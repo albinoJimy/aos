@@ -73,6 +73,13 @@ type Call struct {
 	Resource   Resource
 	Principal  Principal
 	Context    CallContext
+	// Credential é o token NHI (AOS-005) apresentado pelo chamador. O hook de
+	// identidade (o IdentityCheck de platform/identity) verifica-o e RESOLVE o
+	// Principal a partir dele. Vazio ⇒ chamada anónima, negada fail-closed pelo
+	// hook de identidade (proibição de round-robin anónimo, ADR-003). Não entra
+	// no fingerprint do call nem é gravado nos eventos (não é um segredo de infra,
+	// mas é um bearer efémero: só metadados da NHI resolvida vão ao audit).
+	Credential string
 	// Input é o payload opaco entregue à tool após permit.
 	Input []byte
 }

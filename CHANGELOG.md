@@ -7,6 +7,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — AOS-005 Identidade não-humana (NHI)
+- `feat(AOS-005): identidade não-humana por agente em packages/platform/identity` — emissor/verificador de tokens NHI **scoped + time-bound**, assinados **EdDSA/ed25519** (JWS compacto, só stdlib, **zero deps**; rejeita `alg=none`). Claims `(user_id, agent_id, agent_class, policy_ref, scope, exp, jti)`; TTL e escopo **por classe**; autoridade = **utilizador ∩ classe** (filho ⊆ pai em on-behalf-of).
+  - `Verify` fail-closed: assinatura, `exp`/`nbf` (relógio injectável), revogação, emissor, `typ` — resolve o `Principal` para o PDP. Integrado no **`IdentityCheck` do RM** (substitui o `IdentityStub` do AOS-003): chamada sem NHI **não prossegue** (proibição de anónimo/round-robin). Emissão/revogação gravadas como eventos no Event Store (só metadados, nunca o token/assinatura).
+  - Auditoria adversarial apanhou e a remediação corrigiu: `randomJTI` engolia o erro do CSPRNG (→ `jti` constante, revogação demasiado ampla + gap de auditoria) — agora **fail-closed**; `typ` validado em `Verify` (defesa-em-profundidade); guard contra receiver nil na revogação.
+  - Mudança ao reference-monitor: **+7 linhas** (`Call.Credential`), AOS-003 e AOS-004 verdes. `BenchmarkVerify` ~44 µs/op (≈300× abaixo do orçamento). Cobertura 90.8%, `-race` limpo nos três módulos. Sem material de chave no repo.
+
 ### Added — AOS-004 PDP (policy-as-code)
 - `feat(AOS-004): PDP com policy-as-code (Cedar) em packages/control-plane/pdp` — `Decide(input) → {allow|deny|escalate, reason, policy_version, obligations}`, motor **Cedar** (`cedar-go` v1.8.0) compilado em memória, integrado no Reference Monitor via `PolicyCheck` (substitui o stub do AOS-003). Política de referência (tecnica/12 §9, Rego) reproduzida em Cedar com tabela-verdade idêntica.
   - **Bundle versionado + assinado (ed25519 + sha256 canónico)**: verificação no load, **fail-closed** — `ErrSignatureInvalid` (adulterado/não-assinado/anchor errado) e `ErrPolicyUnavailable` (ausente) tratados como deny. `policy_version` gravada no evento de mediação (mudança mínima aditiva ao reference-monitor, AOS-003 verde).
