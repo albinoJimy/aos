@@ -7,6 +7,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — AOS-008 Orçamento hierárquico (reserva atómica CAS)
+- `feat(AOS-008): orçamento hierárquico com reserva atómica em packages/control-plane/budget` — orçamento por árvore de execução em **tokens E custo** (inteiros micro-USD, sem floats); `Reserve`/`Commit`/`Release` com **CAS atómico** (secção crítica verificação-e-débito por nó) que sobe a cadeia de ancestrais com **rollback em falha parcial**. **0 overshoot** provado com 200 goroutines sob `-race` (árvore plana e ancestral partilhado). `BudgetCheck` do RM nega sem headroom (fail-closed + audit); estado **reconstruível a partir de eventos** do Event Store (`Rebuild`). Zero deps externas; nenhuma alteração fora do pacote.
+  - Auditoria adversarial apanhou e a remediação corrigiu (medium): `Commit`/`Release` mutavam contadores **antes** de emitir e sem rollback → divergência in-memory vs log durável. Agora **emitem antes de aplicar, fail-closed** (revertem para `pending` se o emit falha), preservando `Rebuild == in-memory`. Guarda de overflow int64 no `Rebuild`.
+  - Aberto (documentado, fora de escopo por "sem scheduler/backpressure completos"): TTL/reaper de reservas órfãs — expiração automática fica para o escalonador (AOS-025+); hoje o settle é responsabilidade do consumidor.
+  - `-race -count=5` limpo; cobertura 98.2%; AOS-002..007 verdes.
+
 ### Added — AOS-007 Capability allowlist default-deny
 - `feat(AOS-007): capability allowlist default-deny no PDP` — allowlist de capabilities por `agent_class` como recurso de política assinado (`packages/control-plane/pdp/policies/capabilities/allowlist.json`), **parte do content_hash + assinatura ed25519 do bundle** (adicionar capability exige re-assinatura). **Gate default-deny** em `PDP.Decide` antes das regras Cedar (permit = allowlist ∧ Cedar); capability não listada → deny fail-closed, auditado pelo RM com capability + principal (incl. `agent_class`). **Sem wildcards por omissão** (só com `justification` explícita).
   - `agent_class` flui identity → RM → PDP por alterações mínimas aditivas (`Principal.AgentClass`, +10 linhas nos 3 módulos). Fuzz (loop determinístico 3000 + `FuzzDecide` nativo ~273k execs) com **0 allow indevido**.
