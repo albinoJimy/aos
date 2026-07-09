@@ -7,6 +7,11 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — AOS-006 Cadeia de delegação on-behalf-of
+- `feat(AOS-006): cadeia de delegação on-behalf-of até humano em packages/platform/identity/delegation` — `delegation_chain` de elos `{sub, act_as, authority, depth, prev_hash}` **hash-encadeados** (ordem tamper-evident), embebida no token NHI e **selada pela assinatura do emissor** (AOS-005). `IssueChild` on-behalf-of: filho herda a cadeia do pai + novo elo, **autoridade = intersecção (filho ⊆ pai)**, escalada rejeitada fail-closed. Raiz sempre `human:<id>`; **cadeia órfã** (raiz não-humana) → deny + audit no RM. `delegation_chain` em cada evento de tool call → **reconstrução de "quem autorizou"** (`AuthorFromEvent`).
+  - Auditoria adversarial apanhou e a remediação corrigiu (medium): `Verify` não vinculava `user_id` à raiz humana selada → duas fontes divergentes de autoria ("The Audit Log Lied" sob emissor comprometido). Agora exige `root.Sub == human:<user_id>` **e** `scope ⊆ leaf.Authority` (fail-closed).
+  - Estende o módulo AOS-005 (não módulo novo); mudança ao reference-monitor limitada a +26 linhas (`delegation_chain` no payload de mediação). `-race` limpo, cobertura 89.4% (delegation 92.2%); AOS-002/003/004/005 **todos verdes**. Modelo de confiança (ancorado no emissor; PKI por-principal = endurecimento futuro) documentado.
+
 ### Added — AOS-005 Identidade não-humana (NHI)
 - `feat(AOS-005): identidade não-humana por agente em packages/platform/identity` — emissor/verificador de tokens NHI **scoped + time-bound**, assinados **EdDSA/ed25519** (JWS compacto, só stdlib, **zero deps**; rejeita `alg=none`). Claims `(user_id, agent_id, agent_class, policy_ref, scope, exp, jti)`; TTL e escopo **por classe**; autoridade = **utilizador ∩ classe** (filho ⊆ pai em on-behalf-of).
   - `Verify` fail-closed: assinatura, `exp`/`nbf` (relógio injectável), revogação, emissor, `typ` — resolve o `Principal` para o PDP. Integrado no **`IdentityCheck` do RM** (substitui o `IdentityStub` do AOS-003): chamada sem NHI **não prossegue** (proibição de anónimo/round-robin). Emissão/revogação gravadas como eventos no Event Store (só metadados, nunca o token/assinatura).

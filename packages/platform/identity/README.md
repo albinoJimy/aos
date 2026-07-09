@@ -99,6 +99,34 @@ m := rm.New(
 // call.Credential = ""           → deny (anónimo proibido)
 ```
 
+## Cadeia de delegação on-behalf-of até humano (AOS-006)
+
+O subpacote [`delegation`](delegation/README.md) estende a NHI com a **cadeia de
+delegação** completa, embebida no claim `delegation_chain` e **selada pela
+assinatura do token**. A cadeia é ordenada da **raiz humana** (`human:<user_id>`)
+até ao agente actual; cada elo é encadeado por hash ao anterior (ordem
+*tamper-evident*).
+
+- **`Issuer.Issue`** embute a cadeia **raiz** (`human:<user_id> → agente`).
+- **`Issuer.IssueChild(ctx, parentToken, ChildRequest)`** — emissão *on-behalf-of*:
+  verifica o token pai, extrai a sua cadeia, **rejeita escalada** de autoridade
+  (`ErrDelegationInvalid`, que envolve `delegation.ErrScopeEscalation`), estende a
+  cadeia com um novo elo (`Depth+1`, `PrevHash = hash(folha)`) e emite o token
+  filho. A autoridade do filho é `pedido ∩ classe`, sempre **⊆ folha do pai**.
+- **`Verifier.Verify`** valida a cadeia embebida (raiz humana, não-escalada,
+  encadeamento de hash, folha = `agent_id`) — falha **fail-closed** com
+  `ErrDelegationInvalid`. Expõe `Principal.DelegationChain` e
+  `Principal.HumanPrincipal()`.
+- **`IdentityCheck`** propaga a cadeia **completa** ao `Principal` do RM, que a
+  grava em cada evento de tool call (`Producer.DelegationChain` **e** no payload
+  da mediação).
+- **`AuthorFromEvent(ev)`** reconstrói *quem autorizou* a partir de um evento de
+  tool call lido do Event Store: o autor é o humano na raiz da cadeia
+  (fail-closed em cadeia vazia/órfã).
+
+> Uma cadeia que não resolva até um humano (**órfã**) é **negada e auditada** pelo
+> RM — 0 cadeias órfãs. Ver o modelo de confiança em [`delegation/README.md`](delegation/README.md).
+
 ## Chaves
 
 O emissor detém a chave **privada** ed25519 **fora da árvore do repo** (injectada

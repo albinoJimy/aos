@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+
+	"github.com/aos-ref/platform/identity/delegation"
 )
 
 // Constantes do envelope do token NHI. O formato é um JWS compacto:
@@ -51,6 +53,15 @@ type Claims struct {
 	Expiry    int64 `json:"exp"`
 	// JTI é o identificador único do token (usado na revogação).
 	JTI string `json:"jti"`
+	// DelegationChain é a cadeia de delegação on-behalf-of embebida (AOS-006):
+	// ordenada da raiz humana ("human:<user_id>") até ao agente actual. Vai SELADA
+	// pela assinatura do token (o emissor assina a cadeia inteira). O verificador
+	// valida-a (não-escalada, raiz humana, encadeamento de hash). Ver o subpacote
+	// delegation. OBRIGATÓRIA a partir de AOS-006: um token sem cadeia é rejeitado
+	// fail-closed por [Verifier.Verify] (ErrDelegationInvalid/E_CHAIN_EMPTY) — a
+	// tag omitempty é apenas o encoding on-the-wire, não indica tolerância a
+	// tokens legados sem cadeia.
+	DelegationChain delegation.Chain `json:"delegation_chain,omitempty"`
 }
 
 func b64enc(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

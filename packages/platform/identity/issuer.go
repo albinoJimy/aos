@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"time"
 
+	"github.com/aos-ref/platform/identity/delegation"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -149,18 +151,27 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		return Token{}, err
 	}
 
+	// Cadeia de delegação raiz: esta NHI é criada on-behalf-of um humano
+	// responsável. A raiz é sempre "human:<user_id>" (AOS-006); a autoridade do
+	// elo é o escopo do token. Sela-se na assinatura abaixo.
+	chain, err := delegation.NewRoot(humanRoot(req.UserID), req.AgentID, scope)
+	if err != nil {
+		return Token{}, err
+	}
+
 	now := i.now()
 	claims := Claims{
-		UserID:     req.UserID,
-		AgentID:    req.AgentID,
-		AgentClass: req.AgentClass,
-		PolicyRef:  req.PolicyRef,
-		Scope:      scope,
-		Issuer:     i.iss,
-		IssuedAt:   now.Unix(),
-		NotBefore:  now.Unix(),
-		Expiry:     now.Add(cp.TTL).Unix(),
-		JTI:        jti,
+		UserID:          req.UserID,
+		AgentID:         req.AgentID,
+		AgentClass:      req.AgentClass,
+		PolicyRef:       req.PolicyRef,
+		Scope:           scope,
+		Issuer:          i.iss,
+		IssuedAt:        now.Unix(),
+		NotBefore:       now.Unix(),
+		Expiry:          now.Add(cp.TTL).Unix(),
+		JTI:             jti,
+		DelegationChain: chain,
 	}
 
 	compact, err := signToken(i.priv, i.kid, claims)
@@ -203,11 +214,35 @@ func (i *Issuer) recordIssued(ctx context.Context, c Claims) error {
 		StepID:  "nhi.issued:" + c.JTI, // idempotência por jti
 		Producer: eventstore.Producer{
 			NHIID:           c.AgentID,
-			DelegationChain: []eventstore.DelegationHop{{Sub: c.UserID, ActAs: c.AgentID}},
+			DelegationChain: chainToHops(c.DelegationChain),
 			Scope:           c.Scope,
 		},
 	})
 	return err
+}
+
+// humanRoot normaliza um user_id para a raiz da cadeia de delegação: garante o
+// prefixo "human:" exigido por AOS-006. Se o user_id já vier prefixado (ex.:
+// "human:alice"), devolve-o inalterado; senão prefixa-o.
+func humanRoot(userID string) string {
+	if strings.HasPrefix(userID, delegation.HumanPrefix) {
+		return userID
+	}
+	return delegation.HumanPrefix + userID
+}
+
+// chainToHops projecta a cadeia de delegação para os hops (sub/act_as) do Event
+// Store. Os hashes/autoridade ficam no token selado; o evento regista a ordem
+// dos elos, suficiente para reconstruir "quem autorizou" (a raiz humana).
+func chainToHops(chain delegation.Chain) []eventstore.DelegationHop {
+	if len(chain) == 0 {
+		return nil
+	}
+	out := make([]eventstore.DelegationHop, len(chain))
+	for i, l := range chain {
+		out[i] = eventstore.DelegationHop{Sub: l.Sub, ActAs: l.ActAs}
+	}
+	return out
 }
 
 // intersect devolve os elementos de a que também estão em b, preservando a ordem

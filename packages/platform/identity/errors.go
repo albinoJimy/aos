@@ -58,4 +58,11 @@ var (
 	// ErrInvalidRequest — pedido de emissão/revogação com campos obrigatórios em
 	// falta (ex.: user_id, agent_id ou jti vazios).
 	ErrInvalidRequest = &IdentityError{Code: "E_INVALID_REQUEST", msg: "pedido invalido (campos obrigatorios em falta)"}
+
+	// ErrDelegationInvalid — a cadeia de delegação embebida no token é inválida:
+	// vazia, órfã (raiz não-humana), com escalada de autoridade ou com o
+	// encadeamento de hash quebrado. Envolve o erro sentinela do subpacote
+	// delegation (comparável com errors.Is em ambos os níveis). Fail-closed:
+	// AOS-006 exige que toda a NHI resolva até um humano responsável.
+	ErrDelegationInvalid = &IdentityError{Code: "E_DELEGATION_INVALID", msg: "cadeia de delegacao invalida (nao resolve ate humano ou escala autoridade)"}
 )

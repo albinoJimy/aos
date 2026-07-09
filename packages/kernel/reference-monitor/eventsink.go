@@ -102,6 +102,16 @@ type principalDTO struct {
 	NHIID     string   `json:"nhi_id,omitempty"`
 	AgentID   string   `json:"agent_id,omitempty"`
 	Authority []string `json:"authority,omitempty"`
+	// DelegationChain é a cadeia on-behalf-of completa (raiz humana → agente
+	// actual) também no payload da mediação, para reconstruir "quem autorizou"
+	// directamente do payload sem depender do envelope Producer (AOS-006).
+	DelegationChain []delegationHopDTO `json:"delegation_chain,omitempty"`
+}
+
+// delegationHopDTO é um elo (sub/act_as) da cadeia serializado no payload.
+type delegationHopDTO struct {
+	Sub   string `json:"sub"`
+	ActAs string `json:"act_as"`
 }
 
 // appender é o subconjunto do Event Store de que o adaptador depende. Manter
@@ -144,9 +154,10 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 		},
 		LatencyNanos: rec.Latency.Nanoseconds(),
 		Principal: principalDTO{
-			NHIID:     rec.Principal.NHIID,
-			AgentID:   rec.Principal.AgentID,
-			Authority: rec.Principal.Authority,
+			NHIID:           rec.Principal.NHIID,
+			AgentID:         rec.Principal.AgentID,
+			Authority:       rec.Principal.Authority,
+			DelegationChain: toHopDTOs(rec.Principal.DelegationChain),
 		},
 		Obligations: rec.Obligations,
 	}
@@ -172,6 +183,18 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 		return 0, err
 	}
 	return res.Seq, nil
+}
+
+// toHopDTOs projecta a cadeia de delegação do RM para os elos do payload.
+func toHopDTOs(chain []DelegationHop) []delegationHopDTO {
+	if len(chain) == 0 {
+		return nil
+	}
+	out := make([]delegationHopDTO, len(chain))
+	for i, h := range chain {
+		out[i] = delegationHopDTO{Sub: h.Sub, ActAs: h.ActAs}
+	}
+	return out
 }
 
 // toStoreChain converte a cadeia de delegação do RM para o modelo do Event Store.

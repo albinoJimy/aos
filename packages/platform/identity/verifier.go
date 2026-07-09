@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"time"
+
+	"github.com/aos-ref/platform/identity/delegation"
 )
 
 // RevocationChecker é a superfície mínima de que o [Verifier] precisa para
@@ -29,6 +31,16 @@ type Principal struct {
 	IssuedAt   time.Time
 	NotBefore  time.Time
 	Expiry     time.Time
+	// DelegationChain é a cadeia on-behalf-of verificada (raiz humana → agente
+	// actual), extraída dos claims e validada por [Verifier.Verify] (AOS-006).
+	DelegationChain delegation.Chain
+}
+
+// HumanPrincipal resolve o humano responsável único na raiz da cadeia de
+// delegação (reconstrução de autoria: "quem autorizou"). Falha fail-closed se a
+// cadeia for vazia ou órfã.
+func (p Principal) HumanPrincipal() (string, error) {
+	return p.DelegationChain.HumanPrincipal()
 }
 
 // Allows indica se a capability pedida está no escopo da NHI. É a fronteira de
@@ -154,17 +166,52 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 		}
 	}
 
+	// 6) Cadeia de delegação (AOS-006). Corre por último: só se valida a autoria
+	// de um token cuja assinatura, janela temporal e revogação já passaram. A
+	// cadeia tem de (a) resolver até um humano responsável na raiz (0 órfãs), (b)
+	// não escalar autoridade ao descer, (c) manter o encadeamento de hash intacto,
+	// (d) terminar no agente deste token (leaf.ActAs == agent_id), (e) enraizar
+	// exactamente no humano do claim (root.Sub == human:<user_id>) e (f) selar uma
+	// autoridade na folha que cubra o escopo efectivo (claims.Scope ⊆
+	// leaf.Authority). Qualquer falha ⇒ ErrDelegationInvalid (fail-closed): o RM
+	// nega e audita.
 	c := pt.claims
+	if err := c.DelegationChain.Verify(); err != nil {
+		return Principal{}, fmt.Errorf("%w: %w", ErrDelegationInvalid, err)
+	}
+	// (e) Atribuição: a raiz da cadeia SELADA tem de ser exactamente o humano do
+	// claim. Sem isto, claims.UserID e a raiz da cadeia seriam duas fontes
+	// divergentes de "quem autorizou" (um emissor comprometido/buggy podia gravar
+	// UserID=alice num token cuja cadeia enraíza em bob) e o registo de auditoria
+	// mentiria. Liga a atribuição do token à autoria selada (AOS-006). Fail-closed.
+	root, _ := c.DelegationChain.Root()
+	if root.Sub != humanRoot(c.UserID) {
+		return Principal{}, fmt.Errorf("%w: raiz da cadeia (%q) nao corresponde ao user_id (%q)", ErrDelegationInvalid, root.Sub, c.UserID)
+	}
+	leaf, _ := c.DelegationChain.Leaf()
+	if leaf.ActAs != c.AgentID {
+		return Principal{}, fmt.Errorf("%w: folha da cadeia (%q) nao corresponde ao agent_id (%q)", ErrDelegationInvalid, leaf.ActAs, c.AgentID)
+	}
+	// (f) Defesa-em-profundidade: o escopo efectivo (claims.Scope, o que o RM/PDP
+	// realmente aplicam) tem de ser subconjunto da autoridade SELADA na folha da
+	// cadeia. Sem esta reconciliação a autoridade da cadeia não vincularia o
+	// enforcement (um token podia selar folha.Authority=[cap:http.get] e ainda
+	// assim conceder claims.Scope=[cap:http.get,cap:admin]). Fail-closed.
+	if !authoritySubset(c.Scope, leaf.Authority) {
+		return Principal{}, fmt.Errorf("%w: escopo do token excede a autoridade selada na folha da cadeia", ErrDelegationInvalid)
+	}
+
 	return Principal{
-		UserID:     c.UserID,
-		AgentID:    c.AgentID,
-		AgentClass: c.AgentClass,
-		PolicyRef:  c.PolicyRef,
-		Issuer:     c.Issuer,
-		JTI:        c.JTI,
-		Scope:      append([]string(nil), c.Scope...),
-		IssuedAt:   time.Unix(c.IssuedAt, 0),
-		NotBefore:  time.Unix(c.NotBefore, 0),
-		Expiry:     time.Unix(c.Expiry, 0),
+		UserID:          c.UserID,
+		AgentID:         c.AgentID,
+		AgentClass:      c.AgentClass,
+		PolicyRef:       c.PolicyRef,
+		Issuer:          c.Issuer,
+		JTI:             c.JTI,
+		Scope:           append([]string(nil), c.Scope...),
+		IssuedAt:        time.Unix(c.IssuedAt, 0),
+		NotBefore:       time.Unix(c.NotBefore, 0),
+		Expiry:          time.Unix(c.Expiry, 0),
+		DelegationChain: c.DelegationChain.Clone(),
 	}, nil
 }

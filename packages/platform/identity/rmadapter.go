@@ -4,6 +4,8 @@ import (
 	"context"
 
 	rm "github.com/aos-ref/kernel/reference-monitor"
+
+	"github.com/aos-ref/platform/identity/delegation"
 )
 
 // IdentityCheck adapta o [Verifier] à interface Hook do Reference Monitor
@@ -67,16 +69,30 @@ func (c *IdentityCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookRes
 
 	// Resolve o Principal para os hooks seguintes (mecanismo de mutação do *Call
 	// já existente no RM). NHIID = agent_id; Authority = escopo do token; a cadeia
-	// de delegação liga a NHI ao humano responsável.
+	// de delegação COMPLETA (raiz humana → agente actual, já verificada por
+	// Verify) liga a NHI ao humano responsável e propaga a cada evento de tool
+	// call, permitindo reconstruir "quem autorizou" (AOS-006).
 	call.Principal = rm.Principal{
-		NHIID:   principal.AgentID,
-		AgentID: principal.AgentID,
-		DelegationChain: []rm.DelegationHop{
-			{Sub: principal.UserID, ActAs: principal.AgentID},
-		},
-		Authority: principal.Scope,
+		NHIID:           principal.AgentID,
+		AgentID:         principal.AgentID,
+		DelegationChain: toRMChain(principal.DelegationChain),
+		Authority:       principal.Scope,
 	}
 	return rm.HookResult{Decision: rm.HookAllow}, nil
+}
+
+// toRMChain projecta a cadeia de delegação verificada para os hops (sub/act_as)
+// do Reference Monitor, que os grava no Producer de cada evento de mediação. A
+// ordem dos elos (raiz humana primeiro) é preservada.
+func toRMChain(chain delegation.Chain) []rm.DelegationHop {
+	if len(chain) == 0 {
+		return nil
+	}
+	out := make([]rm.DelegationHop, len(chain))
+	for i, l := range chain {
+		out[i] = rm.DelegationHop{Sub: l.Sub, ActAs: l.ActAs}
+	}
+	return out
 }
 
 // deny constrói um HookResult de negação com a razão dada.
