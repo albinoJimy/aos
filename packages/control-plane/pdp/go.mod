@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
+	github.com/aos-ref/platform/identity v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
 	github.com/cedar-policy/cedar-go v1.8.0
 )
@@ -18,3 +19,9 @@ require golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 replace github.com/aos-ref/kernel/reference-monitor => ../../kernel/reference-monitor
 
 replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
+
+// Identidade (AOS-005/006) integrada por path local APENAS em teste: o teste de
+// integração cross-package (identity_gate_integration_test.go) compõe o
+// IdentityCheck real antes do PolicyCheck para provar que o gate default-deny
+// keia na agent_class RESOLVIDA da NHI verificada, não na forjada pelo caller.
+replace github.com/aos-ref/platform/identity => ../../platform/identity

@@ -7,6 +7,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — AOS-007 Capability allowlist default-deny
+- `feat(AOS-007): capability allowlist default-deny no PDP` — allowlist de capabilities por `agent_class` como recurso de política assinado (`packages/control-plane/pdp/policies/capabilities/allowlist.json`), **parte do content_hash + assinatura ed25519 do bundle** (adicionar capability exige re-assinatura). **Gate default-deny** em `PDP.Decide` antes das regras Cedar (permit = allowlist ∧ Cedar); capability não listada → deny fail-closed, auditado pelo RM com capability + principal (incl. `agent_class`). **Sem wildcards por omissão** (só com `justification` explícita).
+  - `agent_class` flui identity → RM → PDP por alterações mínimas aditivas (`Principal.AgentClass`, +10 linhas nos 3 módulos). Fuzz (loop determinístico 3000 + `FuzzDecide` nativo ~273k execs) com **0 allow indevido**.
+  - Auditoria adversarial apanhou e a remediação corrigiu (medium): a composição de referência usava o `IdentityStub` (pass-through) → `agent_class` **forjável** para amplificar capabilities. Corrigido no README (composição segura com `IdentityCheck` real) + **teste cross-package** que prova que a classe forjada é ignorada em favor da NHI verificada.
+  - `-race` limpo nos 3 módulos; cobertura pdp 83.9%; AOS-002..006 verdes. Bundle re-assinado (chave privada fora do repo).
+
 ### Added — AOS-006 Cadeia de delegação on-behalf-of
 - `feat(AOS-006): cadeia de delegação on-behalf-of até humano em packages/platform/identity/delegation` — `delegation_chain` de elos `{sub, act_as, authority, depth, prev_hash}` **hash-encadeados** (ordem tamper-evident), embebida no token NHI e **selada pela assinatura do emissor** (AOS-005). `IssueChild` on-behalf-of: filho herda a cadeia do pai + novo elo, **autoridade = intersecção (filho ⊆ pai)**, escalada rejeitada fail-closed. Raiz sempre `human:<id>`; **cadeia órfã** (raiz não-humana) → deny + audit no RM. `delegation_chain` em cada evento de tool call → **reconstrução de "quem autorizou"** (`AuthorFromEvent`).
   - Auditoria adversarial apanhou e a remediação corrigiu (medium): `Verify` não vinculava `user_id` à raiz humana selada → duas fontes divergentes de autoria ("The Audit Log Lied" sob emissor comprometido). Agora exige `root.Sub == human:<user_id>` **e** `scope ⊆ leaf.Authority` (fail-closed).

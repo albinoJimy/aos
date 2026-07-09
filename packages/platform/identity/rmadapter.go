@@ -75,6 +75,7 @@ func (c *IdentityCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookRes
 	call.Principal = rm.Principal{
 		NHIID:           principal.AgentID,
 		AgentID:         principal.AgentID,
+		AgentClass:      principal.AgentClass,
 		DelegationChain: toRMChain(principal.DelegationChain),
 		Authority:       principal.Scope,
 	}

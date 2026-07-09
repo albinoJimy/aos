@@ -21,6 +21,17 @@ func refPolicy(t testing.TB) []byte {
 	return b
 }
 
+// refAllowlist devolve a allowlist de capabilities de referência committada
+// (AOS-007).
+func refAllowlist(t testing.TB) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("policies", capabilitiesDir, "allowlist.json"))
+	if err != nil {
+		t.Fatalf("ler allowlist de referencia: %v", err)
+	}
+	return b
+}
+
 // newKeypair gera um par ed25519 para os testes.
 func newKeypair(t testing.TB) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -136,10 +147,19 @@ func TestVerify_FailClosed(t *testing.T) {
 	}
 }
 
-// writeSignedDir escreve um bundle assinado num directório e o trust anchor.
+// writeSignedDir escreve um bundle assinado num directório (regras Cedar +
+// allowlist de capabilities do AOS-007) e o trust anchor. A allowlist entra no
+// bundle assinado, pelo que os testes de round-trip/reload exercitam também o
+// gate default-deny sobre uma allowlist verificada.
 func writeSignedDir(t testing.TB, dir, version string, priv ed25519.PrivateKey) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "aos_authz.cedar"), refPolicy(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, capabilitiesDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, capabilitiesDir, "allowlist.json"), refAllowlist(t), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := SignBundle(dir, version, priv); err != nil {

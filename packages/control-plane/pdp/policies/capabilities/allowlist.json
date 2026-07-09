@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "classes": {
+    "agent-worker": {
+      "capabilities": [
+        { "cap": "cap:http.post" },
+        { "cap": "cap:fs.read" }
+      ]
+    },
+    "agent-reader": {
+      "capabilities": [
+        { "cap": "cap:fs.read" }
+      ]
+    },
+    "agent-break-glass": {
+      "capabilities": [
+        {
+          "cap": "*",
+          "justification": "classe break-glass de emergencia: concessao ampla deliberada, auditada em cada uso e revista trimestralmente pelo Engenheiro de Seguranca (AOS-007)."
+        }
+      ]
+    }
+  }
+}

@@ -35,6 +35,11 @@ type Principal struct {
 	// ID é o identificador estável da NHI (NHIID). Usado como id da entidade
 	// Cedar do principal.
 	ID string
+	// AgentClass é a classe da NHI (claim `agent_class` do token, AOS-005). É a
+	// CHAVE da allowlist de capabilities (AOS-007): o gate default-deny de
+	// [PDP.Decide] só concede uma capability que conste explicitamente da
+	// allowlist assinada desta classe. Vazia ⇒ nenhuma allowlist ⇒ deny.
+	AgentClass string
 	// DelegationChain é a cadeia on-behalf-of (raiz humana → agente actual). Não
 	// é avaliada pela política de referência §9; presente por fidelidade ao C1.
 	DelegationChain []string

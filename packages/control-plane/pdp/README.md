@@ -73,7 +73,56 @@ exactamente como as regras Rego que exigem `allow`. Ver `engine_cedar.go`
 | `fs.read` sem a capability | **deny** | — |
 | qualquer capability não coberta | **deny** (default-deny) | — |
 
-Cobertas em `TestDecide_GoldenTruthTable` (`pdp_test.go`).
+Cobertas em `TestDecide_GoldenTruthTable` (`pdp_test.go`). Todos os casos assumem
+uma `agent_class` cuja **allowlist de capabilities** (AOS-007, abaixo) concede a
+capability pedida — o gate default-deny corre **antes** das regras Cedar.
+
+## Capability allowlist default-deny (AOS-007)
+
+A blocklist de tools de sub-agente **falhava aberta** a cada tool nova. O PDP
+substitui-a por uma **allowlist capability-scoped default-deny**: o que não está
+explicitamente concedido é negado.
+
+- **Recurso:** `policies/capabilities/allowlist.json` — declarativo, keyed por
+  `agent_class`, enumerando as capabilities de cada classe. **Faz parte do bundle
+  assinado** (entra no `content_hash` e na assinatura ed25519): adicionar/alterar
+  uma capability **exige re-assinatura** (`AC#4` — sem allow implícito).
+- **Gate:** `PDP.Decide` impõe, **antes** de qualquer regra Cedar, que a
+  `(agent_class, capability)` conste explicitamente da allowlist. A decisão final
+  `permit` exige **allowlist ∧ regras Cedar**. Ausência de concessão ⇒ `deny`
+  (fail-closed), com `reason` que contém `default-deny` e nomeia a classe.
+- **Identidade (AOS-005/006):** a `agent_class` chega ao PDP resolvida pelo hook
+  de identidade a partir do claim `agent_class` do token NHI → `rm.Principal.AgentClass`
+  → `pdp.Input.Principal.AgentClass`. A negação é auditada pelo RM (o evento de
+  mediação carrega `capability` + `principal` incl. `agent_class`).
+- **Sem wildcards perigosos por omissão:** uma entrada `"*"` só concede se trouxer
+  `justification` não-vazia; um wildcard sem justificação é **ignorado** (não
+  concede nada).
+
+```json
+{
+  "schema_version": 1,
+  "classes": {
+    "agent-worker": { "capabilities": [ {"cap": "cap:http.post"}, {"cap": "cap:fs.read"} ] },
+    "agent-reader": { "capabilities": [ {"cap": "cap:fs.read"} ] },
+    "agent-break-glass": { "capabilities": [ {"cap": "*", "justification": "break-glass auditado, revisto trimestralmente"} ] }
+  }
+}
+```
+
+| Caso (gate da allowlist) | Decisão |
+|---|---|
+| classe lista a capability | segue para as regras Cedar |
+| classe **não** lista a capability (tool nova) | **deny** default-deny |
+| `agent_class` vazia / classe desconhecida | **deny** default-deny |
+| classe com wildcard **justificado** | concede qualquer capability |
+| wildcard **sem** justificação | ignorado (não concede) |
+
+Coberto em `capabilities_test.go`: default-deny, "tool nova falha fechada", allow
+explícito por política assinada, **fuzz** de capabilities aleatórias (0 falso
+allow — `TestDecide_Fuzz_ZeroFalsoAllow` + `FuzzDecide_CapabilityNuncaEscapaAllowlist`),
+adulteração da allowlist ⇒ `ErrSignatureInvalid`, e integração RM (negação
+auditada com capability + principal).
 
 ## Bundle assinado e versionado
 
@@ -81,8 +130,9 @@ A política vive num **bundle** em `policies/`:
 
 | Ficheiro | Papel | Committado? |
 |---|---|---|
-| `aos_authz.cedar` | fonte da política | sim |
-| `manifest.json` | `policy_version` (SemVer) + `content_hash` (sha256 canónico) + `created_at` | sim |
+| `aos_authz.cedar` | fonte da política (regras Cedar) | sim |
+| `capabilities/allowlist.json` | allowlist de capabilities por `agent_class` (AOS-007) | sim |
+| `manifest.json` | `policy_version` (SemVer) + `content_hash` (sha256 canónico, cobre `.cedar` **e** allowlist) + `created_at` | sim |
 | `aos_authz.sig` | assinatura **ed25519** (base64) | sim |
 | `trust_anchor.pub` | chave **pública** ed25519 (base64) | sim |
 | `signing.key` | chave **privada** ed25519 | **NÃO** (gitignored via `*.key`) |
@@ -91,8 +141,9 @@ A política vive num **bundle** em `policies/`:
 canónica que liga `policy_version` **e** `content_hash`
 (`aos.policy.bundle.v1\n<version>\n<hash>\n`). No `Open`:
 
-1. recomputa `content_hash` dos `.cedar` e compara com o manifest — divergência ⇒
-   adulteração ⇒ `ErrSignatureInvalid` (`E_SIGNATURE_INVALID`);
+1. recomputa `content_hash` dos `.cedar` **e** da allowlist de capabilities e
+   compara com o manifest — divergência ⇒ adulteração ⇒ `ErrSignatureInvalid`
+   (`E_SIGNATURE_INVALID`);
 2. verifica a assinatura ed25519 contra o `trust_anchor.pub` — falha ⇒
    `ErrSignatureInvalid`;
 3. compila a policy set Cedar em memória (uma vez).
@@ -134,10 +185,25 @@ Store (AOS-002), cumprindo o critério de audit do AOS-004.
 ```go
 p, _ := pdp.Open("policies")
 m := rm.New(
-    rm.WithHooks(rm.IdentityStub{}, pdp.NewPolicyCheck(p), rm.BudgetStub{}, rm.EgressStub{}, rm.AuditStub{}),
+    // Identidade REAL antes do PDP: o IdentityCheck resolve e re-deriva o Principal
+    // (incl. agent_class) do token NHI verificado — ver "Fronteira de confiança".
+    rm.WithHooks(identity.NewIdentityCheck(verifier), pdp.NewPolicyCheck(p), rm.BudgetStub{}, rm.EgressStub{}, rm.AuditStub{}),
     rm.WithEventSink(rm.NewEventStoreSink(store)),
 )
 ```
+
+> **Fronteira de confiança (AOS-007) — não usar `IdentityStub` antes do gate.** O
+> gate default-deny da allowlist decide sobre `(agent_class, capability)` e trata a
+> `agent_class` como **já resolvida de uma NHI verificada**. Compor o PDP atrás do
+> `rm.IdentityStub{}` neutro (pass-through) é **inseguro**: a `agent_class` vem então
+> do `Call` bruto do caller e é **forjável** — um caller troca a sua classe real por
+> uma de maior privilégio (ex.: `agent-worker`, ou `agent-break-glass` com wildcard)
+> e amplifica capabilities. Em produção componha o `identity.NewIdentityCheck`
+> (AOS-005/006), que **substitui o `Call.Principal` inteiro** a partir do token
+> verificado, imediatamente antes do `PolicyCheck`. O teste
+> `TestIntegration_IdentityGate_ForgedAgentClassIgnored_Deny`
+> (`identity_gate_integration_test.go`) prova que, nessa composição, uma
+> `agent_class` forjada no `Call` é ignorada e o gate decide pela classe do token.
 
 Um `permit` da política ⇒ `Mediate` permit + evento `tool.call.mediated` com
 `policy_version`; um `deny` ⇒ `Mediate` deny + evento `tool.call.denied` com
@@ -166,6 +232,7 @@ go test -run '^$' -bench BenchmarkDecide -benchtime=100000x
 
 ## Âmbito (AOS-004)
 
-**Dentro:** PDP + bundle assinado/versionado + integração via `PolicyCheck`.
-**Fora:** identidade real (AOS-005), orçamento/egress reais (AOS-007/008), CI
-(AOS-010).
+**Dentro:** PDP + bundle assinado/versionado + integração via `PolicyCheck` +
+capability allowlist default-deny (AOS-007).
+**Fora:** identidade real (AOS-005/006, integrada), orçamento/egress reais
+(AOS-008/009), CI (AOS-010).

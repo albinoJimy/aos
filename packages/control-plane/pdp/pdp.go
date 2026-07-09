@@ -132,6 +132,24 @@ func (p *PDP) Decide(_ context.Context, in Input) (Decision, error) {
 			fmt.Errorf("%w: %v", ErrMalformedRequest, err)
 	}
 
+	// GATE default-deny da allowlist de capabilities (AOS-007). Impõe-se ANTES de
+	// qualquer regra Cedar: a capability pedida TEM de constar explicitamente da
+	// allowlist assinada da agent_class do principal. A ausência de concessão é
+	// recusa (fail-closed) — uma tool/capability nova sem entrada é negada até ser
+	// explicitamente permitida por política re-assinada. A decisão final permit
+	// exige, assim, allowlist ∧ regras Cedar. A negação é auditada pelo RM (o
+	// evento de mediação carrega capability + principal + policy_version).
+	//
+	// FRONTEIRA DE CONFIANÇA. O gate keia em in.Principal.AgentClass e ASSUME-A já
+	// resolvida de uma NHI verificada — o hook de identidade real (AOS-005/006)
+	// substitui o Principal inteiro a partir do token verificado ANTES deste gate.
+	// É INSEGURO compor o PDP atrás de um IdentityStub pass-through: aí a agent_class
+	// vem do Call bruto do caller e é forjável, amplificando capabilities. Ver a nota
+	// "Fronteira de confiança" no README e a prova em identity_gate_integration_test.go.
+	if ok, greason := eng.allow.permits(in.Principal.AgentClass, in.Capability); !ok {
+		return Decision{Effect: Deny, Reason: greason, PolicyVersion: eng.version}, nil
+	}
+
 	allow, reason, err := eng.evaluate(in)
 	if err != nil {
 		return Decision{Effect: Deny, Reason: reason, PolicyVersion: eng.version}, err

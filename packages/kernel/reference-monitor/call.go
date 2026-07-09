@@ -21,6 +21,10 @@ type Principal struct {
 	NHIID string
 	// AgentID é o identificador do agente no run corrente.
 	AgentID string
+	// AgentClass é a classe da NHI (claim `agent_class` do token, AOS-005),
+	// resolvida pelo hook de identidade. É a chave da allowlist de capabilities
+	// que o PDP avalia no gate default-deny (AOS-007).
+	AgentClass string
 	// DelegationChain é a cadeia on-behalf-of (raiz humana → agente actual).
 	DelegationChain []DelegationHop
 	// Authority são as capabilities que o principal pode exercer (allowlist).

@@ -11,6 +11,14 @@ import (
 
 // buildRM constrói um Reference Monitor com o PDP como hook de política e stubs
 // neutros nos restantes hooks, gravando no Event Store real (AOS-002).
+//
+// FRONTEIRA DE CONFIANÇA (AOS-007). Este harness usa DELIBERADAMENTE o
+// rm.IdentityStub neutro (pass-through): a identidade está fora do âmbito destes
+// testes focados no PDP, pelo que a agent_class chega do Call tal-qual. NÃO é a
+// composição segura de produção — sob IdentityStub a agent_class é input do
+// caller e forjável. A composição REAL (IdentityCheck a re-derivar o Principal do
+// token verificado antes do gate) e a prova de que a classe forjada é ignorada
+// estão em identity_gate_integration_test.go.
 func buildRM(t testing.TB, store eventstore.EventStore) *rm.Monitor {
 	t.Helper()
 	p := mustOpen(t)
@@ -32,7 +40,7 @@ func permitCall() rm.Call {
 		RequestID: "req-permit", RunID: "run-permit", StepID: "step-1",
 		ToolID: "tool.http", Capability: "cap:http.post",
 		Resource:  rm.Resource{Type: "url", Value: "https://api.example.com/orders", Region: "eu"},
-		Principal: rm.Principal{NHIID: "nhi-1", Authority: []string{"cap:http.post"}},
+		Principal: rm.Principal{NHIID: "nhi-1", AgentClass: "agent-worker", Authority: []string{"cap:http.post"}},
 		Context:   rm.CallContext{Taint: "trusted", Sensitivity: "confidential"},
 		Input:     []byte("body"),
 	}

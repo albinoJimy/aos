@@ -99,9 +99,10 @@ type contextDTO struct {
 }
 
 type principalDTO struct {
-	NHIID     string   `json:"nhi_id,omitempty"`
-	AgentID   string   `json:"agent_id,omitempty"`
-	Authority []string `json:"authority,omitempty"`
+	NHIID      string   `json:"nhi_id,omitempty"`
+	AgentID    string   `json:"agent_id,omitempty"`
+	AgentClass string   `json:"agent_class,omitempty"`
+	Authority  []string `json:"authority,omitempty"`
 	// DelegationChain é a cadeia on-behalf-of completa (raiz humana → agente
 	// actual) também no payload da mediação, para reconstruir "quem autorizou"
 	// directamente do payload sem depender do envelope Producer (AOS-006).
@@ -156,6 +157,7 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 		Principal: principalDTO{
 			NHIID:           rec.Principal.NHIID,
 			AgentID:         rec.Principal.AgentID,
+			AgentClass:      rec.Principal.AgentClass,
 			Authority:       rec.Principal.Authority,
 			DelegationChain: toHopDTOs(rec.Principal.DelegationChain),
 		},

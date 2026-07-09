@@ -99,13 +99,19 @@ func (rb RawBundle) Verify(pub ed25519.PublicKey) error {
 	return nil
 }
 
-// readPolicyFiles lê todos os *.cedar de um directório para um mapa nome→fonte.
+// readPolicyFiles lê os ficheiros do bundle para um mapa nome→fonte: os *.cedar
+// de topo (regras) e os `capabilities/*.json` (allowlist de capabilities do
+// AOS-007). AMBOS entram no mapa e, logo, no content_hash canónico e na
+// assinatura — adulterar ou renomear qualquer um invalida a verificação. As
+// chaves da allowlist usam SEMPRE "/" (capabilities/<ficheiro>) para um hash
+// canónico estável independente do separador de caminho do SO.
 func readPolicyFiles(dir string) (map[string][]byte, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: ler dir de politicas %q: %v", ErrPolicyUnavailable, dir, err)
 	}
 	files := make(map[string][]byte)
+	cedarCount := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), cedarExt) {
 			continue
@@ -115,9 +121,31 @@ func readPolicyFiles(dir string) (map[string][]byte, error) {
 			return nil, fmt.Errorf("%w: ler %q: %v", ErrPolicyUnavailable, e.Name(), err)
 		}
 		files[e.Name()] = b
+		cedarCount++
 	}
-	if len(files) == 0 {
+	if cedarCount == 0 {
 		return nil, fmt.Errorf("%w: nenhum ficheiro %s em %q", ErrPolicyUnavailable, cedarExt, dir)
+	}
+
+	// Allowlist de capabilities (AOS-007): capabilities/*.json. O subdirectório é
+	// OPCIONAL — a sua ausência resulta numa allowlist vazia (default-deny total),
+	// nunca em fail-open.
+	capEntries, err := os.ReadDir(filepath.Join(dir, capabilitiesDir))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: ler dir de capabilities: %v", ErrPolicyUnavailable, err)
+		}
+		return files, nil
+	}
+	for _, e := range capEntries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, capabilitiesDir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("%w: ler capabilities/%q: %v", ErrPolicyUnavailable, e.Name(), err)
+		}
+		files[capabilitiesDir+"/"+e.Name()] = b
 	}
 	return files, nil
 }

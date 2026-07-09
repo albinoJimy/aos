@@ -3,6 +3,7 @@ package pdp
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	cedar "github.com/cedar-policy/cedar-go"
 )
@@ -20,6 +21,10 @@ const (
 type cedarEngine struct {
 	policies *cedar.PolicySet
 	version  string
+	// allow é a allowlist de capabilities (AOS-007) compilada a partir do MESMO
+	// bundle assinado. Trocada atomicamente com as regras Cedar em hot-reload,
+	// nunca divergindo da versão de política em vigor.
+	allow *Allowlist
 }
 
 // compilePolicies compila os ficheiros .cedar do bundle numa única policy set.
@@ -36,6 +41,12 @@ func compilePolicies(files map[string][]byte) (*cedar.PolicySet, error) {
 	sort.Strings(names)
 
 	for _, n := range names {
+		// Só os *.cedar são regras Cedar; os `capabilities/*.json` (allowlist do
+		// AOS-007) partilham o mapa (para entrarem no hash/assinatura) mas NÃO
+		// compilam como política Cedar.
+		if !strings.HasSuffix(n, cedarExt) {
+			continue
+		}
 		list, err := cedar.NewPolicyListFromBytes(n, files[n])
 		if err != nil {
 			return nil, fmt.Errorf("compilar politica %q: %w", n, err)
@@ -69,7 +80,11 @@ func newCedarEngine(files map[string][]byte, version string) (*cedarEngine, erro
 	if err != nil {
 		return nil, err
 	}
-	return &cedarEngine{policies: ps, version: version}, nil
+	al, err := parseAllowlist(files)
+	if err != nil {
+		return nil, err
+	}
+	return &cedarEngine{policies: ps, version: version, allow: al}, nil
 }
 
 // evaluate mapeia o [Input] para um request Cedar e autoriza-o contra a policy

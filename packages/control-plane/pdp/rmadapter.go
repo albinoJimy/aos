@@ -99,6 +99,7 @@ func inputFromCall(call *rm.Call) Input {
 		RequestID: call.RequestID,
 		Principal: Principal{
 			ID:              call.Principal.NHIID,
+			AgentClass:      call.Principal.AgentClass,
 			DelegationChain: chain,
 			Authority:       authority,
 		},

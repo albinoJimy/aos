@@ -22,7 +22,7 @@ func mustOpen(t testing.TB) *PDP {
 func httpPost() Input {
 	return Input{
 		RequestID:  "req-1",
-		Principal:  Principal{ID: "nhi-1", Authority: []string{"cap:http.post", "cap:fs.read"}},
+		Principal:  Principal{ID: "nhi-1", AgentClass: "agent-worker", Authority: []string{"cap:http.post", "cap:fs.read"}},
 		Capability: "cap:http.post",
 		Resource:   Resource{Type: "url", Value: "https://api.example.com/orders", Region: "eu"},
 		Context:    DecisionContext{Taint: "trusted", Sensitivity: "public"},
@@ -32,7 +32,7 @@ func httpPost() Input {
 func fsRead() Input {
 	return Input{
 		RequestID:  "req-2",
-		Principal:  Principal{ID: "nhi-1", Authority: []string{"cap:fs.read"}},
+		Principal:  Principal{ID: "nhi-1", AgentClass: "agent-worker", Authority: []string{"cap:fs.read"}},
 		Capability: "cap:fs.read",
 		Resource:   Resource{Type: "file", Value: "/etc/data", Region: "eu"},
 		Context:    DecisionContext{Taint: "trusted"},
