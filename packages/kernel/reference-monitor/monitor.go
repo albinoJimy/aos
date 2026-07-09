@@ -151,7 +151,7 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (Decision, error) {
 	//    é [DefaultHooks]; [WithHooks] com cadeia vazia é misconfiguração).
 	if len(m.hooks) == 0 {
 		return m.fail(ctx, call, EffectDeny, CodeEmptyHookChain, "config",
-			"cadeia de hooks vazia (fail-closed)", start), nil
+			"cadeia de hooks vazia (fail-closed)", start, ""), nil
 	}
 
 	// 1) Cadeia de hooks pela ordem fornecida (ver [WithHooks]; a ordem canónica
@@ -159,23 +159,30 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (Decision, error) {
 	//    call é partilhado por ponteiro para permitir resolução de identidade e
 	//    propagação de contexto entre hooks.
 	var obligations []Obligation
+	// policyVersion é a versão de política observada na cadeia (preenchida pelo
+	// PDP, AOS-004). Actualiza-se ANTES de tratar deny/escalate para que também a
+	// negação de política registe a versão em vigor no evento de mediação.
+	var policyVersion string
 	for _, h := range m.hooks {
 		res, err := safeEvaluate(ctx, h, &call)
+		if res.PolicyVersion != "" {
+			policyVersion = res.PolicyVersion
+		}
 		switch {
 		case err != nil:
-			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), start), nil
+			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), start, policyVersion), nil
 		case res.Decision == HookDeny:
 			reason := res.Reason
 			if reason == "" {
 				reason = fmt.Sprintf("negado por %q", h.Name())
 			}
-			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, start), nil
+			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, start, policyVersion), nil
 		case res.Decision == HookEscalate:
 			reason := res.Reason
 			if reason == "" {
 				reason = fmt.Sprintf("escalado por %q", h.Name())
 			}
-			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, start), nil
+			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, start, policyVersion), nil
 		}
 		obligations = append(obligations, res.Obligations...)
 	}
@@ -185,7 +192,7 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (Decision, error) {
 	_, registered := m.tools[call.ToolID]
 	m.mu.RUnlock()
 	if !registered {
-		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", start), nil
+		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", start, policyVersion), nil
 	}
 
 	// 3) Auditoria ANTES do efeito (audit-before-effect). Se falhar, fail-closed.
@@ -195,12 +202,13 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (Decision, error) {
 		Effect: EffectPermit, ToolID: call.ToolID, Capability: call.Capability,
 		Resource: call.Resource, Context: call.Context,
 		Principal: call.Principal, Latency: m.now().Sub(start), Obligations: obligations,
+		PolicyVersion: policyVersion,
 	}
 	seq, err := m.sink.RecordMediation(ctx, rec)
 	if err != nil {
 		// Uma acção não-auditável não é permitida (ADR-002/010).
 		d := m.fail(ctx, call, EffectDeny, CodeAuditUnavailable, "audit-sink",
-			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), start)
+			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), start, policyVersion)
 		return d, nil
 	}
 
@@ -224,7 +232,7 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (Decision, error) {
 // fail constrói uma Decision de negação/escalonamento, grava o evento
 // correspondente (best-effort — a negação nunca deve ser bloqueada por uma
 // falha de registo) e actualiza métricas. Nunca despacha a tool.
-func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, start time.Time) Decision {
+func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, start time.Time, policyVersion string) Decision {
 	latency := m.now().Sub(start)
 	// Registo best-effort: em deny/escalate o efeito já está bloqueado, pelo que
 	// uma falha de auditoria não altera a decisão (contrasta com o permit path).
@@ -235,6 +243,7 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		ToolID: call.ToolID, Capability: call.Capability,
 		Resource: call.Resource, Context: call.Context,
 		Principal: call.Principal, Latency: latency,
+		PolicyVersion: policyVersion,
 	})
 	if eff == EffectEscalate {
 		m.metrics.Escalations.Add(1)

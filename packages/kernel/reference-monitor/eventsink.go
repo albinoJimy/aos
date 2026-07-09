@@ -36,6 +36,9 @@ type MediationRecord struct {
 	Principal    Principal
 	Latency      time.Duration
 	Obligations  []Obligation
+	// PolicyVersion é a versão de política em vigor na decisão (preenchida pelo
+	// PDP via [HookResult.PolicyVersion]). Fica no evento de mediação (AOS-004).
+	PolicyVersion string
 }
 
 // EventSink é a porta mínima de que o RM precisa para gravar cada mediação de
@@ -67,19 +70,20 @@ func eventTypeFor(e Effect) string {
 // alvo e o contexto de decisão para que o evento seja explicável/auditável sem
 // depender de estado externo (contrato C1, tecnica/12 §4).
 type mediationPayload struct {
-	PortVersion  string       `json:"port_version"`
-	RequestID    string       `json:"request_id,omitempty"`
-	Decision     string       `json:"decision"`
-	Code         string       `json:"code,omitempty"`
-	Reason       string       `json:"reason,omitempty"`
-	DeniedBy     string       `json:"denied_by,omitempty"`
-	ToolID       string       `json:"tool_id"`
-	Capability   string       `json:"capability,omitempty"`
-	Resource     resourceDTO  `json:"resource,omitempty"`
-	Context      contextDTO   `json:"context,omitempty"`
-	LatencyNanos int64        `json:"latency_ns"`
-	Principal    principalDTO `json:"principal"`
-	Obligations  []Obligation `json:"obligations,omitempty"`
+	PortVersion   string       `json:"port_version"`
+	PolicyVersion string       `json:"policy_version,omitempty"`
+	RequestID     string       `json:"request_id,omitempty"`
+	Decision      string       `json:"decision"`
+	Code          string       `json:"code,omitempty"`
+	Reason        string       `json:"reason,omitempty"`
+	DeniedBy      string       `json:"denied_by,omitempty"`
+	ToolID        string       `json:"tool_id"`
+	Capability    string       `json:"capability,omitempty"`
+	Resource      resourceDTO  `json:"resource,omitempty"`
+	Context       contextDTO   `json:"context,omitempty"`
+	LatencyNanos  int64        `json:"latency_ns"`
+	Principal     principalDTO `json:"principal"`
+	Obligations   []Obligation `json:"obligations,omitempty"`
 }
 
 type resourceDTO struct {
@@ -119,14 +123,15 @@ func NewEventStoreSink(store eventstore.EventStore) EventSink {
 
 func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecord) (uint64, error) {
 	payload := mediationPayload{
-		PortVersion: PortVersion,
-		RequestID:   rec.RequestID,
-		Decision:    string(rec.Effect),
-		Code:        rec.Code,
-		Reason:      rec.Reason,
-		DeniedBy:    rec.DeniedBy,
-		ToolID:      rec.ToolID,
-		Capability:  rec.Capability,
+		PortVersion:   PortVersion,
+		PolicyVersion: rec.PolicyVersion,
+		RequestID:     rec.RequestID,
+		Decision:      string(rec.Effect),
+		Code:          rec.Code,
+		Reason:        rec.Reason,
+		DeniedBy:      rec.DeniedBy,
+		ToolID:        rec.ToolID,
+		Capability:    rec.Capability,
 		Resource: resourceDTO{
 			Type:   rec.Resource.Type,
 			Value:  rec.Resource.Value,

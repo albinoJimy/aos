@@ -7,6 +7,14 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — AOS-004 PDP (policy-as-code)
+- `feat(AOS-004): PDP com policy-as-code (Cedar) em packages/control-plane/pdp` — `Decide(input) → {allow|deny|escalate, reason, policy_version, obligations}`, motor **Cedar** (`cedar-go` v1.8.0) compilado em memória, integrado no Reference Monitor via `PolicyCheck` (substitui o stub do AOS-003). Política de referência (tecnica/12 §9, Rego) reproduzida em Cedar com tabela-verdade idêntica.
+  - **Bundle versionado + assinado (ed25519 + sha256 canónico)**: verificação no load, **fail-closed** — `ErrSignatureInvalid` (adulterado/não-assinado/anchor errado) e `ErrPolicyUnavailable` (ausente) tratados como deny. `policy_version` gravada no evento de mediação (mudança mínima aditiva ao reference-monitor, AOS-003 verde).
+  - **Sem segredos no repo**: só a chave pública (`trust_anchor.pub`) + assinatura; chave privada gerada fora da árvore (`~/.aos/keys`, e `*.key` gitignored). `cmd/policy-sign` (re)assina.
+  - Decisão de motor: Cedar em vez de OPA/Rego — OPA traz uma árvore de deps enorme (supply-chain, contra ADR-005); tecnica/12 §9 sanciona Cedar como equivalente. Documentado no README.
+  - `BenchmarkDecide` ~3 µs/op, RM+PDP ~4.3 µs/op — p95 ≪ 15 ms. Cobertura 83.3%, `-race` limpo nos dois módulos.
+  - Aberto (documentado): persistir o evento de mudança-de-política diretamente no Event Store (sub-parte adiada; há já `PolicyChangeEvent` + hook `WithReloadAudit`).
+
 ### Added — AOS-003 Reference Monitor (PEP)
 - `feat(AOS-003): reference monitor (PEP) em packages/kernel/reference-monitor` — superfície única `Mediate(ctx, call) → Decision` (autoriza e despacha; nenhuma tool executa fora dela), cadeia de hooks `Identity → Policy → Budget → Egress → Audit` (contratos + stubs neutros), fail-closed em deny/erro/panic/escalate/falha-de-auditoria, registo do evento de mediação no Event Store (AOS-002) com run_id/step_id/latência/decisão/principal. Go, zero deps externas (integra o ES por `replace` local).
   - No-bypass em duas camadas: `Permit` não-forjável (token não-exportado, ligado ao *call*, uso único via `CompareAndSwap`) + arch-lint `go/ast` que corre como teste (falha em violação) com testdata bom/mau.

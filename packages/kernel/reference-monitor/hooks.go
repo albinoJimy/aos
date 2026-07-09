@@ -20,6 +20,11 @@ type HookResult struct {
 	Decision    HookDecision
 	Reason      string
 	Obligations []Obligation
+	// PolicyVersion é a versão (SemVer) da política que produziu este veredicto.
+	// Só o hook de política (PDP, AOS-004) a preenche; o RM propaga-a ao evento
+	// de mediação para que cada decisão de audit registe a política em vigor
+	// (contrato C1, tecnica/12 §4 — campo policy_version). Vazia nos stubs.
+	PolicyVersion string
 }
 
 // allow é um HookResult neutro reutilizável (sem obrigações).
