@@ -1,0 +1,17 @@
+# Normalização de fim de linha — coerente entre Windows/Linux/macOS.
+* text=auto eol=lf
+
+# Scripts e config que TÊM de ser LF.
+*.sh        text eol=lf
+*.tf        text eol=lf
+*.tfvars    text eol=lf
+*.hcl       text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Makefile    text eol=lf
+
+# Ficheiros binários — sem conversão.
+*.png       binary
+*.jpg       binary
+*.pdf       binary
+*.zip       binary

@@ -1,0 +1,52 @@
+# --- Terraform / OpenTofu ---
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+# Backend/override files that may carry local endpoints/creds — NEVER commit
+*.override.tf
+*.override.tf.json
+override.tf
+override.tf.json
+.terraform.lock.hcl.local
+# tfvars podem conter segredos: só se versiona env/*.tfvars (sem segredos, revistos)
+*.auto.tfvars
+secrets.tfvars
+*.secrets.tfvars
+
+# --- Segredos / credenciais (nunca versionar — ADR-006) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+vault-token
+.vault-token
+
+# --- Node / TS ---
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+
+# --- Go ---
+bin/
+vendor/
+
+# --- Ferramentas / IDE / SO ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+coverage/
+*.log

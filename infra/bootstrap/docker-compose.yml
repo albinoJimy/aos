@@ -1,0 +1,43 @@
+# Bootstrap do ESTADO REMOTO local (S3-compatível) para a IaC dev/staging.
+# Resolve o problema do "ovo-e-galinha": o backend S3 precisa de um bucket antes
+# do primeiro `init`. Sobe um MinIO e cria o bucket `aos-tfstate` com versioning.
+#
+#   docker compose -f infra/bootstrap/docker-compose.yml up -d
+#
+# Credenciais abaixo são de DESENVOLVIMENTO LOCAL, não segredos de produção.
+# Para staging real, usa um bucket S3/GCS gerido em vez deste MinIO.
+services:
+  minio:
+    # Release >= 2025 é OBRIGATÓRIA: o locking nativo (use_lockfile) usa escrita
+    # condicional S3 (If-None-Match), não suportada por MinIO antigo. Verificada.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: aos-dev-minio
+      MINIO_ROOT_PASSWORD: aos-dev-minio-pass
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # Consola
+    volumes:
+      - aos_tfstate:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  createbucket:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 aos-dev-minio aos-dev-minio-pass &&
+      mc mb --ignore-existing local/aos-tfstate &&
+      mc version enable local/aos-tfstate &&
+      echo 'bucket aos-tfstate pronto (versioning ativo)';
+      "
+
+volumes:
+  aos_tfstate:
