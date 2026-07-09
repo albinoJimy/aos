@@ -41,6 +41,10 @@ __pycache__/
 # --- Go ---
 bin/
 vendor/
+# Perfis de cobertura (gerados por `go test -coverprofile`)
+*.out
+cover*.out
+coverage.out
 
 # --- Ferramentas / IDE / SO ---
 .DS_Store

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aos.ref/schemas/event-envelope/1.0.json",
+  "title": "AOS Event Envelope",
+  "description": "Envelope canónico append-only do Event Store do AOS (AOS-002, ADR-007). Versão 1.0 do registo de schemas. A ordem total é dada por (stream_id, seq); ts é observacional e nunca fonte de ordem.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "stream_id",
+    "seq",
+    "type",
+    "ts",
+    "producer",
+    "payload",
+    "schema_version",
+    "run_id",
+    "step_id",
+    "idempotency_key"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "description": "ULID globalmente único do evento (26 chars Crockford base32). Identificador, não fonte de ordem.",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "stream_id": {
+      "type": "string",
+      "description": "Identificador do stream (ex.: um run). A ordem total é por (stream_id, seq).",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "description": "Contador monotónico, gapless, por stream, atribuído pelo store. Começa em 1. Base da ordem total (ADR-001).",
+      "minimum": 1
+    },
+    "type": {
+      "type": "string",
+      "description": "Nome canónico do facto (ex.: tool.call.dispatched, tool.result.received, state.transition).",
+      "minLength": 1
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Relógio de parede RFC3339. OBSERVACIONAL — nunca fonte de ordenação."
+    },
+    "producer": {
+      "type": "object",
+      "description": "Identidade não-humana (NHI) emissora e a sua cadeia de delegação on-behalf-of.",
+      "additionalProperties": false,
+      "required": ["nhi_id", "delegation_chain", "scope"],
+      "properties": {
+        "nhi_id": {
+          "type": "string",
+          "description": "Identidade da NHI (ex.: nhi:agent:planner@v2.3.1)."
+        },
+        "delegation_chain": {
+          "type": "array",
+          "description": "Cadeia de delegação que termina num humano responsável (ADR-003).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sub", "act_as"],
+            "properties": {
+              "sub": { "type": "string" },
+              "act_as": { "type": "string" }
+            }
+          }
+        },
+        "scope": {
+          "type": "array",
+          "description": "Scopes activos do produtor (ex.: search:web, fs:read).",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "payload": {
+      "description": "Conteúdo do evento. Inline neste reference impl; em produção é uma referência de payload cifrada por titular (tecnica/13 §3).",
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    },
+    "schema_version": {
+      "type": "string",
+      "description": "Versão do schema do envelope/payload no registo. Evolução compatível expand/contract (ADR-012).",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Correlação da trajectória. Componente da idempotency_key."
+    },
+    "step_id": {
+      "type": "string",
+      "description": "Passo determinístico. Componente da idempotency_key."
+    },
+    "parent_step_id": {
+      "type": "string",
+      "description": "Passo pai (cadeia de causalidade). Opcional."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "f(run_id, step_id) = run_id + \":\" + step_id. Garante zero efeitos duplicados no retry (ADR-001)."
+    }
+  },
+  "$comment": "Registo de schema_version: 1.0 (inicial, AOS-002). Novos event.type são MINOR (forward-compat: consumidores ignoram tipos desconhecidos). Remover um campo ou mudar a semântica de expected_seq é MAJOR (tecnica/12 §5)."
+}

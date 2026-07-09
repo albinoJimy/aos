@@ -7,6 +7,11 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — AOS-002 Event Store
+- `feat(AOS-002): event store replicado append-only em packages/substrate/eventstore` — API `Append`/`Read`/`Subscribe`, envelope versionado (schema 1.0), ordem total por `(stream_id, seq)`, append-only estrito, idempotência `f(run_id, step_id)`, replicação de referência com quórum + failover, transporte push. Go, zero dependências. 28 testes, `-race` limpo, cobertura 96.5%.
+  - Auditoria adversarial de qualidade apanhou e a remediação corrigiu: **perda silenciosa de eventos confirmados** no revive de réplica *stale* pós-perda-de-quórum (agora `electLeader`/`Revive` recusam promover abaixo do commit index confirmado por quórum → `ErrNoQuorum` em vez de servir log truncado); **fuga de goroutine** no `Subscribe` (ciclo de vida ligado ao `ctx`).
+  - Benchmarks registados: `Append` ~6.3 µs/op; `Fanout`/50 subs ~70 µs/op.
+
 ### Added
 - `chore: esqueleto do monorepo AOS (packages/{kernel,control-plane,platform,substrate})`.
 - `chore: IaC declarativa dev/staging com estado remoto + locking e módulos network/eventstore/secrets`.
