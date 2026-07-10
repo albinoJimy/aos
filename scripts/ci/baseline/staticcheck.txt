@@ -1,0 +1,4 @@
+packages/kernel/reference-monitor/eventsink.go: should convert h (type DelegationHop) to delegationHopDTO instead of using struct literal (S1016)
+packages/platform/identity/delegation/chain_test.go: identical expressions on the left and right side of the '!=' operator (SA4000)
+packages/substrate/bus/bus.go: func withClock is unused (U1000)
+packages/substrate/eventstore/store.go: func withClock is unused (U1000)

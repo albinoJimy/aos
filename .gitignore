@@ -41,6 +41,8 @@ __pycache__/
 # --- Go ---
 bin/
 vendor/
+# Artefactos transitórios dos self-tests do CI (removidos pelo runner; rede de segurança)
+packages/_selftest_bad/
 # Perfis de cobertura (gerados por `go test -coverprofile`)
 *.out
 cover*.out

@@ -130,6 +130,23 @@ Diferenças dev↔staging (todas por var-file versionado, sem segredos):
 
 ---
 
+## CI e gates de qualidade
+
+O *pipeline* é **fail-closed**: `secrets → build → lint → test → sast → sca → policy-test`,
+qualquer gate vermelho bloqueia o merge. A fonte de verdade é local
+(`scripts/ci/`); a CI (`.github/workflows/ci.yml`) apenas a invoca. Reproduz-se
+por **um comando**:
+
+```bash
+make ci                 # ou, sem make: bash scripts/ci/run.sh
+make ci-selftest        # prova que falhas de lint/test/política/CVE são bloqueadas
+```
+
+Inclui arch-lint de proibição de despacho directo (AOS-003), gate de cobertura do
+kernel ≥ 80%, SAST (gosec, HIGH/CRITICAL), SCA (govulncheck) e teste de política
+do PDP (golden allow/deny + assinatura). Detalhe, pré-requisitos, baselines e
+*required checks* em [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## Onde ler a seguir
 
 - **Padrões de engenharia / DoR / DoD / gates:** [`specs/01_Engineering_Standards_e_Handoff.md`](specs/01_Engineering_Standards_e_Handoff.md)

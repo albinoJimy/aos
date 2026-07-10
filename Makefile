@@ -11,7 +11,8 @@ BACKEND := backend-$(ENV).hcl
 VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env
+.PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
+        ci ci-secrets ci-build ci-lint ci-test ci-sast ci-sca ci-policy ci-selftest ci-all
 
 help: ## Lista os alvos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -46,3 +47,39 @@ fmt: ## Formata o HCL
 
 validate: ## Valida a configuração
 	cd $(INFRA_DIR) && $(TF) validate
+
+# --- CI / Gates de qualidade (AOS-010) ---------------------------------------
+# Fonte de verdade dos gates: scripts/ci/*.sh (fail-closed). O YAML da CI só os
+# invoca. Reprodução local por UM comando: 'make ci'. Requer Go, gcc/mingw (para
+# -race) e bash; staticcheck/gosec/govulncheck são auto-instalados (go install
+# pinado, idempotente). Ver CONTRIBUTING.md.
+CI := bash scripts/ci
+
+ci: ## Corre TODOS os gates locais (build→lint→test→sast→sca→policy-test), fail-closed
+	$(CI)/run.sh
+
+ci-secrets: ## Gate: scan de segredos (chaves privadas / ficheiros de segredo rastreados)
+	$(CI)/secrets.sh
+
+ci-build: ## Gate: build (go build ./... por módulo)
+	$(CI)/build.sh
+
+ci-lint: ## Gate: lint/format + arch-lint AOS-003 (gofmt, vet, staticcheck)
+	$(CI)/lint.sh
+
+ci-test: ## Gate: test -race + cobertura (gate kernel >= 80%)
+	$(CI)/test.sh
+
+ci-sast: ## Gate: SAST (gosec, HIGH/CRITICAL)
+	$(CI)/sast.sh
+
+ci-sca: ## Gate: SCA (govulncheck, vulns afetantes)
+	$(CI)/sca.sh
+
+ci-policy: ## Gate: teste de política do PDP (golden allow/deny + assinatura)
+	$(CI)/policy-test.sh
+
+ci-selftest: ## Auto-testes dos gates: prova que falhas de lint/test/política/CVE são bloqueadas
+	$(CI)/selftest.sh
+
+ci-all: ci ci-selftest ## Corre os gates E os self-tests (prova completa do pipeline)
