@@ -81,6 +81,22 @@ sequenceDiagram
     RT->>U: Resposta com progresso e burn-down de custo
 ```
 
+### 3.1 Contrato do loop entregue (AOS-013)
+
+O loop base é implementado no pacote `packages/kernel/agent-runtime` (`agentruntime`). Esta subsecção fixa o **contrato concreto** entregue por AOS-013 (o esqueleto do loop; a durabilidade ao nível do passo é AOS-014/015/017).
+
+**Superfície pública.** `Runtime.Run(ctx, Goal) (Result, error)` percorre o ciclo montar→chamar→despachar→verificar. `Goal` traz `RunID` (stream_id), `Principal` (NHI + cadeia de delegação), escopo, `ModelConfig` (model_id/params/seed), o `System` prompt e o tool set **congelado** do run. `Result` devolve a resposta final (ou paragem por `MaxTurns`), o uso/custo agregado, os `ToolResults` (todos untrusted) e os `TurnSeqs` gravados.
+
+**Evento canónico `turn.recorded`.** Cada turno grava um evento `turn.recorded` no Event Store (AOS-002) com o **manifesto por trajectória** (ADR-010): `prompt_hash` (sha256 do prompt materializado do turno), `system_hash`, `assembly_version`, `model{model_id,params,seed}` e as `tools`/`skills` **pinadas** (nome+versão+digest+servidor MCP). O `step_id` é distinto por turno (evita a deduplicação por `idempotency_key` do Event Store). O manifesto é gravado **inline** em cada evento — a indirecção canónica `dependency_manifest_ref`/`frozen_at_seq:1` (tecnica/13 §6) fica como dívida técnica ligada a AOS-016, porque o envelope do Event Store ainda não expõe o campo.
+
+**Interfaces (portas) públicas.** `PromptAssembler` (prompt cache-estável: prefixo imutável byte-idêntico entre turnos + tail append-only; expõe `PrefixHash` como SLI de estabilidade, emitido no span `chat` via `aos.prefix_hash`); `ModelClient` (porta do Model Gateway — real em EPIC-06); `TurnRecorder` (materialização durável do `turn.recorded`); `Tracer` (spans OTel GenAI `invoke_agent`/`chat`/`execute_tool` com a semconv — real em EPIC-08).
+
+**Garantia estrutural de no-bypass (ADR-002).** O `Runtime` detém um `*referencemonitor.Monitor`, **nunca** uma `ToolFunc`: o único caminho de execução de tools é `Monitor.Mediate`. A prova é estrutural (reflexão) + sintáctica (`archlint`). Cada resultado de tool volta ao loop **marcado untrusted** (ADR-005); um erro de tool permitida (`dec.ToolErr`) é propagado ao span (`error.type`) e ao tail, sem ser silenciosamente descartado.
+
+**Pontos de ligação (hooks, default no-op).** `StepIdentity` — derivação do `step_id` (AOS-014, idempotência por passo). `Checkpointer` — checkpoint intra-iteração por fase `assembled`/`model_called`/`turn_recorded`/`dispatched`/`verified` (AOS-015). A máquina de estados durável rica (`waiting_on_human`/`paused`) é AOS-017.
+
+**Fidelidade de replay.** O `prompt_hash` por turno permite **detectar** divergência no replay, mas a **reconstrução** do tail exige re-execução determinista das tools (ou journaling durável dos seus outputs) — âmbito de AOS-016. Ver `packages/kernel/agent-runtime/doc.go`.
+
 ---
 
 ## 4. Contrato de execução durável
