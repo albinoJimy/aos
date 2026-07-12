@@ -358,9 +358,44 @@ O orçamento hierárquico integra-se aqui: antes de o RT fazer spawn de um sub-a
 
 ## 7. Sagas e compensação
 
-Nem todo o efeito externo é reversível por retry idempotente. Quando um passo falha *após* já ter produzido efeitos parciais no mundo — um recurso criado, uma reserva feita, uma mensagem enviada — a idempotência sozinha não basta: é preciso **desfazer**. O AOS modela isto como uma **saga de compensação**. Cada activity com efeito reversível regista, junto com o seu resultado, a acção inversa correspondente (a *compensação*). No estado `compensating`, o RT reproduz o log em sentido inverso, executando as compensações registadas dos passos já aplicados, cada uma também idempotente. Concluída a compensação, o run regressa a `ready` para retry limpo, ou termina em `failed` se o retry estiver esgotado.
+Nem todo o efeito externo é reversível por retry idempotente. Quando um passo falha *após* já ter produzido efeitos parciais no mundo — um recurso criado, uma reserva feita, uma mensagem enviada — a idempotência sozinha não basta: é preciso **desfazer**. O AOS modela isto como uma **saga de compensação**. Cada activity com efeito reversível regista, junto com o seu resultado, a acção inversa correspondente (a *compensação*). No estado `compensating`, o RT reproduz o log em sentido inverso, executando as compensações registadas dos passos já aplicados, cada uma também idempotente. Concluída a compensação, o run regressa a `ready` para retry limpo, ou — se a compensação for irrecuperável — fica **preso** em `compensating` e escala por alerta (não existe aresta `compensating → terminal` na tabela de AOS-017; ver §7.1).
 
 Isto fecha o gap que os gates deixavam aberto: os gates *previnem* efeitos indesejados, mas nada faziam quando um efeito legítimo ficava a meio. A saga adiciona *recuperação* onde antes só havia prevenção. Efeitos irreversíveis (que não admitem compensação) são precisamente os que exigem gate `danger` com dual-control a montante (ADR-013) — a irreversibilidade empurra o controlo para antes da execução.
+
+### 7.1 Semântica de realização (AOS-020)
+
+A saga **compõe** as duas fundações duráveis já existentes — não as reimplementa. O
+`SagaCoordinator` (pacote `saga`) coordena, o step-ledger (AOS-014) dá a idempotência e
+a máquina de estados (AOS-017) dá as transições duráveis.
+
+- **Registo de compensações.** Cada activity com efeito reversível regista, no momento
+  em que aplica o efeito, a acção inversa associada ao seu `step_id`. O registo
+  **preserva a ordem de aplicação** (registo idempotente por `step_id`), que é o que
+  permite compensar por **ordem inversa** (LIFO).
+- **Chave de compensação distinta.** Cada reversão corre dentro de `StepLedger.Apply`
+  com a chave `f(run_id, comp-<step_id>)`, num **domínio de dedup separado** do efeito
+  directo (`run_id:step_id`), do ledger (`run_id:ledger-…`), do checkpoint e da
+  transição de estado. A verificação `already-applied` **precede** o efeito ⇒ reexecutar
+  a saga **não duplica** a reversão (0 efeitos de compensação duplicados). O evento
+  `step.ledger.applied` de cada compensação é o seu registo **append-only**.
+- **Integração com a máquina (AOS-017).** Na entrada, `Compensate` aciona
+  `failed → compensating`; concluída a compensação com sucesso, transita
+  `compensating → ready` (retry limpo — a **única** aresta de saída de `compensating` na
+  tabela). Ambas passam pela `Machine` (válidas, duráveis, reconstruíveis por replay).
+- **Crash-resume.** Um crash *durante* a compensação retoma sem repetir as já aplicadas
+  nem saltar as pendentes: um worker novo reconstrói o estado com `Machine.Rebuild`
+  (estado = `compensating`) e `StepLedger.Rebuild` (conjunto de compensações já
+  commitadas) e reitera a mesma sequência LIFO — o ledger deduplica as feitas e corre as
+  que faltam. Um *crash-before-commit* (efeito aplicado mas registo não commitado) volta
+  a correr o efeito na retoma (*at-least-once*), mas o registo durável fica **uma** vez.
+- **Compensação que falha (honesta).** Uma compensação falhada é re-tentada de forma
+  idempotente (uma tentativa falhada nada commita, logo o retry não duplica). Esgotada a
+  política de retry, a saga **não finge sucesso**: **não** transita para `ready`, deixa o
+  run **preso** em `compensating` e **escala por alerta** (`ErrCompensationExhausted`).
+  A tabela de AOS-017 não tem aresta `compensating → killed`, pelo que a escalada é por
+  **alerta + paragem**, nunca por uma transição forjada — a saga respeita a máquina.
+- **Observabilidade sem segredos.** Os eventos de compensação são observáveis; as chaves
+  entram sempre na forma **opaca** (hash) e o payload da reversão é vazio por convenção.
 
 ---
 
