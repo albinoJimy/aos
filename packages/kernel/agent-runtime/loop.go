@@ -69,6 +69,7 @@ type Runtime struct {
 	tracer          Tracer
 	stepIdentity    StepIdentity
 	checkpointer    Checkpointer
+	capturer        Capturer
 	assemblyVersion string
 	defaultMaxTurns int
 }
@@ -84,6 +85,10 @@ func WithStepIdentity(s StepIdentity) Option { return func(rt *Runtime) { rt.ste
 
 // WithCheckpointer injecta o checkpointer intra-iteração (ponto de ligação AOS-015).
 func WithCheckpointer(c Checkpointer) Option { return func(rt *Runtime) { rt.checkpointer = c } }
+
+// WithCapturer injecta o capturer de não-determinismo (ponto de ligação AOS-016).
+// Default [noopCapturer] — sem ele o comportamento de AOS-013 é inalterado.
+func WithCapturer(c Capturer) Option { return func(rt *Runtime) { rt.capturer = c } }
 
 // WithAssemblyVersion sobrepõe a versão do assembler gravada no manifesto (por
 // omissão [AssemblyVersion]). Útil para testes de replay/versão.
@@ -103,6 +108,7 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 		tracer:          NoopTracer{},
 		stepIdentity:    sequentialStepIdentity{},
 		checkpointer:    noopCheckpointer{},
+		capturer:        noopCapturer{},
 		assemblyVersion: AssemblyVersion,
 		defaultMaxTurns: DefaultMaxTurns,
 	}
@@ -117,6 +123,9 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 	}
 	if rt.checkpointer == nil {
 		rt.checkpointer = noopCheckpointer{}
+	}
+	if rt.capturer == nil {
+		rt.capturer = noopCapturer{}
 	}
 	if rt.assemblyVersion == "" {
 		rt.assemblyVersion = AssemblyVersion
@@ -229,12 +238,16 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		}
 
 		// (3) DESPACHAR — cada tool call PRETENDIDA via o Reference Monitor.
+		// turnCaptured acumula os resultados DESTE turno (com a invocação original)
+		// para a captura de não-determinismo (AOS-016), sem afectar res.ToolResults.
+		var turnCaptured []CapturedToolResult
 		for j, inv := range resp.ToolCalls {
 			result, toolErr, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
 			if err != nil {
 				return res, err
 			}
 			res.ToolResults = append(res.ToolResults, result)
+			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: result, ToolError: toolErr})
 			// O tail materializa a condição de erro da tool (se houver) para o
 			// modelo poder reagir; o conteúdo mantém-se untrusted, append-only.
 			tail = append(tail, tailFromResult(result, toolErr))
@@ -245,6 +258,22 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			if err := rt.cpActivity(ctx, goal.RunID, stepID, turn, j, len(resp.ToolCalls)); err != nil {
 				return res, err
 			}
+		}
+
+		// CAPTURA (AOS-016) — persiste os inputs não-determinísticos do turno (a
+		// resposta do modelo COMPLETA + o output de cada tool call) para o replay
+		// reconstruir a trajectória sem re-executar o modelo nem os efeitos. É
+		// ADITIVA: default no-op ⇒ AOS-013 inalterado. Corre DEPOIS do despacho
+		// (para captar os resultados das tools) e ANTES da verificação.
+		if err := rt.capturer.Capture(ctx, TurnCapture{
+			RunID:       goal.RunID,
+			StepID:      stepID,
+			Turn:        turn,
+			Response:    resp,
+			ToolResults: turnCaptured,
+			Producer:    producer,
+		}); err != nil {
+			return res, fmt.Errorf("%w: turno %d: %w", ErrCapture, turn, err)
 		}
 
 		// (4) VERIFICAR — terminação simples (a máquina de estados é AOS-017).

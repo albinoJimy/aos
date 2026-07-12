@@ -21,4 +21,7 @@ var (
 	ErrModelCall = errors.New("agentruntime: falha na chamada ao modelo")
 	// ErrTurnRecord — a gravação do turno no Event Store falhou (envolve o erro).
 	ErrTurnRecord = errors.New("agentruntime: falha ao gravar o turno")
+	// ErrCapture — a captura de não-determinismo do turno falhou (AOS-016). Envolve
+	// o erro subjacente do [Capturer] (p.ex. perda de quórum no Event Store).
+	ErrCapture = errors.New("agentruntime: falha ao capturar o não-determinismo do turno")
 )

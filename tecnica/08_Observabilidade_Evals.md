@@ -100,6 +100,8 @@ O replay fiel exige capturar **todos os inputs não-determinísticos** de cada p
 
 Com este manifesto, o replay é *resume-from-step* (ADR-001), não *resume-from-task*: reconstrói-se exactamente a entrada de cada passo e reproduz-se o resultado, ou reexecuta-se contra um modelo actual para trace-diffing. O alvo não-funcional é **100% dos passos reproduzíveis** — modelos não-determinísticos cujos inputs não sejam capturados invalidam a fidelidade, pelo que a captura é condição de admissão, não opção. O replay infiel após evolução de código — RCA e evals inválidos — é mitigado precisamente por este manifesto de versões por trajectória.
 
+**Implementação (AOS-016).** O motor de replay vive em `packages/kernel/agent-runtime/replay`. A captura por passo é o evento append-only `replay.captured` (resposta do modelo completa + output de cada tool call + relógio; o seed vem do manifesto de `turn.recorded`), escrito pelo `EventStoreCapturer` — um hook aditivo do loop de AOS-013 que não altera a trajectória quando ausente. O `ReplayEngine` relê o stream, re-materializa o prompt com o mesmo `PromptAssembler` e compara o `prompt_hash` por turno; uma divergência é **localizada no passo exacto**. O motor **não detém caminho para efeitos ao vivo** (só um leitor `Read` do Event Store — sem `ModelClient`, sem Reference Monitor, sem `Append`), pelo que o replay é estruturalmente livre de efeitos externos. Cada replay emite um marcador de eval ligado ao trace original: um span `replay` com `gen_ai.evaluation.result` (`pass`/`fail`), `aos.replay.fidelity` e `aos.replay.from_step`, correlacionado por `aos.run_id` — é este o span `gen_ai.evaluation.result` da secção 8.2 no caso do eval de replay/RCA. Ver `tecnica/02` §4.3.
+
 ---
 
 ## 6. Circuit breaker multi-sinal

@@ -201,5 +201,18 @@ func tailFromHistory(text string) TailSegment {
 	return TailSegment{Kind: TailHistory, Content: content}
 }
 
+// TailFromModelText constrói o segmento de tail do texto do modelo de um turno.
+// É EXACTAMENTE a construção que o loop usa ([tailFromHistory]) — exportada para o
+// motor de replay (AOS-016) reconstruir o tail BYTE-IDÊNTICO ao original, condição
+// necessária para o prompt_hash re-materializado coincidir com o gravado. Reutilizar
+// esta função (em vez de replicar o layout) garante que o tail do replay não
+// diverge do tail do loop se o layout evoluir (a par de [AssemblyVersion]).
+func TailFromModelText(text string) TailSegment { return tailFromHistory(text) }
+
+// TailFromToolResult constrói o segmento de tail de um resultado de tool. É a MESMA
+// construção do loop ([tailFromResult]), exportada para o replay reconstruir o tail
+// byte-idêntico (ver [TailFromModelText]).
+func TailFromToolResult(r Tainted, toolErr error) TailSegment { return tailFromResult(r, toolErr) }
+
 // itoa é um atalho local (evita fmt em hot path de montagem).
 func itoa(n int) string { return strconv.Itoa(n) }

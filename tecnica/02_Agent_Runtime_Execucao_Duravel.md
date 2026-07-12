@@ -95,7 +95,7 @@ O loop base é implementado no pacote `packages/kernel/agent-runtime` (`agentrun
 
 **Pontos de ligação (hooks, default no-op).** `StepIdentity` — derivação do `step_id` (AOS-014, idempotência por passo). `Checkpointer` — checkpoint intra-iteração por fase `assembled`/`model_called`/`turn_recorded`/`dispatched`/`verified` (AOS-015). A máquina de estados durável rica (`waiting_on_human`/`paused`) é AOS-017.
 
-**Fidelidade de replay.** O `prompt_hash` por turno permite **detectar** divergência no replay, mas a **reconstrução** do tail exige re-execução determinista das tools (ou journaling durável dos seus outputs) — âmbito de AOS-016. Ver `packages/kernel/agent-runtime/doc.go`.
+**Fidelidade de replay.** O `prompt_hash` por turno permite **detectar** divergência no replay; a **reconstrução** do tail exige o journaling durável dos inputs não-determinísticos, **implementado** em AOS-016 (§4.3): o `EventStoreCapturer` persiste a resposta do modelo e os outputs das tools por turno, e o `ReplayEngine` reconstrói a trajectória a partir do log. Ver `packages/kernel/agent-runtime/replay`.
 
 ---
 
@@ -233,6 +233,53 @@ nunca toca no assembler, só **cresce** o registo append-only; um teste compara 
 prefixo de um run com checkpointer real contra um run no-op e exige igualdade
 byte-a-byte. A recuperação é provada com crash em **seis pontos distintos** de uma
 iteração multi-passo.
+
+### 4.3. Replay determinístico resume-from-step (AOS-016)
+
+O replay determinístico está **implementado** no subpacote
+`packages/kernel/agent-runtime/replay` (`nondeterminism_capture.go`, `engine.go`),
+em duas metades complementares que fecham a cláusula de *replay* do contrato.
+
+**Captura de não-determinismo — o gap-filler.** O `turn.recorded` de AOS-013 grava
+o manifesto (hashes, model-id/params/seed, versões pinadas) mas **não** os inputs
+crus — sem eles o replay detecta divergência mas não reconstrói. O
+`EventStoreCapturer` implementa o hook aditivo `Capturer` do loop (ligação via
+`WithCapturer`, sem alterar a forma de AOS-013: default no-op ⇒ byte-idêntico) e
+persiste, por turno, um evento **`replay.captured`** com (a) a **resposta do modelo
+completa** (texto + tool calls + uso + custo + `final`), (b) o **output de cada tool
+call** (untrusted + eventual erro) e (c) o **relógio** (`observed_at`). O **seed**
+não é duplicado — vem do manifesto (`model.seed`). O envelope usa a `idempotency_key`
+namespaced `run_id:cap-<step_id>` — o **quarto** domínio de dedup por passo,
+distinto do turno, do ledger e do checkpoint. Resultados **sensíveis** são gravados
+só como referência (`payload_ref = sha256`), nunca PII em claro (`WithSensitiveResults`,
+análogo a AOS-014). Serialização canónica/estável (structs, sem mapas).
+
+**Motor de replay.** `ReplayEngine.Replay(ctx, run_id, opts)` relê o stream do run e,
+por turno a partir do `FromStepID` (ou do início): re-materializa o prompt com o
+**mesmo `PromptAssembler`** e a **mesma construção de tail** do loop (funções
+exportadas `TailFromModelText`/`TailFromToolResult` — reuso, não réplica), **compara**
+o `prompt_hash` re-materializado com o gravado, e obtém a resposta do modelo de um
+**cliente de replay** (devolve o registado, nunca ao vivo) e o resultado de cada tool
+de um **dispatcher de replay** (devolve o registado, nunca executa). Os inputs
+determinísticos (system, tool set congelado, objectivo, memory_context) são
+re-fornecidos via `TrajectorySpec` — são código/config; **alterá-los simula a
+evolução de código** e o motor **localiza o passo** onde o hash diverge
+(`ReplayDivergence{ StepID, Turn, ExpectedHash, ActualHash }`), parando aí.
+
+**Resume-from-step.** `FromStepID` arranca de qualquer `step_id`: os turnos
+anteriores são **dobrados** a partir do log (zero efeitos) para reconstruir o estado
+(o tail) e a verificação começa no ponto de retoma. O `FinalStateHash` é **idêntico**
+entre um replay completo e um resume do mesmo run — a prova de que o resume produz o
+mesmo estado. Consome o cursor de AOS-015: o `ResumePoint.NextStepID` de um `Resumer`
+é passável directamente como `FromStepID`.
+
+**Zero efeitos externos — garantia estrutural.** O `ReplayEngine` detém **apenas**
+um `EventReader` (só `Read`) e um `Tracer`: **não tem** `ModelClient`, Reference
+Monitor, registo de tools nem `Append`. Não existe, por construção, caminho para um
+efeito ao vivo. Provado por teste comportamental (o contador de execuções de tool
+não mexe; o stream não cresce) e estrutural (reflexão sobre os campos do struct). A
+cobertura do subpacote é ≥ 90 % com `-race` limpo; a fidelidade de replay é 100 %
+nos testes (mesma sequência de `step_id`, `prompt_hash` por turno coincide).
 
 ---
 
