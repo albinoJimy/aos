@@ -310,6 +310,34 @@ stateDiagram-v2
 
 Os estados repartem-se em três famílias. **Activos:** `ready` (elegível para claim), `running` (a executar sob um fencing token). **Suspensos:** `waiting_on_tool` (bloqueado numa activity externa), `waiting_on_human` (num gate HITL, com timeout fail-closed que transita para `killed`), `paused` (steer/interrupt aceite, retomável com correcção). **Terminais e de recuperação:** `complete`, `failed` (erro recuperável, que entra em `compensating` para a saga e regressa a `ready` com retry idempotente), `timed_out` (excedeu wall-clock) e `killed` (terminado por política ou timeout). A separação de `waiting_on_human` de `running` é o que impede que um gate humano pareça um worker morto — e vice-versa.
 
+### 5.1 Tabela declarativa de transições (AOS-017)
+
+A máquina é implementada como **dados**, não como lógica espalhada por `if/switch`: um conjunto declarativo dos pares `(from → to)` válidos (`packages/kernel/agent-runtime/state`, `transitions.go`). Qualquer par ausente da tabela é rejeitado com `ErrInvalidTransition` **sem** tocar no estado persistido. A tabela completa tem **13** pares sobre os **10** estados canónicos:
+
+| # | De → Para | Gatilho | Pré-condição |
+|---|---|---|---|
+| 1 | `ready → running` | claim pelo worker | **fencing token válido** (o único par que o exige) |
+| 2 | `running → waiting_on_tool` | activity externa | — |
+| 3 | `waiting_on_tool → running` | resultado da activity | retoma sob o lease detido |
+| 4 | `running → waiting_on_human` | gate de risco (HITL) | — |
+| 5 | `waiting_on_human → running` | aprovação assinada | retoma sob o lease detido |
+| 6 | `waiting_on_human → killed` | **timeout fail-closed** | TTL do gate excedido (ADR-013) |
+| 7 | `running → paused` | sinal de steer/interrupt | — |
+| 8 | `paused → running` | resume com correcção | retoma sob o lease detido |
+| 9 | `running → complete` | sucesso | — |
+| 10 | `running → failed` | erro recuperável | — |
+| 11 | `running → timed_out` | excede o wall-clock | deadline de `running` excedido |
+| 12 | `failed → compensating` | saga rollback | — |
+| 13 | `compensating → ready` | retry idempotente | após compensação |
+
+Terminais **absorventes** (zero saídas): `complete`, `killed`, `timed_out`. `failed` **não** é absorvente — a sua única saída é `→ compensating`. Os restantes 87 dos 100 pares da matriz 10×10 são inválidos por omissão (verificado por varredura exaustiva nos testes).
+
+**Persistência e reconstrução (ADR-001).** Cada transição válida é um evento append-only `run.state.transition` no Event Store replicado (AOS-002), com `step_id` namespaced `state-N` — distinto dos domínios de dedup do turno (AOS-013), do ledger (AOS-014) e do checkpoint (AOS-015). O estado corrente é sempre reconstruível por `Machine.Rebuild(run_id)`, que adopta o `to` do evento de transição de seq mais alto — a máquina **sobrevive a crash**: um worker novo reconstrói do log e continua. O estado in-memory só avança **após** o commit durável, pelo que uma transição inválida ou uma falha do Event Store (fail-closed) nunca corrompe o estado.
+
+**Fencing token (contrato partilhado com AOS-018).** O claim `ready → running` exige um `FencingToken` válido; AOS-017 define só o **contrato** (`FencingToken`/`Uint64Token`) e verifica presença/validade. A origem monotónica durável do contador, o heartbeat de renovação e a rejeição de escritas de token inferior no Event Store são **AOS-018**. As retomas de suspensão para `running` reentram sob o lease já detido e **não** re-exigem token.
+
+**Timeout fail-closed (ADR-013).** `Machine.CheckDeadlines`, com um **relógio injectável** (testes determinísticos, sem sleeps), aplica: `waiting_on_human` há ≥ TTL → `killed` (nunca `running` em ambiguidade); `running` há ≥ wall-clock → `timed_out`. Os eventos `pause`/`resume`/`kill` são **expostos** (métodos finos sobre `Transition`) para o steer (AOS-023) e o lease (AOS-018) os accionarem — a lógica desses tickets não é implementada aqui.
+
 ---
 
 ## 6. Liveness e fencing
