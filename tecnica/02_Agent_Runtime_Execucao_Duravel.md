@@ -124,6 +124,67 @@ flowchart LR
     RESUME --> DONE["Run continua ate complete"]
 ```
 
+### 4.1. Contrato de idempotência por passo — especificação (AOS-014)
+
+A cláusula de idempotência por passo está **implementada** no subpacote
+`packages/kernel/agent-runtime/durable`. O contrato publicado, consumível por
+AOS-015/016/020/021/022, tem três peças e um modelo de garantia honesto.
+
+**Função de chave — pura, determinística, injectiva.**
+`IdempotencyKey(run_id, step_id) = run_id + ":" + step_id`. É byte-a-byte a forma
+que o Event Store (AOS-002) já usa para deduplicar — um único espaço de nomes de
+idempotência de ponta a ponta: a chave que a activity propaga ao downstream é a
+mesma por que o ES deduplica. A função **rejeita** `run_id`/`step_id` vazios ou que
+contenham `:`, fechando a colisão de deslocamento do delimitador (`("a","bc")` vs
+`("ab","c")`); com o `:` proibido nos inputs, cada chave tem exactamente uma
+decomposição (a função é injectiva; `SplitKey` é a inversa). Uma forma opaca
+(SHA-256 hex) está disponível para logs/spans sem expor a chave em claro.
+
+**`step_id` monotónico e estável.** O `StepSequencer` atribui `step_id`s puros na
+posição do passo no log (número do turno), não em relógio nem UUID. O mesmo passo
+lógico recebe sempre o mesmo `step_id` em execução, retry e replay — nunca
+reatribuído. Implementa o hook `StepIdentity` de AOS-013 de forma aditiva
+(`WithStepIdentity`), coordenando o significado de `step_id` com o checkpoint
+(AOS-015) e o replay (AOS-016).
+
+**Step-ledger de resultado.** `StepLedger.Apply(ctx, key, effect)` verifica
+*already-applied* **antes** de qualquer efeito: se a chave já tem resultado
+registado (in-memory, reconstruído do ES), devolve o memorizado sem correr o
+`effect`; caso contrário corre o `effect`, regista `{key → status, resultado,
+hash}` como evento durável `step.ledger.applied` no Event Store, e devolve o
+resultado. O ledger é reconstruível do log (`Rebuild`) — sobrevive ao reinício do
+worker. O envelope do evento de ledger usa uma `idempotency_key` namespaced
+(`run_id:ledger-<step_id>`) para não colidir com o `turn.recorded` homónimo; esse
+namespace é **reservado** — `Apply` recusa (`ErrReservedStepID`) um step_id de
+negócio começado por `ledger-`, fechando estruturalmente a colisão na dedup global
+do ES. A precedência *already-applied* opera em **dois âmbitos**: a verificação
+in-memory reforçada por um **single-flight por-key** cobre o mesmo processo (colapsa
+Applies concorrentes/repetidos no máximo a uma execução do `effect`); a garantia após
+**restart-sem-`Rebuild`** ou entre workers distintos vem da **dedup durável no commit
+do ES** (`StatusDuplicate`) **+ idempotência downstream**, não da verificação
+in-memory — que é um atalho, não um single-flight durável.
+
+**Observabilidade e segredos do ledger (delegações explícitas).** A vertente
+**"eventos observáveis"** do DoD de AOS-014 está satisfeita pelo evento durável
+`step.ledger.applied` no Event Store (fonte de verdade WORM, base do replay/ADR-010);
+o `Observer` expõe contadores `apply`/`dedup` apenas na forma **opaca** (hash) da
+chave. O **wiring OTel de spans/métricas** do `Observer` (default `NopObserver`, sem
+emissão de span pelo próprio ledger) é **delegado a AOS-021** (activities), quando os
+efeitos passarem pelo ledger — não é requisito de AOS-014. Quanto a **segredos**: o
+`Result.Payload` é persistido **em claro** no ES (o cifrado por-titular é dívida de
+EPIC-13); AOS-014 oferece uma guarda **opt-in** `WithSensitiveResults()` que recusa
+memorizar Payload em claro não marcado como referência, mas a imposição por defeito
+de resultados sensíveis por **referência/hash** (idealmente via helper ou validação no
+contrato de activity) é **requisito explícito de AOS-021**.
+
+**Modelo de garantia (honesto).** Exactly-once verdadeiro do efeito externo é
+impossível sem cooperação downstream. O contrato é **at-least-once + idempotência
+downstream honrando a key = 0 efeitos OBSERVÁVEIS duplicados**. O `effect` pode
+correr mais de uma vez (crash entre o efeito e o commit do ledger); a deduplicação
+dos efeitos externos é do downstream, pela chave determinística que o `effect` lhe
+propaga. O teste de fault-injection modela um downstream que honra a key e prova
+que, com crash antes ou depois do commit, o efeito é registado uma vez observável.
+
 ---
 
 ## 5. Máquina de estados durável
