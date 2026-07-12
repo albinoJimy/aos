@@ -356,6 +356,15 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, asm *PromptAssembl
 // para o loop materializar no tail) e o erro FATAL do loop (só cancelamento de
 // contexto). Um erro da tool NÃO é uma negação de política: a decisão foi Permit e
 // o efeito ocorreu, mas a execução downstream falhou (ADR-005 / decision.ToolErr).
+//
+// ADOPÇÃO DO CONTRATO DE ACTIVITY (AOS-021): DIFERIDA. Este caminho medeia o efeito
+// DIRECTAMENTE via rt.rm.Mediate (no-bypass estrutural + taint untrusted garantidos),
+// mas ainda NÃO despacha via activity.Dispatcher.Dispatch — logo a idempotência/replay
+// pelo step-ledger (AOS-014/016) NÃO cobre ainda o efeito externo REAL do loop. O
+// checkpoint intra-iteração acima é AOS-015 (recorder de cursor), NÃO a dedup do
+// ledger. Ligar o loop ao Dispatcher (construído com rm + durable.StepLedger) é wiring
+// DEFERIDO (integração AOS-022); o escopo estrito de AOS-021 é o contrato. Ver
+// activity/doc.go, "Adopção pelo loop (AOS-013): DIFERIDA".
 func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (Tainted, error, error) {
 	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
 

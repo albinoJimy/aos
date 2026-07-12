@@ -185,6 +185,97 @@ dos efeitos externos é do downstream, pela chave determinística que o `effect`
 propaga. O teste de fault-injection modela um downstream que honra a key e prova
 que, com crash antes ou depois do commit, o efeito é registado uma vez observável.
 
+### 4.1.1. Contrato de activity — isolamento de efeitos externos (AOS-021)
+
+O contrato de activity está **implementado** no subpacote
+`packages/kernel/agent-runtime/activity` (`contract.go`, `dispatch.go`). É o **ponto
+de composição** que unifica, num único despacho, as fundações já *Done* — **não**
+reimplementa nenhuma: idempotência (ledger AOS-014), mediação (Reference Monitor
+AOS-003), replay (AOS-016), taint (ADR-005) e registo de compensação (AOS-020). É a
+materialização de "cada efeito externo é uma *activity* durável, isolada, idempotente
+e mediada".
+
+**A activity é uma descrição, não uma função de efeito.** `Activity{RunID, StepID,
+ToolID, Capability, Resource, Input, …}` **descreve** o efeito; não contém uma função
+directamente invocável. O efeito é a **tool registada no RM**, e a única via de a
+executar é `rm.Mediate` (AOS-003) — que exige um *permit não-forjável* (campo
+não-exportado, uso único). É esta indirecção que dá o **no-bypass estrutural**: o
+`Dispatcher` traduz a activity num `referencemonitor.Call` e chama `Mediate` **dentro**
+do `effect` do ledger; sem permit, a tool nunca corre.
+
+**Fluxo `ModeNormal` de `Dispatcher.Dispatch`.** (1) deriva `key = run_id:step_id`
+(AOS-014); (2) `ledger.Apply` verifica *already-applied* **antes** do efeito — se já
+aplicado, devolve o resultado memorizado (`Deduplicated`) sem re-executar; (3) o
+`effect` **medeia pelo RM antes de executar** — `deny`/`escalate` → `ErrMediationDenied`
+(zero efeito, nada memorizado); só sob permit a tool corre; (4) memoriza `{status,
+output}` como `step.ledger.applied` (append-only); (5) **regista a compensação** (se
+houver) no `CompensationRegistry` de AOS-020, ancorada ao `step_id`, **após `Apply` e em
+AMBOS os caminhos — applied E dedup** (AOS021-Q1, ver a seguir); e (6) devolve o
+resultado **sempre marcado `untrusted`** (ADR-005). Uma tool permitida que falhe a
+jusante → `ErrToolExecution` (nada memorizado, retriável). O custo do efeito é emitido
+por span (`gen_ai.usage.cost_usd`) **apenas no caminho applied** (efeito real de agora;
+AOS021-Q5) — em dedup nenhum custo é incorrido, pelo que emiti-lo faria um agregador
+somá-lo por retry.
+
+**Pré-condição de segurança: estabilidade do `step_id` (AOS021-Q2).** A idempotency key
+liga-se a `(run_id, step_id)` — **não** aos parâmetros do call (`ToolID`/`Capability`/
+`Resource`/`Input`). No caminho dedup a mediação do RM é **saltada** e o resultado
+registado é devolvido sem re-verificar que o call actual iguala o mediado da 1.ª vez. É,
+por isso, **contrato explícito** que o mesmo `(run_id, step_id)` identifique sempre o
+mesmo call lógico: o `step_id` determinístico (posição no log, via `SubStepID` — não
+relógio nem UUID) é a **"entrada normalizada"** que âncora a identidade da activity. Não
+há hash separado do payload de input no evento (o `step.ledger.applied` guarda `status` +
+`output` + hash do **resultado**); a ligação forte call→resultado por fingerprint durável
+(recusar em dedup um call divergente) fica para a evolução do evento de ledger / adaptador
+de engine. O `taint` não é persistido mas é garantido **por construção** (o resultado sai
+sempre `untrusted`).
+
+**Compensação: alcance e limite (AOS021-Q1).** O registo da compensação é **desacoplado
+da execução do efeito**: corre após `Apply` tanto no applied (efeito agora) como no dedup
+(already-applied). É isto que torna a intenção de compensar **reconstruível na retoma** —
+um worker novo que re-despacha os passos aplicados (obtendo dedup) restaura as
+compensações no `registry` antes de a saga as correr em LIFO; sem isto, a saga percorreria
+um `registry` vazio e transitaria `compensating → ready` **sem reverter nada**. *Limite
+honesto:* o `registry` é in-memory e a `Action` é uma closure não-serializável, pelo que a
+reconstrução **assenta no re-despacho** dos passos pelo loop na retoma. A durabilidade
+**plena** da intenção (marcador por `step_id` no Event Store + factory de compensação por
+`ToolID` no rebuild) fica para o adaptador de engine (AOS-022).
+
+**`ModeReplay` — zero efeito estrutural (AOS-016).** `NewReplayDispatcher(src)` constrói
+um dispatcher que **não detém RM** (`rm == nil`): `Dispatch` devolve o resultado
+**registado** da `ReplaySource` (satisfeita por `*durable.StepLedger` após `Rebuild`, ou
+por um adaptador do journal de AOS-016), com zero efeito e sem mediação. Um log
+incompleto → `ErrReplayMiss` (nunca execução ao vivo como fallback). O teste prova que
+o contador de execuções da tool fica em **0** em replay.
+
+**Separação (lint) — `activity/separation`.** Um analisador AST (stdlib, zero-dep, como
+o archlint de AOS-003) **detecta um efeito externo directo** (`http.Get`, `os.Open`,
+`exec.Command`, `net.Dial`, …) escrito na lógica do loop **fora de uma activity**, com
+`testdata` bom/mau. `AnalyzeTree` corre **recursivamente** (AOS021-Q4) sobre TODO o
+núcleo determinístico — raiz (AOS-013) **e** subpacotes (`durable`, `saga`, `state`,
+`liveness`, `replay`) — saltando `testdata` e o próprio analisador (que faz I/O de
+ficheiro por construção); exige **0** violações. *Limite tratado (AOS021-Q3):* casa só a
+forma sintáctica trivial `pkg.Fn(...)` — **não** apanha import aliasado (`h.Get`), método
+sobre valor de cliente (`client.Do` — a forma idiomática real de I/O HTTP) nem valor de
+função; um `testdata/evasion` com teste que assevera **0 flags** fixa esse limite
+explicitamente. `http.NewRequest` (sem I/O) e o inexistente `http.Do` foram **removidos**
+do conjunto para não dar falso positivo / entrada morta. É defesa-em-profundidade — a
+garantia forte é **estrutural**.
+
+**Adopção pelo loop (AOS-013): diferida (integração).** O escopo estrito de AOS-021 é o
+**contrato** (o subpacote `activity` + testes). O loop base medeia hoje cada tool call
+**directamente** via `rm.Mediate` (no-bypass + taint garantidos; ver §4), mas ainda **não
+despacha** via `Dispatcher.Dispatch` — logo a idempotência/replay pelo step-ledger não
+cobre ainda o efeito externo **em execução** do loop (o checkpoint de §4.2 é AOS-015, não
+a dedup do ledger). Ligar o loop ao `Dispatcher` (substituir o `rm.Mediate` directo por um
+despacho ledger-backed) é **wiring deferido** (adopção AOS-022 / ticket de integração).
+
+**Agnóstico ao engine (AOS-022).** As peças que o `Dispatcher` consome são interfaces
+(`Mediator`, `Ledger`, `ReplaySource`, `CompensationRegistrar`). O adaptador de AOS-022
+(Temporal/Restate/DBOS **ou** o contrato próprio) satisfaz `Ledger`/`ReplaySource` sobre
+o seu backend **sem alterar esta API**: `Activity`↔activity/step, `Ledger.Apply`↔
+memoização exactly-once-observável, `ReplaySource`↔event history relido no replay.
+
 ### 4.2. Checkpoint intra-iteração e resume-from-step — especificação (AOS-015)
 
 O checkpoint intra-iteração está **implementado** no mesmo subpacote
