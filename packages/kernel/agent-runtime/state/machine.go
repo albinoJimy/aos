@@ -273,11 +273,34 @@ func (m *Machine) Current() State {
 
 // EnteredAt devolve o instante (wall-clock do relógio injectado) em que o estado
 // corrente foi entrado — a base a partir da qual os timeouts são medidos.
+//
+// NOTA (wall-clock, AOS-019): o instante é gravado com a componente MONOTÓNICA
+// removida (doTransition faz .UTC() para o serializar em RFC3339Nano). Logo os
+// deadlines derivados dele — tanto [Machine.CheckDeadlines] como o WaitingGate de
+// AOS-019 que reusa este enteredAt — são comparações de WALL-CLOCK e assumem um
+// relógio SEM SALTOS: um ajuste NTP para trás ADIA o kill fail-closed, um para a
+// frente antecipa-o. Os dois executores degradam da MESMA forma (concordam entre si),
+// mas o par não é robusto a saltos de relógio. Se essa robustez for requisito, é
+// necessário preservar a leitura monotónica (fora do âmbito de AOS-019).
 func (m *Machine) EnteredAt() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.enteredAt
 }
+
+// HumanApprovalTTL devolve o TTL do gate humano configurado ([WithHumanApprovalTTL]);
+// 0 significa que o fail-closed automático de waiting_on_human → killed está DESLIGADO.
+// É write-once (fixado na construção), logo seguro para leitura sem lock. Exposto para
+// que o WaitingGate de AOS-019 seja DERIVADO da MESMA fonte de TTL (ver
+// liveness.NewWaitingGateFrom), eliminando por construção o drift entre o veredicto
+// GateExpired do classificador e o kill real de [Machine.CheckDeadlines].
+func (m *Machine) HumanApprovalTTL() time.Duration { return m.humanTTL }
+
+// Clock devolve o relógio injectado da máquina (write-once na construção, seguro sem
+// lock). Exposto para que consumidores — em particular o WaitingGate de AOS-019 — usem
+// o MESMO relógio que decide os deadlines duráveis, garantindo que a decisão do gate e
+// a transição fail-closed concordam no tempo (sem duas fontes de "agora" a divergir).
+func (m *Machine) Clock() Clock { return m.clock }
 
 // parseStateStepID extrai o N de um step_id "state-N" (o namespacing posicional das
 // transições). Devolve (0, false) para step_ids sem o prefixo ou com sufixo não
@@ -519,6 +542,11 @@ func (m *Machine) emitSpan(ctx context.Context, from, to State, rec transitionRe
 // Devolve o estado resultante, se disparou uma transição, e um erro (só do Event
 // Store — a transição de timeout é sempre válida na tabela). Idempotente: se nenhum
 // deadline foi excedido, ou se o TTL respectivo está desligado (0), não faz nada.
+//
+// Relógio: as comparações são WALL-CLOCK (o enteredAt tem a componente monotónica
+// removida — ver [Machine.EnteredAt]) e assumem um relógio sem saltos; um ajuste NTP
+// desloca o instante do kill fail-closed. É o MESMO critério (fronteira inclusiva) e
+// a MESMA degradação do WaitingGate de AOS-019, pelo que gate e Machine concordam.
 func (m *Machine) CheckDeadlines(ctx context.Context) (State, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

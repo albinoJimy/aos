@@ -123,6 +123,30 @@ func TestNewMachineValidation(t *testing.T) {
 	}
 }
 
+// TestMachineGetters cobre os getters expostos para o wiring anti-drift do WaitingGate
+// (AOS-019): HumanApprovalTTL e Clock devolvem exactamente a configuração injectada.
+func TestMachineGetters(t *testing.T) {
+	st := newStore(t)
+	clk := newManualClock()
+	const ttl = 17 * time.Minute
+	m := mustMachine(t, st, "run-getters", WithClock(clk), WithHumanApprovalTTL(ttl))
+
+	if got := m.HumanApprovalTTL(); got != ttl {
+		t.Errorf("HumanApprovalTTL()=%v; quero %v", got, ttl)
+	}
+	if m.Clock() != Clock(clk) {
+		t.Error("Clock() nao devolveu o relogio injectado")
+	}
+	if !m.Clock().Now().Equal(clk.Now()) {
+		t.Error("Clock().Now() diverge do relogio injectado")
+	}
+
+	// Default: sem WithHumanApprovalTTL, o TTL humano e 0 (fail-closed automatico off).
+	if got := mustMachine(t, st, "run-getters-2").HumanApprovalTTL(); got != 0 {
+		t.Errorf("HumanApprovalTTL() default=%v; quero 0", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Fencing token na entrada em running (o claim).
 // ---------------------------------------------------------------------------
