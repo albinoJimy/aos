@@ -154,7 +154,7 @@ As opções abaixo são as citadas na fonte; onde há alternativas, a escolha é
 
 | Preocupação | Opção de referência | Componente |
 |---|---|---|
-| Durable execution | Temporal / Restate / DBOS (ou contrato explícito de idempotência por passo) | RT, SCH |
+| Durable execution | **Contrato próprio** (idempotência por passo + checkpoint + replay sobre o Event Store), exposto por uma porta `Engine` agnóstica ao backend — Temporal / Restate / DBOS ficam como backend plugável opcional (**ADR-015 ratificado**, AOS-022) | RT, SCH |
 | Event store / transporte | Log append-only replicado com *push*: NATS / Redis / Postgres | ES |
 | Isolamento (microVM) | Firecracker / Kata; alternativa gVisor; FS read-only + overlay efémero, seccomp | SBX |
 | Policy Decision Point | Rego/OPA ou Cedar (versionado e assinado em git) | PDP |
@@ -255,6 +255,7 @@ Um Agentic OS não nasce ideal; evolui por níveis onde cada um **desbloqueia** 
 | ADR-012 | SemVer + eval-gate para auto-modificação | Staging → eval-gate → canary → ratificação assinada → prod, com rollback atómico |
 | ADR-013 | Gates de risco SA-ROC + controlo bidireccional | Tiering safe/gray/danger; steer/interrupt; aprovação-de-plano; timeout fail-closed |
 | ADR-014 | Taxonomia de autonomia L0–L5 | Oversight proporcional ao impacto; promoção por fiabilidade medida; demoção automática |
+| ADR-015 | Durable execution: contrato próprio (ratificado) | Consolidar o contrato próprio (AOS-014/015/016/021); porta `Engine` agnóstica ao backend (Princípio 8); engine externo como backend plugável subordinado ao ES (ADR-007). Concretizado em AOS-022 |
 
 ---
 
@@ -334,3 +335,4 @@ Um Agentic OS não nasce ideal; evolui por níveis onde cada um **desbloqueia** 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | Julho 2026 | ADR-015 ratificado (contrato próprio de durable execution + porta `Engine` agnóstica ao backend); stack e ADRs em vigor actualizados (AOS-022 fase feature) | Equipa AOS |

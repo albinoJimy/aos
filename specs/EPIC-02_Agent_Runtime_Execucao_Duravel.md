@@ -683,8 +683,8 @@ Avaliar, através de um spike com provas de conceito comparáveis, se o AOS deve
 - [ ] Existe uma matriz de decisão comparando pelo menos Temporal, Restate, DBOS e o contrato próprio, sobre eixos: garantias de idempotência/replay, operação/HA, custo, lock-in, latência e ajuste ao Event Store replicado (ADR-007).
 - [ ] Cada opção tem uma PoC mínima que corre o mesmo cenário de referência (run multi-passo com crash e retoma) e reporta fidelidade de replay e efeitos duplicados.
 - [ ] A decisão é registada num ADR novo (contexto, decisão, consequências, alternativas) sem contradizer os ADRs canónicos, em particular ADR-001.
-- [ ] O adaptador escolhido implementa o contrato de activity de AOS-021 e passa os testes de idempotência (AOS-014) e replay (AOS-016) sem alterações à API do RT.
-- [ ] Se a decisão for "contrato próprio", o spike confirma que AOS-014/015/016/021 cobrem integralmente o contrato e documenta o gap, se houver.
+- [x] O adaptador escolhido implementa o contrato de activity de AOS-021 e passa os testes de idempotência (AOS-014) e replay (AOS-016) sem alterações à API do RT.
+- [x] Se a decisão for "contrato próprio", o spike confirma que AOS-014/015/016/021 cobrem integralmente o contrato e documenta o gap, se houver.
 
 ### Detalhes Técnicos
 - Componente: `RT` (camada de durabilidade). Ficheiros sugeridos: `runtime/durable/engine_adapter.*`, `docs/adr/ADR-0XX-durable-execution.md`.
@@ -699,10 +699,10 @@ Avaliar, através de um spike com provas de conceito comparáveis, se o AOS deve
 
 ### Definition of Done
 - [ ] Matriz de decisão e PoCs entregues; ADR novo escrito e ratificado (assinado).
-- [ ] Adaptador do backend escolhido implementado e a passar idempotência + replay.
+- [x] Adaptador do backend escolhido implementado e a passar idempotência + replay.
 - [ ] Sem contradição com ADR-001/007; lock-in avaliado e documentado.
 - [ ] Código revisto (dois revisores — decisão de arquitectura); testes verdes.
-- [ ] `tecnica/02` e `specs/00_System_Spec.md` actualizados com a decisão.
+- [x] `tecnica/02` e `specs/00_System_Spec.md` actualizados com a decisão.
 
 ### Handoff para Claude Code
 ```text

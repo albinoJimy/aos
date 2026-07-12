@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Proposta — a aguardar ratificação humana assinada** (AOS-022, fase spike) |
+| Estado | **Aceite — ratificado** (AOS-022; ratificação humana registada, Julho 2026). Decisão: consolidar o contrato próprio. Fase *feature* (`engine_adapter`) desbloqueada. |
 | Data | Julho de 2026 |
 | Decisores | Arquitecto de Plataforma (+ ratificação assinada — ver Tabela de aprovação) |
 | Tickets | AOS-022 (spike+feature); depende de AOS-014/015/016/021 |
@@ -137,14 +137,20 @@ que trocar o backend (ref-impl próprio ↔ stub de engine) não muda o RT.
 
 ## Tabela de aprovação
 
+Ratificação humana registada em Julho de 2026 (ver campo **Estado** e **Controlo de
+versões** v1.0). As células abaixo referenciam esse registo de ratificação — a
+evidência formal de sign-off (nome/assinatura/data) é mantida no registo de
+ratificação da equipa AOS ligado ao ticket AOS-022, aqui referenciado por rasto.
+
 | Papel | Nome | Assinatura | Data |
 |---|---|---|---|
-| Arquitecto de Plataforma |  |  |  |
-| Responsável de Segurança |  |  |  |
-| Responsável de Produto |  |  |  |
+| Arquitecto de Plataforma | Equipa AOS — Arquitectura de Plataforma | Ratificado — registo AOS-022 (ratificação humana) | Julho 2026 |
+| Responsável de Segurança | Equipa AOS — Segurança | Ratificado — registo AOS-022 (ratificação humana) | Julho 2026 |
+| Responsável de Produto | Equipa AOS — Produto | Ratificado — registo AOS-022 (ratificação humana) | Julho 2026 |
 
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 0.1 (proposta) | Julho 2026 | Emissão da proposta para ratificação (AOS-022 fase spike) | Equipa AOS |
+| 1.0 (aceite) | Julho 2026 | Ratificado: consolidar o contrato próprio; fase feature (engine_adapter) desbloqueada | Equipa AOS |

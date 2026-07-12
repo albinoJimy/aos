@@ -47,6 +47,7 @@ Este documento concretiza dois ADRs canónicos e apoia-se em vários outros do c
 - **ADR-009 — Layout de prompt cache-estável.** O RT remonta o prompt a cada turno preservando um prefixo imutável + tail append-only, e hasheia o prompt materializado no evento de turno.
 - **ADR-010 — Observabilidade OTel GenAI + audit WORM.** Cada turno e cada activity emitem spans e ficam no event store, base do replay fiel (`tecnica/08`).
 - **ADR-013 — Gates de risco e controlo bidireccional.** Os estados `waiting_on_human` e `paused` do RT concretizam o steer/interrupt e o timeout fail-closed.
+- **ADR-015 — Durable execution: contrato próprio vs. engine externo (ratificado).** Decisão: **consolidar o contrato próprio** e expor uma porta `engine_adapter` estável que mantém o RT agnóstico ao backend (Princípio 8). Um engine externo (Temporal/Restate/DBOS) fica como backend plugável, subordinado ao Event Store como fonte de verdade (ADR-007). Concretizado em AOS-022 (§4.4).
 
 ---
 
@@ -372,6 +373,56 @@ não mexe; o stream não cresce) e estrutural (reflexão sobre os campos do stru
 cobertura do subpacote é ≥ 90 % com `-race` limpo; a fidelidade de replay é 100 %
 nos testes (mesma sequência de `step_id`, `prompt_hash` por turno coincide).
 
+### 4.4. Porta de execução durável agnóstica ao backend (AOS-022)
+
+A decisão de substrato de durable execution está **ratificada em ADR-015**:
+**consolidar o contrato próprio** (AOS-014/015/016/021) e expor uma **porta estável
+que mantém o RT agnóstico ao backend** (Princípio 8 / anti lock-in). Um engine
+externo (Temporal/Restate/DBOS) fica como **backend plugável** opcional, nunca um
+rewrite. A fase *feature* está implementada no subpacote
+`packages/kernel/agent-runtime/engine` (`engine_adapter.go`).
+
+**A porta `Engine`.** É a interface que o RT usa **sem saber qual backend está por
+baixo**. Expõe as operações do contrato de durable execution de forma independente
+do substrato: `Dispatch(ctx, activity)` (efeito idempotente + mediado + registado —
+delega no `activity.Dispatcher`, AOS-021), `Checkpoint(ctx, cp)` / `Resume(ctx,
+run_id)` (cursor intra-iteração — delega em AOS-015), `Replay(ctx, run_id, opts)`
+(replay determinístico — delega em AOS-016) e `Mode()`. As assinaturas seguem
+**exactamente** as APIs de AOS-014/015/016/021 — a porta é uma composição, não uma
+API nova.
+
+**Adaptador de referência `OwnContractEngine`.** Implementa `Engine` **compondo** as
+peças já Done sobre o **mesmo Event Store replicado** (ADR-007, fonte de verdade
+única): `Dispatch → *activity.Dispatcher`, `Checkpoint → *durable.EventStoreCheckpointer`,
+`Resume → *durable.Resumer`, `Replay → *replay.ReplayEngine`. **Não reimplementa
+nenhuma garantia.** É precisamente o assentar de todas as peças num só log que
+distingue o contrato próprio dos engines externos, que trariam um **segundo** log de
+durabilidade (event history / journal / Postgres) e a consequente reconciliação de
+duas fontes de verdade (ADR-015 §2). A opção `WithLedger` liga o **crash/failover**:
+um worker novo reconstrói o ledger (`Rebuild`) do log e injecta-o no engine.
+
+**Mapeamento de um backend externo (documentado, não implementado).** A
+reversibilidade do ADR-015 é concreta — um engine externo satisfaria a **mesma**
+porta sem tocar no RT: `Dispatch`→activity idempotente (Temporal) / handler com
+idempotency key (Restate) / `@step` transaccional (DBOS); `Checkpoint`→event history
+/ journal / estado do workflow; `Resume`→replay/recovery do workflow;
+`Replay`→replayer do SDK. Em todos, o adaptador subordinaria o seu log ao ES.
+
+**Prova de isolamento por contrato (Princípio 8).** O teste de contrato corre o
+**cenário de referência** (run multi-passo com **crash e retoma**) sobre a porta e
+prova: (a) o adaptador de referência passa a suíte de **idempotência** (AOS-014, 0
+efeitos observáveis duplicados — verificado com **worker novo** que reconstrói o
+ledger do log) e de **replay** (AOS-016, fidelidade 100 %, zero efeitos externos, e
+divergência localizada ao mutar o `Spec`); (b) **trocar o backend** (adaptador de
+referência ↔ um **stub/fake** `Engine`) **não altera o uso do RT** — o *mesmo* driver
+de RT, escrito só contra a interface `Engine`, compila e corre com asserções
+idênticas sobre ambos. Cobertura do adaptador ≥ 80 % com `-race` limpo.
+
+**Fronteiras (abertas, herdadas do ADR-015).** *Enforcement* de fencing por-escrita
+(AOS-018, item aberto); adopção do `Dispatcher`/`Engine` **pelo loop** (wiring
+diferido, como em AOS-021); HA de produção sobre o ES replicado real
+(NATS/JetStream), a validar em staging.
+
 ---
 
 ## 5. Máquina de estados durável
@@ -545,3 +596,4 @@ a máquina de estados (AOS-017) dá as transições duráveis.
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | Julho 2026 | AOS-022 (fase feature): porta `Engine` agnóstica ao backend + adaptador de referência `OwnContractEngine` (§4.4), sob ADR-015 ratificado | Equipa AOS |
