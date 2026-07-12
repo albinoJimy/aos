@@ -34,6 +34,13 @@ const (
 	attrNodeAgentNHI = "aos.node.agent_nhi"
 	// attrNodeDelegationDepth — profundidade da cadeia de delegação do nó.
 	attrNodeDelegationDepth = "aos.node.delegation_depth"
+	// attrNodeParentNHI — NHI do PAI imediato do nó (penúltimo sujeito da cadeia de
+	// delegação do filho, i.e. o Sub da folha). Torna a aresta filho→pai
+	// reconstruível a partir do span isolado, sem depender só da agregação do trace.
+	attrNodeParentNHI = "aos.node.parent_nhi"
+	// attrParentStepID — step_id do passo do pai que originou o spawn (correlação
+	// causal filho→pai ao nível do span).
+	attrParentStepID = "aos.parent.step_id"
 
 	// attrEdgeFrom/attrEdgeTo — a aresta admitida (From precede To).
 	attrEdgeFrom = "aos.edge.from"

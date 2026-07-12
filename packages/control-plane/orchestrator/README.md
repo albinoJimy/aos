@@ -110,6 +110,72 @@ autoridade da máquina durável do run. O Orquestrador **não** detém o fencing
 do claim (isso é do Escalonador/AOS-018): ao nível do grafo regista-se a transição
 de estado, não o enforcement do lease.
 
+## Delegação a sub-agentes com orçamento herdado (AOS-026)
+
+`delegation.go` acrescenta o **spawn de sub-agentes** com **orçamento hierárquico
+herdado**. O `Delegator` **compõe** três fundações (não reimplementa nenhuma):
+
+- **Orçamento CAS** (`control-plane/budget`, AOS-008) — a **reserva atómica** por
+  compare-and-swap sobre a árvore de orçamento. É o budget (nunca um contador
+  partilhado com corrida) que impõe *soma-das-fatias-dos-filhos ≤ orçamento do pai*
+  (**0 overshoot**) e *sub-orçamento herdado ≤ remanescente*, em **tokens e USD**
+  (nunca iterações).
+- **Identidade NHI filha** (`platform/identity`, AOS-005/006) — cada sub-agente é
+  uma identidade **não-humana única**, emitida on-behalf-of o pai por
+  `Issuer.IssueChild`, estendendo a cadeia de delegação hash-linked (autoridade =
+  pedido ∩ classe, ⊆ pai; raiz humana preservada, ADR-003).
+- **Reference Monitor** (`kernel/reference-monitor`, AOS-003) — a criação da
+  identidade filha e o débito são **mediados**: só ocorrem sob um Permit
+  não-forjável de `Monitor.Mediate` (ADR-002). Uma negação **liberta** a reserva
+  (sem leak) e recusa o spawn fail-closed.
+
+### Modelo de contabilidade (sem dupla contagem)
+
+A árvore de orçamento **espelha** a árvore de delegação: cada agente tem um nó cujo
+**limite** é o orçamento do seu subárvore. No spawn reserva-se a **fatia de consumo
+próprio** do filho **no nó do filho**; como `budget.Reserve` debita em **cascata**
+por toda a linhagem (filho→pai→raiz), a reserva é atomicamente validada contra o
+limite do pai (e da raiz) — é isto a *reserva CAS antes do spawn*. A fatia própria
+de cada agente é contada **uma vez** e sobe a cascata uma vez: a soma na raiz é o
+consumo real total, sem dupla contagem. O limite do nó do filho (≥ fatia própria)
+deixa headroom para o filho **delegar recursivamente** (map-reduce).
+
+### Ciclo de vida e idempotência (ADR-001)
+
+`Spawn` → reserva CAS + mediação RM + emissão da NHI filha (+ admissão opcional no
+DAG). `Finish(success)` consolida o consumo real (`budget.Commit`); `Finish(fail)`
+liberta a fatia (`budget.Release`). Ambos são **idempotentes** por `reservation.ID`
+(um retry é no-op nos contadores) e os eventos deduplicam por `(run_id, step_id)` —
+**0 efeitos duplicados** no retry. Um `Commit` após `Release` (ou vice-versa) é
+rejeitado: a reserva consome-se exactamente uma vez.
+
+### Eventos append-only
+
+`subagent.budget_reserved`, `subagent.spawned`, `subagent.budget_consumed`,
+`subagent.budget_released`, `subagent.spawn_denied_no_budget` (fail-closed sem
+orçamento) e `subagent.spawn_denied` (profundidade/fan-out/mediação). Permitem
+reconstruir a **árvore de delegação** e correlacionar com o **burn-down** — cuja
+contabilidade autoritativa e durável é a do próprio budget (`budget.Rebuild` sobre
+`budget.reserved/committed/released`). Profundidade e fan-out são **configuráveis**
+(`WithMaxDepth`/`WithMaxFanOut`) e adicionalmente limitados pelo orçamento.
+
+```go
+del, _ := orchestrator.NewDelegator(bud /* *budget.Budget */, mon /* *rm.Monitor */, iss /* *identity.Issuer */,
+    orchestrator.WithMaxDepth(8), orchestrator.WithMaxFanOut(16),
+    orchestrator.WithDelegationStore(es, producer), orchestrator.WithDelegationGraph(gb))
+h, err := del.Spawn(ctx, orchestrator.SpawnRequest{
+    RunID: runID, ParentBudgetNode: runID, ChildBudgetNode: "nA",
+    InheritedBudget: budget.Amount{Tokens: 400, CostMicroUSD: 400_000},
+    SpawnReserve:    budget.Amount{Tokens: 50, CostMicroUSD: 50_000},
+    Depth: 1, ParentToken: parentTok.Compact, Child: childReq,
+})
+// ... sub-agente executa ...
+_ = del.Finish(ctx, h, true) // consolida o consumo real (idempotente)
+```
+
+O token-bucket global TPM/RPM (AOS-027/028), o circuit breaker (AOS-029) e o
+scheduling (AOS-032) assentam **sobre** esta delegação, **fora** do âmbito de AOS-026.
+
 ## O que é STUB / NÃO-PRODUTIVO (AOS-012)
 
 Marcado como stub no código; **fica para EPIC-03**:
@@ -129,18 +195,21 @@ Marcado como stub no código; **fica para EPIC-03**:
 
 - **Decomposição real**: `Submit` continua a construir o grafo mínimo (1 nó); a
   decomposição de linguagem natural em DAG multi-nó liga-se ao `GraphBuilder`.
-- Delegação a sub-agentes com orçamento herdado (AOS-026) usa a `AgentIdentity`
-  dos nós; o `admission control` global (AOS-027) e o scheduling priority-aware
-  com aging (AOS-032) consomem a `TopoOrder` — **fora** do escopo de AOS-025.
+- Delegação a sub-agentes com orçamento herdado (AOS-026) — **implementada** em
+  `delegation.go` (ver secção acima), reutiliza a `AgentIdentity` dos nós; o
+  `admission control` global (AOS-027) e o scheduling priority-aware com aging
+  (AOS-032) consomem a `TopoOrder` — **fora** do escopo de AOS-025/026.
 - O fencing token do claim `ready→running` e a expiração de lease/heartbeat são do
   Escalonador/AOS-018 (o Orquestrador só regista a transição de estado por-nó).
 
 ## Dependências e build
 
 Zero dependências externas. Integrados por `replace` local: Barramento (AOS-009),
-Event Store (AOS-002) e a **máquina de estados durável** (AOS-017, subpacote
-`state` do Agent Runtime — com o `reference-monitor` como dependência transitiva).
-**Não** altera nenhum módulo existente; consome-os só pelas APIs públicas.
+Event Store (AOS-002), a **máquina de estados durável** (AOS-017, subpacote `state`
+do Agent Runtime) e — para a delegação de AOS-026 — o **orçamento CAS** (AOS-008,
+`control-plane/budget`), a **identidade NHI** (AOS-005/006, `platform/identity`) e o
+**Reference Monitor** (AOS-003, `kernel/reference-monitor`). **Não** altera nenhum
+módulo existente; consome-os só pelas APIs públicas.
 
 ```
 go mod tidy && go vet ./... && go test ./... -race -count=1
