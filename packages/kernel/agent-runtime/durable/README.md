@@ -1,9 +1,9 @@
-# `durable` — Contrato de execução durável (AOS-014)
+# `durable` — Execução durável: idempotência (AOS-014) + checkpoint intra-iteração (AOS-015)
 
 Subpacote de `agent-runtime` que implementa a **cláusula de idempotência por passo**
-do ADR-001 (`tecnica/02` §4). É a fundação consumida por **AOS-015** (checkpoint),
-**AOS-016** (replay), **AOS-020** (sagas), **AOS-021/022** (activities de efeito
-externo).
+do ADR-001 (`tecnica/02` §4) e o **checkpoint intra-iteração** *resume-from-step*
+sobre o Event Store replicado (ADR-007). É a fundação consumida por **AOS-016**
+(replay), **AOS-020** (sagas), **AOS-021/022** (activities de efeito externo).
 
 Zero dependências externas (só a stdlib + `eventstore` e `agent-runtime` por path).
 
@@ -120,6 +120,65 @@ homónimo (`run_id:step_id`).
 
 ---
 
+## Checkpoint intra-iteração + resume (AOS-015)
+
+O checkpoint materializa o progresso **dentro** de uma iteração no Event Store
+replicado (ADR-007, fonte de verdade), para que o RT retome no **próximo passo não
+confirmado** sem repetir os já confirmados nem perder os pendentes
+(*resume-from-step*, não *resume-from-task*). O checkpoint dá **eficiência** (salta
+o trabalho); o ledger (AOS-014) é a **rede de segurança** de idempotência se um
+passo for na mesma re-tentado.
+
+### `EventStoreCheckpointer` — o `Checkpointer` real de AOS-013
+
+```go
+cpr, _ := durable.NewCheckpointer(store) // implementa agentruntime.Checkpointer
+rt := agentruntime.New(model, rm, recorder,
+    agentruntime.WithStepIdentity(seq),
+    agentruntime.WithCheckpointer(cpr), // ligação ADITIVA — sem alterar o loop
+)
+```
+
+- **Evento append-only** `step.checkpoint` por **fase confirmada** do turno
+  (`assembled`/`model_called`/`turn_recorded`/`dispatched`*/`verified`). O payload é
+  o **cursor de progresso** `{ run_id, confirmed_step_id, turn, phase, step_index,
+  pending_activities }` — **referencia**, não copia: a resposta do modelo vive no
+  `turn.recorded`, o resultado da activity no `step.ledger.applied`.
+- **`idempotency_key` namespaced** `run_id:ckpt-<phase>-<step_id>` — o **terceiro**
+  domínio de dedup por passo, **distinto** do turno (`run_id:step_id`) e do ledger
+  (`run_id:ledger-<step_id>`). Re-escrever o mesmo checkpoint num retry dá
+  `StatusDuplicate` (a escrita de checkpoint é, ela própria, **idempotente**).
+- **Consistente com o ledger**: `confirmed_step_id` é **exactamente** o `step_id`
+  que o ledger usa para o mesmo passo lógico (para uma activity,
+  `seq.SubStepID(run, turn, n)` = `step-000001-tool-n`).
+- **Não muta o prefixo cache-estável** (ADR-009): o checkpointer nunca toca no
+  assembler — só **cresce** o registo append-only.
+
+### `Resumer` — cursor de retoma resume-from-step
+
+```go
+resumer, _ := durable.NewResumer(store, durable.WithStepIdentity(seq))
+rp, _ := resumer.Resume(ctx, runID) // lê os checkpoints do stream do run
+```
+
+`Resume` encontra a **fronteira** (o último checkpoint por `seq`) e devolve o
+`ResumePoint`:
+
+| Fronteira | Retoma |
+|---|---|
+| `verified` do turno *T* | turno *T+1*, `NextStepID = StepID(T+1)` |
+| `dispatched` com pendentes | turno *T*, `NextStepID` = 1.ª activity pendente, `PendingActivities` = restantes |
+| `dispatched` sem pendentes | turno *T* (re-verifica; ledger dedup) |
+| `assembled`/`model_called`/`turn_recorded` | turno *T* (re-entra; modelo re-chamado) |
+| **sem checkpoints** | `FromScratch`, turno 1 |
+
+O `ResumePoint` é **serializável e estável** — preparado para o replay determinístico
+(AOS-016) consumir o cursor (o `next` é uma função pura da fase + pendentes). Como os
+checkpoints vivem no ES replicado, um worker **novo** reconstrói o cursor após
+**failover** (análogo de leitura do `StepLedger.Rebuild`).
+
+---
+
 ## Observabilidade e segredos
 
 - `Observer` recebe contadores `Applied`/`Deduplicated` com a forma **opaca** (hash)
@@ -140,8 +199,7 @@ homónimo (`run_id:step_id`).
 
 | Ticket | Como consome |
 |---|---|
-| **AOS-015** (checkpoint) | `step_id` estável de `StepSequencer`; `Applied(key)` para inspeccionar estado sem efeito. |
-| **AOS-016** (replay) | `Rebuild` reconstrói do log; `step_id` idêntico entre execução e replay (lê inputs do log, não regenera). |
+| **AOS-016** (replay) | `Rebuild` reconstrói do log; `ResumePoint` (cursor estável) arranca de qualquer `step_id`; `step_id` idêntico entre execução e replay (lê inputs do log, não regenera). |
 | **AOS-020** (sagas) | Cada compensação é um `Apply` idempotente; regista a acção inversa a par do resultado. |
 | **AOS-021** (activities) | Toda a activity corre dentro de `Apply`, derivando a key de `IdempotencyKey`/`SubKey` e propagando-a ao downstream. |
 | **AOS-022** | Contadores `apply`/`dedup` via `Observer`; reconciliação a partir do ledger reconstruído. |
@@ -160,4 +218,10 @@ homónimo (`run_id:step_id`).
   key regista 1× observável;
 - integração: ledger persiste no Event Store real e sobrevive a reinício (`Rebuild`);
 - `step_id` estável por passo lógico entre execução e retry/replay;
-- corrida concorrente na mesma key (alvo do `-race`).
+- corrida concorrente na mesma key (alvo do `-race`);
+- **checkpoint/resume (AOS-015)**: recuperação com crash em **6 pontos distintos** de
+  uma iteração multi-passo (retoma sem repetir os confirmados nem perder os
+  pendentes); consistência `confirmed_step_id` ↔ `step_id` do ledger; a escrita de
+  checkpoint **não muta** o prefixo cache-estável (comparação com run no-op);
+  integração com o **loop real** + **failover** de worker (ES 3 réplicas, `Kill`/eleição
+  + `Revive`/resync) preservando o cursor de retoma.

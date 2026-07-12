@@ -56,11 +56,29 @@ const (
 )
 
 // Checkpoint descreve um ponto de checkpoint intra-iteração.
+//
+// Os campos ConfirmedStepID e PendingActivities são ADITIVOS (AOS-015): dão ao
+// Checkpointer real a granularidade de SUB-PASSO (activity) dentro de um turno,
+// sem alterar a forma dos checkpoints já observada por AOS-013. Ficam a zero
+// ("" / nil) nas fases sem granularidade de activity — nesse caso o Checkpointer
+// trata StepID como o passo confirmado (o turno inteiro).
 type Checkpoint struct {
 	RunID  string
 	StepID string
 	Turn   int
 	Phase  CheckpointPhase
+
+	// ConfirmedStepID é o step_id CONCRETO que este checkpoint confirma. Numa
+	// fase de despacho de activity é o sub-passo (StepID + "-tool-" + n, a MESMA
+	// convenção do loop e de [durable.StepSequencer.SubStepID]); nas fases ao
+	// nível do turno fica vazio e o Checkpointer usa StepID. É esta string que
+	// tem de casar com o step_id do step-ledger de AOS-014 para o mesmo passo.
+	ConfirmedStepID string
+	// PendingActivities são os step_ids das activities AINDA pendentes dentro da
+	// iteração corrente DEPOIS deste checkpoint (vazio ⇒ iteração toda despachada).
+	// O cursor de progresso persistido em AOS-015 usa esta lista para o resume
+	// retomar no próximo sub-passo não confirmado.
+	PendingActivities []string
 }
 
 // Checkpointer persiste checkpoints intra-iteração. É o ponto de ligação de

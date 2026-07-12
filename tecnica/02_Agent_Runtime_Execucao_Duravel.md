@@ -185,6 +185,55 @@ dos efeitos externos é do downstream, pela chave determinística que o `effect`
 propaga. O teste de fault-injection modela um downstream que honra a key e prova
 que, com crash antes ou depois do commit, o efeito é registado uma vez observável.
 
+### 4.2. Checkpoint intra-iteração e resume-from-step — especificação (AOS-015)
+
+O checkpoint intra-iteração está **implementado** no mesmo subpacote
+`packages/kernel/agent-runtime/durable` (`checkpoint.go`, `resume.go`), sobre o
+Event Store replicado (ADR-007) como fonte de verdade. Materializa a cláusula de
+*checkpoint* do contrato: o RT retoma no **último passo confirmado dentro da
+iteração**, sem repetir passos aplicados nem perder passos pendentes.
+
+**Checkpointer — evento append-only por fase confirmada.** O `EventStoreCheckpointer`
+é o `Checkpointer` REAL do hook de AOS-013 (ligação aditiva via `WithCheckpointer`,
+sem alterar a forma do loop). Por cada fase confirmada de um turno
+(`assembled`/`model_called`/`turn_recorded`/`dispatched`*/`verified`) escreve um
+evento `step.checkpoint` cujo payload é o **cursor de progresso**
+`{ run_id, confirmed_step_id, turn, phase, step_index, pending_activities }`. O
+cursor **referencia, não copia**: a resposta do modelo permanece no `turn.recorded`
+(AOS-013) e o resultado da activity no `step.ledger.applied` (AOS-014) — o checkpoint
+é só um marcador barato de progresso. A `idempotency_key` do envelope é **namespaced**
+(`run_id:ckpt-<phase>-<step_id>`), um **terceiro** domínio de dedup, distinto do
+turno (`run_id:step_id`) e do ledger (`run_id:ledger-<step_id>`); re-escrever o mesmo
+checkpoint num retry dá `StatusDuplicate` (a escrita é ela própria idempotente).
+
+**Consistência checkpoint↔ledger.** O `confirmed_step_id` gravado é **exactamente** o
+`step_id` que o ledger de AOS-014 usa para o mesmo passo lógico — para uma activity,
+`SubStepID(run, turn, n) = step-NNNNNN-tool-n`. O mesmo passo lógico tem, pois, o
+mesmo identificador no ledger E no checkpoint (provado por teste).
+
+**Resumer — cursor de retoma.** `Resumer.Resume(ctx, run_id)` relê os checkpoints do
+stream e devolve o `ResumePoint`: a **fronteira** é o último checkpoint por `seq`
+(escritos pela ordem de execução). A tradução para o próximo passo é **pura**: fase
+`verified` do turno *T* ⇒ retoma no turno *T+1*; fase `dispatched` com pendentes ⇒
+retoma na 1.ª activity pendente do turno *T* (salta as confirmadas); sem checkpoints
+⇒ retoma do início (turno 1). O checkpoint dá **eficiência** (salta o trabalho
+confirmado); o step-ledger é a **rede de segurança** — se um passo for na mesma
+re-executado, o downstream deduplica pela chave determinística. O `ResumePoint` é
+**serializável e estável**, preparado para o replay determinístico (AOS-016) consumir
+o cursor e arrancar de qualquer `step_id`.
+
+**Durabilidade sob failover e cache de prompt.** Como os checkpoints vivem no Event
+Store replicado por quórum, o cursor **sobrevive à morte do worker** que os escreveu:
+um worker novo constrói um `Resumer` sobre o mesmo cluster e recupera a fronteira
+(análogo de leitura do `Rebuild` do ledger). O teste de integração exercita o **loop
+real** + **failover** (ES de 3 réplicas, `Kill` do líder + eleição da follower, e
+`Revive`/resync) e confirma que o cursor de retoma se mantém idêntico. A escrita de
+checkpoint **não muta o prefixo cache-estável** do prompt (ADR-009) — o checkpointer
+nunca toca no assembler, só **cresce** o registo append-only; um teste compara o
+prefixo de um run com checkpointer real contra um run no-op e exige igualdade
+byte-a-byte. A recuperação é provada com crash em **seis pontos distintos** de uma
+iteração multi-passo.
+
 ---
 
 ## 5. Máquina de estados durável

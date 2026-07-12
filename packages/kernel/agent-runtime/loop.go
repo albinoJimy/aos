@@ -238,7 +238,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// O tail materializa a condição de erro da tool (se houver) para o
 			// modelo poder reagir; o conteúdo mantém-se untrusted, append-only.
 			tail = append(tail, tailFromResult(result, toolErr))
-			if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseDispatched); err != nil {
+			// Checkpoint intra-iteração (AOS-015): a activity j ficou CONFIRMADA
+			// (efeito externo concluído). O cursor carrega o sub-passo confirmado e
+			// as activities ainda pendentes do turno — o resume retoma no próximo
+			// sub-passo não confirmado sem repetir os já aplicados.
+			if err := rt.cpActivity(ctx, goal.RunID, stepID, turn, j, len(resp.ToolCalls)); err != nil {
 				return res, err
 			}
 		}
@@ -393,6 +397,27 @@ func (rt *Runtime) cp(ctx context.Context, runID, stepID string, turn int, phase
 		StepID: stepID,
 		Turn:   turn,
 		Phase:  phase,
+	})
+}
+
+// cpActivity é o checkpoint intra-iteração da fase de despacho: confirma a
+// activity idx (0-based) do turno e declara as activities ainda pendentes. O
+// sub-passo confirmado usa a MESMA convenção que a mediação ("-tool-"+n, 1-based)
+// e que o step-ledger de AOS-014, garantindo consistência checkpoint↔ledger. Só a
+// ligação do cursor é aditiva; o default no-op ignora os campos extra.
+func (rt *Runtime) cpActivity(ctx context.Context, runID, stepID string, turn, idx, total int) error {
+	confirmed := stepID + "-tool-" + itoa(idx+1)
+	var pending []string
+	for k := idx + 2; k <= total; k++ {
+		pending = append(pending, stepID+"-tool-"+itoa(k))
+	}
+	return rt.checkpointer.Checkpoint(ctx, Checkpoint{
+		RunID:             runID,
+		StepID:            stepID,
+		Turn:              turn,
+		Phase:             PhaseDispatched,
+		ConfirmedStepID:   confirmed,
+		PendingActivities: pending,
 	})
 }
 

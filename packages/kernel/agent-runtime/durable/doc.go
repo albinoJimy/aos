@@ -1,10 +1,32 @@
 // Package durable implementa o CONTRATO DE EXECUÇÃO DURÁVEL do Agent Runtime do
-// AOS (AOS-014) — a cláusula de idempotência por passo do ADR-001 (tecnica/02 §4).
-// É o alicerce sobre o qual assentam o checkpoint intra-iteração (AOS-015), o
-// replay resume-from-step (AOS-016), as sagas de compensação (AOS-020) e as
-// activities de efeito externo (AOS-021/022).
+// AOS — a cláusula de idempotência por passo do ADR-001 (AOS-014) e o checkpoint
+// intra-iteração resume-from-step sobre o Event Store replicado (AOS-015, ADR-007).
+// É o alicerce sobre o qual assentam o replay resume-from-step (AOS-016), as sagas
+// de compensação (AOS-020) e as activities de efeito externo (AOS-021/022).
 //
-// # As três peças
+// # Checkpoint intra-iteração e resume (AOS-015)
+//
+// O [EventStoreCheckpointer] é o [github.com/aos-ref/kernel/agent-runtime.Checkpointer]
+// REAL: persiste cada fase confirmada de um turno como um evento append-only
+// [EventTypeCheckpoint] com o [Cursor] de progresso (turno, fase, sub-passo,
+// activities pendentes) — REFERENCIANDO, não copiando, o payload já no log. A sua
+// idempotency_key é namespaced (run_id:ckpt-…), um TERCEIRO domínio de dedup
+// distinto do turno e do ledger; o confirmed_step_id CASA com o step_id do ledger
+// para o mesmo passo lógico. O [Resumer] relê os checkpoints do run e devolve o
+// [ResumePoint] — o próximo passo NÃO confirmado — retomando sem repetir os
+// confirmados nem perder os pendentes. Como os checkpoints vivem no Event Store
+// replicado, o cursor sobrevive ao failover do worker. A escrita de checkpoint só
+// CRESCE o registo append-only — nunca muta o prefixo cache-estável (ADR-009).
+//
+// O cursor é um MARCADOR de progresso, não estado de execução: é auto-suficiente em
+// fronteiras de turno mas NÃO mid-dispatch — as invocações de tool pendentes
+// (ToolID/Input) não vivem no log de AOS-015, pelo que re-despachá-las sem
+// re-chamar o modelo, e re-montar o tail com fidelidade de prompt_hash, são
+// responsabilidade de AOS-016 (ver [ResumePoint] e [Resumer]). O acoplamento de
+// formato de step_id entre o loop e o [Resumer] é VERIFICADO no acto da retoma
+// (fail-closed com [ErrStepIdentityMismatch]).
+//
+// # As três peças de idempotência (AOS-014)
 //
 //   - [IdempotencyKey] — função PURA e DETERMINÍSTICA key = run_id + ":" + step_id.
 //     Injectiva (rejeita ':' nos inputs para fechar a colisão de deslocamento do
@@ -40,8 +62,13 @@
 // reproduz o log em sentido inverso — cada compensação é, ela própria, um Apply
 // idempotente. AOS-022 consome o ledger para observabilidade (contadores
 // apply/dedup via [Observer]) e reconciliação. O ledger é reconstruível
-// (Rebuild) — o replay (AOS-016) lê os inputs não-determinísticos do log em vez de
-// os regenerar.
+// (Rebuild). Os inputs NÃO-DETERMINÍSTICOS de nível de turno — a resposta do modelo
+// e as tool calls que dela derivam (ToolID/Input) — NÃO estão hoje no log de
+// AOS-014/015 (o turn.recorded grava só o manifesto e a contagem de tool calls, e o
+// evento de mediação do RM não grava o Input). Persistir/reconstruir esses inputs, e
+// re-derivar as tool calls a partir deles em vez de os regenerar, é o trabalho do
+// replay determinístico (AOS-016); AOS-015 entrega a POSIÇÃO (o cursor), não o
+// conteúdo não-determinístico.
 //
 // # Zero dependências externas
 //

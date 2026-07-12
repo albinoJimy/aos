@@ -38,6 +38,16 @@ var (
 	// namespace que o ledger reivindica.
 	ErrReservedStepID = errors.New("durable: step_id não pode começar por 'ledger-' (namespace reservado do ledger)")
 
+	// ErrStepIdentityMismatch — o [StepIdentity] injectado no [Resumer] NÃO reproduz
+	// o step_id que o loop gravou no checkpoint (formato de step_id divergente:
+	// prefixo/largura diferentes). A correcção do resume-from-step depende de o
+	// Resumer e o loop derivarem step_ids IDÊNTICOS para a mesma posição (senão o
+	// NextStepID apontaria para um passo que o loop nunca produz, ou o turno retomado
+	// gravaria sob uma chave diferente, escapando à dedup). Em vez de só o avisar por
+	// comentário, o Resumer VERIFICA-O contra o step_id persistido no cursor e
+	// fail-closed aqui — nunca devolve um cursor sob identidade divergente.
+	ErrStepIdentityMismatch = errors.New("durable: StepIdentity do Resumer diverge do step_id gravado no checkpoint (formato incompatível)")
+
 	// ErrClearResultInSensitiveMode — em modo sensível ([WithSensitiveResults]) o
 	// effect devolveu um Result com Payload não-vazio SEM o marcar como Reference.
 	// O Payload é persistido em CLARO no evento durável do Event Store (o cifrado
