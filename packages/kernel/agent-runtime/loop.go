@@ -280,6 +280,14 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseVerified); err != nil {
 			return res, err
 		}
+		// FRONTEIRA DE FIM DE TURNO (ponto de ligação AOS-023). É AQUI — com todas as
+		// activities do turno confirmadas e antes de o turno seguinte começar — que o
+		// runtime chamaria control.SteerChannel.GracefulPause (materializar a pausa
+		// graciosa) e injectaria a Correction.TailSegment de um Resume no tail do turno
+		// seguinte. AOS-023 entrega e prova a API do canal (runtime/control) de forma
+		// isolada; o wiring do canal ao loop de produção é DIFERIDO para o ticket de
+		// integração de superfície (EPIC-12) — sem ele o comportamento de AOS-013
+		// permanece inalterado.
 		if resp.Final || len(resp.ToolCalls) == 0 {
 			res.FinalText = resp.Text
 			res.Turns = turn

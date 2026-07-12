@@ -174,6 +174,8 @@ Os approval gates ganham quatro propriedades que os tornam efectivos: **aprovado
 
 O modelo de responsabilização é explícito e assenta na cadeia de delegação da secção 3: cada acção tem um principal completo rastreável até um humano; cada decisão de política fica no audit com o seu motivo; cada aprovação é assinada. Não existem execuções anónimas. Isto satisfaz simultaneamente a supervisão humana efectiva (Art. 14) e a exigência de atribuição inequívoca perante um regulador.
 
+A supervisão efectiva não é só *bloquear antes* (approval gates): é também **corrigir durante**. O **controlo bidireccional** de ADR-013 — pausar → injectar correcção → retomar — é implementado pelo **canal de steer/interrupt out-of-band** do Agent Runtime (**AOS-023**, `runtime/control`; ver `tecnica/02` §5.1). Três propriedades ligam-no directamente a esta secção: (i) o canal é **separado do canal de dados** (o prompt), pelo que uma correcção humana é uma **instrução do plano de controlo**, nunca um dado *untrusted* — conteúdo *untrusted* (resultado de tool / web) **não** carrega credencial de emissor válida e é rejeitado, fechando por construção a escalada de privilégio (ADR-005); (ii) cada `steer` é **autenticado** e gravado como evento append-only **com a identidade do emissor** — o mesmo **não-repúdio** das aprovações assinadas, agora estendido às correcções em run; (iii) a **pausa é graciosa** (materializa-se no fim do turno, sem efeitos parciais) e todo o ciclo é **durável e reproduzível por replay**, pelo que a intervenção humana fica no audit tal como qualquer outra decisão rastreável até um humano.
+
 ---
 
 ## 9. Ratificação de auto-modificação
