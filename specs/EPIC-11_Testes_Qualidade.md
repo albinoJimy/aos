@@ -229,6 +229,7 @@ Construir a suite de teste de replay determinístico que, dada uma trajectória 
 - Componentes-alvo: OBS (replay), ES (fonte de verdade), RT (loop). Alinhar com o manifesto por trajectória (model-id/params/seed + hash do prompt) descrito em `specs/01` §5 e `EPIC-08`.
 - Usar o *content-capture* de spans OTel para reconstruir o input; efeitos externos servidos por *replay stubs*, nunca executados.
 - Reportar a métrica `Replay-fidelity` (% de trajectórias 100% reproduzíveis; alvo 100%).
+- **Reutilizar o harness fundacional de AOS-024** (`packages/kernel/agent-runtime/harness`), já entregue no EPIC-02: `Verify`/`FidelityReport` sobre o `ReplayEngine` de AOS-016, as golden trajectories (`GoldenSet`) e o gate 8 (`scripts/ci/replay.sh`) já existem e são *fail-closed*. Esta suite **estende** esse harness com trajectórias de domínio adicionais (via *seed* de AOS-110) — **não** reimplementa a mecânica de replay/relatório. **Distinto do eval harness de comportamento (AOS-114):** aqui o foco é replay/idempotência, não o *golden-set* de comportamento.
 
 ### Testes Requeridos
 
@@ -299,6 +300,7 @@ Construir a suite que, para uma *activity* com efeito externo, injecta falha ap�
 - Componentes-alvo: RT (loop), SCH (leases/fencing), ES. Usar o ambiente efémero de AOS-110 para o *store* de idempotência real.
 - Modelar a *idempotency key* explicitamente e cobrir os estados `failed → compensating → ready` da máquina de estados durável.
 - Evitar dependência de tempo real; injectar relógio controlável.
+- **Reutilizar o harness fundacional de AOS-024**: a verificação de idempotência por passo (calendário *at-least-once* com crash intercalado → *zero* efeitos observáveis duplicados via `StepLedger` de AOS-014) e a detecção de efeito duplicado injectado já estão implementadas em `harness.Verify`/`harness.Effect`. Esta suite **estende** o harness com efeitos de domínio — não reimplementa a mecânica.
 
 ### Testes Requeridos
 

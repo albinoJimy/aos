@@ -116,6 +116,22 @@ fi
 rm -f "$syn_cur" "$syn_base"
 
 # ============================================================================
+# D) trajectória adulterada torna o gate 8 (replay/idempotência) vermelho
+# ============================================================================
+log_gate "self-test D · trajectória adulterada bloqueia o gate 8 (replay)"
+# O harness de AOS-024 tem um teste-veneno (TestSelftestTamperReddensGate) que só
+# corre com AOS_REPLAY_SELFTEST=1: adultera uma golden trajectory e ASSEVERA
+# (falsamente) que ela é fiel — a asserção FALHA de propósito, provando que uma
+# trajectória divergente faz o gate ficar vermelho (fail-closed). Determinista,
+# offline e sem rasto no repo (nenhum ficheiro é alterado).
+if ( cd "$REPO_ROOT/packages/kernel/agent-runtime" && \
+     AOS_REPLAY_SELFTEST=1 go test ./harness/ -run TestSelftestTamperReddensGate -count=1 ) >/dev/null 2>&1; then
+  bad "D: o harness aceitou uma trajectória adulterada — gate 8 NÃO bloquearia"
+else
+  pass "D: o harness bloqueou (exit!=0) a trajectória adulterada (gate 8 fail-closed)"
+fi
+
+# ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"
 if [ "$fails" -eq 0 ]; then
   printf '%s  TODOS OS SELF-TESTS OK — falhas são bloqueadas pelos gates%s\n' "$C_GRN$C_BLD" "$C_RST"

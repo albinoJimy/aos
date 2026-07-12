@@ -13,7 +13,7 @@ make ci
 bash scripts/ci/run.sh
 ```
 
-Corre, por ordem canónica, `secrets → build → lint → test → sast → sca → policy-test`
+Corre, por ordem canónica, `secrets → build → lint → test → replay → sast → sca → policy-test`
 e termina com `exit != 0` se qualquer gate falhar. Provar que as falhas **são
 bloqueadas**:
 
@@ -22,7 +22,7 @@ make ci-selftest          # ou: bash scripts/ci/selftest.sh
 make ci-all               # gates + self-tests
 ```
 
-Correr um gate isolado: `make ci-secrets | ci-build | ci-lint | ci-test | ci-sast | ci-sca | ci-policy`
+Correr um gate isolado: `make ci-secrets | ci-build | ci-lint | ci-test | ci-replay | ci-sast | ci-sca | ci-policy`
 (ou `bash scripts/ci/<gate>.sh`).
 
 ## Pré-requisitos
@@ -45,6 +45,7 @@ acrescenta ao `PATH` o mingw/shims do scoop e o `bin` do GOPATH, e força
 | 1 | build | `build.sh` | `go build ./...` em cada módulo | merge |
 | 2 | lint | `lint.sh` | `gofmt -l`, `go vet`, `staticcheck` **+ arch-lint AOS-003** (proibição de despacho directo) | merge |
 | 3 | test | `test.sh` | `go test ./... -race -covermode=atomic`; **cobertura do kernel ≥ 80%** | merge |
+| 8 | replay | `replay.sh` | **harness de replay/idempotência (AOS-024)**: golden trajectories reproduzem-se *resume-from-step* (replay-fidelity 100%) + **zero efeitos duplicados** (step-ledger AOS-014); emite o relatório de fidelidade | merge |
 | 4 | sast | `sast.sh` | `gosec` — falha em findings **HIGH/CRITICAL** | merge |
 | 5 | sca | `sca.sh` | `govulncheck` — falha em vuln que **afecta** o código | merge |
 | 6 | policy-test | `policy-test.sh` | bundle do PDP (AOS-004): golden allow/deny (default-deny) **+ verificação de assinatura**; bundle não-assinado/adulterado é rejeitado | merge |
@@ -65,11 +66,12 @@ Provam, de forma isolada e reversível (sem rasto no repo), que os gates bloquei
 - **A** — módulo mau injectado (gofmt sujo + teste que falha) ⇒ `lint`/`test` vermelhos;
 - **B** — assinatura do bundle do PDP adulterada (backup+restore) ⇒ `policy-test` vermelho;
 - **C** — vuln afetante fora da baseline ⇒ comparador do `sca` vermelho (determinista, offline).
+- **D** — golden trajectory **adulterada** ⇒ o harness de replay (gate 8) vermelho (determinista, offline, sem rasto).
 
 ## Required checks (bloqueiam o merge em `main`)
 
 Configurar em *branch protection* de `main` os checks:
-`secrets · build · lint · test · sast · sca · policy-test · selftest`, ou o
+`secrets · build · lint · test · replay · sast · sca · policy-test · selftest`, ou o
 agregador único **`gates`** (job que depende de todos). O **scan de segredos**
 (regra transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de merge.
 
@@ -78,8 +80,8 @@ agregador único **`gates`** (job que depende de todos). O **scan de segredos**
 **Local (sequencial):** ~10 min numa máquina de programador — dominado por
 `sast`/gosec e `sca`/govulncheck (que descarrega a base de vulnerabilidades).
 Repartição observada: `secrets` ~1 s · `build` ~10 s · `lint` ~30 s ·
-`test -race` ~107 s · `sast` ~278 s (gosec, dominante) · `sca` ~151 s
-(govulncheck, rede) · `policy-test` ~10 s · `selftest` ~78 s.
+`test -race` ~107 s · `replay` ~15 s (harness AOS-024) · `sast` ~278 s (gosec,
+dominante) · `sca` ~151 s (govulncheck, rede) · `policy-test` ~10 s · `selftest` ~78 s.
 
 **Na CI:** os jobs correm em **paralelo** com cache de módulos (`actions/setup-go`),
 pelo que o *wall-clock* é ≈ o gate mais lento (~5 min, `sast`), não a soma.

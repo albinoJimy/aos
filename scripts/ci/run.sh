@@ -2,7 +2,8 @@
 # run.sh — AGREGADOR do gate runner local do AOS (AOS-010).
 #
 # Corre, por ordem canónica (specs/01 §4), os gates:
-#   1) build  2) lint(+arch-lint)  3) test(+cobertura)  4) sast  5) sca  6) policy-test
+#   1) build  2) lint(+arch-lint)  3) test(+cobertura)  8) replay(harness AOS-024)
+#   4) sast  5) sca  6) policy-test
 #
 # Fail-closed: corre TODOS os gates para dar visibilidade completa, mas termina
 # com exit != 0 se QUALQUER um falhar. SEM '|| true' / 'set +e' / 'continue-on-error'
@@ -18,7 +19,7 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$CI_DIR/lib.sh"
 
-ALL_GATES=(secrets build lint test sast sca policy-test)
+ALL_GATES=(secrets build lint test replay sast sca policy-test)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 

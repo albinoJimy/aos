@@ -474,7 +474,7 @@ func pinnedDeps(specs []ToolSpec) []PinnedDep {
 	}
 	out := make([]PinnedDep, len(specs))
 	for i, s := range specs {
-		out[i] = PinnedDep{Name: s.Name, Version: s.Version, Digest: s.Digest, MCPServer: s.MCPServer}
+		out[i] = PinnedDep(s)
 	}
 	return out
 }

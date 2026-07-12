@@ -373,6 +373,40 @@ não mexe; o stream não cresce) e estrutural (reflexão sobre os campos do stru
 cobertura do subpacote é ≥ 90 % com `-race` limpo; a fidelidade de replay é 100 %
 nos testes (mesma sequência de `step_id`, `prompt_hash` por turno coincide).
 
+### 4.3.1. Harness de replay/idempotência + gate 8 (AOS-024)
+
+As propriedades de replay determinístico (§4.3) e idempotência por passo (§4.1.1)
+têm de ser **verificáveis de forma repetível e automática**, não por inspecção
+manual. O harness de AOS-024 (`packages/kernel/agent-runtime/harness`,
+`replay_idempotency.go` + `fixtures.go`) **orquestra e afere** as peças já Done —
+**não reimplementa** replay nem ledger. Dado um **run gravado**, verifica: **(a)**
+replay determinístico (corre o `ReplayEngine` de AOS-016; falha se algum passo
+divergir; suporta `resume-from-step`); **(b)** idempotência por passo (reexecuta
+cada efeito sob um calendário *at-least-once* com **crash intercalado** — ledger
+reconstruído do log — e confirma **zero efeitos observáveis duplicados** via o
+`StepLedger` de AOS-014); **(c)** **fault-injection** parametrizável (pontos de
+crash → retoma no estado correcto). Emite um **relatório de fidelidade**
+(`FidelityReport`/`AggregateReport`) com serialização JSON **estável** (structs, sem
+mapas), consumível pelo driver `replay-fidelity` (§9 de `01`).
+
+**Golden trajectories.** Trajectórias de referência **determinísticas e
+versionadas** (`BuildEchoGolden`, `BuildImmediateFinalGolden`, `GoldenSet`),
+construídas correndo o loop real de AOS-013 com relógios injectados e modelo
+guionado — reprodutíveis entre execuções e reutilizáveis por EPIC-11 (que as
+**consome sem duplicar** o eval harness de comportamento de AOS-114).
+
+**Meta-testes (a prova de que o harness funciona).** O harness **apanha** uma
+trajectória adulterada (divergência localizada) e um efeito duplicado injectado
+(idempotency key não-determinística), e as fixtures são estáveis sob `-count` alto.
+
+**Gate 8 fail-closed.** `scripts/ci/replay.sh` corre o harness via `go test`
+(`require_tests` impede *green* vazio), emite o relatório e fica **vermelho** numa
+trajectória divergente ou efeito duplicado. Ligado a `run.sh` (`ALL_GATES`),
+`Makefile` (`ci-replay`) e `ci.yml` (job `replay` + agregador `gates`); o
+`selftest.sh` (secção D) prova que uma trajectória adulterada bloqueia o gate.
+Cobertura do harness ≥ 80 % com `-race` limpo; fidelidade 100 % / zero duplicados
+nas golden.
+
 ### 4.4. Porta de execução durável agnóstica ao backend (AOS-022)
 
 A decisão de substrato de durable execution está **ratificada em ADR-015**:
