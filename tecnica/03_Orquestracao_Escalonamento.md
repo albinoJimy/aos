@@ -73,6 +73,8 @@ O **gate de aprovação-de-plano** (ADR-013) permite ao humano ver e editar o gr
 
 A aciclicidade é imposta na inserção de cada aresta por verificação incremental (o fecho transitivo não pode conter o nó de origem). A detecção de deadlock opera sobre o **grafo de espera** (*wait-for graph*): tarefas bloqueadas em leases, em resultados de sub-agentes ou em quota. Um ciclo no wait-for graph — por exemplo, dois sub-agentes à espera mútua de um lease escasso — dispara resolução: aborta-se a vítima de menor prioridade com saga de compensação (ADR-001) e liberta-se o recurso. Zombies são detectados por expiração de lease/heartbeat com fencing token, **nunca** por PID.
 
+> **Implementação (AOS-025).** O DAG, a aciclicidade fail-closed na admissão de arestas, a ordenação topológica reprodutível em replay e o detector de deadlock vivem em `packages/control-plane/orchestrator` (`graph.go`, `deadlock.go`). Nós/arestas são persistidos como eventos append-only no Event Store (`task.node.created`, `task.edge.added`, `task.edge.rejected_cycle`) e o DAG reconstrói-se por replay com ordem **idêntica** (ADR-010). A espera circular emite `deadlock.detected` (conjunto de tarefas) e a resolução determinística — vítima de menor prioridade, desempate por recência — emite `deadlock.resolved`, libertando recursos e transitando o nó vítima `running→failed` pela tabela declarativa de AOS-017, **sem efeitos duplicados** (a libertação/transição é *gated* pelo commit do evento; um duplicado em replay não reaplica). O *admission control* global (AOS-027), a delegação a sub-agentes (AOS-026) e o scheduling priority-aware com aging (AOS-032) assentam **sobre** este grafo, fora do âmbito de AOS-025.
+
 ---
 
 ## 4. Orçamento hierárquico e reserva atómica

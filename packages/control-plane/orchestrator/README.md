@@ -58,6 +58,58 @@ runID, _ := orch.Submit(ctx, contract.Goal{
 })
 ```
 
+## Grafo de tarefas acíclico + deadlock (AOS-025)
+
+O pacote raiz acrescenta o **DAG de tarefas** e a **detecção de deadlock**, sobre
+o Event Store (ADR-007) e a máquina de estados durável de AOS-017.
+
+### DAG e aciclicidade fail-closed (`graph.go`)
+
+- `DAG` é o grafo **puro** (sem I/O). Uma aresta `From→To` exprime que `To`
+  **depende de** `From` (`From` precede `To`).
+- **Aciclicidade INCREMENTAL na admissão**: `DAG.AddEdge` recusa
+  (`ErrEdgeClosesCycle`) qualquer aresta cujo destino já alcance a origem — o
+  fecho transitivo não pode conter o nó de origem. **Fail-closed**: a aresta NÃO
+  é adicionada, nunca "aceita e corrige depois".
+- **Ordenação topológica reprodutível**: `DAG.TopoOrder` é Kahn com desempate por
+  `task_id` **lexicográfico** (nunca a ordem de um mapa Go). Para os mesmos
+  nós/arestas o plano é **idêntico**, independentemente da ordem de admissão.
+- `GraphBuilder` persiste cada admissão como evento append-only no stream=`run_id`:
+  `task.node.created`, `task.edge.added` e — nas rejeições — `task.edge.rejected_cycle`
+  (com razão explícita). A idempotência é por passo (`step_id` = `node:<id>` /
+  `edge:<from>><to>`), pelo que reemitir é deduplicado (ADR-001).
+- **Replay determinístico**: `RebuildDAG` reconstrói o DAG relendo os eventos do
+  Event Store; a `TopoOrder` reconstruída é **idêntica** à original (ADR-010).
+- Cada nó carrega uma `AgentIdentity` (NHI + cadeia de delegação on-behalf-of,
+  ADR-003) e uma `Priority`.
+
+### Detecção e resolução de deadlock (`deadlock.go`)
+
+- `WaitForGraph` é o **grafo de espera**: uma aresta `Waiter→Holder` significa que
+  `Waiter` está bloqueado num recurso detido por `Holder`. `FindCycle` procura
+  espera circular (DFS a três cores) e devolve o **conjunto de tarefas** do ciclo,
+  ordenado (determinístico).
+- `ResourceLedger` regista quem detém/espera cada recurso (leases, filas,
+  orçamento); o wait-for graph é derivado dele.
+- `DeadlockDetector.DetectAndResolve` emite `deadlock.detected` (com o conjunto de
+  tarefas), aplica a **política determinística** `abort_lowest_priority_victim` e
+  emite `deadlock.resolved`. Critério de escolha da vítima, por ordem de desempate
+  **estável**: (1) **menor prioridade**; (2) empate → **mais recente** (maior ordem
+  de admissão); (3) empate → `task_id` lexicograficamente maior (defensivo — a
+  ordem de admissão já é única).
+- **Sem efeitos duplicados** (ADR-001): a libertação dos recursos da vítima e a
+  transição do nó (`running→failed`, validada pela tabela de AOS-017) só são
+  aplicadas se o `deadlock.resolved` for **committed**. Num duplicado (replay do
+  mesmo deadlock) o Event Store deduplica e os efeitos **não** são reaplicados.
+
+### Integração com a máquina de estados (AOS-017)
+
+As transições por-nó (`ready→running`, `running→failed`) são validadas pela tabela
+declarativa de `kernel/agent-runtime/state` (`state.IsValidTransition`) — a mesma
+autoridade da máquina durável do run. O Orquestrador **não** detém o fencing token
+do claim (isso é do Escalonador/AOS-018): ao nível do grafo regista-se a transição
+de estado, não o enforcement do lease.
+
 ## O que é STUB / NÃO-PRODUTIVO (AOS-012)
 
 Marcado como stub no código; **fica para EPIC-03**:
@@ -75,15 +127,20 @@ Marcado como stub no código; **fica para EPIC-03**:
 
 ## Pontos de extensão (EPIC-03)
 
-- `contract/state.go` → acrescentar `waiting_on_tool`, `waiting_on_human`,
-  `paused`, `compensating`, `timed_out`, `killed` e as respectivas arestas.
-- `contract/graph.go` → arestas do DAG real e decomposição de `Goal` multi-nó.
-- `contract/events.go` → novos tipos de evento (sem renomear os existentes).
+- **Decomposição real**: `Submit` continua a construir o grafo mínimo (1 nó); a
+  decomposição de linguagem natural em DAG multi-nó liga-se ao `GraphBuilder`.
+- Delegação a sub-agentes com orçamento herdado (AOS-026) usa a `AgentIdentity`
+  dos nós; o `admission control` global (AOS-027) e o scheduling priority-aware
+  com aging (AOS-032) consomem a `TopoOrder` — **fora** do escopo de AOS-025.
+- O fencing token do claim `ready→running` e a expiração de lease/heartbeat são do
+  Escalonador/AOS-018 (o Orquestrador só regista a transição de estado por-nó).
 
 ## Dependências e build
 
-Zero dependências externas. Barramento (AOS-009) e Event Store (AOS-002)
-integrados por `replace` local. **Não** altera nenhum módulo existente.
+Zero dependências externas. Integrados por `replace` local: Barramento (AOS-009),
+Event Store (AOS-002) e a **máquina de estados durável** (AOS-017, subpacote
+`state` do Agent Runtime — com o `reference-monitor` como dependência transitiva).
+**Não** altera nenhum módulo existente; consome-os só pelas APIs públicas.
 
 ```
 go mod tidy && go vet ./... && go test ./... -race -count=1
