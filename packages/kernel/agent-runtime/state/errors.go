@@ -16,6 +16,15 @@ var (
 	// partilhado com AOS-018).
 	ErrMissingFencingToken = errors.New("state: entrada em running exige fencing token válido")
 
+	// ErrStaleFencingToken — o claim ready → running trouxe um token VÁLIDO mas
+	// OBSOLETO (inferior ao token corrente do run reportado pela [FencingAuthority]
+	// injectada via [WithFencingAuthority]). Um worker superado por um novo claim é
+	// recusado fail-closed ANTES de materializar a transição — a PRESENÇA do token não
+	// basta quando há autoridade de staleness ligada. Sem [FencingAuthority] a
+	// máquina impõe só a presença/validade (contrato mínimo de AOS-017), delegando a
+	// staleness ao [durable.FencedAppender] de AOS-018.
+	ErrStaleFencingToken = errors.New("state: fencing token obsoleto (inferior ao corrente) — claim de worker superado recusado")
+
 	// ErrNilStore — a [Machine] foi construída sem um Event Store (nil). Sem log
 	// append-only não há durabilidade nem reconstrução por replay.
 	ErrNilStore = errors.New("state: event store em falta")

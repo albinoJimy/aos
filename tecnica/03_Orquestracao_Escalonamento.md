@@ -156,6 +156,8 @@ flowchart LR
 
 O *claim* de cada worker usa lease com TTL e fencing token; se o heartbeat expirar, a tarefa é reclamada por outro worker sem risco de dupla execução, porque o fencing token invalida escritas do worker obsoleto (ver `tecnica/02_Agent_Runtime_Execucao_Duravel.md`). O escalonamento é assim, simultaneamente, priority-aware e resiliente a falha de nó.
 
+> **Nota cruzada (AOS-018).** O primitivo de lease/heartbeat + fencing token **já está implementado** no Agent Runtime (`runtime/durable`: `LeaseManager`, `FencedAppender`), com o contador monotónico ancorado na concorrência optimista do Event Store (AOS-002). O SCH **não reimplementa** o mecanismo: reutiliza-o pelas interfaces partilháveis `LeaseAuthority` (`Claim`/`Heartbeat`/`CurrentToken`) e `TokenSource` — o mesmo token monotónico serve o claim `ready → running` de AOS-017 e o enforcement de escritas. Os trabalhos de escalonamento (AOS-025..034) atribuem leases, prioridade, *aging* e backpressure **sobre** este contrato; a detecção de zombies é por expiração de lease/heartbeat, **nunca** por PID.
+
 ---
 
 ## 8. Vista de qualidade

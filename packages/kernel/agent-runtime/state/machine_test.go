@@ -162,6 +162,56 @@ func TestClaimRequiresFencingToken(t *testing.T) {
 	}
 }
 
+// stubFencingAuthority é uma [FencingAuthority] fixa para os testes de staleness: o
+// token corrente é constante e a leitura pode ser instruída a falhar.
+type stubFencingAuthority struct {
+	current uint64
+	err     error
+}
+
+func (s stubFencingAuthority) CurrentTokenValue(context.Context, string) (uint64, error) {
+	return s.current, s.err
+}
+
+// TestClaimStalenessWithFencingAuthority: com uma FencingAuthority ligada, a PRESENÇA
+// do token não basta — um token inferior ao corrente (worker superado) é recusado com
+// ErrStaleFencingToken sem materializar a transição; o token corrente é aceite.
+func TestClaimStalenessWithFencingAuthority(t *testing.T) {
+	ctx := context.Background()
+
+	// Corrente = 2: um claim com token 1 (obsoleto) é fenced-out.
+	st := newStore(t)
+	m := mustMachine(t, st, "run-stale", WithFencingAuthority(stubFencingAuthority{current: 2}))
+	if err := m.Transition(ctx, Running, TransitionEvent{Token: Uint64Token(1)}); !errors.Is(err, ErrStaleFencingToken) {
+		t.Fatalf("claim obsoleto: err=%v; quero ErrStaleFencingToken", err)
+	}
+	if m.Current() != Ready {
+		t.Fatalf("estado após claim obsoleto=%q; quero ready (transição não materializada)", m.Current())
+	}
+	if _, err := st.Read(ctx, "run-stale", 1); !errors.Is(err, eventstore.ErrStreamNotFound) {
+		t.Fatalf("claim obsoleto não devia persistir eventos; Read err=%v", err)
+	}
+
+	// Token == corrente → aceite.
+	if err := m.Transition(ctx, Running, TransitionEvent{Token: Uint64Token(2)}); err != nil {
+		t.Fatalf("claim com token corrente: %v", err)
+	}
+	if m.Current() != Running {
+		t.Fatalf("estado=%q; quero running", m.Current())
+	}
+
+	// Um erro da autoridade é fail-closed: a transição é recusada e propaga o erro.
+	authErr := errors.New("autoridade indisponível")
+	st2 := newStore(t)
+	m2 := mustMachine(t, st2, "run-authfail", WithFencingAuthority(stubFencingAuthority{err: authErr}))
+	if err := m2.Transition(ctx, Running, TransitionEvent{Token: Uint64Token(5)}); !errors.Is(err, authErr) {
+		t.Fatalf("erro da autoridade: err=%v; quero %v", err, authErr)
+	}
+	if m2.Current() != Ready {
+		t.Fatalf("estado após erro da autoridade=%q; quero ready", m2.Current())
+	}
+}
+
 // TestResumeToRunningNoTokenNeeded confirma que as retomas de suspensão para running
 // não re-exigem token.
 func TestResumeToRunningNoTokenNeeded(t *testing.T) {

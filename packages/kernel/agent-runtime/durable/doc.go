@@ -70,8 +70,72 @@
 // replay determinístico (AOS-016); AOS-015 entrega a POSIÇÃO (o cursor), não o
 // conteúdo não-determinístico.
 //
+// # Liveness por lease/heartbeat + fencing tokens (AOS-018)
+//
+// A liveness distribuída NÃO é decidida por PID (falha silenciosamente cross-host):
+// é decidida por LEASE com TTL renovável por HEARTBEAT sobre um relógio INJECTÁVEL
+// ([Clock]), com FENCING TOKENS monotónicos que invalidam escritas de um worker
+// obsoleto. As três peças:
+//
+//   - [LeaseManager] — a autoridade. [LeaseManager.Claim] reclama um run livre (nunca
+//     reclamado ou com o lease expirado), mintando um fencing token ESTRITAMENTE
+//     MONOTÓNICO e um [Lease] com TTL. [LeaseManager.Heartbeat] renova o TTL enquanto
+//     o lease for o corrente e não tiver expirado. A ORIGEM e a durabilidade do
+//     contador são o stream de lease ("lease:"+run_id) do Event Store: cada claim faz
+//     Append com WithExpectedSeq (concorrência optimista, AOS-002); dois claims
+//     concorrentes competem no mesmo slot — um vence, o outro relê e obtém um token
+//     ESTRITAMENTE MAIOR. Não há contador só em memória: é reconstruível por replay.
+//   - [FencingToken] — o contador uint64. Satisfaz ESTRUTURALMENTE o contrato
+//     state.FencingToken de AOS-017 (Valid()/Value()), pelo que o token mintado pelo
+//     Claim alimenta directamente Machine.Transition(ready → running) — o claim — sem
+//     o pacote durable importar state (ligação por interface implícita).
+//   - [FencedAppender] — o ENFORCEMENT OPT-IN. É o GUARD com que o CONSUMIDOR envolve
+//     as suas escritas de efeito (padrão Claim → token → FencedAppender.Append): rejeita
+//     ([ErrStaleFencingToken]) qualquer escrita cujo token seja inferior ao corrente do
+//     run (worker superado por um novo claim) e, com [LeaseExpiryAuthority], também a de
+//     um detentor com lease EXPIRADO. A escrita obsoleta NÃO chega ao log — é o que
+//     garante NO MÁXIMO UM ESCRITOR EFECTIVO por run sobre os caminhos ROTEADOS por ele.
+//
+// # Alcance HONESTO do enforcement (o que está e o que NÃO está ligado)
+//
+// O fencing só protege as escritas EFECTIVAMENTE encaminhadas pelo [FencedAppender].
+// NÃO está (por AOS-018) ligado aos caminhos de escrita internos do módulo: o
+// [StepLedger], o [EventStoreCheckpointer] e a máquina de estados de AOS-017 persistem
+// DIRECTO no Event Store. Nesses caminhos, o que impede duplicados HOJE é a DEDUP por
+// idempotency_key do Event Store (StatusDuplicate) MAIS a idempotência DOWNSTREAM — e
+// NÃO o fencing. As duas camadas são COMPLEMENTARES: um consumidor que queira a garantia
+// de "no máximo um escritor efectivo" tem de encaminhar a sua escrita de efeito pelo
+// [FencedAppender]. Análogo na máquina de estados: o claim ready → running valida por
+// omissão só a PRESENÇA do token; a rejeição de um token OBSOLETO na própria transição
+// exige ligar uma FencingAuthority (state.WithFencingAuthority).
+//
+// # Limite conhecido (TOCTOU) e durabilidade
+//
+// O token é consultado EXTERNAMENTE e NÃO é dobrado no envelope/CAS do próprio evento
+// de negócio. AOS-018 fecha, de forma provada, o caso token-ESTRITAMENTE-inferior; o
+// boundary token-IGUAL sob concorrência real (dobrar o token no CAS durável via
+// expected_seq) fica delegado à implementação de produção do Event Store — FORA do
+// âmbito deste módulo. Do mesmo modo, a DURABILIDADE e a monotonicidade CROSS-HOST do
+// contador herdam do backend do Event Store: o reference impl é in-memory, pelo que os
+// testes de "survives restart/failover" provam RECONSTRUÇÃO-a-partir-do-log (o
+// LeaseManager é stateless e relê o stream), não persistência através da morte do
+// processo — essa é responsabilidade do substrate (o ES expor um CAS durável partilhado).
+//
+// # Contrato partilhável com o Escalonador (EPIC-03)
+//
+// [LeaseAuthority] (Claim/Heartbeat/CurrentToken) e [TokenSource] (CurrentToken) são
+// as interfaces PARTILHÁVEIS: o Escalonador (AOS-025..034) reutiliza o MESMO token
+// monotónico e a MESMA autoridade de expiração, em vez de duplicar o mecanismo. O
+// SCH atribui leases, prioridade e backpressure sobre este primitivo (ver tecnica/03).
+//
+// # Proibição de PID
+//
+// NENHUM caminho de código decide liveness por PID (os.Getpid/os.Getppid). É
+// auditável — um teste varre os ficheiros de produção e falha se os encontrar.
+//
 // # Zero dependências externas
 //
 // Só a stdlib e os pacotes internos por path (eventstore, agent-runtime). O -race
-// é limpo; o estado é protegido por mutex.
+// é limpo; o estado durável vive no Event Store (o [LeaseManager] é stateless entre
+// chamadas — a verdade é o log), e o restante estado é protegido por mutex.
 package durable

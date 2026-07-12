@@ -60,6 +60,26 @@ func (t Uint64Token) Valid() bool { return t > 0 }
 // Value implementa [FencingToken].
 func (t Uint64Token) Value() uint64 { return uint64(t) }
 
+// FencingAuthority reporta o token de fencing CORRENTE de um run, permitindo à
+// [Machine] recusar um claim (ready → running) OBSOLETO — não apenas um claim com
+// token ausente/inválido. É OPCIONAL: sem ela (default) o claim impõe SÓ a PRESENÇA/
+// validade do token (o contrato mínimo de AOS-017), delegando a staleness ao
+// [durable.FencedAppender] de AOS-018 (o único caminho que hoje a fecha). Com ela
+// ([WithFencingAuthority]) a máquina TAMBÉM fail-closed um claim de worker superado
+// (token < corrente), fechando a lacuna de "presença ≠ staleness" no PRÓPRIO caminho
+// da transição.
+//
+// A durabilidade e a monotonicidade do "corrente" são responsabilidade da autoridade
+// (no AOS-018, o LeaseManager lê-o do stream de lease). O tipo de retorno é uint64
+// (não [FencingToken]) DE PROPÓSITO — para que a autoridade de AOS-018 seja adaptável
+// com um wrapper de 3 linhas SEM o pacote state importar durable (ligação por
+// interface implícita, como o resto do contrato de fencing).
+type FencingAuthority interface {
+	// CurrentTokenValue devolve o valor do token corrente (o maior alguma vez mintado)
+	// do run, ou 0 se o run nunca foi reclamado.
+	CurrentTokenValue(ctx context.Context, runID string) (uint64, error)
+}
+
 // TransitionEvent transporta os metadados de uma transição: o motivo (rótulo de
 // auditoria) e, quando a transição é o claim ready → running, o fencing token que a
 // máquina VERIFICA. Os restantes campos das transições (from/to) são posicionais
@@ -153,8 +173,9 @@ type Machine struct {
 	tracer   agentruntime.Tracer
 	obs      TransitionObserver
 
-	humanTTL  time.Duration // fail-closed de waiting_on_human → killed (0 = desligado)
-	wallClock time.Duration // running → timed_out (0 = desligado)
+	humanTTL  time.Duration    // fail-closed de waiting_on_human → killed (0 = desligado)
+	wallClock time.Duration    // running → timed_out (0 = desligado)
+	fencing   FencingAuthority // opcional: se ligada, o claim recusa tokens obsoletos (nil = só presença)
 
 	current   State     // estado corrente (Ready por omissão / após reconstrução)
 	enteredAt time.Time // quando o estado corrente foi entrado (base dos timeouts)
@@ -190,6 +211,16 @@ func WithHumanApprovalTTL(d time.Duration) Option {
 // ("a partir de running", AOS-017 critério 5). 0 (default) desliga.
 func WithRunWallClock(d time.Duration) Option {
 	return func(m *Machine) { m.wallClock = d }
+}
+
+// WithFencingAuthority liga uma [FencingAuthority] que torna o claim ready → running
+// sensível à STALENESS: além de exigir um token válido, a máquina consulta o token
+// CORRENTE do run e recusa ([ErrStaleFencingToken]) um claim cujo token seja inferior
+// — um worker superado por um novo claim NÃO materializa a transição. Default: nil (a
+// máquina impõe só a PRESENÇA do token, delegando a staleness ao FencedAppender de
+// AOS-018). Passar nil mantém o comportamento default.
+func WithFencingAuthority(a FencingAuthority) Option {
+	return func(m *Machine) { m.fencing = a }
 }
 
 // NewMachine constrói uma máquina para o run dado, começando em [Ready] (o estado
@@ -380,6 +411,23 @@ func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEv
 			return ErrMissingFencingToken
 		}
 		tokenValue = event.Token.Value()
+		// 2b) Staleness OPCIONAL: se uma [FencingAuthority] estiver ligada, a
+		// PRESENÇA do token não basta — um token inferior ao corrente é de um worker
+		// superado por um novo claim e é recusado fail-closed ANTES de tocar no log
+		// (fecha, no próprio caminho da transição, a lacuna "presença ≠ staleness";
+		// sem a autoridade a staleness fica delegada ao FencedAppender de AOS-018).
+		if m.fencing != nil {
+			current, ferr := m.fencing.CurrentTokenValue(ctx, m.runID)
+			if ferr != nil {
+				m.obs.Rejected(from, to, ferr)
+				return ferr
+			}
+			if tokenValue < current {
+				m.obs.Rejected(from, to, ErrStaleFencingToken)
+				return fmt.Errorf("%w: token=%d inferior ao corrente=%d (run %s)",
+					ErrStaleFencingToken, tokenValue, current, m.runID)
+			}
+		}
 	} else if event.Token != nil && event.Token.Valid() {
 		// Token presente numa transição que não o exige: regista-o na mesma (útil
 		// para AOS-018 correlacionar o writer), mas não é condição.

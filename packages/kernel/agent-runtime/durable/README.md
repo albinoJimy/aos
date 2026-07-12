@@ -1,4 +1,4 @@
-# `durable` — Execução durável: idempotência (AOS-014) + checkpoint intra-iteração (AOS-015)
+# `durable` — Execução durável: idempotência (AOS-014) + checkpoint intra-iteração (AOS-015) + liveness lease/fencing (AOS-018)
 
 Subpacote de `agent-runtime` que implementa a **cláusula de idempotência por passo**
 do ADR-001 (`tecnica/02` §4) e o **checkpoint intra-iteração** *resume-from-step*
@@ -195,6 +195,73 @@ checkpoints vivem no ES replicado, um worker **novo** reconstrói o cursor após
 
 ---
 
+## Liveness por lease/heartbeat + fencing tokens (AOS-018)
+
+A liveness distribuída **não** é decidida por PID (falha silenciosamente cross-host):
+é decidida por **lease com TTL renovável por heartbeat** sobre um **relógio injectável**
+(`Clock`), com **fencing tokens** monotónicos que invalidam escritas de um worker
+obsoleto. Ficheiros: `lease.go`, `fencing.go`.
+
+### `LeaseManager` — a autoridade
+
+| Método | Semântica |
+|---|---|
+| `Claim(ctx, runID) (Lease, error)` | Reclama um run **livre** (nunca reclamado ou com o lease expirado) e minta um `Lease{Token, TTL, ExpiresAt}` com token **estritamente monotónico**. Lease vivo detido → `ErrLeaseHeld`. |
+| `Heartbeat(ctx, lease) (Lease, error)` | Renova o TTL **se** o lease for o corrente e não tiver expirado. Superado por novo claim → `ErrLeaseSuperseded`; TTL esgotado → `ErrLeaseExpired`. Não minta novo token. |
+| `CurrentToken(ctx, runID) (FencingToken, error)` | Token corrente do run (0 se nunca reclamado). Serve de `TokenSource` ao enforcement. |
+
+**Origem e durabilidade do contador.** O token vive no **stream de lease do run**
+(`lease:<run_id>`) do Event Store. Cada claim faz `Append(lease.claimed{token})` com
+`WithExpectedSeq` — a **concorrência optimista** de AOS-002. Dois claims concorrentes
+competem no mesmo slot: um vence, o outro é rejeitado (`ErrSeqConflict`/
+`ErrAppendOnlyViolation`), **relê** e obtém um token **estritamente maior**. Não há
+contador só em memória — é reconstruível por replay do log replicado.
+
+### `FencedAppender` — o enforcement **opt-in**
+
+`Append(ctx, runID, token, in, opts...)` escreve ao stream do run **apenas** se
+`token >= corrente`; um token inferior (worker superado por novo claim) ou ausente/0 é
+**rejeitado** com `ErrStaleFencingToken` **sem tocar no Event Store**. Com uma
+`LeaseExpiryAuthority` (que o `LeaseManager` satisfaz) também rejeita a escrita de um
+detentor cujo **lease expirou** por ausência de heartbeat (janela expirado-mas-não-superado).
+
+> **Alcance honesto.** O fencing é um **guard opt-in**: só protege as escritas
+> **efectivamente encaminhadas** pelo `FencedAppender` (padrão `Claim → token →
+> Append`). Não está ligado aos caminhos internos do módulo — `StepLedger`,
+> `EventStoreCheckpointer` e a máquina de estados (AOS-017) persistem **directo** no
+> Event Store. Nesses caminhos, o que impede duplicados **hoje** é a **dedup por
+> `idempotency_key`** do ES (`StatusDuplicate`) **mais** a idempotência **downstream** —
+> não o fencing. São camadas **complementares**.
+>
+> **Limite conhecido (TOCTOU).** O token é consultado externamente e **não** é dobrado
+> no CAS do evento de negócio. AOS-018 fecha, provado, o caso token-**estritamente-
+> inferior**; o boundary token-**igual** sob concorrência real fica delegado ao CAS
+> durável do Event Store de produção (`expected_seq`). Ver
+> `TestFencingTOCTOUWindowBoundary`.
+>
+> **Durabilidade.** A persistência real e a monotonicidade **cross-host** herdam do
+> backend do Event Store (o reference impl é in-memory): os testes de restart/failover
+> provam **reconstrução-a-partir-do-log**, não persistência através da morte do processo.
+
+### Ligação ao claim `ready → running` (AOS-017)
+
+`FencingToken` é um `uint64` com `Valid()`/`Value()`, satisfazendo **estruturalmente**
+o contrato `state.FencingToken`. O token mintado por `Claim` alimenta directamente
+`Machine.Transition(ready → running)` — **sem** o pacote `durable` importar `state`.
+
+Por omissão a máquina valida **só a presença/validade** do token no claim (contrato
+mínimo de AOS-017). Para recusar também um token **obsoleto** (worker superado) na
+própria transição, ligue uma autoridade de staleness com `state.WithFencingAuthority`
+(o `LeaseManager` adapta-se a ela — ver `TestMachineRejectsStaleClaimWithAuthority`).
+
+### Contrato partilhável com o Escalonador (EPIC-03)
+
+`LeaseAuthority` (`Claim`/`Heartbeat`/`CurrentToken`) e `TokenSource` (`CurrentToken`)
+são as interfaces reutilizáveis: o SCH (AOS-025..034) partilha o **mesmo** token
+monotónico e a **mesma** autoridade de expiração, sem duplicar o mecanismo.
+
+---
+
 ## Contrato para consumidores
 
 | Ticket | Como consome |
@@ -203,6 +270,7 @@ checkpoints vivem no ES replicado, um worker **novo** reconstrói o cursor após
 | **AOS-020** (sagas) | Cada compensação é um `Apply` idempotente; regista a acção inversa a par do resultado. |
 | **AOS-021** (activities) | Toda a activity corre dentro de `Apply`, derivando a key de `IdempotencyKey`/`SubKey` e propagando-a ao downstream. |
 | **AOS-022** | Contadores `apply`/`dedup` via `Observer`; reconciliação a partir do ledger reconstruído. |
+| **EPIC-03** (Escalonador, AOS-025..034) | Reutiliza `LeaseAuthority`/`TokenSource` (AOS-018): mesmo token monotónico e mesma autoridade de expiração, sem duplicar o mecanismo. |
 
 ---
 
@@ -225,3 +293,15 @@ checkpoints vivem no ES replicado, um worker **novo** reconstrói o cursor após
   checkpoint **não muta** o prefixo cache-estável (comparação com run no-op);
   integração com o **loop real** + **failover** de worker (ES 3 réplicas, `Kill`/eleição
   + `Revive`/resync) preservando o cursor de retoma.
+- **lease/fencing (AOS-018)**: ciclo claim → heartbeat → renovação → expiração (relógio
+  injectável, sem sleeps); fencing rejeita escrita de token obsoleto (`ErrStaleFencingToken`)
+  sem duplicação; **zero execução dupla** sob reatribuição com efeito de `step_id`
+  **distinto** (isola o fencing da dedup do ES — só o fencing barra o efeito
+  não-idempotente de A); rejeição de **detentor com lease expirado** (fail-open de
+  liveness fechado); **boundary TOCTOU** com supersessão-durante-append forçada por store
+  wrapper (prova o caso `<` e documenta o boundary `==`); staleness da **própria
+  transição** ready→running via `state.WithFencingAuthority`; **observabilidade** dos
+  eventos `lease.claimed`/`lease.renewed` lidos do stream de lease; concorrência (N
+  workers competem → 1 vencedor) e retry de CAS que produz token **estritamente maior**;
+  integração claim → token → `Transition(ready → running)` de AOS-017 → escrita fenced;
+  auditoria de **ausência de decisão de liveness por PID**.

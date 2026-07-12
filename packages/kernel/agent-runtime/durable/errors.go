@@ -55,4 +55,40 @@ var (
 	// memorizar bytes de resultado em claro — o chamador tem de passar uma
 	// referência (hash/URI) e marcar Result.Reference.
 	ErrClearResultInSensitiveMode = errors.New("durable: modo sensível recusa Payload de resultado em claro (marque Result.Reference com uma referência)")
+
+	// --- AOS-018: liveness por lease/heartbeat + fencing tokens ---
+
+	// ErrInvalidTTL — o TTL passado a [NewLeaseManager] não é > 0. Um lease sem TTL
+	// positivo não teria liveness (nunca expiraria ou expiraria de imediato).
+	ErrInvalidTTL = errors.New("durable: TTL do lease tem de ser > 0")
+
+	// ErrNilTokenSource — [NewFencedAppender] foi construído sem [TokenSource] (nil):
+	// o enforcement de fencing não tem autoridade para consultar o token corrente.
+	ErrNilTokenSource = errors.New("durable: token source (autoridade de fencing) em falta")
+
+	// ErrLeaseHeld — [LeaseManager.Claim] recusou porque um lease AINDA VÁLIDO (não
+	// expirado) está detido. Não se rouba um lease vivo; só um run livre (nunca
+	// reclamado ou com o lease expirado por ausência de heartbeat) é reclamável.
+	ErrLeaseHeld = errors.New("durable: run já tem um lease válido detido (não expirado)")
+
+	// ErrLeaseExpired — [LeaseManager.Heartbeat] recusou renovar porque o TTL do lease
+	// já se esgotou; é tarde demais — o run já é reclamável por outro worker. O
+	// detentor obsoleto deve abortar (as suas escritas serão fenced-out).
+	ErrLeaseExpired = errors.New("durable: lease expirado (TTL esgotado); tarde demais para heartbeat")
+
+	// ErrLeaseSuperseded — [LeaseManager.Heartbeat] recusou porque o lease corrente já
+	// é de um token SUPERIOR: um novo claim superou este lease. O worker deste lease
+	// está obsoleto (fenced-out) e deve abortar.
+	ErrLeaseSuperseded = errors.New("durable: lease superado por um claim posterior (token corrente é superior)")
+
+	// ErrClaimContention — [LeaseManager.Claim]/[Heartbeat] esgotou as re-tentativas
+	// sob contenção de concorrência optimista sem convergir. Sinal raro (contenção
+	// patológica); o chamador pode tentar de novo mais tarde.
+	ErrClaimContention = errors.New("durable: contenção de claim esgotou as re-tentativas")
+
+	// ErrStaleFencingToken — o [FencedAppender] REJEITOU uma escrita cujo fencing token
+	// é INFERIOR ao corrente do run (worker obsoleto, cujo lease foi superado por um
+	// novo claim), ou cujo token está ausente/0. É o enforcement que garante NO MÁXIMO
+	// UM ESCRITOR EFECTIVO por run e, com ele, ZERO execução dupla sob reatribuição.
+	ErrStaleFencingToken = errors.New("durable: fencing token obsoleto (inferior ao corrente); escrita rejeitada")
 )
