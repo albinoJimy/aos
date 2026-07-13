@@ -101,6 +101,45 @@ flowchart LR
 
 Esta separação tem três corolários operacionais. Primeiro, um **sub-agente devolve ao pai um resumo de 1–2k tokens**, mas a sua árvore de spans completa vive sempre no backend (ver `tecnica/08`) — o pai poupa custo sem que o auditor perca nada. Segundo, a **compressão/sumarização** da memória de trabalho corre apenas em *checkpoints assíncronos*, fora da hot path, para não destruir a estabilidade de cache do prefixo de prompt (ADR-009). Terceiro, o **manifesto por trajectória** (hash do prompt materializado, model-id, versões de skills/tools/memória) é gravado por turno, tornando o replay fiel mesmo após evolução de código.
 
+### 4.1 Barreira arquitectural (AOS-036)
+
+O Princípio 4 materializa-se em **duas vias fisicamente separadas** no módulo `platform/memory`, que **nunca partilham o caminho de descarte**:
+
+1. **`project_context(record) → injected_view`** (pacote `projection`) — produz o que o modelo vê: um resumo higienizado e **limitado em tokens** (alvo ~1–2k, configurável pela política). Descartar/truncar aqui é economia legítima.
+2. **`persist(record) → event`** (pacote `record`) — persiste **sempre** a trajectória completa (cada turno com o conteúdo cru e o manifesto por turno, mais a árvore de spans completa) no backend. Descartar do registo **nunca** é legítimo — não existe operação que o permita.
+
+A barreira é imposta a **nível de tipo**, não por convenção. A projecção recebe uma vista *read-only* do registo (`record.RecordView`), cujo conjunto de métodos **não inclui qualquer mutador** (não há `AppendTurn`, `AppendSpan`, `Delete` nem `Persist`). Consequências verificadas por teste:
+
+- `view.AppendTurn(...)` ou `view.Delete(...)` **não compilam** (erro de tipo) — a projecção não tem acesso de escrita ao registo;
+- `record.View()` devolve um wrapper de **tipo não exportado**, e o registo mutável (`*TrajectoryRecord`) **nem sequer implementa** `RecordView` (falta-lhe `TurnSummaries`/`isRecordView`) — pelo que uma fuga por `type-assertion` da vista para o registo é uma **impossibilidade de compilação** (`go vet: impossible type assertion`).
+
+O **manifesto por turno** (hash do prompt materializado, model-id/params, `assembly_version`, `manifest_schema_version`) é gravado no registo **independentemente** do que a projecção higienizou — reutilizando o conceito do `TurnRecorder`/`PromptAssembler` do Agent Runtime (AOS-013/016, ADR-010). A **política de projecção é versionada em SemVer**: a mesma trajectória sob a mesma política produz a mesma injecção **byte-a-byte** (determinística — sem `time.Now`/`rand`). O resumo ao pai liga-se à trajectória completa no backend pelo `trace_id`.
+
+```mermaid
+flowchart LR
+    REC["TrajectoryRecord (append-only)\nturnos: cru + manifesto | arvore de spans"]
+
+    REC -->|record.View → RecordView\nREAD-ONLY, sem mutadores| PROJ
+    REC -->|Persist: registo concreto| PERS
+
+    subgraph VIA1["Via 1 — projeccao (contexto)"]
+        PROJ["project_context(view, policy)"]
+        PROJ -->|resumo higienizado ≤ orcamento tokens\npolitica SemVer, determinista| INJ["InjectedView → contexto do pai"]
+    end
+
+    subgraph VIA2["Via 2 — persist (registo)"]
+        PERS["persist(record) → event"]
+        PERS -->|trajectoria COMPLETA\ncru + manifesto por turno + spans| BK["Backend OBS / Event Store\n(fonte de verdade, EPIC-08)"]
+    end
+
+    INJ -. ligado por trace_id .-> BK
+
+    classDef barrier stroke-dasharray: 5 5;
+    class PROJ barrier;
+```
+
+A leitura do diagrama: as duas vias partem do mesmo registo mas por **portas distintas** — a projecção só alcança a vista read-only (a tracejado, sem escrita), enquanto a persist opera sobre o registo concreto e emite tudo. A contagem de spans no backend é sempre estritamente maior do que a vista injectada (provado por teste): o pai poupa tokens, o auditor não perde nada.
+
 ---
 
 ## 5. Event Store e durabilidade

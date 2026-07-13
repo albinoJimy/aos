@@ -46,8 +46,24 @@
 // injectáveis na fachada; não há time.Now nem rand no caminho de decisão, e a
 // serialização é estável.
 //
-// Fora de âmbito deste ticket (só a fundação): projecção contexto≠registo
-// (AOS-036), janela de trabalho (AOS-037), classes concretas (AOS-038/039/040),
-// migrações de schema (AOS-041), quarentena untrusted (AOS-042), compressão
-// (AOS-043).
+// # Projecção contexto ≠ registo (AOS-036)
+//
+// O Princípio 4 (contexto ≠ registo) materializa-se em DUAS vias fisicamente
+// separadas, em subpacotes próprios, que nunca partilham o caminho de descarte:
+//
+//   - record — a via de REGISTO: record.TrajectoryRecord (append-only) e
+//     record.Persist gravam SEMPRE a trajectória completa no backend (cada turno
+//     com o conteúdo cru e o manifesto por turno, mais a árvore de spans completa);
+//   - projection — a via de CONTEXTO: projection.ProjectContext produz o que o
+//     modelo vê (resumo higienizado, limitado em tokens, política SemVer,
+//     determinística).
+//
+// A barreira é a NÍVEL DE TIPO: a projecção recebe apenas record.RecordView (vista
+// read-only, sem mutadores), pelo que é impossível — por compilação — apagar/mutar
+// o registo a partir da projecção. O manifesto por turno (hash do prompt
+// materializado, model-id/params, versões) é gravado independentemente da higiene.
+//
+// Fora de âmbito (tickets seguintes): janela de trabalho (AOS-037), classes
+// concretas (AOS-038/039/040), migrações de schema (AOS-041), quarentena untrusted
+// (AOS-042), compressão assíncrona (AOS-043).
 package memory
