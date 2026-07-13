@@ -209,6 +209,48 @@ reimplementa: os dois primitivos ficam intactos.
 (AOS-030), degradação (AOS-031), scheduling priority-aware (AOS-032), roteamento
 (AOS-033), métricas de saturação (AOS-034) e o Model Gateway (EPIC-06).
 
+## Circuit breaker de orçamento (AOS-029 — tokens/$ por árvore)
+
+`breaker.go` implementa o **circuit breaker de orçamento** por **árvore de run**: o par
+de *continuação* do admission control (AOS-027 governa a **entrada**, o breaker governa a
+**continuação**). Interrompe de forma segura uma árvore que queima orçamento a uma
+velocidade anómala **ou** que esgota o orçamento atribuído, antes da explosão de custo.
+**Compõe** — não reimplementa — o orçamento hierárquico (AOS-026/008, `budget.Budget`
+pela porta `TreeBudgetReader`) e a máquina de estados durável das tarefas (AOS-017,
+`state.Machine` pela porta `TaskParker` / adaptador `MachineParker`).
+
+- **Dois sinais de trip.** `Observe(sample)` contabiliza o consumo (tokens/$) numa
+  **janela deslizante** com **relógio injectável** (à imagem do refill do AOS-027) e
+  reavalia: **(a) VELOCIDADE** — tokens/$ por janela acima do limiar; **(b) ESGOTAMENTO**
+  — remanescente da árvore (`budget.Available`) `<=` margem. O esgotamento tem
+  precedência (condição mais grave).
+- **Máquina PRÓPRIA declarativa** (`closed → open → half_open → closed|open`), tabela de
+  4 pares — **não** confundir com os dez estados das TAREFAS (AOS-017). Half-open permite
+  a **retoma controlada** após o cooldown (relógio injectável).
+- **Trip fail-closed para o consumo.** `Allow()` **nega** a continuação enquanto `open`
+  (na dúvida, pára); um erro de decisão degrada para negação. Ao disparar, as tarefas em
+  curso transitam `running → paused` (estado durável seguro) via a `Machine` do AOS-017,
+  de forma **idempotente** — uma tarefa já parada/terminal é no-op, **sem duplicar
+  efeitos** (ADR-001).
+- **Retoma NÃO re-executa concluídos.** O breaker só **liberta** a continuação
+  (`Allow → true` em half-open); a não-reexecução de passos é do **ledger/replay**
+  determinístico (AOS-014/017) — o breaker nunca reexecuta.
+- **Aviso ~80%.** Antes do hard-trip, `budget.warning_80pct` sinaliza a aproximação do
+  limite (uma vez por ciclo `closed`), integrando a exaustão graciosa (UX).
+- **Limiares por classe/tenant** (`Thresholds` + `ThresholdProvider` /
+  `StaticThresholdProvider`, resolução por especificidade) — **opções**, nunca constantes.
+- **Eventos append-only** (`budget.breaker_tripped` / `budget.breaker_half_open` /
+  `budget.breaker_closed` / `budget.warning_80pct`), cada transição com o **motivo**
+  (velocidade vs esgotamento) e o **estado de orçamento no momento**. `Rebuild` reconstrói
+  o estado do breaker por replay (sobrevive a crash: o `open` durável mantém o fail-closed);
+  `Replay` devolve a sequência. Determinismo: relógio/IDs injectáveis, serialização estável.
+  Span OTel `budget_breaker` com os sinais do breaker + **custo por span**, via a porta
+  `agentruntime.Tracer` zero-dep.
+
+**Fora do âmbito de AOS-029:** backpressure/filas (AOS-030), degradação
+shed→defer→downgrade→reject (AOS-031), scheduling priority-aware (AOS-032), roteamento
+(AOS-033), métricas de saturação (AOS-034). **Não** reimplementa budget/state/admission.
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e

@@ -14,8 +14,8 @@ require (
 // budget + identity). Os replace NÃO são transitivos, por isso re-declaram-se
 // aqui para o build do módulo scheduler resolver a cadeia por path local.
 require (
-	github.com/aos-ref/control-plane/budget v0.0.0 // indirect
-	github.com/aos-ref/platform/identity v0.0.0 // indirect
+	github.com/aos-ref/control-plane/budget v0.0.0
+	github.com/aos-ref/platform/identity v0.0.0
 )
 
 // Todas as dependências integradas por path local (zero deps externas, build
