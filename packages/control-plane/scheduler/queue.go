@@ -436,6 +436,11 @@ func (q *PartitionedQueues) Enqueue(ctx context.Context, item WorkItem) (Enqueue
 		saturationEvents = q.raiseSaturation(st)
 	}
 	saturated := st.saturated
+	// Captura a idade do item mais antigo SOB o lock: st.oldestAge lê st.items, que
+	// outra goroutine muta (sob q.mu) no seu próprio Enqueue. Lê-la depois do Unlock
+	// era uma corrida de dados (detectada por -race). O valor é imutável após a
+	// captura e usado no span já fora do lock.
+	oldestMs := st.oldestAge(nowNano).Milliseconds()
 	q.mu.Unlock()
 
 	if err := q.emitSaturation(ctx, p, st, saturationEvents, nowNano); err != nil {
@@ -444,7 +449,7 @@ func (q *PartitionedQueues) Enqueue(ctx context.Context, item WorkItem) (Enqueue
 	span.SetAttribute(attrQueueDepth, depth)
 	span.SetAttribute(attrQueueSaturated, saturated)
 	span.SetAttribute(attrQueueAdmitted, true)
-	span.SetAttribute(attrQueueOldestMs, st.oldestAge(nowNano).Milliseconds())
+	span.SetAttribute(attrQueueOldestMs, oldestMs)
 	return EnqueueResult{
 		Admitted:  true,
 		Partition: p.String(),

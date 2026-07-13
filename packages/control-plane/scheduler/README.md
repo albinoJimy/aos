@@ -298,6 +298,83 @@ AOS-031.
 roteamento (AOS-033) e as métricas de saturação (AOS-034). **Não** reescreve o admission
 (só acoplamento aditivo).
 
+## Degradação graciosa: executor shed→defer→downgrade→reject (AOS-031)
+
+`degradation.go` implementa o **executor** das quatro acções de degradação. A política de
+AOS-030 (`policy.go`) **SELECCIONA** a acção quando uma fila satura; o `Degrader`
+**EXECUTA-a**, na ordem de preferência canónica da fonte (ADR-008)
+**shed → defer → downgrade → reject**. **Compõe** — não reimplementa — a política (AOS-030)
+nem o admission (AOS-027); o downgrade encaminha para um tier mais barato via a **porta**
+`ModelTierRouter` (o Model Gateway de EPIC-06 implementá-la-á; aqui só a porta + impl de
+referência), à imagem do `QuotaProvider` de AOS-027.
+
+```go
+router := scheduler.NewStaticModelTierRouter( // impl de referência (NÃO é o Model Gateway)
+    scheduler.ModelTier{Tier: "premium", Model: "claude-opus", CostRank: 30},
+    scheduler.ModelTier{Tier: "standard", Model: "claude-sonnet", CostRank: 20},
+    scheduler.ModelTier{Tier: "economy", Model: "claude-haiku", CostRank: 10},
+)
+deg, _ := scheduler.NewDegrader(router,
+    scheduler.WithDegradationLog(es),                 // eventos append-only (AOS-002)
+    scheduler.WithDeferSink(queues),                  // defer preserva o trabalho (AOS-030)
+    scheduler.WithDegradationTracer(tracer),          // agentruntime.Tracer zero-dep
+)
+// A política (AOS-030) escolhe a acção; o executor executa-a.
+action, ver, _ := policy.Select(ctx, cond)
+res, err := deg.Execute(ctx, action, item, scheduler.TriggerFromCondition(cond, ver, "saturação"))
+```
+
+- **Shed.** `Shed` descarta trabalho **opcional/baixa prioridade** com **razão** e evento
+  `work_shed`. **GUARDS FAIL-CLOSED** (nenhum emite evento nem descarta nada; o chamador
+  escala): sem **razão** no gatilho ⇒ `ErrMissingReason`; trabalho **crítico**
+  (`DegradationItem.Critical`) ⇒ `ErrCannotShedCritical`; trabalho **irreversível**
+  (`DegradationItem.Irreversible`) ⇒ `ErrCannotShedIrreversible`; trabalho **não marcado
+  opcional** (`DegradationItem.Optional`) ⇒ `ErrCannotShedNonOptional`. O default é
+  **proteger** — só se descarta trabalho *provadamente* opcional (a mera ausência de
+  `Critical` NÃO autoriza o descarte). Cobertura: `TestShed_CriticalNeverDiscardedSilently`,
+  `TestShed_NonOptionalFailsClosed`, `TestShed_IrreversibleNeverDiscarded`.
+- **Defer.** `Defer` adia trabalho admissível com `retry_after`, **preservando-o** pela porta
+  `DeferSink` (integra AOS-027/030 — não perde o trabalho). Um erro do sink é **propagado**
+  (fail-closed: não afirma um defer que não preservou). Evento `work_deferred`.
+- **Downgrade.** `Downgrade` encaminha para o tier **mais barato** via `ModelTierRouter.Cheaper`,
+  registando o swap como **VARIÂNCIA EXPLÍCITA** (`tier_antigo→tier_novo`, evento
+  `model_downgraded`) — **NUNCA silencioso**. A variância entra no log para o **replay ser
+  fiel** (ADR-010/AOS-016) e o downgrade fica **reversível**. Sem tier mais barato **ou**
+  trabalho **irreversível** ⇒ `Applied=false` (nenhuma variância — o irreversível não é
+  degradado em silêncio; escala para o reject). `Execute` traduz `Applied=false` em
+  `ErrDegradationNotApplied` para o chamador **escalar** (a pressão nunca fica sem alívio
+  silenciosamente); `ExecuteChain` faz esse fallback embutido.
+- **Reject.** `Reject` recusa como **último recurso** com um erro **claro e accionável**
+  (`ErrWorkRejected`) e evento `work_rejected`. **FAIL-CLOSED para irreversíveis**
+  (`DegradationItem.Irreversible`): a rejeição é terminal — o efeito irreversível NÃO ocorre e
+  `Normalize` nunca ressuscita trabalho rejeitado.
+- **Ordem de preferência configurável.** `ExecuteChain` percorre a ordem (por omissão
+  `DefaultPreferenceOrder`, **configurável** por classe/tenant) aplicando o **primeiro degrau
+  aplicável**: um crítico **salta** o shed e é adiado; um item não-diferível sem tier mais
+  barato termina em reject (`TestExecuteChain_*`). A **escalada por pressão crescente** é
+  conduzida pela política de AOS-030 e executada com `Execute`
+  (`TestChain_IncreasingPressureFollowsPreferenceOrder`).
+- **Reversibilidade.** `Normalize(reason)` reverte os downgrades **reversíveis** ao normalizar
+  a carga (ex.: `backpressure_cleared` de AOS-030): restaura o tier (evento `tier_restored`,
+  `tier_novo→tier_antigo`) por ordem de ID (determinismo) e é **idempotente** (2ª passagem é
+  no-op). Um downgrade em **cascata** do mesmo item restaura o tier **original**. Shed/reject
+  **não** são reversíveis (documentado). A variância `model_downgraded` **permanece** no log
+  mesmo após a reversão (`TestNormalize_*`). **Erro parcial do store:** cada item só sai do
+  registo `active` **depois** de o seu `tier_restored` ser persistido — um erro a meio deixa
+  os restantes activos para a próxima `Normalize` (`TestNormalize_PartialFailureKeepsUnrestored`).
+  **Durabilidade:** `RehydrateActive` reconstrói o registo de downgrades activos do log no
+  arranque (`model_downgraded` menos `tier_restored`), para a reversão sobreviver a restarts
+  (`TestRehydrateActive_RebuildsFromLogAfterRestart`).
+- **Eventos append-only + replay.** `work_shed`, `work_deferred`, `model_downgraded`,
+  `work_rejected` e `tier_restored`, cada um com **gatilho + acção + efeito**.
+  `ReplayDegradation` reconstrói a sequência (incl. a variância do downgrade) por ordem de seq.
+  Determinismo: relógio/IDs injectáveis, iteração ordenada, serialização estável (structs).
+  Span OTel `degradation_execute` **por acção**, via a porta `agentruntime.Tracer` zero-dep.
+
+**Fora do âmbito de AOS-031:** o **Model Gateway** (EPIC-06 — o `ModelTierRouter` é a porta),
+o scheduling priority-aware (AOS-032), o roteamento least-loaded (AOS-033) e as métricas de
+saturação (AOS-034). **Não** reimplementa a política (AOS-030) nem o admission (AOS-027).
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e
