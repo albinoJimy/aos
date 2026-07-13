@@ -375,6 +375,56 @@ res, err := deg.Execute(ctx, action, item, scheduler.TriggerFromCondition(cond, 
 o scheduling priority-aware (AOS-032), o roteamento least-loaded (AOS-033) e as métricas de
 saturação (AOS-034). **Não** reimplementa a política (AOS-030) nem o admission (AOS-027).
 
+## Scheduling priority-aware + aging (AOS-032)
+
+`priority.go` implementa o `Dispatcher`: despacho por **classe de prioridade** sobre as filas
+particionadas (AOS-030), com **aging** anti-starvation, decisão **latency-aware** (idade + SLO)
+e ordem **determinística/replayável**. **Compõe** — não reimplementa — as filas (AOS-030) nem o
+admission (AOS-027): ordena **sobre** as filas e só despacha o que o `Admit` **admitiu**.
+
+```go
+d, _ := scheduler.NewDispatcher(
+    scheduler.AgingParams{Base: 0, AgingStep: 1, AgingInterval: time.Second}, // omissão
+    scheduler.WithClassAging("P0", scheduler.AgingParams{Base: 300, AgingStep: 10, AgingInterval: time.Second}),
+    scheduler.WithClassAging("P1", scheduler.AgingParams{Base: 200, AgingStep: 10, AgingInterval: time.Second}),
+    scheduler.WithClassAging("P2", scheduler.AgingParams{Base: 100, AgingStep: 10, AgingInterval: time.Second}),
+    scheduler.WithTenantClassAging("vip", "P2", scheduler.AgingParams{Base: 5000}), // override por tenant
+    scheduler.WithAdmission(adm),        // AOS-027: só despacha trabalho ADMITIDO
+    scheduler.WithQueues(queues),        // AOS-030: bounding + backpressure (opcional)
+    scheduler.WithDefaultKey(providerKey),
+    scheduler.WithDispatchClock(clk.now),// relógio INJECTÁVEL (sem time.Now na decisão)
+    scheduler.WithDispatchLog(es),       // eventos append-only (AOS-002)
+)
+d.Submit(ctx, scheduler.Task{ID: "t1", Tenant: "acme", Class: "P2", Cost: 100, SLO: 30 * time.Second})
+res, _ := d.Dispatch(ctx) // serve a MAIOR prioridade efectiva ADMISSÍVEL
+```
+
+- **Prioridade efectiva = f(base, idade, SLO), MONÓTONA na idade** (aritmética inteira, sem
+  float — replay byte-a-byte): `eff = Base + AgingStep·(idade/AgingInterval) + SLOWeight·(idade/SLO)`.
+  Como o termo de aging cresce **sem tecto**, qualquer classe baixa acaba por ultrapassar trabalho
+  **novo** de classe alta — a garantia **ZERO starvation** (`TestDispatch_NoStarvationAdversarial`,
+  fluxo P0 contínuo, a vítima P2 é despachada). `TestDispatch_AgingPromotesOldLowOverNewHigh`.
+- **Latency-aware.** O SLO entra na decisão além da prioridade nominal: a igual classe e idade, a
+  tarefa de SLO **mais apertado** é servida primeiro (`TestDispatch_LatencyAwareSLO`).
+- **Só despacha ADMITIDO (AOS-027).** Cada candidato passa por `AdmissionGate.Admit`; sem headroom
+  **ADIA** (`Dispatched=false` com `retry_after`), **nunca descarta**; rejeição permanente é saltada.
+  Serve a maior prioridade **admissível** (`TestDispatch_OnlyAdmittedDispatched`: TPM 300/custo 100 ⇒
+  3 despachos, 2 adiados preservados).
+- **Ordem determinística/replay.** A selecção ordena um **slice** (nunca ordem de mapa Go) com
+  tie-break **estável**: prioridade efectiva desc → timestamp de entrada asc → `task_id` asc (total
+  order, `task_id` único). Mesmos inputs ⇒ **mesmos bytes** de evento na mesma ordem
+  (`TestDispatch_ReplayByteForByte`).
+- **Aging por classe/tenant.** `AgingParams` configuráveis por omissão, por classe e por
+  (tenant, classe) — resolução por especificidade (`TestDispatch_AgingParamsPerClassTenant`).
+- **Eventos append-only + replay.** `task_scheduled` (prioridade efectiva/idade) por despacho e
+  `priority_aged` na **promoção** por aging; `ReplaySchedule` reconstrói a ordem
+  (`TestDispatch_ReplayScheduleReconstructs`). Span OTel `priority_dispatch` (tempo de espera por
+  classe) via a porta `agentruntime.Tracer` zero-dep. Seguro para concorrência
+  (`TestDispatch_ConcurrentRaceFree`, `-race`).
+
+**Fora do âmbito de AOS-032:** o roteamento least-loaded/token-aware (AOS-033) e as métricas de
+saturação/headroom (AOS-034). **Não** reimplementa as filas (AOS-030) nem o admission (AOS-027).
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e
