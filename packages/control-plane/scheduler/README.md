@@ -79,6 +79,95 @@ Marcado como stub no código; **fica para EPIC-03**:
 - Estados de suspensão (`waiting_on_tool`, `waiting_on_human`) — acrescentados no
   `contract` e tratados aqui sem alterar `Start`/`Stop`.
 
+## Admission control global (AOS-027 — token-bucket distribuído)
+
+Extensão do SCH que resolve o modo de falha *agregado* do plano-base (ADR-008):
+15 boards, cada um dentro do seu `max_spawn` local, saturam colectivamente o
+rate limit partilhado do provider. A admissão de trabalho passa a ser uma decisão
+**global** denominada em **tokens**, não a soma de decisões locais cegas.
+
+Ficheiros: `quota.go` (porta `QuotaProvider`/`TenantQuotaProvider` + impl de
+referência) e `admission.go` (token-bucket distribuído + `Admit`/`Release`/`Replay`).
+
+```go
+qp := scheduler.NewStaticQuotaProvider(scheduler.ProviderLimits{TPM: 1000, RPM: 300, Window: time.Minute})
+adm, _ := scheduler.NewAdmission(es, qp,                       // es = Event Store (AOS-002)
+    scheduler.WithCostEstimator(scheduler.FixedCostEstimator{Tokens: 100}),
+    scheduler.WithTracer(tracer),                             // agentruntime.Tracer zero-dep
+)
+res, _ := adm.Admit(ctx, scheduler.AdmitRequest{Key: key, Tenant: "board-7"})
+if !res.Granted {
+    // sem headroom: ADIA (nunca descarta) — reagenda após res.RetryAfter
+}
+```
+
+Garantias:
+
+- **TPM/RPM real via porta.** Os limites derivam de `QuotaProvider` por
+  `provider:model:region` — o Model Gateway (EPIC-06) implementá-la-á; a impl de
+  referência (`StaticQuotaProvider`) fecha o contrato entretanto. **Nunca**
+  constantes locais como fonte.
+- **Reserva atómica sem SPOF (ADR-007).** O estado do bucket vive no Event Store
+  replicado (stream `admission/bucket/<key>`); a reserva é um **Append CAS**
+  (`WithExpectedSeq`). Workers *stateless* relêem o estado, calculam o headroom e
+  reservam; o perdedor de corrida re-tenta ou adia. Sem *single-writer*, sem
+  contador em memória partilhado.
+- **`admit()`/defer.** `Admit(cost) → {granted, retry_after}`: reserva se há
+  headroom; sem headroom **ADIA** com `retry_after` derivado do refill, **nunca
+  descarta silenciosamente**.
+- **Rejeição PERMANENTE de pedido oversized.** Se o custo estimado excede o
+  próprio tecto `TPM`/`RPM` da chave (ou do tenant), nenhum refill futuro o torna
+  admissível. Em vez de aconselhar um `retry_after` que geraria *poll* eterno
+  (livelock), `Admit` devolve `Rejected=true` com `retry_after=0` e marca o
+  `admit_deferred` como `unsatisfiable` (span `aos.admission.unsatisfiable`). O
+  chamador distingue assim "tenta mais tarde" de "nunca admissível".
+- **`Release` = reconciliação PARCIAL.** `Release(id, tokens, requests)` SUBTRAI
+  o montante indicado do débito activo da reserva (clamp em 0), **não** liberta a
+  reserva inteira. Devolver 100 de uma reserva de 1000 abre 100 de headroom (não
+  1000); os 900 remanescentes continuam a contar contra o TPM enquanto in-flight.
+  Libertar o custo total remove a reserva. O clamp garante que sobre-libertar
+  nunca abre headroom além do reservado (nunca oversubscreve). A idempotência de
+  `Admit` é sensível ao custo: reusar um `RequestID` activo com custo diferente é
+  rejeitado (`ErrIdempotencyConflict`), não concedido cegamente.
+- **Refill temporizado, relógio injectável.** Uma reserva expira ao fim de
+  `Window` (janela deslizante por reserva). Sem `time.Now` na decisão. A soma das
+  reservas activas **nunca excede** o TPM/RPM — provado sob carga concorrente com
+  `-race` (`TestAdmit_ConcurrentNoOversubscription`).
+- **Quotas multidimensionais por tenant.** `TenantQuotaProvider` particiona o
+  bucket global; o **tecto global domina sempre** (um tenant nunca excede o
+  global, mesmo com folga na sua partição).
+- **Eventos append-only + replay.** `admit_requested`/`admit_granted`/
+  `admit_deferred`/`quota_released`. Grants/releases no stream de reserva (fonte
+  de verdade, com CAS); auditoria à parte. `Replay`/`ReplayAudit` reconstroem a
+  sequência de forma determinística (ADR-001).
+
+### Limites conhecidos (semântica declarada)
+
+- **Distribuição cross-process exige um `EventLog` verdadeiramente partilhado.** A
+  admissão é genuinamente *stateless* (sem contador em memória): toda a
+  contabilidade passa pela porta `EventLog` (`foldBucket` lê, `Admit` faz Append
+  CAS). Dois workers que **partilhem o mesmo** Event Store serializam grants e não
+  oversubscrevem — provado sob `-race`. **Porém**, o `*eventstore.Store` de
+  referência é um cluster de réplicas **in-process**; "workers stateless" só se
+  vêem uns aos outros **dentro do mesmo processo OS**. A não-oversubscription
+  entre processos distintos requer um `EventLog` real partilhado/replicado
+  (fornecido pelo deploy / Model Gateway — porta EPIC-06), **não** o `Store`
+  in-process de referência.
+- **Janela deslizante POR-reserva vs minuto corrido do provider.** O refill expira
+  cada reserva a `ts+Window` (janela deslizante individual). A invariante
+  declarada — "a soma das reservas **activas** nunca excede `TPM`" — mantém-se em
+  **qualquer instante**. Mas contra um provider cujo limite real é "`TPM` por
+  minuto corrido", reservas perto do fim da sua janela somadas a um novo lote no
+  início da sua podem atingir até ~2×`TPM` dentro de uma janela deslizante real —
+  é inerente a esquemas de janela e não viola a invariante declarada. Se o
+  provider penalizar *bursts* no reset, considerar um bucket de janela fixa
+  alinhada ou suavização (*leaky-bucket*) — fica para trabalho futuro.
+
+**Fora do âmbito de AOS-027:** `max_spawn` derivado do headroom (AOS-028),
+circuit breaker (AOS-029), backpressure/filas (AOS-030), degradação (AOS-031),
+scheduling priority-aware (AOS-032), roteamento (AOS-033) e o Model Gateway
+(EPIC-06).
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e
