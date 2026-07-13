@@ -425,6 +425,79 @@ res, _ := d.Dispatch(ctx) // serve a MAIOR prioridade efectiva ADMISSÍVEL
 **Fora do âmbito de AOS-032:** o roteamento least-loaded/token-aware (AOS-033) e as métricas de
 saturação/headroom (AOS-034). **Não** reimplementa as filas (AOS-030) nem o admission (AOS-027).
 
+## Roteamento least-loaded / token-aware (AOS-033)
+
+`routing.go` implementa o `Router`: encaminha trabalho para o destino (worker/tier) **MENOS
+carregado** por **carga real E consumo de tokens** — substituindo o **round-robin cego** —, é
+**token-aware** (custo estimado + headroom por destino) e faz **cost-aware model tiering coerente
+com AOS-031**. **Compõe** — não reimplementa — a carga (porta `LoadSource`), o admission (AOS-027,
+porta `AdmissionGate`) nem o tiering (AOS-031, **a mesma** porta `ModelTierRouter`/escada). O Model
+Gateway (EPIC-06) e a frota (EPIC-10) **NÃO** são implementados aqui — entram como portas com impl
+de referência (`StaticLoadSource`), à imagem do `QuotaProvider` de AOS-027.
+
+```go
+src := scheduler.NewStaticLoadSource(                       // porta de carga (ref.; EPIC-06/10 = prod.)
+    scheduler.Destination{ID: "w-a", Tier: "premium", Model: "big", Key: keyA},
+    scheduler.Destination{ID: "w-b", Tier: "economy", Model: "small", Key: keyB},
+)
+src.SetLoad("w-a", scheduler.DestinationLoad{QueueDepth: 3, TokensInFlight: 300, CapacityTokens: 1000})
+
+rt, _ := scheduler.NewRouter(src,
+    scheduler.WithLoadReporter(src),          // reflecte a carga (equaliza entre decisões)
+    scheduler.WithRouteAdmission(adm),        // AOS-027: headroom GLOBAL por destino (reserva no Admit)
+    scheduler.WithTierRouter(tierLadder),     // AOS-031: MESMA escada de tiers (cost-aware tiering)
+    scheduler.WithRouteClock(clk.now),        // relógio INJECTÁVEL (sem time.Now na decisão)
+    scheduler.WithRouteIDGen(idGen),          // decision IDs determinísticos
+    scheduler.WithRouteLog(es),               // eventos append-only (AOS-002)
+)
+dec, _ := rt.Route(ctx, scheduler.WorkRequest{ID: "job", EstimatedTokens: 50,
+    CurrentTier: "premium", CurrentModel: "big", TierEligible: true})
+// dec.Destination = o MENOS carregado com margem; dec.Downgraded marca a variância de tier.
+```
+
+- **Least-loaded, NÃO round-robin.** A selecção minimiza um custo inteiro sobre a carga real
+  (`DefaultRouteWeights`: `Queue·depth + Token·in_flight + Latency·ms`); o `LoadReporter` reflecte o
+  trabalho encaminhado, pelo que decisões sucessivas **equalizam** a pressão. Prova concreta: sob
+  **carga heterogénea**, o least-loaded tem **menor max-load (hotspot) E menor variância** que um
+  **round-robin de referência** no mesmo workload (`TestRoute_BeatsRoundRobin_HeterogeneousLoad`). A
+  superioridade é **estrutural, não uma ordem hand-picked**: `TestRoute_BeatsRoundRobin_AcrossPermutations`
+  reapresenta o **mesmo multiset** por ~33 ordens (neutra, asc, desc e 30 permutações com semente fixa) e
+  afirma **menor max-load e variância MÉDIOS** sobre todas, vencendo individualmente em ≥90%.
+  `TestRoute_NotRoundRobin_SameLeastLoadedTwice` prova que não há rotação cega.
+- **Token-aware em duas camadas.** (1) headroom **LOCAL** por destino (`CapacityTokens − TokensInFlight`):
+  um destino sem margem para o custo estimado é **PRETERIDO** (`TestRoute_TokenAware_SkipsNoHeadroom`);
+  (2) integração **OPCIONAL** com AOS-027 — o router **reserva** no destino escolhido pelo `Admit` e um
+  destino sem headroom **GLOBAL** é preterido (`TestRoute_AdmissionHeadroom_SkipsGloballySaturated`),
+  reutilizando o `Admit`/`Release` (sem fuga de headroom em erro).
+- **Cost-aware model tiering coerente com AOS-031.** Quando nenhum destino do tier corrente tem margem
+  e o trabalho é **elegível**, o router **desce a escada** pela **mesma** porta `ModelTierRouter`
+  (`Cheaper`) que o downgrade de AOS-031 usa, registando a **variância** `premium→economy`
+  (`TestRoute_CostAwareTiering_DescendsWhenTierSaturated`); trabalho **não-elegível** fica no tier e
+  **adia** (`TestRoute_NotTierEligible_StaysInTierAndDefers`).
+- **Decisões observáveis/replayáveis.** Cada decisão é um evento append-only `work_routed` (destino +
+  carga no momento + custo + custo estimado + variância de tier); um adiamento é `work_route_deferred`
+  (**observável, nunca silencioso**, `TestRoute_TokenAware_DefersWhenAllFull`). Determinística:
+  destinos iterados por **id** (nunca ordem de mapa Go), tie-break **estável** (custo asc → id asc),
+  relógio/IDs injectáveis, serialização estável — mesmos sinais ⇒ **mesmo destino e mesmos bytes**
+  (`TestRoute_DeterministicReplay_SameSignalsSameDecisions`); `ReplayRouting` reconstrói as decisões.
+  Span OTel `routing_decision` (destino/carga/custo) via a porta `agentruntime.Tracer` zero-dep.
+
+> **Contrato operacional (produção).** Duas configurações **não** são impostas na construção (para
+> permitir testes de decisão pura e roteamento plano) mas a **frota de produção DEVE** satisfazê-las,
+> sob pena de invariantes silenciosamente desligadas:
+> - **Tecto token-aware.** A headroom **LOCAL** só é porta quando `CapacityTokens > 0`. **Sem** qualquer
+>   tecto E **sem** `WithRouteAdmission`, o custo estimado alimenta só o `Reserve`/evento — **nunca** a
+>   elegibilidade: o router encaminha independentemente do headroom (`TestRoute_NoCapNoAdmission_NoTokenFilter`
+>   torna-o contratual). A produção **deve** fornecer `CapacityTokens > 0` **ou** o `AdmissionGate`.
+> - **Feedback vivo.** Sem `WithLoadReporter` (nem uma `LoadSource` com carga viva externa), a carga não
+>   evolui entre decisões e sinais idênticos concentram **tudo** no destino de menor id — **hotspot**
+>   (`TestRoute_NotRoundRobin_SameLeastLoadedTwice`). A equalização que distingue o least-loaded do
+>   round-robin cego **exige** feedback vivo: injecte `WithLoadReporter` ou garanta uma `LoadSource` viva.
+
+**Fora do âmbito de AOS-033:** as métricas de saturação/reserva de headroom (AOS-034 — o último), o
+**Model Gateway** (EPIC-06 — a porta `LoadSource`/`ModelTierRouter`) e a **frota** (EPIC-10). **Não**
+reimplementa o admission (AOS-027), o tiering (AOS-031) nem o Event Store (AOS-002).
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e
