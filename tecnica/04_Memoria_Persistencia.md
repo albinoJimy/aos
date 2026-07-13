@@ -174,7 +174,118 @@ A promoção de memória em quarentena para conhecimento confiável (semântico)
 
 ---
 
-## 8. Vista de qualidade
+## 8. Modelo de domínio do Memory Service (implementação AOS-035)
+
+O ticket AOS-035 estabelece a **fundação** executável desta camada: o modelo de
+domínio das quatro classes, a porta versionada e os dois adaptadores. É sobre
+este esqueleto que os tickets seguintes (projecção, janela, classes concretas,
+migrações, quarentena, compressão) assentam. O que se segue documenta o que está
+implementado em `packages/platform/memory` (módulo `github.com/aos-ref/platform/memory`,
+Go 1.24, zero dependências externas).
+
+### 8.1 As quatro classes como abstracções distintas
+
+Cada classe é um tipo de **corpo tipado** (`domain.Body`) próprio — não um saco de
+campos partilhado — e a `domain.MemoryClass` faz parte da identidade de todo o
+registo. Um corpo colocado na classe errada é rejeitado (`ErrClassMismatch`), e
+uma leitura de uma classe nunca devolve registos de outra (as operações são
+escopadas por classe).
+
+| Classe | Constante | Corpo tipado | Ciclo de vida (documentado) |
+|---|---|---|---|
+| Episódica | `ClassEpisodic` | `EpisodicBody` (trace_id, goal, outcome, step_count, summary) | append-only; nunca descartada do registo; TTL longo/permanente |
+| Semântica | `ClassSemantic` | `SemanticBody` (subject, predicate, object, confidence) | consolidada por curadoria; proveniência decisiva (AOS-042) |
+| Procedural | `ClassProcedural` | `ProceduralBody` (skill_name, version SemVer, definition_hash, stage) | staging → eval-gate → produção → rollback (AOS-040) |
+| De trabalho | `ClassWorking` | `WorkingBody` (turn_index, content, token_count) | efémero; gerido pela janela de contexto (AOS-037) |
+
+```mermaid
+classDiagram
+    class Record {
+        +string ID
+        +MemoryClass Class
+        +Metadata Metadata
+        +Body Body
+        +Validate() error
+    }
+    class Metadata {
+        +string AgentID
+        +string RunID
+        +Provenance Provenance
+        +time CreatedAt
+        +TTLClass TTLClass
+        +string SchemaVersion
+        +Validate() error
+    }
+    class Body {
+        <<interface>>
+        +Class() MemoryClass
+    }
+    class EpisodicBody
+    class SemanticBody
+    class ProceduralBody
+    class WorkingBody
+    Record --> Metadata : metadados obrigatorios
+    Record --> Body : corpo tipado por classe
+    Body <|.. EpisodicBody
+    Body <|.. SemanticBody
+    Body <|.. ProceduralBody
+    Body <|.. WorkingBody
+```
+
+### 8.2 Metadados obrigatórios (fail-closed)
+
+Todo o `Record` carrega os seis metadados obrigatórios do critério de aceitação —
+`agent_id`, `run_id`, `provenance` (trusted|untrusted), `created_at`, `ttl_class`,
+`schema_version`. `Metadata.Validate()` impõe a presença de **todos** por ordem
+estável; em particular, escrever sem `provenance` **ou** sem `schema_version`
+devolve erro sentinela e **não persiste** — nunca há default silencioso. A
+proveniência prepara a quarentena (AOS-042) e o `ttl_class` prepara o TTL/GDPR
+(ADR-011); nenhum desses mecanismos é implementado aqui, apenas o metadado que os
+habilita.
+
+### 8.3 Porta versionada e backend-swap
+
+A porta `ports.MemoryPort` (SemVer `ports.PortVersion = "1.0.0"`) expõe
+CRUD/query **por classe** e **não vaza** o backend — nenhum tipo do Event Store
+ou de qualquer adaptador aparece nas assinaturas, só entidades de domínio. Dois
+adaptadores implementam-na com semântica observável idêntica, e um **contract
+test partilhado** (table-driven) corre contra ambos — é a prova de que o backend
+é substituível por configuração sem alterar chamadores. A idempotência de escrita
+é `f(run_id, class, mem_id)`: um retry após crash não duplica o registo (o
+duplicado devolve o registo original).
+
+```mermaid
+flowchart TD
+    CALLER["Chamador (runtime, servicos)"]
+    SVC["memory.Service (fachada): relogio + id injectaveis, valida fail-closed"]
+    PORT["ports.MemoryPort v1.0.0 (CRUD/query por classe, SemVer)"]
+    ESADP["adapters.EventStoreAdapter (FONTE DE VERDADE)"]
+    INADP["adapters.InMemoryAdapter (teste)"]
+    ES["Event Store replicado append-only (ADR-007)"]
+    CT["contract_test partilhado (ambos verdes)"]
+    TR["agentruntime.Tracer (spans gen_ai.*)"]
+    CALLER --> SVC --> PORT
+    PORT -.implementado por.-> ESADP
+    PORT -.implementado por.-> INADP
+    ESADP -->|append eventos + rebuild do log| ES
+    ESADP -.span por operacao.-> TR
+    INADP -.span por operacao.-> TR
+    CT -.corre contra.-> ESADP
+    CT -.corre contra.-> INADP
+```
+
+O `EventStoreAdapter` escreve cada operação como evento append-only
+(`memory.record.written` / `memory.record.deleted`, um stream por classe) e
+**reconstrói toda a leitura por replay do log** — não mantém estado autoritativo
+em RAM, honrando o ADR-007 e proibindo o single-writer como fonte primária. O
+`Delete` é um tombstone (novo evento), nunca uma mutação. Cada operação de porta
+emite um span OTel via a porta `Tracer` zero-dep do Agent Runtime; o relógio
+(`created_at`) e o gerador de IDs são injectáveis na fachada, sem `time.Now`/`rand`
+no caminho de decisão.
+
+---
+
+## 9. Vista de qualidade
 
 **Arquitectura.** A camada de memória assenta inteiramente sobre o Event Store como fonte de verdade única (ADR-007): não há estado autoritativo fora do log, o que elimina divergências entre réplicas e torna todo o estado reconstruível por replay. A separação contexto ≠ registo é o que permite escalar horizontalmente — workers stateless, projecção barata ao modelo, registo completo particionado — sem escolher entre custo e observabilidade.
 
@@ -184,7 +295,7 @@ A promoção de memória em quarentena para conhecimento confiável (semântico)
 
 ---
 
-## 9. Riscos e mitigações
+## 10. Riscos e mitigações
 
 | Risco | Impacto | Mitigação |
 |---|---|---|
@@ -198,7 +309,7 @@ A promoção de memória em quarentena para conhecimento confiável (semântico)
 
 ---
 
-## 10. Glossário
+## 11. Glossário
 
 - **Memory Service (MEM):** serviço que gere os quatro tipos de memória sobre o Event Store, aplicando proveniência e projecção.
 - **Event Store (ES):** log append-only replicado, com transporte push, fonte de verdade de toda a trajectória.
@@ -214,7 +325,7 @@ A promoção de memória em quarentena para conhecimento confiável (semântico)
 
 ---
 
-## 11. Tabela de aprovação
+## 12. Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
 |---|---|---|---|
@@ -224,7 +335,7 @@ A promoção de memória em quarentena para conhecimento confiável (semântico)
 
 ---
 
-## 12. Controlo de versões
+## 13. Controlo de versões
 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
