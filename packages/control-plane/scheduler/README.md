@@ -168,6 +168,47 @@ circuit breaker (AOS-029), backpressure/filas (AOS-030), degradação (AOS-031),
 scheduling priority-aware (AOS-032), roteamento (AOS-033) e o Model Gateway
 (EPIC-06).
 
+## `max_spawn` derivado do headroom (AOS-028 — reserva no admit)
+
+O plano-base fazia *spawn* com um `max_spawn` **constante**, cego ao estado
+agregado do provider. O `SpawnCoordinator` (`spawn_admission.go`) substitui-o por
+um valor **derivado dinamicamente do headroom**, ligando a delegação hierárquica
+(AOS-026, `orchestrator.Delegator` — sub-orçamento por árvore) ao admission
+control global (AOS-027, `Admission` — token-bucket distribuído). **Compõe**, não
+reimplementa: os dois primitivos ficam intactos.
+
+- **Derivação dinâmica.** `deriveMaxSpawn(headroom_tokens, headroom_requests, custo)`
+  = `min(headroom_tokens/custo, headroom_requests)`, **reavaliada a cada pedido** —
+  nunca uma constante. É **monótona** (mais headroom ⇒ ≥ *spawns*) e **0** sob
+  headroom nulo. `Coordinator.MaxSpawn(...)` expõe o valor corrente (leitura pura,
+  via `Admission.Headroom`, sem reservar); `Admission.Headroom` reusa o `foldBucket`
+  do AOS-027 — o **mesmo** estado que o `Admit` vê.
+- **Reserva no admit ANTES do spawn.** `RequestSpawn` chama `Admission.Admit(custo)`
+  **antes** de criar o sub-agente. Sem headroom ⇒ **ADIA** (`spawn_deferred_no_headroom`,
+  com `retry_after`), devolve `Deferred=true` e **não** cria o sub-agente nem toca no
+  sub-orçamento (nunca *oversubscription*). Custo > tecto ⇒ rejeição **permanente**
+  (`ErrSpawnUnsatisfiable`), distinta do *defer* transitório.
+- **Ambos os limites.** Só após reservar headroom se delega ao `Delegator.Spawn`
+  (sub-orçamento da árvore). **Ambos** têm de conceder: se o global concede mas o
+  sub-orçamento **nega**, o headroom já reservado é **LIBERTADO** e o *spawn* é
+  recusado (`ErrSubtreeBudgetDenied`) — **sem fuga de duas-fases** (o risco central).
+- **Libertação idempotente.** `Finish(ticket, success)` consolida o sub-orçamento
+  (`Delegator.Finish` — *Commit* em sucesso, *Release* em falha/timeout) e liberta o
+  headroom (`Admission.Release`). Um segundo `Finish` é **no-op** (guard atómico no
+  ticket + dedup por `step_id`): terminar/falhar/timeout com retries **não** deixa
+  fuga de reservas. A contagem de reservas activas volta sempre a 0 (provado sob
+  `-race`, incl. `Finish` concorrente do mesmo ticket).
+- **Eventos append-only** (`spawn.headroom_reserved` / `spawn.headroom_released` /
+  `spawn.spawn_deferred_no_headroom`, com o headroom reservado por *spawn*) tornam
+  cada decisão auditável; `ReplaySpawnAdmission` reconstrói a sequência. Determinismo:
+  relógio/IDs injectáveis, serialização estável (structs). Span OTel `spawn_admission`
+  com o headroom reservado por *spawn*, reutilizando a porta `agentruntime.Tracer`
+  zero-dep.
+
+**Fora do âmbito de AOS-028:** circuit breaker (AOS-029), backpressure/filas
+(AOS-030), degradação (AOS-031), scheduling priority-aware (AOS-032), roteamento
+(AOS-033), métricas de saturação (AOS-034) e o Model Gateway (EPIC-06).
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e
