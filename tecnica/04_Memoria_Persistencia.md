@@ -322,6 +322,67 @@ emite um span OTel via a porta `Tracer` zero-dep do Agent Runtime; o relógio
 (`created_at`) e o gerador de IDs são injectáveis na fachada, sem `time.Now`/`rand`
 no caminho de decisão.
 
+### 8.4 Memória de trabalho e gestão da janela de contexto (implementação AOS-037)
+
+A memória de trabalho é o **contexto activo do turno** — a janela que o modelo
+efectivamente vê. É aqui que o contrato de cache do ADR-009 vive ou morre. O pacote
+`working` (`packages/platform/memory/working`) implementa a gestão da janela com o
+layout **cache-estável** e ZERO dependências externas, reutilizando o
+`agentruntime.PromptAssembler` (AOS-013) em vez de reimplementar o layout.
+
+**Prefixo imutável + tail append-only (ADR-009).** O `WindowManager` é construído
+UMA vez por run: congela o **prefixo** (system prompt + tool set na ordem fixada) e
+calcula o seu hash. A janela cresce **só pelo tail** (`Append` de segmentos
+`memory`/`tool_result`/`history`/…); NUNCA existe um método que mute ou reordene o
+prefixo. A imutabilidade é provada por teste — o `PrefixHash()` é byte-idêntico ao
+longo de todos os turnos do run, enquanto o `PromptHash` (prefixo + tail) muda a
+cada turno porque o tail cresce.
+
+**Contabilidade em tokens (não em nº de mensagens).** A `Occupancy` mede a ocupação
+da janela EM TOKENS, separando a parte cacheável (`PrefixTokens`, constante) da nova
+(`TailTokens`, só cresce), face ao `Limit` do modelo. O estimador de tokens é uma
+função **pura injectável** (default: palavras com piso por caracteres, coerente com
+a projecção de AOS-036); a contagem exacta por modelo é de EPIC-06.
+
+**Sinal de exaustão graciosa a ~80% (ADR-008).** Ao atingir o limiar
+(`floor(Limit × ExhaustionRatio)`, default 0.80), a janela emite um `Exhaustion`
+com acção `mark_for_compression` (marcar para compressão em checkpoint — AOS-043) e,
+acima do limite do modelo, `escalate` ao runtime. NUNCA é um hard-stop cego: o
+`Append` é sempre aceite e a ocupação continua a ser contabilizada — a decisão de
+comprimir/ramificar/escalar é do runtime. A compressão em si **não** acontece aqui
+(é AOS-043); a memória de trabalho apenas **prepara/marca**.
+
+**Pinning de prefixo — novas tools só em runs novos.** `RequireTool` rejeita com
+`ErrPrefixPinned` qualquer tool que não esteja no tool set congelado (ou com
+versão/digest divergente) — introduzi-la mutaria o prefixo. Uma tool nova SÓ entra
+por `NewRunWith`, que deriva um **run novo** com o tool set aumentado e, logo, um
+prefixo (e hash) diferentes; o run corrente permanece intocado. É fail-closed para
+a estabilidade do prefixo, coerente com o pinning de supply-chain do ADR-009.
+
+**Eviction que preserva o registo (Princípio 4, AOS-036).** `EvictToTailBudget`
+faz eviction do **tail** (nunca do prefixo) por prioridade ascendente e, dentro da
+mesma prioridade, FIFO, até caber num orçamento de tokens. Cada segmento evictado é
+**preservado no backend ANTES** de sair da vista, via um `EvictionSink`; o
+`MemoryPortSink` escreve-o como registo `ClassWorking` na `MemoryPort`
+(AOS-035/036). Se o sink falhar — ou não existir — a eviction é **recusada**
+(`ErrNoEvictionSink`): o que sai da janela é apenas da VISTA injectada, o registo
+nunca é apagado. A eviction PREPARA a compressão assíncrona (AOS-043) sem a executar.
+
+**SLI de cache-hit-rate.** O `CacheHitRate()` mede, EM TOKENS, a fracção do prompt
+servida da cache ao longo dos turnos: o primeiro turno estabelece a cache do
+prefixo (miss); nos seguintes, por o prefixo ser byte-idêntico, os seus tokens são
+hits. Num cenário de referência (prefixo grande e estável, tails pequenos, muitos
+turnos) o SLI fica **acima do alvo (>80%)** e não regride — a poupança de prefix
+caching do ADR-009 tornada observável.
+
+**Observabilidade.** Cada `Turn` emite um span (`working.window.turn`) com a
+ocupação na chave canónica `gen_ai.usage.input_tokens`, o `aos.prefix_hash` (o SLI
+de estabilidade do prefixo) e o `aos.prompt_hash`, mais os atributos
+`aos.working.*` (tokens de prefixo/tail, limiar, exhausted, marcado para compressão,
+cache-hit-rate) — via a porta `agentruntime.Tracer` zero-dep. A eviction emite
+`working.window.evict` com a prova `aos.working.eviction_preserved=true` e o
+prefixo inalterado.
+
 ---
 
 ## 9. Vista de qualidade
@@ -345,6 +406,9 @@ no caminho de decisão.
 | Duplicação de memória no retry | Estado corrompido, factos duplicados | Idempotency key = f(run_id, step_id) por evento (ADR-001) |
 | Skill procedural auto-escrita com regressão | Misevolution silenciosa | Staging → eval-gate → canário → ratificação assinada (ADR-012) |
 | Compressão na hot path destrói cache | Explosão de custo de tokens | Sumarização só em checkpoints assíncronos (ADR-009) |
+| Prompt remontado/tools dinâmicas mutam o prefixo | Cache-hit despenca, custo explode | Prefixo imutável byte-idêntico + tail append-only; novas tools só em runs novos (AOS-037, ADR-009) |
+| Janela satura sem aviso e faz hard-stop | Turno abortado cego, trabalho perdido | Contabilidade em tokens + sinal de exaustão graciosa a ~80% (marca compressão/escala), nunca hard-stop (AOS-037, ADR-008) |
+| Eviction da janela apaga o registo | Perda de evidência (viola Princípio 4) | Eviction só da vista; segmento preservado no backend ANTES de sair, senão recusada (AOS-037/AOS-036) |
 
 ---
 
