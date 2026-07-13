@@ -413,6 +413,11 @@ type Degrader struct {
 	// derivar do refill/backpressure a montante). Injectável via WithDeferRetry.
 	deferRetry time.Duration
 
+	// metrics é a fachada OPCIONAL de métricas (AOS-034). Nil por omissão: sem
+	// WithDegradationMeter o executor emite os MESMOS eventos/spans do AOS-031 e
+	// nenhuma métrica (aditivo, nil-safe). Conta a taxa de degradação por acção.
+	metrics *SchedulerMetrics
+
 	mu sync.Mutex
 	// active mapeia item ID → downgrade reversível em curso. Reverte ao normalizar.
 	active map[string]*activeDowngrade
@@ -471,6 +476,18 @@ func WithDegradationTracer(t agentruntime.Tracer) DegraderOption {
 	return func(d *Degrader) {
 		if t != nil {
 			d.tracer = t
+		}
+	}
+}
+
+// WithDegradationMeter ACOPLA o executor a uma [Meter] (AOS-034). É ADITIVO: conta
+// a taxa de degradação por acção ([MetricDegradation] com aos.scheduler.action).
+// Sem esta opção, o executor é bit-a-bit o do AOS-031 (nenhum teste do AOS-031
+// muda). Meter nil é ignorado.
+func WithDegradationMeter(m Meter) DegraderOption {
+	return func(d *Degrader) {
+		if m != nil {
+			d.metrics = NewSchedulerMetrics(m)
 		}
 	}
 }
@@ -993,7 +1010,32 @@ func (d *Degrader) emit(ctx context.Context, evType string, item DegradationItem
 		StepID:   stepID,
 		Producer: d.producer,
 	})
+	if err == nil {
+		if action, ok := actionForEvent(evType); ok {
+			d.metrics.RecordDegradation(ctx, action, item.Tenant, item.Priority)
+		}
+	}
 	return err
+}
+
+// actionForEvent mapeia o tipo de evento de degradação para a acção de métrica
+// (aos.scheduler.action). tier_restored é uma reversão — conta como acção própria
+// para a taxa de degradação reflectir também as reversões.
+func actionForEvent(evType string) (DegradationAction, bool) {
+	switch evType {
+	case EventWorkShed:
+		return ActionShed, true
+	case EventWorkDeferred:
+		return ActionDefer, true
+	case EventModelDowngraded:
+		return ActionDowngrade, true
+	case EventWorkRejected:
+		return ActionReject, true
+	case EventTierRestored:
+		return DegradationAction("tier_restored"), true
+	default:
+		return "", false
+	}
 }
 
 // DegradationRecord é uma acção de degradação reconstruída do log (para replay).

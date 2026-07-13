@@ -274,6 +274,10 @@ type SpawnCoordinator struct {
 	tracer   agentruntime.Tracer
 	now      func() time.Time
 	idGen    func() string
+	// metrics é a fachada OPCIONAL de métricas (AOS-034). Nil por omissão: sem
+	// WithSpawnMeter o coordenador é bit-a-bit o do AOS-028 (aditivo, nil-safe).
+	// Conta os spawns adiados por falta de headroom.
+	metrics *SchedulerMetrics
 }
 
 // SpawnCoordinatorOption configura o [SpawnCoordinator].
@@ -316,6 +320,17 @@ func WithSpawnTracer(t agentruntime.Tracer) SpawnCoordinatorOption {
 	return func(c *SpawnCoordinator) {
 		if t != nil {
 			c.tracer = t
+		}
+	}
+}
+
+// WithSpawnMeter ACOPLA o coordenador a uma [Meter] (AOS-034). É ADITIVO: conta os
+// spawns ADIADOS por falta de headroom ([MetricSpawnDeferred]). Sem esta opção, é
+// bit-a-bit o do AOS-028 (nenhum teste do AOS-028 muda). Meter nil é ignorado.
+func WithSpawnMeter(m Meter) SpawnCoordinatorOption {
+	return func(c *SpawnCoordinator) {
+		if m != nil {
+			c.metrics = NewSchedulerMetrics(m)
 		}
 	}
 }
@@ -516,6 +531,11 @@ func (c *SpawnCoordinator) RequestSpawn(ctx context.Context, req SpawnAdmitReque
 			RetryAfterMs:     admit.RetryAfter.Milliseconds(),
 			TSUnixNano:       c.now().UnixNano(),
 		})
+		// Custo em micro-USD do sub-orçamento reservado — a dimensão $ é conhecida
+		// AQUI (ao contrário do admission em tokens), pelo que a emitimos como
+		// atributo estável (ADR-010, critério "custo em USD onde aplicável").
+		c.metrics.RecordSpawnDeferred(ctx, req.Key, req.Tenant,
+			Attr{Key: AttrMetricCostMicroUSD, Value: req.Spawn.SpawnReserve.CostMicroUSD})
 		out := SpawnOutcome{
 			Deferred:         true,
 			RetryAfter:       admit.RetryAfter,

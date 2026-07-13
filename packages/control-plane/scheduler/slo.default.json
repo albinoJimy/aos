@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "headroom_critical_free_ratio": 0.05,
+  "headroom_utilization_target": 0.85,
+  "max_defer_rate": 0.20,
+  "sustained_saturation_windows": 3
+}

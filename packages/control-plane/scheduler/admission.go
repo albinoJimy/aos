@@ -186,6 +186,10 @@ type Admission struct {
 	// bp é o seam OPCIONAL de backpressure (AOS-030). Nil por omissão: sem ele o
 	// admit comporta-se EXACTAMENTE como no AOS-027 (acoplamento aditivo).
 	bp BackpressureSource
+	// metrics é a fachada OPCIONAL de métricas (AOS-034). Nil por omissão: sem
+	// WithAdmissionMeter o admit emite os MESMOS eventos/spans do AOS-027 e nenhuma
+	// métrica (instrumentação ADITIVA, nil-safe). Conta admitted/deferred (defer-rate).
+	metrics *SchedulerMetrics
 }
 
 // AdmissionOption configura a [Admission].
@@ -239,6 +243,19 @@ func WithMaxCASRetries(n int) AdmissionOption {
 	return func(a *Admission) {
 		if n > 0 {
 			a.maxRetry = n
+		}
+	}
+}
+
+// WithAdmissionMeter ACOPLA o admission control a uma [Meter] (AOS-034). É ADITIVO:
+// conta admissões concedidas ([MetricAdmitted]) e adiadas ([MetricDeferred], com o
+// motivo no_headroom|backpressure|unsatisfiable) — o defer-rate deriva-se destes
+// dois counters. Sem esta opção, o admit é bit-a-bit o do AOS-027 (nenhum teste do
+// AOS-027 muda). Meter nil é ignorado.
+func WithAdmissionMeter(m Meter) AdmissionOption {
+	return func(a *Admission) {
+		if m != nil {
+			a.metrics = NewSchedulerMetrics(m)
 		}
 	}
 }
@@ -393,6 +410,7 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 		}); err != nil {
 			return AdmitResult{}, err
 		}
+		a.metrics.RecordDeferred(ctx, req.Key, req.Tenant, DeferReasonUnsatisfiable)
 		return AdmitResult{
 			Granted:          false,
 			Rejected:         true,
@@ -423,6 +441,7 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 						ErrIdempotencyConflict, resID, r.grantTokens, r.grantRequests, cost, reqCost)
 				}
 				span.SetAttribute(attrAdmitGranted, true)
+				a.metrics.RecordAdmitted(ctx, req.Key, req.Tenant)
 				return AdmitResult{
 					Granted:          true,
 					ReservationID:    resID,
@@ -479,6 +498,7 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 				span.SetAttribute(attrAdmitGranted, true)
 				span.SetAttribute(attrAdmitHeadroomT, headTokens)
 				span.SetAttribute(attrAdmitHeadroomR, headReq)
+				a.metrics.RecordAdmitted(ctx, req.Key, req.Tenant)
 				return AdmitResult{
 					Granted:          true,
 					ReservationID:    resID,
@@ -531,6 +551,11 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 		}); err != nil {
 			return AdmitResult{}, err
 		}
+		deferReason := DeferReasonNoHeadroom
+		if bpSaturated {
+			deferReason = DeferReasonBackpressure
+		}
+		a.metrics.RecordDeferred(ctx, req.Key, req.Tenant, deferReason)
 		return AdmitResult{
 			Granted:          false,
 			ReservationID:    resID,

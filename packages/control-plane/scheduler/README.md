@@ -498,6 +498,76 @@ dec, _ := rt.Route(ctx, scheduler.WorkRequest{ID: "job", EstimatedTokens: 50,
 **Model Gateway** (EPIC-06 — a porta `LoadSource`/`ModelTierRouter`) e a **frota** (EPIC-10). **Não**
 reimplementa o admission (AOS-027), o tiering (AOS-031) nem o Event Store (AOS-002).
 
+## Métricas de saturação e reserva de headroom (AOS-034 — o ÚLTIMO do EPIC-03)
+
+`metrics.go` + `slo.go` fecham o ciclo de controlo: **instrumentam** (aditivo) o plano de controlo com
+métricas OTel de **saturação** e de **headroom**, com SLIs/SLOs, alertas, dashboard mínimo agregado e o
+padrão **wide events**. **Não** reimplementam admission/filas/degradação/spawn — **instrumentam-nos** via
+opções `With*Meter`.
+
+### Porta `Meter` zero-dep (à imagem de `agentruntime.Tracer`)
+
+Como os spans (AOS-013), as métricas usam uma **porta própria** — `Meter` com `Counter`/`Gauge`/`Histogram`
+— **sem** puxar o OTel SDK (isso é EPIC-08). `NoopMeter` é o default; `RecordingMeter` capta tudo para
+teste **e** é o substrato dos wide events. Os **nomes/atributos são OTel-estáveis** (o adaptador real
+mapeia sem renomear).
+
+```go
+meter := scheduler.NewRecordingMeter() // em produção: adaptador OTel (EPIC-08)
+
+adm, _ := scheduler.NewAdmission(es, qp,
+    scheduler.WithAdmissionMeter(meter),   // conta admitted/deferred (defer-rate)
+)
+d, _ := scheduler.NewDegrader(router,
+    scheduler.WithDegradationMeter(meter), // conta a taxa de degradação por acção
+)
+coord, _ := scheduler.NewSpawnCoordinator(adm, sp,
+    scheduler.WithSpawnMeter(meter),       // conta spawns adiados por falta de headroom
+)
+
+// Gauges por amostragem (observable-gauge OTel): headroom/filas REAIS.
+sm := scheduler.NewSchedulerMetrics(meter)
+sm.SampleHeadroom(ctx, adm, key, tenant)  // headroom livre/reservado/utilização TPM/RPM
+sm.SampleQueues(ctx, queues)              // profundidade/idade/saturação por partição
+
+// Dashboard agregado + alertas deterministas (SLOs versionados).
+ev := scheduler.NewSLOEvaluator(scheduler.DefaultSLOConfig())
+dash := scheduler.BuildDashboard(meter.Measurements(), ev)
+for _, a := range scheduler.FiredAlerts(dash.Alerts) { /* encaminhar */ }
+```
+
+### Métricas (nomes OTel estáveis)
+
+- **Saturação** — `aos.scheduler.queue.depth`, `aos.scheduler.queue.oldest_age_ms`,
+  `aos.scheduler.queue.saturated` (backpressure activo), `aos.scheduler.admission.deferred`
+  (defer-rate, com `defer_reason` = `no_headroom|backpressure|unsatisfiable`),
+  `aos.scheduler.degradation.actions` (por `action`).
+- **Headroom** — `aos.scheduler.headroom.free_tokens`/`free_requests` (livre por
+  `provider:model:region` e tenant), `aos.scheduler.headroom.reserved_tokens` (reservas activas),
+  `aos.scheduler.headroom.utilization` (utilização TPM/RPM por `dimension`),
+  `aos.scheduler.spawn.deferred` (spawns adiados). `aos.scheduler.admission.admitted` fecha o defer-rate.
+
+### SLIs/SLOs + alertas (config versionada, avaliação determinista)
+
+`SLOConfig` é **versionada (SemVer)** e carregável de JSON com validação **fail-closed** (`LoadSLOConfig`),
+à imagem da política de AOS-030. O `SLOEvaluator` é **determinístico** (streak de saturação avançado só por
+`Evaluate`, sem `time.Now`/`rand`): dispara `headroom_critically_low` (fracção livre < limiar crítico) e
+`saturation_sustained` (partição saturada em N observações consecutivas), mais os avisos
+`headroom_utilization_high` e `defer_rate_high`.
+
+### Dashboard mínimo agregado + wide events
+
+`AggregateDashboard` constrói o **descritor agregado** (profundidade total, defer-rate, headroom livre,
+alertas activos) por agregação **query-time** sobre as medições — o antídoto ao *"individualmente ok,
+agregadamente colapsa"*. As medições são **wide events**: o `RecordingMeter` **nunca** filtra no emit-time;
+a filtragem (`Query`/`FilterByAttr`) é query-time — um atributo de alta cardinalidade não usado como eixo
+no emit continua disponível para query (`TestMetrics_WideEvents_QueryTimePreservesUnfilteredAttr`). **Sem
+segredos** nos atributos (só provider/model/region/tenant/partition/acção).
+
+**Fora do âmbito de AOS-034:** o OTel SDK real e os dashboards de produção (EPIC-08 — a porta `Meter` é o
+ponto de sutura), o TPM/RPM real (EPIC-06 — porta `QuotaProvider`). **Não** reimplementa nenhuma fonte de
+sinal — **instrumenta-as** aditivamente (sem esta instrumentação, os AOS-027..033 são bit-a-bit os seus).
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e

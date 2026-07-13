@@ -587,6 +587,52 @@ func (q *PartitionedQueues) IsSaturated(p Partition) bool {
 	return false
 }
 
+// QueueSnapshot é o estado observável de UMA partição num instante (para a
+// amostragem de métricas de saturação, AOS-034). É read-only e não muta estado.
+type QueueSnapshot struct {
+	// Partition é a chave "tenant:priority".
+	Partition string
+	Tenant    string
+	Priority  string
+	// Depth é a profundidade corrente; Capacity é o MaxLen.
+	Depth    int
+	Capacity int
+	// OldestAgeMs é a idade do item mais antigo em ms (relógio injectável).
+	OldestAgeMs int64
+	// Saturated é o estado latched de histerese OU a condição de idade no instante
+	// (coerente com [PartitionedQueues.IsSaturated]).
+	Saturated bool
+}
+
+// Snapshot devolve o estado observável de TODAS as partições, ORDENADO por chave
+// (determinismo/replay). É uma leitura pura (não muta nem satura) usada pela
+// amostragem de métricas do AOS-034 ([SchedulerMetrics.SampleQueues]). A saturação
+// reportada cobre a histerese latched E a condição de idade reavaliada no instante.
+func (q *PartitionedQueues) Snapshot() []QueueSnapshot {
+	nowNano := q.now().UnixNano()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	keys := make([]string, 0, len(q.parts))
+	for k := range q.parts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]QueueSnapshot, 0, len(keys))
+	for _, k := range keys {
+		st := q.parts[k]
+		out = append(out, QueueSnapshot{
+			Partition:   k,
+			Tenant:      st.part.Tenant,
+			Priority:    st.part.Priority,
+			Depth:       len(st.items),
+			Capacity:    st.limits.MaxLen,
+			OldestAgeMs: st.oldestAge(nowNano).Milliseconds(),
+			Saturated:   st.saturated || st.overAge(nowNano),
+		})
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // BackpressureSource — o seam que acopla as filas ao admission control (AOS-027).
 // ---------------------------------------------------------------------------
