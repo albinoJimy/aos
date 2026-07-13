@@ -76,6 +76,9 @@ const (
 	// attrAdmitUnsatisfiable sinaliza uma rejeição permanente (custo > tecto): o
 	// pedido nunca será admitido, distinto de um defer transitório.
 	attrAdmitUnsatisfiable = "aos.admission.unsatisfiable"
+	// attrAdmitBackpressure marca um defer causado por BACKPRESSURE (fila saturada
+	// a montante, AOS-030), distinto de um defer por falta de headroom.
+	attrAdmitBackpressure = "aos.admission.backpressure"
 )
 
 // ErrIdempotencyConflict é devolvido quando um RequestID já activo é reutilizado
@@ -123,6 +126,11 @@ type admissionPayload struct {
 	// (custo > tecto TPM/RPM): o pedido nunca será admissível, não é um adiamento
 	// transitório. Preservado no log para o replay/auditoria distinguir os dois.
 	Unsatisfiable bool `json:"unsatisfiable,omitempty"`
+	// Backpressure, quando true num admit_deferred, marca um defer causado por
+	// BACKPRESSURE (fila saturada a montante, AOS-030) — havia headroom, mas o
+	// sinal de saturação forçou o adiamento. Distingue-o do defer por falta de
+	// headroom no replay/auditoria.
+	Backpressure bool `json:"backpressure,omitempty"`
 }
 
 // AdmitRequest é o pedido de admissão de um trabalho que consome quota do
@@ -175,6 +183,9 @@ type Admission struct {
 	tracer   agentruntime.Tracer
 	producer eventstore.Producer
 	maxRetry int
+	// bp é o seam OPCIONAL de backpressure (AOS-030). Nil por omissão: sem ele o
+	// admit comporta-se EXACTAMENTE como no AOS-027 (acoplamento aditivo).
+	bp BackpressureSource
 }
 
 // AdmissionOption configura a [Admission].
@@ -228,6 +239,20 @@ func WithMaxCASRetries(n int) AdmissionOption {
 	return func(a *Admission) {
 		if n > 0 {
 			a.maxRetry = n
+		}
+	}
+}
+
+// WithBackpressure ACOPLA o admission control a uma [BackpressureSource] (AOS-030).
+// É ADITIVO: sob saturação da fila do tenant, o admit passa a ADIAR (defer) mesmo
+// havendo headroom — o sinal de backpressure propaga-se a montante em vez de
+// deixar a fila crescer. Sem esta opção, o admit é bit-a-bit o do AOS-027 (nenhum
+// teste do AOS-027 muda de comportamento). O check de idempotência de uma reserva
+// JÁ activa NÃO é afectado (um retry do mesmo pedido não é revogado por pressão).
+func WithBackpressure(src BackpressureSource) AdmissionOption {
+	return func(a *Admission) {
+		if src != nil {
+			a.bp = src
 		}
 	}
 }
@@ -333,6 +358,20 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 	bucketID := bucketStreamPrefix + keyStr
 	windowNano := glob.Window.Nanoseconds()
 
+	// BACKPRESSURE (AOS-030, acoplamento ADITIVO): se o seam estiver injectado e a
+	// fila do tenant estiver saturada, o admit passa a ADIAR mesmo havendo headroom
+	// — o sinal propaga-se a montante. Consultado UMA vez (determinístico, barato)
+	// antes do loop de CAS. Sem seam (bp==nil), bpSaturated é false e o caminho é o
+	// do AOS-027, inalterado.
+	var bpSaturated bool
+	var bpRetry time.Duration
+	if a.bp != nil {
+		sig := a.bp.Backpressure(ctx, req.Key, req.Tenant)
+		bpSaturated = sig.Saturated
+		bpRetry = sig.RetryAfter
+	}
+	span.SetAttribute(attrAdmitBackpressure, bpSaturated)
+
 	// Rejeição PERMANENTE (não adiamento): se o custo excede o próprio tecto
 	// TPM/RPM da chave — ou, havendo cap de tenant, o tecto do tenant — nenhum
 	// refill futuro o tornará admissível. Adiar seria aconselhar um poll eterno
@@ -408,8 +447,8 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 			}
 		}
 
-		if cost <= headTokens && reqCost <= headReq && fitsTenant {
-			// Há headroom: tenta reservar atomicamente via CAS.
+		if cost <= headTokens && reqCost <= headReq && fitsTenant && !bpSaturated {
+			// Há headroom E não há backpressure: tenta reservar atomicamente via CAS.
 			pl := admissionPayload{
 				Type:             EventAdmitGranted,
 				Key:              keyStr,
@@ -454,7 +493,11 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 			}
 		}
 
-		// Sem headroom (global ou do tenant): ADIA. Calcula retry_after do refill.
+		// ADIA (defer): ou não há headroom (global/tenant), ou há BACKPRESSURE a
+		// montante (fila saturada). Calcula retry_after do refill; sob backpressure
+		// com headroom, o refill daria 0 (nada a expirar), por isso usa-se o
+		// bpRetry aconselhado pela fila — evita re-tentar de imediato contra uma
+		// fila cheia.
 		retry := retryAfter(st.active, nowNano, windowNano, cost, glob.TPM-st.tokens)
 		if hasTenantCap && !fitsTenant {
 			// Se foi o tenant a bloquear, o retry_after do tenant pode diferir; usa
@@ -463,6 +506,9 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 			if tRetry > retry {
 				retry = tRetry
 			}
+		}
+		if bpSaturated && bpRetry > retry {
+			retry = bpRetry
 		}
 		span.SetAttribute(attrAdmitGranted, false)
 		span.SetAttribute(attrAdmitHeadroomT, headTokens)
@@ -481,6 +527,7 @@ func (a *Admission) Admit(ctx context.Context, req AdmitRequest) (AdmitResult, e
 			HeadroomRequests: headReq,
 			TSUnixNano:       nowNano,
 			RetryAfterMs:     retry.Milliseconds(),
+			Backpressure:     bpSaturated,
 		}); err != nil {
 			return AdmitResult{}, err
 		}

@@ -251,6 +251,53 @@ pela porta `TreeBudgetReader`) e a máquina de estados durável das tarefas (AOS
 shed→defer→downgrade→reject (AOS-031), scheduling priority-aware (AOS-032), roteamento
 (AOS-033), métricas de saturação (AOS-034). **Não** reimplementa budget/state/admission.
 
+## Backpressure: filas limitadas + política declarativa (AOS-030)
+
+`queue.go` (filas limitadas) e `policy.go` (motor de política declarativa) implementam o
+**backpressure real**: em vez de acumular trabalho de forma ilimitada (cascatas de
+timeouts), as filas têm **limite explícito** por partição `tenant:priority` e o enchimento
+é **detectado e sinalizado a montante**, nunca silenciosamente absorvido. Aqui só se
+**SELECCIONA** a acção de degradação; a **execução** (shed→defer→downgrade→reject) é o
+AOS-031.
+
+- **Filas limitadas por partição.** `PartitionedQueues` mantém uma fila bounded por
+  `tenant:priority`, com **limite explícito de comprimento** (`MaxLen`, tecto duro) **e/ou
+  idade** (`MaxAge` do item mais antigo). Ao atingir o limite, aplica-se a **política** em
+  vez de crescer — **sem acumulação ilimitada** (provado: a profundidade nunca excede
+  `MaxLen`, `TestQueue_BoundedNoUnboundedAccumulation`).
+- **Watermarks com histerese.** Cada partição satura ao cruzar o `HighWatermark` e só
+  **sai** de saturado ao descer **até/abaixo** do `LowWatermark` — o estado latched entre
+  os dois evita *flapping* (`TestQueue_WatermarksHysteresis_NoFlapping`).
+- **Motor de política DECLARATIVA versionado.** `PolicyEngine` carrega um artefacto JSON
+  (stdlib, **zero deps** — não YAML/Rego) que mapeia condições de saturação
+  (`priority` + `min_fill_ratio` + `min_age_ms`) → acção nominal. A selecção é
+  **determinística** (primeira regra que casa, por ordem de declaração; senão
+  `default_action`). Emite `degradation_policy_selected`.
+- **Hot-reload atómico versionado (SemVer).** `Reload` troca o motor de decisão via
+  `atomic.Pointer` — as filas em curso **não** são tocadas (**nenhum trabalho se perde**,
+  `TestPolicy_HotReloadPreservesInFlightWork`). A nova versão tem de ser **estritamente
+  mais recente** (SemVer monótono); cada troca regista o **changelog** (versão-antiga→nova)
+  no **audit trail** (evento append-only). Validação **fail-closed**: JSON malformado,
+  acção desconhecida, SemVer inválido ou versão não-monótona são **rejeitados** e mantém-se
+  a política anterior (`TestPolicy_ReloadFailClosed_KeepsPrevious`).
+- **Acoplamento ADITIVO ao admit (AOS-027).** `PartitionedQueues` implementa
+  `BackpressureSource`; injectada via `Admission` + **`WithBackpressure(source)`**, faz o
+  admit **ADIAR (defer)** mais agressivamente para o tenant saturado, mesmo havendo
+  headroom — o sinal propaga-se a montante. **Sem** a opção, o admit é bit-a-bit o do
+  AOS-027 (os seus testes não mudam). Prova concreta: fila saturada ⇒ mais defers
+  (`TestBackpressure_PropagatesToAdmit_MoreDefers`).
+- **Eventos append-only observáveis.** `queue_saturated`, `backpressure_signalled`,
+  `backpressure_cleared`, `degradation_policy_selected` e o changelog `policy_reloaded`.
+  `ReplayQueue` / `ReplayVersions` reconstroem o estado de fila e a linhagem de versões por
+  replay (determinismo: relógio/IDs injectáveis, iteração ordenada, serialização estável).
+  Spans OTel `backpressure_enqueue` / `backpressure_policy_select` (profundidade/idade de
+  fila) via a porta `agentruntime.Tracer` zero-dep.
+
+**Fora do âmbito de AOS-030:** a **execução** das acções shed/defer/downgrade/reject
+(AOS-031), a degradação graciosa (AOS-031), o scheduling priority-aware (AOS-032), o
+roteamento (AOS-033) e as métricas de saturação (AOS-034). **Não** reescreve o admission
+(só acoplamento aditivo).
+
 ## Dependências e build
 
 Zero dependências externas. `orchestrator/contract`, RM (AOS-003), bus (AOS-009) e
