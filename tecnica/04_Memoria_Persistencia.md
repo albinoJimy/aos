@@ -659,6 +659,114 @@ Observabilidade via a porta `Tracer` zero-dep, namespace
 
 ---
 
+### 8.9 Compressão de contexto assíncrona (implementação AOS-043)
+
+O ticket AOS-043 dá **execução** à regra da §4 (terceiro corolário do Princípio 4)
+e do risco "compressão na hot path destrói cache" da §10: a sumarização auxiliar da
+memória de trabalho/episódica ocorre **SÓ em checkpoints assíncronos, FORA da hot
+path** (ADR-009, tabela de zonas do prompt). Comprimir de forma síncrona no turno
+reordena/muta o prompt, invalida a cache do prefixo e degrada custo/latência
+silenciosamente — o "cache thrash invisível". Está implementado em
+`packages/platform/memory/compression` (mesmo módulo, Go 1.24, zero dependências
+externas), **compondo** as fundações já entregues em vez de as reimplementar: a
+memória de trabalho e o seu sinal de exaustão (AOS-037), a projecção e o registo
+(AOS-036) e o Event Store como activity durável (ADR-001).
+
+**Duas peças, uma fronteira (hot path vs. checkpoint).** O pacote separa
+fisicamente o que corre no turno do que corre no checkpoint:
+
+- **`CheckpointTrigger`** (`checkpoint_trigger.go`) — accionado pelo **sinal de
+  exaustão graciosa a ~80%** do `WindowManager` (AOS-037,
+  `working.ActionMarkForCompression`; também `ActionEscalate`). Na **hot path**, o
+  `Observe` só **ENFILEIRA** um pedido de compactação — O(1), sem tocar no compactor,
+  no Event Store, na projecção nem no registo. **NUNCA** corre a compressão no turno.
+  É accionado pelo SINAL, **nunca por hard-stop**: o `WindowManager` continua a
+  aceitar tail; a compactação é diferida.
+- **`AsyncCompactor`** (`async_compactor.go`) — o trabalho **PESADO**, executado
+  **FORA do turno** como uma **activity durável** (ADR-001) quando o runtime chama
+  `RunCheckpoint` num checkpoint. É aqui, e **só** aqui, que a compressão executa.
+
+**Prova de caminho (não corre na hot path).** O compactor tem um contador atómico
+de invocações (`Invocations()`). O teste simula a hot path — N turnos com
+`WindowManager.Append` + `Turn` + `CheckpointTrigger.Observe(sinal)` — e assere que
+`Invocations()` fica a **0** durante todos os turnos (e que **nada** é escrito no
+Event Store na hot path); só depois de `RunCheckpoint`, fora do turno, o contador
+sobe. É a asserção de caminho exigida pelo critério de aceitação.
+
+**Prefixo intacto (ADR-009), provado por hash.** A compressão actua sobre o
+**tail/sumários auxiliares** e **nunca** muta nem reordena o prefixo imutável. O
+`CompactionSource` carrega o **hash do prefixo** capturado no enfileiramento; a
+compactação compara-o com o hash **corrente** (lido de `WindowManager.PrefixHash`
+via `WithPrefixHash`) — se divergiu, é **cache thrash** e a compactação **aborta
+fail-closed** (`ErrPrefixMutated`), emitindo um **alerta** (`AlertSink`). Um teste
+prova o `PrefixHash()` byte-idêntico antes/depois da compactação; outro força um
+prefixo divergente e prova a detecção + alerta.
+
+**Sumário = PROJECÇÃO; registo completo intacto (Princípio 4).** A compactação
+compõe as **duas vias** de AOS-036: `record.Persist` emite a trajectória
+**COMPLETA** (conteúdo cru + manifesto por turno + árvore de spans) para o backend —
+nada do audit trail é descartado — enquanto `projection.ProjectContext` produz o
+**sumário auxiliar** (resumo higienizado, limitado em tokens) que cabe na janela. O
+`FullRecordSpans` é sempre **estritamente maior** do que os turnos incluídos no
+sumário (prova de que o backend recebe tudo e o contexto só o resumo); um teste
+verifica ainda que **nenhum `RawContent` vaza** para o sumário. O sumário durável é
+**recuperável** do log (`Summaries`) — o registo permanece.
+
+**Idempotente e reproduzível, política versionada.** A compactação é uma **função
+pura** de `(CompactionSource, CompressionPolicy)`: mesma origem + mesma política →
+mesmo sumário byte-a-byte e mesmo **`Digest`** (sha256 de uma serialização estável
+de política + manifesto por turno + bytes do sumário; sem `time.Now`/`rand`, ordem de
+registo preservada). A **`CompressionPolicy` é versionada em SemVer** (default
+`1.0.0`), envolvendo a política de projecção. **Reaplicar** a compactação é **no-op
+durável**: o sumário é escrito append-only, idempotente por `f(run_id,
+checkpoint_id)` — a segunda escrita deduplica (`StatusDuplicate`, `Duplicate=true`),
+**sem dupla-compressão divergente**. Provado por teste (reaplicar dá o mesmo `Digest`
+e `Duplicate=true`; um compactor novo produz o mesmo `Digest` — reprodutibilidade
+entre sessões).
+
+**Cache-hit-rate SLI não regride; alerta de cache thrash.** Como a compressão actua
+no tail e **não toca no prefixo**, o prefixo permanece byte-idêntico e o **SLI de
+cache-hit-rate de AOS-037 não regride** com compressão activa — provado por um teste
+de cenário de referência (prefixo grande e estável, muitos turnos, compactação nos
+checkpoints) que assere `WindowManager.CacheHitRate() > 0.80` e `PrefixHash()`
+constante após a compressão. O **alerta de cache thrash** dispara sse (e só se) o
+prefixo tiver sido invalidado externamente entre o enfileiramento e o checkpoint.
+
+```mermaid
+flowchart TD
+    subgraph HOT["Hot path (turno) — NUNCA comprime"]
+        SIG["WindowManager.Signal() ~80% (AOS-037)"]
+        OBS["CheckpointTrigger.Observe → ENFILEIRA (O(1))"]
+        SIG -->|ActionMarkForCompression| OBS
+    end
+    subgraph OFF["Fora da hot path (checkpoint) — activity durável (ADR-001)"]
+        RUN["RunCheckpoint → drena a fila"]
+        CHK["prefixo mudou? (hash before vs. corrente)"]
+        PERS["record.Persist → registo COMPLETO (backend)"]
+        PROJ["projection.ProjectContext → sumário (projecção)"]
+        ES["Event Store: memory.context.compacted (idempotente f(run,ckpt))"]
+        ALERT["AlertSink: cache thrash"]
+    end
+    OBS -->|fila de checkpoints| RUN --> CHK
+    CHK -->|invariante| PERS --> BK["Backend OBS (EPIC-08)\nFullRecordSpans > turnos do sumário"]
+    CHK -->|invariante| PROJ --> ES
+    CHK -.mutou: ErrPrefixMutated.-> ALERT
+```
+
+A leitura do diagrama: o sinal de ~80% só **enfileira** na hot path; a compressão
+inteira (verificação do prefixo, registo completo, projecção, escrita durável
+idempotente) corre no checkpoint. Se o prefixo tiver mutado, aborta e alerta — nunca
+comprime sobre um prefixo invalidado.
+
+Determinismo: compactação como função pura da origem e da política versionada; sem
+`time.Now`/`rand`; estimativa de tokens pura (herdada da projecção); serialização e
+digest estáveis. Observabilidade via a porta `Tracer` zero-dep, namespace
+`aos.memory.compression.*` (o span de checkpoint carrega `prefix_invariant`,
+`cache_thrash`, `full_record_spans`, `summary_tokens`, `digest`); sem segredos nos
+spans.
+
+---
+
 ## 9. Vista de qualidade
 
 **Arquitectura.** A camada de memória assenta inteiramente sobre o Event Store como fonte de verdade única (ADR-007): não há estado autoritativo fora do log, o que elimina divergências entre réplicas e torna todo o estado reconstruível por replay. A separação contexto ≠ registo é o que permite escalar horizontalmente — workers stateless, projecção barata ao modelo, registo completo particionado — sem escolher entre custo e observabilidade.
@@ -679,7 +787,10 @@ Observabilidade via a porta `Tracer` zero-dep, namespace
 | Migração de schema com indisponibilidade | Janela de downtime, rollback impossível | Expand/contract com dual-write e backfill assíncrono; rollback atómico (ADR-012) |
 | Duplicação de memória no retry | Estado corrompido, factos duplicados | Idempotency key = f(run_id, step_id) por evento (ADR-001) |
 | Skill procedural auto-escrita com regressão | Misevolution silenciosa | Staging → eval-gate → canário → ratificação assinada (ADR-012) |
-| Compressão na hot path destrói cache | Explosão de custo de tokens | Sumarização só em checkpoints assíncronos (ADR-009) |
+| Compressão na hot path destrói cache | Explosão de custo de tokens | Sumarização só em checkpoints assíncronos (ADR-009); `CheckpointTrigger` enfileira na hot path (O(1)) e o `AsyncCompactor` só corre em `RunCheckpoint` — provado pelo contador de invocações a 0 nos turnos (AOS-043) |
+| Compressão muta/reordena o prefixo (cache thrash) | Cache-hit despenca sem aviso | Compressão actua só no tail; hash do prefixo comparado before/corrente — se divergir, aborta fail-closed (`ErrPrefixMutated`) e alerta (AOS-043, ADR-009) |
+| Dupla-compressão divergente ao reaplicar | Sumário não-reproduzível, replay corrompido | Compactação como função pura da origem + política SemVer versionada; escrita idempotente f(run_id, checkpoint_id) — reaplicar é no-op durável (mesmo `Digest`) (AOS-043, ADR-001) |
+| Compressão descarta do registo em nome da higiene | Perda de audit trail (viola Princípio 4) | Sumário = projecção; `record.Persist` emite a trajectória completa ao backend (`FullRecordSpans` > turnos do sumário); nenhum `RawContent` vaza (AOS-043/AOS-036) |
 | Prompt remontado/tools dinâmicas mutam o prefixo | Cache-hit despenca, custo explode | Prefixo imutável byte-idêntico + tail append-only; novas tools só em runs novos (AOS-037, ADR-009) |
 | Janela satura sem aviso e faz hard-stop | Turno abortado cego, trabalho perdido | Contabilidade em tokens + sinal de exaustão graciosa a ~80% (marca compressão/escala), nunca hard-stop (AOS-037, ADR-008) |
 | Eviction da janela apaga o registo | Perda de evidência (viola Princípio 4) | Eviction só da vista; segmento preservado no backend ANTES de sair, senão recusada (AOS-037/AOS-036) |
