@@ -30,7 +30,11 @@ func newTestRegistry(t *testing.T, opts ...Option) (*Registry, eventstore.EventS
 		t.Fatalf("eventstore.New: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	all := append([]Option{WithClock(fixedClock())}, opts...)
+	// O default do REG é FAIL-CLOSED (denyVerifier): injectamos allowVerifier ANTES
+	// de opts... para que os testes de ciclo de vida que não exercitam a assinatura
+	// consigam promover a active; um verifier passado em opts (spy/deny) sobrepõe-se
+	// (a última Option vence).
+	all := append([]Option{WithClock(fixedClock()), WithAdmissionVerifier(allowVerifier{})}, opts...)
 	reg, err := New(store, all...)
 	if err != nil {
 		t.Fatalf("registry.New: %v", err)
@@ -368,22 +372,61 @@ func TestSetStatus_AdmissionGateBlocks(t *testing.T) {
 	}
 }
 
-// verifierSpy prova que o gate SÓ é consultado na transicao staging->active.
+// verifierSpy prova que o gate é consultado em CADA promocao a active (staging->
+// active E deprecated->active), e NUNCA nas restantes transicoes.
 type verifierSpy struct{ calls int }
 
 func (s *verifierSpy) Verify(context.Context, domain.Entry) error { s.calls++; return nil }
 
-func TestSetStatus_GateOnlyOnStagingToActive(t *testing.T) {
+func TestSetStatus_GateOnEveryPromotionToActive(t *testing.T) {
 	t.Parallel()
 	spy := &verifierSpy{}
 	reg, _ := newTestRegistry(t, WithAdmissionVerifier(spy))
 	v := ver(1, 0, 0)
 	mustPublish(t, reg, toolReq("tool.x", v))
-	mustSetStatus(t, reg, "tool.x", v, domain.StatusActive)     // gate: +1
-	mustSetStatus(t, reg, "tool.x", v, domain.StatusDeprecated) // sem gate
-	mustSetStatus(t, reg, "tool.x", v, domain.StatusActive)     // deprecated->active: sem gate de staging
-	if spy.calls != 1 {
-		t.Fatalf("gate consultado %d vezes, esperado 1 (so staging->active)", spy.calls)
+	mustSetStatus(t, reg, "tool.x", v, domain.StatusActive)     // staging->active: gate +1
+	mustSetStatus(t, reg, "tool.x", v, domain.StatusDeprecated) // active->deprecated: sem gate
+	mustSetStatus(t, reg, "tool.x", v, domain.StatusActive)     // deprecated->active: gate +1 (AOS-048 Q1)
+	mustSetStatus(t, reg, "tool.x", v, domain.StatusRevoked)    // active->revoked: sem gate
+	if spy.calls != 2 {
+		t.Fatalf("gate consultado %d vezes, esperado 2 (cada promocao a active)", spy.calls)
+	}
+}
+
+// TestSetStatus_DefaultVerifierFailsClosed prova o default FAIL-CLOSED (AOS-048 Q3):
+// um Registry construido SEM WithAdmissionVerifier NAO promove nada a active — o
+// denyVerifier por omissao recusa a promocao com ErrNoAdmissionVerifier (embrulhado
+// em ErrAdmissionDenied), em vez do antigo placeholder fail-open que admitia tudo.
+func TestSetStatus_DefaultVerifierFailsClosed(t *testing.T) {
+	t.Parallel()
+	store, err := eventstore.New()
+	if err != nil {
+		t.Fatalf("eventstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	// New SEM WithAdmissionVerifier: default denyVerifier (fail-closed).
+	reg, err := New(store, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	v := ver(1, 0, 0)
+	mustPublish(t, reg, toolReq("tool.x", v))
+
+	_, err = reg.SetStatus(ctx, "tool.x", v, domain.StatusActive)
+	if !errors.Is(err, ErrAdmissionDenied) {
+		t.Fatalf("promocao com default fail-closed = %v, quer ErrAdmissionDenied", err)
+	}
+	// O artefacto permanece em staging (nunca saltou para active).
+	got, _ := reg.Resolve(ctx, "tool.x", v)
+	if got.Status != domain.StatusStaging {
+		t.Fatalf("apos default deny, status = %s (devia ficar staging)", got.Status)
+	}
+	// O verificador por omissao e o defaultDenyVerifier, que recusa com o sentinela
+	// especifico ErrNoAdmissionVerifier (o SetStatus embrulha-o em ErrAdmissionDenied
+	// via %v, pelo que o sentinela interno nao vaza no chain do chamador — por design).
+	if verr := (defaultDenyVerifier{}).Verify(ctx, got); !errors.Is(verr, ErrNoAdmissionVerifier) {
+		t.Fatalf("defaultDenyVerifier.Verify = %v, quer ErrNoAdmissionVerifier", verr)
 	}
 }
 
@@ -443,7 +486,7 @@ func TestReplay_RebuildsFromEventStore(t *testing.T) {
 	ctx := context.Background()
 	v := ver(1, 0, 0)
 
-	reg1, err := New(store, WithClock(fixedClock()))
+	reg1, err := New(store, WithClock(fixedClock()), WithAdmissionVerifier(allowVerifier{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

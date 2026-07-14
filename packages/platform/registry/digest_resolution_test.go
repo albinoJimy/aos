@@ -76,7 +76,7 @@ func TestResolve_DigestMismatchBlocked(t *testing.T) {
 	v := ver(1, 0, 0)
 
 	// Publica com o SHA-256 real (digest esperado = SHA-256 do conteúdo).
-	pubReg, err := New(store, WithClock(fixedClock()))
+	pubReg, err := New(store, WithClock(fixedClock()), WithAdmissionVerifier(allowVerifier{}))
 	if err != nil {
 		t.Fatalf("New(pub): %v", err)
 	}
@@ -317,7 +317,7 @@ func TestIsAdmissible_DigestMismatchFailsClosed(t *testing.T) {
 	v := ver(1, 0, 0)
 
 	// Publica com o SHA-256 real e promove a active.
-	pubReg, _ := New(store, WithClock(fixedClock()))
+	pubReg, _ := New(store, WithClock(fixedClock()), WithAdmissionVerifier(allowVerifier{}))
 	if _, err := pubReg.Publish(ctx, toolReq("tool.x", v)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}

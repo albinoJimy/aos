@@ -32,13 +32,13 @@ func (s Status) Valid() bool {
 
 // transitions é o grafo de transições PERMITIDAS do ciclo de vida. Tudo o que não
 // esteja aqui é negado (default-deny da máquina de estados). Note-se em particular
-// que NÃO existe qualquer aresta que produza active sem partir de staging (via o
-// gate verificado) ou de deprecated (reactivação de uma versão já verificada):
-// nunca há um "salto" directo para active.
+// que NÃO existe qualquer aresta que produza active sem partir de staging ou de
+// deprecated, e AMBAS atravessam o gate de verificação (ver RequiresAdmissionGate):
+// nunca há um "salto" directo para active nem uma re-promoção não-verificada.
 //
 //	staging    → active (via gate de verificação), revoked
 //	active     → deprecated, revoked
-//	deprecated → active (reactivação), revoked
+//	deprecated → active (reactivação, via gate de verificação), revoked
 //	revoked    → ∅ (terminal)
 var transitions = map[Status]map[Status]bool{
 	StatusStaging: {
@@ -68,18 +68,18 @@ func CanTransition(from, to Status) bool {
 }
 
 // RequiresAdmissionGate indica se a transição atravessa o gate de verificação de
-// admissão (staging → active). É o PONTO DE EXTENSÃO onde AOS-047 (hash), AOS-048
-// (assinatura) e AOS-053 (eval-gate) impõem a verificação antes de promover. As
-// restantes transições não passam por esse gate.
+// admissão (QUALQUER promoção a active). É o PONTO DE EXTENSÃO onde AOS-047 (hash),
+// AOS-048 (assinatura) e AOS-053 (eval-gate) impõem a verificação antes de promover.
+// As restantes transições (active→deprecated, *→revoked) não passam por esse gate.
 //
-// DECISÃO EXPLÍCITA (AOS-045): a reactivação deprecated → active NÃO passa pelo gate.
-// É defensável na fundação porque o conteúdo por (id, version) é IMUTÁVEL (append-only)
-// e essa versão já atravessou o gate uma vez ao alcançar active — reactivar não muda
-// o artefacto verificado. AVISO DE RASTREABILIDADE: quando AOS-053 (eval-gate) e
-// AOS-049 (detecção de TOFU changed) aterrarem, uma versão deprecada por política ou
-// incidente poderia voltar a active sem re-avaliação; nesse momento este predicado
-// deve ser estendido (ou um gate de reactivação dedicado adicionado) para cobrir
-// também deprecated → active, garantindo a re-verificação na re-promoção.
+// TODA a aresta que PRODUZ active é gated: staging→active (primeira promoção) E
+// deprecated→active (reactivação). Embora o conteúdo por (id, version) seja IMUTÁVEL
+// (append-only), a CONFIANÇA na sua origem NÃO é imutável: a chave do publicador pode
+// ter sido REVOGADA entre a primeira promoção e a reactivação. Se a reactivação não
+// re-verificasse assinatura+trust, uma versão previamente activa por uma chave depois
+// comprometida voltaria a active SEM re-verificar a revogação — a revogação seria
+// inefectiva nessa aresta (AOS-048 Q1). Fechar deprecated→active no gate garante a
+// re-verificação criptográfica em cada re-promoção, fechando essa janela de revogação.
 func RequiresAdmissionGate(from, to Status) bool {
-	return from == StatusStaging && to == StatusActive
+	return to == StatusActive && (from == StatusStaging || from == StatusDeprecated)
 }

@@ -53,6 +53,14 @@ var (
 	// verificador que recuse mantém o artefacto fora de active (fail-closed).
 	ErrAdmissionDenied = &RegistryError{Code: "E_REG_ADMISSION_DENIED", msg: "verificacao de admissao recusou a promocao a active"}
 
+	// ErrNoAdmissionVerifier — tentou-se PROMOVER a active um Registry construído SEM
+	// AdmissionVerifier explícito (WithAdmissionVerifier). O default é FAIL-CLOSED: na
+	// ausência de um verificador de assinatura real (AOS-048), nenhuma promoção a
+	// active é admitida — em vez de admitir tudo (o antigo placeholder fail-open). É
+	// devolvido embrulhado em ErrAdmissionDenied, pelo que errors.Is(err,
+	// ErrAdmissionDenied) continua verdadeiro no caminho de promoção.
+	ErrNoAdmissionVerifier = &RegistryError{Code: "E_REG_NO_ADMISSION_VERIFIER", msg: "nenhum verificador de admissao injectado (fail-closed: promocao a active recusada)"}
+
 	// ErrConcurrentWrite — o catálogo mudou concorrentemente durante a escrita e o
 	// número máximo de retentativas optimistas esgotou-se. O chamador deve reler e
 	// reavaliar.

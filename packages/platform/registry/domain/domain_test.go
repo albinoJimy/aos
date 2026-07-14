@@ -136,13 +136,25 @@ func TestStatus_Transitions(t *testing.T) {
 
 func TestStatus_NoDirectJumpToActive(t *testing.T) {
 	t.Parallel()
-	// A ÚNICA aresta staging->active passa pelo gate de admissao; nenhuma outra
-	// aresta produz active sem partir de staging (via gate) ou deprecated (reactivacao).
+	// TODA a aresta que produz active passa pelo gate de admissao (staging->active
+	// E deprecated->active): nenhuma promocao a active escapa a re-verificacao
+	// criptografica (AOS-048 Q1 — fecha a janela de revogacao na reactivacao).
 	if !RequiresAdmissionGate(StatusStaging, StatusActive) {
 		t.Fatal("staging->active tem de exigir o gate de admissao")
 	}
-	if RequiresAdmissionGate(StatusDeprecated, StatusActive) {
-		t.Fatal("deprecated->active (reactivacao) nao passa pelo gate de staging")
+	if !RequiresAdmissionGate(StatusDeprecated, StatusActive) {
+		t.Fatal("deprecated->active (reactivacao) tem de exigir o gate de admissao (re-verificacao)")
+	}
+	// O gate SO se aplica a promocoes a active; as restantes transicoes nao.
+	for _, tc := range []struct{ from, to Status }{
+		{StatusActive, StatusDeprecated},
+		{StatusActive, StatusRevoked},
+		{StatusStaging, StatusRevoked},
+		{StatusDeprecated, StatusRevoked},
+	} {
+		if RequiresAdmissionGate(tc.from, tc.to) {
+			t.Fatalf("%s->%s nao devia exigir o gate de admissao", tc.from, tc.to)
+		}
 	}
 	// Nenhum estado transita para active a nao ser staging e deprecated.
 	for _, from := range []Status{StatusActive, StatusRevoked} {

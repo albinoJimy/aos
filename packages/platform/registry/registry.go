@@ -51,11 +51,23 @@ type AdmissionVerifier interface {
 	Verify(ctx context.Context, entry domain.Entry) error
 }
 
-// allowVerifier é o AdmissionVerifier por omissão de AOS-045: admite qualquer
-// entrada bem-formada. NÃO é um bypass — é o placeholder do gate cuja lógica
-// criptográfica é dos tickets seguintes. A garantia estrutural de AOS-045 é que
-// NENHUM artefacto salta para active sem PASSAR por este gate (publish só cria
-// staging; active exige SetStatus, que invoca o verifier).
+// defaultDenyVerifier é o AdmissionVerifier por omissão FAIL-CLOSED (AOS-048 Q3):
+// recusa TODA a promoção a active enquanto nenhum verificador de assinatura real
+// (signing.Verifier) for injectado via [WithAdmissionVerifier]. Substitui o antigo
+// placeholder fail-OPEN (allowVerifier, que admitia tudo): um Registry construído
+// sem gate criptográfico — por esquecimento de wiring — NÃO promove nada a active,
+// em vez de admitir silenciosamente qualquer entrada. É a diferença entre um default
+// seguro (default-deny, ADR-002) e um fail-open por configuração.
+type defaultDenyVerifier struct{}
+
+func (defaultDenyVerifier) Verify(context.Context, domain.Entry) error {
+	return ErrNoAdmissionVerifier
+}
+
+// allowVerifier admite qualquer entrada bem-formada. NÃO é um bypass estrutural (a
+// garantia de que publish só cria staging e que active exige passar pelo gate
+// mantém-se), mas é FAIL-OPEN: só deve ser injectado EXPLICITAMENTE em testes/dev
+// que não exercitam a assinatura. NUNCA é o default — o default é denyVerifier.
 type allowVerifier struct{}
 
 func (allowVerifier) Verify(context.Context, domain.Entry) error { return nil }
@@ -116,8 +128,11 @@ func WithDigester(d domain.Digester) Option {
 	}
 }
 
-// WithAdmissionVerifier injecta o gate de verificação staging→active (AOS-047/048/
-// 053). Por omissão allowVerifier (placeholder que admite formas bem-formadas).
+// WithAdmissionVerifier injecta o gate de verificação da promoção a active
+// (AOS-047/048/053). Por omissão denyVerifier: FAIL-CLOSED — sem um verificador real
+// injectado, nenhuma promoção a active é admitida. A composition-root de produção
+// DEVE ligar o signing.Verifier aqui; um valor nil é ignorado (mantém o default
+// fail-closed).
 func WithAdmissionVerifier(v AdmissionVerifier) Option {
 	return func(r *Registry) {
 		if v != nil {
@@ -148,7 +163,10 @@ func New(store eventstore.EventStore, opts ...Option) (*Registry, error) {
 		// substituindo o PlaceholderDigester não-criptográfico de AOS-045. Injectável
 		// via WithDigester para testes/futuras gerações de hashing.
 		digester: digest.SHA256Digester{},
-		verifier: allowVerifier{},
+		// FAIL-CLOSED por omissão (AOS-048 Q3): sem AdmissionVerifier injectado,
+		// nenhuma promoção a active é admitida (defaultDenyVerifier). O antigo default
+		// allowVerifier era fail-open por configuração.
+		verifier: defaultDenyVerifier{},
 		now:      time.Now,
 	}
 	for _, o := range opts {
