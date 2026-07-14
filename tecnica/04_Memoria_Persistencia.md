@@ -383,6 +383,100 @@ cache-hit-rate) — via a porta `agentruntime.Tracer` zero-dep. A eviction emite
 `working.window.evict` com a prova `aos.working.eviction_preserved=true` e o
 prefixo inalterado.
 
+### 8.5 Memória episódica (implementação AOS-038)
+
+A memória episódica guarda **trajectórias de execução passadas** — o que o agente
+fez, em que sequência, com que resultado — e torna-as recuperáveis como memória do
+agente. O pacote `episodic` (`packages/platform/memory/episodic`) implementa-a com
+ZERO dependências externas (cripto via stdlib), **compondo** as fundações já
+entregues em vez de as reimplementar.
+
+**Persistência append-only como árvore de spans (ADR-007/010).** Cada episódio
+persiste a trajectória através da via de REGISTO de AOS-036: `record.Persist` emite
+a árvore de spans COMPLETA (raiz + um span por turno com o manifesto + a árvore
+registada) para o backend de observabilidade (EPIC-08), ligada por `trace_id`. O
+episódio em si é escrito como evento append-only (`memory.episode.recorded`) no
+Event Store replicado — um stream dedicado, ordenado, idempotente por
+`f(run_id, episode_id)` (um retry não duplica). A leitura RECONSTRÓI o índice por
+replay do log; não há estado autoritativo em RAM.
+
+**Recuperação devolve PROJECÇÃO resumida, nunca a trajectória crua (Princípio 4).**
+`Recall(goal, tags)` reconstrói o índice, filtra por objectivo e/ou tags e ordena
+por relevância **determinística** (score de tags + bónus de objectivo; tie-break
+estável por `audit_seq` e depois `episode_id`). O conteúdo devolvido é a
+**projecção** de `projection.ProjectContext` (resumo higienizado, limitado em
+tokens) — NUNCA o `RawContent` nem a árvore de spans. O agente recorda episódios
+sem reinjectar tudo: o `EmittedSpans` (backend) é sempre estritamente maior do que
+os turnos incluídos na projecção. O embedding/similaridade é opcional (proposta) —
+a implementação foca objectivo/tags.
+
+**Replay resume-from-step (complementa o Event Store).** Um episódio recuperado dá
+o `run_id`; `ResumeFrom` compõe-no com o Event Store reutilizando o `durable.Resumer`
+de AOS-015 (relê os checkpoints do run e devolve o próximo passo não confirmado). O
+episódio COMPLEMENTA a indexação — não substitui o ES como fonte de verdade do
+replay.
+
+**Crypto-shredding com hash-chain intacta (ADR-011).** O CONTEÚDO recuperável (a
+projecção) é cifrado por **envelope encryption** (AES-256-GCM, stdlib): uma DEK
+aleatória por episódio cifra o resumo, e a **chave do titular (KEK)** — do
+`KeyStore` — embrulha a DEK. O ciphertext e o seu **hash** ficam no log append-only;
+a **hash-chain de audit (AOS-011)** sela o HASH do ciphertext (`PayloadRef`:
+`ContentHash` + `KeyRef` + `SubjectID`), NUNCA o plaintext. Apagar a KEK
+(`DeleteKey` — crypto-shredding) torna o episódio **irrecuperável**
+(`ErrEpisodeShredded`), mas a cadeia **não é mutada** e continua a **verificar**
+(`VerifyChain` → `audit.Verify`). É a reconciliação do direito ao apagamento com a
+tamper-evidence: apaga-se a chave, não o registo.
+
+**TTL por classe.** `Sweep(now)` aplica o TTL por classe (`TTLPolicy`): episódios
+cuja classe tem TTL finito e cujo `created_at + TTL` já passou são **crypto-shredded**
+(a chave do titular é apagada) — expiram por política **sem partir a cadeia**;
+classes permanentes sobrevivem.
+
+**Escrita fora da hot path.** A escrita episódica é uma **fila drenável**: `Enqueue`
+é O(1) e NÃO toca no Event Store, na cripto nem no tracer (não bloqueia o turno);
+o trabalho pesado (registo + projecção + cifragem + selagem) corre em `Flush`,
+chamado num checkpoint fora do turno crítico. É determinístico e testável (relógio,
+IDs e entropia da cripto injectáveis; sem goroutines não-determinísticas). Ao
+primeiro erro, `Flush` recoloca os episódios não persistidos na fila (nada é perdido).
+
+```mermaid
+flowchart TD
+    subgraph HOT["Hot path (turno)"]
+        ENQ["Enqueue(episódio) — O(1), sem ES/cripto"]
+    end
+    subgraph OFF["Fora da hot path (checkpoint) — Flush"]
+        PERS["record.Persist → árvore de spans COMPLETA"]
+        PROJ["projection.ProjectContext → resumo (projecção)"]
+        SEAL["envelope AES-GCM sob KEK do titular"]
+        ES["Event Store: memory.episode.recorded (append-only)"]
+        CHAIN["hash-chain audit: sela HASH do ciphertext"]
+    end
+    ENQ -->|fila drenável| PERS
+    PERS --> BK["Backend OBS (EPIC-08) — registo completo, trace_id"]
+    PERS --> PROJ --> SEAL --> ES
+    SEAL -->|ContentHash + KeyRef + SubjectID| CHAIN
+
+    subgraph RECALL["Recuperação"]
+        Q["Recall(goal, tags) — ranking determinístico"]
+        DEC["decifra sob a KEK → PROJECÇÃO resumida"]
+        RES["ResumeFrom + Event Store → resume-from-step"]
+    end
+    ES -->|replay do índice| Q --> DEC
+    Q --> RES
+
+    SHRED["DeleteKey (crypto-shredding / TTL Sweep)"]
+    SHRED -.apaga a KEK.-> DEC
+    DEC -.sem KEK: ErrEpisodeShredded.-> IRR["irrecuperável"]
+    SHRED -.NÃO toca.-> CHAIN
+    CHAIN -->|VerifyChain: continua a verificar| OK["cadeia intacta"]
+```
+
+A leitura do diagrama: a via quente só enfileira; tudo o que é pesado (as duas vias
+do Princípio 4, a cifragem e a selagem) corre no `Flush` fora do turno. Na
+recuperação, o índice vem do log por replay e o conteúdo é a projecção decifrada —
+nunca a trajectória crua. O crypto-shredding (por apagamento de chave ou por TTL)
+corta a recuperação do conteúdo sem tocar na hash-chain, que continua a verificar.
+
 ---
 
 ## 9. Vista de qualidade
@@ -409,6 +503,9 @@ prefixo inalterado.
 | Prompt remontado/tools dinâmicas mutam o prefixo | Cache-hit despenca, custo explode | Prefixo imutável byte-idêntico + tail append-only; novas tools só em runs novos (AOS-037, ADR-009) |
 | Janela satura sem aviso e faz hard-stop | Turno abortado cego, trabalho perdido | Contabilidade em tokens + sinal de exaustão graciosa a ~80% (marca compressão/escala), nunca hard-stop (AOS-037, ADR-008) |
 | Eviction da janela apaga o registo | Perda de evidência (viola Princípio 4) | Eviction só da vista; segmento preservado no backend ANTES de sair, senão recusada (AOS-037/AOS-036) |
+| Recuperação de episódio reinjecta a trajectória crua | Custo de tokens explode; higiene de contexto corrompida | Recall devolve a PROJECÇÃO resumida (AOS-036), nunca o RawContent/árvore de spans (AOS-038, Princípio 4) |
+| Apagamento GDPR de episódio parte o audit trail | Tamper-evidence perdida ou direito ao apagamento impossível | Crypto-shredding: cifra por titular; apagar a KEK torna irrecuperável e a hash-chain sela só o HASH — continua a verificar (AOS-038, ADR-011) |
+| Escrita episódica na hot path bloqueia o turno | Latência do loop, cache thrash | Fila drenável: Enqueue O(1) sem ES/cripto; persist só em Flush fora do turno (AOS-038) |
 
 ---
 

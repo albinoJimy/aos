@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
+	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
 )
 
@@ -24,3 +25,10 @@ replace github.com/aos-ref/kernel/agent-runtime => ../../kernel/agent-runtime
 replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 
 replace github.com/aos-ref/kernel/reference-monitor => ../../kernel/reference-monitor
+
+// O audit tamper-evident (AOS-011, ADR-010) fornece a hash-chain sob a qual a
+// memória episódica sela o HASH do ciphertext de cada episódio (PayloadRef:
+// ContentHash + KeyRef + SubjectID). É o que garante que apagar a chave por
+// titular (crypto-shredding, ADR-011) torna o plaintext irrecuperável SEM partir
+// a cadeia — a cadeia sela o hash, não o plaintext. NÃO alterar o pacote audit.
+replace github.com/aos-ref/platform/audit => ../audit
