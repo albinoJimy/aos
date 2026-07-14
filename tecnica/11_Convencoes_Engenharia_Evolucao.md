@@ -64,6 +64,8 @@ Cada versão é imutável depois de publicada e é acompanhada de um **contrato*
 
 O schema de memória segue a mesma disciplina com **migrações expand/contract**: primeiro expande-se o schema para suportar ambas as formas (velha e nova), migram-se os dados, e só depois se contrai removendo a forma antiga — garantindo que nenhuma trajectória em curso lê um registo que já não compreende.
 
+> **Execução (AOS-041).** A disciplina acima é executável no Memory Service (ver `tecnica/04` §8.8). O schema de memória é versionado **SemVer por classe** (`memory/schema`, evolução monótona fail-closed) e o motor `memory/migrations` aplica expand → migrate → contract com cada fase reversível, dual-write/dual-read na fase expand (sem downtime) e rollback de migração falhada sem perda de dados (o estado nunca muta até uma fase concluir). O registo de migrações é durável e **idempotente** (idempotency_key no Event Store, ADR-001; reaplicar = no-op). O gate desta secção materializa-se na porta `migrations.Gate`, **fail-closed**: uma mudança **MAJOR sem aprovação é recusada**; MINOR/PATCH passam sem gate. A porta de eval-gate completa (golden-set, ratificação assinada) é do EPIC-05 — o Memory Service consome só o contrato.
+
 ```mermaid
 flowchart TD
     ART["Artefacto comportamental: skill, modulo de prompt, schema de tool, schema de memoria"] --> CONTRACT["Contrato publico versionado"]

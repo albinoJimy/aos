@@ -584,6 +584,81 @@ sem segredos nos spans.
 
 ---
 
+### 8.8 Versionamento de schema e motor expand/contract (implementação AOS-041)
+
+O ticket AOS-041 dá **execução** à estratégia da §6: o versionamento de schema de
+memória **por classe** (SemVer) e um **motor de migração** expand → migrate →
+contract com rollback, dual-write/dual-read e um registo idempotente. Não
+reimplementa o modelo — o `schema_version` obrigatório em cada registo já vem de
+AOS-035 (§8.2); este ticket dá-lhe **semântica** e um motor que o faz evoluir.
+
+**Schema versionado por classe (pacote `memory/schema`).** Cada uma das quatro
+classes tem uma **versão de schema corrente em SemVer** custodiada por um
+`ClassRegistry`. O parser SemVer (`schema.Version`) reutiliza o padrão do scheduler
+(AOS-030): `MAJOR.MINOR.PATCH` numérico, ordenação total. A evolução é **monótona**
+— `Register` recusa (fail-closed, `ErrNonMonotonic`) qualquer versão que não seja
+estritamente mais recente que a corrente, tal como o hot-reload de política recusa
+uma versão não-monótona. `schema.Classify(from,to)` classifica a mudança em termos
+de **contrato** (`ChangeMajor`/`ChangeMinor`/`ChangePatch`) — o discriminador que o
+motor consulta para decidir o gate.
+
+**Motor expand → migrate → contract (pacote `memory/migrations`).** Uma `Migration`
+é a definição declarativa e **bidireccional** de uma evolução de uma classe entre
+duas versões: `Up` migra From→To e `Down` migra To→From — a reversibilidade é
+construtiva, não um add-on. O `Runner` opera sobre um **snapshot** de registos e
+guarda, por registo, as **duas representações** (`old`/`new`); cada fase é aplicável
+e reversível de forma independente:
+
+```mermaid
+flowchart LR
+    N["none: so From"] -->|Expand| E["expand: From+To (dual-write/read), le From"]
+    E -->|Migrate| M["migrate: le To, ambas coexistem"]
+    M -->|Contract| C["contract: so To"]
+    E -.RevertExpand.-> N
+    M -.RevertMigrate.-> E
+    C -.RevertContract (Down).-> M
+```
+
+- **Expand** computa `Up` de cada registo (nova forma), passando a haver
+  **dual-write** (escrita nas duas formas via `Put`) e **dual-read** (`Read(id,ver)`
+  serve a versão pedida, degradando graciosamente para a disponível). A leitura
+  **canónica mantém-se em From** — nenhum leitor vê a nova forma sem a pedir: **sem
+  downtime**.
+- **Migrate** faz o *switch* da leitura canónica para To e **avança a versão da
+  classe** no `ClassRegistry` (é aqui que a nova forma se torna a da classe).
+- **Contract** remove a forma antiga; só To subsiste. Reversível: `RevertContract`
+  recompõe a forma antiga por `Down`.
+
+**Rollback sem perda nem corrupção.** O motor **nunca muta o estado corrente até
+uma fase concluir com sucesso**: cada fase computa num mapa temporário e só o comita
+se **todos** os transforms passarem. Uma migração falhada (um `Up` que devolve erro)
+deixa o estado **byte-idêntico ao inicial** — provado por teste. `Run` encadeia as
+três fases de forma **transacional**: qualquer falha reverte ao snapshot inicial. O
+Event Store append-only nunca é mutado; o rollback reverte por estado/nova fase,
+coerente com a §6 e o ADR-012.
+
+**Registo de migrações durável e idempotente.** Cada `(migração, fase)` aplicada é
+gravada como evento append-only no stream `memory.migrations`, com a
+**idempotency_key** do Event Store (`mem-migration:<id>:<fase>`, coerente com
+ADR-001). **Reaplicar é um no-op**: a segunda gravação deduplica no store e devolve
+`applied=false`; a linhagem reconstrói-se por replay (`List`). A idempotência também
+vale ao nível do motor: reaplicar uma fase já concluída é um no-op observável.
+
+**MAJOR por eval-gate (porta, fail-closed).** A porta `migrations.Gate` é o
+admission control da evolução de contrato (ADR-012, `tecnica/11`): `Expand` submete a
+migração ao gate **antes** de tocar no estado. Mudanças MINOR/PATCH passam sempre;
+uma mudança **MAJOR sem aprovação é RECUSADA** (`ErrMigrationDenied`, nada aplicado).
+O default, sem gate configurado, é fail-closed total para MAJOR. A implementação de
+referência (`EvalGate`) aprova por ID de migração; a porta completa (golden-set,
+trace-diffing, ratificação assinada) é do EPIC-05 — aqui vive só o contrato.
+
+Determinismo: transforms `Up`/`Down` puros (mesma entrada → mesma saída); sem
+`time.Now`/`rand`; namespace de idempotência injectável; serialização estável.
+Observabilidade via a porta `Tracer` zero-dep, namespace
+`aos.memory.migration.*`; sem segredos nos spans.
+
+---
+
 ## 9. Vista de qualidade
 
 **Arquitectura.** A camada de memória assenta inteiramente sobre o Event Store como fonte de verdade única (ADR-007): não há estado autoritativo fora do log, o que elimina divergências entre réplicas e torna todo o estado reconstruível por replay. A separação contexto ≠ registo é o que permite escalar horizontalmente — workers stateless, projecção barata ao modelo, registo completo particionado — sem escolher entre custo e observabilidade.
