@@ -531,6 +531,59 @@ do Agent Runtime, no namespace `aos.memory.provenance.*`; sem segredos nos spans
 
 ---
 
+### 8.7 Memória semântica — base de conhecimento (implementação AOS-039)
+
+O ticket AOS-039 implementa a classe **semântica** — a base de conhecimento factual
+consultável (factos/entidades/relações) — em `packages/platform/memory/semantic`
+(mesmo módulo, Go 1.24, zero dependências externas). É a superfície clássica do
+*memory poisoning* (ASI06), pelo que **compõe** as fundações de segurança já
+entregues em vez de as reimplementar: a proveniência/quarentena de AOS-042, o
+crypto-shredding de AOS-038 (porta `KeyStore`) e a hash-chain de AOS-011, com o
+Event Store como fonte de verdade (reconstrução por replay).
+
+**Proveniência obrigatória (fail-closed).** `KnowledgeBase.Write(ctx, fact, source)`
+declara a proveniência pela **fonte** estruturada — nunca por uma tag in-band. Uma
+fonte ausente ou não-canónica é **rejeitada** (`ErrMissingProvenanceSource`), tal
+como a falta do `run_id` de origem ou dos metadados obrigatórios (via a ingestão de
+AOS-042, que impõe a classificação e valida). A escrita sem proveniência não deixa
+sequer rasto na hash-chain — a selagem só ocorre depois de a ingestão validar.
+
+**Quarentena de untrusted (barreira de AOS-042).** Conhecimento derivado de
+`tool_result`/`web`/`mcp_schema` entra em **quarentena** (untrusted) e é servido como
+`DataItem` taint-marcado — estruturalmente incapaz de autorizar uma acção: não
+satisfaz `PrivilegedAuthorizer`. As **duas superfícies de consulta são disjuntas**:
+`ControlPlaneView` (o que o planeador lê) só expõe conhecimento trusted como
+`TrustedView`; `Recall` serve conhecimento como dados, devolvendo **sempre** a
+etiqueta de proveniência e **preservando o taint** até ao consumidor (um facto
+untrusted expõe um `DataItem`, nunca um autorizador). O ranking é determinístico
+(score de tags/chave desc; `audit_seq` asc; `fact_id` asc).
+
+**Curadoria/promoção auditável (Promoter de AOS-042).** `KnowledgeBase.Curate`
+sela o facto em quarentena como untrusted (`Seal` — que recusa promover algo já
+trusted) e delega em `Promoter.Promote`: exige validação **explícita** (política ou
+humano) e regista a promoção na hash-chain (taint de origem + validação selados).
+Um evento de promoção é persistido no Event Store; a reconstrução passa a servir o
+facto como trusted, admitindo-o pela **fonte-curadora** (autenticado/sistema) que a
+validação implica — só assim se obtém um `TrustedEntry` (a autoridade de
+control-plane é inforjável). O facto original untrusted permanece imutável.
+
+**Conformidade — TTL, redação de PII, crypto-shredding (padrão de AOS-038).** A
+asserção é cifrada por **envelope AES-256-GCM** sob a KEK do titular (`KeyStore`); o
+índice (chave/tags/proveniência) fica em claro. Os campos marcados PII são
+**redigidos** (`[REDACTED]`) antes de servir, tanto no data-plane como no
+control-plane, e a obrigação `redact_pii` é selada na cadeia. Apagar a KEK
+(**crypto-shredding**, directo ou via `Sweep` de TTL por classe) torna o facto
+irrecuperável (`Recoverable=false`) **sem** apagar o índice nem partir a hash-chain
+— que continua a verificar (a cadeia sela o HASH do ciphertext, não o plaintext). O
+`Sweep` só apaga a KEK de um titular quando **todos** os seus factos expiraram (um
+não-expirado, ou de classe `permanent`, retém a chave).
+
+Determinismo: relógio/entropia/ids injectáveis; ranking e serialização estáveis.
+Observabilidade via a porta `Tracer` zero-dep, namespace `aos.memory.semantic.*`;
+sem segredos nos spans.
+
+---
+
 ## 9. Vista de qualidade
 
 **Arquitectura.** A camada de memória assenta inteiramente sobre o Event Store como fonte de verdade única (ADR-007): não há estado autoritativo fora do log, o que elimina divergências entre réplicas e torna todo o estado reconstruível por replay. A separação contexto ≠ registo é o que permite escalar horizontalmente — workers stateless, projecção barata ao modelo, registo completo particionado — sem escolher entre custo e observabilidade.
@@ -558,6 +611,9 @@ do Agent Runtime, no namespace `aos.memory.provenance.*`; sem segredos nos spans
 | Recuperação de episódio reinjecta a trajectória crua | Custo de tokens explode; higiene de contexto corrompida | Recall devolve a PROJECÇÃO resumida (AOS-036), nunca o RawContent/árvore de spans (AOS-038, Princípio 4) |
 | Apagamento GDPR de episódio parte o audit trail | Tamper-evidence perdida ou direito ao apagamento impossível | Crypto-shredding: cifra por titular; apagar a KEK torna irrecuperável e a hash-chain sela só o HASH — continua a verificar (AOS-038, ADR-011) |
 | Escrita episódica na hot path bloqueia o turno | Latência do loop, cache thrash | Fila drenável: Enqueue O(1) sem ES/cripto; persist só em Flush fora do turno (AOS-038) |
+| Facto untrusted da base de conhecimento autoriza uma acção | Memory poisoning comanda o planeador (ASI06) | Consulta trusted-only (`ControlPlaneView`) vs. dados taint-marcados (`Recall`/`DataItem`); untrusted nunca satisfaz `PrivilegedAuthorizer` (AOS-039/AOS-042) |
+| PII na base de conhecimento exposta ou apagamento GDPR parte a cadeia | Violação de conformidade (ADR-011) | Redação de PII antes de servir + crypto-shredding por titular (KEK); apagar a chave torna irrecuperável e a hash-chain sela só o HASH (AOS-039/AOS-038) |
+| Promoção silenciosa de conhecimento untrusted a confiável | Contaminação da base sem rasto | `Curate` exige validação explícita (política/humano) e sela a promoção na hash-chain; sem promoção automática (AOS-039/AOS-042) |
 
 ---
 
