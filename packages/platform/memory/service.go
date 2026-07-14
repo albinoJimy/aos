@@ -8,6 +8,7 @@ import (
 
 	"github.com/aos-ref/platform/memory/domain"
 	"github.com/aos-ref/platform/memory/ports"
+	"github.com/aos-ref/platform/memory/provenance"
 )
 
 // Service é a FACHADA do Memory Service (MEM). Assenta sobre uma MemoryPort
@@ -18,9 +19,12 @@ import (
 //     time.Now/rand no caminho de decisão;
 //   - valida os metadados obrigatórios ANTES de tocar no backend (fail-closed).
 //
-// A fachada NUNCA supre provenance nem schema_version: esses têm de vir do
-// chamador, e a sua ausência falha-fecha (é isto que preserva a garantia de
-// segurança/proveniência ao nível do serviço, não só do adaptador).
+// A fachada NUNCA supre schema_version: esse tem de vir do chamador, e a sua
+// ausência falha-fecha. A PROVENIÊNCIA, ao contrário, NÃO é confiada ao campo do
+// chamador: é DERIVADA da fonte estruturada da escrita ([provenance.Classify]) e
+// IMPOSTA sobre os metadados (a marcação automática de untrusted é ESTRUTURAL, não
+// opcional). Assim, conteúdo de tool_result/web/mcp_schema não pode ser escrito
+// como trusted pela fachada — o anti-padrão de "tag in-band" que o ADR-005 rejeita.
 type Service struct {
 	port  ports.MemoryPort
 	now   func() time.Time
@@ -72,16 +76,20 @@ func NewService(port ports.MemoryPort, opts ...Option) *Service {
 // PortVersion devolve a versão do contrato da porta subjacente.
 func (s *Service) PortVersion() string { return s.port.Version() }
 
-// Remember assembla e escreve um registo de uma classe. Preenche CreatedAt pelo
-// relógio injectado (se zero) e o ID pelo gerador (se vazio), valida (fail-closed)
+// Remember assembla e escreve um registo de uma classe, classificando-o pela FONTE
+// estruturada src. Preenche CreatedAt pelo relógio injectado (se zero) e o ID pelo
+// gerador (se vazio), IMPÕE a proveniência derivada da fonte, valida (fail-closed)
 // e delega em Put. É o caminho ergonómico; o Body tem de corresponder à classe.
 //
-// provenance/schema_version/agent_id/run_id/ttl_class vêm SEMPRE do chamador (via
-// meta): a fachada não os inventa. Sem provenance OU schema_version, devolve erro.
-func (s *Service) Remember(ctx context.Context, class domain.MemoryClass, meta domain.Metadata, body domain.Body) (domain.Record, error) {
+// A proveniência é DERIVADA de src ([provenance.Classify]) e sobrepõe-se ao campo
+// meta.Provenance: um chamador que passe src=tool_result não consegue escrever
+// trusted, ainda que ponha Provenance=trusted em meta. schema_version/agent_id/
+// run_id/ttl_class vêm SEMPRE do chamador (via meta); sem schema_version, erro.
+func (s *Service) Remember(ctx context.Context, class domain.MemoryClass, src provenance.Source, meta domain.Metadata, body domain.Body) (domain.Record, error) {
 	if meta.CreatedAt.IsZero() {
 		meta.CreatedAt = s.now()
 	}
+	imposeProvenance(&meta, src)
 	rec := domain.Record{
 		ID:       s.newID(),
 		Class:    class,
@@ -94,16 +102,28 @@ func (s *Service) Remember(ctx context.Context, class domain.MemoryClass, meta d
 	return s.port.Put(ctx, rec)
 }
 
-// Put escreve um registo já montado pelo chamador (respeita o ID fornecido).
-// Preenche CreatedAt pelo relógio se estiver a zero; valida e delega na porta.
-func (s *Service) Put(ctx context.Context, rec domain.Record) (domain.Record, error) {
+// Put escreve um registo já montado pelo chamador (respeita o ID fornecido),
+// classificando-o pela FONTE estruturada src. Preenche CreatedAt pelo relógio se
+// estiver a zero; IMPÕE a proveniência derivada da fonte (o campo Provenance do
+// registo do chamador NÃO é confiado); valida e delega na porta.
+func (s *Service) Put(ctx context.Context, rec domain.Record, src provenance.Source) (domain.Record, error) {
 	if rec.Metadata.CreatedAt.IsZero() {
 		rec.Metadata.CreatedAt = s.now()
 	}
+	imposeProvenance(&rec.Metadata, src)
 	if err := rec.Validate(); err != nil {
 		return domain.Record{}, err
 	}
 	return s.port.Put(ctx, rec)
+}
+
+// imposeProvenance é a marcação automática ESTRUTURAL: deriva a classificação
+// trusted|untrusted da fonte (fail-closed: fonte desconhecida → untrusted) e
+// estampa a fonte forense, sobrepondo-se a qualquer valor que o chamador tenha
+// posto. É o ponto único onde a fachada recusa confiar numa tag in-band.
+func imposeProvenance(meta *domain.Metadata, src provenance.Source) {
+	meta.Provenance = provenance.Classify(src)
+	meta.Source = domain.ProvenanceSource(src)
 }
 
 // Get devolve o registo (class,id) ou domain.ErrNotFound.

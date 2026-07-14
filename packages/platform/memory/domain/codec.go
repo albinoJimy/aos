@@ -15,12 +15,13 @@ import (
 // exactamente o mesmo formato (pré-requisito do backend-swap por contrato).
 
 type metadataEnvelope struct {
-	AgentID       string     `json:"agent_id"`
-	RunID         string     `json:"run_id"`
-	Provenance    Provenance `json:"provenance"`
-	CreatedAt     string     `json:"created_at"`
-	TTLClass      TTLClass   `json:"ttl_class"`
-	SchemaVersion string     `json:"schema_version"`
+	AgentID       string           `json:"agent_id"`
+	RunID         string           `json:"run_id"`
+	Provenance    Provenance       `json:"provenance"`
+	Source        ProvenanceSource `json:"source,omitempty"`
+	CreatedAt     string           `json:"created_at"`
+	TTLClass      TTLClass         `json:"ttl_class"`
+	SchemaVersion string           `json:"schema_version"`
 }
 
 type recordEnvelope struct {
@@ -47,6 +48,7 @@ func MarshalRecord(r Record) ([]byte, error) {
 			AgentID:       r.Metadata.AgentID,
 			RunID:         r.Metadata.RunID,
 			Provenance:    r.Metadata.Provenance,
+			Source:        r.Metadata.Source,
 			CreatedAt:     r.Metadata.CreatedAt.UTC().Format(time.RFC3339Nano),
 			TTLClass:      r.Metadata.TTLClass,
 			SchemaVersion: r.Metadata.SchemaVersion,
@@ -83,6 +85,7 @@ func UnmarshalRecord(data []byte) (Record, error) {
 			AgentID:       env.Metadata.AgentID,
 			RunID:         env.Metadata.RunID,
 			Provenance:    env.Metadata.Provenance,
+			Source:        env.Metadata.Source,
 			CreatedAt:     createdAt,
 			TTLClass:      env.Metadata.TTLClass,
 			SchemaVersion: env.Metadata.SchemaVersion,

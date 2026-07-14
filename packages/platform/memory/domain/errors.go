@@ -26,6 +26,12 @@ var (
 	// uma escrita sem trusted/untrusted é sempre rejeitada (prepara AOS-042).
 	ErrMissingProvenance = &MemoryError{Code: "E_MEM_MISSING_PROVENANCE", msg: "provenance obrigatoria em falta (trusted|untrusted)"}
 
+	// ErrInvalidProvenanceSource — a FONTE de proveniência (o "de onde veio":
+	// tool_result|web|mcp_schema|system|…) está presente mas não é canónica.
+	// Fail-closed: a marcação de fonte, quando estampada, tem de ser reconhecível
+	// (é o componente forense do triplo (fonte, classificação, run_id) do AOS-042).
+	ErrInvalidProvenanceSource = &MemoryError{Code: "E_MEM_INVALID_PROVENANCE_SOURCE", msg: "provenance source presente mas nao canonica"}
+
 	// ErrMissingCreatedAt — created_at em falta (zero). O relógio é injectável na
 	// fachada; a ausência num registo que chega à porta é fail-closed.
 	ErrMissingCreatedAt = &MemoryError{Code: "E_MEM_MISSING_CREATED_AT", msg: "created_at obrigatorio em falta"}

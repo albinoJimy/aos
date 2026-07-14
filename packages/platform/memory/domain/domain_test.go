@@ -38,6 +38,9 @@ func TestMetadata_Validate_FailClosed(t *testing.T) {
 		{"missing_ttl_class", func(m *domain.Metadata) { m.TTLClass = "" }, domain.ErrMissingTTLClass},
 		{"invalid_ttl_class", func(m *domain.Metadata) { m.TTLClass = "forever-ish" }, domain.ErrMissingTTLClass},
 		{"missing_schema_version", func(m *domain.Metadata) { m.SchemaVersion = "" }, domain.ErrMissingSchemaVersion},
+		{"source_absent_ok", func(m *domain.Metadata) { m.Source = "" }, nil},
+		{"source_canonical_ok", func(m *domain.Metadata) { m.Source = domain.SourceToolResult }, nil},
+		{"source_non_canonical", func(m *domain.Metadata) { m.Source = "hackernews" }, domain.ErrInvalidProvenanceSource},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,6 +150,43 @@ func TestCodec_RoundTrip(t *testing.T) {
 				t.Fatalf("round-trip nao valida: %v", err)
 			}
 		})
+	}
+}
+
+// TestCodec_PersistsSource prova o AOS042-C1 ao nível da serialização: a FONTE
+// forense sobrevive ao round-trip persistido (o "de onde veio" não se perde na
+// escrita), e um registo sem fonte continua a round-tripar (retro-compatível).
+func TestCodec_PersistsSource(t *testing.T) {
+	m := validMeta()
+	m.Provenance = domain.ProvenanceUntrusted
+	m.Source = domain.SourceWeb
+	in := domain.Record{ID: "src", Class: domain.ClassSemantic, Metadata: m, Body: domain.SemanticBody{Subject: "a", Predicate: "b", Object: "c"}}
+
+	raw, err := domain.MarshalRecord(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	out, err := domain.UnmarshalRecord(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if out.Metadata.Source != domain.SourceWeb {
+		t.Fatalf("fonte não sobreviveu ao round-trip: %q", out.Metadata.Source)
+	}
+
+	// Sem fonte: campo omitido no envelope e round-trip permanece válido.
+	noSrc := validMeta()
+	rec2 := domain.Record{ID: "nosrc", Class: domain.ClassSemantic, Metadata: noSrc, Body: domain.SemanticBody{Subject: "a", Predicate: "b", Object: "c"}}
+	raw2, _ := domain.MarshalRecord(rec2)
+	out2, err := domain.UnmarshalRecord(raw2)
+	if err != nil {
+		t.Fatalf("Unmarshal sem fonte: %v", err)
+	}
+	if out2.Metadata.Source != "" {
+		t.Fatalf("fonte devia ser vazia, obteve %q", out2.Metadata.Source)
+	}
+	if err := out2.Validate(); err != nil {
+		t.Fatalf("registo sem fonte devia validar: %v", err)
 	}
 }
 

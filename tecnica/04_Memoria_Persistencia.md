@@ -477,6 +477,58 @@ recuperação, o índice vem do log por replay e o conteúdo é a projecção de
 nunca a trajectória crua. O crypto-shredding (por apagamento de chave ou por TTL)
 corta a recuperação do conteúdo sem tocar na hash-chain, que continua a verificar.
 
+### 8.6 Proveniência e quarentena (implementação AOS-042)
+
+O ticket AOS-042 executa a fronteira de segurança da §7: transforma a proveniência
+(já metadado obrigatório de AOS-035) numa **barreira estrutural** e adiciona a
+quarentena. Está implementado em `packages/platform/memory/provenance` (mesmo
+módulo, Go 1.24, zero dependências externas), assente no metadado obrigatório de
+AOS-035 e na hash-chain de audit de AOS-011.
+
+**Proveniência obrigatória e imutável.** Todo o registo que atravessa esta camada
+é selado num `Ingested` — um tipo cujo campo de proveniência é **não exportado e
+sem mutador**. Uma vez admitido, o estatuto de confiança não muda; o construtor
+clona o registo, pelo que mutar o registo do chamador depois da ingestão não altera
+o selo. `Seal` falha-fecha (`ErrMissingProvenance`) uma escrita com proveniência
+ausente ou não-canónica: não há default silencioso.
+
+**Marcação automática de untrusted.** A classificação é feita pela **fonte**,
+estruturalmente (`Classify`) — nunca por uma tag in-band que o conteúdo carregue.
+Só `system` e `authenticated_user` são trusted; tool results, web e schemas MCP —
+e qualquer fonte desconhecida — são untrusted (lado seguro). A ingestão IMPÕE a
+proveniência classificada, prevalecendo sobre o que o chamador tenha posto no campo.
+
+**Taint transitivo (sem lavagem).** `Derive` propaga o taint dos pais: qualquer pai
+untrusted (ou não-canónico) torna o derivado untrusted; só todos-trusted resulta
+trusted; sem pais, untrusted. Uma mistura trusted+untrusted é sempre untrusted — o
+taint é contagioso, não há caminho de lavagem ao passar pela memória.
+
+**Barreira estrutural control-plane / data-plane.** A separação é a nível de
+tipo/caminho, à imagem da barreira read-only de AOS-036. A admissão (`Partition.Admit`)
+encaminha cada registo pela sua proveniência selada: trusted para a `TrustedView`
+(o único tipo que o planeador lê, e que só expõe `TrustedEntry`), untrusted para a
+`Quarantine` (servida como `DataItem` via a porta `DataPlane`). Só `TrustedEntry`
+satisfaz `PrivilegedAuthorizer` (a capacidade de autorizar uma tool call); um
+`DataItem` **não o implementa** — a asserção de tipo falha e `item.AuthorizeToolCall(…)`
+nem sequer compila. É esta a prova de que a memória em quarentena é
+*estruturalmente* incapaz de comandar uma acção privilegiada.
+
+**Promoção auditável.** `Promoter.Promote` promove untrusted → trusted exigindo
+validação **explícita** (`policy` ou `human` + validador não vazio; senão
+`ErrPromotionNotValidated`) e regista a promoção na hash-chain tamper-evident de
+AOS-011 (taint de origem e validação selados). Não há promoção silenciosa nem
+automática; a promoção cria um registo trusted NOVO — o original untrusted permanece
+imutável, coerente com o event-sourcing.
+
+**Integração EPIC-07 por porta.** O mecanismo real de taint control/data-plane
+(SBX / dual-LLM / CaMeL) é EPIC-07 e não é reimplementado: esta camada depende só
+das interfaces `TaintController` e `DataPlane`, com implementações de referência
+(`DefaultTaintController`, `ReferenceDataPlane`) que EPIC-07 substituirá.
+
+Determinismo: relógio injectável no `Promoter` (sem `time.Now` na decisão),
+serialização estável herdada do audit. Observabilidade via a porta `Tracer` zero-dep
+do Agent Runtime, no namespace `aos.memory.provenance.*`; sem segredos nos spans.
+
 ---
 
 ## 9. Vista de qualidade

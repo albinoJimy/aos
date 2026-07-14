@@ -10,6 +10,7 @@ import (
 	"github.com/aos-ref/platform/memory/adapters"
 	"github.com/aos-ref/platform/memory/domain"
 	"github.com/aos-ref/platform/memory/ports"
+	"github.com/aos-ref/platform/memory/provenance"
 )
 
 var fixed = time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
@@ -39,7 +40,7 @@ func TestService_Remember_FillsSystemFields(t *testing.T) {
 	svc := newSvc(t)
 	ctx := context.Background()
 
-	rec, err := svc.Remember(ctx, domain.ClassEpisodic, metaTrusted(),
+	rec, err := svc.Remember(ctx, domain.ClassEpisodic, provenance.SourceSystem, metaTrusted(),
 		domain.EpisodicBody{TraceID: "t", Outcome: "success"})
 	if err != nil {
 		t.Fatalf("Remember: %v", err)
@@ -70,7 +71,7 @@ func TestService_DeterministicIDs(t *testing.T) {
 		memory.WithIDGenerator(gen),
 	)
 	ctx := context.Background()
-	r, err := svc.Remember(ctx, domain.ClassWorking, metaTrusted(), domain.WorkingBody{TurnIndex: 1})
+	r, err := svc.Remember(ctx, domain.ClassWorking, provenance.SourceSystem, metaTrusted(), domain.WorkingBody{TurnIndex: 1})
 	if err != nil {
 		t.Fatalf("Remember: %v", err)
 	}
@@ -80,25 +81,63 @@ func TestService_DeterministicIDs(t *testing.T) {
 }
 
 // TestService_FailClosed_NoSilentDefaults prova que a fachada NÃO inventa
-// provenance nem schema_version: a sua ausência falha-fecha já no serviço.
+// schema_version: a sua ausência falha-fecha já no serviço.
 func TestService_FailClosed_NoSilentDefaults(t *testing.T) {
 	svc := newSvc(t)
 	ctx := context.Background()
 
-	t.Run("no_provenance", func(t *testing.T) {
-		m := metaTrusted()
-		m.Provenance = ""
-		if _, err := svc.Remember(ctx, domain.ClassSemantic, m, domain.SemanticBody{}); !errors.Is(err, domain.ErrMissingProvenance) {
-			t.Fatalf("quer ErrMissingProvenance, obteve %v", err)
-		}
-	})
 	t.Run("no_schema_version", func(t *testing.T) {
 		m := metaTrusted()
 		m.SchemaVersion = ""
-		if _, err := svc.Remember(ctx, domain.ClassSemantic, m, domain.SemanticBody{}); !errors.Is(err, domain.ErrMissingSchemaVersion) {
+		body := domain.SemanticBody{Subject: "s", Predicate: "p", Object: "o"}
+		if _, err := svc.Remember(ctx, domain.ClassSemantic, provenance.SourceSystem, m, body); !errors.Is(err, domain.ErrMissingSchemaVersion) {
 			t.Fatalf("quer ErrMissingSchemaVersion, obteve %v", err)
 		}
 	})
+}
+
+// TestService_ImposesProvenanceFromSource é a prova do AOS042-C2: a fachada faz a
+// marcação automática ESTRUTURAL — deriva a proveniência da FONTE e sobrepõe-se ao
+// campo do chamador. Conteúdo de tool_result NÃO pode ser escrito como trusted,
+// mesmo que o chamador ponha Provenance=trusted; e a fonte é persistida.
+func TestService_ImposesProvenanceFromSource(t *testing.T) {
+	svc := newSvc(t)
+	ctx := context.Background()
+	body := domain.SemanticBody{Subject: "s", Predicate: "p", Object: "o"}
+
+	// O chamador TENTA forjar trusted em meta...
+	m := metaTrusted()
+	rec, err := svc.Remember(ctx, domain.ClassSemantic, provenance.SourceToolResult, m, body)
+	if err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+	// ...mas a fonte tool_result impõe untrusted (a tag in-band não é autoridade).
+	if rec.Metadata.Provenance != domain.ProvenanceUntrusted {
+		t.Fatalf("a fachada devia impor untrusted para tool_result, obteve %q", rec.Metadata.Provenance)
+	}
+	if rec.Metadata.Source != domain.SourceToolResult {
+		t.Fatalf("fonte não persistida: %q, esperava tool_result", rec.Metadata.Source)
+	}
+
+	// Confirma-se após leitura (a imposição sobrevive ao round-trip do backend).
+	got, err := svc.Get(ctx, domain.ClassSemantic, rec.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Metadata.Provenance != domain.ProvenanceUntrusted || got.Metadata.Source != domain.SourceToolResult {
+		t.Fatalf("registo lido não reflete a imposição: prov=%q source=%q", got.Metadata.Provenance, got.Metadata.Source)
+	}
+
+	// Via Put, o mesmo: um registo montado trusted pelo chamador é reclassificado
+	// pela fonte web → untrusted.
+	in := domain.Record{ID: "caller-x", Class: domain.ClassSemantic, Metadata: metaTrusted(), Body: body}
+	out, err := svc.Put(ctx, in, provenance.SourceWeb)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if out.Metadata.Provenance != domain.ProvenanceUntrusted || out.Metadata.Source != domain.SourceWeb {
+		t.Fatalf("Put não impôs untrusted/web: prov=%q source=%q", out.Metadata.Provenance, out.Metadata.Source)
+	}
 }
 
 // TestService_Put_RespectsCallerID prova que Put respeita o id fornecido e
@@ -112,7 +151,7 @@ func TestService_Put_RespectsCallerID(t *testing.T) {
 		Metadata: metaTrusted(),
 		Body:     domain.SemanticBody{Subject: "a", Predicate: "b", Object: "c"},
 	}
-	out, err := svc.Put(ctx, in)
+	out, err := svc.Put(ctx, in, provenance.SourceSystem)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -136,7 +175,7 @@ func TestService_PortVersion(t *testing.T) {
 func TestService_QueryAndDelete(t *testing.T) {
 	svc := newSvc(t)
 	ctx := context.Background()
-	r, err := svc.Remember(ctx, domain.ClassProcedural, metaTrusted(),
+	r, err := svc.Remember(ctx, domain.ClassProcedural, provenance.SourceSystem, metaTrusted(),
 		domain.ProceduralBody{SkillName: "sk", Version: "1.0.0", Stage: "staging"})
 	if err != nil {
 		t.Fatalf("Remember: %v", err)
