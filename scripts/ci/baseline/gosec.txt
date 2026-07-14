@@ -23,3 +23,7 @@ packages/substrate/bus/metrics.go|G115
 packages/substrate/bus/metrics.go|G115
 packages/substrate/eventstore/ulid.go|G115
 packages/substrate/eventstore/ulid.go|G115
+packages/platform/registry/digest/canonical.go|G115
+packages/platform/registry/digest/canonical.go|G115
+packages/platform/registry/domain/digest.go|G115
+packages/platform/registry/domain/digest.go|G115

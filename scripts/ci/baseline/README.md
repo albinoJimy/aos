@@ -37,6 +37,8 @@ gates — ver `scripts/ci/*.sh`.
 | G101 (CWE-798) "credencial hardcoded" (×1) | `packages/control-plane/scheduler/breaker.go` | AOS-029 | **falso positivo** — nomes de atributos OTel (`aos.breaker.*_tokens`) |
 | G101 (CWE-798) "credencial hardcoded" (×1) | `packages/control-plane/scheduler/routing.go` | AOS-033 | **falso positivo** — nomes de atributos OTel (`aos.routing.*_tokens`) |
 | G101 (CWE-798) "credencial hardcoded" (×1) | `packages/control-plane/scheduler/spawn_admission.go` | AOS-028 | **falso positivo** — nomes de atributos OTel (`aos.spawn.*_tokens`) |
+| G115 (CWE-190) overflow `uint32(len)` (×2) | `packages/platform/registry/digest/canonical.go` | AOS-047 | **falso positivo** — length-prefix de *domain separation* (`len` ≥ 0; >4 GiB inalcançável) |
+| G115 (CWE-190) overflow `uint32(len)` (×2) | `packages/platform/registry/domain/digest.go` | AOS-045 | **falso positivo** — length-prefix de *domain separation* (`len` ≥ 0; >4 GiB inalcançável) |
 
 Severidade dos G115 é HIGH mas são conversões de contadores/timestamps/serialização
 binária (não fronteira de confiança). Os **G407** (nonce/IV) são **falsos positivos**:
