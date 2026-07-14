@@ -9,7 +9,9 @@
 #   B) política não-assinada/adulterada falha o policy-test — bundle committado é
 #      adulterado (backup+restore), o gate tem de ficar vermelho;
 #   C) CVE crítico bloqueia o SCA — prova determinista (offline) de que uma vuln
-#      afetante fora da baseline faz o comparador do SCA falhar fechado.
+#      afetante fora da baseline faz o comparador do SCA falhar fechado;
+#   D) trajectória adulterada bloqueia o gate 8 (replay/idempotência);
+#   E) violação de invariante de memória bloqueia o gate memory (AOS-044).
 #
 # NOTA: um self-test PASSA quando o gate correspondente FALHA como esperado.
 set -uo pipefail
@@ -129,6 +131,22 @@ if ( cd "$REPO_ROOT/packages/kernel/agent-runtime" && \
   bad "D: o harness aceitou uma trajectória adulterada — gate 8 NÃO bloquearia"
 else
   pass "D: o harness bloqueou (exit!=0) a trajectória adulterada (gate 8 fail-closed)"
+fi
+
+# ============================================================================
+# E) violação de invariante de memória torna o gate memory (AOS-044) vermelho
+# ============================================================================
+log_gate "self-test E · violação de integridade bloqueia o gate memory (AOS-044)"
+# A suite de AOS-044 tem um teste-veneno (TestSelftestMemoryViolationReddensGate) que só
+# corre com AOS_MEMORY_SELFTEST=1: injecta um sink que NÃO preserva o registo evictado e
+# ASSEVERA (falsamente) que ele foi preservado — a asserção FALHA de propósito, provando
+# que uma violação de invariante de memória torna o gate VERMELHO (fail-closed).
+# Determinista, offline e sem rasto no repo (nenhum ficheiro é alterado).
+if ( cd "$REPO_ROOT/packages/platform/memory" && \
+     AOS_MEMORY_SELFTEST=1 go test ./integritytests/ -run TestSelftestMemoryViolationReddensGate -count=1 ) >/dev/null 2>&1; then
+  bad "E: a suite aceitou um registo apagado — gate memory NÃO bloquearia"
+else
+  pass "E: a suite bloqueou (exit!=0) a violação de integridade injectada (gate memory fail-closed)"
 fi
 
 # ============================================================================

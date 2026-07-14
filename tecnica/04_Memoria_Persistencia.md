@@ -845,6 +845,65 @@ ligado ao trace; sem segredos (chaves privadas nunca nos spans nem no audit).
 
 ---
 
+### 8.11 Suite de integridade/migração + gate CI (implementação AOS-044)
+
+O ticket AOS-044 — o **último do EPIC-04**, um *chore* de QA — entrega o **safety net**
+que torna as três propriedades não-negociáveis da camada **verificáveis em CI ao longo
+do tempo**. Vive em `packages/platform/memory/integritytests` (mesmo módulo, Go 1.24,
+zero dependências externas) como um pacote **só de testes** (`_test.go` + fixtures
+deterministas): **NÃO reimplementa** nenhuma classe de memória — **COMPÕE e afere** os
+subpacotes reais (`record`/`projection`/`working`/`episodic`/`semantic`/`provenance`/
+`schema`/`migrations`/`compression`), cruzando com os gates de replay (gate 8) e de
+política (gate 7) do Engineering Standards (§4). Alinha com o EPIC-11 sem duplicar o
+eval/replay harness (AOS-024): o foco distinto é a **integridade/migração/proveniência
+de MEMÓRIA**.
+
+**Três suites + conformidade + cache (table-driven, deterministas, `-race` limpas).**
+
+- **INTEGRIDADE (Princípio 4, AOS-036):** projecção, eviction e compressão nunca apagam
+  do **registo** o que o audit trail exige. A projecção descarta do **contexto**
+  (`IncludedTurns < TotalTurns` sob orçamento minúsculo) mas `record.Persist` emite
+  **todos** os turnos com o conteúdo cru; a eviction preserva cada segmento no backend
+  **antes** de o remover da vista (e recusa fail-closed sem sink); a compactação emite
+  `FullRecordSpans > turnos do sumário` e nenhum `RawContent` vaza.
+- **MIGRAÇÃO (AOS-041):** *round-trip* expand→migrate→contract com **dual-read** na fase
+  expand (leitura canónica em From = sem downtime) e **revert** completo que devolve o
+  estado **byte-idêntico** ao inicial; **rollback** de migração falhada (estado
+  idêntico); **idempotência** (reaplicar uma fase/registo = no-op).
+- **PROVENIÊNCIA/SEGURANÇA (AOS-042):** memória em quarentena (tool_result) **não
+  autoriza** — um `DataItem` não satisfaz `PrivilegedAuthorizer` (barreira estrutural);
+  o **taint propaga transitivamente** (mistura trusted+untrusted → untrusted, sem
+  lavagem); a promoção é auditável na hash-chain.
+- **CRYPTO-SHREDDING/TTL (AOS-038, ADR-011):** apagar a KEK do titular (directamente ou
+  via `Sweep` de TTL por classe) torna o episódio **irrecuperável** sem partir a
+  hash-chain — que **continua a verificar** (sela o HASH do ciphertext, não o plaintext).
+- **ESTABILIDADE DE CACHE (AOS-043, ADR-009):** o `PrefixHash` é **byte-idêntico** ao
+  longo dos turnos e antes/depois da compactação; a compactação é **reproduzível** (mesmo
+  `Digest`); o cache-hit-rate fica **acima do alvo (>0.80)** num cenário de referência.
+
+**Meta-testes — a prova de que a suite DETECTA (não é green-vazio).** Cada invariante
+tem um **verificador** partilhado; os meta-testes **injectam** uma violação (um registo
+apagado por um sink que não preserva; uma quarentena furada por um `TaintController`
+que classifica tudo como trusted; uma migração com perda; uma hash-chain adulterada na
+leitura; um prefixo mutado entre checkpoint e compactação) e **exigem** que o verificador
+a **apanhe**. Sem esta prova de detecção, uma suite verde seria inútil.
+
+**Gate CI fail-closed (`scripts/ci/memory.sh`).** À imagem do gate replay de AOS-024
+(`scripts/ci/replay.sh`): corre a suite via `go test` do subpacote e usa **`require_tests`**
+(lib.sh) para exigir que **cada** teste obrigatório — incluindo os meta-testes — tenha
+**efectivamente corrido** (não basta o exit 0; um `-run` que não casasse nada passaria
+vazio). Verifica `-race`, impõe que a **cobertura do módulo não regrida** (>= 80%) e
+falha-fecha sobre o **veredicto agregado** do relatório `AOS_MEMORY_REPORT`. Está ligado
+ao `ALL_GATES` de `scripts/ci/run.sh`, ao **Makefile** (`ci-memory`) e ao **ci.yml** (job
+`memory` + agregador `gates`). O **self-test** (`scripts/ci/selftest.sh`, secção E) prova
+que uma violação injectada (um teste-veneno guardado por `AOS_MEMORY_SELFTEST=1`) torna o
+gate **VERMELHO** — a prova de que é fail-closed.
+
+Determinismo: relógio/entropia/ids **injectáveis** nas fixtures; sem `time.Now`/`rand` na
+decisão; fixtures golden reprodutíveis entre execuções; serialização estável.
+
+---
+
 ## 9. Vista de qualidade
 
 **Arquitectura.** A camada de memória assenta inteiramente sobre o Event Store como fonte de verdade única (ADR-007): não há estado autoritativo fora do log, o que elimina divergências entre réplicas e torna todo o estado reconstruível por replay. A separação contexto ≠ registo é o que permite escalar horizontalmente — workers stateless, projecção barata ao modelo, registo completo particionado — sem escolher entre custo e observabilidade.

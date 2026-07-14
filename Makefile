@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-sast ci-sca ci-policy ci-selftest ci-all
+        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-sast ci-sca ci-policy ci-selftest ci-all
 
 help: ## Lista os alvos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -72,6 +72,9 @@ ci-test: ## Gate: test -race + cobertura (gate kernel >= 80%)
 
 ci-replay: ## Gate 8: replay determinístico + idempotência por passo (harness AOS-024)
 	$(CI)/replay.sh
+
+ci-memory: ## Gate: integridade/migração/proveniência de memória (suite AOS-044, fail-closed)
+	$(CI)/memory.sh
 
 ci-sast: ## Gate: SAST (gosec, HIGH/CRITICAL)
 	$(CI)/sast.sh

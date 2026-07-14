@@ -22,6 +22,19 @@ Estes testes não vivem à parte: são os **gates 3, 4, 7, 8 e 9** do *pipeline*
 
 **Âmbito.** Frameworks e ambientes de teste; suites de domínio (replay, idempotência, política); eval harness e golden-sets; trace-diffing; carga/escala; red-team adversarial; DR end-to-end. **Fora de âmbito:** a instrumentação OTel em si (ver `EPIC-08`), a implementação do PDP (ver `EPIC-01`/`EPIC-09`) e o desenho do event store (ver `EPIC-01`) — este epic **consome e verifica** esses componentes.
 
+> **Nota — suite de integridade/migração de MEMÓRIA (AOS-044, EPIC-04).** A suite de
+> integridade/migração/proveniência de memória entregue por **AOS-044** vive no módulo
+> `packages/platform/memory` (subpacote `integritytests`) com o seu próprio gate CI
+> fail-closed (`scripts/ci/memory.sh`, ligado ao `run.sh`/Makefile/`ci.yml`). É
+> **complementar** a este epic e **não duplica** o eval/replay harness (AOS-024/AOS-111):
+> o seu foco distinto é a **integridade do registo** (Princípio 4 — projecção/eviction/
+> compressão não apagam o registo), a **migração** expand/contract (round-trip + rollback
+> + idempotência) e a **proveniência/segurança** de memória (quarentena não autoriza,
+> taint transitivo), mais crypto-shredding/TTL e estabilidade de prefixo de cache. Cruza
+> com os gates 7 (política) e 8 (replay) e traz **meta-testes** que provam que a suite
+> DETECTA violações (não green-vazio) + um self-test (`selftest.sh` secção E) que prova o
+> fail-closed do gate.
+
 ---
 
 ## 2. Critérios de Saída do Epic
