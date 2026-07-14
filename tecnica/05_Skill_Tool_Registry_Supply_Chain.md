@@ -86,6 +86,17 @@ flowchart TD
 
 O REG é consultado em dois momentos distintos: pelo **Agent Runtime (RT)** no arranque de um run, para resolver o conjunto de tools disponíveis (sempre por versão *pinned*, nunca por `latest`), e pelo **Reference Monitor (RM)** a cada tool call, para revalidar que o digest da definição que está prestes a executar coincide com o que foi congelado. Esta dupla consulta é o que fecha a janela do rug-pull.
 
+### 3.1 Implementação de referência (AOS-045)
+
+O módulo `packages/platform/registry` (`github.com/aos-ref/platform/registry`) concretiza a fundação deste catálogo. A persistência é **append-only sobre o Event Store replicado** (AOS-002, ADR-007): cada publicação/transição é um evento (`registry.artifact.published`, `registry.artifact.status_changed`) e o estado corrente reconstrói-se por **replay** — não há estado autoritativo em RAM nem single-writer SQLite. A imutabilidade é estrutural: republicar uma `(id, version)` existente é recusado (`E_REG_VERSION_EXISTS`); uma alteração exige uma nova versão.
+
+- **Modelo de domínio** (subpacote `domain`): `Entry` com os campos essenciais da tabela acima; `ArtifactKind` distingue os três tipos (`skill`/`tool`/`mcp_server`); `Version` é SemVer estrito (referências flutuantes rejeitadas no parse).
+- **Ciclo de vida fail-closed**: a publicação entra **sempre em `staging`**; a máquina de estados (`CanTransition`) recusa qualquer transição não enumerada, e **nenhuma aresta produz `active` sem partir de `staging` pelo gate de verificação** (`AdmissionVerifier`) ou de `deprecated` (reactivação de versão já verificada).
+- **API mínima**: `Publish`→staging, `Resolve(id, version)`/`ResolveString` por versão **pinada** (flutuante ⇒ `E_REG_FLOATING_RESOLUTION`), `GetDigest` para o RM, `SetStatus` (transição validada), `IsAdmissible` (**default-deny**, ADR-002: despachável só se no catálogo *e* `active`).
+- **Pontos de extensão reservados**: o `digest` é derivado por um `Digester` injectável (default `PlaceholderDigester`, determinista mas não-criptográfico — o SHA-256 sobre conteúdo canónico é **AOS-047**); o campo `signature` fica reservado (**AOS-048**); o estado de confiança TOFU `first_seen`→`pinned`→`changed` arranca em `first_seen` na proveniência (detecção/bloqueio em **AOS-049**); o `AdmissionVerifier` é o gancho onde AOS-047/048/053 imporão hash+assinatura+eval-gate na promoção.
+
+As operações de consulta emitem spans OTel GenAI pela porta `Tracer` zero-dep (AOS-013) sem expor segredos (id/version/digest são públicos; valores de credencial nunca entram em spans/logs).
+
 ---
 
 ## 4. MCP e transportes
