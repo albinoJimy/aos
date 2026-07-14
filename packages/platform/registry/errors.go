@@ -1,5 +1,15 @@
 package registry
 
+import "github.com/aos-ref/platform/registry/digest"
+
+// ErrDigestMismatch é re-exportado do pacote digest (AOS-047): a resolução e a
+// consulta de digest recalculam o digest sobre o conteúdo canonicalizado e
+// comparam-no com o esperado no REG; a divergência BLOQUEIA (fail-closed). É a
+// MESMA identidade que a revalidação por chamada (AOS-051) reutilizará, pelo que
+// errors.Is(err, registry.ErrDigestMismatch) e errors.Is(err,
+// digest.ErrDigestMismatch) são equivalentes.
+var ErrDigestMismatch = digest.ErrDigestMismatch
+
 // RegistryError é o erro sentinela do serviço REG (a camada de orquestração sobre
 // o domínio + Event Store). Código estável, comparável com errors.Is. Fail-closed
 // em toda a superfície: qualquer condição que não seja um sucesso inequívoco
