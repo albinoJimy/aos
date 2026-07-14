@@ -767,6 +767,84 @@ spans.
 
 ---
 
+### 8.10 Memória procedural — pipeline de promoção estagiada (implementação AOS-040)
+
+O ticket AOS-040 dá **execução** ao tratamento mais estrito da §3/§7 e do risco nº1
+da §10: a memória procedural (skills auto-escritas) é "a mudança de maior risco do
+sistema" (*misevolution*/drift mesmo sem atacante), pelo que **nunca chega a
+produção unilateralmente**. Está implementado em `packages/platform/memory/procedural`
+(mesmo módulo, Go 1.24, zero dependências externas — cripto stdlib `ed25519`),
+**compondo** as fundações já entregues em vez de as reimplementar: a classe
+`ClassProcedural` e o `ProceduralBody` (AOS-035), o **SemVer** de schema (AOS-041,
+`schema.Version`), a **hash-chain** de audit tamper-evident (AOS-011,
+`platform/audit`) e a assinatura **ed25519** (AOS-005/006, stdlib). O EPIC-05
+(Registry/supply-chain) e o EPIC-08 (eval-gate/canary) são integrados por **PORTAS**
+(`SkillRegistry`, `EvalGate`, `CanaryGate`) com impls de referência — **não** são
+reimplementados aqui.
+
+**Skill como artefacto comportamental versionado.** Uma skill aprendida é persistida
+como artefacto **SemVer** com **manifesto** (`Manifest`: agente-autor, `run_id` de
+origem, `ContentHash` = SHA-256 do conteúdo). O manifesto é assinado e **pinado no
+Skill Registry** (EPIC-05, porta: pin+hash+assinatura) no `Submit`. As versões são
+**imutáveis** (repin/resubmissão da mesma `(skill,versão)` é recusada). A skill
+projecta-se em `domain.ProceduralBody` (AOS-035), a ponte para a persistir como
+registo da classe procedural.
+
+**Pipeline como máquina de estados fail-closed.** À imagem do fluxo Mermaid da Dim. 7
+da fonte: `staging → eval-gate → canary → ratificação humana assinada → produção`.
+**CADA** gate é fail-closed e a activação em **produção** (`Activate`) é **BLOQUEADA**
+(`ErrActivationRefused`) até: (a) **eval-gate VERDE** (golden-set + trace-diffing vs
+baseline), (b) **canary VERDE** (success-rate + unsafe-action rate) e (c)
+**ratificação assinada VÁLIDA** (ed25519 de um ratificador na allowlist). Falta de
+**qualquer** um → RECUSADA. Uma skill **não se pode auto-promover**: os gates são
+externos (portas) e a assinatura é humana — não há caminho pelo qual o conteúdo da
+skill mude o seu próprio estado.
+
+**Allowlist fail-closed (barreira estrutural).** Só uma versão em estado
+**`production`** (pipeline completo) entra na allowlist de execução de produção
+(`prodActive[name] == version`). Uma skill em `staging`/`eval_gate`/`canary`/
+`ratified` é **estruturalmente excluída**: `IsExecutableInProd`/`ExecuteInProd`
+devolvem `ErrNotExecutableInProd`. Provado por teste em cada passo pré-`Activate`.
+
+**Rollback atómico automático em regressão.** A versão prod **anterior** fica
+**pinada** (`prodPrevious`); a nova só é activada após os três gates. `HandleRegression`
+com regressão detectada **reverte atomicamente** para a versão anterior — swap único
+sob `Lock`, pelo que um leitor concorrente vê **sempre** uma versão prod válida (a
+antiga OU a nova), nunca vazio: **sem downtime** (provado com `-race`). Sem versão
+anterior, o rollback **desactiva** a skill (fail-closed: nenhuma versão é melhor que
+uma regredida).
+
+**Audit trail assinado.** **TODA** a transição (`staging`/`eval_gate`/`canary`/
+`ratified`/`production`/`rolled_back`) é selada na **hash-chain** de AOS-011
+(partição `procedural:<skill>`) **e** assinada com **ed25519** sobre o payload
+canónico da transição (a base64 da assinatura entra nas *obligations*, pelo que a
+cadeia sela também a própria assinatura). A **ratificação humana** é um evento
+`escalate` assinado: a assinatura ed25519 do ratificador é verificada contra a
+allowlist e **selada** no registo (`human_signature`).
+
+```mermaid
+flowchart TD
+    SUB["Submit → manifesto+SemVer, pin no Registry (EPIC-05)"] --> STG["staging (NUNCA executável em prod)"]
+    STG --> EG{"eval-gate VERDE?\n(golden-set + trace-diffing)"}
+    EG -->|não| DENY1["deny (audit assinado) — bloqueado"]
+    EG -->|sim| CAN{"canary VERDE?\n(success-rate + unsafe-action)"}
+    CAN -->|não| DENY2["deny (audit assinado) — bloqueado"]
+    CAN -->|sim| RAT{"ratificação humana\nassinada válida?"}
+    RAT -->|não| DENY3["refused — bloqueado"]
+    RAT -->|sim| ACT["Activate → swap ATÓMICO da allowlist\n(anterior pinada p/ rollback)"]
+    ACT --> PROD["production (executável em prod)"]
+    PROD -.regressão detectada.-> RB["rollback ATÓMICO → versão anterior (sem downtime)"]
+```
+
+Determinismo: relógio e chaves **injectados** (`ed25519` real, chaves de teste
+determinísticas; `ed25519.Sign` é determinístico — sem `rand` na decisão);
+serialização canónica estável (length-prefixing, mapas ordenados por chave, sem
+`time.Now` na decisão). Observabilidade via a porta `Tracer` zero-dep, namespace
+`procedural.*`; os spans de eval-gate e canary carregam **`gen_ai.evaluation.result`**
+ligado ao trace; sem segredos (chaves privadas nunca nos spans nem no audit).
+
+---
+
 ## 9. Vista de qualidade
 
 **Arquitectura.** A camada de memória assenta inteiramente sobre o Event Store como fonte de verdade única (ADR-007): não há estado autoritativo fora do log, o que elimina divergências entre réplicas e torna todo o estado reconstruível por replay. A separação contexto ≠ registo é o que permite escalar horizontalmente — workers stateless, projecção barata ao modelo, registo completo particionado — sem escolher entre custo e observabilidade.
