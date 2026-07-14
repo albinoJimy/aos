@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -29,6 +30,10 @@ const (
 	AttrArtifactKind = "aos.registry.kind"
 	// AttrDecision — veredicto da consulta ("resolved"|"admitted"|"denied"|"not_found").
 	AttrDecision = "aos.registry.decision"
+	// AttrToolSetSize — cardinalidade do snapshot de tools active enumerado no
+	// arranque de um run (base do congelamento por run, AOS-050). Público (é uma
+	// contagem, não um segredo).
+	AttrToolSetSize = "aos.registry.toolset_size"
 )
 
 // Nomes de operação dos spans de consulta do REG.
@@ -36,6 +41,7 @@ const (
 	opResolve      = "registry.resolve"
 	opGetDigest    = "registry.get_digest"
 	opIsAdmissible = "registry.is_admissible"
+	opListActive   = "registry.list_active"
 )
 
 // maxWriteRetries limita as retentativas de escrita optimista (CAS) antes de
@@ -348,6 +354,66 @@ func (r *Registry) Resolve(ctx context.Context, id string, v domain.Version) (do
 	}
 	span.SetAttribute(AttrDecision, "resolved")
 	return e.Clone(), nil
+}
+
+// ActiveEntries devolve o SNAPSHOT das entradas ACTIVE e íntegras no instante da
+// chamada — a base de enumeração do congelamento do tool set por run (AOS-050,
+// tecnica/05 §6). É uma leitura ATÓMICA da projecção (uma única passagem do log):
+// todas as entradas devolvidas provêm da MESMA fotografia, pelo que não há TOCTOU
+// entre "que tools estão active" e "qual o seu conteúdo/digest".
+//
+// Cada entrada devolvida é uma resolução PINADA (id, version exacta) — NUNCA
+// latest/flutuante — e tem o digest RE-VERIFICADO contra o conteúdo canonicalizado
+// (fail-closed, idêntico a Resolve/AOS-047): uma entrada active cujo conteúdo já
+// não coincida com o digest pinado NÃO é devolvida silenciosamente — é uma falha
+// de integridade (ErrDigestMismatch) que ABORTA a enumeração, impedindo o
+// congelamento de um tool set adulterado. Só entradas em estado active entram
+// (default-deny: staging/deprecated/revoked ficam de fora da superfície do run).
+//
+// A ordem é ESTÁVEL — (id, depois version) crescente —, NUNCA a ordem
+// não-determinista do mapa, para que a projecção no prefixo imutável seja
+// byte-idêntica sempre que o conteúdo do catálogo for o mesmo (estabilidade de
+// prefix cache, ADR-009). Cada entrada é um clone (o chamador não pode mutar o
+// estado guardado).
+func (r *Registry) ActiveEntries(ctx context.Context) ([]domain.Entry, error) {
+	ctx, span := r.tracer.StartSpan(ctx, opListActive)
+	defer span.End()
+
+	proj, _, err := r.snapshot(ctx)
+	if err != nil {
+		span.SetAttribute(AttrDecision, "error")
+		return nil, err
+	}
+	out := make([]domain.Entry, 0, len(proj))
+	for _, e := range proj {
+		if e.Status != domain.StatusActive {
+			continue
+		}
+		// Fail-closed: um artefacto active cujo conteúdo já não coincide com o
+		// digest pinado NUNCA é congelado como se fosse íntegro.
+		if err := r.verifyDigest(e); err != nil {
+			span.SetAttribute(AttrArtifactID, e.ID)
+			span.SetAttribute(AttrDecision, "digest_mismatch")
+			return nil, err
+		}
+		out = append(out, e.Clone())
+	}
+	sortEntries(out)
+	span.SetAttribute(AttrToolSetSize, len(out))
+	span.SetAttribute(AttrDecision, "resolved")
+	return out, nil
+}
+
+// sortEntries ordena por (id, version) crescente — ordenação total e
+// determinística (nunca a ordem de iteração de mapa). É a ordem estável que o
+// prefixo imutável congela.
+func sortEntries(es []domain.Entry) {
+	sort.Slice(es, func(i, j int) bool {
+		if es[i].ID != es[j].ID {
+			return es[i].ID < es[j].ID
+		}
+		return es[i].Version.Less(es[j].Version)
+	})
 }
 
 // validateContractSchemas impõe (fail-closed) que os schemas de I/O do contrato

@@ -203,6 +203,22 @@ Duas consequências decorrem deste desenho:
 
 Este é exactamente o trade-off que a fonte resolve na tabela de tensões: *prefix caching vs tools dinâmicas* — tool set congelado por run, com novas tools apenas em runs novos.
 
+### 6.1 Implementação de referência (AOS-050)
+
+O congelamento por run materializa-se em duas peças, sem reimplementar o REG, o manifesto nem o PromptAssembler:
+
+- **Enumeração atómica no REG** (`registry.Registry.ActiveEntries`). Uma única passagem da projecção do log devolve o SNAPSHOT das entradas `active` e íntegras no instante do arranque — todas por versão pinada (nunca *latest*), com o digest re-verificado contra o conteúdo canonicalizado (fail-closed, AOS-047) e em ordem estável `(id, version)` (nunca ordem de mapa). Só `active` entra (default-deny: `staging`/`deprecated`/`revoked` ficam de fora da superfície do run). Sendo uma leitura da MESMA fotografia, não há TOCTOU entre "que tools estão active" e "qual o seu conteúdo/digest".
+
+- **Snapshot imutável do run** (`registry/toolset.FreezeToolSet` → `FrozenToolSet`). No arranque de cada run, `FreezeToolSet(ctx, cat, runID, selector)` congela o conjunto completo (ou um subconjunto restringido por um `Selector`, que só restringe e nunca adiciona) num valor **imutável**: campos privados e acessores que devolvem sempre cópias/clones. Como o `FrozenToolSet` não guarda qualquer referência viva ao catálogo, é **estruturalmente imune** a mudanças posteriores no REG — uma tool nova, uma actualização de versão ou uma re-aprovação só são vistas por um NOVO congelamento (o próximo run). Um `id` com duas versões `active` torna a superfície ambígua e é recusado (`ErrAmbiguousToolID`, fail-closed).
+
+O snapshot projecta-se, sempre em ordem estável e serialização determinista:
+
+- no **prefixo imutável** do prompt, via `FrozenToolSet.Assembler(system)` que reutiliza o `PromptAssembler` cache-estável de AOS-013/037 (ADR-009); o prefixo é byte-idêntico durante todo o run (`PrefixHash` constante — o SLI de cache-hit-rate não regride), e o `FrozenToolSet.Hash()` é a testemunha byte-a-byte da imutabilidade do conjunto;
+- no **manifesto de dependências** da trajectória, via `FrozenToolSet.ApplyToManifest`, reutilizando `registry.ManifestDeps` para gravar `(name, version, digest)` de cada tool/skill/servidor (base do replay fiel, ADR-012);
+- numa **API de consulta** de digest esperado por tool id (`FrozenToolSet.ExpectedDigest` / `Expectation`) — a EXPECTATIVA contra a qual a revalidação criptográfica por chamada (AOS-051) comparará cada digest. AOS-050 apenas PRODUZ e CONSULTA a expectativa; a comparação por chamada é AOS-051.
+
+A resolução do tool set emite um span OTel (`registry.freeze_toolset`) com `run_id`, cardinalidade e hash do conjunto — atributos públicos, sem segredos —, via a porta `agentruntime.Tracer` zero-dep.
+
 ---
 
 ## 7. Versionamento SemVer dos artefactos
