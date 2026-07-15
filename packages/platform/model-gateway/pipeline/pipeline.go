@@ -69,6 +69,10 @@ type Exchange struct {
 	Op        Op
 	Principal string
 	Board     string
+	// RunID correlaciona a chamada com a trajectória do agente (run). É o eixo de
+	// agregação do SLI de cache-hit-rate (AOS-061, por run/tenant) e liga a
+	// métrica/atribuição à trajectória (ADR-010). Vazio se o chamador não o fornece.
+	RunID string
 
 	// RequestedModel/Provider/Region é o que o pedido pediu (o Provider pedido é
 	// o do adaptador configurado por default; o roteamento pode divergir dele).

@@ -24,6 +24,7 @@ type ModelClientAdapter struct {
 	region  string
 	board   string
 	princip string
+	runID   string
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -47,6 +48,14 @@ func WithRegionBoard(region, board string) RuntimeAdapterOption {
 	return func(a *ModelClientAdapter) { a.region, a.board = region, board }
 }
 
+// WithRun correlaciona as chamadas deste adaptador com a TRAJECTÓRIA (run) do
+// agente: o runID entra em cada [port.ChatRequest] e torna-se o eixo de agregação
+// do SLI de cache-hit-rate (AOS-061, por run/tenant) e a ligação da atribuição à
+// trajectória (ADR-010). Um adaptador é tipicamente construído por run.
+func WithRun(runID string) RuntimeAdapterOption {
+	return func(a *ModelClientAdapter) { a.runID = runID }
+}
+
 // NewModelClient constrói o adaptador RT→GW para um modelo dado.
 func NewModelClient(gw port.Gateway, model string, opts ...RuntimeAdapterOption) *ModelClientAdapter {
 	a := &ModelClientAdapter{gw: gw, model: model}
@@ -67,6 +76,7 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 		Principal: a.princip,
 		Region:    a.region,
 		Board:     a.board,
+		RunID:     a.runID,
 	}
 	resp, err := a.gw.Chat(ctx, req)
 	if err != nil {

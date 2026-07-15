@@ -292,6 +292,18 @@ A guarda de layout cache-estável vive em `packages/platform/model-gateway/cache
 
 Mantém verdes os tickets AOS-055..059, o agent-runtime, o registry e o audit. A métrica em si (cache-hit-rate como SLI com alerta < 80%) é AOS-061; aqui garante-se o LAYOUT que a sustenta.
 
+### Implementação (AOS-061)
+
+O cache-hit-rate é elevado a **SLI** em `packages/platform/model-gateway/metering/cache_sli`, mantendo o data-plane **zero-dep** (stdlib) e **COMPONDO** — nunca reimplementando — o usage do provider (`port.Usage`, campos de cache read/write de AOS-055/056), o eixo run/tenant da atribuição (AOS-057) e a guarda de layout (AOS-060). O GW é *stateless*: o agregador de SLI é o **estado externo**, injectado por porta (`modelgateway.WithCacheSLI`), à imagem das outras métricas.
+
+- **Cálculo por chamada (`CallRate`).** A fórmula documentada é `cache_hit_rate = CacheReadTokens / PromptTokens` — a fracção de tokens de **prompt** (input) servidos por cache de prefixo (os *cached tokens* são um subconjunto dos *prompt tokens* na semântica OpenAI/Anthropic). O `CacheWriteTokens` (custo de **popular** a cache) NÃO entra no denominador. `PromptTokens == 0` ⇒ SLI **indefinido** (omitido, nunca 0 nem pânico — sem divisão por zero); o rate é fixado a `[0,1]` por defesa-em-profundidade (um provider inconsistente com `read > prompt` nunca produz > 1).
+- **Agregação por run e por tenant (`Recorder`, `Key{RunID, Tenant}`).** Um agregador concorrente-seguro acumula `(read, prompt)` por chave e expõe o rate agregado como SLI (`RateFor`/`Snapshot`). O **tenant** reutiliza o *board*/humano responsável de AOS-057. Runs/tenants distintos são **isolados** — chaves distintas nunca se contaminam. Uma chamada indefinida (prompt 0) é omitida da agregação (não conta como 0% que envenenaria o sinal).
+- **Emissão OTel ligada à trajectória (`MetricSink`, porta).** Cada observação emite uma métrica `gen_ai.cache.hit_rate` (escopo `aggregate` + `call`) com `aos.run_id`/`aos.tenant`/`aos.region` como atributos — a **ligação à trajectória** (ADR-010) — e anota o span `chat` da chamada com o rate (`aos.cache.hit_rate`/`aos.cache.call_hit_rate`). Só contadores/rates + run/tenant/região **não-secretos**: nunca o prompt, nunca uma chave (ADR-006). O EPIC-08 liga o SDK OTel real; aqui há `MemoryMetricSink` de referência.
+- **Alerta < 80% (`AlertSink`, porta).** O limiar é o alvo canónico `DefaultThreshold = 0.80` (ADR-009), **configurável** (`WithThreshold`) — nunca um número mágico disperso. O alerta é sobre o rate **agregado** por run/tenant (não uma chamada ruidosa) e é **anti-flapping**: dispara UMA vez na **transição** para incumprimento e re-arma na recuperação, só após um mínimo de amostras (`WithMinSamples`). O EPIC-08 liga o alertmanager real; aqui há `MemoryAlertSink` de referência.
+- **Regressão que liga a AOS-060.** Um teste demonstra o *cache thrash* ponta-a-ponta: uma montagem que **quebra o prefixo** é rejeitada pela guarda de layout (`layout.Guard.Admit` → `KindPrefixReordered`) e, como o prefixo mudou, o provider serve **0 cache-read** (cache miss) — o SLI agregado do run **desce abaixo de 80%** e o `AlertSink` **regista o alerta**. É a prova de que impor o layout (AOS-060) e medi-lo (AOS-061) fecham o ciclo contra a explosão de custo silenciosa.
+
+O wiring corre no **metering** do GW (após o usage estar disponível, incluindo no fim do *streaming* — nunca sobre zero tokens), em paralelo com a atribuição de AOS-057. Determinismo: relógio injectável para os timestamps de métrica/alerta; sem `rand` na decisão; agregação determinista. Mantém verdes AOS-055..060, o agent-runtime e o audit.
+
 ---
 
 ## 8. Vista de qualidade

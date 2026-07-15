@@ -32,6 +32,7 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
 	"github.com/aos-ref/platform/model-gateway/metering/attribution"
+	"github.com/aos-ref/platform/model-gateway/metering/cache_sli"
 	"github.com/aos-ref/platform/model-gateway/pipeline"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -131,6 +132,11 @@ type Gateway struct {
 	// attribution, quando definido, regista principal/modelo/região por chamada,
 	// liga ao span OTel GenAI e sela no audit WORM. Nunca "o pool".
 	attribution *attribution.Recorder
+	// --- AOS-061: cache-hit-rate como SLI ---
+	// cacheSLI, quando definido, mede o cache-hit-rate por chamada (a partir do usage
+	// do provider), agrega por run/tenant, emite a métrica OTel ligada à trajectória e
+	// dispara alerta abaixo do limiar. É o estado de agregação EXTERNO (GW stateless).
+	cacheSLI *cache_sli.Recorder
 }
 
 // Compile-time: o Gateway satisfaz a porta compatível OpenAI.
@@ -196,6 +202,13 @@ func WithRoutingStage(s pipeline.Stage) Option { return func(g *Gateway) { g.rou
 // principal/modelo/região, anota o span e sela no audit WORM. Default: sem
 // atribuição (o registo entra com AOS-057 wired).
 func WithAttribution(r *attribution.Recorder) Option { return func(g *Gateway) { g.attribution = r } }
+
+// WithCacheSLI injecta o agregador de cache-hit-rate como SLI (AOS-061): mede o
+// rate por chamada a partir do usage do provider (cache read/write vs. prompt),
+// agrega por run/tenant, emite a métrica OTel ligada à trajectória (ADR-010) e
+// dispara alerta abaixo do limiar (default 80%) via porta AlertSink. É estado
+// EXTERNO por porta — o Gateway mantém-se stateless. Default: sem SLI.
+func WithCacheSLI(r *cache_sli.Recorder) Option { return func(g *Gateway) { g.cacheSLI = r } }
 
 // New constrói o Gateway sobre um adaptador de provider. O adaptador é o ÚNICO
 // componente que fala com um provedor; todo o resto passa pela pipeline.
@@ -271,7 +284,7 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpChat)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.Model, g.regionOf(req.Region))
 
 	var resp port.ChatResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -322,7 +335,7 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpChat)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.Model, g.regionOf(req.Region))
 
 	var inner port.ChatStream
 	runErr := g.pipe.ExecutePreInvoke(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -370,6 +383,9 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 			span.SetAttribute(agentruntime.AttrRequestModel, ex.RequestedModel)
 			span.SetAttribute(attrResponseModel, ex.ResolvedModel)
 			setUsageAttrs(span, usage)
+			// AOS-061: o cache-hit-rate corre no fim do stream, com o usage final (o
+			// chunk final traz cache read/write) — nunca sobre zero tokens.
+			g.recordCacheSLI(ctx, span, ex)
 			span.End()
 		},
 	}
@@ -398,7 +414,7 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 	span.SetAttribute(agentruntime.AttrOperationName, opEmbeddings)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpEmbeddings, req.Principal, req.Board, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpEmbeddings, req.Principal, req.Board, req.RunID, req.Model, g.regionOf(req.Region))
 
 	var resp port.EmbeddingsResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -428,17 +444,19 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 	g.recordVariance(ctx, ex)
 	setUsageAttrs(span, resp.Usage)
 	span.SetAttribute(attrResponseModel, ex.ResolvedModel)
+	g.recordCacheSLI(ctx, span, ex)
 	return resp, nil
 }
 
 // newExchange constrói o Exchange com o relógio injectado. RequestedProvider é
 // semeado com o provedor do adaptador configurado (o provedor "pedido" por
 // default); se o roteamento resolver outro provedor, o GW regista provider_swap.
-func (g *Gateway) newExchange(op pipeline.Op, principal, board, model, region string) *pipeline.Exchange {
+func (g *Gateway) newExchange(op pipeline.Op, principal, board, runID, model, region string) *pipeline.Exchange {
 	ex := &pipeline.Exchange{
 		Op:                op,
 		Principal:         principal,
 		Board:             board,
+		RunID:             runID,
 		RequestedModel:    model,
 		RequestedProvider: g.adapter.Provider(),
 		RequestedRegion:   region,
@@ -490,6 +508,7 @@ func (g *Gateway) finishResponse(ctx context.Context, span agentruntime.Span, ex
 	g.recordVariance(ctx, ex)
 	span.SetAttribute(attrResponseModel, resp.Model)
 	setUsageAttrs(span, resp.Usage)
+	g.recordCacheSLI(ctx, span, ex)
 }
 
 // attribute produz o registo de atribuição da chamada (AOS-057): principal
@@ -511,12 +530,27 @@ func (g *Gateway) attribute(ctx context.Context, span agentruntime.Span, ex *pip
 		KeyID:           ex.KeyID,
 		Operation:       string(ex.Op),
 		PolicyVersion:   ex.PolicyVersion,
+		RunID:           ex.RunID,
 		Timestamp:       g.clock(),
 	}
 	if err := g.attribution.Record(ctx, span, rec); err != nil {
 		return &attributionError{err: err}
 	}
 	return nil
+}
+
+// recordCacheSLI mede o cache-hit-rate desta chamada (AOS-061): projecta o usage
+// do provider (cache read/write vs. prompt) numa Sample com o eixo de agregação
+// (run = trajectória; tenant = board/humano responsável de AOS-057; região) e
+// entrega-a ao agregador externo, que emite a métrica OTel ligada à trajectória,
+// anota o span e dispara alerta se o AGREGADO por run/tenant cair abaixo do limiar.
+// No-op se não há recorder. Corre no metering (após o usage estar disponível,
+// incl. no fim do streaming); nunca emite segredo nem o prompt.
+func (g *Gateway) recordCacheSLI(ctx context.Context, span agentruntime.Span, ex *pipeline.Exchange) {
+	if g.cacheSLI == nil {
+		return
+	}
+	g.cacheSLI.Observe(ctx, span, cache_sli.SampleFromUsage(ex.RunID, ex.Board, ex.ResolvedRegion, ex.Usage))
 }
 
 // annotateAllowlist anota o span com a decisão do estágio allowlist-regional

@@ -128,6 +128,10 @@ type ChatRequest struct {
 	// Region/Board são a fronteira de soberania alvo (consumidos por AOS-058).
 	Region string `json:"-"`
 	Board  string `json:"-"`
+	// RunID correlaciona a chamada com a TRAJECTÓRIA do agente (run). Metadado de
+	// plataforma (nunca no wire): é o eixo de agregação do SLI de cache-hit-rate
+	// (AOS-061, por run/tenant) e liga a métrica/atribuição à trajectória (ADR-010).
+	RunID string `json:"-"`
 }
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).
@@ -186,6 +190,8 @@ type EmbeddingsRequest struct {
 	Principal string `json:"-"`
 	Region    string `json:"-"`
 	Board     string `json:"-"`
+	// RunID correlaciona a chamada com a trajectória do agente (ver [ChatRequest]).
+	RunID string `json:"-"`
 }
 
 // Embedding é um vector de embedding de um input (forma OpenAI).
