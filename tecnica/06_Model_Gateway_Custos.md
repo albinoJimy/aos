@@ -212,6 +212,13 @@ flowchart TD
 
 Assim, a disponibilidade nunca é comprada à custa da soberania: se não houver capacidade dentro da fronteira, o pedido é rejeitado (com *backpressure* graciosa a montante) em vez de vazar para outra jurisdição. A allowlist é *policy-as-code* versionada e assinada, com o changelog no próprio audit trail (ADR-011).
 
+### Implementação (AOS-058)
+
+O ramo de allowlist do diagrama vive em `packages/platform/model-gateway/policy/allowlist`; a guarda de fronteira do failover em `packages/platform/model-gateway/routing/sovereignty`. Mantêm o data-plane do GW **zero-dep** (stdlib), coerentes com AOS-057.
+
+- **Allowlist regional (`policy/allowlist`)** — a allowlist por *board* é *policy-as-code* embebida (`allowlist_policy.json`, `go:embed`), com um **digest canónico** (sha256) que a torna tamper-evident (`Policy.Version()` = `"versão#digest12"`) e uma **assinatura ed25519** (crypto/ed25519 *stdlib*) sobre esse digest, verificada no carregamento contra a chave **pública** de confiança embebida. O único carregador público verifica a assinatura: uma policy adulterada, não-assinada ou com `default != deny` **falha fail-closed** (`ErrSignatureInvalid`/`ErrPolicyMalformed`). A chave **privada** nunca entra no runtime (ADR-006); assina-se offline (`gen_signature.go`). `Evaluate(board, modelo, região)` é **default-deny**: um triplo não explicitamente permitido é recusado. O estágio `allowlist-regional` (o 2.º da pipeline, antes do roteamento) substitui o *pass-through* de AOS-055 e regista a decisão **por chamada** (span OTel + WORM), atribuível a **principal + board** — um *deny* nunca é anónimo.
+- **Guarda de soberania (`routing/sovereignty`)** — a prova é **estrutural**: `Guard.Failover` *particiona* os candidatos em intra-fronteira e cross-border **antes** de qualquer selecção; a escolha só percorre os sobreviventes intra-fronteira, pelo que um endpoint cross-border é **descartado** (`Decision.Dropped`), nunca ordenado ao fundo. Sem sobreviventes intra-fronteira, **rejeita** (`OutcomeReject`); se a rejeição se dever a só existir capacidade cross-border (`Decision.CrossBorderBlocked()`), o router (AOS-059) sela um *deny* explícito atribuível a principal + board. `Guard.Route` implementa o ramo saúde→failover→rejeição com saúde **injectável** (determinismo em teste). AOS-059 sobrepõe a sua escolha cost/load-aware **apenas** sobre os candidatos intra-fronteira que esta guarda autoriza — a decisão de soberania que o router consome. A fronteira legal de um `(board, modelo)` é derivável de `Policy.AllowedRegions`, mantendo a guarda coerente com a allowlist.
+
 ---
 
 ## 6. Roteamento cost/load-aware e model tiering

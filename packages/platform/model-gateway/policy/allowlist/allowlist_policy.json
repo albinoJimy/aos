@@ -1,0 +1,24 @@
+{
+  "version": "gw-allowlist/v1",
+  "default": "deny",
+  "rules": [
+    {
+      "id": "board-eu-chat",
+      "board": "board-eu",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "regions": ["eu", "eu-west"]
+    },
+    {
+      "id": "board-eu-embeddings",
+      "board": "board-eu",
+      "models": ["text-embedding-3-large"],
+      "regions": ["eu", "eu-west"]
+    },
+    {
+      "id": "board-us-chat",
+      "board": "board-us",
+      "models": ["gpt-4o"],
+      "regions": ["us-east"]
+    }
+  ]
+}

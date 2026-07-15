@@ -33,6 +33,7 @@ import (
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
 	"github.com/aos-ref/platform/model-gateway/metering/attribution"
 	"github.com/aos-ref/platform/model-gateway/pipeline"
+	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
 
@@ -114,6 +115,11 @@ type Gateway struct {
 	// authn, quando definido, substitui o estágio auth-principal pass-through pela
 	// validação REAL do token do principal (fail-closed).
 	authn pipeline.Stage
+	// --- AOS-058: allowlist regional + guarda de soberania ---
+	// allowlist, quando definido, substitui o estágio allowlist-regional pass-through
+	// pela allowlist default-deny por board (fail-closed) — a soberania imposta por
+	// desenho antes do roteamento.
+	allowlist pipeline.Stage
 	// keypool, quando definido, escolhe a chave de infra pooled por throughput,
 	// DESACOPLADA da identidade — o KeyID não-secreto entra na atribuição.
 	keypool KeyPool
@@ -160,6 +166,12 @@ func WithDefaultRegion(region string) Option { return func(g *Gateway) { g.regio
 // fail-closed do token do principal + autoridade utilizador ∩ classe + policy-as-code).
 // Substitui o pass-through de AOS-055. Default: pass-through.
 func WithAuthnStage(s pipeline.Stage) Option { return func(g *Gateway) { g.authn = s } }
+
+// WithAllowlistStage injecta o estágio allowlist-regional REAL de AOS-058: a
+// allowlist default-deny por board (versionada + assinada) que recusa fail-closed um
+// modelo fora da fronteira de soberania e regista a decisão por chamada (span +
+// WORM). Substitui o pass-through de AOS-055. Default: pass-through.
+func WithAllowlistStage(s pipeline.Stage) Option { return func(g *Gateway) { g.allowlist = s } }
 
 // WithKeyPool injecta o selector de chave de infra pooled por throughput
 // (AOS-057). A escolha é DESACOPLADA da identidade (a porta só recebe
@@ -212,6 +224,14 @@ func New(adapter adapters.Adapter, opts ...Option) *Gateway {
 		st.Auth = g.authn
 		g.pipe = pipeline.New(st)
 	}
+	// AOS-058: se um estágio allowlist-regional real foi injectado, substitui-o na
+	// pipeline preservando a ORDEM fixa (allowlist corre a seguir ao auth, antes do
+	// roteamento — o 1.º ramo do diagrama de decisão de tecnica/06 §5).
+	if g.allowlist != nil {
+		st := g.pipe.Stages()
+		st.Allowlist = g.allowlist
+		g.pipe = pipeline.New(st)
+	}
 	return g
 }
 
@@ -246,6 +266,7 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		if err := g.attribute(ctx, span, ex); err != nil {
 			return err
 		}
+		g.annotateAllowlist(span, ex)
 		req.Model = ex.ResolvedModel
 		r, err := g.adapter.Chat(ctx, req, cred)
 		if err != nil {
@@ -297,6 +318,7 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		if err := g.attribute(ctx, span, ex); err != nil {
 			return err
 		}
+		g.annotateAllowlist(span, ex)
 		req.Model = ex.ResolvedModel
 		s, err := g.adapter.ChatStream(ctx, req, cred)
 		if err != nil {
@@ -368,6 +390,7 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 		if err := g.attribute(ctx, span, ex); err != nil {
 			return err
 		}
+		g.annotateAllowlist(span, ex)
 		req.Model = ex.ResolvedModel
 		r, err := g.adapter.Embeddings(ctx, req, cred)
 		if err != nil {
@@ -473,6 +496,27 @@ func (g *Gateway) attribute(ctx context.Context, span agentruntime.Span, ex *pip
 		return &attributionError{err: err}
 	}
 	return nil
+}
+
+// annotateAllowlist anota o span com a decisão do estágio allowlist-regional
+// (AOS-058) a partir do rasto de decisões do Exchange — os estágios não recebem o
+// span, pelo que a anotação por chamada (resultado, modelo, região) é feita aqui,
+// no caminho de allow (num deny o span já leva AttrErrorType="stage:allowlist-regional"
+// e a selagem WORM regista o motivo). No-op se o estágio allowlist real não correu.
+func (g *Gateway) annotateAllowlist(span agentruntime.Span, ex *pipeline.Exchange) {
+	if span == nil {
+		return
+	}
+	for _, d := range ex.Decisions {
+		if d.Stage != "allowlist-regional" || d.Result == "" {
+			continue
+		}
+		span.SetAttribute(allowlist.AttrAllowlistResult, d.Result)
+		span.SetAttribute(allowlist.AttrBoard, ex.Board)
+		span.SetAttribute(allowlist.AttrModel, ex.RequestedModel)
+		span.SetAttribute(allowlist.AttrRegion, ex.RequestedRegion)
+		return
+	}
 }
 
 // attributionError marca uma falha de selagem/registo da atribuição. É distinta

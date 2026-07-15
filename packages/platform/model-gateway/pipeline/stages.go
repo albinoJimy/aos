@@ -26,6 +26,12 @@ func (PassthroughAuth) Process(_ context.Context, ex *Exchange) error {
 // default-deny concreto e o bloqueio de failover cross-border são AOS-058. É,
 // ainda assim, o ponto onde uma recusa FALHA-FECHA a chamada (a mecânica está
 // provada por [DenyStage] nos testes).
+//
+// NÃO É PARA PRODUÇÃO: é allow-by-default (fail-OPEN) e NÃO impõe soberania. Um
+// gateway que serve tráfego real TEM de ligar o estágio REAL fail-closed via
+// modelgateway.WithAllowlistStage — obtido de allowlist.LoadAndActivate (que carrega
+// a policy assinada/pinada e sela a activação no changelog WORM). Este esqueleto
+// existe só para os tickets AOS-055/056/057 comporem a pipeline antes de AOS-058.
 type PassthroughAllowlist struct{}
 
 // Name implementa [Stage].
