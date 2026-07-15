@@ -86,6 +86,17 @@ flowchart LR
 
 Cada pedido atravessa uma pipeline determinística: autenticação do principal → allowlist regional → roteamento → validação do layout de cache → *metering*. À semelhança do Reference Monitor para tool calls, o GW é o gate obrigatório para *model calls*.
 
+> **Nota de implementação (AOS-055 — fundação do GW, Done).** O esqueleto do gateway está implementado no módulo `packages/platform/model-gateway` (módulo `github.com/aos-ref/platform/model-gateway`, Go 1.24, **zero dependências externas**), com esta estrutura:
+>
+> - **Porta única compatível OpenAI** (`port/`): tipos normalizados próprios (sem SDK) que espelham a API OpenAI — `ChatRequest`/`ChatResponse` (chat/completions), streaming (`ChatStream` + deltas), tool calling (`Tool`/`ToolCall`), e embeddings. A versão do contrato é **SemVer** (`port.Version`), ancorada a contrato à imagem do gate de SemVer do registry (AOS-052). Os metadados de plataforma (principal, região, board) têm tag `json:"-"` e **nunca** vão no wire do provider.
+> - **Interface de adaptador de provider** (`adapters/`): `Adapter` (Chat/ChatStream/Embeddings) com **um adaptador REAL** (`OpenAIHTTPAdapter`, HTTP OpenAI-compatible sobre `net/http` + wire JSON, testado contra `httptest`) e **um FAKE** in-memory determinista, ambos satisfazendo a mesma interface sem alterar o contrato de porta. As credenciais entram por uma porta `CredentialSource` (ADR-006) e o segredo é **não-exportado** — nunca aparece em código, logs ou spans.
+> - **Pipeline determinística** (`pipeline/`): cadeia ordenada e fixa `auth-principal → allowlist-regional → roteamento → validação-de-layout-de-cache → metering`, cada estágio uma interface `Stage` com **impl de referência pass-through**. São os **pontos de extensão** de AOS-057 (auth), AOS-058 (allowlist), AOS-059 (roteamento), AOS-060 (cache-layout) e AOS-062 (metering/custo). Um estágio que recusa **falha-fecha** a chamada antes de o provider ser invocado.
+> - **Arch-lint de no-bypass** (`archlint/`): analisador `go/ast` (à imagem do archlint do RM, AOS-003) que **falha** se algum pacote fora do GW importar um SDK de provider ou referenciar um endpoint de provedor directamente; testdata bom/mau e varrimento recursivo da árvore de packages (o próprio GW é isento — é o gate legítimo).
+> - **Fachada + observabilidade** (`gateway.go`): a `Gateway` implementa `port.Gateway`, atravessa a pipeline, obtém a credencial server-side, invoca o adaptador (o **único** ponto que fala com um provedor) e emite um **span OTel GenAI `chat`** com `gen_ai.request.model` + `gen_ai.usage.*` via a porta `agentruntime.Tracer` (zero-dep). Um **swap de modelo/provider** face ao pedido é registado como **evento de variância explícito** (`VarianceSink`), nunca silencioso (ADR-010). O serviço é *stateless*; relógio e IDs são injectáveis (determinismo).
+> - **Ligação ao Agent Runtime**: `ModelClientAdapter` satisfaz a porta `agentruntime.ModelClient` (AOS-013), reconciliando o contrato do runtime com o da porta do GW sem que nenhum dependa do outro.
+>
+> Os estágios reais (identidade-vs-pooled, allowlist regional concreta, roteamento cost/load-aware, cache-stable, custo USD) são os tickets AOS-056..062; aqui são pass-through de referência.
+
 ---
 
 ## 4. Identidade vs. chaves de infra
