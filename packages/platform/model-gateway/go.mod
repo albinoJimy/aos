@@ -7,6 +7,7 @@ require (
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
+	github.com/aos-ref/platform/registry v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
 )
 
@@ -14,6 +15,7 @@ require (
 	github.com/aos-ref/control-plane/budget v0.0.0 // indirect
 	github.com/aos-ref/control-plane/orchestrator v0.0.0 // indirect
 	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
+	github.com/aos-ref/platform/memory v0.0.0 // indirect
 	github.com/aos-ref/substrate/bus v0.0.0 // indirect
 )
 
@@ -50,3 +52,13 @@ replace github.com/aos-ref/control-plane/orchestrator => ../../control-plane/orc
 replace github.com/aos-ref/control-plane/budget => ../../control-plane/budget
 
 replace github.com/aos-ref/substrate/bus => ../../substrate/bus
+
+// AOS-060 (layout de prompt cache-estável): o congelamento do tool set por run
+// COMPÕE toolset.FrozenToolSet (AOS-050, platform/registry) — o snapshot imutável
+// que entra no prefixo cache-estável. É um import platform → platform (mesma
+// camada). Os replace NÃO são transitivos, por isso a memória (dependência
+// transitiva do registry via AOS-046) é re-declarada aqui a partir da raiz de
+// packages/. NÃO se reimplementa o registry/toolset — projecta-se o snapshot.
+replace github.com/aos-ref/platform/registry => ../registry
+
+replace github.com/aos-ref/platform/memory => ../memory

@@ -10,8 +10,16 @@
 //   - auth-principal  → AOS-057 (identidade vs chaves pooled)
 //   - allowlist       → AOS-058 (allowlist regional + soberania)
 //   - roteamento      → AOS-059 (cost/load-aware + tiering)
-//   - cache-layout    → AOS-060 (prefixo imutável cache-estável)
+//   - cache-layout    → AOS-060 (prefixo imutável cache-estável) — ver nota abaixo
 //   - metering        → AOS-062 (custo USD por chamada)
+//
+// NOTA sobre cache-layout (AOS-060): ao contrário dos restantes, o estágio
+// cache-layout mantém-se PASS-THROUGH por desenho. A guarda de layout de AOS-060
+// (cache/layout+freeze+compaction) é consumida na HOT PATH DA MONTAGEM pelo
+// runtime/assembler (freeze.RunPrefix.Turn -> layout.Guard.Admit), não pela fachada
+// do GW: o [Exchange] não transporta a PromptView/runID/turno que a validação
+// byte-a-byte exige. Por isso não há WithCacheLayoutStage. Ver
+// [PassthroughCacheLayout] e tecnica/06 §7.
 //
 // # Fail-closed
 //

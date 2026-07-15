@@ -62,8 +62,20 @@ func (IdentityRouting) Process(_ context.Context, ex *Exchange) error {
 }
 
 // PassthroughCacheLayout é o estágio de validação de layout de cache de
-// referência (AOS-060 substitui). Não valida byte-identidade do prefixo nesta
-// fase; deixa o ponto de extensão pronto.
+// referência. NÃO valida byte-identidade do prefixo — e, ao contrário dos outros
+// estágios, mantém-se pass-through POR DESENHO, não à espera de substituição.
+//
+// A guarda de layout cache-estável de AOS-060 (cache/layout, cache/freeze,
+// cache/compaction) é composta e consumida na HOT PATH DA MONTAGEM — o
+// runtime/assembler compõe freeze.RunPrefix.Turn -> layout.Guard.Admit por turno,
+// validando byte-a-byte ANTES de a montagem seguir para o GW. O [Exchange] da
+// pipeline transporta identidade/modelo/região/custo, NÃO a PromptView/runID/turno,
+// pelo que a validação byte-a-byte não é (nem precisa de ser) alcançável por este
+// estágio. Por isso NÃO existe um WithCacheLayoutStage no Gateway (à imagem de
+// WithAuthnStage/WithAllowlistStage/WithRoutingStage): a validação de layout é uma
+// guarda da montagem A MONTANTE, não um estágio do data-plane do GW. Ligar a guarda
+// ao Exchange (transportando a PromptView) fica para um ticket futuro SE a validação
+// passar a ser exigida também no gate do GW.
 type PassthroughCacheLayout struct{}
 
 // Name implementa [Stage].
