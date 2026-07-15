@@ -97,6 +97,17 @@ O módulo `packages/platform/registry` (`github.com/aos-ref/platform/registry`) 
 
 As operações de consulta emitem spans OTel GenAI pela porta `Tracer` zero-dep (AOS-013) sem expor segredos (id/version/digest são públicos; valores de credencial nunca entram em spans/logs).
 
+### 3.2 Ciclo de publicação/promoção (AOS-053)
+
+O subpacote `packages/platform/registry/promotion` concretiza o **admission control** do ciclo de vida — a materialização, no REG, do fluxo de governação de ADR-012. **Compõe** (não reimplementa) as peças de AOS-045..052 numa máquina fail-closed que garante que **nenhum artefacto salta para `active`** sem passar por todos os gates aplicáveis.
+
+- **`GovernedRegistry`** constrói o `Registry` com um **`CompositeVerifier`** como `AdmissionVerifier`. Este é o **fecho estrutural**: como o `Registry` só alcança `active` atravessando o `AdmissionVerifier`, nem uma chamada directa a `SetStatus` (ignorando o `Pipeline`) promove um artefacto sem satisfazer o gate. O verificador composto exige **integridade** (assinatura, AOS-048) para todos e, para **skills auto-escritas**, uma **aprovação de governação** registada num `ApprovalLedger` (só existe após eval-gate + ratificação bem-sucedidos). A aprovação liga-se ao `(id, version, digest)` — nunca é reutilizável para conteúdo adulterado.
+- **`Pipeline.Promote`** orquestra a sequência fail-closed: (1) resolve a versão `staging` (a resolução re-verifica o digest — hash de AOS-047); (2) **pré-condição de integridade** — hash + validação de contrato + **`ValidateBump`** (liga aqui o *skip* de AOS-052: uma promoção que quebre o contrato tem de trazer o bump correcto, senão é **rejeitada**) + assinatura (AOS-048); (3) se **skill auto-escrita**: **eval-gate** (golden-set + trace-diffing vs baseline — a porta `EvalGate` reutiliza o harness de `specs/EPIC-11_Testes_Qualidade.md`; uma skill que falha é **rejeitada** e não vai a prod) e **ratificação humana assinada** (ed25519, não-repúdio, verificada contra a allowlist de ratificadores); (4) promoção a `active` com a **SemVer atribuída**. Cada transição é selada no **audit WORM** (AOS-011, hash-chain tamper-evident).
+- **Distinção estrutural** tools vs skills auto-escritas (por `kind` + origem): um `tool`/`mcp_server`, ou uma skill de origem externa, atravessa **só verificação** (a confiança TOFU é AOS-049); uma skill de origem `self` atravessa **verificação + eval-gate + ratificação**.
+- **Revogação de emergência** (`Pipeline.Revoke`): transição para `revoked` a partir de qualquer estado — bloqueia **imediatamente** no RM (`IsAdmissible` passa a `false`; a revalidação por chamada de AOS-051 recusa). **Rollback atómico** (`Pipeline.Rollback`) delega o *swap* atómico no `Lifecycle` de AOS-052 e reflecte-o na fonte de verdade, com a reactivação a re-atravessar o gate (a confiança da primeira promoção não é herdada — AOS-048 Q1).
+
+Os spans de promoção emitem `gen_ai.evaluation.result` (veredicto do eval-gate) sem jamais colocar chaves privadas ou assinaturas em claro no rasto. **Cross-ref**: o eval-gate é a fronteira de integração com `specs/EPIC-11_Testes_Qualidade.md` (golden-set curado + trace-diffing); a impl real do harness pertence a EPIC-11, aqui vive a porta `EvalGate` e uma impl de referência determinista (`ThresholdEvalGate`).
+
 ---
 
 ## 4. MCP e transportes
