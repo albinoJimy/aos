@@ -35,6 +35,21 @@ Estes testes não vivem à parte: são os **gates 3, 4, 7, 8 e 9** do *pipeline*
 > DETECTA violações (não green-vazio) + um self-test (`selftest.sh` secção E) que prova o
 > fail-closed do gate.
 
+> **Nota — suite adversarial de SUPPLY-CHAIN (AOS-054, EPIC-05).** A suite red-team de
+> supply-chain entregue por **AOS-054** (o último do EPIC-05) vive no módulo
+> `packages/platform/registry` (subpacote `supplychaintests`) com o seu próprio gate CI
+> fail-closed (`scripts/ci/supplychain.sh`, ligado ao `run.sh`/Makefile/`ci.yml`). É a
+> materialização, para o REG, dos **testes de segurança adversariais** deste epic (§1,
+> ADR-005): ORQUESTRA os controlos reais (AOS-045..053) — não os reimplementa — e prova
+> que os **sete vectores** da tabela de riscos de `tecnica/05` §9 são reproduzidos e
+> BLOQUEADOS (rug-pull, schema drift, rug-pull mid-run + quarentena, tool poisoning
+> untrusted, resolução por `latest`, capacidade fora do catálogo, replay infiel). Cada
+> bloqueio é atestado e re-verificado na hash-chain WORM (AOS-011, `audit.Verify`). Traz
+> **meta-testes** que provam a DETECÇÃO (com o controlo contornado o ataque passa — não
+> green-vazio) + um self-test (`selftest.sh` secção F) que prova que um vector desbloqueado
+> torna o gate vermelho. É **complementar** ao replay/eval harness (AOS-024/AOS-111) e ao
+> gate memory (AOS-044): o seu foco distinto é a **fronteira de supply-chain** do registo.
+
 ---
 
 ## 2. Critérios de Saída do Epic

@@ -11,7 +11,8 @@
 #   C) CVE crítico bloqueia o SCA — prova determinista (offline) de que uma vuln
 #      afetante fora da baseline faz o comparador do SCA falhar fechado;
 #   D) trajectória adulterada bloqueia o gate 8 (replay/idempotência);
-#   E) violação de invariante de memória bloqueia o gate memory (AOS-044).
+#   E) violação de invariante de memória bloqueia o gate memory (AOS-044);
+#   F) vector de supply-chain desbloqueado bloqueia o gate supplychain (AOS-054).
 #
 # NOTA: um self-test PASSA quando o gate correspondente FALHA como esperado.
 set -uo pipefail
@@ -147,6 +148,23 @@ if ( cd "$REPO_ROOT/packages/platform/memory" && \
   bad "E: a suite aceitou um registo apagado — gate memory NÃO bloquearia"
 else
   pass "E: a suite bloqueou (exit!=0) a violação de integridade injectada (gate memory fail-closed)"
+fi
+
+# ============================================================================
+# F) vector de supply-chain desbloqueado torna o gate supplychain (AOS-054) vermelho
+# ============================================================================
+log_gate "self-test F · vector desbloqueado bloqueia o gate supplychain (AOS-054)"
+# A suite de AOS-054 tem um teste-veneno (TestSelftestSupplychainBypassReddensGate) que
+# só corre com AOS_SUPPLYCHAIN_SELFTEST=1: reproduz o rug-pull com o controlo CONTORNADO
+# (a chave do atacante adicionada ao trust store) — pelo que a promoção é ADMITIDA — e
+# ASSEVERA (falsamente) que foi bloqueada; a asserção FALHA de propósito, provando que um
+# vector desbloqueado torna o gate VERMELHO (fail-closed). Determinista, offline e sem
+# rasto no repo (nenhum ficheiro é alterado).
+if ( cd "$REPO_ROOT/packages/platform/registry" && \
+     AOS_SUPPLYCHAIN_SELFTEST=1 go test ./supplychaintests/ -run TestSelftestSupplychainBypassReddensGate -count=1 ) >/dev/null 2>&1; then
+  bad "F: a suite aceitou um rug-pull com o controlo desligado — gate supplychain NÃO bloquearia"
+else
+  pass "F: a suite bloqueou (exit!=0) o vector desbloqueado injectado (gate supplychain fail-closed)"
 fi
 
 # ============================================================================

@@ -285,6 +285,20 @@ O **manifesto de dependências** materializa-se em `registry.DependencyManifest`
 | Capacidade fora do catálogo | Execução não-mediada | Default-deny no RM; só executam tools presentes e verificadas no REG (ADR-002). |
 | Replay infiel após evolução de tool | RCA e eval inválidos | Manifesto de dependências imutável por trajectória; versões e digests gravados por run (ADR-010/012). |
 
+**Prova por adversário (AOS-054).** Cada linha desta tabela é um teste executável que
+REPRODUZ o ataque e verifica o BLOQUEIO, na suite adversarial de supply-chain
+`packages/platform/registry/supplychaintests` (pacote só de testes que ORQUESTRA os
+controlos reais AOS-045..053 — não os reimplementa). Os sete vectores — rug-pull
+(AOS-048), schema drift (AOS-049), rug-pull a meio do run + quarentena (AOS-050/051),
+tool poisoning untrusted (barreira AOS-042 reutilizada por AOS-046), resolução por
+`latest` (AOS-047), capacidade fora do catálogo (default-deny, AOS-045) e replay infiel
+(manifesto AOS-052) — são provados bloqueados e cada bloqueio é atestado e re-verificado
+na hash-chain WORM tamper-evident (AOS-011, via `audit.Verify`). Meta-testes provam que a
+suite DETECTA (com o controlo contornado, o ataque passa — não é green-vazio). A suite
+corre como gate CI fail-closed `scripts/ci/supplychain.sh` (ligado a `run.sh`, ao
+`Makefile` e ao `ci.yml`), com self-test (`scripts/ci/selftest.sh`, secção F) que prova
+que um vector desbloqueado torna o gate vermelho. Cross-ref: `specs/EPIC-11_Testes_Qualidade.md`.
+
 ---
 
 ## 10. Glossário
