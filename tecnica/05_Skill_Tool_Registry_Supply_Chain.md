@@ -241,6 +241,18 @@ Todo o artefacto comportamental mutável — skills, schemas de tools, manifesto
 
 O **manifesto de dependências** é imutável por trajectória: cada run grava as versões e digests exactos de todas as skills/tools/servidores que utilizou, junto do model-id e do hash do prompt (ver `tecnica/11_Convencoes_Engenharia_Evolucao.md`). É esta ancoragem que torna o replay fiel — sem ela, uma evolução de tool posterior invalidaria a reprodução do passado. O ciclo de deprecação é formal: uma versão nunca é removida abruptamente enquanto houver trajectórias que a referenciem; passa por `deprecated` antes de qualquer retirada, e o *rollback* para uma versão anterior é atómico.
 
+### 7.1 Validação de bump ancorada a contrato (AOS-052)
+
+A disciplina de SemVer é imposta por um **gate de validação de bump** determinista (pacote `registry/semver`), não por convenção. Dado o contrato público **antigo** e o **novo** (schema de I/O + scopes de credencial + classe de egress), o classificador `ClassifyContract` deduz a mudança **mínima** exigida, ancorada a cada eixo do contrato:
+
+- **MAJOR (quebra)** — schema de *input* com propriedade removida, tornada obrigatória ou de tipo apertado/incompatível; schema de *output* com propriedade removida ou garantia enfraquecida; scopes de credencial **acrescentados**; classe de egress **elevada** (`none` < `internal` < `external`); ou semântica **declarada** quebrada (sinal não-estrutural que o publicador afirma). É a única classe que exige re-aprovação e justifica um novo estado de confiança TOFU (cruza AOS-049).
+- **MINOR (retro-compatível)** — campo opcional novo, relaxamento de obrigatoriedade, scopes removidos, egress reduzido, ou qualquer mudança de contrato sem factor de quebra.
+- **PATCH / none** — contrato byte-idêntico (mesmo schema/scopes/egress).
+
+`ValidateBump` é **fail-closed**: a versão de destino tem de ser estritamente superior à de origem (`ErrNonMonotonicBump`) e o bump declarado pelo delta de versão tem de ser **≥** à mudança exigida (`ErrIncompatibleBump`). Assim, uma mudança de contrato quebrada publicada como MINOR/PATCH é **rejeitada**. A sobre-declaração (declarar MAJOR para uma mudança apenas MINOR) é permitida — a classificação é a fonte de verdade do mínimo. A análise de schema é JSON-Schema-lite (sobre `properties`/`required`/`type`) e conservadora: uma mudança de contrato opaca/não-analisável que difira é tratada como quebra.
+
+O **manifesto de dependências** materializa-se em `registry.DependencyManifest`: um value type **imutável** que grava, por trajectória, o `trajectory_id`, o `model_id`, o `prompt_hash` e as dependências pinadas (`agentruntime.PinnedDep` — nome+versão+digest, reutilizado do manifesto por turno do RT, sem reimplementação). Os acessores devolvem sempre cópias e o `Fingerprint` (digest canónico de AOS-047) dá-lhe identidade tamper-evident estável independente da ordem de entrada. O ciclo de deprecação e o rollback atómico vivem em `registry.Lifecycle`, que projecta a operabilidade de uma linha de versões sobre o catálogo append-only: a retirada exige deprecação formal prévia (`ErrNotDeprecated`) e ausência de referências vivas (`ErrStillReferenced`), e o rollback é um swap único sob lock — sem estado híbrido observável (nunca duas versões `active` nem nenhuma numa fotografia).
+
 ---
 
 ## 8. Vista de qualidade
