@@ -123,6 +123,11 @@ type Gateway struct {
 	// keypool, quando definido, escolhe a chave de infra pooled por throughput,
 	// DESACOPLADA da identidade — o KeyID não-secreto entra na atribuição.
 	keypool KeyPool
+	// --- AOS-059: router cost/load-aware + model tiering ---
+	// routing, quando definido, substitui o estágio de roteamento pass-through
+	// (IdentityRouting) pela escolha REAL de modelo/tier/região/conta dentro da
+	// fronteira de soberania, coordenada com o admission global (ADR-008).
+	routing pipeline.Stage
 	// attribution, quando definido, regista principal/modelo/região por chamada,
 	// liga ao span OTel GenAI e sela no audit WORM. Nunca "o pool".
 	attribution *attribution.Recorder
@@ -179,6 +184,14 @@ func WithAllowlistStage(s pipeline.Stage) Option { return func(g *Gateway) { g.a
 // como em AOS-055/056).
 func WithKeyPool(kp KeyPool) Option { return func(g *Gateway) { g.keypool = kp } }
 
+// WithRoutingStage injecta o estágio de roteamento REAL de AOS-059 (router
+// cost/load-aware + model tiering): escolhe modelo/tier/região/conta dentro da
+// fronteira de soberania (AOS-058), coordenado com o admission global (ADR-008), e
+// regista modelo/tier/razão por decisão. Substitui o pass-through IdentityRouting
+// de AOS-055. Um degrade fica observável como variância explícita (recordVariance).
+// Default: pass-through.
+func WithRoutingStage(s pipeline.Stage) Option { return func(g *Gateway) { g.routing = s } }
+
 // WithAttribution injecta o recorder de atribuição por chamada (AOS-057): regista
 // principal/modelo/região, anota o span e sela no audit WORM. Default: sem
 // atribuição (o registo entra com AOS-057 wired).
@@ -230,6 +243,14 @@ func New(adapter adapters.Adapter, opts ...Option) *Gateway {
 	if g.allowlist != nil {
 		st := g.pipe.Stages()
 		st.Allowlist = g.allowlist
+		g.pipe = pipeline.New(st)
+	}
+	// AOS-059: se um estágio de roteamento real foi injectado, substitui o
+	// IdentityRouting pass-through preservando a ORDEM fixa (roteamento corre a
+	// seguir à allowlist, antes do cache-layout — o 3.º estágio da pipeline).
+	if g.routing != nil {
+		st := g.pipe.Stages()
+		st.Routing = g.routing
 		g.pipe = pipeline.New(st)
 	}
 	return g
