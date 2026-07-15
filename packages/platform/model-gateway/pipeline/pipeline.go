@@ -78,11 +78,51 @@ type Exchange struct {
 	// Usage é preenchido pela invocação do provider antes do estágio de metering.
 	Usage port.Usage
 
+	// --- Identidade resolvida pelo estágio de authn (AOS-057) ---
+	//
+	// Campos PRIMITIVOS por desenho: o pacote pipeline NÃO importa a identidade
+	// (platform/identity) — o estágio de authn (routing/keypool à parte) preenche
+	// estes campos a partir do token NHI validado. São o eixo da ATRIBUIÇÃO
+	// (principal/modelo/região por chamada), SEPARADO do eixo da chave de infra
+	// (KeyID). Ficam vazios no caminho pass-through (AOS-055) e só o estágio de
+	// authn real (AOS-057) os popula.
+	PrincipalUser  string
+	PrincipalAgent string
+	AgentClass     string
+	// HumanRoot é o humano responsável na raiz da cadeia on-behalf-of (ADR-003):
+	// "quem autorizou" em última instância. Vazio até o authn resolver a cadeia.
+	HumanRoot string
+	// EffectiveAuthority é a autoridade efectiva = utilizador ∩ classe de agente
+	// (menor privilégio) computada pelo authn a partir do token e reconciliada com
+	// o escopo selado.
+	EffectiveAuthority []string
+	// DelegationChain é a cadeia on-behalf-of verificada, projectada em forma
+	// primitiva (sub/act_as) para o registo de atribuição e o audit WORM.
+	DelegationChain []DelegationHop
+	// PolicyVersion é a versão (tamper-evident) da policy-as-code de validação de
+	// token aplicada pelo authn. É selada no audit WORM (liga a decisão à política).
+	PolicyVersion string
+
+	// KeyID é o identificador NÃO-SECRETO da chave de infra pooled seleccionada por
+	// THROUGHPUT (routing/keypool), DESACOPLADA da identidade. Entra no registo de
+	// atribuição para provar que a chave usada foi uma chave concreta — NUNCA "o
+	// pool" — e nunca é o segredo (ADR-006). Vazio se não há keypool configurado.
+	KeyID string
+
 	// Decisions acumula o rasto determinista dos estágios.
 	Decisions []Decision
 
 	// clock é o relógio injectável (nunca usado em decisões).
 	clock func() time.Time
+}
+
+// DelegationHop é um elo (sub → act_as) da cadeia de delegação on-behalf-of, em
+// forma PRIMITIVA. O pacote pipeline não importa identity/delegation; o estágio
+// de authn projecta a cadeia verificada (raiz humana → agente actual) para esta
+// forma, que o registo de atribuição e o audit WORM consomem.
+type DelegationHop struct {
+	Sub   string
+	ActAs string
 }
 
 // Now devolve o instante do relógio injectado (ou time.Now se nenhum).
@@ -97,6 +137,11 @@ func (e *Exchange) Now() time.Time {
 func (e *Exchange) record(stage, result, reason string) {
 	e.Decisions = append(e.Decisions, Decision{Stage: stage, Result: result, Reason: reason})
 }
+
+// Record acrescenta uma decisão ao rasto a partir de um estágio EXTERNO ao
+// pacote (ex.: o estágio pipeline/authn de AOS-057, que vive noutro pacote e não
+// consegue chamar o record não-exportado). Espelha o record interno.
+func (e *Exchange) Record(stage, result, reason string) { e.record(stage, result, reason) }
 
 // Stage é um estágio da pipeline. Process muta o [Exchange] ou devolve erro
 // (fail-closed). Name identifica o estágio nos registos/decisões.

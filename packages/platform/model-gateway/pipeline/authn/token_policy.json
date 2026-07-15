@@ -1,0 +1,12 @@
+{
+  "version": "gw-token-policy/v1",
+  "default": "deny",
+  "rules": [
+    {
+      "id": "allow-model-invoke",
+      "operations": ["chat", "embeddings"],
+      "agent_classes": ["*"],
+      "require_capabilities": ["model:invoke"]
+    }
+  ]
+}

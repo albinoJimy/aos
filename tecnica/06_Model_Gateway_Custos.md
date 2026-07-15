@@ -153,6 +153,42 @@ A troca é determinista e sem rede (o *stand-in* do *token endpoint* deriva o to
 
 **Configuração por provider/região e *fail-closed* atribuível.** A `Source` é configurada com o conjunto de pares `(provider, região)` elegíveis (`Config.Allowed`). A chave escolhida corresponde **sempre** ao par exacto pedido — respeita a fronteira de soberania (a *allowlist* regional concreta é AOS-058; aqui a config + a selecção correcta). Sem credencial válida (região não configurada, material ausente, expirado ou revogado) a aquisição falha *fail-closed* com um `*CredentialError` **atribuível** (identifica provider+região, preservando `errors.Is` da causa) — **nunca** cai para outra conta/região silenciosamente. O detalhe de configuração operacional está em `docs/model-gateway/credenciais-por-provider-regiao.md`.
 
+### 4.2 Desacoplamento identidade ↔ chaves de infra pooled (AOS-057)
+
+AOS-057 concretiza a separação dos dois eixos que o *credential pool round-robin* funde. A implementação vive em três pontos do módulo `packages/platform/model-gateway`, cada um num **eixo distinto**, e o Gateway compõe-nos por opção (`WithAuthnStage`, `WithKeyPool`, `WithAttribution`) sem alterar o contrato de porta nem reimplementar identidade/broker/gateway.
+
+**Eixo da IDENTIDADE — `pipeline/authn` (estágio auth-principal REAL).** Substitui o pass-through de AOS-055. Em cada chamada, *fail-closed* em cada passo:
+
+1. **Valida o token do principal** REUTILIZANDO o `Verifier` da identidade (`platform/identity`, AOS-005/006) — não inventa formato: assinatura EdDSA, janela temporal, revogação e cadeia *on-behalf-of*. Token ausente/inválido/expirado ⇒ *deny*.
+2. **Exige raiz humana** na cadeia de delegação (ADR-003): `Principal.HumanPrincipal()` resolve "quem autorizou"; cadeia órfã ⇒ *deny*.
+3. **Autoridade efectiva = utilizador ∩ classe de agente** (`EffectiveAuthority`, menor privilégio), reconciliada com o escopo **selado** no token (defesa em profundidade — nunca concede mais do que o token selou). Autoridade vazia ⇒ *deny*.
+4. **Política de validação de token** como *policy-as-code* **versionada** e *default-deny* (`token_policy.json`, embebida via `go:embed`, com versão *tamper-evident* `versão#digest`): sem regra aplicável ⇒ *deny*. É a equivalente *data-plane* do *default-deny* do PDP/cedar (que impõe as *tool calls*), mantida no gateway para não trazer `cedar-go` ao caminho crítico.
+
+Em sucesso, o estágio popula os campos de identidade do `Exchange` (principal/classe/humano/autoridade/cadeia) e substitui o token bruto por um identificador **não-secreto** (`user/agent`) — o token nunca segue para o rasto de variância/atribuição.
+
+**Eixo da CHAVE DE INFRA — `routing/keypool` (selecção por *throughput*, DESACOPLADA).** É o coração do ticket. A selecção de chave — `Registry.Select(provider, região)` / `Pool.Select()` — recebe **APENAS** `(provider, região)`; a identidade do principal **NÃO existe na sua assinatura** e **NÃO é consultada**. É a **prova estrutural** do desacoplamento: é impossível, por construção, a escolha da chave depender de quem actua. A selecção é determinista (conta com mais folga de RPM, desempate estável por `KeyID`), *fail-closed* se o pool está saturado (`ErrNoCapacity`) ou ausente (`ErrNoPool`). Opera sobre `Account.KeyID` — um identificador **não-secreto** de conta; o segredo concreto vem sempre do Credential Broker (AOS-056, §4.1), *server-side*.
+
+**Eixo da ATRIBUIÇÃO — `metering/attribution` (principal/modelo/região por chamada).** Junta os dois eixos anteriores num `Record` e, em **cada** chamada, seja qual for a chave: (a) **anota o span OTel GenAI** com principal (utilizador, agente), classe, humano responsável, modelo, região e o `KeyID` **não-secreto** — a chave **nunca** no span (ADR-006); (b) **sela no audit WORM** *hash-chain* *tamper-evident* (AOS-011/ADR-010), com o principal, a cadeia *on-behalf-of*, a capability `model:invoke`, o recurso (modelo/região) e a versão da política. A resposta a *"quem autorizou esta chamada ao modelo?"* é sempre o **principal** — **nunca "o pool"**.
+
+```mermaid
+flowchart LR
+    subgraph GW[Model Gateway]
+      A["authn (identidade)\ntoken -> utilizador ∩ classe\ncadeia -> humano"]
+      K["keypool (throughput)\nSelect(provider, regiao)\nSEM identidade"]
+      T["attribution\nprincipal + modelo + regiao\n+ KeyID nao-secreto"]
+    end
+    A -->|eixo identidade| T
+    K -->|eixo chave| T
+    T -->|anota| S[Span OTel GenAI]
+    T -->|sela| W[Audit WORM hash-chain]
+```
+
+**Teste de atribuição cruzada (a prova de governação).** Dois casos, ambos verdes sob `-race`:
+- **Mesmo principal / chaves diferentes:** duas chamadas do mesmo `alice/agent-1` com o pool a alternar `acct-a`→`acct-b` mantêm o **mesmo** principal no registo; a chave rotou, a atribuição não.
+- **Principais diferentes / mesma chave:** `alice/agent-1` e `bob/agent-2` servidos por `acct-shared` permanecem **distinguíveis** no registo.
+
+Um token inválido é recusado pelo estágio de authn **antes** de o provider ser invocado — o adaptador não corre e não há registo de atribuição (*fail-closed*, verificado por teste).
+
 ---
 
 ## 5. Allowlist regional e soberania

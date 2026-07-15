@@ -31,6 +31,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
+	"github.com/aos-ref/platform/model-gateway/metering/attribution"
 	"github.com/aos-ref/platform/model-gateway/pipeline"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
@@ -89,6 +90,14 @@ type nopVariance struct{}
 
 func (nopVariance) Emit(context.Context, VarianceEvent) {}
 
+// KeyPool selecciona a chave de infra pooled por THROUGHPUT (AOS-057,
+// routing/keypool). A ASSINATURA recebe APENAS (provider, região) — NUNCA o
+// principal: é a prova estrutural de que a escolha da chave está DESACOPLADA da
+// identidade. *keypool.Registry satisfá-la.
+type KeyPool interface {
+	Select(provider, region string) (string, error)
+}
+
 // Gateway é a fachada do GW. Stateless: não detém estado autoritativo (buckets,
 // métricas são externos, por porta). Construir com [New].
 type Gateway struct {
@@ -100,6 +109,17 @@ type Gateway struct {
 	clock    func() time.Time
 	newID    func() string
 	region   string
+
+	// --- AOS-057: identidade por principal vs chaves de infra pooled ---
+	// authn, quando definido, substitui o estágio auth-principal pass-through pela
+	// validação REAL do token do principal (fail-closed).
+	authn pipeline.Stage
+	// keypool, quando definido, escolhe a chave de infra pooled por throughput,
+	// DESACOPLADA da identidade — o KeyID não-secreto entra na atribuição.
+	keypool KeyPool
+	// attribution, quando definido, regista principal/modelo/região por chamada,
+	// liga ao span OTel GenAI e sela no audit WORM. Nunca "o pool".
+	attribution *attribution.Recorder
 }
 
 // Compile-time: o Gateway satisfaz a porta compatível OpenAI.
@@ -136,6 +156,22 @@ func WithIDGenerator(f func() string) Option { return func(g *Gateway) { g.newID
 // WithDefaultRegion define a região usada quando o pedido não a especifica.
 func WithDefaultRegion(region string) Option { return func(g *Gateway) { g.region = region } }
 
+// WithAuthnStage injecta o estágio auth-principal REAL de AOS-057 (validação
+// fail-closed do token do principal + autoridade utilizador ∩ classe + policy-as-code).
+// Substitui o pass-through de AOS-055. Default: pass-through.
+func WithAuthnStage(s pipeline.Stage) Option { return func(g *Gateway) { g.authn = s } }
+
+// WithKeyPool injecta o selector de chave de infra pooled por throughput
+// (AOS-057). A escolha é DESACOPLADA da identidade (a porta só recebe
+// provider/região). Default: sem keypool (a credencial é obtida por provider/região
+// como em AOS-055/056).
+func WithKeyPool(kp KeyPool) Option { return func(g *Gateway) { g.keypool = kp } }
+
+// WithAttribution injecta o recorder de atribuição por chamada (AOS-057): regista
+// principal/modelo/região, anota o span e sela no audit WORM. Default: sem
+// atribuição (o registo entra com AOS-057 wired).
+func WithAttribution(r *attribution.Recorder) Option { return func(g *Gateway) { g.attribution = r } }
+
 // New constrói o Gateway sobre um adaptador de provider. O adaptador é o ÚNICO
 // componente que fala com um provedor; todo o resto passa pela pipeline.
 func New(adapter adapters.Adapter, opts ...Option) *Gateway {
@@ -168,6 +204,14 @@ func New(adapter adapters.Adapter, opts ...Option) *Gateway {
 	if g.pipe == nil {
 		g.pipe = pipeline.NewDefault()
 	}
+	// AOS-057: se um estágio auth-principal real foi injectado, substitui-o na
+	// pipeline preservando a ORDEM fixa e os restantes estágios (pass-through fica
+	// para os campos não sobrepostos por outros tickets).
+	if g.authn != nil {
+		st := g.pipe.Stages()
+		st.Auth = g.authn
+		g.pipe = pipeline.New(st)
+	}
 	return g
 }
 
@@ -192,6 +236,14 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
+			return err
+		}
+		// AOS-057: sela a atribuição (principal/modelo/região/KeyID/policyVersion) no
+		// WORM ANTES de o provider ser invocado — audit-before-effect (ADR-010). Todos
+		// os campos já estão resolvidos (auth → routing → keypool) e NÃO dependem do
+		// usage. Fail-closed: se a selagem falhar, o EFEITO (a model call) NÃO ocorre e
+		// nenhuma lacuna silenciosa entra na cadeia tamper-evident.
+		if err := g.attribute(ctx, span, ex); err != nil {
 			return err
 		}
 		req.Model = ex.ResolvedModel
@@ -236,6 +288,15 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		if err != nil {
 			return err
 		}
+		// AOS-057: sela a atribuição ANTES de abrir o stream (o EFEITO). Os campos de
+		// atribuição (principal/modelo/região/KeyID) NÃO dependem do usage, pelo que o
+		// audit-before-effect é alcançável também no streaming — e aqui é FAIL-CLOSED:
+		// se a selagem falhar, o stream NÃO é aberto nem devolvido ao chamador, e não
+		// fica uma lacuna silenciosa na cadeia WORM (fecha a fuga do best-effort
+		// anterior). Só o metering (dependente do usage) é adiado para o fim do stream.
+		if err := g.attribute(ctx, span, ex); err != nil {
+			return err
+		}
 		req.Model = ex.ResolvedModel
 		s, err := g.adapter.ChatStream(ctx, req, cred)
 		if err != nil {
@@ -258,6 +319,8 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		finished: make(chan struct{}),
 		onEnd: func(usage port.Usage) {
 			ex.Usage = usage
+			// A atribuição já foi selada (fail-closed) ANTES de o stream abrir; aqui só
+			// corre o metering, dependente do usage final (custo USD de AOS-062).
 			if err := g.pipe.Meter(ctx, ex); err != nil {
 				span.SetAttribute(agentruntime.AttrErrorType, errType(err))
 			}
@@ -298,6 +361,11 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
+			return err
+		}
+		// AOS-057: audit-before-effect — sela a atribuição ANTES do invoke do provider
+		// (fail-closed, ADR-010). Ver [Gateway.Chat].
+		if err := g.attribute(ctx, span, ex); err != nil {
 			return err
 		}
 		req.Model = ex.ResolvedModel
@@ -345,6 +413,18 @@ func (g *Gateway) credential(ctx context.Context, ex *pipeline.Exchange) (adapte
 	if ex.ResolvedRegion == "" {
 		ex.ResolvedRegion = ex.RequestedRegion
 	}
+	// AOS-057: se há um keypool, escolhe a chave de infra pooled por THROUGHPUT —
+	// DESACOPLADA da identidade (a porta só recebe provider/região; o principal do
+	// Exchange NÃO é passado). O KeyID não-secreto entra na atribuição; o segredo
+	// concreto vem sempre da CredentialSource (broker/vault, ADR-006). Fail-closed
+	// se o pool estiver saturado ou ausente.
+	if g.keypool != nil {
+		keyID, err := g.keypool.Select(ex.ResolvedProvider, ex.ResolvedRegion)
+		if err != nil {
+			return adapters.Credential{}, err
+		}
+		ex.KeyID = keyID
+	}
 	return g.creds.Fetch(ctx, ex.ResolvedProvider, ex.ResolvedRegion)
 }
 
@@ -366,6 +446,56 @@ func (g *Gateway) finishResponse(ctx context.Context, span agentruntime.Span, ex
 	g.recordVariance(ctx, ex)
 	span.SetAttribute(attrResponseModel, resp.Model)
 	setUsageAttrs(span, resp.Usage)
+}
+
+// attribute produz o registo de atribuição da chamada (AOS-057): principal
+// (utilizador, agente), modelo e região — SEMPRE, seja qual for a chave de infra
+// (KeyID não-secreto). Anota o span OTel GenAI e sela no audit WORM. No-op se não
+// há recorder configurado. NUNCA regista o segredo nem "o pool".
+func (g *Gateway) attribute(ctx context.Context, span agentruntime.Span, ex *pipeline.Exchange) error {
+	if g.attribution == nil {
+		return nil
+	}
+	rec := attribution.Record{
+		UserID:          ex.PrincipalUser,
+		AgentID:         ex.PrincipalAgent,
+		AgentClass:      ex.AgentClass,
+		HumanRoot:       ex.HumanRoot,
+		DelegationChain: toAttrHops(ex.DelegationChain),
+		Model:           ex.ResolvedModel,
+		Region:          ex.ResolvedRegion,
+		KeyID:           ex.KeyID,
+		Operation:       string(ex.Op),
+		PolicyVersion:   ex.PolicyVersion,
+		Timestamp:       g.clock(),
+	}
+	if err := g.attribution.Record(ctx, span, rec); err != nil {
+		return &attributionError{err: err}
+	}
+	return nil
+}
+
+// attributionError marca uma falha de selagem/registo da atribuição. É distinta
+// de um erro de estágio ou de provider para que [errType] a classifique como
+// "attribution_error" no span, seja qual for o caminho (Chat/Embeddings/stream).
+type attributionError struct{ err error }
+
+func (e *attributionError) Error() string {
+	return "atribuicao nao selada (fail-closed): " + e.err.Error()
+}
+func (e *attributionError) Unwrap() error { return e.err }
+
+// toAttrHops projecta a cadeia de delegação do Exchange (forma primitiva do
+// pipeline) para os hops do registo de atribuição.
+func toAttrHops(hops []pipeline.DelegationHop) []attribution.Hop {
+	if len(hops) == 0 {
+		return nil
+	}
+	out := make([]attribution.Hop, len(hops))
+	for i, h := range hops {
+		out[i] = attribution.Hop{Sub: h.Sub, ActAs: h.ActAs}
+	}
+	return out
 }
 
 // recordVariance emite um evento de variância explícito por cada dimensão em que
@@ -425,6 +555,10 @@ func setUsageAttrs(span agentruntime.Span, u port.Usage) {
 }
 
 func errType(err error) string {
+	var ae *attributionError
+	if errors.As(err, &ae) {
+		return "attribution_error"
+	}
 	var se *pipeline.StageError
 	if errors.As(err, &se) {
 		return "stage:" + se.Stage
