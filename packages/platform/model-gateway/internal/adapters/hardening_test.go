@@ -2,10 +2,12 @@ package adapters_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
@@ -95,6 +97,75 @@ func TestOpenAIHTTPAdapter_SegredoVazio_FailClosed(t *testing.T) {
 		Model: "m", Messages: []port.Message{{Role: port.RoleUser, Content: "oi"}},
 	}, adapters.NewCredential("openai", "eu", "")); !errors.Is(err, adapters.ErrEmptyCredential) {
 		t.Fatalf("stream com segredo vazio devia falhar ErrEmptyCredential, obtido %v", err)
+	}
+}
+
+// TestOpenAIHTTPAdapter_ErroRedigeCorpoDoProvedor prova que o corpo de um erro
+// 4xx do provedor NÃO propaga verbatim a montante: um provedor que ecoe um
+// header Authorization/bearer ou uma chave sk-/AIza no corpo tem esses padrões
+// REDIGIDOS no erro que sobe ao runtime/agente (ADR-006). Cobre síncrono e stream.
+func TestOpenAIHTTPAdapter_ErroRedigeCorpoDoProvedor(t *testing.T) {
+	t.Parallel()
+	const leaked = "Bearer sk-ant-api03-VERYSECRETLEAKEDTOKEN0000"
+	body := `{"error":"unauthorized, header was: ` + leaked + `"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	a := adapters.NewOpenAIHTTPAdapter("openai", srv.URL, srv.Client())
+	cred := adapters.NewCredential("openai", "eu", "sk-infra")
+
+	// Síncrono.
+	_, err := a.Chat(context.Background(), port.ChatRequest{
+		Model: "m", Messages: []port.Message{{Role: port.RoleUser, Content: "oi"}},
+	}, cred)
+	if err == nil {
+		t.Fatal("status 401 devia devolver erro")
+	}
+	if strings.Contains(err.Error(), "sk-ant-api03-VERYSECRETLEAKEDTOKEN0000") || strings.Contains(err.Error(), "Bearer sk-") {
+		t.Fatalf("segredo do corpo do provedor VAZOU no erro sincrono: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Errorf("erro sincrono devia conter marcador de redacao: %v", err)
+	}
+
+	// Streaming (mesmo caminho de status != 200).
+	_, err = a.ChatStream(context.Background(), port.ChatRequest{
+		Model: "m", Messages: []port.Message{{Role: port.RoleUser, Content: "oi"}},
+	}, cred)
+	if err == nil {
+		t.Fatal("status 401 no stream devia devolver erro")
+	}
+	if strings.Contains(err.Error(), "sk-ant-api03-VERYSECRETLEAKEDTOKEN0000") || strings.Contains(err.Error(), "Bearer sk-") {
+		t.Fatalf("segredo do corpo do provedor VAZOU no erro de stream: %v", err)
+	}
+}
+
+// TestCredential_MarshalJSON_Redige prova que encoding/json de uma Credential
+// serializa a forma REDIGIDA (ADR-006): a garantia é imposta pelo tipo
+// (MarshalJSON), não apenas pela omissão de um campo não-exportado.
+func TestCredential_MarshalJSON_Redige(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-super-secreto-1234567890"
+	cred := adapters.NewCredential("openai", "eu", secret)
+	b, err := json.Marshal(cred)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b), secret) {
+		t.Fatalf("segredo VAZOU no JSON da Credential: %s", b)
+	}
+	if !strings.Contains(string(b), "REDACTED") {
+		t.Errorf("JSON da Credential devia redigir: %s", b)
+	}
+	// Também embrulhada numa struct (o caso real: log/span estruturado).
+	wrapped, _ := json.Marshal(struct {
+		Cred adapters.Credential `json:"cred"`
+	}{Cred: cred})
+	if strings.Contains(string(wrapped), secret) {
+		t.Fatalf("segredo VAZOU no JSON embrulhado: %s", wrapped)
 	}
 }
 

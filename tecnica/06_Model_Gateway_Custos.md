@@ -128,6 +128,31 @@ sequenceDiagram
 
 O registo por chamada — principal, modelo, região, tokens de entrada/saída, cache read/write, custo em USD — é emitido como span OTel GenAI (`gen_ai.*`), ligando cada *model call* à trajectória do agente e ao audit WORM (ver `tecnica/09_Governacao_Conformidade.md`).
 
+### 4.1 OAuth multi-provedor e Credential Broker (AOS-056)
+
+A aquisição das chaves de infra dos três provedores (Claude/Anthropic, Gemini/Google, OpenAI) está implementada em `packages/platform/model-gateway/internal/` como a fonte REAL que satisfaz a porta `CredentialSource` de AOS-055. Corre **sempre server-side**: o agente nunca participa no fluxo OAuth nem vê o material.
+
+**Porta `CredentialBroker` (BRK/Vault).** `internal/credentials/broker.go` define a fronteira: dado `(provider, região)`, o broker emite um `Lease` JIT — um segredo de infra com TTL curto e um `LeaseID` revogável (o segredo é não-exportado e redigido, nunca logado). Há duas implementações: um `FakeBroker` determinista (testes, com relógio injectável, rotação e revogação) e um `ReferenceBroker` que documenta o vault real (HashiCorp Vault / KMS + broker, `tecnica/07 §7.1`) e falha *fail-closed* (`ErrNotWired`) até ser ligado por infra (EPIC-07). O broker é uma **porta**; o vault concreto é infra.
+
+**Camada OAuth por provedor.** `internal/adapters/oauth/` traduz o mecanismo de autenticação específico de cada provedor para a credencial de infra, atrás da `CredentialSource`:
+
+| Provedor | Mecanismo | Tradução |
+|---|---|---|
+| OpenAI | `api_key` | A API key É o portador (*pass-through*); o TTL é o do lease do vault. |
+| Claude/Anthropic | `service_oauth` | OAuth de serviço: troca de *client-credentials* por um *access token* de vida curta. |
+| Gemini/Google | `federated` | Identidade federada: asserção de *workload* → *access token* com **audiência regional** (o token de uma região não vale noutra). |
+
+A troca é determinista e sem rede (o *stand-in* do *token endpoint* deriva o token via HMAC-SHA256 do material; a integração com o endpoint real é infra). O token sai encapsulado numa `adapters.Credential` redigida — nunca existe como *string* solta fora do ponto de injecção.
+
+**Cache JIT: TTL curto, rotação e revogação.** `internal/credentials/source.go` implementa a `Source`:
+
+- **JIT + TTL curto:** a credencial é obtida quando é precisa e guardada com um TTL curto configurável.
+- **Renovação antes de expirar:** uma `Fetch` dentro da janela de *refresh* (`now >= ExpiresAt − RefreshLead`, ainda antes da expiração) reemite um lease novo, em vez de servir uma credencial prestes a expirar.
+- **Rotação sem interromper *in-flight*:** a `adapters.Credential` é um valor imutável; uma vez devolvida por `Fetch`, o chamador tem a sua cópia. A rotação substitui **atomicamente** a referência em cache — uma chamada já em curso completa com a chave antiga; só as chamadas novas vêem a chave nova (provado por teste de rotação concorrente sob `-race`).
+- **Revogação:** `Source.Revoke(provider, região)` invalida a entrada de cache e revoga o lease no broker; a próxima `Fetch` obtém uma credencial nova (ou falha *fail-closed* se o material desapareceu). O lease revogado nunca é reutilizado.
+
+**Configuração por provider/região e *fail-closed* atribuível.** A `Source` é configurada com o conjunto de pares `(provider, região)` elegíveis (`Config.Allowed`). A chave escolhida corresponde **sempre** ao par exacto pedido — respeita a fronteira de soberania (a *allowlist* regional concreta é AOS-058; aqui a config + a selecção correcta). Sem credencial válida (região não configurada, material ausente, expirado ou revogado) a aquisição falha *fail-closed* com um `*CredentialError` **atribuível** (identifica provider+região, preservando `errors.Is` da causa) — **nunca** cai para outra conta/região silenciosamente. O detalhe de configuração operacional está em `docs/model-gateway/credenciais-por-provider-regiao.md`.
+
 ---
 
 ## 5. Allowlist regional e soberania

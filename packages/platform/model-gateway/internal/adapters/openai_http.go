@@ -9,10 +9,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/aos-ref/platform/model-gateway/port"
 )
+
+// secretishPattern reconhece formas típicas de segredo (portador Bearer, chaves
+// de provedor sk-/AIza.../ya29.) que um provedor mal-comportado poderia reflectir
+// no corpo de um erro. [sanitizeProviderBody] redige-as antes de o corpo subir a
+// montante (ADR-006: um segredo de infra nunca atravessa a fronteira RT/agente).
+var secretishPattern = regexp.MustCompile(`(?i)(bearer\s+[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9._-]{8,}|AIza[0-9A-Za-z._-]{10,}|ya29\.[0-9A-Za-z._-]{10,})`)
+
+// sanitizeProviderBody torna o corpo de resposta do provedor seguro para o embrulho
+// num erro que sobe ao runtime/agente: trunca-o (o corpo não é controlado pelo GW)
+// e redige padrões que pareçam segredos, para que um provedor comprometido que
+// ecoe o header Authorization/bearer num 4xx não faça o token de infra vazar a
+// montante. O corpo completo permanece disponível server-side (não é logado aqui).
+func sanitizeProviderBody(body []byte) string {
+	const maxLen = 512
+	s := string(body)
+	if len(s) > maxLen {
+		s = s[:maxLen] + "…(truncado)"
+	}
+	return secretishPattern.ReplaceAllString(s, "[REDACTED]")
+}
 
 // ErrTruncatedStream — o corpo SSE terminou SEM o sentinela "[DONE]" nem um
 // finish_reason terminal: o stream foi cortado a meio (ex.: ligação perdida a
@@ -83,7 +104,7 @@ func (a *OpenAIHTTPAdapter) ChatStream(ctx context.Context, req port.ChatRequest
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("adapters: provider %s devolveu status %d: %s", a.provider, resp.StatusCode, string(msg))
+		return nil, fmt.Errorf("adapters: provider %s devolveu status %d: %s", a.provider, resp.StatusCode, sanitizeProviderBody(msg))
 	}
 	return newSSEStream(resp.Body), nil
 }
@@ -139,7 +160,7 @@ func (a *OpenAIHTTPAdapter) do(ctx context.Context, path string, body []byte, cr
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("adapters: provider %s devolveu status %d: %s", a.provider, resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("adapters: provider %s devolveu status %d: %s", a.provider, resp.StatusCode, sanitizeProviderBody(respBody))
 	}
 	return respBody, nil
 }

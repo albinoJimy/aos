@@ -19,6 +19,9 @@ package adapters
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -57,6 +60,27 @@ func (c Credential) secretValue() string { return c.secret }
 // nunca revela a chave (ADR-006).
 func (c Credential) String() string {
 	return "Credential{provider=" + c.Provider + ",region=" + c.Region + ",secret=REDACTED}"
+}
+
+// MarshalJSON IMPÕE a redação também em JSON (ADR-006): um encoding/json acidental
+// (log/span estruturado) serializa a forma redigida, nunca o segredo. A garantia
+// é imposta pelo tipo, não apenas pela omissão do campo não-exportado.
+func (c Credential) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.String())
+}
+
+// KeyID devolve um identificador NÃO-SECRETO e estável da credencial — um
+// fingerprint DETERMINISTA do segredo (SHA-256 truncado a 12 hex) para
+// correlação/atribuição em observabilidade e testes SEM revelar o segredo. É
+// unidireccional: não permite recuperar a chave (ADR-006). Uma credencial sem
+// segredo devolve "". Usado, por exemplo, para provar que uma rotação de chave
+// produziu uma credencial DIFERENTE sem comparar segredos em claro.
+func (c Credential) KeyID() string {
+	if c.secret == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(c.secret))
+	return hex.EncodeToString(sum[:6])
 }
 
 // CredentialSource é a PORTA de aquisição de credenciais de infra (ADR-006). A
