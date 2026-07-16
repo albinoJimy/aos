@@ -30,6 +30,16 @@
 //     → budget → egress → audit), pelo que É O RM QUE APLICA a decisão de egress na
 //     mediação. Nenhum caminho de execução salta o RM (ADR-002); o filtro apenas
 //     DECIDE, o RM APLICA.
+//   - [DNSFilter] — a resolução DNS CONTROLADA da sandbox (AOS-068) que COMPÕE esta
+//     rede default-deny: envolve um [Resolver] controlado (nunca o do host) e só
+//     devolve IPs quando o nome é um host EXACTO da allowlist do principal E todos os
+//     IPs resolvidos são coerentes com a allowlist (anti-rebinding, coerência nome→IP).
+//     Consultas fora da allowlist e padrões de exfiltração (alta entropia por label ou
+//     por subdomínio reagregado; volume por (principal,domínio) numa janela) são
+//     NEGADOS e SELADOS no WORM (reutiliza o [SecurityAuditSink]). Os limiares de
+//     exfiltração são um [ExfilConfig] VERSIONADO (não mágico). FAIL-CLOSED em toda a
+//     borda: sem allowlist, sem resolução controlada ou audit indisponível ⇒ deny,
+//     nunca fallback ao resolver do host.
 //
 // # Fronteira de integração (composition root)
 //
@@ -50,6 +60,8 @@
 // MODELO verificável: DECIDE (allow/deny) por (principal/classe, IP/porta/host)
 // contra a allowlist e IMPÕE a decisão fail-closed; os drivers reais
 // (firecracker/gvisor) traduziriam a mesma allowlist para o filtro de rede do kernel
-// (iptables/nftables/eBPF) na montagem da microVM. DNS é tratado à parte (AOS-068):
-// aqui a filtragem é ao nível de IP/porta/host.
+// (iptables/nftables/eBPF) na montagem da microVM. A filtragem DNS controlada (AOS-068,
+// [DNSFilter]) vive já neste package e COMPÕE a mesma allowlist ao nível do nome: além
+// de IP/porta/host, um nome só resolve se for host exacto da allowlist e os IPs forem
+// coerentes (anti-rebinding), com deteção de exfiltração por entropia/volume.
 package network
