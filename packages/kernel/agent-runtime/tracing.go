@@ -39,6 +39,18 @@ const (
 	// span execute_tool marca que a tool PERMITIDA falhou em runtime (dec.ToolErr),
 	// distinguindo um output vazio legítimo de um output de tool falhada.
 	AttrErrorType = "error.type"
+	// AttrTaint — aos.taint: o rótulo de taint da AUTORIZAÇÃO da tool call
+	// ([referencemonitor.CallContext].Taint) anotado no span execute_tool. Torna a
+	// decisão de taint OBSERVÁVEL directamente do span — não só do evento de
+	// mediação durável — distinguindo uma negação por taint (autorização untrusted
+	// numa capability privilegiada) de uma por budget/policy (AOS-069). É o rótulo
+	// de confiança, nunca o conteúdo: o Input da tool jamais é gravado no span.
+	AttrTaint = "aos.taint"
+	// AttrDeniedBy — aos.decision.denied_by: o nome do hook que negou/escalou
+	// ([referencemonitor.Decision].DeniedBy), anotado no span execute_tool apenas
+	// quando a decisão não é permit. Com AttrTaint, torna a negação por taint
+	// ("taint") auto-descritível no span, sem segredos.
+	AttrDeniedBy = "aos.decision.denied_by"
 )
 
 // Nomes de operação da semconv GenAI.

@@ -36,6 +36,33 @@ type ToolInvocation struct {
 	ResourceRegion string
 	// Input é o payload opaco entregue à tool após permit.
 	Input []byte
+	// AuthorizationTaint é o rótulo de taint da AUTORIZAÇÃO desta tool call — a
+	// proveniência do PLANO que a originou (control-plane), NÃO a dos seus dados
+	// (que são untrusted no data-plane). Só o planeador sobre dados trusted a marca
+	// [TaintTrusted] (via [AuthorizeTrusted], ADR-005/AOS-069); vazio/desconhecido
+	// ⇒ untrusted (fail-closed). O RT propaga-a ao [referencemonitor.CallContext].
+	// Taint, onde o [referencemonitor.TaintGate] a impõe: untrusted não pode
+	// originar uma capability privilegiada. Distingue-se do taint dos DADOS: uma
+	// tool call pode usar argumentos untrusted (por handle) e ainda ser autorizada
+	// pelo control-plane trusted.
+	//
+	// CONTRATO DE SEGURANÇA CRÍTICO (AOS-069): este campo é in-band no mesmo struct
+	// que a fronteira UNTRUSTED (o [ModelClient]) produz. A garantia "só o
+	// control-plane marca trusted" é, ENQUANTO este for um campo público settable,
+	// CONVENÇÃO — não estrutura (ao contrário do [referencemonitor.Permit], mintado e
+	// infalsificável, ou da barreira de DADOS via [Handle]/[Quarantine], de campos
+	// não-exportados). Portanto, INVARIANTE INEGOCIÁVEL: NENHUM adaptador
+	// [ModelClient] / gateway / normalizador pode preencher AuthorizationTaint a
+	// partir de dados do modelo — a marca trusted SÓ pode nascer de [AuthorizeTrusted]
+	// chamado por um [ControlPlanner] sobre uma [PlannerView] (dados trusted +
+	// handles). O único mecanismo que impede a escalada quando esta convenção é
+	// violada é o fail-closed de [authorizationTaintOf]/[taint.ParseLabel] (qualquer
+	// valor que não seja a string canónica "trusted" resolve untrusted). Tornar a
+	// autorização estruturalmente infalsificável (mintá-la no RT a partir da saída do
+	// ControlPlanner, à semelhança do Permit) é a evolução planeada — DIFERIDA para o
+	// ticket de integração de superfície que liga [SeparatePlanes] ao loop (ver
+	// loop.go, "SEPARAÇÃO DE PLANOS ... DIFERIDA").
+	AuthorizationTaint string
 }
 
 // ModelResponse é o resultado de uma chamada ao Model Gateway.

@@ -233,6 +233,19 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// Histórico do turno no tail append-only (o prefixo nunca muda). A saída do
 		// modelo é untrusted-por-construção — marcada com a mesma proveniência dos
 		// resultados de tool (consistência de auditoria, ADR-005).
+		//
+		// SEPARAÇÃO DE PLANOS (dual-LLM/CaMeL) — DIFERIDA (AOS-069). O conteúdo
+		// untrusted (esta saída do modelo e os resultados de tool abaixo) é acrescentado
+		// INLINE ao tail que asm.Assemble transforma no prompt do próximo turno; NÃO
+		// passa ainda por [SeparatePlanes]/[ControlPlanner]/[Quarantine]. A defesa activa
+		// no loop base é o default fail-closed do [referencemonitor.TaintGate]: nenhuma
+		// call é marcada trusted por omissão, logo uma acção privilegiada influenciada
+		// por injecção é BLOQUEADA (ver taint_plane_test.go). A barreira estrutural "o
+		// planeador só vê trusted + handles" existe como primitivo (taint_plane.go) mas o
+		// seu wiring à montagem de prompt do loop é DIFERIDO para o ticket de integração
+		// de superfície (EPIC-12), à semelhança das notas de AOS-021/022 em
+		// mediateToolCall e da fronteira de fim-de-turno de AOS-023 — sem ele o
+		// comportamento de AOS-013 permanece inalterado.
 		if resp.Text != "" {
 			tail = append(tail, tailFromHistory(resp.Text))
 		}
@@ -391,12 +404,21 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 		},
 		Principal: goal.Principal,
 		Context: referencemonitor.CallContext{
-			// A intenção de tool call vem do modelo (untrusted). O RM/política é
-			// que decide; aqui declaramos a proveniência (ADR-005).
-			Taint: TaintUntrusted,
+			// Taint da AUTORIZAÇÃO da call (ADR-005/AOS-069): a proveniência do PLANO
+			// que a originou, não a dos seus dados. Só o control-plane sobre dados
+			// trusted marca trusted (ver [AuthorizeTrusted]); por omissão é untrusted
+			// (fail-closed). O [referencemonitor.TaintGate] impõe: uma autorização
+			// untrusted não pode originar uma capability privilegiada.
+			Taint: authorizationTaintOf(inv),
 		},
 		Input: inv.Input,
 	}
+
+	// Rótulo de taint da AUTORIZAÇÃO no span execute_tool (AOS-069): torna a decisão
+	// de taint observável a partir do próprio span (não só do evento de mediação
+	// durável), permitindo distinguir uma negação por taint de uma por budget/policy.
+	// É o rótulo, nunca o conteúdo — o Input jamais é gravado.
+	span.SetAttribute(AttrTaint, call.Context.Taint)
 
 	// Mediate recebe o ctx DERIVADO do span execute_tool: futuros spans internos do
 	// RM nascem filhos deste, mantendo a propagação de trace (Q3).
@@ -407,6 +429,11 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 		return Tainted{}, nil, err // apenas cancelamento de contexto
 	}
 	span.SetAttribute("aos.decision", string(dec.Effect))
+	// Numa negação/escalada, anotar o hook atribuível (ex.: "taint") para que a
+	// causa da decisão seja auto-descritível no span, sem segredos.
+	if dec.Effect != referencemonitor.EffectPermit && dec.DeniedBy != "" {
+		span.SetAttribute(AttrDeniedBy, dec.DeniedBy)
+	}
 	// Uma tool PERMITIDA pode falhar em runtime: propaga-se dec.ToolErr para o span
 	// (error.type) e para o loop, para não ficar silenciosamente descartado.
 	if dec.ToolErr != nil {

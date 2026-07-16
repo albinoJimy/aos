@@ -194,7 +194,9 @@ func toHopDTOs(chain []DelegationHop) []delegationHopDTO {
 	}
 	out := make([]delegationHopDTO, len(chain))
 	for i, h := range chain {
-		out[i] = delegationHopDTO{Sub: h.Sub, ActAs: h.ActAs}
+		// Conversão directa (campos idênticos; as tags JSON do DTO não afectam a
+		// convertibilidade). Equivale a delegationHopDTO{Sub: h.Sub, ActAs: h.ActAs}.
+		out[i] = delegationHopDTO(h)
 	}
 	return out
 }
