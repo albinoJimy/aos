@@ -168,3 +168,42 @@ func VerifyFromCheckpoint(ctx context.Context, store Store, pub ed25519.PublicKe
 	}
 	return verifyRange(ctx, store, cp.Partition, cp.AuditSeq+1, to, cp.EntryHash)
 }
+
+// VerifyFromCheckpointAtHead é [VerifyFromCheckpoint] com uma âncora de FRESCURA
+// conhecida FORA do store, fechando o vector de rollback de checkpoint (AOS-072).
+//
+// [VerifyFromCheckpoint] aceita QUALQUER checkpoint bem-assinado, sem noção de
+// "mais recente": um atacante que trunque o tail (remova os registos recentes,
+// indetectável por [Verify] — ver o comentário de [Verify]) e reapresente um
+// checkpoint LEGÍTIMO anterior aos registos removidos passa a verificação. Sem a
+// chave privada não forja checkpoints novos, mas reutiliza os antigos.
+//
+// A mitigação exige que o verificador conheça, de forma independente do store, o
+// último audit_seq que a cadeia DEVE ter atingido — tipicamente o AuditSeq do
+// checkpoint mais recente já observado para a partição, persistido/rastreado
+// externamente. Esse valor é expectedHead. VerifyFromCheckpointAtHead:
+//
+//  1. rejeita ([ErrCheckpointStale]) qualquer checkpoint cujo AuditSeq seja
+//     INFERIOR a expectedHead — um checkpoint anterior ao head conhecido é um
+//     rollback, não uma âncora de confiança aceitável;
+//  2. caso contrário, delega em [VerifyFromCheckpoint] a verificação de
+//     cp.AuditSeq+1 .. to.
+//
+// Nota: expectedHead é a âncora de frescura (o piso que o checkpoint tem de
+// selar); `to` é até onde a cadeia é percorrida a partir da âncora. Uma
+// verificação de produção que queira provar que a cadeia está íntegra ATÉ ao head
+// conhecido passa to == expected-head-real. Manter expectedHead sincronizado com
+// o checkpoint mais recente é responsabilidade operacional do verificador; este
+// helper apenas IMPÕE o piso, tornando o rollback fail-closed em vez de silencioso.
+func VerifyFromCheckpointAtHead(ctx context.Context, store Store, pub ed25519.PublicKey, cp Checkpoint, expectedHead, to uint64) error {
+	// Valida a assinatura ANTES de qualquer decisão de frescura: um checkpoint mal
+	// assinado é rejeitado como tal (ErrCheckpointSignature), não confundido com
+	// stale.
+	if err := VerifyCheckpoint(pub, cp); err != nil {
+		return err
+	}
+	if cp.AuditSeq < expectedHead {
+		return ErrCheckpointStale
+	}
+	return VerifyFromCheckpoint(ctx, store, pub, cp, to)
+}

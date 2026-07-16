@@ -23,6 +23,12 @@ var (
 	// ErrCheckpointAnchor — o EntryHash do checkpoint não corresponde ao registo
 	// desse audit_seq na cadeia (âncora não ancora nada verificável).
 	ErrCheckpointAnchor = errors.New("audit: ancora de checkpoint nao corresponde ao registo")
+	// ErrCheckpointStale — o checkpoint apresentado sela um audit_seq INFERIOR ao
+	// head que o verificador conhece de forma independente do store (ver
+	// [VerifyFromCheckpointAtHead]). Sinaliza rollback de checkpoint: a
+	// reapresentação de um checkpoint antigo, validamente assinado, para mascarar
+	// truncatura do tail dos registos posteriores a ele.
+	ErrCheckpointStale = errors.New("audit: checkpoint anterior ao head conhecido (rollback)")
 	// ErrInvalidKey — material de chave ed25519 com dimensão inválida.
 	ErrInvalidKey = errors.New("audit: chave ed25519 invalida")
 )
