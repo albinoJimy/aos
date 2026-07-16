@@ -1,0 +1,22 @@
+{
+  "version": "sbx-egress/v1",
+  "default": "deny",
+  "rules": [
+    {
+      "id": "r-web-fetcher",
+      "principals": ["class:web-fetcher", "nhi:agent-fetcher-01"],
+      "destinations": [
+        { "hosts": ["api.github.com", "api.internal.aos"], "ports": [443] },
+        { "cidrs": ["93.184.216.0/24"], "ports": [443, 8443] }
+      ]
+    },
+    {
+      "id": "r-billing",
+      "principals": ["class:billing", "nhi:agent-billing-01"],
+      "destinations": [
+        { "hosts": ["payments.internal.aos"], "ports": [443] },
+        { "cidrs": ["10.20.0.0/16"], "ports": [443] }
+      ]
+    }
+  ]
+}
