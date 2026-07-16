@@ -6,6 +6,13 @@ import "context"
 // OTel GenAI). O SBX não puxa o SDK OTel (isso é EPIC-08); expõe uma porta mínima.
 const OpExecuteTool = "execute_tool"
 
+// OpProvisionSandbox é o nome do span que cobre a PROVISÃO de uma sandbox pelo pool
+// (AOS-065): a reserva de uma VM limpa (warm hit / expansão / wait). É o span que
+// transporta o custo de cold-start por span (cold_start_ms/p95_ms) exigido pelo DoD,
+// distinto do span [OpExecuteTool] que cobre a EXECUÇÃO mediada (AOS-064). Sem
+// segredos.
+const OpProvisionSandbox = "provision_sandbox"
+
 // Atributos de span canónicos. NENHUM transporta segredo (ADR-006): o
 // credentials_handle é opaco e o segredo nunca chega aqui.
 const (

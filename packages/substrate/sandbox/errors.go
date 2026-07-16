@@ -45,6 +45,28 @@ var (
 
 	// ErrEmptyToolID — [NewMediatedLauncher] sem tool id de registo.
 	ErrEmptyToolID = errors.New("sandbox: tool id vazio")
+
+	// ErrEmptyImageVersion — [NewSnapshot] sem versão de imagem (o eixo de
+	// imutabilidade do snapshot base).
+	ErrEmptyImageVersion = errors.New("sandbox: versao de imagem vazia")
+
+	// ErrOverlayDiscarded — escrita/leitura sobre um [Overlay] já descartado. O
+	// estado sujo de uma execução não ressuscita (AOS-065): fail-closed.
+	ErrOverlayDiscarded = errors.New("sandbox: overlay efemero ja descartado")
+
+	// ErrNilSnapshot — [NewPool] sem snapshot base.
+	ErrNilSnapshot = errors.New("sandbox: snapshot nil")
+
+	// ErrInvalidPoolSize — [NewPool] com tamanho de pré-aquecimento inválido (< 0).
+	ErrInvalidPoolSize = errors.New("sandbox: tamanho de pool invalido")
+
+	// ErrPoolExhausted — o pool não tem VM limpa disponível e a política de
+	// degradação recusou/expirou (fail-closed). NUNCA se serve estado sujo em vez
+	// de devolver este erro (AOS-065).
+	ErrPoolExhausted = errors.New("sandbox: pool de microVMs esgotado (politica fail-closed)")
+
+	// ErrPoolClosed — reserva sobre um [Pool] já fechado.
+	ErrPoolClosed = errors.New("sandbox: pool fechado")
 )
 
 // DeniedError reporta que o Reference Monitor NÃO permitiu a tool call: nenhum

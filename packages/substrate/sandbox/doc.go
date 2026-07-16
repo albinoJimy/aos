@@ -58,9 +58,43 @@
 // dedicado) e satisfazem o contrato via um [GuestExecutor] injectável; sem KVM/host
 // support (este ambiente) devolvem [ErrDriverUnavailable].
 //
-// # Escopo (AOS-064)
+// # Pool de microVMs com snapshot/restore (AOS-065)
 //
-// Este ticket entrega o isolamento de processo/FS/kernel por execução e a mediação.
-// NÃO implementa rede (default-deny é AOS-067), nem o pool com snapshot/restore
-// (AOS-065), nem o overlay/seccomp (AOS-066), nem o broker real (AOS-070).
+// Sobre a base de AOS-064, o pacote adiciona o pool pré-aquecido com snapshot/
+// restore que reconcilia isolamento forte com latência interactiva, mantendo a
+// mediação pelo RM e o isolamento por execução:
+//
+//   - [Snapshot] é o snapshot BASE imutável por versão de imagem; [Snapshot.Restore]
+//     materializa um [Overlay] efémero de cópia-em-escrita (base read-only + escritas
+//     privadas). O overlay sujo é DESCARTADO ([Overlay.Discard]) e nunca reciclado —
+//     a execução N+1 nunca observa artefactos de N (invariante estrutural). Prepara o
+//     FS read-only + overlay de AOS-066.
+//   - [Pool] mantém N VMs pré-aquecidas, RESERVA-as atomicamente (canal buffered, sem
+//     corrida no contador), REPÕE após consumo (warm replenishment) e, sob
+//     esgotamento, aplica a política EXPLÍCITA declarada ([PolicyReject]/[PolicyWait]/
+//     [PolicyExpand]) — nunca serve estado sujo.
+//   - [ColdStartRecorder] eleva o cold-start (tempo de disponibilização) a SLI (molde
+//     de AOS-061): p95 por porta OTel + alerta anti-flapping ao ultrapassar o alvo de
+//     [DefaultColdStartTarget] (125 ms). O restore é modelado a [MinRestore],
+//     [MaxRestore] (5–30 ms) por relógio/duração injectável (determinismo). O
+//     cold-start de um warm hit modela apenas o handoff ([WithHandoff], default ≈0):
+//     o restore real da VM pré-aquecida é pago OFF-PATH no pré-aquecimento/reposição
+//     e é observável via [MetricWarmReplenish] (+ [MetricRestore] scope "replenish").
+//     Assim um p95≈0 sob carga warm não é lido como "sem custo" — o custo foi apenas
+//     deslocado, e a depleção do warm pool é um SLI explícito.
+//
+// O "custo por span" do cold-start exigido pelo DoD aterra num span REAL de PROVISÃO
+// ([OpProvisionSandbox], distinto do execute_tool de AOS-064): com [WithTracer]
+// ligado, [Pool.Reserve] anota cold_start_ms/p95_ms nesse span (sem segredos). Sem
+// tracer, o span é [NoopTracer] e o cold-start permanece métrica-SLI.
+//
+// A EXECUÇÃO do efeito continua mediada pelo RM — o pool disponibiliza a sandbox mas
+// NÃO expõe Exec (compõe o [MediatedLauncher], não abre um atalho ao RM).
+//
+// # Escopo (AOS-064/AOS-065)
+//
+// Entregue: isolamento de processo/FS/kernel por execução, a mediação (AOS-064) e o
+// pool com snapshot/restore + cold-start SLI (AOS-065). NÃO implementa rede
+// (default-deny é AOS-067), nem o overlay/seccomp concreto (AOS-066), nem o broker
+// real (AOS-070).
 package sandbox
