@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-sast ci-sca ci-policy ci-selftest ci-all
+        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-sast ci-sca ci-policy ci-selftest ci-all
 
 help: ## Lista os alvos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -78,6 +78,9 @@ ci-memory: ## Gate: integridade/migração/proveniência de memória (suite AOS-
 
 ci-supplychain: ## Gate: 7 vectores adversariais de supply-chain + audit WORM (suite AOS-054, fail-closed)
 	$(CI)/supplychain.sh
+
+ci-routing: ## Gate: 5 cenários adversariais de roteamento/failover do GW (suite AOS-063, fail-closed)
+	$(CI)/routing.sh
 
 ci-sast: ## Gate: SAST (gosec, HIGH/CRITICAL)
 	$(CI)/sast.sh

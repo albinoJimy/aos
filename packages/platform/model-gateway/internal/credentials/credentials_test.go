@@ -449,8 +449,14 @@ func TestSeguranca_ScanDeSegredos(t *testing.T) {
 		regexp.MustCompile(`xoxb-[A-Za-z0-9-]{20,}`),     // Slack bot token
 		regexp.MustCompile(`ghp_[A-Za-z0-9]{36}`),        // GitHub PAT
 	}
-	// Marcadores literais de chave privada PEM (sem entropia a exigir).
-	pemMarkers := []string{"-----BEGIN PRIVATE KEY", "-----BEGIN RSA PRIVATE KEY"}
+	// Marcadores literais de chave privada PEM (sem entropia a exigir). Os literais
+	// são compostos por concatenação para que este próprio ficheiro rastreado NÃO
+	// contenha o padrão contíguo "BEGIN … PRIVATE KEY" — senão o gate de segredos
+	// (scripts/ci/secrets.sh, alta-confiança sem allowlist) apanharia a lista de
+	// marcadores do scanner como se fosse uma chave real (falso positivo). O valor
+	// em runtime é idêntico, pelo que o scan continua a detectar chaves reais.
+	const beginPEM = "-----BEGIN "
+	pemMarkers := []string{beginPEM + "PRIVATE KEY", beginPEM + "RSA PRIVATE KEY"}
 
 	// Raiz do módulo model-gateway (o teste corre em internal/credentials).
 	root := filepath.Join("..", "..")

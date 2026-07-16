@@ -334,6 +334,18 @@ A separação identidade × chaves de infra é a fundação da atribuição de r
 
 O contrato de porta compatível com OpenAI, versionado em SemVer, torna a troca de modelo/provider um evento de variância explícito — nunca silencioso. Novos provedores entram por implementação do adaptador de porta, sem rearquitectura. Novas tools e modelos só afectam *runs novos*, preservando a reprodutibilidade dos runs em curso.
 
+### 8.4 Rede de segurança de testes (AOS-063)
+
+Os riscos que emergem só sob saturação e indisponibilidade (§9 — colapso agregado de *rate limit*, fuga de soberania por *failover*) são cobertos por uma suite adversarial dedicada, determinística e integrada no CI como *gate* fail-closed. A suite `packages/platform/model-gateway/routingtests` **orquestra os controlos reais** de AOS-058/059 (router *cost/load-aware*, *tiering*, degradação, guarda de soberania, allowlist regional, keypool) — não os reimplementa — e reproduz cinco cenários, cada um provado correcto/bloqueado **e** acompanhado de um meta-teste de detecção não-vácua (com o controlo contornado, o ataque passa):
+
+1. **Saturação** — selecção *least-loaded/token-aware* e ausência de colapso agregado (o excedente de vários *boards* sob o tecto global partilhado é adiado, não despachado às cegas);
+2. **Tiering** — o tier mais barato que satisfaz a capacidade (nunca um incapaz); interactivo *vs* batch distinguidos;
+3. **Degradação** — a sequência *shed→defer→degradar→rejeitar* sob pressão de orçamento/*rate limit*; exaustão graciosa a ~80% oferece degradar (nunca *hard-stop* cego);
+4. **Failover intra-fronteira** e rejeição quando não há capacidade intra-fronteira;
+5. **Cross-border** bloqueado *fail-closed*, com *deny* registado e atribuível a principal + *board* na *hash-chain* WORM (AOS-011).
+
+Os *fakes* de provider por região têm carga/orçamento/admissão/relógio injectáveis (as impls de referência determinísticas de AOS-057/059 e os *fakes* de AOS-055/056), sem segredos (ADR-006). O *gate* `scripts/ci/routing.sh` (molde de `supplychain.sh`) é fail-closed: exige que cada cenário e meta-teste tenha corrido (não-vácuo), corre `-race`, ancora ao veredicto agregado (`AOS_ROUTING_REPORT`) e não deixa a cobertura do módulo regredir; o `selftest.sh` (secção G) prova que um cenário desbloqueado o torna vermelho.
+
 ---
 
 ## 9. Riscos e mitigações

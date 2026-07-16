@@ -21,7 +21,13 @@ while IFS= read -r mod; do
   # abaixo). QUALQUER outro código = falha de execução (rede/DB de vulns/toolchain
   # indisponível) — não podemos afirmar "sem vulnerabilidades" se o scanner não
   # correu. Bloqueia em vez de passar em falso.
-  if tool_exec_failed "$gv" "$out" "0,3" 'govulncheck:|loading|no such|failed to|connection|timeout'; then
+  # Nota: os padrões de erro têm de ser ESPECÍFICOS de falha de execução. `connection`
+  # e `timeout` "nus" davam FALSO POSITIVO ao casarem com prosa de descrição de
+  # vulnerabilidade (ex.: "persistent connection", "excessive ... timeout") quando o
+  # govulncheck sai 3 com vulns reais — marcando erradamente uma falha de execução e
+  # impedindo a extração dos IDs para comparação com a baseline. Usam-se as formas
+  # concretas de erro de rede do Go (connection refused / i/o timeout / dial tcp).
+  if tool_exec_failed "$gv" "$out" "0,3" 'govulncheck:|loading|no such|failed to|connection refused|i/o timeout|dial tcp'; then
     log_fail "govulncheck falhou a executar (exit $gv) em $mod — fail-closed:"
     printf '%s\n' "$out" | tail -6 | sed 's/^/       /' >&2
     rc=1

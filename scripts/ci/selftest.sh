@@ -12,7 +12,8 @@
 #      afetante fora da baseline faz o comparador do SCA falhar fechado;
 #   D) trajectória adulterada bloqueia o gate 8 (replay/idempotência);
 #   E) violação de invariante de memória bloqueia o gate memory (AOS-044);
-#   F) vector de supply-chain desbloqueado bloqueia o gate supplychain (AOS-054).
+#   F) vector de supply-chain desbloqueado bloqueia o gate supplychain (AOS-054);
+#   G) cenário de roteamento/failover desbloqueado bloqueia o gate routing (AOS-063).
 #
 # NOTA: um self-test PASSA quando o gate correspondente FALHA como esperado.
 set -uo pipefail
@@ -165,6 +166,23 @@ if ( cd "$REPO_ROOT/packages/platform/registry" && \
   bad "F: a suite aceitou um rug-pull com o controlo desligado — gate supplychain NÃO bloquearia"
 else
   pass "F: a suite bloqueou (exit!=0) o vector desbloqueado injectado (gate supplychain fail-closed)"
+fi
+
+# ============================================================================
+# G) cenário de roteamento desbloqueado torna o gate routing (AOS-063) vermelho
+# ============================================================================
+log_gate "self-test G · cenário desbloqueado bloqueia o gate routing (AOS-063)"
+# A suite de AOS-063 tem um teste-veneno (TestSelftestRoutingBypassReddensGate) que só
+# corre com AOS_ROUTING_SELFTEST=1: reproduz o failover CROSS-BORDER com a soberania
+# CONTORNADA (guarda com fronteiras colapsadas + allowlist fail-open) — pelo que a rota
+# resolve para us-east — e ASSEVERA (falsamente) que foi bloqueada; a asserção FALHA de
+# propósito, provando que um cenário desbloqueado torna o gate VERMELHO (fail-closed).
+# Determinista, offline e sem rasto no repo (nenhum ficheiro é alterado).
+if ( cd "$REPO_ROOT/packages/platform/model-gateway" && \
+     AOS_ROUTING_SELFTEST=1 go test ./routingtests/ -run TestSelftestRoutingBypassReddensGate -count=1 ) >/dev/null 2>&1; then
+  bad "G: a suite aceitou um failover cross-border com a soberania desligada — gate routing NÃO bloquearia"
+else
+  pass "G: a suite bloqueou (exit!=0) o cenário desbloqueado injectado (gate routing fail-closed)"
 fi
 
 # ============================================================================

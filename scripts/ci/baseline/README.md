@@ -60,10 +60,23 @@ não-fronteira) até os tickets donos os endereçarem com `#nosec` justificado.
 | Vuln | Onde | Dono | Remediação |
 |---|---|---|---|
 | GO-2026-4602 (stdlib `os`, corrigida em go1.25.8) | `control-plane/pdp`, `kernel/reference-monitor`, `kernel/agent-runtime` (código afetado — `os.ReadDir` no lint de separação de AOS-021) | Manutenção de toolchain | **bump da toolchain Go** (≥ go1.25.8) — NÃO é código dos módulos, fora do âmbito de AOS-010 |
+| **20 vulns de stdlib** (`crypto/tls`, `crypto/x509`, `net/http`, `net/url`, `net/textproto`, `os` — ex.: GO-2026-5856 ECH, GO-2026-5039/5037 TLS, GO-2026-4971 x509; corrigidas em go1.25.8..go1.25.12) | `platform/model-gateway` (código afetado — o adaptador **HTTPS real** `internal/adapters/openai_http.go` chama `http.Client.Do` → `crypto/tls`/`crypto/x509`) | Manutenção de toolchain | **bump da toolchain Go** (≥ go1.25.12) — triadas no fecho do EPIC-06 (AOS-063) |
+| **20 vulns de stdlib** (mesmas classes + GO-2025-3956; corrigidas em go1.25.x) | `platform/registry` (código afetado — caminhos `crypto/x509`/`net/url`/`net/textproto` via assinatura/digest/MCP) | Manutenção de toolchain | **bump da toolchain Go** (≥ go1.25.12) — triadas no fecho do EPIC-06 (AOS-063) |
 
-> Esta é uma vulnerabilidade **real e afetante** detectada pelo govulncheck. Está
-> na baseline apenas porque a sua correção é um upgrade de toolchain, não uma
-> alteração de código (proibida neste ticket *chore*). Remover esta linha faz o
-> gate de SCA ficar imediatamente vermelho — como demonstra o self-test C de
-> forma determinista. Assim que a toolchain for actualizada, esta entrada deve
-> ser removida.
+> A entrada `GO-2026-4602` e os dois blocos de 20 são vulnerabilidades **reais e
+> afetantes** detectadas pelo govulncheck — **não são falsos positivos** (ao
+> contrário das entradas gosec). Estão na baseline apenas porque a sua correção é um
+> **upgrade de toolchain Go** (todas "Fixed in go1.25.x"), não uma alteração de
+> código dos módulos. O `model-gateway` e o `registry` são os primeiros módulos com
+> caminhos reais de TLS/x509/HTTP/URL, pelo que expõem a superfície de stdlib que os
+> restantes módulos não tocam. **Follow-up sinalizado: bumpar a toolchain Go para
+> ≥ go1.25.12 e remover TODAS estas entradas** (a correção real; as entradas
+> voltam a avermelhar o gate — self-test C — se removidas antes do bump).
+>
+> **Nota de processo (AOS-063 / fecho do EPIC-06):** o gate `sca.sh` tinha um
+> **falso positivo** — os padrões de erro de execução `connection`/`timeout` "nus"
+> casavam com prosa de descrição de vulnerabilidade (ex.: "persistent connection")
+> quando o govulncheck sai 3 com vulns reais, marcando erradamente uma falha de
+> execução e **impedindo** a extração dos IDs para a baseline. Corrigido para as
+> formas concretas de erro de rede do Go (`connection refused`/`i/o timeout`/`dial
+> tcp`); sem isto o `model-gateway`/`registry` nunca eram comparados com a baseline.
