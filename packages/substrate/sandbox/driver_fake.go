@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/aos-ref/substrate/sandbox/seccomp"
 )
 
 // FakeDriver é o driver de REFERÊNCIA determinista in-process (AOS-064). Modela o
@@ -49,6 +51,14 @@ type fakeJail struct {
 	files    map[string][]byte
 	symlinks map[string]string // link (limpo, relativo) → target declarado
 	env      map[string]string // injecção server-side (ADR-006); não ecoada
+	// seccomp é o perfil default-deny aplicado a esta instância (AOS-066), propagado
+	// pela [Spec]. Quando não-nil, o [Exec] BLOQUEIA qualquer syscall fora da
+	// allowlist (default-deny). Nil nos drivers directos (gate ignorado).
+	seccomp *seccomp.Profile
+	// rootfs é a montagem raiz-read-only + overlay efémero (AOS-066). Quando não-nil,
+	// as escritas fazem copy-up para o overlay e as leituras caem no base read-only;
+	// o base NUNCA é mutado. Nil mantém o [fakeJail.files] in-memory legado.
+	rootfs *RootFS
 }
 
 // NewFakeDriver constrói o driver fake vazio.
@@ -82,6 +92,8 @@ func (d *FakeDriver) Create(_ context.Context, cap capability, spec Spec) (Insta
 		files:    map[string][]byte{},
 		symlinks: map[string]string{},
 		env:      map[string]string{},
+		seccomp:  spec.Seccomp,
+		rootfs:   spec.RootFS,
 	}
 	d.insts[id] = jail
 	return Instance{
@@ -106,6 +118,19 @@ func (d *FakeDriver) Exec(_ context.Context, cap capability, inst Instance, req 
 		return ExecResult{}, ErrDriverUnavailable
 	}
 	call := req.Call
+
+	// (0) SECCOMP default-deny (AOS-066): antes de qualquer efeito, o perfil
+	// EFETIVAMENTE aplicado (propagado na [Spec]) filtra as syscalls que a tool call
+	// exige. Uma syscall fora da allowlist é BLOQUEADA (fail-closed) — é a imposição,
+	// no caminho de execução, do mesmo perfil cujo hash o manifesto atesta. Nil só nos
+	// drivers directos (gate ignorado).
+	if jail.seccomp != nil {
+		for _, sc := range requiredSyscalls(call) {
+			if !jail.seccomp.Allows(sc) {
+				return d.blockSeccomp()
+			}
+		}
+	}
 
 	// (a) Metacaracteres de shell no comando/args: o jail não invoca um shell e não
 	// deixa um metacaractere quebrar para fora. Bloqueio fail-closed.
@@ -133,20 +158,37 @@ func (d *FakeDriver) Exec(_ context.Context, cap capability, inst Instance, req 
 			return d.blockEscape()
 		}
 		clean = resolved
-		// Escrita/leitura ficam CONTIDAS no mapa do jail — nunca no host.
+		// Escrita/leitura ficam CONTIDAS na microVM — nunca no host. Com um [RootFS]
+		// montado (AOS-066), a escrita faz COPY-UP para o overlay efémero (o base
+		// read-only nunca é mutado) e a leitura cai no base read-only quando não há
+		// escrita local; sem RootFS, usa o jail in-memory legado.
 		if call.Write != nil {
-			d.mu.Lock()
 			buf := make([]byte, len(call.Write))
 			copy(buf, call.Write)
-			jail.files[clean] = buf
-			d.mu.Unlock()
+			if jail.rootfs != nil {
+				// COPY-UP: a escrita vai SEMPRE para o overlay efémero; a raiz é
+				// read-only. Um overlay já descartado falha fail-closed.
+				if err := jail.rootfs.WriteOverlay(clean, buf); err != nil {
+					return ExecResult{}, err
+				}
+			} else {
+				d.mu.Lock()
+				jail.files[clean] = buf
+				d.mu.Unlock()
+			}
 			return newResult([]byte("wrote "+strconv.Itoa(len(call.Write))+" bytes to "+clean), nil, 0), nil
 		}
-		d.mu.Lock()
-		content, exists := jail.files[clean]
-		d.mu.Unlock()
+		var content []byte
+		var exists bool
+		if jail.rootfs != nil {
+			content, exists = jail.rootfs.Read(clean)
+		} else {
+			d.mu.Lock()
+			content, exists = jail.files[clean]
+			d.mu.Unlock()
+		}
 		if !exists {
-			// Ficheiro inexistente no jail: erro de execução (não é escape). O host
+			// Ficheiro inexistente na microVM: erro de execução (não é escape). O host
 			// NUNCA é consultado como fallback.
 			return newResult(nil, nil, 1), nil
 		}
@@ -171,8 +213,15 @@ func (d *FakeDriver) Destroy(_ context.Context, cap capability, inst Instance) e
 		return ErrUnsanctionedCapability
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	jail := d.insts[inst.ID]
 	delete(d.insts, inst.ID)
+	d.mu.Unlock()
+	// DESCARTA o overlay efémero (AOS-066): as escritas desta execução desaparecem —
+	// a execução N+1 (overlay novo do mesmo base imutável) não as observa. Idempotente
+	// (o [Launcher] também o descarta no seu defer; [Overlay.Discard] é idempotente).
+	if jail != nil && jail.rootfs != nil {
+		jail.rootfs.Discard()
+	}
 	return nil
 }
 
@@ -205,6 +254,33 @@ func (d *FakeDriver) blockEscape() (ExecResult, error) {
 	d.escapeAttempts++
 	d.mu.Unlock()
 	return ExecResult{}, ErrJailEscape
+}
+
+// blockSeccomp regista e devolve o bloqueio de uma syscall fora da allowlist
+// (default-deny, AOS-066). Reusa o contador de tentativas de escape: uma syscall
+// negada é, semanticamente, uma tentativa de efeito não autorizada bloqueada.
+func (d *FakeDriver) blockSeccomp() (ExecResult, error) {
+	d.mu.Lock()
+	d.escapeAttempts++
+	d.mu.Unlock()
+	return ExecResult{}, ErrSeccompDenied
+}
+
+// requiredSyscalls modela o conjunto MÍNIMO de syscalls que uma tool call exige, a
+// filtrar pelo perfil seccomp default-deny (AOS-066). É deliberadamente mínimo: uma
+// escrita precisa de "write", uma leitura por caminho de "read"; um comando puro
+// (eco determinista, sem IO no modelo) não exige syscall filtrada. É o gancho que
+// torna o perfil EFETIVO no caminho de execução — os drivers reais traduziriam isto
+// para o filtro BPF equivalente.
+func requiredSyscalls(call ToolCall) []string {
+	switch {
+	case call.Path != "" && call.Write != nil:
+		return []string{"write"}
+	case call.Path != "":
+		return []string{"read"}
+	default:
+		return nil
+	}
 }
 
 // Symlink planta um symlink no jail de uma instância (uso de teste): link e target

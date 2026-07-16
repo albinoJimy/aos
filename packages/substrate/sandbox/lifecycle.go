@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/aos-ref/substrate/sandbox/seccomp"
 )
 
 // Launcher orquestra o ciclo de vida mediado de uma execução na sandbox:
@@ -18,7 +20,21 @@ type Launcher struct {
 	tracer    Tracer
 	injector  CredentialInjector
 	isolation Isolation
-	seq       atomic.Uint64 // contador determinista de ids de instância (fallback)
+	// seccomp é o perfil seccomp default-deny aplicado à microVM (AOS-066). O seu
+	// HASH entra no manifesto de cada execução. NUNCA nil após [NewLauncher]
+	// (default: o perfil embebido) — a microVM não corre sem perfil (fail-closed).
+	seccomp *seccomp.Profile
+	// imageVersion é a versão da imagem base read-only da microVM (AOS-066),
+	// gravada no manifesto. Vazia se não configurada.
+	imageVersion ImageVersion
+	// snapshot é o snapshot base IMUTÁVEL (AOS-065) a partir do qual cada execução
+	// materializa uma montagem raiz-read-only + overlay efémero (AOS-066). Quando
+	// configurado ([WithSnapshot]), o rootfs é EFETIVAMENTE montado e imposto no
+	// caminho de execução (o base nunca é mutado; o overlay é descartado no destroy)
+	// e o manifesto atesta o base digest/overlay REAIS. Nil mantém o jail in-memory
+	// legado (a raiz read-only permanece uma declaração de config no manifesto).
+	snapshot *Snapshot
+	seq      atomic.Uint64 // contador determinista de ids de instância (fallback)
 }
 
 // LauncherOption configura o [Launcher].
@@ -40,6 +56,39 @@ func WithCredentialInjector(ci CredentialInjector) LauncherOption {
 // Launcher rejeita fail-closed uma isolação que não seja hardened.
 func WithIsolation(iso Isolation) LauncherOption { return func(l *Launcher) { l.isolation = iso } }
 
+// WithSeccompProfile sobrepõe o perfil seccomp aplicado (default: o perfil embebido
+// de [seccomp.Load]). Um perfil nil é ignorado (mantém-se o default) — a microVM
+// nunca corre sem perfil seccomp (AOS-066, fail-closed).
+func WithSeccompProfile(p *seccomp.Profile) LauncherOption {
+	return func(l *Launcher) {
+		if p != nil {
+			l.seccomp = p
+		}
+	}
+}
+
+// WithImageVersion regista a versão da imagem base read-only da microVM no
+// manifesto de cada execução (AOS-066). Opcional.
+func WithImageVersion(v ImageVersion) LauncherOption {
+	return func(l *Launcher) { l.imageVersion = v }
+}
+
+// WithSnapshot LIGA o modelo raiz-read-only + overlay efémero (AOS-066 sobre
+// AOS-065) ao caminho de execução: por CADA execução, o [Launcher] restaura um
+// [Overlay] novo do snapshot base imutável, monta-o read-only ([MountReadOnly]) e
+// propaga o [RootFS] para o driver via [Spec.RootFS] — as escritas fazem copy-up
+// para o overlay, a raiz nunca é mutada, e o overlay é DESCARTADO no destroy (a
+// execução N+1 não observa a de N). Sem esta opção, a raiz read-only permanece
+// apenas uma declaração de configuração no manifesto (o jail in-memory legado
+// corre). Um snapshot nil é ignorado.
+func WithSnapshot(s *Snapshot) LauncherOption {
+	return func(l *Launcher) {
+		if s != nil {
+			l.snapshot = s
+		}
+	}
+}
+
 // NewLauncher constrói um Launcher sobre o driver dado. Por omissão: isolação
 // hardened (AOS-064), [NoopTracer] e [discardSink] (não-durável — produção DEVE
 // injectar [WithEventSink] com um sink real).
@@ -47,11 +96,19 @@ func NewLauncher(driver SandboxDriver, opts ...LauncherOption) (*Launcher, error
 	if driver == nil {
 		return nil, ErrNilDriver
 	}
+	// Perfil seccomp default-deny embebido (AOS-066). Fail-closed: se o perfil não
+	// carregar/validar, o Launcher não é construído (a microVM nunca corre sem um
+	// perfil seccomp válido). As opções podem sobrepô-lo por [WithSeccompProfile].
+	prof, err := seccomp.Load()
+	if err != nil {
+		return nil, fmt.Errorf("sandbox seccomp: %w", err)
+	}
 	l := &Launcher{
 		driver:    driver,
 		sink:      discardSink{},
 		tracer:    NoopTracer{},
 		isolation: HardenedIsolation(),
+		seccomp:   prof,
 	}
 	for _, o := range opts {
 		o(l)
@@ -61,6 +118,9 @@ func NewLauncher(driver SandboxDriver, opts ...LauncherOption) (*Launcher, error
 	}
 	if l.tracer == nil {
 		l.tracer = NoopTracer{}
+	}
+	if l.seccomp == nil {
+		return nil, ErrNilSeccompProfile
 	}
 	return l, nil
 }
@@ -82,6 +142,44 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 	if !l.isolation.NoHostSocket {
 		return ExecResult{}, ErrHostSocketForbidden
 	}
+	// Fail-closed AOS-066: a raiz de FS TEM de ser read-only (o overlay efémero é a
+	// única camada de escrita). Nunca correr com a raiz escrevível.
+	if !l.isolation.RootFSReadOnly {
+		return ExecResult{}, ErrReadOnlyRootRequired
+	}
+
+	// Manifesto de segurança AOS-066: hash + versão do perfil seccomp aplicado (e a
+	// versão da imagem base read-only). Entra no span e em cada evento do ciclo de
+	// vida — por trajectória, para replay/auditoria. NÃO é segredo (ADR-006). O
+	// perfil é o MESMO objecto propagado ao driver (spec.Seccomp) — o hash atesta o
+	// perfil EFETIVAMENTE imposto, não uma declaração desligada.
+	seccompHash := l.seccomp.Hash()
+	seccompVersion := l.seccomp.Version()
+
+	// AOS-066: monta a raiz read-only + overlay efémero DESTA execução a partir do
+	// snapshot base imutável, se configurado ([WithSnapshot]). O [RootFS] é propagado
+	// ao driver (imposição real: copy-up para o overlay, base nunca mutado) e o
+	// manifesto atesta o base digest/overlay id REAIS. Sem snapshot, o jail in-memory
+	// legado corre e a raiz read-only fica como declaração de configuração.
+	imageVersion := l.imageVersion
+	var rootfs *RootFS
+	var rootfsBaseDigest, overlayID string
+	if l.snapshot != nil {
+		ov, _ := l.snapshot.Restore()
+		fs, err := MountReadOnly(ov)
+		if err != nil {
+			return ExecResult{}, fmt.Errorf("sandbox rootfs mount: %w", err)
+		}
+		rootfs = fs
+		rootfsBaseDigest = fs.BaseDigest()
+		overlayID = fs.OverlayID()
+		if imageVersion == "" {
+			imageVersion = fs.ImageVersion()
+		}
+		// O overlay efémero é SEMPRE descartado (mesmo em erro/panic, e mesmo que o
+		// Create falhe antes de registar o destroy): nada desta execução persiste.
+		defer rootfs.Discard()
+	}
 
 	ctx, span := l.tracer.StartSpan(ctx, OpExecuteTool)
 	span.SetAttribute(AttrOperationName, OpExecuteTool)
@@ -90,6 +188,21 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 	span.SetAttribute(AttrToolName, req.Call.ToolID)
 	span.SetAttribute(AttrDriver, string(l.driver.Kind()))
 	span.SetAttribute(AttrTaint, string(TaintUntrusted))
+	span.SetAttribute(AttrRootFSReadOnly, l.isolation.RootFSReadOnly)
+	span.SetAttribute(AttrSeccompHash, seccompHash)
+	span.SetAttribute(AttrSeccompVersion, seccompVersion)
+	if imageVersion != "" {
+		span.SetAttribute(AttrImageVersion, string(imageVersion))
+	}
+	// Prova, no manifesto/span, do rootfs EFETIVAMENTE montado (não só o booleano):
+	// o base digest liga a execução à imagem base imutável exacta e o overlay id ao
+	// overlay efémero desta trajectória. Só presentes quando o rootfs é montado.
+	if rootfsBaseDigest != "" {
+		span.SetAttribute(AttrRootFSBaseDigest, rootfsBaseDigest)
+	}
+	if overlayID != "" {
+		span.SetAttribute(AttrOverlayID, overlayID)
+	}
 	if req.CredentialsHandle != "" {
 		// O HANDLE é opaco (não-secreto); o segredo NUNCA chega ao span (ADR-006).
 		span.SetAttribute(AttrCredHandle, req.CredentialsHandle)
@@ -102,6 +215,8 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		StepID:    req.StepID,
 		Kind:      l.driver.Kind(),
 		Isolation: l.isolation,
+		Seccomp:   l.seccomp,
+		RootFS:    rootfs,
 	}
 
 	// (1) CREATE — arranca a microVM.
@@ -124,7 +239,12 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		_, _ = l.sink.RecordLifecycle(dctx, LifecycleEvent{
 			RunID: req.RunID, StepID: req.StepID, Phase: PhaseDestroyed,
 			InstanceID: inst.ID, Driver: inst.Kind, Isolation: l.isolation,
-			CredentialsHandle: req.CredentialsHandle,
+			CredentialsHandle:     req.CredentialsHandle,
+			ImageVersion:          string(imageVersion),
+			SeccompProfileHash:    seccompHash,
+			SeccompProfileVersion: seccompVersion,
+			RootFSBaseDigest:      rootfsBaseDigest,
+			OverlayID:             overlayID,
 		})
 	}()
 
@@ -133,7 +253,12 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 	if _, err := l.sink.RecordLifecycle(ctx, LifecycleEvent{
 		RunID: req.RunID, StepID: req.StepID, Phase: PhaseCreated,
 		InstanceID: inst.ID, Driver: inst.Kind, Isolation: l.isolation,
-		CredentialsHandle: req.CredentialsHandle,
+		CredentialsHandle:     req.CredentialsHandle,
+		ImageVersion:          string(imageVersion),
+		SeccompProfileHash:    seccompHash,
+		SeccompProfileVersion: seccompVersion,
+		RootFSBaseDigest:      rootfsBaseDigest,
+		OverlayID:             overlayID,
 	}); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox audit(created): %w", err)
 	}
@@ -161,6 +286,11 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		RunID: req.RunID, StepID: req.StepID, Phase: PhaseExec,
 		InstanceID: inst.ID, Driver: inst.Kind, Isolation: l.isolation,
 		ExitCode: res.ExitCode, CostMicroUSD: costMicroUSD, CredentialsHandle: req.CredentialsHandle,
+		ImageVersion:          string(imageVersion),
+		SeccompProfileHash:    seccompHash,
+		SeccompProfileVersion: seccompVersion,
+		RootFSBaseDigest:      rootfsBaseDigest,
+		OverlayID:             overlayID,
 	}); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox audit(exec): %w", err)
 	}

@@ -3,6 +3,8 @@ package sandbox
 import (
 	"context"
 	"fmt"
+
+	"github.com/aos-ref/substrate/sandbox/seccomp"
 )
 
 // Taint é o nível de confiança de um resultado. No SBX só existe um valor
@@ -68,6 +70,19 @@ type Spec struct {
 	StepID    string
 	Kind      DriverKind
 	Isolation Isolation
+	// Seccomp é o perfil seccomp default-deny EFETIVAMENTE aplicado a esta execução
+	// (AOS-066). O [Launcher] propaga-o para o driver, que o IMPÕE no [Exec]
+	// (default-deny: uma syscall fora da allowlist devolve [ErrSeccompDenied]). Como
+	// é o MESMO objecto cujo [seccomp.Profile.Hash] é gravado no manifesto, o hash
+	// atesta o perfil REALMENTE aplicado — não uma declaração desligada do caminho de
+	// execução. Nil só nos testes que invocam o driver directamente (gate ignorado).
+	Seccomp *seccomp.Profile
+	// RootFS é a montagem raiz-read-only + overlay efémero (AOS-066 sobre AOS-065)
+	// desta execução. Quando não-nil, o driver roteia as ESCRITAS para o overlay
+	// (copy-up) e as LEITURAS caem no base read-only; o base NUNCA é mutado e o
+	// overlay é descartado no destroy (a execução N+1 não observa a de N). Nil mantém
+	// o jail in-memory legado (sem camada base read-only) — os drivers directos.
+	RootFS *RootFS
 }
 
 // Instance é o handle de uma microVM criada. Os campos de isolamento são a prova

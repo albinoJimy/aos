@@ -40,6 +40,24 @@ type LifecycleEvent struct {
 	// CredentialsHandle é o id OPACO (não-secreto) presente na execução, para
 	// correlação de audit. Vazio quando não há credencial.
 	CredentialsHandle string
+	// ImageVersion é a versão da imagem base read-only da microVM (AOS-066),
+	// gravada no manifesto por trajectória. Vazia se não configurada.
+	ImageVersion string
+	// SeccompProfileHash é o HASH (sha256) do perfil seccomp aplicado (AOS-066): o
+	// hash do manifesto da execução. NÃO é segredo (ADR-006).
+	SeccompProfileHash string
+	// SeccompProfileVersion é a versão tamper-evident ("tag#digest12") do perfil
+	// seccomp aplicado (AOS-066).
+	SeccompProfileVersion string
+	// RootFSBaseDigest é o digest do snapshot base read-only EFETIVAMENTE montado
+	// (AOS-066). Prova, no manifesto, que o rootfs foi montado (não só declarado) e
+	// liga a execução à imagem base imutável exacta. Vazio quando não há snapshot
+	// configurado (a raiz read-only é então só uma declaração de config).
+	RootFSBaseDigest string
+	// OverlayID é o id do overlay efémero desta execução (AOS-065/066). Único por
+	// restore; prova por trajectória de que cada execução tem o seu overlay (nunca
+	// reciclado). Vazio quando não há snapshot configurado.
+	OverlayID string
 }
 
 // EventSink é a porta mínima de que o [Launcher] precisa para selar cada
@@ -84,6 +102,15 @@ type lifecyclePayload struct {
 	CostMicroUSD      int64        `json:"cost_micro_usd,omitempty"`
 	Taint             string       `json:"taint"`
 	CredentialsHandle string       `json:"credentials_handle,omitempty"`
+	// Manifesto de segurança AOS-066 (rootfs read-only + overlay efémero + seccomp).
+	// O hash do perfil seccomp liga a trajectória à versão EXACTA do perfil em vigor.
+	ImageVersion          string `json:"image_version,omitempty"`
+	SeccompProfileHash    string `json:"seccomp_profile_hash,omitempty"`
+	SeccompProfileVersion string `json:"seccomp_profile_version,omitempty"`
+	// Prova do rootfs EFETIVAMENTE montado (AOS-066): só presentes quando o overlay
+	// read-only é montado (WithSnapshot), distinguindo imposição de mera declaração.
+	RootFSBaseDigest string `json:"rootfs_base_digest,omitempty"`
+	OverlayID        string `json:"overlay_id,omitempty"`
 }
 
 type isolationDTO struct {
@@ -123,10 +150,15 @@ func (s *eventStoreSink) RecordLifecycle(ctx context.Context, ev LifecycleEvent)
 			NoSharedPIDNS:  ev.Isolation.NoSharedPIDNS,
 			RootFSReadOnly: ev.Isolation.RootFSReadOnly,
 		},
-		ExitCode:          ev.ExitCode,
-		CostMicroUSD:      ev.CostMicroUSD,
-		Taint:             string(TaintUntrusted),
-		CredentialsHandle: ev.CredentialsHandle,
+		ExitCode:              ev.ExitCode,
+		CostMicroUSD:          ev.CostMicroUSD,
+		Taint:                 string(TaintUntrusted),
+		CredentialsHandle:     ev.CredentialsHandle,
+		ImageVersion:          ev.ImageVersion,
+		SeccompProfileHash:    ev.SeccompProfileHash,
+		SeccompProfileVersion: ev.SeccompProfileVersion,
+		RootFSBaseDigest:      ev.RootFSBaseDigest,
+		OverlayID:             ev.OverlayID,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

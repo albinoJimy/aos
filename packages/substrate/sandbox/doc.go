@@ -91,10 +91,33 @@
 // A EXECUÇÃO do efeito continua mediada pelo RM — o pool disponibiliza a sandbox mas
 // NÃO expõe Exec (compõe o [MediatedLauncher], não abre um atalho ao RM).
 //
-// # Escopo (AOS-064/AOS-065)
+// # Raiz read-only + overlay efémero + seccomp default-deny (AOS-066)
 //
-// Entregue: isolamento de processo/FS/kernel por execução, a mediação (AOS-064) e o
-// pool com snapshot/restore + cold-start SLI (AOS-065). NÃO implementa rede
-// (default-deny é AOS-067), nem o overlay/seccomp concreto (AOS-066), nem o broker
-// real (AOS-070).
+// AOS-066 é IMPOSTO no caminho de execução, não só modelado à parte:
+//
+//   - O perfil seccomp (default-deny, allowlist mínima VERSIONADA — ver o pacote
+//     [seccomp]) é propagado ao driver via [Spec.Seccomp] e o [FakeDriver] IMPÕE-o no
+//     [SandboxDriver.Exec]: uma syscall fora da allowlist devolve [ErrSeccompDenied]
+//     (fail-closed). Como é o MESMO objecto cujo hash entra no manifesto, o hash
+//     atesta o perfil EFETIVAMENTE aplicado — deixa de sobreviver a uma CI verde sem
+//     imposição real. [WithSeccompProfile] sobrepõe o default embebido.
+//   - Com [WithSnapshot] ligado, cada execução MONTA uma raiz read-only + overlay
+//     efémero ([RootFS] sobre o [Overlay] CoW de AOS-065) e propaga-a via
+//     [Spec.RootFS]: as escritas fazem copy-up para o overlay (a raiz base NUNCA é
+//     mutada), e o overlay é DESCARTADO no destroy (a execução N+1 não observa a de
+//     N). O manifesto/span atestam o rootfs REALMENTE montado (base digest + overlay
+//     id), não só o booleano rootfs_read_only. Sem snapshot, o jail in-memory legado
+//     corre e o rootfs_read_only do manifesto é uma DECLARAÇÃO de configuração (a
+//     invariante é imposta pelo [Launcher] fail-closed, mas o overlay/base não são
+//     materializados nesse caminho — o discard por trajectória vive no [Pool], AOS-065).
+//
+// O [Launcher] recusa fail-closed correr sem raiz read-only ([ErrReadOnlyRootRequired])
+// ou sem perfil seccomp ([ErrNilSeccompProfile]).
+//
+// # Escopo (AOS-064/AOS-065/AOS-066)
+//
+// Entregue: isolamento de processo/FS/kernel por execução e a mediação (AOS-064); o
+// pool com snapshot/restore + cold-start SLI (AOS-065); a raiz read-only + overlay
+// efémero + seccomp default-deny imposto no caminho de execução (AOS-066). NÃO
+// implementa rede (default-deny é AOS-067) nem o broker real (AOS-070).
 package sandbox

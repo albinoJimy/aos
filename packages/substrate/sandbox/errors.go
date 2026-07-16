@@ -67,6 +67,31 @@ var (
 
 	// ErrPoolClosed — reserva sobre um [Pool] já fechado.
 	ErrPoolClosed = errors.New("sandbox: pool fechado")
+
+	// ErrReadOnlyRoot — tentativa de ESCRITA na raiz READ-ONLY do FS da microVM
+	// (AOS-066). A raiz é o snapshot base imutável; toda a escrita TEM de ir para o
+	// overlay efémero. Uma escrita fora do overlay (na raiz) falha de forma
+	// controlada com este erro (nunca panic; o base NUNCA é mutado). Fail-closed.
+	ErrReadOnlyRoot = errors.New("sandbox: escrita na raiz read-only rejeitada (use o overlay efemero)")
+
+	// ErrNilOverlay — [MountReadOnly] sem overlay (AOS-065). Um [RootFS] sem a
+	// camada de escrita efémera não pode existir (fail-closed).
+	ErrNilOverlay = errors.New("sandbox: overlay efemero nil")
+
+	// ErrReadOnlyRootRequired — a spec/isolação não exige raiz read-only (AOS-066).
+	// Fail-closed: a microVM nunca corre com a raiz de FS escrevível.
+	ErrReadOnlyRootRequired = errors.New("sandbox: raiz de FS read-only obrigatoria (AOS-066)")
+
+	// ErrNilSeccompProfile — perfil seccomp nil onde é obrigatório (AOS-066). A
+	// microVM nunca corre sem um perfil seccomp default-deny (fail-closed).
+	ErrNilSeccompProfile = errors.New("sandbox: perfil seccomp nil (AOS-066)")
+
+	// ErrSeccompDenied — o [Exec] tentou uma syscall FORA da allowlist do perfil
+	// seccomp EFETIVAMENTE aplicado (AOS-066). Default-deny fail-closed: a syscall é
+	// bloqueada e o efeito não ocorre. É a imposição, no caminho de execução, do
+	// mesmo perfil cujo hash o manifesto atesta — o hash deixa de sobreviver a uma CI
+	// verde sem imposição real.
+	ErrSeccompDenied = errors.New("sandbox: syscall fora da allowlist seccomp bloqueada (default-deny, AOS-066)")
 )
 
 // DeniedError reporta que o Reference Monitor NÃO permitiu a tool call: nenhum
