@@ -32,15 +32,16 @@ type aos057Harness struct {
 // newAOS057Gateway compõe um GW REAL com o estágio authn (token + autoridade),
 // keypool (chave por throughput desacoplada) e atribuição (span + WORM). O pool é
 // injectado pelo teste para controlar a rotação de chaves de forma determinista.
-func newAOS057Gateway(t *testing.T, pool *keypool.Pool) *aos057Harness {
+func newAOS057Gateway(t *testing.T, pool *keypool.Pool, extra ...modelgateway.Option) *aos057Harness {
 	t.Helper()
-	return newAOS057GatewayOn(t, pool, audit.NewMemStore())
+	return newAOS057GatewayOn(t, pool, audit.NewMemStore(), extra...)
 }
 
 // newAOS057GatewayOn é como [newAOS057Gateway] mas com o audit [audit.Store]
 // injectável — permite testar o comportamento FAIL-CLOSED quando a selagem WORM
-// falha (um store cuja Append devolve erro).
-func newAOS057GatewayOn(t *testing.T, pool *keypool.Pool, store audit.Store) *aos057Harness {
+// falha (um store cuja Append devolve erro). As opções extra permitem compor outros
+// estágios de metering (p.ex. WithCost de AOS-062) no MESMO GW/span.
+func newAOS057GatewayOn(t *testing.T, pool *keypool.Pool, store audit.Store, extra ...modelgateway.Option) *aos057Harness {
 	t.Helper()
 	clock := func() time.Time { return time.Unix(1_700_000_000, 0) }
 
@@ -80,7 +81,7 @@ func newAOS057GatewayOn(t *testing.T, pool *keypool.Pool, store audit.Store) *ao
 
 	adpt := adapters.NewFakeAdapter("openai")
 	trace := &agentruntime.RecordingTracer{}
-	gw := modelgateway.New(adpt,
+	opts := []modelgateway.Option{
 		modelgateway.WithCredentialSource(cs),
 		modelgateway.WithDefaultRegion("eu"),
 		modelgateway.WithClock(clock),
@@ -88,7 +89,8 @@ func newAOS057GatewayOn(t *testing.T, pool *keypool.Pool, store audit.Store) *ao
 		modelgateway.WithAuthnStage(authStage),
 		modelgateway.WithKeyPool(reg),
 		modelgateway.WithAttribution(rec),
-	)
+	}
+	gw := modelgateway.New(adpt, append(opts, extra...)...)
 	return &aos057Harness{gw: gw, iss: iss, store: store, recs: &captured, trace: trace, adpt: adpt}
 }
 

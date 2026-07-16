@@ -1,0 +1,45 @@
+{
+  "version": "2026.07",
+  "entries": [
+    {
+      "model": "claude-sonnet",
+      "region": "eu-west",
+      "rate": {
+        "input_per_mtok_micro_usd": 3000000,
+        "output_per_mtok_micro_usd": 15000000,
+        "cache_read_per_mtok_micro_usd": 300000,
+        "cache_write_per_mtok_micro_usd": 3750000
+      }
+    },
+    {
+      "model": "claude-sonnet",
+      "region": "us-east",
+      "rate": {
+        "input_per_mtok_micro_usd": 3000000,
+        "output_per_mtok_micro_usd": 15000000,
+        "cache_read_per_mtok_micro_usd": 300000,
+        "cache_write_per_mtok_micro_usd": 3750000
+      }
+    },
+    {
+      "model": "claude-haiku",
+      "region": "eu-west",
+      "rate": {
+        "input_per_mtok_micro_usd": 800000,
+        "output_per_mtok_micro_usd": 4000000,
+        "cache_read_per_mtok_micro_usd": 80000,
+        "cache_write_per_mtok_micro_usd": 1000000
+      }
+    },
+    {
+      "model": "gpt-4o",
+      "region": "us-east",
+      "rate": {
+        "input_per_mtok_micro_usd": 2500000,
+        "output_per_mtok_micro_usd": 10000000,
+        "cache_read_per_mtok_micro_usd": 1250000,
+        "cache_write_per_mtok_micro_usd": 0
+      }
+    }
+  ]
+}

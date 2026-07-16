@@ -33,6 +33,7 @@ import (
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
 	"github.com/aos-ref/platform/model-gateway/metering/attribution"
 	"github.com/aos-ref/platform/model-gateway/metering/cache_sli"
+	"github.com/aos-ref/platform/model-gateway/metering/cost"
 	"github.com/aos-ref/platform/model-gateway/pipeline"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -137,6 +138,13 @@ type Gateway struct {
 	// do provider), agrega por run/tenant, emite a métrica OTel ligada à trajectória e
 	// dispara alerta abaixo do limiar. É o estado de agregação EXTERNO (GW stateless).
 	cacheSLI *cache_sli.Recorder
+	// --- AOS-062: contabilidade de custo por chamada (USD) ---
+	// cost, quando definido, deriva o custo em micro-USD INTEIRO da chamada (4 tipos de
+	// token × tabela de preços versionada), agrega por run/árvore (burn-down/admission
+	// global, ADR-008), emite o custo no span OTel GenAI ligado a principal/modelo/
+	// região e alimenta a porta de burn-down. É estado EXTERNO (GW stateless).
+	// Fail-closed: um custo NÃO-calculável (sem preço) aborta a chamada síncrona.
+	cost *cost.Recorder
 }
 
 // Compile-time: o Gateway satisfaz a porta compatível OpenAI.
@@ -209,6 +217,16 @@ func WithAttribution(r *attribution.Recorder) Option { return func(g *Gateway) {
 // dispara alerta abaixo do limiar (default 80%) via porta AlertSink. É estado
 // EXTERNO por porta — o Gateway mantém-se stateless. Default: sem SLI.
 func WithCacheSLI(r *cache_sli.Recorder) Option { return func(g *Gateway) { g.cacheSLI = r } }
+
+// WithCost injecta o agregador de custo por chamada (AOS-062): deriva o custo em
+// micro-USD INTEIRO dos quatro tipos de token via a tabela de preços versionada,
+// agrega por run/árvore para o burn-down/admission global (ADR-008), emite o custo no
+// span OTel GenAI (gen_ai.usage.cost_usd + micro-USD exacto) ligado a modelo/região/
+// trajectória e alimenta a porta de burn-down. É estado EXTERNO por porta — o Gateway
+// mantém-se stateless. Fail-closed: um (modelo, região) sem preço aborta a chamada
+// síncrona (custo não-calculável = erro atribuível, nunca 0 silencioso). Default: sem
+// contabilidade de custo.
+func WithCost(r *cost.Recorder) Option { return func(g *Gateway) { g.cost = r } }
 
 // New constrói o Gateway sobre um adaptador de provider. O adaptador é o ÚNICO
 // componente que fala com um provedor; todo o resto passa pela pipeline.
@@ -284,7 +302,7 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpChat)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.TreeID, req.Model, g.regionOf(req.Region))
 
 	var resp port.ChatResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -308,6 +326,13 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		}
 		resp = r
 		ex.Usage = r.Usage
+		// AOS-062: deriva o custo em micro-USD do usage (4 tipos de token × tabela de
+		// preços versionada), agrega por run/árvore e emite no span. Fail-closed: um
+		// custo NÃO-calculável (sem preço) aborta a chamada (erro atribuível, nunca 0
+		// silencioso). Corre com o usage já preenchido, ANTES do fim do Execute.
+		if err := g.recordCost(ctx, span, ex); err != nil {
+			return err
+		}
 		return nil
 	})
 	if runErr != nil {
@@ -335,7 +360,7 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpChat)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.TreeID, req.Model, g.regionOf(req.Region))
 
 	var inner port.ChatStream
 	runErr := g.pipe.ExecutePreInvoke(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -386,6 +411,13 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 			// AOS-061: o cache-hit-rate corre no fim do stream, com o usage final (o
 			// chunk final traz cache read/write) — nunca sobre zero tokens.
 			g.recordCacheSLI(ctx, span, ex)
+			// AOS-062: o custo corre no fim do stream, com o usage final. Ao contrário do
+			// caminho SÍNCRONO, o stream já foi entregue ao chamador, pelo que um custo
+			// não-calculável não pode abortar a chamada — regista-se o erro no span (o
+			// custo do stream permanece observável como falha atribuível, não 0 silencioso).
+			if err := g.recordCost(ctx, span, ex); err != nil {
+				span.SetAttribute(agentruntime.AttrErrorType, errType(err))
+			}
 			span.End()
 		},
 	}
@@ -414,7 +446,7 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 	span.SetAttribute(agentruntime.AttrOperationName, opEmbeddings)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpEmbeddings, req.Principal, req.Board, req.RunID, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpEmbeddings, req.Principal, req.Board, req.RunID, req.TreeID, req.Model, g.regionOf(req.Region))
 
 	var resp port.EmbeddingsResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -435,6 +467,10 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 		}
 		resp = r
 		ex.Usage = r.Usage
+		// AOS-062: custo por chamada (fail-closed). Ver [Gateway.Chat].
+		if err := g.recordCost(ctx, span, ex); err != nil {
+			return err
+		}
 		return nil
 	})
 	if runErr != nil {
@@ -451,12 +487,13 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 // newExchange constrói o Exchange com o relógio injectado. RequestedProvider é
 // semeado com o provedor do adaptador configurado (o provedor "pedido" por
 // default); se o roteamento resolver outro provedor, o GW regista provider_swap.
-func (g *Gateway) newExchange(op pipeline.Op, principal, board, runID, model, region string) *pipeline.Exchange {
+func (g *Gateway) newExchange(op pipeline.Op, principal, board, runID, treeID, model, region string) *pipeline.Exchange {
 	ex := &pipeline.Exchange{
 		Op:                op,
 		Principal:         principal,
 		Board:             board,
 		RunID:             runID,
+		TreeID:            treeID,
 		RequestedModel:    model,
 		RequestedProvider: g.adapter.Provider(),
 		RequestedRegion:   region,
@@ -553,6 +590,27 @@ func (g *Gateway) recordCacheSLI(ctx context.Context, span agentruntime.Span, ex
 	g.cacheSLI.Observe(ctx, span, cache_sli.SampleFromUsage(ex.RunID, ex.Board, ex.ResolvedRegion, ex.Usage))
 }
 
+// recordCost deriva o custo em micro-USD desta chamada (AOS-062): projecta o usage
+// do provider (os 4 tipos de token) e a rota (modelo/região efectivos) numa Sample
+// com o eixo de agregação (run + árvore + tenant=board/humano de AOS-057), e
+// entrega-a ao agregador externo, que calcula o custo pela tabela de preços
+// versionada, agrega por run/árvore (burn-down/admission global), emite a métrica
+// OTel e anota o span (custo USD + micro-USD exacto) ligado a modelo/região/
+// trajectória — em paralelo com a atribuição (AOS-057) que liga o principal no MESMO
+// span. No-op se não há recorder. Fail-closed: devolve erro se o custo for
+// NÃO-calculável (sem preço, tokens negativos, overflow) — nunca 0 silencioso.
+func (g *Gateway) recordCost(ctx context.Context, span agentruntime.Span, ex *pipeline.Exchange) error {
+	if g.cost == nil {
+		return nil
+	}
+	s := cost.SampleFromUsage(ex.RunID, ex.TreeID, ex.Board, ex.ResolvedRegion, ex.ResolvedModel, ex.Usage)
+	rd := g.cost.Observe(ctx, span, s)
+	if rd.Err != nil {
+		return &costError{err: rd.Err}
+	}
+	return nil
+}
+
 // annotateAllowlist anota o span com a decisão do estágio allowlist-regional
 // (AOS-058) a partir do rasto de decisões do Exchange — os estágios não recebem o
 // span, pelo que a anotação por chamada (resultado, modelo, região) é feita aqui,
@@ -583,6 +641,17 @@ func (e *attributionError) Error() string {
 	return "atribuicao nao selada (fail-closed): " + e.err.Error()
 }
 func (e *attributionError) Unwrap() error { return e.err }
+
+// costError marca uma falha de cálculo/contabilidade de custo (AOS-062): um custo
+// NÃO-calculável (sem preço, tokens negativos, overflow). Distinta para que [errType]
+// a classifique como "cost_error" no span — a chamada falha-fecha (custo não-calculável
+// = erro atribuível, nunca 0 silencioso).
+type costError struct{ err error }
+
+func (e *costError) Error() string {
+	return "custo nao contabilizado (fail-closed): " + e.err.Error()
+}
+func (e *costError) Unwrap() error { return e.err }
 
 // toAttrHops projecta a cadeia de delegação do Exchange (forma primitiva do
 // pipeline) para os hops do registo de atribuição.
@@ -657,6 +726,10 @@ func errType(err error) string {
 	var ae *attributionError
 	if errors.As(err, &ae) {
 		return "attribution_error"
+	}
+	var ce *costError
+	if errors.As(err, &ce) {
+		return "cost_error"
 	}
 	var se *pipeline.StageError
 	if errors.As(err, &se) {

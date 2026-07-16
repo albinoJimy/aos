@@ -132,6 +132,12 @@ type ChatRequest struct {
 	// plataforma (nunca no wire): é o eixo de agregação do SLI de cache-hit-rate
 	// (AOS-061, por run/tenant) e liga a métrica/atribuição à trajectória (ADR-010).
 	RunID string `json:"-"`
+	// TreeID correlaciona a chamada com a ÁRVORE de runs (o run-tree/agent-tree a que
+	// o run pertence). Metadado de plataforma (nunca no wire): é o eixo de agregação
+	// do custo por ÁRVORE (AOS-062) que alimenta o burn-down e o admission GLOBAL
+	// (ADR-008, EPIC-03). Vazio se o chamador não o fornece (a agregação por run
+	// mantém-se).
+	TreeID string `json:"-"`
 }
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).
@@ -192,6 +198,9 @@ type EmbeddingsRequest struct {
 	Board     string `json:"-"`
 	// RunID correlaciona a chamada com a trajectória do agente (ver [ChatRequest]).
 	RunID string `json:"-"`
+	// TreeID correlaciona a chamada com a árvore de runs (ver [ChatRequest]) — o eixo
+	// de agregação do custo por árvore que alimenta o burn-down global (AOS-062).
+	TreeID string `json:"-"`
 }
 
 // Embedding é um vector de embedding de um input (forma OpenAI).

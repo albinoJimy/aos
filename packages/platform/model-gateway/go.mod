@@ -3,6 +3,7 @@ module github.com/aos-ref/platform/model-gateway
 go 1.24
 
 require (
+	github.com/aos-ref/control-plane/budget v0.0.0
 	github.com/aos-ref/control-plane/scheduler v0.0.0
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
@@ -12,10 +13,8 @@ require (
 )
 
 require (
-	github.com/aos-ref/control-plane/budget v0.0.0 // indirect
 	github.com/aos-ref/control-plane/orchestrator v0.0.0 // indirect
 	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
-	github.com/aos-ref/platform/memory v0.0.0 // indirect
 	github.com/aos-ref/substrate/bus v0.0.0 // indirect
 )
 
