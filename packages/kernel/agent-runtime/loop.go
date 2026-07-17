@@ -36,6 +36,18 @@ type Goal struct {
 	MemoryContext []byte
 	// MaxTurns limita o nº de iterações (0 ⇒ [DefaultMaxTurns]).
 	MaxTurns int
+
+	// ParentTraceParent é o SEED cross-fronteira da árvore de spans (AOS-077):
+	// quando este run é um sub-agente DELEGADO, transporta o traceparent W3C do span
+	// invoke_agent-âncora aberto pelo Orquestrador no Spawn (ver
+	// [orchestrator.SpawnHandle.ChildSeedTraceParent]). [Run] semeia o ctx-raiz com
+	// ele antes de abrir o SEU invoke_agent, que assim herda o trace_id do pai e
+	// aponta ParentSpanID ao span_id da âncora — ligando a sub-árvore do filho ao pai
+	// pela mecânica NATIVA OTel (não por atributos NHI). Vazio ⇒ run-raiz (trace
+	// novo). Um traceparent malformado é ignorado (best-effort: a perda da LIGAÇÃO ao
+	// pai nunca aborta o run; a trajectória própria do filho é exportada na íntegra de
+	// qualquer modo). A recursão neto→filho usa o mesmo campo em cada nível.
+	ParentTraceParent string
 }
 
 // Result é o desfecho de [Runtime.Run].
@@ -179,6 +191,17 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		NHIID:           goal.Principal.NHIID,
 		DelegationChain: toStoreChain(goal.Principal.DelegationChain),
 		Scope:           goal.Scope,
+	}
+
+	// SEED cross-fronteira (AOS-077): se este run é um sub-agente delegado, semeia o
+	// ctx-raiz com o SpanContext do pai transportado no traceparent, ANTES de abrir o
+	// invoke_agent — que assim herda o trace_id do pai e o parenteia por span_id. Um
+	// traceparent malformado é ignorado fail-open (a perda da ligação ao pai não
+	// aborta o run; a trajectória própria do filho é exportada de qualquer modo).
+	if goal.ParentTraceParent != "" {
+		if sc, perr := ParseTraceParent(goal.ParentTraceParent); perr == nil {
+			ctx = ContextWithSpanContext(ctx, sc)
+		}
 	}
 
 	// Span invoke_agent envolve o run inteiro (ADR-010).

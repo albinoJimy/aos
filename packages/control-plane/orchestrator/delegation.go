@@ -327,6 +327,17 @@ type SpawnRequest struct {
 	Child identity.ChildRequest
 	// ChildTaskID é o id do nó-tarefa do filho no DAG. Default: Child.AgentID.
 	ChildTaskID string
+
+	// ParentTraceParent é o SpanContext do invoke_agent do PAI, transportado como
+	// traceparent W3C (AOS-077). Usado SÓ quando o ctx do Spawn NÃO carrega o
+	// SpanContext do pai — o caso cross-fronteira RT-pai → Orquestrador (a propagação
+	// EM-ctx não atravessa a serialização da delegação). Presente, o span
+	// invoke_agent-âncora do filho abre COMO FILHO deste SpanContext (trace_id do pai
+	// + parent_span_id correcto); ausente e sem SpanContext no ctx, a âncora é raiz de
+	// um trace novo. Um traceparent malformado é ignorado fail-open (a âncora vira
+	// raiz; a mediação/orçamento não são afectados). Vazio quando o pai corre no mesmo
+	// processo e passa o SpanContext pelo ctx.
+	ParentTraceParent string
 }
 
 // SpawnHandle é o comprovativo de um spawn bem-sucedido, consumido por
@@ -339,6 +350,15 @@ type SpawnHandle struct {
 	Slice       budget.Amount
 	ChildToken  identity.Token
 	Agent       contract.AgentIdentity
+
+	// ChildSeedTraceParent é o traceparent W3C do span invoke_agent-ÂNCORA do filho
+	// aberto no Spawn (AOS-077). É o SEED que o RT-filho passa em
+	// [agentruntime.Goal.ParentTraceParent] ao correr o sub-agente: o invoke_agent do
+	// filho herda daqui o trace_id do pai e parenteia sob o span_id da âncora,
+	// ligando a sub-árvore do filho ao pai pela mecânica NATIVA OTel (não por
+	// atributos NHI). Vazio se o tracer é no-op (sem observabilidade). Também vai no
+	// evento subagent.spawned (atributo não-secreto: só ids de trace/span).
+	ChildSeedTraceParent string
 }
 
 // spawnIntent é o payload opaco entregue ao RM na mediação (Call.Input): descreve
@@ -487,13 +507,30 @@ func (d *Delegator) Spawn(ctx context.Context, req SpawnRequest) (*SpawnHandle, 
 		}
 	}
 
-	// 7) Span invoke_agent do filho (ligado ao pai) + custo USD; subagent.spawned.
-	d.spawnSpan(ctx, req, childTask, childTok, slice)
-	d.emitSpawned(ctx, req, childTask, res, slice, agent)
+	// 7) Span invoke_agent-ÂNCORA do filho + custo USD; subagent.spawned.
+	//
+	// AOS-077 (propagação cross-fronteira): a âncora abre COMO FILHO do SpanContext do
+	// PAI. Este vem do ctx quando o pai corre no mesmo processo (propagação EM-ctx);
+	// na fronteira RT-pai → Orquestrador (onde o ctx não viaja), vem do traceparent
+	// explícito em req.ParentTraceParent. Assim a âncora herda o trace_id do pai e
+	// aponta ParentSpanID ao invoke_agent do pai. O traceparent da PRÓPRIA âncora é o
+	// SEED que devolvemos: o RT-filho enraíza o seu invoke_agent sob ela. A âncora é
+	// o ancoradouro da sub-árvore do filho; o RT-filho CONTINUA a mesma árvore um
+	// nível abaixo (custo real na execução; a âncora é a decomposição, custo já
+	// anotado). Mantêm-se os atributos NHI como reforço da aresta.
+	spanCtx := ctx
+	if _, ok := agentruntime.SpanContextFromContext(ctx); !ok && req.ParentTraceParent != "" {
+		if psc, perr := agentruntime.ParseTraceParent(req.ParentTraceParent); perr == nil {
+			spanCtx = agentruntime.ContextWithSpanContext(ctx, psc)
+		}
+	}
+	childSeed := d.spawnSpan(spanCtx, req, childTask, childTok, slice)
+	d.emitSpawned(ctx, req, childTask, res, slice, agent, childSeed)
 
 	return &SpawnHandle{
 		RunID: req.RunID, ChildTaskID: childTask, ChildNHI: childTok.Claims.AgentID,
 		Reservation: res, Slice: slice, ChildToken: childTok, Agent: agent,
+		ChildSeedTraceParent: childSeed,
 	}, nil
 }
 
@@ -597,10 +634,14 @@ func (d *Delegator) release(ctx context.Context, req SpawnRequest, childTask str
 	d.emitBudget(ctx, req, childTask, EventBudgetReleased, StepBudgetReleased(childTask, res.ID), res, slice, "")
 }
 
-// spawnSpan abre e fecha o span invoke_agent do sub-agente, ligado ao pai pelo
-// run_id, com o custo USD da fatia por span (DoD OTel GenAI). Reusa a porta
-// zero-dep [agentruntime.Tracer] (como AOS-025), sem puxar o SDK OTel.
-func (d *Delegator) spawnSpan(ctx context.Context, req SpawnRequest, childTask string, tok identity.Token, slice budget.Amount) {
+// spawnSpan abre e fecha o span invoke_agent-ÂNCORA do sub-agente, ligado ao pai
+// pelo SpanContext propagado em ctx (AOS-077: trace_id comum + parent_span_id do
+// invoke_agent do pai) E reforçado pelos atributos NHI, com o custo USD da fatia por
+// span (DoD OTel GenAI). Reusa a porta zero-dep [agentruntime.Tracer] (como
+// AOS-025), sem puxar o SDK OTel. Devolve o traceparent da própria âncora — o SEED
+// com que o RT-filho enraíza o seu invoke_agent sob esta (a sub-árvore continua um
+// nível abaixo). Devolve "" se o SpanContext da âncora for inválido (tracer no-op).
+func (d *Delegator) spawnSpan(ctx context.Context, req SpawnRequest, childTask string, tok identity.Token, slice budget.Amount) string {
 	_, span := d.tracer.StartSpan(ctx, agentruntime.OpInvokeAgent)
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpInvokeAgent)
 	span.SetAttribute(agentruntime.AttrRunID, req.RunID)
@@ -611,7 +652,7 @@ func (d *Delegator) spawnSpan(ctx context.Context, req SpawnRequest, childTask s
 	// Ligação EXPLÍCITA ao pai a partir do span isolado: o NHI do pai imediato é o
 	// Sub da folha da cadeia do filho (penúltimo sujeito), e o passo do pai vem de
 	// req.ParentStepID quando presente. Torna a aresta filho→pai reconstruível sem
-	// depender só da agregação por run_id.
+	// depender só da agregação por run_id (reforço dos ids nativos de trace/span).
 	if leaf, ok := tok.Claims.DelegationChain.Leaf(); ok {
 		span.SetAttribute(attrNodeParentNHI, leaf.Sub)
 	}
@@ -620,7 +661,13 @@ func (d *Delegator) spawnSpan(ctx context.Context, req SpawnRequest, childTask s
 	}
 	span.SetAttribute(agentruntime.AttrInputTokens, slice.Tokens)
 	span.SetAttribute(agentruntime.AttrCostUSD, float64(slice.CostMicroUSD)/1_000_000.0)
+	// Captura o SpanContext da âncora ANTES de fechar: é o seed cross-fronteira.
+	seed := ""
+	if sc := span.SpanContext(); sc.IsValid() {
+		seed = agentruntime.FormatTraceParent(sc)
+	}
 	span.End()
+	return seed
 }
 
 // DelegationEventPayload é o corpo dos eventos de delegação (struct para
@@ -637,6 +684,9 @@ type DelegationEventPayload struct {
 	ReservationID string        `json:"reservation_id,omitempty"`
 	Amount        budget.Amount `json:"amount,omitzero"`
 	Reason        string        `json:"reason,omitempty"`
+	// ChildSeedTraceParent — traceparent W3C da âncora invoke_agent do filho (AOS-077).
+	// Só em subagent.spawned. Não-secreto: apenas ids de trace/span.
+	ChildSeedTraceParent string `json:"child_seed_traceparent,omitempty"`
 }
 
 // emitBudget projecta um evento de movimento de orçamento da delegação.
@@ -648,12 +698,15 @@ func (d *Delegator) emitBudget(ctx context.Context, req SpawnRequest, childTask,
 	})
 }
 
-// emitSpawned projecta subagent.spawned (identidade filha admitida).
-func (d *Delegator) emitSpawned(ctx context.Context, req SpawnRequest, childTask string, res budget.Reservation, amt budget.Amount, agent contract.AgentIdentity) {
+// emitSpawned projecta subagent.spawned (identidade filha admitida). Inclui o
+// childSeed (traceparent da âncora, AOS-077): um atributo NÃO-SECRETO (só ids de
+// trace/span) que deixa o RT-filho reconstruir a raiz da sua sub-árvore por replay
+// do stream, sem depender do SpawnHandle em memória.
+func (d *Delegator) emitSpawned(ctx context.Context, req SpawnRequest, childTask string, res budget.Reservation, amt budget.Amount, agent contract.AgentIdentity, childSeed string) {
 	d.emit(ctx, req.RunID, EventSubagentSpawned, StepSubagentSpawned(childTask), DelegationEventPayload{
 		RunID: req.RunID, ParentNode: req.ParentBudgetNode, ChildNode: req.ChildBudgetNode,
 		ChildTaskID: childTask, ChildNHI: agent.NHIID, Depth: req.Depth, FanOutIndex: req.FanOutIndex,
-		ReservationID: res.ID, Amount: amt,
+		ReservationID: res.ID, Amount: amt, ChildSeedTraceParent: childSeed,
 	})
 }
 

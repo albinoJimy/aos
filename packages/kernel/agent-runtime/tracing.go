@@ -80,6 +80,28 @@ const (
 	OpExecuteTool = otelgenai.OpExecuteTool
 )
 
+// Carrier cross-fronteira do SpanContext (AOS-077) — aliases para a camada
+// partilhada. A propagação EM-ctx ([ContextWithSpanContext]) só liga spans do
+// MESMO context.Context; NÃO atravessa a fronteira de uma delegação (RT-pai →
+// Orquestrador.Spawn → RT-filho), onde o sub-agente corre com o seu ctx-raiz novo.
+// O traceparent W3C é o veículo que TRANSPORTA o SpanContext do pai como string
+// para o filho re-injectar no seu ctx (ligação nativa trace_id/parent_span_id, não
+// reconstrução por atributos NHI). Re-exportados aqui para o RT e o Orquestrador
+// os consumirem sem importar otelgenai directamente.
+var (
+	// FormatTraceParent serializa um [SpanContext] no formato W3C traceparent.
+	FormatTraceParent = otelgenai.FormatTraceParent
+	// ParseTraceParent decodifica um traceparent num [SpanContext], fail-closed.
+	ParseTraceParent = otelgenai.ParseTraceParent
+	// ContextWithSpanContext semeia o ctx com um [SpanContext] (raiz de propagação).
+	ContextWithSpanContext = otelgenai.ContextWithSpanContext
+	// SpanContextFromContext extrai o [SpanContext] propagado em ctx (se houver).
+	SpanContextFromContext = otelgenai.SpanContextFromContext
+)
+
+// ErrInvalidTraceParent — sentinela fail-closed de [ParseTraceParent] (alias).
+var ErrInvalidTraceParent = otelgenai.ErrInvalidTraceParent
+
 // microUSDToUSD converte micro-USD inteiro para USD (float, só para o atributo de
 // span; o burn-down interno mantém-se inteiro). Delega na conversão canónica da
 // camada partilhada.
