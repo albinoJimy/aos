@@ -366,7 +366,13 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 	}
 	span.SetAttribute(AttrInputTokens, resp.Usage.InputTokens)
 	span.SetAttribute(AttrOutputTokens, resp.Usage.OutputTokens)
+	// Custo do turno em USD (float, conveniência OTel) E em micro-USD INTEIRO (fonte de
+	// verdade). O inteiro exacto é o que a agregação por trajectória/sub-árvore (AOS-078)
+	// soma sem drift de vírgula flutuante e o que reconcilia com os totais do Model
+	// Gateway; é o mesmo valor já em mão (resp.CostMicroUSD), emitido em paralelo — não é
+	// contabilidade nova, é a exposição exacta do custo que a chat span já registava.
 	span.SetAttribute(AttrCostUSD, microUSDToUSD(resp.CostMicroUSD))
+	span.SetAttribute(AttrCostMicroUSD, resp.CostMicroUSD)
 	span.End()
 	return resp, nil
 }
@@ -466,7 +472,12 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 func (rt *Runtime) annotateAgentSpan(span Span, res Result) {
 	span.SetAttribute(AttrInputTokens, res.TotalUsage.InputTokens)
 	span.SetAttribute(AttrOutputTokens, res.TotalUsage.OutputTokens)
+	// AGREGADO do run em USD (float) e micro-USD INTEIRO. Este agregado NÃO deve ser
+	// somado pela agregação por trajectória (AOS-078) — duplicaria com os por-turno dos
+	// chats; a agregação conta só spans chat. O inteiro exacto aqui serve o consumidor
+	// que lê o total directamente do invoke_agent.
 	span.SetAttribute(AttrCostUSD, microUSDToUSD(res.TotalCostMicroUSD))
+	span.SetAttribute(AttrCostMicroUSD, res.TotalCostMicroUSD)
 }
 
 // cp invoca o checkpointer (ponto de ligação AOS-015). Default no-op.

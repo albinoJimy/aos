@@ -16,7 +16,10 @@ const (
 	// O micro-USD INTEIRO ([AttrCostMicroUSD]) é a fonte de verdade emitida em paralelo.
 	AttrCostUSD = agentruntime.AttrCostUSD
 	// AttrCostMicroUSD — custo EXACTO da chamada em micro-USD int64 (sem float drift).
-	AttrCostMicroUSD = "aos.cost.micro_usd"
+	// Alias da fonte única do vocabulário (otelgenai, via agentruntime): a MESMA chave
+	// "aos.cost.micro_usd" que a agregação por trajectória de AOS-078 soma — garante que
+	// o span de custo do GW e a agregação da camada otel-genai falam do mesmo atributo.
+	AttrCostMicroUSD = agentruntime.AttrCostMicroUSD
 	// AttrRunCostMicroUSD — custo AGREGADO do run em micro-USD (burn-down por run).
 	AttrRunCostMicroUSD = "aos.cost.run_micro_usd"
 	// AttrTreeCostMicroUSD — custo AGREGADO da árvore em micro-USD (burn-down por árvore).

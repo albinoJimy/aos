@@ -42,8 +42,11 @@ const (
 	AttrInputTokens = otelgenai.AttrInputTokens
 	// AttrOutputTokens — gen_ai.usage.output_tokens.
 	AttrOutputTokens = otelgenai.AttrOutputTokens
-	// AttrCostUSD — gen_ai.usage.cost_usd (contabilidade fina é AOS-078).
+	// AttrCostUSD — gen_ai.usage.cost_usd (custo do span em USD, float de conveniência).
 	AttrCostUSD = otelgenai.AttrCostUSD
+	// AttrCostMicroUSD — aos.cost.micro_usd (custo EXACTO do span em micro-USD inteiro,
+	// fonte de verdade da agregação por trajectória/sub-árvore de AOS-078).
+	AttrCostMicroUSD = otelgenai.AttrCostMicroUSD
 	// AttrToolName — gen_ai.tool.name (span execute_tool).
 	AttrToolName = otelgenai.AttrToolName
 	// AttrToolCallHash — aos.tool_call.hash (hash(tool+args), posto pelo RM).

@@ -26,6 +26,14 @@ const (
 	// (valor float em USD, derivado do micro-USD inteiro). A contabilidade fina de
 	// custo/tokens é AOS-078; aqui a chave existe só para o mapa de atributos.
 	AttrCostUSD = "gen_ai.usage.cost_usd"
+	// AttrCostMicroUSD — custo EXACTO do span em micro-USD int64 (1 USD = 1_000_000),
+	// emitido em PARALELO com [AttrCostUSD] (float, conveniência OTel). É a FONTE DE
+	// VERDADE do custo por span: a agregação por trajectória/sub-árvore (AOS-078) soma
+	// SEMPRE este inteiro para não acumular drift de vírgula flutuante. Coincide com a
+	// chave "aos.cost.micro_usd" que o Model Gateway (metering/cost) já emite no seu
+	// span de custo — a mesma chave, aqui elevada à fonte única do vocabulário. Não é
+	// segredo (custo não é credencial, ADR-010).
+	AttrCostMicroUSD = "aos.cost.micro_usd"
 	// AttrToolName — gen_ai.tool.name (span execute_tool).
 	AttrToolName = "gen_ai.tool.name"
 	// AttrPrincipalNHI — aos.principal.nhi_id: o identificador estável da NHI do
