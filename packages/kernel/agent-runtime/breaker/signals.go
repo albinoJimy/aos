@@ -90,3 +90,16 @@ type ProgressFunc func() bool
 
 // MadeProgress implementa [ProgressSource].
 func (f ProgressFunc) MadeProgress() bool { return f() }
+
+// EnabledSource é uma porta OPCIONAL que uma fonte de sinal pode implementar para declarar
+// se está efectivamente ARMADA. A nil-check da cablagem fail-closed apanha uma fonte AUSENTE,
+// mas não uma fonte PRESENTE que está inerte (ex.: um detector de action-dedup de AOS-081
+// construído com Threshold<=0, cujo MadeProgress devolve sempre true — não-nil mas cego ao
+// sinal). Quando a fonte implementa esta porta e reporta Enabled()==false enquanto o limiar
+// respectivo está ligado, o breaker recusa a construção ([ErrProgressSourceInert]), fechando
+// o buraco simetricamente com a nil-check. Fontes que NÃO a implementam são tratadas como
+// armadas (compat retroactiva: uma [ProgressFunc] arbitrária continua válida).
+type EnabledSource interface {
+	// Enabled reporta se a fonte está armada (o sinal pode efectivamente cruzar).
+	Enabled() bool
+}

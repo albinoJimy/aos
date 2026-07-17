@@ -146,8 +146,17 @@ func NewBreaker(m *state.Machine, provider ThresholdProvider, class string, opts
 	if (th.MaxCostMicroUSDPerSecond > 0 || th.MaxTokensPerSecond > 0) && b.velocity == nil {
 		return nil, fmt.Errorf("%w (class %q)", ErrVelocitySourceMissing, class)
 	}
-	if th.MaxStaleIterations > 0 && b.progress == nil {
-		return nil, fmt.Errorf("%w (class %q)", ErrProgressSourceMissing, class)
+	if th.MaxStaleIterations > 0 {
+		if b.progress == nil {
+			return nil, fmt.Errorf("%w (class %q)", ErrProgressSourceMissing, class)
+		}
+		// A nil-check apanha a fonte AUSENTE; uma fonte PRESENTE mas inerte (não-nil,
+		// MadeProgress sempre true — ex.: detector de action-dedup com Threshold<=0) passaria
+		// a nil-check e mataria o sinal em silêncio. Se a fonte declara a sua armação via
+		// [EnabledSource], exige-se que esteja armada — fecha o buraco simetricamente.
+		if es, ok := b.progress.(EnabledSource); ok && !es.Enabled() {
+			return nil, fmt.Errorf("%w (class %q)", ErrProgressSourceInert, class)
+		}
 	}
 	return b, nil
 }

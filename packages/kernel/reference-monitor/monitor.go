@@ -2,8 +2,6 @@ package referencemonitor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -380,18 +378,19 @@ func (m *Monitor) dispatch(ctx context.Context, p *Permit, call Call) ([]byte, e
 	return fn(ctx, call.Input)
 }
 
-// toolCallHash calcula a âncora estável sha256(tool_id ‖ 0x00 ‖ args) do span
-// execute_tool (AOS-076), em hex minúsculo com prefixo "sha256:" (convenção do
-// repo, cf. prompt/prefix hash). É uma REFERÊNCIA por hash: o Input NUNCA é gravado
-// no span (content-capture por referência; os payloads em claro são AOS-079). O
-// separador nulo evita colisões de fronteira entre tool_id e args. A normalização
-// canónica dos args (AOS-081) é diferida — aqui hasheia-se o Input tal como despachado.
+// toolCallHash calcula a âncora ESTÁVEL do span execute_tool (AOS-076), delegando na
+// função canónica partilhada [otelgenai.CanonicalToolCallHash] (o módulo folha
+// partilhado pelo RM e pelo Agent Runtime). É uma REFERÊNCIA por hash: o Input NUNCA é
+// gravado no span (content-capture por referência; os payloads em claro são AOS-079).
+//
+// AOS-081: a normalização canónica dos args deixa de ser diferida — se o Input é JSON
+// válido, é re-serializado em forma canónica (chaves ordenadas, espaço insignificante
+// removido; a ordem dos arrays PRESERVA-SE, é semântica) antes do hash, de modo que o
+// span passe a carregar a âncora ESTÁVEL de action-dedup (o mesmo hash para args
+// semanticamente equivalentes). COMPAT: para args NÃO-JSON o valor é byte-idêntico ao
+// pré-AOS-081 (sha256 dos bytes crus com separador nulo).
 func toolCallHash(toolID string, args []byte) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(toolID))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write(args)
-	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+	return otelgenai.CanonicalToolCallHash(toolID, args)
 }
 
 // safeEvaluate invoca um hook com recuperação de panic. Um panic converte-se em

@@ -29,4 +29,14 @@ var (
 	// existir, qualquer classe com MaxStaleIterations>0 tem de ligar explicitamente uma
 	// porta de progresso (ou não pôr o limiar) — nunca um breaker morto e silencioso.
 	ErrProgressSourceMissing = errors.New("breaker: limiar de no-progress ligado sem ProgressSource cablada (WithProgressSource)")
+
+	// ErrProgressSourceInert — o limiar de no-progress (MaxStaleIterations) está LIGADO (>0)
+	// e uma [ProgressSource] FOI cablada, mas ela declara-se INERTE via [EnabledSource]
+	// (Enabled()==false — ex.: um detector de action-dedup de AOS-081 com Threshold<=0, cujo
+	// MadeProgress é sempre true). A nil-check sozinha deixa passar esta fonte não-nil mas
+	// cega ao sinal, produzindo o mesmo breaker "julga-se configurado mas está cego" que o
+	// fail-closed da construção existe para impedir. Recusa fail-closed, fechando o buraco
+	// simetricamente com [ErrProgressSourceMissing]. Remédio: alinhar o Threshold do detector
+	// com o MaxStaleIterations da classe (ligar/desligar em conjunto).
+	ErrProgressSourceInert = errors.New("breaker: limiar de no-progress ligado mas ProgressSource inerte (Enabled()==false; alinhe o Threshold do detector com MaxStaleIterations)")
 )
