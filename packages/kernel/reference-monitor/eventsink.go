@@ -96,6 +96,13 @@ type contextDTO struct {
 	Taint         string `json:"taint,omitempty"`
 	Reversibility string `json:"reversibility,omitempty"`
 	Sensitivity   string `json:"sensitivity,omitempty"`
+	// RiskClass é a classe de risco SA-ROC selada no audit (AOS-074, ADR-013).
+	RiskClass string `json:"risk_class,omitempty"`
+	// RiskApprover é a identidade que autorizou um override gray/danger (SAROC-05).
+	RiskApprover string `json:"risk_approver,omitempty"`
+	// RiskDecisionMode é a natureza da decisão HITL: auto/batch/human/timeout/denied
+	// (SAROC-05) — torna atribuível "quem aprovou e por que via".
+	RiskDecisionMode string `json:"risk_decision_mode,omitempty"`
 }
 
 type principalDTO struct {
@@ -149,9 +156,12 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			Region: rec.Resource.Region,
 		},
 		Context: contextDTO{
-			Taint:         rec.Context.Taint,
-			Reversibility: rec.Context.Reversibility,
-			Sensitivity:   rec.Context.Sensitivity,
+			Taint:            rec.Context.Taint,
+			Reversibility:    rec.Context.Reversibility,
+			Sensitivity:      rec.Context.Sensitivity,
+			RiskClass:        rec.Context.RiskClass,
+			RiskApprover:     rec.Context.RiskApprover,
+			RiskDecisionMode: rec.Context.RiskDecisionMode,
 		},
 		LatencyNanos: rec.Latency.Nanoseconds(),
 		Principal: principalDTO{

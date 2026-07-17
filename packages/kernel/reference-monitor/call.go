@@ -50,6 +50,21 @@ type CallContext struct {
 	Reversibility string
 	// Sensitivity ex.: "public", "confidential".
 	Sensitivity string
+	// RiskClass é a classe de risco SA-ROC (AOS-074) atribuída pelo RiskGate à
+	// acção ("safe", "gray", "danger"). Preenchida pelo gate de risco ANTES de
+	// qualquer negação, para que a classificação seja selada no audit tamper-evident
+	// (ADR-013) tanto em permit como em deny. Vazia se o RiskGate não está na cadeia.
+	RiskClass string
+	// RiskApprover identifica QUEM autorizou uma acção gray/danger (do canal HITL),
+	// para atribuição no audit tamper-evident: um override fica ligado à identidade
+	// que o concedeu. Vazio se não houve confirmação humana (safe, auto-aprovada,
+	// timeout, recusada) ou se o RiskGate não está na cadeia. Sem segredos (SAROC-05).
+	RiskApprover string
+	// RiskDecisionMode é a NATUREZA da decisão do gate de risco ("auto", "batch",
+	// "human", "timeout", "denied"), selada no audit para distinguir COMO a acção foi
+	// resolvida — ex.: um permit gray auto-aprovado por maturidade vs confirmado por
+	// humano deixam de ser indistinguíveis no log (SAROC-05).
+	RiskDecisionMode string
 }
 
 // PortVersion é a versão SemVer da porta C1 (contrato de mediação) que este RM
