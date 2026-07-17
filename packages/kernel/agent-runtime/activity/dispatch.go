@@ -15,6 +15,20 @@ import (
 // (permit|dedup|replay|denied|error). Complementa os atributos GenAI de AOS-013.
 const AttrDecision = "aos.decision"
 
+// OpActivity é o nome do span de ESCOPO DURÁVEL da activity (AOS-021): envolve o
+// despacho idempotente (AOS-014) + a mediação (AOS-003) e regista o DESFECHO durável
+// (permit|dedup|replay|denied|error) e o custo do efeito real. É DELIBERADAMENTE
+// distinto do span execute_tool da semconv GenAI: esse é aberto pelo Reference
+// Monitor DENTRO de [referencemonitor.Monitor.Mediate] — o ponto único de mediação
+// (ADR-002) e a ÚNICA autoridade do span execute_tool (AOS-076). O span aos.activity
+// nasce pai do execute_tool (o ctx derivado propaga-se ao Mediate), formando a árvore
+// aos.activity → execute_tool. Manter as operações separadas evita (a) DUPLICAR o
+// span execute_tool — o duplo-contar em agregadores por-operação quando o mesmo tracer
+// é partilhado com o RM — e (b) apresentar um span execute_tool sem os atributos
+// obrigatórios de CA2 (hash(tool+args) + result_taint), que só o RM anota. O
+// aos.activity carrega o que o RM NÃO conhece: dedup, replay e o custo por efeito real.
+const OpActivity = "aos.activity"
+
 // Dispatcher é o PONTO DE COMPOSIÇÃO das activities (AOS-021): unifica idempotência
 // (ledger AOS-014) + mediação (RM AOS-003) + replay (AOS-016) + taint (ADR-005) +
 // registo de compensação (AOS-020). Construir com [NewDispatcher].
@@ -256,11 +270,14 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 	}, nil
 }
 
-// startSpan abre o span execute_tool da activity e anota-o com a correlação (run/step/
-// tool). Devolve o ctx derivado (para o RM propagar o trace) e o span.
+// startSpan abre o span de escopo durável [OpActivity] e anota-o com a correlação
+// (run/step/tool). NÃO é o span execute_tool — esse é aberto pelo Reference Monitor
+// dentro de Mediate (AOS-076), a única autoridade. Devolve o ctx derivado (para o RM
+// abrir o execute_tool como FILHO deste span, herdando trace_id + parent_span_id) e o
+// span aos.activity, que o dispatcher anota com o desfecho durável (permit|dedup|
+// replay|denied|error) e o custo do efeito real.
 func (d *Dispatcher) startSpan(ctx context.Context, act Activity) (context.Context, agentruntime.Span) {
-	ctx, span := d.tracer.StartSpan(ctx, agentruntime.OpExecuteTool)
-	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpExecuteTool)
+	ctx, span := d.tracer.StartSpan(ctx, OpActivity)
 	span.SetAttribute(agentruntime.AttrToolName, act.ToolID)
 	span.SetAttribute(agentruntime.AttrRunID, act.RunID)
 	span.SetAttribute(agentruntime.AttrStepID, act.StepID)

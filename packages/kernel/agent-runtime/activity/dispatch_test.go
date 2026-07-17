@@ -452,9 +452,9 @@ func TestDispatch_CustoSoNoApplied(t *testing.T) {
 		t.Fatalf("Dispatch #2 (dedup): %v", err)
 	}
 
-	spans := tracer.SpansByOperation(agentruntime.OpExecuteTool)
+	spans := tracer.SpansByOperation(activity.OpActivity)
 	if len(spans) != 2 {
-		t.Fatalf("esperados 2 spans execute_tool, houve %d", len(spans))
+		t.Fatalf("esperados 2 spans aos.activity, houve %d", len(spans))
 	}
 	// span[0] = applied: emite custo. span[1] = dedup: NÃO emite custo.
 	if got, ok := spans[0].Attributes[agentruntime.AttrCostUSD]; !ok || got != 1.0 {
@@ -521,9 +521,9 @@ func TestDispatch_ObservabilidadeCustoPorSpan(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	spans := tracer.SpansByOperation(agentruntime.OpExecuteTool)
+	spans := tracer.SpansByOperation(activity.OpActivity)
 	if len(spans) != 1 {
-		t.Fatalf("devia haver 1 span execute_tool, houve %d", len(spans))
+		t.Fatalf("devia haver 1 span aos.activity, houve %d", len(spans))
 	}
 	s := spans[0]
 	if !s.Ended {
@@ -544,6 +544,63 @@ func TestDispatch_ObservabilidadeCustoPorSpan(t *testing.T) {
 	// A hash observada é OPACA (não é a chave em claro).
 	if hs, _ := obs.lastHash.Load().(string); hs == "" || hs == testRun+":"+testStep {
 		t.Fatalf("observer devia receber a key OPACA (hash), veio %q", hs)
+	}
+}
+
+// TestDispatch_TracerPartilhadoUmSoExecuteTool prova a reconciliação de AOS-076 no
+// caminho DURÁVEL (AOS-021): quando o MESMO tracer é partilhado pelo dispatcher e pelo
+// Reference Monitor — a forma natural de os dois spans caírem na mesma árvore — cada
+// tool call produz EXACTAMENTE UM span execute_tool (aberto SÓ pelo RM, a autoridade
+// única, ADR-002) a carregar os atributos obrigatórios de CA2 (hash(tool+args) +
+// result_taint), e UM span de escopo durável aos.activity (aberto pelo dispatcher) com
+// o desfecho. O execute_tool nasce FILHO do aos.activity (mesma trace, parent = span do
+// dispatcher). Sem a distinção de operações de AOS-076, esta configuração emitiria DOIS
+// spans execute_tool (duplo-contar) e o do dispatcher falharia a semconv CA2.
+func TestDispatch_TracerPartilhadoUmSoExecuteTool(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, false, nil)
+	// Um único tracer partilhado: o RM abre o execute_tool, o dispatcher o aos.activity.
+	tracer := &agentruntime.RecordingTracer{}
+	h.rm.SetTracer(tracer)
+	d, err := activity.NewDispatcher(h.rm, h.ledger, activity.WithTracer(tracer))
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	if _, err := d.Dispatch(context.Background(), baseActivity()); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// EXACTAMENTE um execute_tool, e é o do RM (não o do dispatcher).
+	tools := tracer.SpansByOperation(agentruntime.OpExecuteTool)
+	if len(tools) != 1 {
+		t.Fatalf("esperava 1 span execute_tool (aberto SÓ pelo RM), obtive %d", len(tools))
+	}
+	tool := tools[0]
+	// CA2: o execute_tool traz hash(tool+args) e a marca untrusted do resultado.
+	if hash, _ := tool.Attributes[agentruntime.AttrToolCallHash].(string); len(hash) == 0 {
+		t.Errorf("execute_tool sem hash(tool+args) (CA2): %v", tool.Attributes[agentruntime.AttrToolCallHash])
+	}
+	if tool.Attributes[agentruntime.AttrResultTaint] != "untrusted" {
+		t.Errorf("execute_tool result_taint = %v, esperava \"untrusted\" (CA2)", tool.Attributes[agentruntime.AttrResultTaint])
+	}
+
+	// Um span de escopo durável aos.activity, com o desfecho — e SEM se apresentar como
+	// execute_tool (não duplica nem falha CA2).
+	acts := tracer.SpansByOperation(activity.OpActivity)
+	if len(acts) != 1 {
+		t.Fatalf("esperava 1 span aos.activity (do dispatcher), obtive %d", len(acts))
+	}
+	if got := acts[0].Attributes[activity.AttrDecision]; got != "permit" {
+		t.Errorf("aos.activity decisão = %v, esperava permit", got)
+	}
+
+	// Topologia: o execute_tool é FILHO do aos.activity (mesma trace, parent = dispatcher).
+	if tool.SpanContext.TraceID != acts[0].SpanContext.TraceID {
+		t.Errorf("execute_tool devia partilhar o trace_id do aos.activity")
+	}
+	if tool.ParentSpanID != acts[0].SpanContext.SpanID {
+		t.Errorf("execute_tool devia ser filho do aos.activity (parent_span_id != span_id do dispatcher)")
 	}
 }
 

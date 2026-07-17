@@ -11,6 +11,7 @@ require github.com/aos-ref/platform/audit v0.0.0
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
 	github.com/aos-ref/substrate/eventstore v0.0.0 // indirect
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 replace github.com/aos-ref/kernel/reference-monitor => ../../kernel/reference-monitor
@@ -27,3 +28,5 @@ replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 // por porta para evitar puxar o seu grafo (rm/sandbox/eventstore) e qualquer
 // ciclo. NÃO alterar o pacote referenciado — consome-se só pela API pública.
 replace github.com/aos-ref/platform/audit => ../audit
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

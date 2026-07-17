@@ -16,6 +16,7 @@ require (
 require (
 	github.com/aos-ref/control-plane/budget v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 // Todas as dependências integradas por path local (zero deps externas, build
@@ -36,3 +37,5 @@ replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 replace github.com/aos-ref/control-plane/budget => ../budget
 
 replace github.com/aos-ref/platform/identity => ../../platform/identity
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

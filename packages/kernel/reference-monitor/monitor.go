@@ -2,11 +2,15 @@ package referencemonitor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
 // ToolFunc é a assinatura de uma tool despachável. Recebe o input opaco do call
@@ -43,7 +47,18 @@ type Monitor struct {
 
 	now  func() time.Time
 	rand func() uint64
+
+	// tracer é a porta de observabilidade OTel GenAI (AOS-076). Default
+	// [otelgenai.NoopTracer] — com ele o comportamento é idêntico ao de antes da
+	// instrumentação. O Agent Runtime injecta o SEU tracer (via [WithTracer] ou
+	// [Monitor.SetTracer]) para que o span execute_tool aberto AQUI caia na mesma
+	// árvore/sink dos spans invoke_agent/chat do loop.
+	tracer otelgenai.Tracer
 }
+
+// resultTaintUntrusted é a marca fixa do span execute_tool: o resultado de uma
+// tool call volta SEMPRE untrusted (ADR-005), qualquer que seja o veredicto.
+const resultTaintUntrusted = "untrusted"
 
 // Option configura o Monitor na construção.
 type Option func(*Monitor)
@@ -63,6 +78,24 @@ func WithEventSink(s EventSink) Option {
 	return func(m *Monitor) { m.sink = s }
 }
 
+// WithTracer injecta a porta de observabilidade OTel GenAI (AOS-076). Default
+// [otelgenai.NoopTracer]. O Agent Runtime partilha aqui o SEU tracer para que o
+// span execute_tool aberto em [Monitor.Mediate] caia na mesma árvore que os spans
+// invoke_agent/chat do loop.
+func WithTracer(t otelgenai.Tracer) Option {
+	return func(m *Monitor) { m.tracer = t }
+}
+
+// SetTracer injecta o tracer após a construção — é o ponto de sutura que o Agent
+// Runtime usa para partilhar a sua árvore de spans com um Monitor já construído
+// (o RT detém o RM; ver agentruntime.New). Passar nil repõe o [otelgenai.NoopTracer].
+func (m *Monitor) SetTracer(t otelgenai.Tracer) {
+	if t == nil {
+		t = otelgenai.NoopTracer{}
+	}
+	m.tracer = t
+}
+
 // withClock injecta um relógio (uso interno/testes).
 func withClock(f func() time.Time) Option {
 	return func(m *Monitor) { m.now = f }
@@ -78,11 +111,12 @@ func withNonce(f func() uint64) Option {
 // sink real, senão o fail-closed de auditoria não tem efeito).
 func New(opts ...Option) *Monitor {
 	m := &Monitor{
-		hooks: DefaultHooks(),
-		sink:  discardSink{},
-		tools: make(map[string]ToolFunc),
-		now:   time.Now,
-		rand:  rand.Uint64,
+		hooks:  DefaultHooks(),
+		sink:   discardSink{},
+		tools:  make(map[string]ToolFunc),
+		now:    time.Now,
+		rand:   rand.Uint64,
+		tracer: otelgenai.NoopTracer{},
 	}
 	for _, o := range opts {
 		o(m)
@@ -95,6 +129,9 @@ func New(opts ...Option) *Monitor {
 	}
 	if m.rand == nil {
 		m.rand = rand.Uint64
+	}
+	if m.tracer == nil {
+		m.tracer = otelgenai.NoopTracer{}
 	}
 	return m
 }
@@ -134,7 +171,55 @@ func (m *Monitor) Metrics() *Metrics { return &m.metrics }
 //
 // O erro devolvido é reservado a cancelamento de contexto; as negações de
 // política são comunicadas via Decision.Effect, não via error.
-func (m *Monitor) Mediate(ctx context.Context, call Call) (Decision, error) {
+//
+// INSTRUMENTAÇÃO (AOS-076): Mediate é o ÚNICO ponto de mediação, logo abrir AQUI o
+// span execute_tool garante cobertura de 100% das tool calls (ADR-002) — qualquer
+// caller do RM fica instrumentado, não só o loop. O span nasce filho do ctx (o
+// invoke_agent propagado pelo RT), é anotado com nome/hash(tool+args)/taint da
+// autorização/marca untrusted do resultado, e é fechado (via defer) em TODOS os
+// caminhos — permit, deny, escalate, erro de contexto — com o veredicto observável.
+func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err error) {
+	spanCtx, span := m.tracer.StartSpan(ctx, otelgenai.OpExecuteTool)
+	span.SetAttribute(otelgenai.AttrOperationName, otelgenai.OpExecuteTool)
+	span.SetAttribute(otelgenai.AttrToolName, call.ToolID)
+	// hash(tool+args) — REFERÊNCIA por hash (âncora de action-dedup, AOS-081); o
+	// Input jamais é gravado no span (content-capture por referência; payload é AOS-079).
+	span.SetAttribute(otelgenai.AttrToolCallHash, toolCallHash(call.ToolID, call.Input))
+	// Taint da AUTORIZAÇÃO (AOS-069): o rótulo, nunca o conteúdo.
+	span.SetAttribute(otelgenai.AttrTaint, call.Context.Taint)
+	// O RESULTADO volta SEMPRE untrusted (ADR-005), qualquer que seja o veredicto.
+	span.SetAttribute(otelgenai.AttrResultTaint, resultTaintUntrusted)
+	if call.RunID != "" {
+		span.SetAttribute(otelgenai.AttrRunID, call.RunID)
+	}
+	if call.StepID != "" {
+		span.SetAttribute(otelgenai.AttrStepID, call.StepID)
+	}
+	defer func() {
+		span.SetAttribute(otelgenai.AttrDecision, string(dec.Effect))
+		// Numa negação/escalada, anotar o hook atribuível (ex.: "taint") para que a
+		// causa da decisão seja auto-descritível no span, sem segredos.
+		if dec.Effect != EffectPermit && dec.DeniedBy != "" {
+			span.SetAttribute(otelgenai.AttrDeniedBy, dec.DeniedBy)
+		}
+		// Uma tool PERMITIDA pode falhar em runtime: error.type distingue um output
+		// vazio legítimo de um output de tool falhada.
+		if dec.ToolErr != nil {
+			span.SetAttribute(otelgenai.AttrErrorType, dec.ToolErr.Error())
+		}
+		span.End()
+	}()
+
+	// O ctx DERIVADO do span (spanCtx) segue para a avaliação: futuros spans internos
+	// da cadeia de hooks nascem filhos do execute_tool, mantendo a propagação de trace.
+	dec, err = m.evaluate(spanCtx, call)
+	return dec, err
+}
+
+// evaluate corre a cadeia de mediação (hooks → default-deny → audit-before-effect →
+// despacho) e devolve a decisão. É o núcleo de [Monitor.Mediate], separado apenas
+// para que o span execute_tool envolva TODOS os caminhos de retorno via defer.
+func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	start := m.now()
 	if err := ctx.Err(); err != nil {
 		// Contexto já cancelado: fail-closed, sem sequer avaliar. Esta negação é
@@ -293,6 +378,20 @@ func (m *Monitor) dispatch(ctx context.Context, p *Permit, call Call) ([]byte, e
 		return nil, ErrToolNotRegistered
 	}
 	return fn(ctx, call.Input)
+}
+
+// toolCallHash calcula a âncora estável sha256(tool_id ‖ 0x00 ‖ args) do span
+// execute_tool (AOS-076), em hex minúsculo com prefixo "sha256:" (convenção do
+// repo, cf. prompt/prefix hash). É uma REFERÊNCIA por hash: o Input NUNCA é gravado
+// no span (content-capture por referência; os payloads em claro são AOS-079). O
+// separador nulo evita colisões de fronteira entre tool_id e args. A normalização
+// canónica dos args (AOS-081) é diferida — aqui hasheia-se o Input tal como despachado.
+func toolCallHash(toolID string, args []byte) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(toolID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(args)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // safeEvaluate invoca um hook com recuperação de panic. Um panic converte-se em

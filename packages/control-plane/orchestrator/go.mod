@@ -9,6 +9,7 @@ require (
 	github.com/aos-ref/platform/identity v0.0.0
 	github.com/aos-ref/substrate/bus v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 // Barramento (AOS-009) e Event Store (AOS-002) integrados por path local: zero
@@ -32,3 +33,5 @@ replace github.com/aos-ref/kernel/reference-monitor => ../../kernel/reference-mo
 replace github.com/aos-ref/control-plane/budget => ../budget
 
 replace github.com/aos-ref/platform/identity => ../../platform/identity
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

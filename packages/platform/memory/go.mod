@@ -8,7 +8,10 @@ require (
 	github.com/aos-ref/substrate/eventstore v0.0.0
 )
 
-require github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
+require (
+	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
+	github.com/aos-ref/substrate/otel-genai v0.0.0
+)
 
 // Integração por path local, ZERO dependências externas, build offline.
 //
@@ -32,3 +35,5 @@ replace github.com/aos-ref/kernel/reference-monitor => ../../kernel/reference-mo
 // titular (crypto-shredding, ADR-011) torna o plaintext irrecuperável SEM partir
 // a cadeia — a cadeia sela o hash, não o plaintext. NÃO alterar o pacote audit.
 replace github.com/aos-ref/platform/audit => ../audit
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

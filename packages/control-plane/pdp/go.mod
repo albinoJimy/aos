@@ -9,7 +9,10 @@ require (
 	github.com/cedar-policy/cedar-go v1.8.0
 )
 
-require golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
+require (
+	github.com/aos-ref/substrate/otel-genai v0.0.0
+	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
+)
 
 // Reference Monitor (AOS-003) integrado por path local para o adaptador
 // PolicyCheck; traz o Event Store (AOS-002) transitivamente. Os replace de um
@@ -25,3 +28,5 @@ replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 // IdentityCheck real antes do PolicyCheck para provar que o gate default-deny
 // keia na agent_class RESOLVIDA da NHI verificada, não na forjada pelo caller.
 replace github.com/aos-ref/platform/identity => ../../platform/identity
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

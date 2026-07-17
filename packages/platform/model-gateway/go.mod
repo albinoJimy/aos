@@ -16,6 +16,7 @@ require (
 	github.com/aos-ref/control-plane/orchestrator v0.0.0 // indirect
 	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
 	github.com/aos-ref/substrate/bus v0.0.0 // indirect
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 // Integração por path local: ZERO dependências externas, build offline. O GW
@@ -61,3 +62,5 @@ replace github.com/aos-ref/substrate/bus => ../../substrate/bus
 replace github.com/aos-ref/platform/registry => ../registry
 
 replace github.com/aos-ref/platform/memory => ../memory
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

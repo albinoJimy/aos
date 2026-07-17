@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 // Reference Monitor (AOS-003) integrado por path local para o adaptador
@@ -15,3 +16,5 @@ require (
 replace github.com/aos-ref/kernel/reference-monitor => ../../kernel/reference-monitor
 
 replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

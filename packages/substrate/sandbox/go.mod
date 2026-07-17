@@ -6,6 +6,7 @@ require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 // Integração por path local: ZERO dependências externas, build offline (padrão
@@ -22,3 +23,5 @@ replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 // (audit → reference-monitor → eventstore; sem ciclo com a sandbox, que o audit não
 // importa). NÃO alterar o pacote referenciado.
 replace github.com/aos-ref/platform/audit => ../../platform/audit
+
+replace github.com/aos-ref/substrate/otel-genai => ../otel-genai

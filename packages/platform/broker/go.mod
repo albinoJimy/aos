@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 	github.com/aos-ref/substrate/sandbox v0.0.0
 )
 
@@ -25,3 +26,5 @@ replace github.com/aos-ref/substrate/sandbox => ../../substrate/sandbox
 // transitivos, pelo que audit/reference-monitor/eventstore são re-declarados aqui
 // a partir da raiz de packages/.
 replace github.com/aos-ref/platform/audit => ../audit
+
+replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

@@ -236,6 +236,74 @@ func assertSpans(t *testing.T, tr *RecordingTracer) {
 	}
 }
 
+// TestSpanTreeAcrossRMAndRT é o teste de INTEGRAÇÃO da árvore ponta-a-ponta
+// (AOS-076 CA3/CA4/CA5): um run real invoke_agent → chat → execute_tool prova que o
+// span execute_tool — aberto pelo REFERENCE MONITOR dentro de Mediate, não pelo loop
+// — cai na MESMA árvore que os spans invoke_agent/chat do RT (trace_id comum,
+// parent_span_id = span_id do invoke_agent). É a prova do wiring do tracer partilhado
+// RM↔RT e da cobertura de mediação total (o span nasce no ponto único de mediação).
+func TestSpanTreeAcrossRMAndRT(t *testing.T) {
+	h := newHarness(t, map[string]referencemonitor.ToolFunc{
+		"echo": func(_ context.Context, in []byte) ([]byte, error) { return in, nil },
+	})
+	callN := 0
+	model := ModelClientFunc(func(_ context.Context, _ PromptView) (ModelResponse, error) {
+		callN++
+		if callN == 1 {
+			return ModelResponse{ToolCalls: []ToolInvocation{{ToolID: "echo", Capability: "cap:echo", Input: []byte("x")}}}, nil
+		}
+		return ModelResponse{Text: "fim", Final: true}, nil
+	})
+	rt := New(model, h.rm, h.recorder, WithTracer(h.tracer))
+	if _, err := rt.Run(context.Background(), sampleGoal()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	agents := h.tracer.SpansByOperation(OpInvokeAgent)
+	if len(agents) != 1 {
+		t.Fatalf("esperava 1 span invoke_agent, obtive %d", len(agents))
+	}
+	root := agents[0]
+	if !root.SpanContext.IsValid() {
+		t.Fatal("invoke_agent devia ter SpanContext válido")
+	}
+	if root.ParentSpanID != ([8]byte{}) {
+		t.Fatal("invoke_agent (raiz) não devia ter parent_span_id")
+	}
+
+	tools := h.tracer.SpansByOperation(OpExecuteTool)
+	if len(tools) != 1 {
+		t.Fatalf("esperava 1 span execute_tool (aberto pelo RM), obtive %d", len(tools))
+	}
+
+	// chat e execute_tool ligam-se ao invoke_agent: trace_id comum e parent = raiz.
+	children := append(h.tracer.SpansByOperation(OpChat), tools...)
+	for _, c := range children {
+		if c.SpanContext.TraceID != root.SpanContext.TraceID {
+			t.Errorf("span %q não partilha o trace_id do invoke_agent", c.Operation)
+		}
+		if c.ParentSpanID != root.SpanContext.SpanID {
+			t.Errorf("span %q parent_span_id != span_id do invoke_agent (RM↔RT não partilham a árvore?)", c.Operation)
+		}
+		if c.SpanContext.SpanID == root.SpanContext.SpanID {
+			t.Errorf("span %q reutilizou o span_id da raiz", c.Operation)
+		}
+	}
+
+	// O RM anotou no execute_tool o nome da tool, o hash(tool+args) e a marca
+	// untrusted do resultado (CA2) — content-capture por referência (nunca o Input).
+	tool := tools[0]
+	if tool.Attributes[AttrToolName] != "echo" {
+		t.Errorf("gen_ai.tool.name = %v, esperava echo", tool.Attributes[AttrToolName])
+	}
+	if hash, _ := tool.Attributes[AttrToolCallHash].(string); !strings.HasPrefix(hash, "sha256:") {
+		t.Errorf("hash(tool+args) em falta/mal-formado no span execute_tool: %v", tool.Attributes[AttrToolCallHash])
+	}
+	if tool.Attributes[AttrResultTaint] != "untrusted" {
+		t.Errorf("aos.tool.result_taint = %v, esperava \"untrusted\"", tool.Attributes[AttrResultTaint])
+	}
+}
+
 func filterType(events []eventstore.Event, typ string) []eventstore.Event {
 	var out []eventstore.Event
 	for _, e := range events {

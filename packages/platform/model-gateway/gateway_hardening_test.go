@@ -195,8 +195,9 @@ func (t *endTracer) StartSpan(ctx context.Context, _ string) (context.Context, a
 
 type endSpan struct{ t *endTracer }
 
-func (s *endSpan) SetAttribute(string, any) {}
-func (s *endSpan) End()                     { s.t.once.Do(func() { close(s.t.ended) }) }
+func (s *endSpan) SetAttribute(string, any)              {}
+func (s *endSpan) SpanContext() agentruntime.SpanContext { return agentruntime.SpanContext{} }
+func (s *endSpan) End()                                  { s.t.once.Do(func() { close(s.t.ended) }) }
 
 // TestGateway_Stream_SpanFechaEmCtxCancelado prova o backstop anti-fuga: um
 // consumidor que ABANDONA o stream (sem drenar nem Close) não deixa o span

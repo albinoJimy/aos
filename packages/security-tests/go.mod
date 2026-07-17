@@ -7,6 +7,7 @@ require (
 	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/platform/broker v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 	github.com/aos-ref/substrate/sandbox v0.0.0
 )
 
@@ -38,3 +39,5 @@ replace github.com/aos-ref/platform/broker => ../platform/broker
 replace github.com/aos-ref/substrate/eventstore => ../substrate/eventstore
 
 replace github.com/aos-ref/substrate/sandbox => ../substrate/sandbox
+
+replace github.com/aos-ref/substrate/otel-genai => ../substrate/otel-genai

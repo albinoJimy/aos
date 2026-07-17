@@ -133,6 +133,14 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 	if rt.defaultMaxTurns <= 0 {
 		rt.defaultMaxTurns = DefaultMaxTurns
 	}
+	// WIRING do tracer partilhado (AOS-076): o span execute_tool é aberto no RM (o
+	// ponto único de mediação, ADR-002). Para que esse span caia na MESMA árvore/sink
+	// dos spans invoke_agent/chat abertos aqui, o RT injecta o SEU tracer no Monitor
+	// que detém. Com o default [NoopTracer], o comportamento do Monitor é inalterado
+	// para qualquer caller que o construa sem tracer.
+	if rt.rm != nil {
+		rt.rm.SetTracer(rt.tracer)
+	}
 	return rt
 }
 
@@ -318,6 +326,9 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 	chatCtx, span := rt.tracer.StartSpan(ctx, OpChat)
 	span.SetAttribute(AttrOperationName, OpChat)
 	span.SetAttribute(AttrRequestModel, goal.Model.ModelID)
+	// A NHI do principal que executa o turno (AOS-076 CA1): identifica QUEM corre o
+	// chat. É metadado de identidade, nunca um segredo/credencial (ADR-006).
+	span.SetAttribute(AttrPrincipalNHI, goal.Principal.NHIID)
 	span.SetAttribute(AttrRunID, goal.RunID)
 	span.SetAttribute(AttrStepID, stepID)
 	span.SetAttribute(AttrPromptHash, view.PromptHash)
@@ -389,8 +400,6 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, asm *PromptAssembl
 func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (Tainted, error, error) {
 	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
 
-	toolCtx, span := rt.startToolSpan(ctx, goal.RunID, toolStep, inv.ToolID)
-
 	call := referencemonitor.Call{
 		RunID:        goal.RunID,
 		StepID:       toolStep,
@@ -414,46 +423,20 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 		Input: inv.Input,
 	}
 
-	// Rótulo de taint da AUTORIZAÇÃO no span execute_tool (AOS-069): torna a decisão
-	// de taint observável a partir do próprio span (não só do evento de mediação
-	// durável), permitindo distinguir uma negação por taint de uma por budget/policy.
-	// É o rótulo, nunca o conteúdo — o Input jamais é gravado.
-	span.SetAttribute(AttrTaint, call.Context.Taint)
-
-	// Mediate recebe o ctx DERIVADO do span execute_tool: futuros spans internos do
-	// RM nascem filhos deste, mantendo a propagação de trace (Q3).
-	dec, err := rt.rm.Mediate(toolCtx, call)
+	// O span execute_tool é aberto AGORA pelo Reference Monitor dentro de Mediate — o
+	// ponto único de mediação (ADR-002) — e não mais aqui, para não o DUPLICAR. O RM
+	// é a autoridade do span: anota nome/hash(tool+args)/taint da autorização/marca
+	// untrusted do resultado/veredicto/denied_by/error.type, e fecha-o em todos os
+	// caminhos. Como o RT partilha o seu tracer com o RM (ver [New]), esse span cai na
+	// mesma árvore que o invoke_agent propagado por ctx. Mediate recebe o ctx do
+	// invoke_agent: o execute_tool liga-se a ele por parent_span_id.
+	dec, err := rt.rm.Mediate(ctx, call)
 	if err != nil {
-		span.SetAttribute("aos.decision", "error")
-		span.End()
 		return Tainted{}, nil, err // apenas cancelamento de contexto
 	}
-	span.SetAttribute("aos.decision", string(dec.Effect))
-	// Numa negação/escalada, anotar o hook atribuível (ex.: "taint") para que a
-	// causa da decisão seja auto-descritível no span, sem segredos.
-	if dec.Effect != referencemonitor.EffectPermit && dec.DeniedBy != "" {
-		span.SetAttribute(AttrDeniedBy, dec.DeniedBy)
-	}
-	// Uma tool PERMITIDA pode falhar em runtime: propaga-se dec.ToolErr para o span
-	// (error.type) e para o loop, para não ficar silenciosamente descartado.
-	if dec.ToolErr != nil {
-		span.SetAttribute(AttrErrorType, dec.ToolErr.Error())
-	}
-	span.End()
 
 	// Resultado devolvido ao loop SEMPRE marcado untrusted. Só há Output em permit.
 	return Untrusted(dec.Output), dec.ToolErr, nil
-}
-
-// startToolSpan abre e anota o span execute_tool. Devolve o ctx DERIVADO (para
-// propagação de trace na mediação do RM) e o span.
-func (rt *Runtime) startToolSpan(ctx context.Context, runID, stepID, toolID string) (context.Context, Span) {
-	ctx, span := rt.tracer.StartSpan(ctx, OpExecuteTool)
-	span.SetAttribute(AttrOperationName, OpExecuteTool)
-	span.SetAttribute(AttrToolName, toolID)
-	span.SetAttribute(AttrRunID, runID)
-	span.SetAttribute(AttrStepID, stepID)
-	return ctx, span
 }
 
 // annotateAgentSpan anota o span invoke_agent com o uso e custo agregados.
