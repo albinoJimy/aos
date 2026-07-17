@@ -79,7 +79,23 @@ const (
 	// AttrDecision — aos.decision: o efeito da mediação (permit|deny|escalate|error)
 	// anotado no span execute_tool, para leitura directa do veredicto no span.
 	AttrDecision = "aos.decision"
+	// AttrTenantID — aos.tenant_id: o tenant (organização/projecto) sob o qual a
+	// unidade de trabalho corre. NÃO vive no span de modelo hoje (o eixo de
+	// isolamento é a NHI do principal, ADR-006); entra no wide event (AOS-082) por
+	// ENRIQUECIMENTO no emit-time do diagnóstico, permitindo a agregação ad-hoc
+	// "custo por tenant e por modelo" sem reinstrumentar. É um rótulo de identidade
+	// de tenant, nunca um segredo/credencial.
+	AttrTenantID = "aos.tenant_id"
 )
+
+// PinnedVersionPrefix é o prefixo das dimensões de VERSÃO PINADA do manifesto
+// (skills/tools/memória) que enriquecem o wide event (AOS-082): p.ex.
+// "aos.pinned.skill", "aos.pinned.tool", "aos.pinned.memory". Vivem no manifesto
+// do run, não no span de modelo; entram no wide event por enriquecimento. O
+// [WideEvent] recolhe TODAS as chaves com este prefixo no seu mapa
+// PinnedVersions (derivado), sem fixar o conjunto exacto de dimensões — assim uma
+// versão pinada nova (p.ex. aos.pinned.policy) aparece sem alterar este módulo.
+const PinnedVersionPrefix = "aos.pinned."
 
 // Nomes de operação da semconv GenAI (gen_ai.operation.name).
 const (
