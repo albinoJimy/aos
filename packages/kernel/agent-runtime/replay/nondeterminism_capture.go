@@ -74,12 +74,25 @@ type toolResultCapture struct {
 // capturePayload é o corpo JSON do evento "replay.captured". A serialização é
 // canónica e estável: structs (ordem de campos fixa), sem mapas — os mesmos
 // inputs produzem sempre os mesmos bytes.
+//
+// # Content-capture mode 3 (AOS-079)
+//
+// Em mode 3 ([WithPayloadStore]) o payload COMPLETO (Response + ToolResults) migra
+// para o [PayloadStore] externo e o evento do Event Store carrega APENAS a
+// [PayloadRef] (PayloadRef != "", Response/ToolResults zero) — fica pequeno e fora
+// do caminho quente. O replay resolve a referência via o PayloadStore (com o
+// accessor autorizado) para reconstruir o payload. Sem a opção, o comportamento de
+// AOS-016 (inline: PayloadRef == "", omitido) é byte-idêntico.
 type capturePayload struct {
 	SchemaVersion      string              `json:"schema_version"`
 	Turn               int                 `json:"turn"`
 	Response           responseCapture     `json:"response"`
 	ToolResults        []toolResultCapture `json:"tool_results,omitempty"`
 	ObservedAtUnixNano int64               `json:"observed_at_unix_nano"`
+	// PayloadRef, se != "", indica MODE 3: o payload completo reside no PayloadStore
+	// externo sob o seu próprio IAM; este evento é referência-só. Omitido (omitempty)
+	// em mode inline ⇒ os bytes do evento AOS-016 mantêm-se inalterados.
+	PayloadRef string `json:"payload_ref,omitempty"`
 }
 
 // EventStoreCapturer implementa [agentruntime.Capturer]: persiste os inputs
@@ -101,6 +114,12 @@ type EventStoreCapturer struct {
 	store     EventStore
 	now       func() time.Time
 	sensitive bool
+	// payloadStore/writer activam o content-capture mode 3 (AOS-079): quando != nil,
+	// o payload completo do turno é escrito no store externo e o evento do ES carrega
+	// só a PayloadRef. writer é o principal de ESCRITA (escopo separado do de leitura
+	// exigido no replay). nil ⇒ inline (AOS-016), byte-idêntico.
+	payloadStore PayloadStore
+	writer       Accessor
 }
 
 // CapturerOption configura o [EventStoreCapturer].
@@ -130,6 +149,25 @@ func WithSensitiveResults() CapturerOption {
 	return func(c *EventStoreCapturer) { c.sensitive = true }
 }
 
+// WithPayloadStore activa o content-capture MODE 3 (AOS-079): o payload completo do
+// turno (resposta do modelo + resultados de tools, já minimizados/redigidos pela
+// guarda de segredos quando activa) é escrito no [PayloadStore] EXTERNO sob o seu
+// IAM próprio, e o evento "replay.captured" do Event Store passa a carregar APENAS a
+// [PayloadRef] — pequeno e fora do caminho quente. writer é o principal de ESCRITA
+// (o seu escopo é SEPARADO do escopo de leitura que o replay tem de deter, provando
+// o IAM próprio do store).
+//
+// É ADITIVO e opt-in: sem esta opção o capturer mantém o comportamento inline de
+// AOS-016 (payload no próprio evento do ES), byte-idêntico. A minimização/redação
+// (ADR-011) é aplicada ANTES da fronteira do store — a PII nunca sai em claro nem
+// para o Event Store nem para o payload store.
+func WithPayloadStore(store PayloadStore, writer Accessor) CapturerOption {
+	return func(c *EventStoreCapturer) {
+		c.payloadStore = store
+		c.writer = writer
+	}
+}
+
 // NewCapturer constrói um capturer sobre o Event Store dado. store é obrigatório.
 func NewCapturer(store EventStore, opts ...CapturerOption) (*EventStoreCapturer, error) {
 	if store == nil {
@@ -151,13 +189,44 @@ func NewCapturer(store EventStore, opts ...CapturerOption) (*EventStoreCapturer,
 // do turn.recorded / ledger / checkpoint. Uma re-captura do mesmo turno dá
 // StatusDuplicate no Event Store (a escrita é idempotente) — não corrompe o log.
 func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCapture) error {
+	observedAt := c.now().UTC().UnixNano()
 	payload := capturePayload{
 		SchemaVersion:      captureSchemaVersion,
 		Turn:               tc.Turn,
 		Response:           c.encodeResponse(tc.Response),
 		ToolResults:        c.encodeResults(tc.ToolResults),
-		ObservedAtUnixNano: c.now().UTC().UnixNano(),
+		ObservedAtUnixNano: observedAt,
 	}
+
+	// MODE 3 (AOS-079): o payload completo migra para o PayloadStore externo e o
+	// evento do ES fica referência-só. O payload externo já leva a redação aplicada
+	// (encodeResponse/encodeResults acima) — a PII nunca sai em claro para o store.
+	if c.payloadStore != nil {
+		full, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		ref, err := c.payloadStore.Put(ctx, PayloadPutRequest{
+			RunID:   tc.RunID,
+			StepID:  tc.StepID,
+			Turn:    tc.Turn,
+			Payload: full,
+			Writer:  c.writer,
+		})
+		if err != nil {
+			// Fail-closed: sem o payload escrito no store não se grava um evento com uma
+			// referência pendurada (o replay ficaria inadmissível).
+			return err
+		}
+		// O evento do ES fica PEQUENO: só schema/turn/relógio + a referência opaca.
+		payload = capturePayload{
+			SchemaVersion:      captureSchemaVersion,
+			Turn:               tc.Turn,
+			ObservedAtUnixNano: observedAt,
+			PayloadRef:         ref.Digest,
+		}
+	}
+
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err

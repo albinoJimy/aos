@@ -158,6 +158,14 @@ type ReplayResult struct {
 type ReplayEngine struct {
 	reader EventReader
 	tracer agentruntime.Tracer
+	// payloadStore/accessor resolvem as referências de content-capture mode 3
+	// (AOS-079): quando um evento "replay.captured" é referência-só, o motor lê o
+	// payload completo do store externo IMPONDO o IAM (accessor autorizado). É só um
+	// LEITOR de payloads — não é caminho de efeito ao vivo (o store devolve bytes
+	// gravados, tal como o EventReader devolve eventos gravados). nil ⇒ só resolve
+	// capturas inline (AOS-016); um evento mode 3 sem store ⇒ fail-closed.
+	payloadStore PayloadStore
+	accessor     Accessor
 }
 
 // EngineOption configura o [ReplayEngine].
@@ -166,6 +174,19 @@ type EngineOption func(*ReplayEngine)
 // WithTracer injecta a porta de observabilidade (default [agentruntime.NoopTracer]).
 func WithTracer(t agentruntime.Tracer) EngineOption {
 	return func(e *ReplayEngine) { e.tracer = t }
+}
+
+// WithPayloadResolver liga o [PayloadStore] externo e o [Accessor] AUTORIZADO com que
+// o motor resolve as referências de content-capture mode 3 (AOS-079). O accessor tem
+// de deter o escopo de LEITURA do store — um accessor sem autoridade é negado pelo
+// store ([ErrPayloadAccessDenied]), provando que o payload está atrás do seu IAM
+// próprio, separado do escritor do Event Store. Sem esta opção o motor só resolve
+// capturas inline; um evento mode 3 encontrado sem resolver ⇒ [ErrPayloadStoreRequired].
+func WithPayloadResolver(store PayloadStore, accessor Accessor) EngineOption {
+	return func(e *ReplayEngine) {
+		e.payloadStore = store
+		e.accessor = accessor
+	}
 }
 
 // NewEngine constrói o motor sobre um leitor do Event Store. reader é obrigatório.
@@ -232,6 +253,15 @@ func (e *ReplayEngine) load(ctx context.Context, runID string) (trajectory, erro
 			if err := json.Unmarshal(ev.Payload, &p); err != nil {
 				return trajectory{}, ErrCorruptCapture
 			}
+			// MODE 3 (AOS-079): evento referência-só ⇒ resolver o payload completo no
+			// PayloadStore externo (impondo o IAM). Fail-closed em qualquer falha.
+			if p.PayloadRef != "" {
+				resolved, err := e.resolvePayload(ctx, p)
+				if err != nil {
+					return trajectory{}, err
+				}
+				p = resolved
+			}
 			tr.capture[p.Turn] = p
 		}
 	}
@@ -240,6 +270,72 @@ func (e *ReplayEngine) load(ctx context.Context, runID string) (trajectory, erro
 	}
 	sort.Ints(tr.turns)
 	return tr, nil
+}
+
+// resolvePayload resolve um evento de captura mode 3 (referência-só) para o seu
+// payload completo, lendo-o do [PayloadStore] externo com o accessor AUTORIZADO. É
+// fail-closed:
+//   - sem PayloadStore ligado ⇒ [ErrPayloadStoreRequired] (a ref é irrecuperável);
+//   - acesso negado pelo IAM do store ⇒ [ErrPayloadAccessDenied] (propagado);
+//   - payload em falta (não retido) ⇒ [ErrIncompleteCapture] (captura incompleta);
+//   - conteúdo adulterado (hash != ref) ⇒ [ErrPayloadIntegrity].
+//
+// O payload resolvido reidrata Response/ToolResults; schema/turn/relógio do evento
+// do ES (metadados pequenos) são preservados.
+func (e *ReplayEngine) resolvePayload(ctx context.Context, ref capturePayload) (capturePayload, error) {
+	if e.payloadStore == nil {
+		return capturePayload{}, ErrPayloadStoreRequired
+	}
+	blob, err := e.payloadStore.Get(ctx, PayloadRef{Digest: ref.PayloadRef}, e.accessor)
+	if err != nil {
+		return capturePayload{}, asIncompleteCapture(err)
+	}
+	var full capturePayload
+	if err := json.Unmarshal(blob, &full); err != nil {
+		return capturePayload{}, ErrCorruptCapture
+	}
+	// Fail-closed sobre o blob externo (defesa-em-profundidade, AOS-079): embora a
+	// PayloadRef seja content-addressed (o Get já rejeita bytes adulterados) e a ref
+	// esteja ancorada no ES tamper-evident (AOS-072), NÃO confiamos no conteúdo interno
+	// para (a) indexar o turno nem (b) interpretar o schema. Um schema não suportado ou
+	// um Turn interno divergente do envelope do ES é captura corrupta, não um silêncio.
+	if full.SchemaVersion != captureSchemaVersion {
+		return capturePayload{}, ErrCorruptCapture
+	}
+	if ref.Turn != 0 && full.Turn != 0 && full.Turn != ref.Turn {
+		return capturePayload{}, ErrCorruptCapture
+	}
+	// Preserva os metadados do evento do ES (o payload externo tem os seus, mas a
+	// fonte de verdade do envelope é o evento) e limpa a ref (já resolvida).
+	full.PayloadRef = ""
+	if full.Turn == 0 {
+		full.Turn = ref.Turn
+	}
+	if full.ObservedAtUnixNano == 0 {
+		full.ObservedAtUnixNano = ref.ObservedAtUnixNano
+	}
+	return full, nil
+}
+
+// admit é o GATE DE ADMISSÃO de replay (AOS-079, CA4): "fidelidade é condição, não
+// opção". Verifica ANTES de reproduzir que TODOS os turnos da trajectória têm a
+// captura de não-determinismo completa e um manifesto utilizável. Se algum turno não
+// foi capturado (evento "replay.captured" em falta) ou o manifesto não tem
+// prompt_hash, o replay é INADMISSÍVEL ([ErrIncompleteCapture]) — recusa fail-closed
+// em vez de produzir silenciosamente uma reprodução de baixa fidelidade.
+//
+// As referências de mode 3 já foram resolvidas em [load] (uma ref não resolúvel/perda
+// de payload falhou aí); aqui confirma-se que cada turno tem o conteúdo presente.
+func admit(tr trajectory) error {
+	for _, turn := range tr.turns {
+		if _, ok := tr.capture[turn]; !ok {
+			return ErrIncompleteCapture
+		}
+		if tr.manifest[turn].PromptHash == "" {
+			return ErrIncompleteCapture
+		}
+	}
+	return nil
 }
 
 // Replay reconstrói a trajectória do run a partir do Event Store. Lê TODOS os
@@ -257,6 +353,12 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 	}
 	tr, err := e.load(ctx, runID)
 	if err != nil {
+		return ReplayResult{}, err
+	}
+
+	// GATE DE ADMISSÃO (AOS-079, CA4): recusa fail-closed uma trajectória com captura
+	// incompleta ANTES de reproduzir — fidelidade é condição, não opção.
+	if err := admit(tr); err != nil {
 		return ReplayResult{}, err
 	}
 
