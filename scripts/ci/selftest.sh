@@ -13,7 +13,8 @@
 #   D) trajectória adulterada bloqueia o gate 8 (replay/idempotência);
 #   E) violação de invariante de memória bloqueia o gate memory (AOS-044);
 #   F) vector de supply-chain desbloqueado bloqueia o gate supplychain (AOS-054);
-#   G) cenário de roteamento/failover desbloqueado bloqueia o gate routing (AOS-063).
+#   G) cenário de roteamento/failover desbloqueado bloqueia o gate routing (AOS-063);
+#   H) controlo de segurança desligado bloqueia o gate security (AOS-075).
 #
 # NOTA: um self-test PASSA quando o gate correspondente FALHA como esperado.
 set -uo pipefail
@@ -183,6 +184,23 @@ if ( cd "$REPO_ROOT/packages/platform/model-gateway" && \
   bad "G: a suite aceitou um failover cross-border com a soberania desligada — gate routing NÃO bloquearia"
 else
   pass "G: a suite bloqueou (exit!=0) o cenário desbloqueado injectado (gate routing fail-closed)"
+fi
+
+# ============================================================================
+# H) controlo de segurança desligado torna o gate security (AOS-075) vermelho
+# ============================================================================
+log_gate "self-test H · controlo desligado bloqueia o gate security (AOS-075)"
+# A suite de AOS-075 tem um teste-veneno (TestSelftestSecurityBypassReddensGate) que só
+# corre com AOS_SECURITY_SELFTEST=1: reproduz a PROMPT INJECTION com o controlo CONTORNADO
+# (o TaintGate REMOVIDO da cadeia do RM) — pelo que a acção privilegiada autorizada por
+# untrusted é ADMITIDA — e ASSEVERA (falsamente) que foi bloqueada; a asserção FALHA de
+# propósito, provando que um controlo desligado torna o gate VERMELHO (fail-closed).
+# Determinista, offline e sem rasto no repo (nenhum ficheiro é alterado).
+if ( cd "$REPO_ROOT/packages/security-tests" && \
+     AOS_SECURITY_SELFTEST=1 go test ./ -run TestSelftestSecurityBypassReddensGate -count=1 ) >/dev/null 2>&1; then
+  bad "H: a suite aceitou uma injecção com o TaintGate desligado — gate security NÃO bloquearia"
+else
+  pass "H: a suite bloqueou (exit!=0) o controlo desligado injectado (gate security fail-closed)"
 fi
 
 # ============================================================================

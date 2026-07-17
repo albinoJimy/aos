@@ -4,7 +4,8 @@
 # Corre, por ordem canónica (specs/01 §4), os gates:
 #   1) build  2) lint(+arch-lint)  3) test(+cobertura)  8) replay(harness AOS-024)
 #   memory(integridade/migração AOS-044)  supplychain(7 vectores AOS-054)
-#   routing(5 cenários de roteamento/failover AOS-063)  4) sast  5) sca  6) policy-test
+#   routing(5 cenários de roteamento/failover AOS-063)
+#   security(4 cenários adversariais de segurança AOS-075)  4) sast  5) sca  6) policy-test
 #
 # Fail-closed: corre TODOS os gates para dar visibilidade completa, mas termina
 # com exit != 0 se QUALQUER um falhar. SEM '|| true' / 'set +e' / 'continue-on-error'
@@ -20,7 +21,7 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$CI_DIR/lib.sh"
 
-ALL_GATES=(secrets build lint test replay memory supplychain routing sast sca policy-test)
+ALL_GATES=(secrets build lint test replay memory supplychain routing security sast sca policy-test)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 

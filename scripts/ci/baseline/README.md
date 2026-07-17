@@ -39,6 +39,8 @@ gates — ver `scripts/ci/*.sh`.
 | G101 (CWE-798) "credencial hardcoded" (×1) | `packages/control-plane/scheduler/spawn_admission.go` | AOS-028 | **falso positivo** — nomes de atributos OTel (`aos.spawn.*_tokens`) |
 | G115 (CWE-190) overflow `uint32(len)` (×2) | `packages/platform/registry/digest/canonical.go` | AOS-047 | **falso positivo** — length-prefix de *domain separation* (`len` ≥ 0; >4 GiB inalcançável) |
 | G115 (CWE-190) overflow `uint32(len)` (×2) | `packages/platform/registry/domain/digest.go` | AOS-045 | **falso positivo** — length-prefix de *domain separation* (`len` ≥ 0; >4 GiB inalcançável) |
+| G115 (CWE-190) overflow int64→uint64 (×1) | `packages/platform/messaging/message.go` | AOS-073 | **falso positivo** — `uint64(v)` é a serialização binária canónica de um `int64` (`binary.BigEndian.PutUint64`), não uma fronteira de confiança |
+| G115 (CWE-190) overflow uint64→int64 (×1) | `packages/substrate/sandbox/snapshot.go` | AOS-065 | **falso positivo** — `time.Duration(seq%(span+1))` é um módulo LIMITADO (span=25; resultado ∈ [0,25]), nunca transborda |
 
 Severidade dos G115 é HIGH mas são conversões de contadores/timestamps/serialização
 binária (não fronteira de confiança). Os **G407** (nonce/IV) são **falsos positivos**:
@@ -62,6 +64,7 @@ não-fronteira) até os tickets donos os endereçarem com `#nosec` justificado.
 | GO-2026-4602 (stdlib `os`, corrigida em go1.25.8) | `control-plane/pdp`, `kernel/reference-monitor`, `kernel/agent-runtime` (código afetado — `os.ReadDir` no lint de separação de AOS-021) | Manutenção de toolchain | **bump da toolchain Go** (≥ go1.25.8) — NÃO é código dos módulos, fora do âmbito de AOS-010 |
 | **20 vulns de stdlib** (`crypto/tls`, `crypto/x509`, `net/http`, `net/url`, `net/textproto`, `os` — ex.: GO-2026-5856 ECH, GO-2026-5039/5037 TLS, GO-2026-4971 x509; corrigidas em go1.25.8..go1.25.12) | `platform/model-gateway` (código afetado — o adaptador **HTTPS real** `internal/adapters/openai_http.go` chama `http.Client.Do` → `crypto/tls`/`crypto/x509`) | Manutenção de toolchain | **bump da toolchain Go** (≥ go1.25.12) — triadas no fecho do EPIC-06 (AOS-063) |
 | **20 vulns de stdlib** (mesmas classes + GO-2025-3956; corrigidas em go1.25.x) | `platform/registry` (código afetado — caminhos `crypto/x509`/`net/url`/`net/textproto` via assinatura/digest/MCP) | Manutenção de toolchain | **bump da toolchain Go** (≥ go1.25.12) — triadas no fecho do EPIC-06 (AOS-063) |
+| **2 vulns de stdlib** (`net/url` — GO-2025-4010 corrigida em go1.24.8, GO-2026-4601 em go1.25.8) | `substrate/sandbox` (código afetado — caminho `net/url` via modelação da rede; o sandbox **modela** o egress, não faz HTTPS real, logo só toca `net/url`, não a superfície TLS/x509 completa) | Manutenção de toolchain | **bump da toolchain Go** (≥ go1.25.8) — triadas no fecho do EPIC-07 (AOS-075) |
 
 > A entrada `GO-2026-4602` e os dois blocos de 20 são vulnerabilidades **reais e
 > afetantes** detectadas pelo govulncheck — **não são falsos positivos** (ao

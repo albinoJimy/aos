@@ -41,3 +41,5 @@ packages/platform/registry|GO-2026-4971
 packages/platform/registry|GO-2026-5037
 packages/platform/registry|GO-2026-5039
 packages/platform/registry|GO-2026-5856
+packages/substrate/sandbox|GO-2025-4010
+packages/substrate/sandbox|GO-2026-4601
