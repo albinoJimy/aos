@@ -52,6 +52,13 @@ var (
 	ErrRetentionActive = errors.New("audit: retencao ainda activa (purge negado)")
 	// ErrNoSigner — [IngestPipeline.Seal] sem um Signer ligado (ver WithIngestSigner).
 	ErrNoSigner = errors.New("audit: pipeline sem signer para selagem")
+	// ErrInvalidRetentionConfig — a política de retenção (policy-as-code) é
+	// malformada: versão SemVer inválida ou período de classe <= 0. Fail-closed: uma
+	// config inválida é recusada em vez de aplicada silenciosamente (AOS-092/AC4).
+	ErrInvalidRetentionConfig = errors.New("audit: configuracao de retencao invalida")
+	// ErrNoExpirationSource — o [ExpirationJob] foi construído sem uma fonte de
+	// registos classificados ([RecordSource]) ou sem um sink ([ExpirationSink]).
+	ErrNoExpirationSource = errors.New("audit: job de expiracao sem fonte/sink de registos")
 )
 
 // TamperType classifica a natureza da adulteração detectada.
