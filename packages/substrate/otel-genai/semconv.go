@@ -79,6 +79,14 @@ const (
 	// AttrDecision — aos.decision: o efeito da mediação (permit|deny|escalate|error)
 	// anotado no span execute_tool, para leitura directa do veredicto no span.
 	AttrDecision = "aos.decision"
+	// AttrCacheHitRate — aos.cache.hit_rate: o cache-hit-rate AGREGADO do prefixo
+	// (fracção [0,1] = cache_read_tokens / prompt_tokens) anotado no span da model
+	// call pelo Model Gateway (packages/platform/model-gateway/metering/cache_sli,
+	// que emite esta MESMA chave via span.SetAttribute). Aqui é elevado à fonte única
+	// do vocabulário deste módulo FOLHA — que não pode importar o Model Gateway — para
+	// que o SLI de cache-hit (AOS-085) o LEIA do bag do wide event sem instrumentação
+	// nova nem dependência. É uma métrica de eficiência, nunca segredo/PII (ADR-009).
+	AttrCacheHitRate = "aos.cache.hit_rate"
 	// AttrTenantID — aos.tenant_id: o tenant (organização/projecto) sob o qual a
 	// unidade de trabalho corre. NÃO vive no span de modelo hoje (o eixo de
 	// isolamento é a NHI do principal, ADR-006); entra no wide event (AOS-082) por
@@ -140,6 +148,25 @@ const (
 	// da semconv GenAI), o seu nome é o nome completo do span de avaliação da
 	// convenção. Ligado por trace_id à trajectória avaliada. Ver evaluation.go.
 	OpEvaluation = "gen_ai.evaluation.result"
+)
+
+// Efeitos de mediação (valores de [AttrDecision]). São o conjunto documentado no
+// comentário de AttrDecision, aqui fixados como constantes para as leituras de
+// query-time (ex. o SLI de override-rate de AOS-085, que deriva o override da
+// fracção de decisões [DecisionEscalate]). Não alteram a emissão — só nomeiam os
+// valores já emitidos pelo Reference Monitor.
+const (
+	// DecisionPermit — a tool call foi PERMITIDA pela mediação.
+	DecisionPermit = "permit"
+	// DecisionDeny — a tool call foi NEGADA pela mediação.
+	DecisionDeny = "deny"
+	// DecisionEscalate — a decisão foi ESCALADA/override (ex. aprovação humana). É o
+	// sinal de override que o SLI de override-rate (AOS-085) conta: não há um atributo
+	// de override dedicado no vocabulário, pelo que o override deriva-se desta escalada
+	// explícita do efeito de mediação.
+	DecisionEscalate = "escalate"
+	// DecisionError — a mediação terminou em ERRO (nem permit nem deny limpos).
+	DecisionError = "error"
 )
 
 // MicroUSDToUSD converte micro-USD inteiro para USD (float, só para o atributo de
