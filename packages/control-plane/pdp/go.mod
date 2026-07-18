@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
+	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
 	github.com/cedar-policy/cedar-go v1.8.0
@@ -30,3 +31,8 @@ replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 replace github.com/aos-ref/platform/identity => ../../platform/identity
 
 replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai
+
+// Audit tamper-evident (EPIC-08/AOS-083) integrado por path local para o
+// adaptador do changelog policy.changed (AOS-088): control-plane → platform,
+// direcção descendente já estabelecida. Traz a hash-chain WORM (Store/Append).
+replace github.com/aos-ref/platform/audit => ../../platform/audit

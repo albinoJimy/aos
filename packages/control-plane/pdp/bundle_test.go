@@ -235,11 +235,12 @@ func TestReload_SoAceitaVersaoNovaAssinada(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
+	ctx := context.Background()
 	// Re-assina versão mais recente com a MESMA chave: hot-reload aceita.
 	if _, err := SignBundle(dir, "1.1.0", priv); err != nil {
 		t.Fatalf("SignBundle 1.1.0: %v", err)
 	}
-	if err := p.Reload(); err != nil {
+	if err := p.Reload(ctx, ReloadRequest{Author: "ops@aos", Reason: "rollout 1.1.0"}); err != nil {
 		t.Fatalf("Reload para 1.1.0 devia aceitar: %v", err)
 	}
 	if p.Version() != "1.1.0" {
@@ -252,10 +253,10 @@ func TestReload_SoAceitaVersaoNovaAssinada(t *testing.T) {
 	if _, err := SignBundle(dir, "1.0.5", priv); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Reload(); !errors.Is(err, ErrStalePolicyVersion) {
+	if err := p.Reload(ctx, ReloadRequest{}); !errors.Is(err, ErrStalePolicyVersion) {
 		t.Errorf("reload para versao anterior devia dar ErrStalePolicyVersion, obtive %v", err)
 	}
-	if errors.Is(p.Reload(), ErrSignatureInvalid) {
+	if errors.Is(p.Reload(ctx, ReloadRequest{}), ErrSignatureInvalid) {
 		t.Error("rejeicao por versao nao-crescente NAO deve conflacionar com ErrSignatureInvalid")
 	}
 	if p.Version() != "1.1.0" {
@@ -267,7 +268,7 @@ func TestReload_SoAceitaVersaoNovaAssinada(t *testing.T) {
 	if _, err := SignBundle(dir, "2.0.0", other); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Reload(); !errors.Is(err, ErrSignatureInvalid) {
+	if err := p.Reload(ctx, ReloadRequest{}); !errors.Is(err, ErrSignatureInvalid) {
 		t.Errorf("reload de bundle nao-confiavel devia ser rejeitado, obtive %v", err)
 	}
 	if p.Version() != "1.1.0" {
@@ -293,11 +294,12 @@ func TestReload_AuditTrail(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
+	ctx := context.Background()
 	// Reload para versão mais recente: emite exactamente um evento com a transição.
 	if _, err := SignBundle(dir, "1.1.0", priv); err != nil {
 		t.Fatalf("SignBundle 1.1.0: %v", err)
 	}
-	if err := p.Reload(); err != nil {
+	if err := p.Reload(ctx, ReloadRequest{Author: "ops@aos", Reason: "rollout"}); err != nil {
 		t.Fatalf("Reload 1.1.0: %v", err)
 	}
 	if len(events) != 1 {
@@ -322,7 +324,7 @@ func TestReload_AuditTrail(t *testing.T) {
 	if _, err := SignBundle(dir, "1.0.5", priv); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Reload(); !errors.Is(err, ErrStalePolicyVersion) {
+	if err := p.Reload(ctx, ReloadRequest{}); !errors.Is(err, ErrStalePolicyVersion) {
 		t.Fatalf("esperava ErrStalePolicyVersion, obtive %v", err)
 	}
 	if len(events) != 1 {
