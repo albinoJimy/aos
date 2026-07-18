@@ -98,8 +98,16 @@ func inputFromCall(call *rm.Call) Input {
 	return Input{
 		RequestID: call.RequestID,
 		Principal: Principal{
-			ID:              call.Principal.NHIID,
-			AgentClass:      call.Principal.AgentClass,
+			ID:         call.Principal.NHIID,
+			AgentClass: call.Principal.AgentClass,
+			// Board propaga a CHAVE da soberania por board (AOS-094) para o Input do PDP,
+			// fechando a cadeia PDP-emite → PEP-impõe no adaptador de PRODUÇÃO (e não só
+			// num hook de teste). Como AgentClass, ASSUME-SE já resolvido de uma NHI
+			// verificada: o hook de identidade real (identity.IdentityCheck, AOS-005)
+			// substitui o Principal inteiro a partir do token ANTES deste adaptador. Sob um
+			// IdentityStub pass-through o board vem do Call bruto e é forjável — a mesma
+			// fronteira de confiança documentada para a agent_class no gate default-deny.
+			Board:           call.Principal.Board,
 			DelegationChain: chain,
 			Authority:       authority,
 		},

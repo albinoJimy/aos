@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	github.com/aos-ref/control-plane/governance/autonomy v0.0.0
+	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
@@ -29,6 +30,12 @@ replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 // [autonomy.Oracle] no caminho de decisão para compor o oversight (nível × classe).
 // Mesmo layer (control-plane/governance), sem ciclo — o autonomy NÃO importa o pdp.
 replace github.com/aos-ref/control-plane/governance/autonomy => ../governance/autonomy
+
+// Soberania por board (AOS-094): o mapa GOV board→região autorizada que o PDP
+// compõe para EMITIR a obrigação `region` a partir do board do escopo de identidade
+// (cadeia PDP-emite → PEP-impõe de AOS-087). Módulo GOV puro (zero-dep), mesmo layer
+// (control-plane/governance), sem ciclo — o sovereignty NÃO importa o pdp.
+replace github.com/aos-ref/control-plane/governance/sovereignty => ../governance/sovereignty
 
 // Identidade (AOS-005/006) integrada por path local APENAS em teste: o teste de
 // integração cross-package (identity_gate_integration_test.go) compõe o

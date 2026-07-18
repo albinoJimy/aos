@@ -40,6 +40,13 @@ type Principal struct {
 	// [PDP.Decide] só concede uma capability que conste explicitamente da
 	// allowlist assinada desta classe. Vazia ⇒ nenhuma allowlist ⇒ deny.
 	AgentClass string
+	// Board é o board de governação a que a NHI pertence (codificado no escopo de
+	// identidade — EPIC-01). É a CHAVE da soberania por board (AOS-094): quando um
+	// registo board→região está ligado ([WithBoardRegions]), o PDP resolve o board
+	// para a sua região autorizada e devolve-a como obrigação `region` que o PEP
+	// impõe (AOS-087). Vazio ⇒ sem board no escopo; um board DESCONHECIDO ao registo
+	// é negado fail-closed (nunca cross-border por omissão — ADR-011).
+	Board string
 	// DelegationChain é a cadeia on-behalf-of (raiz humana → agente actual). Não
 	// é avaliada pela política de referência §9; presente por fidelidade ao C1.
 	DelegationChain []string

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
+	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -35,6 +36,12 @@ type PDP struct {
 	// autonomia é inerte (o PDP decide como antes — a autonomia é opt-in e só
 	// TIGHTENS uma decisão, nunca a afrouxa). Ligado por [WithAutonomyOracle].
 	autonomyOracle autonomy.Oracle
+	// boardRegions é o registo GOV board→região autorizada (AOS-094) que o PDP
+	// compõe para EMITIR a obrigação `region` a partir do board do escopo de
+	// identidade. nil ⇒ soberania por board inerte (opt-in; o PDP decide como antes).
+	// Só TIGHTENS: pode negar fail-closed um board desconhecido ou anexar a
+	// obrigação de região, nunca afrouxar um permit. Ligado por [WithBoardRegions].
+	boardRegions *govsov.Registry
 }
 
 // ReloadRequest transporta a atribuição do carregamento de política: QUEM o
@@ -251,6 +258,11 @@ func (p *PDP) Decide(ctx context.Context, in Input) (Decision, error) {
 		PolicyVersion: eng.version,
 		Obligations:   obligationsFor(in),
 	}
+	// SOBERANIA POR BOARD (AOS-094): resolve o board do escopo de identidade para a
+	// sua região autorizada e anexa a obrigação `region` (que o PEP de AOS-087 impõe),
+	// ou NEGA fail-closed um board desconhecido. Aplica-se ANTES do overlay de
+	// autonomia; se negar, applyAutonomy é no-op (só actua sobre base permit).
+	base = p.applySovereignty(in, base)
 	return p.applyAutonomy(ctx, in, base), nil
 }
 

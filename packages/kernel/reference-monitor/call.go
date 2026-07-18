@@ -25,6 +25,16 @@ type Principal struct {
 	// resolvida pelo hook de identidade. É a chave da allowlist de capabilities
 	// que o PDP avalia no gate default-deny (AOS-007).
 	AgentClass string
+	// Board é o board de governação a que a NHI pertence — a CHAVE da soberania por
+	// board (AOS-094). Como AgentClass, é resolvido pelo hook de identidade (AOS-005)
+	// a partir do token NHI VERIFICADO; nunca deve ser confiado do Call bruto do
+	// caller (é forjável). Quando um registo board→região está ligado no PDP
+	// (pdp.WithBoardRegions), o PDP resolve o board para a sua região autorizada e
+	// emite-a como obrigação `region` que este PEP impõe (enforceRegion). Vazio ⇒ sem
+	// board no escopo; um board desconhecido ao registo GOV é negado fail-closed
+	// (nunca cross-border por omissão — ADR-011). Não entra no fingerprint do call
+	// (o NHIID já liga o Permit à identidade; o board é metadado de governação).
+	Board string
 	// DelegationChain é a cadeia on-behalf-of (raiz humana → agente actual).
 	DelegationChain []DelegationHop
 	// Authority são as capabilities que o principal pode exercer (allowlist).
