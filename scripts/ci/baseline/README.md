@@ -41,6 +41,9 @@ gates — ver `scripts/ci/*.sh`.
 | G115 (CWE-190) overflow `uint32(len)` (×2) | `packages/platform/registry/domain/digest.go` | AOS-045 | **falso positivo** — length-prefix de *domain separation* (`len` ≥ 0; >4 GiB inalcançável) |
 | G115 (CWE-190) overflow int64→uint64 (×1) | `packages/platform/messaging/message.go` | AOS-073 | **falso positivo** — `uint64(v)` é a serialização binária canónica de um `int64` (`binary.BigEndian.PutUint64`), não uma fronteira de confiança |
 | G115 (CWE-190) overflow uint64→int64 (×1) | `packages/substrate/sandbox/snapshot.go` | AOS-065 | **falso positivo** — `time.Duration(seq%(span+1))` é um módulo LIMITADO (span=25; resultado ∈ [0,25]), nunca transborda |
+| G101 (CWE-798) "credencial hardcoded" (×2) | `packages/substrate/otel-genai/semconv.go` | AOS-076 | **falso positivo** — nomes OTel semconv (`gen_ai.usage.input_tokens`/`output_tokens`); MIGRADAS de `agent-runtime/tracing.go` (que passou a aliases sem literais) no fecho do EPIC-08 — o vocabulário é agora a fonte-única no módulo folha otel-genai |
+| G101 (CWE-798) "credencial hardcoded" (×1) | `packages/kernel/agent-runtime/breaker/breaker.go` | AOS-080 | **falso positivo** — nome de atributo OTel do span de trip (`aos.breaker.tokens_per_s`, contém a substring "token"), não uma credencial |
+| G407 (CWE-1204) nonce/IV "hardcoded" (×4) | `packages/platform/audit/crypto.go` | AOS-083 | **falso positivo** — mesmo padrão de crypto-shredding de `episodic/crypto.go`: AES-256-GCM em envelope (KEK-por-titular embrulha DEK-por-registo), nonce de 96 bits gerado por `RandSource` injectável (crypto/rand em produção, determinístico em teste); o gosec não segue a entropia injectada |
 
 Severidade dos G115 é HIGH mas são conversões de contadores/timestamps/serialização
 binária (não fronteira de confiança). Os **G407** (nonce/IV) são **falsos positivos**:

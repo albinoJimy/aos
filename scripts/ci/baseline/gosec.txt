@@ -1,8 +1,11 @@
 packages/control-plane/scheduler/breaker.go|G101
 packages/control-plane/scheduler/routing.go|G101
 packages/control-plane/scheduler/spawn_admission.go|G101
-packages/kernel/agent-runtime/tracing.go|G101
-packages/kernel/agent-runtime/tracing.go|G101
+packages/kernel/agent-runtime/breaker/breaker.go|G101
+packages/platform/audit/crypto.go|G407
+packages/platform/audit/crypto.go|G407
+packages/platform/audit/crypto.go|G407
+packages/platform/audit/crypto.go|G407
 packages/platform/audit/record.go|G115
 packages/platform/memory/compression/async_compactor.go|G101
 packages/platform/memory/episodic/crypto.go|G407
@@ -28,4 +31,6 @@ packages/substrate/bus/metrics.go|G115
 packages/substrate/bus/metrics.go|G115
 packages/substrate/eventstore/ulid.go|G115
 packages/substrate/eventstore/ulid.go|G115
+packages/substrate/otel-genai/semconv.go|G101
+packages/substrate/otel-genai/semconv.go|G101
 packages/substrate/sandbox/snapshot.go|G115
