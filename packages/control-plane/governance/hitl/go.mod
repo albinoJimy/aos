@@ -17,6 +17,10 @@ require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/platform/messaging v0.0.0
+	// AOS-096 — otel-genai passa a dependência DIRECTA: o RatificationGate compõe a
+	// porta EvalGate + EvaluationResult (AOS-084, a pré-condição de eval) como parte do
+	// gate de ratificação de auto-modificação. Continua um módulo folha (sem ciclos).
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 // agent-runtime é dependência SÓ-DE-TESTE: o teste de integração comprova que a
@@ -33,10 +37,7 @@ replace github.com/aos-ref/platform/messaging => ../../../platform/messaging
 // Transitivos: messaging depende de audit+rm+eventstore+otel-genai; audit depende
 // do rm que depende do eventstore/otel-genai. Os replace NÃO são herdados — este
 // módulo resolve-os localmente para fechar o build offline.
-require (
-	github.com/aos-ref/substrate/eventstore v0.0.0 // indirect
-	github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
-)
+require github.com/aos-ref/substrate/eventstore v0.0.0 // indirect
 
 replace github.com/aos-ref/substrate/eventstore => ../../../substrate/eventstore
 
