@@ -1,0 +1,157 @@
+package referencemonitor
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// Tipos de obrigação que o PEP SABE cumprir (AOS-087, AC4). A decisão do PDP pode
+// anexar obrigações (TTL, região, redação, audit) que o PEP CUMPRE ANTES de
+// libertar o efeito. Uma obrigação de tipo FORA deste conjunto é
+// não-satisfazível: o PEP não a sabe impor, logo nega fail-closed (nunca a ignora
+// silenciosamente — uma obrigação não-cumprida não pode viajar com um permit).
+//
+// O enforcement é GENÉRICO sobre o tipo [Obligation] (não sobre o PDP concreto): o
+// RM (kernel) não importa o PDP (control-plane). A política de referência (AOS-007)
+// emite hoje redact_pii + audit; região/ttl ficam prontas para quando a política as
+// emitir (o contrato C1 já as prevê).
+const (
+	// ObligationAudit — o efeito tem de ser auditado (nível em Params["level"]). É
+	// SATISFEITA pelo audit-before-effect do RM (RecordMediation grava a mediação,
+	// incluindo as obrigações, ANTES do dispatch); não transforma os args.
+	ObligationAudit = "audit"
+	// ObligationRedactPII — os campos nomeados ([Obligation.Fields]) não podem
+	// chegar ao efeito em claro. O PEP redige-os nos args ANTES do dispatch.
+	ObligationRedactPII = "redact_pii"
+	// ObligationRegion — o efeito só pode ocorrer dentro da região exigida
+	// (Params["region"]). Uma call cross-border é NEGADA antes do dispatch.
+	ObligationRegion = "region"
+	// ObligationTTL — o resultado/efeito tem um tempo-de-vida (Params["seconds"]).
+	// O PEP PROPAGA-A na [Decision.Obligations] para o consumidor a impor (viaja
+	// com a decisão); não transforma os args.
+	ObligationTTL = "ttl"
+)
+
+// redactedMarker é o valor determinístico que substitui um campo redigido. Não
+// revela o comprimento nem qualquer fragmento do valor original.
+const redactedMarker = "[REDACTED]"
+
+// enforceObligations CUMPRE as obrigações coletadas na cadeia ANTES de o efeito ser
+// libertado (AOS-087, AC4). Dirigido pelo [Obligation.Type]:
+//
+//   - audit: satisfeita pelo audit-before-effect (nada a transformar aqui);
+//   - region: uma call que viola a região exigida (cross-border) ⇒ deny;
+//   - redact_pii: redige os campos nomeados nos args (call.Input) in-place;
+//   - ttl: propagada na Decision ao consumidor (nada a transformar aqui);
+//   - QUALQUER outro tipo: desconhecido/não-satisfazível ⇒ deny fail-closed.
+//
+// Devolve (reason, ok=false) se alguma obrigação for violada ou não-satisfazível;
+// nesse caso o chamador nega fail-closed e NÃO despacha. Muta call.Input quando a
+// redação se aplica (o fingerprint do permit não depende do Input — ver call.go).
+func enforceObligations(call *Call, obligations []Obligation) (string, bool) {
+	for _, ob := range obligations {
+		switch ob.Type {
+		case ObligationAudit:
+			// Satisfeita pelo RecordMediation (audit-before-effect) do RM.
+		case ObligationTTL:
+			// Propagada na Decision.Obligations ao consumidor (viaja com a decisão).
+		case ObligationRegion:
+			if reason, ok := enforceRegion(call, ob); !ok {
+				return reason, false
+			}
+		case ObligationRedactPII:
+			if reason, ok := enforceRedactPII(call, ob); !ok {
+				return reason, false
+			}
+		default:
+			// Fail-closed: uma obrigação que o PEP não sabe cumprir não liberta o efeito.
+			return fmt.Sprintf("obrigacao %q desconhecida/nao-satisfazivel: efeito negado (fail-closed)", ob.Type), false
+		}
+	}
+	return "", true
+}
+
+// enforceRegion impõe a obrigação de soberania de dados: o recurso-alvo tem de
+// estar na região exigida. Uma call cross-border é negada ANTES do dispatch — o
+// PEP nunca despacha um efeito que viola uma obrigação de região. Fail-closed: uma
+// obrigação de região sem região exigida, ou um recurso sem região resolvida, ou
+// uma região diferente da exigida ⇒ deny.
+func enforceRegion(call *Call, ob Obligation) (string, bool) {
+	required := ""
+	if ob.Params != nil {
+		required = strings.TrimSpace(ob.Params["region"])
+		if required == "" {
+			required = strings.TrimSpace(ob.Params["allowed"])
+		}
+	}
+	if required == "" {
+		return "obrigacao de regiao sem regiao exigida: nao-satisfazivel (fail-closed)", false
+	}
+	actual := strings.TrimSpace(call.Resource.Region)
+	if actual == "" {
+		return fmt.Sprintf("obrigacao de regiao %q mas recurso sem regiao resolvida: cross-border negado (fail-closed)", required), false
+	}
+	if !strings.EqualFold(actual, required) {
+		return fmt.Sprintf("efeito viola obrigacao de regiao: recurso em %q, exigido %q (cross-border negado)", actual, required), false
+	}
+	return "", true
+}
+
+// enforceRedactPII redige, nos args da call (call.Input), os campos nomeados pela
+// obrigação, para que o efeito NÃO veja a PII em claro. É uma redação determinística
+// dirigida pela obrigação: se o Input é um objecto JSON, os campos nomeados (em
+// qualquer nível de aninhamento) são substituídos por [redactedMarker].
+//
+// Fail-closed (a garantia "o efeito não vê PII em claro" tem de ser assegurável):
+//   - redact_pii sem campos ⇒ alvo de redação indeterminado ⇒ deny;
+//   - Input não-JSON e não-vazio ⇒ não há como localizar/redigir os campos com
+//     garantia ⇒ deny (um blob opaco pode conter a PII em claro).
+//
+// Input vazio não tem PII a redigir (satisfeita, sem transformação).
+func enforceRedactPII(call *Call, ob Obligation) (string, bool) {
+	fields := make(map[string]struct{}, len(ob.Fields))
+	for _, f := range ob.Fields {
+		if f = strings.TrimSpace(f); f != "" {
+			fields[f] = struct{}{}
+		}
+	}
+	if len(fields) == 0 {
+		return "redact_pii sem campos: alvo de redacao indeterminado (fail-closed)", false
+	}
+	if len(call.Input) == 0 {
+		return "", true // sem payload, sem PII a redigir
+	}
+	var v any
+	if err := json.Unmarshal(call.Input, &v); err != nil {
+		return "redact_pii sobre input nao-JSON: redacao nao-garantida (fail-closed)", false
+	}
+	redactValue(v, fields)
+	out, err := json.Marshal(v)
+	if err != nil {
+		// Um valor que desserializou de JSON re-serializa sempre; defensivo.
+		return fmt.Sprintf("re-serializar input redigido: %v (fail-closed)", err), false
+	}
+	call.Input = out
+	return "", true
+}
+
+// redactValue percorre um valor JSON desserializado e substitui, in-place, o valor
+// de qualquer chave em fields por [redactedMarker], recursivamente em objectos e
+// arrays. Uma chave redigida NÃO é percorrida (o subvalor é descartado).
+func redactValue(v any, fields map[string]struct{}) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k := range t {
+			if _, ok := fields[k]; ok {
+				t[k] = redactedMarker
+				continue
+			}
+			redactValue(t[k], fields)
+		}
+	case []any:
+		for i := range t {
+			redactValue(t[i], fields)
+		}
+	}
+}

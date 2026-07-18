@@ -40,6 +40,11 @@ const (
 	// CodeAuditUnavailable — falha de auditoria no caminho de permit; degradou
 	// para deny. Espelha [ErrAuditUnavailable].Code.
 	CodeAuditUnavailable = "E_AUDIT_UNAVAILABLE"
+	// CodeObligationUnsatisfied — uma obrigação da decisão não pôde ser cumprida
+	// pelo PEP antes do efeito (região cross-border, redação não-garantida, ou uma
+	// obrigação de tipo desconhecido). Fail-closed: uma obrigação que o PEP não
+	// sabe/consegue impor NÃO liberta o efeito (AOS-087, ADR-002).
+	CodeObligationUnsatisfied = "E_OBLIGATION_UNSATISFIED"
 )
 
 // Obligation é uma obrigação que o PEP deve impor sobre uma decisão permit

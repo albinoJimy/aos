@@ -183,6 +183,12 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 	// hash(tool+args) — REFERÊNCIA por hash (âncora de action-dedup, AOS-081); o
 	// Input jamais é gravado no span (content-capture por referência; payload é AOS-079).
 	span.SetAttribute(otelgenai.AttrToolCallHash, toolCallHash(call.ToolID, call.Input))
+	// PRINCIPAL da decisão (AOS-087 DoD): o span da decisão do PDP é observável com o
+	// principal (a NHI). É um IDENTIFICADOR, nunca um segredo (o Credential efémero e o
+	// Input jamais são anotados). Fecha o critério "spans emitidos com principal e resultado".
+	if call.Principal.NHIID != "" {
+		span.SetAttribute(otelgenai.AttrPrincipalNHI, call.Principal.NHIID)
+	}
 	// Taint da AUTORIZAÇÃO (AOS-069): o rótulo, nunca o conteúdo.
 	span.SetAttribute(otelgenai.AttrTaint, call.Context.Taint)
 	// O RESULTADO volta SEMPRE untrusted (ADR-005), qualquer que seja o veredicto.
@@ -276,6 +282,17 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	m.mu.RUnlock()
 	if !registered {
 		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", start, policyVersion), nil
+	}
+
+	// 2.5) ENFORCEMENT DE OBRIGAÇÕES ANTES DO EFEITO (AOS-087, AC4). O PEP não só
+	//    COLETA as obrigações da cadeia — CUMPRE-AS antes de libertar o efeito:
+	//    região cross-border ⇒ deny; redação aplicada aos args (call.Input);
+	//    ttl/audit propagados; uma obrigação desconhecida/não-satisfazível ⇒ deny
+	//    fail-closed. É genérico sobre o tipo [Obligation] (o RM não importa o PDP).
+	//    Corre ANTES do audit-before-effect para que uma violação seja registada como
+	//    deny (via fail), e ANTES do dispatch para que nenhum efeito viole a obrigação.
+	if reason, ok := enforceObligations(&call, obligations); !ok {
+		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, start, policyVersion), nil
 	}
 
 	// 3) Auditoria ANTES do efeito (audit-before-effect). Se falhar, fail-closed.

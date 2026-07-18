@@ -3,6 +3,7 @@ package pdp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	rm "github.com/aos-ref/kernel/reference-monitor"
@@ -34,7 +35,9 @@ func buildRM(t testing.TB, store eventstore.EventStore) *rm.Monitor {
 	)
 }
 
-// permitCall é um Call que a política PERMITE.
+// permitCall é um Call que a política PERMITE. O Input é JSON com campos de PII
+// (email/phone) para que o enforcement da obrigação redact_pii do PEP (AOS-087,
+// sensitivity=confidential ⇒ redact_pii) seja exercitado ANTES do efeito.
 func permitCall() rm.Call {
 	return rm.Call{
 		RequestID: "req-permit", RunID: "run-permit", StepID: "step-1",
@@ -42,7 +45,7 @@ func permitCall() rm.Call {
 		Resource:  rm.Resource{Type: "url", Value: "https://api.example.com/orders", Region: "eu"},
 		Principal: rm.Principal{NHIID: "nhi-1", AgentClass: "agent-worker", Authority: []string{"cap:http.post"}},
 		Context:   rm.CallContext{Taint: "trusted", Sensitivity: "confidential"},
-		Input:     []byte("body"),
+		Input:     []byte(`{"body":"order","email":"user@example.com","phone":"+351999"}`),
 	}
 }
 
@@ -86,8 +89,10 @@ func TestIntegration_RM_PDP_Permit(t *testing.T) {
 
 	m := buildRM(t, store)
 	var dispatched bool
+	var dispatchedInput []byte
 	if err := m.Register("tool.http", func(_ context.Context, in []byte) ([]byte, error) {
 		dispatched = true
+		dispatchedInput = append([]byte(nil), in...)
 		return in, nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -102,6 +107,15 @@ func TestIntegration_RM_PDP_Permit(t *testing.T) {
 	}
 	if !dispatched {
 		t.Error("a tool devia ter sido despachada")
+	}
+	// ENFORCEMENT DE OBRIGAÇÕES (AOS-087, AC4): o PEP APLICOU a redact_pii ANTES do
+	// efeito — o efeito (a tool) NÃO vê a PII em claro nos campos redigidos.
+	if strings.Contains(string(dispatchedInput), "user@example.com") ||
+		strings.Contains(string(dispatchedInput), "+351999") {
+		t.Errorf("PII nao foi redigida antes do efeito: input despachado=%s", dispatchedInput)
+	}
+	if !strings.Contains(string(dispatchedInput), "[REDACTED]") {
+		t.Errorf("input despachado devia conter o marcador de redacao: %s", dispatchedInput)
 	}
 	// Obrigações da política chegam à Decision do RM (audit + redact_pii porque
 	// sensitivity=confidential).

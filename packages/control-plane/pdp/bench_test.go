@@ -26,26 +26,23 @@ func BenchmarkDecide(b *testing.B) {
 	}
 }
 
-// buildRMDiscard constrói um RM com o PDP como hook de política e sink de
-// descarte (mede o caminho de compute RM+PDP sem I/O do Event Store).
+// buildRMDiscard constrói um RM com a cadeia SANCIONADA (o PDP real no hook de
+// política, via [DefaultHooksWithPDP]) e sink de descarte (mede o caminho de compute
+// RM+PDP sem I/O do Event Store). O [permitCall] usado nos benchmarks tem
+// sensitivity=confidential + Input JSON, pelo que o caminho medido INCLUI o
+// enforcement da obrigação redact_pii ANTES do dispatch (AOS-087, AC5).
 func buildRMDiscard(tb testing.TB) *rm.Monitor {
 	tb.Helper()
 	p := mustOpen(tb)
-	m := rm.New(rm.WithHooks(
-		rm.IdentityStub{},
-		NewPolicyCheck(p),
-		rm.BudgetStub{},
-		rm.EgressStub{},
-		rm.AuditStub{},
-	))
+	m := rm.New(rm.WithHooks(DefaultHooksWithPDP(p)...))
 	if err := m.Register("tool.http", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
 		tb.Fatalf("Register: %v", err)
 	}
 	return m
 }
 
-// BenchmarkMediate_RM_PDP mede o caminho combinado RM+PDP (mediação completa
-// com o PDP real no hook de política).
+// BenchmarkMediate_RM_PDP mede o caminho combinado RM+PDP (mediação completa com o
+// PDP real no hook de política E o enforcement de obrigações do PEP).
 func BenchmarkMediate_RM_PDP(b *testing.B) {
 	m := buildRMDiscard(b)
 	call := permitCall()
