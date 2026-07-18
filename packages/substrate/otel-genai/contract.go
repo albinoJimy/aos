@@ -27,10 +27,16 @@ func stringify(v any) string {
 //     (CA2). O resultado é SEMPRE untrusted (AttrResultTaint, ADR-005); AttrTaint —
 //     a taint da AUTORIZAÇÃO — é observabilidade adicional (AOS-069), não o mesmo
 //     eixo, pelo que a conformidade CA2 exige [AttrResultTaint].
+//   - gen_ai.evaluation.result: o veredicto pass|fail + a origem do dataset
+//     (golden|failure_derived) da avaliação (AOS-084). A LIGAÇÃO à trajectória
+//     avaliada é estrutural (trace_id partilhado ou [AttrEvalTargetTraceID]), não um
+//     atributo obrigatório do contrato; o que o contrato exige é o veredicto tipado
+//     sobre um dataset identificado.
 var requiredAttrs = map[string][]string{
 	OpInvokeAgent: {AttrOperationName},
 	OpChat:        {AttrOperationName, AttrRequestModel, AttrPrincipalNHI},
 	OpExecuteTool: {AttrOperationName, AttrToolName, AttrToolCallHash, AttrResultTaint},
+	OpEvaluation:  {AttrOperationName, AttrEvalVerdict, AttrEvalDataset},
 }
 
 // RequiredAttributes devolve (uma cópia d)os atributos obrigatórios para a

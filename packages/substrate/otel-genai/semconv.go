@@ -86,6 +86,36 @@ const (
 	// "custo por tenant e por modelo" sem reinstrumentar. É um rótulo de identidade
 	// de tenant, nunca um segredo/credencial.
 	AttrTenantID = "aos.tenant_id"
+
+	// --- Evals ligados ao trace (AOS-084, tecnica/08 §8.2, ADR-010/ADR-012) ---
+	//
+	// O span gen_ai.evaluation.result ([OpEvaluation]) é a avaliação de uma
+	// trajectória registada como span de PRIMEIRA CLASSE, ligado por trace_id à
+	// trajectória que avaliou (partilha o TraceID OU carrega [AttrEvalTargetTraceID]).
+	// Todos os valores abaixo são RÓTULOS/SCORES de avaliação — nunca payload/segredo.
+
+	// AttrEvalVerdict — aos.eval.verdict: o veredicto pass|fail da avaliação
+	// ([EvalPass]/[EvalFail]). É a base do eval-gate de admissão de auto-modificações
+	// (ADR-012): fail-closed, um veredicto que não seja "pass" não admite.
+	AttrEvalVerdict = "aos.eval.verdict"
+	// AttrEvalScore — aos.eval.score: o score numérico (float, tipicamente 0..1) da
+	// avaliação. Métrica de conveniência; o veredicto é a decisão binária.
+	AttrEvalScore = "aos.eval.score"
+	// AttrEvalDataset — aos.eval.dataset: a origem do dataset avaliado, golden|
+	// failure_derived ([EvalDatasetGolden]/[EvalDatasetFailureDerived]). Distingue o
+	// golden-set curado (apanha regressões NOVAS) dos datasets derivados de falhas
+	// passadas (regressões CONHECIDAS).
+	AttrEvalDataset = "aos.eval.dataset"
+	// AttrEvalSuite — aos.eval.suite: o identificador da suite de avaliação (a classe
+	// de artefacto comportamental / conjunto de casos).
+	AttrEvalSuite = "aos.eval.suite"
+	// AttrEvalID — aos.eval.id: o identificador único desta execução de avaliação.
+	AttrEvalID = "aos.eval.id"
+	// AttrEvalTargetTraceID — aos.eval.target_trace_id: o trace_id (hex 32) da
+	// trajectória AVALIADA. Torna a ligação eval→trajectória EXPLÍCITA mesmo quando o
+	// span de eval é emitido num trace próprio; quando é emitido no MESMO trace da
+	// trajectória, o TraceID partilhado já a estabelece e este atributo redunda-a.
+	AttrEvalTargetTraceID = "aos.eval.target_trace_id"
 )
 
 // PinnedVersionPrefix é o prefixo das dimensões de VERSÃO PINADA do manifesto
@@ -105,6 +135,11 @@ const (
 	OpChat = "chat"
 	// OpExecuteTool — span de uma tool call despachada via Reference Monitor.
 	OpExecuteTool = "execute_tool"
+	// OpEvaluation — span gen_ai.evaluation.result: a avaliação de uma trajectória
+	// (AOS-084). Ao contrário das três operações de trajectória acima (nomes curtos
+	// da semconv GenAI), o seu nome é o nome completo do span de avaliação da
+	// convenção. Ligado por trace_id à trajectória avaliada. Ver evaluation.go.
+	OpEvaluation = "gen_ai.evaluation.result"
 )
 
 // MicroUSDToUSD converte micro-USD inteiro para USD (float, só para o atributo de

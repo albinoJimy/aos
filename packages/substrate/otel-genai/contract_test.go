@@ -27,6 +27,10 @@ func TestValidateSpanDataPerOperation(t *testing.T) {
 			AttrToolCallHash: "abc123",
 			AttrResultTaint:  "untrusted",
 		}),
+		OpEvaluation: spanWith(OpEvaluation, map[string]string{
+			AttrEvalVerdict: string(EvalPass),
+			AttrEvalDataset: string(EvalDatasetGolden),
+		}),
 	}
 	for op, sd := range valid {
 		if err := ValidateSpanData(sd); err != nil {
@@ -82,7 +86,7 @@ func TestRequiredAttributesIsolation(t *testing.T) {
 	if RequiredAttributes("desconhecida") != nil {
 		t.Error("operação desconhecida devia devolver nil")
 	}
-	if ops := KnownOperations(); len(ops) != 3 {
-		t.Errorf("KnownOperations = %v, esperava 3", ops)
+	if ops := KnownOperations(); len(ops) != 4 {
+		t.Errorf("KnownOperations = %v, esperava 4", ops)
 	}
 }
