@@ -31,6 +31,27 @@ var (
 	ErrCheckpointStale = errors.New("audit: checkpoint anterior ao head conhecido (rollback)")
 	// ErrInvalidKey — material de chave ed25519 com dimensão inválida.
 	ErrInvalidKey = errors.New("audit: chave ed25519 invalida")
+	// ErrNoSubject — ingestão de PII sem SubjectID, ou shred sem titular. Sem
+	// titular não há chave por-titular a que cifrar/apagar (fail-closed).
+	ErrNoSubject = errors.New("audit: subject_id obrigatorio para PII")
+	// ErrDecrypt — o payload cifrado não autentica sob a chave/blob dados
+	// (adulteração do ciphertext, ou KEK errada). Fail-closed na decifragem.
+	ErrDecrypt = errors.New("audit: decifragem de payload falhou")
+	// ErrShredded — a chave por titular foi destruída (crypto-shredding): o payload
+	// pessoal é IRRECUPERÁVEL (GDPR Art. 17). A cadeia mantém-se íntegra.
+	ErrShredded = errors.New("audit: chave do titular destruida (payload irrecuperavel)")
+	// ErrPayloadMissing — a referência não localiza ciphertext no PayloadStore (ref
+	// vazia/desconhecida). Distinto de [ErrShredded]: aqui falta o blob, não a chave.
+	ErrPayloadMissing = errors.New("audit: payload cifrado ausente")
+	// ErrLegalHold — tentativa de shred/purge de um titular sob legal hold. A
+	// obrigação de preservação SUSPENDE o apagamento (fail-closed), mesmo após a
+	// retenção expirar.
+	ErrLegalHold = errors.New("audit: titular sob legal hold (shred suspenso)")
+	// ErrRetentionActive — purge automático pedido antes de a retenção da classe
+	// expirar. O DSAR explícito ([Shredder.Shred]) não está sujeito a esta barreira.
+	ErrRetentionActive = errors.New("audit: retencao ainda activa (purge negado)")
+	// ErrNoSigner — [IngestPipeline.Seal] sem um Signer ligado (ver WithIngestSigner).
+	ErrNoSigner = errors.New("audit: pipeline sem signer para selagem")
 )
 
 // TamperType classifica a natureza da adulteração detectada.
