@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aos-ref/control-plane/governance/autonomy"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -29,6 +30,11 @@ type PDP struct {
 	// motor para não bloquear Decide() durante o Append (I/O) do audit.
 	sealMu sync.Mutex
 	tracer otelgenai.Tracer // span do reload (DoD AOS-088); nil ⇒ Noop
+	// autonomy é o oráculo de níveis L0–L5 (AOS-089) que o PDP consulta em cada
+	// decisão para compor o oversight (nível × classe de risco). nil ⇒ o overlay de
+	// autonomia é inerte (o PDP decide como antes — a autonomia é opt-in e só
+	// TIGHTENS uma decisão, nunca a afrouxa). Ligado por [WithAutonomyOracle].
+	autonomyOracle autonomy.Oracle
 }
 
 // ReloadRequest transporta a atribuição do carregamento de política: QUEM o
@@ -193,10 +199,15 @@ func (p *PDP) Version() string {
 }
 
 // Decide avalia um pedido de decisão e devolve o veredicto (contrato C1). É
-// PURA e SEM EFEITOS: a mesma (Input, policy_version) produz sempre a mesma
-// Decision. Nunca devolve ausência de resposta — em qualquer erro de porta a
-// Decision é Deny (fail-closed) e o erro correspondente é devolvido à parte.
-func (p *PDP) Decide(_ context.Context, in Input) (Decision, error) {
+// DETERMINISTA: a mesma (Input, policy_version, nível de autonomia) produz sempre
+// a mesma Decision. Nunca devolve ausência de resposta — em qualquer erro de porta
+// a Decision é Deny (fail-closed) e o erro correspondente é devolvido à parte.
+//
+// AUTONOMIA (AOS-089). Quando um [autonomy.Oracle] está ligado ([WithAutonomyOracle]),
+// uma decisão de BASE permit é sobreposta pelo overlay de oversight (nível × classe
+// de risco): ver [PDP.applyAutonomy]. O overlay só TIGHTENS (permit→escalate) — nunca
+// transforma um deny em permit. Sem oráculo, o comportamento é idêntico ao anterior.
+func (p *PDP) Decide(ctx context.Context, in Input) (Decision, error) {
 	p.mu.RLock()
 	eng := p.engine
 	p.mu.RUnlock()
@@ -234,12 +245,13 @@ func (p *PDP) Decide(_ context.Context, in Input) (Decision, error) {
 	if !allow {
 		return Decision{Effect: Deny, Reason: reason, PolicyVersion: eng.version}, nil
 	}
-	return Decision{
+	base := Decision{
 		Effect:        Permit,
 		Reason:        reason,
 		PolicyVersion: eng.version,
 		Obligations:   obligationsFor(in),
-	}, nil
+	}
+	return p.applyAutonomy(ctx, in, base), nil
 }
 
 // Reload verifica e compila o bundle no directório do PDP e, SÓ se a sua

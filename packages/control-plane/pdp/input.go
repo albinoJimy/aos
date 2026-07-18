@@ -69,6 +69,13 @@ type DecisionContext struct {
 	// Sensitivity ex.: "public", "confidential". Mapeada para
 	// `context.sensitivity`; dispara a obligation redact_pii quando "confidential".
 	Sensitivity string
+	// RiskClass é a CLASSE DE RISCO SA-ROC já computada pelo classificador do RM
+	// ("safe"/"gray"/"danger"), transportada para o overlay de autonomia (AOS-089)
+	// compor o oversight nível × classe. É OPCIONAL e aditiva ao contrato C1: só é
+	// consultada quando um [autonomy.Oracle] está ligado; vazia ou desconhecida ⇒
+	// tratada como "danger" (fail-closed, o pior caso). Não afecta a política Cedar
+	// base nem as decisões sem oráculo de autonomia.
+	RiskClass string
 }
 
 // Input é o pedido de decisão submetido a [PDP.Decide] (request do contrato C1).
