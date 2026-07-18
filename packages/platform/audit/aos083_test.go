@@ -519,6 +519,40 @@ func TestPartitionHoldRequiresIndex(t *testing.T) {
 	}
 }
 
+// TestShredderHeldQuery — Held expõe, sem mutar nada, a MESMA decisão de legal hold
+// (subject OU partição) que o Shred faz valer fail-closed. É a query que o fluxo
+// DSAR (AOS-093) consulta antes de iniciar o apagamento multi-store.
+func TestShredderHeldQuery(t *testing.T) {
+	vault := NewInMemoryKeyVault(detRand())
+	if _, _, err := vault.EnsureKey("alice"); err != nil {
+		t.Fatalf("EnsureKey: %v", err)
+	}
+	holds := NewLegalHold()
+	index := NewInMemorySubjectPartitionIndex()
+	index.Link("alice", "board-7")
+	shredder := NewShredder(vault, holds, NewRetentionPolicy(nil), WithShredderSubjectIndex(index))
+
+	// Sem holds: não retido.
+	if shredder.Held("alice") {
+		t.Fatal("Held devia ser false sem qualquer hold")
+	}
+	// Hold por-titular.
+	holds.HoldSubject("alice")
+	if !shredder.Held("alice") {
+		t.Fatal("Held devia ser true sob hold por-titular")
+	}
+	holds.ReleaseSubject("alice")
+	// Hold por-partição (via índice).
+	holds.HoldPartition("board-7")
+	if !shredder.Held("alice") {
+		t.Fatal("Held devia ser true sob hold por-partição (via índice)")
+	}
+	// Held é uma query pura: a chave permanece.
+	if _, ok := vault.Key(KeyRefFor("alice")); !ok {
+		t.Fatal("Held não devia destruir a chave")
+	}
+}
+
 // TestShredEmptySubject — shred sem titular é fail-closed.
 func TestShredEmptySubject(t *testing.T) {
 	shredder := NewShredder(NewInMemoryKeyVault(detRand()), NewLegalHold(), NewRetentionPolicy(nil))

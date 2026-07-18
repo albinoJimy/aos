@@ -227,6 +227,13 @@ func (s *Shredder) Shred(subjectID string) error {
 	return nil
 }
 
+// Held expõe, como QUERY pública, se o titular está sob legal hold (por-titular OU
+// por qualquer partição onde tem dados selados) segundo as MESMAS regras
+// fail-closed do [Shredder.Shred]. Existe para um orquestrador de DSAR (AOS-093)
+// consultar a preservação ANTES de iniciar o apagamento em vários stores — sem
+// duplicar a lógica de hold por-partição nem expor qualquer segredo. Não muta nada.
+func (s *Shredder) Held(subjectID string) bool { return s.held(subjectID) }
+
 // held indica se o titular está sob legal hold, seja por-titular ou por-partição
 // (via o índice, se ligado). A KEK é destruída globalmente no shred, pelo que basta
 // UMA partição retida com dados do titular para o bloquear inteiro (fail-closed).
