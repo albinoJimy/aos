@@ -95,11 +95,14 @@ func (sub *subscription) watchContext(ctx context.Context) {
 }
 
 // fanout enfileira o evento em cada subscrição cujo filtro corresponda e devolve
-// o número de subscrições notificadas. Chamado sob s.mu para preservar a ordem
-// de seq entre appends.
+// o número de subscrições notificadas. Chamado sob o stripe do stream (detido em
+// Lock pelo Append) para preservar a ordem de seq entre appends DO MESMO stream;
+// detém subMu em RLock, pelo que fanouts de streams distintos correm concorrentes
+// (o enqueue por subscritor é serializado por sub.mu). A ordem entre streams
+// distintos é irrelevante — a ordem total é por (stream_id, seq).
 func (s *Store) fanout(ev Event) int {
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
+	s.subMu.RLock()
+	defer s.subMu.RUnlock()
 	n := 0
 	for sub := range s.subs {
 		if sub.filter.matches(ev) {

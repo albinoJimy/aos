@@ -37,6 +37,10 @@ A superfície é deliberadamente **append-only estrito**: não há `Update`,
 s, _ := eventstore.New(
     eventstore.WithReplicas(3),
     eventstore.WithQuorum(2),
+    // Soberania regional (ADR-011), opcional e fail-closed. Se declarada, todas as
+    // réplicas TÊM de estar na região do board (senão New devolve ErrSovereigntyViolation):
+    //   eventstore.WithRegion("eu"),
+    //   eventstore.WithReplicaRegions("eu", "eu", "eu"),
 )
 defer s.Close()
 
@@ -92,8 +96,9 @@ campo ou mudar a semântica de `expected_seq` é *MAJOR* (`tecnica/12 §5`).
   numa posição já ocupada devolve `ErrAppendOnlyViolation`. `Read` devolve
   **cópias** — o chamador não pode mutar o estado guardado.
 - **Ordem total por `(stream_id, seq)`.** `seq` monotónico e gapless por stream,
-  serializado pelo líder. Escritas concorrentes ao mesmo stream produzem seqs
-  únicos e contíguos, sem perda.
+  serializado **por stream** (não globalmente — ver *Concorrência*). Escritas
+  concorrentes ao mesmo stream produzem seqs únicos e contíguos, sem perda;
+  escritas a streams distintos correm em paralelo.
 - **Concorrência optimista (`WithExpectedSeq`).** `n` é o último seq committed que
   o chamador afirma ser o corrente; o evento novo ficaria em `n+1`:
   - `n == último` → procede;
@@ -109,9 +114,11 @@ campo ou mudar a semântica de `expected_seq` é *MAJOR* (`tecnica/12 §5`).
   re-tentar — nenhum é fatal neste contexto. Coberto por
   `TestConcurrentCASLoserError`.
 - **Idempotência.** Um segundo `Append` com a mesma `idempotency_key` devolve
-  `Status=Duplicate` e o **seq committed original**, sem duplicar. Sobrevive a
-  failover (o índice de dedup é mantido em cada réplica, reconstrutível a partir
-  do log committed).
+  `Status=Duplicate` e o **seq committed original**, sem duplicar. A dedup é **por
+  stream** (a `idempotency_key = run_id:step_id` vive no stream do run;
+  `stream_id == run_id`), o que a torna serializada pelo stripe do stream — sem
+  contentor de dedup partilhado entre streams. Sobrevive a failover (o índice de
+  dedup é mantido em cada réplica, reconstrutível a partir do log committed).
 - **`Read` de stream inexistente** → `ErrStreamNotFound`.
 
 **Ordem de verificação num `Append`:** idempotência primeiro (o duplicado ganha),
@@ -154,6 +161,41 @@ Controlo de teste do cluster: `New(WithReplicas(n), WithQuorum(q))`, `Kill(id)`
 
 Este modelo torna as invariantes determinísticas e testáveis; **não** é um Raft
 completo.
+
+## Concorrência — sem single-writer (AOS-100, ADR-007)
+
+A ordem total é **por stream**, nunca global — por isso **não há escritor único**.
+A serialização é **por-stream** (locks listrados, `sharding.go`):
+
+- Appends ao **mesmo stream** serializam-se (seq gapless, CAS, dedup e ordem de
+  push preservados); appends a **streams diferentes** correm **em paralelo**, sem
+  contenção global. Múltiplos workers escrevem e leem para replay em paralelo.
+- **SPOF eliminado.** O antigo mutex global (um único líder a serializar TODAS as
+  escritas) desapareceu: o `mu` do `Store` protege apenas a **membership** do
+  cluster (líder, *alive set*) e os appends detêm-no em `RLock`. O log e a dedup
+  são **por stream**; o commit index é atómico. A falha de um nó (`Kill`) não
+  interrompe as escritas nem perde dados confirmados dentro do quórum.
+- Coberto por `TestParallelMultiWriterStreams`, `TestParallelReadWhileWriting`,
+  `TestNodeFailureContinuityParallel` (todos sob `-race`) e pelo benchmark
+  `BenchmarkAppendParallelStreams` (ganho vs. `BenchmarkAppend` serial).
+
+## Soberania regional (ADR-011)
+
+Um *board* tem uma **fronteira regional de soberania**: os seus dados só podem
+residir nessa região. Quando configurada, o enforcement é **fail-closed**:
+
+- `WithRegion(region)` ou `WithSovereigntyBoard(board, region)` declaram a fronteira;
+  `WithReplicaRegions(...)` dá a região de cada réplica (uma por réplica).
+- **TODAS** as réplicas têm de estar na região do board. Uma réplica **fora da
+  fronteira** — ou com **região ausente/desconhecida** — é **rejeitada na construção**
+  com `ErrSovereigntyViolation` (`E_SOVEREIGNTY_VIOLATION`). Região desconhecida ⇒
+  *deny*. Sem `WithReplicaRegions`, todas as réplicas assumem a região do board
+  (cluster co-localizado — o caso comum).
+- O quórum é computado **dentro da região** e a eleição de líder **nunca** promove
+  liderança *cross-border*. Réplicas e backups **NUNCA** cruzam a fronteira.
+- Sem fronteira configurada a soberania fica **dormente** (retro-compatível).
+- `Region()` e `ReplicaRegion(id)` expõem a topologia regional. Coberto por
+  `TestSovereignty_*`.
 
 ## Transporte push (fan-out)
 
@@ -211,6 +253,11 @@ Requeridos* do ticket:
 | Erro re-tentável ao perdedor de CAS concorrente | `TestConcurrentCASLoserError` |
 | `ctx` cancelado desregista a subscrição (sem fuga, sem entrega posterior) | `TestSubscribeCtxCancelUnsubscribes` |
 | Latência de fan-out push (p95 < 250 ms) + ordem preservada | `TestFanoutLatencyAndOrder` |
+| **Escrita multi-worker paralela** por stream (seq gapless, sem single-writer) | `TestParallelMultiWriterStreams` |
+| **Replay (Read) concorrente** com escrita, log sempre gapless | `TestParallelReadWhileWriting` |
+| **Falha de nó sob carga paralela** → continuidade, zero perda no quórum | `TestNodeFailureContinuityParallel` |
+| **Soberania (ADR-011):** réplica *cross-border* / região ausente rejeitada (fail-closed) | `TestSovereignty_*` |
+| Failover preso à fronteira regional (líder in-region, zero perda) | `TestSovereignty_FailoverStaysInRegion` |
 
 ```sh
 go vet ./...
@@ -220,8 +267,10 @@ go tool cover -func=cover.out | tail -1
 ```
 
 > **Verificação `-race`.** O detector de corridas requer `CGO_ENABLED=1` e um
-> compilador C. Validado limpo (0 data races) com `go 1.24.5` + MinGW gcc 16.1.0
-> (`windows/amd64`); cobertura **96.5%** dos statements.
+> compilador C. Validado limpo (0 data races) com `go 1.24.5` + MinGW gcc
+> (`windows/amd64`), `-race -count=2`; cobertura **97.4%** dos statements. A remoção
+> do mutex global (AOS-100) é o ponto de maior risco de corrida — daí o `-race` ser
+> crítico e a suite incluir escrita multi-worker e replay concorrentes.
 
 ### Benchmark (throughput e latência) — DoD
 
@@ -230,10 +279,20 @@ go tool cover -func=cover.out | tail -1
 
 | Benchmark | Latência | Throughput | Alloc |
 |---|---|---|---|
-| `BenchmarkAppend` (commit + replicação síncrona a 3 réplicas) | ~4.4 µs/op | ~227 000 ops/s | 4742 B/op, 25 allocs/op |
-| `BenchmarkFanout` (append + entrega a 50 subscritores, ponta-a-ponta) | ~50 µs/op | ~20 000 appends/s (~1 µs/entrega) | 16478 B/op, 75 allocs/op |
+| `BenchmarkAppend` (serial, 1 stream: commit + replicação a 3 réplicas) | ~2.7 µs/op | ~370 000 ops/s | 5234 B/op, 25 allocs/op |
+| `BenchmarkAppendParallelStreams` (workers em streams distintos, 12 CPU) | ~0.98 µs/op | **~1 020 000 ops/s** | 4938 B/op, 25 allocs/op |
+| `BenchmarkFanout` (append + entrega a 50 subscritores, ponta-a-ponta) | ~35 µs/op | ~28 000 appends/s | 16684 B/op, 75 allocs/op |
 
-Números in-process de referência (não substituem a validação no backend real).
+O **ganho do paralelismo por-stream** (AOS-100): a escrita paralela a streams
+distintos atinge ~1.9–2.9× o throughput da escrita serial num único stream
+(depende do número de CPUs e da carga da máquina — medições próprias variaram entre
+~1.9× e ~2.9× em execuções distintas), porque não há serializador único —
+exactamente o SPOF de escrita que o baseline single-writer tinha. O invariante
+demonstrado pelo benchmark, e não o número absoluto, é o que importa para o DoD:
+escrever a streams distintos em paralelo bate consistentemente a escrita serial a
+um só stream. Números in-process de referência (não substituem a validação no
+backend real); os valores absolutos da tabela acima são ilustrativos e dependentes
+do hardware.
 
 > **DoD *"Replicação e failover validados em staging"*.** Fica **pendente**: este
 > pacote é o modelo de replicação in-process de referência; a validação em
@@ -249,14 +308,18 @@ eventstore/
   event.go          # envelope Event, EventInput, Producer, Filter, opções
   errors.go         # sentinelas E_* (errors.Is)
   ulid.go           # ULID inline (crypto/rand + Crockford base32)
-  store.go          # EventStore, Store, Append/Read/Close, Observer
-  replicated.go     # réplicas, quórum, eleição, controlo de teste do cluster
+  store.go          # EventStore, Store, Append/Read/Close, Observer, opções (região)
+  replicated.go     # réplicas (log+dedup por stream), quórum, eleição, soberania
+  sharding.go       # locks listrados por-stream (sem single-writer) + normalização de região
   subscribe.go      # transporte push / fan-out
   store_test.go     # testes table-driven (-race)
+  replication_aos100_test.go  # paralelismo por-stream + soberania (AOS-100)
   schemas/
     event-envelope-1.0.json  # schema JSON do envelope + registo de versão
 ```
 
 Referência: `specs/EPIC-01_Fundacoes_Plano_Controlo.md` (AOS-002),
+`specs/EPIC-10_Topologia_Operacao_DR.md` (AOS-100),
+`tecnica/10_Topologia_Implantacao_Operacao.md` (§3, §6, ADR-007/ADR-011),
 `tecnica/12_Contratos_de_Interface.md` (§5, contrato C2),
 `tecnica/13_Modelo_Dados_Eventos.md` (§3–§4).

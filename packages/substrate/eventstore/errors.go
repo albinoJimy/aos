@@ -37,4 +37,9 @@ var (
 
 	// ErrConfig — configuração de cluster inválida.
 	ErrConfig = &StoreError{Code: "E_CONFIG", msg: "configuracao de cluster invalida"}
+
+	// ErrSovereigntyViolation — uma réplica foi colocada fora da fronteira regional
+	// de soberania do board (ADR-011), ou a sua região é ausente/desconhecida. A
+	// construção é recusada fail-closed: réplicas e backups NUNCA cruzam a fronteira.
+	ErrSovereigntyViolation = &StoreError{Code: "E_SOVEREIGNTY_VIOLATION", msg: "replica fora da fronteira regional de soberania (ou regiao ausente); fail-closed"}
 )

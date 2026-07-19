@@ -44,6 +44,31 @@
 // Este modelo torna as invariantes determinísticas e testáveis; não é um Raft
 // completo. Em produção o backend é NATS JetStream (R3/R5, replicação Raft).
 //
+// # Concorrência: sem single-writer (AOS-100, ADR-007)
+//
+// A ordem total é POR STREAM ((stream_id, seq)), nunca global. Por isso NÃO há um
+// escritor único: a serialização é POR-STREAM (locks listrados — ver sharding.go).
+// Appends ao MESMO stream serializam-se (seq gapless, CAS de WithExpectedSeq, dedup
+// e ordem de push preservados); appends a streams DIFERENTES progridem EM PARALELO,
+// sem contenção global — múltiplos workers escrevem e leem para replay em paralelo.
+// O antigo mutex global (que serializava TODAS as escritas através de um único
+// líder) foi eliminado: o mu do Store protege apenas a membership do cluster
+// (líder, alive set); os appends detêm-no em RLock. A dedup e o log são por stream,
+// removendo o último contentor partilhado entre streams. Não existe ponto único de
+// escrita (SPOF): a falha de um nó (kill de réplica) não interrompe as escritas nem
+// perde dados confirmados dentro do quórum.
+//
+// # Soberania regional (ADR-011)
+//
+// Um board tem uma fronteira regional de soberania: os seus dados só podem residir
+// nessa região. Quando configurada (WithRegion ou WithSovereigntyBoard), TODAS as
+// réplicas têm de estar na região do board; uma réplica fora da fronteira — ou com
+// região ausente/desconhecida — é REJEITADA na construção com ErrSovereigntyViolation
+// (fail-closed: região desconhecida ⇒ deny). O quórum é computado dentro da região e
+// a eleição de líder nunca promove liderança cross-border. Réplicas e backups NUNCA
+// cruzam a fronteira. Sem fronteira configurada a soberania fica dormente
+// (retro-compatível).
+//
 // # Transporte push
 //
 // Subscribe entrega eventos committed a subscritores por push, em ordem de seq,
