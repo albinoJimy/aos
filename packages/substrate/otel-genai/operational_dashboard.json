@@ -1,0 +1,90 @@
+{
+  "version": "1.0.0",
+  "panels": [
+    {
+      "sli": "control_plane_availability",
+      "title": "Disponibilidade do plano de controlo",
+      "plane": "control",
+      "producer": "pdp",
+      "metric_source": "aos.control_plane.availability",
+      "unit": "fraction",
+      "direction": "min",
+      "slo": 0.999,
+      "window": "5m",
+      "injected": true,
+      "description": "Sem produtor dedicado: valor injectado por heartbeat/health (LACUNA honesta)."
+    },
+    {
+      "sli": "mediation_overhead_p95",
+      "title": "Overhead de mediação (RM) p95",
+      "plane": "control",
+      "producer": "reference-monitor",
+      "unit": "nanos",
+      "direction": "max",
+      "slo": 15000000,
+      "window": "5m",
+      "description": "p95 da latência dos spans execute_tool (o overhead da mediação)."
+    },
+    {
+      "sli": "sandbox_cold_start_p95",
+      "title": "Cold-start de sandbox p95",
+      "plane": "data",
+      "producer": "sandbox",
+      "metric_source": "aos.sandbox.cold_start_ms",
+      "unit": "ms",
+      "direction": "max",
+      "slo": 125,
+      "window": "5m",
+      "description": "p95 de aos.sandbox.cold_start_ms dos wide events (alvo < 125 ms, ADR-004)."
+    },
+    {
+      "sli": "cache_hit_rate",
+      "title": "Cache-hit-rate de prompt",
+      "plane": "data",
+      "producer": "model-gateway",
+      "metric_source": "aos.cache.hit_rate",
+      "unit": "fraction",
+      "direction": "min",
+      "slo": 0.8,
+      "window": "15m",
+      "description": "Média ponderada de aos.cache.hit_rate (cache thrash como SLI, ADR-009)."
+    },
+    {
+      "sli": "headroom_tokens",
+      "title": "Headroom de tokens/$",
+      "plane": "control",
+      "producer": "scheduler",
+      "metric_source": "aos.scheduler.headroom.free_tokens",
+      "unit": "tokens",
+      "direction": "min",
+      "slo": 1,
+      "window": "1m",
+      "description": "Headroom reservável do admission control (alerta abaixo do limiar de reserva)."
+    },
+    {
+      "sli": "replay_fidelity",
+      "title": "Fidelidade de replay",
+      "plane": "data",
+      "producer": "worker",
+      "metric_source": "aos.replay.fidelity",
+      "unit": "fraction",
+      "direction": "min",
+      "slo": 1,
+      "window": "per_run",
+      "description": "Fracção de turnos que reproduzem (aos.replay.fidelity), ligada por aos.run_id."
+    },
+    {
+      "sli": "audit_worm_integrity",
+      "title": "Integridade do audit WORM",
+      "plane": "data",
+      "producer": "audit",
+      "metric_source": "aos.audit.worm_integrity",
+      "unit": "bool",
+      "direction": "min",
+      "slo": 1,
+      "window": "continuous",
+      "injected": true,
+      "description": "Resultado de audit.Verify() (íntegro=1/adulterado=0), injectado (LACUNA honesta)."
+    }
+  ]
+}
