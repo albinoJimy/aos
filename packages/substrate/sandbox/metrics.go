@@ -48,6 +48,21 @@ const (
 	// deve ser lido como "sem custo".
 	MetricWarmReplenish = "aos.sandbox.warm_replenish"
 
+	// MetricPoolOccupancy é o SLI de OCUPAÇÃO do pool (AOS-103): a fracção de VMs
+	// vivas em uso, em percentagem (100·in_use/(warm+in_use)). Gauge emitido por
+	// reserva/libertação/resize. Ocupação perto de 100% sustentada = pressão sobre o
+	// pool (candidato a crescer via headroom); perto de 0% = pool sobredimensionado.
+	MetricPoolOccupancy = "aos.sandbox.pool_occupancy"
+	// MetricPoolRecycle é o SLI de TAXA DE RECICLAGEM (AOS-103): contador cumulativo
+	// de VMs recicladas (overlay efémero descartado no fim de uma execução e VM
+	// destruída). O backend de séries temporais (EPIC-08) deriva a TAXA; um pico de
+	// reciclagem correlaciona com rotação de carga e com o custo de reposição warm.
+	MetricPoolRecycle = "aos.sandbox.pool_recycle"
+	// MetricPoolResize é o gauge dos ALVOS de dimensionamento após um [Pool.Resize]
+	// (AOS-103): warm/max derivados do headroom. Prova, no fluxo de métricas, que o
+	// tamanho do pool NÃO é uma constante — acompanha o headroom ao longo do tempo.
+	MetricPoolResize = "aos.sandbox.pool_resize"
+
 	// AttrImageVersion — versão de imagem do snapshot base (eixo de agregação).
 	AttrImageVersion = "aos.sandbox.image_version"
 	// AttrProvisionOutcome — resultado do aprovisionamento (warm_hit|expanded|waited).
@@ -60,6 +75,14 @@ const (
 	AttrColdStartMs = "aos.sandbox.cold_start_ms"
 	// AttrColdStartP95Ms — anotação no span com o p95 agregado corrente (ms).
 	AttrColdStartP95Ms = "aos.sandbox.cold_start_p95_ms"
+	// AttrPoolWarm — VMs pré-aquecidas (na fila) no instante da amostra de pool.
+	AttrPoolWarm = "aos.sandbox.pool_warm"
+	// AttrPoolInUse — VMs reservadas (em uso) no instante da amostra de pool.
+	AttrPoolInUse = "aos.sandbox.pool_in_use"
+	// AttrPoolMax — tecto corrente de VMs vivas (o alvo max dinâmico).
+	AttrPoolMax = "aos.sandbox.pool_max"
+	// AttrPoolScope — âmbito da amostra de resize ("warm"|"max").
+	AttrPoolScope = "aos.sandbox.pool_scope"
 )
 
 // PoolKey é a chave de agregação do SLI de cold-start: (versão de imagem, driver).
@@ -98,6 +121,10 @@ type ColdStartAggregate struct {
 	// warm o p95 de cold_start pode ser ≈0; este contador prova que o restore real
 	// continua a acontecer (não é "sem custo"). Ver [MetricWarmReplenish].
 	WarmRestores int
+	// Recycles é o total de VMs recicladas para a chave (cumulativo): cada execução
+	// que termina descarta o overlay efémero e destrói a VM (AOS-103). É a base do SLI
+	// de taxa de reciclagem. Ver [MetricPoolRecycle].
+	Recycles int
 	// Breached indica se o SLI está actualmente em incumprimento (p95 > alvo). É o
 	// estado que torna o alerta anti-flapping (dispara só na transição).
 	Breached bool
@@ -173,6 +200,7 @@ type coldAgg struct {
 	samples      []time.Duration // janela deslizante
 	exhaustions  int
 	warmRestores int
+	recycles     int // VMs recicladas (overlay descartado no fim de execução), AOS-103
 	breached     bool
 }
 
@@ -395,6 +423,83 @@ func (r *ColdStartRecorder) ObserveWarmRestore(ctx context.Context, key PoolKey,
 	}
 }
 
+// ObserveOccupancy emite o SLI de OCUPAÇÃO do pool (AOS-103): a fracção de VMs vivas
+// em uso, em percentagem. É um GAUGE (não acumula estado): reflecte o instante da
+// amostra (inUse/(warm+inUse)). Emitido por reserva/libertação/resize. Sem VMs vivas
+// a ocupação é 0. NUNCA transporta segredo (só contagens + eixos versão/driver).
+func (r *ColdStartRecorder) ObserveOccupancy(ctx context.Context, key PoolKey, inUse, warm, max int) {
+	live := warm + inUse
+	var occ float64
+	if live > 0 {
+		occ = 100 * float64(inUse) / float64(live)
+	}
+	r.metrics.Record(ctx, ColdStartMetric{
+		Name:  MetricPoolOccupancy,
+		Value: occ,
+		Attributes: map[string]any{
+			AttrImageVersion: string(key.ImageVersion),
+			AttrDriver:       string(key.Driver),
+			AttrPoolInUse:    inUse,
+			AttrPoolWarm:     warm,
+			AttrPoolMax:      max,
+		},
+		Timestamp: r.clock(),
+	})
+}
+
+// ObserveRecycle regista a RECICLAGEM de uma VM (AOS-103): no fim de uma execução o
+// overlay efémero é descartado e a VM destruída (nunca reciclada para outra execução).
+// Incrementa o contador cumulativo da chave e emite a métrica; o backend de séries
+// temporais (EPIC-08) deriva a TAXA de reciclagem. NUNCA transporta segredo.
+func (r *ColdStartRecorder) ObserveRecycle(ctx context.Context, key PoolKey) {
+	r.mu.Lock()
+	agg := r.aggs[key]
+	if agg == nil {
+		agg = &coldAgg{}
+		r.aggs[key] = agg
+	}
+	agg.recycles++
+	total := agg.recycles
+	r.mu.Unlock()
+
+	r.metrics.Record(ctx, ColdStartMetric{
+		Name:  MetricPoolRecycle,
+		Value: float64(total),
+		Attributes: map[string]any{
+			AttrImageVersion: string(key.ImageVersion),
+			AttrDriver:       string(key.Driver),
+		},
+		Timestamp: r.clock(),
+	})
+}
+
+// ObserveResize emite os ALVOS de dimensionamento após um [Pool.Resize] (AOS-103):
+// warm e max derivados do headroom. Gauge (dois pontos, scope warm/max). Torna
+// visível, no fluxo de métricas, que o tamanho do pool acompanha o headroom e NÃO é
+// uma constante. NUNCA transporta segredo.
+func (r *ColdStartRecorder) ObserveResize(ctx context.Context, key PoolKey, warmTarget, maxTarget int) {
+	now := r.clock()
+	base := func(scope string) map[string]any {
+		return map[string]any{
+			AttrImageVersion: string(key.ImageVersion),
+			AttrDriver:       string(key.Driver),
+			AttrPoolScope:    scope,
+		}
+	}
+	r.metrics.Record(ctx, ColdStartMetric{
+		Name:       MetricPoolResize,
+		Value:      float64(warmTarget),
+		Attributes: base("warm"),
+		Timestamp:  now,
+	})
+	r.metrics.Record(ctx, ColdStartMetric{
+		Name:       MetricPoolResize,
+		Value:      float64(maxTarget),
+		Attributes: base("max"),
+		Timestamp:  now,
+	})
+}
+
 // emit emite a métrica OTel do SLI: p95 (agregado), a amostra e a duração de
 // restore. Só durações + eixos NÃO-SECRETOS (ADR-006/ADR-010).
 func (r *ColdStartRecorder) emit(ctx context.Context, key PoolKey, s ColdStartSample, p95 time.Duration, now time.Time) {
@@ -453,6 +558,7 @@ func (r *ColdStartRecorder) SnapshotAgg(key PoolKey) (ColdStartAggregate, bool) 
 		Max:          maxOf(agg.samples),
 		Exhaustions:  agg.exhaustions,
 		WarmRestores: agg.warmRestores,
+		Recycles:     agg.recycles,
 		Breached:     agg.breached,
 	}, true
 }

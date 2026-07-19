@@ -132,6 +132,7 @@ type Pool struct {
 	driver   DriverKind
 	warmN    int
 	maxN     int
+	absMax   int
 	policy   ExhaustionPolicy
 	deadline time.Duration
 	handoff  time.Duration
@@ -142,7 +143,7 @@ type Pool struct {
 	// (sem corrida no contador): N reservas concorrentes recebem N VMs distintas.
 	ready chan *warmVM
 
-	mu     sync.Mutex // protege warm/inUse/closed
+	mu     sync.Mutex // protege warm/inUse/closed e os alvos dinâmicos warmN/maxN
 	warm   int        // VMs limpas na fila ready (contabilidade)
 	inUse  int        // VMs reservadas, ainda não libertadas
 	closed bool
@@ -157,8 +158,24 @@ type PoolOption func(*Pool)
 
 // WithMaxSize define o tecto de VMs vivas (warm + em uso) para a política EXPAND.
 // Default: igual a warmN (sem expansão). Valores < warmN são elevados a warmN.
+//
+// Sob autoscaling ([Autoscaler]/[Pool.Resize], AOS-103) este é apenas o tecto
+// INICIAL: [Pool.Resize] reajusta-o dinamicamente, sempre limitado pelo tecto
+// ABSOLUTO ([WithAbsoluteMax]).
 func WithMaxSize(n int) PoolOption {
 	return func(p *Pool) { p.maxN = n }
+}
+
+// WithAbsoluteMax fixa o tecto ABSOLUTO de VMs vivas do pool — o limite físico que
+// dimensiona a fila [Pool.ready] e que o dimensionamento dinâmico ([Pool.Resize],
+// AOS-103) NUNCA ultrapassa, seja qual for o headroom reportado. É a garantia de que
+// o autoscaler derivado do headroom não cresce o pool sem limite (protecção contra
+// uma fonte de headroom errada/adversária). Default: igual a maxN (sem folga de
+// crescimento — retro-compatível: sem esta opção o pool é dimensionado exactamente
+// como em AOS-065). Valores < maxN são elevados a maxN (o tecto absoluto nunca é
+// inferior ao tecto inicial).
+func WithAbsoluteMax(n int) PoolOption {
+	return func(p *Pool) { p.absMax = n }
 }
 
 // WithPolicy define a política de esgotamento. Default [PolicyReject] (fail-closed).
@@ -250,14 +267,20 @@ func NewPool(snap *Snapshot, warmN int, opts ...PoolOption) (*Pool, error) {
 	if p.maxN < warmN {
 		p.maxN = warmN
 	}
+	// O tecto ABSOLUTO (AOS-103) dimensiona a fila e é o limite físico do autoscaling.
+	// Default = maxN (sem folga: retro-compatível com AOS-065). Nunca inferior a maxN.
+	if p.absMax < p.maxN {
+		p.absMax = p.maxN
+	}
 	// A política WAIT tem SEMPRE um deadline (DoD): sem um valor explícito, herda o
 	// tecto default não-nulo — a espera é limitada e observável, nunca bloqueia só à
 	// mercê do cancelamento do ctx (ver [TestPool_WaitDefaultDeadlineBounded]).
 	if p.policy == PolicyWait && p.deadline <= 0 {
 		p.deadline = DefaultWaitDeadline
 	}
-	// A fila comporta até maxN VMs (warm + as expandidas devolvidas por Release).
-	capacity := p.maxN
+	// A fila comporta até absMax VMs: warm + expandidas devolvidas por Release, e o
+	// crescimento dinâmico do autoscaler até ao tecto absoluto (nunca além dele).
+	capacity := p.absMax
 	if capacity < 1 {
 		capacity = 1
 	}
@@ -390,7 +413,96 @@ func (p *Pool) release(l *Lease) {
 	p.mu.Lock()
 	p.inUse--
 	p.mu.Unlock()
+	// SLIs do pool (AOS-103): a reciclagem (overlay descartado no fim de uma execução,
+	// VM efémera destruída) e a ocupação corrente. Nil-safe (sem recorder, no-op).
+	if p.metrics != nil {
+		p.metrics.ObserveRecycle(context.Background(), p.key())
+	}
+	p.observeOccupancy(context.Background())
 	p.triggerReplenish()
+}
+
+// Resize ajusta DINAMICAMENTE os alvos de pré-aquecimento (warm) e o tecto de VMs
+// vivas (max) do pool — a base do dimensionamento derivado do headroom (AOS-103):
+// warmN/maxN deixam de ser constantes. Os alvos são fixados a [0, absMax] (o tecto
+// ABSOLUTO da construção, que dimensiona a fila) — o autoscaler nunca cresce o pool
+// para lá do limite físico, mesmo que a fonte de headroom reporte mais. Reconcilia:
+// ENCOLHE drenando VMs pré-aquecidas em excesso (overlays descartados, nunca
+// reciclados) e CRESCE repondo warm até ao novo alvo. Seguro sob concorrência com
+// Reserve/Release. No-op se o pool estiver fechado. Idempotente para os mesmos alvos.
+func (p *Pool) Resize(warmTarget, maxTarget int) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	// Fixa os alvos ao intervalo válido: max ∈ [0, absMax], warm ∈ [0, max]. O tecto
+	// absoluto DOMINA — um headroom (ou adaptador) errado nunca faz crescer o pool
+	// para lá do limite físico da fila. max=0 é um estado válido e DESEJADO sob
+	// headroom nulo: o pool fica totalmente fail-closed (sem warm, sem expand, toda a
+	// reserva degrada pela política) — a degradação de AOS-107, não servir para lá do
+	// headroom.
+	if maxTarget > p.absMax {
+		maxTarget = p.absMax
+	}
+	if maxTarget < 0 {
+		maxTarget = 0
+	}
+	if warmTarget < 0 {
+		warmTarget = 0
+	}
+	if warmTarget > maxTarget {
+		warmTarget = maxTarget
+	}
+	p.warmN = warmTarget
+	p.maxN = maxTarget
+	p.mu.Unlock()
+
+	// ENCOLHE: drena as VMs pré-aquecidas acima do novo alvo (best-effort, não-
+	// bloqueante), descartando os overlays. CRESCE: repõe warm até ao novo alvo
+	// (doReplenish está limitado por warmN/maxN/absMax). A ordem drena-antes-de-repor
+	// evita repor e logo drenar o mesmo lugar.
+	p.drainExcessWarm()
+	p.triggerReplenish()
+	// SLIs do pool após a reconfiguração: os novos alvos e a ocupação corrente.
+	if p.metrics != nil {
+		p.metrics.ObserveResize(context.Background(), p.key(), warmTarget, maxTarget)
+	}
+	p.observeOccupancy(context.Background())
+}
+
+// drainExcessWarm remove da fila as VMs pré-aquecidas acima do alvo warmN corrente,
+// descartando os seus overlays (VMs efémeras destruídas — nunca recicladas). Recalcula
+// sob lock a cada iteração para NÃO sobre-drenar se um Reserve concorrente já consumiu
+// warm entretanto. Não-bloqueante: pára assim que a fila esvazia ou o alvo é atingido.
+func (p *Pool) drainExcessWarm() {
+	for {
+		p.mu.Lock()
+		if p.closed || p.warm <= p.warmN {
+			p.mu.Unlock()
+			return
+		}
+		select {
+		case vm := <-p.ready:
+			p.warm--
+			p.mu.Unlock()
+			vm.overlay.Discard()
+		default:
+			// Fila sem VMs prontas para drenar agora (podem estar in-flight): pára.
+			p.mu.Unlock()
+			return
+		}
+	}
+}
+
+// observeOccupancy emite o SLI de OCUPAÇÃO do pool (VMs em uso / VMs vivas) a partir
+// do instantâneo corrente. Nil-safe. NÃO deve ser chamado sob p.mu (Stats adquire-o).
+func (p *Pool) observeOccupancy(ctx context.Context) {
+	if p.metrics == nil {
+		return
+	}
+	st := p.Stats()
+	p.metrics.ObserveOccupancy(ctx, p.key(), st.InUse, st.Warm, st.MaxN)
 }
 
 // triggerReplenish agenda a reposição (assíncrona por default; síncrona sob
@@ -476,6 +588,8 @@ func (p *Pool) lease(ctx context.Context, vm *warmVM, outcome ProvisionOutcome, 
 		})
 	}
 	span.End()
+	// SLI de ocupação após a reserva (VM saiu da fila para uso): gauge por reserva.
+	p.observeOccupancy(ctx)
 	return &Lease{pool: p, vm: vm, outcome: outcome, coldStart: coldStart}
 }
 

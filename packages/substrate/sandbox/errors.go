@@ -68,6 +68,16 @@ var (
 	// ErrPoolClosed — reserva sobre um [Pool] já fechado.
 	ErrPoolClosed = errors.New("sandbox: pool fechado")
 
+	// ErrNilPool — [NewAutoscaler] sem pool (AOS-103). Fail-closed.
+	ErrNilPool = errors.New("sandbox: pool nil")
+
+	// ErrNilHeadroomSource — [NewAutoscaler] sem fonte de headroom (AOS-103). O
+	// dimensionamento derivado do headroom exige uma fonte; fail-closed.
+	ErrNilHeadroomSource = errors.New("sandbox: fonte de headroom nil")
+
+	// ErrNilPoolSizer — [NewAutoscaler] sem sizer (AOS-103). Fail-closed.
+	ErrNilPoolSizer = errors.New("sandbox: pool sizer nil")
+
 	// ErrReadOnlyRoot — tentativa de ESCRITA na raiz READ-ONLY do FS da microVM
 	// (AOS-066). A raiz é o snapshot base imutável; toda a escrita TEM de ir para o
 	// overlay efémero. Uma escrita fora do overlay (na raiz) falha de forma

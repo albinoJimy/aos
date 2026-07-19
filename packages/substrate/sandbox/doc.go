@@ -114,10 +114,43 @@
 // O [Launcher] recusa fail-closed correr sem raiz read-only ([ErrReadOnlyRootRequired])
 // ou sem perfil seccomp ([ErrNilSeccompProfile]).
 //
-// # Escopo (AOS-064/AOS-065/AOS-066)
+// # Pool em produção — dimensionamento derivado do headroom (AOS-103)
+//
+// O pool de AOS-065 pré-aquece um número CONSTANTE de VMs. Em produção o tamanho tem
+// de ACOMPANHAR o headroom real do provider (ADR-008), não ser um número mágico: mais
+// headroom ⇒ mais VMs pré-aquecidas (absorve picos sem cold-start); headroom nulo ⇒
+// pool a zero (degrada fail-closed, AOS-107, em vez de servir para lá do headroom).
+// AOS-103 acrescenta essa peça, de forma ADITIVA e ZERO-DEP, COMPONDO o pool base:
+//
+//   - [Pool.Resize] reajusta em runtime os alvos warm/max (deixam de ser constantes),
+//     crescendo por reposição e encolhendo por drenagem das VMs pré-aquecidas em
+//     excesso (overlays descartados — nunca reciclados). É SEMPRE limitado pelo tecto
+//     ABSOLUTO ([WithAbsoluteMax]) que dimensiona a fila: um headroom (ou adaptador)
+//     errado nunca faz o pool crescer para lá do limite físico.
+//   - [Autoscaler] observa uma [HeadroomSource] (porta ZERO-DEP em termos da sandbox)
+//     e aplica um [PoolSizer] puro/determinista ([DefaultPoolSizer]: monótono no
+//     headroom, zero sob headroom nulo — análogo a scheduler.deriveMaxSpawn).
+//   - Os SLIs do pool ([MetricPoolOccupancy] ocupação, [MetricPoolRecycle] reciclagem,
+//     além do cold-start p95 de AOS-065) tornam a pressão e a rotação observáveis.
+//
+// FRONTEIRA DE COMPOSIÇÃO. A fonte de verdade do headroom é o admission control do
+// escalonador (AOS-027/028), no plano de CONTROLO. A sandbox é SUBSTRATO e não pode
+// importá-lo (inverteria a dependência). Por isso a porta [HeadroomSource] é definida
+// aqui em unidades abstractas e o ADAPTADOR que traduz scheduler.HeadroomSnapshot para
+// essas unidades vive no COMPOSITION ROOT (ápice) — o mesmo padrão "porta no pilar +
+// adaptador no ápice" do egress (AOS-067) e da soberania do Event Store (AOS-100). Sem
+// esse adaptador ligado o autoscaling fica DORMENTE por omissão (retro-compatível): o
+// pool comporta-se como em AOS-065 com os alvos iniciais. O mecanismo está entregue e
+// provado aqui; a ligação da fonte real é wiring de ápice.
+//
+// # Escopo (AOS-064/AOS-065/AOS-066/AOS-103)
 //
 // Entregue: isolamento de processo/FS/kernel por execução e a mediação (AOS-064); o
 // pool com snapshot/restore + cold-start SLI (AOS-065); a raiz read-only + overlay
-// efémero + seccomp default-deny imposto no caminho de execução (AOS-066). NÃO
-// implementa rede (default-deny é AOS-067) nem o broker real (AOS-070).
+// efémero + seccomp default-deny imposto no caminho de execução (AOS-066); a rede
+// default-deny + egress allowlist (AOS-067, pacote [network]); e o dimensionamento do
+// pool derivado do headroom + SLIs de ocupação/reciclagem para produção (AOS-103). NÃO
+// implementa o broker real de credenciais (AOS-070) nem liga a fonte real de headroom
+// (adaptador de ápice). O restore real das microVMs (Firecracker/gVisor) é modelado
+// (sem KVM neste ambiente); o timing de produção < 125 ms é o alvo do SLI.
 package sandbox

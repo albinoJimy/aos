@@ -148,6 +148,8 @@ flowchart TB
 
 **Degradar com graça.** Quando o headroom se esgota, entra a **escada de degradação graciosa** com política declarativa: *shed* (rejeitar trabalho não-essencial) → *defer* (adiar para fila de baixa prioridade) → *degradar* (encaminhar para modelo mais barato via roteamento cost-aware) → *rejeitar* (fail-closed com sinal explícito). Isto substitui a acumulação ilimitada de fila e a cascata de timeouts por uma resposta previsível e observável. A mecânica de backpressure e de prioridade/aging detalha-se em `tecnica/03_Orquestracao_Escalonamento.md`.
 
+**Dimensionamento do pool derivado do headroom (AOS-103).** O pool de microVMs pré-aquecidas (`substrate/sandbox`, AOS-065) deixou de ter tamanho constante: o `Autoscaler` observa o headroom por uma **porta** (`HeadroomSource`, em unidades abstractas de capacidade) e aplica um `PoolSizer` puro/determinista (`DefaultPoolSizer`, análogo a `deriveMaxSpawn` do escalonador: `slots = disponível/custo_por_VM`, monótono no headroom, **zero sob headroom nulo**), reajustando os alvos *warm*/*max* via `Pool.Resize` — cresce por reposição, encolhe drenando as VMs pré-aquecidas em excesso (overlays descartados, nunca reciclados). O crescimento é **sempre limitado por um tecto absoluto** que dimensiona a fila: um headroom errado nunca faz o pool crescer para lá do limite físico. Sob headroom nulo o pool vai a zero e **degrada fail-closed** (não serve para lá do headroom) — a escada de degradação acima. A **fonte de verdade** do headroom é o admission control do escalonador (ADR-008); como a sandbox é substrato e não pode importar o plano de controlo, o **adaptador** `scheduler.HeadroomSnapshot` → porta vive no *composition root* (ápice) — o mesmo padrão "porta no pilar + adaptador no ápice" do egress (AOS-067). Os SLIs de **ocupação** e **reciclagem** do pool (secção 7) tornam a pressão e a rotação observáveis.
+
 ---
 
 ## 6. DR e recuperação por replay
@@ -195,6 +197,8 @@ A observação operacional deriva directamente da camada de observabilidade (ADR
 | Disponibilidade do plano de controlo | 99,9% | Erro > 0,1% em janela de 5 min | RB-04 (falha de PDP), geral |
 | Overhead de mediação (RM) p95 | < 15 ms | p95 > 15 ms sustentado | RB-04 |
 | Cold-start de sandbox | < 125 ms | pool esgotado ou p95 > 125 ms | escala (secção 5) |
+| Ocupação do pool de microVMs | headroom-relativa | ocupação ≈ 100% sustentada (pressão) | escala (secção 5) |
+| Taxa de reciclagem do pool | estável | pico de reciclagem (rotação de carga) | escala (secção 5) |
 | Cache-hit-rate de prompt | > 80% | queda abrupta (cache thrash) | observação de custo |
 | Headroom de tokens/$ | > 0 reservável | headroom < limiar de reserva | RB-01 (rate limit), RB-03 (orçamento) |
 | Fidelidade de replay | 100% dos passos | falha de reprodução em amostra | RB-05, DR |
