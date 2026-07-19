@@ -252,6 +252,21 @@ Event Store replicado por quorum sem SPOF; recuperação por replay determiníst
 ### 9.3 Observabilidade
 Trajectória completa em OTel GenAI semconv e audit hash-chain + WORM como base de dashboards, SLIs e alertas; padrão *wide events* (filtrar no query-time); cada alerta ligado a um runbook accionável; custo em USD por span. Ver ADR-010; detalhe em `tecnica/08_Observabilidade_Evals.md`.
 
+### 9.4 Hipercare e transição para operação em regime (AOS-108)
+
+Depois de a topologia, o DR, os dashboards, os alertas, os runbooks e a escala estarem entregues, o sistema entra num período de **hipercare**: operação vigiada de perto, com resposta acelerada, até que os SLOs se estabilizem e os runbooks provem eficácia. É **operacionalização e afinação — sem alterar o comportamento do sistema**. O plano versionado está em `docs/hipercare/plano.md` (duração, escalões de resposta, critérios de saída); o molde de transição em `docs/hipercare/transicao.md`.
+
+O **encerramento** é decidido por um gate **fail-closed** que *compõe* (não reimplementa) os contratos das peças — `packages/platform/hipercare` (`HipercareReport.CanExit`):
+
+| Critério de saída | Composição | Regra |
+|---|---|---|
+| SLOs canónicos sustentados | `otelgenai.OperationalSnapshot` (AOS-104) | cada SLO de saída avaliado (`Samples>0`), `Met` e sem breach; nenhum painel em breach |
+| Runbooks validados com MTTR | `runbooks.CanonicalIDs` (AOS-106) | cada RB-01..RB-05 validado com MTTR medido (> 0) |
+| Alertas calibrados | `otelgenai.OperationalAlertConfig` (AOS-105) | falsos-positivos depois ≤ antes; `override-rate` e `gate escape rate` medidos |
+| DR revalidado | `dr.GameDayEvidence` (AOS-102) | game day repetido com `Passed && RPOWithin && RTOWithin` |
+
+**Anti-vacuidade:** um SLO não avaliado (`Samples==0`) ou um runbook sem MTTR **não** contam como cumpridos — o hipercare **não** encerra sobre ausência de dados. O relatório de transição fecha com as métricas DORA (MTTR, *change failure rate*, *deploy freq.*, `specs/01` §9) e as acções de acompanhamento. Import DOWN (`platform/hipercare` → `otel-genai`/`dr`/`runbooks`); zero dependências externas; não importa o *control-plane*.
+
 ---
 
 ## 10. Riscos e mitigações
