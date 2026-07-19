@@ -12,6 +12,12 @@ packages/platform/audit/crypto.go|G407
 packages/platform/audit/crypto.go|G407
 packages/platform/audit/crypto.go|G407
 packages/platform/audit/record.go|G115
+packages/platform/backup/crypto.go|G407
+packages/platform/backup/crypto.go|G407
+packages/platform/backup/crypto.go|G407
+packages/platform/backup/crypto.go|G407
+packages/platform/backup/manifest.go|G115
+packages/platform/backup/restore.go|G115
 packages/platform/memory/compression/async_compactor.go|G101
 packages/platform/memory/episodic/crypto.go|G407
 packages/platform/memory/episodic/crypto.go|G407
@@ -34,6 +40,8 @@ packages/substrate/bus/metrics.go|G115
 packages/substrate/bus/metrics.go|G115
 packages/substrate/bus/metrics.go|G115
 packages/substrate/bus/metrics.go|G115
+packages/substrate/eventstore/backup.go|G115
+packages/substrate/eventstore/sharding.go|G115
 packages/substrate/eventstore/ulid.go|G115
 packages/substrate/eventstore/ulid.go|G115
 packages/substrate/otel-genai/semconv.go|G101
