@@ -42,4 +42,14 @@ var (
 	// de soberania do board (ADR-011), ou a sua região é ausente/desconhecida. A
 	// construção é recusada fail-closed: réplicas e backups NUNCA cruzam a fronteira.
 	ErrSovereigntyViolation = &StoreError{Code: "E_SOVEREIGNTY_VIOLATION", msg: "replica fora da fronteira regional de soberania (ou regiao ausente); fail-closed"}
+
+	// ErrRestoreOrder — um lote de restauro (IngestStream) não continua o log de
+	// forma gapless (seq esperado = último committed + 1, contíguo). O restauro
+	// preserva a ordem-por-stream; não abre buracos nem reescreve o passado.
+	ErrRestoreOrder = &StoreError{Code: "E_RESTORE_ORDER", msg: "lote de restauro nao e gapless a partir do ultimo seq committed"}
+
+	// ErrRestoreEnvelope — um evento de restauro tem envelope incoerente (StreamID
+	// diferente do stream alvo ou EventID vazio). O restauro reinsere o envelope
+	// intacto; recusa fail-closed qualquer envelope malformado.
+	ErrRestoreEnvelope = &StoreError{Code: "E_RESTORE_ENVELOPE", msg: "envelope de evento de restauro incoerente (stream_id/event_id)"}
 )
