@@ -1,3 +1,8 @@
+packages/control-plane/governance/autonomy/controller.go|G115
+packages/control-plane/governance/compliance/report.go|G115
+packages/control-plane/governance/compliance/report.go|G115
+packages/control-plane/governance/hitl/encode.go|G115
+packages/control-plane/governance/hitl/ratification.go|G101
 packages/control-plane/scheduler/breaker.go|G101
 packages/control-plane/scheduler/routing.go|G101
 packages/control-plane/scheduler/spawn_admission.go|G101
@@ -33,4 +38,6 @@ packages/substrate/eventstore/ulid.go|G115
 packages/substrate/eventstore/ulid.go|G115
 packages/substrate/otel-genai/semconv.go|G101
 packages/substrate/otel-genai/semconv.go|G101
+packages/substrate/redaction/token.go|G407
+packages/substrate/redaction/token.go|G407
 packages/substrate/sandbox/snapshot.go|G115
