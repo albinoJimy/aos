@@ -1,0 +1,88 @@
+{
+  "version": "1.0.0",
+  "sustained_windows": 3,
+  "rules": [
+    {
+      "sli": "control_plane_availability",
+      "name": "control_plane_availability_low",
+      "severity": "critical",
+      "route": {
+        "Runbook": "RB-04",
+        "Owner": "DevOps/SRE"
+      },
+      "sustained_windows": 1
+    },
+    {
+      "sli": "mediation_overhead_p95",
+      "name": "mediation_overhead_p95_high",
+      "severity": "critical",
+      "route": {
+        "Runbook": "RB-04",
+        "Owner": "DevOps/SRE"
+      },
+      "sustained_windows": 3
+    },
+    {
+      "sli": "sandbox_cold_start_p95",
+      "name": "sandbox_cold_start_p95_high",
+      "severity": "warning",
+      "route": {
+        "Runbook": "PROC-ESCALA",
+        "Owner": "DevOps/SRE"
+      },
+      "sustained_windows": 3
+    },
+    {
+      "sli": "cache_hit_rate",
+      "name": "cache_hit_rate_low_op",
+      "severity": "warning",
+      "route": {
+        "Runbook": "RB-03",
+        "Owner": "DevOps/SRE"
+      },
+      "sustained_windows": 3
+    },
+    {
+      "sli": "headroom_tokens",
+      "name": "headroom_rate_limit_collapse",
+      "severity": "critical",
+      "route": {
+        "Runbook": "RB-01",
+        "Owner": "DevOps/SRE"
+      },
+      "cause": "rate_limit_collapse",
+      "sustained_windows": 2
+    },
+    {
+      "sli": "headroom_tokens",
+      "name": "headroom_budget_exhaustion",
+      "severity": "critical",
+      "route": {
+        "Runbook": "RB-03",
+        "Owner": "DevOps/SRE"
+      },
+      "cause": "budget_exhaustion",
+      "sustained_windows": 2
+    },
+    {
+      "sli": "replay_fidelity",
+      "name": "replay_fidelity_low",
+      "severity": "critical",
+      "route": {
+        "Runbook": "RB-05",
+        "Owner": "DevOps/SRE"
+      },
+      "sustained_windows": 1
+    },
+    {
+      "sli": "audit_worm_integrity",
+      "name": "audit_worm_integrity_broken",
+      "severity": "critical",
+      "route": {
+        "Runbook": "PROC-DR",
+        "Owner": "Governação/Segurança"
+      },
+      "sustained_windows": 1
+    }
+  ]
+}
