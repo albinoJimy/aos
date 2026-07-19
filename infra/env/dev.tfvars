@@ -4,9 +4,26 @@
 environment = "dev"
 project     = "aos"
 
-# Rede: egress permitido para conveniência de desenvolvimento.
-network_internal = false
-network_subnet   = "172.28.0.0/16"
+# --- Topologia de planos: modelo de implantação e soberania (ADR-011) ---
+deployment_model    = "self_hosted"
+region              = "eu-west-1"
+sovereignty_board   = "eu"
+sovereignty_regions = ["eu-west-1", "eu-central-1"]
+# backup_region/replica_region omitidos => mesma região (fail-closed dentro do board).
+
+# --- Escala independente por plano ---
+control_plane_replicas     = 1
+data_plane_worker_replicas = 1
+microvm_pool_size          = 1
+
+# --- Rede por plano: default-deny + egress allowlist (ADR-004) ---
+# Sub-redes distintas por plano (não sobrepostas).
+network_subnet_control = "172.28.0.0/24"
+network_subnet_data    = "172.28.1.0/24"
+# Dev pode ter egress mais permissiva por conveniência, mas NUNCA 0.0.0.0/0:
+# aqui autoriza-se apenas o CIDR do proxy/registry de desenvolvimento (allowlist explícita).
+egress_allowlist_control = ["172.28.0.0/24"]
+egress_allowlist_data    = ["172.28.1.0/24"]
 
 # Event Store: single-node (arranque rápido).
 eventstore_image        = "nats:2.10-alpine"

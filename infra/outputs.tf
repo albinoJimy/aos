@@ -3,11 +3,41 @@ output "environment" {
   value       = var.environment
 }
 
-output "network_name" {
-  description = "Nome da rede Docker do ambiente."
-  value       = module.network.network_name
+# --- Topologia de planos (AOS-098) ---
+output "topology" {
+  description = "Resumo da topologia: modelo de implantação, planos e escala independente por plano."
+  value = {
+    deployment_model = var.deployment_model
+    control_plane = {
+      network         = module.network_control.network_name
+      egress_posture  = module.network_control.egress_posture
+      roles           = module.control_plane.roles
+      replicas        = module.control_plane.replicas
+      component_count = length(module.control_plane.component_names)
+    }
+    data_plane = {
+      network           = module.network_data.network_name
+      egress_posture    = module.network_data.egress_posture
+      worker_replicas   = module.data_plane.worker_replicas
+      microvm_pool_size = module.data_plane.microvm_pool_size
+      event_store_nodes = module.eventstore.cluster_size
+    }
+  }
 }
 
+# --- Guardrail de soberania (ADR-011) ---
+output "sovereignty" {
+  description = "Fronteira de soberania efectiva: board, regiões admissíveis e regiões efectivas de backup/réplica."
+  value = {
+    board             = var.sovereignty_board
+    region            = var.region
+    allowed_regions   = local.sovereignty_allowed_regions
+    effective_backup  = local.effective_backup_region
+    effective_replica = local.effective_replica_region
+  }
+}
+
+# --- Endpoints ---
 output "eventstore_client_url" {
   description = "URL de cliente do Event Store (NATS) — consumido por substrate/ES."
   value       = module.eventstore.client_url
@@ -32,9 +62,10 @@ output "vault_dev_root_token" {
 output "endpoints" {
   description = "Resumo de endpoints do ambiente para arranque rápido."
   value = {
-    event_store = module.eventstore.client_url
-    monitoring  = module.eventstore.monitoring_url
-    vault       = module.secrets.address
-    network     = module.network.network_name
+    event_store     = module.eventstore.client_url
+    monitoring      = module.eventstore.monitoring_url
+    vault           = module.secrets.address
+    network_control = module.network_control.network_name
+    network_data    = module.network_data.network_name
   }
 }

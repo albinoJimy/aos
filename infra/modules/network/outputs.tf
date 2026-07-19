@@ -9,6 +9,16 @@ output "network_id" {
 }
 
 output "internal" {
-  description = "Se a rede é interna (sem egress)."
+  description = "Se a rede é interna (sem egress). true quando a allowlist está vazia (deny-all)."
   value       = docker_network.this.internal
+}
+
+output "egress_posture" {
+  description = "Postura de egress: 'deny-all' (allowlist vazia) ou 'allowlist' (CIDRs explícitos)."
+  value       = local.deny_all ? "deny-all" : "allowlist"
+}
+
+output "egress_allowlist" {
+  description = "Destinos CIDR explicitamente autorizados a egress (ADR-004)."
+  value       = var.egress_allowlist
 }

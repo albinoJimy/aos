@@ -4,9 +4,25 @@
 environment = "staging"
 project     = "aos"
 
-# Rede: interna (egress default-deny) — endurecimento face a dev (ADR-004 / Princípio 7).
-network_internal = true
-network_subnet   = "172.29.0.0/16"
+# --- Topologia de planos: modelo de implantação e soberania (ADR-011) ---
+deployment_model    = "on_prem"
+region              = "eu-west-1"
+sovereignty_board   = "eu"
+sovereignty_regions = ["eu-west-1", "eu-central-1"]
+# backup_region/replica_region dentro da região (dados nunca saem da fronteira).
+backup_region  = "eu-west-1"
+replica_region = "eu-west-1"
+
+# --- Escala independente por plano (plano de controlo e de dados escalam separadamente) ---
+control_plane_replicas     = 2
+data_plane_worker_replicas = 3
+microvm_pool_size          = 3
+
+# --- Rede por plano: default-deny ESTRITO (egress allowlist VAZIA = deny-all, ADR-004) ---
+network_subnet_control   = "172.29.0.0/24"
+network_subnet_data      = "172.29.1.0/24"
+egress_allowlist_control = []
+egress_allowlist_data    = []
 
 # Event Store: cluster replicado, sem SPOF (ADR-007).
 eventstore_image        = "nats:2.10-alpine"

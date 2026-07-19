@@ -99,6 +99,8 @@ flowchart TB
 
 **Porquê esta separação.** Manter o PDP e o admission control fora do caminho de dados significa que a decisão de política e de orçamento não escala com o volume de execução — escala com o número de tool calls, avaliada em memória com política compilada (overhead de mediação p95 < 15 ms). O Event Store replicado remove o único ponto de falha do single-writer do plano-base e passa a suportar leituras de replay e escritas de eventos de múltiplos workers em paralelo.
 
+**Materialização por IaC (AOS-098).** A separação de planos não é apenas lógica: o IaC em `infra/` instancia o módulo `network` **uma vez por plano** (rede de controlo e rede de dados, ambas *default-deny* com egress allowlist explícita — ADR-004) e dois módulos de *scaffold*, `control-plane` (ORQ/SCH/ADM/PDP) e `data-plane` (workers + pool de microVMs), cada um com a **sua contagem de réplicas** (`control_plane_replicas`, `data_plane_worker_replicas`, `microvm_pool_size`) — donde a escala independente de cada plano. Os componentes ficam como *placeholders* mínimos; a lógica interna é entregue por AOS-099 (workers *stateless* + estado particionado), AOS-100 (replicação do Event Store) e AOS-103 (pool de microVMs). O Event Store (módulo `eventstore`) e o audit WORM vivem no plano de dados; o Credential Broker/Vault no plano de controlo.
+
 ---
 
 ## 4. Opções de implantação
@@ -112,6 +114,8 @@ O AOS é um blueprint neutro quanto ao provedor. A mesma topologia lógica mater
 | **Nuvem (managed)** | Serviços geridos (log replicado, filas push); KMS gerido | gVisor ou microVM em instâncias com virtualização aninhada | Elasticidade rápida; **failover proibido de cruzar fronteira regional** (ADR-011) |
 
 Em qualquer modelo mantêm-se invariantes: rede **default-deny** com egress allowlist no substrato (ADR-004), Credential Broker + Vault server-side (ADR-006), e a allowlist regional de modelos no Model Gateway. A soberania por *board* impõe que o failover nunca atravesse uma fronteira regional — restrição que se aplica igualmente à réplica do Event Store e aos backups de DR.
+
+**Parametrização e guardrails por IaC (AOS-098).** O IaC parametriza os três modelos via `deployment_model ∈ {self_hosted, on_prem, cloud}` (validação fail-closed que rejeita qualquer outro valor). A fronteira de soberania é declarada por `region` + `sovereignty_board` + `sovereignty_regions`, e um **guardrail fail-closed** (validação de variável, disparada em *input-time* antes de qualquer ligação ao provider) **falha o `plan`/`validate`** se `backup_region` ou `replica_region` cruzarem a fronteira regional — igual a `region` ou dentro do *board*, nunca fora (ADR-011). No modelo cloud, o estado remoto é cifrado (`encrypt = true` em `backend-<env>.hcl`). Estes guardrails são verificáveis **offline** pelos testes nativos `infra/tests/*.tftest.hcl` (`tofu test` com `mock_provider`), sem daemon Docker.
 
 ---
 
