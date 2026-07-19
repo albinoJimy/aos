@@ -72,6 +72,26 @@ const (
 	// MetricHeadroomUtilization (gauge, 0..1) — utilização do TPM/RPM real
 	// (reservado/limite). Atributo aos.scheduler.dimension: tokens|requests.
 	MetricHeadroomUtilization = "aos.scheduler.headroom.utilization"
+
+	// --- ESCALA HORIZONTAL + DEGRADAÇÃO GLOBAL (AOS-107) ---
+
+	// MetricDispatchWaitP95 (gauge, ms) — p95 do TEMPO DE ESPERA/DESPACHO do
+	// scheduler (percentil nearest-rank sobre os WaitMs do Dispatcher, janela
+	// deslizante). É o SLI de latência que, com a profundidade de fila, dirige o
+	// scale-out (AC1). Emitido pelo [WaitP95Recorder].
+	MetricDispatchWaitP95 = "aos.scheduler.dispatch.wait_p95_ms"
+	// MetricDegradationLevel (gauge, 0..4) — o DEGRAU CORRENTE da escada de
+	// degradação graciosa: 0=nenhum, 1=shed, 2=defer, 3=downgrade, 4=reject. Sobe
+	// conforme a pressão agregada quando o headroom se esgota (AC4/AC5). Atributo
+	// aos.scheduler.action com a acção activa. Liga ao alerta de headroom (RB-01/RB-03).
+	MetricDegradationLevel = "aos.scheduler.degradation.level"
+	// MetricDesiredReplicas (gauge) — o alvo de réplicas de worker DERIVADO dos SLIs
+	// e LIMITADO pelo headroom (nunca ultrapassa o max_spawn real, ADR-008). É o SINAL
+	// de escala emitido pelo [HorizontalScaler]; a aplicação real vive no ápice.
+	MetricDesiredReplicas = "aos.scheduler.scale.desired_replicas"
+	// MetricActualReplicas (gauge) — as réplicas de worker CORRENTES observadas (para
+	// o gap desejado-vs-actual). 0 sem fonte de contagem acoplada.
+	MetricActualReplicas = "aos.scheduler.scale.actual_replicas"
 )
 
 // ---------------------------------------------------------------------------
@@ -103,6 +123,9 @@ const (
 	// conhecido (ex.: spawn com sub-orçamento reservado). Torna a dimensão $ do
 	// orçamento visível na observabilidade (ADR-010).
 	AttrMetricCostMicroUSD = "aos.scheduler.cost_micro_usd"
+	// AttrMetricScaleReason — motivo da decisão de escala (scale_out|scale_in|steady|
+	// headroom_exhausted). Torna a direcção do sinal de réplicas consultável.
+	AttrMetricScaleReason = "aos.scheduler.scale_reason"
 )
 
 // Motivos de defer estáveis (valores do atributo AttrMetricDeferReason).
@@ -363,6 +386,10 @@ type SchedulerMetrics struct {
 	hrFreeReq     Gauge
 	hrReserved    Gauge
 	hrUtil        Gauge
+	waitP95       Gauge
+	degLevel      Gauge
+	desiredRepl   Gauge
+	actualRepl    Gauge
 }
 
 // NewSchedulerMetrics constrói a fachada sobre uma [Meter]. Meter nil ⇒ [NoopMeter].
@@ -382,6 +409,10 @@ func NewSchedulerMetrics(m Meter) *SchedulerMetrics {
 		hrFreeReq:     m.Gauge(MetricHeadroomFreeRequests),
 		hrReserved:    m.Gauge(MetricHeadroomReservedTokens),
 		hrUtil:        m.Gauge(MetricHeadroomUtilization),
+		waitP95:       m.Gauge(MetricDispatchWaitP95),
+		degLevel:      m.Gauge(MetricDegradationLevel),
+		desiredRepl:   m.Gauge(MetricDesiredReplicas),
+		actualRepl:    m.Gauge(MetricActualReplicas),
 	}
 }
 
@@ -439,6 +470,49 @@ func (s *SchedulerMetrics) RecordSpawnDeferred(ctx context.Context, key Provider
 		return
 	}
 	s.spawnDeferred.Add(ctx, 1, append(keyAttrs(key, tenant), extra...)...)
+}
+
+// RecordWaitP95 emite o gauge do p95 do tempo de espera/despacho do scheduler (em
+// ms). É o SLI de latência que dirige o scale-out (AOS-107). Emitido pelo
+// [WaitP95Recorder] a cada observação (padrão do ColdStartRecorder).
+func (s *SchedulerMetrics) RecordWaitP95(ctx context.Context, valueMs float64, extra ...Attr) {
+	if s == nil {
+		return
+	}
+	s.waitP95.Set(ctx, valueMs, extra...)
+}
+
+// RecordDegradationLevel emite o gauge do DEGRAU CORRENTE da escada de degradação
+// (0=nenhum..4=reject), com a acção activa. É o sinal observável de AC5 que liga ao
+// alerta de headroom (RB-01/RB-03).
+func (s *SchedulerMetrics) RecordDegradationLevel(ctx context.Context, level int, action DegradationAction, tenant string, extra ...Attr) {
+	if s == nil {
+		return
+	}
+	attrs := []Attr{
+		{Key: AttrMetricAction, Value: string(action)},
+		{Key: AttrMetricTenant, Value: tenant},
+	}
+	s.degLevel.Set(ctx, float64(level), append(attrs, extra...)...)
+}
+
+// RecordDesiredReplicas emite o gauge do alvo de réplicas derivado dos SLIs e
+// limitado pelo headroom (com o motivo da decisão de escala).
+func (s *SchedulerMetrics) RecordDesiredReplicas(ctx context.Context, key ProviderKey, tenant string, n int, reason string, extra ...Attr) {
+	if s == nil {
+		return
+	}
+	attrs := append(keyAttrs(key, tenant), Attr{Key: AttrMetricScaleReason, Value: reason})
+	s.desiredRepl.Set(ctx, float64(n), append(attrs, extra...)...)
+}
+
+// RecordActualReplicas emite o gauge das réplicas de worker correntes observadas
+// (para o gap desejado-vs-actual).
+func (s *SchedulerMetrics) RecordActualReplicas(ctx context.Context, key ProviderKey, tenant string, n int, extra ...Attr) {
+	if s == nil {
+		return
+	}
+	s.actualRepl.Set(ctx, float64(n), append(keyAttrs(key, tenant), extra...)...)
 }
 
 // ObserveHeadroom emite os gauges de headroom (livre, reservado, utilização) de

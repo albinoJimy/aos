@@ -26,9 +26,10 @@
 //     não uma métrica com SLO. Fica no registo como runbook SEM alerta, com
 //     justificação ([Entry.NoAlertReason]) — não é um órfão silencioso.
 //   - PROC-DR e PROC-ESCALA são FORWARD-REFS a runbooks de OUTROS tickets (AOS-102 /
-//     AOS-107). PROC-DR já existe (README de platform/dr); PROC-ESCALA é forward-ref
-//     PENDENTE ([Entry.Pending]). O registo aceita-os como referências marcadas, NÃO
-//     como órfãos — todo o ID que um alerta referencia tem entrada.
+//     AOS-107). Ambos JÁ existem: PROC-DR no README de platform/dr; PROC-ESCALA em
+//     docs/runbooks/PROC-ESCALA.md (escrito pelo AOS-107, que fecha o forward-ref). O
+//     registo aceita-os como referências marcadas, NÃO como órfãos — todo o ID que um
+//     alerta referencia tem entrada.
 package runbooks
 
 import (
@@ -75,8 +76,9 @@ type Entry struct {
 	// OwnerTicket é o ticket dono da documentação (AOS-106 nos canónicos; AOS-102/107
 	// nos forward-refs).
 	OwnerTicket string
-	// Pending marca um forward-ref cujo runbook ainda NÃO foi escrito (PROC-ESCALA →
-	// AOS-107). Aceite pelo registo como pendente-documentado, nunca como órfão silencioso.
+	// Pending marca um forward-ref cujo runbook ainda NÃO foi escrito. Aceite pelo
+	// registo como pendente-documentado, nunca como órfão silencioso. Ambos os
+	// forward-refs (PROC-DR, PROC-ESCALA) já estão escritos, logo Pending=false.
 	Pending bool
 	// Alert é o nome do alerta de AOS-105 ligado a este runbook (contrato estável de
 	// otel-genai). Vazio quando o runbook não tem SLI-alerta (RB-02) — nesse caso
@@ -137,7 +139,7 @@ var registry = []Entry{
 	},
 	{
 		ID: otelgenai.ProcScaleOut, Title: "Procedimento de escala (pool/cold-start)",
-		Kind: KindForwardRef, DocPath: "", OwnerTicket: "AOS-107", Pending: true,
+		Kind: KindForwardRef, DocPath: "docs/runbooks/PROC-ESCALA.md", OwnerTicket: "AOS-107", Pending: false,
 		Alert: otelgenai.AlertSandboxColdStartP95High,
 	},
 }

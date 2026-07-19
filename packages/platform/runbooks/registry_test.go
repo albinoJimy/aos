@@ -121,9 +121,11 @@ func TestRB02_NoAlertButRegistered(t *testing.T) {
 }
 
 // TestForwardRefs_Marked: PROC-DR e PROC-ESCALA estão no registo como forward-refs
-// marcados — PROC-DR já documentado (AOS-102), PROC-ESCALA pendente (AOS-107). Ambos
-// referenciados por alertas de AOS-105, logo NÃO podem ser órfãos.
+// marcados — PROC-DR documentado (AOS-102), PROC-ESCALA documentado (AOS-107, que
+// fechou o forward-ref). Ambos referenciados por alertas de AOS-105, logo NÃO podem
+// ser órfãos; ambos não-pendentes com o seu doc a existir no repo.
 func TestForwardRefs_Marked(t *testing.T) {
+	root := repoRoot(t)
 	dr, ok := Lookup(otelgenai.ProcDisasterRecovery)
 	if !ok {
 		t.Fatal("PROC-DR ausente do registo")
@@ -142,8 +144,15 @@ func TestForwardRefs_Marked(t *testing.T) {
 	if esc.Kind != KindForwardRef {
 		t.Errorf("PROC-ESCALA Kind = %q, quero forward_ref", esc.Kind)
 	}
-	if esc.OwnerTicket != "AOS-107" || !esc.Pending {
-		t.Errorf("PROC-ESCALA = %+v, quero owner AOS-107 e PENDENTE (forward-ref para AOS-107)", esc)
+	if esc.OwnerTicket != "AOS-107" || esc.Pending {
+		t.Errorf("PROC-ESCALA = %+v, quero owner AOS-107 e NÃO-pendente (AOS-107 escreveu o runbook)", esc)
+	}
+	if esc.DocPath == "" {
+		t.Fatal("PROC-ESCALA sem DocPath (AOS-107 devia tê-lo preenchido)")
+	}
+	// O doc referenciado existe no repo (a entrada resolve para um ficheiro real).
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(esc.DocPath))); err != nil {
+		t.Errorf("doc de PROC-ESCALA não existe em %s: %v", esc.DocPath, err)
 	}
 }
 
