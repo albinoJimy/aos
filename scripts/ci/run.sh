@@ -8,6 +8,7 @@
 #   security(4 cenários adversariais de segurança AOS-075)
 #   9) evalgate(eval harness + golden-sets curados / admission control AOS-114)
 #   scale(carga/escala: admission global + backpressure + degradação AOS-116)
+#   dr-e2e(teste de fogo DR/replay: node loss → failover → resume-from-step AOS-118)
 #   4) sast  5) sca  6) policy-test
 #
 # Fail-closed: corre TODOS os gates para dar visibilidade completa, mas termina
@@ -24,7 +25,7 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$CI_DIR/lib.sh"
 
-ALL_GATES=(secrets build lint test replay memory supplychain routing security evalgate scale sast sca policy-test)
+ALL_GATES=(secrets build lint test replay memory supplychain routing security evalgate scale dr-e2e sast sca policy-test)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 

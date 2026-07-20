@@ -11,7 +11,7 @@
 #
 # ─── REQUIRED CHECKS (bloqueiam o merge na branch principal) ──────────────────
 # Configurar em Settings → Branches → branch protection de `main`, exigindo os
-# checks: build · lint · test · replay · memory · supplychain · routing · security · evalgate · scale · sast · sca · policy-test · gates. O job `gates`
+# checks: build · lint · test · replay · memory · supplychain · routing · security · evalgate · scale · dr-e2e · sast · sca · policy-test · gates. O job `gates`
 # agrega os anteriores para um único gate obrigatório conveniente. O scan de
 # segredos (regra transversal de specs/01 §4) é pré-condição de merge e corre em
 # `lint` como passo dedicado.
@@ -171,6 +171,20 @@ jobs:
       - name: Gate scale (saturação agregada · degradação em ordem · filas limitadas · breaker · NFRs)
         run: bash scripts/ci/scale.sh
 
+  # Gate de DR/replay end-to-end — teste de fogo (suite AOS-118, o que FECHA o EPIC-11).
+  # Fail-closed: perda de evento confirmado, efeito duplicado, failover cross-border, MTTR
+  # acima do alvo, ou um meta-teste que deixe de detectar torna o gate vermelho.
+  dr-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: "packages/**/go.sum"
+      - name: Gate dr-e2e (node loss · failover · resume-from-step · zero-loss/zero-dup · soberania · MTTR)
+        run: bash scripts/ci/dr-e2e.sh
+
   sast:
     runs-on: ubuntu-latest
     steps:
@@ -219,7 +233,7 @@ jobs:
   # Gate agregador conveniente para branch protection (required check único).
   gates:
     runs-on: ubuntu-latest
-    needs: [secrets, build, lint, test, replay, memory, supplychain, routing, security, evalgate, scale, sast, sca, policy-test, selftest]
+    needs: [secrets, build, lint, test, replay, memory, supplychain, routing, security, evalgate, scale, dr-e2e, sast, sca, policy-test, selftest]
     steps:
       - name: Todos os gates verdes
         run: echo "Todos os gates de CI passaram (fail-closed)."
