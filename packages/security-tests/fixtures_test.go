@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -80,9 +81,11 @@ func mustCorpus(t *testing.T) *corpus {
 	return c
 }
 
-// effectivePayload decodifica o payload conforme a codificação (base64 → texto;
-// plain/homoglyph → tal e qual). Um vector com codificação desconhecida é um erro
-// (fail-closed: uma má-entrada de corpus não passa despercebida).
+// effectivePayload decodifica o payload conforme a codificação, revelando a instrução/
+// alvo EFECTIVO que a ofuscação esconde: base64 → texto; symlink → o caminho CANÓNICO
+// (deref de symlinks sintéticos + colapso lexical de travessia .,..); plain/homoglyph →
+// tal e qual. Um vector com codificação desconhecida é um erro (fail-closed: uma
+// má-entrada de corpus não passa despercebida).
 func effectivePayload(v promptInjectionVector) (string, error) {
 	switch v.Encoding {
 	case "plain", "homoglyph":
@@ -93,9 +96,46 @@ func effectivePayload(v promptInjectionVector) (string, error) {
 			return "", fmt.Errorf("base64 invalido em %q: %w", v.ID, err)
 		}
 		return string(raw), nil
+	case "symlink":
+		return resolveObfuscatedPath(v.Payload), nil
 	default:
 		return "", fmt.Errorf("codificacao desconhecida %q em %q", v.Encoding, v.ID)
 	}
+}
+
+// testSymlinks é uma tabela SINTÉTICA de symlinks (determinista, offline — NUNCA toca no
+// filesystem real; sem alvos/segredos reais). Modela um link cujo destino é um directório
+// sensível, para exercitar a ofuscação por symlink sem I/O.
+var testSymlinks = map[string]string{
+	"/srv/exports": "/etc", // /srv/exports é um symlink para /etc
+}
+
+// resolveObfuscatedPath de-ofusca um caminho: dereferencia symlinks sintéticos (por
+// prefixo mais-longo, [testSymlinks]) e colapsa a travessia lexical (. e ..) com
+// [path.Clean], revelando o ALVO CANÓNICO que a ofuscação symlink/path-traversal esconde
+// — o análogo, para caminhos, do decode base64. É puro, determinista e limitado (sem
+// ciclos de symlink). Um caminho já-canónico é ponto-fixo (idempotente).
+func resolveObfuscatedPath(p string) string {
+	const maxHops = 16
+	for range make([]struct{}, maxHops) {
+		cleaned := path.Clean(p)
+		// Deref do symlink de PREFIXO MAIS-LONGO (determinista, independente da ordem
+		// de iteração do map).
+		bestSrc, bestDst := "", ""
+		for src, dst := range testSymlinks {
+			if cleaned != src && !strings.HasPrefix(cleaned, src+"/") {
+				continue
+			}
+			if len(src) > len(bestSrc) {
+				bestSrc, bestDst = src, dst
+			}
+		}
+		if bestSrc == "" {
+			return cleaned // ponto-fixo: sem mais symlinks a resolver
+		}
+		p = bestDst + cleaned[len(bestSrc):]
+	}
+	return path.Clean(p)
 }
 
 // ===========================================================================

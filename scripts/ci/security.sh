@@ -38,15 +38,18 @@ setup_env
 SEC_MOD="packages/security-tests"
 SUITE_PKG="./..."
 
-# Testes OBRIGATÓRIOS: os 4 cenários (12 testes) + os 8 meta-testes (detecção) + o corpus
-# versionado + o relatório. require_tests exige que TODOS tenham corrido (fail-closed
-# contra vacuous pass).
+# Testes OBRIGATÓRIOS: os cenários adversariais (EPIC-07: prompt injection, exfiltração,
+# segredos, isolamento; ESTENDIDOS por AOS-117/EPIC-11: memory poisoning, hallucination
+# gate, re-aprovação de schema MCP, cenário 1 reforçado com o PDP REAL) + os meta-testes
+# de detecção não-vácua + o corpus versionado + o relatório. require_tests exige que TODOS
+# tenham corrido (fail-closed contra vacuous pass).
 REQUIRED=(
   TestPromptInjection_ToolResult_Blocked
   TestPromptInjection_Web_Blocked
   TestPromptInjection_Memory_Blocked
   TestPromptInjection_CorpusBattery_AllBlocked
   TestPromptInjection_ProvenanceLaunderingResisted
+  TestPromptInjection_SymlinkTraversal_Blocked
   TestExfiltration_EgressOutsideAllowlist_BlockedAndAudited
   TestExfiltration_DNSTunneling_BlockedAndAudited
   TestExfiltration_BenignToolMislabeled_Blocked
@@ -55,6 +58,7 @@ REQUIRED=(
   TestIsolation_SeccompBlocksOutsideAllowlist
   TestIsolation_NoHostSocket
   TestMetaDetects_PromptInjection_WhenTaintGateBypassed
+  TestMetaDetects_SymlinkObfuscation_WhenPathNotResolved
   TestMetaDetects_EgressExfiltration_WhenAllowlistOpen
   TestMetaDetects_MislabeledEgress_WhenDestinationDerivable
   TestMetaDetects_DNSTunneling_WhenFilterBypassed
@@ -62,6 +66,24 @@ REQUIRED=(
   TestMetaDetects_OverlayPersistence_WhenReused
   TestMetaDetects_SeccompBypass_WhenProfileOpen
   TestMetaDetects_HostSocket_WhenBoundaryWeakened
+  TestMemoryPoisoning_UntrustedAdmittedToQuarantine
+  TestMemoryPoisoning_SealTrustedForged_Rejected
+  TestMemoryPoisoning_DerivedStaysUntrusted
+  TestMemoryPoisoning_TypeBarrier_CompileContract
+  TestHallucinationGate_LegitMessagePasses
+  TestHallucinationGate_ForgedOrigin_BlockedAndSealed
+  TestHallucinationGate_AuthorityNotCovered_BlockedAndSealed
+  TestHallucinationGate_ReferenceInauthentic_BlockedAndSealed
+  TestHallucinationGate_Replay_Blocked
+  TestMCPReapproval_SchemaDrift_BlockedAndReapprovalGated
+  TestMCPReapproval_VersionRegression_Refused
+  TestPDPLayered_AllowlistDeniesUnpermittedCapability
+  TestPDPLayered_TaintGateDeniesUntrustedForPermittedCapability
+  TestPDPLayered_PDPOwnTaintRuleDeniesHTTPPost
+  TestMetaDetects_MemoryPoisoning_WhenClassifiedTrusted
+  TestMetaDetects_HallucinationGate_WhenForgedAccepted
+  TestMetaDetects_MCPReapproval_WhenDigestUnchanged
+  TestMetaDetects_PDPLayered_WhenTaintGateAbsent
   TestCorpusVersionedAndExtensible
   TestSuiteReportEmitted
 )
@@ -70,7 +92,7 @@ REQUIRED=(
 # bónus por substring.
 RE="^($(IFS='|'; echo "${REQUIRED[*]}"))\$"
 
-log_gate "security (AOS-075) · 4 cenários adversariais (prompt injection · exfiltração · segredos · isolamento) fail-closed"
+log_gate "security (AOS-075 + AOS-117) · cenários adversariais (prompt injection · exfiltração · segredos · isolamento · memory poisoning · hallucination gate · re-aprovação MCP · PDP real) fail-closed"
 
 # (1) require_tests: os testes obrigatórios (incl. meta-testes) CORRERAM e passaram
 # (não-vazio, fail-closed). É o coração do gate — a prova de que a suite não é vacuous.

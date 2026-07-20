@@ -37,7 +37,41 @@
 // vácua (sempre verdadeira), o meta-teste falharia — juntos provam que a suite discrimina
 // genuinamente, não é green-vazio. A dimensão de PROVENIÊNCIA da prompt injection (laundering
 // untrusted→trusted, que a variedade de codificação do corpus não exercita por a defesa ser
-// content-blind) é discriminada por TestPromptInjection_ProvenanceLaunderingResisted.
+// content-blind) é discriminada por TestPromptInjection_ProvenanceLaunderingResisted. A
+// OFUSCAÇÃO por symlink / path-traversal (AC1, a par de base64/metacaracteres) é coberta
+// por TestPromptInjection_SymlinkTraversal_Blocked: um recurso de aparência benigna que
+// resolve (deref de symlink + travessia .,..) para um alvo sensível é NEGADO na mesma —
+// a ofuscação do recurso é irrelevante para o gate (decide por taint, não por caminho); o
+// meta-teste TestMetaDetects_SymlinkObfuscation_WhenPathNotResolved prova que a
+// de-ofuscação de caminho é mesmo necessária (o caminho bruto esconde o alvo).
+//
+// NOTA sobre "mediação" nos cenários 5–7: a mediação faz-se pelo PEP APROPRIADO AO
+// DOMÍNIO — ingestão de memória (provenance.Ingestor/Partition), verificação de mensagem
+// (messaging.Verifier) e re-validação de schema (tofu.Monitor) — porque essas superfícies
+// NÃO são tool calls. A mediação pelo Reference Monitor (Monitor.Mediate) é a superfície
+// das TOOL CALLS (cenários 1 e 8). Em qualquer caso, cada tentativa é mediada por um
+// controlo de produção REAL e selada tamper-evident.
+//
+// # Extensão AOS-117 (EPIC-11) — quatro cenários adversariais adicionais
+//
+// A suite é ESTENDIDA (nunca alterada) por AOS-117 com mais quatro cenários, cada um a
+// COMPOR primitivos REAIS e com o seu META-TESTE de detecção não-vácua:
+//
+//  5. MEMORY POISONING (AOS-042) — memória de origem untrusted (tool result / web /
+//     schema MCP / derivada) é admitida na Quarentena (data-plane), NUNCA na TrustedView;
+//     a proveniência é selada e imutável; um Seal de trusted forjado é recusado
+//     (ErrSealTrustedForbidden); e a barreira de TIPO impede a escalada — um DataItem em
+//     quarentena não implementa PrivilegedAuthorizer (item.AuthorizeToolCall nem compila).
+//  6. HALLUCINATION GATE (AOS-073) — uma mensagem inter-agente com origem FORJADA
+//     (assinatura vs chave pinada), autoridade NÃO coberta, referência INAUTÊNTICA ou
+//     replay é rejeitada fail-closed e selada no WORM; uma mensagem legítima passa.
+//  7. RE-APROVAÇÃO DE SCHEMA MCP (AOS-049) — schema drift do manifesto (rug-pull) é
+//     detectado e bloqueado (ErrSchemaDrift); a re-aprovação in-band na MESMA versão
+//     SemVer é recusada (ErrInBandReapproval); só uma nova versão recupera a confiança.
+//  8. CENÁRIO 1 REFORÇADO COM O PDP REAL (AOS-113) — o PDP (bundle Cedar assinado +
+//     allowlist default-deny) COMO hook "policy", com o TaintGate como defesa-em-
+//     profundidade: assere QUAL a camada nega (allowlist → DeniedBy "policy"; taint →
+//     DeniedBy "taint").
 //
 // # Corpus versionado e extensível
 //
