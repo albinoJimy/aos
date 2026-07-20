@@ -9,8 +9,11 @@
 // função Metrics func(id, v) (goldenScore float64, traceDiffRegressions int) — o godoc
 // desses tipos diz que "em produção viria do harness de EPIC-11". É EXACTAMENTE esse
 // ponto que este pacote liga: o harness fornece o GoldenSetScore (o success-rate
-// agregado sobre os golden-sets do candidato) e, por agora, 0 regressões de
-// trace-diffing (AOS-115, fora do âmbito de AOS-114).
+// agregado sobre os golden-sets do candidato) e a contagem de regressões de
+// trace-diffing. Há DOIS caminhos: os construtores base ([NewPromotionGate]/
+// [NewProceduralGate]) devolvem 0 regressões (só o sinal golden-set, AOS-114); as
+// variantes [NewPromotionGateVsBaseline]/[NewProceduralGateVsBaseline] (AOS-115)
+// alimentam a contagem REAL de regressões vs uma baseline aprovada — o segundo sinal.
 //
 // NÃO se reimplementa a ratificação, o canary nem os gates dos consumidores — só se
 // injecta a métrica. Este pacote é isolado do core do harness (que importa apenas o
@@ -34,6 +37,7 @@ import (
 	memschema "github.com/aos-ref/platform/memory/schema"
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/promotion"
+	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
 // rejectScore é um score que reprova qualquer limiar de golden-set >= 0 (o
@@ -69,7 +73,8 @@ func metrics(h eval.Harness, resolve CandidateResolver, id string) (float64, int
 		return rejectScore, rejectRegressions
 	}
 	// Admitido: o GoldenSetScore é o success-rate agregado; 0 regressões de trace-diff
-	// (AOS-115 fora do âmbito — o segundo sinal liga-se depois via otelgenai.TraceDiff).
+	// (este caminho base só carrega o sinal golden-set — o segundo sinal vem do caminho
+	// VsBaseline, ver [metricsVsBaseline]).
 	return res.AggregateSuccessRate(), 0
 }
 
@@ -110,5 +115,90 @@ func NewProceduralGate(h eval.Harness, resolve CandidateResolver, minGoldenSetSc
 		MinGoldenSetScore:       minGoldenSetScore,
 		MaxTraceDiffRegressions: maxTraceDiffRegressions,
 		Metrics:                 ProceduralMetrics(h, resolve),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trace-diffing vs baseline (AOS-115): a contagem REAL de regressões
+// ---------------------------------------------------------------------------
+//
+// Os construtores acima devolvem 0 regressões (o placeholder de AOS-114). As variantes
+// VsBaseline abaixo alimentam a contagem REAL de regressões de trace-diffing vs uma
+// baseline aprovada — o SEGUNDO sinal do eval-gate. São ADITIVAS: não alteram a
+// assinatura de [CandidateResolver] nem os construtores existentes; acrescentam um
+// [BaselineResolver] (resolve também as baselines por golden-set) e uma
+// [otelgenai.TraceDiffConfig] configurável (os limiares ruído-vs-regressão, AC2). O
+// ThresholdEvalGate já reprova quando as regressões excedem MaxTraceDiffRegressions —
+// aqui só se lhe passa o número real.
+
+// BaselineResolver resolve o id de um artefacto candidato para o [eval.Candidate] sob
+// teste, os seus golden-sets E as baselines APROVADAS por golden-set (indexadas por
+// [eval.GoldenSet].EvalID). ok=false ⇒ desconhecido ⇒ fail-closed. É a variante ciente
+// de baseline do [CandidateResolver] — o wiring liga-a ao registo de artefactos
+// aprovados/candidatos; os testes passam um resolver determinista.
+type BaselineResolver func(id string) (candidate eval.Candidate, sets []eval.GoldenSet, baselines map[string]eval.Baseline, ok bool)
+
+// metricsVsBaseline corre o harness COM trace-diffing vs baseline e projecta o resultado
+// no par (goldenScore, traceDiffRegressions) — devolvendo agora a contagem REAL de
+// regressões (não 0). Fail-closed em toda a fronteira: resolver nil/desconhecido, golden
+// não-admitido, ou baseline em falta reprovam incondicionalmente. maxRegressions é o
+// limiar do gate, propagado para consistência interna; o ThresholdEvalGate reaplica-o
+// sobre o número real devolvido.
+func metricsVsBaseline(h eval.Harness, resolve BaselineResolver, cfg otelgenai.TraceDiffConfig, maxRegressions int, id string) (float64, int) {
+	if resolve == nil {
+		return rejectScore, rejectRegressions
+	}
+	candidate, sets, baselines, ok := resolve(id)
+	if !ok || candidate == nil || len(sets) == 0 || baselines == nil {
+		return rejectScore, rejectRegressions
+	}
+	res := h.EvaluateArtifactVsBaseline(context.Background(), sets, candidate, baselines, cfg, maxRegressions)
+	if !res.Base.Admitted || res.BaselineMissing {
+		// Golden reprovou (unsafe/abaixo do limiar) ou faltou baseline: fail-closed.
+		return rejectScore, rejectRegressions
+	}
+	// Admitido no golden E com baseline para cada set: devolve o success-rate agregado e
+	// a contagem REAL de regressões vs baseline (o segundo sinal). Uma regressão
+	// significativa acima do máximo do gate reprova o ThresholdEvalGate.
+	return res.Base.AggregateSuccessRate(), res.TotalRegressions
+}
+
+// PromotionMetricsVsBaseline devolve a função Metrics para
+// [github.com/aos-ref/platform/registry/promotion].ThresholdEvalGate com a contagem REAL
+// de regressões de trace-diffing vs baseline.
+func PromotionMetricsVsBaseline(h eval.Harness, resolve BaselineResolver, cfg otelgenai.TraceDiffConfig, maxRegressions int) func(id string, v domain.Version) (float64, int) {
+	return func(id string, _ domain.Version) (float64, int) {
+		return metricsVsBaseline(h, resolve, cfg, maxRegressions, id)
+	}
+}
+
+// NewPromotionGateVsBaseline constrói uma [promotion.ThresholdEvalGate] ligada ao harness
+// COM trace-diffing vs baseline: o GoldenSetScore e a contagem REAL de regressões vêm do
+// harness. cfg fixa os limiares ruído-vs-regressão (AC2); minGoldenSetScore e
+// maxTraceDiffRegressions são os limiares do gate.
+func NewPromotionGateVsBaseline(h eval.Harness, resolve BaselineResolver, cfg otelgenai.TraceDiffConfig, minGoldenSetScore float64, maxTraceDiffRegressions int) promotion.ThresholdEvalGate {
+	return promotion.ThresholdEvalGate{
+		MinGoldenSetScore:       minGoldenSetScore,
+		MaxTraceDiffRegressions: maxTraceDiffRegressions,
+		Metrics:                 PromotionMetricsVsBaseline(h, resolve, cfg, maxTraceDiffRegressions),
+	}
+}
+
+// ProceduralMetricsVsBaseline devolve a função Metrics para
+// [github.com/aos-ref/platform/memory/procedural].ThresholdEvalGate com a contagem REAL
+// de regressões de trace-diffing vs baseline.
+func ProceduralMetricsVsBaseline(h eval.Harness, resolve BaselineResolver, cfg otelgenai.TraceDiffConfig, maxRegressions int) func(name string, v memschema.Version) (float64, int) {
+	return func(name string, _ memschema.Version) (float64, int) {
+		return metricsVsBaseline(h, resolve, cfg, maxRegressions, name)
+	}
+}
+
+// NewProceduralGateVsBaseline constrói uma [memprocedural.ThresholdEvalGate] ligada ao
+// harness COM trace-diffing vs baseline.
+func NewProceduralGateVsBaseline(h eval.Harness, resolve BaselineResolver, cfg otelgenai.TraceDiffConfig, minGoldenSetScore float64, maxTraceDiffRegressions int) memprocedural.ThresholdEvalGate {
+	return memprocedural.ThresholdEvalGate{
+		MinGoldenSetScore:       minGoldenSetScore,
+		MaxTraceDiffRegressions: maxTraceDiffRegressions,
+		Metrics:                 ProceduralMetricsVsBaseline(h, resolve, cfg, maxTraceDiffRegressions),
 	}
 }

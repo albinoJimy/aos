@@ -13,6 +13,16 @@
 #   (d) corre AMBOS os datasets (golden curado + failure_derived);
 #   (e) os adaptadores às portas Evaluate(...) de promotion/procedural devolvem o score.
 #
+# SEGUNDO SINAL — TRACE-DIFFING vs baseline (AOS-115): além das métricas agregadas do
+# golden-set, compara a árvore de spans do candidato contra uma BASELINE aprovada (mesmo
+# input) e apanha regressões PASSO-A-PASSO que as métricas agregadas não veem — tool
+# trocada/acrescentada, salto de custo/tokens, ou regressão de veredicto. Uma regressão
+# SIGNIFICATIVA BLOQUEIA a admissão (alimenta a contagem REAL ao ThresholdEvalGate, já
+# não o placeholder 0). LIMIARES (ruído vs regressão, otelgenai.TraceDiffConfig): o
+# valor-zero é ESTRITO (qualquer Δcusto/Δtokens > 0 e qualquer troca de tool contam); os
+# testes usam CostToleranceMicroUSD=100 / TokenTolerance=100 — uma variação DENTRO do
+# limiar NÃO gera falso-positivo (o TraceDiff normaliza trace_id/span_id/timestamps).
+#
 # Emite um RELATÓRIO de eval-pass-rate (linha marcada AOS_EVAL_REPORT, molde do
 # AOS_REPLAY_REPORT de replay.sh; alvo >= 90%).
 #
@@ -33,9 +43,14 @@ PASS_RATE_MIN="${EVAL_PASS_RATE_MIN:-0.90}"
 # injectado, (d) é reprodutível, (e) corre ambos os datasets, (f) emite o span de eval
 # ligado ao trace, (g) recusa a emissão sem trace_id, (h) fecha o ciclo emit→consume,
 # (i) valida o formato de golden-set fail-closed, (j) os golden-sets embebidos não
-# divergem dos builders, (k) emite o relatório de eval-pass-rate; e os dois ÚLTIMOS
+# divergem dos builders, (k) emite o relatório de eval-pass-rate; os dois SEGUINTES
 # provam que os adaptadores às portas Evaluate(...) de promotion/procedural devolvem o
-# score do harness. Remover qualquer um avermelha o gate.
+# score do harness; e os CINCO ÚLTIMOS (AOS-115) provam o segundo sinal — trace-diffing
+# vs baseline: (l) baseline==candidato -> 0 regressões e admitido; (m) tool acrescentada
+# -> RegressionToolSequence detectada e admissão BLOQUEADA; (n) salto de custo ->
+# RegressionCost detectada e BLOQUEADA; (o) variação dentro do limiar -> 0 regressões
+# (sem falso-positivo); (p) o gateadapter alimenta a contagem REAL ao ThresholdEvalGate
+# (regressão bloqueia via a porta). Remover qualquer um avermelha o gate.
 REQUIRED=(
   TestGoodCandidatePasses
   TestInjectedUnsafeRegressionFails
@@ -51,8 +66,13 @@ REQUIRED=(
   TestEvalReportEmitted
   TestPromotionGateAdapterReturnsScore
   TestProceduralGateAdapterReturnsScore
+  TestBaselineIdenticalNoRegressions
+  TestBaselineToolSwapDetectedAndBlocks
+  TestBaselineCostJumpDetectedAndBlocks
+  TestBaselineWithinToleranceNoFalsePositive
+  TestPromotionGateVsBaselineBlocksRegression
 )
-RE='TestGoodCandidatePasses|TestInjectedUnsafeRegressionFails|TestInjectedWrongOutputRegressionFails|TestVerdictReproducible|TestDistinctCandidatesDistinctTrace|TestRunsBothDatasets|TestEvaluationSpanLinkedToTrace|TestRecordEvaluationRefusesUnlinked|TestEmitConsumeRoundTrip|TestGoldenSetValidateFailClosed|TestEmbeddedSuitesMatchBuilders|TestEvalReportEmitted|TestPromotionGateAdapterReturnsScore|TestProceduralGateAdapterReturnsScore'
+RE='TestGoodCandidatePasses|TestInjectedUnsafeRegressionFails|TestInjectedWrongOutputRegressionFails|TestVerdictReproducible|TestDistinctCandidatesDistinctTrace|TestRunsBothDatasets|TestEvaluationSpanLinkedToTrace|TestRecordEvaluationRefusesUnlinked|TestEmitConsumeRoundTrip|TestGoldenSetValidateFailClosed|TestEmbeddedSuitesMatchBuilders|TestEvalReportEmitted|TestPromotionGateAdapterReturnsScore|TestProceduralGateAdapterReturnsScore|TestBaselineIdenticalNoRegressions|TestBaselineToolSwapDetectedAndBlocks|TestBaselineCostJumpDetectedAndBlocks|TestBaselineWithinToleranceNoFalsePositive|TestPromotionGateVsBaselineBlocksRegression'
 
 log_gate "evalgate (gate 9) · eval harness + golden-sets curados · admission control fail-closed"
 

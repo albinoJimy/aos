@@ -11,6 +11,23 @@ type Behavior struct {
 	Output string
 	// Actions são as acções (nomes de tool) invocadas, por ordem de execução.
 	Actions []string
+	// InputTokens/OutputTokens/CostMicroUSD são o usage OPCIONAL do comportamento
+	// (AOS-115): os tokens e o custo (micro-USD int64) do turno de modelo que o
+	// produziu. Habilitam a dimensão custo/tokens do trace-diffing — [encodeBehavior]
+	// emite um span chat que os carrega (gen_ai.usage.input_tokens/output_tokens +
+	// aos.cost.micro_usd) quando há usage, para que [otelgenai.TraceDiff] (via
+	// trajectoryUsage) veja um SALTO DE CUSTO. Retro-compatível: usage tudo-zero ⇒ sem
+	// span chat ⇒ comportamento AOS-114 inalterado (o scoring nunca lê usage — só
+	// output+acções). Não são segredos: são contadores de telemetria (ADR-010).
+	InputTokens  int64
+	OutputTokens int64
+	CostMicroUSD int64
+}
+
+// hasUsage reporta se o comportamento carrega ALGUM usage (tokens ou custo não-zero).
+// Um comportamento sem usage não emite span chat (retro-compat AOS-114).
+func (b Behavior) hasUsage() bool {
+	return b.InputTokens != 0 || b.OutputTokens != 0 || b.CostMicroUSD != 0
 }
 
 // Candidate é a superfície do artefacto comportamental sob teste (skill/memória
@@ -129,5 +146,22 @@ func WithRegressedInput(base Candidate, input string, regressed Behavior) Candid
 			return regressed
 		}
 		return base.Behave(ctx, in)
+	})
+}
+
+// WithUsage devolve um candidato que se comporta como base mas ANEXA o mesmo usage
+// (tokens/custo) a CADA comportamento produzido. É a conveniência para dar a um
+// candidato de referência um usage plausível (AOS-115), habilitando a dimensão
+// custo/tokens do trace-diffing sem reimplementar o candidato. Determinista. Combina
+// com [WithRegressedInput]: aplicar WithUsage POR FORA impõe usage UNIFORME (isola uma
+// regressão de tool de uma de custo); um SALTO DE CUSTO obtém-se dando a um candidato
+// um custo maior por caso do que ao baseline.
+func WithUsage(base Candidate, inputTokens, outputTokens, costMicroUSD int64) Candidate {
+	return CandidateFunc(func(ctx context.Context, in string) Behavior {
+		b := base.Behave(ctx, in)
+		b.InputTokens = inputTokens
+		b.OutputTokens = outputTokens
+		b.CostMicroUSD = costMicroUSD
+		return b
 	})
 }

@@ -46,6 +46,18 @@ func deriveTraceID(evalID string, behaviors []caseBehavior) [16]byte {
 			h.Write([]byte{0x1e})
 			h.Write([]byte(a))
 		}
+		// Usage (AOS-115) folda no trace SÓ quando presente, tornando a trajectória
+		// sensível ao custo/tokens do candidato (candidatos que só diferem no custo obtêm
+		// traces distintos, ligando cada eval à sua execução). Guardado por hasUsage para
+		// preservar BYTE-A-BYTE o trace dos candidatos AOS-114 (usage tudo-zero).
+		if cb.b.hasUsage() {
+			h.Write([]byte{0x1d})
+			var u [24]byte
+			binary.BigEndian.PutUint64(u[0:8], uint64(cb.b.InputTokens))
+			binary.BigEndian.PutUint64(u[8:16], uint64(cb.b.OutputTokens))
+			binary.BigEndian.PutUint64(u[16:24], uint64(cb.b.CostMicroUSD))
+			h.Write(u[:])
+		}
 	}
 	sum := h.Sum(nil)
 	var id [16]byte
@@ -81,8 +93,28 @@ func encodeBehavior(traceID [16]byte, caseID string, b Behavior, next *uint64) [
 	}
 	rootSpanID := root.SpanContext.SpanID
 	*next++
-	spans := make([]otelgenai.SpanData, 0, 1+len(b.Actions))
+	spans := make([]otelgenai.SpanData, 0, 2+len(b.Actions))
 	spans = append(spans, root)
+	// Span chat (AOS-115): emitido SÓ quando o comportamento carrega usage. Carrega os
+	// tokens/custo do turno de modelo (a unidade-verdade que trajectoryUsage/TraceDiff
+	// somam) para que a dimensão custo/tokens do trace-diffing aflore um SALTO DE CUSTO.
+	// Filho da raiz do caso, marcado com o case-id. Sem usage ⇒ não é emitido (o
+	// comportamento AOS-114 fica byte-a-byte inalterado — o scoring nunca lê chats).
+	if b.hasUsage() {
+		spans = append(spans, otelgenai.SpanData{
+			Name:         otelgenai.OpChat,
+			SpanContext:  otelgenai.SpanContext{TraceID: traceID, SpanID: spanIDAt(*next)},
+			ParentSpanID: rootSpanID,
+			Attributes: []otelgenai.KeyValue{
+				{Key: otelgenai.AttrOperationName, Value: otelgenai.OpChat},
+				{Key: otelgenai.AttrInputTokens, Value: b.InputTokens},
+				{Key: otelgenai.AttrOutputTokens, Value: b.OutputTokens},
+				{Key: otelgenai.AttrCostMicroUSD, Value: b.CostMicroUSD},
+				{Key: attrEvalCaseID, Value: caseID},
+			},
+		})
+		*next++
+	}
 	for _, action := range b.Actions {
 		spans = append(spans, otelgenai.SpanData{
 			Name:         otelgenai.OpExecuteTool,
