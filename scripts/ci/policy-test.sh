@@ -16,13 +16,18 @@ setup_env
 PDP_DIR="$REPO_ROOT/packages/control-plane/pdp"
 rc=0
 
-log_gate "policy-test · golden allow/deny (default-deny)"
+log_gate "policy-test · golden allow/deny (default-deny) + cobertura por-regra / delegação / deny-rate"
 # require_tests: fail-closed contra "vacuous pass" — exige que CADA teste crítico
 # tenha mesmo corrido (um -run que não casa nada sai 0 sem testar).
+# AOS-113: além da tabela-verdade golden, o gate exige a COBERTURA POR-REGRA
+# (TestPolicyRuleCoverage — falha se uma regra ficar sem allow+deny), a DELEGAÇÃO
+# user∩classe (TestDelegation_AgentNaoExcedeEscopoDoPrincipal) e o DENY-RATE
+# reportado (TestPolicyDenyRate — emite a linha AOS_POLICY_DENY_RATE). Remover
+# qualquer um destes nomes avermelha o gate (regressão de governação bloqueia merge).
 if require_tests "$PDP_DIR" "./..." \
-     'TestDecide_GoldenTruthTable|TestDecide_PolicyVersionRegistada|TestDecide_DefaultDeny_CapabilityAusente|TestDecide_ToolNovaFalhaFechada|TestDecide_AllowExplicitoPorPoliticaAssinada' \
-     TestDecide_GoldenTruthTable TestDecide_PolicyVersionRegistada TestDecide_DefaultDeny_CapabilityAusente TestDecide_ToolNovaFalhaFechada TestDecide_AllowExplicitoPorPoliticaAssinada; then
-  log_ok "golden allow/deny verde"
+     'TestDecide_GoldenTruthTable|TestDecide_PolicyVersionRegistada|TestDecide_DefaultDeny_CapabilityAusente|TestDecide_ToolNovaFalhaFechada|TestDecide_AllowExplicitoPorPoliticaAssinada|TestPolicyRuleCoverage|TestDelegation_AgentNaoExcedeEscopoDoPrincipal|TestPolicyDenyRate' \
+     TestDecide_GoldenTruthTable TestDecide_PolicyVersionRegistada TestDecide_DefaultDeny_CapabilityAusente TestDecide_ToolNovaFalhaFechada TestDecide_AllowExplicitoPorPoliticaAssinada TestPolicyRuleCoverage TestDelegation_AgentNaoExcedeEscopoDoPrincipal TestPolicyDenyRate; then
+  log_ok "golden allow/deny + cobertura por-regra / delegação / deny-rate verde"
 else
   log_fail "golden allow/deny vermelho (ou teste crítico não correu)"
   rc=1

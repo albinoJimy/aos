@@ -205,6 +205,23 @@ func (p *PDP) Version() string {
 	return p.engine.version
 }
 
+// RuleIDs devolve, ORDENADOS, os identificadores (@id) das regras Cedar
+// actualmente compiladas e em vigor (vazio se não houver política carregada). É
+// uma API de INTROSPECÇÃO estritamente SÓ-LEITURA: itera a policy set imutável sob
+// o RLock e não participa em nenhuma decisão — expô-la não altera o comportamento
+// do [PDP.Decide]. Existe para a suite de política verificar COBERTURA POR-REGRA
+// (AOS-113): enumerando as regras reais, um teste pode FALHAR fail-closed se
+// alguma regra ficar sem casos allow E deny — uma regra nova sem par de cobertura
+// avermelha a suite sem exigir manutenção de uma lista paralela codificada à mão.
+func (p *PDP) RuleIDs() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.engine == nil {
+		return nil
+	}
+	return p.engine.ruleIDs()
+}
+
 // Decide avalia um pedido de decisão e devolve o veredicto (contrato C1). É
 // DETERMINISTA: a mesma (Input, policy_version, nível de autonomia) produz sempre
 // a mesma Decision. Nunca devolve ausência de resposta — em qualquer erro de porta

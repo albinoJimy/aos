@@ -64,6 +64,23 @@ func compilePolicies(files map[string][]byte) (*cedar.PolicySet, error) {
 	return ps, nil
 }
 
+// ruleIDs devolve, ORDENADOS, os identificadores (@id) das regras Cedar
+// COMPILADAS na policy set — o mesmo id por que a razão de uma decisão nomeia a
+// regra (ver [compilePolicies]/[annotationID]). É estritamente SÓ-LEITURA: itera
+// a policy set imutável e não toca no caminho de avaliação, pelo que expô-lo NÃO
+// altera nenhuma decisão. Suporta a verificação de cobertura por-regra (AOS-113):
+// enumerar as regras reais permite FALHAR se alguma ficar sem casos allow+deny.
+func (e *cedarEngine) ruleIDs() []string {
+	out := make([]string, 0)
+	// All() é o iterador não-depreciado (v1.8) sobre (PolicyID, *Policy); usamos só
+	// a chave. A ordem de iteração de um mapa não é determinista — ordenamos.
+	for id := range e.policies.All() {
+		out = append(out, string(id))
+	}
+	sort.Strings(out)
+	return out
+}
+
 // annotationID devolve o valor da anotação @id de uma política, ou "" se ausente.
 func annotationID(p *cedar.Policy) string {
 	for k, v := range p.Annotations() {
