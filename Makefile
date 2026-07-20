@@ -12,7 +12,8 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-security ci-sast ci-sca ci-policy ci-selftest ci-all
+        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-security ci-sast ci-sca ci-policy ci-selftest ci-all \
+        cover test-unit
 
 help: ## Lista os alvos disponíveis
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -67,8 +68,17 @@ ci-build: ## Gate: build (go build ./... por módulo)
 ci-lint: ## Gate: lint/format + arch-lint AOS-003 (gofmt, vet, staticcheck)
 	$(CI)/lint.sh
 
-ci-test: ## Gate: test -race + cobertura (gate kernel >= 80%)
+ci-test: ## Gate: test -race + cobertura (gate generalizado >= COVERAGE_MIN, default 80%)
 	$(CI)/test.sh
+
+# --- Comando ÚNICO da suite unit + cobertura máquina-legível (AOS-109 AC1) ----
+# Distinto de `make ci` (pipeline completo): corre SÓ o gate 3 (suite unit -race
+# por módulo) e emite o relatório LCOV em coverage/lcov.info. Tune do limiar por
+# env var: `COVERAGE_MIN=90 make cover`.
+cover: ## Suite unit (gate 3) + relatório de cobertura máquina-legível (coverage/lcov.info)
+	$(CI)/test.sh
+
+test-unit: cover ## Alias de `cover`: corre a suite unit e emite a cobertura LCOV
 
 ci-replay: ## Gate 8: replay determinístico + idempotência por passo (harness AOS-024)
 	$(CI)/replay.sh

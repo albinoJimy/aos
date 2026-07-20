@@ -47,6 +47,10 @@ packages/_selftest_bad/
 *.out
 cover*.out
 coverage.out
+# Artefacto de cobertura máquina-legível (AOS-109): SÓ o directório na RAIZ do repo
+# (COVERAGE_LCOV_OUT=$REPO_ROOT/coverage/lcov.info). Ancorado com "/" inicial para NÃO
+# ignorar o pacote-fonte packages/testkit/coverage/ (o conversor cov2lcov).
+/coverage/
 
 # --- Ferramentas / IDE / SO ---
 .DS_Store
@@ -54,5 +58,4 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
-coverage/
 *.log

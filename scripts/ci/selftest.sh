@@ -204,6 +204,33 @@ else
 fi
 
 # ============================================================================
+# I) cobertura abaixo do limiar bloqueia o gate 3 (AOS-109) — teste do próprio gate
+# ============================================================================
+log_gate "self-test I · cobertura < limiar bloqueia o gate de cobertura (AOS-109)"
+# Exercita DIRECTAMENTE o predicado fail-closed que o gate 3 usa (coverage_meets_min),
+# à imagem do self-test C (que corre o comparador sca_decide directamente). Prova, de
+# forma determinista e offline (sem rebuild da suite), que uma cobertura ABAIXO do
+# limiar NÃO satisfaz o piso — logo o gate sai != 0 e bloqueia o merge.
+if coverage_meets_min "50.0%" 99; then
+  bad "I: coverage_meets_min aceitou 50% < 99% — o gate de cobertura NÃO bloquearia"
+else
+  pass "I: coverage_meets_min rejeitou (exit!=0) 50% < 99% (gate de cobertura fail-closed)"
+fi
+# Controlo positivo: uma cobertura >= limiar é aceite (o gate não bloqueia à toa).
+if coverage_meets_min "95.3%" 80; then
+  pass "I: controlo — cobertura 95.3% >= 80% é aceite (não bloqueia falsamente)"
+else
+  bad "I: controlo falhou — 95.3% >= 80% devia ser aceite"
+fi
+# Fail-closed em cobertura NÃO-MENSURÁVEL: um módulo sem cobertura (FALHOU/n/a/vazio)
+# nunca satisfaz o piso (uma acção não-mensurável não é promovida).
+if coverage_meets_min "FALHOU" 0 || coverage_meets_min "n/a" 0 || coverage_meets_min "" 0; then
+  bad "I: cobertura não-mensurável foi aceite — gate NÃO seria fail-closed"
+else
+  pass "I: cobertura não-mensurável (FALHOU/n/a/vazio) rejeitada (fail-closed)"
+fi
+
+# ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"
 if [ "$fails" -eq 0 ]; then
   printf '%s  TODOS OS SELF-TESTS OK — falhas são bloqueadas pelos gates%s\n' "$C_GRN$C_BLD" "$C_RST"

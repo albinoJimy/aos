@@ -30,6 +30,24 @@ KERNEL_COVERAGE_MIN="${KERNEL_COVERAGE_MIN:-80}"
 # Módulo(s) do kernel sujeitos ao gate de cobertura (rel. a REPO_ROOT).
 KERNEL_MODULES=("packages/kernel/reference-monitor")
 
+# --- Gate de cobertura GENERALIZADO (AOS-109) ---------------------------------
+# Limiar CONFIGURÁVEL aplicado além do kernel: o piso do kernel (AOS-010) é agora
+# um caso particular de um gate parametrizável por env var. Uma descida abaixo do
+# limiar num módulo gated BLOQUEIA o merge (fail-closed; ver test.sh). O default
+# HERDA de KERNEL_COVERAGE_MIN (retro-compat: o knob histórico continua a governar o
+# piso — apertar KERNEL_COVERAGE_MIN aperta o gate generalizado), pelo que o
+# comportamento herdado não muda e o knob antigo não fica inerte.
+COVERAGE_MIN="${COVERAGE_MIN:-${KERNEL_COVERAGE_MIN}}"
+# Módulos sujeitos ao limiar generalizado (rel. a REPO_ROOT). Inclui o kernel
+# (retro-compat com KERNEL_MODULES) e o próprio testkit (AOS-109) — dogfooding: o
+# framework de testes de referência está ele próprio sob o piso que impõe.
+COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/testkit")
+# Directório do testkit (conversor de cobertura cov2lcov, Go stdlib puro).
+TESTKIT_DIR="$REPO_ROOT/packages/testkit"
+# Artefacto de cobertura MÁQUINA-LEGÍVEL emitido pelo gate 3 (LCOV). Ignorado pelo
+# git (.gitignore: coverage/). AOS-109 AC1.
+COVERAGE_LCOV_OUT="${COVERAGE_LCOV_OUT:-$REPO_ROOT/coverage/lcov.info}"
+
 # --- Cores (desligadas se não houver TTY ou se NO_COLOR) ----------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
@@ -159,6 +177,52 @@ require_tests() {
   done
   [ "$missing" -eq 0 ] && log_ok "$# testes obrigatórios correram e passaram em $(basename "$dir")"
   return "$missing"
+}
+
+# coverage_meets_min <pct> <min>
+#   Predicado FAIL-CLOSED do gate de cobertura generalizado (AOS-109). Devolve 0
+#   (verdadeiro) sse a percentagem `pct` (com ou sem '%') for numérica E >= `min`;
+#   1 caso contrário — incluindo pct vazio, "FALHOU" ou "n/a" (uma cobertura
+#   não-mensurável NÃO satisfaz o piso). É a MESMA função que o gate 3 usa e que o
+#   self-test exercita directamente (prova de que uma descida abaixo do limiar
+#   bloqueia). Determinista e offline.
+coverage_meets_min() {
+  local pct="$1" min="$2"
+  local num="${pct%\%}"
+  case "$pct" in ""|FALHOU|n/a) return 1 ;; esac
+  # num TEM de ser numérico (inteiro ou decimal); qualquer outra coisa é fail-closed.
+  case "$num" in
+    ''|*[!0-9.]*) return 1 ;;
+  esac
+  awk "BEGIN{exit !($num >= $min)}"
+}
+
+# emit_lcov <cover_dir> <out_file>
+#   Emite o relatório de cobertura MÁQUINA-LEGÍVEL (LCOV) de AOS-109 AC1 a partir
+#   dos coverprofiles Go já gerados em <cover_dir> (*.out), via o conversor
+#   cov2lcov (Go stdlib puro, ZERO deps, determinista). Escreve <out_file> criando
+#   o directório. Fail-closed: devolve != 0 se não houver perfis ou se a conversão
+#   falhar (um artefacto de cobertura ausente não satisfaz o AC).
+emit_lcov() {
+  local cover_dir="$1" out="$2"
+  local profiles=("$cover_dir"/*.out)
+  if [ ! -e "${profiles[0]}" ]; then
+    log_fail "emit_lcov: nenhum coverprofile em $cover_dir"
+    return 1
+  fi
+  mkdir -p "$(dirname "$out")"
+  if ( cd "$TESTKIT_DIR" && go run ./cmd/cov2lcov "${profiles[@]}" ) > "$out"; then
+    # Anti-vacuidade: um LCOV sem nenhum registo SF: (ex.: coverprofiles só com a
+    # linha "mode:") é um artefacto VAZIO e não satisfaz o AC1 — fail-closed.
+    if grep -q '^SF:' "$out"; then
+      log_ok "cobertura máquina-legível (LCOV) emitida: $out"
+      return 0
+    fi
+    log_fail "emit_lcov: LCOV emitido está vazio (nenhum registo SF:) — artefacto vacuoso"
+    return 1
+  fi
+  log_fail "emit_lcov: conversão cov2lcov falhou"
+  return 1
 }
 
 # tool_exec_failed <exit_code> <output> <ok_codes_csv> [error_regex]

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test.sh — GATE 3 (Unit/Integração). 'go test ./... -race -covermode=atomic
-# -coverprofile' em CADA módulo (CGO+gcc). Reporta cobertura de todos e aplica o
-# GATE de cobertura do kernel (>= KERNEL_COVERAGE_MIN %). Fail-closed.
+# -coverprofile' em CADA módulo (CGO+gcc). Reporta cobertura de todos, emite o
+# relatório MÁQUINA-LEGÍVEL (LCOV, AOS-109) e aplica o GATE de cobertura
+# GENERALIZADO (>= COVERAGE_MIN % nos COVERAGE_GATED_MODULES). Fail-closed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 setup_env
@@ -37,20 +38,26 @@ for mod in $(discover_modules); do
   printf '   %-40s %s\n' "$mod" "${COVER[$mod]:-n/a}"
 done
 
-# --- GATE de cobertura do kernel ---------------------------------------------
-log_gate "test · gate de cobertura do kernel (>= ${KERNEL_COVERAGE_MIN}%)"
-for kmod in "${KERNEL_MODULES[@]}"; do
-  pct="${COVER[$kmod]:-}"
-  num="${pct%\%}"
-  if [ -z "$num" ] || [ "$pct" = "FALHOU" ] || [ "$pct" = "n/a" ]; then
-    log_fail "kernel $kmod sem cobertura mensurável ($pct)"
-    rc=1
-    continue
-  fi
-  if awk "BEGIN{exit !($num >= $KERNEL_COVERAGE_MIN)}"; then
-    log_ok "kernel $kmod cobertura ${pct} >= ${KERNEL_COVERAGE_MIN}%"
+# --- Relatório MÁQUINA-LEGÍVEL (LCOV) — AOS-109 AC1 --------------------------
+# Emite coverage/lcov.info a partir dos coverprofiles já gerados, via o conversor
+# cov2lcov (Go stdlib puro, determinista). Fail-closed: se o artefacto não puder
+# ser produzido, o gate fica vermelho (o AC exige cobertura máquina-legível).
+log_gate "test · relatório de cobertura máquina-legível (LCOV)"
+if ! emit_lcov "$COVER_DIR" "$COVERAGE_LCOV_OUT"; then
+  rc=1
+fi
+
+# --- GATE de cobertura GENERALIZADO (>= COVERAGE_MIN) — AOS-109 AC4 -----------
+# Generaliza o piso do kernel (AOS-010) para um limiar CONFIGURÁVEL aplicado a um
+# conjunto de módulos. Usa o MESMO predicado (coverage_meets_min) que o self-test
+# exercita. Uma descida abaixo do limiar sai != 0 (bloqueia o merge).
+log_gate "test · gate de cobertura generalizado (>= ${COVERAGE_MIN}%)"
+for gmod in "${COVERAGE_GATED_MODULES[@]}"; do
+  pct="${COVER[$gmod]:-}"
+  if coverage_meets_min "$pct" "$COVERAGE_MIN"; then
+    log_ok "$gmod cobertura ${pct} >= ${COVERAGE_MIN}%"
   else
-    log_fail "kernel $kmod cobertura ${pct} < ${KERNEL_COVERAGE_MIN}%"
+    log_fail "$gmod cobertura ${pct:-n/a} < ${COVERAGE_MIN}% (ou não-mensurável)"
     rc=1
   fi
 done
