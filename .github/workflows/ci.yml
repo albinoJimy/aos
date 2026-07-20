@@ -11,7 +11,7 @@
 #
 # ─── REQUIRED CHECKS (bloqueiam o merge na branch principal) ──────────────────
 # Configurar em Settings → Branches → branch protection de `main`, exigindo os
-# checks: build · lint · test · replay · memory · supplychain · routing · security · sast · sca · policy-test · gates. O job `gates`
+# checks: build · lint · test · replay · memory · supplychain · routing · security · evalgate · sast · sca · policy-test · gates. O job `gates`
 # agrega os anteriores para um único gate obrigatório conveniente. O scan de
 # segredos (regra transversal de specs/01 §4) é pré-condição de merge e corre em
 # `lint` como passo dedicado.
@@ -141,6 +141,21 @@ jobs:
       - name: Gate security (prompt injection · exfiltração egress/DNS · segredos · isolamento)
         run: bash scripts/ci/security.sh
 
+  # Gate 9 — eval harness + golden-sets curados / admission control comportamental
+  # (AOS-114, ADR-012). Fail-closed: um candidato mau admitido, um veredicto não-
+  # reprodutível, uma emissão não-ligada ao trace, ou o eval-pass-rate abaixo do alvo
+  # (>=90%) avermelha o gate.
+  evalgate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: "packages/**/go.sum"
+      - name: Gate evalgate (golden-sets curados + admission control · emit ligado ao trace)
+        run: bash scripts/ci/evalgate.sh
+
   sast:
     runs-on: ubuntu-latest
     steps:
@@ -189,7 +204,7 @@ jobs:
   # Gate agregador conveniente para branch protection (required check único).
   gates:
     runs-on: ubuntu-latest
-    needs: [secrets, build, lint, test, replay, memory, supplychain, routing, security, sast, sca, policy-test, selftest]
+    needs: [secrets, build, lint, test, replay, memory, supplychain, routing, security, evalgate, sast, sca, policy-test, selftest]
     steps:
       - name: Todos os gates verdes
         run: echo "Todos os gates de CI passaram (fail-closed)."
