@@ -150,24 +150,27 @@ func stableEffect(runID string, seq *durable.StepSequencer, turn, index int) Eff
 // AOS-016) com relógio fixo e modelo guionado — determinística e reprodutível.
 // Os dois passos de tool são exercitados quanto a idempotência; os step_ids de
 // fronteira de turno 2 e 3 são pontos de crash para a fault-injection.
-func BuildEchoGolden(runID string) (*Fixture, error) {
+func BuildEchoGolden(runID string) (fix *Fixture, err error) {
 	traj, err := eventstore.New()
 	if err != nil {
 		return nil, err
 	}
+	// Fecha o Event Store da trajectória sse (e só se) o builder falhar antes de o
+	// devolver embrulhado na [Fixture] (cujo Close é do chamador). Idioma close-on-error
+	// via named return: evita repetir o cleanup em cada ramo de erro.
+	defer closeOnErr(traj, &err)
+
 	sink := referencemonitor.NewEventStoreSink(traj)
 	rm := referencemonitor.New(referencemonitor.WithEventSink(sink))
-	if err := rm.Register("echo", func(_ context.Context, in []byte) ([]byte, error) {
+	if err = rm.Register("echo", func(_ context.Context, in []byte) ([]byte, error) {
 		return append([]byte("echoed:"), in...), nil
 	}); err != nil {
-		_ = traj.Close()
 		return nil, err
 	}
 
 	recorder := agentruntime.NewTurnRecorder(traj)
 	capturer, err := replay.NewCapturer(traj, replay.WithClock(fixtureClock()))
 	if err != nil {
-		_ = traj.Close()
 		return nil, err
 	}
 
@@ -196,17 +199,15 @@ func BuildEchoGolden(runID string) (*Fixture, error) {
 	rt := agentruntime.New(model, rm, recorder, agentruntime.WithCapturer(capturer))
 	res, err := rt.Run(context.Background(), goal)
 	if err != nil {
-		_ = traj.Close()
 		return nil, err
 	}
 	if !res.Terminated || res.Turns != 3 {
-		_ = traj.Close()
-		return nil, fmt.Errorf("harness fixture echo-3turns: desfecho inesperado (%+v)", res)
+		err = fmt.Errorf("harness fixture echo-3turns: desfecho inesperado (%+v)", res)
+		return nil, err
 	}
 
 	ledgerStore, err := eventstore.New()
 	if err != nil {
-		_ = traj.Close()
 		return nil, err
 	}
 
@@ -229,18 +230,19 @@ func BuildEchoGolden(runID string) (*Fixture, error) {
 // BuildImmediateFinalGolden constrói a golden trajectory "immediate-final": um
 // único turno que responde directamente (Final, sem tools). Exercita o caminho de
 // terminação imediata e a retoma trivial (resume no turno 1). Sem efeitos externos.
-func BuildImmediateFinalGolden(runID string) (*Fixture, error) {
+func BuildImmediateFinalGolden(runID string) (fix *Fixture, err error) {
 	traj, err := eventstore.New()
 	if err != nil {
 		return nil, err
 	}
+	defer closeOnErr(traj, &err)
+
 	sink := referencemonitor.NewEventStoreSink(traj)
 	rm := referencemonitor.New(referencemonitor.WithEventSink(sink))
 
 	recorder := agentruntime.NewTurnRecorder(traj)
 	capturer, err := replay.NewCapturer(traj, replay.WithClock(fixtureClock()))
 	if err != nil {
-		_ = traj.Close()
 		return nil, err
 	}
 
@@ -258,17 +260,15 @@ func BuildImmediateFinalGolden(runID string) (*Fixture, error) {
 	rt := agentruntime.New(model, rm, recorder, agentruntime.WithCapturer(capturer))
 	res, err := rt.Run(context.Background(), goal)
 	if err != nil {
-		_ = traj.Close()
 		return nil, err
 	}
 	if !res.Terminated || res.Turns != 1 {
-		_ = traj.Close()
-		return nil, fmt.Errorf("harness fixture immediate-final: desfecho inesperado (%+v)", res)
+		err = fmt.Errorf("harness fixture immediate-final: desfecho inesperado (%+v)", res)
+		return nil, err
 	}
 
 	ledgerStore, err := eventstore.New()
 	if err != nil {
-		_ = traj.Close()
 		return nil, err
 	}
 	return &Fixture{
@@ -279,6 +279,188 @@ func BuildImmediateFinalGolden(runID string) (*Fixture, error) {
 		spec:        specFromGoal(goal),
 		effects:     nil,
 		faults:      []FaultPoint{{AtStepID: "step-000001"}},
+	}, nil
+}
+
+// closeOnErr fecha o Event Store SSE *err != nil no momento do return. É o idioma
+// close-on-error partilhado pelos builders de golden trajectories: com um named
+// return, o cleanup do Event Store (que de outro modo se repetiria em cada ramo de
+// erro) fica num único defer. No caminho de sucesso o store viaja embrulhado na
+// [Fixture] e é o [Fixture.Close] do chamador que o liberta.
+func closeOnErr(store *eventstore.Store, err *error) {
+	if *err != nil {
+		_ = store.Close()
+	}
+}
+
+// delegationToolSet é o tool set CONGELADO da golden de delegação: a tool
+// "delegate" (que despacha o sub-agente) mais a "echo" (consolidação). Ordem
+// significativa, pinada — como [echoToolSet], mas com a capability de delegação.
+func delegationToolSet() []agentruntime.ToolSpec {
+	return []agentruntime.ToolSpec{
+		{Name: "delegate", Version: "1.0.0", Digest: "sha256:dd04"},
+		{Name: "echo", Version: "0.9.0", Digest: "sha256:cc03"},
+	}
+}
+
+// runSubAgent corre um SUB-AGENTE real — o loop de AOS-013 aninhado — sobre um
+// Event Store EFÉMERO próprio, com relógio fixo (herdado do capturer do supervisor
+// não é preciso aqui: o sub-agente não é replayado) e um modelo guionado. Devolve o
+// desfecho textual do sub-agente. É DETERMINÍSTICO (modelo guionado, seed pinado,
+// sem relógio/random ao vivo), logo o resultado capturado no trajecto do SUPERVISOR
+// é byte-estável entre execuções — e o replay do supervisor reinjecta-o do log sem
+// re-executar o sub-agente. A cadeia de delegação on-behalf-of (humano → supervisor
+// → sub-agente) responsabiliza o efeito (ADR-003).
+func runSubAgent(ctx context.Context, parentRunID string, input []byte) ([]byte, error) {
+	sub, err := eventstore.New()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = sub.Close() }()
+
+	sink := referencemonitor.NewEventStoreSink(sub)
+	rm := referencemonitor.New(referencemonitor.WithEventSink(sink))
+	recorder := agentruntime.NewTurnRecorder(sub)
+
+	// O sub-agente responde num único turno (sem tools) — terminação imediata,
+	// determinística.
+	model := &scriptedModel{responses: []agentruntime.ModelResponse{
+		{
+			Text:         "achado-sub-agente:" + string(input),
+			Final:        true,
+			Usage:        agentruntime.Usage{InputTokens: 5, OutputTokens: 3},
+			CostMicroUSD: 600,
+		},
+	}}
+
+	goal := agentruntime.Goal{
+		RunID: parentRunID + "::sub",
+		Principal: referencemonitor.Principal{
+			NHIID:      "nhi:sub-agente-researcher",
+			AgentID:    "sub-agente-researcher",
+			AgentClass: "researcher",
+			Authority:  []string{"cap:echo"},
+			// Cadeia on-behalf-of completa: humano → supervisor → sub-agente.
+			DelegationChain: []referencemonitor.DelegationHop{
+				{Sub: "human:operador", ActAs: "nhi:agente-supervisor"},
+				{Sub: "nhi:agente-supervisor", ActAs: "nhi:sub-agente-researcher"},
+			},
+		},
+		Scope:     []string{"cap:echo"},
+		Model:     agentruntime.ModelConfig{ModelID: "claude-opus-4-8", Params: map[string]string{"temperature": "0"}, Seed: 42},
+		System:    "És um sub-agente determinístico de pesquisa do AOS.",
+		Objective: "Pesquisa: " + string(input),
+	}
+	rt := agentruntime.New(model, rm, recorder)
+	res, err := rt.Run(ctx, goal)
+	if err != nil {
+		return nil, err
+	}
+	if !res.Terminated {
+		return nil, fmt.Errorf("harness fixture sub-agente: não terminou (%+v)", res)
+	}
+	return []byte(res.FinalText), nil
+}
+
+// BuildDelegationGolden constrói a golden trajectory "delegation-3turns": um agente
+// SUPERVISOR que, no turno 1, DELEGA num sub-agente (a tool "delegate" corre o loop
+// real de AOS-013 aninhado, ver [runSubAgent]) e, no turno 2, consolida o achado do
+// sub-agente com uma tool call (echo), terminando no turno 3. É a trajectória
+// MULTI-PASSO COM SUB-AGENTE de EPIC-11 (AOS-111): corre o loop real com relógio
+// fixo, modelo guionado e seed pinado — determinística e reprodutível. Os dois
+// passos de tool são exercitados quanto a idempotência; as fronteiras dos turnos 2 e
+// 3 são pontos de crash para a fault-injection (resume-from-step).
+func BuildDelegationGolden(runID string) (fix *Fixture, err error) {
+	traj, err := eventstore.New()
+	if err != nil {
+		return nil, err
+	}
+	defer closeOnErr(traj, &err)
+
+	sink := referencemonitor.NewEventStoreSink(traj)
+	rm := referencemonitor.New(referencemonitor.WithEventSink(sink))
+	// A tool "delegate" DESPACHA o sub-agente (delegação); o seu resultado é o achado
+	// do sub-agente, capturado no log do supervisor de forma determinística.
+	if err = rm.Register("delegate", func(ctx context.Context, in []byte) ([]byte, error) {
+		return runSubAgent(ctx, runID, in)
+	}); err != nil {
+		return nil, err
+	}
+	// A tool "echo" consolida o achado (segundo passo com efeito).
+	if err = rm.Register("echo", func(_ context.Context, in []byte) ([]byte, error) {
+		return append([]byte("consolidado:"), in...), nil
+	}); err != nil {
+		return nil, err
+	}
+
+	recorder := agentruntime.NewTurnRecorder(traj)
+	capturer, err := replay.NewCapturer(traj, replay.WithClock(fixtureClock()))
+	if err != nil {
+		return nil, err
+	}
+
+	model := &scriptedModel{responses: []agentruntime.ModelResponse{
+		{
+			Text:         "turno 1: delego a pesquisa no sub-agente",
+			ToolCalls:    []agentruntime.ToolInvocation{{ToolID: "delegate", Capability: "cap:delegate", Input: []byte("pesquisa:clima")}},
+			Usage:        agentruntime.Usage{InputTokens: 12, OutputTokens: 6},
+			CostMicroUSD: 1400,
+		},
+		{
+			Text:         "turno 2: consolido o achado do sub-agente",
+			ToolCalls:    []agentruntime.ToolInvocation{{ToolID: "echo", Capability: "cap:echo", Input: []byte("achado")}},
+			Usage:        agentruntime.Usage{InputTokens: 9, OutputTokens: 5},
+			CostMicroUSD: 1100,
+		},
+		{
+			Text:         "concluído: relatório consolidado",
+			Final:        true,
+			Usage:        agentruntime.Usage{InputTokens: 6, OutputTokens: 3},
+			CostMicroUSD: 700,
+		},
+	}}
+
+	goal := goldenGoal(runID)
+	// Identidade e escopo do SUPERVISOR: age por um humano (cadeia on-behalf-of) e
+	// detém as capabilities de delegação e de echo.
+	goal.Principal.NHIID = "nhi:agente-supervisor"
+	goal.Principal.AgentID = "agente-supervisor"
+	goal.Principal.Authority = []string{"cap:delegate", "cap:echo"}
+	goal.Principal.DelegationChain = []referencemonitor.DelegationHop{
+		{Sub: "human:operador", ActAs: "nhi:agente-supervisor"},
+	}
+	goal.Scope = []string{"cap:delegate", "cap:echo"}
+	goal.Tools = delegationToolSet()
+	goal.Objective = "Delega a pesquisa no sub-agente e consolida o relatório."
+
+	rt := agentruntime.New(model, rm, recorder, agentruntime.WithCapturer(capturer))
+	res, err := rt.Run(context.Background(), goal)
+	if err != nil {
+		return nil, err
+	}
+	if !res.Terminated || res.Turns != 3 {
+		err = fmt.Errorf("harness fixture delegation-3turns: desfecho inesperado (%+v)", res)
+		return nil, err
+	}
+
+	ledgerStore, err := eventstore.New()
+	if err != nil {
+		return nil, err
+	}
+
+	seq := durable.NewStepSequencer()
+	effects := []Effect{
+		stableEffect(runID, seq, 1, 1), // o passo de delegação (efeito externo idempotente)
+		stableEffect(runID, seq, 2, 1), // o passo de consolidação
+	}
+	return &Fixture{
+		Name:        "delegation-3turns",
+		RunID:       runID,
+		trajectory:  traj,
+		ledgerStore: ledgerStore,
+		spec:        specFromGoal(goal),
+		effects:     effects,
+		faults:      []FaultPoint{{AtStepID: "step-000002"}, {AtStepID: "step-000003"}},
 	}, nil
 }
 
@@ -295,8 +477,14 @@ func GoldenSet() ([]Case, func(), error) {
 		f1.Close()
 		return nil, nil, err
 	}
-	fixtures := []*Fixture{f1, f2}
-	cases := []Case{f1.Case(), f2.Case()}
+	f3, err := BuildDelegationGolden("golden_delegation")
+	if err != nil {
+		f1.Close()
+		f2.Close()
+		return nil, nil, err
+	}
+	fixtures := []*Fixture{f1, f2, f3}
+	cases := []Case{f1.Case(), f2.Case(), f3.Case()}
 	closer := func() {
 		for _, f := range fixtures {
 			f.Close()

@@ -336,7 +336,16 @@ type AggregateReport struct {
 	TotalDuplicatedEffects int              `json:"total_duplicated_effects"`
 	TotalResumePoints      int              `json:"total_resume_points"`
 	TotalResumeMismatches  int              `json:"total_resume_mismatches"`
-	Pass                   bool             `json:"pass"`
+	// PerfectRuns é o nº de casos 100% reproduzíveis (ReplayFidelity==1.0 && Pass).
+	// PerfectFraction é a sua fracção sobre Runs (o driver "% de trajectórias 100%
+	// reproduzíveis" do DoD de AOS-111; alvo 1.0). Campos ADITIVOS colocados ANTES de
+	// Pass DE PROPÓSITO: o gate 8 (scripts/ci/replay.sh) ancora o veredicto agregado ao
+	// FIM da linha ("pass":true}$), logo Pass tem de permanecer o ÚLTIMO campo — mover
+	// estes para depois de Pass partiria essa âncora. A serialização dos campos
+	// pré-existentes mantém-se inalterada.
+	PerfectRuns     int     `json:"perfect_runs"`
+	PerfectFraction float64 `json:"perfect_fraction"`
+	Pass            bool    `json:"pass"`
 }
 
 // VerifyAll verifica um conjunto de casos e agrega os relatórios. O erro devolvido
@@ -357,12 +366,18 @@ func VerifyAll(ctx context.Context, cases []Case, opts ...VerifyOption) (Aggrega
 		agg.TotalDuplicatedEffects += rep.DuplicatedEffects
 		agg.TotalResumePoints += rep.ResumePoints
 		agg.TotalResumeMismatches += rep.ResumeMismatches
+		// Um caso conta como PERFEITO (100% reproduzível) sse passou E a sua fidelidade
+		// de replay foi exactamente 1.0 — o numerador do driver PerfectFraction.
+		if rep.Pass && rep.ReplayFidelity == 1.0 {
+			agg.PerfectRuns++
+		}
 		if !rep.Pass {
 			agg.Pass = false
 		}
 	}
 	if agg.Runs > 0 {
 		agg.MeanReplayFidelity = sum / float64(agg.Runs)
+		agg.PerfectFraction = float64(agg.PerfectRuns) / float64(agg.Runs)
 	}
 	return agg, nil
 }
