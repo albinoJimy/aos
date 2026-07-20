@@ -187,7 +187,7 @@ func (c Case) verifyIdempotency(ctx context.Context) (duplicated, verified int, 
 		return 0, 0, ErrNoLedgerStore
 	}
 	for _, eff := range c.Effects {
-		if err := driveEffectSchedule(ctx, c.RunID, c.LedgerStore, eff); err != nil {
+		if err := DriveEffectSchedule(ctx, c.RunID, c.LedgerStore, eff); err != nil {
 			return 0, 0, err
 		}
 		verified++
@@ -198,7 +198,7 @@ func (c Case) verifyIdempotency(ctx context.Context) (duplicated, verified int, 
 	return duplicated, verified, nil
 }
 
-// driveEffectSchedule submete o efeito a um calendário AT-LEAST-ONCE com um CRASH
+// DriveEffectSchedule submete o efeito a um calendário AT-LEAST-ONCE com um CRASH
 // intercalado, o pior caso realista de ADR-001:
 //
 //	tentativa 0 — ledger fresco (worker A) corre o efeito e regista-o (durável);
@@ -208,7 +208,11 @@ func (c Case) verifyIdempotency(ctx context.Context) (duplicated, verified int, 
 //
 // Um efeito idempotente (chave estável) corre UMA vez (Observed==1). Um efeito com
 // chave não-determinística falha a deduplicar e Observed cresce — o harness apanha.
-func driveEffectSchedule(ctx context.Context, runID string, store durable.EventStore, eff Effect) error {
+//
+// É EXPORTADO (AOS-112, AC5): qualquer ticket com efeito externo pode conduzir o seu
+// próprio efeito por este calendário — diretamente ou via [VerifyEffectIdempotency] —
+// para cumprir a DoD de idempotência por passo sem reimplementar o crash-schedule.
+func DriveEffectSchedule(ctx context.Context, runID string, store durable.EventStore, eff Effect) error {
 	workerA, err := durable.NewStepLedger(store)
 	if err != nil {
 		return err

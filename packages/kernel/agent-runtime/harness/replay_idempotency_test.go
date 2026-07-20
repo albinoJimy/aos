@@ -242,9 +242,9 @@ func TestIdempotentEffectRunsOnce(t *testing.T) {
 	defer f.Close()
 
 	seq := durable.NewStepSequencer()
-	eff := stableEffect(f.RunID, seq, 1, 1)
-	if err := driveEffectSchedule(context.Background(), f.RunID, f.ledgerStore, eff); err != nil {
-		t.Fatalf("driveEffectSchedule: %v", err)
+	eff := StableEffect(f.RunID, seq, 1, 1)
+	if err := DriveEffectSchedule(context.Background(), f.RunID, f.ledgerStore, eff); err != nil {
+		t.Fatalf("DriveEffectSchedule: %v", err)
 	}
 	if got := eff.Observed(); got != 1 {
 		t.Fatalf("efeito idempotente devia correr 1 vez, correu %d", got)

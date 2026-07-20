@@ -26,11 +26,15 @@ HARNESS_PKG="./harness/..."
 # Meta-testes OBRIGATÓRIOS: provam que o harness (a) passa nas golden, (b) apanha
 # trajectória adulterada, (c) apanha efeito duplicado, (d) é reprodutível, (e)
 # retoma correctamente sob crash, e (f) emite o relatório de fidelidade. Os três
-# últimos são a suite de replay determinístico de EPIC-11/AOS-111 sobre a
+# seguintes são a suite de replay determinístico de EPIC-11/AOS-111 sobre a
 # trajectória MULTI-PASSO COM SUB-AGENTE: (g) replay positivo resume-from-step de
 # domínio, (h) replay negativo (prefixo do prompt / seed) detectado em vermelho, e
-# (i) o driver "% de trajectórias 100% reproduzíveis". Renomear/remover qualquer um
-# avermelha o gate (require_tests, fail-closed).
+# (i) o driver "% de trajectórias 100% reproduzíveis". Os três ÚLTIMOS são a suite de
+# IDEMPOTÊNCIA POR PASSO de EPIC-11/AOS-112 sobre uma activity de domínio com efeito
+# externo: (j) exactamente-uma-vez sob retry+crash com a mesma f(run_id,step_id), (k)
+# fencing rejeita a escrita de worker obsoleto sem corromper estado, e (l) a saga de
+# compensação (failed→compensating→ready) permite retry idempotente. Renomear/remover
+# qualquer um avermelha o gate (require_tests, fail-closed).
 REQUIRED=(
   TestGoldenReplayIdempotency
   TestHarnessDetectsTamperedTrajectory
@@ -41,8 +45,11 @@ REQUIRED=(
   TestReplayResumeFromStepDomainSuite
   TestReplayDomainNegativeDetected
   TestPerfectFractionReported
+  TestDomainEffectExactlyOnceUnderRetry
+  TestDomainFencingRejectsStaleWrite
+  TestDomainSagaCompensatesAndRetriesIdempotent
 )
-RE='TestGoldenReplayIdempotency|TestHarnessDetectsTamperedTrajectory|TestHarnessDetectsDuplicatedEffect|TestFixturesReproducible|TestFaultInjectionResume|TestFidelityReportEmitted|TestReplayResumeFromStepDomainSuite|TestReplayDomainNegativeDetected|TestPerfectFractionReported'
+RE='TestGoldenReplayIdempotency|TestHarnessDetectsTamperedTrajectory|TestHarnessDetectsDuplicatedEffect|TestFixturesReproducible|TestFaultInjectionResume|TestFidelityReportEmitted|TestReplayResumeFromStepDomainSuite|TestReplayDomainNegativeDetected|TestPerfectFractionReported|TestDomainEffectExactlyOnceUnderRetry|TestDomainFencingRejectsStaleWrite|TestDomainSagaCompensatesAndRetriesIdempotent'
 
 log_gate "replay (gate 8) · harness replay/idempotência fail-closed"
 

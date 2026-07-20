@@ -124,26 +124,6 @@ func specFromGoal(g agentruntime.Goal) replay.TrajectorySpec {
 	}
 }
 
-// stableEffect constrói um [Effect] IDEMPOTENTE: a idempotency key é a forma
-// canónica f(run_id, sub-step_id) e NÃO varia com a tentativa — logo o ledger de
-// AOS-014 deduplica as re-tentativas e o efeito corre uma só vez. O contador
-// partilhado torna o nº de execuções observável.
-func stableEffect(runID string, seq *durable.StepSequencer, turn, index int) Effect {
-	stepID := seq.SubStepID(runID, turn, index)
-	count := 0
-	return Effect{
-		StepID: stepID,
-		KeyAt: func(int) (string, error) {
-			return durable.IdempotencyKey(runID, stepID)
-		},
-		Run: func(context.Context) (durable.Result, error) {
-			count++
-			return durable.Result{Status: "ok", Payload: []byte("efeito:" + stepID)}, nil
-		},
-		Observed: func() int { return count },
-	}
-}
-
 // BuildEchoGolden constrói a golden trajectory de referência "echo-3turns": três
 // turnos, dois com uma tool call (echo) despachada via Reference Monitor real, o
 // terceiro final. Corre o loop REAL de AOS-013 (RM + Event Store + capturer de
@@ -213,8 +193,8 @@ func BuildEchoGolden(runID string) (fix *Fixture, err error) {
 
 	seq := durable.NewStepSequencer()
 	effects := []Effect{
-		stableEffect(runID, seq, 1, 1),
-		stableEffect(runID, seq, 2, 1),
+		StableEffect(runID, seq, 1, 1),
+		StableEffect(runID, seq, 2, 1),
 	}
 	return &Fixture{
 		Name:        "echo-3turns",
@@ -450,8 +430,8 @@ func BuildDelegationGolden(runID string) (fix *Fixture, err error) {
 
 	seq := durable.NewStepSequencer()
 	effects := []Effect{
-		stableEffect(runID, seq, 1, 1), // o passo de delegação (efeito externo idempotente)
-		stableEffect(runID, seq, 2, 1), // o passo de consolidação
+		StableEffect(runID, seq, 1, 1), // o passo de delegação (efeito externo idempotente)
+		StableEffect(runID, seq, 2, 1), // o passo de consolidação
 	}
 	return &Fixture{
 		Name:        "delegation-3turns",
