@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-security ci-evalgate ci-sast ci-sca ci-policy ci-selftest ci-all \
+        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-security ci-evalgate ci-scale ci-sast ci-sca ci-policy ci-selftest ci-all \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -97,6 +97,9 @@ ci-security: ## Gate: 4 cenários adversariais de segurança (prompt injection/e
 
 ci-evalgate: ## Gate 9: eval harness + golden-sets curados / admission control comportamental (AOS-114, fail-closed)
 	$(CI)/evalgate.sh
+
+ci-scale: ## Gate: carga/escala — admission global + backpressure + degradação + breaker (suite AOS-116, fail-closed)
+	$(CI)/scale.sh
 
 ci-sast: ## Gate: SAST (gosec, HIGH/CRITICAL)
 	$(CI)/sast.sh
