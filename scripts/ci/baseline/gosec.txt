@@ -18,6 +18,9 @@ packages/platform/backup/crypto.go|G407
 packages/platform/backup/crypto.go|G407
 packages/platform/backup/manifest.go|G115
 packages/platform/backup/restore.go|G115
+packages/platform/eval/spans.go|G115
+packages/platform/eval/spans.go|G115
+packages/platform/eval/spans.go|G115
 packages/platform/memory/compression/async_compactor.go|G101
 packages/platform/memory/episodic/crypto.go|G407
 packages/platform/memory/episodic/crypto.go|G407
