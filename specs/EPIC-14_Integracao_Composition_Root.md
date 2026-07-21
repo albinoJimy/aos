@@ -320,7 +320,7 @@ Pôr o módulo apex nos gates fail-closed e tornar o build offline reproduzível
 
 - [x] Gate `apex.sh` (`require_tests` + cobertura ≥ 80%) no molde de `memory.sh`/`routing.sh`, com `apex` em `ALL_GATES` e nas `needs` do job agregador `gates`.
 - [x] Vendoring por-módulo **ou** cache-prime pinado, tornando `GOPROXY=off` reproduzível num runner frio.
-- [ ] Baseline SAST/SCA multiset actualizada (sem `sort -u`).
+- [x] Baseline SAST/SCA multiset actualizada (sem `sort -u`).
 
 ### Detalhes Técnicos
 
@@ -334,7 +334,7 @@ Pôr o módulo apex nos gates fail-closed e tornar o build offline reproduzível
 ### Definition of Done
 
 - [x] `apex` fail-closed nos gates; cobertura ≥ 80% no módulo apex.
-- [ ] Build offline reproduzível provado; baseline actualizada; sem segredos.
+- [x] Build offline reproduzível provado; baseline actualizada; sem segredos.
 
 ### Handoff para Claude Code
 
