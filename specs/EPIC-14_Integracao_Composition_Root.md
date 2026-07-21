@@ -29,9 +29,9 @@ Este epic pertence à **Fase 5 — Operacionalização** e é **predecessor** da
 
 ## 2. Critérios de Saída do Epic
 
-- [ ] Todo o código de ápice/seams está committado em branch (nenhuma cópia única em working-dir) — **AOS-144**.
-- [ ] O tip AOS-128 (41 módulos) compila e testa offline (`GOPROXY=off`) e o *drift*/porting + a colisão dos dois `integration` estão **medidos** — **AOS-145**.
-- [ ] Existe **um** módulo `packages/integration` reconciliado sobre AOS-128, com os seams `NewProduction` foldados e portados, `go build/test ./...` verde offline, e o módulo nos gates fail-closed (`require_tests`, cobertura ≥ 80%) **reproduzíveis num runner frio**.
+- [x] Todo o código de ápice/seams está committado em branch (nenhuma cópia única em working-dir) — **AOS-144**.
+- [x] O tip AOS-128 (41 módulos) compila e testa offline (`GOPROXY=off`) e o *drift*/porting + a colisão dos dois `integration` estão **medidos** — **AOS-145**.
+- [x] Existe **um** módulo `packages/integration` reconciliado sobre AOS-128, com os seams `NewProduction` foldados e portados, `go build/test ./...` verde offline, e o módulo nos gates fail-closed (`require_tests`, cobertura ≥ 80%) **reproduzíveis num runner frio**.
 - [ ] `cmd/aos-demo` compõe o grafo zero-rede e o **AC4 é um teste refutável** (invariantes PROVADAS ou DIFERIDAS-com-seam-nomeado; sem *vacuous pass*).
 - [ ] O enforcement é **real**: `Call.Credential` preenchido no kernel; `NewProductionSecure` recusa `IdentityStub`/`EgressStub`/`ScopeGate` nil; cadeia real de hooks com **um único** `audit.Store` WORM; guard-test fim-a-fim que nega anónimo/raiz-forjada/taint/egress/scope.
 - [ ] O long-pole de identidade está ligado **ou** explicitamente marcado *demo-only self-minted* com o bloqueio D4 escalado — sem reivindicar não-forjabilidade inexistente.
@@ -147,10 +147,10 @@ Provar que o tip AOS-128 compila e testa offline e **medir** a superfície real 
 
 ### Critérios de Aceitação
 
-- [ ] Para cada `go.mod` do tip AOS-128, `GOPROXY=off GOFLAGS=-mod=mod go build ./...` e `go test ./...` correm e o resultado (PASS/FAIL por módulo) é registado.
-- [ ] O *overlay* dos seams resgatados (RM `NewProduction`, Model Gateway `production.go`, os dois `integration`) é aplicado e o **drift** (símbolos/APIs mudados; `gateway.go`/`taint_gate.go` são *modificados*) é medido e documentado.
-- [ ] A colisão entre os dois `packages/integration` (símbolos, `go.mod`) é enumerada.
-- [ ] Relatório com a estimativa de porting fundamentada em evidência de build.
+- [x] Para cada `go.mod` do tip AOS-128, `GOPROXY=off GOFLAGS=-mod=mod go build ./...` e `go test ./...` correm e o resultado (PASS/FAIL por módulo) é registado.
+- [x] O *overlay* dos seams resgatados (RM `NewProduction`, Model Gateway `production.go`, os dois `integration`) é aplicado e o **drift** (símbolos/APIs mudados; `gateway.go`/`taint_gate.go` são *modificados*) é medido e documentado.
+- [x] A colisão entre os dois `packages/integration` (símbolos, `go.mod`) é enumerada.
+- [x] Relatório com a estimativa de porting fundamentada em evidência de build.
 
 ### Detalhes Técnicos
 
@@ -164,9 +164,9 @@ Provar que o tip AOS-128 compila e testa offline e **medir** a superfície real 
 
 ### Definition of Done
 
-- [ ] Prova de que o tip AOS-128 compila offline (ou lista dos módulos que falham e porquê).
-- [ ] Superfície de drift/porting e colisão dos dois `integration` medidas e documentadas.
-- [ ] Estimativa de PR-0.a fundamentada; comunicada ao dono.
+- [x] Prova de que o tip AOS-128 compila offline (ou lista dos módulos que falham e porquê).
+- [x] Superfície de drift/porting e colisão dos dois `integration` medidas e documentadas.
+- [x] Estimativa de PR-0.a fundamentada; comunicada ao dono.
 
 ### Handoff para Claude Code
 
@@ -206,11 +206,11 @@ Produzir um único módulo `packages/integration` sobre o tip AOS-128, reconcili
 
 ### Critérios de Aceitação
 
-- [ ] `go.mod` único com a **união** de `require`/`replace` re-declarada a partir da raiz `packages/` (fecho transitivo completo; `replace` não-transitivos).
-- [ ] União dos ficheiros disjuntos (`modelgateway.go` + `secured/freeze/quarantine/revalhook/alerter/doc/wiring`) sem perda.
-- [ ] Colisões de símbolo package-level (ex.: `ErrNoModel`) resolvidas.
-- [ ] O idioma AOS-060 (porta-no-kernel+adaptador-no-pilar) é respeitado no módulo unido.
-- [ ] `GOPROXY=off go build ./...` verde no módulo.
+- [x] `go.mod` único com a **união** de `require`/`replace` re-declarada a partir da raiz `packages/` (fecho transitivo completo; `replace` não-transitivos).
+- [x] União dos ficheiros disjuntos (`modelgateway.go` + `secured/freeze/quarantine/revalhook/alerter/doc/wiring`) sem perda.
+- [x] Colisões de símbolo package-level (ex.: `ErrNoModel`) resolvidas.
+- [x] O idioma AOS-060 (porta-no-kernel+adaptador-no-pilar) é respeitado no módulo unido.
+- [x] `GOPROXY=off go build ./...` verde no módulo.
 
 ### Detalhes Técnicos
 
@@ -224,9 +224,9 @@ Produzir um único módulo `packages/integration` sobre o tip AOS-128, reconcili
 
 ### Definition of Done
 
-- [ ] Um só `packages/integration` compila e testa offline sobre AOS-128.
-- [ ] API pública única documentada; idioma AOS-060 preservado.
-- [ ] Sem segredos.
+- [x] Um só `packages/integration` compila e testa offline sobre AOS-128.
+- [x] API pública única documentada; idioma AOS-060 preservado.
+- [x] Sem segredos.
 
 ### Handoff para Claude Code
 
@@ -265,9 +265,9 @@ Foldar os seams sobre o tip e portá-los até compilar e testar offline.
 
 ### Critérios de Aceitação
 
-- [ ] `referencemonitor.NewProduction` e `model-gateway` `NewProduction`+routing/failover integrados no tip.
-- [ ] Drift portado (assinaturas/símbolos actualizados) até `GOPROXY=off go build ./... && go test ./...` verde em cada módulo tocado.
-- [ ] Sem regressão nos testes existentes dos módulos afectados.
+- [x] `referencemonitor.NewProduction` e `model-gateway` `NewProduction`+routing/failover integrados no tip.
+- [x] Drift portado (assinaturas/símbolos actualizados) até `GOPROXY=off go build ./... && go test ./...` verde em cada módulo tocado.
+- [x] Sem regressão nos testes existentes dos módulos afectados.
 
 ### Detalhes Técnicos
 
@@ -280,8 +280,8 @@ Foldar os seams sobre o tip e portá-los até compilar e testar offline.
 
 ### Definition of Done
 
-- [ ] Seams foldados e portados; verde offline.
-- [ ] Testes dos módulos afectados verdes; sem segredos.
+- [x] Seams foldados e portados; verde offline.
+- [x] Testes dos módulos afectados verdes; sem segredos.
 
 ### Handoff para Claude Code
 
@@ -318,8 +318,8 @@ Pôr o módulo apex nos gates fail-closed e tornar o build offline reproduzível
 
 ### Critérios de Aceitação
 
-- [ ] Gate `apex.sh` (`require_tests` + cobertura ≥ 80%) no molde de `memory.sh`/`routing.sh`, com `apex` em `ALL_GATES` e nas `needs` do job agregador `gates`.
-- [ ] Vendoring por-módulo **ou** cache-prime pinado, tornando `GOPROXY=off` reproduzível num runner frio.
+- [x] Gate `apex.sh` (`require_tests` + cobertura ≥ 80%) no molde de `memory.sh`/`routing.sh`, com `apex` em `ALL_GATES` e nas `needs` do job agregador `gates`.
+- [x] Vendoring por-módulo **ou** cache-prime pinado, tornando `GOPROXY=off` reproduzível num runner frio.
 - [ ] Baseline SAST/SCA multiset actualizada (sem `sort -u`).
 
 ### Detalhes Técnicos
@@ -333,7 +333,7 @@ Pôr o módulo apex nos gates fail-closed e tornar o build offline reproduzível
 
 ### Definition of Done
 
-- [ ] `apex` fail-closed nos gates; cobertura ≥ 80% no módulo apex.
+- [x] `apex` fail-closed nos gates; cobertura ≥ 80% no módulo apex.
 - [ ] Build offline reproduzível provado; baseline actualizada; sem segredos.
 
 ### Handoff para Claude Code
