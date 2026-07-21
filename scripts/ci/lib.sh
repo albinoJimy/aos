@@ -41,7 +41,7 @@ COVERAGE_MIN="${COVERAGE_MIN:-${KERNEL_COVERAGE_MIN}}"
 # Módulos sujeitos ao limiar generalizado (rel. a REPO_ROOT). Inclui o kernel
 # (retro-compat com KERNEL_MODULES) e o próprio testkit (AOS-109) — dogfooding: o
 # framework de testes de referência está ele próprio sob o piso que impõe.
-COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/testkit" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface")
+COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/testkit" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface" "packages/control-plane/governance/authoring-surface")
 # Directório do testkit (conversor de cobertura cov2lcov, Go stdlib puro).
 TESTKIT_DIR="$REPO_ROOT/packages/testkit"
 # Artefacto de cobertura MÁQUINA-LEGÍVEL emitido pelo gate 3 (LCOV). Ignorado pelo
