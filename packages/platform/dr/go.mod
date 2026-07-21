@@ -29,7 +29,7 @@ require (
 
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
-	github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 replace github.com/aos-ref/platform/backup => ../backup
