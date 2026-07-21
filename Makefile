@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-security ci-evalgate ci-scale ci-dr-e2e ci-sast ci-sca ci-policy ci-selftest ci-all \
+        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -103,6 +103,9 @@ ci-scale: ## Gate: carga/escala — admission global + backpressure + degradaç�
 
 ci-dr-e2e: ## Gate: teste de fogo DR/replay — node loss → failover → resume-from-step + zero-loss/zero-dup/soberania (suite AOS-118, fail-closed)
 	$(CI)/dr-e2e.sh
+
+ci-ux-dx: ## Gate: UX/DX — usabilidade dos gates + anti-fadiga (override-rate AOS-095) + paridade + acessibilidade (suite AOS-128, fail-closed)
+	$(CI)/ux-dx.sh
 
 ci-sast: ## Gate: SAST (gosec, HIGH/CRITICAL)
 	$(CI)/sast.sh
