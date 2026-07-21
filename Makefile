@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all \
+        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all ci-cache-prime \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -91,6 +91,12 @@ ci-supplychain: ## Gate: 7 vectores adversariais de supply-chain + audit WORM (s
 
 ci-routing: ## Gate: 5 cenários adversariais de roteamento/failover do GW (suite AOS-063, fail-closed)
 	$(CI)/routing.sh
+
+ci-apex: ## Gate: composition-root — enforcement composto do ápice (packages/integration, AOS-146/147/148, fail-closed)
+	$(CI)/apex.sh
+
+ci-cache-prime: ## Prime determinista do módulo-cache (go.sum pinados) para builds offline reproduzíveis (AOS-148); não é gate
+	$(CI)/cache-prime.sh
 
 ci-security: ## Gate: 4 cenários adversariais de segurança (prompt injection/exfiltração/segredos/isolamento) (suite AOS-075, fail-closed)
 	$(CI)/security.sh

@@ -26,7 +26,7 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$CI_DIR/lib.sh"
 
-ALL_GATES=(secrets build lint test replay memory supplychain routing security evalgate scale dr-e2e ux-dx sast sca policy-test)
+ALL_GATES=(secrets build lint test replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx sast sca policy-test)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 
