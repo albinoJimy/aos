@@ -1051,9 +1051,9 @@ Fixar a invariante estrutural do 4-eyes (duas credenciais atestadas distintas + 
 
 ### Critérios de Aceitação
 
-- [ ] Invariante estrutural do 4-eyes fixada em código (recusa 2.º sign do mesmo principal/sessão/credencial). — **NÃO implementado nesta série; depende de AOS-156** (D4). NOTA: a invariante estrutural é, em teoria, prototipável já contra a identidade *demo-only* (só a *attestation* é condicional a D4 — ver Detalhes Técnicos); mas o valor real do "mesmo principal" depende da espinha de token real, e o ticket lista AOS-156 como dependência.
-- [ ] A *attestation* de dispositivo fica **stub** gated em AOS-152 + **condicional a D4** (sem IdP real). — **BLOQUEADO por D4**.
-- [ ] Coerente com ADR-016 (BFF non-signing; WYSIWYS). — pendente da implementação do ticket.
+- [x] Invariante estrutural do 4-eyes fixada em código (recusa 2.º sign do mesmo principal/sessão/credencial). — **FEITO contra a identidade demo-only**: `verifyLeg` exige 2 credenciais distintas + 2 sessões + challenge por-perna e recusa o 2.º sign do mesmo principal/sessão/credencial (suite pré-existente verde). Endurecida nesta série: `RiskClass` e `DualControlRequired` entram no tuplo assinado (campo `policy` 2-byte length-prefixed), fechando o downgrade dual→single de um relay non-signing (`TestFourEyes_DowngradeDualToSingleRejected` ⇒ `ErrBadLegSignature`), e `verifyLeg` passou a exigir `hitl.RequiredAuthority(RiskClass)` (`TestFourEyes_InsufficientAuthorityRejected` ⇒ `ErrInsufficientAuthority`, fail-closed). **Fronteira honesta:** o valor *não-forjável* de "mesmo principal" depende da espinha de token real e da attestation — **deferido para D4 + AOS-163**; até lá a distinção é estrutural sobre identidade demo-only.
+- [x] A *attestation* de dispositivo fica **stub** gated em AOS-152 + **condicional a D4** (sem IdP real). — **FEITO como stub**: `DeviceAttestation` permanece stub/demo, **fora do tuplo assinado**, coberto por `TestFourEyes_DeviceAttestationIsStub`. Attestation real (AAGUID/WebAuthn/IdP) **deferida — BLOQUEADO por D4** (`docs/reports/D4-escalacao-autoridade-identidade.md`) e AOS-163.
+- [x] Coerente com ADR-016 (BFF non-signing; WYSIWYS). — **FEITO**: a correcção do downgrade fecha exactamente o vector do relay/BFF *distrusted* non-signing do ADR-016 (uma perna dual não valida reconstruída como single); o `preview` no tuplo mantém a garantia WYSIWYS por-perna.
 
 ### Detalhes Técnicos
 
@@ -1065,7 +1065,7 @@ Fixar a invariante estrutural do 4-eyes (duas credenciais atestadas distintas + 
 
 ### Definition of Done
 
-- [ ] Invariante fixada; attestation marcada condicional D4; sem segredos. — **NÃO implementado nesta série; depende de AOS-156** (D4).
+- [x] Invariante fixada; attestation marcada condicional D4; sem segredos. — **FEITO**: invariante estrutural fixada e endurecida (downgrade dual→single fechado; autoridade exigida), attestation permanece stub condicional a D4/AOS-163, `secrets.sh` verde. Gates verdes no módulo `packages/integration` (build/test/vet). **Fronteira honesta:** o binding não-forjável humano↔NHI e a attestation real ficam deferidos para D4 + AOS-163.
 
 ### Handoff para Claude Code
 
