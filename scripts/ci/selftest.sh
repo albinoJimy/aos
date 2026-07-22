@@ -231,6 +231,23 @@ else
 fi
 
 # ============================================================================
+# J) invariante vacuosa avermelha o AC4 do ápice mínimo (AOS-151, PR-0.b)
+# ============================================================================
+log_gate "self-test J · invariante vacuosa bloqueia o AC4 do ápice (AOS-151)"
+# O ápice mínimo (packages/cmd/aos-demo) tem um teste-veneno (TestSelftestApexSufficiencyReddensGate)
+# que só corre com AOS_APEX_SELFTEST=1: injecta uma invariante NÃO CLASSIFICADA (nem
+# provada nem diferida-com-seam) — exactamente o *vacuous pass* que o AC4 proíbe — e
+# assevera (falsamente) que a classificação a aceitou; como o gate a DETECTA, a asserção
+# FALHA de propósito, provando que uma invariante vacuosa torna o AC4 VERMELHO. Prova
+# que "o ápice mínimo chega" nunca passa por omissão. Determinista, offline, sem rasto.
+if ( cd "$REPO_ROOT/packages/cmd/aos-demo" && \
+     AOS_APEX_SELFTEST=1 go test ./ -run TestSelftestApexSufficiencyReddensGate -count=1 ) >/dev/null 2>&1; then
+  bad "J: o AC4 aceitou uma invariante não-classificada — vacuous pass NÃO bloquearia"
+else
+  pass "J: o AC4 bloqueou (exit!=0) a invariante vacuosa injectada (fail-closed, não-vacuoso)"
+fi
+
+# ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"
 if [ "$fails" -eq 0 ]; then
   printf '%s  TODOS OS SELF-TESTS OK — falhas são bloqueadas pelos gates%s\n' "$C_GRN$C_BLD" "$C_RST"

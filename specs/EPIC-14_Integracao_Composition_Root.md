@@ -32,7 +32,7 @@ Este epic pertence à **Fase 5 — Operacionalização** e é **predecessor** da
 - [x] Todo o código de ápice/seams está committado em branch (nenhuma cópia única em working-dir) — **AOS-144**.
 - [x] O tip AOS-128 (41 módulos) compila e testa offline (`GOPROXY=off`) e o *drift*/porting + a colisão dos dois `integration` estão **medidos** — **AOS-145**.
 - [x] Existe **um** módulo `packages/integration` reconciliado sobre AOS-128, com os seams `NewProduction` foldados e portados, `go build/test ./...` verde offline, e o módulo nos gates fail-closed (`require_tests`, cobertura ≥ 80%) **reproduzíveis num runner frio**.
-- [ ] `cmd/aos-demo` compõe o grafo zero-rede e o **AC4 é um teste refutável** (invariantes PROVADAS ou DIFERIDAS-com-seam-nomeado; sem *vacuous pass*).
+- [x] `cmd/aos-demo` compõe o grafo zero-rede e o **AC4 é um teste refutável** (invariantes PROVADAS ou DIFERIDAS-com-seam-nomeado; sem *vacuous pass*).
 - [ ] O enforcement é **real**: `Call.Credential` preenchido no kernel; `NewProductionSecure` recusa `IdentityStub`/`EgressStub`/`ScopeGate` nil; cadeia real de hooks com **um único** `audit.Store` WORM; guard-test fim-a-fim que nega anónimo/raiz-forjada/taint/egress/scope.
 - [ ] O long-pole de identidade está ligado **ou** explicitamente marcado *demo-only self-minted* com o bloqueio D4 escalado — sem reivindicar não-forjabilidade inexistente.
 - [ ] Todos os tickets com DoD de domínio verde (`specs/01_Engineering_Standards_e_Handoff.md`); sem segredos; gates SAST/SCA na baseline.
@@ -479,9 +479,9 @@ Um teste em tabela em que cada invariante é PROVADA (assercção corre) ou DIFE
 
 ### Critérios de Aceitação
 
-- [ ] `TestApexMinimalSufficiency` em tabela: cada invariante PROVADA ou DIFERIDA-com-seam-nomeado; falha em linha não-classificada.
-- [ ] Poison-test `AOS_APEX_SELFTEST=1` que injecta uma configuração má e **passa quando o gate falha** (self-test do fail-closed).
-- [ ] O balanço provado-vs-diferido é o output operacional (resposta a "o ápice mínimo chega").
+- [x] `TestApexMinimalSufficiency` em tabela: cada invariante PROVADA ou DIFERIDA-com-seam-nomeado; falha em linha não-classificada.
+- [x] Poison-test `AOS_APEX_SELFTEST=1` que injecta uma configuração má e **passa quando o gate falha** (self-test do fail-closed).
+- [x] O balanço provado-vs-diferido é o output operacional (resposta a "o ápice mínimo chega").
 
 ### Detalhes Técnicos
 
@@ -493,7 +493,7 @@ Um teste em tabela em que cada invariante é PROVADA (assercção corre) ou DIFE
 
 ### Definition of Done
 
-- [ ] AC4 refutável no CI; nenhum *vacuous pass* possível; sem segredos.
+- [x] AC4 refutável no CI; nenhum *vacuous pass* possível; sem segredos.
 
 ### Handoff para Claude Code
 
