@@ -16,7 +16,9 @@
 
 Este documento é a **especificação de sistema** do AOS — Agentic OS de Referência: a visão executiva consolidada que amarra, num único artefacto, o *porquê* (problema e objectivos), o *quê* (capacidades e modelo de domínio), o *como* estrutural (arquitectura em camadas, stack de referência, ADRs) e o *quanto* (drivers não-funcionais, KPIs e SLOs). Serve três audiências: quem decide (patrocínio e aprovação), quem arquitecta (fronteiras e trade-offs) e quem implementa (mapeamento capacidade → componente → epic → tickets AOS-NNN).
 
-O AOS é um produto/plataforma **standalone**, genérico e reutilizável — um *blueprint* para correr, coordenar e governar agentes de IA. Não descreve um cliente institucional concreto. Onde este documento resume, os documentos técnicos (`tecnica/`) aprofundam e os ficheiros de epic (`specs/`) tornam executável. Em caso de divergência prevalece a fonte técnica autoritativa `_FONTE_agentic-os-ideal.md` e o `_BRIEF` canónico.
+O AOS é um **runtime deployável de referência** — um sistema que se instala e corre para correr, coordenar e governar agentes de IA. A **forma do produto é fixada pela `specs/00_AOS_Carta.md §2`** (v1 = o nó `aos`); esta secção deixa de a hesitar ("blueprint vs plataforma"). Não descreve um cliente institucional concreto. Onde este documento resume, os documentos técnicos (`tecnica/`) aprofundam e os ficheiros de epic (`specs/`) tornam executável.
+
+**Precedência (reconciliada — Carta §1, emenda 1.2):** sobre a *forma do produto e o estado das decisões* prevalece a `specs/00_AOS_Carta.md` (a autoridade congelada); sobre o *detalhe técnico* prevalece a visão congelada `_FONTE_agentic-os-ideal.md` (+ `_BRIEF`), que só muda por emenda datada na Carta. O critério **forma vs detalhe**: "forma" = o que se entrega/opera e o estado de uma decisão (Carta); "detalhe" = como um subsistema funciona por dentro (`_FONTE`/`tecnica/`).
 
 ---
 

@@ -78,8 +78,9 @@ na invariante, dependente de um gatilho externo nomeado) ou **ABERTA** (por deci
 | ADR-013 | Gates de risco SA-ROC (tiering) | FIXA |
 | ADR-015 | Execução durável (idempotência/replay/liveness) | FIXA |
 | ADR-016 | Fronteira de confiança da UI (BFF non-signing, WYSIWYS, 4-eyes) | FIXA |
+| ADR-017 | Supply-chain do nó e da distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência, gates fail-closed na entrega) | FIXA (emitido 2026-07-22, emenda 1.2) |
 
-*(ADR-017 supply-chain foi reservado mas ainda não redigido — ABERTO, dono: Segurança.)*
+*(Correcção — emenda 1.2: a linha "todas FIXAS" acima só é literalmente verdadeira DESDE que o ADR-017 foi emitido. Antes, o painel `wamnbffrk` apanhou a afirmação como falsa — o 017 estava reservado-mas-não-redigido. Está agora emitido `docs/adr/ADR-017-supply-chain-node.md`.)*
 
 ### 4.2 Decisões de programa (D-series)
 
@@ -94,9 +95,24 @@ na invariante, dependente de um gatilho externo nomeado) ou **ABERTA** (por deci
 | **D7** | Read-path soberano fail-closed | **FIXA** (regra); topologia CONDICIONAL a regiões/boards reais | Governança | EPIC-13 §25 |
 | **D-TAIL** | Dono do tail/assembly (um só prefix-hash por run) | **FIXA — RESOLVIDA**: o loop delega a `WindowPort` | Plataforma | EPIC-14/AOS-157 |
 
-**A única decisão ABERTA que bloqueia código é a D4.** Está escalada (relatório dedicado); a
-identidade é *demo-only self-minted* até ser provisionada, sem reivindicar não-forjabilidade.
-Todas as outras estão FIXAS ou CONDICIONAIS-a-gatilho-externo (não a código pendente).
+**A D4 está EM CURSO (emenda 1.1): é o PRÉ-REQUISITO da v1**, a desbloquear pela via construível
+(token spine AOS-156, autoridade self-hosted Nível 2). Todas as outras decisões estão FIXAS ou
+CONDICIONAIS-a-gatilho-externo (não a código pendente).
+
+**Notas de coerência (emenda 1.2, do painel `wamnbffrk`):**
+- **Não-repúdio HITL e identidade fim-a-fim — DEFERIDOS com o eixo D4.** A superfície de aprovação
+  (steer/approve) fica *estruturalmente completa mas criptograficamente demo-grade* até AOS-160
+  (assinatura ed25519) e AOS-162 (4-eyes atestado) — que dependem do token spine (AOS-156). Não se
+  declara "HITL feito" com este eixo desligado.
+- **D3 (SSE stdlib) e D5 (single-process) — REAVALIAR para o modelo de ameaça do nó-serviço.**
+  Foram fixadas no contexto BFF-atrás-de-SPA; num nó exposto como serviço de rede o modelo de
+  ameaça é diferente (a separação "dois canais" passa a ser de protocolo/taint, não física; a SSE
+  precisa de validação sob N ligações longas). A regra mantém-se, mas a sua aplicação ao nó é
+  revista na EPIC-15 (não re-litígio — reavaliação de contexto).
+- **Entrypoint canónico (fim da deriva de nomes).** O composition-root canónico é
+  **`integration.NewSecuredRuntime`**, que constrói o RM via **`referencemonitor.NewProductionSecure`**;
+  o demonstrador/embrião do nó é **`packages/cmd/aos-demo`**. Estes três nomes designam camadas
+  distintas, não alternativas.
 
 ## 5. Definition-of-Done da v1
 
@@ -130,6 +146,17 @@ trabalho do nó (EPIC-15), que fica a jusante dele.
 3. Uma decisão **ABERTA** tem sempre um **dono** e uma **escalada** (não fica em limbo).
 4. Descobrir dívida escondida (como o PR-0) **não** é re-litigar — é uma emenda que se regista
    e se executa. O que se proíbe é reabrir o que já está FIXO por preferência ou dúvida.
+5. **Árbitro da fronteira "dívida escondida vs re-litígio" (emenda 1.2).** A distinção do §6.4 é
+   subjectiva; para não ser um *loophole* que re-legitime a doença que o §0 diagnostica, cada
+   invocação do §6.4 é **arbitrada** pelo **Arquitecto de Plataforma + Responsável de Segurança**
+   (dois papéis, não um), que decidem por escrito na emenda: uma "descoberta" é dívida escondida
+   SÓ se assenta em **facto novo verificável** (código/build/painel) que não existia à data da
+   decisão FIXA; caso contrário é re-litígio e é recusada.
+6. **Tripwire de falsificação da promessa anti-retrabalho (emenda 1.2).** A afirmação "isto acaba
+   o retrabalho" tem de ser falsificável, senão é fé. **Condição de falha declarada:** se, numa
+   janela de 30 dias, **≥ 2 decisões FIXAS forem reabertas** OU **≥ 2 invocações do §6.4 forem
+   recusadas como re-litígio pelo árbitro**, o mecanismo de congelamento **falhou** e a Carta é
+   revista na raiz (não emendada à margem). Este contador é o SLI do próprio processo.
 
 ## 7. Controlo de versões (emendas)
 
@@ -138,6 +165,7 @@ trabalho do nó (EPIC-15), que fica a jusante dele.
 | 0.1 | 2026-07-22 | Emissão inicial (PROPOSTA). Fixa a forma do produto (runtime de referência deployável — nó `aos`), consolida o registo de decisões (ADRs + D1–D7 + D-TAIL + D4), define o DoD da v1 e a regra de congelamento. | Proposta |
 | **1.0** | **2026-07-22** | **RATIFICADA e CONGELADA.** A forma do produto, o registo de decisões, o DoD da v1 e a regra de congelamento passam a autoridade. A partir daqui, nenhuma decisão FIXA se re-litiga sem uma emenda datada nesta tabela. | **Ratificada pelo dono do produto** |
 | **1.1** | **2026-07-22** | **EMENDA — decisão do dono após o painel adversarial `wamnbffrk`.** O **D4 passa de ABERTA-deferida a EM CURSO — PRÉ-REQUISITO da v1**: desbloquear a identidade real (token spine AOS-156, chave do issuer no vault, não controlada pelo nó) ANTES de declarar a v1, para que exista um modo real+seguro (resolve o achado ALTO "forma sobre-reivindicada"). A forma "nó deployável" mantém-se; AOS-156 passa à frente da EPIC-15. **Achados materiais do painel POR ENACTAR** (na revisão da EPIC-15/token-spine): autenticação do canal de controlo (AOS-166); durabilidade do Event Store/WORM (não in-memory); metodologia do e2e AOS-169 (modelo que emite tool calls + caminho permitido + contentor real); observabilidade + `/healthz`·`/readyz`; reconciliação do System Spec §1 e da colisão single-process vs substrato distribuído; ADR-017 (supply-chain) antes de empacotar; dimensionamento no-XL (dividir AOS-164, repromover AOS-167). | Dono do produto |
+| **1.2** | **2026-07-22** | **EMENDA de COERÊNCIA (Passo 2 do roadmap pós-painel).** Enacta os achados de governança/coerência: **(E3)** reconciliado o **System Spec §1** (removida a hesitação "standalone/blueprint" e a precedência `_FONTE`; critério forma-vs-detalhe explícito); a **v1 single-host / sem-HA / com-SPOF** é declarada **non-goal DATADO** — o substrato distribuído/sem-SPOF (pressuposto do System Spec §2.4/§14) é milestone **posterior (EPIC-10)**, não regressão. **(E9)** emitido **ADR-017** (supply-chain do nó) e registado FIXA no §4.1; corrigida a afirmação "todas FIXAS"; adicionados o **árbitro do §6.4** (§6.5) e o **tripwire de falsificação** (§6.6). **(E10)** marcados não-repúdio HITL + identidade fim-a-fim **DEFERIDOS** com D4; **D3/D5 a reavaliar** para o modelo de ameaça do nó-serviço; **entrypoint canónico** uniformizado (§4.2). **Sign-off técnico PENDENTE:** a ratificação (v1.0/1.1/1.2) é do **dono do produto** (em sessão); o **sign-off de Segurança e de Arquitectura** fica **por obter** — é pré-condição da aceitação da v1 (§5), não fabricado aqui. | Dono do produto; Segurança/Arquitectura **pendente** |
 
 ---
 
