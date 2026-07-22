@@ -895,9 +895,9 @@ Um `RatificationNonceStore` durável e ligar freshness+nonce no promotion contro
 
 ### Critérios de Aceitação
 
-- [ ] `RatificationNonceStore` durável sobre eventstore/WORM (`ConsumeNonce` atómico check-and-set).
-- [ ] `WithRatifyFreshness`+`WithRatifyNonceStore` ligados no promotion controller.
-- [ ] Uma ratificação re-usada após consumo é `ReasonRatificationReplayed`; fora da janela é `ReasonRatificationStale`.
+- [x] `RatificationNonceStore` durável sobre eventstore/WORM (`ConsumeNonce` atómico check-and-set).
+- [x] `WithRatifyFreshness`+`WithRatifyNonceStore` ligados no promotion controller.
+- [x] Uma ratificação re-usada após consumo é `ReasonRatificationReplayed`; fora da janela é `ReasonRatificationStale`.
 
 ### Detalhes Técnicos
 
@@ -909,7 +909,7 @@ Um `RatificationNonceStore` durável e ligar freshness+nonce no promotion contro
 
 ### Definition of Done
 
-- [ ] Uso-único durável provado; sem segredos.
+- [x] Uso-único durável provado; sem segredos.
 
 ### Handoff para Claude Code
 

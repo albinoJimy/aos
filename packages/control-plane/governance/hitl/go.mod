@@ -37,7 +37,7 @@ replace github.com/aos-ref/platform/messaging => ../../../platform/messaging
 // Transitivos: messaging depende de audit+rm+eventstore+otel-genai; audit depende
 // do rm que depende do eventstore/otel-genai. Os replace NÃO são herdados — este
 // módulo resolve-os localmente para fechar o build offline.
-require github.com/aos-ref/substrate/eventstore v0.0.0 // indirect
+require github.com/aos-ref/substrate/eventstore v0.0.0
 
 replace github.com/aos-ref/substrate/eventstore => ../../../substrate/eventstore
 
