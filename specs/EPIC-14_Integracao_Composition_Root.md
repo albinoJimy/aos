@@ -687,9 +687,9 @@ Portar o `SecuredRuntime` para `NewProductionSecure` (revalhook a-seguir-a-ident
 
 ### Critérios de Aceitação
 
-- [ ] `SecuredRuntime` usa `NewProductionSecure`, com `RevalidationHook` na posição a-seguir-a-identidade.
-- [ ] `RunToolSets` persiste o snapshot congelado no eventstore no arranque e reconstrói (`Rebuild`) na retoma.
-- [ ] Após failover simulado, a revalidação não colapsa para default-deny.
+- [x] `SecuredRuntime` usa `NewProductionSecure`, com `RevalidationHook` na posição a-seguir-a-identidade.
+- [x] `RunToolSets` persiste o snapshot congelado no eventstore no arranque e reconstrói (`Rebuild`) na retoma.
+- [x] Após failover simulado, a revalidação não colapsa para default-deny.
 
 ### Detalhes Técnicos
 
@@ -701,7 +701,7 @@ Portar o `SecuredRuntime` para `NewProductionSecure` (revalhook a-seguir-a-ident
 
 ### Definition of Done
 
-- [ ] Freeze crash-safe; cadeia segura; sem segredos.
+- [x] Freeze crash-safe; cadeia segura; sem segredos.
 
 ### Handoff para Claude Code
 

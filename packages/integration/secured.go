@@ -54,6 +54,12 @@ type SecuredConfig struct {
 	// EventSink de mediação do RM e pelo sink de segurança de egress — ambos selam no
 	// MESMO WORM (ver [NewSecuredRuntime]). [audit.NewMemStore] satisfá-lo.
 	WORM audit.Store
+	// ToolSetStore torna o registo de tool sets congelados DURÁVEL (AOS-155): cada
+	// arranque de run persiste o snapshot no Event Store e a retoma reconstrói-o
+	// ([RunToolSets.Rebuild]), evitando que um failover colapse a revalidação para
+	// default-deny. OPCIONAL: nil ⇒ registo in-memory (sem crash-safety).
+	// *[eventstore.Store] satisfá-lo.
+	ToolSetStore ToolSetStore
 
 	// --- Colaboradores de segurança da cadeia REAL (AOS-154) --------------------
 	// Todos são OPCIONAIS: quando nil caem para um default demo-grade que é um hook
@@ -164,8 +170,13 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	}
 
 	// Revalidação por chamada (AOS-051): o MESMO hook já existente, na MESMA posição
-	// (logo a seguir à identidade — o gate de supply-chain corre cedo).
-	toolsets := NewRunToolSets()
+	// (logo a seguir à identidade — o gate de supply-chain corre cedo). O registo de
+	// tool sets é DURÁVEL se cfg.ToolSetStore for fornecido (AOS-155, crash-safe).
+	var tsOpts []RunToolSetsOption
+	if cfg.ToolSetStore != nil {
+		tsOpts = append(tsOpts, WithToolSetStore(cfg.ToolSetStore))
+	}
+	toolsets := NewRunToolSets(tsOpts...)
 	revalHook, err := NewRevalidationHook(cfg.Revalidator, toolsets, CatalogResolver{Cat: cfg.Catalog}, cfg.Policy, cfg.HookOptions...)
 	if err != nil {
 		return nil, err
@@ -243,7 +254,12 @@ func (s *SecuredRuntime) Run(ctx context.Context, goal agentruntime.Goal, sel *t
 	if err != nil {
 		return agentruntime.Result{}, nil, err
 	}
-	s.toolsets.Put(frozen)
+	// Registo DURÁVEL do arranque (AOS-155): persiste o snapshot (se durável) antes de
+	// correr, para a revalidação o reconstruir após um failover em vez de negar tudo.
+	// Fail-closed: uma falha de persistência aborta o run (não seria crash-safe).
+	if err := s.toolsets.Freeze(ctx, frozen); err != nil {
+		return agentruntime.Result{}, nil, err
+	}
 	defer s.toolsets.Release(frozen.RunID())
 
 	res, err := s.rt.Run(ctx, ApplyFrozenToGoal(goal, frozen))
