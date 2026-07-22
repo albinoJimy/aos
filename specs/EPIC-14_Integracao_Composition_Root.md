@@ -731,7 +731,7 @@ pos-failover.
 
 ### Contexto
 
-É o *long-pole* do programa e atravessa dois epics. **Condicional à decisão D4 (autoridade de identidade):** não há IdP, AAGUID-allowlist nem binding humano↔NHI reais — é infra/informação humana ausente, não resolúvel por código. Até existir, a identidade é *demo-only self-minted* e **não** se reivindica não-forjabilidade.
+É o *long-pole* do programa e atravessa dois epics. **DESBLOQUEADO (emenda 1.1 da Carta, 2026-07-22): PRÉ-REQUISITO da v1.** Decisão do dono após o painel `wamnbffrk`: desbloquear a identidade real ANTES da v1, pela via **self-hosted Nível 2** — o issuer é uma **autoridade SEPARADA** (a chave nunca é entregue ao runtime do nó; o nó só detém a **pubkey do issuer**), com um **directório de autenticação humana interno** (porta plugável, endurecível para IdP corporativo depois). **Constrangimento verificado:** o vault do repo (`platform/broker`, `vault.Client`) é um cofre de segredos (`Fetch`-only), **não assina no lugar** — logo o Nível 2 (nó nunca detém a chave) exige o issuer como autoridade separada, não bastando buscar a chave ao vault. As partes de garantia mais alta (HSM/sign-in-place, IdP corporativo, attestation AAGUID/WebAuthn) são endurecimento POSTERIOR documentado.
 
 ### Objectivo
 
@@ -739,8 +739,8 @@ Um issuer com chave de assinatura vinda do vault (EPIC-07), o estágio authn (AO
 
 ### Critérios de Aceitação
 
-- [ ] Issuer com chave do vault; verifier com trust-anchor = pubkey do issuer. — **BLOQUEADO por D4** (não há IdP/vault de identidade real; construí-lo com chave do apex seria teatro criptográfico).
-- [ ] Estágio authn (AOS-057) minta o NHI a montante do `ScopeGate`. — **BLOQUEADO por D4** (sem autoridade de identidade real).
+- [ ] Issuer com chave do vault; verifier com trust-anchor = pubkey do issuer. — **EM CURSO** (emenda 1.1): issuer como AUTORIDADE SEPARADA (chave não entregue ao nó); o `NewSecuredRuntime` do nó recebe `identity.NewVerifier(WithTrustedIssuer(iss, pubkey))` — não uma chave que o nó controla.
+- [ ] Estágio authn minta o NHI a partir do humano autenticado, a montante do `ScopeGate`. — **EM CURSO** (emenda 1.1): directório de autenticação humana interno (porta plugável) → mint via `IssueChild` com a raiz humana na cadeia de delegação.
 - [x] **Marcado explicitamente:** enquanto D4 estiver aberta, a identidade é *demo-only self-minted*; nenhuma reivindicação de não-forjabilidade. — o default `identity.NewVerifier()` sem anchors nega toda a NHI fail-closed; marcado demo-only no código (AOS-154), na memória e na escalada D4.
 - [x] Bloqueio D4 escalado ao dono. — `docs/reports/D4-escalacao-autoridade-identidade.md` (o que decidir, o que bloqueia, 4 provisionamentos, 3 opções A/B/C).
 
