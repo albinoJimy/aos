@@ -33,9 +33,9 @@ Este epic pertence à **Fase 5 — Operacionalização** e é **predecessor** da
 - [x] O tip AOS-128 (41 módulos) compila e testa offline (`GOPROXY=off`) e o *drift*/porting + a colisão dos dois `integration` estão **medidos** — **AOS-145**.
 - [x] Existe **um** módulo `packages/integration` reconciliado sobre AOS-128, com os seams `NewProduction` foldados e portados, `go build/test ./...` verde offline, e o módulo nos gates fail-closed (`require_tests`, cobertura ≥ 80%) **reproduzíveis num runner frio**.
 - [x] `cmd/aos-demo` compõe o grafo zero-rede e o **AC4 é um teste refutável** (invariantes PROVADAS ou DIFERIDAS-com-seam-nomeado; sem *vacuous pass*).
-- [ ] O enforcement é **real**: `Call.Credential` preenchido no kernel; `NewProductionSecure` recusa `IdentityStub`/`EgressStub`/`ScopeGate` nil; cadeia real de hooks com **um único** `audit.Store` WORM; guard-test fim-a-fim que nega anónimo/raiz-forjada/taint/egress/scope.
-- [ ] O long-pole de identidade está ligado **ou** explicitamente marcado *demo-only self-minted* com o bloqueio D4 escalado — sem reivindicar não-forjabilidade inexistente.
-- [ ] Todos os tickets com DoD de domínio verde (`specs/01_Engineering_Standards_e_Handoff.md`); sem segredos; gates SAST/SCA na baseline.
+- [x] O enforcement é **real**: `Call.Credential` preenchido no kernel (**AOS-152**); `NewProductionSecure` recusa `IdentityStub`/`EgressStub`/`ScopeGate` nil (**AOS-153**); cadeia real de hooks com **um único** `audit.Store` WORM (**AOS-154**); guard-test fim-a-fim que nega anónimo/raiz-forjada/taint/egress/scope (**AOS-161**, `TestApexEnforcement_FiveDenials`).
+- [x] O long-pole de identidade está explicitamente marcado *demo-only self-minted* com o bloqueio D4 escalado (`docs/reports/D4-escalacao-autoridade-identidade.md`) — sem reivindicar não-forjabilidade inexistente (o default `identity.NewVerifier()` sem anchors nega toda a NHI fail-closed).
+- [ ] Todos os tickets com DoD de domínio verde (`specs/01_Engineering_Standards_e_Handoff.md`); sem segredos; gates SAST/SCA na baseline. — **Parcial:** todos os tickets NÃO-bloqueados têm DoD verde (AOS-144–155, 157–159, 161); sem segredos (`secrets.sh` verde); a triagem SAST/SCA da baseline é o passo de FECHO do epic (correr `sast.sh`/`sca.sh` e baselinar falsos-positivos ao encerrar). Fica aberto porque **AOS-160/162 dependem de D4** (a espinha de token real) — o epic só encerra na íntegra quando D4 for provisionado; até lá está *feito até onde o código permite*.
 
 ---
 
@@ -739,10 +739,10 @@ Um issuer com chave de assinatura vinda do vault (EPIC-07), o estágio authn (AO
 
 ### Critérios de Aceitação
 
-- [ ] Issuer com chave do vault; verifier com trust-anchor = pubkey do issuer.
-- [ ] Estágio authn (AOS-057) minta o NHI a montante do `ScopeGate`.
-- [ ] **Marcado explicitamente:** enquanto D4 estiver aberta, a identidade é *demo-only self-minted*; nenhuma reivindicação de não-forjabilidade.
-- [ ] Bloqueio D4 escalado ao dono.
+- [ ] Issuer com chave do vault; verifier com trust-anchor = pubkey do issuer. — **BLOQUEADO por D4** (não há IdP/vault de identidade real; construí-lo com chave do apex seria teatro criptográfico).
+- [ ] Estágio authn (AOS-057) minta o NHI a montante do `ScopeGate`. — **BLOQUEADO por D4** (sem autoridade de identidade real).
+- [x] **Marcado explicitamente:** enquanto D4 estiver aberta, a identidade é *demo-only self-minted*; nenhuma reivindicação de não-forjabilidade. — o default `identity.NewVerifier()` sem anchors nega toda a NHI fail-closed; marcado demo-only no código (AOS-154), na memória e na escalada D4.
+- [x] Bloqueio D4 escalado ao dono. — `docs/reports/D4-escalacao-autoridade-identidade.md` (o que decidir, o que bloqueia, 4 provisionamentos, 3 opções A/B/C).
 
 ### Detalhes Técnicos
 
@@ -754,7 +754,7 @@ Um issuer com chave de assinatura vinda do vault (EPIC-07), o estágio authn (AO
 
 ### Definition of Done
 
-- [ ] Espinha ligada **ou** marcada *demo-only* com D4 escalada; sem segredos (a chave vem do vault, nunca em código/log).
+- [x] Espinha ligada **ou** marcada *demo-only* com D4 escalada; sem segredos (a chave vem do vault, nunca em código/log). — **satisfeito pelo ramo *demo-only*** (marcação demo-only + D4 escalada acima; `secrets.sh` verde — não há chave de identidade em código). O ramo "espinha ligada" (issuer real via vault) fica pendente de D4; até lá, este é o desfecho máximo alcançável e AOS-160/162 (que exigem a espinha REAL, não demo) permanecem bloqueados.
 
 ### Handoff para Claude Code
 
@@ -946,9 +946,9 @@ Substituir o `HMACAuthenticator` por um `Authenticator` ed25519 + nonce-store du
 
 ### Critérios de Aceitação
 
-- [ ] `Authenticator` verifica assinatura ed25519 contra a identidade (AOS-005).
-- [ ] Nonce-store durável com frescura/expiração; replay recusado.
-- [ ] Substitui `HMACAuthenticator` no `SteerChannel`.
+- [ ] `Authenticator` verifica assinatura ed25519 contra a identidade (AOS-005). — **BLOQUEADO por D4** (via AOS-156: sem identidade real não há contra o quê verificar; o `HMACAuthenticator` demo-grade mantém-se).
+- [ ] Nonce-store durável com frescura/expiração; replay recusado. — **BLOQUEADO por D4** (o primitivo anti-replay durável já existe em AOS-159 — `EventStoreNonceStore` —, mas ligá-lo ao `Authenticator` ed25519 de produção depende da espinha real).
+- [ ] Substitui `HMACAuthenticator` no `SteerChannel`. — **BLOQUEADO por D4**.
 
 ### Detalhes Técnicos
 
@@ -960,7 +960,7 @@ Substituir o `HMACAuthenticator` por um `Authenticator` ed25519 + nonce-store du
 
 ### Definition of Done
 
-- [ ] `Authenticator` de produção ligado; replay recusado; sem segredos.
+- [ ] `Authenticator` de produção ligado; replay recusado; sem segredos. — **BLOQUEADO por D4** (depende de AOS-156).
 
 ### Handoff para Claude Code
 
@@ -1047,9 +1047,9 @@ Fixar a invariante estrutural do 4-eyes (duas credenciais atestadas distintas + 
 
 ### Critérios de Aceitação
 
-- [ ] Invariante estrutural do 4-eyes fixada em código (recusa 2.º sign do mesmo principal/sessão/credencial).
-- [ ] A *attestation* de dispositivo fica **stub** gated em AOS-152 + **condicional a D4** (sem IdP real).
-- [ ] Coerente com ADR-016 (BFF non-signing; WYSIWYS).
+- [ ] Invariante estrutural do 4-eyes fixada em código (recusa 2.º sign do mesmo principal/sessão/credencial). — **NÃO implementado nesta série; depende de AOS-156** (D4). NOTA: a invariante estrutural é, em teoria, prototipável já contra a identidade *demo-only* (só a *attestation* é condicional a D4 — ver Detalhes Técnicos); mas o valor real do "mesmo principal" depende da espinha de token real, e o ticket lista AOS-156 como dependência.
+- [ ] A *attestation* de dispositivo fica **stub** gated em AOS-152 + **condicional a D4** (sem IdP real). — **BLOQUEADO por D4**.
+- [ ] Coerente com ADR-016 (BFF non-signing; WYSIWYS). — pendente da implementação do ticket.
 
 ### Detalhes Técnicos
 
@@ -1061,7 +1061,7 @@ Fixar a invariante estrutural do 4-eyes (duas credenciais atestadas distintas + 
 
 ### Definition of Done
 
-- [ ] Invariante fixada; attestation marcada condicional D4; sem segredos.
+- [ ] Invariante fixada; attestation marcada condicional D4; sem segredos. — **NÃO implementado nesta série; depende de AOS-156** (D4).
 
 ### Handoff para Claude Code
 
