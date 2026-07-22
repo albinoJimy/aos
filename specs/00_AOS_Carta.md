@@ -88,7 +88,7 @@ na invariante, dependente de um gatilho externo nomeado) ou **ABERTA** (por deci
 | **D1(b)** | Superfície web SPA bespoke | **CONDICIONAL** — condicional a utilizadores reais + TCO de ingress + dono de 2.ª supply-chain | Produto | EPIC-13 §25 |
 | **D2** | Stack no-build (HTMX/`go:embed`) | **FIXA** | Plataforma | EPIC-13 §25 |
 | **D3** | Transporte SSE stdlib (não gRPC/WS/GraphQL) | **FIXA** | Plataforma | EPIC-13 §25 |
-| **D4** | **Autoridade de identidade** (IdP + AAGUID + binding humano↔NHI + custódia de chave no vault) | **ABERTA — ESCALADA** | Segurança + Produto | `docs/reports/D4-escalacao-autoridade-identidade.md` |
+| **D4** | **Autoridade de identidade** (IdP + AAGUID + binding humano↔NHI + custódia de chave no vault) | **EM CURSO — PRÉ-REQUISITO DA v1** (emenda 2026-07-22): desbloqueio pela via CONSTRUÍVEL — token spine AOS-156 (chave do issuer no vault `platform/broker`, NÃO gerada pelo nó; verifier trust-anchor = pubkey do issuer; authn→mint via `IssueChild`). As partes organizacionais (IdP corporativo, attestation AAGUID/WebAuthn, HSM real) são endurecimento posterior documentado. | Segurança + Produto | `docs/reports/D4-escalacao-autoridade-identidade.md`; §7 emenda 1.1 |
 | **D5** | BFF single-process | **FIXA** (postura); gatilho de graduação CONDICIONAL a SLO/utilizadores | Plataforma | EPIC-13 §25 |
 | **D6** | Auditoria de leitura sensível | **FIXA** | Governança | EPIC-13 §25 |
 | **D7** | Read-path soberano fail-closed | **FIXA** (regra); topologia CONDICIONAL a regiões/boards reais | Governança | EPIC-13 §25 |
@@ -110,11 +110,16 @@ A **v1 do AOS** (o nó `aos` deployável) está *feita* quando **todos** os segu
       negações — AOS-161, já feito).
 - [ ] **Critérios de aceitação sistémicos** do `00_System_Spec.md §13` verdes.
 - [ ] **Gates fail-closed verdes** (`run.sh`: build/test/-race/lint/secrets/sast/sca/apex/selftest).
-- [ ] **Decisões ABERTAS resolvidas ou deferidas com dono** — em particular a **D4** (nó `aos`
-      arranca em modo *demo-only self-minted* declarado; go-live com identidade real exige D4).
+- [ ] **D4 DESBLOQUEADO — PRÉ-REQUISITO da v1** (emenda 1.1, 2026-07-22): o token spine real
+      (AOS-156 — chave do issuer no vault, NÃO controlada pelo nó) dá ao nó um modo **REAL+SEGURO**;
+      a v1 **não se declara em modo demo-only**. O endurecimento organizacional (IdP corporativo,
+      attestation, HSM) é posterior e documentado, não bloqueia a v1.
 
-Enquanto a D4 estiver aberta, a v1 é **"feita até onde o código permite"**: o nó corre e
-governa, mas a identidade é demo-only e o go-live com garantia de identidade fica gated.
+**Nota (emenda 1.1):** a decisão do dono (após o painel adversarial `wamnbffrk`) foi **desbloquear
+o D4 primeiro** — construir a identidade real ANTES de declarar a v1, para que exista de facto uma
+configuração onde o nó corra trabalho **real E seguro** (resolve o achado ALTO "forma
+sobre-reivindicada"). A forma "nó deployável" mantém-se; o token spine (AOS-156) passa à FRENTE do
+trabalho do nó (EPIC-15), que fica a jusante dele.
 
 ## 6. Regra de congelamento (o mecanismo anti-retrabalho)
 
@@ -132,6 +137,7 @@ governa, mas a identidade é demo-only e o go-live com garantia de identidade fi
 |---|---|---|---|
 | 0.1 | 2026-07-22 | Emissão inicial (PROPOSTA). Fixa a forma do produto (runtime de referência deployável — nó `aos`), consolida o registo de decisões (ADRs + D1–D7 + D-TAIL + D4), define o DoD da v1 e a regra de congelamento. | Proposta |
 | **1.0** | **2026-07-22** | **RATIFICADA e CONGELADA.** A forma do produto, o registo de decisões, o DoD da v1 e a regra de congelamento passam a autoridade. A partir daqui, nenhuma decisão FIXA se re-litiga sem uma emenda datada nesta tabela. | **Ratificada pelo dono do produto** |
+| **1.1** | **2026-07-22** | **EMENDA — decisão do dono após o painel adversarial `wamnbffrk`.** O **D4 passa de ABERTA-deferida a EM CURSO — PRÉ-REQUISITO da v1**: desbloquear a identidade real (token spine AOS-156, chave do issuer no vault, não controlada pelo nó) ANTES de declarar a v1, para que exista um modo real+seguro (resolve o achado ALTO "forma sobre-reivindicada"). A forma "nó deployável" mantém-se; AOS-156 passa à frente da EPIC-15. **Achados materiais do painel POR ENACTAR** (na revisão da EPIC-15/token-spine): autenticação do canal de controlo (AOS-166); durabilidade do Event Store/WORM (não in-memory); metodologia do e2e AOS-169 (modelo que emite tool calls + caminho permitido + contentor real); observabilidade + `/healthz`·`/readyz`; reconciliação do System Spec §1 e da colisão single-process vs substrato distribuído; ADR-017 (supply-chain) antes de empacotar; dimensionamento no-XL (dividir AOS-164, repromover AOS-167). | Dono do produto |
 
 ---
 
