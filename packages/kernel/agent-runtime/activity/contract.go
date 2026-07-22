@@ -104,6 +104,15 @@ type Activity struct {
 	// Compensation, se não-nil, é registada no [CompensationRegistrar] no momento do
 	// permit (AOS-020). Exige um registrar configurado ([WithCompensationRegistry]).
 	Compensation *Compensation
+	// Credential é o token NHI (AOS-005/AOS-152) que autentica o Principal do efeito.
+	// É PROPAGADO ao [referencemonitor.Call] (Credential), onde o hook de identidade o
+	// verifica e resolve a autoridade — vazio ⇒ chamada anónima, negada fail-closed sob
+	// o hook de identidade real. Preserva a identidade quando o loop do Agent Runtime
+	// (AOS-157) despacha por este contrato: sem ele, encaminhar o despacho pelo
+	// Dispatcher perderia o Credential do Call e degradaria toda a tool call a anónima.
+	// NÃO entra na idempotency key (é (RunID, StepID)); é material de mediação, não de
+	// identidade da activity.
+	Credential string
 }
 
 func (a Activity) validate() error {
@@ -128,6 +137,7 @@ func (a Activity) toCall() referencemonitor.Call {
 		Capability: a.Capability,
 		Resource:   a.Resource,
 		Principal:  a.Principal,
+		Credential: a.Credential,
 		Context: referencemonitor.CallContext{
 			Taint:                 agentruntime.TaintUntrusted,
 			BudgetTokensRemaining: a.BudgetTokensRemaining,

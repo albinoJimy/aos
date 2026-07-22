@@ -78,13 +78,13 @@ func main() {
 //
 // A ORDEM DE COMPOSIÇÃO segue o critério de aceitação de AOS-149:
 //
-//	1. Event Store            (substrate/eventstore)
-//	2. Authenticator (HMAC)   (agent-runtime/control) — demo-grade
-//	3. SteerChannel           (agent-runtime/control)
-//	4. State Machine por run  (agent-runtime/state)
-//	5. StateProjector         (governance/control-surface) — reflexão do estado
-//	6. Modelo FAKE            (implementa agent-runtime.ModelClient) — zero rede
-//	7. Reference Monitor (stubs neutros) + TurnRecorder + Agent Runtime
+//  1. Event Store            (substrate/eventstore)
+//  2. Authenticator (HMAC)   (agent-runtime/control) — demo-grade
+//  3. SteerChannel           (agent-runtime/control)
+//  4. State Machine por run  (agent-runtime/state)
+//  5. StateProjector         (governance/control-surface) — reflexão do estado
+//  6. Modelo FAKE            (implementa agent-runtime.ModelClient) — zero rede
+//  7. Reference Monitor (stubs neutros) + TurnRecorder + Agent Runtime
 func runDemo(w io.Writer) error {
 	ctx := context.Background()
 	step := stepPrinter(w)

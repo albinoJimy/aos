@@ -24,4 +24,8 @@ var (
 	// ErrCapture — a captura de não-determinismo do turno falhou (AOS-016). Envolve
 	// o erro subjacente do [Capturer] (p.ex. perda de quórum no Event Store).
 	ErrCapture = errors.New("agentruntime: falha ao capturar o não-determinismo do turno")
+	// ErrWindow — a [WindowFactory] falhou a congelar a janela de contexto do run
+	// (AOS-037). Fail-closed: sem janela não há prompt a montar, logo o run aborta antes
+	// do primeiro turno. Envolve o erro subjacente da fábrica.
+	ErrWindow = errors.New("agentruntime: falha ao construir a janela de contexto")
 )

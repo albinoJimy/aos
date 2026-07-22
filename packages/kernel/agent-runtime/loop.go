@@ -96,6 +96,9 @@ type Runtime struct {
 	checkpointer    Checkpointer
 	capturer        Capturer
 	steer           SteerSource
+	windowFactory   WindowFactory      // AOS-037: dono único do tail/assembly (D-TAIL)
+	compaction      CompactionTrigger  // AOS-043: compressão em checkpoint
+	dispatcher      ActivityDispatcher // AOS-021: despacho durável do efeito
 	assemblyVersion string
 	defaultMaxTurns int
 }
@@ -135,6 +138,8 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 		stepIdentity:    sequentialStepIdentity{},
 		checkpointer:    noopCheckpointer{},
 		capturer:        noopCapturer{},
+		windowFactory:   defaultWindowFactory{},
+		compaction:      noopCompactionTrigger{},
 		assemblyVersion: AssemblyVersion,
 		defaultMaxTurns: DefaultMaxTurns,
 	}
@@ -152,6 +157,17 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 	}
 	if rt.capturer == nil {
 		rt.capturer = noopCapturer{}
+	}
+	if rt.windowFactory == nil {
+		rt.windowFactory = defaultWindowFactory{}
+	}
+	if rt.compaction == nil {
+		rt.compaction = noopCompactionTrigger{}
+	}
+	// Dispatcher default = Mediate directo sobre o RM do runtime (AOS-013). Definido
+	// APÓS as opções para poder ligar rt.rm; um WithActivityDispatcher sobrepõe-no.
+	if rt.dispatcher == nil {
+		rt.dispatcher = directDispatcher{rm: rt.rm}
 	}
 	if rt.assemblyVersion == "" {
 		rt.assemblyVersion = AssemblyVersion
@@ -200,7 +216,14 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		maxTurns = rt.defaultMaxTurns
 	}
 
-	asm := NewPromptAssembler(goal.System, goal.Tools)
+	// DONO ÚNICO do tail/assembly (AOS-037, decisão D-TAIL): o loop delega a posse do
+	// tail append-only e da montagem cache-estável à [WindowPort] — há UM só assembler /
+	// prefix-hash por run (o da janela). Fail-closed: sem janela não há prompt a montar.
+	// O default ([inlineWindow]) reproduz o PromptAssembler + tail inline byte-a-byte.
+	win, err := rt.windowFactory.NewWindow(goal.RunID, goal.System, goal.Tools)
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: %w", ErrWindow, err)
+	}
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
 		DelegationChain: toStoreChain(goal.Principal.DelegationChain),
@@ -235,20 +258,21 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		agentSpan.End()
 	}()
 
-	// Tail append-only, semeado com memory_context + objectivo (trusted).
-	tail := make([]TailSegment, 0, 8)
+	// Tail append-only, semeado com memory_context + objectivo (trusted). O tail é agora
+	// propriedade da [WindowPort] (D-TAIL) — o loop só lhe entrega segmentos.
 	if len(goal.MemoryContext) > 0 {
-		tail = append(tail, TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
+		win.Append(TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
 	}
 	if goal.Objective != "" {
-		tail = append(tail, TailSegment{Kind: TailObjective, Content: []byte(goal.Objective)})
+		win.Append(TailSegment{Kind: TailObjective, Content: []byte(goal.Objective)})
 	}
 
 	for turn := 1; turn <= maxTurns; turn++ {
 		stepID := rt.stepIdentity.StepID(goal.RunID, turn)
 
-		// (1) MONTAR — prompt cache-estável (prefixo imutável + tail append-only).
-		view := asm.Assemble(turn, tail)
+		// (1) MONTAR — prompt cache-estável (prefixo imutável + tail append-only). A
+		// janela é o dono único do assembler: um só prefix-hash por run.
+		view := win.Assemble(ctx, turn)
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseAssembled); err != nil {
 			return res, err
 		}
@@ -266,7 +290,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		res.TotalCostMicroUSD += resp.CostMicroUSD
 
 		// Gravar o turno com o manifesto por trajectória.
-		seq, err := rt.recordTurn(ctx, goal, asm, stepID, turn, view, resp, producer)
+		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), stepID, turn, view, resp, producer)
 		if err != nil {
 			return res, err
 		}
@@ -292,7 +316,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// mediateToolCall e da fronteira de fim-de-turno de AOS-023 — sem ele o
 		// comportamento de AOS-013 permanece inalterado.
 		if resp.Text != "" {
-			tail = append(tail, tailFromHistory(resp.Text))
+			win.Append(tailFromHistory(resp.Text))
 		}
 
 		// (3) DESPACHAR — cada tool call PRETENDIDA via o Reference Monitor.
@@ -308,7 +332,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: result, ToolError: toolErr})
 			// O tail materializa a condição de erro da tool (se houver) para o
 			// modelo poder reagir; o conteúdo mantém-se untrusted, append-only.
-			tail = append(tail, tailFromResult(result, toolErr))
+			win.Append(tailFromResult(result, toolErr))
 			// Checkpoint intra-iteração (AOS-015): a activity j ficou CONFIRMADA
 			// (efeito externo concluído). O cursor carrega o sub-passo confirmado e
 			// as activities ainda pendentes do turno — o resume retoma no próximo
@@ -365,8 +389,17 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// injectada no tail do turno seguinte (taint=trusted), nunca como conteúdo
 			// untrusted (separação control/data-plane, ADR-005).
 			if corr, ok := rt.steer.PendingCorrection(goal.RunID); ok {
-				tail = append(tail, tailFromCorrection(corr))
+				win.Append(tailFromCorrection(corr))
 			}
+		}
+
+		// COMPACTAÇÃO EM CHECKPOINT (AOS-043) — observa a ocupação da janela na fronteira
+		// de fim-de-turno (com o tail do turno completo, incluindo eventual correcção) e
+		// pode enfileirar compressão assíncrona FORA do turno. Aditivo: default no-op ⇒
+		// AOS-013 inalterado. Corre só em turnos NÃO-terminais (um run concluído/pausado
+		// já retornou acima) — a compressão prepara a janela do turno SEGUINTE.
+		if _, err := rt.compaction.Observe(ctx, goal.RunID, turn, win.Signal()); err != nil {
+			return res, err
 		}
 	}
 
@@ -408,10 +441,10 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 }
 
 // recordTurn constrói o manifesto e grava o evento "turn.recorded".
-func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, asm *PromptAssembler, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer) (uint64, error) {
+func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer) (uint64, error) {
 	manifest := Manifest{
 		PromptHash:      view.PromptHash,
-		SystemHash:      asm.SystemHash(),
+		SystemHash:      systemHash,
 		AssemblyVersion: rt.assemblyVersion,
 		Model: ModelManifest{
 			ModelID: goal.Model.ModelID,
@@ -448,14 +481,12 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, asm *PromptAssembl
 // contexto). Um erro da tool NÃO é uma negação de política: a decisão foi Permit e
 // o efeito ocorreu, mas a execução downstream falhou (ADR-005 / decision.ToolErr).
 //
-// ADOPÇÃO DO CONTRATO DE ACTIVITY (AOS-021): DIFERIDA. Este caminho medeia o efeito
-// DIRECTAMENTE via rt.rm.Mediate (no-bypass estrutural + taint untrusted garantidos),
-// mas ainda NÃO despacha via activity.Dispatcher.Dispatch — logo a idempotência/replay
-// pelo step-ledger (AOS-014/016) NÃO cobre ainda o efeito externo REAL do loop. O
-// checkpoint intra-iteração acima é AOS-015 (recorder de cursor), NÃO a dedup do
-// ledger. Ligar o loop ao Dispatcher (construído com rm + durable.StepLedger) é wiring
-// DEFERIDO (integração AOS-022); o escopo estrito de AOS-021 é o contrato. Ver
-// activity/doc.go, "Adopção pelo loop (AOS-013): DIFERIDA".
+// ADOPÇÃO DO CONTRATO DE ACTIVITY (AOS-021): o despacho passa agora pela porta
+// [ActivityDispatcher] (ver ports.go, AOS-157). O default é Mediate directo (byte-
+// idêntico AOS-013, no-bypass estrutural + taint garantidos); um adaptador durável no
+// apex (activity.Dispatcher sobre rm + durable.StepLedger) acrescenta idempotência/
+// replay pelo step-ledger à volta da MESMA mediação, SEM o loop perder o Credential
+// (AOS-152) nem o taint da autorização — a porta recebe o Call já construído aqui.
 func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (Tainted, error, error) {
 	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
 
@@ -492,7 +523,11 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	// caminhos. Como o RT partilha o seu tracer com o RM (ver [New]), esse span cai na
 	// mesma árvore que o invoke_agent propagado por ctx. Mediate recebe o ctx do
 	// invoke_agent: o execute_tool liga-se a ele por parent_span_id.
-	dec, err := rt.rm.Mediate(ctx, call)
+	// Despacho via a porta [ActivityDispatcher] (AOS-021): o default é Mediate directo
+	// (byte-idêntico AOS-013); um adaptador durável (activity.Dispatcher) acrescenta
+	// idempotência/replay à volta da MESMA mediação. A porta recebe o Call COMPLETO, com
+	// o Credential (AOS-152) e o taint da autorização — a identidade nunca se perde.
+	dec, err := rt.dispatcher.Dispatch(ctx, call)
 	if err != nil {
 		return Tainted{}, nil, err // apenas cancelamento de contexto
 	}

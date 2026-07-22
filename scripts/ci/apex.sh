@@ -51,6 +51,9 @@ REQUIRED=(
   TestApplyFrozenToGoal
   TestCatalogResolver_Current
   TestProvenanceQuarantiner_Admits
+  TestWindowManagerFactory_ByteIdenticalToInline
+  TestDurableDispatcher_PreservesCredential
+  TestCompactionTriggerAdapter_ObserveGating
 )
 # Regex ancorado (^Test…$) unido por '|': casa EXACTAMENTE os obrigatórios e nunca
 # um teste-veneno por substring.

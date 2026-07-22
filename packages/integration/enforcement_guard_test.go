@@ -44,14 +44,14 @@ import (
 // barreira. Todos os colaboradores são os construtores REAIS de AOS-154; nenhum é um stub.
 
 const (
-	enfIssuerID  = "iss:test-idp"       // issuer confiado pelo verifier do guard-test
-	enfRogueID   = "iss:rogue-idp"      // issuer NÃO confiado (raiz forjada, cenário b)
-	enfUserID    = "human:alice"        // humano responsável (raiz da cadeia de delegação)
-	enfAgentID   = "agt-1"              // NHI (act-as da raiz)
-	enfClass     = "researcher"         // classe do agente (eixo do escopo user∩classe)
-	enfCapHTTP   = "cap:http.get"       // capability de rede (cenário d)
-	enfCapVault  = "cap:vault.read"     // capability PRIVILEGIADA (cenário c)
-	enfCapDanger = "cap:danger"         // capability fora do tecto user∩classe (cenário e)
+	enfIssuerID  = "iss:test-idp"               // issuer confiado pelo verifier do guard-test
+	enfRogueID   = "iss:rogue-idp"              // issuer NÃO confiado (raiz forjada, cenário b)
+	enfUserID    = "human:alice"                // humano responsável (raiz da cadeia de delegação)
+	enfAgentID   = "agt-1"                      // NHI (act-as da raiz)
+	enfClass     = "researcher"                 // classe do agente (eixo do escopo user∩classe)
+	enfCapHTTP   = "cap:http.get"               // capability de rede (cenário d)
+	enfCapVault  = "cap:vault.read"             // capability PRIVILEGIADA (cenário c)
+	enfCapDanger = "cap:danger"                 // capability fora do tecto user∩classe (cenário e)
 	enfEvilURL   = "https://evil.example/exfil" // destino FORA da allowlist embutida
 )
 
@@ -201,7 +201,7 @@ func TestApexEnforcement_FiveDenials(t *testing.T) {
 	// stub, esta construção falharia (é a garantia herdada de AOS-153/154).
 	rm, err := referencemonitor.NewProductionSecure(fx.privileged,
 		referencemonitor.WithHooks(
-			identity.NewIdentityCheck(fx.verifier),      // identity (AOS-005) — resolve Principal
+			identity.NewIdentityCheck(fx.verifier),       // identity (AOS-005) — resolve Principal
 			referencemonitor.NewTaintGate(fx.privileged), // taint (AOS-069)
 			referencemonitor.NewScopeGate(fx.authority),  // scope (AOS-071)
 			enfEgressHook(t, worm),                       // egress (AOS-067)

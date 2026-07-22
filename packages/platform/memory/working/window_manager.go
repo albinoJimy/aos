@@ -247,6 +247,12 @@ func (w *WindowManager) PrefixHash() string { return w.prefixHash }
 // imutabilidade byte-a-byte em teste.
 func (w *WindowManager) Prefix() []byte { return w.asm.Prefix() }
 
+// SystemHash devolve sha256("<system>") no formato "sha256:<hex>" — o system_hash que
+// o manifesto por trajectória grava (ADR-010). Delega no assembler congelado; existe
+// para o adaptador da [agentruntime.WindowPort] (AOS-157) alimentar o manifesto do loop
+// sem manter um segundo assembler.
+func (w *WindowManager) SystemHash() string { return w.asm.SystemHash() }
+
 // HasTool indica se a tool está no tool set CONGELADO do run.
 func (w *WindowManager) HasTool(name string) bool {
 	_, ok := w.frozenTools[name]

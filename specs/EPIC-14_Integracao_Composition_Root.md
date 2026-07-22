@@ -792,9 +792,9 @@ Definir as portas no pai (tipos locais, default = comportamento actual) e adapta
 
 ### Critérios de Aceitação
 
-- [ ] Portas definidas em `package agentruntime`, default no-op (comportamento AOS-013 byte-idêntico sem adaptador).
-- [ ] Concretos adaptados no apex; sem ciclos de import.
-- [ ] **Decisão D-TAIL (dono):** um único prefix-hash por run (loop delega a `WindowPort` **ou** `WindowManager` passa a dono) — resolver a redundância loop/WindowManager.
+- [x] Portas definidas em `package agentruntime`, default no-op (comportamento AOS-013 byte-idêntico sem adaptador). — `agent-runtime/ports.go`: `WindowFactory`/`WindowPort`+`WindowSignal` (AOS-037), `CompactionTrigger` (AOS-043), `ActivityDispatcher` (AOS-021); defaults `inlineWindow`/`noopCompactionTrigger`/`directDispatcher`. `TestLoop_DefaultWindow_ByteIdentical` prova o prompt do default idêntico ao `PromptAssembler` directo.
+- [x] Concretos adaptados no apex; sem ciclos de import. — `integration/runtime_ports.go`: `WindowManagerFactory` (→ `working.WindowManager`), `CompactionTriggerAdapter` (→ `compression.CheckpointTrigger`), `DurableDispatcher` (→ `activity.Dispatcher`). O kernel importa só `reference-monitor`; os adaptadores vivem no apex (sem ciclos, `go vet` verde).
+- [x] **Decisão D-TAIL (dono):** um único prefix-hash por run — **resolvida: o loop delega a `WindowPort`** (a camada força-o — o kernel não pode importar `platform/memory`; o `WindowManager` é o adaptador atrás da porta, nunca o condutor). `TestLoop_SinglePrefixHash` e `TestWindowManagerFactory_ByteIdenticalToInline` provam um só prefix-hash por run e a byte-identidade da troca.
 
 ### Detalhes Técnicos
 
@@ -806,7 +806,7 @@ Definir as portas no pai (tipos locais, default = comportamento actual) e adapta
 
 ### Definition of Done
 
-- [ ] Portas no pai + adaptadores no apex; um só prefix-hash por run; sem regressão; sem segredos.
+- [x] Portas no pai + adaptadores no apex; um só prefix-hash por run; sem regressão; sem segredos. — 3 portas no kernel + 3 adaptadores no apex; D-TAIL resolvida (loop delega a `WindowPort`). Sem regressão: `agent-runtime ./... -race` verde, `apex.sh` verde (20 testes obrigatórios incl. os 3 do AOS-157, cobertura 83.5%), `memory.sh` 90.1%, `secrets.sh` verde. Preservação do `Credential` (AOS-152) na via durável provada (`TestDurableDispatcher_PreservesCredential`); `activity.Activity` ganhou o campo `Credential` (aditivo).
 
 ### Handoff para Claude Code
 
