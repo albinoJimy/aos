@@ -428,9 +428,9 @@ Semear o `current` correcto relendo o backlog sob watermark e resumir por seq.
 
 ### Critérios de Aceitação
 
-- [ ] `EventSubscriber` alargado com `Read`; `NewStateProjector` costura `Read(fromSeq)`+`Subscribe` sob watermark de seq (dedup na sobreposição).
-- [ ] Um cliente que liga a um run `paused` vê `paused`.
-- [ ] Reconnect não perde nem duplica; cursor de seq exposto.
+- [x] `EventSubscriber` alargado com `Read`; `NewStateProjector` costura `Read(fromSeq)`+`Subscribe` sob watermark de seq (dedup na sobreposição).
+- [x] Um cliente que liga a um run `paused` vê `paused`.
+- [x] Reconnect não perde nem duplica; cursor de seq exposto.
 
 ### Detalhes Técnicos
 
@@ -442,7 +442,7 @@ Semear o `current` correcto relendo o backlog sob watermark e resumir por seq.
 
 ### Definition of Done
 
-- [ ] Backfill+resume correcto e testado; sem segredos.
+- [x] Backfill+resume correcto e testado; sem segredos.
 
 ### Handoff para Claude Code
 
