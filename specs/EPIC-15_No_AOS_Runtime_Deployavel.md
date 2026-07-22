@@ -174,13 +174,21 @@ uma configuração mínima e explícita, fail-closed, ligando o **verifier real 
 
 ### Critérios de Aceitação
 
-- [ ] O nó compõe via `integration.NewSecuredRuntime` (não os stubs do demo); um colaborador
-      obrigatório em falta ABORTA o arranque (fail-closed).
+- [x] O nó compõe via `integration.NewSecuredRuntime` (não os stubs do demo); um colaborador
+      obrigatório em falta ABORTA o arranque (fail-closed). *(bootstrap.go passo 7 via
+      `NewProductionSecure`; fail-closed coberto por main_test/bootstrap_test.)*
 - [ ] Configuração mínima e explícita (WORM store durável, cliente de modelo, **trust-anchor do
       issuer AOS-156**, portas) — sem segredos em código (chaves/tokens vêm de config/vault).
-- [ ] O nó liga o **verifier real** (pubkey da autoridade AOS-156); a chave de assinatura NUNCA
+      *(trust-anchor `Config.IssuerPubKey`/`AOS_ISSUER_PUBKEY` + "sem segredos em código"
+      SATISFEITOS; **WORM store durável DEFERIDO para AOS-170** — seam `cfg.WORM`/`cfg.EventStore`
+      injectável já existe e o substrato é declarado no banner, mas o default in-memory não
+      satisfaz a letra "durável" ⇒ AC fica aberto.)*
+- [x] O nó liga o **verifier real** (pubkey da autoridade AOS-156); a chave de assinatura NUNCA
       entra no runtime do nó (não-forjabilidade relativa ao nó). O modo de identidade em vigor é
       **declarado no arranque e nos logs** (real vs, se alguma vez usado, um modo de teste explícito).
+      *(MODO ENDURECIDO trust-anchor-only: `IssuerPubKey` compõe só o verifier, `Node.Authority==nil`,
+      `ErrConflictingIssuerKey` fail-closed; banner declara os dois modos. Provado por
+      TestNodeTrustAnchorOnlyHasNoAuthorityInProcess/TestBootstrapHardenedRejectsSigningKey.)*
 
 ### Detalhes Técnicos
 
@@ -192,7 +200,9 @@ uma configuração mínima e explícita, fail-closed, ligando o **verifier real 
 
 ### Definition of Done
 
-- [ ] Bootstrap de produção compõe e falha-fechado; modo de identidade declarado; sem segredos.
+- [x] Bootstrap de produção compõe e falha-fechado; modo de identidade declarado; sem segredos.
+      *(cadeia real via `NewProductionSecure`, fail-closed, modo declarado no banner/logs, secrets
+      gate verde. Nota: substrato WORM durável deferido para AOS-170 — ver AC2.)*
 
 ### Handoff para Claude Code
 
