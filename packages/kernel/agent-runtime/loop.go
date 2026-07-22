@@ -20,6 +20,14 @@ type Goal struct {
 	// Principal é a NHI que origina o run e a sua cadeia de delegação (ADR-003).
 	// NHIID é obrigatório.
 	Principal referencemonitor.Principal
+	// Credential é o token NHI (AOS-005) que autentica o Principal do run. É
+	// PROPAGADO a cada [referencemonitor.Call] mediada (Credential), onde o hook de
+	// identidade (identity.IdentityCheck) o verifica e resolve a autoridade. Vazio ⇒
+	// chamada anónima: um RM composto com o hook de identidade NEGA fail-closed toda a
+	// tool call (predecessor de segurança AOS-152). Um RM com o stub de identidade
+	// ignora-o (comportamento inalterado). NÃO entra no prompt cache-estável (ADR-009)
+	// nem na idempotency key (ADR-001) — é material de mediação, não de prompt.
+	Credential string
 	// Scope são os scopes activos do run (vão ao Producer dos eventos).
 	Scope []string
 	// Model pina o modelo (model_id/params/seed) — vai ao manifesto.
@@ -441,6 +449,9 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			Region: inv.ResourceRegion,
 		},
 		Principal: goal.Principal,
+		// Credential do run propagado à call: é AQUI que o token NHI chega ao hook de
+		// identidade (AOS-152). Vazio ⇒ anónimo ⇒ deny fail-closed sob o hook real.
+		Credential: goal.Credential,
 		Context: referencemonitor.CallContext{
 			// Taint da AUTORIZAÇÃO da call (ADR-005/AOS-069): a proveniência do PLANO
 			// que a originou, não a dos seus dados. Só o control-plane sobre dados

@@ -530,10 +530,10 @@ Adicionar `Goal.Credential` (token NHI) e preencher `Call.Credential` no *hot-pa
 
 ### Critérios de Aceitação
 
-- [ ] `Goal` ganha o campo `Credential` (token NHI).
-- [ ] `loop.mediateToolCall` preenche `Call.Credential` a partir do `Goal`.
-- [ ] Com credencial válida, o `IdentityCheck` admite; sem credencial, nega (comportamento fail-closed preservado).
-- [ ] *Blast-radius* nos testes do loop resolvido (sem regressão em AOS-013/durabilidade).
+- [x] `Goal` ganha o campo `Credential` (token NHI).
+- [x] `loop.mediateToolCall` preenche `Call.Credential` a partir do `Goal`.
+- [x] Com credencial válida, o `IdentityCheck` admite; sem credencial, nega (comportamento fail-closed preservado).
+- [x] *Blast-radius* nos testes do loop resolvido (sem regressão em AOS-013/durabilidade).
 
 ### Detalhes Técnicos
 
@@ -545,7 +545,7 @@ Adicionar `Goal.Credential` (token NHI) e preencher `Call.Credential` no *hot-pa
 
 ### Definition of Done
 
-- [ ] `Call.Credential` preenchido; `IdentityCheck` deixa de negar tudo; sem regressão; sem segredos.
+- [x] `Call.Credential` preenchido; `IdentityCheck` deixa de negar tudo; sem regressão; sem segredos.
 
 ### Handoff para Claude Code
 

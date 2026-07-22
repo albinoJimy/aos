@@ -166,9 +166,11 @@ func apexInvariants() []apexInvariant {
 			seam: "AOS-158 (wiring SteerChannel↔loop; hoje só out-of-band)",
 		},
 		{
-			name: "o RM impõe identidade real (Call.Credential preenchido no kernel)",
+			name: "o RM COMPÕE o hook de identidade real (IdentityCheck, não IdentityStub)",
 			kind: kindDeferred,
-			seam: "AOS-152 (Goal.Credential + loop.mediateToolCall; hoje RM com stubs)",
+			// A wiring do kernel (Goal.Credential → Call.Credential) ficou feita em
+			// AOS-152; o que falta é o apex compor o IdentityCheck real (não o stub).
+			seam: "AOS-153/154 (NewProductionSecure compõe o IdentityCheck; kernel Call.Credential já feito em AOS-152)",
 		},
 		{
 			name: "a via sancionada recusa IdentityStub/EgressStub (fail-closed)",
