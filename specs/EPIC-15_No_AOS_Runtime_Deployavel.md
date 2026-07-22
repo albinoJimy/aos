@@ -244,10 +244,16 @@ o run em curso, e encerra com shutdown gracioso (drena/persiste, nunca mata cega
 
 ### Critérios de Aceitação
 
-- [ ] O nó aceita e hospeda múltiplos *runs* (registo de runs em curso por RunID).
+- [x] O nó aceita e hospeda múltiplos *runs* (registo de runs em curso por RunID). *(AOS-164a:
+      `Service.Submit`/`hostRun` regista runs por RunID sob `s.mu`, guarda de duplicação consulta
+      `runs`+`completed`, lease por-run com heartbeat de posse; concorrência verificada.)*
 - [ ] Shutdown gracioso: um sinal de paragem drena/persiste o estado durável (sem efeitos perdidos
-      nem duplicados no reinício — a durabilidade é EPIC-02).
-- [ ] O nó é resiliente a um run que falha (um run não derruba o nó; fail-closed por-run).
+      nem duplicados no reinício — a durabilidade é EPIC-02). *(AOS-164a: drain in-process
+      cooperativo — `Shutdown` sinaliza + aguarda os runs, nunca mata cego. **Metade durável
+      (persistência do estado de shutdown + replay idempotente no reinício ao nível do binário)
+      DEFERIDA para AOS-164b sobre o substrato durável AOS-170.**)*
+- [x] O nó é resiliente a um run que falha (um run não derruba o nó; fail-closed por-run). *(AOS-164a:
+      isolamento de panic por-run via `recover` no defer de `hostRun`; o nó sobrevive; verificado.)*
 
 ### Detalhes Técnicos
 
@@ -259,7 +265,13 @@ o run em curso, e encerra com shutdown gracioso (drena/persiste, nunca mata cega
 
 ### Definition of Done
 
-- [ ] Loop de serviço hospeda runs, shutdown gracioso, falha por-run isolada; sem segredos.
+- [x] Loop de serviço hospeda runs, shutdown gracioso, falha por-run isolada; sem segredos. *(AOS-164a:
+      `packages/cmd/aos/service.go` — loop de serviço long-running com registo/isolamento de falha
+      por-run, drain gracioso in-process, heartbeat de posse do lease (fecha a janela de
+      dupla-execução), retenção FIFO limitada de `completed`, guarda de re-submissão de RunID
+      terminado; gate `go test -race` verde; sem segredos. **Shutdown DURÁVEL + fronteira nó↔ORQ/SCH
+      + single-writer do WORM sob N runs DEFERIDOS para AOS-164b/AOS-170.** Wiring `serve` ao
+      binário deferido para AOS-165; API HTTP para AOS-166.)*
 
 ### Handoff para Claude Code
 
