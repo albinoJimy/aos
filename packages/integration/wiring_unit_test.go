@@ -68,6 +68,10 @@ func TestNewSecuredRuntime_FailClosed(t *testing.T) {
 		Catalog:     &fakeCatalog{},
 		Revalidator: newRevalidator(t, newTrust(t, context.Background(), audit.NewMemStore(), testSigner(t)), audit.NewMemStore(), NoopQuarantinerForTest{}, NoopAlerterForTest{}),
 		Policy:      StaticPolicy{},
+		// WORM é o único audit.Store partilhado (RM EventSink + egress). Os restantes
+		// colaboradores da cadeia real (Verifier/PDP/Privileged/Authority/EgressResolver)
+		// caem para defaults demo-grade fail-closed (hooks REAIS, nunca stubs).
+		WORM: audit.NewMemStore(),
 	}
 	if _, err := NewSecuredRuntime(base); err != nil {
 		t.Fatalf("config válida falhou: %v", err)
@@ -83,6 +87,7 @@ func TestNewSecuredRuntime_FailClosed(t *testing.T) {
 		{"nil catalog", func(c *SecuredConfig) { c.Catalog = nil }, ErrNoCatalog},
 		{"nil revalidator", func(c *SecuredConfig) { c.Revalidator = nil }, ErrNoRevalidator},
 		{"nil policy", func(c *SecuredConfig) { c.Policy = nil }, ErrNoPolicy},
+		{"nil worm", func(c *SecuredConfig) { c.WORM = nil }, ErrNoWORM},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -41,7 +41,8 @@ REQUIRED=(
   TestApex_FailoverIntraBorder_StaysInJurisdiction
   TestTotalMediation_DriftedToolCannotExecute
   TestTotalMediation_UnfrozenRunDenied
-  TestSecuredRuntime_PristineToolExecutes
+  TestSecuredRuntime_RealChain_FreezeAndFailClosed
+  TestSecuredRuntime_RealHookChain_SingleWORM
   TestFreeze_PerRunImmutable
   TestNewRevalidationHook_FailClosed
   TestNewSecuredRuntime_FailClosed

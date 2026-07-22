@@ -18,6 +18,7 @@ import (
 	"github.com/aos-ref/platform/registry/signing"
 	"github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
+	network "github.com/aos-ref/substrate/sandbox/network"
 )
 
 // Estes testes exercitam o WIRING REAL do par de segurança (AOS-050 + AOS-051)
@@ -286,10 +287,15 @@ func TestTotalMediation_DriftedToolCannotExecute(t *testing.T) {
 	assertAuditHas(t, ctx, auditStore, revalidation.DefaultPartition, audit.DecisionDeny, "echo")
 }
 
-// TestSecuredRuntime_PristineToolExecutes é o caminho FELIZ ponta-a-ponta via o
-// composition root [SecuredRuntime]: sem divergência, a tool passa a revalidação e é
-// despachada. Prova também a materialização do freeze (AOS-050) no prefixo imutável.
-func TestSecuredRuntime_PristineToolExecutes(t *testing.T) {
+// TestSecuredRuntime_RealChain_FreezeAndFailClosed exercita o composition root
+// [SecuredRuntime] COM A CADEIA REAL (AOS-154): prova (1) a materialização do freeze
+// (AOS-050) no prefixo imutável e (2) que a cadeia real é FAIL-CLOSED — sem token NHI
+// no goal a IDENTIDADE (1º hook, AOS-005) nega a tool call, que NUNCA é despachada, e
+// o RM sela a negação no WORM ÚNICO. O caminho de PERMIT ponta-a-ponta exige um token
+// NHI assinado + bundle de política assinado (AOS-156, gated por D4) — fora deste
+// ticket; o antigo TestSecuredRuntime_PristineToolExecutes (permit via stubs neutros)
+// deixa de ser possível porque a cadeia deixou de conter stubs.
+func TestSecuredRuntime_RealChain_FreezeAndFailClosed(t *testing.T) {
 	ctx := context.Background()
 	signer := testSigner(t)
 	auditStore := audit.NewMemStore()
@@ -307,11 +313,9 @@ func TestSecuredRuntime_PristineToolExecutes(t *testing.T) {
 		t.Fatalf("eventstore.New: %v", err)
 	}
 	defer trajStore.Close()
-	rmStore, err := eventstore.New()
-	if err != nil {
-		t.Fatalf("eventstore.New: %v", err)
-	}
-	defer rmStore.Close()
+
+	// WORM ÚNICO: partilhado pelo EventSink de mediação do RM e pelo sink de egress.
+	worm := audit.NewMemStore()
 
 	model := &scriptedModel{responses: toolThenFinal("echo", []byte("ola"))}
 	sec, err := NewSecuredRuntime(SecuredConfig{
@@ -320,7 +324,7 @@ func TestSecuredRuntime_PristineToolExecutes(t *testing.T) {
 		Catalog:       catalog,
 		Revalidator:   rv,
 		Policy:        StaticPolicy{MaxEgress: domain.EgressExternal},
-		EventSink:     referencemonitor.NewEventStoreSink(rmStore),
+		WORM:          worm,
 		FreezeOptions: []toolset.Option{toolset.WithClock(fixedClock())},
 	})
 	if err != nil {
@@ -335,7 +339,7 @@ func TestSecuredRuntime_PristineToolExecutes(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	goal := testGoal("run-ok")
+	goal := testGoal("run-ok") // sem Credential ⇒ NHI anónima ⇒ identidade nega
 	res, frozen, err := sec.Run(ctx, goal, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -343,19 +347,22 @@ func TestSecuredRuntime_PristineToolExecutes(t *testing.T) {
 	if !res.Terminated || res.Turns != 2 {
 		t.Fatalf("desfecho inesperado: terminated=%v turns=%d", res.Terminated, res.Turns)
 	}
-	if execCount != 1 {
-		t.Fatalf("a tool devia ter corrido exactamente uma vez, execCount=%d", execCount)
+
+	// FAIL-CLOSED: sem token NHI a identidade nega — a tool NUNCA corre.
+	if execCount != 0 {
+		t.Fatalf("a tool não devia executar sob a cadeia real sem NHI, execCount=%d", execCount)
 	}
 	permits, denials, _ := sec.Metrics().Snapshot()
-	if permits < 1 || denials != 0 {
-		t.Fatalf("métricas inesperadas: permits=%d denials=%d", permits, denials)
+	if permits != 0 || denials < 1 {
+		t.Fatalf("métricas inesperadas: permits=%d denials=%d (esperado permit=0, deny>=1)", permits, denials)
 	}
-	if alerter.Len() != 0 {
-		t.Fatalf("não deviam existir alertas no caminho feliz, tenho %d", alerter.Len())
+	// Resultado devolvido ao loop: untrusted e vazio (deny → sem output).
+	if len(res.ToolResults) != 1 || len(res.ToolResults[0].Value) != 0 {
+		t.Fatalf("tool result inesperado num deny: %+v", res.ToolResults)
 	}
 
 	// AOS-050 materializado: o prefixo do loop é BYTE-idêntico ao do assembler do
-	// snapshot congelado (mesmo system + mesmo tool set na ordem congelada).
+	// snapshot congelado — independente do veredicto de mediação.
 	if frozen.Len() != 1 {
 		t.Fatalf("frozen.Len=%d, esperado 1", frozen.Len())
 	}
@@ -366,13 +373,91 @@ func TestSecuredRuntime_PristineToolExecutes(t *testing.T) {
 	if !bytes.Equal(model.prefixes[0], wantPrefix) {
 		t.Fatalf("o prefixo do loop diverge do tool set congelado:\n loop=%q\nfrozen=%q", model.prefixes[0], wantPrefix)
 	}
-	// Prefixo estável entre turnos (cache-hit).
-	if len(model.prefixes) == 2 && !bytes.Equal(model.prefixes[0], model.prefixes[1]) {
-		t.Fatalf("prefixo instável entre turnos (regressão de cache)")
+
+	// A negação (1º hook, identidade) foi selada no WORM ÚNICO pelo EventSink do RM
+	// (partição = RunID). Prova que o RM escreve no WORM partilhado.
+	assertAuditHas(t, ctx, worm, "run-ok", audit.DecisionDeny, "echo")
+}
+
+// TestSecuredRuntime_RealHookChain_SingleWORM é a PROVA de AOS-154: (a) o RM do
+// composition root é construído via [referencemonitor.NewProductionSecure] e ACEITA a
+// cadeia REAL — se a cadeia contivesse o IdentityStub/EgressStub ou não tivesse um
+// ScopeGate com autoridade, a construção falharia (ErrIdentityStub/ErrEgressStub/
+// ErrScopeGateMissing) e NewSecuredRuntime devolveria erro; e (b) o RM e o egress
+// selam no MESMO [audit.Store] WORM — após uma mediação (via o EventSink do RM) E um
+// evento de egress (via [network.NewWORMSecuritySink] sobre o MESMO store), o WORM
+// contém registos de AMBOS.
+func TestSecuredRuntime_RealHookChain_SingleWORM(t *testing.T) {
+	ctx := context.Background()
+	signer := testSigner(t)
+	auditStore := audit.NewMemStore()
+	trust := newTrust(t, ctx, auditStore, signer)
+
+	entry := signedEntry(t, signer, "echo", "1.0.0", domain.Contract{Egress: domain.EgressNone})
+	catalog := &fakeCatalog{entries: []domain.Entry{entry}}
+
+	quar := NewProvenanceQuarantiner(provenance.NewPartition(nil), WithQuarantineClock(fixedClock()))
+	rv := newRevalidator(t, trust, auditStore, quar, NewRecordingAlerter())
+
+	trajStore, err := eventstore.New()
+	if err != nil {
+		t.Fatalf("eventstore.New: %v", err)
+	}
+	defer trajStore.Close()
+
+	// UM ÚNICO WORM para o RM E o egress.
+	worm := audit.NewMemStore()
+
+	// (a) Construção via NewProductionSecure com a cadeia real: sucesso ⇒ a via
+	// estrita ACEITOU a cadeia (sem IdentityStub/EgressStub, com ScopeGate activo).
+	sec, err := NewSecuredRuntime(SecuredConfig{
+		Model:         &scriptedModel{responses: toolThenFinal("echo", []byte("ola"))},
+		Recorder:      agentruntime.NewTurnRecorder(trajStore),
+		Catalog:       catalog,
+		Revalidator:   rv,
+		Policy:        StaticPolicy{MaxEgress: domain.EgressExternal},
+		WORM:          worm,
+		FreezeOptions: []toolset.Option{toolset.WithClock(fixedClock())},
+	})
+	if err != nil {
+		t.Fatalf("NewSecuredRuntime (cadeia real via NewProductionSecure) recusada: %v", err)
+	}
+	if err := sec.Register("echo", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
+		t.Fatalf("Register: %v", err)
 	}
 
-	// A decisão de DESPACHO foi selada no audit de revalidação.
-	assertAuditHas(t, ctx, auditStore, revalidation.DefaultPartition, audit.DecisionAllow, "echo")
+	// (b.1) MEDIAÇÃO: o RM sela um registo no WORM (partição = RunID). A cadeia real
+	// nega na identidade (sem NHI), mas o EventSink sela na mesma (deny é auditado).
+	if _, _, err := sec.Run(ctx, testGoal("run-worm"), nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if head, _ := worm.Head(ctx, "run-worm"); head == 0 {
+		t.Fatal("o WORM não recebeu o registo de mediação do RM (EventSink partilhado partido)")
+	}
+
+	// (b.2) EGRESS: sela um evento de segurança de egress no MESMO worm, via o MESMO
+	// construtor que [NewSecuredRuntime] usa internamente ([network.NewWORMSecuritySink]).
+	principal := referencemonitor.Principal{NHIID: "nhi:test", AgentClass: "researcher"}
+	egressSink := network.NewWORMSecuritySink(worm)
+	if err := egressSink.Seal(ctx, network.SecurityEvent{
+		Principal:   principal,
+		Destination: network.NewDestination("evil.example", 443),
+		Decision:    network.SecurityBlocked,
+		Reason:      network.ReasonNotInList,
+		RunID:       "run-worm",
+		Timestamp:   fixedClock()(),
+	}); err != nil {
+		t.Fatalf("egress Seal: %v", err)
+	}
+
+	// AMBOS no MESMO store: mediação (partição RunID) E egress (partição por principal).
+	egressPart := network.EgressAuditPartition(principal)
+	if head, _ := worm.Head(ctx, egressPart); head == 0 {
+		t.Fatalf("o WORM não recebeu o evento de egress na partição %q — store não partilhado", egressPart)
+	}
+	// Confirmação explícita de que o ÚNICO store carrega os dois tipos de registo.
+	assertAuditHas(t, ctx, worm, "run-worm", audit.DecisionDeny, "echo")
+	assertAuditHas(t, ctx, worm, egressPart, audit.DecisionDeny, "sandbox.network")
 }
 
 // TestTotalMediation_UnfrozenRunDenied prova o default-deny do arranque: um run cujo

@@ -634,9 +634,9 @@ Compor no apex, via `NewProductionSecure`, a cadeia: identity → reval → PDP 
 
 ### Critérios de Aceitação
 
-- [ ] Ordem: `IdentityCheck` → `RevalidationHook` (AOS-051) → PDP (AOS-004) → `TaintGate` (com `StaticPrivilegedSet` sincronizado com o catálogo de capabilities sensíveis) → `ScopeGate` (com `AuthoritySource` do GOV) → budget → `EgressHook`+`EgressPolicyResolver`+`WORMSecuritySink` → audit.
-- [ ] `IdentityCheck` corre e popula `call.Principal` **antes** de taint/scope/egress/reval.
-- [ ] **Um único** `audit.Store` WORM partilhado entre o `EventSink` do RM e o `WORMSecuritySink` do egress.
+- [x] Ordem: `IdentityCheck` → `RevalidationHook` (AOS-051) → PDP (AOS-004) → `TaintGate` (com `StaticPrivilegedSet` sincronizado com o catálogo de capabilities sensíveis) → `ScopeGate` (com `AuthoritySource` do GOV) → budget → `EgressHook`+`EgressPolicyResolver`+`WORMSecuritySink` → audit.
+- [x] `IdentityCheck` corre e popula `call.Principal` **antes** de taint/scope/egress/reval.
+- [x] **Um único** `audit.Store` WORM partilhado entre o `EventSink` do RM e o `WORMSecuritySink` do egress.
 
 ### Detalhes Técnicos
 
@@ -648,7 +648,7 @@ Compor no apex, via `NewProductionSecure`, a cadeia: identity → reval → PDP 
 
 ### Definition of Done
 
-- [ ] Cadeia real composta pela via segura; um só WORM; sem segredos.
+- [x] Cadeia real composta pela via segura; um só WORM; sem segredos.
 
 ### Handoff para Claude Code
 

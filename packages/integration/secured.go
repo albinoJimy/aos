@@ -4,10 +4,15 @@ import (
 	"context"
 	"errors"
 
+	pdp "github.com/aos-ref/control-plane/pdp"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/authz"
+	"github.com/aos-ref/platform/audit"
+	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/toolset"
+	network "github.com/aos-ref/substrate/sandbox/network"
 )
 
 // Erros de construção do [SecuredRuntime].
@@ -22,6 +27,11 @@ var (
 	ErrNoRevalidator = errors.New("integration: revalidator nil")
 	// ErrNoPolicy — sem política de scopes/egress.
 	ErrNoPolicy = errors.New("integration: policy provider nil")
+	// ErrNoWORM — sem [audit.Store] WORM. É o registo durável tamper-evident ÚNICO
+	// partilhado pelo EventSink do RM (via [audit.NewMediationSink]) e pelo sink de
+	// segurança de egress (via [network.NewWORMSecuritySink]); sem ele a auditoria
+	// não seria durável e o fail-closed de audit do RM nunca dispararia.
+	ErrNoWORM = errors.New("integration: WORM audit store nil")
 )
 
 // SecuredConfig configura o [SecuredRuntime].
@@ -40,9 +50,34 @@ type SecuredConfig struct {
 	// Policy é a política de scopes/egress do run (obrigatória; use [StaticPolicy]
 	// para o caso comum).
 	Policy PolicyProvider
-	// EventSink é o sink de auditoria durável do RM (opcional; produção liga um
-	// [referencemonitor.NewEventStoreSink]).
-	EventSink referencemonitor.EventSink
+	// WORM é o [audit.Store] tamper-evident ÚNICO (obrigatório). É partilhado pelo
+	// EventSink de mediação do RM e pelo sink de segurança de egress — ambos selam no
+	// MESMO WORM (ver [NewSecuredRuntime]). [audit.NewMemStore] satisfá-lo.
+	WORM audit.Store
+
+	// --- Colaboradores de segurança da cadeia REAL (AOS-154) --------------------
+	// Todos são OPCIONAIS: quando nil caem para um default demo-grade que é um hook
+	// REAL fail-closed (NUNCA um stub neutro). Os colaboradores "reais"
+	// não-forjáveis — token NHI assinado, bundle de política assinado, allowlist de
+	// egress por deployment — são AOS-156 (gated por D4), fora deste ticket.
+
+	// Verifier verifica o token NHI (AOS-005) no hook de identidade. nil ⇒
+	// [identity.NewVerifier] sem trust anchors (nega toda a NHI — fail-closed).
+	Verifier *identity.Verifier
+	// PDP é o Policy Decision Point (AOS-004) no hook de política. nil ⇒
+	// [pdp.NewUnloaded] (sem bundle carregado ⇒ deny fail-closed).
+	PDP *pdp.PDP
+	// Privileged classifica capabilities privilegiadas para o [TaintGate] (AOS-069) e
+	// é a barreira control/data-plane exigida por [referencemonitor.NewProductionSecure].
+	// nil ⇒ [referencemonitor.NewStaticPrivilegedSet] vazio (classificador real).
+	Privileged referencemonitor.PrivilegedAuthorizer
+	// Authority é a fonte de autoridade user∩classe para o [ScopeGate] (AOS-071).
+	// nil ⇒ [authz.NewStaticAuthoritySource] vazio (fonte real ⇒ scope fail-closed).
+	Authority authz.AuthoritySource
+	// EgressResolver resolve a allowlist de egress por principal (AOS-067). nil ⇒
+	// [network.NewEmbeddedResolver] (allowlist de referência embutida).
+	EgressResolver network.EgressPolicyResolver
+
 	// HookOptions são opções do [RevalidationHook] (ex.: [WithEgressHost]).
 	HookOptions []HookOption
 	// RuntimeOptions são opções do [agentruntime.Runtime].
@@ -63,12 +98,27 @@ type SecuredRuntime struct {
 	freezeOpt []toolset.Option
 }
 
-// NewSecuredRuntime compõe o runtime seguro. Constrói o RM com a cadeia de mediação
-// canónica MAIS o [RevalidationHook] inserido logo a seguir à identidade
-// (identity → revalidation → policy → budget → egress → audit), constrói o Runtime
-// e prepara o registo de tool sets congelados por run.
+// NewSecuredRuntime compõe o runtime seguro sobre a CADEIA DE MEDIAÇÃO REAL
+// (AOS-154), construída via [referencemonitor.NewProductionSecure] — a via
+// sancionada estrita, que recusa fail-closed uma cadeia com o [IdentityStub] ou o
+// [EgressStub] neutros ou sem um [ScopeGate] com autoridade. A ordem dos hooks é:
 //
-// Fail-closed: qualquer colaborador obrigatório em falta é recusado.
+//	identity (IdentityCheck, AOS-005) → revalidation (AOS-051) → policy (PDP, AOS-004)
+//	→ taint (TaintGate, AOS-069) → scope (ScopeGate, AOS-071) → budget → egress
+//	(EgressHook, AOS-067)
+//
+// A identidade corre PRIMEIRO e resolve [Call.Principal] a partir do token NHI antes
+// de taint/scope/egress/revalidation (que dependem do principal resolvido). O
+// "audit" NÃO é um hook: é o EventSink durável (via [referencemonitor.WithEventSink]),
+// um adaptador ([audit.NewMediationSink]) que sela cada MediationRecord no WORM.
+//
+// UM ÚNICO WORM: o MESMO [audit.Store] (cfg.WORM) alimenta o EventSink do RM E o
+// sink de segurança de egress ([network.NewWORMSecuritySink]) — logo mediações e
+// bloqueios de egress selam-se na MESMA hash-chain tamper-evident.
+//
+// Fail-closed: qualquer colaborador obrigatório em falta é recusado. Os colaboradores
+// de segurança da cadeia (Verifier/PDP/Privileged/Authority/EgressResolver) caem para
+// defaults demo-grade que são hooks REAIS fail-closed quando não fornecidos.
 func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	switch {
 	case cfg.Model == nil:
@@ -81,31 +131,84 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		return nil, ErrNoRevalidator
 	case cfg.Policy == nil:
 		return nil, ErrNoPolicy
+	case cfg.WORM == nil:
+		return nil, ErrNoWORM
 	}
 
+	// Defaults demo-grade (fail-closed): cada um é um hook REAL, nunca um stub. Os
+	// colaboradores não-forjáveis (token NHI assinado, bundle de política assinado,
+	// allowlist de egress por deployment) são AOS-156 — gated por D4, fora deste ticket.
+	verifier := cfg.Verifier
+	if verifier == nil {
+		verifier = identity.NewVerifier() // sem trust anchors ⇒ nega toda a NHI
+	}
+	policyDP := cfg.PDP
+	if policyDP == nil {
+		policyDP = pdp.NewUnloaded() // sem bundle ⇒ deny fail-closed
+	}
+	privileged := cfg.Privileged
+	if privileged == nil {
+		privileged = referencemonitor.NewStaticPrivilegedSet() // classificador real (vazio)
+	}
+	authority := cfg.Authority
+	if authority == nil {
+		authority = authz.NewStaticAuthoritySource() // fonte real (vazia) ⇒ scope fail-closed
+	}
+	resolver := cfg.EgressResolver
+	if resolver == nil {
+		r, err := network.NewEmbeddedResolver()
+		if err != nil {
+			return nil, err
+		}
+		resolver = r
+	}
+
+	// Revalidação por chamada (AOS-051): o MESMO hook já existente, na MESMA posição
+	// (logo a seguir à identidade — o gate de supply-chain corre cedo).
 	toolsets := NewRunToolSets()
-	hook, err := NewRevalidationHook(cfg.Revalidator, toolsets, CatalogResolver{Cat: cfg.Catalog}, cfg.Policy, cfg.HookOptions...)
+	revalHook, err := NewRevalidationHook(cfg.Revalidator, toolsets, CatalogResolver{Cat: cfg.Catalog}, cfg.Policy, cfg.HookOptions...)
 	if err != nil {
 		return nil, err
 	}
 
-	// Cadeia de mediação: os stubs neutros de AOS-003 na ordem canónica, com a
-	// revalidação inserida a seguir à identidade (o gate de supply-chain corre cedo,
-	// antes de política/orçamento/egress). Produção substitui os stubs pelos hooks
-	// reais; a posição da revalidação mantém-se.
+	// Egress real (AOS-067) sobre o MESMO WORM: o sink de segurança sela os bloqueios
+	// de egress no cfg.WORM — a MESMA hash-chain onde o RM sela as mediações.
+	egressFilter, err := network.NewEgressFilter(resolver,
+		network.WithSecurityAuditSink(network.NewWORMSecuritySink(cfg.WORM)),
+	)
+	if err != nil {
+		return nil, err
+	}
+	egressHook, err := network.NewEgressHook(egressFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	// CADEIA REAL na ordem canónica de AOS-154. BudgetStub é aceitável (AOS-008 é o
+	// admission control real, fora deste ticket); todos os outros são hooks reais.
 	hooks := []referencemonitor.Hook{
-		referencemonitor.IdentityStub{},
-		hook,
-		referencemonitor.PolicyStub{},
-		referencemonitor.BudgetStub{},
-		referencemonitor.EgressStub{},
-		referencemonitor.AuditStub{},
+		identity.NewIdentityCheck(verifier),       // identity — resolve Call.Principal (1º)
+		revalHook,                                 // revalidation (AOS-051)
+		pdp.NewPolicyCheck(policyDP),              // policy (PDP, AOS-004)
+		referencemonitor.NewTaintGate(privileged), // taint (AOS-069)
+		referencemonitor.NewScopeGate(authority),  // scope (AOS-071)
+		referencemonitor.BudgetStub{},             // budget (stub aceitável)
+		egressHook,                                // egress (AOS-067)
 	}
-	rmOpts := []referencemonitor.Option{referencemonitor.WithHooks(hooks...)}
-	if cfg.EventSink != nil {
-		rmOpts = append(rmOpts, referencemonitor.WithEventSink(cfg.EventSink))
+
+	// EventSink durável = adaptador sancionado MediationRecord→AuditRecord sobre o
+	// MESMO WORM (partição por RunID). É o "audit" da cadeia — não um hook.
+	eventSink := audit.NewMediationSink(cfg.WORM)
+
+	// RM via a via ESTRITA: recusa fail-closed IdentityStub/EgressStub e exige
+	// ScopeGate+TaintGate activos e audit durável. Nunca [referencemonitor.New] cru.
+	rm, err := referencemonitor.NewProductionSecure(privileged,
+		referencemonitor.WithHooks(hooks...),
+		referencemonitor.WithEventSink(eventSink),
+	)
+	if err != nil {
+		return nil, err
 	}
-	rm := referencemonitor.New(rmOpts...)
 
 	rt := agentruntime.New(cfg.Model, rm, cfg.Recorder, cfg.RuntimeOptions...)
 
