@@ -43,6 +43,7 @@ REQUIRED=(
   TestTotalMediation_UnfrozenRunDenied
   TestSecuredRuntime_RealChain_FreezeAndFailClosed
   TestSecuredRuntime_RealHookChain_SingleWORM
+  TestApexEnforcement_FiveDenials
   TestFreeze_PerRunImmutable
   TestNewRevalidationHook_FailClosed
   TestNewSecuredRuntime_FailClosed

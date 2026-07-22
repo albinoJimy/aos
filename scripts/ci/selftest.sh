@@ -248,6 +248,25 @@ else
 fi
 
 # ============================================================================
+# K) egress desbloqueado torna o gate de enforcement do ápice (AOS-161) vermelho
+# ============================================================================
+log_gate "self-test K · egress desbloqueado bloqueia o enforcement do ápice (AOS-161)"
+# O guard-test do ápice (packages/integration) tem um teste-veneno
+# (TestSelftestApexEnforcementBypassReddensGate) que só corre com AOS_APEX_SELFTEST=1:
+# reproduz o cenário (d) — egress a um destino fora da allowlist — mas com o hook de egress
+# real substituído pelo EgressStub neutro (default-deny AOS-067 CONTORNADO, via a via crua que
+# a costura estrita NewProductionSecure rejeitaria) e ASSEVERA (falsamente) que a acção foi
+# negada por egress; como o stub a admite, a asserção FALHA de propósito, provando que um
+# egress desbloqueado torna o enforcement do ápice VERMELHO (fail-closed). Determinista,
+# offline e sem rasto no repo (nenhum ficheiro é alterado).
+if ( cd "$REPO_ROOT/packages/integration" && \
+     AOS_APEX_SELFTEST=1 go test ./ -run TestSelftestApexEnforcementBypassReddensGate -count=1 ) >/dev/null 2>&1; then
+  bad "K: o ápice admitiu egress a um destino fora da allowlist — o default-deny AOS-067 NÃO bloquearia"
+else
+  pass "K: o ápice bloqueou (exit!=0) o egress desbloqueado injectado (enforcement fail-closed)"
+fi
+
+# ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"
 if [ "$fails" -eq 0 ]; then
   printf '%s  TODOS OS SELF-TESTS OK — falhas são bloqueadas pelos gates%s\n' "$C_GRN$C_BLD" "$C_RST"

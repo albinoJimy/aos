@@ -996,8 +996,8 @@ Um guard-test fim-a-fim que exercita a cadeia real de hooks e um poison-test do 
 
 ### Critérios de Aceitação
 
-- [ ] O RM de produção do apex **nega**: (a) call anónima (Credential vazio); (b) cadeia com raiz forjada / issuer não-confiável; (c) capability privilegiada sob taint untrusted; (d) egress fora da allowlist; (e) capability fora do escopo user∩classe.
-- [ ] Poison-test `AOS_APEX_SELFTEST=1` que injecta `EgressStub`/raiz-forjada e **passa quando o gate falha**.
+- [x] O RM de produção do apex **nega**: (a) call anónima (Credential vazio); (b) cadeia com raiz forjada / issuer não-confiável; (c) capability privilegiada sob taint untrusted; (d) egress fora da allowlist; (e) capability fora do escopo user∩classe. — `TestApexEnforcement_FiveDenials` (packages/integration/enforcement_guard_test.go): as 5 negações provadas via o `Mediate` REAL de um RM `NewProductionSecure` (cadeia identity→taint→scope→egress de AOS-154), cada uma atribuível à barreira certa (`DeniedBy` ∈ {identity, taint, scope, egress}).
+- [x] Poison-test `AOS_APEX_SELFTEST=1` que injecta `EgressStub`/raiz-forjada e **passa quando o gate falha**. — `TestSelftestApexEnforcementBypassReddensGate`: contorna o egress default-deny (EgressStub via a via crua que `NewProductionSecure` recusaria) e assere falsamente a negação; FALHA de propósito, tornando o self-test (scripts/ci/selftest.sh secção K) VERMELHO quando o gate não bloqueia.
 
 ### Detalhes Técnicos
 
@@ -1009,7 +1009,7 @@ Um guard-test fim-a-fim que exercita a cadeia real de hooks e um poison-test do 
 
 ### Definition of Done
 
-- [ ] Cinco negações provadas; poison-test verde; sem segredos.
+- [x] Cinco negações provadas; poison-test verde; sem segredos. — apex.sh verde (17 testes obrigatórios incl. `TestApexEnforcement_FiveDenials`, -race, cobertura 83.2% ≥ 80%); selftest.sh secção K verde (o poison-test reddens o gate quando o egress é contornado); secrets.sh verde.
 
 ### Handoff para Claude Code
 
