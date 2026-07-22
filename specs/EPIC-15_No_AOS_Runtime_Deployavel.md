@@ -37,36 +37,109 @@ CONDICIONAL** (Carta §4.2) — **não** está no caminho crítico da v1. O nó 
 sem SPA. O transporte SSE + backfill/resume (AOS-133–136 da EPIC-13) é reutilizado aqui como o
 read-path do nó, sem a camada de apresentação web.
 
-## 2. Critérios de Saída do Epic (mapeados ao DoD da Carta §5)
+## 2. Critérios de Saída do Epic (mapeados ao DoD da Carta §5) — REVISTOS (emenda pós-painel)
 
-- [ ] **O nó `aos` corre**: um binário que compõe `integration.NewSecuredRuntime` (RM de produção,
-      cadeia real de hooks, WORM único) e hospeda um *run* fim-a-fim — AOS-163/164.
-- [ ] **Interface externa mínima estável**: CLI (`aos serve/run/observe/steer`) + API `net/http`
-      stdlib (submeter *goal*, observar trajectória por SSE, conduzir/aprovar) — AOS-165/166/167.
-- [ ] **Cadeia de governança REAL a mediar** cada tool call no nó (não os stubs do demo); guard-test
-      das 5 negações (AOS-161) cobre o enforcement — herdado, verificado no e2e do nó (AOS-169).
-- [ ] **Transporte SSE fail-safe** (D3): backfill + resume-from-seq + dedup por seq — AOS-167.
-- [ ] **Empacotamento deployável**: contentor distroless/non-root/read-only do nó — AOS-168.
-- [ ] **Aceitação sistémica**: e2e do nó (submit→observe→steer→terminate) + critérios do
-      `00_System_Spec.md §13`; gates fail-closed verdes — AOS-169.
-- [ ] **D4 deferida com honestidade**: o nó arranca em modo demo-only self-minted DECLARADO; sem
-      reivindicar não-forjabilidade — AOS-163.
+> **Pré-requisito (Carta emenda 1.1):** esta epic depende de **AOS-156** (token spine real,
+> autoridade self-hosted Nível 2). O nó da v1 usa **identidade REAL** (verifier com trust-anchor =
+> pubkey do issuer), **não** o modo demo-only. Os critérios abaixo incorporam as emendas E4–E8 do
+> painel `wamnbffrk` (ver §Revisão).
+
+- [ ] **O nó `aos` corre com identidade REAL**: um binário que compõe `integration.NewSecuredRuntime`
+      (RM de produção, cadeia real, WORM único) com o verifier da autoridade AOS-156, e hospeda um
+      *run* fim-a-fim — AOS-163/164a.
+- [ ] **Substrato DURÁVEL** (E4): Event Store/WORM/KeySource persistentes (não in-memory); o
+      reinício não perde nem duplica trabalho — AOS-170 (ou DoD de AOS-164b com dono).
+- [ ] **Interface externa mínima estável e AUTENTICADA** (E5): CLI + API `net/http` stdlib; o
+      **canal de controlo (steer/approve) é autenticado** (não um POST anónimo) e o bind
+      não-loopback é recusado até a autenticação estar ligada — AOS-165/166.
+- [ ] **Health/readiness + observabilidade** (E5/E7): `/healthz`·`/readyz`; spans OTel (`otel-genai`)
+      + custo + WORM ligados por OTLP — AOS-171/173.
+- [ ] **Transporte SSE fail-safe** (D3, reavaliado): backfill + resume-from-seq + dedup **+
+      backpressure/drop-slow-consumer**, streaming por seq (não snapshots de state) — AOS-167 (**L**).
+- [ ] **Soberania/conformidade** (E7): read-path soberano (D7), selo WORM de leitura sensível no SSE
+      (D6), DSAR/crypto-shredding (ADR-011) — AOS-172. (Não gated por D4.)
+- [ ] **Empacotamento deployável**: contentor distroless/non-root/read-only, com **ADR-017**
+      (supply-chain: binário zero-dep, SBOM+proveniência, gates na entrega) — AOS-168.
+- [ ] **Aceitação sistémica NÃO-vacuosa** (E6): e2e com um **modelo que EMITE tool calls** (prova o
+      caminho PERMITIDO, não só a negação), **contentor real** com kill+reinício sem duplicação,
+      bateria de abuso HTTP, e um **checklist NOMEADO de cada critério `00_System_Spec.md §13`**
+      (verde ou deferido-com-eixo) — AOS-169 (reescrito).
 
 ## 3. Tabela Resumo de Tickets
 
 | ID | Título | Tipo | Estimativa | Prioridade | Dependências |
 |---|---|---|---|---|---|
-| AOS-163 | Bootstrap do nó `aos`: composição de PRODUÇÃO + config + modo demo-only declarado | feature | M | P0 | EPIC-14 (PR-0.c), AOS-130 |
-| AOS-164 | Loop de serviço e ciclo de vida do nó (long-running, registo de runs, shutdown gracioso) | feature | M | P0 | AOS-163 |
-| AOS-165 | CLI `aos` (`serve`/`run`/`observe`/`steer`) — só stdlib | feature | S | P1 | AOS-164 |
-| AOS-166 | API HTTP `net/http` stdlib: submeter *goal* + controlo (steer/approve) | feature | M | P1 | AOS-164 |
-| AOS-167 | SSE de trajectória: `StateProjector`→SSE + backfill + resume-from-seq + dedup (D3) | feature | M | P1 | AOS-166, EPIC-13 (AOS-133–136) |
-| AOS-168 | Empacotamento do nó: contentor distroless/non-root/read-only | feature | S | P1 | AOS-164, EPIC-10 |
-| AOS-169 | Aceitação sistémica e2e do nó + critérios `00_System_Spec.md §13` | chore | M | P0 | AOS-166, AOS-167 |
+| AOS-163 | Bootstrap do nó `aos`: composição de PRODUÇÃO + verifier da autoridade AOS-156 + config | feature | M | P0 | EPIC-14 (PR-0.c), **AOS-156**, AOS-130 |
+| AOS-164a | Loop de serviço do nó (long-running, registo de runs, isolamento de falha por-run) | feature | M | P0 | AOS-163 |
+| AOS-164b | Shutdown gracioso durável + fronteira nó↔ORQ/SCH (EPIC-03) + single-writer do WORM sob N runs | feature | M | P0 | AOS-164a, AOS-170 |
+| AOS-170 | **Substrato durável** (E4): Event Store/WORM/KeySource persistentes (não in-memory) | feature | M | P0 | AOS-163, EPIC-02 |
+| AOS-165 | CLI `aos` (`serve`/`run`/`observe`/`steer`) — só stdlib | feature | S | P1 | AOS-164a |
+| AOS-166 | API HTTP stdlib: submeter *goal* + controlo **AUTENTICADO** (steer/approve); bind não-loopback recusado sem authn | feature | M | P1 | AOS-164a, **AOS-160** |
+| AOS-167 | SSE de trajectória: `StateProjector`→SSE + backfill + resume-from-seq + dedup **+ backpressure** (D3), streaming por seq | feature | **L** | P1 | AOS-166 |
+| AOS-171 | **Health/readiness** (E5): `/healthz`·`/readyz` (bloqueia o Dockerfile) | feature | S | P1 | AOS-164a |
+| AOS-172 | **Soberania/conformidade** (E7): read-path soberano (D7) + selo WORM de leitura no SSE (D6) + DSAR/crypto-shredding | feature | M | P1 | AOS-167, AOS-170, EPIC-09/10 |
+| AOS-173 | **Observabilidade** (E7): `otel-genai` (spans+custo) + WORM ligados por OTLP | feature | M | P1 | AOS-163 |
+| AOS-168 | Empacotamento do nó: distroless/non-root/read-only + **ADR-017** (SBOM+proveniência) | feature | S | P1 | AOS-164a, AOS-171, EPIC-10 |
+| AOS-169 | Aceitação sistémica **não-vacuosa** (E6): modelo que emite tools + caminho permitido + contentor real + abuso HTTP + checklist §13 nomeado | chore | M | P0 | AOS-166, AOS-167, AOS-172 |
 
 Estimativas XS/S/M/L (XL proibido). Prioridades P0/P1/P2. Toda a Fase 5 — Operacionalização.
-Fases locais: **núcleo do nó** (AOS-163/164, P0), **interface** (AOS-165/166/167), **entrega**
-(AOS-168/169). A identidade real é D4 (fora desta epic); a web é D1(b) (fora do caminho crítico).
+**Pré-requisito: AOS-156** (identidade real). Fases locais: **núcleo do nó** (AOS-163/164a/164b/170,
+P0), **interface** (AOS-165/166/167/171), **conformidade/observabilidade** (AOS-172/173),
+**entrega** (AOS-168/169). A web é D1(b) (fora do caminho crítico). O single-host/sem-HA da v1 é
+**non-goal datado** (Carta §7 emenda 1.2; distribuído = EPIC-10).
+
+---
+
+## Revisão pós-painel `wamnbffrk` (emenda 2026-07-22)
+
+Esta epic foi revista após o painel adversarial (veredicto `ratificar-com-emendas`) e a decisão do
+dono (Carta emenda 1.1: **desbloquear o D4 primeiro**). As secções por-ticket abaixo (AOS-163–169)
+mantêm a redacção original; **prevalece esta revisão** onde divergirem. Tickets novos/divididos
+(AOS-164a/b, 170, 171, 172, 173) têm aqui o seu escopo; a secção de 9 campos de cada um é expandida
+quando for executado.
+
+**Re-sequência.** A EPIC-15 depende agora de **AOS-156** (identidade real, autoridade self-hosted
+Nível 2). O nó da v1 usa o verifier com trust-anchor = pubkey do issuer — **não** o modo demo-only.
+Isto fecha na raiz o achado ALTO "forma sobre-reivindicada" e habilita a autenticação do canal
+externo (achados ALTO nº4/nº5).
+
+**E4 — Durabilidade (AOS-170, P0).** *Contexto:* o achado ALTO "nó vs biblioteca" — a capacidade
+que distingue um nó de uma lib (ciclo de vida durável) ficava por ligar sobre um Event Store
+in-memory. *Objectivo:* Event Store/WORM/KeySource **persistentes**. *AC:* o reinício do nó não
+perde nem duplica trabalho durável (idempotência/replay, EPIC-02); a tamper-evidence do WORM e o
+KeySource **sobrevivem ao restart** (não reiniciam a cada arranque).
+
+**E8 — Divisão de AOS-164 + fronteiras (AOS-164a/164b, P0).** O AOS-164 original (M) juntava 4
+subsistemas — XL disfarçado. Divisão: **164a** = loop de serviço (hospedar runs, isolamento de
+falha por-run); **164b** = shutdown gracioso **durável** (sobre AOS-170) + **fronteira nó↔ORQ/SCH**
+(desenhar e registar como o loop consome/substitui o Orquestrador+Escalonador de EPIC-03, evitando
+duas fontes de verdade do ciclo de vida) + **CA de single-writer** do WORM sob N runs concorrentes
+(serialização/ordenação do hash-chain com dono).
+
+**E5 — Canal autenticado + health (AOS-166 amendado, AOS-171 novo).** *AOS-166:* o canal de
+controlo (steer/approve) é **autenticado server-side** (não um POST anónimo — o achado ALTO nº4: a
+inércia do D4 não protege pause/steer/terminate); depende de **AOS-160** (Authenticator ed25519,
+desbloqueado pelo D4); **bind não-loopback recusado** enquanto a autenticação não estiver ligada;
+admission/rate-limit no `POST /runs`; teste NEGATIVO (steer não-autenticado é recusado). *AOS-171
+(S, P1):* `/healthz`·`/readyz` — um contentor distroless sem probe não é operável; **bloqueia o
+Dockerfile (AOS-168)**.
+
+**E7 — Soberania/observabilidade (AOS-172, AOS-173 novos).** *AOS-172 (M, P1):* read-path soberano
+fail-closed (D7); selo WORM de leitura sensível no stream SSE (D6, hoje silencioso); DSAR/
+crypto-shredding (Art.17, ADR-011). **Não gated por D4.** *AOS-173 (M, P1):* ligar `otel-genai`
+(spans + custo) e o WORM por **OTLP** — o Spec §13 (Observabilidade) não é verde por omissão.
+
+**E6 — Aceitação não-vacuosa (AOS-169 reescrito).** O e2e original (in-process, modelo fake que nem
+chama tools) é o "funciona-na-demo" que o System Spec §2.1 desqualifica. Reescrita: **modelo que
+EMITE tool calls** (prova o caminho PERMITIDO, não só a negação); **contentor real** exercitado com
+kill+reinício **sem duplicação**; **bateria de abuso HTTP** (payloads gigantes, enumeração de
+RunID, replay, steer não-autenticado); **checklist NOMEADO de cada critério §13** (verde ou
+deferido-com-eixo — o deferimento restrito ao eixo identidade, não a durabilidade/observabilidade).
+
+**E10 — SSE repromovido (AOS-167 → L).** Não há handler SSE no repo (é de raiz, não "reutiliza
+AOS-133–136"); acresce **backpressure/drop-slow-consumer** e **streaming por seq** (não snapshots
+de state). D3/D5 são reavaliados para o modelo de ameaça do nó-serviço (Carta §4.2, emenda 1.2) —
+sob single-process, a separação "dois canais" é de protocolo/taint, não física.
 
 ---
 
@@ -84,25 +157,30 @@ Fases locais: **núcleo do nó** (AOS-163/164, P0), **interface** (AOS-165/166/1
 | Responsável sugerido | Arquitecto de Plataforma |
 | Documentos de referência | `packages/integration/secured.go` (`NewSecuredRuntime`), `specs/00_AOS_Carta.md §2/§4.2` |
 
+> **REVISTO (emenda pós-painel, ver §Revisão):** o nó da v1 usa **identidade REAL** (AOS-156),
+> não demo-only. Onde o texto abaixo diz "demo-only", prevalece a revisão.
+
 ### Contexto
 
 O `cmd/aos-demo` compõe o RM com **stubs neutros** (aceitável no ápice mínimo). O nó de produção
-tem de compor a **cadeia REAL** via `integration.NewSecuredRuntime` (RM de produção, WORM único).
-A identidade real é D4; até lá, o nó arranca em modo demo-only self-minted **declarado**.
+tem de compor a **cadeia REAL** via `integration.NewSecuredRuntime` (RM de produção, WORM único) —
+e, por decisão do dono (Carta emenda 1.1), com o **verifier da autoridade de identidade AOS-156**
+(trust-anchor = pubkey do issuer), não o self-mint.
 
 ### Objectivo
 
-Um pacote de bootstrap (`cmd/aos` ou `packages/node`) que constrói o runtime seguro de produção a
-partir de uma configuração mínima e explícita, fail-closed, com o modo de identidade declarado.
+Um pacote de bootstrap (`packages/cmd/aos`) que constrói o runtime seguro de produção a partir de
+uma configuração mínima e explícita, fail-closed, ligando o **verifier real de AOS-156**.
 
 ### Critérios de Aceitação
 
 - [ ] O nó compõe via `integration.NewSecuredRuntime` (não os stubs do demo); um colaborador
       obrigatório em falta ABORTA o arranque (fail-closed).
-- [ ] Configuração mínima e explícita (WORM store, cliente de modelo, modo de identidade, portas)
-      — sem segredos em código (chaves/tokens vêm de config/vault, nunca hardcoded).
-- [ ] O modo de identidade **demo-only self-minted** é DECLARADO no arranque e nos logs; sem
-      reivindicar não-forjabilidade (Carta §4.2).
+- [ ] Configuração mínima e explícita (WORM store durável, cliente de modelo, **trust-anchor do
+      issuer AOS-156**, portas) — sem segredos em código (chaves/tokens vêm de config/vault).
+- [ ] O nó liga o **verifier real** (pubkey da autoridade AOS-156); a chave de assinatura NUNCA
+      entra no runtime do nó (não-forjabilidade relativa ao nó). O modo de identidade em vigor é
+      **declarado no arranque e nos logs** (real vs, se alguma vez usado, um modo de teste explícito).
 
 ### Detalhes Técnicos
 
@@ -127,6 +205,10 @@ self-minted DECLARADO no arranque/logs (D4 aberta, Carta §4.2). Fail-closed sem
 ---
 
 ## AOS-164 — Loop de serviço e ciclo de vida do nó
+
+> **REVISTO (E8, ver §Revisão):** DIVIDIDO em **164a** (loop de serviço + isolamento de falha
+> por-run) e **164b** (shutdown durável sobre AOS-170 + fronteira nó↔ORQ/SCH de EPIC-03 + CA de
+> single-writer do WORM sob N runs). A redacção abaixo cobre o âmbito conjunto.
 
 | Campo | Valor |
 |---|---|
@@ -232,6 +314,10 @@ client). Cliente da API (AOS-166). Testa parsing e e2e contra um no in-process.
 
 ## AOS-166 — API HTTP `net/http` stdlib: submeter *goal* + controlo
 
+> **REVISTO (E5, ver §Revisão):** o canal de controlo (steer/approve) é **autenticado server-side**
+> (depende de AOS-160); bind não-loopback recusado sem authn; admission/rate-limit no `POST /runs`;
+> teste NEGATIVO de steer não-autenticado. A redacção abaixo é a original.
+
 | Campo | Valor |
 |---|---|
 | Epic | EPIC-15 — Nó `aos` |
@@ -280,6 +366,10 @@ POST /runs/{id}/approve (controlo, idempotente por RequestID). Canal controlo se
 ---
 
 ## AOS-167 — SSE de trajectória: `StateProjector`→SSE + backfill + resume-from-seq + dedup (D3)
+
+> **REVISTO (E10, ver §Revisão):** repromovido **M → L** — não há handler SSE no repo (é de raiz);
+> acresce **backpressure/drop-slow-consumer** e **streaming por seq** (não snapshots de state). A
+> redacção abaixo é a original.
 
 | Campo | Valor |
 |---|---|
@@ -377,6 +467,11 @@ imagem). Coerente com EPIC-10 e AOS-142.
 
 ## AOS-169 — Aceitação sistémica e2e do nó + critérios `00_System_Spec.md §13`
 
+> **REVISTO (E6, ver §Revisão):** e2e **não-vacuoso** — modelo que EMITE tool calls (prova o
+> caminho PERMITIDO, não só a negação), contentor REAL com kill+reinício sem duplicação, bateria de
+> abuso HTTP, e checklist NOMEADO de cada critério §13 (deferimento restrito ao eixo identidade). A
+> redacção abaixo é a original.
+
 | Campo | Valor |
 |---|---|
 | Epic | EPIC-15 — Nó `aos` |
@@ -442,3 +537,4 @@ deferido D4). Deterministico, in-process, modelo fake.
 | Versão | Data | Alteração | Aprovação |
 |---|---|---|---|
 | 1.0 | 2026-07-22 | Emissão inicial. Materializa a decisão de forma do produto da Carta do AOS (§2): graduar `cmd/aos-demo` para o nó `aos` deployável. 7 tickets AOS-163–169 (bootstrap de produção, loop de serviço, CLI, API HTTP, SSE, empacotamento, aceitação sistémica), mapeados ao DoD da Carta §5. A identidade real (D4) e a web (D1(b)) ficam fora do caminho crítico. | — |
+| 1.1 | 2026-07-22 | **REVISÃO pós-painel `wamnbffrk` (Passo 3 do roadmap; Carta emenda 1.1/1.2).** Pré-requisito **AOS-156** (identidade REAL — o nó deixa o modo demo-only). Enactados E4–E8/E10: **AOS-170** (substrato durável), **AOS-164a/164b** (divisão do loop + fronteira ORQ/SCH + single-writer do WORM), **AOS-166** (canal de controlo autenticado, dep. AOS-160), **AOS-171** (health/readiness), **AOS-172** (soberania: D6/D7/DSAR), **AOS-173** (observabilidade OTLP), **AOS-167→L** (backpressure/streaming por seq), **AOS-169 reescrito** (modelo que emite tools + contentor real + abuso HTTP + checklist §13 nomeado), **AOS-168** ganha ADR-017. Critérios de saída (§2) e tabela (§3) revistos; ver a secção **Revisão**. | — |
