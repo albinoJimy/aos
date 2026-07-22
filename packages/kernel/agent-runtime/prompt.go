@@ -41,6 +41,11 @@ const (
 	TailToolResult TailKind = "tool_result"
 	// TailHistory — histórico de turnos anteriores (texto do modelo).
 	TailHistory TailKind = "history"
+	// TailCorrection — uma correcção humana out-of-band injectada por um Resume do
+	// canal de controlo (AOS-158). É dado de CONTROLO TRUSTED (taint=trusted): vem de
+	// um humano autenticado, não do modelo nem de uma tool, pelo que o modelo a vê
+	// como directiva confiável — nunca como conteúdo untrusted (ADR-005).
+	TailCorrection TailKind = "correction"
 )
 
 // TailSegment é uma unidade append-only do tail. O tail cresce a cada turno; o
@@ -200,6 +205,25 @@ func tailFromHistory(text string) TailSegment {
 	content = append(content, text...)
 	return TailSegment{Kind: TailHistory, Content: content}
 }
+
+// tailFromCorrection constrói o segmento de tail de uma correcção humana out-of-band
+// (AOS-158). Ao contrário do output do modelo e dos resultados de tool (untrusted), a
+// correcção vem de um humano AUTENTICADO pelo canal de controlo, logo é marcada
+// TRUSTED (taint=trusted) — o modelo vê-a como directiva confiável (ADR-005). Usa o
+// MESMO esquema de prefixo de proveniência ("taint=…") para consistência do prompt
+// materializado.
+func tailFromCorrection(correction []byte) TailSegment {
+	content := append([]byte("taint="), TaintTrusted...)
+	content = append(content, '\n')
+	content = append(content, "correction="...)
+	content = append(content, correction...)
+	return TailSegment{Kind: TailCorrection, Content: content}
+}
+
+// TailFromCorrection constrói o segmento de tail de uma correcção. É a MESMA
+// construção do loop ([tailFromCorrection]), exportada para o motor de replay (AOS-016)
+// reconstruir o tail byte-idêntico (ver [TailFromModelText]).
+func TailFromCorrection(correction []byte) TailSegment { return tailFromCorrection(correction) }
 
 // TailFromModelText constrói o segmento de tail do texto do modelo de um turno.
 // É EXACTAMENTE a construção que o loop usa ([tailFromHistory]) — exportada para o

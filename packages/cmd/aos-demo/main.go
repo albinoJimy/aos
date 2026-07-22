@@ -10,9 +10,10 @@
 //
 // LIMITAÇÕES ASSUMIDAS (marcadas no código e reimpressas no fim do demo):
 //
-//	(a) O loop base do Agent Runtime NÃO consome o SteerChannel: aqui o ciclo
-//	    pause/steer/resume é EXCLUSIVAMENTE out-of-band (despachado e relido fora do
-//	    loop). Ligar o canal ao loop é o ticket AOS-158.
+//	(a) Esta demo ilustra o canal de controlo OUT-OF-BAND (despachado e relido fora do
+//	    loop). A ligação do SteerChannel ao loop — pausa graciosa ATRAVÉS do loop — já
+//	    existe (AOS-158, via agentruntime.WithSteerSource) e é provada no AC4; a demo
+//	    mantém o out-of-band porque o modelo fake termina num só turno.
 //	(b) O Reference Monitor usa os STUBS NEUTROS (identity/policy/budget/egress/audit)
 //	    — aceitável no ápice mínimo, mas SEM enforcement real. O enforcement de
 //	    produção é PR-0.c (AOS-152/153/154).
@@ -218,8 +219,8 @@ func runDemo(w io.Writer) error {
 
 	// ---- LIMITAÇÕES (reimpressas) ---------------------------------------------
 	step("--- limitações deste ápice mínimo ---")
-	step("LIMITAÇÃO (a): o loop do Agent Runtime NÃO consome o SteerChannel; " +
-		"pause/steer/resume é só OUT-OF-BAND aqui (ligação ao loop = AOS-158)")
+	step("NOTA (a): esta demo usa o canal OUT-OF-BAND; a pausa graciosa ATRAVÉS do loop " +
+		"já existe (AOS-158, agentruntime.WithSteerSource) e é provada no AC4")
 	step("LIMITAÇÃO (b): o Reference Monitor usa STUBS NEUTROS (sem enforcement real); " +
 		"o enforcement de produção é PR-0.c (AOS-152/153/154)")
 	step("demo concluído com sucesso")

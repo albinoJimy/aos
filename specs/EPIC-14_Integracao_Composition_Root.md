@@ -844,9 +844,9 @@ Ligar o `SteerChannel` ao loop: `GracefulPause` no fim do turno e injecção da 
 
 ### Critérios de Aceitação
 
-- [ ] O loop consome o `SteerChannel`: sinal `interrupt` provoca `GracefulPause` no fim do turno.
-- [ ] `resume` injecta a correcção como dado de controlo *trusted* (taint), nunca como conteúdo untrusted.
-- [ ] AC4 do ápice mínimo actualizado (a invariante de steer passa de DIFERIDA a PROVADA).
+- [x] O loop consome o `SteerChannel`: sinal `interrupt` provoca `GracefulPause` no fim do turno.
+- [x] `resume` injecta a correcção como dado de controlo *trusted* (taint), nunca como conteúdo untrusted.
+- [x] AC4 do ápice mínimo actualizado (a invariante de steer passa de DIFERIDA a PROVADA).
 
 ### Detalhes Técnicos
 
@@ -858,7 +858,7 @@ Ligar o `SteerChannel` ao loop: `GracefulPause` no fim do turno e injecção da 
 
 ### Definition of Done
 
-- [ ] Steer/pause/resume através do loop; separação de taint preservada; sem segredos.
+- [x] Steer/pause/resume através do loop; separação de taint preservada; sem segredos.
 
 ### Handoff para Claude Code
 

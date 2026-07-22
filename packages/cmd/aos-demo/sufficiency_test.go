@@ -21,11 +21,20 @@ import (
 	approvalcard "github.com/aos-ref/control-plane/governance/approval-card"
 	controlsurface "github.com/aos-ref/control-plane/governance/control-surface"
 	surfaceadapter "github.com/aos-ref/control-plane/governance/surface-adapter"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/agent-runtime/state"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/risk"
 	"github.com/aos-ref/substrate/eventstore"
 )
+
+// demoPausingSteer é um [agentruntime.SteerSource] que pausa na 1ª fronteira de
+// fim-de-turno — para a invariante AC4 provar que o loop consome o steer.
+type demoPausingSteer struct{}
+
+func (demoPausingSteer) GracefulPause(context.Context, string) (bool, error) { return true, nil }
+func (demoPausingSteer) PendingCorrection(string) ([]byte, bool)             { return nil, false }
 
 // invariantKind classifica uma invariante do ápice. kindUnset é o valor-zero: uma
 // invariante não classificada é um DEFEITO (vacuous pass), nunca um "chega".
@@ -161,9 +170,39 @@ func apexInvariants() []apexInvariant {
 
 		// ---- DIFERIDAS: enforcement de produção que o ápice mínimo NÃO entrega ------
 		{
-			name: "o loop consome o SteerChannel (pause/steer/resume ATRAVÉS do loop)",
-			kind: kindDeferred,
-			seam: "AOS-158 (wiring SteerChannel↔loop; hoje só out-of-band)",
+			name: "o loop consome o SteerChannel — pausa graciosa ATRAVÉS do loop (AOS-158)",
+			kind: kindProven,
+			prove: func(t *testing.T) {
+				ctx := context.Background()
+				store, err := eventstore.New()
+				if err != nil {
+					t.Fatalf("eventstore.New: %v", err)
+				}
+				defer store.Close()
+				rm := referencemonitor.New(referencemonitor.WithHooks(
+					referencemonitor.IdentityStub{}, referencemonitor.PolicyStub{},
+					referencemonitor.BudgetStub{}, referencemonitor.EgressStub{}, referencemonitor.AuditStub{},
+				))
+				if err := rm.Register("noop", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
+					t.Fatalf("Register: %v", err)
+				}
+				// Modelo multi-turno (nunca Final): só o steer pára o loop.
+				model := agentruntime.ModelClientFunc(func(context.Context, agentruntime.PromptView) (agentruntime.ModelResponse, error) {
+					return agentruntime.ModelResponse{ToolCalls: []agentruntime.ToolInvocation{{ToolID: "noop", Capability: "cap:noop", Input: []byte("x")}}}, nil
+				})
+				rt := agentruntime.New(model, rm, agentruntime.NewTurnRecorder(store), agentruntime.WithSteerSource(demoPausingSteer{}))
+				res, err := rt.Run(ctx, agentruntime.Goal{
+					RunID:     "run-ac4-steer",
+					Principal: referencemonitor.Principal{NHIID: "nhi:x", AgentID: "a", AgentClass: "c"},
+					System:    "s", Objective: "o",
+				})
+				if err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+				if !res.Paused {
+					t.Fatal("o loop não pausou através do steer (invariante de steer não provada)")
+				}
+			},
 		},
 		{
 			name: "o RM COMPÕE o hook de identidade real (IdentityCheck, não IdentityStub)",

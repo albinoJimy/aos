@@ -76,6 +76,11 @@ type Result struct {
 	TurnSeqs []uint64
 	// Terminated indica que o run atingiu uma resposta final (vs esgotar MaxTurns).
 	Terminated bool
+	// Paused indica que o run PAROU graciosamente por um interrupt out-of-band
+	// consumido na fronteira de fim-de-turno (AOS-158): a pausa durável (running→
+	// paused, AOS-023) foi materializada e o loop parou limpo entre turnos (nunca a
+	// meio). Distinto de Terminated (resposta final) e de ErrMaxTurnsExceeded.
+	Paused bool
 }
 
 // Runtime é o Agent Runtime: corre o loop base. Detém um *[referencemonitor.Monitor]
@@ -90,6 +95,7 @@ type Runtime struct {
 	stepIdentity    StepIdentity
 	checkpointer    Checkpointer
 	capturer        Capturer
+	steer           SteerSource
 	assemblyVersion string
 	defaultMaxTurns int
 }
@@ -332,19 +338,35 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseVerified); err != nil {
 			return res, err
 		}
-		// FRONTEIRA DE FIM DE TURNO (ponto de ligação AOS-023). É AQUI — com todas as
-		// activities do turno confirmadas e antes de o turno seguinte começar — que o
-		// runtime chamaria control.SteerChannel.GracefulPause (materializar a pausa
-		// graciosa) e injectaria a Correction.TailSegment de um Resume no tail do turno
-		// seguinte. AOS-023 entrega e prova a API do canal (runtime/control) de forma
-		// isolada; o wiring do canal ao loop de produção é DIFERIDO para o ticket de
-		// integração de superfície (EPIC-12) — sem ele o comportamento de AOS-013
-		// permanece inalterado.
+		// TERMINAÇÃO — uma resposta final acaba o run (não se pausa um run já concluído).
 		if resp.Final || len(resp.ToolCalls) == 0 {
 			res.FinalText = resp.Text
 			res.Turns = turn
 			res.Terminated = true
 			return res, nil
+		}
+
+		// FRONTEIRA DE FIM DE TURNO (AOS-158) — consumir o canal de controlo out-of-band.
+		// É AQUI, com todas as activities do turno confirmadas e antes do turno seguinte,
+		// que a pausa é GRACIOSA (entre turnos, nunca a meio — AOS-023). Aditivo: sem um
+		// [SteerSource] ligado ([WithSteerSource]), o comportamento de AOS-013 permanece
+		// byte-idêntico.
+		if rt.steer != nil {
+			paused, err := rt.steer.GracefulPause(ctx, goal.RunID)
+			if err != nil {
+				return res, err
+			}
+			if paused {
+				res.Turns = turn
+				res.Paused = true
+				return res, nil
+			}
+			// Uma correcção de um humano AUTENTICADO é dado de controlo TRUSTED —
+			// injectada no tail do turno seguinte (taint=trusted), nunca como conteúdo
+			// untrusted (separação control/data-plane, ADR-005).
+			if corr, ok := rt.steer.PendingCorrection(goal.RunID); ok {
+				tail = append(tail, tailFromCorrection(corr))
+			}
 		}
 	}
 

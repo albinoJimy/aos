@@ -34,7 +34,7 @@ func TestAposDemoComposesAndRuns(t *testing.T) {
 		"superfície renderizada (desktop)", // render via o Renderer do surface-adapter
 		"steer OUT-OF-BAND despachado",     // steer out-of-band no SteerChannel
 		"eco de pausa pendente: true",      // pause out-of-band ecoado
-		"LIMITAÇÃO (a)",                    // loop não consome o SteerChannel (AOS-158)
+		"NOTA (a)",                         // canal out-of-band; loop-steer via WithSteerSource (AOS-158)
 		"LIMITAÇÃO (b)",                    // RM usa stubs neutros (AOS-152/153/154)
 		"demo concluído com sucesso",
 	}
