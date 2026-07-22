@@ -371,10 +371,10 @@ Um `cmd/aos-demo` que compõe, in-process, um fluxo completo (spawn → plan-app
 
 ### Critérios de Aceitação
 
-- [ ] Compõe, por esta ordem: `eventstore.New` → `control.NewHMACAuthenticator` (marcado *demo-grade*) → `control.NewChannel` → por-run `state.NewMachine` → `StateProjector` → modelo *fake* in-process → `agentruntime.New`.
-- [ ] Conduz um fluxo end-to-end in-process; superfície = control-surface + `Renderer` committed.
-- [ ] Zero dependências externas; `GOPROXY=off go build/test` verde.
-- [ ] Módulo `cmd/aos-demo` separado (fecho de `replace` próprio) para manter `packages/integration` import-limpo.
+- [x] Compõe, por esta ordem: `eventstore.New` → `control.NewHMACAuthenticator` (marcado *demo-grade*) → `control.NewChannel` → por-run `state.NewMachine` → `StateProjector` → modelo *fake* in-process → `agentruntime.New`.
+- [x] Conduz um fluxo end-to-end in-process; superfície = control-surface + `Renderer` committed.
+- [x] Zero dependências externas; `GOPROXY=off go build/test` verde.
+- [x] Módulo `cmd/aos-demo` separado (fecho de `replace` próprio) para manter `packages/integration` import-limpo.
 
 ### Detalhes Técnicos
 
@@ -387,9 +387,9 @@ Um `cmd/aos-demo` que compõe, in-process, um fluxo completo (spawn → plan-app
 
 ### Definition of Done
 
-- [ ] Fluxo end-to-end corre in-process, zero rede, zero deps externas.
-- [ ] Limitações do ápice mínimo marcadas explicitamente (steer out-of-band; RM com stubs).
-- [ ] Sem segredos.
+- [x] Fluxo end-to-end corre in-process, zero rede, zero deps externas.
+- [x] Limitações do ápice mínimo marcadas explicitamente (steer out-of-band; RM com stubs).
+- [x] Sem segredos.
 
 ### Handoff para Claude Code
 
