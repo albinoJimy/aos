@@ -28,14 +28,19 @@ func TestAposDemoComposesAndRuns(t *testing.T) {
 		"5) StateProjector composto",
 		"6) Modelo FAKE composto",
 		"7) Reference Monitor (stubs neutros)",
+		"SPAWN: a criar o run", // spawn do run (ready → running)
 		"transição durável ready → running",
-		"Current() = running",              // reflexão do estado durável via o StateProjector
-		"terminated=true",                  // o turno correu e terminou (modelo fake)
-		"superfície renderizada (desktop)", // render via o Renderer do surface-adapter
-		"steer OUT-OF-BAND despachado",     // steer out-of-band no SteerChannel
-		"eco de pausa pendente: true",      // pause out-of-band ecoado
-		"NOTA (a)",                         // canal out-of-band; loop-steer via WithSteerSource (AOS-158)
-		"LIMITAÇÃO (b)",                    // RM usa stubs neutros (AOS-152/153/154)
+		"Current() = running",               // reflexão do estado durável via o StateProjector
+		"PLAN-APPROVAL via PlanGate real",   // plan-approval via o PlanGate real (AOS-130)
+		"aprovado=true",                     // o plano foi aprovado (L0 escalou danger ao canal)
+		"terminated=true",                   // o turno correu e terminou (modelo fake)
+		"superfície renderizada (desktop)",  // render via o Renderer do surface-adapter
+		"APPROVE (dual-control estrutural)", // approve dual-control (4-eyes estrutural, AOS-130)
+		"autorizado=true",                   // dual-control autorizou (dois aprovadores distintos)
+		"steer OUT-OF-BAND despachado",      // steer out-of-band no SteerChannel
+		"eco de pausa pendente: true",       // pause out-of-band ecoado
+		"NOTA (a)",                          // canal out-of-band; loop-steer via WithSteerSource (AOS-158)
+		"LIMITAÇÃO (b)",                     // RM usa stubs neutros (AOS-152/153/154)
 		"demo concluído com sucesso",
 	}
 	for _, m := range marcos {

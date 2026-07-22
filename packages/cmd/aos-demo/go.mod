@@ -4,7 +4,9 @@ go 1.24
 
 require (
 	github.com/aos-ref/control-plane/governance/approval-card v0.0.0
+	github.com/aos-ref/control-plane/governance/autonomy v0.0.0
 	github.com/aos-ref/control-plane/governance/control-surface v0.0.0
+	github.com/aos-ref/control-plane/governance/plan-approval v0.0.0
 	github.com/aos-ref/control-plane/governance/surface-adapter v0.0.0
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
@@ -12,6 +14,7 @@ require (
 )
 
 require (
+	github.com/aos-ref/platform/audit v0.0.0 // indirect
 	github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
 	github.com/aos-ref/substrate/redaction v0.0.0 // indirect
 )

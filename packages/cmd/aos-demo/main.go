@@ -28,7 +28,9 @@ import (
 	"time"
 
 	approvalcard "github.com/aos-ref/control-plane/governance/approval-card"
+	"github.com/aos-ref/control-plane/governance/autonomy"
 	controlsurface "github.com/aos-ref/control-plane/governance/control-surface"
+	planapproval "github.com/aos-ref/control-plane/governance/plan-approval"
 	surfaceadapter "github.com/aos-ref/control-plane/governance/surface-adapter"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/control"
@@ -63,6 +65,25 @@ func (m fakeModel) Call(_ context.Context, _ agentruntime.PromptView) (agentrunt
 		Final: true,
 		Usage: agentruntime.Usage{InputTokens: 8, OutputTokens: 4},
 	}, nil
+}
+
+// demoApproveChannel é uma [risk.ConfirmationChannel] de demonstração: aprova SEMPRE,
+// alternando entre dois aprovadores DISTINTOS a cada chamada. Serve a decisão binária do
+// plan-approval (1 chamada) e o dual-control estrutural (2 chamadas → aprovadores
+// distintos, quorum 4-eyes satisfeito). É o análogo demo do canal HITL de EPIC-09; o
+// canal REAL (assinatura ed25519 + attestation WebAuthn de credenciais distintas) é
+// AOS-138, condicional a D4 — aqui a distinção é ESTRUTURAL (duas identidades), não por
+// attestation real. Zero rede, determinista.
+type demoApproveChannel struct{ calls int }
+
+// Confirm implementa [risk.ConfirmationChannel]: aprova e alterna o aprovador.
+func (c *demoApproveChannel) Confirm(_ context.Context, _ risk.ConfirmationRequest) (risk.ConfirmationResponse, error) {
+	c.calls++
+	approver := "human:demo-approver-1"
+	if c.calls%2 == 0 {
+		approver = "human:demo-approver-2"
+	}
+	return risk.ConfirmationResponse{Approved: true, Approver: approver}, nil
 }
 
 func main() {
@@ -169,9 +190,9 @@ func runDemo(w io.Writer) error {
 
 	step("--- fluxo de demonstração ---")
 
-	// Cria o run: transita a máquina durável ready → running (o claim exige um fencing
-	// token válido; Uint64Token(1) serve o ápice mínimo). O StateProjector reflecte-o.
-	step("a) a criar o run: transição durável ready → running")
+	// SPAWN — cria o run: transita a máquina durável ready → running (o claim exige um
+	// fencing token válido; Uint64Token(1) serve o ápice mínimo). O StateProjector reflecte-o.
+	step("a) SPAWN: a criar o run — transição durável ready → running")
 	if err := machine.Transition(ctx, state.Running, state.TransitionEvent{
 		Reason: "demo_claim",
 		Token:  state.Uint64Token(1),
@@ -184,6 +205,34 @@ func runDemo(w io.Writer) error {
 		return err
 	}
 	step("b) StateProjector reflectiu o estado durável: Current() = %s", projector.Current())
+
+	// PLAN-APPROVAL — o gate que se interpõe ANTES do trabalho: apresenta o plano (grafo
+	// de tarefas) e recolhe a decisão humana via o PlanGate REAL (control-plane/plan-approval).
+	// O Oracle de autonomia é L0 (conservador), pelo que uma tarefa DANGER não auto-aprova —
+	// escala ao canal de confirmação, que aprova (demo). O canal é partilhado com o
+	// dual-control abaixo.
+	confirmCh := &demoApproveChannel{}
+	planGate, err := planapproval.NewPlanGate(autonomy.NewLevelRegistry(), confirmCh)
+	if err != nil {
+		return fmt.Errorf("compor plan gate: %w", err)
+	}
+	planDec, err := planGate.Approve(ctx, planapproval.Plan{
+		RunID:  demoRunID,
+		Agent:  "nhi:demo-agent",
+		Domain: "demo",
+		Nodes: []planapproval.PlanNode{{
+			TaskID:       "publish",
+			Class:        risk.ClassDanger,
+			Irreversible: true,
+			Preview:      "cap:demo.publish -> surface:desktop",
+			Capability:   "cap:demo.publish",
+			Resource:     "surface:desktop",
+		}},
+	})
+	if err != nil {
+		return fmt.Errorf("plan-approval: %w", err)
+	}
+	step("b') PLAN-APPROVAL via PlanGate real: aprovado=%t (L0 escalou a tarefa danger ao canal HITL)", planDec.Verdict.Approved())
 
 	// Corre um turno via o Agent Runtime com o modelo fake. O loop monta o prompt,
 	// chama o modelo (fake), grava o turno no Event Store e termina (resposta final).
@@ -204,11 +253,31 @@ func runDemo(w io.Writer) error {
 	}
 	step("c) turno corrido: turns=%d terminated=%t final=%q", res.Turns, res.Terminated, res.FinalText)
 
-	// Renderiza uma SUPERFÍCIE via o Renderer do surface-adapter: constrói um
-	// approval-card canónico e renderiza-o no componente desktop (data-only).
-	if err := demoRenderSurface(w, step); err != nil {
+	// Constrói o approval-card canónico (danger + irreversível ⇒ DualControlRequired) —
+	// partilhado pela renderização e pelo approve dual-control abaixo.
+	card, err := buildDemoCard()
+	if err != nil {
 		return err
 	}
+
+	// Renderiza a SUPERFÍCIE via o Renderer do surface-adapter (componente desktop, data-only).
+	if err := demoRenderSurface(w, step, card); err != nil {
+		return err
+	}
+
+	// APPROVE (dual-control ESTRUTURAL) — o card danger+irreversível exige DOIS aprovadores
+	// DISTINTOS (4-eyes). O DualControlCollector real recolhe duas confirmações do canal e
+	// impõe o quorum approver_1 != approver_2. A distinção é ESTRUTURAL (duas identidades);
+	// o 4-eyes por attestation WebAuthn real é AOS-138, condicional a D4.
+	collector, err := approvalcard.NewDualControlCollector(confirmCh)
+	if err != nil {
+		return fmt.Errorf("compor dual-control: %w", err)
+	}
+	dualDec, err := collector.Authorize(ctx, card)
+	if err != nil {
+		return fmt.Errorf("dual-control: %w", err)
+	}
+	step("d') APPROVE (dual-control estrutural): autorizado=%t aprovadores=%v", dualDec.Authorized, dualDec.Approvers)
 
 	// DEMONSTRA um STEER OUT-OF-BAND: despacha sinais de controlo no SteerChannel e
 	// relê a projecção (o "eco"). LIMITAÇÃO (a): o loop acima NÃO consome estes sinais
@@ -227,10 +296,9 @@ func runDemo(w io.Writer) error {
 	return nil
 }
 
-// demoRenderSurface constrói um approval-card canónico e renderiza-o na superfície
-// desktop via o [surfaceadapter.Renderer], imprimindo o [surfaceadapter.DesktopComponent]
-// resultante (estrutura de dados, não uma chamada a API real).
-func demoRenderSurface(w io.Writer, step func(string, ...any)) error {
+// buildDemoCard constrói o approval-card canónico da demo (danger + irreversível ⇒
+// DualControlRequired). É partilhado pela renderização e pelo approve dual-control.
+func buildDemoCard() (approvalcard.ApprovalCard, error) {
 	card, err := approvalcard.BuildCard(risk.ConfirmationRequest{
 		Class:        risk.ClassDanger,
 		Irreversible: true,
@@ -240,9 +308,15 @@ func demoRenderSurface(w io.Writer, step func(string, ...any)) error {
 		Resource:     "surface:desktop",
 	}, approvalcard.WithRequestID("card-demo-0001"))
 	if err != nil {
-		return fmt.Errorf("construir approval-card: %w", err)
+		return approvalcard.ApprovalCard{}, fmt.Errorf("construir approval-card: %w", err)
 	}
+	return card, nil
+}
 
+// demoRenderSurface renderiza o approval-card dado na superfície desktop via o
+// [surfaceadapter.Renderer], imprimindo o [surfaceadapter.DesktopComponent] resultante
+// (estrutura de dados, não uma chamada a API real).
+func demoRenderSurface(w io.Writer, step func(string, ...any), card approvalcard.ApprovalCard) error {
 	renderer, err := surfaceadapter.RendererFor(surfaceadapter.PlatformDesktop)
 	if err != nil {
 		return fmt.Errorf("obter renderer desktop: %w", err)

@@ -139,9 +139,9 @@ Um demonstrador single-process (zero rede) que costura o apex mínimo e conduz s
 
 ### Critérios de Aceitação
 
-- [ ] Fluxo completo corre in-process, zero deps externas.
-- [ ] Alimenta D1/D2/D3 com evidência.
-- [ ] **Prova ou refuta** se o apex mínimo (PR-0.b) chega (AC4 refutável — ver EPIC-14/AOS-151).
+- [x] Fluxo completo corre in-process, zero deps externas. — `cmd/aos-demo` conduz spawn→plan-approval(`PlanGate` real)→trajectória→render(`Renderer`)→approve(dual-control estrutural, 2 aprovadores distintos)→steer, tudo single-process zero-rede via primitivas reais.
+- [x] Alimenta D1/D2/D3 com evidência. — `docs/reports/AOS-130-superficie-canonica.md`: D2 no-build (zero deps, data-only), D3 SSE stdlib (fan-out push do `StateProjector`), D1(b) web condicional (a referência corre sem SPA).
+- [x] **Prova ou refuta** se o apex mínimo (PR-0.b) chega (AC4 refutável — ver EPIC-14/AOS-151). — o demo exercita a superfície que o `TestApexMinimalSufficiency` (AOS-151) mede; AC4 refutável e não-vacuosa (poison-test selftest.sh §J). Conclusão: o ápice mínimo chega para a superfície de referência.
 
 ### Detalhes Técnicos
 
@@ -153,7 +153,7 @@ Um demonstrador single-process (zero rede) que costura o apex mínimo e conduz s
 
 ### Definition of Done
 
-- [ ] Demonstrador corre; evidência para D1/D2/D3; AC4 não-vacuous.
+- [x] Demonstrador corre; evidência para D1/D2/D3; AC4 não-vacuous. — demo verde (`go test ./` em `cmd/aos-demo`, incl. `TestAposDemoComposesAndRuns` com os marcos do fluxo enriquecido e `TestApexMinimalSufficiency`); relatório de evidência D1/D2/D3 em `docs/reports/AOS-130-superficie-canonica.md`; sem segredos.
 
 ### Handoff para Claude Code
 
