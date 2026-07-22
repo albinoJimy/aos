@@ -583,9 +583,9 @@ idempotencia por passo). Resolve o blast-radius nos testes do loop.
 
 ### Critérios de Aceitação
 
-- [ ] `NewProductionSecure` recusa (erro tipado) se `identity == IdentityStub`, `egress == EgressStub`, ou `ScopeGate` nil/`AuthoritySource` nil.
-- [ ] Guard-tests que provam a recusa em cada caso.
-- [ ] A via sancionada deixa de poder embarcar identidade/egress inertes.
+- [x] `NewProductionSecure` recusa (erro tipado) se `identity == IdentityStub`, `egress == EgressStub`, ou `ScopeGate` nil/`AuthoritySource` nil.
+- [x] Guard-tests que provam a recusa em cada caso.
+- [x] A via sancionada deixa de poder embarcar identidade/egress inertes.
 
 ### Detalhes Técnicos
 
@@ -597,7 +597,7 @@ idempotencia por passo). Resolve o blast-radius nos testes do loop.
 
 ### Definition of Done
 
-- [ ] Recusa fail-closed provada; sem segredos.
+- [x] Recusa fail-closed provada; sem segredos.
 
 ### Handoff para Claude Code
 

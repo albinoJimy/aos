@@ -87,3 +87,78 @@ func (m *Monitor) hasDurableAudit() bool {
 	_, discard := m.sink.(discardSink)
 	return !discard
 }
+
+// Sentinelas adicionais de [NewProductionSecure] (AOS-153). Comparáveis com errors.Is.
+var (
+	// ErrIdentityStub — a cadeia FINAL contém o [IdentityStub] neutro: sem hook de
+	// identidade real a NHI não é verificada e a autoridade é forjável (AOS-005). A via
+	// sancionada estrita recusa-o.
+	ErrIdentityStub = &MonitorError{Code: "E_IDENTITY_STUB", msg: "produção-segura: cadeia final contém o IdentityStub neutro (identidade forjável — hook de identidade real AOS-005 ausente)"}
+
+	// ErrEgressStub — a cadeia FINAL contém o [EgressStub] neutro: sem hook de egress
+	// real o default-deny de rede (AOS-067) não corre. Recusado.
+	ErrEgressStub = &MonitorError{Code: "E_EGRESS_STUB", msg: "produção-segura: cadeia final contém o EgressStub neutro (egress default-deny inactivo — hook de egress real AOS-067 ausente)"}
+
+	// ErrScopeGateMissing — a cadeia FINAL não contém um [ScopeGate] com uma
+	// [authz.AuthoritySource] não-nil: sem tecto de autoridade o escopo user∩classe
+	// (AOS-071) não é imposto. Recusado.
+	ErrScopeGateMissing = &MonitorError{Code: "E_SCOPE_GATE_MISSING", msg: "produção-segura: cadeia final sem ScopeGate activo (tecto de autoridade user∩classe AOS-071 ausente)"}
+)
+
+// NewProductionSecure é a costura de produção ESTRITA: herda TODAS as invariantes de
+// [NewProduction] (PrivilegedAuthorizer não-nil, TaintGate activo, auditoria durável) e
+// ACRESCENTA a rejeição dos STUBS NEUTROS que [NewProduction] ainda tolera. Fecha o
+// buraco de um Monitor construído por [NewProduction] passar a própria guarda com o
+// [IdentityStub] (identidade forjável) e o [EgressStub] (egress inerte) — a razão pela
+// qual [NewProduction] é necessário-MAS-insuficiente. Recusa fail-closed, com erro
+// tipado, se a cadeia FINAL (após aplicar as [Option]s):
+//
+//   - contiver o [IdentityStub] neutro ⇒ [ErrIdentityStub];
+//   - contiver o [EgressStub] neutro ⇒ [ErrEgressStub];
+//   - não contiver um [ScopeGate] com [authz.AuthoritySource] não-nil ⇒
+//     [ErrScopeGateMissing].
+//
+// É a via sancionada para o composition root ápice (packages/integration) montar o RM
+// de produção com a cadeia REAL (identity→reval→policy→taint→scope→budget→egress→audit,
+// AOS-154): o chamador monta a cadeia via [WithHooks] com hooks reais e um ScopeGate com
+// autoridade. Como [NewProduction], não impõe uma composição literal única — re-verifica
+// as invariantes na cadeia final. O guard-test garante que a via não regride.
+func NewProductionSecure(privileged PrivilegedAuthorizer, opts ...Option) (*Monitor, error) {
+	m, err := NewProduction(privileged, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if m.containsHook(func(h Hook) bool { _, ok := h.(IdentityStub); return ok }) {
+		return nil, ErrIdentityStub
+	}
+	if m.containsHook(func(h Hook) bool { _, ok := h.(EgressStub); return ok }) {
+		return nil, ErrEgressStub
+	}
+	if !m.hasActiveScopeGate() {
+		return nil, ErrScopeGateMissing
+	}
+	return m, nil
+}
+
+// containsHook reporta se algum hook da cadeia mediadora satisfaz pred.
+func (m *Monitor) containsHook(pred func(Hook) bool) bool {
+	for _, h := range m.hooks {
+		if pred(h) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasActiveScopeGate reporta se a cadeia contém um [ScopeGate] com uma
+// [authz.AuthoritySource] não-nil — i.e. tecto de autoridade EFECTIVO, não um gate sem
+// fonte (que resolveria autoridade vazia). É a mesma lógica "gate activo, não só nome"
+// de [hasActiveTaintGate].
+func (m *Monitor) hasActiveScopeGate() bool {
+	for _, h := range m.hooks {
+		if g, ok := h.(ScopeGate); ok && g.authority != nil {
+			return true
+		}
+	}
+	return false
+}
