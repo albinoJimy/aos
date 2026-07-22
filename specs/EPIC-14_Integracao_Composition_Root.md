@@ -739,10 +739,10 @@ Um issuer com chave de assinatura vinda do vault (EPIC-07), o estágio authn (AO
 
 ### Critérios de Aceitação
 
-- [ ] Issuer com chave do vault; verifier com trust-anchor = pubkey do issuer. — **EM CURSO** (emenda 1.1): issuer como AUTORIDADE SEPARADA (chave não entregue ao nó); o `NewSecuredRuntime` do nó recebe `identity.NewVerifier(WithTrustedIssuer(iss, pubkey))` — não uma chave que o nó controla.
-- [ ] Estágio authn minta o NHI a partir do humano autenticado, a montante do `ScopeGate`. — **EM CURSO** (emenda 1.1): directório de autenticação humana interno (porta plugável) → mint via `IssueChild` com a raiz humana na cadeia de delegação.
-- [x] **Marcado explicitamente:** enquanto D4 estiver aberta, a identidade é *demo-only self-minted*; nenhuma reivindicação de não-forjabilidade. — o default `identity.NewVerifier()` sem anchors nega toda a NHI fail-closed; marcado demo-only no código (AOS-154), na memória e na escalada D4.
-- [x] Bloqueio D4 escalado ao dono. — `docs/reports/D4-escalacao-autoridade-identidade.md` (o que decidir, o que bloqueia, 4 provisionamentos, 3 opções A/B/C).
+- [x] Issuer com chave do vault; verifier com trust-anchor = pubkey do issuer. — **FEITO** (`a9ce546`, `packages/integration/issuer_authority.go`): `IssuerAuthority` = autoridade SEPARADA; a chave ed25519 vive num campo NÃO-exportado do `identity.Issuer` detido pela autoridade e NUNCA é devolvida; `TrustAnchor()` expõe só `(issuerID, pubkey)`; `NewVerifierFromAuthority()` constrói o verifier do nó **só da pubkey**. A chave é injectada de config/vault ou gerada em runtime — a custódia vault-fetch/HSM é endurecimento posterior.
+- [x] Estágio authn minta o NHI a partir do humano autenticado, a montante do `ScopeGate`. — **FEITO**: porta `HumanDirectory` (plugável) + `AllowlistDirectory` de referência (marcada DEMO-GRADE-AUTH) → `MintForHuman` minta via `Issue` = `delegation.NewRoot(human:<id>, agent, escopo)` com o humano na RAIZ da cadeia; humano não-registado → recusado fail-closed. A autenticação real (OIDC/WebAuthn) é a porta a preencher (endurecimento).
+- [x] **Identidade real (reformulado pela emenda 1.1):** deixou de ser *demo-only self-minted*. A identidade é agora emitida por uma autoridade separada com **não-forjabilidade RELATIVA ao nó** — provada por teste (impostor com o mesmo issuer-id mas chave distinta → `ErrSignatureInvalid`). Só a *autenticação humana* da referência é demo-grade (a porta). Sem reivindicar a garantia mais alta (HSM/IdP corporativo/attestation) — endurecimento posterior documentado.
+- [x] Bloqueio D4 escalado ao dono. — `docs/reports/D4-escalacao-autoridade-identidade.md`; e desbloqueado pela via construível (emenda 1.1).
 
 ### Detalhes Técnicos
 
@@ -754,7 +754,9 @@ Um issuer com chave de assinatura vinda do vault (EPIC-07), o estágio authn (AO
 
 ### Definition of Done
 
-- [x] Espinha ligada **ou** marcada *demo-only* com D4 escalada; sem segredos (a chave vem do vault, nunca em código/log). — **satisfeito pelo ramo *demo-only*** (marcação demo-only + D4 escalada acima; `secrets.sh` verde — não há chave de identidade em código). O ramo "espinha ligada" (issuer real via vault) fica pendente de D4; até lá, este é o desfecho máximo alcançável e AOS-160/162 (que exigem a espinha REAL, não demo) permanecem bloqueados.
+- [x] Espinha ligada **ou** marcada *demo-only* com D4 escalada; sem segredos (a chave vem do vault, nunca em código/log). — **satisfeito pelo ramo "ESPINHA LIGADA"** (`a9ce546`): a espinha real está **construída e provada** (autoridade separada; não-forjabilidade relativa ao nó provada por `TestIssuerAuthority_ImpostorSameIssuerIDRejected`/`RogueKeyRejected`/`NoPrivateKeyEscape`); `secrets.sh` verde; `go build`/`test`/`vet` verdes. **Fronteira honesta:** a composição da autoridade **por omissão no nó** (substituir o default `NewVerifier()` sem anchors) é **AOS-163** (bootstrap — o seam `SecuredConfig.Verifier` + `NewVerifierFromAuthority` deixam-no aditivo e trivial); a custódia vault-fetch/HSM e a auth OIDC/WebAuthn reais são endurecimento. **AOS-160/162 desbloqueiam agora sobre esta espinha.**
+
+*Nota de processo (pipeline `wf_c56dd15a`): implementado por dev→auditoria→remediação→commit. A auditoria de qualidade apanhou um teste de não-forjabilidade VACUOSO (só exercitava `ErrUnknownIssuer`, nunca a assinatura) e a remediação acrescentou o caso do impostor que assere `ErrSignatureInvalid` — a prova criptográfica real. Verificado independentemente (6/6 testes re-corridos, gates re-verificados).*
 
 ### Handoff para Claude Code
 
