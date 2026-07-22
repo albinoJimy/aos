@@ -948,9 +948,9 @@ Substituir o `HMACAuthenticator` por um `Authenticator` ed25519 + nonce-store du
 
 ### Critérios de Aceitação
 
-- [ ] `Authenticator` verifica assinatura ed25519 contra a identidade (AOS-005). — **BLOQUEADO por D4** (via AOS-156: sem identidade real não há contra o quê verificar; o `HMACAuthenticator` demo-grade mantém-se).
-- [ ] Nonce-store durável com frescura/expiração; replay recusado. — **BLOQUEADO por D4** (o primitivo anti-replay durável já existe em AOS-159 — `EventStoreNonceStore` —, mas ligá-lo ao `Authenticator` ed25519 de produção depende da espinha real).
-- [ ] Substitui `HMACAuthenticator` no `SteerChannel`. — **BLOQUEADO por D4**.
+- [x] `Authenticator` verifica assinatura ed25519 contra a identidade (AOS-005). — **FEITO** (`packages/integration/steer_authenticator.go`): `Ed25519Authenticator` verifica `ed25519.Verify` sobre o tuplo canónico `(run_id‖kind‖payload‖nonce‖issued_at)` com codificação **injectiva** (length-prefix — provado por `TestEd25519_BoundaryShiftRejected`) contra a pubkey do emissor registada. A chave privada do emissor NUNCA é detida (só pubkeys). A FONTE de identidade real do operador (AOS-005 a alimentar o registo) é a composição de bootstrap = **AOS-163**.
+- [x] Nonce-store durável com frescura/expiração; replay recusado. — **FEITO**: anti-replay via `EventStoreNonceStore` (AOS-159) — durável, sobrevive a restart (`TestEd25519_AntiReplayDurable` prova replay recusado após reconstruir o store sobre o mesmo log); janela de frescura `[now-ttl, now+skew]` com relógio injectável (`TestEd25519_StaleSignalRejected`, velho e futuro).
+- [x] Substitui `HMACAuthenticator` no `SteerChannel`. — **FEITO via o seam** (`control.Authenticator`): o `Ed25519Authenticator` liga-se por `control.NewChannel(store, auth)` **sem mudar o canal** (provado em `TestEd25519_ValidSignatureAccepted`). A substituição POR OMISSÃO no wiring de produção do nó = **AOS-163** (o `cmd/aos-demo` mantém o HMAC demo até lá — não confundir "authenticator construído" com "nó de produção protegido").
 
 ### Detalhes Técnicos
 
@@ -962,7 +962,9 @@ Substituir o `HMACAuthenticator` por um `Authenticator` ed25519 + nonce-store du
 
 ### Definition of Done
 
-- [ ] `Authenticator` de produção ligado; replay recusado; sem segredos. — **BLOQUEADO por D4** (depende de AOS-156).
+- [x] `Authenticator` de produção ligado; replay recusado; sem segredos. — **FEITO**: `Ed25519Authenticator` construído + ligável ao `SteerChannel` pelo seam (provado); replay recusado (durável, sobrevive a restart); sem segredos (`secrets.sh` verde; a chave privada do emissor nunca no authenticator). Gates verdes (integration + kernel/control build/test/vet/-race). **Fronteira honesta:** composição por-omissão no nó = AOS-163; attestation WebAuthn/AAGUID = AOS-162/endurecimento.
+
+*Nota de processo (pipeline `wf_0652dd7b`): dev→auditoria→completude correram; a **auditoria de qualidade apanhou uma falha CRIPTOGRÁFICA ALTO** — codificação assinada NÃO-injectiva (separador `0x00` único ⇒ deslize de fronteira `payload|nonce` re-mintava um sinal com correcção mutada + nonce diferente mantendo a mesma assinatura, contornando o anti-replay durável). As etapas de remediação/commit falharam por erro de rede (`ENOTFOUND`); **completei-as manualmente**: verifiquei que o fix (length-prefix) já estava em disco, corrigi um import partido (`encoding/binary` não-usado) que deixava o build vermelho, e ADICIONEI o teste de injectividade em falta (`TestEd25519_BoundaryShiftRejected`). Verificação independente: 7/7 testes verdes, gates re-corridos.*
 
 ### Handoff para Claude Code
 

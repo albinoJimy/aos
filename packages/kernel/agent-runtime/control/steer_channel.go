@@ -67,9 +67,21 @@ type Emitter struct {
 	// ID é o identificador do emissor (p.ex. a NHI do operador humano ou do serviço de
 	// superfície). Obrigatório — sem ID não há não-repúdio.
 	ID string
-	// Signature é a assinatura sobre (run_id ‖ kind ‖ payload) verificável pelo
-	// [Authenticator]. Uma assinatura ausente/inválida ⇒ sinal REJEITADO.
+	// Signature é a assinatura sobre (run_id ‖ kind ‖ payload [‖ nonce ‖ issued_at])
+	// verificável pelo [Authenticator]. Uma assinatura ausente/inválida ⇒ sinal
+	// REJEITADO.
 	Signature []byte
+	// Nonce é o material anti-replay de USO-ÚNICO deste sinal. Campo ADITIVO (AOS-160):
+	// o [HMACAuthenticator] de referência IGNORA-o (mantém o comportamento demo-grade
+	// intacto); um [Authenticator] de produção (ed25519) FAZ a assinatura cobri-lo e
+	// consome-o num nonce-store durável, pelo que o MESMO sinal capturado não se
+	// re-verifica. Vazio nos emissores que não fazem anti-replay por nonce.
+	Nonce []byte
+	// IssuedAt é o carimbo temporal de EMISSÃO deste sinal. Campo ADITIVO (AOS-160):
+	// ignorado pelo [HMACAuthenticator]; um [Authenticator] de produção cobre-o na
+	// assinatura e rejeita carimbos fora da janela de frescura (expiração). Zero nos
+	// emissores sem frescura.
+	IssuedAt time.Time
 }
 
 // Authenticator é a FRONTEIRA DE SEGURANÇA do canal (ADR-013 + ADR-005). Verifica que
