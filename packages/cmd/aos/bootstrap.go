@@ -153,12 +153,33 @@ type Config struct {
 	Revalidator *revalidation.Revalidator
 	Policy      integration.PolicyProvider
 
-	// --- Substrato (durável = AOS-170; referência in-memory) -------------------
+	// --- Substrato DURÁVEL (AOS-170) -------------------------------------------
 	// EventStore é a espinha append-only partilhada (turnos + sinais de controlo +
-	// nonce-store anti-replay). nil ⇒ um in-memory de referência (não-durável).
+	// nonce-store anti-replay). Precedência: se != nil, usa-o tal-qual (o chamador é
+	// dono do ciclo de vida); senão, se EventStorePath != "", ABRE um Event Store
+	// DURÁVEL respaldado em disco (eventstore.Open — WAL append-only + fsync + replay
+	// crash-safe no arranque, o reinício não perde nem duplica); senão, um in-memory
+	// de referência (não-durável).
 	EventStore *eventstore.Store
-	// WORM é o audit.Store tamper-evident único do RM. nil ⇒ um in-memory de referência.
+	// EventStorePath é o caminho do WAL do Event Store durável (AOS-170). Só é
+	// consultado quando EventStore == nil. Um ficheiro inexistente é criado (store
+	// novo); um existente é reconstruído byte-a-byte no arranque.
+	EventStorePath string
+	// WORM é o audit.Store tamper-evident único do RM. Precedência análoga: se != nil,
+	// usa-o; senão, se WORMPath != "", ABRE um WORM DURÁVEL (audit.OpenFileStore —
+	// mesma mecânica; a hash-chain sobrevive ao restart); senão, um in-memory de
+	// referência.
 	WORM audit.Store
+	// WORMPath é o caminho do WAL do WORM durável (AOS-170). Só consultado quando
+	// WORM == nil.
+	WORMPath string
+	// IssuerKeyPath, quando definido no modo de REFERÊNCIA (não endurecido) e sem
+	// IssuerSigningKey explícita, faz o nó carregar a chave de assinatura do issuer de
+	// um ficheiro de seed PERSISTENTE (LoadOrCreateIssuerKey) em vez de a gerar por
+	// CSPRNG a CADA arranque — os tokens emitidos antes do restart continuam válidos
+	// (durabilidade da identidade, AOS-170). PROIBIDO no modo endurecido (nenhuma
+	// chave de assinatura entra no processo): ErrConflictingIssuerKey.
+	IssuerKeyPath string
 
 	// --- Relógios injectáveis (testes determinísticos) -------------------------
 	IssuerClock   func() time.Time
@@ -194,6 +215,7 @@ type Node struct {
 	IdentityMode string
 
 	ownsEventStore bool
+	ownsWORM       bool
 }
 
 // Bootstrap compõe o nó `aos` de PRODUÇÃO a partir de cfg, escrevendo o banner de
@@ -226,8 +248,9 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	hardened := len(cfg.IssuerPubKey) > 0
 	if hardened {
 		// No modo endurecido NENHUMA chave de assinatura pode entrar no processo do nó:
-		// uma IssuerSigningKey presente derrotaria a propriedade que o modo garante.
-		if cfg.IssuerSigningKey != nil {
+		// uma IssuerSigningKey presente — OU um IssuerKeyPath que a carregaria de disco
+		// para o processo — derrotaria a propriedade que o modo garante.
+		if cfg.IssuerSigningKey != nil || cfg.IssuerKeyPath != "" {
 			return nil, ErrConflictingIssuerKey
 		}
 	} else {
@@ -238,21 +261,60 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 	}
 
-	// (2) SUBSTRATO. Durabilidade real = AOS-170; aqui, defaults in-memory de referência.
+	// (2) SUBSTRATO DURÁVEL (AOS-170). Precedência: fornecido por config > durável em
+	// disco (path) > in-memory de referência. Um store durável aberto AQUI é propriedade
+	// do nó (fecha-o em Close); um fornecido por config é do chamador.
 	es := cfg.EventStore
 	ownsES := false
 	if es == nil {
-		created, err := eventstore.New()
-		if err != nil {
-			return nil, fmt.Errorf("aos: event store de referência: %w", err)
+		if cfg.EventStorePath != "" {
+			created, err := eventstore.Open(cfg.EventStorePath)
+			if err != nil {
+				return nil, fmt.Errorf("aos: event store durável (AOS-170) %q: %w", cfg.EventStorePath, err)
+			}
+			es = created
+		} else {
+			created, err := eventstore.New()
+			if err != nil {
+				return nil, fmt.Errorf("aos: event store de referência: %w", err)
+			}
+			es = created
 		}
-		es = created
 		ownsES = true
 	}
 	worm := cfg.WORM
+	ownsWORM := false
 	if worm == nil {
-		worm = audit.NewMemStore()
+		if cfg.WORMPath != "" {
+			fs, err := audit.OpenFileStore(cfg.WORMPath)
+			if err != nil {
+				if ownsES {
+					_ = es.Close()
+				}
+				return nil, fmt.Errorf("aos: WORM durável (AOS-170) %q: %w", cfg.WORMPath, err)
+			}
+			worm = fs
+			ownsWORM = true
+		} else {
+			worm = audit.NewMemStore()
+		}
 	}
+
+	// Guarda de limpeza fail-closed: se o bootstrap abortar após ter ABERTO stores
+	// duráveis próprios, fecha-os (não deixa descritores/ficheiros pendurados). Só os
+	// stores que o nó abriu (ownsES/ownsWORM) — nunca os fornecidos por config.
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		if ownsES {
+			_ = es.Close()
+		}
+		if ownsWORM {
+			_ = closeIfCloser(worm)
+		}
+	}()
 
 	// (3) IDENTIDADE REAL. Em AMBOS os modos o que entra na CADEIA DE SEGURANÇA é SÓ o
 	// verifier (pubkey) — nunca uma chave de assinatura. A diferença é ONDE vive a
@@ -280,11 +342,23 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if cfg.IssuerClock != nil {
 			issuerOpts = append(issuerOpts, identity.WithIssuerClock(cfg.IssuerClock))
 		}
+		// KEYSOURCE PERSISTENTE (AOS-170): sem IssuerSigningKey explícita mas com
+		// IssuerKeyPath, carrega/persiste a chave de um ficheiro de seed — estável entre
+		// reinícios (os tokens não invalidam no restart). Sem nenhum dos dois, a
+		// autoridade gera por CSPRNG a cada boot (referência não-durável, AOS-163).
+		signingKey := cfg.IssuerSigningKey
+		if signingKey == nil && cfg.IssuerKeyPath != "" {
+			loaded, kerr := LoadOrCreateIssuerKey(cfg.IssuerKeyPath)
+			if kerr != nil {
+				return nil, kerr
+			}
+			signingKey = loaded
+		}
 		authority, err = integration.NewIssuerAuthority(integration.AuthorityConfig{
 			IssuerID:      cfg.IssuerID,
 			Classes:       cfg.IssuerClasses,
 			Directory:     integration.NewAllowlistDirectory(cfg.Humans...),
-			SigningKey:    cfg.IssuerSigningKey,
+			SigningKey:    signingKey,
 			IssuerOptions: issuerOpts,
 		})
 		if err != nil {
@@ -367,9 +441,6 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Verifier:    verifier, // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
 	})
 	if err != nil {
-		if ownsES {
-			_ = es.Close()
-		}
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
 	}
 
@@ -397,8 +468,9 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if foureyes != nil {
 		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s)", len(cfg.Approvers))
 	}
-	log("substrato: %s (durabilidade real = AOS-170)", substrateMode(cfg))
+	log("substrato: %s", substrateMode(cfg))
 
+	success = true // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	return &Node{
 		Runtime:        sec,
 		Steer:          steer,
@@ -410,27 +482,60 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		WORM:           worm,
 		IdentityMode:   identityMode,
 		ownsEventStore: ownsES,
+		ownsWORM:       ownsWORM,
 	}, nil
 }
 
-// Close liberta os recursos que o nó CRIOU (o Event Store de referência quando não foi
-// fornecido por config). Um store fornecido pelo chamador é da sua responsabilidade.
+// Close liberta os recursos que o nó CRIOU (os stores duráveis/de referência abertos
+// pelo nó quando não foram fornecidos por config). Um store fornecido pelo chamador é
+// da sua responsabilidade. Fecha AMBOS mesmo que o primeiro devolva erro (não deixa o
+// WORM aberto por causa de um erro no Event Store).
 func (n *Node) Close() error {
+	var firstErr error
 	if n.ownsEventStore && n.EventStore != nil {
-		return n.EventStore.Close()
+		if err := n.EventStore.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	if n.ownsWORM && n.WORM != nil {
+		if err := closeIfCloser(n.WORM); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// closeIfCloser fecha o valor se implementar io.Closer (o WORM durável FileStore
+// implementa; o MemStore de referência não). No-op caso contrário.
+func closeIfCloser(v any) error {
+	if c, ok := v.(io.Closer); ok {
+		return c.Close()
 	}
 	return nil
 }
 
-// substrateMode descreve a proveniência do substrato para o banner de arranque.
+// substrateMode descreve a proveniência do substrato para o banner de arranque,
+// distinguindo o durável (AOS-170) do in-memory de referência.
 func substrateMode(cfg Config) string {
-	if cfg.EventStore == nil && cfg.WORM == nil {
+	es := describeSubstrate(cfg.EventStore != nil, cfg.EventStorePath)
+	worm := describeSubstrate(cfg.WORM != nil, cfg.WORMPath)
+	if es == worm {
+		return es
+	}
+	return "event-store=" + es + ", worm=" + worm
+}
+
+// describeSubstrate classifica a proveniência de um store: fornecido por config,
+// durável em disco (AOS-170) ou in-memory de referência (não-durável).
+func describeSubstrate(provided bool, path string) string {
+	switch {
+	case provided:
+		return "fornecido por config"
+	case path != "":
+		return "duravel em disco (AOS-170)"
+	default:
 		return "in-memory de referencia (nao-duravel)"
 	}
-	if cfg.EventStore != nil && cfg.WORM != nil {
-		return "fornecido por config"
-	}
-	return "misto (parte fornecida por config, parte in-memory de referencia)"
 }
 
 // referenceModel é o [agentruntime.ModelClient] de REFERÊNCIA do nó: conclui o run no

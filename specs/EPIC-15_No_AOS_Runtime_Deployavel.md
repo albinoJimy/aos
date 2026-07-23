@@ -47,8 +47,16 @@ read-path do nó, sem a camada de apresentação web.
 - [ ] **O nó `aos` corre com identidade REAL**: um binário que compõe `integration.NewSecuredRuntime`
       (RM de produção, cadeia real, WORM único) com o verifier da autoridade AOS-156, e hospeda um
       *run* fim-a-fim — AOS-163/164a.
-- [ ] **Substrato DURÁVEL** (E4): Event Store/WORM/KeySource persistentes (não in-memory); o
+- [x] **Substrato DURÁVEL** (E4): Event Store/WORM/KeySource persistentes (não in-memory); o
       reinício não perde nem duplica trabalho — AOS-170 (ou DoD de AOS-164b com dono).
+      *(AOS-170: Event Store durável write-ahead (WAL persist+fsync ANTES de aplicar às réplicas
+      in-memory/committed/fanout, fail-closed sem phantom-commit), WORM/filestore e seed do issuer
+      com fsync do directório pai (durabilidade POSIX da entrada de directório); reinício reconstrói
+      do WAL sem perda nem duplicação, provado sob `-race` com Append concorrente + restart. Módulos
+      eventstore/audit/cmd-aos verdes (build+test+vet). **DEFERIDO para EPIC-10:** replicação
+      multi-nó/DR/PITR (transporte remoto — as 3 réplicas são process-local reconstruídas do WAL),
+      compactação/GC do WAL a longo prazo, e persistência-em-runtime do IngestStream (restauro
+      PITR). Estes ficam [ ] até EPIC-10.)*
 - [ ] **Interface externa mínima estável e AUTENTICADA** (E5): CLI + API `net/http` stdlib; o
       **canal de controlo (steer/approve) é autenticado** (não um POST anónimo) e o bind
       não-loopback é recusado até a autenticação estar ligada — AOS-165/166.

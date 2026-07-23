@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -101,6 +102,11 @@ type Store struct {
 
 	obs    Observer
 	closed atomic.Bool
+
+	// wal é a camada de persistência durável (AOS-170). nil ⇒ store puramente
+	// in-memory (retro-compatível). Quando não-nil, cada evento committed é
+	// gravado e fsync'd antes de Append devolver committed (ver durable.go / Open).
+	wal *wal
 
 	now func() time.Time // injectável para testes; por omissão time.Now
 }
@@ -357,8 +363,33 @@ func (s *Store) Append(ctx context.Context, streamID string, in EventInput, opts
 		ev.Payload = make([]byte, len(in.Payload))
 		copy(ev.Payload, in.Payload)
 	}
-	// Réplicas distintas mutam containers próprios (r.mu); a serialização por-stream
-	// (stripe) garante que este stream tem um só escritor em cada réplica.
+	// DURABILIDADE (AOS-170) — WRITE-AHEAD. Persiste o evento no WAL e faz fsync
+	// ANTES de o aplicar às réplicas in-memory, elevar o commit index ou fazer
+	// fanout. É a ORDEM correcta face a falha (idêntica ao WORM audit/filestore.go
+	// que persiste antes de publicar em memória):
+	//   - crash APÓS o log estar durável mas antes de aplicar em memória: reparado
+	//     pelo replay no arranque (o evento é reconstruído) — sem perda nem dup;
+	//   - crash ANTES do fsync: o registo parcial no tail é ignorado pelo replay e o
+	//     estado in-memory NUNCA foi mutado — sem divergência nem duplicação;
+	//   - ERRO de I/O (disco cheio/EIO/quota) com o processo vivo: devolve erro
+	//     FAIL-CLOSED sem tocar no estado in-memory. Não há phantom-commit (Read/
+	//     StreamHead não expõem o evento falhado), não há gap de seq no WAL (o seq
+	//     não foi materializado, um retry reusa last+1) e o chamador vê a falha —
+	//     nada foi acked. A antiga ordem apply-before-log deixava justamente esses
+	//     três defeitos sob um único erro de escrita.
+	// Ainda sob o stripe do stream — persistências do MESMO stream serializam na
+	// ordem de seq. O ficheiro é único; o wal serializa os seus próprios writes.
+	if s.wal != nil {
+		if err := s.wal.append(ev); err != nil {
+			s.mu.RUnlock()
+			s.obs.AppendRejected(streamID, err)
+			return AppendResult{}, fmt.Errorf("eventstore: persistir evento committed: %w", err)
+		}
+	}
+
+	// Só DEPOIS de durável: aplica o evento às réplicas vivas. Réplicas distintas
+	// mutam containers próprios (r.mu); a serialização por-stream (stripe) garante
+	// que este stream tem um só escritor em cada réplica.
 	for _, r := range alive {
 		r.store(ev.clone())
 	}
@@ -439,6 +470,13 @@ func (s *Store) Close() error {
 
 	for _, sub := range subs {
 		sub.stop()
+	}
+	// Fecha o WAL durável (flush + fsync + close), se presente. Um evento já
+	// committed já foi fsync'd no Append; este close garante o descarregamento final.
+	if s.wal != nil {
+		if err := s.wal.close(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
