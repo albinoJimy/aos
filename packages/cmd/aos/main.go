@@ -130,6 +130,14 @@ func run(w io.Writer) error {
 		// Ligar isto torna o read-path soberano fail-closed E o selo WORM de leitura sensível (D6)
 		// — os clientes de leitura têm de declarar X-Aos-Reader/X-Aos-Board.
 		BoardRegions: boardRegions,
+		// SUBSTRATO DURÁVEL (AOS-170) por ambiente. OPT-IN: vazio ⇒ in-memory de referência
+		// (inalterado; a imagem roda limpa sob `--read-only`). Presente ⇒ o nó ABRE o Event Store
+		// (WAL append-only + fsync + replay crash-safe) e o WORM (hash-chain tamper-evident) nos
+		// caminhos dados — tipicamente um mount GRAVÁVEL fora do root-fs read-only (deploy/node:
+		// -v aos-data:/var/lib/aos). É esta ligação que torna real o estado durável que o
+		// Dockerfile documenta e que a durabilidade de kill+reinício-sem-duplicação exige.
+		EventStorePath: strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_PATH")),
+		WORMPath:       strings.TrimSpace(os.Getenv("AOS_WORM_PATH")),
 		// Observabilidade OTLP (AOS-173): vazio ⇒ NoopTracer (default, zero overhead);
 		// presente ⇒ o nó exporta traces (invoke_agent/chat[+custo]/execute_tool/freeze +
 		// selos WORM) via OTLP/HTTP. Um endpoint malformado aborta o arranque (fail-closed).
@@ -137,6 +145,16 @@ func run(w io.Writer) error {
 		// Operators vazio ⇒ default-deny do canal de controlo até serem configuradas
 		// pubkeys de operador (o steer anónimo é recusado — a inércia do D4 não protege
 		// pause/steer).
+	}
+
+	// DURABILIDADE DA IDENTIDADE (AOS-170) por ambiente, SÓ no modo de REFERÊNCIA. Um
+	// AOS_ISSUER_KEY_PATH faz a autoridade co-localizada carregar/persistir a chave de assinatura
+	// de um ficheiro de seed em vez de a gerar por CSPRNG a cada arranque — os tokens emitidos
+	// antes do reinício continuam válidos. PROIBIDO no modo endurecido (nenhuma chave de assinatura
+	// entra no processo): só se liga quando issuerPub == nil, senão o Bootstrap aborta fail-closed
+	// com ErrConflictingIssuerKey.
+	if issuerPub == nil {
+		cfg.IssuerKeyPath = strings.TrimSpace(os.Getenv("AOS_ISSUER_KEY_PATH"))
 	}
 
 	node, err := Bootstrap(ctx, cfg, w)
