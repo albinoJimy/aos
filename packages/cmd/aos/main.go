@@ -34,7 +34,9 @@ var ErrBadIssuerPubKey = errors.New("aos: AOS_ISSUER_PUBKEY invalida (esperado 6
 // REAL. Sem segredos em código: o IssuerID e os humanos vêm do ambiente; a chave de
 // assinatura de referência é gerada por CSPRNG (a real vem de vault — AOS-170/EPIC-06).
 func main() {
-	if err := run(os.Stdout); err != nil {
+	// A CLI (AOS-165) despacha os subcomandos: `serve` (ou sem args) arranca o nó via [run];
+	// `run`/`observe`/`steer`/`pause` são clientes HTTP da API (AOS-166).
+	if err := dispatch(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "aos: %v\n", err)
 		os.Exit(1)
 	}

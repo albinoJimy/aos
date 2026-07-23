@@ -57,13 +57,15 @@ read-path do nó, sem a camada de apresentação web.
       multi-nó/DR/PITR (transporte remoto — as 3 réplicas são process-local reconstruídas do WAL),
       compactação/GC do WAL a longo prazo, e persistência-em-runtime do IngestStream (restauro
       PITR). Estes ficam [ ] até EPIC-10.)*
-- [ ] **Interface externa mínima estável e AUTENTICADA** (E5): CLI + API `net/http` stdlib; o
+- [x] **Interface externa mínima estável e AUTENTICADA** (E5): CLI + API `net/http` stdlib; o
       **canal de controlo (steer/approve) é autenticado** (não um POST anónimo) e o bind
       não-loopback é recusado até a autenticação estar ligada — AOS-165/166.
       *(AOS-166 ENTREGUE: API `net/http` stdlib com canal de controlo autenticado server-side
       (ed25519+anti-replay AOS-160), bind não-loopback recusado sem authn no caminho REAL do binário,
       admission/rate-limit em dados E controlo, POST /runs não-enumerável+idempotente por run_id,
-      fail-closed. A metade CLI fica [ ] — AOS-165 deferido; SSE de trajectória deferido AOS-167.)*
+      fail-closed. **AOS-165 ENTREGUE**: CLI `aos` (serve/run/observe/steer/pause) só stdlib, cliente
+      da API, com o steer/pause assinados pela chave do operador (nunca no nó) — e2e prova a
+      assinatura aceite pelo nó. A trajectória em streaming (SSE) fica para AOS-167.)*
 - [ ] **Health/readiness + observabilidade** (E5/E7): `/healthz`·`/readyz`; spans OTel (`otel-genai`)
       + custo + WORM ligados por OTLP — AOS-171/173.
 - [ ] **Transporte SSE fail-safe** (D3, reavaliado): backfill + resume-from-seq + dedup **+
@@ -321,9 +323,9 @@ Um comando `aos` com subcomandos: `serve` (arranca o nó), `run` (submete um *go
 
 ### Critérios de Aceitação
 
-- [ ] `aos serve` arranca o nó (loop de serviço, AOS-164); `aos run --goal …` submete um *goal*.
-- [ ] `aos observe <run-id>` segue a trajectória; `aos steer <run-id> …` conduz o run (out-of-band).
-- [ ] Só stdlib (`flag`, `net/http` client); zero dependências externas.
+- [x] `aos serve` arranca o nó (via `run`/AOS-163/166); `aos run --objective …` submete um *goal* (POST /runs). — `packages/cmd/aos/cli.go` (`dispatch`).
+- [x] `aos observe <run-id>` lê o estado/desfecho (GET /runs/{id}); `aos steer/pause --run-id … --emitter … --key …` conduz o run — **assinado** com a chave do operador (via `integration.SignSignal`, AOS-160); a chave vive na máquina do operador, NUNCA no nó. *(A trajectória em streaming é AOS-167; aqui `observe` é a fotografia de estado.)*
+- [x] Só stdlib (`flag`, `net/http` client, `crypto/ed25519`); zero dependências externas.
 
 ### Detalhes Técnicos
 
@@ -335,7 +337,7 @@ Um comando `aos` com subcomandos: `serve` (arranca o nó), `run` (submete um *go
 
 ### Definition of Done
 
-- [ ] CLI com serve/run/observe/steer; só stdlib; sem segredos.
+- [x] CLI com serve/run/observe/steer/pause; só stdlib; sem segredos. — `cli.go`+`cli_test.go`: 6 testes (dispatch/parsing, `loadOperatorKey`, e2e run→steer→observe contra o handler REAL provando que a assinatura ed25519 da CLI é ACEITE pelo nó, e chave errada → 403). Suite `cmd/aos` verde, `vet`/`gofmt`/`secrets` verdes.
 
 ### Handoff para Claude Code
 
