@@ -484,6 +484,32 @@ func (s *NodeService) pruneCompletedLocked() {
 // (cancelamento de contexto — o loop pára na fronteira de fim-de-turno, nunca a meio nem
 // por kill cego, AOS-023) e espera-os desenrolar (libertando os leases). Devolve nil se
 // drenou a tempo, ou o erro do ctx se teve de cancelar. Idempotente.
+//
+// SHUTDOWN DURÁVEL (AOS-164b sobre AOS-170) — o encerramento NÃO perde nem duplica
+// trabalho DURÁVEL, sem necessidade de flush adicional NESTE caminho. A garantia é
+// composicional, não uma acção do Shutdown:
+//
+//   - Trabalho COMMITTED já está no WAL. Cada evento que o nó considerou committed
+//     (turnos gravados via TurnRecorder, sinais de controlo, e os próprios registos de
+//     lease) foi persistido e FSYNC'D pelo Event Store durável ANTES de o Append devolver
+//     (write-ahead, AOS-170). Um crash — ou uma saída limpa — após o Shutdown reencontra
+//     esse trabalho no reinício via replay do WAL (eventstore.Open), byte-a-byte, com a
+//     dedup/CAS reconstruída (idempotência) — sem perda nem duplicação. O Shutdown não
+//     precisa de "descarregar" nada committed: já está durável no momento do commit.
+//   - Trabalho EM-CURSO é abortado na FRONTEIRA de fim-de-turno. O cancelamento é
+//     COOPERATIVO (o run pára ao observar o ctx, nunca a meio de uma escrita durável nem
+//     por kill), pelo que não deixa um commit parcial: ou o turno já commitou (durável) ou
+//     ainda não escreveu (nada a recuperar). O tail parcial de um crash a meio de um write
+//     é detectado e ignorado no replay (crash-safety do WAL).
+//   - DUPLA-EXECUÇÃO no reinício é barrada por LEASE DURÁVEL. Cada run é possuído por um
+//     lease durável de token monotónico (AOS-018); o Shutdown liberta a posse em-processo
+//     (finish → Release) e o registo durável do lease expira por TTL. No reinício, um novo
+//     Claim minta um token ESTRITAMENTE MAIOR — um token residual da execução anterior
+//     seria fenced (ErrLeaseSuperseded), pelo que uma 2ª execução do mesmo RunID não
+//     produz efeitos duplicados. A durabilidade final do WAL do Event Store é selada por
+//     [Node.Close] (chamado a JUSANTE deste Shutdown na sequência de paragem do nó); mas,
+//     como cada Append já fez fsync, essa Close é o descarregamento de cortesia, não a
+//     condição de durabilidade do trabalho committed.
 func (s *NodeService) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {

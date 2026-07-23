@@ -53,7 +53,12 @@ read-path do nó, sem a camada de apresentação web.
       in-memory/committed/fanout, fail-closed sem phantom-commit), WORM/filestore e seed do issuer
       com fsync do directório pai (durabilidade POSIX da entrada de directório); reinício reconstrói
       do WAL sem perda nem duplicação, provado sob `-race` com Append concorrente + restart. Módulos
-      eventstore/audit/cmd-aos verdes (build+test+vet). **DEFERIDO para EPIC-10:** replicação
+      eventstore/audit/cmd-aos verdes (build+test+vet). **AOS-164b (DoD com dono) ENTREGUE:** o
+      ciclo de vida durável sobre este substrato — shutdown gracioso durável (cancelamento
+      cooperativo na fronteira de fim-de-turno, sem commit parcial), fronteira nó↔ORQ/SCH registada
+      em ADR-018 (loop do nó = fonte única de verdade na v1 single-host), e single-writer do WORM
+      sob N runs concorrentes (seal serializado, cadeias por-partição, provado sob `-race`).
+      **DEFERIDO para EPIC-10:** replicação
       multi-nó/DR/PITR (transporte remoto — as 3 réplicas são process-local reconstruídas do WAL),
       compactação/GC do WAL a longo prazo, e persistência-em-runtime do IngestStream (restauro
       PITR). Estes ficam [ ] até EPIC-10.)*
@@ -275,11 +280,16 @@ o run em curso, e encerra com shutdown gracioso (drena/persiste, nunca mata cega
 - [x] O nó aceita e hospeda múltiplos *runs* (registo de runs em curso por RunID). *(AOS-164a:
       `Service.Submit`/`hostRun` regista runs por RunID sob `s.mu`, guarda de duplicação consulta
       `runs`+`completed`, lease por-run com heartbeat de posse; concorrência verificada.)*
-- [ ] Shutdown gracioso: um sinal de paragem drena/persiste o estado durável (sem efeitos perdidos
+- [x] Shutdown gracioso: um sinal de paragem drena/persiste o estado durável (sem efeitos perdidos
       nem duplicados no reinício — a durabilidade é EPIC-02). *(AOS-164a: drain in-process
-      cooperativo — `Shutdown` sinaliza + aguarda os runs, nunca mata cego. **Metade durável
-      (persistência do estado de shutdown + replay idempotente no reinício ao nível do binário)
-      DEFERIDA para AOS-164b sobre o substrato durável AOS-170.**)*
+      cooperativo — `Shutdown` sinaliza + aguarda os runs, nunca mata cego. **AOS-164b: metade
+      durável ENTREGUE** — no deadline `Shutdown` faz cancelamento COOPERATIVO na fronteira de
+      fim-de-turno (AOS-023, nunca kill cego); leases duráveis (`durable.Lease`, TTL, sem roubo —
+      AOS-018) impedem dupla-execução entre reinícios e `heartbeat()` cancela o run se perder a
+      posse. Provado por encenação no store real pós-restart (`shutdown_durable_test.go`): turno
+      durável sobrevive (>=1 `turn.recorded`) e o run cancelado na fronteira NÃO deixa commit
+      parcial (stream de negócio sem `turn.recorded` = `ErrStreamNotFound`), sobre o substrato
+      durável AOS-170.)*
 - [x] O nó é resiliente a um run que falha (um run não derruba o nó; fail-closed por-run). *(AOS-164a:
       isolamento de panic por-run via `recover` no defer de `hostRun`; o nó sobrevive; verificado.)*
 
@@ -297,9 +307,17 @@ o run em curso, e encerra com shutdown gracioso (drena/persiste, nunca mata cega
       `packages/cmd/aos/service.go` — loop de serviço long-running com registo/isolamento de falha
       por-run, drain gracioso in-process, heartbeat de posse do lease (fecha a janela de
       dupla-execução), retenção FIFO limitada de `completed`, guarda de re-submissão de RunID
-      terminado; gate `go test -race` verde; sem segredos. **Shutdown DURÁVEL + fronteira nó↔ORQ/SCH
-      + single-writer do WORM sob N runs DEFERIDOS para AOS-164b/AOS-170.** Wiring `serve` ao
-      binário deferido para AOS-165; API HTTP para AOS-166.)*
+      terminado; gate `go test -race` verde; sem segredos. **AOS-164b ENTREGUE (3 entregáveis):**
+      (1) shutdown DURÁVEL — cancelamento cooperativo na fronteira de fim-de-turno sobre AOS-170,
+      sem commit parcial (`shutdown_durable_test.go`); (2) fronteira nó↔ORQ/SCH registada em
+      **ADR-018** (o loop de serviço do nó é a fonte ÚNICA de verdade do ciclo de vida na v1
+      single-host; as portas `Orchestrator`/`Scheduler` de EPIC-03 são consumidas DENTRO de um run,
+      não como autoridade concorrente — enforcement em duas camadas: imports directos + fecho
+      transitivo do processo via `go list -deps`, `boundary_orq_sch_test.go`); (3) single-writer do
+      WORM sob N runs — seal serializado por `s.mu` (AuditSeq+PrevHash+EntryHash+fsync ANTES de
+      publicar, fail-closed), cadeias POR-PARTIÇÃO com dono nomeado no `filestore.go`, provado sob
+      `-race` (`filestore_concurrency_test.go`). Wiring `serve` ao binário deferido para AOS-165;
+      API HTTP para AOS-166.)*
 
 ### Handoff para Claude Code
 

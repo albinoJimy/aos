@@ -93,6 +93,22 @@ func OpenFileStore(path string) (*FileStore, error) {
 // registo cujo Append retornou está durável. O selo (seq/PrevHash/EntryHash) é
 // idêntico ao in-memory, pelo que a cadeia reconstruída após restart é byte-a-byte a
 // mesma.
+//
+// DONO DA CADEIA — SINGLE-WRITER (AOS-164b, CA de serialização sob N runs concorrentes).
+// A secção crítica abaixo (s.mu.Lock … s.mu.Unlock) é o ÚNICO escritor da hash-chain, e é
+// o DONO NOMEADO da ordenação por-partição: TODO o selo (leitura do último registo da
+// partição → AuditSeq = last+1, PrevHash = last.EntryHash, EntryHash = ComputeEntryHash)
+// E a persistência acontecem sob o MESMO s.mu, indivisíveis. Logo, com N goroutines (N
+// runs) a fazer Append concorrente:
+//   - na MESMA partição serializam-se aqui: AuditSeq fica contíguo (1..k, gapless), cada
+//     PrevHash encadeia no EntryHash anterior e não há FORK (dois registos a partilhar o
+//     mesmo AuditSeq/PrevHash) — a ordem total por-partição é a ordem de entrada no lock;
+//   - em partições DIFERENTES não contendem na MESMA cadeia (o estado é `parts[Partition]`),
+//     mas continuam serializadas pelo mesmo s.mu (a hash-chain global do ficheiro é uma só)
+//     — cada cadeia por-partição é independentemente contígua e válida.
+//
+// A prova está em filestore_concurrency_test.go (-race). O wmu de [persist] é uma segunda
+// linha defensiva para o ficheiro; o dono da ORDENAÇÃO da cadeia é este s.mu.
 func (s *FileStore) Append(_ context.Context, rec AuditRecord) (AuditRecord, error) {
 	s.mu.Lock()
 	part := s.parts[rec.Partition]

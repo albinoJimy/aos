@@ -37,10 +37,11 @@ A mesma auditoria (`analises/v1_baseline/`) **também** recomendou, informalment
 de *supply-chain / TOFU* com o número 016. Essa recomendação **nunca foi ratificada**.
 Nesta ronda, o número **ADR-016** é atribuído — por ratificação — à **Fronteira de
 confiança da camada de UI** (o ADR que a EPIC-13/AOS-129 exige). A recomendação de
-auditoria sobre supply-chain **permanece pendente**; se e quando for materializada, deve
-tomar o **próximo número livre (ADR-017)**, não reutilizar o 016. O *drift* de citação
-em torno de ADR-005/008 (comentários em `lib.sh`/PDP/`go.mod`) fica registado como
-**dívida documental** a fechar por esse futuro ADR-017 — não é coberto pelo ADR-016.
+auditoria sobre supply-chain foi **posteriormente materializada** como **ADR-017**
+(supply-chain do nó `aos`), tomando o **próximo número livre** — não reutilizando o 016. O
+*drift* de citação em torno de ADR-005/008 (comentários em `lib.sh`/PDP/`go.mod`) fica
+registado como **dívida documental** dessa fronteira de supply-chain (ADR-017) — não é
+coberto pelo ADR-016.
 
 ## Estado do registo
 
@@ -66,14 +67,16 @@ na mesma ronda da EPIC-13 v1.0).
 | ADR-014 | Taxonomia de autonomia L0–L5 | Catálogo, por materializar | catálogo em `specs/00_System_Spec.md` §11 |
 | ADR-015 | Durable execution: contrato próprio vs. engine externo | **Ratificado (AOS-022)** | [`ADR-015-durable-execution.md`](ADR-015-durable-execution.md) |
 | ADR-016 | Fronteira de confiança da camada de UI | **Ratificado (novo)** | [`ADR-016-fronteira-confianca-ui.md`](ADR-016-fronteira-confianca-ui.md) |
-| ADR-017 | *(reservado)* Supply-chain determinista / zero-dep / offline (TOFU) | Recomendado em auditoria, por materializar | recomendação RAST em `analises/v1_baseline/` (sem documento) |
+| ADR-017 | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | **Ratificado** | [`ADR-017-supply-chain-node.md`](ADR-017-supply-chain-node.md) |
+| ADR-018 | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | **Aceite** | [`ADR-018-fronteira-no-orq-sch.md`](ADR-018-fronteira-no-orq-sch.md) |
 
 > Nota: os ficheiros ligados na coluna «Ficheiro» para **006/011/012/013/016** são
-> criados nesta ronda de ratificação. Os restantes (001–005, 007–010, 014) permanecem
-> **exclusivamente** no catálogo de uma linha até serem promovidos a documento próprio —
-> a ligação aponta o leitor para a fonte canónica em vigor, não para um ficheiro
-> inexistente. As linhas 015 e 017 registam **recomendações de auditoria ainda não
-> ratificadas** (sem ficheiro).
+> criados nesta ronda de ratificação; **015** (execução durável, AOS-022), **017**
+> (supply-chain do nó) e **018** (fronteira nó↔ORQ/SCH) estão **igualmente materializados
+> e ligados a ficheiro próprio** — ratificados/aceites, não recomendações pendentes. Os
+> restantes (001–005, 007–010, 014) permanecem **exclusivamente** no catálogo de uma linha
+> até serem promovidos a documento próprio — a ligação aponta o leitor para a fonte
+> canónica em vigor, não para um ficheiro inexistente.
 
 ## Relação com o catálogo canónico
 
@@ -98,7 +101,7 @@ na mesma ronda da EPIC-13 v1.0).
   Consequências · Conformidade/Enforcement · Referências. Idioma **PT-PT**.
 - **Estados** usados: *Ratificado* · *Catálogo, por materializar* · *Referenciado/
   Recomendado em auditoria, por materializar* · *Substituído por ADR-NNN*.
-- **Numeração:** ADRs novos numeram-se **após o maior código atribuído** (hoje ADR-016;
-  o 017 está reservado para a recomendação de supply-chain). Códigos nunca são
-  reutilizados; um ADR retirado passa a *Substituído por*, não desaparece.
+- **Numeração:** ADRs novos numeram-se **após o maior código atribuído** (hoje ADR-018:
+  ADR-017 foi materializado — supply-chain do nó; ADR-018 regista a fronteira nó↔ORQ/SCH).
+  Códigos nunca são reutilizados; um ADR retirado passa a *Substituído por*, não desaparece.
 - Todo o documento técnico relevante deve **citar os ADRs que o afectam**.
