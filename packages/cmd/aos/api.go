@@ -51,6 +51,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	integration "github.com/aos-ref/integration"
@@ -80,6 +81,18 @@ const (
 	DefaultReadTimeout  = 15 * time.Second
 	DefaultWriteTimeout = 15 * time.Second
 	DefaultIdleTimeout  = 60 * time.Second
+	// DefaultTrajectoryWriteTimeout é o write-deadline POR-ESCRITA do stream SSE de
+	// trajectória (AOS-167). NÃO é um tecto da ligação inteira (essa é longa por natureza):
+	// limita CADA escrita individual no socket. Um cliente que parou de ler faz a escrita
+	// bloquear; o deadline dispara e a ligação cai (drop-slow-consumer por progresso). Um
+	// cliente que drena completa cada escrita dentro do deadline e sobrevive indefinidamente.
+	DefaultTrajectoryWriteTimeout = 15 * time.Second
+	// DefaultMaxTrajectoryConns é o tecto por omissão de streams SSE de trajectória
+	// concorrentes por-nó (AOS-167). Cada stream mantém 1 subscrição + goroutines vivas até
+	// o cliente desligar; o tecto barra a exaustão de recursos dentro da fronteira de
+	// confiança (coerente com o hardening de ingresso de AOS-166). Exceder ⇒ 429. <= 0
+	// desliga o tecto.
+	DefaultMaxTrajectoryConns = 256
 )
 
 // Erros da API (fail-closed).
@@ -95,14 +108,17 @@ var (
 
 // apiConfig é a configuração resolvida da API.
 type apiConfig struct {
-	maxBodyBytes   int64
-	rateBurst      float64
-	ratePerSec     float64
-	ctrlRateBurst  float64
-	ctrlRatePerSec float64
-	maxInFlight    int
-	now            func() time.Time
-	logw           io.Writer
+	maxBodyBytes     int64
+	rateBurst        float64
+	ratePerSec       float64
+	ctrlRateBurst    float64
+	ctrlRatePerSec   float64
+	maxInFlight      int
+	trajWriteTimeout time.Duration // write-deadline por-escrita do SSE de trajectória
+	trajMaxConns     int           // tecto de streams SSE concorrentes por-nó
+	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
+	now              func() time.Time
+	logw             io.Writer
 }
 
 // APIOption configura a API HTTP.
@@ -156,6 +172,39 @@ func WithMaxInFlight(n int) APIOption {
 	return func(c *apiConfig) { c.maxInFlight = n }
 }
 
+// WithTrajectoryWriteTimeout define o write-deadline POR-ESCRITA do stream SSE de trajectória
+// (AOS-167; default [DefaultTrajectoryWriteTimeout]). NÃO limita a duração da ligação — limita
+// cada escrita individual no socket, que é o gatilho do drop-slow-consumer. Um valor pequeno
+// torna o corte de um consumidor preso mais rápido (útil em testes determinísticos de
+// backpressure); <= 0 mantém o default.
+func WithTrajectoryWriteTimeout(d time.Duration) APIOption {
+	return func(c *apiConfig) {
+		if d > 0 {
+			c.trajWriteTimeout = d
+		}
+	}
+}
+
+// WithMaxTrajectoryConns define o tecto de streams SSE de trajectória concorrentes por-nó
+// (AOS-167; default [DefaultMaxTrajectoryConns]). Exceder ⇒ 429. <= 0 desliga o tecto (útil
+// em testes que abrem muitas ligações). É a admission anti-exaustão do read-path tempo-real,
+// coerente com o hardening de ingresso de AOS-166.
+func WithMaxTrajectoryConns(n int) APIOption {
+	return func(c *apiConfig) { c.trajMaxConns = n }
+}
+
+// WithServerWriteTimeout define o WriteTimeout do http.Server endurecido de [NewAPIServer]
+// (default [DefaultWriteTimeout]). É um deadline POR-LIGAÇÃO que a rota de trajectória SSE
+// ANULA para si própria (transporte fail-safe); expor este knob permite provar em teste que a
+// ligação SSE sobrevive para além dele. Um valor <= 0 mantém o default.
+func WithServerWriteTimeout(d time.Duration) APIOption {
+	return func(c *apiConfig) {
+		if d > 0 {
+			c.serverWriteTO = d
+		}
+	}
+}
+
 // WithAPIClock injecta o relógio do token-bucket (determinismo em teste de admission, sem
 // sleeps). Ignora nil.
 func WithAPIClock(now func() time.Time) APIOption {
@@ -180,6 +229,7 @@ type apiHandler struct {
 	cfg        apiConfig
 	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
 	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
+	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
 }
 
 // NewAPIHandler compõe o http.Handler do nó sobre o loop de serviço (AOS-164a) e o nó real
@@ -193,13 +243,15 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		return nil, ErrNilNode
 	}
 	cfg := apiConfig{
-		maxBodyBytes:   DefaultMaxBodyBytes,
-		rateBurst:      DefaultRateBurst,
-		ratePerSec:     DefaultRatePerSec,
-		ctrlRateBurst:  DefaultRateBurst,
-		ctrlRatePerSec: DefaultRatePerSec,
-		maxInFlight:    DefaultMaxInFlight,
-		now:            time.Now,
+		maxBodyBytes:     DefaultMaxBodyBytes,
+		rateBurst:        DefaultRateBurst,
+		ratePerSec:       DefaultRatePerSec,
+		ctrlRateBurst:    DefaultRateBurst,
+		ctrlRatePerSec:   DefaultRatePerSec,
+		maxInFlight:      DefaultMaxInFlight,
+		trajWriteTimeout: DefaultTrajectoryWriteTimeout,
+		trajMaxConns:     DefaultMaxTrajectoryConns,
+		now:              time.Now,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -219,6 +271,8 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// Plano de DADOS.
 	mux.HandleFunc("POST /runs", h.handleSubmit)
 	mux.HandleFunc("GET /runs/{id}", h.handleGet)
+	// Plano de DADOS — read-path TEMPO-REAL (AOS-167): SSE dos eventos da trajectória.
+	mux.HandleFunc("GET /runs/{id}/trajectory", h.handleTrajectory)
 	// Plano de CONTROLO TRUSTED (cada um autenticado na fronteira real do nó).
 	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
 	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)
@@ -717,13 +771,20 @@ func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, 
 	for _, o := range opts {
 		o(&cfg)
 	}
+	// O WriteTimeout do http.Server é um deadline POR-LIGAÇÃO (anti slowloris). A rota de
+	// trajectória SSE anula-o para si própria (transporte fail-safe); os restantes handlers
+	// continuam protegidos por ele. Configurável (WithServerWriteTimeout) para testes.
+	writeTimeout := DefaultWriteTimeout
+	if cfg.serverWriteTO > 0 {
+		writeTimeout = cfg.serverWriteTO
+	}
 	return &APIServer{
 		node: node,
 		http: &http.Server{
 			Handler:           handler,
 			ReadHeaderTimeout: DefaultReadHeaderTimeout,
 			ReadTimeout:       DefaultReadTimeout,
-			WriteTimeout:      DefaultWriteTimeout,
+			WriteTimeout:      writeTimeout,
 			IdleTimeout:       DefaultIdleTimeout,
 		},
 		logw: cfg.logw,

@@ -68,8 +68,17 @@ read-path do nó, sem a camada de apresentação web.
       assinatura aceite pelo nó. A trajectória em streaming (SSE) fica para AOS-167.)*
 - [ ] **Health/readiness + observabilidade** (E5/E7): `/healthz`·`/readyz`; spans OTel (`otel-genai`)
       + custo + WORM ligados por OTLP — AOS-171/173.
-- [ ] **Transporte SSE fail-safe** (D3, reavaliado): backfill + resume-from-seq + dedup **+
+- [x] **Transporte SSE fail-safe** (D3, reavaliado): backfill + resume-from-seq + dedup **+
       backpressure/drop-slow-consumer**, streaming por seq (não snapshots de state) — AOS-167 (**L**).
+      *(AOS-167 ENTREGUE: `GET /runs/{id}/trajectory` (text/event-stream) StateProjector→SSE, backfill
+      via `eventstore.Read(fromSeq)` + resume-from-seq + dedup por seq; fail-safe do transporte no
+      APIServer REAL (write-deadline anulado no arranque, re-armado só à volta de cada escrita —
+      sobrevive ao WriteTimeout do servidor); backpressure por PROGRESSO-DE-ESCRITA (fila FIFO
+      ilimitada, drop só de consumidor genuinamente preso — sem falso-drop no backfill grande); tecto
+      de streams concorrentes por-nó (429); posse exigida (404 uniforme não-enumerável para run
+      desconhecido). Só stdlib; sem segredos; suite `-race` verde. A **authz por-chamador do payload
+      (D7)** e o **selo WORM de leitura sensível (D6)** ficam para **AOS-172** — barrados no ingresso
+      pelo bind-guardrail de AOS-166.)*
 - [ ] **Soberania/conformidade** (E7): read-path soberano (D7), selo WORM de leitura sensível no SSE
       (D6), DSAR/crypto-shredding (ADR-011) — AOS-172. (Não gated por D4.)
 - [ ] **Empacotamento deployável**: contentor distroless/non-root/read-only, com **ADR-017**
@@ -437,9 +446,13 @@ tarde vê o histórico), **resume-from-seq** (reconexão sem lacunas) e **dedup 
 
 ### Critérios de Aceitação
 
-- [ ] `GET /runs/{id}/trajectory` (SSE) transmite as reflexões de estado/trajectória por push.
-- [ ] Backfill: um cliente que liga a um run já em curso vê o histórico antes do tempo-real.
-- [ ] Resume-from-seq + dedup por seq: uma reconexão retoma sem lacunas nem duplicados.
+- [x] `GET /runs/{id}/trajectory` (SSE) transmite as reflexões de estado/trajectória por push.
+- [x] Backfill: um cliente que liga a um run já em curso vê o histórico antes do tempo-real.
+- [x] Resume-from-seq + dedup por seq: uma reconexão retoma sem lacunas nem duplicados.
+- [x] Transporte fail-safe: a ligação sobrevive ao `WriteTimeout` do servidor (write-deadline anulado
+      no arranque, re-armado só à volta de cada escrita); backpressure por progresso-de-escrita (sem
+      falso-drop no backfill grande); tecto de streams concorrentes (429); posse exigida (404 uniforme
+      não-enumerável). *(authz por-chamador D7 + selo WORM de leitura D6 = **AOS-172**.)*
 
 ### Detalhes Técnicos
 
@@ -451,7 +464,9 @@ tarde vê o histórico), **resume-from-seq** (reconexão sem lacunas) e **dedup 
 
 ### Definition of Done
 
-- [ ] SSE de trajectória com backfill/resume/dedup; só stdlib; sem segredos.
+- [x] SSE de trajectória com backfill/resume/dedup + transporte fail-safe + backpressure sem
+      falso-drop + tecto de concorrência + posse não-enumerável; só stdlib; sem segredos; `-race`
+      verde. *(authz D7 + selo WORM D6 = **AOS-172**.)*
 
 ### Handoff para Claude Code
 
