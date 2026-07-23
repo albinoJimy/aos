@@ -68,6 +68,11 @@ read-path do nó, sem a camada de apresentação web.
       assinatura aceite pelo nó. A trajectória em streaming (SSE) fica para AOS-167.)*
 - [ ] **Health/readiness + observabilidade** (E5/E7): `/healthz`·`/readyz`; spans OTel (`otel-genai`)
       + custo + WORM ligados por OTLP — AOS-171/173.
+      *(**health/readiness `/healthz`+`/readyz` ENTREGUE — AOS-171** (c0457eb + remediação pós-auditoria):
+      `GET /healthz` liveness (200 sempre, `{"status":"ok"}`); `GET /readyz` readiness (503 em drain OU
+      EventStore==nil OU !Healthy(); senão 200); rotas registadas antes do plano de dados, SEM authn/admission,
+      sem info-leak; `Draining()`/`Healthy()` lock-free; suite `-race` verde. **OTel/OTLP fica para AOS-173** —
+      por isso o item permanece [ ] até a parte observabilidade estar feita.)*
 - [x] **Transporte SSE fail-safe** (D3, reavaliado): backfill + resume-from-seq + dedup **+
       backpressure/drop-slow-consumer**, streaming por seq (não snapshots de state) — AOS-167 (**L**).
       *(AOS-167 ENTREGUE: `GET /runs/{id}/trajectory` (text/event-stream) StateProjector→SSE, backfill

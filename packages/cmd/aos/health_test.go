@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -155,6 +156,30 @@ func TestReadyzBodyNoInfoLeak(t *testing.T) {
 	}
 	_, unready := getProbe(h, "/readyz")
 	assertReadyzBody(t, unready, "unready")
+}
+
+// TestReadyzUnreadyOnNilStore cobre o ramo DEFENSIVO de handleReadyz em que o nó não tem
+// Event Store (h.node.EventStore == nil): /readyz vira 503 (não 200). Em runtime o ramo é
+// inalcançável — NewNodeService falha fail-closed se EventStore for nil, logo não existe um
+// NodeService válido cujo node tenha EventStore nil — mas o teste FIXA a semântica (503,
+// nunca 200) para impedir uma regressão silenciosa caso a invariante de construção mude.
+// Constrói o apiHandler directamente (mesmo pacote) com um svc VÁLIDO e NÃO em drain e um
+// node sem Event Store, e invoca a sonda sem passar pelo mux — só o ramo nil é exercitado.
+func TestReadyzUnreadyOnNilStore(t *testing.T) {
+	node, _ := newAPINode(t, &countingModel{}, false)
+	defer func() { _ = node.Close() }()
+	svc, _ := newAPI(t, node) // svc válido; Draining()==false (não curto-circuita o ramo nil)
+
+	h := &apiHandler{svc: svc, node: &Node{}} // node zero-value ⇒ EventStore == nil
+	rec := httptest.NewRecorder()
+	h.handleReadyz(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz com Event Store nil devia dar 503, veio %d", rec.Code)
+	}
+	var body map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	assertReadyzBody(t, body, "unready")
 }
 
 // assertReadyzBody verifica que o corpo tem EXACTAMENTE {"status": want} — um único campo,

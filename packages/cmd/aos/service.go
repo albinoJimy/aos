@@ -26,6 +26,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -126,8 +127,18 @@ type NodeService struct {
 	runs           map[string]*runState // em curso (por RunID)
 	completed      map[string]*runState // terminados (inspecção/observabilidade)
 	completedOrder []string             // ordem de término (FIFO) para poda do `completed`
-	closed         bool                 // shutdown iniciado — recusa novos runs
+	closed         bool                 // shutdown iniciado — recusa novos runs (governa admissão, sob mu)
 	wg             sync.WaitGroup       // conta as goroutines de run hospedadas
+
+	// draining ESPELHA `closed` para a sonda de prontidão: é armado sob `mu` no MESMO
+	// ponto onde `closed=true` (fonte de verdade única e monotónica — o drain nunca
+	// reverte), mas é LIDO lock-free por [Draining] (/readyz) sem tocar em `mu`. Assim a
+	// sonda pode ser sondada à frequência de um probe sem contender com o mutex que
+	// serializa a admissão/conclusão de runs — simétrico a [eventstore.Store.Healthy],
+	// que foi feito atómico pela mesma razão. `closed` continua a governar a admissão
+	// sob `mu` (a secção crítica closed+registo que impede um run escapar ao Shutdown
+	// fica intacta); só a LEITURA da sonda deixa de adquirir o lock.
+	draining atomic.Bool
 }
 
 // NodeServiceOption configura o [NodeService].
@@ -480,6 +491,7 @@ func (s *NodeService) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	s.closed = true
+	s.draining.Store(true) // espelha o drain (armado SOB mu, no mesmo ponto que closed) para leitura lock-free da sonda
 	inflight := len(s.runs)
 	s.mu.Unlock()
 	s.log("shutdown gracioso iniciado — %d run(s) em curso a drenar (nao aceita novos)", inflight)
@@ -536,16 +548,17 @@ func (s *NodeService) InProgress() []string {
 }
 
 // Draining indica se o shutdown gracioso já começou (ou seja, se [Submit] já recusa
-// novos runs com [ErrServiceShuttingDown]). Lê o MESMO flag privado `closed` que o
-// Shutdown arma, sob o mutex do serviço — NÃO duplica o estado de drain nem introduz
-// um segundo sinal que pudesse divergir do que governa a admissão de runs. É a fonte
-// única de verdade que a sonda de prontidão (/readyz) consulta para virar 503 durante
+// novos runs com [ErrServiceShuttingDown]). Lê o espelho atómico `draining` — armado
+// SOB o mutex no MESMO ponto que o `closed` que governa a admissão (ver [Shutdown]),
+// e monotónico (o drain nunca reverte), pelo que NÃO pode divergir do estado que
+// recusa runs. A leitura é lock-free de propósito: a sonda de prontidão (/readyz) pode
+// ser sondada à frequência de um probe sem contender com o `s.mu` que serializa a
+// admissão/conclusão de runs — simétrico a [eventstore.Store.Healthy], que foi feito
+// atómico pela mesma razão. É esta a fonte que /readyz consulta para virar 503 durante
 // o drain (o orquestrador deixa de encaminhar tráfego novo), enquanto a liveness
 // (/healthz) permanece 200 até o processo sair.
 func (s *NodeService) Draining() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.closed
+	return s.draining.Load()
 }
 
 // InProgressCount devolve o número de runs em curso.
