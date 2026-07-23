@@ -101,10 +101,27 @@ read-path do nó, sem a camada de apresentação web.
       ilimitada, drop só de consumidor genuinamente preso — sem falso-drop no backfill grande); tecto
       de streams concorrentes por-nó (429); posse exigida (404 uniforme não-enumerável para run
       desconhecido). Só stdlib; sem segredos; suite `-race` verde. A **authz por-chamador do payload
-      (D7)** e o **selo WORM de leitura sensível (D6)** ficam para **AOS-172** — barrados no ingresso
-      pelo bind-guardrail de AOS-166.)*
-- [ ] **Soberania/conformidade** (E7): read-path soberano (D7), selo WORM de leitura sensível no SSE
+      (D7)** e o **selo WORM de leitura sensível (D6)** foram **ENTREGUES em AOS-172** — no interim
+      (AOS-167) barrados no ingresso pelo bind-guardrail de AOS-166.)*
+- [x] **Soberania/conformidade** (E7): read-path soberano (D7), selo WORM de leitura sensível no SSE
       (D6), DSAR/crypto-shredding (ADR-011) — AOS-172. (Não gated por D4.)
+      *(AOS-172 ENTREGUE: **(D7)** read-path soberano fail-closed no nó — `handleGet`/`handleTrajectory`
+      resolvem principal+board e compõem `pdp.applySovereignty` (board→região via `govsov.Registry`);
+      board vazio/desconhecido/região não-resolvível/credencial de leitor ausente ⇒ **NEGA** 404/403
+      uniforme não-enumerável. Registo board→região **DEMO-GRADE self-hosted** por config
+      (`AOS_BOARD_REGIONS`, default `board:aos-demo=eu`); malformado ⇒ aborta o arranque
+      (`ErrBadBoardRegions`), `AOS_MODE=production` sem soberania ⇒ recusa (`ErrProductionNeedsSovereignRead`).
+      **(D6)** selo WORM de leitura sensível na hash-chain `platform/audit` (só ids/metadados/hashes/
+      board/região — nunca PII). **(DSAR)** `governance/dsar.Flow.Receive` liga crypto-shredding
+      (Art.17): re-consulta `HoldOracle` imediatamente antes do `Shred` (legal hold suspende o
+      apagamento, fail-closed), `subject_id` validado como pseudónimo opaco antes de selar na WORM.
+      Só stdlib; sem segredos; `-race` verde. **DEFERIDO (eixo topologia):** o provisionamento REAL de
+      regiões/boards (IdP de soberania da org) fica para **EPIC-09/10** — a REGRA fail-closed é FIXA
+      (Carta §4), a TOPOLOGIA é condicional a org-provisioning, análogo ao tratamento de D4 para
+      identidade. Também deferido: verificação `leitor.região==run.região` no selo (exige residência
+      board→região por-run) e erasure unificada sobre o conteúdo dos runs no Event Store (exige cifra
+      por-titular do substrato). Credencial FORTE do leitor/operador DSAR (OIDC/mTLS) deferida ao IdP
+      de soberania — headers `X-Aos-Reader`/`X-Aos-Board` demo-grade declarados.)*
 - [ ] **Empacotamento deployável**: contentor distroless/non-root/read-only, com **ADR-017**
       (supply-chain: binário zero-dep, SBOM+proveniência, gates na entrega) — AOS-168.
 - [ ] **Aceitação sistémica NÃO-vacuosa** (E6): e2e com um **modelo que EMITE tool calls** (prova o
@@ -124,7 +141,7 @@ read-path do nó, sem a camada de apresentação web.
 | AOS-166 | API HTTP stdlib: submeter *goal* + controlo **AUTENTICADO** (steer/approve); bind não-loopback recusado sem authn | feature | M | P1 | AOS-164a, **AOS-160** |
 | AOS-167 | SSE de trajectória: `StateProjector`→SSE + backfill + resume-from-seq + dedup **+ backpressure** (D3), streaming por seq | feature | **L** | P1 | AOS-166 |
 | AOS-171 | **Health/readiness** (E5): `/healthz`·`/readyz` (bloqueia o Dockerfile) | feature | S | P1 | AOS-164a |
-| AOS-172 | **Soberania/conformidade** (E7): read-path soberano (D7) + selo WORM de leitura no SSE (D6) + DSAR/crypto-shredding | feature | M | P1 | AOS-167, AOS-170, EPIC-09/10 |
+| AOS-172 | **Soberania/conformidade** (E7): read-path soberano (D7) + selo WORM de leitura no SSE (D6) + DSAR/crypto-shredding — **ENTREGUE** (topologia real de regiões/boards deferida a EPIC-09/10) | feature | M | P1 | AOS-167, AOS-170, EPIC-09/10 |
 | AOS-173 | **Observabilidade** (E7): `otel-genai` (spans+custo) + WORM ligados por OTLP | feature | M | P1 | AOS-163 |
 | AOS-168 | Empacotamento do nó: distroless/non-root/read-only + **ADR-017** (SBOM+proveniência) | feature | S | P1 | AOS-164a, AOS-171, EPIC-10 |
 | AOS-169 | Aceitação sistémica **não-vacuosa** (E6): modelo que emite tools + caminho permitido + contentor real + abuso HTTP + checklist §13 nomeado | chore | M | P0 | AOS-166, AOS-167, AOS-172 |
@@ -489,7 +506,7 @@ tarde vê o histórico), **resume-from-seq** (reconexão sem lacunas) e **dedup 
 - [x] Transporte fail-safe: a ligação sobrevive ao `WriteTimeout` do servidor (write-deadline anulado
       no arranque, re-armado só à volta de cada escrita); backpressure por progresso-de-escrita (sem
       falso-drop no backfill grande); tecto de streams concorrentes (429); posse exigida (404 uniforme
-      não-enumerável). *(authz por-chamador D7 + selo WORM de leitura D6 = **AOS-172**.)*
+      não-enumerável). *(authz por-chamador D7 + selo WORM de leitura D6 = **AOS-172**, ENTREGUE.)*
 
 ### Detalhes Técnicos
 
@@ -503,7 +520,7 @@ tarde vê o histórico), **resume-from-seq** (reconexão sem lacunas) e **dedup 
 
 - [x] SSE de trajectória com backfill/resume/dedup + transporte fail-safe + backpressure sem
       falso-drop + tecto de concorrência + posse não-enumerável; só stdlib; sem segredos; `-race`
-      verde. *(authz D7 + selo WORM D6 = **AOS-172**.)*
+      verde. *(authz D7 + selo WORM D6 = **AOS-172**, ENTREGUE.)*
 
 ### Handoff para Claude Code
 

@@ -498,6 +498,31 @@ func TestDSARIdempotent(t *testing.T) {
 	}
 }
 
+// TestDSARRejectsNonPseudonymSubject prova a defesa em profundidade contra PII acidental: um
+// subject_id com forma de PII (ex.: um email) é REJEITADO (400) ANTES de ser selado VERBATIM
+// na hash-chain WORM imutável — que o crypto-shredding não consegue remover. Nada é forwardado
+// ao fluxo: a partição governance.dsar não ganha nenhum selo.
+func TestDSARRejectsNonPseudonymSubject(t *testing.T) {
+	node := newGovNode(t, &countingModel{})
+	svc, _ := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute))
+	h, _ := NewAPIHandler(svc, node)
+
+	part := "governance.dsar"
+	before, _ := node.WORM.Head(context.Background(), part)
+
+	for _, bad := range []string{"alice@example.com", "Alice Smith", "café", "x\ty"} {
+		rec := postReq(h, "/dsar/erase", dsarRequestWire{RequestID: "r", SubjectID: bad}, govHeaders())
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("subject_id nao-pseudonimo %q devia dar 400, veio %d (%s)", bad, rec.Code, rec.Body.String())
+		}
+	}
+	// NENHUM selo foi encadeado (o pedido nunca alcançou o fluxo ⇒ nada imutavelmente selado).
+	after, _ := node.WORM.Head(context.Background(), part)
+	if after != before {
+		t.Fatalf("um subject_id rejeitado NAO devia selar nada no WORM: head %d -> %d", before, after)
+	}
+}
+
 // TestDSAREndpointRequiresAuth prova que o endpoint DSAR é fail-closed: sem credencial de
 // governação (principal+board) ⇒ 403; board desconhecido ⇒ 403.
 func TestDSAREndpointRequiresAuth(t *testing.T) {

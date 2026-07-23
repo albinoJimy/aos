@@ -121,6 +121,14 @@ func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
 // É uma PRÉ-CONDIÇÃO de conformidade — o chamador NEGA a leitura fail-closed se esta devolver
 // erro (o WORM não selou). Só metadados/ids entram no selo; o board é identificador de
 // governação (não PII) e a região é a fronteira resolvida.
+//
+// SEMÂNTICA do Resource.Region (declarada — para NÃO ler enganosamente em compliance):
+// a região selada é a que o BOARD DO LEITOR resolve (govsov.RegionFor), NÃO a residência
+// real dos dados do run. Ao contrário de [pdp.PDP.applySovereignty] (que vincula o board do
+// RECURSO), o read-path do nó ainda não rastreia board→região POR-RUN, pelo que o selo afirma
+// a região DECLARADA pelo leitor. Quando o board→região por-run existir (provisioning real,
+// EPIC-09/10) acrescenta-se a verificação de coincidência (leitor.região == run.região)
+// fail-closed, alinhando com [govsov.Registry] — DEFERIDO, análogo ao tratamento de D4.
 func (g *readGovernance) seal(ctx context.Context, id readerIdentity, runID, capability string) error {
 	rec := audit.AuditRecord{
 		Partition:  readAuditPartition(runID),

@@ -52,6 +52,36 @@ type dsarRequestWire struct {
 	SubjectID string `json:"subject_id"`
 }
 
+// maxSubjectIDLen limita o comprimento do subject_id pseudónimo aceite. Um pseudónimo opaco
+// (ex.: um ULID/UUID/hash com prefixo de namespace) cabe folgadamente; valores muito longos
+// são suspeitos de transportar dado pessoal em texto-livre.
+const maxSubjectIDLen = 128
+
+// validPseudonym impõe o contrato "subject_id é pseudónimo OPACO" na fronteira do endpoint,
+// para reduzir o risco de PII acidental ficar IMUTAVELMENTE selada no WORM tamper-evident (que
+// o crypto-shredding não consegue remover). Aceita apenas um charset opaco conservador —
+// letras/dígitos ASCII e os separadores '-', '_', ':', '.' (cobre ULID/UUID/hash namespaced)
+// — e um comprimento limitado. Rejeita '@' (emails), espaços/nomes, não-ASCII e pontuação
+// livre, típicos de PII. É defesa em profundidade, NÃO uma prova de que o valor é pseudónimo:
+// a garantia forte (pseudonimização na origem) vive no IdP de soberania (EPIC-09/10).
+func validPseudonym(s string) bool {
+	if len(s) == 0 || len(s) > maxSubjectIDLen {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-', r == '_', r == ':', r == '.':
+			// carácter opaco permitido
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // dsarResponse é o desfecho SEM PII de um pedido DSAR: se foi apagado ou BLOQUEADO (legal
 // hold), os rótulos dos stores destruídos e os audit_seq selados (prova de auditabilidade).
 type dsarResponse struct {
@@ -102,6 +132,18 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 	var req dsarRequestWire
 	if status, ok := h.decodeJSON(w, r, &req); !ok {
 		writeError(w, status, "corpo invalido")
+		return
+	}
+
+	// (4b) CONTRATO do pseudónimo (defesa em profundidade). O SubjectID é selado VERBATIM na
+	// hash-chain WORM imutável (Resource.Value) — que o próprio crypto-shredding NÃO consegue
+	// remover (a cadeia é append-only/tamper-evident). Se um chamador enviar por engano PII
+	// real (email/nome) como subject_id, esse valor ficaria PERMANENTEMENTE selado. Impõe-se
+	// aqui o contrato "subject_id é pseudónimo opaco": rejeita comprimentos/charsets típicos de
+	// PII ANTES de encaminhar para o fluxo. Um subject_id vazio segue para o fluxo (que devolve
+	// ErrNoSubject ⇒ "em falta"), preservando a mensagem existente.
+	if req.SubjectID != "" && !validPseudonym(req.SubjectID) {
+		writeError(w, http.StatusBadRequest, "subject_id invalido (esperado pseudonimo opaco)")
 		return
 	}
 

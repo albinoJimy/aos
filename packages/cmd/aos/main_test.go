@@ -56,6 +56,82 @@ func TestRunProductionWithTrustAnchorSucceeds(t *testing.T) {
 	}
 }
 
+// TestParseBoardRegions prova o fail-closed de CONFIG da soberania de leitura (AOS-172, D7):
+// vazio ⇒ (nil, nil) legado deliberado; entrada MALFORMADA não-vazia ⇒ erro (aborta, nunca
+// degrada em silêncio); segmentos vazios (vírgula final) tolerados.
+func TestParseBoardRegions(t *testing.T) {
+	t.Parallel()
+	okCases := []struct {
+		name string
+		in   string
+		want map[string]string
+	}{
+		{"vazio", "", nil},
+		{"so espacos", "   ", nil},
+		{"um par", "board:a=eu", map[string]string{"board:a": "eu"}},
+		{"varios pares", "board:a=eu,board:b=us", map[string]string{"board:a": "eu", "board:b": "us"}},
+		{"virgula final toleravel", "board:a=eu,", map[string]string{"board:a": "eu"}},
+		{"espacos internos", " board:a = eu ", map[string]string{"board:a": "eu"}},
+	}
+	for _, c := range okCases {
+		got, err := parseBoardRegions(c.in)
+		if err != nil {
+			t.Fatalf("%s: parseBoardRegions(%q) devia ter sucesso, veio erro %v", c.name, c.in, err)
+		}
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: mapa %v != esperado %v", c.name, got, c.want)
+		}
+		for k, v := range c.want {
+			if got[k] != v {
+				t.Fatalf("%s: got[%q]=%q, esperado %q", c.name, k, got[k], v)
+			}
+		}
+	}
+	badCases := []struct {
+		name string
+		in   string
+	}{
+		{"sem igual (typo)", "aos-demo"},
+		{"par sem igual no meio", "board:a=eu,aos-demo"},
+		{"board vazio", "=eu"},
+		{"regiao vazia", "board:a="},
+		{"so virgulas", ",,"},
+	}
+	for _, c := range badCases {
+		got, err := parseBoardRegions(c.in)
+		if !errors.Is(err, ErrBadBoardRegions) {
+			t.Fatalf("%s: parseBoardRegions(%q) devia abortar com ErrBadBoardRegions, veio (%v, %v)", c.name, c.in, got, err)
+		}
+		if got != nil {
+			t.Fatalf("%s: uma config invalida NAO devia devolver mapa (fail-closed), veio %v", c.name, got)
+		}
+	}
+}
+
+// TestRunRejectsMalformedBoardRegions prova o fail-closed no ENTRYPOINT: um AOS_BOARD_REGIONS
+// malformado (typo) ABORTA o arranque em vez de silenciosamente abrir o read-path (sem authz
+// D7 nem selo D6). Simetria com ErrBadIssuerPubKey.
+func TestRunRejectsMalformedBoardRegions(t *testing.T) {
+	t.Setenv("AOS_BOARD_REGIONS", "aos-demo") // typo: falta o '='
+
+	if err := run(io.Discard); !errors.Is(err, ErrBadBoardRegions) {
+		t.Fatalf("AOS_BOARD_REGIONS malformado devia abortar com ErrBadBoardRegions, veio: %v", err)
+	}
+}
+
+// TestRunProductionRequiresSovereignRead prova que a produção NÃO pode servir o read-path
+// legado: AOS_MODE=production com a soberania de leitura DELIBERADAMENTE desligada
+// (AOS_BOARD_REGIONS vazio explícito) aborta com ErrProductionNeedsSovereignRead — a par da
+// exigência de identidade endurecida.
+func TestRunProductionRequiresSovereignRead(t *testing.T) {
+	t.Setenv("AOS_MODE", "production")
+	t.Setenv("AOS_BOARD_REGIONS", "") // opt-out explícito ⇒ recusado em produção
+
+	if err := run(io.Discard); !errors.Is(err, ErrProductionNeedsSovereignRead) {
+		t.Fatalf("production sem soberania de leitura devia abortar com ErrProductionNeedsSovereignRead, veio: %v", err)
+	}
+}
+
 // TestServeAPIRefusesNonLoopbackWithoutAuth prova que o BIND-GUARDRAIL corre no CAMINHO DE
 // PRODUÇÃO (o wiring de AOS-166): serveAPI — a função que o entrypoint invoca quando
 // AOS_API_ADDR está definido — RECUSA um bind não-loopback quando o canal de controlo não

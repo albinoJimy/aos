@@ -565,6 +565,14 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// do nó como EventSealer (received/key_destroyed/blocked selados SEM PII). O mesmo
 	// [*audit.Shredder] satisfaz HoldOracle (Held) E ShreddableKeyStore (via dsar.AuditStore) —
 	// a governança não é reimplementada, só cabelada no nó.
+	//
+	// FRONTEIRA de COBERTURA (declarada — NÃO re-litigar): a erasure DSAR do nó destrói a KEK
+	// por-titular do VAULT DEMO-GRADE. O conteúdo dos runs que o [eventstore.Store] persiste
+	// (objective/system/prompt dos turnos) é HOJE guardado em texto-claro e NÃO cifrado por
+	// titular, pelo que o crypto-shredding NÃO o torna ilegível. A erasure "unificada" real do
+	// substrato (cifra por-titular do EventStore + registo das partições/streams do titular no
+	// DSARIndex) fica DEFERIDA para a cifra do substrato (EPIC-06/09/10), análogo ao tratamento
+	// de D4 para identidade. O banner declara esta fronteira explicitamente.
 	dsarVault := audit.NewInMemoryKeyVault(nil)
 	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
 	dsarHolds := audit.NewLegalHold()
@@ -604,10 +612,12 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	log("substrato: %s", substrateMode(cfg))
 	if readRegions != nil {
 		log("soberania de leitura (AOS-172, D7): READ-PATH SOBERANO FAIL-CLOSED ligado — %d board(s) no registo GOV DEMO-GRADE (board→regiao); leitura sensivel SELADA no WORM (D6). Provisioning real de regioes/boards DEFERIDO (EPIC-09/10)", readRegions.Len())
+		log("NOTA D6: o selo grava a regiao do BOARD DO LEITOR (nao a residencia por-run do dado); a verificacao de coincidencia leitor.regiao==run.regiao fica DEFERIDA ate haver board->regiao por-run (EPIC-09/10)")
 	} else {
 		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed DEMO-GRADE")
 	}
 	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
+	log("AVISO DSAR: a erasure destroi a KEK por-titular do VAULT DEMO-GRADE; o conteudo dos runs no Event Store (texto-claro, nao cifrado por-titular) fica FORA do alcance do shredding — cifra por-titular do substrato DEFERIDA (EPIC-06/09/10)")
 	if tracingEnabled {
 		if otlpExp != nil {
 			log("observabilidade OTLP (AOS-173): tracer REAL -> exporter OTLP/HTTP fail-open (spans invoke_agent/chat[+custo]/execute_tool/freeze + selos WORM)")

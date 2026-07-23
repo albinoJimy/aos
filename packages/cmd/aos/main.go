@@ -28,6 +28,21 @@ var ErrProductionNeedsHardenedIdentity = errors.New("aos: AOS_MODE=production ex
 // (32 bytes em hex). Fail-closed: um anchor malformado nunca compõe o verifier.
 var ErrBadIssuerPubKey = errors.New("aos: AOS_ISSUER_PUBKEY invalida (esperado 64 hex chars = 32 bytes ed25519)")
 
+// ErrBadBoardRegions — AOS_BOARD_REGIONS presente mas com uma entrada MALFORMADA (sem '=',
+// ou com board/região vazios). Fail-closed de CONFIG da soberania de leitura (AOS-172, D7):
+// distingue "não configurado" (vazio ⇒ read-path legado deliberado) de "configurado mas
+// inválido" (aborta). Um operador que TENCIONA ligar a soberania mas comete um typo (ex.:
+// "aos-demo" sem '=') NÃO obtém um nó que serve TODAS as leituras sem authz por-chamador
+// (D7) nem selo (D6) — a ambiguidade de soberania NEGA o arranque, coerente com o resto do
+// fail-closed do boot (ErrProductionNeedsHardenedIdentity, ErrBadIssuerPubKey).
+var ErrBadBoardRegions = errors.New("aos: AOS_BOARD_REGIONS invalida (esperado \"board=regiao,board2=regiao2\" — entrada malformada aborta em vez de degradar silenciosamente para o read-path aberto)")
+
+// ErrProductionNeedsSovereignRead — sob AOS_MODE=production a soberania de leitura NÃO pode
+// estar desligada por engano: exige-se um registo board→região NÃO-VAZIO (a par de
+// ErrProductionNeedsHardenedIdentity para a identidade). Um nó de produção nunca serve o
+// read-path LEGADO (sem authz por-chamador D7 nem selo D6) — fail-closed.
+var ErrProductionNeedsSovereignRead = errors.New("aos: AOS_MODE=production exige AOS_BOARD_REGIONS nao-vazio (read-path soberano fail-closed) — a producao nao serve leituras sem authz por-chamador nem selo WORM")
+
 // main arranca o nó `aos` de PRODUÇÃO a partir de config de ambiente e declara o modo
 // de identidade em vigor. O loop de serviço long-running (hospedar N runs, shutdown
 // gracioso) é AOS-164; aqui prova-se o BOOTSTRAP fail-closed e a declaração do modo
@@ -51,6 +66,30 @@ func run(w io.Writer) error {
 	issuerID := envOr("AOS_ISSUER_ID", "iss:aos-node")
 	humans := splitCSV(envOr("AOS_HUMANS", "operator"))
 	production := strings.EqualFold(strings.TrimSpace(os.Getenv("AOS_MODE")), "production")
+
+	// SOBERANIA DE LEITURA (AOS-172, D7) — config fail-closed, sem degradação silenciosa.
+	// Distingue TRÊS estados (LookupEnv, não envOr — envOr colapsaria "não definido" com
+	// "definido vazio"):
+	//   - NÃO DEFINIDO ⇒ default DEMO ("board:aos-demo=eu"): a soberania de leitura está LIGADA
+	//     no caminho comum (o `aos serve` de referência é fail-closed por omissão);
+	//   - DEFINIDO VAZIO ⇒ nil: opt-out DELIBERADO do read-path legado (aceite só fora de produção);
+	//   - DEFINIDO MALFORMADO (entrada não-vazia inválida) ⇒ ABORTA (ErrBadBoardRegions): um typo
+	//     (ex.: "aos-demo" sem '=') NÃO degrada em silêncio para o read-path aberto.
+	rawBoardRegions, ok := os.LookupEnv("AOS_BOARD_REGIONS")
+	if !ok {
+		rawBoardRegions = "board:aos-demo=eu"
+	}
+	boardRegions, err := parseBoardRegions(rawBoardRegions)
+	if err != nil {
+		return err
+	}
+	// FAIL-CLOSED de produção: a soberania de leitura NÃO pode estar desligada num nó de
+	// produção (a par da identidade endurecida, ErrProductionNeedsHardenedIdentity). Sem
+	// registo board→região não-vazio, a produção serviria o read-path LEGADO sem authz
+	// por-chamador (D7) nem selo (D6) — recusa o arranque.
+	if production && len(boardRegions) == 0 {
+		return ErrProductionNeedsSovereignRead
+	}
 
 	// Trust-anchor-only ENDURECIDO: se AOS_ISSUER_PUBKEY estiver presente, o nó recebe só
 	// a pubkey do issuer (a autoridade/chave vivem FORA do processo). É o modo de fronteira
@@ -86,10 +125,11 @@ func run(w io.Writer) error {
 		},
 		// SOBERANIA DE LEITURA (AOS-172, D7). Registo board→região DEMO-GRADE self-hosted por
 		// ambiente (AOS_BOARD_REGIONS = "board=regiao,board2=regiao2"), com um board demo por
-		// omissão. A REGRA fail-closed é FIXA; o provisioning real de regiões/boards fica
-		// DEFERIDO (EPIC-09/10). Ligar isto torna o read-path soberano fail-closed E o selo WORM
-		// de leitura sensível (D6) — os clientes de leitura têm de declarar X-Aos-Reader/X-Aos-Board.
-		BoardRegions: parseBoardRegions(envOr("AOS_BOARD_REGIONS", "board:aos-demo=eu")),
+		// omissão. Já validado fail-closed acima (vazio ⇒ legado; malformado ⇒ abortou). A REGRA
+		// fail-closed é FIXA; o provisioning real de regiões/boards fica DEFERIDO (EPIC-09/10).
+		// Ligar isto torna o read-path soberano fail-closed E o selo WORM de leitura sensível (D6)
+		// — os clientes de leitura têm de declarar X-Aos-Reader/X-Aos-Board.
+		BoardRegions: boardRegions,
 		// Observabilidade OTLP (AOS-173): vazio ⇒ NoopTracer (default, zero overhead);
 		// presente ⇒ o nó exporta traces (invoke_agent/chat[+custo]/execute_tool/freeze +
 		// selos WORM) via OTLP/HTTP. Um endpoint malformado aborta o arranque (fail-closed).
@@ -188,26 +228,42 @@ func parseEd25519PubHex(raw string) (ed25519.PublicKey, error) {
 }
 
 // parseBoardRegions interpreta a config DEMO-GRADE do registo board→região (AOS-172, D7) na
-// forma "board=regiao,board2=regiao2". Entradas malformadas (sem '=') ou com board/região
-// vazios são descartadas — coerente com o fail-closed de [govsov.NewRegistry] (uma entrada
-// ambígua nunca cria uma fronteira de soberania indefinida). Vazio ⇒ nil (read-path legado).
-func parseBoardRegions(s string) map[string]string {
+// forma "board=regiao,board2=regiao2". FAIL-CLOSED e sem degradação silenciosa:
+//
+//   - VAZIO (ou só espaços) ⇒ (nil, nil): "não configurado", read-path legado DELIBERADO.
+//   - segmentos VAZIOS entre vírgulas (ex.: vírgula final) são tolerados (ruído de formatação).
+//   - qualquer entrada NÃO-VAZIA MALFORMADA (sem '=', ou board/região vazios) ⇒ (nil,
+//     [ErrBadBoardRegions]): "configurado mas inválido", ABORTA. Um typo (ex.: "aos-demo"
+//     sem '=') NÃO é descartado em silêncio para depois abrir TODAS as leituras sem authz
+//     (D7) nem selo (D6) — a ambiguidade de soberania NEGA, coerente com o resto do boot.
+//
+// Coerente com o fail-closed de [govsov.NewRegistry] (que também descarta board/região
+// vazios) mas mais estrito na FRONTEIRA de config: aqui um valor inválido aborta o arranque
+// em vez de silenciosamente resultar num registo vazio ⇒ read-path aberto.
+func parseBoardRegions(s string) (map[string]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil // não configurado ⇒ legado deliberado (não é um erro).
+	}
 	out := make(map[string]string)
 	for _, pair := range strings.Split(s, ",") {
+		if strings.TrimSpace(pair) == "" {
+			continue // segmento vazio (ex.: vírgula final) ⇒ ruído tolerável, não um typo.
+		}
 		kv := strings.SplitN(pair, "=", 2)
 		if len(kv) != 2 {
-			continue
+			return nil, fmt.Errorf("%w: entrada %q sem '=' (esperado board=regiao)", ErrBadBoardRegions, strings.TrimSpace(pair))
 		}
 		board, region := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
 		if board == "" || region == "" {
-			continue
+			return nil, fmt.Errorf("%w: entrada %q com board ou regiao vazios", ErrBadBoardRegions, strings.TrimSpace(pair))
 		}
 		out[board] = region
 	}
 	if len(out) == 0 {
-		return nil
+		// Só houve segmentos vazios (ex.: ",," ou ", ") — configurado mas sem entrada válida.
+		return nil, fmt.Errorf("%w: nenhuma entrada valida em %q", ErrBadBoardRegions, s)
 	}
-	return out
+	return out, nil
 }
 
 // splitCSV divide uma lista separada por vírgulas, descartando vazios e espaços.
