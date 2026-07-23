@@ -86,8 +86,18 @@ setup_env() {
 # --- Descoberta de módulos Go -------------------------------------------------
 # Ecoa os directórios de módulo (dir que contém go.mod), rel. a REPO_ROOT,
 # ordenados. Descoberto dinamicamente — SEM hardcode frágil.
+#
+# AOS_EXTRA_GATE_MODULES (opt-in, separado por espaços): módulos que SHIPAM mas vivem FORA de
+# packages/ (ex.: deploy/node/healthprobe, empacotado na imagem — AOS-168). A cadeia de entrega
+# (scripts/ci/package.sh) define-o para estender a fronteira do gate a tudo o que shipa; a CI
+# global NÃO o define, pelo que o varrimento por-módulo default fica inalterado.
 discover_modules() {
-  ( cd "$REPO_ROOT" && find packages -name go.mod -print | sed 's#/go.mod$##' | sort )
+  {
+    ( cd "$REPO_ROOT" && find packages -name go.mod -print | sed 's#/go.mod$##' )
+    if [ -n "${AOS_EXTRA_GATE_MODULES:-}" ]; then
+      printf '%s\n' ${AOS_EXTRA_GATE_MODULES}
+    fi
+  } | sort
 }
 
 # --- Instalação idempotente de ferramentas (go install pinado) ----------------

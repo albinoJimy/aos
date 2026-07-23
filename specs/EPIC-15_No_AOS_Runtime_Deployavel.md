@@ -122,8 +122,29 @@ read-path do nó, sem a camada de apresentação web.
       board→região por-run) e erasure unificada sobre o conteúdo dos runs no Event Store (exige cifra
       por-titular do substrato). Credencial FORTE do leitor/operador DSAR (OIDC/mTLS) deferida ao IdP
       de soberania — headers `X-Aos-Reader`/`X-Aos-Board` demo-grade declarados.)*
-- [ ] **Empacotamento deployável**: contentor distroless/non-root/read-only, com **ADR-017**
+- [x] **Empacotamento deployável**: contentor distroless/non-root/read-only, com **ADR-017**
       (supply-chain: binário zero-dep, SBOM+proveniência, gates na entrega) — AOS-168.
+      *(**AOS-168 ENTREGUE** (dev + remediação pós-auditoria). `deploy/node/Dockerfile` multi-stage:
+      **builder** `golang:1.24.5-bookworm` (pinado por **digest**) compila `CGO_ENABLED=0 GOPROXY=off
+      -trimpath -ldflags="-s -w -buildid="` o binário do nó (estático, zero-dep externa além de
+      cedar-go; `go mod verify` do `go.sum` pinado) + o `aos-healthprobe` (stdlib-only); **final**
+      `gcr.io/distroless/static-debian12:nonroot` (pinado por **digest**), só os dois binários, sem
+      shell/package-manager. **Pontos 1/2/4 de ADR-017 VERDES** (prova na imagem construída:
+      `USER=65532:65532` non-root numérico, `docker run --read-only` ⇒ `Running=true`+`ReadonlyRootfs=true`,
+      `/bin/sh` ausente, `Config.Volumes=map[]` sem VOLUME implícito, sem `*.pem`/`*.key`/`*.env` nem
+      `PRIVATE KEY` nas layers; `HEALTHCHECK` via probe estático contra `/healthz` (AOS-171), porta
+      derivada de `AOS_API_ADDR`; estado durável AOS-170 só em mount gravável explícito `-v
+      aos-data:/var/lib/aos`, nunca no root-fs). Gates de entrega FAIL-CLOSED em
+      `scripts/ci/package.sh` (reutiliza `secrets.sh`/`sast.sh`/`sca.sh` — baseline multiset — +
+      `sbom.sh`; `AOS_EXTRA_GATE_MODULES` estende a cobertura ao healthprobe SÓ na cadeia de entrega,
+      CI global inalterada). **Ponto 3 na forma MÍNIMA declarada**: `scripts/ci/sbom.sh` extrai o
+      subject do binário que a IMAGEM carrega (não um rebuild do host), emite SBOM (`go version -m`) +
+      proveniência não-assinada com `reproducible=false`+`reproducibilityCheck` honesto; **assinatura
+      da atestação + registry assinado = EPIC-10** (`signature.status=DEFERIDO-EPIC-10`, declarado nos
+      labels da imagem). **Ponto 5 respeitado**: a chave do issuer (AOS-156) NUNCA na imagem — vem do
+      vault em runtime (ADR-006). Build-verify da imagem executado neste ambiente (Docker 28.5.1); num
+      ambiente sem rede para o pull da base, o Dockerfile fica entregue e o build-verify remete para
+      ambiente com rede.)*
 - [ ] **Aceitação sistémica NÃO-vacuosa** (E6): e2e com um **modelo que EMITE tool calls** (prova o
       caminho PERMITIDO, não só a negação), **contentor real** com kill+reinício sem duplicação,
       bateria de abuso HTTP, e um **checklist NOMEADO de cada critério `00_System_Spec.md §13`**
@@ -143,7 +164,7 @@ read-path do nó, sem a camada de apresentação web.
 | AOS-171 | **Health/readiness** (E5): `/healthz`·`/readyz` (bloqueia o Dockerfile) | feature | S | P1 | AOS-164a |
 | AOS-172 | **Soberania/conformidade** (E7): read-path soberano (D7) + selo WORM de leitura no SSE (D6) + DSAR/crypto-shredding — **ENTREGUE** (topologia real de regiões/boards deferida a EPIC-09/10) | feature | M | P1 | AOS-167, AOS-170, EPIC-09/10 |
 | AOS-173 | **Observabilidade** (E7): `otel-genai` (spans+custo) + WORM ligados por OTLP | feature | M | P1 | AOS-163 |
-| AOS-168 | Empacotamento do nó: distroless/non-root/read-only + **ADR-017** (SBOM+proveniência) | feature | S | P1 | AOS-164a, AOS-171, EPIC-10 |
+| AOS-168 | Empacotamento do nó: distroless/non-root/read-only + **ADR-017** (SBOM+proveniência) — **ENTREGUE** (pontos 1/2/4 verdes; ponto 3 mínimo declarado; assinatura/registry = EPIC-10) | feature | S | P1 | AOS-164a, AOS-171, EPIC-10 |
 | AOS-169 | Aceitação sistémica **não-vacuosa** (E6): modelo que emite tools + caminho permitido + contentor real + abuso HTTP + checklist §13 nomeado | chore | M | P0 | AOS-166, AOS-167, AOS-172 |
 
 Estimativas XS/S/M/L (XL proibido). Prioridades P0/P1/P2. Toda a Fase 5 — Operacionalização.

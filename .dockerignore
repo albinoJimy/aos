@@ -1,0 +1,61 @@
+# .dockerignore — minimiza o contexto de build (raiz do repo) e EVITA VAZAR material
+# sensível ou irrelevante para as layers. O contexto SÓ precisa da árvore packages/
+# (para os replaces relativos) e de deploy/node/healthprobe.
+#
+# Regra: negar tudo o que não é necessário; NUNCA incluir segredos, .git ou .claude.
+
+# --- Nunca no contexto (fuga / ruído) ---
+.git/
+.gitignore
+.gitattributes
+.github/
+.claude/
+.vscode/
+.idea/
+.editorconfig
+
+# --- Segredos / credenciais (ADR-006) — nunca em nenhuma layer ---
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.pgp
+**/vault-token
+**/.vault-token
+**/secrets.tfvars
+**/*.secrets.tfvars
+
+# --- Infra / IaC / docs / specs (irrelevantes para compilar o binário) ---
+infra/
+docs/
+specs/
+tecnica/
+analises/
+coverage/
+scripts/
+
+# --- Artefactos de build / caches / binários ---
+**/vendor/
+**/node_modules/
+**/dist/
+**/build/
+bin/
+**/*.exe
+**/*.test
+**/*.out
+**/cover*.out
+**/coverage.out
+packages/_selftest_bad/
+packages/cmd/aos-demo/aos-demo
+
+# --- Logs / relatórios / temporários ---
+**/*.log
+*.md
+CHANGELOG.md
+
+# --- Terraform state (pode conter endpoints/segredos) ---
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
