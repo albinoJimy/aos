@@ -1,7 +1,9 @@
 package identity
 
 import (
+	"crypto"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -68,8 +70,16 @@ func b64enc(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func b64dec(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
 
-// signToken serializa header+claims e produz o JWS compacto assinado com priv.
-func signToken(priv ed25519.PrivateKey, kid string, claims Claims) (string, error) {
+// signToken serializa header+claims e produz o JWS compacto assinado ATRAVÉS de um
+// [crypto.Signer]. O Signer é a FRONTEIRA de custódia de chave: a chave privada pode
+// viver in-process (via de referência — ed25519.PrivateKey já implementa crypto.Signer)
+// ou num HSM/KMS externo (um adaptador do fornecedor implementa Public()+Sign; a chave
+// nunca sai do HSM). O Issuer nunca precisa dos bytes crus da chave.
+//
+// Ed25519 assina a MENSAGEM directamente (sem pré-hash): opts = crypto.Hash(0). O
+// rand.Reader é ignorado pelo ed25519 (a assinatura é determinística) mas é o contrato
+// crypto.Signer que os SDKs de HSM/KMS honram.
+func signToken(signer crypto.Signer, kid string, claims Claims) (string, error) {
 	hb, err := json.Marshal(header{Alg: algEdDSA, Typ: typNHI, Kid: kid})
 	if err != nil {
 		return "", err
@@ -79,7 +89,34 @@ func signToken(priv ed25519.PrivateKey, kid string, claims Claims) (string, erro
 		return "", err
 	}
 	signingInput := b64enc(hb) + "." + b64enc(pb)
-	sig := ed25519.Sign(priv, []byte(signingInput))
+	sig, err := signer.Sign(rand.Reader, []byte(signingInput), crypto.Hash(0))
+	if err != nil {
+		return "", err
+	}
+	// Fail-closed (forma): um signer que devolva uma assinatura de tamanho errado
+	// (double buggy, adaptador HSM mal-configurado, algoritmo trocado) NUNCA produz um
+	// token. Recusamos já na origem — nenhum bearer inválido chega a existir.
+	if len(sig) != ed25519.SignatureSize {
+		return "", ErrInvalidSigner
+	}
+	// Fail-closed (criptográfico) na ORIGEM: auto-verificar a assinatura contra a
+	// pubkey que o signer reporta. O gate de tamanho acima só prova FORMA (64 bytes);
+	// não prova que a assinatura VALIDA. Precisamente os modos de falha que a fronteira
+	// HSM/KMS aberta por AOS-175 torna prováveis — um adaptador em Ed25519ph (pré-hash
+	// SHA-512), um handle de chave errado (Sign com uma chave != à que Public() reporta),
+	// ou opts ignoradas — produzem 64 bytes que NÃO validam. Sem esta verificação esse
+	// token inválido seria devolvido ao chamador e só o verifier downstream o rejeitaria
+	// (falha longe da causa). Aqui recusa-se fail-closed com ErrInvalidSigner: nenhum
+	// bearer que a própria pubkey do issuer não verifique é alguma vez emitido. Custo: um
+	// ed25519.Verify (~µs). A pubkey é obtida de forma panic-safe (ver signerPublicKey):
+	// um signer patológico devolve o sentinela, nunca derruba o processo.
+	pub, perr := signerPublicKey(signer)
+	if perr != nil {
+		return "", perr
+	}
+	if !ed25519.Verify(pub, []byte(signingInput), sig) {
+		return "", ErrInvalidSigner
+	}
 	return signingInput + "." + b64enc(sig), nil
 }
 

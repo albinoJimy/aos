@@ -105,7 +105,7 @@ func (i *Issuer) IssueChild(ctx context.Context, parentCompact string, req Child
 		DelegationChain: childChain,
 	}
 
-	compact, err := signToken(i.priv, i.kid, claims)
+	compact, err := signToken(i.signer, i.kid, claims)
 	if err != nil {
 		return Token{}, err
 	}
@@ -131,7 +131,7 @@ func (i *Issuer) verifyParent(compact string) (Claims, error) {
 	if pt.claims.Issuer != i.iss {
 		return Claims{}, fmt.Errorf("%w: iss=%q", ErrUnknownIssuer, pt.claims.Issuer)
 	}
-	pub := i.priv.Public().(ed25519.PublicKey)
+	pub := i.pub
 	if !ed25519.Verify(pub, []byte(pt.signingInput), pt.signature) {
 		return Claims{}, ErrSignatureInvalid
 	}

@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -148,7 +149,7 @@ func TestIssueChild_ExpiredParentRejected(t *testing.T) {
 // mintOrphanToken forja um token assinado pelo emissor de teste cuja cadeia de
 // delegação tem uma raiz NÃO-humana (órfã). Serve para provar que o Verifier
 // nega mesmo um token com assinatura válida se a cadeia não resolver até humano.
-func mintOrphanToken(t *testing.T, priv []byte) string {
+func mintOrphanToken(t *testing.T, priv ed25519.PrivateKey) string {
 	t.Helper()
 	orphan := delegation.Chain{
 		{Sub: "agt-root", ActAs: "agt-1", Authority: []string{"cap:http.get"}, Depth: 0},

@@ -59,6 +59,13 @@ var (
 	// falta (ex.: user_id, agent_id ou jti vazios).
 	ErrInvalidRequest = &IdentityError{Code: "E_INVALID_REQUEST", msg: "pedido invalido (campos obrigatorios em falta)"}
 
+	// ErrInvalidSigner — o [crypto.Signer] fornecido ao Issuer (via
+	// [NewIssuerWithSigner]) é inválido: nil, com uma chave pública não-ed25519 (ou
+	// de tamanho errado), ou que produz uma assinatura de tamanho diferente de
+	// ed25519.SignatureSize. Fail-closed: sem um signer ed25519 válido não se emite
+	// NHI — a não-forjabilidade exige que a fronteira de assinatura seja íntegra.
+	ErrInvalidSigner = &IdentityError{Code: "E_INVALID_SIGNER", msg: "signer invalido (nil, pubkey nao-ed25519 ou assinatura de tamanho errado)"}
+
 	// ErrDelegationInvalid — a cadeia de delegação embebida no token é inválida:
 	// vazia, órfã (raiz não-humana), com escalada de autoridade ou com o
 	// encadeamento de hash quebrado. Envolve o erro sentinela do subpacote

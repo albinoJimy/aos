@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -44,12 +45,17 @@ type IssueRequest struct {
 	ParentScope []string
 }
 
-// Issuer emite tokens NHI assinados. Detém a chave privada ed25519 (mantida FORA
-// da árvore do repo — injectada ou gerada em runtime; nunca committada) e a
-// configuração por classe. Construir com [NewIssuer].
+// Issuer emite tokens NHI assinados. NÃO detém os bytes crus da chave privada: assina
+// ATRAVÉS de um [crypto.Signer] (a abstracão stdlib "a chave privada vive noutro sítio").
+// Na via de REFERÊNCIA o signer é uma ed25519.PrivateKey in-process (que já implementa
+// crypto.Signer); na via HSM/KMS o signer é um adaptador do fornecedor cuja chave NUNCA
+// entra no processo. O Issuer só retém a chave PÚBLICA (derivada do signer), a
+// configuração por classe e o kid. Construir com [NewIssuer] (chave ed25519 crua) ou
+// [NewIssuerWithSigner] (signer arbitrário — via HSM/KMS).
 type Issuer struct {
 	iss     string
-	priv    ed25519.PrivateKey
+	signer  crypto.Signer
+	pub     ed25519.PublicKey
 	kid     string
 	classes map[string]ClassPolicy
 	store   appender
@@ -91,12 +97,51 @@ func WithEventStore(store eventstore.EventStore) IssuerOption {
 	}
 }
 
-// NewIssuer constrói um emissor. iss identifica o emissor (tem de coincidir com
-// o trust anchor do [Verifier]); priv é a chave privada ed25519; classes é a
-// política por classe de agente. Uma chave inválida devolve erro.
+// NewIssuer constrói um emissor a partir de uma chave privada ed25519 CRUA — a via de
+// REFERÊNCIA (co-localizada), em que a chave vive in-process. iss identifica o emissor
+// (tem de coincidir com o trust anchor do [Verifier]); priv é a chave privada ed25519;
+// classes é a política por classe de agente. Uma chave inválida devolve
+// [ErrInvalidRequest].
+//
+// COMPATIBILIDADE: esta é a assinatura histórica e mantém-se inalterada. Uma
+// ed25519.PrivateKey JÁ implementa [crypto.Signer], pelo que esta função delega em
+// [NewIssuerWithSigner]. Para a via HSM/KMS (a chave privada vive fora do processo)
+// usar [NewIssuerWithSigner] directamente.
 func NewIssuer(iss string, priv ed25519.PrivateKey, classes map[string]ClassPolicy, opts ...IssuerOption) (*Issuer, error) {
-	if iss == "" || len(priv) != ed25519.PrivateKeySize {
+	// Validação da chave crua ANTES de a embrulhar: uma chave de tamanho errado é um
+	// pedido inválido (preserva o contrato/erro históricos desta via).
+	if len(priv) != ed25519.PrivateKeySize {
 		return nil, ErrInvalidRequest
+	}
+	return NewIssuerWithSigner(iss, priv, classes, opts...)
+}
+
+// NewIssuerWithSigner constrói um emissor que assina ATRAVÉS de um [crypto.Signer]
+// arbitrário — a via de CUSTÓDIA EXTERNA (AOS-175). O signer pode ser uma
+// ed25519.PrivateKey in-process OU um adaptador HSM/KMS cuja chave privada NUNCA entra
+// no processo (só Public() e Sign() são chamados; os bytes da chave nunca são pedidos).
+// É a fronteira que torna a NÃO-FORJABILIDADE real: o Issuer prova origem sem deter o
+// segredo.
+//
+// Fail-closed: recusa (com [ErrInvalidRequest] para iss vazio, [ErrInvalidSigner] para
+// o signer) um signer nil ou cuja Public() não seja uma ed25519.PublicKey de tamanho
+// correcto — o envelope do token é EdDSA/ed25519 e o verifier só aceita esse algoritmo,
+// logo um signer não-ed25519 nunca produziria um token verificável.
+func NewIssuerWithSigner(iss string, signer crypto.Signer, classes map[string]ClassPolicy, opts ...IssuerOption) (*Issuer, error) {
+	if iss == "" {
+		return nil, ErrInvalidRequest
+	}
+	if signer == nil {
+		return nil, ErrInvalidSigner
+	}
+	// signerPublicKey obtém e valida a pubkey de forma panic-safe: um chamador que
+	// contorne NewIssuer e passe uma ed25519.PrivateKey MALFORMADA (len<32) directamente
+	// aqui faria signer.Public() entrar em pânico (copy(pub, priv[32:]) — slice bounds).
+	// Converte-se qualquer signer patológico no sentinela fail-closed ErrInvalidSigner
+	// em vez de derrubar o processo.
+	pub, err := signerPublicKey(signer)
+	if err != nil {
+		return nil, err
 	}
 	cp := make(map[string]ClassPolicy, len(classes))
 	for k, v := range classes {
@@ -104,7 +149,8 @@ func NewIssuer(iss string, priv ed25519.PrivateKey, classes map[string]ClassPoli
 	}
 	i := &Issuer{
 		iss:     iss,
-		priv:    priv,
+		signer:  signer,
+		pub:     pub,
 		kid:     iss,
 		classes: cp,
 		now:     time.Now,
@@ -116,10 +162,36 @@ func NewIssuer(iss string, priv ed25519.PrivateKey, classes map[string]ClassPoli
 	return i, nil
 }
 
-// PublicKey devolve a chave pública correspondente, para registar como trust
-// anchor no verificador (ver [WithTrustedIssuer]).
+// signerPublicKey obtém a chave pública ed25519 de um [crypto.Signer] de forma
+// PANIC-SAFE e fail-closed. É a fronteira defensiva da custódia externa (AOS-175):
+//
+//   - recupera de qualquer pânico em signer.Public() (ex.: ed25519.PrivateKey malformada,
+//     len<32, faz copy(pub, priv[32:]) e entra em pânico com slice bounds out of range) e
+//     converte-o no sentinela [ErrInvalidSigner] — um signer patológico NUNCA derruba o
+//     processo, devolve sempre o erro fail-closed;
+//   - valida que a pubkey é uma ed25519.PublicKey de tamanho correcto (o envelope é
+//     EdDSA/ed25519; qualquer outra coisa nunca produziria um token verificável).
+//
+// Não expõe nem regista o material da chave; em erro devolve nil e o sentinela.
+func signerPublicKey(signer crypto.Signer) (pub ed25519.PublicKey, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			pub = nil
+			err = ErrInvalidSigner
+		}
+	}()
+	p, ok := signer.Public().(ed25519.PublicKey)
+	if !ok || len(p) != ed25519.PublicKeySize {
+		return nil, ErrInvalidSigner
+	}
+	return p, nil
+}
+
+// PublicKey devolve a chave pública correspondente (derivada do signer na construção),
+// para registar como trust anchor no verificador (ver [WithTrustedIssuer]). É a ÚNICA
+// saída de material de chave do Issuer — a privada nunca é exposta.
 func (i *Issuer) PublicKey() ed25519.PublicKey {
-	return i.priv.Public().(ed25519.PublicKey)
+	return i.pub
 }
 
 // Issuer devolve o identificador do emissor (iss).
@@ -174,7 +246,7 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		DelegationChain: chain,
 	}
 
-	compact, err := signToken(i.priv, i.kid, claims)
+	compact, err := signToken(i.signer, i.kid, claims)
 	if err != nil {
 		return Token{}, err
 	}

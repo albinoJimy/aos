@@ -50,9 +50,19 @@ ADR-017 do artefacto distribuído do nó fica intacto.
       liga o verifier à porta `HumanDirectory`; consumida por `IssuerAuthority.MintForAssertion`).
       Nota: o **tenant IdP real (issuer/client/JWKS)** continua a ser **config de deployment** — o
       código entrega o contrato OIDC-padrão validado offline (httptest), não uma instância de IdP.
-- [ ] **Frente 2 — Custódia de chave externa**: interface `Signer` que o issuer usa; o issuer corre
-      como **processo separado** (o nó só tem a pubkey); contrato KMS/HSM + impl de referência; a
-      chave privada NUNCA entra no processo do nó — AOS-175.
+- [x] **Frente 2 — Custódia de chave externa**: o issuer assina através do contrato-padrão stdlib
+      `crypto.Signer` (`Public()`+`Sign()`), pelo que a chave privada pode viver num HSM/KMS e nunca
+      ser detida como bytes crus pelo processo; o issuer corre como **processo separado** (o nó é
+      trust-anchor-only — só a pubkey via `TrustAnchor()`/`NewVerifierFromAuthority`); a chave privada
+      NUNCA entra no processo do nó — **ENTREGUE por AOS-175**. Código: `identity.NewIssuerWithSigner`
+      (via nova, `crypto.Signer` arbitrário) mantendo `NewIssuer` (chave ed25519 crua, compatível) +
+      auto-verificação fail-closed-na-origem em `signToken` (nenhum bearer que a pubkey do issuer não
+      valide é emitido) + fronteira panic-safe (`signerPublicKey`); `integration.AuthorityConfig.Signer`
+      injecta o signer externo (mutuamente exclusivo com `SigningKey`). Impl de referência: a
+      `ed25519.PrivateKey` in-process (que já é `crypto.Signer`); doubles de teste de custódia externa
+      exercitam a fronteira. Nota: o **adapter KMS/HSM concreto do fornecedor** (AWS/GCP KMS, PKCS#11)
+      e a **instância HSM real** continuam a ser **config de deployment** — o binário do nó mantém-se
+      zero-dep; a epic entrega o CONTRATO + impl de referência, não uma instância de HSM.
 - [ ] **Frente 3 — Binding humano↔NHI + ADR-003**: **ADR-003 formal** escrito; o binding
       humano→NHI é registado de forma auditável (evento selado, cadeia de delegação) com o processo
       de autorização declarado — AOS-176.
@@ -69,7 +79,7 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 | ID | Título | Tipo | Est. | Prio | Dependências |
 |---|---|---|---|---|---|
 | AOS-174 ✅ | `HumanDirectory` OIDC real (discovery + JWKS + validação ID-token, stdlib) — **ENTREGUE** | feature | M | P1 | AOS-156 |
-| AOS-175 | Custódia de chave externa: interface `Signer` + issuer processo-separado + contrato KMS/HSM | feature | M | P1 | AOS-156 |
+| AOS-175 ✅ | Custódia de chave externa: `crypto.Signer` + issuer processo-separado + contrato KMS/HSM — **ENTREGUE** | feature | M | P1 | AOS-156 |
 | AOS-176 | Binding humano↔NHI auditável + **ADR-003** formal | feature | S | P1 | AOS-174 |
 | AOS-177 | Attestation **WebAuthn/AAGUID** (lib vetada, componente externo; nó zero-dep) — AOS-162 sai de stub | feature | L | P1 | AOS-175, AOS-162, ADR-016 |
 
@@ -82,3 +92,4 @@ primeiras não tocam o zero-dep; a 177 é a única com a exceção escopada da e
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | 2026-07-23 | Emissão. Enacta a Opção A do D4 (Carta emenda 1.3): Camada B da autoridade de identidade em 4 tickets (AOS-174–177). Nó zero-dep preservado; lib WebAuthn só no componente externo. | Equipa AOS |
+| 1.1 | 2026-07-24 | Frente 2 (custódia de chave externa) marcada ENTREGUE por AOS-175: issuer assina via `crypto.Signer` (chave pode viver em HSM/KMS), issuer processo-separado (nó trust-anchor-only). Adapter KMS concreto e instância HSM = deployment. | Equipa AOS |

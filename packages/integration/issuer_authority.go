@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
@@ -42,6 +43,11 @@ var (
 	// via só-humanID ([HumanDirectory.Authenticate]), sem a prova de autenticação. Sem
 	// asserção não há prova, logo nega-se fail-closed: usar [IssuerAuthority.MintForAssertion].
 	ErrAssertionRequired = errors.New("integration: prova de autenticacao (assercao) obrigatoria")
+	// ErrAmbiguousSigningKey — a config forneceu SIMULTANEAMENTE um Signer (custódia
+	// externa, AOS-175) e uma SigningKey ed25519 crua. Fail-closed: a fonte da chave de
+	// assinatura tem de ser inequívoca — fornecer exactamente uma (ou nenhuma, para
+	// geração CSPRNG in-process). Duas fontes deixariam ambíguo QUAL a chave que assina.
+	ErrAmbiguousSigningKey = errors.New("integration: Signer e SigningKey mutuamente exclusivos (fonte de chave ambigua)")
 )
 
 // HumanDirectory é a PORTA plugável de autenticação humana. É preenchida por um IdP
@@ -136,9 +142,17 @@ type AuthorityConfig struct {
 	Classes map[string]identity.ClassPolicy
 	// Directory é a porta de autenticação humana (obrigatória; fail-closed sem ela).
 	Directory HumanDirectory
-	// SigningKey, quando fornecida, é a chave de assinatura ed25519 do issuer
-	// (tipicamente carregada de config/vault, encapsulada). nil ⇒ é GERADA em runtime
-	// via crypto/rand. Em qualquer caso, a chave privada NUNCA é devolvida pela
+	// Signer, quando fornecido, é a fronteira de CUSTÓDIA EXTERNA (AOS-175): um
+	// [crypto.Signer] cuja chave privada pode viver num HSM/KMS e NUNCA entra no
+	// processo (só Public()+Sign são chamados). É mutuamente exclusivo com SigningKey
+	// ([ErrAmbiguousSigningKey] se ambos): a fonte da chave tem de ser inequívoca. É a
+	// via a preferir quando um adaptador HSM/KMS está disponível — o binário do nó
+	// mantém-se zero-dep (o adaptador é código de deployment).
+	Signer crypto.Signer
+	// SigningKey, quando fornecida, é a chave de assinatura ed25519 CRUA do issuer
+	// (via de referência co-localizada; tipicamente carregada de config/vault,
+	// encapsulada). Mutuamente exclusiva com Signer. Se ambos nil ⇒ a chave é GERADA em
+	// runtime via crypto/rand. Em qualquer caso, a chave privada NUNCA é devolvida pela
 	// autoridade — vive apenas no [identity.Issuer] interno, num campo não-exportado.
 	SigningKey ed25519.PrivateKey
 	// IssuerOptions são opções do [identity.Issuer] (ex.: relógio/Event Store para
@@ -166,11 +180,19 @@ type IssuerAuthority struct {
 	defaultPolicyRef string
 }
 
-// NewIssuerAuthority constrói a autoridade. Se cfg.SigningKey for nil, a chave é
-// gerada em runtime via crypto/rand e encapsulada no issuer (nunca devolvida). Sem
-// IssuerID ([ErrNoIssuerID]) ou sem Directory ([ErrNoHumanDirectory]) é recusada
-// fail-closed. NUNCA há segredos hardcoded: a chave é gerada ou injectada de
-// config/vault pelo chamador.
+// NewIssuerAuthority constrói a autoridade. A fonte da chave de assinatura é escolhida
+// por precedência inequívoca (fail-closed se ambígua):
+//
+//   - cfg.Signer != nil  ⇒ CUSTÓDIA EXTERNA (AOS-175): assina através do [crypto.Signer]
+//     (HSM/KMS ou signer arbitrário); a chave privada nunca entra no processo.
+//   - cfg.SigningKey != nil ⇒ via de referência co-localizada com a chave ed25519 crua.
+//   - ambos nil ⇒ a chave é GERADA em runtime via crypto/rand e encapsulada no issuer.
+//   - AMBOS != nil ⇒ [ErrAmbiguousSigningKey] (a fonte tem de ser única).
+//
+// Sem IssuerID ([ErrNoIssuerID]) ou sem Directory ([ErrNoHumanDirectory]) é recusada
+// fail-closed. NUNCA há segredos hardcoded: a chave é gerada, injectada de config/vault,
+// ou vive num HSM/KMS. Em qualquer via, a autoridade NUNCA devolve a chave privada — só
+// a pubkey via [IssuerAuthority.TrustAnchor].
 func NewIssuerAuthority(cfg AuthorityConfig) (*IssuerAuthority, error) {
 	if cfg.IssuerID == "" {
 		return nil, ErrNoIssuerID
@@ -178,19 +200,32 @@ func NewIssuerAuthority(cfg AuthorityConfig) (*IssuerAuthority, error) {
 	if cfg.Directory == nil {
 		return nil, ErrNoHumanDirectory
 	}
-
-	priv := cfg.SigningKey
-	if priv == nil {
-		// Gerada em runtime via CSPRNG. A variável local sai de escopo após a
-		// construção do issuer; só o issuer (campo não-exportado) a retém.
-		_, generated, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			return nil, fmt.Errorf("integration: falha a gerar chave do issuer: %w", err)
-		}
-		priv = generated
+	if cfg.Signer != nil && cfg.SigningKey != nil {
+		return nil, ErrAmbiguousSigningKey
 	}
 
-	iss, err := identity.NewIssuer(cfg.IssuerID, priv, cfg.Classes, cfg.IssuerOptions...)
+	var (
+		iss *identity.Issuer
+		err error
+	)
+	switch {
+	case cfg.Signer != nil:
+		// Custódia externa: a chave pode viver num HSM/KMS. O Issuer só chama
+		// Public()+Sign — os bytes da chave nunca são pedidos nem entram no processo.
+		iss, err = identity.NewIssuerWithSigner(cfg.IssuerID, cfg.Signer, cfg.Classes, cfg.IssuerOptions...)
+	default:
+		priv := cfg.SigningKey
+		if priv == nil {
+			// Gerada em runtime via CSPRNG. A variável local sai de escopo após a
+			// construção do issuer; só o issuer (campo não-exportado) a retém.
+			_, generated, gerr := ed25519.GenerateKey(rand.Reader)
+			if gerr != nil {
+				return nil, fmt.Errorf("integration: falha a gerar chave do issuer: %w", gerr)
+			}
+			priv = generated
+		}
+		iss, err = identity.NewIssuer(cfg.IssuerID, priv, cfg.Classes, cfg.IssuerOptions...)
+	}
 	if err != nil {
 		return nil, err
 	}
