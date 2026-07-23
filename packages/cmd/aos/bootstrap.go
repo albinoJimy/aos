@@ -54,6 +54,7 @@ import (
 	"github.com/aos-ref/platform/registry/signing"
 	"github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
+	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
 // IdentityModeReal é o modo de identidade EM VIGOR do nó de produção de REFERÊNCIA: o
@@ -181,6 +182,24 @@ type Config struct {
 	// chave de assinatura entra no processo): ErrConflictingIssuerKey.
 	IssuerKeyPath string
 
+	// --- Observabilidade OTLP (AOS-173, EPIC-15 §13) ---------------------------
+	// OTLPEndpoint é o endpoint do colector OTLP/HTTP (ex.: "http://collector:4318").
+	// GATING: vazio ⇒ NoopTracer (zero overhead, comportamento inalterado — a
+	// observabilidade não está no caminho crítico); presente ⇒ o nó compõe um
+	// [otelgenai.SpanTracer] sobre um [OTLPHTTPExporter] fail-open e liga-o ao RT/RM/
+	// toolset e ao WORM. Fail-closed de CONFIG: um endpoint malformado aborta o arranque
+	// ([ErrBadOTLPEndpoint]) — o nó não sobe a fingir que exporta para um destino inválido.
+	OTLPEndpoint string
+	// OTLPExporter, quando != nil, TEM PRECEDÊNCIA sobre OTLPEndpoint e é usado tal-qual
+	// (o chamador é dono do seu ciclo de vida). Serve testes/deployments que injectam um
+	// exporter próprio (ex.: um RecordingExporter ou um exporter para um httptest.Server).
+	// nil ⇒ segue OTLPEndpoint.
+	OTLPExporter otelgenai.Exporter
+	// TracerOptions são opções do [otelgenai.NewTracer] (ex.: WithIDGenerator/WithClock)
+	// — usadas pelos testes para determinismo. Só aplicadas quando a observabilidade está
+	// ligada (OTLPExporter != nil OU OTLPEndpoint != "").
+	TracerOptions []otelgenai.TracerOption
+
 	// --- Relógios injectáveis (testes determinísticos) -------------------------
 	IssuerClock   func() time.Time
 	VerifierClock func() time.Time
@@ -214,8 +233,16 @@ type Node struct {
 	// IdentityMode é o modo de identidade em vigor (sempre IdentityModeReal aqui).
 	IdentityMode string
 
+	// Tracer é a porta de observabilidade EM VIGOR (AOS-173): um [otelgenai.SpanTracer]
+	// sobre OTLP quando ligada, senão o [otelgenai.NoopTracer]. Exposto para inspecção.
+	Tracer otelgenai.Tracer
+
 	ownsEventStore bool
 	ownsWORM       bool
+	// otlp é o exporter OTLP/HTTP que o nó ABRIU (nil se a observabilidade está desligada
+	// ou se foi injectado um OTLPExporter por config, cujo ciclo de vida é do chamador).
+	// [Node.Close] drena-o.
+	otlp *OTLPHTTPExporter
 }
 
 // Bootstrap compõe o nó `aos` de PRODUÇÃO a partir de cfg, escrevendo o banner de
@@ -302,11 +329,17 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	// Guarda de limpeza fail-closed: se o bootstrap abortar após ter ABERTO stores
 	// duráveis próprios, fecha-os (não deixa descritores/ficheiros pendurados). Só os
-	// stores que o nó abriu (ownsES/ownsWORM) — nunca os fornecidos por config.
+	// stores que o nó abriu (ownsES/ownsWORM) — nunca os fornecidos por config. O
+	// exporter OTLP (se aberto pelo nó) é drenado na mesma guarda para não deixar a
+	// goroutine de flush pendurada num arranque abortado.
 	success := false
+	var otlpExp *OTLPHTTPExporter
 	defer func() {
 		if success {
 			return
+		}
+		if otlpExp != nil {
+			_ = otlpExp.Close()
 		}
 		if ownsES {
 			_ = es.Close()
@@ -315,6 +348,29 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			_ = closeIfCloser(worm)
 		}
 	}()
+
+	// (2b) OBSERVABILIDADE OTLP (AOS-173). GATING: sem exporter injectado E sem endpoint
+	// ⇒ NoopTracer (zero overhead; o WORM e o RT/RM/toolset ficam byte-idênticos ao modo
+	// sem observabilidade). Com endpoint ⇒ abre um OTLPHTTPExporter fail-open (fail-closed
+	// SÓ na config: endpoint malformado aborta). Um exporter injectado tem precedência e
+	// não é propriedade do nó (não é fechado por Close).
+	var exporter otelgenai.Exporter
+	switch {
+	case cfg.OTLPExporter != nil:
+		exporter = cfg.OTLPExporter
+	case cfg.OTLPEndpoint != "":
+		e, oerr := NewOTLPHTTPExporter(cfg.OTLPEndpoint, WithOTLPLogger(log))
+		if oerr != nil {
+			return nil, fmt.Errorf("aos: observabilidade OTLP (AOS-173): %w", oerr)
+		}
+		exporter = e
+		otlpExp = e
+	}
+	tracer := otelgenai.Tracer(otelgenai.NoopTracer{})
+	tracingEnabled := exporter != nil
+	if tracingEnabled {
+		tracer = otelgenai.NewTracer(exporter, cfg.TracerOptions...)
+	}
 
 	// (3) IDENTIDADE REAL. Em AMBOS os modos o que entra na CADEIA DE SEGURANÇA é SÓ o
 	// verifier (pubkey) — nunca uma chave de assinatura. A diferença é ONDE vive a
@@ -429,16 +485,33 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 	}
 
+	// (6b) OBSERVABILIDADE ligada à CADEIA (AOS-173). Só quando a observabilidade está
+	// activa: o tracer flui para o RT (spans invoke_agent/chat — o chat JÁ carrega o
+	// custo do turno) e, partilhado por New(), para o RM (execute_tool); o toolset
+	// congelado emite o span de freeze; e o WORM é decorado para emitir um span de
+	// LIGAÇÃO por selo (trajectória↔hash-chain). Sem observabilidade, nada disto é
+	// composto ⇒ zero overhead e comportamento byte-idêntico.
+	wormForChain := worm
+	var freezeOpts []toolset.Option
+	var runtimeOpts []agentruntime.Option
+	if tracingEnabled {
+		wormForChain = newAuditTracingStore(worm, tracer)
+		freezeOpts = append(freezeOpts, toolset.WithTracer(tracer))
+		runtimeOpts = append(runtimeOpts, agentruntime.WithTracer(tracer))
+	}
+
 	// (7) SECURED RUNTIME — a CADEIA REAL (via NewProductionSecure), com o VERIFIER REAL
 	// ligado. Fail-closed: um colaborador obrigatório em falta é recusado aqui.
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
-		Model:       model,
-		Recorder:    agentruntime.NewTurnRecorder(es),
-		Catalog:     catalog,
-		Revalidator: revalidator,
-		Policy:      policy,
-		WORM:        worm,
-		Verifier:    verifier, // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
+		Model:          model,
+		Recorder:       agentruntime.NewTurnRecorder(es),
+		Catalog:        catalog,
+		Revalidator:    revalidator,
+		Policy:         policy,
+		WORM:           wormForChain, // decorado com observabilidade quando ligada (AOS-173)
+		Verifier:       verifier,     // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
+		FreezeOptions:  freezeOpts,   // toolset.WithTracer quando a observabilidade está ligada
+		RuntimeOptions: runtimeOpts,  // agentruntime.WithTracer (RT+RM partilham o tracer)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
@@ -469,6 +542,15 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s)", len(cfg.Approvers))
 	}
 	log("substrato: %s", substrateMode(cfg))
+	if tracingEnabled {
+		if otlpExp != nil {
+			log("observabilidade OTLP (AOS-173): tracer REAL -> exporter OTLP/HTTP fail-open (spans invoke_agent/chat[+custo]/execute_tool/freeze + selos WORM)")
+		} else {
+			log("observabilidade OTLP (AOS-173): tracer REAL -> exporter injectado por config (spans invoke_agent/chat[+custo]/execute_tool/freeze + selos WORM)")
+		}
+	} else {
+		log("observabilidade OTLP (AOS-173): DESLIGADA (NoopTracer, zero overhead) — defina AOS_OTLP_ENDPOINT para exportar traces")
+	}
 
 	success = true // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	return &Node{
@@ -479,10 +561,12 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Verifier:       verifier,
 		SteerAuth:      steerAuth,
 		EventStore:     es,
-		WORM:           worm,
+		WORM:           worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
 		IdentityMode:   identityMode,
+		Tracer:         tracer,
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,
+		otlp:           otlpExp,
 	}, nil
 }
 
@@ -492,6 +576,13 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 // WORM aberto por causa de um erro no Event Store).
 func (n *Node) Close() error {
 	var firstErr error
+	// Drena o exporter OTLP PRIMEIRO (AOS-173): dá à goroutine de flush a oportunidade
+	// de esvaziar a fila de spans dos runs já terminados antes de o processo sair, sem
+	// deixar a goroutine pendurada. É fail-open (bounded) — nunca bloqueia o shutdown do
+	// nó por causa da telemetria. Só o exporter que o nó ABRIU (um injectado é do chamador).
+	if n.otlp != nil {
+		_ = n.otlp.Close()
+	}
 	if n.ownsEventStore && n.EventStore != nil {
 		if err := n.EventStore.Close(); err != nil {
 			firstErr = err
@@ -543,12 +634,17 @@ func describeSubstrate(provided bool, path string) string {
 // AOS-163 é a composição de segurança/identidade, não o modelo.
 type referenceModel struct{}
 
-// Call implementa [agentruntime.ModelClient].
+// Call implementa [agentruntime.ModelClient]. Devolve um uso e um CUSTO não-nulos: o
+// span chat que o RT abre em volta desta chamada carrega AttrCostMicroUSD/AttrCostUSD
+// (ver kernel/agent-runtime/loop.go callModel), pelo que a observabilidade OTLP (AOS-173)
+// exporta um custo real por turno mesmo com o modelo de referência (o Model Gateway real,
+// com custo por provedor, é EPIC-06). O custo é micro-USD INTEIRO (fonte de verdade).
 func (referenceModel) Call(context.Context, agentruntime.PromptView) (agentruntime.ModelResponse, error) {
 	return agentruntime.ModelResponse{
-		Text:  "no `aos`: modelo de referencia (Model Gateway real = EPIC-06)",
-		Final: true,
-		Usage: agentruntime.Usage{InputTokens: 1, OutputTokens: 1},
+		Text:         "no `aos`: modelo de referencia (Model Gateway real = EPIC-06)",
+		Final:        true,
+		Usage:        agentruntime.Usage{InputTokens: 12, OutputTokens: 8},
+		CostMicroUSD: 1500, // 0.0015 USD — custo de referência não-nulo (observável no span chat)
 	}, nil
 }
 

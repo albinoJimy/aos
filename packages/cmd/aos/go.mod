@@ -11,6 +11,7 @@ require (
 	github.com/aos-ref/platform/identity v0.0.0
 	github.com/aos-ref/platform/registry v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 require (
@@ -20,7 +21,6 @@ require (
 	github.com/aos-ref/platform/memory v0.0.0 // indirect
 	github.com/aos-ref/platform/messaging v0.0.0 // indirect
 	github.com/aos-ref/platform/model-gateway v0.0.0 // indirect
-	github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
 	github.com/aos-ref/substrate/sandbox v0.0.0 // indirect
 	github.com/cedar-policy/cedar-go v1.8.0 // indirect
 	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect

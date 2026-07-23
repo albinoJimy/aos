@@ -71,13 +71,27 @@ read-path do nó, sem a camada de apresentação web.
       fail-closed. **AOS-165 ENTREGUE**: CLI `aos` (serve/run/observe/steer/pause) só stdlib, cliente
       da API, com o steer/pause assinados pela chave do operador (nunca no nó) — e2e prova a
       assinatura aceite pelo nó. A trajectória em streaming (SSE) fica para AOS-167.)*
-- [ ] **Health/readiness + observabilidade** (E5/E7): `/healthz`·`/readyz`; spans OTel (`otel-genai`)
+- [x] **Health/readiness + observabilidade** (E5/E7): `/healthz`·`/readyz`; spans OTel (`otel-genai`)
       + custo + WORM ligados por OTLP — AOS-171/173.
       *(**health/readiness `/healthz`+`/readyz` ENTREGUE — AOS-171** (c0457eb + remediação pós-auditoria):
       `GET /healthz` liveness (200 sempre, `{"status":"ok"}`); `GET /readyz` readiness (503 em drain OU
       EventStore==nil OU !Healthy(); senão 200); rotas registadas antes do plano de dados, SEM authn/admission,
-      sem info-leak; `Draining()`/`Healthy()` lock-free; suite `-race` verde. **OTel/OTLP fica para AOS-173** —
-      por isso o item permanece [ ] até a parte observabilidade estar feita.)*
+      sem info-leak; `Draining()`/`Healthy()` lock-free; suite `-race` verde.
+      **OBSERVABILIDADE OTLP ENTREGUE — AOS-173** (dev + remediação pós-auditoria): o nó compõe um
+      `otelgenai.SpanTracer` REAL sobre um `OTLPHTTPExporter` (traces OTLP/HTTP-JSON, só stdlib —
+      `net/http`+`encoding/json`, reutiliza `MarshalOTLP`; ZERO deps `go.opentelemetry.io`) e liga-o à cadeia
+      real (RT: spans `invoke_agent`/`chat`[+custo `AttrCostMicroUSD/USD`]/`execute_tool`; RM: `toolset.WithTracer`;
+      WORM: `auditTracingStore` emite um span `audit_seal` por selo com `entry_hash`/`audit_seq`/`run_id`/`decision`,
+      LIGANDO trajectória↔hash-chain sem duplicar a prova). **GATED por config** (`AOS_OTLP_ENDPOINT`/`OTLPEndpoint`
+      vazio ⇒ `NoopTracer`, zero overhead, byte-idêntico ao modo sem observabilidade; endpoint inválido ⇒
+      fail-CLOSED no arranque). **FAIL-OPEN em runtime** (invariante do caminho crítico): `Export` é assíncrono e
+      NUNCA propaga — endpoint down/timeout/5xx/fila-cheia ⇒ drop CONTABILIZADO (`OTLPStats`), run inalterado;
+      dreno bounded no shutdown (`WithOTLPDrainTimeout`). **Sem segredos** (invariante semconv/ADR-005): spans só
+      transportam ids/metadados/hashes, provado por teste ponta-a-ponta (`TestAuditSealFlowsToOTLPCollector`:
+      WORM→OTLP pela via HTTP real, recurso secreto NUNCA aparece no corpo OTLP). Suite `-race -count=1` verde
+      (+ sensíveis a `-race -count=5`). **Subitem deferido-com-eixo**: custo REAL por-provedor fica para o Model
+      Gateway de **EPIC-06** — o `referenceModel` emite um custo de referência não-nulo (observável no span `chat`),
+      não vacuoso; a mecânica OTLP de custo está completa.)*
 - [x] **Transporte SSE fail-safe** (D3, reavaliado): backfill + resume-from-seq + dedup **+
       backpressure/drop-slow-consumer**, streaming por seq (não snapshots de state) — AOS-167 (**L**).
       *(AOS-167 ENTREGUE: `GET /runs/{id}/trajectory` (text/event-stream) StateProjector→SSE, backfill

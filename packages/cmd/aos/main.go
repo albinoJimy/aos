@@ -84,6 +84,10 @@ func run(w io.Writer) error {
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},
+		// Observabilidade OTLP (AOS-173): vazio ⇒ NoopTracer (default, zero overhead);
+		// presente ⇒ o nó exporta traces (invoke_agent/chat[+custo]/execute_tool/freeze +
+		// selos WORM) via OTLP/HTTP. Um endpoint malformado aborta o arranque (fail-closed).
+		OTLPEndpoint: strings.TrimSpace(os.Getenv("AOS_OTLP_ENDPOINT")),
 		// Operators vazio ⇒ default-deny do canal de controlo até serem configuradas
 		// pubkeys de operador (o steer anónimo é recusado — a inércia do D4 não protege
 		// pause/steer).
