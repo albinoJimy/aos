@@ -454,6 +454,17 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]Ev
 	return out, nil
 }
 
+// Healthy é uma sonda de PRONTIDÃO barata e SEM efeitos colaterais: devolve true
+// enquanto o store está operacional e false depois de [Store.Close] (o mesmo estado
+// que faz Append/Read devolverem [ErrClosed]). É uma leitura atómica do flag `closed`
+// — não adquire stripes nem s.mu, não aloca, não toca em réplicas nem no WAL — pelo
+// que é segura para ser chamada com a frequência de um probe de orquestrador (/readyz)
+// sem contender com o caminho de escrita/leitura. Deliberadamente NÃO reflecte a
+// degradação de quórum: a prontidão que o nó expõe é "o substrato aceita I/O" (NÃO
+// ErrClosed), não uma medida de saúde do cluster (essa é observabilidade, não a
+// condição de drain).
+func (s *Store) Healthy() bool { return !s.closed.Load() }
+
 // Close termina o store e liberta todas as subscrições (sem fugas).
 func (s *Store) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {

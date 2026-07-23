@@ -535,6 +535,19 @@ func (s *NodeService) InProgress() []string {
 	return out
 }
 
+// Draining indica se o shutdown gracioso já começou (ou seja, se [Submit] já recusa
+// novos runs com [ErrServiceShuttingDown]). Lê o MESMO flag privado `closed` que o
+// Shutdown arma, sob o mutex do serviço — NÃO duplica o estado de drain nem introduz
+// um segundo sinal que pudesse divergir do que governa a admissão de runs. É a fonte
+// única de verdade que a sonda de prontidão (/readyz) consulta para virar 503 durante
+// o drain (o orquestrador deixa de encaminhar tráfego novo), enquanto a liveness
+// (/healthz) permanece 200 até o processo sair.
+func (s *NodeService) Draining() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
 // InProgressCount devolve o número de runs em curso.
 func (s *NodeService) InProgressCount() int {
 	s.mu.Lock()

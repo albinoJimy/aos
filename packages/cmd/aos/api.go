@@ -268,6 +268,13 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	}
 
 	mux := http.NewServeMux()
+	// SONDAS de orquestrador (AOS-171, E5): liveness + readiness. SEM autenticação (probes
+	// de k8s/orquestrador não assinam) e SEM admission/rate-limit (probes são frequentes;
+	// passá-las pelo token-bucket causaria falso-unready). NÃO consomem os buckets de
+	// admitData/admitControl nem o tecto de trajConns. O padrão método+rota da stdlib
+	// (Go 1.22+) já devolve 405 a métodos != GET.
+	mux.HandleFunc("GET /healthz", h.handleHealthz)
+	mux.HandleFunc("GET /readyz", h.handleReadyz)
 	// Plano de DADOS.
 	mux.HandleFunc("POST /runs", h.handleSubmit)
 	mux.HandleFunc("GET /runs/{id}", h.handleGet)
@@ -437,6 +444,37 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// Desconhecido ⇒ 404 UNIFORME (não vaza existência de runs alheios).
 	writeError(w, http.StatusNotFound, "not found")
+}
+
+// ---------------------------------------------------------------------------
+// SONDAS de orquestrador (AOS-171, E5) — GET /healthz (liveness), GET /readyz (readiness)
+// ---------------------------------------------------------------------------
+
+// handleHealthz é a sonda de LIVENESS: o processo está vivo e a servir ⇒ 200 SEMPRE
+// (enquanto o handler responde). NÃO consulta dependências — um /healthz que virasse 503
+// por o Event Store estar em degradação causaria restart-loops em orquestração (o
+// orquestrador MATA e reinicia um contentor cuja liveness falha, quando o correcto perante
+// uma dependência indisponível é PARAR de encaminhar tráfego — isso é readiness). O corpo
+// é mínimo e ESTÁVEL, sem detalhes internos.
+func (h *apiHandler) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReadyz é a sonda de READINESS (padrão k8s de drain): 200 SÓ SE (a) o Event Store
+// está operacional (NÃO ErrClosed — [eventstore.Store.Healthy]) E (b) o serviço NÃO está
+// em drain ([NodeService.Draining]); 503 caso contrário. Durante o shutdown gracioso o
+// serviço arma o drain ANTES de esperar os runs escoarem, pelo que /readyz vira 503 de
+// imediato (o orquestrador para de encaminhar tráfego novo) enquanto /healthz permanece
+// 200 até o processo sair — é esta transição ready→unready que torna o drain seguro. O
+// corpo é UNIFORME e mínimo: não revela contagem de runs, RunIDs, modo de identidade nem
+// o detalhe do erro interno (coerente com a filosofia não-enumerável de handleGet); só o
+// status HTTP distingue pronto de não-pronto.
+func (h *apiHandler) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	if h.svc.Draining() || h.node.EventStore == nil || !h.node.EventStore.Healthy() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unready"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 // ---------------------------------------------------------------------------
