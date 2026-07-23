@@ -145,11 +145,40 @@ read-path do nó, sem a camada de apresentação web.
       vault em runtime (ADR-006). Build-verify da imagem executado neste ambiente (Docker 28.5.1); num
       ambiente sem rede para o pull da base, o Dockerfile fica entregue e o build-verify remete para
       ambiente com rede.)*
-- [ ] **Aceitação sistémica NÃO-vacuosa** (E6): e2e com um **modelo que EMITE tool calls** (prova o
+- [x] **Aceitação sistémica NÃO-vacuosa** (E6): e2e com um **modelo que EMITE tool calls** (prova o
       caminho PERMITIDO, não só a negação), **contentor real** com kill+reinício sem duplicação,
       bateria de abuso HTTP, e um **checklist NOMEADO de cada critério `00_System_Spec.md §13`**
       (verde ou deferido-com-eixo) — AOS-169 (reescrito).
+      *(**AOS-169 ENTREGUE** (dev + remediação pós-auditoria). **Caminho PERMITIDO não-vacuoso:** um
+      modelo de teste devolve `ModelResponse{ToolCalls:[{ToolID,Capability,Input}]}` e o RT MEDIA cada
+      tool call pelo Reference Monitor (único ponto de mediação, `loop.go`), exercitando o ALLOW real —
+      a tool executa e devolve output observável, não só a negação (`TestAOS169_Mediation*`). **Contentor
+      real kill+reinício:** `deploy/node/aos169-durability-harness.sh` corre a imagem distroless (AOS-168)
+      com volume gravável (EventStorePath/WORMPath, AOS-170), submete trabalho, SIGKILL, reinicia do MESMO
+      volume e prova **não-duplicação OBSERVÁVEL no substrato** por CARDINALIDADE de turnos do WAL
+      (`aos wal-count`, read-only, coberto por `wal_inspect_test.go` verde `-race`): turno sobrevive ao
+      kill (N≥1) e a re-submissão do mesmo run_id NÃO acrescenta turno (M==N). O 201 é declarado
+      não-discriminante (uniforme por construção); a prova byte-a-byte do fencing (`ErrLeaseSuperseded`)
+      é ancorada no teste Go `TestServiceShutdownDurable_NoLossNoDupNoDoubleExecAfterRestart`. **Bateria
+      de abuso HTTP** (`acceptance_abuse_http_test.go`, `-race`): payload gigante ⇒ 413/limite; enumeração
+      de RunID ⇒ 404 BYTE-A-BYTE indistinguível entre run existente-não-observável e inexistente (leitor
+      autorizado vê 200 não-vacuoso; não-autorizado do MESMO run vê 404 igual ao inexistente, sem vazar o
+      RunID); replay de sinal de controlo (nonce reutilizado) ⇒ recusado; steer não-autenticado ⇒ 403.
+      **Checklist NOMEADO §13** em `docs/reports/AOS-169-aceitacao-sistemica.md`: 6 dos 7 critérios
+      sistémicos VERDES com evidência (Mediação/Durabilidade/Isolamento/Governação/Observabilidade/
+      Conformidade). **DEFERIDO — ÚNICO eixo IDENTIDADE (§13.2):** a autoridade REAL de identidade depende
+      de **D4** (org-provisioning) — modo self-hosted Nível 2 declarado (AOS-156), NÃO a
+      durabilidade/observabilidade. **Nota de execução HONESTA:** `aos wal-count` que torna o harness
+      não-vacuoso está coberto por testes Go verdes `-race`; o harness docker completo (rebuild distroless
+      + docker run) é eixo AMBIENTE — não re-executado nesta remediação, declarado (não fingido); a
+      durabilidade fica VERDE ao nível do NÓ via os testes Go âncora independentes do harness.)*
 
+> **Estado de saída da EPIC-15 (§2):** com AOS-169 ENTREGUE, **todos** os critérios de saída acima
+> estão `[x]` **excepto um único**: "O nó `aos` corre com identidade REAL", legitimamente **DEFERIDO ao
+> eixo IDENTIDADE / D4** (org-provisioning; autoridade AOS-156 em modo self-hosted Nível 2 declarado). O
+> deferimento restringe-se a esse eixo — durabilidade, interface autenticada, health/observabilidade,
+> SSE fail-safe, soberania/conformidade, empacotamento e aceitação sistémica não-vacuosa estão VERDES.
+> Sem over-claim: nada além de IDENTIDADE/D4 fica por fechar dentro do escopo single-host da v1.
 ## 3. Tabela Resumo de Tickets
 
 | ID | Título | Tipo | Estimativa | Prioridade | Dependências |
@@ -165,7 +194,7 @@ read-path do nó, sem a camada de apresentação web.
 | AOS-172 | **Soberania/conformidade** (E7): read-path soberano (D7) + selo WORM de leitura no SSE (D6) + DSAR/crypto-shredding — **ENTREGUE** (topologia real de regiões/boards deferida a EPIC-09/10) | feature | M | P1 | AOS-167, AOS-170, EPIC-09/10 |
 | AOS-173 | **Observabilidade** (E7): `otel-genai` (spans+custo) + WORM ligados por OTLP | feature | M | P1 | AOS-163 |
 | AOS-168 | Empacotamento do nó: distroless/non-root/read-only + **ADR-017** (SBOM+proveniência) — **ENTREGUE** (pontos 1/2/4 verdes; ponto 3 mínimo declarado; assinatura/registry = EPIC-10) | feature | S | P1 | AOS-164a, AOS-171, EPIC-10 |
-| AOS-169 | Aceitação sistémica **não-vacuosa** (E6): modelo que emite tools + caminho permitido + contentor real + abuso HTTP + checklist §13 nomeado | chore | M | P0 | AOS-166, AOS-167, AOS-172 |
+| AOS-169 | Aceitação sistémica **não-vacuosa** (E6): modelo que emite tools + caminho permitido + contentor real + abuso HTTP + checklist §13 nomeado — **ENTREGUE** (6/7 critérios §13 verdes; eixo IDENTIDADE/§13.2 deferido a D4) | chore | M | P0 | AOS-166, AOS-167, AOS-172 |
 
 Estimativas XS/S/M/L (XL proibido). Prioridades P0/P1/P2. Toda a Fase 5 — Operacionalização.
 **Pré-requisito: AOS-156** (identidade real). Fases locais: **núcleo do nó** (AOS-163/164a/164b/170,

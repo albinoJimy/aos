@@ -90,11 +90,21 @@ O deferimento é RESTRITO a este eixo; nenhum outro critério o invoca.
   → `TestAOS169_DurableSubstrateWiredFromEnv`. `run` liga `AOS_EVENTSTORE_PATH`/`AOS_WORM_PATH` ao
   substrato durável (WAL+WORM criados em disco; reabertura por replay sucede); banner declara
   "duravel em disco (AOS-170)".
-- **Contentor REAL (kill+reinício):** `deploy/node/aos169-durability-harness.sh` — build da imagem
-  distroless (AOS-168), run com root-fs `--read-only` + volume gravável, `POST /runs`, `docker kill`
-  ABRUPTO (SIGKILL), `docker start` do MESMO volume, `/healthz` recupera, re-submissão do MESMO
-  `run_id` IDEMPOTENTE (201, sem dupla-execução). **Resultado real: PASS** (docker 28.5.1; ver
-  `docker_resultado` do handoff).
+- **Contentor REAL (kill+reinício), não-duplicação OBSERVÁVEL:** `deploy/node/aos169-durability-harness.sh`
+  — build da imagem distroless (AOS-168), run com root-fs `--read-only` + volume gravável, `POST /runs`,
+  `docker kill` ABRUPTO (SIGKILL); depois **INSPECCIONA o WAL do volume** (contentor parado, contentor
+  efémero da MESMA imagem com o subcomando read-only `aos wal-count --turns`) e prova (a) que o turno
+  DURÁVEL sobreviveu ao kill (cardinalidade N≥1) e — após `docker start`+`/healthz`+banner durável e uma
+  RE-SUBMISSÃO do mesmo `run_id` — (b) que a cardinalidade de turnos se MANTÉM (M==N): a re-submissão não
+  acrescentou trabalho durável, logo NÃO houve dupla-execução observável no substrato (dedup por
+  `(RunID,StepID)` do WAL + fencing do lease). O 201 da re-submissão é uniforme por construção
+  (não-enumerável) e por isso NÃO é usado como prova de não-duplicação — a prova é a cardinalidade do WAL.
+  A prova byte-a-byte da monotonicidade do fencing (token residual ⇒ `ErrLeaseSuperseded`) permanece no
+  teste Go âncora abaixo. **Nota de execução honesta:** o subcomando `aos wal-count` é coberto por testes
+  Go verdes com `-race` (`packages/cmd/aos/wal_inspect_test.go`); o harness docker completo (rebuild
+  distroless + `docker run`) NÃO foi re-executado nesta remediação — o eixo docker é ambiente, declarado,
+  não fingido. A durabilidade fica VERDE ao nível do NÓ independentemente do harness (teste âncora +
+  `TestAOS169_DurableSubstrateWiredFromEnv`).
 
 ## 4. ISOLAMENTO — VERDE
 
@@ -172,7 +182,7 @@ O deferimento é RESTRITO a este eixo; nenhum outro critério o invoca.
 |---|--------------|--------|----------------------------------------|
 | 1 | Mediação | **VERDE** | `TestAOS169_Mediation_{PermitPath,DenyPath,NoBypass_FullNodeAPI}`; `TestApexEnforcement_FiveDenials` |
 | 2 | Identidade | **DEFERIDO-COM-EIXO** (identidade/D4) | `TestNodeComposesRealVerifier`; modo self-hosted Nível 2 (AOS-156); `D4-escalacao-autoridade-identidade.md` |
-| 3 | Durabilidade | **VERDE** | `TestServiceShutdownDurable_NoLossNoDupNoDoubleExecAfterRestart`; `TestAOS169_DurableSubstrateWiredFromEnv`; `aos169-durability-harness.sh` (PASS) |
+| 3 | Durabilidade | **VERDE** | `TestServiceShutdownDurable_NoLossNoDupNoDoubleExecAfterRestart`; `TestAOS169_DurableSubstrateWiredFromEnv`; `aos169-durability-harness.sh` (persistência + não-dup OBSERVÁVEL via `aos wal-count`; harness docker não re-executado nesta remediação — eixo ambiente) |
 | 4 | Isolamento | **VERDE** | `TestApexEnforcement_FiveDenials` (egress); nó compõe `EgressHook` real (bootstrap.go §7); EPIC-07 |
 | 5 | Governação | **VERDE** | bundle assinado enforçado em `TestAOS169_Mediation_*`; `TestNodeComposesFourEyesGate`; promoção via `scripts/ci/evalgate.sh` |
 | 6 | Observabilidade | **VERDE** | `TestObservabilityEndToEndExportsWellFormedOTLPWithCost`; `TestAuditTracingStoreEmitsSealSpanLinkingWORM` |

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ import (
 // (mesmo pacote): newAPINode/newAPI/postJSON/steerBody.
 //
 //	(a) payload GIGANTE no POST /runs                 ⇒ 413 (MaxBytesReader; não OOM)
-//	(b) ENUMERAÇÃO de RunID (GET inexistente)         ⇒ 404 UNIFORME (indistinguível de sem-permissão)
+//	(b) ENUMERAÇÃO de RunID (run EXISTENTE-não-observável vs INEXISTENTE) ⇒ MESMO 404 (não vaza existência)
 //	(c) REPLAY de um sinal de controlo (mesmo nonce)  ⇒ 403 (anti-replay durável AOS-160)
 //	(d) steer NÃO-autenticado (sem assinatura válida) ⇒ 403 (canal de controlo trusted)
 func TestAOS169_HTTPAbuseBattery(t *testing.T) {
@@ -51,21 +52,52 @@ func TestAOS169_HTTPAbuseBattery(t *testing.T) {
 		}
 	})
 
-	// (b) ENUMERAÇÃO de RunID ⇒ 404 UNIFORME. Um RunID inexistente e um não-observável devolvem
-	// o MESMO corpo "not found" — o status não vaza a existência de runs alheios.
+	// (b) ENUMERAÇÃO de RunID ⇒ 404 UNIFORME, exercitando o caso DISCRIMINANTE. A ameaça de
+	// enumeração não é "um inexistente dá 404" (trivial: cai sempre no mesmo 404 final); é a
+	// INDISTINGUIBILIDADE entre um run que EXISTE mas o chamador não pode observar e um que nunca
+	// existiu. Prova-se sobre um nó com SOBERANIA de leitura ligada (gate D7 fail-closed): um
+	// leitor AUTORIZADO vê o run existente (200 — o run é mesmo real, não-vacuoso), um leitor
+	// NÃO-AUTORIZADO do MESMO run existente recebe 404, e esse 404 é BYTE-A-BYTE igual ao de um
+	// run inexistente — logo o status/corpo nunca serve de oráculo de existência.
 	t.Run("enumeracao_runid_404_uniforme", func(t *testing.T) {
-		node, _ := newAPINode(t, &countingModel{}, false)
-		defer func() { _ = node.Close() }()
-		_, h := newAPI(t, node)
+		node := newGovNode(t, &countingModel{})
+		svc, h := newAPI(t, node)
 
-		for _, id := range []string{"nao-existe-1", "outro-inexistente-2", "run-alheio-nao-observavel"} {
-			rec := postJSON(h, "GET", "/runs/"+id, nil)
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("GET de RunID inexistente %q devia dar 404, veio %d", id, rec.Code)
+		const existing = "run-abuse-existente-secreto"
+		submitAndWait(t, svc, existing)
+
+		// NÃO-VACUOSO: o run EXISTE e é observável a um leitor AUTORIZADO (senão a
+		// indistinguibilidade abaixo seria trivial — dois 404 sobre nada).
+		if authz := getReq(h, "/runs/"+existing, govHeaders()); authz.Code != http.StatusOK {
+			t.Fatalf("leitor autorizado devia ver o run existente (200), veio %d (%s)", authz.Code, authz.Body.String())
+		}
+
+		// Caso DISCRIMINANTE: leitor NÃO-autorizado de um run EXISTENTE vs leitor autorizado de um
+		// run INEXISTENTE — têm de ser indistinguíveis (mesmo status E mesmo corpo).
+		deniedExisting := getReq(h, "/runs/"+existing, map[string]string{
+			HeaderReaderPrincipal: govReader, HeaderReaderBoard: govBadBoard,
+		})
+		missing := getReq(h, "/runs/run-abuse-nunca-existiu", govHeaders())
+
+		for _, rec := range []struct {
+			name string
+			r    *httptest.ResponseRecorder
+		}{{"existente-nao-observavel", deniedExisting}, {"inexistente", missing}} {
+			if rec.r.Code != http.StatusNotFound {
+				t.Fatalf("%s devia dar 404, veio %d (%s)", rec.name, rec.r.Code, rec.r.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), "not found") {
-				t.Fatalf("404 devia ser UNIFORME (\"not found\"), veio %q", rec.Body.String())
+			if !strings.Contains(rec.r.Body.String(), "not found") {
+				t.Fatalf("%s: 404 devia ser UNIFORME (\"not found\"), veio %q", rec.name, rec.r.Body.String())
 			}
+		}
+		// A não-enumerabilidade REAL: os dois desfechos são byte-a-byte idênticos.
+		if deniedExisting.Body.String() != missing.Body.String() {
+			t.Fatalf("run existente-nao-observavel (%q) distinguivel de inexistente (%q) — ENUMERAVEL",
+				deniedExisting.Body.String(), missing.Body.String())
+		}
+		// E a negação nunca vaza o RunID existente.
+		if strings.Contains(deniedExisting.Body.String(), existing) {
+			t.Fatalf("a negacao vaza o RunID existente: %q", deniedExisting.Body.String())
 		}
 	})
 

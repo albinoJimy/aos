@@ -13,14 +13,22 @@
 #   3. run do contentor (root-fs READ-ONLY + volume) com a API em 0.0.0.0:8080 e substrato durável
 #   4. espera /healthz; SUBMETE um run (POST /runs) e espera-o concluir (turno durável no WAL)
 #   5. `docker kill` ABRUPTO (SIGKILL — nunca um shutdown gracioso)
-#   6. `docker start` do MESMO contentor/volume — REINÍCIO; espera /healthz
-#   7. prova a DURABILIDADE: os ficheiros WAL persistiram no volume (replay no arranque) e a
-#      RE-SUBMISSÃO do MESMO run_id é IDEMPOTENTE (201 "accepted", sem dupla-execução)
+#   6. INSPECÇÃO pós-kill (contentor PARADO, sem escritor concorrente): conta os TURNOS DURÁVEIS
+#      do run no WAL do volume (N) — prova que o turno committed SOBREVIVEU ao kill abrupto (N>=1)
+#   7. `docker start` do MESMO contentor/volume — REINÍCIO; espera /healthz + banner durável
+#   8. RE-SUBMETE o MESMO run_id (⇒ 201 uniforme: idempotente-ou-fresco, indistinguível por
+#      construção); dá tempo a uma eventual re-execução para gravar
+#   9. `docker kill` + INSPECÇÃO final: conta de novo os turnos duráveis (M) e prova M==N — a
+#      re-submissão NÃO acrescentou um turno, logo NÃO houve DUPLA-EXECUÇÃO observável no substrato
+#      durável (dedup por (RunID,StepID) do WAL + fencing do lease monotónico)
 #
-# A prova byte-a-byte de NO-LOSS/NO-DUP/NO-DOUBLE-EXEC (token de lease monotónico/fencing) é o
-# teste Go do nó sobre o MESMO substrato durável real:
+# A INSPECÇÃO (passos 6/9) usa um contentor EFÉMERO da MESMA imagem (`aos wal-count`, subcomando
+# READ-ONLY) — sem imagem externa. Corre só com o contentor principal PARADO, para o WAL não ter
+# escritor concorrente. A prova byte-a-byte da monotonicidade do fencing (um token residual é
+# rejeitado com ErrLeaseSuperseded) permanece no teste Go do nó sobre o MESMO substrato durável:
 #   packages/cmd/aos: TestServiceShutdownDurable_NoLossNoDupNoDoubleExecAfterRestart
-# Este harness eleva-a ao ARTEFACTO EMPACOTADO (o contentor), não a substitui.
+# Este harness ENCENA no ARTEFACTO EMPACOTADO (o contentor) a persistência + a não-duplicação
+# OBSERVÁVEL (cardinalidade de turnos estável), elevando-as ao nível do nó empacotado.
 #
 # Uso:   deploy/node/aos169-durability-harness.sh
 # Saída: "AOS-169 DURABILIDADE CONTENTOR: PASS" (rc 0) ou "... FAIL: <motivo>" (rc != 0).
@@ -60,6 +68,15 @@ wait_healthz() {
     sleep 1
   done
   return 1
+}
+
+# wal_turns conta os TURNOS DURÁVEIS (turn.recorded) do stream RUN_ID no WAL do volume, a partir
+# de um contentor EFÉMERO da MESMA imagem (subcomando `aos wal-count`, read-only). NÃO usa imagem
+# externa. Só é seguro com o contentor principal PARADO (sem escritor concorrente do WAL). Imprime
+# o inteiro (última linha da saída do contentor efémero).
+wal_turns() {
+  dockerrun --rm -v "${VOL}:/var/lib/aos" "${IMG}" \
+    wal-count --path /var/lib/aos/events.wal --run "${RUN_ID}" --turns 2>/dev/null | tail -n1 | tr -d '[:space:]'
 }
 
 # --- 0. limpeza defensiva de execuções anteriores ---------------------------
@@ -121,7 +138,15 @@ done
 echo "[harness] KILL abrupto do contentor (SIGKILL) ..."
 docker kill "${CT}" >/dev/null || fail "docker kill falhou"
 
-# --- 6. REINÍCIO do MESMO contentor/volume ---------------------------------
+# --- 6. INSPECÇÃO pós-kill: o turno DURÁVEL sobreviveu (cardinalidade N) ----
+# Contentor PARADO ⇒ sem escritor concorrente do WAL. Conta os turnos duráveis do run: >=1 prova
+# que o turno committed antes do kill PERSISTIU no volume (durabilidade real, nAo sO /healthz).
+turns_before=$(wal_turns) || fail "inspecçAo do WAL (pOs-kill) falhou"
+echo "[harness] turnos durAveis no WAL apOs o kill: ${turns_before}"
+[[ "${turns_before}" =~ ^[0-9]+$ ]] || fail "contagem de turnos invAlida (pOs-kill): '${turns_before}'"
+(( turns_before >= 1 )) || fail "o turno durAvel NAO sobreviveu ao kill (turnos=${turns_before}) — perda de trabalho committed"
+
+# --- 7. REINÍCIO do MESMO contentor/volume ---------------------------------
 echo "[harness] REINICIA o contentor do MESMO volume ..."
 docker start "${CT}" >/dev/null || fail "docker start falhou"
 wait_healthz || fail "o contentor nAo recuperou (/healthz) apOs o reinIcio do MESMO volume"
@@ -131,15 +156,27 @@ if ! docker logs "${CT}" 2>&1 | grep -q "duravel em disco (AOS-170)"; then
   fail "apOs o reinIcio o banner nAo declarou o substrato durAvel — o volume nAo foi reutilizado"
 fi
 
-# --- 7. DURABILIDADE: re-submissAo idempotente (sem dupla-execuçAo) ---------
-# Um run_id JÁ conhecido (reconstruIdo do WAL / lease) devolve o MESMO 201 "accepted" idempotente
-# — o nO nAo re-hospeda nem duplica o desfecho (nAo-enumerAvel + idempotente, ADR-016). A prova
-# byte-a-byte de nAo-duplicaçAo/fencing é o teste Go TestServiceShutdownDurable.
-echo "[harness] re-submete o MESMO run_id apOs o reinIcio (idempotEncia) ..."
+# --- 8. RE-SUBMISSÃO do MESMO run_id (201 uniforme) ------------------------
+# Um run_id jA conhecido devolve o MESMO 201 "accepted" que uma submissAo fresca — o status é
+# NÃO-ENUMERÁVEL por construçAo (ADR-016), logo o 201 NÃO distingue idempotEncia de re-hospedagem.
+# É por isso que a prova de nAo-duplicaçAo NÃO se apoia no cOdigo 201, mas na cardinalidade de
+# turnos do WAL (passo 9). Dá-se tempo a uma EVENTUAL re-execuçAo para gravar o seu turno (se
+# houvesse um bug de duplicaçAo, o turno apareceria e o passo 9 falharia).
+echo "[harness] re-submete o MESMO run_id apOs o reinIcio ..."
 code2=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/runs" \
   -H 'Content-Type: application/json' \
   -d "{\"run_id\":\"${RUN_ID}\",\"objective\":\"durabilidade AOS-169\",\"principal_nhi\":\"nhi:${RUN_ID}\"}") \
   || fail "re-POST /runs falhou (transporte)"
-[[ "${code2}" == "201" ]] || fail "re-submissAo do mesmo run_id devia dar 201 idempotente, veio ${code2}"
+[[ "${code2}" == "201" ]] || fail "re-submissAo do mesmo run_id devia dar 201 uniforme, veio ${code2}"
+sleep 3  # janela para uma hipotetica re-execuçAo materializar um turno duplicado no WAL
 
-echo "AOS-169 DURABILIDADE CONTENTOR: PASS"
+# --- 9. INSPECÇÃO final: SEM DUPLA-EXECUÇÃO (cardinalidade M == N) ----------
+echo "[harness] KILL + inspecçAo final (nAo-duplicaçAo) ..."
+docker kill "${CT}" >/dev/null || fail "docker kill (final) falhou"
+turns_after=$(wal_turns) || fail "inspecçAo do WAL (final) falhou"
+echo "[harness] turnos durAveis no WAL apOs a re-submissAo: ${turns_after}"
+[[ "${turns_after}" =~ ^[0-9]+$ ]] || fail "contagem de turnos invAlida (final): '${turns_after}'"
+[[ "${turns_after}" == "${turns_before}" ]] || \
+  fail "DUPLA-EXECUÇÃO detectada: turnos ${turns_before}->${turns_after} (a re-submissAo acrescentou trabalho durAvel)"
+
+echo "AOS-169 DURABILIDADE CONTENTOR: PASS (persistencia turnos=${turns_before}; sem duplicacao apos reinicio)"

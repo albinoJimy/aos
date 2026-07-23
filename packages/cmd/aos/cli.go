@@ -61,11 +61,13 @@ func dispatch(args []string, w io.Writer) error {
 		return cmdControl(args[1:], control.SignalSteer, w)
 	case "pause":
 		return cmdControl(args[1:], control.SignalPause, w)
+	case "wal-count":
+		return cmdWALCount(args[1:], w)
 	case "help", "-h", "--help":
 		printUsage(w)
 		return nil
 	default:
-		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|help)", args[0])
+		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|wal-count|help)", args[0])
 	}
 }
 
@@ -79,6 +81,7 @@ uso: aos <subcomando> [flags]
   observe --addr URL --run-id ID [--reader ID] [--board ID]   (--reader/--board exigidos por um no com soberania de leitura)
   steer   --addr URL --run-id ID --emitter ID --key FICHEIRO --correction TXT
   pause   --addr URL --run-id ID --emitter ID --key FICHEIRO
+  wal-count --path WAL --run ID [--turns]   (diagnostico read-only de durabilidade do Event Store)
 `)
 }
 
