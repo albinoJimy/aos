@@ -54,10 +54,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
+	audit "github.com/aos-ref/platform/audit"
 )
 
 // Defaults da API (todos endurecíveis por [APIOption]).
@@ -119,6 +121,12 @@ type apiConfig struct {
 	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
 	now              func() time.Time
 	logw             io.Writer
+	// readGov é a costura de SOBERANIA/CONFORMIDADE de leitura (AOS-172, D7+D6). Quando
+	// composta (explicitamente por [WithReadSovereignty] ou auto-derivada do nó em
+	// [NewAPIHandler]), os handlers de leitura passam a exigir authz por-chamador (board→região
+	// fail-closed) e a selar cada leitura sensível no WORM. nil ⇒ read-path legado (sem authz
+	// por-chamador, sem selo) — a topologia soberana é condicional ao provisioning (deferido).
+	readGov *readGovernance
 }
 
 // APIOption configura a API HTTP.
@@ -220,6 +228,20 @@ func WithAPILog(w io.Writer) APIOption {
 	return func(c *apiConfig) { c.logw = w }
 }
 
+// WithReadSovereignty compõe EXPLICITAMENTE a costura de SOBERANIA/CONFORMIDADE do read-path
+// (AOS-172, D7+D6): o registo board→região (AOS-094) que autoriza o leitor por-chamador e o
+// WORM onde cada leitura sensível é selada. Tem PRECEDÊNCIA sobre o auto-wiring de
+// [NewAPIHandler] a partir do nó — serve testes/deployments que injectam um Registry próprio
+// ou um WORM específico (ex.: um WORM que falha o Append, para provar a negação fail-closed de
+// D6). Ignora (mantém legado) se regions ou worm forem nil.
+func WithReadSovereignty(regions *govsov.Registry, worm audit.Store) APIOption {
+	return func(c *apiConfig) {
+		if regions != nil && worm != nil {
+			c.readGov = newReadGovernance(regions, worm, c.now)
+		}
+	}
+}
+
 // apiHandler é o http.Handler do nó: um mux stdlib sobre o [NodeService] (plano de dados) e
 // o [Node] (plano de controlo real). Seguro para uso concorrente na medida em que os
 // colaboradores o são.
@@ -230,6 +252,8 @@ type apiHandler struct {
 	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
 	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
 	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
+	// readGov é a costura de soberania/conformidade de leitura (AOS-172, D7+D6). nil ⇒ legado.
+	readGov *readGovernance
 }
 
 // NewAPIHandler compõe o http.Handler do nó sobre o loop de serviço (AOS-164a) e o nó real
@@ -259,12 +283,22 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
+	// SOBERANIA/CONFORMIDADE de leitura (AOS-172, D7+D6). Precedência: uma composição
+	// EXPLÍCITA ([WithReadSovereignty]) vence; senão AUTO-DERIVA do nó quando este traz um
+	// registo board→região composto (o caminho de PRODUÇÃO fica fail-closed por CONSTRUÇÃO, não
+	// por lembrança de passar uma opção). Um nó sem soberania configurada (SovereignReadRegions
+	// nil) mantém o read-path legado — a regra é fixa, a topologia é condicional (deferido).
+	readGov := cfg.readGov
+	if readGov == nil && node.SovereignReadRegions != nil && node.WORM != nil {
+		readGov = newReadGovernance(node.SovereignReadRegions, node.WORM, cfg.now)
+	}
 	h := &apiHandler{
 		svc:        svc,
 		node:       node,
 		cfg:        cfg,
 		bucket:     newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
 		ctrlBucket: newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
+		readGov:    readGov,
 	}
 
 	mux := http.NewServeMux()
@@ -284,6 +318,10 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
 	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)
 	mux.HandleFunc("POST /runs/{id}/approve", h.handleApprove)
+	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
+	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
+	// composto (fail-closed). Ver handleDSAR.
+	mux.HandleFunc("POST /dsar/erase", h.handleDSAR)
 	return mux, nil
 }
 
@@ -418,8 +456,21 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	// (D7) AUTHZ SOBERANA POR-CHAMADOR. Board→região fail-closed; leitor não autorizado ⇒ o
+	// MESMO 404 uniforme de um run inexistente (não-enumerável, sem PII). Gate não composto ⇒
+	// legado. Feita ANTES da verificação de existência: um leitor não autorizado nunca
+	// distingue "existe" de "nao existe" — ambos 404.
+	reader, ok := h.admitSovereignRead(w, r)
+	if !ok {
+		return
+	}
 	// Terminado (desfecho retido)?
 	if oc, done := h.svc.Outcome(runID); done {
+		// (D6) SELO WORM de leitura sensível como PRÉ-CONDIÇÃO: se o WORM não selar, NEGA
+		// fail-closed (não se serve o desfecho sensível sem o registo de auditabilidade).
+		if !h.sealSensitiveRead(w, r, reader, runID, capReadOutcome) {
+			return
+		}
 		resp := runStateResponse{
 			RunID:      runID,
 			Status:     "completed",
@@ -438,6 +489,9 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	// Em curso?
 	for _, id := range h.svc.InProgress() {
 		if id == runID {
+			if !h.sealSensitiveRead(w, r, reader, runID, capReadOutcome) {
+				return
+			}
 			writeJSON(w, http.StatusOK, runStateResponse{RunID: runID, Status: "in_progress"})
 			return
 		}

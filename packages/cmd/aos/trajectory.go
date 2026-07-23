@@ -135,6 +135,16 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// (0) AUTHZ SOBERANA POR-CHAMADOR (AOS-172, D7 — a authz que AOS-167 deferiu para aqui).
+	// Board→região fail-closed; leitor não autorizado ⇒ o MESMO 404 uniforme de um run
+	// inexistente (não-enumerável, sem PII). Gate não composto ⇒ legado. Feita ANTES da
+	// admission para NÃO consumir recursos (subscrição/goroutines/tecto trajConns) por um
+	// leitor não autorizado.
+	reader, authorized := h.admitSovereignRead(w, r)
+	if !authorized {
+		return
+	}
+
 	// (1) ADMISSION — tecto de streams SSE concorrentes por-nó (anti-exaustão, coerente com o
 	// hardening de ingresso de AOS-166). Incrementado cedo, decrementado ao sair: bounda o número
 	// de subscrições + goroutines vivas, incluindo tentativas para runs inexistentes.
@@ -204,6 +214,15 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, streamSetupErrorStatus(rerr), "trajectoria indisponivel")
 			return
 		}
+	}
+
+	// (D6) SELO WORM de leitura sensível (AOS-172) como PRÉ-CONDIÇÃO da abertura do stream — a
+	// leitura de trajectória deixa de ser SILENCIOSA. Feito DEPOIS de confirmada a posse (o run
+	// existe/é conhecido) e ANTES de comprometer o SSE (headers ainda não enviados): se o WORM
+	// NÃO selar, NEGA fail-closed com status HTTP (o selo é obrigação de conformidade, não
+	// telemetria best-effort — contraste com o fail-open de AOS-173).
+	if !h.sealSensitiveRead(w, r, reader, runID, capReadTrajectory) {
+		return
 	}
 
 	// (5) COMPROMISSO COM O SSE. A partir daqui já não há status HTTP possível: um erro de

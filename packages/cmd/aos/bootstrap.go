@@ -43,7 +43,9 @@ import (
 	"io"
 	"time"
 
+	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	hitl "github.com/aos-ref/control-plane/governance/hitl"
+	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
@@ -145,6 +147,16 @@ type Config struct {
 	// Approvers regista os aprovadores do FourEyesGate. Vazio ⇒ o gate não é composto.
 	Approvers []ApproverConfig
 
+	// --- Soberania/conformidade de leitura (AOS-172, E7) -----------------------
+	// BoardRegions é o registo DEMO-GRADE board→região autorizada (AOS-094/ADR-011) que o
+	// READ-PATH SOBERANO (D7) consulta para autorizar o leitor por-chamador e resolver a região
+	// selada em cada leitura sensível (D6). É a MESMA fonte de verdade que o PDP usa
+	// ([govsov.Registry]) — a regra fail-closed NÃO é duplicada. Vazio ⇒ read-path LEGADO (sem
+	// authz por-chamador nem selo): a REGRA é FIXA (Carta §4), mas a TOPOLOGIA real (IdP de
+	// soberania da organização) fica DEFERIDA para EPIC-09/10 (análogo ao tratamento de D4 para
+	// identidade). Entradas com board OU região vazios são descartadas por [govsov.NewRegistry].
+	BoardRegions map[string]string
+
 	// --- Colaboradores NÃO-identidade (defaults de REFERÊNCIA) -----------------
 	// O foco de AOS-163 é a composição de SEGURANÇA/IDENTIDADE real; estes podem vir por
 	// config OU cair para um default de referência para o nó arrancar. O Model Gateway
@@ -236,6 +248,26 @@ type Node struct {
 	// Tracer é a porta de observabilidade EM VIGOR (AOS-173): um [otelgenai.SpanTracer]
 	// sobre OTLP quando ligada, senão o [otelgenai.NoopTracer]. Exposto para inspecção.
 	Tracer otelgenai.Tracer
+
+	// --- Soberania/conformidade de leitura (AOS-172, E7) -----------------------
+	// SovereignReadRegions é o registo board→região (AOS-094) que o read-path soberano (D7)
+	// consulta. nil ⇒ read-path legado (soberania de leitura não composta). A API auto-deriva
+	// dele o gate de leitura em [NewAPIHandler] (fail-closed por construção no caminho de
+	// produção quando composto).
+	SovereignReadRegions *govsov.Registry
+	// DSAR é o fluxo de apagamento/crypto-shredding (AOS-093/Art. 17) composto no nó. O endpoint
+	// POST /dsar/erase encaminha para ele. nil ⇒ endpoint desligado (501).
+	DSAR *dsar.Flow
+	// DSARHolds é o legal hold que SUSPENDE o apagamento (um titular retido NÃO é shredded). É
+	// exposto para o operador/testes colocarem/levantarem holds. O fluxo re-consulta-o ANTES de
+	// cada shred (fail-closed do apagamento).
+	DSARHolds *audit.LegalHold
+	// DSARVault é o vault DEMO-GRADE de chaves de PII por-titular que o crypto-shredding destrói
+	// (a KEK é apagada ⇒ a PII fica irrecuperável sem mutar a hash-chain). Exposto para
+	// selar/provar a PII em testes de conformidade; produção liga um KMS/HSM real pela mesma porta.
+	DSARVault *audit.InMemoryKeyVault
+	// DSARIndex mapeia titular→partições (torna executável o legal hold POR-PARTIÇÃO no shred).
+	DSARIndex *audit.InMemorySubjectPartitionIndex
 
 	ownsEventStore bool
 	ownsWORM       bool
@@ -517,6 +549,34 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
 	}
 
+	// (7b) SOBERANIA DE LEITURA (AOS-172, D7). A REGRA fail-closed board→região é FIXA (Carta
+	// §4); a TOPOLOGIA é DEMO-GRADE self-hosted por config (cfg.BoardRegions) — o provisioning
+	// real de regiões/boards (IdP de soberania) fica DEFERIDO para EPIC-09/10 (análogo a D4).
+	// Vazio ⇒ read-path legado (sem authz por-chamador nem selo). Reutiliza a MESMA autoridade
+	// board→região que o PDP (AOS-094): a regra NÃO é duplicada.
+	var readRegions *govsov.Registry
+	if len(cfg.BoardRegions) > 0 {
+		readRegions = govsov.NewRegistry(cfg.BoardRegions)
+	}
+
+	// (7c) DSAR / CRYPTO-SHREDDING (AOS-172, Art. 17). COMPÕE o fluxo DSAR já existente
+	// (AOS-093) sobre: um vault de chaves de PII por-titular DEMO-GRADE (produção liga um KMS
+	// real pela mesma porta), o legal hold (preservação P0) + índice titular→partição, e o WORM
+	// do nó como EventSealer (received/key_destroyed/blocked selados SEM PII). O mesmo
+	// [*audit.Shredder] satisfaz HoldOracle (Held) E ShreddableKeyStore (via dsar.AuditStore) —
+	// a governança não é reimplementada, só cabelada no nó.
+	dsarVault := audit.NewInMemoryKeyVault(nil)
+	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
+	dsarHolds := audit.NewLegalHold()
+	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
+		audit.WithShredderSubjectIndex(dsarIndex))
+	dsarFlow := dsar.NewFlow(
+		wormEventSealer{store: worm},
+		dsarShredder,
+		[]dsar.ShreddableKeyStore{dsar.AuditStore("audit", dsarShredder)},
+		dsar.WithPartition("governance.dsar"),
+	)
+
 	// (8) DECLARAÇÃO do modo de identidade EM VIGOR (AC3). O modo é declarado SEM ambiguidade
 	// e, no modo de referência, com AVISO explícito de que a autoridade é co-localizada — a
 	// honestidade do banner não pode deixar um operador confundir referência com produção
@@ -542,6 +602,12 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s)", len(cfg.Approvers))
 	}
 	log("substrato: %s", substrateMode(cfg))
+	if readRegions != nil {
+		log("soberania de leitura (AOS-172, D7): READ-PATH SOBERANO FAIL-CLOSED ligado — %d board(s) no registo GOV DEMO-GRADE (board→regiao); leitura sensivel SELADA no WORM (D6). Provisioning real de regioes/boards DEFERIDO (EPIC-09/10)", readRegions.Len())
+	} else {
+		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed DEMO-GRADE")
+	}
+	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
 	if tracingEnabled {
 		if otlpExp != nil {
 			log("observabilidade OTLP (AOS-173): tracer REAL -> exporter OTLP/HTTP fail-open (spans invoke_agent/chat[+custo]/execute_tool/freeze + selos WORM)")
@@ -554,16 +620,23 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	success = true // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	return &Node{
-		Runtime:        sec,
-		Steer:          steer,
-		FourEyes:       foureyes,
-		Authority:      authority, // nil no modo endurecido (a autoridade corre fora do processo)
-		Verifier:       verifier,
-		SteerAuth:      steerAuth,
-		EventStore:     es,
-		WORM:           worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
-		IdentityMode:   identityMode,
-		Tracer:         tracer,
+		Runtime:      sec,
+		Steer:        steer,
+		FourEyes:     foureyes,
+		Authority:    authority, // nil no modo endurecido (a autoridade corre fora do processo)
+		Verifier:     verifier,
+		SteerAuth:    steerAuth,
+		EventStore:   es,
+		WORM:         worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
+		IdentityMode: identityMode,
+		Tracer:       tracer,
+
+		SovereignReadRegions: readRegions,
+		DSAR:                 dsarFlow,
+		DSARHolds:            dsarHolds,
+		DSARVault:            dsarVault,
+		DSARIndex:            dsarIndex,
+
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,
 		otlp:           otlpExp,

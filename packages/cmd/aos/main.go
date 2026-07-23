@@ -84,6 +84,12 @@ func run(w io.Writer) error {
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},
+		// SOBERANIA DE LEITURA (AOS-172, D7). Registo board→região DEMO-GRADE self-hosted por
+		// ambiente (AOS_BOARD_REGIONS = "board=regiao,board2=regiao2"), com um board demo por
+		// omissão. A REGRA fail-closed é FIXA; o provisioning real de regiões/boards fica
+		// DEFERIDO (EPIC-09/10). Ligar isto torna o read-path soberano fail-closed E o selo WORM
+		// de leitura sensível (D6) — os clientes de leitura têm de declarar X-Aos-Reader/X-Aos-Board.
+		BoardRegions: parseBoardRegions(envOr("AOS_BOARD_REGIONS", "board:aos-demo=eu")),
 		// Observabilidade OTLP (AOS-173): vazio ⇒ NoopTracer (default, zero overhead);
 		// presente ⇒ o nó exporta traces (invoke_agent/chat[+custo]/execute_tool/freeze +
 		// selos WORM) via OTLP/HTTP. Um endpoint malformado aborta o arranque (fail-closed).
@@ -179,6 +185,29 @@ func parseEd25519PubHex(raw string) (ed25519.PublicKey, error) {
 		return nil, ErrBadIssuerPubKey
 	}
 	return ed25519.PublicKey(b), nil
+}
+
+// parseBoardRegions interpreta a config DEMO-GRADE do registo board→região (AOS-172, D7) na
+// forma "board=regiao,board2=regiao2". Entradas malformadas (sem '=') ou com board/região
+// vazios são descartadas — coerente com o fail-closed de [govsov.NewRegistry] (uma entrada
+// ambígua nunca cria uma fronteira de soberania indefinida). Vazio ⇒ nil (read-path legado).
+func parseBoardRegions(s string) map[string]string {
+	out := make(map[string]string)
+	for _, pair := range strings.Split(s, ",") {
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		board, region := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		if board == "" || region == "" {
+			continue
+		}
+		out[board] = region
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // splitCSV divide uma lista separada por vírgulas, descartando vazios e espaços.

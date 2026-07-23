@@ -1,0 +1,135 @@
+// AOS-172 (E7) — DSAR / CRYPTO-SHREDDING no nó `aos` (Art. 17 do RGPD, ADR-011). Terceiro
+// entregável do ticket: COMPÕE o fluxo DSAR já existente ([dsar.Flow], AOS-093) no nó e
+// expõe uma forma AUTENTICADA de submeter um pedido de apagamento. NÃO reimplementa a
+// cifra/vault/shredder — orquestra a erasure UNIFICADA por-titular sobre a governança
+// existente (o crypto-shredding do audit AOS-083 e o selo WORM tamper-evident).
+//
+// ESCOLHA de superfície (justificada): um ENDPOINT HTTP autenticado no plano de controlo
+// (POST /dsar/erase), e NÃO um subcomando CLI in-process. Razão: o nó é um servidor
+// long-running que DETÉM os stores (vault de chaves + WORM); um subcomando CLI in-process
+// não alcançaria o processo em execução. O endpoint REUTILIZA o modelo de autenticação de
+// LEITURA de governação (o mesmo principal+board fail-closed de D7) — um pedido DSAR é uma
+// operação de governação e exige um principal de governação AUTENTICADO; sem o gate soberano
+// composto o endpoint está DESLIGADO (fail-closed). Passa também pelo token-bucket do plano
+// de CONTROLO (admitControl). A credencial FORTE do operador DSAR (OIDC/mTLS no IdP de
+// soberania) é DEMO-GRADE aqui e fica DEFERIDA para EPIC-09/10 (análogo a D4).
+//
+// GARANTIAS reutilizadas do [dsar.Flow] (não re-litigadas):
+//   - o legal HOLD é re-consultado ANTES de cada Shred — um titular sob hold NÃO é apagado
+//     (fail-closed do apagamento); o evento dsar.blocked é selado;
+//   - o crypto-shredding destrói a KEK por-titular ([ShreddableKeyStore.Shred]) — a PII fica
+//     ILEGÍVEL sem mutar a hash-chain (que selou o HASH do ciphertext, não o plaintext);
+//   - received/key_destroyed/blocked são selados no WORM (EventSealer); idempotente.
+package main
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	dsar "github.com/aos-ref/control-plane/governance/dsar"
+	audit "github.com/aos-ref/platform/audit"
+)
+
+// wormEventSealer adapta o audit.Store do nó à porta [dsar.EventSealer]. O fluxo DSAR sela
+// APENAS metadados (received/key_destroyed/blocked, SEM PII), pelo que o Ingest se reduz a um
+// Append na hash-chain WORM: o RawRecord nunca traz PII (PayloadRef nil), logo nada é cifrado
+// e o registo é puramente responsabilização selada. A partição vem já definida no Record
+// (dsar.WithPartition / Request.Partition).
+type wormEventSealer struct{ store audit.Store }
+
+// Ingest implementa [dsar.EventSealer]: sela o registo de conformidade na cadeia da sua
+// partição. Sem PII no RawRecord ⇒ sem cifra, sem PayloadRef.
+func (s wormEventSealer) Ingest(ctx context.Context, raw audit.RawRecord) (audit.AuditRecord, error) {
+	return s.store.Append(ctx, raw.Record)
+}
+
+// dsarRequestWire é a representação de wire de um pedido DSAR de apagamento. NÃO carrega
+// qualquer valor pessoal: o SubjectID é o identificador PSEUDÓNIMO do titular (o mesmo que
+// ancora a chave por-titular no vault), nunca o dado pessoal em si.
+type dsarRequestWire struct {
+	RequestID string `json:"request_id"`
+	SubjectID string `json:"subject_id"`
+}
+
+// dsarResponse é o desfecho SEM PII de um pedido DSAR: se foi apagado ou BLOQUEADO (legal
+// hold), os rótulos dos stores destruídos e os audit_seq selados (prova de auditabilidade).
+type dsarResponse struct {
+	RequestID      string   `json:"request_id"`
+	SubjectID      string   `json:"subject_id"`
+	Status         string   `json:"status"` // "erased" | "blocked"
+	Blocked        bool     `json:"blocked"`
+	Partial        bool     `json:"partial,omitempty"`
+	StoresShredded []string `json:"stores_shredded,omitempty"`
+	ReceivedSeq    uint64   `json:"received_seq,omitempty"`
+	OutcomeSeq     uint64   `json:"outcome_seq,omitempty"`
+}
+
+// handleDSAR satisfaz um pedido DSAR de apagamento (Art. 17). Fail-closed em cada porta:
+//
+//  1. admission do plano de CONTROLO (token-bucket dedicado);
+//  2. o fluxo DSAR TEM de estar composto (senão o endpoint está desligado ⇒ 501);
+//  3. AUTENTICAÇÃO de governação: reutiliza o gate soberano de LEITURA (principal+board
+//     fail-closed). Sem gate composto ⇒ 501; credencial ausente/board desconhecido ⇒ 403;
+//  4. decodifica o pedido (subject pseudónimo, sem PII) sob limite de corpo;
+//  5. [dsar.Flow.Receive] re-consulta o legal hold ANTES do shred, executa o crypto-shredding
+//     e sela received/key_destroyed/blocked no WORM. Um titular sob hold NÃO é apagado
+//     (200 blocked); um erro genuíno ⇒ 500 (corpo uniforme, sem PII).
+func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
+	// (1) ADMISSION do plano de controlo (mesmo bucket dedicado de /steer,/pause,/approve).
+	if !h.admitControl(w) {
+		return
+	}
+	// (2) O fluxo DSAR tem de estar composto no nó.
+	if h.node.DSAR == nil {
+		writeError(w, http.StatusNotImplemented, "dsar desligado (fluxo nao composto)")
+		return
+	}
+	// (3) AUTENTICAÇÃO de governação — reutiliza o gate soberano de leitura (D7). Um pedido
+	// DSAR é uma operação de governação: exige um principal+board AUTENTICADO. Sem o gate
+	// composto o endpoint está DESLIGADO (fail-closed); credencial ausente/board desconhecido
+	// ⇒ 403 (corpo uniforme, sem revelar detalhe).
+	if h.readGov == nil {
+		writeError(w, http.StatusNotImplemented, "dsar desligado (governanca soberana nao composta)")
+		return
+	}
+	if _, ok := h.readGov.authorize(r); !ok {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
+
+	// (4) LIMITE DE CORPO + descodificação (o subject é pseudónimo, sem PII).
+	var req dsarRequestWire
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+
+	// (5) EXECUTA o fluxo DSAR (legal hold → crypto-shredding → selo WORM).
+	res, err := h.node.DSAR.Receive(r.Context(), dsar.Request{RequestID: req.RequestID, SubjectID: req.SubjectID})
+	if err != nil {
+		if errors.Is(err, dsar.ErrLegalHold) {
+			// BLOQUEADO por legal hold: nada foi apagado (fail-closed do apagamento); o evento
+			// dsar.blocked foi selado. É um desfecho legítimo (não um erro de servidor): o
+			// requerente autorizado tem direito a saber que a preservação suspendeu o apagamento.
+			writeJSON(w, http.StatusOK, dsarResponse{
+				RequestID: res.RequestID, SubjectID: res.SubjectID, Status: "blocked",
+				Blocked: true, Partial: res.Partial, StoresShredded: res.StoresShredded,
+				ReceivedSeq: res.ReceivedSeq, OutcomeSeq: res.OutcomeSeq,
+			})
+			return
+		}
+		if errors.Is(err, dsar.ErrNoSubject) {
+			writeError(w, http.StatusBadRequest, "subject_id em falta")
+			return
+		}
+		// Erro genuíno (selagem/store) ⇒ 500 sem detalhe no corpo.
+		writeError(w, http.StatusInternalServerError, "dsar recusado")
+		return
+	}
+	writeJSON(w, http.StatusOK, dsarResponse{
+		RequestID: res.RequestID, SubjectID: res.SubjectID, Status: "erased",
+		Blocked: false, StoresShredded: res.StoresShredded,
+		ReceivedSeq: res.ReceivedSeq, OutcomeSeq: res.OutcomeSeq,
+	})
+}

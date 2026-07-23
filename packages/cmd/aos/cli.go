@@ -76,7 +76,7 @@ uso: aos <subcomando> [flags]
 
   serve                        arranca o no (config por ambiente; AOS_API_ADDR levanta a API)
   run     --addr URL --objective TXT [--nhi ID] [--credential TOK] [--run-id ID] [--system TXT] [--scope CSV] [--max-turns N]
-  observe --addr URL --run-id ID
+  observe --addr URL --run-id ID [--reader ID] [--board ID]   (--reader/--board exigidos por um no com soberania de leitura)
   steer   --addr URL --run-id ID --emitter ID --key FICHEIRO --correction TXT
   pause   --addr URL --run-id ID --emitter ID --key FICHEIRO
 `)
@@ -117,6 +117,11 @@ func cmdObserve(args []string, w io.Writer) error {
 	fs.SetOutput(w)
 	addr := fs.String("addr", strings.TrimSpace(os.Getenv("AOS_API_ADDR")), "URL base da API")
 	runID := fs.String("run-id", "", "RunID a observar")
+	// Identidade de LEITURA de governação (AOS-172, D7). Um nó com soberania de leitura ligada
+	// EXIGE-a (fail-closed): board vazio/desconhecido ⇒ 404. A CLI só a transporta nos headers;
+	// o nó impõe a regra board→região e sela a leitura no WORM (D6). Defaults por ambiente.
+	reader := fs.String("reader", strings.TrimSpace(os.Getenv("AOS_READER")), "principal (NHI) de leitura de governacao")
+	board := fs.String("board", strings.TrimSpace(os.Getenv("AOS_BOARD")), "board de governacao do leitor (resolve a regiao autorizada)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -126,8 +131,12 @@ func cmdObserve(args []string, w io.Writer) error {
 	if strings.TrimSpace(*runID) == "" {
 		return ErrRunIDRequired
 	}
+	var headers map[string]string
+	if strings.TrimSpace(*reader) != "" || strings.TrimSpace(*board) != "" {
+		headers = map[string]string{HeaderReaderPrincipal: *reader, HeaderReaderBoard: *board}
+	}
 	var st runStateResponse
-	if err := apiCall(*addr, http.MethodGet, "/runs/"+*runID, nil, &st); err != nil {
+	if err := apiCall(*addr, http.MethodGet, "/runs/"+*runID, nil, &st, headers); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "run %s: status=%s terminated=%t paused=%t panicked=%t turns=%d%s%s\n",
@@ -212,8 +221,10 @@ func loadOperatorKey(path string) (ed25519.PrivateKey, error) {
 }
 
 // apiCall é o cliente HTTP mínimo (stdlib): serializa reqBody (se não-nil) em JSON, chama
-// method base+path, e descodifica a resposta em out (se não-nil). Um status >= 300 é erro.
-func apiCall(base, method, path string, reqBody, out any) error {
+// method base+path com os headers dados (se algum), e descodifica a resposta em out (se
+// não-nil). Um status >= 300 é erro. Os headers transportam a identidade de leitura de
+// governação (AOS-172) sem que a CLI imponha qualquer regra — o nó é que autentica/autoriza.
+func apiCall(base, method, path string, reqBody, out any, headers ...map[string]string) error {
 	var r io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
@@ -228,6 +239,13 @@ func apiCall(base, method, path string, reqBody, out any) error {
 	}
 	if reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for _, hs := range headers {
+		for k, v := range hs {
+			if strings.TrimSpace(v) != "" {
+				req.Header.Set(k, v)
+			}
+		}
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
