@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	identity "github.com/aos-ref/platform/identity"
@@ -90,8 +93,67 @@ func run(w io.Writer) error {
 	}
 	defer func() { _ = node.Close() }()
 
-	fmt.Fprintf(w, "[aos] bootstrap concluido — no pronto (modo de identidade: %s). Loop de servico = AOS-164.\n", node.IdentityMode)
-	return nil
+	// Superfície de REDE (AOS-166). Se AOS_API_ADDR estiver definido, o nó gradua para um nó
+	// OPERÁVEL de fora: levanta o loop de serviço + a API HTTP com o BIND-GUARDRAIL no
+	// CAMINHO DE PRODUÇÃO (é aqui, não só nos testes, que um bind não-loopback sem
+	// autenticação do canal de controlo é RECUSADO). Sem AOS_API_ADDR mantém-se o arranque
+	// de bootstrap/declaração (AOS-163) sem abrir socket.
+	apiAddr := strings.TrimSpace(os.Getenv("AOS_API_ADDR"))
+	if apiAddr == "" {
+		fmt.Fprintf(w, "[aos] bootstrap concluido — no pronto (modo de identidade: %s). API HTTP nao levantada (AOS_API_ADDR vazio).\n", node.IdentityMode)
+		return nil
+	}
+
+	// SIGINT/SIGTERM ⇒ paragem graciosa (drena runs em curso, liberta leases).
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(w, "[aos] bootstrap concluido — a levantar a API HTTP em %q (modo de identidade: %s)\n", apiAddr, node.IdentityMode)
+	return serveAPI(sigCtx, w, node, apiAddr)
+}
+
+// serveAPI gradua o nó para a superfície de REDE (AOS-166): compõe o loop de serviço
+// ([NodeService]) e o [APIServer] com o BIND-GUARDRAIL, e serve em addr. É AQUI que o
+// guardrail entra no CAMINHO DE PRODUÇÃO — [APIServer.Serve] RECUSA (erro, não um log) um
+// bind não-loopback enquanto o canal de controlo não estiver autenticado, pelo que a única
+// barreira contra expor o canal de controlo sem authn corre no arranque REAL, não só em
+// httptest. Bloqueia até ctx ser cancelado (o sinal de paragem) e então encerra
+// graciosamente. Um erro SÍNCRONO de Serve (guardrail recusou / Listen falhou) retorna de
+// imediato, encerrando o loop de serviço.
+func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
+	svc, err := NewNodeService(node, WithServiceLog(w))
+	if err != nil {
+		return err
+	}
+	srv, err := NewAPIServer(svc, node, WithAPILog(w))
+	if err != nil {
+		return err
+	}
+
+	serveErr := make(chan error, 1)
+	go func() {
+		e := srv.Serve(addr) // aplica o bind-guardrail ANTES do Listen
+		if errors.Is(e, http.ErrServerClosed) {
+			e = nil
+		}
+		serveErr <- e
+	}()
+
+	select {
+	case e := <-serveErr:
+		// Serve retornou cedo: o bind-guardrail RECUSOU o addr, ou o Listen falhou. O nó não
+		// chega a servir — encerra o loop de serviço e propaga o erro.
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = svc.Shutdown(shutCtx)
+		return e
+	case <-ctx.Done():
+		fmt.Fprintf(w, "[aos] sinal de paragem recebido — a encerrar graciosamente (drena runs em curso, liberta leases)\n")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+		_ = svc.Shutdown(shutCtx)
+		return <-serveErr
+	}
 }
 
 // envOr devolve a variável de ambiente name ou def se vazia.

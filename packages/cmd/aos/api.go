@@ -1,0 +1,814 @@
+// AOS-166 — a API HTTP (net/http stdlib) que torna o nó `aos` OPERÁVEL de fora,
+// resolvendo os dois achados ALTO do painel: (nº4) o canal de CONTROLO sem autenticação e
+// (nº5) o INGRESSO sem admission. Grada o [NodeService] long-running de AOS-164a — que só
+// existia como superfície in-process — para uma superfície de rede, SEM sair da stdlib
+// (net/http, encoding/json, crypto) e SEM afrouxar nenhuma invariante de segurança.
+//
+// PRINCÍPIOS (ADR-016: canal de controlo TRUSTED separado do de dados; BFF non-signing):
+//
+//   - SEPARAÇÃO CONTROL/DATA. POST /runs é o plano de DADOS (submete um goal). Os POSTs de
+//     CONTROLO (/steer, /pause, /approve) são o plano TRUSTED: cada um exige um emitter
+//     ed25519 e é AUTENTICADO na fronteira de segurança REAL do nó (o Ed25519Authenticator
+//     de AOS-160 via node.Steer, ou o FourEyesGate de AOS-162). NUNCA um POST de controlo
+//     anónimo é aceite.
+//
+//   - NON-SIGNING (ADR-016 §1). A API NUNCA gera nem detém a chave privada do operador. A
+//     assinatura VEM no corpo (no emitter) — produzida FORA deste processo, no dispositivo
+//     do humano/serviço. A API só a TRANSPORTA ao autenticador, que a verifica contra a
+//     PUBKEY pinada. Uma assinatura inválida/replayada/velha ⇒ REJEITADA fail-closed, sem
+//     efeito no SteerChannel.
+//
+//   - BIND-GUARDRAIL. [APIServer.Serve] RECUSA (erro, não um mero log) fazer bind a um
+//     endereço NÃO-loopback enquanto a autenticação do canal de controlo não estiver ligada
+//     (node.SteerAuth == nil ou o modo de identidade não for real). Expor o canal de
+//     controlo à rede sem autenticação seria precisamente o achado nº4 — o guardrail
+//     torna-o IMPOSSÍVEL por construção, não por convenção.
+//
+//   - ADMISSION (achado nº5). POST /runs passa por um token-bucket (rate-limit) E por um
+//     tecto de runs em curso; exceder qualquer um ⇒ 429. Todos os corpos passam por
+//     [http.MaxBytesReader] (⇒ 413 no excesso) para o ingresso não ser vector de exaustão.
+//
+//   - FAIL-CLOSED e NÃO-ENUMERÁVEL. Um pedido malformado/não-autenticado/RunID inexistente é
+//     recusado SEM efeito e sem vazar a existência de runs alheios: GET de um RunID
+//     inexistente e de um não-observável devolvem o MESMO 404 uniforme. Simetricamente,
+//     POST /runs de um RunID JÁ conhecido (em curso/terminado nesta réplica ou com lease
+//     noutra) devolve o MESMO 201 "accepted" IDEMPOTENTE que uma submissão fresca — o
+//     status nunca distingue "existe" de "novo", pelo que um chamador anónimo (o plano de
+//     dados é não-autenticado por ADR-016) não o pode usar como oráculo de existência.
+//
+// FRONTEIRA de escopo: a trajectória em streaming (SSE) é AOS-167 — aqui GET /runs/{id} é
+// a fotografia do estado/desfecho. A API usa o mux de método+padrão da stdlib (Go 1.22+),
+// pelo que não há router externo.
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+
+	integration "github.com/aos-ref/integration"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	control "github.com/aos-ref/kernel/agent-runtime/control"
+	risk "github.com/aos-ref/kernel/reference-monitor/risk"
+)
+
+// Defaults da API (todos endurecíveis por [APIOption]).
+const (
+	// DefaultMaxBodyBytes é o tecto por omissão do corpo de um pedido (1 MiB). Um goal ou
+	// um sinal de controlo legítimo cabe folgadamente; o limite corta um corpo gigante
+	// ANTES de ele esgotar memória (achado nº5).
+	DefaultMaxBodyBytes int64 = 1 << 20
+	// DefaultRateBurst é a capacidade por omissão do token-bucket de admission de POST /runs.
+	DefaultRateBurst = 128
+	// DefaultRatePerSec é o reabastecimento por omissão (tokens/segundo) do token-bucket.
+	DefaultRatePerSec = 64
+	// DefaultMaxInFlight é o tecto por omissão de runs EM CURSO admissíveis por esta réplica.
+	// Exceder ⇒ 429 (o ingresso não sobrecarrega o loop de serviço). <= 0 desliga o tecto.
+	DefaultMaxInFlight = 512
+	// DefaultReadHeaderTimeout limita quanto tempo se espera pelos cabeçalhos (anti
+	// slowloris). Os restantes timeouts do http.Server derivam dele.
+	DefaultReadHeaderTimeout = 5 * time.Second
+	// DefaultReadTimeout / DefaultWriteTimeout / DefaultIdleTimeout completam a defesa do
+	// http.Server contra conexões lentas/pendentes.
+	DefaultReadTimeout  = 15 * time.Second
+	DefaultWriteTimeout = 15 * time.Second
+	DefaultIdleTimeout  = 60 * time.Second
+)
+
+// Erros da API (fail-closed).
+var (
+	// ErrRefuseNonLoopbackBind — o bind-guardrail RECUSOU um bind a um endereço não-loopback
+	// porque a autenticação do canal de controlo não está ligada. Expor o canal de controlo
+	// à rede sem authn é o achado nº4; o guardrail fecha-o na construção do Listen.
+	ErrRefuseNonLoopbackBind = errors.New("aos/api: bind a endereco NAO-loopback RECUSADO — canal de controlo sem autenticacao (SteerAuth ausente ou identidade nao-real); use loopback ou ligue a identidade real")
+	// ErrNilService / ErrNilNode — construção sem os colaboradores obrigatórios.
+	ErrNilService = errors.New("aos/api: NewAPIHandler exige um NodeService (nil)")
+	ErrNilNode    = errors.New("aos/api: NewAPIHandler exige um Node (nil)")
+)
+
+// apiConfig é a configuração resolvida da API.
+type apiConfig struct {
+	maxBodyBytes   int64
+	rateBurst      float64
+	ratePerSec     float64
+	ctrlRateBurst  float64
+	ctrlRatePerSec float64
+	maxInFlight    int
+	now            func() time.Time
+	logw           io.Writer
+}
+
+// APIOption configura a API HTTP.
+type APIOption func(*apiConfig)
+
+// WithMaxBodyBytes define o tecto do corpo de um pedido (default [DefaultMaxBodyBytes]).
+// Valores <= 0 são ignorados.
+func WithMaxBodyBytes(n int64) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.maxBodyBytes = n
+		}
+	}
+}
+
+// WithRateLimit define o token-bucket de admission de POST /runs: burst (capacidade) e
+// perSec (reabastecimento). Um burst <= 0 mantém o default; perSec < 0 é ignorado (0 é
+// válido: bucket sem reabastecimento — útil em testes determinísticos).
+func WithRateLimit(perSec, burst float64) APIOption {
+	return func(c *apiConfig) {
+		if burst > 0 {
+			c.rateBurst = burst
+		}
+		if perSec >= 0 {
+			c.ratePerSec = perSec
+		}
+	}
+}
+
+// WithControlRateLimit define o token-bucket de admission do PLANO DE CONTROLO (/steer,
+// /pause, /approve): burst (capacidade) e perSec (reabastecimento). Semântica idêntica a
+// [WithRateLimit], mas sobre um bucket DEDICADO — o plano de controlo trusted tem o seu
+// próprio tecto de taxa, para que uma inundação de sinais (cada um a forçar um decode +
+// ed25519.Verify) não esgote CPU nem esfomeie o plano de dados, e vice-versa. Um burst <= 0
+// mantém o default [DefaultRateBurst]; perSec < 0 é ignorado (0 é válido: bucket sem
+// reabastecimento, útil em testes determinísticos).
+func WithControlRateLimit(perSec, burst float64) APIOption {
+	return func(c *apiConfig) {
+		if burst > 0 {
+			c.ctrlRateBurst = burst
+		}
+		if perSec >= 0 {
+			c.ctrlRatePerSec = perSec
+		}
+	}
+}
+
+// WithMaxInFlight define o tecto de runs em curso admissíveis (default [DefaultMaxInFlight]).
+// <= 0 desliga o tecto (só o rate-limit governa a admission).
+func WithMaxInFlight(n int) APIOption {
+	return func(c *apiConfig) { c.maxInFlight = n }
+}
+
+// WithAPIClock injecta o relógio do token-bucket (determinismo em teste de admission, sem
+// sleeps). Ignora nil.
+func WithAPIClock(now func() time.Time) APIOption {
+	return func(c *apiConfig) {
+		if now != nil {
+			c.now = now
+		}
+	}
+}
+
+// WithAPILog injecta o destino dos logs da API (arranque/guardrail). nil ⇒ sem logs.
+func WithAPILog(w io.Writer) APIOption {
+	return func(c *apiConfig) { c.logw = w }
+}
+
+// apiHandler é o http.Handler do nó: um mux stdlib sobre o [NodeService] (plano de dados) e
+// o [Node] (plano de controlo real). Seguro para uso concorrente na medida em que os
+// colaboradores o são.
+type apiHandler struct {
+	svc        *NodeService
+	node       *Node
+	cfg        apiConfig
+	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
+	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
+}
+
+// NewAPIHandler compõe o http.Handler do nó sobre o loop de serviço (AOS-164a) e o nó real
+// (AOS-163). É directamente exercitável com httptest. Fail-closed: svc e node são
+// obrigatórios.
+func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handler, error) {
+	if svc == nil {
+		return nil, ErrNilService
+	}
+	if node == nil {
+		return nil, ErrNilNode
+	}
+	cfg := apiConfig{
+		maxBodyBytes:   DefaultMaxBodyBytes,
+		rateBurst:      DefaultRateBurst,
+		ratePerSec:     DefaultRatePerSec,
+		ctrlRateBurst:  DefaultRateBurst,
+		ctrlRatePerSec: DefaultRatePerSec,
+		maxInFlight:    DefaultMaxInFlight,
+		now:            time.Now,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.now == nil {
+		cfg.now = time.Now
+	}
+	h := &apiHandler{
+		svc:        svc,
+		node:       node,
+		cfg:        cfg,
+		bucket:     newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
+		ctrlBucket: newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
+	}
+
+	mux := http.NewServeMux()
+	// Plano de DADOS.
+	mux.HandleFunc("POST /runs", h.handleSubmit)
+	mux.HandleFunc("GET /runs/{id}", h.handleGet)
+	// Plano de CONTROLO TRUSTED (cada um autenticado na fronteira real do nó).
+	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
+	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)
+	mux.HandleFunc("POST /runs/{id}/approve", h.handleApprove)
+	return mux, nil
+}
+
+// ---------------------------------------------------------------------------
+// Plano de DADOS — POST /runs, GET /runs/{id}
+// ---------------------------------------------------------------------------
+
+// submitRequest é a representação de wire de um goal submetido. Deliberadamente mínima: o
+// tipo agentruntime.Goal tem campos ricos (tools/skills/model) que não fazem parte da
+// superfície de submissão de AOS-166; aqui aceita-se o essencial e o RM real medeia o
+// resto.
+type submitRequest struct {
+	RunID        string   `json:"run_id"`
+	Objective    string   `json:"objective"`
+	PrincipalNHI string   `json:"principal_nhi"`
+	Credential   string   `json:"credential,omitempty"`
+	Scope        []string `json:"scope,omitempty"`
+	System       string   `json:"system,omitempty"`
+	MaxTurns     int      `json:"max_turns,omitempty"`
+}
+
+// submitResponse devolve o RunID hospedado (201).
+type submitResponse struct {
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+}
+
+// handleSubmit é o INGRESSO do plano de dados com ADMISSION (achado nº5): (1) rate-limit
+// por token-bucket + tecto de runs em curso; (2) limite de corpo; (3) submete ao serviço.
+func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	// (1) ADMISSION antes de ler o corpo — rejeita cedo, não desperdiça trabalho num pedido
+	// que não vai ser admitido.
+	if !h.bucket.allow() {
+		writeError(w, http.StatusTooManyRequests, "rate limit excedido")
+		return
+	}
+	if h.cfg.maxInFlight > 0 && h.svc.InProgressCount() >= h.cfg.maxInFlight {
+		writeError(w, http.StatusTooManyRequests, "tecto de runs em curso atingido")
+		return
+	}
+
+	// (2) LIMITE DE CORPO + descodificação.
+	var req submitRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	if req.RunID == "" {
+		writeError(w, http.StatusBadRequest, "run_id em falta")
+		return
+	}
+
+	goal := agentruntime.Goal{
+		RunID:      req.RunID,
+		Objective:  req.Objective,
+		Credential: req.Credential,
+		Scope:      req.Scope,
+		System:     req.System,
+		MaxTurns:   req.MaxTurns,
+	}
+	goal.Principal.NHIID = req.PrincipalNHI
+
+	// (3) SUBMETE ao loop de serviço. O ctx do pedido governa SÓ a aquisição do lease; o run
+	// sobrevive ao retorno (é cancelado só por Shutdown).
+	err := h.svc.Submit(r.Context(), goal)
+	if err != nil {
+		if isIdempotentResubmit(err) {
+			// NÃO-ENUMERÁVEL + IDEMPOTENTE. Um run_id que ESTA réplica já hospeda/hospedou, ou
+			// cujo lease é detido por OUTRA réplica, é tratado como RE-SUBMISSÃO idempotente:
+			// devolve o MESMO 201 "accepted" que uma submissão fresca. Antes destes casos
+			// devolvia-se 409 — um oráculo de existência: como o plano de dados é
+			// não-autenticado (ADR-016), um chamador anónimo distinguia "existe" (409) de
+			// "novo" (201) só pelo status, contradizendo a garantia não-enumerável que o GET
+			// preserva. Com a resposta uniforme, o status de POST /runs deixa de revelar a
+			// existência de um run alheio. O run NÃO é re-hospedado nem o desfecho
+			// sobrescrito — a posse por lease e o registo por RunID continuam a mediá-lo a
+			// jusante; o desfecho real fica atrás do GET (também não-enumerável).
+			writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
+			return
+		}
+		writeError(w, submitErrorStatus(err), "submissao recusada")
+		return
+	}
+	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
+}
+
+// isIdempotentResubmit indica se o erro de [NodeService.Submit] corresponde a uma
+// RE-SUBMISSÃO de um run_id já conhecido (em curso/terminado nesta réplica, ou com lease
+// detido noutra) — casos que a API trata como aceitação IDEMPOTENTE e NÃO-ENUMERÁVEL (mesmo
+// run_id ⇒ mesma resposta 201 "accepted"), em vez de um 409 que vazaria a existência do run
+// a um chamador anónimo do plano de dados.
+func isIdempotentResubmit(err error) bool {
+	return errors.Is(err, ErrRunAlreadyInProgress) ||
+		errors.Is(err, ErrRunAlreadyCompleted) ||
+		errors.Is(err, ErrRunLeaseHeldElsewhere)
+}
+
+// submitErrorStatus mapeia os erros GENUÍNOS de [NodeService.Submit] a códigos HTTP (os
+// casos de re-submissão idempotente são interceptados ANTES — ver [isIdempotentResubmit]).
+// A mensagem no corpo é uniforme; só o status distingue as classes, e nenhuma delas revela
+// a existência de um run alheio.
+func submitErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrEmptyRunID):
+		return http.StatusBadRequest
+	case errors.Is(err, ErrServiceShuttingDown):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// runStateResponse é a fotografia do estado/desfecho de um run (GET). A trajectória em
+// streaming é AOS-167.
+type runStateResponse struct {
+	RunID      string `json:"run_id"`
+	Status     string `json:"status"` // "in_progress" | "completed"
+	Terminated bool   `json:"terminated,omitempty"`
+	Paused     bool   `json:"paused,omitempty"`
+	Panicked   bool   `json:"panicked,omitempty"`
+	Error      string `json:"error,omitempty"`
+	FinalText  string `json:"final_text,omitempty"`
+	Turns      int    `json:"turns,omitempty"`
+}
+
+// handleGet devolve o estado/desfecho de um run. NÃO-ENUMERÁVEL: um RunID que esta réplica
+// não hospeda nem reteve devolve o MESMO 404 uniforme que um não-observável — nada distingue
+// "nunca existiu" de "existe mas não é seu".
+func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if runID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	// Terminado (desfecho retido)?
+	if oc, done := h.svc.Outcome(runID); done {
+		resp := runStateResponse{
+			RunID:      runID,
+			Status:     "completed",
+			Terminated: oc.Result.Terminated,
+			Paused:     oc.Result.Paused,
+			Panicked:   oc.Panicked,
+			FinalText:  oc.Result.FinalText,
+			Turns:      oc.Result.Turns,
+		}
+		if oc.Err != nil {
+			resp.Error = oc.Err.Error()
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	// Em curso?
+	for _, id := range h.svc.InProgress() {
+		if id == runID {
+			writeJSON(w, http.StatusOK, runStateResponse{RunID: runID, Status: "in_progress"})
+			return
+		}
+	}
+	// Desconhecido ⇒ 404 UNIFORME (não vaza existência de runs alheios).
+	writeError(w, http.StatusNotFound, "not found")
+}
+
+// ---------------------------------------------------------------------------
+// Plano de CONTROLO TRUSTED — /steer, /pause, /approve (AUTENTICADO, non-signing)
+// ---------------------------------------------------------------------------
+
+// emitterWire é a representação de wire do control.Emitter: a IDENTIDADE + a ASSINATURA que
+// o operador produziu FORA deste processo. A API só a transporta (non-signing).
+type emitterWire struct {
+	ID        string    `json:"id"`
+	Signature string    `json:"signature"` // base64(assinatura ed25519)
+	Nonce     string    `json:"nonce"`     // base64(nonce de uso-único)
+	IssuedAt  time.Time `json:"issued_at"` // RFC3339 — frescura
+}
+
+// decode converte o emitter de wire em control.Emitter. Um campo base64 malformado ⇒ erro
+// (o pedido é 400 SEM tocar no canal).
+func (e emitterWire) decode() (control.Emitter, error) {
+	sig, err := base64.StdEncoding.DecodeString(e.Signature)
+	if err != nil {
+		return control.Emitter{}, fmt.Errorf("signature base64: %w", err)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(e.Nonce)
+	if err != nil {
+		return control.Emitter{}, fmt.Errorf("nonce base64: %w", err)
+	}
+	return control.Emitter{ID: e.ID, Signature: sig, Nonce: nonce, IssuedAt: e.IssuedAt}, nil
+}
+
+// steerRequest transporta o emitter assinado + a correcção (o payload que a assinatura
+// cobre). A correcção é base64 para ser binário-segura e bater byte-a-byte com o que foi
+// assinado.
+type steerRequest struct {
+	Emitter emitterWire `json:"emitter"`
+	Payload string      `json:"payload"` // base64(correccao)
+}
+
+// pauseRequest transporta só o emitter assinado (o pause não carrega payload).
+type pauseRequest struct {
+	Emitter emitterWire `json:"emitter"`
+}
+
+// handleSteer injecta uma correcção AUTENTICADA. A API é non-signing: passa o emitter
+// (assinatura ed25519 produzida no dispositivo do operador) a node.Steer.Steer, que
+// AUTENTICA na fronteira real (AOS-160). Assinatura inválida/replay/stale ⇒ 403 SEM efeito.
+func (h *apiHandler) handleSteer(w http.ResponseWriter, r *http.Request) {
+	if !h.admitControl(w) {
+		return
+	}
+	runID := r.PathValue("id")
+	var req steerRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	emitter, err := req.Emitter.decode()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "emitter invalido")
+		return
+	}
+	correction, err := base64.StdEncoding.DecodeString(req.Payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "payload invalido")
+		return
+	}
+	if err := h.node.Steer.Steer(r.Context(), runID, correction, emitter); err != nil {
+		writeError(w, controlErrorStatus(err), "sinal recusado")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "steered"})
+}
+
+// handlePause emite um pause gracioso AUTENTICADO (mesma fronteira do steer).
+func (h *apiHandler) handlePause(w http.ResponseWriter, r *http.Request) {
+	if !h.admitControl(w) {
+		return
+	}
+	runID := r.PathValue("id")
+	var req pauseRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	emitter, err := req.Emitter.decode()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "emitter invalido")
+		return
+	}
+	if err := h.node.Steer.Pause(r.Context(), runID, emitter); err != nil {
+		writeError(w, controlErrorStatus(err), "sinal recusado")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "paused"})
+}
+
+// controlErrorStatus mapeia os erros do canal de controlo a códigos HTTP. Uma falha de
+// AUTENTICAÇÃO (assinatura inválida / emissor desconhecido / replay / stale) ⇒ 403
+// (control.ErrUnauthenticated); um pedido estruturalmente inválido ⇒ 400. Mensagem uniforme
+// no corpo (não-enumerável).
+func controlErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, control.ErrUnauthenticated):
+		return http.StatusForbidden
+	case errors.Is(err, control.ErrEmptyRunID),
+		errors.Is(err, control.ErrEmptyEmitterID),
+		errors.Is(err, control.ErrEmptyCorrection):
+		return http.StatusBadRequest
+	default:
+		// Divergência de log / falha de store ⇒ 500 (sem detalhe no corpo).
+		return http.StatusInternalServerError
+	}
+}
+
+// approveRequest transporta a decisão irreversível a autorizar e as pernas assinadas do
+// 4-eyes (AOS-162). Cada perna traz a assinatura ed25519 do aprovador (non-signing: a API
+// nunca assina; só transporta).
+type approveRequest struct {
+	Request fourEyesRequestWire `json:"request"`
+	Legs    []approvalLegWire   `json:"legs"`
+}
+
+// fourEyesRequestWire é a representação de wire de integration.FourEyesRequest.
+type fourEyesRequestWire struct {
+	RequestID           string `json:"request_id"`
+	Preview             string `json:"preview"` // base64(digest do efeito exibido — WYSIWYS)
+	RiskClass           uint8  `json:"risk_class"`
+	DualControlRequired bool   `json:"dual_control_required"`
+}
+
+// approvalLegWire é a representação de wire de integration.ApprovalLeg.
+type approvalLegWire struct {
+	Approver          string `json:"approver"`
+	Session           string `json:"session"`
+	Credential        string `json:"credential"`
+	Challenge         string `json:"challenge"`                    // base64
+	DeviceAttestation string `json:"device_attestation,omitempty"` // base64 (stub — não verificado)
+	Signature         string `json:"signature"`                    // base64(assinatura ed25519 da perna)
+}
+
+// handleApprove autoriza uma acção irreversível via o FourEyesGate (AOS-162), SE o nó o
+// compôs; senão o endpoint está DESLIGADO (501). Non-signing: as assinaturas das pernas
+// vêm no corpo; o gate verifica-as contra as pubkeys pinadas. Negação ⇒ 403 SEM efeito.
+func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
+	if !h.admitControl(w) {
+		return
+	}
+	if h.node.FourEyes == nil {
+		writeError(w, http.StatusNotImplemented, "four-eyes desligado (sem aprovadores compostos)")
+		return
+	}
+	var req approveRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	preview, err := base64.StdEncoding.DecodeString(req.Request.Preview)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "preview invalido")
+		return
+	}
+	feReq := integration.FourEyesRequest{
+		RequestID:           req.Request.RequestID,
+		Preview:             preview,
+		RiskClass:           risk.Class(req.Request.RiskClass),
+		DualControlRequired: req.Request.DualControlRequired,
+	}
+	legs := make([]integration.ApprovalLeg, 0, len(req.Legs))
+	for _, lw := range req.Legs {
+		challenge, cerr := base64.StdEncoding.DecodeString(lw.Challenge)
+		if cerr != nil {
+			writeError(w, http.StatusBadRequest, "challenge invalido")
+			return
+		}
+		sig, serr := base64.StdEncoding.DecodeString(lw.Signature)
+		if serr != nil {
+			writeError(w, http.StatusBadRequest, "assinatura invalida")
+			return
+		}
+		// device_attestation é hoje um stub NÃO-verificado (fora do tuplo assinado), mas o
+		// seu base64 malformado é tratado como 400 — coerente com challenge/signature/preview
+		// — para NÃO virar um fail-open silencioso (nil em vez de rejeição) quando a
+		// verificação de attestation entrar (desbloqueio com D4).
+		var attest []byte
+		if lw.DeviceAttestation != "" {
+			decoded, aerr := base64.StdEncoding.DecodeString(lw.DeviceAttestation)
+			if aerr != nil {
+				writeError(w, http.StatusBadRequest, "device_attestation invalido")
+				return
+			}
+			attest = decoded
+		}
+		legs = append(legs, integration.ApprovalLeg{
+			Approver:          lw.Approver,
+			Session:           lw.Session,
+			Credential:        lw.Credential,
+			Challenge:         challenge,
+			DeviceAttestation: attest,
+			Signature:         sig,
+		})
+	}
+
+	decision, err := h.node.FourEyes.Authorize(r.Context(), feReq, legs...)
+	if err != nil || !decision.Authorized {
+		// Fail-closed: qualquer negação ⇒ 403, sem revelar QUAL invariante falhou (o audit
+		// tem o erro dedicado; a resposta HTTP é uniforme).
+		writeError(w, http.StatusForbidden, "aprovacao recusada")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "authorized", "approvers": decision.Approvers})
+}
+
+// ---------------------------------------------------------------------------
+// Utilitários de request/response
+// ---------------------------------------------------------------------------
+
+// admitControl aplica a ADMISSION do PLANO DE CONTROLO (bucket dedicado) ANTES de qualquer
+// descodificação de corpo ou verificação de assinatura. Devolve false (e escreve 429)
+// quando o bucket está vazio — sem isto, um atacante inundaria /steer,/pause,/approve a
+// taxa ilimitada, forçando um decode (até maxBodyBytes) e um ed25519.Verify por pedido
+// (exaustão CPU no canal trusted). O limite de corpo continua a ser imposto em decodeJSON.
+func (h *apiHandler) admitControl(w http.ResponseWriter) bool {
+	if !h.ctrlBucket.allow() {
+		writeError(w, http.StatusTooManyRequests, "rate limit excedido")
+		return false
+	}
+	return true
+}
+
+// decodeJSON aplica o LIMITE DE CORPO ([http.MaxBytesReader]) e descodifica JSON. Devolve
+// (status, ok): ok=false com 413 quando o corpo excede o limite (achado nº5), ou 400 num
+// JSON malformado. O corpo limitado protege o ingresso de ser vector de exaustão.
+func (h *apiHandler) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) (int, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.maxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return http.StatusRequestEntityTooLarge, false
+		}
+		return http.StatusBadRequest, false
+	}
+	return http.StatusOK, true
+}
+
+// writeJSON serializa v como resposta JSON com o status dado.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeError devolve uma resposta de erro UNIFORME (mensagem sem detalhe enumerável). Só o
+// status distingue as classes de falha; o corpo nunca vaza a existência de um run alheio.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// ---------------------------------------------------------------------------
+// Token bucket — admission de POST /runs
+// ---------------------------------------------------------------------------
+
+// tokenBucket é um limitador token-bucket clássico com relógio injectável. Concorrente-seguro.
+type tokenBucket struct {
+	mu         sync.Mutex
+	tokens     float64
+	capacity   float64
+	refillRate float64 // tokens por segundo
+	last       time.Time
+	now        func() time.Time
+}
+
+// newTokenBucket constrói um bucket cheio (capacity tokens) que reabastece a refillRate
+// tokens/segundo. capacity <= 0 desliga de facto o limite (o allow devolve sempre true).
+func newTokenBucket(capacity, refillRate float64, now func() time.Time) *tokenBucket {
+	if now == nil {
+		now = time.Now
+	}
+	return &tokenBucket{
+		tokens:     capacity,
+		capacity:   capacity,
+		refillRate: refillRate,
+		last:       now(),
+		now:        now,
+	}
+}
+
+// allow consome um token se houver; devolve false quando o bucket está vazio (⇒ 429). Um
+// bucket de capacidade <= 0 é interpretado como SEM limite (sempre permite).
+func (b *tokenBucket) allow() bool {
+	if b.capacity <= 0 {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
+		b.tokens += elapsed * b.refillRate
+		if b.tokens > b.capacity {
+			b.tokens = b.capacity
+		}
+		b.last = now
+	}
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// APIServer — http.Server com bind-guardrail
+// ---------------------------------------------------------------------------
+
+// APIServer embrulha o http.Handler do nó num http.Server endurecido (timeouts anti
+// slowloris) e impõe o BIND-GUARDRAIL: [Serve] recusa fazer bind a um endereço não-loopback
+// enquanto a autenticação do canal de controlo não estiver ligada.
+type APIServer struct {
+	node *Node
+	http *http.Server
+	logw io.Writer
+}
+
+// NewAPIServer compõe o handler ([NewAPIHandler]) e um http.Server com timeouts endurecidos.
+func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, error) {
+	handler, err := NewAPIHandler(svc, node, opts...)
+	if err != nil {
+		return nil, err
+	}
+	var cfg apiConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return &APIServer{
+		node: node,
+		http: &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: DefaultReadHeaderTimeout,
+			ReadTimeout:       DefaultReadTimeout,
+			WriteTimeout:      DefaultWriteTimeout,
+			IdleTimeout:       DefaultIdleTimeout,
+		},
+		logw: cfg.logw,
+	}, nil
+}
+
+// Handler expõe o http.Handler subjacente (útil para httptest sem abrir um socket).
+func (s *APIServer) Handler() http.Handler { return s.http.Handler }
+
+// controlAuthenticated indica se o canal de controlo do nó está AUTENTICADO: exige o
+// Ed25519Authenticator de AOS-160 presente E um modo de identidade real. É a condição que o
+// bind-guardrail exige para permitir um bind não-loopback.
+func (s *APIServer) controlAuthenticated() bool {
+	if s.node == nil || s.node.SteerAuth == nil {
+		return false
+	}
+	return s.node.IdentityMode == IdentityModeReal || s.node.IdentityMode == IdentityModeRealHardened
+}
+
+// Serve faz bind a addr e serve, APÓS o bind-guardrail. RECUSA (devolve
+// [ErrRefuseNonLoopbackBind], nunca um mero log) fazer bind a um endereço não-loopback
+// quando o canal de controlo não está autenticado — o Listen nem sequer acontece. Loopback
+// (127.0.0.1/::1/localhost) é sempre permitido.
+func (s *APIServer) Serve(addr string) error {
+	ln, err := s.listen(addr)
+	if err != nil {
+		return err
+	}
+	return s.http.Serve(ln)
+}
+
+// listen aplica o bind-guardrail e, se passar, abre o listener TCP. Extraído para ser
+// testável sem entrar no laço de serviço bloqueante.
+func (s *APIServer) listen(addr string) (net.Listener, error) {
+	if err := guardBind(addr, s.controlAuthenticated()); err != nil {
+		s.log("bind-guardrail RECUSOU %q: %v", addr, err)
+		return nil, err
+	}
+	return net.Listen("tcp", addr)
+}
+
+// Shutdown encerra o http.Server graciosamente.
+func (s *APIServer) Shutdown(ctx context.Context) error { return s.http.Shutdown(ctx) }
+
+// log escreve no destino de logs da API (se configurado).
+func (s *APIServer) log(format string, args ...any) {
+	if s.logw != nil {
+		fmt.Fprintf(s.logw, "[aos-api] "+format+"\n", args...)
+	}
+}
+
+// guardBind é o CORAÇÃO do bind-guardrail (função pura, testável): devolve
+// [ErrRefuseNonLoopbackBind] quando addr NÃO é loopback e o canal de controlo NÃO está
+// autenticado. Um bind loopback é sempre permitido (o canal de controlo só é alcançável do
+// próprio host); um bind não-loopback sem authn é RECUSADO — expor o canal de controlo à
+// rede sem autenticação é o achado nº4.
+func guardBind(addr string, controlAuthenticated bool) error {
+	if controlAuthenticated {
+		return nil // authn ligada: qualquer bind é permitido
+	}
+	if isLoopbackAddr(addr) {
+		return nil // loopback: só o próprio host alcança o canal de controlo
+	}
+	return fmt.Errorf("%w: addr=%q", ErrRefuseNonLoopbackBind, addr)
+}
+
+// isLoopbackAddr decide, CONSERVADORAMENTE, se addr faz bind SÓ à interface de loopback. Um
+// host vazio (ex.: ":8080" ⇒ todas as interfaces), um IP não-loopback, ou um hostname que
+// não se consegue confirmar como loopback são tratados como NÃO-loopback (fail-closed: na
+// dúvida, o guardrail recusa). "localhost" e os IPs de loopback (127.0.0.0/8, ::1) são
+// loopback.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr // pode ter vindo sem porta
+	}
+	if host == "" {
+		return false // bind a todas as interfaces ⇒ NÃO-loopback
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false // hostname não confirmável ⇒ conservador (não-loopback)
+	}
+	return ip.IsLoopback()
+}

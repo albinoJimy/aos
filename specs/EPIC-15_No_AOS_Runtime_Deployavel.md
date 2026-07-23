@@ -60,6 +60,10 @@ read-path do nó, sem a camada de apresentação web.
 - [ ] **Interface externa mínima estável e AUTENTICADA** (E5): CLI + API `net/http` stdlib; o
       **canal de controlo (steer/approve) é autenticado** (não um POST anónimo) e o bind
       não-loopback é recusado até a autenticação estar ligada — AOS-165/166.
+      *(AOS-166 ENTREGUE: API `net/http` stdlib com canal de controlo autenticado server-side
+      (ed25519+anti-replay AOS-160), bind não-loopback recusado sem authn no caminho REAL do binário,
+      admission/rate-limit em dados E controlo, POST /runs não-enumerável+idempotente por run_id,
+      fail-closed. A metade CLI fica [ ] — AOS-165 deferido; SSE de trajectória deferido AOS-167.)*
 - [ ] **Health/readiness + observabilidade** (E5/E7): `/healthz`·`/readyz`; spans OTel (`otel-genai`)
       + custo + WORM ligados por OTLP — AOS-171/173.
 - [ ] **Transporte SSE fail-safe** (D3, reavaliado): backfill + resume-from-seq + dedup **+
@@ -368,10 +372,16 @@ regra de ouro ADR-016; a API nunca assina em nome do humano (BFF non-signing).
 
 ### Critérios de Aceitação
 
-- [ ] `POST /runs` submete um *goal* e devolve o RunID; `POST /runs/{id}/steer` e
-      `POST /runs/{id}/approve` conduzem/aprovam (canal de controlo, idempotente por RequestID).
-- [ ] Só `net/http` stdlib; entrada validada; o canal de controlo é separado do de dados (ADR-016).
-- [ ] Fail-closed: um pedido malformado/não-autorizado é recusado sem efeito.
+- [x] `POST /runs` submete um *goal* e devolve o RunID; `POST /runs/{id}/steer` e
+      `POST /runs/{id}/approve` conduzem/aprovam (canal de controlo AUTENTICADO server-side —
+      ed25519+anti-replay AOS-160). *(Idempotência por RequestID no plano de CONTROLO fica [ ] — em
+      tensão directa com o anti-replay durável já entregue (replay => 403, não re-entrega da resposta);
+      a propriedade de segurança (nenhum duplo-efeito de sinal repetido) está garantida pelo anti-replay.
+      A idempotência do plano de DADOS (mesmo run_id => mesma resposta 201, não-enumerável) está feita.)*
+- [x] Só `net/http` stdlib; entrada validada; o canal de controlo é separado do de dados (ADR-016)
+      (buckets de admissão dedicados por plano; bind não-loopback recusado sem authn).
+- [x] Fail-closed: um pedido malformado/não-autorizado é recusado sem efeito (base64 malformado => 400;
+      steer não-autenticado/replay => 403; sem authn + bind não-loopback => recusa antes do Listen).
 
 ### Detalhes Técnicos
 
@@ -383,7 +393,11 @@ regra de ouro ADR-016; a API nunca assina em nome do humano (BFF non-signing).
 
 ### Definition of Done
 
-- [ ] API submit+controlo em net/http stdlib; canais separados; fail-closed; sem segredos.
+- [x] API submit+controlo em net/http stdlib; canais separados; fail-closed; sem segredos.
+      *(Ligada ao binário via `AOS_API_ADDR` (retrocompatível); bind-guardrail no caminho real;
+      encerramento gracioso SIGINT/SIGTERM. Testes: submit idempotente não-enumerável, rate-limit do
+      plano de controlo, recusa de bind não-loopback sem authn, arranque/encerramento loopback.
+      SSE=AOS-167 e CLI=AOS-165 deferidos; TLS/mTLS por endurecer.)*
 
 ### Handoff para Claude Code
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRunProductionRequiresHardenedIdentity prova o fail-closed do entrypoint: sob
@@ -51,5 +53,54 @@ func TestRunProductionWithTrustAnchorSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(sb.String(), IdentityModeRealHardened) {
 		t.Fatalf("o banner devia declarar o modo %q, veio:\n%s", IdentityModeRealHardened, sb.String())
+	}
+}
+
+// TestServeAPIRefusesNonLoopbackWithoutAuth prova que o BIND-GUARDRAIL corre no CAMINHO DE
+// PRODUÇÃO (o wiring de AOS-166): serveAPI — a função que o entrypoint invoca quando
+// AOS_API_ADDR está definido — RECUSA um bind não-loopback quando o canal de controlo não
+// está autenticado, devolvendo [ErrRefuseNonLoopbackBind] SEM abrir socket. Fecha o achado
+// nº4 (canal de controlo exposto sem authn) no arranque real, não só em httptest.
+func TestServeAPIRefusesNonLoopbackWithoutAuth(t *testing.T) {
+	node, _ := newAPINode(t, &countingModel{}, true)
+	defer func() { _ = node.Close() }()
+
+	// Nó SEM autenticação do canal de controlo (SteerAuth removido) ⇒ controlAuthenticated
+	// falso ⇒ o guardrail tem de recusar um bind não-loopback.
+	unauth := *node
+	unauth.SteerAuth = nil
+
+	err := serveAPI(context.Background(), io.Discard, &unauth, "0.0.0.0:0")
+	if err == nil {
+		t.Fatal("serveAPI a addr nao-loopback sem authn devia RECUSAR (bind-guardrail no caminho de producao)")
+	}
+	if !errors.Is(err, ErrRefuseNonLoopbackBind) {
+		t.Fatalf("serveAPI devia devolver ErrRefuseNonLoopbackBind, veio %v", err)
+	}
+}
+
+// TestServeAPILoopbackStartsAndShutsDown prova o wiring completo: serveAPI levanta a API num
+// addr LOOPBACK (permitido sob o guardrail), serve, e encerra GRACIOSAMENTE quando o ctx é
+// cancelado (o caminho SIGINT/SIGTERM do entrypoint). Não-vacuoso: sem o wiring serveAPI não
+// existiria, e um guardrail mal-colocado recusaria também o loopback.
+func TestServeAPILoopbackStartsAndShutsDown(t *testing.T) {
+	node, _ := newAPINode(t, &countingModel{}, true)
+	defer func() { _ = node.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveAPI(ctx, io.Discard, node, "127.0.0.1:0") }()
+
+	// Dá tempo ao Serve para abrir o listener, depois pede paragem graciosa.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveAPI loopback devia encerrar graciosamente (nil), veio %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveAPI nao encerrou apos cancelamento do ctx (shutdown gracioso preso?)")
 	}
 }
