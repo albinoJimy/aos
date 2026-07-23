@@ -42,9 +42,14 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 
 ## 3. Critérios de Saída do Epic
 
-- [ ] **Frente 1 — IdP OIDC**: uma impl real de `HumanDirectory` autentica o humano contra um IdP
+- [x] **Frente 1 — IdP OIDC**: uma impl real de `HumanDirectory` autentica o humano contra um IdP
       OIDC (discovery + JWKS + validação de ID-token, só stdlib), substituindo a allowlist demo;
-      humano não-autenticado ⇒ mint recusado fail-closed — AOS-174.
+      humano não-autenticado ⇒ mint recusado fail-closed — **ENTREGUE por AOS-174**. Código:
+      `packages/integration/oidc/` (verifier stdlib: discovery+JWKS+JWS+claims, fail-closed,
+      anti-alg-confusion, anti-replay) + `packages/integration/oidc_directory.go` (`OIDCDirectory`
+      liga o verifier à porta `HumanDirectory`; consumida por `IssuerAuthority.MintForAssertion`).
+      Nota: o **tenant IdP real (issuer/client/JWKS)** continua a ser **config de deployment** — o
+      código entrega o contrato OIDC-padrão validado offline (httptest), não uma instância de IdP.
 - [ ] **Frente 2 — Custódia de chave externa**: interface `Signer` que o issuer usa; o issuer corre
       como **processo separado** (o nó só tem a pubkey); contrato KMS/HSM + impl de referência; a
       chave privada NUNCA entra no processo do nó — AOS-175.
@@ -63,7 +68,7 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 
 | ID | Título | Tipo | Est. | Prio | Dependências |
 |---|---|---|---|---|---|
-| AOS-174 | `HumanDirectory` OIDC real (discovery + JWKS + validação ID-token, stdlib) | feature | M | P1 | AOS-156 |
+| AOS-174 ✅ | `HumanDirectory` OIDC real (discovery + JWKS + validação ID-token, stdlib) — **ENTREGUE** | feature | M | P1 | AOS-156 |
 | AOS-175 | Custódia de chave externa: interface `Signer` + issuer processo-separado + contrato KMS/HSM | feature | M | P1 | AOS-156 |
 | AOS-176 | Binding humano↔NHI auditável + **ADR-003** formal | feature | S | P1 | AOS-174 |
 | AOS-177 | Attestation **WebAuthn/AAGUID** (lib vetada, componente externo; nó zero-dep) — AOS-162 sai de stub | feature | L | P1 | AOS-175, AOS-162, ADR-016 |

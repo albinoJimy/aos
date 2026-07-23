@@ -38,19 +38,38 @@ var (
 	ErrHumanNotAuthenticated = errors.New("integration: humano nao autenticado")
 	// ErrHumanNotRegistered — o humano não consta da allowlist de referência.
 	ErrHumanNotRegistered = errors.New("integration: humano nao registado (demo-grade auth)")
+	// ErrAssertionRequired — uma [HumanDirectory] REAL (ex.: OIDC) foi consultada pela
+	// via só-humanID ([HumanDirectory.Authenticate]), sem a prova de autenticação. Sem
+	// asserção não há prova, logo nega-se fail-closed: usar [IssuerAuthority.MintForAssertion].
+	ErrAssertionRequired = errors.New("integration: prova de autenticacao (assercao) obrigatoria")
 )
 
-// HumanDirectory é a PORTA plugável de autenticação humana. Numa v1 é preenchida por
-// um IdP corporativo (OIDC) ou attestation WebAuthn; aqui a impl de referência
-// ([AllowlistDirectory]) é DEMO-GRADE-AUTH — um mero registo de humanos autorizados,
-// NÃO um password/credential store. A autoridade só minta uma identidade para um
-// humano que este directório AUTENTIQUE; um humano não-autenticado é recusado
+// HumanDirectory é a PORTA plugável de autenticação humana. É preenchida por um IdP
+// real (OIDC — ver [OIDCDirectory], AOS-174) ou attestation WebAuthn; a impl de
+// referência ([AllowlistDirectory]) é DEMO-GRADE-AUTH — um mero registo de humanos
+// autorizados, NÃO um password/credential store. A autoridade só minta uma identidade
+// para um humano que este directório AUTENTIQUE; um humano não-autenticado é recusado
 // fail-closed.
+//
+// A porta tem DUAS vias, conforme a forma da prova disponível:
+//
+//   - [HumanDirectory.AuthenticateAssertion] — a via REAL: recebe a ASSERÇÃO de
+//     autenticação (ex.: um ID-token OIDC) e devolve o humanID VERIFICADO extraído
+//     dela. É o que a [IssuerAuthority.MintForAssertion] consome — a prova entra no
+//     mint. Uma impl OIDC valida discovery+JWKS+assinatura+claims aqui.
+//   - [HumanDirectory.Authenticate] — a via só-humanID: confirma um humanID já
+//     conhecido, SEM asserção. Serve o double de teste ([AllowlistDirectory]) e o
+//     caminho legado [IssuerAuthority.MintForHuman]. Uma impl real que exija prova
+//     (OIDC) recusa esta via fail-closed com [ErrAssertionRequired].
 type HumanDirectory interface {
-	// Authenticate confirma que humanID é um principal humano autorizado. Devolve
-	// nil se autenticado; um erro (fail-closed) caso contrário. Recebe o contexto
-	// para impls reais (OIDC/WebAuthn) que façam I/O.
+	// Authenticate confirma que humanID é um principal humano autorizado, SEM uma
+	// asserção externa. Devolve nil se autenticado; um erro (fail-closed) caso
+	// contrário. Uma impl que só aceite prova real (OIDC) devolve [ErrAssertionRequired].
 	Authenticate(ctx context.Context, humanID string) error
+	// AuthenticateAssertion valida a ASSERÇÃO de autenticação (ex.: ID-token OIDC) e
+	// devolve o humanID VERIFICADO nela contido. Erro (fail-closed) em qualquer falha
+	// de validação. É a via por onde a prova real entra no mint.
+	AuthenticateAssertion(ctx context.Context, assertion string) (humanID string, err error)
 }
 
 // AllowlistDirectory é a impl de referência DEMO-GRADE-AUTH de [HumanDirectory]: um
@@ -94,6 +113,17 @@ func (d *AllowlistDirectory) Authenticate(_ context.Context, humanID string) err
 		return ErrHumanNotRegistered
 	}
 	return nil
+}
+
+// AuthenticateAssertion implementa a via de asserção de forma DEMO-GRADE: como não há
+// IdP a validar, a "asserção" é tratada como o humanID reclamado e verificada contra a
+// allowlist. É deliberadamente NÃO-CRIPTOGRÁFICA (o double de teste não prova posse de
+// nada) — a prova real vive no [OIDCDirectory]. NUNCA usar em produção.
+func (d *AllowlistDirectory) AuthenticateAssertion(ctx context.Context, assertion string) (string, error) {
+	if err := d.Authenticate(ctx, assertion); err != nil {
+		return "", err
+	}
+	return assertion, nil
 }
 
 // AuthorityConfig configura a [IssuerAuthority].
@@ -193,12 +223,45 @@ func (a *IssuerAuthority) MintForHuman(ctx context.Context, humanID, agentID, cl
 	if err := a.dir.Authenticate(ctx, humanID); err != nil {
 		return identity.Token{}, fmt.Errorf("%w: %w", ErrHumanNotAuthenticated, err)
 	}
+	return a.mint(ctx, humanID, agentID, class, scope)
+}
 
+// MintForAssertion é a via de emissão que consome a PROVA REAL de autenticação humana
+// (AOS-174). Passos fail-closed:
+//
+//  1. valida os campos obrigatórios (agent/class);
+//  2. valida a ASSERÇÃO na [HumanDirectory] via [HumanDirectory.AuthenticateAssertion]
+//     — com um [OIDCDirectory] isto valida o ID-token (discovery+JWKS+assinatura+claims)
+//     e devolve o sub VERIFICADO; qualquer falha ⇒ RECUSA ([ErrHumanNotAuthenticated]
+//     a envolver o erro concreto) e nenhum token é mintado;
+//  3. minta com o humanID VERIFICADO na RAIZ da cadeia de delegação (human:<sub>).
+//
+// Diferença face a [MintForHuman]: o humano NÃO é um parâmetro em que se confie — é
+// DERIVADO da prova. É a via a usar em produção (o chamador não pode afirmar um humano
+// que a asserção não comprove).
+func (a *IssuerAuthority) MintForAssertion(ctx context.Context, assertion, agentID, class string, scope []string) (identity.Token, error) {
+	if agentID == "" || class == "" {
+		return identity.Token{}, ErrInvalidMintRequest
+	}
+	humanID, err := a.dir.AuthenticateAssertion(ctx, assertion)
+	if err != nil {
+		return identity.Token{}, fmt.Errorf("%w: %w", ErrHumanNotAuthenticated, err)
+	}
+	if humanID == "" {
+		// Defesa em profundidade: uma impl que devolva humanID vazio sem erro não pode
+		// produzir uma raiz de delegação legítima.
+		return identity.Token{}, ErrHumanNotAuthenticated
+	}
+	return a.mint(ctx, humanID, agentID, class, scope)
+}
+
+// mint é o núcleo de emissão partilhado (política de policy_ref + selagem da cadeia com
+// o humano na raiz). O humanID que aqui chega JÁ está autenticado pelo chamador.
+func (a *IssuerAuthority) mint(ctx context.Context, humanID, agentID, class string, scope []string) (identity.Token, error) {
 	policyRef := a.defaultPolicyRef
 	if policyRef == "" {
 		policyRef = "policy://" + class
 	}
-
 	return a.issuer.Issue(ctx, identity.IssueRequest{
 		UserID:        humanID, // humano responsável ⇒ raiz "human:<humanID>" da cadeia
 		AgentID:       agentID,
