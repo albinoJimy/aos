@@ -58,3 +58,12 @@ func (d *OIDCDirectory) AuthenticateAssertion(ctx context.Context, assertion str
 	}
 	return claims.Subject, nil
 }
+
+// AuthorizationMethod implementa [AuthorityReporter]: o rótulo do contexto de
+// autorização é "oidc:<issuer>", onde <issuer> é o IdP contra o qual o ID-token foi
+// validado. Fica gravado no registo AUDITÁVEL do binding humano↔NHI (ADR-003),
+// declarando que a autoria foi provada por OIDC e por que autoridade — sem NUNCA
+// gravar o ID-token cru nem claims sensíveis (só a URL pública do issuer).
+func (d *OIDCDirectory) AuthorizationMethod() string {
+	return "oidc:" + d.verifier.Issuer()
+}

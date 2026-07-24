@@ -53,7 +53,7 @@ na mesma ronda da EPIC-13 v1.0).
 |---|---|---|---|
 | ADR-001 | Execução durável como primitivo | Catálogo, por materializar | catálogo em `specs/00_System_Spec.md` §11 |
 | ADR-002 | Reference Monitor mandatório | Catálogo, por materializar | catálogo em `specs/00_System_Spec.md` §11 |
-| ADR-003 | Identidade não-humana por agente | Catálogo, por materializar | catálogo em `specs/00_System_Spec.md` §11 |
+| ADR-003 | Identidade não-humana por agente (NHI scoped/time-bound + binding humano↔NHI auditável) | **Ratificado (AOS-176)** | [`ADR-003-identidade-nao-humana-por-agente.md`](ADR-003-identidade-nao-humana-por-agente.md) |
 | ADR-004 | Isolamento ao nível do kernel | Catálogo, por materializar | catálogo em `specs/00_System_Spec.md` §11 |
 | ADR-005 | Separação control/data-plane + taint | Catálogo, por materializar | catálogo em `specs/00_System_Spec.md` §11 |
 | ADR-006 | Credential Broker com tokens JIT | **Ratificado** | [`ADR-006-credential-broker-jit.md`](ADR-006-credential-broker-jit.md) |
@@ -73,10 +73,12 @@ na mesma ronda da EPIC-13 v1.0).
 > Nota: os ficheiros ligados na coluna «Ficheiro» para **006/011/012/013/016** são
 > criados nesta ronda de ratificação; **015** (execução durável, AOS-022), **017**
 > (supply-chain do nó) e **018** (fronteira nó↔ORQ/SCH) estão **igualmente materializados
-> e ligados a ficheiro próprio** — ratificados/aceites, não recomendações pendentes. Os
-> restantes (001–005, 007–010, 014) permanecem **exclusivamente** no catálogo de uma linha
-> até serem promovidos a documento próprio — a ligação aponta o leitor para a fonte
-> canónica em vigor, não para um ficheiro inexistente.
+> e ligados a ficheiro próprio** — ratificados/aceites, não recomendações pendentes.
+> **ADR-003** (identidade não-humana por agente + binding humano↔NHI auditável) foi
+> **materializado** numa ronda posterior (AOS-176, frente 3 do D4 / EPIC-16) e está
+> ligado a ficheiro próprio. Os restantes (001–002, 004–005, 007–010, 014) permanecem
+> **exclusivamente** no catálogo de uma linha até serem promovidos a documento próprio —
+> a ligação aponta o leitor para a fonte canónica em vigor, não para um ficheiro inexistente.
 
 ## Relação com o catálogo canónico
 

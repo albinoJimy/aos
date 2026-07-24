@@ -78,6 +78,30 @@ type HumanDirectory interface {
 	AuthenticateAssertion(ctx context.Context, assertion string) (humanID string, err error)
 }
 
+// AuthorityReporter é implementado OPCIONALMENTE por uma [HumanDirectory] que saiba
+// declarar o seu método/autoridade de autenticação — o CONTEXTO DE AUTORIZAÇÃO que
+// torna o binding humano↔NHI auditável (ADR-003). O rótulo é gravado no registo de
+// binding (evento identity.nhi.issued, campo auth_method): ex.: "oidc:<issuer>" para
+// um IdP OIDC, "allowlist" para o double demo. É um RÓTULO de método — NUNCA o
+// token/asserção cru nem PII. Uma directory que não o implemente ⇒ o binding regista
+// [identity.AuthMethodUnspecified].
+type AuthorityReporter interface {
+	// AuthorizationMethod devolve o rótulo estável do método/autoridade de
+	// autenticação humana (ex.: "oidc:https://idp.example"). Sem segredos nem PII.
+	AuthorizationMethod() string
+}
+
+// authorizationMethod extrai o rótulo do contexto de autorização de uma directory,
+// se esta implementar [AuthorityReporter]; senão devolve "" (⇒ o issuer normaliza
+// para [identity.AuthMethodUnspecified]). É o que liga a autoridade de autenticação
+// ao registo auditável do binding.
+func authorizationMethod(dir HumanDirectory) string {
+	if r, ok := dir.(AuthorityReporter); ok {
+		return r.AuthorizationMethod()
+	}
+	return ""
+}
+
 // AllowlistDirectory é a impl de referência DEMO-GRADE-AUTH de [HumanDirectory]: um
 // registo (allowlist) de humanos autorizados. NÃO é um store de credenciais/passwords
 // — a autenticação real (OIDC/WebAuthn) é a porta a preencher depois. Concorrente-seguro.
@@ -131,6 +155,12 @@ func (d *AllowlistDirectory) AuthenticateAssertion(ctx context.Context, assertio
 	}
 	return assertion, nil
 }
+
+// AuthorizationMethod implementa [AuthorityReporter]: o rótulo do contexto de
+// autorização deste double demo-grade é "allowlist" — declara, no registo auditável
+// do binding (ADR-003), que a autenticação foi um mero registo de allowlist, NÃO uma
+// prova criptográfica. Torna explícito no log que este binding é demo-grade.
+func (d *AllowlistDirectory) AuthorizationMethod() string { return "allowlist" }
 
 // AuthorityConfig configura a [IssuerAuthority].
 type AuthorityConfig struct {
@@ -258,7 +288,7 @@ func (a *IssuerAuthority) MintForHuman(ctx context.Context, humanID, agentID, cl
 	if err := a.dir.Authenticate(ctx, humanID); err != nil {
 		return identity.Token{}, fmt.Errorf("%w: %w", ErrHumanNotAuthenticated, err)
 	}
-	return a.mint(ctx, humanID, agentID, class, scope)
+	return a.mint(ctx, humanID, agentID, class, scope, authorizationMethod(a.dir))
 }
 
 // MintForAssertion é a via de emissão que consome a PROVA REAL de autenticação humana
@@ -287,12 +317,14 @@ func (a *IssuerAuthority) MintForAssertion(ctx context.Context, assertion, agent
 		// produzir uma raiz de delegação legítima.
 		return identity.Token{}, ErrHumanNotAuthenticated
 	}
-	return a.mint(ctx, humanID, agentID, class, scope)
+	return a.mint(ctx, humanID, agentID, class, scope, authorizationMethod(a.dir))
 }
 
 // mint é o núcleo de emissão partilhado (política de policy_ref + selagem da cadeia com
-// o humano na raiz). O humanID que aqui chega JÁ está autenticado pelo chamador.
-func (a *IssuerAuthority) mint(ctx context.Context, humanID, agentID, class string, scope []string) (identity.Token, error) {
+// o humano na raiz). O humanID que aqui chega JÁ está autenticado pelo chamador;
+// authMethod é o rótulo do contexto de autorização (ex.: "oidc:<issuer>") que o issuer
+// grava no registo AUDITÁVEL do binding (evento identity.nhi.issued — ADR-003).
+func (a *IssuerAuthority) mint(ctx context.Context, humanID, agentID, class string, scope []string, authMethod string) (identity.Token, error) {
 	policyRef := a.defaultPolicyRef
 	if policyRef == "" {
 		policyRef = "policy://" + class
@@ -303,6 +335,7 @@ func (a *IssuerAuthority) mint(ctx context.Context, humanID, agentID, class stri
 		AgentClass:    class,
 		PolicyRef:     policyRef,
 		UserAuthority: scope,
+		AuthMethod:    authMethod, // contexto de autorização ⇒ binding auditável
 	})
 }
 

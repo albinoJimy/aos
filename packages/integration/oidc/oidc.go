@@ -319,6 +319,12 @@ func (a audience) contains(v string) bool {
 	return false
 }
 
+// Issuer devolve o identificador do IdP (o claim iss exigido) contra o qual este
+// verifier valida os ID-tokens. É material PÚBLICO de configuração (uma URL de
+// issuer), não um segredo: serve para rotular a autoridade de autenticação no
+// registo auditável do binding humano↔NHI (ex.: "oidc:<issuer>", ADR-003).
+func (v *Verifier) Issuer() string { return v.issuer }
+
 // Validate autentica um ID-token OIDC e devolve as claims verificadas. É a superfície
 // central fail-closed: qualquer falha devolve um erro tipado e Claims vazio.
 //

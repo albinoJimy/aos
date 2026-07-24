@@ -109,7 +109,10 @@ func (i *Issuer) IssueChild(ctx context.Context, parentCompact string, req Child
 	if err != nil {
 		return Token{}, err
 	}
-	if err := i.recordIssued(ctx, claims); err != nil {
+	// Contexto de autorização de uma NHI filha: a autoridade é a CADEIA do pai
+	// (on-behalf-of), que enraíza no mesmo humano responsável. O binding regista
+	// [AuthMethodDelegation] — a autoria resolve na mesma, via a raiz humana.
+	if err := i.recordIssued(ctx, claims, AuthMethodDelegation); err != nil {
 		return Token{}, err
 	}
 	return Token{Compact: compact, Claims: claims}, nil

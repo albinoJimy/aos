@@ -43,6 +43,12 @@ type IssueRequest struct {
 	// filho é ainda intersectado com o do pai, garantindo filho ⊆ pai (a
 	// autoridade só pode estreitar ao descer a cadeia, nunca alargar).
 	ParentScope []string
+	// AuthMethod é o CONTEXTO DE AUTORIZAÇÃO do binding humano↔NHI: o método/
+	// autoridade pelo qual o humano responsável foi autenticado antes deste mint
+	// (ex.: "oidc:<issuer>", "allowlist"). É gravado no registo auditável de binding
+	// (evento identity.nhi.issued) — ver ADR-003 e [BindingAudit]. É um RÓTULO de
+	// método: NUNCA o token/asserção cru nem PII. Vazio ⇒ [AuthMethodUnspecified].
+	AuthMethod string
 }
 
 // Issuer emite tokens NHI assinados. NÃO detém os bytes crus da chave privada: assina
@@ -251,7 +257,7 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		return Token{}, err
 	}
 
-	if err := i.recordIssued(ctx, claims); err != nil {
+	if err := i.recordIssued(ctx, claims, req.AuthMethod); err != nil {
 		// Emissão não-auditável é uma acção sem rasto: fail-closed (ADR-003/010).
 		return Token{}, err
 	}
@@ -259,10 +265,17 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 	return Token{Compact: compact, Claims: claims}, nil
 }
 
-// recordIssued grava o evento identity.nhi.issued (só metadados). No-op sem store.
-func (i *Issuer) recordIssued(ctx context.Context, c Claims) error {
+// recordIssued grava o evento identity.nhi.issued — o registo AUDITÁVEL do binding
+// humano↔NHI (ADR-003; só metadados + contexto de autorização). No-op sem store.
+// authMethod é o rótulo do método/autoridade de autorização (ex.: "oidc:<issuer>");
+// vazio é normalizado para [AuthMethodUnspecified] para que o binding declare sempre
+// um método. NUNCA grava segredos/asserções crus nem PII.
+func (i *Issuer) recordIssued(ctx context.Context, c Claims, authMethod string) error {
 	if i.store == nil {
 		return nil
+	}
+	if authMethod == "" {
+		authMethod = AuthMethodUnspecified
 	}
 	payload := issuedPayload{
 		JTI:        c.JTI,
@@ -274,6 +287,7 @@ func (i *Issuer) recordIssued(ctx context.Context, c Claims) error {
 		Issuer:     c.Issuer,
 		IssuedAt:   c.IssuedAt,
 		Expiry:     c.Expiry,
+		AuthMethod: authMethod,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
