@@ -14,7 +14,7 @@
 
 ## 1. Contexto e motivação
 
-A auditoria multiagente de 2026-07-24 (`analises/07_Relatorio_Auditoria_Multiagente.md`) concluiu que o AOS v1 **não está feito** segundo o DoD da Carta §5. As bibliotecas nucleares (RM, NHI, durabilidade, Cedar, OTel) são reais e bem testadas, mas o nó `aos` de produção não as monta; a documentação primária está desactualizada face aos 16 epics/AOS-177 reais; e existem inversões de fronteira canónica e gaps de hardening.
+A auditoria multiagente de 2026-07-24 (`analises/07_Relatorio_Auditoria_Multiagente.md`) concluiu que o AOS v1 **não está feito** segundo o DoD da Carta §5. As bibliotecas nucleares (RM, NHI, durabilidade, Cedar, OTel) são reais e bem testadas, mas o nó `aos` de produção não as monta; a documentação primária está desactualizada face aos 17 epics/AOS-189 reais; e existem inversões de fronteira canónica e gaps de hardening.
 
 Este epic agrupa o trabalho transversal de remediação. Não substitui os epics funcionais — articula-se com eles, produzindo os tickets de wiring, correção documental e gates de CI que faltam para que a v1 possa ser declarada.
 
@@ -176,12 +176,12 @@ justificação e actualização do ADR (supersessão) ou remoção.
 ### AOS-186 — Regenerar e validar RTM na CI
 
 **Critérios de aceitação:**
-- [ ] Script que regenere as secções §4–§5 da `tecnica/16_Rastreabilidade_RTM.md` a partir de `specs/EPIC-*.md`, `docs/adr/*.md` e ficheiros Go.
-- [ ] Gate de CI que falha se um ADR canónico tiver 0 tickets ou se um AOS-NNN citado não existir no backlog.
-- [ ] Cobertura completa de AOS-001..AOS-189, 16 epics e ADR-001..ADR-018.
-- [ ] O gate 2b prometido em `specs/01_Engineering_Standards_e_Handoff.md` §4 existe e valida referências cruzadas.
+- [x] Script que regenere as secções §4–§6 da `tecnica/16_Rastreabilidade_RTM.md` a partir de `specs/EPIC-*.md`, `docs/adr/*.md` e ficheiros Go.
+- [x] Gate de CI que falha se um ADR canónico tiver 0 tickets ou se um AOS-NNN citado não existir no backlog.
+- [x] Cobertura completa de AOS-001..AOS-189, 17 epics e todos os ADRs canónicos.
+- [x] O gate 2b prometido em `specs/01_Engineering_Standards_e_Handoff.md` §4 existe e valida referências cruzadas.
 
-**DoD:** RTM actualizada e verificada automaticamente; `ci-lint` e novo gate verdes.
+**DoD:** RTM actualizada e verificada automaticamente; `ci-lint`, `ci-rtm` e `ci-ref-lint` verdes.
 
 ---
 

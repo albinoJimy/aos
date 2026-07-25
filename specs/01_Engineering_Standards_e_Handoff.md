@@ -76,8 +76,9 @@ O *pipeline* é **fail-closed**: qualquer gate vermelho bloqueia a progressão. 
 |---|---|---|---|
 | 1 | **Build** | Compilação e resolução de dependências | Merge e todo o resto |
 | 2 | **Lint / format** | Estilo, *imports*, formatação | Merge |
-| 2b | **Lint de referências cruzadas** | Cada rótulo entre parênteses em `Dependências`/`Bloqueia` coincide com o título canónico do `AOS-NNN` referido; todas as cross-refs de ficheiros resolvem | Merge — o grafo executável não pode divergir |
+| 2b | **Lint de referências cruzadas (AOS-186)** | Todo `AOS-NNN` citado em `specs/`, `docs/adr/`, `tecnica/` (excepto a própria RTM) ou código Go existe no backlog; todo `ADR-NNN` citado existe no catálogo (`docs/adr/README.md` / `specs/00_System_Spec.md` §11); cada ADR-001…ADR-019 canónico tem ≥ 1 ticket implementador. | Merge — o grafo executável não pode divergir |
 | 2c | **Lint de fronteiras de camadas (AOS-178)** | Imports entre camadas de `packages/` respeitam `control-plane → kernel → platform/substrate`; substrato não importa camadas superiores; módulos de composição/teste não são importados por produção. Inversões conhecidas e documentadas no ADR-019 toleradas pela baseline; novas violações bloqueiam | Merge — inversões canónicas fora da baseline bloqueiam |
+| 2d | **Sincronia da RTM (AOS-186)** | As secções §4–§6 de `tecnica/16_Rastreabilidade_RTM.md` podem ser regeneradas a partir de `specs/EPIC-*.md` e estão sincronizadas com o corpus; o gate falha se a RTM divergir ou se um ADR canónico ficar sem tickets | Merge — rastreabilidade documental não pode regredir |
 | 3 | **Unit** | Testes unitários; cobertura ≥ limiar | Merge |
 | 4 | **Integração** | Contratos entre componentes (RM↔PDP, RT↔ES) conforme `tecnica/12_Contratos_de_Interface.md` | Merge |
 | 5 | **SAST** | Análise estática de segurança do código | Merge |
@@ -92,7 +93,7 @@ O *pipeline* é **fail-closed**: qualquer gate vermelho bloqueia a progressão. 
 | 14 | **Deploy prod** | Aplicação progressiva (canary → *rollout*) | Release |
 | 15 | **Tag SemVer** | Etiqueta de versão + manifesto de dependências imutável | Encerramento do release |
 
-Regra transversal: um *scan* de segredos limpo é pré-condição de qualquer *merge* (cruza com a DoD §3). Nenhum gate pode ser marcado *skip* sem ADR ou aprovação explícita registada no audit trail. Além disso, o **lint de referências cruzadas** (gate 2b) garante que nenhum rótulo de dependência diverge do título canónico do ticket referido — a invariante que mantém componentes nucleares como o Reference Monitor (AOS-003) visíveis no grafo executável e no caminho crítico.
+Regra transversal: um *scan* de segredos limpo é pré-condição de qualquer *merge* (cruza com a DoD §3). Nenhum gate pode ser marcado *skip* sem ADR ou aprovação explícita registada no audit trail. O **lint de referências cruzadas** (gate 2b) garante que nenhum identificador `AOS-NNN` ou `ADR-NNN` citado no corpus aponta para o vazio; o **gate 2d** (`ci-rtm`) garante que a matriz de rastreabilidade reflecte o backlog actual — ambos mantêm componentes nucleares como o Reference Monitor (AOS-003) visíveis no grafo executável e no caminho crítico.
 
 > **Nota normativa (NFR de latência de mediação).** Onde qualquer ticket ou critério de aceitação cita «overhead de mediação p95 < 15 ms», o alvo refere-se à **latência de avaliação do PDP** (NFR-01, política compilada em memória). O **overhead total de mediação por *tool call*** é um orçamento *composto* — PDP + CAS de admissão + broker→vault + append ao Event Store + egress/DNS — decomposto por sub-passo em `tecnica/00 §9` e nos contratos de `tecnica/12_Contratos_de_Interface.md`; **não** é 15 ms. O mapeamento NFR×ticket está na RTM (`tecnica/16_Rastreabilidade_RTM.md`).
 

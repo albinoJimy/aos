@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-layer-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all ci-cache-prime \
+        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all ci-cache-prime \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -70,6 +70,12 @@ ci-lint: ## Gate: lint/format + arch-lint AOS-003 (gofmt, vet, staticcheck)
 
 ci-layer-lint: ## Gate: lint de fronteiras de camadas (AOS-178)
 	$(CI)/layer-lint.sh
+
+ci-rtm: ## Gate: RTM sincronizada com o corpus (AOS-186)
+	python3 scripts/ci/rtm-regenerate.py --check
+
+ci-ref-lint: ## Gate 2b: referências cruzadas AOS/ADR válidas (AOS-186)
+	python3 scripts/ci/ref-lint.py
 
 ci-test: ## Gate: test -race + cobertura (gate generalizado >= COVERAGE_MIN, default 80%)
 	$(CI)/test.sh
