@@ -108,12 +108,11 @@ func (d Decision) Permitted() bool {
 // impressão digital determinística que liga um Permit à acção autorizada.
 // A função [FingerprintOf] devolve o valor canónico.
 type FingerprintInput struct {
-	RunID        string
-	StepID       string
-	ToolID       string
-	Capability   string
-	ResourceType string
+	RunID         string
+	StepID        string
+	ToolID        string
+	Capability    string
+	ResourceType  string
 	ResourceValue string
-	NHIID        string
+	NHIID         string
 }
-

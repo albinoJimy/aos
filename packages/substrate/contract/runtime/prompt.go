@@ -3,7 +3,6 @@ package runtime
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"strconv"
 )
 
 // AssemblyVersion é a versão do CÓDIGO de montagem do prompt. Vai no manifesto
@@ -175,6 +174,3 @@ func sha256Tagged(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hashPrefix + hex.EncodeToString(sum[:])
 }
-
-// itoa é um atalho local (evita fmt em hot path de montagem).
-func itoa(n int) string { return strconv.Itoa(n) }

@@ -304,8 +304,8 @@ func TestStaticDeviceEnrollment(t *testing.T) {
 	devAlice := []byte{0x01, 0x02, 0x03}
 	src := map[string][][]byte{
 		"human:alice": {devAlice},
-		"":            {{0x09}},      // aprovador vazio ⇒ descartado
-		"human:bob":   {{}, nil},     // deviceIDs vazios ⇒ descartados
+		"":            {{0x09}},  // aprovador vazio ⇒ descartado
+		"human:bob":   {{}, nil}, // deviceIDs vazios ⇒ descartados
 		"human:carol": {{0xaa, 0xbb}},
 	}
 	e := NewStaticDeviceEnrollment(src)

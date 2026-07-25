@@ -111,12 +111,12 @@ type Degrader interface {
 
 // Sentinelas de erro do executor (comparáveis por errors.Is — fail-closed).
 var (
-	ErrCannotShedCritical         = errors.New("scheduler: shed recusado — trabalho crítico nunca é descartado (fail-closed)")
-	ErrWorkRejected               = errors.New("scheduler: trabalho rejeitado — sistema saturado, sem degrau de degradação aplicável")
-	ErrUnknownDegradationAction   = errors.New("scheduler: acção de degradação desconhecida")
-	ErrChainExhausted             = errors.New("scheduler: cadeia de degradação esgotada sem degrau aplicável")
-	ErrCannotShedIrreversible     = errors.New("scheduler: shed recusado — trabalho irreversível nunca é descartado (fail-closed)")
-	ErrCannotShedNonOptional      = errors.New("scheduler: shed recusado — trabalho não marcado como opcional (fail-closed)")
-	ErrMissingReason              = errors.New("scheduler: degradação recusada — gatilho sem razão (fail-closed)")
-	ErrDegradationNotApplied      = errors.New("scheduler: acção de degradação seleccionada não teve efeito — escalar")
+	ErrCannotShedCritical       = errors.New("scheduler: shed recusado — trabalho crítico nunca é descartado (fail-closed)")
+	ErrWorkRejected             = errors.New("scheduler: trabalho rejeitado — sistema saturado, sem degrau de degradação aplicável")
+	ErrUnknownDegradationAction = errors.New("scheduler: acção de degradação desconhecida")
+	ErrChainExhausted           = errors.New("scheduler: cadeia de degradação esgotada sem degrau aplicável")
+	ErrCannotShedIrreversible   = errors.New("scheduler: shed recusado — trabalho irreversível nunca é descartado (fail-closed)")
+	ErrCannotShedNonOptional    = errors.New("scheduler: shed recusado — trabalho não marcado como opcional (fail-closed)")
+	ErrMissingReason            = errors.New("scheduler: degradação recusada — gatilho sem razão (fail-closed)")
+	ErrDegradationNotApplied    = errors.New("scheduler: acção de degradação seleccionada não teve efeito — escalar")
 )
