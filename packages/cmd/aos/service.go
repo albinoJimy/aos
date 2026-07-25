@@ -399,6 +399,17 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		}
 	}()
 
+	// AOS-180: antes de correr um run, repõe o step-ledger a partir do Event Store.
+	// Num run novo o stream não existe e Rebuild é um no-op; numa retoma após crash/
+	// failover reconstrói as entradas already-applied para que o ledger deduplique
+	// efeitos já executados.
+	if err := s.node.Runtime.RebuildLedger(ctx, rs.runID); err != nil {
+		s.mu.Lock()
+		rs.err = fmt.Errorf("aos: rebuild do ledger durável do run %q: %w", rs.runID, err)
+		s.mu.Unlock()
+		return
+	}
+
 	res, _, err := s.node.Runtime.Run(ctx, goal, nil)
 	s.mu.Lock()
 	rs.result = res

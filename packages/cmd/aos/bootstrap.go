@@ -46,9 +46,13 @@ import (
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	hitl "github.com/aos-ref/control-plane/governance/hitl"
 	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
+	pdp "github.com/aos-ref/control-plane/pdp"
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
+	"github.com/aos-ref/kernel/agent-runtime/replay"
+	"github.com/aos-ref/kernel/reference-monitor/authz"
 	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/domain"
@@ -165,8 +169,21 @@ type Config struct {
 	Catalog     toolset.Catalog
 	Revalidator *revalidation.Revalidator
 	Policy      integration.PolicyProvider
+	// Authority é a fonte de autoridade user∩classe para o ScopeGate (AOS-071).
+	// nil ⇒ fonte vazia fail-closed (scope negado para toda a tool call); em testes
+	// e wiring de referência pode usar [authz.NewStaticAuthoritySource].
+	Authority authz.AuthoritySource
+	// PDP é um Policy Decision Point injectado para testes/wiring avançado. nil ⇒
+	// [pdp.NewUnloaded] (deny fail-closed até bundle ser carregado). Quando
+	// fornecido, tem PRECEDÊNCIA sobre o PDP default não-carregado.
+	PDP *pdp.PDP
 
 	// --- Substrato DURÁVEL (AOS-170) -------------------------------------------
+	// DurableExecution activa o checkpointer, capturer e step-ledger duráveis
+	// (AOS-180) sobre o Event Store. Quando false, o runtime usa os defaults no-op
+	// (AOS-013) — o nó arranca sem execução durável. Fail-closed: se true mas o Event
+	// Store não puder ser aberto, o bootstrap já aborta em (2).
+	DurableExecution bool
 	// EventStore é a espinha append-only partilhada (turnos + sinais de controlo +
 	// nonce-store anti-replay). Precedência: se != nil, usa-o tal-qual (o chamador é
 	// dono do ciclo de vida); senão, se EventStorePath != "", ABRE um Event Store
@@ -381,6 +398,31 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 	}()
 
+	// (2c) EXECUÇÃO DURÁVEL (AOS-180). Quando configurada, compõe o checkpointer,
+	// capturer de não-determinismo e step-ledger sobre o MESMO Event Store. São
+	// opcionais em conjunto: quando cfg.DurableExecution é false, permanecem nil e
+	// o runtime usa os defaults no-op (AOS-013).
+	var (
+		checkpointer agentruntime.Checkpointer
+		capturer     agentruntime.Capturer
+		ledger       *durable.StepLedger
+	)
+	if cfg.DurableExecution {
+		var err error
+		checkpointer, err = durable.NewCheckpointer(es)
+		if err != nil {
+			return nil, fmt.Errorf("aos: checkpointer durável (AOS-180): %w", err)
+		}
+		capturer, err = replay.NewCapturer(es)
+		if err != nil {
+			return nil, fmt.Errorf("aos: capturer de replay (AOS-180): %w", err)
+		}
+		ledger, err = durable.NewStepLedger(es)
+		if err != nil {
+			return nil, fmt.Errorf("aos: step-ledger durável (AOS-180): %w", err)
+		}
+	}
+
 	// (2b) OBSERVABILIDADE OTLP (AOS-173). GATING: sem exporter injectado E sem endpoint
 	// ⇒ NoopTracer (zero overhead; o WORM e o RT/RM/toolset ficam byte-idênticos ao modo
 	// sem observabilidade). Com endpoint ⇒ abre um OTLPHTTPExporter fail-open (fail-closed
@@ -534,6 +576,10 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	// (7) SECURED RUNTIME — a CADEIA REAL (via NewProductionSecure), com o VERIFIER REAL
 	// ligado. Fail-closed: um colaborador obrigatório em falta é recusado aqui.
+	var toolSetStore integration.ToolSetStore
+	if cfg.DurableExecution {
+		toolSetStore = es // AOS-155: snapshot do tool set congelado persiste no mesmo ES
+	}
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
 		Model:          model,
 		Recorder:       agentruntime.NewTurnRecorder(es),
@@ -542,8 +588,14 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Policy:         policy,
 		WORM:           wormForChain, // decorado com observabilidade quando ligada (AOS-173)
 		Verifier:       verifier,     // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
-		FreezeOptions:  freezeOpts,   // toolset.WithTracer quando a observabilidade está ligada
-		RuntimeOptions: runtimeOpts,  // agentruntime.WithTracer (RT+RM partilham o tracer)
+		Authority:      cfg.Authority,
+		PDP:            cfg.PDP,
+		ToolSetStore:   toolSetStore,
+		Checkpointer:   checkpointer,
+		Capturer:       capturer,
+		Ledger:         ledger,
+		FreezeOptions:  freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
+		RuntimeOptions: runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)

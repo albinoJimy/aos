@@ -3,9 +3,12 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	pdp "github.com/aos-ref/control-plane/pdp"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/activity"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	"github.com/aos-ref/platform/audit"
@@ -61,6 +64,16 @@ type SecuredConfig struct {
 	// *[eventstore.Store] satisfá-lo.
 	ToolSetStore ToolSetStore
 
+	// --- Execução durável (AOS-180) ---------------------------------------------
+	// Quando TODOS os colaboradores abaixo são fornecidos, o runtime corre com
+	// idempotência por passo, checkpoint intra-iteração e captura de não-determinismo
+	// sobre o Event Store. Quando nil, o runtime usa os defaults no-op (AOS-013).
+	// O dispatcher durável é construído internamente a partir do ledger + RM, para
+	// garantir que a mediação é a única via de execução.
+	Checkpointer agentruntime.Checkpointer
+	Capturer     agentruntime.Capturer
+	Ledger       *durable.StepLedger
+
 	// --- Colaboradores de segurança da cadeia REAL (AOS-154) --------------------
 	// Todos são OPCIONAIS: quando nil caem para um default demo-grade que é um hook
 	// REAL fail-closed (NUNCA um stub neutro). Os colaboradores "reais"
@@ -102,6 +115,7 @@ type SecuredRuntime struct {
 	catalog   toolset.Catalog
 	toolsets  *RunToolSets
 	freezeOpt []toolset.Option
+	ledger    *durable.StepLedger
 }
 
 // NewSecuredRuntime compõe o runtime seguro sobre a CADEIA DE MEDIAÇÃO REAL
@@ -221,7 +235,30 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		return nil, err
 	}
 
-	rt := agentruntime.New(cfg.Model, rm, cfg.Recorder, cfg.RuntimeOptions...)
+	// Ligação AOS-180: execução durável. Os colaboradores são opcionais em conjunto;
+	// quando fornecidos, substituem os defaults no-op do loop. O dispatcher durável
+	// é construído sobre o ledger e o RM, garantindo que a mediação permanece a única
+	// via de execução de efeitos.
+	runtimeOpts := cfg.RuntimeOptions
+	if cfg.Checkpointer != nil {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithCheckpointer(cfg.Checkpointer))
+	}
+	if cfg.Capturer != nil {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithCapturer(cfg.Capturer))
+	}
+	if cfg.Ledger != nil {
+		actDisp, err := activity.NewDispatcher(rm, cfg.Ledger)
+		if err != nil {
+			return nil, fmt.Errorf("integration: dispatcher durável: %w", err)
+		}
+		durDisp, err := NewDurableDispatcher(actDisp)
+		if err != nil {
+			return nil, fmt.Errorf("integration: adaptador do dispatcher durável: %w", err)
+		}
+		runtimeOpts = append(runtimeOpts, agentruntime.WithActivityDispatcher(durDisp))
+	}
+
+	rt := agentruntime.New(cfg.Model, rm, cfg.Recorder, runtimeOpts...)
 
 	return &SecuredRuntime{
 		rt:        rt,
@@ -229,6 +266,7 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		catalog:   cfg.Catalog,
 		toolsets:  toolsets,
 		freezeOpt: cfg.FreezeOptions,
+		ledger:    cfg.Ledger,
 	}, nil
 }
 
@@ -277,3 +315,13 @@ func (s *SecuredRuntime) Monitor() *referencemonitor.Monitor { return s.rm }
 
 // ToolSets expõe o registo de tool sets congelados por run (para inspecção).
 func (s *SecuredRuntime) ToolSets() *RunToolSets { return s.toolsets }
+
+// RebuildLedger repõe o step-ledger em memória a partir dos eventos duráveis do run.
+// Deve ser chamado antes de retomar um run após crash/failover (AOS-180). Sem ledger
+// durável é um no-op.
+func (s *SecuredRuntime) RebuildLedger(ctx context.Context, runID string) error {
+	if s.ledger == nil {
+		return nil
+	}
+	return s.ledger.Rebuild(ctx, runID)
+}

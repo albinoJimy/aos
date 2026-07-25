@@ -457,6 +457,40 @@ idênticas sobre ambos. Cobertura do adaptador ≥ 80 % com `-race` limpo.
 diferido, como em AOS-021); HA de produção sobre o ES replicado real
 (NATS/JetStream), a validar em staging.
 
+### 4.5. Wiring no composition-root do nó (AOS-180)
+
+A execução durável é exposta no nó `aos` (`packages/cmd/aos`) através do
+`integration.SecuredRuntime`, que substitui o despacho directo de tool calls por um
+`activity.Dispatcher` backed pelo `durable.StepLedger`. O wiring é realizado no
+`Bootstrap` quando `Config.DurableExecution == true`:
+
+1. **Mesmo Event Store.** O `EventStoreCheckpointer` (`durable.NewCheckpointer`), o
+   `EventStoreCapturer` de replay (`replay.NewCapturer`) e o `StepLedger`
+   (`durable.NewStepLedger`) são construídos sobre a **mesma** instância
+   `*eventstore.Store` que o nó usa para turnos e sinais de controlo. Assim, os
+   quatro domínios de dedup (turno, checkpoint, ledger, replay) partilham a mesma
+   fonte de verdade append-only.
+2. **Dispatcher durável dentro da mediação.** `NewSecuredRuntime` compõe o
+   `activity.Dispatcher` sobre o ledger e o `referencemonitor.Monitor`, e adapta-o a
+   `agentruntime.ActivityDispatcher`. O efeito continua a ser mediado pelo RM (a
+   mediação é a única via de execução), mas agora atravessa `ledger.Apply`, que
+   deduplica pela chave `f(run_id, step_id)`.
+3. **Retoma no arranque do run.** O `NodeService.hostRun` invoca
+   `SecuredRuntime.RebuildLedger(ctx, runID)` **antes** de `Runtime.Run`. Num run
+   novo o stream de ledger está vazio e `Rebuild` é no-op; numa retoma após crash ou
+   failover reconstrói as entradas `already-applied`, garantindo que efeitos
+   anteriormente executados não voltam a correr.
+4. **Opcional e fail-closed.** Quando `DurableExecution == false`, todos os
+   colaboradores duráveis permanecem `nil` e o `SecuredRuntime` usa os defaults
+   no-op do loop (AOS-013). Quando `DurableExecution == true` mas a abertura do
+   Event Store falha, o bootstrap aborta antes de compor o runtime.
+
+O teste de aceitação `TestNode_DurableExecution_NoDoubleExecAfterRestart`
+(`packages/cmd/aos/bootstrap_durable_execution_test.go`) prova o cenário de
+referência: corre um run com uma tool call, fecha o nó, re-arranca sobre o mesmo
+WAL, re-corre o mesmo `RunID` e assegura que a tool executou exactamente uma vez —
+a segunda execução obtém deduplicação do ledger reconstruído.
+
 ---
 
 ## 5. Máquina de estados durável
