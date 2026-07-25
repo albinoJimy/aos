@@ -4,7 +4,7 @@
 
 ## 1. O que é este projecto
 
-O **AOS** é um *Agentic OS de Referência*. Para a **v1**, a forma do produto é um **runtime de referência deployável**: o binário/serviço `aos` que se instala e corre, hospeda *runs* de agentes sob a cadeia de governança REAL e expõe uma interface externa mínima (CLI + API `net/http` stdlib). A visão de longo prazo de *blueprint/platforma standalone* vive no `_FONTE_agentic-os-ideal.md` e só muda por emenda da Carta. É um monorepo que contém a fundação (código, infraestrutura declarativa dev/staging, especificações e desenho técnico). A lógica de negócio de cada componente é entregue pelos tickets `AOS-NNN` dos dezasseis epics do backlog.
+O **AOS** é um *Agentic OS de Referência*. Para a **v1**, a forma do produto é um **runtime de referência deployável**: o binário/serviço `aos` que se instala e corre, hospeda *runs* de agentes sob a cadeia de governança REAL e expõe uma interface externa mínima (CLI + API `net/http` stdlib). A visão de longo prazo de *blueprint/platforma standalone* vive no `_FONTE_agentic-os-ideal.md` e só muda por emenda da Carta. É um monorepo que contém a fundação (código, infraestrutura declarativa dev/staging, especificações e desenho técnico). A lógica de negócio de cada componente é entregue pelos tickets `AOS-NNN` dos dezassete epics do backlog (EPIC-01..EPIC-17).
 
 A tese central: tornar as falhas **arquitecturalmente impossíveis**, não apenas desencorajadas. Para isso assenta em três fundações não-negociáveis:
 
@@ -19,7 +19,7 @@ As fontes de verdade canónicas são: [`specs/00_AOS_Carta.md`](specs/00_AOS_Car
 | Camada | Tecnologia de referência |
 |---|---|
 | Linguagem | **Go 1.24** (`go 1.24` nos `go.mod`) |
-| Orquestração de dependências | Módulos Go locais (`replace` por path) — 45 módulos em `packages/` |
+| Orquestração de dependências | Módulos Go locais (`replace` por path) — 46 módulos em `packages/` (incluindo `platform/attestation`, adicionado no âmbito de EPIC-16/AOS-177) |
 | Infraestrutura | **OpenTofu** ≥ 1.10 (ou Terraform ≥ 1.11) + provider Docker |
 | Estado remoto | S3-compatível (MinIO local em dev) com `use_lockfile` nativo |
 | Event Store / transporte | **NATS JetStream** (dev/staging via Docker); alternativas: Redis/Postgres |
@@ -49,7 +49,7 @@ As fontes de verdade canónicas são: [`specs/00_AOS_Carta.md`](specs/00_AOS_Car
 │   ├── env/                #   dev.tfvars, staging.tfvars (versionados, sem segredos)
 │   ├── tests/              #   Testes nativos *.tftest.hcl + secret-scan.sh + idempotence.sh
 │   └── bootstrap/          #   MinIO local para estado remoto
-├── specs/                  # Backlog executável: System Spec, Standards, EPIC-01..EPIC-16
+├── specs/                  # Backlog executável: System Spec, Standards, EPIC-01..EPIC-17
 ├── tecnica/                # Desenho de solução, contratos, ADRs, matrizes de rastreabilidade
 ├── docs/                   # ADRs materializados, runbooks, hipercare, relatórios
 ├── scripts/ci/             # Fonte de verdade dos gates de CI (fail-closed)

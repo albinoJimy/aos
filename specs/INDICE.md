@@ -13,7 +13,7 @@
 ## 1. Propósito
 
 Este conjunto materializa o **backlog executável** do AOS. Decompõe a totalidade do trabalho em
-**128 tickets atómicos (AOS-001 a AOS-128)**, organizados em **12 epics**, cada um com critérios de
+**189 tickets atómicos (AOS-001 a AOS-189)**, organizados em **17 epics**, cada um com critérios de
 aceitação SMART, Definition of Done, prompt de handoff para o **Claude Code (CLI)** e gates de qualidade.
 
 O backlog é a interface operacional entre o conjunto técnico (`../tecnica/`) e a execução. Cada ticket é
@@ -40,9 +40,13 @@ e fechar de forma independente.
 | **EPIC-10 Topologia, Operação e DR** | Epic | Deployment, dashboards, runbooks, backup/DR | [EPIC-10_Topologia_Operacao_DR.md](EPIC-10_Topologia_Operacao_DR.md) | 616 |
 | **EPIC-11 Testes e Qualidade** | Epic | Testes, eval harness, carga, golden-sets, red-team | [EPIC-11_Testes_Qualidade.md](EPIC-11_Testes_Qualidade.md) | 776 |
 | **EPIC-12 Experiência HITL/UX** | Epic | Superfície de controlo, approval-card, aprovação-de-plano, paridade Slack/Telegram, anti-fadiga | [EPIC-12_Experiencia_HITL_UX.md](EPIC-12_Experiencia_HITL_UX.md) | 781 |
+| **EPIC-13 Frontend** | Epic | Operacionalização da superfície humana (BFF, WebAuthn, WYSIWYS, SSE, a11y) | [EPIC-13_Frontend.md](EPIC-13_Frontend.md) | 856 |
+| **EPIC-14 Integração e Composition-Root** | Epic | Composition-root, seams e ápice de enforcement composto (resolução da dívida PR-0) | [EPIC-14_Integracao_Composition_Root.md](EPIC-14_Integracao_Composition_Root.md) | 1099 |
+| **EPIC-15 Nó `aos` Runtime Deployável** | Epic | Graduação de `cmd/aos-demo` para o nó `aos` de produção (CLI + API stdlib + SSE) | [EPIC-15_No_AOS_Runtime_Deployavel.md](EPIC-15_No_AOS_Runtime_Deployavel.md) | 705 |
+| **EPIC-16 Autoridade de Identidade Real (D4)** | Epic | IdP OIDC, custódia externa de chave, binding humano↔NHI, attestation WebAuthn | [EPIC-16_Autoridade_Identidade_Real_D4.md](EPIC-16_Autoridade_Identidade_Real_D4.md) | 120 |
 | **EPIC-17 Remediação Auditoria Multiagente v3** | Epic | Wiring, gates CI e reconciliação documental dos achados da auditoria Carta ↔ codebase | [EPIC-17_Remediacao_Auditoria_Multiagente_v3.md](EPIC-17_Remediacao_Auditoria_Multiagente_v3.md) | 389 |
 
-**Total: 15 ficheiros referenciados, ~9.690+ linhas. O índice detalhado de EPIC-13..EPIC-16 e EPIC-17 está em reconciliação (AOS-185).**
+**Total: 19 ficheiros referenciados, ~10.000+ linhas. O inventário abaixo cobre EPIC-01..EPIC-17 e AOS-001..AOS-189.**
 
 ---
 
@@ -64,7 +68,12 @@ e fechar de forma independente.
 | EPIC-10 Topologia, Operação e DR | AOS-098 – AOS-108 | 11 | Fase 3–4 |
 | EPIC-11 Testes e Qualidade | AOS-109 – AOS-118 | 10 | Fase 0–4 |
 | EPIC-12 Experiência HITL/UX | AOS-119 – AOS-128 | 10 | Fase 4 |
-| **TOTAL** | **AOS-001 – AOS-128** | **128** | --- |
+| EPIC-13 Frontend | AOS-129 – AOS-143 | 15 | Fase 5 |
+| EPIC-14 Integração e Composition-Root | AOS-144 – AOS-162 | 19 | Fase 5 |
+| EPIC-15 Nó `aos` Runtime Deployável | AOS-163 – AOS-173 | 11 | Fase 5 |
+| EPIC-16 Autoridade de Identidade Real (D4) | AOS-174 – AOS-177 | 4 | Fase 5 |
+| EPIC-17 Remediação Auditoria Multiagente v3 | AOS-178 – AOS-189 | 12 | Transversal |
+| **TOTAL** | **AOS-001 – AOS-189** | **189** | --- |
 
 ### 3.2 Por fase do roadmap (concentração-alvo)
 
@@ -75,6 +84,7 @@ e fechar de forma independente.
 | **Fase 2 — Governação & observabilidade** | policy-as-code, OTel, audit WORM, GDPR | EPIC-08, EPIC-09, parte de EPIC-06 |
 | **Fase 3 — Escala & controlo** | admission global, backpressure, operação | EPIC-03, EPIC-06, EPIC-10 |
 | **Fase 4 — UX & evolução** | steer/interrupt, L0–L5, SemVer + eval-gate | EPIC-09, EPIC-11, parte de EPIC-10 |
+| **Fase 5 — Operacionalização** | composition-root, nó deployável, autoridade real, fronteira humana, remediação | EPIC-13, EPIC-14, EPIC-15, EPIC-16, EPIC-17 |
 
 ---
 
@@ -199,7 +209,7 @@ Detalhes das dependências em cada ticket (campos "Dependências" e "Bloqueia").
 |----------|-------------|-----------|
 | Síntese-fonte | [`../_FONTE_agentic-os-ideal.md`](../_FONTE_agentic-os-ideal.md) | Blueprint autoritativo "O Agentic OS ideal" |
 | Técnica | [`../tecnica/INDICE.md`](../tecnica/INDICE.md) | 18 docs de desenho por subsistema (inclui 12–17 das remediações P0/P1) |
-| **Specs (este conjunto)** | [INDICE.md](INDICE.md) | 12 epics + 128 tickets executáveis |
+| **Specs (este conjunto)** | [INDICE.md](INDICE.md) | 17 epics + 189 tickets executáveis |
 
 ---
 
@@ -211,6 +221,7 @@ Cada documento contém a sua tabela de aprovação (Arquitecto de Plataforma · 
 |--------|------|-----------|-------|
 | 1.0 | Julho 2026 | Emissão inicial: System Spec + Standards + 11 epics decompostos em 118 tickets AOS, alinhados com o conjunto técnico v1.0 e a síntese "O Agentic OS ideal". | Equipa AOS |
 | 1.1 | Julho 2026 | Remediação P1 da auditoria: +EPIC-12 (Experiência HITL/UX, AOS-119–128). Total: 12 epics, 128 tickets. | Equipa AOS |
+| 1.2 | Julho 2026 | Reconciliação documental P0: +EPIC-13..EPIC-17 (Frontend, Composition-Root, Nó `aos`, Autoridade de Identidade Real, Remediação Auditoria Multiagente v3). Total: 17 epics, AOS-001..AOS-189. | Equipa AOS |
 
 ---
 

@@ -2,9 +2,22 @@
 
 Monorepo dividido por **camadas do modelo canónico** (ver
 [_BRIEF.md](../_BRIEF.md) §2). Cada pacote agrupa componentes do catálogo canónico
-pelo seu papel na arquitectura. **Esta entrega é apenas esqueleto**: estrutura,
-fronteiras e READMEs. Nenhuma lógica de negócio é implementada aqui — cada
-componente é entregue pelos tickets `AOS-NNN` dos epics respectivos.
+pelo seu papel na arquitectura. As nove subpastas de produção contêm a
+implementação de referência entregue pelos tickets `AOS-NNN` dos epics
+respectivos; alguns componentes (ex.: composition-root completo do nó `aos`)
+ainda têm seams condicionais documentados nos respectivos epics.
+
+| Subpasta | Papel |
+|---|---|
+| `cmd/` | Binários: `aos` (nó de produção), `aos-demo` |
+| `control-plane/` | Plano de controlo: ORQ, SCH, PDP, budget, governance/* |
+| `integration/` | Composition-root / wiring / ápice de enforcement composto |
+| `kernel/` | Plano de execução: RM (Reference Monitor), RT (Agent Runtime) |
+| `platform/` | Serviços de plataforma: MEM, REG, GW, BRK, identity, audit, … |
+| `qa/` | Testes de qualidade (dr-e2e, ux-dx) |
+| `security-tests/` | Cenários adversariais de segurança |
+| `substrate/` | Log & substrato: ES, bus, sandbox, otel-genai, redaction |
+| `testkit/` | Fixtures, mocks deterministas e conversor cov2lcov (AOS-109) |
 
 | Pacote | Camada canónica | Componentes (catálogo) | Epics de origem |
 |---|---|---|---|

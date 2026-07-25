@@ -258,6 +258,10 @@ Um Agentic OS não nasce ideal; evolui por níveis onde cada um **desbloqueia** 
 | ADR-013 | Gates de risco SA-ROC + controlo bidireccional | Tiering safe/gray/danger; steer/interrupt; aprovação-de-plano; timeout fail-closed |
 | ADR-014 | Taxonomia de autonomia L0–L5 | Oversight proporcional ao impacto; promoção por fiabilidade medida; demoção automática |
 | ADR-015 | Durable execution: contrato próprio (ratificado) | Consolidar o contrato próprio (AOS-014/015/016/021); porta `Engine` agnóstica ao backend (Princípio 8); engine externo como backend plugável subordinado ao ES (ADR-007). Concretizado em AOS-022 |
+| ADR-016 | Fronteira de confiança da camada de UI | BFF *non-signing*; custódia de chave de decisão humana fora do cliente/servidor; WYSIWYS; 4-eyes atestado; read-path soberano. Ratificado na EPIC-13 |
+| ADR-017 | Supply-chain do nó `aos` | Binário zero-dep (só stdlib + cedar-go), imagem distroless/non-root/read-only, SBOM + proveniência. Ver [`docs/adr/ADR-017-supply-chain-node.md`](../docs/adr/ADR-017-supply-chain-node.md) |
+| ADR-018 | Fronteira nó↔ORQ/SCH | O loop do serviço do nó `aos` é a fonte única de verdade do ciclo de vida na v1 single-host. Ver [`docs/adr/ADR-018-fronteira-no-orq-sch.md`](../docs/adr/ADR-018-fronteira-no-orq-sch.md) |
+| ADR-019 | Excepções intencionais às fronteiras canónicas de camada | Inversões conhecidas (kernel↔platform, control-plane→platform/substrate) formalizadas com baseline do gate `layer-lint`. Ver [`docs/adr/ADR-019-fronteiras-camada-excecoes.md`](../docs/adr/ADR-019-fronteiras-camada-excecoes.md) |
 
 ---
 

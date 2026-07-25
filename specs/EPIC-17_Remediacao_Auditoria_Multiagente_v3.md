@@ -62,10 +62,10 @@ Tornar o nó `aos` e a documentação que o acompanha consistentes com a Carta, 
 ### AOS-178 — Gate de lint de fronteiras de camadas
 
 **Critérios de aceitação:**
-- [ ] Script em `scripts/ci/` que, dado um grafo canónico de camadas (`control-plane → kernel → platform/substrate`), falhe se encontrar importações inversas.
-- [ ] Cobertura de todos os módulos `packages/*` (não só do `kernel/reference-monitor`).
-- [ ] Self-test que prove que uma inversão sintética bloqueia o gate.
-- [ ] Documentação do gate em `specs/01_Engineering_Standards_e_Handoff.md` §4.
+- [x] Script em `scripts/ci/` que, dado um grafo canónico de camadas (`control-plane → kernel → platform/substrate`), falhe se encontrar importações inversas.
+- [x] Cobertura de todos os módulos `packages/*` (não só do `kernel/reference-monitor`).
+- [x] Self-test que prove que uma inversão sintética bloqueia o gate (`scripts/ci/selftest.sh`, secção L).
+- [x] Documentação do gate em `specs/01_Engineering_Standards_e_Handoff.md` §4.
 
 **Notas:** Pode reutilizar a lógica de `packages/kernel/reference-monitor/archlint`, mas generalizá-la para todo o repo.
 
@@ -76,8 +76,8 @@ Tornar o nó `aos` e a documentação que o acompanha consistentes com a Carta, 
 ### AOS-179 — Resolver inversões canónicas de imports
 
 **Critérios de aceitação:**
-- [ ] `packages/substrate/sandbox` deixa de importar `kernel/reference-monitor` (ARQ-01) — **formalizado como excepção intencional no ADR-019** (remoção total exigiria redefinir a fronteira RM↔sandbox na v1).
-- [ ] `packages/control-plane/orchestrator` deixa de importar `platform/identity` (ARQ-04) — **formalizado como excepção intencional no ADR-019** (contrato/eventos remetidos para refactor futura).
+- [x] `packages/substrate/sandbox` deixa de importar `kernel/reference-monitor` (ARQ-01) — **formalizado como excepção intencional no ADR-019** (remoção total exigiria redefinir a fronteira RM↔sandbox na v1).
+- [x] `packages/control-plane/orchestrator` deixa de importar `platform/identity` (ARQ-04) — **formalizado como excepção intencional no ADR-019** (contrato/eventos remetidos para refactor futura).
 - [x] Se uma inversão for intencional e permanente, emitir ADR/emenda que a autorize e actualizar `AGENTS.md` §3.
 - [x] O gate AOS-178 passa no repo depois das alterações.
 
