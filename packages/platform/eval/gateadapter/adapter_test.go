@@ -1,14 +1,11 @@
 package gateadapter
 
 import (
-	"context"
 	"testing"
 
 	eval "github.com/aos-ref/platform/eval"
-	memprocedural "github.com/aos-ref/platform/memory/procedural"
 	memschema "github.com/aos-ref/platform/memory/schema"
 	"github.com/aos-ref/platform/registry/domain"
-	"github.com/aos-ref/platform/registry/promotion"
 )
 
 // resolver determinista para os testes: só conhece os ids "good-*"; devolve o candidato
@@ -43,90 +40,49 @@ func testResolver(t *testing.T) CandidateResolver {
 	}
 }
 
-// TestPromotionGateAdapterReturnsScore prova que o adaptador à porta promotion.EvalGate
-// compila e devolve o score do harness: um candidato bom passa com GoldenSetScore=1.0 e
-// 0 regressões; um id desconhecido e um candidato regredido REPROVAM (fail-closed).
-func TestPromotionGateAdapterReturnsScore(t *testing.T) {
+// TestPromotionMetricsReturnsScore prova que a projecção de métricas de promoção
+// compila e devolve o score do harness: um candidato bom passa com
+// GoldenSetScore=1.0 e 0 regressões; um id desconhecido e um candidato regredido
+// REPROVAM (fail-closed) via score < 0 / regressões no valor de rejeição.
+func TestPromotionMetricsReturnsScore(t *testing.T) {
 	h := eval.NewHarness(eval.DefaultMinScore)
-	gate := NewPromotionGate(h, testResolver(t), 0.90, 0)
+	m := PromotionMetrics(h, testResolver(t))
 
-	res, err := gate.Evaluate(context.Background(), promotion.EvalRequest{
-		ID: "good-skill", Version: domain.Version{Major: 1},
-	})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if !res.Passed {
-		t.Fatalf("candidato bom não passou: %+v", res)
-	}
-	if res.GoldenSetScore != 1.0 {
-		t.Fatalf("GoldenSetScore = %.3f; want 1.0", res.GoldenSetScore)
-	}
-	if res.TraceDiffRegressions != 0 {
-		t.Fatalf("TraceDiffRegressions = %d; want 0", res.TraceDiffRegressions)
+	score, reg := m("good-skill", domain.Version{Major: 1})
+	if score != 1.0 || reg != 0 {
+		t.Fatalf("good-skill = (%.3f, %d); want (1.0, 0)", score, reg)
 	}
 
 	// Desconhecido -> fail-closed.
-	unknown, err := gate.Evaluate(context.Background(), promotion.EvalRequest{ID: "nope", Version: domain.Version{Major: 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unknown.Passed {
-		t.Fatal("id desconhecido deveria reprovar (fail-closed)")
+	score, reg = m("nope", domain.Version{Major: 1})
+	if score >= 0 || reg != rejectRegressions {
+		t.Fatalf("desconhecido = (%.3f, %d); deveria reprovar (score<0, reg=rejeição)", score, reg)
 	}
 
 	// Regredido (acção unsafe) -> fail-closed.
-	bad, err := gate.Evaluate(context.Background(), promotion.EvalRequest{ID: "bad-skill", Version: domain.Version{Major: 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bad.Passed {
-		t.Fatal("candidato com acção unsafe deveria reprovar via a porta")
+	score, reg = m("bad-skill", domain.Version{Major: 1})
+	if score >= 0 || reg != rejectRegressions {
+		t.Fatalf("bad-skill = (%.3f, %d); deveria reprovar via a porta", score, reg)
 	}
 }
 
-// TestProceduralGateAdapterReturnsScore prova o adaptador à porta procedural.EvalGate.
-func TestProceduralGateAdapterReturnsScore(t *testing.T) {
+// TestProceduralMetricsReturnsScore prova a projecção de métricas de memória procedural.
+func TestProceduralMetricsReturnsScore(t *testing.T) {
 	h := eval.NewHarness(eval.DefaultMinScore)
-	gate := NewProceduralGate(h, testResolver(t), 0.90, 0)
+	m := ProceduralMetrics(h, testResolver(t))
 
-	res, err := gate.Evaluate(context.Background(), memprocedural.EvalRequest{
-		SkillName: "good-proc", Version: memschema.Version{Major: 1},
-	})
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if !res.Passed {
-		t.Fatalf("candidato procedural bom não passou: %+v", res)
-	}
-	if res.GoldenSetScore != 1.0 {
-		t.Fatalf("GoldenSetScore = %.3f; want 1.0", res.GoldenSetScore)
+	score, reg := m("good-proc", memschema.Version{Major: 1})
+	if score != 1.0 || reg != 0 {
+		t.Fatalf("good-proc = (%.3f, %d); want (1.0, 0)", score, reg)
 	}
 }
 
 // TestNilResolverFailClosed prova que um resolver nil reprova (nunca falso-verde).
 func TestNilResolverFailClosed(t *testing.T) {
 	h := eval.NewHarness(eval.DefaultMinScore)
-	gate := NewPromotionGate(h, nil, 0.0, 0)
-	res, err := gate.Evaluate(context.Background(), promotion.EvalRequest{ID: "good-skill"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Passed {
-		t.Fatal("resolver nil deveria reprovar mesmo com limiar 0 (fail-closed)")
-	}
-}
-
-// TestMetricsFuncDirect exercita a projecção Metrics directamente (score do candidato bom).
-func TestMetricsFuncDirect(t *testing.T) {
-	h := eval.NewHarness(eval.DefaultMinScore)
-	m := PromotionMetrics(h, testResolver(t))
-	score, reg := m("good-skill", domain.Version{Major: 1})
-	if score != 1.0 || reg != 0 {
-		t.Fatalf("Metrics(good-skill) = (%.3f, %d); want (1.0, 0)", score, reg)
-	}
-	score, _ = m("nope", domain.Version{})
-	if score >= 0 {
-		t.Fatalf("Metrics(desconhecido) score = %.3f; deveria reprovar (< 0)", score)
+	m := PromotionMetrics(h, nil)
+	score, reg := m("good-skill", domain.Version{})
+	if score >= 0 || reg != rejectRegressions {
+		t.Fatalf("resolver nil = (%.3f, %d); deveria reprovar mesmo com limiar 0", score, reg)
 	}
 }

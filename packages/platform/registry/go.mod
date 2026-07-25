@@ -5,13 +5,14 @@ go 1.24
 require (
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
+	github.com/aos-ref/platform/eval v0.0.0
 	github.com/aos-ref/platform/memory v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
 )
 
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
-	github.com/aos-ref/substrate/otel-genai v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
 )
 
 // Integração por path local, ZERO dependências externas, build offline.
@@ -40,5 +41,7 @@ replace github.com/aos-ref/substrate/eventstore => ../../substrate/eventstore
 replace github.com/aos-ref/platform/memory => ../memory
 
 replace github.com/aos-ref/platform/audit => ../audit
+
+replace github.com/aos-ref/platform/eval => ../eval
 
 replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai

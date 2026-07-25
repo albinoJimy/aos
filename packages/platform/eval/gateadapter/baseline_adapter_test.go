@@ -5,10 +5,8 @@ import (
 	"testing"
 
 	eval "github.com/aos-ref/platform/eval"
-	memprocedural "github.com/aos-ref/platform/memory/procedural"
 	memschema "github.com/aos-ref/platform/memory/schema"
 	"github.com/aos-ref/platform/registry/domain"
-	"github.com/aos-ref/platform/registry/promotion"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -69,57 +67,60 @@ func baselineTestResolver(t *testing.T) BaselineResolver {
 	}
 }
 
-// TestPromotionGateVsBaselineBlocksRegression prova a INTEGRAÇÃO do segundo sinal (AC3):
-// o gateadapter alimenta a contagem REAL de regressões (não 0). Um candidato idêntico ao
-// aprovado passa com 0 regressões; um dentro do limiar passa (sem falso-positivo); um
-// salto de custo e uma acção de tool acrescentada REPROVAM via a porta (regressões > max);
-// um id desconhecido, um unsafe e um sem-baseline reprovam fail-closed.
-func TestPromotionGateVsBaselineBlocksRegression(t *testing.T) {
+// TestPromotionMetricsVsBaselineBlocksRegression prova a INTEGRAÇÃO do segundo sinal
+// (AC3): o gateadapter alimenta a contagem REAL de regressões (não 0). Um candidato
+// idêntico ao aprovado passa com 0 regressões; um dentro do limiar passa (sem
+// falso-positivo); um salto de custo e uma acção de tool acrescentada REPROVAM via a
+// porta (regressões > max); um id desconhecido, um unsafe e um sem-baseline reprovam
+// fail-closed.
+func TestPromotionMetricsVsBaselineBlocksRegression(t *testing.T) {
 	h := eval.NewHarness(eval.DefaultMinScore)
-	gate := NewPromotionGateVsBaseline(h, baselineTestResolver(t), tdCfg, 0.90, 0)
-	ctx := context.Background()
+	m := PromotionMetricsVsBaseline(h, baselineTestResolver(t), tdCfg, 0)
 
-	eval1 := func(id string) promotion.EvalResult {
-		res, err := gate.Evaluate(ctx, promotion.EvalRequest{ID: id, Version: domain.Version{Major: 1}})
-		if err != nil {
-			t.Fatalf("Evaluate(%s): %v", id, err)
-		}
-		return res
+	score, reg := m("good-skill", domain.Version{Major: 1})
+	if score != 1.0 || reg != 0 {
+		t.Fatalf("good-skill = (%.3f, %d); want (1.0, 0)", score, reg)
 	}
 
-	// Candidato idêntico ao aprovado: passa, 0 regressões REAIS (não o placeholder).
-	if res := eval1("good-skill"); !res.Passed || res.TraceDiffRegressions != 0 {
-		t.Fatalf("good-skill: passed=%v reg=%d; want passed=true reg=0", res.Passed, res.TraceDiffRegressions)
+	score, reg = m("within-tol", domain.Version{Major: 1})
+	if score != 1.0 || reg != 0 {
+		t.Fatalf("within-tol = (%.3f, %d); want (1.0, 0)", score, reg)
 	}
-	// Dentro do limiar: passa sem falso-positivo.
-	if res := eval1("within-tol"); !res.Passed || res.TraceDiffRegressions != 0 {
-		t.Fatalf("within-tol: passed=%v reg=%d; want passed=true reg=0", res.Passed, res.TraceDiffRegressions)
-	}
+
 	// Salto de custo: a contagem real > 0 REPROVA a porta.
-	if res := eval1("cost-jump"); res.Passed || res.TraceDiffRegressions == 0 {
-		t.Fatalf("cost-jump: passed=%v reg=%d; want passed=false reg>0", res.Passed, res.TraceDiffRegressions)
+	score, reg = m("cost-jump", domain.Version{Major: 1})
+	if score != 1.0 || reg == 0 {
+		t.Fatalf("cost-jump = (%.3f, %d); want score=1.0 reg>0", score, reg)
 	}
+
 	// Tool acrescentada: reprova por regressão de sequência.
-	if res := eval1("tool-add"); res.Passed || res.TraceDiffRegressions == 0 {
-		t.Fatalf("tool-add: passed=%v reg=%d; want passed=false reg>0", res.Passed, res.TraceDiffRegressions)
+	score, reg = m("tool-add", domain.Version{Major: 1})
+	if score != 1.0 || reg == 0 {
+		t.Fatalf("tool-add = (%.3f, %d); want score=1.0 reg>0", score, reg)
 	}
+
 	// Unsafe: golden reprova (fail-closed), reg no valor de rejeição.
-	if res := eval1("unsafe"); res.Passed {
-		t.Fatal("unsafe deveria reprovar via golden (fail-closed)")
+	score, reg = m("unsafe", domain.Version{Major: 1})
+	if score >= 0 || reg != rejectRegressions {
+		t.Fatalf("unsafe = (%.3f, %d); deveria reprovar (fail-closed)", score, reg)
 	}
+
 	// Sem baseline: fail-closed.
-	if res := eval1("no-baseline"); res.Passed {
-		t.Fatal("sem baseline deveria reprovar (fail-closed)")
+	score, reg = m("no-baseline", domain.Version{Major: 1})
+	if score >= 0 || reg != rejectRegressions {
+		t.Fatalf("no-baseline = (%.3f, %d); deveria reprovar (fail-closed)", score, reg)
 	}
+
 	// Desconhecido: fail-closed.
-	if res := eval1("nope"); res.Passed {
-		t.Fatal("id desconhecido deveria reprovar (fail-closed)")
+	score, reg = m("nope", domain.Version{Major: 1})
+	if score >= 0 || reg != rejectRegressions {
+		t.Fatalf("nope = (%.3f, %d); deveria reprovar (fail-closed)", score, reg)
 	}
 }
 
-// TestProceduralGateVsBaselineTolerates prova o adaptador procedural VsBaseline: um
+// TestProceduralMetricsVsBaselineTolerates prova a projecção procedural VsBaseline: um
 // candidato bom idêntico ao aprovado passa com 0 regressões reais; um resolver nil reprova.
-func TestProceduralGateVsBaselineTolerates(t *testing.T) {
+func TestProceduralMetricsVsBaselineTolerates(t *testing.T) {
 	h := eval.NewHarness(eval.DefaultMinScore)
 	sets, err := eval.EmbeddedSuitesFor(eval.ArtifactProceduralMemory)
 	if err != nil {
@@ -137,24 +138,16 @@ func TestProceduralGateVsBaselineTolerates(t *testing.T) {
 		return nil, nil, nil, false
 	}
 
-	gate := NewProceduralGateVsBaseline(h, resolve, tdCfg, 0.90, 0)
-	res, err := gate.Evaluate(context.Background(), memprocedural.EvalRequest{
-		SkillName: "good-proc", Version: memschema.Version{Major: 1},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Passed || res.TraceDiffRegressions != 0 {
-		t.Fatalf("good-proc: passed=%v reg=%d; want passed=true reg=0", res.Passed, res.TraceDiffRegressions)
+	m := ProceduralMetricsVsBaseline(h, resolve, tdCfg, 0)
+	score, reg := m("good-proc", memschema.Version{Major: 1})
+	if score != 1.0 || reg != 0 {
+		t.Fatalf("good-proc = (%.3f, %d); want (1.0, 0)", score, reg)
 	}
 
 	// Resolver nil -> fail-closed.
-	nilGate := NewProceduralGateVsBaseline(h, nil, tdCfg, 0.0, 0)
-	nres, err := nilGate.Evaluate(context.Background(), memprocedural.EvalRequest{SkillName: "good-proc"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if nres.Passed {
-		t.Fatal("resolver nil deveria reprovar (fail-closed)")
+	mnil := ProceduralMetricsVsBaseline(h, nil, tdCfg, 0)
+	score, reg = mnil("good-proc", memschema.Version{Major: 1})
+	if score >= 0 || reg != rejectRegressions {
+		t.Fatalf("resolver nil = (%.3f, %d); deveria reprovar (fail-closed)", score, reg)
 	}
 }

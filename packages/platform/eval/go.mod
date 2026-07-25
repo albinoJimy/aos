@@ -8,13 +8,6 @@ require (
 	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
-require (
-	github.com/aos-ref/kernel/agent-runtime v0.0.0 // indirect
-	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect
-	github.com/aos-ref/platform/audit v0.0.0 // indirect
-	github.com/aos-ref/substrate/eventstore v0.0.0 // indirect
-)
-
 // Integração por path local, ZERO dependências externas, build offline (AOS-114).
 //
 // O eval harness (EPIC-11) COMPÕE o vocabulário de eval do módulo FOLHA otel-genai

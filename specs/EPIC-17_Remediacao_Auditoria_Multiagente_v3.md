@@ -212,14 +212,14 @@ justificação e actualização do ADR (supersessão) ou remoção.
 ### AOS-189 — Cablar eval-gate de admissão no registry e memória procedural
 
 **Critérios de aceitação:**
-- [ ] `packages/platform/eval/gateadapter` é instanciado em `packages/integration` ou `packages/control-plane/registry/promotion` e `packages/platform/memory/procedural`.
-- [ ] Uma skill/memória auto-escrita só é promovida após trace-diffing + golden-set >= 90%.
-- [ ] Teste de end-to-end que prove bloqueio de regressão e aprovação de melhoria.
-- [ ] ADR-012 e `tecnica/08` §5 actualizados.
+- [x] `packages/platform/eval/gateadapter` é instanciado em `packages/integration` ou `packages/control-plane/registry/promotion` e `packages/platform/memory/procedural`.
+- [x] Uma skill/memória auto-escrita só é promovida após trace-diffing + golden-set >= 90%.
+- [x] Teste de end-to-end que prove bloqueio de regressão e aprovação de melhoria.
+- [x] ADR-012 e `tecnica/08` §8.2 actualizados.
 
 **Dependências:** AOS-142 (eval harness), OBS-03.
 
-**DoD:** `ci-evalgate` verde; comportamento fail-closed mantido.
+**DoD:** `ci-evalgate` verde; comportamento fail-closed mantido. ✅
 
 ## 7. Riscos e dependências
 

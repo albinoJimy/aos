@@ -178,7 +178,7 @@ A imutabilidade reconcilia-se com o direito ao apagamento (ADR-011): *"imutável
 
 O eval-driven development torna-se viável precisamente porque a trajectória completa está sempre no backend (secção 4). Cada avaliação — de um golden-set curado e estável, ou de datasets derivados de falhas — é registada como um span `gen_ai.evaluation.result` **ligado ao trace** que avaliou. Isto fecha o ciclo: a avaliação não é um relatório à parte, mas um span de primeira classe, correlacionável com os tokens, o custo e as decisões de política da trajectória original.
 
-Estes evals ligados ao trace alimentam o **eval-gate** de admissão de auto-modificações (ADR-012, ver `tecnica/09`): uma skill ou memória procedural auto-escrita só passa a produção após trace-diffing contra baseline e sucesso no golden-set. O golden-set curado apanha regressões *novas* que os datasets de falhas passadas nunca apanhariam.
+Estes evals ligados ao trace alimentam o **eval-gate** de admissão de auto-modificações (ADR-012, ver `tecnica/09`): uma skill ou memória procedural auto-escrita só passa a produção após trace-diffing contra baseline e sucesso no golden-set. Os adaptadores concretos que ligam o eval harness às portas de admissão vivem em `packages/platform/registry/promotion/evaladapter.go` (`NewEvalGateFromHarness`) e `packages/platform/memory/procedural/evaladapter.go` (`NewEvalGateFromHarness`), garantindo que o gate é instanciado no mesmo pacote que o orquestra; o `packages/platform/eval/gateadapter` fornece as funções `PromotionMetrics`/`ProceduralMetrics` (e as variantes VsBaseline) sem criar ciclos de importação. O golden-set curado apanha regressões *novas* que os datasets de falhas passadas nunca apanhariam.
 
 ---
 
