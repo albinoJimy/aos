@@ -58,3 +58,13 @@ packages/integration|GO-2026-4946
 packages/integration|GO-2026-4947
 packages/integration|GO-2026-5037
 packages/integration|GO-2026-5856
+packages/platform/attestation|GO-2025-4007
+packages/platform/attestation|GO-2025-4010
+packages/platform/attestation|GO-2025-4011
+packages/platform/attestation|GO-2025-4013
+packages/platform/attestation|GO-2025-4155
+packages/platform/attestation|GO-2025-4175
+packages/platform/attestation|GO-2026-4601
+packages/platform/attestation|GO-2026-4946
+packages/platform/attestation|GO-2026-4947
+packages/platform/attestation|GO-2026-5037

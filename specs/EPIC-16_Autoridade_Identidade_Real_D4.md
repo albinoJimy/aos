@@ -69,12 +69,32 @@ ADR-017 do artefacto distribuído do nó fica intacto.
       delegação raiz-humana) com o processo de autorização declarado (`auth_method`) e resolvel via a
       porta `identity.BindingAudit` (`ResolveByJTI`/`BindingsForAgent`), fail-closed contra cadeias
       órfãs, sem segredos/PII. — AOS-176.
-- [ ] **Frente 4 — Attestation WebAuthn/AAGUID**: verificação real de attestation de dispositivo
-      (lib vetada, no componente de autoridade externo; nó zero-dep) com allowlist AAGUID; o
-      `DeviceAttestation` de `foureyes.go` deixa de ser stub e entra na decisão 4-eyes — AOS-177.
-- [ ] **Nó zero-dep preservado**: o binário do nó não ganha dependências externas (ADR-017
-      intacto); a lib WebAuthn só no componente externo, passada pelos gates (sca/govulncheck,
-      go.sum, SBOM).
+- [x] **Frente 4 — Attestation WebAuthn/AAGUID** — **ENTREGUE por AOS-177**: verificação REAL de
+      attestation de dispositivo. Porta **stdlib pura** `integration.DeviceAttestationVerifier`
+      (`packages/integration/device_attestation.go`) ligada ao `FourEyesGate` por opção
+      (`WithDeviceAttestation`): presente ⇒ cada perna tem de trazer `attestationObject` +
+      `clientDataJSON` verificados e as duas pernas têm de vir de **dispositivos atestados
+      distintos** (`ErrSameDevice`) — o `DeviceAttestation` de `foureyes.go` deixa de ser stub e
+      ENTRA na decisão; ausente ⇒ comportamento estrutural anterior, retro-compatível (é o modo do
+      binário zero-dep do nó). O binding attestation↔perna é o **challenge por-perna**, que já
+      está dentro do tuplo assinado ed25519 — nada de re-colar attestations. Impl em
+      `packages/platform/attestation` (módulo próprio, única dep externa `fxamacker/cbor/v2`):
+      `packed` com cadeia x5c validada contra âncoras da organização + coerência da extensão de
+      AAGUID do certificado (OID 1.3.6.1.4.1.45724.1.1.4), `packed` self-attestation (opt-in) e
+      `fido-u2f` legado; **allowlist de AAGUID default-deny**; `none` recusado; `rpIdHash`,
+      `origin`, `type`, challenge (comparação em tempo constante) e flags UP/UV verificados;
+      limites anti-DoS no CBOR e bounds no parse binário do `authData`. Tudo fail-closed.
+      Configuração da organização (âncoras x509, allowlist concreta, `rpId`/origem, enrollment dos
+      dispositivos) = deployment.
+- [x] **Nó zero-dep preservado** — **VERIFICADO por AOS-177**: o binário do nó não ganha
+      dependências externas (ADR-017 intacto); a lib CBOR vive só no módulo de attestation, que o
+      nó nunca importa (a porta é satisfeita ESTRUTURALMENTE, sem aresta de importação). Guardas
+      EXECUTÁVEIS: `packages/cmd/aos/dep_isolation_test.go` e
+      `packages/integration/dep_isolation_test.go` correm `go list -deps ./...` e falham se
+      cbor/float16/webauthn/attestation aparecerem no fecho transitivo (molde do guarda de
+      fronteira do ADR-018); `go.sum` pinado com build offline (`GOPROXY=off`) confirmado; dep
+      triada nos gates (govulncheck: só vulns de stdlib já na baseline, nenhuma do cbor a afectar
+      código).
 - [ ] **Sign-off de Segurança/Arquitectura** obtido (pré-condição da v1, Carta §5) — fora do código.
 
 ## 4. Tabela Resumo de Tickets
@@ -84,7 +104,7 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 | AOS-174 ✅ | `HumanDirectory` OIDC real (discovery + JWKS + validação ID-token, stdlib) — **ENTREGUE** | feature | M | P1 | AOS-156 |
 | AOS-175 ✅ | Custódia de chave externa: `crypto.Signer` + issuer processo-separado + contrato KMS/HSM — **ENTREGUE** | feature | M | P1 | AOS-156 |
 | AOS-176 ✅ | Binding humano↔NHI auditável + **ADR-003** formal — **ENTREGUE** | feature | S | P1 | AOS-174 |
-| AOS-177 | Attestation **WebAuthn/AAGUID** (lib vetada, componente externo; nó zero-dep) — AOS-162 sai de stub | feature | L | P1 | AOS-175, AOS-162, ADR-016 |
+| AOS-177 ✅ | Attestation **WebAuthn/AAGUID** (lib vetada, componente externo; nó zero-dep) — AOS-162 sai de stub — **ENTREGUE** | feature | L | P1 | AOS-175, AOS-162, ADR-016 |
 
 **Sequência:** 174 (humano autenticado real) → 175 (não-forjabilidade real, chave fora do nó) →
 176 (binding + ADR-003) → 177 (attestation de dispositivo, a frente com a lib externa). As três
@@ -97,3 +117,4 @@ primeiras não tocam o zero-dep; a 177 é a única com a exceção escopada da e
 | 1.0 | 2026-07-23 | Emissão. Enacta a Opção A do D4 (Carta emenda 1.3): Camada B da autoridade de identidade em 4 tickets (AOS-174–177). Nó zero-dep preservado; lib WebAuthn só no componente externo. | Equipa AOS |
 | 1.1 | 2026-07-24 | Frente 2 (custódia de chave externa) marcada ENTREGUE por AOS-175: issuer assina via `crypto.Signer` (chave pode viver em HSM/KMS), issuer processo-separado (nó trust-anchor-only). Adapter KMS concreto e instância HSM = deployment. | Equipa AOS |
 | 1.2 | 2026-07-24 | Frente 3 (binding humano↔NHI + ADR-003) marcada ENTREGUE por AOS-176: ADR-003 formal ratificado; binding auditável de primeira classe (`identity.BindingAudit`) sobre o evento append-only `identity.nhi.issued` com `auth_method`, fail-closed contra cadeias órfãs, sem segredos/PII. | Equipa AOS |
+| 1.3 | 2026-07-24 | Frente 4 (attestation WebAuthn/AAGUID) marcada ENTREGUE por AOS-177 — ÚLTIMA da Opção A: porta stdlib `DeviceAttestationVerifier` + `FourEyesGate.WithDeviceAttestation` (dispositivos atestados distintos, `ErrSameDevice`); impl `packages/platform/attestation` (packed/x5c + self + fido-u2f, allowlist de AAGUID, extensão de AAGUID do cert, `none` recusado) num módulo com a única dep externa `fxamacker/cbor/v2`. Zero-dep do nó preservado e VERIFICADO por guardas `go list -deps` em cmd/aos e integration. ADR-016 §4 sai de CONDICIONAL-por-código. | Equipa AOS |

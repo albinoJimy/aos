@@ -660,12 +660,18 @@ type fourEyesRequestWire struct {
 
 // approvalLegWire é a representação de wire de integration.ApprovalLeg.
 type approvalLegWire struct {
-	Approver          string `json:"approver"`
-	Session           string `json:"session"`
-	Credential        string `json:"credential"`
-	Challenge         string `json:"challenge"`                    // base64
-	DeviceAttestation string `json:"device_attestation,omitempty"` // base64 (stub — não verificado)
-	Signature         string `json:"signature"`                    // base64(assinatura ed25519 da perna)
+	Approver   string `json:"approver"`
+	Session    string `json:"session"`
+	Credential string `json:"credential"`
+	Challenge  string `json:"challenge"` // base64
+	// DeviceAttestation/DeviceClientData transportam o par WebAuthn (attestationObject +
+	// clientDataJSON) em base64. São VERIFICADOS quando o gate foi composto com a porta
+	// integration.DeviceAttestationVerifier (AOS-177); no binário zero-dep do nó a porta
+	// não é ligada (a impl vive no componente de autoridade externo — Carta emenda 1.3),
+	// pelo que aqui são transportados sem verificação. O wire é o mesmo nos dois modos.
+	DeviceAttestation string `json:"device_attestation,omitempty"`
+	DeviceClientData  string `json:"device_client_data,omitempty"`
+	Signature         string `json:"signature"` // base64(assinatura ed25519 da perna)
 }
 
 // handleApprove autoriza uma acção irreversível via o FourEyesGate (AOS-162), SE o nó o
@@ -707,10 +713,11 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "assinatura invalida")
 			return
 		}
-		// device_attestation é hoje um stub NÃO-verificado (fora do tuplo assinado), mas o
-		// seu base64 malformado é tratado como 400 — coerente com challenge/signature/preview
-		// — para NÃO virar um fail-open silencioso (nil em vez de rejeição) quando a
-		// verificação de attestation entrar (desbloqueio com D4).
+		// O par de attestation em base64 MALFORMADO é 400 — coerente com
+		// challenge/signature/preview — para NÃO virar um fail-open silencioso (entregar nil
+		// ao gate em vez de rejeitar) quando a porta de verificação está ligada: nil seria
+		// indistinguível de "não enviou attestation" e mudaria o erro de "inválida" para
+		// "em falta", perdendo a atribuição.
 		var attest []byte
 		if lw.DeviceAttestation != "" {
 			decoded, aerr := base64.StdEncoding.DecodeString(lw.DeviceAttestation)
@@ -720,12 +727,22 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 			}
 			attest = decoded
 		}
+		var clientData []byte
+		if lw.DeviceClientData != "" {
+			decoded, aerr := base64.StdEncoding.DecodeString(lw.DeviceClientData)
+			if aerr != nil {
+				writeError(w, http.StatusBadRequest, "device_client_data invalido")
+				return
+			}
+			clientData = decoded
+		}
 		legs = append(legs, integration.ApprovalLeg{
 			Approver:          lw.Approver,
 			Session:           lw.Session,
 			Credential:        lw.Credential,
 			Challenge:         challenge,
 			DeviceAttestation: attest,
+			DeviceClientData:  clientData,
 			Signature:         sig,
 		})
 	}

@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -49,12 +50,41 @@ import (
 // fail-closed. Assim o gate é uma decisão de autorização COMPLETA por si (não depende de o
 // [hitl.Channel] a montante ter feito o enforcement de autoridade), embora componha bem com ele.
 //
-// ATTESTATION DE DISPOSITIVO — STUB / DEMO, CONDICIONAL A D4. O campo [ApprovalLeg.DeviceAttestation]
-// é REGISTADO/transportado mas NÃO é verificado contra AAGUID/WebAuthn/IdP reais (não há
-// autoridade de identidade — ver ADR-016 §4 CONDICIONAL e docs/reports/D4-escalacao-*). Fica
-// FORA do tuplo assinado e não influencia a decisão: a distinção 4-eyes actual é ESTRUTURAL
-// (principal/sessão/credencial distintos por igualdade de string sobre identidade demo-only),
-// não por attestation física de dispositivo. Desbloqueia com D4.
+// EMISSÃO SERVER-SIDE DO CHALLENGE — PORTA OPCIONAL [ChallengeIssuance] (remediação AOS-177).
+// O consumo durável (acima) dá DEDUP, não FRESCURA: um challenge escolhido pelo cliente é
+// aceite desde que nunca visto NAQUELE scope, e o scope é por-request_id. Com
+// [WithChallengeIssuance] ligada, o challenge de CADA perna tem de constar do REGISTO DE
+// EMISSÃO do servidor para (pedido, aprovador) e estar dentro do TTL — só então é consumido.
+// É o que impede reapresentar indefinidamente uma prova (incluindo uma attestation WebAuthn
+// capturada) em pedidos novos. Ver [ChallengeIssuance] para o modelo de ataque concreto.
+//
+// ATTESTATION DE DISPOSITIVO — REAL, POR PORTA OPCIONAL (AOS-177, D4 Opção A). O ADR-016 §4
+// exige "duas credenciais WebAuthn ATESTADAS E DISTINTAS": a distinção por igualdade de
+// string (acima) é NECESSÁRIA MAS INSUFICIENTE. O gate aceita a porta
+// [DeviceAttestationVerifier] ([WithDeviceAttestation]) e, para a ATRIBUIÇÃO ao aprovador, a
+// porta [DeviceEnrollment] ([WithDeviceEnrollment]):
+//
+//   - PORTA LIGADA ⇒ cada perna TEM de trazer attestationObject + clientDataJSON WebAuthn
+//     ([ApprovalLeg.DeviceAttestation], [ApprovalLeg.DeviceClientData]); a attestation é
+//     VERIFICADA (formato/AAGUID na allowlist/cadeia x509/assinatura/flags/origin/rpId) e o
+//     challenge do clientDataJSON tem de ser O DA PERNA. As duas pernas têm de apresentar
+//     CREDENCIAIS WebAuthn ATESTADAS DISTINTAS ([ErrSameDevice]), ALÉM dos três eixos
+//     estruturais. Attestation ausente ou inválida ⇒ a perna é RECUSADA (fail-closed), nunca
+//     degradada para o modo estrutural. NOTA DE ALCANCE: [ErrSameDevice] NÃO prova dois
+//     autenticadores FÍSICOS distintos (o AAGUID é de MODELO e a attestation é de LOTE, por
+//     desenho de privacidade do WebAuthn) — ver [ErrSameDevice].
+//   - COM [WithDeviceEnrollment] ⇒ o dispositivo atestado tem ainda de estar REGISTADO para o
+//     APROVADOR nomeado na perna ([ErrDeviceNotEnrolled]); é isso que dá ATRIBUIÇÃO. Sem
+//     enrollment, qualquer autenticador de um modelo permitido serve qualquer perna.
+//   - PORTA AUSENTE ⇒ comportamento ESTRUTURAL de sempre, byte-a-byte retro-compatível: o
+//     campo é transportado mas não verificado (é o STUB histórico). A implementação real
+//     precisa de um descodificador CBOR, que a Carta (emenda 1.3) confina ao componente de
+//     autoridade EXTERNO para o nó ficar zero-dep; o nó liga-se a esse componente pelo
+//     adaptador HTTP stdlib [NewRemoteDeviceAttestationVerifier] (ou corre no modo
+//     estrutural, se não houver componente configurado). Ver packages/platform/attestation.
+//
+// A attestation NÃO entra no tuplo assinado ed25519 (o binding faz-se pelo challenge, já lá
+// dentro), pelo que ligar a porta não invalida assinaturas nem muda o formato da perna.
 
 // Erros do gate 4-eyes (todos fail-closed). Cada colisão estrutural tem o seu erro dedicado
 // para ser atribuível no audit e não-vacuosa nos testes.
@@ -65,6 +95,9 @@ var (
 	// ErrNoChallengeStore — construção sem [NonceConsumer] durável. Sem ele não há
 	// anti-replay de challenges por-perna; recusado fail-closed.
 	ErrNoChallengeStore = errors.New("integration: four-eyes gate exige um nonce-store durável para os challenges")
+	// ErrNilFourEyesOption — [NewFourEyesGate] recebeu uma [FourEyesOption] nil. Aborta a
+	// construção em vez de a ignorar: uma opção perdida é verificação perdida.
+	ErrNilFourEyesOption = errors.New("integration: four-eyes: opção de construção nil (fail-closed)")
 	// ErrMissingRequestID — o pedido não traz request_id (âncora do challenge e do tuplo).
 	ErrMissingRequestID = errors.New("integration: four-eyes: request_id em falta")
 	// ErrMissingPreview — o pedido não traz preview/digest do efeito exibido (WYSIWYS).
@@ -144,21 +177,33 @@ type ApprovalLeg struct {
 	// Eixo 3 da distinção: a mesma credencial não pode assinar as duas pernas.
 	Credential string
 	// Challenge é o nonce/challenge POR-PERNA, ligado ao pedido pelo scope (request_id) e
-	// coberto pela assinatura. A garantia que o gate impõe é ANTI-REPLAY de uso-único
-	// durável (dedup): o MESMO challenge não se re-verifica no mesmo pedido. NÃO há
-	// issue-then-consume do lado do servidor, pelo que o challenge por si só NÃO prova
-	// liveness/frescura nem impede pré-computação offline por quem detenha a credencial — o
-	// que limita o alcance é o (request_id, preview, classe) no tuplo. Emissão-servidor do
-	// challenge (registo antes do consumo) fica para quando houver liveness real (ver AOS-160).
+	// coberto pela assinatura. Duas garantias, com portas distintas:
+	//
+	//   - SEM [WithChallengeIssuance]: só ANTI-REPLAY de uso-único durável (dedup) — o MESMO
+	//     challenge não se re-verifica no mesmo pedido. Como o valor é escolhido pelo CLIENTE
+	//     e o scope é por-request_id, isto NÃO prova liveness nem impede pré-computação
+	//     offline por quem detenha a credencial: um request_id novo reabre o espaço de
+	//     challenges. O que limita o alcance é o (request_id, preview, classe) no tuplo.
+	//   - COM [WithChallengeIssuance]: issue-then-consume REAL — o challenge tem de constar do
+	//     registo de EMISSÃO do servidor para (pedido, aprovador) e estar dentro do TTL, e só
+	//     depois é consumido. É este modo que dá frescura por-cerimónia.
+	//
 	// >= [MinNonceLen] bytes.
 	Challenge []byte
-	// DeviceAttestation é um claim de attestation de dispositivo (AAGUID/WebAuthn).
+	// DeviceAttestation é o attestationObject WebAuthn (CBOR: fmt/attStmt/authData) do
+	// dispositivo que assinou esta perna.
 	//
-	// STUB — DEMO — CONDICIONAL A D4: é REGISTADO/transportado mas NÃO é verificado contra
-	// AAGUID/WebAuthn/IdP reais, e NÃO entra no tuplo assinado nem influencia a decisão. A
-	// distinção 4-eyes actual é ESTRUTURAL (principal/sessão/credencial), não por attestation
-	// física. Desbloqueia com a autoridade de identidade (D4). NÃO confiar nele em produção.
+	// Só é VERIFICADO se o gate tiver a porta [DeviceAttestationVerifier] ligada
+	// ([WithDeviceAttestation]) — nesse caso é obrigatório e a sua recusa recusa a perna
+	// (AOS-177). SEM a porta mantém-se o comportamento histórico: transportado, não
+	// verificado (STUB) — o modo em que o binário zero-dep do nó corre. NÃO entra no tuplo
+	// assinado: o binding à perna faz-se pelo challenge, que já está no tuplo.
 	DeviceAttestation []byte
+	// DeviceClientData são os bytes EXACTOS do clientDataJSON WebAuthn correspondentes à
+	// [ApprovalLeg.DeviceAttestation] (o seu hash é coberto pela assinatura de attestation).
+	// Tem de conter o [ApprovalLeg.Challenge] desta perna — é isso que liga a attestation à
+	// perna. Obrigatório quando a porta de attestation está ligada; ignorado sem ela.
+	DeviceClientData []byte
 	// Signature é a assinatura ed25519 do aprovador sobre o tuplo canónico da perna.
 	Signature []byte
 }
@@ -182,20 +227,98 @@ type FourEyesDecision struct {
 type FourEyesGate struct {
 	registry   hitl.ApproverRegistry
 	challenges NonceConsumer
+	// devices é a porta OPCIONAL de attestation de dispositivo (AOS-177). nil ⇒ modo
+	// estrutural histórico (retro-compatível); não-nil ⇒ attestation exigida e verificada
+	// em CADA perna, e credenciais atestadas DISTINTAS no dual-control.
+	devices DeviceAttestationVerifier
+	// enrollment é a porta OPCIONAL de ATRIBUIÇÃO dispositivo↔aprovador. Só é utilizável com
+	// `devices` ligada (validado na construção). nil ⇒ a attestation prova modelo e posse,
+	// não prova de QUEM é o dispositivo.
+	enrollment DeviceEnrollment
+	// issuance é a porta OPCIONAL do registo de challenges EMITIDOS pelo servidor. nil ⇒ o
+	// challenge só tem de ser INÉDITO (dedup, sem frescura); não-nil ⇒ tem de ter sido
+	// EMITIDO para (pedido, aprovador) e estar dentro do TTL.
+	issuance ChallengeIssuance
+}
+
+// FourEyesOption configura capacidades OPCIONAIS do gate na construção. Uma opção que não
+// possa ser honrada devolve erro e ABORTA a construção — nunca se degrada em silêncio para
+// menos verificação do que o chamador pediu.
+type FourEyesOption func(*FourEyesGate) error
+
+// WithDeviceAttestation LIGA a verificação real de attestation de dispositivo (ADR-016 §4).
+// Com ela, cada perna passa a ter de trazer uma attestation WebAuthn válida e as duas pernas
+// de um dual-control têm de vir de dispositivos atestados DISTINTOS. Verificador nil ⇒
+// [ErrNilDeviceAttestationVerifier] (fail-closed: pedir attestation e não a exigir seria
+// pior que não a pedir).
+func WithDeviceAttestation(v DeviceAttestationVerifier) FourEyesOption {
+	return func(g *FourEyesGate) error {
+		if v == nil {
+			return ErrNilDeviceAttestationVerifier
+		}
+		g.devices = v
+		return nil
+	}
+}
+
+// WithDeviceEnrollment LIGA a ATRIBUIÇÃO dispositivo↔aprovador: o dispositivo atestado de cada
+// perna tem de estar REGISTADO para o aprovador que a assinou ([ErrDeviceNotEnrolled],
+// default-deny). Exige [WithDeviceAttestation] (sem deviceID não há o que confrontar) — a
+// construção é recusada com [ErrEnrollmentWithoutAttestation] se faltar. Registo nil ⇒
+// [ErrNilDeviceEnrollment].
+func WithDeviceEnrollment(e DeviceEnrollment) FourEyesOption {
+	return func(g *FourEyesGate) error {
+		if e == nil {
+			return ErrNilDeviceEnrollment
+		}
+		g.enrollment = e
+		return nil
+	}
+}
+
+// WithChallengeIssuance EXIGE que o challenge de cada perna tenha sido EMITIDO PELO SERVIDOR
+// para (pedido, aprovador) e esteja dentro da validade — não bastando ser inédito. É o que
+// transforma o anti-replay de DEDUP em FRESCURA por-cerimónia (ver [ChallengeIssuance]).
+// Registo nil ⇒ [ErrNilChallengeIssuance] (fail-closed).
+func WithChallengeIssuance(iss ChallengeIssuance) FourEyesOption {
+	return func(g *FourEyesGate) error {
+		if iss == nil {
+			return ErrNilChallengeIssuance
+		}
+		g.issuance = iss
+		return nil
+	}
 }
 
 // NewFourEyesGate constrói o gate sobre a porta de identidade (pubkeys pinadas) e o
 // nonce-store durável dos challenges. Sem registo ([ErrNoApproverRegistry]) ou sem
 // nonce-store ([ErrNoChallengeStore]) é recusado fail-closed. NUNCA há segredos: só pubkeys
-// (via registry) e o store de challenges.
-func NewFourEyesGate(registry hitl.ApproverRegistry, challenges NonceConsumer) (*FourEyesGate, error) {
+// (via registry) e o store de challenges. As opções variádicas (ex.:
+// [WithDeviceAttestation]) são aditivas — a chamada histórica de dois argumentos mantém-se
+// válida e com o comportamento de sempre.
+func NewFourEyesGate(registry hitl.ApproverRegistry, challenges NonceConsumer, opts ...FourEyesOption) (*FourEyesGate, error) {
 	if registry == nil {
 		return nil, ErrNoApproverRegistry
 	}
 	if challenges == nil {
 		return nil, ErrNoChallengeStore
 	}
-	return &FourEyesGate{registry: registry, challenges: challenges}, nil
+	g := &FourEyesGate{registry: registry, challenges: challenges}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, ErrNilFourEyesOption
+		}
+		if err := opt(g); err != nil {
+			return nil, err
+		}
+	}
+	// COERÊNCIA DAS OPÇÕES: um enrollment sem attestation nunca seria consultado (não há
+	// deviceID). Recusa-se a construção em vez de guardar uma porta inerte que daria a
+	// impressão de haver atribuição.
+	if g.enrollment != nil && g.devices == nil {
+		return nil, ErrEnrollmentWithoutAttestation
+	}
+	return g, nil
 }
 
 // Authorize recolhe as aprovações e SÓ autoriza se a invariante estrutural for satisfeita.
@@ -231,7 +354,7 @@ func (g *FourEyesGate) authorizeSingle(ctx context.Context, req FourEyesRequest,
 	if len(legs) != 1 {
 		return denied("reversível exige exactamente 1 aprovação"), fmt.Errorf("%w: reversível quer 1, veio %d", ErrWrongLegCount, len(legs))
 	}
-	if err := g.verifyLeg(ctx, req, legs[0]); err != nil {
+	if _, err := g.verifyLeg(ctx, req, legs[0]); err != nil {
 		return denied("aprovação não verificada (fail-closed)"), err
 	}
 	if err := g.consumeChallenge(ctx, req, legs[0]); err != nil {
@@ -247,12 +370,14 @@ func (g *FourEyesGate) authorizeDual(ctx context.Context, req FourEyesRequest, l
 	}
 	a, b := legs[0], legs[1]
 
-	// (1) Assinaturas de AMBAS as pernas ANTES de qualquer consumo de challenge — uma
-	// assinatura inválida não gasta challenges.
-	if err := g.verifyLeg(ctx, req, a); err != nil {
+	// (1) Assinaturas de AMBAS as pernas (e, com a porta ligada, as ATTESTATIONS) ANTES de
+	// qualquer consumo de challenge — uma perna inválida não gasta challenges.
+	devA, err := g.verifyLeg(ctx, req, a)
+	if err != nil {
 		return denied("1.ª aprovação não verificada (fail-closed)"), err
 	}
-	if err := g.verifyLeg(ctx, req, b); err != nil {
+	devB, err := g.verifyLeg(ctx, req, b)
+	if err != nil {
 		return denied("2.ª aprovação não verificada (fail-closed)"), err
 	}
 
@@ -267,6 +392,25 @@ func (g *FourEyesGate) authorizeDual(ctx context.Context, req FourEyesRequest, l
 		return denied("mesma credencial nas duas pernas"), fmt.Errorf("%w: %q", ErrSameCredential, a.Credential)
 	}
 
+	// (2b) Invariante de CREDENCIAL ATESTADA (só com a porta de attestation ligada — ADR-016
+	// §4): as duas pernas não podem apresentar a MESMA credencial WebAuthn atestada. Fecha o
+	// buraco que os três eixos de string não fecham: dois rótulos de credencial diferentes
+	// sobre a MESMA credencial atestada não constituem 4-eyes.
+	//
+	// A condição é sobre a CAPACIDADE (g.devices != nil), NÃO sobre os dados. Condicioná-la a
+	// `len(devA)>0 && len(devB)>0` seria fail-OPEN por forma: bastaria um refactor que
+	// devolvesse um deviceID vazio sem erro para a regra se desligar em SILÊNCIO, com a
+	// decisão a continuar a anunciar dispositivos distintos. Com a porta ligada, um deviceID
+	// vazio NEGA.
+	if g.devices != nil {
+		if len(devA) == 0 || len(devB) == 0 {
+			return denied("dispositivo atestado sem identificador (fail-closed)"), fmt.Errorf("%w: identificador de dispositivo vazio", ErrDeviceAttestationRejected)
+		}
+		if bytes.Equal(devA, devB) {
+			return denied("mesma credencial atestada nas duas pernas"), ErrSameDevice
+		}
+	}
+
 	// (3) Anti-replay dos challenges por-perna. Consumo durável de uso-único no scope do
 	// pedido: se as duas pernas partilharem o challenge, a 2.ª consome como replay.
 	if err := g.consumeChallenge(ctx, req, a); err != nil {
@@ -276,48 +420,124 @@ func (g *FourEyesGate) authorizeDual(ctx context.Context, req FourEyesRequest, l
 		return denied("challenge da 2.ª perna não consumível (fail-closed)"), err
 	}
 
+	reason := "dual-control: dois aprovadores de principal/sessão/credencial distintos"
+	if g.devices != nil {
+		// Descrição HONESTA do que ficou provado: credenciais WebAuthn atestadas distintas
+		// (não autenticadores físicos distintos — ver [ErrSameDevice]).
+		reason += " e credenciais WebAuthn atestadas distintas"
+		if g.enrollment != nil {
+			reason += ", registadas para cada aprovador"
+		}
+	}
 	return FourEyesDecision{
 		Authorized: true,
 		Approvers:  []string{a.Approver, b.Approver},
-		Reason:     "dual-control: dois aprovadores de principal/sessão/credencial distintos",
+		Reason:     reason,
 	}, nil
 }
 
 // verifyLeg valida os campos obrigatórios da perna, VERIFICA a sua assinatura ed25519
 // contra a pubkey PINADA do aprovador (sobre o tuplo que inclui a classe e o bit
-// dual_required, fechando o downgrade) e exige que a AUTORIDADE do aprovador cubra a classe
-// da acção. Não consome challenge (isso é [consumeChallenge]). Fail-closed: campo em falta ⇒
-// [ErrInvalidLeg]; challenge curto ⇒ [ErrChallengeTooShort]; aprovador desconhecido ⇒
-// [ErrUnknownApprover]; assinatura inválida ⇒ [ErrBadLegSignature]; sem a capability
-// approve:<classe> ⇒ [ErrInsufficientAuthority].
-func (g *FourEyesGate) verifyLeg(ctx context.Context, req FourEyesRequest, leg ApprovalLeg) error {
+// dual_required, fechando o downgrade), exige que a AUTORIDADE do aprovador cubra a classe
+// da acção e — com a porta ligada — VERIFICA a attestation de dispositivo. Não consome
+// challenge (isso é [consumeChallenge]). Devolve o identificador OPACO do dispositivo
+// atestado (vazio se a porta não estiver ligada) para a regra de dispositivos distintos.
+// Fail-closed: campo em falta ⇒ [ErrInvalidLeg]; challenge curto ⇒ [ErrChallengeTooShort];
+// aprovador desconhecido ⇒ [ErrUnknownApprover]; assinatura inválida ⇒ [ErrBadLegSignature];
+// sem a capability approve:<classe> ⇒ [ErrInsufficientAuthority]; attestation ausente ⇒
+// [ErrMissingDeviceAttestation]; attestation recusada ⇒ [ErrDeviceAttestationRejected].
+func (g *FourEyesGate) verifyLeg(ctx context.Context, req FourEyesRequest, leg ApprovalLeg) ([]byte, error) {
 	if leg.Approver == "" || leg.Session == "" || leg.Credential == "" || len(leg.Challenge) == 0 || len(leg.Signature) == 0 {
-		return ErrInvalidLeg
+		return nil, ErrInvalidLeg
 	}
 	if len(leg.Challenge) < MinNonceLen {
-		return fmt.Errorf("%w: %d < %d", ErrChallengeTooShort, len(leg.Challenge), MinNonceLen)
+		return nil, fmt.Errorf("%w: %d < %d", ErrChallengeTooShort, len(leg.Challenge), MinNonceLen)
 	}
 
 	pub, authority, ok, err := g.registry.Lookup(ctx, leg.Approver)
 	if err != nil {
-		return fmt.Errorf("%w: aprovador %q: %v", ErrRegistryBackend, leg.Approver, err)
+		return nil, fmt.Errorf("%w: aprovador %q: %v", ErrRegistryBackend, leg.Approver, err)
 	}
 	if !ok || len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("%w: %q", ErrUnknownApprover, leg.Approver)
+		return nil, fmt.Errorf("%w: %q", ErrUnknownApprover, leg.Approver)
 	}
 
 	msg := fourEyesMessage(req.RequestID, req.Preview, req.RiskClass, req.DualControlRequired, leg.Approver, leg.Session, leg.Credential, leg.Challenge)
 	if !ed25519.Verify(pub, msg, leg.Signature) {
-		return fmt.Errorf("%w: aprovador %q", ErrBadLegSignature, leg.Approver)
+		return nil, fmt.Errorf("%w: aprovador %q", ErrBadLegSignature, leg.Approver)
 	}
 
 	// AUTORIDADE approve:<classe>: a autenticidade não basta — a autoridade autoritativa do
 	// aprovador tem de conter a capability da classe de risco da acção (utilizador ∩ classe).
 	required := hitl.RequiredAuthority(req.RiskClass)
 	if !hasAuthority(authority, required) {
-		return fmt.Errorf("%w: aprovador %q carece de %q", ErrInsufficientAuthority, leg.Approver, required)
+		return nil, fmt.Errorf("%w: aprovador %q carece de %q", ErrInsufficientAuthority, leg.Approver, required)
+	}
+
+	// FRESCURA: com a porta de emissão ligada, o challenge tem de ter sido EMITIDO pelo
+	// servidor para (pedido, aprovador) e estar dentro do TTL. É consulta pura — não consome
+	// nada (o consumo de uso-único continua a ser [consumeChallenge], no fim).
+	if err := g.checkIssued(ctx, req, leg); err != nil {
+		return nil, err
+	}
+
+	return g.verifyDevice(ctx, leg)
+}
+
+// checkIssued impõe a EMISSÃO SERVER-SIDE do challenge quando a porta está ligada. Sem a porta
+// devolve nil (comportamento histórico: dedup sem frescura). Fail-closed nos dois modos de
+// falha: não-emitido/expirado ⇒ [ErrChallengeNotIssued]; backend em erro ⇒
+// [ErrChallengeIssuanceBackend].
+func (g *FourEyesGate) checkIssued(ctx context.Context, req FourEyesRequest, leg ApprovalLeg) error {
+	if g.issuance == nil {
+		return nil
+	}
+	issued, err := g.issuance.IsChallengeIssued(ctx, challengeScope(req.RequestID), leg.Approver, leg.Challenge)
+	if err != nil {
+		return fmt.Errorf("%w: aprovador %q: %v", ErrChallengeIssuanceBackend, leg.Approver, err)
+	}
+	if !issued {
+		return fmt.Errorf("%w: aprovador %q", ErrChallengeNotIssued, leg.Approver)
 	}
 	return nil
+}
+
+// verifyDevice verifica a attestation de dispositivo da perna QUANDO a porta está ligada
+// (AOS-177). Sem porta devolve (nil, nil) — modo estrutural retro-compatível. Com porta é
+// OBRIGATÓRIA: attestationObject e clientDataJSON têm de estar presentes e o verificador tem
+// de devolver um deviceID não-vazio; caso contrário a perna é recusada. O challenge esperado
+// é o DA PERNA (já coberto pela assinatura ed25519), o que liga a attestation a esta perna
+// deste pedido. Os erros propagados não transportam segredos nem PII.
+func (g *FourEyesGate) verifyDevice(ctx context.Context, leg ApprovalLeg) ([]byte, error) {
+	if g.devices == nil {
+		return nil, nil
+	}
+	if len(leg.DeviceAttestation) == 0 || len(leg.DeviceClientData) == 0 {
+		return nil, fmt.Errorf("%w: aprovador %q", ErrMissingDeviceAttestation, leg.Approver)
+	}
+	deviceID, err := g.devices.VerifyDeviceAttestation(ctx, leg.DeviceAttestation, leg.DeviceClientData, leg.Challenge)
+	if err != nil {
+		return nil, fmt.Errorf("%w: aprovador %q: %v", ErrDeviceAttestationRejected, leg.Approver, err)
+	}
+	// Um verificador que devolva (vazio, nil) não provou dispositivo nenhum — trata-se como
+	// recusa em vez de se aceitar um identificador que não distingue nada.
+	if len(deviceID) == 0 {
+		return nil, fmt.Errorf("%w: aprovador %q: identificador de dispositivo vazio", ErrDeviceAttestationRejected, leg.Approver)
+	}
+	// ATRIBUIÇÃO: o dispositivo tem de estar REGISTADO para ESTE aprovador. Sem este passo a
+	// attestation prova modelo+posse, não prova de quem é o autenticador — e um insider com um
+	// único autenticador permitido satisfaria as duas pernas. Default-deny, fail-closed, e
+	// ANTES de qualquer consumo de challenge (o consumo é o último passo do Authorize).
+	if g.enrollment != nil {
+		enrolled, err := g.enrollment.IsEnrolled(ctx, leg.Approver, deviceID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: aprovador %q: %v", ErrDeviceEnrollmentBackend, leg.Approver, err)
+		}
+		if !enrolled {
+			return nil, fmt.Errorf("%w: aprovador %q", ErrDeviceNotEnrolled, leg.Approver)
+		}
+	}
+	return deviceID, nil
 }
 
 // hasAuthority indica se o conjunto de capabilities autoritativas contém a exigida. Igualdade
@@ -390,13 +610,23 @@ func denied(reason string) FourEyesDecision {
 // aprovador legítimo corre no seu próprio dispositivo. A chave privada é um PARÂMETRO; o gate
 // nunca a detém.
 func SignFourEyesLeg(priv ed25519.PrivateKey, req FourEyesRequest, approver, session, credential string, challenge, deviceAttestation []byte) ApprovalLeg {
+	return SignFourEyesLegAttested(priv, req, approver, session, credential, challenge, deviceAttestation, nil)
+}
+
+// SignFourEyesLegAttested é [SignFourEyesLeg] com o par WebAuthn COMPLETO
+// (attestationObject + clientDataJSON) que a porta [DeviceAttestationVerifier] exige. A
+// attestation é produzida pelo AUTENTICADOR do humano (fora deste processo, tal como a
+// assinatura) — este helper apenas a transporta para a perna. Continua a NÃO entrar no
+// tuplo assinado: o binding é o challenge, que já lá está.
+func SignFourEyesLegAttested(priv ed25519.PrivateKey, req FourEyesRequest, approver, session, credential string, challenge, attestationObject, clientDataJSON []byte) ApprovalLeg {
 	sig := ed25519.Sign(priv, fourEyesMessage(req.RequestID, req.Preview, req.RiskClass, req.DualControlRequired, approver, session, credential, challenge))
 	return ApprovalLeg{
 		Approver:          approver,
 		Session:           session,
 		Credential:        credential,
 		Challenge:         challenge,
-		DeviceAttestation: deviceAttestation,
+		DeviceAttestation: attestationObject,
+		DeviceClientData:  clientDataJSON,
 		Signature:         sig,
 	}
 }

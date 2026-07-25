@@ -95,16 +95,44 @@ ou credencial. O 4-eyes amarra-se ao **risco intrínseco** (Class/Irreversible),
 *mode* do tiering — uma política mal-configurada não pode rebaixar uma acção
 não-desfazível para contornar o dual-control.
 
-**CONDICIONAL** — a *autoridade de identidade* que activa este requisito (qual o IdP
-que faz *enrollment*/attestation do WebAuthn, a *allowlist* de AAGUID, e o *binding*
-humano↔NHI) fica **diferida** para quando existir um directório de identidade real
-(substituto de `hitl.MemApproverRegistry` / `IdentityStub` de AOS-005), aprovadores
-humanos nomeados com as suas NHIs, e uma política de dispositivos/attestation da
-organização. A verificação actual por **igualdade de string** (`appr.Approver ==
-pres.Requester` em `hitl/channel.go`) fica marcada como **STUB necessário-mas-
-insuficiente**: garante a estrutura (recusa auto-aprovação), não a distinção física de
-dispositivo. Ratifica-se a **invariante**; a **autoridade** desbloqueia com informação
-humana ausente.
+**CONDICIONAL (histórico)** — a *autoridade de identidade* que activa este requisito
+(qual o IdP que faz *enrollment*/attestation do WebAuthn, a *allowlist* de AAGUID, e o
+*binding* humano↔NHI) ficou **diferida** para quando existisse um directório de
+identidade real (substituto de `hitl.MemApproverRegistry` / `IdentityStub` de AOS-005),
+aprovadores humanos nomeados com as suas NHIs, e uma política de dispositivos/attestation
+da organização. A verificação por **igualdade de string** (`appr.Approver ==
+pres.Requester` em `hitl/channel.go`; principal/sessão/credencial no `FourEyesGate`) ficou
+marcada como **STUB necessário-mas-insuficiente**: garante a estrutura (recusa
+auto-aprovação), não a distinção física de dispositivo.
+
+**RESOLVIDO em CÓDIGO — AOS-177 (EPIC-16, D4 Opção A; Carta emenda 1.3).** A verificação
+de *attestation* deixou de ser stub:
+
+- `integration.FourEyesGate` aceita a porta **opcional** `DeviceAttestationVerifier`
+  (`packages/integration/device_attestation.go`, **stdlib pura**). Ligada, cada perna tem
+  de trazer `attestationObject` + `clientDataJSON` WebAuthn, verificados a sério, e as duas
+  pernas têm de vir de **dispositivos atestados distintos** (`ErrSameDevice`) — a
+  exigência literal desta secção, que a igualdade de string não conseguia provar. Ausente,
+  mantém-se o comportamento estrutural (retro-compatível).
+- A ligação *attestation*↔perna é o **challenge por-perna**, que já está dentro do tuplo
+  assinado ed25519: uma attestation não é re-colável noutra perna nem noutro pedido, e não
+  foi preciso mudar o formato assinado.
+- A implementação (`packages/platform/attestation`) verifica `packed` (com cadeia x5c
+  validada contra âncoras da organização, incluindo a coerência da extensão de AAGUID do
+  certificado, OID 1.3.6.1.4.1.45724.1.1.4, com o AAGUID do `authData`), `packed`
+  *self-attestation* (opt-in) e o legado `fido-u2f`; recusa `none`, AAGUID fora da
+  **allowlist**, `rpIdHash`/`origin`/`type` errados, challenge diferente (comparado em
+  tempo constante) e flags UP/UV em falta. Tudo *fail-closed*.
+- **Supply-chain (Carta emenda 1.3, exceção escopada ao ADR-017):** a lib CBOR necessária
+  vive **só** nesse módulo separado, que o nó **nunca** importa — a satisfação da porta é
+  *estrutural*, sem aresta de importação. É verificado por
+  `packages/cmd/aos/dep_isolation_test.go` e `packages/integration/dep_isolation_test.go`
+  (`go list -deps`): o binário do nó continua zero-dep.
+
+O que permanece **condicional a informação da organização** (não a código): as âncoras de
+confiança x509, a allowlist concreta de AAGUID, a origem/`rpId` do deployment e o
+*enrollment* dos dispositivos dos aprovadores nomeados — configuração de deployment do
+componente de autoridade externo.
 
 ### 5. Read-path SOBERANO + auditoria WORM das leituras sensíveis
 
