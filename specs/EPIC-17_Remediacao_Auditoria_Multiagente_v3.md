@@ -163,11 +163,11 @@ justificação e actualização do ADR (supersessão) ou remoção.
 ### AOS-185 — Reconciliação documental primária
 
 **Critérios de aceitação:**
-- [ ] `_BRIEF.md` §1 actualizado para "runtime de referência deployável" (em vez de "blueprint/plataforma standalone"), com referência à Carta.
-- [ ] `AGENTS.md` corrige "doze epics" → "dezasseis epics" e "45 módulos" conforme realidade (46 com attestation).
-- [ ] `specs/INDICE.md` actualizado com EPIC-13..EPIC-17 e ranges AOS-001..AOS-189.
-- [ ] `packages/README.md` remove a afirmação "apenas esqueleto"; lista todas as 10 subpastas de `packages/` e indica que a lógica é entregue.
-- [ ] `docs/adr/README.md` e `specs/00_System_Spec.md` §11 alinhados com ADR-003, ADR-016, ADR-017, ADR-018.
+- [x] `_BRIEF.md` §1 actualizado para "runtime de referência deployável" (em vez de "blueprint/plataforma standalone"), com referência à Carta.
+- [x] `AGENTS.md` corrige "doze epics" → "dezasseis epics" e "45 módulos" conforme realidade (46 com attestation).
+- [x] `specs/INDICE.md` actualizado com EPIC-13..EPIC-17 e ranges AOS-001..AOS-189.
+- [x] `packages/README.md` remove a afirmação "apenas esqueleto"; lista as subpastas de `packages/` e indica que a lógica é entregue.
+- [x] `docs/adr/README.md` e `specs/00_System_Spec.md` §11 alinhados com ADR-003, ADR-016, ADR-017, ADR-018.
 
 **DoD:** todos os documentos de orientação primária consistentes entre si e com a árvore real; `ci-lint` passa.
 
