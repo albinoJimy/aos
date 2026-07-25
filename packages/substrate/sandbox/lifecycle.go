@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/aos-ref/substrate/otel-genai"
 	"github.com/aos-ref/substrate/sandbox/seccomp"
 )
 
@@ -181,8 +182,8 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		defer rootfs.Discard()
 	}
 
-	ctx, span := l.tracer.StartSpan(ctx, OpExecuteTool)
-	span.SetAttribute(AttrOperationName, OpExecuteTool)
+	ctx, span := l.tracer.StartSpan(ctx, otelgenai.OpExecuteTool)
+	span.SetAttribute(AttrOperationName, otelgenai.OpExecuteTool)
 	span.SetAttribute(AttrRunID, req.RunID)
 	span.SetAttribute(AttrStepID, req.StepID)
 	span.SetAttribute(AttrToolName, req.Call.ToolID)

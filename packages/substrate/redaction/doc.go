@@ -1,8 +1,18 @@
 // Package redaction implementa o MOTOR de redação/tokenização de PII partilhado do
 // AOS (ticket AOS-091, ADR-011, tecnica/09 §5), a primeira camada da conformidade
 // GDPR por desenho: a MINIMIZAÇÃO na ingestão. PII é detectada e tratada ANTES de
-// qualquer persistência — no Event Store, na memória, nos spans e no audit — de
-// modo que nenhuma PII em claro alcance esses destinos.
+// qualquer persistência — destinado a ser aplicado no Event Store, na memória, nos
+// spans e no audit — de modo que nenhuma PII em claro alcance esses destinos.
+//
+// # Escopo real de importação (AOS-188)
+//
+// O motor é um módulo FOLHA (substrate) com zero dependências internas; qualquer
+// camada superior pode importá-lo. Hoje é consumido pelos módulos de governação do
+// plano de controlo (trajectory-surface, approval-card, dsar, confidence-calibration)
+// e cablado nos composition-roots (cmd/aos, cmd/aos-demo, integration). A ligação
+// directa ao Event Store, platform/memory, substrate/otel-genai e platform/audit
+// ainda não está completa na v1; quando esses módulos importarem o motor, usarão o
+// mesmo [Ingestor] e a mesma política, garantindo a consistência aqui provada.
 //
 // # Porquê um módulo FOLHA (substrate) zero-dep
 //

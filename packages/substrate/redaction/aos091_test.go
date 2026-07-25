@@ -313,3 +313,68 @@ func TestTokenResolvableThenShredded(t *testing.T) {
 	}
 	_ = out
 }
+
+// --- AOS-188: PII de exemplo não persiste em eventos/spans/audits ---
+//
+// O motor é folha; o teste simula as três superfícies de persistência (Event Store,
+// span attributes, audit record body) serializando o payload redigido como JSON e
+// varrendo-o por PII em claro. Se o motor falhar, a PII persistiria nesses destinos.
+func TestNoPIIPersistsInEventSpanAuditSerialization(t *testing.T) {
+	e := NewEngine(seqKeySource())
+	ing := NewIngestor(e, tokenizeAllPolicy(t))
+
+	// Payload com PII em valor E em chave de mapa (regressão HIGH anterior).
+	raw := map[string]any{
+		synthEmail:       "chave-PII",
+		"corpo":          "contacto " + synthPhone + " cartao " + synthCard,
+		"iban":           synthIBAN,
+		"rede":           synthIPv4,
+		"nested":         map[string]any{"email": synthEmail},
+		"lista":          []any{synthPhone, "texto neutro"},
+		"numero_nao_pii": 42,
+		"float_nao_pii":  19.9,
+	}
+
+	paths := []struct {
+		name string
+		src  Source
+		run  func(any) (Ingested, error)
+	}{
+		{"event_store", SourceUserInput, func(p any) (Ingested, error) { return ing.UserInput(subject, p) }},
+		{"span", SourceToolResult, func(p any) (Ingested, error) { return ing.ToolResult(subject, p) }},
+		{"audit", SourceMemory, func(p any) (Ingested, error) { return ing.Memory(subject, p) }},
+	}
+
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			got, err := p.run(deepCopy(raw))
+			if err != nil {
+				t.Fatalf("%s: %v", p.name, err)
+			}
+			if got.Source != p.src {
+				t.Fatalf("%s: source %s != %s", p.name, got.Source, p.src)
+			}
+			// (1) O payload estruturado redigido não tem PII em claro.
+			if f := e.Scan(got.Payload); len(f) != 0 {
+				t.Fatalf("%s: payload redigido ainda tem PII: %+v", p.name, f)
+			}
+			// (2) A serialização JSON (o que efetivamente seria persistido/em span/audit)
+			// também não tem PII em claro.
+			blob, err := json.Marshal(got.Payload)
+			if err != nil {
+				t.Fatalf("%s: marshal: %v", p.name, err)
+			}
+			if f := e.ScanJSON(blob); len(f) != 0 {
+				t.Fatalf("%s: JSON serializado ainda tem PII: %+v\n%s", p.name, f, blob)
+			}
+			// (3) Parte não-PII preservada (utilidade). Note que deepCopy usa json.UseNumber;
+			// verificamos os textos decimais para não depender do tipo exacto.
+			m := got.Payload.(map[string]any)
+			nn, okN := m["numero_nao_pii"].(json.Number)
+			fn, okF := m["float_nao_pii"].(json.Number)
+			if !okN || nn.String() != "42" || !okF || fn.String() != "19.9" {
+				t.Fatalf("%s: parte nao-PII alterada: %+v", p.name, m)
+			}
+		})
+	}
+}

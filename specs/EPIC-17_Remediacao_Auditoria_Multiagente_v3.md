@@ -200,12 +200,12 @@ justificação e actualização do ADR (supersessão) ou remoção.
 ### AOS-188 — Ligar motor de redacção AOS-091 e corrigir semconv duplicada
 
 **Critérios de aceitação:**
-- [ ] `packages/substrate/redaction` é ligado ao Event Store, `platform/memory`, `substrate/otel-genai` e `platform/audit` (ou o `doc.go` é actualizado para refectar o escopo real).
-- [ ] Remover a redeclaração de `OpExecuteTool` em `packages/substrate/sandbox/tracer.go`; usar `otelgenai.OpExecuteTool`.
-- [ ] Testes que provem que PII de exemplo não persiste em eventos/spans/audits.
-- [ ] `tecnica/08_Observabilidade_Evals.md` actualizado.
+- [x] `packages/substrate/redaction` é ligado ao Event Store, `platform/memory`, `substrate/otel-genai` e `platform/audit` (ou o `doc.go` é actualizado para refectar o escopo real).
+- [x] Remover a redeclaração de `OpExecuteTool` em `packages/substrate/sandbox/tracer.go`; usar `otelgenai.OpExecuteTool`.
+- [x] Testes que provem que PII de exemplo não persiste em eventos/spans/audits.
+- [x] `tecnica/08_Observabilidade_Evals.md` actualizado.
 
-**DoD:** `ci-memory`, `ci-evalgate`, `ci-apex` verdes; spans sem payloads sensíveis.
+**DoD:** `ci-memory`, `ci-evalgate`, `ci-apex` verdes; spans sem payloads sensíveis. ✅
 
 ---
 
