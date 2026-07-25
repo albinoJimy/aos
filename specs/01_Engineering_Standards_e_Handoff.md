@@ -77,6 +77,7 @@ O *pipeline* é **fail-closed**: qualquer gate vermelho bloqueia a progressão. 
 | 1 | **Build** | Compilação e resolução de dependências | Merge e todo o resto |
 | 2 | **Lint / format** | Estilo, *imports*, formatação | Merge |
 | 2b | **Lint de referências cruzadas** | Cada rótulo entre parênteses em `Dependências`/`Bloqueia` coincide com o título canónico do `AOS-NNN` referido; todas as cross-refs de ficheiros resolvem | Merge — o grafo executável não pode divergir |
+| 2c | **Lint de fronteiras de camadas** | Imports entre camadas de `packages/` respeitam `control-plane → kernel → platform/substrate`; substrato não importa camadas superiores; módulos de composição/teste não são importados por produção | Merge — inversões canónicas bloqueiam (baseline temporária até AOS-179) |
 | 3 | **Unit** | Testes unitários; cobertura ≥ limiar | Merge |
 | 4 | **Integração** | Contratos entre componentes (RM↔PDP, RT↔ES) conforme `tecnica/12_Contratos_de_Interface.md` | Merge |
 | 5 | **SAST** | Análise estática de segurança do código | Merge |

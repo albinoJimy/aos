@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all ci-cache-prime \
+        ci ci-secrets ci-build ci-lint ci-layer-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all ci-cache-prime \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -56,7 +56,7 @@ validate: ## Valida a configuração
 # pinado, idempotente). Ver CONTRIBUTING.md.
 CI := bash scripts/ci
 
-ci: ## Corre TODOS os gates locais (build→lint→test→sast→sca→policy-test), fail-closed
+ci: ## Corre TODOS os gates locais (build→lint(+layer-lint)→test→sast→sca→policy-test), fail-closed
 	$(CI)/run.sh
 
 ci-secrets: ## Gate: scan de segredos (chaves privadas / ficheiros de segredo rastreados)
@@ -67,6 +67,9 @@ ci-build: ## Gate: build (go build ./... por módulo)
 
 ci-lint: ## Gate: lint/format + arch-lint AOS-003 (gofmt, vet, staticcheck)
 	$(CI)/lint.sh
+
+ci-layer-lint: ## Gate: lint de fronteiras de camadas (AOS-178)
+	$(CI)/layer-lint.sh
 
 ci-test: ## Gate: test -race + cobertura (gate generalizado >= COVERAGE_MIN, default 80%)
 	$(CI)/test.sh

@@ -1,0 +1,39 @@
+# Baseline de excepções do gate layer-lint (AOS-178).
+# Estas inversões de fronteira canónica foram identificadas na auditoria
+# multiagente v3 (ARQ-01..04) e serão resolvidas pelo ticket AOS-179.
+# Formato: pacote|importação # AOS-179
+
+# ARQ-01: substrate/sandbox importa kernel/reference-monitor (RM).
+github.com/aos-ref/substrate/sandbox|github.com/aos-ref/kernel/reference-monitor # AOS-179
+github.com/aos-ref/substrate/sandbox/network|github.com/aos-ref/kernel/reference-monitor # AOS-179
+github.com/aos-ref/substrate/sandbox/network|github.com/aos-ref/platform/audit # AOS-179
+
+# ARQ-02/03: platform/* importa kernel/reference-monitor.
+github.com/aos-ref/platform/broker|github.com/aos-ref/kernel/reference-monitor # AOS-179
+github.com/aos-ref/platform/identity|github.com/aos-ref/kernel/reference-monitor # AOS-179
+github.com/aos-ref/platform/audit|github.com/aos-ref/kernel/reference-monitor # AOS-179
+
+# ARQ-02: platform/* importa kernel/agent-runtime (memory, registry, dr, model-gateway).
+github.com/aos-ref/platform/memory/*|github.com/aos-ref/kernel/agent-runtime* # AOS-179
+github.com/aos-ref/platform/registry|github.com/aos-ref/kernel/agent-runtime # AOS-179
+github.com/aos-ref/platform/registry/*|github.com/aos-ref/kernel/agent-runtime* # AOS-179
+github.com/aos-ref/platform/dr|github.com/aos-ref/kernel/agent-runtime/replay # AOS-179
+github.com/aos-ref/platform/model-gateway|github.com/aos-ref/kernel/agent-runtime # AOS-179
+github.com/aos-ref/platform/model-gateway/*|github.com/aos-ref/kernel/agent-runtime* # AOS-179
+
+# ARQ-04: platform/model-gateway importa control-plane.
+github.com/aos-ref/platform/model-gateway/routing/tieradapter|github.com/aos-ref/control-plane/scheduler # AOS-179
+github.com/aos-ref/platform/model-gateway/metering/cost/budgetbridge|github.com/aos-ref/control-plane/budget # AOS-179
+
+# ARQ-04: control-plane importa platform.
+github.com/aos-ref/control-plane/orchestrator|github.com/aos-ref/platform/identity # AOS-179
+github.com/aos-ref/control-plane/scheduler|github.com/aos-ref/platform/identity # AOS-179
+
+# ARQ-05: violações control-plane -> platform/substrate reveladas pela regra
+# estrita do layer-lint (AOS-178). Serão resolvidas pelo ticket AOS-179.
+github.com/aos-ref/control-plane/*|github.com/aos-ref/platform/audit # AOS-179
+github.com/aos-ref/control-plane/*|github.com/aos-ref/platform/messaging # AOS-179
+github.com/aos-ref/control-plane/*|github.com/aos-ref/substrate/bus # AOS-179
+github.com/aos-ref/control-plane/*|github.com/aos-ref/substrate/eventstore # AOS-179
+github.com/aos-ref/control-plane/*|github.com/aos-ref/substrate/otel-genai # AOS-179
+github.com/aos-ref/control-plane/*|github.com/aos-ref/substrate/redaction # AOS-179

@@ -30,10 +30,12 @@ SIG="$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.sig"
 SIG_BAK="$(mktemp)"
 cp "$SIG" "$SIG_BAK"
 
+LAYER_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
   if [ -f "$SIG_BAK" ]; then cp "$SIG_BAK" "$SIG"; rm -f "$SIG_BAK"; fi
+  rm -rf "$LAYER_TMP"
 }
 trap cleanup EXIT INT TERM
 
@@ -265,6 +267,43 @@ if ( cd "$REPO_ROOT/packages/integration" && \
 else
   pass "K: o ápice bloqueou (exit!=0) o egress desbloqueado injectado (enforcement fail-closed)"
 fi
+
+# ============================================================================
+# L) inversão de fronteira canónica bloqueia o gate layer-lint (AOS-178)
+# ============================================================================
+log_gate "self-test L · inversão de camada bloqueia o layer-lint"
+# Cria uma árvore temporária fora do repo com uma inversão sintética:
+# platform/fake importa kernel/fake, o que viola control-plane → kernel → platform/substrate.
+LAYER_TMP="$(mktemp -d)"
+mkdir -p "$LAYER_TMP/packages/kernel/fake" "$LAYER_TMP/packages/platform/fake"
+cat > "$LAYER_TMP/packages/kernel/fake/go.mod" <<'EOF'
+module github.com/aos-ref/kernel/fake
+
+go 1.24
+EOF
+cat > "$LAYER_TMP/packages/kernel/fake/fake.go" <<'EOF'
+package fake
+EOF
+cat > "$LAYER_TMP/packages/platform/fake/go.mod" <<'EOF'
+module github.com/aos-ref/platform/fake
+
+go 1.24
+
+replace github.com/aos-ref/kernel/fake => ../kernel/fake
+EOF
+cat > "$LAYER_TMP/packages/platform/fake/fake.go" <<'EOF'
+package fake
+
+import _ "github.com/aos-ref/kernel/fake"
+EOF
+
+if bash "$CI_DIR/layer-lint.sh" --root "$LAYER_TMP" >/dev/null 2>&1; then
+  bad "L: layer-lint passou com inversão sintética platform -> kernel — gate NÃO bloqueou"
+else
+  pass "L: layer-lint bloqueou (exit!=0) a inversão sintética platform -> kernel"
+fi
+rm -rf "$LAYER_TMP"
+LAYER_TMP=""
 
 # ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"
