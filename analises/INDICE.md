@@ -27,6 +27,17 @@
 
 **Constatações v3:** 57, das quais **0 críticas**. Registo: [Registo_de_Constatacoes.md](Registo_de_Constatacoes.md). Baselines: [`v1_baseline/`](v1_baseline/) · [`v2_baseline/`](v2_baseline/).
 
+## Auditoria Carta ↔ codebase (2026-07-24)
+
+Executada sobre o working tree do AOS com 12 agentes especializados + 4 fiscais adversariais (workflow descrito em [`docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md`](../docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md)).
+
+| Documento | Conteúdo |
+|---|---|
+| **[07_Relatorio_Auditoria_Multiagente.md](07_Relatorio_Auditoria_Multiagente.md)** | Veredicto global, sumário executivo, achados críticos/altos consolidados, refutações do contra-exame, implicações para o DoD da v1 e recomendações. |
+| [phase1_findings_normalized.md](phase1_findings_normalized.md) | 62 achados normalizados da Fase 1 (evidência `caminho:linha` por dimensão). |
+
+---
+
 ## Documentos desta auditoria
 
 | Documento | Conteúdo |

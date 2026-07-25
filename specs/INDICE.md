@@ -40,8 +40,9 @@ e fechar de forma independente.
 | **EPIC-10 Topologia, Operação e DR** | Epic | Deployment, dashboards, runbooks, backup/DR | [EPIC-10_Topologia_Operacao_DR.md](EPIC-10_Topologia_Operacao_DR.md) | 616 |
 | **EPIC-11 Testes e Qualidade** | Epic | Testes, eval harness, carga, golden-sets, red-team | [EPIC-11_Testes_Qualidade.md](EPIC-11_Testes_Qualidade.md) | 776 |
 | **EPIC-12 Experiência HITL/UX** | Epic | Superfície de controlo, approval-card, aprovação-de-plano, paridade Slack/Telegram, anti-fadiga | [EPIC-12_Experiencia_HITL_UX.md](EPIC-12_Experiencia_HITL_UX.md) | 781 |
+| **EPIC-17 Remediação Auditoria Multiagente v3** | Epic | Wiring, gates CI e reconciliação documental dos achados da auditoria Carta ↔ codebase | [EPIC-17_Remediacao_Auditoria_Multiagente_v3.md](EPIC-17_Remediacao_Auditoria_Multiagente_v3.md) | 389 |
 
-**Total: 14 ficheiros, ~9.690 linhas, 128 tickets.**
+**Total: 15 ficheiros referenciados, ~9.690+ linhas. O índice detalhado de EPIC-13..EPIC-16 e EPIC-17 está em reconciliação (AOS-185).**
 
 ---
 
