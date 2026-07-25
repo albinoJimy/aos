@@ -267,3 +267,28 @@ jobs:
     steps:
       - name: Todos os gates verdes
         run: echo "Todos os gates de CI passaram (fail-closed)."
+
+  # Entrega do artefacto `aos` — não bloqueante até EPIC-10 (visível, mas não
+  # required). Corre após os gates para não desperdiçar recursos em código partido.
+  delivery:
+    runs-on: ubuntu-latest
+    needs: [gates]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: "packages/**/go.sum"
+      - name: Gate package (empacotamento + sast/sca + imagem distroless)
+        run: bash scripts/ci/package.sh
+      - name: Gate sbom (SBOM + proveniência mínima)
+        run: bash scripts/ci/sbom.sh
+      - name: Upload de artefactos de entrega
+        uses: actions/upload-artifact@v4
+        with:
+          name: aos-delivery
+          path: deploy/node/build
+          if-no-files-found: warn

@@ -188,10 +188,10 @@ justificação e actualização do ADR (supersessão) ou remoção.
 ### AOS-187 — Limpar baseline govulncheck e ligar package/sbom ao CI
 
 **Critérios de aceitação:**
-- [ ] Revisão de `scripts/ci/baseline/govulncheck.txt`: cada entrada de `platform/attestation` tem dono + remediação; entradas estruturalmente impossíveis removidas.
-- [ ] `Makefile` ganha alvos `ci-package` e `ci-sbom` que invocam `scripts/ci/package.sh` e `scripts/ci/sbom.sh`.
-- [ ] `.github/workflows/ci.yml` inclui os novos gates num job de entrega (não bloqueante até EPIC-10, mas visível).
-- [ ] SBOM cobre também o componente externo de autoridade (`packages/platform/attestation`) quando existir release.
+- [x] Revisão de `scripts/ci/baseline/govulncheck.txt`: cada entrada de `platform/attestation` tem dono + remediação; entradas estruturalmente impossíveis removidas.
+- [x] `Makefile` ganha alvos `ci-package` e `ci-sbom` que invocam `scripts/ci/package.sh` e `scripts/ci/sbom.sh`.
+- [x] `.github/workflows/ci.yml` inclui os novos gates num job de entrega (não bloqueante até EPIC-10, mas visível).
+- [x] SBOM cobre também o componente externo de autoridade (`packages/platform/attestation`) quando existir release.
 
 **DoD:** baseline coerente; package/sbom executáveis via `make`; nenhum segredo no SBOM.
 

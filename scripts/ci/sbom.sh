@@ -124,7 +124,57 @@ sbom="$OUT_DIR/sbom.json"
   printf '}\n'
 } > "$sbom"
 ncomp="$( grep -c '"path":' "$sbom" || true )"
-log_ok "SBOM: $sbom ($ncomp componentes)"
+log_ok "SBOM: $sbom ($ncomp componentes do subject)"
+
+# ---------------------------------------------------------------------------
+# (b') Cobertura do componente externo de autoridade (packages/platform/attestation).
+# O nó principal ainda não cabla este módulo (EPIC-16/AOS-182), mas quando existir
+# release a proveniência deve incluí-lo. Adiciona-se como extra_modules auditável.
+ATT_MOD="packages/platform/attestation"
+if [ -f "$REPO_ROOT/$ATT_MOD/go.mod" ]; then
+  log_step "go list -m $ATT_MOD (componente externo de autoridade)"
+  att_json="$( cd "$REPO_ROOT/$ATT_MOD" && go list -m -json all 2>/dev/null )" || att_json=""
+  if [ -n "$att_json" ]; then
+    python3 -c 'import json, sys
+sbom_path = sys.argv[1]
+data = sys.stdin.read()
+extra = []
+idx = 0
+L = len(data)
+dec = json.JSONDecoder()
+while idx < L:
+    ch = data[idx]
+    if ch in " \t\n\r":
+        idx += 1
+        continue
+    if ch != "{":
+        break
+    obj, end = dec.raw_decode(data, idx)
+    idx = end
+    path = obj.get("Path", "")
+    ver = obj.get("Version", "")
+    if not ver and obj.get("Main"):
+        ver = "v0.0.0"
+    sum_ = obj.get("Sum", "")
+    if path and ver:
+        extra.append({"path": path, "version": ver, "sum": sum_})
+with open(sbom_path, "r", encoding="utf-8") as f:
+    doc = json.load(f)
+if extra:
+    doc["extra_modules_note"] = (
+        "Componentes de packages/platform/attestation (autoridade externa). "
+        "Ainda nao embarcados no binario aos (EPIC-16/AOS-182); incluidos para "
+        "cobertura de release e rastreabilidade de supply-chain (AOS-187)."
+    )
+    doc["extra_modules"] = extra
+    with open(sbom_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+' "$sbom" <<< "$att_json"
+    natt="$( grep -c '"path":' "$sbom" || true )"
+    log_ok "SBOM actualizado: $natt componentes no total (inclui $ATT_MOD)"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # (c) PROVENIÊNCIA NÃO-ASSINADA (quem/o-quê/quando). SLSA-ish minimalista; o campo

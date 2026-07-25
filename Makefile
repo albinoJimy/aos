@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-selftest ci-all ci-cache-prime \
+        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-package ci-sbom ci-selftest ci-all ci-cache-prime \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -127,6 +127,12 @@ ci-sast: ## Gate: SAST (gosec, HIGH/CRITICAL)
 
 ci-sca: ## Gate: SCA (govulncheck, vulns afetantes)
 	$(CI)/sca.sh
+
+ci-package: ## Gate: empacotamento do nó `aos` — secrets + sast + sca + sbom + docker build (AOS-168 / AOS-187)
+	$(CI)/package.sh
+
+ci-sbom: ## Gate: SBOM + proveniência mínima do binário `aos` (ADR-017 ponto 3; AOS-187)
+	$(CI)/sbom.sh
 
 ci-policy: ## Gate: teste de política do PDP (golden allow/deny + assinatura)
 	$(CI)/policy-test.sh

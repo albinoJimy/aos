@@ -1,70 +1,125 @@
-packages/control-plane/pdp|GO-2026-4602
-packages/kernel/agent-runtime|GO-2026-4602
-packages/kernel/reference-monitor|GO-2026-4602
-packages/platform/model-gateway|GO-2025-4007
-packages/platform/model-gateway|GO-2025-4008
-packages/platform/model-gateway|GO-2025-4010
-packages/platform/model-gateway|GO-2025-4011
-packages/platform/model-gateway|GO-2025-4012
-packages/platform/model-gateway|GO-2025-4013
-packages/platform/model-gateway|GO-2025-4155
-packages/platform/model-gateway|GO-2025-4175
-packages/platform/model-gateway|GO-2026-4337
-packages/platform/model-gateway|GO-2026-4340
-packages/platform/model-gateway|GO-2026-4601
-packages/platform/model-gateway|GO-2026-4602
-packages/platform/model-gateway|GO-2026-4870
-packages/platform/model-gateway|GO-2026-4918
-packages/platform/model-gateway|GO-2026-4946
-packages/platform/model-gateway|GO-2026-4947
-packages/platform/model-gateway|GO-2026-4971
-packages/platform/model-gateway|GO-2026-5037
-packages/platform/model-gateway|GO-2026-5039
-packages/platform/model-gateway|GO-2026-5856
-packages/platform/registry|GO-2025-3956
-packages/platform/registry|GO-2025-4007
-packages/platform/registry|GO-2025-4008
-packages/platform/registry|GO-2025-4010
-packages/platform/registry|GO-2025-4011
-packages/platform/registry|GO-2025-4012
-packages/platform/registry|GO-2025-4013
-packages/platform/registry|GO-2025-4155
-packages/platform/registry|GO-2025-4175
-packages/platform/registry|GO-2026-4337
-packages/platform/registry|GO-2026-4340
-packages/platform/registry|GO-2026-4601
-packages/platform/registry|GO-2026-4870
-packages/platform/registry|GO-2026-4918
-packages/platform/registry|GO-2026-4946
-packages/platform/registry|GO-2026-4947
-packages/platform/registry|GO-2026-4971
-packages/platform/registry|GO-2026-5037
-packages/platform/registry|GO-2026-5039
-packages/platform/registry|GO-2026-5856
-packages/substrate/sandbox|GO-2025-4010
-packages/substrate/sandbox|GO-2026-4601
-packages/integration|GO-2025-4007
-packages/integration|GO-2025-4008
-packages/integration|GO-2025-4010
-packages/integration|GO-2025-4011
-packages/integration|GO-2025-4013
-packages/integration|GO-2025-4155
-packages/integration|GO-2025-4175
-packages/integration|GO-2026-4337
-packages/integration|GO-2026-4340
-packages/integration|GO-2026-4601
-packages/integration|GO-2026-4870
-packages/integration|GO-2026-4946
-packages/integration|GO-2026-4947
-packages/integration|GO-2026-5037
-packages/integration|GO-2026-5856
-packages/platform/attestation|GO-2025-4007
-packages/platform/attestation|GO-2025-4010
-packages/platform/attestation|GO-2025-4011
-packages/platform/attestation|GO-2025-4013
-packages/platform/attestation|GO-2025-4155
-packages/platform/attestation|GO-2025-4175
-packages/platform/attestation|GO-2026-4601
-packages/platform/attestation|GO-2026-4946
-packages/platform/attestation|GO-2026-4947
-packages/platform/attestation|GO-2026-5037
+# Baseline govulncheck (AOS-187).
+#
+# Vulnerabilidades afetantes (secção "Symbol Results") conhecidas e aceites como dívida
+# de toolchain. A fonte de verdade dos IDs é o scanner `govulncheck`; esta baseline é a
+# contra-medida fail-closed para findings NOVOS — qualquer vulnerabilidade adicional
+# bloqueia o gate SCA até ser triada.
+#
+# Remediação transversal: bump da toolchain Go 1.24.x → 1.25.y, autorizado no âmbito do
+# EPIC-10 (registry/imagens assinadas). Até lá, as entradas são documentadas com dono e
+# justificação. Nenhuma entrada foi removida como "estruturalmente impossível" — todas
+# as que aqui figuram são atingidas por código real do respetivo módulo.
+#
+# Owner: AOS-187 / supply-chain.
+
+
+# --- packages/cmd/aos ---
+packages/cmd/aos|GO-2025-4007 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2025-4008 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2025-4010 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2025-4011 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2025-4012 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2025-4013 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2025-4155 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2025-4175 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4337 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4340 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4601 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4870 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4918 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4946 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4947 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-4971 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-5037 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-5039 # owner=AOS-187; dívida toolchain do binário de entrega
+packages/cmd/aos|GO-2026-5856 # owner=AOS-187; dívida toolchain do binário de entrega
+
+# --- packages/control-plane/pdp ---
+packages/control-plane/pdp|GO-2026-4602 # owner=EPIC-09/PDP; dívida toolchain
+
+# --- packages/integration ---
+packages/integration|GO-2025-4007 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2025-4008 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2025-4010 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2025-4011 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2025-4012 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2025-4013 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2025-4155 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2025-4175 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4337 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4340 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4601 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4870 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4918 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4946 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4947 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-4971 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-5037 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-5039 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+packages/integration|GO-2026-5856 # owner=AOS-187/EPIC-01; dívida toolchain do composition-root
+
+# --- packages/kernel/agent-runtime ---
+packages/kernel/agent-runtime|GO-2026-4602 # owner=EPIC-02; dívida toolchain
+
+# --- packages/kernel/reference-monitor ---
+packages/kernel/reference-monitor|GO-2026-4602 # owner=EPIC-01; dívida toolchain
+
+# --- packages/platform/attestation ---
+packages/platform/attestation|GO-2025-4007 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); quadratic name constraints (x509) — atingido por verifyChain do verificador de atestação
+packages/platform/attestation|GO-2025-4010 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); IPv6 bracket parsing (net/url) — atingido indiretamente por x509.Verify; aceite enquanto toolchain não sobe
+packages/platform/attestation|GO-2025-4011 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); ASN.1 memory exhaustion — atingido por asn1.Unmarshal em checkCertAAGUID
+packages/platform/attestation|GO-2025-4013 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); DSA panic (x509) — atingido por x509.Certificate.Verify
+packages/platform/attestation|GO-2025-4155 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); error-string resource consumption (x509) — atingido por verifyChain
+packages/platform/attestation|GO-2025-4175 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); wildcard name constraints (x509) — atingido por verifyChain
+packages/platform/attestation|GO-2026-4601 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); IPv6 host literal parsing (net/url) — atingido indiretamente por x509.Verify
+packages/platform/attestation|GO-2026-4946 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); policy validation (x509) — atingido por verifyChain
+packages/platform/attestation|GO-2026-4947 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); chain building work (x509) — atingido por verifyChain
+packages/platform/attestation|GO-2026-5037 # owner=AOS-187; remediação=bump Go 1.24→1.25 (EPIC-10); hostname parsing (x509) — atingido por verifyChain
+
+# --- packages/platform/model-gateway ---
+packages/platform/model-gateway|GO-2025-4007 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2025-4008 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2025-4010 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2025-4011 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2025-4012 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2025-4013 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2025-4155 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2025-4175 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4337 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4340 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4601 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4602 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4870 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4918 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4946 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4947 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-4971 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-5037 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-5039 # owner=EPIC-06; dívida toolchain
+packages/platform/model-gateway|GO-2026-5856 # owner=EPIC-06; dívida toolchain
+
+# --- packages/platform/registry ---
+packages/platform/registry|GO-2025-3956 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4007 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4008 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4010 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4011 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4012 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4013 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4155 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2025-4175 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4337 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4340 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4601 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4870 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4918 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4946 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4947 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-4971 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-5037 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-5039 # owner=EPIC-05; dívida toolchain
+packages/platform/registry|GO-2026-5856 # owner=EPIC-05; dívida toolchain
+
+# --- packages/substrate/sandbox ---
+packages/substrate/sandbox|GO-2025-4010 # owner=EPIC-07; dívida toolchain
+packages/substrate/sandbox|GO-2026-4601 # owner=EPIC-07; dívida toolchain

@@ -128,6 +128,30 @@ norm_path() {
 strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
 
 # --- Comparação com baseline (semântica de multiconjunto) ---------------------
+# baseline_normalize <ficheiro_baseline>
+#   Produz em stdout o ficheiro baseline limpo, ignorando linhas em branco e
+#   comentários (linhas que começam por '#' ou ';', e parte após '#' numa linha
+#   de dados). Permite documentar cada entrada com dono/remediação sem alterar
+#   a semântica de comparação.
+baseline_normalize() {
+  local base="$1"
+  if [ ! -f "$base" ]; then
+    return
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|\#*|\;*) continue ;;
+    esac
+    # Remover comentário inline (primeiro '#' não escapado) e espaços.
+    key="${line%%#*}"
+    key="${key%;*}"
+    key="${key#"${key%%[![:space:]]*}"}"   # ltrim
+    key="${key%"${key##*[![:space:]]}"}"   # rtrim
+    [ -n "$key" ] || continue
+    printf '%s\n' "$key"
+  done < "$base"
+}
+
 # baseline_diff <ficheiro_actual> <ficheiro_baseline>
 #   Imprime em stdout as descobertas NOVAS (presentes no actual e não cobertas
 #   pela baseline, contando duplicados). Devolve 1 se houver novas, 0 caso
@@ -135,8 +159,12 @@ strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
 baseline_diff() {
   local cur="$1" base="$2"
   # Baseline ausente == toda a descoberta é NOVA (compara contra vazio).
-  local base_eff="$base"
-  [ -f "$base" ] || base_eff="/dev/null"
+  local base_eff; base_eff="$(mktemp)"
+  baseline_normalize "$base" > "$base_eff"
+  if [ ! -s "$base_eff" ]; then
+    rm -f "$base_eff"
+    base_eff="/dev/null"
+  fi
 
   local sc sb; sc="$(mktemp)"; sb="$(mktemp)"
   sort "$cur" > "$sc"
@@ -145,7 +173,7 @@ baseline_diff() {
   local new stale
   new="$(comm -23 "$sc" "$sb" || true)"
   stale="$(comm -13 "$sc" "$sb" || true)"
-  rm -f "$sc" "$sb"
+  rm -f "$sc" "$sb" "$base_eff"
 
   if [ -n "$stale" ]; then
     log_warn "entradas de baseline obsoletas (já não ocorrem) em $(basename "$base"):"
