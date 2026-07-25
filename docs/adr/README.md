@@ -69,6 +69,7 @@ na mesma ronda da EPIC-13 v1.0).
 | ADR-016 | Fronteira de confiança da camada de UI | **Ratificado (novo)** | [`ADR-016-fronteira-confianca-ui.md`](ADR-016-fronteira-confianca-ui.md) |
 | ADR-017 | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | **Ratificado** | [`ADR-017-supply-chain-node.md`](ADR-017-supply-chain-node.md) |
 | ADR-018 | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | **Aceite** | [`ADR-018-fronteira-no-orq-sch.md`](ADR-018-fronteira-no-orq-sch.md) |
+| ADR-019 | Excepções intencionais às fronteiras canónicas de camada (v1 single-host) | **Aceite** | [`ADR-019-fronteiras-camada-excecoes.md`](ADR-019-fronteiras-camada-excecoes.md) |
 
 > Nota: os ficheiros ligados na coluna «Ficheiro» para **006/011/012/013/016** são
 > criados nesta ronda de ratificação; **015** (execução durável, AOS-022), **017**
@@ -103,7 +104,8 @@ na mesma ronda da EPIC-13 v1.0).
   Consequências · Conformidade/Enforcement · Referências. Idioma **PT-PT**.
 - **Estados** usados: *Ratificado* · *Catálogo, por materializar* · *Referenciado/
   Recomendado em auditoria, por materializar* · *Substituído por ADR-NNN*.
-- **Numeração:** ADRs novos numeram-se **após o maior código atribuído** (hoje ADR-018:
-  ADR-017 foi materializado — supply-chain do nó; ADR-018 regista a fronteira nó↔ORQ/SCH).
-  Códigos nunca são reutilizados; um ADR retirado passa a *Substituído por*, não desaparece.
+- **Numeração:** ADRs novos numeram-se **após o maior código atribuído** (hoje ADR-019:
+  ADR-017 — supply-chain do nó; ADR-018 — fronteira nó↔ORQ/SCH; ADR-019 — excepções
+  às fronteiras de camada). Códigos nunca são reutilizados; um ADR retirado passa a
+  *Substituído por*, não desaparece.
 - Todo o documento técnico relevante deve **citar os ADRs que o afectam**.

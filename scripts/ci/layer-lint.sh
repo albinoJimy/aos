@@ -8,8 +8,8 @@
 #   substrate só importa substrate.
 # Módulos de composição/teste (cmd/*, integration, testkit, qa/*, security-tests)
 # são isentos como importadores (podem importar qualquer camada), mas não podem
-# ser importados por camadas de produção. Inversões conhecidas (baseline) são
-# toleradas até AOS-179 as resolver.
+# ser importados por camadas de produção. Inversões conhecidas e documentadas
+# no ADR-019 são toleradas pela baseline; novas violações bloqueiam a CI.
 #
 # Uso:
 #   scripts/ci/layer-lint.sh
