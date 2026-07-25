@@ -717,11 +717,11 @@ Estabelecer os testes de UX/DX do epic: testes de usabilidade dos gates (aprova�
 
 ### Critérios de Aceitação
 
-- [ ] Existem **testes de usabilidade dos gates** para AOS-120 (approval-card), AOS-121 (aprovação-de-plano), AOS-123 (exaustão graciosa) e AOS-125 (autonomia): o preview é completo, as opções são inequívocas e a decisão fail-closed é respeitada.
-- [ ] O **override-rate** (medido em AOS-095) é usado como **sinal anti-fadiga**: os testes asseguram que é exposto e que um limiar cronicamente alto é sinalizado como problema de superfície.
-- [ ] Os testes cobrem a **paridade de superfície** (AOS-122): cards equivalentes nas três plataformas, degradação fail-closed nos canais sem capacidade.
-- [ ] Os testes verificam **acessibilidade** básica das superfícies (contraste/rótulos/navegação por teclado nos canais que o suportam).
-- [ ] A bateria integra-se no **harness de qualidade** de EPIC-11 e corre em CI; consome métricas existentes, sem criar enforcement próprio.
+- [x] Existem **testes de usabilidade dos gates** para AOS-120 (approval-card), AOS-121 (aprovação-de-plano), AOS-123 (exaustão graciosa) e AOS-125 (autonomia): o preview é completo, as opções são inequívocas e a decisão fail-closed é respeitada.
+- [x] O **override-rate** (medido em AOS-095) é usado como **sinal anti-fadiga**: os testes asseguram que é exposto e que um limiar cronicamente alto é sinalizado como problema de superfície.
+- [x] Os testes cobrem a **paridade de superfície** (AOS-122): cards equivalentes nas três plataformas, degradação fail-closed nos canais sem capacidade.
+- [x] Os testes verificam **acessibilidade** básica das superfícies (contraste/rótulos/navegação por teclado nos canais que o suportam).
+- [x] A bateria integra-se no **harness de qualidade** de EPIC-11 e corre em CI; consome métricas existentes, sem criar enforcement próprio.
 
 ### Detalhes Técnicos
 
@@ -740,11 +740,11 @@ Estabelecer os testes de UX/DX do epic: testes de usabilidade dos gates (aprova�
 
 ### Definition of Done
 
-- [ ] Critérios de Aceitação satisfeitos e demonstráveis.
-- [ ] Bateria de UX/DX integrada no harness de EPIC-11 e a correr em CI.
-- [ ] Override-rate consumido de AOS-095 como sinal anti-fadiga (sem criar enforcement).
-- [ ] Cobertura de usabilidade, paridade e acessibilidade documentada.
-- [ ] Sem segredos; scan limpo.
+- [x] Critérios de Aceitação satisfeitos e demonstráveis.
+- [x] Bateria de UX/DX integrada no harness de EPIC-11 e a correr em CI.
+- [x] Override-rate consumido de AOS-095 como sinal anti-fadiga (sem criar enforcement).
+- [x] Cobertura de usabilidade, paridade e acessibilidade documentada.
+- [x] Sem segredos; scan limpo.
 
 ### Handoff para Claude Code
 
