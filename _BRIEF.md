@@ -9,8 +9,8 @@
 
 ## 1. Identidade do produto
 
-- **Produto:** **AOS — Agentic OS de Referência** (blueprint de plataforma para correr, coordenar e governar agentes de IA).
-- **Natureza:** produto/plataforma **standalone** (sem cliente institucional). Genérico e reutilizável.
+- **Produto:** **AOS — Agentic OS de Referência** (runtime de referência deployável para correr, coordenar e governar agentes de IA).
+- **Natureza:** para a **v1**, um **runtime/nó `aos` deployável** que se instala e corre, hospedando *runs* de agentes sob uma cadeia de governaça real. A visão de longo prazo de *blueprint/plataforma standalone* vive no `_FONTE_agentic-os-ideal.md` e só muda por emenda da Carta (`specs/00_AOS_Carta.md`). Genérico e reutilizável.
 - **Versão do conjunto:** 1.0 · **Data:** Julho de 2026 · **Classificação:** Documento de Referência — Aberto.
 - **Documento-fonte:** "O Agentic OS ideal — blueprint de referência" (`_FONTE_agentic-os-ideal.md`).
 - **Tese central:** um Agentic OS só é excelente se tornar as falhas *arquitecturalmente impossíveis* — via três fundações não-negociáveis: **reference monitor** mandatório, **identidade por agente** com delegação até um humano responsável, e **execução durável ao nível do passo**. *(«arquitecturalmente impossível» é objectivo de desenho — eliminação estrutural do caminho de falha com risco residual gerido, não garantia absoluta.)*
