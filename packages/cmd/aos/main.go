@@ -106,6 +106,26 @@ func run(w io.Writer) error {
 	}
 	defer func() { _ = node.Close() }()
 
+	// KILL-SWITCH VISÍVEL da soberania de leitura (AOS-203, achado ORF-05). Em produção o
+	// estado desligado nem chega aqui (ErrProductionNeedsSovereignRead abortou em
+	// [nodeConfigFromEnv], e esse fail-closed NÃO é alterado); FORA de produção o
+	// definido-vazio é aceite — mas deixa de ser SILENCIOSO. O aviso sai do lado do
+	// entrypoint (a fronteira que LÊ a variável), a seguir ao banner do composition-root,
+	// e nomeia o que fica desligado e como se religa. Ver [sovereignReadKillSwitchBanner].
+	//
+	// O predicado é o GATE REAL do read-path soberano, não uma aproximação: [NewAPIServer]
+	// só compõe a read-governance quando o registo board→região E o WORM estão ambos
+	// compostos (`node.SovereignReadRegions != nil && node.WORM != nil` — ver newReadGovernance
+	// em api.go). Espelhá-lo aqui, em vez de olhar só para o registo, garante que o aviso
+	// nunca pode ficar CALADO enquanto o nó serve o read-path legado: se o WORM alguma vez
+	// se tornar opcional (hoje o Bootstrap cai sempre para audit.NewMemStore), o nó avisa em
+	// vez de anunciar uma soberania que não está a aplicar — que é precisamente a promessa
+	// falsa que AOS-203 vem eliminar.
+	rawBoardRegions, boardRegionsDefined := os.LookupEnv("AOS_BOARD_REGIONS")
+	for _, line := range sovereignReadKillSwitchBanner(node.SovereignReadRegions != nil, node.WORM != nil, rawBoardRegions, boardRegionsDefined) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
 	// Superfície de REDE (AOS-166). Se AOS_API_ADDR estiver definido, o nó gradua para um nó
 	// OPERÁVEL de fora: levanta o loop de serviço + a API HTTP com o BIND-GUARDRAIL no
 	// CAMINHO DE PRODUÇÃO (é aqui, não só nos testes, que um bind não-loopback sem
@@ -148,6 +168,10 @@ func nodeConfigFromEnv() (Config, error) {
 	//   - DEFINIDO VAZIO ⇒ nil: opt-out DELIBERADO do read-path legado (aceite só fora de produção);
 	//   - DEFINIDO MALFORMADO (entrada não-vazia inválida) ⇒ ABORTA (ErrBadBoardRegions): um typo
 	//     (ex.: "aos-demo" sem '=') NÃO degrada em silêncio para o read-path aberto.
+	//
+	// O segundo estado é um KILL-SWITCH de um controlo de conformidade. Em produção é RECUSADO
+	// (ErrProductionNeedsSovereignRead, logo abaixo); fora de produção é aceite mas deixou de
+	// ser silencioso — [run] escreve o aviso de [sovereignReadKillSwitchBanner] (AOS-203).
 	rawBoardRegions, ok := os.LookupEnv("AOS_BOARD_REGIONS")
 	if !ok {
 		rawBoardRegions = "board:aos-demo=eu"
@@ -178,18 +202,28 @@ func nodeConfigFromEnv() (Config, error) {
 	// Um valor NÃO RECONHECIDO aborta (ErrBadDurableExecution) em vez de ser tratado como
 	// false — ver a justificação no erro.
 	//
-	// POSTURA DE PRODUÇÃO — DECISÃO EXPLÍCITA (AOS-191), não omissão. Ao contrário da
-	// identidade endurecida (ErrProductionNeedsHardenedIdentity) e da soberania de leitura
-	// (ErrProductionNeedsSovereignRead), AOS_MODE=production NÃO exige execução durável: um
-	// nó de produção arranca sem ela. Racional: (i) não há promessa falsa — o banner declara
-	// "DESLIGADA" e nada anuncia durabilidade, que é o critério que separa este caso dos dois
-	// anteriores (ali o nó SERVIRIA leituras/identidade com uma postura mais fraca do que a
-	// anunciada); (ii) exigi-la aqui quebraria a retro-compatibilidade que AOS-191 impõe
-	// (sem a variável, o comportamento actual mantém-se) e transformaria um ticket de
-	// SUPERFÍCIE DE CONFIGURAÇÃO numa mudança de postura de produção não anunciada aos
-	// operadores existentes. A promoção a exigência de produção — a par das outras duas — é
-	// decidida em AOS-203 (postura das variáveis de ambiente do nó), não fica em aberto sem
-	// eixo. Documentado ao operador em deploy/node/README.md.
+	// POSTURA DE PRODUÇÃO — DECIDIDA EM AOS-203: MANTÉM-SE OPT-IN, TAMBÉM EM
+	// AOS_MODE=production. Ao contrário da identidade endurecida
+	// (ErrProductionNeedsHardenedIdentity) e da soberania de leitura
+	// (ErrProductionNeedsSovereignRead), AOS_MODE=production NÃO exige execução durável e NÃO
+	// passará a exigir: um nó de produção arranca sem ela. Isto não é uma pendência — é a
+	// decisão, e o eixo que AOS-191 abriu fica FECHADO aqui.
+	//
+	// CRITÉRIO que separa este caso dos outros dois: a PROMESSA FALSA. Ali o nó SERVIRIA
+	// identidade/leituras com uma postura mais fraca do que a que um nó de produção
+	// implicitamente anuncia; aqui não anuncia durabilidade nenhuma — o banner declara
+	// "execucao duravel (AOS-180): DESLIGADA" em CADA arranque e nenhum endpoint promete
+	// sobrevivência de checkpoints. Capacidade declaradamente ausente, não capacidade
+	// anunciada e não cumprida. Argumentos subordinados: (i) exigi-la quebraria a
+	// retro-compatibilidade que AOS-191 impõe e converteria um ticket de SUPERFÍCIE DE
+	// CONFIGURAÇÃO numa mudança de postura de produção não anunciada aos operadores
+	// existentes; (ii) o eixo REALMENTE perigoso — durabilidade LIGADA sobre substrato
+	// volátil — já é fail-closed em QUALQUER modo, logo abaixo.
+	//
+	// A tabela comparativa das três posturas e a consequência para o operador (quem quiser
+	// retoma de runs interrompidos TEM de a ligar explicitamente, mesmo em produção) estão em
+	// deploy/node/README.md, secção "Postura de produção de AOS_DURABLE_EXECUTION — decisão
+	// (AOS-203)". Reabrir isto exige emenda registada, não um PR silencioso.
 	durableExecution, err := parseDurableExecution(os.Getenv("AOS_DURABLE_EXECUTION"))
 	if err != nil {
 		return Config{}, err
@@ -417,6 +451,75 @@ func parseBoardRegions(s string) (map[string]string, error) {
 		return nil, fmt.Errorf("%w: nenhuma entrada valida em %q", ErrBadBoardRegions, s)
 	}
 	return out, nil
+}
+
+// sovereignReadKillSwitchBanner produz o AVISO PROEMINENTE do KILL-SWITCH da soberania de
+// leitura (AOS-203, achado ORF-05 da auditoria v4). Devolve nil — nenhuma linha — quando o
+// read-path soberano está LIGADO (o caso comum: sem AOS_BOARD_REGIONS o nó aplica o default
+// de referência "board:aos-demo=eu").
+//
+// O DEFEITO QUE FECHA. `AOS_BOARD_REGIONS=` (DEFINIDA-VAZIA) é um kill-switch: desliga um
+// controlo de CONFORMIDADE que está LIGADO por omissão — a authz por-chamador das leituras de
+// governação (D7) e o selo WORM da leitura sensível (D6). Em `AOS_MODE=production` esse estado
+// já é RECUSADO ([ErrProductionNeedsSovereignRead]) e este ticket NÃO altera esse fail-closed;
+// fora de produção ele é legítimo (os harnesses de durabilidade e de plano de controlo usam-no
+// deliberadamente), mas era SILENCIOSO: a única linha do banner era descritiva ("read-path
+// LEGADO") e apontava para `Config.BoardRegions`, um campo de `package main` que o operador do
+// binário nem consegue escrever. Um operador que herdasse um `-e AOS_BOARD_REGIONS=` de uma
+// receita não tinha como saber o que tinha perdido.
+//
+// PORQUÊ AVISO E NÃO RECUSA (fora de produção). Recusar quebraria a retro-compatibilidade que
+// a superfície de configuração impõe e cortaria um estado que o próprio projecto usa em
+// harnesses. O critério é o mesmo de AOS-191: o que não se tolera é a PROMESSA FALSA — daí o
+// aviso declarar, sem eufemismo, o que fica desligado.
+//
+// PORQUÊ AQUI E NÃO NO COMPOSITION-ROOT. O banner de [Bootstrap] declara o estado COMPOSTO
+// (readRegions nil ⇒ "read-path LEGADO"); esta função declara a CAUSA DE AMBIENTE e o remédio,
+// que só a fronteira que lê a variável conhece — um embedder que compõe [Config] à mão não
+// tem AOS_BOARD_REGIONS nenhuma para religar.
+//
+// RESIDUAL CONHECIDO (não é omissão). A linha do composition-root ainda manda "definir
+// Config.BoardRegions" — um campo de `package main` INALCANÇÁVEL por quem corre a imagem, isto
+// é, metade do próprio defeito ORF-05 (sintoma com remédio inalcançável). Reescrevê-la exige
+// tocar em bootstrap.go, fora da propriedade de ficheiros deste ticket; até lá, o aviso
+// NEUTRALIZA-A explicitamente (a linha "IGNORE …" abaixo) em vez de a deixar a competir com o
+// remédio verdadeiro — as duas linhas do banner ficam coerentes e o operador não segue a morta.
+//
+// Os parâmetros são o estado REALMENTE COMPOSTO, não a intenção da config: `regionsComposed`
+// é Node.SovereignReadRegions != nil e `wormComposed` é Node.WORM != nil — a CONJUNÇÃO que
+// api.go exige para compor a read-governance. O aviso nunca contradiz o que o nó está a fazer,
+// e nunca fica calado por olhar para metade do gate.
+func sovereignReadKillSwitchBanner(regionsComposed, wormComposed bool, rawBoardRegions string, defined bool) []string {
+	if regionsComposed && wormComposed {
+		return nil
+	}
+	// A causa é nomeada com precisão — cada estado produz uma mensagem diferente (o operador
+	// tem de reconhecer o SEU caso na linha).
+	var cause string
+	switch {
+	case regionsComposed && !wormComposed:
+		// Inalcançável pelo caminho do binário (o Bootstrap cai sempre para audit.NewMemStore
+		// quando não há WORM durável), mas é o estado em que a soberania seria anunciada e não
+		// aplicada: o registo está configurado e o read-path é LEGADO na mesma. Se o WORM
+		// alguma vez se tornar opcional, o operador vê a causa exacta em vez de silêncio.
+		cause = "o registo board->regiao esta configurado MAS o WORM nao esta composto — o read-path soberano exige AMBOS (o selo D6 nao teria onde ser gravado), pelo que a soberania fica DESLIGADA apesar de AOS_BOARD_REGIONS ter valor"
+	case defined && strings.TrimSpace(rawBoardRegions) == "":
+		cause = "AOS_BOARD_REGIONS esta DEFINIDA-VAZIA (kill-switch explicito: a variavel existe no ambiente com valor vazio)"
+	case !defined:
+		// Inalcançável pelo caminho do binário (sem a variável aplica-se o default de
+		// referência): só um Config composto in-process chega aqui. A linha diz a verdade
+		// para esse caso em vez de mentir sobre uma variável que ninguem definiu.
+		cause = "o registo board->regiao esta VAZIO e AOS_BOARD_REGIONS nao esta definida (Config.BoardRegions composta in-process sem entradas)"
+	default:
+		cause = "o registo board->regiao ficou VAZIO a partir de AOS_BOARD_REGIONS=" + strings.TrimSpace(rawBoardRegions)
+	}
+	return []string{
+		"AVISO KILL-SWITCH (AOS-203): SOBERANIA DE LEITURA (AOS-172, D7) DESLIGADA — " + cause,
+		"=> FICA DESLIGADO: (1) AUTHZ POR-CHAMADOR das leituras de governacao (D7) — o no serve TODAS as leituras sem exigir X-Aos-Reader/X-Aos-Board nem resolver a regiao autorizada do board; (2) SELO WORM da leitura sensivel (D6) — nao fica trilho tamper-evident de QUEM leu o que",
+		"=> PARA RELIGAR: defina AOS_BOARD_REGIONS=\"board=regiao\" (ex.: AOS_BOARD_REGIONS=\"board:prod=eu\") ou REMOVA a variavel do ambiente para voltar ao default de referencia \"board:aos-demo=eu\"",
+		"=> IGNORE a linha \"defina Config.BoardRegions\" do banner acima: Config.BoardRegions e um campo de codigo (package main) que quem corre o binario/imagem NAO consegue escrever — o unico remedio alcancavel e AOS_BOARD_REGIONS, na linha anterior",
+		"=> AOS_MODE=production RECUSA arrancar neste estado (ErrProductionNeedsSovereignRead) — este aviso so existe porque o no NAO esta em modo de producao",
+	}
 }
 
 // parseDurableExecution interpreta AOS_DURABLE_EXECUTION (AOS-191) como um booleano

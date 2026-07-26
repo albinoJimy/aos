@@ -41,6 +41,119 @@ O arranque de referência corre **in-memory** (não escreve no root-fs), pelo qu
 > a verificação de root-fs read-only não é mascarada. O directório `/var/lib/aos` é criado owned
 > por `65532:65532`, pelo que o volume nomeado do operador herda a ownership certa.
 
+### Superfície de configuração — TODAS as variáveis lidas pelo nó (AOS-203)
+
+O ambiente é a **única** superfície de configuração do binário entregue (`Config` vive em
+`package main`: um campo que `nodeConfigFromEnv` não escreva é **inalcançável** por quem corre a
+imagem). A tabela abaixo é o **índice completo** — toda a variável lida pelos dois binários da
+imagem (o nó, `packages/cmd/aos`, e o `aos-healthprobe` do `HEALTHCHECK`) está aqui.
+
+O teste `TestAOS203EnvSurfaceIsDocumented` (`packages/cmd/aos/env_surface_test.go`) **avermelha**
+se alguém acrescentar uma leitura de ambiente sem a documentar **nesta secção**. O que ele impõe,
+exactamente: extrai por **AST** (não `grep`) as chamadas `os.Getenv`/`os.LookupEnv`/`envOr` das
+duas árvores de código, **recursivamente**; **proíbe** `os.Environ` (leitura por enumeração
+escaparia ao gate por construção); e exige, para cada variável, uma linha de tabela **dentro
+desta secção** com as células **Default e Efeito preenchidas** — uma linha degenerada
+``| `AOS_X` |  |  |`` **não** conta como documentação.
+
+As cinco variáveis com secção própria abaixo (estado durável, plano de controlo) têm aqui a linha
+de índice e o detalhe lá.
+
+| Variável | Default | Efeito |
+|---|---|---|
+| `AOS_MODE` | *(vazio ⇒ modo de **referência**)* | `production` (qualquer caixa) activa a **postura de produção fail-closed**. **Segurança:** é o interruptor que torna obrigatórias as duas exigências — `AOS_ISSUER_PUBKEY` (senão `ErrProductionNeedsHardenedIdentity`) e `AOS_BOARD_REGIONS` **não-vazio** (senão `ErrProductionNeedsSovereignRead`). Qualquer outro valor ⇒ modo de referência **sem** essas exigências: um nó exposto sem `AOS_MODE=production` não é um nó de produção, é um nó de referência a servir tráfego. |
+| `AOS_API_ADDR` | *(vazio ⇒ **API não levantada**)* | Endereço de bind da API HTTP. Vazio ⇒ o nó faz bootstrap, declara o banner e **sai sem abrir socket**. Não-loopback ⇒ sujeito ao [bind-guardrail](#bind-guardrail-fail-closed) (recusa se não houver operadores). É também o **default do `--addr`** dos subcomandos cliente (`aos run/observe/steer/pause`) e a fonte da porta do `HEALTHCHECK`. |
+| `AOS_ISSUER_ID` | `iss:aos-node` | Identificador da autoridade de identidade — **é o trust anchor** que o verifier exige no `iss` de cada credencial. **Segurança/operação:** no modo endurecido tem de ser **exactamente** o issuer que emitiu os tokens (o par `(AOS_ISSUER_ID, AOS_ISSUER_PUBKEY)` é o anchor completo); um valor errado não abre nada — faz o nó **rejeitar todas** as credenciais legítimas (fail-closed, mas silencioso do lado da config). Não é segredo: é um nome. |
+| `AOS_ISSUER_PUBKEY` | *(vazio ⇒ modo de **referência**, autoridade **co-localizada**)* | Pubkey ed25519 do issuer em hex (**64 hex chars = 32 bytes**). Presente ⇒ **trust-anchor-only endurecido**: o nó compõe só o verifier e **nenhuma chave de assinatura entra no processo**. Malformada ⇒ **ABORTA** (`ErrBadIssuerPubKey`). Material **público** — pode viver na receita de deployment. |
+| `AOS_ISSUER_KEY_PATH` | *(vazio ⇒ chave gerada por **CSPRNG a cada arranque**)* | **Só no modo de referência.** Ficheiro de *seed* ed25519 que a autoridade co-localizada carrega/persiste, para que os tokens emitidos **sobrevivam ao reinício**. ⚠️ **É o único caminho por onde material PRIVADO entra no processo do nó** — monte-o read-only e fora da imagem, e prefira o modo endurecido. Com `AOS_ISSUER_PUBKEY` definida esta variável **nem é lida** (no modo endurecido nenhuma chave de assinatura entra; um `Config` composto in-process com ambas aborta com `ErrConflictingIssuerKey`). |
+| `AOS_HUMANS` | `operator` | Lista CSV dos **humanos autorizados** na allowlist da autoridade de identidade **de referência** (`integration.NewAllowlistDirectory`) — a raiz de delegação de onde a autoridade minta. **Só tem efeito no modo de referência**: no modo endurecido o directório de humanos vive **com a autoridade externa** e a variável é ignorada. **Fail-closed:** no modo de referência, uma lista definida mas **sem nenhuma entrada válida** (ex.: `AOS_HUMANS=","`) ⇒ **ABORTA** (`ErrNoHumans`) — a autoridade não teria quem autenticar. É `DEMO-GRADE-AUTH`: uma allowlist de nomes, **não** autenticação (OIDC/WebAuthn é a porta por preencher, EPIC-16); o banner declara a cardinalidade (`humanos autorizados na autoridade: N`). |
+| `AOS_BOARD_REGIONS` | *(**não definida** ⇒ `board:aos-demo=eu`, soberania de leitura **LIGADA**)* | Registo `board=regiao,board2=regiao2` da soberania de leitura. **Impacto de conformidade — três estados, incluindo um kill-switch:** ver [Soberania de leitura](#soberania-de-leitura--aos_board_regions-e-o-kill-switch-aos-172--d7-endurecido-em-aos-203). |
+| `AOS_EVENTSTORE_PATH` | *(vazio ⇒ Event Store **in-memory**)* | Estado durável — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180). |
+| `AOS_WORM_PATH` | *(vazio ⇒ WORM **in-memory**)* | Trilho WORM tamper-evident — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180). **Conformidade:** in-memory, o trilho de auditoria **não sobrevive** ao contentor. |
+| `AOS_DURABLE_EXECUTION` | *(vazio ⇒ **DESLIGADA**)* | Execução durável — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180) e a [postura de produção](#postura-de-produção-de-aos_durable_execution--decisão-aos-203) decidida em AOS-203. |
+| `AOS_OPERATORS` | *(vazio ⇒ **default-deny**)* | Pubkeys dos operadores do canal de controlo — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). **Segurança:** vazio ⇒ `steer`/`pause` recusados **e** bind não-loopback recusado. |
+| `AOS_APPROVERS_FILE` | *(vazio ⇒ **four-eyes DESLIGADO**)* | Ficheiro JSON montado com a *roster* do dual-control — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). |
+| `AOS_OTLP_ENDPOINT` | *(vazio ⇒ **`NoopTracer`**, zero overhead)* | URL http(s) **absoluto** do colector OTLP/HTTP (ex.: `http://collector:4318`; o nó completa com `/v1/traces`). Presente ⇒ exporta os spans `invoke_agent`/`chat`[+custo]/`execute_tool`/`freeze` e os selos WORM. Um endpoint **malformado ABORTA** o arranque (`ErrBadOTLPEndpoint`) — o nó não sobe a fingir que exporta. A exportação em si é **fail-open** (a telemetria nunca derruba o nó). **Privacidade:** os spans transportam metadados de governação e custo, não conteúdo de *prompts*; ainda assim o destino é uma fronteira de dados — aponte-o para dentro do seu perímetro. |
+| `AOS_READER` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--reader`, transportada no header `X-Aos-Reader`. É a **identidade de leitura** declarada pelo cliente; com a soberania de leitura ligada, o **nó** é que a exige e a resolve — a CLI só a transporta. Ausente contra um nó soberano ⇒ `404`. |
+| `AOS_BOARD` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--board`, transportada no header `X-Aos-Board`. Board de governação do leitor, de onde o nó resolve a **região autorizada**. Ausente ou desconhecido contra um nó soberano ⇒ `404` (fail-closed). |
+| `AOS_HEALTH_URL` | *(vazio ⇒ derivada de `AOS_API_ADDR`)* | **Override opcional** do URL sondado pelo `aos-healthprobe` do `HEALTHCHECK` (lida por `deploy/node/healthprobe`, **não** pelo nó). Sem ela o probe deriva `127.0.0.1:<porta de AOS_API_ADDR>/healthz` — ver [Health / probes](#health--probes). |
+
+> **Nenhuma destas variáveis transporta segredos**, com a excepção declarada de
+> `AOS_ISSUER_KEY_PATH` (que transporta um **caminho** para material privado, não o material). O
+> banner de arranque não ecoa valores de chaves: as mensagens de erro de `AOS_OPERATORS` e do
+> ficheiro de aprovadores identificam a entrada pelo `emitterID`/`principal` e **nunca** imprimem
+> a pubkey.
+
+> **Precedência e formato.** Todas as variáveis são lidas **uma vez, no arranque** (não há
+> *reload* a quente: para mudar config, substitua o contentor). Todos os valores são
+> `TrimSpace`-ados. A gramática plana `a=b,c=d` é partilhada por `AOS_BOARD_REGIONS` e
+> `AOS_OPERATORS`, deliberadamente.
+
+### Soberania de leitura — `AOS_BOARD_REGIONS` e o kill-switch (AOS-172 / D7, endurecido em AOS-203)
+
+`AOS_BOARD_REGIONS` tem **três** estados, e a diferença entre "não definida" e "definida vazia"
+é a diferença entre um controlo de conformidade **ligado** e **desligado**:
+
+| Estado da variável | Registo `board→região` | Read-path |
+|---|---|---|
+| **NÃO definida** (ausente do ambiente) | default de referência `board:aos-demo=eu` | **SOBERANO** — authz por-chamador (D7) + selo WORM da leitura sensível (D6) |
+| **DEFINIDA VAZIA** (`-e AOS_BOARD_REGIONS=`) | vazio | **LEGADO** — ⚠️ **KILL-SWITCH**: sem authz por-chamador e **sem selo** |
+| **DEFINIDA com valor** (`board:prod=eu`) | o que for declarado | **SOBERANO** |
+| **DEFINIDA malformada** (`aos-demo`, sem `=`) | — | **ABORTA** o arranque (`ErrBadBoardRegions`) |
+
+**O que o kill-switch desliga**, exactamente:
+
+1. **Authz POR-CHAMADOR das leituras de governação (D7).** Com ele desligado o nó serve
+   **todas** as leituras sem exigir `X-Aos-Reader`/`X-Aos-Board` e sem resolver a região
+   autorizada do board do leitor — qualquer chamador que alcance a porta lê qualquer *run*.
+2. **Selo WORM da leitura sensível (D6).** Deixa de existir trilho *tamper-evident* de **quem
+   leu o quê** — a evidência de acesso a dados de governação desaparece, não fica degradada.
+
+**Postura por modo — o que este ticket mudou e o que não mudou:**
+
+- Em **`AOS_MODE=production`** o estado vazio **RECUSA o arranque** (`ErrProductionNeedsSovereignRead`,
+  `exit 1`). **Isto já existia e não foi tocado**: um nó de produção nunca serve o read-path legado.
+- **Fora de produção** o estado vazio continua **permitido** (os *harnesses*
+  `aos169-durability-harness.sh` e `aos193-control-plane-harness.sh` usam-no deliberadamente, para
+  isolarem o eixo que testam) — mas **deixou de ser silencioso**. O banner passa a emitir um aviso
+  proeminente (AOS-203):
+
+```text
+[aos] AVISO KILL-SWITCH (AOS-203): SOBERANIA DE LEITURA (AOS-172, D7) DESLIGADA — AOS_BOARD_REGIONS esta DEFINIDA-VAZIA (kill-switch explicito: a variavel existe no ambiente com valor vazio)
+[aos] => FICA DESLIGADO: (1) AUTHZ POR-CHAMADOR das leituras de governacao (D7) — o no serve TODAS as leituras sem exigir X-Aos-Reader/X-Aos-Board nem resolver a regiao autorizada do board; (2) SELO WORM da leitura sensivel (D6) — nao fica trilho tamper-evident de QUEM leu o que
+[aos] => PARA RELIGAR: defina AOS_BOARD_REGIONS="board=regiao" (ex.: AOS_BOARD_REGIONS="board:prod=eu") ou REMOVA a variavel do ambiente para voltar ao default de referencia "board:aos-demo=eu"
+[aos] => IGNORE a linha "defina Config.BoardRegions" do banner acima: Config.BoardRegions e um campo de codigo (package main) que quem corre o binario/imagem NAO consegue escrever — o unico remedio alcancavel e AOS_BOARD_REGIONS, na linha anterior
+[aos] => AOS_MODE=production RECUSA arrancar neste estado (ErrProductionNeedsSovereignRead) — este aviso so existe porque o no NAO esta em modo de producao
+```
+
+> ⚠️ **Uma linha do banner ainda aponta para um remédio inalcançável (residual conhecido).** Umas
+> linhas acima do aviso, o *composition-root* imprime `soberania de leitura (AOS-172, D7): read-path
+> LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions …`. **`Config.BoardRegions`
+> é um campo de código** (`package main`): quem corre o binário ou a imagem **não o consegue
+> escrever**. É metade do próprio defeito que esta secção fecha — sintoma verdadeiro, remédio
+> impossível. Enquanto essa linha não for reescrita (exige tocar em `packages/cmd/aos/bootstrap.go`,
+> fora da propriedade de ficheiros de AOS-203), o aviso **neutraliza-a pelo nome** — é a linha
+> `IGNORE a linha "defina Config.BoardRegions"` acima. **Se fizer `grep` ao banner, leia o bloco
+> `AVISO KILL-SWITCH` inteiro, não só a linha do `read-path LEGADO`.**
+
+> **O gate real do read-path são DUAS coisas.** A *read-governance* só é composta quando o registo
+> `board→região` **e** o WORM existem ambos (o selo D6 não teria onde ser gravado). Hoje o
+> `Bootstrap` nunca deixa o WORM ausente (cai para um WORM in-memory), pelo que a distinção não é
+> alcançável por configuração; ainda assim o aviso avalia **a conjunção**, não só o registo — se um
+> dia o WORM se tornar opcional, o nó **avisa** em vez de anunciar uma soberania que não aplica.
+
+> **Porquê avisar e não recusar fora de produção?** Recusar quebraria a retro-compatibilidade da
+> superfície de configuração e cortaria um estado que o próprio projecto usa nos *harnesses*. O
+> critério é o de AOS-191: o que não se tolera é a **promessa falsa** — um nó que anuncia uma
+> postura mais forte do que a que cumpre. Daí o aviso nomear, sem eufemismo, o que ficou
+> desligado. Em produção, onde a promessa é implícita, a resposta continua a ser **recusar**.
+
+> **Âmbito honesto do que fica ligado.** Com o registo não-vazio, o selo D6 grava a região do
+> **board do leitor**, não a residência **por-run** do dado; a verificação
+> `leitor.região == run.região` fica **DEFERIDA** até haver `board→região` por-*run* (EPIC-09/10),
+> e o banner declara-o. O provisioning real de regiões/boards (IdP de soberania) é igualmente
+> deferido: o registo aqui é **DEMO-GRADE self-hosted**. A **regra** fail-closed é que é fixa.
+
 ### Estado durável — variáveis de ambiente (AOS-170 / AOS-180)
 
 | Variável | Default | Efeito |
@@ -77,6 +190,34 @@ intenção da config); uma destas duas linhas sai sempre:
 A linha `[aos] substrato: ...` imediatamente antes diz `duravel em disco (AOS-170)` ou
 `in-memory de referencia (nao-duravel)` — confirme-a **antes** de assumir que o estado sobrevive
 a um reinício.
+
+#### Postura de produção de `AOS_DURABLE_EXECUTION` — decisão (AOS-203)
+
+**Decisão: mantém-se OPT-IN, também em `AOS_MODE=production`.** Um nó de produção **arranca sem
+execução durável**. A assimetria face às outras duas posturas de produção
+(`ErrProductionNeedsHardenedIdentity`, `ErrProductionNeedsSovereignRead`) é **deliberada e
+registada aqui**, não tácita — AOS-191 deixou-a em aberto com eixo neste ticket, e é este o
+registo que a fecha.
+
+**Critério que separa os três casos: a promessa falsa.**
+
+| Postura | Estado desligado em produção | Porquê |
+|---|---|---|
+| `AOS_ISSUER_PUBKEY` | **RECUSA** | O nó **serviria** identidade com a autoridade co-localizada — uma postura mais fraca do que a que um nó de produção implicitamente anuncia. |
+| `AOS_BOARD_REGIONS` | **RECUSA** | O nó **serviria** leituras sem authz por-chamador nem selo — o mesmo tipo de promessa falsa, sobre um controlo de conformidade. |
+| `AOS_DURABLE_EXECUTION` | **permite** (declara `DESLIGADA`) | O nó **não anuncia** durabilidade nenhuma. O banner diz `execucao duravel (AOS-180): DESLIGADA` em cada arranque, e nenhum endpoint promete sobrevivência de *checkpoints*. Não há capacidade anunciada e não cumprida — há uma capacidade **declaradamente ausente**. |
+
+Os dois argumentos secundários, subordinados ao critério acima: (i) exigi-la converteria um
+ticket de **superfície de configuração** numa mudança de postura de produção não anunciada aos
+operadores existentes — a retro-compatibilidade que AOS-191 impôs; (ii) o eixo perigoso — ligar a
+durabilidade sobre um substrato volátil — **já é fail-closed em qualquer modo**
+(`AOS_DURABLE_EXECUTION=1` sem `AOS_EVENTSTORE_PATH` aborta), que é onde a promessa falsa
+realmente estaria.
+
+> **Consequência para o operador, dita sem rodeios:** se quer que um *run* interrompido retome
+> onde ia — em vez de recomeçar — **tem de a ligar explicitamente**, mesmo em produção. Ligue
+> `AOS_DURABLE_EXECUTION=1` com `AOS_EVENTSTORE_PATH` dentro do volume gravável, e confirme a
+> linha `LIGADA` no banner. Nada no nó a liga por si.
 
 ### Plano de controlo — operadores e aprovadores (AOS-160 / AOS-162, config em AOS-193)
 
@@ -223,8 +364,10 @@ do **dispositivo do humano**, que a CLI do nó deliberadamente não desempenha.
 Os três últimos ligam o **estado durável** e a **execução durável** nos caminhos do volume
 `aos-data` — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180) para a
 semântica e o fail-closed. **A execução durável é opt-in mesmo em `AOS_MODE=production`**: o nó
-arranca sem ela (declarando `DESLIGADA` no banner, sem anunciar durabilidade nenhuma) — a promoção
-a exigência de produção, a par de `AOS_ISSUER_PUBKEY`/`AOS_BOARD_REGIONS`, é decidida em **AOS-203**.
+arranca sem ela (declarando `DESLIGADA` no banner, sem anunciar durabilidade nenhuma). A promoção
+a exigência de produção, a par de `AOS_ISSUER_PUBKEY`/`AOS_BOARD_REGIONS`, foi **decidida em
+AOS-203 — mantém-se opt-in**, com o critério registado em
+[Postura de produção de `AOS_DURABLE_EXECUTION`](#postura-de-produção-de-aos_durable_execution--decisão-aos-203).
 
 O `HEALTHCHECK` deriva a porta de `AOS_API_ADDR` (aqui, `8080`) e sonda `127.0.0.1:8080/healthz`
 no loopback do contentor — não é preciso definir `AOS_HEALTH_URL`.
