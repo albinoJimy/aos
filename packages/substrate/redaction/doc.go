@@ -4,15 +4,64 @@
 // qualquer persistência — destinado a ser aplicado no Event Store, na memória, nos
 // spans e no audit — de modo que nenhuma PII em claro alcance esses destinos.
 //
-// # Escopo real de importação (AOS-188)
+// # Escopo real de importação (AOS-188, corrigido em AOS-195)
 //
 // O motor é um módulo FOLHA (substrate) com zero dependências internas; qualquer
-// camada superior pode importá-lo. Hoje é consumido pelos módulos de governação do
-// plano de controlo (trajectory-surface, approval-card, dsar, confidence-calibration)
-// e cablado nos composition-roots (cmd/aos, cmd/aos-demo, integration). A ligação
-// directa ao Event Store, platform/memory, substrate/otel-genai e platform/audit
-// ainda não está completa na v1; quando esses módulos importarem o motor, usarão o
-// mesmo [Ingestor] e a mesma política, garantindo a consistência aqui provada.
+// camada superior pode importá-lo. Em código de PRODUÇÃO é hoje importado por três
+// módulos de governação do plano de controlo — trajectory-surface (surface.go,
+// drilldown.go), approval-card (card.go) e confidence-calibration (history.go). No
+// módulo dsar a importação existe APENAS em teste (flow_test.go), não em produção.
+//
+// Nos composition-roots a cablagem é PARCIAL, e é este o facto verificável:
+//
+//   - cmd/aos-demo — o motor ESTÁ no fecho transitivo, por via de approval-card
+//     (main.go → control-plane/governance/approval-card → substrate/redaction).
+//   - cmd/aos — o motor NÃO está no fecho transitivo. O binário do nó arrasta
+//     governance/dsar, mas dsar só importa o motor em teste, pelo que a aresta não
+//     existe no grafo de produção.
+//   - integration — o motor NÃO está no fecho transitivo (nenhum dos módulos de
+//     governação que o importam entra neste grafo).
+//
+// A ligação directa ao Event Store, platform/memory, substrate/otel-genai e
+// platform/audit ainda não está completa na v1 — e é essa ausência que explica o
+// ponto anterior: sem esses importadores, o caminho de execução de cmd/aos e de
+// integration não passa hoje pelo motor. Quando esses módulos importarem o motor,
+// usarão o mesmo [Ingestor] e a mesma política, garantindo a consistência aqui
+// provada.
+//
+// # Como verificar as afirmações acima
+//
+// TODAS as afirmações desta secção de escopo — os importadores em produção, a lista
+// por composition-root e as armadilhas abaixo — são auto-verificáveis pelos comandos
+// seguintes, e DEVEM ser reverificadas sempre que este texto for alterado: foi a
+// ausência desta nota que permitiu, em AOS-188, afirmar-se uma cablagem inexistente
+// (achado VAC-02 ≡ DEF-02 ≡ CON-03 da auditoria v4). Correr a partir da RAIZ DO
+// REPOSITÓRIO, em shell POSIX (bash/CI). Cada linha é auto-contida — os `cd` estão
+// dentro de subshells e não acumulam — pelo que o bloco pode ser colado inteiro ou
+// linha a linha:
+//
+//	(cd packages/cmd/aos      && go list -deps ./... | grep substrate/redaction)  # sem saída
+//	(cd packages/integration  && go list -deps ./... | grep substrate/redaction)  # sem saída
+//	(cd packages/cmd/aos-demo && go list -deps ./... | grep substrate/redaction)  # 1 linha
+//	grep -rln 'aos-ref/substrate/redaction' --include='*.go' --exclude-dir=redaction packages/ | grep -v _test.go  # 4 ficheiros, 3 módulos
+//	grep -rn 'aos-ref/substrate/redaction' --include='*.go' packages/cmd/aos packages/integration  # sem saída
+//	grep -n 'substrate/redaction' packages/cmd/aos/go.mod packages/integration/go.mod  # 2 linhas, ambas `replace`
+//
+// As três primeiras linhas provam a lista por composition-root; a quarta prova os
+// três módulos importadores em produção (e, por exclusão, que dsar não está entre
+// eles — o `--exclude-dir=redaction` apenas omite este próprio pacote, que contém a
+// cadeia em comentário e não a pode importar); as duas últimas provam a armadilha
+// (2). Em PowerShell o `grep` não existe: `grep: command not found` NÃO é evidência
+// de ausência do motor — usar bash.
+//
+// Duas armadilhas que estes comandos desfazem: (1) `go list -deps` NÃO inclui
+// dependências só-de-teste — é por isso que dsar, presente no grafo de cmd/aos, não
+// arrasta o motor consigo; note-se que `go mod why -m` NÃO serve aqui como prova,
+// porque inclui os caminhos de teste e devolve, em cmd/aos, um caminho que passa por
+// `dsar.test`; (2) as entradas `replace` para substrate/redaction em cmd/aos/go.mod
+// e integration/go.mod são vestigiais do replace transversal do repositório e não
+// implicam `require` nem importação — a quinta e a sexta linhas acima provam-no
+// (nenhuma referência em .go, de teste incluídos; nenhum `require` no go.mod).
 //
 // # Porquê um módulo FOLHA (substrate) zero-dep
 //
@@ -64,8 +113,8 @@
 // contenha PII em claro é apanhado pela detecção). Como o RM é um módulo folha
 // (kernel) e este motor é outro (substrate), a composição é feita no ponto de
 // integração (composition root) e não por importação directa do kernel — evitando
-// um novo eixo kernel→substrate. A composição está provada em class/redact tests
-// (ver aos091_integration_test.go, cenário "obrigacao redact + deteccao").
+// um novo eixo kernel→substrate. A composição está provada pelo teste
+// TestComposesWithFieldNameRedaction (aos091_integration_test.go).
 //
 // # Integridade
 //
