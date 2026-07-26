@@ -41,6 +41,43 @@ O arranque de referência corre **in-memory** (não escreve no root-fs), pelo qu
 > a verificação de root-fs read-only não é mascarada. O directório `/var/lib/aos` é criado owned
 > por `65532:65532`, pelo que o volume nomeado do operador herda a ownership certa.
 
+### Estado durável — variáveis de ambiente (AOS-170 / AOS-180)
+
+| Variável | Default | Efeito |
+|---|---|---|
+| `AOS_EVENTSTORE_PATH` | *(vazio)* | **Vazio ⇒ Event Store IN-MEMORY** (volátil: perde tudo quando o processo/contentor morre). Definido ⇒ Event Store **durável** (WAL append-only + `fsync` + replay crash-safe no arranque) no caminho dado. **Tem de apontar para DENTRO do mount gravável** (`-v aos-data:/var/lib/aos`, ex.: `/var/lib/aos/events.wal`). |
+| `AOS_WORM_PATH` | *(vazio)* | Vazio ⇒ WORM in-memory. Definido ⇒ trilho WORM **hash-chain tamper-evident** em disco. Mesmo requisito de mount (ex.: `/var/lib/aos/worm.wal`). |
+| `AOS_DURABLE_EXECUTION` | *(vazio ⇒ **DESLIGADA**)* | Ligam: `1` `true` `t` `yes` `y` `on`. Desligam: `0` `false` `f` `no` `n` `off` (ou ausente/vazia). **Qualquer outro valor ABORTA o arranque** (`enabled`, `tru`, `sim`, … **não** são tratados como `false` — ver abaixo). Ligada ⇒ o nó compõe **checkpointer + capturer de não-determinismo + step-ledger** sobre o Event Store; o tool set congelado (AOS-155) passa a persistir no mesmo store. Desligada ⇒ os três ficam `nil` e o runtime usa os defaults no-op (AOS-013). |
+
+**Interacção `AOS_DURABLE_EXECUTION` × `AOS_EVENTSTORE_PATH` — fail-closed SEMPRE.**
+`AOS_DURABLE_EXECUTION=1` **sem** `AOS_EVENTSTORE_PATH` **RECUSA o arranque** (`exit 1`), em
+**qualquer** modo — não só em `AOS_MODE=production`. Razão: a execução durável compõe-se
+**sobre** o Event Store; sobre um store in-memory os checkpoints, as capturas e o step-ledger
+**evaporariam no reinício** e o nó anunciaria uma durabilidade que não cumpre. A ambiguidade
+**nega** o arranque em vez de degradar em silêncio — a mesma postura de `AOS_BOARD_REGIONS`
+malformado. Um valor não-booleano da própria variável aborta pela mesma razão: quem escreveu
+`AOS_DURABLE_EXECUTION=enabled` **tenciona** ligar a durabilidade, e receber um nó silenciosamente
+não-durável seria pior do que não arrancar.
+
+> **O que a guarda NÃO consegue detectar.** Ela só vê a *ausência* de caminho. Um
+> `AOS_EVENTSTORE_PATH=/tmp/events.wal` — ou qualquer caminho **fora** de `-v aos-data:/var/lib/aos`,
+> incluindo o `--tmpfs /tmp` das receitas acima — **passa** a guarda e continua a perder tudo
+> quando o contentor é substituído. Apontar `AOS_EVENTSTORE_PATH` e `AOS_WORM_PATH` para dentro do
+> volume nomeado é **responsabilidade do operador**; é por isso que está documentado aqui e não só
+> imposto em código.
+
+**Verificação pelo operador** — o banner de arranque declara o estado **realmente composto** (não a
+intenção da config); uma destas duas linhas sai sempre:
+
+```text
+[aos] execucao duravel (AOS-180): LIGADA — checkpointer + capturer + step-ledger COMPOSTOS sobre o event store (duravel em disco (AOS-170)); o tool set congelado (AOS-155) persiste no mesmo store
+[aos] execucao duravel (AOS-180): DESLIGADA — checkpointer/capturer/step-ledger NAO compostos (defaults no-op AOS-013); defina AOS_DURABLE_EXECUTION=1 (exige AOS_EVENTSTORE_PATH) para ligar
+```
+
+A linha `[aos] substrato: ...` imediatamente antes diz `duravel em disco (AOS-170)` ou
+`in-memory de referencia (nao-duravel)` — confirme-a **antes** de assumir que o estado sobrevive
+a um reinício.
+
 ### Bind-guardrail (fail-closed)
 
 A API **recusa** bind a um endereço **não-loopback** (`0.0.0.0`) enquanto o canal de controlo
@@ -52,8 +89,17 @@ docker run --read-only --tmpfs /tmp -v aos-data:/var/lib/aos -p 8080:8080 \
   -e AOS_API_ADDR=0.0.0.0:8080 \
   -e AOS_ISSUER_PUBKEY=<hex-32B-ed25519>   `# trust-anchor-only; a CHAVE PRIVADA fica no vault` \
   -e AOS_BOARD_REGIONS="board:prod=eu" \
+  -e AOS_EVENTSTORE_PATH=/var/lib/aos/events.wal \
+  -e AOS_WORM_PATH=/var/lib/aos/worm.wal \
+  -e AOS_DURABLE_EXECUTION=1 \
   aos-node:local
 ```
+
+Os três últimos ligam o **estado durável** e a **execução durável** nos caminhos do volume
+`aos-data` — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180) para a
+semântica e o fail-closed. **A execução durável é opt-in mesmo em `AOS_MODE=production`**: o nó
+arranca sem ela (declarando `DESLIGADA` no banner, sem anunciar durabilidade nenhuma) — a promoção
+a exigência de produção, a par de `AOS_ISSUER_PUBKEY`/`AOS_BOARD_REGIONS`, é decidida em **AOS-203**.
 
 O `HEALTHCHECK` deriva a porta de `AOS_API_ADDR` (aqui, `8080`) e sonda `127.0.0.1:8080/healthz`
 no loopback do contentor — não é preciso definir `AOS_HEALTH_URL`.

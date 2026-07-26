@@ -94,6 +94,18 @@ var (
 	// chave de assinatura pode entrar no processo do nó — uma chave presente derrotaria a
 	// própria propriedade (não-forjabilidade relativa ao nó) que o modo garante.
 	ErrConflictingIssuerKey = errors.New("aos: modo endurecido (IssuerPubKey) nao pode receber IssuerSigningKey — nenhuma chave de assinatura entra no runtime do no")
+	// ErrDurableExecutionNeedsDurableSubstrate — config que pede execução durável
+	// (DurableExecution) mas em que o nó só teria um Event Store IN-MEMORY para a
+	// suportar (nem EventStore injectado, nem EventStorePath). Fail-closed (AOS-191):
+	// checkpoints, capturas de não-determinismo e step-ledger compostos sobre um store
+	// volátil EVAPORAM no reinício — o nó anunciaria "execução durável" e perderia
+	// exactamente o estado cuja sobrevivência a durabilidade promete. É a classe de
+	// defeito que a auditoria v4 nomeia (capacidade anunciada que o artefacto não
+	// cumpre), pelo que a ambiguidade NEGA o arranque em vez de degradar em silêncio —
+	// coerente com ErrBadBoardRegions (config auto-contraditória aborta sempre, não só
+	// em produção). Um EventStore INJECTADO por config não dispara esta guarda: a sua
+	// durabilidade é do chamador (o nó não a pode atestar) e o banner declara-o.
+	ErrDurableExecutionNeedsDurableSubstrate = errors.New("aos: DurableExecution exige um Event Store DURAVEL (Config.EventStorePath / AOS_EVENTSTORE_PATH) — checkpointer, capturer e step-ledger sobre um store in-memory evaporam no reinicio (durabilidade anunciada e nao cumprida)")
 )
 
 // ApproverConfig regista UM aprovador do FourEyesGate (AOS-162): o principal, a sua
@@ -183,6 +195,14 @@ type Config struct {
 	// (AOS-180) sobre o Event Store. Quando false, o runtime usa os defaults no-op
 	// (AOS-013) — o nó arranca sem execução durável. Fail-closed: se true mas o Event
 	// Store não puder ser aberto, o bootstrap já aborta em (2).
+	//
+	// SUPERFÍCIE DE CONFIGURAÇÃO (AOS-191): é escrita a partir de AOS_DURABLE_EXECUTION
+	// em [nodeConfigFromEnv] — sem isso o campo era INALCANÇÁVEL pelo binário entregue
+	// (Config vive em `package main`, logo nem um embedder externo o podia preencher).
+	//
+	// EXIGE SUBSTRATO DURÁVEL: true sem EventStore injectado E sem EventStorePath ⇒
+	// [ErrDurableExecutionNeedsDurableSubstrate] (a durabilidade sobre um store
+	// in-memory seria uma promessa falsa — ver (1b)).
 	DurableExecution bool
 	// EventStore é a espinha append-only partilhada (turnos + sinais de controlo +
 	// nonce-store anti-replay). Precedência: se != nil, usa-o tal-qual (o chamador é
@@ -259,6 +279,15 @@ type Node struct {
 	// EventStore e WORM são o substrato partilhado.
 	EventStore *eventstore.Store
 	WORM       audit.Store
+
+	// --- Execução durável (AOS-180, activável por AOS_DURABLE_EXECUTION — AOS-191) ---
+	// Checkpointer, Capturer e Ledger são os colaboradores duráveis EM VIGOR, expostos
+	// para inspecção (o banner declara-os e os testes asseram-nos). São compostos EM
+	// CONJUNTO sobre o Event Store quando [Config.DurableExecution] está activa; quando
+	// não está, ficam os três nil e o runtime usa os defaults no-op de AOS-013.
+	Checkpointer agentruntime.Checkpointer
+	Capturer     agentruntime.Capturer
+	Ledger       *durable.StepLedger
 	// IdentityMode é o modo de identidade em vigor (sempre IdentityModeReal aqui).
 	IdentityMode string
 
@@ -335,6 +364,15 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if len(cfg.Humans) == 0 {
 			return nil, ErrNoHumans
 		}
+	}
+
+	// (1b) FAIL-CLOSED da EXECUÇÃO DURÁVEL (AOS-191). Pedir execução durável sobre um
+	// substrato que o nó SABE ser volátil é uma promessa falsa: recusa-se ANTES de abrir
+	// seja o que for. Só se aplica quando o substrato seria criado PELO NÓ e sem caminho
+	// (⇒ in-memory); um EventStore fornecido por config é do chamador (a sua durabilidade
+	// não é atestável aqui) e o banner declara essa fronteira.
+	if cfg.DurableExecution && cfg.EventStore == nil && cfg.EventStorePath == "" {
+		return nil, ErrDurableExecutionNeedsDurableSubstrate
 	}
 
 	// (2) SUBSTRATO DURÁVEL (AOS-170). Precedência: fornecido por config > durável em
@@ -662,6 +700,17 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s)", len(cfg.Approvers))
 	}
 	log("substrato: %s", substrateMode(cfg))
+	// EXECUÇÃO DURÁVEL (AOS-180/AOS-191). O banner declara o estado REALMENTE COMPOSTO
+	// (não a intenção da config) e sobre que substrato — para que um operador nunca tenha
+	// de adivinhar se checkpointer/capturer/step-ledger estão ligados.
+	if checkpointer != nil && capturer != nil && ledger != nil {
+		log("execucao duravel (AOS-180): LIGADA — checkpointer + capturer + step-ledger COMPOSTOS sobre o event store (%s); o tool set congelado (AOS-155) persiste no mesmo store", describeSubstrate(cfg.EventStore != nil, cfg.EventStorePath))
+		if cfg.EventStore != nil {
+			log("NOTA execucao duravel: o event store foi FORNECIDO POR CONFIG — a durabilidade dos checkpoints/capturas/ledger e a DESSE store; o no nao a pode atestar (com AOS_EVENTSTORE_PATH e duravel em disco por construcao)")
+		}
+	} else {
+		log("execucao duravel (AOS-180): DESLIGADA — checkpointer/capturer/step-ledger NAO compostos (defaults no-op AOS-013); defina AOS_DURABLE_EXECUTION=1 (exige AOS_EVENTSTORE_PATH) para ligar")
+	}
 	if readRegions != nil {
 		log("soberania de leitura (AOS-172, D7): READ-PATH SOBERANO FAIL-CLOSED ligado — %d board(s) no registo GOV DEMO-GRADE (board→regiao); leitura sensivel SELADA no WORM (D6). Provisioning real de regioes/boards DEFERIDO (EPIC-09/10)", readRegions.Len())
 		log("NOTA D6: o selo grava a regiao do BOARD DO LEITOR (nao a residencia por-run do dado); a verificacao de coincidencia leitor.regiao==run.regiao fica DEFERIDA ate haver board->regiao por-run (EPIC-09/10)")
@@ -692,6 +741,10 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		WORM:         worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
 		IdentityMode: identityMode,
 		Tracer:       tracer,
+
+		Checkpointer: checkpointer, // nil quando a execução durável está desligada
+		Capturer:     capturer,     // (os três são compostos/omitidos EM CONJUNTO)
+		Ledger:       ledger,
 
 		SovereignReadRegions: readRegions,
 		DSAR:                 dsarFlow,

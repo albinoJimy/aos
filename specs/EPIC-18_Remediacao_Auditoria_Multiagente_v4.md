@@ -110,7 +110,7 @@ Todos falsificáveis por comando — é condição de aceitação que cada um se
 | ID | Título | Tipo | Est. | Prio | Achado | Bloco |
 |---|---|---|---|---|---|---|
 | AOS-190 | Ligar `layer-lint`/`rtm`/`ref-lint` à CI que bloqueia merges — **ENTREGUE** (5/5 CA; elo agregador→merge = *branch protection*, configuração de plataforma fora da árvore — ver §0 do relatório de prova negativa) | fix | **S** | **P0** | PLA-01 | A |
-| AOS-191 | Superfície de configuração para `DurableExecution` (`AOS_DURABLE_EXECUTION`) | feature | **S** | **P0** | REG-01 ≡ STR-09 ≡ PLA-03 | B |
+| AOS-191 | Superfície de configuração para `DurableExecution` (`AOS_DURABLE_EXECUTION`) — **ENTREGUE** (5/5 CA; semântica fail-closed **sempre** sobre `AOS_EVENTSTORE_PATH`; postura de produção deferida com eixo em AOS-203) | feature | **S** | **P0** | REG-01 ≡ STR-09 ≡ PLA-03 | B |
 | AOS-192 | Corrigir o teste de aceitação vacuoso de AOS-180 e reabrir §13.3 | fix | **S** | **P0** | VAC-01 | C |
 | AOS-193 | Caminho de configuração para `Operators`/`Approvers` (plano de controlo operável) | feature | M | **P0** | ORF-02, STR-04 | B |
 | AOS-194 | Corrigir rastreabilidade do STRIDE e cobrir a superfície real do nó | docs | M | P1 | STR-01, STR-06 | D |
@@ -184,12 +184,52 @@ Agravante: `bootstrap.go` é `package main`, pelo que **nem um embedder externo*
 correcto; é **inalcançável**. DUR-01 da v3 continua aberto na prática.
 
 **Critérios de aceitação**
-- [ ] `AOS_DURABLE_EXECUTION` (padrão de `AOS_EVENTSTORE_PATH`) é lida em `main.go` e escreve `Config.DurableExecution`.
-- [ ] O banner de arranque regista se checkpointer/capturer/step-ledger estão compostos.
-- [ ] `deploy/node/README.md` documenta a variável, o seu efeito e a interacção com `AOS_EVENTSTORE_PATH`.
-- [ ] Teste: um nó arrancado com a variável activa compõe os três; sem ela, permanecem `nil` (comportamento actual).
-- [ ] **Emenda ao AC de AOS-180** (ou nota no seu DoD) registando que «quando configurado» exigia superfície de
+- [x] `AOS_DURABLE_EXECUTION` (padrão de `AOS_EVENTSTORE_PATH`) é lida em `main.go` e escreve `Config.DurableExecution`.
+      *(`nodeConfigFromEnv` — `main.go`: `parseDurableExecution(os.Getenv("AOS_DURABLE_EXECUTION"))` → `Config{… DurableExecution: durableExecution …}`.
+      `run` foi refactorizada para chamar `nodeConfigFromEnv`, tornando a costura env→Config testável. Parser
+      fail-closed no padrão de `parseBoardRegions`: `1/true/t/yes/y/on` ligam, `0/false/f/no/n/off`/vazio desligam,
+      **lixo aborta** com `ErrBadDurableExecution` em vez de degradar para `false`.)*
+- [x] O banner de arranque regista se checkpointer/capturer/step-ledger estão compostos.
+      *(`bootstrap.go`: a condição do banner é `checkpointer != nil && capturer != nil && ledger != nil` — declara o
+      estado **realmente composto**, não a intenção da config — e nomeia o substrato via `describeSubstrate`. **Nota
+      deliberada de retro-compatibilidade:** o caminho por omissão passa a emitir **uma linha nova**
+      (`execucao duravel (AOS-180): DESLIGADA — …`). É exigido por este CA e prevalece sobre a leitura literal de
+      «byte-a-byte», que se aplica à **composição** (os três continuam `nil`, exit 0, run inalterado); registado aqui
+      para que uma auditoria futura não o leia como regressão.)*
+- [x] `deploy/node/README.md` documenta a variável, o seu efeito e a interacção com `AOS_EVENTSTORE_PATH`.
+      *(Secção «Estado durável — variáveis de ambiente»: tabela `AOS_EVENTSTORE_PATH`/`AOS_WORM_PATH`/
+      `AOS_DURABLE_EXECUTION` com valores aceites, default e efeito; regra fail-closed **sempre** (não só em
+      produção); ressalva explícita do que a guarda **não** detecta (um caminho fora do mount `-v aos-data:/var/lib/aos`,
+      p.ex. sob `--tmpfs /tmp`, passa a guarda e continua volátil — resíduo só fechável por documentação); as duas
+      linhas de banner como verificação do operador; receita de produção actualizada com os três `-e`.)*
+- [x] Teste: um nó arrancado com a variável activa compõe os três; sem ela, permanecem `nil` (comportamento actual).
+      *(`packages/cmd/aos/durable_execution_env_test.go`. Positivo ao nível de `Bootstrap`:
+      `TestAOS191_DurableExecutionReachableFromEnv` assere os **tipos concretos** (`*durable.EventStoreCheckpointer`,
+      `*replay.EventStoreCapturer`) e o **efeito no substrato** (`step.ledger.applied` + `step.checkpoint` no stream do
+      run). Positivo ao nível do **entrypoint**: `TestAOS191_RunComposesDurableExecutionFromEnv` corre `run` e sela o
+      elo `run`→`Bootstrap` no caminho feliz. Negativos: colaboradores `nil` e **ausência** desses eventos sem a
+      variável; `run` a declarar `DESLIGADA`; `ErrBadDurableExecution` para lixo; `ErrDurableExecutionNeedsDurableSubstrate`
+      no entrypoint e no composition-root. `go test -race -count=1 ./` verde.)*
+- [x] **Emenda ao AC de AOS-180** (ou nota no seu DoD) registando que «quando configurado» exigia superfície de
       configuração — o defeito era de *suficiência do critério*, e deve ficar registado para não se repetir.
+      *(`specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md`, secção AOS-180: bloco «EMENDA AOS-191» + linha nova de
+      DoD. Regra registada: um CA de wiring TEM de nomear a **via de activação no artefacto** e a sua documentação de
+      operador, não só o campo de `Config`.)*
+
+**Semântica decidida — `AOS_DURABLE_EXECUTION` sem substrato durável.** Opção **(a) fail-closed SEMPRE**, a mais
+estrita das três em aberto. A execução durável compõe-se **sobre** o Event Store; sem `AOS_EVENTSTORE_PATH` o store
+é in-memory e checkpoints/capturas/ledger evaporariam no reinício — durabilidade **anunciada e não cumprida**, que é
+a própria classe de defeito desta auditoria. Guarda canónica no composition-root
+(`ErrDurableExecutionNeedsDurableSubstrate`, avaliada **antes** de abrir qualquer store) + guarda na fronteira de
+ambiente. Recusar só em `AOS_MODE=production` (opção b) deixaria a promessa falsa de pé em staging, que é onde ela
+seria acreditada; avisar apenas (opção c) contradiz `ErrBadBoardRegions`, onde config auto-contraditória aborta
+sempre. **Fronteira declarada, não escondida:** um `EventStore` injectado por `Config` não dispara a guarda (a sua
+durabilidade é do chamador e o nó não a pode atestar) — o banner **declara-o**.
+
+**Deferimento com eixo.** `AOS_MODE=production` **não** passa a exigir execução durável: não há promessa falsa (o
+banner declara `DESLIGADA`) e exigi-la quebraria a retro-compatibilidade que este ticket impõe. A promoção a
+exigência de produção, a par de `ErrProductionNeedsHardenedIdentity`/`ErrProductionNeedsSovereignRead`, é decidida
+em **AOS-203**. Registado no código (`main.go`, bloco de `AOS_DURABLE_EXECUTION`) e no README do nó.
 
 ---
 
@@ -404,6 +444,14 @@ apenas num script de harness — uma variável de ambiente que desliga um contro
 - [ ] `AOS_BOARD_REGIONS` vazio **não** desliga silenciosamente o read-path soberano: ou recusa arrancar em
       `AOS_MODE=production` (padrão de `ErrProductionNeedsSovereignRead`), ou regista um aviso proeminente no banner.
 - [ ] **Verificação por script:** o conjunto de `os.Getenv` em `cmd/aos` é subconjunto do documentado (gate ou teste).
+- [ ] **Postura de produção de `AOS_DURABLE_EXECUTION` (eixo herdado de AOS-191).** Decidir se `AOS_MODE=production`
+      passa a **exigir** execução durável (padrão de `ErrProductionNeedsHardenedIdentity` /
+      `ErrProductionNeedsSovereignRead`) ou se permanece **opt-in** por decisão registada. AOS-191 deixou-a opt-in
+      deliberadamente — não há promessa falsa (o banner declara `DESLIGADA`) e exigi-la teria quebrado a
+      retro-compatibilidade que aquele ticket impunha —, mas a **assimetria** face às outras duas posturas de
+      produção tem de ficar decidida aqui, não tácita.
+      *(Nota: AOS-191 já documentou `AOS_DURABLE_EXECUTION`, `AOS_EVENTSTORE_PATH` e `AOS_WORM_PATH` em
+      `deploy/node/README.md`; o 1.º CA acima cobre as restantes, incluindo `AOS_HUMANS` e `AOS_ISSUER_ID`.)*
 
 ---
 

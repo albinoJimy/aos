@@ -462,7 +462,24 @@ diferido, como em AOS-021); HA de produção sobre o ES replicado real
 A execução durável é exposta no nó `aos` (`packages/cmd/aos`) através do
 `integration.SecuredRuntime`, que substitui o despacho directo de tool calls por um
 `activity.Dispatcher` backed pelo `durable.StepLedger`. O wiring é realizado no
-`Bootstrap` quando `Config.DurableExecution == true`:
+`Bootstrap` quando `Config.DurableExecution == true`.
+
+**Como se activa no artefacto entregue (AOS-191).** `Config.DurableExecution` é escrita a
+partir da variável de ambiente **`AOS_DURABLE_EXECUTION`** em `nodeConfigFromEnv`
+(`packages/cmd/aos/main.go`) — a única superfície de configuração do binário. É **opt-in**
+(ausente/vazia ⇒ desligada) e **exige um Event Store durável**: `AOS_DURABLE_EXECUTION=1`
+sem `AOS_EVENTSTORE_PATH` **recusa o arranque** (`ErrDurableExecutionNeedsDurableSubstrate`),
+em qualquer modo — checkpoints, capturas e ledger sobre um store in-memory evaporariam no
+reinício, que seria durabilidade anunciada e não cumprida. O banner de arranque declara
+`execucao duravel (AOS-180): LIGADA|DESLIGADA` e sobre que substrato. Documentação de
+operador em `deploy/node/README.md`.
+
+> Até AOS-191 esta secção afirmava que a execução durável estava «exposta no nó `aos`»
+> **sem nomear via de activação alguma** — e não havia nenhuma: nenhum caminho do binário
+> escrevia o campo (achado REG-01 da auditoria v4; DUR-01 da v3). A afirmação só se tornou
+> verdadeira com a variável acima.
+
+Passos do wiring:
 
 1. **Mesmo Event Store.** O `EventStoreCheckpointer` (`durable.NewCheckpointer`), o
    `EventStoreCapturer` de replay (`replay.NewCapturer`) e o `StepLedger`

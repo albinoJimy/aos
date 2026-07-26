@@ -43,6 +43,14 @@ var ErrBadBoardRegions = errors.New("aos: AOS_BOARD_REGIONS invalida (esperado \
 // read-path LEGADO (sem authz por-chamador D7 nem selo D6) — fail-closed.
 var ErrProductionNeedsSovereignRead = errors.New("aos: AOS_MODE=production exige AOS_BOARD_REGIONS nao-vazio (read-path soberano fail-closed) — a producao nao serve leituras sem authz por-chamador nem selo WORM")
 
+// ErrBadDurableExecution — AOS_DURABLE_EXECUTION presente com um valor que NÃO é um
+// booleano reconhecido. Fail-closed de CONFIG (AOS-191), no padrão de ErrBadBoardRegions:
+// lixo NÃO é tratado como false. Um operador que escreve `AOS_DURABLE_EXECUTION=tru` (ou
+// "enabled", ou "sim") TENCIONA ligar a execução durável; silenciosamente arrancar sem
+// checkpointer/capturer/step-ledger dar-lhe-ia um nó que perde estado no reinício
+// acreditando ele que não perde. A ambiguidade NEGA o arranque.
+var ErrBadDurableExecution = errors.New("aos: AOS_DURABLE_EXECUTION invalida (aceites: 1/true/t/yes/y/on para ligar, 0/false/f/no/n/off ou vazio para desligar) — um valor nao reconhecido aborta em vez de degradar silenciosamente para execucao NAO-duravel")
+
 // main arranca o nó `aos` de PRODUÇÃO a partir de config de ambiente e declara o modo
 // de identidade em vigor. O loop de serviço long-running (hospedar N runs, shutdown
 // gracioso) é AOS-164; aqui prova-se o BOOTSTRAP fail-closed e a declaração do modo
@@ -63,6 +71,47 @@ func main() {
 func run(w io.Writer) error {
 	ctx := context.Background()
 
+	cfg, err := nodeConfigFromEnv()
+	if err != nil {
+		return err
+	}
+
+	node, err := Bootstrap(ctx, cfg, w)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = node.Close() }()
+
+	// Superfície de REDE (AOS-166). Se AOS_API_ADDR estiver definido, o nó gradua para um nó
+	// OPERÁVEL de fora: levanta o loop de serviço + a API HTTP com o BIND-GUARDRAIL no
+	// CAMINHO DE PRODUÇÃO (é aqui, não só nos testes, que um bind não-loopback sem
+	// autenticação do canal de controlo é RECUSADO). Sem AOS_API_ADDR mantém-se o arranque
+	// de bootstrap/declaração (AOS-163) sem abrir socket.
+	apiAddr := strings.TrimSpace(os.Getenv("AOS_API_ADDR"))
+	if apiAddr == "" {
+		fmt.Fprintf(w, "[aos] bootstrap concluido — no pronto (modo de identidade: %s). API HTTP nao levantada (AOS_API_ADDR vazio).\n", node.IdentityMode)
+		return nil
+	}
+
+	// SIGINT/SIGTERM ⇒ paragem graciosa (drena runs em curso, liberta leases).
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(w, "[aos] bootstrap concluido — a levantar a API HTTP em %q (modo de identidade: %s)\n", apiAddr, node.IdentityMode)
+	return serveAPI(sigCtx, w, node, apiAddr)
+}
+
+// nodeConfigFromEnv constrói a [Config] do nó a partir do AMBIENTE — a ÚNICA superfície de
+// configuração do binário entregue. É a costura testável entre o processo e o
+// composition-root: um campo de Config que NÃO seja escrito aqui é, na prática,
+// inalcançável pelo artefacto (Config vive em `package main`, logo nem um embedder
+// externo o pode preencher) — foi exactamente esse o defeito de AOS_DURABLE_EXECUTION
+// (AOS-191, achado REG-01 da auditoria v4).
+//
+// Toda a validação FAIL-CLOSED de config vive aqui: um valor presente mas inválido ABORTA
+// (ErrBadIssuerPubKey, ErrBadBoardRegions, ErrBadDurableExecution) e as exigências de
+// postura de produção são impostas (ErrProductionNeedsHardenedIdentity,
+// ErrProductionNeedsSovereignRead). Nada degrada em silêncio.
+func nodeConfigFromEnv() (Config, error) {
 	issuerID := envOr("AOS_ISSUER_ID", "iss:aos-node")
 	humans := splitCSV(envOr("AOS_HUMANS", "operator"))
 	production := strings.EqualFold(strings.TrimSpace(os.Getenv("AOS_MODE")), "production")
@@ -81,14 +130,56 @@ func run(w io.Writer) error {
 	}
 	boardRegions, err := parseBoardRegions(rawBoardRegions)
 	if err != nil {
-		return err
+		return Config{}, err
 	}
 	// FAIL-CLOSED de produção: a soberania de leitura NÃO pode estar desligada num nó de
 	// produção (a par da identidade endurecida, ErrProductionNeedsHardenedIdentity). Sem
 	// registo board→região não-vazio, a produção serviria o read-path LEGADO sem authz
 	// por-chamador (D7) nem selo (D6) — recusa o arranque.
 	if production && len(boardRegions) == 0 {
-		return ErrProductionNeedsSovereignRead
+		return Config{}, ErrProductionNeedsSovereignRead
+	}
+
+	// EXECUÇÃO DURÁVEL (AOS-180) por ambiente — AOS_DURABLE_EXECUTION (AOS-191). OPT-IN:
+	// ausente/vazio ⇒ false, isto é, o comportamento ACTUAL byte-a-byte (checkpointer,
+	// capturer e step-ledger ficam nil e o runtime usa os defaults no-op de AOS-013).
+	// Presente e verdadeiro ⇒ o nó compõe os três sobre o MESMO Event Store dos turnos e
+	// sinais de controlo, e o snapshot do tool set congelado passa a persistir nele.
+	//
+	// Ao contrário de AOS_BOARD_REGIONS, NÃO é preciso distinguir "não definido" de
+	// "definido vazio": ali o vazio era um KILL-SWITCH (desligava uma protecção LIGADA por
+	// omissão); aqui o default JÁ é "desligado", pelo que vazio colapsa no default sem
+	// perder informação e sem baixar a postura de segurança.
+	//
+	// Um valor NÃO RECONHECIDO aborta (ErrBadDurableExecution) em vez de ser tratado como
+	// false — ver a justificação no erro.
+	//
+	// POSTURA DE PRODUÇÃO — DECISÃO EXPLÍCITA (AOS-191), não omissão. Ao contrário da
+	// identidade endurecida (ErrProductionNeedsHardenedIdentity) e da soberania de leitura
+	// (ErrProductionNeedsSovereignRead), AOS_MODE=production NÃO exige execução durável: um
+	// nó de produção arranca sem ela. Racional: (i) não há promessa falsa — o banner declara
+	// "DESLIGADA" e nada anuncia durabilidade, que é o critério que separa este caso dos dois
+	// anteriores (ali o nó SERVIRIA leituras/identidade com uma postura mais fraca do que a
+	// anunciada); (ii) exigi-la aqui quebraria a retro-compatibilidade que AOS-191 impõe
+	// (sem a variável, o comportamento actual mantém-se) e transformaria um ticket de
+	// SUPERFÍCIE DE CONFIGURAÇÃO numa mudança de postura de produção não anunciada aos
+	// operadores existentes. A promoção a exigência de produção — a par das outras duas — é
+	// decidida em AOS-203 (postura das variáveis de ambiente do nó), não fica em aberto sem
+	// eixo. Documentado ao operador em deploy/node/README.md.
+	durableExecution, err := parseDurableExecution(os.Getenv("AOS_DURABLE_EXECUTION"))
+	if err != nil {
+		return Config{}, err
+	}
+	// INTERACÇÃO COM AOS_EVENTSTORE_PATH — fail-closed SEMPRE (não só em produção). A
+	// execução durável compõe-se SOBRE o Event Store: sem AOS_EVENTSTORE_PATH o nó abriria
+	// um store IN-MEMORY e checkpoints/capturas/step-ledger evaporariam no reinício — o nó
+	// anunciaria durabilidade e perderia tudo. A guarda canónica vive no composition-root
+	// ([ErrDurableExecutionNeedsDurableSubstrate], Bootstrap (1b)) e cobre também um
+	// EventStore injectado por config; aqui, na fronteira de ambiente, a condição é
+	// simplesmente "AOS_DURABLE_EXECUTION=1 exige AOS_EVENTSTORE_PATH".
+	eventStorePath := strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_PATH"))
+	if durableExecution && eventStorePath == "" {
+		return Config{}, fmt.Errorf("%w (defina AOS_EVENTSTORE_PATH, ex.: /var/lib/aos/events.wal)", ErrDurableExecutionNeedsDurableSubstrate)
 	}
 
 	// Trust-anchor-only ENDURECIDO: se AOS_ISSUER_PUBKEY estiver presente, o nó recebe só
@@ -98,7 +189,7 @@ func run(w io.Writer) error {
 	if raw := strings.TrimSpace(os.Getenv("AOS_ISSUER_PUBKEY")); raw != "" {
 		pub, err := parseEd25519PubHex(raw)
 		if err != nil {
-			return err
+			return Config{}, err
 		}
 		issuerPub = pub
 	}
@@ -107,7 +198,7 @@ func run(w io.Writer) error {
 	// co-localizada). Um operador não pode confundir o arranque de referência com uma
 	// fronteira de produção endurecida — exige-se o trust-anchor-only.
 	if production && issuerPub == nil {
-		return ErrProductionNeedsHardenedIdentity
+		return Config{}, ErrProductionNeedsHardenedIdentity
 	}
 
 	// Config MÍNIMA. Numa implantação real, IssuerSigningKey e as pubkeys dos operadores/
@@ -136,8 +227,13 @@ func run(w io.Writer) error {
 		// caminhos dados — tipicamente um mount GRAVÁVEL fora do root-fs read-only (deploy/node:
 		// -v aos-data:/var/lib/aos). É esta ligação que torna real o estado durável que o
 		// Dockerfile documenta e que a durabilidade de kill+reinício-sem-duplicação exige.
-		EventStorePath: strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_PATH")),
+		EventStorePath: eventStorePath,
 		WORMPath:       strings.TrimSpace(os.Getenv("AOS_WORM_PATH")),
+		// EXECUÇÃO DURÁVEL (AOS-180) por ambiente (AOS_DURABLE_EXECUTION — AOS-191): liga o
+		// checkpointer, o capturer de não-determinismo e o step-ledger sobre o Event Store
+		// durável já validado acima. Sem a variável fica false ⇒ os três permanecem nil
+		// (comportamento actual, inalterado).
+		DurableExecution: durableExecution,
 		// Observabilidade OTLP (AOS-173): vazio ⇒ NoopTracer (default, zero overhead);
 		// presente ⇒ o nó exporta traces (invoke_agent/chat[+custo]/execute_tool/freeze +
 		// selos WORM) via OTLP/HTTP. Um endpoint malformado aborta o arranque (fail-closed).
@@ -157,28 +253,7 @@ func run(w io.Writer) error {
 		cfg.IssuerKeyPath = strings.TrimSpace(os.Getenv("AOS_ISSUER_KEY_PATH"))
 	}
 
-	node, err := Bootstrap(ctx, cfg, w)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = node.Close() }()
-
-	// Superfície de REDE (AOS-166). Se AOS_API_ADDR estiver definido, o nó gradua para um nó
-	// OPERÁVEL de fora: levanta o loop de serviço + a API HTTP com o BIND-GUARDRAIL no
-	// CAMINHO DE PRODUÇÃO (é aqui, não só nos testes, que um bind não-loopback sem
-	// autenticação do canal de controlo é RECUSADO). Sem AOS_API_ADDR mantém-se o arranque
-	// de bootstrap/declaração (AOS-163) sem abrir socket.
-	apiAddr := strings.TrimSpace(os.Getenv("AOS_API_ADDR"))
-	if apiAddr == "" {
-		fmt.Fprintf(w, "[aos] bootstrap concluido — no pronto (modo de identidade: %s). API HTTP nao levantada (AOS_API_ADDR vazio).\n", node.IdentityMode)
-		return nil
-	}
-
-	// SIGINT/SIGTERM ⇒ paragem graciosa (drena runs em curso, liberta leases).
-	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	fmt.Fprintf(w, "[aos] bootstrap concluido — a levantar a API HTTP em %q (modo de identidade: %s)\n", apiAddr, node.IdentityMode)
-	return serveAPI(sigCtx, w, node, apiAddr)
+	return cfg, nil
 }
 
 // serveAPI gradua o nó para a superfície de REDE (AOS-166): compõe o loop de serviço
@@ -282,6 +357,33 @@ func parseBoardRegions(s string) (map[string]string, error) {
 		return nil, fmt.Errorf("%w: nenhuma entrada valida em %q", ErrBadBoardRegions, s)
 	}
 	return out, nil
+}
+
+// parseDurableExecution interpreta AOS_DURABLE_EXECUTION (AOS-191) como um booleano
+// EXPLÍCITO e previsível. FAIL-CLOSED de CONFIG, no padrão de [parseBoardRegions]:
+//
+//   - VAZIO (ausente, ou definido só com espaços) ⇒ (false, nil): execução durável
+//     DESLIGADA — o default e o comportamento actual byte-a-byte. Não há aqui o
+//     terceiro estado que AOS_BOARD_REGIONS precisa: ali o vazio DESLIGAVA uma
+//     protecção ligada por omissão (kill-switch); aqui o vazio COINCIDE com o default.
+//   - "1"/"true"/"t"/"yes"/"y"/"on" (qualquer caixa) ⇒ (true, nil).
+//   - "0"/"false"/"f"/"no"/"n"/"off" (qualquer caixa) ⇒ (false, nil).
+//   - QUALQUER OUTRO valor ⇒ (false, [ErrBadDurableExecution]): ABORTA. Tratar lixo como
+//     false daria ao operador que escreveu "enabled"/"tru"/"sim" um nó que perde
+//     checkpoints, capturas e step-ledger no reinício — silenciosamente, e a acreditar
+//     que não perde. É deliberadamente mais estrito que strconv.ParseBool no lado dos
+//     valores ACEITES (que documenta) e igualmente estrito no lado dos rejeitados.
+func parseDurableExecution(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return false, nil // não configurado ⇒ desligado (o default) — não é um erro.
+	case "1", "true", "t", "yes", "y", "on":
+		return true, nil
+	case "0", "false", "f", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: valor %q", ErrBadDurableExecution, strings.TrimSpace(s))
+	}
 }
 
 // splitCSV divide uma lista separada por vírgulas, descartando vazios e espaços.

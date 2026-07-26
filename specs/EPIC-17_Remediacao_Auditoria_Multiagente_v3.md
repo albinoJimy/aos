@@ -94,14 +94,33 @@ justificação e actualização do ADR (supersessão) ou remoção.
 ### AOS-180 — Montar execução durável no composition-root do nó
 
 **Critérios de aceitação:**
-- [ ] `packages/cmd/aos/bootstrap.go` passa checkpointer, capturer, ledger e dispatcher durável ao `NewSecuredRuntime` quando configurado.
+- [ ] `packages/cmd/aos/bootstrap.go` passa checkpointer, capturer, ledger e dispatcher durável ao `NewSecuredRuntime` quando configurado. **[EMENDA AOS-191 — ver abaixo: «quando configurado» é INSUFICIENTE.]**
 - [ ] Fallback seguro quando o ES/configuração não estiver disponível: deny-all/no-op fail-closed.
 - [ ] Teste de aceitação que prove retoma de run após `SIGKILL` simulado (ou restart do processo).
 - [ ] `tecnica/02_Agent_Runtime_Execucao_Duravel.md` §4 actualizado para reflectir o wiring real.
 
+> **EMENDA AOS-191 (registo de suficiência de critério, não de execução).** O 1.º CA acima foi
+> satisfeito à letra e mesmo assim deixou a capacidade **inalcançável pelo binário entregue**: a
+> fórmula «**quando configurado**» exige apenas que o composition-root **reaja** a um campo de
+> `Config`, e nunca a **superfície de configuração** que permite escrevê-lo. Como `Config` vive em
+> `package main`, sem uma variável de ambiente a lê-la nem um embedder externo a podia preencher —
+> `grep AOS_DURABLE .` devolvia **0** e o único escritor em toda a árvore era um teste. O defeito
+> sobreviveu à v3 (DUR-01) e reapareceu na v4 como **REG-01 ≡ STR-09 ≡ PLA-03**.
+>
+> **Regra que fica registada:** um CA de *wiring* TEM de nomear a **via de activação no artefacto**
+> (variável de ambiente / flag / ficheiro de config) e a sua **documentação de operador**, não só o
+> campo de `Config`. Formulação suficiente: «*…quando `X` estiver activa, sendo `X` escrita a partir
+> de `<VAR>` no entrypoint e documentada em `deploy/node/README.md`*». Um CA que se possa fechar sem
+> que exista **qualquer** caminho do binário para ligar a capacidade **não** é um CA de wiring — é
+> um CA de biblioteca.
+>
+> Fechado por AOS-191 (`AOS_DURABLE_EXECUTION`, `packages/cmd/aos/main.go` → `nodeConfigFromEnv`).
+
 **Dependências:** AOS-157 (WindowPort/Dispatcher), AOS-018 (fencing-aware ES) opcional para fechar TOCTOU.
 
 **DoD:** gate `ci-replay` e `ci-dr-e2e` verdes; cobertura do `agent-runtime` mantida ou melhorada.
+**DoD (emenda AOS-191):** a capacidade é **alcançável pelo binário** — existe variável de ambiente
+que a activa, o banner declara o estado composto, e `deploy/node/README.md` documenta-a.
 
 ---
 
