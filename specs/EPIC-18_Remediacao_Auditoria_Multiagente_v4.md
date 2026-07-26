@@ -112,7 +112,7 @@ Todos falsificáveis por comando — é condição de aceitação que cada um se
 | AOS-190 | Ligar `layer-lint`/`rtm`/`ref-lint` à CI que bloqueia merges — **ENTREGUE** (5/5 CA; elo agregador→merge = *branch protection*, configuração de plataforma fora da árvore — ver §0 do relatório de prova negativa) | fix | **S** | **P0** | PLA-01 | A |
 | AOS-191 | Superfície de configuração para `DurableExecution` (`AOS_DURABLE_EXECUTION`) — **ENTREGUE** (5/5 CA; semântica fail-closed **sempre** sobre `AOS_EVENTSTORE_PATH`; postura de produção deferida com eixo em AOS-203) | feature | **S** | **P0** | REG-01 ≡ STR-09 ≡ PLA-03 | B |
 | AOS-192 | Corrigir o teste de aceitação vacuoso de AOS-180 e reabrir §13.3 — **ENTREGUE** (5/5 CA; §13.3 reaberto e **re-marcado VERDE** com evidência nova ao nível do nó + prova negativa executada; §13.1/§13.7 mantêm-se VERDES com a citação corrigida; §13.6 **REABERTO 🟡** por falta de prova, com dono em AOS-204) | fix | **S** | **P0** | VAC-01 | C |
-| AOS-193 | Caminho de configuração para `Operators`/`Approvers` (plano de controlo operável) | feature | M | **P0** | ORF-02, STR-04 | B |
+| AOS-193 | Caminho de configuração para `Operators`/`Approvers` (plano de controlo operável) — **ENTREGUE** (5/5 CA; `AOS_OPERATORS` por env + `AOS_APPROVERS_FILE` por ficheiro montado, ambos fail-closed; bind-guardrail passa a exigir ≥1 operador — mudança de comportamento declarada; prova positiva e negativa executadas no **contentor real**) | feature | M | **P0** | ORF-02, STR-04 | B |
 | AOS-194 | Corrigir rastreabilidade do STRIDE e cobrir a superfície real do nó | docs | M | P1 | STR-01, STR-06 | D |
 | AOS-195 | Corrigir a regressão documental de `redaction/doc.go` e reabrir o CA de AOS-188 | fix | **S** | P1 | VAC-02 ≡ DEF-02 ≡ CON-03 | C |
 | AOS-196 | Registo único de deferimentos + correcção dos eixos inválidos | feature | M | P1 | DEF-01, DEF-03, DEF-06 | E |
@@ -282,12 +282,61 @@ descreve uma condição de guardrail («identidade real **+ operadores**») que 
 STR-04, onde `controlAuthenticated()` (`api.go:909-914`) é identicamente verdadeiro.
 
 **Critérios de aceitação**
-- [ ] Existe caminho de configuração para pubkeys de operador (ficheiro ou env, no padrão de `AOS_ISSUER_PUBKEY`).
-- [ ] Existe caminho equivalente para `Approvers` (4-eyes) ou fica declarado como deferimento **com ticket**.
-- [ ] **Prova positiva:** um nó lançado por `deploy/node/Dockerfile` aceita um `aos steer` assinado.
-- [ ] **Prova negativa:** bind a `0.0.0.0` com **zero** operadores registados **recusa** (`ErrRefuseNonLoopbackBind`)
+- [x] Existe caminho de configuração para pubkeys de operador (ficheiro ou env, no padrão de `AOS_ISSUER_PUBKEY`).
+      — `AOS_OPERATORS="emitterID=hexpubkey,…"` (`packages/cmd/aos/main.go`, `parseOperators` + `ErrBadOperators`),
+      gramática de `AOS_BOARD_REGIONS` com o valor codificado como `AOS_ISSUER_PUBKEY`. Fail-closed: entrada sem
+      `=`, `emitterID` vazio, pubkey não-hex/de tamanho errado, `emitterID` **duplicado** ou **a mesma pubkey em
+      dois `emitterID`s** ABORTAM o arranque (a partilha de chave não eleva privilégio no steer — destrói a
+      **atribuição**: um sinal assinado por A seria selado no WORM como sendo de B).
+      `Bootstrap` recusa ainda (`ErrBadOperatorEntry`) qualquer entrada que o `Register` descartaria em silêncio,
+      e as mesmas colisões de material de chave — `Config` é alcançável **in-process**, não só por ambiente.
+- [x] Existe caminho equivalente para `Approvers` (4-eyes) ou fica declarado como deferimento **com ticket**.
+      — **IMPLEMENTADO**, não deferido: `AOS_APPROVERS_FILE` (ficheiro JSON montado, ADR-017 ponto 2), com
+      `parseApproversFile` + `ErrBadApproversFile` (ficheiro ilegível, JSON inválido, **campo desconhecido**,
+      lista vazia, principal duplicado, pubkey inválida ou autoridade vazia ABORTAM). Escolheu-se ficheiro — e não
+      env — porque `ApproverConfig` não é escalar (`Authority []string`) e uma env exigiria um terceiro nível de
+      delimitador; a coerência com `AOS_OPERATORS` mantém-se na codificação do material público e na disciplina
+      fail-closed. Com ele, `POST /runs/{id}/approve` deixa de responder sempre `501`
+      (`TestBootstrapComposesFourEyesFromConfig`) e **autoriza de facto** um pedido dual-control legítimo
+      (`TestApproversFileAuthorizesDualControlEndToEnd`: roster do ficheiro → `Bootstrap` → handler real → `200`
+      com os dois aprovadores; uma perna assinada pela chave errada ⇒ `403`).
+      **Duas guardas de invariante** que o roster montado torna necessárias (o ficheiro é copy-paste-ável, ao
+      contrário do fork+recompile anterior): (a) **duas entradas com a mesma pubkey ABORTAM** — a distinção do
+      `authorizeDual` é sobre `approver`/`session`/`credential`, três *strings* escolhidas pelo **cliente**, pelo
+      que a pubkey pinada é a **única** âncora criptográfica de "duas pessoas" e a sua partilha faria **uma** chave
+      privada satisfazer o 4-eyes com o banner a declarar "2 aprovador(es) pinados"; (b) `authority` é validada
+      contra o **vocabulário fechado** `approve:{safe,gray,danger}` (derivado de `hitl.RequiredAuthority`, não de
+      uma lista literal) — a comparação em runtime é de *string* exacta, logo um *typo* daria um aprovador contado
+      no banner que nunca aprova nada. Ambas valem também em `Bootstrap` (`ErrBadApproverEntry`), que passa ainda a
+      recusar o **principal duplicado** que o `MemApproverRegistry.Register` sobreporia em silêncio.
+- [x] **Prova positiva:** um nó lançado por `deploy/node/Dockerfile` aceita um `aos steer` assinado.
+      — [`deploy/node/aos193-control-plane-harness.sh`](../deploy/node/aos193-control-plane-harness.sh) **EXECUTADO
+      e VERDE** contra a imagem distroless real: `aos steer` assinado pelo operador registado em `AOS_OPERATORS` é
+      ACEITE (`steer enviado a run-aos193-control`); um emissor não registado leva `403`. Equivalente in-process:
+      `TestEnvConfiguredOperatorSteerAcceptedEndToEnd` (seed → `aos operator-pubkey` → `AOS_OPERATORS` →
+      `nodeConfigFromEnv` → `Bootstrap` → handler HTTP real → `aos steer` → `SteerChannel`).
+- [x] **Prova negativa:** bind a `0.0.0.0` com **zero** operadores registados **recusa** (`ErrRefuseNonLoopbackBind`)
       — ou seja, `controlAuthenticated()` passa a exigir ≥1 operador.
-- [ ] `deploy/node/README.md:46-47` fica verdadeiro, ou é corrigido para descrever o que o código impõe.
+      — o MESMO harness prova-o no contentor (exit != 0, `bind-guardrail RECUSOU "0.0.0.0:8080" … operadores
+      registados=0`); em Go, `TestBindGuardrailRequiresAtLeastOneOperator` assere que o **predicado antigo é
+      verdadeiro nos DOIS nós** (a definição de vácuo) e que só o novo os separa, e
+      `TestServeAPIRefusesNonLoopbackWithoutOperators` leva-o ao caminho de produção (`serveAPI`) sobre um nó
+      INTACTO. Consequência operacional documentada como mudança de comportamento.
+- [x] `deploy/node/README.md:46-47` fica verdadeiro, ou é corrigido para descrever o que o código impõe.
+      — o README (reestruturado por AOS-191) passa a enunciar a condição REAL do guardrail como conjunção de três
+      (SteerAuth ∧ identidade real ∧ ≥1 operador), com secção nova «Plano de controlo — operadores e aprovadores»
+      e aviso destacado de MUDANÇA DE COMPORTAMENTO para quem já fazia bind não-loopback sem operadores.
+      A **descrição** foi alinhada com o **âmbito** do predicado nos dois sentidos: a mensagem de
+      `ErrRefuseNonLoopbackBind` diz «steer/pause INOPERAVEIS» (e não «canal de controlo não operável»), porque um
+      nó configurado só com `AOS_APPROVERS_FILE` tem o `/approve` operável e é, ainda assim, recusado — o âmbito
+      conservador é deliberado e está justificado no README e em `controlAuthenticated`. Documenta-se também o
+      encoding do wire (`risk_class: 0 == danger`, valor-zero fail-closed).
+
+**Mudança de comportamento (declarada).** Um nó que fazia bind a `0.0.0.0` **sem** operadores passa a recusar o
+arranque. A correcção do operador é `-e AOS_OPERATORS="<id>=<hexpubkey>"`; a alternativa honesta é fazer bind ao
+loopback. `deploy/node/aos169-durability-harness.sh` foi o **primeiro afectado** — e a sua correcção é, ela própria,
+prova de que o predicado antigo não discriminava (o comentário do harness afirmava que o bind era permitido «porque
+o SteerAuth está composto»).
 
 ---
 

@@ -160,6 +160,21 @@ func (a *Ed25519Authenticator) Register(emitterID string, pub ed25519.PublicKey)
 	a.mu.Unlock()
 }
 
+// EmitterCount devolve quantos emissores têm pubkey registada. É a leitura HONESTA do
+// estado default-deny do canal de controlo: 0 ⇒ NENHUM sinal pode autenticar (toda a
+// chamada a [Ed25519Authenticator.Authenticate] devolve [ErrUnknownEmitter]), pelo que um
+// canal com 0 emissores está tecnicamente autenticado mas é INOPERÁVEL.
+//
+// Existe para que um chamador (o bind-guardrail do nó, AOS-193) possa DISTINGUIR "canal de
+// controlo autenticado E operável" de "canal composto mas vazio" — a distinção que a mera
+// presença do authenticator NÃO faz. Só expõe uma CARDINALIDADE: nem os IDs dos emissores
+// nem qualquer material de chave saem daqui.
+func (a *Ed25519Authenticator) EmitterCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.keys)
+}
+
 // Authenticate implementa control.Authenticator. Ordem fail-closed: (a) emissor conhecido?
 // (b) nonce e issued_at presentes? (c) ed25519.Verify sobre o tuplo COMPLETO
 // (run_id ‖ kind ‖ payload ‖ nonce ‖ issued_at); (d) frescura — issued_at na janela

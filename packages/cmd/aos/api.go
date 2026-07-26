@@ -102,7 +102,14 @@ var (
 	// ErrRefuseNonLoopbackBind — o bind-guardrail RECUSOU um bind a um endereço não-loopback
 	// porque a autenticação do canal de controlo não está ligada. Expor o canal de controlo
 	// à rede sem authn é o achado nº4; o guardrail fecha-o na construção do Listen.
-	ErrRefuseNonLoopbackBind = errors.New("aos/api: bind a endereco NAO-loopback RECUSADO — canal de controlo sem autenticacao (SteerAuth ausente ou identidade nao-real); use loopback ou ligue a identidade real")
+	//
+	// A mensagem nomeia PRECISAMENTE o que o predicado verifica — steer/pause — e não "o canal
+	// de controlo" inteiro: um nó configurado SÓ com AOS_APPROVERS_FILE tem o /approve
+	// plenamente operável e é, ainda assim, recusado. Dizer "canal de controlo não operável"
+	// afirmaria mais do que [APIServer.controlAuthenticated] verifica — e foi exactamente essa
+	// discrepância entre descrição e predicado (STR-04) que AOS-193 veio fechar, pelo que não
+	// se reintroduz no texto do erro.
+	ErrRefuseNonLoopbackBind = errors.New("aos/api: bind a endereco NAO-loopback RECUSADO — steer/pause INOPERAVEIS (SteerAuth ausente, identidade nao-real, ou ZERO operadores registados); use loopback, ou ligue a identidade real E registe pelo menos um operador em AOS_OPERATORS")
 	// ErrNilService / ErrNilNode — construção sem os colaboradores obrigatórios.
 	ErrNilService = errors.New("aos/api: NewAPIHandler exige um NodeService (nil)")
 	ErrNilNode    = errors.New("aos/api: NewAPIHandler exige um Node (nil)")
@@ -903,14 +910,66 @@ func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, 
 // Handler expõe o http.Handler subjacente (útil para httptest sem abrir um socket).
 func (s *APIServer) Handler() http.Handler { return s.http.Handler }
 
-// controlAuthenticated indica se o canal de controlo do nó está AUTENTICADO: exige o
-// Ed25519Authenticator de AOS-160 presente E um modo de identidade real. É a condição que o
-// bind-guardrail exige para permitir um bind não-loopback.
+// controlAuthenticated indica se o canal de SINAIS do nó (steer/pause) está AUTENTICADO **E
+// OPERÁVEL**: exige (a) o Ed25519Authenticator de AOS-160 presente, (b) um modo de identidade
+// real e (c) PELO MENOS UM operador com pubkey registada. É a condição que o bind-guardrail
+// exige para permitir um bind não-loopback.
+//
+// ÂMBITO DELIBERADO (não é omissão). O predicado NÃO olha para os aprovadores do four-eyes:
+// um nó com AOS_APPROVERS_FILE e ZERO operadores tem o /approve operável e é, mesmo assim,
+// recusado. Escolheu-se a leitura CONSERVADORA — steer/pause são a superfície de INTERVENÇÃO
+// (parar um run a correr), a que justifica expor a porta à rede; alargar a condição a
+// "qualquer superfície de controlo utilizável" abriria o bind não-loopback a um nó que não
+// consegue receber UM único sinal de paragem. O que muda com AOS-193 é que a DESCRIÇÃO
+// (mensagem de erro e README) passa a nomear steer/pause em vez de "canal de controlo", para
+// não afirmar mais do que se verifica.
+//
+// A terceira conjunta é o APERTO de AOS-193 (achado STR-04). Até aqui o predicado era
+// VÁCUO no artefacto entregue: [Bootstrap] compõe SEMPRE o SteerAuth e declara sempre um
+// IdentityMode real, pelo que (a)∧(b) era IDENTICAMENTE VERDADEIRO em qualquer nó saído do
+// composition-root — o guardrail nunca recusava nada e a única forma de o falsificar era
+// mutar o Node à mão (foi o que os testes fizeram: `unauth.SteerAuth = nil`). Pior: sem
+// caminho de configuração para os operadores (ORF-02), o nó que ele deixava passar tinha o
+// canal de controlo em default-deny TOTAL — "autenticado" no sentido em que uma porta
+// soldada está trancada.
+//
+// Com (c), a condição passa a DISCRIMINAR de facto entre dois nós REAIS produzidos pelo mesmo
+// Bootstrap (com e sem AOS_OPERATORS) e passa a coincidir com o que deploy/node/README.md
+// sempre prometeu: «identidade real + operadores». A cardinalidade é lida do PRÓPRIO
+// authenticator ([integration.Ed25519Authenticator.EmitterCount]) — o estado que decide os
+// 403 — e não de uma cópia da config que poderia divergir dele.
+//
+// MUDANÇA DE COMPORTAMENTO (documentada em deploy/node/README.md): um nó que hoje faz bind a
+// 0.0.0.0 sem operadores passa a RECUSAR arrancar com [ErrRefuseNonLoopbackBind]. É o
+// comportamento correcto — expor à rede um plano de controlo que não consegue aceitar UM
+// único sinal legítimo dá todo o risco (superfície exposta) e nenhum benefício.
 func (s *APIServer) controlAuthenticated() bool {
 	if s.node == nil || s.node.SteerAuth == nil {
 		return false
 	}
-	return s.node.IdentityMode == IdentityModeReal || s.node.IdentityMode == IdentityModeRealHardened
+	if s.node.IdentityMode != IdentityModeReal && s.node.IdentityMode != IdentityModeRealHardened {
+		return false
+	}
+	return s.node.SteerAuth.EmitterCount() > 0
+}
+
+// operatorCount devolve o nº de operadores com pubkey registada no canal de controlo (0
+// quando o nó/authenticator não existem). Serve o DIAGNÓSTICO do guardrail — nunca expõe IDs
+// nem material de chave.
+func (s *APIServer) operatorCount() int {
+	if s.node == nil || s.node.SteerAuth == nil {
+		return 0
+	}
+	return s.node.SteerAuth.EmitterCount()
+}
+
+// identityMode devolve o modo de identidade do nó (vazio se não houver nó), para o
+// diagnóstico do guardrail.
+func (s *APIServer) identityMode() string {
+	if s.node == nil {
+		return ""
+	}
+	return s.node.IdentityMode
 }
 
 // Serve faz bind a addr e serve, APÓS o bind-guardrail. RECUSA (devolve
@@ -929,7 +988,11 @@ func (s *APIServer) Serve(addr string) error {
 // testável sem entrar no laço de serviço bloqueante.
 func (s *APIServer) listen(addr string) (net.Listener, error) {
 	if err := guardBind(addr, s.controlAuthenticated()); err != nil {
-		s.log("bind-guardrail RECUSOU %q: %v", addr, err)
+		// O log nomeia a CARDINALIDADE de operadores: é o discriminante que AOS-193 acrescentou
+		// e a causa esmagadoramente mais provável da recusa num nó de produção (identidade real
+		// + SteerAuth composto vêm sempre do Bootstrap).
+		s.log("bind-guardrail RECUSOU %q: %v (modo de identidade=%q, operadores registados=%d)",
+			addr, err, s.identityMode(), s.operatorCount())
 		return nil, err
 	}
 	return net.Listen("tcp", addr)

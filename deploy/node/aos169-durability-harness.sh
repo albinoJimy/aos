@@ -92,9 +92,25 @@ docker build -f "${REPO_ROOT}/deploy/node/Dockerfile" -t "${IMG}" "${REPO_ROOT}"
 docker volume create "${VOL}" >/dev/null || fail "docker volume create falhou"
 
 # --- 3. run: root-fs READ-ONLY + volume durável + API 0.0.0.0:8080 ----------
-# O bind 0.0.0.0 é permitido porque o modo de identidade de referência é `real` e o canal de
-# controlo (SteerAuth) está composto (controlAuthenticated). O plano de DADOS (POST /runs) é
-# não-autenticado por ADR-016. `--read-only` prova que o estado só escreve no volume montado.
+# O bind 0.0.0.0 exige o canal de SINAIS (steer/pause) AUTENTICADO **E OPERÁVEL**: identidade real (modo de
+# referência, que o Bootstrap compõe) **E pelo menos um operador com pubkey registada**
+# (AOS_OPERATORS). Este harness NÃO exercita o plano de controlo — mas registar um operador é
+# agora PRÉ-CONDIÇÃO do bind não-loopback, pelo que a variável tem de estar aqui.
+#
+# MUDANÇA DE COMPORTAMENTO (AOS-193). Até AOS-193 este `docker run` arrancava SEM AOS_OPERATORS:
+# o guardrail exigia só (SteerAuth != nil ∧ identidade real), duas condições que o Bootstrap
+# satisfaz SEMPRE, logo o predicado era identicamente verdadeiro e nunca recusava nada — o nó
+# expunha à rede um plano de controlo que, com zero operadores, recusava TODOS os sinais. Este
+# harness era, ele próprio, a prova de que a condição não discriminava. Agora discrimina.
+#
+# O valor de operador é gerado por CSPRNG A CADA EXECUÇÃO e NÃO é commitado: nada no repositório
+# fica a parecer material de chave, e como este harness nunca ASSINA um sinal, basta-lhe uma
+# entrada bem-formada (32 bytes) para satisfazer a pré-condição do bind. A prova fim-a-fim do
+# plano de controlo (steer assinado e ACEITE) vive no harness irmão
+# deploy/node/aos193-control-plane-harness.sh, que gera um par real no host do operador.
+# O plano de DADOS (POST /runs) continua não-autenticado por ADR-016. `--read-only` prova que o
+# estado só escreve no volume montado.
+HARNESS_OPERATOR="ops:aos169-harness=$(head -c 32 /dev/urandom | od -An -v -tx1 | tr -d ' \n')"
 echo "[harness] run do contentor (read-only + volume durAvel) ..."
 # AOS_BOARD_REGIONS vazio ⇒ read-path LEGADO deliberado: a durabilidade (§13.3) NÃO depende da
 # soberania de leitura (§13.7/D7); assim GET /runs reflecte o desfecho sem exigir os headers
@@ -105,6 +121,7 @@ dockerrun -d --name "${CT}" \
   -e AOS_EVENTSTORE_PATH=/var/lib/aos/events.wal \
   -e AOS_WORM_PATH=/var/lib/aos/worm.wal \
   -e AOS_ISSUER_KEY_PATH=/var/lib/aos/issuer.seed \
+  -e AOS_OPERATORS="${HARNESS_OPERATOR}" \
   -e AOS_BOARD_REGIONS= \
   -v "${VOL}:/var/lib/aos" \
   -p "${PORT}:8080" \

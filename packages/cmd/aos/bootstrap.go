@@ -38,9 +38,12 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"time"
 
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
@@ -53,6 +56,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
+	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/domain"
@@ -106,7 +110,48 @@ var (
 	// em produção). Um EventStore INJECTADO por config não dispara esta guarda: a sua
 	// durabilidade é do chamador (o nó não a pode atestar) e o banner declara-o.
 	ErrDurableExecutionNeedsDurableSubstrate = errors.New("aos: DurableExecution exige um Event Store DURAVEL (Config.EventStorePath / AOS_EVENTSTORE_PATH) — checkpointer, capturer e step-ledger sobre um store in-memory evaporam no reinicio (durabilidade anunciada e nao cumprida)")
+
+	// ErrBadOperatorEntry — uma entrada de [Config.Operators] que o
+	// [integration.Ed25519Authenticator.Register] DESCARTARIA em silêncio (emitterID vazio ou
+	// pubkey de tamanho != ed25519.PublicKeySize). Fail-closed (AOS-193): registar-a-descartar
+	// produziria um nó que arrancou a declarar "N operador(es) registado(s)" no banner e
+	// recusaria com ErrUnknownEmitter todos os sinais desse operador. Também é o que torna
+	// SÃ a leitura de cardinalidade do bind-guardrail: depois desta guarda,
+	// SteerAuth.EmitterCount() == len(cfg.Operators) por construção.
+	ErrBadOperatorEntry = errors.New("aos: entrada de Config.Operators invalida (emitterID vazio, pubkey ed25519 de tamanho != 32 bytes, ou pubkey PARTILHADA por dois emitterIDs) — um registo descartado em silencio daria um operador que nunca autentica; uma pubkey partilhada destruiria a atribuicao do steer")
+	// ErrBadApproverEntry — uma entrada de [Config.Approvers] estruturalmente inútil
+	// (principal vazio, pubkey de tamanho errado, ou autoridade vazia). Fail-closed (AOS-193),
+	// contraparte de [ErrBadOperatorEntry] para o FourEyesGate: um aprovador sem capability
+	// `approve:<classe>` NUNCA satisfaz hitl.RequiredAuthority, pelo que compor o gate com ele
+	// seria anunciar dual-control com um roster que não aprova nada.
+	ErrBadApproverEntry = errors.New("aos: entrada de Config.Approvers invalida (principal vazio ou DUPLICADO, pubkey ed25519 de tamanho != 32 bytes, autoridade vazia ou fora do vocabulario approve:{safe,gray,danger}, ou pubkey PARTILHADA por dois principals) — um aprovador sem capability approve:<classe> nunca autoriza nada; dois principals com a MESMA pubkey deixariam UMA chave privada satisfazer o dual-control")
 )
+
+// approveCapabilities devolve o VOCABULÁRIO FECHADO das capabilities de aprovação aceites num
+// roster de four-eyes. É DERIVADO de [hitl.RequiredAuthority] sobre as três classes de risco —
+// não uma lista literal — para que não possa divergir do produtor: se uma classe nova aparecer
+// em risk.Class, esta lista acompanha-a.
+//
+// A validação existe porque [integration.hasAuthority] compara strings EXACTAS (sem wildcards):
+// "approve:dangerous", "approve:*" ou "approver:danger" são fail-closed (nunca autorizam) mas
+// SILENCIOSOS — dariam um aprovador contado no banner que nunca aprova nada.
+func approveCapabilities() []string {
+	return []string{
+		hitl.RequiredAuthority(risk.ClassSafe),
+		hitl.RequiredAuthority(risk.ClassGray),
+		hitl.RequiredAuthority(risk.ClassDanger),
+	}
+}
+
+// isApproveCapability indica se a capability pertence ao vocabulário de [approveCapabilities].
+func isApproveCapability(capability string) bool {
+	for _, known := range approveCapabilities() {
+		if capability == known {
+			return true
+		}
+	}
+	return false
+}
 
 // ApproverConfig regista UM aprovador do FourEyesGate (AOS-162): o principal, a sua
 // PUBKEY pinada (a privada vive no dispositivo do humano — nunca aqui) e a autoridade
@@ -364,6 +409,63 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if len(cfg.Humans) == 0 {
 			return nil, ErrNoHumans
 		}
+	}
+
+	// (1a) FAIL-CLOSED do PLANO DE CONTROLO (AOS-193). Valida-se ANTES de compor: tanto
+	// [integration.Ed25519Authenticator.Register] como [hitl.MemApproverRegistry.Register]
+	// aceitam entradas inúteis sem se queixarem (o primeiro DESCARTA silenciosamente uma
+	// pubkey de tamanho errado). Uma entrada descartada aqui viraria um operador/aprovador
+	// que o banner conta mas que nunca autentica — precisamente a classe de "capacidade
+	// anunciada e não cumprida" que este eixo vem fechar. Depois desta guarda vale o
+	// invariante que o bind-guardrail lê: EmitterCount() == len(cfg.Operators).
+	//
+	// A guarda cobre também as duas COLISÕES DE MATERIAL DE CHAVE, que nenhum registo
+	// subjacente vê: dois emitterIDs com a mesma pubkey (atribuição do steer destruída) e dois
+	// principals com a mesma pubkey (UMA chave privada satisfaria as duas pernas do
+	// dual-control — a distinção de authorizeDual é sobre três strings escolhidas pelo CLIENTE,
+	// e a pubkey pinada é a ÚNICA âncora criptográfica de "duas pessoas"). Espelha o que
+	// [parseOperators]/[parseApproversFile] impõem à fronteira de ambiente: Config é alcançável
+	// IN-PROCESS, e é aqui — não no parser — que o invariante tem de valer para todo o caminho.
+	opIDs := make([]string, 0, len(cfg.Operators))
+	for id := range cfg.Operators {
+		opIDs = append(opIDs, id)
+	}
+	sort.Strings(opIDs) // ordem determinista ⇒ a mensagem de erro é reproduzível.
+	seenOpKey := make(map[string]string, len(cfg.Operators))
+	for _, id := range opIDs {
+		pub := cfg.Operators[id]
+		if id == "" || len(pub) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("%w: emitterID %q", ErrBadOperatorEntry, id)
+		}
+		fp := hex.EncodeToString(pub)
+		if other, dup := seenOpKey[fp]; dup {
+			return nil, fmt.Errorf("%w: emitterIDs %q e %q partilham a MESMA pubkey", ErrBadOperatorEntry, other, id)
+		}
+		seenOpKey[fp] = id
+	}
+	seenPrincipal := make(map[string]struct{}, len(cfg.Approvers))
+	seenApKey := make(map[string]string, len(cfg.Approvers))
+	for i, a := range cfg.Approvers {
+		if a.Principal == "" || len(a.PubKey) != ed25519.PublicKeySize || len(a.Authority) == 0 {
+			return nil, fmt.Errorf("%w: aprovador #%d (%q)", ErrBadApproverEntry, i, a.Principal)
+		}
+		for _, capability := range a.Authority {
+			if !isApproveCapability(capability) {
+				return nil, fmt.Errorf("%w: aprovador %q com capability %q fora do vocabulario (%s)",
+					ErrBadApproverEntry, a.Principal, capability, strings.Join(approveCapabilities(), ", "))
+			}
+		}
+		if _, dup := seenPrincipal[a.Principal]; dup {
+			// hitl.MemApproverRegistry.Register SOBREPÕE em silêncio — "o último ganha" seria
+			// uma escolha de autoridade feita por acidente de ordenação.
+			return nil, fmt.Errorf("%w: principal %q duplicado", ErrBadApproverEntry, a.Principal)
+		}
+		seenPrincipal[a.Principal] = struct{}{}
+		fp := hex.EncodeToString(a.PubKey)
+		if other, dup := seenApKey[fp]; dup {
+			return nil, fmt.Errorf("%w: principals %q e %q partilham a MESMA pubkey (o dual-control seria satisfeito por UMA chave privada)", ErrBadApproverEntry, other, a.Principal)
+		}
+		seenApKey[fp] = a.Principal
 	}
 
 	// (1b) FAIL-CLOSED da EXECUÇÃO DURÁVEL (AOS-191). Pedir execução durável sobre um
@@ -695,9 +797,19 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("humanos autorizados na autoridade: %d (allowlist de referencia — OIDC/WebAuthn e a porta a preencher)", len(cfg.Humans))
 	}
 	log("verifier: so a pubkey entra na cadeia de seguranca; a chave de assinatura NUNCA entra na cadeia do no")
-	log("canal de controlo: Ed25519Authenticator (AOS-160) — %d operador(es) registado(s); HMACAuthenticator demo DESLIGADO", len(cfg.Operators))
+	// CANAL DE CONTROLO (AOS-160/AOS-193). O banner declara a CARDINALIDADE REAL de emissores
+	// registados (lida do próprio authenticator, não da intenção da config) e a consequência
+	// operacional de ela ser zero — um operador nunca tem de adivinhar porque é que o seu
+	// `aos steer` leva 403 nem porque é que o bind a 0.0.0.0 foi recusado.
+	if n := steerAuth.EmitterCount(); n > 0 {
+		log("canal de controlo: Ed25519Authenticator (AOS-160) — %d operador(es) registado(s) via AOS_OPERATORS; HMACAuthenticator demo DESLIGADO", n)
+	} else {
+		log("canal de controlo: Ed25519Authenticator (AOS-160) composto mas SEM OPERADORES — steer/pause serao TODOS recusados (ErrUnknownEmitter) e o bind NAO-loopback e RECUSADO; defina AOS_OPERATORS=\"emitterID=hexpubkey\" para o tornar operavel")
+	}
 	if foureyes != nil {
-		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s)", len(cfg.Approvers))
+		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s) via AOS_APPROVERS_FILE", len(cfg.Approvers))
+	} else {
+		log("four-eyes gate (AOS-162): DESLIGADO (sem aprovadores) — POST /runs/{id}/approve responde 501; defina AOS_APPROVERS_FILE=<ficheiro JSON montado> para o compor")
 	}
 	log("substrato: %s", substrateMode(cfg))
 	// EXECUÇÃO DURÁVEL (AOS-180/AOS-191). O banner declara o estado REALMENTE COMPOSTO

@@ -61,13 +61,15 @@ func dispatch(args []string, w io.Writer) error {
 		return cmdControl(args[1:], control.SignalSteer, w)
 	case "pause":
 		return cmdControl(args[1:], control.SignalPause, w)
+	case "operator-pubkey":
+		return cmdOperatorPubKey(args[1:], w)
 	case "wal-count":
 		return cmdWALCount(args[1:], w)
 	case "help", "-h", "--help":
 		printUsage(w)
 		return nil
 	default:
-		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|wal-count|help)", args[0])
+		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|operator-pubkey|wal-count|help)", args[0])
 	}
 }
 
@@ -81,6 +83,7 @@ uso: aos <subcomando> [flags]
   observe --addr URL --run-id ID [--reader ID] [--board ID]   (--reader/--board exigidos por um no com soberania de leitura)
   steer   --addr URL --run-id ID --emitter ID --key FICHEIRO --correction TXT
   pause   --addr URL --run-id ID --emitter ID --key FICHEIRO
+  operator-pubkey --key FICHEIRO            (imprime a PUBKEY hex da seed do operador, para AOS_OPERATORS)
   wal-count --path WAL --run ID [--turns]   (diagnostico read-only de durabilidade do Event Store)
 `)
 }
@@ -202,6 +205,35 @@ func cmdControl(args []string, kind control.SignalKind, w io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(w, "%s enviado a %s (emissor %s)\n", kind, *runID, *emitterID)
+	return nil
+}
+
+// cmdOperatorPubKey deriva e imprime a PUBKEY ed25519 (64 hex chars) da seed do operador, no
+// formato EXACTO que AOS_OPERATORS espera (AOS-193). Corre na máquina do OPERADOR, sobre o
+// MESMO ficheiro de seed que `aos steer`/`aos pause` usam para assinar — fecha o ciclo
+// "gerar chave → registar no nó" sem obrigar a ferramenta externa alguma (zero-dep) e sem que
+// o operador tenha de manipular material privado à mão.
+//
+// SÓ SAI MATERIAL PÚBLICO: imprime a pubkey; a seed/chave privada NUNCA é impressa nem
+// devolvida. É a contraparte declarativa da regra do nó ("só pubkeys entram").
+func cmdOperatorPubKey(args []string, w io.Writer) error {
+	fs := flag.NewFlagSet("operator-pubkey", flag.ContinueOnError)
+	fs.SetOutput(w)
+	keyPath := fs.String("key", "", "ficheiro da seed ed25519 (32 bytes hex) do operador")
+	emitterID := fs.String("emitter", "", "se dado, imprime a entrada completa \"emitterID=hexpubkey\" pronta para AOS_OPERATORS")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	priv, err := loadOperatorKey(*keyPath)
+	if err != nil {
+		return err
+	}
+	pub := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
+	if id := strings.TrimSpace(*emitterID); id != "" {
+		fmt.Fprintf(w, "%s=%s\n", id, pub)
+		return nil
+	}
+	fmt.Fprintf(w, "%s\n", pub)
 	return nil
 }
 

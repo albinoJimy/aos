@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +52,28 @@ var ErrProductionNeedsSovereignRead = errors.New("aos: AOS_MODE=production exige
 // checkpointer/capturer/step-ledger dar-lhe-ia um nó que perde estado no reinício
 // acreditando ele que não perde. A ambiguidade NEGA o arranque.
 var ErrBadDurableExecution = errors.New("aos: AOS_DURABLE_EXECUTION invalida (aceites: 1/true/t/yes/y/on para ligar, 0/false/f/no/n/off ou vazio para desligar) — um valor nao reconhecido aborta em vez de degradar silenciosamente para execucao NAO-duravel")
+
+// ErrBadOperators — AOS_OPERATORS presente mas com uma entrada MALFORMADA (sem '=', com
+// emitterID vazio, com pubkey que não é ed25519 hex de 32 bytes, ou com emitterID DUPLICADO).
+// Fail-closed de CONFIG do CANAL DE CONTROLO (AOS-193), no padrão exacto de
+// [ErrBadBoardRegions]: distingue "não configurado" (vazio ⇒ default-deny deliberado, o canal
+// continua inoperável e o bind não-loopback continua recusado) de "configurado mas inválido"
+// (aborta). Um operador que TENCIONA registar a sua pubkey mas comete um typo NÃO obtém um nó
+// que aceita o arranque e depois recusa TODOS os seus steer/pause com ErrUnknownEmitter — a
+// ambiguidade NEGA o arranque. O DUPLICADO aborta em vez de "o último ganha": duas linhas com o
+// mesmo emitterID e pubkeys diferentes são um conflito de autoridade, não uma preferência.
+var ErrBadOperators = errors.New("aos: AOS_OPERATORS invalida (esperado \"emitterID=hexpubkey,emitterID2=hexpubkey2\" com pubkey ed25519 de 64 hex chars = 32 bytes — entrada malformada, emitterID duplicado ou a MESMA pubkey em dois emitterIDs abortam em vez de degradar silenciosamente para um canal de controlo inoperavel ou sem atribuicao)")
+
+// ErrBadApproversFile — AOS_APPROVERS_FILE presente mas o ficheiro não é legível, não é um
+// documento JSON válido no esquema esperado, ou tem uma entrada inválida (principal vazio,
+// pubkey não-ed25519-hex, autoridade vazia ou fora do vocabulário, principal duplicado, DOIS
+// principals com a MESMA pubkey, lista vazia). Fail-closed de CONFIG do 4-EYES (AOS-193), a
+// contraparte de [ErrBadOperators] para o registo RICO dos aprovadores. Um ficheiro configurado
+// mas inválido ABORTA: senão o nó arrancaria com [Node.FourEyes] == nil e POST
+// /runs/{id}/approve continuaria a devolver 501 — exactamente a degradação silenciosa que o
+// achado ORF-02 nomeia — ou, pior, com um gate COMPOSTO cujo dual-control uma única chave
+// privada satisfaz (capacidade anunciada e não cumprida, na versão perigosa).
+var ErrBadApproversFile = errors.New("aos: AOS_APPROVERS_FILE invalido (esperado JSON {\"approvers\":[{\"principal\":..., \"pubkey\":\"<64 hex>\", \"authority\":[\"approve:safe|gray|danger\"]}]} — ficheiro ilegivel, esquema invalido, principal duplicado, MESMA pubkey em dois principals, capability fora do vocabulario, autoridade vazia ou lista vazia abortam em vez de deixarem o four-eyes silenciosamente DESLIGADO ou ANULADO)")
 
 // main arranca o nó `aos` de PRODUÇÃO a partir de config de ambiente e declara o modo
 // de identidade em vigor. O loop de serviço long-running (hospedar N runs, shutdown
@@ -182,6 +206,35 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("%w (defina AOS_EVENTSTORE_PATH, ex.: /var/lib/aos/events.wal)", ErrDurableExecutionNeedsDurableSubstrate)
 	}
 
+	// CANAL DE CONTROLO AUTENTICADO (AOS-160) — PUBKEYS DOS OPERADORES por ambiente
+	// (AOS_OPERATORS, AOS-193). É o caminho que faltava: sem ele [Config.Operators] era
+	// INALCANÇÁVEL pelo binário entregue (Config vive em `package main`), o
+	// Ed25519Authenticator ficava com ZERO emissores e devolvia ErrUnknownEmitter a TODO o
+	// steer/pause — dois subcomandos da CLI e dois endpoints de controlo inatingíveis sem
+	// forkar e recompilar (achado ORF-02).
+	//
+	// SÓ MATERIAL PÚBLICO. O valor é "emitterID=hexpubkey": 64 hex chars = 32 bytes de
+	// pubkey ed25519, a MESMA codificação de AOS_ISSUER_PUBKEY. A chave PRIVADA do operador
+	// vive na máquina do operador (é lá que `aos steer` assina, cli.go) e NUNCA entra aqui.
+	//
+	// LIMITE HONESTO desta validação: uma SEED ed25519 tem também 32 bytes, pelo que o nó
+	// NÃO a consegue distinguir estruturalmente de uma pubkey. Um operador que colar a sua
+	// seed obtém um registo que nunca verifica assinatura nenhuma (fail-closed, sem
+	// elevação de privilégio) — mas terá exposto a sua chave privada ao ambiente do nó por
+	// erro seu. Está documentado em deploy/node/README.md em vez de fingido em código.
+	operators, err := parseOperators(os.Getenv("AOS_OPERATORS"))
+	if err != nil {
+		return Config{}, err
+	}
+
+	// FOUR-EYES / DUAL-CONTROL (AOS-162) — APROVADORES por FICHEIRO MONTADO
+	// (AOS_APPROVERS_FILE, AOS-193). Ver [parseApproversFile] para a JUSTIFICAÇÃO de ser um
+	// ficheiro e não uma env plana (o registo é rico: principal + pubkey + autoridade []).
+	approvers, err := parseApproversFile(strings.TrimSpace(os.Getenv("AOS_APPROVERS_FILE")))
+	if err != nil {
+		return Config{}, err
+	}
+
 	// Trust-anchor-only ENDURECIDO: se AOS_ISSUER_PUBKEY estiver presente, o nó recebe só
 	// a pubkey do issuer (a autoridade/chave vivem FORA do processo). É o modo de fronteira
 	// de produção. Fail-closed: uma pubkey malformada aborta.
@@ -238,9 +291,16 @@ func nodeConfigFromEnv() (Config, error) {
 		// presente ⇒ o nó exporta traces (invoke_agent/chat[+custo]/execute_tool/freeze +
 		// selos WORM) via OTLP/HTTP. Um endpoint malformado aborta o arranque (fail-closed).
 		OTLPEndpoint: strings.TrimSpace(os.Getenv("AOS_OTLP_ENDPOINT")),
-		// Operators vazio ⇒ default-deny do canal de controlo até serem configuradas
-		// pubkeys de operador (o steer anónimo é recusado — a inércia do D4 não protege
-		// pause/steer).
+		// CANAL DE CONTROLO (AOS-160/AOS-193): pubkeys dos operadores lidas de AOS_OPERATORS
+		// (já validadas fail-closed acima). Vazio ⇒ default-deny do canal de controlo (o steer
+		// anónimo é recusado — a inércia do D4 não protege pause/steer) E, desde AOS-193, o
+		// bind-guardrail RECUSA um bind não-loopback (um canal inoperável não é um canal
+		// autenticado).
+		Operators: operators,
+		// FOUR-EYES (AOS-162/AOS-193): aprovadores lidos do ficheiro montado AOS_APPROVERS_FILE
+		// (já validados fail-closed acima). Vazio ⇒ o gate NÃO é composto e POST
+		// /runs/{id}/approve devolve 501 (endpoint declaradamente desligado, não uma falha).
+		Approvers: approvers,
 	}
 
 	// DURABILIDADE DA IDENTIDADE (AOS-170) por ambiente, SÓ no modo de REFERÊNCIA. Um
@@ -384,6 +444,201 @@ func parseDurableExecution(s string) (bool, error) {
 	default:
 		return false, fmt.Errorf("%w: valor %q", ErrBadDurableExecution, strings.TrimSpace(s))
 	}
+}
+
+// parseOperators interpreta AOS_OPERATORS (AOS-193) — o registo emitterID→PUBKEY dos
+// operadores autorizados a emitir sinais de controlo (steer/pause/resume) — na forma
+// "emitterID=hexpubkey,emitterID2=hexpubkey2".
+//
+// FORMATO: é DELIBERADAMENTE a gramática de [parseBoardRegions] (mesmo separador de entradas,
+// mesmo separador chave/valor, mesma tolerância a segmentos vazios) com o valor codificado
+// como em AOS_ISSUER_PUBKEY (32 bytes ed25519 em hex). [Config.Operators] é um mapa
+// id→pubkey PLANO, pelo que a env plana o representa sem perda: não se inventa um formato
+// novo para uma forma que o projecto já sabe exprimir.
+//
+// FAIL-CLOSED e sem degradação silenciosa:
+//
+//   - VAZIO (ou só espaços) ⇒ (nil, nil): "não configurado". O canal fica em DEFAULT-DENY
+//     (nenhum sinal autentica) e — desde AOS-193 — o bind não-loopback é RECUSADO. É um
+//     estado válido e declarado, não um erro.
+//   - segmentos VAZIOS entre vírgulas (ex.: vírgula final) são tolerados (ruído de formatação).
+//   - entrada sem '=', emitterID vazio, pubkey vazia/não-hex/de tamanho != 32 bytes, ou
+//     emitterID DUPLICADO ⇒ [ErrBadOperators]: ABORTA. Nenhum destes casos pode degradar para
+//     "regista os que der": um operador em falta significa que TODOS os seus sinais serão
+//     recusados com ErrUnknownEmitter num nó que arrancou a anunciar um canal de controlo.
+//   - dois emitterIDs DIFERENTES com a MESMA pubkey ⇒ [ErrBadOperators]: ABORTA. O steer não
+//     tem invariante de distinção (ao contrário do 4-eyes), pelo que a partilha não eleva
+//     privilégio — DESTRÓI A ATRIBUIÇÃO: um `aos steer --emitter ops:bob` assinado pela chave
+//     de `ops:alice` seria aceite e SELADO NO WORM como sendo de `ops:bob`, e o nome do emissor
+//     deixaria de ser evidência. É o mesmo conflito de autoridade do emitterID duplicado,
+//     invertido (uma chave, dois nomes), e a mesma resposta: abortar, não escolher por nós.
+//
+// SÓ PUBKEYS. Nunca se aceita nem se lê material privado por esta porta; a chave privada do
+// operador assina no processo DO OPERADOR (`aos steer`, cli.go).
+func parseOperators(s string) (map[string]ed25519.PublicKey, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil // não configurado ⇒ default-deny deliberado (não é um erro).
+	}
+	out := make(map[string]ed25519.PublicKey)
+	// seenKey indexa o material PÚBLICO já visto (hex da pubkey → emitterID que o trouxe) para
+	// apanhar a colisão de chave entre emitterIDs distintos. É um índice de material público
+	// mantido em memória durante o parse — nada dele é logado (ver o erro abaixo).
+	seenKey := make(map[string]string)
+	for _, pair := range strings.Split(s, ",") {
+		if strings.TrimSpace(pair) == "" {
+			continue // segmento vazio (ex.: vírgula final) ⇒ ruído tolerável, não um typo.
+		}
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("%w: entrada %q sem '=' (esperado emitterID=hexpubkey)", ErrBadOperators, strings.TrimSpace(pair))
+		}
+		id, rawKey := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		if id == "" {
+			return nil, fmt.Errorf("%w: entrada %q com emitterID vazio", ErrBadOperators, strings.TrimSpace(pair))
+		}
+		if _, dup := out[id]; dup {
+			return nil, fmt.Errorf("%w: emitterID %q duplicado (conflito de autoridade — o ultimo NAO ganha)", ErrBadOperators, id)
+		}
+		pub, err := parseEd25519PubHex(rawKey)
+		if err != nil {
+			// A pubkey NUNCA é ecoada no erro (é público, mas ecoá-la enche os logs de
+			// material de chave sem necessidade): identifica-se a entrada pelo emitterID.
+			return nil, fmt.Errorf("%w: emitterID %q com pubkey invalida (esperado 64 hex chars = 32 bytes ed25519)", ErrBadOperators, id)
+		}
+		fp := hex.EncodeToString(pub)
+		if other, dup := seenKey[fp]; dup {
+			// A pubkey NÃO é ecoada: a entrada é identificada pelos DOIS emitterIDs em conflito.
+			return nil, fmt.Errorf("%w: emitterIDs %q e %q partilham a MESMA pubkey (a atribuicao do steer deixaria de distinguir quem emitiu o sinal)", ErrBadOperators, other, id)
+		}
+		seenKey[fp] = id
+		out[id] = pub
+	}
+	if len(out) == 0 {
+		// Só houve segmentos vazios (ex.: ",," ou ", ") — configurado mas sem entrada válida.
+		return nil, fmt.Errorf("%w: nenhuma entrada valida em %q", ErrBadOperators, s)
+	}
+	return out, nil
+}
+
+// approversDoc é o esquema do ficheiro de aprovadores (AOS_APPROVERS_FILE, AOS-193). Só
+// material PÚBLICO: principal, pubkey ed25519 em hex e a autoridade autoritativa
+// (capabilities "approve:<classe>" que o principal detém). A chave PRIVADA do aprovador vive
+// no dispositivo do humano e nunca aqui (AOS-162).
+type approversDoc struct {
+	Approvers []approverDoc `json:"approvers"`
+}
+
+// approverDoc é UMA entrada do ficheiro de aprovadores.
+type approverDoc struct {
+	Principal string   `json:"principal"`
+	PubKey    string   `json:"pubkey"`    // 64 hex chars = 32 bytes ed25519 (== AOS_ISSUER_PUBKEY)
+	Authority []string `json:"authority"` // ex.: ["approve:danger", "approve:gray"]
+}
+
+// parseApproversFile lê o ficheiro MONTADO de aprovadores do FourEyesGate (AOS-162) apontado
+// por AOS_APPROVERS_FILE (AOS-193).
+//
+// PORQUÊ UM FICHEIRO E NÃO UMA ENV (decisão, não omissão). [Config.Operators] é um mapa
+// id→escalar e cabe sem perda numa env plana (ver [parseOperators]); [ApproverConfig] NÃO é
+// escalar — traz `Authority []string` por entrada. Espremê-lo numa env exigiria um TERCEIRO
+// nível de delimitador ("principal=hex;cap1;cap2,principal2=..."), uma gramática que o projecto
+// não usa em lado nenhum, ilegível a partir de 2 capabilities e sem forma de ser revista em
+// code-review. Um ficheiro JSON montado é a via que o ADR-017 ponto 2 já prevê ("Config por
+// env/ficheiro montado"), é versionável e é exactamente o artefacto que uma roster de
+// aprovadores de dual-control deve ser. A COERÊNCIA com [parseOperators] mantém-se onde importa:
+// a MESMA codificação hex do material público (a de AOS_ISSUER_PUBKEY), a MESMA disciplina
+// fail-closed (malformado/duplicado/vazio ABORTA) e o MESMO invariante (só pubkeys entram).
+// Cada colaborador tem UM caminho de configuração — não há precedência env-vs-ficheiro a
+// divergir em silêncio.
+//
+// FAIL-CLOSED:
+//
+//   - path VAZIO ⇒ (nil, nil): four-eyes NÃO configurado; o gate não é composto e
+//     POST /runs/{id}/approve devolve 501 (desligado por declaração).
+//   - ficheiro ilegível, JSON malformado ou com campos DESCONHECIDOS ⇒ [ErrBadApproversFile]
+//     (o `DisallowUnknownFields` apanha um esquema em drift — ex.: "pub_key" — em vez de o
+//     ignorar e compor um gate incompleto; é a mesma disciplina do decodeJSON da API).
+//   - lista VAZIA, principal vazio, principal DUPLICADO, pubkey inválida, ou autoridade vazia
+//     ⇒ ABORTA. A autoridade vazia é rejeitada porque um aprovador sem NENHUMA capability
+//     `approve:<classe>` nunca satisfaz [hitl.RequiredAuthority]: seria uma entrada que parece
+//     configurada e nunca aprova nada — a degradação silenciosa que este ticket vem fechar.
+//   - capability FORA do vocabulário fechado ("approve:safe"|"approve:gray"|"approve:danger",
+//     ver [approveCapabilities]) ⇒ ABORTA. hitl.RequiredAuthority só produz estes três valores e
+//     a comparação em integration.hasAuthority é de string EXACTA (sem wildcards): um typo
+//     ("approve:dangerous", "approve:*") daria exactamente o estado anterior — uma entrada que
+//     parece configurada, contada no banner, e que nunca aprova nada.
+//   - duas entradas com a MESMA PUBKEY (mesmo com principals diferentes) ⇒ ABORTA. Esta é a
+//     guarda de SEGURANÇA do ficheiro, não de higiene: a distinção estrutural do dual-control
+//     (integration.FourEyesGate.authorizeDual) compara approver/session/credential, TRÊS
+//     strings ESCOLHIDAS PELO CLIENTE na perna; a única âncora criptográfica de "duas pessoas"
+//     é a pubkey PINADA. Com a mesma pubkey em duas linhas, UMA só chave privada assina as duas
+//     pernas e o 4-eyes é anulado EM SILÊNCIO, com o banner a declarar "2 aprovador(es)
+//     pinados". Antes de AOS-193 esse roster exigia forkar e recompilar; agora é um ficheiro
+//     montado, e um copy-paste é suficiente para o produzir.
+func parseApproversFile(path string) ([]ApproverConfig, error) {
+	if path == "" {
+		return nil, nil // não configurado ⇒ four-eyes desligado por declaração (não é um erro).
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ler %q: %v", ErrBadApproversFile, path, err)
+	}
+	var doc approversDoc
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%w: %q: %v", ErrBadApproversFile, path, err)
+	}
+	if len(doc.Approvers) == 0 {
+		return nil, fmt.Errorf("%w: %q sem aprovadores (um ficheiro configurado e vazio deixaria o four-eyes DESLIGADO em silencio)", ErrBadApproversFile, path)
+	}
+	out := make([]ApproverConfig, 0, len(doc.Approvers))
+	seen := make(map[string]struct{}, len(doc.Approvers))
+	// seenKey: hex do material PÚBLICO → principal que o trouxe (ver a guarda de colisão abaixo).
+	seenKey := make(map[string]string, len(doc.Approvers))
+	for i, a := range doc.Approvers {
+		principal := strings.TrimSpace(a.Principal)
+		if principal == "" {
+			return nil, fmt.Errorf("%w: %q entrada #%d com principal vazio", ErrBadApproversFile, path, i)
+		}
+		if _, dup := seen[principal]; dup {
+			return nil, fmt.Errorf("%w: %q principal %q duplicado (conflito de autoridade — o ultimo NAO ganha)", ErrBadApproversFile, path, principal)
+		}
+		seen[principal] = struct{}{}
+		pub, perr := parseEd25519PubHex(strings.TrimSpace(a.PubKey))
+		if perr != nil {
+			return nil, fmt.Errorf("%w: %q principal %q com pubkey invalida (esperado 64 hex chars = 32 bytes ed25519)", ErrBadApproversFile, path, principal)
+		}
+		if other, dup := seenKey[hex.EncodeToString(pub)]; dup {
+			// A pubkey NÃO é ecoada: identificam-se os DOIS principals que a partilham.
+			return nil, fmt.Errorf("%w: %q principals %q e %q partilham a MESMA pubkey — UMA chave privada assinaria as DUAS pernas e o dual-control (AOS-162) ficaria anulado", ErrBadApproversFile, path, other, principal)
+		}
+		seenKey[hex.EncodeToString(pub)] = principal
+		authority := splitTrimmed(a.Authority)
+		if len(authority) == 0 {
+			return nil, fmt.Errorf("%w: %q principal %q sem autoridade (um aprovador sem capability approve:<classe> nunca autoriza nada)", ErrBadApproversFile, path, principal)
+		}
+		for _, capability := range authority {
+			if !isApproveCapability(capability) {
+				return nil, fmt.Errorf("%w: %q principal %q com capability %q desconhecida (vocabulario fechado: %s — a comparacao e de string EXACTA, sem wildcards)",
+					ErrBadApproversFile, path, principal, capability, strings.Join(approveCapabilities(), ", "))
+			}
+		}
+		out = append(out, ApproverConfig{Principal: principal, PubKey: pub, Authority: authority})
+	}
+	return out, nil
+}
+
+// splitTrimmed normaliza uma lista de strings: remove espaços e descarta as vazias. Devolve
+// nil quando não sobra nenhuma (⇒ o chamador trata "configurado mas vazio" fail-closed).
+func splitTrimmed(in []string) []string {
+	var out []string
+	for _, v := range in {
+		if t := strings.TrimSpace(v); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // splitCSV divide uma lista separada por vírgulas, descartando vazios e espaços.

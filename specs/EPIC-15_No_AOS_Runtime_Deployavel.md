@@ -455,6 +455,7 @@ Um comando `aos` com subcomandos: `serve` (arranca o nó), `run` (submete um *go
 
 - [x] `aos serve` arranca o nó (via `run`/AOS-163/166); `aos run --objective …` submete um *goal* (POST /runs). — `packages/cmd/aos/cli.go` (`dispatch`).
 - [x] `aos observe <run-id>` lê o estado/desfecho (GET /runs/{id}); `aos steer/pause --run-id … --emitter … --key …` conduz o run — **assinado** com a chave do operador (via `integration.SignSignal`, AOS-160); a chave vive na máquina do operador, NUNCA no nó. *(A trajectória em streaming é AOS-167; aqui `observe` é a fotografia de estado.)*
+      > **EMENDA AOS-193 (auditoria v4, achado ORF-02).** Este CA esteve **SOBRE-REIVINDICADO** entre AOS-165 e AOS-193: a CLI assinava correctamente, mas **nenhum nó produzido pelo binário entregue conseguia aceitar** o sinal — `Config.Operators` não tinha caminho de leitura, o `Ed25519Authenticator` arrancava com ZERO emissores e `steer`/`pause` levavam sempre `403 ErrUnknownEmitter`. Registar uma pubkey exigia **forkar e recompilar**. Passa a ser verdadeiro com o caminho de configuração `AOS_OPERATORS` (AOS-193, `packages/cmd/aos/main.go` `parseOperators`), provado fim-a-fim contra o **contentor real** em `deploy/node/aos193-control-plane-harness.sh` e in-process em `TestEnvConfiguredOperatorSteerAcceptedEndToEnd`.
 - [x] Só stdlib (`flag`, `net/http` client, `crypto/ed25519`); zero dependências externas.
 
 ### Detalhes Técnicos
@@ -510,10 +511,20 @@ regra de ouro ADR-016; a API nunca assina em nome do humano (BFF non-signing).
       tensão directa com o anti-replay durável já entregue (replay => 403, não re-entrega da resposta);
       a propriedade de segurança (nenhum duplo-efeito de sinal repetido) está garantida pelo anti-replay.
       A idempotência do plano de DADOS (mesmo run_id => mesma resposta 201, não-enumerável) está feita.)*
+      > **EMENDA AOS-193 (auditoria v4, achado ORF-02).** A parte «`/steer` e `/approve` conduzem/aprovam»
+      > esteve **SOBRE-REIVINDICADA**: sem caminho de configuração para `Config.Operators`/`Config.Approvers`,
+      > `/steer` devolvia sempre `403` (emissor desconhecido) e `/approve` devolvia sempre `501` (gate não
+      > composto) em **qualquer** nó saído do binário entregue. Passa a ser verdadeiro com `AOS_OPERATORS`
+      > (env) e `AOS_APPROVERS_FILE` (ficheiro JSON montado) — AOS-193.
 - [x] Só `net/http` stdlib; entrada validada; o canal de controlo é separado do de dados (ADR-016)
       (buckets de admissão dedicados por plano; bind não-loopback recusado sem authn).
 - [x] Fail-closed: um pedido malformado/não-autorizado é recusado sem efeito (base64 malformado => 400;
       steer não-autenticado/replay => 403; sem authn + bind não-loopback => recusa antes do Listen).
+      > **EMENDA AOS-193 (auditoria v4, achado STR-04).** «sem authn + bind não-loopback => recusa» era
+      > **VÁCUO** no artefacto: `controlAuthenticated()` exigia só (`SteerAuth != nil` ∧ identidade real),
+      > duas condições que o `Bootstrap` satisfaz **sempre** — o predicado era identicamente verdadeiro e o
+      > guardrail nunca recusava um nó real (só nós mutados à mão nos testes). AOS-193 acrescenta a terceira
+      > conjunta (**≥1 operador registado**), pelo que a condição passa a discriminar entre dois nós reais.
 
 ### Detalhes Técnicos
 
