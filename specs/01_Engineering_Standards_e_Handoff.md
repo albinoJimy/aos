@@ -76,11 +76,12 @@ O *pipeline* é **fail-closed**: qualquer gate vermelho bloqueia a progressão. 
 |---|---|---|---|
 | 1 | **Build** | Compilação e resolução de dependências | Merge e todo o resto |
 | 2 | **Lint / format** | Estilo, *imports*, formatação | Merge |
-| 2b | **Lint de referências cruzadas (AOS-186)** | Todo `AOS-NNN` citado em `specs/`, `docs/adr/`, `tecnica/` (excepto a própria RTM) ou código Go existe no backlog; todo `ADR-NNN` citado existe no catálogo (`docs/adr/README.md` / `specs/00_System_Spec.md` §11); cada ADR-001…ADR-019 canónico tem ≥ 1 ticket implementador. | Merge — o grafo executável não pode divergir |
+| 2b | **Lint de referências cruzadas (AOS-186, AOS-198)** | Todo `AOS-NNN` citado em `specs/`, `docs/adr/`, `tecnica/` (excepto a própria RTM) ou código Go existe no backlog; todo `ADR-NNN` citado existe no catálogo (`docs/adr/README.md` / `specs/00_System_Spec.md` §11); cada ADR-001…ADR-019 canónico tem ≥ 1 ticket implementador. **Adicionalmente (AOS-198, residual de AOS-194 CA5):** onde um documento **declara** o título de um `AOS-NNN` — linha de tabela `\| AOS-NNN \| Título \|` ou cabeçalho `## AOS-NNN — Título` — esse título tem de partilhar ≥ 1 palavra significativa com o título real do ticket na sua EPIC, comparado **leave-one-out** (a referência exclui a própria linha testada, senão a comparação seria do texto consigo mesmo). **NÃO** verifica citações nuas sem título — designadamente a coluna «Ticket» de `tecnica/17`, que é a forma em que o STR-01 ocorreu (ver cabeçalho de `scripts/ci/ref-lint.py` para os números que levaram a rejeitar a heurística semântica). | Merge — o grafo executável não pode divergir |
 | 2c | **Lint de fronteiras de camadas (AOS-178)** | Imports entre camadas de `packages/` respeitam `control-plane → kernel → platform/substrate`; substrato não importa camadas superiores; módulos de composição/teste não são importados por produção. Inversões conhecidas e documentadas no ADR-019 toleradas pela baseline; novas violações bloqueiam | Merge — inversões canónicas fora da baseline bloqueiam |
 | 2d | **Sincronia da RTM (AOS-186)** | As secções §4–§6 de `tecnica/16_Rastreabilidade_RTM.md` podem ser regeneradas a partir de `specs/EPIC-*.md` e estão sincronizadas com o corpus; o gate falha se a RTM divergir ou se um ADR canónico ficar sem tickets | Merge — rastreabilidade documental não pode regredir |
 | 3 | **Unit** | Testes unitários; cobertura ≥ limiar | Merge |
-| 4 | **Integração** | Contratos entre componentes (RM↔PDP, RT↔ES) conforme `tecnica/12_Contratos_de_Interface.md` | Merge |
+| 4 | **Integração — contratos de porta (AOS-198)** | Para cada contrato C1–C5 de `tecnica/12_Contratos_de_Interface.md`: existe linha na tabela §3.1 a apontar para um pacote Go **existente**; o parágrafo «Semântica de erro» de cada contrato produz ≥ 1 código; e cada código `E_*` documentado existe como **literal, fora de comentário**, no pacote mapeado. Divergência nova bloqueia; a divergência histórica de C3/C4/C5 está em `scripts/ci/baseline/contract-codes.txt` com dono por entrada e é impressa em cada execução. **NÃO** compara a forma dos tipos campo-a-campo, `port_version`, compatibilidade SemVer de porta, caminho de retorno do erro, nem exercita a porta em runtime — é presença de códigos, não conformidade de schema (âmbito idêntico ao declarado em `tecnica/12` §11) | Merge |
+| 4b | **Catálogo de tipos de evento (AOS-198, absorve AOS-201 CA3)** | Cada tipo de evento é uma **constante declarada junto do emissor** (não há ficheiro central, por decisão de `tecnica/13` §3.3); a **família** de cada constante consta da taxonomia de `tecnica/13` §3.3; **zero** literais e concatenações no campo `Type` de `eventstore.EventInput{…}` e no caminho de emissão. **NÃO** resolve o `Type` quando é parâmetro/variável de um helper genérico, não valida o payload contra o schema, e **não** verifica a separação das famílias (a)/(b) por importação — retirada por imprecisão medida (ver cabeçalho de `scripts/ci/event-catalog.py`) | Merge — a deriva doc↔código do catálogo não pode voltar a ser invisível |
 | 5 | **SAST** | Análise estática de segurança do código | Merge |
 | 6 | **SCA** | Vulnerabilidades e licenças de dependências | Merge |
 | 7 | **Teste de política / PDP** | Rego/Cedar avaliado contra a política de referência de `tecnica/12_Contratos_de_Interface.md`; default-deny; *allow*/*deny* cobertos | Merge — governação não pode regredir |
@@ -96,6 +97,39 @@ O *pipeline* é **fail-closed**: qualquer gate vermelho bloqueia a progressão. 
 Regra transversal: um *scan* de segredos limpo é pré-condição de qualquer *merge* (cruza com a DoD §3). Nenhum gate pode ser marcado *skip* sem ADR ou aprovação explícita registada no audit trail. O **lint de referências cruzadas** (gate 2b) garante que nenhum identificador `AOS-NNN` ou `ADR-NNN` citado no corpus aponta para o vazio; o **gate 2d** (`ci-rtm`) garante que a matriz de rastreabilidade reflecte o backlog actual — ambos mantêm componentes nucleares como o Reference Monitor (AOS-003) visíveis no grafo executável e no caminho crítico.
 
 > **Nota normativa (NFR de latência de mediação).** Onde qualquer ticket ou critério de aceitação cita «overhead de mediação p95 < 15 ms», o alvo refere-se à **latência de avaliação do PDP** (NFR-01, política compilada em memória). O **overhead total de mediação por *tool call*** é um orçamento *composto* — PDP + CAS de admissão + broker→vault + append ao Event Store + egress/DNS — decomposto por sub-passo em `tecnica/00 §9` e nos contratos de `tecnica/12_Contratos_de_Interface.md`; **não** é 15 ms. O mapeamento NFR×ticket está na RTM (`tecnica/16_Rastreabilidade_RTM.md`).
+
+### 4.1 Correspondência entre a tabela conceptual e os gates executáveis
+
+A tabela de §4 é **conceptual**: numera etapas do ciclo de vida, algumas das quais não são (nem podem ser) um script local. A lista **executável** é `ALL_GATES` em `scripts/ci/run.sh`, com um job por gate em `.github/workflows/ci.yml` e a mesma lista no `needs:` do agregador `gates` (a disciplina de AOS-190: os três sítios ou o gate não bloqueia nada). Esta secção existe para que a diferença entre as duas listas seja **declarada** em vez de descoberta — foi exactamente uma linha de tabela sem gate correspondente (o gate 4) que produziu o achado DAT-09.
+
+**(a) Linha da tabela → gate executável**
+
+| Linha de §4 | Gate em `ALL_GATES` |
+|---|---|
+| Regra transversal (scan de segredos) | `secrets` |
+| 1 Build | `build` |
+| 2 Lint / format | `lint` |
+| 2b Lint de referências cruzadas | `ref-lint` |
+| 2c Lint de fronteiras de camadas | `layer-lint` |
+| 2d Sincronia da RTM | `rtm` |
+| 3 Unit / cobertura | `test` |
+| 4 Integração (contratos de porta) | `integration` |
+| 4b Catálogo de tipos de evento | `event-catalog` |
+| 5 SAST | `sast` |
+| 6 SCA | `sca` |
+| 7 Teste de política / PDP | `policy-test` |
+| 8 Replay determinístico | `replay` |
+| 9 Eval-gate de auto-modificação | `evalgate` |
+
+**(b) Linhas de §4 SEM gate no runner local — nomeadas, não omitidas**
+
+`10 Image scan`, `11 Deploy staging`, `12 Smoke`, `13 Aprovação`, `14 Deploy prod`, `15 Tag SemVer`. São etapas de *pipeline de release* (ou humanas, no caso do 13) e dependem de registry, ambiente e assinatura fora do repositório; `scripts/ci/sbom.sh` e `scripts/ci/package.sh` cobrem parte do 10 mas **não** estão em `ALL_GATES` e, portanto, **não bloqueiam merge**. Nenhuma destas linhas deve ser lida como «verificada por CI hoje».
+
+**(c) Gates executáveis SEM linha própria em §4**
+
+`memory` (AOS-044), `supplychain` (AOS-054), `routing` (AOS-063), `apex` (AOS-151/161), `security` (AOS-075), `scale` (AOS-116), `dr-e2e` (AOS-118), `ux-dx` (AOS-128). São suites de domínio acrescentadas depois desta tabela; bloqueiam merge exactamente como as linhas numeradas. Além destes, o job `selftest` (`scripts/ci/selftest.sh`) corre no CI e está no `needs:` do agregador **sem** constar de `ALL_GATES`: não é um gate sobre o produto, é a prova de que os gates bloqueiam.
+
+Contagem actual: **22** gates em `ALL_GATES`, **23** entradas no `needs:` do agregador (os 22 mais `selftest`), **14** linhas de §4 com gate e **6** sem. Qualquer divergência entre o `needs:`, o cabeçalho `REQUIRED-CHECKS:` de `ci.yml` e o de `CONTRIBUTING.md` é detectada pelo self-test §M.
 
 ---
 

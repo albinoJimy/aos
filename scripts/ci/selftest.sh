@@ -19,7 +19,17 @@
 #   J) invariante vacuosa bloqueia o AC4 do ápice (AOS-151);
 #   K) egress desbloqueado bloqueia o enforcement do ápice (AOS-161);
 #   L) inversão de camada sintética bloqueia o layer-lint (AOS-178);
-#   M) as três listas de required checks coincidem entre si (AOS-190) — ver nota.
+#   M) as três listas de required checks coincidem entre si (AOS-190) — ver nota;
+#   N) divergência de contrato de porta bloqueia o gate 4 «Integração» (AOS-198);
+#   O) literal/concatenação de tipo de evento bloqueia o gate event-catalog (AOS-198);
+#   P) título citado de OUTRO ticket é recusado pelo ref-lint (AOS-198, residual STR-01).
+#
+# Os subtestes N4/N5, O3/O4 e P2 existem porque a primeira versão destes três
+# gates passava os seus próprios self-testes sendo, ainda assim, contornável: o
+# §N só testava o caso fácil da baseline (entrada cujo código EXISTE), o §O só
+# exercitava E4 através do corpus real, e o §P era um teste unitário do predicado
+# — nenhum deles provava que o gate BLOQUEIA a evasão. Cada um dos novos injecta
+# a evasão concreta que foi medida e exige VERMELHO.
 #
 # NOTA: um self-test PASSA quando o gate correspondente FALHA como esperado.
 # Excepção: §M não injecta falha — é uma verificação de COERÊNCIA de configuração.
@@ -40,11 +50,17 @@ SIG_BAK="$(mktemp)"
 cp "$SIG" "$SIG_BAK"
 
 LAYER_TMP=""
+# Sonda de evento injectada na árvore real (§O3/§O4). Prefixo `_` para que o
+# toolchain Go a ignore mesmo se algo correr em paralelo. Removida pelo trap.
+EVENT_PROBE="$REPO_ROOT/packages/_selftest_eventcat"
+REFLINT_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
   if [ -f "$SIG_BAK" ]; then cp "$SIG_BAK" "$SIG"; rm -f "$SIG_BAK"; fi
   rm -rf "$LAYER_TMP"
+  rm -rf "$EVENT_PROBE"
+  rm -rf "$REFLINT_TMP"
 }
 trap cleanup EXIT INT TERM
 
@@ -376,6 +392,255 @@ if grep -q "needs.\*.result" "$CI_YML"; then
   pass "M: agregador \`gates\` avalia \`needs.*.result\` (falha se algum gate não ficar success)"
 else
   bad "M: agregador \`gates\` não avalia \`needs.*.result\` — passaria verde com gates vermelhos"
+fi
+
+# ============================================================================
+# N) Divergência de contrato de porta bloqueia o gate 4 «Integração» (AOS-198)
+#
+# Ao contrário do §L, estes subtestes correm contra o CORPUS REAL, e cada um
+# ataca uma via distinta de falso-verde:
+#   N1 baseline VAZIA        — as divergências C3/C4/C5 são mesmo detectadas;
+#   N2 baseline OBSOLETA     — a dívida fechada tem de ser removida;
+#   N3 baseline SEM `owner=` — a regra de honestidade é executável;
+#   N4 parágrafo RENOMEADO   — o gate não se desliga editando o documento;
+#   N5 baseline ÓRFÃ         — uma entrada nunca visitada não se torna permanente.
+# N4 e N5 são as duas vias pelas quais o gate ficava VERDE sobre menos contratos
+# do que dizia verificar (medido pela auditoria de AOS-198).
+# ============================================================================
+log_gate "self-test N · divergência de contrato bloqueia o gate 4 (AOS-198)"
+N_EMPTY="$(mktemp)"
+: > "$N_EMPTY"
+if AOS_CONTRACT_BASELINE="$N_EMPTY" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N1: gate 4 passou com baseline VAZIA — as divergências C3/C4/C5 não estão a ser detectadas"
+else
+  pass "N1: gate 4 bloqueou (exit!=0) com baseline vazia — detecta as divergências reais de contrato"
+fi
+# N2: entrada de baseline para um código que EXISTE (C1) tem de falhar como obsoleta.
+N_STALE="$(mktemp)"
+printf 'C1|E_POLICY_UNAVAILABLE|packages/control-plane/pdp # owner=selftest; entrada propositadamente obsoleta\n' > "$N_STALE"
+cat "$CI_DIR/baseline/contract-codes.txt" >> "$N_STALE"
+if AOS_CONTRACT_BASELINE="$N_STALE" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N2: gate 4 passou com entrada de baseline OBSOLETA — a baseline pode crescer sem custo"
+else
+  pass "N2: gate 4 bloqueou (exit!=0) uma entrada de baseline obsoleta — a baseline só encolhe"
+fi
+# N3: baseline sem dono declarado tem de falhar (a regra de honestidade é executável).
+N_NOOWNER="$(mktemp)"
+printf 'C3|E_NO_DECISION|packages/platform/broker # sem dono declarado\n' > "$N_NOOWNER"
+if AOS_CONTRACT_BASELINE="$N_NOOWNER" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N3: gate 4 aceitou uma entrada de baseline sem \`owner=\`"
+else
+  pass "N3: gate 4 recusou (exit!=0) uma entrada de baseline sem \`owner=\`"
+fi
+
+# N4: RENOMEAR o marcador do parágrafo «Semântica de erro» de um contrato NÃO pode
+# desligar o gate para esse contrato. Antes de AOS-198 (revisão da auditoria) o
+# gate ficava VERDE, a dívida reconhecida caía de 10 para 6 entradas, e a string
+# do contrato desaparecia por completo da saída — sem um único aviso.
+N_DOC="$(mktemp)"
+python3 - "$REPO_ROOT/tecnica/12_Contratos_de_Interface.md" "$N_DOC" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+# Renomeia SÓ o último parágrafo (contrato C5), como na prova da auditoria.
+marker = "**Semântica de erro.**"
+i = text.rfind(marker)
+assert i != -1, "marcador «Semântica de erro» não encontrado — self-test inválido"
+open(dst, "w", encoding="utf-8").write(text[:i] + "**Erros da porta.**" + text[i + len(marker):])
+PY
+if AOS_CONTRACTS_DOC="$N_DOC" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N4: gate 4 passou com o parágrafo «Semântica de erro» de um contrato RENOMEADO — o gate desliga-se em silêncio editando o documento que guarda"
+else
+  pass "N4: gate 4 bloqueou (exit!=0) um contrato sem códigos extraíveis (parse fail-closed)"
+fi
+
+# N5: entrada de baseline ÓRFÃ — um par contrato|código que não existe no
+# documento. Nunca seria visitada pelo laço de verificação, logo passaria
+# despercebida para sempre; é o caminho pelo qual a baseline deixaria de «só
+# encolher» sem que nada o dissesse.
+N_ORPHAN="$(mktemp)"
+cat "$CI_DIR/baseline/contract-codes.txt" > "$N_ORPHAN"
+printf 'C9|E_FANTASMA|packages/nao/existe # owner=selftest; contrato inexistente, entrada propositadamente orfa\n' >> "$N_ORPHAN"
+if AOS_CONTRACT_BASELINE="$N_ORPHAN" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N5: gate 4 aceitou uma entrada de baseline ÓRFÃ (contrato/código inexistente) — a baseline pode crescer sem custo"
+else
+  pass "N5: gate 4 bloqueou (exit!=0) uma entrada de baseline órfã"
+fi
+rm -f "$N_EMPTY" "$N_STALE" "$N_NOOWNER" "$N_DOC" "$N_ORPHAN"
+
+# ============================================================================
+# O) Literal/concatenação de tipo de evento bloqueia o gate event-catalog (AOS-198)
+# ============================================================================
+log_gate "self-test O · literal de tipo de evento bloqueia o gate event-catalog (AOS-198)"
+O_EMPTY="$(mktemp)"
+: > "$O_EMPTY"
+if AOS_EVENT_BASELINE="$O_EMPTY" bash "$CI_DIR/event-catalog.sh" >/dev/null 2>&1; then
+  bad "O1: event-catalog passou com baseline VAZIA — os literais/concatenações reais não são detectados"
+else
+  pass "O1: event-catalog bloqueou (exit!=0) com baseline vazia — detecta os literais/concatenações reais"
+fi
+O_STALE="$(mktemp)"
+printf 'literal-catalog|packages/nao/existe.go|turn.recorded # owner=selftest; entrada propositadamente obsoleta\n' > "$O_STALE"
+cat "$CI_DIR/baseline/event-catalog.txt" >> "$O_STALE"
+if AOS_EVENT_BASELINE="$O_STALE" bash "$CI_DIR/event-catalog.sh" >/dev/null 2>&1; then
+  bad "O2: event-catalog passou com entrada de baseline OBSOLETA"
+else
+  pass "O2: event-catalog bloqueou (exit!=0) uma entrada de baseline obsoleta"
+fi
+rm -f "$O_EMPTY" "$O_STALE"
+
+# O3 — E3 (a promessa de título do gate: «zero literais em EventInput.Type»).
+# Injecta a evasão TRIVIAL medida pela auditoria: literal composto de UMA linha
+# com `Type` a NÃO ser o primeiro campo. A versão anterior do parser exigia
+# `Type:` no início de linha e ficava VERDE. Corre contra a baseline REAL: a
+# única violação nova é a injectada.
+rm -rf "$EVENT_PROBE"; mkdir -p "$EVENT_PROBE"
+cat > "$EVENT_PROBE/probe_literal.go" <<'EOF'
+package selftesteventcat
+
+// Sonda do self-test §O3 (AOS-198). Struct homónimo de propósito: o gate procura
+// literais compostos `EventInput{…}` por texto, sem resolver tipos.
+type EventInput struct {
+	StreamID string
+	Type     string
+}
+
+func sondaLiteralNaoPrimeiroCampo() EventInput {
+	return EventInput{StreamID: "s", Type: "turn.selftest_injectado"}
+}
+EOF
+if bash "$CI_DIR/event-catalog.sh" >/dev/null 2>&1; then
+  bad "O3: event-catalog passou com um literal em \`EventInput.Type\` numa só linha (Type não-primeiro) — a promessa «zero literais» é evadível por reformatação"
+else
+  pass "O3: event-catalog bloqueou (exit!=0) o literal em \`EventInput.Type\` com Type não-primeiro numa só linha"
+fi
+rm -rf "$EVENT_PROBE"
+
+# O4 — E2 (família fora da taxonomia de tecnica/13 §3.3). É o mecanismo
+# anti-reincidência da deriva de 80 entradas e não tinha prova negativa nenhuma:
+# o corpus real só exercitava E4.
+rm -rf "$EVENT_PROBE"; mkdir -p "$EVENT_PROBE"
+cat > "$EVENT_PROBE/probe_familia.go" <<'EOF'
+package selftesteventcat
+
+// Sonda do self-test §O4 (AOS-198): constante de tipo de evento cuja FAMÍLIA não
+// consta das tabelas (a)/(b) de tecnica/13 §3.3.
+const EventSondaSelftest = "familianaodeclarada.sonda"
+EOF
+if bash "$CI_DIR/event-catalog.sh" >/dev/null 2>&1; then
+  bad "O4: event-catalog passou com uma família de evento FORA da taxonomia de tecnica/13 §3.3 — a deriva doc↔código voltaria a ser invisível"
+else
+  pass "O4: event-catalog bloqueou (exit!=0) uma família de evento fora da taxonomia documentada"
+fi
+rm -rf "$EVENT_PROBE"
+
+# O5 — controlo negativo: sem sondas, o gate volta ao verde contra a baseline
+# committada. Sem isto, um O3/O4 «sempre vermelho» (p.ex. por a árvore ter ficado
+# suja) passaria por prova válida.
+if bash "$CI_DIR/event-catalog.sh" >/dev/null 2>&1; then
+  pass "O5: controlo — sem sondas, o event-catalog volta ao verde (as sondas foram removidas sem rasto)"
+else
+  bad "O5: controlo falhou — o event-catalog ficou vermelho SEM sondas injectadas (rasto no repo ou violação nova)"
+fi
+
+# ============================================================================
+# P) Título citado que pertence a OUTRO ticket é recusado (AOS-198, residual STR-01)
+#
+# Exercita DIRECTAMENTE o predicado que o ref-lint usa — o mesmo padrão do §I com
+# `coverage_meets_min`. Os pares são os do STR-01 real: o título do controlo de
+# taint pertence a AOS-069 (não a AOS-067), e o do audit tamper-evident pertence a
+# AOS-072 (não a AOS-071). O subteste é NÃO-TAUTOLÓGICO: exige que o par CORRECTO
+# case e que o par ERRADO não case.
+# ============================================================================
+log_gate "self-test P · título de outro ticket é recusado pelo ref-lint (AOS-198)"
+if python3 - <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("reflint", "scripts/ci/ref-lint.py")
+rl = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rl)
+ref = rl.reference_title_tokens(rl.extract_backlog())
+casos = [
+    ("AOS-069", "Separacao control/data-plane + taint tracking (CaMeL)", True),
+    ("AOS-067", "Separacao control/data-plane + taint tracking (CaMeL)", False),
+    ("AOS-072", "Audit trail hash-chained tamper-evident", True),
+    ("AOS-071", "Audit trail hash-chained tamper-evident", False),
+]
+erros = 0
+for aos, titulo, esperado in casos:
+    if aos not in ref or not ref[aos]:
+        print(f"P: ticket {aos} sem titulo extraivel do backlog", file=sys.stderr)
+        erros += 1
+        continue
+    obtido = rl.titles_agree(titulo, ref[aos])
+    if obtido != esperado:
+        print(f"P: {aos} esperado={esperado} obtido={obtido}", file=sys.stderr)
+        erros += 1
+sys.exit(1 if erros else 0)
+PY
+then
+  pass "P1: o predicado título↔ticket aceita o par correcto e RECUSA o desvio do STR-01"
+else
+  bad "P1: o predicado título↔ticket não discrimina o desvio do STR-01 (falso-verde)"
+fi
+
+# P2 — prova PONTA-A-PONTA de que o GATE (não só o predicado) fica vermelho.
+# O §P1 é um teste unitário: exercita `titles_agree()` com pares escritos à mão e
+# não prova que existe input capaz de avermelhar o gate. Mediu-se que não existia:
+# as 395 declarações verificadas vinham TODAS de `specs/EPIC-*.md`, que é também de
+# onde os títulos de referência eram extraídos — a comparação era do texto consigo
+# mesmo e nenhuma troca de título podia falhar. Este subteste copia o corpus,
+# injecta o desvio EXACTO do STR-01 (o título de AOS-069 no cabeçalho de AOS-067)
+# e exige VERMELHO. A árvore real NÃO é tocada — a mutação vive só na cópia.
+log_gate "self-test P2 · troca de título dentro da própria EPIC avermelha o ref-lint (leave-one-out)"
+REFLINT_TMP="$(mktemp -d)"
+mkdir -p "$REFLINT_TMP/docs"
+cp -r "$REPO_ROOT/specs" "$REFLINT_TMP/specs"
+cp -r "$REPO_ROOT/tecnica" "$REFLINT_TMP/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$REFLINT_TMP/docs/adr"
+
+# Controlo positivo: a cópia intacta tem de ficar VERDE (senão o vermelho de
+# baixo não prova nada — provaria só que a cópia está partida).
+if AOS_REFLINT_ROOT="$REFLINT_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  pass "P2: controlo — a cópia intacta do corpus fica verde"
+else
+  bad "P2: controlo falhou — a cópia intacta do corpus já está vermelha (o subteste não provaria nada)"
+fi
+
+if python3 - "$REFLINT_TMP" <<'PY'
+import sys, glob, re
+root = sys.argv[1]
+alvo = glob.glob(root + "/specs/EPIC-07*.md")
+if not alvo:
+    print("P2: EPIC-07 nao encontrada na copia", file=sys.stderr); sys.exit(2)
+path = alvo[0]
+text = open(path, encoding="utf-8").read()
+# Desvio exacto do STR-01: o titulo de AOS-069 colado no cabecalho de AOS-067.
+novo, n = re.subn(
+    r"(?m)^## AOS-067\s*[-–—].*$",
+    "## AOS-067 — Separacao control/data-plane + taint tracking (CaMeL)",
+    text,
+)
+if n != 1:
+    print(f"P2: esperava 1 cabecalho de AOS-067, encontrei {n}", file=sys.stderr); sys.exit(2)
+open(path, "w", encoding="utf-8").write(novo)
+PY
+then
+  if AOS_REFLINT_ROOT="$REFLINT_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+    bad "P2: ref-lint passou com o título de AOS-069 no cabeçalho de AOS-067 — a verificação título↔ticket é tautológica"
+  else
+    pass "P2: ref-lint bloqueou (exit!=0) o desvio do STR-01 injectado na cópia do corpus"
+  fi
+else
+  bad "P2: não foi possível injectar o desvio do STR-01 na cópia do corpus"
+fi
+rm -rf "$REFLINT_TMP"
+REFLINT_TMP=""
+
+# P3 — a árvore real não foi tocada por §P2.
+if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  pass "P3: controlo — o ref-lint continua verde contra a árvore REAL (sem rasto)"
+else
+  bad "P3: o ref-lint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
 fi
 
 # ============================================================================

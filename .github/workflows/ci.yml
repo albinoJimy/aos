@@ -14,8 +14,8 @@
 # é a FONTE DE VERDADE e tem de coincidir, entrada a entrada e na mesma ordem, com o
 # `needs:` do job `gates` e com a lista de CONTRIBUTING.md §"Required checks" — o
 # self-test §M compara as três e fica vermelho se divergirem.
-# REQUIRED-CHECKS: secrets · build · lint · ref-lint · rtm · layer-lint · test · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
-# Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 21 acima
+# REQUIRED-CHECKS: secrets · build · lint · ref-lint · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
+# Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 23 acima
 # e é fail-closed por construção (`if: always()` + avaliação de `needs.*.result`),
 # pelo que fica `failure` — e não `skipped` — quando qualquer um deles não fica verde.
 name: ci
@@ -108,6 +108,34 @@ jobs:
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate layer-lint (fronteiras de camada sobre packages/ · baseline ADR-019)
         run: bash scripts/ci/layer-lint.sh --root "$GITHUB_WORKSPACE"
+
+  # Gate 4 — Integração (AOS-198, achado DAT-09). Verifica que cada código de erro
+  # de porta `E_*` documentado em tecnica/12 (contratos C1–C5) existe no pacote Go
+  # mapeado em tecnica/12 §3.1. Estava DECLARADO bloqueante em specs/01 §4 desde
+  # sempre e NUNCA existiu — é essa ausência que explica a deriva de C3/C4/C5.
+  # Só precisa de Python: é análise estática de texto (stdlib pura).
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gate integration (contratos de porta C1-C5 · códigos E_* de tecnica/12)
+        run: bash scripts/ci/integration.sh
+
+  # Gate do catálogo de tipos de evento (AOS-198; CA3 residual de AOS-201).
+  # Constante junto do emissor, prefixo na taxonomia de tecnica/13 §3.3, zero
+  # literais/concatenações no caminho de emissão. Python stdlib puro.
+  event-catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gate event-catalog (constantes · prefixos · zero literais em EventInput.Type)
+        run: bash scripts/ci/event-catalog.sh
 
   test:
     runs-on: ubuntu-latest
@@ -301,6 +329,13 @@ jobs:
         with:
           go-version: "1.24"
           cache-dependency-path: "packages/**/go.sum"
+      # Python é dependência EXPLÍCITA do self-test desde AOS-198: §N4 (mutação do
+      # documento de contratos), §P1 (predicado título↔ticket) e §P2 (prova
+      # ponta-a-ponta sobre uma cópia do corpus) correm `python3`. Sem esta linha o
+      # subteste dependeria do que o runner traz por acaso.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Self-tests dos gates
         run: bash scripts/ci/selftest.sh
 
@@ -315,7 +350,7 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     if: always()
-    needs: [secrets, build, lint, ref-lint, rtm, layer-lint, test, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
+    needs: [secrets, build, lint, ref-lint, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
     steps:
       - name: Todos os gates verdes (fail-closed)
         env:

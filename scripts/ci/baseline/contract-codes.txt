@@ -1,0 +1,61 @@
+# Baseline do gate 4 «Integração» (AOS-198, achado DAT-09).
+#
+# Cada linha é uma DIVERGÊNCIA REAL, HOJE, entre um código de erro de porta
+# documentado em `tecnica/12_Contratos_de_Interface.md` e o pacote Go que
+# implementa essa porta (mapa em `tecnica/12` §3.1). NÃO é uma lista de
+# excepções cosméticas: é o achado DAT-09 escrito por extenso.
+#
+# Regra de honestidade desta baseline:
+#   1. Toda a entrada TEM de trazer `owner=` — o gate falha se faltar.
+#   2. Toda a entrada TEM de dizer o que o código faz HOJE em vez do que o
+#      contrato manda (nome real, ou ausência real).
+#   3. A baseline só ENCOLHE, nas duas direcções: (a) quando o código passa a
+#      declarar o código de porta, a entrada fica OBSOLETA e o gate FALHA até ser
+#      removida; (b) quando o par contrato|código deixa de existir em
+#      `tecnica/12` — contrato removido, código renomeado, parágrafo «Semântica
+#      de erro» reformatado — a entrada fica ÓRFÃ e o gate FALHA também. Sem (b),
+#      uma entrada que nunca mais é visitada torna-se permanente em silêncio, que
+#      é exactamente o caminho pelo qual esta regra deixaria de ser verdadeira.
+#      Provado nos self-tests §N2 (obsoleta) e §N5 (órfã).
+#   4. Uma divergência NOVA (contrato ou código a mudar) NÃO entra aqui sem
+#      passar pela mesma revisão: o gate bloqueia primeiro.
+#
+# O que a baseline NÃO afirma: que a divergência é benigna. C3/C4/C5 são
+# precisamente os três contratos SEM rastreio a `tecnica/12` no código, e são os
+# três que divergiram integralmente — a correlação é o achado. A decisão de
+# reconciliar (renomear os códigos para o contrato, ou emendar o contrato para o
+# espaço de nomes real) é alteração de `packages/**` e de âmbito de outro
+# ticket; fica registada como deferimento com eixo em AOS-196 (registo único de
+# deferimentos).
+#
+# Formato: contrato|CÓDIGO|pacote  # owner=...; justificação
+# Chave de comparação: `contrato|CÓDIGO` (o pacote é informativo).
+#
+# Owner global: AOS-198 (gate) / AOS-196 (eixo do deferimento da reconciliação).
+
+
+# --- C3 — RM ↔ BRK (tecnica/12 §6) : packages/platform/broker ---
+# O broker não tem NENHUM código de erro estável: usa erros sentinela
+# (`errors.New`) sem campo `Code`, mais um `DeniedError{Effect,Code,Reason}` cujo
+# `Code` vem da decisão do RM, não do contrato C3. Um consumidor da porta não
+# consegue distinguir as três condições do contrato por código.
+C3|E_NO_DECISION|packages/platform/broker # owner=AOS-196; sem equivalente: a recusa por falta de `decision_ref` é modelada por `DeniedError` (errors.go), sem código de porta estável
+C3|E_SCOPE_DENIED|packages/platform/broker # owner=AOS-196; semântica existe com outro nome e sem código: `ErrOutOfScope` (errors.go), sentinela `errors.New` sem `Code`
+C3|E_VAULT_UNAVAILABLE|packages/platform/broker # owner=AOS-196; semântica parcial com outro nome: `ErrNoMaterial` (reexportado de internal/vault) e `ErrNilVault`, ambos sem `Code`
+
+# --- C4 — GW ↔ Provider (tecnica/12 §7) : packages/platform/model-gateway ---
+# O gateway também não expõe códigos de porta; os erros são sentinelas por
+# subpacote do pipeline.
+C4|E_REGION_DENIED|packages/platform/model-gateway # owner=AOS-196; semântica existe com outro nome e sem código: `ErrModelNotAllowed` (policy/allowlist/stage.go), default-deny regional
+C4|E_RATE_LIMITED|packages/platform/model-gateway # owner=AOS-196; sem equivalente na porta: o admission control vive em control-plane/scheduler e não devolve um erro de porta C4 com `retry_after`
+C4|E_MODEL_UNAVAILABLE|packages/platform/model-gateway # owner=AOS-196; semântica parcial com outro nome: `ErrUnknownProvider` / `ErrNoBaseURL` (production.go), sem sugestão de fallback de classe
+
+# --- C5 — REG (tecnica/12 §8) : packages/platform/registry ---
+# Aqui a divergência é de ESPAÇO DE NOMES, não de semântica: o registry
+# implementa as quatro condições, mas com prefixos próprios (`E_REG_*`,
+# `E_SIG_*`, `E_TOFU_*`, `E_DIGEST_*`). É a divergência mais barata de fechar e
+# a que mais claramente mostra o efeito da ausência do gate.
+C5|E_UNPINNED|packages/platform/registry # owner=AOS-196; mesmo significado, nome diverso: `E_REG_UNPINNED_RESOLUTION` (errors.go) e `E_TOFU_UNPINNED_VERSION` (tofu/errors.go)
+C5|E_HASH_MISMATCH|packages/platform/registry # owner=AOS-196; mesmo significado, nome diverso: `E_DIGEST_MISMATCH` (digest/errors.go)
+C5|E_SIGNATURE_INVALID|packages/platform/registry # owner=AOS-196; mesmo significado, nome diverso: `E_SIG_INVALID` (signing/errors.go) — note-se que C1 usa o nome do contrato e passa; C5 não
+C5|E_SCHEMA_CHANGED|packages/platform/registry # owner=AOS-196; mesmo significado, nome diverso: `E_TOFU_SCHEMA_DRIFT` (tofu/errors.go), que exige nova versão SemVer para re-aprovação

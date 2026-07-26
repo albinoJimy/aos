@@ -71,6 +71,20 @@ flowchart LR
 
 Convenção transversal a todos os contratos: campos `port_version` (SemVer da porta), `request_id` (correlação/tracing OTel) e, quando aplicável, `idempotency_key`. Todos os contratos são **fail-closed** — na dúvida, timeout ou erro de verificação, a porta nega em vez de permitir.
 
+### 3.1 Implementação por contrato (fonte de verdade do gate 4)
+
+A tabela seguinte é **lida por `scripts/ci/integration.py`** (gate 4 — Integração, AOS-198): fixa qual o pacote Go que implementa cada porta e é o que torna o contrato verificável por máquina em vez de por leitura. Uma linha em falta, ou um caminho que não exista na árvore, **falha o gate** — «não verificável» não conta como verde.
+
+| Contrato | Porta | Pacote Go que a implementa (raiz) |
+|---|---|---|
+| C1 | RM ↔ PDP (autorização) | `packages/control-plane/pdp` |
+| C2 | RT ↔ ES (append e read/replay) | `packages/substrate/eventstore` |
+| C3 | RM ↔ BRK (token JIT scoped) | `packages/platform/broker` |
+| C4 | GW ↔ Provider (chamada unificada) | `packages/platform/model-gateway` |
+| C5 | REG (resolução verificada) | `packages/platform/registry` |
+
+**Estado medido (auditoria multiagente v4, achado DAT-09).** Os dois contratos que o código rastreia explicitamente a este documento — C1 e C2 — estão fiéis: os seis códigos de porta de §4 e §5 existem como constantes em `packages/control-plane/pdp/errors.go` e `packages/substrate/eventstore/errors.go`. Os três **sem** rastreio — C3, C4, C5 — divergiram integralmente: nenhum dos **dez** códigos de §6 (3), §7 (3) e §8 (4) existe no código (o registry, por exemplo, usa um espaço de nomes próprio `E_REG_*`, e o broker usa erros sentinela sem código). Essa divergência está registada, entrada a entrada e com dono, nas dez linhas de `scripts/ci/baseline/contract-codes.txt`; o gate 4 imprime-a em cada execução como **dívida reconhecida** e bloqueia qualquer divergência **nova**. O gate imprime também, por contrato, quantos códigos extraiu deste documento — 3/3/3/3/4 para C1…C5 — para que uma quebra de parse fique visível no log em vez de reduzir o gate em silêncio.
+
 ---
 
 ## 4. Contrato C1 — RM ↔ PDP (Autorização)
@@ -336,7 +350,7 @@ obligations contains {"type": "audit", "level": "full"} if {
 
 ### 10.1 Arquitectura
 
-Os contratos de porta são o mecanismo que concretiza a *coerência por contrato* (ADR-012): cada componente é substituível desde que honre a sua porta. A convergência dos contratos C1, C3 e C5 no Reference Monitor reforça a mediação total (ADR-002) — o RM é o único ponto onde decisão, credencial e definição verificada se encontram antes da execução. O contrato C2 (RT↔ES) ancora a execução durável: a `idempotency_key` e o `expected_seq` optimista dão idempotência por passo e concorrência segura sem single-writer (ADR-001, ADR-007). O gate 4 do CI testa estes contratos como pré-condição de merge, tornando a regressão de interface tão bloqueante quanto uma falha de build.
+Os contratos de porta são o mecanismo que concretiza a *coerência por contrato* (ADR-012): cada componente é substituível desde que honre a sua porta. A convergência dos contratos C1, C3 e C5 no Reference Monitor reforça a mediação total (ADR-002) — o RM é o único ponto onde decisão, credencial e definição verificada se encontram antes da execução. O contrato C2 (RT↔ES) ancora a execução durável: a `idempotency_key` e o `expected_seq` optimista dão idempotência por passo e concorrência segura sem single-writer (ADR-001, ADR-007). O gate 4 do CI (`scripts/ci/integration.sh`, AOS-198) verifica estes contratos como pré-condição de merge, tornando a regressão de interface tão bloqueante quanto uma falha de build — **com o âmbito exacto declarado em §11**: presença dos códigos de erro de porta documentados, não a forma dos tipos.
 
 ### 10.2 Segurança
 
@@ -348,7 +362,7 @@ Cada contrato é *fail-closed* na fronteira: C1 nega sem `permit` explícito, C3
 
 | Risco | Impacto | Mitigação |
 |---|---|---|
-| Deriva silenciosa de schema entre componentes | Falha em produção não detectada | Gate 4 testa contratos C1–C5; SemVer de porta com testes de compatibilidade |
+| Deriva silenciosa de schema entre componentes | Falha em produção não detectada | **Mitigação parcial e declarada.** Gate 4 (`scripts/ci/integration.sh`, AOS-198) verifica, para C1–C5, que cada código de erro `E_*` documentado na «Semântica de erro» existe como literal **fora de comentário** no pacote Go mapeado em §3.1, e bloqueia divergências novas. É fail-closed contra a edição do próprio documento que guarda: um contrato de onde não se extraia nenhum código (parágrafo renomeado ou reformatado) faz o gate **falhar**, e uma entrada de baseline sem par contrato/código correspondente é reportada como **órfã** — sem estas duas regras, renomear um parágrafo desligava a verificação desse contrato em silêncio. **NÃO** verifica a forma dos tipos campo-a-campo, o `port_version`, o caminho de retorno do erro, nem exercita a porta em runtime — ou seja, **não** cobre a maior parte de um schema. Testes de compatibilidade SemVer de porta continuam **por fazer** e sem gate. A divergência histórica de C3/C4/C5 está em `scripts/ci/baseline/contract-codes.txt`, com dono por entrada |
 | Política sem cobertura allow/deny | Governação regride entre merges | Gate 7 exige teste PDP cobrindo allow e deny default-deny (§9) |
 | Mudança MAJOR de porta não sinalizada | Quebra de consumidores | `port_version` obrigatório; consumidores rejeitam MAJOR não suportada |
 | Rug-pull de definição via REG | Roubo de credenciais | C5: hash mismatch e assinatura inválida falham fechado |

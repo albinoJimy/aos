@@ -3,7 +3,9 @@
 #
 # Corre, por ordem canónica (specs/01 §4), os gates:
 #   1) build  2) lint(+arch-lint)  2b) ref-lint  2c) rtm  2d) layer-lint
-#   3) test(+cobertura)  8) replay(harness AOS-024)
+#   3) test(+cobertura)  4) integration(contratos de porta C1–C5, AOS-198)
+#   event-catalog(catálogo de tipos de evento, AOS-198/AOS-201)
+#   8) replay(harness AOS-024)
 #   memory(integridade/migração AOS-044)  supplychain(7 vectores AOS-054)
 #   routing(5 cenários de roteamento/failover AOS-063)
 #   security(4 cenários adversariais de segurança AOS-075)
@@ -27,7 +29,7 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$CI_DIR/lib.sh"
 
-ALL_GATES=(secrets build lint ref-lint rtm layer-lint test replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx sast sca policy-test)
+ALL_GATES=(secrets build lint ref-lint rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx sast sca policy-test)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 

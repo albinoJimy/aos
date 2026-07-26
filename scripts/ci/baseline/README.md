@@ -13,6 +13,37 @@ com *drift*), semântica de **multiconjunto** (uma nova ocorrência do mesmo có
 no mesmo ficheiro também é caçada). Regenerável com a mesma normalização dos
 gates — ver `scripts/ci/*.sh`.
 
+## `contract-codes.txt` e `event-catalog.txt` (AOS-198) — regras mais apertadas
+
+As duas baselines criadas por AOS-198 seguem as regras acima **e mais três**, porque
+a dívida que cobrem não é ruído de scanner, é deriva de contrato medida por auditoria:
+
+1. **Dono obrigatório por entrada.** Uma linha sem `owner=` faz o gate ficar
+   vermelho (provado nos self-tests §N3).
+2. **Só encolhem, nas duas direcções.** Uma entrada cuja violação já não ocorre é
+   OBSOLETA e faz o gate ficar vermelho até ser removida (self-tests §N2/§O2). E
+   uma entrada que **nunca chega a ser avaliada** — porque o par contrato/código
+   ou a regra deixou de existir na fonte — é ÓRFÃ e também faz o gate ficar
+   vermelho (self-test §N5). A segunda regra não é teórica: sem ela, renomear o
+   parágrafo «Semântica de erro» de um contrato em `tecnica/12` deixava as suas
+   entradas de baseline sem visita, o gate ficava verde e a dívida desaparecia da
+   saída — foi medido pela auditoria de AOS-198. Ao contrário das baselines de
+   scanner — onde uma entrada obsoleta só gera `WARN` —, aqui não há caminho em
+   que uma entrada se torne permanente por inércia.
+3. **Impressas em cada execução** como «DÍVIDA RECONHECIDA», com o comentário de
+   dono. Uma baseline que ninguém lê é uma baseline que ninguém fecha.
+4. **Chave com o VALOR, não só o ficheiro.** Toda a chave de `event-catalog.txt`
+   inclui o literal/expressão em causa (`literal-type|<ficheiro>|<valor>`,
+   `concat-type|<ficheiro>|<expressão>`, e os equivalentes `*-catalog|…`). Uma
+   chave só com o nome do ficheiro fazia com que **uma** entrada com dono cobrisse
+   **todas** as violações futuras da mesma regra nesse ficheiro — o que anula a
+   propriedade «só encolhe» para esse ficheiro.
+
+| Baseline | Gate | O que contém hoje |
+|---|---|---|
+| `contract-codes.txt` | `integration` (gate 4) | 10 códigos de erro de porta documentados em `tecnica/12` e ausentes do código: C3 (3), C4 (3), C5 (4). C1 e C2 estão fiéis e **não** têm entradas — é a correlação do achado DAT-09 |
+| `event-catalog.txt` | `event-catalog` | 4 violações: 2 composições de nome de evento por concatenação (`steer_channel.go`, `breaker.go`) e 2 literais de tipo catalogado no `testkit` |
+
 ## `staticcheck.txt`
 | Descoberta | Ficheiro | Dono (ticket) | Remediação |
 |---|---|---|---|

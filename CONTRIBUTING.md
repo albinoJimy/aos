@@ -82,7 +82,7 @@ Configurar em *branch protection* de `main` os checks (lista completa, na mesma 
 do `needs:` do agregador — o self-test §M compara-a com `.github/workflows/ci.yml` e
 fica vermelho se divergir):
 
-REQUIRED-CHECKS: secrets · build · lint · ref-lint · rtm · layer-lint · test · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
+REQUIRED-CHECKS: secrets · build · lint · ref-lint · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
 
 …ou, em alternativa, o agregador único **`gates`**. O **scan de segredos** (regra
 transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de merge.

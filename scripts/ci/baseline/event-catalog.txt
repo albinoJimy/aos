@@ -1,0 +1,43 @@
+# Baseline do gate `event-catalog` (AOS-198, absorve o CA3 residual de AOS-201).
+#
+# Cada linha é uma violação REAL, HOJE, das regras do catálogo de tipos de evento
+# de `tecnica/13` §3.3. Nenhuma foi «encontrada e varrida»: as quatro estão
+# reportadas no ticket, com ficheiro:linha, e duas delas são exactamente o padrão
+# que §3.3 manda rejeitar.
+#
+# Regras desta baseline (iguais às de baseline/contract-codes.txt):
+#   1. Toda a entrada TEM de trazer `owner=` — o gate falha se faltar.
+#   2. Toda a entrada diz o que o código faz e por que razão a correcção não cabe
+#      neste ticket (as quatro vivem em `packages/**`, fora da pista de AOS-198,
+#      que só toca `scripts/ci/**`, `.github/workflows/ci.yml`, `specs/01` e
+#      `tecnica/12`).
+#   3. A baseline só ENCOLHE: uma entrada cuja violação desapareça fica OBSOLETA
+#      e o gate FALHA até ser removida.
+#
+# Chave: <regra>|<ficheiro>|<literal ou expressão> — SEM número de linha, para a
+# baseline não se invalidar a cada edição acima da violação, mas SEMPRE com o
+# valor: uma chave só com o ficheiro faria uma entrada cobrir todas as violações
+# futuras da mesma regra nesse ficheiro. Consequência assumida: uma segunda
+# ocorrência do MESMO literal no MESMO ficheiro fica coberta pela mesma entrada.
+#
+# Formato: chave  # owner=...; justificação
+
+
+# --- Composição do nome do evento por concatenação (o padrão nomeado em §3.3) ---
+# Ambos são o ramo `default` de um mapeamento kind→tipo sobre um enum fechado de
+# três valores, pelo que hoje são INALCANÇÁVEIS. A entrada existe porque «hoje
+# inalcançável» não é «correcto»: um valor novo no enum passa a produzir um `type`
+# que não aparece em índice de constantes nenhum, em silêncio. §3.3 nomeia
+# explicitamente o caso de steer_channel como «o padrão que um gate futuro tem de
+# rejeitar»; o de breaker.go é o MESMO padrão e não estava documentado — foi este
+# gate que o encontrou.
+concat-catalog|packages/kernel/agent-runtime/control/steer_channel.go|control. # owner=AOS-201; `eventTypeFor` ramo default compõe "control." + string(kind); enum SignalKind tem 3 valores (inalcançável hoje); correcção = devolver erro/constante, em packages/** (fora da pista de AOS-198)
+concat-catalog|packages/control-plane/scheduler/breaker.go|budget.breaker_ # owner=AOS-201; ACHADO NOVO deste gate: `transitionEventType` ramo default compõe "budget.breaker_" + string(to); enum BreakerState tem 3 valores (inalcançável hoje); não consta de tecnica/13 §3.3, que só nomeava steer_channel
+
+# --- Literal de tipo catalogado no caminho de emissão ---
+# O testkit semeia trajectórias com os nomes em literal, em vez de referenciar as
+# constantes de `agent-runtime`. É uma segunda fonte de verdade: renomear a
+# constante deixa o testkit a semear o nome antigo sem nada ficar vermelho.
+# Não é `_test.go` (é o helper que os testes usam), pelo que o gate vê-o.
+literal-catalog|packages/testkit/env/seed.go|turn.recorded # owner=AOS-201; `SeedTrajectory` usa []string{"turn.recorded", "replay.captured"}; correcção = importar as constantes, em packages/** (fora da pista de AOS-198)
+literal-catalog|packages/testkit/env/seed.go|replay.captured # owner=AOS-201; idem, mesma linha de `SeedTrajectory`
