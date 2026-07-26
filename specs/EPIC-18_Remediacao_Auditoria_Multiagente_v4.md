@@ -113,14 +113,14 @@ Todos falsificáveis por comando — é condição de aceitação que cada um se
 | AOS-191 | Superfície de configuração para `DurableExecution` (`AOS_DURABLE_EXECUTION`) — **ENTREGUE** (5/5 CA; semântica fail-closed **sempre** sobre `AOS_EVENTSTORE_PATH`; postura de produção deferida com eixo em AOS-203) | feature | **S** | **P0** | REG-01 ≡ STR-09 ≡ PLA-03 | B |
 | AOS-192 | Corrigir o teste de aceitação vacuoso de AOS-180 e reabrir §13.3 — **ENTREGUE** (5/5 CA; §13.3 reaberto e **re-marcado VERDE** com evidência nova ao nível do nó + prova negativa executada; §13.1/§13.7 mantêm-se VERDES com a citação corrigida; §13.6 **REABERTO 🟡** por falta de prova, com dono em AOS-204) | fix | **S** | **P0** | VAC-01 | C |
 | AOS-193 | Caminho de configuração para `Operators`/`Approvers` (plano de controlo operável) — **ENTREGUE** (5/5 CA; `AOS_OPERATORS` por env + `AOS_APPROVERS_FILE` por ficheiro montado, ambos fail-closed; bind-guardrail passa a exigir ≥1 operador — mudança de comportamento declarada; prova positiva e negativa executadas no **contentor real**) | feature | M | **P0** | ORF-02, STR-04 | B |
-| AOS-194 | Corrigir rastreabilidade do STRIDE e cobrir a superfície real do nó | docs | M | P1 | STR-01, STR-06 | D |
+| AOS-194 | Corrigir rastreabilidade do STRIDE e cobrir a superfície real do nó — **ENTREGUE (3/5 CA)**; residual: órfandade + automatização (→ AOS-198) | docs | M | P1 | STR-01, STR-06 | D |
 | AOS-195 | Corrigir a regressão documental de `redaction/doc.go` e reabrir o CA de AOS-188 | fix | **S** | P1 | VAC-02 ≡ DEF-02 ≡ CON-03 | C |
 | AOS-196 | Registo único de deferimentos + correcção dos eixos inválidos | feature | M | P1 | DEF-01, DEF-03, DEF-06 | E |
-| AOS-197 | Reclassificar a matriz de conformidade e nomear as lacunas de âmbito | docs | M | P1 | CON-01, DEF-01 | D |
+| AOS-197 | Reclassificar a matriz de conformidade e nomear as lacunas de âmbito — **ENTREGUE (3/4 CA)**; residual: eixo/dono do legal hold (decisão do dono) | docs | M | P1 | CON-01, DEF-01 | D |
 | AOS-198 | Criar o «gate 4 — Integração» (ou retirar a sua declaração) | feature | M | P1 | DAT-09 | A |
 | AOS-199 | Pisos aos limiares de gate sobreponíveis por ambiente | fix | **S** | P1 | ORF-06 | A |
 | AOS-200 | Instrumentar o tripwire da Carta §6.6 e o registo de arbitragens §6.5 | feature | S | P2 | DEF-07 | A |
-| AOS-201 | Reconciliar `tecnica/13` (envelope e catálogo de eventos) com o código | docs | M | P2 | DAT-01, DAT-02, DAT-03 | D |
+| AOS-201 | Reconciliar `tecnica/13` (envelope e catálogo de eventos) com o código — **ENTREGUE (2/3 CA + 1 parcial)**; residual: gate de CI do catálogo (→ AOS-198) | docs | M | P2 | DAT-01, DAT-02, DAT-03 | D |
 | AOS-202 | Decidir o destino dos módulos `*/contract` órfãos (1763 LOC, 0 importadores) | chore | S | P2 | ORF-01 | E |
 | AOS-203 | Documentar as variáveis de ambiente do nó e endurecer o kill-switch de soberania | fix | M | P1 | ORF-03/04/05 | B |
 | AOS-204 | Exportar por OTLP, a partir do nó real, a árvore de um run **com tool call** (ramo `execute_tool`) | fix | **S** | P1 | VAC-01 (eixo residual de §13.6) | C |
@@ -352,11 +352,15 @@ assinadas). Além disso o documento é **órfão** (nenhuma EPIC/ADR/RTM lhe apo
 reavaliar o modelo de ameaça para o nó exposto como serviço de rede**.
 
 **Critérios de aceitação**
-- [ ] Cada `AOS-NNN` citado em `tecnica/17` casa com o título do ticket em `specs/EPIC-*.md` (diff mecânico limpo).
-- [ ] Acrescentada coluna de **estado** por mitigação: entregue / por-fazer / deferido-com-eixo.
-- [ ] O documento cobre a superfície actual: API HTTP, SSE, DSAR, OIDC, attestation, exporter OTLP, contentor.
+- [x] Cada `AOS-NNN` citado em `tecnica/17` casa com o título do ticket em `specs/EPIC-*.md` (diff mecânico limpo).
+      *(ENTREGUE `ff9761f`: 78 `AOS-NNN` distintos verificados; a v1.0 tinha ~3 correctos em ~55 linhas. Causa-raiz registada: `AOS-064` usado como carimbo por secção em vez de por controlo. `ref-lint` verde.)*
+- [x] Acrescentada coluna de **estado** por mitigação: entregue / por-fazer / deferido-com-eixo.
+      *(ENTREGUE `ff9761f`: legenda em §1.5; estado derivado de código+commits, NÃO da presença de ticket — os CA das EPICs estão por marcar e não servem de fonte.)*
+- [x] O documento cobre a superfície actual: API HTTP, SSE, DSAR, OIDC, attestation, exporter OTLP, contentor.
+      *(ENTREGUE `ff9761f`: Bloco B (§4.10–§4.18), 9 elementos × 6 categorias = 54 linhas novas; DFD estendido. Enacta a Carta emenda 1.2. Nova §5.2 com as ameaças sem mitigação completa.)*
 - [ ] O documento passa a ser referenciado (RTM e/ou epic), deixando de ser órfão.
-- [ ] **Automatização:** a verificação ticket↔título é acrescentada ao `ref-lint.py` (extensão natural), para
+      *(POR FAZER — exigia escrever fora da pista do agente na execução paralela. Estado verificado: `tecnica/16` não menciona `tecnica/17`. A entrada tem de entrar na FONTE que `scripts/ci/rtm-regenerate.py` lê, não no ficheiro gerado; e `tecnica/17` deve constar dos «Documentos relacionados» de `specs/EPIC-07` e `specs/EPIC-15`.)*
+- [ ] **Automatização (fecha em AOS-198):** a verificação ticket↔título é acrescentada ao `ref-lint.py` (extensão natural), para
       esta correcção não voltar a derivar.
 
 ---
@@ -408,13 +412,15 @@ suporta o requisito») e a §2 transfere para o operador a responsabilidade de a
 documento**, a linha devia ler «Parcial» — não é falsificação, é calibração.
 
 **Critérios de aceitação**
-- [ ] `tecnica/14:92` (Art. 17) e `:91` (Art. 5) passam de «Coberto» para «**Parcial**», com a lacuna acrescentada à §5.
-- [ ] A §5 passa a nomear também as lacunas de **âmbito da própria matriz**: Art. 15/16/20 (o «DSAR» do produto só
+- [x] `tecnica/14:92` (Art. 17) e `:91` (Art. 5) passam de «Coberto» para «**Parcial**», com a lacuna acrescentada à §5.
+      *(ENTREGUE `d7dd962`: e também o Art. 30; o Art. 32 qualificado. É calibração pela escada que o próprio documento define (:70 + §2), não acusação de falsidade.)*
+- [x] A §5 passa a nomear também as lacunas de **âmbito da própria matriz**: Art. 15/16/20 (o «DSAR» do produto só
       faz apagamento), **Art. 22** (decisão individual automatizada — o artigo mais directamente convocado pela
       forma do produto), Art. 33/34, e AI Act Art. 50.
-- [ ] **Verificação:** toda a linha «Coberto» tem o mecanismo alcançável a partir de `packages/cmd/aos`
+- [x] **Verificação:** toda a linha «Coberto» tem o mecanismo alcançável a partir de `packages/cmd/aos`
       (`go list -deps` sobre o pacote que a implementa).
 - [ ] Legal hold e job de expiração (CON-02) recebem eixo/dono/data declarados ou superfície de administração.
+      *(POR FAZER — **decisão do dono**: são as únicas dívidas de conformidade sem eixo/dono/data declarados. `grep NewExpirationJob` → 0 chamadores de produção; nenhuma rota de hold em `api.go`.)*
 
 ---
 
@@ -471,10 +477,12 @@ emitidos** (`tool.result.received`, `state.transition`, `tool.call.dispatched`).
 não existe no envelope (é persistido no payload da mediação, `eventsink.go:96,159`).
 
 **Critérios de aceitação**
-- [ ] O envelope documentado casa com `eventstore/event.go` (campo a campo), ou as diferenças são declaradas
+- [x] O envelope documentado casa com `eventstore/event.go` (campo a campo), ou as diferenças são declaradas
       como «desenho, não wire» de forma explícita e localizada.
-- [ ] Os nomes canónicos citados são emitidos, ou substituídos pelos reais.
+- [x] Os nomes canónicos citados são emitidos, ou substituídos pelos reais.
+      *(ENTREGUE `7b69c27`: os 3 nomes nunca emitidos corrigidos; a citação original era ilustrativa («ex.:»), não normativa. Taint localizado nos 3 sítios reais (§3.4) em vez de declarado em falta — e corrigido o caminho que a auditoria citava (`kernel/reference-monitor/eventsink.go`, não `platform/audit/`).)*
 - [ ] O catálogo de tipos de evento é gerado ou verificado por script (evitar nova deriva de 80 entradas).
+      *(**PARCIAL** `7b69c27`: catálogo por família/prefixo (29 prefixos, 85 tipos — não 81: o código mexeu-se, mais uma razão para não fixar lista) com o pacote dono e um comando `grep` reproduzível validado. Falta o **gate de CI** (exigia `scripts/**`, fora da pista na execução paralela) — **fecha em AOS-198**.)*
 
 ---
 
