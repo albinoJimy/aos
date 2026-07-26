@@ -164,11 +164,17 @@ read-path do nó, sem a camada de apresentação web.
       de RunID ⇒ 404 BYTE-A-BYTE indistinguível entre run existente-não-observável e inexistente (leitor
       autorizado vê 200 não-vacuoso; não-autorizado do MESMO run vê 404 igual ao inexistente, sem vazar o
       RunID); replay de sinal de controlo (nonce reutilizado) ⇒ recusado; steer não-autenticado ⇒ 403.
-      **Checklist NOMEADO §13** em `docs/reports/AOS-169-aceitacao-sistemica.md`: 6 dos 7 critérios
-      sistémicos VERDES com evidência (Mediação/Durabilidade/Isolamento/Governação/Observabilidade/
-      Conformidade). **DEFERIDO — ÚNICO eixo IDENTIDADE (§13.2):** a autoridade REAL de identidade depende
-      de **D4** (org-provisioning) — modo self-hosted Nível 2 declarado (AOS-156), NÃO a
-      durabilidade/observabilidade. **Nota de execução HONESTA:** `aos wal-count` que torna o harness
+      **Checklist NOMEADO §13** em `docs/reports/AOS-169-aceitacao-sistemica.md`: **5 dos 7** critérios
+      sistémicos VERDES com evidência (Mediação/Durabilidade/Isolamento/Governação/Conformidade);
+      **IDENTIDADE (§13.2) DEFERIDA** ao eixo D4; **OBSERVABILIDADE (§13.6) REABERTA 🟡 por AOS-192** —
+      eixo NOMEADO com ticket real: a árvore exportada por OTLP a partir do NÓ não contém o ramo
+      `execute_tool` (o run do teste de observabilidade não emite tool call); dono **AOS-204**
+      (EPIC-18). *(Estado actualizado por AOS-192, achado VAC-01 da auditoria v4: a redacção anterior
+      dizia «6 dos 7 … Observabilidade» e a durabilidade assentava numa âncora VACUOSA — o teste foi
+      corrigido, §13.3 reaberto e RE-MARCADO VERDE com prova negativa executada, e §13.6 ficou amarelo
+      em vez de verde por inércia.)* **DEFERIDO — ÚNICO eixo IDENTIDADE (§13.2):** a autoridade REAL de
+      identidade depende de **D4** (org-provisioning) — modo self-hosted Nível 2 declarado (AOS-156),
+      NÃO a durabilidade. **Nota de execução HONESTA:** `aos wal-count` que torna o harness
       não-vacuoso está coberto por testes Go verdes `-race`; o harness docker completo (rebuild distroless
       + docker run) é eixo AMBIENTE — não re-executado nesta remediação, declarado (não fingido); a
       durabilidade fica VERDE ao nível do NÓ via os testes Go âncora independentes do harness.)*
@@ -176,9 +182,16 @@ read-path do nó, sem a camada de apresentação web.
 > **Estado de saída da EPIC-15 (§2):** com AOS-169 ENTREGUE, **todos** os critérios de saída acima
 > estão `[x]` **excepto um único**: "O nó `aos` corre com identidade REAL", legitimamente **DEFERIDO ao
 > eixo IDENTIDADE / D4** (org-provisioning; autoridade AOS-156 em modo self-hosted Nível 2 declarado). O
-> deferimento restringe-se a esse eixo — durabilidade, interface autenticada, health/observabilidade,
+> deferimento restringe-se a esse eixo — durabilidade, interface autenticada, health/liveness,
 > SSE fail-safe, soberania/conformidade, empacotamento e aceitação sistémica não-vacuosa estão VERDES.
-> Sem over-claim: nada além de IDENTIDADE/D4 fica por fechar dentro do escopo single-host da v1.
+>
+> **Emenda de AOS-192 (achado VAC-01 da auditoria v4) — sem over-claim.** Além de IDENTIDADE/D4 fica por
+> fechar **um** eixo NOMEADO do checklist §13: **OBSERVABILIDADE §13.6 está REABERTA 🟡** — a árvore que o
+> NÓ exporta por OTLP não cobre o ramo `execute_tool` (o run do teste de observabilidade não emite tool
+> call; a propriedade está provada ao nível de COMPONENTE). Dono: **AOS-204** (EPIC-18). Não é um
+> deferimento de escopo da v1 nem um eixo de ambiente: é prova em falta, e fica amarelo até haver teste.
+> A **DURABILIDADE §13.3** foi igualmente reaberta por VAC-01 e está **RE-MARCADA VERDE** com evidência
+> nova e prova negativa executada (AOS-192) — não foi rebaixada, foi re-provada.
 ## 3. Tabela Resumo de Tickets
 
 | ID | Título | Tipo | Estimativa | Prioridade | Dependências |
@@ -194,7 +207,7 @@ read-path do nó, sem a camada de apresentação web.
 | AOS-172 | **Soberania/conformidade** (E7): read-path soberano (D7) + selo WORM de leitura no SSE (D6) + DSAR/crypto-shredding — **ENTREGUE** (topologia real de regiões/boards deferida a EPIC-09/10) | feature | M | P1 | AOS-167, AOS-170, EPIC-09/10 |
 | AOS-173 | **Observabilidade** (E7): `otel-genai` (spans+custo) + WORM ligados por OTLP | feature | M | P1 | AOS-163 |
 | AOS-168 | Empacotamento do nó: distroless/non-root/read-only + **ADR-017** (SBOM+proveniência) — **ENTREGUE** (pontos 1/2/4 verdes; ponto 3 mínimo declarado; assinatura/registry = EPIC-10) | feature | S | P1 | AOS-164a, AOS-171, EPIC-10 |
-| AOS-169 | Aceitação sistémica **não-vacuosa** (E6): modelo que emite tools + caminho permitido + contentor real + abuso HTTP + checklist §13 nomeado — **ENTREGUE** (6/7 critérios §13 verdes; eixo IDENTIDADE/§13.2 deferido a D4) | chore | M | P0 | AOS-166, AOS-167, AOS-172 |
+| AOS-169 | Aceitação sistémica **não-vacuosa** (E6): modelo que emite tools + caminho permitido + contentor real + abuso HTTP + checklist §13 nomeado — **ENTREGUE** (5/7 critérios §13 verdes; §13.2 IDENTIDADE deferido a D4; §13.6 OBSERVABILIDADE **reaberto 🟡** por AOS-192, dono AOS-204) | chore | M | P0 | AOS-166, AOS-167, AOS-172 |
 
 Estimativas XS/S/M/L (XL proibido). Prioridades P0/P1/P2. Toda a Fase 5 — Operacionalização.
 **Pré-requisito: AOS-156** (identidade real). Fases locais: **núcleo do nó** (AOS-163/164a/164b/170,
@@ -248,7 +261,11 @@ chama tools) é o "funciona-na-demo" que o System Spec §2.1 desqualifica. Reesc
 EMITE tool calls** (prova o caminho PERMITIDO, não só a negação); **contentor real** exercitado com
 kill+reinício **sem duplicação**; **bateria de abuso HTTP** (payloads gigantes, enumeração de
 RunID, replay, steer não-autenticado); **checklist NOMEADO de cada critério §13** (verde ou
-deferido-com-eixo — o deferimento restrito ao eixo identidade, não a durabilidade/observabilidade).
+deferido-com-eixo — o *deferimento* restrito ao eixo identidade, não a durabilidade/observabilidade).
+*(Nota de AOS-192: esta regra continua a valer para DEFERIMENTOS. Não impede que um eixo seja
+**REABERTO 🟡 por falta de prova** — é o caso de §13.6 OBSERVABILIDADE, dono **AOS-204**. Quando a
+regra «estes eixos TÊM de estar verdes» colide com a regra NÃO-VACUOSA da Carta §2.1, prevalece a
+segunda: marcar verde sem prova é o defeito, não a solução.)*
 
 **E10 — SSE repromovido (AOS-167 → L).** Não há handler SSE no repo (é de raiz, não "reutiliza
 AOS-133–136"); acresce **backpressure/drop-slow-consumer** e **streaming por seq** (não snapshots

@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-203** (14 tickets) |
+| Intervalo de tickets | **AOS-190 … AOS-204** (15 tickets; AOS-204 acrescentado por AOS-192 — eixo residual de VAC-01) |
 
 ---
 
@@ -111,7 +111,7 @@ Todos falsificáveis por comando — é condição de aceitação que cada um se
 |---|---|---|---|---|---|---|
 | AOS-190 | Ligar `layer-lint`/`rtm`/`ref-lint` à CI que bloqueia merges — **ENTREGUE** (5/5 CA; elo agregador→merge = *branch protection*, configuração de plataforma fora da árvore — ver §0 do relatório de prova negativa) | fix | **S** | **P0** | PLA-01 | A |
 | AOS-191 | Superfície de configuração para `DurableExecution` (`AOS_DURABLE_EXECUTION`) — **ENTREGUE** (5/5 CA; semântica fail-closed **sempre** sobre `AOS_EVENTSTORE_PATH`; postura de produção deferida com eixo em AOS-203) | feature | **S** | **P0** | REG-01 ≡ STR-09 ≡ PLA-03 | B |
-| AOS-192 | Corrigir o teste de aceitação vacuoso de AOS-180 e reabrir §13.3 | fix | **S** | **P0** | VAC-01 | C |
+| AOS-192 | Corrigir o teste de aceitação vacuoso de AOS-180 e reabrir §13.3 — **ENTREGUE** (5/5 CA; §13.3 reaberto e **re-marcado VERDE** com evidência nova ao nível do nó + prova negativa executada; §13.1/§13.7 mantêm-se VERDES com a citação corrigida; §13.6 **REABERTO 🟡** por falta de prova, com dono em AOS-204) | fix | **S** | **P0** | VAC-01 | C |
 | AOS-193 | Caminho de configuração para `Operators`/`Approvers` (plano de controlo operável) | feature | M | **P0** | ORF-02, STR-04 | B |
 | AOS-194 | Corrigir rastreabilidade do STRIDE e cobrir a superfície real do nó | docs | M | P1 | STR-01, STR-06 | D |
 | AOS-195 | Corrigir a regressão documental de `redaction/doc.go` e reabrir o CA de AOS-188 | fix | **S** | P1 | VAC-02 ≡ DEF-02 ≡ CON-03 | C |
@@ -123,6 +123,7 @@ Todos falsificáveis por comando — é condição de aceitação que cada um se
 | AOS-201 | Reconciliar `tecnica/13` (envelope e catálogo de eventos) com o código | docs | M | P2 | DAT-01, DAT-02, DAT-03 | D |
 | AOS-202 | Decidir o destino dos módulos `*/contract` órfãos (1763 LOC, 0 importadores) | chore | S | P2 | ORF-01 | E |
 | AOS-203 | Documentar as variáveis de ambiente do nó e endurecer o kill-switch de soberania | fix | M | P1 | ORF-03/04/05 | B |
+| AOS-204 | Exportar por OTLP, a partir do nó real, a árvore de um run **com tool call** (ramo `execute_tool`) | fix | **S** | P1 | VAC-01 (eixo residual de §13.6) | C |
 
 **Blocos:** **A** — anti-recorrência (o mecanismo que impede a deriva voltar); **B** — operabilidade do nó
 (capacidade inalcançável); **C** — provas que não provam; **D** — artefactos de auditoria que não auditam;
@@ -246,14 +247,24 @@ com base nesta prova. A propriedade **está** provada ao nível do componente
 (`durable/step_ledger_test.go:142,214,270,314,481`) — falta a prova ao nível do **nó**.
 
 **Critérios de aceitação**
-- [ ] A 2.ª vida do nó usa uma instância **nova** do modelo e emite ≥1 tool call.
-- [ ] A asserção passa a verificar que o ledger devolveu «already-applied», não apenas `execs == 1`.
-- [ ] **Prova negativa:** partir `StepLedger.Apply` torna o teste **vermelho** (registar o output).
-- [ ] `AOS-169-aceitacao-sistemica.md` §13.3 fica **reaberto** (🟡) até este ticket fechar, e é re-marcado com a
-      evidência nova.
-- [ ] Revisão dos outros três eixos com evidência citada errada (§13.1 cadeia sem hook de revalidação;
+- [x] A 2.ª vida do nó usa uma instância **nova** do modelo e emite ≥1 tool call. *(`restartToolModel`,
+      uma instância por vida; asserção explícita `model2.emitted() >= 1`.)*
+- [x] A asserção passa a verificar que o ledger devolveu «already-applied», não apenas `execs == 1`.
+      *(`StepLedger.Applied(key)` é **falso** antes de `RebuildLedger` e **verdadeiro** depois, com o
+      resultado canónico; o efeito da 2.ª vida fica a zero; a tool re-registada devolve bytes
+      diferentes que NÃO aparecem no prompt seguinte; o WAL mantém um só `step.ledger.applied`.)*
+- [x] **Prova negativa:** partir `StepLedger.Apply` torna o teste **vermelho** (registar o output).
+      *(Executada e registada em `docs/reports/AOS-169-aceitacao-sistemica.md` §3.0: teste corrigido
+      `--- FAIL` exit 1; a réplica da forma antiga `--- PASS` exit 0 com o mesmo mecanismo partido —
+      demonstração empírica da vacuidade. Alteração revertida.)*
+- [x] `AOS-169-aceitacao-sistemica.md` §13.3 fica **reaberto** (🟡) até este ticket fechar, e é re-marcado com a
+      evidência nova. *(Reabertura e re-marcação registadas no corpo (§3.0-§3.2) e na tabela-resumo,
+      coerentes entre si.)*
+- [x] Revisão dos outros três eixos com evidência citada errada (§13.1 cadeia sem hook de revalidação;
       §13.6 `execute_tool` com modelo que não emite tool call; §13.7 KEK que nunca cifrou nada) — corrigir a
-      citação ou reabrir o eixo.
+      citação ou reabrir o eixo. *(§13.1 e §13.7: citação corrigida, eixos permanecem VERDES com a
+      âncora certa. §13.6: a citação era FALSA e o que falta é PROVA — eixo **REABERTO 🟡** com o eixo
+      nomeado.)*
 
 ---
 
@@ -455,6 +466,34 @@ apenas num script de harness — uma variável de ambiente que desliga um contro
 
 ---
 
+### AOS-204 — Exportar por OTLP, a partir do nó real, a árvore de um run com tool call
+
+**Achado:** VAC-01 (eixo residual). Ao corrigir a terceira citação errada do checklist §13, AOS-192 apurou que
+`TestObservabilityEndToEndExportsWellFormedOTLPWithCost` (`packages/cmd/aos/observability_test.go`) **não** exporta
+nenhum span `execute_tool`: usa `obsConfig()` → `tnBaseConfig()`, cujo `Config.Model` é nil, pelo que o `Bootstrap`
+injecta o `referenceModel` (`bootstrap.go:830-837`), que devolve `Final: true` **sem tool calls**. A string
+`execute_tool` nem sequer ocorre nesse ficheiro. O ramo `execute_tool` está provado ao nível de **componente**
+(`packages/kernel/agent-runtime/activity/dispatch_test.go`) e a hierarquia é reconstruída em
+`trajectory_surface_test.go` — falta a exportação OTLP **a partir do nó**.
+
+**Impacto:** §13.6 (OBSERVABILIDADE) está **REABERTO 🟡** em `docs/reports/AOS-169-aceitacao-sistemica.md` com este
+eixo nomeado. Sem ticket que o possua, o eixo tende a ser re-arredondado para VERDE pelo próximo agregador de
+estado — o ciclo que AOS-192 veio quebrar. Este ticket é o dono do eixo (CA de AOS-196: todo o deferimento tem
+eixo válido **com um ticket real**).
+
+**Critérios de aceitação**
+- [ ] Um teste de `packages/cmd/aos` compõe o nó com um modelo que **EMITE** uma tool call e assere que o
+      *collector* OTLP recebe um span `execute_tool` bem-formado (atributos `gen_ai.*`/`aos.*`, sem segredos),
+      filho do `invoke_agent` do mesmo run.
+- [ ] O teste é NÃO-VACUOSO: falha se o run não chegar a despachar a tool (asserção explícita de que a tool call
+      foi emitida), e o span nasce **também** sob veredicto de negação do PDP (o span é do Reference Monitor,
+      não do caminho feliz).
+- [ ] `docs/reports/AOS-169-aceitacao-sistemica.md` §13.6 é **re-marcado** com esta evidência (ou mantém-se 🟡
+      com o eixo actualizado — nunca VERDE sem o teste).
+- [ ] Gates `layer-lint`/`rtm`/`ref-lint` verdes; testes com `-race`.
+
+---
+
 ## 9. Definition of Ready (DoR) do epic
 
 Antes de executar qualquer ticket:
@@ -472,3 +511,4 @@ Antes de executar qualquer ticket:
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | 2026-07-26 | Emissão (PROPOSTA). Remedia os 29 achados sobreviventes da auditoria multiagente v4 (`analises/08_Relatorio_Auditoria_Multiagente_v4.md`): 14 tickets AOS-190..AOS-203 em cinco blocos, três decisões de dono (§4) e um aviso de sequenciamento de segurança (§5). | Equipa AOS |
+| 1.1 | 2026-07-26 | **AOS-204** acrescentado (bloco C, P1/S) para possuir o eixo residual de VAC-01: exportar por OTLP, a partir do nó real, a árvore de um run **com tool call** (ramo `execute_tool`). Apurado ao executar AOS-192, que reabriu §13.6 do checklist de AOS-169 — um eixo reaberto sem ticket real viola o CA de AOS-196. | AOS-192 |

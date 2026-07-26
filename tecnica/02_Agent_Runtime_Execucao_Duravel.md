@@ -505,8 +505,26 @@ Passos do wiring:
 O teste de aceitação `TestNode_DurableExecution_NoDoubleExecAfterRestart`
 (`packages/cmd/aos/bootstrap_durable_execution_test.go`) prova o cenário de
 referência: corre um run com uma tool call, fecha o nó, re-arranca sobre o mesmo
-WAL, re-corre o mesmo `RunID` e assegura que a tool executou exactamente uma vez —
-a segunda execução obtém deduplicação do ledger reconstruído.
+WAL e re-corre o mesmo `RunID` **com uma instância NOVA do modelo**, pelo que a tool
+call é **RE-EMITIDA** após o restart; o `RebuildLedger` reconstrói a entrada a partir
+do WAL e o `Apply` devolve *already-applied* — o efeito registado na 2.ª vida **nunca
+corre** e o resultado que volta ao loop é o **canónico memorizado na 1.ª vida**, não um
+novo. As asserções distinguem explicitamente «não re-executou porque **deduplicou**» de
+«não re-executou porque **nunca tentou**»: (i) a 2.ª vida emitiu ≥ 1 tool call;
+(ii) `StepLedger.Applied(key)` é **falso** no nó recém-arrancado e **verdadeiro** depois
+do `RebuildLedger`, com o resultado canónico; (iii) o contador de execução da 2.ª vida
+fica a **zero**; (iv) a tool re-registada devolve bytes DIFERENTES e esses bytes **não**
+aparecem no prompt do turno seguinte; (v) o WAL mantém **exactamente um** evento
+`step.ledger.applied` para a chave.
+
+> **Correcção de AOS-192 (achado VAC-01 da auditoria v4).** Até AOS-192 este parágrafo
+> afirmava que «a segunda execução obtém deduplicação do ledger reconstruído» — e não
+> havia segunda execução: o teste partilhava **uma** instância de modelo pelas duas vidas
+> do nó, o contador de turnos era monotónico e a 2.ª vida devolvia `Final` **sem emitir
+> tool call**. A asserção `execs == 1` passava porque a tool **nunca era re-tentada**, e
+> passava na mesma com a deduplicação partida — verificado empiricamente (prova negativa
+> registada em `docs/reports/AOS-169-aceitacao-sistemica.md`, §3 DURABILIDADE). A
+> afirmação acima só se tornou verdadeira com a correcção do teste.
 
 ---
 
