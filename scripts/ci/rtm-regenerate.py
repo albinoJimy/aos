@@ -62,7 +62,28 @@ def _read(path: Path) -> str:
 
 
 def _write(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
+    # newline="\n" é obrigatório: sem ele, o modo texto do Python traduz para CRLF em
+    # Windows e reescreve o ficheiro inteiro, contrariando o `.gitattributes`
+    # (`* text=auto eol=lf`) e sujando a árvore de trabalho a cada regeneração.
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def corpus_stats(tickets: dict) -> dict:
+    """
+    Constantes do corpus DERIVADAS (nunca escritas à mão): é isto que impede o
+    gate de ficar fail-open quando o backlog cresce. Se um ticket novo entrar em
+    specs/EPIC-*.md, estes números mudam, o texto gerado muda, e `--check` diverge
+    do ficheiro em disco → gate vermelho.
+    """
+    nums = sorted(aos_key(t) for t in tickets)
+    return {
+        "n_tickets": len(nums),
+        "min_aos": nums[0] if nums else 0,
+        "max_aos": nums[-1] if nums else 0,
+        "n_epics": len(list(SPECS_DIR.glob("EPIC-*.md"))),
+        "n_adrs": len(ADR_RANGE),
+        "n_nfrs": len(NFR_SPECS),
+    }
 
 
 def extract_adr_titles() -> dict:
@@ -181,6 +202,16 @@ DOC_RANGES = [
     (("AOS-144", "AOS-162"), ["`tecnica/12`", "`tecnica/02`"]),
     (("AOS-163", "AOS-173"), ["`tecnica/10`", "`tecnica/12`"]),
     (("AOS-174", "AOS-189"), ["`tecnica/09`", "`tecnica/12`"]),
+    # EPIC-18 (remediação da auditoria v4). O limite superior é ABERTO (None): a gama
+    # estende-se até ao último ticket do corpus, para que tickets novos herdem um
+    # mapeamento em vez de caírem em "—" silenciosamente.
+    # Justificação do par escolhido: a EPIC-18 é remediação transversal, mas o seu
+    # centro de gravidade são (a) as convenções de engenharia/CI e os gates
+    # anti-recorrência — `tecnica/11_Convencoes_Engenharia_Evolucao.md` — e (b) a
+    # governação/conformidade que os achados STRIDE e regulatórios tocam —
+    # `tecnica/09_Governacao_Conformidade.md`. §6 declara esta correspondência
+    # explicitamente, para que §4 e §6 não se contradigam.
+    (("AOS-190", None), ["`tecnica/11`", "`tecnica/09`"]),
 ]
 
 
@@ -195,7 +226,9 @@ def infer_docs_for_tickets(tickets_for: list, tickets: dict) -> str:
     low, high = min(nums), max(nums)
     docs = set()
     for (rlow, rhigh), doc_list in DOC_RANGES:
-        rl, rh = aos_key(rlow), aos_key(rhigh)
+        rl = aos_key(rlow)
+        # rhigh None => gama aberta à direita (ver comentário em DOC_RANGES).
+        rh = aos_key(rhigh) if rhigh is not None else max(high, rl)
         if max(rl, low) <= min(rh, high):
             docs.update(doc_list)
     if not docs:
@@ -272,25 +305,45 @@ def generate_section5(tickets: dict) -> str:
     return "\n".join(lines)
 
 
-def update_section1(rtm_text: str) -> str:
-    """Actualiza §1.2 (âmbito) e §1.5 (ADRs aplicáveis) para 17 epics / 19 ADRs."""
+def update_section1(rtm_text: str, stats: dict) -> str:
+    """
+    Actualiza §1.2 (âmbito) e §1.5 (ADRs aplicáveis). Todos os números vêm de
+    `stats` (derivados do corpus) — nenhum é literal, senão o gate ficaria
+    fail-open: o backlog crescia e o texto continuava a afirmar o valor antigo.
+    """
     # §1.2
     rtm_text = re.sub(
-        r"A rastreabilidade cobre os \d+ ADRs canónicos \(`_BRIEF` §3\), as \d+ capacidades funcionais \(`specs/00` §4\), os \d+ \*drivers\* não-funcionais \(`specs/00` §7\) e os \*\*\d+ tickets\*\* `AOS-001`–`AOS-\d+` distribuídos por \d+ epics\.",
-        "A rastreabilidade cobre os 19 ADRs canónicos (`_BRIEF` §3), as 11 capacidades funcionais (`specs/00` §4), os 10 *drivers* não-funcionais (`specs/00` §7) e os **189 tickets** `AOS-001`–`AOS-189` distribuídos por 17 epics.",
+        r"A rastreabilidade cobre os \d+ ADRs canónicos \(`_BRIEF` §3\), as \d+ capacidades funcionais \(`specs/00` §4\), os \d+ \*drivers\* não-funcionais \(`specs/00` §7\) e os \*\*\d+ tickets\*\* `AOS-\d+`–`AOS-\d+` distribuídos por \d+ epics\.",
+        (
+            f"A rastreabilidade cobre os {stats['n_adrs']} ADRs canónicos (`_BRIEF` §3), "
+            f"as 11 capacidades funcionais (`specs/00` §4), os {stats['n_nfrs']} *drivers* "
+            f"não-funcionais (`specs/00` §7) e os **{stats['n_tickets']} tickets** "
+            f"`AOS-{stats['min_aos']:03d}`–`AOS-{stats['max_aos']:03d}` distribuídos por "
+            f"{stats['n_epics']} epics."
+        ),
         rtm_text,
     )
     # §1.5
     rtm_text = re.sub(
         r"Este documento não introduz decisões de arquitectura; \*\*rastreia\*\* as \d+ existentes \(ADR-001 a ADR-\d+, `_BRIEF` §3\)\.",
-        "Este documento não introduz decisões de arquitectura; **rastreia** as 19 existentes (ADR-001 a ADR-019, `_BRIEF` §3).",
+        (
+            f"Este documento não introduz decisões de arquitectura; **rastreia** as "
+            f"{stats['n_adrs']} existentes (ADR-001 a {ADR_RANGE[-1]}, `_BRIEF` §3)."
+        ),
         rtm_text,
     )
     return rtm_text
 
 
-def generate_section6(tickets: dict) -> str:
+def generate_section6(tickets: dict, stats: dict) -> str:
     """Gera a tabela de rasto descendente documento técnico → epic → tickets."""
+    first = f"AOS-{stats['min_aos']:03d}"
+    last = f"AOS-{stats['max_aos']:03d}"
+    last_epic = f"EPIC-{stats['n_epics']:02d}"
+    # Gama da EPIC-18 (remediação v4): derivada da última entrada de DOC_RANGES,
+    # para que §4 (que usa DOC_RANGES) e §6 (esta tabela) nunca se contradigam.
+    epic18_low = DOC_RANGES[-1][0][0]
+    epic18_range = f"{epic18_low} – {last}"
     lines = [
         "## 6. Rasto descendente: documento técnico → epic → tickets",
         "",
@@ -298,7 +351,7 @@ def generate_section6(tickets: dict) -> str:
         "",
         "| Doc técnico | Epic(s) implementador(es) | Gama de tickets |",
         "|---|---|---|",
-        "| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-189 |",
+        f"| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | {first} – {last} |",
         "| `tecnica/01_Reference_Monitor_Plano_Controlo.md` | EPIC-01 | AOS-001 – AOS-012 |",
         "| `tecnica/02_Agent_Runtime_Execucao_Duravel.md` | EPIC-02 | AOS-013 – AOS-024 |",
         "| `tecnica/03_Orquestracao_Escalonamento.md` | EPIC-03 | AOS-025 – AOS-034 |",
@@ -307,19 +360,19 @@ def generate_section6(tickets: dict) -> str:
         "| `tecnica/06_Model_Gateway_Custos.md` | EPIC-06 | AOS-055 – AOS-063 |",
         "| `tecnica/07_Seguranca_Isolamento.md` | EPIC-07 | AOS-064 – AOS-075 |",
         "| `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |",
-        "| `tecnica/09_Governacao_Conformidade.md` | EPIC-09 | AOS-087 – AOS-097 |",
+        f"| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, {last_epic} | AOS-087 – AOS-097 (+ {epic18_range}) |",
         "| `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |",
-        "| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod) | AOS-109 – AOS-118 (+ AOS-045–054) |",
+        f"| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), {last_epic} | AOS-109 – AOS-118 (+ AOS-045–054, + {epic18_range}) |",
         "| `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |",
         "| `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |",
         "| `tecnica/14_Matriz_Conformidade.md` | EPIC-08, EPIC-09 | AOS-072, 076–097 |",
         "",
         "```mermaid",
         "flowchart LR",
-        '    RF["RF-01..RF-11 (capacidades)"] --> ADR["ADR-001..019 (decisoes)"]',
-        '    NFR["NFR-01..NFR-10 (drivers)"] --> ADR',
-        '    ADR --> EPIC["EPIC-01..EPIC-17 (entregas)"]',
-        '    EPIC --> TICK["AOS-001..AOS-189 (tickets)"]',
+        f'    RF["RF-01..RF-11 (capacidades)"] --> ADR["ADR-001..{ADR_RANGE[-1].split("-")[1]} (decisoes)"]',
+        f'    NFR["NFR-01..NFR-{stats["n_nfrs"]:02d} (drivers)"] --> ADR',
+        f'    ADR --> EPIC["EPIC-01..{last_epic} (entregas)"]',
+        f'    EPIC --> TICK["{first}..{last} (tickets)"]',
         '    DOC["tecnica/00..14 (docs)"] --> EPIC',
         '    TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]',
         "    NFR --> TEST",
@@ -331,9 +384,10 @@ def generate_section6(tickets: dict) -> str:
 
 def regenerate_rtm(tickets: dict, adr_titles: dict) -> str:
     rtm_text = _read(RTM_PATH)
+    stats = corpus_stats(tickets)
 
     # Actualiza §1
-    rtm_text = update_section1(rtm_text)
+    rtm_text = update_section1(rtm_text, stats)
 
     # Substitui §4–§5
     sec4 = generate_section4(build_adr_matrix(tickets, adr_titles))
@@ -347,7 +401,7 @@ def regenerate_rtm(tickets: dict, adr_titles: dict) -> str:
     rtm_text = rtm_text[:m.start()] + new_middle + rtm_text[m.end():]
 
     # Substitui §6
-    sec6 = generate_section6(tickets)
+    sec6 = generate_section6(tickets, stats)
     pattern6 = re.compile(r"## 6\. Rasto descendente: documento técnico → epic → tickets.*?\n---", re.DOTALL)
     m6 = pattern6.search(rtm_text)
     if not m6:
@@ -365,12 +419,23 @@ def main():
     tickets = extract_all_tickets()
     adr_titles = extract_adr_titles()
 
-    # Validação: tickets AOS-001..AOS-189 presentes
+    # Validação FAIL-CLOSED da gama: o backlog tem de ser contínuo de AOS-001 até ao
+    # maior ticket encontrado. Um buraco é deriva do corpus (ticket apagado, renumerado
+    # ou nunca escrito), não um aviso — e um aviso em stderr não avermelhava o gate.
+    if not tickets:
+        sys.stderr.write("ERRO: nenhum ticket AOS-NNN encontrado em specs/EPIC-*.md\n")
+        sys.exit(1)
     all_aos = set(tickets.keys())
-    expected = {f"AOS-{i:03d}" for i in range(1, 190)}
+    max_aos = max(aos_key(t) for t in all_aos)
+    expected = {f"AOS-{i:03d}" for i in range(1, max_aos + 1)}
     missing = sorted(expected - all_aos)
     if missing:
-        sys.stderr.write(f"AVISO: tickets esperados mas não encontrados: {missing[:10]}{'...' if len(missing) > 10 else ''}\n")
+        shown = ", ".join(missing[:10]) + ("..." if len(missing) > 10 else "")
+        sys.stderr.write(
+            f"ERRO: gama de tickets descontínua — {len(missing)} em falta entre "
+            f"AOS-001 e AOS-{max_aos:03d}: {shown}\n"
+        )
+        sys.exit(1)
 
     new_text = regenerate_rtm(tickets, adr_titles)
     if args.check:

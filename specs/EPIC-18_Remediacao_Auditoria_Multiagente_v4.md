@@ -79,8 +79,9 @@ protege `AuthorizationTaint`). Carregar a política **antes** de ligar a barreir
 região transforma um nó *seguro-mas-inerte* num nó **permissivo com a defesa estrutural desligada e com a região
 do recurso ditada pela saída do modelo**.
 
-Ordem obrigatória: **AOS-183 → AOS-205\*/CON-04 → AOS-181**.
-*(\* a correcção de CON-04 pertence ao âmbito de AOS-182 na EPIC-17; se for separada, recebe número próprio.)*
+Ordem obrigatória: **AOS-183 → correcção de CON-04\* → AOS-181**.
+*(\* a correcção de CON-04 pertence ao âmbito de AOS-182 na EPIC-17; se for separada, recebe número próprio —
+ainda **não atribuído**, pelo que não é citado aqui: um `AOS-NNN` inexistente quebraria o gate `ref-lint`.)*
 
 ## 6. Critérios de saída do epic
 
@@ -108,7 +109,7 @@ Todos falsificáveis por comando — é condição de aceitação que cada um se
 
 | ID | Título | Tipo | Est. | Prio | Achado | Bloco |
 |---|---|---|---|---|---|---|
-| AOS-190 | Ligar `layer-lint`/`rtm`/`ref-lint` à CI que bloqueia merges | fix | **S** | **P0** | PLA-01 | A |
+| AOS-190 | Ligar `layer-lint`/`rtm`/`ref-lint` à CI que bloqueia merges — **ENTREGUE** (5/5 CA; elo agregador→merge = *branch protection*, configuração de plataforma fora da árvore — ver §0 do relatório de prova negativa) | fix | **S** | **P0** | PLA-01 | A |
 | AOS-191 | Superfície de configuração para `DurableExecution` (`AOS_DURABLE_EXECUTION`) | feature | **S** | **P0** | REG-01 ≡ STR-09 ≡ PLA-03 | B |
 | AOS-192 | Corrigir o teste de aceitação vacuoso de AOS-180 e reabrir §13.3 | fix | **S** | **P0** | VAC-01 | C |
 | AOS-193 | Caminho de configuração para `Operators`/`Approvers` (plano de controlo operável) | feature | M | **P0** | ORF-02, STR-04 | B |
@@ -146,13 +147,29 @@ deles. Existem apenas em `scripts/ci/run.sh:30` e `Makefile:71-78`. O self-test 
 nada**. Um PR com inversão de camada ou RTM desactualizada obtém `gates` verde.
 
 **Critérios de aceitação**
-- [ ] `grep -c "layer-lint\|rtm\|ref-lint" .github/workflows/ci.yml` ≥ 3.
-- [ ] Os três jobs aparecem no `needs:` do agregador `gates`.
-- [ ] `layer-lint` corre contra `packages/` (não contra árvore sintética) no job de CI.
-- [ ] **Prova negativa registada:** um PR de teste com `import ".../control-plane/..."` dentro de `platform/`
-      torna `gates` **vermelho**; o output é anexado ao ticket.
-- [ ] A baseline de `layer-lint` deixa de dizer «Serão resolvidas pelo ticket AOS-179» nas inversões que o
-      ADR-019 decidiu **legitimar** (texto desalinhado com a decisão).
+- [x] `grep -c "layer-lint\|rtm\|ref-lint" .github/workflows/ci.yml` ≥ 3. *(14 ocorrências; três blocos de job
+      reais em `ci.yml:72-107`, não só comentários.)*
+- [x] Os três jobs aparecem no `needs:` do agregador `gates` (`ci.yml`, 21 entradas, todas resolvidas para jobs
+      existentes).
+- [x] `layer-lint` corre contra `packages/` (não contra árvore sintética) no job de CI: o job invoca
+      `bash scripts/ci/layer-lint.sh --root "$GITHUB_WORKSPACE"`, e `--root` tem precedência sobre a variável
+      `LAYER_LINT_ROOT` que o self-test §L usa. O §L mantém-se como teste complementar, não substituto.
+- [x] **Prova negativa registada** em
+      [`docs/reports/AOS-190-prova-negativa-gates-anti-recorrencia.md`](../docs/reports/AOS-190-prova-negativa-gates-anti-recorrencia.md):
+      violação injectada, comando, output literal, código de saída e reversão, para cada um dos três gates.
+      **Ressalva de honestidade — ler o §0 do relatório:** o texto deste CA pressupõe um «PR de teste», que
+      **não existe nem pode existir** (não há remote configurado, logo não há execução do workflow no GitHub
+      para observar). A prova executada é **local ao nível do script** (violação ⇒ `exit != 0`); o elo
+      script→job→agregador é verificado por **inspecção estática** (`needs:` do agregador + `if: always()`),
+      e o elo agregador→merge é configuração de *branch protection*, fora da árvore.
+      *(Colateral necessário: `gates` foi endurecido com `if: always()` + avaliação de `needs.*.result`. Sem
+      isso o agregador seria **saltado** — conclusão `skipped`, que a branch protection trata como passagem —
+      e este CA seria literalmente impossível de satisfazer: `gates` não conseguiria ficar vermelho. Também
+      se fechou um fail-open no gate `rtm`, cujas contagens eram literais e não detectavam o crescimento do
+      corpus — ver §4 do relatório.)*
+- [x] A baseline de `layer-lint` deixa de dizer «Serão resolvidas pelo ticket AOS-179» nas inversões que o
+      ADR-019 decidiu **legitimar** (texto desalinhado com a decisão). *(`scripts/ci/baseline/layer-lint-exceptions.txt`;
+      só linhas de comentário mudaram — as chaves `pacote|import` são idênticas, a superfície tolerada não aumentou.)*
 
 ---
 

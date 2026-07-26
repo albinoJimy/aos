@@ -44,6 +44,9 @@ acrescenta ao `PATH` o mingw/shims do scoop e o `bin` do GOPATH, e força
 |---|---|---|---|---|
 | 1 | build | `build.sh` | `go build ./...` em cada módulo | merge |
 | 2 | lint | `lint.sh` | `gofmt -l`, `go vet`, `staticcheck` **+ arch-lint AOS-003** (proibição de despacho directo) | merge |
+| 2b | ref-lint | `ref-lint.sh` | referências cruzadas do corpus (AOS-186): todo o `AOS-NNN` citado existe no backlog; todo o `ADR-NNN` citado existe no catálogo; cada ADR canónico tem ≥ 1 ticket implementador. Só precisa de **Python 3** | merge |
+| 2c | rtm | `rtm.sh` | sincronia da matriz de rastreabilidade `tecnica/16` com o corpus (AOS-186), via `rtm-regenerate.py --check`. Só precisa de **Python 3** | merge |
+| 2d | layer-lint | `layer-lint.sh` | fronteiras canónicas de camada sobre `packages/` (AOS-178); excepções intencionais na baseline, decididas no **ADR-019**. Precisa de **Go** (`go list`) | merge |
 | 3 | test | `test.sh` | `go test ./... -race -covermode=atomic`; **cobertura do kernel ≥ 80%** | merge |
 | 8 | replay | `replay.sh` | **harness de replay/idempotência (AOS-024)**: golden trajectories reproduzem-se *resume-from-step* (replay-fidelity 100%) + **zero efeitos duplicados** (step-ledger AOS-014); emite o relatório de fidelidade | merge |
 | 4 | sast | `sast.sh` | `gosec` — falha em findings **HIGH/CRITICAL** | merge |
@@ -67,13 +70,35 @@ Provam, de forma isolada e reversível (sem rasto no repo), que os gates bloquei
 - **B** — assinatura do bundle do PDP adulterada (backup+restore) ⇒ `policy-test` vermelho;
 - **C** — vuln afetante fora da baseline ⇒ comparador do `sca` vermelho (determinista, offline).
 - **D** — golden trajectory **adulterada** ⇒ o harness de replay (gate 8) vermelho (determinista, offline, sem rasto).
+- **L** — inversão de camada numa árvore sintética ⇒ `layer-lint` vermelho (AOS-178).
+- **M** — *(coerência, não injecção)* as três listas de required checks — `needs:` do agregador,
+  `REQUIRED-CHECKS:` de `ci.yml` e `REQUIRED-CHECKS:` deste ficheiro — têm de coincidir entrada a
+  entrada e na mesma ordem, e o agregador `gates` tem de manter `if: always()` + avaliação de
+  `needs.*.result`. Divergirem em silêncio já aconteceu (auditoria v4, AOS-190) e nada o detectava.
 
 ## Required checks (bloqueiam o merge em `main`)
 
-Configurar em *branch protection* de `main` os checks:
-`secrets · build · lint · test · replay · sast · sca · policy-test · selftest`, ou o
-agregador único **`gates`** (job que depende de todos). O **scan de segredos**
-(regra transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de merge.
+Configurar em *branch protection* de `main` os checks (lista completa, na mesma ordem
+do `needs:` do agregador — o self-test §M compara-a com `.github/workflows/ci.yml` e
+fica vermelho se divergir):
+
+REQUIRED-CHECKS: secrets · build · lint · ref-lint · rtm · layer-lint · test · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
+
+…ou, em alternativa, o agregador único **`gates`**. O **scan de segredos** (regra
+transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de merge.
+
+Os três gates **anti-recorrência** (`ref-lint`, `rtm`, `layer-lint`, AOS-190) constam
+do `needs:` do agregador `gates` — é isso, e só isso, que os torna bloqueantes. Um
+gate que não consiga sequer arrancar (ex.: interpretador Python ausente) sai `!= 0` e
+avermelha o job: **nunca** há caminho de "skip" verde.
+
+O agregador `gates` só é substituto legítimo da lista completa porque é **fail-closed
+por construção**: tem `if: always()` e avalia `needs.*.result`, terminando `!= 0` se
+qualquer gate não ficar `success`. Sem isso, um `needs:` vermelho fá-lo-ia ser
+**saltado** pelo GitHub Actions, e a protecção de branch trata `skipped` como
+passagem — o agregador nunca conseguiria ficar vermelho. Se alguém remover o
+`if: always()` ou o passo de avaliação, esta alternativa deixa de ser válida e a
+lista completa de 21 checks passa a ser obrigatória.
 
 ## Tempo aceitável
 

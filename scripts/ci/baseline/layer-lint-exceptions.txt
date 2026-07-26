@@ -30,8 +30,11 @@ github.com/aos-ref/platform/model-gateway/metering/cost/budgetbridge|github.com/
 github.com/aos-ref/control-plane/orchestrator|github.com/aos-ref/platform/identity # ADR-019
 github.com/aos-ref/control-plane/scheduler|github.com/aos-ref/platform/identity # ADR-019
 
-# ARQ-05: violações control-plane -> platform/substrate reveladas pela regra
-# estrita do layer-lint (AOS-178). Serão resolvidas pelo ticket AOS-179.
+# ARQ-05: inversões control-plane -> platform/substrate reveladas pela regra
+# estrita do layer-lint (AOS-178). NÃO são dívida por resolver: o ADR-019 §2.5
+# decidiu LEGITIMÁ-LAS na v1 single-host (o plano de controlo governa mas consome
+# identidade/audit/messaging/eventstore/observabilidade da plataforma e do
+# substrato). AOS-179 fechou-as por formalização, não por refactorização.
 github.com/aos-ref/control-plane/*|github.com/aos-ref/platform/audit # ADR-019
 github.com/aos-ref/control-plane/*|github.com/aos-ref/platform/messaging # ADR-019
 github.com/aos-ref/control-plane/*|github.com/aos-ref/substrate/bus # ADR-019

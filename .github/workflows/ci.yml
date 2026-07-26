@@ -10,11 +10,14 @@
 # validação real dos gates é o runner local.
 #
 # ─── REQUIRED CHECKS (bloqueiam o merge na branch principal) ──────────────────
-# Configurar em Settings → Branches → branch protection de `main`, exigindo os
-# checks: build · lint · test · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · gates. O job `gates`
-# agrega os anteriores para um único gate obrigatório conveniente. O scan de
-# segredos (regra transversal de specs/01 §4) é pré-condição de merge e corre em
-# `lint` como passo dedicado.
+# Configurar em Settings → Branches → branch protection de `main`. A lista seguinte
+# é a FONTE DE VERDADE e tem de coincidir, entrada a entrada e na mesma ordem, com o
+# `needs:` do job `gates` e com a lista de CONTRIBUTING.md §"Required checks" — o
+# self-test §M compara as três e fica vermelho se divergirem.
+# REQUIRED-CHECKS: secrets · build · lint · ref-lint · rtm · layer-lint · test · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
+# Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 21 acima
+# e é fail-closed por construção (`if: always()` + avaliação de `needs.*.result`),
+# pelo que fica `failure` — e não `skipped` — quando qualquer um deles não fica verde.
 name: ci
 
 on:
@@ -64,6 +67,47 @@ jobs:
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate lint (+ arch-lint AOS-003)
         run: bash scripts/ci/lint.sh
+
+  # Gate 2b — referências cruzadas AOS-NNN/ADR-NNN do corpus documental (AOS-186).
+  # Só precisa de Python: scripts/ci/ref-lint.sh embrulha ref-lint.py (stdlib pura,
+  # sem toolchain Go). Fail-closed: se o interpretador faltar, o wrapper sai != 0
+  # (127) e o job fica vermelho — nunca "skip" verde.
+  ref-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gate ref-lint (AOS-NNN citados existem · ADR canónicos com ticket)
+        run: bash scripts/ci/ref-lint.sh
+
+  # Gate 2c — sincronia da RTM com o corpus (AOS-186). scripts/ci/rtm.sh corre
+  # rtm-regenerate.py --check (stdlib pura). Também só precisa de Python.
+  rtm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gate rtm (matriz de rastreabilidade sincronizada com specs/ e docs/adr/)
+        run: bash scripts/ci/rtm.sh
+
+  # Gate 2d — fronteiras de camada (AOS-178, excepções em ADR-019). Precisa de Go:
+  # o script faz `go list` em cada módulo de packages/ para extrair o grafo de imports.
+  # --root aponta explicitamente para a checkout REAL (packages/ do repo), nunca para a
+  # árvore sintética que o self-test usa.
+  layer-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: "packages/**/go.sum"
+      - name: Gate layer-lint (fronteiras de camada sobre packages/ · baseline ADR-019)
+        run: bash scripts/ci/layer-lint.sh --root "$GITHUB_WORKSPACE"
 
   test:
     runs-on: ubuntu-latest
@@ -261,12 +305,30 @@ jobs:
         run: bash scripts/ci/selftest.sh
 
   # Gate agregador conveniente para branch protection (required check único).
+  #
+  # `if: always()` + avaliação explícita de `needs.*.result` é ESSENCIAL, não cosmético:
+  # sem isso, um `needs:` vermelho faz o GitHub Actions SALTAR este job, e a conclusão
+  # reportada é `skipped` — que a protecção de branch trata como PASSAGEM. O agregador
+  # ficaria então incapaz de ficar vermelho, anulando exactamente a propriedade que o
+  # AOS-190 exige. Com `always()`, o job corre sempre e ele próprio termina != 0 se
+  # QUALQUER gate não tiver ficado `success` (falha, cancelado ou saltado).
   gates:
     runs-on: ubuntu-latest
-    needs: [secrets, build, lint, test, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
+    if: always()
+    needs: [secrets, build, lint, ref-lint, rtm, layer-lint, test, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
     steps:
-      - name: Todos os gates verdes
-        run: echo "Todos os gates de CI passaram (fail-closed)."
+      - name: Todos os gates verdes (fail-closed)
+        env:
+          GATES_RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Resultados dos gates: $GATES_RESULTS"
+          for r in $GATES_RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "FAIL: pelo menos um gate não ficou verde (resultado '$r')." >&2
+              exit 1
+            fi
+          done
+          echo "Todos os gates de CI passaram (fail-closed)."
 
   # Entrega do artefacto `aos` — não bloqueante até EPIC-10 (visível, mas não
   # required). Corre após os gates para não desperdiçar recursos em código partido.

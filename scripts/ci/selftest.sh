@@ -14,9 +14,18 @@
 #   E) violação de invariante de memória bloqueia o gate memory (AOS-044);
 #   F) vector de supply-chain desbloqueado bloqueia o gate supplychain (AOS-054);
 #   G) cenário de roteamento/failover desbloqueado bloqueia o gate routing (AOS-063);
-#   H) controlo de segurança desligado bloqueia o gate security (AOS-075).
+#   H) controlo de segurança desligado bloqueia o gate security (AOS-075);
+#   I) cobertura abaixo do limiar bloqueia o gate de cobertura (AOS-109);
+#   J) invariante vacuosa bloqueia o AC4 do ápice (AOS-151);
+#   K) egress desbloqueado bloqueia o enforcement do ápice (AOS-161);
+#   L) inversão de camada sintética bloqueia o layer-lint (AOS-178);
+#   M) as três listas de required checks coincidem entre si (AOS-190) — ver nota.
 #
 # NOTA: um self-test PASSA quando o gate correspondente FALHA como esperado.
+# Excepção: §M não injecta falha — é uma verificação de COERÊNCIA de configuração.
+# Existe porque as listas de required checks são a única mitigação humana caso o
+# agregador `gates` seja alguma vez desendurecido; divergirem em silêncio já
+# aconteceu (auditoria v4) e não havia nada a detectá-lo.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 setup_env
@@ -304,6 +313,70 @@ else
 fi
 rm -rf "$LAYER_TMP"
 LAYER_TMP=""
+
+# ============================================================================
+# M) Coerência das listas de required checks (AOS-190)
+#
+# A lista de checks obrigatórios existe em três sítios e TEM de ser a mesma:
+#   1. `needs:` do job agregador `gates` em .github/workflows/ci.yml (a real);
+#   2. o comentário `REQUIRED-CHECKS:` do cabeçalho do mesmo ficheiro;
+#   3. a linha `REQUIRED-CHECKS:` de CONTRIBUTING.md.
+# Se divergirem, um mantenedor configura menos checks do que os que existem e
+# gates que falham deixam de bloquear. Comparação por sequência exacta (a ordem
+# também importa: é ela que torna a revisão humana viável).
+# ============================================================================
+log_gate "self-test M · listas de required checks coerentes com o needs: do agregador"
+
+CI_YML="$REPO_ROOT/.github/workflows/ci.yml"
+CONTRIB="$REPO_ROOT/CONTRIBUTING.md"
+
+# 1. needs: do agregador -> "a b c"
+needs_list="$(grep -m1 -E '^[[:space:]]*needs:[[:space:]]*\[secrets,' "$CI_YML" \
+  | sed -E 's/^[^[]*\[//; s/\].*$//; s/,/ /g' | tr -s ' ' | sed -E 's/^ +| +$//g')"
+# 2/3. linhas REQUIRED-CHECKS: (separadas por " · ") -> "a b c"
+# O marcador TEM de estar no início da linha (opcionalmente após "# " em YAML):
+# sem a âncora, uma menção em prosa a `REQUIRED-CHECKS:` no texto explicativo é
+# apanhada primeiro pelo `-m1` e a comparação passa a ser feita contra prosa.
+extract_required() {
+  grep -m1 -E '^(# )?REQUIRED-CHECKS:' "$1" \
+    | sed -E 's/^(# )?REQUIRED-CHECKS:[[:space:]]*//; s/`//g' \
+    | sed -E 's/ · / /g' | tr -s ' ' | sed -E 's/^ +| +$//g'
+}
+yml_list="$(extract_required "$CI_YML")"
+doc_list="$(extract_required "$CONTRIB")"
+
+if [ -z "$needs_list" ]; then
+  bad "M: não encontrei o \`needs:\` do agregador \`gates\` em .github/workflows/ci.yml"
+elif [ -z "$yml_list" ]; then
+  bad "M: não encontrei a linha REQUIRED-CHECKS: em .github/workflows/ci.yml"
+elif [ -z "$doc_list" ]; then
+  bad "M: não encontrei a linha REQUIRED-CHECKS: em CONTRIBUTING.md"
+elif [ "$needs_list" != "$yml_list" ]; then
+  bad "M: REQUIRED-CHECKS de ci.yml diverge do needs: do agregador
+       needs: $needs_list
+       ci.yml: $yml_list"
+elif [ "$needs_list" != "$doc_list" ]; then
+  bad "M: REQUIRED-CHECKS de CONTRIBUTING.md diverge do needs: do agregador
+       needs:        $needs_list
+       CONTRIBUTING: $doc_list"
+else
+  n_checks="$(printf '%s' "$needs_list" | wc -w | tr -d ' ')"
+  pass "M: as 3 listas de required checks coincidem ($n_checks checks, mesma ordem)"
+fi
+
+# O agregador só é substituto legítimo da lista completa se for fail-closed:
+# sem `if: always()` seria SALTADO (conclusão `skipped` = passagem para a branch
+# protection) em vez de vermelho, e os gates deixariam de bloquear de facto.
+if grep -A2 -E '^  gates:' "$CI_YML" | grep -q 'if: always()'; then
+  pass "M: agregador \`gates\` tem \`if: always()\` (não pode ficar \`skipped\` em vez de vermelho)"
+else
+  bad "M: agregador \`gates\` sem \`if: always()\` — ficaria \`skipped\` (= verde) quando um gate falha"
+fi
+if grep -q "needs.\*.result" "$CI_YML"; then
+  pass "M: agregador \`gates\` avalia \`needs.*.result\` (falha se algum gate não ficar success)"
+else
+  bad "M: agregador \`gates\` não avalia \`needs.*.result\` — passaria verde com gates vermelhos"
+fi
 
 # ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"
