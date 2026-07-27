@@ -11,7 +11,7 @@ package otelgenai
 // da trajectória original PORQUE partilha o MESMO trace_id (a correlação faz-se via
 // a agregação por trace de cost_aggregation.go / wide_event.go — não se duplica).
 //
-// # O que é ESTE módulo (folha) e o que é EPIC-11 (diferido)
+// # O que é ESTE módulo (folha) e o que é AOS-114/AOS-115 (diferido)
 //
 // Este ficheiro entrega o LADO OBS: o vocabulário do span de eval, um
 // [EvaluationResult] tipado, um recorder que o emite ligado por trace_id, as PORTAS
@@ -207,12 +207,13 @@ func attrString(sd SpanData, key string) string {
 }
 
 // ---------------------------------------------------------------------------
-// PORTAS — EvalRunner + EvalGate (concreto = EPIC-11, DIFERIDO)
+// PORTAS — EvalRunner + EvalGate (concreto = AOS-114/AOS-115, DIFERIDO)
 // ---------------------------------------------------------------------------
 
 // EvalTarget é a trajectória a avaliar entregue ao [EvalRunner]: o trace_id da
-// trajectória e os seus spans (a árvore já emitida). O runner concreto (EPIC-11)
-// corre o golden-set/dataset sobre esta trajectória e produz um [EvaluationResult].
+// trajectória e os seus spans (a árvore já emitida). O runner concreto (AOS-114,
+// entregue em packages/platform/eval) corre o golden-set/dataset sobre esta
+// trajectória e produz um [EvaluationResult].
 type EvalTarget struct {
 	// TraceID é o trace_id da trajectória avaliada (liga o resultado à trajectória).
 	TraceID [16]byte
@@ -223,7 +224,7 @@ type EvalTarget struct {
 // EvalRunner é a PORTA para o harness de avaliação concreto (EPIC-11, AOS-114). Run
 // avalia a trajectória target (golden-set curado e/ou dataset derivado de falhas) e
 // devolve o [EvaluationResult]. O runner CONCRETO — os golden-sets curados, os
-// datasets de falhas, o critério de pass/fail — pertence a EPIC-11 e fica DIFERIDO.
+// datasets de falhas, o critério de pass/fail — pertence a AOS-114 e fica DIFERIDO.
 // Aqui só a porta + impls de referência ([StaticEvalRunner], [EvalRunnerFunc]).
 type EvalRunner interface {
 	Run(ctx context.Context, target EvalTarget) EvaluationResult
@@ -239,8 +240,10 @@ func (f EvalRunnerFunc) Run(ctx context.Context, target EvalTarget) EvaluationRe
 
 // StaticEvalRunner é um runner de referência/fake que devolve sempre Result (com o
 // TargetTraceID preenchido a partir do target, para o resultado ficar ligado à
-// trajectória). É o duplo de teste até EPIC-11 entregar o runner concreto — NÃO é um
-// harness real (não corre golden-sets).
+// trajectória). É o duplo de teste desta folha — NÃO é um harness real (não corre
+// golden-sets). O harness REAL já existe: packages/platform/eval (AOS-114). O que
+// falta é o gate de promoção composto num caminho de produção (AOS-115) — ver
+// DEF-009 do registo de deferimentos.
 type StaticEvalRunner struct {
 	Result EvaluationResult
 }
@@ -252,11 +255,12 @@ func (r StaticEvalRunner) Run(_ context.Context, target EvalTarget) EvaluationRe
 	return out
 }
 
-// EvalGate é a PORTA de admission-control da auto-modificação (ADR-012, EPIC-11): a
-// partir de um [EvaluationResult], Admit reporta se o artefacto comportamental
+// EvalGate é a PORTA de admission-control da auto-modificação (ADR-012; eixo do
+// concreto: AOS-115): a partir de um [EvaluationResult], Admit reporta se o artefacto
+// comportamental
 // candidato (skill/memória procedural auto-escrita) pode ser promovido. O gate
 // CONCRETO — a política completa de promoção staging→canary→prod — pertence a
-// EPIC-11 e fica DIFERIDO; aqui a porta + a referência FAIL-CLOSED [FailClosedGate].
+// AOS-114/AOS-115 e fica DIFERIDO; aqui a porta + a referência FAIL-CLOSED [FailClosedGate].
 type EvalGate interface {
 	Admit(result EvaluationResult) bool
 }

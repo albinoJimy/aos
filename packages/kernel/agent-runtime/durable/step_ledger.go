@@ -33,7 +33,7 @@ const ledgerStepPrefix = "ledger-"
 // # Segredos (ver também [WithSensitiveResults] e README, secção "segredos")
 //
 // O Payload é persistido EM CLARO no evento durável do Event Store (o cifrado
-// por-titular do ES é dívida de EPIC-13). Para resultados SENSÍVEIS, o chamador
+// por-titular do ES é dívida de AOS-093). Para resultados SENSÍVEIS, o chamador
 // deve passar uma REFERÊNCIA (hash/URI) em vez dos bytes em claro e marcar
 // [Result.Reference]. Por defeito o ledger persiste o Payload tal como o recebe
 // (convenção de chamador); com [WithSensitiveResults] activo, o ledger RECUSA
@@ -171,7 +171,7 @@ func WithObserver(o Observer) LedgerOption { return func(l *StepLedger) { l.obs 
 // [StepLedger.Apply] RECUSA ([ErrClearResultInSensitiveMode]) memorizar um Result
 // com Payload não-vazio que não esteja marcado como [Result.Reference] — porque o
 // Payload é persistido em claro no Event Store (o cifrado por-titular é dívida de
-// EPIC-13). É OPT-IN: o default preserva o contrato documentado (Payload tal-como-
+// AOS-093). É OPT-IN: o default preserva o contrato documentado (Payload tal-como-
 // recebido, redacção a cargo do chamador). Consumidores AOS-021 com resultados de
 // tool calls sensíveis devem activá-la e propagar uma referência (hash/URI).
 func WithSensitiveResults() LedgerOption { return func(l *StepLedger) { l.sensitive = true } }

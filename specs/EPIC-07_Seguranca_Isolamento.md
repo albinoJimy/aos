@@ -8,7 +8,7 @@
 | Data | Julho de 2026 |
 | Classificação | Documento de Referência — Aberto |
 | Documento-fonte | `_FONTE_agentic-os-ideal.md` |
-| Documentos relacionados | `tecnica/07_Seguranca_Isolamento.md`, `specs/EPIC-01_Fundacoes_Plano_Controlo.md`, `specs/EPIC-09_Governacao_Conformidade.md`, `specs/01_Engineering_Standards_e_Handoff.md`, `tecnica/12_Contratos_de_Interface.md`, `tecnica/13_Modelo_Dados_Eventos.md` |
+| Documentos relacionados | `tecnica/07_Seguranca_Isolamento.md`, `tecnica/17_Analise_STRIDE.md` (modelo de ameaças que classifica os controlos desta epic), `specs/EPIC-01_Fundacoes_Plano_Controlo.md`, `specs/EPIC-09_Governacao_Conformidade.md`, `specs/01_Engineering_Standards_e_Handoff.md`, `tecnica/12_Contratos_de_Interface.md`, `tecnica/13_Modelo_Dados_Eventos.md` |
 
 ---
 

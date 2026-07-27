@@ -33,30 +33,47 @@
 packages/cmd/aos/bootstrap.go|EPIC-09/10 # owner=AOS-196 (pendência P-1); eixo correcto: DEF-201 (POR ATRIBUIR) + DEF-202 (AOS-182) — string do banner "NOTA D6"
 packages/cmd/aos/bootstrap.go|EPIC-06/09/10 # owner=AOS-196 (pendência P-1); eixo correcto: DEF-301 (AOS-093, arbitragem A-DEF-301) — string do banner "AVISO DSAR"
 
-# --- Soberania de leitura em ficheiros de outro pipeline (pendência P-2) -----
-packages/cmd/aos/dsar.go|EPIC-09/10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-207/DEF-208 (POR ATRIBUIR, nota N-DEF-201)
-packages/cmd/aos/main.go|EPIC-09/10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-209/DEF-210 (POR ATRIBUIR, nota N-DEF-201)
-tecnica/17_Analise_STRIDE.md|EPIC-09/10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-307 (AOS-093, arbitragem A-DEF-301) — ficheiro de AOS-194
-tecnica/14_Matriz_Conformidade.md|EPIC-09+EPIC-10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-201 (POR ATRIBUIR, nota N-DEF-201) — ficheiro de AOS-197
+# --- Legal hold / retenção / bundle de política (residual de AOS-197) ---------
+# Esta entrada é uma REPOSIÇÃO deliberada, e a razão importa. Na primeira passagem
+# de P-2 a frase do legal hold vivia no MESMO parágrafo que a cifra por-titular;
+# ao propagar `AOS-093` para essa frase, o parágrafo inteiro passou a trazer um
+# `AOS-NNN` e a verificação 6 deixou de o ver (`deferrals.py`: `if not epics or
+# RE_AOS.search(line): continue`). O deferimento sem ticket não desapareceu —
+# ficou INVISÍVEL, e a entrada de baseline tinha saído ao mesmo tempo. Isso é
+# gate verde por cegueira, não por ausência de dívida.
+# A correcção foi separar o residual para linha própria SEM `AOS-NNN` (volta a ser
+# apanhado) e repor aqui a entrada com dono. Sai quando o dono atribuir o eixo —
+# pela regra 3, não por esbatimento.
+tecnica/14_Matriz_Conformidade.md|EPIC-09 # owner=dono do backlog (residual nomeado da entrega de AOS-197, `specs/EPIC-18`); eixo correcto: POR ATRIBUIR — achado CON-02 (administração de legal hold/retenção) e carregamento de bundle de política no binário
 
-# --- Cifra por-titular do substrato: o eixo EPIC-13 (Frontend) do achado DEF-01
-# Quatro ocorrências no agent-runtime + uma na matriz de conformidade. É a MESMA
-# dívida das corrigidas em tecnica/02 e bootstrap.go, nos ficheiros que AOS-196
-# não pode escrever.
-packages/kernel/agent-runtime/durable/errors.go|EPIC-13 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-304 (AOS-093, arbitragem A-DEF-301) — EPIC-13 é o epic de Frontend
-packages/kernel/agent-runtime/durable/step_ledger.go|EPIC-13 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-304 (AOS-093, arbitragem A-DEF-301) — EPIC-13 é o epic de Frontend
-packages/kernel/agent-runtime/replay/nondeterminism_capture.go|EPIC-13 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-305 (AOS-093, arbitragem A-DEF-301) — 2 ocorrências, EPIC-13 é o epic de Frontend
-tecnica/14_Matriz_Conformidade.md|EPIC-06+EPIC-09+EPIC-10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-306 (AOS-093, arbitragem A-DEF-301) — «Eixo declarado» da cifra do substrato
-
-# --- Grafia DIFERIDO (com I): o mesmo defeito noutra ortografia ---------------
-# Acrescentadas em 2026-07-27, quando a verificação 6 passou a reconhecer também
-# `DIFERID*`/`diferid*` (a forma portuguesa corrente, que escapava ao vocabulário
-# original — ver §4 do registo). Ambas são ocorrências REAIS do defeito DEF-01:
-# deferem para um EPIC sem nomear ticket. Os ficheiros são de `packages/**` e
-# estão FORA do âmbito de escrita de AOS-196; o eixo correcto (um ticket que
-# existe e cobre o assunto) já está no registo.
-packages/kernel/reference-monitor/scope_gate.go|EPIC-08 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-605 (AOS-076 — «cada tool call mediada pelo RM emite um span execute_tool» é literalmente o CA em falta)
-packages/substrate/otel-genai/evaluation.go|EPIC-11 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-009 (AOS-114/AOS-115) — 4 ocorrências; o harness concreto JÁ existe em packages/platform/eval
-
-# --- Fronteira nó↔ORQ/SCH ----------------------------------------------------
-docs/adr/ADR-018-fronteira-no-orq-sch.md|EPIC-10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-502 (AOS-098/099/100) — cabeçalho «O que muda no distribuído», ficheiro fora do âmbito de escrita
+# --- Pendência P-2: FECHADA (2026-07-27) -------------------------------------
+# As ONZE entradas que aqui viviam — `durable/errors.go`, `durable/step_ledger.go`,
+# `replay/nondeterminism_capture.go`, `cmd/aos/dsar.go`, `cmd/aos/main.go`,
+# `reference-monitor/scope_gate.go`, `otel-genai/evaluation.go`, `tecnica/14` (duas),
+# `tecnica/17` e `docs/adr/ADR-018` — foram REMOVIDAS porque o texto dos ficheiros
+# foi corrigido, não porque a regra tenha sido esbatida. É a regra 3 deste cabeçalho
+# a funcionar: corrigido o texto, a entrada fica OBSOLETA e o gate FALHA até sair.
+#
+# UMA delas VOLTOU — `tecnica/14|EPIC-09` — e está na secção seguinte com a razão por
+# extenso: a remoção tinha sido correcta para a cifra por-titular e INCORRECTA para o
+# legal hold, que partilhava o mesmo parágrafo e ficou invisível ao gate em vez de
+# corrigido. Só a cifra por-titular fechou naquele parágrafo; o legal hold não.
+#
+# O eixo propagado foi o que o registo já trazia, sem excepção:
+#   - a cifra por-titular do substrato (o `EPIC-13` de Frontend do achado DEF-01, em
+#     SEIS sítios: errors.go, step_ledger.go ×2, nondeterminism_capture.go ×2 e a
+#     «Eixo declarado» de tecnica/14) → **AOS-093**, arbitragem A-DEF-301;
+#   - o alcance do crypto-shredding em `tecnica/17` §5.2-d → **AOS-093**;
+#   - o provisionamento do IdP de soberania (`dsar.go`, `main.go` e o ponto 1 da lista
+#     de `tecnica/14` que trata do registo de soberania)
+#     → **AOS-205**, o ticket que a nota N-DEF-201 descrevia e que já existe;
+#   - a metade SPAN/OTel do escopo efectivo (`scope_gate.go`, grafia DIFERIDO)
+#     → **AOS-076**;
+#   - o runner/gate de eval concretos (`otel-genai/evaluation.go`, 4 ocorrências)
+#     → **AOS-114/AOS-115**;
+#   - a fronteira nó↔ORQ/SCH no distribuído (`ADR-018`) → **AOS-098/099/100**.
+#
+# Nos ficheiros `.go` a correcção tocou APENAS COMENTÁRIOS. As duas entradas que
+# restam acima são a pendência P-1 — strings `log(...)` do banner de arranque, que
+# são comportamento observável e não comentário. Continuam com dono e a encolher só
+# por remoção.

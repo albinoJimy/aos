@@ -8,7 +8,7 @@
 | Data | 2026-07-22 |
 | Classificação | Documento de Referência — Aberto |
 | Documento-fonte | **`specs/00_AOS_Carta.md` v1.0 (RATIFICADA)** — §2 forma do produto, §5 DoD da v1 |
-| Documentos relacionados | `specs/EPIC-14_Integracao_Composition_Root.md` (composition-root/PR-0), `specs/EPIC-13_Frontend.md` (AOS-130/133–136), `specs/00_System_Spec.md` (§13 critérios sistémicos), `docs/reports/D4-escalacao-autoridade-identidade.md`, `specs/01_Engineering_Standards_e_Handoff.md` |
+| Documentos relacionados | `specs/EPIC-14_Integracao_Composition_Root.md` (composition-root/PR-0), `specs/EPIC-13_Frontend.md` (AOS-130/133–136), `specs/00_System_Spec.md` (§13 critérios sistémicos), `tecnica/17_Analise_STRIDE.md` (modelo de ameaças da superfície REAL do nó deployável), `docs/reports/D4-escalacao-autoridade-identidade.md`, `specs/01_Engineering_Standards_e_Handoff.md` |
 
 ---
 

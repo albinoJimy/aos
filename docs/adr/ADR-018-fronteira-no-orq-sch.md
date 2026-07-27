@@ -72,7 +72,7 @@ Concretização na topologia single-process:
    registos de lease vivem todos no **mesmo Event Store durável** (AOS-170). Não se
    introduz um segundo log/estado de escalonamento paralelo.
 
-### O que muda no distribuído (EPIC-10, DEFERIDO)
+### O que muda no distribuído (DEFERIDO — AOS-098, AOS-099, AOS-100)
 
 A v1 single-host/sem-HA é um **non-goal DATADO** (Carta §7, emenda 1.2), não uma regressão.
 Num deployment distribuído (EPIC-10), a decomposição (ORQ) e o despacho (SCH) podem tornar-se

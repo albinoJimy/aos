@@ -12,7 +12,7 @@
 // operação de governação e exige um principal de governação AUTENTICADO; sem o gate soberano
 // composto o endpoint está DESLIGADO (fail-closed). Passa também pelo token-bucket do plano
 // de CONTROLO (admitControl). A credencial FORTE do operador DSAR (OIDC/mTLS no IdP de
-// soberania) é DEMO-GRADE aqui e fica DEFERIDA para EPIC-09/10 (análogo a D4).
+// soberania) é DEMO-GRADE aqui e fica DEFERIDA para AOS-205 (análogo a D4).
 //
 // GARANTIAS reutilizadas do [dsar.Flow] (não re-litigadas):
 //   - o legal HOLD é re-consultado ANTES de cada Shred — um titular sob hold NÃO é apagado
@@ -63,7 +63,7 @@ const maxSubjectIDLen = 128
 // letras/dígitos ASCII e os separadores '-', '_', ':', '.' (cobre ULID/UUID/hash namespaced)
 // — e um comprimento limitado. Rejeita '@' (emails), espaços/nomes, não-ASCII e pontuação
 // livre, típicos de PII. É defesa em profundidade, NÃO uma prova de que o valor é pseudónimo:
-// a garantia forte (pseudonimização na origem) vive no IdP de soberania (EPIC-09/10).
+// a garantia forte (pseudonimização na origem) vive no IdP de soberania (AOS-205).
 func validPseudonym(s string) bool {
 	if len(s) == 0 || len(s) > maxSubjectIDLen {
 		return false

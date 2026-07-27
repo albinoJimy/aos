@@ -304,7 +304,7 @@ func nodeConfigFromEnv() (Config, error) {
 		// SOBERANIA DE LEITURA (AOS-172, D7). Registo board→região DEMO-GRADE self-hosted por
 		// ambiente (AOS_BOARD_REGIONS = "board=regiao,board2=regiao2"), com um board demo por
 		// omissão. Já validado fail-closed acima (vazio ⇒ legado; malformado ⇒ abortou). A REGRA
-		// fail-closed é FIXA; o provisioning real de regiões/boards fica DEFERIDO (EPIC-09/10).
+		// fail-closed é FIXA; o provisioning real de regiões/boards fica DEFERIDO (AOS-205).
 		// Ligar isto torna o read-path soberano fail-closed E o selo WORM de leitura sensível (D6)
 		// — os clientes de leitura têm de declarar X-Aos-Reader/X-Aos-Board.
 		BoardRegions: boardRegions,

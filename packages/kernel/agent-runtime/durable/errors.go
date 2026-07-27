@@ -51,7 +51,7 @@ var (
 	// ErrClearResultInSensitiveMode — em modo sensível ([WithSensitiveResults]) o
 	// effect devolveu um Result com Payload não-vazio SEM o marcar como Reference.
 	// O Payload é persistido em CLARO no evento durável do Event Store (o cifrado
-	// por-titular do ES é dívida de EPIC-13); em modo sensível o ledger recusa
+	// por-titular do ES é dívida de AOS-093); em modo sensível o ledger recusa
 	// memorizar bytes de resultado em claro — o chamador tem de passar uma
 	// referência (hash/URI) e marcar Result.Reference.
 	ErrClearResultInSensitiveMode = errors.New("durable: modo sensível recusa Payload de resultado em claro (marque Result.Reference com uma referência)")

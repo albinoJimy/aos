@@ -220,6 +220,7 @@ que a activa, o banner declara o estado composto, e `deploy/node/README.md` docu
 
 **Critérios de aceitação:**
 - [x] `packages/substrate/redaction` é ligado ao Event Store, `platform/memory`, `substrate/otel-genai` e `platform/audit` (ou o `doc.go` é actualizado para refectar o escopo real).
+  - *Nota de encerramento (AOS-195, CA2): este CA fechou pela **porta de escape disjuntiva** — «ou o `doc.go` é actualizado» —, **não** pela cablagem. E até ao commit `d355551` nem essa via estava genuinamente satisfeita: o texto substituto do `doc.go` afirmava uma cablagem inexistente, pelo que o `[x]` descrevia um facto falso. AOS-195 corrigiu o `doc.go` para o escopo REAL, e é isso — e só isso — que o `[x]` hoje atesta. Mantém-se marcado porque desmarcá-lo tornaria o CA falso no sentido inverso: a disjunção está satisfeita. A **ligação substantiva** do motor de redacção aos quatro consumidores continua por fazer e tem eixo próprio em **AOS-208** (`specs/EPIC-18` §8-bis) — não é dívida escondida atrás deste `[x]`.*
 - [x] Remover a redeclaração de `OpExecuteTool` em `packages/substrate/sandbox/tracer.go`; usar `otelgenai.OpExecuteTool`.
 - [x] Testes que provem que PII de exemplo não persiste em eventos/spans/audits.
 - [x] `tecnica/08_Observabilidade_Evals.md` actualizado.

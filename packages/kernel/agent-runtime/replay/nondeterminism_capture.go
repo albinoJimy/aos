@@ -60,7 +60,7 @@ type responseCapture struct {
 // # Segredos (ver [WithSensitiveResults])
 //
 // Output é persistido EM CLARO no evento durável (o cifrado por-titular do ES é
-// dívida de EPIC-13). Em modo sensível o capturer substitui Output por uma
+// dívida de AOS-093). Em modo sensível o capturer substitui Output por uma
 // REFERÊNCIA não reversível (Reference=true, PayloadRef=sha256(output)) — o
 // replay reconstrói então um marcador de referência, NUNCA a PII em claro.
 type toolResultCapture struct {
@@ -142,7 +142,7 @@ func WithClock(now func() time.Time) CapturerOption {
 //     send_email).
 //
 // É o análogo de [durable.WithSensitiveResults] (AOS-014) para a captura: evita
-// gravar PII em claro no Event Store (o cifrado por-titular é dívida de EPIC-13). O
+// gravar PII em claro no Event Store (o cifrado por-titular é dívida de AOS-093). O
 // replay de um turno sensível reconstrói marcadores de referência, NÃO a PII — o
 // modo sensível troca fidelidade byte-a-byte por confidencialidade, por desenho.
 func WithSensitiveResults() CapturerOption {

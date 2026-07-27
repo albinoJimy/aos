@@ -66,8 +66,9 @@ func agentClassSubject(class string) string {
 //     escopo efectivo computado (forma canónica), pelo que o audit da mediação
 //     regista a autoridade REALMENTE em vigor (menor privilégio), não a reclamada.
 //     A metade SPAN/OTel deste critério (ADR-002/010) está deliberadamente
-//     DIFERIDA para EPIC-08 (observabilidade — ver monitor.go: sem SDK OTel neste
-//     ticket); o canal AUDIT já satisfaz a rastreabilidade fail-closed hoje.
+//     DIFERIDA para AOS-076 (span `execute_tool` por tool call mediada — ver
+//     monitor.go: sem SDK OTel neste ticket); o canal AUDIT já satisfaz a
+//     rastreabilidade fail-closed hoje.
 //
 // A decisão é DETERMINISTA e PURA (sem relógio/rand): função apenas de
 // (autoridade-fonte, cadeia de delegação, capability).
