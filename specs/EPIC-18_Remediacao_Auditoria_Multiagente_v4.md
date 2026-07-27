@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-208** (19 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…208 acrescentados pelo registo de deferimentos** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor |
+| Intervalo de tickets | **AOS-190 … AOS-211** (22 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono) |
 
 ---
 
@@ -578,11 +578,23 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos e pela análise STRIDE (AOS-205 … AOS-209)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-211)
 
-Estes quatro tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
-deferimentos apontavam sem executor. Nascem aqui porque foram o `docs/governance/REGISTO-Deferimentos.md`
-(AOS-196) e o AOS-195 que os identificaram; a **execução** pertence aos epics temáticos indicados.
+Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
+deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
+foram o `docs/governance/REGISTO-Deferimentos.md` (AOS-196), o AOS-195, o AOS-194 e o **AOS-204** que os
+identificaram; a **execução** pertence aos epics temáticos indicados.
+
+O AOS-210 acrescenta uma **terceira origem** às duas do título original: um *residual nomeado* num
+relatório de aceitação. É deliberado que ele apareça aqui e não fique só no relatório — a §6.3 de
+`docs/reports/AOS-169-aceitacao-sistemica.md` escreveu, sobre a sua própria pendência, que ela «**não tem
+dono atribuído**: tem de ser entregue a quem detém `packages/integration`, sob pena de reproduzir a
+deriva "residual nomeado que nunca é encaminhado"». Criar o ticket é a acção que essa frase pedia.
+
+O **AOS-211** nasce da mesma regra aplicada ao próprio AOS-210: ao pôr o `aos.activity` na árvore
+exportada pelo nó, AOS-210 deixou dois atributos por cobrir nesse span (o custo por efeito real e o
+`gen_ai.operation.name`), e nomeá-los no relatório **sem dono** seria repetir exactamente a deriva que
+AOS-210 veio terminar. A regra vale para quem a invoca: **residual nomeado ⇒ ticket**, ou não se nomeia.
 
 Enquanto não existiam, 19 linhas do registo diziam `POR ATRIBUIR` — o que é honesto, mas não é
 executável. Criá-los completa o objectivo §2 deste epic («pôr os deferimentos num registo único com
@@ -602,6 +614,8 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-207 | Assinatura e atestação da imagem do nó (chave de release, in-toto/SLSA, verificação na entrega) | feature | M | P2 | **EPIC-05** | nota `N-DEF-501` (DEF-06) |
 | AOS-208 | Ligação substantiva do motor de redacção ao Event Store, memória, `otel-genai` e audit | feature | M | P1 | **EPIC-09** | pendência de AOS-195 |
 | AOS-209 | **Terminação TLS do nó** (ingresso HTTP/SSE/DSAR + perna OTLP) | feature | M | **P0** | **EPIC-15** | `tecnica/17` §5.2-b (AOS-194) |
+| AOS-210 | Tracer do **dispatcher durável** no composition root: o span `aos.activity` na árvore do nó | fix | S | P1 | **EPIC-14** | residual §6.3 de `AOS-169-aceitacao-sistemica.md` (AOS-204) |
+| AOS-211 | Os dois atributos em falta no `aos.activity`: **custo por efeito real** e `gen_ai.operation.name` sob contrato semconv | fix | S | P2 | **EPIC-08** | residual §6.3 de `AOS-169-aceitacao-sistemica.md` (AOS-210) |
 
 ---
 
@@ -770,6 +784,161 @@ ligações longas sobre TLS), AOS-172 (DSAR), AOS-173 (exporter OTLP), AOS-168 (
 
 ---
 
+### AOS-210 — Tracer do dispatcher durável no composition root (`aos.activity` na árvore do nó)
+
+**Origem:** o **residual NOMEADO** por AOS-204 em `docs/reports/AOS-169-aceitacao-sistemica.md` **§6.3**,
+apurado por leitura de código ao fechar §13.6. A própria §6.3 declara que a pendência «**não tem dono
+atribuído**» e tem de ser entregue a quem detém `packages/integration` — este ticket é esse dono.
+
+**O defeito.** `packages/integration/secured.go` compõe o dispatcher durável com
+`activity.NewDispatcher(rm, cfg.Ledger)` — **sem lhe passar tracer**. O default de `activity.Dispatcher`
+é `agentruntime.NoopTracer{}` (`activity/dispatch.go`), e a opção existe (`activity.WithTracer`). Logo,
+com `AOS_DURABLE_EXECUTION` ligado, o span **`aos.activity`** (`OpActivity`) **não é exportado**.
+
+**Porque não existia.** O mecanismo é de EPIC-08 e **está entregue**: AOS-076 (semconv/árvore) e AOS-021
+(o span de escopo durável) têm o comportamento provado ao nível de COMPONENTE em
+`kernel/agent-runtime/activity/dispatch_test.go`. Nada em EPIC-08 falta. O que faltava era o
+**composition root** passar o tracer que já constrói — a classe de dívida que EPIC-14 existe para
+resolver («compõe as bibliotecas com o enforcement real, não *stubbed*»), e o mesmo padrão do AOS-206
+(mecanismo entregue, chamador de produção inexistente). Por isso o **epic de EXECUÇÃO é EPIC-14**, não
+EPIC-08: atribuí-lo a EPIC-08 mandaria re-entregar um mecanismo que já passa nos seus testes.
+
+**O que está em causa (e o que NÃO está).** O ramo `execute_tool` **sai na mesma** — o RM recebe o tracer
+do RT (`loop.go`, `rt.rm.SetTracer`) e é a **única** autoridade desse span (AOS-076) —, pelo que **§13.6
+não reabre**. O que falta é a camada **INTERMÉDIA** da árvore: é no `aos.activity` que vivem o desfecho
+durável (`permit|dedup|replay|denied|error`) e o **custo do efeito real**. Sem ela, um auditor de um nó
+com execução durável vê o efeito mas **não vê se ele foi de facto executado ou deduplicado**.
+
+**Restrição de desenho (o eixo central).** O comentário de `activity.OpActivity` diz que a separação
+entre `aos.activity` e `execute_tool` é **DELIBERADA**, e nomeia o que ela evita: (a) **duplicar** o span
+`execute_tool` — o duplo-contar em agregadores por-operação quando o mesmo tracer é partilhado com o RM —
+e (b) apresentar um `execute_tool` sem os atributos obrigatórios de CA2 (`hash(tool+args)` +
+`result_taint`), que só o RM anota. **A separação de operações é deliberada; não passar tracer nenhum não
+é.** Passar o tracer tem de produzir `aos.activity` como **PAI** e `execute_tool` **uma só vez** — se
+duplicar, o remédio é pior que a doença e a correcção reverte-se.
+
+**Forma da mudança.** `SecuredConfig` **não** tem campo de tracer, e as vias existentes
+(`RuntimeOptions []agentruntime.Option`, `FreezeOptions []toolset.Option`) são **fatias de funções
+opacas**: não há como extrair delas o tracer sem as aplicar a um alvo falso. A via é, por isso, um campo
+**explícito** em `SecuredConfig`, que o nó preenche com o **MESMO** tracer que já entrega às outras duas.
+
+**Critérios de aceitação**
+
+- [x] **ENTREGUE** — `SecuredConfig` expõe uma via **explícita** de tracer (campo próprio, não extracção de opções
+      opacas) e `secured.go` passa-a a `activity.NewDispatcher` via `activity.WithTracer`.
+      *(Campo `SecuredConfig.Tracer` (`packages/integration/secured.go`), documentado com a razão de NÃO
+      extrair de `RuntimeOptions`/`FreezeOptions` e com a **invariante do chamador** — o mesmo valor de
+      tracer nas duas vias; um tracer diferente produz uma árvore partida sem erro de construção.)*
+- [x] **ENTREGUE** — `packages/cmd/aos/bootstrap.go` preenche-a com o **MESMO** tracer que já passa em
+      `RuntimeOptions`/`FreezeOptions`, e **apenas** quando a observabilidade está ligada.
+      *(`chainTracer` atribuída SÓ dentro do `if tracingEnabled` já existente, ao lado de
+      `toolset.WithTracer(tracer)` e `agentruntime.WithTracer(tracer)` — é literalmente a mesma variável.)*
+- [x] **ENTREGUE** — **Falsificável (árvore):** com `-race`, contra um colector OTLP `httptest` e com
+      `AOS_DURABLE_EXECUTION` ligado, a árvore **exportada pelo nó** contém `aos.activity` e
+      `parentSpanId(execute_tool) == spanId(aos.activity)` no mesmo `traceId`. A asserção é sobre a
+      **topologia**, não sobre a presença de nomes.
+      *(`TestAOS210_DurableExecutionExportsActivitySpanAsParentOfExecuteTool`,
+      `packages/cmd/aos/observability_durable_test.go`: `obsAssertChildOf` verifica mesmo `traceId` **e**
+      `child.ParentSpanID == parent.SpanID`. **Mutação executada** (aplicada e revertida): deixando
+      `chainTracer` por atribuir em `bootstrap.go` — a ligação removida —, o teste fica VERMELHO com
+      `vieram 0; nomes vistos: [registry.freeze_toolset chat audit_seal execute_tool chat invoke_agent]`,
+      isto é, a restante árvore intacta e SÓ a camada intermédia em falta. Ao nível de pacote,
+      `TestAOS210_DurableDispatcherTracerProducesActivityParentOfExecuteTool`,
+      `packages/integration/durable_activity_tracing_test.go`.)*
+- [x] **ENTREGUE** — **Falsificável (não-duplicação):** nessa mesma árvore, `execute_tool` aparece **exactamente uma
+      vez**. Duas ocorrências ⇒ o ticket falha e a mudança reverte-se.
+      *(Contagem exacta nos DOIS níveis: no nó sobre o wire OTLP e no pacote sobre `RecordingTracer`. O mesmo
+      teste do nó exige também exactamente 1 `aos.activity` e 1 `invoke_agent`, e verifica que o `execute_tool`
+      mantém os DOIS atributos de CA2 — `aos.tool_call.hash` **e** `aos.tool.result_taint` —, que só o RM anota:
+      a separação de operações mantém-se DELIBERADA, não colapsada.)*
+- [x] **ENTREGUE** — **Retro-compatibilidade:** sem tracer configurado (nó sem `AOS_OTLP_ENDPOINT`), o dispatcher fica
+      com `NoopTracer`, **nenhum** span novo é emitido e o desfecho observável do run é **idêntico**.
+      Prova negativa directa exigida (com o tracer ligado ao RT/RM mas **não** ao dispatcher: zero
+      `aos.activity`, `execute_tool` na mesma — sem isso a ausência seria vacuosa).
+      *(`TestAOS210_WithoutChainTracerNoActivitySpanIsEmitted` é a prova negativa directa e não-vacuosa;
+      `TestAOS210_DurableExecutionWithoutTracerKeepsBehaviourAndExportsNothing` compara o desfecho por
+      igualdade de struct com o do nó instrumentado e verifica ZERO corpos num colector a correr ao lado;
+      `TestAOS210_NodeWithoutObservabilityOpensNoExporter` sela `node.otlp == nil`.)*
+- [x] **ENTREGUE** — `docs/reports/AOS-169-aceitacao-sistemica.md` §6.3 é actualizada: o residual **fecha** com a
+      evidência, ou permanece aberto **com o que falta nomeado** (honestidade acima de verde).
+      *(§6.3 passa a «FECHADO por AOS-210», com o texto ORIGINAL do achado preservado. Os DOIS residuais que
+      sobram no `aos.activity` — custo por efeito real e `gen_ai.operation.name` — ficam nomeados **com dono**:
+      **AOS-211**. Nomear sem encaminhar era a deriva que este ticket veio terminar.)*
+
+> **Marcação e SHA.** Os CA acima são marcados na **mesma alteração** que os entrega: a spec — autoridade do
+> backlog e fonte da RTM — não pode dizer «por cumprir» enquanto o relatório de aceitação diz «FECHADO»
+> (a divergência entre fontes é precisamente o que AOS-192 veio impedir). A convenção `**ENTREGUE** <sha>`
+> usada em AOS-204 só é aplicável **a posteriori** — o SHA não existe antes do commit —, pelo que a evidência
+> aqui é o **nome do teste**, que é verificável sem ele: `go test ./ -race -run AOS210` em `packages/cmd/aos`
+> e em `packages/integration`.
+
+**Dependências:** AOS-021 (span de escopo durável), AOS-076 (semconv/árvore + autoridade do
+`execute_tool`), AOS-173 (exporter OTLP do nó), AOS-180/AOS-191 (execução durável alcançável do
+ambiente), AOS-204 (que nomeou o residual).
+**Não duplica:** AOS-204 (que provou a árvore no despacho **directo**) nem AOS-078 (agregação de custo).
+**Deixa em aberto (com dono):** AOS-211 — os dois atributos que faltam ao `aos.activity` agora exportado.
+
+---
+
+### AOS-211 — Os dois atributos em falta no `aos.activity`: custo por efeito real e `gen_ai.operation.name`
+
+**Origem:** o **residual REMANESCENTE** que AOS-210 nomeou em `docs/reports/AOS-169-aceitacao-sistemica.md`
+**§6.3** ao fechar o residual anterior. Existe porque a regra que justificou AOS-210 — *residual nomeado tem
+de ter dono* — vale para quem a invoca: deixar estes dois pontos «nomeados, sem ticket atribuído» seria
+reproduzir a deriva no mesmo parágrafo em que se declara tê-la terminado.
+
+**O defeito (dois eixos, o mesmo span).** AOS-210 pôs o `aos.activity` na árvore **exportada pelo nó**. Uma
+vez lá, duas lacunas do span deixaram de ser teóricas:
+
+1. **Custo por efeito real ausente.** `activity/dispatch.go` anota `gen_ai.usage.cost_usd` quando
+   `Activity.CostMicroUSD != 0`, mas o adaptador `integration.DurableDispatcher` (`runtime_ports.go`)
+   traduz o `referencemonitor.Call` numa `activity.Activity` **sem** `CostMicroUSD` — o campo nem sequer é
+   preenchido. Nesta via, a anotação **nunca dispara**. O **desfecho** durável (`permit|dedup|replay|denied|
+   error`) é exportado; o **custo do efeito** não. É metade da razão de ser do span, segundo o comentário do
+   próprio `OpActivity` («o `aos.activity` carrega o que o RM NÃO conhece: dedup, replay e o custo por efeito
+   real»).
+2. **`gen_ai.operation.name` ausente.** `startSpan` anota `tool`/`run_id`/`step_id` mas **não** o
+   `AttrOperationName`. Consequências verificáveis: (a) `otelgenai.ValidateSpanData` resolve a operação por
+   *fallback* ao `Name` do span, não encontra entrada em `requiredAttrs` e **aceita o span sem validar** — o
+   único span da árvore durável isento do contrato semconv de AOS-076; (b) consumidores que leem
+   estritamente o atributo, sem *fallback* — p. ex. o `operationOf` de `packages/platform/eval/spans.go` —
+   **nunca** vêem este span como uma operação.
+
+**O que NÃO está em causa.** Não é regressão nem foi introduzido por AOS-210: o conteúdo do span é de
+AOS-021 e `registry.freeze_toolset` tem a mesma forma. Não há dupla-contagem em nenhum agregador — o custo do
+turno vive no `chat` e o agregado do run no `invoke_agent`, ambos provados por
+`TestObservabilityEndToEndExportsWellFormedOTLPWithCost`. **§13.6 não reabre por isto**; é uma lacuna de
+COBERTURA do span, não uma afirmação falsa.
+
+**Restrição de desenho.** Acrescentar `OpActivity` a `requiredAttrs` põe o span **sob contrato** — e um
+contrato que o span não cumpra transforma um teste de conformidade verde em vermelho. Os dois eixos têm por
+isso de andar juntos e na ordem certa: primeiro anotar, depois exigir. O custo é **opcional por natureza**
+(`CostMicroUSD == 0` não emite: custo gratuito e custo desconhecido são indistintos) e por isso **não** pode
+entrar na lista de obrigatórios — obrigá-lo faria falhar todo o `aos.activity` de tools sem custo apurado.
+
+**Critérios de aceitação**
+
+- [ ] `startSpan` de `activity/dispatch.go` anota `gen_ai.operation.name = aos.activity`, e `OpActivity`
+      passa a ter entrada em `otelgenai.requiredAttrs` com os atributos que o span **sempre** carrega
+      (`operation.name`, `tool`, `run_id`, `step_id`) — **não** o custo, que é opcional por desenho.
+- [ ] Teste que falha ANTES da mudança: `ValidateSpanData` sobre um `aos.activity` sem
+      `gen_ai.operation.name` deixa de ser **vacuosamente** aceite (hoje é aceite por não ter contrato).
+- [ ] O adaptador `integration.DurableDispatcher` propaga um custo por efeito real para
+      `Activity.CostMicroUSD` **a partir de uma fonte declarada** (ou o eixo fica **explicitamente
+      deferido** com a razão escrita: a porta que o forneceria não existe). Nomear a ausência da fonte é
+      resposta aceitável; deixar o campo em branco **sem** a nomear não é.
+- [ ] Prova ao nível do NÓ, com `-race` e colector OTLP: o `aos.activity` exportado traz
+      `gen_ai.operation.name`; e, se o custo for propagado, `gen_ai.usage.cost_usd` aparece **uma só vez por
+      efeito real** — nunca em `dedup`/`replay` (senão um agregador soma N retries como N custos).
+- [ ] Retro-compatibilidade: nenhum span deixa de ser emitido e nenhum consumidor existente passa a falhar
+      (os testes de conformidade semconv de AOS-076 continuam verdes).
+
+**Dependências:** AOS-210 (que pôs o span na árvore exportada), AOS-021 (o span), AOS-076 (contrato semconv).
+**Não duplica:** AOS-078 (contabilidade de tokens/custo por span **do modelo** — aqui é o custo do **efeito**
+de uma tool, outro eixo) nem AOS-210 (que fecha a ligação do tracer, não o conteúdo do span).
+
+---
+
 ## 9. Definition of Ready (DoR) do epic
 
 Antes de executar qualquer ticket:
@@ -788,3 +957,5 @@ Antes de executar qualquer ticket:
 |---|---|---|---|
 | 1.0 | 2026-07-26 | Emissão (PROPOSTA). Remedia os 29 achados sobreviventes da auditoria multiagente v4 (`analises/08_Relatorio_Auditoria_Multiagente_v4.md`): 14 tickets AOS-190..AOS-203 em cinco blocos, três decisões de dono (§4) e um aviso de sequenciamento de segurança (§5). | Equipa AOS |
 | 1.1 | 2026-07-26 | **AOS-204** acrescentado (bloco C, P1/S) para possuir o eixo residual de VAC-01: exportar por OTLP, a partir do nó real, a árvore de um run **com tool call** (ramo `execute_tool`). Apurado ao executar AOS-192, que reabriu §13.6 do checklist de AOS-169 — um eixo reaberto sem ticket real viola o CA de AOS-196. | AOS-192 |
+| 1.2 | 2026-07-27 | **AOS-210** acrescentado a §8-bis (P1/S, execução **EPIC-14**) para possuir o **residual NOMEADO** por AOS-204 em `AOS-169-aceitacao-sistemica.md` §6.3 — o dispatcher durável composto **sem tracer** em `integration/secured.go`, que suprimia o span `aos.activity` do nó com `AOS_DURABLE_EXECUTION` ligado. A própria §6.3 declarava a pendência «sem dono atribuído»; §8-bis passa a acolher também residuais nomeados, e o intervalo de tickets do cabeçalho (que ainda dizia AOS-208) é reconciliado com AOS-209/210. | AOS-204 |
+| 1.3 | 2026-07-27 | **AOS-210 marcado ENTREGUE** (6/6 CA, evidência por nome de teste — a spec não pode dizer «por cumprir» enquanto §6.3 do relatório diz «FECHADO») e **AOS-211** acrescentado a §8-bis (P2/S, execução **EPIC-08**) para possuir o residual REMANESCENTE que AOS-210 nomeou: os dois atributos em falta no `aos.activity` agora exportado (custo por efeito real e `gen_ai.operation.name` sob contrato semconv). Nomear sem encaminhar, no mesmo parágrafo em que se declara ter terminado essa deriva, seria repeti-la. | AOS-210 |

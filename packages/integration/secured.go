@@ -103,6 +103,37 @@ type SecuredConfig struct {
 	RuntimeOptions []agentruntime.Option
 	// FreezeOptions são opções de [toolset.FreezeToolSet] (ex.: WithClock/WithTracer).
 	FreezeOptions []toolset.Option
+
+	// Tracer é a VIA EXPLÍCITA de observabilidade dos colaboradores que este
+	// composition root constrói INTERNAMENTE — hoje, o dispatcher durável de AOS-021
+	// (AOS-210). OPCIONAL: nil ⇒ [agentruntime.NoopTracer] (comportamento byte-idêntico
+	// ao de antes da instrumentação; zero spans novos).
+	//
+	// PORQUE UM CAMPO PRÓPRIO e não a extracção de [RuntimeOptions]/[FreezeOptions]:
+	// essas listas são OPACAS por construção — `[]agentruntime.Option` e
+	// `[]toolset.Option` são fatias de FUNÇÕES que mutam o alvo; não há forma de as
+	// inspeccionar para recuperar o tracer que lá foi posto sem as aplicar a um alvo
+	// falso (uma via reflexiva, frágil e que dependeria da ordem das opções). Um campo
+	// explícito torna a dependência VISÍVEL na assinatura da config e deixa o chamador
+	// declarar o MESMO tracer nas três vias (RT/RM, freeze e dispatcher durável), que é
+	// exactamente o que o nó faz.
+	//
+	// INVARIANTE DO CHAMADOR (o preço do campo explícito): quando este campo é preenchido,
+	// TEM de ser o MESMO valor de tracer entregue em [RuntimeOptions] via
+	// [agentruntime.WithTracer]. Entregar aqui um tracer DIFERENTE do do Runtime produz uma
+	// ÁRVORE PARTIDA — o aos.activity num trace e o execute_tool noutro —, exactamente o
+	// contrário do que este campo existe para garantir, e sem erro em tempo de construção:
+	// as duas vias são independentes por desenho, e nada aqui as pode comparar (os
+	// [agentruntime.Tracer] não são comparáveis de forma fiável nem inspeccionáveis a
+	// partir das opções opacas). Só um teste de TOPOLOGIA o apanha — ver
+	// packages/cmd/aos/observability_durable_test.go, que sela o único chamador de
+	// produção. Enforcement estrutural (o composition root derivar as três vias de UM
+	// campo) seria uma mudança de assinatura maior, deliberadamente fora de AOS-210.
+	//
+	// NÃO substitui [agentruntime.WithTracer]: o span execute_tool continua a ser aberto
+	// SÓ pelo Reference Monitor (AOS-076), que recebe o tracer do Runtime. Este campo
+	// acrescenta apenas a camada INTERMÉDIA aos.activity — ver [activity.OpActivity].
+	Tracer agentruntime.Tracer
 }
 
 // SecuredRuntime é o Agent Runtime COM a revalidação por chamada e o congelamento
@@ -247,7 +278,18 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithCapturer(cfg.Capturer))
 	}
 	if cfg.Ledger != nil {
-		actDisp, err := activity.NewDispatcher(rm, cfg.Ledger)
+		// OBSERVABILIDADE do escopo durável (AOS-210). Sem esta opção o dispatcher fica
+		// com o default [agentruntime.NoopTracer] e o span aos.activity — a camada que
+		// carrega dedup/replay e o CUSTO DO EFEITO REAL — nunca é exportado, mesmo com a
+		// observabilidade do nó ligada. Passar o tracer NÃO duplica o execute_tool: o
+		// aos.activity nasce PAI dele (o ctx derivado propaga-se ao Mediate) e o RM
+		// continua a ser a ÚNICA autoridade que o abre (ver [activity.OpActivity]).
+		// cfg.Tracer nil ⇒ nenhuma opção ⇒ NoopTracer ⇒ retro-compatibilidade estrita.
+		var actOpts []activity.Option
+		if cfg.Tracer != nil {
+			actOpts = append(actOpts, activity.WithTracer(cfg.Tracer))
+		}
+		actDisp, err := activity.NewDispatcher(rm, cfg.Ledger, actOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("integration: dispatcher durável: %w", err)
 		}

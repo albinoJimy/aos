@@ -659,6 +659,15 @@ func TestOTLPExporterShutdownStatsReconcile(t *testing.T) {
 // (token NHI) a propagar no goal. O nó é fechado pelo chamador (o Close drena o exporter).
 func obsPermitNode(t *testing.T, endpoint string, model agentruntime.ModelClient) (*Node, string) {
 	t.Helper()
+	return obsPermitNodeWith(t, endpoint, model, nil)
+}
+
+// obsPermitNodeWith é [obsPermitNode] com um gancho de AJUSTE da [Config] antes do
+// Bootstrap (AOS-210): permite compor o MESMO nó de permit com variações declaradas —
+// p.ex. ligar a execução durável (`DurableExecution` + paths) — sem duplicar a montagem
+// da cadeia de produção. tweak nil ⇒ comportamento idêntico a [obsPermitNode].
+func obsPermitNodeWith(t *testing.T, endpoint string, model agentruntime.ModelClient, tweak func(*Config)) (*Node, string) {
+	t.Helper()
 	ctx := context.Background()
 
 	// (supply-chain REAL, AOS-051) entry assinada + trust store que confia no publicador —
@@ -697,12 +706,21 @@ func obsPermitNode(t *testing.T, endpoint string, model agentruntime.ModelClient
 		Set(durAgent, durCap).
 		Set("agent:"+durClass, durCap)
 
+	if tweak != nil {
+		tweak(&cfg)
+	}
+
 	node, err := Bootstrap(ctx, cfg, io.Discard)
 	if err != nil {
 		t.Fatalf("Bootstrap (no com observabilidade + cadeia de permit): %v", err)
 	}
-	if node.otlp == nil {
+	// endpoint vazio e o caso DELIBERADO de "sem observabilidade" (AOS-210, prova de
+	// retro-compatibilidade): ai o no NAO deve abrir exporter nenhum.
+	switch {
+	case endpoint != "" && node.otlp == nil:
 		t.Fatal("esperava um exporter OTLP aberto pelo no (observabilidade ligada)")
+	case endpoint == "" && node.otlp != nil:
+		t.Fatal("sem endpoint o no NAO pode abrir um exporter OTLP")
 	}
 	tok, err := node.Authority.MintForHuman(ctx, tnHuman, durAgent, durClass, []string{durCap})
 	if err != nil {

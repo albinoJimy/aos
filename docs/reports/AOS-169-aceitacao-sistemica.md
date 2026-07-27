@@ -18,7 +18,9 @@ a violação), sobre os colaboradores REAIS (nunca stubs neutros).
 > RE-MARCADO com evidência nova), **§13.6** (citação FALSA — corrigida e o eixo REABERTO 🟡 por
 > AOS-192, porque o que faltava era prova e não redacção; **fechado e RE-MARCADO VERDE por AOS-204 no
 > despacho DIRECTO**, com evidência nova e prova negativa em três variantes — uma delas partindo a
-> instrumentação de PRODUÇÃO — e com o residual da execução DURÁVEL nomeado, §6.0/§6.1/§6.3), **§13.7** (implicação atribuída ao teste errado — citação
+> instrumentação de PRODUÇÃO — e o residual da execução DURÁVEL, então nomeado em §6.3, **fechado por
+> AOS-210** com a árvore `aos.activity` → `execute_tool` verificada por topologia a partir do nó,
+> §6.0/§6.1/§6.3), **§13.7** (implicação atribuída ao teste errado — citação
 > corrigida; a propriedade está genuinamente provada, ao nível da plataforma). Quando a regra da
 > EPIC-15 §2 («estes eixos TÊM de estar VERDES») colide com a regra NÃO-VACUOSA, prevalece a segunda:
 > marcar VERDE sem prova é o defeito, não a solução.
@@ -257,7 +259,7 @@ porque **nunca tentou**»:
   em runtime; provada a esse nível. O NÓ enforça o bundle assinado que essa promoção produz — que é a
   parte "governa cada decisão" do critério, VERDE aqui.
 
-## 6. OBSERVABILIDADE — VERDE **no despacho DIRECTO** (execução durável: residual NOMEADO, §6.3) — reaberto 🟡 por AOS-192, **re-marcado por AOS-204** com evidência nova
+## 6. OBSERVABILIDADE — **VERDE** (despacho DIRECTO **e** execução DURÁVEL) — reaberto 🟡 por AOS-192, re-marcado por AOS-204, **residual §6.3 fechado por AOS-210**
 
 > "Cada *run* produz uma árvore de *spans* OTel GenAI completa e um registo *audit* WORM
 > *tamper-evident*."
@@ -405,30 +407,99 @@ execução real fica dentro da árvore — e o negado é o complemento, não o s
 - **Gating fail-open/fail-closed:** `TestObservabilityFailOpenOnCollectorError`,
   `TestObservabilityMalformedEndpointFailsClosed`.
 
-### 6.3 Residual NOMEADO (não bloqueia o critério, mas não é escondido)
+### 6.3 Residual NOMEADO — **FECHADO por AOS-210** (2026-07-27)
 
-O `execute_tool` provado ponta-a-ponta pelo nó é o do despacho **directo** (`ActivityDispatcher`
-default, `AOS_DURABLE_EXECUTION` desligado). Com a execução durável ligada interpõe-se o
-`activity.Dispatcher`, que ao nível de COMPONENTE abre um span `aos.activity`
+> **Estado: FECHADO.** O que esta secção descrevia como pendência de produção sem dono foi convertido
+> em ticket (**AOS-210**, `specs/EPIC-18` §8-bis, execução EPIC-14) e **entregue**. O texto original do
+> achado fica preservado abaixo, para que a história não seja reescrita.
+
+O `execute_tool` provado ponta-a-ponta pelo nó em AOS-204 é o do despacho **directo**
+(`ActivityDispatcher` default, `AOS_DURABLE_EXECUTION` desligado). Com a execução durável ligada
+interpõe-se o `activity.Dispatcher`, que abre um span `aos.activity`
 (`kernel/agent-runtime/activity/dispatch.go`, `OpActivity`) entre o `invoke_agent` e o `execute_tool`,
-anotado com dedup/replay/custo do efeito real.
+anotado com o desfecho durável (dedup/replay/custo do efeito real).
 
-**Achado de leitura de código (não corrigido aqui — exige mudança de PRODUÇÃO, fora do âmbito de
-AOS-204):** `integration/secured.go` compõe esse dispatcher com `activity.NewDispatcher(rm, cfg.Ledger)`
-**sem lhe passar tracer**, e o default de `activity.Dispatcher` é `NoopTracer` — pelo que, no nó com
-execução durável, o span `aos.activity` **não é exportado**. O ramo `execute_tool` em si continua a
-sair (o RM recebe o tracer do RT via `rt.rm.SetTracer`, e é o RM a autoridade desse span), pelo que
-§13.6 não é reaberto por isto; o que falta é a **camada de dedup durável** na árvore. Fica **nomeado**
-como pendência de produção, e a configuração durável **não** foi re-verificada a partir do nó neste
-ticket.
+**Achado ORIGINAL de leitura de código (AOS-204, não corrigido nesse ticket — exigia mudança de
+PRODUÇÃO):** `integration/secured.go` compunha esse dispatcher com
+`activity.NewDispatcher(rm, cfg.Ledger)` **sem lhe passar tracer**, e o default de
+`activity.Dispatcher` é `NoopTracer` — pelo que, no nó com execução durável, o span `aos.activity`
+**não era exportado**. O ramo `execute_tool` em si continuava a sair (o RM recebe o tracer do RT via
+`rt.rm.SetTracer`, e é o RM a autoridade desse span), pelo que §13.6 nunca foi reaberto por isto; o que
+faltava era a **camada intermédia de dedup durável** na árvore.
 
-Note-se o que isto significa para a força da afirmação: nesta configuração, a de que o ramo
-`execute_tool` sai na mesma é sustentada por **leitura de código**, não por teste ponta-a-ponta. Por
-isso o VERDE de §13.6 é declarado **no despacho DIRECTO** (cabeçalho de §6, linha 6 da tabela-resumo e
-conclusão), e não sem qualificador. A pendência exige decisão sobre código de PRODUÇÃO —
-`activity.NewDispatcher(rm, cfg.Ledger)` passar a receber o tracer, ou o default deixar de ser
-`NoopTracer` — e **não tem dono atribuído**: tem de ser entregue a quem detém `packages/integration`,
-sob pena de reproduzir a deriva «residual nomeado que nunca é encaminhado».
+**FECHO (AOS-210).** `SecuredConfig` passou a expor uma via **explícita** de tracer
+(`SecuredConfig.Tracer`, `packages/integration/secured.go`) — e não uma extracção de
+`RuntimeOptions`/`FreezeOptions`, que são fatias de funções **opacas** e não inspeccionáveis — que
+`secured.go` entrega a `activity.NewDispatcher` via `activity.WithTracer`. O nó
+(`packages/cmd/aos/bootstrap.go`) preenche-a com o **MESMO** tracer que já entrega em
+`agentruntime.WithTracer` e `toolset.WithTracer`, e **só** quando a observabilidade está ligada.
+
+Evidência — tudo com `-race`, contra um colector OTLP `httptest`, com `AOS_DURABLE_EXECUTION` ligado:
+
+- **ÁRVORE (topologia, não presença de nomes):**
+  `TestAOS210_DurableExecutionExportsActivitySpanAsParentOfExecuteTool`
+  (`packages/cmd/aos/observability_durable_test.go`) — a árvore **exportada pelo nó** contém
+  `aos.activity`, e `parentSpanId(execute_tool) == spanId(aos.activity)` no **mesmo** `traceId`; o
+  `aos.activity` é por sua vez filho do `invoke_agent`. O selo WORM `audit_seal` continua **filho do
+  `execute_tool`** — a interposição **não** parte a ligação trajectória↔hash-chain de §13.6.
+- **NÃO-DUPLICAÇÃO (o risco que `dispatch.go` nomeia):** no mesmo teste, `execute_tool` aparece
+  **exactamente uma vez** na árvore exportada. A separação de operações mantém-se DELIBERADA: o
+  `aos.activity` carrega `aos.decision=permit`/`tool`/`run_id`/`step_id`; o `execute_tool` mantém
+  `aos.tool_call.hash` e o veredicto, que **só** o RM anota.
+- **ANTI-VACUIDADE:** o teste assere que o modelo EMITIU a tool call, que ela EXECUTOU **exactamente
+  uma vez** sob permit da cadeia real de 7 hooks (`permits>=1`, `denials==0`) e que o resultado voltou
+  ao loop — sem isso, "não vi spans" seria indistinguível de "nunca houve nada a instrumentar".
+- **PROVA NEGATIVA executada (mutação):** removendo a ligação em `bootstrap.go`, o teste fica VERMELHO
+  com `esperava EXACTAMENTE 1 span "aos.activity" [...] vieram 0; nomes vistos: [registry.freeze_toolset
+  chat audit_seal execute_tool chat invoke_agent]` — a árvore restante intacta, exactamente o defeito
+  aqui descrito. A ligação foi reposta.
+- **RETRO-COMPATIBILIDADE (dois níveis):**
+  `TestAOS210_WithoutChainTracerNoActivitySpanIsEmitted`
+  (`packages/integration/durable_activity_tracing_test.go`) é a prova negativa **directa**: com
+  `SecuredConfig.Tracer` em branco mas o **mesmo** tracer ligado ao RT/RM, saem **zero** spans
+  `aos.activity` e o `execute_tool` sai na mesma (logo a ausência é atribuível ao dispatcher, não a
+  "não houve run"). Ao nível do NÓ,
+  `TestAOS210_DurableExecutionWithoutTracerKeepsBehaviourAndExportsNothing` mostra que o mesmo cenário
+  durável sem `AOS_OTLP_ENDPOINT` não abre exporter, não envia **um único byte** a um colector que está
+  a correr ao lado, e produz um desfecho observável **idêntico** ao do nó instrumentado.
+
+**Residual REMANESCENTE — DOIS pontos, ambos com DONO (`AOS-211`).** Pôr o `aos.activity` na árvore
+exportada tornou visíveis duas lacunas do próprio span. Nenhuma delas estava no âmbito de AOS-210, e
+nenhuma fica **sem dono**: a regra que justificou AOS-210 («residual nomeado tem de ser encaminhado»)
+vale para quem a invoca, pelo que ambas são propriedade de **AOS-211** (`specs/EPIC-18` §8-bis,
+execução EPIC-08). Nomear sem encaminhar, no mesmo parágrafo em que se declara ter terminado essa
+deriva, seria repeti-la.
+
+1. **Custo por efeito real ausente.** O `aos.activity` do nó **não** carrega `gen_ai.usage.cost_usd`: o
+   adaptador `integration.DurableDispatcher` traduz o `referencemonitor.Call` numa `activity.Activity`
+   **sem** `CostMicroUSD` (`runtime_ports.go`), pelo que a anotação de custo por efeito real de
+   `dispatch.go` nunca dispara nesta via. O **desfecho** durável (`permit|dedup|replay|denied|error`) é
+   exportado; o **custo por efeito** não.
+2. **`gen_ai.operation.name` ausente.** O `aos.activity` é o único span da árvore durável exportada que
+   **não** traz `gen_ai.operation.name` (`invoke_agent`, `chat`, `execute_tool` e `audit_seal` trazem-no).
+   Duas consequências verificáveis: (a) `otelgenai.ValidateSpanData` resolve a operação por *fallback* ao
+   `Name`, não encontra entrada em `requiredAttrs` e **aceita o span sem validar** — fica isento do
+   contrato semconv de AOS-076; (b) consumidores que leem estritamente o atributo, sem *fallback* — p. ex.
+   o `operationOf` de `packages/platform/eval/spans.go` — **nunca** vêem este span como uma operação.
+   Não é regressão nem foi introduzido por AOS-210 (o conteúdo do span é de AOS-021, e
+   `registry.freeze_toolset` tem a mesma forma), e não causa dupla-contagem em agregador nenhum — mas é
+   AOS-210 que faz este span chegar pela primeira vez à árvore exportada pelo nó, e por isso é aqui que
+   fica registado.
+
+Nenhum dos dois bloqueia §13.6: o custo do turno vive no span `chat` e o agregado do run no
+`invoke_agent`, ambos provados em `TestObservabilityEndToEndExportsWellFormedOTLPWithCost`; e a
+topologia da árvore — o que o eixo exige — é asserida por `parent_span_id`, não por atributo.
+
+**Nota histórica (redacção de AOS-204, agora superada).** A versão anterior desta secção dizia que, na
+configuração durável, a afirmação «o ramo `execute_tool` sai na mesma» era sustentada por **leitura de
+código** e não por teste ponta-a-ponta — e por isso o VERDE de §13.6 era declarado **no despacho
+DIRECTO**, com qualificador. Dizia ainda que a pendência «**não tem dono atribuído**: tem de ser
+entregue a quem detém `packages/integration`, sob pena de reproduzir a deriva "residual nomeado que
+nunca é encaminhado"». **Ambas as coisas deixaram de ser verdade:** o dono foi atribuído (AOS-210,
+`specs/EPIC-18` §8-bis, execução EPIC-14) e a configuração durável passou a ser verificada **a partir do
+nó**, contra um colector OTLP real — o `execute_tool` é agora observado, e não inferido, nessa
+configuração. O qualificador do VERDE de §13.6 pode por isso cair (ver cabeçalho de §6 e linha 6 da
+tabela-resumo).
 
 ## 7. CONFORMIDADE — VERDE
 
@@ -470,7 +541,7 @@ sob pena de reproduzir a deriva «residual nomeado que nunca é encaminhado».
 | 3 | Durabilidade | **VERDE** (reaberto 🟡 por VAC-01, **re-marcado por AOS-192** com evidência nova) | dedup de TOOL CALL pelo ledger no NÓ: `TestNode_DurableExecution_NoDoubleExecAfterRestart` (corrigido; prova negativa executada, §3.0); substrato/WAL + fencing de lease: `TestServiceShutdownDurable_NoLossNoDupNoDoubleExecAfterRestart` (**não prova dedup de tool call**); componente: `durable/step_ledger_test.go` (5 testes); ambiente: `TestAOS169_DurableSubstrateWiredFromEnv` + AOS-191; `aos169-durability-harness.sh` (harness docker não re-executado — eixo ambiente) |
 | 4 | Isolamento | **VERDE** | `TestApexEnforcement_FiveDenials` (egress); nó compõe `EgressHook` real (bootstrap.go §7); EPIC-07 |
 | 5 | Governação | **VERDE** | bundle assinado enforçado em `TestAOS169_Mediation_*`; `TestNodeComposesFourEyesGate`; promoção via `scripts/ci/evalgate.sh` |
-| 6 | Observabilidade | **VERDE no despacho DIRECTO** — execução durável com residual NOMEADO (§6.3); reaberto 🟡 por AOS-192, **re-marcado por AOS-204** com evidência nova | árvore COMPLETA exportada PELO NÓ, com topologia (`traceId` partilhado + `parentSpanId`) e o selo WORM `audit_seal` como FILHO do `execute_tool` permitido: `TestAOS204_ObservabilityExportsExecuteToolBranchInSameTrace` (permitido **e** negado; prova negativa executada em duas variantes, §6.0); base: `TestObservabilityEndToEndExportsWellFormedOTLPWithCost` (custo), `TestAuditTracingStoreEmitsSealSpanLinkingWORM`, `TestAuditSealFlowsToOTLPCollector`. **Limite de âmbito:** o provado é o despacho DIRECTO; com `AOS_DURABLE_EXECUTION` ligado o span `aos.activity` **não é exportado** (`secured.go` compõe o dispatcher sem tracer) e essa configuração **não** foi re-verificada a partir do nó — residual NOMEADO em §6.3, exige mudança de PRODUÇÃO |
+| 6 | Observabilidade | **VERDE** (despacho DIRECTO **e** execução DURÁVEL) — reaberto 🟡 por AOS-192, re-marcado por AOS-204, **residual §6.3 fechado por AOS-210** (residual remanescente do span `aos.activity` — custo por efeito e `operation.name` — nomeado **e encaminhado a AOS-211**) | árvore COMPLETA exportada PELO NÓ, com topologia (`traceId` partilhado + `parentSpanId`) e o selo WORM `audit_seal` como FILHO do `execute_tool` permitido: `TestAOS204_ObservabilityExportsExecuteToolBranchInSameTrace` (permitido **e** negado; prova negativa executada em duas variantes, §6.0); base: `TestObservabilityEndToEndExportsWellFormedOTLPWithCost` (custo), `TestAuditTracingStoreEmitsSealSpanLinkingWORM`, `TestAuditSealFlowsToOTLPCollector`. **Execução DURÁVEL (residual §6.3 FECHADO por AOS-210):** com `AOS_DURABLE_EXECUTION` ligado, a árvore exportada pelo nó contém `aos.activity` e ele é **PAI** do `execute_tool` (`parentSpanId(execute_tool) == spanId(aos.activity)`, mesmo `traceId`), com `execute_tool` **exactamente uma vez** e o `audit_seal` ainda seu filho: `TestAOS210_DurableExecutionExportsActivitySpanAsParentOfExecuteTool`; retro-compatibilidade provada em `TestAOS210_WithoutChainTracerNoActivitySpanIsEmitted` (prova negativa directa) e `TestAOS210_DurableExecutionWithoutTracerKeepsBehaviourAndExportsNothing`. **Residual remanescente nomeado, com dono AOS-211:** o `aos.activity` do nó não carrega o custo por efeito real (o adaptador `DurableDispatcher` não propaga `CostMicroUSD`) nem o `gen_ai.operation.name` (fica isento do contrato semconv de AOS-076) — ver §6.3 |
 | 7 | Conformidade | **VERDE** (citação corrigida, AOS-192) | propriedade: `TestCryptoShreddingRemovesPIIKeepsChain` (`platform/audit`, PII cifrada ⇒ `ErrShredded` ⇒ cadeia íntegra); fluxo no nó: `TestDSARErasesAndSeals`, `TestDSARBlockedByLegalHold`, `TestDSARIdempotent` (a KEK do nó **nunca cifrou nada** — ver §7) |
 
 **Seis de sete critérios VERDES com evidência real; um único deferimento (IDENTIDADE §13.2, eixo
@@ -481,16 +552,27 @@ DURABILIDADE §13.3 (reaberta por VAC-01, fechada por AOS-192 — §3.0/§3.1) e
 exportado e asserido a partir do NÓ, com a topologia da árvore e o selo WORM ligado por
 `parent_span_id`).
 
-**Com uma reserva de âmbito explícita, que o VERDE de §13.6 carrega e não esconde:** o provado é a
-configuração de despacho **DIRECTO**. Com `AOS_DURABLE_EXECUTION` ligado — uma configuração REAL e
-seleccionável pelo operador — a árvore exportada está **comprovadamente incompleta numa camada**
-(o span `aos.activity` do dispatcher durável não sai, porque `integration/secured.go` compõe o
-dispatcher sem tracer), e essa configuração **não foi re-verificada a partir do nó** neste ticket.
-O ramo `execute_tool` em si continua a sair nesse modo — mas isso é sustentado por **leitura de
-código** (`loop.go`, `rt.rm.SetTracer`), não por teste ponta-a-ponta. Fica NOMEADO em §6.3 como
-pendência de PRODUÇÃO, com dono por atribuir.
+**A reserva de âmbito que este sumário carregava CAIU (AOS-210, 2026-07-27).** Até aqui, o VERDE de
+§13.6 valia só para a configuração de despacho **DIRECTO**: com `AOS_DURABLE_EXECUTION` ligado — uma
+configuração REAL e seleccionável pelo operador — a árvore exportada estava **comprovadamente incompleta
+numa camada** (o span `aos.activity` não saía, porque `integration/secured.go` compunha o dispatcher sem
+tracer) e essa configuração não tinha sido re-verificada a partir do nó. O **AOS-210** deu a
+`SecuredConfig` uma via explícita de tracer, ligou-a no nó, e a configuração durável passou a ser
+verificada a partir do NÓ contra um colector OTLP: `aos.activity` é **PAI** do `execute_tool` na árvore
+exportada, o `execute_tool` sai **uma só vez**, e sem observabilidade nada muda (§6.3).
+
+**Residual remanescente, nomeado E ENCAMINHADO (dono: `AOS-211`):** nessa via, o `aos.activity` não
+carrega (a) o **custo por efeito real** — o adaptador `integration.DurableDispatcher` não propaga
+`CostMicroUSD` para a `activity.Activity` — nem (b) o `gen_ai.operation.name`, o que o deixa isento do
+contrato semconv de AOS-076 (`ValidateSpanData` cai no *fallback* ao nome do span e aceita-o sem
+validar). O desfecho durável (permit/dedup/replay/denied) é exportado; o custo por efeito não. Nenhum
+dos dois bloqueia §13.6 (o custo por turno e o agregado do run estão provados noutros spans; a topologia
+é asserida por `parent_span_id`, não por atributo), e ambos ficam escritos em §6.3 **com ticket**
+(`specs/EPIC-18` §8-bis) em vez de desaparecer — ou de repetir a deriva «residual nomeado sem dono» que
+este mesmo ticket veio terminar.
 
 Nenhum eixo fica AMARELO. A regra continua a ser a da EPIC-15 §2 — e continua subordinada à regra
 NÃO-VACUOSA da Carta §2.1: cada re-marcação acima traz a prova negativa que a sustenta (para §13.6,
-incluindo a variante que parte a INSTRUMENTAÇÃO DE PRODUÇÃO, §6.0 (C)), e o limite de âmbito é
-declarado no sumário e não só no detalhe.
+incluindo a variante que parte a INSTRUMENTAÇÃO DE PRODUÇÃO, §6.0 (C), e a mutação de AOS-210 que
+suprime o `aos.activity` da árvore), e o residual que resta é declarado no sumário e não só no detalhe —
+com **dono** (AOS-211), porque um residual nomeado sem executor é a deriva que AOS-210 veio terminar.

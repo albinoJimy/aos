@@ -708,13 +708,32 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// congelado emite o span de freeze; e o WORM é decorado para emitir um span de
 	// LIGAÇÃO por selo (trajectória↔hash-chain). Sem observabilidade, nada disto é
 	// composto ⇒ zero overhead e comportamento byte-idêntico.
+	//
+	// AOS-210: chainTracer é a QUARTA via — o MESMO tracer entregue explicitamente ao
+	// composition root, para ele instrumentar o dispatcher durável que constrói
+	// INTERNAMENTE (activity.Dispatcher, AOS-021). Sem ela o span aos.activity — a
+	// camada intermédia da árvore, onde vivem dedup/replay e o custo do efeito real —
+	// ficava com NoopTracer e nunca era exportado com AOS_DURABLE_EXECUTION ligado.
+	//
+	// Fica NIL quando a observabilidade está desligada ⇒ o dispatcher mantém o seu
+	// default [agentruntime.NoopTracer] e a composição é byte-idêntica à de antes de
+	// AOS-210. É deliberado que a atribuição viva DENTRO do `if` com as outras três vias
+	// (WORM decorado, freeze, runtime) e não numa inicialização incondicional
+	// `= tracer`: `tracer` é `otelgenai.NoopTracer{}` — NÃO-nil — quando a
+	// observabilidade está desligada, pelo que inicializá-lo aqui faria o nó passar
+	// SEMPRE um tracer ao composition root. O efeito observável seria o mesmo (um Noop
+	// não emite), mas a retro-compatibilidade passaria a depender de o Noop do nó ser
+	// equivalente ao default do dispatcher, em vez de ser ESTRUTURAL — e o CA «apenas
+	// quando a observabilidade está ligada» deixaria de ser verdade.
 	wormForChain := worm
 	var freezeOpts []toolset.Option
 	var runtimeOpts []agentruntime.Option
+	var chainTracer agentruntime.Tracer
 	if tracingEnabled {
 		wormForChain = newAuditTracingStore(worm, tracer)
 		freezeOpts = append(freezeOpts, toolset.WithTracer(tracer))
 		runtimeOpts = append(runtimeOpts, agentruntime.WithTracer(tracer))
+		chainTracer = tracer // a MESMA variável das três vias acima (invariante de SecuredConfig.Tracer)
 	}
 
 	// (7) SECURED RUNTIME — a CADEIA REAL (via NewProductionSecure), com o VERIFIER REAL
@@ -739,6 +758,7 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Ledger:         ledger,
 		FreezeOptions:  freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
 		RuntimeOptions: runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
+		Tracer:         chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
