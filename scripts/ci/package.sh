@@ -7,8 +7,19 @@
 #   1. secrets.sh  — nenhum material sensível rastreado (a chave do issuer NUNCA na imagem);
 #   2. sast.sh     — gosec, baseline MULTISET (nunca sort -u); descoberta NOVA avermelha;
 #   3. sca.sh      — govulncheck, baseline multiset; vuln afetante nova avermelha;
-#   4. sbom.sh     — SBOM + proveniência mínima do binário (ADR-017 ponto 3, assinatura DEFERIDA);
-#   5. docker build (se o Docker estiver disponível) — a imagem endurecida (ADR-017 ponto 2).
+#   4. docker build (se o Docker estiver disponível) — a imagem endurecida (ADR-017 ponto 2);
+#   5. sbom.sh     — SBOM + proveniência do binário que a imagem carrega (ADR-017 ponto 3);
+#   6. sign.sh     — ATESTAÇÃO ASSINADA (DSSE/ed25519) do conjunto entregue (AOS-207);
+#   7. verify-attestation.sh — a entrega RECUSA o que não valida (AOS-207).
+#
+# AOS-207 fechou o ponto 3 do ADR-017: a atestação deixou de ser «gerada, por assinar». Os
+# passos 6/7 são o que torna isso verificável — assinar sem verificar não recusa nada, e por
+# isso a verificação corre SEMPRE, mesmo acabada de assinar nesta corrida. Sem chave de
+# release (o esperado em PR/local) o passo 6 declara `NAO-ASSINADA` e o 7 devolve 4, que
+# aqui vira VERDE PARCIAL (saída 3): a entrega não é publicável, mas nada mentiu. O mesmo
+# vale quando se assina SEM imagem construída (`ASSINADA-SEM-IMAGEM`) ou quando a imagem
+# atestada não está presente para o digest ser recomparado: a garantia central do ticket é a
+# da IMAGEM, e um verde que não a tenha provado seria um falso-verde.
 #
 # Fail-closed: QUALQUER etapa vermelha aborta a entrega (exit != 0). O docker build é a única
 # etapa que pode faltar por AMBIENTE (Docker/rede indisponível) — nesse caso é reportada como
@@ -24,7 +35,8 @@
 #
 # CÓDIGOS DE SAÍDA: 0 = verde (nada saltado) · 1 = vermelho (etapa falhou) ·
 #   2 = configuração inválida (interruptor mal escrito) · 3 = VERDE PARCIAL (nenhuma etapa
-#   falhou mas alguma NÃO correu). O 3 existe porque registar não é impedir: este script é
+#   falhou mas alguma NÃO correu — inclui a entrega NÃO-ASSINADA, que não é publicável).
+#   O 3 existe porque registar não é impedir: este script é
 #   um step de CI cujo único sinal consumido a jusante é o código de saída, e o passo
 #   seguinte publica o artefacto. Um verde parcial indistinguível de um verde publicaria o
 #   ponto 2 do ADR-017 por verificar. O mesmo sinal fica em deploy/node/build/SKIPPED.txt
@@ -38,6 +50,33 @@ IMAGE_TAG="${IMAGE_TAG:-aos-node:local}"
 export IMAGE_TAG   # sbom.sh extrai o SUBJECT desta imagem (o binário que SHIPA).
 DOCKERFILE="$REPO_ROOT/deploy/node/Dockerfile"
 overall=0
+
+# --- SKIPS DOS PROCESSOS FILHOS (fronteira de processo) -----------------------
+# `GATE_SKIPPED` é um array de SHELL, por processo. Este script invoca os gates com
+# `bash "$CI_DIR/..."`, ou seja em processos FILHOS: um skip declarado dentro do sbom.sh, do
+# sign.sh ou do verify-attestation.sh («a atestação NÃO ficou bindada à imagem») morria com o
+# filho e o veredicto FINAL daqui dizia «AOS_SKIPPED_STEPS none» — falso-verde por fronteira de
+# processo, exactamente o defeito que AOS-199 fechou dentro de cada script. O sink é o canal por
+# ficheiro: os filhos ANEXAM (skip_declared), este script REABSORVE-OS para o seu próprio array,
+# e por isso o relatório final e o SKIPPED.txt passam a ser a UNIÃO — nunca uma truncatura.
+AOS_SKIP_SINK="$REPO_ROOT/deploy/node/build/SKIPPED.child.tsv"
+export AOS_SKIP_SINK
+mkdir -p "$( dirname "$AOS_SKIP_SINK" )"
+: > "$AOS_SKIP_SINK"   # de uma corrida anterior seria um skip fantasma.
+
+# absorb_child_skips — lê o sink e regista cada linha no array DESTE processo. Devolve o número
+# absorvido (usado para não duplicar um registo genérico quando o filho já foi específico).
+absorb_child_skips() {
+  local n=0 etapa motivo garantia
+  [ -f "$AOS_SKIP_SINK" ] || return 0
+  while IFS=$'\t' read -r etapa motivo garantia; do
+    [ -n "${etapa:-}" ] || continue
+    gate_skip "$etapa" "$motivo" "$garantia"
+    n=$(( n + 1 ))
+  done < "$AOS_SKIP_SINK"
+  : > "$AOS_SKIP_SINK"
+  return "$n"
+}
 
 # Validação da CONFIGURAÇÃO do interruptor (AOS-199 / ORF-06). Antes, qualquer valor
 # diferente de "1" (ex.: SKIP_DOCKER=true, SKIP_DOCKER=yes) era tratado como 0 em
@@ -123,6 +162,62 @@ fi
 # imagem $IMAGE_TAG quando presente; senão cai para rebuild do host (declarado, reproducible=false).
 run_gate "sbom" "$CI_DIR/sbom.sh"
 
+# (6) ATESTAÇÃO ASSINADA (AOS-207 / ADR-017 ponto 3). Finaliza o bloco `signature` da
+# proveniência, escreve o manifesto de entrega e — havendo AOS_RELEASE_KEY_FILE — emite o
+# envelope DSSE. Sem chave NÃO falha: escreve `NAO-ASSINADA` e regista um SKIP declarado
+# (assinar é um passo de RELEASE; um PR não tem, nem deve ter, a chave de release).
+# Vermelho aqui é configuração inválida ou chave em que o registo não confia — não ausência.
+run_gate "sign (atestação assinada)" "$CI_DIR/sign.sh"
+
+# (7) A ENTREGA RECUSA O QUE NÃO VALIDA (AOS-207). Corre SEMPRE, mesmo que o passo 6 acabe
+# de assinar: é a verificação — não a assinatura — que impede publicar um artefacto cujo
+# digest não bate com o que está atestado. É este passo que a PROVA NEGATIVA do CA exercita
+# (trocar o digest da imagem no manifesto ⇒ vermelho).
+#
+# Precisa de tratamento próprio porque `run_gate` colapsa todo o não-zero em VERMELHO, e a
+# saída 4 (POR VERIFICAR, declarada) não é uma falha. Cobre TRÊS casos, todos «nada mentiu, mas
+# nem tudo foi provado»: (a) build sem chave de release; (b) assinou-se sem imagem construída,
+# logo a atestação não cobre imagem nenhuma; (c) a imagem atestada não está presente para o
+# digest ser recomparado com a realidade. Tratá-la como vermelha tornaria todo o PR vermelho;
+# tratá-la como verde publicaria uma entrega por verificar — era o falso-verde que (b) e (c)
+# produziam antes. Vira SKIP ⇒ VERDE PARCIAL (saída 3) ⇒ não publicável.
+log_gate "package · verify-attestation (a entrega recusa o que não valida)"
+# `|| va_rc=$?`: `lib.sh` impõe `set -euo pipefail`. Escrito como `bash ...; va_rc=$?`, uma saída
+# 4 do filho abortava ESTE script imediatamente — o `case` abaixo, o veredicto, o registo dos
+# skips e o SKIPPED.txt eram código morto, e o package.sh terminava com 4 (um código que a sua
+# própria documentação não define) em vez de 3. Capturar em condição mantém o errexit e o
+# vocabulário de saída documentado.
+va_rc=0
+bash "$CI_DIR/verify-attestation.sh" || va_rc=$?
+
+# REABSORÇÃO dos skips dos três filhos (sbom, sign, verify). Tem de acontecer ANTES do veredicto:
+# é o que faz o relatório final e o SKIPPED.txt dizerem a verdade sobre o que não correu.
+# (mesma razão para o `|| absorbed=$?`: a função devolve a CONTAGEM, não um estado de erro.)
+absorbed=0
+absorb_child_skips || absorbed=$?
+if [ "$absorbed" -gt 0 ]; then
+  log_step "reabsorvidos $absorbed skip(s) declarados nos gates filhos (sbom/sign/verify)"
+fi
+
+case "$va_rc" in
+  0)
+    log_ok "package · verify-attestation: verde — atestação assinada, a cobrir a imagem, e coerente com o artefacto" ;;
+  4)
+    # Saída 4 = POR VERIFICAR (não-assinada, ou assinada sem cobrir a imagem, ou imagem
+    # indisponível para recomparação). O filho já declarou o motivo EXACTO no sink, acabado de
+    # reabsorver; só se acrescenta um registo genérico se, por alguma razão, nada tiver vindo —
+    # nunca se deixa uma saída 4 sem skip registado, senão o veredicto final voltaria a verde.
+    if [ "$absorbed" -eq 0 ]; then
+      gate_skip "verificação da atestação assinada" \
+                "verify-attestation devolveu 4 (POR VERIFICAR) sem detalhe no sink" \
+                "ADR-017 ponto 3 — a atestação NÃO foi integralmente verificada; entrega não publicável"
+    fi
+    log_warn "package · verify-attestation: POR VERIFICAR (saída 4) — entrega NÃO publicável" ;;
+  *)
+    log_fail "package · verify-attestation: VERMELHO — entrega bloqueada (atestação não valida)"
+    overall=1 ;;
+esac
+
 printf '\n%s========== ENTREGA (AOS-168 / ADR-017) ==========%s\n' "$C_BLD" "$C_RST"
 # REDECLARAÇÃO das etapas saltadas (AOS-199): um WARN a meio de 300 linhas não é
 # registo — o veredicto final tem de dizer o que NÃO foi verificado. `none` quando
@@ -131,13 +226,20 @@ gate_skip_report || true
 # ... e o MESMO registo ao lado do artefacto, legível por máquina: este script é um step
 # de CI cujo passo seguinte faz upload do que está em deploy/node/build. Quem publica passa
 # a poder testar `[ -e deploy/node/build/SKIPPED.txt ]` em vez de ler o log.
+#
+# A lista deste processo JÁ INCLUI os skips dos filhos (absorb_child_skips, acima), pelo que
+# esta escrita é a UNIÃO e não uma truncatura: antes, o `rm -f` interno apagava o SKIPPED.txt
+# que o sbom.sh tinha escrito sempre que o pai não tivesse skips PRÓPRIOS — o sinal máquina-
+# legível desaparecia justamente para quem decide publicar por ficheiro.
 gate_skip_file "$REPO_ROOT/deploy/node/build/SKIPPED.txt" || true
+rm -f "$AOS_SKIP_SINK"   # canal interno; não é artefacto de entrega.
 if [ "$overall" -eq 0 ]; then
   if [ "${#GATE_SKIPPED[@]}" -eq 0 ]; then
-    log_ok "package: VERDE — pontos 1/2/4 impostos, ponto 3 mínimo declarado (ponto 5 respeitado: sem chave na imagem)"
+    log_ok "package: VERDE — pontos 1/2/3/4 impostos (ponto 3 ASSINADO e VERIFICADO, AOS-207; ponto 5 respeitado: sem chave na imagem)"
   else
     log_warn "package: VERDE PARCIAL — pontos 1/4 impostos e ponto 5 respeitado, mas as ${#GATE_SKIPPED[@]} etapa(s) acima NÃO correram."
-    log_warn "         Este verde NÃO é prova do ponto 2 (imagem endurecida) do ADR-017. Não o cite como entrega verificada."
+    log_warn "         Este verde NÃO é prova do ponto 2 (imagem endurecida) nem do ponto 3 (atestação assinada) do ADR-017."
+    log_warn "         Não o cite como entrega verificada."
     # REGISTAR NÃO É IMPEDIR. O único sinal que a automação a jusante consome é o código
     # de saída; um verde parcial indistinguível de um verde publicaria o artefacto com o
     # ponto 2 do ADR-017 por verificar. Saída DEDICADA (3): não é vermelho (nada falhou)

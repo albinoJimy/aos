@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# sbom.sh — SBOM + PROVENIÊNCIA do binário do nó `aos` (ADR-017 ponto 3, forma MÍNIMA).
+# sbom.sh — SBOM + PROVENIÊNCIA do binário do nó `aos` (ADR-017 ponto 3).
 #
-# ADR-017 §Consequências: o ponto 3 fica na FORMA MÍNIMA até ao endurecimento de EPIC-10 —
-# "SBOM gerado, atestação POR ASSINAR — declarado, não fingido". Este script:
+# ÂMBITO (mudou com AOS-207): este script GERA o SBOM e a proveniência; NÃO assina. A
+# assinatura e a recusa da entrega são de `scripts/ci/sign.sh` e
+# `scripts/ci/verify-attestation.sh`, encadeados a seguir a este por `scripts/ci/package.sh`.
+# O bloco `signature` que sai daqui é TRANSITÓRIO (`POR-FINALIZAR`) — é o sign.sh que o
+# fecha. Antes de AOS-207 este campo dizia `DEFERIDO-EPIC-10`, o que era um eixo ERRADO:
+# nenhum dos onze tickets do EPIC-10 assina imagens (corrigido por AOS-196 e fechado aqui).
+#
+# Este script:
 #   (a) determina o SUBJECT — o binário que a IMAGEM REALMENTE carrega. Quando a imagem
 #       (IMAGE_TAG) existe, EXTRAI /usr/local/bin/aos dela (docker create + docker cp) e
 #       hasheia ESSE artefacto. A proveniência tem de bindar-se ao que SHIPA, não a um
 #       rebuild do host (toolchain/cache do host divergem byte-a-byte do build da imagem);
 #   (b) extrai o SBOM dos MÓDULOS embebidos NESSE binário com `go version -m` (Go tooling);
-#   (c) emite um registo de PROVENIÊNCIA NÃO-ASSINADO (quem/o-quê/quando) declarando
-#       explicitamente que a ASSINATURA da atestação + o registry de imagens assinado ficam
-#       DEFERIDOS para EPIC-10 (não se finge uma garantia que ainda não existe).
+#   (c) emite o registo de PROVENIÊNCIA (quem/o-quê/quando) com o bloco `signature` ainda
+#       POR FINALIZAR — quem o fecha é o `sign.sh` (não se finge aqui uma garantia que só
+#       existe depois de assinada e verificada).
 #
 # Reprodutibilidade HONESTA: `reproducible:true` NUNCA é emitido sem verificação. Só quando o
 # rebuild estático do host bate BYTE-A-BYTE com o binário da imagem é que se afirma true; caso
@@ -21,9 +27,24 @@
 # Uso:  bash scripts/ci/sbom.sh [OUT_DIR]
 #   OUT_DIR default: deploy/node/build (ignorado pelo .gitignore — artefacto, não fonte).
 #   IMAGE_TAG default aos-node:local — imagem de onde se extrai o subject (se existir/houver docker).
+#   AOS_SKIP_SINK (opcional) ficheiro onde este processo ANEXA os skips declarados, para que o
+#     processo PAI (package.sh) os reabsorva — ver `skip_declared`.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 setup_env
+
+# skip_declared <etapa> <motivo> <garantia por verificar>
+#   `gate_skip` regista num ARRAY do PROCESSO, e este script corre como processo FILHO de
+#   package.sh — o array do pai nunca veria o registo. O sink é o canal por ficheiro que
+#   atravessa a fronteira de processo; sem ele, o veredicto do pai podia dizer «nada saltado»
+#   enquanto o filho declarava que o subject não ficou bindado à imagem.
+skip_declared() {
+  gate_skip "$1" "$2" "$3"
+  if [ -n "${AOS_SKIP_SINK:-}" ]; then
+    mkdir -p "$( dirname "$AOS_SKIP_SINK" )" 2>/dev/null || true
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$AOS_SKIP_SINK"
+  fi
+}
 
 NODE_MOD="packages/cmd/aos"
 OUT_DIR="${1:-$REPO_ROOT/deploy/node/build}"
@@ -34,7 +55,7 @@ mkdir -p "$OUT_DIR"
 BUILDER_IMAGE="golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40"
 RUNTIME_IMAGE="gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35"
 
-log_gate "sbom · binário estático + SBOM + proveniência (ADR-017 ponto 3, forma mínima)"
+log_gate "sbom · binário estático + SBOM + proveniência (ADR-017 ponto 3; assina-se em sign.sh)"
 
 # ---------------------------------------------------------------------------
 # Rebuild estático do host (CGO off, GOPROXY=off, trimpath) — o MESMO comando do Dockerfile.
@@ -72,9 +93,9 @@ else
   # (fora do package.sh), e nesse caminho um WARN solto a meio do output não é registo —
   # o veredicto do próprio script tem de redeclarar o que ficou por verificar. O registo
   # de skips passa a ser propriedade do runner, não de um script.
-  gate_skip "SBOM subject bindado à imagem" \
-            "imagem $IMAGE_TAG indisponível (docker ausente ou imagem não construída)" \
-            "ADR-017 ponto 3 — a proveniência NÃO fica ligada ao binário que shipa (subject = rebuild do host)"
+  skip_declared "SBOM subject bindado à imagem" \
+                "imagem $IMAGE_TAG indisponível (docker ausente ou imagem não construída)" \
+                "ADR-017 ponto 3 — a proveniência NÃO fica ligada ao binário que shipa (subject = rebuild do host)"
   cp -f "$host_bin" "$bin"
   subject_source="host-build"
 fi
@@ -108,7 +129,7 @@ sbom="$OUT_DIR/sbom.json"
 {
   printf '{\n'
   printf '  "format": "aos-sbom-minimal/v1",\n'
-  printf '  "note": "Forma minima (ADR-017 ponto 3). Componentes extraidos de `go version -m` do binario que a imagem carrega. Atestacao assinada DEFERIDA para EPIC-10.",\n'
+  printf '  "note": "Formato MINIMO (nao e CycloneDX/SPDX completo): componentes extraidos de `go version -m` do binario que a imagem carrega. Este SBOM e um dos subjects ATESTADOS em attestation.dsse.json (AOS-207); qualquer byte alterado aqui faz scripts/ci/verify-attestation.sh recusar a entrega.",\n'
   printf '  "subject": { "name": "aos", "sha256": "%s", "source": "%s" },\n' "$bin_sha" "$subject_source"
   printf '  "toolchain": "%s",\n' "$( go version | awk '{print $3}' )"
   # main module
@@ -203,10 +224,32 @@ builder_id="$( id -un 2>/dev/null || echo unknown )@$( hostname 2>/dev/null || e
   printf '    "flags": "CGO_ENABLED=0 GOOS=linux GOPROXY=off -trimpath -ldflags=-s -w -buildid="\n'
   printf '  },\n'
   printf '  "metadata": { "buildFinishedOn": "%s", "offlineBuild": true, "subjectSource": "%s", "hostRebuildSha256": "%s", "reproducible": %s, "reproducibilityCheck": "%s" },\n' "$now" "$subject_source" "$host_sha" "$reproducible" "$repro_check"
-  printf '  "signature": { "status": "DEFERIDO-EPIC-10", "note": "Atestacao por assinar (ADR-017 ponto 3). Registry de imagens assinado + attestation de hardware sao endurecimento datado de EPIC-10. Declarado, nao fingido." }\n'
+  printf '  "signature": { "status": "POR-FINALIZAR", "eixo": "AOS-207", "note": "Estado TRANSITORIO: este ficheiro sai do sbom.sh por assinar. scripts/ci/sign.sh finaliza este bloco (ASSINADA com keyid, ou NAO-ASSINADA quando nao ha chave de release) e scripts/ci/verify-attestation.sh recusa a entrega que nao valide. Ver este valor numa entrega significa que o sign.sh NAO correu." }\n'
   printf '}\n'
 } > "$prov"
 log_ok "proveniência (não-assinada): $prov"
+
+# ---------------------------------------------------------------------------
+# INVALIDAÇÃO DOS ARTEFACTOS DE ASSINATURA DE UMA CORRIDA ANTERIOR.
+#
+# `sbom.json` e `provenance.json` acabaram de ser REESCRITOS: os seus sha256 mudaram (o bloco
+# `signature` sozinho já muda o digest da proveniência). Ambos são SUBJECTS assinados, pelo que
+# qualquer `attestation.dsse.json`/`delivery-manifest.json` que estivesse aqui deixou, neste
+# instante, de cobrir o que está no disco. Deixá-los seria publicar um envelope dessincronizado
+# do artefacto — pior do que não haver envelope, porque parece uma garantia.
+#
+# Isto NÃO é hipotético: `.github/workflows/ci.yml` (pista de OUTRO dono) corre `sbom.sh` como
+# passo SEPARADO **depois** de `package.sh`, e nenhum gate corre a seguir para apanhar a
+# divergência. Enquanto essa ordem não for corrigida, esta remoção é a defesa desta pista: a
+# entrega degrada para NÃO-ASSINADA (honesta e recusada a jusante) em vez de mentir. A pendência
+# está nomeada em ADR-017 §Consequências (residual 7).
+for stale in "$OUT_DIR/attestation.dsse.json" "$OUT_DIR/delivery-manifest.json"; do
+  if [ -f "$stale" ]; then
+    rm -f "$stale"
+    log_warn "REMOVIDO $stale — a proveniência foi regenerada e este artefacto já não a cobre."
+    log_warn "        Corra scripts/ci/sign.sh (ou scripts/ci/package.sh) para reassinar."
+  fi
+done
 
 # Limpeza do rebuild de referência (artefacto intermédio; o subject fica em $bin).
 rm -f "$host_bin"
@@ -217,4 +260,7 @@ rm -f "$host_bin"
 # uniforme: `AOS_SKIPPED_STEPS` no fim + o marcador máquina-legível ao lado do artefacto.
 gate_skip_report || true
 gate_skip_file "$OUT_DIR/SKIPPED.txt" || true
-log_ok "sbom: verde (SBOM + proveniência mínima; subject = $subject_source; reproducible=$reproducible/$repro_check; assinatura DEFERIDA-EPIC-10)"
+# O veredicto NÃO afirma nada sobre a assinatura: este script não assina. Dizia
+# «assinatura DEFERIDA-EPIC-10» — eixo errado (AOS-196) e, desde AOS-207, estado errado.
+# Quem tem autoridade para falar do estado da assinatura é o sign.sh/verify-attestation.sh.
+log_ok "sbom: verde (SBOM + proveniência mínima; subject = $subject_source; reproducible=$reproducible/$repro_check; assinatura: fica para sign.sh — ver signature.status em provenance.json)"

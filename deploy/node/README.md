@@ -385,15 +385,53 @@ em runtime (ADR-006), nunca da imagem.
 - **Kubernetes**: prefira sondas `httpGet` nativas — `livenessProbe` em `/healthz`,
   `readinessProbe` em `/readyz` (drain-aware).
 
-## Entrega fail-closed (ADR-017 ponto 4)
+## Entrega fail-closed (ADR-017 pontos 3 e 4)
 
 ```bash
-bash scripts/ci/package.sh      # secrets + sast + sca + sbom + docker build
-bash scripts/ci/sbom.sh         # só SBOM + proveniência (deploy/node/build/)
+bash scripts/ci/package.sh              # a cadeia completa (ver abaixo)
+bash scripts/ci/sbom.sh                 # só SBOM + proveniência (deploy/node/build/)
+bash scripts/ci/sign.sh                 # assina a atestação (precisa de AOS_RELEASE_KEY_FILE)
+bash scripts/ci/verify-attestation.sh   # recusa a entrega que não valide
 ```
 
-Reutiliza `sast.sh`/`sca.sh`/`secrets.sh` (baseline **multiset**, nunca `sort -u`). Uma descoberta
-nova fora da baseline **avermelha**.
+> Correr `sbom.sh` **isolado** regenera `provenance.json` e, com isso, invalida qualquer
+> atestação anterior: o script **remove** o `attestation.dsse.json` e o `delivery-manifest.json`
+> obsoletos e diz que o fez. A entrega fica *não-assinada* (honesta) em vez de ficar com um
+> envelope que já não cobre os bytes no disco. Reassine com `sign.sh` (ou corra `package.sh`).
+
+`package.sh` encadeia: `secrets` → `sast` → `sca` → `docker build` → `sbom` → **`sign`** →
+**`verify-attestation`**. Reutiliza `sast.sh`/`sca.sh`/`secrets.sh` (baseline **multiset**, nunca
+`sort -u`). Uma descoberta nova fora da baseline **avermelha**.
+
+**Atestação assinada (AOS-207, fecha o ponto 3).** `sign.sh` emite um envelope **DSSE v1** com um
+**in-toto Statement v1** assinado em **ed25519**, cujos *subjects* são o digest da imagem, o
+binário, o SBOM, a proveniência e o manifesto de entrega. `verify-attestation.sh` verifica a
+assinatura contra `release-pubkeys.json` e **recompara cada digest com o artefacto real** — mexer
+no digest da imagem dentro de `delivery-manifest.json` põe o gate **vermelho**.
+
+O que o `verify-attestation.sh` **NÃO** dá por verde (saída `4`, «por verificar», ⇒ `package.sh`
+devolve `3` = **não publicável**):
+
+- não há envelope (build sem `AOS_RELEASE_KEY_FILE`) — o caminho esperado num PR;
+- o envelope é válido mas **não tem subject `image:`** (assinou-se sem imagem construída): a
+  garantia central do ticket está ausente, e um verde aqui seria um falso-verde;
+- a imagem atestada **não está presente** para o digest ser recomparado com a realidade — corra-o
+  no host onde a imagem existe (`IMAGE_TAG=…`), senão a comparação com a imagem não acontece.
+
+Se o manifesto **afirmar** cobertura da imagem (`attestation.imageBound=true`) que o statement
+assinado não tem, isso não é ausência — é **vermelho**.
+
+A chave privada de release **nunca** entra no repositório: entra por **caminho**
+(`AOS_RELEASE_KEY_FILE`), como já acontece com `AOS_ISSUER_KEY_PATH`. Procedimento completo — quem
+assina, onde vive, como se roda — em **[`CUSTODIA-CHAVE-RELEASE.md`](CUSTODIA-CHAVE-RELEASE.md)**.
+
+Códigos de saída de `package.sh`: `0` verde · `1` vermelho · `2` configuração inválida ·
+`3` **verde parcial** (nada falhou mas algo não correu — inclui a entrega **não-assinada**, a
+**assinada-sem-imagem** e a imagem **não recomparada**; nenhuma delas é publicável). Um build
+local/PR não tem a chave de release e devolve `3`: é o caminho esperado, declarado, não fingido.
+O que ficou por verificar é redeclarado no fim (`AOS_SKIPPED_STEPS`) e ao lado do artefacto
+(`deploy/node/build/SKIPPED.txt`) — incluindo os skips declarados **dentro** de `sbom.sh`,
+`sign.sh` e `verify-attestation.sh`, que o `package.sh` reabsorve por ficheiro (`AOS_SKIP_SINK`).
 
 ## Repin dos digests
 

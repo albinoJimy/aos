@@ -6,8 +6,12 @@
 #   (1) binário REPRODUZÍVEL zero-dep externa (estático, CGO off, GOPROXY=off no build);
 #   (2) imagem ENDURECIDA: distroless STATIC, NON-ROOT (UID numérico), root-fs READ-ONLY,
 #       sem shell nem package-manager, config só por env/ficheiro montado, SEM segredos;
-#   (3) SBOM + proveniência — forma MÍNIMA (gerados por scripts/ci/sbom.sh; a ASSINATURA da
-#       atestação + registry assinado ficam DEFERIDOS para EPIC-10 — declarado, não fingido);
+#   (3) SBOM + proveniência ASSINADOS e verificáveis (AOS-207): scripts/ci/sbom.sh gera,
+#       scripts/ci/sign.sh assina (DSSE v1 / in-toto Statement v1, ed25519) e
+#       scripts/ci/verify-attestation.sh RECUSA a entrega que não valide. Este comentário dizia
+#       «forma MÍNIMA, assinatura DEFERIDA para EPIC-10»: eixo errado (nenhum ticket do EPIC-10
+#       assina imagens — AOS-196) e estado errado desde AOS-207. Residual que CONTINUA aberto e
+#       nomeado: a assinatura não está ANEXADA à imagem no registry (sem OCI referrers);
 #   (4) gates FAIL-CLOSED na entrega (scripts/ci/package.sh reutiliza sast/sca/secrets);
 #   (5) a autoridade de IDENTIDADE (issuer, AOS-156) é um trust-domain SEPARADO — a sua chave
 #       NUNCA entra nesta imagem; vem do vault em runtime (ADR-006).
@@ -60,14 +64,35 @@ RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos-health
 # ----------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
 
-# Metadados de proveniência (o registo assinado é DEFERIDO — ADR-017 ponto 3 / EPIC-10).
+# Metadados de proveniência.
+#
+# O label `attestation` dizia `DEFERIDO-EPIC-10 (por assinar)` — DUAS afirmações agora falsas:
+# o eixo estava errado (nenhum ticket do EPIC-10 assina imagens — corrigido por AOS-196) e o
+# estado mudou (AOS-207 fechou o ponto 3: a atestação é ASSINADA e VERIFICÁVEL). Um label é
+# metadado que viaja COM a imagem: deixá-lo diria a quem inspecciona o artefacto o contrário
+# do que a cadeia de entrega impõe.
+#
+# O que os labels declaram é ONDE está a garantia, não que ela esteja DENTRO da imagem: o
+# envelope DSSE é um artefacto SEPARADO (deploy/node/build/attestation.dsse.json), porque o
+# digest da imagem é um dos subjects assinados — uma atestação sobre a imagem não pode viver
+# dentro da imagem que atesta. O residual (não estar ANEXADA no registry por OCI referrers)
+# está nomeado em ADR-017 §Consequências e em CUSTODIA-CHAVE-RELEASE.md §6.
+#
+# ESTE COMENTÁRIO NÃO VIAJA COM A IMAGEM; os LABELS viajam. Quem faz `docker pull` e inspecciona
+# os labels lê caminhos e um comando que só existem na ÁRVORE DO REPOSITÓRIO — se o valor não o
+# disser, o label parece uma instrução executável e não é. Por isso cada valor qualifica-se a si
+# próprio: onde NÃO está o artefacto, e o que a verificação EXIGE para dar verde.
 LABEL org.opencontainers.image.title="aos-node" \
       org.opencontainers.image.description="Nó de referência do Agentic OS (AOS-168), distroless non-root read-only" \
       org.opencontainers.image.source="github.com/aos-ref/cmd/aos" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.aos.adr="ADR-017" \
-      org.aos.supplychain.sbom="scripts/ci/sbom.sh (forma minima)" \
-      org.aos.supplychain.attestation="DEFERIDO-EPIC-10 (por assinar)"
+      org.aos.supplychain.sbom="scripts/ci/sbom.sh (forma minima; artefacto na arvore do repo, NAO nesta imagem)" \
+      org.aos.supplychain.attestation="DSSE v1 / in-toto Statement v1, ed25519 (AOS-207)" \
+      org.aos.supplychain.attestation.artifact="deploy/node/build/attestation.dsse.json — NAO viaja com esta imagem e NAO esta anexado no registry (sem OCI referrers; ADR-017 residual 1). Um docker pull NAO traz a atestacao." \
+      org.aos.supplychain.attestation.verify="bash scripts/ci/verify-attestation.sh — EXIGE a arvore do repositorio (envelope+roster+artefactos em deploy/node/build) E esta imagem presente localmente; sem a imagem a saida e 4 (POR VERIFICAR, nao publicavel), nunca verde" \
+      org.aos.supplychain.attestation.trustroot="deploy/node/release-pubkeys.json (na arvore do repo; roster vazio = recusa tudo, fail-closed)" \
+      org.aos.supplychain.custody="deploy/node/CUSTODIA-CHAVE-RELEASE.md"
 
 # Binários estáticos (o único conteúdo mutável do artefacto).
 COPY --from=builder /out/aos /usr/local/bin/aos

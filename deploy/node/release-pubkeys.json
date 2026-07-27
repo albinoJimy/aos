@@ -1,0 +1,5 @@
+{
+  "format": "aos-release-pubkeys/v1",
+  "note": "ANCORA DE CONFIANCA da atestacao de entrega do no `aos` (AOS-207 / ADR-017 ponto 3). SO material PUBLICO vive aqui: chaves publicas ed25519 em hex, com detentor, custodia, estado e janela de validade. A chave PRIVADA correspondente NUNCA entra neste repositorio (ver deploy/node/CUSTODIA-CHAVE-RELEASE.md). `keys` VAZIO significa: nenhuma chave de release provisionada ainda — e por isso `scripts/ci/verify-attestation.sh` RECUSA qualquer envelope (fail-closed por omissao). Isto e o estado declarado, nao um esquecimento: a chave de release e provisionada pelo Arquitecto de Plataforma no primeiro release distribuido fora do repositorio, e a entrada abaixo e acrescentada nesse momento pelo procedimento documentado.",
+  "keys": []
+}
