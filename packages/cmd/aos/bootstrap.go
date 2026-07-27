@@ -59,12 +59,15 @@ import (
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
+	memory "github.com/aos-ref/platform/memory"
+	memadapters "github.com/aos-ref/platform/memory/adapters"
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
 	"github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
+	"github.com/aos-ref/substrate/redaction"
 )
 
 // IdentityModeReal é o modo de identidade EM VIGOR do nó de produção de REFERÊNCIA: o
@@ -368,6 +371,15 @@ type Node struct {
 	// Tracer é a porta de observabilidade EM VIGOR (AOS-173): um [otelgenai.SpanTracer]
 	// sobre OTLP quando ligada, senão o [otelgenai.NoopTracer]. Exposto para inspecção.
 	Tracer otelgenai.Tracer
+
+	// Ingestion é o motor de redacção/tokenização de PII (AOS-091) LIGADO de facto ao
+	// fecho transitivo do nó (AOS-208): a fronteira de minimização onde o objectivo de
+	// um run é redigido ANTES de alcançar o Event Store, a memória (platform/memory), os
+	// spans (substrate/otel-genai) e o audit (platform/audit) — todos pela MESMA porta
+	// [redaction.Ingestor] e a mesma política. NUNCA nil: o Bootstrap compõe-o SEMPRE
+	// (o default não deixa o motor inalcançável — é o defeito que AOS-208 fecha), e o
+	// [NodeService.Submit] invoca-o em cada run. O banner declara o estado.
+	Ingestion *integration.IngestionGateway
 
 	// --- Soberania/conformidade de leitura (AOS-172, E7) -----------------------
 	// SovereignReadRegions é o registo board→região (AOS-094) que o read-path soberano (D7)
@@ -863,6 +875,32 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		dsar.WithPartition("governance.dsar"),
 	)
 
+	// (7d) MOTOR DE REDACÇÃO (AOS-091) LIGADO AO FECHO TRANSITIVO (AOS-208). A cablagem
+	// que faltava: o objectivo de um run é INPUT DO UTILIZADOR e pode carregar PII em
+	// claro. O [integration.IngestionGateway] redige-o na FRONTEIRA de ingestão e faz o
+	// fan-out do valor REDIGIDO para as quatro portas — Event Store, platform/memory,
+	// substrate/otel-genai e o WORM do nó — com o MESMO [redaction.Ingestor] e a mesma
+	// política (a consistência que o doc.go do motor promete). É composto SEMPRE (o
+	// default NÃO deixa o motor inalcançável — o defeito que AOS-208 fecha); o
+	// [NodeService.Submit] invoca-o em cada run e substitui o objectivo pelo redigido.
+	//
+	// Política: [redaction.RemoveAllPolicy] (MINIMIZAÇÃO máxima — cada PII detectada é
+	// substituída por [REDACTED:<classe>], sem KeySource nem tokens retidos), o mesmo
+	// default seguro do preview do approval-card no demo (a MESMA disciplina, não uma
+	// variante). O tracer é o do nó (NoopTracer quando a observabilidade está desligada
+	// ⇒ o span de ingestão é descartado, zero overhead); o WORM é o REAL do nó (não o
+	// decorado). O backend de memória é o [memadapters.EventStoreAdapter] sobre o MESMO
+	// Event Store — pelo que a porta memory e a porta Event Store são a MESMA escrita.
+	redactionEngine := redaction.NewEngine(nil) // RemoveAllPolicy não exige KeySource
+	redactionPolicy := redaction.RemoveAllPolicy("aos-node-redaction-v1")
+	ingestor := redaction.NewIngestor(redactionEngine, redactionPolicy)
+	memPort := memadapters.NewEventStoreAdapter(es, memadapters.WithEventStoreTracer(tracer))
+	memService := memory.NewService(memPort)
+	ingestion, err := integration.NewIngestionGateway(ingestor, memService, tracer, worm)
+	if err != nil {
+		return nil, fmt.Errorf("aos: gateway de ingestao/redaccao (AOS-208/AOS-091): %w", err)
+	}
+
 	// (8) DECLARAÇÃO do modo de identidade EM VIGOR (AC3). O modo é declarado SEM ambiguidade
 	// e, no modo de referência, com AVISO explícito de que a autoridade é co-localizada — a
 	// honestidade do banner não pode deixar um operador confundir referência com produção
@@ -926,6 +964,12 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed DEMO-GRADE")
 	}
 	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
+	// MOTOR DE REDACÇÃO (AOS-091/AOS-208). O banner declara que o motor está LIGADO ao
+	// fecho transitivo do nó e a política em vigor — sem capacidade-fantasma. Ligar o
+	// motor MUDA o comportamento por omissão: o objectivo de cada run passa a ser
+	// redigido na ingestão (um objectivo sem PII é byte-idêntico; um com PII segue
+	// minimizado para [REDACTED:<classe>]). É essa a decisão que o banner torna visível.
+	log("redaccao de PII (AOS-091/AOS-208): motor LIGADO ao fecho transitivo — objectivo de cada run redigido na ingestao (RemoveAllPolicy) ANTES do Event Store/memory/spans/audit; MESMO Ingestor e mesma politica em todas as portas")
 	log("AVISO DSAR: a erasure destroi a KEK por-titular do VAULT DEMO-GRADE; o conteudo dos runs no Event Store (texto-claro, nao cifrado por-titular) fica FORA do alcance do shredding — cifra por-titular do substrato DEFERIDA (EPIC-06/09/10)")
 	if tracingEnabled {
 		if otlpExp != nil {
@@ -950,6 +994,7 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		WORM:         worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
 		IdentityMode: identityMode,
 		Tracer:       tracer,
+		Ingestion:    ingestion,
 
 		Checkpointer: checkpointer, // nil quando a execução durável está desligada
 		Capturer:     capturer,     // (os três são compostos/omitidos EM CONJUNTO)

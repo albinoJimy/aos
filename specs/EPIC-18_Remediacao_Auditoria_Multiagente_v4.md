@@ -717,15 +717,24 @@ apenas menções em EPIC-09 e EPIC-17, nenhuma com este âmbito.
 
 **Critérios de aceitação**
 
-- [ ] O motor entra no fecho transitivo de `packages/cmd/aos` e de `packages/integration` — hoje
-      `go list -deps ./...` mostra-o **ausente** em ambos (presente só em `aos-demo`, via
-      `approval-card`).
-- [ ] Está ligado ao Event Store, `platform/memory`, `substrate/otel-genai` e `platform/audit`, usando
-      o **mesmo `Ingestor` e a mesma política** — é a consistência que o `doc.go` já promete.
-- [ ] **Falsificável:** um run cujo objectivo contenha um padrão de PII produz, no Event Store e nos
-      spans exportados, o valor **redigido** — e o teste falha se o motor for desligado.
-- [ ] O `doc.go` é actualizado (a secção «Como verificar as afirmações acima» do AOS-195 mantém-se e
-      passa a confirmar a presença, não a ausência).
+- [x] O motor entra no fecho transitivo de `packages/cmd/aos` e de `packages/integration` —
+      `go list -deps ./...` devolve agora `github.com/aos-ref/substrate/redaction` em **ambos**
+      os módulos (antes ausente; presente só em `aos-demo`, via `approval-card`). Cablagem no
+      `Bootstrap` (`bootstrap.go`) via `integration.NewIngestionGateway` (`integration/ingestion.go`).
+- [x] Está ligado ao Event Store, `platform/memory`, `substrate/otel-genai` e `platform/audit`, usando
+      o **mesmo `Ingestor` e a mesma política** (`redaction.RemoveAllPolicy`) — uma única passagem de
+      redacção alimenta as quatro portas em `IngestionGateway.IngestObjective`: registo de memória
+      EPISÓDICA sobre o `EventStoreAdapter`, span `aos.ingest.redacted`, e selo WORM do HASH do payload
+      já tratado. É a consistência que o `doc.go` promete.
+- [x] **Falsificável:** `TestNodeRedactsRunObjectiveEndToEnd` (`cmd/aos/ingestion_redaction_test.go`)
+      corre o nó com objectivo contendo PII sintética (RFC 2606) e exige o valor **redigido**
+      (`[REDACTED:email]`) no span exportado, no registo de memória/Event Store e no prompt materializado
+      que o LOOP consome, com a PII crua **ausente**. Provado não-vácuo: desligar `goal.Objective =
+      ing.Redacted` (`service.go`) faz o teste FALHAR (`ingestion_redaction_test.go:156` — PII crua
+      alcança o loop); restaurada, volta a verde.
+- [x] O `doc.go` é actualizado: a secção «Como verificar as afirmações acima» do AOS-195 mantém-se e
+      passa a **confirmar a presença** (o motor ESTÁ no fecho transitivo dos dois roots + demo; os
+      comandos `go list -deps` devolvem 1 linha cada), sem reintroduzir over-claim.
 
 **Dependências:** AOS-091 (motor), AOS-188.
 

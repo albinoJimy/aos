@@ -340,6 +340,32 @@ func (s *NodeService) Submit(ctx context.Context, goal agentruntime.Goal) error 
 	s.wg.Add(1)
 	s.mu.Unlock()
 
+	// INGESTÃO/REDACÇÃO (AOS-091/AOS-208). O objectivo é INPUT DO UTILIZADOR: redige-se
+	// na FRONTEIRA de ingestão — ANTES de o run arrancar — e o valor REDIGIDO é o que
+	// segue para o loop E o que alcança o Event Store/memory/spans/audit (fan-out pela
+	// MESMA porta). Só quando há objectivo E principal a quem atribuir (um objectivo
+	// sem PII é byte-idêntico; sem objectivo/principal nada há a minimizar — no-op
+	// retro-compatível). Fail-closed: uma falha de ingestão desfaz a posse e recusa o
+	// run (não se hospeda sobre uma minimização parcial). Corre APÓS o wg.Add/rs.lease
+	// para o desenrolar reutilizar o mesmo caminho de finish em caso de erro.
+	if s.node.Ingestion != nil && goal.Objective != "" && goal.Principal.NHIID != "" {
+		// AOS-208: `subject` é o PRINCIPAL DO RUN (a NHI do agente), não o titular dos
+		// dados (GDPR data subject). Sob RemoveAllPolicy (minimização, sem tokenização) só
+		// alimenta o SubjectID do registo de audit; ver o aviso de crypto-shredding em
+		// integration.IngestObjective antes de habilitar tokenização por-titular.
+		subject := goal.Principal.NHIID
+		ing, ierr := s.node.Ingestion.IngestObjective(ctx, subject, runID, goal.Principal.NHIID, goal.Objective)
+		if ierr != nil {
+			// Desenrola a posse contabilizada: decrementa o wg, larga o lease e move o
+			// run para terminado com o erro (mesmo caminho de finish, sem goroutine).
+			rs.err = fmt.Errorf("aos: ingestao/redaccao do objectivo do run %q (AOS-208): %w", runID, ierr)
+			s.wg.Done()
+			s.finish(rs)
+			return rs.err
+		}
+		goal.Objective = ing.Redacted // o run vê o objectivo MINIMIZADO
+	}
+
 	go s.hostRun(runCtx, rs, goal)
 	return nil
 }

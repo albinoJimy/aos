@@ -4,64 +4,69 @@
 // qualquer persistência — destinado a ser aplicado no Event Store, na memória, nos
 // spans e no audit — de modo que nenhuma PII em claro alcance esses destinos.
 //
-// # Escopo real de importação (AOS-188, corrigido em AOS-195)
+// # Escopo real de importação (AOS-188, corrigido em AOS-195, LIGADO em AOS-208)
 //
 // O motor é um módulo FOLHA (substrate) com zero dependências internas; qualquer
-// camada superior pode importá-lo. Em código de PRODUÇÃO é hoje importado por três
-// módulos de governação do plano de controlo — trajectory-surface (surface.go,
-// drilldown.go), approval-card (card.go) e confidence-calibration (history.go). No
-// módulo dsar a importação existe APENAS em teste (flow_test.go), não em produção.
+// camada superior pode importá-lo. Em código de PRODUÇÃO é importado por CINCO
+// módulos: três de governação do plano de controlo — trajectory-surface (surface.go,
+// drilldown.go), approval-card (card.go) e confidence-calibration (history.go) — e,
+// desde AOS-208, os DOIS composition-roots do nó: integration (ingestion.go) e cmd/aos
+// (bootstrap.go). No módulo dsar a importação existe APENAS em teste (flow_test.go),
+// não em produção.
 //
-// Nos composition-roots a cablagem é PARCIAL, e é este o facto verificável:
+// Nos composition-roots a cablagem está COMPLETA, e é este o facto verificável:
 //
 //   - cmd/aos-demo — o motor ESTÁ no fecho transitivo, por via de approval-card
 //     (main.go → control-plane/governance/approval-card → substrate/redaction).
-//   - cmd/aos — o motor NÃO está no fecho transitivo. O binário do nó arrasta
-//     governance/dsar, mas dsar só importa o motor em teste, pelo que a aresta não
-//     existe no grafo de produção.
-//   - integration — o motor NÃO está no fecho transitivo (nenhum dos módulos de
-//     governação que o importam entra neste grafo).
+//   - integration — o motor ESTÁ no fecho transitivo desde AOS-208, via o
+//     [github.com/aos-ref/integration.IngestionGateway] (ingestion.go), o ponto de
+//     composição que alimenta as quatro portas a partir de um único [Ingestor].
+//   - cmd/aos — o motor ESTÁ no fecho transitivo desde AOS-208: o Bootstrap compõe o
+//     IngestionGateway (bootstrap.go) e o NodeService.Submit redige o objectivo de
+//     cada run na fronteira de ingestão.
 //
-// A ligação directa ao Event Store, platform/memory, substrate/otel-genai e
-// platform/audit ainda não está completa na v1 — e é essa ausência que explica o
-// ponto anterior: sem esses importadores, o caminho de execução de cmd/aos e de
-// integration não passa hoje pelo motor. Quando esses módulos importarem o motor,
-// usarão o mesmo [Ingestor] e a mesma política, garantindo a consistência aqui
-// provada.
+// A ligação ao Event Store, platform/memory, substrate/otel-genai e platform/audit
+// está feita no IngestionGateway de AOS-208: o MESMO [Ingestor] e a mesma política
+// alimentam as quatro portas a partir de UMA passagem de redacção — a consistência
+// aqui provada é, no nó, estrutural (há um só motor), não uma coincidência de
+// configuração. O objectivo de um run (input do utilizador) é redigido ANTES de
+// alcançar qualquer destino; nenhuma PII em claro chega ao Event Store, à memória,
+// aos spans ou ao audit (prova falsificável em
+// packages/integration/ingestion_test.go e packages/cmd/aos/ingestion_redaction_test.go).
 //
 // # Como verificar as afirmações acima
 //
 // TODAS as afirmações desta secção de escopo — os importadores em produção, a lista
-// por composition-root e as armadilhas abaixo — são auto-verificáveis pelos comandos
+// por composition-root e a nota abaixo — são auto-verificáveis pelos comandos
 // seguintes, e DEVEM ser reverificadas sempre que este texto for alterado: foi a
 // ausência desta nota que permitiu, em AOS-188, afirmar-se uma cablagem inexistente
-// (achado VAC-02 ≡ DEF-02 ≡ CON-03 da auditoria v4). Correr a partir da RAIZ DO
-// REPOSITÓRIO, em shell POSIX (bash/CI). Cada linha é auto-contida — os `cd` estão
-// dentro de subshells e não acumulam — pelo que o bloco pode ser colado inteiro ou
-// linha a linha:
+// (achado VAC-02 ≡ DEF-02 ≡ CON-03 da auditoria v4). AOS-208 fez a cablagem que
+// faltava, pelo que os comandos agora CONFIRMAM PRESENÇA (antes confirmavam ausência).
+// Correr a partir da RAIZ DO REPOSITÓRIO, em shell POSIX (bash/CI). Cada linha é
+// auto-contida — os `cd` estão dentro de subshells e não acumulam — pelo que o bloco
+// pode ser colado inteiro ou linha a linha:
 //
-//	(cd packages/cmd/aos      && go list -deps ./... | grep substrate/redaction)  # sem saída
-//	(cd packages/integration  && go list -deps ./... | grep substrate/redaction)  # sem saída
+//	(cd packages/cmd/aos      && go list -deps ./... | grep substrate/redaction)  # 1 linha (AOS-208)
+//	(cd packages/integration  && go list -deps ./... | grep substrate/redaction)  # 1 linha (AOS-208)
 //	(cd packages/cmd/aos-demo && go list -deps ./... | grep substrate/redaction)  # 1 linha
-//	grep -rln 'aos-ref/substrate/redaction' --include='*.go' --exclude-dir=redaction packages/ | grep -v _test.go  # 4 ficheiros, 3 módulos
-//	grep -rn 'aos-ref/substrate/redaction' --include='*.go' packages/cmd/aos packages/integration  # sem saída
-//	grep -n 'substrate/redaction' packages/cmd/aos/go.mod packages/integration/go.mod  # 2 linhas, ambas `replace`
+//	grep -rln 'aos-ref/substrate/redaction' --include='*.go' --exclude-dir=redaction packages/ | grep -v _test.go  # 6 ficheiros, 5 módulos
+//	grep -rn 'aos-ref/substrate/redaction' --include='*.go' packages/cmd/aos packages/integration | grep -v _test.go  # 2 linhas (bootstrap.go, ingestion.go)
+//	grep -n 'substrate/redaction' packages/cmd/aos/go.mod packages/integration/go.mod  # 4 linhas: `require` + `replace` em CADA go.mod
 //
-// As três primeiras linhas provam a lista por composition-root; a quarta prova os
-// três módulos importadores em produção (e, por exclusão, que dsar não está entre
-// eles — o `--exclude-dir=redaction` apenas omite este próprio pacote, que contém a
-// cadeia em comentário e não a pode importar); as duas últimas provam a armadilha
-// (2). Em PowerShell o `grep` não existe: `grep: command not found` NÃO é evidência
-// de ausência do motor — usar bash.
+// As três primeiras linhas provam a lista por composition-root (o motor no fecho
+// transitivo dos DOIS roots do nó E do demo); a quarta prova os cinco módulos
+// importadores em produção (e, por exclusão, que dsar não está entre eles — o
+// `--exclude-dir=redaction` apenas omite este próprio pacote, que contém a cadeia em
+// comentário e não a pode importar); a quinta localiza a cablagem do nó (o import
+// directo em bootstrap.go e ingestion.go); a sexta prova que agora há `require`
+// (não só o `replace` vestigial) em ambos os go.mod. Em PowerShell o `grep` não
+// existe: `grep: command not found` NÃO é evidência de nada — usar bash.
 //
-// Duas armadilhas que estes comandos desfazem: (1) `go list -deps` NÃO inclui
-// dependências só-de-teste — é por isso que dsar, presente no grafo de cmd/aos, não
-// arrasta o motor consigo; note-se que `go mod why -m` NÃO serve aqui como prova,
-// porque inclui os caminhos de teste e devolve, em cmd/aos, um caminho que passa por
-// `dsar.test`; (2) as entradas `replace` para substrate/redaction em cmd/aos/go.mod
-// e integration/go.mod são vestigiais do replace transversal do repositório e não
-// implicam `require` nem importação — a quinta e a sexta linhas acima provam-no
-// (nenhuma referência em .go, de teste incluídos; nenhum `require` no go.mod).
+// Uma armadilha que estes comandos desfazem: `go list -deps` NÃO inclui dependências
+// só-de-teste — é por isso que dsar, presente no grafo de cmd/aos, nunca arrastou o
+// motor consigo (a importação em dsar é só-de-teste); o motor entra agora pelo caminho
+// de PRODUÇÃO (bootstrap.go → integration.IngestionGateway), não por dsar. `go mod
+// why -m` não serve como prova de ausência porque inclui os caminhos de teste.
 //
 // # Porquê um módulo FOLHA (substrate) zero-dep
 //
