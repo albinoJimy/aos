@@ -2,7 +2,8 @@
 # run.sh — AGREGADOR do gate runner local do AOS (AOS-010).
 #
 # Corre, por ordem canónica (specs/01 §4), os gates:
-#   1) build  2) lint(+arch-lint)  2b) ref-lint  2c) rtm  2d) layer-lint
+#   1) build  2) lint(+arch-lint)  2b) ref-lint  2b') deferrals  2c) rtm  2d) layer-lint
+#   deferrals(eixo verificável de cada deferimento declarado no código, AOS-196)
 #   3) test(+cobertura)  4) integration(contratos de porta C1–C5, AOS-198)
 #   event-catalog(catálogo de tipos de evento, AOS-198/AOS-201)
 #   8) replay(harness AOS-024)
@@ -29,7 +30,7 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$CI_DIR/lib.sh"
 
-ALL_GATES=(secrets build lint ref-lint rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx sast sca policy-test)
+ALL_GATES=(secrets build lint ref-lint deferrals rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx sast sca policy-test)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 

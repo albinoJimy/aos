@@ -159,6 +159,19 @@ make cover              # ou make test-unit — emite coverage/lcov.info
 COVERAGE_MIN=90 make cover
 ```
 
+> **Limiares de gate só APERTAM.** `COVERAGE_MIN`, `KERNEL_COVERAGE_MIN`,
+> `APEX_COVERAGE_MIN`, `MEMORY_COVERAGE_MIN`, `ROUTING_COVERAGE_MIN`,
+> `REGISTRY_COVERAGE_MIN` e `EVAL_PASS_RATE_MIN` têm **piso** (AOS-199): um valor abaixo
+> dele avermelha o gate por **VIOLAÇÃO DE PISO** — diagnóstico distinto de «limiar não
+> atingido», porque é a *configuração* que está errada e nenhum código chegou a ser
+> avaliado. `EVAL_PASS_RATE_MIN=0 make ci` **falha**. O mesmo vale para os *knobs de
+> caminho*: desviar a raiz ou a baseline de um gate torna-o verde sem varrer nada, e
+> `gate_path` recusa-o em CI. Uma etapa saltada é sempre redeclarada no veredicto
+> (`AOS_SKIPPED_STEP`) e o `package.sh` sai `3` num **VERDE PARCIAL** — registar não é
+> impedir. Tabela de limiares, pisos, escape hatch de bisect local, códigos de saída e
+> política de skips (`SKIP_DOCKER`) em
+> [`CONTRIBUTING.md` §Limiares dos gates e os seus pisos](CONTRIBUTING.md#limiares-dos-gates-e-os-seus-pisos).
+
 ### Formatação e validação da IaC
 
 ```bash

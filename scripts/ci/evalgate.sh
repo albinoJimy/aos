@@ -36,7 +36,19 @@ setup_env
 
 EVAL_MOD="packages/platform/eval"
 EVAL_PKG="./..."
-PASS_RATE_MIN="${EVAL_PASS_RATE_MIN:-0.90}"
+# Limiar de eval-pass-rate. Sobreponível por ambiente APENAS PARA APERTAR: o piso é
+# FLOOR_EVAL_PASS_RATE_MIN (0.90 = o alvo de ADR-012/AOS-114). `EVAL_PASS_RATE_MIN=0`
+# avermelha o gate por VIOLAÇÃO DE PISO — não passa verde (AOS-199 / ORF-06).
+# Domínio: FRACÇÃO em [piso, 1] — `EVAL_PASS_RATE_MIN=90` é confusão de unidade e é recusado.
+gate_threshold EVAL_PASS_RATE_MIN 0.90 "$FLOOR_EVAL_PASS_RATE_MIN" 1 "" || exit 1
+PASS_RATE_MIN="$EVAL_PASS_RATE_MIN"
+
+# ANTI-RECORRÊNCIA do próprio mecanismo (AOS-199, Bloco A do EPIC-18). Sem isto, um
+# refactor que reponha `VAR="${VAR:-80}"` ou apague um `|| exit 1` neutraliza os pisos e
+# passa em TODOS os gates — a prova negativa do ticket seria evidência de uma vez só, não
+# um guard. Corre aqui por ser o gate que a CI invoca e que o CA nomeia para a prova
+# negativa (`EVAL_PASS_RATE_MIN=0 make ci` falha); custo: milissegundos, sem rede.
+gate_floor_selftest || exit 1
 
 # Meta-testes OBRIGATÓRIOS (fail-closed, require_tests): provam que o harness (a) passa
 # um candidato bom, (b) reprova uma acção unsafe injectada, (c) reprova um output errado
@@ -107,7 +119,7 @@ if [ -z "$rate" ]; then
   exit 1
 fi
 if ! awk "BEGIN{exit !($rate >= $PASS_RATE_MIN)}"; then
-  log_fail "eval-pass-rate $rate abaixo do alvo $PASS_RATE_MIN"
+  log_fail "LIMIAR NÃO ATINGIDO: eval-pass-rate $rate < $PASS_RATE_MIN (configuração válida; foi o CÓDIGO que ficou abaixo)"
   exit 1
 fi
 

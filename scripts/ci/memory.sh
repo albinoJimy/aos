@@ -31,7 +31,8 @@ MEM_MOD="packages/platform/memory"
 SUITE_PKG="./integritytests/..."
 
 # Cobertura mínima do módulo de memória (não regride). Igual ao limiar do kernel.
-MEMORY_COVERAGE_MIN="${MEMORY_COVERAGE_MIN:-80}"
+# Sobreponível por ambiente APENAS PARA APERTAR: piso FLOOR_MODULE_COVERAGE_MIN (AOS-199).
+gate_threshold MEMORY_COVERAGE_MIN 80 "$FLOOR_MODULE_COVERAGE_MIN" 100 "%" || exit 1
 
 # Testes OBRIGATÓRIOS: as três suites + shredding/TTL + cache + os META-TESTES (prova de
 # detecção, não green-vazio) + o relatório. require_tests exige que TODOS tenham corrido.
@@ -85,7 +86,7 @@ fi
 pct="$( cd "$REPO_ROOT/$MEM_MOD" && go tool cover -func="$cover_prof" | awk '/^total:/{print $NF}' )"
 num="${pct%\%}"
 if [ -z "$num" ] || ! awk "BEGIN{exit !($num >= $MEMORY_COVERAGE_MIN)}"; then
-  log_fail "cobertura do módulo de memória ${pct} < ${MEMORY_COVERAGE_MIN}%"
+  log_fail "LIMIAR NÃO ATINGIDO: cobertura do módulo de memória ${pct} < ${MEMORY_COVERAGE_MIN}% (configuração válida; foi o CÓDIGO que ficou abaixo)"
   exit 1
 fi
 log_ok "cobertura do módulo de memória ${pct} >= ${MEMORY_COVERAGE_MIN}%"

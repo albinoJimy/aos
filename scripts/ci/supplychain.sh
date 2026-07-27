@@ -36,7 +36,8 @@ REG_MOD="packages/platform/registry"
 SUITE_PKG="./supplychaintests/..."
 
 # Cobertura mínima do módulo do REG (não regride). Igual ao limiar do kernel/memória.
-REGISTRY_COVERAGE_MIN="${REGISTRY_COVERAGE_MIN:-80}"
+# Sobreponível por ambiente APENAS PARA APERTAR: piso FLOOR_MODULE_COVERAGE_MIN (AOS-199).
+gate_threshold REGISTRY_COVERAGE_MIN 80 "$FLOOR_MODULE_COVERAGE_MIN" 100 "%" || exit 1
 
 # Testes OBRIGATÓRIOS: os 7 vectores + os 7 meta-testes (detecção) + o relatório.
 # require_tests exige que TODOS tenham corrido (fail-closed contra vacuous pass).
@@ -90,7 +91,7 @@ fi
 pct="$( cd "$REPO_ROOT/$REG_MOD" && go tool cover -func="$cover_prof" | awk '/^total:/{print $NF}' )"
 num="${pct%\%}"
 if [ -z "$num" ] || ! awk "BEGIN{exit !($num >= $REGISTRY_COVERAGE_MIN)}"; then
-  log_fail "cobertura do módulo do REG ${pct} < ${REGISTRY_COVERAGE_MIN}%"
+  log_fail "LIMIAR NÃO ATINGIDO: cobertura do módulo do REG ${pct} < ${REGISTRY_COVERAGE_MIN}% (configuração válida; foi o CÓDIGO que ficou abaixo)"
   exit 1
 fi
 log_ok "cobertura do módulo do REG ${pct} >= ${REGISTRY_COVERAGE_MIN}%"

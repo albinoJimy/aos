@@ -14,8 +14,8 @@
 # é a FONTE DE VERDADE e tem de coincidir, entrada a entrada e na mesma ordem, com o
 # `needs:` do job `gates` e com a lista de CONTRIBUTING.md §"Required checks" — o
 # self-test §M compara as três e fica vermelho se divergirem.
-# REQUIRED-CHECKS: secrets · build · lint · ref-lint · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
-# Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 23 acima
+# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
+# Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 24 acima
 # e é fail-closed por construção (`if: always()` + avaliação de `needs.*.result`),
 # pelo que fica `failure` — e não `skipped` — quando qualquer um deles não fica verde.
 name: ci
@@ -81,6 +81,22 @@ jobs:
           python-version: "3.12"
       - name: Gate ref-lint (AOS-NNN citados existem · ADR canónicos com ticket)
         run: bash scripts/ci/ref-lint.sh
+
+  # Gate 2b' — eixo verificável de cada deferimento declarado no código (AOS-196,
+  # achados DEF-01/DEF-03/DEF-06 da auditoria v4). Irmão do ref-lint: onde este
+  # verifica que um AOS-NNN CITADO existe, o deferrals verifica que um deferimento
+  # DECLARADO tem um AOS-NNN que existe (ou um `POR ATRIBUIR` com o ticket descrito).
+  # Só precisa de Python: deferrals.sh embrulha deferrals.py (stdlib pura). Fail-closed:
+  # se o interpretador faltar, o wrapper sai != 0 (127) — nunca "skip" verde.
+  deferrals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gate deferrals (marcador com entrada no registo · eixo com ticket EXISTENTE)
+        run: bash scripts/ci/deferrals.sh
 
   # Gate 2c — sincronia da RTM com o corpus (AOS-186). scripts/ci/rtm.sh corre
   # rtm-regenerate.py --check (stdlib pura). Também só precisa de Python.
@@ -350,7 +366,7 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     if: always()
-    needs: [secrets, build, lint, ref-lint, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
+    needs: [secrets, build, lint, ref-lint, deferrals, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
     steps:
       - name: Todos os gates verdes (fail-closed)
         env:

@@ -52,12 +52,17 @@ fi
 # conjunto de módulos. Usa o MESMO predicado (coverage_meets_min) que o self-test
 # exercita. Uma descida abaixo do limiar sai != 0 (bloqueia o merge).
 log_gate "test · gate de cobertura generalizado (>= ${COVERAGE_MIN}%)"
+# INVENTÁRIO dos limiares em vigor (AOS-199): a linha AOS_GATE_THRESHOLD é emitida aqui —
+# no gate que CONSOME KERNEL_COVERAGE_MIN/COVERAGE_MIN — e não no `source lib.sh`. Emitida
+# no source só quando houvesse override, o marcador prometia inventário e não o dava: numa
+# corrida normal um recolector que lhe fizesse grep não via nenhum dos limiares globais.
+gate_threshold_report
 for gmod in "${COVERAGE_GATED_MODULES[@]}"; do
   pct="${COVER[$gmod]:-}"
   if coverage_meets_min "$pct" "$COVERAGE_MIN"; then
     log_ok "$gmod cobertura ${pct} >= ${COVERAGE_MIN}%"
   else
-    log_fail "$gmod cobertura ${pct:-n/a} < ${COVERAGE_MIN}% (ou não-mensurável)"
+    log_fail "LIMIAR NÃO ATINGIDO: $gmod cobertura ${pct:-n/a} < ${COVERAGE_MIN}% (ou não-mensurável) — configuração válida, foi o CÓDIGO que ficou abaixo"
     rc=1
   fi
 done

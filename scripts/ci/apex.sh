@@ -28,7 +28,8 @@ APEX_MOD="packages/integration"
 APEX_PKG="./..."
 
 # Piso anti-regressão de cobertura do módulo do ápice (igual ao kernel/GW: 80%).
-APEX_COVERAGE_MIN="${APEX_COVERAGE_MIN:-80}"
+# Sobreponível por ambiente APENAS PARA APERTAR: piso FLOOR_MODULE_COVERAGE_MIN (AOS-199).
+gate_threshold APEX_COVERAGE_MIN 80 "$FLOOR_MODULE_COVERAGE_MIN" 100 "%" || exit 1
 
 # Invariantes de wiring OBRIGATÓRIAS: os e2e do Model Gateway (AOS-058) + os do
 # SecuredRuntime/freeze/revalidação (AOS-050/051) + as unidades de composição.
@@ -82,7 +83,7 @@ if ! ( cd "$REPO_ROOT/$APEX_MOD" && go test "$APEX_PKG" -covermode=atomic -cover
 fi
 pct="$( cd "$REPO_ROOT/$APEX_MOD" && go tool cover -func="$cover_prof" | awk '/^total:/{print $NF}' )"
 if ! coverage_meets_min "$pct" "$APEX_COVERAGE_MIN"; then
-  log_fail "cobertura do ápice ${pct:-n/a} < ${APEX_COVERAGE_MIN}% (ou não-mensurável)"
+  log_fail "LIMIAR NÃO ATINGIDO: cobertura do ápice ${pct:-n/a} < ${APEX_COVERAGE_MIN}% (ou não-mensurável) — configuração válida, foi o CÓDIGO que ficou abaixo"
   exit 1
 fi
 log_ok "piso anti-regressão do ápice ${pct} >= ${APEX_COVERAGE_MIN}%"

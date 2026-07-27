@@ -38,7 +38,8 @@ GW_MOD="packages/platform/model-gateway"
 SUITE_PKG="./routingtests/..."
 
 # Cobertura mínima do módulo do GW (não regride). Igual ao limiar do kernel/memória.
-ROUTING_COVERAGE_MIN="${ROUTING_COVERAGE_MIN:-80}"
+# Sobreponível por ambiente APENAS PARA APERTAR: piso FLOOR_MODULE_COVERAGE_MIN (AOS-199).
+gate_threshold ROUTING_COVERAGE_MIN 80 "$FLOOR_MODULE_COVERAGE_MIN" 100 "%" || exit 1
 
 # Testes OBRIGATÓRIOS: os 5 cenários + os 8 meta-testes (detecção) + o relatório.
 # require_tests exige que TODOS tenham corrido (fail-closed contra vacuous pass).
@@ -91,7 +92,7 @@ fi
 pct="$( cd "$REPO_ROOT/$GW_MOD" && go tool cover -func="$cover_prof" | awk '/^total:/{print $NF}' )"
 num="${pct%\%}"
 if [ -z "$num" ] || ! awk "BEGIN{exit !($num >= $ROUTING_COVERAGE_MIN)}"; then
-  log_fail "cobertura do módulo do GW ${pct} < ${ROUTING_COVERAGE_MIN}%"
+  log_fail "LIMIAR NÃO ATINGIDO: cobertura do módulo do GW ${pct} < ${ROUTING_COVERAGE_MIN}% (configuração válida; foi o CÓDIGO que ficou abaixo)"
   exit 1
 fi
 log_ok "piso anti-regressão do módulo do GW ${pct} >= ${ROUTING_COVERAGE_MIN}% (cobertura dos testes UNITÁRIOS de AOS-055..062; a suite adversarial AOS-063 contribui ~0)"
