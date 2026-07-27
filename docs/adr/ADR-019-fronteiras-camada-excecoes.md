@@ -129,6 +129,24 @@ partilhada, não uma camada que pode ser ignorada pelo controlo.
 - **Mover tipos partilhados para um pacote `kernel/contract`.** Rejeitada para a
   v1: é a solução correcta a longo prazo, mas exige migrar todo o repo e validar
   todos os imports; fica como opção para EPIC-10/futuro, com ADR de supersessão.
+
+  > **Nota de execução (AOS-202, ORF-01 da auditoria v4).** Entre 2026-07-25 e
+  > 2026-07-26 existiram no repo dois módulos — `packages/kernel/contract` e
+  > `packages/substrate/contract` (24 ficheiros: 22 `.go` com 1763 linhas, das
+  > quais ~1600 não-brancas, mais 2 `go.mod`) — que materializavam
+  > **exactamente** esta alternativa rejeitada e se auto-declaravam "contrato
+  > canónico" do RM, do audit, do agent-runtime e das portas do Escalonador.
+  > Entraram como efeito colateral não declarado do commit `4d90a58`
+  > (`feat(AOS-177)`), cuja mensagem não os menciona; nunca tiveram importadores,
+  > testes nem referência documental, e o seu conteúdo era cópia já divergente
+  > dos ficheiros vivos (`kernel/reference-monitor/call.go`,
+  > `platform/audit/record.go`, `control-plane/budget/amount.go`,
+  > `platform/identity/delegation/chain.go`, `kernel/agent-runtime/ports.go`).
+  > Foram **removidos** em AOS-202: não eram o contrato em vigor, contradiziam
+  > esta secção e constituíam um fork silencioso com risco de divergência
+  > semântica (nomeadamente no domínio de hash da cadeia de audit). A alternativa
+  > mantém-se **rejeitada na v1**; adoptá-la exige decisão do dono e ADR de
+  > supersessão, não a reintrodução de código sem importadores.
 - **Inverter os adaptadores `tieradapter`/`budgetbridge` para dentro do
   control-plane.** Rejeitada: faria o escalonador/orçamento depender de
   internos do GW, invertendo o sentido desejado de abstração (a plataforma
@@ -153,6 +171,17 @@ partilhada, não uma camada que pode ser ignorada pelo controlo.
   da baseline falha a CI.
 - **Referência em `AGENTS.md` §3.** A regra de sentido de dependências é
   acompanhada de nota que remete para este ADR.
+- **Ausência de `kernel/contract` / `substrate/contract` (AOS-202).** Nenhum
+  destes caminhos existe em `packages/`. Se um deles reaparecer sem ADR de
+  supersessão desta decisão, é uma violação da §3, não uma implementação dela.
+  **Verificação hoje: manual — não há gate que a imponha.** `layer-lint.sh`
+  enumera os módulos dinamicamente (`find packages -name go.mod`), pelo que um
+  `packages/kernel/contract` reintroduzido seria apenas somado à lista analisada
+  e passaria em silêncio — foi exactamente este o mecanismo pelo qual o código
+  sobreviveu desde `4d90a58` sem detecção. **Controlo automático pendente**
+  (pendência para o dono; fora do âmbito do AOS-202, que não podia tocar
+  `scripts/ci/`): assertar no gate de fronteiras, ou num guard-test próprio, que
+  os dois caminhos não existem, falhando a CI se reaparecerem.
 - **Não contradiz ADR-018.** A fronteira nó↔ORQ/SCH (`cmd/aos` não importar
   `control-plane/orchestrator` nem `control-plane/scheduler` como donos do ciclo
   de vida) mantém-se intacta; as excepções aqui são ortogonais (plano de controlo
