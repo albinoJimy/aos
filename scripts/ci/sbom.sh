@@ -68,7 +68,13 @@ if command -v docker >/dev/null 2>&1 && docker image inspect "$IMAGE_TAG" >/dev/
   subject_source="image:$IMAGE_TAG"
   log_ok "subject extraído da imagem: $bin"
 else
-  log_warn "imagem $IMAGE_TAG indisponível (docker ausente ou imagem não construída) — subject = rebuild do host (não verificável contra a imagem)"
+  # DEGRADAÇÃO DECLARADA (AOS-199): a CI invoca este script TAMBÉM como step autónomo
+  # (fora do package.sh), e nesse caminho um WARN solto a meio do output não é registo —
+  # o veredicto do próprio script tem de redeclarar o que ficou por verificar. O registo
+  # de skips passa a ser propriedade do runner, não de um script.
+  gate_skip "SBOM subject bindado à imagem" \
+            "imagem $IMAGE_TAG indisponível (docker ausente ou imagem não construída)" \
+            "ADR-017 ponto 3 — a proveniência NÃO fica ligada ao binário que shipa (subject = rebuild do host)"
   cp -f "$host_bin" "$bin"
   subject_source="host-build"
 fi
@@ -205,4 +211,10 @@ log_ok "proveniência (não-assinada): $prov"
 # Limpeza do rebuild de referência (artefacto intermédio; o subject fica em $bin).
 rm -f "$host_bin"
 
+# REDECLARAÇÃO da degradação no veredicto (AOS-199). O exit NÃO muda: o SBOM foi
+# genuinamente emitido e o JSON já regista subject.source/reproducible=false — avermelhar
+# aqui seria um FALSO VERMELHO num ambiente sem docker. O que faltava era o registo
+# uniforme: `AOS_SKIPPED_STEPS` no fim + o marcador máquina-legível ao lado do artefacto.
+gate_skip_report || true
+gate_skip_file "$OUT_DIR/SKIPPED.txt" || true
 log_ok "sbom: verde (SBOM + proveniência mínima; subject = $subject_source; reproducible=$reproducible/$repro_check; assinatura DEFERIDA-EPIC-10)"
