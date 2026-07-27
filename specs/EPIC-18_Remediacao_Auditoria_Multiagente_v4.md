@@ -680,12 +680,12 @@ do EPIC-10 assina imagens (AOS-098 IaC, 099 workers, 100 replicação, 101 backu
 
 **Critérios de aceitação**
 
-- [ ] Custódia da chave de assinatura de release documentada (**quem** assina, **onde** vive a chave,
+- [x] **ENTREGUE** `0cb8d5d` — Custódia da chave de assinatura de release documentada (**quem** assina, **onde** vive a chave,
       **como** se roda). O ADR-017 ponto 5 já exige custódia própria para a autoridade de identidade;
       a imagem do nó não tem equivalente.
-- [ ] A atestação de proveniência passa de **gerada** a **assinada e verificável**, e a entrega
+- [x] **ENTREGUE** `0cb8d5d` — a atestação passa de gerada a **assinada e verificável** (envelope DSSE v1 + in-toto Statement, `crypto/ed25519` stdlib, `scripts/ci/attest` zero-dep + build offline); a entrega **RECUSA** assinatura inválida. `release-pubkeys.json` = `keys:[]` (fail-closed por omissão). A atestação de proveniência passa de **gerada** a **assinada e verificável**, e a entrega
       **recusa** uma imagem cuja assinatura não valide.
-- [ ] **Falsificável:** substituir o digest da imagem no manifesto de entrega faz o gate ficar
+- [x] **ENTREGUE** `0cb8d5d` — **Falsificável (verificado):** `verify-attestation` recomputa cada subject assinado contra o artefacto e o digest REAIS; uma atestação válida sobre bytes que já não existem é recusada. Os **3 ALTO de fail-open** da auditoria foram remediados e verificados por reprodução. **Pendência declarada** (outra pista): encadear `sign.sh`/`verify-attestation.sh` no `ci.yml`/`run.sh` e distinguir a saída 3 (verde parcial) da 1. **Falsificável:** substituir o digest da imagem no manifesto de entrega faz o gate ficar
       **vermelho**.
 
 **Dependências:** AOS-168 (empacotamento), AOS-187 (gates package/sbom).
