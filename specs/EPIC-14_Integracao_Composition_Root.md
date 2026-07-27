@@ -35,7 +35,7 @@ Este epic pertence à **Fase 5 — Operacionalização** e é **predecessor** da
 - [x] `cmd/aos-demo` compõe o grafo zero-rede e o **AC4 é um teste refutável** (invariantes PROVADAS ou DIFERIDAS-com-seam-nomeado; sem *vacuous pass*).
 - [x] O enforcement é **real**: `Call.Credential` preenchido no kernel (**AOS-152**); `NewProductionSecure` recusa `IdentityStub`/`EgressStub`/`ScopeGate` nil (**AOS-153**); cadeia real de hooks com **um único** `audit.Store` WORM (**AOS-154**); guard-test fim-a-fim que nega anónimo/raiz-forjada/taint/egress/scope (**AOS-161**, `TestApexEnforcement_FiveDenials`).
 - [x] O long-pole de identidade está explicitamente marcado *demo-only self-minted* com o bloqueio D4 escalado (`docs/reports/D4-escalacao-autoridade-identidade.md`) — sem reivindicar não-forjabilidade inexistente (o default `identity.NewVerifier()` sem anchors nega toda a NHI fail-closed).
-- [ ] Todos os tickets com DoD de domínio verde (`specs/01_Engineering_Standards_e_Handoff.md`); sem segredos; gates SAST/SCA na baseline. — **Parcial:** todos os tickets NÃO-bloqueados têm DoD verde (AOS-144–155, 157–159, 161); sem segredos (`secrets.sh` verde); a triagem SAST/SCA da baseline é o passo de FECHO do epic (correr `sast.sh`/`sca.sh` e baselinar falsos-positivos ao encerrar). Fica aberto porque **AOS-160/162 dependem de D4** (a espinha de token real) — o epic só encerra na íntegra quando D4 for provisionado; até lá está *feito até onde o código permite*.
+- [ ] Todos os tickets com DoD de domínio verde (`specs/01_Engineering_Standards_e_Handoff.md`); sem segredos; gates SAST/SCA na baseline. — **Parcial:** todos os tickets NÃO-bloqueados têm DoD verde (AOS-144–155, 157–159, 161) — com o **residual nomeado de AOS-159** (o CA do wiring no promotion controller foi corrigido de `[x]` para `[ ]` por **AOS-196**/DEF-03; o DoD do mecanismo mantém-se verde); sem segredos (`secrets.sh` verde); a triagem SAST/SCA da baseline é o passo de FECHO do epic (correr `sast.sh`/`sca.sh` e baselinar falsos-positivos ao encerrar). Fica aberto porque **AOS-160/162 dependem de D4** (a espinha de token real) — o epic só encerra na íntegra quando D4 for provisionado; até lá está *feito até onde o código permite*.
 
 ---
 
@@ -897,9 +897,9 @@ Um `RatificationNonceStore` durável e ligar freshness+nonce no promotion contro
 
 ### Critérios de Aceitação
 
-- [x] `RatificationNonceStore` durável sobre eventstore/WORM (`ConsumeNonce` atómico check-and-set).
-- [x] `WithRatifyFreshness`+`WithRatifyNonceStore` ligados no promotion controller.
-- [x] Uma ratificação re-usada após consumo é `ReasonRatificationReplayed`; fora da janela é `ReasonRatificationStale`.
+- [x] `RatificationNonceStore` durável sobre eventstore/WORM (`ConsumeNonce` atómico check-and-set). — **FEITO** (`packages/control-plane/governance/hitl/nonce_store.go`, `EventStoreNonceStore`).
+- [ ] `WithRatifyFreshness`+`WithRatifyNonceStore` ligados no promotion controller. — **POR CUMPRIR** (corrigido de `[x]` por **AOS-196**, achado **DEF-03** da auditoria v4). O CA estava marcado feito e é **falso**: a via sancionada `hitl.NewProductionRatificationGate` (que FORÇA freshness+nonce) **não tem chamador de produção** em toda a árvore — `grep NewProductionRatificationGate packages/**/*.go` fora de `_test.go` → só a própria declaração. A causa é estrutural e não um esquecimento de wiring: **o nó `aos` não compõe nenhum promotion controller** (`grep -n "promotion\|Promote" packages/cmd/aos/*.go` não-teste → 0). O que AOS-159 entregou foi o **mecanismo**; o wiring **não tem ticket atribuído** e está registado como `DEF-401` em `docs/governance/REGISTO-Deferimentos.md`.
+- [x] Uma ratificação re-usada após consumo é `ReasonRatificationReplayed`; fora da janela é `ReasonRatificationStale`. — **FEITO** ao nível do gate (`hitl/ratification.go`), provado em `nonce_store_test.go`/`ratification_test.go`; **não** observável em produção enquanto o CA acima não fechar.
 
 ### Detalhes Técnicos
 
@@ -911,7 +911,7 @@ Um `RatificationNonceStore` durável e ligar freshness+nonce no promotion contro
 
 ### Definition of Done
 
-- [x] Uso-único durável provado; sem segredos.
+- [x] Uso-único durável provado; sem segredos. — **FEITO ao nível do mecanismo** (testes de replay/freshness/durabilidade verdes; `secrets.sh` verde). **Fronteira honesta (AOS-196):** «provado» é *provado em teste sobre o gate*, não *activo em produção* — o segundo CA está `[ ]` e o wiring é `DEF-401` (POR ATRIBUIR).
 
 ### Handoff para Claude Code
 

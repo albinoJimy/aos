@@ -56,10 +56,19 @@ O loop de autoria (`packages/control-plane/governance/authoring-surface/`, AOS-1
 
 ### 7. Endurecimento anti-replay (freshness + nonce durável) — invariante ratificada, wiring de produção condicional
 
-A ratificação assinada, por si só, é uma identidade **estável de conteúdo** e portanto reutilizável N vezes (idempotência): a mesma assinatura re-valida sempre, inclusive **após** um rollback que marcou a versão como má. A EPIC-13 exige **endurecer** esta fronteira contra re-promoção. A invariante é ratificada agora; os mecanismos já existem como portas opcionais no gate de AOS-096:
+A ratificação assinada, por si só, é uma identidade **estável de conteúdo** e portanto reutilizável N vezes (idempotência): a mesma assinatura re-valida sempre, inclusive **após** um rollback que marcou a versão como má. Esta fronteira tem de ser **endurecida** contra re-promoção. A invariante é ratificada agora; os mecanismos já existem como portas opcionais no gate de AOS-096:
 
 - **Freshness** (`WithRatifyFreshness(ttl, skew)`): rejeita uma ratificação cujo `IssuedAt` esteja fora de `[now−ttl, now+skew]` (`ReasonRatificationStale`), limitando a janela temporal em que uma assinatura promove.
 - **Uso-único por nonce durável** (`WithRatifyNonceStore`): consome atomicamente o nonce no caminho de promoção; uma reutilização vira `ReasonRatificationReplayed`. O `RatificationNonceStore` é injectável porque a **durabilidade e o âmbito** (por-processo, partilhado, com TTL) são decisões de *wiring*.
+
+**Eixo do endurecimento (corrigido por AOS-196, achado DEF-03).** O mecanismo é **AOS-159**
+(`RatificationNonceStore` durável sobre o Event Store/WORM + freshness) e está **entregue**.
+O que falta é o **wiring de produção**: `NewProductionRatificationGate` — a via sancionada que
+FORÇA freshness+nonce — **não tem chamador de produção** em toda a árvore (só testes), porque o
+nó `aos` não compõe nenhum *promotion controller*. Esse wiring **não tem ticket no backlog**:
+está registado como **POR ATRIBUIR** em `docs/governance/REGISTO-Deferimentos.md` (`DEF-401`).
+**Não** é dívida da EPIC-13 (correcção de AOS-196) — a EPIC-13 é o epic de *Frontend* e nunca
+teve ticket para isto; a atribuição anterior era o defeito, não o plano.
 
 Ratifica-se a **forma e a invariante**: em produção, a ratificação de auto-modificação **deve** ser configurada com freshness **e** um nonce-store **durável** (o âmbito é o `RatificationID`, uso-único por identidade de artefacto+eval), fechando a re-promoção pós-rollback. Fica **condicional** apenas a autoridade que ativa o não-repúdio pleno — qual o IdP que faz o *pinning*/enrollment das chaves de ratificador e o binding humano↔NHI (ADR-003/AOS-005 IdentityStub) — porque depende de utilizadores e de uma organização reais que ainda não existem.
 
@@ -77,7 +86,7 @@ Ratifica-se a **forma e a invariante**: em produção, a ratificação de auto-m
 ### Negativas / trade-offs
 
 - **Fricção humana obrigatória**: nenhuma auto-modificação é totalmente autónoma; há sempre um humano no laço final. É uma escolha deliberada (a auto-modificação é o risco máximo), mas limita a cadência de evolução autónoma.
-- **Idempotência por omissão é um pé-de-cabra**: sem freshness+nonce **configurados e duráveis**, a mesma ratificação re-promove indefinidamente — inclusive após rollback. A defesa existe mas é **opcional e por omissão desligada** no gate de AOS-096, e o caminho REG (`RatifierStore.Verify`) **não** modela freshness/nonce de todo. O endurecimento (§7) é, hoje, uma **obrigação de wiring** por cumprir, não um invariante já ativo em produção — registado honestamente como dívida a fechar na EPIC-13.
+- **Idempotência por omissão é um pé-de-cabra**: sem freshness+nonce **configurados e duráveis**, a mesma ratificação re-promove indefinidamente — inclusive após rollback. A defesa existe mas é **opcional e por omissão desligada** no gate de AOS-096, e o caminho REG (`RatifierStore.Verify`) **não** modela freshness/nonce de todo. O endurecimento (§7) é, hoje, uma **obrigação de wiring** por cumprir, não um invariante já ativo em produção — registado como `DEF-401` em `docs/governance/REGISTO-Deferimentos.md`, com o mecanismo em AOS-159 (entregue) e o **wiring POR ATRIBUIR** (AOS-196 corrigiu a atribuição anterior à EPIC-13, que é o epic de Frontend).
 - **Durabilidade do nonce-store limitada pela postura single-process**: um nonce-store in-memory perde o registo no restart do processo; o uso-único inter-restart fica condicional à graduação do estado para um backend durável (fora de escopo deste ADR).
 - **Autoridade de identidade em falta**: o *pinning* de chaves de ratificador (`RatifierStore.Authorize`, `ApproverRegistry`) pressupõe um registador que ateste "esta chave pertence a este humano e este humano cobre `ratify:production`". Enquanto não existir um diretório de identidade real (AOS-005/IdentityStub diferido), o não-repúdio é estruturalmente correto mas operacionalmente incompleto.
 - **Custo de curadoria dos golden-sets**: a garantia comportamental é tão boa quanto os golden-sets curados; um set fraco dá um verde fraco. Exige disciplina de revisão contínua.
@@ -87,7 +96,7 @@ Ratifica-se a **forma e a invariante**: em produção, a ratificação de auto-m
 - **Deploy directo de auto-modificações com monitorização a posteriori** — rejeitado: viola frontalmente a métrica "0 auto-modificações não avaliadas em prod" e transforma *misevolution* num incidente de produção em vez de a barrar na admissão.
 - **Eval-gate sem ratificação humana (auto-promoção se score alto)** — rejeitado: a auto-modificação é o risco máximo; um eval-gate pode ser satisfeito por um golden-set incompleto, e sem um humano responsável não há não-repúdio nem accountability.
 - **Ratificação por assinatura de servidor / broker JIT (ADR-006)** — rejeitado para a decisão humana: o broker JIT injecta credenciais **downstream da NHI do agente** e é proibido produzir a assinatura de uma **decisão humana**. A chave de ratificação humana nunca é do sistema.
-- **Idempotência pura como única semântica de replay** — mantida como default de compatibilidade, mas **insuficiente** para produção: a EPIC-13 exige freshness+nonce durável por cima, para que uma ratificação não re-promova após rollback.
+- **Idempotência pura como única semântica de replay** — mantida como default de compatibilidade, mas **insuficiente** para produção: exige-se freshness+nonce durável por cima (mecanismo em AOS-159; wiring `DEF-401`), para que uma ratificação não re-promova após rollback.
 - **Golden-set não-determinista (avaliação com chamadas reais a modelos)** — rejeitado no core: quebraria a reprodutibilidade offline e a auditabilidade; o harness core depende apenas do módulo folha `otel-genai`.
 
 ## Conformidade / Enforcement
@@ -100,7 +109,7 @@ Ratifica-se a **forma e a invariante**: em produção, a ratificação de auto-m
 | Canary como pré-condição | `RatificationGate.Ratify` → `ReasonPreconditionFailed` (`hitl/ratification.go`) |
 | Ratificação humana assinada + allowlist + digest-binding | `promotion/ratification.go` (`RatifierStore.Verify`, `CanonicalRatification`); `Pipeline.verifyRatification` |
 | Anti-transplante (RequestID = RatificationID) + autoridade | `hitl/ratification.go` (`SelfModArtifact.RatificationID`, `DefaultRatifyAuthority`, `ReasonRatificationTransplant`/`ReasonRatifierUnauthorized`) |
-| Anti-replay: freshness + nonce durável | `hitl/ratification.go` (`WithRatifyFreshness`, `WithRatifyNonceStore`, `RatificationNonceStore`, `ReasonRatificationStale`/`ReasonRatificationReplayed`) — **a configurar no wiring de produção (EPIC-13)** |
+| Anti-replay: freshness + nonce durável | `hitl/ratification.go` (`WithRatifyFreshness`, `WithRatifyNonceStore`, `RatificationNonceStore`, `ReasonRatificationStale`/`ReasonRatificationReplayed`) e `hitl/production_gate.go` (`NewProductionRatificationGate`, que os FORÇA) — **mecanismo entregue em AOS-159; wiring de produção POR CUMPRIR e sem ticket atribuído (`DEF-401`), pelo que a linha NÃO está imposta hoje** |
 | Selagem WORM de cada transição/decisão (audit-before-effect) | `Pipeline.seal` (`promotion/pipeline.go`); `RatificationGate.seal`/`finish` (`hitl/ratification.go`); partição de quarentena `ratification-unratified` |
 | Rollback atómico + re-verificação de integridade | `Pipeline.Rollback` → `Lifecycle.Rollback` (AOS-052); revogação terminal `Pipeline.Revoke` |
 | Superfície não-autora do enforcement | `packages/control-plane/governance/authoring-surface/doc.go` (sem caminho de `Ratify`; `ErrEffectCommitted` fail-closed) |

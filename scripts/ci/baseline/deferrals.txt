@@ -1,0 +1,62 @@
+# Baseline da verificação 6 do gate `deferrals` (AOS-196, achados DEF-01/03/06).
+#
+# Cada linha é uma OCORRÊNCIA REAL, HOJE, de um deferimento que aponta para um
+# `EPIC-NN` SEM nomear um `AOS-NNN` na mesma linha — a forma textual exacta do
+# defeito DEF-01. NÃO é uma lista de excepções cosméticas: é o achado escrito por
+# extenso, ficheiro a ficheiro.
+#
+# Nenhuma destas linhas está aqui porque a dívida seja benigna. Estão aqui porque
+# o ficheiro que as contém está FORA do âmbito de escrita de AOS-196 (três
+# pipelines correram em paralelo sobre este trunk; ver §7 do registo, pendências
+# P-1 e P-2). O eixo CORRECTO de cada uma já está no registo — o que falta é
+# propagar o texto para o ficheiro.
+#
+# Regras de honestidade desta baseline (as de AOS-198, sem excepção):
+#   1. Toda a entrada TEM de trazer `owner=` — o gate falha se faltar.
+#   2. Toda a entrada TEM de nomear a linha do registo que já traz o eixo
+#      correcto, para que a baseline aponte para a correcção e não só para o
+#      problema.
+#   3. A baseline só ENCOLHE: quando o texto do ficheiro for corrigido, a entrada
+#      fica OBSOLETA e o gate FALHA até ser removida. Não há caminho pelo qual uma
+#      entrada se torne permanente por inércia.
+#   4. Uma ocorrência NOVA não entra aqui sem passar pela mesma revisão: o gate
+#      bloqueia primeiro.
+#
+# Formato: <ficheiro>|<EPICs da linha>  # owner=...; eixo correcto: ...
+# Chave: exactamente essa string à esquerda do `#` (o número de linha NÃO entra —
+# não parte com drift).
+
+# --- Banner de arranque do nó (pendência P-1) --------------------------------
+# Os COMENTÁRIOS do eixo em bootstrap.go foram corrigidos por AOS-196; estas duas
+# são strings `log(...)` impressas ao operador — comportamento observável, não
+# comentário, e o âmbito de AOS-196 sobre bootstrap.go é «só o comentário do eixo».
+packages/cmd/aos/bootstrap.go|EPIC-09/10 # owner=AOS-196 (pendência P-1); eixo correcto: DEF-201 (POR ATRIBUIR) + DEF-202 (AOS-182) — string do banner "NOTA D6"
+packages/cmd/aos/bootstrap.go|EPIC-06/09/10 # owner=AOS-196 (pendência P-1); eixo correcto: DEF-301 (AOS-093, arbitragem A-DEF-301) — string do banner "AVISO DSAR"
+
+# --- Soberania de leitura em ficheiros de outro pipeline (pendência P-2) -----
+packages/cmd/aos/dsar.go|EPIC-09/10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-207/DEF-208 (POR ATRIBUIR, nota N-DEF-201)
+packages/cmd/aos/main.go|EPIC-09/10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-209/DEF-210 (POR ATRIBUIR, nota N-DEF-201)
+tecnica/17_Analise_STRIDE.md|EPIC-09/10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-307 (AOS-093, arbitragem A-DEF-301) — ficheiro de AOS-194
+tecnica/14_Matriz_Conformidade.md|EPIC-09+EPIC-10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-201 (POR ATRIBUIR, nota N-DEF-201) — ficheiro de AOS-197
+
+# --- Cifra por-titular do substrato: o eixo EPIC-13 (Frontend) do achado DEF-01
+# Quatro ocorrências no agent-runtime + uma na matriz de conformidade. É a MESMA
+# dívida das corrigidas em tecnica/02 e bootstrap.go, nos ficheiros que AOS-196
+# não pode escrever.
+packages/kernel/agent-runtime/durable/errors.go|EPIC-13 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-304 (AOS-093, arbitragem A-DEF-301) — EPIC-13 é o epic de Frontend
+packages/kernel/agent-runtime/durable/step_ledger.go|EPIC-13 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-304 (AOS-093, arbitragem A-DEF-301) — EPIC-13 é o epic de Frontend
+packages/kernel/agent-runtime/replay/nondeterminism_capture.go|EPIC-13 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-305 (AOS-093, arbitragem A-DEF-301) — 2 ocorrências, EPIC-13 é o epic de Frontend
+tecnica/14_Matriz_Conformidade.md|EPIC-06+EPIC-09+EPIC-10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-306 (AOS-093, arbitragem A-DEF-301) — «Eixo declarado» da cifra do substrato
+
+# --- Grafia DIFERIDO (com I): o mesmo defeito noutra ortografia ---------------
+# Acrescentadas em 2026-07-27, quando a verificação 6 passou a reconhecer também
+# `DIFERID*`/`diferid*` (a forma portuguesa corrente, que escapava ao vocabulário
+# original — ver §4 do registo). Ambas são ocorrências REAIS do defeito DEF-01:
+# deferem para um EPIC sem nomear ticket. Os ficheiros são de `packages/**` e
+# estão FORA do âmbito de escrita de AOS-196; o eixo correcto (um ticket que
+# existe e cobre o assunto) já está no registo.
+packages/kernel/reference-monitor/scope_gate.go|EPIC-08 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-605 (AOS-076 — «cada tool call mediada pelo RM emite um span execute_tool» é literalmente o CA em falta)
+packages/substrate/otel-genai/evaluation.go|EPIC-11 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-009 (AOS-114/AOS-115) — 4 ocorrências; o harness concreto JÁ existe em packages/platform/eval
+
+# --- Fronteira nó↔ORQ/SCH ----------------------------------------------------
+docs/adr/ADR-018-fronteira-no-orq-sch.md|EPIC-10 # owner=AOS-196 (pendência P-2); eixo correcto: DEF-502 (AOS-098/099/100) — cabeçalho «O que muda no distribuído», ficheiro fora do âmbito de escrita

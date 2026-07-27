@@ -214,8 +214,11 @@ type Config struct {
 	// selada em cada leitura sensível (D6). É a MESMA fonte de verdade que o PDP usa
 	// ([govsov.Registry]) — a regra fail-closed NÃO é duplicada. Vazio ⇒ read-path LEGADO (sem
 	// authz por-chamador nem selo): a REGRA é FIXA (Carta §4), mas a TOPOLOGIA real (IdP de
-	// soberania da organização) fica DEFERIDA para EPIC-09/10 (análogo ao tratamento de D4 para
-	// identidade). Entradas com board OU região vazios são descartadas por [govsov.NewRegistry].
+	// soberania da organização) fica DEFERIDA (análogo ao tratamento de D4 para identidade).
+	// EIXO (AOS-196): o provisionamento do IdP de soberania NÃO tem ticket no backlog — está
+	// registado como POR ATRIBUIR em docs/governance/REGISTO-Deferimentos.md (DEF-201). NÃO é
+	// EPIC-09/10: nenhum desses epics tem ticket para ele.
+	// Entradas com board OU região vazios são descartadas por [govsov.NewRegistry].
 	BoardRegions map[string]string
 
 	// --- Colaboradores NÃO-identidade (defaults de REFERÊNCIA) -----------------
@@ -743,7 +746,9 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	// (7b) SOBERANIA DE LEITURA (AOS-172, D7). A REGRA fail-closed board→região é FIXA (Carta
 	// §4); a TOPOLOGIA é DEMO-GRADE self-hosted por config (cfg.BoardRegions) — o provisioning
-	// real de regiões/boards (IdP de soberania) fica DEFERIDO para EPIC-09/10 (análogo a D4).
+	// real de regiões/boards (IdP de soberania) fica DEFERIDO (análogo a D4). EIXO (AOS-196):
+	// POR ATRIBUIR, registado em docs/governance/REGISTO-Deferimentos.md (DEF-201); a
+	// verificação leitor.região == run.região no selo D6 é AOS-182. NÃO é EPIC-09/10.
 	// Vazio ⇒ read-path legado (sem authz por-chamador nem selo). Reutiliza a MESMA autoridade
 	// board→região que o PDP (AOS-094): a regra NÃO é duplicada.
 	var readRegions *govsov.Registry
@@ -763,8 +768,13 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (objective/system/prompt dos turnos) é HOJE guardado em texto-claro e NÃO cifrado por
 	// titular, pelo que o crypto-shredding NÃO o torna ilegível. A erasure "unificada" real do
 	// substrato (cifra por-titular do EventStore + registo das partições/streams do titular no
-	// DSARIndex) fica DEFERIDA para a cifra do substrato (EPIC-06/09/10), análogo ao tratamento
-	// de D4 para identidade. O banner declara esta fronteira explicitamente.
+	// DSARIndex) fica DEFERIDA, análogo ao tratamento de D4 para identidade. EIXO (AOS-196,
+	// achado DEF-01): AOS-093 (crypto-shredding), cujo primeiro critério de aceitação é «toda a
+	// PII persistida é cifrada com uma chave por titular» — ver DEF-301 e a arbitragem
+	// A-DEF-301 em docs/governance/REGISTO-Deferimentos.md. NÃO é EPIC-06/09/10 (nenhum tem
+	// ticket para ela) nem EPIC-13 (que é o epic de Frontend).
+	// O banner declara esta fronteira explicitamente (a string do banner ainda cita os epics
+	// antigos — residual nomeado na pendência P-1 do registo).
 	dsarVault := audit.NewInMemoryKeyVault(nil)
 	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
 	dsarHolds := audit.NewLegalHold()

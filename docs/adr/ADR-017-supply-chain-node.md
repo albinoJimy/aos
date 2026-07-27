@@ -48,10 +48,15 @@ impõe às tools, materializadas na entrega:
 - **Positivas:** o artefacto do nó é tão auditável quanto uma tool do REG; a fronteira para-fora
   fica explícita ANTES de o nó ser empacotado (fecha o achado do painel); nenhuma dependência
   externa nova entra sem passar pelos gates.
-- **Custos/risco residual:** SBOM+atestação assinada exige infra de assinatura de imagem (parte do
-  endurecimento de EPIC-10); até lá, os pontos 1/2/4 são impostos e o 3 fica na forma mínima
-  (SBOM gerado, atestação por assinar) — declarado, não fingido. A garantia mais alta (registry de
-  imagens assinado, attestation de hardware) é endurecimento datado.
+- **Custos/risco residual:** SBOM+atestação assinada exige infra de **assinatura de imagem**;
+  até lá, os pontos 1/2/4 são impostos e o 3 fica na forma mínima (SBOM gerado, atestação por
+  assinar) — declarado, não fingido. A garantia mais alta (registry de imagens assinado,
+  attestation de hardware) é endurecimento por fazer.
+  **Eixo (corrigido por AOS-196, achado DEF-06):** a infra de assinatura/atestação de imagem
+  está **POR ATRIBUIR** — registada em `docs/governance/REGISTO-Deferimentos.md` (`DEF-501`).
+  **Não** é «parte do endurecimento de EPIC-10»: o EPIC-10 não tem nenhum ticket para
+  assinatura de imagem. O que existe e está entregue é o **empacotamento** (AOS-168) e a
+  ligação dos gates `package`/`sbom` à CI (AOS-187) — nenhum dos dois assina a imagem.
 
 ## Estado na Carta
 

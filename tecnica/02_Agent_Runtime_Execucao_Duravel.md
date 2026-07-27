@@ -172,8 +172,14 @@ o `Observer` expõe contadores `apply`/`dedup` apenas na forma **opaca** (hash) 
 chave. O **wiring OTel de spans/métricas** do `Observer` (default `NopObserver`, sem
 emissão de span pelo próprio ledger) é **delegado a AOS-021** (activities), quando os
 efeitos passarem pelo ledger — não é requisito de AOS-014. Quanto a **segredos**: o
-`Result.Payload` é persistido **em claro** no ES (o cifrado por-titular é dívida de
-EPIC-13); AOS-014 oferece uma guarda **opt-in** `WithSensitiveResults()` que recusa
+`Result.Payload` é persistido **em claro** no ES (o cifrado por-titular do substrato tem
+**eixo `AOS-093`** — crypto-shredding, cujo primeiro critério de aceitação é «toda a PII
+persistida é cifrada com uma chave por titular»; corrigido por AOS-196, achado DEF-01:
+o eixo **não** é o EPIC-13 — o epic de *Frontend* — nem o EPIC-06/09/10, e nenhum desses
+quatro tem ticket para ela, ao contrário de AOS-093. As linhas canónicas são
+`DEF-301`/`DEF-303` e a arbitragem `A-DEF-301` em
+`docs/governance/REGISTO-Deferimentos.md`);
+AOS-014 oferece uma guarda **opt-in** `WithSensitiveResults()` que recusa
 memorizar Payload em claro não marcado como referência, mas a imposição por defeito
 de resultados sensíveis por **referência/hash** (idealmente via helper ou validação no
 contrato de activity) é **requisito explícito de AOS-021**.
