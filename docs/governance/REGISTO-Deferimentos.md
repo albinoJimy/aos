@@ -568,7 +568,11 @@ AOS-196 correu em paralelo com outros pipelines e o seu âmbito de escrita foi d
   o contador que o gate imprime em cada execução, sob `DÍVIDA SEM EIXO` — o número não é
   repetido aqui à mão precisamente para não divergir dele. Baixou nesta passagem: seis linhas
   da família 3xx passaram a `AOS-093` pela arbitragem A-DEF-301.
-- **P-3b — refinar o CA de AOS-093 em `specs/EPIC-09`.** Consequência directa da arbitragem
+- **P-3b — refinar o CA de AOS-093 em `specs/EPIC-09`. ✅ FEITO** (2026-07-27, pelo dono do backlog):
+  o CA #1 passa a nomear explicitamente o conteúdo dos runs no Event Store; foi acrescentado um CA para
+  o `DSARIndex` registar as partições/streams do titular; foi acrescentado o critério falsificável do
+  *grep* pós-`/dsar/erase`; os Detalhes Técnicos deixam de fundir as duas obrigações de `OBS/ES`; e os
+  Testes Requeridos ganham o teste de alcance ao substrato e o do índice. *(descrição original:)* Consequência directa da arbitragem
   A-DEF-301: o eixo da cifra do substrato passou a apontar para AOS-093, mas o texto do ticket
   não nomeia as **partições/streams** do Event Store nem o seu registo no `DSARIndex`. O texto
   proposto está no §6. Sem ele, o eixo é correcto mas subespecificado — e um eixo

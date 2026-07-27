@@ -494,15 +494,33 @@ Implementar o crypto-shredding: cifra de PII por chave-por-titular guardada no v
 ### Critérios de Aceitação
 
 - [ ] Toda a PII persistida é **cifrada com uma chave por titular** (chave no vault; o agente nunca a vê — EPIC-07).
+      **Âmbito explícito (refinamento AOS-196/`A-DEF-301`, 2026-07-27):** «toda a PII persistida» inclui o
+      **conteúdo dos runs no Event Store** — `objective`/`system`/`prompt` dos turnos, `Result.Payload`
+      do step-ledger e as capturas de não-determinismo — e **não apenas** o vault de audit. É a mesma
+      chave por titular que o crypto-shredding destrói.
+      *Estado de partida verificado:* hoje esse conteúdo é persistido **em claro** — `bootstrap.go`
+      avisa-o em runtime («fica FORA do alcance do shredding») e `audit.IngestPipeline`, que faria a
+      cifra, **nunca é composto fora de testes**.
 - [ ] Um **DSAR de apagamento** destrói a chave do titular; após isso o payload cifrado é **irrecuperável** (teste prova que decifração falha).
 - [ ] A **cadeia de hashes do audit permanece íntegra e válida** após o crypto-shredding (verificação de integridade passa).
+- [ ] O **`DSARIndex` regista as partições/streams do titular no Event Store**, para o *shred* alcançar o
+      **substrato** e não só o vault de audit. Sem este índice, a destruição da chave não sabe que dados
+      tornar ilegíveis fora do audit.
 - [ ] O registo de **quem fez o quê, quando** (metadados não-pessoais) é preservado como facto de conformidade.
 - [ ] Um titular sob **legal hold** (AOS-092) **não** é sujeito a crypto-shredding enquanto o hold vigorar.
 - [ ] O apagamento é um evento auditável (DSAR recebido, chave destruída, timestamp).
+- [ ] **Critério falsificável (fecha a ambiguidade que originou o achado DEF-01):** após `POST /dsar/erase`,
+      procurar o texto do *prompt* no ficheiro do Event Store **não devolve nada**, e a *hash-chain*
+      **continua a validar**. Enquanto este critério não passar, a linha «Art. 17 — Coberto» da
+      `tecnica/14_Matriz_Conformidade.md` mantém-se **Parcial** (calibrada por AOS-197).
 
 ### Detalhes Técnicos
 
-- Componentes: **GOV** (fluxo DSAR), **BRK/Vault** (chave por titular, destruição), **OBS/ES** (audit hash-chain intacto).
+- Componentes: **GOV** (fluxo DSAR), **BRK/Vault** (chave por titular, destruição), **OBS/ES** — e aqui
+  `ES` = **Event Store**, com **duas** obrigações distintas que a redacção original fundia: (a) a
+  *hash-chain* do audit permanece íntegra; (b) o **payload do Event Store é ele próprio cifrado** pela
+  chave do titular. Ler `OBS/ES` apenas como (a) foi o que deixou o substrato fora do âmbito e gerou o
+  achado **DEF-01** (eixo apontado a três epics inconsistentes, um deles o de *Frontend*).
 - Cifra envelope: chave por titular no vault cifra PII antes de persistir; destruição da chave = shredding.
 - Interacção com legal hold (AOS-092): shredding bloqueado enquanto hold activo.
 - O hash do audit é calculado sobre o payload cifrado, pelo que a destruição da chave não altera hashes.
@@ -511,6 +529,10 @@ Implementar o crypto-shredding: cifra de PII por chave-por-titular guardada no v
 
 - Teste de irrecuperabilidade: após destruir a chave, a decifração do payload falha determinísticamente.
 - Teste de integridade: verificação da cadeia de hashes passa antes **e** depois do shredding.
+- **Teste de alcance ao substrato:** um run com PII no objectivo/prompt é apagado por DSAR; o conteúdo
+  deixa de ser legível **no ficheiro do Event Store** (não só no audit), e a cadeia continua a validar.
+- **Teste do índice:** o `DSARIndex` resolve as partições/streams do titular; um titular com runs em
+  várias partições vê **todas** alcançadas pelo *shred*.
 - Teste de legal hold: DSAR sobre titular sob hold é bloqueado.
 - Teste de auditoria: o fluxo DSAR gera eventos (recepção, destruição) sem expor PII.
 - Teste de isolamento de segredo: a chave por titular nunca é exposta ao agente/logs.
