@@ -360,7 +360,9 @@ reavaliar o modelo de ameaça para o nó exposto como serviço de rede**.
       *(ENTREGUE `ff9761f`: Bloco B (§4.10–§4.18), 9 elementos × 6 categorias = 54 linhas novas; DFD estendido. Enacta a Carta emenda 1.2. Nova §5.2 com as ameaças sem mitigação completa.)*
 - [ ] O documento passa a ser referenciado (RTM e/ou epic), deixando de ser órfão.
       *(POR FAZER — exigia escrever fora da pista do agente na execução paralela. Estado verificado: `tecnica/16` não menciona `tecnica/17`. A entrada tem de entrar na FONTE que `scripts/ci/rtm-regenerate.py` lê, não no ficheiro gerado; e `tecnica/17` deve constar dos «Documentos relacionados» de `specs/EPIC-07` e `specs/EPIC-15`.)*
-- [ ] **Automatização (fecha em AOS-198):** a verificação ticket↔título é acrescentada ao `ref-lint.py` (extensão natural), para
+- [x] **Automatização — ENTREGUE por AOS-198** (`7d16c4e`): a verificação ticket↔título foi acrescentada ao `ref-lint.py`.
+      *(395 declarações verificadas, 0 discordâncias. Calibração MEDIDA: a 1.ª versão aceitava a forma em prosa e deu 16 falsos positivos e zero verdadeiros, pelo que foi restringida a cabeçalhos e células de tabela. LIMITE DECLARADO: não apanha a forma exacta do STR-01, porque a tabela de `tecnica/17` cita tickets numa coluna **sem título** para comparar.)*
+      *(texto original do CA:)* a verificação ticket↔título é acrescentada ao `ref-lint.py` (extensão natural), para
       esta correcção não voltar a derivar.
 
 ---
@@ -373,9 +375,12 @@ cmd/aos-demo, integration)»; `go list -deps` mostra-o **ausente** em `cmd/aos` 
 `aos-demo`, via `approval-card`). Três lentes independentes chegaram aqui por caminhos diferentes.
 
 **Critérios de aceitação**
-- [ ] `doc.go:11-12` deixa de afirmar cablagem inexistente (mantendo `:13-15`, que declara o limite real).
+- [x] `doc.go:11-12` deixa de afirmar cablagem inexistente (mantendo `:13-15`, que declara o limite real).
+      *(ENTREGUE `d355551`: discrimina por composition-root — ausente em `cmd/aos` e `integration`, presente em `aos-demo` via `approval-card`. Corrigido também um over-claim adjacente: o `dsar` era listado como consumidor de produção quando só o é em teste. Nova secção «Como verificar as afirmações acima» com os comandos e as duas armadilhas.)*
 - [ ] O CA de AOS-188 é reaberto **ou** a fronteira fica registada como deferimento com ticket nomeado.
-- [ ] **Verificação:** `go list -deps ./...` em `cmd/aos` e `integration` não contradiz nenhuma afirmação do `doc.go`.
+      *(POR FAZER — exigia `specs/EPIC-17`, fora da pista na execução paralela. Via RECOMENDADA pelo agente: **não** desmarcar. O CA de AOS-188 tem porta de escape disjuntiva («ou o `doc.go` é actualizado para reflectir o escopo real») que até `d355551` **não** estava genuinamente satisfeita; desmarcar torná-lo-ia falso no sentido inverso. O que fica aberto é a ligação SUBSTANTIVA do motor ao Event Store/`platform/memory`/`otel-genai`/`platform/audit` — escopo próprio, ticket por criar.)*
+- [x] **Verificação:** `go list -deps ./...` em `cmd/aos` e `integration` não contradiz nenhuma afirmação do `doc.go`.
+      *(ENTREGUE `d355551`. MECANISMO do quase-acerto identificado: `cmd/aos` arrasta `governance/dsar`, mas o `dsar` importa o motor **apenas em `flow_test.go`** — e `go list -deps` NÃO segue dependências só-de-teste.)*
 
 ---
 
@@ -389,10 +394,15 @@ ADR-012 é apontado a EPIC-13; a assinatura de imagem do ADR-017 é apontada a E
 («ligados no promotion controller») é falso.
 
 **Critérios de aceitação**
-- [ ] Existe um registo único de deferimentos com colunas: id, descrição, **eixo (ticket real)**, dono, gatilho, estado.
-- [ ] Os três eixos inválidos acima são corrigidos (ou recebem ticket novo se nenhum existir).
-- [ ] O CA falso de `EPIC-14:901` é corrigido.
-- [ ] **Verificação por script:** todo o marcador `DEFERIDO`/`demo-grade` em `packages/**/*.go` (não-teste) tem
+- [x] Existe um registo único de deferimentos com colunas: id, descrição, **eixo (ticket real)**, dono, gatilho, estado.
+      *(ENTREGUE `d33c0ff`: `docs/governance/REGISTO-Deferimentos.md`, 51 linhas cobrindo 38 pares (ficheiro, marcador) e 77 ocorrências em Go de produção + 11 documentais. **Nenhum número inventado**: 19 linhas dizem `POR ATRIBUIR` com nota a descrever o ticket necessário — citar um `AOS-NNN` fantasma avermelharia o `ref-lint`.)*
+- [x] Os três eixos inválidos acima são corrigidos (ou recebem ticket novo se nenhum existir).
+      *(ENTREGUE `d33c0ff`: `bootstrap.go` (comentários), `tecnica/02:~175`, ADR-012 (4 ocorrências) e ADR-017. O ADR-017 passou a enumerar os onze tickets do EPIC-10 para mostrar que **nenhum assina imagens**.)*
+- [x] O CA falso de `EPIC-14:901` é corrigido.
+      *(ENTREGUE `d33c0ff`: **DESMARCADO** de `[x]` para `[ ]` com evidência — `NewProductionRatificationGate` só tem chamadores em `_test.go` e o nó não compõe promotion controller nenhum. Direcção oposta ao over-claim.)*
+- [x] **Verificação por script — ENTREGUE** `d33c0ff`: gate `deferrals` (Python stdlib, fail-closed, 6 verificações incl. anti-eixo-fantasma e «só encolhe»), ligado aos TRÊS sítios (`ALL_GATES`, job em `ci.yml`, `needs:` do agregador).
+      *(Detalhe MEDIDO: `STUB` e `CONDICIONAL` só contam em MAIÚSCULAS — em minúsculas ocorrem ~30× em negações («nunca um stub») e em identificadores Go (`BudgetStub`), o que produziria linhas sem significado e um gate que seria desligado.)*
+      *(texto original do CA:)* todo o marcador `DEFERIDO`/`demo-grade` em `packages/**/*.go` (não-teste) tem
       entrada no registo cujo eixo contém um `AOS-NNN` existente.
 
 ---
@@ -432,11 +442,12 @@ Integração», declarado bloqueante de merge em `specs/01:83` e nomeado em `tec
 «deriva silenciosa de schema», **não existe** em `scripts/ci/`. A deriva não é acidental — é a ausência do gate.
 
 **Critérios de aceitação**
-- [ ] `scripts/ci/run.sh` inclui um gate que falha se um tipo Go de porta divergir do contrato declarado em
+- [x] **VIA ESCOLHIDA — ENTREGUE** `7d16c4e`: `scripts/ci/run.sh` inclui um gate que falha se um tipo Go de porta divergir do contrato declarado em
       `tecnica/12` (mínimo verificável: presença dos códigos de erro `E_*` documentados), **ou**
-- [ ] a declaração é **retirada** de `specs/01:83` e `tecnica/12:351` e a deriva C3/C4/C5 fica registada como
+- [—] *(VIA NÃO ESCOLHIDA — o CA é disjuntivo; criar o gate foi preferido porque retirar a declaração converteria um achado num deferimento permanente)* a declaração é **retirada** de `specs/01:83` e `tecnica/12:351` e a deriva C3/C4/C5 fica registada como
       deferimento com eixo (AOS-196).
-- [ ] Qualquer que seja a via, o resultado é falsificável: não pode ficar um gate declarado e inexistente.
+- [x] Qualquer que seja a via, o resultado é falsificável: não pode ficar um gate declarado e inexistente.
+      *(ENTREGUE `7d16c4e`. O que o gate NÃO faz está declarado em TRÊS sítios (cabeçalho do script, `specs/01` linha 4, `tecnica/12` §11); corrigidas as duas afirmações que sobre-prometiam. Baselines com regras mais apertadas que as de scanner: dono obrigatório, só encolhem, entrada obsoleta **falha**.)*
 
 ---
 
@@ -446,10 +457,14 @@ Integração», declarado bloqueante de merge em `specs/01:83` e nomeado em `tec
 são sobreponíveis por ambiente **sem piso nem registo** — «gates verdes» deixa de ser prova reproduzível.
 
 **Critérios de aceitação**
-- [ ] Cada limiar tem um **piso** abaixo do qual o gate falha por violação de piso.
-- [ ] **Prova negativa:** `EVAL_PASS_RATE_MIN=0 make ci` **falha** (não passa verde).
-- [ ] Os limiares e os seus pisos ficam documentados em `CONTRIBUTING.md` ou `AGENTS.md`.
-- [ ] `SKIP_DOCKER` regista no output que etapas foram saltadas (sem falso-verde silencioso).
+- [x] Cada limiar tem um **piso** abaixo do qual o gate falha por violação de piso.
+      *(ENTREGUE `be53411`: **7 limiares + 1 interruptor** — a auditoria nomeava 4; três (`MEMORY`/`ROUTING`/`REGISTRY_COVERAGE_MIN`) eram invisíveis ao ORF-06. Piso == default, deliberadamente: um piso mais baixo seria uma segunda barra não documentada. Nenhum default foi baixado; os knobs passam a **ratchets** (só apertam). `COVERAGE_MIN` tem piso PRÓPRIO, não herdado — senão baixar o knob histórico arrastava o gate dos 10 módulos.)*
+- [x] **Prova negativa:** `EVAL_PASS_RATE_MIN=0 make ci` **falha** (não passa verde).
+      *(ENTREGUE `be53411`. Dois diagnósticos distintos: «VIOLAÇÃO DE PISO» (config inválida) vs «LIMIAR NÃO ATINGIDO» (o código falhou). Validação de domínio apanha confusão de unidade (`EVAL_PASS_RATE_MIN=90` numa fracção 0..1). Escape hatch exige justificação e é **RECUSADO em CI** — a CI não consegue descer um piso nem de propósito.)*
+- [x] Os limiares e os seus pisos ficam documentados em `CONTRIBUTING.md` ou `AGENTS.md`.
+      *(ENTREGUE `be53411`: tabela dos 7 limiares (default/piso/domínio/ficheiro/justificação) + tabela dos dois diagnósticos em `CONTRIBUTING.md`; nota da regra «só apertam» em `AGENTS.md`.)*
+- [x] `SKIP_DOCKER` regista no output que etapas foram saltadas (sem falso-verde silencioso).
+      *(ENTREGUE `be53411` + `82cd7f4`: `'true'`/`'yes'` eram tratados como 0 **em silêncio** — agora saem 2 como config inválida. Veredicto passa a «VERDE PARCIAL» que nega explicitamente ser prova do ponto 2 do ADR-017. O mesmo modelo aplicado ao `sbom.sh`, que a CI invoca como step autónomo.)*
 
 ---
 
@@ -461,10 +476,12 @@ lado nenhum do corpus. A promessa anti-retrabalho não está falsificada — est
 precisamente a condição que o §6.6 foi escrito para evitar.
 
 **Critérios de aceitação**
-- [ ] Existe um registo (ficheiro versionado) com: data, decisão FIXA tocada, natureza (emenda/arbitragem),
+- [x] **ENTREGUE** `5c01d7c` — existe um registo (ficheiro versionado) com: data, decisão FIXA tocada, natureza (emenda/arbitragem),
       veredicto do árbitro §6.5.
-- [ ] O contador de reaberturas em janela de 30 dias é calculável por comando.
-- [ ] As emendas 1.1/1.2/1.3 e a arbitragem que originou o ADR-019 ficam registadas retroactivamente.
+- [x] O contador de reaberturas em janela de 30 dias é calculável por comando.
+      *(ENTREGUE `5c01d7c`: python3 inline sobre TODAS as janelas deslizantes (a §6.6 diz «numa janela de 30 dias», não «na corrente»). **Prova negativa**: sobre cópia com as três PENDENTE mutadas para RECUSA, imprime `TRIPWIRE DISPARADO` e sai com 1 — um contador que nunca dispara não é um SLI.)*
+- [x] As emendas 1.1/1.2/1.3 e a arbitragem que originou o ADR-019 ficam registadas retroactivamente.
+      *(ENTREGUE `5c01d7c`: 10 eventos (REG-000..009). Contador: reaberturas=0, recusas=0, **PENDENTES=3**. A §6.5 exige decisão POR ESCRITO pelos DOIS papéis; o rótulo «reavaliação de contexto, não re-litígio» foi **auto-atribuído por quem propôs a alteração**, na mesma emenda que cria o árbitro. As três (D3, D5, excepção zero-dep do ADR-017) caem na MESMA janela de 30 dias: se duas forem arbitradas como re-litígio, a §6.6 **dispara retroactivamente**.)*
 
 ---
 
@@ -481,7 +498,8 @@ não existe no envelope (é persistido no payload da mediação, `eventsink.go:9
       como «desenho, não wire» de forma explícita e localizada.
 - [x] Os nomes canónicos citados são emitidos, ou substituídos pelos reais.
       *(ENTREGUE `7b69c27`: os 3 nomes nunca emitidos corrigidos; a citação original era ilustrativa («ex.:»), não normativa. Taint localizado nos 3 sítios reais (§3.4) em vez de declarado em falta — e corrigido o caminho que a auditoria citava (`kernel/reference-monitor/eventsink.go`, não `platform/audit/`).)*
-- [ ] O catálogo de tipos de evento é gerado ou verificado por script (evitar nova deriva de 80 entradas).
+- [x] O catálogo de tipos de evento é gerado ou verificado por script (evitar nova deriva de 80 entradas).
+      *(ENTREGUE por **AOS-198** `7d16c4e`: gate `event-catalog` (85 constantes vs as 29 famílias da taxonomia de `tecnica/13` §3.3; rejeita literais e concatenações em `EventInput.Type`), ligado aos três sítios. Fecha o residual que `7b69c27` deixou como PARCIAL.)*
       *(**PARCIAL** `7b69c27`: catálogo por família/prefixo (29 prefixos, 85 tipos — não 81: o código mexeu-se, mais uma razão para não fixar lista) com o pacote dono e um comando `grep` reproduzível validado. Falta o **gate de CI** (exigia `scripts/**`, fora da pista na execução paralela) — **fecha em AOS-198**.)*
 
 ---
@@ -494,9 +512,12 @@ não entram em nenhum binário (daí a reclassificação de CONTRADITÓRIO para 
 com a leitura literal do ADR-019 §3.
 
 **Critérios de aceitação**
-- [ ] Decisão registada: **remover**, **documentar como referência não-vinculativa**, ou **adoptar** (com importadores).
-- [ ] Se ficarem, a auto-declaração «contrato canónico» é calibrada para não colidir com o ADR-019 §3.
-- [ ] Se saírem, a remoção não quebra nenhum build (verificado por `go build ./...` em todos os módulos).
+- [x] Decisão registada: **REMOVER** — `c78f431`.
+      *(Os 22 ficheiros nasceram TODOS em `4d90a58` (AOS-177), cuja mensagem nunca os menciona: não houve decisão, houve arrasto. Contradiziam o ADR-019 §3, aceite no MESMO dia, que rejeita `kernel/contract` para a v1 — e não existe ADR de supersessão. Não eram referência: eram um **fork silencioso já a divergir**, com as cópias ATRASADAS (a de audit perdeu o bloco do bump v1→v2).)*
+- [—] *(N/A — não ficaram.)* Se ficarem, a auto-declaração «contrato canónico» é calibrada para não colidir com o ADR-019 §3.
+      *(Em vez disso, o ADR-019 §5 ganhou um item que torna a AUSÊNCIA verificável: se os directórios reaparecerem sem ADR de supersessão, é violação da §3, não implementação dela.)*
+- [x] Se saírem, a remoção não quebra nenhum build (verificado por `go build ./...` em todos os módulos).
+      *(ENTREGUE `c78f431`: ~34 módulos compilam; `layer-lint` verde; a baseline não continha entradas `contract`, logo não foi tocada.)*
 
 ---
 
@@ -507,12 +528,15 @@ todo o repo. Pior: **`AOS_BOARD_REGIONS` definido-vazio é um kill-switch do rea
 apenas num script de harness — uma variável de ambiente que desliga um controlo de conformidade sem registo.
 
 **Critérios de aceitação**
-- [ ] Todas as variáveis lidas por `packages/cmd/aos` (`os.Getenv`) estão documentadas em `deploy/node/README.md`,
+- [x] **ENTREGUE** `f8354ae` — todas as variáveis lidas por `packages/cmd/aos` (`os.Getenv`) estão documentadas em `deploy/node/README.md`,
       com efeito, default e impacto de segurança.
-- [ ] `AOS_BOARD_REGIONS` vazio **não** desliga silenciosamente o read-path soberano: ou recusa arrancar em
+- [x] **ENTREGUE** `f8354ae` — `AOS_BOARD_REGIONS` vazio **não** desliga silenciosamente o read-path soberano: ou recusa arrancar em
       `AOS_MODE=production` (padrão de `ErrProductionNeedsSovereignRead`), ou regista um aviso proeminente no banner.
-- [ ] **Verificação por script:** o conjunto de `os.Getenv` em `cmd/aos` é subconjunto do documentado (gate ou teste).
-- [ ] **Postura de produção de `AOS_DURABLE_EXECUTION` (eixo herdado de AOS-191).** Decidir se `AOS_MODE=production`
+- [x] **Verificação por script:** o conjunto de `os.Getenv` em `cmd/aos` é subconjunto do documentado (gate ou teste).
+      *(ENTREGUE `f8354ae`: `TestAOS203EnvSurfaceIsDocumented` parseia o código com **`go/parser` (AST), não grep** — um `grep AOS_` apanharia menções em comentários e strings de erro, de que o pacote está cheio, e exigiria documentar variáveis que ninguém lê. Allowlist explícita hoje VAZIA. As 16 variáveis documentadas, incluindo `AOS_HUMANS` e `AOS_ISSUER_ID`, que não tinham UMA linha em todo o repo.)*
+- [x] **Postura de produção de `AOS_DURABLE_EXECUTION` — DECIDIDA** `f8354ae`: mantém-se **opt-in**, também em produção.
+      *(Critério da promessa falsa: sem `AOS_ISSUER_PUBKEY` ou `AOS_BOARD_REGIONS` o nó SERVIRIA com postura mais fraca do que a anunciada; com a durabilidade desligada o nó **não anuncia durabilidade nenhuma** — o banner declara DESLIGADA em cada arranque. Decisão explícita e registada, não omissão.)*
+      *(texto original do CA:)* Decidir se `AOS_MODE=production`
       passa a **exigir** execução durável (padrão de `ErrProductionNeedsHardenedIdentity` /
       `ErrProductionNeedsSovereignRead`) ou se permanece **opt-in** por decisão registada. AOS-191 deixou-a opt-in
       deliberadamente — não há promessa falsa (o banner declara `DESLIGADA`) e exigi-la teria quebrado a
@@ -539,15 +563,18 @@ estado — o ciclo que AOS-192 veio quebrar. Este ticket é o dono do eixo (CA d
 eixo válido **com um ticket real**).
 
 **Critérios de aceitação**
-- [ ] Um teste de `packages/cmd/aos` compõe o nó com um modelo que **EMITE** uma tool call e assere que o
+- [x] **ENTREGUE** `339992d` — um teste de `packages/cmd/aos` compõe o nó com um modelo que **EMITE** uma tool call e assere que o
       *collector* OTLP recebe um span `execute_tool` bem-formado (atributos `gen_ai.*`/`aos.*`, sem segredos),
       filho do `invoke_agent` do mesmo run.
-- [ ] O teste é NÃO-VACUOSO: falha se o run não chegar a despachar a tool (asserção explícita de que a tool call
+- [x] **ENTREGUE** `339992d` — o teste é NÃO-VACUOSO: falha se o run não chegar a despachar a tool (asserção explícita de que a tool call
       foi emitida), e o span nasce **também** sob veredicto de negação do PDP (o span é do Reference Monitor,
       não do caminho feliz).
-- [ ] `docs/reports/AOS-169-aceitacao-sistemica.md` §13.6 é **re-marcado** com esta evidência (ou mantém-se 🟡
+- [x] **ENTREGUE** `339992d` — §13.6 re-marcado **VERDE**, com o «dono: AOS-204» retirado do corpo, da tabela-resumo e da conclusão.
+      *(Prova negativa em DUAS variantes; a (B) reconstitui o defeito ORIGINAL de AOS-192 e devolve `[registry.freeze_toolset chat invoke_agent]` — EXACTAMENTE o conjunto que a evidência antiga citava como se incluísse `execute_tool`. O teste novo pinta de vermelho o falso-verde que AOS-192 apanhou. Topologia asserida (traceId + parentSpanId), não só presença; e o selo WORM `audit_seal` é FILHO do `execute_tool`, ligando trajectória e registo por parentesco. **RESIDUAL NOMEADO**: `secured.go:250` compõe o dispatcher durável sem tracer ⇒ no modo durável o span `aos.activity` não é exportado. Correcção de UMA linha em PRODUÇÃO: declarada, não feita.)*
+      *(texto original do CA:)* `docs/reports/AOS-169-aceitacao-sistemica.md` §13.6 é re-marcado com esta evidência (ou mantém-se 🟡
       com o eixo actualizado — nunca VERDE sem o teste).
-- [ ] Gates `layer-lint`/`rtm`/`ref-lint` verdes; testes com `-race`.
+- [x] Gates `layer-lint`/`rtm`/`ref-lint` verdes; testes com `-race`.
+      *(Verificado pelo orquestrador sobre árvore estável, com os gates novos incluídos: `deferrals`, `integration`, `event-catalog`, `selftest`, `secrets` e `cmd/aos -race` — todos verdes.)*
 
 ---
 
