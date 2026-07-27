@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos (AOS-205 … AOS-208)
+## 8-bis. Tickets gerados pelo registo de deferimentos e pela análise STRIDE (AOS-205 … AOS-209)
 
 Estes quatro tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos apontavam sem executor. Nascem aqui porque foram o `docs/governance/REGISTO-Deferimentos.md`
@@ -601,6 +601,7 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-206 | Compor o *promotion controller* do nó com `NewProductionRatificationGate` | feature | M | P1 | **EPIC-14** | nota `N-DEF-401` (DEF-03) |
 | AOS-207 | Assinatura e atestação da imagem do nó (chave de release, in-toto/SLSA, verificação na entrega) | feature | M | P2 | **EPIC-05** | nota `N-DEF-501` (DEF-06) |
 | AOS-208 | Ligação substantiva do motor de redacção ao Event Store, memória, `otel-genai` e audit | feature | M | P1 | **EPIC-09** | pendência de AOS-195 |
+| AOS-209 | **Terminação TLS do nó** (ingresso HTTP/SSE/DSAR + perna OTLP) | feature | M | **P0** | **EPIC-15** | `tecnica/17` §5.2-b (AOS-194) |
 
 ---
 
@@ -704,6 +705,68 @@ apenas menções em EPIC-09 e EPIC-17, nenhuma com este âmbito.
       passa a confirmar a presença, não a ausência).
 
 **Dependências:** AOS-091 (motor), AOS-188.
+
+---
+
+### AOS-209 — Terminação TLS do nó (ingresso HTTP/SSE/DSAR + perna OTLP)
+
+**Origem:** achado **(b) «Transporte em claro — sem dono»** de `tecnica/17_Analise_STRIDE.md` §5.2,
+produzido pelo AOS-194. É a lacuna que a própria análise recomenda **escalar primeiro**.
+
+**Porque não existia:** `specs/EPIC-15` registava «TLS/mTLS por endurecer» numa nota entre parênteses,
+**sem lhe atribuir ticket**. Procurar `TLS` nas linhas de ticket de `specs/` devolve **zero**: nenhum
+`AOS-NNN` do backlog possuía a terminação TLS do nó.
+
+**O que está em causa.** Contra um atacante na rota, o transporte em claro degrada *Tampering*
+(§4.10-T) e *Information disclosure* (trajectória e telemetria), e corrói o **valor prático** da
+assinatura do canal de controlo: a assinatura ed25519 continua íntegra, mas o conteúdo transportado é
+observável. Toda a identidade real (AOS-174/175/176/177), a soberania de leitura (AOS-172) e o canal
+autenticado (AOS-160/193) assentam num transporte que qualquer intermediário lê.
+
+**Âmbito — INGRESSO e a perna de saída da telemetria.** A saída do Model Gateway tem a **mesma raiz**
+(`http.DefaultClient` sem timeout/TLS próprios, `BaseURL` sem validação de esquema — §4.7-T) mas **já
+tem eixo: AOS-184**, com os quatro CA por satisfazer. Este ticket **não** o duplica.
+
+**Nota de zero-dep:** `crypto/tls` é **stdlib**. A terminação TLS no próprio nó **não** colide com o
+ponto 1 do ADR-017 nem exige a disciplina de excepção da emenda 1.3 da Carta.
+
+**Decisão de desenho a tomar no ticket (e a justificar):** terminar TLS **no nó** (`crypto/tls`) ou
+**a montante** (ingress/malha de serviço). A recomendação da análise é **suportar o primeiro e permitir
+o segundo explicitamente** — um *opt-out* declarado e visível, nunca um default silencioso. O que não
+se tolera é o estado actual: texto-claro por omissão, sem o operador o saber.
+
+**Critérios de aceitação**
+
+- [ ] O nó **serve TLS** no ingresso (API, SSE de trajectória, `/dsar/erase`) com certificado e chave
+      configuráveis por ficheiro montado, no padrão de `AOS_ISSUER_KEY_PATH` — e **sem material
+      privado em variáveis de ambiente**.
+- [ ] **Extensão do bind-guardrail (quarta conjunção).** O `controlAuthenticated()` de
+      `packages/cmd/aos/api.go:946` já exige `SteerAuth` + identidade real + ≥1 operador (AOS-193).
+      Passa a exigir também **transporte cifrado**: um bind **não-loopback em texto-claro** é
+      **RECUSADO** com o erro tipado próprio. É a mesma disciplina, não um mecanismo novo.
+- [ ] **Opt-out explícito e ruidoso** para quem termina TLS a montante: variável dedicada que
+      **declara** a terminação externa, com **aviso proeminente no banner** (no modelo do kill-switch de
+      soberania, AOS-203) a dizer que o nó está a servir em claro e **por decisão de quem o configurou**.
+      Em `AOS_MODE=production`, sem TLS **nem** opt-out declarado, o arranque **recusa**.
+- [ ] A **perna OTLP** do exporter usa TLS e autentica-se perante o colector (ou declara a ausência com
+      eixo nomeado). Mantém-se o **fail-open** de AOS-173: uma falha de telemetria **nunca** quebra um run.
+- [ ] **mTLS do plano de controlo:** ou é entregue, ou fica **deferido com eixo nomeado** e entrada no
+      `docs/governance/REGISTO-Deferimentos.md`. Não pode voltar a ficar numa nota entre parênteses.
+- [ ] `deploy/node/README.md` documenta certificados, rotação, o opt-out e a postura por `AOS_MODE`,
+      no estilo das secções de AOS-191/193/203.
+
+**Critérios falsificáveis (provas negativas exigidas)**
+
+- [ ] Bind a `0.0.0.0` **sem** TLS e **sem** opt-out declarado ⇒ **recusa** (`ErrRefuse…`), com o
+      output capturado. Hoje **aceita**.
+- [ ] Com TLS ligado, um cliente que fale HTTP em claro contra a porta TLS **falha**; o `aos steer`
+      assinado sobre TLS **é aceite** (prova dos dois sentidos — não basta apertar).
+- [ ] `AOS_MODE=production` sem TLS nem opt-out ⇒ **não arranca**.
+
+**Dependências:** AOS-166 (API e bind-guardrail), AOS-193 (guardrail que discrimina), AOS-167 (SSE —
+ligações longas sobre TLS), AOS-172 (DSAR), AOS-173 (exporter OTLP), AOS-168 (imagem/porta exposta).
+**Não duplica:** AOS-184 (egresso do Model Gateway).
+**Fecha:** a nota órfã de `specs/EPIC-15` e o achado §5.2-b de `tecnica/17`.
 
 ---
 

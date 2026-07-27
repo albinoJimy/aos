@@ -27,7 +27,7 @@ Este documento é a **Matriz de Rastreabilidade de Requisitos** (*Requirements T
 
 ### 1.2 Âmbito
 
-A rastreabilidade cobre os 19 ADRs canónicos (`_BRIEF` §3), as 11 capacidades funcionais (`specs/00` §4), os 10 *drivers* não-funcionais (`specs/00` §7) e os **208 tickets** `AOS-001`–`AOS-208` distribuídos por 18 epics. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
+A rastreabilidade cobre os 19 ADRs canónicos (`_BRIEF` §3), as 11 capacidades funcionais (`specs/00` §4), os 10 *drivers* não-funcionais (`specs/00` §7) e os **209 tickets** `AOS-001`–`AOS-209` distribuídos por 18 epics. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
 
 ### 1.3 Audiência
 
@@ -112,7 +112,7 @@ Para cada ADR-001…019, os tickets `AOS-NNN` cujo bloco de especificação o ci
 | **ADR-014** | Taxonomia de autonomia L0–L5 | 4 | AOS-022, AOS-089, AOS-090, AOS-125 | `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/15` |
 | **ADR-015** | Durable execution: contrato próprio vs. engine externo | 1 | AOS-129 | `tecnica/12`, `tecnica/15` |
 | **ADR-016** | Fronteira de confiança da camada de UI | 11 | AOS-129, AOS-131, AOS-132, AOS-137, AOS-138, AOS-143, AOS-153, AOS-162, AOS-166, AOS-182, AOS-185 | `tecnica/02`, `tecnica/09`, `tecnica/10`, `tecnica/12`, `tecnica/15` |
-| **ADR-017** | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | 8 | AOS-129, AOS-169, AOS-185, AOS-193, AOS-196, AOS-199, AOS-200, AOS-207 | `tecnica/02`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
+| **ADR-017** | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | 9 | AOS-129, AOS-169, AOS-185, AOS-193, AOS-196, AOS-199, AOS-200, AOS-207, AOS-209 | `tecnica/02`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-018** | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | 2 | AOS-164, AOS-185 | `tecnica/09`, `tecnica/10`, `tecnica/12` |
 | **ADR-019** | Excepções intencionais às fronteiras canónicas de camada (v1 single-host) | 4 | AOS-179, AOS-190, AOS-200, AOS-202 | `tecnica/09`, `tecnica/11`, `tecnica/12` |
 
@@ -147,7 +147,7 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 
 | Doc técnico | Epic(s) implementador(es) | Gama de tickets |
 |---|---|---|
-| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-208 |
+| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-209 |
 | `tecnica/01_Reference_Monitor_Plano_Controlo.md` | EPIC-01 | AOS-001 – AOS-012 |
 | `tecnica/02_Agent_Runtime_Execucao_Duravel.md` | EPIC-02 | AOS-013 – AOS-024 |
 | `tecnica/03_Orquestracao_Escalonamento.md` | EPIC-03 | AOS-025 – AOS-034 |
@@ -156,9 +156,9 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 | `tecnica/06_Model_Gateway_Custos.md` | EPIC-06 | AOS-055 – AOS-063 |
 | `tecnica/07_Seguranca_Isolamento.md` | EPIC-07 | AOS-064 – AOS-075 |
 | `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |
-| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-18 | AOS-087 – AOS-097 (+ AOS-190 – AOS-208) |
+| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-18 | AOS-087 – AOS-097 (+ AOS-190 – AOS-209) |
 | `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |
-| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-18 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-208) |
+| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-18 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-209) |
 | `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |
 | `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |
 | `tecnica/14_Matriz_Conformidade.md` | EPIC-08, EPIC-09 | AOS-072, 076–097 |
@@ -168,7 +168,7 @@ flowchart LR
     RF["RF-01..RF-11 (capacidades)"] --> ADR["ADR-001..019 (decisoes)"]
     NFR["NFR-01..NFR-10 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-18 (entregas)"]
-    EPIC --> TICK["AOS-001..AOS-208 (tickets)"]
+    EPIC --> TICK["AOS-001..AOS-209 (tickets)"]
     DOC["tecnica/00..14 (docs)"] --> EPIC
     TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]
     NFR --> TEST

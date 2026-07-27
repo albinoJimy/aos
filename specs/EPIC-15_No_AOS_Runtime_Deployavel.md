@@ -540,7 +540,8 @@ regra de ouro ADR-016; a API nunca assina em nome do humano (BFF non-signing).
       *(Ligada ao binário via `AOS_API_ADDR` (retrocompatível); bind-guardrail no caminho real;
       encerramento gracioso SIGINT/SIGTERM. Testes: submit idempotente não-enumerável, rate-limit do
       plano de controlo, recusa de bind não-loopback sem authn, arranque/encerramento loopback.
-      SSE=AOS-167 e CLI=AOS-165 deferidos; TLS/mTLS por endurecer.)*
+      SSE=AOS-167 e CLI=AOS-165 deferidos; **TLS/mTLS = AOS-209** — a nota deixou de ser órfã: o achado
+      §5.2-b de `tecnica/17` (AOS-194) mostrou que nenhum ticket possuía a terminação TLS do nó.)*
 
 ### Handoff para Claude Code
 
