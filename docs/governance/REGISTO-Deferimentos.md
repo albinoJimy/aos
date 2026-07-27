@@ -165,17 +165,17 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-111 | STUB | packages/cmd/aos/bootstrap.go | Doc de pacote: contraste com os STUBS NEUTROS do `cmd/aos-demo`; o nó `aos` compõe a cadeia real | AOS-163 | Arquitecto de Plataforma | Remoção do ápice mínimo demo | FECHADO-RESIDUAL |
 | DEF-112 | DEMO-GRADE | packages/cmd/aos-demo/main.go | Ápice mínimo: HMAC efémero gerado em runtime + registo demo; é o binário de demonstração, não o nó | AOS-163 | Arquitecto de Plataforma | Idem DEF-111 | FECHADO-RESIDUAL |
 | DEF-113 | STUB | packages/cmd/aos-demo/main.go | O demo compõe o RM com STUBS NEUTROS (sem enforcement) e declara-o no passo 7 e na limitação (b) | AOS-163 | Arquitecto de Plataforma | Idem DEF-111 | FECHADO-RESIDUAL |
-| DEF-201 | DEFERIDO | packages/cmd/aos/bootstrap.go | Provisionamento REAL de regiões/boards (IdP de soberania da organização); hoje o registo board→região é self-hosted por config | POR ATRIBUIR | Arquitecto de Plataforma + Responsável de Segurança | Existir organização com boards/regiões reais (Carta §4.2, D7 CONDICIONAL) | ABERTO |
+| DEF-201 | DEFERIDO | packages/cmd/aos/bootstrap.go | Provisionamento REAL de regiões/boards (IdP de soberania da organização); hoje o registo board→região é self-hosted por config | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Existir organização com boards/regiões reais (Carta §4.2, D7 CONDICIONAL) | ABERTO |
 | DEF-202 | DEFERIDO | packages/cmd/aos/bootstrap.go | Verificação de coincidência `leitor.região == run.região` no selo D6: o selo grava a região do BOARD DO LEITOR, não a residência por-run | AOS-182 | Responsável de Segurança | Execução de AOS-182 (read-path soberano fail-closed D6/D7) | ABERTO |
-| DEF-203 | DEFERIDO | packages/cmd/aos/sovereignty.go | Idem DEF-201 no doc de ficheiro do read-path soberano | POR ATRIBUIR | Arquitecto de Plataforma + Responsável de Segurança | Idem DEF-201 | ABERTO |
-| DEF-204 | DEMO-GRADE | packages/cmd/aos/sovereignty.go | Headers de leitura `X-Aos-Reader`/`X-Aos-Board` auto-declarados: sem credencial forte (OIDC/mTLS) do leitor de governação | POR ATRIBUIR | Responsável de Segurança | Idem DEF-201 (a credencial do leitor vem do mesmo IdP de soberania) | ABERTO |
-| DEF-205 | CONDICIONAL | packages/cmd/aos/sovereignty.go | A REGRA fail-closed é FIXA (Carta §4) mas a TOPOLOGIA é condicional ao provisionamento | POR ATRIBUIR | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
-| DEF-206 | DEFERIDO | packages/cmd/aos/api.go | Sem soberania composta, os handlers de leitura mantêm o read-path LEGADO (sem authz por-chamador nem selo) | POR ATRIBUIR | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
-| DEF-207 | DEFERIDO | packages/cmd/aos/dsar.go | Credencial FORTE do operador DSAR (OIDC/mTLS no IdP de soberania) | POR ATRIBUIR | Responsável de Segurança | Idem DEF-201 | ABERTO |
-| DEF-208 | DEMO-GRADE | packages/cmd/aos/dsar.go | O endpoint `POST /dsar/erase` reutiliza o modelo de autenticação de leitura de governação, que é demo-grade | POR ATRIBUIR | Responsável de Segurança | Idem DEF-201 | ABERTO |
-| DEF-209 | DEFERIDO | packages/cmd/aos/main.go | Provisioning real de regiões/boards por ambiente; hoje `AOS_BOARD_REGIONS` com um board demo por omissão | POR ATRIBUIR | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
-| DEF-210 | DEMO-GRADE | packages/cmd/aos/main.go | `parseBoardRegions` interpreta a config demo-grade do registo board→região | AOS-203; provisionamento real POR ATRIBUIR | Arquitecto de Plataforma | Execução de AOS-203 (variáveis de ambiente + kill-switch de soberania) | ABERTO |
-| DEF-211 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | `Config.BoardRegions` é o registo board→região demo-grade que o read-path soberano consulta | AOS-203; provisionamento real POR ATRIBUIR | Arquitecto de Plataforma | Idem DEF-210 | ABERTO |
+| DEF-203 | DEFERIDO | packages/cmd/aos/sovereignty.go | Idem DEF-201 no doc de ficheiro do read-path soberano | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Idem DEF-201 | ABERTO |
+| DEF-204 | DEMO-GRADE | packages/cmd/aos/sovereignty.go | Headers de leitura `X-Aos-Reader`/`X-Aos-Board` auto-declarados: sem credencial forte (OIDC/mTLS) do leitor de governação | AOS-205 | Responsável de Segurança | Idem DEF-201 (a credencial do leitor vem do mesmo IdP de soberania) | ABERTO |
+| DEF-205 | CONDICIONAL | packages/cmd/aos/sovereignty.go | A REGRA fail-closed é FIXA (Carta §4) mas a TOPOLOGIA é condicional ao provisionamento | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
+| DEF-206 | DEFERIDO | packages/cmd/aos/api.go | Sem soberania composta, os handlers de leitura mantêm o read-path LEGADO (sem authz por-chamador nem selo) | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
+| DEF-207 | DEFERIDO | packages/cmd/aos/dsar.go | Credencial FORTE do operador DSAR (OIDC/mTLS no IdP de soberania) | AOS-205 | Responsável de Segurança | Idem DEF-201 | ABERTO |
+| DEF-208 | DEMO-GRADE | packages/cmd/aos/dsar.go | O endpoint `POST /dsar/erase` reutiliza o modelo de autenticação de leitura de governação, que é demo-grade | AOS-205 | Responsável de Segurança | Idem DEF-201 | ABERTO |
+| DEF-209 | DEFERIDO | packages/cmd/aos/main.go | Provisioning real de regiões/boards por ambiente; hoje `AOS_BOARD_REGIONS` com um board demo por omissão | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
+| DEF-210 | DEMO-GRADE | packages/cmd/aos/main.go | `parseBoardRegions` interpreta a config demo-grade do registo board→região | AOS-203; provisionamento real AOS-205 | Arquitecto de Plataforma | Execução de AOS-203 (variáveis de ambiente + kill-switch de soberania) | ABERTO |
+| DEF-211 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | `Config.BoardRegions` é o registo board→região demo-grade que o read-path soberano consulta | AOS-203; provisionamento real AOS-205 | Arquitecto de Plataforma | Idem DEF-210 | ABERTO |
 | DEF-301 | DEFERIDO | packages/cmd/aos/bootstrap.go | **Cifra por-titular do substrato.** A erasure DSAR destrói a KEK do vault, mas o conteúdo dos runs no Event Store está em texto-claro e fica FORA do alcance do crypto-shredding | AOS-093 (CA #1: «toda a PII persistida é cifrada com uma chave por titular» — ver arbitragem A-DEF-301) | Responsável de Segurança | Primeiro DSAR real sobre conteúdo de runs, ou auditoria GDPR externa | ABERTO |
 | DEF-302 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | `DSARVault` é um `audit.InMemoryKeyVault`: as KEK por-titular vivem em memória; produção liga um KMS/HSM pela mesma porta | AOS-093, AOS-070 | Responsável de Segurança | Ambiente com KMS/HSM disponível | ABERTO |
 | DEF-303 | DOCUMENTAL | tecnica/02_Agent_Runtime_Execucao_Duravel.md | `Result.Payload` do step-ledger persistido em claro no Event Store; a guarda `WithSensitiveResults()` é opt-in | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 (é a mesma cifra do substrato) | ABERTO |
@@ -183,9 +183,9 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-305 | DOCUMENTAL | packages/kernel/agent-runtime/replay/nondeterminism_capture.go | Idem no capturer de não-determinismo (2 ocorrências), com o eixo antigo `EPIC-13` | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 | ABERTO |
 | DEF-306 | DOCUMENTAL | tecnica/14_Matriz_Conformidade.md | «Eixo declarado» da cifra por titular do substrato aponta EPIC-06/09/10 (ficheiro de outro pipeline — ver pendência P-2) | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 | ABERTO |
 | DEF-307 | DOCUMENTAL | tecnica/17_Analise_STRIDE.md | Alcance do crypto-shredding: o conteúdo dos runs fica fora, com eixo `EPIC-09/10` | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 | ABERTO |
-| DEF-401 | DOCUMENTAL | docs/adr/ADR-012-semver-eval-gate.md | **Anti-replay da ratificação.** Freshness+nonce são portas opcionais desligadas por omissão; `NewProductionRatificationGate` não tem chamador de produção porque o nó não compõe promotion controller | AOS-159 entregue (mecanismo); wiring de produção POR ATRIBUIR | Responsável de Segurança | Existir um caminho de promoção/auto-modificação composto no nó | ABERTO |
-| DEF-402 | DOCUMENTAL | specs/EPIC-14_Integracao_Composition_Root.md | CA de AOS-159 «ligados no promotion controller» estava `[x]` e era falso; corrigido para `[ ]` por AOS-196 | AOS-159; wiring POR ATRIBUIR | Responsável de Segurança | Idem DEF-401 | ABERTO |
-| DEF-501 | DOCUMENTAL | docs/adr/ADR-017-supply-chain-node.md | **Assinatura/atestação de imagem.** SBOM é gerado; a atestação fica por assinar e não há registry de imagens assinado | POR ATRIBUIR | Arquitecto de Plataforma | Primeiro release distribuído do nó fora do repositório | ABERTO |
+| DEF-401 | DOCUMENTAL | docs/adr/ADR-012-semver-eval-gate.md | **Anti-replay da ratificação.** Freshness+nonce são portas opcionais desligadas por omissão; `NewProductionRatificationGate` não tem chamador de produção porque o nó não compõe promotion controller | AOS-159 entregue (mecanismo); wiring de produção AOS-206 | Responsável de Segurança | Existir um caminho de promoção/auto-modificação composto no nó | ABERTO |
+| DEF-402 | DOCUMENTAL | specs/EPIC-14_Integracao_Composition_Root.md | CA de AOS-159 «ligados no promotion controller» estava `[x]` e era falso; corrigido para `[ ]` por AOS-196 | AOS-159; wiring AOS-206 | Responsável de Segurança | Idem DEF-401 | ABERTO |
+| DEF-501 | DOCUMENTAL | docs/adr/ADR-017-supply-chain-node.md | **Assinatura/atestação de imagem.** SBOM é gerado; a atestação fica por assinar e não há registry de imagens assinado | AOS-207 | Arquitecto de Plataforma | Primeiro release distribuído do nó fora do repositório | ABERTO |
 | DEF-502 | DOCUMENTAL | docs/adr/ADR-018-fronteira-no-orq-sch.md | Secção «O que muda no distribuído» deferida a EPIC-10 sem nomear ticket na linha | AOS-098, AOS-099, AOS-100 | Arquitecto de Plataforma | Passagem do nó a multi-processo/multi-nó | ABERTO |
 | DEF-601 | STUB | packages/kernel/reference-monitor/doc.go | O pacote entrega o RM com STUBS NEUTROS; identidade, política, orçamento, egress e audit reais chegam noutros tickets | AOS-004, AOS-005, AOS-011, AOS-087 | Arquitecto de Plataforma | Substituição dos hooks neutros no ápice de produção | MITIGADO |
 | DEF-602 | STUB | packages/kernel/reference-monitor/hooks.go | `IdentityStub`/`PolicyStub`/`BudgetStub`/`EgressStub` e o audit no-op documentam o ponto de injecção sem codificar regra | AOS-004, AOS-005, AOS-011, AOS-087 | Arquitecto de Plataforma | Idem DEF-601 | MITIGADO |
@@ -415,7 +415,7 @@ Uma secção `A-DEF-NNN` é outra coisa: uma **arbitragem** — um eixo que foi 
 cuja decisão fica escrita com o que a falsificaria. Não é lida pelo gate (as linhas que ela
 cobre já têm ticket); está aqui para a decisão não ter de ser redescoberta.
 
-### N-DEF-201 — cobre DEF-201, DEF-203, DEF-204, DEF-205, DEF-206, DEF-207, DEF-208, DEF-209, DEF-210, DEF-211
+### N-DEF-201 — cobre DEF-201, DEF-203…DEF-211 — **TICKET CRIADO: AOS-205** (`specs/EPIC-18` §8-bis)
 
 É **um só** ticket em falta, replicado por dez linhas em seis ficheiros. DEF-210 e DEF-211 têm
 eixo parcial (AOS-203 cobre a documentação e o kill-switch das variáveis de ambiente); a parte
@@ -493,7 +493,7 @@ o que ele **não** aceita é o estado anterior a esta discussão — `EPIC-06/09
 decisões reabertas). Esse ficheiro está **fora do âmbito de escrita de AOS-196** — a
 transcrição fica na pendência **P-6**.
 
-### N-DEF-401 — cobre DEF-401, DEF-402
+### N-DEF-401 — cobre DEF-401, DEF-402 — **TICKET CRIADO: AOS-206** (`specs/EPIC-18` §8-bis)
 
 É o achado **DEF-03**.
 
@@ -514,7 +514,7 @@ EPIC-18, com dependência de AOS-159 e AOS-096.
 `[x]` sem chamador de produção existir (corrigido por AOS-196). O ADR-012 apontava o
 endurecimento à EPIC-13 — Frontend.
 
-### N-DEF-501 — cobre DEF-501
+### N-DEF-501 — cobre DEF-501 — **TICKET CRIADO: AOS-207** (`specs/EPIC-18` §8-bis)
 
 É o achado **DEF-06**.
 

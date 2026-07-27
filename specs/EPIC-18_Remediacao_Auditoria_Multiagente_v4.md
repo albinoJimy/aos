@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-204** (15 tickets; AOS-204 acrescentado por AOS-192 — eixo residual de VAC-01) |
+| Intervalo de tickets | **AOS-190 … AOS-208** (19 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…208 acrescentados pelo registo de deferimentos** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor |
 
 ---
 
@@ -575,6 +575,135 @@ eixo válido **com um ticket real**).
       com o eixo actualizado — nunca VERDE sem o teste).
 - [x] Gates `layer-lint`/`rtm`/`ref-lint` verdes; testes com `-race`.
       *(Verificado pelo orquestrador sobre árvore estável, com os gates novos incluídos: `deferrals`, `integration`, `event-catalog`, `selftest`, `secrets` e `cmd/aos -race` — todos verdes.)*
+
+---
+
+## 8-bis. Tickets gerados pelo registo de deferimentos (AOS-205 … AOS-208)
+
+Estes quatro tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
+deferimentos apontavam sem executor. Nascem aqui porque foram o `docs/governance/REGISTO-Deferimentos.md`
+(AOS-196) e o AOS-195 que os identificaram; a **execução** pertence aos epics temáticos indicados.
+
+Enquanto não existiam, 19 linhas do registo diziam `POR ATRIBUIR` — o que é honesto, mas não é
+executável. Criá-los completa o objectivo §2 deste epic («pôr os deferimentos num registo único com
+eixo, dono e gatilho **falsificáveis**»): um eixo sem executor não é falsificável.
+
+**Não foi criado de propósito:** a cifra por-titular do substrato (família `3xx` do registo) **não**
+recebe ticket novo. A arbitragem `A-DEF-301` (2026-07-27) apontou-a ao **AOS-093 existente**, cujo
+primeiro CA diz «toda a PII persistida é cifrada com uma chave por titular» — sem restrição ao audit —
+e cujos Detalhes Técnicos já nomeiam o Event Store. Criar um ticket novo **duplicaria** AOS-093 e daria
+dois donos à mesma propriedade: *trocar um eixo errado por um eixo inflacionado é o mesmo defeito ao
+contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), não criar outro ticket.
+
+| ID | Título | Tipo | Est. | Prio | Epic de EXECUÇÃO | Origem |
+|---|---|---|---|---|---|---|
+| AOS-205 | Provisionamento do IdP de soberania: registo board→região e credencial forte do leitor/operador | feature | L | P1 | **EPIC-09** | nota `N-DEF-201` (10 linhas do registo) |
+| AOS-206 | Compor o *promotion controller* do nó com `NewProductionRatificationGate` | feature | M | P1 | **EPIC-14** | nota `N-DEF-401` (DEF-03) |
+| AOS-207 | Assinatura e atestação da imagem do nó (chave de release, in-toto/SLSA, verificação na entrega) | feature | M | P2 | **EPIC-05** | nota `N-DEF-501` (DEF-06) |
+| AOS-208 | Ligação substantiva do motor de redacção ao Event Store, memória, `otel-genai` e audit | feature | M | P1 | **EPIC-09** | pendência de AOS-195 |
+
+---
+
+### AOS-205 — Provisionamento do IdP de soberania
+
+**Origem:** nota `N-DEF-201` do registo — **um só** ticket em falta, replicado por dez linhas em seis
+ficheiros. O AOS-203 cobre a documentação e o kill-switch das variáveis; o **provisionamento** é este.
+
+**Porque não existia:** o eixo estava escrito como «EPIC-09/10». O EPIC-09 entrega a *regra* de
+soberania (AOS-094) e o EPIC-10 entrega topologia/DR (AOS-098…108) — nenhum dos onze tickets entrega
+**provisionamento de identidade regional**. A Carta §4.2 marca **D7 como CONDICIONAL** a esse
+provisionamento: a decisão estava registada, o ticket é que nunca existiu.
+
+**Critérios de aceitação**
+
+- [ ] O registo board→região deixa de ser lido de `AOS_BOARD_REGIONS` e passa a vir de uma fonte de
+      autoridade da organização, com **rotação** e **auditoria de alterações**.
+- [ ] Os headers `X-Aos-Reader`/`X-Aos-Board` deixam de ser **auto-declarados**: o leitor de governação
+      e o operador DSAR apresentam credencial forte (OIDC/mTLS) verificada contra esse IdP.
+- [ ] Em `AOS_MODE=production`, arrancar sem essa fonte **recusa** — hoje já recusa sem soberania
+      configurada, mas aceita a configuração *self-hosted* como se fosse autoridade.
+- [ ] **Falsificável:** um pedido com `X-Aos-Board` forjado (board válido, credencial ausente ou de
+      outro titular) é **recusado**; hoje passa.
+
+**Dependências:** AOS-094 (regra de soberania), AOS-174 (`HumanDirectory` OIDC), AOS-182.
+**Fecha no registo:** DEF-201, DEF-203…DEF-211.
+
+---
+
+### AOS-206 — Compor o *promotion controller* do nó com `NewProductionRatificationGate`
+
+**Origem:** nota `N-DEF-401` — é o achado **DEF-03**.
+
+**Porque não existia:** o AOS-159 entregou o mecanismo e o CA do *wiring* foi marcado `[x]` **sem
+chamador de produção existir** (desmarcado por AOS-196, `d33c0ff`). O ADR-012 apontava o endurecimento
+à **EPIC-13 — que é o epic de Frontend**.
+
+**Critérios de aceitação**
+
+- [ ] O nó `aos` compõe um *promotion controller* real. Facto de partida: procurar `promotion` ou
+      `Promote` em `packages/cmd/aos/*.go` (não-teste) devolve **zero** ocorrências.
+- [ ] Esse controller usa a via sancionada `hitl.NewProductionRatificationGate`, que **força**
+      `WithRatifyFreshness` + `WithRatifyNonceStore` e recusa a construção sem eles — **não**
+      `NewRatificationGate` cru.
+- [ ] **Falsificável:** um teste de ápice em que a mesma ratificação, re-submetida após consumo,
+      devolve `ReasonRatificationReplayed` **através do caminho do nó**, não do gate isolado.
+
+**Dependências:** AOS-159 (mecanismo), AOS-096.
+**Fecha no registo:** DEF-401, DEF-402.
+
+---
+
+### AOS-207 — Assinatura e atestação da imagem do nó
+
+**Origem:** nota `N-DEF-501` — é o achado **DEF-06**. Fecha o **ponto 3 do ADR-017**, que a própria
+§Consequências admitia entregar «na forma mínima (SBOM gerado, atestação por assinar)».
+
+**Porque não existia:** o eixo dizia «parte do endurecimento de EPIC-10». **Nenhum** dos onze tickets
+do EPIC-10 assina imagens (AOS-098 IaC, 099 workers, 100 replicação, 101 backup, 102 DR, 103 microVMs,
+104/105/106 dashboards/alertas/runbooks, 107 escala, 108 hipercare). O AOS-168 entregou o
+**empacotamento** e o AOS-187 ligou os gates `package`/`sbom` — nenhum assina.
+
+**Critérios de aceitação**
+
+- [ ] Custódia da chave de assinatura de release documentada (**quem** assina, **onde** vive a chave,
+      **como** se roda). O ADR-017 ponto 5 já exige custódia própria para a autoridade de identidade;
+      a imagem do nó não tem equivalente.
+- [ ] A atestação de proveniência passa de **gerada** a **assinada e verificável**, e a entrega
+      **recusa** uma imagem cuja assinatura não valide.
+- [ ] **Falsificável:** substituir o digest da imagem no manifesto de entrega faz o gate ficar
+      **vermelho**.
+
+**Dependências:** AOS-168 (empacotamento), AOS-187 (gates package/sbom).
+**Fecha no registo:** DEF-501.
+**Nota:** pode exigir dependência externa de assinatura — se exigir, aplica-se a disciplina da emenda
+1.3 da Carta (excepção escopada, fora do binário do nó).
+
+---
+
+### AOS-208 — Ligação substantiva do motor de redacção
+
+**Origem:** pendência do AOS-195 (`d355551`). **Não** consta do registo de deferimentos porque o
+defeito era um **over-claim no `doc.go`**, não um marcador `DEFERIDO` — e por isso escapou também ao
+gate `deferrals`.
+
+**Porque não existia:** o AOS-188 fechou o seu CA pela **porta de escape disjuntiva** («ou o `doc.go` é
+actualizado para reflectir o escopo real») e o texto substituto passou a afirmar cablagem inexistente.
+O AOS-195 corrigiu o texto; a **ligação** nunca teve ticket — procurar `redac` em `specs/` devolve
+apenas menções em EPIC-09 e EPIC-17, nenhuma com este âmbito.
+
+**Critérios de aceitação**
+
+- [ ] O motor entra no fecho transitivo de `packages/cmd/aos` e de `packages/integration` — hoje
+      `go list -deps ./...` mostra-o **ausente** em ambos (presente só em `aos-demo`, via
+      `approval-card`).
+- [ ] Está ligado ao Event Store, `platform/memory`, `substrate/otel-genai` e `platform/audit`, usando
+      o **mesmo `Ingestor` e a mesma política** — é a consistência que o `doc.go` já promete.
+- [ ] **Falsificável:** um run cujo objectivo contenha um padrão de PII produz, no Event Store e nos
+      spans exportados, o valor **redigido** — e o teste falha se o motor for desligado.
+- [ ] O `doc.go` é actualizado (a secção «Como verificar as afirmações acima» do AOS-195 mantém-se e
+      passa a confirmar a presença, não a ausência).
+
+**Dependências:** AOS-091 (motor), AOS-188.
 
 ---
 
