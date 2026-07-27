@@ -15,8 +15,10 @@ a violação), sobre os colaboradores REAIS (nunca stubs neutros).
 > ERRADA em quatro eixos deste checklist. Cada um foi re-verificado contra o código e tratado pelo que
 > é: **§13.1** (citação imprecisa — corrigida, com âncora nova para o PERMIT sobre a cadeia COMPLETA
 > do nó), **§13.3** (âncora VACUOSA — teste corrigido, prova negativa executada, eixo reaberto e
-> RE-MARCADO com evidência nova), **§13.6** (citação FALSA — corrigida e o eixo **REABERTO 🟡**, porque
-> o que falta é prova, não redacção), **§13.7** (implicação atribuída ao teste errado — citação
+> RE-MARCADO com evidência nova), **§13.6** (citação FALSA — corrigida e o eixo REABERTO 🟡 por
+> AOS-192, porque o que faltava era prova e não redacção; **fechado e RE-MARCADO VERDE por AOS-204 no
+> despacho DIRECTO**, com evidência nova e prova negativa em três variantes — uma delas partindo a
+> instrumentação de PRODUÇÃO — e com o residual da execução DURÁVEL nomeado, §6.0/§6.1/§6.3), **§13.7** (implicação atribuída ao teste errado — citação
 > corrigida; a propriedade está genuinamente provada, ao nível da plataforma). Quando a regra da
 > EPIC-15 §2 («estes eixos TÊM de estar VERDES») colide com a regra NÃO-VACUOSA, prevalece a segunda:
 > marcar VERDE sem prova é o defeito, não a solução.
@@ -255,43 +257,178 @@ porque **nunca tentou**»:
   em runtime; provada a esse nível. O NÓ enforça o bundle assinado que essa promoção produz — que é a
   parte "governa cada decisão" do critério, VERDE aqui.
 
-## 6. OBSERVABILIDADE — 🟡 REABERTO-COM-EIXO (eixo: ramo `execute_tool` na árvore exportada pelo nó; ticket **AOS-204**)
+## 6. OBSERVABILIDADE — VERDE **no despacho DIRECTO** (execução durável: residual NOMEADO, §6.3) — reaberto 🟡 por AOS-192, **re-marcado por AOS-204** com evidência nova
 
 > "Cada *run* produz uma árvore de *spans* OTel GenAI completa e um registo *audit* WORM
 > *tamper-evident*."
 
+### 6.0 O defeito que estava aqui, e a prova negativa do seu fecho
+
 **Reaberto por AOS-192** (achado VAC-01, terceira citação errada). O que estava escrito — que
 `TestObservabilityEndToEndExportsWellFormedOTLPWithCost` exporta «invoke_agent/chat[+custo]/
-**execute_tool**/freeze» — é **FALSO** quanto a `execute_tool`: esse teste usa `tnBaseConfig()`, cujo
-`Config.Model` é nil, pelo que o `Bootstrap` injecta o `referenceModel` (`bootstrap.go:830-837`), que
-devolve `Final: true` **sem nenhuma tool call**. O run não tem ramo de tool, o teste não assere
+**execute_tool**/freeze» — era **FALSO** quanto a `execute_tool`: esse teste usa `tnBaseConfig()`, cujo
+`Config.Model` é nil, pelo que o `Bootstrap` injecta o `referenceModel` (`bootstrap.go`), que devolve
+`Final: true` **sem nenhuma tool call**. O run não tinha ramo de tool, o teste não asseria
 `execute_tool` (só `invoke_agent`, `registry.freeze_toolset` e `chat`) e a palavra «completa» do
-critério ficava por provar ao nível do nó. Marcar isto VERDE era exactamente o defeito que AOS-192
-corrige.
+critério ficava por provar ao nível do nó.
 
-- **PROVADO (permanece VERDE):** exportação OTLP/HTTP bem-formada de `invoke_agent`,
-  `registry.freeze_toolset` e `chat` com `gen_ai.*`/`aos.*` e **custo** (micro-USD + USD), sem
-  segredos, com estatísticas de exportação sem falhas/drops — `packages/cmd/aos/observability_test.go`
-  → `TestObservabilityEndToEndExportsWellFormedOTLPWithCost` (AOS-173).
-- **PROVADO ao nível de COMPONENTE (não do nó):** uma tool call produz **exactamente um** span
-  `execute_tool`, aberto SÓ pelo Reference Monitor (a autoridade do span), filho do `aos.activity` do
-  dispatcher durável — `packages/kernel/agent-runtime/activity/dispatch_test.go` (bloco `:553-…`); o RM
-  anota-lhe o veredicto (`monitor.go:203`). A hierarquia `invoke_agent → execute_tool → chat` é
-  reconstruída e verificada em `packages/control-plane/governance/trajectory-surface/trajectory_surface_test.go`.
-- **EIXO REABERTO (por provar) — dono: AOS-204** (`specs/EPIC-18_Remediacao_Auditoria_Multiagente_v4.md`
-  §7): **nenhum** teste exporta por OTLP, a partir do NÓ real, a árvore de um run **que contenha uma
-  tool call** — logo o ramo `execute_tool` da árvore do nó não está observado ponta-a-ponta. Fecho
-  natural (escopo de AOS-204): dar ao teste de observabilidade um modelo que emite tool call (o span
-  nasce mesmo sob veredicto de negação) e asserir o `execute_tool` exportado. Fora do âmbito de
-  AOS-192 (P0/S), que corrige a citação e nomeia o eixo — com **ticket real**, como exige o CA de
-  AOS-196 («todo o deferimento tem eixo válido … com um ticket real») — em vez de o manter verde
-  sem prova.
-- **WORM tamper-evident + ligação trajectória↔hash-chain:** mesmo ficheiro
-  → `TestAuditTracingStoreEmitsSealSpanLinkingWORM`, `TestAuditSealFlowsToOTLPCollector`. O WORM é a
-  hash-chain tamper-evident única partilhada pelo RM e pelo egress (AOS-154); durável (FileStore,
-  AOS-170).
+**AOS-204 fecha o eixo** acrescentando a `packages/cmd/aos/observability_test.go` o teste
+`TestAOS204_ObservabilityExportsExecuteToolBranchInSameTrace` (dois sub-testes: caminho PERMITIDO e
+caminho NEGADO). **Zero alterações a código de produção ENTREGUES** — o permit é obtido só por
+composição, pelas portas de `Config` que já existiam. (A variante (C) da prova negativa, abaixo, parte
+deliberadamente a produção para demonstrar o acoplamento e é revertida no acto; nada dela é entregue.)
+
+**PROVA NEGATIVA executada — TRÊS variantes, todas revertidas** (árvore de trabalho conferida no fim:
+`md5sum` de cada ficheiro tocado idêntico ao original, zero ocorrências do marcador temporário,
+`git diff --numstat` de volta a `377 0` só em `observability_test.go`). As duas primeiras partem o
+TESTE; a **terceira parte a INSTRUMENTAÇÃO DE PRODUÇÃO**, e é essa que demonstra que a asserção está
+**acoplada ao nó** e não é auto-referencial.
+
+> **Âncora da evidência.** Cita-se o NOME do sub-teste e o TEXTO da mensagem de falha — estáveis e
+> pesquisáveis. Os números de linha das variantes (A) e (B) são **deliberadamente omitidos**: dependem
+> da FORMA da edição temporária e não se reproduzem a partir do ficheiro committado (execuções
+> independentes da mesma variante (B) deram `:798`, `:803` e `:808` para a MESMA asserção). Comando
+> em todas as variantes: `go test ./ -race -count=1 -run TestAOS204 -v` em `packages/cmd/aos`.
+
+- **(A) [TESTE] o ramo deixa de ser exportado** — filtrando os spans `execute_tool` do documento OTLP
+  recebido pelo colector, mantendo tudo o resto idêntico. `caminho PERMITIDO` fica **VERMELHO**:
+
+  ```
+  faltou o ramo "execute_tool" na arvore EXPORTADA PELO NO — §13.6 exige a arvore COMPLETA;
+  nomes vistos: [registry.freeze_toolset chat audit_seal chat invoke_agent]
+  ```
+
+- **(B) [TESTE] o defeito ORIGINAL de AOS-192 reconstituído** — trocando o modelo que emite tool call
+  pelo `referenceModel{}` (o que nunca emite) e neutralizando os portões anti-vacuidade, para o teste
+  ALCANÇAR a asserção do ramo em vez de morrer antes dela. `caminho PERMITIDO` fica **VERMELHO**:
+
+  ```
+  faltou o ramo "execute_tool" na arvore EXPORTADA PELO NO — §13.6 exige a arvore COMPLETA;
+  nomes vistos: [registry.freeze_toolset chat invoke_agent]
+  ```
+
+  A lista `[registry.freeze_toolset chat invoke_agent]` é **exactamente** o conjunto que a evidência
+  antiga citava como se incluísse `execute_tool`. A variante (B) reproduz o falso-verde e o teste
+  novo pinta-o de vermelho.
+
+- **(C) [PRODUÇÃO] a instrumentação REAL é partida** — a variante que fecha o argumento «a asserção
+  está ligada ao nó, não a si própria». Duas sub-variantes, aplicadas a código de produção **fora do
+  âmbito de escrita deste ticket**, executadas e imediatamente revertidas (`md5sum` de `loop.go` e de
+  `monitor.go` conferido contra a cópia original; `git diff` vazio nos dois):
+
+  - **(C1) o RM deixa de receber o tracer do RT** — neutralizando `rt.rm.SetTracer(rt.tracer)` em
+    `kernel/agent-runtime/loop.go` (o wiring AOS-076). O RM cai no `NoopTracer` default e o span
+    deixa de nascer. **Os DOIS sub-testes ficam VERMELHOS:**
+
+    ```
+    caminho PERMITIDO: faltou o ramo "execute_tool" na arvore EXPORTADA PELO NO — §13.6 exige a
+                       arvore COMPLETA; nomes vistos:
+                       [registry.freeze_toolset chat audit_seal chat invoke_agent]
+    caminho NEGADO:    faltou o ramo "execute_tool" de uma tool call NEGADA — a negacao tem de ser
+                       observavel na arvore; nomes: [registry.freeze_toolset chat audit_seal chat invoke_agent]
+    ```
+
+  - **(C2) o span nasce FORA da árvore** — trocando `m.tracer.StartSpan(ctx, …)` por
+    `StartSpan(context.Background(), …)` em `kernel/reference-monitor/monitor.go`. O span
+    `execute_tool` **existe, com o nome certo e os atributos certos**, mas noutro trace. Os dois
+    sub-testes ficam **VERMELHOS na asserção de TOPOLOGIA**:
+
+    ```
+    span "execute_tool" num TRACE DIFERENTE de "invoke_agent":
+    "0b084384f8a2ff0800fdd8abb6c42960" != "373284064238a2e3d9329a780422357d" — a arvore esta partida
+    ```
+
+    Ou seja: a asserção de topologia de §6.1 (o ponto «mesmo `traceId` + `parentSpanId ==
+    invoke_agent.spanId`», implementada em `obsAssertChildOf`) **não é decorativa**. Sem ela, um nó que exportasse
+    o ramo DESLIGADO da árvore passaria — e uma árvore desligada não é uma árvore.
+
+**A observação que sustenta a decisão de AOS-192 de reabrir o eixo.** Sob **ambas** as sub-variantes
+de produção — com o ramo AUSENTE (C1) e com o ramo DESPARENTEADO (C2) — os testes de observabilidade
+**PREEXISTENTES ao nível do nó** (`TestObservabilityEndToEndExportsWellFormedOTLPWithCost`,
+`TestAuditTracingStoreEmitsSealSpanLinkingWORM`, `TestAuditSealFlowsToOTLPCollector`) continuaram
+**todos a PASSAR**. A bateria antiga era cega não só à AUSÊNCIA do ramo (que é o que a variante (B)
+reconstitui) como à sua DESLIGAÇÃO da árvore: nenhum sinal de regressão viria dela. É a justificação
+directa para o eixo ter sido reaberto — e para a asserção de topologia, e não só a de presença, ter
+sido necessária.
+
+### 6.1 Evidência NOVA (AOS-204) — a árvore COMPLETA exportada pelo NÓ
+
+`packages/cmd/aos/observability_test.go` → `TestAOS204_ObservabilityExportsExecuteToolBranchInSameTrace`:
+
+- **Caminho PERMITIDO (a prova forte).** O nó é composto por `Bootstrap` com a observabilidade ligada
+  a um colector `httptest` **e** com a cadeia no estado em que uma tool call legítima é PERMITIDA
+  ponta-a-ponta: bundle Cedar **assinado** committado (`pdp.Open("../../control-plane/pdp/policies")`),
+  entry `counter` **assinada** + trust store que confia no publicador (o hook de revalidação AOS-051
+  corre a sério), `authz.AuthoritySource` para o ScopeGate e um token NHI mintado pela autoridade do
+  **próprio nó** (`node.Authority.MintForHuman`) — o mesmo precedente de
+  `TestNode_DurableExecution_NoDoubleExecAfterRestart`. Um modelo que EMITE a tool call corre pela
+  cadeia REAL de 7 hooks; a tool **executa** (`execs == 1`, `permits >= 1`, `denials == 0`).
+  Do documento OTLP recebido assere-se a **topologia**, não só a presença de nomes:
+  - exactamente **um** `invoke_agent`, e ele é a **raiz** (`parentSpanId` vazio);
+  - cada `chat` e cada `execute_tool` partilham o **mesmo `traceId`** do `invoke_agent` e têm
+    `parentSpanId == invoke_agent.spanId` (o `execute_tool` é aberto pelo RM com o ctx do
+    `invoke_agent` — `kernel/agent-runtime/loop.go`, `reference-monitor/monitor.go`);
+  - existe um `execute_tool` com `aos.decision = "permit"`, `gen_ai.tool.name = "counter"`,
+    `aos.principal.nhi`, `aos.tool.call_hash` e `aos.run_id` — o veredicto do efeito é observável;
+  - **a segunda metade do critério, na MESMA árvore:** o selo WORM da mediação (`audit_seal`) é
+    exportado como **filho do `execute_tool` permitido**, no mesmo trace, com o
+    `aos.audit.entry_hash` (a âncora *tamper-evident* da hash-chain) e `aos.decision = allow`.
+    A trajectória e o registo WORM ficam ligados por `parent_span_id`, não só por correlação de ids;
+  - **sem segredos**: nem nos atributos nem no corpo OTLP bruto POSTado.
+- **Caminho NEGADO (cobertura dos dois sentidos).** O chain **default** do nó (PDP `NewUnloaded`,
+  deny fail-closed) com o mesmo modelo-que-emite: o ramo `execute_tool` **sai na mesma**, filho do
+  `invoke_agent` e no mesmo trace, com `aos.decision = "deny"` e `aos.denied_by` preenchido — uma
+  negação não é um buraco na trajectória.
+
+**Porque o caminho PERMITIDO era necessário (justificação da decisão de âmbito).** O span
+`execute_tool` é aberto em `Monitor.Mediate` **antes** da avaliação da cadeia e fechado por `defer` em
+todos os caminhos, pelo que uma tool call negada já o exportava. Isso prova a **mediação** (§13.1),
+mas não a árvore **completa** de §13.6: numa negação nada é despachado, o veredicto é `deny` e o selo
+WORM aninhado é o de uma NÃO-execução. Um nó que exportasse bem a árvore dos runs que não fazem nada
+e a partisse nos runs que produzem efeitos passaria num teste só-negativo. Por isso a âncora deste
+eixo é o caminho **permitido** — onde a tool executa, o veredicto é `permit` e o selo WORM da
+execução real fica dentro da árvore — e o negado é o complemento, não o substituto.
+
+### 6.2 Evidência que já existia (permanece VERDE)
+
+- **Exportação OTLP/HTTP bem-formada** de `invoke_agent`, `registry.freeze_toolset` e `chat` com
+  `gen_ai.*`/`aos.*` e **custo** (micro-USD + USD), sem segredos, com estatísticas de exportação sem
+  falhas/drops — `TestObservabilityEndToEndExportsWellFormedOTLPWithCost` (AOS-173).
+- **Ao nível de COMPONENTE:** uma tool call produz **exactamente um** span `execute_tool`, aberto SÓ
+  pelo Reference Monitor (a autoridade do span), filho do `aos.activity` do dispatcher durável —
+  `packages/kernel/agent-runtime/activity/dispatch_test.go`; o RM anota-lhe o veredicto
+  (`monitor.go`). A hierarquia é também reconstruída em
+  `packages/control-plane/governance/trajectory-surface/trajectory_surface_test.go`.
+- **WORM tamper-evident + ligação trajectória↔hash-chain:** `TestAuditTracingStoreEmitsSealSpanLinkingWORM`,
+  `TestAuditSealFlowsToOTLPCollector`. O WORM é a hash-chain tamper-evident única partilhada pelo RM e
+  pelo egress (AOS-154); durável (FileStore, AOS-170).
 - **Gating fail-open/fail-closed:** `TestObservabilityFailOpenOnCollectorError`,
   `TestObservabilityMalformedEndpointFailsClosed`.
+
+### 6.3 Residual NOMEADO (não bloqueia o critério, mas não é escondido)
+
+O `execute_tool` provado ponta-a-ponta pelo nó é o do despacho **directo** (`ActivityDispatcher`
+default, `AOS_DURABLE_EXECUTION` desligado). Com a execução durável ligada interpõe-se o
+`activity.Dispatcher`, que ao nível de COMPONENTE abre um span `aos.activity`
+(`kernel/agent-runtime/activity/dispatch.go`, `OpActivity`) entre o `invoke_agent` e o `execute_tool`,
+anotado com dedup/replay/custo do efeito real.
+
+**Achado de leitura de código (não corrigido aqui — exige mudança de PRODUÇÃO, fora do âmbito de
+AOS-204):** `integration/secured.go` compõe esse dispatcher com `activity.NewDispatcher(rm, cfg.Ledger)`
+**sem lhe passar tracer**, e o default de `activity.Dispatcher` é `NoopTracer` — pelo que, no nó com
+execução durável, o span `aos.activity` **não é exportado**. O ramo `execute_tool` em si continua a
+sair (o RM recebe o tracer do RT via `rt.rm.SetTracer`, e é o RM a autoridade desse span), pelo que
+§13.6 não é reaberto por isto; o que falta é a **camada de dedup durável** na árvore. Fica **nomeado**
+como pendência de produção, e a configuração durável **não** foi re-verificada a partir do nó neste
+ticket.
+
+Note-se o que isto significa para a força da afirmação: nesta configuração, a de que o ramo
+`execute_tool` sai na mesma é sustentada por **leitura de código**, não por teste ponta-a-ponta. Por
+isso o VERDE de §13.6 é declarado **no despacho DIRECTO** (cabeçalho de §6, linha 6 da tabela-resumo e
+conclusão), e não sem qualificador. A pendência exige decisão sobre código de PRODUÇÃO —
+`activity.NewDispatcher(rm, cfg.Ledger)` passar a receber o tracer, ou o default deixar de ser
+`NoopTracer` — e **não tem dono atribuído**: tem de ser entregue a quem detém `packages/integration`,
+sob pena de reproduzir a deriva «residual nomeado que nunca é encaminhado».
 
 ## 7. CONFORMIDADE — VERDE
 
@@ -333,12 +470,27 @@ corrige.
 | 3 | Durabilidade | **VERDE** (reaberto 🟡 por VAC-01, **re-marcado por AOS-192** com evidência nova) | dedup de TOOL CALL pelo ledger no NÓ: `TestNode_DurableExecution_NoDoubleExecAfterRestart` (corrigido; prova negativa executada, §3.0); substrato/WAL + fencing de lease: `TestServiceShutdownDurable_NoLossNoDupNoDoubleExecAfterRestart` (**não prova dedup de tool call**); componente: `durable/step_ledger_test.go` (5 testes); ambiente: `TestAOS169_DurableSubstrateWiredFromEnv` + AOS-191; `aos169-durability-harness.sh` (harness docker não re-executado — eixo ambiente) |
 | 4 | Isolamento | **VERDE** | `TestApexEnforcement_FiveDenials` (egress); nó compõe `EgressHook` real (bootstrap.go §7); EPIC-07 |
 | 5 | Governação | **VERDE** | bundle assinado enforçado em `TestAOS169_Mediation_*`; `TestNodeComposesFourEyesGate`; promoção via `scripts/ci/evalgate.sh` |
-| 6 | Observabilidade | 🟡 **REABERTO-COM-EIXO** (AOS-192; eixo: ramo `execute_tool` na árvore exportada pelo nó; **dono: AOS-204**) | PROVADO: `TestObservabilityEndToEndExportsWellFormedOTLPWithCost` (invoke_agent/chat+custo/freeze), `TestAuditTracingStoreEmitsSealSpanLinkingWORM`; `execute_tool` só ao nível de COMPONENTE (`activity/dispatch_test.go`) — o run do teste do nó **não emite tool call** |
+| 6 | Observabilidade | **VERDE no despacho DIRECTO** — execução durável com residual NOMEADO (§6.3); reaberto 🟡 por AOS-192, **re-marcado por AOS-204** com evidência nova | árvore COMPLETA exportada PELO NÓ, com topologia (`traceId` partilhado + `parentSpanId`) e o selo WORM `audit_seal` como FILHO do `execute_tool` permitido: `TestAOS204_ObservabilityExportsExecuteToolBranchInSameTrace` (permitido **e** negado; prova negativa executada em duas variantes, §6.0); base: `TestObservabilityEndToEndExportsWellFormedOTLPWithCost` (custo), `TestAuditTracingStoreEmitsSealSpanLinkingWORM`, `TestAuditSealFlowsToOTLPCollector`. **Limite de âmbito:** o provado é o despacho DIRECTO; com `AOS_DURABLE_EXECUTION` ligado o span `aos.activity` **não é exportado** (`secured.go` compõe o dispatcher sem tracer) e essa configuração **não** foi re-verificada a partir do nó — residual NOMEADO em §6.3, exige mudança de PRODUÇÃO |
 | 7 | Conformidade | **VERDE** (citação corrigida, AOS-192) | propriedade: `TestCryptoShreddingRemovesPIIKeepsChain` (`platform/audit`, PII cifrada ⇒ `ErrShredded` ⇒ cadeia íntegra); fluxo no nó: `TestDSARErasesAndSeals`, `TestDSARBlockedByLegalHold`, `TestDSARIdempotent` (a KEK do nó **nunca cifrou nada** — ver §7) |
 
-**Cinco de sete critérios VERDES com evidência real; um deferimento (IDENTIDADE §13.2, eixo
-D4/org-provisioning, modo self-hosted Nível 2 declarado) e um eixo REABERTO (OBSERVABILIDADE §13.6,
-ramo `execute_tool` na árvore exportada pelo nó, dono AOS-204).** DURABILIDADE §13.3 foi reaberta por VAC-01 e está
-**re-marcada VERDE** com a evidência NOVA de AOS-192 (§3.1), acompanhada da prova negativa (§3.0). A
-regra continua a ser a da EPIC-15 §2 — mas prevalece a regra NÃO-VACUOSA da Carta §2.1: um eixo sem
-prova sólida fica AMARELO com o eixo NOMEADO em vez de VERDE por inércia.
+**Seis de sete critérios VERDES com evidência real; um único deferimento (IDENTIDADE §13.2, eixo
+D4/org-provisioning, modo self-hosted Nível 2 declarado).** DOIS eixos foram reabertos pela auditoria
+v4 e AMBOS estão hoje **re-marcados VERDES com evidência NOVA e prova negativa executada**:
+DURABILIDADE §13.3 (reaberta por VAC-01, fechada por AOS-192 — §3.0/§3.1) e OBSERVABILIDADE §13.6
+(reaberta por AOS-192, fechada por **AOS-204** — §6.0/§6.1: o ramo `execute_tool` passa a ser
+exportado e asserido a partir do NÓ, com a topologia da árvore e o selo WORM ligado por
+`parent_span_id`).
+
+**Com uma reserva de âmbito explícita, que o VERDE de §13.6 carrega e não esconde:** o provado é a
+configuração de despacho **DIRECTO**. Com `AOS_DURABLE_EXECUTION` ligado — uma configuração REAL e
+seleccionável pelo operador — a árvore exportada está **comprovadamente incompleta numa camada**
+(o span `aos.activity` do dispatcher durável não sai, porque `integration/secured.go` compõe o
+dispatcher sem tracer), e essa configuração **não foi re-verificada a partir do nó** neste ticket.
+O ramo `execute_tool` em si continua a sair nesse modo — mas isso é sustentado por **leitura de
+código** (`loop.go`, `rt.rm.SetTracer`), não por teste ponta-a-ponta. Fica NOMEADO em §6.3 como
+pendência de PRODUÇÃO, com dono por atribuir.
+
+Nenhum eixo fica AMARELO. A regra continua a ser a da EPIC-15 §2 — e continua subordinada à regra
+NÃO-VACUOSA da Carta §2.1: cada re-marcação acima traz a prova negativa que a sustenta (para §13.6,
+incluindo a variante que parte a INSTRUMENTAÇÃO DE PRODUÇÃO, §6.0 (C)), e o limite de âmbito é
+declarado no sumário e não só no detalhe.

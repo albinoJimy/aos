@@ -19,12 +19,20 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	pdp "github.com/aos-ref/control-plane/pdp"
+	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/authz"
 	audit "github.com/aos-ref/platform/audit"
+	identity "github.com/aos-ref/platform/identity"
+	"github.com/aos-ref/platform/registry/domain"
+	"github.com/aos-ref/platform/registry/revalidation"
+	"github.com/aos-ref/platform/registry/signing"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -605,7 +613,376 @@ func TestOTLPExporterShutdownStatsReconcile(t *testing.T) {
 	}
 }
 
+// =====================================================================================
+// AOS-204 (EPIC-18) — o RAMO execute_tool NA ÁRVORE EXPORTADA PELO NÓ
+// =====================================================================================
+//
+// # O defeito que este bloco fecha (reaberto por AOS-192)
+//
+// §13.6 do System Spec exige que "cada run produz uma árvore de spans OTel GenAI
+// COMPLETA e um registo audit WORM tamper-evident". A evidência anterior de AOS-169 era
+// VACUOSA quanto à COMPLETUDE: o único teste de observabilidade AO NÍVEL DO NÓ
+// ([TestObservabilityEndToEndExportsWellFormedOTLPWithCost]) corre com o
+// [referenceModel], que NUNCA EMITE UMA TOOL CALL. Logo o ramo execute_tool da árvore
+// jamais era exportado a partir do nó: estava provado só ao nível de COMPONENTE
+// (kernel/agent-runtime/loop_test.go e activity/dispatch_test.go, com RecordingTracer).
+// Uma árvore sem o ramo dos EFEITOS não é "completa" em nenhum sentido operacional — é
+// precisamente o ramo que um auditor precisa de ver.
+//
+// # Porque o caminho PERMITIDO (e não só o NEGADO)
+//
+// O span execute_tool é aberto em [referencemonitor.Monitor.Mediate], ANTES da avaliação
+// da cadeia, e fechado por defer em TODOS os caminhos — portanto uma tool call NEGADA já
+// exporta um span execute_tool. Isso prova a MEDIAÇÃO (§13.1), mas NÃO prova a árvore
+// COMPLETA de §13.6: numa negação nada é despachado, o veredicto é deny e o selo WORM que
+// se aninha no span é o de uma NÃO-execução. Um nó que exportasse correctamente a árvore
+// dos runs que não fazem nada e a partisse nos runs que fazem efeitos passaria num teste
+// só-negativo. A prova FORTE é portanto o caminho PERMITIDO: a tool EXECUTA, o span
+// execute_tool sai com decision=permit, e o selo WORM da mediação (audit_seal, com o
+// entry_hash da hash-chain tamper-evident) é EXPORTADO COMO FILHO desse span, no MESMO
+// trace — que é literalmente as duas metades do critério §13.6 numa só árvore.
+// O caminho NEGADO fica provado no sub-teste seguinte (o ramo é exportado na mesma, com
+// decision=deny e denied_by), para a cobertura ser dos DOIS sentidos.
+//
+// # Como se obtém o permit a partir do NÓ sem tocar em código de produção
+//
+// Segue-se o precedente já committado de [TestNode_DurableExecution_NoDoubleExecAfterRestart]
+// (bootstrap_durable_execution_test.go): o nó é composto por [Bootstrap] com o bundle
+// Cedar ASSINADO committado ([pdp.Open] sobre control-plane/pdp/policies), um catálogo com
+// uma entry assinada + trust store que confia no publicador, a AuthoritySource do ScopeGate
+// e um token NHI mintado pela autoridade do PRÓPRIO nó. Nenhuma dessas portas é nova: são
+// campos de [Config] que já existiam. Zero alterações a produção.
+
+// obsPermitNode compõe o NÓ com a observabilidade OTLP ligada a endpoint E a cadeia de
+// produção no estado em que uma tool call LEGÍTIMA é PERMITIDA ponta-a-ponta (identity →
+// revalidation → policy → taint → scope → budget → egress). Devolve o nó e a credencial
+// (token NHI) a propagar no goal. O nó é fechado pelo chamador (o Close drena o exporter).
+func obsPermitNode(t *testing.T, endpoint string, model agentruntime.ModelClient) (*Node, string) {
+	t.Helper()
+	ctx := context.Background()
+
+	// (supply-chain REAL, AOS-051) entry assinada + trust store que confia no publicador —
+	// sem isto o hook de revalidação nega ANTES de o PDP sequer ser consultado.
+	signer := durSigner(t)
+	entry := counterEntry(t, signer)
+	auditStore := audit.NewMemStore()
+	trust, err := signing.NewTrustStore(auditStore)
+	if err != nil {
+		t.Fatalf("trust store: %v", err)
+	}
+	if err := trust.Add(ctx, signer.KeyID(), signer.PublicKey()); err != nil {
+		t.Fatalf("trust add: %v", err)
+	}
+	revalidator, err := revalidation.New(trust, auditStore)
+	if err != nil {
+		t.Fatalf("revalidator: %v", err)
+	}
+
+	cfg := obsConfig(endpoint) // OTLPEndpoint ligado ⇒ tracer REAL → exporter OTLP/HTTP
+	cfg.Model = model
+	cfg.Catalog = catalogStub{entries: []domain.Entry{entry}}
+	cfg.Revalidator = revalidator
+	cfg.IssuerClasses = map[string]identity.ClassPolicy{
+		durClass: {TTL: 15 * time.Minute, Scope: []string{durCap}},
+	}
+	cfg.Policy = integration.StaticPolicy{MaxEgress: domain.EgressInternal}
+	// (política REAL) o MESMO bundle Cedar assinado committado que acceptance_mediation_test.go
+	// usa — verificado contra o trust anchor no Open.
+	cfg.PDP, err = pdp.Open(pdpPoliciesDir)
+	if err != nil {
+		t.Fatalf("pdp.Open(%q) — bundle assinado committado: %v", pdpPoliciesDir, err)
+	}
+	cfg.Authority = authz.NewStaticAuthoritySource().
+		Set("human:"+tnHuman, durCap).
+		Set(durAgent, durCap).
+		Set("agent:"+durClass, durCap)
+
+	node, err := Bootstrap(ctx, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("Bootstrap (no com observabilidade + cadeia de permit): %v", err)
+	}
+	if node.otlp == nil {
+		t.Fatal("esperava um exporter OTLP aberto pelo no (observabilidade ligada)")
+	}
+	tok, err := node.Authority.MintForHuman(ctx, tnHuman, durAgent, durClass, []string{durCap})
+	if err != nil {
+		_ = node.Close()
+		t.Fatalf("MintForHuman: %v", err)
+	}
+	return node, tok.Compact
+}
+
+// TestAOS204_ObservabilityExportsExecuteToolBranchInSameTrace é a prova de §13.6 que
+// faltava: a partir do NÓ REAL, um run cujo modelo EMITE uma tool call exporta pelo
+// exporter OTLP/HTTP uma árvore que CONTÉM o ramo execute_tool ligado ao MESMO trace do
+// invoke_agent/chat, com a topologia verificada (trace_id partilhado + parent_span_id
+// correcto) e com o selo WORM tamper-evident aninhado nesse ramo.
+//
+// NÃO-VACUOSO por construção:
+//
+//   - o teste ASSERE que o modelo EMITIU a tool call e (no caminho permitido) que a tool
+//     EXECUTOU — sem isso, "não vi execute_tool" seria indistinguível de "nunca houve
+//     tool call", que é exactamente o defeito de VAC que AOS-192 apanhou;
+//   - a asserção é sobre o CORPO OTLP recebido por um colector httptest, não sobre um
+//     tracer de memória: se o ramo deixar de ser exportado PELO NÓ, o teste fica VERMELHO
+//     (prova negativa registada em docs/reports/AOS-169-aceitacao-sistemica.md §13.6).
+func TestAOS204_ObservabilityExportsExecuteToolBranchInSameTrace(t *testing.T) {
+	t.Run("caminho PERMITIDO — a tool executa e o ramo sai na arvore", func(t *testing.T) {
+		col := &otlpCollector{}
+		srv := httptest.NewServer(col)
+		defer srv.Close()
+
+		model := &toolEmittingModel{inv: agentruntime.ToolInvocation{
+			ToolID:     "counter", // a entry ASSINADA do catálogo (counterEntry)
+			Capability: durCap,    // cap:fs.read — permitida pelo bundle Cedar assinado
+			Input:      []byte("tick"),
+		}}
+		node, credential := obsPermitNode(t, srv.URL, model)
+
+		var execs int64
+		if err := node.Runtime.Register("counter", func(_ context.Context, _ []byte) ([]byte, error) {
+			atomic.AddInt64(&execs, 1)
+			return []byte("pong"), nil
+		}); err != nil {
+			t.Fatalf("Register(counter): %v", err)
+		}
+
+		res, _, err := node.Runtime.Run(context.Background(), agentruntime.Goal{
+			RunID:      "run-obs-tool-permit",
+			Principal:  referencemonitor.Principal{NHIID: durAgent},
+			Credential: credential,
+			Model:      agentruntime.ModelConfig{ModelID: "model:test-obs"},
+			System:     obsSecretSystem,
+			Objective:  obsSecretObjective,
+			MaxTurns:   4,
+		}, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !res.Terminated {
+			t.Fatalf("o run devia ter concluido, veio %+v", res)
+		}
+
+		// (i) ANTI-VACUIDADE: houve mesmo uma tool call, e ela EXECUTOU sob permit.
+		if model.turns < 2 {
+			t.Fatalf("o modelo devia ter EMITIDO a tool call (turno 1) e concluido (turno 2); turnos=%d — sem tool call emitida a prova do ramo seria VACUOSA", model.turns)
+		}
+		if got := atomic.LoadInt64(&execs); got != 1 {
+			t.Fatalf("a tool devia ter EXECUTADO exactamente 1 vez sob permit, correu %d — sem execucao o ramo execute_tool provaria so mediacao, nao a arvore completa", got)
+		}
+		permits, denials, _ := node.Runtime.Monitor().Metrics().Snapshot()
+		if permits < 1 || denials != 0 {
+			t.Fatalf("esperava a call PERMITIDA pela cadeia real (permits=%d, denials=%d)", permits, denials)
+		}
+
+		// Close drena o exporter SINCRONAMENTE: ao retornar, tudo o que foi enfileirado
+		// já foi POSTado ao colector.
+		if err := node.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		spans := col.spans(t)
+		if len(spans) == 0 {
+			t.Fatal("nenhum span exportado — a observabilidade nao fluiu ponta-a-ponta")
+		}
+
+		// (ii) A ÁRVORE: invoke_agent (raiz do run) + chat (>=1) + execute_tool (>=1).
+		agents := obsSpansNamed(spans, otelgenai.OpInvokeAgent)
+		if len(agents) != 1 {
+			t.Fatalf("esperava exactamente 1 span %q exportado, vieram %d; nomes vistos: %v", otelgenai.OpInvokeAgent, len(agents), names(spans))
+		}
+		root := agents[0]
+		if root.ParentSpanID != "" {
+			t.Errorf("o span %q devia ser a RAIZ do trace (sem parentSpanId), tem %q", otelgenai.OpInvokeAgent, root.ParentSpanID)
+		}
+		chats := obsSpansNamed(spans, otelgenai.OpChat)
+		if len(chats) == 0 {
+			t.Fatalf("faltou o span %q; nomes vistos: %v", otelgenai.OpChat, names(spans))
+		}
+		tools := obsSpansNamed(spans, otelgenai.OpExecuteTool)
+		if len(tools) == 0 {
+			// ESTE é o assert que o defeito de AOS-192 nomeou: o ramo dos EFEITOS.
+			t.Fatalf("faltou o ramo %q na arvore EXPORTADA PELO NO — §13.6 exige a arvore COMPLETA; nomes vistos: %v", otelgenai.OpExecuteTool, names(spans))
+		}
+
+		// (iii) TOPOLOGIA: trace_id partilhado e parent_span_id correcto. O execute_tool é
+		// aberto no RM com o ctx do invoke_agent (ver kernel/agent-runtime/loop.go), logo é
+		// IRMÃO do chat e FILHO do invoke_agent.
+		for _, c := range chats {
+			obsAssertChildOf(t, c, root)
+		}
+		var permitTool *otlpSpanWire
+		for i := range tools {
+			obsAssertChildOf(t, tools[i], root)
+			if v, ok := tools[i].attr(otelgenai.AttrDecision); ok && v == string(referencemonitor.EffectPermit) {
+				permitTool = &tools[i]
+			}
+		}
+		if permitTool == nil {
+			t.Fatalf("nenhum span %q exportado com decision=%q — a tool executou, logo o veredicto TEM de ser observavel na arvore", otelgenai.OpExecuteTool, referencemonitor.EffectPermit)
+		}
+		if v, ok := permitTool.attr(otelgenai.AttrToolName); !ok || v != "counter" {
+			t.Errorf("execute_tool.%s = %q (ok=%v), esperava \"counter\"", otelgenai.AttrToolName, v, ok)
+		}
+		if v, ok := permitTool.attr(otelgenai.AttrPrincipalNHI); !ok || v != durAgent {
+			t.Errorf("execute_tool.%s = %q (ok=%v), esperava %q", otelgenai.AttrPrincipalNHI, v, ok, durAgent)
+		}
+		if v, ok := permitTool.attr(otelgenai.AttrToolCallHash); !ok || v == "" {
+			t.Errorf("execute_tool.%s ausente/vazio — a ancora hash(tool+args) e o que substitui o payload no span", otelgenai.AttrToolCallHash)
+		}
+		if v, ok := permitTool.attr(otelgenai.AttrRunID); !ok || v != "run-obs-tool-permit" {
+			t.Errorf("execute_tool.%s = %q (ok=%v), esperava run-obs-tool-permit", otelgenai.AttrRunID, v, ok)
+		}
+
+		// (iv) A SEGUNDA METADE DE §13.6: o registo WORM tamper-evident. O selo da mediação
+		// (audit_seal, com o entry_hash da hash-chain) é exportado COMO FILHO do execute_tool
+		// permitido, no MESMO trace — a trajectória e a hash-chain ficam ligadas na árvore.
+		var seal *otlpSpanWire
+		for _, s := range obsSpansNamed(spans, opAuditSeal) {
+			if s.ParentSpanID == permitTool.SpanID {
+				sc := s
+				seal = &sc
+				break
+			}
+		}
+		if seal == nil {
+			t.Fatalf("nenhum span %q filho do execute_tool permitido — §13.6 exige o registo WORM tamper-evident LIGADO a arvore do run; nomes vistos: %v", opAuditSeal, names(spans))
+		}
+		obsAssertSameTrace(t, *seal, root)
+		if v, ok := seal.attr(attrAuditEntryHash); !ok || v == "" {
+			t.Errorf("selo sem %s (ancora tamper-evident da hash-chain)", attrAuditEntryHash)
+		}
+		if v, ok := seal.attr(otelgenai.AttrDecision); !ok || v != string(audit.DecisionAllow) {
+			t.Errorf("selo.%s = %q (ok=%v), esperava %q (a mediacao permitida selada)", otelgenai.AttrDecision, v, ok, audit.DecisionAllow)
+		}
+
+		// (v) SEM segredos em nenhum span da árvore (o objectivo/system nunca entram no wire).
+		assertNoSecrets(t, spans)
+		col.mu.Lock()
+		for _, b := range col.bodies {
+			if strings.Contains(string(b), obsSecretObjective) || strings.Contains(string(b), obsSecretSystem) {
+				col.mu.Unlock()
+				t.Fatal("SEGREDO do payload vazou no corpo OTLP exportado")
+			}
+		}
+		col.mu.Unlock()
+	})
+
+	t.Run("caminho NEGADO — o ramo sai na mesma, com o veredicto atribuivel", func(t *testing.T) {
+		// Chain DEFAULT do nó (PDP não-carregado ⇒ deny fail-closed): prova que uma tool
+		// call BLOQUEADA continua observável na árvore, com decision=deny e denied_by — a
+		// negação não é um buraco na trajectória. É o complemento do caminho permitido.
+		col := &otlpCollector{}
+		srv := httptest.NewServer(col)
+		defer srv.Close()
+
+		cfg := obsConfig(srv.URL)
+		model := &toolEmittingModel{inv: agentruntime.ToolInvocation{
+			ToolID:     "echo",
+			Capability: tnCap,
+			Input:      []byte("ping"),
+		}}
+		cfg.Model = model
+		node, err := Bootstrap(context.Background(), cfg, io.Discard)
+		if err != nil {
+			t.Fatalf("Bootstrap: %v", err)
+		}
+		if err := node.Runtime.Register("echo", func(_ context.Context, in []byte) ([]byte, error) {
+			return in, nil
+		}); err != nil {
+			t.Fatalf("Register(echo): %v", err)
+		}
+		tok, err := node.Authority.MintForHuman(context.Background(), tnHuman, tnAgent, tnClass, []string{tnCap})
+		if err != nil {
+			t.Fatalf("MintForHuman: %v", err)
+		}
+
+		res, _, err := node.Runtime.Run(context.Background(), agentruntime.Goal{
+			RunID:      "run-obs-tool-deny",
+			Principal:  referencemonitor.Principal{NHIID: tnAgent},
+			Credential: tok.Compact,
+			Model:      agentruntime.ModelConfig{ModelID: "model:test-obs"},
+			System:     obsSecretSystem,
+			Objective:  obsSecretObjective,
+			MaxTurns:   4,
+		}, nil)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !res.Terminated {
+			t.Fatalf("o run devia ter concluido, veio %+v", res)
+		}
+		if model.turns < 2 {
+			t.Fatalf("o modelo devia ter EMITIDO a tool call; turnos=%d (prova vacuosa)", model.turns)
+		}
+		if err := node.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		spans := col.spans(t)
+		agents := obsSpansNamed(spans, otelgenai.OpInvokeAgent)
+		if len(agents) != 1 {
+			t.Fatalf("esperava 1 span %q, vieram %d; nomes: %v", otelgenai.OpInvokeAgent, len(agents), names(spans))
+		}
+		tools := obsSpansNamed(spans, otelgenai.OpExecuteTool)
+		if len(tools) == 0 {
+			t.Fatalf("faltou o ramo %q de uma tool call NEGADA — a negacao tem de ser observavel na arvore; nomes: %v", otelgenai.OpExecuteTool, names(spans))
+		}
+		denied := false
+		for i := range tools {
+			obsAssertChildOf(t, tools[i], agents[0])
+			if v, ok := tools[i].attr(otelgenai.AttrDecision); ok && v == string(referencemonitor.EffectDeny) {
+				if by, ok := tools[i].attr(otelgenai.AttrDeniedBy); !ok || by == "" {
+					t.Errorf("span de negacao sem %s — o veredicto tem de ser ATRIBUIVEL", otelgenai.AttrDeniedBy)
+				}
+				denied = true
+			}
+		}
+		if !denied {
+			t.Fatalf("esperava pelo menos um %q com decision=%q (o chain default do no tem o PDP nao-carregado)", otelgenai.OpExecuteTool, referencemonitor.EffectDeny)
+		}
+		assertNoSecrets(t, spans)
+	})
+}
+
 // --- helpers ---
+
+// obsSpansNamed devolve todos os spans com o nome dado (cópias).
+func obsSpansNamed(spans []otlpSpanWire, name string) []otlpSpanWire {
+	var out []otlpSpanWire
+	for _, s := range spans {
+		if s.Name == name {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// obsAssertSameTrace falha se child e parent não pertencerem ao MESMO trace.
+func obsAssertSameTrace(t *testing.T, child, parent otlpSpanWire) {
+	t.Helper()
+	if child.TraceID == "" || parent.TraceID == "" {
+		t.Fatalf("traceId vazio no wire (child=%q traceId=%q, parent=%q traceId=%q)", child.Name, child.TraceID, parent.Name, parent.TraceID)
+	}
+	if child.TraceID != parent.TraceID {
+		t.Fatalf("span %q num TRACE DIFERENTE de %q: %q != %q — a arvore esta partida", child.Name, parent.Name, child.TraceID, parent.TraceID)
+	}
+}
+
+// obsAssertChildOf verifica a topologia completa: mesmo trace_id E parent_span_id igual
+// ao span_id do pai. É a asserção que distingue "spans soltos com o mesmo nome" de uma
+// ÁRVORE.
+func obsAssertChildOf(t *testing.T, child, parent otlpSpanWire) {
+	t.Helper()
+	obsAssertSameTrace(t, child, parent)
+	if parent.SpanID == "" {
+		t.Fatalf("spanId vazio no pai %q", parent.Name)
+	}
+	if child.ParentSpanID != parent.SpanID {
+		t.Fatalf("span %q com parentSpanId=%q, esperava %q (span_id de %q) — o ramo nao esta ligado ao pai",
+			child.Name, child.ParentSpanID, parent.SpanID, parent.Name)
+	}
+}
 
 func names(spans []otlpSpanWire) []string {
 	out := make([]string, 0, len(spans))
