@@ -407,6 +407,65 @@ func TestOTLPExporterDeterministicWireFormat(t *testing.T) {
 	}
 }
 
+// TestOTLPExporterOverTLS prova a PERNA OTLP sobre TLS (AOS-209), nos dois sentidos:
+//
+//   - contra um colector TLS de CONFIANÇA, o export sobre HTTPS funciona (Exported>0) — o
+//     transporte da telemetria é cifrado;
+//   - contra um colector TLS NÃO confiável (o handshake TLS FALHA), o FAIL-OPEN de AOS-173
+//     mantém-se INTACTO: Export nunca bloqueia nem propaga, o Close é limpo (garantido por
+//     -race), e a falha é CONTABILIZADA (Failed>0). Cifrar o transporte não introduz um novo
+//     caminho crítico — uma falha de telemetria/TLS não quebra um run.
+func TestOTLPExporterOverTLS(t *testing.T) {
+	makeSpan := func(exp otelgenai.Exporter) {
+		tracer := otelgenai.NewTracer(exp)
+		_, span := tracer.StartSpan(context.Background(), otelgenai.OpChat)
+		span.SetAttribute(otelgenai.AttrOperationName, otelgenai.OpChat)
+		span.End()
+	}
+
+	t.Run("colector TLS de confianca => export sobre HTTPS funciona", func(t *testing.T) {
+		col := &otlpCollector{}
+		srv := httptest.NewTLSServer(col) // endpoint https:// com certificado self-signed
+		defer srv.Close()
+		// srv.Client() confia no certificado do servidor de teste — prova o export cifrado.
+		exp, err := NewOTLPHTTPExporter(srv.URL, WithOTLPHTTPClient(srv.Client()))
+		if err != nil {
+			t.Fatalf("NewOTLPHTTPExporter: %v", err)
+		}
+		makeSpan(exp)
+		if err := exp.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if st := exp.Stats(); st.Exported == 0 {
+			t.Fatalf("esperava Exported>0 sobre TLS de confianca, veio %+v", st)
+		}
+	})
+
+	t.Run("colector TLS NAO confiavel => fail-open (handshake falha, Failed>0)", func(t *testing.T) {
+		col := &otlpCollector{}
+		srv := httptest.NewTLSServer(col)
+		defer srv.Close()
+		// SEM injectar srv.Client(): o exporter usa o transporte ENDURECIDO (MinVersion TLS 1.2,
+		// raízes do sistema), que NÃO confia no certificado self-signed do httptest ⇒ o handshake
+		// TLS falha. Export tem de continuar a NÃO bloquear nem propagar.
+		exp, err := NewOTLPHTTPExporter(srv.URL)
+		if err != nil {
+			t.Fatalf("NewOTLPHTTPExporter: %v", err)
+		}
+		makeSpan(exp)
+		if err := exp.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		st := exp.Stats()
+		if st.Failed == 0 {
+			t.Fatalf("esperava Failed>0 com o TLS a falhar (fail-open contabilizado), veio %+v", st)
+		}
+		if st.Exported != 0 {
+			t.Fatalf("nada devia exportar com o TLS a falhar, veio Exported=%d", st.Exported)
+		}
+	})
+}
+
 // TestAuditTracingStoreEmitsSealSpanLinkingWORM prova a ligação WORM↔trajectória: cada
 // selo de audit emite um span de observabilidade com run_id/step_id + audit_seq +
 // entry_hash + veredicto/tool, e NUNCA o payload/recurso (invariante sem-segredos). O

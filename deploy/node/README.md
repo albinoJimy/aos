@@ -61,8 +61,11 @@ de índice e o detalhe lá.
 
 | Variável | Default | Efeito |
 |---|---|---|
-| `AOS_MODE` | *(vazio ⇒ modo de **referência**)* | `production` (qualquer caixa) activa a **postura de produção fail-closed**. **Segurança:** é o interruptor que torna obrigatórias as duas exigências — `AOS_ISSUER_PUBKEY` (senão `ErrProductionNeedsHardenedIdentity`) e `AOS_BOARD_REGIONS` **não-vazio** (senão `ErrProductionNeedsSovereignRead`). Qualquer outro valor ⇒ modo de referência **sem** essas exigências: um nó exposto sem `AOS_MODE=production` não é um nó de produção, é um nó de referência a servir tráfego. |
+| `AOS_MODE` | *(vazio ⇒ modo de **referência**)* | `production` (qualquer caixa) activa a **postura de produção fail-closed**. **Segurança:** é o interruptor que torna obrigatórias **três** exigências — `AOS_ISSUER_PUBKEY` (senão `ErrProductionNeedsHardenedIdentity`), `AOS_BOARD_REGIONS` **não-vazio** (senão `ErrProductionNeedsSovereignRead`) e **terminação TLS** — `AOS_TLS_CERT_PATH`+`AOS_TLS_KEY_PATH` **ou** `AOS_TLS_EXTERNAL_TERMINATION` (senão `ErrProductionNeedsTLS`, AOS-209). Qualquer outro valor ⇒ modo de referência **sem** essas exigências: um nó exposto sem `AOS_MODE=production` não é um nó de produção, é um nó de referência a servir tráfego. |
 | `AOS_API_ADDR` | *(vazio ⇒ **API não levantada**)* | Endereço de bind da API HTTP. Vazio ⇒ o nó faz bootstrap, declara o banner e **sai sem abrir socket**. Não-loopback ⇒ sujeito ao [bind-guardrail](#bind-guardrail-fail-closed) (recusa se não houver operadores). É também o **default do `--addr`** dos subcomandos cliente (`aos run/observe/steer/pause`) e a fonte da porta do `HEALTHCHECK`. |
+| `AOS_TLS_CERT_PATH` | *(vazio ⇒ **sem terminação TLS no nó**)* | Caminho do **certificado** (PEM) da terminação TLS do ingresso — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). Exige `AOS_TLS_KEY_PATH` (só um dos dois ⇒ `ErrIncompleteTLSConfig`). Material **público**. |
+| `AOS_TLS_KEY_PATH` | *(vazio ⇒ **sem terminação TLS no nó**)* | Caminho da **chave privada** (PEM) da terminação TLS — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). ⚠️ **Material PRIVADO por FICHEIRO montado** (nunca por variável de ambiente), no padrão de `AOS_ISSUER_KEY_PATH`; monte-o read-only e fora da imagem. Par inválido ⇒ `ErrBadTLSKeyPair`. |
+| `AOS_TLS_EXTERNAL_TERMINATION` | *(vazio ⇒ **não declarado**)* | **Opt-out ruidoso** — declara que a terminação TLS é feita **a montante** (ingress/malha). Ligam: `1` `true` `t` `yes` `y` `on`; qualquer outro valor ⇒ **ABORTA** (`ErrBadTLSExternalTermination`). Declarado ⇒ o nó serve em claro **por decisão de quem o configurou** e emite um aviso proeminente no banner — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). Ignorado se houver TLS no nó. |
 | `AOS_ISSUER_ID` | `iss:aos-node` | Identificador da autoridade de identidade — **é o trust anchor** que o verifier exige no `iss` de cada credencial. **Segurança/operação:** no modo endurecido tem de ser **exactamente** o issuer que emitiu os tokens (o par `(AOS_ISSUER_ID, AOS_ISSUER_PUBKEY)` é o anchor completo); um valor errado não abre nada — faz o nó **rejeitar todas** as credenciais legítimas (fail-closed, mas silencioso do lado da config). Não é segredo: é um nome. |
 | `AOS_ISSUER_PUBKEY` | *(vazio ⇒ modo de **referência**, autoridade **co-localizada**)* | Pubkey ed25519 do issuer em hex (**64 hex chars = 32 bytes**). Presente ⇒ **trust-anchor-only endurecido**: o nó compõe só o verifier e **nenhuma chave de assinatura entra no processo**. Malformada ⇒ **ABORTA** (`ErrBadIssuerPubKey`). Material **público** — pode viver na receita de deployment. |
 | `AOS_ISSUER_KEY_PATH` | *(vazio ⇒ chave gerada por **CSPRNG a cada arranque**)* | **Só no modo de referência.** Ficheiro de *seed* ed25519 que a autoridade co-localizada carrega/persiste, para que os tokens emitidos **sobrevivam ao reinício**. ⚠️ **É o único caminho por onde material PRIVADO entra no processo do nó** — monte-o read-only e fora da imagem, e prefira o modo endurecido. Com `AOS_ISSUER_PUBKEY` definida esta variável **nem é lida** (no modo endurecido nenhuma chave de assinatura entra; um `Config` composto in-process com ambas aborta com `ErrConflictingIssuerKey`). |
@@ -219,6 +222,84 @@ realmente estaria.
 > `AOS_DURABLE_EXECUTION=1` com `AOS_EVENTSTORE_PATH` dentro do volume gravável, e confirme a
 > linha `LIGADA` no banner. Nada no nó a liga por si.
 
+### Terminação TLS do ingresso — API, SSE, DSAR + perna OTLP (AOS-209)
+
+O nó serve API HTTP, o SSE de trajectória e o `POST /dsar/erase`. Sem TLS, **qualquer
+intermediário na rota lê o transporte**: a assinatura ed25519 do canal de controlo continua
+íntegra, mas o **conteúdo** transportado (trajectória, desfechos, corpos de sinais) fica
+observável — o achado §5.2-b de `tecnica/17`. `crypto/tls` é **stdlib**: terminar TLS no nó
+**não** puxa dependências nem colide com o ADR-017. Há **duas** posturas legítimas, e o que não
+se tolera é a terceira (texto-claro por omissão, sem o operador o saber).
+
+**Duas formas de cifrar o transporte — escolha uma, explicitamente:**
+
+| Postura | Variáveis | Efeito |
+|---|---|---|
+| **TLS no nó** | `AOS_TLS_CERT_PATH` + `AOS_TLS_KEY_PATH` (ambos) | O nó carrega o par e serve TLS **endurecido** (MinVersion **TLS 1.2**; cipher suites **AEAD sobre ECDHE**). |
+| **Terminação a montante** (opt-out) | `AOS_TLS_EXTERNAL_TERMINATION=1` | O nó serve em **claro por decisão sua**; a cifra fica a cargo do ingress/malha. Banner **ruidoso** em cada arranque. |
+| **Texto-claro sem opt-out** | *(nenhuma)* | Loopback: permitido. **Não-loopback: RECUSADO** (`ErrRefuseCleartextBind`). Em produção: **arranque RECUSA** (`ErrProductionNeedsTLS`). |
+
+**Certificados e chave.** O certificado é material **público** (`AOS_TLS_CERT_PATH`). A **chave
+privada** entra **só por ficheiro montado** (`AOS_TLS_KEY_PATH`) — **nunca** por variável de
+ambiente, no mesmo padrão de `AOS_ISSUER_KEY_PATH`. Monte-os read-only e fora da imagem:
+
+```bash
+docker run --read-only --tmpfs /tmp -p 8443:8443 \
+  -v $PWD/tls/server.crt:/etc/aos/tls/server.crt:ro \
+  -v $PWD/tls/server.key:/etc/aos/tls/server.key:ro \
+  -e AOS_API_ADDR=0.0.0.0:8443 \
+  -e AOS_TLS_CERT_PATH=/etc/aos/tls/server.crt \
+  -e AOS_TLS_KEY_PATH=/etc/aos/tls/server.key \
+  -e AOS_OPERATORS="ops:alice=<hex-32B-ed25519>" \
+  aos-node:local
+```
+
+**Rotação.** Todas as variáveis são lidas **uma vez, no arranque** — não há *reload* a quente.
+Para rodar o certificado/chave, **substitua os ficheiros montados e reinicie o contentor** (a
+substituição de contentor é o modelo de rotação de todo o material do nó). Um par que não carrega
+(ficheiro ilegível, PEM malformado, chave que não corresponde ao certificado) ⇒ **ABORTA**
+(`ErrBadTLSKeyPair`); definir **só um** dos dois caminhos ⇒ **ABORTA** (`ErrIncompleteTLSConfig`).
+
+**Opt-out — o que o banner declara.** Com `AOS_TLS_EXTERNAL_TERMINATION` declarado (e sem TLS no
+nó), o arranque emite:
+
+```text
+[aos] AVISO TLS (AOS-209): TERMINACAO A MONTANTE DECLARADA (AOS_TLS_EXTERNAL_TERMINATION) — o no serve API/SSE/DSAR em TEXTO-CLARO por DECISAO de quem o configurou
+[aos] => RESPONSABILIDADE ASSUMIDA: a cifra do transporte passa a depender do ingress/malha de servico a montante; se essa camada nao cifrar, o transporte fica legivel por qualquer intermediario na rota
+[aos] => O bind NAO-loopback em claro deixa de ser recusado (a quarta conjuncao do bind-guardrail da-se por satisfeita); a assinatura ed25519 do canal de controlo continua integra, mas o CONTEUDO transportado e observavel se a montante nao cifrar
+[aos] => PARA TERMINAR TLS NO PROPRIO NO: remova AOS_TLS_EXTERNAL_TERMINATION e defina AOS_TLS_CERT_PATH + AOS_TLS_KEY_PATH (chave privada por ficheiro montado, NUNCA por variavel de ambiente)
+```
+
+**Postura por `AOS_MODE`.** Em `AOS_MODE=production`, servir sem TLS **nem** opt-out declarado
+**recusa o arranque** (`ErrProductionNeedsTLS`, `exit 1`) — a par de `ErrProductionNeedsHardenedIdentity`
+e `ErrProductionNeedsSovereignRead`. Fora de produção, o texto-claro é permitido em **loopback**;
+o bind **não-loopback** em claro é **sempre** recusado pela [quarta conjunção do
+bind-guardrail](#bind-guardrail-fail-closed).
+
+**Códigos de recusa (todos `exit 1`, fail-closed):**
+
+| Código | Quando |
+|---|---|
+| `ErrRefuseCleartextBind` | Bind **não-loopback** em texto-claro sem TLS nem opt-out (fora de produção também). |
+| `ErrProductionNeedsTLS` | `AOS_MODE=production` sem TLS nem opt-out. |
+| `ErrBadTLSKeyPair` | Par certificado+chave ilegível / PEM malformado / chave que não corresponde ao certificado. |
+| `ErrIncompleteTLSConfig` | Só um de `AOS_TLS_CERT_PATH`/`AOS_TLS_KEY_PATH` definido. |
+| `ErrBadTLSExternalTermination` | `AOS_TLS_EXTERNAL_TERMINATION` com valor não-booleano. |
+
+**Perna OTLP (AOS-173/AOS-209).** Um `AOS_OTLP_ENDPOINT` **`https://`** faz o exporter negociar
+TLS **1.2+** contra o colector e validar o certificado dele contra as raízes do sistema. O
+**fail-open** de AOS-173 mantém-se **intacto**: uma falha de handshake TLS (colector em baixo,
+certificado inválido) é contabilizada e **nunca** quebra um run — cifrar o transporte não
+introduz um novo caminho crítico. A **autenticação forte** perante o colector (mTLS de cliente
+ou bearer token) fica **deferida** (DEF-012).
+
+> **mTLS do plano de controlo — deferido (DEF-012).** Esta terminação cifra e autentica o
+> **servidor** perante o cliente. A autenticação **mútua** por certificado de cliente do plano de
+> controlo não é entregue aqui: o plano de controlo já é autenticado na camada de **aplicação**
+> por assinatura ed25519 no corpo (non-signing, AOS-160), independente do transporte — o mTLS
+> seria uma segunda barreira, não a primeira. Eixo em `docs/governance/REGISTO-Deferimentos.md`
+> (DEF-012, nota N-DEF-012).
+
 ### Plano de controlo — operadores e aprovadores (AOS-160 / AOS-162, config em AOS-193)
 
 O canal de controlo (`POST /runs/{id}/steer`, `/pause`) e o *four-eyes* (`/approve`) são
@@ -308,8 +389,9 @@ Formato do ficheiro de `AOS_APPROVERS_FILE` (monte-o read-only, ex.: `-v $PWD/ap
 ### Bind-guardrail (fail-closed)
 
 A API **recusa** bind a um endereço **não-loopback** (`0.0.0.0`, `:8080`, um IP público, ou um
-*hostname* não confirmável como loopback) enquanto o **canal de sinais (`steer`/`pause`)** não
-estiver **autenticado E operável**. A condição imposta pelo código é a **conjunção** de três coisas:
+*hostname* não confirmável como loopback) enquanto **duas** condições sobre o mesmo eixo não
+estiverem satisfeitas. A primeira é o **canal de sinais (`steer`/`pause`)** **autenticado E
+operável** — a **conjunção** de três coisas:
 
 1. o autenticador ed25519 do canal de controlo está composto (`SteerAuth != nil`);
 2. o modo de identidade é real (`real` ou `real-trust-anchor-only`);
@@ -318,6 +400,13 @@ estiver **autenticado E operável**. A condição imposta pelo código é a **co
 Falhar qualquer uma ⇒ `ErrRefuseNonLoopbackBind` **antes** do `Listen` (o socket nem chega a
 abrir); o *loopback* continua sempre permitido. O log da recusa nomeia o modo de identidade e a
 **cardinalidade de operadores**, que é a causa esmagadoramente mais provável.
+
+**Quarta conjunção — transporte cifrado (AOS-209).** Mesmo com o canal de controlo operável, um
+bind não-loopback em **texto-claro** ⇒ `ErrRefuseCleartextBind` **antes** do `Listen`. É a
+**mesma disciplina, um segundo eixo**: satisfaz-se com TLS no nó (`AOS_TLS_CERT_PATH`+`AOS_TLS_KEY_PATH`)
+**ou** com a declaração de terminação a montante (`AOS_TLS_EXTERNAL_TERMINATION=1`) — ver
+[Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). O *loopback*
+continua sempre permitido (sem intermediário na rota).
 
 > **Âmbito exacto (não é omissão):** o predicado **não** olha para os aprovadores. Um nó
 > configurado **só** com `AOS_APPROVERS_FILE` tem o `/approve` plenamente operável e é, ainda
@@ -339,9 +428,13 @@ abrir); o *loopback* continua sempre permitido. O log da recusa nomeia o modo de
 Para servir tráfego externo endurecido:
 
 ```bash
-docker run --read-only --tmpfs /tmp -v aos-data:/var/lib/aos -p 8080:8080 \
+docker run --read-only --tmpfs /tmp -v aos-data:/var/lib/aos -p 8443:8443 \
+  -v $PWD/tls/server.crt:/etc/aos/tls/server.crt:ro \
+  -v $PWD/tls/server.key:/etc/aos/tls/server.key:ro \
   -e AOS_MODE=production \
-  -e AOS_API_ADDR=0.0.0.0:8080 \
+  -e AOS_API_ADDR=0.0.0.0:8443 \
+  -e AOS_TLS_CERT_PATH=/etc/aos/tls/server.crt   `# certificado (publico)` \
+  -e AOS_TLS_KEY_PATH=/etc/aos/tls/server.key    `# CHAVE PRIVADA por ficheiro montado read-only` \
   -e AOS_ISSUER_PUBKEY=<hex-32B-ed25519>   `# trust-anchor-only; a CHAVE PRIVADA fica no vault` \
   -e AOS_OPERATORS="ops:alice=<hex-32B-ed25519>"   `# PUBKEY do operador; a privada fica na maquina dele` \
   -e AOS_BOARD_REGIONS="board:prod=eu" \
@@ -350,6 +443,11 @@ docker run --read-only --tmpfs /tmp -v aos-data:/var/lib/aos -p 8080:8080 \
   -e AOS_DURABLE_EXECUTION=1 \
   aos-node:local
 ```
+
+> Quem termina TLS a montante (ingress/malha) troca as duas linhas de TLS acima por
+> `-e AOS_TLS_EXTERNAL_TERMINATION=1` — o nó serve em claro **por decisão declarada** e o banner
+> avisa-o em cada arranque. Em `AOS_MODE=production`, **uma** das duas posturas é obrigatória:
+> sem nenhuma, o arranque recusa (`ErrProductionNeedsTLS`).
 
 Prova executável desta secção: [`aos193-control-plane-harness.sh`](aos193-control-plane-harness.sh)
 — arranca o **contentor real** em `0.0.0.0` sem operadores (recusa), depois com um operador

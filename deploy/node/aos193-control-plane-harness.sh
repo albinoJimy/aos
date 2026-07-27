@@ -178,10 +178,16 @@ echo "${neg_out}" | grep -q "SEM OPERADORES" \
   || fail "o banner devia declarar o canal de controlo SEM OPERADORES, veio: ${neg_out}"
 
 # --- 4. PROVA POSITIVA: o MESMO bind, agora com um operador registado -------
+# AOS-209: o bind 0.0.0.0 exige agora TRANSPORTE cifrado (quarta conjuncao do bind-guardrail).
+# Este harness isola o eixo DOS OPERADORES (AOS-193), pelo que DECLARA a terminacao TLS a
+# montante (AOS_TLS_EXTERNAL_TERMINATION=1) — o no serve em claro por decisao declarada e o
+# steer segue por http, como antes. A prova de TLS propriamente dito e in-process
+# (TestTLSServesEncryptedAndRejectsCleartext em packages/cmd/aos/tls_test.go).
 echo "[harness] PROVA POSITIVA: arranque em 0.0.0.0 COM o operador registado ..."
 dockerrun -d --name "${CT}" \
   --read-only \
   -e AOS_API_ADDR=0.0.0.0:8080 \
+  -e AOS_TLS_EXTERNAL_TERMINATION=1 \
   -e AOS_OPERATORS="${OP_ENTRY}" \
   -e AOS_APPROVERS_FILE=/etc/aos/approvers.json \
   -e AOS_BOARD_REGIONS= \

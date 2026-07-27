@@ -27,6 +27,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
@@ -205,7 +206,7 @@ func NewOTLPHTTPExporter(endpoint string, opts ...OTLPOption) (*OTLPHTTPExporter
 	e := &OTLPHTTPExporter{
 		endpoint:     target,
 		scope:        otelgenai.ScopeName,
-		client:       &http.Client{Timeout: defaultOTLPTimeout},
+		client:       &http.Client{Timeout: defaultOTLPTimeout, Transport: hardenedOTLPTransport()},
 		logf:         func(string, ...any) {},
 		maxBatch:     defaultOTLPBatchSize,
 		maxRetries:   defaultOTLPMaxRetries,
@@ -221,6 +222,26 @@ func NewOTLPHTTPExporter(endpoint string, opts ...OTLPOption) (*OTLPHTTPExporter
 	e.wg.Add(1)
 	go e.loop()
 	return e, nil
+}
+
+// hardenedOTLPTransport devolve o http.Transport da perna OTLP (AOS-209) com a [tls.Config]
+// ENDURECIDA para o POST ao colector: MinVersion TLS 1.2 quando o endpoint é https. Um endpoint
+// `https://collector:4318` passa a exigir um handshake TLS 1.2+ e a validar o certificado do
+// colector contra as raízes de confiança do sistema (comportamento default do cliente, tornado
+// EXPLÍCITO no piso mínimo de versão). Só stdlib (crypto/tls + net/http).
+//
+// FAIL-OPEN preservado (AOS-173): esta config vive no http.Client que a goroutine de flush usa
+// FORA do caminho do run — uma falha de handshake TLS (colector em baixo, certificado inválido)
+// devolve erro no [OTLPHTTPExporter.post], que é contabilizado como Failed e re-tentado/largado,
+// NUNCA propagado ao run. Cifrar o transporte não introduz um novo caminho crítico.
+//
+// A AUTENTICAÇÃO FORTE perante o colector (mTLS por certificado de cliente, ou bearer token) fica
+// por entregar — pertence ao mesmo eixo do mTLS do plano de controlo (ver o marcador em api.go e
+// DEF-012 em docs/governance/REGISTO-Deferimentos.md), pelo que não se declara um marcador próprio.
+func hardenedOTLPTransport() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	return tr
 }
 
 // normalizeOTLPEndpoint valida (fail-closed) e completa o endpoint com /v1/traces.

@@ -75,6 +75,23 @@ var ErrBadOperators = errors.New("aos: AOS_OPERATORS invalida (esperado \"emitte
 // privada satisfaz (capacidade anunciada e não cumprida, na versão perigosa).
 var ErrBadApproversFile = errors.New("aos: AOS_APPROVERS_FILE invalido (esperado JSON {\"approvers\":[{\"principal\":..., \"pubkey\":\"<64 hex>\", \"authority\":[\"approve:safe|gray|danger\"]}]} — ficheiro ilegivel, esquema invalido, principal duplicado, MESMA pubkey em dois principals, capability fora do vocabulario, autoridade vazia ou lista vazia abortam em vez de deixarem o four-eyes silenciosamente DESLIGADO ou ANULADO)")
 
+// ErrProductionNeedsTLS — sob AOS_MODE=production o ingresso NÃO pode ser servido em
+// texto-claro por engano (AOS-209). Exige-se OU a terminação TLS no nó
+// (AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH) OU a DECLARAÇÃO explícita de terminação a montante
+// (AOS_TLS_EXTERNAL_TERMINATION). A par de ErrProductionNeedsHardenedIdentity (identidade) e
+// ErrProductionNeedsSovereignRead (soberania de leitura), é a terceira exigência de postura de
+// produção: um nó de produção nunca serve API/SSE/DSAR sem transporte cifrado sem que alguém o
+// tenha DECIDIDO — fail-closed.
+var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminacao TLS do ingresso — defina AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH (TLS no no) OU DECLARE terminacao a montante com AOS_TLS_EXTERNAL_TERMINATION=1; a producao nao serve API/SSE/DSAR em texto-claro sem decisao explicita")
+
+// ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é
+// um booleano reconhecido. Fail-closed de CONFIG (AOS-209), no padrão de ErrBadDurableExecution:
+// lixo NÃO é tratado como false. Um operador que escreve "AOS_TLS_EXTERNAL_TERMINATION=sim"
+// (ou "yep", ou "externo") TENCIONA declarar a terminação a montante; silenciosamente tratá-la
+// como não-declarada faria o bind não-loopback ser RECUSADO por texto-claro, com o operador a
+// acreditar que o tinha permitido. A ambiguidade NEGA o arranque.
+var ErrBadTLSExternalTermination = errors.New("aos: AOS_TLS_EXTERNAL_TERMINATION invalida (aceites: 1/true/t/yes/y/on para declarar terminacao a montante, 0/false/f/no/n/off ou vazio para nao declarar) — um valor nao reconhecido aborta em vez de degradar silenciosamente para nao-declarado")
+
 // main arranca o nó `aos` de PRODUÇÃO a partir de config de ambiente e declara o modo
 // de identidade em vigor. O loop de serviço long-running (hospedar N runs, shutdown
 // gracioso) é AOS-164; aqui prova-se o BOOTSTRAP fail-closed e a declaração do modo
@@ -359,13 +376,27 @@ func nodeConfigFromEnv() (Config, error) {
 // graciosamente. Um erro SÍNCRONO de Serve (guardrail recusou / Listen falhou) retorna de
 // imediato, encerrando o loop de serviço.
 func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
+	// TERMINAÇÃO TLS DO INGRESSO (AOS-209). Lê a config de TLS do ambiente e impõe a postura
+	// de produção fail-closed (sem TLS nem opt-out em AOS_MODE=production ⇒ ErrProductionNeedsTLS)
+	// ANTES de compor o serviço. As opções resultantes ligam a terminação no nó ou declaram a
+	// terminação a montante; o banner (se houver) é emitido depois de o servidor compor.
+	production := strings.EqualFold(strings.TrimSpace(os.Getenv("AOS_MODE")), "production")
+	tlsOpts, tlsBanner, err := apiTLSOptionsFromEnv(production)
+	if err != nil {
+		return err
+	}
 	svc, err := NewNodeService(node, WithServiceLog(w))
 	if err != nil {
 		return err
 	}
-	srv, err := NewAPIServer(svc, node, WithAPILog(w))
+	srv, err := NewAPIServer(svc, node, append([]APIOption{WithAPILog(w)}, tlsOpts...)...)
 	if err != nil {
 		return err
+	}
+	// AVISO PROEMINENTE do opt-out (modelo do kill-switch de soberania, AOS-203): quem termina
+	// TLS a montante fica a saber, em CADA arranque, que o nó serve em claro POR DECISÃO sua.
+	for _, line := range tlsBanner {
+		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
 	serveErr := make(chan error, 1)
@@ -392,6 +423,90 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 		_ = srv.Shutdown(shutCtx)
 		_ = svc.Shutdown(shutCtx)
 		return <-serveErr
+	}
+}
+
+// apiTLSOptionsFromEnv resolve a config de TERMINAÇÃO TLS do ingresso (AOS-209) a partir do
+// ambiente e devolve (opções de API, linhas de banner do opt-out, erro). É a costura entre o
+// processo e o [APIServer]: TODO o material privado (a chave TLS) entra por FICHEIRO montado
+// (AOS_TLS_KEY_PATH) — NUNCA por variável de ambiente — no mesmo padrão de AOS_ISSUER_KEY_PATH.
+//
+// Três estados de transporte, e a postura de produção que os discrimina:
+//
+//   - TLS NO NÓ: AOS_TLS_CERT_PATH e AOS_TLS_KEY_PATH ambos definidos ⇒ [WithTLSFiles]. O
+//     [NewAPIServer] carrega o par e serve TLS endurecido (fail-closed: par inválido ou
+//     incompleto abortam lá). A declaração de terminação externa é irrelevante e ignorada.
+//   - TERMINAÇÃO A MONTANTE (opt-out): AOS_TLS_EXTERNAL_TERMINATION declara-a ⇒
+//     [WithExternalTLSTermination] + um banner RUIDOSO. O nó serve em claro POR DECISÃO de quem
+//     o configurou (assume a responsabilidade de a malha/ingress cifrar o transporte).
+//   - TEXTO-CLARO sem opt-out: nenhuma das duas. Fora de produção é permitido (o bind-guardrail
+//     recusa na mesma o não-loopback em claro — ErrRefuseCleartextBind — mas o loopback passa).
+//     Em produção ⇒ [ErrProductionNeedsTLS]: um nó de produção nunca serve o ingresso em claro
+//     sem decisão explícita.
+//
+// Um par TLS INCOMPLETO (só cert OU só key) é deixado passar para [NewAPIServer], que o recusa
+// com [ErrIncompleteTLSConfig] — a validação do par vive junto do carregamento, não duplicada aqui.
+func apiTLSOptionsFromEnv(production bool) ([]APIOption, []string, error) {
+	certPath := strings.TrimSpace(os.Getenv("AOS_TLS_CERT_PATH"))
+	keyPath := strings.TrimSpace(os.Getenv("AOS_TLS_KEY_PATH"))
+	external, err := parseTLSExternalTermination(os.Getenv("AOS_TLS_EXTERNAL_TERMINATION"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	tlsAtNode := certPath != "" && keyPath != ""
+	tlsConfigured := certPath != "" || keyPath != "" // completo ou incompleto (NewAPIServer arbitra)
+
+	// FAIL-CLOSED de produção: sem transporte cifrado NEM opt-out declarado, recusa.
+	if production && !tlsConfigured && !external {
+		return nil, nil, ErrProductionNeedsTLS
+	}
+
+	var opts []APIOption
+	if tlsConfigured {
+		opts = append(opts, WithTLSFiles(certPath, keyPath))
+	}
+	if external {
+		opts = append(opts, WithExternalTLSTermination(true))
+	}
+
+	// O banner do opt-out só sai quando a terminação externa é a via EFECTIVA — isto é, quando
+	// o nó NÃO termina TLS. Com TLS no nó, a declaração externa é ignorada (precedência em
+	// NewAPIServer) e um aviso a dizer "sirvo em claro" seria falso.
+	var banner []string
+	if external && !tlsAtNode {
+		banner = tlsExternalTerminationBanner()
+	}
+	return opts, banner, nil
+}
+
+// parseTLSExternalTermination interpreta AOS_TLS_EXTERNAL_TERMINATION (AOS-209) como um
+// booleano EXPLÍCITO, no molde de [parseDurableExecution]: vazio/desligado ⇒ false; um dos
+// valores verdadeiros ⇒ true; QUALQUER OUTRO valor ⇒ [ErrBadTLSExternalTermination] (lixo NÃO
+// é false — ver a justificação no erro).
+func parseTLSExternalTermination(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return false, nil
+	case "1", "true", "t", "yes", "y", "on":
+		return true, nil
+	case "0", "false", "f", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: valor %q", ErrBadTLSExternalTermination, strings.TrimSpace(s))
+	}
+}
+
+// tlsExternalTerminationBanner produz o AVISO PROEMINENTE do opt-out de TLS (AOS-209), no
+// modelo do kill-switch de soberania (AOS-203): declara, sem eufemismo, que o nó serve o
+// ingresso em texto-claro POR DECISÃO de quem o configurou, que assume a cifra do transporte a
+// montante, e como se religa a terminação no nó.
+func tlsExternalTerminationBanner() []string {
+	return []string{
+		"AVISO TLS (AOS-209): TERMINACAO A MONTANTE DECLARADA (AOS_TLS_EXTERNAL_TERMINATION) — o no serve API/SSE/DSAR em TEXTO-CLARO por DECISAO de quem o configurou",
+		"=> RESPONSABILIDADE ASSUMIDA: a cifra do transporte passa a depender do ingress/malha de servico a montante; se essa camada nao cifrar, o transporte fica legivel por qualquer intermediario na rota",
+		"=> O bind NAO-loopback em claro deixa de ser recusado (a quarta conjuncao do bind-guardrail da-se por satisfeita); a assinatura ed25519 do canal de controlo continua integra, mas o CONTEUDO transportado e observavel se a montante nao cifrar",
+		"=> PARA TERMINAR TLS NO PROPRIO NO: remova AOS_TLS_EXTERNAL_TERMINATION e defina AOS_TLS_CERT_PATH + AOS_TLS_KEY_PATH (chave privada por ficheiro montado, NUNCA por variavel de ambiente)",
 	}
 }
 

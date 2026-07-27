@@ -43,6 +43,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,10 +112,40 @@ var (
 	// discrepância entre descrição e predicado (STR-04) que AOS-193 veio fechar, pelo que não
 	// se reintroduz no texto do erro.
 	ErrRefuseNonLoopbackBind = errors.New("aos/api: bind a endereco NAO-loopback RECUSADO — steer/pause INOPERAVEIS (SteerAuth ausente, identidade nao-real, ou ZERO operadores registados); use loopback, ou ligue a identidade real E registe pelo menos um operador em AOS_OPERATORS")
+	// ErrRefuseCleartextBind — o bind-guardrail RECUSOU um bind a um endereço não-loopback em
+	// TEXTO-CLARO (AOS-209). É a QUARTA conjunção da mesma disciplina de [guardBind]: expor
+	// o ingresso (API/SSE/DSAR) à rede sem TLS deixa o transporte legível por qualquer
+	// intermediário — a assinatura ed25519 do canal de controlo permanece íntegra, mas o
+	// conteúdo transportado (trajectória, desfechos, corpos de sinais) é observável, o que
+	// corrói o valor prático da autenticação (achado §5.2-b de tecnica/17).
+	//
+	// A recusa fecha-se na CONSTRUÇÃO do Listen, como as outras conjunções. É contornável de
+	// DUAS formas explícitas, nunca por omissão silenciosa: (a) terminar TLS NO nó
+	// (AOS_TLS_CERT_PATH + AOS_TLS_KEY_PATH), ou (b) DECLARAR terminação TLS a montante
+	// (AOS_TLS_EXTERNAL_TERMINATION), que assume a responsabilidade e emite um aviso ruidoso
+	// no banner. Loopback continua sempre permitido (só o próprio host alcança a porta).
+	ErrRefuseCleartextBind = errors.New("aos/api: bind a endereco NAO-loopback em TEXTO-CLARO RECUSADO (AOS-209) — o ingresso serviria API/SSE/DSAR sem TLS e qualquer intermediario leria o transporte; termine TLS no no (AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH), ou DECLARE terminacao a montante (AOS_TLS_EXTERNAL_TERMINATION=1), ou use loopback")
+	// ErrBadTLSKeyPair — AOS_TLS_CERT_PATH/AOS_TLS_KEY_PATH presentes mas o par certificado+chave
+	// não carrega (ficheiro ilegível, PEM malformado, chave que não corresponde ao certificado).
+	// Fail-closed: um nó não sobe a servir TLS com um par inválido.
+	ErrBadTLSKeyPair = errors.New("aos/api: par TLS invalido (AOS_TLS_CERT_PATH/AOS_TLS_KEY_PATH ilegivel, PEM malformado, ou chave que nao corresponde ao certificado)")
+	// ErrIncompleteTLSConfig — só um de AOS_TLS_CERT_PATH/AOS_TLS_KEY_PATH foi definido. Fail-closed:
+	// a terminação TLS no nó exige AMBOS (certificado E chave), e a ambiguidade aborta em vez de
+	// degradar em silêncio para texto-claro.
+	ErrIncompleteTLSConfig = errors.New("aos/api: config TLS incompleta — AOS_TLS_CERT_PATH e AOS_TLS_KEY_PATH sao AMBOS obrigatorios para terminar TLS no no (definir so um aborta em vez de servir em claro)")
 	// ErrNilService / ErrNilNode — construção sem os colaboradores obrigatórios.
 	ErrNilService = errors.New("aos/api: NewAPIHandler exige um NodeService (nil)")
 	ErrNilNode    = errors.New("aos/api: NewAPIHandler exige um Node (nil)")
 )
+
+// mTLS DO PLANO DE CONTROLO — DEFERIDO (AOS-209). A terminação TLS deste ticket cifra e
+// autentica o SERVIDOR perante o cliente; a autenticação MÚTUA por certificado de cliente
+// (mTLS) do plano de controlo, e a autenticação forte da perna OTLP perante o colector,
+// ficam por entregar. Não é uma lacuna de segurança aberta: o plano de controlo já é
+// autenticado na camada de APLICAÇÃO por assinatura ed25519 no corpo (non-signing, AOS-160),
+// independente do transporte — o mTLS acrescentaria uma segunda barreira ao nível do
+// transporte, não a primeira. Eixo e ticket em falta: ver DEF-012 em
+// docs/governance/REGISTO-Deferimentos.md (eixo POR ATRIBUIR, nota N-DEF-012).
 
 // apiConfig é a configuração resolvida da API.
 type apiConfig struct {
@@ -128,6 +160,20 @@ type apiConfig struct {
 	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
 	now              func() time.Time
 	logw             io.Writer
+	// --- Terminação TLS do ingresso (AOS-209) --------------------------------
+	// tlsCertPath/tlsKeyPath apontam para o certificado e a CHAVE PRIVADA montados por
+	// ficheiro (padrão AOS_ISSUER_KEY_PATH: material privado NUNCA por variável de ambiente).
+	// Ambos vazios ⇒ ingresso em texto-claro (só admitido em loopback ou com externalTLS).
+	// Ambos definidos ⇒ [NewAPIServer] carrega o par e serve TLS endurecido. Só um ⇒
+	// [ErrIncompleteTLSConfig].
+	tlsCertPath string
+	tlsKeyPath  string
+	// externalTLS DECLARA que a terminação TLS é feita a MONTANTE (ingress/malha de serviço):
+	// o nó serve em claro POR DECISÃO explícita de quem o configurou. Satisfaz a quarta
+	// conjunção do bind-guardrail (o transporte É cifrado, apenas não no nó) e faz o banner
+	// emitir um aviso proeminente. É mutuamente exclusivo com a terminação no nó (um par TLS
+	// definido tem precedência: se o nó termina TLS, não há terminação "externa" a declarar).
+	externalTLS bool
 	// readGov é a costura de SOBERANIA/CONFORMIDADE de leitura (AOS-172, D7+D6). Quando
 	// composta (explicitamente por [WithReadSovereignty] ou auto-derivada do nó em
 	// [NewAPIHandler]), os handlers de leitura passam a exigir authz por-chamador (board→região
@@ -247,6 +293,28 @@ func WithReadSovereignty(regions *govsov.Registry, worm audit.Store) APIOption {
 			c.readGov = newReadGovernance(regions, worm, c.now)
 		}
 	}
+}
+
+// WithTLSFiles compõe a TERMINAÇÃO TLS do ingresso NO nó (AOS-209): o certificado e a CHAVE
+// PRIVADA são lidos dos ficheiros MONTADOS certPath/keyPath (o padrão de AOS_ISSUER_KEY_PATH —
+// material privado por ficheiro, NUNCA por variável de ambiente). [NewAPIServer] carrega o par
+// (fail-closed: um par inválido ⇒ [ErrBadTLSKeyPair]) e monta uma [tls.Config] endurecida
+// (MinVersion TLS 1.2, cipher suites AEAD/ECDHE). Só um dos dois caminhos ⇒
+// [ErrIncompleteTLSConfig]. Ambos vazios ⇒ sem terminação no nó.
+func WithTLSFiles(certPath, keyPath string) APIOption {
+	return func(c *apiConfig) {
+		c.tlsCertPath = strings.TrimSpace(certPath)
+		c.tlsKeyPath = strings.TrimSpace(keyPath)
+	}
+}
+
+// WithExternalTLSTermination DECLARA que a terminação TLS é feita A MONTANTE (ingress/malha):
+// o nó serve em texto-claro por DECISÃO explícita de quem o configurou (AOS-209). Satisfaz a
+// quarta conjunção do bind-guardrail — o transporte é cifrado, apenas não no nó — e faz o
+// banner emitir um aviso proeminente. Ignorada quando há terminação TLS no nó ([WithTLSFiles]):
+// se o nó já termina TLS, não há terminação externa a declarar.
+func WithExternalTLSTermination(declared bool) APIOption {
+	return func(c *apiConfig) { c.externalTLS = declared }
 }
 
 // apiHandler é o http.Handler do nó: um mux stdlib sobre o [NodeService] (plano de dados) e
@@ -875,9 +943,17 @@ type APIServer struct {
 	node *Node
 	http *http.Server
 	logw io.Writer
+	// tlsEnabled é true quando o nó TERMINA TLS (o par foi carregado em s.http.TLSConfig);
+	// externalTLS é true quando a terminação foi DECLARADA a montante. Qualquer um satisfaz a
+	// quarta conjunção do bind-guardrail (transporte cifrado). Ver [APIServer.transportEncrypted].
+	tlsEnabled  bool
+	externalTLS bool
 }
 
 // NewAPIServer compõe o handler ([NewAPIHandler]) e um http.Server com timeouts endurecidos.
+// Quando a terminação TLS no nó está composta ([WithTLSFiles]), carrega o par certificado+chave
+// dos ficheiros montados e monta uma [tls.Config] ENDURECIDA — fail-closed: um par inválido ou
+// uma config TLS incompleta abortam ([ErrBadTLSKeyPair]/[ErrIncompleteTLSConfig]).
 func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, error) {
 	handler, err := NewAPIHandler(svc, node, opts...)
 	if err != nil {
@@ -894,17 +970,58 @@ func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, 
 	if cfg.serverWriteTO > 0 {
 		writeTimeout = cfg.serverWriteTO
 	}
+	httpSrv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		ReadTimeout:       DefaultReadTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       DefaultIdleTimeout,
+	}
+
+	// TERMINAÇÃO TLS NO NÓ (AOS-209). Precedência sobre a declaração externa: se o nó termina
+	// TLS, não há terminação "a montante" a declarar. Fail-closed em três frentes: só um
+	// caminho definido aborta; um par que não carrega aborta; ambos vazios ⇒ sem TLS no nó.
+	tlsEnabled := false
+	externalTLS := cfg.externalTLS
+	switch {
+	case cfg.tlsCertPath != "" && cfg.tlsKeyPath != "":
+		cert, cerr := tls.LoadX509KeyPair(cfg.tlsCertPath, cfg.tlsKeyPath)
+		if cerr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrBadTLSKeyPair, cerr)
+		}
+		httpSrv.TLSConfig = hardenedServerTLSConfig(cert)
+		tlsEnabled = true
+		externalTLS = false // o nó termina TLS: a declaração externa é irrelevante.
+	case cfg.tlsCertPath != "" || cfg.tlsKeyPath != "":
+		return nil, ErrIncompleteTLSConfig
+	}
+
 	return &APIServer{
-		node: node,
-		http: &http.Server{
-			Handler:           handler,
-			ReadHeaderTimeout: DefaultReadHeaderTimeout,
-			ReadTimeout:       DefaultReadTimeout,
-			WriteTimeout:      writeTimeout,
-			IdleTimeout:       DefaultIdleTimeout,
-		},
-		logw: cfg.logw,
+		node:        node,
+		http:        httpSrv,
+		logw:        cfg.logw,
+		tlsEnabled:  tlsEnabled,
+		externalTLS: externalTLS,
 	}, nil
+}
+
+// hardenedServerTLSConfig monta a [tls.Config] endurecida do servidor a partir do par
+// certificado+chave carregado (AOS-209): MinVersion TLS 1.2 (recusa SSLv3/TLS1.0/1.1) e um
+// conjunto de cipher suites AEAD sobre ECDHE (forward secrecy) para o handshake TLS 1.2 — as
+// suites de TLS 1.3 não são configuráveis e são sempre seguras. Só stdlib (crypto/tls).
+func hardenedServerTLSConfig(cert tls.Certificate) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		},
+	}
 }
 
 // Handler expõe o http.Handler subjacente (útil para httptest sem abrir um socket).
@@ -981,11 +1098,33 @@ func (s *APIServer) Serve(addr string) error {
 	if err != nil {
 		return err
 	}
+	return s.serveListener(ln)
+}
+
+// serveListener serve o listener já aberto, escolhendo TLS ou texto-claro conforme a
+// terminação composta no nó (AOS-209). Extraído de [APIServer.Serve] para os testes poderem
+// abrir o listener (via [APIServer.listen], que aplica os guardrails) e servir sobre a MESMA
+// via de produção, sem reimplementar a escolha TLS/claro.
+func (s *APIServer) serveListener(ln net.Listener) error {
+	if s.http.TLSConfig != nil {
+		// O par certificado+chave já vive em s.http.TLSConfig.Certificates (carregado em
+		// NewAPIServer); os ficheiros vazios dizem ao ServeTLS para o usar.
+		return s.http.ServeTLS(ln, "", "")
+	}
 	return s.http.Serve(ln)
 }
 
+// transportEncrypted é a QUARTA conjunção do bind-guardrail (AOS-209): o transporte do
+// ingresso está cifrado, seja porque o NÓ termina TLS (tlsEnabled), seja porque a terminação
+// foi DECLARADA a montante (externalTLS). Qualquer um satisfaz a condição; nenhum ⇒ texto-claro.
+func (s *APIServer) transportEncrypted() bool {
+	return s.tlsEnabled || s.externalTLS
+}
+
 // listen aplica o bind-guardrail e, se passar, abre o listener TCP. Extraído para ser
-// testável sem entrar no laço de serviço bloqueante.
+// testável sem entrar no laço de serviço bloqueante. São DUAS conjunções sobre o mesmo eixo
+// (bind não-loopback), verificadas por ordem: primeiro o canal de controlo autenticado
+// (AOS-193), depois o transporte cifrado (AOS-209). Loopback passa ambas.
 func (s *APIServer) listen(addr string) (net.Listener, error) {
 	if err := guardBind(addr, s.controlAuthenticated()); err != nil {
 		// O log nomeia a CARDINALIDADE de operadores: é o discriminante que AOS-193 acrescentou
@@ -993,6 +1132,11 @@ func (s *APIServer) listen(addr string) (net.Listener, error) {
 		// + SteerAuth composto vêm sempre do Bootstrap).
 		s.log("bind-guardrail RECUSOU %q: %v (modo de identidade=%q, operadores registados=%d)",
 			addr, err, s.identityMode(), s.operatorCount())
+		return nil, err
+	}
+	if err := guardCleartext(addr, s.transportEncrypted()); err != nil {
+		s.log("bind-guardrail RECUSOU %q em TEXTO-CLARO: %v (termine TLS no no com AOS_TLS_CERT_PATH/AOS_TLS_KEY_PATH, ou declare AOS_TLS_EXTERNAL_TERMINATION=1)",
+			addr, err)
 		return nil, err
 	}
 	return net.Listen("tcp", addr)
@@ -1021,6 +1165,21 @@ func guardBind(addr string, controlAuthenticated bool) error {
 		return nil // loopback: só o próprio host alcança o canal de controlo
 	}
 	return fmt.Errorf("%w: addr=%q", ErrRefuseNonLoopbackBind, addr)
+}
+
+// guardCleartext é a QUARTA conjunção do bind-guardrail (função pura, testável, AOS-209):
+// devolve [ErrRefuseCleartextBind] quando addr NÃO é loopback e o transporte NÃO está cifrado.
+// Espelha EXACTAMENTE a disciplina de [guardBind] (mesma forma, mesmo tratamento conservador
+// de loopback) — não é um mecanismo novo, é a mesma barreira sobre um segundo eixo: um bind
+// não-loopback em texto-claro expõe API/SSE/DSAR à leitura de qualquer intermediário.
+func guardCleartext(addr string, transportEncrypted bool) error {
+	if transportEncrypted {
+		return nil // TLS no nó ou declarado a montante: o transporte é cifrado
+	}
+	if isLoopbackAddr(addr) {
+		return nil // loopback: só o próprio host alcança a porta, sem intermediário na rota
+	}
+	return fmt.Errorf("%w: addr=%q", ErrRefuseCleartextBind, addr)
 }
 
 // isLoopbackAddr decide, CONSERVADORAMENTE, se addr faz bind SÓ à interface de loopback. Um

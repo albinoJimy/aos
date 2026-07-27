@@ -664,9 +664,12 @@ func TestBindGuardrailRequiresAtLeastOneOperator(t *testing.T) {
 	}
 	_ = ln.Close()
 
-	// CONTRAPROVA: um operador registado ⇒ o MESMO bind não-loopback é permitido.
+	// CONTRAPROVA: um operador registado ⇒ o MESMO bind não-loopback é permitido. Declara-se a
+	// terminação TLS a montante (AOS-209) para ISOLAR o eixo dos operadores: sem isso, a quarta
+	// conjunção do bind-guardrail (transporte cifrado) recusaria o bind em texto-claro e o teste
+	// deixaria de medir o discriminante que lhe interessa (operadores).
 	svcOp, _ := newAPI(t, withOp)
-	srvOp, err := NewAPIServer(svcOp, withOp)
+	srvOp, err := NewAPIServer(svcOp, withOp, WithExternalTLSTermination(true))
 	if err != nil {
 		t.Fatalf("NewAPIServer (withOp): %v", err)
 	}

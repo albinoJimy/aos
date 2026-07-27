@@ -115,9 +115,14 @@ echo "[harness] run do contentor (read-only + volume durAvel) ..."
 # AOS_BOARD_REGIONS vazio ⇒ read-path LEGADO deliberado: a durabilidade (§13.3) NÃO depende da
 # soberania de leitura (§13.7/D7); assim GET /runs reflecte o desfecho sem exigir os headers
 # X-Aos-Reader/X-Aos-Board (que a soberania de leitura, quando ligada, passaria a exigir).
+# AOS-209: o bind 0.0.0.0 exige agora TRANSPORTE cifrado (quarta conjuncao do bind-guardrail).
+# Este harness exercita a DURABILIDADE, nao o TLS; declara a terminacao a montante
+# (AOS_TLS_EXTERNAL_TERMINATION=1) para isolar o seu eixo, servindo em claro por decisao
+# declarada. A prova de TLS propriamente dito e in-process (packages/cmd/aos/tls_test.go).
 dockerrun -d --name "${CT}" \
   --read-only \
   -e AOS_API_ADDR=0.0.0.0:8080 \
+  -e AOS_TLS_EXTERNAL_TERMINATION=1 \
   -e AOS_EVENTSTORE_PATH=/var/lib/aos/events.wal \
   -e AOS_WORM_PATH=/var/lib/aos/worm.wal \
   -e AOS_ISSUER_KEY_PATH=/var/lib/aos/issuer.seed \

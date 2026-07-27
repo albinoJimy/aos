@@ -751,31 +751,64 @@ se tolera é o estado actual: texto-claro por omissão, sem o operador o saber.
 
 **Critérios de aceitação**
 
-- [ ] O nó **serve TLS** no ingresso (API, SSE de trajectória, `/dsar/erase`) com certificado e chave
+- [x] **ENTREGUE** — O nó **serve TLS** no ingresso (API, SSE de trajectória, `/dsar/erase`) com certificado e chave
       configuráveis por ficheiro montado, no padrão de `AOS_ISSUER_KEY_PATH` — e **sem material
       privado em variáveis de ambiente**.
-- [ ] **Extensão do bind-guardrail (quarta conjunção).** O `controlAuthenticated()` de
+      *(`WithTLSFiles(certPath, keyPath)` + `serveListener` que escolhe TLS endurecido; a chave privada
+      entra por `AOS_TLS_KEY_PATH` (ficheiro montado), nunca por env. Certificados de teste gerados em
+      runtime em `t.TempDir()` (`genTLSCertFiles`, ecdsa P256+x509), zero material committado — gate
+      secrets EXIT=0. **Residual NÃO-material nomeado:** a prova positiva sobre TLS
+      (`TestTLSServesEncryptedAndRejectsCleartext`) exercita `/healthz` (200) e `/runs/{id}/steer` (202);
+      SSE e `/dsar/erase` partilham o **mesmo** `http.Server`/listener/config TLS, cobertos **por
+      construção** — asserção independente das três superfícies fica como melhoria de cobertura, não
+      correcção de defeito.)*
+- [x] **ENTREGUE** — **Extensão do bind-guardrail (quarta conjunção).** O `controlAuthenticated()` de
       `packages/cmd/aos/api.go:946` já exige `SteerAuth` + identidade real + ≥1 operador (AOS-193).
       Passa a exigir também **transporte cifrado**: um bind **não-loopback em texto-claro** é
       **RECUSADO** com o erro tipado próprio. É a mesma disciplina, não um mecanismo novo.
-- [ ] **Opt-out explícito e ruidoso** para quem termina TLS a montante: variável dedicada que
+      *(`guardCleartext(addr, transportEncrypted)` (`api.go:1175`, função pura) devolve `ErrRefuseCleartextBind`
+      no não-loopback em claro; loopback sempre permitido (retro-compat). `TestTLSCleartextNonLoopbackRefused`
+      prova a recusa e `TestTLSServesEncryptedAndRejectsCleartext`/`TestTLSNodeTerminationSatisfiesGuard`
+      provam o sentido oposto — não-vacuoso.)*
+- [x] **ENTREGUE** — **Opt-out explícito e ruidoso** para quem termina TLS a montante: variável dedicada que
       **declara** a terminação externa, com **aviso proeminente no banner** (no modelo do kill-switch de
       soberania, AOS-203) a dizer que o nó está a servir em claro e **por decisão de quem o configurou**.
       Em `AOS_MODE=production`, sem TLS **nem** opt-out declarado, o arranque **recusa**.
-- [ ] A **perna OTLP** do exporter usa TLS e autentica-se perante o colector (ou declara a ausência com
+      *(`AOS_TLS_EXTERNAL_TERMINATION` (`parseTLSExternalTermination`, `main.go:483`) — valor não-reconhecido
+      **aborta** (`ErrBadTLSExternalTermination`), nunca degrada para false; banner ruidoso de aviso.
+      `TestProductionRefusesWithoutTLSOrOptOut` (recusa `ErrProductionNeedsTLS`),
+      `TestProductionAcceptsOptOutWithBanner`, `TestProductionAcceptsNodeTLSNoBanner`,
+      `TestParseTLSExternalTerminationRejectsGarbage`.)*
+- [x] **ENTREGUE** — A **perna OTLP** do exporter usa TLS e autentica-se perante o colector (ou declara a ausência com
       eixo nomeado). Mantém-se o **fail-open** de AOS-173: uma falha de telemetria **nunca** quebra um run.
-- [ ] **mTLS do plano de controlo:** ou é entregue, ou fica **deferido com eixo nomeado** e entrada no
+      *(`hardenedOTLPTransport` (MinVersion TLS 1.2, suites AEAD/ECDHE, sem `InsecureSkipVerify`) no
+      `http.Client` da goroutine de flush, **fora** do caminho do run. `TestOTLPExporterOverTLS` prova
+      `Failed>0` contra colector não-confiável **sem quebrar o run** — fail-open preservado. A **autenticação
+      forte** perante o colector (mTLS/bearer) fica deferida com eixo — DEF-012, ver CA seguinte.)*
+- [x] **DEFERIDO (eixo nomeado)** — **mTLS do plano de controlo:** ou é entregue, ou fica **deferido com eixo nomeado** e entrada no
       `docs/governance/REGISTO-Deferimentos.md`. Não pode voltar a ficar numa nota entre parênteses.
-- [ ] `deploy/node/README.md` documenta certificados, rotação, o opt-out e a postura por `AOS_MODE`,
+      *(**Não entregue — deferido** por decisão do próprio ticket: `DEF-012` no registo (eixo **POR ATRIBUIR**
+      com nota `N-DEF-012`; gate deferrals EXIT=0 reconhece-o). A terminação TLS cifra e autentica o
+      **servidor** perante o cliente; a autenticação **mútua** por certificado de cliente do plano de controlo
+      e a autenticação forte perante o colector OTLP ficam por entregar. Não é lacuna aberta: o plano de
+      controlo já é autenticado na APLICAÇÃO por assinatura ed25519 no corpo (AOS-160), independente do
+      transporte.)*
+- [x] **ENTREGUE** — `deploy/node/README.md` documenta certificados, rotação, o opt-out e a postura por `AOS_MODE`,
       no estilo das secções de AOS-191/193/203.
+      *(Secção «Terminação TLS do ingresso» + linhas `AOS_TLS_CERT_PATH`/`AOS_TLS_KEY_PATH`/
+      `AOS_TLS_EXTERNAL_TERMINATION` na tabela de config, incluindo a exigência de produção `ErrProductionNeedsTLS`.)*
 
 **Critérios falsificáveis (provas negativas exigidas)**
 
-- [ ] Bind a `0.0.0.0` **sem** TLS e **sem** opt-out declarado ⇒ **recusa** (`ErrRefuse…`), com o
+- [x] **ENTREGUE** — Bind a `0.0.0.0` **sem** TLS e **sem** opt-out declarado ⇒ **recusa** (`ErrRefuse…`), com o
       output capturado. Hoje **aceita**.
-- [ ] Com TLS ligado, um cliente que fale HTTP em claro contra a porta TLS **falha**; o `aos steer`
+      *(`TestTLSCleartextNonLoopbackRefused` — `guardCleartext` devolve `ErrRefuseCleartextBind` no não-loopback em claro.)*
+- [x] **ENTREGUE** — Com TLS ligado, um cliente que fale HTTP em claro contra a porta TLS **falha**; o `aos steer`
       assinado sobre TLS **é aceite** (prova dos dois sentidos — não basta apertar).
-- [ ] `AOS_MODE=production` sem TLS nem opt-out ⇒ **não arranca**.
+      *(`TestTLSServesEncryptedAndRejectsCleartext` — cliente em claro contra porta TLS não obtém 200; `/steer`
+      assinado sobre TLS ⇒ 202 e a correcção chega ao `SteerChannel` (não-vacuoso).)*
+- [x] **ENTREGUE** — `AOS_MODE=production` sem TLS nem opt-out ⇒ **não arranca**.
+      *(`TestProductionRefusesWithoutTLSOrOptOut` — `ErrProductionNeedsTLS`.)*
 
 **Dependências:** AOS-166 (API e bind-guardrail), AOS-193 (guardrail que discrimina), AOS-167 (SSE —
 ligações longas sobre TLS), AOS-172 (DSAR), AOS-173 (exporter OTLP), AOS-168 (imagem/porta exposta).
