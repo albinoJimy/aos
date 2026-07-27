@@ -76,6 +76,7 @@ de índice e o detalhe lá.
 | `AOS_DURABLE_EXECUTION` | *(vazio ⇒ **DESLIGADA**)* | Execução durável — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180) e a [postura de produção](#postura-de-produção-de-aos_durable_execution--decisão-aos-203) decidida em AOS-203. |
 | `AOS_OPERATORS` | *(vazio ⇒ **default-deny**)* | Pubkeys dos operadores do canal de controlo — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). **Segurança:** vazio ⇒ `steer`/`pause` recusados **e** bind não-loopback recusado. |
 | `AOS_APPROVERS_FILE` | *(vazio ⇒ **four-eyes DESLIGADO**)* | Ficheiro JSON montado com a *roster* do dual-control — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). |
+| `AOS_RATIFIERS` | *(vazio ⇒ **toda a promoção NEGADA**)* | Pubkeys dos ratificadores do *promotion controller* (AOS-206) — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). **Segurança:** o controller é composto **sempre** pela via sancionada (freshness + nonce-store durável **forçados**); vazio ⇒ nenhum artefacto de auto-modificação pode ser promovido (`ratifier_unknown`). |
 | `AOS_OTLP_ENDPOINT` | *(vazio ⇒ **`NoopTracer`**, zero overhead)* | URL http(s) **absoluto** do colector OTLP/HTTP (ex.: `http://collector:4318`; o nó completa com `/v1/traces`). Presente ⇒ exporta os spans `invoke_agent`/`chat`[+custo]/`execute_tool`/`freeze` e os selos WORM. Um endpoint **malformado ABORTA** o arranque (`ErrBadOTLPEndpoint`) — o nó não sobe a fingir que exporta. A exportação em si é **fail-open** (a telemetria nunca derruba o nó). **Privacidade:** os spans transportam metadados de governação e custo, não conteúdo de *prompts*; ainda assim o destino é uma fronteira de dados — aponte-o para dentro do seu perímetro. |
 | `AOS_READER` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--reader`, transportada no header `X-Aos-Reader`. É a **identidade de leitura** declarada pelo cliente; com a soberania de leitura ligada, o **nó** é que a exige e a resolve — a CLI só a transporta. Ausente contra um nó soberano ⇒ `404`. |
 | `AOS_BOARD` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--board`, transportada no header `X-Aos-Board`. Board de governação do leitor, de onde o nó resolve a **região autorizada**. Ausente ou desconhecido contra um nó soberano ⇒ `404` (fail-closed). |
@@ -310,6 +311,7 @@ duas variáveis são o **único** caminho para os ligar no binário entregue.
 |---|---|---|
 | `AOS_OPERATORS` | *(vazio ⇒ **default-deny**)* | Registo `emitterID=hexpubkey,emitterID2=hexpubkey2` das **pubkeys** ed25519 dos operadores autorizados a emitir `steer`/`pause`. `hexpubkey` = **64 hex chars = 32 bytes**, a mesma codificação de `AOS_ISSUER_PUBKEY`. Vazio ⇒ o canal fica composto mas **inoperável** (todo o sinal leva `403`) **e o bind não-loopback é RECUSADO** (ver abaixo). |
 | `AOS_APPROVERS_FILE` | *(vazio ⇒ **four-eyes DESLIGADO**)* | Caminho de um **ficheiro JSON montado** com a *roster* de aprovadores do dual-control. Vazio ⇒ o `FourEyesGate` não é composto e `POST /runs/{id}/approve` responde `501` (desligado **por declaração**, não por avaria). |
+| `AOS_RATIFIERS` | *(vazio ⇒ **toda a promoção NEGADA**)* | Registo `principal=hexpubkey,principal2=hexpubkey2` das **pubkeys** ed25519 dos ratificadores de produção do *promotion controller* (AOS-159/AOS-206). `hexpubkey` = **64 hex chars = 32 bytes**, a mesma codificação de `AOS_OPERATORS`. A autoridade é **fixa** (`ratify:production`), pelo que — ao contrário dos aprovadores — é uma *env* plana e não um ficheiro. **Ao contrário do 4-eyes, NÃO gateia a composição:** o controller é composto **sempre** pela via sancionada `hitl.NewProductionRatificationGate` (freshness + nonce-store **durável** forçados; uma ratificação re-submetida após consumo ⇒ `ratification_replayed`). Vazio ⇒ composto mas **sem ratificadores** ⇒ nenhum artefacto de auto-modificação (skill/memória procedural) pode ser promovido (`ratifier_unknown`) — o banner declara-o. |
 
 **Fail-closed, sem degradação silenciosa** (a postura de `AOS_BOARD_REGIONS`/`AOS_DURABLE_EXECUTION`):
 uma entrada sem `=`, um `emitterID` vazio, uma pubkey que não seja hex de 32 bytes, ou um
@@ -319,6 +321,10 @@ depois recusa **todos** os sinais desse operador com `403`. O duplicado aborta e
 ganha" — dois valores para o mesmo `emitterID` são um conflito de autoridade, não uma preferência.
 O ficheiro de aprovadores segue a mesma regra: ilegível, JSON inválido, **campo desconhecido**
 (esquema em *drift*), lista vazia, principal duplicado ou autoridade vazia ⇒ **ABORTA**.
+`AOS_RATIFIERS` segue a gramática e o regime de `AOS_OPERATORS`: entrada sem `=`, `principal`
+vazio, pubkey não-hex-de-32-bytes, ou `principal` **duplicado** ⇒ **ABORTA** (`ErrBadRatifiers`) —
+um ratificador silenciosamente descartado daria um nó a contar "N ratificador(es)" no banner que
+recusaria com `ratifier_unknown` toda a ratificação desse principal.
 
 Duas regras adicionais, que valem **nos dois** caminhos (env e ficheiro) e também para quem compõe
 `Config` in-process — o `Bootstrap` impõe-as antes de compor seja o que for:

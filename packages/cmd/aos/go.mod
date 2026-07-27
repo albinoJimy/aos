@@ -6,6 +6,7 @@ require (
 	github.com/aos-ref/control-plane/governance/dsar v0.0.0
 	github.com/aos-ref/control-plane/governance/hitl v0.0.0
 	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0
+	github.com/aos-ref/control-plane/pdp v0.0.0
 	github.com/aos-ref/integration v0.0.0
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
@@ -14,15 +15,14 @@ require (
 	github.com/aos-ref/platform/registry v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
 	github.com/aos-ref/substrate/otel-genai v0.0.0
+	github.com/aos-ref/substrate/sandbox v0.0.0
 )
 
 require (
 	github.com/aos-ref/control-plane/governance/autonomy v0.0.0 // indirect
-	github.com/aos-ref/control-plane/pdp v0.0.0 // indirect
 	github.com/aos-ref/platform/memory v0.0.0 // indirect
 	github.com/aos-ref/platform/messaging v0.0.0 // indirect
 	github.com/aos-ref/platform/model-gateway v0.0.0 // indirect
-	github.com/aos-ref/substrate/sandbox v0.0.0 // indirect
 	github.com/cedar-policy/cedar-go v1.8.0 // indirect
 	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 )

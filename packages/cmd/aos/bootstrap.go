@@ -208,6 +208,26 @@ type Config struct {
 	// Approvers regista os aprovadores do FourEyesGate. Vazio ⇒ o gate não é composto.
 	Approvers []ApproverConfig
 
+	// --- Promotion controller / ratificação de produção (AOS-159/AOS-206) ------
+	// Ratifiers regista os ratificadores de PRODUÇÃO pinados do promotion controller
+	// (principal + pubkey; autoridade fixa "ratify:production"). Ao contrário de Approvers,
+	// NÃO gateia a composição: o promotion controller é SEMPRE composto (ver [PromotionController]).
+	// Vazio ⇒ o controller é composto na mesma mas toda a promoção é NEGADA fail-closed
+	// (ratifier_unknown) e o banner declara-o. Um roster inútil é fail-closed ([ErrBadRatifierEntry]).
+	Ratifiers []RatifierConfig
+	// PromotionEval é o eval-gate (pré-condição eval-gate+canary) do promotion controller.
+	// nil ⇒ referência fail-closed [otelgenai.FailClosedGate] (score >= [defaultPromotionMinScore]).
+	// O eval-gate CONCRETO da política de promoção (AOS-114/115) fica DEFERIDO.
+	PromotionEval otelgenai.EvalGate
+	// RatifyTTL é a janela de frescura da ratificação. <=0 ⇒ [defaultRatifyTTL]. A via
+	// sancionada EXIGE ttl > 0 ([hitl.ErrNoFreshness]); o nó satisfá-la sempre.
+	RatifyTTL time.Duration
+	// RatifySkew tolera ratificações com IssuedAt ligeiramente no futuro (relógios adiantados).
+	RatifySkew time.Duration
+	// RatifyClock injecta o relógio do gate de ratificação (frescura/selo). nil ⇒ [time.Now].
+	// Uso interno/testes deterministas.
+	RatifyClock func() time.Time
+
 	// --- Soberania/conformidade de leitura (AOS-172, E7) -----------------------
 	// BoardRegions é o registo DEMO-GRADE board→região autorizada (AOS-094/ADR-011) que o
 	// READ-PATH SOBERANO (D7) consulta para autorizar o leitor por-chamador e resolver a região
@@ -315,6 +335,12 @@ type Node struct {
 	Steer *control.SteerChannel
 	// FourEyes é o gate de dual-control (AOS-162); nil se não configurado.
 	FourEyes *integration.FourEyesGate
+	// Promotion é o promotion controller (AOS-159/AOS-206): a via SANCIONADA
+	// [hitl.NewProductionRatificationGate] (freshness + nonce-store durável FORÇADOS) que
+	// interpõe a ratificação humana assinada entre o canary e a produção de um artefacto de
+	// auto-modificação. NUNCA é nil — é composto INCONDICIONALMENTE (ver [PromotionController]);
+	// sem ratificadores registados, toda a promoção é negada fail-closed (ratifier_unknown).
+	Promotion *PromotionController
 	// Authority é a autoridade de identidade AOS-156 (detém a chave, encapsulada). No
 	// nó de referência serve a superfície de emissão (mint) do operador/admin. É NIL no
 	// modo endurecido (trust-anchor-only): a autoridade corre FORA do processo e o nó
@@ -469,6 +495,12 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			return nil, fmt.Errorf("%w: principals %q e %q partilham a MESMA pubkey (o dual-control seria satisfeito por UMA chave privada)", ErrBadApproverEntry, other, a.Principal)
 		}
 		seenApKey[fp] = a.Principal
+	}
+	// RATIFICADORES do promotion controller (AOS-206), a par das duas guardas acima: um roster
+	// inútil (pubkey de tamanho errado, principal duplicado, pubkey partilhada) é fail-closed
+	// ANTES de compor o gate — senão o banner contaria ratificadores que nunca ratificam.
+	if err := validateRatifiers(cfg.Ratifiers); err != nil {
+		return nil, err
 	}
 
 	// (1b) FAIL-CLOSED da EXECUÇÃO DURÁVEL (AOS-191). Pedir execução durável sobre um
@@ -681,6 +713,30 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 	}
 
+	// (5b) PROMOTION CONTROLLER (AOS-159/AOS-206, achado DEF-03). SEMPRE composto (ver
+	// [PromotionController]), pela via SANCIONADA [hitl.NewProductionRatificationGate] — que
+	// FORÇA freshness + nonce-store durável e RECUSA a construção sem eles. O nonce-store é
+	// DURÁVEL sobre o MESMO Event Store dos turnos/sinais (molde de AOS-159/AOS-160/AOS-162);
+	// o eval-gate é a referência fail-closed (ou o injectado); o WORM do nó sela a decisão. O
+	// crú [hitl.NewRatificationGate] (anti-replay opcional) NÃO é chamado. Sem ratificadores
+	// registados, o gate é composto na mesma mas toda a promoção é NEGADA (ratifier_unknown) —
+	// o default seguro, declarado no banner.
+	promotionEval := cfg.PromotionEval
+	if promotionEval == nil {
+		promotionEval = otelgenai.FailClosedGate{MinScore: defaultPromotionMinScore}
+	}
+	promotion, err := newPromotionController(
+		promotionEval,
+		buildRatifierRegistry(cfg.Ratifiers),
+		worm, es,
+		cfg.RatifyTTL, cfg.RatifySkew,
+		len(cfg.Ratifiers),
+		cfg.RatifyClock,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("aos: promotion controller (AOS-159/AOS-206): %w", err)
+	}
+
 	// (6) COLABORADORES NÃO-IDENTIDADE — defaults de REFERÊNCIA (o foco é a identidade).
 	model := cfg.Model
 	if model == nil {
@@ -841,6 +897,16 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("four-eyes gate (AOS-162): DESLIGADO (sem aprovadores) — POST /runs/{id}/approve responde 501; defina AOS_APPROVERS_FILE=<ficheiro JSON montado> para o compor")
 	}
+	// PROMOTION CONTROLLER (AOS-159/AOS-206). O banner declara o estado REALMENTE COMPOSTO (a
+	// via sancionada com anti-replay SEMPRE ligado) e a cardinalidade REAL de ratificadores
+	// (lida do controller, não da intenção da config) — um roster vazio é declarado como tal,
+	// sem capacidade-fantasma.
+	if n := promotion.RatifierCount(); n > 0 {
+		log("promotion controller (AOS-159/AOS-206) composto via NewProductionRatificationGate — freshness+nonce-store DURAVEL FORCADOS; %d ratificador(es) pinado(s) via AOS_RATIFIERS; ratificacao re-submetida apos consumo => ratification_replayed", n)
+	} else {
+		log("promotion controller (AOS-159/AOS-206) composto via NewProductionRatificationGate (freshness+nonce-store DURAVEL FORCADOS) mas SEM RATIFICADORES — toda a promocao sera NEGADA (ratifier_unknown); defina AOS_RATIFIERS=\"principal=hexpubkey\" para pinar ratificadores")
+	}
+	log("NOTA promotion controller: a capacidade e alcancavel PELO CAMINHO DO NO (node.Promotion.Promote, provada em teste); a submissao de ratificacoes pelo operador (endpoint HTTP/subcomando CLI) fica DEFERIDA — depende de AOS-096/pipeline de promocao")
 	log("substrato: %s", substrateMode(cfg))
 	// EXECUÇÃO DURÁVEL (AOS-180/AOS-191). O banner declara o estado REALMENTE COMPOSTO
 	// (não a intenção da config) e sobre que substrato — para que um operador nunca tenha
@@ -876,6 +942,7 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Runtime:      sec,
 		Steer:        steer,
 		FourEyes:     foureyes,
+		Promotion:    promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
 		Authority:    authority, // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:     verifier,
 		SteerAuth:    steerAuth,

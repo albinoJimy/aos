@@ -75,6 +75,18 @@ var ErrBadOperators = errors.New("aos: AOS_OPERATORS invalida (esperado \"emitte
 // privada satisfaz (capacidade anunciada e não cumprida, na versão perigosa).
 var ErrBadApproversFile = errors.New("aos: AOS_APPROVERS_FILE invalido (esperado JSON {\"approvers\":[{\"principal\":..., \"pubkey\":\"<64 hex>\", \"authority\":[\"approve:safe|gray|danger\"]}]} — ficheiro ilegivel, esquema invalido, principal duplicado, MESMA pubkey em dois principals, capability fora do vocabulario, autoridade vazia ou lista vazia abortam em vez de deixarem o four-eyes silenciosamente DESLIGADO ou ANULADO)")
 
+// ErrBadRatifiers — AOS_RATIFIERS presente mas com uma entrada MALFORMADA (sem '=', com
+// principal vazio, com pubkey que não é ed25519 hex de 32 bytes, com principal DUPLICADO, ou com
+// a MESMA pubkey em dois principals). Fail-closed de CONFIG do PROMOTION CONTROLLER (AOS-206), no
+// padrão exacto de [ErrBadOperators]: distingue "não configurado" (vazio ⇒ o controller é composto
+// na mesma mas toda a promoção é negada com ratifier_unknown) de "configurado mas inválido"
+// (aborta). Sem esta porta, [Config.Ratifiers] seria INALCANÇÁVEL pelo binário entregue (Config
+// vive em `package main`) — o MESMO defeito de campo-fantasma (DEF-03/REG-01) que este ticket
+// fecha. O DUPLICADO e a pubkey partilhada abortam em vez de "o último ganha": duas linhas com o
+// mesmo principal (autoridade por acidente de ordenação) ou uma chave por dois nomes (não-repúdio
+// da ratificação satisfeito por UMA chave privada) são conflitos, não preferências.
+var ErrBadRatifiers = errors.New("aos: AOS_RATIFIERS invalida (esperado \"principal=hexpubkey,principal2=hexpubkey2\" com pubkey ed25519 de 64 hex chars = 32 bytes — entrada malformada, principal duplicado ou a MESMA pubkey em dois principals abortam em vez de degradar silenciosamente para um ratificador que nunca ratifica ou sem atribuicao de nao-repudio)")
+
 // ErrProductionNeedsTLS — sob AOS_MODE=production o ingresso NÃO pode ser servido em
 // texto-claro por engano (AOS-209). Exige-se OU a terminação TLS no nó
 // (AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH) OU a DECLARAÇÃO explícita de terminação a montante
@@ -286,6 +298,19 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	// PROMOTION CONTROLLER / RATIFICAÇÃO DE PRODUÇÃO (AOS-159/AOS-206) — RATIFICADORES por
+	// ambiente (AOS_RATIFIERS). É o caminho que faltava (achado DEF-03): o promotion controller
+	// é SEMPRE composto pela via sancionada, mas sem esta porta [Config.Ratifiers] era
+	// INALCANÇÁVEL pelo binário e o gate nunca teria um ratificador autorizado — toda a promoção
+	// negada com ratifier_unknown, sem forma de a religar sem forkar e recompilar. A gramática é
+	// a de [parseOperators] (principal=hexpubkey): a autoridade é FIXA ("ratify:production"),
+	// pelo que — ao contrário dos aprovadores — não há []Authority por entrada e uma env plana
+	// chega. SÓ MATERIAL PÚBLICO: a chave PRIVADA do ratificador assina FORA do nó.
+	ratifiers, err := parseRatifiers(os.Getenv("AOS_RATIFIERS"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	// Trust-anchor-only ENDURECIDO: se AOS_ISSUER_PUBKEY estiver presente, o nó recebe só
 	// a pubkey do issuer (a autoridade/chave vivem FORA do processo). É o modo de fronteira
 	// de produção. Fail-closed: uma pubkey malformada aborta.
@@ -352,6 +377,11 @@ func nodeConfigFromEnv() (Config, error) {
 		// (já validados fail-closed acima). Vazio ⇒ o gate NÃO é composto e POST
 		// /runs/{id}/approve devolve 501 (endpoint declaradamente desligado, não uma falha).
 		Approvers: approvers,
+		// PROMOTION CONTROLLER (AOS-159/AOS-206): ratificadores lidos de AOS_RATIFIERS (já
+		// validados fail-closed acima). O controller é composto SEMPRE (via sancionada,
+		// freshness+nonce durável forçados); vazio ⇒ composto mas toda a promoção negada
+		// (ratifier_unknown), declarado no banner. A janela de frescura usa o default do nó.
+		Ratifiers: ratifiers,
 	}
 
 	// DURABILIDADE DA IDENTIDADE (AOS-170) por ambiente, SÓ no modo de REFERÊNCIA. Um
@@ -734,6 +764,73 @@ func parseOperators(s string) (map[string]ed25519.PublicKey, error) {
 	if len(out) == 0 {
 		// Só houve segmentos vazios (ex.: ",," ou ", ") — configurado mas sem entrada válida.
 		return nil, fmt.Errorf("%w: nenhuma entrada valida em %q", ErrBadOperators, s)
+	}
+	return out, nil
+}
+
+// parseRatifiers interpreta AOS_RATIFIERS (AOS-206) — o registo principal→PUBKEY dos
+// ratificadores de PRODUÇÃO autorizados a ratificar a promoção de um artefacto de
+// auto-modificação (skill/memória procedural, AOS-096) — na forma
+// "principal=hexpubkey,principal2=hexpubkey2".
+//
+// FORMATO: é DELIBERADAMENTE a gramática de [parseOperators] (mesmo separador de entradas, mesmo
+// separador chave/valor, mesma tolerância a segmentos vazios) com o valor codificado como em
+// AOS_ISSUER_PUBKEY (32 bytes ed25519 em hex). Ao contrário dos aprovadores do FourEyes — que
+// trazem uma autoridade []string por entrada e por isso vão num ficheiro JSON montado — o
+// ratificador tem uma autoridade FIXA ("ratify:production", [hitl.DefaultRatifyAuthority]), pelo
+// que não há nada a variar por entrada e uma env plana representa o roster sem perda.
+//
+// FAIL-CLOSED e sem degradação silenciosa (idêntico a [parseOperators]):
+//
+//   - VAZIO (ou só espaços) ⇒ (nil, nil): "não configurado". O promotion controller é composto na
+//     mesma (via sancionada, anti-replay forçado) mas SEM ratificadores ⇒ toda a promoção é
+//     NEGADA (ratifier_unknown). É um estado válido e declarado no banner, não um erro.
+//   - segmentos VAZIOS entre vírgulas (ex.: vírgula final) são tolerados (ruído de formatação).
+//   - entrada sem '=', principal vazio, pubkey vazia/não-hex/de tamanho != 32 bytes, ou principal
+//     DUPLICADO ⇒ [ErrBadRatifiers]: ABORTA (o último NÃO ganha — é conflito de autoridade).
+//   - dois principals DIFERENTES com a MESMA pubkey ⇒ [ErrBadRatifiers]: ABORTA. UMA chave privada
+//     satisfaria o não-repúdio de dois nomes, destruindo a atribuição da ratificação assinada.
+//
+// SÓ PUBKEYS. A chave PRIVADA do ratificador assina FORA do nó (no dispositivo do humano) e NUNCA
+// entra aqui.
+func parseRatifiers(s string) ([]RatifierConfig, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil // não configurado ⇒ controller composto mas sem ratificadores (não é um erro).
+	}
+	var out []RatifierConfig
+	seenPrincipal := make(map[string]struct{})
+	seenKey := make(map[string]string) // hex da pubkey → principal que a trouxe (colisão de chave).
+	for _, pair := range strings.Split(s, ",") {
+		if strings.TrimSpace(pair) == "" {
+			continue // segmento vazio (ex.: vírgula final) ⇒ ruído tolerável, não um typo.
+		}
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("%w: entrada %q sem '=' (esperado principal=hexpubkey)", ErrBadRatifiers, strings.TrimSpace(pair))
+		}
+		principal, rawKey := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		if principal == "" {
+			return nil, fmt.Errorf("%w: entrada %q com principal vazio", ErrBadRatifiers, strings.TrimSpace(pair))
+		}
+		if _, dup := seenPrincipal[principal]; dup {
+			return nil, fmt.Errorf("%w: principal %q duplicado (conflito de autoridade — o ultimo NAO ganha)", ErrBadRatifiers, principal)
+		}
+		pub, err := parseEd25519PubHex(rawKey)
+		if err != nil {
+			// A pubkey NÃO é ecoada no erro: identifica-se a entrada pelo principal.
+			return nil, fmt.Errorf("%w: principal %q com pubkey invalida (esperado 64 hex chars = 32 bytes ed25519)", ErrBadRatifiers, principal)
+		}
+		fp := hex.EncodeToString(pub)
+		if other, dup := seenKey[fp]; dup {
+			return nil, fmt.Errorf("%w: principals %q e %q partilham a MESMA pubkey (o nao-repudio da ratificacao deixaria de distinguir quem ratificou)", ErrBadRatifiers, other, principal)
+		}
+		seenKey[fp] = principal
+		seenPrincipal[principal] = struct{}{}
+		out = append(out, RatifierConfig{Principal: principal, PubKey: pub})
+	}
+	if len(out) == 0 {
+		// Só houve segmentos vazios (ex.: ",," ou ", ") — configurado mas sem entrada válida.
+		return nil, fmt.Errorf("%w: nenhuma entrada valida em %q", ErrBadRatifiers, s)
 	}
 	return out, nil
 }

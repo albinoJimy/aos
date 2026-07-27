@@ -184,8 +184,11 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-305 | DOCUMENTAL | packages/kernel/agent-runtime/replay/nondeterminism_capture.go | Idem no capturer de não-determinismo (2 ocorrências), com o eixo antigo `EPIC-13` | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 | ABERTO |
 | DEF-306 | DOCUMENTAL | tecnica/14_Matriz_Conformidade.md | «Eixo declarado» da cifra por titular do substrato aponta EPIC-06/09/10 (ficheiro de outro pipeline — ver pendência P-2) | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 | ABERTO |
 | DEF-307 | DOCUMENTAL | tecnica/17_Analise_STRIDE.md | Alcance do crypto-shredding: o conteúdo dos runs fica fora, com eixo `EPIC-09/10` | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 | ABERTO |
-| DEF-401 | DOCUMENTAL | docs/adr/ADR-012-semver-eval-gate.md | **Anti-replay da ratificação.** Freshness+nonce são portas opcionais desligadas por omissão; `NewProductionRatificationGate` não tem chamador de produção porque o nó não compõe promotion controller | AOS-159 entregue (mecanismo); wiring de produção AOS-206 | Responsável de Segurança | Existir um caminho de promoção/auto-modificação composto no nó | ABERTO |
-| DEF-402 | DOCUMENTAL | specs/EPIC-14_Integracao_Composition_Root.md | CA de AOS-159 «ligados no promotion controller» estava `[x]` e era falso; corrigido para `[ ]` por AOS-196 | AOS-159; wiring AOS-206 | Responsável de Segurança | Idem DEF-401 | ABERTO |
+| DEF-401 | DOCUMENTAL | docs/adr/ADR-012-semver-eval-gate.md | **Anti-replay da ratificação.** Freshness+nonce eram portas opcionais desligadas por omissão; `NewProductionRatificationGate` não tinha chamador de produção porque o nó não compunha promotion controller. **FECHADO por AOS-206:** o nó compõe agora `PromotionController` (`packages/cmd/aos/promotion.go`) pela via sancionada `hitl.NewProductionRatificationGate` (freshness+nonce durável FORÇADOS); `TestNodePromotionController_ReplayBlockedThroughNode` prova `ratification_replayed` pelo caminho do nó | AOS-159 (mecanismo); wiring de produção AOS-206 | Responsável de Segurança | Existir um caminho de promoção/auto-modificação composto no nó — **SATISFEITO por AOS-206** | FECHADO-RESIDUAL |
+| DEF-402 | DOCUMENTAL | specs/EPIC-14_Integracao_Composition_Root.md | CA de AOS-159 «ligados no promotion controller» estava `[x]` e era falso; corrigido para `[ ]` por AOS-196. **FECHADO por AOS-206:** o CA voltou a `[x]` com chamador de produção real e prova de ápice+negativa (guarda de fonte `TestNode_UsesSanctionedRatificationPathOnly`) | AOS-159; wiring AOS-206 | Responsável de Segurança | Idem DEF-401 — **SATISFEITO por AOS-206** | FECHADO-RESIDUAL |
+| DEF-403 | DEFERIDO | packages/cmd/aos/promotion.go | **Eval-gate CONCRETO da política de promoção.** O `PromotionController` (AOS-206) interpõe a via sancionada mas usa a referência fail-closed `otelgenai.FailClosedGate` como pré-condição eval-gate+canary; o gate de eval CONCRETO da política de promoção fica deferido (mesmo subject de DEF-009, agora visível no chamador do nó) | AOS-114, AOS-115 | Arquitecto de Plataforma | Existir eval-gate concreto de política de promoção composto no caminho do nó (idem DEF-009) | MITIGADO |
+| DEF-404 | DEFERIDO | packages/cmd/aos/bootstrap.go | Idem DEF-403 no seam `Config.PromotionEval` (default fail-closed `otelgenai.FailClosedGate` quando não injectado) — o eval-gate concreto da política de promoção não é composto no ápice | AOS-114, AOS-115 | Arquitecto de Plataforma | Idem DEF-403 | MITIGADO |
+| DEF-405 | DEFERIDO | packages/cmd/aos/bootstrap.go | **Superfície de INVOCAÇÃO da promoção pelo operador.** A ratificação de promoção (AOS-206) é alcançável PELO CAMINHO DO NÓ (`node.Promotion.Promote`, provada em teste), mas o binário não expõe I/O (endpoint HTTP nem subcomando CLI) que a submeta — ao contrário do FourEyesGate (`POST /runs/{id}/approve`) | AOS-096 | Responsável de Segurança | Existir pipeline de promoção/canary (AOS-096) que submeta ratificações ao controller | ABERTO |
 | DEF-501 | DOCUMENTAL | docs/adr/ADR-017-supply-chain-node.md | **Assinatura/atestação de imagem.** SBOM é gerado; a atestação fica por assinar e não há registry de imagens assinado | AOS-207 | Arquitecto de Plataforma | Primeiro release distribuído do nó fora do repositório | ABERTO |
 | DEF-502 | DOCUMENTAL | docs/adr/ADR-018-fronteira-no-orq-sch.md | Secção «O que muda no distribuído» deferida a EPIC-10 sem nomear ticket na linha | AOS-098, AOS-099, AOS-100 | Arquitecto de Plataforma | Passagem do nó a multi-processo/multi-nó | ABERTO |
 | DEF-601 | STUB | packages/kernel/reference-monitor/doc.go | O pacote entrega o RM com STUBS NEUTROS; identidade, política, orçamento, egress e audit reais chegam noutros tickets | AOS-004, AOS-005, AOS-011, AOS-087 | Arquitecto de Plataforma | Substituição dos hooks neutros no ápice de produção | MITIGADO |
@@ -233,7 +236,7 @@ cada execução.)*
 | packages/cmd/aos-demo/main.go | DEMO-GRADE | 6 |
 | packages/cmd/aos-demo/main.go | STUB | 3 |
 | packages/cmd/aos/api.go | DEFERIDO | 3 |
-| packages/cmd/aos/bootstrap.go | DEFERIDO | 6 |
+| packages/cmd/aos/bootstrap.go | DEFERIDO | 8 |
 | packages/cmd/aos/bootstrap.go | DEMO-GRADE | 10 |
 | packages/cmd/aos/bootstrap.go | STUB | 1 |
 | packages/cmd/aos/dsar.go | DEFERIDO | 1 |
@@ -241,6 +244,7 @@ cada execução.)*
 | packages/cmd/aos/main.go | DEFERIDO | 1 |
 | packages/cmd/aos/main.go | DEMO-GRADE | 2 |
 | packages/cmd/aos/otlpexporter.go | DIFERIDO | 2 |
+| packages/cmd/aos/promotion.go | DEFERIDO | 1 |
 | packages/cmd/aos/service.go | DEFERIDO | 1 |
 | packages/cmd/aos/sovereignty.go | CONDICIONAL | 1 |
 | packages/cmd/aos/sovereignty.go | DEFERIDO | 3 |

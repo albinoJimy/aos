@@ -655,13 +655,22 @@ chamador de produção existir** (desmarcado por AOS-196, `d33c0ff`). O ADR-012 
 
 **Critérios de aceitação**
 
-- [ ] O nó `aos` compõe um *promotion controller* real. Facto de partida: procurar `promotion` ou
-      `Promote` em `packages/cmd/aos/*.go` (não-teste) devolve **zero** ocorrências.
-- [ ] Esse controller usa a via sancionada `hitl.NewProductionRatificationGate`, que **força**
+- [x] O nó `aos` compõe um *promotion controller* real. — **FEITO**: `PromotionController`
+      (`packages/cmd/aos/promotion.go`), composto INCONDICIONALMENTE no `Bootstrap` passo (5b) e
+      exposto em `Node.Promotion`; `Promote` delega no gate de produção. `grep promotion|Promote`
+      em `packages/cmd/aos/*.go` não-teste passou de **zero** a não-zero.
+- [x] Esse controller usa a via sancionada `hitl.NewProductionRatificationGate`, que **força**
       `WithRatifyFreshness` + `WithRatifyNonceStore` e recusa a construção sem eles — **não**
-      `NewRatificationGate` cru.
-- [ ] **Falsificável:** um teste de ápice em que a mesma ratificação, re-submetida após consumo,
-      devolve `ReasonRatificationReplayed` **através do caminho do nó**, não do gate isolado.
+      `NewRatificationGate` cru. — **FEITO**: `newPromotionController` chama só a via sancionada
+      (nonce-store durável `hitl.NewEventStoreNonceStore(es)` + janela de frescura); guarda de fonte
+      `TestNode_UsesSanctionedRatificationPathOnly` prova que `NewRatificationGate(` cru não é
+      chamado em nenhum ficheiro de produção do nó (prova negativa, CA4).
+- [x] **Falsificável:** um teste de ápice em que a mesma ratificação, re-submetida após consumo,
+      devolve `ReasonRatificationReplayed` **através do caminho do nó**, não do gate isolado. —
+      **FEITO**: `TestNodePromotionController_ReplayBlockedThroughNode` promove por
+      `node.Promotion.Promote` (1ª ⇒ `ratified`) e, re-submetendo a MESMA `SignedApproval`, obtém
+      `admit=false` com `ratification_replayed` selado no WORM do nó (só alcançável com o nonce-store
+      durável da via sancionada composto — não-vácuo).
 
 **Dependências:** AOS-159 (mecanismo), AOS-096.
 **Fecha no registo:** DEF-401, DEF-402.
