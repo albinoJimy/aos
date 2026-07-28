@@ -149,6 +149,12 @@ type Claims struct {
 	Email string
 	// Issuer é o iss verificado (== Config.Issuer).
 	Issuer string
+	// Board é o claim `board` VERIFICADO (soberania de leitura, AOS-205): a fronteira de
+	// governação a que o titular pertence, tal como o IdP a assere. É devolvido do MESMO
+	// payload que a assinatura cobre, pelo que um chamador NÃO o pode forjar num header
+	// cru — quem consome o read-path soberano deriva o board DAQUI, não de um cabeçalho
+	// auto-declarado. Vazio quando o IdP não emite o claim (o consumidor decide se o exige).
+	Board string
 }
 
 // Verifier valida ID-tokens OIDC contra um issuer/JWKS fixos. Concorrente-seguro; a
@@ -290,6 +296,7 @@ type idClaims struct {
 	Nonce string   `json:"nonce"`
 	Jti   string   `json:"jti"`
 	Email string   `json:"email"`
+	Board string   `json:"board"` // fronteira de soberania asserida pelo IdP (AOS-205)
 }
 
 // audience aceita tanto uma string como um array de strings no claim aud (ambos são
@@ -446,7 +453,7 @@ func (v *Verifier) Validate(ctx context.Context, rawIDToken string) (Claims, err
 		}
 	}
 
-	return Claims{Subject: c.Sub, Email: c.Email, Issuer: c.Iss}, nil
+	return Claims{Subject: c.Sub, Email: c.Email, Issuer: c.Iss, Board: c.Board}, nil
 }
 
 // checkReplay regista e detecta reutilização de (iss,jti). Recusa [ErrTokenReplayed] se

@@ -631,17 +631,39 @@ provisionamento: a decisão estava registada, o ticket é que nunca existiu.
 
 **Critérios de aceitação**
 
-- [ ] O registo board→região deixa de ser lido de `AOS_BOARD_REGIONS` e passa a vir de uma fonte de
-      autoridade da organização, com **rotação** e **auditoria de alterações**.
-- [ ] Os headers `X-Aos-Reader`/`X-Aos-Board` deixam de ser **auto-declarados**: o leitor de governação
-      e o operador DSAR apresentam credencial forte (OIDC/mTLS) verificada contra esse IdP.
-- [ ] Em `AOS_MODE=production`, arrancar sem essa fonte **recusa** — hoje já recusa sem soberania
-      configurada, mas aceita a configuração *self-hosted* como se fosse autoridade.
-- [ ] **Falsificável:** um pedido com `X-Aos-Board` forjado (board válido, credencial ausente ou de
-      outro titular) é **recusado**; hoje passa.
+- [x] O registo board→região deixa de ser lido de `AOS_BOARD_REGIONS` e passa a vir de uma fonte de
+      autoridade da organização, com **rotação** e **auditoria de alterações**. — **FEITO**:
+      `SovereignRegionAuthority` (`packages/cmd/aos/sovereign_authority.go`) embrulha a regra
+      `govsov.Registry` (AOS-094, NÃO duplicada) numa porta com `Rotate` (revisão monotónica) e SELA
+      cada provisionamento/rotação na hash-chain WORM (partição `gov.sovereignty.authority`, sem PII);
+      `AOS_BOARD_REGIONS` passou a ser a **semente**, não a verdade congelada. Prova:
+      `TestSovereignAuthorityProvisionAndRotateAudited` (selos verificáveis, revisão sobe, resolução
+      muda) e `TestSovereignAuthorityRequiresWORM` (sem WORM não é autoridade).
+- [x] Os headers `X-Aos-Reader`/`X-Aos-Board` deixam de ser **auto-declarados**: o leitor de governação
+      e o operador DSAR apresentam credencial forte (OIDC/mTLS) verificada contra esse IdP. — **FEITO**:
+      `readGovernance.authorize` (`packages/cmd/aos/sovereignty.go`) deriva o board/reader das CLAIMS
+      VERIFICADAS quando a credencial está composta; `oidcReadCredential`
+      (`packages/cmd/aos/read_credential.go`) reutiliza o verifier REAL de AOS-174
+      (`oidc.Verifier.Validate`, claim `board` acrescentado a `oidc.Claims`), sem reimplementar
+      verificação. O endpoint DSAR (`dsar.go`) reutiliza o mesmo gate. mTLS fica como impl alternativa
+      da mesma porta (`readCredentialVerifier`).
+- [x] Em `AOS_MODE=production`, arrancar sem essa fonte **recusa** — hoje já recusa sem soberania
+      configurada, mas aceita a configuração *self-hosted* como se fosse autoridade. — **FEITO**:
+      `ErrProductionNeedsSovereignAuthority` (`packages/cmd/aos/main.go`) — produção exige
+      `AOS_SOVEREIGN_OIDC_ISSUER`+`AOS_SOVEREIGN_OIDC_AUDIENCE` (config incompleta ⇒ `ErrBadSovereignOIDC`).
+      Prova: `TestRunProductionRequiresSovereignAuthority` e `TestRunRejectsIncompleteSovereignOIDC`.
+- [x] **Falsificável:** um pedido com `X-Aos-Board` forjado (board válido, credencial ausente ou de
+      outro titular) é **recusado**; hoje passa. — **FEITO**:
+      `TestReadPathForgedBoardRejectedCredentialAccepted` — (A) header `X-Aos-Board=govBoard` sem
+      credencial ⇒ 404; (B) header a forjar `govBoard` mas credencial verificada afirma outro board ⇒
+      404 (o header é ignorado, a claim decide); (C) credencial VÁLIDA com `board=govBoard` ⇒ 200. Os
+      tokens são mintados em runtime por um IdP OIDC de teste com chave EFÉMERA (molde de AOS-174, sem
+      segredos em código). Não-vacuo: prova o DENY e o PERMIT.
 
 **Dependências:** AOS-094 (regra de soberania), AOS-174 (`HumanDirectory` OIDC), AOS-182.
-**Fecha no registo:** DEF-201, DEF-203…DEF-211.
+**Fecha no registo:** DEF-201, DEF-203…DEF-211 (⇒ `MITIGADO`); acrescenta DEF-212/DEF-213
+(`sovereign_authority.go`, residual do tenant concreto). Deferido com eixo: o **tenant concreto** do
+IdP de soberania (o nó fica com o CONTRATO — fonte rotacionável+auditada e verificação de credencial).
 
 ---
 

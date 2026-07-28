@@ -51,6 +51,7 @@ import (
 	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 	pdp "github.com/aos-ref/control-plane/pdp"
 	integration "github.com/aos-ref/integration"
+	oidc "github.com/aos-ref/integration/oidc"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
@@ -244,6 +245,19 @@ type Config struct {
 	// Entradas com board OU região vazios são descartadas por [govsov.NewRegistry].
 	BoardRegions map[string]string
 
+	// --- Soberania de leitura: FONTE DE AUTORIDADE + CREDENCIAL FORTE (AOS-205) ---
+	// SovereignReadOIDC configura o verificador OIDC (AOS-174) da CREDENCIAL FORTE do leitor de
+	// governação / operador DSAR: quando presente, o read-path soberano EXIGE um ID-token OIDC
+	// verificado e DERIVA o board/reader das CLAIMS VERIFICADAS (o header X-Aos-Board deixa de
+	// autorizar). nil ⇒ via LEGADA por headers demo-grade (aceite só FORA de produção — a
+	// produção exige-o, ver [ErrProductionNeedsSovereignAuthority] em main.go). O TENANT concreto
+	// (issuer/audience reais) é config: o provisionamento do IdP de soberania da organização fica
+	// DEFERIDO, o nó fica com o CONTRATO (verifica a credencial e deriva claims).
+	SovereignReadOIDC *oidc.Config
+	// SovereignClock injecta o relógio da AUDITORIA de alterações da [SovereignRegionAuthority]
+	// (selos de provisionamento/rotação). nil ⇒ time.Now. Uso interno/testes deterministas.
+	SovereignClock func() time.Time
+
 	// --- Colaboradores NÃO-identidade (defaults de REFERÊNCIA) -----------------
 	// O foco de AOS-163 é a composição de SEGURANÇA/IDENTIDADE real; estes podem vir por
 	// config OU cair para um default de referência para o nó arrancar. O Model Gateway
@@ -382,11 +396,19 @@ type Node struct {
 	Ingestion *integration.IngestionGateway
 
 	// --- Soberania/conformidade de leitura (AOS-172, E7) -----------------------
-	// SovereignReadRegions é o registo board→região (AOS-094) que o read-path soberano (D7)
-	// consulta. nil ⇒ read-path legado (soberania de leitura não composta). A API auto-deriva
-	// dele o gate de leitura em [NewAPIHandler] (fail-closed por construção no caminho de
-	// produção quando composto).
+	// SovereignReadRegions é o registo board→região (AOS-094) EM VIGOR — snapshot da autoridade
+	// (AOS-205) quando composta, ou nil ⇒ read-path legado (soberania não composta). Mantido para
+	// o predicado do banner/kill-switch (AOS-203); o gate de leitura auto-derivado em
+	// [NewAPIHandler] prefere [Node.SovereignAuthority].
 	SovereignReadRegions *govsov.Registry
+	// SovereignAuthority é a FONTE DE AUTORIDADE board→região (AOS-205) com ROTAÇÃO e AUDITORIA
+	// de alterações — a fonte que substitui o mapa estático de env tratado como verdade. nil ⇒
+	// sem soberania composta. [NewAPIHandler] deriva dela o gate de leitura.
+	SovereignAuthority *SovereignRegionAuthority
+	// SovereignReadCredential é a CREDENCIAL FORTE do read-path (AOS-205): quando composta
+	// (OIDC/mTLS verificado contra o IdP de soberania), o board/reader vêm das CLAIMS VERIFICADAS,
+	// não dos headers. nil ⇒ via legada por headers demo-grade (só fora de produção).
+	SovereignReadCredential readCredentialVerifier
 	// DSAR é o fluxo de apagamento/crypto-shredding (AOS-093/Art. 17) composto no nó. O endpoint
 	// POST /dsar/erase encaminha para ele. nil ⇒ endpoint desligado (501).
 	DSAR *dsar.Flow
@@ -423,7 +445,7 @@ type Node struct {
 //  6. colaboradores não-identidade (defaults de referência);
 //  7. SecuredRuntime (cadeia REAL) com o verifier REAL ligado;
 //  8. declara o modo de identidade REAL no log.
-func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
+func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	log := func(format string, args ...any) {
 		if logw != nil {
 			fmt.Fprintf(logw, "[aos] "+format+"\n", args...)
@@ -839,9 +861,30 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// verificação leitor.região == run.região no selo D6 é AOS-182. NÃO é EPIC-09/10.
 	// Vazio ⇒ read-path legado (sem authz por-chamador nem selo). Reutiliza a MESMA autoridade
 	// board→região que o PDP (AOS-094): a regra NÃO é duplicada.
+	// AOS-205: a fonte board→região é agora uma PORTA DE AUTORIDADE ([SovereignRegionAuthority])
+	// com ROTAÇÃO e AUDITORIA de alterações — o mapa de env é apenas a SEMENTE do provisionamento
+	// inicial, não a verdade congelada. A REGRA fail-closed (govsov.RegionFor) NÃO se duplica.
+	// readRegions é o snapshot em vigor, mantido para o predicado do banner/kill-switch.
+	var readAuthority *SovereignRegionAuthority
 	var readRegions *govsov.Registry
+	var readCred readCredentialVerifier
 	if len(cfg.BoardRegions) > 0 {
-		readRegions = govsov.NewRegistry(cfg.BoardRegions)
+		readAuthority, err = NewSovereignRegionAuthority(ctx, cfg.BoardRegions, worm, cfg.SovereignClock)
+		if err != nil {
+			return nil, fmt.Errorf("aos: fonte de autoridade de soberania (AOS-205): %w", err)
+		}
+		readRegions = readAuthority.Registry()
+	}
+	// CREDENCIAL FORTE do leitor (AOS-205): quando o verificador OIDC de soberania está
+	// configurado, o read-path exige um ID-token verificado e deriva o board das CLAIMS. Sem ele,
+	// mantém-se a via legada por headers (aceite só fora de produção). Fail-closed: uma config
+	// OIDC inválida (issuer/audience vazios, transporte inseguro) aborta o arranque.
+	if cfg.SovereignReadOIDC != nil {
+		v, verr := oidc.NewVerifier(*cfg.SovereignReadOIDC)
+		if verr != nil {
+			return nil, fmt.Errorf("aos: verificador OIDC de soberania (AOS-205/AOS-174): %w", verr)
+		}
+		readCred = newOIDCReadCredential(v)
 	}
 
 	// (7c) DSAR / CRYPTO-SHREDDING (AOS-172, Art. 17). COMPÕE o fluxo DSAR já existente
@@ -957,11 +1000,27 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("execucao duravel (AOS-180): DESLIGADA — checkpointer/capturer/step-ledger NAO compostos (defaults no-op AOS-013); defina AOS_DURABLE_EXECUTION=1 (exige AOS_EVENTSTORE_PATH) para ligar")
 	}
-	if readRegions != nil {
-		log("soberania de leitura (AOS-172, D7): READ-PATH SOBERANO FAIL-CLOSED ligado — %d board(s) no registo GOV DEMO-GRADE (board→regiao); leitura sensivel SELADA no WORM (D6). Provisioning real de regioes/boards DEFERIDO (EPIC-09/10)", readRegions.Len())
-		log("NOTA D6: o selo grava a regiao do BOARD DO LEITOR (nao a residencia por-run do dado); a verificacao de coincidencia leitor.regiao==run.regiao fica DEFERIDA ate haver board->regiao por-run (EPIC-09/10)")
+	if readAuthority != nil {
+		if readCred != nil {
+			// Declara HONESTAMENTE a postura anti-replay REALMENTE composta (fecha o achado da
+			// auditoria v4): o tecto de idade (MaxAge) limita a janela de um token capturado
+			// INDEPENDENTEMENTE de jti; RequireJTI (opt-in) impõe single-use estrito quando o IdP
+			// emite jti. Sem capacidade-fantasma — o banner nunca anuncia mais do que o wiring aplica.
+			jtiPosture := "por-jti quando o IdP emite jti"
+			if cfg.SovereignReadOIDC != nil && cfg.SovereignReadOIDC.RequireJTI {
+				jtiPosture = "jti OBRIGATORIO (single-use estrito)"
+			}
+			var maxAge time.Duration
+			if cfg.SovereignReadOIDC != nil {
+				maxAge = cfg.SovereignReadOIDC.MaxAge
+			}
+			log("soberania de leitura (AOS-172/AOS-205, D7): READ-PATH SOBERANO FAIL-CLOSED ligado sobre FONTE DE AUTORIDADE board->regiao (rotacao+auditoria) — %d board(s), revisao %d, fingerprint %s; CREDENCIAL FORTE do leitor VERIFICADA (OIDC AOS-174) — board/reader das CLAIMS, o header X-Aos-Board NAO autoriza; anti-replay: idade maxima do token %s + reutilizacao recusada %s; leitura sensivel SELADA no WORM (D6)", readAuthority.Len(), readAuthority.Revision(), fingerShort(readAuthority.Fingerprint()), maxAge, jtiPosture)
+		} else {
+			log("soberania de leitura (AOS-172/AOS-205, D7): READ-PATH SOBERANO FAIL-CLOSED ligado sobre FONTE DE AUTORIDADE board->regiao (rotacao+auditoria) — %d board(s), revisao %d; credencial do leitor DEMO-GRADE por headers (X-Aos-Reader/X-Aos-Board), aceite so FORA de producao — defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE para exigir credencial forte OIDC; leitura sensivel SELADA no WORM (D6)", readAuthority.Len(), readAuthority.Revision())
+		}
+		log("NOTA AOS-205: o TENANT concreto (IdP de soberania da organizacao que empurra o board->regiao autoritativo) fica DEFERIDO — a semente/rotacoes entram por config/operador; o no fica com o CONTRATO (fonte rotacionavel+auditada e verificacao de credencial). A coincidencia leitor.regiao==run.regiao no selo D6 e AOS-182")
 	} else {
-		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed DEMO-GRADE")
+		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed")
 	}
 	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
 	// MOTOR DE REDACÇÃO (AOS-091/AOS-208). O banner declara que o motor está LIGADO ao
@@ -1000,11 +1059,13 @@ func Bootstrap(_ context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Capturer:     capturer,     // (os três são compostos/omitidos EM CONJUNTO)
 		Ledger:       ledger,
 
-		SovereignReadRegions: readRegions,
-		DSAR:                 dsarFlow,
-		DSARHolds:            dsarHolds,
-		DSARVault:            dsarVault,
-		DSARIndex:            dsarIndex,
+		SovereignReadRegions:    readRegions,
+		SovereignAuthority:      readAuthority,
+		SovereignReadCredential: readCred,
+		DSAR:                    dsarFlow,
+		DSARHolds:               dsarHolds,
+		DSARVault:               dsarVault,
+		DSARIndex:               dsarIndex,
 
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,

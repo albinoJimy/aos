@@ -27,10 +27,14 @@
 # não parte com drift).
 
 # --- Banner de arranque do nó (pendência P-1) --------------------------------
-# Os COMENTÁRIOS do eixo em bootstrap.go foram corrigidos por AOS-196; estas duas
-# são strings `log(...)` impressas ao operador — comportamento observável, não
+# O COMENTÁRIO do eixo em bootstrap.go foi corrigido por AOS-196; esta é uma
+# string `log(...)` impressa ao operador — comportamento observável, não
 # comentário, e o âmbito de AOS-196 sobre bootstrap.go é «só o comentário do eixo».
-packages/cmd/aos/bootstrap.go|EPIC-09/10 # owner=AOS-196 (pendência P-1); eixo correcto: DEF-201 (POR ATRIBUIR) + DEF-202 (AOS-182) — string do banner "NOTA D6"
+#
+# A entrada `bootstrap.go|EPIC-09/10` (string do banner "NOTA D6") SAIU aqui em
+# 2026-07-28: AOS-205 reescreveu essa linha do banner para referir AOS-205/AOS-182
+# (a "NOTA AOS-205"), pelo que já traz `AOS-NNN` e a verificação 6 deixou de a ver —
+# a regra 3 (a baseline só encolhe por correcção do texto) a funcionar.
 packages/cmd/aos/bootstrap.go|EPIC-06/09/10 # owner=AOS-196 (pendência P-1); eixo correcto: DEF-301 (AOS-093, arbitragem A-DEF-301) — string do banner "AVISO DSAR"
 
 # --- Legal hold / retenção / bundle de política (residual de AOS-197) ---------

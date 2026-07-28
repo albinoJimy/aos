@@ -47,6 +47,11 @@ func TestRunProductionWithTrustAnchorSucceeds(t *testing.T) {
 	t.Setenv("AOS_MODE", "production")
 	t.Setenv("AOS_ISSUER_ID", "iss:external-authority")
 	t.Setenv("AOS_ISSUER_PUBKEY", hex.EncodeToString(pub))
+	// AOS-205: a produção exige também a CREDENCIAL FORTE da soberania de leitura (o
+	// verificador OIDC do leitor/operador). Só material público (issuer https + client id); o
+	// JWKS é buscado preguiçosamente, pelo que o arranque não faz I/O de rede.
+	t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp-soberania.example")
+	t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
 
 	if err := run(&sb); err != nil {
 		t.Fatalf("production com trust anchor valido devia arrancar, veio: %v", err)
@@ -129,6 +134,108 @@ func TestRunProductionRequiresSovereignRead(t *testing.T) {
 
 	if err := run(io.Discard); !errors.Is(err, ErrProductionNeedsSovereignRead) {
 		t.Fatalf("production sem soberania de leitura devia abortar com ErrProductionNeedsSovereignRead, veio: %v", err)
+	}
+}
+
+// TestRunProductionRequiresSovereignAuthority prova o fail-closed de AOS-205: em
+// AOS_MODE=production, com identidade endurecida e soberania de leitura ligada, o nó AINDA recusa
+// arrancar sem CREDENCIAL FORTE de soberania (AOS_SOVEREIGN_OIDC_ISSUER/AUDIENCE) — a produção
+// nunca deriva o board de um header X-Aos-Board auto-declarado.
+func TestRunProductionRequiresSovereignAuthority(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	t.Setenv("AOS_MODE", "production")
+	t.Setenv("AOS_ISSUER_PUBKEY", hex.EncodeToString(pub)) // identidade endurecida OK
+	// AOS_SOVEREIGN_OIDC_* deliberadamente AUSENTES ⇒ sem credencial forte ⇒ recusa.
+
+	if e := run(io.Discard); !errors.Is(e, ErrProductionNeedsSovereignAuthority) {
+		t.Fatalf("production sem credencial forte de soberania devia abortar com ErrProductionNeedsSovereignAuthority, veio: %v", e)
+	}
+}
+
+// TestRunRejectsIncompleteSovereignOIDC prova o fail-closed de CONFIG: definir só um de
+// issuer/audience aborta (ErrBadSovereignOIDC) em vez de degradar para o read-path por header.
+func TestRunRejectsIncompleteSovereignOIDC(t *testing.T) {
+	t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp-soberania.example")
+	// AOS_SOVEREIGN_OIDC_AUDIENCE deliberadamente ausente ⇒ config incompleta.
+
+	if err := run(io.Discard); !errors.Is(err, ErrBadSovereignOIDC) {
+		t.Fatalf("config OIDC de soberania incompleta devia abortar com ErrBadSovereignOIDC, veio: %v", err)
+	}
+}
+
+// TestParseSovereignReadOIDCHardening prova o WIRING anti-replay de AOS-205 (fecha o achado da
+// auditoria v4): parseSovereignReadOIDC NUNCA devolve um verificador com MaxAge=0 — o tecto de
+// idade do ID-token é SEMPRE aplicado (default 5 min), pelo que um token de soberania capturado
+// deixa de ser reapresentável durante toda a janela exp INDEPENDENTEMENTE de jti. RequireJTI é
+// opt-in. Config inválida (MaxAge não-parseável/≤0, RequireJTI não-booleano) ABORTA fail-closed.
+func TestParseSovereignReadOIDCHardening(t *testing.T) {
+	// Não-configurado ⇒ (nil, nil): via legada por headers (fora de produção).
+	t.Run("nao configurado", func(t *testing.T) {
+		t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "")
+		t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "")
+		t.Setenv("AOS_SOVEREIGN_OIDC_JWKS_URI", "")
+		cfg, err := parseSovereignReadOIDC()
+		if err != nil || cfg != nil {
+			t.Fatalf("nao configurado devia dar (nil, nil), veio (%v, %v)", cfg, err)
+		}
+	})
+
+	// Configurado sem MaxAge/RequireJTI explícitos ⇒ default MaxAge não-nulo, RequireJTI false.
+	t.Run("default aplica tecto de replay", func(t *testing.T) {
+		t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp.example")
+		t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
+		t.Setenv("AOS_SOVEREIGN_OIDC_MAX_AGE", "")
+		t.Setenv("AOS_SOVEREIGN_OIDC_REQUIRE_JTI", "")
+		cfg, err := parseSovereignReadOIDC()
+		if err != nil || cfg == nil {
+			t.Fatalf("config valida devia construir, veio (%v, %v)", cfg, err)
+		}
+		if cfg.MaxAge != sovereignReadDefaultMaxAge {
+			t.Fatalf("MaxAge default devia ser %v (NUNCA 0 — reabriria o replay), veio %v", sovereignReadDefaultMaxAge, cfg.MaxAge)
+		}
+		if cfg.RequireJTI {
+			t.Fatalf("RequireJTI devia ser opt-in (false por omissao), veio true")
+		}
+	})
+
+	// Override explícito de ambos.
+	t.Run("override explicito", func(t *testing.T) {
+		t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp.example")
+		t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
+		t.Setenv("AOS_SOVEREIGN_OIDC_MAX_AGE", "90s")
+		t.Setenv("AOS_SOVEREIGN_OIDC_REQUIRE_JTI", "true")
+		cfg, err := parseSovereignReadOIDC()
+		if err != nil || cfg == nil {
+			t.Fatalf("override valido devia construir, veio (%v, %v)", cfg, err)
+		}
+		if cfg.MaxAge != 90*time.Second {
+			t.Fatalf("MaxAge devia ser 90s, veio %v", cfg.MaxAge)
+		}
+		if !cfg.RequireJTI {
+			t.Fatal("RequireJTI devia ser true")
+		}
+	})
+
+	// Config inválida ⇒ ErrBadSovereignOIDC (fail-closed, não degrada para "sem tecto").
+	badCases := []struct{ name, maxAge, requireJTI string }{
+		{"max-age nao parseavel", "cinco-minutos", ""},
+		{"max-age zero", "0s", ""},
+		{"max-age negativo", "-1m", ""},
+		{"require-jti nao booleano", "", "talvez"},
+	}
+	for _, c := range badCases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp.example")
+			t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
+			t.Setenv("AOS_SOVEREIGN_OIDC_MAX_AGE", c.maxAge)
+			t.Setenv("AOS_SOVEREIGN_OIDC_REQUIRE_JTI", c.requireJTI)
+			if _, err := parseSovereignReadOIDC(); !errors.Is(err, ErrBadSovereignOIDC) {
+				t.Fatalf("%s devia abortar com ErrBadSovereignOIDC, veio %v", c.name, err)
+			}
+		})
 	}
 }
 

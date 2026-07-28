@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	oidc "github.com/aos-ref/integration/oidc"
 	identity "github.com/aos-ref/platform/identity"
 )
 
@@ -44,6 +45,24 @@ var ErrBadBoardRegions = errors.New("aos: AOS_BOARD_REGIONS invalida (esperado \
 // ErrProductionNeedsHardenedIdentity para a identidade). Um nó de produção nunca serve o
 // read-path LEGADO (sem authz por-chamador D7 nem selo D6) — fail-closed.
 var ErrProductionNeedsSovereignRead = errors.New("aos: AOS_MODE=production exige AOS_BOARD_REGIONS nao-vazio (read-path soberano fail-closed) — a producao nao serve leituras sem authz por-chamador nem selo WORM")
+
+// ErrProductionNeedsSovereignAuthority — sob AOS_MODE=production a FONTE DE AUTORIDADE da
+// soberania (AOS-205) tem de ter CREDENCIAL FORTE verificada: exige-se a config do verificador
+// OIDC do leitor de governação/operador DSAR (AOS_SOVEREIGN_OIDC_ISSUER + AOS_SOVEREIGN_OIDC_AUDIENCE).
+// Hoje a produção já recusa SEM soberania (ErrProductionNeedsSovereignRead), mas ACEITAVA o mapa
+// self-hosted de AOS_BOARD_REGIONS COMO SE fosse autoridade da organização — com o board
+// AUTO-DECLARADO no header X-Aos-Board. Sem uma fonte de credencial forte, um X-Aos-Board forjado
+// autorizaria a leitura. Fail-closed: a produção nunca deriva o board de um header cru.
+var ErrProductionNeedsSovereignAuthority = errors.New("aos: AOS_MODE=production exige credencial forte verificada para a soberania de leitura — defina AOS_SOVEREIGN_OIDC_ISSUER e AOS_SOVEREIGN_OIDC_AUDIENCE (o leitor/operador DSAR apresenta um ID-token OIDC verificado; o board vem das claims, nao do header X-Aos-Board auto-declarado). O mapa self-hosted AOS_BOARD_REGIONS nao e, por si so, autoridade da organizacao")
+
+// ErrBadSovereignOIDC — a config do verificador OIDC de soberania (AOS-205) está presente mas
+// INVÁLIDA: um de AOS_SOVEREIGN_OIDC_ISSUER/AOS_SOVEREIGN_OIDC_AUDIENCE em falta, ou
+// AOS_SOVEREIGN_OIDC_MAX_AGE não-parseável/≤0, ou AOS_SOVEREIGN_OIDC_REQUIRE_JTI não-booleano.
+// Fail-closed de CONFIG, no padrão de ErrBadBoardRegions: distingue "não configurado" (ambos
+// vazios ⇒ via legada, fora de produção) de "configurado mas inválido" (aborta). Um operador que
+// define só o issuer NÃO obtém um nó que serve leituras sem verificar a credencial; um MaxAge
+// inválido NÃO degrada para "sem tecto de replay".
+var ErrBadSovereignOIDC = errors.New("aos: config OIDC de soberania incompleta — AOS_SOVEREIGN_OIDC_ISSUER e AOS_SOVEREIGN_OIDC_AUDIENCE sao AMBOS obrigatorios (definir so um aborta em vez de degradar para o read-path por header auto-declarado)")
 
 // ErrBadDurableExecution — AOS_DURABLE_EXECUTION presente com um valor que NÃO é um
 // booleano reconhecido. Fail-closed de CONFIG (AOS-191), no padrão de ErrBadBoardRegions:
@@ -217,6 +236,18 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, ErrProductionNeedsSovereignRead
 	}
 
+	// CREDENCIAL FORTE da soberania de leitura (AOS-205) — o verificador OIDC do leitor de
+	// governação / operador DSAR. Config fail-closed: ambos vazios ⇒ nil (via legada por headers,
+	// só fora de produção); um só ⇒ ErrBadSovereignOIDC (aborta). Quando presente, o read-path
+	// EXIGE um ID-token verificado e deriva o board das CLAIMS, não do header X-Aos-Board.
+	sovereignOIDC, err := parseSovereignReadOIDC()
+	if err != nil {
+		return Config{}, err
+	}
+	// A exigência de produção (credencial forte) é imposta ABAIXO, a par de
+	// ErrProductionNeedsHardenedIdentity — depois de o trust anchor ser parseado, para que a
+	// falta da identidade endurecida (a fronteira mais fundamental) seja diagnosticada primeiro.
+
 	// EXECUÇÃO DURÁVEL (AOS-180) por ambiente — AOS_DURABLE_EXECUTION (AOS-191). OPT-IN:
 	// ausente/vazio ⇒ false, isto é, o comportamento ACTUAL byte-a-byte (checkpointer,
 	// capturer e step-ledger ficam nil e o runtime usa os defaults no-op de AOS-013).
@@ -330,6 +361,14 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, ErrProductionNeedsHardenedIdentity
 	}
 
+	// FAIL-CLOSED de produção (AOS-205): a FONTE DE AUTORIDADE da soberania de leitura tem de ter
+	// CREDENCIAL FORTE verificada — a produção nunca deriva o board de um header X-Aos-Board
+	// auto-declarado. O mapa self-hosted de AOS_BOARD_REGIONS é semente, não autoridade da
+	// organização. Sem o verificador OIDC configurado (AOS_SOVEREIGN_OIDC_ISSUER+AUDIENCE), recusa.
+	if production && sovereignOIDC == nil {
+		return Config{}, ErrProductionNeedsSovereignAuthority
+	}
+
 	// Config MÍNIMA. Numa implantação real, IssuerSigningKey e as pubkeys dos operadores/
 	// aprovadores vêm de config/vault (nunca do código). No modo de referência (sem
 	// AOS_ISSUER_PUBKEY) a chave é gerada por CSPRNG e a autoridade co-localizada
@@ -350,6 +389,12 @@ func nodeConfigFromEnv() (Config, error) {
 		// Ligar isto torna o read-path soberano fail-closed E o selo WORM de leitura sensível (D6)
 		// — os clientes de leitura têm de declarar X-Aos-Reader/X-Aos-Board.
 		BoardRegions: boardRegions,
+		// CREDENCIAL FORTE da soberania de leitura (AOS-205): o verificador OIDC do leitor de
+		// governação / operador DSAR, configurado por AOS_SOVEREIGN_OIDC_ISSUER/AUDIENCE (já
+		// validado fail-closed acima). Presente ⇒ o read-path exige um ID-token verificado e
+		// deriva o board das CLAIMS (o header X-Aos-Board deixa de autorizar). O tenant concreto
+		// (issuer real) é config; o provisionamento do IdP de soberania fica DEFERIDO.
+		SovereignReadOIDC: sovereignOIDC,
 		// SUBSTRATO DURÁVEL (AOS-170) por ambiente. OPT-IN: vazio ⇒ in-memory de referência
 		// (inalterado; a imagem roda limpa sob `--read-only`). Presente ⇒ o nó ABRE o Event Store
 		// (WAL append-only + fsync + replay crash-safe) e o WORM (hash-chain tamper-evident) nos
@@ -596,6 +641,104 @@ func parseBoardRegions(s string) (map[string]string, error) {
 		return nil, fmt.Errorf("%w: nenhuma entrada valida em %q", ErrBadBoardRegions, s)
 	}
 	return out, nil
+}
+
+// sovereignReadDefaultMaxAge é o TECTO por-omissão da idade (iat) de um ID-token de leitura
+// soberana quando AOS_SOVEREIGN_OIDC_MAX_AGE não é fornecido. FECHA o achado de anti-replay
+// (auditoria v4): sem MaxAge, o [oidc.Verifier] só detecta reutilização quando o token TRAZ jti
+// (ver [oidc.Verifier.Validate]); um ID-token de soberania LEGITIMAMENTE emitido e capturado
+// (ex.: fuga a montante da terminação TLS externa) seria reapresentável durante TODA a janela
+// exp. Um MaxAge não-nulo limita essa janela INDEPENDENTEMENTE de jti — um token com iat mais
+// antigo que now-MaxAge (mais leeway) é recusado ([oidc.ErrTokenTooOld]). 5 min alinha com a
+// recomendação de [oidc.Config.MaxAge] e é folgado o bastante para o relógio real; alarga-se por
+// AOS_SOVEREIGN_OIDC_MAX_AGE quando o IdP emite tokens mais longevos.
+const sovereignReadDefaultMaxAge = 5 * time.Minute
+
+// parseSovereignReadOIDC constrói a config do verificador OIDC da CREDENCIAL FORTE de leitura
+// (AOS-205) a partir do ambiente: AOS_SOVEREIGN_OIDC_ISSUER (obrigatório), AOS_SOVEREIGN_OIDC_AUDIENCE
+// (obrigatório), AOS_SOVEREIGN_OIDC_JWKS_URI (opcional — vazio ⇒ discovery via issuer),
+// AOS_SOVEREIGN_OIDC_MAX_AGE (opcional — default [sovereignReadDefaultMaxAge]) e
+// AOS_SOVEREIGN_OIDC_REQUIRE_JTI (opcional — default false).
+//
+// FAIL-CLOSED e sem degradação silenciosa (padrão de [parseBoardRegions]):
+//
+//   - AMBOS vazios (e sem jwks_uri) ⇒ (nil, nil): "não configurado" ⇒ via legada por headers
+//     demo-grade. Aceite só FORA de produção (a produção exige-a — ver
+//     [ErrProductionNeedsSovereignAuthority]).
+//   - UM só de issuer/audience presente ⇒ [ErrBadSovereignOIDC]: "configurado mas incompleto",
+//     ABORTA. Não se degrada para o read-path por header quando alguém TENCIONA ligar a credencial.
+//   - AOS_SOVEREIGN_OIDC_MAX_AGE presente mas não-parseável, ou ≤ 0 ⇒ [ErrBadSovereignOIDC]:
+//     ABORTA (não se degrada para "sem tecto", que é exactamente o buraco de replay que fechamos).
+//   - AOS_SOVEREIGN_OIDC_REQUIRE_JTI com valor não-booleano ⇒ [ErrBadSovereignOIDC]: ABORTA.
+//
+// ANTI-REPLAY (fecha o achado da auditoria v4). Quando a credencial forte está ligada, o
+// verificador é SEMPRE construído com um MaxAge não-nulo (default 5 min), pelo que um ID-token de
+// soberania capturado deixa de ser reapresentável durante toda a janela exp — a janela fica
+// limitada a MaxAge+leeway, INDEPENDENTEMENTE de o IdP emitir jti. Quando o IdP EMITE jti, a
+// reutilização do MESMO (iss,jti) é adicionalmente recusada por-token; AOS_SOVEREIGN_OIDC_REQUIRE_JTI=1
+// TORNA o jti OBRIGATÓRIO (single-use estrito — recusa qualquer token sem jti), para políticas que
+// o exijam. Sem RequireJTI, um IdP que não emita jti continua coberto pelo MaxAge.
+//
+// A validação do CONTEÚDO (issuer/audience não vazios, transporte https salvo loopback) é de
+// [oidc.NewVerifier], invocado no Bootstrap — um issuer http não-loopback aborta lá (fail-closed).
+// SÓ material PÚBLICO entra por aqui: o issuer e o client id do IdP de soberania, nunca segredos.
+func parseSovereignReadOIDC() (*oidc.Config, error) {
+	issuer := strings.TrimSpace(os.Getenv("AOS_SOVEREIGN_OIDC_ISSUER"))
+	audience := strings.TrimSpace(os.Getenv("AOS_SOVEREIGN_OIDC_AUDIENCE"))
+	jwksURI := strings.TrimSpace(os.Getenv("AOS_SOVEREIGN_OIDC_JWKS_URI"))
+	if issuer == "" && audience == "" && jwksURI == "" {
+		return nil, nil // não configurado ⇒ via legada por headers (fora de produção).
+	}
+	if issuer == "" || audience == "" {
+		return nil, ErrBadSovereignOIDC
+	}
+	maxAge, err := parseSovereignReadMaxAge(os.Getenv("AOS_SOVEREIGN_OIDC_MAX_AGE"))
+	if err != nil {
+		return nil, err
+	}
+	requireJTI, err := parseSovereignReadRequireJTI(os.Getenv("AOS_SOVEREIGN_OIDC_REQUIRE_JTI"))
+	if err != nil {
+		return nil, err
+	}
+	return &oidc.Config{
+		Issuer:     issuer,
+		Audience:   audience,
+		JWKSURI:    jwksURI,
+		MaxAge:     maxAge,
+		RequireJTI: requireJTI,
+	}, nil
+}
+
+// parseSovereignReadMaxAge interpreta AOS_SOVEREIGN_OIDC_MAX_AGE como uma duração Go (ex.: "5m",
+// "300s"). VAZIO ⇒ [sovereignReadDefaultMaxAge] (NUNCA 0 — o tecto é sempre aplicado, senão
+// reabre-se o buraco de replay). Não-parseável ou ≤ 0 ⇒ [ErrBadSovereignOIDC] (fail-closed de
+// config: não se degrada para "sem tecto").
+func parseSovereignReadMaxAge(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return sovereignReadDefaultMaxAge, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%w: AOS_SOVEREIGN_OIDC_MAX_AGE=%q invalido (esperado duracao Go > 0, ex.: \"5m\")", ErrBadSovereignOIDC, s)
+	}
+	return d, nil
+}
+
+// parseSovereignReadRequireJTI interpreta AOS_SOVEREIGN_OIDC_REQUIRE_JTI como um booleano
+// EXPLÍCITO (mesma gramática estrita de [parseDurableExecution]). VAZIO ⇒ false (o default: o
+// MaxAge cobre o replay mesmo sem jti). Valor não-booleano ⇒ [ErrBadSovereignOIDC] (fail-closed).
+func parseSovereignReadRequireJTI(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return false, nil
+	case "1", "true", "t", "yes", "y", "on":
+		return true, nil
+	case "0", "false", "f", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: AOS_SOVEREIGN_OIDC_REQUIRE_JTI=%q nao e booleano", ErrBadSovereignOIDC, strings.TrimSpace(s))
+	}
 }
 
 // sovereignReadKillSwitchBanner produz o AVISO PROEMINENTE do KILL-SWITCH da soberania de

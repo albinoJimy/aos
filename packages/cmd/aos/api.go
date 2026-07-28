@@ -290,7 +290,21 @@ func WithAPILog(w io.Writer) APIOption {
 func WithReadSovereignty(regions *govsov.Registry, worm audit.Store) APIOption {
 	return func(c *apiConfig) {
 		if regions != nil && worm != nil {
-			c.readGov = newReadGovernance(regions, worm, c.now)
+			c.readGov = newReadGovernance(regions, nil, worm, c.now)
+		}
+	}
+}
+
+// WithSovereignAuthority compõe o read-path soberano sobre a FONTE DE AUTORIDADE board→região
+// (AOS-205, [SovereignRegionAuthority] com rotação+auditoria) e, opcionalmente, a CREDENCIAL
+// FORTE do leitor (cred). Tem PRECEDÊNCIA sobre o auto-wiring de [NewAPIHandler]. Quando cred é
+// composto, o board/reader são derivados das CLAIMS VERIFICADAS (o header X-Aos-Board deixa de
+// autorizar); cred nil mantém a via legada por headers (só fora de produção). Ignora (mantém
+// legado) se authority ou worm forem nil.
+func WithSovereignAuthority(authority *SovereignRegionAuthority, cred readCredentialVerifier, worm audit.Store) APIOption {
+	return func(c *apiConfig) {
+		if authority != nil && worm != nil {
+			c.readGov = newReadGovernance(authority, cred, worm, c.now)
 		}
 	}
 }
@@ -364,8 +378,17 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// por lembrança de passar uma opção). Um nó sem soberania configurada (SovereignReadRegions
 	// nil) mantém o read-path legado — a regra é fixa, a topologia é condicional (deferido).
 	readGov := cfg.readGov
-	if readGov == nil && node.SovereignReadRegions != nil && node.WORM != nil {
-		readGov = newReadGovernance(node.SovereignReadRegions, node.WORM, cfg.now)
+	if readGov == nil && node.WORM != nil {
+		switch {
+		case node.SovereignAuthority != nil:
+			// AOS-205: a FONTE DE AUTORIDADE (rotação+auditoria) e — quando composta — a
+			// CREDENCIAL FORTE do leitor. cred nil (fora de produção) ⇒ via legada por headers
+			// sobre a autoridade; cred composta ⇒ board/reader das claims verificadas.
+			readGov = newReadGovernance(node.SovereignAuthority, node.SovereignReadCredential, node.WORM, cfg.now)
+		case node.SovereignReadRegions != nil:
+			// Caminho de compatibilidade: um registo board→região cru sem autoridade composta.
+			readGov = newReadGovernance(node.SovereignReadRegions, nil, node.WORM, cfg.now)
+		}
 	}
 	h := &apiHandler{
 		svc:        svc,

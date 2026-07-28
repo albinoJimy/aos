@@ -61,7 +61,7 @@ de índice e o detalhe lá.
 
 | Variável | Default | Efeito |
 |---|---|---|
-| `AOS_MODE` | *(vazio ⇒ modo de **referência**)* | `production` (qualquer caixa) activa a **postura de produção fail-closed**. **Segurança:** é o interruptor que torna obrigatórias **três** exigências — `AOS_ISSUER_PUBKEY` (senão `ErrProductionNeedsHardenedIdentity`), `AOS_BOARD_REGIONS` **não-vazio** (senão `ErrProductionNeedsSovereignRead`) e **terminação TLS** — `AOS_TLS_CERT_PATH`+`AOS_TLS_KEY_PATH` **ou** `AOS_TLS_EXTERNAL_TERMINATION` (senão `ErrProductionNeedsTLS`, AOS-209). Qualquer outro valor ⇒ modo de referência **sem** essas exigências: um nó exposto sem `AOS_MODE=production` não é um nó de produção, é um nó de referência a servir tráfego. |
+| `AOS_MODE` | *(vazio ⇒ modo de **referência**)* | `production` (qualquer caixa) activa a **postura de produção fail-closed**. **Segurança:** é o interruptor que torna obrigatórias **quatro** exigências — `AOS_ISSUER_PUBKEY` (senão `ErrProductionNeedsHardenedIdentity`), `AOS_BOARD_REGIONS` **não-vazio** (senão `ErrProductionNeedsSovereignRead`), **credencial forte da soberania de leitura** — `AOS_SOVEREIGN_OIDC_ISSUER`+`AOS_SOVEREIGN_OIDC_AUDIENCE` (senão `ErrProductionNeedsSovereignAuthority`, AOS-205) e **terminação TLS** — `AOS_TLS_CERT_PATH`+`AOS_TLS_KEY_PATH` **ou** `AOS_TLS_EXTERNAL_TERMINATION` (senão `ErrProductionNeedsTLS`, AOS-209). Qualquer outro valor ⇒ modo de referência **sem** essas exigências: um nó exposto sem `AOS_MODE=production` não é um nó de produção, é um nó de referência a servir tráfego. |
 | `AOS_API_ADDR` | *(vazio ⇒ **API não levantada**)* | Endereço de bind da API HTTP. Vazio ⇒ o nó faz bootstrap, declara o banner e **sai sem abrir socket**. Não-loopback ⇒ sujeito ao [bind-guardrail](#bind-guardrail-fail-closed) (recusa se não houver operadores). É também o **default do `--addr`** dos subcomandos cliente (`aos run/observe/steer/pause`) e a fonte da porta do `HEALTHCHECK`. |
 | `AOS_TLS_CERT_PATH` | *(vazio ⇒ **sem terminação TLS no nó**)* | Caminho do **certificado** (PEM) da terminação TLS do ingresso — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). Exige `AOS_TLS_KEY_PATH` (só um dos dois ⇒ `ErrIncompleteTLSConfig`). Material **público**. |
 | `AOS_TLS_KEY_PATH` | *(vazio ⇒ **sem terminação TLS no nó**)* | Caminho da **chave privada** (PEM) da terminação TLS — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). ⚠️ **Material PRIVADO por FICHEIRO montado** (nunca por variável de ambiente), no padrão de `AOS_ISSUER_KEY_PATH`; monte-o read-only e fora da imagem. Par inválido ⇒ `ErrBadTLSKeyPair`. |
@@ -70,7 +70,12 @@ de índice e o detalhe lá.
 | `AOS_ISSUER_PUBKEY` | *(vazio ⇒ modo de **referência**, autoridade **co-localizada**)* | Pubkey ed25519 do issuer em hex (**64 hex chars = 32 bytes**). Presente ⇒ **trust-anchor-only endurecido**: o nó compõe só o verifier e **nenhuma chave de assinatura entra no processo**. Malformada ⇒ **ABORTA** (`ErrBadIssuerPubKey`). Material **público** — pode viver na receita de deployment. |
 | `AOS_ISSUER_KEY_PATH` | *(vazio ⇒ chave gerada por **CSPRNG a cada arranque**)* | **Só no modo de referência.** Ficheiro de *seed* ed25519 que a autoridade co-localizada carrega/persiste, para que os tokens emitidos **sobrevivam ao reinício**. ⚠️ **É o único caminho por onde material PRIVADO entra no processo do nó** — monte-o read-only e fora da imagem, e prefira o modo endurecido. Com `AOS_ISSUER_PUBKEY` definida esta variável **nem é lida** (no modo endurecido nenhuma chave de assinatura entra; um `Config` composto in-process com ambas aborta com `ErrConflictingIssuerKey`). |
 | `AOS_HUMANS` | `operator` | Lista CSV dos **humanos autorizados** na allowlist da autoridade de identidade **de referência** (`integration.NewAllowlistDirectory`) — a raiz de delegação de onde a autoridade minta. **Só tem efeito no modo de referência**: no modo endurecido o directório de humanos vive **com a autoridade externa** e a variável é ignorada. **Fail-closed:** no modo de referência, uma lista definida mas **sem nenhuma entrada válida** (ex.: `AOS_HUMANS=","`) ⇒ **ABORTA** (`ErrNoHumans`) — a autoridade não teria quem autenticar. É `DEMO-GRADE-AUTH`: uma allowlist de nomes, **não** autenticação (OIDC/WebAuthn é a porta por preencher, EPIC-16); o banner declara a cardinalidade (`humanos autorizados na autoridade: N`). |
-| `AOS_BOARD_REGIONS` | *(**não definida** ⇒ `board:aos-demo=eu`, soberania de leitura **LIGADA**)* | Registo `board=regiao,board2=regiao2` da soberania de leitura. **Impacto de conformidade — três estados, incluindo um kill-switch:** ver [Soberania de leitura](#soberania-de-leitura--aos_board_regions-e-o-kill-switch-aos-172--d7-endurecido-em-aos-203). |
+| `AOS_BOARD_REGIONS` | *(**não definida** ⇒ `board:aos-demo=eu`, soberania de leitura **LIGADA**)* | Registo `board=regiao,board2=regiao2` que **semeia** a fonte de autoridade board→região. **Impacto de conformidade — três estados, incluindo um kill-switch:** ver [Soberania de leitura](#soberania-de-leitura--aos_board_regions-e-o-kill-switch-aos-172--d7-endurecido-em-aos-203). **AOS-205:** deixou de ser tratado como verdade congelada — é a **semente** de uma [fonte de autoridade com rotação+auditoria](#credencial-forte-e-fonte-de-autoridade-da-soberania-de-leitura-aos-205); em produção **não basta** (ver `AOS_SOVEREIGN_OIDC_ISSUER`). |
+| `AOS_SOVEREIGN_OIDC_ISSUER` | *(vazio ⇒ **credencial por headers demo-grade**, só fora de produção)* | Issuer OIDC (URL) do **IdP de soberania** contra o qual o **leitor de governação** e o **operador DSAR** apresentam uma **credencial forte** (ID-token). Presente ⇒ o read-path soberano **exige** um ID-token verificado (AOS-174) e **deriva o board das CLAIMS verificadas**, não do header `X-Aos-Board` auto-declarado — um `X-Aos-Board` forjado é **recusado**. **Segurança/conformidade:** em `AOS_MODE=production` é **obrigatório** (senão `ErrProductionNeedsSovereignAuthority`, AOS-205); definir só um de issuer/audience ⇒ **ABORTA** (`ErrBadSovereignOIDC`). Transporte **https** (loopback exceptuado) ou aborta. Material **público** (uma URL de issuer). O **tenant concreto** é config — o provisionamento do IdP fica DEFERIDO. |
+| `AOS_SOVEREIGN_OIDC_AUDIENCE` | *(vazio ⇒ **credencial por headers demo-grade**)* | Client id (`aud`) que o ID-token do leitor/operador **tem** de conter. Par obrigatório de `AOS_SOVEREIGN_OIDC_ISSUER` (um só ⇒ `ErrBadSovereignOIDC`). Material **público**. |
+| `AOS_SOVEREIGN_OIDC_JWKS_URI` | *(vazio ⇒ **discovery** via issuer)* | Endpoint JWKS **directo** do IdP de soberania — salta o `.well-known/openid-configuration`. Transporte **https** (loopback exceptuado) ou aborta. Material **público**. |
+| `AOS_SOVEREIGN_OIDC_MAX_AGE` | *(vazio ⇒ **`5m`**)* | Duração Go (ex.: `5m`, `120s`) do **tecto de idade** (`iat`) do ID-token de soberania. **Segurança — anti-replay:** o tecto é aplicado **SEMPRE** (nunca 0), pelo que um ID-token legitimamente emitido e **capturado** deixa de ser reapresentável durante toda a janela `exp` — a janela fica limitada a `MaxAge`+*leeway*, **independentemente** de o IdP emitir `jti`. Só se lê quando `AOS_SOVEREIGN_OIDC_ISSUER`/`AUDIENCE` estão definidos. Valor **não-parseável ou ≤ 0 ⇒ ABORTA** (`ErrBadSovereignOIDC`) — não degrada para "sem tecto". Material **público**. |
+| `AOS_SOVEREIGN_OIDC_REQUIRE_JTI` | *(vazio ⇒ **`false`**)* | Booleano (`1`/`true`/`0`/`false`…). **Segurança — single-use estrito:** presente e verdadeiro ⇒ o ID-token de soberania **tem** de trazer `jti` (senão recusado), e a reutilização do mesmo `(iss,jti)` é recusada por-token. Com `false`, um IdP que emita `jti` continua a ter deteccão de reutilização por-token, e o `MaxAge` cobre o caso sem `jti`. Só se lê quando `AOS_SOVEREIGN_OIDC_ISSUER`/`AUDIENCE` estão definidos. Valor **não-booleano ⇒ ABORTA** (`ErrBadSovereignOIDC`). Material **público**. |
 | `AOS_EVENTSTORE_PATH` | *(vazio ⇒ Event Store **in-memory**)* | Estado durável — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180). |
 | `AOS_WORM_PATH` | *(vazio ⇒ WORM **in-memory**)* | Trilho WORM tamper-evident — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180). **Conformidade:** in-memory, o trilho de auditoria **não sobrevive** ao contentor. |
 | `AOS_DURABLE_EXECUTION` | *(vazio ⇒ **DESLIGADA**)* | Execução durável — ver [Estado durável](#estado-durável--variáveis-de-ambiente-aos-170--aos-180) e a [postura de produção](#postura-de-produção-de-aos_durable_execution--decisão-aos-203) decidida em AOS-203. |
@@ -157,6 +162,45 @@ de índice e o detalhe lá.
 > `leitor.região == run.região` fica **DEFERIDA** até haver `board→região` por-*run* (EPIC-09/10),
 > e o banner declara-o. O provisioning real de regiões/boards (IdP de soberania) é igualmente
 > deferido: o registo aqui é **DEMO-GRADE self-hosted**. A **regra** fail-closed é que é fixa.
+
+### Credencial forte e fonte de autoridade da soberania de leitura (AOS-205)
+
+AOS-205 fecha o eixo que os deferimentos `DEF-201/203…211` nomeavam: o registo `board→região`
+deixou de ser o **mapa estático de `AOS_BOARD_REGIONS` tratado como verdade**, e os headers
+`X-Aos-Reader`/`X-Aos-Board` deixaram de ser **auto-declarados**. Duas mudanças:
+
+1. **Fonte de autoridade com rotação + auditoria.** `AOS_BOARD_REGIONS` passa a ser a **semente**
+   de uma `SovereignRegionAuthority`: um registo `board→região` que pode ser **re-provisionado**
+   (rotação) e cujo provisionamento inicial e cada rotação são **selados na hash-chain WORM**
+   (revisão monotónica + impressão digital do conjunto, **sem PII**). A **regra** fail-closed
+   `board→região` continua a ser a de AOS-094 (não se duplica); o que muda é a **fonte**.
+2. **Credencial forte verificada.** Com `AOS_SOVEREIGN_OIDC_ISSUER`+`AOS_SOVEREIGN_OIDC_AUDIENCE`
+   definidos, o **leitor de governação** e o **operador DSAR** apresentam um **ID-token OIDC** que
+   o nó **verifica** (reutilizando a validação real de AOS-174: discovery + JWKS + assinatura JWS +
+   anti-alg-confusion + anti-replay). O **board** e o **principal** são **derivados das claims
+   verificadas** (`board` e `sub`), **não** do header cru. Um pedido com `X-Aos-Board` **forjado**
+   (board válido mas sem credencial, ou credencial de **outro** titular com outro board) é
+   **RECUSADO**; um pedido com o ID-token **válido** correspondente é **ACEITE**.
+
+**Anti-replay (o que o *wiring* garante, sem sobre-promessa).** A credencial de leitura é sempre
+construída com um **tecto de idade** (`AOS_SOVEREIGN_OIDC_MAX_AGE`, default `5m`, **nunca 0**): um
+ID-token de soberania legitimamente emitido e **capturado** deixa de ser reapresentável durante
+toda a janela `exp` — a janela fica limitada a `MaxAge`+*leeway*, **independentemente** de o IdP
+emitir `jti`. Quando o IdP **emite** `jti`, a reutilização do mesmo `(iss,jti)` é adicionalmente
+recusada **por-token**; `AOS_SOVEREIGN_OIDC_REQUIRE_JTI=1` **exige** `jti` (single-use estrito). O
+banner de arranque declara a postura em vigor (idade máxima + `jti` obrigatório/oportunista).
+
+**Postura de produção.** Em `AOS_MODE=production` a credencial forte é **obrigatória**
+(`ErrProductionNeedsSovereignAuthority`): a produção **nunca** deriva o board de um header
+auto-declarado. Fora de produção, sem OIDC configurado, mantém-se a via **legada por headers**
+(demo-grade) — retro-compatível para os *harnesses*.
+
+**Fronteira honesta (DEFERIDO).** O **tenant concreto** — a integração com o serviço de
+configuração/IdP de soberania **real** da organização que empurra as alterações autoritativas de
+`board→região` e emite os ID-tokens — é infra-org, não código do nó. O nó fica com o **CONTRATO**
+(fonte rotacionável+auditada e verificação de credencial OIDC/mTLS); o *issuer* concreto e as
+rotações entram por config/operador. A coincidência `leitor.região == run.região` no selo D6 é
+AOS-182. É o mesmo tratamento de D4/AOS-16x para a identidade.
 
 ### Estado durável — variáveis de ambiente (AOS-170 / AOS-180)
 

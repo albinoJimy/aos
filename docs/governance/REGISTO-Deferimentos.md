@@ -166,17 +166,19 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-111 | STUB | packages/cmd/aos/bootstrap.go | Doc de pacote: contraste com os STUBS NEUTROS do `cmd/aos-demo`; o nó `aos` compõe a cadeia real | AOS-163 | Arquitecto de Plataforma | Remoção do ápice mínimo demo | FECHADO-RESIDUAL |
 | DEF-112 | DEMO-GRADE | packages/cmd/aos-demo/main.go | Ápice mínimo: HMAC efémero gerado em runtime + registo demo; é o binário de demonstração, não o nó | AOS-163 | Arquitecto de Plataforma | Idem DEF-111 | FECHADO-RESIDUAL |
 | DEF-113 | STUB | packages/cmd/aos-demo/main.go | O demo compõe o RM com STUBS NEUTROS (sem enforcement) e declara-o no passo 7 e na limitação (b) | AOS-163 | Arquitecto de Plataforma | Idem DEF-111 | FECHADO-RESIDUAL |
-| DEF-201 | DEFERIDO | packages/cmd/aos/bootstrap.go | Provisionamento REAL de regiões/boards (IdP de soberania da organização); hoje o registo board→região é self-hosted por config | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Existir organização com boards/regiões reais (Carta §4.2, D7 CONDICIONAL) | ABERTO |
+| DEF-201 | DEFERIDO | packages/cmd/aos/bootstrap.go | AOS-205 entregou a FONTE DE AUTORIDADE board→região (SovereignRegionAuthority, rotação+auditoria de alterações): o registo deixou de ser o mapa de env tratado como verdade. Fica o provisionamento do TENANT concreto (o serviço de config/IdP de soberania real da organização que empurra as alterações autoritativas), que é infra-org | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Existir organização com boards/regiões reais (Carta §4.2, D7 CONDICIONAL) | MITIGADO |
 | DEF-202 | DEFERIDO | packages/cmd/aos/bootstrap.go | Verificação de coincidência `leitor.região == run.região` no selo D6: o selo grava a região do BOARD DO LEITOR, não a residência por-run | AOS-182 | Responsável de Segurança | Execução de AOS-182 (read-path soberano fail-closed D6/D7) | ABERTO |
-| DEF-203 | DEFERIDO | packages/cmd/aos/sovereignty.go | Idem DEF-201 no doc de ficheiro do read-path soberano | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Idem DEF-201 | ABERTO |
-| DEF-204 | DEMO-GRADE | packages/cmd/aos/sovereignty.go | Headers de leitura `X-Aos-Reader`/`X-Aos-Board` auto-declarados: sem credencial forte (OIDC/mTLS) do leitor de governação | AOS-205 | Responsável de Segurança | Idem DEF-201 (a credencial do leitor vem do mesmo IdP de soberania) | ABERTO |
-| DEF-205 | CONDICIONAL | packages/cmd/aos/sovereignty.go | A REGRA fail-closed é FIXA (Carta §4) mas a TOPOLOGIA é condicional ao provisionamento | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
-| DEF-206 | DEFERIDO | packages/cmd/aos/api.go | Sem soberania composta, os handlers de leitura mantêm o read-path LEGADO (sem authz por-chamador nem selo) | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
-| DEF-207 | DEFERIDO | packages/cmd/aos/dsar.go | Credencial FORTE do operador DSAR (OIDC/mTLS no IdP de soberania) | AOS-205 | Responsável de Segurança | Idem DEF-201 | ABERTO |
-| DEF-208 | DEMO-GRADE | packages/cmd/aos/dsar.go | O endpoint `POST /dsar/erase` reutiliza o modelo de autenticação de leitura de governação, que é demo-grade | AOS-205 | Responsável de Segurança | Idem DEF-201 | ABERTO |
-| DEF-209 | DEFERIDO | packages/cmd/aos/main.go | Provisioning real de regiões/boards por ambiente; hoje `AOS_BOARD_REGIONS` com um board demo por omissão | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | ABERTO |
-| DEF-210 | DEMO-GRADE | packages/cmd/aos/main.go | `parseBoardRegions` interpreta a config demo-grade do registo board→região | AOS-203; provisionamento real AOS-205 | Arquitecto de Plataforma | Execução de AOS-203 (variáveis de ambiente + kill-switch de soberania) | ABERTO |
-| DEF-211 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | `Config.BoardRegions` é o registo board→região demo-grade que o read-path soberano consulta | AOS-203; provisionamento real AOS-205 | Arquitecto de Plataforma | Idem DEF-210 | ABERTO |
+| DEF-203 | DEFERIDO | packages/cmd/aos/sovereignty.go | Idem DEF-201 no doc de ficheiro do read-path soberano: a fonte board→região é a autoridade com rotação+auditoria (AOS-205); resta o tenant concreto | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Idem DEF-201 | MITIGADO |
+| DEF-204 | DEMO-GRADE | packages/cmd/aos/sovereignty.go | AOS-205 entregou a CREDENCIAL FORTE OIDC verificada: com ela composta o board/reader vêm das CLAIMS verificadas e o header auto-declarado deixa de autorizar. A via por headers `X-Aos-Reader`/`X-Aos-Board` fica como fallback demo-grade só FORA de produção | AOS-205 | Responsável de Segurança | Idem DEF-201 (a credencial do leitor vem do mesmo IdP de soberania) | MITIGADO |
+| DEF-205 | CONDICIONAL | packages/cmd/aos/sovereignty.go | A REGRA fail-closed é FIXA (Carta §4) e AOS-205 entregou a fonte de autoridade e a credencial forte; a TOPOLOGIA continua condicional ao provisionamento do tenant concreto | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | MITIGADO |
+| DEF-206 | DEFERIDO | packages/cmd/aos/api.go | Sem soberania composta os handlers mantêm o read-path LEGADO; com ela composta AOS-205 endurece o caminho (autoridade + credencial forte verificada). O fallback legado é aceite só fora de produção | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | MITIGADO |
+| DEF-207 | DEFERIDO | packages/cmd/aos/dsar.go | AOS-205 entregou: o endpoint `POST /dsar/erase` passa a exigir a CREDENCIAL FORTE verificada (reutiliza o gate soberano endurecido). Resta o tenant concreto do IdP de soberania | AOS-205 | Responsável de Segurança | Idem DEF-201 | MITIGADO |
+| DEF-208 | DEMO-GRADE | packages/cmd/aos/dsar.go | O endpoint reutiliza o gate soberano de leitura, que AOS-205 passou a exigir com credencial forte OIDC; a via por headers fica só fora de produção | AOS-205 | Responsável de Segurança | Idem DEF-201 | MITIGADO |
+| DEF-209 | DEFERIDO | packages/cmd/aos/main.go | AOS-205: `AOS_BOARD_REGIONS` passou a SEMEAR a fonte de autoridade (rotação+auditoria) e a credencial forte vem de `AOS_SOVEREIGN_OIDC_*`; resta o provisionamento do tenant concreto | AOS-205 | Arquitecto de Plataforma | Idem DEF-201 | MITIGADO |
+| DEF-210 | DEMO-GRADE | packages/cmd/aos/main.go | `parseBoardRegions` interpreta a config demo-grade que SEMEIA a autoridade board→região (AOS-205); o tenant concreto é config | AOS-203; provisionamento real AOS-205 | Arquitecto de Plataforma | Execução de AOS-203 (variáveis de ambiente + kill-switch de soberania) | MITIGADO |
+| DEF-211 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | `Config.BoardRegions` é a SEMENTE da fonte de autoridade board→região (AOS-205); resta o tenant concreto | AOS-203; provisionamento real AOS-205 | Arquitecto de Plataforma | Idem DEF-210 | MITIGADO |
+| DEF-212 | DEFERIDO | packages/cmd/aos/sovereign_authority.go | A FONTE DE AUTORIDADE board→região (rotação+auditoria de alterações) existe e é fail-closed; o provisionamento do TENANT concreto (serviço de config/IdP de soberania real que empurra as alterações autoritativas) é infra-org, não código do nó | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Existir organização com boards/regiões reais (Carta §4.2, D7 CONDICIONAL) | MITIGADO |
+| DEF-213 | DEMO-GRADE | packages/cmd/aos/sovereign_authority.go | A semente e as rotações entram por config/API do operador (não de um tenant real); é demo-grade nesse sentido preciso, com a regra fail-closed e a auditoria de alterações reais | AOS-205 | Arquitecto de Plataforma | Idem DEF-212 | MITIGADO |
 | DEF-301 | DEFERIDO | packages/cmd/aos/bootstrap.go | **Cifra por-titular do substrato.** A erasure DSAR destrói a KEK do vault, mas o conteúdo dos runs no Event Store está em texto-claro e fica FORA do alcance do crypto-shredding | AOS-093 (CA #1: «toda a PII persistida é cifrada com uma chave por titular» — ver arbitragem A-DEF-301) | Responsável de Segurança | Primeiro DSAR real sobre conteúdo de runs, ou auditoria GDPR externa | ABERTO |
 | DEF-302 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | `DSARVault` é um `audit.InMemoryKeyVault`: as KEK por-titular vivem em memória; produção liga um KMS/HSM pela mesma porta | AOS-093, AOS-070 | Responsável de Segurança | Ambiente com KMS/HSM disponível | ABERTO |
 | DEF-303 | DOCUMENTAL | tecnica/02_Agent_Runtime_Execucao_Duravel.md | `Result.Payload` do step-ledger persistido em claro no Event Store; a guarda `WithSensitiveResults()` é opt-in | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 (é a mesma cifra do substrato) | ABERTO |
@@ -237,18 +239,20 @@ cada execução.)*
 | packages/cmd/aos-demo/main.go | STUB | 3 |
 | packages/cmd/aos/api.go | DEFERIDO | 3 |
 | packages/cmd/aos/bootstrap.go | DEFERIDO | 8 |
-| packages/cmd/aos/bootstrap.go | DEMO-GRADE | 10 |
+| packages/cmd/aos/bootstrap.go | DEMO-GRADE | 11 |
 | packages/cmd/aos/bootstrap.go | STUB | 1 |
 | packages/cmd/aos/dsar.go | DEFERIDO | 1 |
 | packages/cmd/aos/dsar.go | DEMO-GRADE | 1 |
-| packages/cmd/aos/main.go | DEFERIDO | 1 |
-| packages/cmd/aos/main.go | DEMO-GRADE | 2 |
+| packages/cmd/aos/main.go | DEFERIDO | 2 |
+| packages/cmd/aos/main.go | DEMO-GRADE | 3 |
 | packages/cmd/aos/otlpexporter.go | DIFERIDO | 2 |
 | packages/cmd/aos/promotion.go | DEFERIDO | 1 |
 | packages/cmd/aos/service.go | DEFERIDO | 1 |
+| packages/cmd/aos/sovereign_authority.go | DEFERIDO | 1 |
+| packages/cmd/aos/sovereign_authority.go | DEMO-GRADE | 1 |
 | packages/cmd/aos/sovereignty.go | CONDICIONAL | 1 |
 | packages/cmd/aos/sovereignty.go | DEFERIDO | 3 |
-| packages/cmd/aos/sovereignty.go | DEMO-GRADE | 4 |
+| packages/cmd/aos/sovereignty.go | DEMO-GRADE | 7 |
 | packages/control-plane/orchestrator/orchestrator.go | STUB | 1 |
 | packages/integration/device_attestation.go | STUB | 1 |
 | packages/integration/foureyes.go | STUB | 2 |

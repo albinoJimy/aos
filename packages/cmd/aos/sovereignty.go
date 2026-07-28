@@ -30,7 +30,6 @@ import (
 	"strings"
 	"time"
 
-	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -70,14 +69,27 @@ type readerIdentity struct {
 	region    string
 }
 
-// readGovernance é a costura de soberania/conformidade do read-path do nó (D7+D6). Compõe o
-// MESMO [govsov.Registry] board→região que o PDP usa (AOS-094) e o WORM durável já composto no
-// nó (AOS-170). É imutável após construção e seguro para uso concorrente (o Registry é só-leitura
-// e o Store é concorrente-seguro).
+// boardRegionResolver é a regra board→região que o read-path consulta. Ambos o
+// [govsov.Registry] cru (via legado) e a [SovereignRegionAuthority] (AOS-205, fonte com
+// rotação+auditoria) a satisfazem — a REGRA (RegionFor fail-closed) NÃO se duplica; o que varia
+// é a FONTE. Board vazio/desconhecido ⇒ ("", false) ⇒ NEGA.
+type boardRegionResolver interface {
+	RegionFor(board string) (string, bool)
+}
+
+// readGovernance é a costura de soberania/conformidade do read-path do nó (D7+D6). Compõe a
+// autoridade board→região (a MESMA regra que o PDP usa, AOS-094) e o WORM durável já composto no
+// nó (AOS-170). É imutável após construção e seguro para uso concorrente (a fonte board→região é
+// concorrente-segura e o Store também).
 type readGovernance struct {
-	// regions é a autoridade board→região (AOS-094/ADR-011). RegionFor resolve fail-closed:
-	// board vazio/desconhecido ⇒ (_, false) ⇒ NEGA. NÃO se duplica a regra.
-	regions *govsov.Registry
+	// regions é a fonte board→região (AOS-094/ADR-011): [govsov.Registry] no caminho legado ou a
+	// [SovereignRegionAuthority] com rotação+auditoria (AOS-205). RegionFor resolve fail-closed.
+	regions boardRegionResolver
+	// cred é a CREDENCIAL FORTE do leitor (AOS-205). Quando composta (OIDC/mTLS verificado contra
+	// o IdP de soberania), o principal e o board são DERIVADOS das CLAIMS VERIFICADAS — o header
+	// X-Aos-Board auto-declarado deixa de autorizar. nil ⇒ via LEGADA (headers demo-grade),
+	// aceite só FORA de produção (a produção exige a credencial — ver main.go).
+	cred readCredentialVerifier
 	// worm é o audit.Store tamper-evident (o MESMO do nó) onde o selo de leitura é encadeado.
 	worm audit.Store
 	// now carimba o selo (injectável para testes determinísticos; default time.Now).
@@ -85,13 +97,14 @@ type readGovernance struct {
 }
 
 // newReadGovernance compõe a costura de leitura soberana. regions e worm são obrigatórios (o
-// chamador só a compõe quando ambos existem — ver [WithReadSovereignty] e o auto-wiring de
-// [NewAPIHandler]). now nil cai em time.Now.
-func newReadGovernance(regions *govsov.Registry, worm audit.Store, now func() time.Time) *readGovernance {
+// chamador só a compõe quando ambos existem — ver [WithReadSovereignty]/[WithSovereignAuthority]
+// e o auto-wiring de [NewAPIHandler]). cred nil ⇒ via LEGADA por headers (demo-grade); composta
+// ⇒ credencial forte verificada. now nil cai em time.Now.
+func newReadGovernance(regions boardRegionResolver, cred readCredentialVerifier, worm audit.Store, now func() time.Time) *readGovernance {
 	if now == nil {
 		now = time.Now
 	}
-	return &readGovernance{regions: regions, worm: worm, now: now}
+	return &readGovernance{regions: regions, cred: cred, worm: worm, now: now}
 }
 
 // authorize aplica a REGRA D7 fail-closed a um pedido de leitura: extrai o principal+board dos
@@ -101,14 +114,32 @@ func newReadGovernance(regions *govsov.Registry, worm audit.Store, now func() ti
 // revela PII nem a existência de qualquer run (a decisão depende só dos headers do leitor e do
 // registo GOV, nunca do run pedido).
 func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
-	principal := strings.TrimSpace(r.Header.Get(HeaderReaderPrincipal))
-	board := strings.TrimSpace(r.Header.Get(HeaderReaderBoard))
+	var principal, board string
+	if g.cred != nil {
+		// CREDENCIAL FORTE (AOS-205): o principal e o board vêm das CLAIMS VERIFICADAS do
+		// ID-token (OIDC/mTLS contra o IdP de soberania), NÃO dos headers. Um X-Aos-Board
+		// forjado (board válido sem credencial, ou credencial de outro titular com outro board)
+		// é IGNORADO — a decisão depende só da credencial verificada. Falha de verificação
+		// (sem Bearer, assinatura/janela/replay inválidos, sem claim board) ⇒ NEGA fail-closed.
+		p, b, err := g.cred.verify(r.Context(), r)
+		if err != nil {
+			return readerIdentity{}, false
+		}
+		principal, board = p, b
+	} else {
+		// VIA LEGADA demo-grade (aceite só FORA de produção): o leitor declara principal+board
+		// nos headers. Fail-closed na mesma: ausência de qualquer um ⇒ NEGA (nunca anónimo).
+		principal = strings.TrimSpace(r.Header.Get(HeaderReaderPrincipal))
+		board = strings.TrimSpace(r.Header.Get(HeaderReaderBoard))
+	}
 	// Credencial de leitura ausente ⇒ NEGA (nunca uma leitura anónima é autorizada).
 	if principal == "" || board == "" {
 		return readerIdentity{}, false
 	}
 	// Board→região é a autoridade de AOS-094: board vazio/desconhecido, ou região não
-	// resolvível ⇒ (_, false) ⇒ NEGA (nunca cross-border/leitura por omissão — ADR-011).
+	// resolvível ⇒ (_, false) ⇒ NEGA (nunca cross-border/leitura por omissão — ADR-011). Com a
+	// credencial forte, `board` é o claim VERIFICADO — resolver aqui é resolver a fronteira que
+	// o IdP asseriu, não a que o cliente afirmou.
 	region, ok := g.regions.RegionFor(board)
 	if !ok {
 		return readerIdentity{}, false
