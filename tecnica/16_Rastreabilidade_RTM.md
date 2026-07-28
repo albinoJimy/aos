@@ -162,6 +162,9 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 | `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |
 | `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |
 | `tecnica/14_Matriz_Conformidade.md` | EPIC-08, EPIC-09 | AOS-072, 076–097 |
+| `tecnica/15_Experiencia_HITL_UX.md` | EPIC-12 (+ EPIC-13 frontend) | AOS-119 – AOS-143 |
+| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | AOS-001 – AOS-211 |
+| `tecnica/17_Analise_STRIDE.md` | EPIC-07, EPIC-15, EPIC-16 (análise em EPIC-18/AOS-194) | AOS-064–075, AOS-163–173, AOS-174–177 |
 
 ```mermaid
 flowchart LR
@@ -169,7 +172,7 @@ flowchart LR
     NFR["NFR-01..NFR-10 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-18 (entregas)"]
     EPIC --> TICK["AOS-001..AOS-211 (tickets)"]
-    DOC["tecnica/00..14 (docs)"] --> EPIC
+    DOC["tecnica/00..17 (docs)"] --> EPIC
     TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]
     NFR --> TEST
 ```
