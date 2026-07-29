@@ -48,7 +48,7 @@ packages/cmd/aos/bootstrap.go|EPIC-06/09/10 # owner=AOS-196 (pendência P-1); ei
 # A correcção foi separar o residual para linha própria SEM `AOS-NNN` (volta a ser
 # apanhado) e repor aqui a entrada com dono. Sai quando o dono atribuir o eixo —
 # pela regra 3, não por esbatimento.
-tecnica/14_Matriz_Conformidade.md|EPIC-09 # owner=dono do backlog (residual nomeado da entrega de AOS-197, `specs/EPIC-18`); eixo correcto: POR ATRIBUIR — achado CON-02 (administração de legal hold/retenção) e carregamento de bundle de política no binário
+tecnica/14_Matriz_Conformidade.md|EPIC-09 # owner=dono do backlog (residual nomeado da entrega de AOS-197, `specs/EPIC-18`); eixo correcto: POR ATRIBUIR — carregamento de bundle de política no binário (o CON-02/legal hold saiu desta linha: recebeu eixo AOS-093 via DEF-903, decisão do dono Opção C 2026-07-29)
 
 # --- Pendência P-2: FECHADA (2026-07-27) -------------------------------------
 # As ONZE entradas que aqui viviam — `durable/errors.go`, `durable/step_ledger.go`,

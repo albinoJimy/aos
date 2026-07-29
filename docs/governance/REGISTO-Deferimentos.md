@@ -215,6 +215,7 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-809 | DIFERIDO | packages/kernel/reference-monitor/scope_gate.go | Wiring de produção do par escopo+taint no ápice, «a par de AOS-021/037/043» — as portas RT/RM foram entregues por AOS-157; falta o autorizador privilegiado real | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-808 | MITIGADO |
 | DEF-901 | NUNCA-EM-PRODUCAO | packages/substrate/otel-genai/idgen.go | `SequentialIDGenerator` produz ids deterministas para testes de topologia de árvore | AOS-076 | Arquitecto de Plataforma | Uso do gerador determinista fora de testes | FECHADO-RESIDUAL |
 | DEF-902 | NUNCA-EM-PRODUCAO | packages/testkit/env/vault.go | Vault efémero por `Env` do testkit | AOS-109 | Arquitecto de Plataforma | Importação do testkit por código de produção | FECHADO-RESIDUAL |
+| DEF-903 | DEFERIDO | packages/cmd/aos/bootstrap.go | **CON-02 — legal hold e job de expiração sem superfície de administração no nó.** O `audit.LegalHold` está composto (`Node.DSARHolds`) mas sem rota de administração; o `audit.ExpirationJob` (AOS-092) não é composto (0 chamadores de produção). Decisão do dono (Opção C, 2026-07-29, dossiê `DOSSIE-CON-02-legal-hold.md`): a utilidade acopla-se ao apagamento real, hoje adiado (a cifra por-titular do substrato é AOS-093); a superfície de administração constrói-se DEPOIS. Princípio registado: obrigação de produto, concretizado na execução | AOS-093 | Dono do produto | AOS-093 entregue (a cifra por-titular torna o shred/expiração reais) | ABERTO |
 
 
 ### 3.1 Contagens declaradas por par (a verificação 1b lê-as)
@@ -238,7 +239,7 @@ cada execução.)*
 | packages/cmd/aos-demo/main.go | DEMO-GRADE | 6 |
 | packages/cmd/aos-demo/main.go | STUB | 3 |
 | packages/cmd/aos/api.go | DEFERIDO | 3 |
-| packages/cmd/aos/bootstrap.go | DEFERIDO | 8 |
+| packages/cmd/aos/bootstrap.go | DEFERIDO | 9 |
 | packages/cmd/aos/bootstrap.go | DEMO-GRADE | 11 |
 | packages/cmd/aos/bootstrap.go | STUB | 1 |
 | packages/cmd/aos/dsar.go | DEFERIDO | 1 |

@@ -429,8 +429,8 @@ documento**, a linha devia ler «Parcial» — não é falsificação, é calibr
       forma do produto), Art. 33/34, e AI Act Art. 50.
 - [x] **Verificação:** toda a linha «Coberto» tem o mecanismo alcançável a partir de `packages/cmd/aos`
       (`go list -deps` sobre o pacote que a implementa).
-- [ ] Legal hold e job de expiração (CON-02) recebem eixo/dono/data declarados ou superfície de administração.
-      *(POR FAZER — **decisão do dono**: são as únicas dívidas de conformidade sem eixo/dono/data declarados. `grep NewExpirationJob` → 0 chamadores de produção; nenhuma rota de hold em `api.go`.)*
+- [x] Legal hold e job de expiração (CON-02) recebem eixo/dono/data declarados ou superfície de administração.
+      *(ENTREGUE — **decisão do dono** (Opção C, 2026-07-29): eixo/dono/gatilho declarados no registo (`DEF-903`, âncora `bootstrap.go`) — eixo **AOS-093**, dono **Dono do produto**, gatilho «AOS-093 entregue». A superfície de administração (rotas de hold + `ExpirationJob` composto) sequencia-se DEPOIS de a cifra por-titular tornar o apagamento real; princípio registado: **obrigação de produto**. Ver `docs/governance/DOSSIE-CON-02-legal-hold.md`. A dívida deixa de estar sem eixo/dono/data.)*
 
 ---
 

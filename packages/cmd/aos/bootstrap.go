@@ -928,6 +928,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// antigos — residual nomeado na pendência P-1 do registo).
 	dsarVault := audit.NewInMemoryKeyVault(nil)
 	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
+	// CON-02 (legal hold + job de expiração — superfície de ADMINISTRAÇÃO): DEFERIDO por
+	// decisão do dono (Opção C, docs/governance/DOSSIE-CON-02-legal-hold.md, 2026-07-29). O
+	// audit.LegalHold é composto (dsarHolds, exposto em Node.DSARHolds) mas SEM rota de
+	// administração; o audit.ExpirationJob (AOS-092) não é composto (0 chamadores de produção).
+	// EIXO: AOS-093 — a cifra por-titular do substrato torna o shred/expiração reais (hoje não
+	// há apagamento real para suspender). Gatilho: AOS-093 entregue. Ver DEF-903 no
+	// REGISTO-Deferimentos.md; produto-vs-operador resolve-se na execução (princípio: produto).
 	dsarHolds := audit.NewLegalHold()
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
