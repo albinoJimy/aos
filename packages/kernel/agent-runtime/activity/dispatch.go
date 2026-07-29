@@ -9,6 +9,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/saga"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
 // AttrDecision é o atributo de span que regista o desfecho da activity
@@ -27,7 +28,14 @@ const AttrDecision = "aos.decision"
 // é partilhado com o RM — e (b) apresentar um span execute_tool sem os atributos
 // obrigatórios de CA2 (hash(tool+args) + result_taint), que só o RM anota. O
 // aos.activity carrega o que o RM NÃO conhece: dedup, replay e o custo por efeito real.
-const OpActivity = "aos.activity"
+//
+// ANTI-DERIVA (AOS-211): o nome é o MESMO símbolo da folha substrate
+// ([otelgenai.OpActivity]), não uma segunda cópia da string. Tem de o ser porque a
+// operação é agora chave do contrato semconv ([otelgenai.requiredAttrs]) — que vive na
+// folha, abaixo do kernel — e uma cópia local abriria a porta a duas strings
+// "aos.activity" que divergissem sem ninguém dar por isso. Referenciar (em vez de um
+// teste de igualdade) torna a deriva IMPOSSÍVEL por construção, não apenas detectável.
+const OpActivity = otelgenai.OpActivity
 
 // Dispatcher é o PONTO DE COMPOSIÇÃO das activities (AOS-021): unifica idempotência
 // (ledger AOS-014) + mediação (RM AOS-003) + replay (AOS-016) + taint (ADR-005) +
@@ -278,6 +286,13 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 // replay|denied|error) e o custo do efeito real.
 func (d *Dispatcher) startSpan(ctx context.Context, act Activity) (context.Context, agentruntime.Span) {
 	ctx, span := d.tracer.StartSpan(ctx, OpActivity)
+	// gen_ai.operation.name PRIMEIRO (AOS-211): sem ele, ValidateSpanData resolvia a
+	// operação por fallback ao Name do span e — antes de OpActivity entrar em
+	// requiredAttrs — aceitava-o SEM contrato; consumidores que leem estritamente o
+	// atributo (ex. operationOf de platform/eval) nunca o viam como operação. startSpan
+	// é a ÚNICA fonte deste span, pelo que TODOS os aos.activity o passam a trazer — a
+	// pré-condição para o pôr sob contrato no mesmo commit (anotar antes de exigir).
+	span.SetAttribute(agentruntime.AttrOperationName, OpActivity)
 	span.SetAttribute(agentruntime.AttrToolName, act.ToolID)
 	span.SetAttribute(agentruntime.AttrRunID, act.RunID)
 	span.SetAttribute(agentruntime.AttrStepID, act.StepID)

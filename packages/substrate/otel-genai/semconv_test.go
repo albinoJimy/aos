@@ -27,6 +27,7 @@ func TestSemconvCanonicalNames(t *testing.T) {
 		OpChat:                "chat",
 		OpExecuteTool:         "execute_tool",
 		OpEvaluation:          "gen_ai.evaluation.result",
+		OpActivity:            "aos.activity",
 		AttrEvalVerdict:       "aos.eval.verdict",
 		AttrEvalScore:         "aos.eval.score",
 		AttrEvalDataset:       "aos.eval.dataset",

@@ -148,6 +148,15 @@ const (
 	// da semconv GenAI), o seu nome é o nome completo do span de avaliação da
 	// convenção. Ligado por trace_id à trajectória avaliada. Ver evaluation.go.
 	OpEvaluation = "gen_ai.evaluation.result"
+	// OpActivity — span de ESCOPO DURÁVEL da activity (AOS-021): envolve o despacho
+	// idempotente + a mediação e regista o DESFECHO durável (permit|dedup|replay|
+	// denied|error). A string vive AQUI, na folha substrate, e NÃO no kernel que a
+	// emite, por uma razão de camada: para o span ficar sob o contrato semconv
+	// ([requiredAttrs]) a operação tem de ser uma chave desse mapa, e o mapa é deste
+	// módulo — que o kernel importa mas que NÃO pode importar o kernel de volta. O
+	// kernel (agent-runtime/activity) referencia esta constante como a sua OpActivity,
+	// pelo que a string é ÚNICA e não pode divergir entre as duas camadas (AOS-211).
+	OpActivity = "aos.activity"
 )
 
 // Efeitos de mediação (valores de [AttrDecision]). São o conjunto documentado no

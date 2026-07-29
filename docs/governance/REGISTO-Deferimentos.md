@@ -6,7 +6,7 @@
 | Autoridade | **Subordinado**. Este ficheiro **não decide nada** e **não cria tickets** — regista o que já está deferido e torna o eixo verificável por comando |
 | Origem | AOS-196 (EPIC-18), achados **DEF-01**, **DEF-03** e **DEF-06** da auditoria multiagente v4 |
 | Gate que o impõe | `scripts/ci/deferrals.sh` (bloqueante; `run.sh` → `ALL_GATES`, job `deferrals` em `ci.yml`, `needs:` do agregador `gates`) |
-| Última actualização | 2026-07-27 |
+| Última actualização | 2026-07-28 |
 
 ---
 
@@ -213,6 +213,7 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-807 | DIFERIDO | packages/kernel/agent-runtime/model.go | `AuthorizationTaint` é uma string convencionada em vez de uma autorização estruturalmente infalsificável mintada no runtime | AOS-069 | Responsável de Segurança | Idem DEF-806 | ABERTO |
 | DEF-808 | DIFERIDO | packages/kernel/reference-monitor/taint_gate.go | Sem `DefaultHooksWithTaint` e um `PrivilegedAuthorizer` real ligados no ápice, a metade do ADR-005 fica inactiva; o conjunto `Privileged` composto hoje é vazio | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-604 (conjunto `Privileged` real no ápice) | MITIGADO |
 | DEF-809 | DIFERIDO | packages/kernel/reference-monitor/scope_gate.go | Wiring de produção do par escopo+taint no ápice, «a par de AOS-021/037/043» — as portas RT/RM foram entregues por AOS-157; falta o autorizador privilegiado real | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-808 | MITIGADO |
+| DEF-810 | DEFERIDO | packages/integration/runtime_ports.go | **Custo por efeito real no aos.activity via durável.** O adaptador DurableDispatcher traduz o referencemonitor.Call numa activity.Activity sem CostMicroUSD porque NÃO há fonte: Call/CallContext não têm campo de custo e a Decision devolvida também não o carrega (AOS-211, EIXO 2). Zero não emite (custo desconhecido e gratuito indistintos), pelo que não é perda silenciosa — é ausência de porta | POR ATRIBUIR | Arquitecto de Plataforma | Existir uma porta que declare o custo do efeito ao longo da cadeia Call→Decision (campo de custo no Call ou no Result do dispatcher) | ABERTO |
 | DEF-901 | NUNCA-EM-PRODUCAO | packages/substrate/otel-genai/idgen.go | `SequentialIDGenerator` produz ids deterministas para testes de topologia de árvore | AOS-076 | Arquitecto de Plataforma | Uso do gerador determinista fora de testes | FECHADO-RESIDUAL |
 | DEF-902 | NUNCA-EM-PRODUCAO | packages/testkit/env/vault.go | Vault efémero por `Env` do testkit | AOS-109 | Arquitecto de Plataforma | Importação do testkit por código de produção | FECHADO-RESIDUAL |
 
@@ -261,6 +262,7 @@ cada execução.)*
 | packages/integration/issuer_authority.go | NUNCA-EM-PRODUCAO | 2 |
 | packages/integration/oidc/oidc.go | DEMO-GRADE | 1 |
 | packages/integration/oidc_directory.go | DEMO-GRADE | 1 |
+| packages/integration/runtime_ports.go | DEFERIDO | 1 |
 | packages/integration/secured.go | DEMO-GRADE | 3 |
 | packages/integration/steer_authenticator.go | DEMO-GRADE | 1 |
 | packages/kernel/agent-runtime/activity/doc.go | DEFERIDO | 1 |
@@ -470,6 +472,39 @@ com dependência de AOS-094 e AOS-174.
 *regra* de soberania (AOS-094) e o EPIC-10 entrega topologia/DR (AOS-098…108); nenhum dos onze
 tickets entrega o **provisionamento de identidade regional**. A Carta §4.2 marca D7 como
 CONDICIONAL a esse provisionamento — a decisão está registada, o ticket é que nunca existiu.
+
+### N-DEF-810 — cobre DEF-810
+
+Nomeado por **AOS-211** ao pôr o `gen_ai.operation.name` no `aos.activity` (EIXO 1) e ao encarar
+o EIXO 2 — o **custo por efeito real** — do mesmo span. O CA #3 de AOS-211 abençoa explicitamente
+o deferimento: «propaga um custo por efeito real … **a partir de uma fonte declarada** (ou o eixo
+fica **explicitamente deferido** com a razão escrita: a porta que o forneceria não existe)».
+
+A razão é estrutural, não falta de trabalho: na via durável do nó, `integration.DurableDispatcher`
+traduz um `referencemonitor.Call` numa `activity.Activity`, e **nenhum dos dois lados carrega
+custo**. O `Call`/`CallContext` (`packages/kernel/reference-monitor/call.go`) tem `Taint`,
+`BudgetTokensRemaining`, `Reversibility`, `Sensitivity`, `RiskClass`, `RiskApprover`,
+`RiskDecisionMode` — não um campo de custo do efeito. A `referencemonitor.Decision` devolvida pelo
+dispatcher também não. Sem fonte, deixar `CostMicroUSD` a zero é o comportamento **correcto** do
+span (zero não emite: custo gratuito e custo desconhecido são indistintos por desenho), não uma
+perda silenciosa. Isto **não** duplica AOS-078 (custo do span DO MODELO, tokens/custo do turno):
+aqui é o custo do **efeito** de uma tool, outro eixo.
+
+**Ticket necessário — «Fonte declarada do custo por efeito real da tool».** Epic sugerido: EPIC-08
+(observabilidade/instrumentação, o mesmo de AOS-211) ou EPIC-02 (Reference Monitor), com
+dependência de AOS-021 (o span de escopo durável) e AOS-210 (que o pôs na árvore exportada).
+
+- O `referencemonitor.Call`/`Decision` (ou o `Result` do `activity.Dispatcher`) passa a poder
+  transportar o **custo do efeito** apurado quando a tool o reporta, sem o confundir com o custo do
+  turno de modelo (AOS-078).
+- O `DurableDispatcher` propaga esse custo para `Activity.CostMicroUSD`, e o span `aos.activity`
+  emite `gen_ai.usage.cost_usd` **uma só vez por efeito real** — nunca em `dedup`/`replay` (a guarda
+  de `dispatch.go` já o garante: só no ramo `applied`).
+
+**Porque não tem ticket hoje:** procurar «custo do efeito» / campo de custo no `Call` no backlog
+devolve zero — o eixo do custo por efeito real nunca teve `AOS-NNN` próprio. AOS-211 entrega o
+EIXO 1 (operation.name sob contrato) e **nomeia** este EIXO 2 em vez de o deixar mudo, que é
+precisamente a deriva que o ticket veio terminar.
 
 ### A-DEF-301 — ARBITRAGEM do eixo da cifra do substrato (DEF-301, DEF-303…DEF-307)
 

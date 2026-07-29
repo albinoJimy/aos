@@ -991,20 +991,25 @@ entrar na lista de obrigatórios — obrigá-lo faria falhar todo o `aos.activit
 
 **Critérios de aceitação**
 
-- [ ] `startSpan` de `activity/dispatch.go` anota `gen_ai.operation.name = aos.activity`, e `OpActivity`
+- [x] `startSpan` de `activity/dispatch.go` anota `gen_ai.operation.name = aos.activity`, e `OpActivity`
       passa a ter entrada em `otelgenai.requiredAttrs` com os atributos que o span **sempre** carrega
       (`operation.name`, `tool`, `run_id`, `step_id`) — **não** o custo, que é opcional por desenho.
-- [ ] Teste que falha ANTES da mudança: `ValidateSpanData` sobre um `aos.activity` sem
+      *(ENTREGUE: `activity/dispatch.go` `startSpan` emite `AttrOperationName=OpActivity` como 1.º atributo; `OpActivity` nasce em `otel-genai/semconv.go` (folha substrato, para poder ser chave sem o substrato importar o kernel) e o kernel `activity.OpActivity` REFERENCIA-o (single-source, anti-deriva por construção); entrada em `otel-genai/contract.go` `requiredAttrs` com os 4 atributos, sem o custo. layer-lint VERDE.)*
+- [x] Teste que falha ANTES da mudança: `ValidateSpanData` sobre um `aos.activity` sem
       `gen_ai.operation.name` deixa de ser **vacuosamente** aceite (hoje é aceite por não ter contrato).
-- [ ] O adaptador `integration.DurableDispatcher` propaga um custo por efeito real para
+      *(ENTREGUE: `TestAOS211_ActivityUnderContractIsNotVacuouslyAccepted` (`otel-genai/contract_test.go`); não-vacuidade provada empiricamente — remover a linha de `requiredAttrs` faz o teste FALHAR (aceitava por fallback ao `Name`), repô-la volta a verde.)*
+- [~] O adaptador `integration.DurableDispatcher` propaga um custo por efeito real para
       `Activity.CostMicroUSD` **a partir de uma fonte declarada** (ou o eixo fica **explicitamente
       deferido** com a razão escrita: a porta que o forneceria não existe). Nomear a ausência da fonte é
       resposta aceitável; deixar o campo em branco **sem** a nomear não é.
-- [ ] Prova ao nível do NÓ, com `-race` e colector OTLP: o `aos.activity` exportado traz
+      *(**DEFERIDO com razão nomeada** (a via aceitável da CA): `referencemonitor.Call`/`CallContext` e a `Decision` devolvida não carregam custo do efeito, e o `activity.Result` também não — não há fonte declarada na via durável do nó. `CostMicroUSD` fica a 0 DELIBERADAMENTE (0 não emite: custo gratuito e desconhecido indistintos), nomeado num comentário em `runtime_ports.go` + **DEF-810** no `REGISTO-Deferimentos.md` (eixo POR ATRIBUIR). Não é campo em branco mudo.)*
+- [x] Prova ao nível do NÓ, com `-race` e colector OTLP: o `aos.activity` exportado traz
       `gen_ai.operation.name`; e, se o custo for propagado, `gen_ai.usage.cost_usd` aparece **uma só vez por
       efeito real** — nunca em `dedup`/`replay` (senão um agregador soma N retries como N custos).
-- [ ] Retro-compatibilidade: nenhum span deixa de ser emitido e nenhum consumidor existente passa a falhar
+      *(ENTREGUE: `TestAOS211_ExportedActivitySpanCarriesOperationName` (`packages/cmd/aos`, molde AOS-210, `-race` + colector OTLP `httptest`): o `aos.activity` exportado traz `gen_ai.operation.name=aos.activity` e NÃO traz `gen_ai.usage.cost_usd` — sela o eixo do custo deferido e impede uma regressão que emitisse custo zero/forjado.)*
+- [x] Retro-compatibilidade: nenhum span deixa de ser emitido e nenhum consumidor existente passa a falhar
       (os testes de conformidade semconv de AOS-076 continuam verdes).
+      *(ENTREGUE: a mudança só ACRESCENTA um atributo (via `startSpan`, fonte única) e uma const/entrada de contrato; suites `-race` verdes em `otel-genai`, `agent-runtime/activity`, `integration` e `cmd/aos`; conformidade semconv de AOS-076 verde.)*
 
 **Dependências:** AOS-210 (que pôs o span na árvore exportada), AOS-021 (o span), AOS-076 (contrato semconv).
 **Não duplica:** AOS-078 (contabilidade de tokens/custo por span **do modelo** — aqui é o custo do **efeito**

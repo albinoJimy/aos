@@ -31,6 +31,11 @@ func TestValidateSpanDataPerOperation(t *testing.T) {
 			AttrEvalVerdict: string(EvalPass),
 			AttrEvalDataset: string(EvalDatasetGolden),
 		}),
+		OpActivity: spanWith(OpActivity, map[string]string{
+			AttrToolName: "search",
+			AttrRunID:    "run-1",
+			AttrStepID:   "step-1",
+		}),
 	}
 	for op, sd := range valid {
 		if err := ValidateSpanData(sd); err != nil {
@@ -86,7 +91,43 @@ func TestRequiredAttributesIsolation(t *testing.T) {
 	if RequiredAttributes("desconhecida") != nil {
 		t.Error("operação desconhecida devia devolver nil")
 	}
-	if ops := KnownOperations(); len(ops) != 4 {
-		t.Errorf("KnownOperations = %v, esperava 4", ops)
+	if ops := KnownOperations(); len(ops) != 5 {
+		t.Errorf("KnownOperations = %v, esperava 5", ops)
+	}
+}
+
+// TestAOS211_ActivityUnderContractIsNotVacuouslyAccepted é a prova de NÃO-VACUIDADE do
+// EIXO 1. Antes de AOS-211, `aos.activity` não tinha entrada em requiredAttrs: um span
+// com esse Name resolvia a operação por fallback, não encontrava contrato e era ACEITE
+// SEM VALIDAR — o único span da árvore durável isento da semconv de AOS-076. Este teste
+// afirma o oposto: um aos.activity SEM gen_ai.operation.name é agora RECUSADO, e o erro
+// nomeia os atributos em falta.
+//
+// Porque é falha-antes/passa-depois num só commit: correr esta asserção contra o
+// requiredAttrs ANTERIOR (sem a chave OpActivity) devolvia nil de ValidateSpanData e o
+// `if err == nil` disparava — a prova de que o contrato antes NÃO se aplicava a este span.
+func TestAOS211_ActivityUnderContractIsNotVacuouslyAccepted(t *testing.T) {
+	// Um span `aos.activity` cru — só o Name, SEM gen_ai.operation.name e sem os
+	// atributos de correlação. É a forma exacta que era vacuosamente aceite.
+	bare := SpanData{Name: OpActivity}
+	err := ValidateSpanData(bare)
+	if err == nil {
+		t.Fatal("aos.activity sem gen_ai.operation.name devia ser RECUSADO — antes de AOS-211 era aceite vacuosamente (sem contrato)")
+	}
+	// O erro tem de nomear os obrigatórios que faltam (o contrato aplica-se a sério).
+	for _, want := range []string{AttrOperationName, AttrToolName, AttrRunID, AttrStepID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("erro devia nomear o atributo em falta %q: %v", want, err)
+		}
+	}
+
+	// E o span COMPLETO (como o emite startSpan de activity/dispatch.go) é conforme.
+	full := spanWith(OpActivity, map[string]string{
+		AttrToolName: "counter",
+		AttrRunID:    "run-1",
+		AttrStepID:   "step-1",
+	})
+	if err := ValidateSpanData(full); err != nil {
+		t.Errorf("aos.activity com operation.name+tool+run_id+step_id devia validar: %v", err)
 	}
 }

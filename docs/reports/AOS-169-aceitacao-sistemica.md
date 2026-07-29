@@ -463,20 +463,26 @@ Evidência — tudo com `-race`, contra um colector OTLP `httptest`, com `AOS_DU
   durável sem `AOS_OTLP_ENDPOINT` não abre exporter, não envia **um único byte** a um colector que está
   a correr ao lado, e produz um desfecho observável **idêntico** ao do nó instrumentado.
 
-**Residual REMANESCENTE — DOIS pontos, ambos com DONO (`AOS-211`).** Pôr o `aos.activity` na árvore
+**Residual REMANESCENTE — DOIS pontos, ambos com DONO (`AOS-211`) — RESOLVIDOS.** Pôr o `aos.activity` na árvore
 exportada tornou visíveis duas lacunas do próprio span. Nenhuma delas estava no âmbito de AOS-210, e
-nenhuma fica **sem dono**: a regra que justificou AOS-210 («residual nomeado tem de ser encaminhado»)
-vale para quem a invoca, pelo que ambas são propriedade de **AOS-211** (`specs/EPIC-18` §8-bis,
+nenhuma ficou **sem dono**: a regra que justificou AOS-210 («residual nomeado tem de ser encaminhado»)
+vale para quem a invoca, pelo que ambas foram propriedade de **AOS-211** (`specs/EPIC-18` §8-bis,
 execução EPIC-08). Nomear sem encaminhar, no mesmo parágrafo em que se declara ter terminado essa
 deriva, seria repeti-la.
 
-1. **Custo por efeito real ausente.** O `aos.activity` do nó **não** carrega `gen_ai.usage.cost_usd`: o
+**ESTADO (AOS-211, entregue):** o ponto 2 (`gen_ai.operation.name`) foi **FECHADO** — `startSpan` anota-o e
+`OpActivity` entrou em `otelgenai.requiredAttrs` (o span deixou de estar isento do contrato semconv de AOS-076).
+O ponto 1 (custo por efeito real) foi **DEFERIDO com razão nomeada** — não há fonte declarada do custo do efeito
+na via durável do nó (`referencemonitor.Call`/`Decision` e `activity.Result` não o carregam), pelo que
+`CostMicroUSD` fica a 0 (0 não emite) e a ausência da fonte está registada como **DEF-810** (`REGISTO-Deferimentos.md`).
+
+1. **Custo por efeito real ausente.** *(→ DEFERIDO, DEF-810.)* O `aos.activity` do nó **não** carrega `gen_ai.usage.cost_usd`: o
    adaptador `integration.DurableDispatcher` traduz o `referencemonitor.Call` numa `activity.Activity`
    **sem** `CostMicroUSD` (`runtime_ports.go`), pelo que a anotação de custo por efeito real de
    `dispatch.go` nunca dispara nesta via. O **desfecho** durável (`permit|dedup|replay|denied|error`) é
    exportado; o **custo por efeito** não.
-2. **`gen_ai.operation.name` ausente.** O `aos.activity` é o único span da árvore durável exportada que
-   **não** traz `gen_ai.operation.name` (`invoke_agent`, `chat`, `execute_tool` e `audit_seal` trazem-no).
+2. **`gen_ai.operation.name` ausente.** *(→ FECHADO por AOS-211.)* O `aos.activity` era o único span da árvore durável exportada que
+   **não** trazia `gen_ai.operation.name` (`invoke_agent`, `chat`, `execute_tool` e `audit_seal` trazem-no).
    Duas consequências verificáveis: (a) `otelgenai.ValidateSpanData` resolve a operação por *fallback* ao
    `Name`, não encontra entrada em `requiredAttrs` e **aceita o span sem validar** — fica isento do
    contrato semconv de AOS-076; (b) consumidores que leem estritamente o atributo, sem *fallback* — p. ex.

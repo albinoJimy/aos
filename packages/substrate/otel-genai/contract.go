@@ -32,11 +32,17 @@ func stringify(v any) string {
 //     avaliada é estrutural (trace_id partilhado ou [AttrEvalTargetTraceID]), não um
 //     atributo obrigatório do contrato; o que o contrato exige é o veredicto tipado
 //     sobre um dataset identificado.
+//   - aos.activity: a operação e a correlação que o span de escopo durável SEMPRE
+//     carrega — nome de operação + tool + run_id + step_id (AOS-021/AOS-211). O custo
+//     do efeito (gen_ai.usage.cost_usd) NÃO entra: é OPCIONAL por desenho
+//     (CostMicroUSD==0 não emite; custo gratuito e desconhecido são indistintos),
+//     pelo que obrigá-lo faria falhar todo o aos.activity de tools sem custo apurado.
 var requiredAttrs = map[string][]string{
 	OpInvokeAgent: {AttrOperationName},
 	OpChat:        {AttrOperationName, AttrRequestModel, AttrPrincipalNHI},
 	OpExecuteTool: {AttrOperationName, AttrToolName, AttrToolCallHash, AttrResultTaint},
 	OpEvaluation:  {AttrOperationName, AttrEvalVerdict, AttrEvalDataset},
+	OpActivity:    {AttrOperationName, AttrToolName, AttrRunID, AttrStepID},
 }
 
 // RequiredAttributes devolve (uma cópia d)os atributos obrigatórios para a

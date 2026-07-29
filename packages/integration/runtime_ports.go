@@ -246,6 +246,16 @@ func NewDurableDispatcher(d *activity.Dispatcher) (*DurableDispatcher, error) {
 // numa activity.Activity (preservando o Credential), despacha idempotentemente e converte
 // o desfecho de volta numa [referencemonitor.Decision].
 func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.Call) (referencemonitor.Decision, error) {
+	// CUSTO POR EFEITO REAL — ausência de fonte NOMEADA, não campo em branco mudo
+	// (AOS-211, EIXO 2; registo DEF-810). activity.Activity.CostMicroUSD alimentaria
+	// gen_ai.usage.cost_usd no span aos.activity, mas nesta via não há de onde o tirar:
+	// referencemonitor.Call/CallContext não têm campo de custo (só Taint, orçamento,
+	// reversibilidade, sensibilidade, classe/aprovador de risco) e a referencemonitor.
+	// Decision devolvida pelo dispatcher também não o carrega. Deixá-lo a zero é o
+	// comportamento CORRECTO do span (CostMicroUSD==0 não emite: custo gratuito e custo
+	// desconhecido são indistintos por desenho), não uma perda silenciosa. A propagação
+	// fica deferida até existir uma porta que declare o custo do efeito ao longo desta
+	// cadeia; o eixo está registado com dono em docs/governance/REGISTO-Deferimentos.md.
 	act := activity.Activity{
 		RunID:                 call.RunID,
 		StepID:                call.StepID,
@@ -258,6 +268,7 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 		Sensitivity:           call.Context.Sensitivity,
 		BudgetTokensRemaining: call.Context.BudgetTokensRemaining,
 		Input:                 call.Input,
+		// CostMicroUSD: sem fonte nesta via — ausência nomeada no comentário acima.
 	}
 	res, err := d.dispatcher.Dispatch(ctx, act)
 	if err != nil {
