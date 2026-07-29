@@ -105,13 +105,15 @@ func TestControlMTLSNotBypassOfEd25519(t *testing.T) {
 		t.Fatal("assinatura ma NAO devia ter efeito no canal mesmo com certificado de cliente valido")
 	}
 
-	// (b) certificado verificado + assinatura AUSENTE (vazia) ⇒ 403.
+	// (b) certificado verificado + assinatura AUSENTE (vazia) ⇒ 403. Exigimos exactamente 403
+	// (não apenas "≠ 202"), alinhado com o caso da assinatura adulterada: a recusa tem de ser pela
+	// razão certa (ed25519 barra), não por um 4xx/5xx acidental.
 	const runIDAbsent = "run-mtls-absentsig"
 	emAbsent := integration.SignSignal(opPriv, apiOperatorID, runIDAbsent, control.SignalSteer, correction, nonce, tnClock()())
 	emAbsent.Signature = nil // assinatura AUSENTE
 	recAbsent := postSteerTLS(h, runIDAbsent, steerBody(emAbsent, correction), verifiedClientTLS())
-	if recAbsent.Code == http.StatusAccepted {
-		t.Fatalf("cert de cliente valido + assinatura AUSENTE NAO devia ser aceite, veio %d", recAbsent.Code)
+	if recAbsent.Code != http.StatusForbidden {
+		t.Fatalf("cert de cliente valido + assinatura AUSENTE devia dar 403 (mTLS nao e bypass), veio %d", recAbsent.Code)
 	}
 	if _, ok := node.Steer.PendingCorrection(runIDAbsent); ok {
 		t.Fatal("assinatura ausente NAO devia ter efeito no canal")
@@ -364,5 +366,35 @@ func TestControlMTLSEndToEnd(t *testing.T) {
 	_ = sresp2.Body.Close()
 	if got, ok := node.Steer.PendingCorrection(runID); !ok || string(got) != string(correction) {
 		t.Fatalf("a correccao (cert+assinatura validos) devia ter chegado ao canal, veio (%q,%v)", got, ok)
+	}
+
+	// (d) DISCRIMINAÇÃO — um certificado de cliente assinado por OUTRA CA (não encadeada em
+	// AOS_CONTROL_MTLS_CA_PATH) é RECUSADO no handshake. Isto exercita DIRECTAMENTE a âncora de
+	// confiança (ClientCAs): com tls.VerifyClientCertIfGiven, um cert apresentado mas não-verificável
+	// contra a CA montada aborta o handshake — o pedido nunca chega ao handler e a correcção NÃO
+	// atinge o canal. Sem este caso, um pool de CA mal montado passaria despercebido.
+	_, untrustedCert := genControlClientCA(t) // segunda CA independente; caPath descartado de propósito
+	untrustedClient := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			RootCAs:      serverPool,
+			Certificates: []tls.Certificate{untrustedCert},
+			MinVersion:   tls.VersionTLS12,
+		}},
+	}
+	const runIDUntrusted = "run-mtls-e2e-untrusted"
+	nonce3 := make([]byte, 32)
+	_, _ = rand.Read(nonce3)
+	em3 := integration.SignSignal(opPriv, apiOperatorID, runIDUntrusted, control.SignalSteer, correction, nonce3, tnClock()())
+	body3, _ := json.Marshal(steerBody(em3, correction))
+	sreq3, _ := http.NewRequest("POST", "https://"+addr+"/runs/"+runIDUntrusted+"/steer", bytes.NewReader(body3))
+	sreq3.Header.Set("Content-Type", "application/json")
+	sresp3, err := untrustedClient.Do(sreq3)
+	if err == nil {
+		_ = sresp3.Body.Close()
+		t.Fatalf("/steer com cert de OUTRA CA devia falhar o handshake (CA nao-confiavel), veio status %d", sresp3.StatusCode)
+	}
+	if _, ok := node.Steer.PendingCorrection(runIDUntrusted); ok {
+		t.Fatal("um cert de cliente de CA nao-confiavel NAO devia ter efeito no canal")
 	}
 }
