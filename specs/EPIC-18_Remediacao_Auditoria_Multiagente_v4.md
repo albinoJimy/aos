@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-211** (22 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono) |
+| Intervalo de tickets | **AOS-190 … AOS-212** (23 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva) |
 
 ---
 
@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-211)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-212)
 
 Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
@@ -595,6 +595,15 @@ O **AOS-211** nasce da mesma regra aplicada ao próprio AOS-210: ao pôr o `aos.
 exportada pelo nó, AOS-210 deixou dois atributos por cobrir nesse span (o custo por efeito real e o
 `gen_ai.operation.name`), e nomeá-los no relatório **sem dono** seria repetir exactamente a deriva que
 AOS-210 veio terminar. A regra vale para quem a invoca: **residual nomeado ⇒ ticket**, ou não se nomeia.
+
+O **AOS-212** é a terceira aplicação da mesma regra, agora ao próprio AOS-211: dos seus dois eixos, o do
+`gen_ai.operation.name` foi entregue, mas o do **custo por efeito real** foi **deferido com razão nomeada**
+(`DEF-810`) — não há, na via durável do nó, uma **fonte declarada** do custo do efeito: nem
+`referencemonitor.Call`/`Decision`, nem o desfecho do `Apply` (`durable.Result`), nem o `activity.Result`
+o transportam. Deferir com razão nomeada é a resposta que o próprio CA de AOS-211 abençoou; mas deixar o
+`DEF-810` em `POR ATRIBUIR` seria repetir a deriva. AOS-212 é o executor: entrega a **porta** que faltava
+(o custo a fluir do desfecho do efeito para o span, em tempo de `Apply`), deixando o **produtor real** de
+custo (Model Gateway / tools pagas) explicitamente em EPIC-06.
 
 Enquanto não existiam, 19 linhas do registo diziam `POR ATRIBUIR` — o que é honesto, mas não é
 executável. Criá-los completa o objectivo §2 deste epic («pôr os deferimentos num registo único com
@@ -616,6 +625,7 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-209 | **Terminação TLS do nó** (ingresso HTTP/SSE/DSAR + perna OTLP) | feature | M | **P0** | **EPIC-15** | `tecnica/17` §5.2-b (AOS-194) |
 | AOS-210 | Tracer do **dispatcher durável** no composition root: o span `aos.activity` na árvore do nó | fix | S | P1 | **EPIC-14** | residual §6.3 de `AOS-169-aceitacao-sistemica.md` (AOS-204) |
 | AOS-211 | Os dois atributos em falta no `aos.activity`: **custo por efeito real** e `gen_ai.operation.name` sob contrato semconv | fix | S | P2 | **EPIC-08** | residual §6.3 de `AOS-169-aceitacao-sistemica.md` (AOS-210) |
+| AOS-212 | Fonte declarada do custo por efeito real da tool: porta do desfecho do efeito → span `aos.activity` | feature | M | P2 | **EPIC-08** | `DEF-810` (eixo do custo deferido por AOS-211) |
 
 ---
 
@@ -1014,6 +1024,70 @@ entrar na lista de obrigatórios — obrigá-lo faria falhar todo o `aos.activit
 **Dependências:** AOS-210 (que pôs o span na árvore exportada), AOS-021 (o span), AOS-076 (contrato semconv).
 **Não duplica:** AOS-078 (contabilidade de tokens/custo por span **do modelo** — aqui é o custo do **efeito**
 de uma tool, outro eixo) nem AOS-210 (que fecha a ligação do tracer, não o conteúdo do span).
+
+---
+
+### AOS-212 — Fonte declarada do custo por efeito real da tool: porta do desfecho do efeito → span `aos.activity`
+
+**Origem:** `DEF-810` — o eixo do custo que **AOS-211 deferiu com razão nomeada**. A metade
+`gen_ai.operation.name` foi entregue; esta é a metade que faltava um **produtor**.
+
+**A lacuna (precisa).** O `aos.activity` **sabe** emitir `gen_ai.usage.cost_usd`: `activity/dispatch.go`
+anota-o quando `Activity.CostMicroUSD != 0`, **uma vez por efeito real** (`applied`), nunca em
+`dedup`/`replay` — essa disciplina já existe (AOS-021/AOS-211). Falta o **valor**: na via durável do nó
+nenhum caminho o preenche. O efeito corre em `d.ledger.Apply(...)` e devolve `durable.Result{Status,
+Payload}` — **sem custo**; `referencemonitor.Decision` e `activity.Result` também não o transportam; o
+`integration.DurableDispatcher` (`runtime_ports.go`) constrói o `Activity` com `CostMicroUSD == 0`, hoje de
+propósito e nomeado (`DEF-810`).
+
+**O que NÃO é (não-duplicação — o eixo de risco).** O custo do **modelo** (tokens da inferência) já flui
+por `resp.CostMicroUSD` (`loop.go`) para o span `chat` — é AOS-078, o custo do **turno LLM**. AOS-212 é o
+custo do **efeito**: a acção com efeito colateral que o RM permite, no span `aos.activity`. Eixo diferente,
+span diferente. O invariante a preservar é **sem dupla-contagem**: custo-de-modelo no `chat`,
+custo-de-efeito no `aos.activity`, agregado no `invoke_agent` = soma.
+
+**Decisão de desenho (a tomar e justificar).** Custo **medido** (do desfecho do efeito, no momento do
+`Apply`) vs **declarado** (estimativa fixa por tool, à cabeça no `Call`/catálogo). Recomendação: **medido** —
+`gen_ai.usage.cost_usd` afirma semanticamente um custo **real**; uma estimativa seria um valor errado num
+atributo sob contrato semconv. **Subtileza crítica:** o custo é **sinal de observabilidade em tempo de
+`Apply`, não estado durável** — é essa a razão de só se emitir em `applied` e nunca em `replay` (o replay
+não re-incorre o efeito). Logo o custo **não** deve viver no `durable.Result` gravado no ledger (senão o
+replay teria de o re-emitir ou suprimir): deve ser um **canal lateral** da closure do `Apply` para o span.
+
+**Porque está genuinamente por-fazer.** No nó de referência as tools são stubs (`emptyCatalog`,
+`referenceModel`) e **nenhuma incorre custo mensurável**. O produtor real (Model Gateway com custo, tools
+pagas) é **EPIC-06**, fora do escopo zero-dep do nó. AOS-212 entrega a **porta** + a **prova** com uma tool
+de referência que reporta um custo; o produtor real fica declarado em EPIC-06.
+
+**Recorte.** DENTRO: o contrato do desfecho do efeito passa a transportar `CostMicroUSD` (canal lateral
+`Apply`→span); o dispatcher anota o `aos.activity` a partir do **resultado do efeito** (não do `Activity`
+de entrada), só em `applied`; uma tool de referência que reporta custo para provar o fio ponta-a-ponta.
+FORA (deferido, EPIC-06/08): custo real por-tool do Model Gateway; consumo pelo `control-plane/budget`.
+
+**Critérios de aceitação**
+
+- [ ] O contrato do desfecho do efeito transporta `CostMicroUSD` **por um canal lateral** (não no
+      `durable.Result` gravado no ledger — replay não re-incorre custo); o dispatcher anota o `aos.activity`
+      a partir do **resultado do efeito**, não do `Activity` de entrada, **só** em `applied`.
+- [ ] **Falsificável, ao nível do NÓ** (`-race` + colector OTLP): um run cuja tool de referência reporta
+      custo `C` produz `gen_ai.usage.cost_usd == C` no `aos.activity` exportado, **exactamente uma vez por
+      efeito real**; um `dedup`/`replay` do **mesmo** `step_id` emite **zero** custo. Falha-antes: hoje lê o
+      `Activity` de entrada, que é `0` na via do nó.
+- [ ] **Sem dupla-contagem:** o custo-de-modelo permanece no span `chat`; o agregado no `invoke_agent`
+      iguala `chat + efeito` sem duplicação (estende `TestObservabilityEndToEndExportsWellFormedOTLPWithCost`).
+- [ ] **Retro-compatibilidade:** um efeito sem custo (`CostMicroUSD == 0`) não emite o atributo (inalterado);
+      o custo continua **fora** de `otelgenai.requiredAttrs` (opcional por desenho, como AOS-211 fixou) e a
+      conformidade semconv de AOS-076 mantém-se verde.
+- [ ] **Produtor real declarado, não fingido:** a tool de referência que reporta custo é rotulada como tal;
+      o custo real por-tool (Model Gateway / tools pagas) fica **explicitamente deferido em EPIC-06**, não
+      marcado entregue.
+- [ ] Zero dependências externas; sem segredos.
+
+**Dependências:** AOS-021 (o span + disciplina dedup/replay), AOS-210 (tracer no dispatcher), AOS-211
+(`operation.name` + custo opcional, uma vez por efeito real). **Não duplica:** AOS-078 (custo do **modelo**).
+**Relação:** EPIC-06 (produtor real do custo) e `control-plane/budget` (consumidor eventual do agregado).
+**Nota de tamanho:** **M, não S** — mexe num contrato durável transversal do kernel (o desfecho do `Apply`),
+com atenção a **layering** e **fidelidade de replay**; é a diferença face à metade `operation.name` do AOS-211.
 
 ---
 

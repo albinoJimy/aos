@@ -213,7 +213,7 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-807 | DIFERIDO | packages/kernel/agent-runtime/model.go | `AuthorizationTaint` é uma string convencionada em vez de uma autorização estruturalmente infalsificável mintada no runtime | AOS-069 | Responsável de Segurança | Idem DEF-806 | ABERTO |
 | DEF-808 | DIFERIDO | packages/kernel/reference-monitor/taint_gate.go | Sem `DefaultHooksWithTaint` e um `PrivilegedAuthorizer` real ligados no ápice, a metade do ADR-005 fica inactiva; o conjunto `Privileged` composto hoje é vazio | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-604 (conjunto `Privileged` real no ápice) | MITIGADO |
 | DEF-809 | DIFERIDO | packages/kernel/reference-monitor/scope_gate.go | Wiring de produção do par escopo+taint no ápice, «a par de AOS-021/037/043» — as portas RT/RM foram entregues por AOS-157; falta o autorizador privilegiado real | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-808 | MITIGADO |
-| DEF-810 | DEFERIDO | packages/integration/runtime_ports.go | **Custo por efeito real no aos.activity via durável.** O adaptador DurableDispatcher traduz o referencemonitor.Call numa activity.Activity sem CostMicroUSD porque NÃO há fonte: Call/CallContext não têm campo de custo e a Decision devolvida também não o carrega (AOS-211, EIXO 2). Zero não emite (custo desconhecido e gratuito indistintos), pelo que não é perda silenciosa — é ausência de porta | POR ATRIBUIR | Arquitecto de Plataforma | Existir uma porta que declare o custo do efeito ao longo da cadeia Call→Decision (campo de custo no Call ou no Result do dispatcher) | ABERTO |
+| DEF-810 | DEFERIDO | packages/integration/runtime_ports.go | **Custo por efeito real no aos.activity via durável.** O adaptador DurableDispatcher traduz o referencemonitor.Call numa activity.Activity sem CostMicroUSD porque NÃO há fonte: Call/CallContext não têm campo de custo e a Decision devolvida também não o carrega (AOS-211, EIXO 2). Zero não emite (custo desconhecido e gratuito indistintos), pelo que não é perda silenciosa — é ausência de porta | **AOS-212** (EPIC-18 §8-bis) | Arquitecto de Plataforma | Existir uma porta que declare o custo do efeito ao longo da cadeia Call→Decision (campo de custo no Call ou no Result do dispatcher) | ABERTO |
 | DEF-901 | NUNCA-EM-PRODUCAO | packages/substrate/otel-genai/idgen.go | `SequentialIDGenerator` produz ids deterministas para testes de topologia de árvore | AOS-076 | Arquitecto de Plataforma | Uso do gerador determinista fora de testes | FECHADO-RESIDUAL |
 | DEF-902 | NUNCA-EM-PRODUCAO | packages/testkit/env/vault.go | Vault efémero por `Env` do testkit | AOS-109 | Arquitecto de Plataforma | Importação do testkit por código de produção | FECHADO-RESIDUAL |
 
@@ -492,9 +492,13 @@ span (zero não emite: custo gratuito e custo desconhecido são indistintos por 
 perda silenciosa. Isto **não** duplica AOS-078 (custo do span DO MODELO, tokens/custo do turno):
 aqui é o custo do **efeito** de uma tool, outro eixo.
 
-**Ticket necessário — «Fonte declarada do custo por efeito real da tool».** Epic sugerido: EPIC-08
-(observabilidade/instrumentação, o mesmo de AOS-211) ou EPIC-02 (Reference Monitor), com
-dependência de AOS-021 (o span de escopo durável) e AOS-210 (que o pôs na árvore exportada).
+**Ticket — «Fonte declarada do custo por efeito real da tool» — ENCAMINHADO a AOS-212** (EPIC-18
+§8-bis, execução **EPIC-08**), com dependência de AOS-021 (o span de escopo durável), AOS-210 (que o
+pôs na árvore exportada) e AOS-211 (`operation.name` + a disciplina «custo opcional, uma vez por
+efeito real»). O eixo do registo deixou de ser `POR ATRIBUIR`. Decisão de desenho fixada no ticket:
+custo **medido** do desfecho do efeito por **canal lateral** do `Apply` (não estado durável no ledger,
+para o replay não o re-incorrer), com o **produtor real** (Model Gateway / tools pagas) deferido em
+EPIC-06.
 
 - O `referencemonitor.Call`/`Decision` (ou o `Result` do `activity.Dispatcher`) passa a poder
   transportar o **custo do efeito** apurado quando a tool o reporta, sem o confundir com o custo do
