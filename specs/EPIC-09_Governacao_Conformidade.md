@@ -501,15 +501,15 @@ Implementar o crypto-shredding: cifra de PII por chave-por-titular guardada no v
       *Estado de partida verificado:* hoje esse conteúdo é persistido **em claro** — `bootstrap.go`
       avisa-o em runtime («fica FORA do alcance do shredding») e `audit.IngestPipeline`, que faria a
       cifra, **nunca é composto fora de testes**.
-- [ ] Um **DSAR de apagamento** destrói a chave do titular; após isso o payload cifrado é **irrecuperável** (teste prova que decifração falha).
-- [ ] A **cadeia de hashes do audit permanece íntegra e válida** após o crypto-shredding (verificação de integridade passa).
-- [ ] O **`DSARIndex` regista as partições/streams do titular no Event Store**, para o *shred* alcançar o
+- [x] Um **DSAR de apagamento** destrói a chave do titular; após isso o payload cifrado é **irrecuperável** (teste prova que decifração falha).
+- [x] A **cadeia de hashes do audit permanece íntegra e válida** após o crypto-shredding (verificação de integridade passa).
+- [x] O **`DSARIndex` regista as partições/streams do titular no Event Store**, para o *shred* alcançar o
       **substrato** e não só o vault de audit. Sem este índice, a destruição da chave não sabe que dados
       tornar ilegíveis fora do audit.
-- [ ] O registo de **quem fez o quê, quando** (metadados não-pessoais) é preservado como facto de conformidade.
-- [ ] Um titular sob **legal hold** (AOS-092) **não** é sujeito a crypto-shredding enquanto o hold vigorar.
-- [ ] O apagamento é um evento auditável (DSAR recebido, chave destruída, timestamp).
-- [ ] **Critério falsificável (fecha a ambiguidade que originou o achado DEF-01):** após `POST /dsar/erase`,
+- [x] O registo de **quem fez o quê, quando** (metadados não-pessoais) é preservado como facto de conformidade.
+- [x] Um titular sob **legal hold** (AOS-092) **não** é sujeito a crypto-shredding enquanto o hold vigorar.
+- [x] O apagamento é um evento auditável (DSAR recebido, chave destruída, timestamp).
+- [x] **Critério falsificável (fecha a ambiguidade que originou o achado DEF-01):** após `POST /dsar/erase`,
       procurar o texto do *prompt* no ficheiro do Event Store **não devolve nada**, e a *hash-chain*
       **continua a validar**. Enquanto este critério não passar, a linha «Art. 17 — Coberto» da
       `tecnica/14_Matriz_Conformidade.md` mantém-se **Parcial** (calibrada por AOS-197).

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -30,13 +31,14 @@ const ledgerStepPrefix = "ledger-"
 // Result é o resultado de um efeito de passo, memorizado no ledger. Payload é
 // opaco (bytes do resultado da activity); Status classifica o desfecho.
 //
-// # Segredos (ver também [WithSensitiveResults] e README, secção "segredos")
+// # Segredos (ver também [WithContentSealer], [WithSensitiveResults] e README)
 //
-// O Payload é persistido EM CLARO no evento durável do Event Store (o cifrado
-// por-titular do ES é dívida de AOS-093). Para resultados SENSÍVEIS, o chamador
-// deve passar uma REFERÊNCIA (hash/URI) em vez dos bytes em claro e marcar
-// [Result.Reference]. Por defeito o ledger persiste o Payload tal como o recebe
-// (convenção de chamador); com [WithSensitiveResults] activo, o ledger RECUSA
+// Com [WithContentSealer] ligado (AOS-093, o caminho de PRODUÇÃO), o Payload é
+// CIFRADO por chave POR-TITULAR (envelope DEK/KEK) antes de tocar o Event Store — o
+// texto-claro nunca vai ao WAL e o crypto-shredding torna-o irrecuperável. Sem sealer,
+// o Payload é persistido tal como recebido (convenção de chamador); nesse caso, para
+// resultados SENSÍVEIS o chamador passa uma REFERÊNCIA (hash/URI) e marca
+// [Result.Reference], e [WithSensitiveResults] RECUSA
 // ([ErrClearResultInSensitiveMode]) um Payload não-vazio não marcado como Reference.
 type Result struct {
 	// Status classifica o desfecho do efeito (p.ex. "ok"). Livre para o chamador.
@@ -59,11 +61,21 @@ func (r Result) hash() string {
 
 // ledgerRecord é o corpo JSON do evento step.ledger.applied. Guarda a associação
 // {key → status, resultado, hash(resultado)} exigida pelo contrato (AOS-014).
+//
+// # Cifra por-titular (AOS-093)
+//
+// Com [WithContentSealer] activo e um titular resolúvel, Result carrega o ciphertext
+// de envelope (DEK/KEK) em vez do payload em claro e Sealed=true marca-o; Subject é o
+// titular (NHI-id) sob cuja KEK foi cifrado — o identificador que o crypto-shredding
+// destrói. O texto-claro NUNCA toca o WAL. Hash é sempre o SHA-256 do payload EM CLARO
+// (integridade/dedup por conteúdo; um hash não revela nem recupera o plaintext).
 type ledgerRecord struct {
-	Key    string `json:"key"`
-	Status string `json:"status"`
-	Result []byte `json:"result,omitempty"`
-	Hash   string `json:"result_hash"`
+	Key     string `json:"key"`
+	Status  string `json:"status"`
+	Result  []byte `json:"result,omitempty"`
+	Hash    string `json:"result_hash"`
+	Sealed  bool   `json:"sealed,omitempty"`
+	Subject string `json:"subject,omitempty"`
 }
 
 func (r ledgerRecord) result() Result { return Result{Status: r.Status, Payload: r.Result} }
@@ -143,6 +155,11 @@ type StepLedger struct {
 	obs       Observer
 	producer  eventstore.Producer
 	sensitive bool
+	// cipher cifra o Result.Payload por chave POR-TITULAR antes de o persistir e
+	// decifra-o no rebuild (AOS-093). nil ⇒ sem cifra (payload tal-como-recebido,
+	// retro-compat). O titular é o [eventstore.Producer.NHIID] injectado via
+	// [WithProducer] — o principal do run.
+	cipher agentruntime.ContentCipher
 
 	mu       sync.Mutex
 	records  map[string]ledgerRecord
@@ -167,14 +184,31 @@ type LedgerOption func(*StepLedger)
 // WithObserver injecta o gancho de observabilidade (default [NopObserver]).
 func WithObserver(o Observer) LedgerOption { return func(l *StepLedger) { l.obs = o } }
 
-// WithSensitiveResults activa a guarda de segredos ao nível do módulo: com ela, o
-// [StepLedger.Apply] RECUSA ([ErrClearResultInSensitiveMode]) memorizar um Result
-// com Payload não-vazio que não esteja marcado como [Result.Reference] — porque o
-// Payload é persistido em claro no Event Store (o cifrado por-titular é dívida de
-// AOS-093). É OPT-IN: o default preserva o contrato documentado (Payload tal-como-
-// recebido, redacção a cargo do chamador). Consumidores AOS-021 com resultados de
-// tool calls sensíveis devem activá-la e propagar uma referência (hash/URI).
+// WithSensitiveResults activa a guarda de segredos ao nível do módulo (via de
+// REFERÊNCIA, para quem NÃO liga a cifra por-titular): com ela, o [StepLedger.Apply]
+// RECUSA ([ErrClearResultInSensitiveMode]) memorizar um Result com Payload não-vazio
+// não marcado como [Result.Reference], porque sem sealer o Payload iria em claro para o
+// Event Store. O caminho de PRODUÇÃO (AOS-093) é [WithContentSealer], que CIFRA o
+// Payload por-titular — dispensa esta recusa (a cifra é a garantia). É OPT-IN: o default
+// preserva o contrato documentado (Payload tal-como-recebido, redacção a cargo do
+// chamador). Consumidores AOS-021 sem cifra devem activá-la e propagar uma referência.
 func WithSensitiveResults() LedgerOption { return func(l *StepLedger) { l.sensitive = true } }
+
+// WithContentSealer liga a cifra POR-TITULAR do Result.Payload (AOS-093): com ela,
+// o ledger cifra o payload de cada passo sob a KEK do TITULAR do run (o
+// [WithProducer].NHIID) por envelope DEK/KEK ANTES de o persistir no Event Store — o
+// texto-claro nunca toca o WAL — e decifra-o no [StepLedger.Rebuild]. Destruir a KEK
+// do titular (crypto-shredding) torna o resultado memorizado irrecuperável sem mutar
+// o log; um passo cujo titular foi apagado deixa de ser reconstruído no rebuild.
+//
+// É OPT-IN e coexiste com [WithSensitiveResults]: com o sealer activo, um payload em
+// claro NÃO é recusado — é cifrado (a cifra é a garantia de confidencialidade). Sem
+// sealer, o comportamento documentado mantém-se (payload tal-como-recebido; recusa em
+// modo sensível). Requer um titular resolúvel (Producer.NHIID): sem ele o payload é
+// persistido como antes (retro-compat honesto — declarado, não silencioso).
+func WithContentSealer(cipher agentruntime.ContentCipher) LedgerOption {
+	return func(l *StepLedger) { l.cipher = cipher }
+}
 
 // WithProducer define a identidade emissora (NHI + cadeia de delegação) gravada
 // nos eventos do ledger. Default: Producer zero (aceitável em teste; em produção
@@ -295,15 +329,35 @@ func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash 
 		return Result{}, false, ledgerRecord{}, err
 	}
 
-	// (2b) guarda de segredos opt-in: recusa memorizar resultado em claro.
-	if l.sensitive && len(res.Payload) > 0 && !res.Reference {
+	// (2b) guarda de segredos opt-in: com o [ContentCipher] ligado a CIFRA é a
+	// garantia de confidencialidade (o payload em claro é cifrado, não recusado); sem
+	// ele, mantém-se a recusa opt-in de memorizar resultado em claro.
+	if l.cipher == nil && l.sensitive && len(res.Payload) > 0 && !res.Reference {
 		return Result{}, false, ledgerRecord{}, ErrClearResultInSensitiveMode
 	}
 
-	// (3) regista o resultado de forma durável. O envelope usa uma idempotency_key
-	// namespaced (run_id:ledger-step_id) para não colidir com o evento de turno.
-	rec := ledgerRecord{Key: key, Status: res.Status, Result: res.Payload, Hash: res.hash()}
-	payload, err := json.Marshal(rec)
+	// (3) constrói o registo EM CLARO (memória/retorno) e o registo a PERSISTIR. Com a
+	// cifra por-titular ligada (AOS-093) e um titular resolúvel, o payload é cifrado por
+	// envelope DEK/KEK ANTES de tocar o WAL; o texto-claro fica só em memória (dedup
+	// intra-processo) e nunca é persistido. O Hash é sempre do payload EM CLARO —
+	// integridade/dedup por conteúdo, sem revelar nem recuperar o plaintext.
+	clearRec := ledgerRecord{Key: key, Status: res.Status, Result: res.Payload, Hash: res.hash()}
+	persistRec := clearRec
+	subject := l.producer.NHIID
+	if l.cipher != nil && subject != "" && len(res.Payload) > 0 {
+		sealed, serr := l.cipher.SealContent(ctx, subject, runID, res.Payload)
+		if serr != nil {
+			return Result{}, false, ledgerRecord{}, serr
+		}
+		persistRec = ledgerRecord{
+			Key: key, Status: res.Status, Result: sealed, Hash: clearRec.Hash,
+			Sealed: true, Subject: subject,
+		}
+	}
+
+	// O envelope usa uma idempotency_key namespaced (run_id:ledger-step_id) para não
+	// colidir com o evento de turno.
+	payload, err := json.Marshal(persistRec)
 	if err != nil {
 		return Result{}, false, ledgerRecord{}, err
 	}
@@ -320,24 +374,52 @@ func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash 
 
 	if appendRes.Status == eventstore.StatusDuplicate {
 		// Outro worker já tinha commitado este registo — o resultado canónico é o
-		// dele. Reconstrói a partir do evento devolvido e devolve-o (idêntico).
+		// dele. Reconstrói a partir do evento devolvido, DECIFRA-o (se cifrado) e
+		// devolve-o em claro (idêntico ao que o vencedor memorizou).
 		canonical, perr := decodeRecord(appendRes.Event.Payload)
 		if perr != nil {
 			return Result{}, false, ledgerRecord{}, perr
 		}
+		clearCanonical, cerr := l.toClear(ctx, canonical)
+		if cerr != nil {
+			return Result{}, false, ledgerRecord{}, cerr
+		}
 		l.mu.Lock()
-		l.records[key] = canonical
+		l.records[key] = clearCanonical
 		l.mu.Unlock()
 		l.obs.Deduplicated(keyHash)
-		return canonical.result(), false, canonical, nil
+		return clearCanonical.result(), false, clearCanonical, nil
 	}
 
-	// Committed: registo novo.
+	// Committed: registo novo. Guarda o CLARO em memória (o WAL tem o cifrado).
 	l.mu.Lock()
-	l.records[key] = rec
+	l.records[key] = clearRec
 	l.mu.Unlock()
 	l.obs.Applied(keyHash)
-	return res, true, rec, nil
+	return res, true, clearRec, nil
+}
+
+// toClear devolve o registo com o Result EM CLARO: se rec.Sealed (cifrado por-titular,
+// AOS-093), decifra-o via o [ContentCipher] sob a KEK do titular; caso contrário
+// devolve-o inalterado. FAIL-CLOSED: um registo cifrado sem cipher ligado devolve
+// [ErrSealedResultNoCipher]; se a KEK do titular foi destruída (crypto-shredding), a
+// decifragem falha e o erro propaga-se — um passo de um titular apagado não é
+// recuperável, por desenho.
+func (l *StepLedger) toClear(ctx context.Context, rec ledgerRecord) (ledgerRecord, error) {
+	if !rec.Sealed {
+		return rec, nil
+	}
+	if l.cipher == nil {
+		return ledgerRecord{}, ErrSealedResultNoCipher
+	}
+	plain, err := l.cipher.OpenContent(ctx, rec.Subject, rec.Result)
+	if err != nil {
+		return ledgerRecord{}, err
+	}
+	rec.Result = plain
+	rec.Sealed = false
+	rec.Subject = ""
+	return rec, nil
 }
 
 // Applied indica se a chave já tem resultado registado no ledger (in-memory).
@@ -375,7 +457,20 @@ func (l *StepLedger) Rebuild(ctx context.Context, runID string) error {
 		if derr != nil {
 			return derr
 		}
-		l.records[rec.Key] = rec
+		clear, cerr := l.toClear(ctx, rec)
+		if cerr != nil {
+			// AOS-093: um registo cifrado cujo titular foi crypto-shredded (KEK
+			// destruída) já NÃO é decifrável — o passo deixa de ser reconstruído (o run
+			// está a ser apagado; a re-execução é irrelevante). O blob mantém-se no log
+			// (a cadeia continua a validar); apenas não re-hidrata o estado in-memory.
+			// Um wiring sem cipher sobre um store cifrado ([ErrSealedResultNoCipher]) é
+			// erro de composição e propaga-se — nunca se devolve ciphertext como claro.
+			if errors.Is(cerr, ErrSealedResultNoCipher) {
+				return cerr
+			}
+			continue
+		}
+		l.records[clear.Key] = clear
 	}
 	return nil
 }

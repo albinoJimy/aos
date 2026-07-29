@@ -116,6 +116,57 @@ func openPayload(kek []byte, s encryptedPayload) ([]byte, error) {
 	return plaintext, nil
 }
 
+// SealContent cifra o CONTEÚDO de um run (AOS-093) sob a KEK POR-TITULAR do vault,
+// reutilizando o MESMO envelope DEK/KEK da PII de audit ([sealPayload]): uma DEK
+// aleatória por registo cifra o plaintext e a KEK do titular embrulha a DEK. A KEK
+// é provisionada na 1ª escrita ([KeyVault.EnsureKey]) — a mesma chave por-titular que
+// o crypto-shredding destrói. Devolve o blob de envelope serializável (opaco) que os
+// escritores do Event Store persistem no lugar do texto-claro; o plaintext NUNCA vai
+// ao WAL. randSrc nil cai em crypto/rand (produção); os testes injectam determinismo.
+//
+// É a FRONTEIRA estável reutilizada pelo substrato (kernel/agent-runtime) via a porta
+// [ContentSealer] cablada no composition root — sem duplicar crypto nem adicionar libs.
+func SealContent(vault KeyVault, subjectID string, plaintext []byte, randSrc RandSource) ([]byte, error) {
+	if vault == nil {
+		return nil, ErrNoSubject
+	}
+	if subjectID == "" {
+		return nil, ErrNoSubject
+	}
+	if randSrc == nil {
+		randSrc = cryptoRand
+	}
+	kek, _, err := vault.EnsureKey(subjectID)
+	if err != nil {
+		return nil, err
+	}
+	env, err := sealPayload(kek, plaintext, randSrc)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(env)
+}
+
+// OpenContent decifra o blob que [SealContent] selou, resolvendo a KEK do titular no
+// vault. FAIL-CLOSED: se a KEK foi destruída (crypto-shredding via [Shredder.Shred] /
+// [KeyVault.Delete]) devolve [ErrDecrypt] — o conteúdo do run é IRRECUPERÁVEL. É por
+// aqui que a erasure DSAR se manifesta sobre o substrato: sem a KEK, o open é
+// impossível, mas o blob (e o seu hash na cadeia/WAL) NUNCA é mutado.
+func OpenContent(vault KeyVault, subjectID string, blob []byte) ([]byte, error) {
+	if vault == nil || subjectID == "" {
+		return nil, ErrDecrypt
+	}
+	kek, ok := vault.Key(KeyRefFor(subjectID))
+	if !ok {
+		return nil, ErrDecrypt
+	}
+	var env encryptedPayload
+	if err := json.Unmarshal(blob, &env); err != nil {
+		return nil, ErrDecrypt
+	}
+	return openPayload(kek, env)
+}
+
 // newPayloadGCM constrói um AEAD AES-GCM a partir de uma chave de 32 bytes (AES-256).
 func newPayloadGCM(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)

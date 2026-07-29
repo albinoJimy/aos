@@ -617,6 +617,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 	}()
 
+	// (2c-pre) CIFRA POR-TITULAR DO CONTEÚDO DOS RUNS (AOS-093). O vault de chaves de
+	// PII por-titular e o índice titular→partição são criados AQUI — antes da execução
+	// durável — porque são PARTILHADOS por duas frentes que TÊM de usar a mesma chave:
+	//   (i)  a cifra do conteúdo dos runs (capturer/step-ledger) que persiste no ES;
+	//   (ii) o crypto-shredding DSAR (POST /dsar/erase) que destrói a KEK por-titular.
+	// É a MESMA KEK: apagar a chave no erase torna irrecuperável tanto a PII de audit
+	// como o conteúdo do run. Zero-dep — reutiliza o envelope DEK/KEK de platform/audit
+	// ([audit.SealContent]/[audit.OpenContent]), sem crypto novo nem libs.
+	dsarVault := audit.NewInMemoryKeyVault(nil)
+	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
+	contentCipher := newContentSealer(dsarVault, dsarIndex)
+
 	// (2c) EXECUÇÃO DURÁVEL (AOS-180). Quando configurada, compõe o checkpointer,
 	// capturer de não-determinismo e step-ledger sobre o MESMO Event Store. São
 	// opcionais em conjunto: quando cfg.DurableExecution é false, permanecem nil e
@@ -632,11 +644,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("aos: checkpointer durável (AOS-180): %w", err)
 		}
-		capturer, err = replay.NewCapturer(es)
+		// AOS-093: o capturer cifra o conteúdo não-determinístico (resposta do modelo +
+		// resultados de tools) por chave POR-TITULAR antes de o persistir — o texto-claro
+		// nunca toca o WAL; o /dsar/erase torna-o irrecuperável.
+		capturer, err = replay.NewCapturer(es, replay.WithContentSealer(contentCipher))
 		if err != nil {
 			return nil, fmt.Errorf("aos: capturer de replay (AOS-180): %w", err)
 		}
-		ledger, err = durable.NewStepLedger(es)
+		// AOS-093: o step-ledger cifra o Result.Payload por-titular (activa-se quando o
+		// run injecta o principal via Producer.NHIID; sem principal, retro-compat).
+		ledger, err = durable.NewStepLedger(es, durable.WithContentSealer(contentCipher))
 		if err != nil {
 			return nil, fmt.Errorf("aos: step-ledger durável (AOS-180): %w", err)
 		}
@@ -914,27 +931,28 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// [*audit.Shredder] satisfaz HoldOracle (Held) E ShreddableKeyStore (via dsar.AuditStore) —
 	// a governança não é reimplementada, só cabelada no nó.
 	//
-	// FRONTEIRA de COBERTURA (declarada — NÃO re-litigar): a erasure DSAR do nó destrói a KEK
-	// por-titular do VAULT DEMO-GRADE. O conteúdo dos runs que o [eventstore.Store] persiste
-	// (objective/system/prompt dos turnos) é HOJE guardado em texto-claro e NÃO cifrado por
-	// titular, pelo que o crypto-shredding NÃO o torna ilegível. A erasure "unificada" real do
-	// substrato (cifra por-titular do EventStore + registo das partições/streams do titular no
-	// DSARIndex) fica DEFERIDA, análogo ao tratamento de D4 para identidade. EIXO (AOS-196,
-	// achado DEF-01): AOS-093 (crypto-shredding), cujo primeiro critério de aceitação é «toda a
-	// PII persistida é cifrada com uma chave por titular» — ver DEF-301 e a arbitragem
-	// A-DEF-301 em docs/governance/REGISTO-Deferimentos.md. NÃO é EPIC-06/09/10 (nenhum tem
-	// ticket para ela) nem EPIC-13 (que é o epic de Frontend).
-	// O banner declara esta fronteira explicitamente (a string do banner ainda cita os epics
-	// antigos — residual nomeado na pendência P-1 do registo).
-	dsarVault := audit.NewInMemoryKeyVault(nil)
-	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
+	// COBERTURA DO SUBSTRATO (AOS-093 — NÚCLEO ENTREGUE): a erasure DSAR do nó destrói a
+	// KEK por-titular do vault. Essa MESMA KEK cifra o CONTEÚDO DOS RUNS que o Event Store
+	// persiste — a resposta do modelo e os resultados de tools do capturer de replay são
+	// cifrados por-titular (envelope DEK/KEK) ANTES de tocar o WAL (ver (2c-pre) e
+	// [replay.WithContentSealer]), e o step-ledger cifra o Result.Payload quando o run
+	// injecta o principal. O capturer regista subject→stream no DSARIndex (via
+	// [contentSealer.SealContent]), pelo que o crypto-shredding e o legal hold POR-PARTIÇÃO
+	// alcançam o SUBSTRATO. Apagar a KEK no /dsar/erase torna o conteúdo do run
+	// IRRECUPERÁVEL (a decifragem falha) sem mutar o log — a hash-chain continua a validar.
+	// RESIDUAL nomeado (eixo AOS-093): (a) turn.recorded persiste apenas hashes (prompt_hash/
+	// system_hash), nunca o objective/prompt cru — nada a cifrar aí; (b) o REPLAY de um run
+	// cujo conteúdo foi selado exige o acesso ao vault do titular pelo leitor (fora do âmbito
+	// deste núcleo); (c) o step-ledger só sela quando há Producer.NHIID (o run injecta o
+	// principal). Ver DEF-301/A-DEF-301 em docs/governance/REGISTO-Deferimentos.md.
+	//
 	// CON-02 (legal hold + job de expiração — superfície de ADMINISTRAÇÃO): DEFERIDO por
 	// decisão do dono (Opção C, docs/governance/DOSSIE-CON-02-legal-hold.md, 2026-07-29). O
 	// audit.LegalHold é composto (dsarHolds, exposto em Node.DSARHolds) mas SEM rota de
 	// administração; o audit.ExpirationJob (AOS-092) não é composto (0 chamadores de produção).
-	// EIXO: AOS-093 — a cifra por-titular do substrato torna o shred/expiração reais (hoje não
-	// há apagamento real para suspender). Gatilho: AOS-093 entregue. Ver DEF-903 no
-	// REGISTO-Deferimentos.md; produto-vs-operador resolve-se na execução (princípio: produto).
+	// A barreira de hold JÁ cobre o substrato: um titular retido não é shredded, logo o
+	// conteúdo do run cifrado mantém-se decifrável enquanto o hold vigorar (provado em teste).
+	// Ver DEF-903 no REGISTO-Deferimentos.md.
 	dsarHolds := audit.NewLegalHold()
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
@@ -1056,7 +1074,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// redigido na ingestão (um objectivo sem PII é byte-idêntico; um com PII segue
 	// minimizado para [REDACTED:<classe>]). É essa a decisão que o banner torna visível.
 	log("redaccao de PII (AOS-091/AOS-208): motor LIGADO ao fecho transitivo — objectivo de cada run redigido na ingestao (RemoveAllPolicy) ANTES do Event Store/memory/spans/audit; MESMO Ingestor e mesma politica em todas as portas")
-	log("AVISO DSAR: a erasure destroi a KEK por-titular do VAULT DEMO-GRADE; o conteudo dos runs no Event Store (texto-claro, nao cifrado por-titular) fica FORA do alcance do shredding — cifra por-titular do substrato DEFERIDA (EPIC-06/09/10)")
+	if capturer != nil {
+		log("DSAR/substrato (AOS-093): o conteudo dos runs (resposta do modelo + resultados de tools do capturer) e CIFRADO POR-TITULAR (envelope DEK/KEK) antes de tocar o Event Store; a erasure destroi a MESMA KEK => o conteudo fica IRRECUPERAVEL e a hash-chain continua a validar; subject->stream registado no DSARIndex (shred/hold alcancam o substrato)")
+	} else {
+		log("DSAR/substrato (AOS-093): execucao duravel DESLIGADA => sem capturer, o conteudo dos runs nao e persistido no Event Store; a cifra por-titular activa-se com AOS_DURABLE_EXECUTION=1")
+	}
 	if tracingEnabled {
 		if otlpExp != nil {
 			log("observabilidade OTLP (AOS-173): tracer REAL -> exporter OTLP/HTTP fail-open (spans invoke_agent/chat[+custo]/execute_tool/freeze + selos WORM)")

@@ -49,6 +49,45 @@ type TurnCapture struct {
 	Response    ModelResponse
 	ToolResults []CapturedToolResult
 	Producer    eventstore.Producer
+	// Subject é o TITULAR do run (o NHI-id do principal, ADR-003) sob cuja chave
+	// POR-TITULAR o conteúdo não-determinístico é cifrado antes de tocar o Event
+	// Store (AOS-093). Vazio ⇒ sem cifra por-titular (retro-compat). Não é PII de
+	// conteúdo: é o identificador que localiza a KEK a destruir no crypto-shredding.
+	Subject string
+}
+
+// ContentSealer cifra o CONTEÚDO PII de um run por chave POR-TITULAR (envelope
+// DEK/KEK) ANTES de ele ser persistido no Event Store, e regista a ligação
+// titular→stream para o alcance do crypto-shredding (AOS-093). A implementação
+// concreta vive no composition root (que detém o KeyVault e o índice titular→
+// partição) — o substrato depende só desta porta, não do platform/audit.
+//
+// Retro-compat: quando NENHUM sealer é injectado o conteúdo é persistido como
+// antes (o comportamento de AOS-013/016 é byte-idêntico); a produção liga o sealer
+// e o conteúdo passa a ser cifrado por-titular por omissão.
+type ContentSealer interface {
+	// SealContent cifra plaintext sob a KEK do titular (subject) e regista
+	// subject→streamID no índice de partições do DSAR (para o hold/shred alcançarem
+	// o substrato). Devolve o envelope serializável (opaco) a persistir no lugar do
+	// texto-claro. FAIL-CLOSED: um erro aborta a escrita — nunca se persiste em claro
+	// por baixo de um sealer activo.
+	SealContent(ctx context.Context, subject, streamID string, plaintext []byte) (sealed []byte, err error)
+}
+
+// ContentOpener é o lado de LEITURA da cifra por-titular (AOS-093): decifra o que um
+// [ContentSealer] selou. FAIL-CLOSED após crypto-shredding — se a KEK do titular foi
+// destruída devolve erro e o conteúdo é irrecuperável. Usado na reconstrução durável
+// (rebuild do step-ledger) para re-hidratar o resultado memorizado; um titular já
+// apagado deixa de ser reconstruível, por desenho.
+type ContentOpener interface {
+	OpenContent(ctx context.Context, subject string, sealed []byte) (plaintext []byte, err error)
+}
+
+// ContentCipher combina as duas metades da cifra por-titular. É o que o step-ledger
+// exige (sela na escrita, decifra no rebuild); o capturer só precisa do [ContentSealer].
+type ContentCipher interface {
+	ContentSealer
+	ContentOpener
 }
 
 // Capturer persiste os inputs não-determinísticos de um turno para o replay

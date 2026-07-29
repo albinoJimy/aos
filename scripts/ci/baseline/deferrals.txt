@@ -35,7 +35,6 @@
 # 2026-07-28: AOS-205 reescreveu essa linha do banner para referir AOS-205/AOS-182
 # (a "NOTA AOS-205"), pelo que já traz `AOS-NNN` e a verificação 6 deixou de a ver —
 # a regra 3 (a baseline só encolhe por correcção do texto) a funcionar.
-packages/cmd/aos/bootstrap.go|EPIC-06/09/10 # owner=AOS-196 (pendência P-1); eixo correcto: DEF-301 (AOS-093, arbitragem A-DEF-301) — string do banner "AVISO DSAR"
 
 # --- Legal hold / retenção / bundle de política (residual de AOS-197) ---------
 # Esta entrada é uma REPOSIÇÃO deliberada, e a razão importa. Na primeira passagem

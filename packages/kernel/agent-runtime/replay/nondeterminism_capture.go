@@ -59,10 +59,12 @@ type responseCapture struct {
 //
 // # Segredos (ver [WithSensitiveResults])
 //
-// Output é persistido EM CLARO no evento durável (o cifrado por-titular do ES é
-// dívida de AOS-093). Em modo sensível o capturer substitui Output por uma
-// REFERÊNCIA não reversível (Reference=true, PayloadRef=sha256(output)) — o
-// replay reconstrói então um marcador de referência, NUNCA a PII em claro.
+// Com [WithContentSealer] (AOS-093, o caminho de PRODUÇÃO) Output nunca é persistido
+// em claro: migra, com o resto do conteúdo do turno, para dentro do envelope cifrado
+// por-titular ([capturePayload.SealedContent]) — o crypto-shredding torna-o
+// irrecuperável. Sem sealer, Output é inline; em modo sensível ([WithSensitiveResults])
+// o capturer substitui-o por uma REFERÊNCIA não reversível (Reference=true,
+// PayloadRef=sha256(output)) — o replay reconstrói um marcador, nunca a PII em claro.
 type toolResultCapture struct {
 	Taint      string `json:"taint"`
 	Output     []byte `json:"output,omitempty"`
@@ -93,6 +95,27 @@ type capturePayload struct {
 	// externo sob o seu próprio IAM; este evento é referência-só. Omitido (omitempty)
 	// em mode inline ⇒ os bytes do evento AOS-016 mantêm-se inalterados.
 	PayloadRef string `json:"payload_ref,omitempty"`
+	// SealedContent, se != nil, CIFRA por-titular (envelope DEK/KEK, AOS-093) o
+	// conteúdo não-determinístico do turno (a [sealedContent]: resposta do modelo +
+	// resultados de tools). Quando presente, Response/ToolResults ficam VAZIOS — o
+	// texto-claro NUNCA toca o WAL. Destruir a KEK do titular no crypto-shredding
+	// torna este blob irrecuperável, sem mutar o evento. Omitido ⇒ comportamento
+	// AOS-016 (inline em claro), byte-idêntico.
+	SealedContent []byte `json:"sealed_content,omitempty"`
+	// SealedSubject é o TITULAR (NHI-id) sob cuja KEK SealedContent foi cifrado — o
+	// identificador que localiza a chave a destruir. NÃO é PII de conteúdo (é o mesmo
+	// principal que o Producer do envelope), mas é preservado para a erasure o
+	// alcançar. Omitido quando não há cifra.
+	SealedSubject string `json:"sealed_subject,omitempty"`
+}
+
+// sealedContent é o corpo PII do turno que migra INTEIRO para dentro do envelope
+// cifrado por-titular (AOS-093): a resposta do modelo e os resultados de tools. É a
+// serialização canónica (structs, ordem fixa) que [audit.SealContent] cifra; o
+// evento do Event Store guarda só o ciphertext ([capturePayload.SealedContent]).
+type sealedContent struct {
+	Response    responseCapture     `json:"response"`
+	ToolResults []toolResultCapture `json:"tool_results,omitempty"`
 }
 
 // EventStoreCapturer implementa [agentruntime.Capturer]: persiste os inputs
@@ -120,6 +143,9 @@ type EventStoreCapturer struct {
 	// exigido no replay). nil ⇒ inline (AOS-016), byte-idêntico.
 	payloadStore PayloadStore
 	writer       Accessor
+	// sealer cifra o conteúdo não-determinístico por chave POR-TITULAR antes de tocar
+	// o Event Store (AOS-093). nil ⇒ sem cifra (inline em claro, AOS-016 byte-idêntico).
+	sealer agentruntime.ContentSealer
 }
 
 // CapturerOption configura o [EventStoreCapturer].
@@ -141,10 +167,11 @@ func WithClock(now func() time.Time) CapturerOption {
 //   - o INPUT e o ResourceValue de cada tool call (ex.: corpo/destinatário de um
 //     send_email).
 //
-// É o análogo de [durable.WithSensitiveResults] (AOS-014) para a captura: evita
-// gravar PII em claro no Event Store (o cifrado por-titular é dívida de AOS-093). O
-// replay de um turno sensível reconstrói marcadores de referência, NÃO a PII — o
-// modo sensível troca fidelidade byte-a-byte por confidencialidade, por desenho.
+// É o análogo de [durable.WithSensitiveResults] (AOS-014) para a captura: a via de
+// REFERÊNCIA irreversível para quem NÃO liga a cifra por-titular. O caminho de
+// PRODUÇÃO (AOS-093) é [WithContentSealer], que CIFRA o conteúdo por-titular (reversível
+// com a chave, apagável por crypto-shredding); o modo sensível troca fidelidade
+// byte-a-byte por confidencialidade via hash, por desenho.
 func WithSensitiveResults() CapturerOption {
 	return func(c *EventStoreCapturer) { c.sensitive = true }
 }
@@ -166,6 +193,19 @@ func WithPayloadStore(store PayloadStore, writer Accessor) CapturerOption {
 		c.payloadStore = store
 		c.writer = writer
 	}
+}
+
+// WithContentSealer liga a cifra POR-TITULAR do conteúdo não-determinístico
+// (AOS-093): quando presente, a resposta do modelo e os resultados de tools de cada
+// turno são cifrados por envelope DEK/KEK sob a chave do TITULAR do run
+// ([agentruntime.TurnCapture.Subject]) ANTES de serem persistidos — o texto-claro
+// nunca toca o WAL. Destruir a KEK do titular (crypto-shredding) torna o conteúdo
+// irrecuperável sem mutar o log. É OPT-IN e ADITIVO: sem esta opção o capturer
+// mantém o comportamento inline de AOS-016, byte-idêntico. Substitui, no caminho de
+// produção, a redacção-por-referência irreversível de [WithSensitiveResults] por
+// cifra reversível-com-chave — confidencialidade COM apagamento criptográfico.
+func WithContentSealer(sealer agentruntime.ContentSealer) CapturerOption {
+	return func(c *EventStoreCapturer) { c.sealer = sealer }
 }
 
 // NewCapturer constrói um capturer sobre o Event Store dado. store é obrigatório.
@@ -196,6 +236,29 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 		Response:           c.encodeResponse(tc.Response),
 		ToolResults:        c.encodeResults(tc.ToolResults),
 		ObservedAtUnixNano: observedAt,
+	}
+
+	// CIFRA POR-TITULAR (AOS-093): antes de qualquer persistência, o conteúdo
+	// não-determinístico (resposta do modelo + resultados de tools) é cifrado por
+	// envelope DEK/KEK sob a KEK do TITULAR do run. Response/ToolResults ficam VAZIOS
+	// no evento — o texto-claro nunca toca o WAL nem, adiante, o PayloadStore de mode 3.
+	// FAIL-CLOSED: um erro de cifra aborta a captura (nunca se cai para texto-claro).
+	if c.sealer != nil && tc.Subject != "" {
+		inner, err := json.Marshal(sealedContent{
+			Response:    payload.Response,
+			ToolResults: payload.ToolResults,
+		})
+		if err != nil {
+			return err
+		}
+		sealed, err := c.sealer.SealContent(ctx, tc.Subject, tc.RunID, inner)
+		if err != nil {
+			return err
+		}
+		payload.Response = responseCapture{}
+		payload.ToolResults = nil
+		payload.SealedContent = sealed
+		payload.SealedSubject = tc.Subject
 	}
 
 	// MODE 3 (AOS-079): o payload completo migra para o PayloadStore externo e o

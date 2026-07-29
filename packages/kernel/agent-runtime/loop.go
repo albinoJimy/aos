@@ -354,6 +354,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			Response:    resp,
 			ToolResults: turnCaptured,
 			Producer:    producer,
+			// AOS-093: o TITULAR do run (o principal, ADR-003) sob cuja chave
+			// por-titular o capturer cifra o conteúdo não-determinístico antes do ES.
+			Subject: goal.Principal.NHIID,
 		}); err != nil {
 			return res, fmt.Errorf("%w: turno %d: %w", ErrCapture, turn, err)
 		}

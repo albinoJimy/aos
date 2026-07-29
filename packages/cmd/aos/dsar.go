@@ -28,8 +28,50 @@ import (
 	"net/http"
 
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	audit "github.com/aos-ref/platform/audit"
 )
+
+// contentSealer é a implementação de [agentruntime.ContentCipher] do nó (AOS-093).
+// Cifra/decifra o CONTEÚDO DOS RUNS por chave POR-TITULAR reutilizando o envelope
+// DEK/KEK de platform/audit ([audit.SealContent]/[audit.OpenContent]) — zero crypto
+// novo — e regista subject→stream no índice titular→partição para o crypto-shredding
+// e o legal hold POR-PARTIÇÃO alcançarem o substrato. Detém as MESMAS instâncias de
+// vault/índice que o fluxo DSAR, pelo que o POST /dsar/erase destrói exactamente a KEK
+// que cifra o conteúdo — tornando-o irrecuperável sem mutar o log.
+type contentSealer struct {
+	vault *audit.InMemoryKeyVault
+	index *audit.InMemorySubjectPartitionIndex
+}
+
+// newContentSealer liga o cifrador ao vault e índice DSAR partilhados.
+func newContentSealer(vault *audit.InMemoryKeyVault, index *audit.InMemorySubjectPartitionIndex) *contentSealer {
+	return &contentSealer{vault: vault, index: index}
+}
+
+// SealContent cifra plaintext sob a KEK do titular (provisionada na 1ª escrita) e liga
+// subject→streamID no índice — o stream do run passa a ser uma partição do titular, que
+// o shred/hold cobrem (AOS-093 CA4/CA6). FAIL-CLOSED: um erro de cifra propaga-se e
+// aborta a escrita (o chamador nunca cai para texto-claro).
+func (s *contentSealer) SealContent(_ context.Context, subject, streamID string, plaintext []byte) ([]byte, error) {
+	sealed, err := audit.SealContent(s.vault, subject, plaintext, nil)
+	if err != nil {
+		return nil, err
+	}
+	if s.index != nil && streamID != "" {
+		s.index.Link(subject, streamID)
+	}
+	return sealed, nil
+}
+
+// OpenContent decifra o que SealContent selou. FAIL-CLOSED após crypto-shredding: se a
+// KEK do titular foi destruída devolve [audit.ErrDecrypt] — o conteúdo é irrecuperável.
+func (s *contentSealer) OpenContent(_ context.Context, subject string, sealed []byte) ([]byte, error) {
+	return audit.OpenContent(s.vault, subject, sealed)
+}
+
+// contentSealer satisfaz a porta de cifra por-titular do substrato (compile-time).
+var _ agentruntime.ContentCipher = (*contentSealer)(nil)
 
 // wormEventSealer adapta o audit.Store do nó à porta [dsar.EventSealer]. O fluxo DSAR sela
 // APENAS metadados (received/key_destroyed/blocked, SEM PII), pelo que o Ingest se reduz a um

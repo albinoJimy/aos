@@ -56,6 +56,13 @@ var (
 	// referência (hash/URI) e marcar Result.Reference.
 	ErrClearResultInSensitiveMode = errors.New("durable: modo sensível recusa Payload de resultado em claro (marque Result.Reference com uma referência)")
 
+	// ErrSealedResultNoCipher — um registo do ledger lido do Event Store está marcado
+	// como cifrado por-titular (Sealed, AOS-093) mas o ledger não tem um [ContentCipher]
+	// ligado para o decifrar. Sinaliza um wiring inconsistente (o store foi escrito com
+	// cifra e relido sem ela) e é fail-closed — nunca se devolve ciphertext como se
+	// fosse o resultado em claro.
+	ErrSealedResultNoCipher = errors.New("durable: registo cifrado por-titular sem ContentCipher ligado (AOS-093)")
+
 	// --- AOS-018: liveness por lease/heartbeat + fencing tokens ---
 
 	// ErrInvalidTTL — o TTL passado a [NewLeaseManager] não é > 0. Um lease sem TTL
