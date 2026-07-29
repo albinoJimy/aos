@@ -135,14 +135,12 @@ Propõe-se que uma linha nova passe a ser obrigatória sempre que:
 | REG-002 | 2026-07-22 | DoD da v1 (Carta §5) — novo pré-requisito «D4 desbloqueado» | emenda | Dono do produto | n/a — o §5 não é decisão do registo §4 | NAO | commit `42dc95d`; Carta §7 emenda 1.1; §5 |
 | REG-003 | 2026-07-22 | Afirmação «§4.1 todas FIXAS» falsa + emissão do ADR-017 + criação do árbitro §6.5 e do tripwire §6.6 | emenda | Dono do produto | n/a — correcção factual e decisões novas | NAO | commit `608e84c`; emenda 1.2 ponto E9; §4.1 §6.5 §6.6 |
 | REG-004 | 2026-07-22 | System Spec §1 e non-goal datado single-host sem-HA | emenda | Dono do produto | n/a — documento subordinado | NAO | commit `608e84c`; emenda 1.2 ponto E3 |
-| REG-005 | 2026-07-22 | **D3 — transporte SSE stdlib (FIXA)** marcada para REAVALIAR | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida (§6.5, 2026-07-29, REG-011); ver N-005/N-011 | PENDENTE | commit `608e84c`; emenda 1.2 ponto E10; §4.2 |
-| REG-006 | 2026-07-22 | **D5 — BFF single-process (FIXA)** marcada para REAVALIAR | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida (§6.5, 2026-07-29, REG-011); ver N-006/N-011 | PENDENTE | commit `608e84c`; emenda 1.2 ponto E10; §4.2 |
-| REG-010 | 2026-07-22 | **ADR-016 (FIXA)** — não-repúdio HITL e identidade fim-a-fim DEFERIDOS com D4; aprovação fica demo-grade | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida; garantia hoje em larga medida CUMPRIDA (§6.5, 2026-07-29, REG-011); ver N-010/N-011 | PENDENTE | commit `608e84c`; emenda 1.2 ponto E10; §4.1 §4.2 |
+| REG-005 | 2026-07-22 | **D3 — transporte SSE stdlib (FIXA)** marcada para REAVALIAR | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida (§6.5, 2026-07-29, N-011); ver N-005/N-011 | NAO | commit `608e84c`; emenda 1.2 ponto E10; §4.2 |
+| REG-006 | 2026-07-22 | **D5 — BFF single-process (FIXA)** marcada para REAVALIAR | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida (§6.5, 2026-07-29, N-011); ver N-006/N-011 | NAO | commit `608e84c`; emenda 1.2 ponto E10; §4.2 |
+| REG-010 | 2026-07-22 | **ADR-016 (FIXA)** — não-repúdio HITL e identidade fim-a-fim DEFERIDOS com D4; aprovação fica demo-grade | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida; garantia hoje em larga medida CUMPRIDA (§6.5, 2026-07-29, N-011); ver N-010/N-011 | NAO | commit `608e84c`; emenda 1.2 ponto E10; §4.1 §4.2 |
 | REG-007 | 2026-07-23 | D4 — Opção A: provisionar a autoridade completa (Camada B) | emenda | Dono do produto | n/a — D4 não estava FIXA | NAO | commit `a16c0b6`; emenda 1.3; EPIC-16 |
-| REG-008 | 2026-07-23 | **ADR-017 ponto 1 — binário zero-dep (FIXA)**: excepção escopada inscrita na própria linha do §4.1 | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida (§6.5, 2026-07-29, REG-011); permanece REABERTURA na 1.ª perna; ver N-008/N-011 | REABERTURA | commit `a16c0b6`; emenda 1.3; §4.1 |
+| REG-008 | 2026-07-23 | **ADR-017 ponto 1 — binário zero-dep (FIXA)**: excepção escopada inscrita na própria linha do §4.1 | divida-escondida | Dono do produto | **LEGITIMADA** — dívida-escondida (§6.5, 2026-07-29, N-011); permanece REABERTURA na 1.ª perna; ver N-008/N-011 | REABERTURA | commit `a16c0b6`; emenda 1.3; §4.1 |
 | REG-009 | 2026-07-25 | Invariante de sentido de dependências entre camadas (AGENTS.md §3) | arbitragem | Equipa AOS — **não** os dois papéis do §6.5 | LEGITIMADA como excepção intencional escopada — ver nota N-009 | NAO | commit `db5c19f`; ADR-019; EPIC-17 AOS-179 |
-| REG-011 | 2026-07-29 | Arbitragem §6.5 de REG-005/006/008/010 (D3, D5, ADR-016, excepção ADR-017 zero-dep) | arbitragem | Arquitecto de Plataforma + Responsável de Segurança (os dois papéis do §6.5) | LEGITIMADAS as quatro como dívida-escondida — ver N-011 | NAO | dossiê `DOSSIE-Arbitragem-6.5.md`; leitura técnica `LEITURA-TECNICA-Merito-6.5.md` |
-
 ---
 
 ## 4. Notas de classificação (a fundamentação, evento a evento)
@@ -277,20 +275,25 @@ auto-atribuída por quem propôs e passou a ter a pronúncia dos dois papéis. P
 pronúncia regista ainda que a garantia do ADR-016 está **hoje em larga medida cumprida** (verifier
 real + ed25519 + 4-eyes compostos no nó; residuais WebAuthn/tenant IdP deferidos).
 
-**O que esta arbitragem NÃO resolve (e não pode, por não ser dos árbitros):**
+Conforme o §2.2 ponto 4, a pronúncia **actualiza as linhas existentes** (Veredicto + Natureza +
+Conta de REG-005/006/008/010) — **não** cria uma linha nova.
 
-1. **A 1.ª perna / o contador §6.6.** Legitimar no mérito **não des-reabre** uma FIXA: REG-008
-   continua `REABERTURA` (editou a linha do §4.1). A perna (b) do §6.6 (recusas por re-litígio)
-   fica a **0** — nenhuma foi recusada. Mas a perna (a) depende da **definição de «reaberta» do
-   dono (§8.4)**, que continua **por fechar**: no estrito (só o texto tocado) conta **1**
-   (REG-008) e o tripwire **não dispara**; na leitura ampla (pôr uma FIXA de novo em cima da mesa)
-   contam **4** e o §6.6 **dispara** (Carta revista na raiz). O contador §5.1 reflecte ambos.
-2. **O sign-off de v1 (§5).** As emendas 1.2 e 1.3 têm o sign-off de Segurança/Arquitectura como
-   **pré-condição da v1**; que a mesma dupla que arbitrou também **assine** essas emendas fica por
-   **confirmar** — «aceite a arbitragem» não é, por si, a assinatura do §5.
+**As duas pendências que a arbitragem tinha deixado ao dono foram despachadas na mesma data:**
 
-Enquanto (1) e (2) não forem despachados pelo dono, o registo mantém-se honesto: mérito arbitrado,
-contagem e sign-off em aberto.
+1. **Definição de «reaberta» (§8.4) — o dono fechou-a no sentido ESTRITO** (2026-07-29): «reaberta»
+   = a **linha da FIXA foi textualmente alterada** (caso (a) do §2.1). Consequência no contador:
+   REG-005/006/010 tocaram FIXAS **sem** lhes alterar o texto (facto verificado por `git show
+   608e84c`) ⇒ resolvem-se como **não-reabertura** (`Conta = NAO`); só REG-008 alterou a linha do
+   §4.1 ⇒ mantém-se `REABERTURA`. **Contagem final: 1 reabertura na janela ⇒ abaixo do limiar do
+   §6.6 ⇒ o tripwire NÃO dispara.** A perna (b) já estava a **0** (nenhuma recusada). **O mecanismo
+   de congelamento aguenta** — não é revisto na raiz.
+2. **Sign-off de v1 (§5) — dado.** Os mesmos dois papéis assinaram o sign-off de Segurança/
+   Arquitectura das emendas **1.2 e 1.3** (2026-07-29); a linha de aprovação de cada uma no §7 da
+   Carta passa de «pendente» a **assinado**. A pré-condição de aceitação da v1 do §5 quanto a estas
+   emendas fica **satisfeita**.
+
+O registo mantém-se honesto e agora **fechado** nestes eixos: mérito arbitrado (as quatro,
+dívida-escondida), contador do §6.6 resolvido (1 reabertura, não dispara) e sign-off de v1 dado.
 
 ---
 
