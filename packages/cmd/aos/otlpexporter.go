@@ -29,9 +29,11 @@ import (
 	"bytes"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,6 +46,23 @@ import (
 // bem-formado. Fail-closed de config: um endpoint malformado aborta o arranque (o
 // nó não sobe a fingir que exporta telemetria para um destino inválido).
 var ErrBadOTLPEndpoint = errors.New("aos: AOS_OTLP_ENDPOINT invalido (esperado URL http(s) absoluto, ex.: http://collector:4318)")
+
+// ErrIncompleteOTLPClientTLS — só um de AOS_OTLP_CLIENT_CERT_PATH/AOS_OTLP_CLIENT_KEY_PATH foi
+// definido (DEF-012, EIXO 2). Fail-closed de CONFIG, no molde de ErrIncompleteTLSConfig do
+// ingresso: o mTLS de cliente da perna OTLP exige AMBOS (certificado E chave), e a ambiguidade
+// aborta em vez de degradar silenciosamente para "sem certificado de cliente".
+var ErrIncompleteOTLPClientTLS = errors.New("aos: config mTLS de cliente OTLP incompleta — AOS_OTLP_CLIENT_CERT_PATH e AOS_OTLP_CLIENT_KEY_PATH sao AMBOS obrigatorios (definir so um aborta em vez de exportar sem certificado de cliente)")
+
+// ErrBadOTLPClientCert — o par certificado+chave de cliente OTLP montado por ficheiro não carrega
+// (ilegível, PEM malformado, chave que não corresponde ao certificado). Fail-closed de CONFIG:
+// o nó não sobe a anunciar mTLS de cliente perante o colector com um par inválido. NÃO viola o
+// fail-open de AOS-173: este é um erro de ARRANQUE (config), não do caminho do run.
+var ErrBadOTLPClientCert = errors.New("aos: par mTLS de cliente OTLP invalido (AOS_OTLP_CLIENT_CERT_PATH/AOS_OTLP_CLIENT_KEY_PATH ilegivel, PEM malformado, ou chave que nao corresponde ao certificado)")
+
+// ErrBadOTLPBearerToken — AOS_OTLP_BEARER_TOKEN_PATH presente mas o ficheiro é ilegível ou vazio.
+// Fail-closed de CONFIG. O bearer é um SEGREDO: o erro nomeia SÓ o caminho, NUNCA o conteúdo do
+// ficheiro (o segredo nunca entra em erros, logs ou spans).
+var ErrBadOTLPBearerToken = errors.New("aos: AOS_OTLP_BEARER_TOKEN_PATH invalido (ficheiro ilegivel ou vazio)")
 
 // Defaults do exporter (conservadores: fail-open, caminho crítico intocado).
 const (
@@ -83,6 +102,16 @@ type OTLPHTTPExporter struct {
 	backoff      time.Duration
 	flushEvery   time.Duration
 	drainTimeout time.Duration
+
+	// --- Autenticação forte perante o colector (DEF-012, EIXO 2) — OPT-IN, por FICHEIRO ---
+	// clientCertPath/clientKeyPath são o par mTLS de CLIENTE montado; bearerTokenPath é o
+	// ficheiro do bearer. São só CAMINHOS (resolvidos uma vez em [NewOTLPHTTPExporter]); o
+	// material carregado vive no transport (certificado) ou em bearerToken (o segredo). O
+	// bearerToken NUNCA é logado nem colocado em spans/erros.
+	clientCertPath  string
+	clientKeyPath   string
+	bearerTokenPath string
+	bearerToken     string
 
 	queue chan otelgenai.SpanData
 	done  chan struct{}
@@ -194,6 +223,32 @@ func WithOTLPScope(scope string) OTLPOption {
 	}
 }
 
+// WithOTLPClientCertFiles compõe o mTLS de CLIENTE da perna OTLP (DEF-012, EIXO 2): o par
+// certificado+chave é lido dos ficheiros MONTADOS certPath/keyPath (material privado por ficheiro,
+// no padrão de AOS_TLS_KEY_PATH/AOS_ISSUER_KEY_PATH — NUNCA por variável de ambiente).
+// [NewOTLPHTTPExporter] carrega o par e coloca-o no [tls.Config] do transporte, apresentando-o ao
+// colector no handshake. Fail-closed de CONFIG (só um caminho ⇒ [ErrIncompleteOTLPClientTLS]; par
+// inválido ⇒ [ErrBadOTLPClientCert]). O FAIL-OPEN de AOS-173 mantém-se: uma recusa do colector em
+// TEMPO DE RUN (ex.: o colector rejeita o certificado) é contabilizada como Failed e NUNCA quebra
+// um run. Ambos vazios ⇒ sem mTLS de cliente (comportamento actual).
+func WithOTLPClientCertFiles(certPath, keyPath string) OTLPOption {
+	return func(e *OTLPHTTPExporter) {
+		e.clientCertPath = strings.TrimSpace(certPath)
+		e.clientKeyPath = strings.TrimSpace(keyPath)
+	}
+}
+
+// WithOTLPBearerTokenFile compõe a autenticação por BEARER da perna OTLP (DEF-012, EIXO 2): o token
+// é lido do ficheiro MONTADO path (é um SEGREDO — só por ficheiro, NUNCA por variável de ambiente,
+// NUNCA em código/fixtures). [NewOTLPHTTPExporter] lê o ficheiro e passa a acrescentar
+// `Authorization: Bearer <token>` a cada POST ao colector. Fail-closed de CONFIG (ficheiro
+// ilegível/vazio ⇒ [ErrBadOTLPBearerToken], SEM ecoar o conteúdo). O FAIL-OPEN de AOS-173
+// mantém-se: um 401/403 do colector é contabilizado como Failed e NUNCA quebra um run. path vazio
+// ⇒ sem bearer (comportamento actual). O token NUNCA é logado nem colocado em spans/erros.
+func WithOTLPBearerTokenFile(path string) OTLPOption {
+	return func(e *OTLPHTTPExporter) { e.bearerTokenPath = strings.TrimSpace(path) }
+}
+
 // NewOTLPHTTPExporter constrói o exporter e arranca a goroutine de flush. endpoint é
 // a BASE do colector (ex.: "http://collector:4318"); o caminho canónico
 // [otlpTracesPath] é acrescentado se ainda não terminar nele. Fail-closed: um
@@ -219,9 +274,57 @@ func NewOTLPHTTPExporter(endpoint string, opts ...OTLPOption) (*OTLPHTTPExporter
 	for _, o := range opts {
 		o(e)
 	}
+	// AUTENTICAÇÃO FORTE perante o colector (DEF-012, EIXO 2) — resolvida UMA vez, no arranque.
+	// Fail-closed de CONFIG (par incompleto/inválido, bearer ilegível/vazio ⇒ erro tipado): o nó
+	// não sobe a fingir que se autentica com material inválido. NENHUMA goroutine é arrancada se a
+	// resolução falhar (idêntico ao endpoint malformado). O fail-open de AOS-173 vive no caminho
+	// do RUN (post/send), não aqui.
+	if err := e.resolveOTLPClientAuth(); err != nil {
+		return nil, err
+	}
 	e.wg.Add(1)
 	go e.loop()
 	return e, nil
+}
+
+// resolveOTLPClientAuth carrega, no arranque, o material de autenticação forte da perna OTLP
+// (DEF-012, EIXO 2): o par mTLS de cliente para o transporte e/ou o bearer para o cabeçalho. É
+// fail-closed de CONFIG e mantém o segredo do bearer FORA de qualquer erro/log. Não é chamada no
+// caminho do run — o fail-open de AOS-173 permanece intacto.
+func (e *OTLPHTTPExporter) resolveOTLPClientAuth() error {
+	if e.clientCertPath != "" || e.clientKeyPath != "" {
+		if e.clientCertPath == "" || e.clientKeyPath == "" {
+			return ErrIncompleteOTLPClientTLS
+		}
+		cert, err := tls.LoadX509KeyPair(e.clientCertPath, e.clientKeyPath)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrBadOTLPClientCert, err)
+		}
+		tr, ok := e.client.Transport.(*http.Transport)
+		if !ok || tr == nil {
+			return fmt.Errorf("%w: transporte do cliente OTLP nao e *http.Transport", ErrBadOTLPClientCert)
+		}
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		} else {
+			tr.TLSClientConfig = tr.TLSClientConfig.Clone()
+		}
+		tr.TLSClientConfig.Certificates = []tls.Certificate{cert}
+	}
+	if e.bearerTokenPath != "" {
+		raw, err := os.ReadFile(e.bearerTokenPath)
+		if err != nil {
+			// NUNCA se ecoa o conteúdo do ficheiro — só o caminho (o os.ReadFile error não
+			// inclui o conteúdo).
+			return fmt.Errorf("%w: ler %q: %v", ErrBadOTLPBearerToken, e.bearerTokenPath, err)
+		}
+		token := strings.TrimSpace(string(raw))
+		if token == "" {
+			return fmt.Errorf("%w: %q vazio", ErrBadOTLPBearerToken, e.bearerTokenPath)
+		}
+		e.bearerToken = token
+	}
+	return nil
 }
 
 // hardenedOTLPTransport devolve o http.Transport da perna OTLP (AOS-209) com a [tls.Config]
@@ -235,9 +338,12 @@ func NewOTLPHTTPExporter(endpoint string, opts ...OTLPOption) (*OTLPHTTPExporter
 // devolve erro no [OTLPHTTPExporter.post], que é contabilizado como Failed e re-tentado/largado,
 // NUNCA propagado ao run. Cifrar o transporte não introduz um novo caminho crítico.
 //
-// A AUTENTICAÇÃO FORTE perante o colector (mTLS por certificado de cliente, ou bearer token) fica
-// por entregar — pertence ao mesmo eixo do mTLS do plano de controlo (ver o marcador em api.go e
-// DEF-012 em docs/governance/REGISTO-Deferimentos.md), pelo que não se declara um marcador próprio.
+// A AUTENTICAÇÃO FORTE perante o colector (mTLS por certificado de cliente, ou bearer token) É
+// ENTREGUE OPT-IN (DEF-012, EIXO 2): [WithOTLPClientCertFiles] coloca o par de cliente neste
+// transport e [WithOTLPBearerTokenFile] acrescenta o cabeçalho Authorization no [post] — ambos por
+// FICHEIRO montado, ambos preservando o fail-open (a recusa do colector em tempo de run é Failed,
+// nunca quebra um run). Ver o par deste eixo (mTLS do plano de controlo) em api.go e DEF-012 em
+// docs/governance/REGISTO-Deferimentos.md.
 func hardenedOTLPTransport() *http.Transport {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -386,6 +492,11 @@ func (e *OTLPHTTPExporter) post(body []byte) bool {
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if e.bearerToken != "" {
+		// AUTENTICAÇÃO BEARER perante o colector (DEF-012, EIXO 2). O token é um SEGREDO: vai só
+		// no cabeçalho do pedido ao colector, nunca em logs/spans/erros.
+		req.Header.Set("Authorization", "Bearer "+e.bearerToken)
+	}
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return false

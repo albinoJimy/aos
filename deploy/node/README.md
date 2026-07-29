@@ -82,13 +82,19 @@ de índice e o detalhe lá.
 | `AOS_OPERATORS` | *(vazio ⇒ **default-deny**)* | Pubkeys dos operadores do canal de controlo — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). **Segurança:** vazio ⇒ `steer`/`pause` recusados **e** bind não-loopback recusado. |
 | `AOS_APPROVERS_FILE` | *(vazio ⇒ **four-eyes DESLIGADO**)* | Ficheiro JSON montado com a *roster* do dual-control — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). |
 | `AOS_RATIFIERS` | *(vazio ⇒ **toda a promoção NEGADA**)* | Pubkeys dos ratificadores do *promotion controller* (AOS-206) — ver [Plano de controlo](#plano-de-controlo--operadores-e-aprovadores-aos-160--aos-162-config-em-aos-193). **Segurança:** o controller é composto **sempre** pela via sancionada (freshness + nonce-store durável **forçados**); vazio ⇒ nenhum artefacto de auto-modificação pode ser promovido (`ratifier_unknown`). |
+| `AOS_CONTROL_MTLS_CA_PATH` | *(vazio ⇒ **mTLS de controlo DESLIGADO**)* | Caminho do **bundle PEM da CA de cliente** que autentica o plano de controlo por **certificado** (DEF-012, EIXO 1) — ver [mTLS do plano de controlo](#mtls-do-plano-de-controlo--autenticação-forte-otlp-def-012). Presente ⇒ `/steer`,`/pause`,`/approve` exigem um **certificado de cliente verificado**, **ALÉM** da assinatura ed25519 do corpo (AOS-160) — é **ADITIVO, nunca um bypass**. Exige **terminação TLS no nó** (senão `ErrControlMTLSNeedsNodeTLS`); bundle inválido ⇒ `ErrBadControlMTLSCA`. Material **público** (a CA). |
+| `AOS_OTLP_CLIENT_CERT_PATH` | *(vazio ⇒ **sem mTLS de cliente OTLP**)* | Caminho do **certificado** (PEM) que o exporter apresenta ao colector OTLP no mTLS de cliente (DEF-012, EIXO 2) — ver [mTLS do plano de controlo](#mtls-do-plano-de-controlo--autenticação-forte-otlp-def-012). Exige `AOS_OTLP_CLIENT_KEY_PATH` (só um ⇒ `ErrIncompleteOTLPClientTLS`). Só se aplica com `AOS_OTLP_ENDPOINT` definido. **Fail-open** de AOS-173 preservado. Material **público**. |
+| `AOS_OTLP_CLIENT_KEY_PATH` | *(vazio ⇒ **sem mTLS de cliente OTLP**)* | Caminho da **chave privada** (PEM) do certificado de cliente OTLP (DEF-012, EIXO 2). ⚠️ **Material PRIVADO por FICHEIRO montado** (nunca por variável de ambiente), no padrão de `AOS_TLS_KEY_PATH`. Par inválido ⇒ `ErrBadOTLPClientCert`. Ver [mTLS do plano de controlo](#mtls-do-plano-de-controlo--autenticação-forte-otlp-def-012). |
+| `AOS_OTLP_BEARER_TOKEN_PATH` | *(vazio ⇒ **sem bearer OTLP**)* | Caminho do ficheiro com o **bearer token** que o exporter envia ao colector OTLP em `Authorization: Bearer …` (DEF-012, EIXO 2). ⚠️ **É um SEGREDO por FICHEIRO montado** — nunca por variável de ambiente, nunca em código/fixtures; o nó **nunca** o ecoa em logs/spans/erros. Ficheiro ilegível/vazio ⇒ `ErrBadOTLPBearerToken`. Só se aplica com `AOS_OTLP_ENDPOINT` definido. **Fail-open** preservado. Ver [mTLS do plano de controlo](#mtls-do-plano-de-controlo--autenticação-forte-otlp-def-012). |
 | `AOS_OTLP_ENDPOINT` | *(vazio ⇒ **`NoopTracer`**, zero overhead)* | URL http(s) **absoluto** do colector OTLP/HTTP (ex.: `http://collector:4318`; o nó completa com `/v1/traces`). Presente ⇒ exporta os spans `invoke_agent`/`chat`[+custo]/`execute_tool`/`freeze` e os selos WORM. Um endpoint **malformado ABORTA** o arranque (`ErrBadOTLPEndpoint`) — o nó não sobe a fingir que exporta. A exportação em si é **fail-open** (a telemetria nunca derruba o nó). **Privacidade:** os spans transportam metadados de governação e custo, não conteúdo de *prompts*; ainda assim o destino é uma fronteira de dados — aponte-o para dentro do seu perímetro. |
 | `AOS_READER` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--reader`, transportada no header `X-Aos-Reader`. É a **identidade de leitura** declarada pelo cliente; com a soberania de leitura ligada, o **nó** é que a exige e a resolve — a CLI só a transporta. Ausente contra um nó soberano ⇒ `404`. |
 | `AOS_BOARD` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--board`, transportada no header `X-Aos-Board`. Board de governação do leitor, de onde o nó resolve a **região autorizada**. Ausente ou desconhecido contra um nó soberano ⇒ `404` (fail-closed). |
 | `AOS_HEALTH_URL` | *(vazio ⇒ derivada de `AOS_API_ADDR`)* | **Override opcional** do URL sondado pelo `aos-healthprobe` do `HEALTHCHECK` (lida por `deploy/node/healthprobe`, **não** pelo nó). Sem ela o probe deriva `127.0.0.1:<porta de AOS_API_ADDR>/healthz` — ver [Health / probes](#health--probes). |
 
-> **Nenhuma destas variáveis transporta segredos**, com a excepção declarada de
-> `AOS_ISSUER_KEY_PATH` (que transporta um **caminho** para material privado, não o material). O
+> **Nenhuma destas variáveis transporta segredos**, com as excepções declaradas de
+> `AOS_ISSUER_KEY_PATH`, `AOS_TLS_KEY_PATH`, `AOS_OTLP_CLIENT_KEY_PATH` e
+> `AOS_OTLP_BEARER_TOKEN_PATH` (que transportam um **caminho** para material privado, não o
+> material — o bearer é ele próprio um segredo, e o nó nunca o ecoa em logs/spans/erros). O
 > banner de arranque não ecoa valores de chaves: as mensagens de erro de `AOS_OPERATORS` e do
 > ficheiro de aprovadores identificam a entrada pelo `emitterID`/`principal` e **nunca** imprimem
 > a pubkey.
@@ -336,14 +342,88 @@ TLS **1.2+** contra o colector e validar o certificado dele contra as raízes do
 **fail-open** de AOS-173 mantém-se **intacto**: uma falha de handshake TLS (colector em baixo,
 certificado inválido) é contabilizada e **nunca** quebra um run — cifrar o transporte não
 introduz um novo caminho crítico. A **autenticação forte** perante o colector (mTLS de cliente
-ou bearer token) fica **deferida** (DEF-012).
+ou bearer token) é **entregue OPT-IN** por DEF-012 — ver a secção seguinte.
 
-> **mTLS do plano de controlo — deferido (DEF-012).** Esta terminação cifra e autentica o
-> **servidor** perante o cliente. A autenticação **mútua** por certificado de cliente do plano de
-> controlo não é entregue aqui: o plano de controlo já é autenticado na camada de **aplicação**
-> por assinatura ed25519 no corpo (non-signing, AOS-160), independente do transporte — o mTLS
-> seria uma segunda barreira, não a primeira. Eixo em `docs/governance/REGISTO-Deferimentos.md`
-> (DEF-012, nota N-DEF-012).
+### mTLS do plano de controlo + autenticação forte OTLP (DEF-012)
+
+A terminação TLS de AOS-209 cifra e autentica o **servidor** perante o cliente. DEF-012
+acrescenta, **OPT-IN e por FICHEIRO montado**, a autenticação **mútua** de transporte em dois
+eixos independentes. Nenhum é a primeira barreira: o plano de controlo já é autenticado na camada
+de **aplicação** por assinatura ed25519 no corpo (non-signing, AOS-160), independente do
+transporte — o mTLS é uma **segunda** barreira, **ADITIVA, nunca um bypass**.
+
+#### EIXO 1 — mTLS do plano de controlo
+
+`AOS_CONTROL_MTLS_CA_PATH` monta o **bundle PEM da CA de cliente**. Com ele definido, o listener
+negoceia `tls.VerifyClientCertIfGiven` (verifica o certificado de cliente contra a CA **se**
+apresentado) e as rotas `/steer`, `/pause`, `/approve` **RECUSAM** (`403`) um pedido sem um
+certificado de cliente **verificado** — e, a seguir, a assinatura ed25519 do corpo continua a ser
+exigida por `node.Steer`/`FourEyes`.
+
+| Propriedade | Comportamento |
+|---|---|
+| **Escopo** | **ESCOPADO** ao plano de controlo. `/healthz`, `/readyz`, `GET`/`POST /runs` e `/trajectory` **não** exigem certificado de cliente (sondas de orquestrador não assinam; o plano de dados é não-autenticado por ADR-016). Não é `RequireAndVerifyClientCert` no listener, que imporia o certificado a essas rotas. |
+| **Aditivo** | Um certificado de cliente **válido** com assinatura ed25519 **ausente/má** continua **RECUSADO**. O mTLS **nunca** substitui a assinatura. |
+| **Pré-requisito** | Exige **terminação TLS no nó** (`AOS_TLS_CERT_PATH`+`AOS_TLS_KEY_PATH`) — a autenticação mútua é do handshake. Sem TLS no nó ⇒ **ABORTA** (`ErrControlMTLSNeedsNodeTLS`). |
+| **Recusa** | Bundle ilegível/sem CA PEM válida ⇒ **ABORTA** (`ErrBadControlMTLSCA`). |
+
+O banner declara o estado real: `mTLS do plano de controlo (DEF-012): LIGADO … ADITIVO, NAO BYPASS … ESCOPADO ao plano de controlo`.
+
+#### EIXO 2 — autenticação forte da perna OTLP
+
+O exporter autentica-se perante o colector, **preservando o fail-open de AOS-173** (uma recusa do
+colector em tempo de run é contabilizada como `Failed` e **nunca** quebra um run). Duas formas,
+combináveis:
+
+| Variáveis | Efeito |
+|---|---|
+| `AOS_OTLP_CLIENT_CERT_PATH` + `AOS_OTLP_CLIENT_KEY_PATH` | **mTLS de cliente**: o par é apresentado ao colector no handshake. Só um ⇒ `ErrIncompleteOTLPClientTLS`; par inválido ⇒ `ErrBadOTLPClientCert`. |
+| `AOS_OTLP_BEARER_TOKEN_PATH` | **Bearer**: cada POST leva `Authorization: Bearer <token>`. Ficheiro ilegível/vazio ⇒ `ErrBadOTLPBearerToken`. |
+
+O banner declara `autenticacao OTLP (DEF-012): mTLS de cliente + bearer LIGADOS` / `… LIGADO` /
+`… DESLIGADA` conforme composto — **sem** ecoar o token.
+
+#### Material privado, rotação e códigos de recusa
+
+Todo o material privado (chave de cliente OTLP, **bearer**) entra **só por ficheiro montado** —
+**nunca** por variável de ambiente, nunca em código/fixtures. A **CA de cliente** do EIXO 1 é
+material **público**. Como todo o material do nó, é lido **uma vez no arranque**: para rodar,
+**substitua os ficheiros montados e reinicie o contentor**.
+
+```bash
+docker run --read-only --tmpfs /tmp -p 8443:8443 \
+  -v $PWD/tls/server.crt:/etc/aos/tls/server.crt:ro \
+  -v $PWD/tls/server.key:/etc/aos/tls/server.key:ro \
+  -v $PWD/tls/control-client-ca.crt:/etc/aos/tls/control-client-ca.crt:ro \
+  -v $PWD/otlp/client.crt:/etc/aos/otlp/client.crt:ro \
+  -v $PWD/otlp/client.key:/etc/aos/otlp/client.key:ro \
+  -v $PWD/otlp/bearer.token:/etc/aos/otlp/bearer.token:ro \
+  -e AOS_API_ADDR=0.0.0.0:8443 \
+  -e AOS_TLS_CERT_PATH=/etc/aos/tls/server.crt \
+  -e AOS_TLS_KEY_PATH=/etc/aos/tls/server.key \
+  -e AOS_CONTROL_MTLS_CA_PATH=/etc/aos/tls/control-client-ca.crt \
+  -e AOS_OTLP_ENDPOINT=https://collector:4318 \
+  -e AOS_OTLP_CLIENT_CERT_PATH=/etc/aos/otlp/client.crt \
+  -e AOS_OTLP_CLIENT_KEY_PATH=/etc/aos/otlp/client.key \
+  -e AOS_OTLP_BEARER_TOKEN_PATH=/etc/aos/otlp/bearer.token \
+  -e AOS_OPERATORS="ops:alice=<hex-32B-ed25519>" \
+  aos-node:local
+```
+
+**Códigos de recusa (todos `exit 1`/`403`, fail-closed):**
+
+| Código | Quando |
+|---|---|
+| `ErrControlMTLSNeedsNodeTLS` | `AOS_CONTROL_MTLS_CA_PATH` sem terminação TLS no nó. |
+| `ErrBadControlMTLSCA` | Bundle de CA de cliente ilegível ou sem certificado PEM válido. |
+| `403` nas rotas de controlo | mTLS de controlo ligado e pedido sem certificado de cliente verificado (a assinatura ed25519 continua a ser exigida a seguir). |
+| `ErrIncompleteOTLPClientTLS` | Só um de `AOS_OTLP_CLIENT_CERT_PATH`/`AOS_OTLP_CLIENT_KEY_PATH`. |
+| `ErrBadOTLPClientCert` | Par mTLS de cliente OTLP ilegível/PEM malformado/chave≠certificado. |
+| `ErrBadOTLPBearerToken` | Ficheiro de bearer OTLP ilegível ou vazio (o erro nomeia só o caminho, nunca o conteúdo). |
+
+> **Eixo em `docs/governance/REGISTO-Deferimentos.md` (DEF-012, nota N-DEF-012):** o mecanismo é
+> entregue e fail-closed; o que fica **deferido** é a **provisão de infra** (PKI/emissão de
+> certificados de cliente aos operadores, bearer/mTLS do lado do colector), não código do nó.
 
 ### Plano de controlo — operadores e aprovadores (AOS-160 / AOS-162, config em AOS-193)
 

@@ -6,7 +6,7 @@
 | Autoridade | **Subordinado**. Este ficheiro **não decide nada** e **não cria tickets** — regista o que já está deferido e torna o eixo verificável por comando |
 | Origem | AOS-196 (EPIC-18), achados **DEF-01**, **DEF-03** e **DEF-06** da auditoria multiagente v4 |
 | Gate que o impõe | `scripts/ci/deferrals.sh` (bloqueante; `run.sh` → `ALL_GATES`, job `deferrals` em `ci.yml`, `needs:` do agregador `gates`) |
-| Última actualização | 2026-07-28 |
+| Última actualização | 2026-07-29 |
 
 ---
 
@@ -152,7 +152,7 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-009 | DIFERIDO | packages/substrate/otel-genai/evaluation.go | A folha declara em 4 sítios que o runner/gate CONCRETO «pertence a EPIC-11 e fica DIFERIDO» — mas o harness concreto JÁ existe em `packages/platform/eval` (AOS-114); o que falta é o gate de eval composto num caminho de promoção | AOS-114, AOS-115 | Arquitecto de Plataforma | Existir caminho de promoção composto no nó (o mesmo gatilho de DEF-401) | MITIGADO |
 | DEF-010 | DIFERIDO | packages/platform/eval/doc.go | Marcador de contraste: este pacote É o harness que a folha `otel-genai` declarava DIFERIDO para EPIC-11 | AOS-114 | Arquitecto de Plataforma | Idem DEF-009 | FECHADO-RESIDUAL |
 | DEF-011 | DIFERIDO | packages/platform/eval/runner.go | Idem DEF-010 no `Runner` concreto que satisfaz a porta `otelgenai.EvalRunner` | AOS-114 | Arquitecto de Plataforma | Idem DEF-009 | FECHADO-RESIDUAL |
-| DEF-012 | DEFERIDO | packages/cmd/aos/api.go | **mTLS do plano de controlo e autenticação forte da perna OTLP.** A terminação TLS de AOS-209 (crypto/tls stdlib) cifra e autentica o SERVIDOR perante o cliente; a autenticação MÚTUA por certificado de cliente do plano de controlo, e a autenticação forte perante o colector OTLP (mTLS/bearer), ficam por entregar. Não é lacuna aberta: o plano de controlo já é autenticado na APLICAÇÃO por assinatura ed25519 no corpo (AOS-160), independente do transporte | POR ATRIBUIR | Responsável de Segurança | Ambiente que exija autenticação de TRANSPORTE (certificado de cliente) para o plano de controlo ou o colector OTLP, para além da assinatura ed25519 de aplicação | ABERTO |
+| DEF-012 | DEFERIDO | packages/cmd/aos/api.go | **mTLS do plano de controlo e autenticação forte da perna OTLP — MECANISMO ENTREGUE OPT-IN.** O mTLS do plano de controlo (CA de cliente por AOS_CONTROL_MTLS_CA_PATH; escopado a /steer,/pause,/approve; ADITIVO à assinatura ed25519, nunca bypass) e a autenticação forte da perna OTLP (mTLS de cliente ou bearer, por ficheiro; fail-open de AOS-173 preservado) estão ENTREGUES e fail-closed. Fica deferido apenas o que é infra-org, não código do nó: a PROVISÃO de PKI/emissão de certificados de cliente aos operadores e o bearer/mTLS do lado do colector | POR ATRIBUIR | Responsável de Segurança | Provisão de infra (PKI de cliente / configuração de autenticação do colector) numa organização real — o mecanismo do nó já não é o gargalo | MITIGADO |
 | DEF-101 | DEMO-GRADE | packages/integration/issuer_authority.go | `AllowlistDirectory` é a impl de referência de `HumanDirectory`: regista humanos, não prova autenticação | AOS-174, AOS-156 | Responsável de Segurança | O nó compor `OIDCDirectory` por configuração em vez da allowlist | MITIGADO |
 | DEF-102 | NUNCA-EM-PRODUCAO | packages/integration/issuer_authority.go | `AuthenticateAssertion` aceita a asserção sem prova criptográfica (não há IdP na allowlist) | AOS-174 | Responsável de Segurança | Idem DEF-101 | MITIGADO |
 | DEF-103 | DEFERIDO | packages/integration/issuer_authority.go | Endurecimento posterior da autoridade: HSM/sign-in-place e chave fora do processo | AOS-175 | Responsável de Segurança | Custódia de chave num KMS/HSM real de ambiente | MITIGADO |
@@ -429,27 +429,29 @@ cobre já têm ticket); está aqui para a decisão não ter de ser redescoberta.
 ### N-DEF-012 — cobre DEF-012
 
 Introduzido por **AOS-209** (terminação TLS do nó), que decidiu **entregar** a terminação TLS do
-ingresso (servidor) e **deferir** a autenticação MÚTUA de transporte. A decisão está justificada no
-próprio ticket (`specs/EPIC-18` §8-bis, CA «mTLS do plano de controlo»): o plano de controlo já é
+ingresso (servidor) e **deferir** a autenticação MÚTUA de transporte. **O mecanismo do nó foi
+entregue OPT-IN pelo próprio eixo DEF-012** (sem `AOS-NNN` novo — o eixo é o registo). A decisão de
+o fazer defesa-em-profundidade está justificada em `specs/EPIC-18` §8-bis: o plano de controlo já é
 autenticado na camada de **aplicação** por assinatura ed25519 no corpo (non-signing, AOS-160),
-independente do transporte — o mTLS acrescentaria uma **segunda** barreira ao nível do transporte,
-não a primeira; deferi-lo não abre uma lacuna, adia um reforço.
+independente do transporte — o mTLS é uma **segunda** barreira, não a primeira.
 
-**Ticket necessário — «Autenticação mútua de transporte (mTLS) do plano de controlo e da perna
-OTLP».** Epic sugerido: EPIC-15 (o mesmo de AOS-209) ou EPIC-16 (autoridade de identidade), com
-dependência de AOS-209 (terminação TLS do servidor, já entregue).
+**O que foi entregue (código do nó, fail-closed, ADITIVO):**
 
-- O servidor da API passa a poder exigir **certificado de cliente** verificado (`tls.Config`
-  `ClientAuth` + `ClientCAs` de um bundle montado) nas rotas do plano de controlo (`/steer`,
-  `/pause`, `/approve`), a par da assinatura ed25519 de aplicação.
-- O exporter OTLP passa a poder apresentar **certificado de cliente** (mTLS) OU um **bearer token**
-  perante o colector, mantendo o **fail-open** de AOS-173 intacto.
-- Ambos por **ficheiro montado** (o material privado nunca por variável de ambiente, no padrão de
-  `AOS_TLS_KEY_PATH`/`AOS_ISSUER_KEY_PATH`).
+- O servidor da API exige **certificado de cliente** verificado (`tls.VerifyClientCertIfGiven` +
+  `ClientCAs` do bundle montado em `AOS_CONTROL_MTLS_CA_PATH`) nas rotas do plano de controlo
+  (`/steer`,`/pause`,`/approve`), **escopado** (não impõe cert às rotas de dados/sondas), **ADITIVO**
+  à assinatura ed25519 (um cert válido com assinatura ausente/má continua recusado — provado em
+  `control_mtls_test.go`). Exige terminação TLS no nó (`ErrControlMTLSNeedsNodeTLS`).
+- O exporter OTLP apresenta **certificado de cliente** (mTLS, `AOS_OTLP_CLIENT_CERT_PATH`+`KEY`) OU um
+  **bearer token** (`AOS_OTLP_BEARER_TOKEN_PATH`) perante o colector, mantendo o **fail-open** de
+  AOS-173 intacto (provado em `otlp_auth_test.go`). O bearer é um segredo — nunca logado.
+- Todo o material privado por **ficheiro montado** (nunca por variável de ambiente, no padrão de
+  `AOS_TLS_KEY_PATH`/`AOS_ISSUER_KEY_PATH`); a CA de cliente é material público.
 
-**Porque não tem ticket hoje:** procurar `TLS`/`mTLS` nas linhas de ticket de `specs/` devolvia
-**zero** antes de AOS-209 (a própria origem deste ticket). AOS-209 entrega a terminação do servidor;
-a autenticação mútua nunca teve `AOS-NNN` próprio e é o reforço que fica por atribuir.
+**O que fica deferido (POR ATRIBUIR — é infra-org, não código do nó):** a **provisão** da PKI de
+cliente (emissão/rotação de certificados aos operadores) e a configuração de autenticação do lado do
+**colector**. Não tem `AOS-NNN` porque é provisionamento de infra da organização, no mesmo padrão de
+N-DEF-201; o nó já não é o gargalo. Estado do registo passou de `ABERTO` a `MITIGADO`.
 
 ### N-DEF-201 — cobre DEF-201, DEF-203…DEF-211 — **TICKET CRIADO: AOS-205** (`specs/EPIC-18` §8-bis)
 

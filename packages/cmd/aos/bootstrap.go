@@ -333,6 +333,16 @@ type Config struct {
 	// — usadas pelos testes para determinismo. Só aplicadas quando a observabilidade está
 	// ligada (OTLPExporter != nil OU OTLPEndpoint != "").
 	TracerOptions []otelgenai.TracerOption
+	// --- Autenticação forte da perna OTLP (DEF-012, EIXO 2) — OPT-IN, por FICHEIRO ---------
+	// OTLPClientCertPath/OTLPClientKeyPath compõem o mTLS de CLIENTE perante o colector (o par
+	// certificado+chave montado por ficheiro); OTLPBearerTokenPath compõe a autenticação por
+	// bearer (o token, um SEGREDO, lido de ficheiro). Só se aplicam quando o nó ABRE o exporter
+	// (OTLPEndpoint != "" e sem OTLPExporter injectado); um exporter injectado é do chamador e
+	// traz a sua própria autenticação. Vazios ⇒ sem autenticação de cliente (comportamento
+	// actual). Material privado NUNCA por variável de ambiente — sempre por ficheiro montado.
+	OTLPClientCertPath  string
+	OTLPClientKeyPath   string
+	OTLPBearerTokenPath string
 
 	// --- Relógios injectáveis (testes determinísticos) -------------------------
 	IssuerClock   func() time.Time
@@ -642,7 +652,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	case cfg.OTLPExporter != nil:
 		exporter = cfg.OTLPExporter
 	case cfg.OTLPEndpoint != "":
-		e, oerr := NewOTLPHTTPExporter(cfg.OTLPEndpoint, WithOTLPLogger(log))
+		// AUTENTICAÇÃO FORTE perante o colector (DEF-012, EIXO 2) — OPT-IN, só quando o NÓ abre o
+		// exporter. Os caminhos vêm da Config (env em main.go); vazios ⇒ sem autenticação de
+		// cliente (comportamento actual). Fail-closed de CONFIG dentro de NewOTLPHTTPExporter.
+		otlpOpts := []OTLPOption{WithOTLPLogger(log)}
+		if cfg.OTLPClientCertPath != "" || cfg.OTLPClientKeyPath != "" {
+			otlpOpts = append(otlpOpts, WithOTLPClientCertFiles(cfg.OTLPClientCertPath, cfg.OTLPClientKeyPath))
+		}
+		if cfg.OTLPBearerTokenPath != "" {
+			otlpOpts = append(otlpOpts, WithOTLPBearerTokenFile(cfg.OTLPBearerTokenPath))
+		}
+		e, oerr := NewOTLPHTTPExporter(cfg.OTLPEndpoint, otlpOpts...)
 		if oerr != nil {
 			return nil, fmt.Errorf("aos: observabilidade OTLP (AOS-173): %w", oerr)
 		}
@@ -1033,6 +1053,21 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if tracingEnabled {
 		if otlpExp != nil {
 			log("observabilidade OTLP (AOS-173): tracer REAL -> exporter OTLP/HTTP fail-open (spans invoke_agent/chat[+custo]/execute_tool/freeze + selos WORM)")
+			// AUTENTICAÇÃO FORTE perante o colector (DEF-012, EIXO 2). O banner declara o estado
+			// REALMENTE composto, sem revelar o segredo (o bearer nunca é impresso — só se ESTÁ
+			// ou NÃO ligado). Fail-open preservado: uma recusa do colector nunca quebra um run.
+			mtlsOTLP := cfg.OTLPClientCertPath != "" && cfg.OTLPClientKeyPath != ""
+			bearerOTLP := cfg.OTLPBearerTokenPath != ""
+			switch {
+			case mtlsOTLP && bearerOTLP:
+				log("autenticacao OTLP (DEF-012): mTLS de cliente + bearer LIGADOS (material por ficheiro; fail-open intacto — recusa do colector nao quebra o run)")
+			case mtlsOTLP:
+				log("autenticacao OTLP (DEF-012): mTLS de cliente LIGADO (par cert+chave por ficheiro; fail-open intacto)")
+			case bearerOTLP:
+				log("autenticacao OTLP (DEF-012): bearer LIGADO (token por ficheiro, nunca logado; fail-open intacto)")
+			default:
+				log("autenticacao OTLP (DEF-012): DESLIGADA — so TLS de servidor (se https); defina AOS_OTLP_CLIENT_CERT_PATH+KEY ou AOS_OTLP_BEARER_TOKEN_PATH para autenticar o cliente")
+			}
 		} else {
 			log("observabilidade OTLP (AOS-173): tracer REAL -> exporter injectado por config (spans invoke_agent/chat[+custo]/execute_tool/freeze + selos WORM)")
 		}

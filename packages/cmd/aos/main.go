@@ -412,6 +412,14 @@ func nodeConfigFromEnv() (Config, error) {
 		// presente ⇒ o nó exporta traces (invoke_agent/chat[+custo]/execute_tool/freeze +
 		// selos WORM) via OTLP/HTTP. Um endpoint malformado aborta o arranque (fail-closed).
 		OTLPEndpoint: strings.TrimSpace(os.Getenv("AOS_OTLP_ENDPOINT")),
+		// AUTENTICAÇÃO FORTE da perna OTLP (DEF-012, EIXO 2) — OPT-IN, por FICHEIRO montado. mTLS
+		// de cliente (par cert+chave) e/ou bearer perante o colector. Vazios ⇒ sem autenticação de
+		// cliente (comportamento actual). Só se aplicam quando o nó ABRE o exporter (endpoint
+		// definido); fail-closed de CONFIG (par incompleto/inválido, bearer ilegível) dentro de
+		// NewOTLPHTTPExporter. Material privado (chave, bearer) NUNCA por variável — só por ficheiro.
+		OTLPClientCertPath:  strings.TrimSpace(os.Getenv("AOS_OTLP_CLIENT_CERT_PATH")),
+		OTLPClientKeyPath:   strings.TrimSpace(os.Getenv("AOS_OTLP_CLIENT_KEY_PATH")),
+		OTLPBearerTokenPath: strings.TrimSpace(os.Getenv("AOS_OTLP_BEARER_TOKEN_PATH")),
 		// CANAL DE CONTROLO (AOS-160/AOS-193): pubkeys dos operadores lidas de AOS_OPERATORS
 		// (já validadas fail-closed acima). Vazio ⇒ default-deny do canal de controlo (o steer
 		// anónimo é recusado — a inércia do D4 não protege pause/steer) E, desde AOS-193, o
@@ -528,6 +536,11 @@ func apiTLSOptionsFromEnv(production bool) ([]APIOption, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// mTLS DO PLANO DE CONTROLO (DEF-012, EIXO 1) — OPT-IN, por FICHEIRO. A CA de CLIENTE (material
+	// PÚBLICO) é lida do ficheiro montado AOS_CONTROL_MTLS_CA_PATH. Vazio ⇒ desligado. Definido ⇒
+	// WithControlMTLS; [NewAPIServer] arbitra fail-closed (exige TLS no nó ⇒ ErrControlMTLSNeedsNodeTLS;
+	// CA inválida ⇒ ErrBadControlMTLSCA).
+	controlMTLSCA := strings.TrimSpace(os.Getenv("AOS_CONTROL_MTLS_CA_PATH"))
 
 	tlsAtNode := certPath != "" && keyPath != ""
 	tlsConfigured := certPath != "" || keyPath != "" // completo ou incompleto (NewAPIServer arbitra)
@@ -544,6 +557,9 @@ func apiTLSOptionsFromEnv(production bool) ([]APIOption, []string, error) {
 	if external {
 		opts = append(opts, WithExternalTLSTermination(true))
 	}
+	if controlMTLSCA != "" {
+		opts = append(opts, WithControlMTLS(controlMTLSCA))
+	}
 
 	// O banner do opt-out só sai quando a terminação externa é a via EFECTIVA — isto é, quando
 	// o nó NÃO termina TLS. Com TLS no nó, a declaração externa é ignorada (precedência em
@@ -552,7 +568,23 @@ func apiTLSOptionsFromEnv(production bool) ([]APIOption, []string, error) {
 	if external && !tlsAtNode {
 		banner = tlsExternalTerminationBanner()
 	}
+	// BANNER HONESTO do mTLS do plano de controlo (DEF-012, EIXO 1): declara o estado REALMENTE
+	// composto e que é ADITIVO à assinatura ed25519 (nunca um bypass).
+	if controlMTLSCA != "" {
+		banner = append(banner, controlMTLSBanner()...)
+	}
 	return opts, banner, nil
+}
+
+// controlMTLSBanner declara que o mTLS do plano de controlo (DEF-012, EIXO 1) está LIGADO e que é
+// uma SEGUNDA barreira (transporte) ADITIVA à assinatura ed25519 do corpo (AOS-160), nunca um
+// substituto dela.
+func controlMTLSBanner() []string {
+	return []string{
+		"mTLS do plano de controlo (DEF-012): LIGADO (AOS_CONTROL_MTLS_CA_PATH) — /steer,/pause,/approve exigem certificado de cliente verificado contra a CA montada, ALEM da assinatura ed25519 do corpo (AOS-160)",
+		"=> ADITIVO, NAO BYPASS: um certificado de cliente valido com assinatura ed25519 ausente/ma continua RECUSADO; a assinatura permanece a barreira primaria, o mTLS e a segunda",
+		"=> ESCOPADO ao plano de controlo: /healthz,/readyz,GET|POST /runs e /trajectory NAO exigem certificado de cliente (VerifyClientCertIfGiven no listener; a recusa vive nos handlers de controlo)",
+	}
 }
 
 // parseTLSExternalTermination interpreta AOS_TLS_EXTERNAL_TERMINATION (AOS-209) como um

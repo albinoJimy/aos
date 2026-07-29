@@ -44,6 +44,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -51,6 +52,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -133,19 +135,51 @@ var (
 	// a terminação TLS no nó exige AMBOS (certificado E chave), e a ambiguidade aborta em vez de
 	// degradar em silêncio para texto-claro.
 	ErrIncompleteTLSConfig = errors.New("aos/api: config TLS incompleta — AOS_TLS_CERT_PATH e AOS_TLS_KEY_PATH sao AMBOS obrigatorios para terminar TLS no no (definir so um aborta em vez de servir em claro)")
+	// ErrBadControlMTLSCA — AOS_CONTROL_MTLS_CA_PATH presente mas o bundle de CA de cliente
+	// não carrega (ficheiro ilegível, ou sem nenhum certificado PEM válido). Fail-closed de
+	// CONFIG (DEF-012, EIXO 1): um nó não sobe a anunciar mTLS do plano de controlo com uma
+	// âncora de confiança que nunca verificaria um certificado de cliente.
+	ErrBadControlMTLSCA = errors.New("aos/api: AOS_CONTROL_MTLS_CA_PATH invalido (ficheiro ilegivel ou sem certificado PEM de CA de cliente valido)")
+	// ErrControlMTLSNeedsNodeTLS — AOS_CONTROL_MTLS_CA_PATH está definido mas o nó NÃO termina
+	// TLS (AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH ausentes). A autenticação MÚTUA acontece no
+	// handshake TLS, que só o nó que TERMINA TLS realiza — não se pode exigir certificado de
+	// cliente a montante (terminação externa) nem em texto-claro. Fail-closed: a ambiguidade
+	// aborta em vez de anunciar um mTLS que o listener nunca imporia.
+	ErrControlMTLSNeedsNodeTLS = errors.New("aos/api: AOS_CONTROL_MTLS_CA_PATH exige terminacao TLS NO no (AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH) — o mTLS do plano de controlo verifica o certificado de cliente no handshake, que so o no que termina TLS realiza; nao e compativel com terminacao a montante nem com texto-claro")
+	// ErrControlClientCertRequired — o mTLS do plano de controlo está LIGADO e o pedido a uma
+	// rota de controlo (/steer, /pause, /approve) chegou SEM um certificado de cliente
+	// verificado contra a CA montada. É a PRIMEIRA barreira (transporte) da defesa-em-profundidade
+	// de DEF-012; a segunda (assinatura ed25519 no corpo, AOS-160) é imposta a seguir por
+	// node.Steer/FourEyes. Recusar aqui NUNCA substitui a assinatura — é ADITIVO a ela.
+	ErrControlClientCertRequired = errors.New("aos/api: rota de controlo RECUSADA — mTLS do plano de controlo LIGADO exige certificado de cliente verificado (a assinatura ed25519 do corpo continua a ser exigida a seguir; o mTLS e uma barreira ADICIONAL, nao um bypass)")
 	// ErrNilService / ErrNilNode — construção sem os colaboradores obrigatórios.
 	ErrNilService = errors.New("aos/api: NewAPIHandler exige um NodeService (nil)")
 	ErrNilNode    = errors.New("aos/api: NewAPIHandler exige um Node (nil)")
 )
 
-// mTLS DO PLANO DE CONTROLO — DEFERIDO (AOS-209). A terminação TLS deste ticket cifra e
-// autentica o SERVIDOR perante o cliente; a autenticação MÚTUA por certificado de cliente
-// (mTLS) do plano de controlo, e a autenticação forte da perna OTLP perante o colector,
-// ficam por entregar. Não é uma lacuna de segurança aberta: o plano de controlo já é
-// autenticado na camada de APLICAÇÃO por assinatura ed25519 no corpo (non-signing, AOS-160),
-// independente do transporte — o mTLS acrescentaria uma segunda barreira ao nível do
-// transporte, não a primeira. Eixo e ticket em falta: ver DEF-012 em
-// docs/governance/REGISTO-Deferimentos.md (eixo POR ATRIBUIR, nota N-DEF-012).
+// mTLS DO PLANO DE CONTROLO — ENTREGUE OPT-IN (DEF-012, EIXO 1). A terminação TLS de AOS-209
+// cifra e autentica o SERVIDOR perante o cliente; ESTE eixo acrescenta a autenticação MÚTUA por
+// certificado de CLIENTE às rotas de controlo (/steer, /pause, /approve), composta por
+// [WithControlMTLS] a partir de uma CA de cliente montada por FICHEIRO (AOS_CONTROL_MTLS_CA_PATH).
+//
+// DESENHO — ESCOPADO ao plano de controlo, NÃO listener-wide. O listener negoceia
+// tls.VerifyClientCertIfGiven (pede e VERIFICA o certificado de cliente contra a CA montada SE
+// apresentado, mas não o exige a TODAS as rotas), e SÓ os handlers de controlo RECUSAM
+// ([admitControlMTLS] ⇒ [ErrControlClientCertRequired]) quando não há PeerCertificate verificado.
+// Assim /healthz, /readyz, GET/POST /runs e /trajectory — que NÃO pertencem ao plano de controlo
+// (sondas de orquestrador não assinam; o plano de dados é não-autenticado por ADR-016) — não
+// passam a exigir certificado de cliente. RequireAndVerifyClientCert no listener imporia o
+// certificado a essas rotas, fora do âmbito do ticket.
+//
+// ADITIVO, NUNCA BYPASS. O mTLS é uma SEGUNDA barreira (transporte); a PRIMEIRA continua a ser a
+// assinatura ed25519 no corpo (non-signing, AOS-160), imposta a seguir por node.Steer/FourEyes,
+// independente do transporte. Um certificado de cliente válido com assinatura AUSENTE/MÁ continua
+// RECUSADO. Requer terminação TLS NO nó ([ErrControlMTLSNeedsNodeTLS]).
+//
+// A autenticação forte da perna OTLP perante o colector (EIXO 2) é o par deste eixo — ver o
+// marcador em otlpexporter.go. O que fica deferido em DEF-012 é apenas a PROVISÃO de infra
+// (PKI/emissão de certificados de cliente aos operadores, bearer do colector), não código do nó —
+// ver DEF-012 em docs/governance/REGISTO-Deferimentos.md (nota N-DEF-012).
 
 // apiConfig é a configuração resolvida da API.
 type apiConfig struct {
@@ -174,6 +208,13 @@ type apiConfig struct {
 	// emitir um aviso proeminente. É mutuamente exclusivo com a terminação no nó (um par TLS
 	// definido tem precedência: se o nó termina TLS, não há terminação "externa" a declarar).
 	externalTLS bool
+	// controlMTLSCAPath aponta para o bundle PEM da CA de CLIENTE montado por ficheiro
+	// (DEF-012, EIXO 1). Vazio ⇒ mTLS do plano de controlo DESLIGADO (comportamento actual:
+	// só a assinatura ed25519 autentica). Definido ⇒ o listener verifica o certificado de
+	// cliente contra esta CA (VerifyClientCertIfGiven) e as rotas /steer,/pause,/approve
+	// RECUSAM sem um certificado verificado — ADITIVO à assinatura ed25519. Exige terminação
+	// TLS no nó ([ErrControlMTLSNeedsNodeTLS]). Material PÚBLICO (a CA), por ficheiro montado.
+	controlMTLSCAPath string
 	// readGov é a costura de SOBERANIA/CONFORMIDADE de leitura (AOS-172, D7+D6). Quando
 	// composta (explicitamente por [WithReadSovereignty] ou auto-derivada do nó em
 	// [NewAPIHandler]), os handlers de leitura passam a exigir authz por-chamador (board→região
@@ -322,6 +363,18 @@ func WithTLSFiles(certPath, keyPath string) APIOption {
 	}
 }
 
+// WithControlMTLS compõe o mTLS do PLANO DE CONTROLO (DEF-012, EIXO 1): a CA de CLIENTE é lida
+// do ficheiro MONTADO caPath (material PÚBLICO por ficheiro, no padrão de [WithTLSFiles]).
+// [NewAPIServer] carrega o bundle (fail-closed: bundle inválido ⇒ [ErrBadControlMTLSCA]), exige
+// que o nó TERMINE TLS ([ErrControlMTLSNeedsNodeTLS] caso contrário) e liga
+// tls.VerifyClientCertIfGiven + ClientCAs no listener. As rotas /steer,/pause,/approve passam a
+// RECUSAR ([ErrControlClientCertRequired]) um pedido sem certificado de cliente verificado — uma
+// SEGUNDA barreira ADITIVA à assinatura ed25519 do corpo (AOS-160), nunca um substituto dela.
+// caPath vazio ⇒ mTLS de controlo desligado (comportamento actual).
+func WithControlMTLS(caPath string) APIOption {
+	return func(c *apiConfig) { c.controlMTLSCAPath = strings.TrimSpace(caPath) }
+}
+
 // WithExternalTLSTermination DECLARA que a terminação TLS é feita A MONTANTE (ingress/malha):
 // o nó serve em texto-claro por DECISÃO explícita de quem o configurou (AOS-209). Satisfaz a
 // quarta conjunção do bind-guardrail — o transporte é cifrado, apenas não no nó — e faz o
@@ -341,6 +394,11 @@ type apiHandler struct {
 	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
 	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
 	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
+	// controlMTLS indica se o mTLS do plano de controlo está LIGADO (DEF-012, EIXO 1). Quando
+	// true, os handlers de controlo exigem um certificado de cliente verificado — ADITIVO à
+	// assinatura ed25519. O ClientCAs/ClientAuth vive no listener ([NewAPIServer]); este flag é
+	// a contraparte no handler que faz a RECUSA por-rota.
+	controlMTLS bool
 	// readGov é a costura de soberania/conformidade de leitura (AOS-172, D7+D6). nil ⇒ legado.
 	readGov *readGovernance
 }
@@ -391,12 +449,13 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		}
 	}
 	h := &apiHandler{
-		svc:        svc,
-		node:       node,
-		cfg:        cfg,
-		bucket:     newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
-		ctrlBucket: newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
-		readGov:    readGov,
+		svc:         svc,
+		node:        node,
+		cfg:         cfg,
+		bucket:      newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
+		ctrlBucket:  newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
+		controlMTLS: cfg.controlMTLSCAPath != "",
+		readGov:     readGov,
 	}
 
 	mux := http.NewServeMux()
@@ -676,6 +735,9 @@ func (h *apiHandler) handleSteer(w http.ResponseWriter, r *http.Request) {
 	if !h.admitControl(w) {
 		return
 	}
+	if !h.admitControlMTLS(w, r) {
+		return
+	}
 	runID := r.PathValue("id")
 	var req steerRequest
 	if status, ok := h.decodeJSON(w, r, &req); !ok {
@@ -702,6 +764,9 @@ func (h *apiHandler) handleSteer(w http.ResponseWriter, r *http.Request) {
 // handlePause emite um pause gracioso AUTENTICADO (mesma fronteira do steer).
 func (h *apiHandler) handlePause(w http.ResponseWriter, r *http.Request) {
 	if !h.admitControl(w) {
+		return
+	}
+	if !h.admitControlMTLS(w, r) {
 		return
 	}
 	runID := r.PathValue("id")
@@ -777,6 +842,9 @@ type approvalLegWire struct {
 // vêm no corpo; o gate verifica-as contra as pubkeys pinadas. Negação ⇒ 403 SEM efeito.
 func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 	if !h.admitControl(w) {
+		return
+	}
+	if !h.admitControlMTLS(w, r) {
 		return
 	}
 	if h.node.FourEyes == nil {
@@ -867,6 +935,31 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) admitControl(w http.ResponseWriter) bool {
 	if !h.ctrlBucket.allow() {
 		writeError(w, http.StatusTooManyRequests, "rate limit excedido")
+		return false
+	}
+	return true
+}
+
+// admitControlMTLS impõe o mTLS do PLANO DE CONTROLO (DEF-012, EIXO 1) quando composto: a rota
+// de controlo RECUSA (403) se não houver um certificado de cliente VERIFICADO contra a CA montada.
+// É a PRIMEIRA barreira (transporte); a assinatura ed25519 do corpo (AOS-160) é imposta A SEGUIR
+// pelo handler — pelo que esta função é ADITIVA e NUNCA um bypass: um certificado válido com
+// assinatura ausente/má é aceite AQUI mas continua RECUSADO pela verificação ed25519 subsequente.
+//
+// Quando o mTLS de controlo está DESLIGADO (o comportamento actual), devolve sempre true — a
+// única autenticação continua a ser a ed25519, exactamente como antes de DEF-012.
+//
+// O predicado é `len(r.TLS.VerifiedChains) > 0`: com tls.VerifyClientCertIfGiven no listener, uma
+// cadeia verificada só existe se o cliente APRESENTOU um certificado E ele encadeou até à CA
+// montada (um certificado apresentado mas não-encadeável falha o handshake e nem chega aqui; um
+// pedido sem certificado chega com VerifiedChains vazio ⇒ recusado). A resposta é uniforme
+// (não-enumerável): só o 403 distingue, sem revelar o estado do run.
+func (h *apiHandler) admitControlMTLS(w http.ResponseWriter, r *http.Request) bool {
+	if !h.controlMTLS {
+		return true
+	}
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
+		writeError(w, http.StatusForbidden, "certificado de cliente exigido")
 		return false
 	}
 	return true
@@ -971,6 +1064,10 @@ type APIServer struct {
 	// quarta conjunção do bind-guardrail (transporte cifrado). Ver [APIServer.transportEncrypted].
 	tlsEnabled  bool
 	externalTLS bool
+	// controlMTLS é true quando o mTLS do plano de controlo (DEF-012, EIXO 1) foi composto: o
+	// listener verifica o certificado de cliente (VerifyClientCertIfGiven) e os handlers de
+	// controlo recusam sem cadeia verificada. Exposto para diagnóstico/banner.
+	controlMTLS bool
 }
 
 // NewAPIServer compõe o handler ([NewAPIHandler]) e um http.Server com timeouts endurecidos.
@@ -1019,14 +1116,54 @@ func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, 
 		return nil, ErrIncompleteTLSConfig
 	}
 
+	// mTLS DO PLANO DE CONTROLO (DEF-012, EIXO 1). OPT-IN e ADITIVO. Exige terminação TLS NO nó
+	// (a autenticação mútua é do handshake) e liga tls.VerifyClientCertIfGiven + ClientCAs no
+	// listener — ESCOPADO: verifica o certificado SE apresentado, e são os handlers de controlo
+	// (não o listener) que RECUSAM quando falta. Fail-closed de config: CA ilegível/inválida
+	// aborta ([ErrBadControlMTLSCA]); sem TLS no nó aborta ([ErrControlMTLSNeedsNodeTLS]).
+	controlMTLS := false
+	if cfg.controlMTLSCAPath != "" {
+		if !tlsEnabled {
+			return nil, ErrControlMTLSNeedsNodeTLS
+		}
+		pool, cerr := loadClientCAPool(cfg.controlMTLSCAPath)
+		if cerr != nil {
+			return nil, cerr
+		}
+		httpSrv.TLSConfig.ClientCAs = pool
+		httpSrv.TLSConfig.ClientAuth = tls.VerifyClientCertIfGiven
+		controlMTLS = true
+	}
+
 	return &APIServer{
 		node:        node,
 		http:        httpSrv,
 		logw:        cfg.logw,
 		tlsEnabled:  tlsEnabled,
 		externalTLS: externalTLS,
+		controlMTLS: controlMTLS,
 	}, nil
 }
+
+// loadClientCAPool lê o bundle PEM da CA de CLIENTE montado (DEF-012, EIXO 1) e constrói o pool de
+// confiança que o listener usa para VERIFICAR o certificado de cliente do plano de controlo.
+// Fail-closed: ficheiro ilegível ou sem nenhum certificado PEM válido ⇒ [ErrBadControlMTLSCA]. Só
+// material PÚBLICO (a CA); nenhuma chave privada entra por aqui.
+func loadClientCAPool(path string) (*x509.CertPool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ler %q: %v", ErrBadControlMTLSCA, path, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(raw) {
+		return nil, fmt.Errorf("%w: %q sem certificado PEM de CA valido", ErrBadControlMTLSCA, path)
+	}
+	return pool, nil
+}
+
+// controlMTLSEnabled indica se o mTLS do plano de controlo (DEF-012, EIXO 1) foi composto (para o
+// diagnóstico/banner do arranque).
+func (s *APIServer) controlMTLSEnabled() bool { return s.controlMTLS }
 
 // hardenedServerTLSConfig monta a [tls.Config] endurecida do servidor a partir do par
 // certificado+chave carregado (AOS-209): MinVersion TLS 1.2 (recusa SSLv3/TLS1.0/1.1) e um
