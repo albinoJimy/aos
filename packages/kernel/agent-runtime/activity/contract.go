@@ -98,9 +98,12 @@ type Activity struct {
 	BudgetTokensRemaining int64
 	// Status é o rótulo de desfecho memorizado no ledger (default [StatusOK]).
 	Status string
-	// CostMicroUSD é o custo do efeito em micro-USD inteiro, para observabilidade por
-	// span (ADR-010). Opcional (0 se desconhecido).
-	CostMicroUSD int64
+	// (AOS-212) O custo do efeito NÃO é um campo de ENTRADA da Activity. O span
+	// aos.activity anota-o a partir do DESFECHO real do efeito — o custo MEDIDO que a
+	// tool reporta ao Reference Monitor ([referencemonitor.Decision.CostMicroUSD]),
+	// captado por canal lateral em [Dispatcher.Dispatch] (ver dispatch.go). Um custo
+	// declarado à cabeça na Activity seria estimativa, não medição, e — pior — sobreviveria
+	// ao dedup/replay; a fonte correcta é o desfecho, que só ocorre no efeito real.
 	// Compensation, se não-nil, é registada no [CompensationRegistrar] no momento do
 	// permit (AOS-020). Exige um registrar configurado ([WithCompensationRegistry]).
 	Compensation *Compensation

@@ -305,7 +305,7 @@ func TestNoBypass_PermitNaoForjavel(t *testing.T) {
 
 	t.Run("permit_zero_e_rejeitado", func(t *testing.T) {
 		called = false
-		_, err := m.dispatch(ctx, &Permit{}, call)
+		_, _, err := m.dispatch(ctx, &Permit{}, call)
 		if !errors.Is(err, ErrInvalidPermit) {
 			t.Fatalf("esperava ErrInvalidPermit, obtive %v", err)
 		}
@@ -316,7 +316,7 @@ func TestNoBypass_PermitNaoForjavel(t *testing.T) {
 
 	t.Run("permit_nil_e_rejeitado", func(t *testing.T) {
 		called = false
-		_, err := m.dispatch(ctx, nil, call)
+		_, _, err := m.dispatch(ctx, nil, call)
 		if !errors.Is(err, ErrInvalidPermit) {
 			t.Fatalf("esperava ErrInvalidPermit, obtive %v", err)
 		}
@@ -328,7 +328,7 @@ func TestNoBypass_PermitNaoForjavel(t *testing.T) {
 	t.Run("permit_valido_uso_unico", func(t *testing.T) {
 		called = false
 		p := m.mint(call)
-		if _, err := m.dispatch(ctx, p, call); err != nil {
+		if _, _, err := m.dispatch(ctx, p, call); err != nil {
 			t.Fatalf("permit valido devia despachar: %v", err)
 		}
 		if !called {
@@ -336,7 +336,7 @@ func TestNoBypass_PermitNaoForjavel(t *testing.T) {
 		}
 		// Reutilização: uso único.
 		called = false
-		if _, err := m.dispatch(ctx, p, call); !errors.Is(err, ErrInvalidPermit) {
+		if _, _, err := m.dispatch(ctx, p, call); !errors.Is(err, ErrInvalidPermit) {
 			t.Fatalf("reutilizacao devia dar ErrInvalidPermit, obtive %v", err)
 		}
 		if called {
@@ -349,7 +349,7 @@ func TestNoBypass_PermitNaoForjavel(t *testing.T) {
 		p := m.mint(call)
 		other := call
 		other.StepID = "step-outro"
-		if _, err := m.dispatch(ctx, p, other); !errors.Is(err, ErrInvalidPermit) {
+		if _, _, err := m.dispatch(ctx, p, other); !errors.Is(err, ErrInvalidPermit) {
 			t.Fatalf("permit de outro call devia dar ErrInvalidPermit, obtive %v", err)
 		}
 		if called {
@@ -377,6 +377,61 @@ func TestRegister_Validacoes(t *testing.T) {
 	if err := m.Register("t", func(context.Context, []byte) ([]byte, error) { return nil, nil }); !errors.Is(err, ErrToolAlreadyRegistered) {
 		t.Errorf("re-registo devia dar ErrToolAlreadyRegistered, obtive %v", err)
 	}
+}
+
+// TestRegisterCosting_CostSurfacesInDecision prova AOS-212 ao NÍVEL DO RM: uma tool
+// registada por RegisterCosting REPORTA o custo medido do efeito, e esse custo surge em
+// Decision.CostMicroUSD; uma tool de Register (produtor de referência honesto) reporta 0.
+func TestRegisterCosting_CostSurfacesInDecision(t *testing.T) {
+	t.Parallel()
+
+	t.Run("costing_reporta_custo", func(t *testing.T) {
+		m := New()
+		const want = int64(4_200_000) // 4.2 USD
+		if err := m.RegisterCosting("tool.echo", func(_ context.Context, in []byte) ([]byte, int64, error) {
+			return in, want, nil
+		}); err != nil {
+			t.Fatalf("RegisterCosting: %v", err)
+		}
+		d, err := m.Mediate(context.Background(), baseCall())
+		if err != nil {
+			t.Fatalf("Mediate: %v", err)
+		}
+		if d.Effect != EffectPermit {
+			t.Fatalf("esperava permit, veio %q (%s)", d.Effect, d.Reason)
+		}
+		if d.CostMicroUSD != want {
+			t.Errorf("Decision.CostMicroUSD = %d, esperava %d (custo reportado pela tool)", d.CostMicroUSD, want)
+		}
+	})
+
+	t.Run("register_simples_reporta_zero", func(t *testing.T) {
+		m := New()
+		var called bool
+		if err := m.Register("tool.echo", toolSpy(&called, []byte("x"))); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		d, err := m.Mediate(context.Background(), baseCall())
+		if err != nil {
+			t.Fatalf("Mediate: %v", err)
+		}
+		if d.Effect != EffectPermit {
+			t.Fatalf("esperava permit, veio %q", d.Effect)
+		}
+		if d.CostMicroUSD != 0 {
+			t.Errorf("uma tool de Register (sem custo) devia reportar 0, veio %d", d.CostMicroUSD)
+		}
+	})
+
+	t.Run("validacoes", func(t *testing.T) {
+		m := New()
+		if err := m.RegisterCosting("", func(context.Context, []byte) ([]byte, int64, error) { return nil, 0, nil }); !errors.Is(err, ErrInvalidRegistration) {
+			t.Errorf("tool_id vazio devia dar ErrInvalidRegistration, veio %v", err)
+		}
+		if err := m.RegisterCosting("t", nil); !errors.Is(err, ErrInvalidRegistration) {
+			t.Errorf("fn nil devia dar ErrInvalidRegistration, veio %v", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

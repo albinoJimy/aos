@@ -205,6 +205,16 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 		}
 	}
 
+	// CANAL LATERAL do custo do efeito (AOS-212). Variável EXTERIOR fechada pela closure
+	// do Apply: a closure alimenta-a a partir do DESFECHO real (dec.CostMicroUSD), o ramo
+	// applied abaixo anota o span a partir DELA — nunca do Activity de entrada. Fica a 0
+	// nos caminhos dedup/replay POR CONSTRUÇÃO: a closure SÓ corre no efeito real
+	// (already-applied vive DENTRO de Apply e precede-a; replay nem chega aqui), pelo que a
+	// disciplina "uma vez por efeito real, zero em dedup/replay" cai de graça. E — o eixo de
+	// risco #1 — o custo NÃO entra no durable.Result gravado no ledger: se entrasse, o
+	// replay (que lê rec.Payload) re-emitiria um custo que o efeito nunca voltou a incorrer.
+	var effectCostMicroUSD int64
+
 	// A verificação already-applied vive DENTRO de Apply (precede o efeito). O efeito
 	// abaixo é a ÚNICA via de execução: constrói o Call e chama Mediate — sem permit,
 	// a tool nunca corre (o RM só a despacha sob permit não-forjável).
@@ -220,6 +230,9 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 		if dec.ToolErr != nil {
 			return durable.Result{}, fmt.Errorf("%w: %w", ErrToolExecution, &ToolError{Err: dec.ToolErr})
 		}
+		// Canal lateral: capta o custo MEDIDO do efeito que ACABOU de correr. Só aqui —
+		// nunca no durable.Result devolvido, que é o que o ledger grava e o replay relê.
+		effectCostMicroUSD = dec.CostMicroUSD
 		status := act.Status
 		if status == "" {
 			status = StatusOK
@@ -259,12 +272,18 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 
 	if applied {
 		span.SetAttribute(AttrDecision, "permit")
-		// Observabilidade de custo por span SÓ no efeito real de agora (AOS021-Q5): em
-		// dedup nenhum custo é incorrido, pelo que emiti-lo faria um agregador somar o
-		// custo N vezes por N retries. CostMicroUSD==0 continua a não emitir (custo
-		// gratuito e desconhecido indistintos — dívida menor de observabilidade).
-		if act.CostMicroUSD != 0 {
-			span.SetAttribute(agentruntime.AttrCostUSD, microUSDToUSD(act.CostMicroUSD))
+		// Observabilidade de custo por span SÓ no efeito real de agora (AOS021-Q5,
+		// AOS-212): a fonte é o DESFECHO do efeito (effectCostMicroUSD, alimentado por
+		// dec.CostMicroUSD na closure), NÃO o Activity de entrada. Em dedup nenhum custo é
+		// incorrido e a variável está a 0 por construção, pelo que este ramo nem sequer
+		// corre em dedup/replay — um agregador nunca soma o custo N vezes por N retries.
+		// custo == 0 continua a NÃO emitir o atributo (custo gratuito e desconhecido
+		// indistintos, e retro-compat: uma tool sem custo não altera o span). Emite-se o
+		// micro-USD inteiro (fonte de verdade) em PARALELO com o USD float, tal como o span
+		// chat (loop.go), para a agregação reconciliar sem erro de arredondamento.
+		if effectCostMicroUSD != 0 {
+			span.SetAttribute(agentruntime.AttrCostUSD, microUSDToUSD(effectCostMicroUSD))
+			span.SetAttribute(agentruntime.AttrCostMicroUSD, effectCostMicroUSD)
 		}
 		d.obs.Applied(keyHash)
 	} else {

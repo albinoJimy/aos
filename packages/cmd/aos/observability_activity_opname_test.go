@@ -17,12 +17,13 @@ package main
 //     (TestAOS211_ActivityUnderContractIsNotVacuouslyAccepted); aqui prova-se ao nível do NÓ
 //     que o atributo aparece MESMO no wire OTLP.
 //
-//  2. EIXO 2 (custo por efeito real) — DEFERIDO com razão nomeada (registo DEF-810): nesta
-//     via não há fonte de custo (referencemonitor.Call/Decision não o carregam). O teste
-//     SELA o deferimento: o span NÃO traz `gen_ai.usage.cost_usd`. Não é um esquecimento —
-//     é o comportamento correcto do span sem fonte de custo (zero não emite). Se um dia o
-//     custo for propagado, este assert vira a asserção positiva pedida pelo CA #4 (uma só
-//     vez por efeito real, nunca em dedup/replay).
+//  2. EIXO 2 (custo por efeito real) — ENTREGUE por AOS-212 (Decision.CostMicroUSD +
+//     RegisterCosting + canal lateral no dispatcher). Aqui a tool de referência "counter" é
+//     registada por Register (SEM custo, o caso HONESTO das tools de referência de
+//     produção), pelo que o span continua a NÃO trazer `gen_ai.usage.cost_usd` — agora como
+//     RETRO-COMPATIBILIDADE (custo == 0 não emite), não como selo de deferimento. A prova
+//     POSITIVA do custo (a tool reporta C ⇒ o span traz C, uma vez; dedup/replay ⇒ 0) vive
+//     em observability_activity_cost_test.go.
 
 import (
 	"net/http/httptest"
@@ -68,11 +69,13 @@ func TestAOS211_ExportedActivitySpanCarriesOperationName(t *testing.T) {
 			activity.OpActivity, otelgenai.AttrOperationName, v, activity.OpActivity)
 	}
 
-	// EIXO 2 (deferido, DEF-810): sem fonte de custo nesta via, o span NÃO emite
-	// gen_ai.usage.cost_usd. Selar a ausência impede uma regressão que passasse a emitir um
-	// custo forjado/zero — e documenta no teste que o campo está deferido, não esquecido.
+	// EIXO 2 (RETRO-COMPAT após AOS-212): a tool de referência "counter" é registada SEM
+	// custo (Register), logo o span NÃO emite gen_ai.usage.cost_usd — custo == 0 não emite.
+	// Selar a ausência apanha uma regressão que forjasse um custo onde a tool não reporta
+	// nenhum. A prova POSITIVA (tool reporta C ⇒ span traz C) está em
+	// observability_activity_cost_test.go.
 	if cv, has := act.attr(otelgenai.AttrCostUSD); has {
-		t.Errorf("%s NAO devia trazer %s nesta via (custo por efeito DEFERIDO, DEF-810: sem fonte no Call/Decision), veio %q",
+		t.Errorf("%s NAO devia trazer %s com uma tool sem custo (Register reporta 0), veio %q",
 			activity.OpActivity, otelgenai.AttrCostUSD, cv)
 	}
 

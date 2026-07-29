@@ -320,6 +320,15 @@ func (s *SecuredRuntime) Register(toolID string, fn referencemonitor.ToolFunc) e
 	return s.rm.Register(toolID, fn)
 }
 
+// RegisterCosting associa um ToolID a uma [referencemonitor.CostingToolFunc] no RM — uma
+// tool que REPORTA o custo medido do seu efeito real (AOS-212). Idêntica a [Register] nas
+// garantias de no-bypass/default-deny; o custo reportado alimenta o span aos.activity na
+// via durável. O produtor real (Model Gateway / tools pagas) é EPIC-06; as tools de
+// referência de produção do nó usam [Register] e reportam 0 (honesto — sem custo).
+func (s *SecuredRuntime) RegisterCosting(toolID string, fn referencemonitor.CostingToolFunc) error {
+	return s.rm.RegisterCosting(toolID, fn)
+}
+
 // Run arranca um run: CONGELA o tool set do REG (AOS-050), materializa-o no goal
 // (prefixo imutável + manifesto via [ApplyFrozenToGoal]), regista o snapshot para a
 // revalidação o consultar e corre o loop base. Cada tool call do run atravessa a

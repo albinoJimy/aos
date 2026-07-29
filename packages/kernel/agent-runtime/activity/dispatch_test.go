@@ -28,11 +28,14 @@ const (
 )
 
 // spyTool é o efeito externo instrumentado: conta as execuções REAIS (só sobem sob
-// permit + despacho do RM) e devolve um output determinístico.
+// permit + despacho do RM) e devolve um output determinístico. costMicroUSD, se != 0,
+// é o custo MEDIDO que a tool REPORTA ao RM (registada via RegisterCosting) — a fonte
+// declarada do custo do efeito de AOS-212.
 type spyTool struct {
-	calls  atomic.Int64
-	output []byte
-	err    error
+	calls        atomic.Int64
+	output       []byte
+	err          error
+	costMicroUSD int64
 }
 
 func (s *spyTool) fn(_ context.Context, in []byte) ([]byte, error) {
@@ -44,6 +47,13 @@ func (s *spyTool) fn(_ context.Context, in []byte) ([]byte, error) {
 		return s.output, nil
 	}
 	return append([]byte("out:"), in...), nil
+}
+
+// costingFn é a forma [referencemonitor.CostingToolFunc] da spy: reporta o custo
+// medido do efeito (costMicroUSD) além do output.
+func (s *spyTool) costingFn(ctx context.Context, in []byte) ([]byte, int64, error) {
+	out, err := s.fn(ctx, in)
+	return out, s.costMicroUSD, err
 }
 
 // denyHook nega sempre — simula uma política que barra o efeito (fail-closed).
@@ -77,8 +87,11 @@ func newHarness(t testing.TB, deny bool, toolErr error) *harness {
 	} else {
 		rm = referencemonitor.New(referencemonitor.WithEventSink(sink))
 	}
-	if err := rm.Register(testTool, spy.fn); err != nil {
-		t.Fatalf("Register(%s): %v", testTool, err)
+	// Registada via RegisterCosting: a spy pode reportar o custo MEDIDO do efeito
+	// (h.spy.costMicroUSD, lido no momento da execução). Com custo 0 o comportamento é
+	// idêntico a Register — é o default dos restantes testes.
+	if err := rm.RegisterCosting(testTool, spy.costingFn); err != nil {
+		t.Fatalf("RegisterCosting(%s): %v", testTool, err)
 	}
 	ledger, err := durable.NewStepLedger(store)
 	if err != nil {
@@ -431,18 +444,21 @@ func TestDispatch_CompensacaoActionNil(t *testing.T) {
 	}
 }
 
-// TestDispatch_CustoSoNoApplied prova AOS021-Q5: o custo por span só é emitido no
-// efeito REAL (applied), nunca no dedup — senão um agregador somaria o custo por retry.
+// TestDispatch_CustoSoNoApplied prova AOS021-Q5 + AOS-212 (fidelidade de replay, o eixo
+// de risco #1): o custo por span vem do DESFECHO do efeito (a tool reporta-o ao RM), é
+// emitido SÓ no efeito REAL (applied) e NUNCA num dedup do mesmo step_id — senão um
+// agregador somaria o custo por retry. A 1.ª passagem emite C; a 2.ª (already-applied,
+// sem re-incorrer o efeito) emite 0 — porque o custo não vive no durable.Result do ledger.
 func TestDispatch_CustoSoNoApplied(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, false, nil)
+	h.spy.costMicroUSD = 1_000_000 // 1.0 USD — custo MEDIDO reportado pela tool ao RM
 	tracer := &agentruntime.RecordingTracer{}
 	d, err := activity.NewDispatcher(h.rm, h.ledger, activity.WithTracer(tracer))
 	if err != nil {
 		t.Fatalf("NewDispatcher: %v", err)
 	}
 	act := baseActivity()
-	act.CostMicroUSD = 1_000_000 // 1.0 USD
 	ctx := context.Background()
 
 	if _, err := d.Dispatch(ctx, act); err != nil {
@@ -456,9 +472,12 @@ func TestDispatch_CustoSoNoApplied(t *testing.T) {
 	if len(spans) != 2 {
 		t.Fatalf("esperados 2 spans aos.activity, houve %d", len(spans))
 	}
-	// span[0] = applied: emite custo. span[1] = dedup: NÃO emite custo.
+	// span[0] = applied: emite custo (USD float + micro-USD inteiro). span[1] = dedup: NÃO.
 	if got, ok := spans[0].Attributes[agentruntime.AttrCostUSD]; !ok || got != 1.0 {
 		t.Fatalf("span applied devia ter custo 1.0, veio %v (ok=%v)", got, ok)
+	}
+	if got, ok := spans[0].Attributes[agentruntime.AttrCostMicroUSD]; !ok || got != int64(1_000_000) {
+		t.Fatalf("span applied devia ter custo micro-USD 1_000_000 (fonte de verdade), veio %v (ok=%v)", got, ok)
 	}
 	if spans[0].Attributes[activity.AttrDecision] != "permit" {
 		t.Fatalf("span[0] devia ser permit, veio %v", spans[0].Attributes[activity.AttrDecision])
@@ -466,8 +485,73 @@ func TestDispatch_CustoSoNoApplied(t *testing.T) {
 	if _, ok := spans[1].Attributes[agentruntime.AttrCostUSD]; ok {
 		t.Fatalf("span dedup NÃO devia emitir custo (nenhum custo incorrido no retry)")
 	}
+	if _, ok := spans[1].Attributes[agentruntime.AttrCostMicroUSD]; ok {
+		t.Fatalf("span dedup NÃO devia emitir custo micro-USD (o custo não vive no ledger)")
+	}
 	if spans[1].Attributes[activity.AttrDecision] != "dedup" {
 		t.Fatalf("span[1] devia ser dedup, veio %v", spans[1].Attributes[activity.AttrDecision])
+	}
+	if h.spy.calls.Load() != 1 {
+		t.Fatalf("o efeito real devia correr EXACTAMENTE 1 vez (dedup nao re-executa), correu %d", h.spy.calls.Load())
+	}
+}
+
+// TestDispatch_ReplayEmiteZeroCusto é a prova DEDICADA da fidelidade de replay (AOS-212,
+// risco #1): um dispatcher em ModeReplay reproduz o desfecho REGISTADO do ledger com ZERO
+// efeito — e o span aos.activity do replay NÃO traz custo, porque o custo é canal lateral
+// da closure de Apply (que só corre no efeito real) e NUNCA foi gravado no durable.Result.
+func TestDispatch_ReplayEmiteZeroCusto(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, false, nil)
+	h.spy.costMicroUSD = 3_000_000 // 3.0 USD no efeito REAL
+	ctx := context.Background()
+
+	// 1.ª passagem: efeito real (applied) — grava o desfecho no ledger.
+	appliedTracer := &agentruntime.RecordingTracer{}
+	dNormal, err := activity.NewDispatcher(h.rm, h.ledger, activity.WithTracer(appliedTracer))
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	if _, err := dNormal.Dispatch(ctx, baseActivity()); err != nil {
+		t.Fatalf("Dispatch (applied): %v", err)
+	}
+	if got, ok := appliedTracer.SpansByOperation(activity.OpActivity)[0].Attributes[agentruntime.AttrCostMicroUSD]; !ok || got != int64(3_000_000) {
+		t.Fatalf("applied devia emitir custo 3_000_000, veio %v (ok=%v)", got, ok)
+	}
+
+	// Reconstrói o ledger a partir do stream e cria um dispatcher de REPLAY sobre ele.
+	if err := h.ledger.Rebuild(ctx, testRun); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	replayTracer := &agentruntime.RecordingTracer{}
+	dReplay, err := activity.NewReplayDispatcher(h.ledger, activity.WithTracer(replayTracer))
+	if err != nil {
+		t.Fatalf("NewReplayDispatcher: %v", err)
+	}
+	res, err := dReplay.Dispatch(ctx, baseActivity())
+	if err != nil {
+		t.Fatalf("Dispatch (replay): %v", err)
+	}
+	if !res.Replayed {
+		t.Fatalf("o resultado devia vir do log (Replayed), veio %+v", res)
+	}
+	// O efeito NÃO voltou a correr (replay não medeia nem executa).
+	if h.spy.calls.Load() != 1 {
+		t.Fatalf("replay nao pode re-incorrer o efeito; a tool correu %d vezes", h.spy.calls.Load())
+	}
+	spans := replayTracer.SpansByOperation(activity.OpActivity)
+	if len(spans) != 1 {
+		t.Fatalf("esperava 1 span aos.activity no replay, houve %d", len(spans))
+	}
+	if spans[0].Attributes[activity.AttrDecision] != "replay" {
+		t.Fatalf("o span devia ser replay, veio %v", spans[0].Attributes[activity.AttrDecision])
+	}
+	// A PROVA: o replay do MESMO step emite ZERO custo (o custo nunca esteve no ledger).
+	if _, ok := spans[0].Attributes[agentruntime.AttrCostUSD]; ok {
+		t.Fatalf("replay NAO pode emitir custo USD — o efeito nao foi re-incorrido")
+	}
+	if _, ok := spans[0].Attributes[agentruntime.AttrCostMicroUSD]; ok {
+		t.Fatalf("replay NAO pode emitir custo micro-USD — o custo nunca foi gravado no durable.Result")
 	}
 }
 
@@ -515,8 +599,8 @@ func TestDispatch_ObservabilidadeCustoPorSpan(t *testing.T) {
 		t.Fatalf("NewDispatcher: %v", err)
 	}
 
+	h.spy.costMicroUSD = 2_500_000 // 2.5 USD — custo MEDIDO reportado pela tool ao RM
 	act := baseActivity()
-	act.CostMicroUSD = 2_500_000 // 2.5 USD
 	if _, err := d.Dispatch(context.Background(), act); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}

@@ -58,6 +58,29 @@ type durObsOutcome struct {
 // tool call. endpoint vazio ⇒ observabilidade DESLIGADA (o caso de retro-compatibilidade).
 // Devolve o desfecho observável.
 func runDurableToolRun(t *testing.T, endpoint, runID string) durObsOutcome {
+	return runDurableToolRunCore(t, endpoint, runID, false, 0)
+}
+
+// runDurableCostingToolRun é [runDurableToolRun] em que a tool de referência "counter" é
+// registada via RegisterCosting e REPORTA o custo medido do seu efeito (costMicroUSD) —
+// o produtor de custo ROTULADO da prova de AOS-212 (o produtor real por-tool é EPIC-06).
+func runDurableCostingToolRun(t *testing.T, endpoint, runID string, costMicroUSD int64) durObsOutcome {
+	return runDurableToolRunCore(t, endpoint, runID, true, costMicroUSD)
+}
+
+// referenceCostingCounter é o PRODUTOR DE CUSTO DE REFERÊNCIA (rotulado, AOS-212 CA5): uma
+// tool que reporta um custo medido não-nulo do efeito para provar o fio desfecho→span
+// ponta-a-ponta. NÃO é o produtor real: o custo real por-tool (Model Gateway / tools pagas)
+// é EPIC-06, e as tools de referência de PRODUÇÃO do nó reportam 0 (via Register). Existe
+// só no teste, exactamente para não forjar custo no caminho de produção.
+func referenceCostingCounter(execs *int64, costMicroUSD int64) referencemonitor.CostingToolFunc {
+	return func(_ context.Context, _ []byte) ([]byte, int64, error) {
+		atomic.AddInt64(execs, 1)
+		return []byte("pong"), costMicroUSD, nil
+	}
+}
+
+func runDurableToolRunCore(t *testing.T, endpoint, runID string, costing bool, costMicroUSD int64) durObsOutcome {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -76,7 +99,12 @@ func runDurableToolRun(t *testing.T, endpoint, runID string) durObsOutcome {
 	})
 
 	var execs int64
-	if err := node.Runtime.Register("counter", func(_ context.Context, _ []byte) ([]byte, error) {
+	if costing {
+		// AOS-212: a tool de referência reporta o custo medido do efeito ao RM.
+		if err := node.Runtime.RegisterCosting("counter", referenceCostingCounter(&execs, costMicroUSD)); err != nil {
+			t.Fatalf("RegisterCosting(counter): %v", err)
+		}
+	} else if err := node.Runtime.Register("counter", func(_ context.Context, _ []byte) ([]byte, error) {
 		atomic.AddInt64(&execs, 1)
 		return []byte("pong"), nil
 	}); err != nil {

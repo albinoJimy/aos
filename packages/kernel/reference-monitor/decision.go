@@ -83,6 +83,15 @@ type Decision struct {
 	// Nota: um erro DA TOOL não é uma negação de política — a decisão foi Permit
 	// e o efeito ocorreu; ToolErr reporta a falha de execução downstream.
 	ToolErr error
+	// CostMicroUSD é o custo MEDIDO do efeito real em micro-USD inteiro, tal como
+	// REPORTADO pela tool despachada no momento da execução (só em permit; 0 quando a
+	// tool não mede custo, o caso das tools de referência de produção — ver AOS-212 /
+	// DEF-810). É um SINAL DE OBSERVABILIDADE do desfecho, não estado de decisão: o
+	// Agent Runtime lê-o em tempo de Apply para anotar o span aos.activity a partir do
+	// DESFECHO do efeito (não do Activity de entrada) e NUNCA o grava no durable.Result
+	// do ledger — assim replay/dedup, que não re-incorrem o efeito, emitem ZERO custo.
+	// Uma tool reporta-o via [Monitor.RegisterCosting]; via [Monitor.Register] é sempre 0.
+	CostMicroUSD int64
 
 	// permit é o token não-forjável emitido só em Permit (nil caso contrário).
 	// É não-exportado: código externo não o consegue construir nem inspeccionar,

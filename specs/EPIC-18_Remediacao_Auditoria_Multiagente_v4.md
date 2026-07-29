@@ -1066,22 +1066,39 @@ FORA (deferido, EPIC-06/08): custo real por-tool do Model Gateway; consumo pelo 
 
 **Critérios de aceitação**
 
-- [ ] O contrato do desfecho do efeito transporta `CostMicroUSD` **por um canal lateral** (não no
+- [x] O contrato do desfecho do efeito transporta `CostMicroUSD` **por um canal lateral** (não no
       `durable.Result` gravado no ledger — replay não re-incorre custo); o dispatcher anota o `aos.activity`
-      a partir do **resultado do efeito**, não do `Activity` de entrada, **só** em `applied`.
-- [ ] **Falsificável, ao nível do NÓ** (`-race` + colector OTLP): um run cuja tool de referência reporta
+      a partir do **resultado do efeito**, não do `Activity` de entrada, **só** em `applied`. *(Evidência:
+      `referencemonitor.Decision.CostMicroUSD` — novo campo alimentado por `m.dispatch` via
+      `Monitor.RegisterCosting`/`CostingToolFunc`, `reference-monitor/decision.go`+`monitor.go`;
+      `activity/dispatch.go` capta-o na variável exterior `effectCostMicroUSD` fechada pela closure de
+      `Apply` e anota o span só no ramo `applied`, NUNCA no `durable.Result`. Provas dedicadas:
+      `TestRegisterCosting_CostSurfacesInDecision`, `TestDispatch_CustoSoNoApplied`,
+      `TestDispatch_ReplayEmiteZeroCusto`.)*
+- [x] **Falsificável, ao nível do NÓ** (`-race` + colector OTLP): um run cuja tool de referência reporta
       custo `C` produz `gen_ai.usage.cost_usd == C` no `aos.activity` exportado, **exactamente uma vez por
       efeito real**; um `dedup`/`replay` do **mesmo** `step_id` emite **zero** custo. Falha-antes: hoje lê o
-      `Activity` de entrada, que é `0` na via do nó.
-- [ ] **Sem dupla-contagem:** o custo-de-modelo permanece no span `chat`; o agregado no `invoke_agent`
+      `Activity` de entrada, que é `0` na via do nó. *(Evidência ao nível do nó, `-race`:
+      `TestAOS212_ExportedActivitySpanCarriesEffectCost` (applied → `C`) e
+      `TestAOS212_DedupExportsZeroEffectCost` (commit-dedup cross-restart → `decision=='dedup'`, ZERO custo:
+      a closure re-corre e re-reporta `C` na 2.ª vida, mas `applied==false` ⇒ o ramo que anota o custo não
+      corre), `packages/cmd/aos/observability_activity_cost_test.go`.)*
+- [x] **Sem dupla-contagem:** o custo-de-modelo permanece no span `chat`; o agregado no `invoke_agent`
       iguala `chat + efeito` sem duplicação (estende `TestObservabilityEndToEndExportsWellFormedOTLPWithCost`).
-- [ ] **Retro-compatibilidade:** um efeito sem custo (`CostMicroUSD == 0`) não emite o atributo (inalterado);
+      *(Evidência: `TestAOS212_NoDoubleCountingModelVsEffectCost` — custo do modelo no `chat`, custo do efeito
+      no `aos.activity`, agregado no `invoke_agent` = soma sem sobreposição.)*
+- [x] **Retro-compatibilidade:** um efeito sem custo (`CostMicroUSD == 0`) não emite o atributo (inalterado);
       o custo continua **fora** de `otelgenai.requiredAttrs` (opcional por desenho, como AOS-211 fixou) e a
-      conformidade semconv de AOS-076 mantém-se verde.
-- [ ] **Produtor real declarado, não fingido:** a tool de referência que reporta custo é rotulada como tal;
+      conformidade semconv de AOS-076 mantém-se verde. *(Evidência: `dispatch.go` guarda `if
+      effectCostMicroUSD != 0`; `otel-genai/contract.go` `requiredAttrs[OpActivity]` continua
+      `{operation.name, tool.name, run.id, step.id}` sem atributo de custo; gate policy/semconv verde.)*
+- [x] **Produtor real declarado, não fingido:** a tool de referência que reporta custo é rotulada como tal;
       o custo real por-tool (Model Gateway / tools pagas) fica **explicitamente deferido em EPIC-06**, não
-      marcado entregue.
-- [ ] Zero dependências externas; sem segredos.
+      marcado entregue. *(Evidência: a prova usa `referenceCostingCounter` — tool de referência ROTULADA
+      registada por `RegisterCosting`; as tools de referência de produção do nó usam `Register` e reportam 0
+      (honesto — sem custo mensurável). O produtor real por-tool fica **DEFERIDO em EPIC-06**, não entregue:
+      `Recorte` FORA + registo `N-DEF-810` como RESOLVIDO quanto à porta, produtor real em EPIC-06.)*
+- [x] Zero dependências externas; sem segredos. *(stdlib + cedar-go apenas; gate `secrets` verde.)*
 
 **Dependências:** AOS-021 (o span + disciplina dedup/replay), AOS-210 (tracer no dispatcher), AOS-211
 (`operation.name` + custo opcional, uma vez por efeito real). **Não duplica:** AOS-078 (custo do **modelo**).

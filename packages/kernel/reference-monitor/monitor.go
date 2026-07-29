@@ -20,6 +20,27 @@ import (
 // sinaliza invocações directas de ToolFunc fora deste pacote.
 type ToolFunc func(ctx context.Context, input []byte) ([]byte, error)
 
+// CostingToolFunc é uma tool que, além do resultado, REPORTA o custo MEDIDO do seu
+// efeito real em micro-USD inteiro (>= 0), apurado no momento da execução (AOS-212).
+// É a fonte declarada de [Decision.CostMicroUSD]: só uma tool registada por
+// [Monitor.RegisterCosting] pode reportar custo; as tools de [Monitor.Register]
+// reportam sempre 0 (custo desconhecido/gratuito — o caso HONESTO das tools de
+// referência de produção do nó, que não incorrem custo mensurável).
+//
+// O custo é um SINAL DE OBSERVABILIDADE do desfecho, medido de baixo (a tool paga /
+// o Model Gateway real de EPIC-06 devolveria o custo efectivamente faturado); não é
+// uma estimativa declarada à cabeça. As mesmas garantias de no-bypass da [ToolFunc]
+// aplicam-se: nunca invocar directamente fora do RM.
+type CostingToolFunc func(ctx context.Context, input []byte) (out []byte, costMicroUSD int64, err error)
+
+// registeredTool é o valor interno do registo de tools. Guarda a tool na forma em que
+// foi registada: fn (simples, custo 0) OU cost (reporta o custo medido do efeito). O
+// dispatcher interno ([Monitor.dispatch]) escolhe o caminho e devolve sempre o custo.
+type registeredTool struct {
+	fn   ToolFunc
+	cost CostingToolFunc
+}
+
 // Metrics são contadores de observabilidade leve (sem SDK OTel — isso é
 // EPIC-08). Todos os acessos são atómicos.
 type Metrics struct {
@@ -39,7 +60,7 @@ type Monitor struct {
 	sink  EventSink
 
 	mu    sync.RWMutex
-	tools map[string]ToolFunc
+	tools map[string]registeredTool
 
 	metrics Metrics
 
@@ -111,7 +132,7 @@ func New(opts ...Option) *Monitor {
 	m := &Monitor{
 		hooks:  DefaultHooks(),
 		sink:   discardSink{},
-		tools:  make(map[string]ToolFunc),
+		tools:  make(map[string]registeredTool),
 		now:    time.Now,
 		rand:   rand.Uint64,
 		tracer: otelgenai.NoopTracer{},
@@ -138,7 +159,27 @@ func New(opts ...Option) *Monitor {
 // mesmo ToolID devolve [ErrToolAlreadyRegistered]. Uma tool não registada é
 // negada por omissão (default-deny). Register é seguro para concorrência.
 func (m *Monitor) Register(toolID string, fn ToolFunc) error {
-	if toolID == "" || fn == nil {
+	if fn == nil {
+		return ErrInvalidRegistration
+	}
+	return m.register(toolID, registeredTool{fn: fn})
+}
+
+// RegisterCosting associa um ToolID a uma [CostingToolFunc] — uma tool que REPORTA o
+// custo medido do seu efeito real (AOS-212). Idêntica a [Register] em todas as
+// garantias (imutável, default-deny, segura para concorrência), acrescentando que o
+// custo reportado alimenta [Decision.CostMicroUSD] e, a jusante, o span aos.activity.
+// Usada pelo produtor de custo (o Model Gateway real / tools pagas de EPIC-06 e, no
+// nó de referência, a tool de referência rotulada que prova o fio ponta-a-ponta).
+func (m *Monitor) RegisterCosting(toolID string, fn CostingToolFunc) error {
+	if fn == nil {
+		return ErrInvalidRegistration
+	}
+	return m.register(toolID, registeredTool{cost: fn})
+}
+
+func (m *Monitor) register(toolID string, t registeredTool) error {
+	if toolID == "" {
 		return ErrInvalidRegistration
 	}
 	m.mu.Lock()
@@ -146,7 +187,7 @@ func (m *Monitor) Register(toolID string, fn ToolFunc) error {
 	if _, exists := m.tools[toolID]; exists {
 		return ErrToolAlreadyRegistered
 	}
-	m.tools[toolID] = fn
+	m.tools[toolID] = t
 	return nil
 }
 
@@ -312,9 +353,11 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		return d, nil
 	}
 
-	// 4) Permit: mintar o Permit não-forjável e despachar via dispatcher interno.
+	// 4) Permit: mintar o Permit não-forjável e despachar via dispatcher interno. O
+	//    despacho devolve TAMBÉM o custo medido do efeito (AOS-212): 0 para uma tool
+	//    registada por Register, o valor reportado para uma CostingToolFunc.
 	p := m.mint(call)
-	out, toolErr := m.dispatch(ctx, p, call)
+	out, costMicroUSD, toolErr := m.dispatch(ctx, p, call)
 
 	m.metrics.Permits.Add(1)
 	return Decision{
@@ -325,6 +368,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		MediationSeq: seq,
 		Output:       out,
 		ToolErr:      toolErr,
+		CostMicroUSD: costMicroUSD,
 		permit:       p,
 	}, nil
 }
@@ -375,24 +419,30 @@ func (m *Monitor) mint(call Call) *Permit {
 // uma tool. Exige um Permit válido — não-nil, com token minta­do por este RM,
 // correspondente ao call e ainda não usado (uso único). Código externo não
 // consegue construir um Permit aceite aqui nem alcançar este método.
-func (m *Monitor) dispatch(ctx context.Context, p *Permit, call Call) ([]byte, error) {
+func (m *Monitor) dispatch(ctx context.Context, p *Permit, call Call) ([]byte, int64, error) {
 	if p == nil || p.tok == nil {
-		return nil, ErrInvalidPermit
+		return nil, 0, ErrInvalidPermit
 	}
 	if p.tok.fingerprint != fingerprint(call) {
-		return nil, ErrInvalidPermit
+		return nil, 0, ErrInvalidPermit
 	}
 	// Uso único: consome o permit atomicamente. Uma segunda tentativa falha.
 	if !p.tok.used.CompareAndSwap(false, true) {
-		return nil, ErrInvalidPermit
+		return nil, 0, ErrInvalidPermit
 	}
 	m.mu.RLock()
-	fn, ok := m.tools[call.ToolID]
+	t, ok := m.tools[call.ToolID]
 	m.mu.RUnlock()
 	if !ok {
-		return nil, ErrToolNotRegistered
+		return nil, 0, ErrToolNotRegistered
 	}
-	return fn(ctx, call.Input)
+	// Selector de campo (t.cost/t.fn), não uma [ToolFunc] em ident de âmbito: é o
+	// caminho SANCIONADO de execução (archlint reconhece dispatch), e o único.
+	if t.cost != nil {
+		return t.cost(ctx, call.Input)
+	}
+	out, err := t.fn(ctx, call.Input)
+	return out, 0, err
 }
 
 // toolCallHash calcula a âncora ESTÁVEL do span execute_tool (AOS-076), delegando na
