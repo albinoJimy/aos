@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-212** (23 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva) |
+| Intervalo de tickets | **AOS-190 … AOS-213** (24 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093) |
 
 ---
 
@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-212)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-213)
 
 Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
@@ -626,6 +626,7 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-210 | Tracer do **dispatcher durável** no composition root: o span `aos.activity` na árvore do nó | fix | S | P1 | **EPIC-14** | residual §6.3 de `AOS-169-aceitacao-sistemica.md` (AOS-204) |
 | AOS-211 | Os dois atributos em falta no `aos.activity`: **custo por efeito real** e `gen_ai.operation.name` sob contrato semconv | fix | S | P2 | **EPIC-08** | residual §6.3 de `AOS-169-aceitacao-sistemica.md` (AOS-210) |
 | AOS-212 | Fonte declarada do custo por efeito real da tool: porta do desfecho do efeito → span `aos.activity` | feature | M | P2 | **EPIC-08** | `DEF-810` (eixo do custo deferido por AOS-211) |
+| AOS-213 | Superfície de administração de legal hold e expiração (CON-02): rotas autenticadas de hold/release + `ExpirationJob` composto (crypto-shred no TTL) | feature | M | P1 | **EPIC-09** | `CON-02`/`DEF-903` (Opção C, sequenciada após AOS-093) |
 
 ---
 
@@ -1105,6 +1106,45 @@ FORA (deferido, EPIC-06/08): custo real por-tool do Model Gateway; consumo pelo 
 **Relação:** EPIC-06 (produtor real do custo) e `control-plane/budget` (consumidor eventual do agregado).
 **Nota de tamanho:** **M, não S** — mexe num contrato durável transversal do kernel (o desfecho do `Apply`),
 com atenção a **layering** e **fidelidade de replay**; é a diferença face à metade `operation.name` do AOS-211.
+
+---
+
+### AOS-213 — Superfície de administração de legal hold e expiração (CON-02)
+
+**Origem:** `CON-02`/`DEF-903`. A decisão do dono (Opção C, 2026-07-29) **sequenciou** a superfície de
+administração para DEPOIS de o apagamento ser real. O núcleo do **AOS-093** entregou essa realidade
+(o conteúdo dos runs é hoje cifrado por-titular e o `/dsar/erase` torna-o irrecuperável), pelo que o
+gatilho está desbloqueado: já **há** apagamento real para suspender (hold) e para expirar (TTL).
+
+**A lacuna (verificada em código):** o `audit.LegalHold` está composto (`Node.DSARHolds`,
+`HoldSubject`/`ReleaseSubject`/`HoldPartition`/`ReleasePartition` existem) mas **sem rota de
+administração** — um operador não tem como colocar/levantar um hold sem código. E o
+`audit.ExpirationJob` (AOS-092, TTL-por-classe, já salta titulares/partições sob hold) **não é
+composto** no nó (0 chamadores de produção).
+
+**O que entregar**
+
+- [ ] **Rotas autenticadas de legal hold:** `POST /dsar/hold` e `POST /dsar/release` (colocar/levantar
+      por titular e/ou partição), autenticadas pela **mesma credencial forte** do `/dsar/erase`
+      (`readGov.authorize`, AOS-205), com o **contrato subject_id = pseudónimo opaco** (rejeita PII),
+      fail-closed, e cada acção **selada no WORM sem PII** (quem/quando/subject-pseudónimo).
+- [ ] **`ExpirationJob` composto no nó** sobre um `RecordSource` dos registos classificados do Event
+      Store e um `ExpirationSink` que **crypto-shred a chave por-titular** no fim do TTL (reutiliza o
+      envelope de AOS-093 — `audit.SealContent`/KeyVault — a expiração é apagamento real, não no-op),
+      **respeitando o legal hold** (o job já salta held). Conduzido por rota administrativa e/ou
+      agendamento; o modo é declarado no banner.
+- [ ] **Falsificável (dois sentidos):** (a) um hold colocado **bloqueia** um `/dsar/erase` subsequente
+      e um titular held é **saltado** pela expiração; (b) após `release`, o erase/expiração **sucede**.
+- [ ] **Falsificável (expiração real):** um titular expirado pelo `ExpirationJob` fica **irrecuperável**
+      (`audit.OpenContent` → `ErrDecrypt`) e a **hash-chain valida** — a mesma prova de AOS-093, agora
+      pela via da expiração por TTL.
+- [ ] **Autorização:** um `/dsar/hold` ou `/dsar/release` **sem credencial forte** (ou forjado) é
+      **recusado**; com credencial válida é aceite (dois sentidos).
+- [ ] `deploy/node/README.md` documenta as rotas, o TTL/retenção, o hold, e a postura por `AOS_MODE`.
+
+**Fecha:** `CON-02`/`DEF-903` (a superfície que a Opção C sequenciou). **Depende de:** AOS-092
+(mecanismo hold/expiração), AOS-093 (apagamento real), AOS-205 (credencial forte), AOS-166/193 (API).
+**Não duplica:** AOS-093 (que entrega a cifra/erase; aqui é a **administração** de hold/expiração sobre ela).
 
 ---
 
