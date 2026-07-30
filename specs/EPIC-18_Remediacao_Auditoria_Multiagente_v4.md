@@ -1299,20 +1299,27 @@ key-never-leaves não pode participar — a KEK teria de sair para o processo.
 
 **O que entregar**
 
-- [ ] Uma porta de **envelope** — `audit.KeyWrapper` (ou extensão de `KeyVault`) — com `WrapDEK(subjectID,
+- [x] Uma porta de **envelope** — `audit.KeyWrapper` (ou extensão de `KeyVault`) — com `WrapDEK(subjectID,
       dek) → (wrapped, keyRef, err)` e `UnwrapDEK(keyRef, wrapped) → (dek, ok)`, em que **o wrap/unwrap corre
-      dentro do vault** e a **KEK nunca entra no processo do nó**.
-- [ ] `SealContent`/`OpenContent` usam a porta de envelope **quando o vault a implementa** (a DEK é gerada e
+      dentro do vault** e a **KEK nunca entra no processo do nó**. — `packages/platform/audit/keywrapper.go`.
+- [x] `SealContent`/`OpenContent` usam a porta de envelope **quando o vault a implementa** (a DEK é gerada e
       entregue ao wrapper; o `WrappedDEK` do `encryptedPayload` passa a ser o embrulho do HSM), com **fallback**
-      à via KEK-crua actual quando o vault só implementa `KeyVault` — **sem quebrar** AOS-093/213/214/215.
-- [ ] **Impl de referência** `InMemoryKeyWrapper` que prova o CONTRATO (embrulha/desembrulha internamente, a
+      à via KEK-crua actual quando o vault só implementa `KeyVault` — **sem quebrar** AOS-093/213/214/215. O
+      formato de envelope é versionado retro-compativelmente por `key_ref` (`omitempty`) — a via KEK-crua
+      serializa BYTE-A-BYTE como antes. — `packages/platform/audit/crypto.go`.
+- [x] **Impl de referência** `InMemoryKeyWrapper` que prova o CONTRATO (embrulha/desembrulha internamente, a
       KEK **nunca** é devolvida ao chamador; `Delete` destrói a KEK ⇒ `UnwrapDEK` falha, crypto-shred aguenta).
-- [ ] **Falsificável (`-race`):** com um wrapper injectado, a cifra/decifração passa por `WrapDEK`/`UnwrapDEK`
+      — `packages/platform/audit/keywrapper.go` (`Key()` devolve sempre `(nil,false)`).
+- [x] **Falsificável (`-race`):** com um wrapper injectado, a cifra/decifração passa por `WrapDEK`/`UnwrapDEK`
       (a KEK crua nunca é pedida — um wrapper-spy que **falha `Key()`** ainda cifra/decifra); após shred
-      (`Delete`), `UnwrapDEK` falha e o conteúdo é irrecuperável; a hash-chain valida.
-- [ ] **Custódia key-never-leaves documentada** e o HSM **real** declarado **infra-org** (o wrapper de
-      referência é in-process, prova o seam; o HSM concreto — PKCS#11/KMS — vive fora do binário).
-- [ ] Zero dependências externas no binário do nó.
+      (`Delete`), `UnwrapDEK` falha e o conteúdo é irrecuperável; a hash-chain valida. — `aos216_hsm_envelope_test.go`
+      (ao nível do audit: gate que PANICA em `Key()`/`EnsureKey()`; hash do blob estável) E
+      `packages/cmd/aos/aos216_hsm_envelope_test.go` (ao nível do nó: `key_ref` no blob do substrato; `Key`/`EnsureKey`
+      a ZERO; `/dsar/erase` ⇒ `ErrDecrypt`).
+- [x] **Custódia key-never-leaves documentada** e o HSM **real** declarado **infra-org** (o wrapper de
+      referência é in-process, prova o seam; o HSM concreto — PKCS#11/KMS — vive fora do binário). —
+      `deploy/node/README.md` (§Custódia da KEK — AOS-215/AOS-216/DEF-302).
+- [x] Zero dependências externas no binário do nó. — stdlib `crypto/aes`,`crypto/cipher`,`crypto/rand` apenas.
 
 **Fecha:** o residual HSM de `DEF-302` (a porta de envelope; o HSM concreto fica infra-org). **Depende de:**
 AOS-215 (a costura de injeção), AOS-093 (o envelope DEK/KEK). **Não duplica:** AOS-215 (que injecta o vault

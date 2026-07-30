@@ -267,7 +267,7 @@ verificado. Fora de produção, sem soberania configurada, as rotas respondem `5
 declaração). A retenção TTL é **opt-in em qualquer modo** (`Config.Retention` vazia ⇒ nada expira);
 o banner declara o estado em cada arranque.
 
-#### Custódia da KEK por-titular — o seam KMS/HSM (AOS-215 / DEF-302)
+#### Custódia da KEK por-titular — o seam KMS/HSM (AOS-215 / AOS-216 / DEF-302)
 
 Todo o apagamento real (erase e expiração) materializa por **crypto-shred de uma KEK por-titular**: a
 chave que embrulha as DEKs do conteúdo cifrado do titular (AOS-093). **Onde essa KEK vive é uma
@@ -296,14 +296,24 @@ análoga à custódia da chave do issuer (AOS-175/`CUSTODIA-CHAVE-RELEASE.md`) e
   o custodiante pode versionar/rodar o material subjacente sem que o nó mude — desde que uma `KeyRef`
   já provisionada continue a resolver para a chave que cifrou o conteúdo existente.
 
-> **Residual nomeado — HSM *key-never-leaves* exige uma porta de envelope (eixo AOS-093/envelope,
-> DEF-302).** A porta `audit.KeyVault` devolve a **KEK crua** (`Key(keyRef) → []byte`) e o embrulho da
-> DEK corre **in-process** (`audit.sealPayload`). Isto serve directamente um **key-service / software-KMS
-> que devolve chaves** (custódia externa — melhor que memória, que é o que DEF-302 fechava). Um **HSM
-> verdadeiro** (a chave **nunca** sai do módulo) **não** devolve a chave crua: exigiria uma porta de
-> **envelope** (`WrapDEK`/`UnwrapDEK`, com o embrulho a correr **dentro** do HSM). Essa porta **não**
-> é entregue aqui — está nomeada como residual com eixo em `DEF-302`. É uma extensão da porta actual,
-> não uma re-arquitectura do envelope de AOS-093.
+> **Custódia HSM *key-never-leaves* — porta de envelope `WrapDEK`/`UnwrapDEK` (AOS-216, fecha o residual
+> de `DEF-302`).** A porta `audit.KeyVault` devolve a **KEK crua** (`Key(keyRef) → []byte`) e o embrulho da
+> DEK corre **in-process** (`audit.sealPayload`) — isto serve directamente um **key-service / software-KMS
+> que devolve chaves** (custódia externa, o que `DEF-302` fechava). Um **HSM verdadeiro** (a chave **nunca**
+> sai do módulo) **não** devolve a chave crua: para o servir, o nó expõe a porta de **envelope**
+> `audit.KeyWrapper` — `WrapDEK(subjectID, dek) → (wrapped, keyRef)` e `UnwrapDEK(keyRef, wrapped) → (dek, ok)`,
+> com o embrulho/desembrulho a correr **dentro** do módulo de custódia. Um vault injectado por
+> `Config.DSARVault` que implemente **também** `KeyWrapper` faz `audit.SealContent`/`OpenContent` tomarem a
+> via de envelope **por type assertion**: a **DEK** (efémera, por-registo) é o único material que atravessa
+> a fronteira; a **KEK crua NUNCA entra no processo do nó** (nem no seal, nem no open, nem em log/span/erro).
+> Um vault que só implemente `KeyVault` mantém a via KEK-crua de AOS-093/215 (**fallback**, serialização
+> **byte-a-byte** idêntica — o formato de envelope é versionado retro-compativelmente por um campo `key_ref`
+> presente só nesse caminho). O crypto-shredding manifesta-se na via de envelope tal-qual: `Delete` destrói a
+> KEK dentro do módulo ⇒ `UnwrapDEK` falha ⇒ o conteúdo é irrecuperável, sem mutar o log (a hash-chain
+> continua a validar). A impl de referência `audit.InMemoryKeyWrapper` (stdlib AES-256-GCM, in-process) prova
+> o **contrato** e o **seam**; o **HSM concreto** (PKCS#11, AWS KMS `Encrypt`/`Decrypt`, HashiCorp Vault
+> Transit) é **infra-org**, vive **fora** do binário zero-dep — análogo à custódia da chave do issuer
+> (AOS-175) e ao tenant de soberania (DEF-201/212).
 
 ### Estado durável — variáveis de ambiente (AOS-170 / AOS-180)
 
