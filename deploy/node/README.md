@@ -208,6 +208,65 @@ configuração/IdP de soberania **real** da organização que empurra as altera�
 rotações entram por config/operador. A coincidência `leitor.região == run.região` no selo D6 é
 AOS-182. É o mesmo tratamento de D4/AOS-16x para a identidade.
 
+### DSAR / conformidade — apagamento, legal hold e expiração (AOS-172 / AOS-093 / AOS-213)
+
+O nó expõe quatro rotas de **governança de dados**, todas no plano `POST /dsar/*`. Todas exigem a
+**mesma credencial forte** que autentica o read-path soberano (ver [Credencial
+forte](#credencial-forte-e-fonte-de-autoridade-da-soberania-de-leitura-aos-205)) — em produção, um
+**ID-token OIDC** verificado (o board vem das *claims*, não de um header auto-declarado); fora de
+produção, os headers demo-grade `X-Aos-Reader`/`X-Aos-Board`. Todas passam pela *admission* do
+plano de controlo (*rate-limit*). **Fail-closed:** sem o gate soberano composto (sem
+`AOS_BOARD_REGIONS`), respondem `501`; credencial ausente/forjada/board desconhecido ⇒ `403`.
+
+| Rota | O que faz | Colaborador |
+|---|---|---|
+| `POST /dsar/erase` | Apagamento (Art. 17): crypto-shred da KEK por-titular; legal hold re-consultado antes do shred; `received`/`key_destroyed`/`blocked` selados no WORM. | `dsar.Flow` (AOS-093) |
+| `POST /dsar/hold` | **Coloca** um legal hold (por titular e/ou partição) — SUSPENDE o erase e a expiração desse alvo. | `audit.LegalHold` (AOS-213) |
+| `POST /dsar/release` | **Levanta** o legal hold, reabrindo o alvo ao erase/expiração. | `audit.LegalHold` (AOS-213) |
+| `POST /dsar/expire` | Conduz **uma passagem** do job de expiração por TTL: expira os registos classificados que cruzaram a retenção e **não** estão sob hold, por crypto-shred da KEK por-titular. | `audit.ExpirationJob` (AOS-092/AOS-213) |
+
+**Contrato do identificador (sem PII).** `subject_id` e `partition` são **pseudónimos/identificadores
+opacos** (ULID/UUID/hash *namespaced*, run/stream id) — nunca o dado pessoal em si. São selados
+**verbatim** na hash-chain WORM imutável, que o próprio crypto-shredding **não** consegue remover;
+por isso a fronteira rejeita (`400`) valores com forma de PII (email, nome, espaços, `@`, `/`,
+não-ASCII). Cada acção de hold/release é **selada no WORM sem PII** (quem/quando/subject-pseudónimo/
+partição/board) na partição `governance.legalhold`, verificável de forma independente.
+
+**Wire (JSON).**
+
+```jsonc
+// POST /dsar/hold  |  POST /dsar/release   — pelo menos um de subject_id/partition
+{ "request_id": "req-42", "subject_id": "nhi:agent-7a3f", "partition": "run-19c2" }
+// POST /dsar/expire — sem corpo; devolve as contagens da passagem (sem PII)
+// 200: { "scanned": 12, "expired": 3, "held": 1, "skipped": 8, "not_expired": 0 }
+```
+
+**Expiração por TTL — retenção e granularidade.** O `audit.ExpirationJob` é **composto SEMPRE** no
+nó. A política de retenção **TTL-por-classe** (`Config.Retention`, *policy-as-code* versionada) é a
+superfície a preencher: **vazia por omissão ⇒ NADA expira** (`POST /dsar/expire` varre e devolve
+tudo em `not_expired` — *fail-closed*, nunca se auto-purga o que não tem período definido). A
+expiração **materializa** por **crypto-shred da KEK POR-TITULAR** (o mesmo apagamento real de
+AOS-093): apagar a chave torna o conteúdo do titular irrecuperável (`audit.OpenContent` →
+`ErrDecrypt`) **sem** mutar a hash-chain, que continua a validar. Respeita o legal hold — um titular
+sob hold é **saltado**. É conduzida **sob demanda** pela rota (um *scheduler*/*cron* externo
+invoca-a periodicamente); o nó não corre um varredor de fundo próprio.
+
+> **Granularidade (residual nomeado, eixo AOS-093/envelope).** O TTL é avaliado **por-registo/classe**
+> (idade = relógio − criação), mas o crypto-shred do envelope de AOS-093 é **por-CHAVE-DE-TITULAR**:
+> uma KEK embrulha as DEKs de **todos** os registos do titular. A expiração é, por isso,
+> **POR-TITULAR** — quando um registo classificado de um titular cruza o TTL (e não há hold), a KEK
+> desse titular é destruída, expirando todo o seu conteúdo cifrado. A retenção **diferencial por-classe
+> dentro de um mesmo titular** colapsa para a classe que expira primeiro. A granularidade fina
+> por-registo exigiria custódia de chave por-registo ou *tombstones* no Event Store (re-arquitectura
+> do envelope) — **não previsto**. Ver `DEF-903` em `docs/governance/REGISTO-Deferimentos.md`.
+
+**Postura por `AOS_MODE`.** As rotas herdam a postura do read-path soberano: em `AOS_MODE=production`,
+`AOS_BOARD_REGIONS` **e** a credencial forte OIDC (`AOS_SOVEREIGN_OIDC_ISSUER`+`AUDIENCE`) são
+**obrigatórias** (senão o arranque recusa), pelo que as rotas `/dsar/*` exigem sempre um ID-token
+verificado. Fora de produção, sem soberania configurada, as rotas respondem `501` (desligadas por
+declaração). A retenção TTL é **opt-in em qualquer modo** (`Config.Retention` vazia ⇒ nada expira);
+o banner declara o estado em cada arranque.
+
 ### Estado durável — variáveis de ambiente (AOS-170 / AOS-180)
 
 | Variável | Default | Efeito |

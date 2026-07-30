@@ -316,6 +316,18 @@ type Config struct {
 	// chave de assinatura entra no processo): ErrConflictingIssuerKey.
 	IssuerKeyPath string
 
+	// --- Retenção / expiração por TTL (AOS-092/AOS-213) ------------------------
+	// Retention é a política de retenção TTL-por-classe (policy-as-code) que conduz o
+	// [audit.ExpirationJob] composto no nó. VAZIA (zero value) ⇒ o job é composto na mesma mas
+	// NADA expira (nenhuma classe tem período ⇒ [audit.RetentionPolicy] fail-closed): o
+	// POST /dsar/expire varre e devolve tudo em not_expired. Com períodos definidos, um registo
+	// classificado que cruza o TTL da sua classe E não está sob legal hold é expirado por
+	// crypto-shred da KEK por-titular (AOS-093 — apagamento REAL). O banner declara o estado.
+	Retention audit.RetentionConfig
+	// RetentionClock injecta o relógio do [audit.ExpirationJob] (a idade de cada registo é
+	// agora−CreatedAt). nil ⇒ time.Now. Uso interno/testes deterministas.
+	RetentionClock func() time.Time
+
 	// --- Observabilidade OTLP (AOS-173, EPIC-15 §13) ---------------------------
 	// OTLPEndpoint é o endpoint do colector OTLP/HTTP (ex.: "http://collector:4318").
 	// GATING: vazio ⇒ NoopTracer (zero overhead, comportamento inalterado — a
@@ -432,6 +444,12 @@ type Node struct {
 	DSARVault *audit.InMemoryKeyVault
 	// DSARIndex mapeia titular→partições (torna executável o legal hold POR-PARTIÇÃO no shred).
 	DSARIndex *audit.InMemorySubjectPartitionIndex
+	// ExpirationJob é o job de expiração por TTL (AOS-092) COMPOSTO no nó (AOS-213): varre os
+	// registos classificados do Event Store ([eventStoreRecordSource]) e expira os que cruzaram o
+	// TTL e não estão sob legal hold por crypto-shred da KEK por-titular ([cryptoShredSink],
+	// reutilizando o vault de AOS-093). Conduzido por POST /dsar/expire. NUNCA nil: o Bootstrap
+	// compõe-o SEMPRE (com política vazia ⇒ nada expira, fail-closed). Respeita [DSARHolds].
+	ExpirationJob *audit.ExpirationJob
 
 	ownsEventStore bool
 	ownsWORM       bool
@@ -946,13 +964,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// deste núcleo); (c) o step-ledger só sela quando há Producer.NHIID (o run injecta o
 	// principal). Ver DEF-301/A-DEF-301 em docs/governance/REGISTO-Deferimentos.md.
 	//
-	// CON-02 (legal hold + job de expiração — superfície de ADMINISTRAÇÃO): DEFERIDO por
-	// decisão do dono (Opção C, docs/governance/DOSSIE-CON-02-legal-hold.md, 2026-07-29). O
-	// audit.LegalHold é composto (dsarHolds, exposto em Node.DSARHolds) mas SEM rota de
-	// administração; o audit.ExpirationJob (AOS-092) não é composto (0 chamadores de produção).
-	// A barreira de hold JÁ cobre o substrato: um titular retido não é shredded, logo o
-	// conteúdo do run cifrado mantém-se decifrável enquanto o hold vigorar (provado em teste).
-	// Ver DEF-903 no REGISTO-Deferimentos.md.
+	// CON-02 (legal hold + job de expiração — superfície de ADMINISTRAÇÃO): foi DEFERIDA por
+	// decisão do dono (Opção C, docs/governance/DOSSIE-CON-02-legal-hold.md, 2026-07-29) e está
+	// agora ENTREGUE por AOS-213 — o gatilho da Opção C (o apagamento ser real) cumpriu-se com
+	// AOS-093. O audit.LegalHold (dsarHolds, exposto em Node.DSARHolds) ganha rotas de
+	// administração (POST /dsar/hold / /dsar/release — ver legalhold.go) e o audit.ExpirationJob
+	// (AOS-092) É composto no nó (ver (7c-bis) abaixo, exposto em Node.ExpirationJob, conduzido
+	// por POST /dsar/expire) — deixa de ter ZERO chamadores de produção. A barreira de hold cobre
+	// o substrato (um titular retido não é shredded, logo o conteúdo cifrado mantém-se decifrável
+	// enquanto o hold vigorar, provado em teste) E é respeitada pela expiração. DEF-903 fechado
+	// (FECHADO-RESIDUAL) no REGISTO-Deferimentos.md; o residual de granularidade (por-titular vs
+	// por-registo) fica nomeado com eixo em retention.go e no registo.
 	dsarHolds := audit.NewLegalHold()
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
@@ -961,6 +983,36 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		dsarShredder,
 		[]dsar.ShreddableKeyStore{dsar.AuditStore("audit", dsarShredder)},
 		dsar.WithPartition("governance.dsar"),
+	)
+
+	// (7c-bis) AOS-213 (CON-02/DEF-903) — JOB DE EXPIRAÇÃO por TTL COMPOSTO no nó. Fecha a
+	// superfície que a Opção C do dono sequenciou para DEPOIS de o apagamento ser real (AOS-093
+	// entregou-o). O [audit.ExpirationJob] (AOS-092) — que era composto por ZERO chamadores de
+	// produção — passa a agir sobre o substrato REAL: [eventStoreRecordSource] expõe os registos
+	// classificados do Event Store (eventos "replay.captured" cifrados por-titular) e
+	// [cryptoShredSink] materializa a expiração por crypto-shred da MESMA KEK por-titular que o
+	// /dsar/erase destrói (apagamento real, não no-op — a prova de AOS-093 pela via da expiração).
+	// RESPEITA o legal hold (o job salta os held) e SELA cada retention.expired no WORM
+	// ([retentionPartition]) sem PII. É SEMPRE composto: com [Config.Retention] vazia nada expira
+	// (fail-closed), com períodos definidos o TTL entra em vigor. Conduzido por POST /dsar/expire
+	// (sob demanda / agendamento externo); a granularidade (por-titular) está resolvida e o eixo
+	// residual nomeado em retention.go.
+	expirationOpts := []audit.ExpirationOption{
+		audit.WithExpirationAudit(worm, retentionPartition),
+		audit.WithExpirationSubjectIndex(dsarIndex),
+	}
+	if tracingEnabled {
+		expirationOpts = append(expirationOpts, audit.WithExpirationTracer(tracer))
+	}
+	if cfg.RetentionClock != nil {
+		expirationOpts = append(expirationOpts, audit.WithExpirationClock(cfg.RetentionClock))
+	}
+	expirationJob := audit.NewExpirationJob(
+		cfg.Retention,
+		dsarHolds,
+		eventStoreRecordSource{es: es},
+		cryptoShredSink{vault: dsarVault},
+		expirationOpts...,
 	)
 
 	// (7d) MOTOR DE REDACÇÃO (AOS-091) LIGADO AO FECHO TRANSITIVO (AOS-208). A cablagem
@@ -1068,6 +1120,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed")
 	}
 	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
+	// LEGAL HOLD + EXPIRAÇÃO (AOS-213, CON-02/DEF-903). O banner declara a superfície de
+	// administração REALMENTE composta e o MODO de expiração (sob demanda por rota) — sem
+	// capacidade-fantasma. A granularidade (por-titular) e o eixo residual são declarados.
+	log("legal hold (AOS-213): POST /dsar/hold / POST /dsar/release (por titular e/ou particao) — MESMA credencial forte do /dsar/erase (readGov); cada accao selada no WORM sem PII (particao %q)", legalHoldPartition)
+	if _, hasPII := cfg.Retention.Period(audit.ClassPIIOperational); hasPII || cfg.Retention.Version() != "" {
+		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO (politica %q) — conduzido por POST /dsar/expire (sob demanda/agendamento externo); expiracao = crypto-shred da KEK POR-TITULAR (AOS-093, apagamento real), RESPEITA o legal hold; retention.expired selado no WORM (particao %q)", cfg.Retention.Version(), retentionPartition)
+		log("NOTA granularidade (AOS-213): o TTL e por-registo/classe mas o crypto-shred e por-CHAVE-DE-TITULAR (uma KEK embrulha todos os registos do titular) => a expiracao e POR-TITULAR; a retencao diferencial por-classe DENTRO de um titular colapsa para a classe que expira primeiro (residual nomeado, eixo AOS-093/envelope; ver DEF-903)")
+	} else {
+		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO mas SEM politica de retencao (Config.Retention vazia) — POST /dsar/expire varre mas NADA expira (fail-closed); defina a politica de retencao TTL-por-classe para ligar o TTL")
+	}
 	// MOTOR DE REDACÇÃO (AOS-091/AOS-208). O banner declara que o motor está LIGADO ao
 	// fecho transitivo do nó e a política em vigor — sem capacidade-fantasma. Ligar o
 	// motor MUDA o comportamento por omissão: o objectivo de cada run passa a ser
@@ -1130,6 +1192,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		DSARHolds:               dsarHolds,
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
+		ExpirationJob:           expirationJob,
 
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,

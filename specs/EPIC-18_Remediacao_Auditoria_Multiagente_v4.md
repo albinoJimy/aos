@@ -1124,23 +1124,48 @@ composto** no nó (0 chamadores de produção).
 
 **O que entregar**
 
-- [ ] **Rotas autenticadas de legal hold:** `POST /dsar/hold` e `POST /dsar/release` (colocar/levantar
+- [x] **Rotas autenticadas de legal hold:** `POST /dsar/hold` e `POST /dsar/release` (colocar/levantar
       por titular e/ou partição), autenticadas pela **mesma credencial forte** do `/dsar/erase`
       (`readGov.authorize`, AOS-205), com o **contrato subject_id = pseudónimo opaco** (rejeita PII),
       fail-closed, e cada acção **selada no WORM sem PII** (quem/quando/subject-pseudónimo).
-- [ ] **`ExpirationJob` composto no nó** sobre um `RecordSource` dos registos classificados do Event
+      *(ENTREGUE: `packages/cmd/aos/legalhold.go` — `handleLegalHold`/`sealLegalHold`, registadas em
+      `api.go`; partição `governance.legalhold`. Provas: `TestLegalHoldSealsWORMWithoutPII` (selo
+      verificável + `assertNoPIIInPartition`), `TestLegalHoldRejectsNonPseudonymTarget`.)*
+- [x] **`ExpirationJob` composto no nó** sobre um `RecordSource` dos registos classificados do Event
       Store e um `ExpirationSink` que **crypto-shred a chave por-titular** no fim do TTL (reutiliza o
       envelope de AOS-093 — `audit.SealContent`/KeyVault — a expiração é apagamento real, não no-op),
       **respeitando o legal hold** (o job já salta held). Conduzido por rota administrativa e/ou
       agendamento; o modo é declarado no banner.
-- [ ] **Falsificável (dois sentidos):** (a) um hold colocado **bloqueia** um `/dsar/erase` subsequente
+      *(ENTREGUE: `bootstrap.go` (7c-bis) compõe `Node.ExpirationJob`; `retention.go` traz
+      `eventStoreRecordSource` (eventos `replay.captured` por-titular) + `cryptoShredSink`
+      (`vault.Delete`); conduzido por `POST /dsar/expire`; banner declara o modo. **Granularidade
+      resolvida = POR-TITULAR**, residual nomeado com eixo — ver nota abaixo.)*
+- [x] **Falsificável (dois sentidos):** (a) um hold colocado **bloqueia** um `/dsar/erase` subsequente
       e um titular held é **saltado** pela expiração; (b) após `release`, o erase/expiração **sucede**.
-- [ ] **Falsificável (expiração real):** um titular expirado pelo `ExpirationJob` fica **irrecuperável**
+      *(ENTREGUE: `TestHoldRouteBlocksEraseThenReleaseAllows` (hold via rota bloqueia o erase; release
+      via rota reabre-o) e `TestNode_AOS213_HeldSkippedByExpirationThenReleased` (held ⇒ `report.Held`,
+      nada expira; após release ⇒ expira).)*
+- [x] **Falsificável (expiração real):** um titular expirado pelo `ExpirationJob` fica **irrecuperável**
       (`audit.OpenContent` → `ErrDecrypt`) e a **hash-chain valida** — a mesma prova de AOS-093, agora
       pela via da expiração por TTL.
-- [ ] **Autorização:** um `/dsar/hold` ou `/dsar/release` **sem credencial forte** (ou forjado) é
+      *(ENTREGUE: `TestNode_AOS213_ExpirationRealErasure` (-race, nível do nó): após `ExpirationJob.Run`,
+      `OpenContent`→`ErrDecrypt` E `audit.Verify(governance.retention)` valida; idempotência na 2ª
+      passagem.)*
+- [x] **Autorização:** um `/dsar/hold` ou `/dsar/release` **sem credencial forte** (ou forjado) é
       **recusado**; com credencial válida é aceite (dois sentidos).
-- [ ] `deploy/node/README.md` documenta as rotas, o TTL/retenção, o hold, e a postura por `AOS_MODE`.
+      *(ENTREGUE: `TestLegalHoldRoutesRequireStrongCredential` (anónimo/board forjado ⇒ 403, sem hold
+      aplicado; válida ⇒ 200 aplicado), `TestExpireRouteRequiresStrongCredentialAndExpires` e
+      `TestLegalHoldRoutesOffWithoutSovereignty` (501 sem gate soberano).)*
+- [x] `deploy/node/README.md` documenta as rotas, o TTL/retenção, o hold, e a postura por `AOS_MODE`.
+      *(ENTREGUE: secção «DSAR / conformidade — apagamento, legal hold e expiração (AOS-172 / AOS-093 /
+      AOS-213)» — tabela de rotas, wire JSON, retenção/granularidade e postura por `AOS_MODE`.)*
+
+> **Residual nomeado (granularidade, eixo AOS-093/envelope).** O TTL é por-registo/classe mas o
+> crypto-shred é por-CHAVE-DE-TITULAR (uma KEK embrulha todas as DEKs do titular), pelo que a
+> expiração entregue é **POR-TITULAR**: a retenção diferencial por-classe DENTRO de um titular
+> colapsa para a classe que expira primeiro. A granularidade fina por-registo exigiria custódia de
+> chave por-registo ou *tombstones* no Event Store (re-arquitectura do envelope de AOS-093) — não
+> previsto. Registado em `DEF-903` (`FECHADO-RESIDUAL`) e em `retention.go`.
 
 **Fecha:** `CON-02`/`DEF-903` (a superfície que a Opção C sequenciou). **Depende de:** AOS-092
 (mecanismo hold/expiração), AOS-093 (apagamento real), AOS-205 (credencial forte), AOS-166/193 (API).

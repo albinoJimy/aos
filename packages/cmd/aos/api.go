@@ -401,6 +401,13 @@ type apiHandler struct {
 	controlMTLS bool
 	// readGov é a costura de soberania/conformidade de leitura (AOS-172, D7+D6). nil ⇒ legado.
 	readGov *readGovernance
+	// expireInFlight serializa as passagens do [audit.ExpirationJob] conduzidas por
+	// POST /dsar/expire (AOS-213). O Run do job é pensado para uma execução de cada vez
+	// (o check-then-Add da idempotency key não é atómico ao nível do registo), pelo que
+	// duas passagens concorrentes poderiam selar DOIS eventos retention.expired para o
+	// mesmo facto. O guard CAS admite UMA passagem activa; uma segunda invocação
+	// concorrente recebe 409 (no-op) em vez de poluir a cadeia WORM.
+	expireInFlight atomic.Bool
 }
 
 // NewAPIHandler compõe o http.Handler do nó sobre o loop de serviço (AOS-164a) e o nó real
@@ -479,6 +486,13 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
 	// composto (fail-closed). Ver handleDSAR.
 	mux.HandleFunc("POST /dsar/erase", h.handleDSAR)
+	// Plano de GOVERNANÇA — ADMINISTRAÇÃO de legal hold e expiração (AOS-213, CON-02/DEF-903).
+	// Autenticadas pela MESMA credencial forte do /dsar/erase (readGov) + admission do plano de
+	// controlo; desligadas (501) se o legal hold / job de expiração ou o gate soberano não
+	// estiverem compostos (fail-closed). Ver legalhold.go.
+	mux.HandleFunc("POST /dsar/hold", h.handleHold)
+	mux.HandleFunc("POST /dsar/release", h.handleRelease)
+	mux.HandleFunc("POST /dsar/expire", h.handleExpire)
 	return mux, nil
 }
 
