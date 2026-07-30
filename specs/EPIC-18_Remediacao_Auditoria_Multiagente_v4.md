@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-216** (27 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093); **AOS-215 acrescentado por AOS-093/DEF-302** (a KEK por-titular vive num `InMemoryKeyVault` demo-grade e o nó não tem costura para injectar um KMS/HSM — a porta `audit.KeyVault` existe mas `Config.DSARVault` é o tipo concreto; o KMS real é infra-org, a costura de injeção é código do nó) |
+| Intervalo de tickets | **AOS-190 … AOS-217** (28 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093); **AOS-215 acrescentado por AOS-093/DEF-302** (a KEK por-titular vive num `InMemoryKeyVault` demo-grade e o nó não tem costura para injectar um KMS/HSM — a porta `audit.KeyVault` existe mas `Config.DSARVault` é o tipo concreto; o KMS real é infra-org, a costura de injeção é código do nó); **AOS-217 acrescentado por auditoria adversarial** (achado A1: um run submetido sem `principal_nhi` em modo soberano persiste o conteúdo em CLARO no WAL — a cifra por-titular de AOS-093 só corre com titular != "" — e fica não-shreddable; sem fail-closed no submit soberano; o titular é ainda um campo de corpo desacoplado da credencial verificada do submissor) |
 
 ---
 
@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-216)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-217)
 
 Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
@@ -630,6 +630,7 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-214 | Replay soberano de conteúdo selado: `ContentOpener` autorizado por soberania na reconstrução de um run selado (leitor autorizado decifra; não-autorizado nunca vê claro; shred aguenta) | feature | M | P1 | **EPIC-09** | residual (b) de `DEF-301`/AOS-093 |
 | AOS-215 | Costura de custódia externa da KEK por-titular (DEF-302): `Config.DSARVault` injectável pela porta `audit.KeyVault` + custódia documentada; KMS/HSM real fica infra-org | feature | M | P2 | **EPIC-09** | `DEF-302`/AOS-093 |
 | AOS-216 | Porta de envelope `WrapDEK`/`UnwrapDEK` para custódia HSM key-never-leaves: a KEK nunca sai do vault; impl de referência prova o contrato; fallback à via KEK-crua | feature | M | P2 | **EPIC-09** | residual HSM de `DEF-302`/AOS-215 |
+| AOS-217 | Fail-closed do titular no submit soberano (achado A1): sem `principal_nhi` recusa; o titular é derivado/validado da credencial verificada — nenhum conteúdo persiste sem cifra por-titular | fix | S | **P1** | **EPIC-09** | achado A1 (auditoria adversarial da soberania) |
 
 ---
 
@@ -1324,6 +1325,38 @@ key-never-leaves não pode participar — a KEK teria de sair para o processo.
 **Fecha:** o residual HSM de `DEF-302` (a porta de envelope; o HSM concreto fica infra-org). **Depende de:**
 AOS-215 (a costura de injeção), AOS-093 (o envelope DEK/KEK). **Não duplica:** AOS-215 (que injecta o vault
 KEK-crua; aqui é a porta de embrulho que um HSM suporta).
+
+---
+
+### AOS-217 — Fail-closed do titular no submit soberano (achado A1)
+
+**Origem:** achado **A1** da auditoria adversarial da cadeia de soberania/apagamento.
+
+**O defeito (verificado):** a cifra por-titular de AOS-093 só corre com `Subject != ""`
+(`nondeterminism_capture.go:246`); o titular do run é `goal.Principal.NHIID`, preenchido do **campo de
+corpo** `req.PrincipalNHI` (`api.go:582`), **desacoplado** da credencial verificada do submissor. Em modo
+soberano, `handleSubmit` autentica o submissor (`readGov.authorize`) mas **não** exige nem liga o titular:
+um `POST /runs` com `principal_nhi:""` (credencial válida) + `DurableExecution` persiste **texto do modelo e
+outputs de tools em CLARO no WAL** e fica **não-shreddable** (sem KEK por-titular). A produção fail-closed
+(TLS/OIDC/board) **não** cobre o titular por-run — degrada em silêncio para o legado em claro.
+
+**Critérios de aceitação**
+
+- [ ] Em modo **soberano** (`readGov` composto), o submit **RECUSA fail-closed** (`400`/`403`) um run sem
+      titular resolúvel — nenhum run soberano é hospedado sem um `Subject` sob o qual cifrar.
+- [ ] O titular do run é **derivado/validado contra a credencial verificada do submissor** (`submitter.principal`
+      de `readGov.authorize`), não um campo de corpo auto-declarado — fecha também o achado **A7** (titular
+      desacoplado da credencial). Um `principal_nhi` que **discorde** do submissor verificado é recusado (ou
+      ignorado em favor do verificado — decidir e justificar).
+- [ ] **Falsificável (dois sentidos, `-race`):** (a) submit soberano sem/`""` titular ⇒ recusado, nada
+      persiste; (b) submit soberano com titular válido ⇒ o conteúdo do run no WAL está **cifrado** (a PII
+      sintética **não** aparece em claro — reutiliza a prova de grep-no-WAL de AOS-093) e é **shreddable**
+      (`/dsar/erase` ⇒ `ErrDecrypt`). Um teste que prova a **fuga ANTES** do fix (não-vacuidade).
+- [ ] **Retro-compat:** o modo **legado** (sem `readGov`) mantém-se; runs fora de produção não são forçados.
+- [ ] Sem segredos; gates bloqueantes verdes.
+
+**Fecha:** o achado A1 (+A7). **Depende de:** AOS-093 (cifra por-titular), AOS-182/205 (submissor
+autenticado). **Não duplica:** AOS-208 (redação — outra camada) nem AOS-182 (residência — outro atributo).
 
 ---
 
