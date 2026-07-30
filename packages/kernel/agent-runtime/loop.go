@@ -267,6 +267,13 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		win.Append(TailSegment{Kind: TailObjective, Content: []byte(goal.Objective)})
 	}
 
+	// pendingCorrection carrega a correcção de steer TRUSTED injectada no tail no FIM do
+	// turno anterior (a "leading correction" do turno corrente). É a costura que leva a
+	// correcção — que só é conhecida DEPOIS da captura do turno em que foi emitida — à
+	// captura do turno SEGUINTE, onde de facto pertence ao prompt (AOS-218). Sem steer
+	// ligado permanece nil e a captura fica byte-idêntica (retro-compat).
+	var pendingCorrection []byte
+
 	for turn := 1; turn <= maxTurns; turn++ {
 		stepID := rt.stepIdentity.StepID(goal.RunID, turn)
 
@@ -357,6 +364,10 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// AOS-093: o TITULAR do run (o principal, ADR-003) sob cuja chave
 			// por-titular o capturer cifra o conteúdo não-determinístico antes do ES.
 			Subject: goal.Principal.NHIID,
+			// AOS-218: a correcção de steer TRUSTED que o turno ANTERIOR injectou no tail
+			// (leading correction deste turno). Vazia nos runs sem steer — captura
+			// byte-idêntica. Capturá-la aqui é o que torna o replay do run steerado fiel.
+			LeadingCorrection: pendingCorrection,
 		}); err != nil {
 			return res, fmt.Errorf("%w: turno %d: %w", ErrCapture, turn, err)
 		}
@@ -390,9 +401,15 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			}
 			// Uma correcção de um humano AUTENTICADO é dado de controlo TRUSTED —
 			// injectada no tail do turno seguinte (taint=trusted), nunca como conteúdo
-			// untrusted (separação control/data-plane, ADR-005).
+			// untrusted (separação control/data-plane, ADR-005). Guarda-se em
+			// pendingCorrection para a captura do turno SEGUINTE a persistir (AOS-218): é
+			// no prompt desse turno que a correcção entra, logo é lá que o replay tem de a
+			// reconstruir para o prompt_hash bater.
 			if corr, ok := rt.steer.PendingCorrection(goal.RunID); ok {
 				win.Append(tailFromCorrection(corr))
+				pendingCorrection = corr
+			} else {
+				pendingCorrection = nil
 			}
 		}
 

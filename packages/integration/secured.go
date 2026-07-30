@@ -97,6 +97,15 @@ type SecuredConfig struct {
 	// [network.NewEmbeddedResolver] (allowlist de referência embutida).
 	EgressResolver network.EgressPolicyResolver
 
+	// SteerSource liga o CANAL DE CONTROLO out-of-band (AOS-023) ao loop base via
+	// [agentruntime.WithSteerSource] (AOS-218): a partir daqui o runtime de PRODUÇÃO
+	// consulta a pausa graciosa + a correcção TRUSTED na fronteira de fim-de-turno. É o
+	// concreto [control.LoopSteer] (SteerChannel + resolvedor de [control.StateGate]
+	// por-run) composto pelo nó. OPCIONAL e ADITIVO: nil ⇒ o loop nunca o consulta e o
+	// comportamento de AOS-013 é byte-idêntico (o steer é opt-in, como o capturer/ledger).
+	// Fechar o ACHADO-2 (steer inerte): sem esta ligação, [control.NewLoopSteer]/
+	// [WithSteerSource] não tinham chamador de produção e a correcção nunca chegava ao loop.
+	SteerSource agentruntime.SteerSource
 	// HookOptions são opções do [RevalidationHook] (ex.: [WithEgressHost]).
 	HookOptions []HookOption
 	// RuntimeOptions são opções do [agentruntime.Runtime].
@@ -276,6 +285,13 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	}
 	if cfg.Capturer != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithCapturer(cfg.Capturer))
+	}
+	// AOS-218: liga o canal de steer ao loop de PRODUÇÃO. É a composição que faltava
+	// (ACHADO-2) — [WithSteerSource] passa a ter chamador de produção, logo a pausa
+	// graciosa e a injecção da correcção TRUSTED tornam-se efectivas na fronteira de
+	// fim-de-turno. nil ⇒ opção omitida ⇒ retro-compatibilidade byte-idêntica.
+	if cfg.SteerSource != nil {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithSteerSource(cfg.SteerSource))
 	}
 	if cfg.Ledger != nil {
 		// OBSERVABILIDADE do escopo durável (AOS-210). Sem esta opção o dispatcher fica

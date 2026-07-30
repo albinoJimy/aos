@@ -86,6 +86,7 @@ func (e *ReplayEngine) resolveSealed(ctx context.Context, p capturePayload) (cap
 	}
 	p.Response = sc.Response
 	p.ToolResults = sc.ToolResults
+	p.LeadingCorrection = sc.LeadingCorrection // AOS-218: correcção de steer selada por-titular
 	p.SealedContent = nil
 	p.SealedSubject = ""
 	return p, nil

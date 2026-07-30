@@ -1,0 +1,118 @@
+package main
+
+import (
+	"context"
+	"sync"
+
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	control "github.com/aos-ref/kernel/agent-runtime/control"
+	"github.com/aos-ref/kernel/agent-runtime/state"
+)
+
+// reasonSteerRunClaim é o motivo gravado na aresta ready→running reclamada pelo
+// lazy-claim de AOS-218 (ver [runGate.Pause]) — rótulo de auditoria legível, não segredo.
+const reasonSteerRunClaim = "steer_run_claim"
+
+// runStateGates é a COSTURA MÍNIMA (AOS-218) que dá ao canal de steer (AOS-023) uma
+// FONTE de [control.StateGate] durável POR-RUN — sem inventar um mecanismo de estado
+// novo. Reusa a máquina de estados de AOS-017 ([state.Machine]) sobre o MESMO Event Store
+// do nó: a pausa graciosa materializa a aresta declarativa running→paused e a retoma a
+// paused→running, gravadas como eventos append-only (reconstruíveis por replay, sobrevivem
+// a crash). O loop de serviço ABRE um gate por run hospedado ([Open]) e LIBERTA-o no fim
+// ([Close]); o loop base resolve-o por [Resolve] — o gates func de [control.NewLoopSteer].
+//
+// LAZY-CLAIM (retro-compatibilidade estrita): o gate NÃO transita nada ao abrir. A aresta
+// ready→running só é reclamada — com o fencing token do LEASE já detido (AOS-018) — no
+// PRIMEIRO pause de facto pedido. Um run SEM steer nunca chama Pause, logo não gera
+// NENHUM evento de transição: o seu stream (e o seu replay/resume) fica byte-idêntico ao
+// de antes de AOS-218. É a razão de não se conduzir a máquina eagerly no arranque.
+//
+// Seguro para uso concorrente: o mutex serializa o mapa; cada [state.Machine] tem o seu
+// próprio mutex interno.
+type runStateGates struct {
+	store  state.EventStore
+	tracer agentruntime.Tracer
+
+	mu    sync.Mutex
+	gates map[string]*runGate
+}
+
+// newRunStateGates constrói o registo sobre o Event Store do nó. tracer é reusado da
+// observabilidade do nó (um span por transição confirmada); nil ⇒ [agentruntime.NoopTracer].
+func newRunStateGates(store state.EventStore, tracer agentruntime.Tracer) *runStateGates {
+	if tracer == nil {
+		tracer = agentruntime.NoopTracer{}
+	}
+	return &runStateGates{store: store, tracer: tracer, gates: make(map[string]*runGate)}
+}
+
+// Open compõe (e RECONSTRÓI do log — para a retoma após crash) a máquina de estados do
+// run e regista o seu gate. token é o fencing token do lease de posse: o MESMO que
+// AOS-017 exige no claim ready→running, propagado sem o duplicar. NÃO transita nada aqui
+// (lazy-claim, ver [runStateGates]). Fail-closed: um log de estado corrompido aborta —
+// mas um run novo reconstrói para [state.Ready] e nunca falha.
+func (g *runStateGates) Open(ctx context.Context, runID string, token state.FencingToken) error {
+	m, err := state.NewMachine(g.store, runID, state.WithTracer(g.tracer))
+	if err != nil {
+		return err
+	}
+	if _, err := m.Rebuild(ctx); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	g.gates[runID] = &runGate{m: m, token: token}
+	g.mu.Unlock()
+	return nil
+}
+
+// Resolve devolve o [control.StateGate] do run — o gates func de [control.NewLoopSteer].
+// Um run não aberto devolve nil: [control.LoopSteer.GracefulPause] trata nil como "sem
+// gate" (a pausa desse run é um no-op fail-safe, o loop continua), nunca um panic.
+func (g *runStateGates) Resolve(runID string) control.StateGate {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if gate, ok := g.gates[runID]; ok {
+		return gate
+	}
+	return nil
+}
+
+// Close remove o gate do run (chamado quando o run sai do registo de em-curso). Um gate
+// desconhecido é ignorado (idempotente).
+func (g *runStateGates) Close(runID string) {
+	g.mu.Lock()
+	delete(g.gates, runID)
+	g.mu.Unlock()
+}
+
+// runGate adapta a [state.Machine] de UM run ao [control.StateGate], com o LAZY-CLAIM de
+// AOS-218: materializa running→paused (e paused→running na retoma) usando as arestas já
+// EXPOSTAS por AOS-017, reclamando ready→running — com o fencing token do lease — apenas
+// quando o PRIMEIRO pause é de facto pedido, para que um run sem steer não gere transições.
+type runGate struct {
+	m     *state.Machine
+	token state.FencingToken
+}
+
+// Pause materializa a pausa graciosa (running→paused). Se a máquina ainda está em
+// [state.Ready] (nenhum pause anterior), reclama primeiro ready→running com o fencing
+// token do lease — a aresta que AOS-017 exige antes de qualquer suspensão. Se já está em
+// [state.Paused], a tabela declarativa recusa paused→paused ([state.ErrInvalidTransition])
+// — devolvido ao canal, que não re-pausa um run já pausado.
+func (g *runGate) Pause(ctx context.Context, reason string) error {
+	if g.m.Current() == state.Ready {
+		if err := g.m.Transition(ctx, state.Running, state.TransitionEvent{Token: g.token, Reason: reasonSteerRunClaim}); err != nil {
+			return err
+		}
+	}
+	return g.m.Pause(ctx, state.TransitionEvent{Reason: reason})
+}
+
+// Resume materializa paused→running (retoma sob o lease já detido — a retoma de suspensão
+// NÃO re-exige fencing token, AOS-017/018).
+func (g *runGate) Resume(ctx context.Context, reason string) error {
+	return g.m.Resume(ctx, state.TransitionEvent{Reason: reason})
+}
+
+// Assegura em compile-time que runGate satisfaz a porta que o canal de steer consome.
+var _ control.StateGate = (*runGate)(nil)

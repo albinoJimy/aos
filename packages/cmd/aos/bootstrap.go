@@ -475,6 +475,13 @@ type Node struct {
 	// Bootstrap compõe-o SEMPRE (mesma instância que sela), independentemente de DurableExecution.
 	contentOpener agentruntime.ContentOpener
 
+	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
+	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
+	// serviço ABRE/LIBERTA um gate por run hospedado (ver service.go hostRun); o loop base
+	// resolve-o pelo gates func já cablado no [control.LoopSteer]. NIL só se o nó não tiver
+	// canal de steer (não acontece na via de produção — o Bootstrap compõe-o sempre).
+	stateGates *runStateGates
+
 	ownsEventStore bool
 	ownsWORM       bool
 	// otlp é o exporter OTLP/HTTP que o nó ABRIU (nil se a observabilidade está desligada
@@ -920,6 +927,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		chainTracer = tracer // a MESMA variável das três vias acima (invariante de SecuredConfig.Tracer)
 	}
 
+	// (6c) STEER LIGADO AO LOOP (AOS-218, ACHADO-2). Compõe o adaptador que faltava:
+	// [control.NewLoopSteer] casa o [control.SteerChannel] do nó (node.Steer) com o
+	// resolvedor de [control.StateGate] por-run ([runStateGates.Resolve]) e liga-se ao
+	// runtime de PRODUÇÃO via [agentruntime.WithSteerSource] (abaixo, SecuredConfig.SteerSource).
+	// A partir daqui a pausa graciosa e a injecção da correcção TRUSTED tornam-se EFECTIVAS
+	// na fronteira de fim-de-turno — antes de AOS-218, NewLoopSteer/WithSteerSource não
+	// tinham chamador de produção e a correcção nunca chegava ao loop. O StateGate durável
+	// vem da FONTE REAL do nó: a máquina de estados de AOS-017 sobre o mesmo Event Store,
+	// aberta por-run pelo loop de serviço com o fencing token do lease (ver service.go).
+	stateGates := newRunStateGates(es, chainTracer)
+	loopSteer := control.NewLoopSteer(steer, stateGates.Resolve)
+
 	// (7) SECURED RUNTIME — a CADEIA REAL (via NewProductionSecure), com o VERIFIER REAL
 	// ligado. Fail-closed: um colaborador obrigatório em falta é recusado aqui.
 	var toolSetStore integration.ToolSetStore
@@ -943,6 +962,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		FreezeOptions:  freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
 		RuntimeOptions: runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
 		Tracer:         chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
+		SteerSource:    loopSteer,   // AOS-218: liga o canal de steer ao loop de produção (ACHADO-2)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
@@ -1243,6 +1263,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		DSARIndex:               dsarIndex,
 		ExpirationJob:           expirationJob,
 		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
+		stateGates:              stateGates,    // AOS-218: fonte do StateGate durável por-run para o steer
 
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,

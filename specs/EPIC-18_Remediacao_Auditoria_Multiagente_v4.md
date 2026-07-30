@@ -1395,23 +1395,29 @@ divergência de replay. É a mesma disciplina de AOS-211 (anotar-depois-exigir):
 
 **Critérios de aceitação**
 
-- [ ] **Steer chega ao loop:** o runtime de produção compõe `control.NewLoopSteer(node.Steer, gates)` e
+- [x] **Steer chega ao loop:** o runtime de produção compõe `control.NewLoopSteer(node.Steer, gates)` e
       liga-o via `agentruntime.WithSteerSource` (em `bootstrap.go`/`secured.go`). O `gates func(runID) StateGate`
       resolve o `StateGate` durável por-run (a máquina de estados AOS-017) da fonte real do nó — decidir e
       justificar de onde vem (registo de runs / substrato durável), sem inventar mecanismo novo.
-- [ ] **Falsificável (steer efectivo, `-race`, ao nível do nó):** um `POST /runs/{id}/steer` assinado durante
+      *(Evidência: `bootstrap.go:940` `control.NewLoopSteer(steer, stateGates.Resolve)` → `SecuredConfig.SteerSource` → `secured.go:294` `WithSteerSource`; a costura por-run `runStateGates` em `packages/cmd/aos/steer_gates.go` reusa a `state.Machine` de AOS-017 sobre o Event Store do nó, com lazy-claim ready→running sob o fencing token do lease.)*
+- [x] **Falsificável (steer efectivo, `-race`, ao nível do nó):** um `POST /runs/{id}/steer` assinado durante
       um run faz o loop **aplicar a correcção** (a correcção entra no tail do turno seguinte) e um `/pause`
       **pausa** o run (transição durável running→paused). Prova dos dois sentidos: sem a correcção, o loop
       não muda.
-- [ ] **Replay fiel de um run com steer:** o `ReplayEngine` **capta/reconstrói** a correcção (consome
+      *(Evidência: `TestNodeSteerCorrectionReachesLoop` + `TestNodeSteerPauseIsDurable` em `packages/cmd/aos/aos218_steer_wiring_test.go`, `-race` verdes.)*
+- [x] **Replay fiel de um run com steer:** o `ReplayEngine` **capta/reconstrói** a correcção (consome
       `control.steer` do stream, ou capta-a no `TurnCapture`) e o replay de um run steerado **reproduz o
       `prompt_hash` SEM divergência**. Teste que **falha ANTES** do fix (a divergência espúria) e passa depois.
-- [ ] **Resume-from-step** com correcção pré-segmento produz o **mesmo** `FinalStateHash` que o replay
+      *(Evidência: `TestReplaySteeredRunIsFaithful` — não-vácuo (prompt_hash do turno 2 steerado ≠ baseline) + falha-antes provado empiricamente; análogo selado `TestReplaySteeredSealedRunIsFaithful`; captura via `TurnCapture` de `LeadingCorrection` em `nondeterminism_capture.go`/`sovereign_content.go`.)*
+- [x] **Resume-from-step** com correcção pré-segmento produz o **mesmo** `FinalStateHash` que o replay
       completo (fecha a janela de retoma silenciosamente-errada).
-- [ ] **Retro-compat:** runs **sem** steer são byte-idênticos (replay/resume inalterados); os testes de
+      *(Evidência: `TestReplaySteeredResumeEqualsFullReplay`, `-race` verde.)*
+- [x] **Retro-compat:** runs **sem** steer são byte-idênticos (replay/resume inalterados); os testes de
       AOS-016/021/180/210/211 continuam verdes.
-- [ ] Reconciliar as afirmações de `steer_channel.go:38`/`aos-demo/main.go:292` («reproduz-se por replay») com
+      *(Evidência: `TestReplayNoSteerByteIdenticalCapture`; lazy-claim em `steer_gates.go` não gera transição sem pause de facto; suites AOS-016/021/180/210/211 verdes com `-race`.)*
+- [x] Reconciliar as afirmações de `steer_channel.go:38`/`aos-demo/main.go:292` («reproduz-se por replay») com
       o wiring agora real. Sem segredos; gates verdes.
+      *(Evidência: doc-comment de `steer_channel.go` distingue sobreviver-a-crash (Rebuild) de fidelidade-de-replay do run steerado; `aos-demo/main.go:292` nota que a pausa através do loop já existe via `WithSteerSource`. Gates bloqueantes verdes, `secrets.sh` verde.)*
 
 **Fecha:** ACHADO-2 + ACHADO-1. **Depende de:** AOS-158 (`LoopSteer`/`WithSteerSource`), AOS-160 (steer
 autenticado), AOS-016/AOS-017 (durabilidade/StateGate), AOS-180 (replay/capturer). **Não duplica:** AOS-193

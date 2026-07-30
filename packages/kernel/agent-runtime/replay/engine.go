@@ -421,6 +421,20 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		manifest := tr.manifest[turn]
 		inSegment := fromTurn == 0 || turn >= fromTurn
 
+		// (0) CORRECÇÃO DE STEER (AOS-218/AOS-023): o turno ANTERIOR injectou uma correcção
+		// TRUSTED no tail (leading correction deste turno), capturada em
+		// [capturePayload.LeadingCorrection]. Dobra-se ANTES de re-materializar o prompt —
+		// EXACTAMENTE onde o loop base a acrescentou (fim do turno anterior, antes do
+		// assemble deste) — usando a MESMA construção ([agentruntime.TailFromCorrection]).
+		// Sem ela o tail reconstruído omitiria o segmento e o prompt_hash divergiria
+		// espuriamente num run steerado. Aplica-se a TODO o turno (segmento verificado OU
+		// pré-segmento dobrado no resume), pelo que uma correcção pré-segmento também entra
+		// no estado reconstruído — o que faz o resume-from-step convergir com o replay
+		// completo. Runs sem steer têm LeadingCorrection vazia ⇒ tail byte-idêntico.
+		if len(capt.LeadingCorrection) > 0 {
+			tail = append(tail, agentruntime.TailFromCorrection(capt.LeadingCorrection))
+		}
+
 		// (1) RE-MATERIALIZAR o prompt do turno com o tail corrente.
 		incoming := tailHash(tail)
 		view := asm.Assemble(turn, tail)

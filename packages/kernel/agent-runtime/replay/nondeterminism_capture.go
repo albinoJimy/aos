@@ -107,6 +107,14 @@ type capturePayload struct {
 	// principal que o Producer do envelope), mas é preservado para a erasure o
 	// alcançar. Omitido quando não há cifra.
 	SealedSubject string `json:"sealed_subject,omitempty"`
+	// LeadingCorrection é a correcção de steer TRUSTED (AOS-023) que o turno ANTERIOR
+	// injectou no tail e que, por isso, integra o prompt DESTE turno. Capturá-la é o que
+	// torna o replay de um run STEERADO fiel (AOS-218): o motor reconstrói o mesmo
+	// segmento de tail antes de re-materializar o prompt. Omitida (omitempty) nos runs
+	// sem steer ⇒ os bytes do evento AOS-016 mantêm-se inalterados. Quando há cifra
+	// por-titular ([SealedContent]), migra para dentro do envelope selado (fica vazia
+	// aqui) — não é texto-claro no WAL, tal como a resposta e os resultados.
+	LeadingCorrection []byte `json:"leading_correction,omitempty"`
 }
 
 // sealedContent é o corpo PII do turno que migra INTEIRO para dentro do envelope
@@ -114,8 +122,9 @@ type capturePayload struct {
 // serialização canónica (structs, ordem fixa) que [audit.SealContent] cifra; o
 // evento do Event Store guarda só o ciphertext ([capturePayload.SealedContent]).
 type sealedContent struct {
-	Response    responseCapture     `json:"response"`
-	ToolResults []toolResultCapture `json:"tool_results,omitempty"`
+	Response          responseCapture     `json:"response"`
+	ToolResults       []toolResultCapture `json:"tool_results,omitempty"`
+	LeadingCorrection []byte              `json:"leading_correction,omitempty"`
 }
 
 // EventStoreCapturer implementa [agentruntime.Capturer]: persiste os inputs
@@ -236,6 +245,19 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 		Response:           c.encodeResponse(tc.Response),
 		ToolResults:        c.encodeResults(tc.ToolResults),
 		ObservedAtUnixNano: observedAt,
+		LeadingCorrection:  tc.LeadingCorrection, // AOS-218: correcção de steer TRUSTED do prompt deste turno
+	}
+
+	// GUARDA DE SEGREDOS na correcção de steer (AOS-218). A LeadingCorrection é texto-livre
+	// de um operador AUTENTICADO que pode carregar PII/segredos — a MESMA superfície que o
+	// texto do modelo e os argumentos de tool. No modo referência-só ([WithSensitiveResults],
+	// SEM sealer), cujo desenho é manter TODO o texto-livre fora do WAL em claro, redige-se
+	// para uma referência sha256 irreversível — coerência da guarda (nada de texto-livre em
+	// claro no WAL). Com sealer (caminho de PRODUÇÃO, AOS-093), a correcção migra CIFRADA
+	// por-titular para dentro do envelope selado abaixo (nunca claro no WAL, mas reversível
+	// com a chave), pelo que NÃO se redige aí — é isso que mantém o replay selado FIEL.
+	if c.sensitive && c.sealer == nil && len(payload.LeadingCorrection) > 0 {
+		payload.LeadingCorrection = []byte(redactRef(payload.LeadingCorrection))
 	}
 
 	// CIFRA POR-TITULAR (AOS-093): antes de qualquer persistência, o conteúdo
@@ -245,8 +267,9 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 	// FAIL-CLOSED: um erro de cifra aborta a captura (nunca se cai para texto-claro).
 	if c.sealer != nil && tc.Subject != "" {
 		inner, err := json.Marshal(sealedContent{
-			Response:    payload.Response,
-			ToolResults: payload.ToolResults,
+			Response:          payload.Response,
+			ToolResults:       payload.ToolResults,
+			LeadingCorrection: payload.LeadingCorrection,
 		})
 		if err != nil {
 			return err
@@ -257,6 +280,7 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 		}
 		payload.Response = responseCapture{}
 		payload.ToolResults = nil
+		payload.LeadingCorrection = nil
 		payload.SealedContent = sealed
 		payload.SealedSubject = tc.Subject
 	}

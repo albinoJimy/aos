@@ -54,6 +54,13 @@ type TurnCapture struct {
 	// Store (AOS-093). Vazio ⇒ sem cifra por-titular (retro-compat). Não é PII de
 	// conteúdo: é o identificador que localiza a KEK a destruir no crypto-shredding.
 	Subject string
+	// LeadingCorrection é a correcção de steer TRUSTED (AOS-023) que o loop injectou
+	// no tail no FIM do turno ANTERIOR e que, por isso, faz parte do prompt DESTE
+	// turno (ver o consumo do [SteerSource] em [Runtime.Run] e [tailFromCorrection]).
+	// Capturá-la é o que torna o replay de um run STEERADO fiel (AOS-218): sem ela a
+	// reconstrução do tail omitiria o segmento de correcção e o prompt_hash divergiria
+	// espuriamente. Vazio ⇒ turno sem correcção pendente (retro-compat byte-idêntica).
+	LeadingCorrection []byte
 }
 
 // ContentSealer cifra o CONTEÚDO PII de um run por chave POR-TITULAR (envelope

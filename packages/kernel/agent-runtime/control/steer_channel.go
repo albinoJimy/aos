@@ -35,8 +35,16 @@ const (
 // Tipos canónicos dos eventos append-only do canal de controlo no Event Store. Cada
 // sinal aceite é UM evento; a projecção corrente (pausa pendente + correcção
 // pendente) é reconstruível relendo-os por ordem de seq ([SteerChannel.Rebuild]) —
-// é isto que faz o ciclo pause/steer/resume SOBREVIVER A CRASH e reproduzir-se por
-// replay (AOS-016).
+// é isto que faz o ciclo pause/steer/resume SOBREVIVER A CRASH.
+//
+// FIDELIDADE DE REPLAY (AOS-218): o ciclo de controlo sobreviver a crash (via Rebuild) é
+// distinto de o RUN steerado reproduzir-se sem divergência. A correcção que o loop injecta
+// no tail (ver [agentruntime.SteerSource]/tailFromCorrection) altera o prompt do turno
+// seguinte; para o replay (AOS-016) o reproduzir fielmente, essa correcção é CAPTURADA no
+// evento de não-determinismo do turno ([agentruntime.TurnCapture.LeadingCorrection]) e
+// re-dobrada no tail pelo motor. Antes de AOS-218 a correcção não era captada e um run
+// steerado divergia espuriamente por prompt_hash — o wiring de produção (ACHADO-2) e a
+// captura (ACHADO-1) fecham as duas metades: a correcção chega ao loop E reproduz-se.
 const (
 	// EventTypeControlPause — sinal pause aceite (running→paused no fim do turno).
 	EventTypeControlPause = "control.pause"

@@ -436,6 +436,23 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		return
 	}
 
+	// AOS-218: ABRE a máquina de estados durável do run (AOS-017) e regista o
+	// [control.StateGate] que o canal de steer usa para materializar running↔paused. É
+	// reconstruída do log (retoma após crash) e reclamada (ready→running) LAZILY — só no
+	// primeiro pause de facto pedido — com o fencing token do lease JÁ detido (rs.lease foi
+	// escrito em Submit sob o mutex, happens-before deste `go hostRun`). Um run sem steer
+	// nunca toca o gate ⇒ nenhuma transição ⇒ stream/replay byte-idênticos. O gate é
+	// LIBERTADO no fim (defer), simétrico ao registo de em-curso.
+	if s.node.stateGates != nil {
+		if err := s.node.stateGates.Open(ctx, rs.runID, rs.lease.Token); err != nil {
+			s.mu.Lock()
+			rs.err = fmt.Errorf("aos: abertura da maquina de estados do run %q (AOS-218): %w", rs.runID, err)
+			s.mu.Unlock()
+			return
+		}
+		defer s.node.stateGates.Close(rs.runID)
+	}
+
 	res, _, err := s.node.Runtime.Run(ctx, goal, nil)
 	s.mu.Lock()
 	rs.result = res
