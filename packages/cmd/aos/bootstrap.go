@@ -920,8 +920,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (7b) SOBERANIA DE LEITURA (AOS-172, D7). A REGRA fail-closed board→região é FIXA (Carta
 	// §4); a TOPOLOGIA é DEMO-GRADE self-hosted por config (cfg.BoardRegions) — o provisioning
 	// real de regiões/boards (IdP de soberania) fica DEFERIDO (análogo a D4). EIXO (AOS-196):
-	// POR ATRIBUIR, registado em docs/governance/REGISTO-Deferimentos.md (DEF-201); a
-	// verificação leitor.região == run.região no selo D6 é AOS-182. NÃO é EPIC-09/10.
+	// POR ATRIBUIR, registado em docs/governance/REGISTO-Deferimentos.md (DEF-201). A
+	// verificação leitor.região == run.região POR-RUN está ENTREGUE (AOS-182/DEF-202): a
+	// residência do run é selada na criação e authorizeRead recusa cross-region — ver
+	// sovereignty.go/api.go. NÃO é EPIC-09/10.
 	// Vazio ⇒ read-path legado (sem authz por-chamador nem selo). Reutiliza a MESMA autoridade
 	// board→região que o PDP (AOS-094): a regra NÃO é duplicada.
 	// AOS-205: a fonte board→região é agora uma PORTA DE AUTORIDADE ([SovereignRegionAuthority])
@@ -1123,7 +1125,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		} else {
 			log("soberania de leitura (AOS-172/AOS-205, D7): READ-PATH SOBERANO FAIL-CLOSED ligado sobre FONTE DE AUTORIDADE board->regiao (rotacao+auditoria) — %d board(s), revisao %d; credencial do leitor DEMO-GRADE por headers (X-Aos-Reader/X-Aos-Board), aceite so FORA de producao — defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE para exigir credencial forte OIDC; leitura sensivel SELADA no WORM (D6)", readAuthority.Len(), readAuthority.Revision())
 		}
-		log("NOTA AOS-205: o TENANT concreto (IdP de soberania da organizacao que empurra o board->regiao autoritativo) fica DEFERIDO — a semente/rotacoes entram por config/operador; o no fica com o CONTRATO (fonte rotacionavel+auditada e verificacao de credencial). A coincidencia leitor.regiao==run.regiao no selo D6 e AOS-182")
+		log("NOTA AOS-205: o TENANT concreto (IdP de soberania da organizacao que empurra o board->regiao autoritativo) fica DEFERIDO — a semente/rotacoes entram por config/operador; o no fica com o CONTRATO (fonte rotacionavel+auditada e verificacao de credencial). A coincidencia leitor.regiao==run.regiao POR-RUN esta ENTREGUE (AOS-182/DEF-202): residencia selada na criacao, authorizeRead recusa cross-region")
 	} else {
 		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed")
 	}

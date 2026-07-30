@@ -97,7 +97,7 @@ func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 	// (1) AUTHZ SOBERANA POR-CHAMADOR (D7). Leitor não autorizado ⇒ 404 uniforme (não-enumerável,
 	// sem PII). Gate não composto ⇒ legado (proceed=true): mas a reconstrução EXIGE o gate soberano
 	// (é uma leitura de conteúdo sensível decifrado), pelo que sem ele NEGAMOS abaixo (501).
-	reader, authorized := h.admitSovereignRead(w, r)
+	reader, residency, authorized := h.admitSovereignRead(w, r, runID)
 	if !authorized {
 		return
 	}
@@ -136,7 +136,7 @@ func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 
 	// (3) SELO WORM DE LEITURA SENSÍVEL (D6) como PRÉ-CONDIÇÃO — a reconstrução decifra conteúdo
 	// sensível e não pode ser silenciosa. Se o WORM não selar, NEGA fail-closed (503).
-	if !h.sealSensitiveRead(w, r, reader, runID, capReadReconstruct) {
+	if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadReconstruct) {
 		return
 	}
 

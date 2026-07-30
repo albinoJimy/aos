@@ -1203,18 +1203,20 @@ WORM); o `Accessor`/`WithPayloadResolver` do `ReplayEngine`.
       leitor) que reconstrói um run selado obtém o **conteúdo REAL decifrado**; a leitura sensível é
       **selada no WORM (D6)** sem PII. *(GET /runs/{id}/reconstruct atrás de D7+D6 — `sovereign_replay.go`;
       `replay.ReplayEngine.Reconstruct` + `WithContentOpener`; prova `TestNode_AOS214_AuthorizedReaderDecrypts`.)*
-      **Ressalva (alcance do gate — deferimento AOS-182):** a âncora de região é a resolução soberana
-      **board→região** (`RegionFor` fail-closed, D7 PDP — a mesma regra de AOS-172/AOS-094), **não** uma
-      verificação **por-run** `leitor.região == run.região`. O read-path do nó ainda não rastreia
-      board→região POR-RUN (não existe esse registo; inventá-lo seria mecanismo novo, proibido pelas
-      restrições zero-dep), pelo que um leitor cujo board resolve para uma região válida reconstrói um run
-      cujo titular pertença a outra região desde que esta réplica detenha o vault — a mesma coarseness que
-      já governa as leituras SSE/desfecho existentes, que aqui **escala de ciphertext para plaintext
-      decifrado**. Quando o registo board→região por-run existir (provisioning real, EPIC-09/10)
-      acrescenta-se a verificação de coincidência fail-closed antes de compor o opener. Ver a mesma nota em
-      `sovereignty.go` (`readGovernance.seal`, semântica do `Resource.Region`) e no cabeçalho de
-      `sovereign_replay.go`. A âncora de autorização continua **real e não-vácua** (board não resolvível ⇒
-      região negada ⇒ 404), apenas não granular por-run.
+      **Nota (alcance do gate — RECONCILIADA por AOS-182/DEF-202):** a âncora de região passou a ser
+      **por-run**. O deferimento AOS-182 (a ressalva original desta linha) foi entregue: a residência do run
+      é **selada na criação** (`POST /runs` → `readGovernance.sealResidency`) a partir da resolução soberana
+      **board→região** do SUBMISSOR (`RegionFor` fail-closed, a mesma regra de AOS-172/AOS-094 — não uma
+      auto-declaração), durável e tamper-evidente numa partição WORM POR-RunID (`gov.residency/<run>`), e a
+      reconstrução resolve-a via `readGovernance.authorizeRead` (em `admitSovereignRead`) exigindo
+      **`leitor.região == run.região`** ANTES de compor o opener — cross-region ⇒ 404 uniforme
+      não-enumerável, **nunca** decifrado. Fecha-se assim a coarseness anterior (um leitor cujo board resolve
+      para região válida já **não** reconstrói um run residente noutra região). Ver a nota reconciliada em
+      `sovereignty.go` (`readGovernance.authorizeRead`/`seal`, obrigação `gov.read.residency`). A âncora de
+      autorização é **real, não-vácua E granular por-run** (board não resolvível ⇒ região negada ⇒ 404).
+      RESIDUAL nomeado (retro-compat): um run SEM residência selada (legado/in-process, ou pré-existente ao
+      deploy da soberania) é servido sem check — em modo soberano todo o run ingressado via `POST /runs`
+      tem-na. Ver DEF-202 (FECHADO-RESIDUAL) no `REGISTO-Deferimentos`.
 - [x] **Falsificável (dois sentidos):** um leitor **não-autorizado** (região errada, ou sem credencial)
       obtém **`ErrPayloadAccessDenied`** (ou ciphertext) — **nunca o texto em claro**; o autorizado obtém
       o claro. A prova exercita a âncora de autorização (não é vácua). *(`TestNode_AOS214_UnauthorizedReaderDenied`

@@ -140,7 +140,7 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	// inexistente (não-enumerável, sem PII). Gate não composto ⇒ legado. Feita ANTES da
 	// admission para NÃO consumir recursos (subscrição/goroutines/tecto trajConns) por um
 	// leitor não autorizado.
-	reader, authorized := h.admitSovereignRead(w, r)
+	reader, residency, authorized := h.admitSovereignRead(w, r, runID)
 	if !authorized {
 		return
 	}
@@ -221,7 +221,7 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	// existe/é conhecido) e ANTES de comprometer o SSE (headers ainda não enviados): se o WORM
 	// NÃO selar, NEGA fail-closed com status HTTP (o selo é obrigação de conformidade, não
 	// telemetria best-effort — contraste com o fail-open de AOS-173).
-	if !h.sealSensitiveRead(w, r, reader, runID, capReadTrajectory) {
+	if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadTrajectory) {
 		return
 	}
 

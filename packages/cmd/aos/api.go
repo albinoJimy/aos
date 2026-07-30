@@ -549,6 +549,28 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SOBERANIA — RESIDÊNCIA DO RUN na CRIAÇÃO (AOS-182, DEF-202). Em modo SOBERANO (gate de
+	// leitura composto) a região de residência do run é ESTABELECIDA aqui a partir da resolução
+	// board→região do SUBMISSOR — a MESMA autoridade (readGov.authorize) que resolve os leitores,
+	// não uma auto-declaração sem verificação — e SELADA de forma durável e tamper-evidente
+	// POR-RunID ANTES de o run ser hospedado, para que uma leitura futura possa exigir
+	// leitor.região == run.região e nenhum run soberano fique legível antes de a sua residência
+	// estar durável. FAIL-CLOSED: sem região resolvível (credencial/board ausente ou desconhecido)
+	// o submit é RECUSADO; se o WORM não selar, é RECUSADO. Em modo LEGADO (readGov nil) nada muda
+	// — sem residência, sem check cross-region, como o resto do read-path D6/D7 sem topologia
+	// soberana.
+	if h.readGov != nil {
+		submitter, ok := h.readGov.authorize(r)
+		if !ok {
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
+		if err := h.readGov.sealResidency(r.Context(), submitter, req.RunID); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
+	}
+
 	goal := agentruntime.Goal{
 		RunID:      req.RunID,
 		Objective:  req.Objective,
@@ -635,7 +657,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	// MESMO 404 uniforme de um run inexistente (não-enumerável, sem PII). Gate não composto ⇒
 	// legado. Feita ANTES da verificação de existência: um leitor não autorizado nunca
 	// distingue "existe" de "nao existe" — ambos 404.
-	reader, ok := h.admitSovereignRead(w, r)
+	reader, residency, ok := h.admitSovereignRead(w, r, runID)
 	if !ok {
 		return
 	}
@@ -643,7 +665,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	if oc, done := h.svc.Outcome(runID); done {
 		// (D6) SELO WORM de leitura sensível como PRÉ-CONDIÇÃO: se o WORM não selar, NEGA
 		// fail-closed (não se serve o desfecho sensível sem o registo de auditabilidade).
-		if !h.sealSensitiveRead(w, r, reader, runID, capReadOutcome) {
+		if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
 			return
 		}
 		resp := runStateResponse{
@@ -664,7 +686,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	// Em curso?
 	for _, id := range h.svc.InProgress() {
 		if id == runID {
-			if !h.sealSensitiveRead(w, r, reader, runID, capReadOutcome) {
+			if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
 				return
 			}
 			writeJSON(w, http.StatusOK, runStateResponse{RunID: runID, Status: "in_progress"})

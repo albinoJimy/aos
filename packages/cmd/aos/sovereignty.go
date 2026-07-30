@@ -56,8 +56,20 @@ const (
 	readAuditToolID = "gov.read"
 	// readBoardObligation carrega o board do leitor no selo (identificador de governação).
 	readBoardObligation = "gov.read.board"
+	// readResidencyObligation carrega a REGIÃO DE RESIDÊNCIA DO RUN no selo de leitura D6
+	// (AOS-182, DEF-202) — para o selo provar a COINCIDÊNCIA leitor.região == run.região que a
+	// authz já impôs. É um identificador de GOVERNAÇÃO (não PII), a par do board do leitor.
+	readResidencyObligation = "gov.read.residency"
 	// readResourceType rotula o Resource cujo Value é o run lido (id, não PII).
 	readResourceType = "run"
+
+	// AOS-182 (DEF-202) — RESIDÊNCIA DO RUN. capRunResidency rotula o selo que ESTABELECE a
+	// região de residência do run na CRIAÇÃO (submit); residencyToolID identifica o seu produtor
+	// (sem PII). O selo é encadeado numa partição POR-RUN dedicada ([readResidencyPartition]),
+	// tamper-evidente, e é a fonte que a leitura futura consulta para exigir a coincidência de
+	// região — NÃO a região auto-declarada pelo leitor.
+	capRunResidency = "residency:run"
+	residencyToolID = "gov.residency"
 )
 
 // readerIdentity é a identidade de governação RESOLVIDA de um leitor autorizado: o principal
@@ -147,20 +159,123 @@ func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
 	return readerIdentity{principal: principal, board: board, region: region}, true
 }
 
-// seal emite o SELO WORM de leitura sensível (D6): um registo tamper-evident, POR-PARTIÇÃO e
-// SEM PII, que regista QUEM leu (principal), o BOARD, o run, a REGIÃO resolvida e o instante.
-// É uma PRÉ-CONDIÇÃO de conformidade — o chamador NEGA a leitura fail-closed se esta devolver
-// erro (o WORM não selou). Só metadados/ids entram no selo; o board é identificador de
-// governação (não PII) e a região é a fronteira resolvida.
+// authorizeRead é a authz de LEITURA POR-RUN (AOS-182, DEF-202): resolve o leitor (via
+// [readGovernance.authorize]) E impõe a fronteira de SOBERANIA POR-RUN — leitor.região tem de
+// COINCIDIR com a REGIÃO DE RESIDÊNCIA do run (a que o submissor selou na criação). Devolve
+// (identidade, residência-do-run, true) só quando o leitor está autorizado E a residência
+// coincide; caso contrário (_, _, false) — NEGA fail-closed (o chamador devolve o 404 uniforme e
+// não-enumerável). É a comparação que faltava: [authorize] resolvia a região do LEITOR mas não
+// tinha a região do RUN com que a confrontar, pelo que um leitor de OUTRA região (com credencial
+// válida do SEU board) podia ler um run alheio.
 //
-// SEMÂNTICA do Resource.Region (declarada — para NÃO ler enganosamente em compliance):
-// a região selada é a que o BOARD DO LEITOR resolve (govsov.RegionFor), NÃO a residência
-// real dos dados do run. Ao contrário de [pdp.PDP.applySovereignty] (que vincula o board do
-// RECURSO), o read-path do nó ainda não rastreia board→região POR-RUN, pelo que o selo afirma
-// a região DECLARADA pelo leitor. Quando o board→região por-run existir (provisioning real,
-// EPIC-09/10) acrescenta-se a verificação de coincidência (leitor.região == run.região)
-// fail-closed, alinhando com [govsov.Registry] — DEFERIDO, análogo ao tratamento de D4.
-func (g *readGovernance) seal(ctx context.Context, id readerIdentity, runID, capability string) error {
+// RETRO-COMPAT (fixado): um run SEM residência selada (criado no modo LEGADO — sem soberania
+// composta no submit — ou por uma via in-process que não passou pela criação soberana) resolve
+// para residência AUSENTE e é lido SEM check cross-region, exactamente como o resto do read-path
+// D6/D7 se comporta sem topologia soberana. Em modo SOBERANO todo o run criado via ingresso tem
+// residência selada (fail-closed no submit), pelo que NENHUM run soberano é servido cross-region.
+func (g *readGovernance) authorizeRead(ctx context.Context, r *http.Request, runID string) (readerIdentity, string, bool) {
+	id, ok := g.authorize(r)
+	if !ok {
+		return readerIdentity{}, "", false
+	}
+	region, sealed, err := g.runResidency(ctx, runID)
+	if err != nil {
+		// Falha ao resolver a residência do run ⇒ NEGA fail-closed (nunca se serve na dúvida).
+		return readerIdentity{}, "", false
+	}
+	if !sealed {
+		// Run sem residência selada (legado) ⇒ sem check cross-region (retro-compat).
+		return id, "", true
+	}
+	if !regionsCoincide(id.region, region) {
+		// CROSS-REGION: leitor de região != residência do run ⇒ NEGA (nunca servido).
+		return readerIdentity{}, "", false
+	}
+	return id, region, true
+}
+
+// regionsCoincide compara duas regiões de governação. Ambas são saídas de [govsov.Registry.RegionFor]
+// (já normalizadas), pelo que a comparação é directa; o EqualFold+TrimSpace é defesa em profundidade.
+func regionsCoincide(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// readResidencyPartition é a partição WORM POR-RUN que guarda a RESIDÊNCIA do run (AOS-182,
+// DEF-202) — namespaced com "gov.residency/" para não colidir com a cadeia de mediação do RM
+// (por RunID cru) nem com os selos de leitura ("gov.read/"). A residência de cada run forma a sua
+// própria cadeia tamper-evidente, verificável isoladamente.
+func readResidencyPartition(runID string) string { return "gov.residency/" + runID }
+
+// sealResidency ESTABELECE a residência de um run na CRIAÇÃO (submit): sela, de forma durável e
+// tamper-evidente na partição por-run, a REGIÃO resolvida do SUBMISSOR (a mesma resolução
+// board→região dos leitores, via [readGovernance.authorize] — não uma auto-declaração sem
+// verificação). SEM PII: só o principal pseudónimo, o board (identificador de governação) e a
+// região. É PRÉ-CONDIÇÃO da hospedagem do run em modo soberano (o chamador recusa o submit se
+// isto falhar), para que nenhum run soberano fique legível ANTES de a sua residência estar durável.
+func (g *readGovernance) sealResidency(ctx context.Context, submitter readerIdentity, runID string) error {
+	// IDEMPOTENTE POR-RunID: a residência é fixada na PRIMEIRA criação e não é re-negociável. Uma
+	// re-submissão do MESMO RunID — incluindo uma vinda de credencial de OUTRA região — NÃO
+	// acrescenta um segundo registo à partição: [runResidency] já toma o primeiro registo como
+	// autoritativo (a fronteira em vigor nunca muda), e saltar o Append aqui evita poluir o trilho
+	// tamper-evidente com "submits" de regiões que não residem o run e evita o seu crescimento a cada
+	// retry idempotente de svc.Submit. Se já há residência selada, é no-op.
+	if _, sealed, err := g.runResidency(ctx, runID); err != nil {
+		return err
+	} else if sealed {
+		return nil
+	}
+	rec := audit.AuditRecord{
+		Partition:  readResidencyPartition(runID),
+		Timestamp:  g.now().UTC(),
+		Decision:   audit.DecisionAllow,
+		Principal:  audit.Principal{NHIID: submitter.principal},
+		Capability: capRunResidency,
+		RunID:      runID,
+		ToolID:     residencyToolID,
+		// Resource liga o selo ao run e grava a REGIÃO DE RESIDÊNCIA (soberania), tamper-evidente.
+		Resource: audit.Resource{Type: readResourceType, Value: runID, Region: submitter.region},
+		// O board do submissor entra como obrigação (identificador de governação, não PII).
+		Obligations: []audit.Obligation{{Type: readBoardObligation, Fields: []string{submitter.board}}},
+	}
+	_, err := g.worm.Append(ctx, rec)
+	return err
+}
+
+// runResidency resolve a REGIÃO DE RESIDÊNCIA de um run a partir do selo de criação. Usa o PRIMEIRO
+// registo da partição (audit_seq 1) como AUTORITATIVO — a residência é fixada no primeiro submit e
+// não é re-negociável por uma re-submissão de outra região (que apenas acrescentaria um registo ao
+// trilho, sem mudar a fronteira em vigor). Devolve (região, true, nil) quando há residência selada;
+// ("", false, nil) quando a partição está vazia (run legado, sem residência).
+func (g *readGovernance) runResidency(ctx context.Context, runID string) (string, bool, error) {
+	rec, ok, err := g.worm.At(ctx, readResidencyPartition(runID), 1)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	return rec.Resource.Region, true, nil
+}
+
+// seal emite o SELO WORM de leitura sensível (D6): um registo tamper-evident, POR-PARTIÇÃO e
+// SEM PII, que regista QUEM leu (principal), o BOARD, o run, a REGIÃO do leitor, a REGIÃO DE
+// RESIDÊNCIA do run e o instante. É uma PRÉ-CONDIÇÃO de conformidade — o chamador NEGA a leitura
+// fail-closed se esta devolver erro (o WORM não selou). Só metadados/ids entram no selo; o board
+// é identificador de governação (não PII) e as regiões são fronteiras de soberania.
+//
+// SEMÂNTICA (AOS-182, DEF-202 — resolvido): Resource.Region é a região do LEITOR (govsov.RegionFor
+// sobre o board do leitor); a obrigação [readResidencyObligation] carrega a REGIÃO DE RESIDÊNCIA
+// DO RUN (a que o submissor selou na criação). Como a authz por-run já impôs leitor.região ==
+// run.região ANTES de chegar aqui, o selo GRAVA AS DUAS e prova a sua COINCIDÊNCIA — fechando o
+// residuo que a versão anterior deixava declarado (o selo afirmava só a região do leitor porque o
+// read-path ainda não rastreava board→região por-run). Para um run LEGADO (sem residência selada)
+// residency vem vazio e a obrigação é omitida — o selo mantém a forma anterior (retro-compat).
+func (g *readGovernance) seal(ctx context.Context, id readerIdentity, residency, runID, capability string) error {
+	obligations := []audit.Obligation{{Type: readBoardObligation, Fields: []string{id.board}}}
+	if residency != "" {
+		// Grava a residência do run (identificador de governação, não PII) — a prova da coincidência.
+		obligations = append(obligations, audit.Obligation{Type: readResidencyObligation, Fields: []string{residency}})
+	}
 	rec := audit.AuditRecord{
 		Partition:  readAuditPartition(runID),
 		Timestamp:  g.now().UTC(),
@@ -169,10 +284,9 @@ func (g *readGovernance) seal(ctx context.Context, id readerIdentity, runID, cap
 		Capability: capability,
 		RunID:      runID,
 		ToolID:     readAuditToolID,
-		// Resource liga o selo ao run lido e à região resolvida (soberania), tamper-evidente.
-		Resource: audit.Resource{Type: readResourceType, Value: runID, Region: id.region},
-		// O board do leitor entra como obrigação (identificador de governação, não PII).
-		Obligations: []audit.Obligation{{Type: readBoardObligation, Fields: []string{id.board}}},
+		// Resource liga o selo ao run lido e à região do LEITOR (soberania), tamper-evidente.
+		Resource:    audit.Resource{Type: readResourceType, Value: runID, Region: id.region},
+		Obligations: obligations,
 	}
 	_, err := g.worm.Append(ctx, rec)
 	return err
@@ -188,23 +302,25 @@ func readAuditPartition(runID string) string { return "gov.read/" + runID }
 // Integração nos handlers de leitura (D7 authz + D6 selo)
 // ---------------------------------------------------------------------------
 
-// admitSovereignRead aplica a REGRA D7 a um handler de leitura. Quando o gate soberano NÃO
-// está composto (readGov nil) devolve a identidade-zero e proceed=true — o comportamento
-// LEGADO (sem authz por-chamador), preservado para nós sem soberania configurada: a REGRA é
-// FIXA (Carta §4) mas a TOPOLOGIA (regiões/boards reais) é CONDICIONAL ao provisioning, que
-// fica DEFERIDO. Quando composto, NEGA fail-closed com o 404 UNIFORME e não-enumerável (a
-// MESMA resposta de um run inexistente) se o leitor não estiver autorizado — sem revelar PII
-// nem a existência de qualquer run.
-func (h *apiHandler) admitSovereignRead(w http.ResponseWriter, r *http.Request) (readerIdentity, bool) {
+// admitSovereignRead aplica a REGRA D7 a um handler de leitura POR-RUN. Quando o gate soberano
+// NÃO está composto (readGov nil) devolve a identidade-zero, residência vazia e proceed=true — o
+// comportamento LEGADO (sem authz por-chamador), preservado para nós sem soberania configurada: a
+// REGRA é FIXA (Carta §4) mas a TOPOLOGIA (regiões/boards reais) é CONDICIONAL ao provisioning.
+// Quando composto, resolve o leitor E impõe a fronteira de SOBERANIA POR-RUN (leitor.região ==
+// residência do run, AOS-182/DEF-202): um leitor não autorizado OU de outra região que a
+// residência do run é NEGADO fail-closed com o 404 UNIFORME e não-enumerável (a MESMA resposta de
+// um run inexistente) — sem revelar PII nem a existência de qualquer run. Devolve também a
+// residência resolvida do run, para o selo D6 a gravar (prova da coincidência).
+func (h *apiHandler) admitSovereignRead(w http.ResponseWriter, r *http.Request, runID string) (readerIdentity, string, bool) {
 	if h.readGov == nil {
-		return readerIdentity{}, true
+		return readerIdentity{}, "", true
 	}
-	id, ok := h.readGov.authorize(r)
+	id, residency, ok := h.readGov.authorizeRead(r.Context(), r, runID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "not found")
-		return readerIdentity{}, false
+		return readerIdentity{}, "", false
 	}
-	return id, true
+	return id, residency, true
 }
 
 // sealSensitiveRead emite o SELO WORM de leitura sensível (D6) como PRÉ-CONDIÇÃO da leitura.
@@ -213,11 +329,11 @@ func (h *apiHandler) admitSovereignRead(w http.ResponseWriter, r *http.Request) 
 // best-effort (contraste deliberado com o fail-open de AOS-173). Deve ser chamado ANTES de
 // comprometer a resposta (headers de 200 / corpo), para que a negação ainda possa devolver um
 // status.
-func (h *apiHandler) sealSensitiveRead(w http.ResponseWriter, r *http.Request, id readerIdentity, runID, capability string) bool {
+func (h *apiHandler) sealSensitiveRead(w http.ResponseWriter, r *http.Request, id readerIdentity, residency, runID, capability string) bool {
 	if h.readGov == nil {
 		return true
 	}
-	if err := h.readGov.seal(r.Context(), id, runID, capability); err != nil {
+	if err := h.readGov.seal(r.Context(), id, residency, runID, capability); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "indisponivel")
 		return false
 	}

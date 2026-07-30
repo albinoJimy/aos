@@ -142,7 +142,7 @@ que a activa, o banner declara o estado composto, e `deploy/node/README.md` docu
 ### AOS-182 — Implementar read-path soberano fail-closed D6/D7 no nó
 
 **Critérios de aceitação:**
-- [ ] `readGovernance.authorize` verifica a região de residência do run contra a região declarada pelo leitor, recusando leituras cross-board não autorizadas.
+- [x] `readGovernance.authorize` verifica a região de residência do run contra a região declarada pelo leitor, recusando leituras cross-board não autorizadas.
 - [ ] Selo de leitura sensível (D6) só é emitido quando o recurso/operador é classificado como sensível, e transporta `PayloadRef`/`KeyRef` conforme ADR-016.
 - [ ] Testes de API demonstrando recusa cross-region e auditoria correcta.
 - [ ] `docs/adr/ADR-016-fronteira-confianca-ui.md` §4 actualizado se o stub for promovido.
