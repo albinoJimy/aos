@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-217** (28 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093); **AOS-215 acrescentado por AOS-093/DEF-302** (a KEK por-titular vive num `InMemoryKeyVault` demo-grade e o nó não tem costura para injectar um KMS/HSM — a porta `audit.KeyVault` existe mas `Config.DSARVault` é o tipo concreto; o KMS real é infra-org, a costura de injeção é código do nó); **AOS-217 acrescentado por auditoria adversarial** (achado A1: um run submetido sem `principal_nhi` em modo soberano persiste o conteúdo em CLARO no WAL — a cifra por-titular de AOS-093 só corre com titular != "" — e fica não-shreddable; sem fail-closed no submit soberano; o titular é ainda um campo de corpo desacoplado da credencial verificada do submissor) |
+| Intervalo de tickets | **AOS-190 … AOS-218** (29 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093); **AOS-215 acrescentado por AOS-093/DEF-302** (a KEK por-titular vive num `InMemoryKeyVault` demo-grade e o nó não tem costura para injectar um KMS/HSM — a porta `audit.KeyVault` existe mas `Config.DSARVault` é o tipo concreto; o KMS real é infra-org, a costura de injeção é código do nó); **AOS-217 acrescentado por auditoria adversarial** (achado A1: um run submetido sem `principal_nhi` em modo soberano persiste o conteúdo em CLARO no WAL — a cifra por-titular de AOS-093 só corre com titular != "" — e fica não-shreddable; sem fail-closed no submit soberano; o titular é ainda um campo de corpo desacoplado da credencial verificada do submissor); **AOS-218 acrescentado por auditoria adversarial** (achados ACHADO-2+ACHADO-1: o plano de controlo steer/pause é autenticado e persistido mas GRAVADO-MAS-INERTE — `WithSteerSource`/`NewLoopSteer` sem chamador de produção, o loop nunca consome a correcção; e ligar o steer activa a divergência espúria de `prompt_hash` porque o replay não capta a correcção) |
 
 ---
 
@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-217)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-218)
 
 Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
@@ -631,6 +631,7 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-215 | Costura de custódia externa da KEK por-titular (DEF-302): `Config.DSARVault` injectável pela porta `audit.KeyVault` + custódia documentada; KMS/HSM real fica infra-org | feature | M | P2 | **EPIC-09** | `DEF-302`/AOS-093 |
 | AOS-216 | Porta de envelope `WrapDEK`/`UnwrapDEK` para custódia HSM key-never-leaves: a KEK nunca sai do vault; impl de referência prova o contrato; fallback à via KEK-crua | feature | M | P2 | **EPIC-09** | residual HSM de `DEF-302`/AOS-215 |
 | AOS-217 | Fail-closed do titular no submit soberano (achado A1): sem `principal_nhi` recusa; o titular é derivado/validado da credencial verificada — nenhum conteúdo persiste sem cifra por-titular | fix | S | **P1** | **EPIC-09** | achado A1 (auditoria adversarial da soberania) |
+| AOS-218 | Ligar o plano de controlo steer/pause ao loop (achado ACHADO-2) + captar a correcção no replay (ACHADO-1): a correcção humana chega ao loop e o replay de um run com steer não diverge | fix | M | **P1** | **EPIC-02** | achados ACHADO-2+ACHADO-1 (auditoria adversarial durável) |
 
 ---
 
@@ -1367,6 +1368,54 @@ outputs de tools em CLARO no WAL** e fica **não-shreddable** (sem KEK por-titul
 
 **Fecha:** o achado A1 (+A7). **Depende de:** AOS-093 (cifra por-titular), AOS-182/205 (submissor
 autenticado). **Não duplica:** AOS-208 (redação — outra camada) nem AOS-182 (residência — outro atributo).
+
+---
+
+### AOS-218 — Ligar o steer/pause ao loop + captar a correcção no replay (achados ACHADO-2 + ACHADO-1)
+
+**Origem:** achados **ACHADO-2** (ALTO) e **ACHADO-1** (latente) da auditoria adversarial da execução durável.
+
+**O defeito (verificado):**
+- **ACHADO-2 — gravado-mas-inerte.** `POST /runs/{id}/steer` autentica (ed25519, anti-replay durável, o
+  aparato AOS-160/193/DEF-012 + a guarda de bind de 4 conjunções) e **persiste** um `control.steer`,
+  marcando `PendingCorrection`. Mas `control.NewLoopSteer`/`WithSteerSource` **não têm chamador de produção**
+  (grep vazio em `integration`/`cmd/aos`): `integration/secured.go` runtimeOpts acrescenta
+  `WithCheckpointer`/`WithCapturer`/`WithActivityDispatcher` mas **nunca** `WithSteerSource`; `bootstrap.go`
+  runtimeOpts = só `WithTracer`. Logo `rt.steer == nil` (`loop.go:381`) e o loop **nunca** consome a
+  correcção nem pausa. O operador crê que corrigiu/pausou o run; não teve efeito.
+- **ACHADO-1 — replay não capta a correcção.** A correcção entra no tail (`loop.go:395`
+  `win.Append(tailFromCorrection(corr))`), alterando o `prompt_hash` do turno seguinte; mas o `TurnCapture`
+  (`loop.go:350`) **não** a persiste e o `ReplayEngine.load()` **ignora** os eventos `control.steer`,
+  reconstruindo o tail só de texto+tool-results. Ligar o steer (ACHADO-2) **activa** este bug: o replay de
+  um run com correcção reporta uma divergência **falsa** de `prompt_hash` (RCA na direcção errada; run fiel
+  marcado eval-fail; e em `FromStepID` estado de retoma silenciosamente errado).
+
+**Restrição de sequência:** os dois têm de ir juntos — ligar o steer sem captar a correcção introduz a
+divergência de replay. É a mesma disciplina de AOS-211 (anotar-depois-exigir): completo, ou nenhum.
+
+**Critérios de aceitação**
+
+- [ ] **Steer chega ao loop:** o runtime de produção compõe `control.NewLoopSteer(node.Steer, gates)` e
+      liga-o via `agentruntime.WithSteerSource` (em `bootstrap.go`/`secured.go`). O `gates func(runID) StateGate`
+      resolve o `StateGate` durável por-run (a máquina de estados AOS-017) da fonte real do nó — decidir e
+      justificar de onde vem (registo de runs / substrato durável), sem inventar mecanismo novo.
+- [ ] **Falsificável (steer efectivo, `-race`, ao nível do nó):** um `POST /runs/{id}/steer` assinado durante
+      um run faz o loop **aplicar a correcção** (a correcção entra no tail do turno seguinte) e um `/pause`
+      **pausa** o run (transição durável running→paused). Prova dos dois sentidos: sem a correcção, o loop
+      não muda.
+- [ ] **Replay fiel de um run com steer:** o `ReplayEngine` **capta/reconstrói** a correcção (consome
+      `control.steer` do stream, ou capta-a no `TurnCapture`) e o replay de um run steerado **reproduz o
+      `prompt_hash` SEM divergência**. Teste que **falha ANTES** do fix (a divergência espúria) e passa depois.
+- [ ] **Resume-from-step** com correcção pré-segmento produz o **mesmo** `FinalStateHash` que o replay
+      completo (fecha a janela de retoma silenciosamente-errada).
+- [ ] **Retro-compat:** runs **sem** steer são byte-idênticos (replay/resume inalterados); os testes de
+      AOS-016/021/180/210/211 continuam verdes.
+- [ ] Reconciliar as afirmações de `steer_channel.go:38`/`aos-demo/main.go:292` («reproduz-se por replay») com
+      o wiring agora real. Sem segredos; gates verdes.
+
+**Fecha:** ACHADO-2 + ACHADO-1. **Depende de:** AOS-158 (`LoopSteer`/`WithSteerSource`), AOS-160 (steer
+autenticado), AOS-016/AOS-017 (durabilidade/StateGate), AOS-180 (replay/capturer). **Não duplica:** AOS-193
+(auth do canal — aqui é o consumo pelo loop).
 
 ---
 
