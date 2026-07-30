@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-213** (24 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093) |
+| Intervalo de tickets | **AOS-190 … AOS-214** (25 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093) |
 
 ---
 
@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-213)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-214)
 
 Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
@@ -627,6 +627,7 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-211 | Os dois atributos em falta no `aos.activity`: **custo por efeito real** e `gen_ai.operation.name` sob contrato semconv | fix | S | P2 | **EPIC-08** | residual §6.3 de `AOS-169-aceitacao-sistemica.md` (AOS-210) |
 | AOS-212 | Fonte declarada do custo por efeito real da tool: porta do desfecho do efeito → span `aos.activity` | feature | M | P2 | **EPIC-08** | `DEF-810` (eixo do custo deferido por AOS-211) |
 | AOS-213 | Superfície de administração de legal hold e expiração (CON-02): rotas autenticadas de hold/release + `ExpirationJob` composto (crypto-shred no TTL) | feature | M | P1 | **EPIC-09** | `CON-02`/`DEF-903` (Opção C, sequenciada após AOS-093) |
+| AOS-214 | Replay soberano de conteúdo selado: `ContentOpener` autorizado por soberania na reconstrução de um run selado (leitor autorizado decifra; não-autorizado nunca vê claro; shred aguenta) | feature | M | P1 | **EPIC-09** | residual (b) de `DEF-301`/AOS-093 |
 
 ---
 
@@ -1170,6 +1171,54 @@ composto** no nó (0 chamadores de produção).
 **Fecha:** `CON-02`/`DEF-903` (a superfície que a Opção C sequenciou). **Depende de:** AOS-092
 (mecanismo hold/expiração), AOS-093 (apagamento real), AOS-205 (credencial forte), AOS-166/193 (API).
 **Não duplica:** AOS-093 (que entrega a cifra/erase; aqui é a **administração** de hold/expiração sobre ela).
+
+---
+
+### AOS-214 — Replay soberano de conteúdo selado
+
+**Origem:** residual **(b)** de `DEF-301`/AOS-093 — «o REPLAY de um run selado exige acesso do leitor
+ao vault do titular». A cifra por-titular do AOS-093 tornou o conteúdo dos runs **ciphertext** no Event
+Store; um **leitor** que reconstrói/inspecciona um run selado precisa de **decifração autorizada**.
+
+**O que JÁ está resolvido (não re-fazer):** o **resume durável in-process** — o step-ledger decifra no
+`Rebuild` via `ContentOpener` (o run continua como si próprio, sob o vault do nó) e é **fail-closed sem
+cipher** (`ErrSealedResultNoCipher`, provado em `TestLedger_SealedRecordWithoutCipher_FailsClosed`). Este
+ticket **não** duplica isso — trata do lado do **LEITOR** (reconstrução/inspecção por um terceiro).
+
+**A lacuna (verificada):** as capturas de não-determinismo (`capturePayload.SealedContent` +
+`SealedSubject`) são seladas na escrita, mas a reconstrução **do lado do leitor** não tem um
+`ContentOpener` **gated por soberania** — um leitor que reconstrua um run selado obtém ciphertext (ou a
+reconstrução parte). O `ReplayEngine` já traz o padrão certo: `WithPayloadResolver(store, accessor)` com
+um **Accessor AUTORIZADO** e `ErrPayloadAccessDenied` — falta ligar o opener por-titular ATRÁS desse gate,
+e o gate tem de ser o **soberano** (a mesma autoridade do read-path de AOS-172/205).
+
+**Peças a reutilizar (não reinventar):** `agentruntime.ContentOpener`/`ContentCipher` (a porta de
+decifração já existe); `audit.OpenContent` (decifra o envelope, **fail-closed após shred** →
+`ErrDecrypt`); o read-path soberano (`sovereignty.go`, `readGov.authorize` + `RegionFor` + selo D6 no
+WORM); o `Accessor`/`WithPayloadResolver` do `ReplayEngine`.
+
+**Critérios de aceitação**
+
+- [ ] Um **leitor autorizado por soberania** (credencial forte de AOS-205 + região que corresponde à do
+      titular/run) que reconstrói um run selado obtém o **conteúdo REAL decifrado**; a leitura sensível é
+      **selada no WORM (D6)** sem PII.
+- [ ] **Falsificável (dois sentidos):** um leitor **não-autorizado** (região errada, ou sem credencial)
+      obtém **`ErrPayloadAccessDenied`** (ou ciphertext) — **nunca o texto em claro**; o autorizado obtém
+      o claro. A prova exercita a âncora de autorização (não é vácua).
+- [ ] **O shred aguenta o replay:** após `POST /dsar/erase` (KEK destruída), **mesmo** o leitor autorizado
+      obtém **`ErrDecrypt`** na reconstrução — o direito ao apagamento vale também contra o replay. Prova
+      ao nível do nó (`-race`).
+- [ ] **Legal hold:** um titular sob hold **não** é shredded, pelo que o replay autorizado **reconstrói**
+      normalmente (o hold preserva a reconstruibilidade).
+- [ ] **Superfície de leitor:** decide e justifica ONDE vive a reconstrução do leitor no nó (compor o
+      `ReplayEngine` atrás de um endpoint soberano, ou ligar o opener à via de leitura de trajectória que
+      já sela D6) — sem abrir uma via que devolva claro sem passar pelo gate soberano.
+- [ ] Reutiliza `ContentOpener`/`audit.OpenContent` e o read-path soberano — **sem** cripto nova, **sem**
+      dependências externas, **sem** um segundo mecanismo de autorização.
+
+**Fecha:** o residual (b) de `DEF-301` (que passa a nomear só o resume, já resolvido). **Depende de:**
+AOS-093 (cifra/opener), AOS-172/205 (read-path soberano + credencial forte), AOS-016/180 (replay).
+**Não duplica:** AOS-093 (resume in-process, já fail-closed) nem AOS-213 (administração de hold/expiração).
 
 ---
 
