@@ -308,6 +308,19 @@ type Config struct {
 	// WORMPath é o caminho do WAL do WORM durável (AOS-170). Só consultado quando
 	// WORM == nil.
 	WORMPath string
+	// DSARVault é a CUSTÓDIA das chaves de PII por-titular (KEK) que o crypto-shredding destrói
+	// (AOS-215/DEF-302). É a PORTA [audit.KeyVault] (EnsureKey/Key/Delete), injectável: um
+	// deployment liga aqui um key-service/software-KMS de CUSTÓDIA EXTERNA (as KEK vivem FORA do
+	// processo, sobrevivem ao restart) sem tocar o binário. Precedência no MOLDE do Event Store/
+	// WORM: se != nil, usa-o TAL-QUAL (o chamador é dono do ciclo de vida e da durabilidade — o nó
+	// não a atesta); senão, um [audit.InMemoryKeyVault] de referência (DEMO-GRADE: KEK em memória,
+	// NÃO-durável, perdem-se no restart — o banner declara-o). A MESMA instância serve o cifrador
+	// de conteúdo (AOS-093), o shredder DSAR e o sink de expiração (AOS-213): o /dsar/erase destrói
+	// a KEK ONDE ela vive. FAIL-CLOSED: um vault injectado que falha propaga o erro (a cifra/shred
+	// aborta) — NUNCA se cai em silêncio para o in-memory. O KMS/HSM real (AWS KMS, Vault, PKCS#11)
+	// é INFRA-ORG por trás desta porta; um HSM key-never-leaves exige a porta de envelope (residual
+	// nomeado com eixo em DEF-302). nil ⇒ referência in-memory demo-grade.
+	DSARVault audit.KeyVault
 	// IssuerKeyPath, quando definido no modo de REFERÊNCIA (não endurecido) e sem
 	// IssuerSigningKey explícita, faz o nó carregar a chave de assinatura do issuer de
 	// um ficheiro de seed PERSISTENTE (LoadOrCreateIssuerKey) em vez de a gerar por
@@ -438,10 +451,13 @@ type Node struct {
 	// exposto para o operador/testes colocarem/levantarem holds. O fluxo re-consulta-o ANTES de
 	// cada shred (fail-closed do apagamento).
 	DSARHolds *audit.LegalHold
-	// DSARVault é o vault DEMO-GRADE de chaves de PII por-titular que o crypto-shredding destrói
-	// (a KEK é apagada ⇒ a PII fica irrecuperável sem mutar a hash-chain). Exposto para
-	// selar/provar a PII em testes de conformidade; produção liga um KMS/HSM real pela mesma porta.
-	DSARVault *audit.InMemoryKeyVault
+	// DSARVault é o vault de chaves de PII por-titular que o crypto-shredding destrói (a KEK é
+	// apagada ⇒ a PII fica irrecuperável sem mutar a hash-chain). É a PORTA [audit.KeyVault] EM
+	// VIGOR (AOS-215/DEF-302): o vault INJECTADO por [Config.DSARVault] (custódia externa) quando
+	// composto, ou o [audit.InMemoryKeyVault] de referência (demo-grade, KEK em memória) senão.
+	// Exposto para selar/provar a PII em testes de conformidade; produção liga um KMS/HSM real
+	// pela mesma porta (o real é infra-org).
+	DSARVault audit.KeyVault
 	// DSARIndex mapeia titular→partições (torna executável o legal hold POR-PARTIÇÃO no shred).
 	DSARIndex *audit.InMemorySubjectPartitionIndex
 	// ExpirationJob é o job de expiração por TTL (AOS-092) COMPOSTO no nó (AOS-213): varre os
@@ -651,7 +667,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// É a MESMA KEK: apagar a chave no erase torna irrecuperável tanto a PII de audit
 	// como o conteúdo do run. Zero-dep — reutiliza o envelope DEK/KEK de platform/audit
 	// ([audit.SealContent]/[audit.OpenContent]), sem crypto novo nem libs.
-	dsarVault := audit.NewInMemoryKeyVault(nil)
+	//
+	// CUSTÓDIA DA KEK (AOS-215/DEF-302). Precedência no MOLDE do Event Store/WORM: um vault
+	// INJECTADO por [Config.DSARVault] (custódia externa — key-service/software-KMS que sobrevive
+	// ao restart) é usado TAL-QUAL; senão, o [audit.InMemoryKeyVault] de referência (DEMO-GRADE:
+	// KEK em memória do processo, NÃO-durável). Uma deployment deixa de precisar de tocar o
+	// binário para ligar custódia externa. A MESMA instância é partilhada pelo cifrador de
+	// conteúdo, pelo shredder DSAR e pelo sink de expiração — o erase/expira destrói a KEK ONDE
+	// ela realmente vive. FAIL-CLOSED: um vault injectado que falha propaga o erro pela cadeia de
+	// cifra/shred; NUNCA há fallback silencioso para o in-memory.
+	dsarVaultInjected := cfg.DSARVault != nil
+	var dsarVault audit.KeyVault
+	if dsarVaultInjected {
+		dsarVault = cfg.DSARVault
+	} else {
+		dsarVault = audit.NewInMemoryKeyVault(nil)
+	}
 	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
 	contentCipher := newContentSealer(dsarVault, dsarIndex)
 
@@ -1130,6 +1161,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed")
 	}
 	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
+	// CUSTÓDIA DA KEK (AOS-215/DEF-302). O banner DECLARA a postura REALMENTE composta: custódia
+	// externa injectada vs referência in-memory demo-grade — sem esconder que a referência perde
+	// as KEK no restart. É a mesma classe de honestidade do substrato/identidade.
+	if dsarVaultInjected {
+		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular INJECTADO por config (custodia EXTERNA pela porta audit.KeyVault) — as KEK vivem FORA do processo; a durabilidade/rotacao e do custodiante (o no nao a atesta); /dsar/erase e a expiracao destroem a KEK NESSE vault")
+	} else {
+		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular de REFERENCIA in-memory — DEMO-GRADE: as KEK vivem em MEMORIA do processo, NAO-duraveis (perdem-se no restart); injecte Config.DSARVault (key-service/software-KMS de custodia externa) para producao; o KMS/HSM real e infra-org por tras da mesma porta")
+	}
 	// LEGAL HOLD + EXPIRAÇÃO (AOS-213, CON-02/DEF-903). O banner declara a superfície de
 	// administração REALMENTE composta e o MODO de expiração (sob demanda por rota) — sem
 	// capacidade-fantasma. A granularidade (por-titular) e o eixo residual são declarados.

@@ -1266,18 +1266,20 @@ análogo à custódia da chave do issuer (AOS-175) e ao tenant de soberania (DEF
 
 **Critérios de aceitação**
 
-- [ ] `Config.DSARVault` passa a ser a **interface** `audit.KeyVault` (injectável); `Node.DSARVault` é a
+- [x] `Config.DSARVault` passa a ser a **interface** `audit.KeyVault` (injectável); `Node.DSARVault` é a
       interface. Precedência de composição no molde do Event Store/WORM: injectado ⇒ usa-o tal-qual; senão ⇒
       `InMemoryKeyVault` de referência (declarado no banner como demo-grade, KEK em memória).
-- [ ] **Falsificável:** um vault **injectado** (double de referência/spy) é o que o caminho de cifra/shred usa —
+- [x] **Falsificável:** um vault **injectado** (double de referência/spy) é o que o caminho de cifra/shred usa —
       `EnsureKey`/`Key`/`Delete` passam por ELE, não pelo in-memory hardcoded; o `/dsar/erase` destrói a KEK
       **no vault injectado** e o conteúdo fica irrecuperável por essa via. Prova ao nível do nó (`-race`).
-- [ ] **Custódia documentada** (`deploy/node/`): quem detém as KEK, rotação, o seam KMS/HSM, e a **postura**
+- [x] **Custódia documentada** (`deploy/node/`): quem detém as KEK, rotação, o seam KMS/HSM, e a **postura**
       (referência in-memory = KEK em memória, não-durável, demo-grade — declarada, não escondida).
-- [ ] **Nuance HSM resolvida:** ou uma porta de envelope (`WrapDEK`/`UnwrapDEK`) que um HSM possa suportar, com
+- [x] **Nuance HSM resolvida:** ou uma porta de envelope (`WrapDEK`/`UnwrapDEK`) que um HSM possa suportar, com
       double de referência; **ou** o residual «HSM key-never-leaves exige porta de envelope» nomeado com eixo no
-      registo (o key-service que devolve chaves funciona pela porta actual).
-- [ ] Zero dependências externas no binário do nó; o KMS/HSM real declarado **infra-org**, não entregue.
+      registo (o key-service que devolve chaves funciona pela porta actual). — RESOLVIDO pela 2.ª via: o
+      residual está nomeado com eixo em `DEF-302` (a porta actual serve um key-service/software-KMS que devolve
+      chaves; o HSM key-never-leaves fica deferido com eixo AOS-093/envelope).
+- [x] Zero dependências externas no binário do nó; o KMS/HSM real declarado **infra-org**, não entregue.
 
 **Fecha:** `DEF-302` (a costura; o KMS real fica infra-org com eixo). **Depende de:** AOS-093 (envelope/vault),
 AOS-070 (broker de credenciais). **Não duplica:** AOS-175 (custódia da chave do **issuer** — outra chave).

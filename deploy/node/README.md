@@ -267,6 +267,44 @@ verificado. Fora de produção, sem soberania configurada, as rotas respondem `5
 declaração). A retenção TTL é **opt-in em qualquer modo** (`Config.Retention` vazia ⇒ nada expira);
 o banner declara o estado em cada arranque.
 
+#### Custódia da KEK por-titular — o seam KMS/HSM (AOS-215 / DEF-302)
+
+Todo o apagamento real (erase e expiração) materializa por **crypto-shred de uma KEK por-titular**: a
+chave que embrulha as DEKs do conteúdo cifrado do titular (AOS-093). **Onde essa KEK vive é uma
+decisão de deployment**, exposta pela porta `audit.KeyVault` (`EnsureKey`/`Key`/`Delete`) e injectável
+por `Config.DSARVault` — o **mesmo molde de precedência** do Event Store e do WORM:
+
+| `Config.DSARVault` | Quem detém a KEK | Durabilidade | Postura |
+|---|---|---|---|
+| *(nil — omitido)* | `audit.InMemoryKeyVault` de **referência**, dentro do processo do nó | **NÃO-durável**: as KEK vivem em **memória** e **perdem-se no restart** | **DEMO-GRADE** — declarado no banner; adequado só a demo/teste |
+| *(injectado)* | um **key-service / software-KMS de custódia EXTERNA** que o operador liga | **do custodiante** (sobrevive ao restart; rotação/backup são dele — o nó **não** os atesta) | **Produção** — a KEK vive **fora** do binário |
+
+O nó entrega o **contrato + a costura + um double de referência** (`InMemoryKeyVault`); a
+**implementação concreta** (AWS KMS, HashiCorp Vault, um serviço de chaves interno…) é **infra-org**,
+análoga à custódia da chave do issuer (AOS-175/`CUSTODIA-CHAVE-RELEASE.md`) e ao tenant de soberania
+(DEF-201/212) — **não** vive no binário e **não** adiciona dependências externas ao nó.
+
+- **Uma única instância** serve o cifrador de conteúdo, o shredder DSAR e o sink de expiração: o
+  `/dsar/erase` e o `/dsar/expire` destroem a KEK **onde ela realmente vive** (no vault injectado, se
+  houver). O banner de arranque declara qual das duas posturas está composta.
+- **Fail-closed:** um vault injectado que **falha** (ex.: custódia externa indisponível) **propaga o
+  erro** pela cadeia de cifra/shred e **aborta** a escrita — **nunca** há fallback silencioso para o
+  in-memory de referência. Um deployment que exige custódia externa não sela conteúdo sob uma chave
+  volátil sem se aperceber.
+- **Rotação.** A referência in-memory **não roda** (chave efémera por arranque). Sob custódia externa,
+  a rotação é do custodiante: como a KEK é resolvida por `KeyRef` derivada do titular a cada operação,
+  o custodiante pode versionar/rodar o material subjacente sem que o nó mude — desde que uma `KeyRef`
+  já provisionada continue a resolver para a chave que cifrou o conteúdo existente.
+
+> **Residual nomeado — HSM *key-never-leaves* exige uma porta de envelope (eixo AOS-093/envelope,
+> DEF-302).** A porta `audit.KeyVault` devolve a **KEK crua** (`Key(keyRef) → []byte`) e o embrulho da
+> DEK corre **in-process** (`audit.sealPayload`). Isto serve directamente um **key-service / software-KMS
+> que devolve chaves** (custódia externa — melhor que memória, que é o que DEF-302 fechava). Um **HSM
+> verdadeiro** (a chave **nunca** sai do módulo) **não** devolve a chave crua: exigiria uma porta de
+> **envelope** (`WrapDEK`/`UnwrapDEK`, com o embrulho a correr **dentro** do HSM). Essa porta **não**
+> é entregue aqui — está nomeada como residual com eixo em `DEF-302`. É uma extensão da porta actual,
+> não uma re-arquitectura do envelope de AOS-093.
+
 ### Estado durável — variáveis de ambiente (AOS-170 / AOS-180)
 
 | Variável | Default | Efeito |

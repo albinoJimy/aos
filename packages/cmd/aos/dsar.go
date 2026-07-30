@@ -39,13 +39,18 @@ import (
 // e o legal hold POR-PARTIÇÃO alcançarem o substrato. Detém as MESMAS instâncias de
 // vault/índice que o fluxo DSAR, pelo que o POST /dsar/erase destrói exactamente a KEK
 // que cifra o conteúdo — tornando-o irrecuperável sem mutar o log.
+//
+// O vault é a PORTA [audit.KeyVault] (AOS-215/DEF-302), não o tipo concreto: um deployment
+// injecta um key-service/software-KMS de CUSTÓDIA EXTERNA por [Config.DSARVault] e o cifrador
+// passa a selar/decifrar por ELE, sem tocar o binário. Sem injecção cai no
+// [audit.InMemoryKeyVault] de referência (demo-grade, KEK em memória).
 type contentSealer struct {
-	vault *audit.InMemoryKeyVault
+	vault audit.KeyVault
 	index *audit.InMemorySubjectPartitionIndex
 }
 
-// newContentSealer liga o cifrador ao vault e índice DSAR partilhados.
-func newContentSealer(vault *audit.InMemoryKeyVault, index *audit.InMemorySubjectPartitionIndex) *contentSealer {
+// newContentSealer liga o cifrador ao vault (porta [audit.KeyVault]) e índice DSAR partilhados.
+func newContentSealer(vault audit.KeyVault, index *audit.InMemorySubjectPartitionIndex) *contentSealer {
 	return &contentSealer{vault: vault, index: index}
 }
 

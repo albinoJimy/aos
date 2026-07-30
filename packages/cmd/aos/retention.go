@@ -102,8 +102,12 @@ func (s eventStoreRecordSource) List(ctx context.Context) ([]audit.ExpirableReco
 // torna o conteúdo do titular IRRECUPERÁVEL ([audit.OpenContent] ⇒ [audit.ErrDecrypt]) sem mutar
 // a hash-chain. É IDEMPOTENTE (o Delete de uma chave ausente é no-op ⇒ nil), como o contrato do
 // sink exige, pelo que reexecutar o job para o mesmo registo é seguro.
+//
+// O vault é a PORTA [audit.KeyVault] (AOS-215/DEF-302): o crypto-shred da expiração corre pelo
+// MESMO vault (injectado ou de referência) que o /dsar/erase, garantindo que a expiração destrói
+// a KEK onde ela realmente vive (custódia externa quando injectada).
 type cryptoShredSink struct {
-	vault *audit.InMemoryKeyVault
+	vault audit.KeyVault
 }
 
 // Expire implementa [audit.ExpirationSink]. Crypto-shred a KEK do titular (idempotente). Um
