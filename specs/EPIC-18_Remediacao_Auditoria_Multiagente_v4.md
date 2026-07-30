@@ -1199,22 +1199,39 @@ WORM); o `Accessor`/`WithPayloadResolver` do `ReplayEngine`.
 
 **Critérios de aceitação**
 
-- [ ] Um **leitor autorizado por soberania** (credencial forte de AOS-205 + região que corresponde à do
-      titular/run) que reconstrói um run selado obtém o **conteúdo REAL decifrado**; a leitura sensível é
-      **selada no WORM (D6)** sem PII.
-- [ ] **Falsificável (dois sentidos):** um leitor **não-autorizado** (região errada, ou sem credencial)
+- [x] Um **leitor autorizado por soberania** (credencial forte de AOS-205 + região resolvida pelo board do
+      leitor) que reconstrói um run selado obtém o **conteúdo REAL decifrado**; a leitura sensível é
+      **selada no WORM (D6)** sem PII. *(GET /runs/{id}/reconstruct atrás de D7+D6 — `sovereign_replay.go`;
+      `replay.ReplayEngine.Reconstruct` + `WithContentOpener`; prova `TestNode_AOS214_AuthorizedReaderDecrypts`.)*
+      **Ressalva (alcance do gate — deferimento AOS-182):** a âncora de região é a resolução soberana
+      **board→região** (`RegionFor` fail-closed, D7 PDP — a mesma regra de AOS-172/AOS-094), **não** uma
+      verificação **por-run** `leitor.região == run.região`. O read-path do nó ainda não rastreia
+      board→região POR-RUN (não existe esse registo; inventá-lo seria mecanismo novo, proibido pelas
+      restrições zero-dep), pelo que um leitor cujo board resolve para uma região válida reconstrói um run
+      cujo titular pertença a outra região desde que esta réplica detenha o vault — a mesma coarseness que
+      já governa as leituras SSE/desfecho existentes, que aqui **escala de ciphertext para plaintext
+      decifrado**. Quando o registo board→região por-run existir (provisioning real, EPIC-09/10)
+      acrescenta-se a verificação de coincidência fail-closed antes de compor o opener. Ver a mesma nota em
+      `sovereignty.go` (`readGovernance.seal`, semântica do `Resource.Region`) e no cabeçalho de
+      `sovereign_replay.go`. A âncora de autorização continua **real e não-vácua** (board não resolvível ⇒
+      região negada ⇒ 404), apenas não granular por-run.
+- [x] **Falsificável (dois sentidos):** um leitor **não-autorizado** (região errada, ou sem credencial)
       obtém **`ErrPayloadAccessDenied`** (ou ciphertext) — **nunca o texto em claro**; o autorizado obtém
-      o claro. A prova exercita a âncora de autorização (não é vácua).
-- [ ] **O shred aguenta o replay:** após `POST /dsar/erase` (KEK destruída), **mesmo** o leitor autorizado
+      o claro. A prova exercita a âncora de autorização (não é vácua). *(`TestNode_AOS214_UnauthorizedReaderDenied`
+      — endpoint 404 não-enumerável + motor sem opener ⇒ `ErrPayloadAccessDenied`; `TestReconstruct_*` no módulo replay.)*
+- [x] **O shred aguenta o replay:** após `POST /dsar/erase` (KEK destruída), **mesmo** o leitor autorizado
       obtém **`ErrDecrypt`** na reconstrução — o direito ao apagamento vale também contra o replay. Prova
-      ao nível do nó (`-race`).
-- [ ] **Legal hold:** um titular sob hold **não** é shredded, pelo que o replay autorizado **reconstrói**
-      normalmente (o hold preserva a reconstruibilidade).
-- [ ] **Superfície de leitor:** decide e justifica ONDE vive a reconstrução do leitor no nó (compor o
+      ao nível do nó (`-race`). *(`TestNode_AOS214_ShredSurvivesReplay` — in-process `audit.ErrDecrypt` + endpoint 410 Gone.)*
+- [x] **Legal hold:** um titular sob hold **não** é shredded, pelo que o replay autorizado **reconstrói**
+      normalmente (o hold preserva a reconstruibilidade). *(`TestNode_AOS214_LegalHoldReconstructs`.)*
+- [x] **Superfície de leitor:** decide e justifica ONDE vive a reconstrução do leitor no nó (compor o
       `ReplayEngine` atrás de um endpoint soberano, ou ligar o opener à via de leitura de trajectória que
-      já sela D6) — sem abrir uma via que devolva claro sem passar pelo gate soberano.
-- [ ] Reutiliza `ContentOpener`/`audit.OpenContent` e o read-path soberano — **sem** cripto nova, **sem**
-      dependências externas, **sem** um segundo mecanismo de autorização.
+      já sela D6) — sem abrir uma via que devolva claro sem passar pelo gate soberano. *(ESCOLHA: endpoint
+      soberano dedicado GET /runs/{id}/reconstruct; a via de trajectória SSE foi rejeitada — transporta o
+      log cru por seq e misturaria transporte com reconstrução. Justificação em `sovereign_replay.go`.)*
+- [x] Reutiliza `ContentOpener`/`audit.OpenContent` e o read-path soberano — **sem** cripto nova, **sem**
+      dependências externas, **sem** um segundo mecanismo de autorização. *(o opener é o mesmo
+      `contentSealer`/`ContentCipher` que sela; o gate é `readGov.authorize` (AOS-205) + o selo D6 de AOS-172.)*
 
 **Fecha:** o residual (b) de `DEF-301` (que passa a nomear só o resume, já resolvido). **Depende de:**
 AOS-093 (cifra/opener), AOS-172/205 (read-path soberano + credencial forte), AOS-016/180 (replay).

@@ -478,6 +478,10 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	mux.HandleFunc("GET /runs/{id}", h.handleGet)
 	// Plano de DADOS — read-path TEMPO-REAL (AOS-167): SSE dos eventos da trajectória.
 	mux.HandleFunc("GET /runs/{id}/trajectory", h.handleTrajectory)
+	// Plano de DADOS — RECONSTRUÇÃO SOBERANA de conteúdo selado (AOS-214): decifra o conteúdo
+	// cifrado por-titular (AOS-093) de um run para um leitor autorizado por soberania (D7+D6).
+	// Desligado (501) sem o gate soberano composto. Ver sovereign_replay.go.
+	mux.HandleFunc("GET /runs/{id}/reconstruct", h.handleReconstruct)
 	// Plano de CONTROLO TRUSTED (cada um autenticado na fronteira real do nó).
 	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
 	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)

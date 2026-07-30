@@ -166,6 +166,16 @@ type ReplayEngine struct {
 	// capturas inline (AOS-016); um evento mode 3 sem store ⇒ fail-closed.
 	payloadStore PayloadStore
 	accessor     Accessor
+	// contentOpener/contentAccessor resolvem o CONTEÚDO SELADO por-titular (AOS-093/AOS-214):
+	// quando um evento de captura carrega [capturePayload.SealedContent], o motor DECIFRA-o via
+	// o [agentruntime.ContentOpener] IMPONDO o gate (contentAccessor tem de deter
+	// contentReadScope). É o lado do LEITOR da cifra por-titular — o opener/accessor só são
+	// compostos ([WithContentOpener]) DEPOIS de o gate soberano do nó autorizar. nil ⇒ conteúdo
+	// selado encontrado ⇒ [ErrPayloadAccessDenied] (fail-closed, nunca claro).
+	contentOpener   agentruntime.ContentOpener
+	contentAccessor Accessor
+	// contentReadScope é o escopo exigido no contentAccessor (default [DefaultSovereignContentScope]).
+	contentReadScope string
 }
 
 // EngineOption configura o [ReplayEngine].
@@ -194,7 +204,7 @@ func NewEngine(reader EventReader, opts ...EngineOption) (*ReplayEngine, error) 
 	if reader == nil {
 		return nil, ErrNilStore
 	}
-	e := &ReplayEngine{reader: reader, tracer: agentruntime.NoopTracer{}}
+	e := &ReplayEngine{reader: reader, tracer: agentruntime.NoopTracer{}, contentReadScope: DefaultSovereignContentScope}
 	for _, o := range opts {
 		o(e)
 	}
@@ -257,6 +267,17 @@ func (e *ReplayEngine) load(ctx context.Context, runID string) (trajectory, erro
 			// PayloadStore externo (impondo o IAM). Fail-closed em qualquer falha.
 			if p.PayloadRef != "" {
 				resolved, err := e.resolvePayload(ctx, p)
+				if err != nil {
+					return trajectory{}, err
+				}
+				p = resolved
+			}
+			// AOS-214: conteúdo cifrado por-titular (AOS-093) ⇒ decifra do lado do LEITOR atrás do
+			// gate soberano do opener. Fail-closed sem opener/accessor autorizado
+			// ([ErrPayloadAccessDenied]); depois do crypto-shredding, o open falha (audit.ErrDecrypt),
+			// propagado — o shred aguenta o replay.
+			if p.SealedContent != nil {
+				resolved, err := e.resolveSealed(ctx, p)
 				if err != nil {
 					return trajectory{}, err
 				}

@@ -450,6 +450,14 @@ type Node struct {
 	// reutilizando o vault de AOS-093). Conduzido por POST /dsar/expire. NUNCA nil: o Bootstrap
 	// compõe-o SEMPRE (com política vazia ⇒ nada expira, fail-closed). Respeita [DSARHolds].
 	ExpirationJob *audit.ExpirationJob
+	// contentOpener é o cifrador por-titular do nó (o MESMO [contentSealer]/[agentruntime.ContentCipher]
+	// que o capturer/step-ledger usam para SELAR) exposto como [agentruntime.ContentOpener] para o
+	// REPLAY SOBERANO do lado do leitor (AOS-214): a reconstrução de um run selado por um TERCEIRO
+	// autorizado por soberania decifra o conteúdo por AQUI, atrás do gate (ver sovereign_replay.go).
+	// Reutiliza [audit.OpenContent] — depois do /dsar/erase (KEK destruída) o open falha
+	// (audit.ErrDecrypt), pelo que o replay não ressuscita o que a erasure apagou. NUNCA nil: o
+	// Bootstrap compõe-o SEMPRE (mesma instância que sela), independentemente de DurableExecution.
+	contentOpener agentruntime.ContentOpener
 
 	ownsEventStore bool
 	ownsWORM       bool
@@ -1193,6 +1201,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
 		ExpirationJob:           expirationJob,
+		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,
