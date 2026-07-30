@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-214** (25 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093) |
+| Intervalo de tickets | **AOS-190 … AOS-215** (26 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093); **AOS-215 acrescentado por AOS-093/DEF-302** (a KEK por-titular vive num `InMemoryKeyVault` demo-grade e o nó não tem costura para injectar um KMS/HSM — a porta `audit.KeyVault` existe mas `Config.DSARVault` é o tipo concreto; o KMS real é infra-org, a costura de injeção é código do nó) |
 
 ---
 
@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-214)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-215)
 
 Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
@@ -628,6 +628,7 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-212 | Fonte declarada do custo por efeito real da tool: porta do desfecho do efeito → span `aos.activity` | feature | M | P2 | **EPIC-08** | `DEF-810` (eixo do custo deferido por AOS-211) |
 | AOS-213 | Superfície de administração de legal hold e expiração (CON-02): rotas autenticadas de hold/release + `ExpirationJob` composto (crypto-shred no TTL) | feature | M | P1 | **EPIC-09** | `CON-02`/`DEF-903` (Opção C, sequenciada após AOS-093) |
 | AOS-214 | Replay soberano de conteúdo selado: `ContentOpener` autorizado por soberania na reconstrução de um run selado (leitor autorizado decifra; não-autorizado nunca vê claro; shred aguenta) | feature | M | P1 | **EPIC-09** | residual (b) de `DEF-301`/AOS-093 |
+| AOS-215 | Costura de custódia externa da KEK por-titular (DEF-302): `Config.DSARVault` injectável pela porta `audit.KeyVault` + custódia documentada; KMS/HSM real fica infra-org | feature | M | P2 | **EPIC-09** | `DEF-302`/AOS-093 |
 
 ---
 
@@ -1238,6 +1239,48 @@ WORM); o `Accessor`/`WithPayloadResolver` do `ReplayEngine`.
 **Fecha:** o residual (b) de `DEF-301` (que passa a nomear só o resume, já resolvido). **Depende de:**
 AOS-093 (cifra/opener), AOS-172/205 (read-path soberano + credencial forte), AOS-016/180 (replay).
 **Não duplica:** AOS-093 (resume in-process, já fail-closed) nem AOS-213 (administração de hold/expiração).
+
+---
+
+### AOS-215 — Costura de custódia externa da KEK por-titular (DEF-302)
+
+**Origem:** `DEF-302` (residual de AOS-093): o `DSARVault` é um `audit.InMemoryKeyVault` — as KEK por-titular
+vivem em **memória do processo** (perdem-se no restart, sem custódia durável). Produção deve ligar um KMS/HSM.
+
+**A lacuna (verificada):** a porta `audit.KeyVault` (`EnsureKey`/`Key`/`Delete`) **já existe** e a sua doc diz
+«produção liga um KMS/HSM pela mesma porta». MAS o nó **não tem a costura**: `Config.DSARVault` é o **tipo
+concreto** `*audit.InMemoryKeyVault` (não a interface) e `bootstrap.go` **hardcoda** `NewInMemoryKeyVault` —
+uma deployment **não pode injectar** um vault externo sem tocar o binário. É a mesma classe de defeito que a
+auditoria v4 nomeia (porta existe, artefacto não a expõe).
+
+**Nuance de desenho a resolver honestamente (não varrer):** a porta `KeyVault` devolve a **KEK CRUA**
+(`Key(keyRef) → []byte`) e `audit.sealPayload` embrulha a DEK **in-process** com essa KEK. Um KMS/HSM
+**key-never-leaves** (o objectivo de um HSM) **não** devolve a chave crua. Logo: a costura de injeção serve
+directamente um **key-service/software-KMS** que devolve chaves (custódia externa, melhor que memória), mas um
+**HSM verdadeiro** exigiria uma porta de **envelope** (`WrapDEK`/`UnwrapDEK`, a operação corre DENTRO do HSM).
+O ticket entrega a costura de injeção e **ou** acrescenta a porta de envelope **ou** nomeia-a como residual com eixo.
+
+**Âmbito — código do nó vs infra-org:** o KMS/HSM **real** (AWS KMS, Vault, PKCS#11…) é **infra-org**,
+análogo à custódia da chave do issuer (AOS-175) e ao tenant de soberania (DEF-201/212). O nó entrega o
+**CONTRATO + a costura + um double de referência**; a impl concreta vive fora do binário.
+
+**Critérios de aceitação**
+
+- [ ] `Config.DSARVault` passa a ser a **interface** `audit.KeyVault` (injectável); `Node.DSARVault` é a
+      interface. Precedência de composição no molde do Event Store/WORM: injectado ⇒ usa-o tal-qual; senão ⇒
+      `InMemoryKeyVault` de referência (declarado no banner como demo-grade, KEK em memória).
+- [ ] **Falsificável:** um vault **injectado** (double de referência/spy) é o que o caminho de cifra/shred usa —
+      `EnsureKey`/`Key`/`Delete` passam por ELE, não pelo in-memory hardcoded; o `/dsar/erase` destrói a KEK
+      **no vault injectado** e o conteúdo fica irrecuperável por essa via. Prova ao nível do nó (`-race`).
+- [ ] **Custódia documentada** (`deploy/node/`): quem detém as KEK, rotação, o seam KMS/HSM, e a **postura**
+      (referência in-memory = KEK em memória, não-durável, demo-grade — declarada, não escondida).
+- [ ] **Nuance HSM resolvida:** ou uma porta de envelope (`WrapDEK`/`UnwrapDEK`) que um HSM possa suportar, com
+      double de referência; **ou** o residual «HSM key-never-leaves exige porta de envelope» nomeado com eixo no
+      registo (o key-service que devolve chaves funciona pela porta actual).
+- [ ] Zero dependências externas no binário do nó; o KMS/HSM real declarado **infra-org**, não entregue.
+
+**Fecha:** `DEF-302` (a costura; o KMS real fica infra-org com eixo). **Depende de:** AOS-093 (envelope/vault),
+AOS-070 (broker de credenciais). **Não duplica:** AOS-175 (custódia da chave do **issuer** — outra chave).
 
 ---
 
