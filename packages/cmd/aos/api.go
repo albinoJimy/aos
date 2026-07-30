@@ -565,10 +565,33 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "nao autorizado")
 			return
 		}
+		// AOS-217 (achado A1+A7) — TITULAR FAIL-CLOSED, DERIVADO DA CREDENCIAL VERIFICADA. Em modo
+		// SOBERANO o TITULAR do run (o `Subject` sob cuja chave por-titular AOS-093 cifra o conteúdo
+		// não-determinístico — texto do modelo, outputs de tools — ANTES do WAL do Event Store) é
+		// DERIVADO do `submitter.principal` que [readGovernance.authorize] resolveu da credencial
+		// VERIFICADA (OIDC/mTLS ou header demonstrativo fora de produção), NÃO do campo de corpo
+		// auto-declarado
+		// `req.PrincipalNHI` — que aqui é IGNORADO. Fecha A7 (titular desacoplado da credencial): o
+		// submissor deixa de poder escolher um titular arbitrário (ou vazio) para o run que hospeda.
+		// FAIL-CLOSED: [authorize] já NEGA (403) um submissor sem principal resolvível (principal
+		// vazio ⇒ (_, false)) — a linha 564 acima converte esse false em 403 e retorna, pelo que
+		// quando o fluxo alcança a guarda abaixo `submitter.principal` é já garantidamente != "".
+		// Nenhum run soberano é hospedado sem um `Subject` sob o qual cifrar; a guarda explícita
+		// abaixo é DEFESA EM PROFUNDIDADE — dado o contrato de [authorize] é hoje inalcançável, mas
+		// torna o invariante LOCAL e auditável no ponto de uso: sem ele, um principal vazio degradaria
+		// em silêncio para a cifra bypassed de `nondeterminism_capture.go:246`, persistindo o conteúdo
+		// em CLARO e não-shreddable. Em modo
+		// LEGADO (`readGov` nil) nada muda: o titular continua a vir de `req.PrincipalNHI` e runs fora
+		// de produção/soberania não são forçados (retro-compat).
+		if submitter.principal == "" {
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
 		if err := h.readGov.sealResidency(r.Context(), submitter, req.RunID); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "indisponivel")
 			return
 		}
+		req.PrincipalNHI = submitter.principal
 	}
 
 	goal := agentruntime.Goal{

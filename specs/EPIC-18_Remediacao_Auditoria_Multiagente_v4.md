@@ -1342,18 +1342,28 @@ outputs de tools em CLARO no WAL** e fica **não-shreddable** (sem KEK por-titul
 
 **Critérios de aceitação**
 
-- [ ] Em modo **soberano** (`readGov` composto), o submit **RECUSA fail-closed** (`400`/`403`) um run sem
+- [x] Em modo **soberano** (`readGov` composto), o submit **RECUSA fail-closed** (`400`/`403`) um run sem
       titular resolúvel — nenhum run soberano é hospedado sem um `Subject` sob o qual cifrar.
-- [ ] O titular do run é **derivado/validado contra a credencial verificada do submissor** (`submitter.principal`
+      *(Evidência: `api.go` handleSubmit — `authorize` nega 403 sem principal resolvível + guarda de defesa
+      em profundidade; `TestNode_AOS217_FailClosedNoResolvableTitular` — submit anónimo ⇒ 403, sem residência
+      selada, run não hospedado, WAL sem conteúdo.)*
+- [x] O titular do run é **derivado/validado contra a credencial verificada do submissor** (`submitter.principal`
       de `readGov.authorize`), não um campo de corpo auto-declarado — fecha também o achado **A7** (titular
-      desacoplado da credencial). Um `principal_nhi` que **discorde** do submissor verificado é recusado (ou
-      ignorado em favor do verificado — decidir e justificar).
-- [ ] **Falsificável (dois sentidos, `-race`):** (a) submit soberano sem/`""` titular ⇒ recusado, nada
+      desacoplado da credencial). **Decisão (justificada): DERIVAR** — `req.PrincipalNHI = submitter.principal`,
+      o campo de corpo é IGNORADO (opção mais simples e segura: o submissor não pode escolher um titular
+      arbitrário nem vazio). *(Evidência: `api.go:594`; `TestNode_AOS217_SovereignSubmitDerivesTitular` — um
+      DECOY no corpo é inerte, o conteúdo sela sob o submissor verificado.)*
+- [x] **Falsificável (dois sentidos, `-race`):** (a) submit soberano sem/`""` titular ⇒ recusado, nada
       persiste; (b) submit soberano com titular válido ⇒ o conteúdo do run no WAL está **cifrado** (a PII
       sintética **não** aparece em claro — reutiliza a prova de grep-no-WAL de AOS-093) e é **shreddable**
       (`/dsar/erase` ⇒ `ErrDecrypt`). Um teste que prova a **fuga ANTES** do fix (não-vacuidade).
-- [ ] **Retro-compat:** o modo **legado** (sem `readGov`) mantém-se; runs fora de produção não são forçados.
-- [ ] Sem segredos; gates bloqueantes verdes.
+      *(Evidência: `aos217_titular_failclosed_test.go` — T1 `LeakWithEmptyTitular_Falsifiable` (fuga-antes:
+      titular vazio ⇒ PII em claro no WAL), T2 `SovereignSubmitDerivesTitular` (grep-no-WAL cifrado +
+      `ErrDecrypt` após erase), T3 fail-closed; suite `-race` verde.)*
+- [x] **Retro-compat:** o modo **legado** (sem `readGov`) mantém-se; runs fora de produção não são forçados.
+      *(Evidência: `TestNode_AOS217_LegacyModeTitularUnforced` — sem `BoardRegions` o titular do corpo é
+      honrado; testes de AOS-093/182/208/213/214 verdes.)*
+- [x] Sem segredos; gates bloqueantes verdes. *(secrets, deferrals, layer-lint, ref-lint, rtm verdes.)*
 
 **Fecha:** o achado A1 (+A7). **Depende de:** AOS-093 (cifra por-titular), AOS-182/205 (submissor
 autenticado). **Não duplica:** AOS-208 (redação — outra camada) nem AOS-182 (residência — outro atributo).
