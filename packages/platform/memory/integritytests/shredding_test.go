@@ -63,7 +63,7 @@ func TestShreddingIrrecoverableChainIntact(t *testing.T) {
 	}
 
 	// ANTES do shredding: recuperável (projecção, não o cru) e cadeia íntegra.
-	before, err := store.Recall(ctx, episodic.Query{Goal: "do-x"})
+	before, err := store.Recall(ctx, episodic.Query{PrincipalID: "agent-1", Goal: "do-x"})
 	if err != nil {
 		t.Fatalf("Recall (antes): %v", err)
 	}
@@ -81,10 +81,10 @@ func TestShreddingIrrecoverableChainIntact(t *testing.T) {
 	keys.DeleteKey("subject-A")
 
 	// DEPOIS: irrecuperável, mas a cadeia CONTINUA a verificar (não foi mutada).
-	if _, perr := store.Project(ctx, "ep-1"); !errors.Is(perr, episodic.ErrEpisodeShredded) {
+	if _, perr := store.Project(ctx, "agent-1", "ep-1"); !errors.Is(perr, episodic.ErrEpisodeShredded) {
 		t.Fatalf("Project após shredding devolveu %v, quero ErrEpisodeShredded", perr)
 	}
-	after, err := store.Recall(ctx, episodic.Query{Goal: "do-x"})
+	after, err := store.Recall(ctx, episodic.Query{PrincipalID: "agent-1", Goal: "do-x"})
 	if err != nil {
 		t.Fatalf("Recall (depois): %v", err)
 	}
@@ -129,14 +129,14 @@ func TestTTLSweepShredsExpired(t *testing.T) {
 	if _, ok := keys.Key("subj-eph"); ok {
 		t.Fatal("a chave do titular efémero devia ter sido apagada pelo Sweep")
 	}
-	if _, perr := store.Project(ctx, "ep-eph"); !errors.Is(perr, episodic.ErrEpisodeShredded) {
+	if _, perr := store.Project(ctx, "agent-1", "ep-eph"); !errors.Is(perr, episodic.ErrEpisodeShredded) {
 		t.Fatalf("Project(ep-eph) = %v, quero ErrEpisodeShredded", perr)
 	}
 	// O permanente: intacto (a chave sobrevive; continua recuperável).
 	if _, ok := keys.Key("subj-perm"); !ok {
 		t.Fatal("a chave do titular permanente NÃO devia ser apagada")
 	}
-	if _, perr := store.Project(ctx, "ep-perm"); perr != nil {
+	if _, perr := store.Project(ctx, "agent-1", "ep-perm"); perr != nil {
 		t.Fatalf("Project(ep-perm) devia ser recuperável, deu %v", perr)
 	}
 	// A cadeia continua íntegra após o TTL-shredding.

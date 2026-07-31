@@ -1601,14 +1601,32 @@ qualquer recall ser ligado, sob pena de vazamento cross-principal.
 
 **Critérios de aceitação**
 
-- [ ] A leitura/recall da memória é **escopada pela identidade verificada do principal** (não auto-declarada); um
-      recall de um principal **não** devolve memória de outro.
-- [ ] **Falsificável (`-race`):** dois principais escrevem memória; o recall de A **não** vê a de B (falha-antes se
-      o escopo não existir). Recuo cross-principal ⇒ vazio, não claro alheio.
-- [ ] **Retro-compat:** o caminho de escrita/provenance/redação (já são) inalterado. Sem segredos; gates verdes.
+- [x] A leitura/recall da memória **episódica** é **escopada pela identidade verificada do principal** (não
+      auto-declarada); um recall de um principal **não** devolve memória de outro. *(Evidência: `retrieval.go` —
+      guarda `if q.PrincipalID == "" { return nil, ErrMissingPrincipal }` (1ª instrução, antes de ler o log) +
+      filtro `if env.AgentID != q.PrincipalID { continue }`; a chave de escopo vem da request verificada a
+      montante, não do conteúdo in-band. `Project(ctx, principalID, episodeID)` fecha também a leitura por-id:
+      episódio de outro principal ⇒ `ErrEpisodeNotFound` (não-oráculo de existência).)*
+- [x] **Falsificável (`-race`):** dois principais escrevem memória; o recall de A **não** vê a de B (falha-antes se
+      o escopo não existir). Recuo cross-principal ⇒ vazio, não claro alheio. *(Evidência:
+      `recall_principal_scope_test.go` (`TestRecallScopedByPrincipalNoCrossLeak`/`…EmptyPrincipalFailClosed`/
+      `…UnknownPrincipalEmpty`) + `project_principal_scope_test.go` (`TestProjectScopedByPrincipalNoCrossLeak`/
+      `…EmptyPrincipalFailClosed`); falha-antes provada por neutralização (números exactos: `recall(A)=3, esp 2`),
+      restaurado byte-idêntico; `-race` verde.)*
+- [x] **Retro-compat:** o caminho de escrita/provenance/redação (já são) inalterado. Sem segredos; gates verdes.
+      *(Evidência: só a assinatura de leitura mudou; escrita/seal/hash-chain intactos; `integritytests` `-race`
+      verde (`TestShredding…`, `TestTTLSweep…`); `go.mod`/`go.sum` intactos.)*
 
-**Fecha:** o achado #8 (escopo de recall). **Depende de:** o subsistema de memória (EPIC-04) e a identidade
-verificada (AOS-205/174). **Não duplica:** a provenance/redação (já ligadas).
+**Fecha:** o achado #8 (escopo de recall **episódico**). **Depende de:** o subsistema de memória (EPIC-04) e a
+identidade verificada (AOS-205/174). **Não duplica:** a provenance/redação (já ligadas).
+
+**Residual nomeado (decisões do dono, não defeitos):** (1) `semantic.KnowledgeBase.Recall`/`ControlPlaneView`
+**não** foram escopados por principal — **deliberado**: a memória semântica é, por design, uma **base de
+conhecimento partilhada** (a barreira é trusted/untrusted do Princípio 5/ADR-005, não por-principal; factos como
+`capital:france` são conhecimento partilhado, não trajectórias privadas). Escopá-la redefiniria a semântica e é
+um **follow-up com decisão de arquitectura** (eixo EPIC-04), não um bug deste entregável. (2) Episódios legados
+gravados com `agent_id` vazio ficam irrecuperáveis via leitura escopada (direcção **fail-closed**) — nota de
+migração; a escrita/hash-chain não muda e a cadeia permanece verificável.
 
 ---
 

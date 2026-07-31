@@ -239,7 +239,7 @@ func TestAppendOnlyAndTraceLink(t *testing.T) {
 	}
 
 	// Ligação por trace_id: o episódio recuperado liga-se à árvore de spans do run.
-	recalled, err := s.Recall(ctx, Query{Goal: "objetivo X"})
+	recalled, err := s.Recall(ctx, Query{PrincipalID: "agent-1", Goal: "objetivo X"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestRecallReturnsProjectionNotRaw(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	recalled, err := s.Recall(ctx, Query{Goal: "resumir", Tags: []string{"a"}})
+	recalled, err := s.Recall(ctx, Query{PrincipalID: "agent-1", Goal: "resumir", Tags: []string{"a"}})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestRecallRankingDeterministic(t *testing.T) {
 
 	want := []string{"ep-2", "ep-3", "ep-1"} // score desc
 	for i := 0; i < 3; i++ {                 // reproduzível entre execuções
-		got, err := s.Recall(ctx, Query{Tags: []string{"x", "y", "z"}})
+		got, err := s.Recall(ctx, Query{PrincipalID: "agent-1", Tags: []string{"x", "y", "z"}})
 		if err != nil {
 			t.Fatalf("Recall: %v", err)
 		}
@@ -382,7 +382,7 @@ func TestResumeFromEpisodePlusEventStore(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	recalled, err := s.Recall(ctx, Query{Goal: "tarefa longa"})
+	recalled, err := s.Recall(ctx, Query{PrincipalID: "agent-1", Goal: "tarefa longa"})
 	if err != nil || len(recalled) != 1 {
 		t.Fatalf("Recall: %v (%d)", err, len(recalled))
 	}
@@ -430,7 +430,7 @@ func TestCryptoShreddingChainIntact(t *testing.T) {
 		t.Fatalf("VerifyChain (antes): %v", err)
 	}
 	// O episódio 2 é recuperável (projecção decifrada).
-	if iv, err := s.Project(ctx, "ep-2"); err != nil {
+	if iv, err := s.Project(ctx, "agent-1", "ep-2"); err != nil {
 		t.Fatalf("Project ep-2 (antes): %v", err)
 	} else if iv.TraceID != "trace-run-2" {
 		t.Fatalf("projecção ep-2 inesperada: %q", iv.TraceID)
@@ -440,15 +440,15 @@ func TestCryptoShreddingChainIntact(t *testing.T) {
 	keys.DeleteKey("subj-2")
 
 	// O episódio 2 é agora IRRECUPERÁVEL.
-	if _, err := s.Project(ctx, "ep-2"); !errors.Is(err, ErrEpisodeShredded) {
+	if _, err := s.Project(ctx, "agent-1", "ep-2"); !errors.Is(err, ErrEpisodeShredded) {
 		t.Fatalf("Project ep-2 (depois)=%v, esperado ErrEpisodeShredded", err)
 	}
 	// ErrEpisodeShredded distingue-se de ErrEpisodeNotFound (o registo ainda existe).
-	if _, err := s.Project(ctx, "ep-2"); errors.Is(err, ErrEpisodeNotFound) {
+	if _, err := s.Project(ctx, "agent-1", "ep-2"); errors.Is(err, ErrEpisodeNotFound) {
 		t.Fatalf("ep-2 não devia ser NotFound (o registo selado permanece)")
 	}
 	// Via Recall, o episódio aparece no índice mas Recoverable=false.
-	recalled, err := s.Recall(ctx, Query{Goal: "g"})
+	recalled, err := s.Recall(ctx, Query{PrincipalID: "agent-1", Goal: "g"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
@@ -507,10 +507,10 @@ func TestTTLPerClass(t *testing.T) {
 	}
 
 	// O expirado é irrecuperável; o permanente continua recuperável.
-	if _, err := s.Project(ctx, "ep-short"); !errors.Is(err, ErrEpisodeShredded) {
+	if _, err := s.Project(ctx, "agent-1", "ep-short"); !errors.Is(err, ErrEpisodeShredded) {
 		t.Fatalf("ep-short (expirado)=%v, esperado ErrEpisodeShredded", err)
 	}
-	if _, err := s.Project(ctx, "ep-perm"); err != nil {
+	if _, err := s.Project(ctx, "agent-1", "ep-perm"); err != nil {
 		t.Fatalf("ep-perm (permanente) devia sobreviver: %v", err)
 	}
 	// A cadeia continua intacta (TTL não parte a hash-chain).

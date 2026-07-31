@@ -15,6 +15,11 @@ var (
 	ErrMissingRunID = errors.New("episodic: run_id em falta")
 	// ErrMissingGoal — episódio sem objectivo (dimensão de indexação/recuperação).
 	ErrMissingGoal = errors.New("episodic: goal em falta (indexação por objectivo)")
+	// ErrMissingPrincipal — recuperação (Recall) sem a identidade VERIFICADA do
+	// principal. O recall é ESCOPADO por principal (fail-closed): sem principal, a
+	// recuperação é RECUSADA — nunca devolve memória de outro principal. Ver
+	// [Query.PrincipalID].
+	ErrMissingPrincipal = errors.New("episodic: principal_id em falta (recall escopado por principal — fail-closed)")
 	// ErrInvalidTTLClass — classe de retenção (ttl_class) fora do conjunto canónico.
 	ErrInvalidTTLClass = errors.New("episodic: ttl_class inválida")
 	// ErrNilStore — Event Store (log append-only) não configurado.

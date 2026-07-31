@@ -167,7 +167,7 @@ func TestRecallEmptyAndProjectNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// Store vazio (stream ainda inexistente): Recall devolve vazio sem erro.
-	got, err := s.Recall(ctx, Query{Goal: "nada"})
+	got, err := s.Recall(ctx, Query{PrincipalID: "agent-1", Goal: "nada"})
 	if err != nil {
 		t.Fatalf("Recall (vazio): %v", err)
 	}
@@ -175,7 +175,7 @@ func TestRecallEmptyAndProjectNotFound(t *testing.T) {
 		t.Fatalf("recall=%d, esperado 0", len(got))
 	}
 	// Project de id inexistente => ErrEpisodeNotFound.
-	if _, err := s.Project(ctx, "fantasma"); !errors.Is(err, ErrEpisodeNotFound) {
+	if _, err := s.Project(ctx, "agent-1", "fantasma"); !errors.Is(err, ErrEpisodeNotFound) {
 		t.Fatalf("Project(inexistente)=%v, esperado ErrEpisodeNotFound", err)
 	}
 }
@@ -203,7 +203,7 @@ func TestDefaultCryptoRandRoundTrip(t *testing.T) {
 	if _, err := s.Flush(ctx); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	iv, err := s.Project(ctx, "ep-1")
+	iv, err := s.Project(ctx, "agent-1", "ep-1")
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -252,10 +252,10 @@ func TestSweepSameSubjectMixedClassesRetainsKEK(t *testing.T) {
 
 	// AMBOS continuam recuperáveis — o permanente NÃO foi destruído silenciosamente,
 	// e o curto também sobrevive porque a KEK partilhada não pôde ser apagada.
-	if _, err := s.Project(ctx, "ep-perm"); err != nil {
+	if _, err := s.Project(ctx, "agent-1", "ep-perm"); err != nil {
 		t.Fatalf("ep-perm (permanente, mesmo titular) foi destruído: %v", err)
 	}
-	if _, err := s.Project(ctx, "ep-short"); err != nil {
+	if _, err := s.Project(ctx, "agent-1", "ep-short"); err != nil {
 		t.Fatalf("ep-short devia sobreviver enquanto a KEK do titular for retida: %v", err)
 	}
 	if err := s.VerifyChain(ctx); err != nil {
@@ -294,7 +294,7 @@ func TestSweepSameSubjectAllExpiredShredsAndReportsAll(t *testing.T) {
 		t.Fatalf("swept=%+v, esperado ambos ep-a e ep-b", swept)
 	}
 	for _, id := range []string{"ep-a", "ep-b"} {
-		if _, err := s.Project(ctx, id); !errors.Is(err, ErrEpisodeShredded) {
+		if _, err := s.Project(ctx, "agent-1", id); !errors.Is(err, ErrEpisodeShredded) {
 			t.Fatalf("Project(%s)=%v, esperado ErrEpisodeShredded", id, err)
 		}
 	}
@@ -377,14 +377,14 @@ func TestFlushRequeueDoesNotReSealAfterESFailure(t *testing.T) {
 	}
 
 	// O episódio ficou coerente: audit_seq==1 (o único selo), recuperável, cadeia íntegra.
-	iv, perr := s.Project(ctx, "ep-1")
+	iv, perr := s.Project(ctx, "agent-1", "ep-1")
 	if perr != nil {
 		t.Fatalf("Project ep-1: %v", perr)
 	}
 	if iv.TraceID != "trace-run-1" {
 		t.Fatalf("projecção inesperada: %q", iv.TraceID)
 	}
-	rec, _ := s.Recall(ctx, Query{Goal: "g"})
+	rec, _ := s.Recall(ctx, Query{PrincipalID: "agent-1", Goal: "g"})
 	if len(rec) != 1 || rec[0].AuditSeq != 1 {
 		t.Fatalf("recall=%+v, esperado 1 episódio com audit_seq=1", rec)
 	}

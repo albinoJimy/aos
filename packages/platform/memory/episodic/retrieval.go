@@ -17,6 +17,15 @@ import (
 // campo vazio não filtra nessa dimensão. A recuperação devolve sempre a PROJECÇÃO
 // resumida — nunca a trajectória crua (Princípio 4).
 type Query struct {
+	// PrincipalID é a identidade VERIFICADA do principal (a NHI/AgentID) que
+	// recupera. O recall é ESCOPADO por este principal: só devolve episódios
+	// PRODUZIDOS por ele (env.AgentID == PrincipalID) — um recall de um principal
+	// NUNCA devolve memória de outro. É fail-closed e OBRIGATÓRIO: vazio ⇒ a
+	// recuperação é recusada com [ErrMissingPrincipal] (jamais devolve memória
+	// alheia). Não é auto-declarado in-band pelo conteúdo do episódio — o chamador
+	// passa aqui a identidade já verificada da request (o boundary de identidade
+	// verifica-a a montante; a memória apenas a IMPÕE no escopo da leitura).
+	PrincipalID string
 	// Goal filtra por objectivo exacto (vazio = qualquer objectivo).
 	Goal string
 	// Tags são as etiquetas a casar. Ver MatchAll para a semântica.
@@ -35,6 +44,9 @@ type Query struct {
 type RecalledEpisode struct {
 	EpisodeID string
 	SubjectID string
+	// AgentID é a NHI/principal que PRODUZIU o episódio. O recall é escopado por
+	// este campo (== Query.PrincipalID); é exposto para tornar o escopo verificável.
+	AgentID   string
 	RunID     string
 	TraceID   string
 	Goal      string
@@ -65,7 +77,19 @@ type RecalledEpisode struct {
 // Ranking determinístico: por Score DESC; empate por CreatedAt (audit_seq) ASC;
 // empate remanescente por EpisodeID ASC. A mesma consulta sobre o mesmo log produz
 // sempre a MESMA ordem.
+//
+// ESCOPO POR PRINCIPAL (fail-closed): a recuperação é SEMPRE restringida à
+// identidade verificada do principal em [Query.PrincipalID] — só devolve episódios
+// que ESSE principal produziu (env.AgentID == PrincipalID). Um recall de um
+// principal NUNCA devolve memória de outro; um PrincipalID vazio RECUSA a
+// recuperação com [ErrMissingPrincipal] (jamais devolve memória alheia por omissão).
 func (s *TrajectoryStore) Recall(ctx context.Context, q Query) ([]RecalledEpisode, error) {
+	// FAIL-CLOSED: sem principal verificado, não se recupera nada — o default é
+	// negar, não abrir. É a primeira guarda, ANTES de sequer ler o log.
+	if q.PrincipalID == "" {
+		return nil, ErrMissingPrincipal
+	}
+
 	envs, err := s.readEnvelopes(ctx)
 	if err != nil {
 		return nil, err
@@ -77,6 +101,12 @@ func (s *TrajectoryStore) Recall(ctx context.Context, q Query) ([]RecalledEpisod
 	}
 	matched := make([]scored, 0, len(envs))
 	for _, env := range envs {
+		// ESCOPO POR PRINCIPAL: descarta silenciosamente qualquer episódio que NÃO
+		// pertença ao principal que recupera (env.AgentID != PrincipalID). Um recuo
+		// cross-principal resolve para vazio — nunca expõe memória alheia.
+		if env.AgentID != q.PrincipalID {
+			continue
+		}
 		if q.Goal != "" && env.Goal != q.Goal {
 			continue
 		}
@@ -106,6 +136,7 @@ func (s *TrajectoryStore) Recall(ctx context.Context, q Query) ([]RecalledEpisod
 		re := RecalledEpisode{
 			EpisodeID:    m.env.EpisodeID,
 			SubjectID:    m.env.SubjectID,
+			AgentID:      m.env.AgentID,
 			RunID:        m.env.RunID,
 			TraceID:      m.env.TraceID,
 			Goal:         m.env.Goal,
@@ -138,15 +169,36 @@ func (s *TrajectoryStore) Recall(ctx context.Context, q Query) ([]RecalledEpisod
 // crisp de recuperação/prova: um episódio cuja chave foi apagada devolve
 // [ErrEpisodeShredded] (irrecuperável), NUNCA a trajectória crua nem um plaintext.
 // Um id inexistente devolve [ErrEpisodeNotFound].
-func (s *TrajectoryStore) Project(ctx context.Context, episodeID string) (projection.InjectedView, error) {
+//
+// ESCOPO POR PRINCIPAL (fail-closed): tal como [TrajectoryStore.Recall], a prova
+// por-id é SEMPRE restringida à identidade verificada do principal em principalID —
+// só devolve o episódio se ESSE principal o produziu (env.AgentID == principalID). Um
+// principalID vazio RECUSA a prova com [ErrMissingPrincipal] (nunca devolve conteúdo
+// por omissão do escopo). Um episódio existente que pertença a OUTRO principal é
+// indistinguível de inexistente — devolve [ErrEpisodeNotFound], NÃO um erro distinto:
+// isto fecha o oráculo de existência cross-principal (um principal não confirma sequer
+// que o id de outro existe). Fecha o caminho de leitura de conteúdo por-id que, sem
+// escopo, devolvia a projecção decifrada de QUALQUER episódio a quem soubesse o id.
+func (s *TrajectoryStore) Project(ctx context.Context, principalID, episodeID string) (projection.InjectedView, error) {
+	// FAIL-CLOSED: sem principal verificado, não se prova nada — o default é negar.
+	if principalID == "" {
+		return projection.InjectedView{}, ErrMissingPrincipal
+	}
 	envs, err := s.readEnvelopes(ctx)
 	if err != nil {
 		return projection.InjectedView{}, err
 	}
 	for _, env := range envs {
-		if env.EpisodeID == episodeID {
-			return s.decrypt(env)
+		if env.EpisodeID != episodeID {
+			continue
 		}
+		// ESCOPO POR PRINCIPAL: um episódio de OUTRO principal é indistinguível de
+		// inexistente (não-oráculo de existência) — fail-closed, nunca expõe conteúdo
+		// nem confirma a existência de um id alheio.
+		if env.AgentID != principalID {
+			return projection.InjectedView{}, ErrEpisodeNotFound
+		}
+		return s.decrypt(env)
 	}
 	return projection.InjectedView{}, ErrEpisodeNotFound
 }
