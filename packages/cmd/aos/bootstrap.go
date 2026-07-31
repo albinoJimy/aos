@@ -1158,6 +1158,15 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("execucao duravel (AOS-180): DESLIGADA — checkpointer/capturer/step-ledger NAO compostos (defaults no-op AOS-013); defina AOS_DURABLE_EXECUTION=1 (exige AOS_EVENTSTORE_PATH) para ligar")
 	}
+	// MEDIAÇÃO DE POLÍTICA (AOS-220). O banner declara o estado REALMENTE composto do PDP — para
+	// que o default-deny nunca seja um acidente silencioso: ou um BUNDLE ASSINADO está carregado
+	// (o nó medeia tool calls pela allowlist assinada + regras Cedar), ou o PDP está NÃO-CARREGADO
+	// e TODA a tool call mediada é negada fail-closed, DECLARADAMENTE.
+	if cfg.PDP != nil {
+		log("mediacao de politica (AOS-220): PDP com BUNDLE CARREGADO (AOS_POLICY_BUNDLE_DIR) — trust anchor FORCADO out-of-band (AOS_POLICY_TRUST_ANCHOR), NAO lido do bundle; politica em vigor versao %q; tool calls decididas pela allowlist assinada + regras Cedar", cfg.PDP.ActiveVersion())
+	} else {
+		log("mediacao de politica (AOS-220): PDP NAO-CARREGADO (NewUnloaded) — DEFAULT-DENY EXPLICITO de TODA a tool call mediada; defina AOS_POLICY_BUNDLE_DIR + AOS_POLICY_TRUST_ANCHOR (pubkey ed25519 out-of-band) para carregar um bundle assinado")
+	}
 	if readAuthority != nil {
 		if readCred != nil {
 			// Declara HONESTAMENTE a postura anti-replay REALMENTE composta (fecha o achado da

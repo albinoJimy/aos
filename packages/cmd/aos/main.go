@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	pdp "github.com/aos-ref/control-plane/pdp"
 	oidc "github.com/aos-ref/integration/oidc"
 	identity "github.com/aos-ref/platform/identity"
 )
@@ -71,6 +72,29 @@ var ErrBadSovereignOIDC = errors.New("aos: config OIDC de soberania incompleta �
 // checkpointer/capturer/step-ledger dar-lhe-ia um nó que perde estado no reinício
 // acreditando ele que não perde. A ambiguidade NEGA o arranque.
 var ErrBadDurableExecution = errors.New("aos: AOS_DURABLE_EXECUTION invalida (aceites: 1/true/t/yes/y/on para ligar, 0/false/f/no/n/off ou vazio para desligar) — um valor nao reconhecido aborta em vez de degradar silenciosamente para execucao NAO-duravel")
+
+// ErrPolicyBundleNeedsTrustAnchor — AOS_POLICY_BUNDLE_DIR está definido (o operador PEDE
+// mediação de política real) mas AOS_POLICY_TRUST_ANCHOR está em falta. Fail-closed de CONFIG
+// do bundle PDP (AOS-220): o trust anchor TEM de vir OUT-OF-BAND (do ambiente, provisionado por
+// deploy/VCS read-only), NUNCA do próprio directório mutável do bundle. Carregar o bundle e ler
+// o anchor do MESMO dir reabriria o vector de cold-start que [pdp.WithTrustAnchor] fecha — um
+// adversário com escrita no dir substituiria o anchor E re-assinaria o bundle com a sua chave,
+// contornando a verificação. A ambiguidade NEGA o arranque em vez de carregar política cuja
+// âncora de confiança é a própria coisa a verificar.
+var ErrPolicyBundleNeedsTrustAnchor = errors.New("aos: AOS_POLICY_BUNDLE_DIR definido exige AOS_POLICY_TRUST_ANCHOR (a pubkey ed25519 do trust anchor, 64 hex chars) — o anchor e FORCADO out-of-band pelo ambiente, nunca lido do proprio bundle (fecha o cold-start em que quem escreve no dir do bundle re-assina com a sua chave)")
+
+// ErrBadPolicyTrustAnchor — AOS_POLICY_TRUST_ANCHOR presente mas não é uma pubkey ed25519 válida
+// (32 bytes em hex, 64 chars). Fail-closed de CONFIG (AOS-220), gémeo de [ErrBadIssuerPubKey]:
+// um anchor malformado NUNCA verifica bundle nenhum. Só material público bem-formado se torna
+// âncora de confiança da política.
+var ErrBadPolicyTrustAnchor = errors.New("aos: AOS_POLICY_TRUST_ANCHOR invalida (esperado 64 hex chars = 32 bytes ed25519 — a pubkey do trust anchor da politica; a chave PRIVADA assina o bundle FORA do no)")
+
+// ErrPolicyBundleLoad — AOS_POLICY_BUNDLE_DIR e AOS_POLICY_TRUST_ANCHOR estão definidos mas o
+// bundle NÃO carregou fail-closed: ausente, não-assinado, adulterado, ou com assinatura que a
+// âncora out-of-band NÃO verifica (envolve [pdp.ErrPolicyUnavailable]/[pdp.ErrSignatureInvalid]).
+// AOS-220: um bundle cuja assinatura a âncora forçada não valida é RECUSADO, não carregado — o nó
+// não arranca a servir política que não conseguiu verificar contra o anchor de confiança.
+var ErrPolicyBundleLoad = errors.New("aos: falha ao carregar o bundle PDP de AOS_POLICY_BUNDLE_DIR (ausente/nao-assinado/adulterado ou assinatura nao verificavel pelo trust anchor out-of-band) — RECUSADO fail-closed, nao carregado")
 
 // ErrBadOperators — AOS_OPERATORS presente mas com uma entrada MALFORMADA (sem '=', com
 // emitterID vazio, com pubkey que não é ed25519 hex de 32 bytes, ou com emitterID DUPLICADO).
@@ -447,6 +471,17 @@ func nodeConfigFromEnv() (Config, error) {
 		cfg.IssuerKeyPath = strings.TrimSpace(os.Getenv("AOS_ISSUER_KEY_PATH"))
 	}
 
+	// SUPERFÍCIE DE CARREGAMENTO DO BUNDLE PDP (AOS-220, achado #5 / DEF-604). Preenche
+	// [Config.PDP] a partir do ambiente — sem isto o campo era INALCANÇÁVEL pelo binário e o nó
+	// caía sempre em [pdp.NewUnloaded] (default-deny de TODA a tool call mediada). AOS_POLICY_BUNDLE_DIR
+	// → pdp.Open(dir, WithTrustAnchor(anchor de AOS_POLICY_TRUST_ANCHOR)); ausente ⇒ nil (default-deny
+	// EXPLÍCITO). Fail-closed: dir sem anchor / anchor malformado / bundle não-verificável ABORTAM.
+	policyDP, err := loadPolicyBundleFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.PDP = policyDP // nil ⇒ NewUnloaded (default-deny EXPLÍCITO) no composition-root; != nil ⇒ precedência
+
 	return cfg, nil
 }
 
@@ -632,6 +667,58 @@ func parseEd25519PubHex(raw string) (ed25519.PublicKey, error) {
 	b, err := hex.DecodeString(raw)
 	if err != nil || len(b) != ed25519.PublicKeySize {
 		return nil, ErrBadIssuerPubKey
+	}
+	return ed25519.PublicKey(b), nil
+}
+
+// loadPolicyBundleFromEnv é a SUPERFÍCIE DE CARREGAMENTO do bundle PDP (AOS-220) — o caminho que
+// FALTAVA entre o ambiente e o composition-root. Sem ele, [Config.PDP] era INALCANÇÁVEL pelo
+// binário entregue (Config vive em `package main`) e o nó caía SEMPRE em [pdp.NewUnloaded] ⇒
+// default-deny de TODA a tool call mediada, sem forma de carregar política (achado #5 / DEF-604).
+//
+// Contrato fail-closed, com o trust anchor FORÇADO out-of-band:
+//   - AOS_POLICY_BUNDLE_DIR ausente/vazio ⇒ (nil, nil): default-deny MANTÉM-SE, mas agora
+//     EXPLÍCITO e declarado (o composition-root compõe [pdp.NewUnloaded] e o banner anuncia-o).
+//     É a retro-compatibilidade: o binário sem a variável arranca exactamente como antes.
+//   - AOS_POLICY_BUNDLE_DIR definido SEM AOS_POLICY_TRUST_ANCHOR ⇒ [ErrPolicyBundleNeedsTrustAnchor]:
+//     o anchor NUNCA é lido do próprio dir do bundle (isso reabriria o cold-start que
+//     [pdp.WithTrustAnchor] fecha) — exige-se a pubkey out-of-band do ambiente.
+//   - anchor malformado ⇒ [ErrBadPolicyTrustAnchor]; bundle que não verifica contra o anchor
+//     (ausente/adulterado/assinado por outra chave) ⇒ [ErrPolicyBundleLoad] via [pdp.Open].
+//
+// Devolve o [*pdp.PDP] verificado e compilado, pronto a ser injectado em [Config.PDP] (tem
+// PRECEDÊNCIA sobre o default não-carregado no Bootstrap).
+func loadPolicyBundleFromEnv() (*pdp.PDP, error) {
+	dir := strings.TrimSpace(os.Getenv("AOS_POLICY_BUNDLE_DIR"))
+	if dir == "" {
+		return nil, nil // sem superfície ⇒ default-deny EXPLÍCITO (NewUnloaded no composition-root)
+	}
+	raw := strings.TrimSpace(os.Getenv("AOS_POLICY_TRUST_ANCHOR"))
+	if raw == "" {
+		return nil, ErrPolicyBundleNeedsTrustAnchor
+	}
+	anchor, err := parsePolicyTrustAnchor(raw)
+	if err != nil {
+		return nil, err
+	}
+	// O anchor é FORÇADO via WithTrustAnchor: [pdp.Open] verifica a assinatura do bundle contra
+	// ELE, ignorando qualquer trust_anchor.pub que exista no dir mutável do bundle. Um bundle
+	// assinado por outra chave é recusado (ErrSignatureInvalid), não carregado.
+	p, err := pdp.Open(dir, pdp.WithTrustAnchor(anchor))
+	if err != nil {
+		return nil, fmt.Errorf("%w: dir %q: %v", ErrPolicyBundleLoad, dir, err)
+	}
+	return p, nil
+}
+
+// parsePolicyTrustAnchor descodifica a pubkey ed25519 (64 hex chars) do trust anchor da política
+// (AOS_POLICY_TRUST_ANCHOR). Gémeo de [parseEd25519PubHex] mas com o erro DEDICADO
+// [ErrBadPolicyTrustAnchor] — fail-closed: qualquer erro de descodificação ou tamanho errado
+// aborta, só material público bem-formado se torna âncora de confiança.
+func parsePolicyTrustAnchor(raw string) (ed25519.PublicKey, error) {
+	b, err := hex.DecodeString(raw)
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil, ErrBadPolicyTrustAnchor
 	}
 	return ed25519.PublicKey(b), nil
 }

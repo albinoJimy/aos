@@ -1481,16 +1481,26 @@ não carrega bundle".)
 
 **Critérios de aceitação**
 
-- [ ] O ápice expõe uma superfície de carregamento fail-closed: `AOS_POLICY_BUNDLE_DIR` →
+- [x] O ápice expõe uma superfície de carregamento fail-closed: `AOS_POLICY_BUNDLE_DIR` →
       `pdp.Open(dir, WithTrustAnchor(...))`; sem a variável, o comportamento default-deny mantém-se
-      **explícito e declarado** (não um acidente silencioso).
-- [ ] O **trust anchor** é forçado **out-of-band** (não do próprio bundle) — um bundle sem assinatura
-      verificável pela âncora é **recusado** (fail-closed), não carregado.
-- [ ] **Falsificável (`-race`, ao nível do nó):** com bundle válido carregado, uma tool call permitida pela
+      **explícito e declarado** (não um acidente silencioso). *(Evidência: `main.go:479-483` liga
+      `loadPolicyBundleFromEnv()` a `nodeConfigFromEnv` preenchendo `cfg.PDP` (campo antes inalcançável pelo
+      binário); loader `main.go:691-712` faz `pdp.Open(dir, pdp.WithTrustAnchor(anchor))`; sem env ⇒ `cfg.PDP`
+      nil ⇒ `secured.go:205-207` compõe `pdp.NewUnloaded()`. `pdp.Open`/`WithTrustAnchor` existem — não inventados.)*
+- [x] O **trust anchor** é forçado **out-of-band** (não do próprio bundle) — um bundle sem assinatura
+      verificável pela âncora é **recusado** (fail-closed), não carregado. *(Evidência: `pdp.Open` só lê
+      `trust_anchor.pub` do dir quando `len(anchor)==0` (`pdp.go:154`), logo a âncora de `AOS_POLICY_TRUST_ANCHOR`
+      sobrepõe-se ao dir mutável; subteste "anchor VÁLIDO mas ERRADO" recusa o MESMO bundle que a âncora correcta
+      carrega ⇒ `ErrPolicyBundleLoad`.)*
+- [x] **Falsificável (`-race`, ao nível do nó):** com bundle válido carregado, uma tool call permitida pela
       política **passa** a mediação (hoje seria negada); com bundle ausente/assinatura inválida, **toda** a tool
-      call é negada. Prova dos dois sentidos.
-- [ ] **Retro-compat:** o binário sem `AOS_POLICY_BUNDLE_DIR` continua a arrancar (default-deny explícito), não
-      quebra os testes existentes. Sem segredos (a âncora é chave pública); gates verdes.
+      call é negada. Prova dos dois sentidos. *(Evidência: `aos220_pdp_bundle_surface_test.go` — subteste "bundle
+      CARREGADO ⇒ tool call PERMITIDA passa a mediação e EXECUTA" assere `permits>0` (falha-antes: sem o fix
+      `cfg.PDP` nil ⇒ `NewUnloaded` ⇒ deny); QA cortou a costura e confirmou empiricamente a falha-antes; `-race` verde.)*
+- [x] **Retro-compat:** o binário sem `AOS_POLICY_BUNDLE_DIR` continua a arrancar (default-deny explícito), não
+      quebra os testes existentes. Sem segredos (a âncora é chave pública, 32 bytes); gates verdes. *(Evidência:
+      assere `cfg.PDP` nil sem env; suites `cmd/aos` `-race` verdes; `go.mod`/`go.sum` intactos; secrets/deferrals/
+      layer-lint verdes; env documentado em `deploy/node/README.md`.)*
 
 **Fecha:** `DEF-604` (metade do bundle PDP). **Depende de:** AOS-181 (o `pdp.Open`/bundle), AOS-005 (contrato
 PDP). **Não duplica:** AOS-219 (taint) nem AOS-206 (promotion gate — outra via).
