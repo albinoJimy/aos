@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/aos-ref/platform/model-gateway/port"
 )
@@ -55,12 +57,47 @@ type OpenAIHTTPAdapter struct {
 	client   *http.Client
 }
 
+// defaultEgressTimeout e defaultMaxRedirects endurecem o cliente HTTP DEFAULT do
+// adaptador (usado quando nenhum client é injectado). O http.DefaultClient nu não
+// tem timeout, política de TLS nem limite de redirect — uma requisição pendurada
+// segura um worker indefinidamente e um redirect podia ser seguido sem limite.
+const (
+	defaultEgressTimeout = 30 * time.Second
+	defaultMaxRedirects  = 5
+)
+
+// newHardenedClient constrói o *http.Client DEFAULT do adaptador quando nenhum é
+// injectado: substitui o http.DefaultClient NU por um cliente com timeout
+// explícito, política de TLS mínima (TLS 1.2) e um limite de redirects. Fecha o
+// defeito (a) de AOS-223 no seam do adaptador (transport hardening). A validação
+// de BaseURL (esquema https + allowlist de hosts, defeito (b)) é imposta a montante
+// na costura de produção ([NewProduction], pacote modelgateway), que é quem conhece
+// a allowlist de egress — o adaptador de baixo nível não a conhece.
+func newHardenedClient() *http.Client {
+	return &http.Client{
+		Timeout: defaultEgressTimeout,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= defaultMaxRedirects {
+				return fmt.Errorf("adapters: demasiados redirects no egress (%d, max %d)", len(via), defaultMaxRedirects)
+			}
+			return nil
+		},
+	}
+}
+
 // NewOpenAIHTTPAdapter constrói o adaptador HTTP. baseURL é a raiz da API
 // compatível OpenAI (ex.: "https://host/v1"); client permite injectar um
-// http.Client de teste (httptest). Se client for nil, usa http.DefaultClient.
+// http.Client de teste (httptest). Se client for nil, usa um cliente ENDURECIDO
+// ([newHardenedClient]: timeout + TLS 1.2 + limite de redirect) — NUNCA o
+// http.DefaultClient nu.
 func NewOpenAIHTTPAdapter(provider, baseURL string, client *http.Client) *OpenAIHTTPAdapter {
 	if client == nil {
-		client = http.DefaultClient
+		client = newHardenedClient()
 	}
 	return &OpenAIHTTPAdapter{
 		provider: provider,

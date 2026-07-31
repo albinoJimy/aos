@@ -1569,13 +1569,21 @@ composition-root.
 
 **Critérios de aceitação**
 
-- [ ] O cliente HTTP do gateway tem **timeout**, política de **TLS** explícita e **limite de redirect** (não
-      `http.DefaultClient`).
-- [ ] `BaseURL` é **validado** antes de qualquer chamada: esquema **https** obrigatório + **allowlist** de hosts;
-      um host fora da allowlist / esquema não-https é **recusado** fail-closed.
-- [ ] **Falsificável (`-race`):** um teste prova que um `BaseURL` malicioso (http, host interno, redirect para
+- [x] O cliente HTTP do gateway tem **timeout**, política de **TLS** explícita e **limite de redirect** (não
+      `http.DefaultClient`). *(Evidência: `newHardenedEgressClient` (`production.go:365-380`) — `Timeout:
+      egressTimeout` (30s), `TLSClientConfig{MinVersion: TLS12}`, `CheckRedirect` que impõe `egressMaxRedirects=5`;
+      `newHardenedClient` (`openai_http.go:76`) substitui o `http.DefaultClient` nu; `TestHardenedEgressClient_*`.)*
+- [x] `BaseURL` é **validado** antes de qualquer chamada: esquema **https** obrigatório + **allowlist** de hosts;
+      um host fora da allowlist / esquema não-https é **recusado** fail-closed. *(Evidência: `newProviderAdapter`
+      (`production.go:286-303`) valida SEMPRE no caminho de egress real (`client==nil`); sentinelas
+      `ErrInsecureBaseURL`/`ErrHostNotAllowed`.)*
+- [x] **Falsificável (`-race`):** um teste prova que um `BaseURL` malicioso (http, host interno, redirect para
       host não-permitido) é **recusado** (falha-antes: hoje passaria); e que um endpoint legítimo continua a funcionar.
-- [ ] Sem segredos (sem credenciais reais no teste); gates verdes. Zero-dep preservado.
+      *(Evidência: `ssrf_seam_test.go` — `TestNewProduction_MaliciousBaseURL_RefusedAtSeam` (http, `169.254.169.254`,
+      fora-da-allowlist, allowlist-vazia ⇒ sentinela certo **e** gateway `nil`) + controlo positivo legítimo;
+      QA quebrou o wiring e confirmou o fail-OPEN antes do fix, restaurou byte-idêntico (`bbcad9f5`); `-race` verde.)*
+- [x] Sem segredos (sem credenciais reais no teste); gates verdes. Zero-dep preservado. *(Evidência:
+      `go.mod`/`go.sum` intactos; suite `model-gateway` `-race` verde; secrets/layer-lint/deferrals verdes.)*
 
 **Fecha:** os dois defeitos de seam do achado #9. **Depende de:** AOS-184 (o Model Gateway). **Não duplica:** o
 produtor real de custo/credenciais (EPIC-06, infra) nem o egress-de-tools do nó (já são).

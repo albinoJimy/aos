@@ -2,9 +2,13 @@ package modelgateway
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -57,6 +61,15 @@ var (
 	ErrUnknownProvider = errors.New("modelgateway: provider desconhecido (sem adaptador)")
 	// ErrNoBaseURL — o provider HTTP exige um baseURL (endpoint da API).
 	ErrNoBaseURL = errors.New("modelgateway: provider HTTP exige baseURL (fail-closed)")
+	// ErrInsecureBaseURL — o BaseURL (ou um alvo de redirect) do provider NÃO usa
+	// https. Fail-closed (SSRF, AOS-223): um esquema não-https (http, file, gopher,
+	// …) no caminho de egress real é recusado ANTES de qualquer chamada.
+	ErrInsecureBaseURL = errors.New("modelgateway: BaseURL de egress tem de ser https (fail-closed SSRF)")
+	// ErrHostNotAllowed — o host do BaseURL (ou de um redirect) NÃO está na allowlist
+	// de egress. Fail-closed (SSRF, AOS-223): um host fora da allowlist — incluindo
+	// metadados de nuvem (169.254.169.254), loopback ou qualquer alvo interno — é
+	// recusado. Uma allowlist vazia nega tudo.
+	ErrHostNotAllowed = errors.New("modelgateway: host de egress fora da allowlist (fail-closed SSRF)")
 )
 
 // CredentialProvider é o SEAM PÚBLICO de aquisição de credenciais de infra para o
@@ -91,9 +104,19 @@ type ProductionConfig struct {
 	// BaseURL é a raiz da API compatível OpenAI do provedor (ex.: "https://host/v1").
 	// Injectável para apontar a um httptest em testes de integração.
 	BaseURL string
-	// HTTPClient é opcional (nil ⇒ http.DefaultClient); permite injectar o client de
-	// um httptest.Server nos testes de integração.
+	// HTTPClient é opcional. Se nil, o gateway constrói um cliente ENDURECIDO para o
+	// egress REAL (timeout + TLS 1.2 + limite de redirect + re-validação de cada salto
+	// de redirect contra AllowedEgressHosts) e VALIDA o BaseURL (https + allowlist)
+	// antes de arrancar. Se um client for injectado (o seam de httptest/integração), é
+	// esse transporte de confiança que governa o egress e a validação de BaseURL é
+	// delegada nele — é como os testes apontam a um httptest.Server (http).
 	HTTPClient *http.Client
+	// AllowedEgressHosts é a ALLOWLIST de hosts (SSRF, AOS-223) a que o gateway pode
+	// fazer egress no caminho real (HTTPClient nil). Consultada na validação do BaseURL
+	// e re-validada em cada salto de redirect. Fail-closed: no caminho de egress real,
+	// uma allowlist VAZIA nega tudo. Ignorada quando um HTTPClient é injectado (o
+	// transporte injectado é a fronteira de confiança nesse caso).
+	AllowedEgressHosts []string
 	// DefaultRegion é a região usada quando o pedido não a especifica.
 	DefaultRegion string
 	// Authn é o estágio de IDENTIDADE (AOS-057) que valida o token do principal e
@@ -177,8 +200,11 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	// (4) Keypool: escolha da chave por throughput, DESACOPLADA da identidade (AOS-057).
 	kp := keypoolFromAccounts(cfg.Accounts)
 
-	// (5) Adaptador de provider interno (no-bypass) + ponte de credenciais.
-	adapter, err := newProviderAdapter(cfg.Provider, cfg.BaseURL, cfg.HTTPClient)
+	// (5) Adaptador de provider interno (no-bypass) + ponte de credenciais. No caminho
+	// de egress REAL (HTTPClient nil) o BaseURL é validado (https + allowlist) e um
+	// cliente endurecido/allowlist-aware é construído ANTES de servir tráfego (SSRF,
+	// AOS-223) — fail-closed: um BaseURL malicioso não produz gateway.
+	adapter, err := newProviderAdapter(cfg.Provider, cfg.BaseURL, cfg.HTTPClient, cfg.AllowedEgressHosts)
 	if err != nil {
 		return nil, err
 	}
@@ -251,15 +277,136 @@ func adaptHealth(h func(keyID, region string) bool) sovereignty.HealthFunc {
 // newProviderAdapter constrói o adaptador de provider INTERNO (mantido sob internal/,
 // no-bypass). Hoje só o wire OpenAI-compatible (AOS-055/056); outros provedores
 // entram por aqui sem alterar o composition root.
-func newProviderAdapter(provider, baseURL string, client *http.Client) (adapters.Adapter, error) {
+//
+// SSRF (AOS-223): no caminho de egress REAL (client == nil) o BaseURL é VALIDADO
+// (esquema https obrigatório + host na allowlist) e um cliente endurecido
+// allowlist-aware é construído — um BaseURL malicioso (http, host interno,
+// não-allowlisted) é recusado fail-closed ANTES de qualquer chamada. Quando um
+// client é injectado (httptest/integração), esse transporte de confiança governa e
+// a validação é delegada nele.
+func newProviderAdapter(provider, baseURL string, client *http.Client, allowedHosts []string) (adapters.Adapter, error) {
 	switch provider {
 	case "openai", "anthropic", "google":
 		if baseURL == "" {
 			return nil, ErrNoBaseURL
 		}
+		if client == nil {
+			allow := newHostAllowlist(allowedHosts)
+			if err := validateEgressURL(baseURL, allow); err != nil {
+				return nil, err
+			}
+			client = newHardenedEgressClient(allow)
+		}
 		return adapters.NewOpenAIHTTPAdapter(provider, baseURL, client), nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
+	}
+}
+
+// egressTimeout e egressMaxRedirects endurecem o cliente HTTP de egress REAL do
+// gateway (defeito (a) de AOS-223): timeout explícito e limite de redirect, contra
+// o http.DefaultClient nu (sem timeout/TLS/limite).
+const (
+	egressTimeout      = 30 * time.Second
+	egressMaxRedirects = 5
+)
+
+// hostAllowlist é o conjunto de destinos (host, ou host:porta) a que o gateway pode
+// fazer egress. Vazio ⇒ nega tudo (fail-closed, SSRF). A porta faz parte da chave: uma
+// entrada NUA ("host") permite só a porta https default (443); um destino numa porta
+// não-default TEM de ser allowlisted explicitamente como "host:porta" — fail-closed,
+// não se assume que um host allowlisted é alcançável em qualquer porta (defesa contra
+// desviar o egress para uma porta interna — SSH, admin — de um host allowlisted, ex.:
+// via 3xx para https://host-allowlisted:22/).
+type hostAllowlist map[string]struct{}
+
+// newHostAllowlist normaliza a lista de destinos numa allowlist (lowercase, sem
+// espaços; entradas vazias ignoradas). Uma entrada "host:443" colapsa para o host nu
+// (443 é a porta https default e é o que uma entrada nua já permite); uma entrada
+// "host:porta" com porta não-default é mantida como par exacto.
+func newHostAllowlist(hosts []string) hostAllowlist {
+	set := make(hostAllowlist, len(hosts))
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h == "" {
+			continue
+		}
+		if host, port, err := net.SplitHostPort(h); err == nil {
+			if port == "443" {
+				set[host] = struct{}{} // porta https default: colapsa para o host nu
+			} else {
+				set[host+":"+port] = struct{}{}
+			}
+			continue
+		}
+		set[h] = struct{}{} // entrada só-host (sem porta)
+	}
+	return set
+}
+
+// permits reporta se o destino (host bare + porta do URL, "" quando ausente) está na
+// allowlist. A porta https default (443) ou ausente é satisfeita por uma entrada NUA
+// "host"; qualquer outra porta exige uma entrada exacta "host:porta". Uma allowlist
+// vazia nunca permite (fail-closed).
+func (s hostAllowlist) permits(host, port string) bool {
+	host = strings.ToLower(host)
+	if port == "" || port == "443" {
+		if _, ok := s[host]; ok {
+			return true
+		}
+	}
+	if port != "" {
+		if _, ok := s[host+":"+port]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// validateEgressURL valida um URL de egress fail-closed (SSRF, AOS-223): esquema
+// https OBRIGATÓRIO + par (host, porta) na allowlist. Qualquer desvio — URL inválido,
+// esquema não-https, host vazio, host fora da allowlist, OU porta não-default de um
+// host cuja entrada é nua — é RECUSADO. É a mesma política aplicada ao BaseURL inicial
+// E a cada salto de redirect (fecha o SSRF-via-redirect, incluindo o desvio para uma
+// porta interna de um host allowlisted).
+func validateEgressURL(raw string, allow hostAllowlist) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("%w: URL invalido: %v", ErrInsecureBaseURL, err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("%w: esquema %q", ErrInsecureBaseURL, u.Scheme)
+	}
+	host := u.Hostname() // host sem porta
+	if host == "" {
+		return fmt.Errorf("%w: sem host", ErrHostNotAllowed)
+	}
+	if !allow.permits(host, u.Port()) {
+		return fmt.Errorf("%w: %q", ErrHostNotAllowed, u.Host)
+	}
+	return nil
+}
+
+// newHardenedEgressClient constrói o cliente de egress REAL do gateway: timeout
+// explícito, política de TLS mínima (TLS 1.2) e uma política de redirect que (i)
+// limita o número de saltos e (ii) RE-VALIDA cada alvo de redirect contra a mesma
+// allowlist https (fecha o SSRF-via-redirect — um 3xx para http ou para um host
+// interno é recusado a meio do fluxo). Fecha os defeitos (a) e (b) de AOS-223 no
+// caminho de egress real.
+func newHardenedEgressClient(allow hostAllowlist) *http.Client {
+	return &http.Client{
+		Timeout: egressTimeout,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= egressMaxRedirects {
+				return fmt.Errorf("modelgateway: demasiados redirects no egress (%d, max %d)", len(via), egressMaxRedirects)
+			}
+			return validateEgressURL(req.URL.String(), allow)
+		},
 	}
 }
 
