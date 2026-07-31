@@ -9,7 +9,7 @@
 | Estatuto | **PROPOSTA** — carece de ratificação do dono (ver §4 e o DoR em §9) |
 | Epic anterior | `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` |
 | Fontes de verdade | `analises/08_Relatorio_Auditoria_Multiagente_v4.md`, `specs/00_AOS_Carta.md`, `specs/00_System_Spec.md`, `docs/runbooks/RB-Auditoria_Multiagente_CartavCodebase.md` |
-| Intervalo de tickets | **AOS-190 … AOS-218** (29 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093); **AOS-215 acrescentado por AOS-093/DEF-302** (a KEK por-titular vive num `InMemoryKeyVault` demo-grade e o nó não tem costura para injectar um KMS/HSM — a porta `audit.KeyVault` existe mas `Config.DSARVault` é o tipo concreto; o KMS real é infra-org, a costura de injeção é código do nó); **AOS-217 acrescentado por auditoria adversarial** (achado A1: um run submetido sem `principal_nhi` em modo soberano persiste o conteúdo em CLARO no WAL — a cifra por-titular de AOS-093 só corre com titular != "" — e fica não-shreddable; sem fail-closed no submit soberano; o titular é ainda um campo de corpo desacoplado da credencial verificada do submissor); **AOS-218 acrescentado por auditoria adversarial** (achados ACHADO-2+ACHADO-1: o plano de controlo steer/pause é autenticado e persistido mas GRAVADO-MAS-INERTE — `WithSteerSource`/`NewLoopSteer` sem chamador de produção, o loop nunca consome a correcção; e ligar o steer activa a divergência espúria de `prompt_hash` porque o replay não capta a correcção) |
+| Intervalo de tickets | **AOS-190 … AOS-225** (36 tickets). AOS-204 acrescentado por AOS-192 (eixo residual de VAC-01); **AOS-205…209 acrescentados pelo registo de deferimentos e pela análise STRIDE** (§8-bis) — não são remediação, são o trabalho substantivo que os deferimentos apontavam sem executor; **AOS-210 acrescentado por AOS-204** (o residual nomeado em §6.3 do relatório de aceitação sistémica, que a própria §6.3 declarava «sem dono atribuído»); **AOS-211 acrescentado por AOS-210** (os dois atributos que faltam ao `aos.activity` que AOS-210 pôs na árvore exportada — encaminhar em vez de voltar a nomear sem dono); **AOS-212 acrescentado por AOS-211** (o eixo do custo por efeito real que AOS-211 deferiu com razão nomeada em DEF-810 — a porta que forneceria o custo do efeito não existia, e nomear sem encaminhar seria a mesma deriva); **AOS-213 acrescentado por CON-02/DEF-903** (a superfície de administração de legal hold/expiração, cuja Opção C sequenciou a execução para DEPOIS de o apagamento ser real — agora desbloqueada pela entrega do núcleo do AOS-093); **AOS-214 acrescentado por AOS-093** (o residual nomeado «replay soberano de conteúdo selado»: a cifra por-titular tornou o conteúdo dos runs ciphertext no Event Store, pelo que um leitor que reconstrói/inspecciona um run selado precisa de decifração autorizada por soberania — o resume in-process já ficou resolvido em AOS-093); **AOS-215 acrescentado por AOS-093/DEF-302** (a KEK por-titular vive num `InMemoryKeyVault` demo-grade e o nó não tem costura para injectar um KMS/HSM — a porta `audit.KeyVault` existe mas `Config.DSARVault` é o tipo concreto; o KMS real é infra-org, a costura de injeção é código do nó); **AOS-217 acrescentado por auditoria adversarial** (achado A1: um run submetido sem `principal_nhi` em modo soberano persiste o conteúdo em CLARO no WAL — a cifra por-titular de AOS-093 só corre com titular != "" — e fica não-shreddable; sem fail-closed no submit soberano; o titular é ainda um campo de corpo desacoplado da credencial verificada do submissor); **AOS-218 acrescentado por auditoria adversarial** (achados ACHADO-2+ACHADO-1: o plano de controlo steer/pause é autenticado e persistido mas GRAVADO-MAS-INERTE — `WithSteerSource`/`NewLoopSteer` sem chamador de produção, o loop nunca consome a correcção; e ligar o steer activa a divergência espúria de `prompt_hash` porque o replay não capta a correcção); **AOS-219…225 acrescentados pelo programa de fixes das auditorias adversariais** — o padrão meta confirmado nas 9 auditorias (mecanismos sãos; lacuna sistemática no **wiring/imposição/veracidade** do composition-root do nó): guarda do taint por eficácia (AOS-219), superfície de bundle PDP sem a qual o nó nega toda a tool call (AOS-220), tamper-evidence WORM imposta (AOS-221), veracidade do fencing do lease (AOS-222), seam SSRF do Model Gateway (AOS-223), escopo de recall da memória por principal (AOS-224) e defesa-em-profundidade da identidade (AOS-225) |
 
 ---
 
@@ -578,7 +578,7 @@ eixo válido **com um ticket real**).
 
 ---
 
-## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-218)
+## 8-bis. Tickets gerados pelo registo de deferimentos, pela análise STRIDE e pelos residuais nomeados (AOS-205 … AOS-225)
 
 Estes tickets **não são remediação da auditoria** — são o trabalho substantivo para que os
 deferimentos, a análise STRIDE e os **residuais nomeados** apontavam sem executor. Nascem aqui porque
@@ -616,6 +616,16 @@ e cujos Detalhes Técnicos já nomeiam o Event Store. Criar um ticket novo **dup
 dois donos à mesma propriedade: *trocar um eixo errado por um eixo inflacionado é o mesmo defeito ao
 contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), não criar outro ticket.
 
+Os **AOS-219 … AOS-225** fecham a **última camada de código do nó** que o programa de fixes das
+auditorias adversariais deixou em aberto. Não são mecanismos novos: as nove auditorias confirmaram que os
+mecanismos do nó são **sãos e testados** e que a lacuna é sistematicamente de **wiring/imposição/veracidade
+no composition-root** — capacidades anunciadas mas **não-ligadas** (bundle PDP, steer), **não-impostas**
+(tamper-evidence WORM, eficácia do taint) ou **falsamente alegadas** (o log de fencing). Cada um liga/impõe
+um controlo na via fail-closed do nó, ou corrige um claim que anuncia o que não compõe. Depois destes, o nó
+**impõe** cada controlo que declara; o que resta para uma **execução real** é **provisionamento de infra**
+(D4/identidade, bundle+trust-anchor real, KMS/HSM, provider de modelo) — decisões do dono e ops, **não**
+código do nó.
+
 | ID | Título | Tipo | Est. | Prio | Epic de EXECUÇÃO | Origem |
 |---|---|---|---|---|---|---|
 | AOS-205 | Provisionamento do IdP de soberania: registo board→região e credencial forte do leitor/operador | feature | L | P1 | **EPIC-09** | nota `N-DEF-201` (10 linhas do registo) |
@@ -632,6 +642,13 @@ contrário*. O que falta é **refinar** o CA de AOS-093 (pendência `P-3b`), nã
 | AOS-216 | Porta de envelope `WrapDEK`/`UnwrapDEK` para custódia HSM key-never-leaves: a KEK nunca sai do vault; impl de referência prova o contrato; fallback à via KEK-crua | feature | M | P2 | **EPIC-09** | residual HSM de `DEF-302`/AOS-215 |
 | AOS-217 | Fail-closed do titular no submit soberano (achado A1): sem `principal_nhi` recusa; o titular é derivado/validado da credencial verificada — nenhum conteúdo persiste sem cifra por-titular | fix | S | **P1** | **EPIC-09** | achado A1 (auditoria adversarial da soberania) |
 | AOS-218 | Ligar o plano de controlo steer/pause ao loop (achado ACHADO-2) + captar a correcção no replay (ACHADO-1): a correcção humana chega ao loop e o replay de um run com steer não diverge | fix | M | **P1** | **EPIC-02** | achados ACHADO-2+ACHADO-1 (auditoria adversarial durável) |
+| AOS-219 | Guarda do taint com **eficácia, não presença**: `hasActiveTaintGate` exige conjunto `privileged` **não-vazio** + compor o `PrivilegedAuthorizer` real no ápice endurecido (o nó não pode alegar "produção" com TaintGate inerte) | fix | S | P2 | **EPIC-07** | achado RM (auditoria adversarial) / `DEF-808`/`DEF-809`/`DEF-604` |
+| AOS-220 | **Superfície de carregamento do bundle PDP** (`AOS_POLICY_BUNDLE_DIR`→`pdp.Open(dir, WithTrustAnchor)`, fail-closed): sem bundle o nó entregue nega TODA a tool call mediada (`NewUnloaded`) — o trabalho real fica inalcançável | feature | M | **P1** | **EPIC-07** | achado #5 PDP (auditoria adversarial) / `DEF-604` |
+| AOS-221 | **Imposição da tamper-evidence do WORM**: ligar `audit.Verify` no restart e pós-shred, re-encadear o hash no load (não só CRC), compor `audit.Signer`/checkpoint — o bootstrap alega "hash-chain valida" sem validar | fix | M | P1 | **EPIC-09** | achado #7 WORM/tamper (auditoria adversarial) |
+| AOS-222 | **Veracidade do fencing** no lease de posse: corrigir os claims falsos (`service.go:468` log + comentário `hostRun`) que anunciam um `FencedAppender` não-composto, e declarar o limite real (cancel cooperativo + idempotência do ledger) em `ADR-018` | fix | S | P2 | **EPIC-02** | achado #10 lease/posse (auditoria adversarial) / `ADR-018` |
+| AOS-223 | Endurecimento do seam do Model Gateway (**SSRF/transport**): `http.DefaultClient` nu → cliente com timeout/TLS/limite de redirect; validar `BaseURL` (https + allowlist) antes de qualquer chamada | fix | S | P2 | **EPIC-06** | achado #9 egress (auditoria adversarial) / eixo `AOS-184` |
+| AOS-224 | **Escopo do recall da memória por principal**: a leitura de memória é escopada pela identidade verificada do principal (não write-only/global) — fechar antes de qualquer recall ser ligado no loop | fix | S | P3 | **EPIC-04** | achado #8 memória (auditoria adversarial) |
+| AOS-225 | Defesa-em-profundidade da identidade: validar `len(IssuerPubKey)==32` no modo endurecido (ed25519) — o boundary já rejeita chave partilhada (AOS-193); esta é a asserção estrutural redundante no ápice | fix | S | P3 | **EPIC-16** | defesa-em-profundidade (auditoria adversarial) / eixo `AOS-193` |
 
 ---
 
@@ -1425,6 +1442,180 @@ autenticado), AOS-016/AOS-017 (durabilidade/StateGate), AOS-180 (replay/capturer
 
 ---
 
+### AOS-219 — Guarda do taint com eficácia, não presença (achado RM)
+
+**Origem:** achado MÉDIO da auditoria adversarial do Reference Monitor.
+
+**O defeito (verificado):** `hasActiveTaintGate` (`packages/kernel/reference-monitor/production.go:72`) valida
+**presença** (`g.privileged != nil`), não **eficácia**: o nó passa a guarda de "produção" com um `TaintGate`
+**inerte** — conjunto `privileged` vazio ⇒ nenhuma promoção de escopo é jamais barrada, mas o ápice alega
+estar endurecido. (O `TaintGate` inerte em si é deferimento declarado — `DEF-808`/`DEF-809`/`DEF-604`; este
+ticket é a **guarda de eficácia** + compor o `PrivilegedAuthorizer` real, não a semântica do gate.)
+
+**Critérios de aceitação**
+
+- [ ] `hasActiveTaintGate` (ou o predicado de "modo endurecido") **exige** o conjunto `privileged`
+      **não-vazio** — um `TaintGate` com conjunto vazio **não** conta como activo; o nó **recusa fail-closed**
+      arrancar em modo endurecido com um taint gate inerte (ou degrada o claim de postura de forma honesta e visível).
+- [ ] O ápice de produção compõe um `PrivilegedAuthorizer` **real** (a fonte do conjunto privilegiado), não o
+      vazio por defeito — decidir/justificar a fonte sem inventar mecanismo novo (eixo `DEF-808`/AOS-183).
+- [ ] **Falsificável (`-race`):** um teste prova que, com conjunto vazio, o predicado de postura endurecida é
+      **falso** (falha-antes: hoje é verdadeiro); e que uma promoção de escopo tainted é **efectivamente barrada**
+      quando o autorizador está composto.
+- [ ] **Retro-compat:** modos não-endurecidos (demo/legado) inalterados. Sem segredos; gates verdes.
+
+**Fecha:** o achado RM de eficácia-vs-presença (a metade de wiring de `DEF-808`/`DEF-809`; a semântica do gate
+já existe). **Depende de:** AOS-183 (conjunto `Privileged`), AOS-157 (portas RT/RM). **Não duplica:** AOS-220
+(bundle PDP — outra guarda) nem a semântica do `TaintGate` (AOS-069/ADR-005).
+
+---
+
+### AOS-220 — Superfície de carregamento do bundle PDP (achado #5)
+
+**Origem:** achado MÉDIO (alto impacto) da auditoria adversarial do PDP.
+
+**O defeito (verificado):** `cfg.PDP` nunca é preenchido no ápice ⇒ o nó cai em `pdp.NewUnloaded` ⇒
+**default-deny de TODA a tool call mediada**. O nó entregue **nega todo o trabalho real** pela via mediada —
+o inverso silencioso do risco: seguro, mas inútil, e sem superfície para carregar política. (`DEF-604`: "o PDP
+não carrega bundle".)
+
+**Critérios de aceitação**
+
+- [ ] O ápice expõe uma superfície de carregamento fail-closed: `AOS_POLICY_BUNDLE_DIR` →
+      `pdp.Open(dir, WithTrustAnchor(...))`; sem a variável, o comportamento default-deny mantém-se
+      **explícito e declarado** (não um acidente silencioso).
+- [ ] O **trust anchor** é forçado **out-of-band** (não do próprio bundle) — um bundle sem assinatura
+      verificável pela âncora é **recusado** (fail-closed), não carregado.
+- [ ] **Falsificável (`-race`, ao nível do nó):** com bundle válido carregado, uma tool call permitida pela
+      política **passa** a mediação (hoje seria negada); com bundle ausente/assinatura inválida, **toda** a tool
+      call é negada. Prova dos dois sentidos.
+- [ ] **Retro-compat:** o binário sem `AOS_POLICY_BUNDLE_DIR` continua a arrancar (default-deny explícito), não
+      quebra os testes existentes. Sem segredos (a âncora é chave pública); gates verdes.
+
+**Fecha:** `DEF-604` (metade do bundle PDP). **Depende de:** AOS-181 (o `pdp.Open`/bundle), AOS-005 (contrato
+PDP). **Não duplica:** AOS-219 (taint) nem AOS-206 (promotion gate — outra via).
+
+---
+
+### AOS-221 — Imposição da tamper-evidence do WORM (achado #7)
+
+**Origem:** achado MÉDIO da auditoria adversarial do WORM/Event Store.
+
+**O defeito (verificado):** `audit.Verify` **nunca** é chamado em `cmd/aos` (nem no restart nem pós-shred); o nó
+**não compõe** `audit.Signer`/checkpoint; `OpenFileStore` valida só **CRC** (não **re-encadeia o hash** no
+load). A tamper-evidence é **latente, não imposta** — e o `bootstrap.go` comenta "hash-chain valida" **sem**
+validar. Um WAL adulterado passa despercebido no arranque.
+
+**Critérios de aceitação**
+
+- [ ] O arranque do nó **re-encadeia e verifica** a hash-chain do Event Store no load (não só CRC); uma cadeia
+      adulterada **impede** o arranque fail-closed (ou marca o store como comprometido de forma visível e recusa servir).
+- [ ] `audit.Verify` é chamado nos pontos-chave (restart e **pós-shred**, para provar que o shred preservou a
+      cadeia); o nó compõe `audit.Signer`/checkpoint (ou justifica a ausência honestamente, sem alegar o que não compõe).
+- [ ] **Falsificável (`-race`):** um teste adultera um registo do WAL e prova que a verificação **detecta**
+      (falha-antes: hoje o load passa com CRC intacto mas hash-chain partida). O comentário "hash-chain valida"
+      só permanece se a validação **existir**.
+- [ ] Sem segredos; gates verdes (incl. selftest).
+
+**Fecha:** o achado #7 (tamper-evidence imposta). **Depende de:** AOS-093 (hash-chain/envelope), AOS-170 (Event
+Store durável). **Não duplica:** AOS-214/AOS-215 (decifração/custódia — outra propriedade).
+
+---
+
+### AOS-222 — Veracidade do fencing no lease de posse (achado #10)
+
+**Origem:** achado MÉDIO da auditoria adversarial do lease/posse (`worker.Assigner`) — a lacuna que o dono
+insistiu em cobrir.
+
+**O defeito (verificado):** o nó **anuncia** "fencing" — `service.go:468` (log de heartbeat) e o comentário de
+`hostRun` — mas **não compõe** `FencedAppender`/`worker.Worker` (dark-code). O anti-duplo-efeito real é **cancel
+cooperativo + idempotência do step-ledger**, declarado noutro sítio. É um defeito de **veracidade do log**:
+alega uma barreira que não existe naquele caminho.
+
+**Critérios de aceitação**
+
+- [ ] Os claims falsos são corrigidos: o log de `service.go:468` e o comentário de `hostRun` **deixam de afirmar**
+      fencing que não compõem; passam a nomear o mecanismo **real** (lease por CAS atómico + idempotência do
+      ledger + cancel cooperativo).
+- [ ] `ADR-018` (ou o ADR do lease) **declara o limite**: v1 usa lease+idempotência, **não** `FencedAppender`; o
+      `FencedAppender` fica eixo nomeado (threading do lease token ao `Runtime.Run`) para quando for composto.
+- [ ] **Falsificável:** um teste/asserção garante que nenhum log ou comentário do caminho de posse afirma
+      "fencing" enquanto o `FencedAppender` não estiver composto (guarda de veracidade). Sem segredos; gates verdes.
+
+**Fecha:** o achado #10 (veracidade). **Depende de:** AOS-164/AOS-170 (NodeService/lease). **Não duplica:** a
+composição do `FencedAppender` (eixo maior, deixado nomeado).
+
+---
+
+### AOS-223 — Endurecimento do seam do Model Gateway (SSRF/transport) (achado #9)
+
+**Origem:** achado da auditoria adversarial do egress — dois defeitos **latentes** no seam do Model Gateway (o
+egress-de-tools do nó já é são: hook RM default-deny fail-closed provado).
+
+**O defeito (verificado):** no seam (`packages/platform/model-gateway`): (a) `http.DefaultClient` **nu** — sem
+timeout, sem política de TLS, sem limite de redirect; (b) `BaseURL` **sem validação** (https/allowlist) ⇒
+superfície de **SSRF**. Disjunto do nó (`platform/model-gateway`), pelo que **paraleliza** com os fixes do
+composition-root.
+
+**Critérios de aceitação**
+
+- [ ] O cliente HTTP do gateway tem **timeout**, política de **TLS** explícita e **limite de redirect** (não
+      `http.DefaultClient`).
+- [ ] `BaseURL` é **validado** antes de qualquer chamada: esquema **https** obrigatório + **allowlist** de hosts;
+      um host fora da allowlist / esquema não-https é **recusado** fail-closed.
+- [ ] **Falsificável (`-race`):** um teste prova que um `BaseURL` malicioso (http, host interno, redirect para
+      host não-permitido) é **recusado** (falha-antes: hoje passaria); e que um endpoint legítimo continua a funcionar.
+- [ ] Sem segredos (sem credenciais reais no teste); gates verdes. Zero-dep preservado.
+
+**Fecha:** os dois defeitos de seam do achado #9. **Depende de:** AOS-184 (o Model Gateway). **Não duplica:** o
+produtor real de custo/credenciais (EPIC-06, infra) nem o egress-de-tools do nó (já são).
+
+---
+
+### AOS-224 — Escopo do recall da memória por principal (achado #8)
+
+**Origem:** achado **latente** da auditoria adversarial da memória (provenance/redação são sãos e ligados; o
+recall é que não é escopado).
+
+**O defeito (verificado):** o recall da memória é **write-only/não-escopado-por-principal** — uma leitura não é
+restringida à identidade do principal. Latente hoje (sem recall ligado no loop), mas **tem de fechar antes** de
+qualquer recall ser ligado, sob pena de vazamento cross-principal.
+
+**Critérios de aceitação**
+
+- [ ] A leitura/recall da memória é **escopada pela identidade verificada do principal** (não auto-declarada); um
+      recall de um principal **não** devolve memória de outro.
+- [ ] **Falsificável (`-race`):** dois principais escrevem memória; o recall de A **não** vê a de B (falha-antes se
+      o escopo não existir). Recuo cross-principal ⇒ vazio, não claro alheio.
+- [ ] **Retro-compat:** o caminho de escrita/provenance/redação (já são) inalterado. Sem segredos; gates verdes.
+
+**Fecha:** o achado #8 (escopo de recall). **Depende de:** o subsistema de memória (EPIC-04) e a identidade
+verificada (AOS-205/174). **Não duplica:** a provenance/redação (já ligadas).
+
+---
+
+### AOS-225 — Defesa-em-profundidade da identidade: `len(IssuerPubKey)==32` (auditoria adversarial)
+
+**Origem:** recomendação de **defesa-em-profundidade** da auditoria adversarial da identidade (o boundary já
+está protegido — AOS-193 rejeita chave partilhada).
+
+**O defeito (verificado):** no modo endurecido, a chave pública do emissor (ed25519) **não** tem asserção
+estrutural de comprimento no ápice. Não é um furo (AOS-193 protege no boundary), mas a asserção redundante
+`len(IssuerPubKey)==32` fecha a via de uma chave malformada/vazia passar em silêncio.
+
+**Critérios de aceitação**
+
+- [ ] No modo endurecido, o ápice **valida** `len(IssuerPubKey)==32` (ed25519) — chave de comprimento
+      errado/vazia ⇒ **recusa fail-closed** de arrancar.
+- [ ] **Falsificável (`-race`):** uma `IssuerPubKey` de comprimento ≠ 32 ⇒ arranque recusado (falha-antes: hoje
+      passaria). Sem segredos; gates verdes.
+
+**Fecha:** a recomendação de defesa-em-profundidade da identidade. **Depende de:** AOS-193 (rejeição de chave
+partilhada no boundary). **Não duplica:** o four-eyes atestado (`DEF-107`, ABERTO — exige a porta de attestation,
+**infra**, não código do nó).
+
+---
+
 ## 9. Definition of Ready (DoR) do epic
 
 Antes de executar qualquer ticket:
@@ -1445,3 +1636,4 @@ Antes de executar qualquer ticket:
 | 1.1 | 2026-07-26 | **AOS-204** acrescentado (bloco C, P1/S) para possuir o eixo residual de VAC-01: exportar por OTLP, a partir do nó real, a árvore de um run **com tool call** (ramo `execute_tool`). Apurado ao executar AOS-192, que reabriu §13.6 do checklist de AOS-169 — um eixo reaberto sem ticket real viola o CA de AOS-196. | AOS-192 |
 | 1.2 | 2026-07-27 | **AOS-210** acrescentado a §8-bis (P1/S, execução **EPIC-14**) para possuir o **residual NOMEADO** por AOS-204 em `AOS-169-aceitacao-sistemica.md` §6.3 — o dispatcher durável composto **sem tracer** em `integration/secured.go`, que suprimia o span `aos.activity` do nó com `AOS_DURABLE_EXECUTION` ligado. A própria §6.3 declarava a pendência «sem dono atribuído»; §8-bis passa a acolher também residuais nomeados, e o intervalo de tickets do cabeçalho (que ainda dizia AOS-208) é reconciliado com AOS-209/210. | AOS-204 |
 | 1.3 | 2026-07-27 | **AOS-210 marcado ENTREGUE** (6/6 CA, evidência por nome de teste — a spec não pode dizer «por cumprir» enquanto §6.3 do relatório diz «FECHADO») e **AOS-211** acrescentado a §8-bis (P2/S, execução **EPIC-08**) para possuir o residual REMANESCENTE que AOS-210 nomeou: os dois atributos em falta no `aos.activity` agora exportado (custo por efeito real e `gen_ai.operation.name` sob contrato semconv). Nomear sem encaminhar, no mesmo parágrafo em que se declara ter terminado essa deriva, seria repeti-la. | AOS-210 |
+| 1.4 | 2026-07-31 | **AOS-219…AOS-225** acrescentados a §8-bis — a última camada de código do nó do programa de fixes das auditorias adversariais: guarda do taint por eficácia (AOS-219, EPIC-07), superfície de bundle PDP (AOS-220, EPIC-07), tamper-evidence WORM imposta (AOS-221, EPIC-09), veracidade do fencing (AOS-222, EPIC-02), seam SSRF do Model Gateway (AOS-223, EPIC-06), escopo de recall por principal (AOS-224, EPIC-04) e defesa-em-profundidade da identidade (AOS-225, EPIC-16). Fecham o wiring/imposição/veracidade no composition-root; o que resta para execução real é provisionamento de infra (D4, bundle+anchor, KMS, provider), **não** código do nó. | auditorias adversariais |
