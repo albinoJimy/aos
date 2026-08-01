@@ -2,7 +2,10 @@ module github.com/aos-ref/cmd/aos-issuer
 
 go 1.24
 
-require github.com/aos-ref/platform/identity v0.0.0
+require (
+	github.com/aos-ref/integration v0.0.0-00010101000000-000000000000
+	github.com/aos-ref/platform/identity v0.0.0
+)
 
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0 // indirect

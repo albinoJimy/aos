@@ -106,6 +106,7 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 | AOS-176 ✅ | Binding humano↔NHI auditável + **ADR-003** formal — **ENTREGUE** | feature | S | P1 | AOS-174 |
 | AOS-177 ✅ | Attestation **WebAuthn/AAGUID** (lib vetada, componente externo; nó zero-dep) — AOS-162 sai de stub — **ENTREGUE** | feature | L | P1 | AOS-175, AOS-162, ADR-016 |
 | AOS-226 ✅ | Issuer externo **runnable** (`cmd/aos-issuer`): monta AOS-174/175 num binário deployável — detém a chave via `crypto.Signer`, exporta o trust anchor, minta NHI; o nó verifica trust-anchor-only sem deter a chave — **ENTREGUE** | feature | M | P1 | AOS-174, AOS-175 |
+| AOS-227 ✅ | Autenticação OIDC do humano no `cmd/aos-issuer` (frente 1): `mint --assertion` verifica um ID-token contra o IdP (verifier real de AOS-174) e deriva o humano-raiz do `sub` verificado — **cbor-free** — **ENTREGUE** | feature | S | P1 | AOS-226, AOS-174 |
 
 **Sequência:** 174 (humano autenticado real) → 175 (não-forjabilidade real, chave fora do nó) →
 176 (binding + ADR-003) → 177 (attestation de dispositivo, a frente com a lib externa). As três
@@ -148,6 +149,37 @@ por flag; a costura front-1 fica para o próximo incremento, eixo `DEF-104/105/1
 **Depende de:** AOS-174 (verifier/token), AOS-175 (`crypto.Signer`). **Não duplica:** AOS-177
 (attestation, componente externo com a lib WebAuthn).
 
+### 4-ter. AOS-227 — autenticação OIDC do humano no issuer (frente 1)
+
+AOS-226 entregou o issuer com o humano por **flag** (auto-declarado). AOS-227 fecha a **frente 1**
+no issuer: `mint --assertion <id-token> --oidc-issuer <url> --oidc-audience <aud>` **autentica** o
+humano contra um **IdP real** antes de emitir — o humano-raiz da delegação é **DERIVADO do `sub`
+VERIFICADO**, não auto-declarado.
+
+- usa o **verificador OIDC real de AOS-174** (`integration/oidc`: discovery/JWKS + JWS +
+  anti-alg-confusion + `aud`/`exp`/`iat`) — a mesma verificação que o `OIDCDirectory` embrulha;
+- **cbor-free**: usa só o subpacote `integration/oidc` (stdlib), **não** o pacote `integration`
+  (que traria a lib WebAuthn da attestation) — o issuer mantém-se zero-dep externo;
+- **fail-closed**: qualquer falha de verificação propaga-se; nenhum humano é derivado de um token
+  não-verificado e nenhum NHI é emitido. O método (`oidc:<issuer>`) alimenta o binding audit (AOS-176).
+
+**Critérios de aceitação**
+
+- [x] `mint --assertion` deriva o humano-raiz do `sub` **verificado** (não de uma flag) + método
+      `oidc:<issuer>`; um ID-token **adulterado** é recusado fail-closed. *(Evidência:
+      `packages/cmd/aos-issuer/main_test.go` — `TestIssuer_OIDCAuthenticatesHumanBeforeMint`, IdP mock RSA/JWKS, `-race`.)*
+- [x] **cbor-free** preservado (`go list -deps` sem attestation/cbor; `go.sum` vazio). *(Evidência: `go list -deps` + gate.)*
+- [x] **Retro-compat**: `mint --human` (via manual) continua a funcionar. *(Evidência:
+      `TestIssuer_MintProducesVerifiableToken` + smoke por flag.)*
+
+**Residual nomeado:** o **tenant OIDC real** (Okta/Azure/Keycloak) é infra-org (deployment); o issuer
+fica com o **contrato** (verifica qualquer IdP conforme). A costura OIDC no **modo de referência do
+NÓ** (`DEF-110`, `bootstrap.go`) é um seam **distinto** e de menor valor — o modo de referência
+auto-assina; o caminho real é endurecido + issuer externo, que é o que AOS-227 serve. Permanece residual.
+
+**Fecha:** a frente 1 do D4 **no issuer** (autenticação humana real antes do mint). **Depende de:**
+AOS-226 (issuer runnable), AOS-174 (verifier OIDC).
+
 ## 5. Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -157,3 +189,4 @@ por flag; a costura front-1 fica para o próximo incremento, eixo `DEF-104/105/1
 | 1.2 | 2026-07-24 | Frente 3 (binding humano↔NHI + ADR-003) marcada ENTREGUE por AOS-176: ADR-003 formal ratificado; binding auditável de primeira classe (`identity.BindingAudit`) sobre o evento append-only `identity.nhi.issued` com `auth_method`, fail-closed contra cadeias órfãs, sem segredos/PII. | Equipa AOS |
 | 1.3 | 2026-07-24 | Frente 4 (attestation WebAuthn/AAGUID) marcada ENTREGUE por AOS-177 — ÚLTIMA da Opção A: porta stdlib `DeviceAttestationVerifier` + `FourEyesGate.WithDeviceAttestation` (dispositivos atestados distintos, `ErrSameDevice`); impl `packages/platform/attestation` (packed/x5c + self + fido-u2f, allowlist de AAGUID, extensão de AAGUID do cert, `none` recusado) num módulo com a única dep externa `fxamacker/cbor/v2`. Zero-dep do nó preservado e VERIFICADO por guardas `go list -deps` em cmd/aos e integration. ADR-016 §4 sai de CONDICIONAL-por-código. | Equipa AOS |
 | 1.4 | 2026-08-01 | **AOS-226** acrescentado (§4-bis): issuer externo RUNNABLE `cmd/aos-issuer` — monta AOS-174/175 num binário deployável (`pubkey` exporta o trust anchor; `mint` emite NHI via `crypto.Signer`; o nó verifica trust-anchor-only sem deter a chave). Módulo zero-dep externo (`go.sum` vazio, `go mod tidy` limpo); prova ponta-a-ponta no dev-harness (`TestDevHarness_ExternalIssuer`) e no módulo (`TestIssuer_MintProducesVerifiableToken`). Residual: compor o `OIDCDirectory` no issuer (`DEF-104/105/110`); HSM/KMS + tenant OIDC = infra. | Equipa AOS |
+| 1.5 | 2026-08-01 | **AOS-227** acrescentado (§4-ter): autenticação OIDC do humano no `cmd/aos-issuer` (frente 1) — `mint --assertion` verifica um ID-token contra o IdP (verifier real de AOS-174: discovery/JWKS/JWS/aud/exp) e deriva o humano-raiz do `sub` VERIFICADO, **cbor-free** (só `integration/oidc`, sem a attestation). Fail-closed; retro-compat com `--human`. Prova: `TestIssuer_OIDCAuthenticatesHumanBeforeMint` (IdP mock RSA/JWKS, -race). Residual: tenant OIDC = infra; `DEF-110` (OIDC no modo de referência do NÓ) = seam distinto de menor valor. | Equipa AOS |

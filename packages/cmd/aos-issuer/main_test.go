@@ -3,13 +3,23 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	oidc "github.com/aos-ref/integration/oidc"
 	identity "github.com/aos-ref/platform/identity"
 )
 
@@ -74,5 +84,98 @@ func TestIssuer_MintFailClosed(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("mint recusado não devia imprimir nada, veio %q", out.String())
+	}
+}
+
+// --- IdP OIDC de teste (RSA, JWKS via httptest) — replica mínima do padrão de AOS-174 ---
+
+const (
+	idpIssuer   = "https://idp.dev.example"
+	idpAudience = "aos-issuer-client"
+	idpKid      = "idp-dev-1"
+)
+
+func idpClock() func() time.Time {
+	return func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+}
+
+type testIDP struct {
+	server *httptest.Server
+	key    *rsa.PrivateKey
+}
+
+func newTestIDP(t *testing.T) *testIDP {
+	t.Helper()
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("gerar RSA: %v", err)
+	}
+	idp := &testIDP{key: k}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		pub := &idp.key.PublicKey
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{
+			"kty": "RSA", "kid": idpKid, "alg": "RS256", "use": "sig",
+			"n": base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+			"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+		}}})
+	})
+	idp.server = httptest.NewServer(mux)
+	t.Cleanup(idp.server.Close)
+	return idp
+}
+
+func (idp *testIDP) jwksURI() string { return idp.server.URL + "/jwks" }
+
+// signIDToken minta um ID-token RS256 para o sub dado (claims válidas para idpClock).
+func (idp *testIDP) signIDToken(t *testing.T, sub string) string {
+	t.Helper()
+	now := idpClock()().Unix()
+	claims := map[string]any{
+		"iss": idpIssuer, "sub": sub, "aud": idpAudience,
+		"exp": now + 3600, "iat": now - 30, "nbf": now - 30,
+	}
+	hdr, _ := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": idpKid})
+	pb, _ := json.Marshal(claims)
+	input := base64.RawURLEncoding.EncodeToString(hdr) + "." + base64.RawURLEncoding.EncodeToString(pb)
+	digest := sha256.Sum256([]byte(input))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, idp.key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("assinar id-token: %v", err)
+	}
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// TestIssuer_OIDCAuthenticatesHumanBeforeMint prova a costura front-1 do D4 (AOS-174) no issuer:
+// com um ID-token VÁLIDO, `authenticateOIDC` deriva o humano-raiz do `sub` VERIFICADO e o método
+// `oidc:<issuer>`; um ID-token ADULTERADO é RECUSADO fail-closed (nenhum humano derivado). É o que
+// permite ao `mint --assertion` autenticar o humano contra um IdP real em vez de o auto-declarar.
+func TestIssuer_OIDCAuthenticatesHumanBeforeMint(t *testing.T) {
+	idp := newTestIDP(t)
+	cfg := oidc.Config{
+		Issuer:     idpIssuer,
+		Audience:   idpAudience,
+		JWKSURI:    idp.jwksURI(),
+		HTTPClient: idp.server.Client(),
+		Clock:      idpClock(),
+	}
+
+	// (1) VÁLIDO: humano derivado do sub verificado; método = oidc:<issuer>.
+	idToken := idp.signIDToken(t, "alice@corp.example")
+	human, method, err := authenticateOIDC(context.Background(), cfg, idToken)
+	if err != nil {
+		t.Fatalf("authenticateOIDC (ID-token válido): %v", err)
+	}
+	if human != "human:alice@corp.example" {
+		t.Fatalf("humano derivado = %q, quero human:alice@corp.example (o sub verificado)", human)
+	}
+	if want := "oidc:" + idpIssuer; method != want {
+		t.Fatalf("método = %q, quero %q (contexto de binding audit)", method, want)
+	}
+
+	// (2) ADULTERADO: recusa fail-closed — nenhum humano é derivado de um token não-verificado.
+	tampered := idToken[:len(idToken)-2] + "AA"
+	if h, _, err := authenticateOIDC(context.Background(), cfg, tampered); err == nil {
+		t.Fatalf("ID-token adulterado devia ser RECUSADO fail-closed, veio humano=%q", h)
 	}
 }

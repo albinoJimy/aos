@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	oidc "github.com/aos-ref/integration/oidc"
 	identity "github.com/aos-ref/platform/identity"
 )
 
@@ -92,17 +93,43 @@ func cmdMint(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("mint", flag.ContinueOnError)
 	keyFile := fs.String("key-file", "issuer.key", "ficheiro da chave de assinatura")
 	issuerID := fs.String("issuer", "iss:aos-issuer", "id do issuer (== AOS_ISSUER_ID do nó)")
-	human := fs.String("human", "", "humano responsável (raiz da cadeia de delegação, ADR-003)")
+	human := fs.String("human", "", "humano responsável (raiz da delegação); alternativa a --assertion (via manual/allowlist)")
 	agent := fs.String("agent", "", "id do agente (NHI a criar)")
 	class := fs.String("class", "", "classe do agente (selecciona a ClassPolicy)")
 	caps := fs.String("caps", "", "capabilities CSV que o utilizador possui (a autoridade é a intersecção com a classe)")
 	ttl := fs.Duration("ttl", 15*time.Minute, "TTL do token")
 	authMethod := fs.String("auth-method", "manual", "rótulo do método de autenticação humana (binding audit AOS-176; NUNCA PII)")
+	// AUTENTICAÇÃO OIDC do humano (front 1 do D4, AOS-174): com --assertion o humano-raiz é
+	// DERIVADO do `sub` de um ID-token VERIFICADO contra o IdP, não auto-declarado por flag.
+	assertion := fs.String("assertion", "", "ID-token OIDC do humano (autentica-o contra o IdP; alternativa a --human)")
+	oidcIssuer := fs.String("oidc-issuer", "", "issuer OIDC (URL) — exigido com --assertion")
+	oidcAudience := fs.String("oidc-audience", "", "audience OIDC — exigido com --assertion")
+	oidcJWKS := fs.String("oidc-jwks", "", "JWKS URI do IdP (opcional; vazio ⇒ discovery via issuer)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *human == "" || *agent == "" || *class == "" {
-		return errors.New("mint exige --human, --agent e --class")
+	if *agent == "" || *class == "" {
+		return errors.New("mint exige --agent e --class")
+	}
+
+	// Resolver o humano-raiz da delegação: via OIDC (autenticado) ou via flag (manual).
+	rootHuman, method := *human, *authMethod
+	if *assertion != "" {
+		if *oidcIssuer == "" || *oidcAudience == "" {
+			return errors.New("--assertion exige --oidc-issuer e --oidc-audience")
+		}
+		h, m, err := authenticateOIDC(context.Background(), oidc.Config{
+			Issuer:   *oidcIssuer,
+			Audience: *oidcAudience,
+			JWKSURI:  *oidcJWKS, // vazio ⇒ discovery; HTTPClient nil ⇒ cliente com timeout; Clock nil ⇒ time.Now
+		}, *assertion)
+		if err != nil {
+			return fmt.Errorf("autenticação OIDC do humano: %w", err)
+		}
+		rootHuman, method = h, m
+	}
+	if rootHuman == "" {
+		return errors.New("mint exige --human ou --assertion (o humano-raiz da delegação)")
 	}
 	scope := splitCSV(*caps)
 
@@ -120,18 +147,37 @@ func cmdMint(args []string, out io.Writer) error {
 		return fmt.Errorf("construir issuer: %w", err)
 	}
 	tok, err := iss.Issue(context.Background(), identity.IssueRequest{
-		UserID:        *human,
+		UserID:        rootHuman,
 		AgentID:       *agent,
 		AgentClass:    *class,
 		PolicyRef:     "policy://" + *class,
 		UserAuthority: scope,
-		AuthMethod:    *authMethod,
+		AuthMethod:    method,
 	})
 	if err != nil {
 		return fmt.Errorf("mint: %w", err)
 	}
 	_, err = fmt.Fprintln(out, tok.Compact)
 	return err
+}
+
+// authenticateOIDC verifica o ID-token do humano contra o IdP com o verificador OIDC REAL de
+// AOS-174 (discovery/JWKS + assinatura JWS + anti-alg-confusion + aud/exp/iat) e devolve o
+// humano-raiz (`human:<sub verificado>`) e o rótulo de método para o binding audit
+// (`oidc:<issuer>`, AOS-176). Fail-closed: qualquer falha de verificação propaga-se — nenhum
+// humano é derivado de um token não-verificado, e nenhum token NHI é emitido. É a costura front-1
+// do D4 (substitui a allowlist demo pela autenticação real), cbor-free: usa só `integration/oidc`
+// (stdlib JWS/JWKS), não o pacote `integration` (que traria a lib WebAuthn da attestation).
+func authenticateOIDC(ctx context.Context, cfg oidc.Config, assertion string) (human, method string, err error) {
+	v, err := oidc.NewVerifier(cfg)
+	if err != nil {
+		return "", "", err
+	}
+	claims, err := v.Validate(ctx, assertion)
+	if err != nil {
+		return "", "", err
+	}
+	return "human:" + claims.Subject, "oidc:" + claims.Issuer, nil
 }
 
 // loadOrCreateKey carrega a seed ed25519 (32 bytes em hex) do ficheiro; se não existir, gera uma
