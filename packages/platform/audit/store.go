@@ -99,6 +99,14 @@ func (s *MemStore) At(_ context.Context, partition string, seq uint64) (AuditRec
 	return AuditRecord{}, false, nil
 }
 
+// Partitions implementa [PartitionLister]: os nomes de todas as partições com
+// registos, ordenados (determinismo ⇒ verificação reproduzível em [VerifyStore]).
+func (s *MemStore) Partitions() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return sortedPartitions(s.parts)
+}
+
 // cloneRecord devolve uma cópia profunda dos campos mutáveis (slices/ponteiros)
 // para preservar o isolamento append-only: nem o chamador nem o Store partilham
 // slices de bytes que possam ser mutadas após a selagem.

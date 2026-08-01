@@ -28,6 +28,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	audit "github.com/aos-ref/platform/audit"
@@ -219,9 +220,10 @@ func (h *apiHandler) sealLegalHold(ctx context.Context, reader readerIdentity, r
 
 // handleExpire conduz UMA passagem do [audit.ExpirationJob] composto no nó (AOS-213). Fail-closed:
 // admission do plano de controlo; job não composto ⇒ 501; gate soberano não composto ⇒ 501;
-// credencial forte ausente/forjada ⇒ 403. A expiração RESPEITA o legal hold (o job salta os held)
-// e MATERIALIZA a expiração por crypto-shred da KEK por-titular (apagamento real). Devolve as
-// contagens da passagem SEM PII.
+// credencial forte ausente/forjada ⇒ 403; hash-chain do WORM adulterada PÓS-SHRED ⇒ 500 (AOS-221,
+// paridade com /dsar/erase). A expiração RESPEITA o legal hold (o job salta os held) e MATERIALIZA
+// a expiração por crypto-shred da KEK por-titular (apagamento real). Devolve as contagens da
+// passagem SEM PII.
 //
 // SERIALIZAÇÃO (AOS-213): o Run do job é pensado para uma execução de cada vez — o seu ciclo faz
 // idem.Seen(key) e só mais tarde idem.Add(key) (após o Append ao WORM), sem atomicidade
@@ -258,6 +260,19 @@ func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 		// Um passo falhou (ex.: selagem do retention.expired): 500 sem detalhe no corpo. Os
 		// registos restantes foram processados na mesma (errors.Join no job).
 		writeError(w, http.StatusInternalServerError, "expiracao recusada")
+		return
+	}
+	// AOS-221 — VERIFICAÇÃO PÓS-SHRED da hash-chain do WORM, em PARIDADE com POST /dsar/erase
+	// (ver dsar.go). A expiração por TTL MATERIALIZA-SE por crypto-shred da KEK por-titular
+	// (retention.go cryptoShredSink.Expire) — é um apagamento REAL, o MESMO vector do /dsar/erase.
+	// Prova-se aqui que destruir a CHAVE não mutou a cadeia tamper-evident: o shred apaga a KEK,
+	// não os registos selados (incl. os selos retention.expired desta passagem), pelo que a
+	// hash-chain TEM de continuar a validar. Re-encadeia TODAS as partições (via SEM chave privada).
+	// Cadeia partida ⇒ incidente de integridade ⇒ fail-closed (500 uniforme, sem detalhe). Um WORM
+	// injectado opaco (sem audit.PartitionLister) não é verificável pelo nó ⇒ NÃO é falha da
+	// expiração (a integridade desse substrato é do chamador).
+	if verr := h.node.VerifyWORM(r.Context()); verr != nil && !errors.Is(verr, audit.ErrPartitionsUnavailable) {
+		writeError(w, http.StatusInternalServerError, "integridade do worm comprometida apos a expiracao")
 		return
 	}
 	writeJSON(w, http.StatusOK, expireResponse{

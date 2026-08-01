@@ -1540,17 +1540,38 @@ validar. Um WAL adulterado passa despercebido no arranque.
 
 **Critérios de aceitação**
 
-- [ ] O arranque do nó **re-encadeia e verifica** a hash-chain do Event Store no load (não só CRC); uma cadeia
+- [x] O arranque do nó **re-encadeia e verifica** a hash-chain do Event Store no load (não só CRC); uma cadeia
       adulterada **impede** o arranque fail-closed (ou marca o store como comprometido de forma visível e recusa servir).
-- [ ] `audit.Verify` é chamado nos pontos-chave (restart e **pós-shred**, para provar que o shred preservou a
+      *(Evidência: `filestore.go:98` — `OpenFileStore` corre `verifyReplayedChain` por partição após o replay CRC e
+      recusa o `Open` na 1ª cadeia partida; `bootstrap.go:696` — `audit.VerifyStore` no restart aborta o arranque
+      (erro ≠ `ErrPartitionsUnavailable`). `TestWORM_LoadRejectsTamperedChain_CRCValid` + `TestNode_RestartRejectsTamperedWORM`.)*
+- [x] `audit.Verify` é chamado nos pontos-chave (restart e **pós-shred**, para provar que o shred preservou a
       cadeia); o nó compõe `audit.Signer`/checkpoint (ou justifica a ausência honestamente, sem alegar o que não compõe).
-- [ ] **Falsificável (`-race`):** um teste adultera um registo do WAL e prova que a verificação **detecta**
+      *(Evidência: restart `bootstrap.go:696`; pós-shred em **AMBOS** os caminhos — `handleErase` (`dsar.go:226`) e
+      `handleExpire`/TTL (`legalhold.go:274`, ligado pela remediação em paridade). `audit.Signer`/checkpoint **NÃO**
+      composto — justificado honestamente: o re-encadeamento é SHA-256, **sem chave privada no runtime**; a âncora
+      assinada de frescura (que apanharia a truncatura do TAIL) fica no eixo **AOS-072**. `TestNode_VerifyWORM_PostShredPositive`
+      + `TestExpireRoute_PostShredVerifiesWORM_FailClosed` + `TestVerifyStore_DetectsTamperedPartition`.)*
+- [x] **Falsificável (`-race`):** um teste adultera um registo do WAL e prova que a verificação **detecta**
       (falha-antes: hoje o load passa com CRC intacto mas hash-chain partida). O comentário "hash-chain valida"
-      só permanece se a validação **existir**.
-- [ ] Sem segredos; gates verdes (incl. selftest).
+      só permanece se a validação **existir**. *(Evidência: `aos221_worm_tamper_test.go` — o tamper **recalcula o CRC**
+      do frame (framing intacto) e parte a hash-chain, atingindo o vector "CRC-válido, hash-chain-partida";
+      `TestWORM_LoadRejectsTamperedChain_CRCValid` prova o sentido-antes (`replayAuditWAL` aceita) e o sentido-depois
+      (`OpenFileStore` recusa); a doc-comment de `VerifyWORM` tornou-se **verdadeira por wiring**, não reescrita; `-race` verde.)*
+- [x] Sem segredos; gates verdes (incl. selftest). *(Evidência: sem chave privada no runtime do audit;
+      `go test -race` verde em `cmd/aos` + `platform/audit`; `bash scripts/ci/selftest.sh` — TODOS OS SELF-TESTS OK;
+      `deferrals`/`layer-lint` verdes; `go.mod`/`go.sum` intactos.)*
 
 **Fecha:** o achado #7 (tamper-evidence imposta). **Depende de:** AOS-093 (hash-chain/envelope), AOS-170 (Event
 Store durável). **Não duplica:** AOS-214/AOS-215 (decifração/custódia — outra propriedade).
+
+**Residual nomeado (não defeitos):** (1) a **truncatura do TAIL** (remover os registos mais recentes) é o único
+vector que o re-encadeamento SHA-256 não apanha — exige uma **âncora de frescura assinada** (`audit.Signer`/checkpoint
+com `AuditSeq==head`), cuja selagem usaria a chave **privada** do operador que, pela regra do nó, **não vive no
+runtime** → deferido a **AOS-072** (custódia out-of-process, molde AOS-156). (2) Um WORM **injectado por config** que
+não implemente `audit.PartitionLister` devolve `ErrPartitionsUnavailable` e não é verificável pelo nó (carve-out
+**declarado** no banner) — os stores próprios do nó (`FileStore`/`MemStore`) implementam-no sempre e o `FileStore`
+auto-verifica no `Open`; fronteira de custódia do chamador, não fail-open silencioso.
 
 ---
 

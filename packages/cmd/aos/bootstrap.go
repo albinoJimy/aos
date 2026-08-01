@@ -302,7 +302,8 @@ type Config struct {
 	EventStorePath string
 	// WORM é o audit.Store tamper-evident único do RM. Precedência análoga: se != nil,
 	// usa-o; senão, se WORMPath != "", ABRE um WORM DURÁVEL (audit.OpenFileStore —
-	// mesma mecânica; a hash-chain sobrevive ao restart); senão, um in-memory de
+	// mesma mecânica; a hash-chain sobrevive ao restart E é RE-ENCADEADA e verificada no
+	// load, não só validado o CRC de framing — AOS-221); senão, um in-memory de
 	// referência.
 	WORM audit.Store
 	// WORMPath é o caminho do WAL do WORM durável (AOS-170). Só consultado quando
@@ -665,6 +666,38 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			_ = closeIfCloser(worm)
 		}
 	}()
+
+	// (2a) AOS-221 — IMPOR a tamper-evidence do WORM no RESTART. Re-encadeia e VERIFICA a
+	// hash-chain de TODAS as partições do WORM logo após o reabrir, ANTES de compor seja o
+	// que for sobre ela. É a via SEM CHAVE PRIVADA (um encadeamento de HASHES, não uma
+	// assinatura): detecta MUTAÇÃO, REMOÇÃO INTERNA, INSERÇÃO e ENCADEAMENTO QUEBRADO no
+	// estado RESTAURADO do disco. Uma cadeia adulterada ABORTA o arranque fail-closed — o
+	// nó nunca sobe a servir um WORM cuja cadeia está partida; um WORM in-memory
+	// recém-criado (vazio) ou um durável íntegro passa em silêncio (retro-compat).
+	//
+	// O WORM durável ([audit.FileStore]) já RECUSA o próprio Open sobre uma cadeia partida
+	// (defesa no substrato, AOS-221); esta chamada IMPÕE a MESMA verificação para TODAS as
+	// proveniências (durável, in-memory, INJECTADA por config) e é o ponto onde o nó chama
+	// audit.Verify no restart. Um WORM injectado por config que NÃO saiba enumerar as suas
+	// partições ([audit.PartitionLister]) devolve [audit.ErrPartitionsUnavailable]: aí a
+	// verificação integral não é possível PELO NÓ e o banner DECLARA-O (não finge ter
+	// verificado), mas NÃO aborta — o ciclo de vida/durabilidade desse store é do chamador
+	// (a mesma fronteira do substrato injectado, que o nó não atesta).
+	//
+	// SIGNER/CHECKPOINT ASSINADO — NÃO COMPOSTO, honestamente. A truncatura do TAIL (remover
+	// os registos MAIS RECENTES) é o único vector que a re-verificação de hash-chain não
+	// apanha (ver o comentário de [audit.Verify]); fechá-la exige uma ÂNCORA DE FRESCURA
+	// assinada ([audit.Signer]/checkpoint) cujo AuditSeq == head esperado. SELAR um checkpoint
+	// exige a chave PRIVADA do operador — que, pela regra do nó, NÃO vive no runtime — pelo
+	// que o Signer/checkpoint não é composto aqui. Eixo nomeado: AOS-072 (checkpoint como
+	// âncora de frescura), com a chave de assinatura sob custódia OUT-OF-PROCESS no mesmo
+	// molde do modo endurecido de AOS-156. O nó IMPÕE o que consegue sem chave privada
+	// (re-encadeamento) e não alega o que não compõe.
+	wormVerifiedParts, wormVerifyErr := audit.VerifyStore(ctx, worm)
+	wormPartitionsOpaque := errors.Is(wormVerifyErr, audit.ErrPartitionsUnavailable)
+	if wormVerifyErr != nil && !wormPartitionsOpaque {
+		return nil, fmt.Errorf("aos: tamper-evidence do WORM (AOS-221) — hash-chain adulterada no arranque, o no recusa servir: %w", wormVerifyErr)
+	}
 
 	// (2c-pre) CIFRA POR-TITULAR DO CONTEÚDO DOS RUNS (AOS-093). O vault de chaves de
 	// PII por-titular e o índice titular→partição são criados AQUI — antes da execução
@@ -1147,6 +1180,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	log("NOTA promotion controller: a capacidade e alcancavel PELO CAMINHO DO NO (node.Promotion.Promote, provada em teste); a submissao de ratificacoes pelo operador (endpoint HTTP/subcomando CLI) fica DEFERIDA — depende de AOS-096/pipeline de promocao")
 	log("substrato: %s", substrateMode(cfg))
+	// TAMPER-EVIDENCE DO WORM IMPOSTA (AOS-221). O banner declara o estado REALMENTE
+	// verificado (não a intenção): a hash-chain foi RE-ENCADEADA e verificada no arranque —
+	// uma cadeia adulterada teria ABORTADO aqui, fail-closed — ou, para um WORM injectado
+	// opaco, que a verificação integral não foi possível PELO NÓ (custódia do chamador). E
+	// declara honestamente que o Signer/checkpoint ASSINADO (âncora de frescura da truncatura
+	// do tail) NÃO é composto, com o eixo nomeado — sem capacidade-fantasma.
+	if wormPartitionsOpaque {
+		log("tamper-evidence do WORM (AOS-221): WORM INJECTADO nao expoe as particoes (audit.PartitionLister) — verificacao integral da hash-chain NAO feita pelo no (custodia/durabilidade do chamador); o WORM duravel/in-memory do no re-encadeia sempre")
+	} else {
+		log("tamper-evidence do WORM (AOS-221): hash-chain RE-ENCADEADA e verificada no arranque (%d particao(oes)) — nao so o CRC de framing; uma cadeia adulterada ABORTARIA o arranque fail-closed (audit.Verify chamado no restart e pos-shred)", wormVerifiedParts)
+	}
+	log("NOTA AOS-221: o Signer/checkpoint ASSINADO (ancora de frescura que fecharia a truncatura do TAIL) NAO e composto — selar checkpoints exige a chave PRIVADA do operador, que nao vive no runtime do no; eixo AOS-072 (checkpoint) sob custodia out-of-process (molde AOS-156). A re-verificacao de hash-chain (sem chave privada) detecta mutacao/remocao-interna/insercao/encadeamento-quebrado")
 	// EXECUÇÃO DURÁVEL (AOS-180/AOS-191). O banner declara o estado REALMENTE COMPOSTO
 	// (não a intenção da config) e sobre que substrato — para que um operador nunca tenha
 	// de adivinhar se checkpointer/capturer/step-ledger estão ligados.
@@ -1304,6 +1349,19 @@ func (n *Node) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// VerifyWORM re-encadeia e verifica a hash-chain de TODAS as partições do WORM do nó
+// (AOS-221). É a MESMA verificação SEM CHAVE PRIVADA do arranque, exposta para os pontos
+// PÓS-SHRED: após um crypto-shred (POST /dsar/erase — AOS-093 — ou a expiração por TTL de
+// AOS-213) o nó chama-a para PROVAR que o shred destruiu a KEK SEM mutar a cadeia (o shred
+// apaga a CHAVE, não os registos selados — a hash-chain TEM de continuar a validar). Um WORM
+// injectado opaco (sem [audit.PartitionLister]) devolve [audit.ErrPartitionsUnavailable]: a
+// verificação integral é do chamador, não uma falha do shred. Um [*audit.VerifyError]
+// (desembrulha para [audit.ErrTampered]) sinaliza cadeia partida — o chamador impõe fail-closed.
+func (n *Node) VerifyWORM(ctx context.Context) error {
+	_, err := audit.VerifyStore(ctx, n.WORM)
+	return err
 }
 
 // closeIfCloser fecha o valor se implementar io.Closer (o WORM durável FileStore

@@ -85,7 +85,30 @@ func OpenFileStore(path string) (*FileStore, error) {
 	for _, rec := range recs {
 		s.parts[rec.Partition] = append(s.parts[rec.Partition], rec)
 	}
+
+	// AOS-221 — RE-ENCADEAR NO LOAD (não só CRC). O replay acima só garantiu o
+	// FRAMING (CRC de cada registo) do WAL; NÃO garante que o CONTEÚDO selado
+	// ENCADEIA. Um WAL cujo registo foi adulterado e o CRC recalculado passa o replay
+	// mas parte a hash-chain. Aqui re-encadeia-se cada partição reconstruída a partir da
+	// GÉNESE (sem chave privada — é um encadeamento de hashes): audit_seq contíguo,
+	// PrevHash encadeado, EntryHash recomputável. Uma cadeia adulterada RECUSA o Open
+	// (fail-closed) — o WORM nunca serve como íntegro um WAL cuja cadeia está partida.
+	// Um WORM intacto abre exactamente como antes (a verificação passa em silêncio).
+	for _, part := range sortedPartitions(s.parts) {
+		if err := verifyReplayedChain(part, s.parts[part]); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("audit: hash-chain adulterada no WAL %q: %w", path, err)
+		}
+	}
 	return s, nil
+}
+
+// Partitions implementa [PartitionLister]: os nomes de todas as partições com
+// registos, ordenados (determinismo ⇒ verificação reproduzível em [VerifyStore]).
+func (s *FileStore) Partitions() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return sortedPartitions(s.parts)
 }
 
 // Append implementa [Store.Append]: sela o registo na cadeia da partição (idêntico a

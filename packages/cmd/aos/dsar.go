@@ -216,6 +216,18 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "dsar recusado")
 		return
 	}
+
+	// (5b) AOS-221 — VERIFICAÇÃO PÓS-SHRED da hash-chain do WORM. Prova que o crypto-shred
+	// (KEK destruída) NÃO mutou a cadeia tamper-evident: o shred apaga a CHAVE por-titular, não
+	// os registos selados — a hash-chain TEM de continuar a validar (é a garantia central de
+	// AOS-093). Re-encadeia TODAS as partições (via SEM chave privada). Uma cadeia partida aqui
+	// é um incidente de integridade ⇒ fail-closed (500 uniforme, sem detalhe). Um WORM injectado
+	// opaco (sem audit.PartitionLister) não é verificável pelo nó ⇒ NÃO é falha do apagamento.
+	if verr := h.node.VerifyWORM(r.Context()); verr != nil && !errors.Is(verr, audit.ErrPartitionsUnavailable) {
+		writeError(w, http.StatusInternalServerError, "integridade do worm comprometida apos o apagamento")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, dsarResponse{
 		RequestID: res.RequestID, SubjectID: res.SubjectID, Status: "erased",
 		Blocked: false, StoresShredded: res.StoresShredded,

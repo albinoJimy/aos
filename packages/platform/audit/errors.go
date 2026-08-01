@@ -59,6 +59,10 @@ var (
 	// ErrNoExpirationSource — o [ExpirationJob] foi construído sem uma fonte de
 	// registos classificados ([RecordSource]) ou sem um sink ([ExpirationSink]).
 	ErrNoExpirationSource = errors.New("audit: job de expiracao sem fonte/sink de registos")
+	// ErrPartitionsUnavailable — [VerifyStore] recebeu um [Store] que não implementa
+	// [PartitionLister], pelo que não pode enumerar as partições a re-encadear. Fail-closed
+	// (AOS-221): não se declara verificado o que não se pôde percorrer.
+	ErrPartitionsUnavailable = errors.New("audit: store nao expoe as particoes (PartitionLister) para verificacao integral")
 )
 
 // TamperType classifica a natureza da adulteração detectada.
