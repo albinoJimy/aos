@@ -28,12 +28,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -541,4 +544,104 @@ func TestDevHarness_ExternalIssuer_NodeVerifiesTrustAnchorOnly(t *testing.T) {
 		t.Fatalf("token de um issuer NÃO-confiado devia ser NEGADO em identity, veio DeniedBy=%q", decRogue.DeniedBy)
 	}
 	t.Log("[OK]   dois sentidos: um issuer não-confiado (outra chave) é NEGADO em identity — o trust anchor é a única fonte.")
+}
+
+// buildAOSIssuer compila o binário `cmd/aos-issuer` (módulo separado) para um caminho temporário.
+func buildAOSIssuer(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "aos-issuer")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd.Dir = "../aos-issuer" // cwd de `go test` = packages/cmd/aos ⇒ ../aos-issuer = o módulo do issuer
+	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=mod")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("compilar aos-issuer: %v\n%s", err, out)
+	}
+	return bin
+}
+
+// runAOSIssuer executa o binário aos-issuer como PROCESSO SEPARADO e devolve o stdout (aparado).
+func runAOSIssuer(t *testing.T, bin string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("aos-issuer %v: %v\n%s", args, err, stderr.String())
+	}
+	return strings.TrimSpace(stdout.String())
+}
+
+// TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary fecha o ciclo "DOIS PROCESSOS" do D4: o
+// binário `aos-issuer` corre como PROCESSO SEPARADO — detém a chave, exporta a pubkey e minta um
+// token NHI — e o nó (processo distinto), em modo endurecido com essa pubkey como trust anchor,
+// VERIFICA o token sem nunca deter a chave. Dois sentidos: um token assinado por OUTRA chave (outro
+// key-file) é negado em identity. É a mesma prova de AOS-226 mas com o issuer a correr de facto como
+// binário, não in-process.
+func TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary(t *testing.T) {
+	t.Log("=== AOS dev-harness — o nó verifica um issuer a correr como PROCESSO SEPARADO (D4) ===")
+	t.Log("REAL   : o binário aos-issuer detém a chave e minta; o nó (processo distinto) verifica trust-anchor-only")
+
+	ctx := context.Background()
+	bin := buildAOSIssuer(t)
+	keyFile := filepath.Join(t.TempDir(), "issuer.key")
+	const issuerID = "iss:aos-subprocess"
+
+	// PROCESSO 1 (aos-issuer): exporta a pubkey — o trust anchor do nó (AOS_ISSUER_PUBKEY).
+	pubHex := runAOSIssuer(t, bin, "pubkey", "--key-file", keyFile)
+	pub, err := hex.DecodeString(pubHex)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		t.Fatalf("pubkey do issuer inválida: %v (len=%d)", err, len(pub))
+	}
+	t.Logf("[PROC 1: aos-issuer] pubkey → %s… (%d bytes) = AOS_ISSUER_PUBKEY do nó", pubHex[:16], len(pub))
+
+	// PROCESSO 1 (aos-issuer): minta um token NHI — a chave NUNCA sai deste processo.
+	tok := runAOSIssuer(t, bin, "mint", "--key-file", keyFile, "--issuer", issuerID,
+		"--human", "human:alice", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
+	if tok == "" {
+		t.Fatal("o issuer não produziu token")
+	}
+	t.Logf("[PROC 1: aos-issuer] mint → token NHI (%d chars)", len(tok))
+
+	// PROCESSO 2 (nó): modo endurecido, trust anchor = pubkey do issuer. RELÓGIO REAL (o subprocesso
+	// mintou com time.Now), pelo que o verificador do nó também usa time.Now.
+	cfg := tnBaseConfig()
+	cfg.IssuerID = issuerID
+	cfg.IssuerPubKey = ed25519.PublicKey(pub)
+	cfg.VerifierClock = time.Now
+	node, err := Bootstrap(ctx, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("Bootstrap (endurecido, trust anchor do subprocesso): %v", err)
+	}
+	t.Cleanup(func() { _ = node.Close() })
+	if node.IdentityMode != IdentityModeRealHardened {
+		t.Fatalf("o nó devia estar em modo ENDURECIDO, veio %q", node.IdentityMode)
+	}
+	t.Logf("[PROC 2: nó] modo=%s — trust anchor = pubkey do issuer; nunca detém a chave", node.IdentityMode)
+
+	// O NÓ verifica o token do PROCESSO SEPARADO (identidade aceite ⇒ DeniedBy != identity).
+	dec, err := node.Runtime.Monitor().Mediate(ctx, tnCall(tok))
+	if err != nil {
+		t.Fatalf("Mediate (token do subprocesso): %v", err)
+	}
+	if dec.DeniedBy == "identity" {
+		t.Fatalf("o nó devia ACEITAR a identidade do token do issuer subprocesso, foi negado em identity")
+	}
+	t.Log("[OK]   dois processos: o issuer mintou (detém a chave), o nó verificou (não a detém) — não-forjabilidade real.")
+
+	// DOIS SENTIDOS: um token do MESMO issuerID mas assinado por OUTRA chave (outro key-file) é
+	// NEGADO em identity — o anchor (pubkey da 1ª chave) é a única fonte de confiança.
+	rogueKey := filepath.Join(t.TempDir(), "rogue.key")
+	rogueTok := runAOSIssuer(t, bin, "mint", "--key-file", rogueKey, "--issuer", issuerID,
+		"--human", "human:alice", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
+	decRogue, err := node.Runtime.Monitor().Mediate(ctx, tnCall(rogueTok))
+	if err != nil {
+		t.Fatalf("Mediate (rogue): %v", err)
+	}
+	if decRogue.DeniedBy != "identity" {
+		t.Fatalf("token assinado por OUTRA chave devia ser NEGADO em identity, veio DeniedBy=%q", decRogue.DeniedBy)
+	}
+	t.Log("[OK]   dois sentidos: um token do mesmo issuerID mas OUTRA chave é NEGADO em identity — o anchor manda.")
 }
