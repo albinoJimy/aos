@@ -64,7 +64,7 @@ Derivados de `specs/00_System_Spec.md` §4 (capacidades top-level) e alinhados c
 | **RF-09** | Controlar orçamento: *admission control* global em tokens/$, *circuit breaker*, roteamento *cost/load-aware* | SCH, GW | EPIC-03, EPIC-06 | ADR-008, ADR-009 |
 | **RF-10** | Controlo bidireccional: pausar→corrigir→retomar, aprovação de plano, gates SA-ROC | RT, GOV | EPIC-09 | ADR-013 |
 | **RF-11** | Evoluir com rede: SemVer + *eval-gate* + *canary* + ratificação assinada para auto-modificação | REG, OBS | EPIC-05, EPIC-11 | ADR-012 |
-| **RF-12** | Planear e meta-orquestrar: decompor um objectivo de alto nível num organigrama executável de sub-agentes, tratando o plano proposto pelo LLM como **dados untrusted** (validação por função pura, orçamento por ramo, aprovação no gate) antes de materializar | ORQ (PLN), RM, GOV | EPIC-19 | ADR-005, ADR-008, ADR-013 |
+| **RF-12** | Planear e meta-orquestrar: decompor um objectivo de alto nível num organigrama executável de sub-agentes, tratando o plano proposto pelo LLM como **dados untrusted** (validação por função pura, orçamento por ramo, aprovação no gate) antes de materializar | ORQ (PLN), RM, GOV | EPIC-19 | ADR-005, ADR-008, ADR-013, ADR-020 |
 | **RF-13** | Meta-runs e organizações efémeras: materializar o organigrama como árvore de delegação (NHI *on-behalf-of*, orçamento hierárquico), re-planear subgrafos e estender-se com rede (`capability_gap`) — sem organizações persistentes | ORQ, SCH, REG | EPIC-19 | ADR-003, ADR-012, ADR-018 |
 
 **Total: 13 requisitos funcionais (RF-01 … RF-13).**
@@ -96,7 +96,7 @@ Derivados dos *drivers* canónicos (`_BRIEF` §4 / `specs/00` §7) e dos KPIs/SL
 
 ## 4. Matriz ADR × ticket
 
-Para cada ADR-001…019, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
+Para cada ADR-001…020, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
 
 | ADR | Decisão | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |
 |---|---|---|---|---|
@@ -119,8 +119,9 @@ Para cada ADR-001…019, os tickets `AOS-NNN` cujo bloco de especificação o ci
 | **ADR-017** | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | 9 | AOS-129, AOS-169, AOS-185, AOS-193, AOS-196, AOS-199, AOS-200, AOS-207, AOS-209 | `tecnica/02`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-018** | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | 6 | AOS-164, AOS-185, AOS-204, AOS-222, AOS-234, AOS-238 | `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/18` |
 | **ADR-019** | Excepções intencionais às fronteiras canónicas de camada (v1 single-host) | 4 | AOS-179, AOS-190, AOS-200, AOS-202 | `tecnica/09`, `tecnica/11`, `tecnica/12` |
+| **ADR-020** | Planeador como agente governado | 3 | AOS-234, AOS-235, AOS-237 | `tecnica/18` |
 
-**Cobertura: 19/19 ADRs têm ≥ 1 ticket implementador.**
+**Cobertura: 20/20 ADRs têm ≥ 1 ticket implementador.**
 
 - **Sub-cobertura (≤3 tickets):** 
   - **ADR-015** (Durable execution: contrato próprio vs. engine externo) — 1 ticket(s): AOS-129.
@@ -174,7 +175,7 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 
 ```mermaid
 flowchart LR
-    RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..019 (decisoes)"]
+    RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..020 (decisoes)"]
     NFR["NFR-01..NFR-12 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-18 (entregas)"]
     EPIC --> TICK["AOS-001..AOS-229 (tickets)"]
@@ -198,7 +199,7 @@ Sinalizadas a partir dos dados reais das §§4–5. Cada lacuna deve gerar ticke
 | GAP-05 | **Ausência de coluna de estado** — a RTM regista cobertura de *especificação*, não de *implementação concluída* (nenhum ticket tem estado Done/WIP no corpus) | §4–5 | Ligar a RTM ao *tracker* (estado por ticket) na próxima revisão |
 | GAP-06 | **NFR-09 (DSAR) verificado indirectamente** — provado por AOS-091/092 + AOS-113, sem teste e2e de DSAR sobre log encadeado | §5 | Criar teste e2e de crypto-shredding preservando integridade hash-chain |
 
-Nenhum ADR e nenhum NFR está **sem** cobertura mínima: 19/19 ADRs e 10/10 NFRs têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação**, não de ausência total.
+Nenhum ADR e nenhum NFR está **sem** cobertura mínima: 20/20 ADRs e 12/12 NFRs têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação**, não de ausência total.
 
 ---
 
@@ -222,7 +223,7 @@ A RTM serve sobretudo as dimensões **Governação** (prova auditável de que ca
 - **Rasto ascendente / descendente:** navegação da evidência para o requisito / do requisito para a evidência.
 - **RF / NFR:** requisito funcional (capacidade) / não-funcional (propriedade de qualidade com alvo mensurável).
 - **Sub-cobertura:** número de implementadores anormalmente baixo face à criticidade — sinal de revisão.
-- **ADR (Architecture Decision Record):** registo de decisão de arquitectura; no AOS, ADR-001…019 (`_BRIEF` §3).
+- **ADR (Architecture Decision Record):** registo de decisão de arquitectura; no AOS, ADR-001…020 (`_BRIEF` §3; ADR-020 = planeador como agente governado).
 - **SLO / SLI:** objectivo / indicador de nível de serviço (ex.: PDP p95 < 15 ms, cache-hit > 80%).
 - **Gate fail-closed:** etapa de CI que, em falha ou dúvida, **bloqueia** a promoção (`specs/01` §4).
 - **Eval-gate:** *admission control* da auto-modificação baseado em *golden-sets* (ADR-012).
@@ -243,3 +244,4 @@ A RTM serve sobretudo as dimensões **Governação** (prova auditável de que ca
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-08-02 | Entradas RTM do planeador (`tecnica/18` v1.0 ratificado, EPIC-19): +RF-12/RF-13, +NFR-11/NFR-12, verificação §5, *back-link* §6, e tickets AOS-230..244 tecidos nas linhas ADR-005/008/010/012/013/014/018 do §4. | Equipa AOS |
+| 1.2 | 2026-08-02 | +ADR-020 (planeador como agente governado) no §4 (AOS-234/235/237) e em RF-12; cobertura 20/20 ADRs, 12/12 NFRs. | Equipa AOS |
