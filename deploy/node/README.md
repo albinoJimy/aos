@@ -713,6 +713,46 @@ no loopback do contentor — não é preciso definir `AOS_HEALTH_URL`.
 assinatura do issuer (AOS-156) é um trust-domain separado (ADR-017 ponto 5) — vem do vault/KeyVault
 em runtime (ADR-006), nunca da imagem.
 
+## Exercitar o caminho REAL do nó localmente — o *dev-harness*
+
+Antes de provisionar a infra de produção (IdP OIDC real, provider de modelo, KMS/HSM), o
+**dev-harness** exercita o **caminho real** do nó `aos` ponta-a-ponta com colaboradores **locais** —
+a mesma composição `NewProductionSecure` que a imagem corre, **não** os *stubs* neutros do `aos-demo`.
+É um teste **runnable**, sem Docker nem rede:
+
+```bash
+go test -run TestDevHarness -v -race ./packages/cmd/aos
+```
+
+Cada cenário conduz o nó pela **API HTTP real** (`NewAPIHandler`) e narra o desfecho. O que cada um
+prova é o **mesmo** comportamento que a config de deployment correspondente activa:
+
+| Cenário (`go test -run …`) | Prova, no caminho real | Config de deployment análoga |
+|---|---|---|
+| `TestDevHarness_RealNode_MediatedExecution` | a política **Cedar assinada** PERMITE `cap:fs.read` (a tool executa) e NEGA `cap:payments.charge` fail-closed | `AOS_POLICY_BUNDLE_DIR` + `AOS_POLICY_TRUST_ANCHOR` |
+| `TestDevHarness_CryptoShred_RightToErasure` | reconstruct autorizado decifra → `POST /dsar/erase` → `410 Gone`/`ErrDecrypt`, sem vazamento | `AOS_DURABLE_EXECUTION` + `AOS_EVENTSTORE_PATH`/`AOS_WORM_PATH` |
+| `TestDevHarness_SovereignSubmit_TitularAndResidency` | `403` sem credencial; o titular é **derivado** do submissor (o `principal_nhi` do corpo é ignorado); a residência é **selada por-run** | `AOS_BOARD_REGIONS` (+ soberania) |
+| `TestDevHarness_SteerReachesLoop` | uma correcção de operador **assinada** é consumida pelo loop e injectada `taint=trusted` no turno seguinte | `AOS_OPERATORS` |
+| `TestDevHarness_RestartVerifiesWORM` | ao reiniciar, o nó **re-encadeia e verifica** a hash-chain do WORM; um WORM adulterado **ABORTA fail-closed** | `AOS_WORM_PATH` |
+
+**O que é REAL** — a cadeia `identity→PDP→taint→scope→egress` com o *permit* não-forjável, o bundle
+Cedar assinado committado (`packages/control-plane/pdp/policies`), o envelope DEK/KEK por-titular
+(AOS-093), o gate soberano D6/D7, a execução durável sobre o Event Store/WORM em disco, o canal de
+steer ed25519, e a API HTTP.
+
+**O que é LOCAL/demo** — os dois eixos que ainda separam isto da produção, e **só** esses:
+
+- **identidade**: a credencial é cunhada por uma autoridade **co-localizada** (ou apresentada por
+  cabeçalho demo `X-Aos-Reader`/`X-Aos-Board`) em vez de um **IdP OIDC real** — o eixo **D4/EPIC-16**
+  (ver [`AOS_ISSUER_PUBKEY`](#superfície-de-configuração--todas-as-variáveis-lidas-pelo-nó-aos-203) e
+  [`AOS_SOVEREIGN_OIDC_ISSUER`](#credencial-forte-e-fonte-de-autoridade-da-soberania-de-leitura-aos-205));
+- **modelo**: um modelo **determinista** de teste em vez de um provider LLM real — **EPIC-06**.
+
+Substituir esses dois colaboradores locais pelos reais (config `AOS_ISSUER_PUBKEY`/OIDC + um provider
+de modelo) é o que promove o harness a um *smoke-test* de deployment; o **código do nó** exercitado é
+já o de produção. O harness vive em `packages/cmd/aos/devharness_test.go` e reutiliza o *scaffolding*
+dos testes de aceitação (o bundle committado, os *helpers* de composição/HTTP) — não duplica mecanismo.
+
 ## Health / probes
 
 - Container `HEALTHCHECK`: binário estático `aos-healthprobe` (distroless não tem shell/curl) →
