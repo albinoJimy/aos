@@ -30,6 +30,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -381,4 +382,64 @@ func TestDevHarness_RestartVerifiesWORM(t *testing.T) {
 		t.Fatalf("erro de arranque devia desembrulhar para audit.ErrTampered, veio: %v", err)
 	}
 	t.Log("[OK]   tamper-evidence imposta: o reinício sobre um WORM adulterado é RECUSADO fail-closed (audit.ErrTampered) — AOS-221.")
+}
+
+// TestDevHarness_SovereignSubmit_TitularAndResidency exercita o submit SOBERANO pela API real
+// (AOS-182 + AOS-217): (1) sem credencial do submissor o submit é RECUSADO fail-closed (403) e
+// nada persiste; (2) com credencial, o TITULAR do run é DERIVADO do submissor VERIFICADO — um
+// `principal_nhi` DECOY no corpo é IGNORADO (AOS-217) — e o conteúdo é cifrado por-titular no
+// WAL; (3) a RESIDÊNCIA do run (board→região) é SELADA por-run no WORM (AOS-182), para que uma
+// leitura futura possa exigir leitor.região == run.região.
+//
+// REAL: gate soberano D6/D7 + selo de residência WORM + cifra por-titular. LOCAL/demo: a
+// credencial do submissor é a via por cabeçalho fora-de-produção; OIDC real = eixo D4.
+func TestDevHarness_SovereignSubmit_TitularAndResidency(t *testing.T) {
+	t.Log("=== AOS dev-harness — submit SOBERANO (titular derivado + residência) pela API real ===")
+	t.Log("REAL   : gate soberano D6/D7 · derivação de titular da credencial (AOS-217) · selo de residência por-run (AOS-182) · cifra por-titular")
+	t.Log("LOCAL  : credencial do submissor via cabeçalho demo (X-Aos-Reader/X-Aos-Board); OIDC real = eixo D4")
+
+	ctx := context.Background()
+	node, esPath := newDurableGovNode(t, &synthPIIModel{})
+	svc, h := newAPI(t, node)
+
+	// (1) FAIL-CLOSED: sem credencial resolvível não há titular sob o qual cifrar ⇒ 403, nada persiste.
+	const runIDDeny = "dev-sov-deny"
+	rec := postReq(h, "/runs", submitRequest{RunID: runIDDeny, PrincipalNHI: "nhi:auto-declarado"}, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("submit soberano SEM credencial devia dar 403, veio %d (%s)", rec.Code, rec.Body.String())
+	}
+	if head, _ := node.WORM.Head(ctx, readResidencyPartition(runIDDeny)); head != 0 {
+		t.Fatalf("um submit recusado NÃO devia selar residência, head=%d", head)
+	}
+	t.Log("[HTTP] POST /runs (anónimo, sem credencial) → 403 · nada persiste (sem residência, run não hospedado)")
+
+	// (2) AUTORIZADO + DERIVAÇÃO DE TITULAR: com credencial + um DECOY no corpo ⇒ 201; o titular
+	// selado é o do submissor verificado, NÃO o DECOY.
+	const runID = "dev-sov"
+	const decoy = "nhi:DECOY-ATACANTE"
+	submitSovereignAndWait(t, svc, h,
+		submitRequest{RunID: runID, Objective: "trabalho soberano demo", PrincipalNHI: decoy},
+		govHeaders())
+	t.Logf("[HTTP] POST /runs (credencial do submissor + corpo principal_nhi=%q DECOY) → 201", decoy)
+
+	_, subject := sealedContentOf(t, node, runID)
+	if subject != govReader {
+		t.Fatalf("titular selado devia ser o submissor derivado %q, veio %q (corpo não foi ignorado)", govReader, subject)
+	}
+	wal, err := os.ReadFile(esPath)
+	if err != nil {
+		t.Fatalf("ler WAL: %v", err)
+	}
+	if bytes.Contains(wal, []byte(aos217SynthPII)) {
+		t.Fatal("o conteúdo do run não devia aparecer em CLARO no WAL — o titular derivado devia tê-lo selado")
+	}
+	t.Logf("[SEAL] titular DERIVADO do submissor verificado = %q (o DECOY do corpo foi IGNORADO); conteúdo cifrado no WAL", subject)
+
+	// (3) RESIDÊNCIA SELADA POR-RUN: a região do run está durável e tamper-evidente no WORM.
+	head, err := node.WORM.Head(ctx, readResidencyPartition(runID))
+	if err != nil || head < 1 {
+		t.Fatalf("a residência do run devia estar SELADA (head>=1), veio head=%d err=%v", head, err)
+	}
+	t.Logf("[WORM] residência do run SELADA por-run (região=%q, head=%d) — uma leitura futura exige leitor.região == run.região", govRegion, head)
+	t.Log("[OK]   submit soberano: fail-closed sem credencial; titular derivado do submissor (AOS-217); residência selada por-run (AOS-182).")
 }
