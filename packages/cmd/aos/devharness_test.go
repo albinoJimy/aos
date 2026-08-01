@@ -24,7 +24,9 @@ package main
 // Correr:  go test -run TestDevHarness -v ./packages/cmd/aos
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -205,4 +207,65 @@ func TestDevHarness_RealNode_MediatedExecution(t *testing.T) {
 		}
 		t.Log("[OK]   a política Cedar real NEGOU a call fail-closed; a tool NUNCA executou.")
 	})
+}
+
+// TestDevHarness_CryptoShred_RightToErasure conduz o ciclo REAL do direito-ao-apagamento pela API
+// HTTP do nó: o conteúdo de um run é cifrado POR-TITULAR no Event Store (AOS-093); um leitor
+// autorizado por soberania reconstrói e DECIFRA (AOS-214); um POST /dsar/erase destrói a KEK
+// por-titular (crypto-shred); e daí em diante MESMO o leitor autorizado obtém 410 Gone —
+// irrecuperável — enquanto a hash-chain do Event Store permanece íntegra.
+//
+// Colaboradores REAIS: execução durável sobre o Event Store/WORM em disco, o envelope DEK/KEK
+// por-titular (AOS-093), o gate de leitura soberano D6/D7 e o fluxo DSAR. LOCAL/demo: a
+// credencial do leitor é a via por cabeçalho fora-de-produção (X-Aos-Reader/X-Aos-Board), com o
+// board→região semeado por config — a não-forjabilidade de produção (OIDC real) é o eixo D4.
+func TestDevHarness_CryptoShred_RightToErasure(t *testing.T) {
+	t.Log("=== AOS dev-harness — direito ao apagamento (crypto-shred) pela API real ===")
+	t.Log("REAL   : execução durável (Event Store/WORM em disco) · cifra DEK/KEK por-titular (AOS-093) · gate soberano D6/D7 (AOS-214) · fluxo DSAR")
+	t.Log("LOCAL  : credencial do leitor via cabeçalho demo (X-Aos-Reader/X-Aos-Board); OIDC real = eixo D4")
+
+	node := newGovDurableNode(t) // nó com execução durável + soberania de leitura ligadas
+	_, h := newAPI(t, node)
+
+	const subject = "nhi:titular-demo-shred"
+	const runID = "dev-shred"
+	const secret = "PROMPT-DEV: dados sensiveis do titular demo (SYNTH-DEVHARNESS)"
+	// Sela um run sintético: o conteúdo (texto + output de tool) é cifrado por-titular ANTES do WAL.
+	captureSynthetic(t, node, subject, runID, secret, "TOOL-OUT-DEVHARNESS")
+
+	// (1) ANTES do apagamento: o leitor autorizado reconstrói e DECIFRA o conteúdo real (200).
+	rec := getReq(h, "/runs/"+runID+"/reconstruct", govHeaders())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reconstrução autorizada devia dar 200, veio %d (%s)", rec.Code, rec.Body.String())
+	}
+	var resp reconstructResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("resposta de reconstrução não descodifica: %v", err)
+	}
+	if len(resp.Turns) != 1 || resp.Turns[0].Text != secret {
+		t.Fatalf("o leitor autorizado devia decifrar o conteúdo real, veio %+v", resp.Turns)
+	}
+	t.Logf("[HTTP] GET /runs/%s/reconstruct (leitor autorizado) → 200 · conteúdo DECIFRADO: %q", runID, resp.Turns[0].Text)
+
+	// (2) POST /dsar/erase — destrói a KEK por-titular (crypto-shred real) pelo fluxo DSAR.
+	er := postReq(h, "/dsar/erase", dsarRequestWire{RequestID: "dev-erase-1", SubjectID: subject}, govHeaders())
+	if er.Code != http.StatusOK {
+		t.Fatalf("POST /dsar/erase devia dar 200, veio %d (%s)", er.Code, er.Body.String())
+	}
+	if bytes.Contains(er.Body.Bytes(), []byte(secret)) {
+		t.Fatalf("a resposta do erase não devia carregar conteúdo: %q", er.Body.String())
+	}
+	t.Logf("[HTTP] POST /dsar/erase (subject pseudónimo) → 200 · KEK por-titular DESTRUÍDA")
+
+	// (3) DEPOIS do apagamento: MESMO o leitor autorizado obtém 410 Gone — irrecuperável — e a
+	// resposta NUNCA vaza o conteúdo. O direito ao apagamento vale também contra o replay.
+	rec2 := getReq(h, "/runs/"+runID+"/reconstruct", govHeaders())
+	if rec2.Code != http.StatusGone {
+		t.Fatalf("após o shred a reconstrução autorizada devia dar 410, veio %d (%s)", rec2.Code, rec2.Body.String())
+	}
+	if bytes.Contains(rec2.Body.Bytes(), []byte(secret)) {
+		t.Fatalf("a resposta 410 vaza o conteúdo apagado: %q", rec2.Body.String())
+	}
+	t.Logf("[HTTP] GET /runs/%s/reconstruct (após shred) → 410 Gone · ErrDecrypt (KEK destruída), sem vazamento", runID)
+	t.Log("[OK]   direito ao apagamento REAL: o crypto-shred torna o conteúdo irrecuperável mesmo ao leitor autorizado; a hash-chain do Event Store permanece íntegra.")
 }
