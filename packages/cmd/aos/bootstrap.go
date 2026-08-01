@@ -102,6 +102,25 @@ var (
 	// chave de assinatura pode entrar no processo do nó — uma chave presente derrotaria a
 	// própria propriedade (não-forjabilidade relativa ao nó) que o modo garante.
 	ErrConflictingIssuerKey = errors.New("aos: modo endurecido (IssuerPubKey) nao pode receber IssuerSigningKey — nenhuma chave de assinatura entra no runtime do no")
+	// ErrBadIssuerAnchor — no modo endurecido (trust-anchor-only) a IssuerPubKey do ápice
+	// (Config, IN-PROCESS) tem de ser uma chave pública ed25519 ESTRUTURALMENTE válida
+	// (exactamente ed25519.PublicKeySize bytes). Defesa-em-profundidade (AOS-225): NÃO é um
+	// furo — o boundary já está fechado (AOS-193 rejeita a pubkey partilhada dos operadores;
+	// o próprio verifier nega fail-closed qualquer token; e a fronteira de AMBIENTE já
+	// valida len==32 em [parseEd25519PubHex] antes de povoar Config). O que faltava era a
+	// asserção no ÁPICE PROGRAMÁTICO: qualquer chamador que constrói Config.IssuerPubKey
+	// DIRECTAMENTE (embedders, composition-roots, testes) — sem passar pelo parser de env —
+	// podia injectar uma pubkey de comprimento errado. Bootstrap NÃO a apanhava: fluía para
+	// [identity.WithTrustedIssuer] em §(3), que a DESCARTA em silêncio (só regista se
+	// len==32), e o nó SUBIA a anunciar "REAL ENDURECIDO (issuer=X)" com o trust map VAZIO —
+	// a degradação só aflorava ao primeiro token, tardiamente e com ErrUnknownIssuer
+	// enganador (o issuer ESTAVA em config, foi descartado por tamanho). Esta asserção
+	// converte esse silêncio numa RECUSA fail-closed cedo e clara, espelhando no ápice a
+	// guarda que a fronteira de env já tinha (é o gémeo in-process de ErrBadIssuerPubKey e o
+	// análogo, para o issuer, de ErrBadOperatorEntry). (Uma IssuerPubKey vazia NÃO chega
+	// aqui: o gate `len > 0` não activa o modo endurecido — cai no modo de referência,
+	// inalterado.)
+	ErrBadIssuerAnchor = errors.New("aos: modo endurecido exige IssuerPubKey ed25519 de exactamente 32 bytes (chave de comprimento errado seria descartada em silencio pelo trust anchor — o no anunciaria identidade endurecida com verifier vazio)")
 	// ErrDurableExecutionNeedsDurableSubstrate — config que pede execução durável
 	// (DurableExecution) mas em que o nó só teria um Event Store IN-MEMORY para a
 	// suportar (nem EventStore injectado, nem EventStorePath). Fail-closed (AOS-191):
@@ -520,6 +539,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	hardened := len(cfg.IssuerPubKey) > 0
 	if hardened {
+		// (AOS-225) Defesa-em-profundidade do trust anchor: a IssuerPubKey tem de ser
+		// estruturalmente uma pubkey ed25519 (len == ed25519.PublicKeySize). Sem esta
+		// asserção, uma chave de comprimento errado é DESCARTADA em silêncio por
+		// identity.WithTrustedIssuer em §(3) (que só regista o anchor se len==32) e o nó
+		// sobe com o trust map VAZIO — identidade endurecida ANUNCIADA no banner e não
+		// cumprida, com a falha a aflorar só ao primeiro token (ErrUnknownIssuer tardio e
+		// enganador). Recusa-se cedo, fail-closed, com erro claro. Note-se que o gate
+		// `len > 0` acima garante que uma chave vazia não activa sequer o modo endurecido;
+		// esta guarda cobre as chaves NÃO-vazias de comprimento errado (curtas/longas).
+		if len(cfg.IssuerPubKey) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("%w: len=%d", ErrBadIssuerAnchor, len(cfg.IssuerPubKey))
+		}
 		// No modo endurecido NENHUMA chave de assinatura pode entrar no processo do nó:
 		// uma IssuerSigningKey presente — OU um IssuerKeyPath que a carregaria de disco
 		// para o processo — derrotaria a propriedade que o modo garante.

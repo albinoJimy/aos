@@ -398,6 +398,105 @@ func TestBootstrapHardenedRejectsSigningKey(t *testing.T) {
 	}
 }
 
+// TestBootstrapHardenedRejectsMalformedIssuerPubKey prova a defesa-em-profundidade de
+// AOS-225: no modo endurecido (trust-anchor-only) uma IssuerPubKey de comprimento != 32
+// bytes ⇒ arranque RECUSADO fail-closed com ErrBadIssuerAnchor, em vez de subir com um
+// trust anchor VAZIO (o que faria hoje — ver TestHardenedMalformedIssuerPubKeyDegradedSilently).
+//
+// Falsificável nos dois sentidos: sem a asserção no ápice o Bootstrap NÃO devolveria erro
+// (o teste falharia no t.Fatalf do "devia recusar"); a asserção de retro-compat garante
+// que uma pubkey VÁLIDA de 32 bytes continua a arrancar (o teste falharia se a guarda
+// fosse cega e recusasse a chave boa também).
+func TestBootstrapHardenedRejectsMalformedIssuerPubKey(t *testing.T) {
+	ctx := context.Background()
+
+	// Comprimentos != 32 NÃO-vazios (o gate `len>0` do modo endurecido nunca vê o 0): a
+	// fronteira em ambos os lados de 32 e casos extremos.
+	for _, n := range []int{1, 16, 31, 33, 64} {
+		cfg := Config{
+			IssuerID:      "iss:external-authority",
+			IssuerPubKey:  make(ed25519.PublicKey, n), // n bytes, comprimento errado
+			IssuerClasses: tnBaseConfig().IssuerClasses,
+			VerifierClock: tnClock(),
+		}
+		_, err := Bootstrap(ctx, cfg, io.Discard)
+		if !errors.Is(err, ErrBadIssuerAnchor) {
+			t.Fatalf("IssuerPubKey de %d bytes no modo endurecido devia recusar com ErrBadIssuerAnchor, veio: %v", n, err)
+		}
+	}
+
+	// Retro-compat: uma pubkey ed25519 VÁLIDA de 32 bytes arranca na mesma (a guarda não é
+	// cega). Autoridade externa real para obter um anchor legítimo.
+	extAuth, err := integration.NewIssuerAuthority(integration.AuthorityConfig{
+		IssuerID:      "iss:external-authority",
+		Classes:       tnBaseConfig().IssuerClasses,
+		Directory:     integration.NewAllowlistDirectory(tnHuman),
+		IssuerOptions: []identity.IssuerOption{identity.WithIssuerClock(tnClock())},
+	})
+	if err != nil {
+		t.Fatalf("NewIssuerAuthority (externa): %v", err)
+	}
+	issuerID, pub := extAuth.TrustAnchor()
+	if len(pub) != ed25519.PublicKeySize {
+		t.Fatalf("pubkey da autoridade tem %d bytes, esperava %d", len(pub), ed25519.PublicKeySize)
+	}
+	node, err := Bootstrap(ctx, Config{
+		IssuerID:      issuerID,
+		IssuerPubKey:  pub,
+		IssuerClasses: tnBaseConfig().IssuerClasses,
+		VerifierClock: tnClock(),
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("pubkey VÁLIDA de 32 bytes devia arrancar no modo endurecido, veio: %v", err)
+	}
+	defer node.Close()
+	if node.IdentityMode != IdentityModeRealHardened {
+		t.Fatalf("modo de identidade = %q, quero %q", node.IdentityMode, IdentityModeRealHardened)
+	}
+}
+
+// TestHardenedMalformedIssuerPubKeyDegradedSilently documenta, de forma executável, o
+// SILÊNCIO que AOS-225 fecha: uma pubkey de comprimento errado é DESCARTADA por
+// identity.WithTrustedIssuer (só regista se len==32), pelo que um verifier composto
+// directamente do anchor malformado tem trust map VAZIO e NEGA todo o token com
+// ErrUnknownIssuer — tardiamente, não no arranque. É a diferença concreta "falha-antes":
+// sem a guarda de Bootstrap o nó SUBIRIA e só aqui, ao primeiro token, é que a degradação
+// afloraria. Este teste NÃO passa pelo ápice endurecido: prova o comportamento do
+// colaborador que a guarda torna inalcançável.
+func TestHardenedMalformedIssuerPubKeyDegradedSilently(t *testing.T) {
+	ctx := context.Background()
+
+	extAuth, err := integration.NewIssuerAuthority(integration.AuthorityConfig{
+		IssuerID:      "iss:external-authority",
+		Classes:       tnBaseConfig().IssuerClasses,
+		Directory:     integration.NewAllowlistDirectory(tnHuman),
+		IssuerOptions: []identity.IssuerOption{identity.WithIssuerClock(tnClock())},
+	})
+	if err != nil {
+		t.Fatalf("NewIssuerAuthority: %v", err)
+	}
+	issuerID, _ := extAuth.TrustAnchor()
+
+	// Anchor MALFORMADO (33 bytes): reproduz o que o ramo endurecido faria em §(3) — copiar
+	// a IssuerPubKey e passá-la a WithTrustedIssuer.
+	malformed := make(ed25519.PublicKey, 33)
+	v := identity.NewVerifier(
+		identity.WithTrustedIssuer(issuerID, malformed),
+		identity.WithVerifierClock(tnClock()),
+	)
+
+	// Um token LEGÍTIMO da autoridade externa é rejeitado com ErrUnknownIssuer: o anchor foi
+	// DESCARTADO em silêncio, o trust map ficou vazio. É a "advertised capability not
+	// delivered" que só afloraria ao primeiro token, não no arranque.
+	tok, err := extAuth.MintForHuman(ctx, tnHuman, tnAgent, tnClass, []string{tnCap})
+	if err != nil {
+		t.Fatalf("MintForHuman: %v", err)
+	}
+	if _, err := v.Verify(ctx, tok.Compact); !errors.Is(err, identity.ErrUnknownIssuer) {
+		t.Fatalf("com anchor malformado descartado, o verifier devia negar com ErrUnknownIssuer (degradacao silenciosa), veio: %v", err)
+	}
+}
+
 // tnCall constrói uma [referencemonitor.Call] de teste com a credencial dada (o token
 // NHI compacto, ou "" para anónima). A capability/recurso são triviais — o que o teste
 // distingue é QUEM nega (identidade real vs a jusante).

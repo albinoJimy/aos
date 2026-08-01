@@ -1701,14 +1701,29 @@ estrutural de comprimento no ápice. Não é um furo (AOS-193 protege no boundar
 
 **Critérios de aceitação**
 
-- [ ] No modo endurecido, o ápice **valida** `len(IssuerPubKey)==32` (ed25519) — chave de comprimento
-      errado/vazia ⇒ **recusa fail-closed** de arrancar.
-- [ ] **Falsificável (`-race`):** uma `IssuerPubKey` de comprimento ≠ 32 ⇒ arranque recusado (falha-antes: hoje
-      passaria). Sem segredos; gates verdes.
+- [x] No modo endurecido, o ápice **valida** `len(IssuerPubKey)==32` (ed25519) — chave de comprimento
+      errado/vazia ⇒ **recusa fail-closed** de arrancar. *(Evidência: `bootstrap.go:551-553`, dentro do bloco
+      `if hardened {`, **antes** de qualquer composição, usa `ed25519.PublicKeySize` (não o literal 32) e recusa
+      com a sentinela `ErrBadIssuerAnchor` (não panic, não arranque silencioso). O gate `len>0` garante que a chave
+      vazia nem activa o modo endurecido; a guarda cobre as não-vazias de comprimento errado.)*
+- [x] **Falsificável (`-race`):** uma `IssuerPubKey` de comprimento ≠ 32 ⇒ arranque recusado (falha-antes: hoje
+      passaria). Sem segredos; gates verdes. *(Evidência: `TestBootstrapHardenedRejectsMalformedIssuerPubKey` —
+      1/16/31/33/64 bytes ⇒ `ErrBadIssuerAnchor`, e uma pubkey **real de 32 bytes** de `IssuerAuthority` externa
+      arranca em `IdentityModeRealHardened` (dois sentidos); `TestHardenedMalformedIssuerPubKeyDegradedSilently`
+      documenta o silêncio fechado; falha-antes reproduzida (guarda removida ⇒ `Bootstrap` devolve `nil`, nó sobe
+      em silêncio); `-race`/`deferrals`/gofmt/vet verdes; `go.mod` intacto.)*
 
 **Fecha:** a recomendação de defesa-em-profundidade da identidade. **Depende de:** AOS-193 (rejeição de chave
 partilhada no boundary). **Não duplica:** o four-eyes atestado (`DEF-107`, ABERTO — exige a porta de attestation,
 **infra**, não código do nó).
+
+**Natureza honesta (defesa-em-profundidade, não furo):** a chave malformada **já** era barrada na **fronteira de
+ambiente** (`main.go` `parseEd25519PubHex`, `ErrBadIssuerPubKey`), pelo que o **binário entregue** nunca a levava a
+`Bootstrap`. O que a guarda acrescenta é a recusa **cedo e clara** para o **ápice programático** (embedders/
+composition-roots/testes que povoam `Config` diretamente): sem ela, `identity.WithTrustedIssuer` **descartava a
+chave em silêncio** (só regista se `len==32`) e o nó subia a **anunciar** identidade endurecida com o trust map
+**vazio**, falhando só ao primeiro token (`ErrUnknownIssuer` tardio e enganador). O acesso mantém-se negado
+(fail-closed) em todos os estados — não há acesso indevido; fecha-se o **silêncio**, não um furo.
 
 ---
 
