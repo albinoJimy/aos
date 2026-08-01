@@ -50,11 +50,11 @@ observabilidade e governação; DevOps/SRE; responsáveis de produto; e revisão
 | 15 | **Experiência de Utilização e Controlo Humano (UX/DX)** | Superfície HITL out-of-band, approval-card, aprovação-de-plano, paridade Slack/Telegram, anti-fadiga SA-ROC | [15_Experiencia_HITL_UX.md](15_Experiencia_HITL_UX.md) | 289 |
 | 16 | **Matriz de Rastreabilidade (RTM)** | Catálogo RF-/NFR- com IDs estáveis; matrizes ADR×ticket e NFR×ticket; back-link técnico→ticket | [16_Rastreabilidade_RTM.md](16_Rastreabilidade_RTM.md) | 234 |
 | 17 | **Análise STRIDE** | Decomposição por fronteira de confiança (9 elementos × 6 categorias) → controlo → ADR → ticket | [17_Analise_STRIDE.md](17_Analise_STRIDE.md) | 268 |
-| 18 | **Planeador de Objectivos e Meta-Orchestração** *(proposta, v0.2)* | PlanDocument untrusted, validação fail-closed, gate como fronteira, meta-runs e organizações efémeras; organizações persistentes marcadas *(proposta)* | [18_Planner_Meta_Orquestracao.md](18_Planner_Meta_Orquestracao.md) | 263 |
+| 18 | **Planeador de Objectivos e Meta-Orchestração** *(Ratificado, v1.0)* | PlanDocument untrusted, validação fail-closed, gate como fronteira, meta-runs e organizações efémeras; organizações persistentes marcadas *(proposta)* | [18_Planner_Meta_Orquestracao.md](18_Planner_Meta_Orquestracao.md) | 263 |
 
 **Total: 19 documentos, ~4.890 linhas, 60 diagramas Mermaid.**
 
-> Os documentos 12–14 foram acrescentados na remediação **P0** da auditoria (resolvem COMP-01, COMP-02, COMP-03): contratos de interface + política Rego, modelo de dados/eventos, e matriz de conformidade. Os documentos 15–17 foram acrescentados na remediação **P1**: o documento de UX/DX (a 6ª dimensão de excelência), a Matriz de Rastreabilidade (IDs RF-/NFR- + ADR×ticket) e a Análise STRIDE. O documento 18 é uma **proposta de desenho** (v0.2, por ratificar; emendada pós-revisão adversarial): especifica o planeador real (goal→DAG) e a meta-orchestração dentro da forma congelada da Carta, marcando explicitamente o que exigiria emenda.
+> Os documentos 12–14 foram acrescentados na remediação **P0** da auditoria (resolvem COMP-01, COMP-02, COMP-03): contratos de interface + política Rego, modelo de dados/eventos, e matriz de conformidade. Os documentos 15–17 foram acrescentados na remediação **P1**: o documento de UX/DX (a 6ª dimensão de excelência), a Matriz de Rastreabilidade (IDs RF-/NFR- + ADR×ticket) e a Análise STRIDE. O documento 18 foi **ratificado** (v1.0, 2026-08-02, após revisão adversarial multi-perspectiva): especifica o planeador real (goal→DAG) e a meta-orchestração dentro da forma congelada da Carta, marcando explicitamente o que exigiria emenda.
 
 ---
 

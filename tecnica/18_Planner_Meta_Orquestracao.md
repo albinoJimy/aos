@@ -4,8 +4,8 @@
 |---|---|
 | Produto | AOS — Agentic OS de Referência |
 | Documento | Documento técnico — Planeador de Objectivos e Meta-Orchestração |
-| Versão | 0.2 (proposta de desenho — por ratificar; emendada pós-revisão adversarial) |
-| Data | Julho de 2026 |
+| Versão | 1.0 (**Ratificado** — 2026-08-02) |
+| Data | Julho de 2026 (ratificado Agosto de 2026) |
 | Classificação | Documento de Referência — Aberto |
 | Documento-fonte | `_FONTE_agentic-os-ideal.md` |
 | Documentos relacionados | `tecnica/03_Orquestracao_Escalonamento.md`, `tecnica/05_Skill_Tool_Registry_Supply_Chain.md`, `tecnica/11_Convencoes_Engenharia_Evolucao.md`, `tecnica/15_Experiencia_HITL_UX.md`, `specs/EPIC-03_Orquestracao_Escalonamento.md` |
@@ -22,7 +22,7 @@ Este documento especifica o **Planeador (PLN)** — a graduação da função de
 
 Cobre: o ciclo goal→plano (decomposição LLM, validação estrutural fail-closed, estimativa de custo por ramo); a materialização do plano aprovado no DAG (AOS-025) e no spawn delegado (AOS-026/028); re-planeamento de subgrafos; organizações **efémeras** de agentes (a árvore de delegação de um meta-run); e a marcação *(proposta)* do que excede a visão congelada (organizações persistentes, `org_blueprint` no registry). Fora de âmbito: o executor de skills (artefactos do REG interpretados dinamicamente — desenho separado, a especificar), a cablagem do Model Gateway real no nó (EPIC-06 entregue como pacote; o *wiring* no bootstrap é trabalho de integração), a meta-orchestração em topologia multi-host e a soberania por *tenant* (a v1 é *single-host*, ADR-018 — o distribuído é eixo do EPIC-10), e qualquer forma de marketplace/economia de agentes (horizonte, não desenhado).
 
-**Estado de ratificação.** Este documento é uma **proposta de desenho** nos termos do `_BRIEF.md` (o que não está na fonte marca-se *(proposta)*, nunca contradizendo ADRs). Não altera a Carta: a secção 8 identifica explicitamente as partes que, a serem adoptadas, exigem **emenda** (`specs/00_AOS_Carta.md` §6). Até lá, tudo o aqui descrito se constrói dentro da forma do produto já congelada — o nó `aos` que hospeda *runs*.
+**Estado de ratificação.** Este documento foi **ratificado a 2026-08-02** (v1.0), após revisão adversarial multi-perspectiva e emenda das condições (ver `docs/reports/revisao-tecnica18-planner-para-ratificacao.md`). Nasceu como proposta de desenho nos termos do `_BRIEF.md` (o que não está na fonte marca-se *(proposta)*, nunca contradizendo ADRs). **Não altera a Carta:** a secção 8 identifica explicitamente as partes que, a serem adoptadas, exigem **emenda** (`specs/00_AOS_Carta.md` §6) — e permanecem *(proposta)*, fora do que esta ratificação autoriza. Tudo o restante constrói-se dentro da forma do produto já congelada — o nó `aos` que hospeda *runs*.
 
 ### 1.3 Audiência
 
@@ -249,9 +249,11 @@ Tudo o que precede se constrói dentro da forma congelada. O passo seguinte — 
 
 | Papel | Nome | Assinatura | Data |
 |---|---|---|---|
-| Arquitecto de Plataforma |  |  |  |
-| Responsável de Segurança |  |  |  |
-| Responsável de Produto |  |  |  |
+| Arquitecto de Plataforma | Armando Albino | Ratificado (autoridade de dono) | 2026-08-02 |
+| Responsável de Segurança | Armando Albino | Ratificado (autoridade de dono) | 2026-08-02 |
+| Responsável de Produto | Armando Albino | Ratificado (autoridade de dono) | 2026-08-02 |
+
+> **Nota de proveniência da ratificação.** As três linhas foram ratificadas pelo **dono do projecto sob autoridade consolidada** — não representam três *sign-offs* independentes de revisores distintos. A ratificação apoia-se na revisão adversarial multi-perspectiva (9 lentes, 52 achados, 0 refutados) documentada em `docs/reports/revisao-tecnica18-planner-para-ratificacao.md`, cujas condições foram emendadas na v0.2→v1.0. Caso a governação exija *sign-offs* independentes de Arquitectura e Segurança (Carta §6), estes substituem esta ratificação consolidada quando registados.
 
 ---
 
@@ -261,3 +263,4 @@ Tudo o que precede se constrói dentro da forma congelada. O passo seguinte — 
 |---|---|---|---|
 | 0.1 | Julho 2026 | Proposta inicial de desenho (por ratificar). | Equipa AOS |
 | 0.2 | Julho 2026 | Emendas pós-revisão adversarial multi-perspectiva: risco derivado (não auto-declarado), validação sobre snapshot pinado, replay orientado a eventos, tectos de cardinalidade próprios, arranque do planeador, agente-autor governado, correções de referência; novas §3.5 (classificação de intake: routing-não-autoridade), §4.4 (papel do SCH), §3.6 (evolução/migração do `plan_version`) e §6.3 (golden-sets de decomposição); multi-host/soberania declarados fora de âmbito (§1.2) e cobertura OTel do planeamento (§3.2). | Equipa AOS |
+| 1.0 | Agosto 2026 | **Ratificado** (2026-08-02) sob autoridade de dono, após revisão adversarial multi-perspectiva com condições emendadas. Sem alteração de conteúdo face à v0.2; muda o estado de *proposta* para *ratificado*. | Armando Albino (dono) |
