@@ -26,6 +26,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -442,4 +444,101 @@ func TestDevHarness_SovereignSubmit_TitularAndResidency(t *testing.T) {
 	}
 	t.Logf("[WORM] residência do run SELADA por-run (região=%q, head=%d) — uma leitura futura exige leitor.região == run.região", govRegion, head)
 	t.Log("[OK]   submit soberano: fail-closed sem credencial; titular derivado do submissor (AOS-217); residência selada por-run (AOS-182).")
+}
+
+// TestDevHarness_ExternalIssuer_NodeVerifiesTrustAnchorOnly demonstra o coração da
+// não-forjabilidade do D4: um issuer EXTERNO detém a chave de assinatura (via `crypto.Signer`,
+// AOS-175) e minta um token NHI; o nó, em modo ENDURECIDO (trust-anchor-only, `AOS_ISSUER_PUBKEY`
+// = pubkey do issuer), VERIFICA esse token **sem nunca deter a chave privada**. Dois sentidos: um
+// issuer ROGUE (outra chave, não confiada) é NEGADO em identity. É a prova de que o nó consome uma
+// autoridade externa — o que o `cmd/aos-issuer` runnable embrulha num processo deployável.
+//
+// REAL: verifier trust-anchor-only do nó (AOS-174 + AOS-225), issuer via `crypto.Signer` (AOS-175
+// — em prod o signer é um adaptador HSM/KMS cuja chave nunca entra em processo nenhum). LOCAL/demo:
+// a chave do issuer é uma ed25519 gerada no teste (em prod: custódia HSM/KMS).
+func TestDevHarness_ExternalIssuer_NodeVerifiesTrustAnchorOnly(t *testing.T) {
+	t.Log("=== AOS dev-harness — o nó verifica um issuer EXTERNO trust-anchor-only (D4) ===")
+	t.Log("REAL   : verifier trust-anchor-only (AOS-174/225) · issuer via crypto.Signer (AOS-175) · nó NUNCA detém a chave")
+	t.Log("LOCAL  : a chave do issuer é ed25519 gerada no teste; em prod é custódia HSM/KMS")
+
+	ctx := context.Background()
+
+	// (1) ISSUER EXTERNO: detém a chave de assinatura; exporta SÓ a pubkey. A privada não vai ao nó.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	const issuerID = "iss:aos-devissuer"
+	iss, err := identity.NewIssuerWithSigner(issuerID, priv, map[string]identity.ClassPolicy{
+		tnClass: {TTL: 15 * time.Minute, Scope: []string{tnCap}},
+	}, identity.WithIssuerClock(tnClock()))
+	if err != nil {
+		t.Fatalf("NewIssuerWithSigner: %v", err)
+	}
+	t.Logf("[ISSUER] issuer externo %q detém a chave; exporta a pubkey (%d bytes) → AOS_ISSUER_PUBKEY do nó", issuerID, len(iss.PublicKey()))
+
+	// (2) NÓ em modo ENDURECIDO: trust anchor = pubkey do issuer externo; nenhuma chave no nó.
+	cfg := tnBaseConfig()
+	cfg.IssuerID = issuerID
+	cfg.IssuerPubKey = iss.PublicKey()
+	node, err := Bootstrap(ctx, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("Bootstrap (endurecido, trust anchor externo): %v", err)
+	}
+	t.Cleanup(func() { _ = node.Close() })
+	if node.IdentityMode != IdentityModeRealHardened {
+		t.Fatalf("o nó devia estar em modo ENDURECIDO (trust-anchor-only), veio %q", node.IdentityMode)
+	}
+	t.Logf("[NÓ] modo=%s — verifica trust-anchor-only; nunca detém a chave privada de assinatura", node.IdentityMode)
+
+	// (3) O ISSUER EXTERNO minta um token NHI (o nó NUNCA o mintou nem tem a chave).
+	tok, err := iss.Issue(ctx, identity.IssueRequest{
+		UserID:        tnHuman,
+		AgentID:       tnAgent,
+		AgentClass:    tnClass,
+		PolicyRef:     "policy://" + tnClass,
+		UserAuthority: []string{tnCap},
+		AuthMethod:    "oidc:demo", // rótulo de método p/ o binding audit (AOS-176), nunca PII
+	})
+	if err != nil {
+		t.Fatalf("Issue (issuer externo): %v", err)
+	}
+
+	// (4) O NÓ ACEITA a identidade do token do issuer externo (verifier real ⇒ DeniedBy != identity).
+	rm := node.Runtime.Monitor()
+	dec, err := rm.Mediate(ctx, tnCall(tok.Compact))
+	if err != nil {
+		t.Fatalf("Mediate (token do issuer externo): %v", err)
+	}
+	if dec.DeniedBy == "identity" {
+		t.Fatalf("o nó devia ACEITAR a identidade do issuer externo; foi NEGADO em identity (DeniedBy=%q)", dec.DeniedBy)
+	}
+	t.Log("[OK]   o nó VERIFICOU o token de um issuer EXTERNO sem deter a chave — não-forjabilidade real (D4).")
+
+	// (5) DOIS SENTIDOS: um issuer ROGUE (outra chave, não confiada pelo anchor) é NEGADO em identity.
+	_, roguePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey (rogue): %v", err)
+	}
+	rogue, err := identity.NewIssuerWithSigner("iss:rogue", roguePriv, map[string]identity.ClassPolicy{
+		tnClass: {TTL: 15 * time.Minute, Scope: []string{tnCap}},
+	}, identity.WithIssuerClock(tnClock()))
+	if err != nil {
+		t.Fatalf("NewIssuerWithSigner (rogue): %v", err)
+	}
+	rogueTok, err := rogue.Issue(ctx, identity.IssueRequest{
+		UserID: tnHuman, AgentID: tnAgent, AgentClass: tnClass,
+		PolicyRef: "policy://" + tnClass, UserAuthority: []string{tnCap}, AuthMethod: "oidc:demo",
+	})
+	if err != nil {
+		t.Fatalf("Issue (rogue): %v", err)
+	}
+	decRogue, err := rm.Mediate(ctx, tnCall(rogueTok.Compact))
+	if err != nil {
+		t.Fatalf("Mediate (rogue): %v", err)
+	}
+	if decRogue.DeniedBy != "identity" {
+		t.Fatalf("token de um issuer NÃO-confiado devia ser NEGADO em identity, veio DeniedBy=%q", decRogue.DeniedBy)
+	}
+	t.Log("[OK]   dois sentidos: um issuer não-confiado (outra chave) é NEGADO em identity — o trust anchor é a única fonte.")
 }

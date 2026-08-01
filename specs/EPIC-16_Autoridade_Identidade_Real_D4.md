@@ -105,10 +105,48 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 | AOS-175 ✅ | Custódia de chave externa: `crypto.Signer` + issuer processo-separado + contrato KMS/HSM — **ENTREGUE** | feature | M | P1 | AOS-156 |
 | AOS-176 ✅ | Binding humano↔NHI auditável + **ADR-003** formal — **ENTREGUE** | feature | S | P1 | AOS-174 |
 | AOS-177 ✅ | Attestation **WebAuthn/AAGUID** (lib vetada, componente externo; nó zero-dep) — AOS-162 sai de stub — **ENTREGUE** | feature | L | P1 | AOS-175, AOS-162, ADR-016 |
+| AOS-226 ✅ | Issuer externo **runnable** (`cmd/aos-issuer`): monta AOS-174/175 num binário deployável — detém a chave via `crypto.Signer`, exporta o trust anchor, minta NHI; o nó verifica trust-anchor-only sem deter a chave — **ENTREGUE** | feature | M | P1 | AOS-174, AOS-175 |
 
 **Sequência:** 174 (humano autenticado real) → 175 (não-forjabilidade real, chave fora do nó) →
 176 (binding + ADR-003) → 177 (attestation de dispositivo, a frente com a lib externa). As três
-primeiras não tocam o zero-dep; a 177 é a única com a exceção escopada da emenda 1.3.
+primeiras não tocam o zero-dep; a 177 é a única com a exceção escopada da emenda 1.3. **AOS-226**
+monta 174/175 num **processo deployável** (as frentes entregaram bibliotecas; faltava o binário).
+
+### 4-bis. AOS-226 — issuer externo runnable (`cmd/aos-issuer`)
+
+As frentes entregaram a autoridade real como **bibliotecas**; faltava **montá-las num processo
+deployável** que o nó consuma. `cmd/aos-issuer` é esse binário — a autoridade de identidade
+**externa** (processo separado por desenho: quem minta não pode ser quem verifica, senão o nó
+"verificaria" tokens que ele próprio mintou — escalada §2):
+
+- **`pubkey`** exporta a chave pública ed25519 (o `AOS_ISSUER_PUBKEY` do nó);
+- **`mint`** emite um token NHI (`identity.NewIssuerWithSigner` → `Issue`, com `AuthMethod` para o
+  binding audit de AOS-176) que o nó verifica trust-anchor-only;
+- a chave privada vive **fora** do nó — em dev, num ficheiro `0600` que o operador controla; em
+  prod, num **HSM/KMS** pela costura `crypto.Signer` (AOS-175). A chave nunca é ecoada.
+
+**Critérios de aceitação**
+
+- [x] `cmd/aos-issuer` compila e é **zero-dep externo** (`go.sum` vazio; só deps `aos-ref` locais;
+      `go mod tidy` limpo) — o nó permanece intocado. *(Evidência: build+vet+`go mod tidy` verdes; `go.sum` 0 bytes.)*
+- [x] `pubkey` exporta um trust anchor **estável** (64 hex) e `mint` emite um token NHI **verificável**
+      contra essa pubkey; um verifier com **outra** chave **recusa** (dois sentidos). *(Evidência:
+      `packages/cmd/aos-issuer/main_test.go` — `TestIssuer_MintProducesVerifiableToken`, `-race`.)*
+- [x] `mint` é **fail-closed** sem `--human`/`--agent`/`--class` (não emite token degenerado).
+      *(Evidência: `TestIssuer_MintFailClosed`.)*
+- [x] O **nó** verifica um token do issuer externo **trust-anchor-only, sem deter a chave**; um issuer
+      rogue é negado em identity. *(Evidência: `packages/cmd/aos/devharness_test.go` —
+      `TestDevHarness_ExternalIssuer_NodeVerifiesTrustAnchorOnly`, `-race`.)*
+- [x] A chave privada **nunca** é ecoada (código/log); sem `issuer.key` committada. *(Evidência: gate `secrets` verde.)*
+
+**Residual nomeado (fronteira honesta):** o `OIDCDirectory` (AOS-174) — autenticar o humano contra um
+IdP real **antes** do mint — ainda **não está composto** no `cmd/aos-issuer` (o `mint` recebe o humano
+por flag; a costura front-1 fica para o próximo incremento, eixo `DEF-104/105/110`). O adaptador
+**HSM/KMS** concreto e o **tenant OIDC** são infra-org (deployment), como o resto do D4.
+
+**Fecha:** o "issuer processo-separado" que AOS-175 nomeia mas não entregava como binário.
+**Depende de:** AOS-174 (verifier/token), AOS-175 (`crypto.Signer`). **Não duplica:** AOS-177
+(attestation, componente externo com a lib WebAuthn).
 
 ## 5. Controlo de versões
 
@@ -118,3 +156,4 @@ primeiras não tocam o zero-dep; a 177 é a única com a exceção escopada da e
 | 1.1 | 2026-07-24 | Frente 2 (custódia de chave externa) marcada ENTREGUE por AOS-175: issuer assina via `crypto.Signer` (chave pode viver em HSM/KMS), issuer processo-separado (nó trust-anchor-only). Adapter KMS concreto e instância HSM = deployment. | Equipa AOS |
 | 1.2 | 2026-07-24 | Frente 3 (binding humano↔NHI + ADR-003) marcada ENTREGUE por AOS-176: ADR-003 formal ratificado; binding auditável de primeira classe (`identity.BindingAudit`) sobre o evento append-only `identity.nhi.issued` com `auth_method`, fail-closed contra cadeias órfãs, sem segredos/PII. | Equipa AOS |
 | 1.3 | 2026-07-24 | Frente 4 (attestation WebAuthn/AAGUID) marcada ENTREGUE por AOS-177 — ÚLTIMA da Opção A: porta stdlib `DeviceAttestationVerifier` + `FourEyesGate.WithDeviceAttestation` (dispositivos atestados distintos, `ErrSameDevice`); impl `packages/platform/attestation` (packed/x5c + self + fido-u2f, allowlist de AAGUID, extensão de AAGUID do cert, `none` recusado) num módulo com a única dep externa `fxamacker/cbor/v2`. Zero-dep do nó preservado e VERIFICADO por guardas `go list -deps` em cmd/aos e integration. ADR-016 §4 sai de CONDICIONAL-por-código. | Equipa AOS |
+| 1.4 | 2026-08-01 | **AOS-226** acrescentado (§4-bis): issuer externo RUNNABLE `cmd/aos-issuer` — monta AOS-174/175 num binário deployável (`pubkey` exporta o trust anchor; `mint` emite NHI via `crypto.Signer`; o nó verifica trust-anchor-only sem deter a chave). Módulo zero-dep externo (`go.sum` vazio, `go mod tidy` limpo); prova ponta-a-ponta no dev-harness (`TestDevHarness_ExternalIssuer`) e no módulo (`TestIssuer_MintProducesVerifiableToken`). Residual: compor o `OIDCDirectory` no issuer (`DEF-104/105/110`); HSM/KMS + tenant OIDC = infra. | Equipa AOS |
