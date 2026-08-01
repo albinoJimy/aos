@@ -107,6 +107,7 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 | AOS-177 ✅ | Attestation **WebAuthn/AAGUID** (lib vetada, componente externo; nó zero-dep) — AOS-162 sai de stub — **ENTREGUE** | feature | L | P1 | AOS-175, AOS-162, ADR-016 |
 | AOS-226 ✅ | Issuer externo **runnable** (`cmd/aos-issuer`): monta AOS-174/175 num binário deployável — detém a chave via `crypto.Signer`, exporta o trust anchor, minta NHI; o nó verifica trust-anchor-only sem deter a chave — **ENTREGUE** | feature | M | P1 | AOS-174, AOS-175 |
 | AOS-227 ✅ | Autenticação OIDC do humano no `cmd/aos-issuer` (frente 1): `mint --assertion` verifica um ID-token contra o IdP (verifier real de AOS-174) e deriva o humano-raiz do `sub` verificado — **cbor-free** — **ENTREGUE** | feature | S | P1 | AOS-226, AOS-174 |
+| AOS-228 ✅ | Costura OIDC do directório humano no **NÓ** (fecha DEF-104/105/110): `AOS_HUMAN_OIDC_*` compõe o `OIDCDirectory` na autoridade de referência (a via sem-prova é recusada), padrão injectável de AOS-220, **cbor-free** — **ENTREGUE** | feature | S | P2 | AOS-174, AOS-220 |
 
 **Sequência:** 174 (humano autenticado real) → 175 (não-forjabilidade real, chave fora do nó) →
 176 (binding + ADR-003) → 177 (attestation de dispositivo, a frente com a lib externa). As três
@@ -180,6 +181,36 @@ auto-assina; o caminho real é endurecido + issuer externo, que é o que AOS-227
 **Fecha:** a frente 1 do D4 **no issuer** (autenticação humana real antes do mint). **Depende de:**
 AOS-226 (issuer runnable), AOS-174 (verifier OIDC).
 
+### 4-quater. AOS-228 — costura OIDC do directório humano no nó (fecha DEF-104/105/110)
+
+O nó compunha **sempre** a allowlist de referência (`bootstrap.go`); não havia ramo de config para
+OIDC (`DEF-104/105/110`). AOS-228 fecha-o, **espelhando a costura injectável de AOS-220** (o PDP):
+
+- `Config.HumanDirectory` (injectável); `nodeConfigFromEnv` compõe `integration.NewOIDCDirectory` a
+  partir de `AOS_HUMAN_OIDC_ISSUER`/`AUDIENCE`/`JWKS_URI`;
+- **fail-closed**: config incompleta ⇒ `ErrBadHumanOIDC` (aborta); o `bootstrap` dá **precedência**
+  ao OIDC, senão a allowlist de referência (retro-compat);
+- **cbor-free**: o nó já compila `package integration` sem cbor (a `attestation` de AOS-177 fica atrás
+  de build-tag); usar `NewOIDCDirectory` não adiciona deps — `go list -deps cmd/aos` continua sem cbor;
+- **só no modo de REFERÊNCIA** (autoridade co-localizada); no modo endurecido o directório humano vive
+  com o issuer EXTERNO (AOS-226/227), não no nó.
+
+**Critérios de aceitação**
+
+- [x] `AOS_HUMAN_OIDC_*` ⇒ `nodeConfigFromEnv` compõe o `OIDCDirectory` (a via sem-prova é recusada
+      `ErrAssertionRequired`); config incompleta ⇒ `ErrBadHumanOIDC`; ausente ⇒ allowlist (retro-compat).
+      *(Evidência: `packages/cmd/aos/aos228_human_oidc_test.go` — `TestAOS228_ConfigFromEnv_WiresHumanOIDCDirectory`.)*
+- [x] O nó **compõe** o directório injectado com precedência: `MintForHuman` (sem prova) ⇒
+      `ErrAssertionRequired`; sem injecção (allowlist) ⇒ funciona (dois sentidos). *(Evidência:
+      `TestAOS228_NodeComposesInjectedHumanDirectory`, `-race`.)*
+- [x] **cbor-free** preservado (`go list -deps cmd/aos` sem attestation/cbor) + env-surface documentada
+      (`AOS_HUMAN_OIDC_*`) + `deferrals` verde. *(Evidência: `TestAOS203EnvSurfaceIsDocumented` + gate.)*
+
+**Fecha:** `DEF-104/105/110` (o seam de config do directório humano no nó). **Depende de:** AOS-174
+(`OIDCDirectory`), AOS-220 (padrão de costura injectável). **Residual:** o **tenant OIDC** concreto é
+infra; a costura no modo de referência é de **menor valor** (auto-assina) — o caminho de produção é
+endurecido + issuer externo (AOS-226/227), já servido.
+
 ## 5. Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -190,3 +221,4 @@ AOS-226 (issuer runnable), AOS-174 (verifier OIDC).
 | 1.3 | 2026-07-24 | Frente 4 (attestation WebAuthn/AAGUID) marcada ENTREGUE por AOS-177 — ÚLTIMA da Opção A: porta stdlib `DeviceAttestationVerifier` + `FourEyesGate.WithDeviceAttestation` (dispositivos atestados distintos, `ErrSameDevice`); impl `packages/platform/attestation` (packed/x5c + self + fido-u2f, allowlist de AAGUID, extensão de AAGUID do cert, `none` recusado) num módulo com a única dep externa `fxamacker/cbor/v2`. Zero-dep do nó preservado e VERIFICADO por guardas `go list -deps` em cmd/aos e integration. ADR-016 §4 sai de CONDICIONAL-por-código. | Equipa AOS |
 | 1.4 | 2026-08-01 | **AOS-226** acrescentado (§4-bis): issuer externo RUNNABLE `cmd/aos-issuer` — monta AOS-174/175 num binário deployável (`pubkey` exporta o trust anchor; `mint` emite NHI via `crypto.Signer`; o nó verifica trust-anchor-only sem deter a chave). Módulo zero-dep externo (`go.sum` vazio, `go mod tidy` limpo); prova ponta-a-ponta no dev-harness (`TestDevHarness_ExternalIssuer`) e no módulo (`TestIssuer_MintProducesVerifiableToken`). Residual: compor o `OIDCDirectory` no issuer (`DEF-104/105/110`); HSM/KMS + tenant OIDC = infra. | Equipa AOS |
 | 1.5 | 2026-08-01 | **AOS-227** acrescentado (§4-ter): autenticação OIDC do humano no `cmd/aos-issuer` (frente 1) — `mint --assertion` verifica um ID-token contra o IdP (verifier real de AOS-174: discovery/JWKS/JWS/aud/exp) e deriva o humano-raiz do `sub` VERIFICADO, **cbor-free** (só `integration/oidc`, sem a attestation). Fail-closed; retro-compat com `--human`. Prova: `TestIssuer_OIDCAuthenticatesHumanBeforeMint` (IdP mock RSA/JWKS, -race). Residual: tenant OIDC = infra; `DEF-110` (OIDC no modo de referência do NÓ) = seam distinto de menor valor. | Equipa AOS |
+| 1.6 | 2026-08-01 | **AOS-228** acrescentado (§4-quater): costura OIDC do directório humano no **NÓ** — `AOS_HUMAN_OIDC_*` compõe o `OIDCDirectory` na autoridade de referência (padrão injectável de AOS-220; fail-closed `ErrBadHumanOIDC`; precedência sobre a allowlist), **CBOR-FREE** (`go list -deps cmd/aos` sem cbor). **FECHA `DEF-104/105/110`**. Prova: `TestAOS228_ConfigFromEnv_WiresHumanOIDCDirectory` + `TestAOS228_NodeComposesInjectedHumanDirectory` (-race). Residual: tenant OIDC = infra; costura ref-mode de menor valor (o caminho real é endurecido + issuer externo). | Equipa AOS |

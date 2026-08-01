@@ -294,6 +294,17 @@ type Config struct {
 	// fornecido, tem PRECEDÊNCIA sobre o PDP default não-carregado.
 	PDP *pdp.PDP
 
+	// HumanDirectory é o directório de autenticação humana injectado na autoridade de
+	// identidade de REFERÊNCIA (co-localizada). nil ⇒ [integration.NewAllowlistDirectory]
+	// (allowlist de nomes de `Humans`, não autenticação real). Quando fornecido — ex.:
+	// [integration.NewOIDCDirectory] a partir de AOS_HUMAN_OIDC_* — a autoridade autentica o
+	// humano contra um IdP REAL (ID-token OIDC verificado) antes do mint, e a via allowlist
+	// sem prova passa a ser recusada (frente 1 do D4, fecha DEF-110). Tem PRECEDÊNCIA sobre a
+	// allowlist. Só tem efeito no modo de REFERÊNCIA; no modo endurecido (IssuerPubKey) o nó é
+	// trust-anchor-only e o directório humano vive com o issuer EXTERNO (`cmd/aos-issuer`,
+	// AOS-226/227), não no nó.
+	HumanDirectory integration.HumanDirectory
+
 	// --- Substrato DURÁVEL (AOS-170) -------------------------------------------
 	// DurableExecution activa o checkpointer, capturer e step-ledger duráveis
 	// (AOS-180) sobre o Event Store. Quando false, o runtime usa os defaults no-op
@@ -858,10 +869,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			}
 			signingKey = loaded
 		}
+		// DIRECTÓRIO HUMANO: OIDC real (injectado por AOS_HUMAN_OIDC_*, fecha DEF-110) com
+		// PRECEDÊNCIA; senão a allowlist de referência (nomes de `Humans`) (retro-compat).
+		humanDir := integration.HumanDirectory(integration.NewAllowlistDirectory(cfg.Humans...))
+		if cfg.HumanDirectory != nil {
+			humanDir = cfg.HumanDirectory
+		}
 		authority, err = integration.NewIssuerAuthority(integration.AuthorityConfig{
 			IssuerID:      cfg.IssuerID,
 			Classes:       cfg.IssuerClasses,
-			Directory:     integration.NewAllowlistDirectory(cfg.Humans...),
+			Directory:     humanDir,
 			SigningKey:    signingKey,
 			IssuerOptions: issuerOpts,
 		})

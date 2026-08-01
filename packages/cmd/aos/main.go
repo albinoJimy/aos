@@ -17,6 +17,7 @@ import (
 	"time"
 
 	pdp "github.com/aos-ref/control-plane/pdp"
+	integration "github.com/aos-ref/integration"
 	oidc "github.com/aos-ref/integration/oidc"
 	identity "github.com/aos-ref/platform/identity"
 )
@@ -64,6 +65,14 @@ var ErrProductionNeedsSovereignAuthority = errors.New("aos: AOS_MODE=production 
 // define só o issuer NÃO obtém um nó que serve leituras sem verificar a credencial; um MaxAge
 // inválido NÃO degrada para "sem tecto de replay".
 var ErrBadSovereignOIDC = errors.New("aos: config OIDC de soberania incompleta — AOS_SOVEREIGN_OIDC_ISSUER e AOS_SOVEREIGN_OIDC_AUDIENCE sao AMBOS obrigatorios (definir so um aborta em vez de degradar para o read-path por header auto-declarado)")
+
+// ErrBadHumanOIDC — a config do directório humano OIDC (frente 1 do D4, AOS-174; fecha DEF-110)
+// está presente mas INVÁLIDA: um de AOS_HUMAN_OIDC_ISSUER/AOS_HUMAN_OIDC_AUDIENCE em falta, ou o
+// OIDCDirectory não constrói (ex.: issuer http não-loopback). Fail-closed de CONFIG (padrão de
+// ErrBadSovereignOIDC): distingue "não configurado" (ambos vazios ⇒ allowlist de referência) de
+// "configurado mas inválido" (aborta). Um operador que define só o issuer NÃO obtém um nó que
+// autentica humanos por allowlist quando tencionava ligar o IdP.
+var ErrBadHumanOIDC = errors.New("aos: config do directorio humano OIDC incompleta — AOS_HUMAN_OIDC_ISSUER e AOS_HUMAN_OIDC_AUDIENCE sao AMBOS obrigatorios (definir so um aborta em vez de degradar para a allowlist de referencia)")
 
 // ErrBadDurableExecution — AOS_DURABLE_EXECUTION presente com um valor que NÃO é um
 // booleano reconhecido. Fail-closed de CONFIG (AOS-191), no padrão de ErrBadBoardRegions:
@@ -399,10 +408,19 @@ func nodeConfigFromEnv() (Config, error) {
 	// encapsula-a — nunca é impressa nem entra na cadeia de segurança; o banner AVISA que
 	// é referência. No modo endurecido (AOS_ISSUER_PUBKEY presente) NENHUMA chave de
 	// assinatura entra no processo.
+	// DIRECTÓRIO HUMANO OIDC (frente 1 do D4, AOS-174; fecha DEF-110): AOS_HUMAN_OIDC_* compõe o
+	// OIDCDirectory que autentica o humano contra um IdP REAL antes do mint (modo de referência);
+	// nil ⇒ allowlist de nomes de `Humans` (retro-compat). Fail-closed em config incompleta.
+	humanDir, err := parseHumanOIDCDirectory()
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
-		IssuerID:     issuerID,
-		Humans:       humans,
-		IssuerPubKey: issuerPub, // nil ⇒ referência; presente ⇒ trust-anchor-only endurecido
+		IssuerID:       issuerID,
+		Humans:         humans,
+		HumanDirectory: humanDir,
+		IssuerPubKey:   issuerPub, // nil ⇒ referência; presente ⇒ trust-anchor-only endurecido
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},
@@ -826,6 +844,39 @@ func parseSovereignReadOIDC() (*oidc.Config, error) {
 		MaxAge:     maxAge,
 		RequireJTI: requireJTI,
 	}, nil
+}
+
+// parseHumanOIDCDirectory constrói o directório de autenticação humana OIDC (frente 1 do D4,
+// AOS-174; fecha DEF-110) a partir do ambiente: AOS_HUMAN_OIDC_ISSUER (obrigatório),
+// AOS_HUMAN_OIDC_AUDIENCE (obrigatório), AOS_HUMAN_OIDC_JWKS_URI (opcional ⇒ discovery via issuer).
+// Só tem efeito no modo de REFERÊNCIA (autoridade co-localizada); no modo endurecido o directório
+// humano vive com o issuer EXTERNO (cmd/aos-issuer). Fail-closed (padrão de parseSovereignReadOIDC):
+// ambos vazios ⇒ (nil,nil) ⇒ allowlist de nomes de referência (retro-compat); um só ⇒
+// ErrBadHumanOIDC (aborta, sem degradar para a allowlist quando alguém tenciona ligar o IdP). A
+// validação de conteúdo/transporte (issuer/audience não vazios; https salvo loopback) é de
+// oidc.NewVerifier, invocado por NewOIDCDirectory aqui — um issuer http não-loopback aborta o
+// arranque. Só material PÚBLICO entra (issuer + client id do IdP), nunca segredos. A frescura do
+// ID-token é limitada por um MaxAge por-omissão (anti-replay do mint humano).
+func parseHumanOIDCDirectory() (integration.HumanDirectory, error) {
+	issuer := strings.TrimSpace(os.Getenv("AOS_HUMAN_OIDC_ISSUER"))
+	audience := strings.TrimSpace(os.Getenv("AOS_HUMAN_OIDC_AUDIENCE"))
+	jwksURI := strings.TrimSpace(os.Getenv("AOS_HUMAN_OIDC_JWKS_URI"))
+	if issuer == "" && audience == "" && jwksURI == "" {
+		return nil, nil // não configurado ⇒ allowlist de referência (retro-compat).
+	}
+	if issuer == "" || audience == "" {
+		return nil, ErrBadHumanOIDC
+	}
+	dir, err := integration.NewOIDCDirectory(oidc.Config{
+		Issuer:   issuer,
+		Audience: audience,
+		JWKSURI:  jwksURI,
+		MaxAge:   5 * time.Minute, // anti-replay do mint humano (curto, como o read-path soberano)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadHumanOIDC, err)
+	}
+	return dir, nil
 }
 
 // parseSovereignReadMaxAge interpreta AOS_SOVEREIGN_OIDC_MAX_AGE como uma duração Go (ex.: "5m",
