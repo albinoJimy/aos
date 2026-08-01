@@ -1454,19 +1454,41 @@ ticket é a **guarda de eficácia** + compor o `PrivilegedAuthorizer` real, não
 
 **Critérios de aceitação**
 
-- [ ] `hasActiveTaintGate` (ou o predicado de "modo endurecido") **exige** o conjunto `privileged`
+- [x] `hasActiveTaintGate` (ou o predicado de "modo endurecido") **exige** o conjunto `privileged`
       **não-vazio** — um `TaintGate` com conjunto vazio **não** conta como activo; o nó **recusa fail-closed**
       arrancar em modo endurecido com um taint gate inerte (ou degrada o claim de postura de forma honesta e visível).
+      *(Evidência: `hasActiveTaintGate` (`production.go:104`) chama `privilegedIsEffective(g.privileged)` →
+      `StaticPrivilegedSet.HasPrivileged()` = `len(caps)>0` (`taint_gate.go`); o check **estrutural** separou-se em
+      `hasWiredTaintGate:88` (retro-compat). Costura fail-closed `NewProductionHardenedTaint`+`ErrTaintGateInert`
+      recusa o gate inerte. O ápice **não** faz alegação falsa de taint-hardened (os "hardened" em `bootstrap.go`
+      são todos de identidade). `TestHasActiveTaintGate_EmptySetIsInert` — falha-antes provada por neutralização.)*
 - [ ] O ápice de produção compõe um `PrivilegedAuthorizer` **real** (a fonte do conjunto privilegiado), não o
       vazio por defeito — decidir/justificar a fonte sem inventar mecanismo novo (eixo `DEF-808`/AOS-183).
-- [ ] **Falsificável (`-race`):** um teste prova que, com conjunto vazio, o predicado de postura endurecida é
+      *(**EM FALTA POR DESIGN — honestamente deferido a `AOS-183`/`DEF-808`**: a fonte do conjunto privilegiado
+      real não existe no código (`secured.go:209-211` cai em `NewStaticPrivilegedSet()` vazio; `bootstrap.go` nem
+      fornece `Privileged`). Não foi fabricado — `bootstrap.go` **não** tocado. `NewProductionHardenedTaint` é a
+      costura de adopção pronta para quando AOS-183 fornecer o conjunto real.)*
+- [x] **Falsificável (`-race`):** um teste prova que, com conjunto vazio, o predicado de postura endurecida é
       **falso** (falha-antes: hoje é verdadeiro); e que uma promoção de escopo tainted é **efectivamente barrada**
-      quando o autorizador está composto.
-- [ ] **Retro-compat:** modos não-endurecidos (demo/legado) inalterados. Sem segredos; gates verdes.
+      quando o autorizador está composto. *(Evidência: `production_efficacy_test.go` — `…EmptySetIsInert` +
+      `…HardenedTaint_FailClosedOnInert` falham-antes (neutralização confirmada por QA+completude independentes);
+      a barra efectiva de promoção tainted (vazio vs não-vazio) por `TestTaintEnforcement_EmptyVsNonEmpty`
+      (corroboração **material**, rotulada com precisão — não é falha-antes do predicado); `-race` verde.)*
+- [x] **Retro-compat:** modos não-endurecidos (demo/legado) inalterados. Sem segredos; gates verdes.
+      *(Evidência: `NewProduction`/`NewProductionSecure` constroem com conjunto vazio via `hasWiredTaintGate`
+      (lógica byte-idêntica à guarda antiga); `cmd/aos` + `integration` `-race`/build verdes; `go.mod`/`go.sum`
+      intactos; secrets/deferrals/layer-lint verdes.)*
 
 **Fecha:** o achado RM de eficácia-vs-presença (a metade de wiring de `DEF-808`/`DEF-809`; a semântica do gate
 já existe). **Depende de:** AOS-183 (conjunto `Privileged`), AOS-157 (portas RT/RM). **Não duplica:** AOS-220
 (bundle PDP — outra guarda) nem a semântica do `TaintGate` (AOS-069/ADR-005).
+
+**Estado: PARCIAL — fecha o achado de veracidade; CA2 deferido.** O defeito do achado RM (o predicado alegar
+endurecimento com um gate **inerte**) está **fechado**: o predicado passou a exigir eficácia e o ápice não mente.
+O **conjunto privilegiado real** permanece deferido a `AOS-183`/`DEF-808` (fonte inexistente, não fabricada).
+**Residual nomeado:** `Monitor.HasActiveTaintGate()` está exportado mas ainda **não é consultado no ápice** para
+emitir um banner honesto de postura — ligá-lo exige editar `bootstrap.go`, a par da adopção de
+`NewProductionHardenedTaint` quando AOS-183 fornecer o conjunto. Sem alegação falsa em disco entretanto.
 
 ---
 

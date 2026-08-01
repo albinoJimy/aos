@@ -13,9 +13,20 @@ var (
 	ErrNoPrivilegedAuthorizer = &MonitorError{Code: "E_NO_PRIVILEGED_AUTHORIZER", msg: "produção exige um PrivilegedAuthorizer não-nil (sem ele o TaintGate é no-op)"}
 
 	// ErrTaintGateMissing — a cadeia de hooks FINAL (após aplicar as [Option]s) não
-	// contém um TaintGate activo (com authorizer não-nil). Manifesta-se se um override
-	// via [WithHooks] remover a barreira control/data-plane. Fail-closed: construção nega.
-	ErrTaintGateMissing = &MonitorError{Code: "E_TAINT_GATE_MISSING", msg: "cadeia de produção sem TaintGate activo (barreira control/data-plane ADR-005 inactiva)"}
+	// contém um TaintGate WIRED (presente com authorizer não-nil). Manifesta-se se um
+	// override via [WithHooks] remover a barreira control/data-plane ou a substituir por
+	// um gate com authorizer nil. Fail-closed: construção nega. NOTA (AOS-219): esta é a
+	// invariante ESTRUTURAL (presença); a EFICÁCIA (conjunto privileged não-vazio) é
+	// aferida à parte por [Monitor.HasActiveTaintGate] / [ErrTaintGateInert].
+	ErrTaintGateMissing = &MonitorError{Code: "E_TAINT_GATE_MISSING", msg: "cadeia de produção sem TaintGate wired (barreira control/data-plane ADR-005 ausente)"}
+
+	// ErrTaintGateInert — a cadeia FINAL contém um TaintGate WIRED mas INERTE: o conjunto
+	// privileged é VAZIO ([Monitor.HasActiveTaintGate] falso), logo nenhuma promoção de
+	// escopo tainted é jamais barrada. [NewProductionHardenedTaint] recusa-o fail-closed —
+	// a via ENDURECIDA no eixo do taint não arranca a alegar barreira control/data-plane
+	// com um gate no-op. Distinto de [ErrTaintGateMissing] (gate AUSENTE): aqui o gate
+	// existe mas não classifica nada como privilegiado (eixo AOS-183/DEF-808).
+	ErrTaintGateInert = &MonitorError{Code: "E_TAINT_GATE_INERT", msg: "modo endurecido: TaintGate presente mas INERTE (conjunto privileged vazio ⇒ nenhuma promoção tainted é barrada); exige um PrivilegedAuthorizer não-vazio (AOS-183)"}
 
 	// ErrNoDurableAudit — o [EventSink] final é não-durável (o discard por omissão).
 	// Um RM sem auditoria durável nunca dispara o fail-closed de auditoria (a acção
@@ -56,7 +67,7 @@ func NewProduction(privileged PrivilegedAuthorizer, opts ...Option) (*Monitor, e
 	base = append(base, opts...)
 	m := New(base...)
 
-	if !m.hasActiveTaintGate() {
+	if !m.hasWiredTaintGate() {
 		return nil, ErrTaintGateMissing
 	}
 	if !m.hasDurableAudit() {
@@ -65,11 +76,14 @@ func NewProduction(privileged PrivilegedAuthorizer, opts ...Option) (*Monitor, e
 	return m, nil
 }
 
-// hasActiveTaintGate reporta se a cadeia mediadora contém um [TaintGate] com um
-// [PrivilegedAuthorizer] não-nil — i.e. enforcement de taint EFECTIVO, não um
-// placeholder no-op. É mais forte que casar pelo Name(): um gate com authorizer
-// nil nunca bloqueia e, para efeitos de produção, equivale a não ter gate.
-func (m *Monitor) hasActiveTaintGate() bool {
+// hasWiredTaintGate reporta se a cadeia mediadora contém um [TaintGate] com um
+// [PrivilegedAuthorizer] NÃO-NIL — i.e. a barreira control/data-plane está
+// estruturalmente PRESENTE (não removida por um override [WithHooks], não um gate com
+// authorizer nil que nunca bloqueia). É a invariante ESTRUTURAL que [NewProduction]
+// exige — impede que a via sancionada regrida para uma cadeia sem barreira. É mais forte
+// que casar pelo Name(), mas NÃO afere EFICÁCIA: um gate wired com conjunto privileged
+// VAZIO passa aqui e ainda assim é inerte (ver [Monitor.hasActiveTaintGate] e AOS-219).
+func (m *Monitor) hasWiredTaintGate() bool {
 	for _, h := range m.hooks {
 		if g, ok := h.(TaintGate); ok && g.privileged != nil {
 			return true
@@ -77,6 +91,36 @@ func (m *Monitor) hasActiveTaintGate() bool {
 	}
 	return false
 }
+
+// hasActiveTaintGate reporta se a cadeia contém um [TaintGate] EFICAZ — presente E com um
+// classificador que trata ALGUMA capability como privilegiada ([privilegedIsEffective]). É
+// ESTRITAMENTE mais forte que [hasWiredTaintGate]: um gate wired mas com o conjunto
+// privileged VAZIO é INERTE (nenhuma promoção de escopo tainted é jamais barrada) e NÃO
+// conta como activo. É a correcção de AOS-219 (eficácia-vs-presença): o predicado de
+// postura endurecida só é verdadeiro quando o enforcement de taint é EFECTIVO, não um
+// placeholder no-op. Um authorizer nil ⇒ false (herdado de [privilegedIsEffective]).
+func (m *Monitor) hasActiveTaintGate() bool {
+	for _, h := range m.hooks {
+		if g, ok := h.(TaintGate); ok && privilegedIsEffective(g.privileged) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasActiveTaintGate expõe o predicado de EFICÁCIA da barreira control/data-plane para o
+// composition root ápice DECLARAR a postura de forma HONESTA e VISÍVEL (AOS-219). Contrato:
+//
+//   - true  ⇒ o [TaintGate] está presente E o conjunto privileged é não-vazio: uma promoção
+//     de escopo tainted é EFECTIVAMENTE barrada — o nó PODE alegar postura de taint endurecida.
+//   - false ⇒ o gate está presente mas INERTE (conjunto privileged vazio) ou ausente: nenhuma
+//     promoção tainted é barrada — o nó NÃO deve alegar postura de taint endurecida.
+//
+// [NewProduction]/[NewProductionSecure] arrancam com um gate wired-mas-inerte (o conjunto
+// privileged real está DEFERIDO em AOS-183/DEF-808), pelo que o ápice DEVE consultar este
+// predicado antes de alegar endurecimento — e adoptar [NewProductionHardenedTaint] (que recusa
+// fail-closed o gate inerte) quando um classificador real e não-vazio existir.
+func (m *Monitor) HasActiveTaintGate() bool { return m.hasActiveTaintGate() }
 
 // hasDurableAudit reporta se o sink materializa auditoria durável — i.e. não é o
 // [discardSink] (nem nil). Só um sink durável dá efeito ao fail-closed de auditoria.
@@ -136,6 +180,27 @@ func NewProductionSecure(privileged PrivilegedAuthorizer, opts ...Option) (*Moni
 	}
 	if !m.hasActiveScopeGate() {
 		return nil, ErrScopeGateMissing
+	}
+	return m, nil
+}
+
+// NewProductionHardenedTaint é a via de produção ENDURECIDA no eixo do taint: herda TODAS as
+// invariantes de [NewProductionSecure] (identidade/egress reais, ScopeGate com autoridade,
+// TaintGate wired, auditoria durável) e ACRESCENTA a exigência de EFICÁCIA do TaintGate —
+// recusa fail-closed com [ErrTaintGateInert] se o conjunto privileged for VAZIO (gate inerte).
+//
+// Fecha a metade de wiring de AOS-219/DEF-808 SEM inventar um conjunto privileged: é a costura
+// que o composition root ápice adopta QUANDO existir um [PrivilegedAuthorizer] REAL e não-vazio
+// (eixo AOS-183). Até lá o conjunto real está DEFERIDO e o ápice arranca por [NewProductionSecure]
+// (gate wired-mas-inerte) DECLARANDO a postura de forma honesta via [Monitor.HasActiveTaintGate] —
+// nunca alegando endurecimento de taint que não tem. O guard-test garante que a via não regride.
+func NewProductionHardenedTaint(privileged PrivilegedAuthorizer, opts ...Option) (*Monitor, error) {
+	m, err := NewProductionSecure(privileged, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if !m.hasActiveTaintGate() {
+		return nil, ErrTaintGateInert
 	}
 	return m, nil
 }

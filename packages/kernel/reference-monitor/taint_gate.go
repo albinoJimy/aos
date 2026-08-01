@@ -55,6 +55,47 @@ func (s StaticPrivilegedSet) IsPrivileged(capability string) bool {
 	return ok
 }
 
+// HasPrivileged implementa [EffectivePrivilegedAuthorizer]: o conjunto é EFICAZ sse
+// enumerar ao menos uma capability. Um [StaticPrivilegedSet] VAZIO é inerte — nada é
+// privilegiado ⇒ o [TaintGate] que o usa nunca barra uma promoção tainted. É a
+// distinção "wired vs eficaz" no cerne de AOS-219.
+func (s StaticPrivilegedSet) HasPrivileged() bool { return len(s.caps) > 0 }
+
+// EffectivePrivilegedAuthorizer é a extensão OPCIONAL de [PrivilegedAuthorizer] que
+// declara EFICÁCIA: se o classificador trata ALGUMA capability como privilegiada. Um
+// classificador que não trata nenhuma (conjunto vazio) torna o [TaintGate] INERTE — a
+// barreira control/data-plane (ADR-005) fica PRESENTE-MAS-INERTE (nada é privilegiado ⇒
+// nada é bloqueado por taint). A presença de um authorizer não-nil NÃO implica, por si,
+// enforcement efectivo: é essa a confusão eficácia-vs-presença que AOS-219 corrige.
+type EffectivePrivilegedAuthorizer interface {
+	PrivilegedAuthorizer
+	// HasPrivileged reporta se o conjunto classifica >= 1 capability como privilegiada.
+	// false ⇒ o TaintGate é inerte (nenhuma promoção de escopo tainted é jamais barrada).
+	HasPrivileged() bool
+}
+
+// privilegedIsEffective reporta se p classifica ALGUMA capability como privilegiada —
+// i.e. se um [TaintGate] que o use é EFICAZ e não um no-op inerte. Semântica:
+//
+//   - nil ⇒ false (sem classificador, nada é privilegiado ⇒ inerte);
+//   - implementa [EffectivePrivilegedAuthorizer] ⇒ o próprio p.HasPrivileged() (preciso —
+//     é o caso do [StaticPrivilegedSet], a única implementação do nó);
+//   - opaco (sem a extensão) ⇒ true: não é possível provar a vacuidade de um classificador
+//     arbitrário, e um authorizer custom não-trivial presume-se eficaz (retro-compat — não
+//     rebaixa a postura de um integrador que forneça o seu próprio classificador).
+//
+// O caso inerte concreto que AOS-219 fecha — o [StaticPrivilegedSet] VAZIO com que o ápice
+// arranca hoje (conjunto real DEFERIDO em AOS-183/DEF-808) — é classificado com precisão.
+func privilegedIsEffective(p PrivilegedAuthorizer) bool {
+	if p == nil {
+		return false
+	}
+	if e, ok := p.(EffectivePrivilegedAuthorizer); ok {
+		return e.HasPrivileged()
+	}
+	return true
+}
+
 // TaintGate é o hook de enforcement da barreira control/data-plane (ADR-005): ao
 // mediar uma tool call PRIVILEGIADA, verifica o taint da AUTORIZAÇÃO
 // ([CallContext.Taint], preenchido na origem pelo Agent Runtime) e NEGA a call se
