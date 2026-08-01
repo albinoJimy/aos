@@ -196,6 +196,7 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-603 | STUB | packages/kernel/reference-monitor/production.go | Marcador de contraste: `NewProductionSecure` REJEITA os stubs neutros que `NewProduction` tolerava | AOS-153 | Arquitecto de Plataforma | Remoção de `NewProduction` do contrato público | FECHADO-RESIDUAL |
 | DEF-604 | DEMO-GRADE | packages/integration/secured.go | Colaboradores nil caem para defaults demo-grade que são hooks REAIS fail-closed (nunca stubs permissivos); o PDP não carrega bundle e o conjunto `Privileged` é vazio | AOS-181, AOS-183 | Responsável de Segurança | Execução de AOS-181 (bundle PDP) e AOS-183 (conjunto Privileged real) | MITIGADO |
 | DEF-605 | DIFERIDO | packages/kernel/reference-monitor/scope_gate.go | A metade SPAN/OTel do critério de escopo efectivo (ADR-002/010) está DIFERIDA: hoje só o canal AUDIT regista a autoridade em vigor. O texto do ficheiro difere para `EPIC-08` sem nomear ticket — o eixo real é AOS-076 | AOS-076 | Arquitecto de Plataforma | Execução de AOS-076 (span `execute_tool` por tool call mediada) | ABERTO |
+| DEF-606 | DIFERIDO | packages/kernel/reference-monitor/production.go | Guarda de eficácia do taint (AOS-219): `hasActiveTaintGate` exige conjunto `Privileged` não-vazio e o ápice arranca com um gate wired-mas-inerte, declarando a postura via `Monitor.HasActiveTaintGate` (sem alegar endurecimento que não tem). A costura fail-closed `NewProductionHardenedTaint`/`ErrTaintGateInert` está pronta, mas o conjunto `Privileged` REAL fica diferido a AOS-183 (idem DEF-808/DEF-604) | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-808 (conjunto `Privileged` real no ápice) | MITIGADO |
 | DEF-701 | NUNCA-EM-PRODUCAO | packages/substrate/sandbox/driver.go | O driver de referência NÃO cria jail nem impõe as invariantes de isolamento | AOS-064, AOS-068 | Responsável de Segurança | Catálogo de tools não-vazio a executar código não-confiável | ABERTO |
 | DEF-702 | NUNCA-EM-PRODUCAO | packages/substrate/sandbox/driver_fake.go | Driver fake dos testes: corre no host | AOS-064 | Responsável de Segurança | Idem DEF-701 | ABERTO |
 | DEF-703 | NUNCA-EM-PRODUCAO | packages/platform/broker/internal/vault/vault.go | Vault em memória do Credential Broker | AOS-070 | Responsável de Segurança | Ambiente com Vault/KMS real disponível | ABERTO |
@@ -271,8 +272,9 @@ cada execução.)*
 | packages/kernel/reference-monitor/doc.go | STUB | 1 |
 | packages/kernel/reference-monitor/hooks.go | STUB | 1 |
 | packages/kernel/reference-monitor/production.go | STUB | 1 |
+| packages/kernel/reference-monitor/production.go | DIFERIDO | 2 |
 | packages/kernel/reference-monitor/scope_gate.go | DIFERIDO | 2 |
-| packages/kernel/reference-monitor/taint_gate.go | DIFERIDO | 1 |
+| packages/kernel/reference-monitor/taint_gate.go | DIFERIDO | 2 |
 | packages/platform/broker/internal/vault/vault.go | NUNCA-EM-PRODUCAO | 1 |
 | packages/platform/broker/vault_client.go | NUNCA-EM-PRODUCAO | 1 |
 | packages/platform/eval/doc.go | DIFERIDO | 1 |

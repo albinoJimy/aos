@@ -85,7 +85,7 @@ type EffectivePrivilegedAuthorizer interface {
 //     rebaixa a postura de um integrador que forneça o seu próprio classificador).
 //
 // O caso inerte concreto que AOS-219 fecha — o [StaticPrivilegedSet] VAZIO com que o ápice
-// arranca hoje (conjunto real DEFERIDO em AOS-183/DEF-808) — é classificado com precisão.
+// arranca hoje (conjunto real DIFERIDO em AOS-183/DEF-808) — é classificado com precisão.
 func privilegedIsEffective(p PrivilegedAuthorizer) bool {
 	if p == nil {
 		return false

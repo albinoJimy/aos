@@ -117,7 +117,7 @@ func (m *Monitor) hasActiveTaintGate() bool {
 //     promoção tainted é barrada — o nó NÃO deve alegar postura de taint endurecida.
 //
 // [NewProduction]/[NewProductionSecure] arrancam com um gate wired-mas-inerte (o conjunto
-// privileged real está DEFERIDO em AOS-183/DEF-808), pelo que o ápice DEVE consultar este
+// privileged real está DIFERIDO em AOS-183/DEF-808), pelo que o ápice DEVE consultar este
 // predicado antes de alegar endurecimento — e adoptar [NewProductionHardenedTaint] (que recusa
 // fail-closed o gate inerte) quando um classificador real e não-vazio existir.
 func (m *Monitor) HasActiveTaintGate() bool { return m.hasActiveTaintGate() }
@@ -191,7 +191,7 @@ func NewProductionSecure(privileged PrivilegedAuthorizer, opts ...Option) (*Moni
 //
 // Fecha a metade de wiring de AOS-219/DEF-808 SEM inventar um conjunto privileged: é a costura
 // que o composition root ápice adopta QUANDO existir um [PrivilegedAuthorizer] REAL e não-vazio
-// (eixo AOS-183). Até lá o conjunto real está DEFERIDO e o ápice arranca por [NewProductionSecure]
+// (eixo AOS-183). Até lá o conjunto real está DIFERIDO e o ápice arranca por [NewProductionSecure]
 // (gate wired-mas-inerte) DECLARANDO a postura de forma honesta via [Monitor.HasActiveTaintGate] —
 // nunca alegando endurecimento de taint que não tem. O guard-test garante que a via não regride.
 func NewProductionHardenedTaint(privileged PrivilegedAuthorizer, opts ...Option) (*Monitor, error) {
