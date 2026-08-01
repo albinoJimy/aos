@@ -13,7 +13,7 @@
 ## 1. Propósito
 
 Este conjunto materializa o **backlog executável** do AOS. Decompõe a totalidade do trabalho em
-**189 tickets atómicos (AOS-001 a AOS-189)**, organizados em **17 epics**, cada um com critérios de
+**189 tickets atómicos ratificados (AOS-001 a AOS-189)** em **17 epics**, mais duas epics em **proposta** (EPIC-18 e EPIC-19; AOS-190..225 e AOS-230..244), cada uma com critérios de
 aceitação SMART, Definition of Done, prompt de handoff para o **Claude Code (CLI)** e gates de qualidade.
 
 O backlog é a interface operacional entre o conjunto técnico (`../tecnica/`) e a execução. Cada ticket é
@@ -45,8 +45,10 @@ e fechar de forma independente.
 | **EPIC-15 Nó `aos` Runtime Deployável** | Epic | Graduação de `cmd/aos-demo` para o nó `aos` de produção (CLI + API stdlib + SSE) | [EPIC-15_No_AOS_Runtime_Deployavel.md](EPIC-15_No_AOS_Runtime_Deployavel.md) | 705 |
 | **EPIC-16 Autoridade de Identidade Real (D4)** | Epic | IdP OIDC, custódia externa de chave, binding humano↔NHI, attestation WebAuthn | [EPIC-16_Autoridade_Identidade_Real_D4.md](EPIC-16_Autoridade_Identidade_Real_D4.md) | 120 |
 | **EPIC-17 Remediação Auditoria Multiagente v3** | Epic | Wiring, gates CI e reconciliação documental dos achados da auditoria Carta ↔ codebase | [EPIC-17_Remediacao_Auditoria_Multiagente_v3.md](EPIC-17_Remediacao_Auditoria_Multiagente_v3.md) | 389 |
+| **EPIC-18 Remediação Auditoria Multiagente v4** *(proposta)* | Epic | Remediação dos achados da auditoria v4: wiring/imposição/veracidade do composition-root do nó; §8-bis (deferimentos + STRIDE) | [EPIC-18_Remediacao_Auditoria_Multiagente_v4.md](EPIC-18_Remediacao_Auditoria_Multiagente_v4.md) | 1750 |
+| **EPIC-19 Planeador e Meta-Orchestração** *(proposta)* | Epic | Graduação do planeador (goal→DAG), meta-runs e gate como fronteira; deriva `tecnica/18` v1.0 (Ratificado) | [EPIC-19_Planeador_Meta_Orquestracao.md](EPIC-19_Planeador_Meta_Orquestracao.md) | 489 |
 
-**Total: 19 ficheiros referenciados, ~10.000+ linhas. O inventário abaixo cobre EPIC-01..EPIC-17 e AOS-001..AOS-189.**
+**Total: 21 ficheiros referenciados, ~12.200+ linhas. Backlog ratificado/aceite: EPIC-01..17 (AOS-001..189). Propostas por ratificar: EPIC-18 (AOS-190..225) e EPIC-19 (AOS-230..244).**
 
 ---
 
@@ -73,7 +75,12 @@ e fechar de forma independente.
 | EPIC-15 Nó `aos` Runtime Deployável | AOS-163 – AOS-173 | 11 | Fase 5 |
 | EPIC-16 Autoridade de Identidade Real (D4) | AOS-174 – AOS-177 | 4 | Fase 5 |
 | EPIC-17 Remediação Auditoria Multiagente v3 | AOS-178 – AOS-189 | 12 | Transversal |
-| **TOTAL** | **AOS-001 – AOS-189** | **189** | --- |
+| EPIC-18 Remediação Auditoria Multiagente v4 *(proposta)* | AOS-190 – AOS-225 | 36 | Transversal |
+| EPIC-19 Planeador e Meta-Orchestração *(proposta)* | AOS-230 – AOS-244 | 15 | Fase 3/5 |
+| **TOTAL ratificado** | **AOS-001 – AOS-189** | **189** | --- |
+| **+ propostas** | **AOS-190–225, AOS-230–244** | **51** | --- |
+
+> **Nota:** AOS-226–229 (continuação do D4 — OIDC do *issuer*/verificador) são trabalho entregue fora das epics listadas neste índice.
 
 ### 3.2 Por fase do roadmap (concentração-alvo)
 
@@ -84,7 +91,8 @@ e fechar de forma independente.
 | **Fase 2 — Governação & observabilidade** | policy-as-code, OTel, audit WORM, GDPR | EPIC-08, EPIC-09, parte de EPIC-06 |
 | **Fase 3 — Escala & controlo** | admission global, backpressure, operação | EPIC-03, EPIC-06, EPIC-10 |
 | **Fase 4 — UX & evolução** | steer/interrupt, L0–L5, SemVer + eval-gate | EPIC-09, EPIC-11, parte de EPIC-10 |
-| **Fase 5 — Operacionalização** | composition-root, nó deployável, autoridade real, fronteira humana, remediação | EPIC-13, EPIC-14, EPIC-15, EPIC-16, EPIC-17 |
+| **Fase 5 — Operacionalização** | composition-root, nó deployável, autoridade real, fronteira humana, remediação | EPIC-13, EPIC-14, EPIC-15, EPIC-16, EPIC-17, EPIC-18 *(proposta)* |
+| **Fase 3/5 — Planeamento** | planeador produtivo, meta-runs, gate como fronteira | EPIC-19 *(proposta)* |
 
 ---
 
@@ -209,7 +217,7 @@ Detalhes das dependências em cada ticket (campos "Dependências" e "Bloqueia").
 |----------|-------------|-----------|
 | Síntese-fonte | [`../_FONTE_agentic-os-ideal.md`](../_FONTE_agentic-os-ideal.md) | Blueprint autoritativo "O Agentic OS ideal" |
 | Técnica | [`../tecnica/INDICE.md`](../tecnica/INDICE.md) | 18 docs de desenho por subsistema (inclui 12–17 das remediações P0/P1) |
-| **Specs (este conjunto)** | [INDICE.md](INDICE.md) | 17 epics + 189 tickets executáveis |
+| **Specs (este conjunto)** | [INDICE.md](INDICE.md) | 19 epics (17 ratificados + EPIC-18/19 propostos) + backlog AOS-001..244 |
 
 ---
 
@@ -222,6 +230,7 @@ Cada documento contém a sua tabela de aprovação (Arquitecto de Plataforma · 
 | 1.0 | Julho 2026 | Emissão inicial: System Spec + Standards + 11 epics decompostos em 118 tickets AOS, alinhados com o conjunto técnico v1.0 e a síntese "O Agentic OS ideal". | Equipa AOS |
 | 1.1 | Julho 2026 | Remediação P1 da auditoria: +EPIC-12 (Experiência HITL/UX, AOS-119–128). Total: 12 epics, 128 tickets. | Equipa AOS |
 | 1.2 | Julho 2026 | Reconciliação documental P0: +EPIC-13..EPIC-17 (Frontend, Composition-Root, Nó `aos`, Autoridade de Identidade Real, Remediação Auditoria Multiagente v3). Total: 17 epics, AOS-001..AOS-189. | Equipa AOS |
+| 1.3 | 2026-08-02 | Indexação das epics em proposta: +EPIC-18 (Remediação Auditoria v4, AOS-190..225) e +EPIC-19 (Planeador e Meta-Orchestração, AOS-230..244, deriva `tecnica/18` v1.0 ratificado). Nota sobre AOS-226..229 (continuação D4, fora das epics listadas). | Equipa AOS |
 
 ---
 
