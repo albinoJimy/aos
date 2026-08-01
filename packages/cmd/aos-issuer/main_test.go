@@ -179,3 +179,18 @@ func TestIssuer_OIDCAuthenticatesHumanBeforeMint(t *testing.T) {
 		t.Fatalf("ID-token adulterado devia ser RECUSADO fail-closed, veio humano=%q", h)
 	}
 }
+
+// TestIssuer_OIDCRefusesInsecureTransport é a GUARDA de que o caminho OIDC do issuer exige
+// TRANSPORTE SEGURO: herda o cliente ENDURECIDO de AOS-229 e NÃO liga `AllowInsecureTransport`,
+// pelo que um IdP cujo issuer seja http num host NÃO-loopback é RECUSADO fail-closed — nenhum
+// humano é derivado, nenhum token seria emitido. Impede uma regressão em que o issuer passasse a
+// falar com um IdP em claro em produção.
+func TestIssuer_OIDCRefusesInsecureTransport(t *testing.T) {
+	_, _, err := authenticateOIDC(context.Background(), oidc.Config{
+		Issuer:   "http://idp.internal.example", // http + não-loopback ⇒ transporte inseguro
+		Audience: "aos-issuer-client",
+	}, "qualquer.id.token")
+	if err == nil {
+		t.Fatal("o issuer devia RECUSAR um IdP com transporte http não-loopback (fail-closed)")
+	}
+}

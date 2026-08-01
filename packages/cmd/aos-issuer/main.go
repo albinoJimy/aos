@@ -118,10 +118,12 @@ func cmdMint(args []string, out io.Writer) error {
 		if *oidcIssuer == "" || *oidcAudience == "" {
 			return errors.New("--assertion exige --oidc-issuer e --oidc-audience")
 		}
+		// HTTPClient/Clock nil ⇒ defaults endurecidos do verificador (AOS-229: TLS 1.2 + timeout +
+		// limite de redirects + anti-SSRF); sem AllowInsecureTransport ⇒ https exigido ao IdP.
 		h, m, err := authenticateOIDC(context.Background(), oidc.Config{
 			Issuer:   *oidcIssuer,
 			Audience: *oidcAudience,
-			JWKSURI:  *oidcJWKS, // vazio ⇒ discovery; HTTPClient nil ⇒ cliente com timeout; Clock nil ⇒ time.Now
+			JWKSURI:  *oidcJWKS, // vazio ⇒ discovery via issuer
 		}, *assertion)
 		if err != nil {
 			return fmt.Errorf("autenticação OIDC do humano: %w", err)
@@ -168,6 +170,11 @@ func cmdMint(args []string, out io.Writer) error {
 // humano é derivado de um token não-verificado, e nenhum token NHI é emitido. É a costura front-1
 // do D4 (substitui a allowlist demo pela autenticação real), cbor-free: usa só `integration/oidc`
 // (stdlib JWS/JWKS), não o pacote `integration` (que traria a lib WebAuthn da attestation).
+//
+// TRANSPORTE ENDURECIDO: com `cfg.HTTPClient` nil (o caminho do `mint`), `oidc.NewVerifier` usa o
+// cliente DEFAULT endurecido de AOS-229 (TLS 1.2 + timeout + limite de redirects + anti-SSRF); e,
+// sem `AllowInsecureTransport`, exige https ao IdP (loopback exceptuado). Um chamador que injecte
+// um `cfg.HTTPClient` (ex.: httptest) é respeitado tal-qual.
 func authenticateOIDC(ctx context.Context, cfg oidc.Config, assertion string) (human, method string, err error) {
 	v, err := oidc.NewVerifier(cfg)
 	if err != nil {
