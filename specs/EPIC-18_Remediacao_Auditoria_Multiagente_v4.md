@@ -1587,16 +1587,33 @@ alega uma barreira que não existe naquele caminho.
 
 **Critérios de aceitação**
 
-- [ ] Os claims falsos são corrigidos: o log de `service.go:468` e o comentário de `hostRun` **deixam de afirmar**
-      fencing que não compõem; passam a nomear o mecanismo **real** (lease por CAS atómico + idempotência do
-      ledger + cancel cooperativo).
-- [ ] `ADR-018` (ou o ADR do lease) **declara o limite**: v1 usa lease+idempotência, **não** `FencedAppender`; o
+- [x] Os claims falsos são corrigidos: o log (`service.go:491`) e a doc-comment do caminho de posse **deixam de afirmar**
+      fencing que não compõem; passam a nomear o mecanismo **real** (lease por CAS atómico `worker.Assigner` +
+      idempotência do step-ledger `f(RunID,StepID)` + cancel cooperativo). *(Evidência: os DOIS claims falsos viviam
+      em `heartbeat` — a spec dizia `hostRun`/`:468` imprecisamente; ambos corrigidos e a **negar** o fencing de
+      escritas. A menção legítima `hostRun:442` ("fencing token do lease", threaded a `stateGates.Open`, AOS-218)
+      mantida. Adicionalmente afinei uma sobre-atribuição suave adjacente em `Shutdown` (`:567`): "seria fenced" →
+      supersede real + idempotência nomeada.)*
+- [x] `ADR-018` (ou o ADR do lease) **declara o limite**: v1 usa lease+idempotência, **não** `FencedAppender`; o
       `FencedAppender` fica eixo nomeado (threading do lease token ao `Runtime.Run`) para quando for composto.
-- [ ] **Falsificável:** um teste/asserção garante que nenhum log ou comentário do caminho de posse afirma
+      *(Evidência: `ADR-018 §5-bis` — nomeia (1)+(2)+(3) reais; declara que o `FencedAppender` existe no kernel e é
+      exercitado em integração/DR mas **não** é cablado no nó (sem chamador de produção de `NewFencedAppender`/
+      `worker.NewWorker`); eixo nomeado (threading do `rs.lease.Token`); distingue-o do uso do token em `ready→running` do AOS-218.)*
+- [x] **Falsificável:** um teste/asserção garante que nenhum log ou comentário do caminho de posse afirma
       "fencing" enquanto o `FencedAppender` não estiver composto (guarda de veracidade). Sem segredos; gates verdes.
+      *(Evidência: `aos222_fencing_truthfulness_test.go` — varre por **AST** `hostRun`+`heartbeat` e recusa a
+      assinatura semântica "fencing + escrit + verbo-de-barreira" enquanto o `FencedAppender` não for composto
+      (skip condicional se for); falha-antes provada (reintroduzir o claim ⇒ FAIL em `service.go:491`); detector
+      two-sided (4 positivos / 6 negativos, não trip o "fencing token" legítimo); guarda-da-guarda `pieces==0`⇒Fatal;
+      `-race` + `deferrals` verdes; `go.mod` intacto.)*
 
 **Fecha:** o achado #10 (veracidade). **Depende de:** AOS-164/AOS-170 (NodeService/lease). **Não duplica:** a
 composição do `FencedAppender` (eixo maior, deixado nomeado).
+
+**Residual nomeado (não defeito):** a guarda de veracidade cobre **apenas** `hostRun`/`heartbeat` (o caminho de
+posse do ticket) — um futuro claim falso de fencing noutra função (ex.: `Shutdown`, comentário de topo) não seria
+apanhado automaticamente (direcção **fail-closed**: o detector, sendo lexical por-linha, tende a falso-positivo
+over-strict, não a falso-negativo). Alargar a varredura a mais funções fica como melhoria incremental, não bug.
 
 ---
 

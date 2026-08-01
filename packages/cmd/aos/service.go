@@ -462,12 +462,17 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 
 // heartbeat renova periodicamente a posse do lease do run enquanto ele corre. Pára quando
 // hbStop fecha (run terminou) ou o ctx do run é cancelado. Se perder a partição —
-// [durable.ErrLeaseSuperseded] (outro claim superou-nos) ou [durable.ErrLeaseExpired] (TTL
-// esgotado apesar da renovação, ex.: pausa de GC/relógio) — CANCELA o run cooperativamente
-// (cancel): já não somos o dono, e o fencing rejeitaria as nossas escritas tardias; parar
-// já evita duplo-efeito. Erros transitórios do Event Store são registados e re-tentados no
-// tick seguinte. O lease durável é o mesmo (o heartbeat não minta token), pelo que se
-// reutiliza a cópia imutável capturada no arranque.
+// [durable.ErrLeaseSuperseded] (outro claim de token maior superou-nos) ou
+// [durable.ErrLeaseExpired] (TTL esgotado apesar da renovação, ex.: pausa de GC/relógio) —
+// CANCELA o run COOPERATIVAMENTE (cancel): já não somos o dono. O anti-duplo-efeito NESTE
+// caminho NÃO é um fencing de escritas — o nó NÃO compõe o [durable.FencedAppender] (eixo
+// nomeado, ver ADR-018 §5-bis); a barreira REAL é a soma de (1) a posse arbitrada por CAS
+// atómico do lease ([worker.Assigner]), (2) o cancel cooperativo, que pára o run na fronteira
+// de fim-de-turno, e (3) a idempotência do step-ledger (chave = f(RunID,StepID)), que
+// deduplica no replay qualquer efeito já aplicado caso uma escrita tardia escape. Erros
+// transitórios do Event Store são registados e re-tentados no tick seguinte. O lease durável
+// é o mesmo (o heartbeat não minta token), pelo que se reutiliza a cópia imutável capturada
+// no arranque.
 func (s *NodeService) heartbeat(ctx context.Context, runID string, lease durable.Lease, cancel context.CancelFunc, hbStop <-chan struct{}) {
 	if s.hbInterval <= 0 {
 		return // heartbeat desligado (ex.: TTL demasiado curto para derivar período)
@@ -483,7 +488,7 @@ func (s *NodeService) heartbeat(ctx context.Context, runID string, lease durable
 		case <-t.C:
 			if _, err := s.leases.Heartbeat(ctx, lease); err != nil {
 				if errors.Is(err, durable.ErrLeaseSuperseded) || errors.Is(err, durable.ErrLeaseExpired) {
-					s.log("run %q PERDEU a posse do lease (%v) — a cancelar (sem duplo-efeito; fencing barra escritas tardias)", runID, err)
+					s.log("run %q PERDEU a posse do lease (%v) — a cancelar COOPERATIVAMENTE (anti-duplo-efeito por cancel + idempotencia do step-ledger f(RunID,StepID); este caminho NAO compoe fencing de escritas)", runID, err)
 					if cancel != nil {
 						cancel()
 					}
@@ -555,12 +560,14 @@ func (s *NodeService) pruneCompletedLocked() {
 //     por kill), pelo que não deixa um commit parcial: ou o turno já commitou (durável) ou
 //     ainda não escreveu (nada a recuperar). O tail parcial de um crash a meio de um write
 //     é detectado e ignorado no replay (crash-safety do WAL).
-//   - DUPLA-EXECUÇÃO no reinício é barrada por LEASE DURÁVEL. Cada run é possuído por um
-//     lease durável de token monotónico (AOS-018); o Shutdown liberta a posse em-processo
-//     (finish → Release) e o registo durável do lease expira por TTL. No reinício, um novo
-//     Claim minta um token ESTRITAMENTE MAIOR — um token residual da execução anterior
-//     seria fenced (ErrLeaseSuperseded), pelo que uma 2ª execução do mesmo RunID não
-//     produz efeitos duplicados. A durabilidade final do WAL do Event Store é selada por
+//   - DUPLA-EXECUÇÃO no reinício é barrada por LEASE DURÁVEL + IDEMPOTÊNCIA. Cada run é
+//     possuído por um lease durável de token monotónico (AOS-018); o Shutdown liberta a posse
+//     em-processo (finish → Release) e o registo durável do lease expira por TTL. No reinício,
+//     um novo Claim minta um token ESTRITAMENTE MAIOR — um token residual da execução anterior
+//     é superado (ErrLeaseSuperseded) e pára cooperativamente; e a idempotência do step-ledger
+//     (chave = f(RunID,StepID)) deduplica no replay qualquer efeito já aplicado. Juntos — e NÃO
+//     um fencing de escritas (este caminho também não compõe o FencedAppender, ver heartbeat +
+//     ADR-018 §5-bis) — garantem que uma 2ª execução do mesmo RunID não produz efeitos duplicados. A durabilidade final do WAL do Event Store é selada por
 //     [Node.Close] (chamado a JUSANTE deste Shutdown na sequência de paragem do nó); mas,
 //     como cada Append já fez fsync, essa Close é o descarregamento de cortesia, não a
 //     condição de durabilidade do trabalho committed.

@@ -126,9 +126,52 @@ processos** sob a mesma disciplina de lease, não uma segunda fonte de verdade.
   declara a posse por lease como o mecanismo de ciclo de vida; este ADR é a sua justificação
   registada.
 
+## 5-bis. Limite de veracidade declarado (AOS-222): o fencing de ESCRITAS não está composto na v1
+
+Este ADR também **fixa o limite honesto** do mecanismo anti-duplo-efeito do loop de serviço,
+para que nem o código nem a documentação **anunciem uma barreira que não existe** naquele
+caminho (achado #10 da auditoria adversarial do lease/posse).
+
+**O que a v1 usa (real, composto, testado):**
+
+1. **Posse por lease de CAS atómico.** `worker.Assigner` sobre `durable.LeaseManager` arbitra
+   um só dono por run com token **estritamente monotónico** (AOS-018). Um run detido por outra
+   réplica **não é roubado** (`TryAcquire` ⇒ `(_, false, nil)`).
+2. **Cancelamento cooperativo.** Se o `heartbeat()` do loop perder a partição
+   (`ErrLeaseSuperseded`/`ErrLeaseExpired`) ele **cancela o run** — que pára na **fronteira de
+   fim-de-turno**, nunca a meio de uma escrita durável (§2.3, ADR-015).
+3. **Idempotência do step-ledger.** A dedup por **`(RunID, StepID)`** no replay do WAL
+   (AOS-180) garante que um efeito já aplicado **não** re-materializa numa 2ª execução do mesmo
+   run.
+
+**O que a v1 NÃO compõe (declarado, não fingido):** o `durable.FencedAppender` — o *enforcement
+opt-in* que rejeitaria, no ponto de escrita, o `Append` de um detentor cujo token já foi
+superado (`ErrStaleFencingToken`). Ele **existe** no kernel (`agent-runtime/durable`,
+`agent-runtime/worker`) e é exercitado nos testes de integração/DR, mas o **nó não o cabla** no
+caminho de escrita de `Runtime.Run`: não há chamador de produção de `durable.NewFencedAppender`
+nem de `worker.NewWorker` no processo do nó. Por isso, **nenhum log ou comentário do caminho de
+posse (`service.go`: `hostRun`/`heartbeat`) deve afirmar que um "fencing" barra as escritas
+tardias** — a barreira real é a soma (1)+(2)+(3) acima.
+
+**Eixo nomeado (para quando for composto):** cablar o `FencedAppender` no nó exige **threading
+do fencing token do lease** (`rs.lease.Token`, já detido em `hostRun`) **até ao ponto de escrita
+de efeito de `Runtime.Run`**, para que TODA a escrita de progresso passe pelo appender fenced
+(padrão `Claim → token → FencedAppender.Append`, como o `worker.Worker` já faz). Enquanto esse
+threading não existir, a defesa-em-profundidade do fencing de escritas fica **por compor** — não
+anunciada. (A máquina de estados durável do steer (AOS-218) **já** usa o token do lease em
+`ready→running`; isso é distinto do fencing das escritas de *efeito* do run.)
+
+**Enforcement:** uma **guarda de veracidade falsificável**
+(`packages/cmd/aos/aos222_fencing_truthfulness_test.go`) varre o *source* do caminho de posse e
+**recusa** um comentário/log que afirme que um fencing **barra/rejeita escritas** enquanto o
+`FencedAppender` **não** estiver composto no pacote do nó. Se um dia o nó compuser o
+`FencedAppender`, a premissa da guarda inverte-se e o claim passa a ser legítimo.
+
 ## 6. Referências
 
 - `specs/00_AOS_Carta.md §7` (emenda 1.2) — single-host non-goal datado; distribuído = EPIC-10.
 - `packages/control-plane/orchestrator/contract/ports.go` — portas `Orchestrator`/`Scheduler` (AOS-012).
 - `packages/cmd/aos/service.go` — `NodeService`, posse por lease durável (AOS-164a), shutdown gracioso durável (AOS-164b).
 - ADR-007 (Event Store como fonte de verdade), ADR-015 (durable execution — contrato próprio), AOS-018 (lease/fencing).
+- `packages/cmd/aos/aos222_fencing_truthfulness_test.go` — guarda de veracidade do §5-bis (AOS-222).
+- `packages/kernel/agent-runtime/durable/fencing.go` (`FencedAppender`), `packages/kernel/agent-runtime/worker/worker.go` (`worker.Worker`) — o enforcement opt-in NÃO composto no nó (AOS-222).
