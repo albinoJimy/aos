@@ -27,8 +27,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,6 +39,7 @@ import (
 	pdp "github.com/aos-ref/control-plane/pdp"
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	control "github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	"github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
@@ -268,4 +272,113 @@ func TestDevHarness_CryptoShred_RightToErasure(t *testing.T) {
 	}
 	t.Logf("[HTTP] GET /runs/%s/reconstruct (após shred) → 410 Gone · ErrDecrypt (KEK destruída), sem vazamento", runID)
 	t.Log("[OK]   direito ao apagamento REAL: o crypto-shred torna o conteúdo irrecuperável mesmo ao leitor autorizado; a hash-chain do Event Store permanece íntegra.")
+}
+
+// TestDevHarness_SteerReachesLoop exercita a via REAL do plano de controlo (AOS-218): uma
+// correcção de operador ASSINADA (ed25519), pendente na fronteira de fim-de-turno, é CONSUMIDA
+// pelo loop de produção e injectada — marcada `taint=trusted` — no prompt do turno seguinte.
+// Dois sentidos: sem steer, o prompt é inalterado. Usa a submissão in-process do canal de steer
+// (`node.Steer`, o MESMO que o handler POST /runs/{id}/steer invoca após autenticar o sinal) por
+// ser determinista — evitar correr contra a fronteira de turno de um run já em curso via HTTP.
+func TestDevHarness_SteerReachesLoop(t *testing.T) {
+	t.Log("=== AOS dev-harness — steer→loop (plano de controlo) pela via real ===")
+	t.Log("REAL   : canal de steer ed25519 (AOS-160/193) · LoopSteer composto no runtime de produção (AOS-218) · StateGate durável por-run")
+
+	ctx := context.Background()
+	correction := []byte("prioriza a superficie desktop")
+
+	// (a) COM steer: submetido ANTES de o run correr ⇒ pendente na fronteira do turno 1 ⇒
+	// injectado no prompt do turno 2.
+	var views []agentruntime.PromptView
+	node, priv, opID := steerNode(t, &views)
+	const runID = "dev-steer"
+	emit := signedSignal(t, priv, opID, runID, control.SignalSteer, correction)
+	if err := node.Steer.Steer(ctx, runID, correction, emit); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	t.Logf("[STEER] operador assina (ed25519) a correção %q e submete-a pendente para o run %q", string(correction), runID)
+	if _, _, err := node.Runtime.Run(ctx, steerGoal(runID), nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(views) < 2 {
+		t.Fatalf("esperava >= 2 turnos (a fronteira de fim-de-turno não foi cruzada), tive %d", len(views))
+	}
+	if !strings.Contains(string(views[1].Materialized), "correction=prioriza a superficie desktop") {
+		t.Fatalf("a correção NÃO chegou ao prompt do turno 2 — steer não ligado ao loop de produção\nprompt: %s", views[1].Materialized)
+	}
+	if !strings.Contains(string(views[1].Materialized), "taint="+agentruntime.TaintTrusted) {
+		t.Fatal("a correção no prompt não está marcada taint=trusted (dado de controlo, não untrusted)")
+	}
+	t.Log("[LOOP] turno 2: o prompt materializado contém a correção marcada taint=trusted — o loop de produção CONSUMIU o steer")
+
+	// (b) SEM steer: o mesmo prompt do turno 2 NÃO contém a correção — o efeito é aditivo.
+	var views2 []agentruntime.PromptView
+	node2, _, _ := steerNode(t, &views2)
+	if _, _, err := node2.Runtime.Run(ctx, steerGoal("dev-no-steer"), nil); err != nil {
+		t.Fatalf("Run (sem steer): %v", err)
+	}
+	if len(views2) >= 2 && strings.Contains(string(views2[1].Materialized), "correction=") {
+		t.Fatal("o prompt sem steer NÃO devia conter uma correção — o efeito não seria aditivo")
+	}
+	t.Log("[OK]   steer→loop: a correção humana chega ao loop (AOS-218); sem steer, o prompt é inalterado (dois sentidos).")
+}
+
+// TestDevHarness_RestartVerifiesWORM exercita a imposição REAL da tamper-evidence do WORM
+// (AOS-221): ao reiniciar, o nó re-encadeia e VERIFICA a hash-chain durável no load (não só o
+// CRC de framing). Dois sentidos: um WORM íntegro reabre e arranca; um WORM adulterado (CRC
+// recalculado ⇒ framing intacto, hash-chain partida) faz o arranque ABORTAR fail-closed.
+func TestDevHarness_RestartVerifiesWORM(t *testing.T) {
+	t.Log("=== AOS dev-harness — restart re-encadeia e verifica o WORM (tamper-evidence) ===")
+	t.Log("REAL   : Event Store/WORM durável em disco · audit.VerifyStore no arranque (AOS-221) · re-encadeamento SHA-256 da hash-chain")
+
+	ctx := context.Background()
+
+	// (a) ÍNTEGRO: sela um registo, fecha, e reinicia — o nó arranca e a verificação fecha.
+	wormPath := filepath.Join(t.TempDir(), "worm.wal")
+	cfg := tnBaseConfig()
+	cfg.WORMPath = wormPath
+	n1, err := Bootstrap(ctx, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("bootstrap (vida 1): %v", err)
+	}
+	sealMarkerRecord(t, ctx, n1)
+	t.Log("[WORM] vida 1: selado um registo na cadeia; a fechar o nó")
+	if err := n1.Close(); err != nil {
+		t.Fatalf("close (vida 1): %v", err)
+	}
+	n2, err := Bootstrap(ctx, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("re-bootstrap de um WORM ÍNTEGRO não devia falhar: %v", err)
+	}
+	if err := n2.VerifyWORM(ctx); err != nil {
+		_ = n2.Close()
+		t.Fatalf("VerifyWORM de um WORM íntegro: %v", err)
+	}
+	_ = n2.Close()
+	t.Log("[WORM] vida 2 (restart íntegro): re-encadeou e VERIFICOU a hash-chain no load; o nó ARRANCOU")
+
+	// (b) ADULTERADO: recalcula o CRC (framing intacto) mas parte a hash-chain ⇒ o arranque
+	// ABORTA fail-closed com audit.ErrTampered.
+	wormPath2 := filepath.Join(t.TempDir(), "worm.wal")
+	cfg2 := tnBaseConfig()
+	cfg2.WORMPath = wormPath2
+	m1, err := Bootstrap(ctx, cfg2, io.Discard)
+	if err != nil {
+		t.Fatalf("bootstrap (tamper vida 1): %v", err)
+	}
+	sealMarkerRecord(t, ctx, m1)
+	if err := m1.Close(); err != nil {
+		t.Fatalf("close (tamper vida 1): %v", err)
+	}
+	tamperWALMarker(t, wormPath2, aos221Marker)
+	t.Log("[WORM] adulterado um registo do WAL — CRC recalculado (framing intacto), hash-chain PARTIDA")
+	m2, err := Bootstrap(ctx, cfg2, io.Discard)
+	if err == nil {
+		_ = m2.Close()
+		t.Fatal("o arranque devia ABORTAR fail-closed com o WORM adulterado (CRC válido)")
+	}
+	if !errors.Is(err, audit.ErrTampered) {
+		t.Fatalf("erro de arranque devia desembrulhar para audit.ErrTampered, veio: %v", err)
+	}
+	t.Log("[OK]   tamper-evidence imposta: o reinício sobre um WORM adulterado é RECUSADO fail-closed (audit.ErrTampered) — AOS-221.")
 }
