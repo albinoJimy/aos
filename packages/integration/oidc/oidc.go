@@ -24,6 +24,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -202,7 +203,7 @@ func NewVerifier(cfg Config) (*Verifier, error) {
 	}
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 10 * time.Second}
+		hc = newHardenedOIDCClient(cfg.AllowInsecureTransport)
 	}
 	clk := cfg.Clock
 	if clk == nil {
@@ -257,6 +258,40 @@ func checkTransport(raw string, allowInsecure bool) error {
 		return nil
 	}
 	return fmt.Errorf("%w: esquema %q em %q", ErrInsecureTransport, u.Scheme, raw)
+}
+
+// oidcHTTPTimeout é o timeout total do cliente HTTP default do verificador (discovery + JWKS).
+const oidcHTTPTimeout = 10 * time.Second
+
+// maxOIDCRedirects limita a cadeia de redirects na busca de discovery/JWKS. O material de chave
+// raramente precisa de redirects; uma cadeia longa — ou para um host interno — é um vector de SSRF.
+const maxOIDCRedirects = 3
+
+// newHardenedOIDCClient constrói o cliente HTTP DEFAULT do verificador (usado só quando
+// [Config.HTTPClient] é nil — o caminho de PRODUÇÃO). Defesa-em-profundidade sobre o transporte do
+// material de chave (análogo a AOS-223 no Model Gateway):
+//
+//   - timeout total (não pendura um pedido num IdP lento/malicioso);
+//   - TLS MinVersion 1.2 explícito (recusa handshakes antigos);
+//   - [http.Client.CheckRedirect] que LIMITA a cadeia de redirects E RE-VALIDA o transporte de cada
+//     salto com [checkTransport]: um redirect do endpoint de discovery/JWKS para http/host interno é
+//     RECUSADO (anti-SSRF), com a mesma regra do URL inicial (https salvo loopback/allowInsecure).
+//
+// Um cliente INJECTADO (testes/httptest, ou um transport de deployment) é respeitado tal-qual e
+// NÃO passa por aqui — o endurecimento é do default, nunca uma sobreposição do que o operador liga.
+func newHardenedOIDCClient(allowInsecure bool) *http.Client {
+	return &http.Client{
+		Timeout: oidcHTTPTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxOIDCRedirects {
+				return fmt.Errorf("oidc: demasiados redirects na busca de discovery/JWKS (>%d)", maxOIDCRedirects)
+			}
+			return checkTransport(req.URL.String(), allowInsecure)
+		},
+	}
 }
 
 // isLoopbackHost indica se host (com ou sem porta) é um endereço de loopback ou

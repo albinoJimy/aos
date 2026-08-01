@@ -108,6 +108,7 @@ ADR-017 do artefacto distribuído do nó fica intacto.
 | AOS-226 ✅ | Issuer externo **runnable** (`cmd/aos-issuer`): monta AOS-174/175 num binário deployável — detém a chave via `crypto.Signer`, exporta o trust anchor, minta NHI; o nó verifica trust-anchor-only sem deter a chave — **ENTREGUE** | feature | M | P1 | AOS-174, AOS-175 |
 | AOS-227 ✅ | Autenticação OIDC do humano no `cmd/aos-issuer` (frente 1): `mint --assertion` verifica um ID-token contra o IdP (verifier real de AOS-174) e deriva o humano-raiz do `sub` verificado — **cbor-free** — **ENTREGUE** | feature | S | P1 | AOS-226, AOS-174 |
 | AOS-228 ✅ | Costura OIDC do directório humano no **NÓ** (fecha DEF-104/105/110): `AOS_HUMAN_OIDC_*` compõe o `OIDCDirectory` na autoridade de referência (a via sem-prova é recusada), padrão injectável de AOS-220, **cbor-free** — **ENTREGUE** | feature | S | P2 | AOS-174, AOS-220 |
+| AOS-229 ✅ | Endurecimento do cliente HTTP do verificador OIDC (defesa-em-profundidade, análogo a AOS-223): TLS MinVersion 1.2 + limite de redirects + anti-SSRF (redirect para http/host interno recusado) no cliente default de `integration/oidc` — **ENTREGUE** | fix | S | P2 | AOS-174, AOS-223 |
 
 **Sequência:** 174 (humano autenticado real) → 175 (não-forjabilidade real, chave fora do nó) →
 176 (binding + ADR-003) → 177 (attestation de dispositivo, a frente com a lib externa). As três
@@ -211,6 +212,35 @@ OIDC (`DEF-104/105/110`). AOS-228 fecha-o, **espelhando a costura injectável de
 infra; a costura no modo de referência é de **menor valor** (auto-assina) — o caminho de produção é
 endurecido + issuer externo (AOS-226/227), já servido.
 
+### 4-quinquies. AOS-229 — endurecimento do cliente HTTP do verificador OIDC
+
+O verificador OIDC (`integration/oidc`) — **partilhado** pelo read-path soberano (AOS-205), pelo
+directório humano do nó (AOS-228) e pelo issuer (AOS-227) — usava, no default, `&http.Client{Timeout:
+10s}`: com timeout, mas **sem** política de TLS explícita nem limite de redirects. AOS-229 endurece o
+cliente **default** (defesa-em-profundidade sobre o transporte do material de chave, análogo a AOS-223
+no Model Gateway):
+
+- **TLS MinVersion 1.2** explícito no transport;
+- **limite de redirects** (`CheckRedirect`, máx. 3) — não segue indefinidamente um IdP que redirige em ciclo;
+- **anti-SSRF**: cada salto de redirect é **re-validado** por `checkTransport` — um redirect do endpoint
+  de discovery/JWKS para **http/host interno** é RECUSADO (a mesma regra https-salvo-loopback do URL inicial).
+
+Um cliente **injectado** (testes/httptest ou um transport de deployment) é respeitado tal-qual e **não**
+passa pelo default — o endurecimento nunca sobrepõe o que o operador liga.
+
+**Critérios de aceitação**
+
+- [x] O cliente default tem **TLS MinVersion 1.2** + timeout. *(Evidência: `packages/integration/oidc/oidc_hardened_client_test.go`
+      — `TestHardenedOIDCClient_TLSMinVersionAndTimeout`.)*
+- [x] A cadeia de redirects é **limitada** (não-infinita). *(Evidência: `TestHardenedOIDCClient_RedirectLimit`.)*
+- [x] Um redirect para transporte inseguro (http/host não-loopback) é **RECUSADO** fail-closed; um redirect
+      https legítimo dentro do limite é permitido (dois sentidos). *(Evidência: `TestHardenedOIDCClient_RejectsInsecureRedirect`.)*
+- [x] **Sem regressão**: os testes OIDC existentes (que injectam cliente) verdes; nó/issuer compilam; nó
+      **cbor-free**. *(Evidência: `go test -race ./oidc/...` + builds + `go list -deps`.)*
+
+**Fecha:** o eixo de defesa-em-profundidade do transporte OIDC. **Depende de:** AOS-174 (verificador OIDC).
+**Não duplica:** AOS-223 (o seam do Model Gateway — outro cliente).
+
 ## 5. Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -222,3 +252,4 @@ endurecido + issuer externo (AOS-226/227), já servido.
 | 1.4 | 2026-08-01 | **AOS-226** acrescentado (§4-bis): issuer externo RUNNABLE `cmd/aos-issuer` — monta AOS-174/175 num binário deployável (`pubkey` exporta o trust anchor; `mint` emite NHI via `crypto.Signer`; o nó verifica trust-anchor-only sem deter a chave). Módulo zero-dep externo (`go.sum` vazio, `go mod tidy` limpo); prova ponta-a-ponta no dev-harness (`TestDevHarness_ExternalIssuer`) e no módulo (`TestIssuer_MintProducesVerifiableToken`). Residual: compor o `OIDCDirectory` no issuer (`DEF-104/105/110`); HSM/KMS + tenant OIDC = infra. | Equipa AOS |
 | 1.5 | 2026-08-01 | **AOS-227** acrescentado (§4-ter): autenticação OIDC do humano no `cmd/aos-issuer` (frente 1) — `mint --assertion` verifica um ID-token contra o IdP (verifier real de AOS-174: discovery/JWKS/JWS/aud/exp) e deriva o humano-raiz do `sub` VERIFICADO, **cbor-free** (só `integration/oidc`, sem a attestation). Fail-closed; retro-compat com `--human`. Prova: `TestIssuer_OIDCAuthenticatesHumanBeforeMint` (IdP mock RSA/JWKS, -race). Residual: tenant OIDC = infra; `DEF-110` (OIDC no modo de referência do NÓ) = seam distinto de menor valor. | Equipa AOS |
 | 1.6 | 2026-08-01 | **AOS-228** acrescentado (§4-quater): costura OIDC do directório humano no **NÓ** — `AOS_HUMAN_OIDC_*` compõe o `OIDCDirectory` na autoridade de referência (padrão injectável de AOS-220; fail-closed `ErrBadHumanOIDC`; precedência sobre a allowlist), **CBOR-FREE** (`go list -deps cmd/aos` sem cbor). **FECHA `DEF-104/105/110`**. Prova: `TestAOS228_ConfigFromEnv_WiresHumanOIDCDirectory` + `TestAOS228_NodeComposesInjectedHumanDirectory` (-race). Residual: tenant OIDC = infra; costura ref-mode de menor valor (o caminho real é endurecido + issuer externo). | Equipa AOS |
+| 1.7 | 2026-08-01 | **AOS-229** acrescentado (§4-quinquies): endurecimento do cliente HTTP **default** do verificador OIDC (`integration/oidc`, partilhado por AOS-205/227/228) — TLS MinVersion 1.2 + limite de redirects (máx. 3) + anti-SSRF (redirect para http/host interno RECUSADO via re-validação de `checkTransport`), análogo a AOS-223. Cliente injectado respeitado tal-qual. Prova: `TestHardenedOIDCClient_*` (-race); sem regressão nos testes OIDC existentes; nó cbor-free. | Equipa AOS |
