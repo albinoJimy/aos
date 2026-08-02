@@ -30,15 +30,15 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 
 ## 3. Critérios de Saída do Epic
 
-- [ ] Um pedido de alto nível produz um **PlanDocument** validado por função pura (schema fechado, aciclicidade, tools resolvidas contra snapshot pinado, tectos, risco **derivado**, orçamento) — fail-closed, sem plano fantasma (AOS-230/231/232).
-- [ ] O planeador corre como **agente governado** (NHI `agent:planner`, reserva de planeamento admitida antes da decomposição, RM, spans OTel ligados) (AOS-234).
-- [ ] O plano aprovado **materializa-se** no DAG (AOS-025) e no spawn delegado (AOS-026), com `tools[]` a vincular a `Authority[]` da NHI filha; o **Scheduler** despacha a jusante do gate, nunca a montante (AOS-237/238).
-- [ ] O **gate** renderiza o organigrama completo **triado por risco**, com cards por-efeito e edição→revalidação→aprovação sem round-trip ao LLM (AOS-236).
-- [ ] **Replay byte-a-byte** sem re-chamar o LLM: eventos `aos.planner.v1` append-only + janela de suporte de `plan_version` (AOS-235/243).
-- [ ] O **classificador de intake** é determinístico e respeita a invariante de não-bypass (AOS-233).
-- [ ] `capability_gap` bloqueia até ratificação via pipeline ADR-012, com agente-autor governado (AOS-240) — *sujeito à lacuna do executor de skills*.
-- [ ] O prompt de decomposição é artefacto comportamental SemVer com **eval-gate de golden-sets** (AOS-241); a promoção L0–L5 usa fiabilidade medida (AOS-242).
-- [ ] Suite de segurança adversarial verde (plano hostil, downgrade de risco, exaustão, gaming do intake, injecção via retry) (AOS-244).
+- [x] Um pedido de alto nível produz um **PlanDocument** validado por função pura (schema fechado, aciclicidade, tools resolvidas contra snapshot pinado, tectos, risco **derivado**, orçamento) — fail-closed, sem plano fantasma (AOS-230/231/232).
+- [x] O planeador corre como **agente governado** (NHI `agent:planner`, reserva de planeamento admitida antes da decomposição, RM, spans OTel ligados) (AOS-234).
+- [x] O plano aprovado **materializa-se** no DAG (AOS-025) e no spawn delegado (AOS-026), com `tools[]` a vincular a `Authority[]` da NHI filha; o **Scheduler** despacha a jusante do gate, nunca a montante (AOS-237/238).
+- [x] O **gate** renderiza o organigrama completo **triado por risco**, com cards por-efeito e edição→revalidação→aprovação sem round-trip ao LLM (AOS-236).
+- [x] **Replay byte-a-byte** sem re-chamar o LLM: eventos `aos.planner.v1` append-only + janela de suporte de `plan_version` (AOS-235/243).
+- [x] O **classificador de intake** é determinístico e respeita a invariante de não-bypass (AOS-233).
+- [x] `capability_gap` bloqueia até ratificação via pipeline ADR-012, com agente-autor governado (AOS-240) — *sujeito à lacuna do executor de skills*.
+- [x] O prompt de decomposição é artefacto comportamental SemVer com **eval-gate de golden-sets** (AOS-241); a promoção L0–L5 usa fiabilidade medida (AOS-242).
+- [x] Suite de segurança adversarial verde (plano hostil, downgrade de risco, exaustão, gaming do intake, injecção via retry) (AOS-244).
 - [ ] Gate SAST/SCA (gosec/govulncheck) limpo ou triado para a baseline documentada.
 
 ## 4. Tabela Resumo de Tickets
@@ -413,11 +413,14 @@ Versionar o prompt e montar o eval-gate de golden-sets.
 Controlador de promoção/demoção por (planner, domínio) e SLIs de planeamento.
 
 ### Critérios de Aceitação
-- Sinais: taxa de aprovação **sem edição**, taxa de replan, calibração de custo (AOS-124), taxa de propostas inválidas; demoção automática em anomalia.
-- Promoção por domínio **recorrente** (janela sustentada, AOS-014); *ad-hoc* permanece L0 por desenho; granularidade de "domínio" declarada.
-- L4/L5 auto-aprova dentro de envelope declarado (avaliado sobre risco **derivado**); `capability_gap`/`danger` forçam sempre revisão.
-- Travão de runtime independente do humano: eval-gate de decomposição (AOS-241) como pré-condição + amostragem post-hoc mesmo a L4/L5.
-- SLI: fracção de planeamento ≤ 5% (burn-down AOS-123; contabilidade AOS-062).
+- [x] Sinais: taxa de aprovação **sem edição**, taxa de replan, calibração de custo (AOS-124), taxa de propostas inválidas; demoção automática em anomalia. *(Evidência: `planneraut/signals.go` `ComputeSignals` (puro) + `Envelope.Evaluate`; `ObserveWindow` demove a L0 em qualquer brecha. `TestObserveWindow_AnomalyDemotes`.)*
+- [x] Promoção por domínio **recorrente** (janela sustentada, AOS-014); *ad-hoc* permanece L0 por desenho; granularidade de "domínio" declarada. *(Evidência: `MinRecurrence` janelas sãs; `domain.go` `DomainKey` = (tenant, assinatura estrutural de capabilities) — NUNCA o objective untrusted (ADR-005).)*
+- [x] L4/L5 auto-aprova dentro de envelope declarado (avaliado sobre risco **derivado**); `capability_gap`/`danger` forçam sempre revisão. *(Evidência: `AuthorizeAutoApproval` sobre risco DERIVADO; **o QA fechou um fail-open real** — `elevate(RiskUnset,RiskSafe)==RiskSafe` deixava um derivado DESCONHECIDO auto-aprovar a L5 com rótulo safe; corrigido exigindo `in.Derived != RiskSafe` (o cru), mantendo "advisory só eleva". `TestAuthorizeAutoApproval_GrayAndUnsetForceReviewEvenAtL5` (falha-antes não-vacuosa), `_DerivedDangerForcesReviewEvenAtL5`, `_AdvisoryElevatesOnly`.)*
+- [x] Travão de runtime independente do humano: eval-gate de decomposição (AOS-241) como pré-condição + amostragem post-hoc mesmo a L4/L5. *(Evidência: eval-gate por porta como pré-condição (reprova/erro ⇒ fail-closed) + amostragem post-hoc.)*
+- [x] SLI: fracção de planeamento ≤ 5% (burn-down AOS-123; contabilidade AOS-062). *(Evidência: `PlanningFractionSLI`/`DefaultMaxPlanningFraction=0.05`; excede ⇒ demove. `TestGovernor_PlanningFractionSLIVisible`, `TestEnvelope_PlanningFractionSLIBreach`.)*
+
+### Estado
+**FECHADO** (vaga 7 EPIC-19). Pacote `packages/control-plane/orchestrator/planneraut/` (tipo `Level` L0–L5 local, sem dep de `governance/autonomy`). Promoção não-gameável ancorada no `OverrideRate` autoritativo (AOS-095, por porta — contadores próprios não bastam: `TestObserveWindow_OverridePortVetoesPromotion`); assimetria promover-devagar/demover-já. Zero-dep, `go.mod` intacto, `-race` verde. Fronteiras: aplicação a jusante (gate/override/eval-gate) por porta = do wiring; amostragem post-hoc é global (não per-domain) por desenho.
 
 ### Detalhes Técnicos
 - Override-rate autoritativo de AOS-095; AOS-128 é a suite que o testa, não o controlo.
@@ -470,11 +473,14 @@ Persistir o plano aprovado e gerir a evolução/deprecação de `plan_version`.
 Provar em teste que os vectores adversariais estão fechados.
 
 ### Critérios de Aceitação
-- **Plano adversarial**: objectivo/untrusted não induz spawn com efeitos indevidos (plano como dados + validação + gate + spawn mediado).
-- **Downgrade de risco**: rótulo `safe` num nó irreversível é ignorado (piso derivado, AOS-232).
-- **Exaustão de fan-out**: plano gigante barrado por tectos (AOS-231) + teto por nó + breaker (AOS-029).
-- **Gaming do intake**: classificação forçada a "simples" reentra no gate (AOS-233).
-- **Injecção via retry**: feedback estruturado/allowlisted, sem re-injecção in-band.
+- [x] **Plano adversarial**: objectivo/untrusted não induz spawn com efeitos indevidos (plano como dados + validação + gate + spawn mediado). *(Evidência: `planadversarial/adversarial_test.go` `TestVector_PlanoAdversarial_BarradoAntesDeQualquerEfeito` — `planvalidate.Validate` REAL rejeita com `ReasonToolInadmissible`+`Locator.NodeID=exfil`, sem mutar o doc.)*
+- [x] **Downgrade de risco**: rótulo `safe` num nó irreversível é ignorado (piso derivado, AOS-232). *(Evidência: `TestVector_DowngradeDeRisco_RotuloSafeIgnoradoEmNoIrreversivel` — `deleteTool`⇒`Derived=danger`, `elevateOnly(danger,safe)=danger`, `Resolved=danger` (não auto-aprovável); + `_ResolvidoCarimbaRequiresCardNoDespachoReal` exercita a função de PRODUÇÃO `plandispatch.PlanFrom` ⇒ `RequiresCard`, bloqueio no despacho.)*
+- [x] **Exaustão de fan-out**: plano gigante barrado por tectos (AOS-231) + teto por nó + breaker (AOS-029). *(Evidência: `TestVector_ExaustaoFanout_BarradaPorTectosEBreaker` — 3 camadas: `MaxFanout` estrutural (40>8⇒`ReasonMaxFanoutExceeded`), `checkBudget` teto por-nó, circuit breaker.)*
+- [x] **Gaming do intake**: classificação forçada a "simples" reentra no gate (AOS-233). *(Evidência: `TestVector_GamingDoIntake_SimpleForcadoReentraNoGate` — `intake.Classify` avalia sinais de meta antes de simple + não-bypass do gate por-spawn (`DelegationGuard`).)*
+- [x] **Injecção via retry**: feedback estruturado/allowlisted, sem re-injecção in-band. *(Evidência: `TestVector_InjeccaoViaRetry_FeedbackAllowlistedSemEco` — `validNodeID` rejeita id malformado com `Locator` vazio, marcador de injeção ausente de `renderVerdict` (coordenadas estruturais, não conteúdo cru).)*
+
+### Estado
+**FECHADO** (vaga 7 EPIC-19, capstone). Pacote `packages/control-plane/orchestrator/planadversarial/` — um teste NEGATIVO por vector, cada um a exercitar o pacote REAL (`planvalidate`/`intake`/`plandispatch`), não mocks. O QA fechou um gap: um vector usava um helper em vez da função de produção `plandispatch.PlanFrom` — corrigido a exercitá-la. Zero-dep, `go.mod` intacto, `-race` verde (6 testes). **DoD residual do épico:** o gate SAST/SCA (gosec/govulncheck) triado corre no fecho do épico (não é CA deste pacote).
 
 ### Detalhes Técnicos
 - Cada teste mapeia a uma linha da tabela de riscos `tecnica/18` §9.
