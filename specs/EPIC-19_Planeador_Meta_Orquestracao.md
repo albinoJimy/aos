@@ -270,9 +270,12 @@ Renderizar o organigrama completo, triado por risco, com edição cidadã de pri
 Converter o plano aprovado em eventos do DAG e spawns delegados.
 
 ### Critérios de Aceitação
-- `plan.materialized`: `node_id` → nó-folha `task.node.created` (AOS-025) **ou** papel-que-expande → `Delegator.Spawn` (AOS-026).
-- `tools[]` do plano vincula `Authority[]` da NHI filha (issuer_child).
-- Admissão global por nó (AOS-027/028).
+- [x] `plan.materialized`: `node_id` → nó-folha `task.node.created` (AOS-025) **ou** papel-que-expande → `Delegator.Spawn` (AOS-026). *(Evidência: `planmaterialize/materialize.go` — switch determinístico por `SpawnKind` (folha→`LeafAdmitter`/`GraphBuilder.AddNode`; papel→`Spawner`/`Delegator.Spawn`); emite `plannerevents.EventMaterialized`. `TestRoleExpandsLeafBecomesNode`, `TestEmitsPlanMaterializedConstant`.)*
+- [x] `tools[]` do plano vincula `Authority[]` da NHI filha (issuer_child). *(Evidência: `authorityForNode` deriva as caps **exclusivamente** de `node.Tools` (clamp intrínseco) → `Child.Authority` → `issuer.IssueChild`. `TestChildAuthorityClampedToRoleTools` prova que a tool de OUTRO nó (`cap:tool:toolB`) NÃO entra na Authority do papel — propriedade de segurança central, falha-antes documentado.)*
+- [x] Admissão global por nó (AOS-027/028). *(Evidência: porta `Admission` (sem require novo); admissão em **duas fases** fail-closed — admite TODOS antes de qualquer efeito. `TestNodeNotAdmittedFailsClosed`: negação ⇒ `ErrNodeNotAdmitted` + zero spawns/folhas/records. Materialização determinística: `TestDeterministicMaterialization`.)*
+
+### Estado
+**FECHADO** (vaga 5 EPIC-19). Pacote `packages/control-plane/orchestrator/planmaterialize/`. Consome o documento APROVADO (não a saída crua); determinístico; Authority clampada às tools do papel; admissão fail-closed; reúsa `EventMaterialized`; zero-dep, `go.mod` intacto, `-race` verde. Fronteiras declaradas+testadas: DAG single-tool leva `tools[0]` (o conjunto coarse sobrevive em `plan.materialized.Nodes[].Tools`; estender o DAG a multi-tool exige emenda ao irmão congelado `contract.TaskSpec`); orçamento papel-sob-papel achatado ao root (aninhamento fica com o dispatch AOS-238).
 
 ### Detalhes Técnicos
 - Reconciliar granularidade tools-pinadas-no-REG vs capabilities coarse na Authority.
@@ -346,9 +349,12 @@ Re-planear um subgrafo afectado com orçamento residual e novo ciclo de aprovaç
 Modelar o nó `capability_gap` e encaminhar a skill candidata pelo pipeline ADR-012.
 
 ### Critérios de Aceitação
-- Nó `capability_gap` bloqueia (`waiting_on_capability`) até ratificação.
-- Skill gerada por **agente-autor governado** (NHI, orçamento, allowlist restrita) que trata a spec do gap como **input untrusted** com taint no eval-gate.
-- Pipeline: dry-run (AOS-126) → eval-gate (AOS-114/115/189) → canary → ratificação assinada (AOS-096/206); humano pode substituir/rejeitar o nó.
+- [x] Nó `capability_gap` bloqueia (`waiting_on_capability`) até ratificação. *(Evidência: `capabilitygap/capabilitygap.go` — `CanDispatch()` só admite `StateResolved`, alcançável só via ratificação assinada+verificada; estado inicial `StateWaiting`. Emite `plan.capability_gap_opened`/`_resolved` (constantes de plannerevents). `TestNode_DoesNotDispatch_UntilResolved`.)*
+- [x] Skill gerada por **agente-autor governado** (NHI, orçamento, allowlist restrita) que trata a spec do gap como **input untrusted** com taint no eval-gate. *(Evidência: NHI on-behalf-of, orçamento `Reserve/Commit/Release`, allowlist imposta por este pacote; `TestAllowlistViolation_FailClosedAndReleasesBudget` (tool fora da allowlist ⇒ fica `waiting` + orçamento libertado).)*
+- [x] Pipeline: dry-run (AOS-126) → eval-gate (AOS-114/115/189) → canary → ratificação assinada (AOS-096/206); humano pode substituir/rejeitar o nó. *(Evidência: sequência de estados imposta (`ErrStageOutOfOrder`); `TestSelfAuthored_NotToProduction_Unilaterally` (bypass `Author→Ratify` recusado); anti-transplante por content-hash + exigência de `Verified` — `TestRatification_TransplantRejected`/`_UnverifiedApprovalDoesNotPromote`.)*
+
+### Estado
+**FECHADO** (vaga 5 EPIC-19). Pacote `packages/control-plane/orchestrator/capabilitygap/`. Entrega a GOVERNAÇÃO do gap (máquina de estados fail-closed, agente-autor governado, pipeline sem bypass, teto de gaps por plano); zero-dep, `go.mod` intacto, `-race` verde (14 testes). Fronteiras honestas (§5): o **executor de skills** (runtime que carrega/corre a skill ratificada) é desenho separado — este ticket NÃO o entrega; a assinatura cripto real da ratificação vive na porta `Ratifier` (espelha `hitl.RatificationGate`, AOS-096/206), ligada pelo wiring.
 
 ### Detalhes Técnicos
 - Sem executor de skills (lacuna honesta §5), os nós executam sobre tools concretas já registadas — este ticket entrega a governação do gap, não o executor.
