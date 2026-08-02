@@ -6,12 +6,26 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/aos-ref/control-plane/orchestrator/plan"
 	"github.com/aos-ref/control-plane/orchestrator/plannerevents"
 	identity "github.com/aos-ref/platform/identity"
 )
+
+// clampU64ToInt64 converte um uint64 UNTRUSTED (ex.: BudgetEstimate.Tokens/CostMicroUSD
+// vindos do PlanDocument proposto pelo LLM) para int64 SATURANDO em [math.MaxInt64] em vez
+// de transbordar para negativo. Um valor >= 2^63 num orçamento estimado não deve virar um
+// débito NEGATIVO na admissão/reserva a jusante (corromperia a contabilidade fail-closed);
+// satura-se determinística e não-silenciosamente no tecto. Espelha o clamp de AOS-232
+// (planvalidate) para a mesma classe de input untrusted.
+func clampU64ToInt64(u uint64) int64 {
+	if u > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(u)
+}
 
 // Sentinelas de erro do materializador (comparáveis por errors.Is — fail-closed).
 var (
@@ -313,7 +327,7 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 		v, err := m.admission.Admit(ctx, AdmitRequest{
 			RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
 			Kind:   p.kind,
-			Tokens: int64(p.node.BudgetEstimate.Tokens), CostMicroUSD: int64(p.node.BudgetEstimate.CostMicroUSD),
+			Tokens: clampU64ToInt64(p.node.BudgetEstimate.Tokens), CostMicroUSD: clampU64ToInt64(p.node.BudgetEstimate.CostMicroUSD),
 		})
 		if err != nil {
 			return empty, fmt.Errorf("planmaterialize: admissão do nó %q: %w", p.node.NodeID, err)
@@ -350,7 +364,7 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 			rs := RoleSpawn{
 				RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
 				ParentToken: req.ParentToken, ParentBudgetNode: req.RootBudgetNode, ChildBudgetNode: p.node.NodeID,
-				InheritedTokens: int64(p.node.BudgetEstimate.Tokens), InheritedCostMicroUSD: int64(p.node.BudgetEstimate.CostMicroUSD),
+				InheritedTokens: clampU64ToInt64(p.node.BudgetEstimate.Tokens), InheritedCostMicroUSD: clampU64ToInt64(p.node.BudgetEstimate.CostMicroUSD),
 				Child: identity.ChildRequest{
 					AgentID:    req.RunID + "/" + p.node.NodeID,
 					AgentClass: m.childClass,

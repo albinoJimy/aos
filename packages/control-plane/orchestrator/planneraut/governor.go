@@ -322,7 +322,14 @@ func (g *Governor) nextSample() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.sampleCtr++
-	return g.sampleCtr%uint64(g.cfg.SampleEveryN) == 0
+	// SampleEveryN > 0 é invariante do construtor (Config.valid()); a guarda torna-o
+	// explícito e fail-safe (um N <= 0 desliga a amostragem em vez de dividir por zero
+	// ou de converter um negativo para um uint64 gigante).
+	n := g.cfg.SampleEveryN
+	if n <= 0 {
+		return false
+	}
+	return g.sampleCtr%uint64(n) == 0
 }
 
 // ---------------------------------------------------------------------------
