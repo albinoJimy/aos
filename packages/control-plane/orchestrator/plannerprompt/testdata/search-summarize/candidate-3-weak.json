@@ -1,0 +1,9 @@
+{
+  "plan_version": "1.0.0",
+  "objective": "search the web and summarize findings",
+  "budget_total": {"tokens": 800, "cost_micro_usd": 4000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {"node_id": "solo", "role": "generalist", "objective": "search and summarize in one shot", "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}], "depends_on": [], "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000}, "risk_class": "safe"}
+  ]
+}

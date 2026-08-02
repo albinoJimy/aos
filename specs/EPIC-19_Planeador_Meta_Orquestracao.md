@@ -368,11 +368,14 @@ Modelar o nó `capability_gap` e encaminhar a skill candidata pelo pipeline ADR-
 Versionar o prompt e montar o eval-gate de golden-sets.
 
 ### Critérios de Aceitação
-- Prompt estático, cache-estável (ADR-009), SemVer; mudanças passam pelo pipeline ADR-012.
-- Golden-set: entradas `(objectivo, contexto) → asserções` (estruturais + semânticas), verificáveis pelo validador (AOS-231) + rubrica.
-- Amostragem **K×** por objectivo: asserções de **segurança** a 100% de K; de **qualidade** por limiar ≥ M/K.
-- Trace-diffing = **regressão distribucional** sobre métricas (não plano cru); sem regressão de segurança.
-- Mutar o golden-set é *gated* (anti-envenenamento).
+- [x] Prompt estático, cache-estável (ADR-009), SemVer; mudanças passam pelo pipeline ADR-012. *(Evidência: `plannerprompt/` — artefacto de prompt versionado (SemVer próprio); mutação sujeita a `ValidateGoldenMutation` (bump exigido).)*
+- [x] Golden-set: entradas `(objectivo, contexto) → asserções` (estruturais + semânticas), verificáveis pelo validador (AOS-231) + rubrica. *(Evidência: `goldenset.go`/`eval.go` — estruturais via `planvalidate` (importado), semânticas via rubrica de predicados; `RejectsWith`/`Context` exercitados por `TestEvaluate_RejectsWithNegativeCase`.)*
+- [x] Amostragem **K×** por objectivo: asserções de **segurança** a 100% de K; de **qualidade** por limiar ≥ M/K. *(Evidência: K amostras/objetivo como fixtures; segurança 100%/K, qualidade ≥M/K.)*
+- [x] Trace-diffing = **regressão distribucional** sobre métricas (não plano cru); sem regressão de segurança. *(Evidência: `Regression` sobre pass-rate agregada; **fail-closed contra perda TOTAL de cobertura** — `baseline.Total>0 && candidate.Total==0 ⇒ SecurityRegressed` (o QA apanhou `0!=0=false` que deixava passar; corrigido, confirmado por reversão). `TestRegression_SecurityCoverageLossIsRegression`.)*
+- [x] Mutar o golden-set é *gated* (anti-envenenamento). *(Evidência: `assertionSignature` (multiset severidade|natureza|id) apanha o **esvaziamento** (gutting) de um caso HARD retido — trocar uma asserção de segurança por rubrica sempre-verdadeira exige `RemovalApproval` explícita (`ErrHardCaseGutted`) + conta como mudança. `TestGoldenMutation_HardCaseGuttingRequiresApproval`. Limite honesto: enfraquecer o *corpo* de um predicado semântico sob o mesmo (id,severidade) não é detetável por assinatura — closures Go — mitigado por revisão na aprovação.)*
+
+### Estado
+**FECHADO** (vaga 3 EPIC-19). Pacote `packages/control-plane/orchestrator/plannerprompt/`. Eval-gate offline (staging), nunca por-run/produção; sinal de pass-rate para AOS-242. Dois fail-opens fechados pelo QA (perda total de cobertura de segurança; gutting de caso HARD). Zero-dep; `-race` verde. Handoff: ligação ao CI de staging real é fronteira declarada.
 
 ### Detalhes Técnicos
 - Corre offline no eval-gate (staging), nunca por-run nem em produção.
@@ -422,11 +425,14 @@ Controlador de promoção/demoção por (planner, domínio) e SLIs de planeament
 Persistir o plano aprovado e gerir a evolução/deprecação de `plan_version`.
 
 ### Critérios de Aceitação
-- O plano aprovado (+ `capabilities_hash` + `prompt_version`) é persistido; o manifesto do run inclui-o.
-- Replay **reproduz os eventos capturados** — nunca re-resolve o REG nem re-atravessa o RM.
-- Planos aprovados **congelados na versão**; nunca auto-migrados. Se a versão foi retirada antes da materialização ⇒ invalida → re-plano + re-aprovação (fail-closed).
-- **Janela de suporte** de MAJORs declarada; run fora da janela é **inadmissível** (como payload perdido).
-- Bump MAJOR passa por ADR-012, com reader retido **ou** deprecação documentada (implicações AOS-079/093).
+- [x] O plano aprovado (+ `capabilities_hash` + `prompt_version`) é persistido; o manifesto do run inclui-o. *(Evidência: `planmigrate/manifest.go` — `Manifest` fixa os 3 eixos + `PlanHash` (`HashPlan` = sha256 canónico); `TestManifestPinsThreeDistinctAxes`.)*
+- [x] Replay **reproduz os eventos capturados** — nunca re-resolve o REG nem re-atravessa o RM. *(Evidência: `replay.go` — via de replay recebe só `EventReader` read-only; provado por **duplos envenenados** `failResolver`/`failMonitor` que falham o teste se tocados: `TestReplayIsDeterministic_NoREG_NoRM_NoLLM` (`reg.calls==0, rm.calls==0`) + assimetria vs escrita `TestMaterialize_TraversesREGandRM_ReplayDoesNot`.)*
+- [x] Planos aprovados **congelados na versão**; nunca auto-migrados. Se a versão foi retirada antes da materialização ⇒ invalida → re-plano + re-aprovação (fail-closed). *(Evidência: `TestFrozenVersionNeverAutoMigrated` (plano 2.4.1 nunca vira `CurrentPlanVersion`); `TestRetiredVersionInvalidatesFailClosed` + `TestMaterializeRefusesRetiredBeforeTouchingREGorRM` (`ErrRetired` antes de tocar REG/RM).)*
+- [x] **Janela de suporte** de MAJORs declarada; run fora da janela é **inadmissível** (como payload perdido). *(Evidência: `policy.go` `SupportWindow`/`Covers`/`Admit` ⇒ `ErrOutsideSupportWindow`; `TestRunOutsideSupportWindowIsInadmissible` com controlo (MAJOR 3 admite em [1,3], rejeita em [1,2]).)*
+- [x] Bump MAJOR passa por ADR-012, com reader retido **ou** deprecação documentada (implicações AOS-079/093). *(Evidência: forma **executável** da regra (janela `MinMajor`/reader retido) em `policy.go`. O artefacto ADR-012 e as implicações AOS-079/093 são governança humana / dos seus epics — fronteira de escopo, referenciada nos doc-comments, não emitida por este pacote.)*
+
+### Estado
+**FECHADO** (vaga 3 EPIC-19). Pacote `packages/control-plane/orchestrator/planmigrate/`. Manifesto com 3 eixos pinados (schema≠comportamento≠ambiente); replay puro (duplos envenenados provam zero REG/RM/LLM); congelamento + invalidação fail-closed de versão retirada; janela de suporte de MAJORs. Reusa eventos de `plannerevents`; zero-dep; `-race` verde (14 testes).
 
 ### Detalhes Técnicos
 - `plan_version` (schema) ≠ `prompt_version` (comportamento) ≠ `capabilities_hash` (ambiente) — os três pinados.

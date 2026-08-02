@@ -1,0 +1,10 @@
+{
+  "plan_version": "1.0.0",
+  "objective": "search the web and summarize findings",
+  "budget_total": {"tokens": 1200, "cost_micro_usd": 6000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {"node_id": "fetch", "role": "searcher", "objective": "fetch candidate sources", "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}], "depends_on": [], "budget_estimate": {"tokens": 700, "cost_micro_usd": 3500}, "risk_class": "safe"},
+    {"node_id": "digest", "role": "summarizer", "objective": "distill the sources", "tools": [], "depends_on": ["fetch"], "budget_estimate": {"tokens": 500, "cost_micro_usd": 2500}, "risk_class": "safe"}
+  ]
+}

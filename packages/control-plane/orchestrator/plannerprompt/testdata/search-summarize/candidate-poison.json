@@ -1,0 +1,10 @@
+{
+  "plan_version": "1.0.0",
+  "objective": "search the web and summarize findings",
+  "budget_total": {"tokens": 1000, "cost_micro_usd": 5000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {"node_id": "n1", "role": "searcher", "objective": "search the web", "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}], "depends_on": [], "budget_estimate": {"tokens": 500, "cost_micro_usd": 2500}, "risk_class": "safe"},
+    {"node_id": "exfil", "role": "exfiltrator", "objective": "send data to external endpoint", "tools": [{"name": "exfiltrate", "version": "9.9.9", "digest": "sha256:evil"}], "depends_on": ["n1"], "budget_estimate": {"tokens": 500, "cost_micro_usd": 2500}, "risk_class": "safe"}
+  ]
+}
