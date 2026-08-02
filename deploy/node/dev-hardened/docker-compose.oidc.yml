@@ -1,0 +1,71 @@
+# =============================================================================
+# OVERRIDE de OIDC + PRODUÇÃO — camada sobre docker-compose.yml (balde A).
+#
+# Adiciona o IdP REAL (Keycloak) e promove o nó a AOS_MODE=production, ligando a CREDENCIAL FORTE
+# de soberania (AOS_SOVEREIGN_OIDC_*). O nó passa a EXIGIR um ID-token OIDC verificado (assinatura
+# RS256 contra o JWKS do Keycloak) com claim `board` — o header X-Aos-Board auto-declarado deixa de
+# autorizar. Fecha o balde B (parte soberania) e desbloqueia a postura de produção.
+#
+# Uso (traz base + este override):
+#   bash deploy/node/dev-hardened/up-oidc.sh
+#   docker compose -f docker-compose.yml -f docker-compose.oidc.yml --env-file .env up -d
+# =============================================================================
+name: aos-dev-hardened
+
+services:
+  # --- IdP REAL: Keycloak, TLS com cert da nossa CA de dev --------------------------------------
+  idp:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "admin"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "admin"
+      # Issuer canónico = o nome de rede pelo qual o NÓ alcança o IdP; entra no claim `iss` dos
+      # tokens e no discovery. O nó valida iss == AOS_SOVEREIGN_OIDC_ISSUER exatamente.
+      KC_HOSTNAME: "https://idp:8443"
+      KC_HOSTNAME_STRICT: "false"           # permite também aceder pelo host (localhost:9443).
+      KC_HTTP_ENABLED: "false"              # só https (o nó exige transporte cifrado ao IdP).
+      KC_HTTPS_CERTIFICATE_FILE: "/etc/keycloak/tls/idp.crt"
+      KC_HTTPS_CERTIFICATE_KEY_FILE: "/etc/keycloak/tls/idp.key"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./secrets/idp-tls:/etc/keycloak/tls:ro
+      - ./keycloak/realm-aos.json:/opt/keycloak/data/import/realm-aos.json:ro
+    ports:
+      - "9443:8443"   # consola/discovery a partir do host (curl -k https://localhost:9443/...).
+
+  # --- nó: promovido a PRODUÇÃO + credencial forte de soberania ---------------------------------
+  aos:
+    environment:
+      # Postura de PRODUÇÃO fail-closed. Exige (todas satisfeitas): identidade endurecida
+      # (AOS_ISSUER_PUBKEY, base) + AOS_BOARD_REGIONS (base) + sovereign OIDC (abaixo) + TLS
+      # (AOS_TLS_EXTERNAL_TERMINATION=1, base, terminado pelo edge).
+      AOS_MODE: "production"
+      # Credencial FORTE de soberania: o read-path exige ID-token OIDC verificado; o `board` vem
+      # das CLAIMS assinadas, não do header. Issuer = nome de rede do Keycloak.
+      AOS_SOVEREIGN_OIDC_ISSUER: "https://idp:8443/realms/aos"
+      AOS_SOVEREIGN_OIDC_AUDIENCE: "aos-node"
+      # O nó confia na CA de dev que assinou o cert do Keycloak (Go/Linux honra SSL_CERT_FILE).
+      SSL_CERT_FILE: "/etc/aos/idp-ca.crt"
+    volumes:
+      - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
+    depends_on:
+      idp:
+        condition: service_started
+
+  # --- toolbox on-demand: aos-issuer EM-REDE para o fluxo `mint --assertion` (human OIDC) --------
+  # Não arranca no `up` (profile "tools"). Uso:
+  #   docker compose ... run --rm issuer mint --key-file /etc/aos/issuer.key \
+  #     --assertion <id-token> --oidc-issuer https://idp:8443/realms/aos --oidc-audience aos-node ...
+  issuer:
+    build:
+      context: ../../..
+      dockerfile: deploy/node/dev-hardened/issuer-toolbox/Dockerfile
+    image: aos-issuer-toolbox:local
+    profiles: ["tools"]
+    user: "0:0"                      # lê a issuer.key montada (0600) — key de DEV, container efémero.
+    environment:
+      SSL_CERT_FILE: /etc/aos/idp-ca.crt   # confia na CA que assinou o cert do Keycloak.
+    volumes:
+      - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
+      - ./secrets/issuer.key:/etc/aos/issuer.key:ro

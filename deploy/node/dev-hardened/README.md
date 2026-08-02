@@ -9,15 +9,28 @@ bash deploy/node/dev-hardened/up.sh
 ```
 
 Ao fim: nó `healthy`, `https://localhost:8443/healthz` a devolver `200` (TLS self-signed, use
-`curl -k`). Parar e limpar o estado durável:
+`curl -k`).
+
+Para subir também com **OIDC real (Keycloak) + `AOS_MODE=production`** (balde B):
 
 ```bash
-docker compose -f deploy/node/dev-hardened/docker-compose.yml down -v
+bash deploy/node/dev-hardened/up-oidc.sh
+```
+```bash
+bash deploy/node/dev-hardened/demo-human-oidc.sh
+```
+
+Parar e limpar (inclui o Keycloak e o estado durável):
+
+```bash
+docker compose -p aos-dev-hardened -f deploy/node/dev-hardened/docker-compose.yml -f deploy/node/dev-hardened/docker-compose.oidc.yml down -v
 ```
 
 > **DEV, não produção.** As chaves vivem em ficheiros gerados (`./secrets/`, git-ignored), não em
-> HSM/KMS; o TLS é self-signed; a soberania forte e a identidade humana OIDC continuam a exigir
-> IdP real. É uma demonstração fiel da POSTURA, não uma fronteira de produção.
+> HSM/KMS; o TLS (edge e IdP) é assinado por uma CA de dev local. Com `up-oidc.sh` a postura de
+> produção e a verificação OIDC são **reais** (o Keycloak é um IdP a sério); o que fica DEFERIDO é
+> o **tenant** de soberania da organização, não o mecanismo. Continua a ser dev, não uma fronteira
+> de produção com HSM/KMS e IdP corporativo.
 
 ---
 
@@ -63,19 +76,30 @@ Estes itens **não** se ligam com uma variável de ambiente. Ou exigem infra ext
 pontos de injeção de código, ou estão deferidos por decisão. Referências a `file:line` são âncoras
 para o estado atual do código.
 
-### B — exige infra externa (IdP OIDC real)
-- **Identidade humana OIDC/WebAuthn** (`AOS_HUMAN_OIDC_ISSUER`/`_AUDIENCE`, [main.go:860](../../../packages/cmd/aos/main.go)).
-  Frente 1 do D4. Precisa de um IdP OIDC com issuer `https` e JWKS. Sem ele, o nó usa a allowlist
-  de nomes de referência (demo-grade). Ligar isto localmente exigiria montar um IdP (ex.: Keycloak/
-  Dex) — fora do âmbito de um self-signed de dev.
-- **Soberania de leitura — credencial FORTE OIDC** (`AOS_SOVEREIGN_OIDC_ISSUER`/`_AUDIENCE`).
-  A **regra** board→região está ligada (balde A), mas a credencial forte que substitui os headers
-  `X-Aos-Reader`/`X-Aos-Board` auto-declarados exige o IdP de soberania da organização. O
-  **provisionamento do tenant está DEFERIDO** por decisão (banner AOS-205; DEF-201).
+### B — RESOLVIDO com IdP real (Keycloak) — `bash up-oidc.sh`
 
-> Consequência: **`AOS_MODE=production` não arranca localmente** — exige, além de identidade
-> endurecida (✔) e TLS (✔ via edge), a credencial forte de soberania OIDC (acima). Sem IdP real,
-> a produção recusa o arranque (`ErrProductionNeedsSovereignAuthority`), fail-closed **by design**.
+O override `docker-compose.oidc.yml` sobe **Keycloak** (IdP OIDC production-grade), promove o nó a
+`AOS_MODE=production` e liga a **credencial forte de soberania**. O nó faz verificação OIDC
+**genuína** (discovery + JWKS + assinatura RS256 + iss/aud/janela/anti-replay); não é mock.
+
+| Frente | Onde | Como / prova |
+|---|---|---|
+| **Soberania — credencial FORTE OIDC** (`AOS_SOVEREIGN_OIDC_ISSUER`/`_AUDIENCE`) | no **NÓ** | `POST /runs` exige `Authorization: Bearer <id-token>`; o `board` vem das CLAIMS assinadas. Prova: run aceite **201**; `X-Aos-Board` forjado sem Bearer **403**. |
+| **Identidade humana OIDC** (`aos-issuer --assertion`) | no **ISSUER externo** (não no nó, em modo endurecido) | `bash demo-human-oidc.sh`: o humano-raiz do NHI é DERIVADO do `sub` de um ID-token verificado contra o Keycloak, não de uma flag manual. |
+
+Detalhes de topologia que tornam isto real:
+- **TLS ao IdP:** o Keycloak serve https com cert da **CA de dev** (gerada em `up-oidc.sh`); o nó
+  confia via `SSL_CERT_FILE=/etc/aos/idp-ca.crt` (Go/Linux honra-o). O contrato exige https para um
+  IdP não-loopback — cumprido de verdade.
+- **`board`:** um *hardcoded claim mapper* do realm põe `board:demo` no ID-token (dev, um só board);
+  em produção real seria um *user-attribute mapper* alimentado pelo IdP da organização.
+- O **tenant concreto** (o IdP de soberania da organização) permanece a decisão de infra-org
+  DEFERIDA (AOS-205/DEF-201); aqui prova-se o **contrato**, com um IdP real no lugar do tenant.
+
+> Consequência: **`AOS_MODE=production` ARRANCA** — as quatro exigências fail-closed estão
+> satisfeitas: identidade endurecida (✔), `AOS_BOARD_REGIONS` (✔), soberania OIDC (✔ Keycloak),
+> TLS (✔ edge). Verificado: nó `healthy` em produção + banner *"CREDENCIAL FORTE do leitor
+> VERIFICADA (OIDC AOS-174)"*.
 
 ### C — só injeção de código (sem env; um embedder tem de o costurar)
 - **Política de retenção TTL** (`Config.Retention`, [bootstrap.go:370](../../../packages/cmd/aos/bootstrap.go)).
@@ -102,9 +126,14 @@ para o estado atual do código.
 
 | Ficheiro | Papel |
 |---|---|
-| `up.sh` | Gera chaves/roster/TLS/`.env` (idempotente) e faz `docker compose up`. |
+| `up.sh` | Gera chaves/roster/TLS/`.env` (idempotente) e faz `docker compose up` (balde A). |
 | `docker-compose.yml` | Serviços `aos` (endurecido), `edge` (TLS), `otel` (collector). |
 | `nginx.conf` | Edge que termina TLS e faz proxy (SSE-friendly) para o nó. |
 | `otel-collector.yaml` | Collector OTLP → exporter `debug` (stdout). |
-| `secrets/` (git-ignored) | Material gerado: chaves privadas, `approvers.json`, cert/chave TLS. |
+| `up-oidc.sh` | Gera CA+cert do IdP, sobe Keycloak + nó em produção, e prova o run com Bearer OIDC (balde B). |
+| `docker-compose.oidc.yml` | Override: serviço `idp` (Keycloak), nó em `AOS_MODE=production`+sovereign OIDC, e o toolbox `issuer` (profile `tools`). |
+| `keycloak/realm-aos.json` | Realm importável: client `aos-node`, user `alice`, mapper `board`→claim. |
+| `demo-human-oidc.sh` | Autentica o humano por OIDC (`aos-issuer --assertion`) e submete um run. |
+| `issuer-toolbox/Dockerfile` | Compila `aos-issuer` num container para o correr EM-REDE (human OIDC). |
+| `secrets/` (git-ignored) | Material gerado: chaves privadas, `approvers.json`, CA+certs TLS. |
 | `.env` (git-ignored) | Valores derivados (pubkeys, trust anchor) consumidos pelo compose. |
