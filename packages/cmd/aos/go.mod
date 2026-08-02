@@ -1,6 +1,8 @@
 module github.com/aos-ref/cmd/aos
 
-go 1.24
+go 1.25
+
+toolchain go1.25.12
 
 require (
 	github.com/aos-ref/control-plane/governance/dsar v0.0.0

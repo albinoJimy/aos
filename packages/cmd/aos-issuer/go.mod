@@ -1,6 +1,8 @@
 module github.com/aos-ref/cmd/aos-issuer
 
-go 1.24
+go 1.25
+
+toolchain go1.25.12
 
 require (
 	github.com/aos-ref/integration v0.0.0-00010101000000-000000000000

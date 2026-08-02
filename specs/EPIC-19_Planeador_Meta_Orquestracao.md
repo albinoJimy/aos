@@ -39,7 +39,7 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 - [x] `capability_gap` bloqueia até ratificação via pipeline ADR-012, com agente-autor governado (AOS-240) — *sujeito à lacuna do executor de skills*.
 - [x] O prompt de decomposição é artefacto comportamental SemVer com **eval-gate de golden-sets** (AOS-241); a promoção L0–L5 usa fiabilidade medida (AOS-242).
 - [x] Suite de segurança adversarial verde (plano hostil, downgrade de risco, exaustão, gaming do intake, injecção via retry) (AOS-244).
-- [ ] Gate SAST/SCA (gosec/govulncheck) limpo ou triado para a baseline documentada.
+- [x] Gate SAST/SCA (gosec/govulncheck) limpo ou triado para a baseline documentada. **SCA verde** (`scripts/ci/sca.sh` exit 0): os dois binários de entrega — `packages/cmd/aos` e `packages/cmd/aos-issuer` — subiram para `go 1.25`+`toolchain go1.25.12` (fecha o maior "Fixed in" observado, GO-2026-5856), pelo que govulncheck a esses módulos passou a ZERO findings afetantes; as 19 entradas obsoletas de `packages/cmd/aos` saíram de `baseline/govulncheck.txt`. Debt das bibliotecas (analisadas standalone a 1.24.5, não shipam isoladas) permanece triado, com a subida transversal reservada ao EPIC-10. **SAST verde** (`scripts/ci/sast.sh` exit 0): as 9 descobertas HIGH residuais (G115 de conversão comprimento/timestamp; G407 de proveniência de nonce em GCM) estão triadas em `baseline/gosec.txt` como falso-positivo/seguro-por-construção.
 
 ## 4. Tabela Resumo de Tickets
 

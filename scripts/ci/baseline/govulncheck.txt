@@ -6,33 +6,21 @@
 # bloqueia o gate SCA até ser triada.
 #
 # Remediação transversal: bump da toolchain Go 1.24.x → 1.25.y, autorizado no âmbito do
-# EPIC-10 (registry/imagens assinadas). Até lá, as entradas são documentadas com dono e
-# justificação. Nenhuma entrada foi removida como "estruturalmente impossível" — todas
-# as que aqui figuram são atingidas por código real do respetivo módulo.
+# EPIC-10 (registry/imagens assinadas). Até lá, as entradas de MÓDULOS DE BIBLIOTECA são
+# documentadas com dono e justificação. Nenhuma entrada foi removida como "estruturalmente
+# impossível" — todas as que aqui figuram são atingidas por código real do respetivo módulo.
 #
 # Owner: AOS-187 / supply-chain.
-
-
-# --- packages/cmd/aos ---
-packages/cmd/aos|GO-2025-4007 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2025-4008 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2025-4010 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2025-4011 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2025-4012 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2025-4013 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2025-4155 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2025-4175 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4337 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4340 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4601 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4870 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4918 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4946 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4947 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-4971 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-5037 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-5039 # owner=AOS-187; dívida toolchain do binário de entrega
-packages/cmd/aos|GO-2026-5856 # owner=AOS-187; dívida toolchain do binário de entrega
+#
+# --- REMEDIAÇÃO DOS BINÁRIOS DE ENTREGA (critério de saída 42, EPIC-19) ---
+# Os dois ARTEFACTOS QUE SHIPAM — packages/cmd/aos e packages/cmd/aos-issuer — deixaram de
+# aceitar esta dívida: passaram a `go 1.25` + `toolchain go1.25.12` (o patch que fecha o
+# maior "Fixed in" observado, GO-2026-5856 @ go1.25.12). govulncheck a esses módulos passou
+# a ZERO findings afetantes (Symbol Results vazio), pelo que NÃO têm entradas nesta baseline
+# — um binário shipado é a superfície realmente explorável e é corrigido de facto, não triado.
+# As entradas dos MÓDULOS DE BIBLIOTECA abaixo permanecem: são analisados em isolamento a
+# go1.24.5 (não shipam standalone) e herdam a correção quando compilados dentro dos binários;
+# a subida transversal da sua própria toolchain fica reservada ao EPIC-10.
 
 # --- packages/control-plane/pdp ---
 packages/control-plane/pdp|GO-2026-4602 # owner=EPIC-09/PDP; dívida toolchain
