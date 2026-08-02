@@ -45,4 +45,25 @@ var (
 	// aprovado pelo [PlanGate]. É a prova ESTRUTURAL do AC1: nenhum sub-agente é lançado
 	// antes da aprovação do plano (o custo de tokens fica ADIADO). Fail-closed.
 	ErrPlanNotApproved = errors.New("planapproval: spawn recusado — plano do run nao aprovado (fail-closed)")
+
+	// ErrForcedReviewMissing — uma aprovação foi tentada sem rever um nó cuja revisão é
+	// FORÇADA pela triagem por risco (Class >= gray ou capability_gap). Fail-closed: a
+	// triagem item-a-item não pode ser saltada — o nó forçado tem de constar de
+	// [PlanDecision.ReviewedNodes]. Imposto quando [WithForcedReview] está ligado.
+	ErrForcedReviewMissing = errors.New("planapproval: no forcado (>=gray/capability_gap) nao revisto — aprovacao recusada (fail-closed)")
+
+	// ErrEffectDualControlFailed — a imposição INLINE do dual-control POR-EFEITO (nós
+	// danger) recusou: um card por-efeito danger não foi autorizado pelo
+	// [approvalcard.DualControlCollector] (falta de quórum de dois aprovadores DISTINTOS,
+	// recusa ou erro do canal). Fail-closed: com [WithPerEffectDualControl] ligado, um nó
+	// danger cujo efeito não obteve dual-control NUNCA deixa o plano ser aprovado — a
+	// granularidade por-efeito é imposta ANTES da decisão agregada assinada.
+	ErrEffectDualControlFailed = errors.New("planapproval: dual-control por-efeito (no danger) nao autorizado — aprovacao recusada (fail-closed)")
+
+	// ErrRevalidationFailed — uma EDIÇÃO do plano NÃO revalidou: a porta [Revalidator]
+	// (adaptador do orchestrator/planvalidate ligado no wiring) OU a revalidação
+	// estrutural local (validate/topo do grafo revisto) rejeitou o plano editado. Fail-
+	// closed: um plano editado só é aprovável APÓS revalidar — uma edição que introduz
+	// invalidez nunca é aprovada (sem round-trip ao LLM).
+	ErrRevalidationFailed = errors.New("planapproval: plano editado nao revalidou — aprovacao recusada (fail-closed)")
 )

@@ -56,6 +56,15 @@ type PlanDecision struct {
 	// AutoApproved indica que a decisão foi AUTO-APROVADA por nível de autonomia (L4/L5),
 	// sem gate humano — consumo de AOS-089, não decisão de nível.
 	AutoApproved bool
+	// ReviewedNodes lista os task_ids que o humano REVIU item-a-item na triagem. Quando a
+	// imposição de revisão forçada está ligada ([WithForcedReview]), o gate exige que TODO
+	// nó forçado (Class >= gray ou capability_gap) esteja aqui — aprovar sem rever um nó
+	// forçado é recusado fail-closed ([ErrForcedReviewMissing]). A superfície de edição
+	// ([PlanReviewer]) preenche-o; vazio numa auto-aprovação.
+	ReviewedNodes []string
+	// Diff é o DIFF ESTRUTURAL da edição (antes→depois, ao nível dos nós/arestas). Só é
+	// preenchido num [VerdictEdit]; nil noutros veredictos. Sem segredos (só topologia).
+	Diff *PlanDiff
 	// Reason descreve o desfecho (sem segredos).
 	Reason string
 }

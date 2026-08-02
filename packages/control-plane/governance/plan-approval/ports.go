@@ -35,6 +35,15 @@ type PlanNode struct {
 	// Capability e Resource identificam a acção resolvida do nó.
 	Capability string
 	Resource   string
+	// Cost é o custo ESTIMADO deste nó/RAMO do grafo (opcional). É o custo POR RAMO
+	// (distinto do agregado do plano em [CostEstimate] agregado): o wiring popula-o a
+	// partir da agregação por-subárvore do scheduler (AOS-027) + otel-genai (AOS-078). O
+	// [PlanCard] EXIBE-o por-nó; o gate não o calcula. Nil ⇒ sem custo por-ramo conhecido.
+	Cost *CostEstimate
+	// CapabilityGap marca um nó cuja capability requerida NÃO está (ainda) concedida — um
+	// GAP de capacidade que EXIGE revisão item-a-item (não colapsável), a par dos nós
+	// Class >= gray. LIDO do planeamento/orchestrator no wiring; o gate não o infere.
+	CapabilityGap bool
 }
 
 // Plan é a representação local do GRAFO DE TAREFAS proposto pelo orquestrador — o

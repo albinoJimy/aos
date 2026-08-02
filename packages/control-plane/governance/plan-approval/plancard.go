@@ -51,6 +51,11 @@ type PlanCard struct {
 	AggregateIrreversible bool
 	// EstimatedCost é o custo agregado estimado do plano, opcional (apresentação).
 	EstimatedCost *CostEstimate
+	// NodeReviews é a TRIAGEM por-nó (na MESMA ordem de [Order]): quais nós exigem revisão
+	// FORÇADA item-a-item (Class >= gray ou capability_gap) e quais são colapsáveis. O
+	// custo POR RAMO de cada nó vive no card por-nó correspondente ([NodeCards][i].
+	// EstimatedCost) — "custo por ramo visível no card".
+	NodeReviews []NodeReview
 }
 
 // NodeCount devolve o número de nós do plano.
@@ -58,7 +63,8 @@ func (c PlanCard) NodeCount() int { return len(c.Order) }
 
 // planCardConfig acumula as opções de [BuildPlanCard].
 type planCardConfig struct {
-	cost *CostEstimate
+	cost      *CostEstimate
+	nodeCosts map[string]*CostEstimate
 }
 
 // BuildOption configura [BuildPlanCard].
@@ -67,6 +73,30 @@ type BuildOption func(*planCardConfig)
 // WithEstimatedCost enriquece o plan-card com o custo AGREGADO estimado do plano.
 func WithEstimatedCost(tokens, microUSD int64) BuildOption {
 	return func(c *planCardConfig) { c.cost = &CostEstimate{EstimatedTokens: tokens, MicroUSD: microUSD} }
+}
+
+// WithNodeCost fixa o custo POR RAMO (por-nó) de um task_id, exibido no card por-nó
+// correspondente ([PlanCard.NodeCards][i].EstimatedCost). É o threading por-nó do custo
+// quando este vem de FORA do nó (agregação por-subárvore do wiring); TEM precedência
+// sobre o [PlanNode.Cost] embutido. CA/DoD: "custo por ramo visível no card".
+func WithNodeCost(taskID string, tokens, microUSD int64) BuildOption {
+	return func(c *planCardConfig) {
+		if c.nodeCosts == nil {
+			c.nodeCosts = make(map[string]*CostEstimate)
+		}
+		c.nodeCosts[taskID] = &CostEstimate{EstimatedTokens: tokens, MicroUSD: microUSD}
+	}
+}
+
+// nodeCostFor resolve o custo por-ramo efectivo de um nó: a opção [WithNodeCost] tem
+// precedência sobre o [PlanNode.Cost] embutido. Nil ⇒ sem custo por-ramo para o nó.
+func nodeCostFor(cfg planCardConfig, n PlanNode) *CostEstimate {
+	if cfg.nodeCosts != nil {
+		if c, ok := cfg.nodeCosts[n.TaskID]; ok {
+			return c
+		}
+	}
+	return n.Cost
 }
 
 // BuildPlanCard constrói o modelo canónico do plano A PARTIR de um [Plan]: valida o
@@ -108,7 +138,13 @@ func BuildPlanCard(plan Plan, opts ...BuildOption) (PlanCard, error) {
 			Capability:   n.Capability,
 			Resource:     n.Resource,
 		}
-		card, cerr := approvalcard.BuildCard(req, approvalcard.WithRequestID(plan.RunID+"#"+id))
+		cardOpts := []approvalcard.BuildOption{approvalcard.WithRequestID(plan.RunID + "#" + id)}
+		// Custo POR RAMO: enfia o custo por-nó (opção ou embutido) no card por-nó, para
+		// que "custo por ramo" fique visível no card (NodeCards[i].EstimatedCost).
+		if cost := nodeCostFor(cfg, n); cost != nil {
+			cardOpts = append(cardOpts, approvalcard.WithEstimatedCost(cost.EstimatedTokens, cost.MicroUSD))
+		}
+		card, cerr := approvalcard.BuildCard(req, cardOpts...)
 		if cerr != nil {
 			return PlanCard{}, cerr
 		}
@@ -126,6 +162,7 @@ func BuildPlanCard(plan Plan, opts ...BuildOption) (PlanCard, error) {
 		AggregateClass:        aggregateClass(plan.Nodes),
 		AggregateIrreversible: aggregateIrreversible(plan.Nodes),
 		EstimatedCost:         cfg.cost,
+		NodeReviews:           buildNodeReviews(order, byID),
 	}
 	if verr := pc.Validate(); verr != nil {
 		return PlanCard{}, verr
@@ -163,6 +200,11 @@ func (c PlanCard) Validate() error {
 	if c.AggregateIrreversible && len(c.NodeCards) > 0 && !anyIrrev {
 		return ErrInvalidPlanCard
 	}
+	// Coerência da triagem (aditiva/retrocompatível): quando presente, há uma entrada de
+	// revisão por nó da ordem. Ausente (nil, ex.: card de wire antigo) é tolerado.
+	if len(c.NodeReviews) != 0 && len(c.NodeReviews) != len(c.Order) {
+		return ErrInvalidPlanCard
+	}
 	return nil
 }
 
@@ -181,6 +223,7 @@ type planCardWire struct {
 	AggregateClass        string                      `json:"aggregate_class"`
 	AggregateIrreversible bool                        `json:"aggregate_irreversible"`
 	EstimatedCost         *CostEstimate               `json:"estimated_cost,omitempty"`
+	NodeReviews           []NodeReview                `json:"node_reviews,omitempty"`
 }
 
 // MarshalJSON serializa o plan-card na forma de wire estável, carimbando a
@@ -199,6 +242,7 @@ func (c PlanCard) MarshalJSON() ([]byte, error) {
 		AggregateClass:        c.AggregateClass.String(),
 		AggregateIrreversible: c.AggregateIrreversible,
 		EstimatedCost:         c.EstimatedCost,
+		NodeReviews:           c.NodeReviews,
 	})
 }
 
@@ -225,6 +269,7 @@ func (c *PlanCard) UnmarshalJSON(data []byte) error {
 		AggregateClass:        parseClass(w.AggregateClass),
 		AggregateIrreversible: w.AggregateIrreversible,
 		EstimatedCost:         w.EstimatedCost,
+		NodeReviews:           w.NodeReviews,
 	}
 	if verr := out.Validate(); verr != nil {
 		return verr
