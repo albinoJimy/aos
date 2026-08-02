@@ -1,0 +1,85 @@
+# =============================================================================
+# Stack de DEV ENDURECIDO do nó `aos` — liga TODOS os subsistemas que são configuráveis por
+# ambiente/mount/tooling do repo (o "balde A" da análise em README.md deste diretório).
+#
+# NÃO é uma postura de PRODUÇÃO: as chaves vivem em ficheiros gerados por up.sh (não HSM/KMS), o
+# TLS é self-signed, e os IdP OIDC (identidade humana / soberania forte) continuam a ser infra
+# externa — ver README.md §"O que fica por resolver e porquê".
+#
+# Arranque:  bash deploy/node/dev-hardened/up.sh
+# Paragem:   docker compose -f deploy/node/dev-hardened/docker-compose.yml down -v
+#
+# As variáveis ${...} vêm do .env gerado por up.sh (material derivado das chaves geradas).
+# =============================================================================
+name: aos-dev-hardened
+
+services:
+  # --- o nó `aos`, endurecido, na rede interna (cleartext NÃO publicado no host) --------------
+  aos:
+    image: aos-node:local
+    read_only: true          # root-fs read-only (ADR-017); estado durável só no volume abaixo.
+    tmpfs:
+      - /tmp
+    environment:
+      AOS_API_ADDR: "0.0.0.0:8080"
+
+      # Identidade ENDURECIDA trust-anchor-only: a pubkey vem do issuer EXTERNO (aos-issuer); a
+      # chave de assinatura NUNCA entra neste processo. Fecha o aviso "identidade CO-LOCALIZADA".
+      AOS_ISSUER_ID: "iss:aos-issuer"
+      AOS_ISSUER_PUBKEY: "${AOS_ISSUER_PUBKEY}"
+
+      # Plano de controlo: operadores (steer/pause), ratificadores (promoção), four-eyes (approve).
+      AOS_OPERATORS: "${AOS_OPERATORS}"
+      AOS_RATIFIERS: "${AOS_RATIFIERS}"
+      AOS_APPROVERS_FILE: "/etc/aos/approvers.json"
+
+      # PDP: bundle de política ASSINADO + trust anchor FORÇADO out-of-band (hex). Sai do
+      # default-deny para mediação real por allowlist assinada + regras Cedar.
+      AOS_POLICY_BUNDLE_DIR: "/etc/aos/policies"
+      AOS_POLICY_TRUST_ANCHOR: "${AOS_POLICY_TRUST_ANCHOR}"
+
+      # Substrato + execução DURÁVEIS (Event Store WAL + WORM) no volume gravável.
+      AOS_DURABLE_EXECUTION: "1"
+      AOS_EVENTSTORE_PATH: "/var/lib/aos/events.wal"
+      AOS_WORM_PATH: "/var/lib/aos/worm.wal"
+
+      # Soberania de leitura (REGRA board->região). A credencial FORTE OIDC fica por ligar (infra
+      # externa); aqui vale a via demo por headers, aceite só FORA de produção.
+      AOS_BOARD_REGIONS: "board:demo=eu-west"
+
+      # TLS terminado A MONTANTE pelo edge (serviço `edge`); o nó serve em claro só na rede interna.
+      AOS_TLS_EXTERNAL_TERMINATION: "1"
+
+      # Observabilidade: exporta traces para o collector.
+      AOS_OTLP_ENDPOINT: "http://otel:4318"
+    volumes:
+      - aos-data:/var/lib/aos                                              # estado durável (gravável)
+      - ./secrets/approvers.json:/etc/aos/approvers.json:ro               # roster four-eyes (público)
+      - ../../../packages/control-plane/pdp/policies:/etc/aos/policies:ro # bundle PDP assinado
+    expose:
+      - "8080"   # só visível na rede interna do compose; NÃO publicado no host.
+    depends_on:
+      otel:
+        condition: service_started
+
+  # --- edge de ingresso: termina TLS (self-signed) e publica 8443 no host ---------------------
+  edge:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./secrets/tls:/etc/nginx/tls:ro
+    ports:
+      - "8443:8443"
+    depends_on:
+      aos:
+        condition: service_healthy   # espera o HEALTHCHECK (probe HTTP loopback) do nó.
+
+  # --- collector OTLP: recebe e imprime os traces do nó ---------------------------------------
+  otel:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+
+volumes:
+  aos-data:

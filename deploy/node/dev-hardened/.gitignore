@@ -1,0 +1,4 @@
+# Artefactos gerados por up.sh — material de chave e config derivada. NUNCA committar.
+# As chaves privadas (issuer/operador/ratificador/aprovadores/TLS) e o .env vivem aqui.
+secrets/
+.env
