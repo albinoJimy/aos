@@ -52,3 +52,32 @@ packages/substrate/otel-genai/semconv.go|G101
 packages/substrate/redaction/token.go|G407
 packages/substrate/redaction/token.go|G407
 packages/substrate/sandbox/snapshot.go|G115
+
+# --- Triagem gosec v2.21.4 (dívida pré-existente exposta pelo scanner) --------
+# Findings HIGH que o gosec pin (v2.21.4) reporta em código pré-EPIC-19 e que NÃO
+# são regressões deste epic. Cada entrada foi revista à mão e classificada como
+# FALSO POSITIVO ou SEGURO POR CONSTRUÇÃO — nenhuma é reuso de nonce nem overflow
+# explorável. Os do EPIC-19 (planvalidate/planmaterialize) foram CORRIGIDOS com
+# clamp saturante (ecce8e5), não baselinados.
+#
+# G407 (CWE-1204, nonce/IV "hardcoded") — FALSO POSITIVO. O nonce/IV é fresco e
+# aleatório por operação, obtido via RandSource (default crypto/rand; injectável só
+# para determinismo em teste — ver crypto.go:20-32). O gosec não segue a
+# indirecção da RandSource, pelo que trata o `make([]byte, nonceSize)` como slice
+# fixa. Mesma classe já baselinada em audit/crypto.go, backup/crypto.go,
+# memory/episodic/crypto.go, memory/semantic/knowledge_base.go, redaction/token.go.
+# crypto.go: +2 (sobe de 4→6) por o scanner passar a marcar também os Open()
+# (nonce relido do envelope persistido, aleatório no selo). keywrapper.go: AOS-216,
+# WrapDEK/UnwrapDEK com nonce fresco por embrulho.
+packages/platform/audit/crypto.go|G407     # Open(): nonce relido do envelope (random no selo) — não fixo
+packages/platform/audit/crypto.go|G407     # Open(): idem (par DEK/nonce único por registo)
+packages/platform/audit/keywrapper.go|G407 # WrapDEK: nonce fresco da RandSource por embrulho (linha 95-100)
+packages/platform/audit/keywrapper.go|G407 # UnwrapDEK: nonce lido do prefixo do embrulho (random no wrap) (linha 120-121)
+#
+# G115 (CWE-190, overflow de conversão) — SEGURO POR CONSTRUÇÃO. Valor limitado por
+# guarda explícita ou por natureza interna; input não é untrusted-transbordável.
+packages/platform/audit/filestore.go|G115         # uint32(len(payload)): limitado a auditMaxRecordBytes=64MiB (guarda linha 170) « MaxUint32
+packages/cmd/aos/observability.go|G115            # int64(AuditSeq): seq monotónica interna do store, nunca atinge 2^63 (atributo de span)
+packages/cmd/aos/sovereign_authority.go|G115      # uint64(n): n é contagem/revisão com guarda n<0→0 (linhas 240-242); int não-negativo→uint64 sempre seguro
+packages/integration/steer_authenticator.go|G115  # uint64(UnixNano): timestamp do próprio nó no selo do sinal, positivo e determinístico (codificação injectiva)
+packages/substrate/eventstore/durable.go|G115     # uint32(len(payload)): limitado a maxRecordBytes=64MiB (guarda linha 104) « MaxUint32
