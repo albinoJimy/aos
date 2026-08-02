@@ -19,6 +19,7 @@ import (
 	pdp "github.com/aos-ref/control-plane/pdp"
 	integration "github.com/aos-ref/integration"
 	oidc "github.com/aos-ref/integration/oidc"
+	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 )
 
@@ -500,6 +501,16 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	cfg.PDP = policyDP // nil ⇒ NewUnloaded (default-deny EXPLÍCITO) no composition-root; != nil ⇒ precedência
 
+	// POLÍTICA DE RETENÇÃO TTL (AOS-092/AOS-213) por ambiente. Preenche [Config.Retention] a partir
+	// de AOS_RETENTION_VERSION + AOS_RETENTION_PERIODS — sem isto o campo era INALCANÇÁVEL pelo
+	// binário e o /dsar/expire varria mas NADA expirava. Ambas vazias ⇒ zero-value (nada expira,
+	// inalterado); config inválida ⇒ ABORTA (ErrBadRetention), fail-closed.
+	retention, err := parseRetentionFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Retention = retention
+
 	return cfg, nil
 }
 
@@ -844,6 +855,81 @@ func parseSovereignReadOIDC() (*oidc.Config, error) {
 		MaxAge:     maxAge,
 		RequireJTI: requireJTI,
 	}, nil
+}
+
+// ErrBadRetention — a política de retenção TTL (AOS-092/AOS-213) está presente no ambiente mas
+// INVÁLIDA: um de AOS_RETENTION_VERSION/AOS_RETENTION_PERIODS em falta, uma classe de dados
+// desconhecida, uma duração não-parseável/≤0, ou a versão não-SemVer. Fail-closed de CONFIG, no
+// padrão de ErrBadBoardRegions: distingue "não configurado" (ambos vazios ⇒ nada expira, o
+// ExpirationJob varre mas não apaga — comportamento actual) de "configurado mas inválido" (aborta,
+// em vez de degradar em silêncio para uma política parcial ou vazia). Um operador que se engana no
+// nome de uma classe ou na duração NÃO obtém um nó que expira menos do que pensa.
+var ErrBadRetention = errors.New("aos: política de retenção inválida — AOS_RETENTION_VERSION (SemVer) e AOS_RETENTION_PERIODS (\"classe=duracao,...\" com classe em {diagnostic,trajectory,audit,pii_operational} e duracao>0) sao AMBOS obrigatorios quando um deles e definido")
+
+// retentionClasses é o vocabulário FECHADO de classes de dados que a política de retenção pode
+// nomear — o espelho das constantes [audit.DataClass]. Uma classe fora deste conjunto ABORTA
+// (ErrBadRetention) em vez de ser silenciosamente ignorada: um typo não deve deixar uma classe por
+// expirar sem aviso.
+var retentionClasses = map[string]audit.DataClass{
+	string(audit.ClassDiagnostic):     audit.ClassDiagnostic,
+	string(audit.ClassTrajectory):     audit.ClassTrajectory,
+	string(audit.ClassAudit):          audit.ClassAudit,
+	string(audit.ClassPIIOperational): audit.ClassPIIOperational,
+}
+
+// parseRetentionFromEnv constrói a política de retenção TTL-por-classe (AOS-092/AOS-213) a partir
+// do ambiente — a superfície que faltava para o [audit.ExpirationJob] (SEMPRE composto) ter uma
+// política a aplicar. Sem isto, [Config.Retention] era INALCANÇÁVEL pelo binário e o /dsar/expire
+// varria mas NADA expirava (fail-closed). Duas variáveis, ambas-ou-nenhuma:
+//
+//   - AOS_RETENTION_VERSION — SemVer MAJOR.MINOR.PATCH que rotula a política (auditável no selo WORM);
+//   - AOS_RETENTION_PERIODS — "classe=duracao,..." (ex.: "pii_operational=720h,audit=8760h"); a
+//     duração é um [time.Duration] (>0); uma classe omitida = NUNCA expira (semântica de AOS-092).
+//
+// Ambas vazias ⇒ devolve o zero-value (versão vazia ⇒ nada expira, inalterado). Uma sem a outra,
+// classe desconhecida, duração ≤0/ilegível, ou versão não-SemVer ⇒ [ErrBadRetention] (aborta). A
+// GRANULARIDADE de materialização por-titular e o residual da KEK única continuam como em
+// retention.go — esta função só liga a POLÍTICA, não muda o mecanismo de crypto-shred.
+func parseRetentionFromEnv() (audit.RetentionConfig, error) {
+	version := strings.TrimSpace(os.Getenv("AOS_RETENTION_VERSION"))
+	rawPeriods := strings.TrimSpace(os.Getenv("AOS_RETENTION_PERIODS"))
+	if version == "" && rawPeriods == "" {
+		return audit.RetentionConfig{}, nil // não configurado ⇒ nada expira (comportamento actual).
+	}
+	if version == "" || rawPeriods == "" {
+		return audit.RetentionConfig{}, ErrBadRetention
+	}
+	periods := make(map[audit.DataClass]time.Duration)
+	for _, pair := range strings.Split(rawPeriods, ",") {
+		if strings.TrimSpace(pair) == "" {
+			continue // segmento vazio (vírgula final) ⇒ ruído tolerável, não um typo.
+		}
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 {
+			return audit.RetentionConfig{}, fmt.Errorf("%w: entrada %q sem '='", ErrBadRetention, strings.TrimSpace(pair))
+		}
+		className, rawDur := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		class, ok := retentionClasses[className]
+		if !ok {
+			return audit.RetentionConfig{}, fmt.Errorf("%w: classe desconhecida %q", ErrBadRetention, className)
+		}
+		if _, dup := periods[class]; dup {
+			return audit.RetentionConfig{}, fmt.Errorf("%w: classe %q repetida", ErrBadRetention, className)
+		}
+		dur, err := time.ParseDuration(rawDur)
+		if err != nil || dur <= 0 {
+			return audit.RetentionConfig{}, fmt.Errorf("%w: duracao invalida %q para a classe %q", ErrBadRetention, rawDur, className)
+		}
+		periods[class] = dur
+	}
+	if len(periods) == 0 {
+		return audit.RetentionConfig{}, fmt.Errorf("%w: nenhuma entrada valida em AOS_RETENTION_PERIODS", ErrBadRetention)
+	}
+	rc, err := audit.NewRetentionConfig(version, periods)
+	if err != nil {
+		return audit.RetentionConfig{}, fmt.Errorf("%w: %v", ErrBadRetention, err)
+	}
+	return rc, nil
 }
 
 // parseHumanOIDCDirectory constrói o directório de autenticação humana OIDC (frente 1 do D4,

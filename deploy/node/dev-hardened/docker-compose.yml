@@ -47,6 +47,12 @@ services:
       # externa); aqui vale a via demo por headers, aceite só FORA de produção.
       AOS_BOARD_REGIONS: "board:demo=eu-west"
 
+      # Política de RETENÇÃO TTL-por-classe (AOS-092/AOS-213). Sem isto o ExpirationJob varre mas
+      # NADA expira; com isto o POST /dsar/expire crypto-shreds a KEK por-titular das classes cujo
+      # TTL expirou (respeitando legal hold). Classe omitida = nunca expira.
+      AOS_RETENTION_VERSION: "1.0.0"
+      AOS_RETENTION_PERIODS: "pii_operational=720h,trajectory=2160h,diagnostic=168h"
+
       # TLS terminado A MONTANTE pelo edge (serviço `edge`); o nó serve em claro só na rede interna.
       AOS_TLS_EXTERNAL_TERMINATION: "1"
 

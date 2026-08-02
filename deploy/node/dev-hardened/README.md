@@ -102,9 +102,12 @@ Detalhes de topologia que tornam isto real:
 > VERIFICADA (OIDC AOS-174)"*.
 
 ### C — só injeção de código (sem env; um embedder tem de o costurar)
-- **Política de retenção TTL** (`Config.Retention`, [bootstrap.go:370](../../../packages/cmd/aos/bootstrap.go)).
-  O `ExpirationJob` é sempre composto, mas sem env que preencha a política "varre mas nada expira"
-  (fail-closed). Ligar exige injetar `audit.RetentionConfig` em código.
+- **Política de retenção TTL** — **RESOLVIDO por env** (`AOS_RETENTION_VERSION` + `AOS_RETENTION_PERIODS`).
+  Adicionou-se a superfície que faltava em [main.go](../../../packages/cmd/aos/main.go)
+  (`parseRetentionFromEnv`, fail-closed, gate AOS-203 + teste `retention_env_test.go`). O
+  `ExpirationJob` passa a ter política: o `POST /dsar/expire` crypto-shreds a KEK por-titular das
+  classes cujo TTL expirou (respeitando legal hold). Ligado neste stack (`pii_operational=720h,…`).
+  *Nota:* isto tocou o binário de entrega (governado) — mudança de código verificada, não config pura.
 - **Custódia da KEK / DSARVault** (`Config.DSARVault`, [bootstrap.go:354](../../../packages/cmd/aos/bootstrap.go)).
   Sem env: o default é um vault in-memory demo-grade (KEK perde-se no restart). Produção injeta um
   key-service/KMS/HSM externo pela mesma porta (`audit.KeyVault`/`KeyWrapper`, AOS-215/AOS-216) —
