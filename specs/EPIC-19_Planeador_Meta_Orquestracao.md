@@ -298,10 +298,13 @@ Converter o plano aprovado em eventos do DAG e spawns delegados.
 Despachar nós prontos sob admissão, a jusante do gate.
 
 ### Critérios de Aceitação
-- Só despacha nós com `depends_on` satisfeitas, após `plan.materialized`.
-- Tecto de **concorrência** `max_spawn = f(headroom)` (AOS-028) — run-time, distinto dos tectos de tamanho (AOS-231).
-- Espera no gate **não consome headroom**; nós `waiting_on_capability`/`danger` sem card resolvido não despacham.
-- Re-verificação TOCTOU no spawn: sob pressão, **adia** (spawn diferido), nunca oversubscreve nem spawn parcial silencioso.
+- [x] Só despacha nós com `depends_on` satisfeitas, após `plan.materialized`. *(Evidência: `plandispatch/dispatch.go` — gate (materialização) é a 1ª porta; `unmetDependency` exige `NodeComplete` em todas as arestas, fail-closed em dep desconhecida. `TestDispatch_NoDispatchBeforeGate`, `TestDispatch_UnsatisfiedDependencyBlocks`.)*
+- [x] Tecto de **concorrência** `max_spawn = f(headroom)` (AOS-028) — run-time, distinto dos tectos de tamanho (AOS-231). *(Evidência: porta `Headroom` com `Acquire` atómico (vs `Available` advisory, ignorado — `TestDispatch_IgnoresAdvisoryAvailable`); distinção AOS-028/AOS-231 documentada.)*
+- [x] Espera no gate **não consome headroom**; nós `waiting_on_capability`/`danger` sem card resolvido não despacham. *(Evidência: retorno antes de `Acquire`; cartão avaliado antes do bloco de `Acquire`. `TestDispatch_NoDispatchBeforeGate` (`acquireCalls==0`), `TestDispatch_WaitingOnCardDoesNotConsumeHeadroom`.)*
+- [x] Re-verificação TOCTOU no spawn: sob pressão, **adia** (spawn diferido), nunca oversubscreve nem spawn parcial silencioso. *(Evidência: `Acquire` atómico por nó; falha do sink faz `Release` real + propaga `ErrDispatchSink`, `Result` sempre completo. `TestDispatch_TOCTOU_DoesNotOversubscribe` (advertised=3/live=1 ⇒ despacha 1), `TestDispatch_SinkFailureReleasesSlotAndSurfaces`, `TestDispatch_SinkFailureCompletesResults`.)*
+
+### Estado
+**FECHADO** (vaga 6 EPIC-19). Pacote `packages/control-plane/orchestrator/plandispatch/`. SCH a jusante do gate; `LifecycleView` leitura-só (preserva ADR-018). A fronteira ADR-018 é agora um **guard-test executável** (`TestBoundary_ProductionImportsAreAllowlisted`: imports de produção só `{plan, plannerevents}`), não só documental. `validatePlan` deteta ciclo/auto-dep/aresta pendente (DFS 3-cores). Zero-dep (deps de outro módulo — scheduler AOS-028/029 — por porta), `go.mod` intacto, `-race` verde (16 testes).
 
 ### Detalhes Técnicos
 - Degradação graciosa reutiliza AOS-028/031.
@@ -324,9 +327,12 @@ Despachar nós prontos sob admissão, a jusante do gate.
 Re-planear um subgrafo afectado com orçamento residual e novo ciclo de aprovação.
 
 ### Critérios de Aceitação
-- Replan debita o orçamento da árvore; atravessa o **mesmo** gate conforme o nível L0–L5 do plano original (autonomia do replan ≤ original).
-- Nós concluídos são **intocáveis** (imutabilidade do histórico — só opera sobre o futuro).
-- Tecto de replans por árvore (replans **aninhados** contam para o mesmo tecto); revisão humana forçada quando o custo acumulado excede fracção do orçamento.
+- [x] Replan debita o orçamento da árvore; atravessa o **mesmo** gate conforme o nível L0–L5 do plano original (autonomia do replan ≤ original). *(Evidência: `replan/replan.go` — reserva CAS do residual→gate ao nível original; "autonomia ≤ original" **ancorada à ÁRVORE** (não ao pedido) via `pinAndCheckLevel`, que fixa+valida o nível numa **secção crítica única** — fecha o TOCTOU de duas primeiras invocações concorrentes (verificado por `TestReplan_ConcurrentFirstInvocations_NoAutonomyEscalation`, falha-antes confirmada por reversão). `TestReplan_NestedCannotEscalateAutonomyAbovePinnedLevel`.)*
+- [x] Nós concluídos são **intocáveis** (imutabilidade do histórico — só opera sobre o futuro). *(Evidência: `guardImmutable` recusa `NodeCompleted` no subgrafo a substituir E no novo; nó ausente do snapshot ⇒ `ErrNodeStatusUnknown` (fecha o fail-open). `TestReplan_AbsentNodeInSnapshot_FailClosed`.)*
+- [x] Tecto de replans por árvore (replans **aninhados** contam para o mesmo tecto); revisão humana forçada quando o custo acumulado excede fracção do orçamento. *(Evidência: contador por-`tree_id` (aninhados no mesmo); gatilho de fracção exacto sem overflow int64 (`crossGreater` via `math/big` — fecha um fail-open). `TestReplan_NestedIncrementsSameCounter`, `TestExceedsFraction_NoInt64Overflow`, `TestReplan_NoPermanentLoop_HumanCanStop`.)*
+
+### Estado
+**FECHADO** (vaga 6 EPIC-19). Pacote `packages/control-plane/orchestrator/replan/`. Dois regimes de recuperação (antes/após commit — retoma sempre o subgrafo original em falha). O QA fechou dois fail-opens (nó ausente do snapshot; overflow int64 na fração); **eu fechei à mão o TOCTOU de escalada de autonomia** (residual LOW declarado): `pinAndCheckLevel` torna check-and-pin atómico, com teste de concorrência falsificável (`-race`, falha-antes reproduzida por reversão). Zero-dep, `go.mod` intacto, `-race` verde.
 
 ### Detalhes Técnicos
 - `plan.replan_requested`/`applied`; o SCH suspende o subgrafo e retoma no `applied` (AOS-238).
