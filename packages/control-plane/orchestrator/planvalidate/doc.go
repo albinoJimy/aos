@@ -14,9 +14,18 @@
 //   - NÃO reimplementa a detecção de ciclos: REUTILIZA a aciclicidade incremental
 //     do DAG de AOS-025 (o primitivo vive no pacote raiz `orchestrator`; a família
 //     de eventos de AOS-025 vive no subpacote irmão `orchestrator/contract`).
-//   - NÃO deriva risco nem re-preça orçamento (regras 5–6): isso é AOS-232.
 //   - NÃO computa o hash do snapshot (AOS-243): só ACEITA o snapshot pinado e
 //     confere que o seu Hash bate com o `capabilities_hash` que o plano carimbou.
+//
+// Regras 5–6 (AOS-232) — RISCO DERIVADO e ORÇAMENTO RE-PREÇADO — vivem no MESMO
+// pacote (risk.go, budget.go, resources.go) mas num ponto de entrada PRÓPRIO,
+// [ValidateResources] (e o composto [ValidatePlan]), porque exigem inputs que as
+// regras 1–4 não têm (um [Pricer] e a política de orçamento/risco) e produzem, além
+// do veredicto, o RISCO RESOLVIDO por nó que o gate AOS-236 consome. O [Validate]
+// das regras 1–4 mantém a assinatura pura de AOS-231. A regra 6 DERIVA o risco das
+// tools PINADAS (o rótulo `risk_class` do LLM só ELEVA o piso, nunca o baixa); a
+// regra 5 RE-PREÇA o custo de cada ramo (nunca o ecoa) e impõe o teto duro por-nó.
+// Ambas continuam PURAS e sem I/O (assumindo um [Pricer] puro).
 //
 // Feedback fail-closed: uma proposta inválida devolve um [Verdict] com uma [Rule]
 // ALLOWLISTED (as constantes de `orchestrator/plannerevents`, §3.3) e um [Locator]

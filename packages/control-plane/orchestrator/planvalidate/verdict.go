@@ -31,6 +31,13 @@ const (
 	ReasonMaxNodesExceeded  Reason = "max_nodes_exceeded"
 	ReasonMaxDepthExceeded  Reason = "max_depth_exceeded"
 	ReasonMaxFanoutExceeded Reason = "max_fanout_exceeded"
+
+	// Regra 5 — orçamento RE-PREÇADO com teto por nó (AOS-232).
+	ReasonNoPricer             Reason = "no_pricer"              // política sem Pricer (fail-closed)
+	ReasonBranchCostDivergence Reason = "branch_cost_divergence" // re-preçado vs declarado > tolerância
+	ReasonNodeCeilingExceeded  Reason = "node_ceiling_exceeded"  // teto duro por-nó (breaker AOS-029)
+	ReasonBudgetOverflow       Reason = "budget_overflow"        // soma dos custos transborda int64
+	ReasonBudgetTotalExceeded  Reason = "budget_total_exceeded"  // total re-preçado > raiz remanescente
 )
 
 // ToolCoord são as coordenadas ESTRUTURAIS de uma tool ofensora (a referência

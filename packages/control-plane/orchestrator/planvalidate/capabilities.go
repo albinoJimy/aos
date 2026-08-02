@@ -1,5 +1,7 @@
 package planvalidate
 
+import "github.com/aos-ref/kernel/reference-monitor/risk"
+
 // Capability é UMA entrada do snapshot de capabilities pinado: uma ferramenta
 // conhecida do REG, com a versão e o digest a que está fixada e o seu estado de
 // admissibilidade. É DADO PINADO (trusted): faz parte do input imutável do
@@ -17,6 +19,20 @@ type Capability struct {
 	// Admissible é a decisão de política do snapshot (allowlist): se falso, a
 	// ferramenta existe mas não é admitida para este planeamento. Fail-closed.
 	Admissible bool
+
+	// Sensitivity/Egress/Reversibility são os EIXOS DE RISCO PINADOS da capability
+	// (AOS-232, regra 6): a propriedade INERENTE da ferramenta que o classificador
+	// SA-ROC ([risk.Classify]) consome para DERIVAR o piso de risco de cada nó. São
+	// dados TRUSTED do snapshot — a derivação NÃO lê o rótulo do LLM.
+	//
+	// FAIL-CLOSED PELO TIPO: os valores-zero de cada eixo são os mais perigosos
+	// ([risk.SensitivityUnknown]→sensível, [risk.EgressUnknown]→externo,
+	// [risk.ReversibilityUnknown]→irreversível). Uma capability pinada SEM eixos de
+	// risco explícitos deriva `danger` — uma ferramenta por classificar trata-se como
+	// perigosa, nunca como segura.
+	Sensitivity   risk.Sensitivity
+	Egress        risk.Egress
+	Reversibility risk.Reversibility
 }
 
 // Snapshot é o conjunto PINADO de capabilities contra o qual a regra 3 resolve as
