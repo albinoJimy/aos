@@ -86,6 +86,19 @@ func (c *demoApproveChannel) Confirm(_ context.Context, _ risk.ConfirmationReque
 	return risk.ConfirmationResponse{Approved: true, Approver: approver}, nil
 }
 
+// demoPlanReviewer é a superfície de revisão de demonstração ([planapproval.PlanReviewer]):
+// revê item-a-item TODOS os nós forçados (Class >= gray ou capability_gap) do card e aprova.
+// Existe para o composition root DEMO poder ligar a POSTURA SEGURA do gate (AOS-236, opção B
+// do dono): [planapproval.WithForcedReview] exige um reviewer que evidencie a revisão dos nós
+// forçados — sem ele, um plano >= gray seria recusado fail-closed. Num nó real este seria o
+// operador humano/superfície interativa; aqui aprova de forma determinista, zero rede.
+type demoPlanReviewer struct{}
+
+// Review devolve approve com os task_ids forçados marcados como revistos.
+func (demoPlanReviewer) Review(_ context.Context, card planapproval.PlanCard) (planapproval.PlanDecision, error) {
+	return planapproval.PlanDecision{Verdict: planapproval.VerdictApprove, ReviewedNodes: card.ForcedTaskIDs()}, nil
+}
+
 func main() {
 	if err := runDemo(os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "aos-demo: %v\n", err)
@@ -211,8 +224,19 @@ func runDemo(w io.Writer) error {
 	// O Oracle de autonomia é L0 (conservador), pelo que uma tarefa DANGER não auto-aprova —
 	// escala ao canal de confirmação, que aprova (demo). O canal é partilhado com o
 	// dual-control abaixo.
+	//
+	// POSTURA SEGURA (AOS-236, decisão do dono = opção B: seguro via wiring de produção). O
+	// default da biblioteca é permissivo (flexível), mas o composition root LIGA as duas
+	// imposições da fronteira de segurança até L3: WithForcedReview (todo o nó >= gray tem de
+	// ser revisto item-a-item, evidenciado pelo demoPlanReviewer) e WithPerEffectDualControl
+	// (cada nó danger exige dois aprovadores DISTINTOS por-efeito, inline, antes da decisão
+	// agregada). Sem estas, o nó entregue aprovaria um plano >= gray sem revisão nó-a-nó.
 	confirmCh := &demoApproveChannel{}
-	planGate, err := planapproval.NewPlanGate(autonomy.NewLevelRegistry(), confirmCh)
+	planGate, err := planapproval.NewPlanGate(autonomy.NewLevelRegistry(), confirmCh,
+		planapproval.WithReviewer(demoPlanReviewer{}),
+		planapproval.WithForcedReview(),
+		planapproval.WithPerEffectDualControl(),
+	)
 	if err != nil {
 		return fmt.Errorf("compor plan gate: %w", err)
 	}
@@ -232,7 +256,7 @@ func runDemo(w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("plan-approval: %w", err)
 	}
-	step("b') PLAN-APPROVAL via PlanGate real: aprovado=%t (L0 escalou a tarefa danger ao canal HITL)", planDec.Verdict.Approved())
+	step("b') PLAN-APPROVAL via PlanGate real (postura segura AOS-236: revisão forçada + dual-control por-efeito): aprovado=%t (L0 escalou a tarefa danger; nó revisto item-a-item + dois aprovadores distintos)", planDec.Verdict.Approved())
 
 	// Corre um turno via o Agent Runtime com o modelo fake. O loop monta o prompt,
 	// chama o modelo (fake), grava o turno no Event Store e termina (resposta final).
