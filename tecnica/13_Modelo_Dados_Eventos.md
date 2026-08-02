@@ -66,7 +66,7 @@ Princípios directamente materializados: **contexto ≠ registo** (Princípio 4)
 
 Todo o facto que ocorre num run — um turno de modelo, uma mediação de tool call, uma transição de estado, uma escrita de memória — é gravado como um **evento append-only** com o mesmo envelope canónico. O envelope é **fino e uniforme**: transporta apenas os **metadados de correlação e de ordem** (quem, que stream, que passo, que versão de schema) e delega tudo o que é específico do facto ao `payload`, que tem o **seu próprio schema por tipo de evento**.
 
-Esta é a decisão estrutural mais importante da secção, e a que mais frequentemente é mal lida: **o envelope não transporta `prompt_hash`, `model`, `taint` nem manifesto**. Esses metadados existem — mas um nível abaixo, no `payload` do tipo de evento a que pertencem. Um evento de mediação não tem `model.seed`; um evento de turno não tem `taint`. Espalhá-los pelo envelope obrigaria todos os 78 tipos de evento do Event Store (§3.3) a carregar campos vazios e tornaria qualquer novo metadado uma alteração MAJOR da porta C2.
+Esta é a decisão estrutural mais importante da secção, e a que mais frequentemente é mal lida: **o envelope não transporta `prompt_hash`, `model`, `taint` nem manifesto**. Esses metadados existem — mas um nível abaixo, no `payload` do tipo de evento a que pertencem. Um evento de mediação não tem `model.seed`; um evento de turno não tem `taint`. Espalhá-los pelo envelope obrigaria todos os 91 tipos de evento do Event Store (§3.3) a carregar campos vazios e tornaria qualquer novo metadado uma alteração MAJOR da porta C2.
 
 ### 3.1 Envelope real `[WIRE]`
 
@@ -139,7 +139,7 @@ Consequência prática do `additionalProperties: false` no schema publicado: um 
 
 ### 3.3 Catálogo de tipos de evento `[WIRE]`
 
-À data desta revisão o código declara **85 constantes de tipo de facto**, das quais **78 são tipos do envelope do Event Store** (as que chegam a um `eventstore.EventInput.Type`) e **7 são rótulos de `audit.AuditRecord`** — nomes com a mesma forma, mas que nunca passam pelo Event Store. As duas famílias estão separadas nas duas tabelas abaixo; **o catálogo do campo `type` do envelope de §3.1 é a primeira tabela (78)**.
+À data desta revisão o código declara **98 constantes de tipo de facto**, das quais **91 são tipos do envelope do Event Store** (as que chegam a um `eventstore.EventInput.Type`) e **7 são rótulos de `audit.AuditRecord`** — nomes com a mesma forma, mas que nunca passam pelo Event Store. As duas famílias estão separadas nas duas tabelas abaixo; **o catálogo do campo `type` do envelope de §3.1 é a primeira tabela (78)**.
 
 A versão 1.0 deste documento citava quatro nomes «canónicos» a título de exemplo (`turn.recorded`, `tool.call.dispatched`, `tool.result.received`, `state.transition`) — dos quais **três nunca foram emitidos por código nenhum**. A citação era ilustrativa («ex.:»), não um contrato decretado; mas um exemplo errado num documento de referência é lido como catálogo, e foi. Correcção:
 
@@ -159,7 +159,7 @@ Uma tabela com os 85 nomes ficaria desactualizada na semana seguinte — foi exa
 
 A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declaradas**; este documento fixa a **taxonomia de prefixos** e o dono de cada família.
 
-**(a) Tipos do envelope do Event Store — 78.** Estes são os valores legítimos do campo `type` de §3.1:
+**(a) Tipos do envelope do Event Store — 91.** Estes são os valores legítimos do campo `type` de §3.1:
 
 | Prefixo | Nº | Componente dono (onde as constantes vivem) |
 |---|---|---|
@@ -174,6 +174,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `identity.nhi.*` | 2 | `packages/platform/identity/events.go` |
 | `lease.*` | 2 | `packages/kernel/agent-runtime/durable/lease.go` |
 | `memory.*` | 8 | `packages/platform/memory/{adapters,semantic,episodic,compression,migrations}` |
+| `plan.*` | 13 | `packages/control-plane/orchestrator/plannerevents/events.go` (domínio `aos.planner.v1`, EPIC-19/AOS-235) |
 | `ratification.*` | 1 | `packages/control-plane/governance/hitl/nonce_store.go` |
 | `registry.artifact.*` | 2 | `packages/platform/registry/events.go` |
 | `replay.captured` | 1 | `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |
@@ -208,7 +209,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 
 #### Verificação — gate automático `event-catalog` (AOS-198)
 
-O conjunto de constantes declaradas é reproduzível a partir da árvore, sem lista manual. **O resultado esperado é 85 linhas** — 78 tipos de Event Store + 7 rótulos de audit (a distinção não é feita pelo comando; é feita pela pertença às tabelas (a)/(b) acima).
+O conjunto de constantes declaradas é reproduzível a partir da árvore, sem lista manual. **O resultado esperado é 98 linhas** — 91 tipos de Event Store + 7 rótulos de audit (a distinção não é feita pelo comando; é feita pela pertença às tabelas (a)/(b) acima).
 
 Variante GNU (Linux/macOS, ou Git Bash no Windows):
 
