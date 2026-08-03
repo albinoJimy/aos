@@ -3,6 +3,12 @@
 # demo-pdp-tool-deny.sh — prova a MEDIAÇÃO de tool calls pelo Reference Monitor num run MULTI-TURNO
 # real, com DEFESA-EM-PROFUNDIDADE fail-closed (AOS-069 / ADR-002).
 #
+# NOTA (gate observado): este script demonstra a negação na REVALIDAÇÃO de registry (2.º hook), que
+# ocorre quando a tool NÃO está registada como contrato assinado — ou seja, com
+# AOS_MODEL_TOOLS_REGISTER *desligado*. O compose OIDC liga-o por omissão; para reproduzir a negação
+# na revalidação, corre com AOS_MODEL_TOOLS_REGISTER vazio. COM o registo ligado a negação MOVE-SE
+# para o PDP/Cedar (taint-gate) — ver demo-pdp-taint-gate.sh.
+#
 #   O nó oferece ao modelo (via AOS_MODEL_TOOLS) a tool `web_post` → capability `cap:http.post`,
 #   região `eu`. O NHI do run é mintado COM `cap:http.post` (o principal ESTÁ autorizado). O modelo
 #   real (Kimi) É INDUZIDO a pedir a tool — e pede-a a cada turno. CADA tool call é MEDIADA pelo RM

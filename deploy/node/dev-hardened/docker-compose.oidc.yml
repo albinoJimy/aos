@@ -105,6 +105,11 @@ services:
       # o RM/PDP MEDEIA-a. Como a autorização originada pelo modelo é UNTRUSTED, o taint-gate NEGA
       # (P4, "untrusted não comanda") — ver demo-pdp-tool-deny.sh. Ver deploy/node/README.md.
       AOS_MODEL_TOOLS: "/etc/aos/model-tools.json"
+      # REGISTA as tools acima como catálogo ASSINADO (dev-grade, chave efémera) para a REVALIDAÇÃO
+      # do RM as admitir → a decisão passa ao PDP/Cedar (gate seguinte). Sem isto a negação seria na
+      # revalidação (tool sem contrato assinado); COM isto a negação de cap:http.post é do taint-gate
+      # Cedar (allow_http_post exige taint != untrusted). Ver demo-pdp-taint-gate.sh.
+      AOS_MODEL_TOOLS_REGISTER: "1"
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
       - ./secrets/vault-token:/etc/aos/vault-token:ro

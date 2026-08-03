@@ -47,6 +47,39 @@ type modelToolSpec struct {
 	ResourceType   string          `json:"resource_type"`
 	ResourceValue  string          `json:"resource_value"`
 	ResourceRegion string          `json:"resource_region"`
+	// Egress / CredentialScopes descrevem o CONTRATO de supply-chain da tool (só usados quando
+	// AOS_MODEL_TOOLS_REGISTER regista o catálogo assinado; ver modelcatalog.go). Egress ∈
+	// {none,internal,external} (default none); CredentialScopes são scopes DECLARADOS (nunca
+	// segredos). Não afectam a decisão Cedar (essa avalia a Capability), só a REVALIDAÇÃO.
+	Egress           string   `json:"egress"`
+	CredentialScopes []string `json:"credential_scopes"`
+}
+
+// readModelToolSpecs lê + valida o ficheiro AOS_MODEL_TOOLS e devolve os specs crus. Vazio ⇒
+// (nil, nil): não configurado. Fonte única partilhada por loadModelToolsFromEnv (face do modelo) e
+// buildSignedToolRegistryFromEnv (catálogo assinado).
+func readModelToolSpecs() ([]modelToolSpec, error) {
+	path := strings.TrimSpace(os.Getenv("AOS_MODEL_TOOLS"))
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ler ficheiro: %v", ErrBadModelTools, err)
+	}
+	var specs []modelToolSpec
+	if err := json.Unmarshal(raw, &specs); err != nil {
+		return nil, fmt.Errorf("%w: JSON invalido: %v", ErrBadModelTools, err)
+	}
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("%w: lista vazia", ErrBadModelTools)
+	}
+	for i, s := range specs {
+		if strings.TrimSpace(s.Name) == "" || strings.TrimSpace(s.Capability) == "" {
+			return nil, fmt.Errorf("%w: tool #%d sem name/capability", ErrBadModelTools, i)
+		}
+	}
+	return specs, nil
 }
 
 // toolBinding é o mapeamento trusted nome-da-tool → (capability, recurso) aplicado à ToolInvocation
@@ -61,29 +94,18 @@ type toolBinding struct {
 // loadModelToolsFromEnv lê AOS_MODEL_TOOLS. Devolve (tools p/ WithTools, bindings p/ enriquecimento,
 // err). Vazio ⇒ (nil, nil, nil): nenhuma tool oferecida, comportamento inalterado.
 func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
-	path := strings.TrimSpace(os.Getenv("AOS_MODEL_TOOLS"))
-	if path == "" {
-		return nil, nil, nil
-	}
-	raw, err := os.ReadFile(path)
+	specs, err := readModelToolSpecs()
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: ler ficheiro: %v", ErrBadModelTools, err)
-	}
-	var specs []modelToolSpec
-	if err := json.Unmarshal(raw, &specs); err != nil {
-		return nil, nil, fmt.Errorf("%w: JSON invalido: %v", ErrBadModelTools, err)
+		return nil, nil, err
 	}
 	if len(specs) == 0 {
-		return nil, nil, fmt.Errorf("%w: lista vazia", ErrBadModelTools)
+		return nil, nil, nil
 	}
 	tools := make([]port.Tool, 0, len(specs))
 	bindings := make(map[string]toolBinding, len(specs))
-	for i, s := range specs {
+	for _, s := range specs {
 		name := strings.TrimSpace(s.Name)
 		capab := strings.TrimSpace(s.Capability)
-		if name == "" || capab == "" {
-			return nil, nil, fmt.Errorf("%w: tool #%d sem name/capability", ErrBadModelTools, i)
-		}
 		tools = append(tools, port.Tool{
 			Type: "function",
 			Function: port.FunctionDef{

@@ -13,6 +13,23 @@
     "capability": "cap:http.post",
     "resource_type": "http",
     "resource_value": "https://api.example.com/results",
-    "resource_region": "eu"
+    "resource_region": "eu",
+    "egress": "external"
+  },
+  {
+    "name": "doc_read",
+    "description": "Lê um documento local por id. Usa isto quando te pedirem para ler/consultar um documento.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "doc_id": { "type": "string", "description": "id do documento a ler" }
+      },
+      "required": ["doc_id"]
+    },
+    "capability": "cap:fs.read",
+    "resource_type": "file",
+    "resource_value": "doc://notes",
+    "resource_region": "eu",
+    "egress": "none"
   }
 ]
