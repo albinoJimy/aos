@@ -1,0 +1,47 @@
+# =============================================================================
+# Gateway de modelos EXTERNO e CONFIGURÁVEL (LiteLLM proxy) — substitui o OmniRoute.
+#
+# É config-driven puro: adicionar/trocar PROVIDERS e MODELOS faz-se AQUI (YAML) + no ficheiro de
+# segredos (./secrets/model.env), SEM tocar no código do nó. O nó continua a pedir um `model_name`;
+# o LiteLLM traduz para o provider/modelo REAL (`litellm_params.model`) e injecta a key do provider.
+#
+# `model_name`  = o ALIAS que o NÓ pede. TEM de ser um nome da allowlist ASSINADA do gateway do nó
+#                 (board-eu): gpt-4o | gpt-4o-mini | text-embedding-3-large. É a fronteira de
+#                 governança do nó (imutável sem re-assinar); o mapeamento para o provider real é
+#                 livre e vive aqui.
+# `litellm_params.model` = o PROVIDER/MODELO real (prefixo do provider, ex.: moonshot/…, openai/…,
+#                 anthropic/…). A key vem de os.environ/<VAR> (definida em ./secrets/model.env).
+# =============================================================================
+model_list:
+  # --- Kimi (Moonshot AI) — o provider pedido ------------------------------------------------
+  - model_name: gpt-4o-mini            # alias allowlisted que o nó pede
+    litellm_params:
+      model: moonshot/kimi-k2-0711-preview   # modelo Kimi real (muda p/ o que preferires)
+      api_key: os.environ/MOONSHOT_API_KEY
+      api_base: https://api.moonshot.ai/v1
+
+  - model_name: gpt-4o                 # segundo alias allowlisted -> outro modelo Kimi
+    litellm_params:
+      model: moonshot/moonshot-v1-32k
+      api_key: os.environ/MOONSHOT_API_KEY
+      api_base: https://api.moonshot.ai/v1
+
+  # --- Exemplos p/ MAIS providers/modelos (descomenta e põe a key em ./secrets/model.env) -----
+  # - model_name: gpt-4o
+  #   litellm_params:
+  #     model: openai/gpt-4o
+  #     api_key: os.environ/OPENAI_API_KEY
+  # - model_name: gpt-4o-mini
+  #   litellm_params:
+  #     model: anthropic/claude-3-5-sonnet-latest
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  drop_params: true            # tolera params que um provider não suporte (não rebenta o pedido)
+  telemetry: false             # sem telemetria externa
+
+general_settings:
+  # Sem master key => o nó fala com o LiteLLM sem auth de cliente (rede interna, dev). Em produção
+  # define LITELLM_MASTER_KEY e usa AOS_MODEL_API_KEY_PATH no nó.
+  # SSRF: o egress do LiteLLM vai para api_base acima (api.moonshot.ai) — mantém a allowlist curta.
+  background_health_checks: false

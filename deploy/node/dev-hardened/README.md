@@ -123,18 +123,22 @@ Detalhes de topologia que tornam isto real:
   OpenAI (que vive em `internal/adapters`): reutiliza-o via o construtor de produção + o
   `NewModelClient` canónico. Traz allowlist regional **assinada** (embebida, trust-anchor pinado),
   keypool, routing de failover, metering/pricing e endurecimento SSRF. Ligado a um endpoint
-  **OpenAI-compatível** (aqui o **OmniRoute**, `http://omniroute:20128/api/v1`). **Zero-dep
-  preservado**: o model-gateway já estava no grafo do nó e não traz deps externas (binário linka 0
-  novas; go.sum inalterado). Verificado por `modelgatewaywiring_test.go` (nó→GW→provider contra um
-  httptest OpenAI-wire) e vivo (o OmniRoute regista `POST /api/v1/chat/completions | gpt-4o`).
-  - **Restrição da allowlist:** a policy assinada embebida só permite `board-eu` → modelos
-    `{gpt-4o, gpt-4o-mini, text-embedding-3-large}`; por isso `AOS_MODEL_NAME` tem de ser um destes
-    (o OmniRoute mapeia o nome para o provider real). Um nome fora da allowlist é **negado
-    fail-closed** antes de tocar o upstream.
-  - **Último passo (teu):** o OmniRoute precisa de um **provider com API key** para completar. Sem
-    ele o turno do modelo devolve `No active credentials`. Configura em `http://localhost:20128`
-    (login `admin`/`CHANGEME` → adiciona um provider OpenAI-compatível com a tua key → mapeia
-    `gpt-4o`). O boot do nó **não** depende disto (o modelo só é chamado durante um run).
+  **OpenAI-compatível** — o **LiteLLM proxy** (`http://litellm:4000/v1`), um gateway **config-driven**
+  (YAML) multi-provider/multi-modelo, **externo e sem código**. **Zero-dep preservado**: o
+  model-gateway já estava no grafo do nó e não traz deps externas (binário linka 0 novas; go.sum
+  inalterado). Verificado por `modelgatewaywiring_test.go` (nó→GW→provider contra um httptest
+  OpenAI-wire).
+  - **Duas camadas de config (limpo):** o **nome** que o nó pede é travado pela allowlist ASSINADA
+    embebida (`board-eu` → `gpt-4o | gpt-4o-mini | text-embedding-3-large`) — a fronteira de
+    governança do NÓ; o **mapeamento nome→provider/modelo real** vive em
+    [litellm/config.yaml](litellm/config.yaml) (livre, versionável). Adicionar/trocar provider ou
+    modelo = editar o YAML + `secrets/model.env` (keys), **sem tocar no nó**.
+  - **Kimi (Moonshot):** `gpt-4o-mini` está mapeado para `moonshot/kimi-k2-0711-preview`
+    (`api.moonshot.ai`). Para completar, põe a tua `MOONSHOT_API_KEY` em `secrets/model.env`. Sem
+    key o turno devolve erro do provider; o boot do nó **não** depende disto.
+  - **Mais providers/modelos:** adiciona entradas em `litellm/config.yaml` (openai, anthropic, …) +
+    as keys em `secrets/model.env`. (O nó só pode PEDIR os nomes allowlisted; cada um mapeia
+    livremente para um provider/modelo real.)
 
 ### D — deferido por decisão/dependência
 - **Checkpoint WORM ASSINADO** (âncora de frescura que fecharia a truncatura do tail, AOS-072).
@@ -159,7 +163,8 @@ Detalhes de topologia que tornam isto real:
 | `keycloak/realm-aos.json` | Realm importável: client `aos-node`, user `alice`, mapper `board`→claim. |
 | `demo-human-oidc.sh` | Autentica o humano por OIDC (`aos-issuer --assertion`) e submete um run. |
 | `demo-vault-shred.sh` | Prova o crypto-shred: um run cria a KEK no Vault; o `/dsar/erase` destrói-a. |
-| *(OmniRoute)* | Model gateway OpenAI-compatível — corre como container próprio (`docker run … diegosouzapw/omniroute`); `up-oidc.sh` liga-o à rede. O nó fala com ele via o gateway real do EPIC-06. |
+| `litellm/config.yaml` | Gateway de modelos EXTERNO (LiteLLM): mapeia os nomes allowlisted → providers/modelos reais (Kimi/Moonshot, …). Multi-provider/modelo, sem código. |
+| `secrets/model.env` (git-ignored) | Keys dos providers do LiteLLM (`MOONSHOT_API_KEY`, …). |
 | `issuer-toolbox/Dockerfile` | Compila `aos-issuer` num container para o correr EM-REDE (human OIDC). |
 | `secrets/` (git-ignored) | Material gerado: chaves privadas, `approvers.json`, CA+certs TLS. |
 | `.env` (git-ignored) | Valores derivados (pubkeys, trust anchor) consumidos pelo compose. |

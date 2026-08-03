@@ -80,19 +80,16 @@ services:
       AOS_DSAR_VAULT_ADDR: "http://vault:8200"
       AOS_DSAR_VAULT_TOKEN_PATH: "/etc/aos/vault-token"
 
-      # MODEL GATEWAY (EPIC-06) apontado ao OmniRoute (gateway OpenAI-compatível auto-hospedado).
-      # O nó compõe o gateway REAL (packages/platform/model-gateway) e chama o OmniRoute em
-      # /api/v1/chat/completions. O AOS_MODEL_NAME TEM de ser um modelo da allowlist ASSINADA
-      # embebida (board-eu): gpt-4o | gpt-4o-mini. O OmniRoute mapeia esse nome para o provider
-      # concreto — que precisa de ser configurado NA UI do OmniRoute (login + provider + key).
-      # Sem provider configurado o turno do modelo devolve "No active credentials" (o boot NÃO é
-      # afectado: o modelo só é chamado durante um run). O OmniRoute corre como container próprio
-      # (o teu `docker run`), ligado a esta rede por up-oidc.sh.
-      AOS_MODEL_ENDPOINT: "http://omniroute:20128/api/v1"
-      # Modelo pedido ao gateway. Travado pela allowlist ASSINADA embebida (board-eu): só
-      # gpt-4o | gpt-4o-mini | text-embedding-3-large. Trocar entre estes é config; um nome fora
-      # da allowlist é NEGADO fail-closed. O PROVIDER real a que este nome roteia escolhe-se na UI
-      # do OmniRoute (mapear gpt-4o-mini -> provider+key).
+      # MODEL GATEWAY (EPIC-06) apontado ao LiteLLM (gateway OpenAI-compatível CONFIG-DRIVEN).
+      # O nó compõe o gateway REAL (packages/platform/model-gateway) e chama o LiteLLM em
+      # /v1/chat/completions com um nome ALLOWLISTED. O LiteLLM traduz esse nome para o
+      # provider/modelo REAL segundo litellm/config.yaml (multi-provider/modelo, externo, SEM
+      # código). As keys dos providers vivem em ./secrets/model.env (nunca no nó). Sem key o turno
+      # devolve erro do provider; o boot do nó NÃO depende disto (o modelo só é chamado num run).
+      AOS_MODEL_ENDPOINT: "http://litellm:4000/v1"
+      # Nome pedido ao gateway do nó. Travado pela allowlist ASSINADA embebida (board-eu): só
+      # gpt-4o | gpt-4o-mini | text-embedding-3-large. É a fronteira de governança do NÓ; o
+      # provider/modelo real a que este nome roteia define-se em litellm/config.yaml (livre).
       AOS_MODEL_NAME: "gpt-4o-mini"
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
@@ -113,6 +110,19 @@ services:
     command: ["server", "-dev"]
     ports:
       - "8200:8200"   # API/consola a partir do host (curl -H X-Vault-Token: aos-dev-root ...).
+
+  # --- LiteLLM proxy — gateway de modelos EXTERNO e CONFIG-DRIVEN (substitui o OmniRoute) --------
+  # Multi-provider/multi-modelo por YAML (litellm/config.yaml); keys dos providers por env
+  # (./secrets/model.env). Adicionar/trocar provider ou modelo = editar esses ficheiros, SEM código.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    env_file:
+      - ./secrets/model.env      # MOONSHOT_API_KEY=... (e outras keys de provider). Git-ignored.
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"              # endpoint OpenAI a partir do host (http://localhost:4000/v1).
 
   # --- toolbox on-demand: aos-issuer EM-REDE para o fluxo `mint --assertion` (human OIDC) --------
   # Não arranca no `up` (profile "tools"). Uso:

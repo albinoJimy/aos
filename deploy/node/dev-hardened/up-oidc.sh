@@ -69,15 +69,19 @@ until [[ "$(docker inspect -f '{{.State.Health.Status}}' "${CID}" 2>/dev/null)" 
   sleep 2
 done
 
-# --- 2a. OmniRoute (model gateway upstream): liga o container do utilizador a esta rede ---------
-# O OmniRoute corre como container PRÓPRIO (o `docker run` do utilizador). Se existir, liga-se à
-# rede do compose para o nó o alcançar por http://omniroute:20128. Best-effort: sem OmniRoute, o
-# turno do modelo devolve erro (o resto da stack não depende dele).
-if docker ps -a --format '{{.Names}}' | grep -qx omniroute; then
-  docker network connect "${PROJECT}_default" omniroute >/dev/null 2>&1 || true
-  echo "[oidc] OmniRoute ligado à rede ${PROJECT}_default (endpoint do modelo: http://omniroute:20128/api/v1)"
-else
-  echo "[oidc] NOTA: container 'omniroute' não encontrado — corre o \`docker run ... diegosouzapw/omniroute\` para o modelo."
+# --- 2a. Model gateway (LiteLLM): ficheiro de segredos das keys de provider --------------------
+# As keys dos providers (Moonshot/Kimi, etc.) vivem AQUI (externo, git-ignored), não no nó nem no
+# YAML. Cria um placeholder se não existir; o LiteLLM lê-o por env_file. Enche MOONSHOT_API_KEY
+# com a tua key do Kimi para os runs completarem.
+if [[ ! -f "${SECRETS}/model.env" ]]; then
+  cat > "${SECRETS}/model.env" <<'EOF'
+# Keys dos providers do LiteLLM (litellm/config.yaml lê-as via os.environ/<VAR>).
+# Enche a(s) que usas; sem key o turno do modelo devolve erro do provider.
+MOONSHOT_API_KEY=
+# OPENAI_API_KEY=
+# ANTHROPIC_API_KEY=
+EOF
+  echo "[oidc] criado ${SECRETS}/model.env — PÕE a tua MOONSHOT_API_KEY lá para o Kimi completar."
 fi
 
 # --- 2b. Vault: habilitar o motor Transit (idempotente) ---------------------
