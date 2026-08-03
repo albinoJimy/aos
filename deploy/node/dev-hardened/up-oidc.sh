@@ -87,12 +87,30 @@ UI_USERNAME=admin
 UI_PASSWORD=aos-litellm-2026
 DATABASE_URL=postgresql://keycloak:keycloak-dev-pass@postgres:5432/litellm
 STORE_MODEL_IN_DB=True
+
+# --- SSO OIDC via Keycloak (login humano da UI; "key para máquinas, SSO para humanos") ---
+GENERIC_CLIENT_ID=litellm
+GENERIC_CLIENT_SECRET=litellm-dev-secret
+GENERIC_AUTHORIZATION_ENDPOINT=https://localhost:9443/realms/aos/protocol/openid-connect/auth
+GENERIC_TOKEN_ENDPOINT=https://idp:8443/realms/aos/protocol/openid-connect/token
+GENERIC_USERINFO_ENDPOINT=https://idp:8443/realms/aos/protocol/openid-connect/userinfo
+GENERIC_SCOPE=openid email profile
+PROXY_BASE_URL=http://localhost:4000
 EOF
   echo "[oidc] criado ${SECRETS}/model.env — PÕE a tua MOONSHOT_API_KEY lá para o Kimi completar."
 fi
 # A master key que o NÓ apresenta ao LiteLLM (bearer). Deriva-a do model.env (idempotente).
 grep -E '^LITELLM_MASTER_KEY=' "${SECRETS}/model.env" | head -1 | sed 's/^LITELLM_MASTER_KEY=//' | tr -d '\r\n' > "${SECRETS}/litellm-key"
 chmod 644 "${SECRETS}/litellm-key"
+# Bundle de CA COMBINADO para o LiteLLM (Python): CAs públicas do certifi (egress real p/ os
+# providers) + a nossa CA de dev (SSO backend ao Keycloak em https://idp:8443). Só a CA de dev
+# quebraria o TLS público.
+if [[ ! -s "${SECRETS}/ca-bundle.crt" ]]; then
+  docker run --rm --entrypoint python ghcr.io/berriai/litellm:main-stable \
+    -c 'import certifi,sys; sys.stdout.write(open(certifi.where()).read())' > "${SECRETS}/ca-bundle.crt" 2>/dev/null || true
+  cat "${SECRETS}/ca.crt" >> "${SECRETS}/ca-bundle.crt"
+  chmod 644 "${SECRETS}/ca-bundle.crt"
+fi
 
 # --- 2b. Vault: habilitar o motor Transit (idempotente) ---------------------
 echo "[oidc] a aguardar o Vault e a habilitar o motor Transit ..."
@@ -115,6 +133,17 @@ until curl -sk "${DISCO}" | grep -q '"issuer"'; do
   sleep 2
 done
 echo "[oidc]   discovery OK: $(curl -sk "${DISCO}" | sed -n 's/.*"issuer":"\([^"]*\)".*/\1/p')"
+
+# Cliente 'litellm' do SSO no Keycloak. Em imports frescos vem do realm-aos.json; num realm já
+# importado, cria-o idempotentemente via admin API (201=novo, 409=já existia — ambos OK).
+ADMTOK="$(curl -sk -d client_id=admin-cli -d username=admin -d password=admin -d grant_type=password \
+  https://localhost:9443/realms/master/protocol/openid-connect/token | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+if [[ -n "${ADMTOK}" ]]; then
+  sc="$(curl -sk -o /dev/null -w '%{http_code}' -X POST https://localhost:9443/admin/realms/aos/clients \
+    -H "Authorization: Bearer ${ADMTOK}" -H 'Content-Type: application/json' \
+    -d '{"clientId":"litellm","secret":"litellm-dev-secret","publicClient":false,"standardFlowEnabled":true,"directAccessGrantsEnabled":false,"redirectUris":["http://localhost:4000/sso/callback","http://localhost:4000/*"],"webOrigins":["http://localhost:4000"]}')"
+  echo "[oidc]   cliente SSO litellm -> HTTP ${sc} (201=novo, 409=existia)"
+fi
 
 # --- 3. ID-token REAL do Keycloak (in-network; iss = https://idp:8443/...) ---
 echo "[oidc] 3/5 a obter ID-token do Keycloak (grant password, user alice) ..."

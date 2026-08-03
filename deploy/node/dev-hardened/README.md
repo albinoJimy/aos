@@ -164,7 +164,15 @@ Detalhes de topologia que tornam isto real:
 | `demo-human-oidc.sh` | Autentica o humano por OIDC (`aos-issuer --assertion`) e submete um run. |
 | `demo-vault-shred.sh` | Prova o crypto-shred: um run cria a KEK no Vault; o `/dsar/erase` destrói-a. |
 | `litellm/config.yaml` | Gateway de modelos EXTERNO (LiteLLM): mapeia os nomes allowlisted → providers/modelos reais (Kimi/Moonshot, …). Multi-provider/modelo, sem código. |
-| `secrets/model.env` (git-ignored) | Keys dos providers do LiteLLM (`MOONSHOT_API_KEY`, …). |
+| `postgres-init/` | SQL que cria a DB `litellm` (UI/keys) no 1º init do Postgres. |
+| `secrets/model.env` (git-ignored) | Keys dos providers + config da UI/SSO do LiteLLM (`MOONSHOT_API_KEY`, `LITELLM_MASTER_KEY`, `GENERIC_*`). |
+| `secrets/ca-bundle.crt` (git-ignored) | CAs públicas (certifi) + CA de dev — o LiteLLM confia em ambas (egress público + SSO backend). |
+
+### Login da UI do LiteLLM (`http://localhost:4000/ui`)
+
+Dois modos, e a distinção é a do AOS — **SSO para humanos, key para máquinas**:
+- **Humano (recomendado):** **"Login com SSO"** → Keycloak (realm `aos`, ex.: `alice`/`alice`). O LiteLLM é um client OIDC (`litellm`) do MESMO IdP que governa o nó — sem silo de password. Split de hostname: o browser vai a `https://localhost:9443` (cert self-signed → aceita o aviso), o backend do LiteLLM troca o código em `https://idp:8443` (confia via `ca-bundle.crt`).
+- **Máquina:** o **nó** apresenta a `LITELLM_MASTER_KEY` (NHI, não humano) — `AOS_MODEL_API_KEY_PATH`. Há também um login admin local (`admin`/`UI_PASSWORD`) para quando o Keycloak está em baixo.
 | `issuer-toolbox/Dockerfile` | Compila `aos-issuer` num container para o correr EM-REDE (human OIDC). |
 | `secrets/` (git-ignored) | Material gerado: chaves privadas, `approvers.json`, CA+certs TLS. |
 | `.env` (git-ignored) | Valores derivados (pubkeys, trust anchor) consumidos pelo compose. |

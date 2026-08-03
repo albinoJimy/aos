@@ -122,9 +122,17 @@ services:
     image: ghcr.io/berriai/litellm:main-stable
     command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
     env_file:
-      - ./secrets/model.env      # MOONSHOT_API_KEY=... (e outras keys de provider). Git-ignored.
+      - ./secrets/model.env      # MOONSHOT_API_KEY, LITELLM_MASTER_KEY, GENERIC_* (SSO). Git-ignored.
+    environment:
+      # Bundle COMBINADO (CAs públicas do certifi + a nossa CA de dev): o LiteLLM precisa das
+      # públicas p/ o egress real (Moonshot/api.kimi.com) E da CA de dev p/ o SSO backend ao
+      # Keycloak (token/userinfo em https://idp:8443). Só a CA de dev quebraria o TLS público.
+      # O login (browser) vai a https://localhost:9443 (split de hostname).
+      SSL_CERT_FILE: "/etc/litellm/ca-bundle.crt"
+      REQUESTS_CA_BUNDLE: "/etc/litellm/ca-bundle.crt"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+      - ./secrets/ca-bundle.crt:/etc/litellm/ca-bundle.crt:ro
     ports:
       - "4000:4000"              # endpoint OpenAI + UI a partir do host (http://localhost:4000/ui).
     depends_on:
