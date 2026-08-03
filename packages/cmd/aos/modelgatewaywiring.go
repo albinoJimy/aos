@@ -30,6 +30,7 @@ import (
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/pipeline"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
+	"github.com/aos-ref/platform/model-gateway/port"
 )
 
 // ErrBadModelAllowlist — o bundle de allowlist EXTERNO está pedido (AOS_MODEL_ALLOWLIST_BUNDLE_DIR)
@@ -104,8 +105,10 @@ func (nodeModelAuthn) Process(_ context.Context, ex *pipeline.Exchange) error {
 // newGatewayModelClient compõe o [modelgateway.Gateway] de produção apontado ao endpoint dado e
 // devolve-o já adaptado à porta [agentruntime.ModelClient] via [modelgateway.NewModelClient].
 // region/board são a fronteira de soberania que o nó declara ao gateway; pol, se != nil, é a
-// allowlist EXTERNA (bundle assinado montado) que substitui a embebida.
-func newGatewayModelClient(baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy) (agentruntime.ModelClient, error) {
+// allowlist EXTERNA (bundle assinado montado) que substitui a embebida. tools, se não-vazio, é o
+// tool set OFERECIDO ao modelo (WithTools → `tools` do request OpenAI) a partir do registry
+// (AOS_MODEL_TOOLS); sem ele o modelo não emite tool_calls. Ver modeltools.go.
+func newGatewayModelClient(baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool) (agentruntime.ModelClient, error) {
 	secret := ""
 	if apiKeyPath != "" {
 		raw, err := os.ReadFile(apiKeyPath)
@@ -138,5 +141,9 @@ func newGatewayModelClient(baseURL, model, apiKeyPath, region, board string, pol
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBadModelConfig, err)
 	}
-	return modelgateway.NewModelClient(gw, model, modelgateway.WithRegionBoard(region, board)), nil
+	opts := []modelgateway.RuntimeAdapterOption{modelgateway.WithRegionBoard(region, board)}
+	if len(tools) > 0 {
+		opts = append(opts, modelgateway.WithTools(tools))
+	}
+	return modelgateway.NewModelClient(gw, model, opts...), nil
 }

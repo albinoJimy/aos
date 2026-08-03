@@ -45,7 +45,7 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 	for _, model := range []string{"gpt-4o", "gpt-4o-mini"} {
 		gotModel = ""
 		// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu embebida.
-		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil)
+		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil)
 		if err != nil {
 			t.Fatalf("newGatewayModelClient(%q): %v", model, err)
 		}
@@ -111,7 +111,7 @@ func TestExternalAllowlist_AllowsNonEmbeddedModel(t *testing.T) {
 		t.Fatalf("loadModelAllowlistFromEnv: pol=%v err=%v", pol, err)
 	}
 	// kimi-for-coding/board-kimi NÃO estão na allowlist embebida — só passam pela externa.
-	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol)
+	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}

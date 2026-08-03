@@ -99,10 +99,17 @@ services:
       # gpt-4o | gpt-4o-mini | text-embedding-3-large. É a fronteira de governança do NÓ; o
       # provider/modelo real a que este nome roteia define-se em litellm/config.yaml (livre).
       AOS_MODEL_NAME: "gpt-4o-mini"
+      # REGISTRY DE TOOLS (opt-in, análogo mínimo do EPIC-05): oferece ao modelo a tool `web_post`
+      # (→ `cap:http.post`, região eu) e liga o binding de governança que o Reference Monitor avalia.
+      # Runs normais não a chamam; quando o objetivo pede uma publicação HTTP, o modelo pede a tool e
+      # o RM/PDP MEDEIA-a. Como a autorização originada pelo modelo é UNTRUSTED, o taint-gate NEGA
+      # (P4, "untrusted não comanda") — ver demo-pdp-tool-deny.sh. Ver deploy/node/README.md.
+      AOS_MODEL_TOOLS: "/etc/aos/model-tools.json"
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
       - ./secrets/vault-token:/etc/aos/vault-token:ro
       - ./secrets/litellm-key:/etc/aos/litellm-key:ro
+      - ./model-tools/tools.json:/etc/aos/model-tools.json:ro
     depends_on:
       idp:
         condition: service_started

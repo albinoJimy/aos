@@ -1,0 +1,18 @@
+[
+  {
+    "name": "web_post",
+    "description": "Publica um resultado fazendo um HTTP POST a um URL. Usa isto quando te pedirem para publicar/enviar/submeter algo para a web.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "URL alvo do POST" },
+        "body": { "type": "string", "description": "corpo a enviar" }
+      },
+      "required": ["url", "body"]
+    },
+    "capability": "cap:http.post",
+    "resource_type": "http",
+    "resource_value": "https://api.example.com/results",
+    "resource_region": "eu"
+  }
+]

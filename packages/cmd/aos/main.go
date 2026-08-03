@@ -1028,7 +1028,23 @@ func parseModelFromEnv() (agentruntime.ModelClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol)
+	// Tool set OFERECIDO ao modelo (registry opt-in AOS_MODEL_TOOLS): sem ele o modelo não pede
+	// tools; com ele, cada tool call é MEDIADA pelo Reference Monitor (o binding capability/recurso
+	// vem do registry trusted, o AuthorizationTaint fica untrusted). Ver modeltools.go.
+	tools, bindings, err := loadModelToolsFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	client, err := newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol, tools)
+	if err != nil {
+		return nil, err
+	}
+	// Decora com o enriquecedor de governança só quando há bindings (o modelo escolhe a tool pelo
+	// nome; o RM recebe a capability do registry). Sem tools ⇒ cliente nu (comportamento inalterado).
+	if len(bindings) > 0 {
+		client = &toolEnrichingClient{inner: client, bindings: bindings}
+	}
+	return client, nil
 }
 
 // parseHumanOIDCDirectory constrói o directório de autenticação humana OIDC (frente 1 do D4,
