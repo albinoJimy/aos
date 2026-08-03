@@ -22,7 +22,10 @@ fail() { echo "demo-human-oidc.sh: FAIL: $*" >&2; exit 1; }
 # b64url decode do payload (segmento 2) de um JWT, e extrai um claim string.
 claim_of() { printf '%s' "$1" | cut -d. -f2 | tr '_-' '/+' | { base64 -d 2>/dev/null || true; } | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }
 
-ISS="https://idp:8443/realms/aos"
+# iss = frontend (localhost:9443, o que o Keycloak assere); o JWKS busca-se pelo nome de rede
+# (idp:8443) — o mesmo split de hostname do nó.
+ISS="https://localhost:9443/realms/aos"
+JWKS="https://idp:8443/realms/aos/protocol/openid-connect/certs"
 TOKURL="https://idp:8443/realms/aos/protocol/openid-connect/token"
 getidtoken() {
   docker run --rm --network "${PROJECT}_default" curlimages/curl:latest -sk \
@@ -41,7 +44,7 @@ echo "[human]   sub verificado do Keycloak = ${SUB}"
 echo "[human] 3/4 aos-issuer mint --assertion (verifica o ID-token contra o Keycloak, deriva o humano) ..."
 NHI="$("${DC[@]}" run --rm -T issuer \
   mint --key-file issuer.key --issuer iss:aos-issuer \
-       --assertion "${ASSERT}" --oidc-issuer "${ISS}" --oidc-audience aos-node \
+       --assertion "${ASSERT}" --oidc-issuer "${ISS}" --oidc-jwks "${JWKS}" --oidc-audience aos-node \
        --agent agt-human --class researcher --caps cap:doc.read --ttl 15m 2>/dev/null | tr -d '\r\n')"
 [[ -n "${NHI}" ]] || fail "mint --assertion falhou (ver: ${DC[*]} run --rm issuer mint --assertion ...)"
 NHI_HUMAN="$(claim_of "${NHI}" user_id)"

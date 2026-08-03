@@ -43,10 +43,12 @@ services:
       KC_DB_URL: "jdbc:postgresql://postgres:5432/keycloak"
       KC_DB_USERNAME: "keycloak"
       KC_DB_PASSWORD: "keycloak-dev-pass"
-      # Issuer canónico = o nome de rede pelo qual o NÓ alcança o IdP; entra no claim `iss` dos
-      # tokens e no discovery. O nó valida iss == AOS_SOVEREIGN_OIDC_ISSUER exatamente.
-      KC_HOSTNAME: "https://idp:8443"
-      KC_HOSTNAME_STRICT: "false"           # permite também aceder pelo host (localhost:9443).
+      # FRONTEND (browser) = localhost:9443 — o único hostname que o browser do host resolve (o
+      # SSO da UI do LiteLLM redireciona para aqui). O `iss` dos tokens passa a localhost:9443.
+      KC_HOSTNAME: "https://localhost:9443"
+      # BACKCHANNEL DINÂMICO: os endpoints de token/JWKS respondem também pelo nome DE REDE (idp:8443)
+      # que o NÓ/LiteLLM usam em-rede — resolve o split de hostname browser vs. backend.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HTTP_ENABLED: "false"              # só https (o nó exige transporte cifrado ao IdP).
       KC_HTTPS_CERTIFICATE_FILE: "/etc/keycloak/tls/idp.crt"
       KC_HTTPS_CERTIFICATE_KEY_FILE: "/etc/keycloak/tls/idp.key"
@@ -69,7 +71,10 @@ services:
       AOS_MODE: "production"
       # Credencial FORTE de soberania: o read-path exige ID-token OIDC verificado; o `board` vem
       # das CLAIMS assinadas, não do header. Issuer = nome de rede do Keycloak.
-      AOS_SOVEREIGN_OIDC_ISSUER: "https://idp:8443/realms/aos"
+      # iss = frontend (localhost:9443, o que o Keycloak assere); mas o nó NÃO alcança localhost —
+      # busca o JWKS explicitamente pelo nome de rede idp:8443 (confia via SSL_CERT_FILE).
+      AOS_SOVEREIGN_OIDC_ISSUER: "https://localhost:9443/realms/aos"
+      AOS_SOVEREIGN_OIDC_JWKS_URI: "https://idp:8443/realms/aos/protocol/openid-connect/certs"
       AOS_SOVEREIGN_OIDC_AUDIENCE: "aos-node"
       # O nó confia na CA de dev que assinou o cert do Keycloak (Go/Linux honra SSL_CERT_FILE).
       SSL_CERT_FILE: "/etc/aos/idp-ca.crt"
