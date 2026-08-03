@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,17 +29,42 @@ import (
 	audit "github.com/aos-ref/platform/audit"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/pipeline"
+	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 )
 
-// modelGatewayRegion / modelGatewayBoard têm de constar da allowlist regional ASSINADA embebida no
-// model-gateway (policy/allowlist/allowlist_policy.json, trust anchor PINADO — não re-assinável
-// aqui). A regra `board-eu` permite os modelos {gpt-4o, gpt-4o-mini, text-embedding-3-large} nas
-// regiões {eu, eu-west}. CONSEQUÊNCIA: o AOS_MODEL_NAME pedido ao gateway tem de ser um destes
-// (o gateway NEGA fail-closed um modelo fora da allowlist) — o upstream (OmniRoute) é que mapeia
-// esse nome canónico para o provider concreto.
+// ErrBadModelAllowlist — o bundle de allowlist EXTERNO está pedido (AOS_MODEL_ALLOWLIST_BUNDLE_DIR)
+// mas mal configurado: sem AOS_MODEL_ALLOWLIST_TRUST_ANCHOR, ou o bundle não verifica contra o
+// anchor. Fail-closed: quem monta uma allowlist externa obtém-na verificada ou o nó recusa arrancar.
+var ErrBadModelAllowlist = errors.New("aos: allowlist externa do model gateway mal configurada — AOS_MODEL_ALLOWLIST_BUNDLE_DIR exige AOS_MODEL_ALLOWLIST_TRUST_ANCHOR (base64 da pubkey ed25519 do assinante, out-of-band); bundle ausente/adulterado/assinado por outra chave e RECUSADO fail-closed")
+
+// loadModelAllowlistFromEnv carrega a policy de allowlist EXTERNA (bundle assinado montado) quando
+// AOS_MODEL_ALLOWLIST_BUNDLE_DIR está definido — a via gémea do bundle PDP (AOS-220) que remove o
+// acoplamento "modelos fixos no código". Vazio ⇒ nil (o gateway usa a allowlist EMBEBIDA, trust
+// anchor pinado; comportamento inalterado). Fail-closed: dir sem anchor, ou bundle não-verificável.
+func loadModelAllowlistFromEnv() (*allowlist.Policy, error) {
+	dir := strings.TrimSpace(os.Getenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR"))
+	if dir == "" {
+		return nil, nil
+	}
+	anchor := strings.TrimSpace(os.Getenv("AOS_MODEL_ALLOWLIST_TRUST_ANCHOR"))
+	if anchor == "" {
+		return nil, ErrBadModelAllowlist
+	}
+	pol, err := allowlist.LoadSignedPolicyFromDir(dir, anchor)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadModelAllowlist, err)
+	}
+	return pol, nil
+}
+
+// defaultModelGatewayRegion / defaultModelGatewayBoard casam com a allowlist regional ASSINADA
+// EMBEBIDA (regra `board-eu` → {gpt-4o, gpt-4o-mini, text-embedding-3-large} em {eu, eu-west}).
+// São os defaults quando NÃO se monta uma allowlist externa. Com um bundle externo
+// (AOS_MODEL_ALLOWLIST_BUNDLE_DIR), o operador escolhe o board/região/modelos que quiser
+// (AOS_MODEL_BOARD/REGION) — o nome pedido deixa de ter de ser um alias fixo do código.
 const (
-	modelGatewayRegion = "eu"
-	modelGatewayBoard  = "board-eu"
+	defaultModelGatewayRegion = "eu"
+	defaultModelGatewayBoard  = "board-eu"
 )
 
 // staticModelCredential implementa [modelgateway.CredentialProvider]: devolve o segredo de infra
@@ -77,7 +103,9 @@ func (nodeModelAuthn) Process(_ context.Context, ex *pipeline.Exchange) error {
 
 // newGatewayModelClient compõe o [modelgateway.Gateway] de produção apontado ao endpoint dado e
 // devolve-o já adaptado à porta [agentruntime.ModelClient] via [modelgateway.NewModelClient].
-func newGatewayModelClient(baseURL, model, apiKeyPath string) (agentruntime.ModelClient, error) {
+// region/board são a fronteira de soberania que o nó declara ao gateway; pol, se != nil, é a
+// allowlist EXTERNA (bundle assinado montado) que substitui a embebida.
+func newGatewayModelClient(baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy) (agentruntime.ModelClient, error) {
 	secret := ""
 	if apiKeyPath != "" {
 		raw, err := os.ReadFile(apiKeyPath)
@@ -98,16 +126,17 @@ func newGatewayModelClient(baseURL, model, apiKeyPath string) (agentruntime.Mode
 		Provider:      "openai",
 		BaseURL:       base,
 		HTTPClient:    &http.Client{Timeout: 60 * time.Second}, // seam de dev: delega validação de egress
-		DefaultRegion: modelGatewayRegion,
+		DefaultRegion: region,
 		Audit:         audit.NewMemStore(), // audit de governação do GW (activação da allowlist + decisões)
 		Credentials:   staticModelCredential{secret: secret},
 		Accounts: []modelgateway.InfraAccount{{
-			KeyID: "omniroute", Provider: "openai", Region: modelGatewayRegion, LimitRPM: 120, LimitTPM: 200_000,
+			KeyID: "model-upstream", Provider: "openai", Region: region, LimitRPM: 120, LimitTPM: 200_000,
 		}},
-		Authn: nodeModelAuthn{},
+		Authn:     nodeModelAuthn{},
+		Allowlist: pol, // nil ⇒ allowlist EMBEBIDA (retro-compat); != nil ⇒ bundle externo montado
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBadModelConfig, err)
 	}
-	return modelgateway.NewModelClient(gw, model, modelgateway.WithRegionBoard(modelGatewayRegion, modelGatewayBoard)), nil
+	return modelgateway.NewModelClient(gw, model, modelgateway.WithRegionBoard(region, board)), nil
 }

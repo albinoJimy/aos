@@ -50,6 +50,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -192,6 +194,32 @@ func LoadSignedPolicy(policyJSON []byte, signatureB64, pubKeyB64 string) (*Polic
 		return nil, ErrSignatureInvalid
 	}
 	return p, nil
+}
+
+// Nomes dos ficheiros do BUNDLE EXTERNO de allowlist (espelham os embebidos).
+const (
+	BundlePolicyFile = "allowlist_policy.json"
+	BundleSigFile    = "allowlist_policy.sig"
+)
+
+// LoadSignedPolicyFromDir carrega e VERIFICA uma policy de allowlist a partir de um DIRECTÓRIO
+// MONTADO, contra um trust anchor fornecido OUT-OF-BAND (base64 da pubkey ed25519 do assinante) —
+// NÃO o fingerprint PINADO da policy embebida ([LoadPolicy]). É a via EXTERNA, gémea do bundle
+// assinado do PDP (AOS-220): o operador curadoria e assina a policy (modelos/regiões/boards) com a
+// sua chave custodiada e monta-a; a governança (assinatura + default-deny + selagem WORM) é
+// IDÊNTICA à embebida — só a PROVENIÊNCIA e o anchor mudam, removendo o acoplamento "modelos fixos
+// no código". Fail-closed: ficheiro ausente/ilegível, assinatura inválida ou anchor malformado ⇒
+// erro (o chamador recusa arrancar).
+func LoadSignedPolicyFromDir(dir, trustAnchorB64 string) (*Policy, error) {
+	policyJSON, err := os.ReadFile(filepath.Join(dir, BundlePolicyFile))
+	if err != nil {
+		return nil, fmt.Errorf("allowlist: ler policy do bundle: %w", err)
+	}
+	sig, err := os.ReadFile(filepath.Join(dir, BundleSigFile))
+	if err != nil {
+		return nil, fmt.Errorf("allowlist: ler assinatura do bundle: %w", err)
+	}
+	return LoadSignedPolicy(policyJSON, strings.TrimSpace(string(sig)), strings.TrimSpace(trustAnchorB64))
 }
 
 // Digest devolve o digest canónico (sha256 hex) do documento de policy SEM

@@ -73,12 +73,28 @@ func LoadAndActivate(ctx context.Context, rec *Recorder, at time.Time) (*Stage, 
 	if err != nil {
 		return nil, nil, err
 	}
+	st, err := ActivateWith(ctx, rec, at, pol)
+	if err != nil {
+		return nil, nil, err
+	}
+	return st, pol, nil
+}
+
+// ActivateWith sela a activação de uma policy JÁ CARREGADA no changelog WORM e devolve o stage. É o
+// núcleo partilhado por [LoadAndActivate] (policy EMBEBIDA, trust anchor pinado) e pelo carregamento
+// EXTERNO ([LoadSignedPolicyFromDir], bundle montado + trust anchor out-of-band): a governança
+// (selagem WORM + default-deny + tamper-evidence) é IDÊNTICA; só a proveniência da policy muda.
+// Fail-closed: policy nil ou selagem falhada ⇒ erro (nenhum gateway sem activação selada).
+func ActivateWith(ctx context.Context, rec *Recorder, at time.Time, pol *Policy) (*Stage, error) {
+	if pol == nil {
+		return nil, errors.New("allowlist: policy nil na activacao (fail-closed)")
+	}
 	if rec != nil {
 		if _, err := rec.SealChangelog(ctx, pol.Version(), at); err != nil {
-			return nil, nil, fmt.Errorf("allowlist: activacao da policy nao selada no changelog (fail-closed): %w", err)
+			return nil, fmt.Errorf("allowlist: activacao da policy nao selada no changelog (fail-closed): %w", err)
 		}
 	}
-	return NewStage(pol, WithRecorder(rec)), pol, nil
+	return NewStage(pol, WithRecorder(rec)), nil
 }
 
 // Name implementa [pipeline.Stage]: mantém o nome canónico do slot ("allowlist-regional").

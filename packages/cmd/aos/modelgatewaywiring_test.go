@@ -2,12 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 )
 
 // TestGatewayModelClient_EndToEnd prova que newGatewayModelClient compõe o Model Gateway REAL
@@ -38,7 +44,8 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 	// ao provider COM o nome correto. Um nome fora da allowlist seria negado fail-closed.
 	for _, model := range []string{"gpt-4o", "gpt-4o-mini"} {
 		gotModel = ""
-		mc, err := newGatewayModelClient(srv.URL, model, "")
+		// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu embebida.
+		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil)
 		if err != nil {
 			t.Fatalf("newGatewayModelClient(%q): %v", model, err)
 		}
@@ -75,4 +82,95 @@ func TestParseModelFromEnv_Unset(t *testing.T) {
 	if _, err := parseModelFromEnv(); err == nil {
 		t.Fatalf("endpoint sem AOS_MODEL_NAME devia abortar (ErrBadModelConfig)")
 	}
+}
+
+// TestExternalAllowlist_AllowsNonEmbeddedModel prova a externalização (padrão PDP): uma allowlist
+// ASSINADA MONTADA (bundle) permite um modelo/board que a policy EMBEBIDA NÃO tem — removendo o
+// acoplamento "modelos fixos no código". Assina uma policy com um modelo Kimi real e verifica que o
+// nó (loadModelAllowlistFromEnv + newGatewayModelClient) o aceita e o envia ao upstream.
+func TestExternalAllowlist_AllowsNonEmbeddedModel(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotModel = req.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	pub := signAllowlistBundle(t, dir, "board-kimi", "kimi-for-coding", "eu")
+	t.Setenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR", dir)
+	t.Setenv("AOS_MODEL_ALLOWLIST_TRUST_ANCHOR", pub)
+
+	pol, err := loadModelAllowlistFromEnv()
+	if err != nil || pol == nil {
+		t.Fatalf("loadModelAllowlistFromEnv: pol=%v err=%v", pol, err)
+	}
+	// kimi-for-coding/board-kimi NÃO estão na allowlist embebida — só passam pela externa.
+	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol)
+	if err != nil {
+		t.Fatalf("newGatewayModelClient: %v", err)
+	}
+	if _, err := mc.Call(context.Background(), agentruntime.PromptView{Turn: 1, Materialized: []byte("olá")}); err != nil {
+		t.Fatalf("Call com allowlist externa (modelo não-embebido) falhou: %v", err)
+	}
+	if gotModel != "kimi-for-coding" {
+		t.Fatalf("upstream devia receber kimi-for-coding, recebeu %q", gotModel)
+	}
+}
+
+// TestExternalAllowlist_FailClosed — dir sem anchor aborta; anchor de outra chave (bundle não
+// verifica) aborta. Fail-closed em ambos.
+func TestExternalAllowlist_FailClosed(t *testing.T) {
+	dir := t.TempDir()
+	_ = signAllowlistBundle(t, dir, "board-kimi", "kimi-for-coding", "eu")
+
+	t.Setenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR", dir)
+	t.Setenv("AOS_MODEL_ALLOWLIST_TRUST_ANCHOR", "")
+	if _, err := loadModelAllowlistFromEnv(); err == nil {
+		t.Fatalf("dir sem anchor devia abortar (ErrBadModelAllowlist)")
+	}
+
+	otherPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	t.Setenv("AOS_MODEL_ALLOWLIST_TRUST_ANCHOR", base64.StdEncoding.EncodeToString(otherPub))
+	if _, err := loadModelAllowlistFromEnv(); err == nil {
+		t.Fatalf("anchor de outra chave devia abortar (assinatura não verifica)")
+	}
+}
+
+// signAllowlistBundle escreve allowlist_policy.json + .sig num dir, assinados por uma chave NOVA, e
+// devolve a pubkey base64 (o trust anchor out-of-band). Espelha o gen_signature.go offline.
+func signAllowlistBundle(t *testing.T, dir, board, model, region string) string {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := map[string]any{
+		"version": "gw-allowlist/v1",
+		"default": "deny",
+		"rules": []map[string]any{{
+			"id": "ext-" + board, "board": board, "models": []string{model}, "regions": []string{region},
+		}},
+	}
+	policyJSON, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := allowlist.Digest(policyJSON)
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+	sig := ed25519.Sign(priv, []byte(digest))
+	if err := os.WriteFile(filepath.Join(dir, allowlist.BundlePolicyFile), policyJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, allowlist.BundleSigFile), []byte(base64.StdEncoding.EncodeToString(sig)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(pub)
 }

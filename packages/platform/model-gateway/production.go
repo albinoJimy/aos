@@ -146,6 +146,12 @@ type ProductionConfig struct {
 	Clock    func() time.Time
 	Tracer   agentruntime.Tracer
 	Variance VarianceSink
+	// Allowlist é a policy regional EXTERNA (bundle assinado montado, carregada via
+	// [allowlist.LoadSignedPolicyFromDir] com o trust anchor OUT-OF-BAND). Presente ⇒ substitui a
+	// policy EMBEBIDA (fim do acoplamento "modelos fixos no código"; o operador curadoria/assina o
+	// catálogo). Nil ⇒ usa a embebida (trust anchor pinado) — comportamento inalterado. A
+	// governança (default-deny + assinatura + selagem WORM na activação) é IDÊNTICA nos dois casos.
+	Allowlist *allowlist.Policy
 }
 
 // NewProduction monta um GW de produção FAIL-CLOSED por construção a partir de seams
@@ -184,7 +190,18 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	// (2) Allowlist regional default-deny: carrega+verifica (trust anchor + assinatura)
 	// e sela a activação no changelog WORM. Fail-closed: sem policy activada, sem GW.
 	govRec := allowlist.NewRecorder(cfg.Audit)
-	alStage, pol, err := allowlist.LoadAndActivate(ctx, govRec, at)
+	var alStage *allowlist.Stage
+	var err error
+	pol := cfg.Allowlist
+	if pol != nil {
+		// Policy EXTERNA (bundle assinado montado): activa e sela IGUAL à embebida; só a
+		// proveniência muda (o operador assinou-a com a sua chave, verificada out-of-band já no
+		// carregamento). Remove o acoplamento "modelos fixos no código".
+		alStage, err = allowlist.ActivateWith(ctx, govRec, at, pol)
+	} else {
+		// Policy EMBEBIDA (trust anchor pinado) — comportamento inalterado, retro-compat.
+		alStage, pol, err = allowlist.LoadAndActivate(ctx, govRec, at)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("modelgateway: allowlist nao activada (fail-closed): %w", err)
 	}

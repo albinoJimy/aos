@@ -1013,7 +1013,22 @@ func parseModelFromEnv() (agentruntime.ModelClient, error) {
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
 	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
-	return newGatewayModelClient(endpoint, model, apiKeyPath)
+	// Fronteira de soberania (board/região) que o nó declara ao gateway. Defaults casam com a
+	// allowlist EMBEBIDA; com um bundle externo o operador escolhe-os livremente.
+	region := defaultModelGatewayRegion
+	if v := strings.TrimSpace(os.Getenv("AOS_MODEL_REGION")); v != "" {
+		region = v
+	}
+	board := defaultModelGatewayBoard
+	if v := strings.TrimSpace(os.Getenv("AOS_MODEL_BOARD")); v != "" {
+		board = v
+	}
+	// Allowlist EXTERNA (bundle assinado montado) se pedida; nil ⇒ embebida. Ver modelgatewaywiring.go.
+	pol, err := loadModelAllowlistFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol)
 }
 
 // parseHumanOIDCDirectory constrói o directório de autenticação humana OIDC (frente 1 do D4,
