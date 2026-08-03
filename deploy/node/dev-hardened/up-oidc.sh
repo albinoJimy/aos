@@ -32,14 +32,19 @@ hostpath() { case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) cygpath -w "$1" ;; 
 mkdir -p "${SECRETS}/idp-tls"
 if [[ ! -s "${SECRETS}/ca.crt" ]]; then
   echo "[oidc] 1/5 a gerar CA de dev ..."
+  # As extensões de CA (basicConstraints CA:TRUE + keyUsage keyCertSign) são OBRIGATÓRIAS: o Go (nó)
+  # e o Java (Keycloak) toleram a sua ausência, mas o openssl/Python (httpx do LiteLLM, usado no SSO
+  # backend) RECUSA uma CA sem elas ("CA cert does not include key usage extension").
   openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-    -keyout "${SECRETS}/ca.key" -out "${SECRETS}/ca.crt" -subj "//CN=aos-dev-ca" >/dev/null 2>&1 \
+    -keyout "${SECRETS}/ca.key" -out "${SECRETS}/ca.crt" -subj "//CN=aos-dev-ca" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 \
     || fail "openssl CA falhou"
 fi
 if [[ ! -s "${SECRETS}/idp-tls/idp.crt" ]]; then
   echo "[oidc] 1/5 a gerar cert do IdP (SAN: idp, localhost, 127.0.0.1) ..."
   EXT="${SECRETS}/idp-tls/idp.ext"
-  printf 'subjectAltName=DNS:idp,DNS:localhost,IP:127.0.0.1\n' > "${EXT}"
+  printf 'subjectAltName=DNS:idp,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "${EXT}"
   openssl req -nodes -newkey rsa:2048 \
     -keyout "${SECRETS}/idp-tls/idp.key" -out "${SECRETS}/idp-tls/idp.csr" -subj "//CN=idp" >/dev/null 2>&1 \
     || fail "openssl CSR do IdP falhou"
