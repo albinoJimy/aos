@@ -89,7 +89,11 @@ services:
       # afectado: o modelo só é chamado durante um run). O OmniRoute corre como container próprio
       # (o teu `docker run`), ligado a esta rede por up-oidc.sh.
       AOS_MODEL_ENDPOINT: "http://omniroute:20128/api/v1"
-      AOS_MODEL_NAME: "gpt-4o"
+      # Modelo pedido ao gateway. Travado pela allowlist ASSINADA embebida (board-eu): só
+      # gpt-4o | gpt-4o-mini | text-embedding-3-large. Trocar entre estes é config; um nome fora
+      # da allowlist é NEGADO fail-closed. O PROVIDER real a que este nome roteia escolhe-se na UI
+      # do OmniRoute (mapear gpt-4o-mini -> provider+key).
+      AOS_MODEL_NAME: "gpt-4o-mini"
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
       - ./secrets/vault-token:/etc/aos/vault-token:ro

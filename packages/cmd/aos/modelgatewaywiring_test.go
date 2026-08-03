@@ -34,27 +34,30 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// gpt-4o é um modelo da allowlist regional ASSINADA embebida (regra board-eu). Um nome fora
-	// dela seria NEGADO fail-closed pelo estágio de allowlist antes de tocar o provider.
-	mc, err := newGatewayModelClient(srv.URL, "gpt-4o", "")
-	if err != nil {
-		t.Fatalf("newGatewayModelClient: %v", err)
-	}
-	resp, err := mc.Call(context.Background(), agentruntime.PromptView{
-		Turn:         1,
-		Materialized: []byte("=== SYSTEM ===\nx\n=== CONTEXT ===\nolá"),
-	})
-	if err != nil {
-		t.Fatalf("Call (nó->GW->provider) falhou: %v", err)
-	}
-	if resp.Text != "resposta do gateway" {
-		t.Fatalf("texto = %q, esperado a conclusão do provider", resp.Text)
-	}
-	if resp.Usage.InputTokens != 11 || resp.Usage.OutputTokens != 7 {
-		t.Fatalf("usage = %+v, esperado {11,7}", resp.Usage)
-	}
-	if gotModel != "gpt-4o" {
-		t.Fatalf("o gateway devia pedir o modelo 'gpt-4o', pediu %q", gotModel)
+	// Ambos os modelos da regra board-eu da allowlist ASSINADA embebida têm de atravessar e chegar
+	// ao provider COM o nome correto. Um nome fora da allowlist seria negado fail-closed.
+	for _, model := range []string{"gpt-4o", "gpt-4o-mini"} {
+		gotModel = ""
+		mc, err := newGatewayModelClient(srv.URL, model, "")
+		if err != nil {
+			t.Fatalf("newGatewayModelClient(%q): %v", model, err)
+		}
+		resp, err := mc.Call(context.Background(), agentruntime.PromptView{
+			Turn:         1,
+			Materialized: []byte("=== SYSTEM ===\nx\n=== CONTEXT ===\nolá"),
+		})
+		if err != nil {
+			t.Fatalf("Call %q (nó->GW->provider) falhou: %v", model, err)
+		}
+		if resp.Text != "resposta do gateway" {
+			t.Fatalf("[%s] texto = %q, esperado a conclusão do provider", model, resp.Text)
+		}
+		if resp.Usage.InputTokens != 11 || resp.Usage.OutputTokens != 7 {
+			t.Fatalf("[%s] usage = %+v, esperado {11,7}", model, resp.Usage)
+		}
+		if gotModel != model {
+			t.Fatalf("o gateway devia pedir o modelo %q, pediu %q", model, gotModel)
+		}
 	}
 }
 
