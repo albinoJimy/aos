@@ -117,8 +117,24 @@ Detalhes de topologia que tornam isto real:
   Transit**. Provado vivo (`demo-vault-shred.sh`): a KEK aparece no Vault após um run e é **destruída**
   pelo erase (unwrap passa a falhar). Teste `vaultkeyvault_test.go` (round-trip + shred). *Nota:* tocou
   o binário governado — mudança de código verificada. Sem as vars, mantém-se o in-memory demo-grade.
-- **Model Gateway real** ([bootstrap.go:1451](../../../packages/cmd/aos/bootstrap.go)). Sem env; o
-  nó usa o modelo de referência. O gateway real é o EPIC-06.
+- **Model Gateway real** — **RESOLVIDO ligando o gateway do EPIC-06** (`AOS_MODEL_ENDPOINT` +
+  `AOS_MODEL_NAME`). [modelgatewaywiring.go](../../../packages/cmd/aos/modelgatewaywiring.go) compõe
+  o gateway REAL (`packages/platform/model-gateway`, `NewProduction`) — **sem duplicar** o cliente
+  OpenAI (que vive em `internal/adapters`): reutiliza-o via o construtor de produção + o
+  `NewModelClient` canónico. Traz allowlist regional **assinada** (embebida, trust-anchor pinado),
+  keypool, routing de failover, metering/pricing e endurecimento SSRF. Ligado a um endpoint
+  **OpenAI-compatível** (aqui o **OmniRoute**, `http://omniroute:20128/api/v1`). **Zero-dep
+  preservado**: o model-gateway já estava no grafo do nó e não traz deps externas (binário linka 0
+  novas; go.sum inalterado). Verificado por `modelgatewaywiring_test.go` (nó→GW→provider contra um
+  httptest OpenAI-wire) e vivo (o OmniRoute regista `POST /api/v1/chat/completions | gpt-4o`).
+  - **Restrição da allowlist:** a policy assinada embebida só permite `board-eu` → modelos
+    `{gpt-4o, gpt-4o-mini, text-embedding-3-large}`; por isso `AOS_MODEL_NAME` tem de ser um destes
+    (o OmniRoute mapeia o nome para o provider real). Um nome fora da allowlist é **negado
+    fail-closed** antes de tocar o upstream.
+  - **Último passo (teu):** o OmniRoute precisa de um **provider com API key** para completar. Sem
+    ele o turno do modelo devolve `No active credentials`. Configura em `http://localhost:20128`
+    (login `admin`/`CHANGEME` → adiciona um provider OpenAI-compatível com a tua key → mapeia
+    `gpt-4o`). O boot do nó **não** depende disto (o modelo só é chamado durante um run).
 
 ### D — deferido por decisão/dependência
 - **Checkpoint WORM ASSINADO** (âncora de frescura que fecharia a truncatura do tail, AOS-072).
@@ -143,6 +159,7 @@ Detalhes de topologia que tornam isto real:
 | `keycloak/realm-aos.json` | Realm importável: client `aos-node`, user `alice`, mapper `board`→claim. |
 | `demo-human-oidc.sh` | Autentica o humano por OIDC (`aos-issuer --assertion`) e submete um run. |
 | `demo-vault-shred.sh` | Prova o crypto-shred: um run cria a KEK no Vault; o `/dsar/erase` destrói-a. |
+| *(OmniRoute)* | Model gateway OpenAI-compatível — corre como container próprio (`docker run … diegosouzapw/omniroute`); `up-oidc.sh` liga-o à rede. O nó fala com ele via o gateway real do EPIC-06. |
 | `issuer-toolbox/Dockerfile` | Compila `aos-issuer` num container para o correr EM-REDE (human OIDC). |
 | `secrets/` (git-ignored) | Material gerado: chaves privadas, `approvers.json`, CA+certs TLS. |
 | `.env` (git-ignored) | Valores derivados (pubkeys, trust anchor) consumidos pelo compose. |

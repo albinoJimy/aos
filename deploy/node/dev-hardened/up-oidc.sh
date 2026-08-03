@@ -69,6 +69,17 @@ until [[ "$(docker inspect -f '{{.State.Health.Status}}' "${CID}" 2>/dev/null)" 
   sleep 2
 done
 
+# --- 2a. OmniRoute (model gateway upstream): liga o container do utilizador a esta rede ---------
+# O OmniRoute corre como container PRÓPRIO (o `docker run` do utilizador). Se existir, liga-se à
+# rede do compose para o nó o alcançar por http://omniroute:20128. Best-effort: sem OmniRoute, o
+# turno do modelo devolve erro (o resto da stack não depende dele).
+if docker ps -a --format '{{.Names}}' | grep -qx omniroute; then
+  docker network connect "${PROJECT}_default" omniroute >/dev/null 2>&1 || true
+  echo "[oidc] OmniRoute ligado à rede ${PROJECT}_default (endpoint do modelo: http://omniroute:20128/api/v1)"
+else
+  echo "[oidc] NOTA: container 'omniroute' não encontrado — corre o \`docker run ... diegosouzapw/omniroute\` para o modelo."
+fi
+
 # --- 2b. Vault: habilitar o motor Transit (idempotente) ---------------------
 echo "[oidc] a aguardar o Vault e a habilitar o motor Transit ..."
 VADDR="http://localhost:8200"; VTOK="aos-dev-root"

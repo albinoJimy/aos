@@ -19,6 +19,7 @@ import (
 	pdp "github.com/aos-ref/control-plane/pdp"
 	integration "github.com/aos-ref/integration"
 	oidc "github.com/aos-ref/integration/oidc"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 )
@@ -523,6 +524,17 @@ func nodeConfigFromEnv() (Config, error) {
 		cfg.DSARVault = dsarVault
 	}
 
+	// MODEL GATEWAY (OpenAI-compatível) por ambiente. Vazio ⇒ [Config.Model] fica nil e o Bootstrap
+	// usa o referenceModel (inalterado); AOS_MODEL_ENDPOINT presente ⇒ liga o adaptador ao gateway
+	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig).
+	modelClient, err := parseModelFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	if modelClient != nil {
+		cfg.Model = modelClient
+	}
+
 	return cfg, nil
 }
 
@@ -977,6 +989,31 @@ func parseVaultDSARFromEnv() (audit.KeyVault, error) {
 		mount = "transit"
 	}
 	return newVaultKeyVault(addr, mount, token), nil
+}
+
+// ErrBadModelConfig — o gateway de modelos está pedido (AOS_MODEL_ENDPOINT presente) mas mal
+// configurado: sem AOS_MODEL_NAME, ou o ficheiro de AOS_MODEL_API_KEY_PATH ilegível/vazio. Fail-
+// closed: um endpoint sem o modelo a pedir NÃO degrada para o referenceModel — quem liga um gateway
+// obtém-no ou o nó recusa arrancar.
+var ErrBadModelConfig = errors.New("aos: config do model gateway invalida — AOS_MODEL_ENDPOINT exige AOS_MODEL_NAME (id do modelo a pedir ao gateway); AOS_MODEL_API_KEY_PATH, se definido, tem de ser um ficheiro legivel (material privado NUNCA por variavel de ambiente)")
+
+// parseModelFromEnv liga [Config.Model] a um gateway OpenAI-compatível (OmniRoute/OpenRouter/…) a
+// partir do ambiente — a via que preenche a porta [agentruntime.ModelClient] em vez do
+// referenceModel. Vazio ⇒ nil (referenceModel, inalterado). Presente ⇒ exige AOS_MODEL_NAME; a API
+// key (opcional) vem por FICHEIRO montado. O adaptador é zero-dep ([openAIModelClient]).
+func parseModelFromEnv() (agentruntime.ModelClient, error) {
+	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
+	if endpoint == "" {
+		return nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
+	}
+	model := strings.TrimSpace(os.Getenv("AOS_MODEL_NAME"))
+	if model == "" {
+		return nil, ErrBadModelConfig
+	}
+	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
+	// ficheiro pelo builder. Ver modelgatewaywiring.go.
+	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
+	return newGatewayModelClient(endpoint, model, apiKeyPath)
 }
 
 // parseHumanOIDCDirectory constrói o directório de autenticação humana OIDC (frente 1 do D4,
