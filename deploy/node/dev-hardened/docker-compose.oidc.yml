@@ -13,13 +13,35 @@
 name: aos-dev-hardened
 
 services:
-  # --- IdP REAL: Keycloak, TLS com cert da nossa CA de dev --------------------------------------
+  # --- base de dados PERSISTENTE do Keycloak (PostgreSQL) ---------------------------------------
+  # Sem isto o Keycloak cairia na H2 embutida (efémera, dev-only). Com Postgres o realm/utilizadores
+  # SOBREVIVEM a recriação do container — a postura production-shaped que um IdP a sério exige.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: "keycloak"
+      POSTGRES_USER: "keycloak"
+      POSTGRES_PASSWORD: "keycloak-dev-pass"   # DEV; produção usaria um segredo gerido.
+    volumes:
+      - kc-pgdata:/var/lib/postgresql/data      # persistência real da DB.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # --- IdP REAL: Keycloak, TLS com cert da nossa CA de dev, DB em Postgres ----------------------
   idp:
     image: quay.io/keycloak/keycloak:26.0
     command: ["start", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: "admin"
       KC_BOOTSTRAP_ADMIN_PASSWORD: "admin"
+      # Base de dados PERSISTENTE (Postgres) em vez da H2 embutida efémera.
+      KC_DB: "postgres"
+      KC_DB_URL: "jdbc:postgresql://postgres:5432/keycloak"
+      KC_DB_USERNAME: "keycloak"
+      KC_DB_PASSWORD: "keycloak-dev-pass"
       # Issuer canónico = o nome de rede pelo qual o NÓ alcança o IdP; entra no claim `iss` dos
       # tokens e no discovery. O nó valida iss == AOS_SOVEREIGN_OIDC_ISSUER exatamente.
       KC_HOSTNAME: "https://idp:8443"
@@ -33,6 +55,9 @@ services:
       - ./keycloak/realm-aos.json:/opt/keycloak/data/import/realm-aos.json:ro
     ports:
       - "9443:8443"   # consola/discovery a partir do host (curl -k https://localhost:9443/...).
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # --- nó: promovido a PRODUÇÃO + credencial forte de soberania ---------------------------------
   aos:
@@ -47,11 +72,32 @@ services:
       AOS_SOVEREIGN_OIDC_AUDIENCE: "aos-node"
       # O nó confia na CA de dev que assinou o cert do Keycloak (Go/Linux honra SSL_CERT_FILE).
       SSL_CERT_FILE: "/etc/aos/idp-ca.crt"
+
+      # CUSTÓDIA EXTERNA DA KEK em HashiCorp Vault (AOS-215/AOS-216), motor Transit: a KEK
+      # por-titular vive no Vault (key-never-leaves) e o /dsar/erase destrói-a lá (crypto-shred).
+      # Dev: transporte http na rede interna e token por ficheiro; produção usaria https + token
+      # de curta duração. Sem estas vars o nó cairia no vault in-memory demo-grade.
+      AOS_DSAR_VAULT_ADDR: "http://vault:8200"
+      AOS_DSAR_VAULT_TOKEN_PATH: "/etc/aos/vault-token"
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
+      - ./secrets/vault-token:/etc/aos/vault-token:ro
     depends_on:
       idp:
         condition: service_started
+      vault:
+        condition: service_started
+
+  # --- HashiCorp Vault (dev) — custódia externa da KEK por-titular (motor Transit) --------------
+  vault:
+    image: hashicorp/vault:1.18
+    cap_add: [IPC_LOCK]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: "aos-dev-root"
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    command: ["server", "-dev"]
+    ports:
+      - "8200:8200"   # API/consola a partir do host (curl -H X-Vault-Token: aos-dev-root ...).
 
   # --- toolbox on-demand: aos-issuer EM-REDE para o fluxo `mint --assertion` (human OIDC) --------
   # Não arranca no `up` (profile "tools"). Uso:
@@ -69,3 +115,8 @@ services:
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
       - ./secrets/issuer.key:/etc/aos/issuer.key:ro
+
+# Volume da base de dados persistente do Keycloak (Postgres). Merge com o `volumes:` da base
+# (aos-data). Apagar com `down -v` (perde realm/utilizadores importados).
+volumes:
+  kc-pgdata:

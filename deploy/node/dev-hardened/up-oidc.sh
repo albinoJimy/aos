@@ -49,6 +49,13 @@ if [[ ! -s "${SECRETS}/idp-tls/idp.crt" ]]; then
   chmod 644 "${SECRETS}/idp-tls/idp.crt" "${SECRETS}/idp-tls/idp.key" "${SECRETS}/ca.crt"
 fi
 
+# Token do Vault (dev): tem de existir ANTES do `up` (o nó lê-o no arranque). Casa com o
+# VAULT_DEV_ROOT_TOKEN_ID do serviço vault. Material de DEV; produção usaria AppRole/k8s-auth.
+if [[ ! -s "${SECRETS}/vault-token" ]]; then
+  printf 'aos-dev-root' > "${SECRETS}/vault-token"
+  chmod 644 "${SECRETS}/vault-token"   # UID 65532 non-root tem de LER o mount.
+fi
+
 # --- 2. sobe base + override (Keycloak + nó em produção) ---------------------
 echo "[oidc] 2/5 docker compose up (base + oidc) ..."
 docker compose -p "${PROJECT}" -f "${BASE}" -f "${OIDC}" --env-file "${ENV_FILE}" up -d
@@ -61,6 +68,19 @@ until [[ "$(docker inspect -f '{{.State.Health.Status}}' "${CID}" 2>/dev/null)" 
     || fail "nó em '${st}' — ver: docker compose -p ${PROJECT} -f ${BASE} -f ${OIDC} logs aos"
   sleep 2
 done
+
+# --- 2b. Vault: habilitar o motor Transit (idempotente) ---------------------
+echo "[oidc] a aguardar o Vault e a habilitar o motor Transit ..."
+VADDR="http://localhost:8200"; VTOK="aos-dev-root"
+tries=60
+until curl -sf -o /dev/null "${VADDR}/v1/sys/health" 2>/dev/null; do
+  (( tries-- > 0 )) || fail "Vault não respondeu a tempo (docker compose logs vault)"
+  sleep 1
+done
+# 204 = criado; 400 "path is already in use" = já habilitado ⇒ ambos OK.
+tcode="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Vault-Token: ${VTOK}" \
+  "${VADDR}/v1/sys/mounts/transit" -d '{"type":"transit"}')"
+echo "[oidc]   enable transit -> HTTP ${tcode} (204=novo, 400=já existia)"
 
 echo "[oidc] a aguardar o Keycloak (discovery) ..."
 DISCO="https://localhost:9443/realms/aos/.well-known/openid-configuration"

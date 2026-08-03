@@ -511,6 +511,18 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	cfg.Retention = retention
 
+	// CUSTÓDIA EXTERNA DA KEK em HashiCorp Vault (AOS-215/AOS-216) por ambiente. Vazio ⇒
+	// [Config.DSARVault] fica nil e o Bootstrap usa o vault in-memory demo-grade (inalterado);
+	// AOS_DSAR_VAULT_ADDR presente ⇒ liga a custódia key-never-leaves via Transit. Fail-closed:
+	// config incompleta ABORTA (ErrBadVaultDSAR) em vez de degradar para o in-memory.
+	dsarVault, err := parseVaultDSARFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	if dsarVault != nil {
+		cfg.DSARVault = dsarVault
+	}
+
 	return cfg, nil
 }
 
@@ -930,6 +942,41 @@ func parseRetentionFromEnv() (audit.RetentionConfig, error) {
 		return audit.RetentionConfig{}, fmt.Errorf("%w: %v", ErrBadRetention, err)
 	}
 	return rc, nil
+}
+
+// ErrBadVaultDSAR — a custódia externa da KEK em HashiCorp Vault (AOS-215/AOS-216) está pedida
+// (AOS_DSAR_VAULT_ADDR presente) mas mal configurada: sem AOS_DSAR_VAULT_TOKEN_PATH, ou o ficheiro
+// do token ilegível/vazio. Fail-closed: um endereço de Vault sem credencial NÃO degrada para o
+// vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
+var ErrBadVaultDSAR = errors.New("aos: custódia DSAR no Vault mal configurada — AOS_DSAR_VAULT_ADDR exige AOS_DSAR_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
+
+// parseVaultDSARFromEnv constrói a custódia da KEK por-titular em HashiCorp Vault (Transit) a
+// partir do ambiente — a via que preenche [Config.DSARVault] com custódia EXTERNA em vez do
+// [audit.InMemoryKeyVault] demo-grade. Vazio ⇒ nil (in-memory, inalterado). Presente ⇒ exige o
+// token por FICHEIRO montado (material privado nunca por env). O adaptador é key-never-leaves
+// ([vaultKeyVault] implementa [audit.KeyWrapper]): a KEK vive no Vault e o crypto-shred destrói-a lá.
+func parseVaultDSARFromEnv() (audit.KeyVault, error) {
+	addr := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_ADDR"))
+	if addr == "" {
+		return nil, nil // não configurado ⇒ vault in-memory de referência (comportamento actual).
+	}
+	tokenPath := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_TOKEN_PATH"))
+	if tokenPath == "" {
+		return nil, ErrBadVaultDSAR
+	}
+	raw, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ler token: %v", ErrBadVaultDSAR, err)
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return nil, fmt.Errorf("%w: token vazio em %q", ErrBadVaultDSAR, tokenPath)
+	}
+	mount := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_TRANSIT_MOUNT"))
+	if mount == "" {
+		mount = "transit"
+	}
+	return newVaultKeyVault(addr, mount, token), nil
 }
 
 // parseHumanOIDCDirectory constrói o directório de autenticação humana OIDC (frente 1 do D4,

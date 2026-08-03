@@ -78,8 +78,9 @@ para o estado atual do código.
 
 ### B — RESOLVIDO com IdP real (Keycloak) — `bash up-oidc.sh`
 
-O override `docker-compose.oidc.yml` sobe **Keycloak** (IdP OIDC production-grade), promove o nó a
-`AOS_MODE=production` e liga a **credencial forte de soberania**. O nó faz verificação OIDC
+O override `docker-compose.oidc.yml` sobe **Keycloak** (IdP OIDC production-grade) **sobre
+PostgreSQL** (não a H2 embutida efémera — o realm/utilizadores persistem num volume), promove o nó
+a `AOS_MODE=production` e liga a **credencial forte de soberania**. O nó faz verificação OIDC
 **genuína** (discovery + JWKS + assinatura RS256 + iss/aud/janela/anti-replay); não é mock.
 
 | Frente | Onde | Como / prova |
@@ -108,10 +109,14 @@ Detalhes de topologia que tornam isto real:
   `ExpirationJob` passa a ter política: o `POST /dsar/expire` crypto-shreds a KEK por-titular das
   classes cujo TTL expirou (respeitando legal hold). Ligado neste stack (`pii_operational=720h,…`).
   *Nota:* isto tocou o binário de entrega (governado) — mudança de código verificada, não config pura.
-- **Custódia da KEK / DSARVault** (`Config.DSARVault`, [bootstrap.go:354](../../../packages/cmd/aos/bootstrap.go)).
-  Sem env: o default é um vault in-memory demo-grade (KEK perde-se no restart). Produção injeta um
-  key-service/KMS/HSM externo pela mesma porta (`audit.KeyVault`/`KeyWrapper`, AOS-215/AOS-216) —
-  infra-org, não configurável por docker.
+- **Custódia da KEK / DSARVault** — **RESOLVIDO com HashiCorp Vault** (`AOS_DSAR_VAULT_ADDR` +
+  `AOS_DSAR_VAULT_TOKEN_PATH`). Adicionou-se [vaultkeyvault.go](../../../packages/cmd/aos/vaultkeyvault.go):
+  um adaptador **key-never-leaves** (`audit.KeyWrapper`, AOS-216) sobre o motor **Transit** do Vault,
+  **zero-dep** (só stdlib HTTP — o SDK Go do Vault não entra no binário). A KEK por-titular vive no
+  Vault; o embrulho/desembrulho da DEK corre lá; o `/dsar/erase` faz **crypto-shred destruindo a chave
+  Transit**. Provado vivo (`demo-vault-shred.sh`): a KEK aparece no Vault após um run e é **destruída**
+  pelo erase (unwrap passa a falhar). Teste `vaultkeyvault_test.go` (round-trip + shred). *Nota:* tocou
+  o binário governado — mudança de código verificada. Sem as vars, mantém-se o in-memory demo-grade.
 - **Model Gateway real** ([bootstrap.go:1451](../../../packages/cmd/aos/bootstrap.go)). Sem env; o
   nó usa o modelo de referência. O gateway real é o EPIC-06.
 
@@ -133,10 +138,11 @@ Detalhes de topologia que tornam isto real:
 | `docker-compose.yml` | Serviços `aos` (endurecido), `edge` (TLS), `otel` (collector). |
 | `nginx.conf` | Edge que termina TLS e faz proxy (SSE-friendly) para o nó. |
 | `otel-collector.yaml` | Collector OTLP → exporter `debug` (stdout). |
-| `up-oidc.sh` | Gera CA+cert do IdP, sobe Keycloak + nó em produção, e prova o run com Bearer OIDC (balde B). |
-| `docker-compose.oidc.yml` | Override: serviço `idp` (Keycloak), nó em `AOS_MODE=production`+sovereign OIDC, e o toolbox `issuer` (profile `tools`). |
+| `up-oidc.sh` | Gera CA+cert do IdP + token do Vault, sobe Postgres+Keycloak+Vault + nó em produção, habilita Transit e prova o run com Bearer OIDC (balde B). |
+| `docker-compose.oidc.yml` | Override: `postgres` (DB do Keycloak), `idp` (Keycloak), `vault` (Transit), nó em `AOS_MODE=production`+sovereign OIDC+custódia Vault, e o toolbox `issuer` (profile `tools`). |
 | `keycloak/realm-aos.json` | Realm importável: client `aos-node`, user `alice`, mapper `board`→claim. |
 | `demo-human-oidc.sh` | Autentica o humano por OIDC (`aos-issuer --assertion`) e submete um run. |
+| `demo-vault-shred.sh` | Prova o crypto-shred: um run cria a KEK no Vault; o `/dsar/erase` destrói-a. |
 | `issuer-toolbox/Dockerfile` | Compila `aos-issuer` num container para o correr EM-REDE (human OIDC). |
 | `secrets/` (git-ignored) | Material gerado: chaves privadas, `approvers.json`, CA+certs TLS. |
 | `.env` (git-ignored) | Valores derivados (pubkeys, trust anchor) consumidos pelo compose. |
