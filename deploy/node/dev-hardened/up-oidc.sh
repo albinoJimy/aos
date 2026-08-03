@@ -80,9 +80,19 @@ if [[ ! -f "${SECRETS}/model.env" ]]; then
 MOONSHOT_API_KEY=
 # OPENAI_API_KEY=
 # ANTHROPIC_API_KEY=
+
+# --- LiteLLM UI/admin (login em http://localhost:4000/ui) ---
+LITELLM_MASTER_KEY=sk-aos-litellm-master
+UI_USERNAME=admin
+UI_PASSWORD=aos-litellm-2026
+DATABASE_URL=postgresql://keycloak:keycloak-dev-pass@postgres:5432/litellm
+STORE_MODEL_IN_DB=True
 EOF
   echo "[oidc] criado ${SECRETS}/model.env — PÕE a tua MOONSHOT_API_KEY lá para o Kimi completar."
 fi
+# A master key que o NÓ apresenta ao LiteLLM (bearer). Deriva-a do model.env (idempotente).
+grep -E '^LITELLM_MASTER_KEY=' "${SECRETS}/model.env" | head -1 | sed 's/^LITELLM_MASTER_KEY=//' | tr -d '\r\n' > "${SECRETS}/litellm-key"
+chmod 644 "${SECRETS}/litellm-key"
 
 # --- 2b. Vault: habilitar o motor Transit (idempotente) ---------------------
 echo "[oidc] a aguardar o Vault e a habilitar o motor Transit ..."

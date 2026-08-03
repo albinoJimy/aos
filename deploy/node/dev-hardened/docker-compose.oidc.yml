@@ -24,6 +24,7 @@ services:
       POSTGRES_PASSWORD: "keycloak-dev-pass"   # DEV; produção usaria um segredo gerido.
     volumes:
       - kc-pgdata:/var/lib/postgresql/data      # persistência real da DB.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro   # cria a DB `litellm` no 1º init.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
       interval: 5s
@@ -87,6 +88,8 @@ services:
       # código). As keys dos providers vivem em ./secrets/model.env (nunca no nó). Sem key o turno
       # devolve erro do provider; o boot do nó NÃO depende disto (o modelo só é chamado num run).
       AOS_MODEL_ENDPOINT: "http://litellm:4000/v1"
+      # Com master key no LiteLLM (UI login), o nó tem de a apresentar como bearer ao gateway.
+      AOS_MODEL_API_KEY_PATH: "/etc/aos/litellm-key"
       # Nome pedido ao gateway do nó. Travado pela allowlist ASSINADA embebida (board-eu): só
       # gpt-4o | gpt-4o-mini | text-embedding-3-large. É a fronteira de governança do NÓ; o
       # provider/modelo real a que este nome roteia define-se em litellm/config.yaml (livre).
@@ -94,6 +97,7 @@ services:
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
       - ./secrets/vault-token:/etc/aos/vault-token:ro
+      - ./secrets/litellm-key:/etc/aos/litellm-key:ro
     depends_on:
       idp:
         condition: service_started
@@ -122,7 +126,10 @@ services:
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     ports:
-      - "4000:4000"              # endpoint OpenAI a partir do host (http://localhost:4000/v1).
+      - "4000:4000"              # endpoint OpenAI + UI a partir do host (http://localhost:4000/ui).
+    depends_on:
+      postgres:
+        condition: service_healthy   # DATABASE_URL (UI/keys) aponta para a MESMA Postgres.
 
   # --- toolbox on-demand: aos-issuer EM-REDE para o fluxo `mint --assertion` (human OIDC) --------
   # Não arranca no `up` (profile "tools"). Uso:
