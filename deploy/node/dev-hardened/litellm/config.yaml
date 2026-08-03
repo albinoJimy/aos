@@ -13,18 +13,20 @@
 #                 anthropic/…). A key vem de os.environ/<VAR> (definida em ./secrets/model.env).
 # =============================================================================
 model_list:
-  # --- Kimi (Moonshot AI) — o provider pedido ------------------------------------------------
-  - model_name: gpt-4o-mini            # alias allowlisted que o nó pede
+  # --- Kimi Code (endpoint de codificação) — provider OpenAI-compatível em api.kimi.com ------
+  # A key "Kimi Code" é válida em https://api.kimi.com/coding/v1 (NÃO no api.moonshot.ai/v1).
+  # Usa-se o prefixo openai/ (provider OpenAI-compatível genérico) com api_base custom.
+  - model_name: gpt-4o-mini            # alias allowlisted que o nó pede -> K2.7 Coding
     litellm_params:
-      model: moonshot/kimi-k2-0711-preview   # modelo Kimi real (muda p/ o que preferires)
+      model: openai/kimi-for-coding
       api_key: os.environ/MOONSHOT_API_KEY
-      api_base: https://api.moonshot.ai/v1
+      api_base: https://api.kimi.com/coding/v1
 
-  - model_name: gpt-4o                 # segundo alias allowlisted -> outro modelo Kimi
+  - model_name: gpt-4o                 # segundo alias allowlisted -> K3
     litellm_params:
-      model: moonshot/moonshot-v1-32k
+      model: openai/k3
       api_key: os.environ/MOONSHOT_API_KEY
-      api_base: https://api.moonshot.ai/v1
+      api_base: https://api.kimi.com/coding/v1
 
   # --- Exemplos p/ MAIS providers/modelos (descomenta e põe a key em ./secrets/model.env) -----
   # - model_name: gpt-4o
