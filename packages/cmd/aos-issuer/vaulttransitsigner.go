@@ -15,12 +15,15 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -34,19 +37,34 @@ type vaultTransitSigner struct {
 // newVaultTransitSigner liga-se ao Vault e obtém a pubkey ed25519 da chave Transit nomeada
 // (fail-closed: a chave tem de existir e ser ed25519). NÃO cria a chave — o provisionamento
 // (transit/keys/<name> type=ed25519) é um passo do operador/up-script, separado do uso.
-func newVaultTransitSigner(addr, mount, key, token string) (*vaultTransitSigner, error) {
+func newVaultTransitSigner(addr, mount, key, token, caPath string) (*vaultTransitSigner, error) {
 	if addr == "" || key == "" || token == "" {
 		return nil, errors.New("vault signer exige addr, key e token")
 	}
 	if mount == "" {
 		mount = "transit"
 	}
+	hc := &http.Client{Timeout: 10 * time.Second}
+	// Quando o Vault serve TLS com uma CA privada (dev/PKI interna), confia-se nessa CA
+	// explicitamente (o binário host não honra SSL_CERT_FILE em todas as plataformas). Vazio ⇒
+	// verifica contra o trust store do sistema (produção com CA pública).
+	if strings.TrimSpace(caPath) != "" {
+		pem, err := os.ReadFile(caPath)
+		if err != nil {
+			return nil, fmt.Errorf("ler CA do Vault: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA do Vault %q sem certificado PEM", caPath)
+		}
+		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
+	}
 	s := &vaultTransitSigner{
 		addr:  strings.TrimRight(addr, "/"),
 		mount: strings.Trim(mount, "/"),
 		key:   key,
 		token: token,
-		hc:    &http.Client{Timeout: 10 * time.Second},
+		hc:    hc,
 	}
 	pub, err := s.fetchPublicKey()
 	if err != nil {

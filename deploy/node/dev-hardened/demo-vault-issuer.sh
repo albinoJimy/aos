@@ -25,7 +25,7 @@ SECRETS="${SCRIPT_DIR}/secrets"
 PROJECT="aos-dev-hardened"
 EXE=""; case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) EXE=".exe" ;; esac
 ISSUERBIN="${REPO_ROOT}/packages/cmd/aos-issuer/aos-issuer${EXE}"
-VADDR_HOST="http://localhost:8200"
+VADDR_HOST="https://localhost:8200"
 VTOK="$(cat "${SECRETS}/vault-token" 2>/dev/null)"
 KEYNAME="aos-issuer-key"
 
@@ -38,16 +38,16 @@ recreate_node() { "${DC[@]}" up -d --force-recreate aos >/dev/null 2>&1; for _ i
 [[ -n "${VTOK}" ]] || fail "sem token do Vault em ${SECRETS}/vault-token"
 
 echo "[vault-issuer] 1/6 a provisionar a chave ed25519 '${KEYNAME}' no Transit do Vault ..."
-code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-Vault-Token: ${VTOK}" -X POST -d '{"type":"ed25519"}' "${VADDR_HOST}/v1/transit/keys/${KEYNAME}")"
+code="$(curl -sk -o /dev/null -w '%{http_code}' -H "X-Vault-Token: ${VTOK}" -X POST -d '{"type":"ed25519"}' "${VADDR_HOST}/v1/transit/keys/${KEYNAME}")"
 echo "[vault-issuer]   create key -> HTTP ${code} (204=nova, 400/200=já existia)"
 
 echo "[vault-issuer] 2/6 a exportar a pubkey DO VAULT (trust-anchor do nó) ..."
-PUB="$("${ISSUERBIN}" pubkey --vault-addr "${VADDR_HOST}" --vault-key "${KEYNAME}" --vault-token-path "${SECRETS}/vault-token" | tr -d '\r\n')"
+PUB="$("${ISSUERBIN}" pubkey --vault-addr "${VADDR_HOST}" --vault-key "${KEYNAME}" --vault-token-path "${SECRETS}/vault-token" --vault-ca "${SECRETS}/ca.crt" | tr -d '\r\n')"
 [[ ${#PUB} -eq 64 ]] || fail "pubkey do Vault inválida (${PUB})"
 echo "[vault-issuer]   AOS_ISSUER_PUBKEY = ${PUB:0:32}…  (veio do Vault, não de um ficheiro)"
 
 echo "[vault-issuer] 3/6 a mintar um NHI ASSINADO PELO VAULT (a privada nunca entra no issuer) ..."
-NHI="$("${ISSUERBIN}" mint --vault-addr "${VADDR_HOST}" --vault-key "${KEYNAME}" --vault-token-path "${SECRETS}/vault-token" \
+NHI="$("${ISSUERBIN}" mint --vault-addr "${VADDR_HOST}" --vault-key "${KEYNAME}" --vault-token-path "${SECRETS}/vault-token" --vault-ca "${SECRETS}/ca.crt" \
   --issuer iss:aos-issuer --human human:alice --agent agt-vault --class agent-worker --caps cap:http.post --ttl 15m | tr -d '\r\n')"
 [[ -n "${NHI}" ]] || fail "mint via Vault falhou"
 echo "[vault-issuer]   NHI mintado (${#NHI} chars)"

@@ -18,8 +18,11 @@ storage "file" {
 }
 
 listener "tcp" {
-  address     = "0.0.0.0:8200"
-  tls_disable = "true"
+  address       = "0.0.0.0:8200"
+  # TLS com cert SAN=vault assinado pela CA de dev (o nó/issuer confiam nela). Encripta o
+  # transporte nó↔Vault (fecha DEF-012 nessa perna); produção usaria a PKI interna.
+  tls_cert_file = "/vault/tls/tls.crt"
+  tls_key_file  = "/vault/tls/tls.key"
 }
 
 # mlock exige CAP_IPC_LOCK; desligado em dev para evitar falhas de arranque conforme o host.

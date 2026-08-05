@@ -203,6 +203,7 @@ func vaultSignerFlags(fs *flag.FlagSet, keyFile *string) func() (crypto.Signer, 
 	mount := fs.String("vault-mount", "transit", "mount do motor Transit do Vault")
 	key := fs.String("vault-key", "", "nome da chave ed25519 do issuer no Transit")
 	tokenPath := fs.String("vault-token-path", "", "ficheiro com o token do Vault (material privado nunca por flag)")
+	caPath := fs.String("vault-ca", "", "CA PEM do Vault quando serve TLS com CA privada (vazio ⇒ trust store do sistema)")
 	return func() (crypto.Signer, error) {
 		if strings.TrimSpace(*addr) == "" {
 			return loadOrCreateKey(*keyFile)
@@ -214,7 +215,7 @@ func vaultSignerFlags(fs *flag.FlagSet, keyFile *string) func() (crypto.Signer, 
 		if err != nil {
 			return nil, fmt.Errorf("ler token do Vault: %w", err)
 		}
-		return newVaultTransitSigner(*addr, *mount, *key, strings.TrimSpace(string(tb)))
+		return newVaultTransitSigner(*addr, *mount, *key, strings.TrimSpace(string(tb)), *caPath)
 	}
 }
 

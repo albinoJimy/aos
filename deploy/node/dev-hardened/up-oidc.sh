@@ -71,6 +71,24 @@ if [[ ! -s "${SECRETS}/attestation-tls/tls.crt" ]]; then
   chmod 644 "${SECRETS}/attestation-tls/tls.crt" "${SECRETS}/attestation-tls/tls.key"
 fi
 
+# Cert do VAULT (SAN: vault, localhost, 127.0.0.1) assinado pela CA de dev — o listener do Vault
+# passa a servir TLS (encripta o transporte nó↔Vault, DEF-012). O nó/issuer confiam na CA; o CLI
+# interno do Vault (healthcheck) usa VAULT_CACERT=/vault/tls/ca.crt.
+if [[ ! -s "${SECRETS}/vault-tls/tls.crt" ]]; then
+  echo "[oidc] 1c/5 a gerar cert do Vault (SAN: vault, localhost, 127.0.0.1) ..."
+  mkdir -p "${SECRETS}/vault-tls"
+  VEXT="${SECRETS}/vault-tls/tls.ext"
+  printf 'subjectAltName=DNS:vault,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > "${VEXT}"
+  openssl req -nodes -newkey rsa:2048 \
+    -keyout "${SECRETS}/vault-tls/tls.key" -out "${SECRETS}/vault-tls/tls.csr" -subj "//CN=vault" >/dev/null 2>&1 \
+    || fail "openssl CSR do Vault falhou"
+  openssl x509 -req -in "${SECRETS}/vault-tls/tls.csr" -CA "${SECRETS}/ca.crt" -CAkey "${SECRETS}/ca.key" \
+    -CAcreateserial -out "${SECRETS}/vault-tls/tls.crt" -days 825 -extfile "${VEXT}" >/dev/null 2>&1 \
+    || fail "openssl assinatura do cert do Vault falhou"
+  cp "${SECRETS}/ca.crt" "${SECRETS}/vault-tls/ca.crt"
+  chmod 644 "${SECRETS}/vault-tls/tls.crt" "${SECRETS}/vault-tls/tls.key" "${SECRETS}/vault-tls/ca.crt"
+fi
+
 # Token do Vault: o ficheiro tem de EXISTIR antes do `up` (o nó lê-o no arranque, 1x). Aqui é só
 # um PLACEHOLDER — a secção 2b substitui-o pelo root token REAL do init do Vault persistente e
 # recria o nó. Material de DEV; produção usaria AppRole/k8s-auth de curta duração.
@@ -141,17 +159,17 @@ fi
 # produção usaria AUTO-UNSEAL (KMS/HSM) + cerimónia Shamir multi-custodiante. A cada arranque:
 # init-se-preciso -> unseal-se-selado -> enable-transit-idempotente -> sincroniza o token do nó.
 echo "[oidc] a aguardar o Vault e a garantir init/unseal + Transit ..."
-VADDR="http://localhost:8200"
+VADDR="https://localhost:8200"
 INIT_FILE="${SECRETS}/vault-init.json"
-seal_status() { curl -s "${VADDR}/v1/sys/seal-status"; }
+seal_status() { curl -sk "${VADDR}/v1/sys/seal-status"; }
 tries=60
-until [[ "$(curl -s -o /dev/null -w '%{http_code}' "${VADDR}/v1/sys/seal-status" 2>/dev/null)" == "200" ]]; do
+until [[ "$(curl -sk -o /dev/null -w '%{http_code}' "${VADDR}/v1/sys/seal-status" 2>/dev/null)" == "200" ]]; do
   (( tries-- > 0 )) || fail "Vault não respondeu a tempo (docker compose logs vault)"
   sleep 1
 done
 if [[ "$(seal_status | grep -o '"initialized":[a-z]*' | cut -d: -f2)" != "true" ]]; then
   echo "[oidc]   Vault não inicializado — operator init (1 share / threshold 1) ..."
-  curl -s -X POST "${VADDR}/v1/sys/init" -d '{"secret_shares":1,"secret_threshold":1}' > "${INIT_FILE}"
+  curl -sk -X POST "${VADDR}/v1/sys/init" -d '{"secret_shares":1,"secret_threshold":1}' > "${INIT_FILE}"
   chmod 600 "${INIT_FILE}"
 fi
 UNSEAL_KEY="$(grep -o '"keys_base64":\["[^"]*"' "${INIT_FILE}" 2>/dev/null | sed 's/.*\["//;s/"$//')"
@@ -159,10 +177,10 @@ ROOT_TOKEN="$(grep -o '"root_token":"[^"]*"' "${INIT_FILE}" 2>/dev/null | cut -d
 [[ -n "${UNSEAL_KEY}" && -n "${ROOT_TOKEN}" ]] || fail "material de init do Vault ausente/ilegível (${INIT_FILE})"
 if [[ "$(seal_status | grep -o '"sealed":[a-z]*' | cut -d: -f2)" == "true" ]]; then
   echo "[oidc]   Vault selado — a fazer unseal ..."
-  curl -s -X POST "${VADDR}/v1/sys/unseal" -d "{\"key\":\"${UNSEAL_KEY}\"}" > /dev/null
+  curl -sk -X POST "${VADDR}/v1/sys/unseal" -d "{\"key\":\"${UNSEAL_KEY}\"}" > /dev/null
 fi
 # 204 = criado; 400 "path is already in use" = já habilitado ⇒ ambos OK.
-tcode="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Vault-Token: ${ROOT_TOKEN}" \
+tcode="$(curl -sk -o /dev/null -w '%{http_code}' -X POST -H "X-Vault-Token: ${ROOT_TOKEN}" \
   "${VADDR}/v1/sys/mounts/transit" -d '{"type":"transit"}')"
 echo "[oidc]   enable transit -> HTTP ${tcode} (204=novo, 400=já existia)"
 
@@ -179,10 +197,10 @@ path "transit/keys/aos-kek-*/config" { capabilities = ["update"] }
 path "transit/encrypt/aos-kek-*" { capabilities = ["update"] }
 path "transit/decrypt/aos-kek-*" { capabilities = ["update"] }'
 POLICY_JSON="$(printf '%s' "${POLICY_HCL}" | python -c 'import json,sys; print(json.dumps({"policy": sys.stdin.read()}))')"
-curl -s -o /dev/null -w '[oidc]   política aos-node -> HTTP %{http_code} (204=ok)\n' -X PUT \
+curl -sk -o /dev/null -w '[oidc]   política aos-node -> HTTP %{http_code} (204=ok)\n' -X PUT \
   -H "X-Vault-Token: ${ROOT_TOKEN}" "${VADDR}/v1/sys/policies/acl/aos-node" -d "${POLICY_JSON}"
 # Token periódico (renovável) com SÓ essa política — não-root, sem herdar o default.
-SCOPED_TOKEN="$(curl -s -X POST -H "X-Vault-Token: ${ROOT_TOKEN}" "${VADDR}/v1/auth/token/create" \
+SCOPED_TOKEN="$(curl -sk -X POST -H "X-Vault-Token: ${ROOT_TOKEN}" "${VADDR}/v1/auth/token/create" \
   -d '{"policies":["aos-node"],"no_default_policy":true,"period":"720h","display_name":"aos-node"}' \
   | grep -o '"client_token":"[^"]*"' | cut -d'"' -f4)"
 [[ -n "${SCOPED_TOKEN}" ]] || fail "não consegui emitir o token scoped do Vault"

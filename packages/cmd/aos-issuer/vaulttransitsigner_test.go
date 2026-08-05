@@ -47,7 +47,7 @@ func TestVaultTransitSigner_PublicAndSign(t *testing.T) {
 	srv := fakeTransit(t, pub, priv)
 	defer srv.Close()
 
-	s, err := newVaultTransitSigner(srv.URL, "transit", "aos-issuer", "tok")
+	s, err := newVaultTransitSigner(srv.URL, "transit", "aos-issuer", "tok", "")
 	if err != nil {
 		t.Fatalf("construir signer: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestVaultTransitSigner_EndToEndIssuer(t *testing.T) {
 	srv := fakeTransit(t, pub, priv)
 	defer srv.Close()
 
-	signer, err := newVaultTransitSigner(srv.URL, "transit", "aos-issuer", "tok")
+	signer, err := newVaultTransitSigner(srv.URL, "transit", "aos-issuer", "tok", "")
 	if err != nil {
 		t.Fatalf("signer: %v", err)
 	}

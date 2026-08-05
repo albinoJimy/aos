@@ -89,7 +89,7 @@ services:
       # por-titular vive no Vault (key-never-leaves) e o /dsar/erase destrói-a lá (crypto-shred).
       # Dev: transporte http na rede interna e token por ficheiro; produção usaria https + token
       # de curta duração. Sem estas vars o nó cairia no vault in-memory demo-grade.
-      AOS_DSAR_VAULT_ADDR: "http://vault:8200"
+      AOS_DSAR_VAULT_ADDR: "https://vault:8200"
       AOS_DSAR_VAULT_TOKEN_PATH: "/etc/aos/vault-token"
 
       # MODEL GATEWAY (EPIC-06) apontado ao LiteLLM (gateway OpenAI-compatível CONFIG-DRIVEN).
@@ -167,7 +167,9 @@ services:
     pids_limit: 128
     cap_add: [IPC_LOCK]
     environment:
-      VAULT_ADDR: "http://127.0.0.1:8200"
+      # TLS: o listener serve https; o CLI interno (healthcheck `vault status`) confia na CA de dev.
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/ca.crt"
     # SÓ `server` — o entrypoint da imagem já injecta -config=/vault/config (o DIRECTÓRIO onde
     # montamos o config.hcl). Passar também -config=<ficheiro> definiria o listener 2x ("address
     # already in use"). O ficheiro montado no dir é lido automaticamente.
@@ -185,8 +187,9 @@ services:
     volumes:
       - vault-data:/vault/file                          # storage PERSISTENTE (dir vault:vault da imagem).
       - ./vault/config.hcl:/vault/config/config.hcl:ro
+      - ./secrets/vault-tls:/vault/tls:ro               # cert TLS (SAN vault) + ca.crt, gerados por up-oidc.
     ports:
-      - "8200:8200"   # API/consola a partir do host (X-Vault-Token = root token de secrets/vault-token).
+      - "8200:8200"   # API/consola a partir do host (https; X-Vault-Token = token de secrets/vault-token).
 
   # --- LiteLLM proxy — gateway de modelos EXTERNO e CONFIG-DRIVEN (substitui o OmniRoute) --------
   # Multi-provider/multi-modelo por YAML (litellm/config.yaml); keys dos providers por env
