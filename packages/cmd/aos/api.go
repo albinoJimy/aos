@@ -743,12 +743,32 @@ func (h *apiHandler) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // corpo é UNIFORME e mínimo: não revela contagem de runs, RunIDs, modo de identidade nem
 // o detalhe do erro interno (coerente com a filosofia não-enumerável de handleGet); só o
 // status HTTP distingue pronto de não-pronto.
-func (h *apiHandler) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+func (h *apiHandler) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if h.svc.Draining() || h.node.EventStore == nil || !h.node.EventStore.Healthy() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unready"})
 		return
 	}
+	// DEPENDÊNCIA CRÍTICA: a custódia da KEK (Vault). Se está configurada (custódia durável) e
+	// SELADA/inalcançável, o crypto-shred/DSAR e a cifra de conteúdo sob a KEK estão quebrados —
+	// 503 para o orquestrador PARAR de encaminhar, em vez de servir com a via GDPR partida em
+	// silêncio (revisão de prontidão #2). O vault in-memory de referência NÃO implementa a sonda
+	// (a KEK está sempre disponível em memória) ⇒ readyz não sonda nada, comportamento inalterado.
+	if p, ok := h.node.DSARVault.(readinessProber); ok {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := p.ready(ctx); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unready"})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+// readinessProber é uma dependência crítica que sabe dizer se está operacional. O DSARVault do
+// Vault implementa-o (sonda seal-status); o vault in-memory de referência NÃO — nesse caso o
+// /readyz não sonda a custódia (a KEK em memória está sempre disponível).
+type readinessProber interface {
+	ready(context.Context) error
 }
 
 // ---------------------------------------------------------------------------

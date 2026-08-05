@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -91,6 +92,32 @@ func (v *vaultKeyVault) do(method, path string, body any) ([]byte, int, error) {
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return rb, resp.StatusCode, nil
+}
+
+// ready sonda a saúde do motor de custódia (Vault) para o /readyz (revisão de prontidão #2).
+// Devolve erro se o Vault está INALCANÇÁVEL ou SELADO — nesses estados o crypto-shred/DSAR e a
+// cifra de conteúdo sob a KEK NÃO funcionam, pelo que o nó não deve reportar-se pronto (senão a
+// via GDPR Art.17 quebra EM SILÊNCIO com o nó a encaminhar tráfego, exatamente o achado da
+// revisão). /v1/sys/seal-status é NÃO-AUTENTICADO e responde 200 sempre; o campo `sealed`
+// distingue pronto de selado. O ctx traz um timeout curto de quem chama (não bloqueia o readyz).
+func (v *vaultKeyVault) ready(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.addr+"/v1/sys/seal-status", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := v.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("vault inalcancavel: %w", err)
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("vault seal-status HTTP %d", resp.StatusCode)
+	}
+	if !bytes.Contains(rb, []byte(`"sealed":false`)) {
+		return errors.New("vault selado")
+	}
+	return nil
 }
 
 // ensureTransitKey garante (idempotente) que a chave Transit do titular existe. Criar uma chave já
