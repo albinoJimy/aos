@@ -54,10 +54,11 @@ if [[ ! -s "${SECRETS}/idp-tls/idp.crt" ]]; then
   chmod 644 "${SECRETS}/idp-tls/idp.crt" "${SECRETS}/idp-tls/idp.key" "${SECRETS}/ca.crt"
 fi
 
-# Token do Vault (dev): tem de existir ANTES do `up` (o nó lê-o no arranque). Casa com o
-# VAULT_DEV_ROOT_TOKEN_ID do serviço vault. Material de DEV; produção usaria AppRole/k8s-auth.
+# Token do Vault: o ficheiro tem de EXISTIR antes do `up` (o nó lê-o no arranque, 1x). Aqui é só
+# um PLACEHOLDER — a secção 2b substitui-o pelo root token REAL do init do Vault persistente e
+# recria o nó. Material de DEV; produção usaria AppRole/k8s-auth de curta duração.
 if [[ ! -s "${SECRETS}/vault-token" ]]; then
-  printf 'aos-dev-root' > "${SECRETS}/vault-token"
+  printf 'placeholder-ate-init' > "${SECRETS}/vault-token"
   chmod 644 "${SECRETS}/vault-token"   # UID 65532 non-root tem de LER o mount.
 fi
 
@@ -117,18 +118,42 @@ if [[ ! -s "${SECRETS}/ca-bundle.crt" ]]; then
   chmod 644 "${SECRETS}/ca-bundle.crt"
 fi
 
-# --- 2b. Vault: habilitar o motor Transit (idempotente) ---------------------
-echo "[oidc] a aguardar o Vault e a habilitar o motor Transit ..."
-VADDR="http://localhost:8200"; VTOK="aos-dev-root"
+# --- 2b. Vault: init/unseal PERSISTENTE + motor Transit (idempotente) --------
+# Storage `file` (NÃO -dev): o Transit e as KEKs SOBREVIVEM a restart. Custo: init/unseal reais.
+# DEV usa 1 share / threshold 1 e guarda o material em secrets/vault-init.json (git-ignored);
+# produção usaria AUTO-UNSEAL (KMS/HSM) + cerimónia Shamir multi-custodiante. A cada arranque:
+# init-se-preciso -> unseal-se-selado -> enable-transit-idempotente -> sincroniza o token do nó.
+echo "[oidc] a aguardar o Vault e a garantir init/unseal + Transit ..."
+VADDR="http://localhost:8200"
+INIT_FILE="${SECRETS}/vault-init.json"
+seal_status() { curl -s "${VADDR}/v1/sys/seal-status"; }
 tries=60
-until curl -sf -o /dev/null "${VADDR}/v1/sys/health" 2>/dev/null; do
+until [[ "$(curl -s -o /dev/null -w '%{http_code}' "${VADDR}/v1/sys/seal-status" 2>/dev/null)" == "200" ]]; do
   (( tries-- > 0 )) || fail "Vault não respondeu a tempo (docker compose logs vault)"
   sleep 1
 done
+if [[ "$(seal_status | grep -o '"initialized":[a-z]*' | cut -d: -f2)" != "true" ]]; then
+  echo "[oidc]   Vault não inicializado — operator init (1 share / threshold 1) ..."
+  curl -s -X POST "${VADDR}/v1/sys/init" -d '{"secret_shares":1,"secret_threshold":1}' > "${INIT_FILE}"
+  chmod 600 "${INIT_FILE}"
+fi
+UNSEAL_KEY="$(grep -o '"keys_base64":\["[^"]*"' "${INIT_FILE}" 2>/dev/null | sed 's/.*\["//;s/"$//')"
+ROOT_TOKEN="$(grep -o '"root_token":"[^"]*"' "${INIT_FILE}" 2>/dev/null | cut -d'"' -f4)"
+[[ -n "${UNSEAL_KEY}" && -n "${ROOT_TOKEN}" ]] || fail "material de init do Vault ausente/ilegível (${INIT_FILE})"
+if [[ "$(seal_status | grep -o '"sealed":[a-z]*' | cut -d: -f2)" == "true" ]]; then
+  echo "[oidc]   Vault selado — a fazer unseal ..."
+  curl -s -X POST "${VADDR}/v1/sys/unseal" -d "{\"key\":\"${UNSEAL_KEY}\"}" > /dev/null
+fi
 # 204 = criado; 400 "path is already in use" = já habilitado ⇒ ambos OK.
-tcode="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Vault-Token: ${VTOK}" \
+tcode="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Vault-Token: ${ROOT_TOKEN}" \
   "${VADDR}/v1/sys/mounts/transit" -d '{"type":"transit"}')"
 echo "[oidc]   enable transit -> HTTP ${tcode} (204=novo, 400=já existia)"
+# Sincroniza o token do nó com o root token REAL; recria o nó se mudou (lê-o no boot, 1x).
+if [[ "$(cat "${SECRETS}/vault-token" 2>/dev/null)" != "${ROOT_TOKEN}" ]]; then
+  printf '%s' "${ROOT_TOKEN}" > "${SECRETS}/vault-token"; chmod 644 "${SECRETS}/vault-token"
+  echo "[oidc]   token do nó actualizado — a recriar o nó para o reler ..."
+  docker compose -p "${PROJECT}" -f "${BASE}" -f "${OIDC}" --env-file "${ENV_FILE}" up -d --force-recreate aos >/dev/null 2>&1
+fi
 
 echo "[oidc] a aguardar o Keycloak (discovery) ..."
 DISCO="https://localhost:9443/realms/aos/.well-known/openid-configuration"

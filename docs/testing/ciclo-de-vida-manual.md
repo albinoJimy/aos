@@ -344,18 +344,25 @@ digest+assinatura → **negada pelo taint-gate do PDP** → selada no WORM com a
 cadeia de delegação → observável no OTLP → e o conteúdo do titular apagável por crypto-shred.
 O LLM propõe, o nó dispõe — e regista tudo de forma imutável.
 
-## Nota operacional (dev-hardened)
+## Nota operacional (dev-hardened) — Vault persistente
 
-O **Vault de dev é in-memory**: se o Docker/Vault reiniciar, o motor Transit perde-se e o
-selamento de KEK devolve `404` (o nó recusa-se a fingir que selou). Re-ativar:
+O Vault usa **storage `file` num volume nomeado** (`vault-data`), não o modo `-dev` in-memory.
+Consequência: o motor Transit e as KEKs por-titular **sobrevivem a restart** do container. Um
+restart deixa o Vault `initialized:true, sealed:true` (dados intactos, apenas selado) — não
+apaga nada.
+
+Após um restart basta **re-correr `up-oidc.sh`** (idempotente): deteta que já está
+inicializado, lê o material de `secrets/vault-init.json` (git-ignored), faz **unseal** e garante
+o motor Transit. Unseal manual, se preciso:
 
 ```bash
-docker run --rm --network aos-dev-hardened_default curlimages/curl:latest -sk \
-  -H "X-Vault-Token: aos-dev-root" -X POST -d '{"type":"transit"}' \
-  http://vault:8200/v1/sys/mounts/transit
+KEY="$(grep -o '"keys_base64":\["[^"]*"' secrets/vault-init.json | sed 's/.*\["//;s/"$//')"
+curl -s -X POST http://localhost:8200/v1/sys/unseal -d "{\"key\":\"${KEY}\"}"
 ```
 
-O `up-oidc.sh` já faz isto no arranque; em produção o Vault seria persistente.
+O root token real vive em `secrets/vault-token` (o nó lê-o no arranque; os demos também). Em
+produção usar-se-ia **auto-unseal** (KMS/HSM) + cerimónia Shamir multi-custodiante em vez do
+share único guardado em ficheiro.
 
 ---
 

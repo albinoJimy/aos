@@ -24,7 +24,7 @@ SECRETS="${SCRIPT_DIR}/secrets"
 PROJECT="aos-dev-hardened"
 EXE=""; case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) EXE=".exe" ;; esac
 ISSUERBIN="${REPO_ROOT}/packages/cmd/aos-issuer/aos-issuer${EXE}"
-VADDR="http://localhost:8200"; VTOK="aos-dev-root"
+VADDR="http://localhost:8200"; VTOK="$(cat "${SECRETS}/vault-token" 2>/dev/null || echo aos-dev-root)"
 TMP="$(mktemp -d)"; trap 'rm -rf "${TMP}"' EXIT
 
 hdr()  { echo; echo "══ $* ═══════════════════════════════════════════"; }

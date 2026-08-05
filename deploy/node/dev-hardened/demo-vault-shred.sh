@@ -15,7 +15,7 @@ SECRETS="${SCRIPT_DIR}/secrets"
 PROJECT="aos-dev-hardened"
 EXE=""; case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) EXE=".exe" ;; esac
 ISSUERBIN="${REPO_ROOT}/packages/cmd/aos-issuer/aos-issuer${EXE}"
-VADDR="http://localhost:8200"; VTOK="aos-dev-root"
+VADDR="http://localhost:8200"; VTOK="$(cat "${SECRETS}/vault-token" 2>/dev/null || echo aos-dev-root)"
 
 fail() { echo "demo-vault-shred.sh: FAIL: $*" >&2; exit 1; }
 claim_of() { printf '%s' "$1" | cut -d. -f2 | tr '_-' '/+' | { base64 -d 2>/dev/null || true; } | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p"; }

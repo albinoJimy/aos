@@ -121,16 +121,25 @@ services:
       vault:
         condition: service_started
 
-  # --- HashiCorp Vault (dev) — custódia externa da KEK por-titular (motor Transit) --------------
+  # --- HashiCorp Vault — custódia externa da KEK por-titular (motor Transit), PERSISTENTE -------
+  # Storage `file` num volume nomeado (NÃO -dev): o motor Transit e as KEKs por-titular
+  # SOBREVIVEM a restart do container (o -dev perdia-as em memória, partindo o crypto-shred).
+  # O init/unseal (1 share/threshold 1 em dev) é tratado pelo up-oidc.sh, que guarda o material
+  # em secrets/vault-init.json (git-ignored) e escreve o root token em secrets/vault-token.
   vault:
     image: hashicorp/vault:1.18
     cap_add: [IPC_LOCK]
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: "aos-dev-root"
-      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
-    command: ["server", "-dev"]
+      VAULT_ADDR: "http://127.0.0.1:8200"
+    # SÓ `server` — o entrypoint da imagem já injecta -config=/vault/config (o DIRECTÓRIO onde
+    # montamos o config.hcl). Passar também -config=<ficheiro> definiria o listener 2x ("address
+    # already in use"). O ficheiro montado no dir é lido automaticamente.
+    command: ["server"]
+    volumes:
+      - vault-data:/vault/file                          # storage PERSISTENTE (dir vault:vault da imagem).
+      - ./vault/config.hcl:/vault/config/config.hcl:ro
     ports:
-      - "8200:8200"   # API/consola a partir do host (curl -H X-Vault-Token: aos-dev-root ...).
+      - "8200:8200"   # API/consola a partir do host (X-Vault-Token = root token de secrets/vault-token).
 
   # --- LiteLLM proxy — gateway de modelos EXTERNO e CONFIG-DRIVEN (substitui o OmniRoute) --------
   # Multi-provider/multi-modelo por YAML (litellm/config.yaml); keys dos providers por env
@@ -173,7 +182,9 @@ services:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
       - ./secrets/issuer.key:/etc/aos/issuer.key:ro
 
-# Volume da base de dados persistente do Keycloak (Postgres). Merge com o `volumes:` da base
-# (aos-data). Apagar com `down -v` (perde realm/utilizadores importados).
+# Volumes persistentes: Postgres do Keycloak (realm/utilizadores) e storage do Vault (motor
+# Transit + KEKs por-titular). Merge com o `volumes:` da base (aos-data). Apagar com `down -v`
+# (perde realm/utilizadores E as KEKs — o crypto-shred fica sem material para destruir).
 volumes:
   kc-pgdata:
+  vault-data:
