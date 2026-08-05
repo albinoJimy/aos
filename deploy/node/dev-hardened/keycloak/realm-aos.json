@@ -1,9 +1,13 @@
 {
   "realm": "aos",
   "enabled": true,
-  "sslRequired": "none",
+  "sslRequired": "external",
   "accessTokenLifespan": 900,
   "registrationAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and notUsername(undefined)",
   "clients": [
     {
       "clientId": "litellm",
@@ -19,11 +23,12 @@
       "clientId": "aos-node",
       "enabled": true,
       "publicClient": true,
-      "standardFlowEnabled": true,
+      "standardFlowEnabled": false,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["*"],
-      "webOrigins": ["*"],
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
       "protocolMappers": [
         {
           "name": "board-claim",
