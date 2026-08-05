@@ -10,7 +10,42 @@ principais; este mostra o que corre *dentro* de cada uma.
 
 ---
 
-## 1. Árvore de subprocessos em runtime (spans OTLP)
+## 0. Dois planos — porque o planeador NÃO aparece no trace de runtime
+
+O AOS separa **plano de DADOS** de **plano de CONTROLO**. A telemetria de runtime (secções 1–4)
+mostra só o **plano de dados** — o loop que o nó implantado (`cmd/aos`) corre: objectivo → modelo
+propõe tool calls → mediação. O **Planeador/Meta-Orquestração (ORQ) + Escalonador (SCH)** são o
+**plano de controlo**: decompõem um objectivo num plano validado (DAG) e delegam a sub-agentes.
+
+```mermaid
+flowchart TB
+  OBJ(["objectivo"]) --> INT["INTAKE<br/>classify · non-bypass gate<br/><i>routing, NÃO autoridade</i>"]
+  INT --> PLN["PLANNER<br/>LLM produz o plano<br/><i>plano = UNTRUSTED</i>"]
+  PLN --> VAL["PLAN-VALIDATE<br/>valida sobre snapshot PINADO<br/>risco DERIVADO, não auto-declarado"]
+  VAL -->|inválido| REJ["rejeitado fail-closed"]
+  VAL -->|válido| DOC["PLAN-DOCUMENT<br/>versionado semver · DAG acíclico<br/>deadlock-check (AOS-025)"]
+  DOC --> DEL["DELEGAÇÃO<br/>sub-agentes · orçamento herdado (CAS, AOS-026)"]
+  DEL --> DISP["DISPATCH<br/>emite ControlEvents (AOS-009)"]
+  DISP --> SCH["SCHEDULER (SCH)<br/>consome os eventos · escalona"]
+  SCH -->|cada tarefa escalonada torna-se| RUN["um run do PLANO DE DADOS<br/>invoke_agent → chat → execute_tool<br/><i>(as secções 1–4)</i>"]
+
+  classDef ctrl fill:#fff8e0,stroke:#bb9a40;
+  classDef data fill:#e8f0ff,stroke:#4062bb;
+  classDef rej fill:#ffe8e8,stroke:#bb4040;
+  class INT,PLN,VAL,DOC,DEL,DISP,SCH ctrl; class RUN data; class REJ rej;
+```
+
+> **ESTADO (honesto):** este plano de controlo está **construído e RATIFICADO** (spec `tecnica/18`,
+> código em `packages/control-plane/orchestrator/`, **módulo próprio**), mas **NÃO está ligado a
+> nenhum binário** — nem `cmd/aos` (o nó) nem `cmd/aos-demo` o importam. Por isso **não emite spans
+> no runtime**: o nó implantado corre o loop de dados; o planeador/orquestrador é maquinaria de
+> plano de controlo ainda não integrada no caminho de execução. Quando ligado, **cada tarefa que o
+> SCH escalona torna-se um run do plano de dados** — ou seja, a árvore da secção 1 passa a ser uma
+> *folha* deste grafo.
+
+---
+
+## 1. Árvore de subprocessos em runtime (spans OTLP) — plano de DADOS
 
 Todo o run vive sob **um** span `invoke_agent`; cada turno e cada tool call desdobram-se em
 subprocessos aninhados. Nada corre sem deixar um span.
