@@ -165,10 +165,31 @@ fi
 tcode="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Vault-Token: ${ROOT_TOKEN}" \
   "${VADDR}/v1/sys/mounts/transit" -d '{"type":"transit"}')"
 echo "[oidc]   enable transit -> HTTP ${tcode} (204=novo, 400=já existia)"
-# Sincroniza o token do nó com o root token REAL; recria o nó se mudou (lê-o no boot, 1x).
-if [[ "$(cat "${SECRETS}/vault-token" 2>/dev/null)" != "${ROOT_TOKEN}" ]]; then
-  printf '%s' "${ROOT_TOKEN}" > "${SECRETS}/vault-token"; chmod 644 "${SECRETS}/vault-token"
-  echo "[oidc]   token do nó actualizado — a recriar o nó para o reler ..."
+
+# POLÍTICA LEAST-PRIVILEGE + token NÃO-ROOT para o nó/issuer (endurecimento AOS-215): o nó deixa de
+# usar o root token e passa a um token cujas capabilities são SÓ as operações Transit que precisa —
+# assinar com a chave do issuer, criar/ler/apagar KEKs por-titular (crypto-shred) e cifrar/decifrar.
+# O root token fica só em vault-init.json (ops de admin). Produção: AppRole/k8s-auth de curta duração
+# (login no arranque) — a renovação de TTL é a peça que falta (código do nó), fora deste dev-setup.
+POLICY_HCL='path "transit/sign/aos-issuer-key" { capabilities = ["update"] }
+path "transit/keys/aos-issuer-key" { capabilities = ["read"] }
+path "transit/keys" { capabilities = ["list"] }
+path "transit/keys/aos-kek-*" { capabilities = ["create","read","update","delete"] }
+path "transit/keys/aos-kek-*/config" { capabilities = ["update"] }
+path "transit/encrypt/aos-kek-*" { capabilities = ["update"] }
+path "transit/decrypt/aos-kek-*" { capabilities = ["update"] }'
+POLICY_JSON="$(printf '%s' "${POLICY_HCL}" | python -c 'import json,sys; print(json.dumps({"policy": sys.stdin.read()}))')"
+curl -s -o /dev/null -w '[oidc]   política aos-node -> HTTP %{http_code} (204=ok)\n' -X PUT \
+  -H "X-Vault-Token: ${ROOT_TOKEN}" "${VADDR}/v1/sys/policies/acl/aos-node" -d "${POLICY_JSON}"
+# Token periódico (renovável) com SÓ essa política — não-root, sem herdar o default.
+SCOPED_TOKEN="$(curl -s -X POST -H "X-Vault-Token: ${ROOT_TOKEN}" "${VADDR}/v1/auth/token/create" \
+  -d '{"policies":["aos-node"],"no_default_policy":true,"period":"720h","display_name":"aos-node"}' \
+  | grep -o '"client_token":"[^"]*"' | cut -d'"' -f4)"
+[[ -n "${SCOPED_TOKEN}" ]] || fail "não consegui emitir o token scoped do Vault"
+# Sincroniza o token do nó com o token SCOPED (não-root); recria o nó se mudou (lê-o no boot, 1x).
+if [[ "$(cat "${SECRETS}/vault-token" 2>/dev/null)" != "${SCOPED_TOKEN}" ]]; then
+  printf '%s' "${SCOPED_TOKEN}" > "${SECRETS}/vault-token"; chmod 644 "${SECRETS}/vault-token"
+  echo "[oidc]   token do nó actualizado (NÃO-ROOT, least-privilege) — a recriar o nó ..."
   docker compose -p "${PROJECT}" -f "${BASE}" -f "${OIDC}" --env-file "${ENV_FILE}" up -d --force-recreate aos >/dev/null 2>&1
 fi
 
