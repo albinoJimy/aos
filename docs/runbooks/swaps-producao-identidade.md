@@ -91,9 +91,23 @@ Passar `--ca` **desliga automaticamente** o MODO DEV: o endpoint `/synth` deixa 
 **autenticadores REAIS** certificados por essas raízes (com AAGUID na allowlist) verificam. O
 contrato bytes-in/bytes-out com o nó (`RemoteDeviceAttestationVerifier`) **não muda**.
 
-**Ação do dono:** obter as raízes de attestation (FIDO Metadata Service e/ou PKI interna), definir a
-allowlist de AAGUID dos modelos homologados, inscrever os dispositivos dos aprovadores (enrollment
-WebAuthn), e passar `--ca`+`--aaguids` ao serviço.
+**PROVADO com uma raiz FIDO REAL** (Yubico U2F Root CA, `attestation/fido-roots.pem`, cert público
+que certifica YubiKeys reais):
+
+```
+serve --ca /fido-roots.pem --aaguids ee882879721c491397753dfcce97072a --rpid aos.corp --origins https://aos.corp
+  /healthz          -> 200   (arrancou com a raiz Yubico real carregada)
+  /synth            -> 404   (helper de dev DESLIGADO em modo produção)
+  /verify(dev-att)  -> 422   (uma attestation de dev é RECUSADA — não encadeia à raiz Yubico)
+```
+
+O único passo que resta ao dono é o que exige hardware físico: **inscrever um YubiKey/autenticador
+real** (enrollment WebAuthn) para produzir a attestation positiva — o verificador já corre com a
+raiz de produção e recusa tudo o que não seja certificado por ela.
+
+**Ação do dono:** obter as raízes das marcas homologadas (FIDO MDS e/ou PKI interna — a Yubico é um
+exemplo já incluído), definir a allowlist de AAGUID dos modelos, inscrever os dispositivos dos
+aprovadores, e passar `--ca`+`--aaguids` ao serviço (o compose já suporta via `command`).
 
 ---
 
