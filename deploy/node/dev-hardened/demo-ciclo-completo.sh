@@ -122,13 +122,19 @@ esac
 # ── 8. AUDITORIA (WORM + OTLP) ──────────────────────────────────────────────
 hdr "8. AUDITORIA  (WORM selado + spans OTLP)"
 docker cp "${PROJECT}-aos-1:/var/lib/aos/worm.wal" "${TMP}/worm.wal" >/dev/null 2>&1
-WN="$(grep -a -c "\"Partition\":\"${RID}\"" "${TMP}/worm.wal" 2>/dev/null || echo 0)"
+# O WORM é um WAL BINÁRIO (quase sem newlines) — grep -c contaria LINHAS (=1), não registos.
+# Conta OCORRÊNCIAS. Partições com namespace por plano+run: run-<id> (decisões de mediação de
+# DADOS), gov.read/run-<id> (read-path soberano, ele próprio auditado), gov.residency/run-<id>
+# (residência na criação). O RunID vai selado no conteúdo de TODAS, independentemente da Partition.
+WN="$(grep -a -o "\"Partition\":\"run-[^\"]*${RID#run-}\"" "${TMP}/worm.wal" 2>/dev/null | wc -l | tr -d ' ')"
+WGOV="$(grep -a -o "\"Partition\":\"gov.read/${RID}\"" "${TMP}/worm.wal" 2>/dev/null | wc -l | tr -d ' ')"
 DENY="$(docker compose -p "${PROJECT}" logs otel 2>/dev/null | awk -v RS='Name           : execute_tool' -v rid="${RID}" '
   index($0,"aos.run_id: Str(" rid ")") {
     if (match($0,/aos.decision.denied_by: Str\(policy\)/)) print "deny|policy";
     else if (match($0,/aos.decision.denied_by: Str\(scope\)/)) print "deny|scope";
     else if (match($0,/aos.decision: Str\(deny\)/)) print "deny|other" }' | sort | uniq -c | tr '\n' ';')"
-info "registos WORM selados (partição do run): ${WN}  (hash-chain contígua, tamper-evident)"
+info "WORM selado — partição de DADOS (run-${RID#run-}): ${WN} decisões de mediação  (hash-chain por-partição)"
+info "WORM selado — partição gov.read/${RID}: ${WGOV} registos  (o read-path soberano é ele próprio auditado)"
 info "spans OTLP execute_tool: ${DENY:-<nenhum>}"
 [[ "${WN}" -ge 1 ]] && ok "cada decisão de mediação gravada em audit imutável + trace distribuído" || info "sem registos WORM (o run pode não ter emitido tool calls)"
 
