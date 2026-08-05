@@ -150,6 +150,17 @@ var ErrBadRatifiers = errors.New("aos: AOS_RATIFIERS invalida (esperado \"princi
 // tenha DECIDIDO — fail-closed.
 var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminacao TLS do ingresso — defina AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH (TLS no no) OU DECLARE terminacao a montante com AOS_TLS_EXTERNAL_TERMINATION=1; a producao nao serve API/SSE/DSAR em texto-claro sem decisao explicita")
 
+// ErrProductionNeedsDurableKEK — sob AOS_MODE=production COM substrato durável (AOS_WORM_PATH
+// e/ou AOS_DURABLE_EXECUTION), a custódia da KEK por-titular NÃO pode ser o vault in-memory de
+// referência (AOS-215/AOS-216). É a SIMÉTRICA de ErrDurableExecutionNeedsDurableSubstrate: aquela
+// exige que o SUBSTRATO seja durável; esta exige que a CHAVE que o decifra seja igualmente
+// durável. Sem AOS_DSAR_VAULT_ADDR, o read-path soberano sela conteúdo sensível (D6) e a captura
+// de não-determinismo sob uma KEK que evapora no restart — o conteúdo cifrado fica PERMANENTEMENTE
+// indecifrável (over-erasure silenciosa) e o legal hold deixa de preservar o que a lei manda reter.
+// Ao contrário das outras colunas de produção, a KEK-em-memória só AVISAVA; agora RECUSA. O modo
+// de referência (sem AOS_MODE=production) mantém a KEK-em-memória demo-grade.
+var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
+
 // ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é
 // um booleano reconhecido. Fail-closed de CONFIG (AOS-209), no padrão de ErrBadDurableExecution:
 // lixo NÃO é tratado como false. Um operador que escreve "AOS_TLS_EXTERNAL_TERMINATION=sim"
@@ -522,6 +533,15 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	if dsarVault != nil {
 		cfg.DSARVault = dsarVault
+	}
+
+	// FAIL-CLOSED de produção (AOS-215/AOS-216) — a KEK tem de ser tão durável quanto o substrato
+	// que cifra. Se há substrato durável (WORM durável e/ou execução durável) mas a KEK ficaria no
+	// vault in-memory de referência, um restart perde-a e o conteúdo selado (D6/captura) fica
+	// PERMANENTEMENTE indecifrável. Simétrica a ErrDurableExecutionNeedsDurableSubstrate. Fora de
+	// produção a KEK-em-memória demo-grade é aceite (inalterado).
+	if production && cfg.DSARVault == nil && (durableExecution || cfg.WORMPath != "") {
+		return Config{}, ErrProductionNeedsDurableKEK
 	}
 
 	// MODEL GATEWAY (OpenAI-compatível) por ambiente. Vazio ⇒ [Config.Model] fica nil e o Bootstrap
