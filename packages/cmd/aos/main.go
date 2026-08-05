@@ -544,6 +544,19 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, ErrProductionNeedsDurableKEK
 	}
 
+	// ATTESTATION DE DISPOSITIVO WebAuthn (AOS-177) por ambiente: AOS_ATTESTATION_VERIFIER_URL liga
+	// o verificador REMOTO ao FourEyesGate (o CBOR corre no componente de autoridade externo; o
+	// binário do nó fica zero-dep). Com ele, cada perna de aprovação exige attestationObject válido.
+	// O token opcional vem de FICHEIRO montado (material privado nunca por variável de ambiente).
+	cfg.AttestationVerifierURL = strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_URL"))
+	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_TOKEN_PATH")); p != "" {
+		tb, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return Config{}, fmt.Errorf("aos: AOS_ATTESTATION_VERIFIER_TOKEN_PATH: %w", rerr)
+		}
+		cfg.AttestationVerifierToken = strings.TrimSpace(string(tb))
+	}
+
 	// MODEL GATEWAY (OpenAI-compatível) por ambiente. Vazio ⇒ [Config.Model] fica nil e o Bootstrap
 	// usa o referenceModel (inalterado); AOS_MODEL_ENDPOINT presente ⇒ liga o adaptador ao gateway
 	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig).

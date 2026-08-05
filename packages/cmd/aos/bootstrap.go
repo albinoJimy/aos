@@ -231,6 +231,16 @@ type Config struct {
 	// Approvers regista os aprovadores do FourEyesGate. Vazio ⇒ o gate não é composto.
 	Approvers []ApproverConfig
 
+	// AttestationVerifierURL liga a attestation de dispositivo WebAuthn (AOS-177) ao FourEyesGate
+	// via [integration.RemoteDeviceAttestationVerifier] (cliente HTTP STDLIB para o componente de
+	// autoridade externo que corre o verificador CBOR — o binário do nó fica ZERO-DEP, ADR-017).
+	// Presente ⇒ cada perna de aprovação TEM de trazer attestationObject+clientDataJSON válidos; o
+	// enforcement dormente de AOS-177 passa a ACTIVO. Vazio ⇒ inalterado (sem attestation).
+	AttestationVerifierURL string
+	// AttestationVerifierToken é o bearer opcional apresentado ao componente de autoridade
+	// (material NÃO-secreto entra por env; o token vem de ficheiro montado, como o do Vault).
+	AttestationVerifierToken string
+
 	// --- Promotion controller / ratificação de produção (AOS-159/AOS-206) ------
 	// Ratifiers regista os ratificadores de PRODUÇÃO pinados do promotion controller
 	// (principal + pubkey; autoridade fixa "ratify:production"). Ao contrário de Approvers,
@@ -930,7 +940,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		for _, a := range cfg.Approvers {
 			registry.Register(a.Principal, a.PubKey, a.Authority...)
 		}
-		foureyes, err = integration.NewFourEyesGate(registry, hitl.NewEventStoreNonceStore(es))
+		// ATTESTATION DE DISPOSITIVO (AOS-177) — opcional. Com AttestationVerifierURL, liga o
+		// verificador REMOTO (cliente HTTP stdlib; o CBOR corre no componente externo) e cada perna
+		// de aprovação passa a EXIGIR attestationObject+clientDataJSON. Fail-closed: URL malformada
+		// ou não-https-fora-de-loopback ABORTA o boot (o enforcement não degrada para o modo dormente).
+		var feOpts []integration.FourEyesOption
+		if strings.TrimSpace(cfg.AttestationVerifierURL) != "" {
+			av, aerr := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
+				URL:       cfg.AttestationVerifierURL,
+				AuthToken: cfg.AttestationVerifierToken,
+			})
+			if aerr != nil {
+				return nil, fmt.Errorf("aos: verificador de attestation remoto (AOS-177): %w", aerr)
+			}
+			feOpts = append(feOpts, integration.WithDeviceAttestation(av))
+		}
+		foureyes, err = integration.NewFourEyesGate(registry, hitl.NewEventStoreNonceStore(es), feOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("aos: four-eyes gate (AOS-162): %w", err)
 		}
