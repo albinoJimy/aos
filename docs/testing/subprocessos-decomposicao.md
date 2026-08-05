@@ -157,5 +157,80 @@ flowchart TB
 
 ---
 
-*Derivado da telemetria de `run-app-195330`. Os diagramas renderizam no GitHub e em qualquer viewer
-com suporte Mermaid.*
+## 5. Tabela granular — fase → subprocesso → evidência (um por linha)
+
+Cada subprocesso individual, com o sinal EXATO que o comprova (observado ao vivo).
+
+| Fase | Subprocesso | Evidência concreta |
+|---|---|---|
+| **A · Submissão** | verificar assinatura RS256 do Bearer (JWKS do IdP) | id-token aceite |
+| | validar `aud`/`exp`/`iss` | 201 (falha ⇒ 401) |
+| | **anti-replay** por-jti | reutilizar o Bearer ⇒ 404 |
+| | admissão (token-bucket do plano de dados) | 201 accepted |
+| | selar residência de região do run | `authorizeRead` recusa cross-region depois |
+| | reclamar lease de serviço | evento `lease.claimed` |
+| **B · Arranque** | congelar catálogo assinado (`FreezeToolSet`) | evento `run.toolset.frozen` (seq 1) · span `registry.freeze_toolset` |
+| **C · Turno** | montar prompt (assembler) | manifesto no `turn.recorded` |
+| | chamar o modelo | span `chat` (LiteLLM → Kimi) |
+| | enriquecer tool call com a capability do registry | `aos.capability` no span `execute_tool` |
+| **D · Mediação** (`execute_tool`) | hook 1 · identity (NHI vs trust-anchor) | `aos.principal.nhi_id` · deny ⇒ `denied_by=identity` |
+| | hook 2 · revalidation (digest+assinatura vs frozen) | `aos.tool_call.hash` · deny ⇒ `denied_by=revalidation` |
+| | hook 3 · PDP allowlist AOS-007 + Cedar sob taint | `aos.taint=untrusted` · deny ⇒ `denied_by=policy` |
+| | hook 4 · scope (escopo do recurso) | deny ⇒ `denied_by=scope` |
+| | selar decisão no WORM | span `audit_seal`: `aos.audit.entry_hash` + `aos.audit.partition` |
+| | despacho durável idempotente (envolve o hook chain) | span `aos.activity` |
+| **E · Fim de turno** | checkpoint de passo | `step.checkpoint` (×N) |
+| | gravar turno | `turn.recorded` |
+| | capturar não-determinismo | `replay.captured` |
+| | escrever memória | `memory.record.written` · span `memory.put` |
+| | redacção de conteúdo untrusted | span `aos.ingest.redacted` |
+| **F · Leitura soberana** | verificar OIDC do leitor + região==run | GET 200 |
+| | auto-auditar a leitura | registo em `gov.read/<run>` (3 por 3 GETs) |
+| **G · Trajetória/reconstrução** | replay do Event Store (SSE) | 113 eventos SSE |
+| | desembrulhar KEK + decifrar | `GET /reconstruct` → 200 |
+| **H · Crypto-shred** | índice partição-por-titular localiza a KEK | KEK `aos-kek-<sha>` no Vault |
+| | re-check de legal-hold (TOCTOU) | shred recusado sob hold |
+| | `deletion_allowed` + DELETE da KEK (Transit/TLS, token não-root) | `POST /dsar/erase` → 200 |
+| | verificar hash-chain do WORM pós-shred | KEK ausente ⇒ conteúdo irrecuperável |
+
+---
+
+## 6. Exemplo — uma tool call que FLUI pelo PDP (`doc_read` vs `web_post`)
+
+Nem toda a tool call morre no mesmo gate. O gate que a nega revela **até onde fluiu**. Com o MESMO
+`taint=untrusted`, a MESMA classe `agent-worker` e a MESMA região `eu`, duas capabilities têm
+destinos diferentes — isola o taint-gate (A/B, observado ao vivo):
+
+```mermaid
+flowchart TD
+  M(["tool call do modelo<br/>taint = untrusted · region = eu"]) --> ID{"1 · identity"}
+  ID -->|ok| RV{"2 · revalidation<br/>(catálogo assinado)"}
+  RV -->|ok| PDP{"3 · PDP / Cedar<br/>regra por capability"}
+
+  PDP -->|"web_post → cap:http.post<br/>allow_http_post EXIGE taint≠untrusted"| DWP["DENY no PDP<br/>denied_by = <b>policy</b><br/><i>morre AQUI (taint-gate P4)</i>"]
+
+  PDP -->|"doc_read → cap:fs.read<br/>allow_fs_read SEM cláusula de taint → PERMIT"| SCOPE{"4 · SCOPE<br/>(a jusante do PDP)"}
+  SCOPE -->|"authority de referência vazia"| DDR["DENY no scope<br/>denied_by = <b>scope</b><br/><i>FLUIU pelo PDP, morre aqui</i>"]
+
+  classDef deny fill:#ffe8e8,stroke:#bb4040;
+  classDef flow fill:#e8ffe8,stroke:#40bb62;
+  class DWP deny; class DDR deny; class SCOPE flow;
+```
+
+**Evidência ao vivo** (runs `run-idv2` / `run-docread-*`, mesmos taint/classe/região):
+
+| Tool | Capability | Regra Cedar | Passa o taint-gate? | `denied_by` (16×) | Leitura |
+|---|---|---|---|---|---|
+| `web_post` | `cap:http.post` | `allow_http_post` (com cláusula de taint) | **Não** | **`policy`** | morre **NO** PDP |
+| `doc_read` | `cap:fs.read` | `allow_fs_read` (sem cláusula de taint) | **Sim** | **`scope`** | **FLUI pelo PDP**, morre no ScopeGate |
+
+O `doc_read` é o exemplo pedido: passa `identity` → `revalidation` → **o PDP PERMITE-o** (a regra
+`allow_fs_read` não gateia por taint) → e só o **ScopeGate** a jusante o nega (`denied_by=scope`),
+porque a `authority` do nó de referência é vazia por design (DEF-604). Numa deployment com uma
+`AuthoritySource` real que concedesse o escopo do recurso, esta MESMA call **executaria** — é a
+única via, na config de referência, em que a decisão do PDP é *permit*.
+
+---
+
+*Derivado da telemetria de `run-app-195330`, `run-idv2-165230`, `run-sub-220014` e `run-docread-*`.
+Os diagramas renderizam no GitHub e em qualquer viewer com suporte Mermaid.*
