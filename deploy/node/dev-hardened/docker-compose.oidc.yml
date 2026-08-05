@@ -105,6 +105,12 @@ services:
       # gpt-4o | gpt-4o-mini | text-embedding-3-large. É a fronteira de governança do NÓ; o
       # provider/modelo real a que este nome roteia define-se em litellm/config.yaml (livre).
       AOS_MODEL_NAME: "gpt-4o-mini"
+
+      # ATTESTATION DE DISPOSITIVO WebAuthn (AOS-177): liga o FourEyesGate ao componente de
+      # autoridade externo (serviço `attestation`) via cliente HTTP stdlib. Com isto, cada perna de
+      # aprovação (POST /runs/{id}/approve) exige attestationObject+clientDataJSON válidos — o
+      # enforcement dormente passa a ACTIVO. O CBOR corre no componente externo; o nó fica zero-dep.
+      AOS_ATTESTATION_VERIFIER_URL: "https://attestation:8090/verify"
       # REGISTRY DE TOOLS (opt-in, análogo mínimo do EPIC-05): oferece ao modelo a tool `web_post`
       # (→ `cap:http.post`, região eu) e liga o binding de governança que o Reference Monitor avalia.
       # Runs normais não a chamam; quando o objetivo pede uma publicação HTTP, o modelo pede a tool e
@@ -126,6 +132,28 @@ services:
         condition: service_started
       vault:
         condition: service_started
+      attestation:
+        condition: service_started
+
+  # --- componente de autoridade de ATTESTATION WebAuthn (AOS-177) — corre o CBOR fora do nó ------
+  # O binário do nó NUNCA pode importar o descodificador CBOR (ADR-017); fala com este serviço por
+  # HTTP stdlib (RemoteDeviceAttestationVerifier). MODO DEV: CA auto-gerada + /synth. Em produção
+  # passar --ca <raiz FIDO/organizacional> no ENTRYPOINT e a allowlist de AAGUID real.
+  attestation:
+    build:
+      context: ../../..
+      dockerfile: deploy/node/dev-hardened/attestation/Dockerfile
+    image: aos-attestation:local
+    restart: unless-stopped
+    mem_limit: 128m
+    pids_limit: 128
+    # HTTPS: o nó recusa http em claro para a attestation (um veredito em claro é manipulável em
+    # trânsito). Cert SAN=attestation assinado pela CA de dev (o nó confia nela via SSL_CERT_FILE).
+    command: ["serve", "--addr", "0.0.0.0:8090", "--tls-cert", "/etc/attestation/tls.crt", "--tls-key", "/etc/attestation/tls.key"]
+    volumes:
+      - ./secrets/attestation-tls:/etc/attestation:ro
+    expose:
+      - "8090"   # só na rede interna do compose; o nó chama https://attestation:8090/verify.
 
   # --- HashiCorp Vault — custódia externa da KEK por-titular (motor Transit), PERSISTENTE -------
   # Storage `file` num volume nomeado (NÃO -dev): o motor Transit e as KEKs por-titular

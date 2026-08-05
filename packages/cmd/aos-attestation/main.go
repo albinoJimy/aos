@@ -89,27 +89,51 @@ func loadRoots(pemPath string) (*x509.CertPool, error) {
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8090", "endereço de escuta")
-	rpID := fs.String("rpid", "", "Relying Party ID (ex.: aos.local)")
-	origins := fs.String("origins", "", "origens web aceites, CSV (ex.: https://aos.local)")
-	aaguidsCSV := fs.String("aaguids", "", "allowlist de AAGUID, CSV de hex de 32 chars")
-	caPEM := fs.String("ca", "", "ficheiro PEM das âncoras de confiança (x5c)")
+	rpID := fs.String("rpid", "aos.local", "Relying Party ID (ex.: aos.local)")
+	origins := fs.String("origins", "https://aos.local", "origens web aceites, CSV (ex.: https://aos.local)")
+	aaguidsCSV := fs.String("aaguids", "", "allowlist de AAGUID, CSV de hex de 32 chars (vazio em modo dev ⇒ um AAGUID de dev)")
+	caPEM := fs.String("ca", "", "ficheiro PEM das âncoras de confiança (x5c); vazio ⇒ MODO DEV (CA auto-gerada + endpoint /synth)")
+	tlsCert := fs.String("tls-cert", "", "cert PEM do servidor (TLS); presente ⇒ https (o nó exige https ou http-loopback)")
+	tlsKey := fs.String("tls-key", "", "chave PEM do servidor (TLS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *rpID == "" || *origins == "" || *aaguidsCSV == "" || *caPEM == "" {
-		return errors.New("serve exige --rpid --origins --aaguids --ca")
+
+	var (
+		roots   *x509.CertPool
+		aaguids [][16]byte
+		devMode = strings.TrimSpace(*caPEM) == ""
+		devCAp  *devCA
+	)
+	// AAGUID de dev (o mesmo do selftest) quando não é dada allowlist.
+	devAAGUID := [16]byte{0x9c, 0x83, 0x5a, 0x11, 0x1e, 0x4f, 0x42, 0x0a, 0xb1, 0x2d, 0x77, 0x30, 0x51, 0x0e, 0xa3, 0x01}
+	if strings.TrimSpace(*aaguidsCSV) == "" {
+		aaguids = [][16]byte{devAAGUID}
+	} else {
+		for _, h := range strings.Split(*aaguidsCSV, ",") {
+			a, err := parseAAGUID(h)
+			if err != nil {
+				return err
+			}
+			aaguids = append(aaguids, a)
+		}
 	}
-	var aaguids [][16]byte
-	for _, h := range strings.Split(*aaguidsCSV, ",") {
-		a, err := parseAAGUID(h)
+	if devMode {
+		// MODO DEV: gera uma CA em memória e confia nela, e expõe /synth para produzir attestations
+		// de teste amarradas a um challenge. Em PRODUÇÃO passa-se --ca (raiz FIDO/organizacional) e
+		// /synth fica indisponível — só autenticadores REAIS certificados por essa raiz verificam.
+		ca, err := newDevCA("AOS Dev Attestation Root")
 		if err != nil {
 			return err
 		}
-		aaguids = append(aaguids, a)
-	}
-	roots, err := loadRoots(*caPEM)
-	if err != nil {
-		return err
+		devCAp = ca
+		roots = x509.NewCertPool()
+		roots.AddCert(ca.cert)
+	} else {
+		var err error
+		if roots, err = loadRoots(*caPEM); err != nil {
+			return err
+		}
 	}
 	v, err := attestation.New(attestation.Config{
 		RPID:           *rpID,
@@ -123,6 +147,31 @@ func cmdServe(args []string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
+	if devMode {
+		// Helper DEV: sintetiza uma attestation packed x5c válida amarrada ao challenge dado.
+		mux.HandleFunc("POST /synth", func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				Challenge string `json:"challenge"`
+			}
+			_ = json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&req)
+			ch, err := base64.StdEncoding.DecodeString(req.Challenge)
+			if err != nil || len(ch) == 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			att, cd, err := synthAttestation(devCAp, *rpID, strings.Split(*origins, ",")[0], devAAGUID, ch)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(verifyRequest{
+				AttestationObject: base64.StdEncoding.EncodeToString(att),
+				ClientDataJSON:    base64.StdEncoding.EncodeToString(cd),
+				ExpectedChallenge: base64.StdEncoding.EncodeToString(ch),
+			})
+		})
+	}
 	mux.HandleFunc("POST /verify", func(w http.ResponseWriter, r *http.Request) {
 		var req verifyRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil {
@@ -149,7 +198,15 @@ func cmdServe(args []string) error {
 	})
 
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	fmt.Fprintf(os.Stderr, "[aos-attestation] a servir /verify em %s (rpid=%s, %d AAGUID allowlisted)\n", *addr, *rpID, len(aaguids))
+	mode := "PRODUÇÃO (CA fornecida)"
+	if devMode {
+		mode = "DEV (CA auto-gerada + /synth)"
+	}
+	if strings.TrimSpace(*tlsCert) != "" && strings.TrimSpace(*tlsKey) != "" {
+		fmt.Fprintf(os.Stderr, "[aos-attestation] a servir /verify em %s (HTTPS) — modo %s, rpid=%s, %d AAGUID allowlisted\n", *addr, mode, *rpID, len(aaguids))
+		return srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+	}
+	fmt.Fprintf(os.Stderr, "[aos-attestation] a servir /verify em %s (http claro; o nó exige https salvo loopback) — modo %s, rpid=%s, %d AAGUID allowlisted\n", *addr, mode, *rpID, len(aaguids))
 	return srv.ListenAndServe()
 }
 

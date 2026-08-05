@@ -54,6 +54,23 @@ if [[ ! -s "${SECRETS}/idp-tls/idp.crt" ]]; then
   chmod 644 "${SECRETS}/idp-tls/idp.crt" "${SECRETS}/idp-tls/idp.key" "${SECRETS}/ca.crt"
 fi
 
+# Cert do COMPONENTE DE ATTESTATION (SAN: attestation) assinado pela MESMA CA de dev — o nó recusa
+# http em claro para a attestation (veredito manipulável em trânsito), pelo que fala https; confia
+# na CA via SSL_CERT_FILE. Mesmo molde do cert do IdP.
+if [[ ! -s "${SECRETS}/attestation-tls/tls.crt" ]]; then
+  echo "[oidc] 1b/5 a gerar cert do attestation (SAN: attestation, localhost) ..."
+  mkdir -p "${SECRETS}/attestation-tls"
+  AEXT="${SECRETS}/attestation-tls/tls.ext"
+  printf 'subjectAltName=DNS:attestation,DNS:localhost\nextendedKeyUsage=serverAuth\n' > "${AEXT}"
+  openssl req -nodes -newkey rsa:2048 \
+    -keyout "${SECRETS}/attestation-tls/tls.key" -out "${SECRETS}/attestation-tls/tls.csr" -subj "//CN=attestation" >/dev/null 2>&1 \
+    || fail "openssl CSR do attestation falhou"
+  openssl x509 -req -in "${SECRETS}/attestation-tls/tls.csr" -CA "${SECRETS}/ca.crt" -CAkey "${SECRETS}/ca.key" \
+    -CAcreateserial -out "${SECRETS}/attestation-tls/tls.crt" -days 825 -extfile "${AEXT}" >/dev/null 2>&1 \
+    || fail "openssl assinatura do cert do attestation falhou"
+  chmod 644 "${SECRETS}/attestation-tls/tls.crt" "${SECRETS}/attestation-tls/tls.key"
+fi
+
 # Token do Vault: o ficheiro tem de EXISTIR antes do `up` (o nó lê-o no arranque, 1x). Aqui é só
 # um PLACEHOLDER — a secção 2b substitui-o pelo root token REAL do init do Vault persistente e
 # recria o nó. Material de DEV; produção usaria AppRole/k8s-auth de curta duração.
