@@ -53,6 +53,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -473,6 +474,11 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// (Go 1.22+) já devolve 405 a métodos != GET.
 	mux.HandleFunc("GET /healthz", h.handleHealthz)
 	mux.HandleFunc("GET /readyz", h.handleReadyz)
+	// Observabilidade MÉTRICA (revisão de prontidão #5): via de métricas em texto Prometheus. O
+	// nó só exportava traces — os SLOs (disponibilidade, saúde de dependências, USE) são métricos e
+	// eram indetectáveis. Não-autenticada como healthz/readyz (scrapers não assinam; sem PII/segredos;
+	// restringir por rede). Zero-dep: texto emitido à mão, sem SDK de métricas.
+	mux.HandleFunc("GET /metrics", h.handleMetrics)
 	// Plano de DADOS.
 	mux.HandleFunc("POST /runs", h.handleSubmit)
 	mux.HandleFunc("GET /runs/{id}", h.handleGet)
@@ -769,6 +775,62 @@ func (h *apiHandler) handleReadyz(w http.ResponseWriter, r *http.Request) {
 // /readyz não sonda a custódia (a KEK em memória está sempre disponível).
 type readinessProber interface {
 	ready(context.Context) error
+}
+
+// handleMetrics emite métricas operacionais em formato de exposição Prometheus (text/plain
+// version 0.0.4). É a VIA DE MÉTRICAS que faltava (revisão de prontidão #5): sem ela os SLOs
+// métricos — disponibilidade, saúde de dependências, saturação de recursos (USE) — eram
+// indetectáveis a partir do nó em execução. Conjunto inicial produzível SEM instrumentar o
+// kernel: gauges de saúde/dependência (o gap exato do achado) + runtime Go. As latências de
+// request (mediation_overhead_p95) exigem histogramas instrumentados no kernel — follow-up. O
+// corpo NÃO revela RunIDs/contagens sensíveis (coerente com a filosofia não-enumerável).
+func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	var b strings.Builder
+	g := func(name, help string, typ string, val float64, labels string) {
+		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s %s\n%s%s %g\n", name, help, name, typ, name, labels, val)
+	}
+	b01 := func(ok bool) float64 {
+		if ok {
+			return 1
+		}
+		return 0
+	}
+
+	g("aos_up", "O processo esta a servir a API (sempre 1 quando responde).", "gauge", 1, "")
+	g("aos_build_info", "Metadados do no (valor sempre 1; ler pelas labels).", "gauge", 1,
+		fmt.Sprintf("{identity_mode=%q}", h.node.IdentityMode))
+
+	draining := h.svc.Draining()
+	g("aos_draining", "O servico esta em drain (1) para shutdown gracioso.", "gauge", b01(draining), "")
+
+	esHealthy := h.node.EventStore != nil && h.node.EventStore.Healthy()
+	g("aos_eventstore_healthy", "Event Store operacional (1) ou fechado/ausente (0).", "gauge", b01(esHealthy), "")
+
+	// Custódia da KEK (Vault): dependência crítica cujo estado selado/inalcançável partia a via
+	// GDPR em silêncio (revisão #2). Só exposta quando configurada (custódia durável).
+	vaultReady := true
+	if p, ok := h.node.DSARVault.(readinessProber); ok {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		vaultReady = p.ready(ctx) == nil
+		cancel()
+		g("aos_dsar_vault_ready", "Custodia da KEK (Vault) operacional (1) ou selada/inalcancavel (0).", "gauge", b01(vaultReady), "")
+	}
+
+	// aos_ready espelha o veredito do /readyz (drain + Event Store + custódia da KEK) — o SLI de
+	// disponibilidade a partir do qual o alerta de SLO dispara.
+	g("aos_ready", "O no reporta-se pronto no /readyz (1) ou nao (0).", "gauge", b01(!draining && esHealthy && vaultReady), "")
+
+	// Runtime Go (USE): saturação de recursos do processo.
+	g("aos_goroutines", "Goroutines em execucao.", "gauge", float64(runtime.NumGoroutine()), "")
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	g("aos_memory_alloc_bytes", "Heap alocado e ainda em uso (bytes).", "gauge", float64(ms.Alloc), "")
+	g("aos_memory_sys_bytes", "Memoria obtida do SO (bytes).", "gauge", float64(ms.Sys), "")
+	g("aos_gc_cycles_total", "Ciclos de GC completos desde o arranque.", "counter", float64(ms.NumGC), "")
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, b.String())
 }
 
 // ---------------------------------------------------------------------------
