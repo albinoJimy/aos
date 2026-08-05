@@ -18,6 +18,9 @@ services:
   # SOBREVIVEM a recriação do container — a postura production-shaped que um IdP a sério exige.
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 256
     environment:
       POSTGRES_DB: "keycloak"
       POSTGRES_USER: "keycloak"
@@ -34,6 +37,9 @@ services:
   # --- IdP REAL: Keycloak, TLS com cert da nossa CA de dev, DB em Postgres ----------------------
   idp:
     image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    mem_limit: 1536m         # Keycloak (JVM) precisa de heap folgado.
+    pids_limit: 1024
     command: ["start", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: "admin"
@@ -128,6 +134,9 @@ services:
   # em secrets/vault-init.json (git-ignored) e escreve o root token em secrets/vault-token.
   vault:
     image: hashicorp/vault:1.18
+    restart: unless-stopped   # sobrevive a reboot; volta SELADO (dados intactos) → up-oidc.sh faz unseal.
+    mem_limit: 256m
+    pids_limit: 128
     cap_add: [IPC_LOCK]
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
@@ -135,6 +144,16 @@ services:
     # montamos o config.hcl). Passar também -config=<ficheiro> definiria o listener 2x ("address
     # already in use"). O ficheiro montado no dir é lido automaticamente.
     command: ["server"]
+    # Healthcheck MEANINGFUL: `vault status` sai 0 só quando INICIALIZADO E UNSEALED (2=selado,
+    # 1=erro). Marca o serviço healthy apenas quando a custódia da KEK está de facto operacional —
+    # visível na monitorização. Nada depende de vault:healthy (o nó usa service_started), pelo que
+    # o estado "selado após restart até o up-oidc.sh fazer unseal" não bloqueia o arranque.
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     volumes:
       - vault-data:/vault/file                          # storage PERSISTENTE (dir vault:vault da imagem).
       - ./vault/config.hcl:/vault/config/config.hcl:ro
@@ -146,6 +165,9 @@ services:
   # (./secrets/model.env). Adicionar/trocar provider ou modelo = editar esses ficheiros, SEM código.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 512
     command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
     env_file:
       - ./secrets/model.env      # MOONSHOT_API_KEY, LITELLM_MASTER_KEY, GENERIC_* (SSO). Git-ignored.
