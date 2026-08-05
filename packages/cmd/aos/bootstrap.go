@@ -404,6 +404,13 @@ type Config struct {
 	IssuerClock   func() time.Time
 	VerifierClock func() time.Time
 	SteerClock    func() time.Time
+	// FreezeClock injecta o relógio do timestamp de congelamento do tool set
+	// (frozen_at do evento run.toolset.frozen). nil ⇒ time.Now. É OBSERVACIONAL —
+	// não entra em nenhuma decisão nem no hash do conjunto (que deriva dos specs); a
+	// reconstrução pós-failover restaura o valor persistido (byte-idêntica). Sem
+	// injecção o toolset.FreezeToolSet cai no relógio zero-value determinista (o
+	// frozen_at aparecia como "0001-01-01T00:00:00Z"). Uso interno/testes.
+	FreezeClock func() time.Time
 }
 
 // Node é o nó `aos` composto: a superfície de PRODUÇÃO pronta a hospedar runs (o loop
@@ -998,7 +1005,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// equivalente ao default do dispatcher, em vez de ser ESTRUTURAL — e o CA «apenas
 	// quando a observabilidade está ligada» deixaria de ser verdade.
 	wormForChain := worm
-	var freezeOpts []toolset.Option
+	// Relógio REAL do timestamp de congelamento (frozen_at). Sem isto o
+	// toolset.FreezeToolSet cai no zero-value determinista e o frozen_at do evento
+	// run.toolset.frozen serializa como "0001-01-01T00:00:00Z". É observacional (não
+	// entra em decisão nem no hash do conjunto), pelo que injectar time.Now é seguro;
+	// o rebuild pós-failover restaura o valor persistido (byte-idêntico).
+	freezeClock := cfg.FreezeClock
+	if freezeClock == nil {
+		freezeClock = time.Now
+	}
+	freezeOpts := []toolset.Option{toolset.WithClock(freezeClock)}
 	var runtimeOpts []agentruntime.Option
 	var chainTracer agentruntime.Tracer
 	if tracingEnabled {
