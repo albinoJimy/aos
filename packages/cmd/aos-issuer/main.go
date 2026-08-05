@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -72,14 +73,15 @@ func run(args []string, out io.Writer) error {
 func cmdPubkey(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("pubkey", flag.ContinueOnError)
 	keyFile := fs.String("key-file", "issuer.key", "ficheiro da chave de assinatura (seed ed25519 em hex)")
+	buildSigner := vaultSignerFlags(fs, keyFile)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	priv, err := loadOrCreateKey(*keyFile)
+	signer, err := buildSigner()
 	if err != nil {
 		return err
 	}
-	pub, ok := priv.Public().(ed25519.PublicKey)
+	pub, ok := signer.Public().(ed25519.PublicKey)
 	if !ok {
 		return errors.New("chave sem pubkey ed25519")
 	}
@@ -92,6 +94,7 @@ func cmdPubkey(args []string, out io.Writer) error {
 func cmdMint(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("mint", flag.ContinueOnError)
 	keyFile := fs.String("key-file", "issuer.key", "ficheiro da chave de assinatura")
+	buildSigner := vaultSignerFlags(fs, keyFile)
 	issuerID := fs.String("issuer", "iss:aos-issuer", "id do issuer (== AOS_ISSUER_ID do nó)")
 	human := fs.String("human", "", "humano responsável (raiz da delegação); alternativa a --assertion (via manual/allowlist)")
 	agent := fs.String("agent", "", "id do agente (NHI a criar)")
@@ -135,14 +138,15 @@ func cmdMint(args []string, out io.Writer) error {
 	}
 	scope := splitCSV(*caps)
 
-	priv, err := loadOrCreateKey(*keyFile)
+	signer, err := buildSigner()
 	if err != nil {
 		return err
 	}
-	// A via de custódia externa (AOS-175): o Issuer assina ATRAVÉS de um crypto.Signer. Aqui o
-	// signer é a ed25519.PrivateKey do ficheiro; em produção seria um adaptador HSM/KMS cuja
-	// chave nunca entra no processo. O nó continua a verificar só com a pubkey.
-	iss, err := identity.NewIssuerWithSigner(*issuerID, priv, map[string]identity.ClassPolicy{
+	// A via de custódia externa (AOS-175): o Issuer assina ATRAVÉS de um crypto.Signer. Com
+	// --vault-addr o signer é o Vault Transit (a chave ed25519 vive no Vault e NUNCA entra no
+	// processo — a realização da custódia HSM/KMS); senão, a ed25519.PrivateKey do ficheiro. O nó
+	// continua a verificar só com a pubkey (trust-anchor-only).
+	iss, err := identity.NewIssuerWithSigner(*issuerID, signer, map[string]identity.ClassPolicy{
 		*class: {TTL: *ttl, Scope: scope},
 	})
 	if err != nil {
@@ -189,6 +193,31 @@ func authenticateOIDC(ctx context.Context, cfg oidc.Config, assertion string) (h
 
 // loadOrCreateKey carrega a seed ed25519 (32 bytes em hex) do ficheiro; se não existir, gera uma
 // e grava-a com permissões 0600. É a via de DEV: a chave privada vive num ficheiro que o operador
+// vaultSignerFlags regista as flags de custódia da chave do issuer no Vault (AOS-175) num FlagSet
+// e devolve um construtor que, após o Parse, produz o crypto.Signer: o signer Vault (a chave vive
+// no Transit, NUNCA no processo) quando --vault-addr está presente, senão a chave de ficheiro
+// local. Partilhado por `mint` e `pubkey` para que a pubkey exportada (o trust-anchor do nó) venha
+// SEMPRE da mesma fonte que assina os tokens.
+func vaultSignerFlags(fs *flag.FlagSet, keyFile *string) func() (crypto.Signer, error) {
+	addr := fs.String("vault-addr", "", "endereco do Vault (ex.: http://vault:8200) — custodia da chave do issuer no Transit (AOS-175); vazio => --key-file")
+	mount := fs.String("vault-mount", "transit", "mount do motor Transit do Vault")
+	key := fs.String("vault-key", "", "nome da chave ed25519 do issuer no Transit")
+	tokenPath := fs.String("vault-token-path", "", "ficheiro com o token do Vault (material privado nunca por flag)")
+	return func() (crypto.Signer, error) {
+		if strings.TrimSpace(*addr) == "" {
+			return loadOrCreateKey(*keyFile)
+		}
+		if strings.TrimSpace(*key) == "" || strings.TrimSpace(*tokenPath) == "" {
+			return nil, errors.New("--vault-addr exige --vault-key e --vault-token-path")
+		}
+		tb, err := os.ReadFile(*tokenPath)
+		if err != nil {
+			return nil, fmt.Errorf("ler token do Vault: %w", err)
+		}
+		return newVaultTransitSigner(*addr, *mount, *key, strings.TrimSpace(string(tb)))
+	}
+}
+
 // controla, FORA do processo do nó. Em PRODUÇÃO, substituir por um crypto.Signer HSM/KMS (AOS-175)
 // — a chave nunca entra em processo nenhum. NUNCA se ecoa o material da chave.
 func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
