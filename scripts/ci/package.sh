@@ -7,7 +7,9 @@
 #   1. secrets.sh  — nenhum material sensível rastreado (a chave do issuer NUNCA na imagem);
 #   2. sast.sh     — gosec, baseline MULTISET (nunca sort -u); descoberta NOVA avermelha;
 #   3. sca.sh      — govulncheck, baseline multiset; vuln afetante nova avermelha;
-#   4. docker build (se o Docker estiver disponível) — a imagem endurecida (ADR-017 ponto 2);
+#   4. docker build (se o Docker estiver disponível) — a imagem endurecida (ADR-017 ponto 2),
+#      provada no artefacto CONSTRUÍDO: USER non-root numérico + os labels de proveniência
+#      (OCI + org.aos.*) que têm de VIAJAR com a imagem, não apenas constar do Dockerfile;
 #   5. sbom.sh     — SBOM + proveniência do binário que a imagem carrega (ADR-017 ponto 3);
 #   6. sign.sh     — ATESTAÇÃO ASSINADA (DSSE/ed25519) do conjunto entregue (AOS-207);
 #   7. verify-attestation.sh — a entrega RECUSA o que não valida (AOS-207).
@@ -150,6 +152,55 @@ else
       log_ok "imagem corre como NON-ROOT (User=$user)"
     else
       log_fail "imagem NÃO declara USER non-root numérico (User=${user:-<vazio>}) — fail-closed"
+      overall=1
+    fi
+
+    # Prova mínima de PROVENIÊNCIA QUE VIAJA: os labels do Dockerfile chegaram ao artefacto.
+    #
+    # PORQUÊ um gate e não «está no Dockerfile, logo está na imagem»: o Dockerfile é a INTENÇÃO,
+    # o `Config.Labels` da imagem construída é o FACTO — e já divergiram. Ficaram digests deste
+    # nó (untagged, Agosto 3-5) com `Config.Labels: null`, construídos pelo builder clássico a
+    # partir de um estado da árvore que não é o de hoje. Nenhum gate reparou, porque nenhum
+    # OLHAVA: o passo 4 provava o USER e mais nada. Quem inspeccionasse esse artefacto não
+    # encontraria nem o ADR nem os caminhos de verificação da cadeia — exactamente o contrário
+    # do que os labels existem para dizer. Um label que não viaja é um label que não existe.
+    #
+    # A lista é o CONTRATO (os 4 OCI + os 7 org.aos.* de ADR-017), deliberadamente escrita aqui
+    # e não derivada por grep ao Dockerfile: derivá-la faria o gate concordar com qualquer
+    # apagamento — apagar o LABEL apagaria também a expectativa, e o gate ficaria verde sobre
+    # uma imagem sem proveniência. Acrescentar um label ao Dockerfile NÃO obriga a tocar aqui;
+    # remover um dos obrigatórios é que tem de ser uma emenda CONSCIENTE a esta lista e ao ADR.
+    log_step "labels de proveniência OCI/ADR-017 presentes na imagem construída"
+    labels_json="$( docker image inspect --format '{{json .Config.Labels}}' "$IMAGE_TAG" 2>/dev/null || true )"
+    missing_labels=""
+    for lbl in \
+      org.opencontainers.image.title \
+      org.opencontainers.image.description \
+      org.opencontainers.image.source \
+      org.opencontainers.image.licenses \
+      org.aos.adr \
+      org.aos.supplychain.sbom \
+      org.aos.supplychain.attestation \
+      org.aos.supplychain.attestation.artifact \
+      org.aos.supplychain.attestation.verify \
+      org.aos.supplychain.attestation.trustroot \
+      org.aos.supplychain.custody ; do
+      # Ausente OU presente-mas-vazio contam como EM FALTA: um label vazio não diz nada a quem
+      # inspecciona o artefacto, e um verde sobre ele seria o mesmo falso-verde. Com
+      # `Config.Labels: null` o inspect devolve a string `null` e nenhum padrão casa => todos
+      # em falta, que é precisamente o caso que fica vermelho.
+      case "$labels_json" in
+        *"\"$lbl\":\"\""*) missing_labels="$missing_labels $lbl(vazio)" ;;
+        *"\"$lbl\":\""*)   ;;
+        *)                 missing_labels="$missing_labels $lbl" ;;
+      esac
+    done
+    if [ -z "$missing_labels" ]; then
+      log_ok "imagem carrega os 11 labels de proveniência (OCI + org.aos.* / ADR-017)"
+    else
+      log_fail "imagem SEM label(s) de proveniência obrigatórios:$missing_labels — fail-closed"
+      log_fail "  A imagem construída não carrega a proveniência que o Dockerfile declara."
+      log_fail "  Ver o bloco LABEL em deploy/node/Dockerfile e ADR-017 (docs/adr/ADR-017-supply-chain-node.md)."
       overall=1
     fi
   else
