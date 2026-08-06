@@ -10,7 +10,10 @@ import (
 // por trajectória (ADR-010): um replay tem de saber com que assembler o prompt
 // foi materializado. Incrementar sempre que o layout do prefixo ou do tail mude
 // de forma que altere os bytes materializados.
-const AssemblyVersion = "1.0.0"
+// 1.1.0 — o tail de um resultado de tool passou a materializar o bloco SANITIZADO de
+// negação (`tool_denied=`/`denied_code=`/`denied_by=`) quando o RM não permitiu a call
+// (ver [tailFromResultDenied]). Os bytes de um PERMIT são inalterados face a 1.0.0.
+const AssemblyVersion = "1.1.0"
 
 // hashPrefix é o prefixo dos hashes emitidos (formato tecnica/13 §3: "sha256:…").
 const hashPrefix = "sha256:"
@@ -184,8 +187,54 @@ func sha256Tagged(b []byte) string {
 // output vazio legítimo de uma falha de execução downstream (o conteúdo mantém-se
 // untrusted; a mensagem de erro NÃO autoriza nada).
 func tailFromResult(r Tainted, toolErr error) TailSegment {
+	return tailFromResultDenied(r, toolErr, nil)
+}
+
+// ToolDenial é a informação SANITIZADA de uma decisão NÃO-permit do Reference Monitor,
+// materializada no tail para o modelo saber QUE a sua tool call foi negada — e sob que
+// rótulo — em vez de ver um resultado vazio indistinguível de "a tool não devolveu nada"
+// (AOS-013 gap 2).
+//
+// SÓ RÓTULOS DE ENUMERAÇÃO FECHADA. Deliberadamente NÃO transporta [Decision.Reason]:
+// esse é texto livre de um hook/PDP e pode conter fragmentos de regra de política, nomes
+// de recursos/hosts de allowlist ou mensagens de erro internas — escrevê-lo no prompt
+// seria exfiltrar política para um plano que conteúdo untrusted consegue ler. É a MESMA
+// fronteira que o span do RM já impõe (anota `denied_by`, nunca `reason`) e que o
+// despacho durável já usa ("effect=%s code=%s").
+type ToolDenial struct {
+	// Effect é o veredicto ("deny" | "escalate").
+	Effect string
+	// Code é o código estável da decisão (enumeração fechada; vazio ⇒ omitido).
+	Code string
+	// DeniedBy é o nome do hook atribuível (ex.: "taint", "scope"; vazio ⇒ omitido).
+	DeniedBy string
+}
+
+// tailFromResultDenied é [tailFromResult] com a decisão de negação opcional. den == nil
+// produz bytes BYTE-IDÊNTICOS aos de antes desta funcionalidade (permit, com ou sem
+// toolErr) — a retro-compatibilidade do prompt materializado é estrutural.
+//
+// O bloco de negação é escrito no SEGMENTO DE TAIL, nunca dentro de [Tainted.Value]: o
+// resultado de uma call negada continua a ser untrusted-VAZIO (invariante selado por
+// teste), e o marcador é metadado de proveniência, não conteúdo devolvido por uma tool.
+func tailFromResultDenied(r Tainted, toolErr error, den *ToolDenial) TailSegment {
 	content := append([]byte("taint="), r.Taint...)
 	content = append(content, '\n')
+	if den != nil {
+		content = append(content, "tool_denied="...)
+		content = append(content, den.Effect...)
+		content = append(content, '\n')
+		if den.Code != "" {
+			content = append(content, "denied_code="...)
+			content = append(content, den.Code...)
+			content = append(content, '\n')
+		}
+		if den.DeniedBy != "" {
+			content = append(content, "denied_by="...)
+			content = append(content, den.DeniedBy...)
+			content = append(content, '\n')
+		}
+	}
 	if toolErr != nil {
 		content = append(content, "tool_error="...)
 		content = append(content, toolErr.Error()...)
@@ -237,6 +286,14 @@ func TailFromModelText(text string) TailSegment { return tailFromHistory(text) }
 // construção do loop ([tailFromResult]), exportada para o replay reconstruir o tail
 // byte-idêntico (ver [TailFromModelText]).
 func TailFromToolResult(r Tainted, toolErr error) TailSegment { return tailFromResult(r, toolErr) }
+
+// TailFromToolResultDenied é [TailFromToolResult] com a decisão de negação opcional —
+// a construção que o loop usa quando o RM não permitiu a call. O motor de replay TEM de
+// a usar (em vez de [TailFromToolResult]) para reconstruir o tail byte-idêntico: um run
+// com uma negação divergiria no prompt_hash se o replay omitisse o bloco de negação.
+func TailFromToolResultDenied(r Tainted, toolErr error, den *ToolDenial) TailSegment {
+	return tailFromResultDenied(r, toolErr, den)
+}
 
 // itoa é um atalho local (evita fmt em hot path de montagem).
 func itoa(n int) string { return strconv.Itoa(n) }

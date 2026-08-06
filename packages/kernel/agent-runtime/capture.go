@@ -35,6 +35,10 @@ type CapturedToolResult struct {
 	// materializado no tail do turno seguinte — o replay tem de o reproduzir para
 	// o prompt_hash bater.
 	ToolError error
+	// Denial é a decisão SANITIZADA quando o RM NÃO permitiu a call (nil em permit).
+	// Pela MESMA razão do ToolError: é materializada no tail, logo o replay tem de a
+	// reproduzir ou o prompt_hash de qualquer run com uma negação divergiria.
+	Denial *ToolDenial
 }
 
 // TurnCapture é o pacote de inputs não-determinísticos de um turno entregue ao

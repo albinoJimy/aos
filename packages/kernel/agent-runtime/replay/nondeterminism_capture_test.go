@@ -127,7 +127,7 @@ func TestCaptureSensitiveResultsStoresReferenceOnly(t *testing.T) {
 		t.Fatalf("output em claro NÃO devia ser persistido em modo sensível: %q", tr.Output)
 	}
 	// O replay de um resultado sensível devolve o marcador de referência, não a PII.
-	value, _ := tr.decode()
+	value, _, _ := tr.decode()
 	if string(value.Value) != tr.PayloadRef {
 		t.Fatalf("replay sensível devia devolver a referência, obtive %q", value.Value)
 	}
@@ -236,7 +236,7 @@ func TestCapturePreservesToolError(t *testing.T) {
 	if p.ToolResults[0].ToolError != "falha downstream" {
 		t.Fatalf("erro de tool não preservado: %q", p.ToolResults[0].ToolError)
 	}
-	_, toolErr := p.ToolResults[0].decode()
+	_, toolErr, _ := p.ToolResults[0].decode()
 	if toolErr == nil || toolErr.Error() != "falha downstream" {
 		t.Fatalf("erro de tool não re-hidratado: %v", toolErr)
 	}

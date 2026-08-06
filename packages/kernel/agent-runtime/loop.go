@@ -331,15 +331,17 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// para a captura de não-determinismo (AOS-016), sem afectar res.ToolResults.
 		var turnCaptured []CapturedToolResult
 		for j, inv := range resp.ToolCalls {
-			result, toolErr, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
+			result, denial, toolErr, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
 			if err != nil {
 				return res, err
 			}
 			res.ToolResults = append(res.ToolResults, result)
-			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: result, ToolError: toolErr})
-			// O tail materializa a condição de erro da tool (se houver) para o
-			// modelo poder reagir; o conteúdo mantém-se untrusted, append-only.
-			win.Append(tailFromResult(result, toolErr))
+			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: result, ToolError: toolErr, Denial: denial})
+			// O tail materializa a condição de erro da tool (se houver) E o facto de a
+			// call ter sido NEGADA pelo RM (rótulos sanitizados, nunca a Reason) para o
+			// modelo poder reagir em vez de reemitir a mesma call às cegas; o conteúdo
+			// mantém-se untrusted, append-only.
+			win.Append(tailFromResultDenied(result, toolErr, denial))
 			// Checkpoint intra-iteração (AOS-015): a activity j ficou CONFIRMADA
 			// (efeito externo concluído). O cursor carrega o sub-passo confirmado e
 			// as activities ainda pendentes do turno — o resume retoma no próximo
@@ -496,10 +498,11 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // untrusted (ADR-005), qualquer que seja o veredicto do RM. O span execute_tool
 // envolve a mediação. NOTA: o nome evita deliberadamente os identificadores
 // reservados de dispatcher do archlint — o único despacho real é rm.Mediate.
-// Devolve o resultado (SEMPRE untrusted), o erro DA TOOL (dec.ToolErr — não-fatal,
-// para o loop materializar no tail) e o erro FATAL do loop (só cancelamento de
-// contexto). Um erro da tool NÃO é uma negação de política: a decisão foi Permit e
-// o efeito ocorreu, mas a execução downstream falhou (ADR-005 / decision.ToolErr).
+// Devolve o resultado (SEMPRE untrusted), a NEGAÇÃO sanitizada (nil em permit — ver
+// [ToolDenial]), o erro DA TOOL (dec.ToolErr — não-fatal, para o loop materializar no
+// tail) e o erro FATAL do loop (só cancelamento de contexto). Um erro da tool NÃO é uma
+// negação de política: a decisão foi Permit e o efeito ocorreu, mas a execução
+// downstream falhou (ADR-005 / decision.ToolErr).
 //
 // ADOPÇÃO DO CONTRATO DE ACTIVITY (AOS-021): o despacho passa agora pela porta
 // [ActivityDispatcher] (ver ports.go, AOS-157). O default é Mediate directo (byte-
@@ -507,7 +510,7 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // apex (activity.Dispatcher sobre rm + durable.StepLedger) acrescenta idempotência/
 // replay pelo step-ledger à volta da MESMA mediação, SEM o loop perder o Credential
 // (AOS-152) nem o taint da autorização — a porta recebe o Call já construído aqui.
-func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (Tainted, error, error) {
+func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (Tainted, *ToolDenial, error, error) {
 	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
 
 	call := referencemonitor.Call{
@@ -549,11 +552,24 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	// o Credential (AOS-152) e o taint da autorização — a identidade nunca se perde.
 	dec, err := rt.dispatcher.Dispatch(ctx, call)
 	if err != nil {
-		return Tainted{}, nil, err // apenas cancelamento de contexto
+		return Tainted{}, nil, nil, err // apenas cancelamento de contexto
+	}
+
+	// NEGAÇÃO SANITIZADA para o tail (AOS-013 gap 2): num veredicto não-permit, o loop
+	// materializa o FACTO da negação + rótulos de enumeração fechada, para o modelo não
+	// confundir "negado" com "a tool não devolveu nada". Reason NUNCA sai daqui — ver
+	// [ToolDenial]. Em permit fica nil ⇒ tail byte-idêntico ao de antes.
+	var denial *ToolDenial
+	if dec.Effect != referencemonitor.EffectPermit {
+		denial = &ToolDenial{
+			Effect:   string(dec.Effect),
+			Code:     dec.Code,
+			DeniedBy: dec.DeniedBy,
+		}
 	}
 
 	// Resultado devolvido ao loop SEMPRE marcado untrusted. Só há Output em permit.
-	return Untrusted(dec.Output), dec.ToolErr, nil
+	return Untrusted(dec.Output), denial, dec.ToolErr, nil
 }
 
 // annotateAgentSpan anota o span invoke_agent com o uso e custo agregados.

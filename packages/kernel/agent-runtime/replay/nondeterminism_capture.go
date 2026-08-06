@@ -71,6 +71,13 @@ type toolResultCapture struct {
 	ToolError  string `json:"tool_error,omitempty"`
 	Reference  bool   `json:"reference,omitempty"`
 	PayloadRef string `json:"payload_ref,omitempty"`
+	// Negação SANITIZADA do RM (vazios em permit). São RÓTULOS de enumeração fechada,
+	// nunca Decision.Reason — o mesmo contrato de [agentruntime.ToolDenial]. Persistidos
+	// porque o loop os materializa no tail: sem eles o replay de um run com uma negação
+	// reconstruiria um tail mais curto e o prompt_hash divergiria espuriamente.
+	DeniedEffect string `json:"denied_effect,omitempty"`
+	DeniedCode   string `json:"denied_code,omitempty"`
+	DeniedBy     string `json:"denied_by,omitempty"`
 }
 
 // capturePayload é o corpo JSON do evento "replay.captured". A serialização é
@@ -390,6 +397,11 @@ func (c *EventStoreCapturer) encodeResults(results []agentruntime.CapturedToolRe
 		if r.ToolError != nil {
 			trc.ToolError = r.ToolError.Error()
 		}
+		if r.Denial != nil {
+			trc.DeniedEffect = r.Denial.Effect
+			trc.DeniedCode = r.Denial.Code
+			trc.DeniedBy = r.Denial.DeniedBy
+		}
 		if c.sensitive && len(r.Result.Value) > 0 {
 			// Modo sensível: NUNCA persistir o output em claro. Guarda uma referência
 			// não reversível (hash) — o replay devolve um marcador de referência.
@@ -429,7 +441,7 @@ func (r responseCapture) decode() agentruntime.ModelResponse {
 // decode reconstrói o resultado da tool (untrusted) e o eventual erro a partir do
 // registo canónico. Em modo referência, o valor devolvido é o marcador de
 // referência (não a PII em claro).
-func (t toolResultCapture) decode() (agentruntime.Tainted, error) {
+func (t toolResultCapture) decode() (agentruntime.Tainted, error, *agentruntime.ToolDenial) {
 	taint := t.Taint
 	if taint == "" {
 		taint = agentruntime.TaintUntrusted
@@ -442,7 +454,13 @@ func (t toolResultCapture) decode() (agentruntime.Tainted, error) {
 	if t.ToolError != "" {
 		toolErr = &capturedToolError{msg: t.ToolError}
 	}
-	return agentruntime.Tainted{Value: value, Taint: taint}, toolErr
+	// A negação re-hidrata-se quando registada; um registo anterior a esta funcionalidade
+	// (campos vazios) devolve nil ⇒ tail reconstruído exactamente como antes.
+	var denial *agentruntime.ToolDenial
+	if t.DeniedEffect != "" {
+		denial = &agentruntime.ToolDenial{Effect: t.DeniedEffect, Code: t.DeniedCode, DeniedBy: t.DeniedBy}
+	}
+	return agentruntime.Tainted{Value: value, Taint: taint}, toolErr, denial
 }
 
 // capturedToolError re-hidrata o erro de execução da tool registado no log (só a

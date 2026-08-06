@@ -477,8 +477,10 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			tail = append(tail, agentruntime.TailFromModelText(resp.Text))
 		}
 		for idx := range resp.ToolCalls {
-			value, toolErr := dispatcher.Dispatch(turn, idx)
-			tail = append(tail, agentruntime.TailFromToolResult(value, toolErr))
+			// A negação REGISTADA entra na reconstrução: o loop materializa-a no tail,
+			// logo omiti-la divergiria o prompt_hash de qualquer run com uma negação.
+			value, toolErr, denial := dispatcher.Dispatch(turn, idx)
+			tail = append(tail, agentruntime.TailFromToolResultDenied(value, toolErr, denial))
 		}
 
 		// (4) TERMINAÇÃO — igual ao loop: resposta final ou sem tool calls.

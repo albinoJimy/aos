@@ -40,10 +40,13 @@ func (c *replayModelClient) Call(_ context.Context, view agentruntime.PromptView
 // replay não precisa (nem tem) de um modelo real.
 var _ agentruntime.ModelClient = (*replayModelClient)(nil)
 
-// recordedResult é o resultado REGISTADO de uma tool call (valor untrusted + erro).
+// recordedResult é o resultado REGISTADO de uma tool call (valor untrusted + erro +
+// negação sanitizada). A negação faz parte do registo porque o loop a materializa no
+// tail: reproduzi-la é condição de o prompt_hash do replay bater com o original.
 type recordedResult struct {
 	value   agentruntime.Tainted
 	toolErr error
+	denial  *agentruntime.ToolDenial
 }
 
 // replayDispatcher devolve o resultado REGISTADO de cada tool call — NUNCA executa
@@ -62,8 +65,8 @@ func newReplayDispatcher(captures map[int]capturePayload) *replayDispatcher {
 	for turn, capt := range captures {
 		results := make([]recordedResult, 0, len(capt.ToolResults))
 		for _, tr := range capt.ToolResults {
-			value, toolErr := tr.decode()
-			results = append(results, recordedResult{value: value, toolErr: toolErr})
+			value, toolErr, denial := tr.decode()
+			results = append(results, recordedResult{value: value, toolErr: toolErr, denial: denial})
 		}
 		byTurn[turn] = results
 	}
@@ -74,10 +77,10 @@ func newReplayDispatcher(captures map[int]capturePayload) *replayDispatcher {
 // houver registo (índice fora de alcance), devolve um resultado untrusted vazio —
 // nunca executa nada ao vivo. O motor garante idx < len(ToolCalls) porque itera
 // sobre as tool calls da própria resposta registada.
-func (d *replayDispatcher) Dispatch(turn, idx int) (agentruntime.Tainted, error) {
+func (d *replayDispatcher) Dispatch(turn, idx int) (agentruntime.Tainted, error, *agentruntime.ToolDenial) {
 	results := d.byTurn[turn]
 	if idx < 0 || idx >= len(results) {
-		return agentruntime.Untrusted(nil), nil
+		return agentruntime.Untrusted(nil), nil, nil
 	}
-	return results[idx].value, results[idx].toolErr
+	return results[idx].value, results[idx].toolErr, results[idx].denial
 }

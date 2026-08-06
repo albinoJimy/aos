@@ -189,7 +189,9 @@ func (e *ReplayEngine) Reconstruct(ctx context.Context, runID string) ([]Reconst
 			ObservedAtUnixNano: capt.ObservedAtUnixNano,
 		}
 		for _, tr := range capt.ToolResults {
-			value, _ := tr.decode()
+			// Só o VALOR interessa à leitura soberana de conteúdo; o erro e a negação
+			// sanitizada são metadados de reconstrução do tail (ver o motor de replay).
+			value, _, _ := tr.decode()
 			rt.ToolResults = append(rt.ToolResults, value)
 		}
 		out = append(out, rt)
