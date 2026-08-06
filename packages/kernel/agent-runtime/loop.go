@@ -81,6 +81,14 @@ type Result struct {
 	// paused, AOS-023) foi materializada e o loop parou limpo entre turnos (nunca a
 	// meio). Distinto de Terminated (resposta final) e de ErrMaxTurnsExceeded.
 	Paused bool
+	// Tripped indica que o run PAROU por DISPARO do circuit breaker do agente vivo
+	// (AOS-080/081) na fronteira de fim-de-turno: deixou de progredir, excedeu o
+	// wall-clock ou a velocidade de queima. A transição durável já foi materializada
+	// pelo adaptador. É o VEREDICTO ÚTIL que substitui o esgotamento cego de MaxTurns.
+	Tripped bool
+	// BreakerTarget é o rótulo do estado durável atingido no disparo ("paused" |
+	// "timed_out"). Vazio quando !Tripped.
+	BreakerTarget string
 }
 
 // Runtime é o Agent Runtime: corre o loop base. Detém um *[referencemonitor.Monitor]
@@ -96,6 +104,7 @@ type Runtime struct {
 	checkpointer    Checkpointer
 	capturer        Capturer
 	steer           SteerSource
+	breaker         LivenessBreaker    // AOS-080/081: disjuntor multi-sinal do agente vivo
 	windowFactory   WindowFactory      // AOS-037: dono único do tail/assembly (D-TAIL)
 	compaction      CompactionTrigger  // AOS-043: compressão em checkpoint
 	dispatcher      ActivityDispatcher // AOS-021: despacho durável do efeito
@@ -412,6 +421,28 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 				pendingCorrection = corr
 			} else {
 				pendingCorrection = nil
+			}
+		}
+
+		// DISJUNTOR DO AGENTE VIVO (AOS-080/081) — na MESMA fronteira de fim-de-turno da
+		// pausa graciosa (todas as activities confirmadas, entre turnos e nunca a meio) e
+		// DEPOIS da terminação normal, para um run que já concluiu nunca disparar. Fecha a
+		// lacuna de um loop que só sabia parar por MaxTurns: aqui o run pára com um
+		// VEREDICTO (sem progresso / wall-clock / velocidade de queima) já materializado
+		// como transição durável pelo adaptador. Aditivo: sem [WithLivenessBreaker] o
+		// comportamento de AOS-013 é byte-idêntico.
+		if rt.breaker != nil {
+			tripped, target, err := rt.breaker.Observe(ctx, goal.RunID, turn)
+			if err != nil {
+				// Fail-closed: uma falha da transição durável NÃO é engolida — continuar
+				// deixaria o run a queimar recursos com o disjuntor cego.
+				return res, err
+			}
+			if tripped {
+				res.Turns = turn
+				res.Tripped = true
+				res.BreakerTarget = target
+				return res, nil
 			}
 		}
 

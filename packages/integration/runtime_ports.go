@@ -6,6 +6,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/activity"
+	"github.com/aos-ref/kernel/agent-runtime/breaker"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/platform/memory/compression"
 	"github.com/aos-ref/platform/memory/working"
@@ -32,6 +33,8 @@ var (
 	ErrNilSourceBuilder = errors.New("integration: CompactionSourceBuilder nil")
 	// ErrNilDispatcher — [NewDurableDispatcher] sem activity.Dispatcher.
 	ErrNilDispatcher = errors.New("integration: activity.Dispatcher nil")
+	// ErrNilBreakerResolver — [NewLivenessBreakerAdapter] sem resolvedor por-run.
+	ErrNilBreakerResolver = errors.New("integration: resolvedor de breaker por-run nil")
 	// ErrInvalidTokenLimit — [NewWindowManagerFactory] com limite de tokens não-positivo.
 	ErrInvalidTokenLimit = errors.New("integration: ModelTokenLimit tem de ser > 0")
 )
@@ -284,3 +287,54 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 }
 
 var _ agentruntime.ActivityDispatcher = (*DurableDispatcher)(nil)
+
+// ---------------------------------------------------------------------------
+// AOS-080/081 — LivenessBreakerAdapter → agentruntime.LivenessBreaker
+// ---------------------------------------------------------------------------
+
+// LivenessBreakerAdapter adapta o [breaker.Breaker] (circuit breaker multi-sinal do agente
+// vivo) à [agentruntime.LivenessBreaker] que o loop consulta na fronteira de fim-de-turno.
+// Fecha a lacuna de o breaker existir COMPLETO — limiares por classe, sinais de
+// velocity/wall-clock/no-progress, transição durável e alerta — mas nunca ter tido chamador
+// de produção: `Observe` não era invocado em lado nenhum e não havia porta no Runtime.
+//
+// O breaker é POR-RUN (detém a máquina de estados durável desse run), pelo que o adaptador
+// recebe um RESOLVEDOR em vez de uma instância — o mesmo idioma de [control.NewLoopSteer],
+// que resolve o StateGate por-run. Um run sem breaker resolvido é NO-OP (o loop segue como
+// em AOS-013), o que mantém a ligação aditiva mesmo com o adaptador ligado.
+//
+// O adaptador NÃO decide nem materializa nada: o veredicto e a transição durável são do
+// [breaker.Breaker.Observe]; aqui só se traduz a [breaker.Decision] para o contrato da porta.
+type LivenessBreakerAdapter struct {
+	resolve func(runID string) (*breaker.Breaker, bool)
+}
+
+// NewLivenessBreakerAdapter constrói o adaptador sobre um resolvedor por-run. Um resolvedor
+// nil é recusado (seria um adaptador sempre inerte, mascarado de disjuntor activo).
+func NewLivenessBreakerAdapter(resolve func(runID string) (*breaker.Breaker, bool)) (*LivenessBreakerAdapter, error) {
+	if resolve == nil {
+		return nil, ErrNilBreakerResolver
+	}
+	return &LivenessBreakerAdapter{resolve: resolve}, nil
+}
+
+// Observe implementa [agentruntime.LivenessBreaker].
+func (a *LivenessBreakerAdapter) Observe(ctx context.Context, runID string, _ int) (bool, string, error) {
+	b, ok := a.resolve(runID)
+	if !ok || b == nil {
+		return false, "", nil // run sem disjuntor ⇒ no-op (aditivo)
+	}
+	dec, err := b.Observe(ctx)
+	if err != nil {
+		// Fail-closed: falha da transição durável sobe ao loop (não é engolida).
+		return false, "", err
+	}
+	if !dec.Trip {
+		return false, "", nil
+	}
+	// Disparou: a transição durável JÁ foi materializada pelo breaker; devolvemos o
+	// rótulo do estado atingido para o loop o reportar como veredicto do run.
+	return true, string(dec.Target), nil
+}
+
+var _ agentruntime.LivenessBreaker = (*LivenessBreakerAdapter)(nil)

@@ -106,6 +106,17 @@ type SecuredConfig struct {
 	// Fechar o ACHADO-2 (steer inerte): sem esta ligação, [control.NewLoopSteer]/
 	// [WithSteerSource] não tinham chamador de produção e a correcção nunca chegava ao loop.
 	SteerSource agentruntime.SteerSource
+	// LivenessBreaker liga o CIRCUIT BREAKER multi-sinal do agente vivo (AOS-080/081) ao
+	// loop base via [agentruntime.WithLivenessBreaker]: na fronteira de fim-de-turno o run
+	// pára com um VEREDICTO (sem progresso / wall-clock / velocidade de queima), já
+	// materializado como transição durável, em vez de esgotar MaxTurns cegamente. É o
+	// concreto [LivenessBreakerAdapter] sobre o [breaker.Breaker] por-run composto pelo nó.
+	// OPCIONAL e ADITIVO: nil ⇒ o loop nunca o consulta e o comportamento de AOS-013 é
+	// byte-idêntico (mesmo padrão de SteerSource/Capturer/Ledger).
+	//
+	// Fecha a lacuna de o breaker existir COMPLETO (limiares por classe, sinais,
+	// transição durável, alerta) sem NUNCA ter tido chamador de produção.
+	LivenessBreaker agentruntime.LivenessBreaker
 	// HookOptions são opções do [RevalidationHook] (ex.: [WithEgressHost]).
 	HookOptions []HookOption
 	// RuntimeOptions são opções do [agentruntime.Runtime].
@@ -308,6 +319,12 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	// fim-de-turno. nil ⇒ opção omitida ⇒ retro-compatibilidade byte-idêntica.
 	if cfg.SteerSource != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithSteerSource(cfg.SteerSource))
+	}
+	// AOS-080/081: liga o disjuntor do agente vivo ao loop de PRODUÇÃO — a composição que
+	// faltava para o [breaker.Breaker] deixar de ser código órfão (Observe sem chamador).
+	// nil ⇒ opção omitida ⇒ retro-compatibilidade byte-idêntica.
+	if cfg.LivenessBreaker != nil {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithLivenessBreaker(cfg.LivenessBreaker))
 	}
 	var durDisp agentruntime.ActivityDispatcher // nil quando a execução durável está desligada
 	if cfg.Ledger != nil {
