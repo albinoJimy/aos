@@ -53,6 +53,21 @@ type modelToolSpec struct {
 	// segredos). Não afectam a decisão Cedar (essa avalia a Capability), só a REVALIDAÇÃO.
 	Egress           string   `json:"egress"`
 	CredentialScopes []string `json:"credential_scopes"`
+	// Sandbox, quando presente, LIGA a tool à execução mediada em sandbox (AOS-005/AOS-064):
+	// declara COMO os args OPACOS do modelo viram um ExecRequest (Command FIXO + slots
+	// nomeados). É config TRUSTED — o modelo nunca escolhe o Command. Ausente ⇒ a tool é
+	// mediada mas não tem executor de sandbox ligado (só exercita a decisão). Ver sandboxwiring.go.
+	Sandbox *sandboxMapping `json:"sandbox,omitempty"`
+}
+
+// sandboxMapping é a face JSON do [sandbox.SandboxBinding] no registry: como os args do
+// modelo preenchem o ExecRequest. command é FIXO (trusted); path_arg/args_from/write_arg
+// nomeiam as chaves dos args (untrusted) que preenchem Path/Args/Write.
+type sandboxMapping struct {
+	Command  string   `json:"command"`
+	PathArg  string   `json:"path_arg"`
+	ArgsFrom []string `json:"args_from"`
+	WriteArg string   `json:"write_arg"`
 }
 
 // readModelToolSpecs lê + valida o ficheiro AOS_MODEL_TOOLS e devolve os specs crus. Vazio ⇒

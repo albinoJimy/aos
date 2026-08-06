@@ -113,6 +113,22 @@ type SecuredConfig struct {
 	// FreezeOptions são opções de [toolset.FreezeToolSet] (ex.: WithClock/WithTracer).
 	FreezeOptions []toolset.Option
 
+	// EffectRewriter reescreve a [referencemonitor.Call] IMEDIATAMENTE antes do
+	// despacho (AOS-005). É o decorator OUTERMOST do dispatcher: recebe a Call já
+	// construída pelo loop (com RunID/StepID/ToolID/Input) e devolve-a reescrita.
+	//
+	// PORQUE É SEGURO (não relaxa a mediação): a decisão do RM avalia Principal/
+	// Capability/Resource/Taint/Context — NUNCA o Input. Este hook só reshapa o
+	// PAYLOAD do efeito (Call.Input), pelo que a decisão de política é idêntica com
+	// ou sem ele. O uso canónico é traduzir os args OPACOS do modelo num envelope de
+	// execução da sandbox (ExecRequest) que exige o RunID/StepID reais da Call — que
+	// só existem aqui, no dispatcher, não no enriquecimento do ModelClient.
+	//
+	// FAIL-CLOSED: um erro de reescrita NÃO aborta o run — materializa-se como uma
+	// [referencemonitor.Decision] Deny (nenhum efeito, visível no tail), como uma tool
+	// call malformada. nil ⇒ sem reescrita (comportamento byte-idêntico).
+	EffectRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
+
 	// Tracer é a VIA EXPLÍCITA de observabilidade dos colaboradores que este
 	// composition root constrói INTERNAMENTE — hoje, o dispatcher durável de AOS-021
 	// (AOS-210). OPCIONAL: nil ⇒ [agentruntime.NoopTracer] (comportamento byte-idêntico
@@ -293,6 +309,7 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	if cfg.SteerSource != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithSteerSource(cfg.SteerSource))
 	}
+	var durDisp agentruntime.ActivityDispatcher // nil quando a execução durável está desligada
 	if cfg.Ledger != nil {
 		// OBSERVABILIDADE do escopo durável (AOS-210). Sem esta opção o dispatcher fica
 		// com o default [agentruntime.NoopTracer] e o span aos.activity — a camada que
@@ -309,10 +326,23 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		if err != nil {
 			return nil, fmt.Errorf("integration: dispatcher durável: %w", err)
 		}
-		durDisp, err := NewDurableDispatcher(actDisp)
+		dd, err := NewDurableDispatcher(actDisp)
 		if err != nil {
 			return nil, fmt.Errorf("integration: adaptador do dispatcher durável: %w", err)
 		}
+		durDisp = dd
+	}
+
+	// Selecção do dispatcher FINAL. Quando há EffectRewriter (AOS-005) ele é o decorator
+	// OUTERMOST: reescreve a Call.Input ANTES do despacho e delega no dispatcher durável
+	// (se composto) ou em Mediate directo — SEM abrir spans nem tocar na decisão, pelo que
+	// a topologia de observabilidade (AOS-210) e o no-bypass ficam intactos. Sem rewriter,
+	// o comportamento é byte-idêntico ao anterior (durDisp directo, ou default se nil).
+	switch {
+	case cfg.EffectRewriter != nil:
+		runtimeOpts = append(runtimeOpts, agentruntime.WithActivityDispatcher(
+			rewritingDispatcher{inner: durDisp, rm: rm, rewrite: cfg.EffectRewriter}))
+	case durDisp != nil:
 		runtimeOpts = append(runtimeOpts, agentruntime.WithActivityDispatcher(durDisp))
 	}
 
@@ -327,6 +357,43 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		ledger:    cfg.Ledger,
 	}, nil
 }
+
+// CodeEffectRewrite é o código de Deny quando o [SecuredConfig.EffectRewriter] falha a
+// reescrita da Call antes do despacho (ex.: args do modelo malformados). Fail-closed:
+// nenhum efeito ocorre; a tool call materializa-se como Deny no tail do turno.
+const CodeEffectRewrite = "E_EFFECT_REWRITE"
+
+// rewritingDispatcher é o decorator do [agentruntime.ActivityDispatcher] que aplica o
+// [SecuredConfig.EffectRewriter] à Call ANTES do despacho. Delega no dispatcher durável
+// (inner) quando composto, ou em [referencemonitor.Monitor.Mediate] directo (via rm)
+// quando a execução durável está desligada — preservando o no-bypass (o único despacho
+// continua a ser Mediate) e a topologia de spans (não abre spans; o aos.activity e o
+// execute_tool nascem a jusante).
+type rewritingDispatcher struct {
+	inner   agentruntime.ActivityDispatcher // nil ⇒ Mediate directo
+	rm      *referencemonitor.Monitor
+	rewrite func(referencemonitor.Call) (referencemonitor.Call, error)
+}
+
+func (d rewritingDispatcher) Dispatch(ctx context.Context, call referencemonitor.Call) (referencemonitor.Decision, error) {
+	rc, err := d.rewrite(call)
+	if err != nil {
+		// Fail-closed: reescrita falhou ⇒ Deny (nenhum efeito). NÃO é fatal para o loop —
+		// materializa-se no tail como uma tool call negada (dec.Output nil).
+		return referencemonitor.Decision{
+			Effect:   referencemonitor.EffectDeny,
+			Code:     CodeEffectRewrite,
+			Reason:   err.Error(),
+			DeniedBy: "effect_rewriter",
+		}, nil
+	}
+	if d.inner != nil {
+		return d.inner.Dispatch(ctx, rc)
+	}
+	return d.rm.Mediate(ctx, rc)
+}
+
+var _ agentruntime.ActivityDispatcher = rewritingDispatcher{}
 
 // Register associa um ToolID a uma [referencemonitor.ToolFunc] no RM. O despacho
 // real de uma tool só acontece sob permit do RM (no-bypass); registá-la aqui é a

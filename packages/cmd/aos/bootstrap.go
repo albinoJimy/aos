@@ -1067,7 +1067,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.DurableExecution {
 		toolSetStore = es // AOS-155: snapshot do tool set congelado persiste no mesmo ES
 	}
+	// Bindings de execução em sandbox (AOS-005/AOS-064): as tools de AOS_MODEL_TOOLS que
+	// declaram um bloco `sandbox`. Vazio ⇒ EffectRewriter nil (comportamento inalterado). O
+	// rewriter traduz args→ExecRequest no dispatcher (onde há RunID/StepID reais); o registo
+	// dos MediatedLaunchers no RM faz-se A SEGUIR (precisa de sec.Monitor()). Ver sandboxwiring.go.
+	sandboxBindings, err := sandboxBindingsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
+		EffectRewriter: newSandboxEffectRewriter(sandboxBindings), // AOS-005: args→ExecRequest; nil ⇒ sem reescrita
 		Model:          model,
 		Recorder:       agentruntime.NewTurnRecorder(es),
 		Catalog:        catalog,
@@ -1088,6 +1097,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
+	}
+
+	// (7-bis) EXECUÇÃO EM SANDBOX (AOS-005/AOS-064). Regista um MediatedLauncher por tool com
+	// binding NO RM do nó (sec.Monitor()) — no-bypass estrutural. Só agora, porque precisa do RM
+	// já construído. Casado com o EffectRewriter acima, fecha o caminho args→ExecRequest→sandbox
+	// para o loop live. Vazio ⇒ no-op. Fail-closed: uma falha de registo aborta o arranque.
+	if err := registerSandboxLaunchers(sec, es, sandboxBindings, log); err != nil {
+		return nil, err
 	}
 
 	// (7b) SOBERANIA DE LEITURA (AOS-172, D7). A REGRA fail-closed board→região é FIXA (Carta
