@@ -93,8 +93,12 @@ func (ScopeGate) Name() string { return "scope" }
 // Evaluate implementa [Hook]. Computa o escopo efectivo e aplica a política de
 // escopo default-deny, anotando o escopo efectivo no principal do call.
 func (g ScopeGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
-	// Fonte ausente ⇒ fail-closed: não há como computar utilizador ∩ classe.
-	if g.authority == nil {
+	// Fonte ausente ⇒ fail-closed. A autoridade de escopo pode vir de DUAS fontes
+	// complementares (AOS-071 + AOS-156): a derivada do TOKEN verificado
+	// ([Principal.SubjectAuthority], povoada pelo hook de identidade — a única que
+	// conhece o agente por-mint) e um directório externo estático (g.authority). Sem
+	// NENHUMA das duas não há como computar utilizador ∩ classe.
+	if g.authority == nil && call.Principal.SubjectAuthority == nil {
 		call.Principal.Authority = nil
 		return HookResult{
 			Decision: HookDeny,
@@ -134,12 +138,27 @@ func (g ScopeGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 	// Escopo efectivo = dobra de intersecções da autoridade-fonte de cada sujeito
 	// (raiz → folha). Um sujeito não resolvido conta como autoridade VAZIA
 	// (fail-closed: a intersecção colapsa para ∅ ⇒ tudo negado).
-	sets := make([][]string, 0, len(subjects))
+	// DUAS dobras (AOS-071 + AOS-156), porque a fonte de VERDADE (o que o issuer
+	// concedeu) e o ENFORCAMENTO (que um directório externo pode restringir mais) são
+	// eixos distintos:
+	//   - grantedCeiling = dobra da autoridade CONCEDIDA por sujeito (token verificado,
+	//     ou o directório estático quando não há token). É o TECTO contra o qual se
+	//     verifica a não-escalada — a autoridade reclamada não pode exceder o que o
+	//     issuer concedeu.
+	//   - effective = dobra do ENFORCADO por sujeito = concedido ∩ directório externo.
+	//     Uma revogação/RBAC organizacional no directório restringe ABAIXO do concedido
+	//     SEM ser uma escalada (o token não mudou; o directório é que revogou). É o que a
+	//     política de escopo autoriza.
+	// Sem directório externo, os dois eixos COINCIDEM (backward-compat estrito).
+	grantSets := make([][]string, 0, len(subjects))
+	enforceSets := make([][]string, 0, len(subjects))
 	for _, s := range subjects {
-		caps, _ := g.authority.Authority(s)
-		sets = append(sets, caps)
+		grantSets = append(grantSets, g.grantAuthority(call.Principal, s))
+		enforced, _ := g.resolveAuthority(call.Principal, s)
+		enforceSets = append(enforceSets, enforced)
 	}
-	effective := authz.FoldSets(sets)
+	grantedCeiling := authz.FoldSets(grantSets)
+	effective := authz.FoldSets(enforceSets)
 
 	// ANOTAÇÃO (span/audit): o escopo efectivo em vigor substitui a autoridade
 	// reclamada no principal. Faz-se ANTES de qualquer deny para que o evento de
@@ -149,11 +168,12 @@ func (g ScopeGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 	claimed := call.Principal.Authority
 	call.Principal.Authority = effective
 
-	// RESTRIÇÃO MONOTÓNICA / anti-escalada: uma autoridade reclamada que exceda o
-	// escopo efectivo (utilizador ∩ classe) é uma tentativa de alargamento — um
+	// RESTRIÇÃO MONOTÓNICA / anti-escalada: uma autoridade reclamada que exceda o que
+	// a fonte de verdade CONCEDE (grantedCeiling) é uma tentativa de alargamento — um
 	// sub-agente a reclamar mais do que o principal lhe concede, ou o vector do
-	// confused deputy. Negada e atribuível.
-	if err := authz.CheckNoEscalation(claimed, effective); err != nil {
+	// confused deputy. Negada e atribuível. (Verifica-se contra o CONCEDIDO, não o
+	// enforcado, para que uma revogação externa não seja confundida com escalada.)
+	if err := authz.CheckNoEscalation(claimed, grantedCeiling); err != nil {
 		return HookResult{
 			Decision: HookDeny,
 			Reason:   err.Error(),
@@ -173,6 +193,64 @@ func (g ScopeGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 		}, nil
 	}
 	return allow, nil
+}
+
+// resolveAuthority devolve a autoridade-fonte de um sujeito combinando as DUAS
+// fontes complementares (AOS-071 + AOS-156): a derivada do TOKEN verificado
+// ([Principal.SubjectAuthority] — a única que conhece a autoridade do agente
+// por-mint, dinâmica) e o directório externo estático (g.authority). Regras
+// (defesa-em-profundidade):
+//   - AMBAS conhecem o sujeito ⇒ INTERSECÇÃO: o directório externo pode restringir
+//     mais (revogação / RBAC organizacional), mas NUNCA ampliar o que o token
+//     assinado concede;
+//   - só UMA conhece ⇒ essa;
+//   - NENHUMA ⇒ (nil,false): o gate trata como autoridade VAZIA (fail-closed — a
+//     dobra colapsa para ∅ e tudo é negado).
+//
+// A autoridade derivada do token é o grant ASSINADO pelo issuer (AOS-156), já
+// computado como utilizador ∩ classe no mint e validado pelo Verify; usá-la aqui
+// reproduz esse grant sem o ampliar. Untrusted não eleva: a resolução depende só da
+// identidade verificada, nunca do taint.
+// grantAuthority devolve a autoridade CONCEDIDA a um sujeito pela fonte de VERDADE —
+// o token verificado quando presente ([Principal.SubjectAuthority]), senão o directório
+// estático. É o tecto de não-escalada (o que o issuer concedeu), distinto do enforcado
+// ([resolveAuthority]) que um directório externo pode restringir mais. Um sujeito
+// desconhecido em ambas devolve nil (a dobra colapsa ⇒ fail-closed).
+func (g ScopeGate) grantAuthority(p Principal, subject string) []string {
+	if p.SubjectAuthority != nil {
+		if caps, ok := p.SubjectAuthority[subject]; ok {
+			return caps
+		}
+	}
+	if g.authority != nil {
+		if caps, ok := g.authority.Authority(subject); ok {
+			return caps
+		}
+	}
+	return nil
+}
+
+func (g ScopeGate) resolveAuthority(p Principal, subject string) ([]string, bool) {
+	var tokenCaps []string
+	tokenOK := false
+	if p.SubjectAuthority != nil {
+		tokenCaps, tokenOK = p.SubjectAuthority[subject]
+	}
+	var staticCaps []string
+	staticOK := false
+	if g.authority != nil {
+		staticCaps, staticOK = g.authority.Authority(subject)
+	}
+	switch {
+	case tokenOK && staticOK:
+		return authz.Intersect(tokenCaps, staticCaps), true
+	case tokenOK:
+		return tokenCaps, true
+	case staticOK:
+		return staticCaps, true
+	default:
+		return nil, false
+	}
 }
 
 // chainSubjects extrai a lista ORDENADA de sujeitos da cadeia on-behalf-of (raiz

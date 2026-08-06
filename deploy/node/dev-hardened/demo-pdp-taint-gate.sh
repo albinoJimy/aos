@@ -94,22 +94,24 @@ submit_run "${RID_READ}" "agt-tgread" "cap:fs.read" '["cap:fs.read"]' \
 echo "[taint-gate]   spans doc_read (RUN B):"; pdp_decision "${RID_READ}" doc_read | sort | uniq -c | sed 's/^/[taint-gate]     /'
 
 echo "[taint-gate] 3/3 RESULTADO:"
-# web_post NEGADA pelo PDP (deny|policy); doc_read PASSA o PDP e morre no ScopeGate (deny|scope).
+# web_post NEGADA pelo PDP (deny|policy, taint-gate). doc_read PASSA o PDP E o ScopeGate
+# (permit): a autoridade de escopo deriva do token NHI VERIFICADO (AOS-156) — o issuer
+# concedeu cap:fs.read — logo doc_read EXECUTA (em microVM firecracker quando ligada).
 POST_POLICY="$(pdp_decision "${RID_POST}" web_post | grep -c '^deny|policy$' || true)"
-READ_SCOPE="$(pdp_decision "${RID_READ}" doc_read | grep -c '^deny|scope$' || true)"
+READ_PERMIT="$(pdp_decision "${RID_READ}" doc_read | grep -c '^allow|' || true)"
 READ_POLICY="$(pdp_decision "${RID_READ}" doc_read | grep -c '^deny|policy$' || true)"
 echo "----------------------------------------------------------------------"
-if [[ "${POST_POLICY:-0}" -ge 1 && "${READ_SCOPE:-0}" -ge 1 && "${READ_SCOPE:-0}" -gt "${READ_POLICY:-0}" ]]; then
-  echo "[taint-gate]   ✅ TAINT-GATE ISOLADO (P4):"
+if [[ "${POST_POLICY:-0}" -ge 1 && "${READ_PERMIT:-0}" -ge 1 ]]; then
+  echo "[taint-gate]   ✅ TAINT-GATE (P4) + ESCOPO DERIVADO DA IDENTIDADE (AOS-156):"
   echo "[taint-gate]      • web_post (cap:http.post) NEGADA pelo PDP/Cedar (denied_by=policy) — allow_http_post"
-  echo "[taint-gate]        exige taint != untrusted; authority contém cap:http.post e region=eu (satisfeitas),"
-  echo "[taint-gate]        logo a ÚNICA cláusula que falha é a de TAINT."
-  echo "[taint-gate]      • doc_read (cap:fs.read) NÃO negada pelo PDP (allow_fs_read não tem cláusula de taint)"
-  echo "[taint-gate]        — só é travada mais à frente no ScopeGate (denied_by=scope), NÃO pelo PDP."
-  echo "[taint-gate]      Mesmo taint=untrusted, mesma classe agent-worker, authority a conter a capability:"
-  echo "[taint-gate]      'untrusted não comanda' cap:http.post, mas cap:fs.read (sem gate de taint) passa o PDP."
+  echo "[taint-gate]        exige taint != untrusted; a ÚNICA cláusula que falha é a de TAINT."
+  echo "[taint-gate]      • doc_read (cap:fs.read) PERMITIDA: passa o PDP (allow_fs_read sem cláusula de taint)"
+  echo "[taint-gate]        E o ScopeGate — a autoridade vem do token NHI verificado (o issuer concedeu"
+  echo "[taint-gate]        cap:fs.read), logo a tool EXECUTA (microVM firecracker quando AOS_SANDBOX_DRIVER=firecracker)."
+  echo "[taint-gate]      Mesmo taint=untrusted, mesma classe agent-worker: 'untrusted não comanda' cap:http.post,"
+  echo "[taint-gate]      mas cap:fs.read (sem gate de taint, dentro do escopo do token) passa e corre."
 else
-  echo "[taint-gate]   ⚠ A/B incompleto — web_post(policy)=${POST_POLICY} doc_read(policy)=${READ_POLICY} doc_read(any)=${READ_ANY}."
+  echo "[taint-gate]   ⚠ A/B incompleto — web_post(policy)=${POST_POLICY} doc_read(permit)=${READ_PERMIT} doc_read(policy)=${READ_POLICY}."
   echo "[taint-gate]     Confirma AOS_MODEL_TOOLS_REGISTER=1 e classe agent-worker; re-corre."
 fi
 echo "----------------------------------------------------------------------"

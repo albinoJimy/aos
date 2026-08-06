@@ -558,3 +558,69 @@ func lastRecord(t *testing.T, sink *spySink) referencemonitor.MediationRecord {
 	}
 	return sink.records[len(sink.records)-1]
 }
+
+// --- (N) Autoridade de escopo DERIVADA DO TOKEN (AOS-071 + AOS-156) ----------
+//
+// Prova a correção definitiva do gap de escopo: a autoridade-fonte do ScopeGate
+// pode vir do TOKEN verificado (Principal.SubjectAuthority, povoada pelo hook de
+// identidade), a ÚNICA fonte que conhece o agente por-mint (dinâmico). Sem esta
+// derivação, um directório estático nunca resolve o sujeito-agente e a call morre
+// fail-closed no scope — mesmo com um NHI legitimamente autorizado.
+func TestScope_SubjectAuthority_DerivadaDoToken(t *testing.T) {
+	t.Parallel()
+	const agentID = "agt-live"
+	chain := []referencemonitor.DelegationHop{{Sub: humAlice, ActAs: agentID}}
+	// Sujeitos que o gate dobra: raiz humana, agente (por-mint), classe.
+	tokenRead := map[string][]string{
+		humAlice:           {capRead},
+		agentID:            {capRead},
+		"agent:researcher": {capRead},
+	}
+	// claimed espelha o que o hook de identidade poe em Principal.Authority: o scope
+	// VERIFICADO do token (consistente com SubjectAuthority).
+	mkCall := func(capability string, claimed []string, subjAuth map[string][]string) *referencemonitor.Call {
+		return &referencemonitor.Call{
+			ToolID:     scopeToolID,
+			Capability: capability,
+			Principal: referencemonitor.Principal{
+				NHIID:            agentID,
+				AgentClass:       "researcher",
+				DelegationChain:  chain,
+				Authority:        claimed,
+				SubjectAuthority: subjAuth,
+			},
+			Context: referencemonitor.CallContext{Taint: "untrusted"},
+		}
+	}
+
+	// (1) Token-derivada SOZINHA (sem directório estático) PERMITE a cap no escopo.
+	//     É o cenário que desbloqueia o firecracker no run live: fonte estática vazia.
+	g1 := referencemonitor.NewScopeGate(nil)
+	if res, _ := g1.Evaluate(context.Background(), mkCall(capRead, []string{capRead}, tokenRead)); res.Decision != referencemonitor.HookAllow {
+		t.Fatalf("(1) token-derivada devia PERMITIR cap:doc.read sem directório estático; veio %v (%s)", res.Decision, res.Reason)
+	}
+	// (2) Fora do escopo do token NEGA (untrusted não eleva; só a identidade decide).
+	if res, _ := g1.Evaluate(context.Background(), mkCall(capWrite, []string{capRead}, tokenRead)); res.Decision != referencemonitor.HookDeny {
+		t.Fatalf("(2) cap:doc.write fora do escopo do token devia NEGAR; veio %v", res.Decision)
+	}
+	// (3) Sem NENHUMA fonte (nil estática + nil SubjectAuthority) ⇒ fail-closed.
+	if res, _ := g1.Evaluate(context.Background(), mkCall(capRead, []string{capRead}, nil)); res.Decision != referencemonitor.HookDeny {
+		t.Fatalf("(3) sem fonte de autoridade devia ser fail-closed deny; veio %v", res.Decision)
+	}
+	// (4) DEFESA-EM-PROFUNDIDADE: token concede {read,write}, directório externo
+	//     restringe a {read} ⇒ o enforcado (token ∩ externo) nega write mas permite
+	//     read, e a restrição externa NÃO é confundida com escalada (o concedido é o
+	//     tecto de não-escalada, o enforcado é o que autoriza).
+	staticNarrow := authz.NewStaticAuthoritySource().
+		Set(humAlice, capRead).Set(agentID, capRead).Set("agent:researcher", capRead)
+	tokenRW := map[string][]string{
+		humAlice: {capRead, capWrite}, agentID: {capRead, capWrite}, "agent:researcher": {capRead, capWrite},
+	}
+	g4 := referencemonitor.NewScopeGate(staticNarrow)
+	if res, _ := g4.Evaluate(context.Background(), mkCall(capWrite, []string{capRead, capWrite}, tokenRW)); res.Decision != referencemonitor.HookDeny {
+		t.Fatalf("(4) directório externo devia restringir write via intersecção; veio %v", res.Decision)
+	}
+	if res, _ := g4.Evaluate(context.Background(), mkCall(capRead, []string{capRead, capWrite}, tokenRW)); res.Decision != referencemonitor.HookAllow {
+		t.Fatalf("(4) read (na intersecção token∩estático) devia PERMITIR; veio %v (%s)", res.Decision, res.Reason)
+	}
+}

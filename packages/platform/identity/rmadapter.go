@@ -78,8 +78,38 @@ func (c *IdentityCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookRes
 		AgentClass:      principal.AgentClass,
 		DelegationChain: toRMChain(principal.DelegationChain),
 		Authority:       principal.Scope,
+		// Autoridade de escopo derivada da IDENTIDADE (AOS-156): o grant ASSINADO pelo
+		// issuer, por-sujeito, para o ScopeGate (AOS-071) resolver — incl. o agente
+		// por-mint, que nenhum directório estático pode conhecer. Ver [subjectAuthorityFromScope].
+		SubjectAuthority: subjectAuthorityFromScope(principal),
 	}
 	return rm.HookResult{Decision: rm.HookAllow}, nil
+}
+
+// subjectAuthorityFromScope deriva a autoridade-fonte por-SUJEITO (raiz humana, cada
+// agente da cadeia, "agent:<classe>") a partir do escopo VERIFICADO do token. O issuer
+// já computou Scope = UserAuthority ∩ ClassPolicy.Scope no mint e o Verify validou-o
+// (assinatura + cadeia + Scope ⊆ folha.Authority), pelo que atribuir o escopo verificado
+// a cada sujeito faz o fold do [rm.ScopeGate] reproduzir EXACTAMENTE o grant assinado —
+// nunca o amplia. É o ÚNICO sítio que conhece a autoridade do agente POR-MINT (dinâmica),
+// impossível num directório estático externo (AOS-156). Os sujeitos correspondem 1:1 aos
+// que o ScopeGate dobra (chainSubjects + "agent:"+AgentClass).
+func subjectAuthorityFromScope(p Principal) map[string][]string {
+	scope := append([]string(nil), p.Scope...) // cópia partilhada read-only pelas chaves
+	out := make(map[string][]string)
+	chain := p.DelegationChain
+	if len(chain) > 0 {
+		out[chain[0].Sub] = scope // raiz humana (eixo UTILIZADOR)
+		for _, l := range chain {
+			if l.ActAs != "" {
+				out[l.ActAs] = scope // cada agente delegatário
+			}
+		}
+	}
+	if p.AgentClass != "" {
+		out["agent:"+p.AgentClass] = scope // tecto da CLASSE do agente autenticado
+	}
+	return out
 }
 
 // toRMChain projecta a cadeia de delegação verificada para os hops (sub/act_as)

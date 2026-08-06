@@ -39,6 +39,15 @@ type Principal struct {
 	DelegationChain []DelegationHop
 	// Authority são as capabilities que o principal pode exercer (allowlist).
 	Authority []string
+	// SubjectAuthority é a autoridade-fonte VERIFICADA por SUJEITO da cadeia (raiz
+	// humana, cada agente, "agent:<classe>"), resolvida pelo hook de identidade
+	// (AOS-005) a partir do token NHI ASSINADO. É a autoridade de escopo derivada da
+	// IDENTIDADE (AOS-156): o [ScopeGate] (AOS-071) resolve cada sujeito a partir
+	// daqui — a ÚNICA fonte que conhece a autoridade do agente POR-MINT (dinâmica,
+	// impossível num directório estático) — intersectando com uma [authz.AuthoritySource]
+	// externa quando configurada (defesa-em-profundidade: o directório pode restringir
+	// mais, nunca ampliar). nil ⇒ o gate cai só na fonte estática (retro-compatível).
+	SubjectAuthority map[string][]string
 }
 
 // Resource é o alvo concreto da tool call (contrato C1, tecnica/12 §4).
