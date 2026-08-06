@@ -100,3 +100,60 @@ func TestDemo_SandboxExecEndToEnd(t *testing.T) {
 		"  RESULTADO    : %v (microVM real precisa de host com KVM — infra do dono, nao codigo)",
 		fcErr)
 }
+
+// TestDemo_ArgsToExecRequestChain fecha a última peça: os args OPACOS que o modelo produz por tool
+// call → [BuildExecRequest] (binding TRUSTED) → [ExecRequest] → MediatedLauncher → sandbox →
+// conteúdo real. É o que ligaria o loop live (Kimi) à execução em microVM.
+func TestDemo_ArgsToExecRequestChain(t *testing.T) {
+	ctx := context.Background()
+	content := []byte("Reuniao 3a: rever o plano de migracao. Owner: alice.")
+	snap, err := NewSnapshot("img/doc-v1", map[string][]byte{"notes": content})
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	store := newStore(t)
+	driver, _ := NewDriver(DriverFake)
+	launcher, err := NewLauncher(driver, WithEventSink(NewEventStoreSink(store)), WithSnapshot(snap))
+	if err != nil {
+		t.Fatalf("NewLauncher: %v", err)
+	}
+	ml, err := NewMediatedLauncher(newPermitMonitor(store), launcher, "doc_read")
+	if err != nil {
+		t.Fatalf("NewMediatedLauncher: %v", err)
+	}
+
+	// O modelo (Kimi) produz ESTES args opacos. A binding é TRUSTED (config): Command fixo "read",
+	// o Path vem do arg doc_id. O modelo NÃO escolhe o comando.
+	modelArgs := []byte(`{"doc_id":"notes"}`)
+	binding := SandboxBinding{Command: "read", PathArg: "doc_id"}
+	req, err := BuildExecRequest("run-adapt", "step-1", "doc_read", modelArgs, binding)
+	if err != nil {
+		t.Fatalf("BuildExecRequest: %v", err)
+	}
+	res, err := ml.Execute(ctx, defaultAuthz(), req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if string(res.Stdout) != string(content) {
+		t.Fatalf("output != conteudo: %q", res.Stdout)
+	}
+
+	// SEGURANÇA: os args untrusted só preenchem VALORES; o Command vem da binding. Um arg que tenta
+	// escapar (path traversal) é bloqueado pelo jail — não escolhe comando nem lê o host.
+	evilReq, err := BuildExecRequest("run-evil", "s", "doc_read", []byte(`{"doc_id":"../../etc/passwd"}`), binding)
+	if err != nil {
+		t.Fatalf("BuildExecRequest(evil): %v", err)
+	}
+	_, evilErr := ml.Execute(ctx, defaultAuthz(), evilReq)
+	if !errors.Is(evilErr, ErrJailEscape) {
+		t.Fatalf("escape via args devia ser bloqueado, veio: %v", evilErr)
+	}
+
+	t.Logf("\n"+
+		"  ARGS DO MODELO : %s  (opacos, untrusted)\n"+
+		"  BINDING (trust): Command=read (FIXO), Path<-doc_id\n"+
+		"  EXECREQUEST    : ToolCall{tool=doc_read, cmd=read, path=notes}\n"+
+		"  -> MediatedLauncher -> sandbox -> OUTPUT: %s\n"+
+		"  SEGURANCA      : args '../../etc/passwd' -> BLOQUEADO (%v); o modelo nao escolhe o Command",
+		modelArgs, res.Stdout, evilErr)
+}
