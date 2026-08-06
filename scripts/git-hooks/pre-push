@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pre-push (AOS) — GATE DE SEGREDOS antes de publicar.
+#
+# Bloqueia o push (exit 1) se houver material sensível RASTREADO pelo git. Zero-dep
+# (só git + grep). É a última barreira antes de o código sair da máquina — sobretudo
+# relevante com um remoto PÚBLICO. Reutiliza o gate canónico scripts/ci/secrets.sh
+# (extensões de chave/segredo + blocos PEM de chave privada) e acrescenta uma rede
+# para a pasta de segredos da stack dev (que é git-ignored — qualquer coisa rastreada
+# lá é um 'git add -f' acidental).
+#
+# Instalação (já feita): git config core.hooksPath scripts/git-hooks
+# =============================================================================
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+rc=0
+
+# 1) Gate canónico partilhado com a CI (make ci): .key/.p12/.pfx/.pgp/.env + PEM privado.
+if ! bash "$root/scripts/ci/secrets.sh"; then
+  rc=1
+fi
+
+# 2) Rede adicional: NADA deve estar rastreado sob a pasta de segredos da stack dev
+#    (model.env, vault-init.json, vault-token, *.seed, issuer.key, TLS...). É git-ignored;
+#    um ficheiro rastreado aí só chega por 'git add -f' e é sempre um acidente.
+leaked="$(git -C "$root" ls-files -- 'deploy/node/dev-hardened/secrets/' 2>/dev/null || true)"
+if [ -n "$leaked" ]; then
+  echo "!! pre-push: ficheiro(s) de segredo RASTREADO(s) sob deploy/node/dev-hardened/secrets/:" >&2
+  printf '     %s\n' $leaked >&2
+  rc=1
+fi
+
+if [ "$rc" -ne 0 ]; then
+  echo "!! PUSH BLOQUEADO — remove o material sensível antes de publicar:" >&2
+  echo "     git rm --cached <ficheiro>   # tira do índice (mantém em disco)" >&2
+  echo "   e confirma que está no .gitignore. (Contornar, sob tua responsabilidade: git push --no-verify)" >&2
+  exit 1
+fi
+echo ">> pre-push: sem material sensível rastreado — OK."

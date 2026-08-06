@@ -23,7 +23,11 @@ fi
 
 # 2) Ficheiros de chave/segredo rastreados por extensão (nunca devem ser
 #    committados — o .gitignore já os ignora; isto apanha um 'git add -f').
-keyfiles="$( git ls-files -- '*.key' '*.pem' '*.p12' '*.pfx' '*.pgp' '.env' '**/.env' 2>/dev/null || true )"
+#    NOTA: '*.pem' NÃO está na lista de propósito — .pem serve também para certs/
+#    cadeias PÚBLICAS (ex.: raízes FIDO em fido-roots.pem), que são legítimas. Um
+#    .pem com CHAVE PRIVADA é sempre apanhado pela verificação de conteúdo (1) acima
+#    ('BEGIN ... PRIVATE KEY'), pelo que nenhuma chave privada escapa por esta omissão.
+keyfiles="$( git ls-files -- '*.key' '*.p12' '*.pfx' '*.pgp' '.env' '**/.env' 2>/dev/null || true )"
 if [ -n "$keyfiles" ]; then
   log_fail "ficheiro de chave/segredo rastreado (não deve ser committado):"
   printf '%s\n' "$keyfiles" | sed 's/^/       /' >&2
