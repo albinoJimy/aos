@@ -30,6 +30,7 @@
     "resource_type": "file",
     "resource_value": "doc://notes",
     "resource_region": "eu",
-    "egress": "none"
+    "egress": "none",
+    "sandbox": { "command": "read", "path_arg": "doc_id" }
   }
 ]

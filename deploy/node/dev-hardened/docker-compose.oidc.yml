@@ -122,6 +122,15 @@ services:
       # revalidação (tool sem contrato assinado); COM isto a negação de cap:http.post é do taint-gate
       # Cedar (allow_http_post exige taint != untrusted). Ver demo-pdp-taint-gate.sh.
       AOS_MODEL_TOOLS_REGISTER: "1"
+
+      # EXECUÇÃO DE TOOLS EM microVM FIRECRACKER REAL (AOS-064). A tool `doc_read` do registry
+      # tem um bloco `sandbox` ({command:read, path_arg:doc_id}); com o driver firecracker + a URL
+      # do orchestrator, uma tool call PERMITIDA executa numa microVM DEDICADA (fronteira de
+      # virtualização de hardware, KVM), lê o documento semeado e devolve o conteúdo. O nó fica
+      # ZERO-DEP: fala com o orchestrator por HTTP stdlib (o firecracker/jailer corre lá, não aqui).
+      # Sem AOS_SANDBOX_FIRECRACKER_URL, o driver firecracker seria o skeleton (ErrDriverUnavailable).
+      AOS_SANDBOX_DRIVER: "firecracker"
+      AOS_SANDBOX_FIRECRACKER_URL: "http://firecracker:9100/exec"
     volumes:
       - ./secrets/ca.crt:/etc/aos/idp-ca.crt:ro
       - ./secrets/vault-token:/etc/aos/vault-token:ro
@@ -134,6 +143,37 @@ services:
         condition: service_started
       attestation:
         condition: service_started
+      firecracker:
+        condition: service_healthy
+
+  # --- executor de microVM FIRECRACKER (AOS-064) — a integração REAL fora do módulo do nó --------
+  # O sandbox.FirecrackerDriver do nó é um skeleton por desenho (ADR-017, zero-dep): a orquestração
+  # da microVM (firecracker + jailer + KVM + kernel/rootfs + agente de guest por vsock) vive AQUI,
+  # num componente host-side privilegiado, e o nó fala com ele por HTTP stdlib — o mesmo padrão do
+  # serviço `attestation`. Por POST /exec arranca UMA microVM dedicada, corre a tool call e devolve
+  # o resultado. Precisa de /dev/kvm (virtualização aninhada; presente na VM do Docker Desktop).
+  firecracker:
+    build:
+      context: ../../..
+      dockerfile: deploy/node/dev-hardened/firecracker/Dockerfile
+    image: aos-firecracker:local
+    restart: unless-stopped
+    privileged: true            # jailer/tap/loop-mount do rootfs + acesso a /dev/kvm.
+    devices:
+      - "/dev/kvm:/dev/kvm"
+    mem_limit: 1g
+    environment:
+      FC_ADDR: ":9100"
+      FC_SEED_DIR: "/seed"      # documentos semeados no RootFS base read-only da microVM (AOS-066).
+    volumes:
+      - fc-art:/art             # kernel do guest + rootfs.ext4 (persistem entre restarts).
+      - ./firecracker/seed:/seed:ro
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -sf http://127.0.0.1:9100/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s         # 1º arranque baixa o kernel e constrói o rootfs.
 
   # --- componente de autoridade de ATTESTATION WebAuthn (AOS-177) — corre o CBOR fora do nó ------
   # O binário do nó NUNCA pode importar o descodificador CBOR (ADR-017); fala com este serviço por
@@ -241,3 +281,4 @@ services:
 volumes:
   kc-pgdata:
   vault-data:
+  fc-art:   # kernel do guest + rootfs.ext4 da microVM firecracker (evita rebaixar/reconstruir a cada arranque).

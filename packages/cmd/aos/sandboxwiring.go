@@ -106,7 +106,9 @@ func registerSandboxLaunchers(sec *integration.SecuredRuntime, es *eventstore.St
 	if v := strings.TrimSpace(os.Getenv("AOS_SANDBOX_DRIVER")); v != "" {
 		kind = sandbox.DriverKind(v)
 	}
-	driver, err := sandbox.NewDriver(kind)
+	// firecracker + AOS_SANDBOX_FIRECRACKER_URL ⇒ injecta o executor remoto (microVM REAL via o
+	// componente externo); senão skeleton (ErrDriverUnavailable no exec). Ver firecrackerexecutor.go.
+	driver, err := buildSandboxDriver(kind)
 	if err != nil {
 		return fmt.Errorf("aos: driver de sandbox %q: %w", kind, err)
 	}
