@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -30,6 +31,7 @@ var ErrNoStateGateForRun = errors.New("aos: run sem gate de estado aberto — na
 type nodeEscalationSink struct {
 	gates   *runStateGates
 	pending *integration.PendingApprovals
+	clock   func() time.Time
 }
 
 // newNodeEscalationSink constrói o adaptador. Ambos os colaboradores são obrigatórios: um
@@ -42,7 +44,7 @@ func newNodeEscalationSink(gates *runStateGates, pending *integration.PendingApp
 	if pending == nil {
 		return nil, fmt.Errorf("aos: registo de pendentes de aprovacao nil")
 	}
-	return &nodeEscalationSink{gates: gates, pending: pending}, nil
+	return &nodeEscalationSink{gates: gates, pending: pending, clock: time.Now}, nil
 }
 
 // Escalate implementa [agentruntime.EscalationSink].
@@ -62,6 +64,9 @@ func (s *nodeEscalationSink) Escalate(ctx context.Context, p agentruntime.Pendin
 		ResourceValue:  p.ResourceValue,
 		ResourceRegion: p.ResourceRegion,
 		Preview:        p.Preview,
+		// Âncora do TTL: é daqui que o varrimento periódico sabe que a espera excedeu os
+		// 15 minutos. Sem ela o pendente nunca expiraria sozinho (fail-safe).
+		CreatedAt: s.clock().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		return fmt.Errorf("aos: registar aprovacao pendente: %w", err)
 	}

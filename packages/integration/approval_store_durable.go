@@ -212,7 +212,10 @@ var _ ApprovalStore = (*eventStoreApprovalStore)(nil)
 // aprovar e o run ficaria suspenso até expirar — fail-closed, mas uma avaria operacional
 // real. Por isso é um facto append-only no MESMO stream.
 
-const approvalPendingEventType = "approval.pending"
+const (
+	approvalPendingEventType = "approval.pending"
+	approvalExpiredEventType = "approval.expired"
+)
 
 // PendingRecord é uma aprovação à espera de decisão humana. Espelha
 // [agentruntime.PendingApproval] com a forma serializável (a preview vai em base64 pelo
@@ -229,6 +232,12 @@ type PendingRecord struct {
 	ResourceValue  string `json:"resource_value,omitempty"`
 	ResourceRegion string `json:"resource_region,omitempty"`
 	Preview        []byte `json:"preview"`
+	// CreatedAt é o instante em que a acção foi escalada (RFC3339). É a âncora do TTL:
+	// passados [DefaultApprovalTTL] sem decisão, o pendente EXPIRA e o run deixa de
+	// esperar. Carimbado por quem regista (o nó tem o relógio); vazio ⇒ sem expiração
+	// computável, o pendente fica à espera de decisão explícita (fail-safe: nunca expira
+	// sozinho um pendente cuja idade não se sabe).
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // PendingApprovals é o registo durável de aprovações pendentes.
@@ -268,15 +277,19 @@ func (p *PendingApprovals) ListForRun(ctx context.Context, runID string) ([]Pend
 	if err != nil {
 		return nil, err
 	}
-	// Previews que já têm grant emitido ⇒ deixaram de estar "à espera de decisão".
+	// Previews com grant emitido, e pendentes EXPIRADOS, deixaram de estar "à espera de
+	// decisão" — não devem aparecer ao operador como coisas por fazer.
 	decididas := make([][]byte, 0, 4)
+	expirados := make(map[string]struct{})
 	for _, ev := range events {
-		if ev.Type != approvalGrantedEventType {
-			continue
-		}
-		var g grantPayload
-		if err := json.Unmarshal(ev.Payload, &g); err == nil {
-			decididas = append(decididas, g.Preview)
+		switch ev.Type {
+		case approvalGrantedEventType:
+			var g grantPayload
+			if err := json.Unmarshal(ev.Payload, &g); err == nil {
+				decididas = append(decididas, g.Preview)
+			}
+		case approvalExpiredEventType:
+			expirados[ev.StepID] = struct{}{}
 		}
 	}
 	var out []PendingRecord
@@ -292,6 +305,9 @@ func (p *PendingApprovals) ListForRun(ctx context.Context, runID string) ([]Pend
 		if rec.RunID != runID {
 			continue
 		}
+		if _, ja := expirados["expired-"+rec.RunID+"-"+rec.StepID]; ja {
+			continue
+		}
 		jaDecidida := false
 		for _, d := range decididas {
 			if constantTimeEqualBytes(d, rec.Preview) {
@@ -303,6 +319,80 @@ func (p *PendingApprovals) ListForRun(ctx context.Context, runID string) ([]Pend
 			continue
 		}
 		chave := rec.StepID
+		if _, dup := vistos[chave]; dup {
+			continue
+		}
+		vistos[chave] = struct{}{}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+// Expire marca um pendente como EXPIRADO: passou o TTL sem decisão humana. É um facto
+// append-only — o pendente deixa de constar de [PendingApprovals.ListForRun] e o run pode
+// deixar de esperar. NÃO aprova nada: a acção continua por autorizar, e uma retoma
+// posterior encontra-a sem grant e vê-a negada.
+func (p *PendingApprovals) Expire(ctx context.Context, runID, stepID string) error {
+	_, err := p.store.Append(ctx, approvalStream, eventstore.EventInput{
+		Type:    approvalExpiredEventType,
+		Payload: json.RawMessage(`{"run_id":` + quoteJSON(runID) + `,"step_id":` + quoteJSON(stepID) + `}`),
+		RunID:   approvalRunID,
+		StepID:  "expired-" + runID + "-" + stepID,
+	})
+	return err
+}
+
+// ListExpirable devolve os pendentes de TODOS os runs cuja idade excede ttl e que ainda
+// não foram decididos (sem grant) nem expirados. É o que o varrimento periódico consome.
+//
+// Um pendente sem CreatedAt NUNCA é devolvido: não se expira sozinho aquilo cuja idade se
+// desconhece (fail-safe — fica à espera de decisão explícita).
+func (p *PendingApprovals) ListExpirable(ctx context.Context, now time.Time, ttl time.Duration) ([]PendingRecord, error) {
+	events, err := p.store.Read(ctx, approvalStream, 0)
+	if err != nil {
+		return nil, err
+	}
+	decididas := make([][]byte, 0, 4)
+	expirados := make(map[string]struct{})
+	for _, ev := range events {
+		switch ev.Type {
+		case approvalGrantedEventType:
+			var g grantPayload
+			if err := json.Unmarshal(ev.Payload, &g); err == nil {
+				decididas = append(decididas, g.Preview)
+			}
+		case approvalExpiredEventType:
+			expirados[ev.StepID] = struct{}{} // "expired-<run>-<step>"
+		}
+	}
+	var out []PendingRecord
+	vistos := make(map[string]struct{})
+	for _, ev := range events {
+		if ev.Type != approvalPendingEventType {
+			continue
+		}
+		var rec PendingRecord
+		if err := json.Unmarshal(ev.Payload, &rec); err != nil || rec.CreatedAt == "" {
+			continue // sem âncora de tempo ⇒ nunca expira sozinho
+		}
+		criado, perr := time.Parse(time.RFC3339Nano, rec.CreatedAt)
+		if perr != nil || now.Sub(criado) < ttl {
+			continue
+		}
+		if _, ja := expirados["expired-"+rec.RunID+"-"+rec.StepID]; ja {
+			continue
+		}
+		jaDecidida := false
+		for _, d := range decididas {
+			if constantTimeEqualBytes(d, rec.Preview) {
+				jaDecidida = true
+				break
+			}
+		}
+		if jaDecidida {
+			continue
+		}
+		chave := rec.RunID + "|" + rec.StepID
 		if _, dup := vistos[chave]; dup {
 			continue
 		}
