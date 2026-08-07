@@ -55,3 +55,30 @@ func WithEscalationSink(s EscalationSink) Option {
 		}
 	}
 }
+
+// ApprovalEvidenceSource fornece a EVIDÊNCIA de aprovação humana a anexar a uma tool call
+// que está a ser mediada — o outro lado da escalada: é assim que, na RETOMA, a acção
+// aprovada volta ao Reference Monitor acompanhada da prova.
+//
+// A consulta é POR PREVIEW (o digest canónico da call), não por índice nem por nome de
+// tool: é a amarra exacta. Uma call que não seja aquela que o humano aprovou tem outra
+// preview e não obtém evidência nenhuma.
+//
+// A fonte é infraestrutura TRUSTED do nó (a store de grants), NUNCA o modelo — o modelo
+// não pode anexar autorização a si próprio. Os bytes devolvidos continuam a ser tratados
+// como opacos e untrusted pelo [referencemonitor.ApprovalGate], que os verifica.
+type ApprovalEvidenceSource interface {
+	// EvidenceFor devolve a evidência para a call com esta preview, ou nil se não houver
+	// aprovação pendente para ela. Nunca é erro não haver: é o caso normal.
+	EvidenceFor(ctx context.Context, runID string, preview []byte) []byte
+}
+
+// WithApprovalEvidence injecta a fonte de evidência de aprovação (AOS-021). Um valor nil
+// é ignorado (nenhuma call leva evidência — comportamento byte-idêntico).
+func WithApprovalEvidence(s ApprovalEvidenceSource) Option {
+	return func(rt *Runtime) {
+		if s != nil {
+			rt.approvalEvidence = s
+		}
+	}
+}

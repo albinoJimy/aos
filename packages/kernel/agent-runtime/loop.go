@@ -107,18 +107,19 @@ type Runtime struct {
 	rm       *referencemonitor.Monitor
 	recorder *TurnRecorder
 
-	tracer          Tracer
-	stepIdentity    StepIdentity
-	checkpointer    Checkpointer
-	capturer        Capturer
-	steer           SteerSource
-	breaker         LivenessBreaker    // AOS-080/081: disjuntor multi-sinal do agente vivo
-	escalation      EscalationSink     // AOS-021: tool call escalada → espera por humano
-	windowFactory   WindowFactory      // AOS-037: dono único do tail/assembly (D-TAIL)
-	compaction      CompactionTrigger  // AOS-043: compressão em checkpoint
-	dispatcher      ActivityDispatcher // AOS-021: despacho durável do efeito
-	assemblyVersion string
-	defaultMaxTurns int
+	tracer           Tracer
+	stepIdentity     StepIdentity
+	checkpointer     Checkpointer
+	capturer         Capturer
+	steer            SteerSource
+	breaker          LivenessBreaker        // AOS-080/081: disjuntor multi-sinal do agente vivo
+	escalation       EscalationSink         // AOS-021: tool call escalada → espera por humano
+	approvalEvidence ApprovalEvidenceSource // AOS-021: prova de aprovação a anexar na retoma
+	windowFactory    WindowFactory          // AOS-037: dono único do tail/assembly (D-TAIL)
+	compaction       CompactionTrigger      // AOS-043: compressão em checkpoint
+	dispatcher       ActivityDispatcher     // AOS-021: despacho durável do efeito
+	assemblyVersion  string
+	defaultMaxTurns  int
 }
 
 // Option configura o Runtime na construção.
@@ -622,6 +623,15 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			Taint: authorizationTaintOf(inv),
 		},
 		Input: inv.Input,
+	}
+
+	// EVIDÊNCIA DE APROVAÇÃO (AOS-021) — na RETOMA de uma acção escalada, é aqui que a
+	// prova volta a acompanhar a call. A consulta é pela PREVIEW da call já construída
+	// (a amarra exacta): uma call diferente da aprovada tem outra preview e não obtém
+	// evidência. A fonte é infraestrutura TRUSTED do nó, nunca o modelo — e os bytes
+	// continuam opacos até o ApprovalGate os VERIFICAR. Sem fonte ligada, nada muda.
+	if rt.approvalEvidence != nil {
+		call.ApprovalEvidence = rt.approvalEvidence.EvidenceFor(ctx, goal.RunID, referencemonitor.ApprovalPreview(call))
 	}
 
 	// O span execute_tool é aberto AGORA pelo Reference Monitor dentro de Mediate — o

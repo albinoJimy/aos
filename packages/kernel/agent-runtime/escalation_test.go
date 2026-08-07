@@ -170,3 +170,120 @@ func TestEscalation_NenhumEfeitoOcorreu(t *testing.T) {
 		t.Fatalf("uma call escalada não produz efeito: valor tem de ser untrusted-vazio; %+v", res.ToolResults[0])
 	}
 }
+
+// evidenceSource devolve a evidência apenas para a preview registada — modela a store de
+// grants do nó (infraestrutura TRUSTED, nunca o modelo).
+type evidenceSource struct {
+	forPreview []byte
+	evidence   []byte
+	asked      int
+}
+
+func (s *evidenceSource) EvidenceFor(_ context.Context, _ string, preview []byte) []byte {
+	s.asked++
+	if s.forPreview != nil && string(preview) == string(s.forPreview) {
+		return s.evidence
+	}
+	return nil
+}
+
+// approvingHook modela a cadeia REAL na retoma: escala a capability privilegiada SALVO se
+// a call trouxer evidência de aprovação verificada (é o papel combinado
+// ApprovalGate+TaintGate, aqui condensado para isolar o comportamento do LOOP).
+type approvingHook struct{ capability string }
+
+func (approvingHook) Name() string { return "risk" }
+
+func (h approvingHook) Evaluate(_ context.Context, call *referencemonitor.Call) (referencemonitor.HookResult, error) {
+	if call.Capability != h.capability {
+		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
+	}
+	if len(call.ApprovalEvidence) > 0 {
+		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
+	}
+	return referencemonitor.HookResult{Decision: referencemonitor.HookEscalate, Reason: "requer aval humano"}, nil
+}
+
+// TestEscalation_RetomaComEvidenciaExecuta fecha o CICLO do bridge: (1) sem aprovação a
+// acção escala e o run suspende; (2) com a evidência da aprovação disponível para AQUELA
+// preview, a MESMA acção volta a ser mediada e EXECUTA.
+func TestEscalation_RetomaComEvidenciaExecuta(t *testing.T) {
+	h := newHarness(t, nil)
+	rm := referencemonitor.New(
+		referencemonitor.WithHooks(approvingHook{capability: "cap:http.post"}),
+		referencemonitor.WithEventSink(referencemonitor.NewEventStoreSink(h.store)),
+	)
+	execCount := 0
+	if err := rm.Register("web_post", func(_ context.Context, in []byte) ([]byte, error) {
+		execCount++
+		return []byte("publicado"), nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// (1) 1.ª passagem: sem evidência ⇒ escalate ⇒ suspende, sem efeito.
+	sink := &spySink{}
+	rt1 := New(escalatingModel(), rm, h.recorder, WithEscalationSink(sink))
+	res1, err := rt1.Run(context.Background(), sampleGoal())
+	if err != nil {
+		t.Fatalf("Run (1.ª): %v", err)
+	}
+	if !res1.Escalated || execCount != 0 {
+		t.Fatalf("1.ª passagem devia escalar SEM efeito; escalated=%t execs=%d", res1.Escalated, execCount)
+	}
+	preview := res1.EscalatedPreview
+
+	// (2) O humano aprovou: a store passa a ter evidência para AQUELA preview. A retoma
+	// reproduz o turno (aqui, o mesmo modelo determinista) e a acção executa.
+	src := &evidenceSource{forPreview: preview, evidence: []byte("grant-1")}
+	rt2 := New(escalatingModel(), rm, h.recorder,
+		WithEscalationSink(sink), WithApprovalEvidence(src))
+	res2, err := rt2.Run(context.Background(), sampleGoal())
+	if err != nil {
+		t.Fatalf("Run (retoma): %v", err)
+	}
+	if res2.Escalated {
+		t.Fatalf("com aprovação a retoma NÃO devia voltar a escalar; res=%+v", res2)
+	}
+	if execCount != 1 {
+		t.Fatalf("a acção aprovada devia EXECUTAR exactamente 1x; execs=%d", execCount)
+	}
+	if !res2.Terminated {
+		t.Fatalf("depois de executar, o run devia prosseguir e terminar; res=%+v", res2)
+	}
+}
+
+// TestEscalation_EvidenciaSoParaAPreviewCerta: a fonte é consultada POR PREVIEW. Uma
+// evidência registada para OUTRA acção não é entregue a esta — a amarra é exacta.
+func TestEscalation_EvidenciaSoParaAPreviewCerta(t *testing.T) {
+	h := newHarness(t, nil)
+	rm := referencemonitor.New(
+		referencemonitor.WithHooks(approvingHook{capability: "cap:http.post"}),
+		referencemonitor.WithEventSink(referencemonitor.NewEventStoreSink(h.store)),
+	)
+	execCount := 0
+	if err := rm.Register("web_post", func(_ context.Context, _ []byte) ([]byte, error) {
+		execCount++
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Evidência registada para uma preview QUE NÃO É a desta call.
+	src := &evidenceSource{forPreview: []byte("preview-de-outra-accao"), evidence: []byte("grant-x")}
+	rt := New(escalatingModel(), rm, h.recorder,
+		WithEscalationSink(&spySink{}), WithApprovalEvidence(src))
+
+	res, err := rt.Run(context.Background(), sampleGoal())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.Escalated {
+		t.Fatalf("evidência de OUTRA acção não pode destravar esta; res=%+v", res)
+	}
+	if execCount != 0 {
+		t.Fatalf("nada devia executar; execs=%d", execCount)
+	}
+	if src.asked == 0 {
+		t.Fatalf("a fonte devia ter sido consultada (por preview)")
+	}
+}
