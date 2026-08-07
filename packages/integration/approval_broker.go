@@ -71,14 +71,18 @@ type ApprovalStore interface {
 	Consume(ctx context.Context, id string) (ApprovalGrant, bool, error)
 }
 
-// memApprovalStore é a [ApprovalStore] in-memory de referência. DEMO-GRADE: um restart
-// perde os grants pendentes (o efeito é fail-closed — a acção volta a exigir aprovação).
+// memApprovalStore é a [ApprovalStore] in-memory — SÓ PARA TESTES/DEV. Um restart perde
+// os grants pendentes, o que entre o POST /approve e a retoma obriga a repetir a
+// cerimónia four-eyes inteira. A implementação de PRODUÇÃO é
+// [NewEventStoreApprovalStore], durável sobre o Event Store.
 type memApprovalStore struct {
 	mu     sync.Mutex
 	grants map[string]ApprovalGrant
 }
 
-// NewMemApprovalStore constrói a store in-memory de referência.
+// NewMemApprovalStore constrói a store in-memory. NÃO USAR EM PRODUÇÃO — os grants vivem
+// no caminho de autorização e não podem evaporar num restart/failover; use
+// [NewEventStoreApprovalStore].
 func NewMemApprovalStore() ApprovalStore {
 	return &memApprovalStore{grants: make(map[string]ApprovalGrant)}
 }

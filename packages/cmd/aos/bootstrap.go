@@ -974,9 +974,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// com os restantes guards de produção (ver ErrProductionNeedsDurableApproval em
 	// main.go): sem ela não há como reproduzir com fidelidade o turno escalado nem
 	// impedir a dupla execução das activities já aplicadas do mesmo turno.
+	// A store de grants é DURÁVEL sobre o MESMO Event Store dos turnos/sinais: os grants
+	// vivem no caminho de autorização e não podem evaporar num restart/failover — entre o
+	// POST /approve e a retoma isso obrigaria a repetir a cerimónia four-eyes inteira. O
+	// uso-único ATÓMICO vem do dedup do Event Store (o consumo é uma reclamação
+	// idempotente), o mesmo mecanismo em que o step-ledger assenta.
 	var approvalBroker *integration.ApprovalBroker
 	if foureyes != nil {
-		approvalBroker, err = integration.NewApprovalBroker(foureyes, integration.NewMemApprovalStore())
+		grantStore, gerr := integration.NewEventStoreApprovalStore(es)
+		if gerr != nil {
+			return nil, fmt.Errorf("aos: store de grants de aprovacao (AOS-021): %w", gerr)
+		}
+		approvalBroker, err = integration.NewApprovalBroker(foureyes, grantStore)
 		if err != nil {
 			return nil, fmt.Errorf("aos: broker de aprovacao (AOS-021): %w", err)
 		}
