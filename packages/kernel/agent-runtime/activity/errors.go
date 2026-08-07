@@ -79,3 +79,26 @@ type ToolError struct{ Err error }
 
 func (e *ToolError) Error() string { return "activity: erro de execução da tool: " + e.Err.Error() }
 func (e *ToolError) Unwrap() error { return e.Err }
+
+// MediationDenial transporta o VEREDICTO NÃO-PERMIT do Reference Monitor através da
+// fronteira de erro do dispatcher durável, para o chamador o poder reconstituir sem fazer
+// parse de texto.
+//
+// PORQUE EXISTE: o [Dispatcher] reporta deny E escalate como [ErrMediationDenied]. Sem
+// este payload tipado, o adaptador a jusante não distingue os dois e colapsa ambos em
+// deny — o que APAGA o `escalate` e, com ele, todo o caminho de aprovação humana
+// (AOS-021): o loop nunca suspenderia, e a acção de risco pareceria simplesmente negada.
+// O Code/DeniedBy vêm pelo mesmo canal, para o marcador de negação do tail (AOS-013)
+// continuar informativo na via durável.
+type MediationDenial struct {
+	// Effect é o veredicto do RM ("deny" | "escalate").
+	Effect string
+	// Code é o código estável da decisão (enumeração fechada).
+	Code string
+	// DeniedBy é o hook atribuível.
+	DeniedBy string
+}
+
+func (e *MediationDenial) Error() string {
+	return "activity: veredicto " + e.Effect + " (code=" + e.Code + ", denied_by=" + e.DeniedBy + ")"
+}

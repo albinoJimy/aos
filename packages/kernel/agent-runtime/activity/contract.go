@@ -116,6 +116,13 @@ type Activity struct {
 	// NÃO entra na idempotency key (é (RunID, StepID)); é material de mediação, não de
 	// identidade da activity.
 	Credential string
+	// ApprovalEvidence é a evidência BRUTA de aprovação humana (AOS-021) anexada à call.
+	// É PROPAGADA ao [referencemonitor.Call], onde o ApprovalGate a VERIFICA — sem ela,
+	// encaminhar o despacho por este contrato perderia a prova e a acção escalada nunca
+	// destravaria (o run ficaria a escalar para sempre). Opaca e untrusted: nada nela é
+	// acreditado até ser verificada. NÃO entra na idempotency key (é (RunID, StepID)) nem
+	// é memorizada no ledger — é material de mediação, como o Credential.
+	ApprovalEvidence []byte
 }
 
 func (a Activity) validate() error {
@@ -147,7 +154,8 @@ func (a Activity) toCall() referencemonitor.Call {
 			Reversibility:         a.Reversibility,
 			Sensitivity:           a.Sensitivity,
 		},
-		Input: a.Input,
+		Input:            a.Input,
+		ApprovalEvidence: a.ApprovalEvidence,
 	}
 }
 

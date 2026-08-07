@@ -224,7 +224,12 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 			return durable.Result{}, mErr // cancelamento de contexto (fatal)
 		}
 		if dec.Effect != referencemonitor.EffectPermit {
-			return durable.Result{}, fmt.Errorf("%w: effect=%s code=%s", ErrMediationDenied, dec.Effect, dec.Code)
+			// O VEREDICTO viaja tipado (ver [MediationDenial]): sem isso o adaptador a
+			// jusante não distingue deny de ESCALATE e apagaria o caminho de aprovação
+			// humana — o loop nunca suspenderia.
+			return durable.Result{}, fmt.Errorf("%w: %w", ErrMediationDenied, &MediationDenial{
+				Effect: string(dec.Effect), Code: dec.Code, DeniedBy: dec.DeniedBy,
+			})
 		}
 		// Tool permitida mas falhou a jusante: nada é memorizado; retriável.
 		if dec.ToolErr != nil {

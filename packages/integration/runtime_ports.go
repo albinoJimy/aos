@@ -270,12 +270,26 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 		Sensitivity:           call.Context.Sensitivity,
 		BudgetTokensRemaining: call.Context.BudgetTokensRemaining,
 		Input:                 call.Input,
+		// AOS-021: a prova de aprovação tem de atravessar a via durável — sem ela o
+		// ApprovalGate nada vê e a acção escalada nunca destrava.
+		ApprovalEvidence: call.ApprovalEvidence,
 	}
 	res, err := d.dispatcher.Dispatch(ctx, act)
 	if err != nil {
 		if errors.Is(err, activity.ErrMediationDenied) {
-			// Deny não é fatal ao loop: Decision de Deny (output vazio, untrusted).
-			return referencemonitor.Decision{Effect: referencemonitor.EffectDeny}, nil
+			// Não-permit não é fatal ao loop. O VEREDICTO é reconstituído do erro tipado:
+			// colapsar tudo em Deny apagaria o ESCALATE e, com ele, todo o caminho de
+			// aprovação humana (AOS-021) — o loop nunca suspenderia e a acção de risco
+			// pareceria apenas negada. Code/DeniedBy vêm pelo mesmo canal, para o
+			// marcador de negação do tail continuar informativo nesta via.
+			dec := referencemonitor.Decision{Effect: referencemonitor.EffectDeny}
+			var md *activity.MediationDenial
+			if errors.As(err, &md) && md.Effect != "" {
+				dec.Effect = referencemonitor.Effect(md.Effect)
+				dec.Code = md.Code
+				dec.DeniedBy = md.DeniedBy
+			}
+			return dec, nil
 		}
 		return referencemonitor.Decision{}, err // cancelamento/erro fatal do loop
 	}
