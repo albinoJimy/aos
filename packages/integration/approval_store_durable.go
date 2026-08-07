@@ -153,6 +153,45 @@ func (s *eventStoreApprovalStore) lookup(ctx context.Context, id string) (Approv
 	return ApprovalGrant{}, false, nil
 }
 
+// FindUnconsumedByPreview varre a partição e devolve o id de um grant emitido cuja
+// preview coincida E que ainda NÃO tenha sido reclamado. É só uma PISTA para a retoma
+// («há aprovação para esta acção?»): a exclusão atómica vive no [Consume], pelo que uma
+// pista obsoleta (consumo concorrente entretanto) resolve-se fail-closed lá.
+func (s *eventStoreApprovalStore) FindUnconsumedByPreview(ctx context.Context, preview []byte) (string, bool, error) {
+	if len(preview) == 0 {
+		return "", false, nil
+	}
+	events, err := s.store.Read(ctx, approvalStream, 0)
+	if err != nil {
+		return "", false, err
+	}
+	// Primeiro os consumidos, para não propor um grant já reclamado.
+	consumidos := make(map[string]struct{})
+	for _, ev := range events {
+		if ev.Type == approvalConsumedEventType {
+			consumidos[ev.StepID] = struct{}{} // "used-<id>"
+		}
+	}
+	for i := len(events) - 1; i >= 0; i-- { // do mais recente para trás
+		ev := events[i]
+		if ev.Type != approvalGrantedEventType {
+			continue
+		}
+		var p grantPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			continue // um registo ilegível não é uma aprovação utilizável
+		}
+		if !constantTimeEqualBytes(p.Preview, preview) {
+			continue
+		}
+		if _, usado := consumidos["used-"+p.ID]; usado {
+			continue
+		}
+		return p.ID, true, nil
+	}
+	return "", false, nil
+}
+
 // quoteJSON escapa uma string para interpolação segura num literal JSON.
 func quoteJSON(s string) string {
 	b, err := json.Marshal(s)
@@ -163,3 +202,112 @@ func quoteJSON(s string) string {
 }
 
 var _ ApprovalStore = (*eventStoreApprovalStore)(nil)
+
+// ---------------------------------------------------------------------------
+// AOS-021 — Registo DURÁVEL de aprovações PENDENTES
+// ---------------------------------------------------------------------------
+//
+// O pendente é o que o operador VÊ para decidir (por polling). Tal como os grants, vive
+// no caminho de aprovação: se evaporasse num restart, o operador deixaria de saber o que
+// aprovar e o run ficaria suspenso até expirar — fail-closed, mas uma avaria operacional
+// real. Por isso é um facto append-only no MESMO stream.
+
+const approvalPendingEventType = "approval.pending"
+
+// PendingRecord é uma aprovação à espera de decisão humana. Espelha
+// [agentruntime.PendingApproval] com a forma serializável (a preview vai em base64 pelo
+// JSON). NÃO transporta o Input da tool — o payload pode conter dados sensíveis e não
+// deve atravessar a superfície de administração; a amarra é a preview, que já o cobre
+// por hash.
+type PendingRecord struct {
+	RunID          string `json:"run_id"`
+	StepID         string `json:"step_id"`
+	Turn           int    `json:"turn"`
+	ToolID         string `json:"tool_id"`
+	Capability     string `json:"capability"`
+	ResourceType   string `json:"resource_type,omitempty"`
+	ResourceValue  string `json:"resource_value,omitempty"`
+	ResourceRegion string `json:"resource_region,omitempty"`
+	Preview        []byte `json:"preview"`
+}
+
+// PendingApprovals é o registo durável de aprovações pendentes.
+type PendingApprovals struct {
+	store approvalAppendReader
+}
+
+// NewPendingApprovals constrói o registo sobre o Event Store do nó.
+func NewPendingApprovals(store approvalAppendReader) (*PendingApprovals, error) {
+	if store == nil {
+		return nil, ErrNilApprovalStore
+	}
+	return &PendingApprovals{store: store}, nil
+}
+
+// Put regista um pendente. A idempotency_key deriva de (run, step): re-escalar o MESMO
+// passo não duplica o registo.
+func (p *PendingApprovals) Put(ctx context.Context, rec PendingRecord) error {
+	body, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	_, err = p.store.Append(ctx, approvalStream, eventstore.EventInput{
+		Type:    approvalPendingEventType,
+		Payload: body,
+		RunID:   approvalRunID,
+		StepID:  "pending-" + rec.RunID + "-" + rec.StepID,
+	})
+	return err
+}
+
+// ListForRun devolve os pendentes de um run que ainda NÃO foram aprovados (não existe
+// grant emitido para a sua preview). É o que a superfície de administração expõe ao
+// operador — «o que falta decidir».
+func (p *PendingApprovals) ListForRun(ctx context.Context, runID string) ([]PendingRecord, error) {
+	events, err := p.store.Read(ctx, approvalStream, 0)
+	if err != nil {
+		return nil, err
+	}
+	// Previews que já têm grant emitido ⇒ deixaram de estar "à espera de decisão".
+	decididas := make([][]byte, 0, 4)
+	for _, ev := range events {
+		if ev.Type != approvalGrantedEventType {
+			continue
+		}
+		var g grantPayload
+		if err := json.Unmarshal(ev.Payload, &g); err == nil {
+			decididas = append(decididas, g.Preview)
+		}
+	}
+	var out []PendingRecord
+	vistos := make(map[string]struct{})
+	for _, ev := range events {
+		if ev.Type != approvalPendingEventType {
+			continue
+		}
+		var rec PendingRecord
+		if err := json.Unmarshal(ev.Payload, &rec); err != nil {
+			continue
+		}
+		if rec.RunID != runID {
+			continue
+		}
+		jaDecidida := false
+		for _, d := range decididas {
+			if constantTimeEqualBytes(d, rec.Preview) {
+				jaDecidida = true
+				break
+			}
+		}
+		if jaDecidida {
+			continue
+		}
+		chave := rec.StepID
+		if _, dup := vistos[chave]; dup {
+			continue
+		}
+		vistos[chave] = struct{}{}
+		out = append(out, rec)
+	}
+	return out, nil
+}

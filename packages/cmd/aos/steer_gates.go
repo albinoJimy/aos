@@ -114,5 +114,39 @@ func (g *runGate) Resume(ctx context.Context, reason string) error {
 	return g.m.Resume(ctx, state.TransitionEvent{Reason: reason})
 }
 
+// EscalateToHuman materializa running→waiting_on_human (AOS-021): o run fica suspenso à
+// espera de aval humano sobre uma tool call ESCALADA pelo Reference Monitor. Usa o MESMO
+// lazy-claim do [runGate.Pause] — se a máquina ainda está em [state.Ready], reclama
+// ready→running com o fencing token do lease, a aresta que AOS-017 exige antes de
+// qualquer suspensão.
+//
+// Distinto de Pause: waiting_on_human é um gate HITL (com timeout fail-closed próprio),
+// não uma pausa de steer. A tabela declarativa de AOS-017 já expõe ambas as arestas
+// ({Running, WaitingOnHuman} e o regresso {WaitingOnHuman, Running}).
+func (g *runGate) EscalateToHuman(ctx context.Context, reason string) error {
+	if g.m.Current() == state.Ready {
+		if err := g.m.Transition(ctx, state.Running, state.TransitionEvent{Token: g.token, Reason: reasonSteerRunClaim}); err != nil {
+			return err
+		}
+	}
+	return g.m.Transition(ctx, state.WaitingOnHuman, state.TransitionEvent{Reason: reason})
+}
+
+// ResumeFromHuman materializa waiting_on_human→running: o run volta a correr depois de o
+// aval humano ser decidido (aprovado, ou expirado — decisão do dono: ao fim do TTL o run
+// volta a running com a call negada, e o agente pode tentar outro caminho).
+func (g *runGate) ResumeFromHuman(ctx context.Context, reason string) error {
+	return g.m.Transition(ctx, state.Running, state.TransitionEvent{Reason: reason})
+}
+
+// resolveGate devolve o [runGate] concreto do run (nil se não aberto). Distinto de
+// [runStateGates.Resolve], que devolve a porta control.StateGate: aqui o chamador precisa
+// das transições HITL, que não fazem parte dessa porta.
+func (g *runStateGates) resolveGate(runID string) *runGate {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.gates[runID]
+}
+
 // Assegura em compile-time que runGate satisfaz a porta que o canal de steer consome.
 var _ control.StateGate = (*runGate)(nil)

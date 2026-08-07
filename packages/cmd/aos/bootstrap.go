@@ -980,6 +980,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// uso-único ATÓMICO vem do dedup do Event Store (o consumo é uma reclamação
 	// idempotente), o mesmo mecanismo em que o step-ledger assenta.
 	var approvalBroker *integration.ApprovalBroker
+	var pendingApprovals *integration.PendingApprovals
 	if foureyes != nil {
 		grantStore, gerr := integration.NewEventStoreApprovalStore(es)
 		if gerr != nil {
@@ -988,6 +989,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		approvalBroker, err = integration.NewApprovalBroker(foureyes, grantStore)
 		if err != nil {
 			return nil, fmt.Errorf("aos: broker de aprovacao (AOS-021): %w", err)
+		}
+		// Registo DURÁVEL de pendentes (o que o operador vê para decidir). Mesma razão dos
+		// grants: se evaporasse num restart, o operador deixaria de saber o que aprovar.
+		pendingApprovals, err = integration.NewPendingApprovals(es)
+		if err != nil {
+			return nil, fmt.Errorf("aos: registo de aprovacoes pendentes (AOS-021): %w", err)
 		}
 	}
 
@@ -1091,6 +1098,26 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	stateGates := newRunStateGates(es, chainTracer)
 	loopSteer := control.NewLoopSteer(steer, stateGates.Resolve)
 
+	// (6d) BRIDGE DE APROVAÇÃO LIGADO AO LOOP (AOS-021). É esta composição que faz o ciclo
+	// escalada→aprovação→retoma CORRER: sem ela as portas do kernel ficam inertes e um
+	// veredicto `escalate` do RM comporta-se como uma negação (o run prossegue sem que
+	// ninguém peça aval). Só existe quando o four-eyes está composto — sem aprovadores não
+	// há a quem escalar, e degradar para negação é a postura correcta.
+	//   - escalationSink: suspende o run (running→waiting_on_human) na MESMA state.Machine
+	//     por-run que o steer usa, e regista o pendente DURÁVEL para o operador ver.
+	//   - approvalBroker: como ApprovalEvidenceSource, resolve na retoma se existe aprovação
+	//     por usar para a preview da call e devolve a evidência a anexar.
+	var escalationSink agentruntime.EscalationSink
+	var approvalEvidence agentruntime.ApprovalEvidenceSource
+	if approvalBroker != nil && pendingApprovals != nil {
+		sink, serr := newNodeEscalationSink(stateGates, pendingApprovals)
+		if serr != nil {
+			return nil, fmt.Errorf("aos: adaptador de escalada (AOS-021): %w", serr)
+		}
+		escalationSink = sink
+		approvalEvidence = approvalBroker
+	}
+
 	// (7) SECURED RUNTIME — a CADEIA REAL (via NewProductionSecure), com o VERIFIER REAL
 	// ligado. Fail-closed: um colaborador obrigatório em falta é recusado aqui.
 	var toolSetStore integration.ToolSetStore
@@ -1124,6 +1151,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		RuntimeOptions: runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
 		Tracer:         chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
 		SteerSource:    loopSteer,   // AOS-218: liga o canal de steer ao loop de produção (ACHADO-2)
+		// AOS-021: bridge de aprovação. nil quando não há four-eyes ⇒ escalate degrada para
+		// negação (o loop prossegue) — retro-compatível.
+		EscalationSink:   escalationSink,
+		ApprovalEvidence: approvalEvidence,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)

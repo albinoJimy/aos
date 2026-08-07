@@ -117,6 +117,16 @@ type SecuredConfig struct {
 	// Fecha a lacuna de o breaker existir COMPLETO (limiares por classe, sinais,
 	// transição durável, alerta) sem NUNCA ter tido chamador de produção.
 	LivenessBreaker agentruntime.LivenessBreaker
+	// EscalationSink liga o bridge de aprovação (AOS-021) ao loop: um veredicto `escalate`
+	// do Reference Monitor suspende o run (running → waiting_on_human) e regista o pendente
+	// para o operador decidir. OPCIONAL e ADITIVO: nil ⇒ o escalate é tratado como negação
+	// e o run prossegue (comportamento anterior byte-idêntico).
+	EscalationSink agentruntime.EscalationSink
+	// ApprovalEvidence é o outro lado do bridge: na RETOMA, resolve por PREVIEW se existe
+	// aprovação humana por usar para a call que vai ser mediada, e devolve a evidência a
+	// anexar. É infraestrutura TRUSTED (a store de grants), nunca o modelo. OPCIONAL: nil ⇒
+	// nenhuma call leva evidência.
+	ApprovalEvidence agentruntime.ApprovalEvidenceSource
 	// HookOptions são opções do [RevalidationHook] (ex.: [WithEgressHost]).
 	HookOptions []HookOption
 	// RuntimeOptions são opções do [agentruntime.Runtime].
@@ -325,6 +335,15 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	// nil ⇒ opção omitida ⇒ retro-compatibilidade byte-idêntica.
 	if cfg.LivenessBreaker != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithLivenessBreaker(cfg.LivenessBreaker))
+	}
+	// AOS-021: bridge negação→aprovação→reexecução. As duas portas são independentes (a
+	// escalada suspende; a evidência destrava na retoma) e ambas aditivas — nil ⇒ omitidas
+	// ⇒ comportamento anterior byte-idêntico.
+	if cfg.EscalationSink != nil {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithEscalationSink(cfg.EscalationSink))
+	}
+	if cfg.ApprovalEvidence != nil {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithApprovalEvidence(cfg.ApprovalEvidence))
 	}
 	var durDisp agentruntime.ActivityDispatcher // nil quando a execução durável está desligada
 	if cfg.Ledger != nil {

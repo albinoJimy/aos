@@ -69,6 +69,12 @@ type ApprovalStore interface {
 	Put(ctx context.Context, g ApprovalGrant) error
 	// Consume devolve o grant e marca-o usado. ok=false se não existir.
 	Consume(ctx context.Context, id string) (ApprovalGrant, bool, error)
+	// FindUnconsumedByPreview devolve o ID de um grant AINDA NÃO CONSUMIDO cuja preview
+	// seja EXACTAMENTE a dada — é como a retoma descobre "há aprovação para esta acção?"
+	// sem a consumir. É uma PISTA: quem consome é o [ApprovalStore.Consume], e é lá que
+	// vive a exclusão atómica. Uma pista obsoleta (grant entretanto consumido) resolve-se
+	// fail-closed no consumo.
+	FindUnconsumedByPreview(ctx context.Context, preview []byte) (string, bool, error)
 }
 
 // memApprovalStore é a [ApprovalStore] in-memory — SÓ PARA TESTES/DEV. Um restart perde
@@ -103,6 +109,17 @@ func (s *memApprovalStore) Consume(_ context.Context, id string) (ApprovalGrant,
 	}
 	delete(s.grants, id) // USO-ÚNICO: uma aprovação destrava UMA execução
 	return g, true, nil
+}
+
+func (s *memApprovalStore) FindUnconsumedByPreview(_ context.Context, preview []byte) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, g := range s.grants {
+		if constantTimeEqualBytes(g.Preview, preview) {
+			return id, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // ApprovalBrokerOption configura o [ApprovalBroker].
@@ -222,6 +239,26 @@ func (b *ApprovalBroker) VerifyApproval(ctx context.Context, evidence, preview [
 		Approvers:   append([]string(nil), g.Approvers...),
 		DualControl: g.DualControl,
 	}, nil
+}
+
+// EvidenceFor implementa [agentruntime.ApprovalEvidenceSource]: na RETOMA, resolve se
+// existe uma aprovação por usar para a acção com esta preview e devolve a EVIDÊNCIA (o id
+// do grant) a anexar à call. nil ⇒ não há aprovação — o caso normal de toda a tool call
+// que nunca foi escalada.
+//
+// NÃO consome nada: é uma consulta. O consumo (uso-único atómico) acontece depois, no
+// [ApprovalBroker.VerifyApproval] invocado pelo ApprovalGate do Reference Monitor — que é
+// também quem verifica a amarra e a frescura. Assim uma consulta que não chegue a
+// mediação não queima a aprovação.
+//
+// Um erro de leitura resolve-se como "sem evidência" (fail-closed silencioso): uma avaria
+// da store nunca destrava nada; no máximo mantém a acção por aprovar.
+func (b *ApprovalBroker) EvidenceFor(ctx context.Context, _ string, preview []byte) []byte {
+	id, ok, err := b.store.FindUnconsumedByPreview(ctx, preview)
+	if err != nil || !ok || id == "" {
+		return nil
+	}
+	return []byte(id)
 }
 
 // constantTimeEqualBytes compara dois digests sem ramificar no conteúdo. Os digests não
