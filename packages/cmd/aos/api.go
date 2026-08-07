@@ -492,6 +492,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
 	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)
 	mux.HandleFunc("POST /runs/{id}/approve", h.handleApprove)
+	mux.HandleFunc("POST /runs/{id}/resume", h.handleResume)
 	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
 	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
 	// composto (fail-closed). Ver handleDSAR.
@@ -1611,4 +1612,62 @@ func isLoopbackAddr(addr string) bool {
 		return false // hostname não confirmável ⇒ conservador (não-loopback)
 	}
 	return ip.IsLoopback()
+}
+
+// ---------------------------------------------------------------------------
+// RETOMA de um run suspenso (AOS-021) — POST /runs/{id}/resume
+// ---------------------------------------------------------------------------
+
+// resumeRequest transporta a credencial NHI FRESCA com que o run é retomado. A credencial
+// original NÃO foi persistida (é um bearer token, e teria expirado durante a janela de
+// aprovação) — quem retoma re-autentica-se.
+type resumeRequest struct {
+	Credential string `json:"credential"`
+}
+
+// handleResume retoma um run SUSPENSO à espera de aval humano. É plano de CONTROLO: passa
+// pela admissão e pelo mTLS de controlo como /steer, /pause e /approve.
+//
+// A autorização REAL da acção retomada não acontece aqui — acontece onde sempre aconteceu:
+// a cadeia de mediação COMPLETA volta a correr sobre a credencial fresca (identidade,
+// revalidação, PDP, taint, escopo, egress). Este endpoint só reconstitui e re-submete.
+func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
+	if !h.admitControl(w) {
+		return
+	}
+	if !h.admitControlMTLS(w, r) {
+		return
+	}
+	runID := r.PathValue("id")
+	if runID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var req resumeRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	if strings.TrimSpace(req.Credential) == "" {
+		// Fail-closed: sem credencial fresca não há retoma. Aceitar vazio faria o run
+		// prosseguir anonimamente até o hook de identidade o negar — mais tarde e com
+		// pior diagnóstico.
+		writeError(w, http.StatusBadRequest, "credencial de retoma em falta (a original nao e persistida — re-autentique)")
+		return
+	}
+	err := h.svc.Resume(r.Context(), runID, req.Credential)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]any{"run_id": runID, "status": "resumed"})
+	case errors.Is(err, ErrRunNotSuspended):
+		// 404 UNIFORME (como o resto do read-path): não se distingue "não existe" de
+		// "existe mas não está suspenso" — não enumera runs alheios.
+		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, ErrResumeUnavailable):
+		writeError(w, http.StatusNotImplemented, "retoma indisponivel (four-eyes nao composto)")
+	case errors.Is(err, ErrNoResumeRecord):
+		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
+	default:
+		writeError(w, http.StatusInternalServerError, "retoma falhou")
+	}
 }

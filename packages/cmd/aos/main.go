@@ -1122,6 +1122,15 @@ func parseModelFromEnv() (agentruntime.ModelClient, error) {
 	if len(bindings) > 0 {
 		client = &toolEnrichingClient{inner: client, bindings: bindings}
 	}
+	// RETOMA (AOS-021): decorador OUTERMOST. Num turno coberto pelo plano de replay da
+	// retoma (que viaja no ctx) devolve a resposta REGISTADA, sem tocar no modelo; nos
+	// restantes delega. Um run normal nunca tem plano ⇒ totalmente transparente.
+	//
+	// Tem de envolver o enriquecedor, não o contrário: as respostas capturadas JÁ trazem
+	// o binding de governança que o enriquecedor aplicou na primeira passagem, e
+	// re-enriquecer seria redundante — mas sobretudo, o que importa é que a tool call
+	// reproduzida seja BYTE-IDÊNTICA à aprovada, e a captura é a fonte dessa verdade.
+	client = newResumeAwareModelClient(client)
 	return client, nil
 }
 
