@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/worker"
@@ -56,6 +57,11 @@ var (
 	// réplica. O registo por RunID recusa a duplicação (não se hospeda o mesmo run duas
 	// vezes).
 	ErrRunAlreadyInProgress = errors.New("aos: run ja em curso nesta replica (RunID duplicado)")
+
+	// ErrRunSuspended — o run PAROU à espera de aval humano (AOS-021) e não é
+	// re-submissível: re-submeter perderia o estado suspenso e a aprovação pendente.
+	// É RETOMÁVEL por POST /runs/{id}/resume com uma credencial NHI FRESCA.
+	ErrRunSuspended = errors.New("aos: run suspenso a espera de aval humano — retome com POST /runs/{id}/resume (credencial fresca), nao re-submeta")
 
 	// ErrRunAlreadyCompleted — submeteu-se um RunID cujo desfecho ESTA réplica já retém
 	// como TERMINADO. A re-submissão de um run terminado é recusada explicitamente
@@ -92,6 +98,9 @@ type runState struct {
 	result   agentruntime.Result
 	err      error
 	panicked bool
+	// suspended marca um run que PAROU à espera de aval humano (AOS-021). NÃO terminou:
+	// é arquivado no balde `suspended` e continua RETOMÁVEL por POST /runs/{id}/resume.
+	suspended bool
 }
 
 // RunOutcome é a fotografia imutável do desfecho de um run terminado (inspecção/testes).
@@ -123,9 +132,15 @@ type NodeService struct {
 	hbInterval   time.Duration // período de renovação (heartbeat) da posse; <= 0 desliga
 	completedCap int           // teto de desfechos retidos (FIFO); <= 0 = ilimitado
 
+	// AOS-021 — varrimento de aprovações expiradas (decisão do dono: no loop de serviço).
+	sweepInterval time.Duration // período do varrimento; <= 0 desliga
+	approvalTTL   time.Duration // janela de validade de uma aprovação pendente
+	sweepStop     chan struct{} // fechado no Shutdown para parar o varrimento
+
 	mu             sync.Mutex
 	runs           map[string]*runState // em curso (por RunID)
 	completed      map[string]*runState // terminados (inspecção/observabilidade)
+	suspended      map[string]*runState // à espera de aval humano (AOS-021) — RETOMÁVEIS
 	completedOrder []string             // ordem de término (FIFO) para poda do `completed`
 	closed         bool                 // shutdown iniciado — recusa novos runs (governa admissão, sob mu)
 	wg             sync.WaitGroup       // conta as goroutines de run hospedadas
@@ -152,6 +167,11 @@ type nodeServiceConfig struct {
 	workerID        string
 	leaseClock      durable.Clock
 	logw            io.Writer
+	// AOS-021 — varrimento de aprovações. sweepIntervalSet distingue "não configurado"
+	// (⇒ default) de "explicitamente 0" (⇒ DESLIGADO, usado em testes).
+	sweepInterval    time.Duration
+	sweepIntervalSet bool
+	approvalTTL      time.Duration
 }
 
 // WithLeaseTTL define o TTL do lease de posse de run (default [DefaultLeaseTTL]).
@@ -234,6 +254,15 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	if cfg.completedCapSet {
 		completedCap = cfg.completedCap
 	}
+	// AOS-021 — varrimento de aprovações. Explícito (incl. 0 = DESLIGADO) ou o default.
+	sweepInterval := DefaultApprovalSweepInterval
+	if cfg.sweepIntervalSet {
+		sweepInterval = cfg.sweepInterval
+	}
+	approvalTTL := cfg.approvalTTL
+	if approvalTTL <= 0 {
+		approvalTTL = integration.DefaultApprovalTTL
+	}
 
 	var leaseOpts []durable.LeaseOption
 	if cfg.leaseClock != nil {
@@ -252,17 +281,28 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 
 	s := &NodeService{
-		node:         node,
-		assigner:     assigner,
-		leases:       leases,
-		logw:         cfg.logw,
-		hbInterval:   hbInterval,
-		completedCap: completedCap,
-		runs:         make(map[string]*runState),
-		completed:    make(map[string]*runState),
+		node:          node,
+		assigner:      assigner,
+		leases:        leases,
+		logw:          cfg.logw,
+		hbInterval:    hbInterval,
+		completedCap:  completedCap,
+		runs:          make(map[string]*runState),
+		completed:     make(map[string]*runState),
+		suspended:     make(map[string]*runState),
+		sweepInterval: sweepInterval,
+		approvalTTL:   approvalTTL,
+		sweepStop:     make(chan struct{}),
 	}
 	s.log("loop de servico do no `aos` pronto (AOS-164a): TTL de lease=%s, heartbeat=%s, worker=%q, retencao=%d",
 		cfg.ttl, hbInterval, cfg.workerID, completedCap)
+	// AOS-021 — varrimento de aprovações expiradas no LOOP DE SERVIÇO. Só arranca quando
+	// há four-eyes composto (sem aprovadores não há nada a expirar) e o período é > 0.
+	if sweepInterval > 0 && node.PendingApprovals != nil {
+		go s.sweepApprovals(s.sweepStop)
+		s.log("varrimento de aprovacoes (AOS-021): LIGADO — periodo=%s, TTL de aprovacao=%s; um pendente sem decisao expira e o run fica RETOMAVEL",
+			sweepInterval, approvalTTL)
+	}
 	return s, nil
 }
 
@@ -296,6 +336,12 @@ func (s *NodeService) Submit(ctx context.Context, goal agentruntime.Goal) error 
 	if _, dup := s.runs[runID]; dup {
 		s.mu.Unlock()
 		return ErrRunAlreadyInProgress
+	}
+	if _, susp := s.suspended[runID]; susp {
+		// Suspenso à espera de aval humano: NÃO é re-submissível (perderia o estado), mas
+		// é RETOMÁVEL — por POST /runs/{id}/resume com credencial fresca.
+		s.mu.Unlock()
+		return ErrRunSuspended
 	}
 	if _, done := s.completed[runID]; done {
 		// Desfecho ainda retido: re-submissão recusada explicitamente (não re-executa nem
@@ -454,10 +500,46 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	}
 
 	res, _, err := s.node.Runtime.Run(ctx, goal, nil)
+
+	// SUSPENSÃO À ESPERA DE HUMANO (AOS-021): o run NÃO terminou — uma tool call foi
+	// escalada e nenhum efeito ocorreu. Persiste-se o registo de RETOMA (o Goal SEM a
+	// credencial) para que qualquer réplica o possa retomar depois, e larga-se tudo o
+	// resto (lease, heartbeat) — não se seguram recursos durante minutos de latência
+	// humana. FAIL-CLOSED: se o registo não persistir, o run é tratado como FALHADO em
+	// vez de suspenso — um "suspenso" que não se consegue retomar seria pior (ficaria à
+	// espera de uma aprovação que nunca teria efeito).
+	suspenso := false
+	if res.Escalated && s.node.ResumeRecords != nil {
+		if perr := s.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); perr != nil {
+			err = fmt.Errorf("aos: persistir registo de retoma do run %q: %w", rs.runID, perr)
+		} else {
+			suspenso = true
+		}
+	}
+
 	s.mu.Lock()
 	rs.result = res
 	rs.err = err
+	rs.suspended = suspenso
 	s.mu.Unlock()
+}
+
+// resumeRecordFromGoal projecta o Goal no registo de retoma. A Credential é
+// DELIBERADAMENTE omitida — ver [integration.ResumeRecord].
+func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
+	return integration.ResumeRecord{
+		RunID:             goal.RunID,
+		Principal:         goal.Principal,
+		Scope:             goal.Scope,
+		Model:             goal.Model,
+		System:            goal.System,
+		Tools:             goal.Tools,
+		Skills:            goal.Skills,
+		Objective:         goal.Objective,
+		MemoryContext:     goal.MemoryContext,
+		MaxTurns:          goal.MaxTurns,
+		ParentTraceParent: goal.ParentTraceParent,
+	}
 }
 
 // heartbeat renova periodicamente a posse do lease do run enquanto ele corre. Pára quando
@@ -514,11 +596,18 @@ func (s *NodeService) finish(rs *runState) {
 	}
 	s.mu.Lock()
 	delete(s.runs, rs.runID)
-	if _, seen := s.completed[rs.runID]; !seen {
-		s.completedOrder = append(s.completedOrder, rs.runID)
+	if rs.suspended {
+		// À ESPERA DE HUMANO: não é um desfecho. Fica no balde de suspensos — fora da
+		// retenção FIFO de terminados (que o podaria e o tornaria irretomável) — e
+		// continua a bloquear uma re-submissão do mesmo RunID, mas por POST /resume.
+		s.suspended[rs.runID] = rs
+	} else {
+		if _, seen := s.completed[rs.runID]; !seen {
+			s.completedOrder = append(s.completedOrder, rs.runID)
+		}
+		s.completed[rs.runID] = rs
+		s.pruneCompletedLocked()
 	}
-	s.completed[rs.runID] = rs
-	s.pruneCompletedLocked()
 	s.mu.Unlock()
 	close(rs.done)
 }
@@ -581,6 +670,9 @@ func (s *NodeService) Shutdown(ctx context.Context) error {
 	s.draining.Store(true) // espelha o drain (armado SOB mu, no mesmo ponto que closed) para leitura lock-free da sonda
 	inflight := len(s.runs)
 	s.mu.Unlock()
+	// Para o varrimento de aprovações (AOS-021) — idempotente: o Shutdown já retornou
+	// cedo se `closed` estava armado, pelo que este close acontece uma só vez.
+	close(s.sweepStop)
 	s.log("shutdown gracioso iniciado — %d run(s) em curso a drenar (nao aceita novos)", inflight)
 
 	drained := make(chan struct{})
@@ -661,6 +753,19 @@ func (s *NodeService) Outcome(runID string) (RunOutcome, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rs, ok := s.completed[runID]
+	if !ok {
+		return RunOutcome{}, false
+	}
+	return RunOutcome{RunID: rs.runID, Result: rs.result, Err: rs.err, Panicked: rs.panicked}, true
+}
+
+// Suspended indica se o run está SUSPENSO à espera de aval humano (AOS-021) — não
+// terminou, e é retomável por POST /runs/{id}/resume. Devolve também o desfecho parcial
+// (o Result com Escalated=true e a preview da acção que aguarda decisão).
+func (s *NodeService) Suspended(runID string) (RunOutcome, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs, ok := s.suspended[runID]
 	if !ok {
 		return RunOutcome{}, false
 	}

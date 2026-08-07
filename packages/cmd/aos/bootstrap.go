@@ -443,6 +443,10 @@ type Node struct {
 	// humano — o que a superfície de administração expõe ao operador (polling). nil
 	// quando o four-eyes não está composto.
 	PendingApprovals *integration.PendingApprovals
+	// ResumeRecords guarda o que reconstitui um run SUSPENSO (o Goal SEM a credencial,
+	// cifrado por-titular quando há cifrador). É o que torna a retoma possível depois de
+	// o processo largar lease e goroutine. nil quando o four-eyes não está composto.
+	ResumeRecords *integration.ResumeRecords
 	// Promotion é o promotion controller (AOS-159/AOS-206): a via SANCIONADA
 	// [hitl.NewProductionRatificationGate] (freshness + nonce-store durável FORÇADOS) que
 	// interpõe a ratificação humana assinada entre o canary e a produção de um artefacto de
@@ -985,6 +989,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// idempotente), o mesmo mecanismo em que o step-ledger assenta.
 	var approvalBroker *integration.ApprovalBroker
 	var pendingApprovals *integration.PendingApprovals
+	var resumeRecords *integration.ResumeRecords
 	if foureyes != nil {
 		grantStore, gerr := integration.NewEventStoreApprovalStore(es)
 		if gerr != nil {
@@ -999,6 +1004,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		pendingApprovals, err = integration.NewPendingApprovals(es)
 		if err != nil {
 			return nil, fmt.Errorf("aos: registo de aprovacoes pendentes (AOS-021): %w", err)
+		}
+		// O Goal transporta o objectivo do utilizador e o contexto de memória — conteúdo
+		// que o turn.recorded deliberadamente NÃO persiste em claro. Aqui passa pelo MESMO
+		// cifrador por-titular do capturer (AOS-093), pelo que o crypto-shredding o alcança.
+		resumeRecords, err = integration.NewResumeRecords(es, contentCipher)
+		if err != nil {
+			return nil, fmt.Errorf("aos: registo de retoma (AOS-021): %w", err)
 		}
 	}
 
@@ -1467,6 +1479,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		FourEyes:         foureyes,
 		ApprovalBroker:   approvalBroker,
 		PendingApprovals: pendingApprovals,
+		ResumeRecords:    resumeRecords,
 		Promotion:        promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
 		Authority:        authority, // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:         verifier,

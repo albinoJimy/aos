@@ -664,7 +664,7 @@ func submitErrorStatus(err error) int {
 // streaming é AOS-167.
 type runStateResponse struct {
 	RunID      string `json:"run_id"`
-	Status     string `json:"status"` // "in_progress" | "completed"
+	Status     string `json:"status"` // "in_progress" | "waiting_on_human" | "completed"
 	Terminated bool   `json:"terminated,omitempty"`
 	Paused     bool   `json:"paused,omitempty"`
 	Panicked   bool   `json:"panicked,omitempty"`
@@ -740,6 +740,21 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	// distingue "existe" de "nao existe" — ambos 404.
 	reader, residency, ok := h.admitSovereignRead(w, r, runID)
 	if !ok {
+		return
+	}
+	// SUSPENSO à espera de aval humano (AOS-021)? Verificado ANTES de "terminado": um run
+	// escalado NÃO terminou — reportá-lo como "completed" seria uma mentira operacional
+	// (o operador julgaria o trabalho feito quando falta a decisão dele).
+	if oc, susp := h.svc.Suspended(runID); susp {
+		if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
+			return
+		}
+		writeJSON(w, http.StatusOK, runStateResponse{
+			RunID:            runID,
+			Status:           "waiting_on_human",
+			Turns:            oc.Result.Turns,
+			PendingApprovals: h.pendingApprovalsFor(r.Context(), runID),
+		})
 		return
 	}
 	// Terminado (desfecho retido)?

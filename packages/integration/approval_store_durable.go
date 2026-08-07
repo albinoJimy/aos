@@ -3,11 +3,27 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/aos-ref/substrate/eventstore"
 )
+
+// readApprovalStream lê a partição de aprovações tratando o stream AINDA INEXISTENTE como
+// VAZIO. Num nó fresco (nenhuma aprovação alguma vez emitida) o Event Store devolve
+// ErrStreamNotFound; propagá-lo faria toda a consulta de aprovações falhar em vez de
+// responder "não há nada" — que é a verdade.
+func readApprovalStream(ctx context.Context, store approvalAppendReader) ([]eventstore.Event, error) {
+	events, err := store.Read(ctx, approvalStream, 0)
+	if err != nil {
+		if errors.Is(err, eventstore.ErrStreamNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return events, nil
+}
 
 // ---------------------------------------------------------------------------
 // AOS-021 — ApprovalStore DURÁVEL sobre o Event Store
@@ -127,7 +143,7 @@ func (s *eventStoreApprovalStore) Consume(ctx context.Context, id string) (Appro
 // varre o stream (a partição é pequena — um evento por aprovação); um índice por id é
 // optimização, não correcção.
 func (s *eventStoreApprovalStore) lookup(ctx context.Context, id string) (ApprovalGrant, bool, error) {
-	events, err := s.store.Read(ctx, approvalStream, 0)
+	events, err := readApprovalStream(ctx, s.store)
 	if err != nil {
 		return ApprovalGrant{}, false, err
 	}
@@ -161,7 +177,7 @@ func (s *eventStoreApprovalStore) FindUnconsumedByPreview(ctx context.Context, p
 	if len(preview) == 0 {
 		return "", false, nil
 	}
-	events, err := s.store.Read(ctx, approvalStream, 0)
+	events, err := readApprovalStream(ctx, s.store)
 	if err != nil {
 		return "", false, err
 	}
@@ -273,7 +289,7 @@ func (p *PendingApprovals) Put(ctx context.Context, rec PendingRecord) error {
 // grant emitido para a sua preview). É o que a superfície de administração expõe ao
 // operador — «o que falta decidir».
 func (p *PendingApprovals) ListForRun(ctx context.Context, runID string) ([]PendingRecord, error) {
-	events, err := p.store.Read(ctx, approvalStream, 0)
+	events, err := readApprovalStream(ctx, p.store)
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +364,7 @@ func (p *PendingApprovals) Expire(ctx context.Context, runID, stepID string) err
 // Um pendente sem CreatedAt NUNCA é devolvido: não se expira sozinho aquilo cuja idade se
 // desconhece (fail-safe — fica à espera de decisão explícita).
 func (p *PendingApprovals) ListExpirable(ctx context.Context, now time.Time, ttl time.Duration) ([]PendingRecord, error) {
-	events, err := p.store.Read(ctx, approvalStream, 0)
+	events, err := readApprovalStream(ctx, p.store)
 	if err != nil {
 		return nil, err
 	}

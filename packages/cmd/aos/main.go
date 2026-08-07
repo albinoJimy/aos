@@ -624,7 +624,17 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
-	svc, err := NewNodeService(node, WithServiceLog(w))
+	// AOS-021 — período do varrimento de aprovações expiradas (loop de serviço). Vazio ⇒
+	// default; "0" ⇒ DESLIGADO (os pendentes nunca expiram sozinhos). Um valor malformado
+	// é ignorado (mantém o default): o varrimento é higiene operacional, não um gate de
+	// segurança — degradar para o default é preferível a recusar o arranque do nó.
+	svcOpts := []NodeServiceOption{WithServiceLog(w)}
+	if v := strings.TrimSpace(os.Getenv("AOS_APPROVAL_SWEEP_INTERVAL")); v != "" {
+		if d, derr := time.ParseDuration(v); derr == nil {
+			svcOpts = append(svcOpts, WithApprovalSweepInterval(d))
+		}
+	}
+	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
 	}
