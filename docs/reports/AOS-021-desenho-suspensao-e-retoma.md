@@ -129,3 +129,30 @@ O sweeper **não** re-executa nada. Retomar é sempre um acto explícito.
 ## 8. O que peço antes de codificar
 
 Nada — as três decisões (retoma explícita, run retomável, documento primeiro) estão tomadas. Este documento existe para ser **contestado** antes de eu escrever a etapa 1. Se a forma estiver certa, avanço pela ordem do §7.
+
+---
+
+## Adenda (2026-08-07) — correcção de um achado e resolução dos dois itens inertes
+
+**CORRECÇÃO.** Afirmei antes que o `escalate` estava inalcançável porque *"o bundle Cedar de
+referência nunca escala"*. **A causa apontada estava errada.** Cedar exprime apenas
+permit/deny — nunca poderia escalar. O `Escalate` vem do **oráculo de autonomia**
+(`control-plane/pdp/autonomy.go`): sobre uma decisão de base `permit`, o PDP compõe o
+**nível do par (agente, domínio)** com a **classe de risco** e, se o modo de oversight
+exigir um humano (`suggest`/`confirm`/`batch`), rebaixa o efeito para `escalate`.
+A conclusão mantinha-se (o escalate era inalcançável); a causa real era o nó **não ligar o
+oráculo** — `applyAutonomy` é no-op sem ele.
+
+**Resolvido.** `AOS_AUTONOMY_LEVELS` (`agt:dominio=Ln`) constrói o registo de níveis e
+liga-o ao PDP. **Opt-in de propósito:** o registo é fail-closed (par não registado ⇒ `L0`,
+cujo oversight é `suggest` para todas as classes), pelo que ligá-lo com registo vazio faria
+**cada** tool call exigir aprovação individual e pararia qualquer deployment. Quais agentes
+correm em que domínios e a que nível é decisão por-deployment.
+
+**Limiares do disjuntor (AOS-080/081), também resolvidos.** Ligados por omissão apenas os
+dois sinais justificáveis sem conhecer a carga: **no-progress (3 iterações)** — evidência
+directa do run que repetiu a mesma call negada 16× até esgotar `MaxTurns` — e **wall-clock
+(30 min)**. As velocidades de queima (custo/s, tokens/s) ficam **desligadas por escolha**:
+um tecto errado mata runs saudáveis e o valor certo depende do modelo, do preço e do perfil
+da carga, que o nó não conhece. Ambos fail-closed na **configuração** (um limiar mal escrito
+aborta o arranque, em vez de deixar o operador convencido de que está protegido).

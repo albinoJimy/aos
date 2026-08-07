@@ -75,14 +75,25 @@ var internalEnvAllowlist = map[string]string{}
 // o extractor apanha pelo literal. Fora delas, um argumento não-literal FALHA o teste (uma
 // variável de ambiente cujo nome o gate não consegue determinar é uma variável que o gate
 // não consegue exigir documentada).
-var envNameWrappers = map[string]bool{"envOr": true}
+var envNameWrappers = map[string]bool{
+	"envOr": true,
+	// AOS-080/081 — os limiares do disjuntor partilham a validação (inteiro/duração/
+	// número, >= 0, vazio ⇒ default). Os nomes REAIS são literais nos chamadores
+	// (breakerThresholdsFromEnv), que é onde o extractor os apanha.
+	"envInt":      true,
+	"envDuration": true,
+	"envFloat":    true,
+}
 
 // envReadFuncs são as leituras de ambiente reconhecidas: as duas da stdlib mais os
 // wrappers locais. `os.LookupEnv` conta como leitura tanto quanto `os.Getenv` — foi
 // precisamente por LookupEnv (e não Getenv) que `AOS_BOARD_REGIONS` distingue os três
 // estados, e um extractor que só olhasse para Getenv perderia a variável mais sensível
 // da superfície.
-var envReadFuncs = map[string]bool{"os.Getenv": true, "os.LookupEnv": true, "envOr": true}
+var envReadFuncs = map[string]bool{
+	"os.Getenv": true, "os.LookupEnv": true, "envOr": true,
+	"envInt": true, "envDuration": true, "envFloat": true,
+}
 
 // envEnumerationFuncs são as leituras de ambiente POR ENUMERAÇÃO — a única forma conhecida
 // de ler o ambiente sem nomear a variável, e portanto de escapar a este gate por construção.

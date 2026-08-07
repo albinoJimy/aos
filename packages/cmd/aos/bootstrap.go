@@ -1123,6 +1123,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	//     por-run que o steer usa, e regista o pendente DURÁVEL para o operador ver.
 	//   - approvalBroker: como ApprovalEvidenceSource, resolve na retoma se existe aprovação
 	//     por usar para a preview da call e devolve a evidência a anexar.
+	// (6e) DISJUNTOR DO AGENTE VIVO (AOS-080/081) — POR-RUN, sobre a MESMA state.Machine
+	// que o steer e a escalada usam. Só é composto quando há limiares configurados: um
+	// disjuntor sem limiares é cego e daria a ilusão de protecção (ver breaker_thresholds.go).
+	breakerProvider, berr := breakerThresholdsFromEnv()
+	if berr != nil {
+		return nil, berr
+	}
+	breakers := newRunBreakers(stateGates, breakerProvider)
+	livenessBreaker := breakers.livenessAdapter()
+
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
 	if approvalBroker != nil && pendingApprovals != nil {
@@ -1167,6 +1177,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		RuntimeOptions: runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
 		Tracer:         chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
 		SteerSource:    loopSteer,   // AOS-218: liga o canal de steer ao loop de produção (ACHADO-2)
+		// AOS-080/081: disjuntor do agente vivo. nil quando não há limiares configurados.
+		LivenessBreaker: livenessBreaker,
 		// AOS-021: bridge de aprovação. nil quando não há four-eyes ⇒ escalate degrada para
 		// negação (o loop prossegue) — retro-compatível.
 		EscalationSink:   escalationSink,

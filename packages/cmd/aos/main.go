@@ -835,7 +835,24 @@ func loadPolicyBundleFromEnv() (*pdp.PDP, error) {
 	// O anchor é FORÇADO via WithTrustAnchor: [pdp.Open] verifica a assinatura do bundle contra
 	// ELE, ignorando qualquer trust_anchor.pub que exista no dir mutável do bundle. Um bundle
 	// assinado por outra chave é recusado (ErrSignatureInvalid), não carregado.
-	p, err := pdp.Open(dir, pdp.WithTrustAnchor(anchor))
+	opts := []pdp.Option{pdp.WithTrustAnchor(anchor)}
+	// ORÁCULO DE AUTONOMIA (AOS-087) — o que torna o `escalate` ALCANÇÁVEL e, com ele,
+	// todo o bridge de aprovação humana (AOS-021). Cedar só exprime permit/deny; é a
+	// composição nível-de-autonomia × classe-de-risco que rebaixa um permit para
+	// escalate. Sem esta variável o oráculo NÃO é ligado e nada escala — ver
+	// autonomy_levels.go para a razão de ser opt-in.
+	specs, aerr := parseAutonomyLevels()
+	if aerr != nil {
+		return nil, aerr
+	}
+	oracle, aerr := buildAutonomyOracle(context.Background(), specs)
+	if aerr != nil {
+		return nil, aerr
+	}
+	if oracle != nil {
+		opts = append(opts, pdp.WithAutonomyOracle(oracle))
+	}
+	p, err := pdp.Open(dir, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: dir %q: %v", ErrPolicyBundleLoad, dir, err)
 	}
