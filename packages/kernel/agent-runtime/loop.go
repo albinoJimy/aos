@@ -89,6 +89,14 @@ type Result struct {
 	// BreakerTarget é o rótulo do estado durável atingido no disparo ("paused" |
 	// "timed_out"). Vazio quando !Tripped.
 	BreakerTarget string
+	// Escalated indica que o run PAROU à espera de AVAL HUMANO (AOS-021): o Reference
+	// Monitor devolveu `escalate` numa tool call (nenhum efeito ocorreu) e o
+	// [EscalationSink] suspendeu o run (running → waiting_on_human). Distinto de Paused
+	// (steer) e de Tripped (disjuntor).
+	Escalated bool
+	// EscalatedPreview é o digest canónico da acção que aguarda aprovação — o mesmo valor
+	// que as pernas de aprovação assinam. Vazio quando !Escalated.
+	EscalatedPreview []byte
 }
 
 // Runtime é o Agent Runtime: corre o loop base. Detém um *[referencemonitor.Monitor]
@@ -105,6 +113,7 @@ type Runtime struct {
 	capturer        Capturer
 	steer           SteerSource
 	breaker         LivenessBreaker    // AOS-080/081: disjuntor multi-sinal do agente vivo
+	escalation      EscalationSink     // AOS-021: tool call escalada → espera por humano
 	windowFactory   WindowFactory      // AOS-037: dono único do tail/assembly (D-TAIL)
 	compaction      CompactionTrigger  // AOS-043: compressão em checkpoint
 	dispatcher      ActivityDispatcher // AOS-021: despacho durável do efeito
@@ -340,17 +349,43 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// para a captura de não-determinismo (AOS-016), sem afectar res.ToolResults.
 		var turnCaptured []CapturedToolResult
 		for j, inv := range resp.ToolCalls {
-			result, denial, toolErr, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
+			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
 			if err != nil {
 				return res, err
 			}
-			res.ToolResults = append(res.ToolResults, result)
-			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: result, ToolError: toolErr, Denial: denial})
+			res.ToolResults = append(res.ToolResults, out.Result)
+			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: out.Result, ToolError: out.ToolErr, Denial: out.Denial})
 			// O tail materializa a condição de erro da tool (se houver) E o facto de a
 			// call ter sido NEGADA pelo RM (rótulos sanitizados, nunca a Reason) para o
 			// modelo poder reagir em vez de reemitir a mesma call às cegas; o conteúdo
 			// mantém-se untrusted, append-only.
-			win.Append(tailFromResultDenied(result, toolErr, denial))
+			win.Append(tailFromResultDenied(out.Result, out.ToolErr, out.Denial))
+
+			// ESCALADA PARA HUMANO (AOS-021) — ANTES do checkpoint da activity, e é
+			// crítico que seja antes: o cpActivity marca a activity como CONFIRMADA
+			// (efeito concluído), e uma activity escalada NÃO produziu efeito nenhum.
+			// Marcá-la faria a retoma SALTÁ-LA — a acção aprovada nunca executaria.
+			// Paramos o run aqui, com o sub-passo por confirmar, para a retoma o
+			// re-mediar com a evidência da aprovação.
+			if out.escalated() && rt.escalation != nil {
+				pending := PendingApproval{
+					RunID: goal.RunID, StepID: out.Call.StepID, Turn: turn,
+					ToolID: out.Call.ToolID, Capability: out.Call.Capability,
+					ResourceType: out.Call.Resource.Type, ResourceValue: out.Call.Resource.Value,
+					ResourceRegion: out.Call.Resource.Region,
+					Preview:        referencemonitor.ApprovalPreview(out.Call),
+				}
+				if err := rt.escalation.Escalate(ctx, pending); err != nil {
+					// Fail-closed: se a suspensão durável falha, prosseguir deixaria o
+					// agente a avançar como se nada tivesse ficado por decidir.
+					return res, err
+				}
+				res.Turns = turn
+				res.Escalated = true
+				res.EscalatedPreview = pending.Preview
+				return res, nil
+			}
+
 			// Checkpoint intra-iteração (AOS-015): a activity j ficou CONFIRMADA
 			// (efeito externo concluído). O cursor carrega o sub-passo confirmado e
 			// as activities ainda pendentes do turno — o resume retoma no próximo
@@ -541,7 +576,26 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // apex (activity.Dispatcher sobre rm + durable.StepLedger) acrescenta idempotência/
 // replay pelo step-ledger à volta da MESMA mediação, SEM o loop perder o Credential
 // (AOS-152) nem o taint da autorização — a porta recebe o Call já construído aqui.
-func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (Tainted, *ToolDenial, error, error) {
+// toolOutcome é o desfecho de UMA tool call mediada, agregado para não multiplicar
+// valores de retorno.
+type toolOutcome struct {
+	// Result é o resultado devolvido ao loop (SEMPRE untrusted).
+	Result Tainted
+	// Denial é a decisão sanitizada quando o RM não permitiu (nil em permit).
+	Denial *ToolDenial
+	// ToolErr é o erro de execução de uma tool PERMITIDA (não é negação de política).
+	ToolErr error
+	// Call é a call construída e submetida — o loop precisa dela para descrever o
+	// pendente de aprovação quando o veredicto é `escalate`.
+	Call referencemonitor.Call
+}
+
+// escalated indica que o veredicto foi `escalate` (requer gate humano; nenhum efeito).
+func (o toolOutcome) escalated() bool {
+	return o.Denial != nil && o.Denial.Effect == string(referencemonitor.EffectEscalate)
+}
+
+func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (toolOutcome, error) {
 	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
 
 	call := referencemonitor.Call{
@@ -583,7 +637,7 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	// o Credential (AOS-152) e o taint da autorização — a identidade nunca se perde.
 	dec, err := rt.dispatcher.Dispatch(ctx, call)
 	if err != nil {
-		return Tainted{}, nil, nil, err // apenas cancelamento de contexto
+		return toolOutcome{}, err // apenas cancelamento de contexto
 	}
 
 	// NEGAÇÃO SANITIZADA para o tail (AOS-013 gap 2): num veredicto não-permit, o loop
@@ -600,7 +654,12 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	}
 
 	// Resultado devolvido ao loop SEMPRE marcado untrusted. Só há Output em permit.
-	return Untrusted(dec.Output), denial, dec.ToolErr, nil
+	return toolOutcome{
+		Result:  Untrusted(dec.Output),
+		Denial:  denial,
+		ToolErr: dec.ToolErr,
+		Call:    call,
+	}, nil
 }
 
 // annotateAgentSpan anota o span invoke_agent com o uso e custo agregados.
