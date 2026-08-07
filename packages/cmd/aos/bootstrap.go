@@ -435,6 +435,10 @@ type Node struct {
 	Steer *control.SteerChannel
 	// FourEyes é o gate de dual-control (AOS-162); nil se não configurado.
 	FourEyes *integration.FourEyesGate
+	// ApprovalBroker liga a cerimónia four-eyes ao bridge negação→aprovação→reexecução
+	// (AOS-021): uma aprovação concluída produz um GRANT persistido, amarrado à preview
+	// da acção, em vez de evaporar. nil quando o four-eyes não está composto.
+	ApprovalBroker *integration.ApprovalBroker
 	// Promotion é o promotion controller (AOS-159/AOS-206): a via SANCIONADA
 	// [hitl.NewProductionRatificationGate] (freshness + nonce-store durável FORÇADOS) que
 	// interpõe a ratificação humana assinada entre o canary e a produção de um artefacto de
@@ -961,6 +965,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 	}
 
+	// (5a-bis) BROKER DE APROVAÇÃO (AOS-021) — liga a cerimónia four-eyes ao bridge
+	// negação→aprovação→reexecução: uma aprovação concluída deixa de EVAPORAR (o /approve
+	// só verificava e respondia "authorized") e passa a produzir um GRANT persistido,
+	// amarrado à preview da acção, que a retoma apresenta ao Reference Monitor.
+	//
+	// A exigência de EXECUÇÃO DURÁVEL para o four-eyes em produção é imposta a montante,
+	// com os restantes guards de produção (ver ErrProductionNeedsDurableApproval em
+	// main.go): sem ela não há como reproduzir com fidelidade o turno escalado nem
+	// impedir a dupla execução das activities já aplicadas do mesmo turno.
+	var approvalBroker *integration.ApprovalBroker
+	if foureyes != nil {
+		approvalBroker, err = integration.NewApprovalBroker(foureyes, integration.NewMemApprovalStore())
+		if err != nil {
+			return nil, fmt.Errorf("aos: broker de aprovacao (AOS-021): %w", err)
+		}
+	}
+
 	// (5b) PROMOTION CONTROLLER (AOS-159/AOS-206, achado DEF-03). SEMPRE composto (ver
 	// [PromotionController]), pela via SANCIONADA [hitl.NewProductionRatificationGate] — que
 	// FORÇA freshness + nonce-store durável e RECUSA a construção sem eles. O nonce-store é
@@ -1397,18 +1418,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	success = true // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	return &Node{
-		Runtime:      sec,
-		Steer:        steer,
-		FourEyes:     foureyes,
-		Promotion:    promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
-		Authority:    authority, // nil no modo endurecido (a autoridade corre fora do processo)
-		Verifier:     verifier,
-		SteerAuth:    steerAuth,
-		EventStore:   es,
-		WORM:         worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
-		IdentityMode: identityMode,
-		Tracer:       tracer,
-		Ingestion:    ingestion,
+		Runtime:        sec,
+		Steer:          steer,
+		FourEyes:       foureyes,
+		ApprovalBroker: approvalBroker,
+		Promotion:      promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
+		Authority:      authority, // nil no modo endurecido (a autoridade corre fora do processo)
+		Verifier:       verifier,
+		SteerAuth:      steerAuth,
+		EventStore:     es,
+		WORM:           worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
+		IdentityMode:   identityMode,
+		Tracer:         tracer,
+		Ingestion:      ingestion,
 
 		Checkpointer: checkpointer, // nil quando a execução durável está desligada
 		Capturer:     capturer,     // (os três são compostos/omitidos EM CONJUNTO)

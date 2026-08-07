@@ -1058,6 +1058,32 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// BRIDGE DE APROVAÇÃO (AOS-021): quando o broker está composto, a cerimónia produz um
+	// GRANT PERSISTIDO amarrado à preview — é o que a retoma apresenta ao Reference Monitor
+	// para destravar a acção escalada. Antes disto o /approve só verificava e respondia
+	// "authorized": a aprovação EVAPORAVA e nada era destravado.
+	//
+	// O id do grant é o request_id do pedido: já é o âmbito anti-replay dos challenges, e
+	// mantém o broker sem fontes de aleatoriedade (determinista e reproduzível).
+	if h.node.ApprovalBroker != nil {
+		grant, gerr := h.node.ApprovalBroker.Approve(r.Context(), feReq.RequestID, feReq, legs...)
+		if gerr != nil {
+			// Fail-closed e resposta UNIFORME: não se revela qual invariante falhou (o audit
+			// tem o erro dedicado).
+			writeError(w, http.StatusForbidden, "aprovacao recusada")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "authorized",
+			"approvers": grant.Approvers,
+			// grant_id é a EVIDÊNCIA que destrava a acção na retoma; expires_at é a janela
+			// (o grant é de USO-ÚNICO e expira — ver integration.DefaultApprovalTTL).
+			"grant_id":   grant.ID,
+			"expires_at": grant.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
 	decision, err := h.node.FourEyes.Authorize(r.Context(), feReq, legs...)
 	if err != nil || !decision.Authorized {
 		// Fail-closed: qualquer negação ⇒ 403, sem revelar QUAL invariante falhou (o audit

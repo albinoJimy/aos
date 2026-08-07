@@ -159,6 +159,14 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // indecifrável (over-erasure silenciosa) e o legal hold deixa de preservar o que a lei manda reter.
 // Ao contrário das outras colunas de produção, a KEK-em-memória só AVISAVA; agora RECUSA. O modo
 // de referência (sem AOS_MODE=production) mantém a KEK-em-memória demo-grade.
+// ErrProductionNeedsDurableApproval — sob AOS_MODE=production com aprovadores four-eyes
+// configurados (AOS_APPROVERS_FILE), a EXECUÇÃO DURÁVEL é obrigatória. O bridge
+// negação→aprovação→reexecução (AOS-021) depende dela em dois pontos: reproduzir o turno
+// escalado com fidelidade (o log durável NÃO guarda os inputs das tool calls — só a
+// captura de replay os tem) e impedir a dupla execução das activities já aplicadas do
+// mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
+var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
+
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
 
 // ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é
@@ -542,6 +550,18 @@ func nodeConfigFromEnv() (Config, error) {
 	// produção a KEK-em-memória demo-grade é aceite (inalterado).
 	if production && cfg.DSARVault == nil && (durableExecution || cfg.WORMPath != "") {
 		return Config{}, ErrProductionNeedsDurableKEK
+	}
+
+	// FAIL-CLOSED de produção (AOS-021) — o four-eyes só é uma via de aprovação REAL com
+	// execução durável ligada. Sem ela, o bridge negação→aprovação→reexecução não funciona:
+	// o log durável não guarda os inputs das tool calls, pelo que o turno escalado não pode
+	// ser reproduzido com fidelidade (a acção aprovada nunca voltaria a ser apresentada de
+	// forma idêntica), e sem o step-ledger nada impede que as activities JÁ EXECUTADAS do
+	// mesmo turno voltem a correr na retoma. Ficaria um four-eyes que verifica assinaturas e
+	// não destrava nada — pior do que desligado, porque cria a expectativa de que há
+	// aprovação humana quando na prática só há negações.
+	if production && len(cfg.Approvers) > 0 && !durableExecution {
+		return Config{}, ErrProductionNeedsDurableApproval
 	}
 
 	// ATTESTATION DE DISPOSITIVO WebAuthn (AOS-177) por ambiente: AOS_ATTESTATION_VERIFIER_URL liga
