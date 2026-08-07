@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -133,5 +135,50 @@ func TestSink_RetomaDoHumanoVoltaARunning(t *testing.T) {
 	}
 	if got := gate.m.Current(); got != state.Running {
 		t.Fatalf("depois da retoma o run devia voltar a running, está em %q", got)
+	}
+}
+
+// TestSink_PendenteConverteParaWire cobre a projecção para a superfície de administração
+// (GET /runs/{id}): o operador vê O QUE vai executar e a preview a assinar — e NÃO vê o
+// input da tool.
+func TestSink_PendenteConverteParaWire(t *testing.T) {
+	const runID = "run-esc-wire"
+	sink, _, es := newSinkHarness(t, runID, true)
+	if err := sink.Escalate(context.Background(), pendingSample(runID)); err != nil {
+		t.Fatalf("Escalate: %v", err)
+	}
+	pend, err := integration.NewPendingApprovals(es)
+	if err != nil {
+		t.Fatalf("NewPendingApprovals: %v", err)
+	}
+	h := &apiHandler{node: &Node{PendingApprovals: pend}}
+	wire := h.pendingApprovalsFor(context.Background(), runID)
+	if len(wire) != 1 {
+		t.Fatalf("esperava 1 pendente no wire, veio %d", len(wire))
+	}
+	w := wire[0]
+	if w.ToolID != "web_post" || w.Capability != "cap:http.post" || w.Turn != 1 {
+		t.Fatalf("o wire devia descrever a acção: %+v", w)
+	}
+	if w.Preview == "" {
+		t.Fatal("a preview (base64) é o que as pernas assinam em /approve — não pode faltar")
+	}
+	// O input da tool NUNCA atravessa a superfície de administração: o wire não tem sequer
+	// um campo para ele (a amarra é a preview, que o cobre por hash).
+	blob, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if bytes.Contains(blob, []byte("input")) {
+		t.Fatalf("o wire NÃO pode transportar o input da tool: %s", blob)
+	}
+}
+
+// TestSink_SemFourEyesNaoExpoePendentes: sem o registo composto, a projecção é nil (o
+// campo desaparece da resposta) — nada a expor quando o four-eyes não está ligado.
+func TestSink_SemFourEyesNaoExpoePendentes(t *testing.T) {
+	h := &apiHandler{node: &Node{}}
+	if got := h.pendingApprovalsFor(context.Background(), "run-x"); got != nil {
+		t.Fatalf("sem registo composto devia devolver nil, veio %+v", got)
 	}
 }

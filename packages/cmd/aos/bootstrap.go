@@ -439,6 +439,10 @@ type Node struct {
 	// (AOS-021): uma aprovação concluída produz um GRANT persistido, amarrado à preview
 	// da acção, em vez de evaporar. nil quando o four-eyes não está composto.
 	ApprovalBroker *integration.ApprovalBroker
+	// PendingApprovals é o registo DURÁVEL das tool calls escaladas que aguardam aval
+	// humano — o que a superfície de administração expõe ao operador (polling). nil
+	// quando o four-eyes não está composto.
+	PendingApprovals *integration.PendingApprovals
 	// Promotion é o promotion controller (AOS-159/AOS-206): a via SANCIONADA
 	// [hitl.NewProductionRatificationGate] (freshness + nonce-store durável FORÇADOS) que
 	// interpõe a ratificação humana assinada entre o canary e a produção de um artefacto de
@@ -1458,19 +1462,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	success = true // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	return &Node{
-		Runtime:        sec,
-		Steer:          steer,
-		FourEyes:       foureyes,
-		ApprovalBroker: approvalBroker,
-		Promotion:      promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
-		Authority:      authority, // nil no modo endurecido (a autoridade corre fora do processo)
-		Verifier:       verifier,
-		SteerAuth:      steerAuth,
-		EventStore:     es,
-		WORM:           worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
-		IdentityMode:   identityMode,
-		Tracer:         tracer,
-		Ingestion:      ingestion,
+		Runtime:          sec,
+		Steer:            steer,
+		FourEyes:         foureyes,
+		ApprovalBroker:   approvalBroker,
+		PendingApprovals: pendingApprovals,
+		Promotion:        promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
+		Authority:        authority, // nil no modo endurecido (a autoridade corre fora do processo)
+		Verifier:         verifier,
+		SteerAuth:        steerAuth,
+		EventStore:       es,
+		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
+		IdentityMode:     identityMode,
+		Tracer:           tracer,
+		Ingestion:        ingestion,
 
 		Checkpointer: checkpointer, // nil quando a execução durável está desligada
 		Capturer:     capturer,     // (os três são compostos/omitidos EM CONJUNTO)

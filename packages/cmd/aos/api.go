@@ -671,6 +671,58 @@ type runStateResponse struct {
 	Error      string `json:"error,omitempty"`
 	FinalText  string `json:"final_text,omitempty"`
 	Turns      int    `json:"turns,omitempty"`
+	// PendingApprovals são as tool calls ESCALADAS que aguardam aval humano (AOS-021).
+	// É o que o operador consulta por POLLING para saber o que decidir; a preview é o
+	// valor que cada perna de aprovação assina em POST /runs/{id}/approve. Ausente
+	// quando não há nada por decidir (ou o four-eyes não está composto).
+	PendingApprovals []pendingApprovalWire `json:"pending_approvals,omitempty"`
+}
+
+// pendingApprovalWire é a face de wire de uma aprovação pendente. Descreve O QUE vai
+// executar (tool/capability/recurso) para o humano decidir com contexto.
+//
+// NÃO transporta o Input da tool — o payload pode conter dados sensíveis e não deve
+// atravessar a superfície de administração. A amarra criptográfica é a `preview`, que já
+// cobre o input POR HASH: assinar a preview é assinar exactamente aquela acção com
+// exactamente aqueles argumentos (WYSIWYS).
+type pendingApprovalWire struct {
+	StepID         string `json:"step_id"`
+	Turn           int    `json:"turn"`
+	ToolID         string `json:"tool_id"`
+	Capability     string `json:"capability"`
+	ResourceType   string `json:"resource_type,omitempty"`
+	ResourceValue  string `json:"resource_value,omitempty"`
+	ResourceRegion string `json:"resource_region,omitempty"`
+	Preview        string `json:"preview"` // base64 — o digest a assinar em /approve
+}
+
+// pendingApprovalsFor resolve as aprovações pendentes de um run para a resposta. Devolve
+// nil quando o four-eyes não está composto ou nada está por decidir. Uma falha de leitura
+// NÃO quebra a resposta de estado: o pendente é informação de administração, e degradar
+// para "sem pendentes" é preferível a negar a consulta do estado do run (o operador
+// percebe pela ausência; o run continua suspenso e nada executa).
+func (h *apiHandler) pendingApprovalsFor(ctx context.Context, runID string) []pendingApprovalWire {
+	if h.node.PendingApprovals == nil {
+		return nil
+	}
+	recs, err := h.node.PendingApprovals.ListForRun(ctx, runID)
+	if err != nil || len(recs) == 0 {
+		return nil
+	}
+	out := make([]pendingApprovalWire, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, pendingApprovalWire{
+			StepID:         r.StepID,
+			Turn:           r.Turn,
+			ToolID:         r.ToolID,
+			Capability:     r.Capability,
+			ResourceType:   r.ResourceType,
+			ResourceValue:  r.ResourceValue,
+			ResourceRegion: r.ResourceRegion,
+			Preview:        base64.StdEncoding.EncodeToString(r.Preview),
+		})
+	}
+	return out
 }
 
 // handleGet devolve o estado/desfecho de um run. NÃO-ENUMERÁVEL: um RunID que esta réplica
@@ -709,6 +761,9 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		if oc.Err != nil {
 			resp.Error = oc.Err.Error()
 		}
+		// Um run TERMINADO pode ter deixado pendentes por decidir (ex.: expirou o TTL e
+		// voltou a correr sem a acção). Expô-los mantém o histórico legível ao operador.
+		resp.PendingApprovals = h.pendingApprovalsFor(r.Context(), runID)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -718,7 +773,14 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
 				return
 			}
-			writeJSON(w, http.StatusOK, runStateResponse{RunID: runID, Status: "in_progress"})
+			// É AQUI que o operador vê o que tem de aprovar: um run suspenso em
+			// waiting_on_human continua "in_progress" e traz a lista de pendentes com a
+			// preview a assinar em POST /runs/{id}/approve (AOS-021, polling).
+			writeJSON(w, http.StatusOK, runStateResponse{
+				RunID:            runID,
+				Status:           "in_progress",
+				PendingApprovals: h.pendingApprovalsFor(r.Context(), runID),
+			})
 			return
 		}
 	}
