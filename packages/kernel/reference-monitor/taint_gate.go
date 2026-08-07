@@ -138,6 +138,21 @@ func (g TaintGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 	// Capability privilegiada: SÓ autorização trusted a satisfaz (ADR-005). O taint
 	// ausente/desconhecido resolve untrusted (fail-closed, ver taint.ParseLabel).
 	if taint.ParseLabel(call.Context.Taint).IsUntrusted() {
+		// ÚNICA EXCEPÇÃO (ADR-013/ADR-016): existe PROVA VERIFICADA de que humanos com
+		// autoridade assumiram ESTA call concreta — o caminho legítimo de destravar uma
+		// acção escalada. Note-se o que NÃO acontece aqui: o taint NÃO muda. A call
+		// continua marcada untrusted no registo, porque foi mesmo originada pelo modelo;
+		// o que a liberta é a responsabilidade humana, não uma reetiquetagem.
+		//
+		// A prova está num campo NÃO-EXPORTADO, escrito só pelo [ApprovalGate] deste
+		// pacote após verificar assinaturas, dual-control, frescura e a amarra à
+		// [ApprovalPreview] desta call. Nenhum pacote externo a consegue colocar — se a
+		// excepção dependesse de um campo exportado (ou do rótulo de taint, que é
+		// CONVENÇÃO e não estrutura), qualquer componente poderia auto-aprovar-se e o
+		// bypass do gate seria invisível no log.
+		if call.humanApproved != nil {
+			return allow, nil
+		}
 		return HookResult{
 			Decision: HookDeny,
 			Reason:   "autorizacao untrusted nao pode originar tool call privilegiada (ADR-005)",

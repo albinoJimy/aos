@@ -120,6 +120,23 @@ type Call struct {
 	Credential string
 	// Input é o payload opaco entregue à tool após permit.
 	Input []byte
+	// ApprovalEvidence é a evidência BRUTA de aprovação humana (ADR-013/ADR-016) que o
+	// chamador anexa quando uma acção escalada foi aprovada. É OPACA e UNTRUSTED: nada
+	// nela é acreditado até o [ApprovalGate] a verificar contra a preview desta call. Um
+	// chamador não pode "trazer" uma aprovação — só bytes a verificar. Vazia ⇒ sem
+	// aprovação (o caso normal). Nunca é gravada no audit (pode conter material de
+	// credencial); só a atribuição resultante entra no registo.
+	ApprovalEvidence []byte
+
+	// humanApproved é a PROVA VERIFICADA de aprovação humana desta call. NÃO-EXPORTADO
+	// DE PROPÓSITO: só o [ApprovalGate] (deste pacote) a escreve, e só após verificação
+	// criptográfica ligada à [ApprovalPreview] — nenhum pacote externo a consegue forjar,
+	// o mesmo mecanismo estrutural que torna [Decision.permit] não-forjável. É a ÚNICA
+	// excepção que o [TaintGate] aceita à barreira «untrusted não comanda» (AOS-069):
+	// o taint da call PERMANECE untrusted (ela foi mesmo originada pelo modelo, e o
+	// registo tem de continuar a dizê-lo) — o que muda é existir prova de que um humano
+	// com autoridade assumiu ESTA acção. Ler de fora via [Call.HumanApproval].
+	humanApproved *ApprovalProof
 }
 
 // fingerprint calcula uma impressão determinística do call que liga o Permit à
