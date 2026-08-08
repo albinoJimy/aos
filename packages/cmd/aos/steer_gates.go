@@ -132,6 +132,21 @@ func (g *runGate) EscalateToHuman(ctx context.Context, reason string) error {
 	return g.m.Transition(ctx, state.WaitingOnHuman, state.TransitionEvent{Reason: reason})
 }
 
+// resumeIfWaiting repõe em `running` um run que o log diz estar À ESPERA DE HUMANO. É o
+// que fecha a RETOMA (AOS-021) do lado da máquina de estados: a suspensão é durável, pelo
+// que a reconstrução no arranque devolve `waiting_on_human` — e sem esta reposição um run
+// retomado que voltasse a escalar tentaria waiting_on_human→waiting_on_human, um par que a
+// tabela não tem, e morreria como FALHADO em vez de suspender outra vez.
+//
+// Só transita QUANDO o estado é mesmo esse: um run novo (ready) ou já a correr não é
+// tocado, e o stream/replay ficam byte-idênticos.
+func (g *runGate) resumeIfWaiting(ctx context.Context) error {
+	if g.m.Current() != state.WaitingOnHuman {
+		return nil
+	}
+	return g.ResumeFromHuman(ctx, "retoma explicita apos aval humano (AOS-021)")
+}
+
 // ResumeFromHuman materializa waiting_on_human→running: o run volta a correr depois de o
 // aval humano ser decidido (aprovado, ou expirado — decisão do dono: ao fim do TTL o run
 // volta a running com a call negada, e o agente pode tentar outro caminho).

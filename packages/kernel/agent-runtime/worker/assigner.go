@@ -73,6 +73,33 @@ func (a *Assigner) Release(runID string) {
 	a.mu.Unlock()
 }
 
+// Relinquish larga a posse EM-PROCESSO **e** anuncia no log durável que esta réplica
+// deixou de servir o run ([durable.LeaseManager.Release]), tornando-o reclamável já em
+// vez de ao fim do TTL.
+//
+// Usa-se quando a paragem é DELIBERADA e o run vai ser re-hospedado a seguir — o caso
+// da suspensão à espera de aval humano (AOS-021), em que a retoma na MESMA réplica
+// bateria em [durable.ErrLeaseHeld] durante todo o TTL. Para scale-in/handoff, [Release]
+// (largar só em-processo, deixar expirar) continua a ser o correcto: quem assume não
+// precisa de imediatismo e o TTL é a garantia de liveness.
+//
+// A posse em-processo é largada MESMO que o anúncio durável falhe — a réplica parou de
+// servir de qualquer modo; o erro é devolvido para quem chama decidir (o pior caso é
+// degradar para a semântica de sempre: esperar o TTL). Idempotente.
+func (a *Assigner) Relinquish(ctx context.Context, runID string) error {
+	if runID == "" {
+		return ErrEmptyRunID
+	}
+	a.mu.Lock()
+	lease, held := a.owned[runID]
+	delete(a.owned, runID)
+	a.mu.Unlock()
+	if !held {
+		return nil
+	}
+	return a.leases.Release(ctx, lease)
+}
+
 // Requeue larga a posse de uma partição cujo worker PERDEU o lease a meio
 // ([ErrLeaseLost]) — sinónimo de [Release] com a intenção semântica de "disponível
 // para outra réplica retomar". A retoma da outra réplica é resume-from-step (sem

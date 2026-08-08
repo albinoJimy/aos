@@ -497,6 +497,19 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			return
 		}
 		defer s.node.stateGates.Close(rs.runID)
+		// RETOMA (AOS-021): a suspensão é DURÁVEL, pelo que a reconstrução acima devolve
+		// `waiting_on_human` num run que está a ser retomado. Hospedá-lo é, por definição,
+		// voltar a corrê-lo — repõe-se `running`. Sem isto, uma segunda escalada (o caso
+		// normal: o agente pede outra acção de risco no turno seguinte) tentaria
+		// waiting_on_human→waiting_on_human e o run morreria como FALHADO.
+		if gate := s.node.stateGates.resolveGate(rs.runID); gate != nil {
+			if err := gate.resumeIfWaiting(ctx); err != nil {
+				s.mu.Lock()
+				rs.err = fmt.Errorf("aos: repor o run %q em execucao na retoma (AOS-021): %w", rs.runID, err)
+				s.mu.Unlock()
+				return
+			}
+		}
 	}
 
 	res, _, err := s.node.Runtime.Run(ctx, goal, nil)
@@ -590,7 +603,18 @@ func (s *NodeService) heartbeat(ctx context.Context, runID string, lease durable
 // revogação, AOS-018), cancela o contexto do run e move-o de em-curso para terminado,
 // fechando o seu done. É o ponto único de saída de um run do registo de em-curso.
 func (s *NodeService) finish(rs *runState) {
-	s.assigner.Release(rs.runID)
+	if rs.suspended {
+		// SUSPENSO (AOS-021): a paragem é deliberada e o run VAI ser re-hospedado pela
+		// retoma. Anuncia-se o largar no log durável — senão o lease continua vivo e o
+		// POST /resume bate em ErrRunLeaseHeldElsewhere durante todo o TTL, na própria
+		// réplica que suspendeu o run. Uma falha do anúncio degrada para a semântica de
+		// sempre (esperar o TTL), pelo que não é fatal: regista-se e segue.
+		if err := s.assigner.Relinquish(context.Background(), rs.runID); err != nil {
+			s.log("largar o lease do run suspenso %q falhou (a retoma tera de esperar o TTL): %v", rs.runID, err)
+		}
+	} else {
+		s.assigner.Release(rs.runID)
+	}
 	if rs.cancel != nil {
 		rs.cancel()
 	}

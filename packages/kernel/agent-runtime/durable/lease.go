@@ -19,6 +19,18 @@ const EventTypeLeaseClaimed = "lease.claimed"
 // (renovação de TTL) do lease corrente, sem mintar novo token.
 const EventTypeLeaseRenewed = "lease.renewed"
 
+// EventTypeLeaseReleased é o tipo canónico do evento em que o DETENTOR do lease
+// corrente anuncia que DEIXOU de servir o run, tornando-o imediatamente reclamável em
+// vez de esperar o TTL. Não minta token e não rouba nada: só o detentor do token
+// corrente o pode escrever, e o efeito é encurtar a SUA própria expiração.
+//
+// PORQUE EXISTE (AOS-021): sem ele, um run SUSPENSO à espera de aval humano continua a
+// segurar um lease vivo que ninguém está a servir — e a retoma, mesmo na réplica que o
+// suspendeu, bate em [ErrLeaseHeld] até o TTL passar. O largar por TTL é a semântica
+// certa para uma réplica que MORREU (não há quem anuncie); para uma que PAROU de propósito,
+// o anúncio explícito é a semântica certa.
+const EventTypeLeaseReleased = "lease.released"
+
 // leaseStreamPrefix namespaceia o stream de lease de um run ("lease:" + run_id),
 // SEPARANDO-O do stream de negócio do run (stream_id == run_id, onde vivem as
 // transições de AOS-017 e o ledger de AOS-014). A separação é o que permite usar a
@@ -38,6 +50,7 @@ func leaseStream(runID string) string { return leaseStreamPrefix + runID }
 const (
 	leaseClaimStepPrefix = "lease-claim-"
 	leaseRenewStepPrefix = "lease-hb-"
+	leaseRelStepPrefix   = "lease-rel-"
 )
 
 // Clock é o relógio INJECTÁVEL do lease — a fonte do wall-clock que decide a
@@ -233,7 +246,7 @@ func (m *LeaseManager) readLeaseState(ctx context.Context, runID string) (leaseS
 	var st leaseState
 	for i := range events {
 		e := events[i]
-		if e.Type != EventTypeLeaseClaimed && e.Type != EventTypeLeaseRenewed {
+		if e.Type != EventTypeLeaseClaimed && e.Type != EventTypeLeaseRenewed && e.Type != EventTypeLeaseReleased {
 			continue
 		}
 		st.lastSeq = e.Seq
@@ -250,6 +263,14 @@ func (m *LeaseManager) readLeaseState(ctx context.Context, runID string) (leaseS
 			st.ttlNanos = rec.TTLNanos
 			st.expiresUnixNano = rec.ExpiresUnixNano
 		case rec.Token == st.token:
+			// LARGAR do token corrente: ENCURTA a expiração (o detentor anunciou que parou).
+			// É o único caso em que a expiração recua — e só o próprio detentor a recua,
+			// sobre o SEU token. Um claim posterior (token maior) já a substituiu por
+			// inteiro no ramo acima, pelo que um released tardio não afecta o novo detentor.
+			if e.Type == EventTypeLeaseReleased {
+				st.expiresUnixNano = rec.ExpiresUnixNano
+				continue
+			}
 			// Heartbeat do token corrente: estende a expiração (toma a mais recente).
 			if rec.ExpiresUnixNano > st.expiresUnixNano {
 				st.expiresUnixNano = rec.ExpiresUnixNano
@@ -346,6 +367,73 @@ func (m *LeaseManager) Claim(ctx context.Context, runID string) (Lease, error) {
 		}, nil
 	}
 	return Lease{}, ErrClaimContention
+}
+
+// Release LARGA explicitamente o lease: o detentor do token corrente anuncia que deixou
+// de servir o run, tornando-o IMEDIATAMENTE reclamável em vez de esperar o TTL.
+//
+// Não minta token, não rouba e não revoga o lease de ninguém: o único efeito é encurtar
+// a expiração DO PRÓPRIO token de quem escreve. Um lease já superado por um claim
+// posterior devolve [ErrLeaseSuperseded] — largar tarde não pode expulsar o novo
+// detentor. Já expirado, ou sem lease no stream, é NO-OP (idempotente): o run já é
+// reclamável e escrever um facto redundante não acrescenta verdade.
+//
+// Motivação (AOS-021): um run SUSPENSO à espera de aval humano não está a ser servido
+// por ninguém. Deixá-lo a segurar um lease vivo faz a própria retoma bater em
+// [ErrLeaseHeld] durante todo o TTL — a réplica ficaria impedida de re-hospedar o run
+// que ela mesma parou.
+func (m *LeaseManager) Release(ctx context.Context, lease Lease) error {
+	if lease.RunID == "" {
+		return ErrEmptyRunID
+	}
+	if !lease.Token.Valid() {
+		return ErrLeaseSuperseded
+	}
+	for attempt := 0; attempt <= m.retries; attempt++ {
+		st, err := m.readLeaseState(ctx, lease.RunID)
+		if err != nil {
+			return err
+		}
+		if !st.exists {
+			return nil // nada a largar
+		}
+		if st.token != lease.Token.Value() {
+			return ErrLeaseSuperseded
+		}
+		now := m.clock.Now()
+		if now.UnixNano() >= st.expiresUnixNano {
+			return nil // já reclamável — largar de novo não muda nada
+		}
+		rec := leaseRecord{
+			RunID:      lease.RunID,
+			Token:      st.token,
+			Worker:     m.worker,
+			Kind:       "released",
+			TTLNanos:   int64(m.ttl),
+			AtUnixNano: now.UnixNano(),
+			// Expira AGORA: é isto que torna o run reclamável já.
+			ExpiresUnixNano: now.UnixNano(),
+		}
+		payload, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		_, err = m.store.Append(ctx, leaseStream(lease.RunID), eventstore.EventInput{
+			Type:     EventTypeLeaseReleased,
+			Payload:  payload,
+			RunID:    lease.RunID,
+			StepID:   leaseRelStepPrefix + newNonce(),
+			Producer: m.producer,
+		}, eventstore.WithExpectedSeq(st.lastSeq))
+		if err != nil {
+			if isConcurrencyConflict(err) {
+				continue // escrita concorrente: relê e reavalia
+			}
+			return err
+		}
+		return nil
+	}
+	return ErrClaimContention
 }
 
 // Heartbeat renova o TTL do lease SE ele ainda for o corrente (token == corrente) e
