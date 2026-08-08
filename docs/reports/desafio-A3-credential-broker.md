@@ -276,6 +276,8 @@ Hoje são independentes por desenho declarado: a injecção autoriza-se por **po
 
 - [`desafio-A4-orquestrador.md`](./desafio-A4-orquestrador.md) — o quarto da série.
 
+- [`desafio-A5-escalonador.md`](./desafio-A5-escalonador.md)
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_80dad371-e91/journal.jsonl`.

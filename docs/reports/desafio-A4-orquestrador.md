@@ -233,6 +233,8 @@ Uma nota de acção que não é «pequena» e não recomendo agora: acrescentar 
 - [`desafio-A2-progress-surface.md`](./desafio-A2-progress-surface.md)
 - [`desafio-A3-credential-broker.md`](./desafio-A3-credential-broker.md)
 
+- [`desafio-A5-escalonador.md`](./desafio-A5-escalonador.md)
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_ea5c25f0-cb2/journal.jsonl`.

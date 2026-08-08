@@ -202,6 +202,8 @@ incarnação na retoma.
 
 - [`desafio-A4-orquestrador.md`](./desafio-A4-orquestrador.md) — o quarto da série.
 
+- [`desafio-A5-escalonador.md`](./desafio-A5-escalonador.md)
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_5587aefe-a93/journal.jsonl`

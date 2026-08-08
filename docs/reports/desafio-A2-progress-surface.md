@@ -221,6 +221,8 @@ Registado para ninguém repetir:
 
 - [`desafio-A4-orquestrador.md`](./desafio-A4-orquestrador.md) — o quarto da série.
 
+- [`desafio-A5-escalonador.md`](./desafio-A5-escalonador.md)
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_951d3a23-2b8/journal.jsonl`
