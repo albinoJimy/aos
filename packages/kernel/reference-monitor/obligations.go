@@ -31,7 +31,34 @@ const (
 	// O PEP PROPAGA-A na [Decision.Obligations] para o consumidor a impor (viaja
 	// com a decisão); não transforma os args.
 	ObligationTTL = "ttl"
+	// ObligationAutonomy — o overlay de autonomia (AOS-087/ADR-013) diz QUE oversight
+	// o par (agente, domínio) × classe de risco exige (Params["oversight"]:
+	// run/sample/suggest/confirm/batch). O PEP impõe-a: um oversight que exige HUMANO só
+	// liberta o efeito com prova de aprovação VERIFICADA nesta call; os restantes modos
+	// não transformam nada (viajam para o audit).
+	//
+	// Antes de existir, esta obligation caía no default fail-closed: QUALQUER permit
+	// vindo do oráculo de autonomia era negado a jusante por "obrigação desconhecida".
+	// Nunca se notou porque o veredicto habitual do oráculo é `escalate`, que
+	// curto-circuita a cadeia ANTES do enforcement — só ao fechar o ciclo de aprovação
+	// (AOS-021), com um permit a chegar ao fim, é que o efeito ficou observável.
+	ObligationAutonomy = "autonomy"
 )
+
+// paramOversight é a chave do modo de oversight na [ObligationAutonomy].
+const paramOversight = "oversight"
+
+// oversightRequiresHuman enumera os modos de oversight que EXIGEM um humano no ciclo
+// (ADR-013). Vocabulário fechado: um modo desconhecido é tratado como exigente (o PEP
+// não afrouxa perante um valor que não reconhece).
+func oversightRequiresHuman(mode string) bool {
+	switch mode {
+	case "run", "sample":
+		return false
+	default: // suggest, confirm, batch e qualquer valor não reconhecido
+		return true
+	}
+}
 
 // redactedMarker é o valor determinístico que substitui um campo redigido. Não
 // revela o comprimento nem qualquer fragmento do valor original.
@@ -64,10 +91,33 @@ func enforceObligations(call *Call, obligations []Obligation) (string, bool) {
 			if reason, ok := enforceRedactPII(call, ob); !ok {
 				return reason, false
 			}
+		case ObligationAutonomy:
+			if reason, ok := enforceAutonomy(call, ob); !ok {
+				return reason, false
+			}
 		default:
 			// Fail-closed: uma obrigação que o PEP não sabe cumprir não liberta o efeito.
 			return fmt.Sprintf("obrigacao %q desconhecida/nao-satisfazivel: efeito negado (fail-closed)", ob.Type), false
 		}
+	}
+	return "", true
+}
+
+// enforceAutonomy impõe o oversight de autonomia no PEP (AOS-087, AC4). Um modo que
+// exige humano no ciclo só liberta o efeito se ESTA call trouxer prova de aprovação
+// VERIFICADA — o campo não-exportado que só o [ApprovalGate] escreve. Sem ela, deny.
+//
+// É defesa em profundidade DELIBERADA: o PDP já rebaixa para escalate quando não há
+// gate humano cumprido, e aqui o PEP volta a exigi-lo, agora sobre a prova concreta
+// anexada à call. Uma decisão que chegue com "confirm" e sem prova é, por definição,
+// uma decisão a que faltou o gate — e o PEP não a liberta.
+func enforceAutonomy(call *Call, ob Obligation) (string, bool) {
+	mode := strings.TrimSpace(ob.Params[paramOversight])
+	if !oversightRequiresHuman(mode) {
+		return "", true // corre sem gate (ou é amostrado post-hoc): nada a impor aqui
+	}
+	if call.humanApproved == nil {
+		return fmt.Sprintf("oversight de autonomia %q exige aval humano e a call nao traz aprovacao verificada", mode), false
 	}
 	return "", true
 }

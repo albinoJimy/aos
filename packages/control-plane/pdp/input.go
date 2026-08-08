@@ -83,6 +83,19 @@ type DecisionContext struct {
 	// tratada como "danger" (fail-closed, o pior caso). Não afecta a política Cedar
 	// base nem as decisões sem oráculo de autonomia.
 	RiskClass string
+	// HumanGateSatisfied diz que o gate humano que o oversight de autonomia exigiria JÁ
+	// ocorreu para ESTA acção concreta — uma aprovação four-eyes verificada, amarrada à
+	// preview da call, de uso-único e dentro do TTL (AOS-021/AOS-162).
+	//
+	// NÃO é auto-declarável: o adaptador do RM só a põe a true a partir de
+	// [rm.Call.HumanApproval], um campo NÃO-EXPORTADO que só o ApprovalGate escreve depois
+	// de verificar a evidência. Nem o modelo nem o conteúdo untrusted lhe chegam.
+	//
+	// Efeito: a autonomia deixa de REBAIXAR o permit para escalate — porque o escalate
+	// significa "requer gate humano" e o gate humano aconteceu. Não converte deny em permit,
+	// não altera a política Cedar base e não toca no taint: uma acção negada por qualquer
+	// outra razão continua negada.
+	HumanGateSatisfied bool
 }
 
 // Input é o pedido de decisão submetido a [PDP.Decide] (request do contrato C1).

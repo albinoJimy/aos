@@ -122,6 +122,11 @@ func inputFromCall(call *rm.Call) Input {
 			BudgetTokensRemaining: call.Context.BudgetTokensRemaining,
 			Reversibility:         call.Context.Reversibility,
 			Sensitivity:           call.Context.Sensitivity,
+			// AOS-021: prova NÃO-FORJÁVEL de que o gate humano exigido pela autonomia já
+			// ocorreu para esta acção. Vem de um campo não-exportado do Call que só o
+			// ApprovalGate escreve após verificar a evidência contra o broker (amarra à
+			// preview, uso-único, TTL) — nunca do conteúdo do pedido.
+			HumanGateSatisfied: call.HumanApproval() != nil,
 		},
 	}
 }

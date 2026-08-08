@@ -70,10 +70,22 @@ func (p *PDP) applyAutonomy(ctx context.Context, in Input, base Decision) Decisi
 	}
 	out.Obligations = append(append([]Obligation(nil), base.Obligations...), ob)
 
-	if mode.RequiresHumanGate() {
+	switch {
+	case mode.RequiresHumanGate() && in.Context.HumanGateSatisfied:
+		// O gate humano exigido JÁ ocorreu para esta acção concreta (aprovação four-eyes
+		// verificada, amarrada à preview, de uso-único e dentro do TTL). Rebaixar de novo
+		// tornaria a aprovação inútil: o run escalaria para sempre e aprovar nunca
+		// satisfaria quem exigiu a aprovação. Mantém-se o permit de BASE — a autonomia não
+		// concede nada, só deixa de acrescentar o oversight que já foi cumprido; a call
+		// continua a atravessar taint, escopo, orçamento e egress.
+		out.Reason = base.Reason + " | autonomia " + level.String() + " x " + class.String() +
+			" -> " + mode.String() + " (gate humano CUMPRIDO)"
+		ob.Params["human_gate"] = "satisfied"
+		out.Obligations[len(out.Obligations)-1] = ob
+	case mode.RequiresHumanGate():
 		out.Effect = Escalate
 		out.Reason = "autonomia " + level.String() + " x " + class.String() + " -> " + mode.String() + " (gate humano)"
-	} else {
+	default:
 		out.Reason = base.Reason + " | autonomia " + level.String() + " x " + class.String() + " -> " + mode.String()
 	}
 	span.SetAttribute(attrAutonomyEffectFinal, string(out.Effect))
