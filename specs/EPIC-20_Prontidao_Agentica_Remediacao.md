@@ -54,7 +54,7 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | AOS-247 | Guarda de produção no fallback de credencial dev do GW | fix | S | **P0** | — | F5 |
 | AOS-248 | Banner de verdade: budget/broker/modelo/autonomia + `WithSink` no autonomy registry | fix | S | **P0** | — | F11, F14 |
 | AOS-249 | Higiene Vault DSAR: validação de esquema + renovação de token | fix | M | P1 | — | F6 |
-| AOS-250 | Clamp de `MaxTurns` no submit | fix | S | P1 | — | F15 |
+| AOS-250 | Clamp de `MaxTurns` no submit (`AOS_MAX_TURNS`) | fix | S | **P0** | — | F15 |
 | AOS-251 | Breaker efectivo: `observeAction` ligado + claim `ready→running` no arranque do run + teste de trip | fix | M | **P0** | — | F3 |
 | AOS-252 | Estados terminais duráveis (`complete`/`failed`) + caller de `CheckDeadlines` | feature | M | **P0** | — | F4 |
 | AOS-253 | Crash-resume: varredura de runs órfãos + `Resumer` composto | feature | L | P1 | AOS-252 | F9, F13 |
@@ -80,6 +80,9 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | AOS-273 | **ADR-022** — `plan_version` bump + migração (`planmigrate`) + golden-sets/adversariais das extensões | test | M | P2 | AOS-270..272 | — |
 | AOS-274 | Produtor de SLOs/alertas em runtime (loop avaliador no nó) | feature | M | P2 | — | F8 |
 | AOS-275 | Promotion controller: endpoint `POST /promote` autenticado | feature | M | P2 | AOS-096 | F7 |
+| AOS-276 | Keypool do GW: fusível RPM de 120 chamadas/vida — janela real **ou** tecto declarado no LiteLLM | fix | S | **P0** | D11 | F17 |
+| AOS-277 | Knobs de ingresso por env (token-bucket + tecto in-flight) + teste do 429 | feature | S | P1 | — | A5-passo 2 |
+| AOS-278 | Estágio de identidade real do GW (substituir o stub `nodeModelAuthn`) | feature | M | P2 | D4/EPIC-16 | F18 |
 
 ---
 
@@ -177,14 +180,14 @@ Validação de esquema fail-closed; renovação periódica do token (ou falha ru
 ## AOS-250 — Clamp de `MaxTurns` no submit
 
 ### Contexto
-**F15 (baixa).** `max_turns` vem do corpo do `POST /runs` sem limite superior (`api.go:525`); hoje é um dos poucos travões reais de custo. Fonte: desafio A1 (risco 8).
+**F15 (ALTA, promovido pelo desafio A5).** `max_turns` vem do corpo do `POST /runs` sem limite superior (`api.go:610` copia cru; `WithMaxTurns` tem zero chamadores de produção). Composto com o fusível do keypool (F17/AOS-276), **um único `POST /runs {max_turns: 200}` esgota o `LimitRPM=120` e desliga o nó para todos os runs** — o rate-limit de ingresso não protege (1 pedido), o tecto de in-flight não protege (1 run), o breaker está inerte (F3). Fontes: desafios A1 (risco 8) e A5 (F2).
 
 ### Objectivo
-Tecto de operador para `MaxTurns`, com default sensato e clamp auditado.
+Tecto de operador para `MaxTurns` na fronteira de ingresso — node-local, sem tocar em módulos proibidos.
 
 ### Critérios de Aceitação
-- [ ] Env de tecto (ex.: `AOS_MAX_TURNS_CEILING`) na tabela AOS-203; pedido acima ⇒ clamp declarado ou 422 (decisão registada).
-- [ ] Teste de API nos dois modos.
+- [ ] `AOS_MAX_TURNS` (default 16) na tabela AOS-203; pedido acima ⇒ clamp declarado na resposta/log, ou 422 (decisão registada no ticket).
+- [ ] Teste de API: `max_turns=200` ⇒ clamp aplicado; ausente ⇒ default; inválido ⇒ fail-closed.
 
 ### Estado
 **ABERTO.**
@@ -653,15 +656,71 @@ Superfície de submissão de ratificação no molde de `/approve` (admissão do 
 
 ---
 
+## AOS-276 — Keypool do GW: fusível RPM de 120 chamadas por vida do processo
+
+### Contexto
+**F17 (alta).** `modelgatewaywiring.go:135-137` compõe o gateway com uma conta `LimitRPM: 120, LimitTPM: 200_000` e o contador **nunca reinicia** — `keypool.go:171` incrementa a cada `Select`, `saturated()` (`keypool.go:72-73`) aos 120, e `gateway.go:520-523` propaga `ErrNoCapacity` **fail-closed para sempre**. À 121.ª chamada ao modelo desde o arranque (~8 runs com `MaxTurns=16`), tudo falha até reiniciar — brownout permanente e silencioso, sem métrica de saturação, indistinguível de avaria do provider. O comentário `keypool.go:67` diz «janela corrente» — a janela não existe. Fonte: desafio A5 (F1, verificado à mão).
+
+### Objectivo
+Eliminar o fusível: ou o pool ganha uma janela real, ou o tecto é declarado como pertencendo ao gateway externo (D11 — recomendação do desafio: LiteLLM).
+
+### Critérios de Aceitação
+- [ ] **Opção A (janela real):** relógio injectável (padrão `WithClock` já existente no GW) que zera os contadores ao cruzar o minuto; teste prova recuperação após a janela.
+- [ ] **Opção B (tecto externo):** `LimitRPM/LimitTPM: 0` (o contrato diz `<=0 = ilimitado`) + linha na tabela AOS-203 a declarar que o rate-limit vive no LiteLLM externo.
+- [ ] Qualquer das opções: saturação expõe sinal observável (span/métrica) — nunca brownout silencioso; teste de nó com >120 chamadas não morre.
+- [ ] A decisão A/B fica registada (D11).
+
+### Estado
+**ABERTO.**
+
+---
+
+## AOS-277 — Knobs de ingresso por env (token-bucket + tecto de in-flight)
+
+### Contexto
+O desafio A5 corrigiu o «sem backpressure» do relatório: o ingresso **já tem** token-bucket + tecto de runs em voo com 429 (`api.go:534-546`) — o que falta é o operador poder afiná-los. As três opções existem, sem env.
+
+### Objectivo
+Expor os limites de ingresso na superfície AOS-203, com defaults declarados e teste do 429.
+
+### Critérios de Aceitação
+- [ ] Envs (ex.: `AOS_INGRESS_RATE`, `AOS_INGRESS_BURST`, `AOS_INGRESS_MAX_INFLIGHT`) lidas uma vez no arranque, fail-closed em valor inválido, na tabela AOS-203.
+- [ ] Teste de API: burst excedido ⇒ 429; in-flight no tecto ⇒ 429; dentro dos limites ⇒ 201/202.
+- [ ] Banner declara os limites em vigor.
+
+### Estado
+**ABERTO.**
+
+---
+
+## AOS-278 — Estágio de identidade real do GW (substituir o stub allow-all)
+
+### Contexto
+**F18 (média).** `production.go:178` exige `Authn` fail-closed mas só guarda contra nil; o nó passa `nodeModelAuthn{}` (`modelgatewaywiring.go:93-103`), que forja o principal e devolve allow incondicional. O estágio real (`pipeline/authn`, valida EdDSA + raiz humana ADR-003) tem zero importadores não-teste. Declarado no código como dívida de AOS-057 — liga-se ao eixo D4. Fonte: desafio A5 (achado E).
+
+### Objectivo
+Ligar o estágio `pipeline/authn` real na composição do GW, com o principal propagado (pré-requisito parcial de AOS-265).
+
+### Critérios de Aceitação
+- [ ] `nodeModelAuthn{}` substituído pelo estágio real (ou o stub passa a ser recusado em `AOS_MODE=production`).
+- [ ] Atribuição correcta: o principal do pedido ao GW é o do run, não forjado.
+- [ ] Teste: credencial inválida ⇒ deny atribuível; credencial válida ⇒ pipeline segue.
+- [ ] Enquanto não ligado: banner declara «authn do GW: stub (dívida AOS-057/D4)».
+
+### Estado
+**ABERTO** (depende de D4/EPIC-16 para a raiz humana real).
+
+---
+
 ## Mapa de dependências desta epic
 
 ```
-P0 (risco activo):  AOS-245 · AOS-246 · AOS-247 · AOS-248 · AOS-251 · AOS-252 · AOS-255
-P1:                 AOS-249 · AOS-250 · AOS-253 (dep. 252) · AOS-256 → AOS-257 → AOS-258
-                    AOS-261 → AOS-262 · AOS-266 · AOS-269
+P0 (risco activo):  AOS-245 · AOS-246 · AOS-247 · AOS-248 · AOS-250 · AOS-251 · AOS-252 · AOS-255 · AOS-276
+P1:                 AOS-249 · AOS-253 (dep. 252) · AOS-256 → AOS-257 → AOS-258
+                    AOS-261 → AOS-262 · AOS-266 · AOS-269 · AOS-277
 P2 (c/ decisão):    AOS-254 (dep. 252) · AOS-259 (D2) → AOS-260 (D1) · AOS-263 (D4/D5/D6)
                     AOS-264 (D7/D8) → AOS-265 · AOS-267 · AOS-268 (D4/AOS-156)
-                    AOS-270 → AOS-271/272 → AOS-273 · AOS-274 · AOS-275 (AOS-096)
+                    AOS-270 → AOS-271/272 → AOS-273 · AOS-274 · AOS-275 (AOS-096) · AOS-278 (D4)
 ```
 
-Cadeia causal registada no relatório §8: **F1 → F2 → F3 → F4 → F5** primeiro — fechar wiring novo (budget, exaustão) sobre esta base partida replica o padrão «capacidade verde, efeito zero».
+Cadeia causal registada no relatório §8: **F1 → F2 → F3 → F4 → F5** primeiro — fechar wiring novo (budget, exaustão) sobre esta base partida replica o padrão «capacidade verde, efeito zero». O desafio A5 acrescenta **F17 → F15** à cabeça da cadeia de disponibilidade: o fusível do keypool e o clamp de `max_turns` são a ordem mínima defensável de um lote (com os knobs de ingresso, AOS-277, e a correcção documental já aplicada ao relatório).

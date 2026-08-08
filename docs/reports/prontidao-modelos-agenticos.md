@@ -8,7 +8,7 @@
 > 1. **2026-08-05 — avaliação viva** (imagem publicada, `demo-ciclo-completo`, caminho de permit).
 > 2. **2026-08-06 — revisão adversarial** (5 lentes + cépticos; gaps 1 e 5 declarados resolvidos).
 > 3. **2026-08-08 — sessão de execução** (ciclo de aprovação corrido ao vivo; gaps 2, 3, 5-bis fechados; 7+ commits) **+ análise aprofundada em 6 frentes** (inventário de costuras, N1–N7).
-> 4. **2026-08-08 — desafios adversariais A1–A4** (4×13 agentes contra os planos de fecho: [A1](./desafio-A1-budget-admission-control.md), [A2](./desafio-A2-progress-surface.md), [A3](./desafio-A3-credential-broker.md), [A4](./desafio-A4-orquestrador.md); achados N8–N13, correcções de plano).
+> 4. **2026-08-08 — desafios adversariais A1–A5** (13 agentes cada contra os planos de fecho: [A1](./desafio-A1-budget-admission-control.md), [A2](./desafio-A2-progress-surface.md), [A3](./desafio-A3-credential-broker.md), [A4](./desafio-A4-orquestrador.md), [A5](./desafio-A5-escalonador.md); achados N8–N13, F17–F18, correcções de plano). O A5 teve 2 dos 6 refutadores caídos — os seus dois achados altos foram **verificados à mão** pelo autor e re-classificados aqui como F15 (promovido) e F17.
 >
 > As vagas anteriores viviam como secções datadas com marcações cruzadas difíceis de seguir; esta consolidação substitui-as. Cada afirmação traz a fonte entre parênteses. Divergências entre avaliações estão em §9.
 
@@ -90,7 +90,7 @@ Construídas, testadas, verdes — e sem efeito. Três grupos, por tipo de remé
 | **progress-surface** (burn-down + exaustão) | AOS-123 | Zero consumidores de produção (só QA); nenhuma env | Ver §7 — correcções pesadas: só `extend` tem porta; o «timeout» não existe (sem relógio); sem spans retidos lê 0 **sem erro**; «decisão via SSE» é impossível |
 | **Credential Broker (BRK)** | AOS-070 | Zero imports não-teste fora do módulo; credenciais entram por ficheiro; nenhuma env, nenhuma linha de banner | Ver §7 — o risco foi **reatribuído** (bearer nó→LiteLLM, não a chave do provider); exige passo zero de política/identidade antes do wiring |
 | **Orquestrador (ORQ)** | EPIC-03/18/19 | Proibido por teste (`boundary_orq_sch_test.go`, directo+transitivo); deferimento **honesto** (ADR-018) | Para a v1: **nada**. Rota in-run é v1-legal mas grande (15 interfaces + `Decomposer` inexistente + `agent.plan` no catálogo assinado) |
-| **Escalonador (SCH)** | EPIC-03 | Idem; o `tieradapter` do GW importa tipos do SCH mas também não é composto | Subconjunto com valor single-node: admission/budget como colaborador do run (**médio**); o resto depende de frota (EPIC-10) |
+| **Escalonador (SCH)** | EPIC-03 | Proibido pelo mesmo guarda. *(Correcções do desafio A5:)* o `tieradapter` do GW não está «por ligar» — é **código morto interdito** (zero importadores nos cinco binários; compô-lo arrastaria o SCH para o grafo do nó e reprovaria o guarda); o «sem backpressure» era **errado** — o ingresso tem token-bucket + tecto de runs em voo (429), o que falta são os knobs por env; e **filas (AOS-030) e prioridade (AOS-032) são single-node** — só routing/escala dependem de frota | Subconjunto com valor single-node: admission/budget como colaborador do run por **adaptador node-local** (a emenda ao guarda não é exequível sem quebrar o zero-dep — D12); filas+prioridade (**médio**, single-node); routing/escala (**grande**, EPIC-10) |
 | **Attestation: portas `ChallengeIssuance` + `DeviceEnrollment`** | AOS-177 | Implementadas e testadas em `integration/`; **zero ocorrências em `cmd/aos`** | Sem elas a attestation prova posse mas **não liveness** (replay possível) nem atribuição dispositivo↔aprovador. Wiring + `AOS_DEVICE_ENROLLMENT_FILE` (**pequeno-médio**) + linha de banner |
 
 *Nota:* o **verificador** de attestation sai do Grupo A — liga-se por `AOS_ATTESTATION_VERIFIER_URL` (é Grupo B). E atenção: o wiring inteiro está dentro de `if len(cfg.Approvers) > 0` — URL definida sem approvers é **ignorada em silêncio**.
@@ -135,8 +135,10 @@ Severidade × esforço × fonte. **F1–F4 são anteriores a qualquer wiring nov
 | **F12** | **Saga/compensação sem construtor de produção** — o pacote está no fecho do nó; `WithCompensationRegistry` nunca é chamado; e sem `failed` (F4) a aresta de compensação é inalcançável por dois motivos | Média | Médio | desafio A4 |
 | **F13** | **Nenhum caminho reclama runs órfãos** — `TryAcquire` só no submit; sem varredura de arranque; um crash não é retomado por ninguém (eixo AOS-015/099) | Média | Médio | desafio A4 |
 | **F14** | **Banner mudo** sobre budget, broker, e modelo/gateway — diverge da disciplina AOS-203 («postura anunciada = postura ligada») | Baixa | Pequeno | análise 08-08 + A3 |
-| **F15** | **`MaxTurns` do corpo do pedido sem clamp** — `max_turns=100000` é aceite; hoje é um dos poucos travões reais de custo | Baixa | Pequeno | desafio A1 |
+| **F15** | **`MaxTurns` do corpo do pedido sem clamp** — `max_turns=100000` é aceite. Composto com F17 é um **DoS de um pedido**: um único `POST /runs {max_turns: 200}` esgota o fusível RPM e desliga o nó para todos os runs; o rate-limit de ingresso não protege (1 pedido), o tecto de in-flight não protege (1 run) e o breaker está inerte (F3) | **Alta** *(promovido pelo desafio A5)* | Pequeno | desafios A1/A5 |
 | **F16** | **`CallContext.BudgetTokensRemaining`/`Sensitivity` sempre zero no nó** — sem produtor; dívida de higiene (não chega à política Cedar, logo sem risco de decisão errada) | Baixa | — | desafios A1/A4 |
+| **F17** | **O keypool do gateway é um fusível de 120 chamadas ao modelo por vida do processo** — `modelgatewaywiring.go:135-137` compõe uma conta com `LimitRPM: 120` e o contador **nunca reinicia** (não há janela, apesar do comentário «janela corrente»): `keypool.go:171` incrementa a cada `Select`, `saturated()` aos 120, e `gateway.go:520-523` falha **fail-closed para sempre** à 121.ª chamada (~8 runs com `MaxTurns=16`). Brownout permanente e silencioso, indistinguível de avaria do provider. Remédio: janela com relógio injectável (o GW já tem `WithClock`) **ou** `LimitRPM=0` com o tecto declarado como sendo do LiteLLM externo (D11) | **Alta** | Pequeno | desafio A5 (verificado à mão) |
+| **F18** | **O estágio de identidade do GW é um stub allow-all** — `production.go:178` guarda só contra nil; o nó passa `nodeModelAuthn{}` (`modelgatewaywiring.go:93-103`), que forja o principal e permite tudo; o estágio real (`pipeline/authn`, EdDSA + raiz humana ADR-003) tem zero importadores. Declarado no código como dívida de AOS-057/D4, mas ausente deste relatório | Média | Médio | desafio A5 |
 
 ### Mitos refutados (para ninguém repetir)
 
@@ -168,10 +170,12 @@ O que os desafios corrigiram no plano de fecho:
 |---|---|---|
 | 1 | Propagar o titular por-`Apply` no step-ledger (selar outputs por-titular) | **F1** |
 | 2 | `NewBreaker` fail-closed no arranque + anotar as envs de velocidade na doc | **F2** |
-| 3 | Guarda de produção no fallback `aos-dev-omniroute` | **F5** |
-| 4 | `WithSink` no autonomy registry (uma linha) + linhas de banner (budget/broker/modelo/autonomia) | **F11, F14** |
-| 5 | Validação de esquema em `AOS_DSAR_VAULT_ADDR` | **F6** (parcial) |
-| 6 | Clamp de `MaxTurns` | **F15** |
+| 3 | **Janela no keypool ou `LimitRPM=0` declarado** (desarmar o fusível de 120 chamadas) | **F17** |
+| 4 | Guarda de produção no fallback `aos-dev-omniroute` | **F5** |
+| 5 | `WithSink` no autonomy registry (uma linha) + linhas de banner (budget/broker/modelo/autonomia) | **F11, F14** |
+| 6 | Validação de esquema em `AOS_DSAR_VAULT_ADDR` | **F6** (parcial) |
+| 7 | Clamp de `MaxTurns` (`AOS_MAX_TURNS`, default 16) | **F15** |
+| 8 | Expor por env os três knobs de ingresso já implementados (token-bucket + tecto in-flight) + teste do 429 | correctivo do «sem backpressure» (A5) |
 
 ### 8.2 Curto prazo (tickets pequenos-médios)
 
@@ -196,6 +200,8 @@ O que os desafios corrigiram no plano de fecho:
 | D8 | Rota do valor sob composição (A3) | **C na v1** (broker só para credenciais in-process); B (handle opaco até ao orchestrator) como desenho-alvo |
 | D9 | Guarda ORQ/SCH: lista de dois nomes vs critério (A4) | Manter a lista, corrigir a descrição, **replicar o teste em `cmd/aos-demo`** |
 | D10 | Qual retoma é canónica e quem é o dono do heartbeat (A4) | Declarar antes de compor `worker.Worker` (ADR-018 §5-bis já o antecipa) |
+| D11 | Onde vive o rate-limit de throughput (A5 — forçada por F17) | **Tecto no LiteLLM externo** com `LimitRPM=0` declarado na tabela AOS-203 — coerente com o deployment endurecido; alternativa: janela real no keypool |
+| D12 | Como consumir admission/filas sem violar o guarda (A5) | **Adaptador node-local** (a via do A2) para as portas scheduler-free; extracção de módulo-folha só se o token-bucket real (AOS-027) for necessário; a emenda «sem `Scheduler.Start`» **não é exequível** (zero-dep + símbolo errado) |
 
 ---
 
@@ -215,3 +221,4 @@ O que os desafios corrigiram no plano de fecho:
 - **2026-08-08:** sessão de execução ao vivo do ciclo de aprovação (outro autor): gaps 2, 3, 5-bis fechados; audit com atribuição; suspensão durável.
 - **2026-08-08:** desafios adversariais A1–A4 (outro autor): N8–N13, correcções de plano, decisões do dono.
 - **2026-08-08:** esta consolidação — substitui as secções datadas; o detalhe integral das vagas 3–4 permanece nos ficheiros-fonte ligados no cabeçalho.
+- **2026-08-08:** desafio A5 (escalonador) incorporado: F17 (fusível do keypool) e F18 (authn do GW) novos; F15 promovido a alta (DoS composto); correcções ao SCH (backpressure de ingresso existe; tieradapter é código morto interdito; filas/prioridade são single-node); D11/D12 novas.
