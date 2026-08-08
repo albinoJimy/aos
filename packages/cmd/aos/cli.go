@@ -65,11 +65,13 @@ func dispatch(args []string, w io.Writer) error {
 		return cmdOperatorPubKey(args[1:], w)
 	case "wal-count":
 		return cmdWALCount(args[1:], w)
+	case "audit-trail":
+		return cmdAuditTrail(args[1:], w)
 	case "help", "-h", "--help":
 		printUsage(w)
 		return nil
 	default:
-		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|operator-pubkey|wal-count|help)", args[0])
+		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|operator-pubkey|wal-count|audit-trail|help)", args[0])
 	}
 }
 
@@ -85,6 +87,7 @@ uso: aos <subcomando> [flags]
   pause   --addr URL --run-id ID --emitter ID --key FICHEIRO
   operator-pubkey --key FICHEIRO            (imprime a PUBKEY hex da seed do operador, para AOS_OPERATORS)
   wal-count --path WAL --run ID [--turns]   (diagnostico read-only de durabilidade do Event Store)
+  audit-trail --path WORM --run ID [--denied-only]  (diagnostico read-only: o que foi decidido, por quem e porque)
 `)
 }
 
