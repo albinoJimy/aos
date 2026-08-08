@@ -396,6 +396,17 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	// secção crítica que o set de `closed` do Shutdown — garantindo que um run contado no
 	// WaitGroup NUNCA escapa a um Shutdown que já começou (e vice-versa).
 	runCtx, cancel := context.WithCancel(context.Background())
+	// O run corre sob um contexto PRÓPRIO (sobrevive ao retorno de Submit e só é cancelado
+	// por Shutdown), o que o desliga do ctx de entrada — e com ele de todos os seus valores.
+	//
+	// O PLANO DE REPLAY DA RETOMA (AOS-021) é um desses valores, e perdê-lo esvaziava a
+	// retoma em silêncio: os turnos já vividos voltavam a interrogar o modelo em vez de
+	// serem reproduzidos das capturas, e a acção re-mediada só coincidia com a APROVADA se
+	// o modelo fosse determinista. Re-anexa-se explicitamente — só este valor, para não
+	// arrastar o resto do ctx do pedido para a vida do run.
+	if plan := replayPlanFrom(ctx); plan != nil {
+		runCtx = withReplayPlan(runCtx, plan)
+	}
 	s.mu.Lock()
 	if s.closed {
 		// Shutdown começou durante a aquisição do lease: aborta limpo (larga a posse

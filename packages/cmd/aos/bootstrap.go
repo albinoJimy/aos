@@ -1044,6 +1044,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if model == nil {
 		model = referenceModel{}
 	}
+	// RETOMA (AOS-021) — decorador OUTERMOST, aplicado AQUI e não no construtor de modelo
+	// do arranque por ambiente. Num turno coberto pelo plano de replay (que viaja no ctx),
+	// devolve a resposta REGISTADA sem tocar no modelo; nos restantes delega. Um run normal
+	// nunca tem plano ⇒ totalmente transparente.
+	//
+	// PORQUÊ AQUI: a garantia de replay-then-continue é do NÓ, não de quem construiu o
+	// modelo. Enquanto o decorador viveu só no caminho por-ambiente, um cfg.Model injectado
+	// (embedder, teste, harness) perdia-o EM SILÊNCIO — a retoma voltava a interrogar o
+	// modelo nos turnos já vividos, e a acção aprovada podia deixar de ser a acção
+	// reproduzida. Aplicá-lo na composição do nó torna a garantia independente da origem.
+	model = newResumeAwareModelClient(model)
 	catalog := cfg.Catalog
 	if catalog == nil {
 		catalog = emptyCatalog{}
