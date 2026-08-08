@@ -56,6 +56,7 @@ import (
 	control "github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
@@ -1135,6 +1136,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
+	var approvalVerifier referencemonitor.ApprovalVerifier
 	if approvalBroker != nil && pendingApprovals != nil {
 		sink, serr := newNodeEscalationSink(stateGates, pendingApprovals)
 		if serr != nil {
@@ -1142,6 +1144,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 		escalationSink = sink
 		approvalEvidence = approvalBroker
+		// O TERCEIRO lado do bridge, dentro da cadeia: sem o gate, a evidência viaja e
+		// ninguém a lê — o escalate repetir-se-ia para sempre e a cerimónia four-eyes não
+		// destravaria nada. É o MESMO broker: quem emite o grant é quem o verifica e o
+		// consome (uso-único atómico).
+		approvalVerifier = approvalBroker
 	}
 
 	// (7) SECURED RUNTIME — a CADEIA REAL (via NewProductionSecure), com o VERIFIER REAL
@@ -1183,6 +1190,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// negação (o loop prossegue) — retro-compatível.
 		EscalationSink:   escalationSink,
 		ApprovalEvidence: approvalEvidence,
+		ApprovalVerifier: approvalVerifier,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)

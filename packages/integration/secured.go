@@ -127,6 +127,16 @@ type SecuredConfig struct {
 	// anexar. É infraestrutura TRUSTED (a store de grants), nunca o modelo. OPCIONAL: nil ⇒
 	// nenhuma call leva evidência.
 	ApprovalEvidence agentruntime.ApprovalEvidenceSource
+	// ApprovalVerifier fecha o bridge DENTRO da cadeia de mediação: é o hook que verifica a
+	// evidência anexada e, só em sucesso, carimba a call com a prova não-forjável. Sem ele
+	// os dois lados acima ficam inertes — a evidência viaja mas nada a lê, e o escalate
+	// repete-se para sempre (aprovar nunca satisfaz quem exigiu a aprovação).
+	//
+	// O gate entra a seguir à IDENTIDADE (a preview inclui o principal RESOLVIDO do token,
+	// pelo que antes disso não seria calculável) e ANTES da política: o oráculo de autonomia
+	// tem de poder ver que o gate humano JÁ ocorreu, senão volta a rebaixar para escalate.
+	// NUNCA nega e nunca concede: no máximo mantém tudo fechado. OPCIONAL: nil ⇒ gate ausente.
+	ApprovalVerifier referencemonitor.ApprovalVerifier
 	// HookOptions são opções do [RevalidationHook] (ex.: [WithEgressHost]).
 	HookOptions []HookOption
 	// RuntimeOptions são opções do [agentruntime.Runtime].
@@ -288,15 +298,32 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 
 	// CADEIA REAL na ordem canónica de AOS-154. BudgetStub é aceitável (AOS-008 é o
 	// admission control real, fora deste ticket); todos os outros são hooks reais.
-	hooks := []referencemonitor.Hook{
-		identity.NewIdentityCheck(verifier),       // identity — resolve Call.Principal (1º)
+	var hooks []referencemonitor.Hook
+	// APROVAÇÃO HUMANA (AOS-021) — ANTES de tudo o resto. Duas razões, ambas obrigatórias:
+	//
+	//  1. A preview é o digest da acção, e o hook de identidade SUBSTITUI Call.Principal a
+	//     partir do token. Um gate colocado depois dele recalcularia a preview sobre um
+	//     principal DIFERENTE do que o loop usou para registar o pendente e para procurar a
+	//     evidência — e a amarra nunca casaria. (Observado ao vivo: a aprovação era emitida,
+	//     a evidência viajava, e a acção voltava a escalar indefinidamente.)
+	//  2. O oráculo de autonomia — dentro da política — é QUEM exige o gate humano; tem de
+	//     poder ver que o gate já ocorreu, senão volta a rebaixar o permit para escalate.
+	//
+	// O gate nunca nega e nunca concede: no máximo carimba uma prova verificada. Toda a
+	// autorização real continua a jusante (identidade, revalidação, política, taint, escopo,
+	// orçamento, egress). OPCIONAL: nil ⇒ gate ausente, escalate degrada para negação.
+	if cfg.ApprovalVerifier != nil {
+		hooks = append(hooks, referencemonitor.NewApprovalGate(cfg.ApprovalVerifier))
+	}
+	hooks = append(hooks,
+		identity.NewIdentityCheck(verifier),       // identity — resolve Call.Principal
 		revalHook,                                 // revalidation (AOS-051)
 		pdp.NewPolicyCheck(policyDP),              // policy (PDP, AOS-004)
 		referencemonitor.NewTaintGate(privileged), // taint (AOS-069)
 		referencemonitor.NewScopeGate(authority),  // scope (AOS-071)
 		referencemonitor.BudgetStub{},             // budget (stub aceitável)
 		egressHook,                                // egress (AOS-067)
-	}
+	)
 
 	// EventSink durável = adaptador sancionado MediationRecord→AuditRecord sobre o
 	// MESMO WORM (partição por RunID). É o "audit" da cadeia — não um hook.
@@ -369,17 +396,21 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		durDisp = dd
 	}
 
-	// Selecção do dispatcher FINAL. Quando há EffectRewriter (AOS-005) ele é o decorator
-	// OUTERMOST: reescreve a Call.Input ANTES do despacho e delega no dispatcher durável
-	// (se composto) ou em Mediate directo — SEM abrir spans nem tocar na decisão, pelo que
-	// a topologia de observabilidade (AOS-210) e o no-bypass ficam intactos. Sem rewriter,
-	// o comportamento é byte-idêntico ao anterior (durDisp directo, ou default se nil).
-	switch {
-	case cfg.EffectRewriter != nil:
-		runtimeOpts = append(runtimeOpts, agentruntime.WithActivityDispatcher(
-			rewritingDispatcher{inner: durDisp, rm: rm, rewrite: cfg.EffectRewriter}))
-	case durDisp != nil:
+	if durDisp != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithActivityDispatcher(durDisp))
+	}
+	// FORMA FINAL DO EFEITO (AOS-005/AOS-064): a reescrita entra pela porta do LOOP, não
+	// como decorator do dispatcher. É deliberado e foi corrigido depois de a via anterior
+	// falhar ao vivo: como decorator, a reescrita corria DEPOIS de o loop já ter descrito o
+	// efeito ao exterior (preview de aprovação, pendente mostrado ao operador), pelo que o
+	// humano aprovava os args do modelo e o RM mediava o ExecRequest reescrito — duas
+	// descrições do mesmo passo, e a aprovação nunca casava. Na porta do loop há uma só
+	// descrição, e é a do efeito que realmente corre.
+	//
+	// O no-bypass NÃO depende disto: continua a ser estrutural no MediatedLauncher (a tool
+	// só corre sob permit não-forjável) e no dispatcher (Mediate é a única via de efeito).
+	if cfg.EffectRewriter != nil {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithCallRewriter(cfg.EffectRewriter))
 	}
 
 	rt := agentruntime.New(cfg.Model, rm, cfg.Recorder, runtimeOpts...)
@@ -394,42 +425,11 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	}, nil
 }
 
-// CodeEffectRewrite é o código de Deny quando o [SecuredConfig.EffectRewriter] falha a
-// reescrita da Call antes do despacho (ex.: args do modelo malformados). Fail-closed:
-// nenhum efeito ocorre; a tool call materializa-se como Deny no tail do turno.
-const CodeEffectRewrite = "E_EFFECT_REWRITE"
-
-// rewritingDispatcher é o decorator do [agentruntime.ActivityDispatcher] que aplica o
-// [SecuredConfig.EffectRewriter] à Call ANTES do despacho. Delega no dispatcher durável
-// (inner) quando composto, ou em [referencemonitor.Monitor.Mediate] directo (via rm)
-// quando a execução durável está desligada — preservando o no-bypass (o único despacho
-// continua a ser Mediate) e a topologia de spans (não abre spans; o aos.activity e o
-// execute_tool nascem a jusante).
-type rewritingDispatcher struct {
-	inner   agentruntime.ActivityDispatcher // nil ⇒ Mediate directo
-	rm      *referencemonitor.Monitor
-	rewrite func(referencemonitor.Call) (referencemonitor.Call, error)
-}
-
-func (d rewritingDispatcher) Dispatch(ctx context.Context, call referencemonitor.Call) (referencemonitor.Decision, error) {
-	rc, err := d.rewrite(call)
-	if err != nil {
-		// Fail-closed: reescrita falhou ⇒ Deny (nenhum efeito). NÃO é fatal para o loop —
-		// materializa-se no tail como uma tool call negada (dec.Output nil).
-		return referencemonitor.Decision{
-			Effect:   referencemonitor.EffectDeny,
-			Code:     CodeEffectRewrite,
-			Reason:   err.Error(),
-			DeniedBy: "effect_rewriter",
-		}, nil
-	}
-	if d.inner != nil {
-		return d.inner.Dispatch(ctx, rc)
-	}
-	return d.rm.Mediate(ctx, rc)
-}
-
-var _ agentruntime.ActivityDispatcher = rewritingDispatcher{}
+// CodeEffectRewrite é o código de Deny quando o [SecuredConfig.EffectRewriter] recusa a
+// Call (ex.: args do modelo malformados). Fail-closed: nenhum efeito ocorre; a tool call
+// materializa-se como Deny no tail do turno. É o MESMO símbolo do kernel — não uma segunda
+// cópia da string — para o código não poder divergir entre as duas camadas.
+const CodeEffectRewrite = agentruntime.CodeEffectRewrite
 
 // Register associa um ToolID a uma [referencemonitor.ToolFunc] no RM. O despacho
 // real de uma tool só acontece sob permit do RM (no-bypass); registá-la aqui é a
