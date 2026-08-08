@@ -68,6 +68,23 @@ cat > "${SECRETS}/approvers.json" <<EOF
 EOF
 chmod 644 "${SECRETS}/approvers.json"   # UID 65532 non-root tem de LER o mount.
 
+# AOS-071 — directório de autoridade externo. Sem ele o ScopeGate acaba a re-verificar o
+# que a identidade já impôs e NÃO há revogação: um token válido vale até expirar. Os
+# sujeitos são os TRÊS que o gate dobra (raiz humana, agente, e o eixo "agent:<classe>").
+# Para REVOGAR um sujeito, deixe "capabilities": [] — remover a linha NÃO revoga, devolve-o
+# à autoridade plena do seu token.
+cat > "${SECRETS}/authority.json" <<'JSON'
+{
+  "revision": 1,
+  "subjects": [
+    { "subject": "human:alice",        "capabilities": ["cap:fs.read", "cap:http.post"] },
+    { "subject": "agt-aprov",          "capabilities": ["cap:fs.read", "cap:http.post"] },
+    { "subject": "agent:agent-worker", "capabilities": ["cap:fs.read", "cap:http.post"] }
+  ]
+}
+JSON
+chmod 644 "${SECRETS}/authority.json"   # UID 65532 non-root tem de LER o mount.
+
 echo "[up] 4/6 trust anchor do PDP — base64 do bundle -> hex (formato de AOS_POLICY_TRUST_ANCHOR) ..."
 ANCHOR_B64="$(tr -d ' \r\n' < "${REPO_ROOT}/packages/control-plane/pdp/policies/trust_anchor.pub")"
 AOS_POLICY_TRUST_ANCHOR="$(printf '%s' "${ANCHOR_B64}" | base64 -d | od -An -v -tx1 | tr -d ' \n')"

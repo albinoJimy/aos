@@ -35,6 +35,9 @@ services:
       AOS_OPERATORS: "${AOS_OPERATORS}"
       AOS_RATIFIERS: "${AOS_RATIFIERS}"
       AOS_APPROVERS_FILE: "/etc/aos/approvers.json"
+      # AOS-071: segunda opiniao independente do ScopeGate e a unica via de REVOGACAO.
+      # Sem isto o gate re-verifica o que a identidade ja impos e um token vale ate expirar.
+      AOS_AUTHORITY_FILE: "/etc/aos/authority.json"
 
       # PDP: bundle de política ASSINADO + trust anchor FORÇADO out-of-band (hex). Sai do
       # default-deny para mediação real por allowlist assinada + regras Cedar.
@@ -64,6 +67,7 @@ services:
     volumes:
       - aos-data:/var/lib/aos                                              # estado durável (gravável)
       - ./secrets/approvers.json:/etc/aos/approvers.json:ro               # roster four-eyes (público)
+      - ./secrets/authority.json:/etc/aos/authority.json:ro               # directório de autoridade AOS-071 (público)
       - ../../../packages/control-plane/pdp/policies:/etc/aos/policies:ro # bundle PDP assinado
     expose:
       - "8080"   # só visível na rede interna do compose; NÃO publicado no host.

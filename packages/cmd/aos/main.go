@@ -396,6 +396,16 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	// DIRECTÓRIO DE AUTORIDADE EXTERNO (AOS-071) — a SEGUNDA opinião independente do
+	// ScopeGate e a única via de REVOGAÇÃO. Sem ele, o gate acaba a re-verificar o que o
+	// hook de identidade já impôs e um token válido continua válido até expirar, aconteça
+	// o que acontecer à organização. [Config.Authority] existia e era inalcançável pelo
+	// binário — o mesmo defeito de campo-fantasma de AOS_RATIFIERS.
+	authorityDir, err := parseAuthorityFile(os.Getenv("AOS_AUTHORITY_FILE"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	// Trust-anchor-only ENDURECIDO: se AOS_ISSUER_PUBKEY estiver presente, o nó recebe só
 	// a pubkey do issuer (a autoridade/chave vivem FORA do processo). É o modo de fronteira
 	// de produção. Fail-closed: uma pubkey malformada aborta.
@@ -498,6 +508,13 @@ func nodeConfigFromEnv() (Config, error) {
 		// freshness+nonce durável forçados); vazio ⇒ composto mas toda a promoção negada
 		// (ratifier_unknown), declarado no banner. A janela de frescura usa o default do nó.
 		Ratifiers: ratifiers,
+	}
+
+	// DIRECTÓRIO DE AUTORIDADE (AOS-071): nil ⇒ campo não preenchido e o ScopeGate opera
+	// só sobre a autoridade do token (comportamento anterior, byte-idêntico). Presente ⇒
+	// segunda opinião independente e revogação, declaradas no banner.
+	if authorityDir != nil {
+		cfg.Authority = authorityDir
 	}
 
 	// DURABILIDADE DA IDENTIDADE (AOS-170) por ambiente, SÓ no modo de REFERÊNCIA. Um

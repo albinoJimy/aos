@@ -1426,6 +1426,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("mediacao de politica (AOS-220): PDP NAO-CARREGADO (NewUnloaded) — DEFAULT-DENY EXPLICITO de TODA a tool call mediada; defina AOS_POLICY_BUNDLE_DIR + AOS_POLICY_TRUST_ANCHOR (pubkey ed25519 out-of-band) para carregar um bundle assinado")
 	}
+	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA
+	// da DORMENTE: sem directório externo, o ScopeGate acaba a re-verificar o que o hook
+	// de identidade já impôs e NÃO há revogação — um token válido vale até expirar. Com
+	// directório, há segunda opinião independente e revogação, e o fingerprint diz QUAL
+	// directório está em vigor (uma rotação é visível sem despejar a lista de sujeitos).
+	if dir, ok := cfg.Authority.(*authorityDirectory); ok {
+		log("autoridade de escopo (AOS-071): DIRECTORIO EXTERNO ligado (AOS_AUTHORITY_FILE) — %d sujeito(s), %d revogado(s), revisao %d, fingerprint %s; o escopo efectivo e token INTERSECTADO com o directorio: restringe e REVOGA, nunca amplia (a ampliacao esta estruturalmente fora do alcance do gate)", dir.Subjects, dir.Revoked, dir.Revision, dir.Fingerprint)
+		log("=> NOTA AOS-071: um sujeito AUSENTE do directorio NAO e restringido (cai na autoridade do token) — e o que torna seguro ligar um directorio PARCIAL. REVOGAR nao e remover: liste o sujeito com \"capabilities\": [] para lhe negar tudo")
+	} else {
+		log("autoridade de escopo (AOS-071): sem directorio externo — a defesa-em-profundidade fica DORMENTE (o gate verifica capability ∈ token.Scope, que a identidade ja impos) e NAO ha revogacao: um token valido vale ate expirar. Defina AOS_AUTHORITY_FILE para a segunda opiniao independente e revogacao/RBAC organizacional")
+	}
 	if readAuthority != nil {
 		if readCred != nil {
 			// Declara HONESTAMENTE a postura anti-replay REALMENTE composta (fecha o achado da
