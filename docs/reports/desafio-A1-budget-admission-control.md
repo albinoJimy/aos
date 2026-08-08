@@ -191,6 +191,13 @@ Ordem mínima defensável se só houver apetite para um lote: **1 → 3 → 2**.
 - **«`AOS_MODE=production` deve recusar o `BudgetStub` pelo molde de `ErrProductionNeedsDurableApproval`.»** A leitura do molde está certa mas não é nova: `production.go:175-180` já testa por tipo e `NewProductionHardenedTaint` já é o molde do «construtor mais estrito adoptado quando o real existir».
 ---
 
+## Ver também
+
+[`desafio-A2-progress-surface.md`](./desafio-A2-progress-surface.md) — a avaliação gémea do
+subtópico A2, que depende deste. Dois achados desta avaliação são lá reutilizados como
+factos verificados: a ausência de canal de custo em `port.Usage`, e o trace novo por
+incarnação na retoma.
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_5587aefe-a93/journal.jsonl`
