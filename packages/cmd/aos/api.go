@@ -1668,6 +1668,9 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrNoResumeRecord):
 		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
 	default:
+		// Um 500 SEM diagnóstico é indepurável: a resposta ao cliente mantém-se opaca
+		// (não revela interno), mas o operador tem de conseguir ver a causa no log.
+		h.svc.log("retoma do run %q falhou: %v", runID, err)
 		writeError(w, http.StatusInternalServerError, "retoma falhou")
 	}
 }

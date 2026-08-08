@@ -122,6 +122,11 @@ services:
       # revalidação (tool sem contrato assinado); COM isto a negação de cap:http.post é do taint-gate
       # Cedar (allow_http_post exige taint != untrusted). Ver demo-pdp-taint-gate.sh.
       AOS_MODEL_TOOLS_REGISTER: "1"
+      # NÍVEIS DE AUTONOMIA (AOS-087) — o que torna o `escalate` ALCANÇÁVEL e, com ele, o
+      # bridge de aprovação humana (AOS-021). L4 = corre por omissão e SÓ escala em risco
+      # alto. Como o RiskGate não está na cadeia, a classe de risco chega VAZIA e resolve
+      # `danger` (fail-closed) — logo, a este nível, a tool call escala e aguarda aval.
+      AOS_AUTONOMY_LEVELS: "agt-aprov:fs=L4"
 
       # EXECUÇÃO DE TOOLS EM microVM FIRECRACKER REAL (AOS-064). A tool `doc_read` do registry
       # tem um bloco `sandbox` ({command:read, path_arg:doc_id}); com o driver firecracker + a URL

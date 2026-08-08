@@ -61,6 +61,8 @@ func run(args []string, out io.Writer) error {
 	switch args[0] {
 	case "pubkey":
 		return cmdPubkey(args[1:], out)
+	case "approve-sign":
+		return runApproveSign(args[1:])
 	case "mint":
 		return cmdMint(args[1:], out)
 	default:

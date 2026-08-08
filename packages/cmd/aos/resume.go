@@ -73,7 +73,7 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	// (3) Plano de replay: as respostas do modelo JÁ REGISTADAS, por turno. Sem elas a
 	// retoma reinterrogaria o modelo e a aprovação — amarrada à preview da call original —
 	// nunca se aplicaria.
-	plan, err := s.replayPlanFor(ctx, runID)
+	plan, err := s.replayPlanFor(ctx, runID, rec.Principal.NHIID)
 	if err != nil {
 		return fmt.Errorf("aos: carregar capturas do run %q para a retoma: %w", runID, err)
 	}
@@ -100,8 +100,19 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 // Usa o mesmo [replay.ReplayEngine.Reconstruct] que o read-path soberano — e portanto o
 // mesmo gate de decifração por-titular: um run cujo conteúdo foi apagado por
 // crypto-shredding NÃO é retomável, por desenho.
-func (s *NodeService) replayPlanFor(ctx context.Context, runID string) (replayPlan, error) {
-	engine, err := replay.NewEngine(s.node.EventStore)
+func (s *NodeService) replayPlanFor(ctx context.Context, runID, subject string) (replayPlan, error) {
+	// O conteúdo capturado é CIFRADO POR-TITULAR (AOS-093). Sem o opener, as capturas
+	// seladas não abrem e a retoma falha — foi exactamente o que aconteceu na primeira
+	// execução ao vivo. O acessor é o PRÓPRIO principal do run: é o run a continuar o seu
+	// trabalho, não um terceiro a ler conteúdo alheio (menor privilégio).
+	var opts []replay.EngineOption
+	if s.node.contentOpener != nil {
+		opts = append(opts, replay.WithContentOpener(s.node.contentOpener, replay.Accessor{
+			Principal: subject,
+			Scopes:    []string{replay.DefaultSovereignContentScope},
+		}))
+	}
+	engine, err := replay.NewEngine(s.node.EventStore, opts...)
 	if err != nil {
 		return nil, err
 	}
