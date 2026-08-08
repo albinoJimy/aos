@@ -44,6 +44,9 @@ vendor/
 # Binários compilados de comandos (go build ./... em packages/cmd/*) — nunca versionar
 *.exe
 /packages/cmd/aos-demo/aos-demo
+/packages/cmd/aos/aos
+/packages/cmd/aos-issuer/aos-issuer
+/packages/cmd/aos-attestation/aos-attestation
 # Artefactos transitórios dos self-tests do CI (removidos pelo runner; rede de segurança)
 packages/_selftest_bad/
 # Perfis de cobertura (gerados por `go test -coverprofile`)
