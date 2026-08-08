@@ -204,6 +204,8 @@ incarnação na retoma.
 
 - [`desafio-A5-escalonador.md`](./desafio-A5-escalonador.md)
 
+- [`desafio-A6-attestation.md`](./desafio-A6-attestation.md)
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_5587aefe-a93/journal.jsonl`

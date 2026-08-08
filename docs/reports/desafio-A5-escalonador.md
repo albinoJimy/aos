@@ -284,6 +284,8 @@ disponibilidade e alinha o documento, sem tocar em nenhum módulo proibido.
 - [`desafio-A3-credential-broker.md`](./desafio-A3-credential-broker.md)
 - [`desafio-A4-orquestrador.md`](./desafio-A4-orquestrador.md)
 
+- [`desafio-A6-attestation.md`](./desafio-A6-attestation.md)
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_ed92f85a-1ba/journal.jsonl`
