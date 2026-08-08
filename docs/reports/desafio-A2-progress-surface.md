@@ -215,6 +215,10 @@ Registado para ninguém repetir:
 13. **«Ligar o custo não precisa de acautelar nada porque o gateway não escreve tokens.»** Falso — verifiquei: `Chat` chama `finishResponse` (`gateway.go:343`), que chama `setUsageAttrs` (`gateway.go:547`). Os tokens **são** escritos nos dois spans. Ver §2 E.
 ---
 
+## Ver também
+
+[`desafio-A3-credential-broker.md`](./desafio-A3-credential-broker.md) — o terceiro da série.
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_951d3a23-2b8/journal.jsonl`

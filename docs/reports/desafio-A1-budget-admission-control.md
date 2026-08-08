@@ -198,6 +198,8 @@ subtópico A2, que depende deste. Dois achados desta avaliação são lá reutil
 factos verificados: a ausência de canal de custo em `port.Usage`, e o trace novo por
 incarnação na retoma.
 
+[`desafio-A3-credential-broker.md`](./desafio-A3-credential-broker.md) — o terceiro da série.
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_5587aefe-a93/journal.jsonl`
