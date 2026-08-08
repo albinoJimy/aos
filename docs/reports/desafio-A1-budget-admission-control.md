@@ -200,6 +200,8 @@ incarnação na retoma.
 
 [`desafio-A3-credential-broker.md`](./desafio-A3-credential-broker.md) — o terceiro da série.
 
+- [`desafio-A4-orquestrador.md`](./desafio-A4-orquestrador.md) — o quarto da série.
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_5587aefe-a93/journal.jsonl`

@@ -274,6 +274,8 @@ Hoje são independentes por desenho declarado: a injecção autoriza-se por **po
 - [`desafio-A1-budget-admission-control.md`](./desafio-A1-budget-admission-control.md)
 - [`desafio-A2-progress-surface.md`](./desafio-A2-progress-surface.md)
 
+- [`desafio-A4-orquestrador.md`](./desafio-A4-orquestrador.md) — o quarto da série.
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_80dad371-e91/journal.jsonl`.

@@ -219,6 +219,8 @@ Registado para ninguém repetir:
 
 [`desafio-A3-credential-broker.md`](./desafio-A3-credential-broker.md) — o terceiro da série.
 
+- [`desafio-A4-orquestrador.md`](./desafio-A4-orquestrador.md) — o quarto da série.
+
 ## Rastreabilidade
 
 Transcrições por agente: `.claude/projects/…/subagents/workflows/wf_951d3a23-2b8/journal.jsonl`
