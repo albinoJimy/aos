@@ -9,13 +9,13 @@
 
 **Arquitecturalmente sim — e funcionalmente sim para efeitos locais governados.**
 
-> **REVISTO (2026-08-06).** O veredicto original era «funcionalmente ainda não»: nenhuma tool call chegava a executar por omissão e o loop esgotava os turnos. **Isso deixou de valer**: o commit `303cf47` fez a autoridade de escopo derivar do token NHI verificado, e uma tool call legítima (`cap:fs.read`) **executa hoje** — provado em CI (`TestScopeTokenOnly_SemDirectorioExterno_ToolExecuta`, com o directório de autoridade VAZIO) e ao vivo (`run-fclive-2` → microVM Firecracker real). O que resta é o **feedback de negação** e o **circuito de aprovação humana**, não a execução.
+> **REVISTO (2026-08-06).** O veredicto original era «funcionalmente ainda não»: nenhuma tool call chegava a executar por omissão e o loop esgotava os turnos. **Isso deixou de valer**: o commit `303cf47` fez a autoridade de escopo derivar do token NHI verificado, e uma tool call legítima (`cap:fs.read`) **executa hoje** — provado em CI (`TestScopeTokenOnly_SemDirectorioExterno_ToolExecuta`, com o directório de autoridade VAZIO) e ao vivo (`run-fclive-2` → microVM Firecracker real). O que restava era o **feedback de negação** e o **circuito de aprovação humana** — ambos **fechados desde então**; ver [Revisão 2026-08-08](#revisão-2026-08-08--o-ciclo-de-aprovação-corrido-ao-vivo).
 
 | Cenário | Pronto? |
 |---|---|
 | Correr modelos agênticos **sem que possam fazer mal** (sandbox governada, read-only, auditoria total) | **Sim** — é o que a stack hardened faz hoje |
 | Agentes com **efeitos locais reais** (ler/escrever em sandbox) sob governo | **Sim** *(revisto)* — autoridade derivada do token + `MediatedLauncher` em microVM; `cap:fs.read` executa ponta a ponta |
-| Agentes com **efeitos de REDE externa** (postar, chamar APIs) originados pelo modelo | **Não — por desenho.** `cap:http.post` é negada pelo taint-gate («untrusted não comanda», P4). Não é um gap de prontidão: é a propriedade a funcionar. Destravar exige o circuito de aprovação humana (gap 3) |
+| Agentes com **efeitos de REDE externa** (postar, chamar APIs) originados pelo modelo | **Não — por desenho.** `cap:http.post` é negada pelo taint-gate («untrusted não comanda», P4). Não é um gap de prontidão: é a propriedade a funcionar. Destravar exige o circuito de aprovação humana — que **passou a existir** (revisão 2026-08-08): uma acção escalada suspende o run, é aprovada por four-eyes e a **mesma** acção volta a atravessar a cadeia inteira. O taint NUNCA muda; a aprovação remove um obstáculo, não promove a autorização |
 | Produção multi-tenant com soberania real | **Não** — tenant/IdP de soberania e HSM/KMS concreto são deferimentos nomeados (DEF-xxx) |
 
 ## Evidência recolhida (2026-08-05)
@@ -72,9 +72,9 @@ Verde nos três níveis, todos contra a cadeia de produção real (`NewProductio
    O diagnóstico original (o tecto do ScopeGate, `Config.Authority`, só ser escrito por testes) estava correcto, mas **o remédio proposto foi superado**. Um directório estático **nunca** poderia resolver o sujeito-**agente**, que é criado **por-mint (dinâmico)**: só o token o conhece. A correcção faz o hook de identidade — que já verifica o token assinado — povoar `Principal.SubjectAuthority` com o grant por-sujeito derivado do `Scope` **verificado**, e o ScopeGate resolve daí (intersectando com um directório externo **quando existir**, para revogação/RBAC).
    **Zero config nova.** Provado em CI: `TestScopeTokenOnly_SemDirectorioExterno_ToolExecuta` (Authority **vazia** ⇒ `permits=1`, tool executa) + controlo negativo (`TestScopeTokenOnly_CapForaDoTokenNegada`). Ao vivo: `run-fclive-1` `deny|scope` → `run-fclive-2` **permit** → microVM Firecracker real (`cmd=read`).
    ⚠️ **Nota honesta:** sem directório externo, o ScopeGate passa a verificar `capability ∈ token.Scope` — que o hook de identidade já impõe. Não é vulnerabilidade (o grant é assinado pelo issuer e o eixo user∩classe é computado no **mint**), mas a **defesa-em-profundidade do AOS-071 fica dormente** por omissão. Provisionar uma `AuthoritySource` externa restaura a segunda opinião independente e habilita revogação.
-2. **Feedback de negação para o loop.** ⚠️ **AINDA VÁLIDO — e mais grave do que aqui se dizia.** Não é «fraco»: é **descartado**. `mediateToolCall` (`loop.go:556`) devolve apenas `Untrusted(dec.Output)` + `dec.ToolErr`; num deny **ambos são vazios/nil**, pelo que o tail materializa corpo **vazio** — o modelo não distingue «negado» de «a tool não devolveu nada». Isto explica o Kimi repetir a mesma estratégia 16×. Os dados já existem (`Effect/Code/Reason/DeniedBy`, `decision.go:61-72`) e o padrão já vive noutro caminho: é **encanamento**, não construção. **Remédio (2 eixos):** (a) marcador estruturado no tail; (b) terminação por orçamento de negações — para a qual existe um **circuit breaker pronto e não-cablado** (`breaker/breaker.go`, `MaxStaleIterations` + `actiondedup`): `Observe` nunca é chamado e não há sequer uma `Option` no Runtime. **Cablar, não reescrever.**
-3. **Circuito negação→aprovação humana.** ⚠️ **PARCIALMENTE VÁLIDO — a afirmação original misturava três coisas.**
-   - ✅ **Válido:** não existe bridge `deny → aprovação → reexecução` de uma tool call. `FourEyes` é um endpoint `/approve` **autónomo** para acções irreversíveis (`api.go:985-1068`), **não** um hook da cadeia de mediação (`secured.go:270-278` não o tem); nenhum código apanha `Decision.DeniedBy` e escala. **É o gap real.**
+2. ~~**Feedback de negação para o loop.**~~ ✅ **FECHADO** (`60f5d64` marcador de negação no tail + `f0c2bd8` breaker cablado). O diagnóstico abaixo mantém-se registado por ser exacto. ⚠️ *(texto original)* **AINDA VÁLIDO — e mais grave do que aqui se dizia.** Não é «fraco»: é **descartado**. `mediateToolCall` (`loop.go:556`) devolve apenas `Untrusted(dec.Output)` + `dec.ToolErr`; num deny **ambos são vazios/nil**, pelo que o tail materializa corpo **vazio** — o modelo não distingue «negado» de «a tool não devolveu nada». Isto explica o Kimi repetir a mesma estratégia 16×. Os dados já existem (`Effect/Code/Reason/DeniedBy`, `decision.go:61-72`) e o padrão já vive noutro caminho: é **encanamento**, não construção. **Remédio (2 eixos):** (a) marcador estruturado no tail; (b) terminação por orçamento de negações — para a qual existe um **circuit breaker pronto e não-cablado** (`breaker/breaker.go`, `MaxStaleIterations` + `actiondedup`): `Observe` nunca é chamado e não há sequer uma `Option` no Runtime. **Cablar, não reescrever.**
+3. ~~**Circuito negação→aprovação humana.**~~ ✅ **FECHADO E PROVADO AO VIVO (2026-08-08)** — escalar → suspender → four-eyes → retomar → executar numa microVM real, com o efeito já aplicado a NÃO repetir-se. Fechá-lo exigiu corrigir **seis** defeitos de composição e dois de retoma; ver [Revisão 2026-08-08](#revisão-2026-08-08--o-ciclo-de-aprovação-corrido-ao-vivo). ⚠️ *(texto original)* **PARCIALMENTE VÁLIDO — a afirmação original misturava três coisas.**
+   - ✅ **Válido:** não existe bridge `deny → aprovação → reexecução` de uma tool call. `FourEyes` é um endpoint `/approve` **autónomo** para acções irreversíveis (`api.go:985-1068`), **não** um hook da cadeia de mediação (`secured.go:270-278` não o tem); nenhum código apanha `Decision.DeniedBy` e escala. **É o gap real.** ✅ **RESOLVIDO** — o `ApprovalGate` entra na cadeia (`aabf4eb`), o oráculo de autonomia passa a reconhecer a aprovação (`4214b3b`) e o loop suspende/retoma (`bbd89b9`/`de014a9`/`1a04174`).
    - ❌ **Falso já à data deste relatório:** «operadores de steer/pause … não estão ligados ponta a ponta ao loop». Foram ligados por **AOS-218 (`53c224d`, 2026-07-31)**, antes desta avaliação.
    - ❌ **Premissa inválida:** «é a via natural para destravar o gap 1» — o gap 1 foi destravado por outra via (o token), sem four-eyes no caminho.
 4. **DEMO-GRADE declarados** — ⚠️ **severidade recalibrada: a lista misturava *default do nó nu* com *limitação do deployment avaliado*.**
@@ -103,10 +103,10 @@ Verde nos três níveis, todos contra a cadeia de produção real (`NewProductio
 O AOS está pronto para **conter** modelos agênticos **e para os deixar trabalhar em efeitos locais governados**. O que falta é a camada de *diálogo* com o modelo e a escalada humana:
 
 1. ~~`AuthoritySource` provisionável ligada ao `Config.Authority`~~ ✅ **FEITO** por `303cf47` (autoridade derivada do token — superou o remédio proposto).
-2. **Feedback de negação estruturado** devolvido ao modelo (encanar `Decision` até ao tail) **+ terminação por orçamento de negações** (cablar o `breaker` existente). *O maior item que resta; ambos com primitivos prontos.*
-3. **Circuito negação→four-eyes→execução aprovada** ligado ao loop — sem criar bypass da mediação (a reexecução tem de voltar a atravessar o RM com autorização trusted).
+2. ~~**Feedback de negação estruturado** devolvido ao modelo + terminação por orçamento de negações~~ ✅ **FEITO** (`60f5d64`, `f0c2bd8`).
+3. ~~**Circuito negação→four-eyes→execução aprovada** ligado ao loop~~ ✅ **FEITO e provado ao vivo** (2026-08-08). Nota de rigor sobre a formulação original: a reexecução **não** passa a ter «autorização trusted» — o taint permanece `untrusted` e a aprovação é uma prova não-forjável num campo não-exportado que remove UM obstáculo. Promover o taint teria sido um bypass; não foi feito.
 4. ~~Republicar a imagem com os labels OCI/ADR-017~~ ✅ **FEITO**; resta purgar o *dangling* e fixar a republicação no CI.
-5. *(novo)* **Provisionar uma `AuthoritySource` externa** para restaurar a defesa-em-profundidade do AOS-071 e habilitar **revogação/RBAC organizacional** (restringe, nunca amplia).
+5. ~~*(novo)* **Provisionar uma `AuthoritySource` externa**~~ ✅ **FEITO** (`03afcbb`): `AOS_AUTHORITY_FILE`. Faltava a **via**, não a política — o campo existia e só era atribuível por código. ⚠️ **Revogar não é remover**: um sujeito ausente cai na autoridade do token; revoga-se com `"capabilities": []`.
 
 A fundação é sólida e honesta — os gaps estão declarados no próprio código e banners, não escondidos.
 
@@ -129,3 +129,106 @@ Painel adversarial de **5 lentes** (segurança/autorização, loop-runtime, SRE/
 - A execução na microVM (`run-fclive-2`) foi observada ao vivo, **não em CI** — o mecanismo (ScopeGate corrigido) está provado em CI; a execução viva não.
 - O «16 turnos, nada selado» da linha de crypto-shred **não é verificável a partir do código** (não há log do run no repo); o mecanismo causal e o caminho ao vivo estão estabelecidos.
 - A margem «caminho token-only sem teste CI end-to-end», levantada pelo painel, foi **fechada** logo a seguir por `TestScopeTokenOnly_*` (commit `8281bcb`).
+
+---
+
+## Revisão 2026-08-08 — o ciclo de aprovação corrido AO VIVO
+
+> **Origem:** não foi uma auditoria, foi uma execução. Pediu-se «corra o ciclo de aprovação ao vivo na stack dev». O ciclo **não corria** — e não corria por seis razões independentes, nenhuma delas um bug num componente. Todas eram falhas de **encaixe**, num caminho cuja suite estava inteiramente verde.
+
+### Gap 2 (feedback de negação) e gap 3 (circuito negação→aprovação): **FECHADOS**
+
+O gap 3 — «não existe bridge `deny → aprovação → reexecução`» — está fechado e **provado ao vivo**, com o run a terminar com o conteúdo real do documento lido numa microVM Firecracker:
+
+```
+00:17:42  escalate  step-000001-tool-1                     → run SUSPENSO (waiting_on_human)
+          cerimónia four-eyes: alice+bob, 3 eixos distintos, attestation WebAuthn → grant durável
+          retoma com credencial NHI FRESCA (a original nunca é persistida)
+00:18:03  allow     step-000001-tool-1                     ← atravessou a cadeia INTEIRA
+00:18:03.764  [guest-agent] pedido: cmd="read" path="notes"  ← microVM real
+00:18:08  escalate  step-000002-tool-1                     ← a acção seguinte exige a SUA aprovação
+```
+
+O gap 2 fechou antes (marcador de negação no tail + breaker cablado, `60f5d64`/`f0c2bd8`).
+
+### Os seis defeitos de composição (todos corrigidos, todos com teste)
+
+| # | defeito | porque a suite verde não o via | commit |
+|---|---|---|---|
+| 1 | a escalada retornava de dentro do laço e **não capturava o turno** ⇒ retoma sem trajectória | o teste de composição **simulava** o replay com um modelo determinista | `bbd89b9` |
+| 2 | o **lease durável nunca é revogado** (só expira por TTL) ⇒ a própria réplica não re-hospedava o run que suspendeu | só aparece quando a mesma réplica tenta retomar | `de014a9` |
+| 3 | a suspensão é durável ⇒ uma **segunda escalada** tentava `waiting_on_human→waiting_on_human` e o run morria FALHADO | só aparece no segundo ciclo | `de014a9` |
+| 4 | o **`ApprovalGate` nunca foi ligado à cadeia** — a evidência viajava e ninguém a lia | o teste construía o seu próprio Reference Monitor | `aabf4eb` |
+| 5 | o **oráculo de autonomia** não sabia da aprovação ⇒ aprovar nunca satisfazia quem exigira a aprovação | o `escalate` vinha de um hook de teste, não do PDP | `4214b3b` |
+| 6 | o PEP **não sabia cumprir a obligation `autonomy`** ⇒ negava TODO o permit do oráculo | o `escalate` curto-circuita a cadeia ANTES do enforcement | `4214b3b` |
+
+Mais um de fronteira: a **reescrita args→`ExecRequest`** corria no despacho, depois de a preview ter sido calculada — o humano aprovava os args do modelo e o RM mediava o `ExecRequest`. Duas descrições do mesmo passo; o grant era emitido, encontrado e **consumido**, e a amarra falhava (`aabf4eb`).
+
+### Depois, os que os testes novos encontraram
+
+Ao escrever o teste de composição **pela cadeia de produção** (`NewSecuredRuntime` e `Bootstrap`, sem hooks de teste), a asserção «um turno reproduzido não pode ir ao modelo» deu 2 em vez de 1:
+
+- o decorador de retoma **nunca envolvia um `cfg.Model` injectado** (vivia no construtor por-ambiente do `main`);
+- o **plano de replay morria no detach do contexto** de `Submit` (`context.Background()`): **a retoma nunca reproduziu trajectória nenhuma**.
+
+Ao vivo isto ficara escondido porque o modelo, reinterrogado com o mesmo prompt, devolveu **por acaso** a mesma tool call — a preview coincidiu. Determinismo por sorte, não por desenho (`d676e04`, `1735d07`).
+
+### Gap 5 (`AuthoritySource` externa): **FECHADO**
+
+`Config.Authority` existia no ScopeGate mas só era atribuível **por código** — nenhum deployment o conseguia provisionar. Consequência: **não havia revogação**; um token válido valia até expirar. `AOS_AUTHORITY_FILE` liga um directório JSON montado (`03afcbb`).
+
+Provado ao vivo — o **mesmo token**, o mesmo objectivo, só o directório mudou:
+
+```
+antes:  seq=1 allow tool=doc_read cap=cap:fs.read
+depois: seq=1 deny  tool=doc_read cap=cap:fs.read denied_by=scope
+        reason="capability fora do escopo efectivo utilizador ∩ classe (default-deny)"
+```
+
+Duas notas que não são detalhe:
+
+- **Revogar não é remover.** Um sujeito **ausente** do directório NÃO é restringido — cai na autoridade do token. É o que torna seguro ligar um directório parcial, mas revoga-se listando-o com `"capabilities": []`.
+- **Não é assinado**, e é escolha: o directório só pode RESTRINGIR. Adulterá-lo nega acções (negação de serviço, visível e auditável) mas não concede nenhuma — a ampliação está estruturalmente fora do alcance do gate, que intersecta com o grant assinado pelo issuer.
+
+### Achado NOVO (não constava de nenhuma revisão): o audit não sabia atribuir
+
+O `MediationRecord` do RM traz `Effect`/`Code`/`DeniedBy`/`Reason`; o `AuditRecord` selado guardava **só o veredicto**. O log inviolável provava QUE uma acção foi recusada, não **por quem** nem **porquê** — e responder a isso obrigou, nesta sessão, a subir um segundo nó com o oráculo desligado e comparar.
+
+Fechado em `1b326d1` com **versão por-registo** (os selos de um WORM não se re-escrevem, e o arranque re-verifica a hash-chain fail-closed): cada registo verifica-se com as regras da SUA época. Compatibilidade provada sobre um log real — **236 partições** do WORM da stack dev, escrito pelo binário anterior, re-verificadas ao arranque pelo novo.
+
+Via de acesso em `6c88a7a` (`aos audit-trail`), porque selar sem dar por onde ler seria repetir o padrão que a sessão fechou.
+
+### Outro achado NOVO, revelado pelo anterior
+
+A atribuição recém-selada expôs, numa linha, um defeito introduzido nesta mesma sessão: ao impor a obligation `autonomy`, foi reconstruída no kernel uma **segunda tabela** de «que modos exigem humano», adivinhando os nomes (`sample` em vez de `post_hoc_sample`). L5 sobre uma acção `danger` — que por desenho **corre** — era negada. Corrigido eliminando a segunda tabela: o PDP emite o **veredicto**, o PEP impõe-no, e a igualdade das chaves entre camadas é verificada por teste (`9b32092`).
+
+### Suspensão durável
+
+O balde `suspended` do serviço era **in-memory** enquanto o registo de retoma, o pendente, o grant e a transição de estado eram todos duráveis. Um restart perdia a única peça volátil: `GET` passava a 404, a retoma dava `ErrRunNotSuspended`, e re-submeter o mesmo RunID **recomeçava do zero** um run à espera de um humano. Fechado em `1a04174` (o balde passa a cache; a fonte de verdade é a máquina de estados durável), provado com um `restart` a meio do ciclo.
+
+### Padrões, para não se repetirem
+
+Dois, e ambos apareceram mais do que uma vez:
+
+1. **Mecanismo sem via de acesso.** O `/approve` existia e nada produzia a perna assinada (→ `aos-issuer approve-sign`). O `Config.Authority` existia e nenhum deployment o provisionava (→ `AOS_AUTHORITY_FILE`). O `ResumeFromHuman` existia sem chamador. A atribuição, mal selada, não tinha por onde ser lida (→ `aos audit-trail`).
+2. **Duas tabelas da mesma verdade.** A preview calculada em dois sítios sobre `Call`s diferentes; o vocabulário de oversight reconstruído no kernel. Corrigidos eliminando a segunda cópia, não sincronizando-a.
+
+### Nota metodológica (a mais importante desta revisão)
+
+> **Um teste de composição que substitui a peça vizinha por um duplo NÃO é um teste de composição.**
+
+Os seis primeiros defeitos sobreviveram exactamente aí: cada peça testada isoladamente, e o encaixe testado contra um Reference Monitor construído à mão. A rede que ficou está em duas camadas — `integration/approval_chain_real_test.go` (cadeia `NewSecuredRuntime` com bundle assinado e oráculo ligado) e `cmd/aos/approval_cycle_node_test.go` (nó completo via `Bootstrap`, dois ciclos, a contar as idas ao modelo) — com âncoras de não-vacuidade explícitas, incluindo uma que omite o `ApprovalVerifier` e exige que o ciclo **não** feche.
+
+### Estado dos gaps após esta revisão
+
+| Gap | Estado |
+|---|---|
+| 1 · Nenhum efeito executa | ✅ fechado (`303cf47`, revisão anterior) |
+| 2 · Feedback de negação | ✅ fechado (`60f5d64` + breaker `f0c2bd8`) |
+| 3 · Negação→aprovação humana | ✅ **fechado e provado ao vivo** (7 commits desta sessão) |
+| 4 · DEMO-GRADE declarados | severidade já recalibrada; inalterado |
+| 5 · Labels OCI | ✅ fechado (revisão anterior) |
+| 5-bis · `AuthoritySource` externa | ✅ **fechado** (`03afcbb`) — revogação a funcionar |
+| **NOVO** · audit não atribuía a negação | ✅ **fechado** (`1b326d1` + `6c88a7a`) |
+
+Fora do âmbito desta sessão e **em aberto, com dono**: **D4/EPIC-16** (autoridade de identidade), **critério 42** (SAST/SCA), e o conteúdo de produção do directório de autoridade — que é decisão de deployment, não de código.
