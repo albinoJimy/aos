@@ -66,6 +66,13 @@ func (p *PDP) applyAutonomy(ctx context.Context, in Input, base Decision) Decisi
 			"domain":     domain,
 			"oversight":  mode.String(),
 			"risk_class": class.String(),
+			// A RESPOSTA, não o enunciado. Quem sabe se um modo exige humano é a
+			// taxonomia de autonomia — não o PEP, que vive noutra camada e não pode
+			// importar esta. Emitir o veredicto (em vez de deixar o nome do modo ser
+			// reinterpretado a jusante) elimina uma segunda tabela que pode divergir:
+			// divergiu, e o resultado foi `post_hoc_sample` — que CORRE — a ser tratado
+			// como exigente e a negar acções legítimas.
+			paramRequiresHuman: boolParam(mode.RequiresHumanGate()),
 		},
 	}
 	out.Obligations = append(append([]Obligation(nil), base.Obligations...), ob)
@@ -96,6 +103,22 @@ func (p *PDP) applyAutonomy(ctx context.Context, in Input, base Decision) Decisi
 // obligationAutonomy é o Type da obligation que transporta a decisão de oversight
 // de autonomia para o PEP/audit (nível/domínio/modo/classe).
 const obligationAutonomy = "autonomy"
+
+// paramRequiresHuman é a chave do VEREDICTO de oversight na obligation de autonomia:
+// "true" ⇒ este efeito só é libertado com prova de aprovação humana verificada. É o
+// contrato entre o PDP (que sabe compor nível × classe) e o PEP (que impõe).
+//
+// Tem de ser o mesmo símbolo que o Reference Monitor lê — ver
+// referencemonitor.ParamAutonomyRequiresHuman, cuja igualdade é selada por teste.
+const paramRequiresHuman = "requires_human"
+
+// boolParam serializa um booleano para os Params de uma obligation.
+func boolParam(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
 
 // Atributos do span de decisão anotados pelo overlay de autonomia (além dos de
 // [autonomy.ExposeLevel]): o efeito de base e o efeito final, para tornar visível

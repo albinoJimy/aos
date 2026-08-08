@@ -45,20 +45,20 @@ const (
 	ObligationAutonomy = "autonomy"
 )
 
-// paramOversight é a chave do modo de oversight na [ObligationAutonomy].
-const paramOversight = "oversight"
+// ParamAutonomyRequiresHuman é a chave do VEREDICTO de oversight na
+// [ObligationAutonomy]: "true" ⇒ o efeito só é libertado com prova de aprovação humana
+// verificada nesta call.
+//
+// O PEP lê o VEREDICTO, não o nome do modo. Reinterpretar o nome exigiria uma segunda
+// cópia da taxonomia de autonomia aqui no kernel — e uma cópia diverge: divergiu, e o
+// modo `post_hoc_sample` (que CORRE) foi tratado como exigente, negando acções legítimas
+// até isto ser observado numa corrida real. Quem sabe compor nível × classe é o PDP; o
+// PEP impõe o que ele decidiu.
+const ParamAutonomyRequiresHuman = "requires_human"
 
-// oversightRequiresHuman enumera os modos de oversight que EXIGEM um humano no ciclo
-// (ADR-013). Vocabulário fechado: um modo desconhecido é tratado como exigente (o PEP
-// não afrouxa perante um valor que não reconhece).
-func oversightRequiresHuman(mode string) bool {
-	switch mode {
-	case "run", "sample":
-		return false
-	default: // suggest, confirm, batch e qualquer valor não reconhecido
-		return true
-	}
-}
+// paramOversight é a chave do NOME do modo. Só para a mensagem de negação (atribuição
+// legível); nunca para decidir.
+const paramOversight = "oversight"
 
 // redactedMarker é o valor determinístico que substitui um campo redigido. Não
 // revela o comprimento nem qualquer fragmento do valor original.
@@ -113,13 +113,20 @@ func enforceObligations(call *Call, obligations []Obligation) (string, bool) {
 // uma decisão a que faltou o gate — e o PEP não a liberta.
 func enforceAutonomy(call *Call, ob Obligation) (string, bool) {
 	mode := strings.TrimSpace(ob.Params[paramOversight])
-	if !oversightRequiresHuman(mode) {
-		return "", true // corre sem gate (ou é amostrado post-hoc): nada a impor aqui
+	switch strings.TrimSpace(ob.Params[ParamAutonomyRequiresHuman]) {
+	case "false":
+		return "", true // corre (com ou sem amostragem post-hoc): nada a impor aqui
+	case "true":
+		if call.humanApproved == nil {
+			return fmt.Sprintf("oversight de autonomia %q exige aval humano e a call nao traz aprovacao verificada", mode), false
+		}
+		return "", true
+	default:
+		// Veredicto ausente ou não reconhecido: o PEP não o adivinha a partir do nome do
+		// modo — foi essa adivinhação que introduziu a divergência. Fail-closed, como
+		// qualquer obrigação que não se sabe cumprir.
+		return fmt.Sprintf("obligation de autonomia sem veredicto %q utilizavel (oversight %q): efeito negado (fail-closed)", ParamAutonomyRequiresHuman, mode), false
 	}
-	if call.humanApproved == nil {
-		return fmt.Sprintf("oversight de autonomia %q exige aval humano e a call nao traz aprovacao verificada", mode), false
-	}
-	return "", true
 }
 
 // enforceRegion impõe a obrigação de soberania de dados: o recurso-alvo tem de

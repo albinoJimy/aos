@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 )
 
 // TestAutonomyHumanGateSatisfiedNaoVoltaAEscalar é o fecho do ciclo de AOS-021. Sem isto o
@@ -84,5 +85,21 @@ func TestAutonomyHumanGateIrrelevanteSemGate(t *testing.T) {
 	}
 	if a.Effect != Permit || b.Effect != a.Effect || a.Reason != b.Reason {
 		t.Fatalf("sem gate exigido a prova e IRRELEVANTE: %s/%q vs %s/%q", a.Effect, a.Reason, b.Effect, b.Reason)
+	}
+}
+
+// TestAutonomy_ChaveDoVeredictoNaoDiverge sela o contrato entre as duas camadas. O PDP
+// emite o veredicto e o Reference Monitor impõe-no; se as duas chaves divergissem, o PEP
+// deixaria de o encontrar e — fail-closed — passaria a negar TUDO o que o oráculo permite.
+// A igualdade é verificada, não assumida: é exactamente o tipo de acoplamento por string
+// que já divergiu uma vez neste caminho.
+func TestAutonomy_ChaveDoVeredictoNaoDiverge(t *testing.T) {
+	if paramRequiresHuman != referencemonitor.ParamAutonomyRequiresHuman {
+		t.Fatalf("a chave do veredicto divergiu entre PDP (%q) e PEP (%q)",
+			paramRequiresHuman, referencemonitor.ParamAutonomyRequiresHuman)
+	}
+	if obligationAutonomy != referencemonitor.ObligationAutonomy {
+		t.Fatalf("o tipo da obligation divergiu: PDP %q vs PEP %q",
+			obligationAutonomy, referencemonitor.ObligationAutonomy)
 	}
 }
