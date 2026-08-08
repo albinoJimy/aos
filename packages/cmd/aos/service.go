@@ -32,6 +32,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	"github.com/aos-ref/kernel/agent-runtime/state"
 	"github.com/aos-ref/kernel/agent-runtime/worker"
 )
 
@@ -322,6 +323,14 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 // corre sob um contexto próprio do serviço (o run sobrevive ao retorno de Submit e só é
 // cancelado por [Shutdown]).
 func (s *NodeService) Submit(ctx context.Context, goal agentruntime.Goal) error {
+	return s.submit(ctx, goal, false)
+}
+
+// submit é o Submit com o interruptor da RETOMA. resuming=true vem exclusivamente de
+// [NodeService.Resume] e dispensa a recusa por suspensão — é precisamente o run suspenso
+// que se está a re-hospedar, e o log continua a dizer `waiting_on_human` até o arranque o
+// repor em `running`. Nenhuma outra via o liga.
+func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resuming bool) error {
 	if goal.RunID == "" {
 		return ErrEmptyRunID
 	}
@@ -353,6 +362,23 @@ func (s *NodeService) Submit(ctx context.Context, goal agentruntime.Goal) error 
 	rs := &runState{runID: runID, done: make(chan struct{})}
 	s.runs[runID] = rs // RESERVA — bloqueia duplicados enquanto adquirimos o lease
 	s.mu.Unlock()
+
+	// (2-bis) SUSPENSÃO DURÁVEL (AOS-021). O balde acima é um cache que um restart esvazia;
+	// o log não. Sem esta consulta, re-submeter depois de um restart RECOMEÇARIA do zero um
+	// run que está à espera de um humano — perdendo a trajectória e deixando o pendente e o
+	// grant órfãos. FAIL-CLOSED: uma leitura que falha recusa a admissão, em vez de admitir
+	// sobre um estado que não se conseguiu ler.
+	if !resuming {
+		susp, serr := s.suspendedDurably(ctx, runID)
+		if serr != nil {
+			s.unreserve(rs)
+			return fmt.Errorf("aos: ler o estado duravel do run %q: %w", runID, serr)
+		}
+		if susp {
+			s.unreserve(rs)
+			return ErrRunSuspended
+		}
+	}
 
 	// (3) POSSE por lease FORA do mutex (I/O no Event Store). Sem roubo: um lease vivo
 	// detido por outra réplica ⇒ (_, false, nil) ⇒ não hospeda.
@@ -786,14 +812,71 @@ func (s *NodeService) Outcome(runID string) (RunOutcome, bool) {
 // Suspended indica se o run está SUSPENSO à espera de aval humano (AOS-021) — não
 // terminou, e é retomável por POST /runs/{id}/resume. Devolve também o desfecho parcial
 // (o Result com Escalated=true e a preview da acção que aguarda decisão).
-func (s *NodeService) Suspended(runID string) (RunOutcome, bool) {
+//
+// O balde em memória é um CACHE, não a verdade: um run desconhecido desta réplica é
+// procurado no log (a máquina de estados durável do run). Sem isso, um restart do nó
+// tornaria irretomável um run cujo registo de retoma, pendente e grant estão todos
+// persistidos — o operador aprovaria e nada consumiria a aprovação.
+func (s *NodeService) Suspended(ctx context.Context, runID string) (RunOutcome, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rs, ok := s.suspended[runID]
-	if !ok {
+	if ok {
+		defer s.mu.Unlock()
+		return RunOutcome{RunID: rs.runID, Result: rs.result, Err: rs.err, Panicked: rs.panicked}, true
+	}
+	_, done := s.completed[runID]
+	_, running := s.runs[runID]
+	s.mu.Unlock()
+	// Esta réplica CONHECE o run (em curso ou com desfecho retido): a contabilidade em
+	// memória é autoritativa e não há nada a reconstruir. Consultar o log aqui reportaria
+	// como suspenso um run que já foi arquivado como falhado — por exemplo o fail-closed
+	// de hostRun, que marca FALHADO um run cuja transição durável já ocorreu.
+	if done || running {
 		return RunOutcome{}, false
 	}
-	return RunOutcome{RunID: rs.runID, Result: rs.result, Err: rs.err, Panicked: rs.panicked}, true
+	return s.suspendedFromLog(ctx, runID)
+}
+
+// suspendedFromLog reconstitui a suspensão de um run que esta réplica não conhece: o
+// estado durável diz `waiting_on_human`. O desfecho parcial não sobrevive em memória, mas
+// o TURNO em que o run parou está no pendente durável — reporta-se esse, em vez de zero
+// (que seria uma segunda mentira operacional, depois da que a suspensão já corrigiu).
+//
+// Uma falha de leitura resolve-se como "não suspenso": é um caminho de CONSULTA, e o 404
+// uniforme e não-enumerável é preferível a inventar um estado. A admissão (Submit) e a
+// retoma tratam o erro de leitura como fatal — ver [NodeService.suspendedDurably].
+func (s *NodeService) suspendedFromLog(ctx context.Context, runID string) (RunOutcome, bool) {
+	susp, err := s.suspendedDurably(ctx, runID)
+	if err != nil || !susp {
+		return RunOutcome{}, false
+	}
+	oc := RunOutcome{RunID: runID, Result: agentruntime.Result{Escalated: true}}
+	if s.node != nil && s.node.PendingApprovals != nil {
+		if recs, perr := s.node.PendingApprovals.ListForRun(ctx, runID); perr == nil {
+			for _, r := range recs {
+				if r.Turn > oc.Result.Turns {
+					oc.Result.Turns = r.Turn
+				}
+			}
+		}
+	}
+	return oc, true
+}
+
+// suspendedDurably lê do log se o run está À ESPERA DE HUMANO. É a fonte de verdade da
+// suspensão; o balde em memória apenas a espelha enquanto o processo viver.
+//
+// Sem registo de gates de estado composto, devolve false sem erro: um deployment que não
+// tem a máquina de estados também não tem suspensão para recuperar.
+func (s *NodeService) suspendedDurably(ctx context.Context, runID string) (bool, error) {
+	if s.node == nil || s.node.stateGates == nil {
+		return false, nil
+	}
+	st, err := s.node.stateGates.currentState(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	return st == state.WaitingOnHuman, nil
 }
 
 // Wait bloqueia até o run runID terminar (sair do registo de em-curso) e devolve o seu

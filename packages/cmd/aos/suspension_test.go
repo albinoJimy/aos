@@ -116,7 +116,7 @@ func TestSuspensao_NaoEhTerminado(t *testing.T) {
 		t.Fatal("um run suspenso NÃO pode aparecer como terminado (era a mentira operacional)")
 	}
 	// (2) Aparece como suspenso, com o desfecho parcial.
-	oc, susp := svc.Suspended("run-esperando")
+	oc, susp := svc.Suspended(context.Background(), "run-esperando")
 	if !susp {
 		t.Fatal("o run devia constar como suspenso")
 	}

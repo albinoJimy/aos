@@ -65,6 +65,20 @@ func (g *runStateGates) Open(ctx context.Context, runID string, token state.Fenc
 	return nil
 }
 
+// currentState reconstrói do log o estado DURÁVEL de um run sem abrir gate, sem registar
+// nada e sem transitar nada — é uma LEITURA. Um run sem transições (ou sem stream) é
+// [state.Ready], o estado inicial.
+//
+// É o que permite ao serviço saber que um run ficou À ESPERA DE HUMANO mesmo depois de um
+// restart: a contabilidade em memória do nó é um cache, a máquina de estados é a verdade.
+func (g *runStateGates) currentState(ctx context.Context, runID string) (state.State, error) {
+	m, err := state.NewMachine(g.store, runID)
+	if err != nil {
+		return "", err
+	}
+	return m.Rebuild(ctx)
+}
+
 // Resolve devolve o [control.StateGate] do run — o gates func de [control.NewLoopSteer].
 // Um run não aberto devolve nil: [control.LoopSteer.GracefulPause] trata nil como "sem
 // gate" (a pausa desse run é um no-op fail-safe, o loop continua), nunca um panic.

@@ -643,7 +643,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 func isIdempotentResubmit(err error) bool {
 	return errors.Is(err, ErrRunAlreadyInProgress) ||
 		errors.Is(err, ErrRunAlreadyCompleted) ||
-		errors.Is(err, ErrRunLeaseHeldElsewhere)
+		errors.Is(err, ErrRunLeaseHeldElsewhere) ||
+		// SUSPENSO à espera de humano (AOS-021): é a MESMA classe — um run_id que esta
+		// réplica conhece e cuja submissão não produz trabalho novo. Sem este caso caía no
+		// default e devolvia 500, que lê como avaria do nó quando é uma recusa legítima.
+		// O estado real (waiting_on_human + o que falta decidir) obtém-se em
+		// GET /runs/{id}, que corre sob a credencial forte do read-path soberano — é lá que
+		// a verdade se conta, não numa resposta de submissão potencialmente anónima.
+		errors.Is(err, ErrRunSuspended)
 }
 
 // submitErrorStatus mapeia os erros GENUÍNOS de [NodeService.Submit] a códigos HTTP (os
@@ -746,7 +753,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	// SUSPENSO à espera de aval humano (AOS-021)? Verificado ANTES de "terminado": um run
 	// escalado NÃO terminou — reportá-lo como "completed" seria uma mentira operacional
 	// (o operador julgaria o trabalho feito quando falta a decisão dele).
-	if oc, susp := h.svc.Suspended(runID); susp {
+	if oc, susp := h.svc.Suspended(r.Context(), runID); susp {
 		if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
 			return
 		}

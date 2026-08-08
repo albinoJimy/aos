@@ -53,12 +53,30 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 		return ErrResumeUnavailable
 	}
 
-	// (1) Está suspenso?
+	// (1) Está suspenso? O balde em memória é um cache — um restart do nó esvazia-o sem
+	// que a suspensão deixe de ser verdade (registo de retoma, pendente, grant e transição
+	// são todos duráveis). Um run que esta réplica não conhece é procurado NO LOG; sem
+	// isso, um restart tornaria irretomável um run perfeitamente recuperável.
+	//
+	// FAIL-CLOSED na leitura: não se retoma sobre um estado que não se conseguiu ler.
 	s.mu.Lock()
 	rs, susp := s.suspended[runID]
+	_, done := s.completed[runID]
+	_, running := s.runs[runID]
 	s.mu.Unlock()
 	if !susp || rs == nil {
-		return ErrRunNotSuspended
+		rs = nil
+		if done || running {
+			// Esta réplica conhece-o e não como suspenso: a memória é autoritativa.
+			return ErrRunNotSuspended
+		}
+		durable, derr := s.suspendedDurably(ctx, runID)
+		if derr != nil {
+			return fmt.Errorf("aos: ler o estado duravel do run %q: %w", runID, derr)
+		}
+		if !durable {
+			return ErrRunNotSuspended
+		}
 	}
 
 	// (2) É reconstituível?
@@ -79,17 +97,24 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	}
 
 	// (4) Sai do balde de suspensos e volta a ser submetido. A REMOÇÃO acontece ANTES do
-	// Submit porque este recusaria um run ainda listado como suspenso (ErrRunSuspended);
-	// se o Submit falhar, repõe-se — o run não pode ficar nem suspenso nem submetido.
+	// Submit porque, enquanto lá estiver, GET /runs/{id} continuaria a reportar
+	// `waiting_on_human` para um run que já voltou a correr; se o Submit falhar, repõe-se
+	// — o run não pode ficar nem suspenso nem submetido. Depois de um restart não há nada
+	// a repor (rs == nil): a suspensão continua verdadeira no log e é de lá que a próxima
+	// tentativa a lê.
 	s.mu.Lock()
 	delete(s.suspended, runID)
 	s.mu.Unlock()
 
 	goal := rec.GoalWith(credential)
-	if err := s.Submit(withReplayPlan(ctx, plan), goal); err != nil {
-		s.mu.Lock()
-		s.suspended[runID] = rs
-		s.mu.Unlock()
+	// resuming=true: é este o run suspenso a ser re-hospedado, e o log só passa a dizer
+	// `running` dentro do arranque — a recusa por suspensão não se aplica a si próprio.
+	if err := s.submit(withReplayPlan(ctx, plan), goal, true); err != nil {
+		if rs != nil {
+			s.mu.Lock()
+			s.suspended[runID] = rs
+			s.mu.Unlock()
+		}
 		return fmt.Errorf("aos: re-submeter run %q na retoma: %w", runID, err)
 	}
 	s.log("run %q RETOMADO: %d turno(s) reproduzidos da captura, credencial fresca, cadeia de mediacao COMPLETA a correr de novo", runID, len(plan))
