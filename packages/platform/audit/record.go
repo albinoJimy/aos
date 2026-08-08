@@ -94,8 +94,28 @@ type AuditRecord struct {
 	Partition string
 	// Timestamp é observacional (não é fonte de ordem; a ordem é AuditSeq).
 	Timestamp time.Time
+	// SchemaVersion é a versão do formato do CONTEÚDO SELADO deste registo. É gravada
+	// com ele e escolhe a serialização canónica na verificação — é o que permite
+	// acrescentar campos ao selo sem invalidar tudo o que já foi selado (a hash-chain de
+	// um WORM não se re-escreve; um registo antigo tem de continuar a verificar com as
+	// regras da SUA época). Zero ⇒ [SchemaV2], o formato anterior a esta capacidade.
+	// Atribuída por [Store.Append] quando o produtor a deixa vazia.
+	SchemaVersion uint8
 	// Decision é o veredicto (allow/deny/escalate).
 	Decision Decision
+	// Code, DeniedBy e Reason são a ATRIBUIÇÃO da decisão: o código de enumeração
+	// fechada, o gate que a produziu e a explicação. Sem eles o log inviolável prova
+	// QUE uma acção foi recusada mas não POR QUEM nem PORQUÊ — e uma recusa que não se
+	// consegue atribuir obriga a bissectar o sistema com experiências de controlo para
+	// responder à pergunta mais básica de uma auditoria.
+	//
+	// Não introduzem classe nova de exposição: o sink de mediação do Reference Monitor
+	// para o Event Store já persiste os três (ver referencemonitor.mediationPayload), e
+	// o WORM é a superfície MAIS protegida das duas (read-path soberano + hash-chain).
+	// Vazios num allow, onde não há nada a atribuir.
+	Code     string
+	DeniedBy string
+	Reason   string
 	// Principal é a identidade responsável e a cadeia de delegação.
 	Principal Principal
 	// Capability é o direito escopado exercido/negado (ex.: "fs:write:/reports/*").
@@ -137,6 +157,42 @@ type AuditRecord struct {
 // (AOS-011). O bump garante que hashes v1 e v2 nunca são comparados como iguais.
 const canonicalDomain = "aos.audit.v2"
 
+// Versões do formato do conteúdo selado. Cada uma tem a SUA serialização canónica e o seu
+// separador de domínio; um registo verifica-se sempre com as regras da versão com que foi
+// escrito, que viaja no próprio registo ([AuditRecord.SchemaVersion]).
+//
+// PORQUE É POR-REGISTO E NÃO GLOBAL: um WORM é append-only — os selos antigos não se
+// re-escrevem. Uma constante global de domínio só serve enquanto o formato nunca muda;
+// mudá-la invalidaria de uma vez toda a cadeia já escrita e, como o arranque do nó
+// RE-VERIFICA a hash-chain fail-closed, o nó deixaria de arrancar sobre o seu próprio log.
+const (
+	// SchemaV2 é o formato anterior à atribuição da decisão. É o default de um registo
+	// sem versão gravada (tudo o que foi selado antes desta capacidade).
+	SchemaV2 uint8 = 2
+	// SchemaV3 acrescenta ao selo a ATRIBUIÇÃO: code, denied_by e reason.
+	SchemaV3 uint8 = 3
+	// CurrentSchemaVersion é a versão com que se selam registos NOVOS.
+	CurrentSchemaVersion = SchemaV3
+)
+
+// canonicalDomainV3 é o separador de domínio do formato v3. Distinto do v2 para que os
+// hashes das duas épocas nunca possam colidir nem ser comparados como iguais.
+const canonicalDomainV3 = "aos.audit.v3"
+
+// domainFor devolve o separador de domínio da versão de um registo. Uma versão
+// desconhecida (formato de futuro, ou log corrompido) NÃO é adivinhada: devolve "" e o
+// chamador trata-a como não-verificável — fail-closed, nunca "verifica" por omissão.
+func domainFor(v uint8) string {
+	switch v {
+	case 0, SchemaV2:
+		return canonicalDomain
+	case SchemaV3:
+		return canonicalDomainV3
+	default:
+		return ""
+	}
+}
+
 // NOTA (audit_id — schema §5, deliberadamente adiado para EPIC-08): o schema
 // canónico prevê um audit_id (ULID único por registo) além da ordem total
 // (Partition, AuditSeq). No MVP in-memory a identidade por (Partition, AuditSeq)
@@ -154,7 +210,7 @@ const canonicalDomain = "aos.audit.v2"
 // dependente de runtime — o mesmo conteúdo produz sempre os mesmos bytes.
 func canonicalContent(rec AuditRecord) []byte {
 	buf := make([]byte, 0, 256)
-	buf = putString(buf, canonicalDomain)
+	buf = putString(buf, domainFor(rec.SchemaVersion))
 	buf = putUint64(buf, rec.AuditSeq)
 	buf = putString(buf, rec.Partition)
 	// Timestamp observacional: UnixNano em UTC, largura fixa (determinístico,
@@ -213,6 +269,13 @@ func canonicalContent(rec AuditRecord) []byte {
 		buf = putBytes(buf, rec.PayloadRef.ContentHash)
 		buf = putString(buf, rec.PayloadRef.KeyRef)
 		buf = putString(buf, rec.PayloadRef.SubjectID)
+	}
+	// v3 e seguintes: ATRIBUIÇÃO da decisão, no FIM e só nesta versão — um registo v2
+	// produz exactamente os mesmos bytes de antes, e por isso continua a verificar.
+	if rec.SchemaVersion >= SchemaV3 {
+		buf = putString(buf, rec.Code)
+		buf = putString(buf, rec.DeniedBy)
+		buf = putString(buf, rec.Reason)
 	}
 	return buf
 }

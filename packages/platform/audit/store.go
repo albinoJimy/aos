@@ -53,6 +53,7 @@ func (s *MemStore) Append(_ context.Context, rec AuditRecord) (AuditRecord, erro
 		rec.AuditSeq = last.AuditSeq + 1
 	}
 	rec.PrevHash = prev
+	stampSchema(&rec)
 	rec.EntryHash = ComputeEntryHash(prev, rec)
 
 	// Cópia defensiva das slices mutáveis para que o chamador não altere o estado

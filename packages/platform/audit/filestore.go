@@ -145,6 +145,7 @@ func (s *FileStore) Append(_ context.Context, rec AuditRecord) (AuditRecord, err
 		rec.AuditSeq = last.AuditSeq + 1
 	}
 	rec.PrevHash = prev
+	stampSchema(&rec)
 	rec.EntryHash = ComputeEntryHash(prev, rec)
 	sealed := cloneRecord(rec)
 

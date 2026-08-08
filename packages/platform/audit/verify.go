@@ -91,6 +91,14 @@ func verifyRange(ctx context.Context, store Store, partition string, from, to ui
 				"prev_hash nao corresponde ao entry_hash anterior")
 		}
 
+		// Versão de formato conhecida? Cada registo verifica-se com as regras da SUA
+		// época (a versão viaja no registo); uma que este binário não conheça torna o
+		// conteúdo canónico incomputável e a integridade não-verificável.
+		if domainFor(rec.SchemaVersion) == "" {
+			return tamper(TamperUnknownSchema, partition, rec.AuditSeq,
+				"versao de formato do registo desconhecida deste binario")
+		}
+
 		// Integridade do próprio registo: recalcular o EntryHash a partir do
 		// conteúdo. Divergência ⇒ algum campo foi mutado.
 		if !bytes.Equal(ComputeEntryHash(rec.PrevHash, rec), rec.EntryHash) {

@@ -24,6 +24,18 @@ func GenesisHash(partition string) []byte {
 // Partition e todos os metadados de responsabilização, qualquer mutação de um
 // campo — ou do prevHash herdado — altera o EntryHash e propaga-se a todos os
 // EntryHash subsequentes da cadeia.
+// stampSchema atribui a versão de formato a um registo NOVO, imediatamente antes de ele
+// ser selado. Um produtor que a fixe explicitamente é respeitado — é como se escrevem
+// registos numa versão antiga (compatibilidade e testes de regressão do formato).
+//
+// É deliberado que só o caminho de escrita a atribua: a versão faz parte do CONTEÚDO
+// SELADO, pelo que carimbá-la mais tarde mudaria o hash de um registo já na cadeia.
+func stampSchema(rec *AuditRecord) {
+	if rec.SchemaVersion == 0 {
+		rec.SchemaVersion = CurrentSchemaVersion
+	}
+}
+
 func ComputeEntryHash(prevHash []byte, rec AuditRecord) []byte {
 	h := sha256.New()
 	h.Write(prevHash)

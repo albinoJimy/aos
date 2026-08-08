@@ -81,6 +81,13 @@ const (
 	// TamperChainBroken — o PrevHash de um registo não corresponde ao EntryHash do
 	// anterior (encadeamento quebrado; sintoma de inserção/remoção/mutação vizinha).
 	TamperChainBroken TamperType = "chain_broken"
+	// TamperUnknownSchema — o registo declara uma versão de formato que este binário
+	// não sabe serializar, logo o seu conteúdo canónico não é computável e a
+	// integridade NÃO é verificável. Fail-closed como qualquer outra adulteração, mas
+	// com tipo PRÓPRIO: a causa provável é um binário mais ANTIGO do que o log (ou um
+	// campo de versão corrompido), e reportá-lo como "mutação" mandaria o operador
+	// procurar um adulterador onde há um problema de versões.
+	TamperUnknownSchema TamperType = "unknown_schema"
 )
 
 // VerifyError identifica o registo e o tipo de adulteração detectados na

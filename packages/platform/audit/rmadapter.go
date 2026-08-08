@@ -67,6 +67,13 @@ func (a *MediationSink) RecordMediation(ctx context.Context, rec referencemonito
 		Decision:      decisionFor(rec.Effect),
 		Capability:    rec.Capability,
 		PolicyVersion: rec.PolicyVersion,
+		// ATRIBUIÇÃO da decisão. Sem estes três, o selo prova QUE a acção foi recusada
+		// mas não POR QUEM nem PORQUÊ — e responder a isso obrigava a bissectar o
+		// sistema com experiências de controlo, que é o oposto do que um log de
+		// auditoria existe para fazer. Vêm do MESMO MediationRecord que já os traz.
+		Code:     rec.Code,
+		DeniedBy: rec.DeniedBy,
+		Reason:   rec.Reason,
 		// Correlação e alvo selados na cadeia (não só na Partition): run_id/step_id/
 		// parent_step_id/request_id, tool_id, resource e contexto de decisão. Assim
 		// cada registo selado é atribuível à chamada mediada concreta (AOS-011-Q3).
