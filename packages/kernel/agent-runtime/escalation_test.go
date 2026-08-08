@@ -121,6 +121,42 @@ func TestEscalation_NaoConfirmaAActivity(t *testing.T) {
 	}
 }
 
+// spyCapturer grava as capturas recebidas.
+type spyCapturer struct{ caps []TurnCapture }
+
+func (c *spyCapturer) Capture(_ context.Context, t TurnCapture) error {
+	c.caps = append(c.caps, t)
+	return nil
+}
+
+// TestEscalation_CapturaOTurnoEscalado é a guarda da RETOMA. A retoma reproduz os turnos
+// 1..N a partir das CAPTURAS; se o turno escalado não for capturado, o registo de retoma
+// existe mas a trajectória está vazia e o run suspenso fica IRRECUPERÁVEL — foi o que
+// aconteceu ao vivo (replay: trajectória vazia). A escalada retorna de dentro do laço de
+// tool calls, logo tem de capturar ANTES de retornar.
+func TestEscalation_CapturaOTurnoEscalado(t *testing.T) {
+	cap := &spyCapturer{}
+	sink := &spySink{}
+	rt, _ := newEscalationRuntime(t, sink, WithCapturer(cap))
+	res, err := rt.Run(context.Background(), sampleGoal())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.Escalated {
+		t.Fatalf("pré-condição: o run devia ter escalado; res=%+v", res)
+	}
+	if len(cap.caps) != 1 {
+		t.Fatalf("o turno escalado TEM de ser capturado (senão a retoma não tem trajectória); capturas=%d", len(cap.caps))
+	}
+	c := cap.caps[0]
+	if c.Turn != 1 || len(c.Response.ToolCalls) != 1 {
+		t.Fatalf("a captura tem de conter a resposta do modelo do turno escalado: %+v", c)
+	}
+	if len(c.ToolResults) != 1 || c.ToolResults[0].Denial == nil {
+		t.Fatalf("a captura tem de conter o resultado da call escalada com o marcador de negação: %+v", c.ToolResults)
+	}
+}
+
 // TestEscalation_SemSinkComportamentoInalterado: sem [WithEscalationSink] o escalate
 // continua a ser tratado como uma negação (o run prossegue) — retro-compatível.
 func TestEscalation_SemSinkComportamentoInalterado(t *testing.T) {

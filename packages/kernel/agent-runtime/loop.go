@@ -118,6 +118,7 @@ type Runtime struct {
 	windowFactory    WindowFactory          // AOS-037: dono único do tail/assembly (D-TAIL)
 	compaction       CompactionTrigger      // AOS-043: compressão em checkpoint
 	dispatcher       ActivityDispatcher     // AOS-021: despacho durável do efeito
+	callRewriter     CallRewriter           // AOS-005/064: forma final do efeito, na construção
 	assemblyVersion  string
 	defaultMaxTurns  int
 }
@@ -137,6 +138,22 @@ func WithCheckpointer(c Checkpointer) Option { return func(rt *Runtime) { rt.che
 // WithCapturer injecta o capturer de não-determinismo (ponto de ligação AOS-016).
 // Default [noopCapturer] — sem ele o comportamento de AOS-013 é inalterado.
 func WithCapturer(c Capturer) Option { return func(rt *Runtime) { rt.capturer = c } }
+
+// CallRewriter dá a FORMA FINAL ao efeito antes de ele ser descrito seja a quem for: a
+// Call que sai daqui é a que o RM medeia, a que o step-ledger indexa, a que o audit sela
+// e a que o humano vê na preview de aprovação. Um erro é fail-closed — nenhum efeito
+// ocorre e a tool call materializa-se como Deny no tail.
+//
+// O caso de uso é a mediação de sandbox (AOS-005/AOS-064): os args do modelo (untrusted)
+// preenchem slots nomeados de um comando FIXO de configuração trusted.
+type CallRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
+
+// CodeEffectRewrite é o Code de Deny quando o [CallRewriter] recusa a Call (ex.: args do
+// modelo malformados). Nenhum efeito ocorre.
+const CodeEffectRewrite = "E_EFFECT_REWRITE"
+
+// WithCallRewriter injecta o [CallRewriter]. Default: nenhum (Call inalterada).
+func WithCallRewriter(r CallRewriter) Option { return func(rt *Runtime) { rt.callRewriter = r } }
 
 // WithAssemblyVersion sobrepõe a versão do assembler gravada no manifesto (por
 // omissão [AssemblyVersion]). Útil para testes de replay/versão.
@@ -349,6 +366,31 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// turnCaptured acumula os resultados DESTE turno (com a invocação original)
 		// para a captura de não-determinismo (AOS-016), sem afectar res.ToolResults.
 		var turnCaptured []CapturedToolResult
+		// captureTurn é uma closure porque a captura tem DOIS pontos de saída: o fim
+		// normal do turno e a ESCALADA (AOS-021), que retorna de dentro do laço. Um run
+		// suspenso cuja retoma depende de reproduzir a trajectória TEM de ter o turno
+		// escalado capturado — sem isto o replay encontra a trajectória vazia e a retoma
+		// é impossível. Lê turnCaptured no momento da chamada (captura por referência).
+		captureTurn := func() error {
+			if err := rt.capturer.Capture(ctx, TurnCapture{
+				RunID:       goal.RunID,
+				StepID:      stepID,
+				Turn:        turn,
+				Response:    resp,
+				ToolResults: turnCaptured,
+				Producer:    producer,
+				// AOS-093: o TITULAR do run (o principal, ADR-003) sob cuja chave
+				// por-titular o capturer cifra o conteúdo não-determinístico antes do ES.
+				Subject: goal.Principal.NHIID,
+				// AOS-218: a correcção de steer TRUSTED que o turno ANTERIOR injectou no tail
+				// (leading correction deste turno). Vazia nos runs sem steer — captura
+				// byte-idêntica. Capturá-la aqui é o que torna o replay do run steerado fiel.
+				LeadingCorrection: pendingCorrection,
+			}); err != nil {
+				return fmt.Errorf("%w: turno %d: %w", ErrCapture, turn, err)
+			}
+			return nil
+		}
 		for j, inv := range resp.ToolCalls {
 			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
 			if err != nil {
@@ -376,6 +418,13 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 					ResourceRegion: out.Call.Resource.Region,
 					Preview:        referencemonitor.ApprovalPreview(out.Call),
 				}
+				// A CAPTURA VEM PRIMEIRO: a retoma reproduz os turnos 1..N a partir das
+				// capturas. Sem capturar ESTE turno, o registo de retoma existe mas a
+				// trajectória está vazia e o run suspenso fica irrecuperável. Fail-closed
+				// pela mesma razão que a escalada: sem captura não há retoma possível.
+				if err := captureTurn(); err != nil {
+					return res, err
+				}
 				if err := rt.escalation.Escalate(ctx, pending); err != nil {
 					// Fail-closed: se a suspensão durável falha, prosseguir deixaria o
 					// agente a avançar como se nada tivesse ficado por decidir.
@@ -401,22 +450,8 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// reconstruir a trajectória sem re-executar o modelo nem os efeitos. É
 		// ADITIVA: default no-op ⇒ AOS-013 inalterado. Corre DEPOIS do despacho
 		// (para captar os resultados das tools) e ANTES da verificação.
-		if err := rt.capturer.Capture(ctx, TurnCapture{
-			RunID:       goal.RunID,
-			StepID:      stepID,
-			Turn:        turn,
-			Response:    resp,
-			ToolResults: turnCaptured,
-			Producer:    producer,
-			// AOS-093: o TITULAR do run (o principal, ADR-003) sob cuja chave
-			// por-titular o capturer cifra o conteúdo não-determinístico antes do ES.
-			Subject: goal.Principal.NHIID,
-			// AOS-218: a correcção de steer TRUSTED que o turno ANTERIOR injectou no tail
-			// (leading correction deste turno). Vazia nos runs sem steer — captura
-			// byte-idêntica. Capturá-la aqui é o que torna o replay do run steerado fiel.
-			LeadingCorrection: pendingCorrection,
-		}); err != nil {
-			return res, fmt.Errorf("%w: turno %d: %w", ErrCapture, turn, err)
+		if err := captureTurn(); err != nil {
+			return res, err
 		}
 
 		// (4) VERIFICAR — terminação simples (a máquina de estados é AOS-017).
@@ -623,6 +658,35 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			Taint: authorizationTaintOf(inv),
 		},
 		Input: inv.Input,
+	}
+
+	// FORMA FINAL DO EFEITO (AOS-005/AOS-064) — a reescrita da Call corre AQUI, na
+	// construção, e não no despacho.
+	//
+	// PORQUÊ AQUI: a reescrita é o que DEFINE o efeito (ex.: args do modelo → ExecRequest
+	// de sandbox). Tudo a jusante — a preview que o humano aprova, a chave do step-ledger,
+	// o registo de audit, a mediação do RM — tem de descrever O MESMO efeito. Enquanto
+	// corria dentro do dispatcher, o loop descrevia ao mundo o efeito PRÉ-reescrita e o RM
+	// mediava o PÓS-reescrita: as duas previews divergiam e a aprovação humana, embora
+	// emitida e consumida, nunca casava com a acção (observado ao vivo). Fazê-la na
+	// construção elimina a divergência POR CONSTRUÇÃO.
+	//
+	// Fail-closed: uma reescrita que falha (args malformados) NÃO despacha nada e
+	// materializa-se como Deny no tail — não é fatal para o loop.
+	if rt.callRewriter != nil {
+		rc, rerr := rt.callRewriter(call)
+		if rerr != nil {
+			return toolOutcome{
+				Result: Untrusted(nil),
+				Denial: &ToolDenial{
+					Effect:   string(referencemonitor.EffectDeny),
+					Code:     CodeEffectRewrite,
+					DeniedBy: "effect_rewriter",
+				},
+				Call: call,
+			}, nil
+		}
+		call = rc
 	}
 
 	// EVIDÊNCIA DE APROVAÇÃO (AOS-021) — na RETOMA de uma acção escalada, é aqui que a
