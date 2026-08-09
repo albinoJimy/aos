@@ -25,7 +25,7 @@ func newSuspensaoDuravelHarness(t *testing.T, runID string, comPendente bool) *N
 	}
 	t.Cleanup(func() { _ = es.Close() })
 
-	gates := newRunStateGates(es, nil)
+	gates := newRunStateGates(es, nil, 0)
 	ctx := context.Background()
 	if err := gates.Open(ctx, runID, durable.FencingToken(1)); err != nil {
 		t.Fatalf("Open: %v", err)

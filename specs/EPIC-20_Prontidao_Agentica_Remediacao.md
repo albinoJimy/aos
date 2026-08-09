@@ -35,11 +35,11 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 ## 3. Critérios de Saída do Epic
 
 - [ ] Nenhum output de tool call é persistido em claro: o step-ledger sela por-titular como o capturer (AOS-245), e o shred/expire apaga ambos (prova: erase → `ErrDecrypt` nos dois registos).
-- [ ] O breaker **dispara** no run comum: teste de nó repete a mesma call negada e assere trip **antes** de `MaxTurns` (AOS-251); ligar velocidades sem fonte **aborta o arranque** (AOS-246).
-- [ ] O log durável distingue desfecho de crash: `complete`/`failed` escritos em todos os caminhos; `CheckDeadlines` com caller periódico (AOS-252).
+- [x] O breaker **dispara** no run comum: teste de nó repete a mesma call negada e assere trip **antes** de `MaxTurns` (AOS-251); ligar velocidades sem fonte **aborta o arranque** (AOS-246).
+- [ ] O log durável distingue desfecho de crash: `complete`/`failed` escritos em todos os caminhos; `CheckDeadlines` com caller periódico **que interrompe o run** (AOS-252 — escrito e a correr; falta o teste crash-simulado vs fim-normal, ver AOS-252 CA3).
 - [ ] Um crash a meio de um run é retomado por varredura no arranque, sem re-executar efeitos (AOS-253).
 - [ ] Um run com `AOS_BUDGET_MAX_TOKENS` definido é **negado por orçamento** com o deny selado e atribuído, e um run dentro do tecto obtém **permit** — ambos ao nível do nó (AOS-256..258).
-- [ ] O banner declara budget/broker/modelo/autonomia (AOS-248) — postura anunciada = postura ligada.
+- [x] O banner declara budget/broker/modelo/autonomia (AOS-248) — postura anunciada = postura ligada.
 - [ ] Burn-down visível no run real com aviso a ~80% (AOS-261/262).
 - [ ] ADR-021: o router ordena por scoring determinístico com tabela de pesos assinada; guard-test prova função pura; nenhum peso elege candidato cross-border (AOS-269).
 - [ ] ADR-022: PlanDocument aceita arestas condicionais, `role: verifier` e payload tipado — validador puro rejeita ciclo disfarçado, auto-verificação e taint incompatível (AOS-270..273).
@@ -101,7 +101,7 @@ Propagar o titular **por-`Apply`** (o ledger é um por processo, partilhado por 
 - [ ] Compatibilidade de leitura com WALs escritos pelo formato anterior (ou migração declarada).
 
 ### Estado
-**ABERTO.**
+**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
 
 ---
 
@@ -114,12 +114,22 @@ Propagar o titular **por-`Apply`** (o ledger é um por processo, partilhado por 
 Tornar o erro de construção do breaker **fatal** quando a config o exige; anotar/retirar as envs de velocidade da doc até existir fonte.
 
 ### Critérios de Aceitação
-- [ ] Velocidade > 0 sem `VelocitySource` ⇒ **aborta o arranque** com erro nomeado (nunca `return nil`).
-- [ ] `deploy/node/README.md` deixa de recomendar «ligar quando tiver dados» sem a ressalva; a env é marcada como inócua-até-fonte ou removida da tabela.
-- [ ] Teste: boot com a env definida falha fail-closed; boot sem ela compõe o breaker normal.
+- [x] Velocidade > 0 sem `VelocitySource` ⇒ **aborta o arranque** com erro nomeado (nunca `return nil`).
+- [x] `deploy/node/README.md` deixa de recomendar «ligar quando tiver dados» sem a ressalva; a env é marcada como inócua-até-fonte ou removida da tabela.
+- [x] Teste: boot com a env definida falha fail-closed; boot sem ela compõe o breaker normal.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — auditado (qualidade + completude) e remediado.** O gate vive em
+`newRunBreakers` (arranque), não no `resolve` por-run: interroga o `ThresholdProvider` com a
+MESMA `breakerClass` que o `resolve` usará e devolve `ErrBreakerVelocitySourceUnwired`, que
+`Bootstrap` propaga até `os.Exit(1)`. `deploy/node/README.md` declara as duas envs como
+`0 (desligado; NÃO ligável hoje)` e diz que `>0` ABORTA. Testes fail-closed e de composição
+normal em `aos246_breaker_failclosed_test.go`.
+
+Residual fechado na remediação (achado F-A7): o `return nil` do `resolve` — inalcançável por
+configuração depois do gate — denunciava-se com um `sync.Once` **por processo**, devolvendo o
+silêncio de F2 aos runs 2..N. Passou a **uma denúncia por run** (`runBreakers.reported`, podado
+pelo `forget`): cada run que corra sem disjuntor deixa rasto.
 
 ---
 
@@ -132,12 +142,18 @@ Tornar o erro de construção do breaker **fatal** quando a config o exige; anot
 Em produção, a ausência do ficheiro de credencial do modelo é fatal; fora de produção, o fallback é declarado no banner.
 
 ### Critérios de Aceitação
-- [ ] `AOS_MODE=production` sem `AOS_MODEL_API_KEY_PATH` (com gateway ligado) ⇒ arranque aborta com erro nomeado.
-- [ ] Modo referência com fallback ⇒ linha de banner declara «bearer de DEV em uso».
-- [ ] Testes nos dois sentidos.
+- [x] `AOS_MODE=production` sem `AOS_MODEL_API_KEY_PATH` (com gateway ligado) ⇒ arranque aborta com erro nomeado.
+- [x] Modo referência com fallback ⇒ linha de banner declara «bearer de DEV em uso».
+- [x] Testes nos dois sentidos.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — auditado (qualidade + completude), sem achados.** `ErrProductionNeedsModelCredential`
+em `parseModelFromEnv(production)`, com a postura vinda da ÚNICA leitura de `AOS_MODE`
+(passada por parâmetro, não relida). `devModelCredentialBanner` declara o fallback e é chamada
+no arranque real com o predicado do estado COMPOSTO (`cfg.Model != nil`), não da intenção da
+config. Sete casos em `aos247_model_credential_test.go` cobrem os dois sentidos, incluindo
+asserções de NÃO-VAZAMENTO: o bearer de dev é obtido em runtime do próprio provider (sem
+literal no ficheiro de teste) e assere-se a sua ausência do banner sem nunca o imprimir.
 
 ---
 
@@ -150,12 +166,32 @@ Em produção, a ausência do ficheiro de credencial do modelo é fatal; fora de
 Postura anunciada = postura ligada, para estas quatro superfícies.
 
 ### Critérios de Aceitação
-- [ ] `WithSink` ligado ao WORM composto; `SetLevel` de provisionamento selado com actor e motivo.
-- [ ] Banner declara: orçamento (NÃO COMPOSTO — eixo AOS-008/EPIC-20), broker (ausente — credenciais por ficheiro), modelo (gateway real vs `referenceModel`), autonomia (oráculo ligado/nil).
-- [ ] `env_surface_test` e testes de banner actualizados; nenhuma linha promete o que não está ligado.
+- [x] `WithSink` ligado ao WORM composto; `SetLevel` de provisionamento selado com actor e motivo.
+- [x] Banner declara: orçamento (NÃO COMPOSTO — eixo AOS-008/EPIC-20), broker (ausente — credenciais por ficheiro), modelo (gateway real vs `referenceModel`), autonomia (oráculo ligado/nil).
+- [x] `env_surface_test` e testes de banner actualizados; nenhuma linha promete o que não está ligado.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — auditado (qualidade + completude) e remediado.** Registo construído com
+`autonomy.WithSink` sobre um sink de LIGAÇÃO TARDIA que NEGA (`ErrAutonomySinkUnbound`) até
+`Bootstrap` o ligar ao WORM composto — o mesmo store que `audit.VerifyStore` re-encadeia; a
+selagem recusada aborta o arranque. As quatro linhas de banner saem do arranque real.
+
+Três correcções de remediação, todas sobre afirmações não amarradas ao código:
+
+- **F-A3** — a lista de credenciais do broker dizia-se EXAUSTIVA e omitia três chaves privadas
+  que o nó lê do disco e retém em memória: `AOS_ISSUER_KEY_PATH` (a chave ed25519 de assinatura
+  da autoridade co-localizada), `AOS_TLS_KEY_PATH` e `AOS_OTLP_CLIENT_KEY_PATH`. Um operador que
+  lesse a lista à letra sub-dimensionava a rotação. As três passaram a estar declaradas, como
+  família distinta das credenciais downstream.
+- **F-A6** — «cada um SELADO» derivava de `len(w.specs)` (o DECLARADO). Passou a derivar de
+  `autonomyWiring.sealedPairs` (os pares que o `SetLevel` aplicou E selou), com um TERCEIRO ramo
+  de banner para a cablagem construída-e-não-provisionada; a cardinalidade conta pares distintos,
+  não entradas. A guarda de teste estava invertida (chamava o banner sem provisionar e validava a
+  linha «SELADO») — foi substituída pela guarda na direcção certa.
+- **AC3** — `runWithoutTouchingBoardRegions` afirmava fixar TODA a superfície de ambiente com uma
+  lista de 14 nomes escrita à mão, deixando `AOS_MODEL_*`, `AOS_AUTONOMY_LEVELS`,
+  `AOS_POLICY_BUNDLE_DIR` e `AOS_BREAKER_*` herdados da máquina. A lista passou a ser DERIVADA do
+  extractor AST do gate de AOS-203 (`envVarsReadBySources`): uma variável nova é fixada sozinha.
 
 ---
 
@@ -190,7 +226,7 @@ Tecto de operador para `MaxTurns` na fronteira de ingresso — node-local, sem t
 - [ ] Teste de API: `max_turns=200` ⇒ clamp aplicado; ausente ⇒ default; inválido ⇒ fail-closed.
 
 ### Estado
-**ABERTO.**
+**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
 
 ---
 
@@ -203,13 +239,35 @@ Tecto de operador para `MaxTurns` na fronteira de ingresso — node-local, sem t
 O breaker dispara no run comum: alimentar o detector e armar o claim no arranque do run.
 
 ### Critérios de Aceitação
-- [ ] `observeAction(runID, hash)` chamado no fecho do `execute_tool` (reusa `agentruntime.AttrToolCallHash`); teste negativo que falha se ficar sem chamadores.
-- [ ] O run transita `ready→running` no início da execução (não no primeiro pause/escalada); máquina de estados e fencing ajustados.
-- [ ] **Teste de nó:** a mesma call negada repetida ⇒ trip do breaker **antes** de `MaxTurns`, com veredicto atribuído no WORM.
+- [x] `observeAction(runID, hash)` chamado no fecho do `execute_tool` (reusa `agentruntime.AttrToolCallHash`); teste negativo que falha se ficar sem chamadores.
+- [x] O run transita `ready→running` no início da execução (não no primeiro pause/escalada); máquina de estados e fencing ajustados.
+- [x] **Teste de nó:** a mesma call negada repetida ⇒ trip do breaker **antes** de `MaxTurns`, com veredicto atribuído no WORM.
 - [ ] Divergência A1↔A2/A4 resolvida por este teste e registada no relatório.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — pendente de auditoria.** (a) Nova porta `agentruntime.ActionObserver`
+(`WithActionObserver`) invocada no fecho de cada mediação em `mediateToolCall` com
+`otelgenai.CanonicalToolCallHash` — a mesma âncora do span execute_tool; o bootstrap liga-a
+por method value a `runBreakers.observeAction`. Guarda AST anti-regressão
+(`TestAOS251_ObserveActionHasProductionCaller`, falsificabilidade provada). (b) Claim
+`ready→running` no arranque do run em `hostRun` (`runGate.claimRunning`, razão
+`run_start_claim`, fencing token do lease; no-op idempotente na retoma; fail-closed se a
+transição falhar); o lazy-claim de AOS-218 mantém-se como fallback do caminho directo
+`Runtime.Run` sem serviço. (c) Teste de nó `TestAOS251_BreakerTripsOnDeniedLoop`: deny-loop
+⇒ trip no turno 5 (< MaxTurns=12), alvo `paused`, razão `breaker_no_progress` relida do log
+durável por máquina fresca; controlo `TestAOS251_RunWithProgressDoesNotTrip`. Falta só o
+registo formal da divergência A1↔A2/A4 no relatório de prontidão §9 (artefacto documental,
+fora do código).
+
+**Remediação (achado F-A1, suite vermelha).** O controlo assertava que a máquina ficava em
+`running` no FIM de um run bem-sucedido. Era verdade quando o claim era a única transição que
+esse caminho escrevia; com o selo terminal de AOS-252 na mesma branch, o mesmo caminho de
+saída escreve `running→complete` ANTES de o `Wait` devolver (o `defer` do selo está a montante
+do `defer s.finish(rs)` na pilha LIFO de `hostRun`). A asserção tinha passado a exigir que o
+desfecho do run NÃO ficasse no log durável — o defeito F4 que AOS-252 fecha. O invariante de
+AOS-251 passou a ser asserido onde vive: a **aresta** `ready→running` com a razão
+`run_start_claim`, relida do stream durável, mais o estado final `complete`. Prova a coexistência
+dos dois mecanismos, que nenhuma das duas waves teria produzido isolada.
 
 ---
 
@@ -222,12 +280,29 @@ O breaker dispara no run comum: alimentar o detector e armar o claim no arranque
 Escrever `complete`/`failed` em todos os caminhos de saída do loop; correr `CheckDeadlines` periodicamente (molde do sweeper de aprovações).
 
 ### Critérios de Aceitação
-- [ ] Todo o fim de run (sucesso, erro, MaxTurns, breaker, panic recuperado) escreve o estado terminal no log durável.
-- [ ] `CheckDeadlines` com caller periódico composto no loop de serviço; `running→timed_out` materializado.
+- [x] Todo o fim de run (sucesso, erro, MaxTurns, breaker, panic recuperado) escreve o estado terminal no log durável.
+- [x] `CheckDeadlines` com caller periódico composto no loop de serviço; `running→timed_out` materializado **e o run interrompido**.
 - [ ] Teste: crash simulado vs fim normal distinguem-se no log; `GET /runs/{id}` reflecte o desfecho durável após restart.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO PARCIAL — entregue na W0 (ver nota de âmbito), auditado e remediado.**
+`runGate.sealTerminal` sela no ponto único de saída (`hostRun`), a montante dos defers de
+libertação e do recover de isolamento — no-op fora de `running`, para não reescrever os
+desfechos que outros condutores (steer/breaker, escalada, deadlines) já materializaram.
+`sweepDeadlines` é o caller periódico que `CheckDeadlines` nunca teve.
+
+**Remediação (achado F-A5, fail-open).** O varrimento marcava `running→timed_out` e deixava o
+run A CORRER: o operador lia um estado terminal e parava de olhar enquanto o agente continuava
+a emitir tool calls, com o disjuntor cego (`Observe` é no-op fora de `running`) e o selo terminal
+já a no-op. Um timeout que não interrompe é pior do que timeout nenhum. O varrimento passou a
+cancelar o contexto do run (`rs.cancel` — o MESMO mecanismo do `Shutdown` e do heartbeat de posse
+perdida, não uma segunda via de paragem). Prova de nó em `aos252_deadline_interrupt_test.go`: um
+run preso a meio do turno (o modelo só devolve quando o ctx é cancelado) sai, com `timed_out` no
+log; falsificabilidade verificada — sem o cancelamento o teste não termina.
+
+**Falta para fechar (CA3):** o teste que distingue crash simulado de fim normal no log e o
+`GET /runs/{id}` após restart. Eixo: AOS-253, que precisa exactamente dessa distinção para
+separar órfão de terminado.
 
 ---
 
@@ -671,7 +746,7 @@ Eliminar o fusível: ou o pool ganha uma janela real, ou o tecto é declarado co
 - [ ] A decisão A/B fica registada (D11).
 
 ### Estado
-**ABERTO.**
+**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
 
 ---
 
@@ -724,3 +799,34 @@ P2 (c/ decisão):    AOS-254 (dep. 252) · AOS-259 (D2) → AOS-260 (D1) · AOS-
 ```
 
 Cadeia causal registada no relatório §8: **F1 → F2 → F3 → F4 → F5** primeiro — fechar wiring novo (budget, exaustão) sobre esta base partida replica o padrão «capacidade verde, efeito zero». O desafio A5 acrescenta **F17 → F15** à cabeça da cadeia de disponibilidade: o fusível do keypool e o clamp de `max_turns` são a ordem mínima defensável de um lote (com os knobs de ingresso, AOS-277, e a correcção documental já aplicada ao relatório).
+
+---
+
+## Modelo de execução — uma branch por wave, agentes em paralelo, revisão adversarial no PR
+
+Cada wave é **uma branch** (`feature/epic20-wN-<slug>`), executada por um agente/modelo **em paralelo** com as outras. O agrupamento é por subsistema — minimiza conflitos de merge (todas as waves tocam `cmd/aos`, mas em ficheiros/funções diferentes). **Ordem de merge:** W0 → W1 → W2 → resto; cada wave seguinte faz rebase sobre a anterior já merged (W0 e W1 partilham `breaker_wiring.go`: W0 merge primeiro).
+
+| Wave | Branch | Tickets | Foco |
+|---|---|---|---|
+| **W0 — risco activo** | `feature/epic20-w0-risco-activo` | AOS-246, 247, 248 **+ 251, 252** (ver nota) | Os fixes P0 de segurança/disponibilidade que a wave entregou (F2, F5, F11, F14) mais os dois de ciclo de vida que vieram com ela (F3, F4) |
+| **W1 — ciclo de vida do run** | `feature/epic20-w1-ciclo-vida` | ~~AOS-251, 252~~, 253, 254 | Crash-resume e saga (F9, F12, F13); breaker efectivo e estados terminais saíram na W0 |
+| **W2 — billing & exaustão** | `feature/epic20-w2-billing` | AOS-255, 256, 257, 258, 261, 262, 263, 277 | Budget token-only, burn-down, knobs de ingresso (§7 do relatório) |
+| **W3 — identidade & credenciais** | `feature/epic20-w3-identidade` | AOS-264, 265, 266, 278 | Broker, attestation, authn do GW (D4/D7/D8-dependentes marcados) |
+| **W4 — ADR-021 scoring** | `feature/epic20-w4-scoring-gw` | AOS-269 | Scoring determinístico no GW |
+| **W5 — ADR-022 plano** | `feature/epic20-w5-plano-v2` | AOS-270, 271, 272, 273 | Arestas condicionais, verificador, payload tipado, migração |
+| **W6 — operações** | `feature/epic20-w6-operacoes` | AOS-249, 267, 268, 274, 275 | Vault, retenção, WORM ancorado, SLOs, promote |
+
+**Nota de âmbito da W0 (emenda registada, não violação silenciosa).** A branch `feature/epic20-w0-risco-activo` entregou **AOS-246/247/248 + AOS-251/252**, e **não** entregou AOS-245, AOS-250 nem AOS-276 (zero linhas de código). A tabela acima foi corrigida para dizer o que a branch é, em vez de a branch contradizer a tabela. As duas consequências, ambas registadas:
+
+- **Porque a mistura importou:** AOS-251 e AOS-252 disputam a MESMA aresta de estado do run. Escritos como se fossem independentes, produziram uma contradição determinista — o controlo de AOS-251 exigia a máquina em `running` no fim de um run bem-sucedido, o selo terminal de AOS-252 escreve `running→complete` no mesmo caminho de saída, e a suite ficou vermelha. Reconciliado na remediação: o invariante de AOS-251 é a **aresta** `ready→running` com a razão do claim de arranque (relida do log), não o estado final; o estado final é `complete`, como AOS-252 exige. É a prova de que os dois mecanismos coexistem — que nenhuma das duas waves teria produzido sozinha.
+- **Ordem de merge:** cai a ressalva «W0 e W1 partilham `breaker_wiring.go`: W0 merge primeiro» — com AOS-251/252 dentro da W0, a W1 fica reduzida a AOS-253/254 e faz rebase sobre esta branch.
+- **⚠️ AOS-251 e AOS-252 têm DUAS implementações independentes.** Como entraram na W0 sem serem escolhidos (o agente do AOS-248 alargou o âmbito por sua conta), a W0 duplica trabalho que já existia por committar noutros worktrees: `.claude/worktrees/nice-cartwright-529d11` (AOS-251, branch `claude/compassionate-curie-e2866b` — `breaker_trip_node_test.go`, `reference-monitor/action_observer_test.go`) e `.claude/worktrees/admiring-wright-dec4c1` (AOS-252, branch `claude/vibrant-wilson-ce1127` — `deadline_sweeper.go`, `terminal_durable_test.go`). Nomes de ficheiro diferentes, mesmos ficheiros de produção tocados (`bootstrap.go`, `service.go`, `steer_gates.go`). **Quem fizer o merge tem de escolher UMA das duas e descartar a outra** — juntá-las cegamente compõe dois claims de arranque e dois selos terminais sobre a mesma aresta de estado. A da W0 é a única com prova de coexistência dos dois mecanismos; a dos worktrees não foi avaliada.
+- **AOS-245, AOS-250 e AOS-276 SAEM da W0** e continuam `ABERTO`, sem código nesta branch. Eixo: AOS-245 e AOS-250 vão para a wave que tocar o step-ledger e a fronteira de ingresso; AOS-276 depende de D11 (decisão do dono) e não podia entrar na mesma. Nenhum dos três está fechado por omissão — estão declarados por fechar.
+
+**Regras do modelo:**
+
+1. **Um agente por wave**, com a branch como fronteira — não toca nos ficheiros das outras waves (a tabela de dependências da §4 manda nas intra-wave).
+2. **Revisão adversarial obrigatória no PR** — o modelo adversário revê o diff contra os Critérios de Aceitação do ticket e contra o código (não contra a intenção), no molde dos desafios A1–A5: achado só confirmado se não for refutável. O adversário **pode melhorar o código directamente no PR** (commit de revisão identificado), mas nunca alarga o escopo do ticket — desvios abrem ticket novo.
+3. **Gates fail-closed por PR:** `make ci-build`, `ci-lint`, `ci-test` + o gate de domínio aplicável; cobertura sem regressão (pisos AOS-199). O PR só merge verde **e** com a revisão adversarial aprovada.
+4. **Tickets bloqueados por decisão do dono (D1–D12)** não entram na wave até a decisão estar registada no ticket — o agente não decide pelo dono.
+5. **Cada PR actualiza o relatório de prontidão** (estado do finding que fecha) e o `Estado` do ticket na epic — o documento continua a ser a fonte de verdade do que falta.

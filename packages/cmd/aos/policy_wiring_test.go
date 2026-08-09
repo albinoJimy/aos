@@ -8,6 +8,7 @@ import (
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	"github.com/aos-ref/kernel/reference-monitor/risk"
+	audit "github.com/aos-ref/platform/audit"
 )
 
 // ---------------------------------------------------------------------------
@@ -23,9 +24,8 @@ func TestAutonomy_NaoConfiguradoNaoLigaOOraculo(t *testing.T) {
 	if err != nil || specs != nil {
 		t.Fatalf("não configurado devia dar (nil,nil); specs=%+v err=%v", specs, err)
 	}
-	oracle, err := buildAutonomyOracle(context.Background(), specs)
-	if err != nil || oracle != nil {
-		t.Fatalf("sem specs não devia haver oráculo; oracle=%v err=%v", oracle, err)
+	if w := buildAutonomyOracle(specs); w != nil {
+		t.Fatalf("sem specs não devia haver cablagem de oráculo; veio %v", w)
 	}
 }
 
@@ -40,10 +40,17 @@ func TestAutonomy_ParseEConstroiORegisto(t *testing.T) {
 	if len(specs) != 2 {
 		t.Fatalf("esperava 2 entradas, veio %d", len(specs))
 	}
-	oracle, err := buildAutonomyOracle(context.Background(), specs)
-	if err != nil {
-		t.Fatalf("buildAutonomyOracle: %v", err)
+	// AOS-248: a cablagem é em DUAS FASES — o registo nasce vazio (com o sink ligado) e os níveis
+	// só entram em vigor no `provision`, com o WORM composto. É por isso que este teste sela num
+	// [audit.NewMemStore]: sem store não haveria selo e o provisionamento RECUSARIA.
+	wiring := buildAutonomyOracle(specs)
+	if wiring == nil {
+		t.Fatal("buildAutonomyOracle: com specs devia devolver cablagem")
 	}
+	if err := wiring.provision(context.Background(), audit.NewMemStore()); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	oracle := wiring.oracle()
 	if got := oracle.LevelFor("agt-1", "http"); got != autonomy.L4 {
 		t.Fatalf("agt-1:http devia ser L4, veio %v", got)
 	}

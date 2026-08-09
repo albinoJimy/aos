@@ -6,6 +6,7 @@ import (
 
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/substrate/eventstore"
+	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
 // DefaultMaxTurns é o tecto de turnos por omissão (paragem defensiva do
@@ -113,6 +114,7 @@ type Runtime struct {
 	capturer         Capturer
 	steer            SteerSource
 	breaker          LivenessBreaker        // AOS-080/081: disjuntor multi-sinal do agente vivo
+	actionObserver   ActionObserver         // AOS-251: fonte do sinal de no-progress (hash por acção mediada)
 	escalation       EscalationSink         // AOS-021: tool call escalada → espera por humano
 	approvalEvidence ApprovalEvidenceSource // AOS-021: prova de aprovação a anexar na retoma
 	windowFactory    WindowFactory          // AOS-037: dono único do tail/assembly (D-TAIL)
@@ -712,6 +714,16 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	dec, err := rt.dispatcher.Dispatch(ctx, call)
 	if err != nil {
 		return toolOutcome{}, err // apenas cancelamento de contexto
+	}
+
+	// SINAL DE NO-PROGRESS (AOS-251) — a mediação FECHOU (o span execute_tool terminou,
+	// qualquer que seja o veredicto). Reporta o hash canónico da acção ao observador: é a
+	// MESMA âncora que o RM acabou de anotar no span
+	// ([otelgenai.CanonicalToolCallHash] sobre a call JÁ reescrita), pelo que o detector de
+	// acções repetidas e a telemetria falam da mesma "acção". Aditivo: sem observador
+	// ligado, nada muda.
+	if rt.actionObserver != nil {
+		rt.actionObserver(goal.RunID, otelgenai.CanonicalToolCallHash(call.ToolID, call.Input))
 	}
 
 	// NEGAÇÃO SANITIZADA para o tail (AOS-013 gap 2): num veredicto não-permit, o loop

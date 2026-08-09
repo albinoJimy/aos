@@ -167,6 +167,19 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
 var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
 
+// ErrProductionNeedsModelCredential — sob AOS_MODE=production COM o model gateway LIGADO
+// (AOS_MODEL_ENDPOINT), a credencial que o nó apresenta ao upstream NÃO pode ser o bearer de DEV
+// embebido no binário (AOS-247, achado F5). Sem AOS_MODEL_API_KEY_PATH, [staticModelCredential]
+// serve uma constante do código — a MESMA em todos os nós e legível por quem tenha o artefacto —
+// e o nó de produção falava com o gateway upstream com uma credencial que não identifica ninguém
+// e não se pode revogar. Pertence à mesma família de ErrProductionNeedsHardenedIdentity/
+// ErrProductionNeedsTLS: a produção não degrada silenciosamente para uma postura de referência.
+//
+// PORQUÊ NO ARRANQUE E NÃO NO Fetch. O `Fetch` corre POR-PEDIDO e não tem por onde abortar o
+// processo — devolver erro ali daria um nó que arranca, anuncia gateway e falha cada chamada em
+// runtime. A decisão é de CONFIG, logo vive na fronteira que lê o ambiente ([parseModelFromEnv]).
+var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com o model gateway ligado (AOS_MODEL_ENDPOINT) exige AOS_MODEL_API_KEY_PATH — sem ele o no apresentaria ao upstream um bearer de DEV embebido no binario (identico em todos os nos, legivel por quem tenha o artefacto, nao revogavel) em vez da credencial da organizacao; material privado por FICHEIRO montado, NUNCA por variavel de ambiente")
+
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
 
 // ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é
@@ -225,6 +238,16 @@ func run(w io.Writer) error {
 	// falsa que AOS-203 vem eliminar.
 	rawBoardRegions, boardRegionsDefined := os.LookupEnv("AOS_BOARD_REGIONS")
 	for _, line := range sovereignReadKillSwitchBanner(node.SovereignReadRegions != nil, node.WORM != nil, rawBoardRegions, boardRegionsDefined) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
+	// FALLBACK DE CREDENCIAL DO MODELO VISÍVEL (AOS-247, achado F5), pela mesma via: em produção
+	// este estado nem chega aqui (ErrProductionNeedsModelCredential abortou em
+	// [nodeConfigFromEnv]); fora de produção é aceite mas deixa de ser SILENCIOSO. O predicado é o
+	// estado composto — cfg.Model != nil significa que [parseModelFromEnv] construiu MESMO o
+	// gateway — para o aviso nunca sair quando o nó usa o referenceModel (que não apresenta bearer
+	// nenhum). Ver [devModelCredentialBanner].
+	for _, line := range devModelCredentialBanner(cfg.Model != nil, os.Getenv("AOS_MODEL_API_KEY_PATH")) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
@@ -532,11 +555,15 @@ func nodeConfigFromEnv() (Config, error) {
 	// caía sempre em [pdp.NewUnloaded] (default-deny de TODA a tool call mediada). AOS_POLICY_BUNDLE_DIR
 	// → pdp.Open(dir, WithTrustAnchor(anchor de AOS_POLICY_TRUST_ANCHOR)); ausente ⇒ nil (default-deny
 	// EXPLÍCITO). Fail-closed: dir sem anchor / anchor malformado / bundle não-verificável ABORTAM.
-	policyDP, err := loadPolicyBundleFromEnv()
+	policyDP, autonomyCabling, err := loadPolicyBundleFromEnv()
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.PDP = policyDP // nil ⇒ NewUnloaded (default-deny EXPLÍCITO) no composition-root; != nil ⇒ precedência
+	// ORÁCULO DE AUTONOMIA (AOS-087/AOS-248), fase 1 de 2. O registo já vai com o sink de audit
+	// ligado, mas VAZIO: os níveis só são aplicados — e SELADOS — em [Bootstrap], que é quem tem
+	// o WORM. Ver [autonomyWiring]. nil ⇒ oráculo não ligado e nenhum `escalate` é emitido.
+	cfg.Autonomy = autonomyCabling
 
 	// POLÍTICA DE RETENÇÃO TTL (AOS-092/AOS-213) por ambiente. Preenche [Config.Retention] a partir
 	// de AOS_RETENTION_VERSION + AOS_RETENTION_PERIODS — sem isto o campo era INALCANÇÁVEL pelo
@@ -596,8 +623,10 @@ func nodeConfigFromEnv() (Config, error) {
 
 	// MODEL GATEWAY (OpenAI-compatível) por ambiente. Vazio ⇒ [Config.Model] fica nil e o Bootstrap
 	// usa o referenceModel (inalterado); AOS_MODEL_ENDPOINT presente ⇒ liga o adaptador ao gateway
-	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig).
-	modelClient, err := parseModelFromEnv()
+	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig) e, em
+	// produção, um gateway sem ficheiro de credencial ABORTA (ErrProductionNeedsModelCredential,
+	// AOS-247) em vez de apresentar o bearer de DEV embebido.
+	modelClient, err := parseModelFromEnv(production)
 	if err != nil {
 		return Config{}, err
 	}
@@ -835,19 +864,22 @@ func parseEd25519PubHex(raw string) (ed25519.PublicKey, error) {
 //     (ausente/adulterado/assinado por outra chave) ⇒ [ErrPolicyBundleLoad] via [pdp.Open].
 //
 // Devolve o [*pdp.PDP] verificado e compilado, pronto a ser injectado em [Config.PDP] (tem
-// PRECEDÊNCIA sobre o default não-carregado no Bootstrap).
-func loadPolicyBundleFromEnv() (*pdp.PDP, error) {
+// PRECEDÊNCIA sobre o default não-carregado no Bootstrap), e a cablagem do oráculo de autonomia
+// ([autonomyWiring]) que o composition-root tem de PROVISIONAR depois de abrir o WORM — o
+// oráculo é ligado ao PDP aqui (é opção de [pdp.Open]) mas os níveis só se registam lá, para que
+// nasçam selados na hash-chain (AOS-248). nil ⇒ oráculo não ligado.
+func loadPolicyBundleFromEnv() (*pdp.PDP, *autonomyWiring, error) {
 	dir := strings.TrimSpace(os.Getenv("AOS_POLICY_BUNDLE_DIR"))
 	if dir == "" {
-		return nil, nil // sem superfície ⇒ default-deny EXPLÍCITO (NewUnloaded no composition-root)
+		return nil, nil, nil // sem superfície ⇒ default-deny EXPLÍCITO (NewUnloaded no composition-root)
 	}
 	raw := strings.TrimSpace(os.Getenv("AOS_POLICY_TRUST_ANCHOR"))
 	if raw == "" {
-		return nil, ErrPolicyBundleNeedsTrustAnchor
+		return nil, nil, ErrPolicyBundleNeedsTrustAnchor
 	}
 	anchor, err := parsePolicyTrustAnchor(raw)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// O anchor é FORÇADO via WithTrustAnchor: [pdp.Open] verifica a assinatura do bundle contra
 	// ELE, ignorando qualquer trust_anchor.pub que exista no dir mutável do bundle. Um bundle
@@ -860,20 +892,21 @@ func loadPolicyBundleFromEnv() (*pdp.PDP, error) {
 	// autonomy_levels.go para a razão de ser opt-in.
 	specs, aerr := parseAutonomyLevels()
 	if aerr != nil {
-		return nil, aerr
+		return nil, nil, aerr
 	}
-	oracle, aerr := buildAutonomyOracle(context.Background(), specs)
-	if aerr != nil {
-		return nil, aerr
-	}
-	if oracle != nil {
-		opts = append(opts, pdp.WithAutonomyOracle(oracle))
+	// FASE 1 da cablagem (AOS-248): o registo nasce com o [autonomy.Sink] ligado mas VAZIO. Os
+	// níveis são aplicados na FASE 2 ([autonomyWiring.provision], em Bootstrap), depois de o WORM
+	// existir — só assim cada SetLevel de provisionamento fica SELADO com motivo e actor. Registar
+	// aqui, como se fazia, deixava a mudança de nível sem rasto em lado nenhum.
+	cabling := buildAutonomyOracle(specs)
+	if cabling != nil {
+		opts = append(opts, pdp.WithAutonomyOracle(cabling.oracle()))
 	}
 	p, err := pdp.Open(dir, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("%w: dir %q: %v", ErrPolicyBundleLoad, dir, err)
+		return nil, nil, fmt.Errorf("%w: dir %q: %v", ErrPolicyBundleLoad, dir, err)
 	}
-	return p, nil
+	return p, cabling, nil
 }
 
 // parsePolicyTrustAnchor descodifica a pubkey ed25519 (64 hex chars) do trust anchor da política
@@ -1112,8 +1145,13 @@ var ErrBadModelConfig = errors.New("aos: config do model gateway invalida — AO
 // parseModelFromEnv liga [Config.Model] a um gateway OpenAI-compatível (OmniRoute/OpenRouter/…) a
 // partir do ambiente — a via que preenche a porta [agentruntime.ModelClient] em vez do
 // referenceModel. Vazio ⇒ nil (referenceModel, inalterado). Presente ⇒ exige AOS_MODEL_NAME; a API
-// key (opcional) vem por FICHEIRO montado. O adaptador é zero-dep ([openAIModelClient]).
-func parseModelFromEnv() (agentruntime.ModelClient, error) {
+// key (opcional FORA de produção) vem por FICHEIRO montado. O adaptador é zero-dep
+// ([openAIModelClient]).
+//
+// production é a postura do nó (AOS_MODE=production), recebida por PARÂMETRO — como
+// [apiTLSOptionsFromEnv] — para que haja UMA única leitura de AOS_MODE por arranque e o gate de
+// AOS-247 não possa divergir das restantes exigências de produção impostas em [nodeConfigFromEnv].
+func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
 		return nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
@@ -1125,6 +1163,17 @@ func parseModelFromEnv() (agentruntime.ModelClient, error) {
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
 	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
+	// FAIL-CLOSED de produção (AOS-247, achado F5) — o gateway está LIGADO (chegámos aqui com
+	// AOS_MODEL_ENDPOINT não-vazio) e não há ficheiro de credencial: em produção RECUSA. Sem esta
+	// guarda o nó arrancava a apresentar ao upstream o bearer de DEV embebido no binário
+	// ([staticModelCredential.Fetch]) — uma credencial que não identifica o nó, é a mesma em todos
+	// e não se revoga — e NADA o declarava. É a guarda de ARRANQUE porque o `Fetch` é por-pedido:
+	// falhar lá daria um nó vivo que anuncia gateway e erra cada chamada. Fora de produção o
+	// fallback continua legítimo (a stack de dev fala com um OmniRoute/LiteLLM que pode nem exigir
+	// bearer), mas deixa de ser silencioso — ver [devModelCredentialBanner].
+	if production && apiKeyPath == "" {
+		return nil, ErrProductionNeedsModelCredential
+	}
 	// Fronteira de soberania (board/região) que o nó declara ao gateway. Defaults casam com a
 	// allowlist EMBEBIDA; com um bundle externo o operador escolhe-os livremente.
 	region := defaultModelGatewayRegion
@@ -1295,6 +1344,37 @@ func sovereignReadKillSwitchBanner(regionsComposed, wormComposed bool, rawBoardR
 		"=> PARA RELIGAR: defina AOS_BOARD_REGIONS=\"board=regiao\" (ex.: AOS_BOARD_REGIONS=\"board:prod=eu\") ou REMOVA a variavel do ambiente para voltar ao default de referencia \"board:aos-demo=eu\"",
 		"=> IGNORE a linha \"defina Config.BoardRegions\" do banner acima: Config.BoardRegions e um campo de codigo (package main) que quem corre o binario/imagem NAO consegue escrever — o unico remedio alcancavel e AOS_BOARD_REGIONS, na linha anterior",
 		"=> AOS_MODE=production RECUSA arrancar neste estado (ErrProductionNeedsSovereignRead) — este aviso so existe porque o no NAO esta em modo de producao",
+	}
+}
+
+// devModelCredentialBanner DECLARA o fallback de credencial do model gateway (AOS-247, achado F5),
+// na disciplina de banner de AOS-203 (o molde de [tlsExternalTerminationBanner]): uma linha, só
+// quando o estado REALMENTE composto o justifica, com a causa e o remédio ALCANÇÁVEL pelo operador.
+// Devolve nil — nenhuma linha — nos dois casos honestos: sem gateway composto (o nó usa o
+// referenceModel e não apresenta bearer nenhum a ninguém) ou com AOS_MODEL_API_KEY_PATH definido
+// (a credencial veio do ficheiro montado, que [newGatewayModelClient] já validou não-vazio).
+//
+// O DEFEITO QUE FECHA. Sem AOS_MODEL_API_KEY_PATH, [staticModelCredential.Fetch] devolve um bearer
+// de DEV embebido no binário. Contra um upstream de dev que não exige bearer isso é inócuo; o que
+// não era aceitável é ser INDISTINGUÍVEL, do lado de fora, de um nó que apresenta a credencial da
+// organização — nenhum banner, nenhuma env, nenhuma linha de log o dizia.
+//
+// O VALOR NUNCA ENTRA NA LINHA — nem este nem o do ficheiro montado. O banner declara a POSTURA
+// (qual das duas credenciais está em uso e o que isso implica), nunca o segredo.
+//
+// PORQUÊ AVISO E NÃO RECUSA (fora de produção). O critério de AOS-191/AOS-203/AOS-209: em produção
+// RECUSA-SE ([ErrProductionNeedsModelCredential], imposta em [parseModelFromEnv], que é por onde
+// este estado nunca chega aqui em modo de produção); fora dela o estado é legítimo e o que não se
+// tolera é a PROMESSA FALSA.
+//
+// gatewayComposed é o estado REALMENTE composto (Config.Model != nil), não a intenção da config —
+// a mesma disciplina de [sovereignReadKillSwitchBanner]: o aviso nunca contradiz o que o nó faz.
+func devModelCredentialBanner(gatewayComposed bool, apiKeyPath string) []string {
+	if !gatewayComposed || strings.TrimSpace(apiKeyPath) != "" {
+		return nil
+	}
+	return []string{
+		"AVISO CREDENCIAL DE MODELO (AOS-247): BEARER DE DEV EM USO — o model gateway esta LIGADO (AOS_MODEL_ENDPOINT) sem AOS_MODEL_API_KEY_PATH, pelo que o no apresenta ao upstream um bearer de DEV embebido no binario (o mesmo em todos os nos, legivel por quem tenha o artefacto, nao revogavel) e NAO a credencial da organizacao; para apresentar a credencial real defina AOS_MODEL_API_KEY_PATH (ficheiro montado — material privado NUNCA por variavel de ambiente). AOS_MODE=production RECUSA arrancar neste estado (ErrProductionNeedsModelCredential)",
 	}
 }
 

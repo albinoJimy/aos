@@ -73,13 +73,13 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 func TestParseModelFromEnv_Unset(t *testing.T) {
 	t.Setenv("AOS_MODEL_ENDPOINT", "")
 	t.Setenv("AOS_MODEL_NAME", "")
-	mc, err := parseModelFromEnv()
+	mc, err := parseModelFromEnv(false)
 	if err != nil || mc != nil {
 		t.Fatalf("unset devia dar (nil,nil), veio (%v,%v)", mc, err)
 	}
 	t.Setenv("AOS_MODEL_ENDPOINT", "http://x/v1")
 	t.Setenv("AOS_MODEL_NAME", "")
-	if _, err := parseModelFromEnv(); err == nil {
+	if _, err := parseModelFromEnv(false); err == nil {
 		t.Fatalf("endpoint sem AOS_MODEL_NAME devia abortar (ErrBadModelConfig)")
 	}
 }

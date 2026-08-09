@@ -18,7 +18,14 @@ package main
 // As VELOCIDADES DE QUEIMA (custo/s, tokens/s) ficam DESLIGADAS por omissão, e isso é uma
 // escolha, não um esquecimento: um tecto de velocidade errado mata runs saudáveis, e o
 // valor certo depende do modelo, do preço e do perfil da carga — coisas que este nó não
-// sabe. Ficam expostas por configuração para quem tiver os dados.
+// sabe.
+//
+// AOS-246: além disso, hoje elas NÃO SÃO LIGÁVEIS — o nó não cabla nenhuma
+// [breaker.VelocitySource], e um limiar de velocidade sem fonte fazia [breaker.NewBreaker]
+// recusar a construção, deixando o run SEM DISJUNTOR NENHUM (também sem no-progress nem
+// wall-clock). Ligá-las passou a ABORTAR O ARRANQUE, em breaker_wiring.go
+// ([ErrBreakerVelocitySourceUnwired]); a validação aqui continua a ser só sintáctica, para
+// que o erro que o operador vê nomeie a causa REAL (falta a fonte) e não um formato errado.
 //
 // Um limiar <= 0 desliga o respectivo sinal (contrato de [breaker.Thresholds]).
 

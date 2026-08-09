@@ -504,27 +504,34 @@ func runWithCleanEnv(t *testing.T, boardRegions string) string {
 // AOS_BOARD_REGIONS — necessária para o caso "variável ausente", que t.Setenv não sabe
 // exprimir.
 //
-// Fixa TODA a superfície de ambiente do nó excepto AOS_BOARD_REGIONS (a variável sob teste):
-// é a lista completa de [envSourceRoots] menos ela. Sem isto, uma variável herdada da máquina
-// de quem corre os testes entraria no banner — `AOS_ISSUER_ID` aparece literalmente na
-// primeira linha, e um `AOS_HUMANS=","` no ambiente do developer faria [run] devolver
-// ErrNoHumans e este helper falhar com uma mensagem enganadora sobre produção.
+// Fixa TODA a superfície de ambiente do nó excepto AOS_BOARD_REGIONS (a variável sob teste).
+// Sem isto, uma variável herdada da máquina de quem corre os testes entraria no banner —
+// `AOS_ISSUER_ID` aparece literalmente na primeira linha, e um `AOS_HUMANS=","` no ambiente
+// do developer faria [run] devolver ErrNoHumans e este helper falhar com uma mensagem
+// enganadora sobre produção.
+//
+// A LISTA É DERIVADA, NÃO ESCRITA À MÃO (correcção da auditoria da W0: o comentário afirmava
+// exaustividade sobre uma lista de 14 nomes, e o nó lê mais de 50 — AOS_MODEL_*,
+// AOS_AUTONOMY_LEVELS, AOS_POLICY_BUNDLE_DIR e AOS_BREAKER_* ficavam de fora, tornando os
+// testes de banner dependentes do ambiente da máquina). Reusa-se o MESMO extractor AST do
+// gate de AOS-203 ([envVarsReadBySources]) que já conhece a superfície completa: uma variável
+// nova passa a ser fixada automaticamente, sem ninguém se lembrar de a acrescentar aqui.
 func runWithoutTouchingBoardRegions(t *testing.T) string {
 	t.Helper()
-	t.Setenv("AOS_MODE", "")                  // modo de referência (o aviso é para fora de produção).
-	t.Setenv("AOS_API_ADDR", "")              // sem socket: o teste é sobre o banner.
+
+	// (1) LIMPA tudo o que o nó lê, menos a variável sob teste. Todos os nomes da superfície
+	// são AOS_* (o gate de AOS-203 fá-lo-ia falhar se não fossem documentados no README),
+	// pelo que isto não toca no ambiente da máquina fora do prefixo do produto.
+	for name := range envVarsReadBySources(t, envSourceRoots) {
+		if name == "AOS_BOARD_REGIONS" {
+			continue
+		}
+		t.Setenv(name, "")
+	}
+	// (2) REPÕE os poucos valores sem os quais [run] não arranca — ou arrancaria a dizer
+	// outra coisa que não a postura sob teste.
 	t.Setenv("AOS_ISSUER_ID", "iss:aos-node") // o default — o issuer é ecoado no banner.
 	t.Setenv("AOS_HUMANS", "operator")        // o default — uma lista sem entradas válidas abortaria.
-	t.Setenv("AOS_ISSUER_PUBKEY", "")         // autoridade de referência co-localizada.
-	t.Setenv("AOS_ISSUER_KEY_PATH", "")       // chave efémera por CSPRNG.
-	t.Setenv("AOS_EVENTSTORE_PATH", "")       // substrato in-memory.
-	t.Setenv("AOS_WORM_PATH", "")             //
-	t.Setenv("AOS_DURABLE_EXECUTION", "")     // execução durável desligada (o default).
-	t.Setenv("AOS_OTLP_ENDPOINT", "")         // NoopTracer.
-	t.Setenv("AOS_OPERATORS", "")             // canal de controlo em default-deny.
-	t.Setenv("AOS_APPROVERS_FILE", "")        // four-eyes desligado.
-	t.Setenv("AOS_READER", "")                // lado cliente (não influencia o nó, fixado por higiene).
-	t.Setenv("AOS_BOARD", "")                 // idem.
 
 	var sb strings.Builder
 	if err := run(&sb); err != nil {

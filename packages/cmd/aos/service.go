@@ -138,6 +138,10 @@ type NodeService struct {
 	approvalTTL   time.Duration // janela de validade de uma aprovação pendente
 	sweepStop     chan struct{} // fechado no Shutdown para parar o varrimento
 
+	// AOS-252 — varrimento de deadlines duráveis (CheckDeadlines). Partilha o sweepStop:
+	// o Shutdown pára os dois varrimentos com UM close.
+	deadlineSweepInterval time.Duration // período do varrimento; <= 0 desliga
+
 	mu             sync.Mutex
 	runs           map[string]*runState // em curso (por RunID)
 	completed      map[string]*runState // terminados (inspecção/observabilidade)
@@ -173,6 +177,9 @@ type nodeServiceConfig struct {
 	sweepInterval    time.Duration
 	sweepIntervalSet bool
 	approvalTTL      time.Duration
+	// AOS-252 — idem para o varrimento de deadlines (CheckDeadlines).
+	deadlineSweepInterval    time.Duration
+	deadlineSweepIntervalSet bool
 }
 
 // WithLeaseTTL define o TTL do lease de posse de run (default [DefaultLeaseTTL]).
@@ -264,6 +271,11 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	if approvalTTL <= 0 {
 		approvalTTL = integration.DefaultApprovalTTL
 	}
+	// AOS-252 — varrimento de deadlines. Explícito (incl. 0 = DESLIGADO) ou o default.
+	deadlineSweepInterval := DefaultDeadlineSweepInterval
+	if cfg.deadlineSweepIntervalSet {
+		deadlineSweepInterval = cfg.deadlineSweepInterval
+	}
 
 	var leaseOpts []durable.LeaseOption
 	if cfg.leaseClock != nil {
@@ -294,6 +306,8 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		sweepInterval: sweepInterval,
 		approvalTTL:   approvalTTL,
 		sweepStop:     make(chan struct{}),
+
+		deadlineSweepInterval: deadlineSweepInterval,
 	}
 	s.log("loop de servico do no `aos` pronto (AOS-164a): TTL de lease=%s, heartbeat=%s, worker=%q, retencao=%d",
 		cfg.ttl, hbInterval, cfg.workerID, completedCap)
@@ -303,6 +317,12 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		go s.sweepApprovals(s.sweepStop)
 		s.log("varrimento de aprovacoes (AOS-021): LIGADO — periodo=%s, TTL de aprovacao=%s; um pendente sem decisao expira e o run fica RETOMAVEL",
 			sweepInterval, approvalTTL)
+	}
+	// AOS-252 — varrimento de DEADLINES duráveis (CheckDeadlines) no loop de serviço. Só
+	// arranca quando há máquinas de estado compostas e o período é > 0.
+	if deadlineSweepInterval > 0 && node.stateGates != nil {
+		go s.sweepDeadlines(s.sweepStop)
+		s.log("varrimento de deadlines (AOS-252): LIGADO — periodo=%s; um run preso a meio de um turno materializa running->timed_out E e INTERROMPIDO (contexto do run cancelado)", deadlineSweepInterval)
 	}
 	return s, nil
 }
@@ -521,11 +541,12 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 
 	// AOS-218: ABRE a máquina de estados durável do run (AOS-017) e regista o
 	// [control.StateGate] que o canal de steer usa para materializar running↔paused. É
-	// reconstruída do log (retoma após crash) e reclamada (ready→running) LAZILY — só no
-	// primeiro pause de facto pedido — com o fencing token do lease JÁ detido (rs.lease foi
-	// escrito em Submit sob o mutex, happens-before deste `go hostRun`). Um run sem steer
-	// nunca toca o gate ⇒ nenhuma transição ⇒ stream/replay byte-idênticos. O gate é
-	// LIBERTADO no fim (defer), simétrico ao registo de em-curso.
+	// reconstruída do log (retoma após crash) e reclamada (ready→running) com o fencing
+	// token do lease JÁ detido (rs.lease foi escrito em Submit sob o mutex, happens-before
+	// deste `go hostRun`). O gate é LIBERTADO no fim (defer), simétrico ao registo de
+	// em-curso — e com ele o estado em memória do disjuntor do run (AOS-251).
+	var res agentruntime.Result
+	var err error
 	if s.node.stateGates != nil {
 		if err := s.node.stateGates.Open(ctx, rs.runID, rs.lease.Token); err != nil {
 			s.mu.Lock()
@@ -534,12 +555,39 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			return
 		}
 		defer s.node.stateGates.Close(rs.runID)
-		// RETOMA (AOS-021): a suspensão é DURÁVEL, pelo que a reconstrução acima devolve
-		// `waiting_on_human` num run que está a ser retomado. Hospedá-lo é, por definição,
-		// voltar a corrê-lo — repõe-se `running`. Sem isto, uma segunda escalada (o caso
-		// normal: o agente pede outra acção de risco no turno seguinte) tentaria
-		// waiting_on_human→waiting_on_human e o run morreria como FALHADO.
+		defer s.node.breakers.forget(rs.runID) // nil-safe: sem disjuntor composto é no-op
+		// SELO DO ESTADO TERMINAL (AOS-252). Registado DEPOIS dos defers de libertação para
+		// correr ANTES deles (LIFO: o gate ainda está aberto) e ANTES do recover de
+		// isolamento — que fica a jusante na pilha de defers e trata o panic em definitivo.
+		// Aqui o panic é apenas DETECTADO (recover) para escolher a razão do selo e
+		// IMEDIATAMENTE re-lançado. Corre em todos os caminhos de saída: sucesso, erro,
+		// MaxTurns, trip do breaker (no-op — já materializado) e panic.
+		defer func() {
+			r := recover()
+			s.sealTerminalState(rs, res, err, r != nil)
+			if r != nil {
+				panic(r)
+			}
+		}()
 		if gate := s.node.stateGates.resolveGate(rs.runID); gate != nil {
+			// CLAIM NO ARRANQUE (AOS-251): a aresta ready→running é reclamada QUANDO o run
+			// começa a executar, não no primeiro pause/escalada. Sem isto um run comum
+			// ficava em `ready` do princípio ao fim e o disjuntor do agente vivo — no-op
+			// fora de `running` — nunca disparava, inclusive no deny-loop. Numa retoma o
+			// claim é no-op (a máquina não está em ready) e a reposição de
+			// waiting_on_human a seguir é que conduz. Fail-closed: sem o claim durável o
+			// run NÃO arranca — arrancar seria correr com o disjuntor cego.
+			if err := gate.claimRunning(ctx); err != nil {
+				s.mu.Lock()
+				rs.err = fmt.Errorf("aos: claim ready->running do run %q no arranque (AOS-251): %w", rs.runID, err)
+				s.mu.Unlock()
+				return
+			}
+			// RETOMA (AOS-021): a suspensão é DURÁVEL, pelo que a reconstrução acima devolve
+			// `waiting_on_human` num run que está a ser retomado. Hospedá-lo é, por definição,
+			// voltar a corrê-lo — repõe-se `running`. Sem isto, uma segunda escalada (o caso
+			// normal: o agente pede outra acção de risco no turno seguinte) tentaria
+			// waiting_on_human→waiting_on_human e o run morreria como FALHADO.
 			if err := gate.resumeIfWaiting(ctx); err != nil {
 				s.mu.Lock()
 				rs.err = fmt.Errorf("aos: repor o run %q em execucao na retoma (AOS-021): %w", rs.runID, err)
@@ -549,7 +597,7 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		}
 	}
 
-	res, _, err := s.node.Runtime.Run(ctx, goal, nil)
+	res, _, err = s.node.Runtime.Run(ctx, goal, nil)
 
 	// SUSPENSÃO À ESPERA DE HUMANO (AOS-021): o run NÃO terminou — uma tool call foi
 	// escalada e nenhum efeito ocorreu. Persiste-se o registo de RETOMA (o Goal SEM a

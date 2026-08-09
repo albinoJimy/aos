@@ -73,6 +73,18 @@ const (
 // aqui o vault/broker (EPIC-07); aqui é o valor lido de AOS_MODEL_API_KEY_PATH. OmniRoute em dev
 // pode não exigir bearer — devolve-se um valor não-vazio para o keypool não falhar; o upstream
 // ignora-o se não o exigir.
+//
+// O FALLBACK DE DEV NÃO SE GUARDA AQUI (AOS-247, achado F5). Este `Fetch` corre POR-PEDIDO e não
+// tem por onde abortar o arranque: devolver erro daria um nó vivo que anuncia gateway e falha cada
+// chamada em runtime, o que é pior diagnóstico do que uma recusa de boot. As DUAS metades da
+// remediação vivem por isso na fronteira que lê o ambiente:
+//
+//   - AOS_MODE=production sem AOS_MODEL_API_KEY_PATH ⇒ [ErrProductionNeedsModelCredential] em
+//     [parseModelFromEnv] (o nó não chega a construir-se, quanto mais a apresentar isto);
+//   - fora de produção ⇒ [devModelCredentialBanner] declara, em cada arranque, que é o bearer de
+//     DEV que está em uso — o estado deixou de ser indistinguível de uma credencial real.
+//
+// Por construção, então, este ramo só é alcançável num nó de REFERÊNCIA que já o declarou.
 type staticModelCredential struct{ secret string }
 
 func (c staticModelCredential) Fetch(_ context.Context, _, _ string) (string, error) {

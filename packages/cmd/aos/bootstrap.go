@@ -305,6 +305,17 @@ type Config struct {
 	// fornecido, tem PRECEDÊNCIA sobre o PDP default não-carregado.
 	PDP *pdp.PDP
 
+	// Autonomy é a cablagem do ORÁCULO DE NÍVEIS DE AUTONOMIA (AOS-087/AOS-248) que a fronteira
+	// de ambiente já ligou ao [Config.PDP] mas que ainda NÃO está provisionada: o Bootstrap tem
+	// de chamar [autonomyWiring.provision] com o WORM composto, e só aí os níveis declarados em
+	// AOS_AUTONOMY_LEVELS entram em vigor — selados na hash-chain, com motivo e actor. nil ⇒
+	// oráculo não ligado (nenhum `escalate` é emitido; ver autonomy_levels.go).
+	//
+	// PORQUÊ UM CAMPO E NÃO UMA LEITURA DE AMBIENTE AQUI: o oráculo é opção de [pdp.Open], que
+	// corre na config; separar as duas fases num campo mantém UMA só leitura do ambiente e deixa
+	// o composition-root dono da ordem (WORM primeiro, provisionamento depois).
+	Autonomy *autonomyWiring
+
 	// HumanDirectory é o directório de autenticação humana injectado na autoridade de
 	// identidade de REFERÊNCIA (co-localizada). nil ⇒ [integration.NewAllowlistDirectory]
 	// (allowlist de nomes de `Humans`, não autenticação real). Quando fornecido — ex.:
@@ -543,6 +554,11 @@ type Node struct {
 	// canal de steer (não acontece na via de produção — o Bootstrap compõe-o sempre).
 	stateGates *runStateGates
 
+	// breakers é o registo de disjuntores por-run (AOS-080/081). O loop de serviço
+	// LIBERTA o estado de cada run quando ele sai do registo de em-curso ([runBreakers.forget],
+	// ver service.go hostRun). NIL quando não há limiares configurados (disjuntor não composto).
+	breakers *runBreakers
+
 	ownsEventStore bool
 	ownsWORM       bool
 	// otlp é o exporter OTLP/HTTP que o nó ABRIU (nil se a observabilidade está desligada
@@ -769,6 +785,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	wormPartitionsOpaque := errors.Is(wormVerifyErr, audit.ErrPartitionsUnavailable)
 	if wormVerifyErr != nil && !wormPartitionsOpaque {
 		return nil, fmt.Errorf("aos: tamper-evidence do WORM (AOS-221) — hash-chain adulterada no arranque, o no recusa servir: %w", wormVerifyErr)
+	}
+
+	// (2b) PROVISIONAMENTO DOS NÍVEIS DE AUTONOMIA (AOS-087/AOS-248) — a FASE 2 da cablagem que
+	// a fronteira de ambiente deixou por fazer. AQUI, e não antes, porque só aqui existe o WORM:
+	// ligar o sink ao store composto é o que faz cada alteração de nível nascer SELADA (motivo +
+	// actor) na MESMA hash-chain que o `audit.VerifyStore` acima acabou de re-encadear.
+	//
+	// O defeito que fecha (F11): [buildAutonomyOracle] chamava NewLevelRegistry() SEM WithSink e
+	// registava os níveis ali mesmo — a autonomia com que o nó ia correr mudava sem ficar
+	// registada em lado nenhum. Fail-closed: uma selagem recusada ABORTA o arranque
+	// ([ErrAutonomyProvisioning]); a guarda de limpeza acima fecha os stores que o nó abriu.
+	if err := cfg.Autonomy.provision(ctx, worm); err != nil {
+		return nil, err
 	}
 
 	// (2c-pre) CIFRA POR-TITULAR DO CONTEÚDO DOS RUNS (AOS-093). O vault de chaves de
@@ -1123,7 +1152,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// tinham chamador de produção e a correcção nunca chegava ao loop. O StateGate durável
 	// vem da FONTE REAL do nó: a máquina de estados de AOS-017 sobre o mesmo Event Store,
 	// aberta por-run pelo loop de serviço com o fencing token do lease (ver service.go).
-	stateGates := newRunStateGates(es, chainTracer)
+	//
+	// AOS-252: o tecto de wall-clock em `running` resolve-se ANTES dos gates — as máquinas
+	// abertas por eles precisam dele para o varrimento de deadlines (CheckDeadlines). É o
+	// MESMO valor do sinal wall-clock do breaker (UM conceito operador, dois pontos de
+	// enforcement: fronteira de fim-de-turno e backstop a meio do turno).
+	breakerProvider, berr := breakerThresholdsFromEnv()
+	if berr != nil {
+		return nil, berr
+	}
+	var runWallClock time.Duration
+	if breakerProvider != nil {
+		runWallClock = breakerProvider.Thresholds(breakerClass).MaxWallClock
+	}
+	stateGates := newRunStateGates(es, chainTracer, runWallClock)
 	loopSteer := control.NewLoopSteer(steer, stateGates.Resolve)
 
 	// (6d) BRIDGE DE APROVAÇÃO LIGADO AO LOOP (AOS-021). É esta composição que faz o ciclo
@@ -1138,12 +1180,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (6e) DISJUNTOR DO AGENTE VIVO (AOS-080/081) — POR-RUN, sobre a MESMA state.Machine
 	// que o steer e a escalada usam. Só é composto quando há limiares configurados: um
 	// disjuntor sem limiares é cego e daria a ilusão de protecção (ver breaker_thresholds.go).
-	breakerProvider, berr := breakerThresholdsFromEnv()
+	// O provider foi resolvido em (6c) — as máquinas de estado precisavam do wall-clock (AOS-252).
+	// AOS-246: a cablagem incompatível (limiar de velocidade ligado sem VelocitySource)
+	// aborta o ARRANQUE aqui — antes valia um disjuntor ausente em silêncio.
+	breakers, berr := newRunBreakers(stateGates, breakerProvider)
 	if berr != nil {
 		return nil, berr
 	}
-	breakers := newRunBreakers(stateGates, breakerProvider)
 	livenessBreaker := breakers.livenessAdapter()
+	// AOS-251: o detector de no-progress só vê acções se o loop as reportar — liga o
+	// observador ao runtime (method value nil-safe: sem disjuntor composto é inerte).
+	runtimeOpts = append(runtimeOpts, agentruntime.WithActionObserver(breakers.observeAction))
 
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
@@ -1426,6 +1473,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("mediacao de politica (AOS-220): PDP NAO-CARREGADO (NewUnloaded) — DEFAULT-DENY EXPLICITO de TODA a tool call mediada; defina AOS_POLICY_BUNDLE_DIR + AOS_POLICY_TRUST_ANCHOR (pubkey ed25519 out-of-band) para carregar um bundle assinado")
 	}
+	// AS QUATRO SUPERFÍCIES QUE O BANNER CALAVA (AOS-248, achado F14). Ficam JUNTAS e logo a
+	// seguir à mediação de política porque é com ela que o operador as compõe mentalmente: o PDP
+	// diz o que é permitido, a autonomia diz o que ainda assim EXIGE um humano, o modelo diz quem
+	// propõe as acções, e o orçamento/broker dizem o que NÃO as limita nem lhes guarda os
+	// segredos. Cada linha segue o estado REALMENTE composto — ver posture_banner.go, onde a
+	// justificação de cada afirmação está amarrada ao código que a suporta.
+	for _, line := range autonomyPostureBanner(cfg.Autonomy) {
+		log("%s", line)
+	}
+	for _, line := range modelPostureBanner(cfg.Model) {
+		log("%s", line)
+	}
+	for _, line := range budgetPostureBanner() {
+		log("%s", line)
+	}
+	for _, line := range credentialBrokerPostureBanner() {
+		log("%s", line)
+	}
 	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA
 	// da DORMENTE: sem directório externo, o ScopeGate acaba a re-verificar o que o hook
 	// de identidade já impôs e NÃO há revogação — um token válido vale até expirar. Com
@@ -1546,6 +1611,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		ExpirationJob:           expirationJob,
 		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		stateGates:              stateGates,    // AOS-218: fonte do StateGate durável por-run para o steer
+		breakers:                breakers,      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
 
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,
