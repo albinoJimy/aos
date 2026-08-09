@@ -1,4 +1,29 @@
-packages/kernel/reference-monitor/eventsink.go: should convert h (type DelegationHop) to delegationHopDTO instead of using struct literal (S1016)
+# Baseline do staticcheck — descobertas PRE-EXISTENTES declaradas. O gate e fail-closed
+# para tudo o que nao esteja aqui.
+#
+# ATENCAO A QUEM LER A SAIDA DO GATE: os dois rotulos da seccao staticcheck de
+# scripts/ci/lint.sh estao TROCADOS. O que ele anuncia como "descobertas NOVAS fora da
+# baseline" e na verdade a lista de entradas OBSOLETAS desta baseline, e o que anuncia como
+# "entradas de baseline obsoletas" sao os achados NOVOS. Verificado a mao em 2026-08-09:
+# corri staticcheck em packages/kernel/reference-monitor (limpo, logo a entrada eventsink.go
+# era obsoleta) e em orchestrator/ + agent-runtime/replay/ (as 4 abaixo reproduzem). Quem
+# seguir a mensagem sem verificar vai depurar o ficheiro errado.
+
+# --- Achados reais, PRE-EXISTENTES a EPIC-20 (reproduzem na base 030033c) ---
+# Testes: triviais de fechar (valor por usar / metodo por usar) — ficam declarados em vez
+# de fechados aqui porque sao de outro ticket e esta wave nao lhes toca.
+packages/control-plane/orchestrator/planner/planner_test.go: this value of p is never used (SA4006)
+packages/control-plane/orchestrator/planneraut/governor_test.go: func (*stubOverride).set is unused (U1000)
+# Producao: ST1008 exige MUDAR A ASSINATURA de funcoes do subsistema de replay — nao e
+# formatacao, e uma alteracao de contrato. Fica com eixo, nao se fecha de passagem.
+packages/kernel/agent-runtime/replay/nondeterminism_capture.go: error should be returned as the last argument (ST1008)
+packages/kernel/agent-runtime/replay/replay_source.go: error should be returned as the last argument (ST1008)
+
+# --- Restantes pre-existentes ---
 packages/platform/identity/delegation/chain_test.go: identical expressions on the left and right side of the '!=' operator (SA4000)
 packages/substrate/bus/bus.go: func withClock is unused (U1000)
 packages/substrate/eventstore/store.go: func withClock is unused (U1000)
+
+# REMOVIDA em 2026-08-09 (o codigo foi corrigido; a entrada ficou para tras e era ela que
+# fazia o gate falhar):
+#   packages/kernel/reference-monitor/eventsink.go: should convert h (type DelegationHop) to delegationHopDTO instead of using struct literal (S1016)

@@ -81,3 +81,8 @@ packages/cmd/aos/observability.go|G115            # int64(AuditSeq): seq monotó
 packages/cmd/aos/sovereign_authority.go|G115      # uint64(n): n é contagem/revisão com guarda n<0→0 (linhas 240-242); int não-negativo→uint64 sempre seguro
 packages/integration/steer_authenticator.go|G115  # uint64(UnixNano): timestamp do próprio nó no selo do sinal, positivo e determinístico (codificação injectiva)
 packages/substrate/eventstore/durable.go|G115     # uint32(len(payload)): limitado a maxRecordBytes=64MiB (guarda linha 104) « MaxUint32
+# AOS-177 (EPIC-16) — conversao INALCANCAVEL: credID e gerado no proprio ficheiro com
+# tamanho FIXO de 32 bytes (synth.go:136 `make([]byte, 32)`) e ha um unico chamador
+# (synth.go:140), pelo que len(credID) nunca se aproxima de 65535. Se algum dia o credID
+# passar a vir de fora, esta entrada TEM de sair e a conversao ganhar guarda.
+packages/cmd/aos-attestation/synth.go|G115
