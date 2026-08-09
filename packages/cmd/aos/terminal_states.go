@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/state"
@@ -33,6 +34,11 @@ const (
 	// reasonRunPanicked — running→failed: o run PANICOU e o panic foi recuperado pelo
 	// isolamento por-run. Razão distinta para a auditoria distinguir falha de crash lógico.
 	reasonRunPanicked = "run_panicked"
+	// reasonMaxTurnsExhausted — running→timed_out por esgotamento do ORÇAMENTO DE TURNOS.
+	// Rótulo DELIBERADAMENTE distinto do wall_clock_exceeded de [state.Machine.CheckDeadlines]
+	// e do tecto do disjuntor: as três causas partilham o estado `timed_out` e só o rótulo as
+	// torna atribuíveis no log.
+	reasonMaxTurnsExhausted = "max_turns_exhausted"
 )
 
 // sealTerminal materializa o estado TERMINAL do run no log durável. É NO-OP quando a
@@ -52,9 +58,19 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 		return g.m.Transition(ctx, state.Failed, state.TransitionEvent{Token: g.token, Reason: reasonRunPanicked})
 	case runErr == nil && res.Terminated:
 		return g.m.Transition(ctx, state.Complete, state.TransitionEvent{Token: g.token, Reason: reasonRunComplete})
+	case errors.Is(runErr, agentruntime.ErrMaxTurnsExceeded):
+		// ORÇAMENTO DE TURNOS ESGOTADO ⇒ `timed_out`, NÃO `failed`. A distinção não é
+		// cosmética: na tabela de AOS-017 `failed` é a falha RECUPERÁVEL cuja única aresta
+		// de saída é failed→compensating — a saga de rollback (AOS-254). Propor uma
+		// compensação a um run que apenas ficou sem turnos é a recuperação errada; o que se
+		// quer é re-correr com mais orçamento. `timed_out` é o estado dos TECTOS DEFENSIVOS
+		// excedidos, absorvente por construção, e é para onde o disjuntor já manda o seu
+		// próprio tecto de wall-clock — mandar MaxTurns para `failed` deixaria dois tectos
+		// irmãos em estados diferentes.
+		return g.m.Transition(ctx, state.TimedOut, state.TransitionEvent{Token: g.token, Reason: reasonMaxTurnsExhausted})
 	default:
-		// Erro de loop, MaxTurns esgotado, cancelamento — qualquer saída não-terminada é
-		// uma FALHA durável (recuperável: a aresta failed→compensating é da saga, AOS-254).
+		// Erro de loop, cancelamento — qualquer outra saída não-terminada é uma FALHA
+		// durável, e aí a saga de compensação é a recuperação certa.
 		return g.m.Transition(ctx, state.Failed, state.TransitionEvent{Token: g.token, Reason: reasonRunFailed})
 	}
 }

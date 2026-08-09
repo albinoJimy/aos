@@ -282,14 +282,19 @@ Escrever `complete`/`failed` em todos os caminhos de saída do loop; correr `Che
 ### Critérios de Aceitação
 - [x] Todo o fim de run (sucesso, erro, MaxTurns, breaker, panic recuperado) escreve o estado terminal no log durável.
 - [x] `CheckDeadlines` com caller periódico composto no loop de serviço; `running→timed_out` materializado **e o run interrompido**.
-- [ ] Teste: crash simulado vs fim normal distinguem-se no log; `GET /runs/{id}` reflecte o desfecho durável após restart.
+- [x] Teste: crash simulado vs fim normal distinguem-se no log; `GET /runs/{id}` reflecte o desfecho durável após restart.
 
 ### Estado
-**IMPLEMENTADO PARCIAL — entregue na W0 (ver nota de âmbito), auditado e remediado.**
+**IMPLEMENTADO — pendente de auditoria.** (CA3 entregue na W1, fechando o parcial abaixo.)
 `runGate.sealTerminal` sela no ponto único de saída (`hostRun`), a montante dos defers de
 libertação e do recover de isolamento — no-op fora de `running`, para não reescrever os
 desfechos que outros condutores (steer/breaker, escalada, deadlines) já materializaram.
-`sweepDeadlines` é o caller periódico que `CheckDeadlines` nunca teve.
+`sweepDeadlines` é o caller periódico que `CheckDeadlines` nunca teve. CA3: o GET
+`/runs/{id}` ganhou fallback durável (`NodeService.DurableState` + mapeamento em
+`handleGet`: complete ⇒ completed/terminated; failed/timed_out/killed/paused pelo nome do
+estado); `aos252_terminal_states_test.go` prova a distinção crash (claim sem desfecho) vs
+fim normal no log e o GET pós-restart sobre o mesmo substrato (completed sem nada em
+memória; crashado continua 404 — a retoma de órfãos é AOS-253).
 
 **Remediação (achado F-A5, fail-open).** O varrimento marcava `running→timed_out` e deixava o
 run A CORRER: o operador lia um estado terminal e parava de olhar enquanto o agente continuava
@@ -299,10 +304,6 @@ cancelar o contexto do run (`rs.cancel` — o MESMO mecanismo do `Shutdown` e do
 perdida, não uma segunda via de paragem). Prova de nó em `aos252_deadline_interrupt_test.go`: um
 run preso a meio do turno (o modelo só devolve quando o ctx é cancelado) sai, com `timed_out` no
 log; falsificabilidade verificada — sem o cancelamento o teste não termina.
-
-**Falta para fechar (CA3):** o teste que distingue crash simulado de fim normal no log e o
-`GET /runs/{id}` após restart. Eixo: AOS-253, que precisa exactamente dessa distinção para
-separar órfão de terminado.
 
 ---
 

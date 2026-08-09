@@ -129,6 +129,7 @@ type NodeService struct {
 	assigner *worker.Assigner
 	leases   *durable.LeaseManager
 	logw     io.Writer
+	logMu    sync.Mutex // serializa as escritas em logw (ver [NodeService.log])
 
 	hbInterval   time.Duration // período de renovação (heartbeat) da posse; <= 0 desliga
 	completedCap int           // teto de desfechos retidos (FIFO); <= 0 = ilimitado
@@ -938,6 +939,18 @@ func (s *NodeService) suspendedDurably(ctx context.Context, runID string) (bool,
 	return st == state.WaitingOnHuman, nil
 }
 
+// DurableState devolve o estado durável do run reconstruído do log (AOS-252). É uma
+// LEITURA — nada transita. Um run sem transições (ou sem stream) é [state.Ready]. É o que
+// permite ao GET /runs/{id} reflectir o desfecho de um run que esta réplica já não conhece
+// em memória (restart, poda FIFO): o mapa `completed` é um cache, a máquina de estados é a
+// verdade.
+func (s *NodeService) DurableState(ctx context.Context, runID string) (state.State, error) {
+	if s.node == nil || s.node.stateGates == nil {
+		return "", nil
+	}
+	return s.node.stateGates.currentState(ctx, runID)
+}
+
 // Wait bloqueia até o run runID terminar (sair do registo de em-curso) e devolve o seu
 // desfecho, ou (_, false, ctx.Err()) se o ctx expirar antes. Um run desconhecido (nunca
 // submetido ou já colhido) devolve imediatamente o que houver em `completed`. Útil para
@@ -960,8 +973,20 @@ func (s *NodeService) Wait(ctx context.Context, runID string) (RunOutcome, bool,
 }
 
 // log escreve uma linha no destino de logs do serviço (se configurado).
+//
+// SERIALIZADO: [io.Writer] não promete nada sobre uso concorrente, e este método é chamado
+// de várias goroutines ao mesmo tempo — a de cada run hospedado (panic recuperado, selo do
+// desfecho), a do heartbeat de posse, as dos DOIS varredores periódicos (aprovações e
+// deadlines) e a de quem invoca o Shutdown. Sem o lock, dois Fprintf concorrentes sobre o
+// mesmo destino são uma corrida de dados a sério: o detector apanha-a num destino de teste
+// e num ficheiro dá linhas entrelaçadas — precisamente no log que serve para explicar o que
+// correu mal. O mutex é DEDICADO e nunca é adquirido com `s.mu` detido, pelo que não pode
+// participar numa inversão de ordem com o lock que serializa a admissão de runs.
 func (s *NodeService) log(format string, args ...any) {
-	if s.logw != nil {
-		fmt.Fprintf(s.logw, "[aos-service] "+format+"\n", args...)
+	if s.logw == nil {
+		return
 	}
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	fmt.Fprintf(s.logw, "[aos-service] "+format+"\n", args...)
 }

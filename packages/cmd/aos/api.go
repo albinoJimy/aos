@@ -63,6 +63,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
+	"github.com/aos-ref/kernel/agent-runtime/state"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
 )
@@ -672,7 +673,7 @@ func submitErrorStatus(err error) int {
 // streaming é AOS-167.
 type runStateResponse struct {
 	RunID      string `json:"run_id"`
-	Status     string `json:"status"` // "in_progress" | "waiting_on_human" | "completed"
+	Status     string `json:"status"` // "in_progress" | "waiting_on_human" | "completed" | desfecho durável (AOS-252): "failed" | "timed_out" | "killed" | "paused"
 	Terminated bool   `json:"terminated,omitempty"`
 	Paused     bool   `json:"paused,omitempty"`
 	Panicked   bool   `json:"panicked,omitempty"`
@@ -804,6 +805,30 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 				Status:           "in_progress",
 				PendingApprovals: h.pendingApprovalsFor(r.Context(), runID),
 			})
+			return
+		}
+	}
+	// DESFECHO DURÁVEL (AOS-252): os baldes em memória são um cache que um restart (ou a
+	// poda FIFO) esvazia; o log não. Um run que esta réplica já não conhece mas cujo log
+	// tem um estado FINAL/SUSPENSO reflecte-o — completo, falhado, timed_out, killed ou
+	// paused (trip do breaker) — em vez do 404 de "nunca existiu". Um run em ready/running
+	// (crash ou órfão sem desfecho — AOS-253) ou inexistente cai no 404 uniforme: a leitura
+	// é um caminho de CONSULTA e um erro de leitura resolve-se pelo lado não-enumerável.
+	if st, derr := h.svc.DurableState(r.Context(), runID); derr == nil {
+		var resp runStateResponse
+		switch st {
+		case state.Complete:
+			resp = runStateResponse{RunID: runID, Status: "completed", Terminated: true}
+		case state.Failed, state.TimedOut, state.Killed:
+			resp = runStateResponse{RunID: runID, Status: string(st)}
+		case state.Paused:
+			resp = runStateResponse{RunID: runID, Status: string(state.Paused), Paused: true}
+		}
+		if resp.Status != "" {
+			if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
