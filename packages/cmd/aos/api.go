@@ -192,6 +192,14 @@ type apiConfig struct {
 	ctrlRateBurst    float64
 	ctrlRatePerSec   float64
 	maxInFlight      int
+	// maxTurnsCeiling é o TECTO node-local do nº de turnos de um run (AOS-203, achado F2 do
+	// desafio A5). Um `max_turns` do corpo de POST /runs é CLAMPADO a este valor na fronteira
+	// de INGRESSO ANTES de construir o Goal, para que o submissor não escolha um orçamento de
+	// turnos arbitrário: sem tecto, um único `POST /runs {max_turns: 200}` esgota o LimitRPM do
+	// keypool do gateway e deixa o nó incapaz de chamar o modelo até reiniciar (o orçamento RPM
+	// é do PROCESSO, não do run). Default [agentruntime.DefaultMaxTurns]; endurecível por
+	// AOS_MAX_TURNS via [WithMaxTurnsCeiling]. É node-local: não importa nada do escalonador.
+	maxTurnsCeiling  int
 	trajWriteTimeout time.Duration // write-deadline por-escrita do SSE de trajectória
 	trajMaxConns     int           // tecto de streams SSE concorrentes por-nó
 	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
@@ -275,6 +283,21 @@ func WithControlRateLimit(perSec, burst float64) APIOption {
 // <= 0 desliga o tecto (só o rate-limit governa a admission).
 func WithMaxInFlight(n int) APIOption {
 	return func(c *apiConfig) { c.maxInFlight = n }
+}
+
+// WithMaxTurnsCeiling define o TECTO node-local do nº de turnos de um run (AOS-203, F2). Um
+// `max_turns` do corpo de POST /runs maior do que este tecto — ou ausente — é CLAMPADO a ele
+// na fronteira de ingresso, ANTES de o Goal chegar ao loop. Fecha o DoS de um pedido em que
+// um `max_turns` grande esgota o orçamento RPM do gateway (que é do processo, não do run) e
+// deixa o nó sem poder chamar o modelo. Default [agentruntime.DefaultMaxTurns]; n <= 0 é
+// ignorado (mantém o default) — o tecto NUNCA se desliga: um clamp "desligável" reabriria o
+// próprio buraco que fecha.
+func WithMaxTurnsCeiling(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.maxTurnsCeiling = n
+		}
+	}
 }
 
 // WithTrajectoryWriteTimeout define o write-deadline POR-ESCRITA do stream SSE de trajectória
@@ -430,6 +453,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		ctrlRateBurst:    DefaultRateBurst,
 		ctrlRatePerSec:   DefaultRatePerSec,
 		maxInFlight:      DefaultMaxInFlight,
+		maxTurnsCeiling:  agentruntime.DefaultMaxTurns,
 		trajWriteTimeout: DefaultTrajectoryWriteTimeout,
 		trajMaxConns:     DefaultMaxTrajectoryConns,
 		now:              time.Now,
@@ -605,6 +629,19 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.PrincipalNHI = submitter.principal
+	}
+
+	// TECTO DE TURNOS na fronteira de INGRESSO (AOS-203, achado F2 do desafio A5). O `max_turns`
+	// vem do corpo do submissor e, sem clamp, é copiado cru para o Goal — o loop só aplica o
+	// default quando o campo é <= 0, pelo que um valor grande passa tal e qual. Composto com o
+	// orçamento RPM POR-PROCESSO do keypool do gateway, um único `POST /runs {max_turns: 200}`
+	// esgota-o e deixa o nó incapaz de chamar o modelo até reiniciar — um DoS de UM pedido que
+	// o rate-limit de ingresso (1 pedido, abaixo do burst) e o tecto de in-flight (1 run) não
+	// apanham. O clamp fecha-o aqui, node-local, ANTES de o Goal existir: um `max_turns` acima
+	// do tecto — ou ausente (<= 0) — é reduzido ao tecto (default [agentruntime.DefaultMaxTurns],
+	// endurecível por AOS_MAX_TURNS). Um valor legítimo abaixo do tecto passa intacto.
+	if req.MaxTurns <= 0 || req.MaxTurns > h.cfg.maxTurnsCeiling {
+		req.MaxTurns = h.cfg.maxTurnsCeiling
 	}
 
 	goal := agentruntime.Goal{

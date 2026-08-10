@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -744,12 +745,22 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
+	// TECTO DE TURNOS por run (AOS-203, F2/AOS-250): AOS_MAX_TURNS clampa `max_turns` na
+	// fronteira de ingresso. Resolvido ANTES de compor o serviço — um valor malformado aborta
+	// o arranque, como os limiares do disjuntor, em vez de degradar em silêncio para o default.
+	maxTurnsOpt, err := apiMaxTurnsOptionFromEnv()
+	if err != nil {
+		return err
+	}
 	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
 	}
 	apiOpts := append([]APIOption{WithAPILog(w)}, tlsOpts...)
 	apiOpts = append(apiOpts, ingressOpts...)
+	if maxTurnsOpt != nil {
+		apiOpts = append(apiOpts, maxTurnsOpt)
+	}
 	srv, err := NewAPIServer(svc, node, apiOpts...)
 	if err != nil {
 		return err
@@ -859,6 +870,30 @@ func apiTLSOptionsFromEnv(production bool) ([]APIOption, []string, error) {
 		banner = append(banner, controlMTLSBanner()...)
 	}
 	return opts, banner, nil
+}
+
+// ErrBadMaxTurns — AOS_MAX_TURNS está definido mas não é um inteiro POSITIVO. Fail-closed de
+// CONFIG (AOS-203, F2): um tecto malformado que fosse ignorado deixaria o operador convencido
+// de que limitou o orçamento de turnos por run quando não limitou — o mesmo raciocínio do
+// fail-closed dos limiares do disjuntor. Um tecto <= 0 não faz sentido (clampar tudo a 0 fá-lo-ia
+// recair no default do loop, reabrindo o buraco), por isso é recusado em vez de degradado.
+var ErrBadMaxTurns = errors.New("aos: AOS_MAX_TURNS invalido — esperado inteiro POSITIVO (o tecto node-local de turnos por run); vazio usa o default")
+
+// apiMaxTurnsOptionFromEnv resolve o TECTO node-local de turnos por run (AOS-203, achado F2)
+// a partir de AOS_MAX_TURNS. Vazio ⇒ (nil, nil): [NewAPIHandler] aplica o default
+// [agentruntime.DefaultMaxTurns] e o clamp de ingresso continua activo com esse tecto. Definido
+// e válido (> 0) ⇒ [WithMaxTurnsCeiling]. Definido e inválido ⇒ [ErrBadMaxTurns] (o nó recusa
+// arrancar, no molde dos limiares do disjuntor). É node-local — não importa nada do escalonador.
+func apiMaxTurnsOptionFromEnv() (APIOption, error) {
+	v := strings.TrimSpace(os.Getenv("AOS_MAX_TURNS"))
+	if v == "" {
+		return nil, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return nil, fmt.Errorf("%w: AOS_MAX_TURNS=%q", ErrBadMaxTurns, v)
+	}
+	return WithMaxTurnsCeiling(n), nil
 }
 
 // controlMTLSBanner declara que o mTLS do plano de controlo (DEF-012, EIXO 1) está LIGADO e que é
