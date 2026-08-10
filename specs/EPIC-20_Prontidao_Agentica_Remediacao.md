@@ -940,7 +940,7 @@ Eliminar o fusível: ou o pool ganha uma janela real, ou o tecto é declarado co
 - [x] A decisão A/B fica registada (D11). **DECIDIDO 2026-08-10 (dono): Opção B — tecto externo no LiteLLM.** O rate-limit de RPM/TPM pertence ao gateway externo, não ao nó; o keypool perde o fusível de vida-inteira (`LimitRPM/LimitTPM: 0` = ilimitado no contrato) e a tabela AOS-203 declara que o limite vive no LiteLLM.
 
 ### Estado
-**DESBLOQUEADO (D11 decidido 2026-08-10: Opção B, tecto no LiteLLM) — pronto para wave.** Declarado na W0 e não entrou (zero linhas na branch `feature/epic20-w0-risco-activo`); agora sem bloqueio de decisão. Ver «Modelo de execução».
+**IMPLEMENTADO (2026-08-10, Opção B).** `LimitRPM/LimitTPM: 0` em `modelgatewaywiring.go` (keypool = selector por throughput, não rate-limiter; o tecto real vive no LiteLLM externo com janela e backpressure). Trabalho adotado da sessão `determined-greider`, verificado verde e committado com proveniência.
 
 ---
 

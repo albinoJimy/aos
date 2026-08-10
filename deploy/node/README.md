@@ -144,6 +144,21 @@ de índice e o detalhe lá.
 > `TrimSpace`-ados. A gramática plana `a=b,c=d` é partilhada por `AOS_BOARD_REGIONS` e
 > `AOS_OPERATORS`, deliberadamente.
 
+> **Tecto de throughput do modelo — é do gateway EXTERNO, não do nó (F1 / AOS-203).** A conta
+> de infra que o nó compõe para o Model Gateway (`packages/cmd/aos/modelgatewaywiring.go`)
+> declara `LimitRPM = LimitTPM = 0` — **ilimitado** pelo contrato do `keypool` (`<=0 =
+> ilimitado`). É **deliberado**: o `keypool` é um **selector de chave por throughput** (distribui
+> carga por um *pool* de contas), **não** um *rate-limiter* — **não tem janela temporal** e o
+> `rpm` só **sobe** a cada `Select`. Um limite finito numa conta **única** (não há pool por onde
+> distribuir) não faria *backpressure*: tornar-se-ia um **FUSÍVEL permanente** — à `(limite+1).ª`
+> chamada ao modelo da vida do processo, **toda** a chamada falharia *fail-closed*
+> (`ErrNoCapacity`) até **reiniciar** o nó, um *brownout* silencioso indistinguível de uma avaria
+> do provider. O tecto de throughput **REAL** vive no **gateway externo** — o **LiteLLM** do
+> deployment endurecido (`deploy/node/dev-hardened/docker-compose.oidc.yml`), que tem janela e
+> *backpressure* a sério — ou noutro proxy OpenAI-compatível à frente do nó. Guard-test:
+> `TestModelGateway_NoThroughputFuse` (faz **mais** do que o antigo fusível de 120 chamadas pelo
+> caminho nó→GW e exige que **todas** passem; reintroduzir um limite sem janela avermelha-o).
+
 ### Soberania de leitura — `AOS_BOARD_REGIONS` e o kill-switch (AOS-172 / D7, endurecido em AOS-203)
 
 `AOS_BOARD_REGIONS` tem **três** estados, e a diferença entre "não definida" e "definida vazia"

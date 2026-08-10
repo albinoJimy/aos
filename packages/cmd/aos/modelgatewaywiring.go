@@ -144,8 +144,18 @@ func newGatewayModelClient(baseURL, model, apiKeyPath, region, board string, pol
 		DefaultRegion: region,
 		Audit:         audit.NewMemStore(), // audit de governação do GW (activação da allowlist + decisões)
 		Credentials:   staticModelCredential{secret: secret},
+		// Uma ÚNICA conta de infra — não há pool por onde distribuir carga. LIMITES A ZERO
+		// (⇒ ILIMITADO, contrato keypool.Account: "<=0 = ilimitado") de PROPÓSITO (F1/AOS-203):
+		// o keypool é um SELECTOR de chave por throughput, NÃO um rate-limiter — não tem janela
+		// temporal e o rpm só SOBE a cada Select (keypool.Select). Um limite finito numa conta
+		// única não faz backpressure: vira um FUSÍVEL permanente — à (limite+1).ª chamada ao
+		// modelo da vida do processo, g.credential() falharia fail-closed (ErrNoCapacity) para
+		// SEMPRE até reiniciar o nó, um brownout silencioso indistinguível de avaria do provider.
+		// O tecto de throughput REAL é do gateway EXTERNO (o LiteLLM do deployment endurecido, que
+		// tem janela e backpressure a sério). Ver deploy/node/README.md e, como guarda,
+		// TestModelGateway_NoThroughputFuse.
 		Accounts: []modelgateway.InfraAccount{{
-			KeyID: "model-upstream", Provider: "openai", Region: region, LimitRPM: 120, LimitTPM: 200_000,
+			KeyID: "model-upstream", Provider: "openai", Region: region, LimitRPM: 0, LimitTPM: 0,
 		}},
 		Authn:     nodeModelAuthn{},
 		Allowlist: pol, // nil ⇒ allowlist EMBEBIDA (retro-compat); != nil ⇒ bundle externo montado
