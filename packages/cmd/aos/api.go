@@ -186,12 +186,12 @@ var (
 
 // apiConfig é a configuração resolvida da API.
 type apiConfig struct {
-	maxBodyBytes     int64
-	rateBurst        float64
-	ratePerSec       float64
-	ctrlRateBurst    float64
-	ctrlRatePerSec   float64
-	maxInFlight      int
+	maxBodyBytes   int64
+	rateBurst      float64
+	ratePerSec     float64
+	ctrlRateBurst  float64
+	ctrlRatePerSec float64
+	maxInFlight    int
 	// maxTurnsCeiling é o TECTO node-local do nº de turnos de um run (AOS-203, achado F2 do
 	// desafio A5). Um `max_turns` do corpo de POST /runs é CLAMPADO a este valor na fronteira
 	// de INGRESSO ANTES de construir o Goal, para que o submissor não escolha um orçamento de
