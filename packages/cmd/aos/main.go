@@ -680,13 +680,31 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 			svcOpts = append(svcOpts, WithApprovalSweepInterval(d))
 		}
 	}
+	// AOS-277 — KNOBS DE INGRESSO. As três variáveis são lidas UMA vez, AQUI (o arranque), e
+	// fail-closed: um valor inválido devolve [ErrBadIngressLimits] e o nó NÃO chega a servir.
+	// O que se liga é a admission que já existia desde AOS-166 (token-bucket + tecto de runs
+	// em curso, 429 em handleSubmit); o que estas opções mudam são os NÚMEROS, até aqui
+	// constantes do binário. Ver ingress_env.go.
+	ingressLim, ingressOpts, err := ingressLimitsFromEnv()
+	if err != nil {
+		return err
+	}
 	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
 	}
-	srv, err := NewAPIServer(svc, node, append([]APIOption{WithAPILog(w)}, tlsOpts...)...)
+	apiOpts := append([]APIOption{WithAPILog(w)}, tlsOpts...)
+	apiOpts = append(apiOpts, ingressOpts...)
+	srv, err := NewAPIServer(svc, node, apiOpts...)
 	if err != nil {
 		return err
+	}
+	// Os limites EM VIGOR são declarados a partir do MESMO valor que alimentou as opções
+	// acima — postura anunciada = postura ligada (AOS-248). Sai aqui, e não no banner de
+	// bootstrap, porque a admission só existe quando o nó SERVE: um `aos` que faz bootstrap
+	// sem AOS_API_ADDR não tem ingresso nenhum para anunciar.
+	for _, line := range ingressPostureBanner(ingressLim) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 	// AVISO PROEMINENTE do opt-out (modelo do kill-switch de soberania, AOS-203): quem termina
 	// TLS a montante fica a saber, em CADA arranque, que o nó serve em claro POR DECISÃO sua.

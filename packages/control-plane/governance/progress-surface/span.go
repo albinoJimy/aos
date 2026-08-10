@@ -17,6 +17,12 @@ const (
 	// OpExhaustionDecision — aos.control.exhaustion_decision: o span da decisão (a opção
 	// resolvida, ou a degradação por timeout).
 	OpExhaustionDecision = "aos.control.exhaustion_decision"
+	// OpBudgetWarning — aos.control.budget_warning: o AVISO de aproximação ao tecto
+	// (AOS-262, primeira entrega). É DISTINTO de [OpExhaustionPrompt] de propósito: um
+	// aviso não oferece opções e não espera resposta, e dar-lhe o nome do prompt faria
+	// qualquer consumidor do canal de leitura inferir que houve uma escolha a apresentar.
+	// Emitido UMA VEZ por run (latch em [ProgressSurface]).
+	OpBudgetWarning = "aos.control.budget_warning"
 
 	// AttrBudgetFraction — aos.control.budget_fraction: a fracção consumida [0,1+) no
 	// instante do prompt/decisão.
@@ -41,7 +47,39 @@ const (
 	// AttrDegradeReason — aos.control.degrade_reason: a razão da degradação por ausência de
 	// resposta ao prompt.
 	AttrDegradeReason = "aos.control.degrade_reason"
+	// AttrConsumedTokens — aos.control.consumed_tokens: os tokens consumidos, LIDOS da
+	// [BurndownSource] (o ledger de turnos). É a dimensão que HOJE decide a fracção — a de
+	// micro-USD está a zero enquanto o canal de custo não estiver ligado (AOS-259).
+	AttrConsumedTokens = "aos.control.consumed_tokens"
+	// AttrLimitTokens — aos.control.limit_tokens: o tecto em tokens (porta BudgetReader).
+	AttrLimitTokens = "aos.control.limit_tokens"
+	// AttrWarningTurn — aos.control.warning_turn: o turno em que o limiar foi atingido (a
+	// outra metade da correlação (run_id, turn) de AOS-261).
+	AttrWarningTurn = "aos.control.warning_turn"
 )
+
+// emitWarningSpan abre e fecha o span do AVISO de burn-down (AOS-262). Chamado SÓ quando o
+// latch arma (uma vez por run). Sem segredos: só rótulos e números.
+func (s *ProgressSurface) emitWarningSpan(ctx context.Context, runID string, turn int, bd Burndown, prog ProgressSnapshot) {
+	_, span := s.tracer.StartSpan(ctx, OpBudgetWarning)
+	if runID != "" {
+		span.SetAttribute(otelgenai.AttrRunID, runID)
+	}
+	span.SetAttribute(AttrWarningTurn, int64(turn))
+	span.SetAttribute(AttrBudgetFraction, bd.Fraction)
+	span.SetAttribute(AttrBudgetThreshold, s.threshold)
+	span.SetAttribute(AttrConsumedTokens, bd.Consumed.Tokens)
+	span.SetAttribute(AttrLimitTokens, bd.Limit.Tokens)
+	span.SetAttribute(AttrConsumedMicroUSD, bd.Consumed.CostMicroUSD)
+	span.SetAttribute(AttrLimitMicroUSD, bd.Limit.CostMicroUSD)
+	if prog.State != "" {
+		span.SetAttribute(AttrProgressState, prog.State)
+	}
+	if prog.Step != "" {
+		span.SetAttribute(AttrProgressStep, prog.Step)
+	}
+	span.End()
+}
 
 // emitPromptSpan abre e fecha o span do prompt de exaustão, ligado ao run pelo AttrRunID,
 // com a fracção/limiar, o burn-down e o progresso corrente. Sem segredos.

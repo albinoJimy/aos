@@ -63,6 +63,9 @@ de índice e o detalhe lá.
 |---|---|---|
 | `AOS_MODE` | *(vazio ⇒ modo de **referência**)* | `production` (qualquer caixa) activa a **postura de produção fail-closed**. **Segurança:** é o interruptor que torna obrigatórias **quatro** exigências — `AOS_ISSUER_PUBKEY` (senão `ErrProductionNeedsHardenedIdentity`), `AOS_BOARD_REGIONS` **não-vazio** (senão `ErrProductionNeedsSovereignRead`), **credencial forte da soberania de leitura** — `AOS_SOVEREIGN_OIDC_ISSUER`+`AOS_SOVEREIGN_OIDC_AUDIENCE` (senão `ErrProductionNeedsSovereignAuthority`, AOS-205) e **terminação TLS** — `AOS_TLS_CERT_PATH`+`AOS_TLS_KEY_PATH` **ou** `AOS_TLS_EXTERNAL_TERMINATION` (senão `ErrProductionNeedsTLS`, AOS-209). Qualquer outro valor ⇒ modo de referência **sem** essas exigências: um nó exposto sem `AOS_MODE=production` não é um nó de produção, é um nó de referência a servir tráfego. |
 | `AOS_API_ADDR` | *(vazio ⇒ **API não levantada**)* | Endereço de bind da API HTTP. Vazio ⇒ o nó faz bootstrap, declara o banner e **sai sem abrir socket**. Não-loopback ⇒ sujeito ao [bind-guardrail](#bind-guardrail-fail-closed) (recusa se não houver operadores). É também o **default do `--addr`** dos subcomandos cliente (`aos run/observe/steer/pause`) e a fonte da porta do `HEALTHCHECK`. |
+| `AOS_INGRESS_RATE` | `64` (pedidos/segundo) | Reabastecimento do **token-bucket de admissão** de `POST /runs` (AOS-166/AOS-277) — ver [Ingresso / admission](#ingresso--admission-de-post-runs-aos-166--aos-277). Número **finito > 0** (aceita fraccionário, ex.: `0.5`). **Segurança/disponibilidade:** é backpressure, não autorização — protege o loop de serviço de uma inundação de submissões, e **não** substitui `AOS_OPERATORS`/soberania. Valor ilegível, não-finito, negativo ou `0` ⇒ **ABORTA** (`ErrBadIngressLimits`); `0` **não** desliga o limite (fecharia o ingresso para sempre, passado o *burst*). |
+| `AOS_INGRESS_BURST` | `128` (pedidos) | Capacidade do mesmo balde: quantos `POST /runs` são absorvidos **de uma vez** com o balde cheio, antes de o reabastecimento passar a governar. Número **finito ≥ 1**. Valor ilegível, não-finito ou `< 1` ⇒ **ABORTA** (`ErrBadIngressLimits`) — abaixo de 1 o balde nunca acumularia o token inteiro que a admissão consome e **nenhum** pedido seria admitido. |
+| `AOS_INGRESS_MAX_INFLIGHT` | `512` (runs) | Tecto de runs **EM CURSO** nesta réplica: com a contagem no tecto, `POST /runs` responde **429**. Inteiro **> 0**. Um run **suspenso** à espera de aval humano **sai** da contagem (não ocupa lugar) e a **retoma** (`POST /runs/{id}/resume`) re-hospeda **sem** consultar o tecto — o número trava admissões novas, não o total de runs vivos. Valor ilegível, negativo ou `0` ⇒ **ABORTA** (`ErrBadIngressLimits`); ⚠️ `0` seria a armadilha inversa — na implementação **desligaria** o tecto, por isso é recusado. |
 | `AOS_TLS_CERT_PATH` | *(vazio ⇒ **sem terminação TLS no nó**)* | Caminho do **certificado** (PEM) da terminação TLS do ingresso — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). Exige `AOS_TLS_KEY_PATH` (só um dos dois ⇒ `ErrIncompleteTLSConfig`). Material **público**. |
 | `AOS_TLS_KEY_PATH` | *(vazio ⇒ **sem terminação TLS no nó**)* | Caminho da **chave privada** (PEM) da terminação TLS — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). ⚠️ **Material PRIVADO por FICHEIRO montado** (nunca por variável de ambiente), no padrão de `AOS_ISSUER_KEY_PATH`; monte-o read-only e fora da imagem. Par inválido ⇒ `ErrBadTLSKeyPair`. |
 | `AOS_TLS_EXTERNAL_TERMINATION` | *(vazio ⇒ **não declarado**)* | **Opt-out ruidoso** — declara que a terminação TLS é feita **a montante** (ingress/malha). Ligam: `1` `true` `t` `yes` `y` `on`; qualquer outro valor ⇒ **ABORTA** (`ErrBadTLSExternalTermination`). Declarado ⇒ o nó serve em claro **por decisão de quem o configurou** e emite um aviso proeminente no banner — ver [Terminação TLS](#terminação-tls-do-ingresso--api-sse-dsar--perna-otlp-aos-209). Ignorado se houver TLS no nó. |
@@ -110,6 +113,8 @@ de índice e o detalhe lá.
 | `AOS_BREAKER_MAX_WALL_CLOCK` | `30m` | Tecto **absoluto** de tempo em `running` antes de o disjuntor abrir (leva a `timed_out`). Generoso para um run longo, mas impede um run pendurado de viver para sempre. `0` desliga. |
 | `AOS_BREAKER_MAX_COST_MICRO_USD_PER_SEC` | `0` *(**desligado**; **NÃO ligável hoje**)* | Tecto de **velocidade de queima** de custo. 🚫 **Só aceita `0`/ausente: este nó não cabla nenhuma `VelocitySource`, logo não há sinal de velocidade para medir.** Qualquer valor `> 0` faz o nó **ABORTAR o arranque** (`ErrBreakerVelocitySourceUnwired`, AOS-246) — deliberadamente, porque a alternativa era pior: sem fonte, `breaker.NewBreaker` recusa a construção e o run corria **sem disjuntor nenhum**, perdendo também o no-progress e o wall-clock. A env fica documentada como **inócua-até-existir-fonte**; volta a ser ligável quando o sinal de velocidade for cablado. |
 | `AOS_BREAKER_MAX_TOKENS_PER_SEC` | `0` *(**desligado**; **NÃO ligável hoje**)* | Tecto de velocidade de queima de tokens. Mesma fonte em falta, mesma consequência: `> 0` **ABORTA o arranque** (`ErrBreakerVelocitySourceUnwired`, AOS-246). |
+| `AOS_BUDGET_MAX_TOKENS` | *(vazio ⇒ **SEM orçamento**; o hook fica o stub neutro)* | Tecto de orçamento **em TOKENS**, **por *run*** (AOS-008, ligado em AOS-256/AOS-257). Presente ⇒ o ponto de injecção `budget` da cadeia de mediação deixa de ser o `BudgetStub` e passa a ser o **`BudgetCheck` real**: cada *run* regista o seu **nó de orçamento** ao arrancar (libertado no fim, incl. erro/*panic*) e **cada tool call reserva *headroom*** antes de executar; sem *headroom* a call é **NEGADA** *fail-closed* (`denied_by=budget`, selado no WORM). **Leia o [alcance declarado](#orçamento--tecto-de-custo--o-alcance-declarado-aos-008--aos-255) ANTES de ligar:** é **TOOL-ONLY** (o turno de modelo corre fora da cadeia e **não** tem tecto) e **TOKEN-ONLY** (não há equivalente em `$` — o canal micro-USD não está ligado ponta a ponta, eixo AOS-259; um tecto em dólares seria contado a **zero**). O tecto é **POR-RUN, nunca por-mandato**: dois *runs* concorrentes têm tectos independentes. ⚠️ É também **POR-INCARNAÇÃO**: a árvore vive em memória e cada **re-hospedagem** do mesmo *run* (retoma via `/resume`, *restart*) recebe o tecto **inteiro** — ver o [alcance declarado](#orçamento--tecto-de-custo--o-alcance-declarado-aos-008--aos-255). A estimativa é a da **call materializada** (AOS-258): argumentos na forma final do efeito **+** envelope (`tool_id`/`capability`/`resource`); **não** conta o turno de modelo, **não** conta o resultado da tool, **não** conta dólares — ver o [alcance declarado](#orçamento--tecto-de-custo--o-alcance-declarado-aos-008--aos-255). ⚠️ **Valor ilegível, negativo ou `0` ABORTA o arranque** (`ErrBadBudget`) — `0` **não** desliga o orçamento, negaria **todas** as tool calls; para correr sem orçamento **deixe a variável por definir**. Material **público** (um número). |
+| `AOS_PROGRESS_THRESHOLD` | `0.80` *(o aviso só existe se houver tecto — ver ⚠️)* | Limiar do **aviso de burn-down** (AOS-261/AOS-262): a **fracção consumida** a partir da qual o nó **avisa**, na fronteira de fim-de-turno, **uma vez por *run*** (*latch*; um *restart* re-avisa uma vez). **Onde se vê o aviso:** uma linha `[aos] AVISO DE BURN-DOWN` no **log do nó** — o canal que existe **sempre** — e, **só com `AOS_OTLP_ENDPOINT` definida**, também o span `aos.control.budget_warning`; sem OTLP o *tracer* do nó é o `NoopTracer` e o span **não tem destino**. A fonte do consumido é o **ledger de turnos** (eventos `turn.recorded` do event store, deduplicados por `run_id:step_id`): uma **re-emissão não infla** a contagem e uma **retoma não a zera** (a chave é o `run_id`, não o `trace_id`). ⚠️ **Conta os TURNOS DE MODELO e só eles** — o ledger não pesa *tool calls*, pelo que a leitura é um **limite inferior** do consumo do *run*: o aviso dispara **tarde**, nunca cedo por engano. A dimensão que decide é **tokens** (a de `$` está a **zero** até AOS-259). ⚠️ **O aviso NÃO decide nada:** não pára o *run*, não pede escolha e **não** apresenta `extend`/`summarize_stop`/`abort` — nenhuma dessas opções tem executor nem autoridade no nó (eixo AOS-263); quem pára um *run* é o disjuntor (veredicto durável) ou o operador. ⚠️ **Exige `AOS_BUDGET_MAX_TOKENS`**: sem tecto não há denominador e o aviso **nunca** dispararia — definir esta variável **sem** o tecto **ABORTA o arranque** (`ErrProgressBudgetUnwired`, molde de AOS-246). Valor ilegível ou fora de **(0,1)** ⇒ **ABORTA** (`ErrBadProgressThreshold`): `0` avisaria em **todos** os turnos e `1` nunca avisaria antes do tecto esgotado — **não** há *fallback* silencioso para o default. ⚠️ **Fail-closed da LEITURA:** o *run* **aborta** — nunca lê 0% — quando não há ledger, quando o ledger tem turnos mas somou **zero tokens** (o *provider* do modelo não ecoou `usage`; `ErrBurndownNoUsage`) ou quando o *payload* é ilegível. **Indisponibilidade transitória** do substrato (`ErrNoQuorum` numa troca de líder, contexto do *run* a cair) **não** mata o *run*: a leitura adia-se para a fronteira seguinte e só passa a fatal ao fim de **3 fronteiras consecutivas**. Material **público** (um número). |
 | `AOS_APPROVAL_SWEEP_INTERVAL` | `1m` | Período do **varrimento de aprovações expiradas** (AOS-021), no loop de serviço. Passado o TTL de aprovação (15 min) sem decisão humana, o pendente **EXPIRA**: deixa de aparecer ao operador e o run deixa de estar à espera. **NÃO retoma nem re-executa nada** — o run permanece **retomável**, e a acção escalada será **negada** quando for retomado (o agente vê o marcador de negação e pode seguir outro caminho). `0` **desliga** o varrimento (os pendentes nunca expiram sozinhos). Sem four-eyes composto o varrimento não arranca. Material **público**. |
 | `AOS_SANDBOX_DRIVER` | `fake` | Driver de execução de tools em **sandbox** (AOS-005/AOS-064) quando alguma tool de `AOS_MODEL_TOOLS` declara um bloco `sandbox`. `fake` = **jail funcional in-process** (RootFS overlay read-only, seccomp default-deny, escape bloqueado, host **nunca** tocado) — determinista, sem host especial. `firecracker`/`gvisor` = **microVM/gVisor reais**: exigem **KVM**/`runsc` no host; sem eles o registo do launcher passa, mas a execução devolve `ErrDriverUnavailable` (o caminho de produção fica **WIRED**, só falta o host — **infra do dono, não código**). Ausente ⇒ `fake`. Material **público**. |
 | `AOS_SANDBOX_SEED_DIR` | *(vazio ⇒ **base vazia**)* | Directório (opcional) cujo **nível de topo** semeia o **RootFS BASE read-only** da sandbox (AOS-066): cada ficheiro vira uma entrada base pelo seu nome, legível pelas tools mediadas (ex.: um `doc_read` que lê `notes`). Sem a variável ⇒ base vazia (a tool lê o que a call montar/produzir). Só se aplica ao driver `fake`; para `firecracker` a semente vive no rootfs do **orchestrator** (`FC_SEED_DIR` do componente externo). Ilegível ⇒ **ABORTA**. Material **público** (conteúdo de referência). |
@@ -411,6 +416,127 @@ realmente estaria.
 > onde ia — em vez de recomeçar — **tem de a ligar explicitamente**, mesmo em produção. Ligue
 > `AOS_DURABLE_EXECUTION=1` com `AOS_EVENTSTORE_PATH` dentro do volume gravável, e confirme a
 > linha `LIGADA` no banner. Nada no nó a liga por si.
+
+### Orçamento / tecto de custo — o alcance declarado (AOS-008 / AOS-255)
+
+**A declaração, na forma que o nó imprime no banner de arranque:**
+
+> **orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado por tempo (wall-clock), não por tecto**
+
+Leia-a **antes** de ligar um orçamento, não depois. Ela existe porque a palavra «orçamento»
+sugere uma coisa que a v1 **não** faz, e a diferença é a linha de custo dominante:
+
+| Eixo | O que o orçamento cobre | O que o trava |
+|---|---|---|
+| **Tool calls** | ✅ **Sim, em TOKENS** — o *hook* de orçamento é um `Hook` do Reference Monitor e a cadeia só é atravessada **por tool call**; a estimativa incide sobre a **call materializada** (ver abaixo). | Negação por falta de *headroom* (fail-closed, auditada no WORM). |
+| **Turno de modelo (inferência)** | ❌ **Não, de todo** — `rt.model.Call` (`kernel/agent-runtime/loop.go`) é invocado **directamente**, fora da cadeia: não há *hook*, não há reserva, **não há tecto**. É a **maior** fatia do gasto de um *run*. | **TEMPO:** `AOS_BREAKER_MAX_WALL_CLOCK` (30m por omissão), o sinal de *no-progress* e o esgotamento de `MaxTurns`. |
+
+Duas consequências práticas, ditas sem rodeios:
+
+- **A dimensão é TOKENS, não dólares.** O canal de custo em micro-USD não está ligado ponta a
+  ponta (o `translateResponse` do *model gateway* não preenche `CostMicroUSD`), pelo que um tecto
+  em `$` seria contado a **zero** e não negaria nada. Um tecto em dólares só é honesto depois do
+  contrato de custo (eixo AOS-259).
+- **O tecto é POR-RUN, nunca por-mandato.** Não é herdado por delegação nem partilhado entre
+  *runs*; dois *runs* concorrentes têm tectos independentes. O tecto por-mandato (ligado ao
+  *token*/delegação) é trabalho de identidade, deferido.
+- ⚠️ **O tecto é também POR-INCARNAÇÃO — não é cumulativo entre elas.** A árvore de orçamento
+  vive **em memória**: o nó do *run* é registado no arranque de **cada hospedagem** e removido
+  no fim. Uma **re-hospedagem** do mesmo `run_id` — a **retoma** depois de escalada/aprovação
+  humana (`POST /runs/{id}/resume`, o fluxo **normal** de AOS-021), ou um **restart** do
+  processo — recebe um nó **novo com o tecto inteiro**. Um *run* que passe por *N* ciclos de
+  escalada/retoma pode consumir até **N × `AOS_BUDGET_MAX_TOKENS`** em *tool calls*.
+  **Assimetria a ter em conta:** o **aviso** de burn-down (AOS-261/AOS-262) lê o **ledger
+  durável** chaveado por `run_id` e **é** cumulativo entre incarnações — o aviso vê o total,
+  o *enforcement* recomeça. Fechar o eixo exige **estado de orçamento durável por *run***, que
+  este nó não tem; um remendo em memória trocaria a fuga por nós vivos para sempre, e mesmo
+  assim zerados no primeiro *restart*.
+
+**O que a estimativa conta — e o que não conta (AOS-258).** O estimador em vigor é
+`integration.TokenOnlyEstimator`; o `DefaultEstimator` *placeholder* do `control-plane/budget`
+**não** é usado em produção. O que ele **conta**:
+
+- os **argumentos** da tool call na sua **forma final** — depois da reescrita do efeito
+  (`EffectRewriter`), que é a forma que o Reference Monitor medeia, que um humano aprova e que
+  de facto executa;
+- o **envelope** que viaja com eles e também ocupa contexto: `tool_id`, `capability` e o
+  `resource` (tipo/valor/região). Um URL de 300 bytes custa contexto esteja ele no *payload* ou
+  no recurso.
+
+A contagem é uma **aproximação determinística sem dependências** (ADR-017): piso de ~1 *token*
+por 4 bytes, **elevado** nos *payloads* estruturados (JSON/URLs/base64, onde a heurística de
+bytes **subestima**) e 1 *token* por *rune* não-ASCII. Não é o *tokenizer* do *provider*:
+**sobrestima** latino acentuado e aproxima CJK — sobrestimar aperta o tecto mais cedo, que é a
+direcção *fail-closed*.
+
+O que ele **não conta**, e nenhuma configuração o muda hoje:
+
+| Não conta | Porquê | Eixo |
+|---|---|---|
+| O **turno de modelo** | é invocado fora da cadeia; nenhuma reserva o admite | AOS-260 |
+| O **resultado da tool** | volta à transcrição e é reenviado em cada turno, mas só é mensurável **depois** do efeito; o saldo confirma a **reserva**, não a medição | AOS-259 |
+| **Dólares** | a dimensão `CostMicroUSD` é devolvida a **zero** de propósito — sem canal de custo, uma tarifa aqui seria um número inventado | AOS-259 |
+
+**Como se liga, e o que muda (AOS-256/AOS-257).** O orçamento é **opt-in por uma variável**,
+`AOS_BUDGET_MAX_TOKENS` (ver o índice de configuração):
+
+- **Por definir (o default):** não há orçamento **nenhum** — o ponto de injecção `budget` da
+  cadeia fica com o **stub neutro**, nenhuma decisão consulta custo, e o banner di-lo em cada
+  arranque (`orcamento / tecto de custo (AOS-008): NAO COMPOSTO`).
+- **Definida (inteiro `> 0`):** o `BudgetCheck` real entra na cadeia; **cada *run* recebe o seu
+  próprio nó de orçamento** com esse tecto, registado antes do primeiro turno e **libertado no
+  fim** (também em erro e em *panic*); cada tool call **reserva** a sua estimativa antes de
+  executar e a reserva é **confirmada** em `permit` ou **devolvida** em `deny`/`escalate`/erro —
+  incluindo uma negação **a jusante** (o `egress` corre depois do `budget`), que de outro modo
+  roubaria *headroom* ao *run* sem nada ter gasto. O banner passa a `COMPOSTO com ALCANCE
+  TOOL-ONLY e TOKEN-ONLY` — **com a mesma frase acima**, palavra por palavra.
+- **Definida com valor ilegível, negativo ou `0`:** o nó **ABORTA o arranque** (`ErrBadBudget`).
+  `0` não é «desligado»: nenhuma estimativa cabe em zero, logo seria **tudo negado**.
+
+Os tectos de **velocidade de queima** (`AOS_BREAKER_MAX_COST_MICRO_USD_PER_SEC`,
+`AOS_BREAKER_MAX_TOKENS_PER_SEC`) continuam a **não ser ligáveis** hoje — ver as respectivas
+linhas do índice de configuração: qualquer valor `> 0` **aborta o arranque**
+(`ErrBreakerVelocitySourceUnwired`, AOS-246).
+
+> **Se precisa de limitar o gasto de inferência hoje**, o único travão do nó é **temporal**:
+> aperte `AOS_BREAKER_MAX_WALL_CLOCK`. Um tecto em tokens sobre tool calls não o substitui.
+
+### Ingresso / admission de `POST /runs` (AOS-166 / AOS-277)
+
+O ingresso do plano de **dados** tem *backpressure* desde AOS-166: **antes** de ler o corpo do
+pedido, `POST /runs` passa por um **token-bucket** e por um **tecto de runs em curso**, e responde
+**429** quando qualquer um deles fecha. AOS-277 **não acrescentou** esse mecanismo — acrescentou a
+superfície que faltava para o operador **afinar os três números**, até aí constantes do binário.
+
+| Variável | Default | O que governa |
+| --- | --- | --- |
+| `AOS_INGRESS_RATE` | `64`/s | Reabastecimento do balde (pedidos por segundo). |
+| `AOS_INGRESS_BURST` | `128` | Capacidade do balde — a rajada absorvida de uma vez. |
+| `AOS_INGRESS_MAX_INFLIGHT` | `512` | Runs **em curso** admitidos nesta réplica. |
+
+As três são lidas **uma só vez, no arranque**, e são **fail-closed**: um valor ilegível,
+não-finito, negativo ou `0` **aborta** o arranque com `ErrBadIngressLimits`. Deixe a variável
+**por definir** para manter o default — **nenhum** valor desliga um limite.
+
+**O alcance, para não o ler por excesso** (é o que o banner declara em cada arranque):
+
+- cobre **`POST /runs` e só**. O plano de **controlo** (`/steer`, `/pause`, `/approve`,
+  `/resume`) tem um balde **dedicado** que estas variáveis **não** afinam; `GET /runs/{id}`
+  não tem limite de taxa nenhum; o SSE de trajectória tem o seu próprio tecto de ligações;
+- o balde é **por-processo**, em memória e **global entre chamadores** — **não** é por-IP nem
+  por-principal (um só cliente ruidoso esgota-o para todos), e **N** réplicas valem **N** vezes
+  este limite: não há admissão agregada no cluster;
+- o tecto de *in-flight* conta os runs **registados** no loop de serviço: um run **suspenso** à
+  espera de aval humano **sai** da contagem, e a **retoma** re-hospeda **sem** consultar o tecto;
+- o `429` **não** leva `Retry-After`.
+
+Isto é **backpressure**, não autorização: protege o loop de serviço de uma inundação de
+submissões e não substitui o [bind-guardrail](#bind-guardrail-fail-closed), `AOS_OPERATORS` nem a
+soberania de leitura.
+
+```
+[aos] ingresso / admission (AOS-166/AOS-277): LIGADO e nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT definida) — POST /runs admite 64 pedido(s)/segundo com burst de 128 e no maximo 512 run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: […]
+```
 
 ### Terminação TLS do ingresso — API, SSE, DSAR + perna OTLP (AOS-209)
 

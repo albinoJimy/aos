@@ -31,18 +31,65 @@ import (
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
 
-// budgetPostureBanner declara o ORÇAMENTO. É incondicional porque o estado é incondicional: o
-// composition-root NÃO importa `control-plane/budget` em lado nenhum — não há reserva, não há
-// tecto por-run/por-árvore e nenhuma decisão do Reference Monitor consulta custo. O único
-// controlo com aparência de tecto de custo (as velocidades de queima do disjuntor) está
-// INLIGÁVEL desde AOS-246: sem [breaker.VelocitySource] cablada, um valor > 0 aborta o arranque
-// ([ErrBreakerVelocitySourceUnwired]).
+// BudgetScopeDeclaration é o ALCANCE da v1 do orçamento, no texto aprovado em AOS-255 — a
+// FRASE, não uma paráfrase dela. Aparece nos DOIS estados de [budgetPostureBanner] porque
+// descreve o que o orçamento cobre QUANDO composto, e essa é precisamente a coisa que o
+// operador precisa de saber antes de o ligar (e não depois).
+//
+// A frase existe porque o alcance não é o que o nome "orçamento" sugere. O hook de orçamento é
+// um [rm.Hook] e a cadeia do Reference Monitor só é atravessada POR TOOL CALL
+// (`integration/secured.go`, hook "budget" na ordem canónica de AOS-154); o turno de modelo é
+// invocado DIRECTAMENTE (`kernel/agent-runtime/loop.go`, `rt.model.Call`), fora da cadeia, sem
+// hook e sem reserva. Um tecto composto cobre portanto a estimativa da TOOL CALL MATERIALIZADA
+// (AOS-258: `integration.TokenOnlyEstimator` — argumentos na forma final do efeito + envelope) e
+// deixa a LINHA DE CUSTO DOMINANTE — a inferência — sem admission control. O que trava a
+// inferência é TEMPO: o wall-clock do disjuntor (AOS_BREAKER_MAX_WALL_CLOCK, 30m por omissão),
+// o no-progress e MaxTurns.
+//
+// TOKEN-ONLY pela mesma disciplina: a dimensão micro-USD não tem canal de dados ponta a ponta
+// (o `translateResponse` do gateway não preenche `CostMicroUSD` — declarado no ramo do gateway
+// de [modelPostureBanner]), pelo que um tecto em dólares seria contado a ZERO e negaria nada.
+//
+// Escrita em ASCII sem acentos como o resto do banner. A forma acentuada da mesma frase é a que
+// está em `deploy/node/README.md` e no relatório de prontidão.
+const BudgetScopeDeclaration = "orcamento: cobre tool calls em TOKENS; o gasto de inferencia e travado por tempo (wall-clock), nao por tecto"
+
+// budgetPostureBanner declara o ORÇAMENTO em função do que está REALMENTE composto — o
+// parâmetro é o estado, nunca a intenção da config, como em [modelPostureBanner] e
+// [autonomyPostureBanner].
+//
+// Os dois estados dizem coisas DIFERENTES e ambos têm de ser verdade:
+//
+//   - composed == false (o default: `AOS_BUDGET_MAX_TOKENS` por definir): o ponto de injecção
+//     "budget" da cadeia ficou com o [referencemonitor.BudgetStub] neutro — não há reserva, não
+//     há tecto por-run/por-árvore e nenhuma decisão do Reference Monitor consulta custo. Nem as
+//     tool calls estão cobertas. O único controlo com aparência de tecto de custo (as
+//     velocidades de queima do disjuntor) está INLIGÁVEL desde AOS-246: sem
+//     [breaker.VelocitySource] cablada, um valor > 0 aborta o arranque
+//     ([ErrBreakerVelocitySourceUnwired]);
+//   - composed == true (LIGADO em AOS-256/AOS-257, quando AOS_BUDGET_MAX_TOKENS está
+//     definida): há tecto por-run, e o que ele cobre é EXACTAMENTE
+//     [BudgetScopeDeclaration] — nem mais.
+//
+// Porque é que o ramo COMPOSTO já existe antes de haver wiring: é o inverso de uma promessa a
+// mais. O defeito que AOS-255 remove não é a ausência de orçamento — é o operador ler
+// "orçamento LIGADO" e inferir que o gasto do agente tem tecto, quando a linha dominante ficou
+// de fora. Fixar o texto ANTES do wiring é o que impede que a linha seja escrita, no calor do
+// ticket que liga o hook, como se cobrisse tudo. AOS-256/AOS-257 fizeram exactamente o que
+// aqui estava previsto: o ARGUMENTO passou a derivar do estado real (`runBudget != nil` no
+// composition-root) e a linha ganhou o nome da env do tecto — a declaração de alcance NÃO foi
+// reescrita.
 //
 // A linha existe para que "o nó não me avisou" deixe de ser verdade: um agente autónomo sem
 // tecto de gasto é uma decisão, e uma decisão tem de estar escrita onde o operador a lê.
-func budgetPostureBanner() []string {
+func budgetPostureBanner(composed bool) []string {
+	if composed {
+		return []string{
+			"orcamento / tecto de custo (AOS-008): COMPOSTO com ALCANCE TOOL-ONLY e TOKEN-ONLY — " + BudgetScopeDeclaration + ". Ou seja: o hook de orcamento vive na cadeia do Reference Monitor, e a cadeia so e atravessada por TOOL CALL — o turno de modelo (loop.go, rt.model.Call) e invocado DIRECTAMENTE, fora da cadeia, e NENHUMA reserva o admite; o tecto cobre a estimativa da TOOL CALL MATERIALIZADA e a inferencia, que e a linha de custo DOMINANTE, nao tem tecto nenhum — o que a trava e TEMPO: o wall-clock do disjuntor (AOS_BREAKER_MAX_WALL_CLOCK), o no-progress e MaxTurns. A dimensao e TOKENS e nao dolares porque o canal micro-USD nao esta ligado ponta a ponta (translateResponse nao preenche CostMicroUSD): um tecto em $ seria contado a ZERO e nao negaria nada. O tecto e POR-RUN (AOS_BUDGET_MAX_TOKENS tokens por run, registado como no proprio da arvore no arranque de cada run e libertado no fim), nunca por-mandato/delegacao: dois runs concorrentes tem tectos independentes. ATENCAO — o tecto e tambem POR-INCARNACAO e NAO E CUMULATIVO ENTRE ELAS: a arvore de orcamento vive EM MEMORIA e o no do run e criado no arranque de CADA hospedagem e removido no fim, pelo que cada RE-HOSPEDAGEM do mesmo run_id (retoma apos escalada/aprovacao humana em POST /runs/{id}/resume, ou apos restart do processo) recebe um no NOVO com o tecto INTEIRO. Um run em ciclo de escalada/retoma pode portanto gastar ate N x AOS_BUDGET_MAX_TOKENS em tool calls, N = numero de incarnacoes. ASSIMETRIA DECLARADA: o burn-down/aviso (AOS-261/AOS-262) le o LEDGER DURAVEL chaveado por run_id e por isso E cumulativo entre incarnacoes — o AVISO ve o total, o ENFORCEMENT nao. Fechar a assimetria exige estado de orcamento DURAVEL por run, que este no nao tem (eixo por abrir, a jusante de AOS-259). A ESTIMATIVA e a da CALL MATERIALIZADA (AOS-258, integration.TokenOnlyEstimator — o DefaultEstimator placeholder do control-plane/budget NAO e usado): conta os ARGUMENTOS na forma FINAL do efeito (pos-reescrita) MAIS o envelope que tambem ocupa contexto (tool_id, capability, resource), por aproximacao de tokens sem dependencias — piso de ~1 token por 4 bytes, elevado nos payloads estruturados (JSON/URLs/base64), 1 token por rune nao-ASCII. NAO conta o turno de modelo (e invocado fora da cadeia), NAO conta o RESULTADO da tool (so mensuravel DEPOIS do efeito — AOS-259) e NAO conta dolares (dimensao a ZERO). Eixos por fechar: admissao do turno de modelo AOS-260, canal de custo micro-USD AOS-259",
+		}
+	}
 	return []string{
-		"orcamento / tecto de custo (AOS-008): NAO COMPOSTO — nenhum control-plane/budget entra neste no: nao ha reserva, nao ha tecto por-run nem por-arvore, e NENHUMA decisao e negada por custo; um run so para por MaxTurns, pelo disjuntor (no-progress/wall-clock) ou por steer/pause do operador. Os tectos de VELOCIDADE de queima (AOS_BREAKER_MAX_COST_MICRO_USD_PER_SEC / AOS_BREAKER_MAX_TOKENS_PER_SEC) NAO sao ligaveis hoje: sem VelocitySource cablada, qualquer valor >0 ABORTA o arranque (ErrBreakerVelocitySourceUnwired, AOS-246). Eixo: AOS-008 / EPIC-20",
+		"orcamento / tecto de custo (AOS-008): NAO COMPOSTO — AOS_BUDGET_MAX_TOKENS nao esta definida, logo o ponto de injeccao \"budget\" da cadeia ficou com o STUB neutro: nao ha reserva, nao ha tecto por-run nem por-arvore, e NENHUMA decisao e negada por custo; um run so para por MaxTurns, pelo disjuntor (no-progress/wall-clock) ou por steer/pause do operador. ALCANCE DECLARADO da v1 para quando FOR composto (AOS-255; define AOS_BUDGET_MAX_TOKENS para o ligar) — " + BudgetScopeDeclaration + " —: mesmo ligado, o tecto NAO cobrira o turno de modelo, que e a linha de custo dominante; hoje nao cobre sequer as tool calls. Os tectos de VELOCIDADE de queima (AOS_BREAKER_MAX_COST_MICRO_USD_PER_SEC / AOS_BREAKER_MAX_TOKENS_PER_SEC) NAO sao ligaveis hoje: sem VelocitySource cablada, qualquer valor >0 ABORTA o arranque (ErrBreakerVelocitySourceUnwired, AOS-246). Eixo: AOS-008 / EPIC-20",
 	}
 }
 
@@ -143,5 +190,39 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 	return []string{
 		fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO LIGADO — %d par(es) agente:dominio provisionado(s) de AOS_AUTONOMY_LEVELS, cada um SELADO na hash-chain WORM como autonomy.level_changed (particao %q, motivo %q, actor %q): uma mudanca de autonomia deixa de poder acontecer sem rasto. E a composicao nivel x classe de risco que rebaixa um permit para ESCALATE — e portanto e esta ligacao que torna o bridge de aprovacao humana (AOS-021) ALCANCAVEL. Par NAO registado ⇒ L0 fail-closed (tudo escala)",
 			len(w.sealedPairs), autonomy.DefaultAutonomyPartition, autonomyProvisionReason, autonomyProvisionActor),
+	}
+}
+
+// burndownPostureBanner declara o BURN-DOWN e o AVISO DE EXAUSTÃO (AOS-261/AOS-262) em
+// função do que está REALMENTE composto — o parâmetro é o estado do observador entregue ao
+// loop, nunca a intenção da config (mesma disciplina de [budgetPostureBanner]).
+//
+// A linha existe porque esta é uma superfície com um histórico específico de mentir: até
+// AOS-261, `Evaluate` recebia os spans por parâmetro e NADA no nó os produzia ou retinha
+// (NoopTracer por omissão, SpanTracer dispara-e-esquece), pelo que qualquer leitura devolvia
+// «0% consumido» — verde, e falso. O que se declara aqui tem de ser, portanto,
+// EXACTAMENTE o que a fonte sabe e o que o aviso faz:
+//
+//   - a FONTE é o LEDGER DE TURNOS (`turn.recorded`), não spans. Conta os TURNOS DE MODELO
+//     e só eles: o ledger não pesa tool calls, logo o burn-down é um LIMITE INFERIOR do
+//     consumo do run — dispara TARDE, nunca cedo por engano;
+//   - a dimensão que decide é TOKENS. A de dólares está a zero enquanto o canal de custo não
+//     estiver ligado ponta a ponta (AOS-259);
+//   - o aviso NÃO DECIDE NADA. Não pára o run, não pede escolha, não estende o tecto — as
+//     opções extend/summarize_stop/abort NÃO são apresentadas nesta entrega porque nenhuma
+//     tem executor nem autoridade no nó (AOS-263). Quem pára um run continua a ser o
+//     disjuntor (com veredicto durável) ou o operador;
+//   - ONDE O AVISO SE VÊ. A linha nomeia as duas superfícies e diz qual delas depende de
+//     config: o LOG do nó (sempre) e o span (só com `AOS_OTLP_ENDPOINT`). Anunciar só o
+//     span era a mentira exacta que esta função existe para evitar — na configuração por
+//     omissão o tracer é o NoopTracer e o operador não tinha ONDE olhar.
+func burndownPostureBanner(composed bool, threshold float64) []string {
+	if composed {
+		return []string{
+			fmt.Sprintf("burn-down / aviso de exaustao (AOS-261/AOS-262): COMPOSTO — o loop le, na fronteira de fim-de-turno, o consumo ACUMULADO do run no LEDGER DE TURNOS (eventos turn.recorded do event store, deduplicados por run_id:step_id: uma re-emissao NAO infla a contagem e a retoma NAO a zera, porque a chave e o run_id e nao o trace_id) e compara-o com o tecto por-run de AOS_BUDGET_MAX_TOKENS. Ao atingir %.2f da fraccao consumida avisa UMA VEZ POR RUN (latch por-incarnacao do processo; um restart re-avisa uma vez). ONDE SE VE O AVISO: uma linha [aos] AVISO DE BURN-DOWN NESTE LOG, que e o canal que existe sempre; o span aos.control.budget_warning SO tem destino com AOS_OTLP_ENDPOINT definida — sem ela o tracer do no e o NoopTracer e o span nao vai a lado nenhum. ALCANCE: conta os TURNOS DE MODELO e SO eles — o ledger nao pesa tool calls, pelo que a leitura e um LIMITE INFERIOR do consumo (o aviso dispara TARDE, nunca cedo por engano); a dimensao que decide e TOKENS, a de dolares esta a ZERO ate AOS-259. O aviso NAO DECIDE NADA: nao para o run, nao pede escolha e NAO apresenta extend/summarize_stop/abort — nenhuma dessas opcoes tem executor nem autoridade no no (eixo AOS-263). Quem para um run e o disjuntor (veredicto duravel) ou o operador. FAIL-CLOSED: a leitura devolve ERRO e o run aborta — nunca 0%% — quando nao ha fonte, quando o ledger existe mas somou ZERO tokens (o provider nao ecoou usage, ErrBurndownNoUsage) ou quando o payload e ilegivel. Indisponibilidade TRANSITORIA do substrato (sem quorum, ctx do run a cair) NAO mata o run: a leitura adia-se para a fronteira seguinte e so passa a fatal ao fim de %d fronteiras consecutivas", threshold, maxLeiturasTransitoriasToleradas),
+		}
+	}
+	return []string{
+		"burn-down / aviso de exaustao (AOS-261/AOS-262): NAO COMPOSTO — AOS_BUDGET_MAX_TOKENS nao esta definida, logo NAO HA TECTO e portanto nao ha denominador: qualquer fraccao seria 0 para sempre e nenhum aviso poderia disparar. O loop nao consulta observador nenhum (o gancho de fim-de-turno fica inerte) e NADA neste no avisa que um run se aproxima de um limite de gasto — o que trava um run e MaxTurns, o disjuntor (no-progress/wall-clock) ou o steer do operador. Defina AOS_BUDGET_MAX_TOKENS para ligar o tecto e, com ele, o burn-down; AOS_PROGRESS_THRESHOLD ajusta o limiar do aviso (default ~0.80) e ABORTA o arranque se for definida SEM o tecto (ErrProgressBudgetUnwired). Eixo: AOS-261/AOS-262 / EPIC-20",
 	}
 }

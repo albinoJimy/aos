@@ -25,6 +25,32 @@
 //   - PROGRESSO (AC1): a semântica de progresso vem da porta ProgressReflector (adaptador
 //     sobre o controlsurface.StateProjector/state.Machine.Current no wiring).
 //
+// # A FONTE do burn-down (AOS-261) e o AVISO (AOS-262)
+//
+// O parágrafo acima descreve a via ORIGINAL — [ProgressSurface.Evaluate] sobre uma fatia de
+// spans recebida por parâmetro. Essa via tinha um defeito estrutural: NADA, em nenhum nó,
+// produz ou retém spans (o tracer por omissão é o NoopTracer e o SpanTracer real
+// dispara-e-esquece), pelo que o chamador só tinha `nil` para passar e a superfície
+// devolvia sempre 0% — verde e falso. Hoje `nil` é [ErrNoBurndownSpans].
+//
+// A via VIVA é [ProgressSurface.EvaluateRun] sobre a porta [BurndownSource], cujo adaptador
+// de produção lê o LEDGER DE TURNOS (os eventos `turn.recorded` do Event Store). A escolha
+// entre reter spans e ler o ledger, com as razões, está no cabeçalho de burndown_source.go.
+//
+// POLÍTICA MULTI-INCARNAÇÃO (AOS-261, critério 2): a chave é o `run_id` e o consumo é
+// CUMULATIVO — o prefixo T1 (a incarnação que crashou/pausou) continua a contar, e a
+// reprodução T2 (a retoma) não duplica porque a idempotency_key `run_id:step_id` deduplica
+// na origem. Agregar por `trace_id` faria o oposto em ambos os casos: cada retoma abre um
+// trace novo, o burn-down ressuscitaria a zero e um run em ciclo de retoma nunca atingiria
+// o limiar.
+//
+// PRIMEIRA ENTREGA, SEM DECISÃO (AOS-262): [ProgressSurface.EvaluateRun] produz um
+// [BudgetWarning] — um AVISO, com o span `aos.control.budget_warning` emitido UMA VEZ por
+// run (latch). NÃO produz o [ExhaustionPrompt] nem as três opções: `extend`,
+// `summarize_stop` e `abort` não têm executor nem autoridade no nó (eixo AOS-263), e
+// apresentar uma escolha que ninguém consegue executar é prometer o que não existe. As
+// portas [BudgetExtender] e [Degrader] continuam a existir e continuam por compor.
+//
 // # Padrão porta+adaptador (core mínimo)
 //
 // O core importa SÓ o LEVE: otel-genai (AggregateByTrace/UsageTotals/Tracer) e budget

@@ -559,6 +559,13 @@ type Node struct {
 	// ver service.go hostRun). NIL quando não há limiares configurados (disjuntor não composto).
 	breakers *runBreakers
 
+	// progress é o observador de burn-down por-run (AOS-261/AOS-262). O loop de serviço
+	// LIBERTA o estado de cada run (superfície, latch do aviso e cursor da fonte) no mesmo
+	// ponto em que liberta o disjuntor ([runProgress.forget], ver service.go hostRun). NIL
+	// quando o burn-down não está composto (sem AOS_BUDGET_MAX_TOKENS não há tecto ⇒ não há
+	// denominador ⇒ nenhum aviso poderia disparar).
+	progress *runProgress
+
 	ownsEventStore bool
 	ownsWORM       bool
 	// otlp é o exporter OTLP/HTTP que o nó ABRIU (nil se a observabilidade está desligada
@@ -1223,6 +1230,38 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// (7-ante) ORÇAMENTO POR-RUN (AOS-008, ligado em AOS-256/AOS-257). nil ⇒ AOS_BUDGET_MAX_TOKENS
+	// não está definida ⇒ o ponto de injecção "budget" da cadeia fica com o stub neutro. É ESTE
+	// valor — o que foi REALMENTE composto, não a intenção da config — que alimenta a linha do
+	// banner mais abaixo. Fail-closed: um tecto ilegível/≤0 aborta o arranque (ErrBadBudget).
+	runBudget, err := budgetFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	// (7-ante-bis) BURN-DOWN + AVISO DE EXAUSTÃO (AOS-261/AOS-262). A fonte é o LEDGER DE
+	// TURNOS (o mesmo `es` onde o TurnRecorder logo abaixo grava — a coincidência não é
+	// acidental, é o contrato: se fossem stores diferentes a fonte denunciaria com
+	// ErrBurndownNoLedger em vez de somar zeros). O tecto vem do orçamento por-run.
+	//
+	// GATE FAIL-CLOSED: pedir o aviso (AOS_PROGRESS_THRESHOLD) sem tecto (AOS_BUDGET_MAX_TOKENS)
+	// é uma configuração impossível — sem denominador a fracção é 0 para sempre e o aviso
+	// nunca dispararia. Aborta aqui, como AOS-246 faz com o disjuntor sem VelocitySource.
+	progressThreshold, progressRequested, err := progressThresholdFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if progressRequested && runBudget == nil {
+		return nil, ErrProgressBudgetUnwired
+	}
+	burndownSource := newTurnLedgerBurndown(es)
+	// O `log` do nó entra aqui porque é a superfície onde o aviso é VISÍVEL sempre: sem
+	// AOS_OTLP_ENDPOINT o `tracer` acima é o NoopTracer e o span do aviso não vai a lado
+	// nenhum (ver runProgress.avisar).
+	progress := newRunProgress(stateGates, runBudget, burndownSource, tracer, progressThreshold, log)
+	// nil-safe: sem burn-down composto o observador é nil e o loop nunca o consulta
+	// (comportamento de AOS-013 byte-idêntico).
+	runtimeOpts = append(runtimeOpts, agentruntime.WithProgressObserver(progress.observer()))
+
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
 		EffectRewriter: newSandboxEffectRewriter(sandboxBindings), // AOS-005: args→ExecRequest; nil ⇒ sem reescrita
 		Model:          model,
@@ -1249,6 +1288,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		EscalationSink:   escalationSink,
 		ApprovalEvidence: approvalEvidence,
 		ApprovalVerifier: approvalVerifier,
+		// AOS-256/AOS-257: nó de orçamento por-run + BudgetCheck no lugar do stub + saldo da
+		// reserva no decorator do dispatcher. nil ⇒ stub neutro (nenhuma decisão consulta custo).
+		Budget: runBudget,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
@@ -1485,7 +1527,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range modelPostureBanner(cfg.Model) {
 		log("%s", line)
 	}
-	for _, line := range budgetPostureBanner() {
+	// AOS-256/AOS-257: o argumento DERIVA do que foi REALMENTE composto — `runBudget` é o
+	// mesmo valor entregue a [integration.SecuredConfig.Budget], não a intenção da config. Um
+	// tecto configurado ⇒ o hook real está na cadeia e o nó por-run é registado em cada run;
+	// nil ⇒ o ponto de injecção ficou com o stub neutro. O guard-test de AOS-255
+	// (aos255_budget_scope_test.go) sela que este argumento nunca volta a ser um literal.
+	for _, line := range budgetPostureBanner(runBudget != nil) {
+		log("%s", line)
+	}
+	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
+	// (`progress`, o mesmo valor entregue a agentruntime.WithProgressObserver), nunca a
+	// intenção da config. Vem LOGO A SEGUIR ao orçamento porque é a leitura desse tecto.
+	for _, line := range burndownPostureBanner(progress != nil, progressThreshold) {
 		log("%s", line)
 	}
 	for _, line := range credentialBrokerPostureBanner() {
@@ -1612,6 +1665,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		stateGates:              stateGates,    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
+		progress:                progress,      // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
 
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,

@@ -148,7 +148,18 @@ Os desafios registam listas completas de achados refutados pelo céptico. Os mai
 
 ## 7. Billing/custos — o plano corrigido (cruzamento da análise com os desafios A1/A2)
 
-**Componentes verdes:** `budget` (CAS 0-overshoot, Rebuild do log, hook `BudgetCheck` com deny auditado), `metering/cost` (micro-USD inteiro, fail-closed sem preço), `pricing` (tabela versionada, alterações seladas no WORM), `progress-surface`, `planvalidate`. **Nenhum ligado ao nó.**
+**Componentes verdes:** `budget` (CAS 0-overshoot, Rebuild do log, hook `BudgetCheck` com deny auditado), `metering/cost` (micro-USD inteiro, fail-closed sem preço), `pricing` (tabela versionada, alterações seladas no WORM), `progress-surface`, `planvalidate`. **Só o `budget` está ligado ao nó** (AOS-256/AOS-257: nó de orçamento por-run no seam de `SecuredRuntime.Run`, `BudgetCheck` no lugar do `BudgetStub`, saldo da reserva no decorator do `ActivityDispatcher`, opt-in por `AOS_BUDGET_MAX_TOKENS`) — e **token-only**, no alcance declarado abaixo; `metering/cost` e `pricing` continuam **sem chamador de produção** (eixo AOS-259).
+
+**Declaração de alcance da v1 (AOS-255, fixada antes de qualquer wiring)** — é este o texto que o
+nó imprime no banner e que `deploy/node/README.md` documenta, e é o vocabulário que os tickets
+AOS-256..262 usam:
+
+> **orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado por tempo (wall-clock), não por tecto**
+
+**TOOL-ONLY** porque o *hook* vive na cadeia do Reference Monitor, atravessada só por tool call;
+**TOKEN-ONLY** porque a dimensão micro-USD não tem canal de dados ponta a ponta. O tecto é
+**por-run**, nunca por-mandato. Fixar a frase primeiro é o que impede que a linha de banner seja
+escrita, no calor do ticket que liga o hook, como se cobrisse o gasto todo.
 
 O que os desafios corrigiram no plano de fecho:
 

@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/aos-ref/control-plane/budget v0.0.0 // indirect
 	github.com/aos-ref/control-plane/governance/autonomy v0.0.0 // indirect
 	github.com/aos-ref/control-plane/governance/hitl v0.0.0-00010101000000-000000000000 // indirect
 	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0 // indirect

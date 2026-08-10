@@ -228,7 +228,11 @@ func TestAOS248_BannerModeloTresEstados(t *testing.T) {
 func TestAOS248_BannerOrcamentoEBrokerNaoPrometem(t *testing.T) {
 	t.Parallel()
 
-	orcamento := strings.Join(budgetPostureBanner(), "\n")
+	// O estado NÃO-COMPOSTO é o DEFAULT do binário — `AOS_BUDGET_MAX_TOKENS` por definir.
+	// (Desde AOS-256/AOS-257 o binário COMPÕE o orçamento quando a variável está definida;
+	// o argumento deixou de ser um literal e passou a derivar do estado, pelo que este
+	// teste cobre um dos dois estados alcançáveis, não «o binário de hoje».)
+	orcamento := strings.Join(budgetPostureBanner(false), "\n")
 	if !strings.Contains(orcamento, "NAO COMPOSTO") || !strings.Contains(orcamento, "AOS-008") {
 		t.Fatalf("a linha do orcamento tem de declarar NAO COMPOSTO e nomear o eixo:\n%s", orcamento)
 	}

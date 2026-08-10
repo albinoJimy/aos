@@ -557,6 +557,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		}
 		defer s.node.stateGates.Close(rs.runID)
 		defer s.node.breakers.forget(rs.runID) // nil-safe: sem disjuntor composto é no-op
+		// AOS-262: e com ele a superfície de burn-down do run — o latch do aviso e o cursor
+		// do ledger. nil-safe: sem burn-down composto é no-op.
+		defer s.node.progress.forget(rs.runID)
 		// SELO DO ESTADO TERMINAL (AOS-252). Registado DEPOIS dos defers de libertação para
 		// correr ANTES deles (LIFO: o gate ainda está aberto) e ANTES do recover de
 		// isolamento — que fica a jusante na pilha de defers e trata o panic em definitivo.

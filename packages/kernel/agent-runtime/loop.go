@@ -115,6 +115,7 @@ type Runtime struct {
 	steer            SteerSource
 	breaker          LivenessBreaker        // AOS-080/081: disjuntor multi-sinal do agente vivo
 	actionObserver   ActionObserver         // AOS-251: fonte do sinal de no-progress (hash por acção mediada)
+	progressObserver ProgressObserver       // AOS-262: burn-down + aviso a ~limiar (leitura, nunca decisão)
 	escalation       EscalationSink         // AOS-021: tool call escalada → espera por humano
 	approvalEvidence ApprovalEvidenceSource // AOS-021: prova de aprovação a anexar na retoma
 	windowFactory    WindowFactory          // AOS-037: dono único do tail/assembly (D-TAIL)
@@ -516,6 +517,21 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 				res.Tripped = true
 				res.BreakerTarget = target
 				return res, nil
+			}
+		}
+
+		// BURN-DOWN + AVISO DE EXAUSTÃO (AOS-262) — na MESMA fronteira de fim-de-turno da
+		// pausa graciosa e do disjuntor, e DEPOIS de ambos: um run que já parou (pausado ou
+		// disparado) retornou acima e não é avisado sobre um orçamento que deixou de queimar.
+		// É LEITURA e não decisão — o observador não pode parar o run (ver [ProgressObserver]);
+		// quem pára continua a ser o disjuntor ou o operador. Corre DEPOIS de `recordTurn`
+		// (mais acima neste mesmo turno), pelo que o turno corrente JÁ está no ledger que a
+		// fonte lê. Um erro é FATAL: a fonte só falha quando NÃO TEM DADOS, e continuar com o
+		// burn-down cego é a superfície verde a mentir que AOS-261/262 removem. Aditivo: sem
+		// [WithProgressObserver] o comportamento de AOS-013 é byte-idêntico.
+		if rt.progressObserver != nil {
+			if err := rt.progressObserver.ObserveProgress(ctx, goal.RunID, turn); err != nil {
+				return res, err
 			}
 		}
 

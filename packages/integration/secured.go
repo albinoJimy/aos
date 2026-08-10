@@ -137,6 +137,24 @@ type SecuredConfig struct {
 	// tem de poder ver que o gate humano JÁ ocorreu, senão volta a rebaixar para escalate.
 	// NUNCA nega e nunca concede: no máximo mantém tudo fechado. OPCIONAL: nil ⇒ gate ausente.
 	ApprovalVerifier referencemonitor.ApprovalVerifier
+	// Budget é o ORÇAMENTO POR-RUN (AOS-008, ligado em AOS-256/AOS-257). Quando fornecido:
+	//
+	//   - o ponto de injecção "budget" da cadeia deixa de ser o [referencemonitor.BudgetStub]
+	//     e passa a ser o adaptador REAL ([budget.BudgetCheck]), que RESERVA headroom por
+	//     tool call e NEGA fail-closed quando não há;
+	//   - cada run regista o seu nó de orçamento em [SecuredRuntime.Run] e liberta-o no fim
+	//     (incl. erro e panic) — sem esse nó o adaptador negaria 100% das tool calls;
+	//   - o dispatcher de efeitos é decorado para SALDAR a reserva (commit em permit;
+	//     release em deny/escalate/erro).
+	//
+	// ALCANCE, na declaração fixada em AOS-255: TOOL-ONLY (o turno de modelo é invocado fora
+	// da cadeia e nenhuma reserva o admite) e TOKEN-ONLY (o canal de custo micro-USD não está
+	// ligado ponta a ponta — eixo AOS-259). Construir com [NewRunBudget].
+	//
+	// OPCIONAL: nil ⇒ [referencemonitor.BudgetStub] como antes (nenhuma decisão consulta
+	// custo) — e é ESSE o estado que o banner do nó tem de declarar.
+	Budget *RunBudget
+
 	// HookOptions são opções do [RevalidationHook] (ex.: [WithEgressHost]).
 	HookOptions []HookOption
 	// RuntimeOptions são opções do [agentruntime.Runtime].
@@ -203,6 +221,7 @@ type SecuredRuntime struct {
 	toolsets  *RunToolSets
 	freezeOpt []toolset.Option
 	ledger    *durable.StepLedger
+	budget    *RunBudget // AOS-256: nil ⇒ nenhum nó por-run (e nenhum hook de orçamento)
 }
 
 // NewSecuredRuntime compõe o runtime seguro sobre a CADEIA DE MEDIAÇÃO REAL
@@ -296,8 +315,14 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		return nil, err
 	}
 
-	// CADEIA REAL na ordem canónica de AOS-154. BudgetStub é aceitável (AOS-008 é o
-	// admission control real, fora deste ticket); todos os outros são hooks reais.
+	// CADEIA REAL na ordem canónica de AOS-154. O ponto de injecção "budget" é o
+	// [budget.BudgetCheck] REAL quando cfg.Budget é fornecido (AOS-257) e o
+	// [referencemonitor.BudgetStub] neutro quando não — nunca um terceiro estado; todos os
+	// outros são hooks reais.
+	budgetHook := referencemonitor.Hook(referencemonitor.BudgetStub{})
+	if cfg.Budget != nil {
+		budgetHook = cfg.Budget.check
+	}
 	var hooks []referencemonitor.Hook
 	// APROVAÇÃO HUMANA (AOS-021) — ANTES de tudo o resto. Duas razões, ambas obrigatórias:
 	//
@@ -321,7 +346,7 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		pdp.NewPolicyCheck(policyDP),              // policy (PDP, AOS-004)
 		referencemonitor.NewTaintGate(privileged), // taint (AOS-069)
 		referencemonitor.NewScopeGate(authority),  // scope (AOS-071)
-		referencemonitor.BudgetStub{},             // budget (stub aceitável)
+		budgetHook,                                // budget (AOS-008): real com cfg.Budget, stub sem ele
 		egressHook,                                // egress (AOS-067)
 	)
 
@@ -396,6 +421,21 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		durDisp = dd
 	}
 
+	// AOS-257: SALDO DA RESERVA no decorator do dispatcher — commit em permit, release em
+	// deny/escalate/erro/panic. É OUTERMOST (envolve o durável quando existe) para ver o
+	// desfecho FINAL; num dedup/replay do ledger não houve mediação, logo não há reserva
+	// pendente e o saldo é no-op. Sem execução durável não há dispatcher nenhum para
+	// decorar — e entregar um [agentruntime.WithActivityDispatcher] SUBSTITUI o default do
+	// runtime, pelo que o decorator assenta em [mediateDispatcher] (o mesmo Mediate directo
+	// que o default do kernel faz).
+	if cfg.Budget != nil {
+		inner := durDisp
+		if inner == nil {
+			inner = mediateDispatcher{rm: rm}
+		}
+		durDisp = budgetSettlingDispatcher{inner: inner, check: cfg.Budget.check}
+	}
+
 	if durDisp != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithActivityDispatcher(durDisp))
 	}
@@ -422,6 +462,7 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		toolsets:  toolsets,
 		freezeOpt: cfg.FreezeOptions,
 		ledger:    cfg.Ledger,
+		budget:    cfg.Budget, // AOS-256: o ciclo de vida do nó por-run vive em Run
 	}, nil
 }
 
@@ -469,6 +510,26 @@ func (s *SecuredRuntime) Run(ctx context.Context, goal agentruntime.Goal, sel *t
 		return agentruntime.Result{}, nil, err
 	}
 	defer s.toolsets.Release(frozen.RunID())
+
+	// AOS-256 — NÓ DE ORÇAMENTO POR-RUN, no MESMO seam por-run do tool set congelado.
+	//
+	// Tem de acontecer ANTES do primeiro turno: o hook de orçamento debita o nó cujo id é o
+	// RunID e, sem esse nó registado, [budget.Budget.Reserve] devolve ErrUnknownNode, que o
+	// adaptador converte em deny — 100% das tool calls negadas por um defeito de wiring
+	// disfarçado de falta de orçamento (o risco 4 do desafio A1).
+	//
+	// A libertação é `defer`: cobre o retorno normal, o erro do loop E o panic. Sem ela cada
+	// run deixaria um nó vivo para sempre e a retoma do mesmo RunID colidiria.
+	//
+	// Fail-closed: se o nó não se consegue registar, o run NÃO arranca — correr sem nó seria
+	// correr com tudo negado, e o operador procuraria a causa no sítio errado.
+	if s.budget != nil {
+		releaseBudget, berr := s.budget.acquire(goal.RunID)
+		if berr != nil {
+			return agentruntime.Result{}, nil, berr
+		}
+		defer releaseBudget()
+	}
 
 	res, err := s.rt.Run(ctx, ApplyFrozenToGoal(goal, frozen))
 	return res, frozen, err
