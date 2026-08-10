@@ -86,3 +86,8 @@ packages/substrate/eventstore/durable.go|G115     # uint32(len(payload)): limita
 # (synth.go:140), pelo que len(credID) nunca se aproxima de 65535. Se algum dia o credID
 # passar a vir de fora, esta entrada TEM de sair e a conversao ganhar guarda.
 packages/cmd/aos-attestation/synth.go|G115
+# AOS-261/262 (EPIC-20 W2) — FALSO-POSITIVO: G101 dispara porque o identificador
+# AttrConsumedTokens (span.go:53) contem "Tokens", mas o valor e um NOME DE ATRIBUTO DE
+# SPAN OTel ("aos.control.consumed_tokens"), nao uma credencial. Confidence: LOW. Nenhum
+# segredo. Gemeo dos outros Attr* do mesmo bloco; so este casa o padrao do gosec.
+packages/control-plane/governance/progress-surface/span.go|G101
