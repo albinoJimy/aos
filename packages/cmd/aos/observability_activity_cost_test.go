@@ -35,6 +35,7 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/activity"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/platform/audit"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -129,11 +130,20 @@ func TestAOS212_DedupExportsZeroEffectCost(t *testing.T) {
 	dir := t.TempDir()
 	runID := "run-obs-durable-cost-dedup"
 
+	// CUSTÓDIA DE KEK ESTÁVEL ENTRE AS DUAS VIDAS (AOS-215/AOS-245). O step-ledger sela o
+	// Result.Payload sob a KEK POR-TITULAR (AOS-093), pelo que o registo canónico que a 2.ª
+	// vida relê do WAL só é decifrável se a KEK sobreviver ao restart. O vault de REFERÊNCIA é
+	// in-memory e morre com o processo — a configuração que [ErrProductionNeedsDurableKEK]
+	// PROÍBE justamente quando o substrato é durável. Injectar a MESMA instância nas duas vidas
+	// é o análogo de teste de AOS_DSAR_VAULT_ADDR (custódia externa); sem ela o teste mediria a
+	// evaporação da KEK, não a deduplicação durável que é o seu objecto.
+	kek := audit.NewInMemoryKeyVault(nil)
 	durableTweak := func(cfg *Config) {
 		cfg.DurableExecution = true
 		cfg.EventStorePath = filepath.Join(dir, "events.wal")
 		cfg.WORMPath = filepath.Join(dir, "worm.wal")
 		cfg.IssuerKeyPath = filepath.Join(dir, "issuer.seed") // estável entre reinícios
+		cfg.DSARVault = kek                                   // KEK por-titular partilhada pelas duas vidas
 	}
 	goalOf := func(credential string) agentruntime.Goal {
 		return agentruntime.Goal{

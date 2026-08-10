@@ -904,9 +904,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("aos: capturer de replay (AOS-180): %w", err)
 		}
-		// AOS-093: o step-ledger cifra o Result.Payload por-titular (activa-se quando o
-		// run injecta o principal via Producer.NHIID; sem principal, retro-compat).
-		ledger, err = durable.NewStepLedger(es, durable.WithContentSealer(contentCipher))
+		// AOS-093/AOS-245: o step-ledger cifra o Result.Payload — o OUTPUT de cada tool
+		// call — sob a MESMA KEK por-titular que o capturer usa. O TITULAR é POR-RUN e
+		// este ledger é composto UMA vez, partilhado por todos os runs: por isso NÃO vem
+		// de um produtor fixo aqui, mas do contexto do despacho
+		// ([durable.ContextWithTitular], anexado pelo activity.Dispatcher a partir do
+		// Principal do run — o mesmo valor que loop.go passa ao capturer).
+		//
+		// [durable.WithRequireTitular] fecha a degradação silenciosa que ISTO corrige: até
+		// AOS-245 o cifrador estava composto mas o titular nunca chegava, pelo que o ledger
+		// caía no caminho retro-compatível e escrevia o output da tool EM CLARO no WAL — os
+		// mesmos bytes cifrados em replay.captured e em claro em step.ledger.applied, fora
+		// do alcance do crypto-shredding por-titular. Com a guarda, um passo sem titular é
+		// RECUSADO antes de qualquer efeito em vez de vazar. Não há degradação a temer no
+		// nó: o loop já recusa um run sem principal ([agentruntime.ErrNoPrincipal]), logo o
+		// titular é sempre resolvível no caminho de execução.
+		ledger, err = durable.NewStepLedger(es,
+			durable.WithContentSealer(contentCipher), durable.WithRequireTitular())
 		if err != nil {
 			return nil, fmt.Errorf("aos: step-ledger durável (AOS-180): %w", err)
 		}
@@ -1435,16 +1449,27 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// KEK por-titular do vault. Essa MESMA KEK cifra o CONTEÚDO DOS RUNS que o Event Store
 	// persiste — a resposta do modelo e os resultados de tools do capturer de replay são
 	// cifrados por-titular (envelope DEK/KEK) ANTES de tocar o WAL (ver (2c-pre) e
-	// [replay.WithContentSealer]), e o step-ledger cifra o Result.Payload quando o run
-	// injecta o principal. O capturer regista subject→stream no DSARIndex (via
+	// [replay.WithContentSealer]), e o step-ledger cifra o Result.Payload sob o titular do
+	// run que o despacho lhe leva no contexto (AOS-245). O capturer regista subject→stream no DSARIndex (via
 	// [contentSealer.SealContent]), pelo que o crypto-shredding e o legal hold POR-PARTIÇÃO
 	// alcançam o SUBSTRATO. Apagar a KEK no /dsar/erase torna o conteúdo do run
 	// IRRECUPERÁVEL (a decifragem falha) sem mutar o log — a hash-chain continua a validar.
 	// RESIDUAL nomeado (eixo AOS-093): (a) turn.recorded persiste apenas hashes (prompt_hash/
 	// system_hash), nunca o objective/prompt cru — nada a cifrar aí; (b) o REPLAY de um run
 	// cujo conteúdo foi selado exige o acesso ao vault do titular pelo leitor (fora do âmbito
-	// deste núcleo); (c) o step-ledger só sela quando há Producer.NHIID (o run injecta o
-	// principal). Ver DEF-301/A-DEF-301 em docs/governance/REGISTO-Deferimentos.md.
+	// deste núcleo); (c) FECHADO por AOS-245 — o step-ledger selava só com Producer.NHIID, que o
+	// nó nunca passava (o titular é por-RUN e o ledger é composto uma vez), pelo que o OUTPUT de
+	// cada tool call ia EM CLARO para o WAL com o cifrador composto e inerte; agora o titular
+	// chega pelo contexto do despacho e a ausência dele é RECUSADA
+	// ([durable.WithRequireTitular]), não degradada. Ver DEF-301/A-DEF-301 em
+	// docs/governance/REGISTO-Deferimentos.md.
+	//
+	// DEPENDÊNCIA que a selagem do ledger cria (AOS-215): o registo canónico do ledger passa a
+	// ser decifrável só enquanto a KEK do titular viver. Num restart com a custódia de REFERÊNCIA
+	// (vault in-memory) o Rebuild deixa de re-hidratar os passos selados e um step re-despachado
+	// falha ao reler o canónico — é exactamente a combinação (substrato durável + KEK efémera)
+	// que [ErrProductionNeedsDurableKEK] já PROÍBE em produção. Fora de produção mantém-se a
+	// postura demo-grade declarada no banner.
 	//
 	// CON-02 (legal hold + job de expiração — superfície de ADMINISTRAÇÃO): foi DEFERIDA por
 	// decisão do dono (Opção C, docs/governance/DOSSIE-CON-02-legal-hold.md, 2026-07-29) e está
