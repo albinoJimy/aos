@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -128,6 +129,25 @@ var ErrBadOperators = errors.New("aos: AOS_OPERATORS invalida (esperado \"emitte
 // achado ORF-02 nomeia — ou, pior, com um gate COMPOSTO cujo dual-control uma única chave
 // privada satisfaz (capacidade anunciada e não cumprida, na versão perigosa).
 var ErrBadApproversFile = errors.New("aos: AOS_APPROVERS_FILE invalido (esperado JSON {\"approvers\":[{\"principal\":..., \"pubkey\":\"<64 hex>\", \"authority\":[\"approve:safe|gray|danger\"]}]} — ficheiro ilegivel, esquema invalido, principal duplicado, MESMA pubkey em dois principals, capability fora do vocabulario, autoridade vazia ou lista vazia abortam em vez de deixarem o four-eyes silenciosamente DESLIGADO ou ANULADO)")
+
+// ErrBadChallengeIssuance — AOS_CHALLENGE_ISSUANCE presente com um valor que NÃO é um booleano
+// reconhecido (AOS-266). Molde de [ErrBadDurableExecution]: lixo NÃO degrada silenciosamente
+// para "frescura desligada" — um `AOS_CHALLENGE_ISSUANCE=tru` que deixasse o replay em aberto
+// seria a pior degradação possível. Aborta.
+var ErrBadChallengeIssuance = errors.New("aos: AOS_CHALLENGE_ISSUANCE invalida (aceites: 1/true/t/yes/y/on para ligar a frescura por-cerimonia, 0/false/f/no/n/off ou vazio para desligar) — um valor nao reconhecido aborta em vez de deixar o replay de attestation em aberto")
+
+// ErrBadChallengeTTL — AOS_CHALLENGE_TTL presente mas não é uma duração Go válida e positiva
+// (AOS-266). O TTL é o tempo de uma CERIMÓNIA de aprovação; um valor negativo/zero/lixo aborta em
+// vez de silenciosamente cair no default (que poderia mascarar um erro de operador — ex. "5" sem
+// unidade, ou "-5m").
+var ErrBadChallengeTTL = errors.New("aos: AOS_CHALLENGE_TTL invalida (esperada duracao Go POSITIVA, ex. 5m, 90s — o tempo de UMA cerimonia de aprovacao, nao de uma sessao); vazio usa o default")
+
+// ErrBadDeviceEnrollmentFile — o ficheiro de enrollment de dispositivos (AOS_DEVICE_ENROLLMENT_FILE,
+// ou o AOS_APPROVERS_FILE por omissão) não é legível, não segue o esquema, tem um principal vazio,
+// um device_id não-base64, ou (quando o ficheiro foi EXPLICITAMENTE apontado) não traz dispositivo
+// nenhum. Fail-loud (molde AOS-193): descartar em silêncio daria um nó que arrancou a parecer
+// atribuir dispositivos e nunca atribui.
+var ErrBadDeviceEnrollmentFile = errors.New("aos: AOS_DEVICE_ENROLLMENT_FILE invalido (esperado JSON {\"approvers\":[{\"principal\":..., \"devices\":[\"<base64 do device_id opaco>\"]}]} — ficheiro ilegivel, esquema invalido, principal vazio, device_id nao-base64, ou ficheiro explicitamente apontado mas SEM dispositivos abortam em vez de deixarem a atribuicao silenciosamente DESLIGADA)")
 
 // ErrBadRatifiers — AOS_RATIFIERS presente mas com uma entrada MALFORMADA (sem '=', com
 // principal vazio, com pubkey que não é ed25519 hex de 32 bytes, com principal DUPLICADO, ou com
@@ -619,6 +639,41 @@ func nodeConfigFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("aos: AOS_ATTESTATION_VERIFIER_TOKEN_PATH: %w", rerr)
 		}
 		cfg.AttestationVerifierToken = strings.TrimSpace(string(tb))
+	}
+
+	// FRESCURA POR-CERIMÓNIA DO 4-EYES (AOS-266, achado F10): AOS_CHALLENGE_ISSUANCE=1 liga o modo
+	// issue-then-consume — o nó EMITE o challenge de cada perna por (pedido, aprovador) com TTL e a
+	// verificação exige-o fresco. Sem ela, o anti-replay só dá dedup (sem frescura). O TTL opcional
+	// (AOS_CHALLENGE_TTL) é o tempo de uma cerimónia; fail-closed em valor não-positivo/lixo.
+	cfg.ChallengeIssuance, err = parseChallengeIssuance(os.Getenv("AOS_CHALLENGE_ISSUANCE"))
+	if err != nil {
+		return Config{}, err
+	}
+	if d := strings.TrimSpace(os.Getenv("AOS_CHALLENGE_TTL")); d != "" {
+		ttl, terr := time.ParseDuration(d)
+		if terr != nil || ttl <= 0 {
+			return Config{}, fmt.Errorf("%w: valor %q", ErrBadChallengeTTL, d)
+		}
+		cfg.ChallengeTTL = ttl
+	}
+
+	// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266, achado F10): AOS_DEVICE_ENROLLMENT_FILE alimenta
+	// NewStaticDeviceEnrollment; POR OMISSÃO é o próprio AOS_APPROVERS_FILE (os device_ids vivem no
+	// campo `devices` de cada aprovador). Distingue-se o ficheiro EXPLICITAMENTE apontado (vazio ⇒
+	// erro) do herdado por omissão (vazio ⇒ atribuição dormente — o caso comum de um roster sem
+	// dispositivos ainda enrolados). A atribuição EXIGE a porta de attestation (sem deviceID não há
+	// o que confrontar): dispositivos sem AOS_ATTESTATION_VERIFIER_URL ABORTAM (fail-loud).
+	enrollPath := strings.TrimSpace(os.Getenv("AOS_DEVICE_ENROLLMENT_FILE"))
+	enrollExplicit := enrollPath != ""
+	if enrollPath == "" {
+		enrollPath = strings.TrimSpace(os.Getenv("AOS_APPROVERS_FILE"))
+	}
+	cfg.DeviceEnrollment, err = parseDeviceEnrollmentFile(enrollPath, enrollExplicit)
+	if err != nil {
+		return Config{}, err
+	}
+	if len(cfg.DeviceEnrollment) > 0 && cfg.AttestationVerifierURL == "" {
+		return Config{}, ErrEnrollmentWithoutAttestationURL
 	}
 
 	// MODEL GATEWAY (OpenAI-compatível) por ambiente. Vazio ⇒ [Config.Model] fica nil e o Bootstrap
@@ -1572,11 +1627,16 @@ type approversDoc struct {
 	Approvers []approverDoc `json:"approvers"`
 }
 
-// approverDoc é UMA entrada do ficheiro de aprovadores.
+// approverDoc é UMA entrada do ficheiro de aprovadores. O campo `devices` (AOS-266) é OPCIONAL e
+// só é consumido pelo caminho de ENROLLMENT ([parseDeviceEnrollmentFile]) — [parseApproversFile]
+// ignora-o (o roster de pubkeys e a atribuição de dispositivos são preocupações separadas, lidas
+// do MESMO ficheiro por omissão). Cada device_id é o digest OPACO base64 que o componente de
+// attestation devolve em /verify; NÃO é segredo.
 type approverDoc struct {
 	Principal string   `json:"principal"`
-	PubKey    string   `json:"pubkey"`    // 64 hex chars = 32 bytes ed25519 (== AOS_ISSUER_PUBKEY)
-	Authority []string `json:"authority"` // ex.: ["approve:danger", "approve:gray"]
+	PubKey    string   `json:"pubkey"`            // 64 hex chars = 32 bytes ed25519 (== AOS_ISSUER_PUBKEY)
+	Authority []string `json:"authority"`         // ex.: ["approve:danger", "approve:gray"]
+	Devices   []string `json:"devices,omitempty"` // AOS-266: device_ids opacos em base64 (atribuição)
 }
 
 // parseApproversFile lê o ficheiro MONTADO de aprovadores do FourEyesGate (AOS-162) apontado
@@ -1669,6 +1729,85 @@ func parseApproversFile(path string) ([]ApproverConfig, error) {
 			}
 		}
 		out = append(out, ApproverConfig{Principal: principal, PubKey: pub, Authority: authority})
+	}
+	return out, nil
+}
+
+// parseChallengeIssuance lê AOS_CHALLENGE_ISSUANCE (AOS-266) com a MESMA gramática booleana
+// fail-closed de [parseDurableExecution]: vazio ⇒ desligado; um valor não-reconhecido ABORTA
+// (nunca degrada em silêncio para "frescura desligada", que reabriria o replay).
+func parseChallengeIssuance(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return false, nil
+	case "1", "true", "t", "yes", "y", "on":
+		return true, nil
+	case "0", "false", "f", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: valor %q", ErrBadChallengeIssuance, strings.TrimSpace(s))
+	}
+}
+
+// parseDeviceEnrollmentFile lê o registo de ATRIBUIÇÃO dispositivo↔aprovador (AOS-266) de um
+// ficheiro montado, no MESMO esquema do ficheiro de aprovadores ({"approvers":[...]}), mas
+// consumindo APENAS `principal` + `devices`. Devolve o mapa aprovador → device_ids (bytes) que
+// alimenta [integration.NewStaticDeviceEnrollment].
+//
+// `explicit` distingue o ficheiro EXPLICITAMENTE apontado (AOS_DEVICE_ENROLLMENT_FILE) do herdado
+// por omissão (AOS_APPROVERS_FILE):
+//
+//   - path VAZIO ⇒ (nil, nil): sem enrollment (atribuição dormente).
+//   - ficheiro ilegível / JSON malformado / campo desconhecido / principal vazio / device_id
+//     não-base64 ⇒ [ErrBadDeviceEnrollmentFile] (fail-loud, nunca descartar em silêncio).
+//   - SEM nenhum dispositivo: se `explicit`, ABORTA (apontou-se um ficheiro de enrollment que não
+//     enrola nada — a degradação silenciosa que AOS-193 fecha); se herdado por omissão, devolve
+//     (nil, nil) — o caso comum de um roster de aprovadores ainda sem dispositivos enrolados.
+//
+// Entradas de aprovador SEM `devices` são simplesmente saltadas (quando o ficheiro é o de
+// aprovadores, a maioria não tem dispositivos). device_ids duplicados no mesmo aprovador são
+// idempotentes ([integration.NewStaticDeviceEnrollment] usa um conjunto).
+func parseDeviceEnrollmentFile(path string, explicit bool) (map[string][][]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ler %q: %v", ErrBadDeviceEnrollmentFile, path, err)
+	}
+	var doc approversDoc
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%w: %q: %v", ErrBadDeviceEnrollmentFile, path, err)
+	}
+	out := make(map[string][][]byte)
+	for i, a := range doc.Approvers {
+		if len(a.Devices) == 0 {
+			continue
+		}
+		principal := strings.TrimSpace(a.Principal)
+		if principal == "" {
+			return nil, fmt.Errorf("%w: %q entrada #%d com principal vazio mas com dispositivos", ErrBadDeviceEnrollmentFile, path, i)
+		}
+		for _, d := range a.Devices {
+			ds := strings.TrimSpace(d)
+			if ds == "" {
+				continue
+			}
+			// O device_id NÃO é ecoado no erro (é opaco mas evita-se expor identificadores).
+			id, derr := base64.StdEncoding.DecodeString(ds)
+			if derr != nil || len(id) == 0 {
+				return nil, fmt.Errorf("%w: %q principal %q com device_id nao-base64 utilizavel", ErrBadDeviceEnrollmentFile, path, principal)
+			}
+			out[principal] = append(out[principal], id)
+		}
+	}
+	if len(out) == 0 {
+		if explicit {
+			return nil, fmt.Errorf("%w: %q apontado explicitamente mas sem dispositivos (um ficheiro de enrollment que nao enrola nada deixaria a atribuicao DESLIGADA em silencio)", ErrBadDeviceEnrollmentFile, path)
+		}
+		return nil, nil // herdado do AOS_APPROVERS_FILE sem dispositivos ⇒ atribuição dormente.
 	}
 	return out, nil
 }

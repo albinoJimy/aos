@@ -149,6 +149,13 @@ var (
 	// `approve:<classe>` NUNCA satisfaz hitl.RequiredAuthority, pelo que compor o gate com ele
 	// seria anunciar dual-control com um roster que não aprova nada.
 	ErrBadApproverEntry = errors.New("aos: entrada de Config.Approvers invalida (principal vazio ou DUPLICADO, pubkey ed25519 de tamanho != 32 bytes, autoridade vazia ou fora do vocabulario approve:{safe,gray,danger}, ou pubkey PARTILHADA por dois principals) — um aprovador sem capability approve:<classe> nunca autoriza nada; dois principals com a MESMA pubkey deixariam UMA chave privada satisfazer o dual-control")
+	// ErrEnrollmentWithoutAttestationURL — [Config.DeviceEnrollment] traz dispositivos mas
+	// [Config.AttestationVerifierURL] está vazia (AOS-266, fail-loud molde AOS-193). Sem a porta
+	// de attestation não há deviceID a confrontar com o enrollment: [integration.NewFourEyesGate]
+	// recusaria com ErrEnrollmentWithoutAttestation, mas aqui aborta-se ANTES, nomeando as duas
+	// envs, para o operador não ficar a adivinhar. Descartar os dispositivos em silêncio daria um
+	// nó que arrancou a parecer atribuir e nunca atribui.
+	ErrEnrollmentWithoutAttestationURL = errors.New("aos: AOS_DEVICE_ENROLLMENT_FILE traz dispositivos registados mas AOS_ATTESTATION_VERIFIER_URL nao esta definida — a atribuicao dispositivo<->aprovador so vale com a porta de attestation ligada (sem ela nao ha deviceID a confrontar); defina a URL do verificador ou remova os dispositivos do ficheiro de enrollment")
 )
 
 // approveCapabilities devolve o VOCABULÁRIO FECHADO das capabilities de aprovação aceites num
@@ -165,6 +172,16 @@ func approveCapabilities() []string {
 		hitl.RequiredAuthority(risk.ClassGray),
 		hitl.RequiredAuthority(risk.ClassDanger),
 	}
+}
+
+// effectiveChallengeTTL devolve o TTL de challenge REALMENTE em vigor (AOS-266): o configurado
+// se > 0, senão o default do emissor. Só para o banner declarar o valor honesto — a mesma regra
+// que [hitl.NewEventStoreChallengeIssuer] aplica na construção.
+func effectiveChallengeTTL(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return hitl.DefaultChallengeTTL
 }
 
 // isApproveCapability indica se a capability pertence ao vocabulário de [approveCapabilities].
@@ -241,6 +258,30 @@ type Config struct {
 	// AttestationVerifierToken é o bearer opcional apresentado ao componente de autoridade
 	// (material NÃO-secreto entra por env; o token vem de ficheiro montado, como o do Vault).
 	AttestationVerifierToken string
+
+	// ChallengeIssuance liga a FRESCURA POR-CERIMÓNIA do 4-eyes (AOS-266, achado F10): o modo
+	// issue-then-consume da porta [integration.ChallengeIssuance]. Com ela, o nó EMITE o
+	// challenge de cada perna por (pedido, aprovador) com TTL ([ChallengeTTL]) e a verificação
+	// EXIGE que o challenge conste do registo de emissão e esteja fresco — fecha o replay de
+	// uma prova capturada por quem detenha a chave de um aprovador (o anti-replay por uso-único
+	// só dá DEDUP, não frescura). INDIVISÍVEL da emissão: quando ligada, o MESMO
+	// [hitl.EventStoreChallengeIssuer] alimenta a porta do gate E o endpoint POST
+	// /runs/{id}/challenge ([Node.ChallengeIssuer]) — não há como compor a porta sem o caminho
+	// de emissão (compô-la sem emissão negaria TODA a perna com ErrChallengeNotIssued). Vazio ⇒
+	// modo histórico (dedup sem frescura). Exige aprovadores (senão não há gate a compor).
+	ChallengeIssuance bool
+	// ChallengeTTL é a validade de um challenge EMITIDO — o tempo de uma CERIMÓNIA de aprovação,
+	// não de uma sessão (não se guarda através de suspend/resume). <=0 ⇒ [hitl.DefaultChallengeTTL].
+	ChallengeTTL time.Duration
+
+	// DeviceEnrollment é o registo de ATRIBUIÇÃO dispositivo↔aprovador (AOS-266, achado F10):
+	// aprovador → identificadores OPACOS de dispositivo registados. Não-vazio ⇒ o gate é composto
+	// com [integration.WithDeviceEnrollment] e uma perna cujo dispositivo atestado NÃO esteja
+	// registado para o aprovador é RECUSADA ([integration.ErrDeviceNotEnrolled], default-deny) —
+	// é isto que faz a attestation provar de QUEM é o autenticador, não só o modelo. EXIGE
+	// [AttestationVerifierURL] (sem deviceID não há o que confrontar): dispositivos configurados
+	// sem attestation ABORTAM o boot ([ErrEnrollmentWithoutAttestationURL], fail-loud).
+	DeviceEnrollment map[string][][]byte
 
 	// --- Promotion controller / ratificação de produção (AOS-159/AOS-206) ------
 	// Ratifiers regista os ratificadores de PRODUÇÃO pinados do promotion controller
@@ -459,6 +500,13 @@ type Node struct {
 	// cifrado por-titular quando há cifrador). É o que torna a retoma possível depois de
 	// o processo largar lease e goroutine. nil quando o four-eyes não está composto.
 	ResumeRecords *integration.ResumeRecords
+	// ChallengeIssuer é o emissor DURÁVEL de challenges do 4-eyes (AOS-266). É o LADO DE
+	// EMISSÃO da frescura por-cerimónia — o MESMO valor que alimenta a porta
+	// [integration.WithChallengeIssuance] do gate. Não-nil ⇒ o endpoint POST /runs/{id}/challenge
+	// emite; nil ⇒ frescura DORMENTE (o endpoint responde 501). Amarrar os dois lados ao MESMO
+	// valor é o que torna emissão↔composição INDIVISÍVEIS: nunca se compõe a porta (que sem
+	// emissão negaria toda a perna) sem o endpoint que a alimenta.
+	ChallengeIssuer *hitl.EventStoreChallengeIssuer
 	// Promotion é o promotion controller (AOS-159/AOS-206): a via SANCIONADA
 	// [hitl.NewProductionRatificationGate] (freshness + nonce-store durável FORÇADOS) que
 	// interpõe a ratificação humana assinada entre o canary e a produção de um artefacto de
@@ -983,17 +1031,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 
 	// (5) FOUR-EYES GATE (AOS-162) — opcional. Composto quando há aprovadores em config.
+	// As três portas de endurecimento (AOS-177/AOS-266) são declaradas ao banner pelo estado
+	// REALMENTE composto (não pela intenção da config): um "LIGADA" sobre uma porta não composta
+	// seria pior que o silêncio.
 	var foureyes *integration.FourEyesGate
+	var challengeIssuer *hitl.EventStoreChallengeIssuer
+	var attestationComposed, enrollmentComposed, freshnessComposed bool
 	if len(cfg.Approvers) > 0 {
 		registry := hitl.NewMemApproverRegistry()
 		for _, a := range cfg.Approvers {
 			registry.Register(a.Principal, a.PubKey, a.Authority...)
 		}
+		var feOpts []integration.FourEyesOption
+
 		// ATTESTATION DE DISPOSITIVO (AOS-177) — opcional. Com AttestationVerifierURL, liga o
 		// verificador REMOTO (cliente HTTP stdlib; o CBOR corre no componente externo) e cada perna
 		// de aprovação passa a EXIGIR attestationObject+clientDataJSON. Fail-closed: URL malformada
 		// ou não-https-fora-de-loopback ABORTA o boot (o enforcement não degrada para o modo dormente).
-		var feOpts []integration.FourEyesOption
 		if strings.TrimSpace(cfg.AttestationVerifierURL) != "" {
 			av, aerr := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
 				URL:       cfg.AttestationVerifierURL,
@@ -1003,7 +1057,38 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 				return nil, fmt.Errorf("aos: verificador de attestation remoto (AOS-177): %w", aerr)
 			}
 			feOpts = append(feOpts, integration.WithDeviceAttestation(av))
+			attestationComposed = true
 		}
+
+		// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266) — opcional. Com dispositivos em config, o
+		// dispositivo atestado de cada perna tem de estar REGISTADO para o aprovador que a assinou
+		// (default-deny). EXIGE a porta de attestation (sem deviceID não há o que confrontar):
+		// aborta-se ANTES de NewFourEyesGate, nomeando as duas envs, em vez de descartar em silêncio.
+		if len(cfg.DeviceEnrollment) > 0 {
+			if !attestationComposed {
+				return nil, ErrEnrollmentWithoutAttestationURL
+			}
+			feOpts = append(feOpts, integration.WithDeviceEnrollment(integration.NewStaticDeviceEnrollment(cfg.DeviceEnrollment)))
+			enrollmentComposed = true
+		}
+
+		// FRESCURA POR-CERIMÓNIA (AOS-266, achado F10) — opcional, INDIVISÍVEL da emissão. O MESMO
+		// [hitl.EventStoreChallengeIssuer] é (a) passado ao gate por WithChallengeIssuance — o lado
+		// de CONSULTA (o challenge tem de constar do registo de emissão para (pedido, aprovador) e
+		// estar fresco) — e (b) guardado em Node.ChallengeIssuer, que o endpoint POST
+		// /runs/{id}/challenge usa para EMITIR. Um único sítio de construção amarra os dois lados:
+		// não existe caminho que componha a porta (que, sozinha, negaria TODA a perna com
+		// ErrChallengeNotIssued — a armadilha de indivisibilidade do desafio A6) sem o endpoint que
+		// a alimenta. O TTL é o tempo de uma cerimónia, não de uma sessão.
+		if cfg.ChallengeIssuance {
+			challengeIssuer, err = hitl.NewEventStoreChallengeIssuer(es, cfg.ChallengeTTL)
+			if err != nil {
+				return nil, fmt.Errorf("aos: emissor de challenges do four-eyes (AOS-266): %w", err)
+			}
+			feOpts = append(feOpts, integration.WithChallengeIssuance(challengeIssuer))
+			freshnessComposed = true
+		}
+
 		foureyes, err = integration.NewFourEyesGate(registry, hitl.NewEventStoreNonceStore(es), feOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("aos: four-eyes gate (AOS-162): %w", err)
@@ -1469,8 +1554,39 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	if foureyes != nil {
 		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s) via AOS_APPROVERS_FILE", len(cfg.Approvers))
+		// ATTESTATION DE DISPOSITIVO (AOS-177/AOS-266). O banner declara o estado REALMENTE
+		// composto (LIGADA/DORMENTE), nunca a intenção — SEGUE o wiring acima.
+		if attestationComposed {
+			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA")
+		} else {
+			log("  attestation de dispositivo (AOS-177): DORMENTE — sem AOS_ATTESTATION_VERIFIER_URL o 4-eyes e SO estrutural (nao prova modelo nem posse do dispositivo); defina a URL do verificador externo para a ligar")
+		}
+		// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266).
+		if enrollmentComposed {
+			log("  atribuicao dispositivo<->aprovador (AOS-266): LIGADA — %d aprovador(es) com dispositivo(s) registado(s) via AOS_DEVICE_ENROLLMENT_FILE; dispositivo atestado nao registado para o aprovador => perna RECUSADA (ErrDeviceNotEnrolled, default-deny)", len(cfg.DeviceEnrollment))
+		} else {
+			log("  atribuicao dispositivo<->aprovador (AOS-266): DORMENTE — sem dispositivos registados a attestation prova modelo+posse, NAO de quem e o autenticador; defina AOS_DEVICE_ENROLLMENT_FILE (default AOS_APPROVERS_FILE) para exigir atribuicao")
+		}
+		// FRESCURA POR-CERIMÓNIA (AOS-266, achado F10).
+		if freshnessComposed {
+			log("  frescura por-cerimonia (AOS-266): LIGADA — challenges EMITIDOS pelo no por (pedido, aprovador) com TTL=%s via POST /runs/{id}/challenge; a verificacao EXIGE challenge emitido e fresco (issue-then-consume); challenge nao emitido/expirado => perna RECUSADA (ErrChallengeNotIssued)", effectiveChallengeTTL(cfg.ChallengeTTL))
+		} else {
+			log("  frescura por-cerimonia (AOS-266): DORMENTE — anti-replay so por uso-unico duravel (dedup, sem frescura); quem detenha a chave de um aprovador pode reapresentar uma prova capturada num pedido novo; defina AOS_CHALLENGE_ISSUANCE=1 para exigir emissao server-side")
+		}
 	} else {
 		log("four-eyes gate (AOS-162): DESLIGADO (sem aprovadores) — POST /runs/{id}/approve responde 501; defina AOS_APPROVERS_FILE=<ficheiro JSON montado> para o compor")
+		// AVISO banner-mudo (AOS-266, achado F10): capacidades de endurecimento do 4-eyes
+		// definidas SEM aprovadores são IGNORADAS em silêncio (o gate nem sequer é composto). O
+		// banner deixa de ser mudo: nomeia cada env orfã e a razão de não ter efeito.
+		if strings.TrimSpace(cfg.AttestationVerifierURL) != "" {
+			log("  AVISO (AOS-266): AOS_ATTESTATION_VERIFIER_URL esta definida mas NAO ha aprovadores (AOS_APPROVERS_FILE) — o gate 4-eyes nao e composto e a URL de attestation e IGNORADA; a attestation so se liga AO 4-eyes")
+		}
+		if cfg.ChallengeIssuance {
+			log("  AVISO (AOS-266): AOS_CHALLENGE_ISSUANCE=1 mas NAO ha aprovadores — sem 4-eyes composto nao ha emissao de challenges nem endpoint /runs/{id}/challenge; defina AOS_APPROVERS_FILE")
+		}
+		if len(cfg.DeviceEnrollment) > 0 {
+			log("  AVISO (AOS-266): AOS_DEVICE_ENROLLMENT_FILE traz dispositivos mas NAO ha aprovadores — enrollment IGNORADO sem 4-eyes composto; defina AOS_APPROVERS_FILE")
+		}
 	}
 	// PROMOTION CONTROLLER (AOS-159/AOS-206). O banner declara o estado REALMENTE COMPOSTO (a
 	// via sancionada com anti-replay SEMPRE ligado) e a cardinalidade REAL de ratificadores
@@ -1640,8 +1756,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		ApprovalBroker:   approvalBroker,
 		PendingApprovals: pendingApprovals,
 		ResumeRecords:    resumeRecords,
-		Promotion:        promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
-		Authority:        authority, // nil no modo endurecido (a autoridade corre fora do processo)
+		ChallengeIssuer:  challengeIssuer, // nil quando a frescura por-cerimónia (AOS-266) está DORMENTE
+		Promotion:        promotion,       // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
+		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
 		EventStore:       es,

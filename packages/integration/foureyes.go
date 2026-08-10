@@ -571,6 +571,18 @@ func challengeScope(requestID string) string {
 	return "4eyes:" + requestID
 }
 
+// ChallengeScope é a forma EXPORTADA de [challengeScope] para o EMISSOR server-side (AOS-266).
+// O emissor de challenges vive FORA deste pacote (no nó, sobre [hitl.EventStoreChallengeIssuer]),
+// mas TEM de emitir no MESMO scope que [checkIssued] consulta na verificação — senão um challenge
+// emitido nunca seria reconhecido e [WithChallengeIssuance] negaria TODA a perna
+// ([ErrChallengeNotIssued], o modo de falha que a armadilha de indivisibilidade de AOS-177
+// documenta). Exportar o cálculo do scope (em vez de o duplicar como string "4eyes:" no nó) é o
+// que amarra emissão e verificação ao MESMO namespace por construção: uma mudança do prefixo
+// altera os dois lados de uma vez.
+func ChallengeScope(requestID string) string {
+	return challengeScope(requestID)
+}
+
 // fourEyesMessage constrói o tuplo canónico assinado por uma perna, com a codificação
 // INJECTIVA length-prefix de AOS-160 ([appendLenPrefixed]): cada campo variável é prefixado
 // com o seu comprimento em 8 bytes big-endian. Como TODOS os campos são length-prefixed,

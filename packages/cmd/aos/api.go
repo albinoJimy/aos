@@ -46,6 +46,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -493,6 +494,10 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
 	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)
 	mux.HandleFunc("POST /runs/{id}/approve", h.handleApprove)
+	// FRESCURA POR-CERIMÓNIA (AOS-266, achado F10): EMISSÃO server-side do challenge do 4-eyes.
+	// É o LADO DE EMISSÃO indivisível da porta integration.WithChallengeIssuance — desligado (501)
+	// quando a frescura está DORMENTE (Node.ChallengeIssuer nil). Ver handleChallenge.
+	mux.HandleFunc("POST /runs/{id}/challenge", h.handleChallenge)
 	mux.HandleFunc("POST /runs/{id}/resume", h.handleResume)
 	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
 	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
@@ -1090,6 +1095,63 @@ type approvalLegWire struct {
 	DeviceAttestation string `json:"device_attestation,omitempty"`
 	DeviceClientData  string `json:"device_client_data,omitempty"`
 	Signature         string `json:"signature"` // base64(assinatura ed25519 da perna)
+}
+
+// challengeRequest pede a EMISSÃO de um challenge fresco para uma cerimónia de aprovação
+// (AOS-266). O scope é derivado de request_id (o mesmo âmbito anti-replay que o /approve usa),
+// e o challenge é atribuído ao aprovador nomeado — só ele o poderá usar numa perna válida.
+type challengeRequest struct {
+	RequestID string `json:"request_id"`
+	Approver  string `json:"approver"`
+}
+
+// handleChallenge EMITE um challenge server-side para (request_id, approver) e regista-o
+// duravelmente com TTL (AOS-266, achado F10). É o LADO DE EMISSÃO da frescura por-cerimónia: o
+// operador/aprovador pede aqui o challenge, assina a perna com ele (aos-issuer approve-sign
+// --challenge <hex>) e submete em /approve; o gate, composto com integration.WithChallengeIssuance,
+// só aceita challenges que constem deste registo e estejam frescos.
+//
+// DESLIGADO (501) quando a frescura está DORMENTE (Node.ChallengeIssuer nil) — o mesmo valor que
+// alimenta a porta do gate. Emissão e composição são INDIVISÍVEIS por construção (ver Bootstrap):
+// nunca há a porta ligada sem este endpoint operável, nem o contrário.
+//
+// O challenge NÃO é segredo (viaja em claro no clientDataJSON da attestation); é devolvido em
+// base64 (para o wire do /approve) e em hex (para a flag --challenge do aos-issuer), sem obrigar
+// a reescrever o cliente. Autenticado pela MESMA admission do plano de controlo que o /approve.
+func (h *apiHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
+	if !h.admitControl(w) {
+		return
+	}
+	if !h.admitControlMTLS(w, r) {
+		return
+	}
+	if h.node.ChallengeIssuer == nil {
+		writeError(w, http.StatusNotImplemented, "emissao de challenges desligada (frescura por-cerimonia dormente; defina AOS_CHALLENGE_ISSUANCE=1)")
+		return
+	}
+	var req challengeRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	approver := strings.TrimSpace(req.Approver)
+	if requestID == "" || approver == "" {
+		writeError(w, http.StatusBadRequest, "request_id e approver obrigatorios")
+		return
+	}
+	// O scope EXPORTADO amarra a emissão ao MESMO namespace que a verificação (checkIssued)
+	// consulta — uma divergência de prefixo faria o gate negar toda a perna.
+	challenge, err := h.node.ChallengeIssuer.IssueChallenge(r.Context(), integration.ChallengeScope(requestID), approver)
+	if err != nil {
+		// Falha do backend durável do Event Store ⇒ 500 (sem detalhe no corpo).
+		writeError(w, http.StatusInternalServerError, "emissao de challenge falhou")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"challenge":     base64.StdEncoding.EncodeToString(challenge), // wire do /approve
+		"challenge_hex": hex.EncodeToString(challenge),                // flag --challenge do aos-issuer
+	})
 }
 
 // handleApprove autoriza uma acção irreversível via o FourEyesGate (AOS-162), SE o nó o

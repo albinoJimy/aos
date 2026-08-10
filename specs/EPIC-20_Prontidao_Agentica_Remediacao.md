@@ -27,7 +27,7 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | Billing token-only | Wiring do hook, ciclo de vida por-run, envs, estimador | **D1/D2** (âmbito tool-only; eixo $) — recomendações registadas |
 | Turno de modelo no orçamento | Pré-requisito de contrato (`port.Usage`) | **D1 opção B** — ticket separado, pós-decisão |
 | Exaustão graciosa completa | Retentor de spans, resolvedores, burn-down+aviso | **D4/D5/D6** (2.º tipo de PendingRecord, autoridade do `extend`, dono do tecto) |
-| Broker de credenciais | Passo zero de política/identidade, cliente Vault, porta com contexto | **D7/D8** (separar cliente Vault; v1 in-process) |
+| Broker de credenciais | Passo zero de política/identidade, cliente Vault, porta com contexto | **D7/D8 DECIDIDOS 2026-08-10 (dono):** D7 = cliente/token Vault SEPARADOS (`AOS_BROKER_VAULT_*`); D8 = consumo v1 IN-PROCESS (injecção remota deferida, D8-B) |
 | Verificação ancorada do WORM | Env trust anchor + `VerifyFromCheckpointAtHead` no restart | **D4/AOS-156** — custódia da chave do operador (infra-org) |
 | ADR-021 / ADR-022 | Toda a implementação | Gramática concreta de perfis/condições/payloads → `tecnica/06`/`tecnica/18` |
 | ORQ/SCH distribuídos | **Nada** — deferimento ADR-018 mantido | EPIC-10 (frota multi-nó) |
@@ -716,7 +716,7 @@ Preparar a troca mediada: capability nomeada (ou reutilização declarada de `ca
 - [ ] Higiene pré-wiring: reaper de leases (molde `approval_sweeper.go`) e superfície para `Revoke`.
 
 ### Estado
-**ABERTO** (bloqueado por D7/D8).
+**DESBLOQUEADO (D7/D8 decididos 2026-08-10: cliente Vault separado `AOS_BROKER_VAULT_*` + consumo in-process v1) — pronto para wave.**
 
 ---
 
@@ -735,7 +735,7 @@ Alargar a porta com contexto de chamada e ligar o broker ao ponto de aquisição
 - [ ] Teste de composição pela cadeia real; injecção no executor remoto fica **declaradamente deferida** (desenho-alvo: handle opaco até ao orchestrator, D8-B).
 
 ### Estado
-**ABERTO** (bloqueado por AOS-264).
+**DESBLOQUEADO — o AOS-264 deixou de estar bloqueado (D7/D8 decididos 2026-08-10). Entra na wave a seguir ao AOS-264.**
 
 ---
 
@@ -937,10 +937,10 @@ Eliminar o fusível: ou o pool ganha uma janela real, ou o tecto é declarado co
 - [ ] **Opção A (janela real):** relógio injectável (padrão `WithClock` já existente no GW) que zera os contadores ao cruzar o minuto; teste prova recuperação após a janela.
 - [ ] **Opção B (tecto externo):** `LimitRPM/LimitTPM: 0` (o contrato diz `<=0 = ilimitado`) + linha na tabela AOS-203 a declarar que o rate-limit vive no LiteLLM externo.
 - [ ] Qualquer das opções: saturação expõe sinal observável (span/métrica) — nunca brownout silencioso; teste de nó com >120 chamadas não morre.
-- [ ] A decisão A/B fica registada (D11).
+- [x] A decisão A/B fica registada (D11). **DECIDIDO 2026-08-10 (dono): Opção B — tecto externo no LiteLLM.** O rate-limit de RPM/TPM pertence ao gateway externo, não ao nó; o keypool perde o fusível de vida-inteira (`LimitRPM/LimitTPM: 0` = ilimitado no contrato) e a tabela AOS-203 declara que o limite vive no LiteLLM.
 
 ### Estado
-**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
+**DESBLOQUEADO (D11 decidido 2026-08-10: Opção B, tecto no LiteLLM) — pronto para wave.** Declarado na W0 e não entrou (zero linhas na branch `feature/epic20-w0-risco-activo`); agora sem bloqueio de decisão. Ver «Modelo de execução».
 
 ---
 
