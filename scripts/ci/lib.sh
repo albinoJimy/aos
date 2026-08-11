@@ -367,7 +367,12 @@ gate_skip_file() {
 # Pinadas para builds reprodutíveis (ADR-008: supply-chain mínima e determinista).
 STATICCHECK_PIN="honnef.co/go/tools/cmd/staticcheck@v0.7.0"
 GOVULNCHECK_PIN="golang.org/x/vuln/cmd/govulncheck@v1.6.0"
-GOSEC_PIN="github.com/securego/gosec/v2/cmd/gosec@v2.21.4"
+# gosec: v2.21.4 arrastava golang.org/x/tools@v0.25.0, que NÃO COMPILA com Go 1.25
+# ("invalid array length -delta * delta" em internal/tokeninternal). Não é achado de
+# segurança — é a ferramenta que deixou de construir quando o runner subiu de toolchain.
+# v2.28.0 é a primeira linha que constrói na 1.25. Ao subir a toolchain, as ferramentas
+# pinadas têm de subir com ela: um pin antigo não é reprodutibilidade, é um gate que não corre.
+GOSEC_PIN="github.com/securego/gosec/v2/cmd/gosec@v2.28.0"
 
 # --- Gate de cobertura --------------------------------------------------------
 # Cobertura mínima de linhas do kernel (Reference Monitor). AOS-010 AC.

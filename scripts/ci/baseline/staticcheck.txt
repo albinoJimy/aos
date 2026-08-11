@@ -1,4 +1,33 @@
+# Baseline do staticcheck — descobertas PRE-EXISTENTES declaradas. O gate e fail-closed
+# para tudo o que nao esteja aqui.
+#
+# FONTE DE VERDADE: a versao do staticcheck do RUNNER DA CI, nao a local. Sao diferentes e
+# a CI ve MAIS: em 2026-08-11 o meu staticcheck local (2026.1/v0.7.0) nao reportava os dois
+# U1000 de breaker_wiring.go nem o S1016 de eventsink.go, que a CI reporta. Uma baseline
+# escrita so com observacao local fica incompleta e o gate falha no CI — foi o que
+# aconteceu. Esta lista foi sincronizada com o output REAL da CI (run 31485572865).
+
+# --- cmd/aos (EPIC-20) ---
+# observeAction/forget: superficie do registo de disjuntores por-run mantida para o
+# chamador do sinal de no-progress (AOS-251). Ficam sem chamador enquanto a alimentacao do
+# detector vier do observador do loop; remover a superficie agora obrigaria a recria-la.
+packages/cmd/aos/breaker_wiring.go: func (*runBreakers).forget is unused (U1000)
+packages/cmd/aos/breaker_wiring.go: func (*runBreakers).observeAction is unused (U1000)
+
+# --- reference-monitor ---
 packages/kernel/reference-monitor/eventsink.go: should convert h (type DelegationHop) to delegationHopDTO instead of using struct literal (S1016)
+
+# --- orchestrator (ficheiros de teste, outro ticket) ---
+packages/control-plane/orchestrator/planner/planner_test.go: this value of p is never used (SA4006)
+packages/control-plane/orchestrator/planneraut/governor_test.go: func (*stubOverride).set is unused (U1000)
+
+# --- agent-runtime/replay ---
+# ST1008 exige MUDAR A ASSINATURA de funcoes de producao do subsistema de replay — e
+# alteracao de contrato, nao formatacao, e nao se faz de passagem. Fica com eixo.
+packages/kernel/agent-runtime/replay/nondeterminism_capture.go: error should be returned as the last argument (ST1008)
+packages/kernel/agent-runtime/replay/replay_source.go: error should be returned as the last argument (ST1008)
+
+# --- restantes pre-existentes ---
 packages/platform/identity/delegation/chain_test.go: identical expressions on the left and right side of the '!=' operator (SA4000)
 packages/substrate/bus/bus.go: func withClock is unused (U1000)
 packages/substrate/eventstore/store.go: func withClock is unused (U1000)
