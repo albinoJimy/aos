@@ -23,7 +23,7 @@ func newSinkHarness(t *testing.T, runID string, abrirGate bool) (*nodeEscalation
 	}
 	t.Cleanup(func() { _ = es.Close() })
 
-	gates := newRunStateGates(es, nil)
+	gates := newRunStateGates(es, nil, 0)
 	if abrirGate {
 		if err := gates.Open(context.Background(), runID, state.Uint64Token(1)); err != nil {
 			t.Fatalf("Open: %v", err)

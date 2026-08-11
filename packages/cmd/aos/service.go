@@ -129,6 +129,7 @@ type NodeService struct {
 	assigner *worker.Assigner
 	leases   *durable.LeaseManager
 	logw     io.Writer
+	logMu    sync.Mutex // serializa as escritas em logw (ver [NodeService.log])
 
 	hbInterval   time.Duration // período de renovação (heartbeat) da posse; <= 0 desliga
 	completedCap int           // teto de desfechos retidos (FIFO); <= 0 = ilimitado
@@ -137,6 +138,32 @@ type NodeService struct {
 	sweepInterval time.Duration // período do varrimento; <= 0 desliga
 	approvalTTL   time.Duration // janela de validade de uma aprovação pendente
 	sweepStop     chan struct{} // fechado no Shutdown para parar o varrimento
+
+	// AOS-252 — varrimento de deadlines duráveis (CheckDeadlines). Partilha o sweepStop:
+	// o Shutdown pára os dois varrimentos com UM close.
+	deadlineSweepInterval time.Duration // período do varrimento; <= 0 desliga
+
+	// AOS-249 — manutenção do token da custódia da KEK (Vault). Partilha o MESMO sweepStop:
+	// o Shutdown pára os três laços com UM close.
+	vaultTokenRenewInterval time.Duration // período da manutenção; <= 0 desliga
+
+	// AOS-267 — scheduler interno de RETENÇÃO (expiração por TTL sem cron externo). Partilha o
+	// MESMO sweepStop: o Shutdown pára os quatro laços com UM close.
+	retentionSweepInterval time.Duration // cadência do varrimento; <= 0 desliga
+
+	// AOS-274 — AVALIADOR DE SLOs/ALERTAS. Partilha o MESMO sweepStop: o Shutdown pára os cinco
+	// laços com UM close. nil ⇒ desligado (AOS_SLO_EVAL_INTERVAL=0 ou nó não composto). É o ÚNICO
+	// laço deste loop declaradamente FAIL-OPEN — ver slo_evaluator.go.
+	slo *sloEvaluator
+
+	// expireInFlight serializa as passagens do [audit.ExpirationJob] — as conduzidas por
+	// POST /dsar/expire (AOS-213) E as do scheduler interno (AOS-267). O Run do job é pensado
+	// para uma execução de cada vez (o check-then-Add da idempotency key não é atómico ao nível
+	// do registo), pelo que duas passagens concorrentes poderiam selar DOIS eventos
+	// retention.expired para o mesmo facto. O guard vive AQUI, e não no [apiHandler], porque
+	// tem de ser UM SÓ: um guard por-via seriam dois guards sem exclusão entre eles, e a rota
+	// voltaria a poder sobrepor-se ao tick. CAS não-bloqueante — quem perde não espera.
+	expireInFlight atomic.Bool
 
 	mu             sync.Mutex
 	runs           map[string]*runState // em curso (por RunID)
@@ -173,6 +200,20 @@ type nodeServiceConfig struct {
 	sweepInterval    time.Duration
 	sweepIntervalSet bool
 	approvalTTL      time.Duration
+	// AOS-252 — idem para o varrimento de deadlines (CheckDeadlines).
+	deadlineSweepInterval    time.Duration
+	deadlineSweepIntervalSet bool
+	// AOS-249 — idem para a manutenção do token da custódia da KEK (Vault).
+	vaultTokenRenewInterval    time.Duration
+	vaultTokenRenewIntervalSet bool
+	// AOS-267 — idem para o scheduler interno de retenção (expiração por TTL).
+	retentionSweepInterval    time.Duration
+	retentionSweepIntervalSet bool
+	// AOS-274 — idem para o avaliador de SLOs/alertas; sloWindow é a janela de dados agregada
+	// (0 ⇒ [DefaultSLOWindow]).
+	sloEvalInterval    time.Duration
+	sloEvalIntervalSet bool
+	sloWindow          time.Duration
 }
 
 // WithLeaseTTL define o TTL do lease de posse de run (default [DefaultLeaseTTL]).
@@ -264,6 +305,30 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	if approvalTTL <= 0 {
 		approvalTTL = integration.DefaultApprovalTTL
 	}
+	// AOS-252 — varrimento de deadlines. Explícito (incl. 0 = DESLIGADO) ou o default.
+	deadlineSweepInterval := DefaultDeadlineSweepInterval
+	if cfg.deadlineSweepIntervalSet {
+		deadlineSweepInterval = cfg.deadlineSweepInterval
+	}
+	// AOS-249 — manutenção do token da custódia. Explícita (incl. 0 = DESLIGADA) ou o default.
+	vaultTokenRenewInterval := DefaultVaultTokenRenewInterval
+	if cfg.vaultTokenRenewIntervalSet {
+		vaultTokenRenewInterval = cfg.vaultTokenRenewInterval
+	}
+	// AOS-267 — scheduler de retenção. Explícito (incl. 0 = DESLIGADO em processo) ou o default.
+	retentionSweepInterval := DefaultRetentionSweepInterval
+	if cfg.retentionSweepIntervalSet {
+		retentionSweepInterval = cfg.retentionSweepInterval
+	}
+	// AOS-274 — avaliador de SLOs/alertas. Explícito (incl. 0 = DESLIGADO) ou o default.
+	sloEvalInterval := DefaultSLOEvalInterval
+	if cfg.sloEvalIntervalSet {
+		sloEvalInterval = cfg.sloEvalInterval
+	}
+	sloWindow := cfg.sloWindow
+	if sloWindow <= 0 {
+		sloWindow = DefaultSLOWindow
+	}
 
 	var leaseOpts []durable.LeaseOption
 	if cfg.leaseClock != nil {
@@ -294,6 +359,10 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		sweepInterval: sweepInterval,
 		approvalTTL:   approvalTTL,
 		sweepStop:     make(chan struct{}),
+
+		deadlineSweepInterval:   deadlineSweepInterval,
+		vaultTokenRenewInterval: vaultTokenRenewInterval,
+		retentionSweepInterval:  retentionSweepInterval,
 	}
 	s.log("loop de servico do no `aos` pronto (AOS-164a): TTL de lease=%s, heartbeat=%s, worker=%q, retencao=%d",
 		cfg.ttl, hbInterval, cfg.workerID, completedCap)
@@ -304,6 +373,36 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		s.log("varrimento de aprovacoes (AOS-021): LIGADO — periodo=%s, TTL de aprovacao=%s; um pendente sem decisao expira e o run fica RETOMAVEL",
 			sweepInterval, approvalTTL)
 	}
+	// AOS-252 — varrimento de DEADLINES duráveis (CheckDeadlines) no loop de serviço. Só
+	// arranca quando há máquinas de estado compostas e o período é > 0.
+	if deadlineSweepInterval > 0 && node.stateGates != nil {
+		go s.sweepDeadlines(s.sweepStop)
+		s.log("varrimento de deadlines (AOS-252): LIGADO — periodo=%s; um run preso a meio de um turno materializa running->timed_out E e INTERROMPIDO (contexto do run cancelado)", deadlineSweepInterval)
+	}
+	// AOS-249 — MANUTENÇÃO DO TOKEN da custódia da KEK (Vault) no loop de serviço. Só arranca
+	// quando a custódia composta TEM token para manter (o vault in-memory de referência não
+	// implementa a porta) e o período é > 0.
+	if _, temToken := node.DSARVault.(vaultTokenRefresher); vaultTokenRenewInterval > 0 && temToken {
+		go s.renewVaultToken(s.sweepStop)
+		s.log("manutencao do token da custodia da KEK (AOS-249): LIGADA — periodo=%s; o token e re-lido do ficheiro montado e renovado antes de expirar, e o /readyz fica VERMELHO ANTES da expiracao se a manutencao falhar (nunca morte silenciosa da custodia)", vaultTokenRenewInterval)
+	}
+	// AOS-267 — SCHEDULER INTERNO DE RETENÇÃO no loop de serviço. Só arranca com a conjunção de
+	// [retentionSchedulerArmed] satisfeita (política armada + legal hold + WORM + job compostos);
+	// o banner DECLARA sempre a postura, ligada ou dormente, e a RAZÃO de estar dormente — sem
+	// isso o operador que definiu a política não distingue "corre" de "não corre".
+	if retentionSchedulerArmed(node, retentionSweepInterval) {
+		go s.sweepRetention(s.sweepStop)
+	}
+	s.log("%s", retentionSchedulerBanner(node, retentionSweepInterval))
+	// AOS-274 — AVALIADOR DE SLOs/ALERTAS no loop de serviço. O avaliador é COMPOSTO sempre que a
+	// cadência é > 0 (não exige a torneira de spans: as fontes de maior severidade — prontidão do
+	// plano de controlo e integridade do WORM — não dependem dela), e o banner declara quais SLIs
+	// têm produtor neste deployment e quais ficam SEM AMOSTRAS. É o único laço FAIL-OPEN daqui.
+	if sloEvaluatorArmed(node, sloEvalInterval) {
+		s.slo = newSLOEvaluator(node, sloEvalInterval, sloWindow)
+		go s.evaluateSLOs(s.sweepStop)
+	}
+	s.log("%s", sloEvaluatorBanner(node, sloEvalInterval, sloWindow))
 	return s, nil
 }
 
@@ -521,11 +620,12 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 
 	// AOS-218: ABRE a máquina de estados durável do run (AOS-017) e regista o
 	// [control.StateGate] que o canal de steer usa para materializar running↔paused. É
-	// reconstruída do log (retoma após crash) e reclamada (ready→running) LAZILY — só no
-	// primeiro pause de facto pedido — com o fencing token do lease JÁ detido (rs.lease foi
-	// escrito em Submit sob o mutex, happens-before deste `go hostRun`). Um run sem steer
-	// nunca toca o gate ⇒ nenhuma transição ⇒ stream/replay byte-idênticos. O gate é
-	// LIBERTADO no fim (defer), simétrico ao registo de em-curso.
+	// reconstruída do log (retoma após crash) e reclamada (ready→running) com o fencing
+	// token do lease JÁ detido (rs.lease foi escrito em Submit sob o mutex, happens-before
+	// deste `go hostRun`). O gate é LIBERTADO no fim (defer), simétrico ao registo de
+	// em-curso — e com ele o estado em memória do disjuntor do run (AOS-251).
+	var res agentruntime.Result
+	var err error
 	if s.node.stateGates != nil {
 		if err := s.node.stateGates.Open(ctx, rs.runID, rs.lease.Token); err != nil {
 			s.mu.Lock()
@@ -534,12 +634,42 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			return
 		}
 		defer s.node.stateGates.Close(rs.runID)
-		// RETOMA (AOS-021): a suspensão é DURÁVEL, pelo que a reconstrução acima devolve
-		// `waiting_on_human` num run que está a ser retomado. Hospedá-lo é, por definição,
-		// voltar a corrê-lo — repõe-se `running`. Sem isto, uma segunda escalada (o caso
-		// normal: o agente pede outra acção de risco no turno seguinte) tentaria
-		// waiting_on_human→waiting_on_human e o run morreria como FALHADO.
+		defer s.node.breakers.forget(rs.runID) // nil-safe: sem disjuntor composto é no-op
+		// AOS-262: e com ele a superfície de burn-down do run — o latch do aviso e o cursor
+		// do ledger. nil-safe: sem burn-down composto é no-op.
+		defer s.node.progress.forget(rs.runID)
+		// SELO DO ESTADO TERMINAL (AOS-252). Registado DEPOIS dos defers de libertação para
+		// correr ANTES deles (LIFO: o gate ainda está aberto) e ANTES do recover de
+		// isolamento — que fica a jusante na pilha de defers e trata o panic em definitivo.
+		// Aqui o panic é apenas DETECTADO (recover) para escolher a razão do selo e
+		// IMEDIATAMENTE re-lançado. Corre em todos os caminhos de saída: sucesso, erro,
+		// MaxTurns, trip do breaker (no-op — já materializado) e panic.
+		defer func() {
+			r := recover()
+			s.sealTerminalState(rs, res, err, r != nil)
+			if r != nil {
+				panic(r)
+			}
+		}()
 		if gate := s.node.stateGates.resolveGate(rs.runID); gate != nil {
+			// CLAIM NO ARRANQUE (AOS-251): a aresta ready→running é reclamada QUANDO o run
+			// começa a executar, não no primeiro pause/escalada. Sem isto um run comum
+			// ficava em `ready` do princípio ao fim e o disjuntor do agente vivo — no-op
+			// fora de `running` — nunca disparava, inclusive no deny-loop. Numa retoma o
+			// claim é no-op (a máquina não está em ready) e a reposição de
+			// waiting_on_human a seguir é que conduz. Fail-closed: sem o claim durável o
+			// run NÃO arranca — arrancar seria correr com o disjuntor cego.
+			if err := gate.claimRunning(ctx); err != nil {
+				s.mu.Lock()
+				rs.err = fmt.Errorf("aos: claim ready->running do run %q no arranque (AOS-251): %w", rs.runID, err)
+				s.mu.Unlock()
+				return
+			}
+			// RETOMA (AOS-021): a suspensão é DURÁVEL, pelo que a reconstrução acima devolve
+			// `waiting_on_human` num run que está a ser retomado. Hospedá-lo é, por definição,
+			// voltar a corrê-lo — repõe-se `running`. Sem isto, uma segunda escalada (o caso
+			// normal: o agente pede outra acção de risco no turno seguinte) tentaria
+			// waiting_on_human→waiting_on_human e o run morreria como FALHADO.
 			if err := gate.resumeIfWaiting(ctx); err != nil {
 				s.mu.Lock()
 				rs.err = fmt.Errorf("aos: repor o run %q em execucao na retoma (AOS-021): %w", rs.runID, err)
@@ -549,7 +679,7 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		}
 	}
 
-	res, _, err := s.node.Runtime.Run(ctx, goal, nil)
+	res, _, err = s.node.Runtime.Run(ctx, goal, nil)
 
 	// SUSPENSÃO À ESPERA DE HUMANO (AOS-021): o run NÃO terminou — uma tool call foi
 	// escalada e nenhum efeito ocorreu. Persiste-se o registo de RETOMA (o Goal SEM a
@@ -731,8 +861,8 @@ func (s *NodeService) Shutdown(ctx context.Context) error {
 	s.draining.Store(true) // espelha o drain (armado SOB mu, no mesmo ponto que closed) para leitura lock-free da sonda
 	inflight := len(s.runs)
 	s.mu.Unlock()
-	// Para o varrimento de aprovações (AOS-021) — idempotente: o Shutdown já retornou
-	// cedo se `closed` estava armado, pelo que este close acontece uma só vez.
+	// Para os laços periódicos (AOS-021/252/249/267/274) com UM close — idempotente: o Shutdown já
+	// retornou cedo se `closed` estava armado, pelo que este close acontece uma só vez.
 	close(s.sweepStop)
 	s.log("shutdown gracioso iniciado — %d run(s) em curso a drenar (nao aceita novos)", inflight)
 
@@ -890,6 +1020,18 @@ func (s *NodeService) suspendedDurably(ctx context.Context, runID string) (bool,
 	return st == state.WaitingOnHuman, nil
 }
 
+// DurableState devolve o estado durável do run reconstruído do log (AOS-252). É uma
+// LEITURA — nada transita. Um run sem transições (ou sem stream) é [state.Ready]. É o que
+// permite ao GET /runs/{id} reflectir o desfecho de um run que esta réplica já não conhece
+// em memória (restart, poda FIFO): o mapa `completed` é um cache, a máquina de estados é a
+// verdade.
+func (s *NodeService) DurableState(ctx context.Context, runID string) (state.State, error) {
+	if s.node == nil || s.node.stateGates == nil {
+		return "", nil
+	}
+	return s.node.stateGates.currentState(ctx, runID)
+}
+
 // Wait bloqueia até o run runID terminar (sair do registo de em-curso) e devolve o seu
 // desfecho, ou (_, false, ctx.Err()) se o ctx expirar antes. Um run desconhecido (nunca
 // submetido ou já colhido) devolve imediatamente o que houver em `completed`. Útil para
@@ -912,8 +1054,20 @@ func (s *NodeService) Wait(ctx context.Context, runID string) (RunOutcome, bool,
 }
 
 // log escreve uma linha no destino de logs do serviço (se configurado).
+//
+// SERIALIZADO: [io.Writer] não promete nada sobre uso concorrente, e este método é chamado
+// de várias goroutines ao mesmo tempo — a de cada run hospedado (panic recuperado, selo do
+// desfecho), a do heartbeat de posse, as dos CINCO laços periódicos (aprovações, deadlines,
+// manutenção do token da custódia, retenção e avaliação de SLOs) e a de quem invoca o Shutdown. Sem o lock, dois Fprintf concorrentes sobre o
+// mesmo destino são uma corrida de dados a sério: o detector apanha-a num destino de teste
+// e num ficheiro dá linhas entrelaçadas — precisamente no log que serve para explicar o que
+// correu mal. O mutex é DEDICADO e nunca é adquirido com `s.mu` detido, pelo que não pode
+// participar numa inversão de ordem com o lock que serializa a admissão de runs.
 func (s *NodeService) log(format string, args ...any) {
-	if s.logw != nil {
-		fmt.Fprintf(s.logw, "[aos-service] "+format+"\n", args...)
+	if s.logw == nil {
+		return
 	}
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	fmt.Fprintf(s.logw, "[aos-service] "+format+"\n", args...)
 }

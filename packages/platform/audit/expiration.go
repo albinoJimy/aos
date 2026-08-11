@@ -365,5 +365,16 @@ func (j *ExpirationJob) held(rec ExpirableRecord) bool {
 // calcular), pelo que uma redução de TTL que o torne expirável continua a
 // expirá-lo — a key ID+classe nunca chegou a ser marcada.
 func idempotencyKey(id string, class DataClass) string {
+	return IdempotencyKeyFor(id, class)
+}
+
+// IdempotencyKeyFor é a forma EXPORTADA de [idempotencyKey]. Existe para que um
+// composition-root possa RE-HIDRATAR o [IdempotencyStore] a partir dos eventos
+// `retention.expired` já selados na hash-chain WORM — que carregam `record_id` e
+// `class` ([BuildRetentionExpiredRecord]) — em vez de recalcular à mão um formato
+// privado deste pacote. Sem ela, um job com seen-set in-memory volta a re-selar,
+// no primeiro varrimento após CADA restart, um segundo `retention.expired` para
+// cada facto já selado, poluindo a cadeia gapless que a idempotência protege.
+func IdempotencyKeyFor(id string, class DataClass) string {
 	return id + "|" + string(class)
 }

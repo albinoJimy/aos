@@ -228,6 +228,32 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// (5c) A AFIRMAÇÃO DE IRRECUPERABILIDADE tem de ser VERDADEIRA (remediação da W6, AOS-249
+	// CA3). O que fecha abaixo não é um desfecho qualquer: é o nó a dizer ao titular que a sua
+	// KEK morreu e o conteúdo é irrecuperável. Desde AOS-249 a custódia VERIFICA a destruição
+	// ([vaultKeyVault.Delete] relê a chave Transit e exige 404) e, não a confirmando, regista a
+	// pendência — mas essa pendência só era lida pela sonda de PRONTIDÃO. Quem via o vermelho era
+	// o orquestrador; o requerente recebia na mesma "erased". Uma afirmação falsa de apagamento é
+	// pior do que não apagar, porque é credível — e a decisão do titular (não voltar a pedir, não
+	// escalar) toma-se sobre ela.
+	//
+	// Fail-closed: sem confirmação da custódia NÃO se afirma o apagamento. 500 uniforme, na
+	// disciplina do resto do handler (o corpo não revela detalhe). O que ficou feito continua
+	// selado no WORM pelo fluxo, e a sonda de prontidão fica vermelha até uma destruição
+	// confirmada da mesma chave — o operador tem o eixo, o titular não tem uma promessa falsa.
+	if c, ok := h.node.DSARVault.(shredConfirmer); ok && req.SubjectID != "" {
+		if serr := c.shredConfirmed(req.SubjectID); serr != nil {
+			// LOG para o OPERADOR (remediação da W6, achado médio #3). O 500 acima vai ao
+			// REQUERENTE; sem esta linha, quem opera via o nó ir a UNREADY após um erase
+			// manual sem causa em lado nenhum até ao varrimento de retenção seguinte (que
+			// só corre de hora a hora). O erro nomeia o EIXO, nunca o titular (o subject_id
+			// é pseudónimo opaco, mas nem esse aparece — só a mensagem tipada da custódia).
+			h.svc.log("DSAR/crypto-shred (AOS-172, Art. 17): apagamento manual de um titular NAO CONFIRMADO pela custodia da KEK — o /readyz fica VERMELHO ate uma destruicao confirmada e o conteudo pode continuar recuperavel. Causas tipicas: politica Transit sem deletion_allowed, replicacao, ou token sem autoridade para destruir. Metrica: aos_dsar_vault_shred_unconfirmed: %v", serr)
+			writeError(w, http.StatusInternalServerError, "apagamento NAO confirmado pela custodia da KEK")
+			return
+		}
+	}
+
 	writeJSON(w, http.StatusOK, dsarResponse{
 		RequestID: res.RequestID, SubjectID: res.SubjectID, Status: "erased",
 		Blocked: false, StoresShredded: res.StoresShredded,

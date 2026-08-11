@@ -56,6 +56,17 @@ var (
 	// referência (hash/URI) e marcar Result.Reference.
 	ErrClearResultInSensitiveMode = errors.New("durable: modo sensível recusa Payload de resultado em claro (marque Result.Reference com uma referência)")
 
+	// ErrNoTitular — GUARDA FAIL-CLOSED DO TITULAR (AOS-245). Com a cifra por-titular
+	// composta ([WithContentSealer]) E o modo estrito ligado ([WithRequireTitular], a
+	// postura de PRODUÇÃO), [StepLedger.Apply] foi chamado SEM titular resolvível — nem
+	// no contexto ([ContextWithTitular], o titular POR-RUN) nem no produtor
+	// ([WithProducer], o fallback de composição). Sem titular a selagem não corre e o
+	// Result.Payload iria em CLARO para o WAL, fora do alcance do crypto-shredding
+	// por-titular (AOS-093, GDPR Art. 17). É recusado ANTES de qualquer efeito — nunca
+	// se degrada em silêncio para texto-claro. Simétrico do fail-closed do submit
+	// soberano (AOS-217): quem cifra por titular não executa sem titular.
+	ErrNoTitular = errors.New("durable: cifra por-titular composta em modo estrito mas sem titular resolvivel (ContextWithTitular/WithProducer) — Apply recusado antes de qualquer efeito para nao persistir o resultado em claro no WAL (AOS-093/AOS-245)")
+
 	// ErrSealedResultNoCipher — um registo do ledger lido do Event Store está marcado
 	// como cifrado por-titular (Sealed, AOS-093) mas o ledger não tem um [ContentCipher]
 	// ligado para o decifrar. Sinaliza um wiring inconsistente (o store foi escrito com

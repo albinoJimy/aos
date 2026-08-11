@@ -230,8 +230,11 @@ func (h *apiHandler) sealLegalHold(ctx context.Context, reader readerIdentity, r
 // check-then-act ao nível do registo. Duas passagens concorrentes poderiam, para o MESMO registo,
 // ver ambas Seen==false e selar DOIS eventos retention.expired para o mesmo facto (a hash-chain
 // mantém-se válida e o crypto-shred é idempotente, mas a cadeia de auditoria ficaria poluída). O
-// guard [apiHandler.expireInFlight] admite UMA passagem activa; uma segunda invocação concorrente
+// guard [NodeService.expireInFlight] admite UMA passagem activa; uma segunda invocação concorrente
 // recebe 409 (no-op). O admitControl (token-bucket) limita a taxa mas NÃO serializa.
+//
+// O guard vive no SERVIÇO (AOS-267) e não no handler: desde que o scheduler interno conduz a mesma
+// passagem, a exclusão tem de ser entre a ROTA e o TICK, não apenas entre invocações da rota.
 func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 	if !h.admitControl(w) {
 		return
@@ -250,11 +253,11 @@ func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 	}
 	// Só UMA passagem de cada vez (ver nota de SERIALIZAÇÃO acima). CAS não-bloqueante: se já
 	// houver uma passagem activa, recusa 409 em vez de correr uma segunda concorrente.
-	if !h.expireInFlight.CompareAndSwap(false, true) {
+	if !h.svc.expireInFlight.CompareAndSwap(false, true) {
 		writeError(w, http.StatusConflict, "expiracao ja em curso")
 		return
 	}
-	defer h.expireInFlight.Store(false)
+	defer h.svc.expireInFlight.Store(false)
 	report, err := h.node.ExpirationJob.Run(r.Context())
 	if err != nil {
 		// Um passo falhou (ex.: selagem do retention.expired): 500 sem detalhe no corpo. Os

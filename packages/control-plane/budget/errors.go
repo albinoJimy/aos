@@ -27,6 +27,11 @@ var (
 	// ErrNodeExists — já existe um nó com o id indicado.
 	ErrNodeExists = &Error{Code: "E_NODE_EXISTS", Msg: "no de orcamento ja registado"}
 
+	// ErrRootRemoval — tentativa de remover a RAIZ da árvore com [Budget.RemoveNode].
+	// A raiz é o tecto de todos os nós: removê-la tornaria o topo inalcançável por id
+	// (nenhum AddNode voltaria a poder pendurar nada nele) sem deixar de o debitar.
+	ErrRootRemoval = &Error{Code: "E_ROOT_REMOVAL", Msg: "a raiz da arvore de orcamento nao se remove"}
+
 	// ErrInvalidAmount — quantia de reserva inválida (dimensão negativa ou zero).
 	ErrInvalidAmount = &Error{Code: "E_INVALID_AMOUNT", Msg: "quantia invalida (negativa ou zero)"}
 

@@ -45,7 +45,7 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 	for _, model := range []string{"gpt-4o", "gpt-4o-mini"} {
 		gotModel = ""
 		// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu embebida.
-		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil)
+		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("newGatewayModelClient(%q): %v", model, err)
 		}
@@ -68,18 +68,58 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestModelGateway_NoThroughputFuse prova que a ligação do nó ao Model Gateway NÃO tem o fusível
+// de disponibilidade F1. O keypool é um SELECTOR de chave por throughput, não um rate-limiter: não
+// tem janela temporal e o rpm só SOBE a cada Select. Declarar um LimitRPM finito na conta ÚNICA que
+// o nó compõe transformava-o num FUSÍVEL permanente — à (limite+1).ª chamada da vida do processo,
+// g.credential() falharia fail-closed (ErrNoCapacity) para SEMPRE até reiniciar. A ligação
+// wired-in usa LimitRPM/LimitTPM = 0 (ilimitado): o tecto de throughput é do gateway EXTERNO
+// (LiteLLM). Este teste faz MUITO mais do que o antigo fusível (120) chamadas pelo caminho
+// nó→GW→provider e exige que TODAS passem; reintroduzir um limite sem janela avermelha-o na
+// chamada (limite+1).
+func TestModelGateway_NoThroughputFuse(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu. É o MESMO caminho de
+	// composição que o nó usa em produção — a conta de infra (LimitRPM/TPM=0) vem de dentro de
+	// newGatewayModelClient, não do teste, pelo que um regresso do fusível é apanhado aqui.
+	mc, err := newGatewayModelClient(srv.URL, "gpt-4o-mini", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("newGatewayModelClient: %v", err)
+	}
+
+	// oldFuseRPM era o limite hardcoded que criava o brownout permanente (F1); passamos bem além
+	// dele. Se o fusível voltar, a chamada oldFuseRPM+1 falha.
+	const oldFuseRPM = 120
+	const total = oldFuseRPM + 10
+	for i := 1; i <= total; i++ {
+		if _, err := mc.Call(context.Background(), agentruntime.PromptView{Turn: i, Materialized: []byte("olá")}); err != nil {
+			t.Fatalf("chamada #%d falhou (%v) — o fusível de throughput F1 voltou: o keypool não tem janela, logo um LimitRPM finito na conta única brownout-a o nó para sempre. Mantenha LimitRPM/LimitTPM=0 (o tecto vive no gateway externo).", i, err)
+		}
+	}
+	if calls != total {
+		t.Fatalf("o upstream devia ter recebido %d chamadas (nenhuma cortada por saturação), recebeu %d", total, calls)
+	}
+}
+
 // TestParseModelFromEnv_Unset garante que sem AOS_MODEL_ENDPOINT o modelo fica nil (referenceModel,
 // inalterado) e que um endpoint sem AOS_MODEL_NAME aborta fail-closed.
 func TestParseModelFromEnv_Unset(t *testing.T) {
 	t.Setenv("AOS_MODEL_ENDPOINT", "")
 	t.Setenv("AOS_MODEL_NAME", "")
-	mc, err := parseModelFromEnv()
+	mc, err := parseModelFromEnv(false)
 	if err != nil || mc != nil {
 		t.Fatalf("unset devia dar (nil,nil), veio (%v,%v)", mc, err)
 	}
 	t.Setenv("AOS_MODEL_ENDPOINT", "http://x/v1")
 	t.Setenv("AOS_MODEL_NAME", "")
-	if _, err := parseModelFromEnv(); err == nil {
+	if _, err := parseModelFromEnv(false); err == nil {
 		t.Fatalf("endpoint sem AOS_MODEL_NAME devia abortar (ErrBadModelConfig)")
 	}
 }
@@ -111,7 +151,7 @@ func TestExternalAllowlist_AllowsNonEmbeddedModel(t *testing.T) {
 		t.Fatalf("loadModelAllowlistFromEnv: pol=%v err=%v", pol, err)
 	}
 	// kimi-for-coding/board-kimi NÃO estão na allowlist embebida — só passam pela externa.
-	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil)
+	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}

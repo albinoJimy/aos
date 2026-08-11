@@ -3,6 +3,8 @@ module github.com/aos-ref/integration
 go 1.24
 
 require (
+	github.com/aos-ref/control-plane/budget v0.0.0
+	github.com/aos-ref/control-plane/governance/autonomy v0.0.0
 	github.com/aos-ref/control-plane/governance/hitl v0.0.0-00010101000000-000000000000
 	github.com/aos-ref/control-plane/pdp v0.0.0
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
@@ -19,7 +21,6 @@ require (
 )
 
 require (
-	github.com/aos-ref/control-plane/governance/autonomy v0.0.0 // indirect
 	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0 // indirect
 	github.com/aos-ref/platform/messaging v0.0.0 // indirect
 	github.com/cedar-policy/cedar-go v1.8.0 // indirect

@@ -5,10 +5,13 @@
 // [audit.ExpirationJob] (AOS-092) para ele agir sobre o substrato REAL do nó:
 //
 //   - [eventStoreRecordSource] — a fonte de leitura ([audit.RecordSource]) que expõe os registos
-//     CLASSIFICADOS do Event Store: cada evento "replay.captured" cifrado por-titular (AOS-093) é
-//     um [audit.ExpirableRecord] de classe pii_operational, com o TITULAR (sealed_subject), a
-//     PARTIÇÃO (o stream do run) e o carimbo de criação (o ts observacional do evento). NÃO lê o
-//     conteúdo (que é opaco/cifrado) — só os metadados que decidem e auditam a expiração.
+//     CLASSIFICADOS do Event Store: cada evento cifrado por-titular (AOS-093) é um
+//     [audit.ExpirableRecord] de classe pii_operational, com o TITULAR, a PARTIÇÃO (o stream do
+//     run) e o carimbo de criação (o ts observacional do evento). NÃO lê o conteúdo (que é
+//     opaco/cifrado) — só os metadados que decidem e auditam a expiração. Cobre as DUAS famílias
+//     que selam sob a KEK por-titular: "replay.captured" (captura de não-determinismo, campo
+//     sealed_subject) e "step.ledger.applied" (o Result.Payload memorizado pelo step-ledger,
+//     campo subject — selado desde AOS-245; antes ia em claro e nada havia a expirar).
 //   - [cryptoShredSink] — o sink de escrita ([audit.ExpirationSink]) que MATERIALIZA a expiração
 //     por CRYPTO-SHRED da KEK POR-TITULAR do MESMO vault que o /dsar/erase destrói (AOS-093):
 //     apagar a KEK torna o conteúdo do run IRRECUPERÁVEL sem mutar a hash-chain (que sela o HASH
@@ -35,6 +38,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 	audit "github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/substrate/eventstore"
@@ -55,10 +59,43 @@ type capturedSubjectWire struct {
 	SealedSubject string `json:"sealed_subject"`
 }
 
+// ledgerSubjectWire é a projecção MÍNIMA do payload de "step.ledger.applied" (AOS-245): o TITULAR
+// sob cuja KEK o Result.Payload — o OUTPUT da tool call — foi cifrado. Nunca desserializa o
+// resultado (opaco/cifrado). O campo é [durable.ledgerRecord].Subject.
+type ledgerSubjectWire struct {
+	Subject string `json:"subject"`
+}
+
+// subjectOf devolve o TITULAR de um evento CLASSIFICADO do Event Store, ou "" se o evento não for
+// conteúdo cifrado por-titular. Cobre as DUAS famílias que selam sob a KEK por-titular de AOS-093:
+// a captura de não-determinismo ("replay.captured": resposta do modelo + resultados de tools) e o
+// step-ledger ("step.ledger.applied": o Result.Payload memorizado de cada passo, selado desde
+// AOS-245). Enumerar só a primeira deixaria um titular cujo conteúdo vive apenas no ledger
+// invisível à expiração por TTL — não porque o crypto-shred lhe não chegasse (a KEK é a MESMA e o
+// /dsar/erase alcança ambos), mas porque o job nunca veria o registo que faz o relógio correr.
+func subjectOf(e eventstore.Event) string {
+	switch e.Type {
+	case replay.EventTypeCaptured:
+		var p capturedSubjectWire
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return "" // payload não-projectável ⇒ sem titular a expirar
+		}
+		return p.SealedSubject
+	case durable.EventTypeLedgerApplied:
+		var p ledgerSubjectWire
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return ""
+		}
+		return p.Subject
+	default:
+		return ""
+	}
+}
+
 // List implementa [audit.RecordSource]. Percorre os streams do Event Store e, para cada evento
-// "replay.captured" com um titular selado, produz um [audit.ExpirableRecord] de classe
-// pii_operational. Um evento sem titular selado (conteúdo não cifrado por-titular ⇒ sem KEK a
-// crypto-shred) é SALTADO; um carimbo de criação não-parseável é SALTADO fail-closed (sem idade
+// CLASSIFICADO com um titular selado (ver [subjectOf]), produz um [audit.ExpirableRecord] de
+// classe pii_operational. Um evento sem titular selado (conteúdo não cifrado por-titular ⇒ sem KEK
+// a crypto-shred) é SALTADO; um carimbo de criação não-parseável é SALTADO fail-closed (sem idade
 // fiável não se decide a expiração — nunca se expira por omissão). Um es nil devolve vazio.
 func (s eventStoreRecordSource) List(ctx context.Context) ([]audit.ExpirableRecord, error) {
 	if s.es == nil {
@@ -71,15 +108,9 @@ func (s eventStoreRecordSource) List(ctx context.Context) ([]audit.ExpirableReco
 			return nil, err
 		}
 		for _, e := range events {
-			if e.Type != replay.EventTypeCaptured {
-				continue
-			}
-			var p capturedSubjectWire
-			if err := json.Unmarshal(e.Payload, &p); err != nil {
-				continue // payload não-projectável ⇒ salta (não há titular a expirar)
-			}
-			if p.SealedSubject == "" {
-				continue // conteúdo não cifrado por-titular ⇒ sem KEK por-titular a crypto-shred
+			subject := subjectOf(e)
+			if subject == "" {
+				continue // não-classificado ou não cifrado por-titular ⇒ sem KEK a crypto-shred
 			}
 			created, perr := time.Parse(time.RFC3339Nano, e.Ts)
 			if perr != nil {
@@ -89,7 +120,7 @@ func (s eventStoreRecordSource) List(ctx context.Context) ([]audit.ExpirableReco
 				ID:        e.EventID,
 				Class:     audit.ClassPIIOperational,
 				CreatedAt: created,
-				SubjectID: p.SealedSubject,
+				SubjectID: subject,
 				Partition: stream,
 			})
 		}
@@ -110,14 +141,58 @@ type cryptoShredSink struct {
 	vault audit.KeyVault
 }
 
+// shredConfirmer é a porta OPCIONAL de VERIFICAÇÃO do crypto-shred. A porta [audit.KeyVault]
+// não deixa o `Delete` devolver erro — mas nada obriga a IGNORAR o que a custódia sabe. Uma
+// custódia que VERIFICA a destruição (AOS-249: o Vault Transit relê a chave e exige 404)
+// implementa isto e responde, por titular, se a destruição ficou por confirmar.
+//
+// Quem não a implementa (o [audit.InMemoryKeyVault] de referência, onde apagar do mapa É a
+// destruição) mantém o comportamento anterior — nenhuma custódia ganha um veredicto inventado.
+type shredConfirmer interface {
+	shredConfirmed(subjectID string) error
+}
+
+// shredPendingReporter é a porta OPCIONAL de CONTAGEM das destruições por confirmar (não por
+// titular: quantas, no total, continuam pendentes). Alimenta o selo de desfecho do varrimento e
+// a métrica de operação — nomear o eixo sem nomear titulares.
+type shredPendingReporter interface {
+	shredPending() int
+}
+
+// shredPendingOf devolve o número de destruições de KEK por confirmar, e se a custódia sabe
+// sequer responder à pergunta.
+func shredPendingOf(vault audit.KeyVault) (int, bool) {
+	if r, ok := vault.(shredPendingReporter); ok {
+		return r.shredPending(), true
+	}
+	return 0, false
+}
+
 // Expire implementa [audit.ExpirationSink]. Crypto-shred a KEK do titular (idempotente). Um
 // registo SEM titular (rec.SubjectID vazio) é no-op: não há chave por-titular a destruir — é o
 // residual nomeado (só o conteúdo cifrado por-titular é expirável por crypto-shred).
+//
+// FAIL-CLOSED DE AUDITORIA (remediação da W6). O sink devolvia `nil` SEMPRE — mesmo quando a
+// custódia acabara de registar que a destruição NÃO foi confirmada. Essa informação existe
+// desde AOS-249 ([vaultKeyVault.Delete] relê a chave Transit e exige 404) e era descartada por
+// um sink que tem canal de erro na assinatura e não o usava. Com uma política Transit sem
+// `deletion_allowed`, uma replicação ou um token sem autoridade, o desfecho era: `retention.expired`
+// selado, `report.Expired++`, key de idempotência marcada — e a KEK viva, com o conteúdo
+// decifrável. É a "afirmação FALSA de irrecuperabilidade — pior do que não apagar, porque é
+// credível" que [ErrVaultShredUnconfirmed] existe para impedir.
+//
+// O erro devolvido NÃO desfaz a selagem (a WORM é append-only e o facto foi selado ANTES da
+// destruição, por desenho): fá-lo AFLORAR. `POST /dsar/expire` passa a responder 500 em vez de
+// 200, o varrimento agendado regista o incidente com o eixo nomeado e sela a contagem de
+// pendentes, e a sonda de prontidão fica vermelha — a passagem deixa de ser silenciosa.
 func (s cryptoShredSink) Expire(_ context.Context, rec audit.ExpirableRecord) error {
 	if s.vault == nil || rec.SubjectID == "" {
 		return nil
 	}
 	s.vault.Delete(rec.SubjectID)
+	if c, ok := s.vault.(shredConfirmer); ok {
+		return c.shredConfirmed(rec.SubjectID)
+	}
 	return nil
 }
 

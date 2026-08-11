@@ -128,14 +128,35 @@ func NewRemoteDeviceAttestationVerifier(cfg RemoteAttestationConfig) (*RemoteDev
 }
 
 // checkRemoteAttestationURL exige https, ou http APENAS para loopback (o mesmo critério de
-// bind não-loopback do resto do nó: em claro só onde não há rede a atravessar).
+// bind não-loopback do resto do nó: em claro só onde não há rede a atravessar). O critério
+// vive em [CheckSecureTransportURL] — este invólucro só lhe cola a sentinela do adaptador.
 func checkRemoteAttestationURL(raw string) error {
+	if err := CheckSecureTransportURL(raw); err != nil {
+		return fmt.Errorf("%w: %v", ErrRemoteAttestationURL, err)
+	}
+	return nil
+}
+
+// CheckSecureTransportURL é o CRITÉRIO DE TRANSPORTE das URLs de saída do nó: exige https, ou
+// http APENAS para loopback (127.0.0.0/8, ::1, "localhost") — em claro só onde não há rede a
+// atravessar, o mesmo princípio do bind-guardrail do ingresso.
+//
+// Está EXPORTADO (e o critério deixou de viver dentro de [checkRemoteAttestationURL]) porque o
+// binário do nó tem mais do que um destino de saída que carrega uma credencial no pedido — a
+// attestation remota e a custódia da KEK no Vault (AOS-249/F6). Ter DOIS critérios escritos à
+// mão era exactamente o defeito: um deles acabaria mais fraco que o outro, e a divergência só
+// se notaria com o token já na rede em claro.
+//
+// Devolve nil, ou um erro DESCRITIVO e SEM sentinela — cada chamador envolve-o na SUA sentinela
+// nomeada, que é o que o operador vê no aborto do arranque. A mensagem nunca inclui credenciais
+// (a URL de entrada é material público; user-info numa URL não é suportado por nenhum chamador).
+func CheckSecureTransportURL(raw string) error {
 	if strings.TrimSpace(raw) == "" {
-		return fmt.Errorf("%w: vazia", ErrRemoteAttestationURL)
+		return errors.New("vazia")
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("%w: %q", ErrRemoteAttestationURL, raw)
+		return fmt.Errorf("%q", raw)
 	}
 	switch u.Scheme {
 	case "https":
@@ -148,9 +169,9 @@ func checkRemoteAttestationURL(raw string) error {
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 			return nil
 		}
-		return fmt.Errorf("%w: http em claro para %q (só loopback)", ErrRemoteAttestationURL, host)
+		return fmt.Errorf("http em claro para %q (só loopback)", host)
 	default:
-		return fmt.Errorf("%w: esquema %q", ErrRemoteAttestationURL, u.Scheme)
+		return fmt.Errorf("esquema %q", u.Scheme)
 	}
 }
 

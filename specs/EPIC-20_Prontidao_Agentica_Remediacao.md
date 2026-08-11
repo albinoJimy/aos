@@ -27,7 +27,7 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | Billing token-only | Wiring do hook, ciclo de vida por-run, envs, estimador | **D1/D2** (âmbito tool-only; eixo $) — recomendações registadas |
 | Turno de modelo no orçamento | Pré-requisito de contrato (`port.Usage`) | **D1 opção B** — ticket separado, pós-decisão |
 | Exaustão graciosa completa | Retentor de spans, resolvedores, burn-down+aviso | **D4/D5/D6** (2.º tipo de PendingRecord, autoridade do `extend`, dono do tecto) |
-| Broker de credenciais | Passo zero de política/identidade, cliente Vault, porta com contexto | **D7/D8** (separar cliente Vault; v1 in-process) |
+| Broker de credenciais | Passo zero de política/identidade, cliente Vault, porta com contexto | **D7/D8 DECIDIDOS 2026-08-10 (dono):** D7 = cliente/token Vault SEPARADOS (`AOS_BROKER_VAULT_*`); D8 = consumo v1 IN-PROCESS (injecção remota deferida, D8-B) |
 | Verificação ancorada do WORM | Env trust anchor + `VerifyFromCheckpointAtHead` no restart | **D4/AOS-156** — custódia da chave do operador (infra-org) |
 | ADR-021 / ADR-022 | Toda a implementação | Gramática concreta de perfis/condições/payloads → `tecnica/06`/`tecnica/18` |
 | ORQ/SCH distribuídos | **Nada** — deferimento ADR-018 mantido | EPIC-10 (frota multi-nó) |
@@ -35,12 +35,12 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 ## 3. Critérios de Saída do Epic
 
 - [ ] Nenhum output de tool call é persistido em claro: o step-ledger sela por-titular como o capturer (AOS-245), e o shred/expire apaga ambos (prova: erase → `ErrDecrypt` nos dois registos).
-- [ ] O breaker **dispara** no run comum: teste de nó repete a mesma call negada e assere trip **antes** de `MaxTurns` (AOS-251); ligar velocidades sem fonte **aborta o arranque** (AOS-246).
-- [ ] O log durável distingue desfecho de crash: `complete`/`failed` escritos em todos os caminhos; `CheckDeadlines` com caller periódico (AOS-252).
+- [x] O breaker **dispara** no run comum: teste de nó repete a mesma call negada e assere trip **antes** de `MaxTurns` (AOS-251); ligar velocidades sem fonte **aborta o arranque** (AOS-246).
+- [ ] O log durável distingue desfecho de crash: `complete`/`failed` escritos em todos os caminhos; `CheckDeadlines` com caller periódico **que interrompe o run** (AOS-252 — escrito e a correr; falta o teste crash-simulado vs fim-normal, ver AOS-252 CA3).
 - [ ] Um crash a meio de um run é retomado por varredura no arranque, sem re-executar efeitos (AOS-253).
-- [ ] Um run com `AOS_BUDGET_MAX_TOKENS` definido é **negado por orçamento** com o deny selado e atribuído, e um run dentro do tecto obtém **permit** — ambos ao nível do nó (AOS-256..258).
-- [ ] O banner declara budget/broker/modelo/autonomia (AOS-248) — postura anunciada = postura ligada.
-- [ ] Burn-down visível no run real com aviso a ~80% (AOS-261/262).
+- [x] Um run com `AOS_BUDGET_MAX_TOKENS` definido é **negado por orçamento** com o deny selado e atribuído, e um run dentro do tecto obtém **permit** — ambos ao nível do nó (AOS-256..258). Prova em `packages/cmd/aos/aos258_budget_permit_node_test.go` (`Bootstrap` real, tecto pela env do operador; permit **com a tool a executar**, deny com `denied_by=budget` + hash-chain verificada, e o mesmo run a permitir e depois negar).
+- [x] O banner declara budget/broker/modelo/autonomia (AOS-248) — postura anunciada = postura ligada.
+- [x] Burn-down visível no run real com aviso a ~80% (AOS-261/262) — fonte no **ledger de turnos** (não spans, que ninguém retinha), aviso **uma vez por run** no **log do nó** (canal que existe sempre; o span `aos.control.budget_warning` exige `AOS_OTLP_ENDPOINT`, sem a qual o tracer é o `NoopTracer`), e **erro explícito** em vez de 0% silencioso quando não há fonte **ou quando o ledger tem turnos mas somou zero tokens** (`ErrBurndownNoUsage`).
 - [ ] ADR-021: o router ordena por scoring determinístico com tabela de pesos assinada; guard-test prova função pura; nenhum peso elege candidato cross-border (AOS-269).
 - [ ] ADR-022: PlanDocument aceita arestas condicionais, `role: verifier` e payload tipado — validador puro rejeita ciclo disfarçado, auto-verificação e taint incompatível (AOS-270..273).
 - [ ] Gates CI verdes; cobertura sem regressão (pisos AOS-199).
@@ -101,7 +101,7 @@ Propagar o titular **por-`Apply`** (o ledger é um por processo, partilhado por 
 - [ ] Compatibilidade de leitura com WALs escritos pelo formato anterior (ou migração declarada).
 
 ### Estado
-**ABERTO.**
+**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
 
 ---
 
@@ -114,12 +114,22 @@ Propagar o titular **por-`Apply`** (o ledger é um por processo, partilhado por 
 Tornar o erro de construção do breaker **fatal** quando a config o exige; anotar/retirar as envs de velocidade da doc até existir fonte.
 
 ### Critérios de Aceitação
-- [ ] Velocidade > 0 sem `VelocitySource` ⇒ **aborta o arranque** com erro nomeado (nunca `return nil`).
-- [ ] `deploy/node/README.md` deixa de recomendar «ligar quando tiver dados» sem a ressalva; a env é marcada como inócua-até-fonte ou removida da tabela.
-- [ ] Teste: boot com a env definida falha fail-closed; boot sem ela compõe o breaker normal.
+- [x] Velocidade > 0 sem `VelocitySource` ⇒ **aborta o arranque** com erro nomeado (nunca `return nil`).
+- [x] `deploy/node/README.md` deixa de recomendar «ligar quando tiver dados» sem a ressalva; a env é marcada como inócua-até-fonte ou removida da tabela.
+- [x] Teste: boot com a env definida falha fail-closed; boot sem ela compõe o breaker normal.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — auditado (qualidade + completude) e remediado.** O gate vive em
+`newRunBreakers` (arranque), não no `resolve` por-run: interroga o `ThresholdProvider` com a
+MESMA `breakerClass` que o `resolve` usará e devolve `ErrBreakerVelocitySourceUnwired`, que
+`Bootstrap` propaga até `os.Exit(1)`. `deploy/node/README.md` declara as duas envs como
+`0 (desligado; NÃO ligável hoje)` e diz que `>0` ABORTA. Testes fail-closed e de composição
+normal em `aos246_breaker_failclosed_test.go`.
+
+Residual fechado na remediação (achado F-A7): o `return nil` do `resolve` — inalcançável por
+configuração depois do gate — denunciava-se com um `sync.Once` **por processo**, devolvendo o
+silêncio de F2 aos runs 2..N. Passou a **uma denúncia por run** (`runBreakers.reported`, podado
+pelo `forget`): cada run que corra sem disjuntor deixa rasto.
 
 ---
 
@@ -132,12 +142,18 @@ Tornar o erro de construção do breaker **fatal** quando a config o exige; anot
 Em produção, a ausência do ficheiro de credencial do modelo é fatal; fora de produção, o fallback é declarado no banner.
 
 ### Critérios de Aceitação
-- [ ] `AOS_MODE=production` sem `AOS_MODEL_API_KEY_PATH` (com gateway ligado) ⇒ arranque aborta com erro nomeado.
-- [ ] Modo referência com fallback ⇒ linha de banner declara «bearer de DEV em uso».
-- [ ] Testes nos dois sentidos.
+- [x] `AOS_MODE=production` sem `AOS_MODEL_API_KEY_PATH` (com gateway ligado) ⇒ arranque aborta com erro nomeado.
+- [x] Modo referência com fallback ⇒ linha de banner declara «bearer de DEV em uso».
+- [x] Testes nos dois sentidos.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — auditado (qualidade + completude), sem achados.** `ErrProductionNeedsModelCredential`
+em `parseModelFromEnv(production)`, com a postura vinda da ÚNICA leitura de `AOS_MODE`
+(passada por parâmetro, não relida). `devModelCredentialBanner` declara o fallback e é chamada
+no arranque real com o predicado do estado COMPOSTO (`cfg.Model != nil`), não da intenção da
+config. Sete casos em `aos247_model_credential_test.go` cobrem os dois sentidos, incluindo
+asserções de NÃO-VAZAMENTO: o bearer de dev é obtido em runtime do próprio provider (sem
+literal no ficheiro de teste) e assere-se a sua ausência do banner sem nunca o imprimir.
 
 ---
 
@@ -150,12 +166,32 @@ Em produção, a ausência do ficheiro de credencial do modelo é fatal; fora de
 Postura anunciada = postura ligada, para estas quatro superfícies.
 
 ### Critérios de Aceitação
-- [ ] `WithSink` ligado ao WORM composto; `SetLevel` de provisionamento selado com actor e motivo.
-- [ ] Banner declara: orçamento (NÃO COMPOSTO — eixo AOS-008/EPIC-20), broker (ausente — credenciais por ficheiro), modelo (gateway real vs `referenceModel`), autonomia (oráculo ligado/nil).
-- [ ] `env_surface_test` e testes de banner actualizados; nenhuma linha promete o que não está ligado.
+- [x] `WithSink` ligado ao WORM composto; `SetLevel` de provisionamento selado com actor e motivo.
+- [x] Banner declara: orçamento (NÃO COMPOSTO — eixo AOS-008/EPIC-20), broker (ausente — credenciais por ficheiro), modelo (gateway real vs `referenceModel`), autonomia (oráculo ligado/nil).
+- [x] `env_surface_test` e testes de banner actualizados; nenhuma linha promete o que não está ligado.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — auditado (qualidade + completude) e remediado.** Registo construído com
+`autonomy.WithSink` sobre um sink de LIGAÇÃO TARDIA que NEGA (`ErrAutonomySinkUnbound`) até
+`Bootstrap` o ligar ao WORM composto — o mesmo store que `audit.VerifyStore` re-encadeia; a
+selagem recusada aborta o arranque. As quatro linhas de banner saem do arranque real.
+
+Três correcções de remediação, todas sobre afirmações não amarradas ao código:
+
+- **F-A3** — a lista de credenciais do broker dizia-se EXAUSTIVA e omitia três chaves privadas
+  que o nó lê do disco e retém em memória: `AOS_ISSUER_KEY_PATH` (a chave ed25519 de assinatura
+  da autoridade co-localizada), `AOS_TLS_KEY_PATH` e `AOS_OTLP_CLIENT_KEY_PATH`. Um operador que
+  lesse a lista à letra sub-dimensionava a rotação. As três passaram a estar declaradas, como
+  família distinta das credenciais downstream.
+- **F-A6** — «cada um SELADO» derivava de `len(w.specs)` (o DECLARADO). Passou a derivar de
+  `autonomyWiring.sealedPairs` (os pares que o `SetLevel` aplicou E selou), com um TERCEIRO ramo
+  de banner para a cablagem construída-e-não-provisionada; a cardinalidade conta pares distintos,
+  não entradas. A guarda de teste estava invertida (chamava o banner sem provisionar e validava a
+  linha «SELADO») — foi substituída pela guarda na direcção certa.
+- **AC3** — `runWithoutTouchingBoardRegions` afirmava fixar TODA a superfície de ambiente com uma
+  lista de 14 nomes escrita à mão, deixando `AOS_MODEL_*`, `AOS_AUTONOMY_LEVELS`,
+  `AOS_POLICY_BUNDLE_DIR` e `AOS_BREAKER_*` herdados da máquina. A lista passou a ser DERIVADA do
+  extractor AST do gate de AOS-203 (`envVarsReadBySources`): uma variável nova é fixada sozinha.
 
 ---
 
@@ -168,12 +204,39 @@ Postura anunciada = postura ligada, para estas quatro superfícies.
 Validação de esquema fail-closed; renovação periódica do token (ou falha ruidosa antes da expiração).
 
 ### Critérios de Aceitação
-- [ ] `AOS_DSAR_VAULT_ADDR` não-https fora de loopback ⇒ aborta (molde `checkRemoteAttestationURL`).
-- [ ] Token renovado em background (molde do sweeper de aprovações) ou `/readyz` falha **antes** da expiração — nunca morte silenciosa da custódia.
-- [ ] Teste: token expirado ⇒ readiness vermelho e erase/expire fail-closed.
+- [x] `AOS_DSAR_VAULT_ADDR` não-https fora de loopback ⇒ aborta (molde `checkRemoteAttestationURL`).
+- [x] Token renovado em background (molde do sweeper de aprovações) ou `/readyz` falha **antes** da expiração — nunca morte silenciosa da custódia.
+- [x] Teste: token expirado ⇒ readiness vermelho e erase/expire fail-closed.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — pendente de auditoria.**
+
+**(a) Esquema.** O critério de `checkRemoteAttestationURL` foi EXTRAÍDO para
+`integration.CheckSecureTransportURL` (exportado) e o gémeo de attestation passou a delegar nele;
+`parseVaultDSARFromEnv` chama o MESMO predicado e aborta com `ErrInsecureVaultDSARAddr`. Não há
+segunda cópia do critério — era a divergência que o desafio A3 apanhou. Guarda
+`TestAOS249_VaultAddrCriterionMatchesAttestationTwin` falha se os dois lados divergirem.
+
+**(b) Token.** O `vaultKeyVault` deixou de congelar o token do arranque: guarda o CAMINHO do
+ficheiro montado, re-lê-o (adopta um token rodado por AppRole/Kubernetes-auth sem reiniciar),
+mede a validade por `auth/token/lookup-self` (**autenticado**) e renova por
+`auth/token/renew-self` quando o TTL entra no dobro da margem. O laço é
+`vaulttoken_renewer.go`, no molde EXACTO de `approval_sweeper.go` (ticker + `sweepStop` do
+Shutdown), ligado em `NewNodeService`.
+
+**(c) A denúncia.** `ready()` deixou de sondar só `/v1/sys/seal-status` (não-autenticado, verde
+com o token morto): passou a exigir também o `lookup-self` e uma **margem**
+(`AOS_DSAR_VAULT_TOKEN_MIN_TTL`, default 5m) — o `/readyz` fica **503 ANTES** da expiração, não
+depois. `aos_dsar_vault_ready`/`aos_ready` seguem o mesmo veredicto.
+
+**(d) Erase/expire.** `Delete` (o funil único do `/dsar/erase` e da expiração de retenção)
+VERIFICA a destruição em vez de a assumir; uma destruição por confirmar mantém o nó UNREADY
+(`ErrVaultShredUnconfirmed`) até ser confirmada — uma afirmação falsa de irrecuperabilidade
+perante o titular deixa de ser possível em silêncio.
+
+Envs novas na tabela AOS-203 (`deploy/node/README.md`): `AOS_DSAR_VAULT_TOKEN_MIN_TTL`; a linha de
+`AOS_DSAR_VAULT_ADDR` passou a declarar a exigência de https e o exemplo `http://vault:8200` foi
+substituído por loopback.
 
 ---
 
@@ -190,7 +253,7 @@ Tecto de operador para `MaxTurns` na fronteira de ingresso — node-local, sem t
 - [ ] Teste de API: `max_turns=200` ⇒ clamp aplicado; ausente ⇒ default; inválido ⇒ fail-closed.
 
 ### Estado
-**ABERTO.**
+**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
 
 ---
 
@@ -203,13 +266,35 @@ Tecto de operador para `MaxTurns` na fronteira de ingresso — node-local, sem t
 O breaker dispara no run comum: alimentar o detector e armar o claim no arranque do run.
 
 ### Critérios de Aceitação
-- [ ] `observeAction(runID, hash)` chamado no fecho do `execute_tool` (reusa `agentruntime.AttrToolCallHash`); teste negativo que falha se ficar sem chamadores.
-- [ ] O run transita `ready→running` no início da execução (não no primeiro pause/escalada); máquina de estados e fencing ajustados.
-- [ ] **Teste de nó:** a mesma call negada repetida ⇒ trip do breaker **antes** de `MaxTurns`, com veredicto atribuído no WORM.
+- [x] `observeAction(runID, hash)` chamado no fecho do `execute_tool` (reusa `agentruntime.AttrToolCallHash`); teste negativo que falha se ficar sem chamadores.
+- [x] O run transita `ready→running` no início da execução (não no primeiro pause/escalada); máquina de estados e fencing ajustados.
+- [x] **Teste de nó:** a mesma call negada repetida ⇒ trip do breaker **antes** de `MaxTurns`, com veredicto atribuído no WORM.
 - [ ] Divergência A1↔A2/A4 resolvida por este teste e registada no relatório.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — pendente de auditoria.** (a) Nova porta `agentruntime.ActionObserver`
+(`WithActionObserver`) invocada no fecho de cada mediação em `mediateToolCall` com
+`otelgenai.CanonicalToolCallHash` — a mesma âncora do span execute_tool; o bootstrap liga-a
+por method value a `runBreakers.observeAction`. Guarda AST anti-regressão
+(`TestAOS251_ObserveActionHasProductionCaller`, falsificabilidade provada). (b) Claim
+`ready→running` no arranque do run em `hostRun` (`runGate.claimRunning`, razão
+`run_start_claim`, fencing token do lease; no-op idempotente na retoma; fail-closed se a
+transição falhar); o lazy-claim de AOS-218 mantém-se como fallback do caminho directo
+`Runtime.Run` sem serviço. (c) Teste de nó `TestAOS251_BreakerTripsOnDeniedLoop`: deny-loop
+⇒ trip no turno 5 (< MaxTurns=12), alvo `paused`, razão `breaker_no_progress` relida do log
+durável por máquina fresca; controlo `TestAOS251_RunWithProgressDoesNotTrip`. Falta só o
+registo formal da divergência A1↔A2/A4 no relatório de prontidão §9 (artefacto documental,
+fora do código).
+
+**Remediação (achado F-A1, suite vermelha).** O controlo assertava que a máquina ficava em
+`running` no FIM de um run bem-sucedido. Era verdade quando o claim era a única transição que
+esse caminho escrevia; com o selo terminal de AOS-252 na mesma branch, o mesmo caminho de
+saída escreve `running→complete` ANTES de o `Wait` devolver (o `defer` do selo está a montante
+do `defer s.finish(rs)` na pilha LIFO de `hostRun`). A asserção tinha passado a exigir que o
+desfecho do run NÃO ficasse no log durável — o defeito F4 que AOS-252 fecha. O invariante de
+AOS-251 passou a ser asserido onde vive: a **aresta** `ready→running` com a razão
+`run_start_claim`, relida do stream durável, mais o estado final `complete`. Prova a coexistência
+dos dois mecanismos, que nenhuma das duas waves teria produzido isolada.
 
 ---
 
@@ -222,12 +307,30 @@ O breaker dispara no run comum: alimentar o detector e armar o claim no arranque
 Escrever `complete`/`failed` em todos os caminhos de saída do loop; correr `CheckDeadlines` periodicamente (molde do sweeper de aprovações).
 
 ### Critérios de Aceitação
-- [ ] Todo o fim de run (sucesso, erro, MaxTurns, breaker, panic recuperado) escreve o estado terminal no log durável.
-- [ ] `CheckDeadlines` com caller periódico composto no loop de serviço; `running→timed_out` materializado.
-- [ ] Teste: crash simulado vs fim normal distinguem-se no log; `GET /runs/{id}` reflecte o desfecho durável após restart.
+- [x] Todo o fim de run (sucesso, erro, MaxTurns, breaker, panic recuperado) escreve o estado terminal no log durável.
+- [x] `CheckDeadlines` com caller periódico composto no loop de serviço; `running→timed_out` materializado **e o run interrompido**.
+- [x] Teste: crash simulado vs fim normal distinguem-se no log; `GET /runs/{id}` reflecte o desfecho durável após restart.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — pendente de auditoria.** (CA3 entregue na W1, fechando o parcial abaixo.)
+`runGate.sealTerminal` sela no ponto único de saída (`hostRun`), a montante dos defers de
+libertação e do recover de isolamento — no-op fora de `running`, para não reescrever os
+desfechos que outros condutores (steer/breaker, escalada, deadlines) já materializaram.
+`sweepDeadlines` é o caller periódico que `CheckDeadlines` nunca teve. CA3: o GET
+`/runs/{id}` ganhou fallback durável (`NodeService.DurableState` + mapeamento em
+`handleGet`: complete ⇒ completed/terminated; failed/timed_out/killed/paused pelo nome do
+estado); `aos252_terminal_states_test.go` prova a distinção crash (claim sem desfecho) vs
+fim normal no log e o GET pós-restart sobre o mesmo substrato (completed sem nada em
+memória; crashado continua 404 — a retoma de órfãos é AOS-253).
+
+**Remediação (achado F-A5, fail-open).** O varrimento marcava `running→timed_out` e deixava o
+run A CORRER: o operador lia um estado terminal e parava de olhar enquanto o agente continuava
+a emitir tool calls, com o disjuntor cego (`Observe` é no-op fora de `running`) e o selo terminal
+já a no-op. Um timeout que não interrompe é pior do que timeout nenhum. O varrimento passou a
+cancelar o contexto do run (`rs.cancel` — o MESMO mecanismo do `Shutdown` e do heartbeat de posse
+perdida, não uma segunda via de paragem). Prova de nó em `aos252_deadline_interrupt_test.go`: um
+run preso a meio do turno (o modelo só devolve quando o ctx é cancelado) sai, com `timed_out` no
+log; falsificabilidade verificada — sem o cancelamento o teste não termina.
 
 ---
 
@@ -277,11 +380,27 @@ Desafio A1 (D-A1.1/D-A1.2, recomendações): um orçamento que cubra tool calls 
 Fixar o texto do banner e da doc **antes** de qualquer wiring de budget.
 
 ### Critérios de Aceitação
-- [ ] Texto aprovado: «orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado por tempo (wall-clock), não por tecto».
-- [ ] `deploy/node/README.md` e o relatório de prontidão referem a declaração.
+- [x] Texto aprovado: «orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado por tempo (wall-clock), não por tecto».
+- [x] `deploy/node/README.md` e o relatório de prontidão referem a declaração.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** A frase é a constante `BudgetScopeDeclaration` (`packages/cmd/aos/posture_banner.go`)
+e entra nos **dois** estados de `budgetPostureBanner(composed bool)` — no estado composto porque é
+o alcance, e no NÃO-composto porque o operador precisa de a ler *antes* de ligar o orçamento, não
+depois. O parâmetro é novo: a linha deixou de ser incondicional para que AOS-257 mude o **estado**
+sem reescrever a **declaração**. Documentos: secção «Orçamento / tecto de custo — o alcance
+declarado» em `deploy/node/README.md` e §7 do relatório de prontidão.
+
+Gate em `packages/cmd/aos/aos255_budget_scope_test.go`: a frase aprovada nos dois estados do
+banner **e** nos dois documentos; lista de formulações de *over-claim* proibidas («todo o gasto»,
+«cobre a inferência», …); e o guard `TestAOS255CallSiteMatchesComposition`, que avermelha se
+alguma árvore (`cmd/aos`, `integration`) passar a importar `control-plane/budget` enquanto o
+composition-root continuar a chamar `budgetPostureBanner(false)` — a mentira simétrica (negar por
+escrito um orçamento que já decide) fica mecanicamente impedida; e, desde a remediação da wave,
+avermelha também com um `budgetPostureBanner(true)` **hardcoded** (a mentira mais cara: anuncia
+protecção que pode não estar composta) e com a **remoção** da chamada (voltar ao silêncio).
+**Neste ticket** nenhum *budget* foi ligado e nenhuma env nova foi introduzida — o wiring e as
+variáveis chegaram em **AOS-256/AOS-257**, nas duas secções abaixo.
 
 ---
 
@@ -294,12 +413,34 @@ Desafio A1 (risco 4): compor o hook sem registar o nó do run ⇒ `ErrUnknownNod
 `AddNode(goal.RunID, treeID, limite)` no início do run e libertação no fim, no seam existente.
 
 ### Critérios de Aceitação
-- [ ] Cada run tem nó de orçamento registado antes do primeiro turno; release garantido (incl. panic/erro).
-- [ ] Limite vem de config (env de AOS-257) com default declarado.
-- [ ] Teste: dois runs concorrentes não partilham tecto (declarar na doc: tecto por-run, nunca por-mandato — D-A1.3).
+- [x] Cada run tem nó de orçamento registado antes do primeiro turno; release garantido (incl. panic/erro).
+- [x] Limite vem de config (env de AOS-257) com default declarado.
+- [x] Teste: dois runs concorrentes não partilham tecto (declarar na doc: tecto por-run, nunca por-mandato — D-A1.3).
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** O ciclo de vida vive no seam existente (`SecuredRuntime.Run`,
+`packages/integration/secured.go`), a seguir ao `Freeze`/`defer Release` do tool set:
+`s.budget.acquire(goal.RunID)` regista o nó **antes do primeiro turno** e a libertação é
+`defer` — cobre retorno, **erro** e **panic**. Fail-closed: se o nó não se consegue registar, o
+run não arranca (correr sem nó seria correr com tudo negado).
+
+O `AddNode`/`RemoveNode` por-run vivem em `packages/integration/budget.go` (`RunBudget`); o
+`RemoveNode` foi acrescentado ao `control-plane/budget` (era o único lado do ciclo que faltava:
+sem ele cada run deixava um nó vivo e a **retoma** do mesmo `RunID` colidia com `ErrNodeExists`).
+A **raiz da árvore é ilimitada em tokens** de propósito — um tecto de árvore seria um tecto
+global, e o run B seria negado pelo gasto do run A (o oposto de D-A1.3).
+
+**Limite e default:** vem de `AOS_BUDGET_MAX_TOKENS` (AOS-257); o default declarado é a
+**ausência de tecto** — não se inventa aqui um número de tokens que o nó não sabe justificar
+(mesma disciplina das velocidades de queima do disjuntor, AOS-246). Documentado em
+`deploy/node/README.md` (índice de configuração + secção do alcance), incluindo **tecto por-run,
+nunca por-mandato**.
+
+**Testes** (`packages/integration/aos256_budget_lifecycle_test.go`): o **caminho feliz** pela
+cadeia REAL (`TestAOS256_CaminhoFeliz_...` — a tool call atravessa identity→…→budget→egress e
+EXECUTA), a sua **prova negativa** (`TestAOS256_SemNoRegistadoOHookNegaTudo`, que reproduz o
+`E_UNKNOWN_NODE` do risco 4), libertação em retorno/erro/panic, e dois runs concorrentes com
+tectos independentes.
 
 ---
 
@@ -312,13 +453,45 @@ O plano original foi corrigido pelo desafio A1: o `Settle` vive num **decorator 
 Substituir `BudgetStub{}` (`secured.go:324`) pelo `BudgetCheck` real, com o ciclo de vida completo e envs token-only.
 
 ### Critérios de Aceitação
-- [ ] `SecuredConfig` ganha campo de orçamento; o hook é composto quando configurado, stub declarado no banner quando não.
-- [ ] `Settle` no decorator: commit em permit, release em deny/escalate/erro — teste de não-fuga após deny do egress e após erro.
-- [ ] `AOS_BUDGET_MAX_TOKENS` (e equivalentes) na tabela AOS-203, fail-closed em valor inválido.
-- [ ] Dependente de AOS-256 (sem nó por-run, nega tudo — ordem obrigatória).
+- [x] `SecuredConfig` ganha campo de orçamento; o hook é composto quando configurado, stub declarado no banner quando não.
+- [x] `Settle` no decorator: commit em permit, release em deny/escalate/erro — teste de não-fuga após deny do egress e após erro.
+- [x] `AOS_BUDGET_MAX_TOKENS` (e equivalentes) na tabela AOS-203, fail-closed em valor inválido.
+- [x] Dependente de AOS-256 (sem nó por-run, nega tudo — ordem obrigatória).
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** `SecuredConfig.Budget *RunBudget`: presente ⇒ o ponto de injecção `budget` da
+cadeia passa a ser o `budget.BudgetCheck` real; nil ⇒ `referencemonitor.BudgetStub{}` como antes
+— e é esse o estado que o banner declara, com o argumento a **derivar** do que foi composto
+(`budgetPostureBanner(runBudget != nil)`), nunca de um literal.
+
+**Settle no decorator** (`budgetSettlingDispatcher`, `packages/integration/budget.go`), OUTERMOST
+em relação ao dispatcher durável: commit em `permit` sem `ToolErr`; release em `deny`, `escalate`,
+**erro fatal do despacho** e **panic** (via `defer` com retornos nomeados). O saldo corre sobre
+`context.WithoutCancel` — o caminho que mais precisa de libertar headroom é justamente o do
+contexto cancelado. Num dedup/replay do step-ledger não houve mediação, logo não há reserva
+pendente e o saldo é um no-op honesto.
+
+**Env:** `AOS_BUDGET_MAX_TOKENS` (`packages/cmd/aos/budget_env.go`), documentada no índice de
+`deploy/node/README.md` (gate AOS-203) e na secção do alcance. Valor ilegível/negativo/**`0`**
+⇒ `ErrBadBudget`, **aborta o arranque** (o `0` merece a nota: não desliga o orçamento, negaria
+todas as tool calls). **Não há equivalente em `$`** e a ausência é a decisão: sem o canal de
+custo ponta a ponta (AOS-259) um tecto em dólares seria contado a zero — o estimador composto é
+token-only (`TokenOnlyEstimator`, dimensão micro-USD zerada).
+
+**Testes:** `packages/integration/aos256_budget_lifecycle_test.go`
+(`TestAOS257_SemFugaAposDenyDoEgress` — pela cadeia REAL, com tecto apertado: a 1.ª call é negada
+pelo **egress**, a jusante do orçamento, e a 2.ª só executa se o headroom tiver voltado;
+verificado por mutação que o teste avermelha com o saldo desligado — e `TestAOS257_SaldoDoDecorator`,
+que cobre permit/deny/escalate/erro/panic sobre o adaptador real) e
+`packages/cmd/aos/aos257_budget_env_test.go` (default, valores inválidos, e a amarra
+banner⇄composição).
+
+**Alcance NÃO alargado:** continua TOOL-ONLY e TOKEN-ONLY. O banner do estado composto declara o
+estimador **realmente composto** — o `integration.TokenOnlyEstimator` de AOS-258, por **átomos**
+sobre a pegada inteira (argumentos na forma final **+** envelope `tool_id`/`capability`/
+`resource`), em que `~1 token por 4 bytes` é o **piso** e não a fórmula. Declara também que o
+tecto é **por-run E por-incarnação** (cada re-hospedagem recebe o tecto inteiro; a árvore é em
+memória) — ver a remediação da wave.
 
 ---
 
@@ -331,12 +504,51 @@ Desafio A1 (esforço 9): `rm.Call` não transporta prompt/tokens — `WithEstima
 Estimador baseado no input materializado, injectado pela seam existente; prova não-vacuosa ponta a ponta.
 
 ### Critérios de Aceitação
-- [ ] Estimador real composto (documentado o que estima e o que não estima).
-- [ ] **Teste de nó:** run dentro do tecto obtém `permit` e a tool executa; run além do tecto é negado com `denied_by=budget` selado e atribuído.
-- [ ] O `DefaultEstimator` deixa de ser usado em produção (ou é declarado no banner).
+- [x] Estimador real composto (documentado o que estima e o que não estima).
+- [x] **Teste de nó:** run dentro do tecto obtém `permit` e a tool executa; run além do tecto é negado com `denied_by=budget` selado e atribuído.
+- [x] O `DefaultEstimator` deixa de ser usado em produção (ou é declarado no banner).
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** O estimador vive em `packages/integration/budget_estimator.go`
+(`TokenOnlyEstimator` — o nome de AOS-257 mantém-se, o corpo deixou de delegar no
+`budget.DefaultEstimator`) e entra pela seam que já existia: `budget.WithEstimator`, chamada em
+`NewRunBudget`. Estimar FORA do Reference Monitor é o que aqui se faz — a função vive na
+composição, não no kernel, e lê a Call **já materializada** (pós-`EffectRewriter`), que é a
+única forma de o RM «ver» o que vai correr.
+
+**O que ESTIMA:** os ARGUMENTOS na forma FINAL do efeito **mais** o envelope que também ocupa
+contexto (`tool_id`, `capability`, `resource` tipo/valor/região) — o `DefaultEstimator` só via
+`call.Input`, pelo que uma call cujo peso está num URL de 300 bytes era estimada como grátis. A
+contagem é uma aproximação **por átomos** sem dependências (ADR-017): corridas alfanuméricas
+partidas a cada 4 caracteres, 1 token por sinal de pontuação/estrutura, 1 token por rune
+não-ASCII, e o **piso** da heurística de bytes do estimador anterior — o piso existe para que a
+troca **nunca baixe** uma estimativa (propriedade selada em `TestAOS258_NuncaSubestimaOPlaceholder`).
+
+**O que NÃO estima**, declarado no banner e no README: o **turno de modelo** (invocado fora da
+cadeia; nenhuma reserva o admite — AOS-260), o **resultado da tool** (volta à transcrição mas só
+é mensurável DEPOIS do efeito; o saldo confirma a RESERVA, não a medição — AOS-259) e **dólares**
+(dimensão `CostMicroUSD` a zero — AOS-259). O alcance declarado em AOS-255 NÃO foi alargado.
+
+**Alternativa REJEITADA, com a razão registada no cabeçalho do ficheiro:** ler uma estimativa
+declarada pelo chamador em `CallContext.BudgetTokensRemaining`. Nos dois produtores reais
+(`orchestrator/delegation.go`, `planner.go`) o campo é a fatia herdada/reserva de planeamento e
+a sub-árvore do filho já é debitada por ancestralidade ⇒ **dupla contagem**; e no nó nenhuma tool
+call do loop o preenche ⇒ campo lido que nunca decide, uma capacidade-fantasma. O sítio para uma
+declaração honesta fica nomeado, e o combinador tem de ser um MÁXIMO com a pegada local.
+
+**Teste de nó** (`packages/cmd/aos/aos258_budget_permit_node_test.go`), com `Bootstrap` REAL e o
+tecto a entrar pela env do operador (`AOS_BUDGET_MAX_TOKENS`), três provas:
+(1) **dentro do tecto ⇒ permit e a tool EXECUTA** — a prova não-vacuosa que faltava;
+(2) **além do tecto ⇒ deny** com o registo `denied_by=budget` no WORM **atribuído**
+(run/step/tool/capability/principal/reason) e **selado** (hash-chain verificada + `EntryHash`
+recomputado do conteúdo); (3) **o mesmo run permite e depois nega** — duas calls idênticas com
+tecto para uma só, o que amarra o permit e o deny ao MESMO nó de orçamento. Verificado por
+MUTAÇÃO nos dois sentidos: sem composição do orçamento (2) e (3) avermelham; sem o nó por-run
+registado (1) e (3) avermelham. Os tectos **derivam** de `TokenOnlyEstimator` (nunca constantes
+calibradas à mão) — e por isso os tectos apertados de AOS-256/257 passaram também a derivar dele.
+
+**Critério (c)** mecanizado em `TestAOS258_ProducaoNaoUsaODefaultEstimator` (AST, não grep: a
+prosa nomeia o placeholder de propósito) sobre as duas árvores de produção. Nenhuma env nova.
 
 ---
 
@@ -385,12 +597,48 @@ Desafio A2 (achados C/F): `Evaluate` recebe spans como parâmetro e nada no nó 
 Decorador de `Exporter` que retém `SpanData` com política de retenção (ou a fonte por ledger) + resolvedores explícitos com política multi-incarnação.
 
 ### Critérios de Aceitação
-- [ ] A fonte de burn-down devolve dados reais com OTLP ligado e **erro explícito** (não zero silencioso) sem tracer.
-- [ ] Política documentada para runs multi-incarnação (prefixo T1 vs reprodução T2).
-- [ ] Testes: retenção, query por trace/run, e o caso de retoma.
+- [x] A fonte de burn-down devolve dados reais com OTLP ligado e **erro explícito** (não zero silencioso) sem tracer.
+- [x] Política documentada para runs multi-incarnação (prefixo T1 vs reprodução T2).
+- [x] Testes: retenção, query por trace/run, e o caso de retoma.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO** — pela alternativa **(b)**, a `BurndownSource` sobre o **ledger de turnos**, e não pelo
+decorador de `Exporter` que retém `SpanData`. A escolha está argumentada no cabeçalho de
+`packages/control-plane/governance/progress-surface/burndown_source.go` e assenta em quatro pontos:
+
+1. **imunidade à re-emissão** — o ledger é deduplicado na origem pela `idempotency_key` `run_id:step_id`
+   do Event Store; um turno gravado duas vezes ocupa UMA entrada. Um retentor de spans contaria 2×,
+   que é o modo de falha que o desafio A2 nomeia (`TestAOS261_FonteLeOLedgerRealDoTurnRecorder` grava o
+   mesmo `(run_id, step_id)` de novo e o total não muda);
+2. **não é preciso inventar retenção** — o retentor exigiria política nova (tecto de memória, despejo,
+   TTL) com o seu próprio despejo silencioso; o ledger herda a retenção durável que o nó já tem
+   (`AOS_RETENTION_*`) e sobrevive ao restart (`TestAOS261_RetencaoDoStoreEAFonteDaFonte` reabre o WAL);
+3. **o resolvedor `runID→traceID` DEIXA DE SER NECESSÁRIO** — era ele o problema multi-incarnação (cada
+   retoma abre um trace novo ⇒ o burn-down ressuscitava a zero). `runID→treeID` também sai do caminho
+   crítico: o nó de orçamento por-run é registado com o próprio RunID, pelo que a resolução é a
+   IDENTIDADE, **declarada** em `runBudgetReader` e não adivinhada;
+4. **é o mesmo número que o run pagou** — `resp.Usage`/`CostMicroUSD` gravados na transacção que torna o
+   turno durável; não há uma segunda contabilidade a divergir.
+
+**Critério duro (erro explícito, nunca zero silencioso)**, em três camadas: sem fonte ⇒
+`ErrNilBurndownSource`; sem ledger / ledger sem turnos / payload ilegível / erro do store ⇒
+`ErrBurndownNoLedger` ou o erro do store tal-qual; e a via ANTIGA (por spans) passou a devolver
+`ErrNoBurndownSpans` para uma fatia **nil** — que era o caso NORMAL (nenhum nó produz/retém spans) e
+fazia `Evaluate` devolver «0% consumido» em todas as leituras.
+
+**Política multi-incarnação** documentada em `BurndownSource` e no `doc.go`: consumo **cumulativo** sobre
+o prefixo T1 (o gasto não volta por o processo ter reiniciado) e reprodução T2 **sem duplicação** (mesma
+`idempotency_key` ⇒ `StatusDuplicate`, sem escrita). Um run delegado é outro `run_id` e outro stream — a
+agregação por parentesco continua a ser AOS-259.
+
+**Alcance declarado, não alargado:** a fonte conta os **turnos de modelo** e só eles (o ledger não pesa
+tool calls), pelo que o burn-down é um **limite inferior** do consumo — dispara TARDE, nunca cedo por
+engano. Está escrito em `RunConsumption`, no banner do nó e no README.
+
+**Ficheiros:** `progress-surface/burndown_source.go` (porta + `RunConsumption` + `BurndownFromConsumption`),
+`errors.go`, `surface.go` (`WithBurndownSource`, `EvaluateRun`, latch, `ForgetRun`, `ValidThreshold`),
+`packages/cmd/aos/burndown_ledger.go` (o adaptador node-local, com cursor por-run para não reler o stream
+inteiro a cada turno). **Zero dependências novas** (ADR-017): só `replace` internos já existentes.
 
 ---
 
@@ -403,13 +651,61 @@ Desafio A2 (plano revisto, passos 6-7): primeira entrega é **só burn-down + av
 `Evaluate` na fronteira de fim-de-turno com as duas portas de leitura (`BudgetReader`, `ProgressReflector`), aviso emitido a ~80%, env fail-closed.
 
 ### Critérios de Aceitação
-- [ ] Adaptadores node-local das portas de leitura (scheduler-free — sem violar `boundary_orq_sch_test.go`); `ProgressSnapshot.Step` ou tem produtor ou o campo é declarado vazio.
-- [ ] `AOS_PROGRESS_THRESHOLD` recusa arrancar com valor inválido (padrão `ErrBadBreakerThresholds`), não o fallback silencioso de `WithThreshold`.
-- [ ] Span de aviso emitido uma vez por run (latch); visível no canal de leitura existente.
-- [ ] As opções de decisão NÃO são apresentadas nesta entrega.
+- [x] Adaptadores node-local das portas de leitura (scheduler-free — sem violar `boundary_orq_sch_test.go`); `ProgressSnapshot.Step` ou tem produtor ou o campo é declarado vazio.
+- [x] `AOS_PROGRESS_THRESHOLD` recusa arrancar com valor inválido (padrão `ErrBadBreakerThresholds`), não o fallback silencioso de `WithThreshold`.
+- [x] Aviso emitido uma vez por run (latch); **visível no canal de leitura existente** — o **log do nó** (o mesmo writer do banner de arranque, que existe sempre) e, **quando `AOS_OTLP_ENDPOINT` está definida**, também o span `aos.control.budget_warning`. Só o span **não** cumpriria o critério: sem OTLP o tracer do nó é o `NoopTracer` e o aviso não teria superfície nenhuma na configuração por omissão.
+- [x] As opções de decisão NÃO são apresentadas nesta entrega.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** O gancho é o que já existia: uma porta nova no kernel
+(`agentruntime.ProgressObserver` + `WithProgressObserver`, molde de `WithSteerSource`/`WithLivenessBreaker`)
+consultada na **mesma fronteira de fim-de-turno**, **depois** da pausa graciosa e do disjuntor (um run que
+já parou não é avisado sobre um orçamento que deixou de queimar) e **depois** de `recordTurn`, pelo que o
+turno corrente já está no ledger que a fonte lê. A assinatura devolve **só `error`** — não há
+`(tripped bool, ...)`: um contrato que não pode parar o run não engana o leitor sobre quem manda.
+
+**Adaptadores node-local** (`packages/cmd/aos/progress_wiring.go`), nenhum a importar
+`control-plane/orchestrator` nem `control-plane/scheduler` — o guarda de fronteira (imports directos **e**
+grafo de build transitivo, ADR-018) corre verde:
+
+- `runBudgetReader` sobre o `integration.RunBudget` — o **tecto** (`Limit`) é o denominador. `Available`
+  existe porque a porta o exige e devolve **erro** para um run sem nó vivo, mas **não** entra no
+  burn-down: mede reservas de TOOL CALL (alcance tool-only de AOS-255) enquanto o numerador vem dos
+  TURNOS DE MODELO — somá-los seria contabilidade nova. Selado em
+  `TestAOS261_EvaluateRun_FraccaoDerivaDaFonteEDoTecto` (zero chamadas a `Available`);
+- `nodeProgressReflector` sobre a `state.Machine` **que o steer/escalada/disjuntor já usam** (leitura em
+  memória `Current()`, não `Rebuild` — isto corre a cada turno). **`ProgressSnapshot.Step` TEM produtor:**
+  é `chat#<turno>`, o mesmo índice que identifica o turno no ledger.
+
+**`AOS_PROGRESS_THRESHOLD` fail-closed** (`progress_env.go`, `ErrBadProgressThreshold`): valor ilegível ou
+fora de `(0,1)` **aborta o arranque**. É deliberadamente mais estrito do que `WithThreshold` (que cai no
+default) porque uma env má é erro do OPERADOR, que ninguém apanha: ele escreve `0.9`, recebe `0.80` e fica
+convencido de que configurou o aviso. `0` avisaria em todos os turnos e `1` nunca avisaria. A validação usa
+`progresssurface.ValidThreshold` — a MESMA função da superfície, para não haver duas noções de "válido".
+
+**Segundo gate, molde de AOS-246** (`ErrProgressBudgetUnwired`): `AOS_PROGRESS_THRESHOLD` **sem**
+`AOS_BUDGET_MAX_TOKENS` aborta o arranque — sem tecto não há denominador, a fracção seria 0 para sempre e o
+aviso **nunca** dispararia, com o banner a prometê-lo.
+
+**Aviso, não prompt:** `EvaluateRun` devolve `BudgetWarning` (sem campo de opções) e emite
+`aos.control.budget_warning` — um op **distinto** de `aos.control.exhaustion_prompt`, para que nenhum
+consumidor do canal de leitura infira que houve uma escolha a apresentar. **Uma vez por run** (latch por
+`runID` na superfície, podado por `ForgetRun` no mesmo ponto de `runBreakers.forget`). `extend`,
+`summarize_stop` e `abort` **não** são apresentados: nenhum tem executor nem autoridade (eixo AOS-263), e
+`BudgetExtender`/`Degrader` ficam **nil** — a superfície recusa-se se alguém as usar, em vez de haver um
+adaptador que finge decidir.
+
+**Banner** (`burndownPostureBanner`, argumento derivado do observador REALMENTE composto): declara a fonte,
+que a leitura é um **limite inferior**, que a dimensão que decide é **tokens**, que o aviso **não decide
+nada** e **quem** pára um run.
+
+**Testes:** `packages/kernel/agent-runtime/progress_observer_test.go` (o seam: consulta por turno
+não-terminal, erro fatal, não-decide, retro-compatibilidade), `packages/cmd/aos/aos262_progress_warning_test.go`
+(env válida/inválida/ausente; os dois gates de arranque pelo `Bootstrap` REAL; o aviso ao limiar pelas peças
+node-local reais com latch e `forget`; a leitura não muta o orçamento; a amarra banner⇄composição) e
+`packages/control-plane/governance/progress-surface/aos261_burndown_source_test.go` (latch por-run, ausência
+de spans de prompt/decisão). **Nenhuma dependência nova**; `AOS_PROGRESS_THRESHOLD` documentada no índice de
+`deploy/node/README.md` (gate AOS-203).
 
 ---
 
@@ -447,7 +743,7 @@ Preparar a troca mediada: capability nomeada (ou reutilização declarada de `ca
 - [ ] Higiene pré-wiring: reaper de leases (molde `approval_sweeper.go`) e superfície para `Revoke`.
 
 ### Estado
-**ABERTO** (bloqueado por D7/D8).
+**DESBLOQUEADO (D7/D8 decididos 2026-08-10: cliente Vault separado `AOS_BROKER_VAULT_*` + consumo in-process v1) — pronto para wave.**
 
 ---
 
@@ -460,13 +756,13 @@ Desafio A3 (estimativas corrigidas): `CredentialProvider.Fetch` devolve `string`
 Alargar a porta com contexto de chamada e ligar o broker ao ponto de aquisição do GW (in-process), com audit de governação no store durável.
 
 ### Critérios de Aceitação
-- [ ] `Fetch` (ou porta nova) transporta principal/run; `recordExchange` distingue runs.
-- [ ] Troca negada (identidade/política) ⇒ falha ruidosa atribuída, nunca bearer vazio.
-- [ ] O `Audit` do GW aponta ao store durável (hoje `audit.NewMemStore()`).
-- [ ] Teste de composição pela cadeia real; injecção no executor remoto fica **declaradamente deferida** (desenho-alvo: handle opaco até ao orchestrator, D8-B).
+- [x] `Fetch` (ou porta nova) transporta principal/run; `recordExchange` distingue runs. — porta NOVA `Broker.AcquireInProcess` (`packages/platform/broker/inprocess.go`) consome o broker: transporta `Principal`/`RunID`/`StepID` do `ExchangeRequest`; `recordExchange` sela por partição de run (stream = RunID). O `CredentialProvider.Fetch` do GW NÃO foi adaptado (mantém `string`, sem identidade) — a porta com contexto é a que consome o broker.
+- [x] Troca negada (identidade/política) ⇒ falha ruidosa atribuída, nunca bearer vazio. — `AcquireInProcess` propaga o `*DeniedError` da mediação (efeito/código/razão) e devolve `ProcessCredential{}` (IsZero); nunca um bearer vazio de sucesso. `ErrNoMaterial`/`ErrLeaseRevoked`/`ErrLeaseExpired` idem.
+- [x] O `Audit` do GW aponta ao store durável (hoje `audit.NewMemStore()`). — `AOS_MODEL_AUDIT_PATH` ⇒ `audit.OpenFileStore` (WORM tamper-evident) injectado em `newGatewayModelClient`; vazio ⇒ MemStore (inalterado), banner declara o modo. Ver `model_audit_env.go`.
+- [x] Teste de composição pela cadeia real; injecção no executor remoto fica **declaradamente deferida** (desenho-alvo: handle opaco até ao orchestrator, D8-B). — `aos265_inprocess_test.go` corre a aquisição pela cadeia REAL (RM com ScopeGate + EventSink durável); a injecção no executor REMOTO está deferida no doc de `inprocess.go` (handle opaco → orchestrator via `Injector.Inject`, D8-B).
 
 ### Estado
-**ABERTO** (bloqueado por AOS-264).
+**IMPLEMENTADO (in-process v1). Porta `AcquireInProcess` (consome o broker, resolve o handle no processo via sink server-side, redige o valor — invariante rainha preservada), audit de governação do GW durável por `AOS_MODEL_AUDIT_PATH`, composição provada pela cadeia real. DEFERIDO com eixo: (D8-B) injecção no executor REMOTO (handle opaco até ao orchestrator); binding LIVE do broker→`CredentialProvider` do model GW no nó de REFERÊNCIA — a ordem de construção (cliente de modelo antes do RM) e o default-deny do PDP não-carregado negariam a troca fail-closed (reintroduzindo o risco A3), pelo que o LIGAR ao vivo exige o bundle assinado do PDP + identidade infra com `cap:http.post` (eixo D4/AOS-156). Partilha do WORM único do nó pelo audit do GW idem deferida (re-ordenação da composição do modelo).**
 
 ---
 
@@ -498,12 +794,58 @@ Grupo B (análise 08-08): a expiração TTL só corre sob `POST /dsar/expire` �
 Ticker interno no loop de serviço (molde do sweeper de aprovações) com credencial de governação em nome próprio — ou decisão documentada de manter externo.
 
 ### Critérios de Aceitação
-- [ ] A política `AOS_RETENTION_*` definida ⇒ expiração corre periodicamente sem acção externa.
-- [ ] Credencial em nome próprio com selo WORM por varrimento (quem/o quê), respeitando legal hold.
-- [ ] Env de cadência com default declarado; fail-closed em valor inválido.
+- [x] A política `AOS_RETENTION_*` definida ⇒ expiração corre periodicamente sem acção externa.
+- [x] Credencial em nome próprio com selo WORM por varrimento (quem/o quê), respeitando legal hold.
+- [x] Env de cadência com default declarado; fail-closed em valor inválido.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — pendente de auditoria.**
+
+**(a) O ticker.** `retention_sweeper.go`, no molde EXACTO de `approval_sweeper.go`/`deadline_sweeper.go`
+(ticker + o MESMO `sweepStop` fechado pelo `Shutdown`), ligado em `NewNodeService`. Corre o
+**MESMO** `audit.ExpirationJob` que a rota corre — não há segundo varredor escrito à mão, porque um
+segundo varredor seria um segundo sítio onde o legal hold podia ficar mais fraco.
+
+**(b) Legal hold, fail-closed em dois níveis.** A barreira é a do job (`ExpirationJob.held`:
+por-titular, pela partição do registo e, via o índice titular→partição, pelas **demais** partições
+do titular) — intacta. Acresce que o scheduler **não arranca** se o `audit.LegalHold` não estiver
+composto: com `holds` nil o job nunca retém nada, e uma expiração sob demanda ainda tem um humano
+autenticado a assumi-la, mas um varredor automático nessas condições não tem ninguém no caminho. O
+banner declara a postura e a **razão** de estar dormente. Guarda:
+`TestAOS267_ScheduledSweepRespectsLegalHold` (o titular sob hold sobrevive ao varrimento agendado e
+só expira após o *release*) e `TestAOS267_SchedulerRefusesToArmWithoutLegalHold`.
+
+**(c) Credencial em nome próprio.** Não há humano na origem, e as duas saídas erradas eram pedir
+emprestada a credencial de um operador (uma mentira selada na cadeia) ou não selar nada (destruição
+não-atribuível). O scheduler age sob `nhi:aos-node/retention-scheduler`, nomeado no selo junto do
+trust anchor do issuer deste deployment. Cada passagem sela **dois** registos na cadeia
+`governance.retention`: `retention.sweep.started` **ANTES** e **fail-closed** (WORM recusa ⇒ a
+passagem **não corre**) e `retention.sweep.completed` **depois**, com contagens
+(varridos/expirados/**retidos por hold**/saltados/não-expirados) e **sem PII**. O `started` era
+indispensável: o `retention.expired` que o job sela por-registo **não leva `Principal`**
+(`audit.BuildRetentionExpiredRecord`), pelo que a destruição automática ficaria na cadeia sem
+ninguém a quem a atribuir. Os três eventos partilham a partição de propósito — numa cadeia gapless
+a **ordem** é ela própria a prova (`TestAOS267_SweepSealsOwnCredentialAndCountsWithoutPII` asserta-a).
+
+**(d) Cadência.** `AOS_RETENTION_SWEEP_INTERVAL`, default **`1h`** declarado (não o minuto dos
+outros varrimentos: um TTL de retenção mede-se em dias/meses e cada passagem lê **todos** os
+streams do Event Store). Fail-closed: ilegível ou `≤0` ⇒ `ErrBadRetentionSweepInterval` e o nó não
+arranca. **Nenhum valor desliga** o scheduler — nem `0`, porque desligá-lo com a política definida é
+exactamente a violação de *storage limitation* que este ticket fecha; quem não quer expiração deixa
+`AOS_RETENTION_*` por definir.
+
+**(e) Serialização.** O guard `expireInFlight` **mudou do `apiHandler` para o `NodeService`**: um
+guard no handler só excluiria as invocações da rota entre si, e `POST /dsar/expire` voltaria a poder
+correr em simultâneo com o tick, selando dois `retention.expired` para o mesmo facto. Guarda:
+`TestAOS267_RouteAndSchedulerShareOneGuard`.
+
+**(f) Integridade.** Paridade AOS-221 com a rota: verificação pós-shred da hash-chain. Se ela deixar
+de validar, o laço **PARA** (não se destrói mais sobre um log de auditoria que já não se verifica) e
+o incidente fica no log com o eixo nomeado.
+
+Env nova na tabela AOS-203 (`deploy/node/README.md`): `AOS_RETENTION_SWEEP_INTERVAL`. Campos novos
+em `Node` (`Retention`, `IssuerID`) para que a decisão de armar e o selo em nome próprio digam a
+verdade sem uma segunda leitura do ambiente.
 
 ---
 
@@ -629,12 +971,51 @@ Tornar as extensões um artefacto comportamental versionado, com janela de supor
 Loop avaliador periódico no nó: constrói `WideEvent`s a partir dos spans/WORM, avalia alertas, expõe o resultado.
 
 ### Critérios de Aceitação
-- [ ] Avaliador composto no loop de serviço (molde sweeper); alertas disparam sobre dados reais.
-- [ ] Resultado exposto (endpoint/span/log estruturado) e ligado ao registo de runbooks (AOS-106).
-- [ ] Fail-open declarado (a observabilidade nunca derruba o nó); `otel-genai/doc.go` corrigido (o «DIFERIDO» do exporter fechou em AOS-173).
+- [x] Avaliador composto no loop de serviço (molde sweeper); alertas disparam sobre dados reais.
+- [x] Resultado exposto (endpoint/span/log estruturado) e ligado ao registo de runbooks (AOS-106).
+- [x] Fail-open declarado (a observabilidade nunca derruba o nó); `otel-genai/doc.go` corrigido (o «DIFERIDO» do exporter fechou em AOS-173).
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** `slo_evaluator.go` corre um laço periódico no loop de serviço, no molde EXACTO
+de `approval_sweeper.go`/`retention_sweeper.go` (mesmo `sweepStop`, parado pelo Shutdown com um só
+`close`), e é um avaliador **composto**: as DUAS famílias na MESMA passagem e sobre a MESMA janela
+— os 4 SLIs da mediação (AOS-085/086) e os 7 canónicos operacionais (AOS-104/105), cada uma com a
+sua config, a sua janela sustentada e o seu vocabulário (não fundidas: fundi-las obrigaria a
+escolher um dos dois SLOs para os dois SLIs que ambas observam).
+
+**Nenhuma métrica nova e nenhum dado sintético.** A fonte dos SLIs derivados de spans é uma
+TORNEIRA (`slo_span_tap.go`): um T no caminho de exportação que entrega ao exportador OTLP real e
+guarda uma cópia num anel limitado — o avaliador agrega, byte a byte, o que o colector recebeu, em
+vez de uma segunda instrumentação divergente. As duas fontes que NÃO dependem de spans (e são as
+de maior severidade) correm sempre: a sonda de prontidão do plano de controlo (a mesma condição do
+`/readyz`, acumulada como fracção na janela) e a verificação da hash-chain do WORM. O que não tem
+produtor no nó (headroom do scheduler, fidelidade de replay) fica **sem amostras** pela regra
+anti-vacuidade de AOS-085 — não dispara nem se declara cumprido.
+
+**Exposição + runbooks:** `GET /metrics` ganha `aos_slo_sli`/`aos_slo_target`/`aos_slo_samples`/
+`aos_slo_breached`/`aos_alert_firing`/`aos_alert_streak`, com o **runbook como label** (e
+`runbook_orphan="1"` quando não resolve); e cada alerta disparado deixa uma linha de log
+estruturado com o título, o doc e o ADR resolvidos em `runbooks.Lookup` (AOS-106). Os `Offenders`
+(trace_ids) ficam DE FORA do `/metrics` — a rota é não-autenticada e a filosofia não-enumerável do
+nó vale para ela; o drill-down por trace vive no log.
+
+**FAIL-OPEN declarado**, com a fronteira explícita: a AVALIAÇÃO é fail-open (pânico contido por
+`recover` — sem ele um pânico na goroutine derrubaria o processo; sem propagação ao caminho de
+execução; sondas com prazo próprio; e o laço NÃO pára nem ao detectar adulteração, ao contrário do
+de retenção, porque não destrói nada); a CONFIGURAÇÃO é fail-closed como todo o resto
+(`AOS_SLO_EVAL_INTERVAL`/`AOS_SLO_WINDOW` ilegíveis ABORTAM o arranque; `0` na cadência desliga
+explicitamente e o banner di-lo). Ambas na tabela AOS-203. `otel-genai/doc.go` corrigido: o
+«DIFERIDO» passou a declarar o adapter REAL (`otlpexporter.go`, stdlib-only) e a separar o que
+continua diferido (o SDK oficial/gRPC).
+
+Testes em `aos274_slo_evaluator_test.go` (13 casos): alerta a disparar sobre spans REAIS emitidos
+pelo tracer do nó nas duas famílias, o sentido inverso (abaixo do SLO não dispara, com o SLI
+avaliado), a janela sustentada (não dispara antes), os três estados da sonda do WORM (íntegro /
+adulterado ⇒ PROC-DR / ilegível ⇒ SEM amostra, nunca falso positivo de DR), anti-vacuidade,
+resolução de runbook para TODO o alerta, log estruturado com doc+ADR, pânico contido com o nó a
+continuar a aceitar runs, sonda pendurada que não segura o laço, config fail-closed, banner, e o
+laço a arrancar no loop de serviço e a parar no Shutdown. Falsificabilidade verificada: retirada a
+torneira da composição, os testes de alerta e de `/metrics` FALHAM.
 
 ---
 
@@ -647,12 +1028,54 @@ Loop avaliador periódico no nó: constrói `WideEvent`s a partir dos spans/WORM
 Superfície de submissão de ratificação no molde de `/approve` (admissão do plano de controlo + assinatura + frescura + nonce durável).
 
 ### Critérios de Aceitação
-- [ ] `POST /promote` (ou subcomando CLI) autenticado; ratificação registada no WORM com principal.
-- [ ] Anti-replay (`ratification_replayed`) provado pela rota externa, não só in-process.
-- [ ] Banner deixa de dizer «deferido» quando a rota existir.
+- [x] `POST /promote` (ou subcomando CLI) autenticado; ratificação registada no WORM com principal.
+- [x] Anti-replay (`ratification_replayed`) provado pela rota externa, não só in-process.
+- [x] Banner deixa de dizer «deferido» quando a rota existir.
 
 ### Estado
-**ABERTO** (depende de AOS-096 para candidatos reais; a rota pode anteceder).
+**IMPLEMENTADO.** `promotion_api.go` acrescenta `POST /promote` ao mux do nó com a **mesma
+admissão do `/approve`** — `admitControl` (token-bucket dedicado do plano de controlo) +
+`admitControlMTLS` (DEF-012, quando composto) — e **nenhum esquema novo** de autenticação: a
+barreira que decide continua a ser a **assinatura ed25519** do ratificador verificada contra a
+pubkey **pinada** em `AOS_RATIFIERS` (non-signing, ADR-016 §1). O handler **não decide nada**:
+descodifica o wire, recusa fail-closed o que é estruturalmente inválido *antes* de tocar no gate,
+e delega em `PromotionController.Promote` — o **mesmo** `hitl.NewProductionRatificationGate` de
+AOS-159/AOS-206, com *freshness* + *nonce-store* **durável** forçados por construção. Nenhuma
+`env` nova (a superfície AOS-203 fica intacta) e nenhuma dependência externa nova (ADR-017).
+
+**Anti-replay PELA ROTA (o CA central).** `aos275_promote_route_test.go` submete a ratificação
+assinada **só por HTTP** (nunca por `node.Promotion.Promote`): a 1.ª chamada devolve `200` e sela
+`reason=ratified` no WORM com `Principal = human:ratifier-route`; a 2.ª, com o **mesmo corpo**
+(mesmo *nonce*), devolve `403` e sela `ratification_replayed`. É falsificável: contra o
+`NewRatificationGate` cru a 2.ª chamada daria `200`/`ratified`. As provas de fronteira cobrem
+ainda: assinatura forjada ⇒ `403` **sem** consumir o *nonce* (a legítima que se segue promove — a
+verificação precede o consumo, pelo que ninguém pode *queimar* a ratificação de um humano);
+ratificador não-pinado ⇒ `403` e **nada** na cadeia do artefacto; mTLS de controlo ligado sem
+certificado ⇒ `403` **antes** do gate (nada selado); corpo malformado ⇒ `400` com o gate intocado;
+campo desconhecido ⇒ `400` (wire fechado).
+
+**Banner.** A linha «a submissão de ratificações … fica DEFERIDA» **desapareceu**; no lugar, o
+banner nomeia a rota, declara o que ela **não** afrouxa e aponta a ferramenta de assinatura. O
+teste `TestAOS275_BannerDeixaDeDizerDeferido` corre o **arranque real** e falha se qualquer linha
+do promotion controller voltar a dizer «deferid…».
+
+**Via de acesso do operador (fecha a mesma classe de defeito um nível acima).** Sem ferramenta, o
+corpo do `POST /promote` era inderivável à mão (assinatura sobre canónico com separador de domínio;
+`request_id` = `RatificationID` = SHA-256 do canónico do artefacto+eval) — a rota nasceria como
+outra capacidade-fantasma. `aos-issuer ratify-sign` (contraparte exacta do `approve-sign`, no
+mesmo binário externo) imprime o corpo COMPLETO, pronto a `curl`; a seed do ratificador vem de
+ficheiro montado e **nunca** é ecoada; o *nonce* é CSPRNG por invocação e não é configurável.
+`ratifysign_test.go` prova que o `request_id` emitido é o `RatificationID` do artefacto
+reconstruído a partir do próprio JSON de saída, e que a assinatura é **byte-a-byte** a de
+`hitl.SignApproval` (ed25519 determinístico) — ou seja, cobre o canónico que o gate verifica.
+
+**Residual nomeado.** O *pipeline* de promoção (staging → eval-gate → canary → produção, AOS-096)
+continua a montante e **fora** do nó: a rota ratifica um candidato **apresentado** pelo operador. O
+que o nó garante é que nenhum artefacto chega a produção sem ratificação humana assinada, fresca e
+de uso-único. Uma submissão não-autenticada sela na partição de quarentena
+`ratification-unratified` (ingresso não-autenticado com escrita limitada no WORM) — **mesma**
+postura do `/approve`, limitada pelo token-bucket e, quando composto, pelo mTLS; o eixo para a
+fechar é o do resto do plano de controlo (DEF-012, PKI de cliente).
 
 ---
 
@@ -668,10 +1091,10 @@ Eliminar o fusível: ou o pool ganha uma janela real, ou o tecto é declarado co
 - [ ] **Opção A (janela real):** relógio injectável (padrão `WithClock` já existente no GW) que zera os contadores ao cruzar o minuto; teste prova recuperação após a janela.
 - [ ] **Opção B (tecto externo):** `LimitRPM/LimitTPM: 0` (o contrato diz `<=0 = ilimitado`) + linha na tabela AOS-203 a declarar que o rate-limit vive no LiteLLM externo.
 - [ ] Qualquer das opções: saturação expõe sinal observável (span/métrica) — nunca brownout silencioso; teste de nó com >120 chamadas não morre.
-- [ ] A decisão A/B fica registada (D11).
+- [x] A decisão A/B fica registada (D11). **DECIDIDO 2026-08-10 (dono): Opção B — tecto externo no LiteLLM.** O rate-limit de RPM/TPM pertence ao gateway externo, não ao nó; o keypool perde o fusível de vida-inteira (`LimitRPM/LimitTPM: 0` = ilimitado no contrato) e a tabela AOS-203 declara que o limite vive no LiteLLM.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO (2026-08-10, Opção B).** `LimitRPM/LimitTPM: 0` em `modelgatewaywiring.go` (keypool = selector por throughput, não rate-limiter; o tecto real vive no LiteLLM externo com janela e backpressure). Trabalho adotado da sessão `determined-greider`, verificado verde e committado com proveniência.
 
 ---
 
@@ -684,12 +1107,23 @@ O desafio A5 corrigiu o «sem backpressure» do relatório: o ingresso **já tem
 Expor os limites de ingresso na superfície AOS-203, com defaults declarados e teste do 429.
 
 ### Critérios de Aceitação
-- [ ] Envs (ex.: `AOS_INGRESS_RATE`, `AOS_INGRESS_BURST`, `AOS_INGRESS_MAX_INFLIGHT`) lidas uma vez no arranque, fail-closed em valor inválido, na tabela AOS-203.
-- [ ] Teste de API: burst excedido ⇒ 429; in-flight no tecto ⇒ 429; dentro dos limites ⇒ 201/202.
-- [ ] Banner declara os limites em vigor.
+- [x] Envs (ex.: `AOS_INGRESS_RATE`, `AOS_INGRESS_BURST`, `AOS_INGRESS_MAX_INFLIGHT`) lidas uma vez no arranque, fail-closed em valor inválido, na tabela AOS-203.
+- [x] Teste de API: burst excedido ⇒ 429; in-flight no tecto ⇒ 429; dentro dos limites ⇒ 201/202.
+- [x] Banner declara os limites em vigor.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** `ingress_env.go` lê as três variáveis **uma só vez** em `serveAPI` (antes de
+compor o serviço) e devolve as `APIOption` que já existiam (`WithRateLimit`/`WithMaxInFlight`) —
+**nenhum** mecanismo novo de backpressure foi escrito, como a correcção do A5 exige. Fail-closed
+com erro nomeado `ErrBadIngressLimits`: ilegível, não-finito, negativo **ou zero** abortam o
+arranque nas três, e o zero é recusado *por nome* nas três razões que o tornam uma armadilha
+(rate 0 ⇒ balde que nunca reabastece; burst < 1 ⇒ nada é admitido; max-in-flight 0 ⇒ **desliga**
+o tecto). Defaults inalterados (64/s, 128, 512) ⇒ nó não-configurado comporta-se exactamente como
+antes. Banner emitido em `serveAPI` a partir do **mesmo** valor que alimentou as opções, com o
+alcance declarado (cobre `POST /runs` e só; plano de controlo tem balde dedicado; por-processo e
+global entre chamadores; run suspenso sai da contagem; `/resume` não consulta o tecto; sem
+`Retry-After`). Testes em `aos277_ingress_knobs_test.go` (13 casos de config inválida, 429 por
+burst, 429 por in-flight com prova de readmissão, banner pela via de `serveAPI`).
 
 ---
 
@@ -724,3 +1158,35 @@ P2 (c/ decisão):    AOS-254 (dep. 252) · AOS-259 (D2) → AOS-260 (D1) · AOS-
 ```
 
 Cadeia causal registada no relatório §8: **F1 → F2 → F3 → F4 → F5** primeiro — fechar wiring novo (budget, exaustão) sobre esta base partida replica o padrão «capacidade verde, efeito zero». O desafio A5 acrescenta **F17 → F15** à cabeça da cadeia de disponibilidade: o fusível do keypool e o clamp de `max_turns` são a ordem mínima defensável de um lote (com os knobs de ingresso, AOS-277, e a correcção documental já aplicada ao relatório).
+
+---
+
+## Modelo de execução — uma branch por wave, agentes em paralelo, revisão adversarial no PR
+
+Cada wave é **uma branch** (`feature/epic20-wN-<slug>`), executada por um agente/modelo **em paralelo** com as outras. O agrupamento é por subsistema — minimiza conflitos de merge (todas as waves tocam `cmd/aos`, mas em ficheiros/funções diferentes). **Ordem de merge:** W0 → W1 → W2 → resto; cada wave seguinte faz rebase sobre a anterior já merged (W0 e W1 partilham `breaker_wiring.go`: W0 merge primeiro).
+
+| Wave | Branch | Tickets | Foco |
+|---|---|---|---|
+| **W0 — risco activo** | `feature/epic20-w0-risco-activo` | AOS-246, 247, 248 **+ 251, 252** (ver nota) | Os fixes P0 de segurança/disponibilidade que a wave entregou (F2, F5, F11, F14) mais os dois de ciclo de vida que vieram com ela (F3, F4) |
+| **W1 — ciclo de vida do run** | `feature/epic20-w1-ciclo-vida` | ~~AOS-251, 252~~, 253, 254 | Crash-resume e saga (F9, F12, F13); breaker efectivo e estados terminais saíram na W0 |
+| **W2 — billing & exaustão** | `feature/epic20-w2-billing` | AOS-255, 256, 257, 258, 261, 262, 263, 277 | Budget token-only, burn-down, knobs de ingresso (§7 do relatório) |
+| **W3 — identidade & credenciais** | `feature/epic20-w3-identidade` | AOS-264, 265, 266, 278 | Broker, attestation, authn do GW (D4/D7/D8-dependentes marcados) |
+| **W4 — ADR-021 scoring** | `feature/epic20-w4-scoring-gw` | AOS-269 | Scoring determinístico no GW |
+| **W5 — ADR-022 plano** | `feature/epic20-w5-plano-v2` | AOS-270, 271, 272, 273 | Arestas condicionais, verificador, payload tipado, migração |
+| **W6 — operações** | `feature/epic20-w6-operacoes` | AOS-249, 267, 268, 274, 275 | Vault, retenção, WORM ancorado, SLOs, promote |
+
+**Nota de âmbito da W0 (emenda registada, não violação silenciosa).** A branch `feature/epic20-w0-risco-activo` entregou **AOS-246/247/248 + AOS-251/252**, e **não** entregou AOS-245, AOS-250 nem AOS-276 (zero linhas de código). A tabela acima foi corrigida para dizer o que a branch é, em vez de a branch contradizer a tabela. As duas consequências, ambas registadas:
+
+- **Porque a mistura importou:** AOS-251 e AOS-252 disputam a MESMA aresta de estado do run. Escritos como se fossem independentes, produziram uma contradição determinista — o controlo de AOS-251 exigia a máquina em `running` no fim de um run bem-sucedido, o selo terminal de AOS-252 escreve `running→complete` no mesmo caminho de saída, e a suite ficou vermelha. Reconciliado na remediação: o invariante de AOS-251 é a **aresta** `ready→running` com a razão do claim de arranque (relida do log), não o estado final; o estado final é `complete`, como AOS-252 exige. É a prova de que os dois mecanismos coexistem — que nenhuma das duas waves teria produzido sozinha.
+- **Ordem de merge:** cai a ressalva «W0 e W1 partilham `breaker_wiring.go`: W0 merge primeiro» — com AOS-251/252 dentro da W0, a W1 fica reduzida a AOS-253/254 e faz rebase sobre esta branch.
+- **Como entraram na W0.** Não foi alargamento de âmbito de nenhum agente da wave: o AOS-251 e o AOS-252 estavam a ser escritos **em simultâneo, na mesma working tree**, pela sessão da W1. O agente do AOS-248 chegou a avisar disso no seu relatório («outro agente está a modificar esta working tree ao mesmo tempo»); o aviso passou-me ao lado e o commit da W0 varreu o trabalho dele em curso. A causa é a partilha da árvore por duas sessões, não a conduta de nenhuma delas. *(Uma versão anterior desta nota — e a mensagem do commit `1100bcb` — atribuíam isto a alargamento de âmbito do agente do AOS-248. Era falso; fica corrigido aqui.)*
+- **⚠️ AOS-251 e AOS-252 têm DUAS implementações independentes.** A da W0/W1 (acima) e uma anterior, por committar noutros worktrees: `.claude/worktrees/nice-cartwright-529d11` (AOS-251, branch `claude/compassionate-curie-e2866b` — `breaker_trip_node_test.go`, `reference-monitor/action_observer_test.go`) e `.claude/worktrees/admiring-wright-dec4c1` (AOS-252, branch `claude/vibrant-wilson-ce1127` — `deadline_sweeper.go`, `terminal_durable_test.go`). Nomes de ficheiro diferentes, mesmos ficheiros de produção tocados (`bootstrap.go`, `service.go`, `steer_gates.go`). **Quem fizer o merge tem de escolher UMA das duas e descartar a outra** — juntá-las cegamente compõe dois claims de arranque e dois selos terminais sobre a mesma aresta de estado. A da W0 é a única com prova de coexistência dos dois mecanismos; a dos worktrees não foi avaliada.
+- **AOS-245, AOS-250 e AOS-276 SAEM da W0** e continuam `ABERTO`, sem código nesta branch. Eixo: AOS-245 e AOS-250 vão para a wave que tocar o step-ledger e a fronteira de ingresso; AOS-276 depende de D11 (decisão do dono) e não podia entrar na mesma. Nenhum dos três está fechado por omissão — estão declarados por fechar.
+
+**Regras do modelo:**
+
+1. **Um agente por wave**, com a branch como fronteira — não toca nos ficheiros das outras waves (a tabela de dependências da §4 manda nas intra-wave).
+2. **Revisão adversarial obrigatória no PR** — o modelo adversário revê o diff contra os Critérios de Aceitação do ticket e contra o código (não contra a intenção), no molde dos desafios A1–A5: achado só confirmado se não for refutável. O adversário **pode melhorar o código directamente no PR** (commit de revisão identificado), mas nunca alarga o escopo do ticket — desvios abrem ticket novo.
+3. **Gates fail-closed por PR:** `make ci-build`, `ci-lint`, `ci-test` + o gate de domínio aplicável; cobertura sem regressão (pisos AOS-199). O PR só merge verde **e** com a revisão adversarial aprovada.
+4. **Tickets bloqueados por decisão do dono (D1–D12)** não entram na wave até a decisão estar registada no ticket — o agente não decide pelo dono.
+5. **Cada PR actualiza o relatório de prontidão** (estado do finding que fecha) e o `Estado` do ticket na epic — o documento continua a ser a fonte de verdade do que falta.
