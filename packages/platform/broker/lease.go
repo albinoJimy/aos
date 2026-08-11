@@ -114,13 +114,14 @@ func (l *Lease) injectInto(sink vault.Sink, now time.Time) error {
 // (encapsulado) reside entre a troca e a injecção; nada aqui é exposto ao agente.
 // Concorrente-seguro (-race).
 //
-// Expiração LAZY (decisão explícita): o corte de acesso no TTL/revogação é imposto
-// na injecção ([Lease.usableLocked]) — uma lease expirada/revogada nunca entrega o
-// valor. O store NÃO evicta entradas expiradas/revogadas (não há reaper): o *Lease
-// (com o [vault.Secret] encapsulado, cujo valor este pacote nem consegue ler)
-// permanece em memória. Para um serviço de longa duração, um GC/reaper de leases
-// expiradas fica registado como trabalho operacional futuro, fora do escopo de
-// AOS-070; a correcção de segurança (acesso cortado no TTL) já está garantida.
+// Expiração LAZY para a SEGURANÇA (decisão explícita): o corte de acesso no
+// TTL/revogação é imposto na injecção ([Lease.usableLocked]) — uma lease
+// expirada/revogada nunca entrega o valor, independentemente de continuar no mapa.
+// A HIGIENE de memória (evictar as entradas já não-injectáveis, com o
+// [vault.Secret] encapsulado que este pacote nem consegue ler) é feita pelo REAPER
+// pré-wiring de AOS-264: [Broker.ReapExpired]/[leaseStore.reap] (ver reaper.go),
+// conduzido por um ticker de fora no wiring (AOS-265, molde approval_sweeper.go).
+// O reaper é higiene, não segurança: o acesso já está cortado no TTL/revogação.
 type leaseStore struct {
 	mu     sync.RWMutex
 	leases map[Handle]*Lease

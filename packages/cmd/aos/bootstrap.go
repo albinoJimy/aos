@@ -60,6 +60,7 @@ import (
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
+	broker "github.com/aos-ref/platform/broker"
 	identity "github.com/aos-ref/platform/identity"
 	memory "github.com/aos-ref/platform/memory"
 	memadapters "github.com/aos-ref/platform/memory/adapters"
@@ -415,6 +416,19 @@ type Config struct {
 	// é INFRA-ORG por trás desta porta; um HSM key-never-leaves exige a porta de envelope (residual
 	// nomeado com eixo em DEF-302). nil ⇒ referência in-memory demo-grade.
 	DSARVault audit.KeyVault
+	// BrokerVault é o cliente Vault REAL (KV v2) da custódia de CREDENCIAIS DOWNSTREAM
+	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
+	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
+	// material). PREPARADO por AOS-264 a partir do ambiente, mas a TROCA MEDIADA ainda
+	// NÃO está ligada ao gateway nesta entrega: é CONSUMIDO em AOS-265 (a porta de
+	// aquisição in-process). nil ⇒ não configurado. O banner declara o modo e que a
+	// troca está pendente — nunca "broker ligado" (seria a promessa a mais que AOS-248
+	// proíbe). Ver broker_vault_env.go.
+	BrokerVault broker.VaultClient
+	// BrokerVaultAddr / BrokerVaultKVMount são material PÚBLICO (uma URL, um nome de
+	// mount) que o banner usa para declarar o modo do broker Vault. Vazios ⇒ dormente.
+	BrokerVaultAddr    string
+	BrokerVaultKVMount string
 	// IssuerKeyPath, quando definido no modo de REFERÊNCIA (não endurecido) e sem
 	// IssuerSigningKey explícita, faz o nó carregar a chave de assinatura do issuer de
 	// um ficheiro de seed PERSISTENTE (LoadOrCreateIssuerKey) em vez de a gerar por
@@ -1683,6 +1697,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("%s", line)
 	}
 	for _, line := range credentialBrokerPostureBanner() {
+		log("%s", line)
+	}
+	// AOS-264: o Vault de credenciais downstream do broker, PREPARADO por
+	// AOS_BROKER_VAULT_* (separado do KEK, D7). Declara "configurado, troca pendente"
+	// ou "dormente" — nunca "broker ligado" (a troca só medeia algo em AOS-265). O
+	// argumento deriva do ESTADO composto: `cfg.BrokerVault != nil` ⇒ preparado.
+	var brokerVaultSet *brokerVaultSettings
+	if cfg.BrokerVault != nil {
+		brokerVaultSet = &brokerVaultSettings{Addr: cfg.BrokerVaultAddr, KVMount: cfg.BrokerVaultKVMount}
+	}
+	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
 		log("%s", line)
 	}
 	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA

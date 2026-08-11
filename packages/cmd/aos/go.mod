@@ -16,6 +16,7 @@ require (
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
+	github.com/aos-ref/platform/broker v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
 	github.com/aos-ref/platform/memory v0.0.0
 	github.com/aos-ref/platform/model-gateway v0.0.0

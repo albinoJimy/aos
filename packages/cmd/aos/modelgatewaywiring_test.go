@@ -45,7 +45,7 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 	for _, model := range []string{"gpt-4o", "gpt-4o-mini"} {
 		gotModel = ""
 		// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu embebida.
-		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil)
+		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("newGatewayModelClient(%q): %v", model, err)
 		}
@@ -89,7 +89,7 @@ func TestModelGateway_NoThroughputFuse(t *testing.T) {
 	// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu. É o MESMO caminho de
 	// composição que o nó usa em produção — a conta de infra (LimitRPM/TPM=0) vem de dentro de
 	// newGatewayModelClient, não do teste, pelo que um regresso do fusível é apanhado aqui.
-	mc, err := newGatewayModelClient(srv.URL, "gpt-4o-mini", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil)
+	mc, err := newGatewayModelClient(srv.URL, "gpt-4o-mini", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestExternalAllowlist_AllowsNonEmbeddedModel(t *testing.T) {
 		t.Fatalf("loadModelAllowlistFromEnv: pol=%v err=%v", pol, err)
 	}
 	// kimi-for-coding/board-kimi NÃO estão na allowlist embebida — só passam pela externa.
-	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil)
+	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}

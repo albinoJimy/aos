@@ -729,13 +729,13 @@ Desafio A3 (estimativas corrigidas): `CredentialProvider.Fetch` devolve `string`
 Alargar a porta com contexto de chamada e ligar o broker ao ponto de aquisição do GW (in-process), com audit de governação no store durável.
 
 ### Critérios de Aceitação
-- [ ] `Fetch` (ou porta nova) transporta principal/run; `recordExchange` distingue runs.
-- [ ] Troca negada (identidade/política) ⇒ falha ruidosa atribuída, nunca bearer vazio.
-- [ ] O `Audit` do GW aponta ao store durável (hoje `audit.NewMemStore()`).
-- [ ] Teste de composição pela cadeia real; injecção no executor remoto fica **declaradamente deferida** (desenho-alvo: handle opaco até ao orchestrator, D8-B).
+- [x] `Fetch` (ou porta nova) transporta principal/run; `recordExchange` distingue runs. — porta NOVA `Broker.AcquireInProcess` (`packages/platform/broker/inprocess.go`) consome o broker: transporta `Principal`/`RunID`/`StepID` do `ExchangeRequest`; `recordExchange` sela por partição de run (stream = RunID). O `CredentialProvider.Fetch` do GW NÃO foi adaptado (mantém `string`, sem identidade) — a porta com contexto é a que consome o broker.
+- [x] Troca negada (identidade/política) ⇒ falha ruidosa atribuída, nunca bearer vazio. — `AcquireInProcess` propaga o `*DeniedError` da mediação (efeito/código/razão) e devolve `ProcessCredential{}` (IsZero); nunca um bearer vazio de sucesso. `ErrNoMaterial`/`ErrLeaseRevoked`/`ErrLeaseExpired` idem.
+- [x] O `Audit` do GW aponta ao store durável (hoje `audit.NewMemStore()`). — `AOS_MODEL_AUDIT_PATH` ⇒ `audit.OpenFileStore` (WORM tamper-evident) injectado em `newGatewayModelClient`; vazio ⇒ MemStore (inalterado), banner declara o modo. Ver `model_audit_env.go`.
+- [x] Teste de composição pela cadeia real; injecção no executor remoto fica **declaradamente deferida** (desenho-alvo: handle opaco até ao orchestrator, D8-B). — `aos265_inprocess_test.go` corre a aquisição pela cadeia REAL (RM com ScopeGate + EventSink durável); a injecção no executor REMOTO está deferida no doc de `inprocess.go` (handle opaco → orchestrator via `Injector.Inject`, D8-B).
 
 ### Estado
-**DESBLOQUEADO — o AOS-264 deixou de estar bloqueado (D7/D8 decididos 2026-08-10). Entra na wave a seguir ao AOS-264.**
+**IMPLEMENTADO (in-process v1). Porta `AcquireInProcess` (consome o broker, resolve o handle no processo via sink server-side, redige o valor — invariante rainha preservada), audit de governação do GW durável por `AOS_MODEL_AUDIT_PATH`, composição provada pela cadeia real. DEFERIDO com eixo: (D8-B) injecção no executor REMOTO (handle opaco até ao orchestrator); binding LIVE do broker→`CredentialProvider` do model GW no nó de REFERÊNCIA — a ordem de construção (cliente de modelo antes do RM) e o default-deny do PDP não-carregado negariam a troca fail-closed (reintroduzindo o risco A3), pelo que o LIGAR ao vivo exige o bundle assinado do PDP + identidade infra com `cap:http.post` (eixo D4/AOS-156). Partilha do WORM único do nó pelo audit do GW idem deferida (re-ordenação da composição do modelo).**
 
 ---
 

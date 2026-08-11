@@ -272,6 +272,13 @@ func run(w io.Writer) error {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
+	// AUDIT DE GOVERNAÇÃO DO GATEWAY (AOS-265): declara se a activação da allowlist e as
+	// decisões por chamada selam num WORM DURÁVEL (AOS_MODEL_AUDIT_PATH) ou num MemStore
+	// volátil. Amarrado ao estado composto (cfg.Model != nil): sem gateway não há linha.
+	for _, line := range modelAuditPostureBanner(cfg.Model != nil, strings.TrimSpace(os.Getenv("AOS_MODEL_AUDIT_PATH"))) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
 	// Superfície de REDE (AOS-166). Se AOS_API_ADDR estiver definido, o nó gradua para um nó
 	// OPERÁVEL de fora: levanta o loop de serviço + a API HTTP com o BIND-GUARDRAIL no
 	// CAMINHO DE PRODUÇÃO (é aqui, não só nos testes, que um bind não-loopback sem
@@ -606,6 +613,22 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	if dsarVault != nil {
 		cfg.DSARVault = dsarVault
+	}
+
+	// CUSTÓDIA DAS CREDENCIAIS DOWNSTREAM do credential broker (AOS-070/AOS-264) por
+	// ambiente — SEPARADA da custódia da KEK (D7: cliente/token AOS_BROKER_VAULT_*
+	// próprios). Vazio ⇒ dormente (inalterado); presente ⇒ PREPARA o cliente Vault
+	// REAL (KV v2) e valida fail-closed (ErrBadBrokerVault). Fica em [Config.BrokerVault]
+	// para AOS-265 CONSUMIR (a troca mediada in-process); AOS-264 só o prepara e
+	// declara o modo no banner — a troca NÃO está ligada nesta entrega.
+	brokerVault, brokerVaultSet, err := parseBrokerVaultFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	if brokerVault != nil {
+		cfg.BrokerVault = brokerVault
+		cfg.BrokerVaultAddr = brokerVaultSet.Addr
+		cfg.BrokerVaultKVMount = brokerVaultSet.KVMount
 	}
 
 	// FAIL-CLOSED de produção (AOS-215/AOS-216) — a KEK tem de ser tão durável quanto o substrato
@@ -1304,7 +1327,15 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol, tools)
+	// AUDIT DE GOVERNAÇÃO DURÁVEL (AOS-265): AOS_MODEL_AUDIT_PATH ⇒ WORM tamper-evident
+	// onde a activação da allowlist e as decisões por chamada sobrevivem ao restart;
+	// vazio ⇒ MemStore de referência (volátil, inalterado). Fail-closed: um caminho
+	// definido que não abre ABORTA (ErrBadModelAudit), em vez de degradar em silêncio.
+	gwAudit, _, err := parseModelAuditFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	client, err := newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit)
 	if err != nil {
 		return nil, err
 	}
