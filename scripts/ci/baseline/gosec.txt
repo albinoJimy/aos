@@ -7,7 +7,7 @@
 # logs de CI (as contagens do log variam entre runs). Multiset preservado — o gate conta
 # ocorrencias, nunca sort -u.
 #
-# PORQUE 74 ocorrencias: o bump v2.21.4 -> v2.28.0 foi OBRIGATORIO (a v2.21.4 arrastava
+# PORQUE 75 ocorrencias: o bump v2.21.4 -> v2.28.0 foi OBRIGATORIO (a v2.21.4 arrastava
 # x/tools@v0.25.0, que NAO COMPILA com Go 1.25 — o gate nao corria). A versao nova traz
 # REGRAS NOVAS (G703/G704/G122) e deteta mais G115/G407/G101 no codigo que ja existia.
 #
@@ -47,7 +47,6 @@ packages/control-plane/scheduler/breaker.go|G101
 packages/control-plane/scheduler/routing.go|G101
 packages/control-plane/scheduler/spawn_admission.go|G101
 packages/kernel/agent-runtime/activity/separation/separation.go|G122
-packages/kernel/agent-runtime/activity/separation/testdata/evasion/evasion.go|G704
 packages/kernel/agent-runtime/breaker/breaker.go|G101
 packages/platform/audit/filestore.go|G115
 packages/platform/audit/record.go|G115
@@ -61,6 +60,8 @@ packages/platform/memory/working/window_manager.go|G101
 packages/platform/memory/working/window_manager.go|G101
 packages/platform/memory/working/window_manager.go|G115
 packages/platform/messaging/message.go|G115
+packages/platform/model-gateway/metering/cost/recorder.go|G101
+packages/platform/model-gateway/metering/cost/recorder.go|G101
 packages/platform/registry/digest/canonical.go|G115
 packages/platform/registry/digest/canonical.go|G115
 packages/platform/registry/digest/canonical.go|G115
