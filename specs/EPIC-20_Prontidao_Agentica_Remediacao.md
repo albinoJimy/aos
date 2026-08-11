@@ -204,12 +204,39 @@ Três correcções de remediação, todas sobre afirmações não amarradas ao c
 Validação de esquema fail-closed; renovação periódica do token (ou falha ruidosa antes da expiração).
 
 ### Critérios de Aceitação
-- [ ] `AOS_DSAR_VAULT_ADDR` não-https fora de loopback ⇒ aborta (molde `checkRemoteAttestationURL`).
-- [ ] Token renovado em background (molde do sweeper de aprovações) ou `/readyz` falha **antes** da expiração — nunca morte silenciosa da custódia.
-- [ ] Teste: token expirado ⇒ readiness vermelho e erase/expire fail-closed.
+- [x] `AOS_DSAR_VAULT_ADDR` não-https fora de loopback ⇒ aborta (molde `checkRemoteAttestationURL`).
+- [x] Token renovado em background (molde do sweeper de aprovações) ou `/readyz` falha **antes** da expiração — nunca morte silenciosa da custódia.
+- [x] Teste: token expirado ⇒ readiness vermelho e erase/expire fail-closed.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — pendente de auditoria.**
+
+**(a) Esquema.** O critério de `checkRemoteAttestationURL` foi EXTRAÍDO para
+`integration.CheckSecureTransportURL` (exportado) e o gémeo de attestation passou a delegar nele;
+`parseVaultDSARFromEnv` chama o MESMO predicado e aborta com `ErrInsecureVaultDSARAddr`. Não há
+segunda cópia do critério — era a divergência que o desafio A3 apanhou. Guarda
+`TestAOS249_VaultAddrCriterionMatchesAttestationTwin` falha se os dois lados divergirem.
+
+**(b) Token.** O `vaultKeyVault` deixou de congelar o token do arranque: guarda o CAMINHO do
+ficheiro montado, re-lê-o (adopta um token rodado por AppRole/Kubernetes-auth sem reiniciar),
+mede a validade por `auth/token/lookup-self` (**autenticado**) e renova por
+`auth/token/renew-self` quando o TTL entra no dobro da margem. O laço é
+`vaulttoken_renewer.go`, no molde EXACTO de `approval_sweeper.go` (ticker + `sweepStop` do
+Shutdown), ligado em `NewNodeService`.
+
+**(c) A denúncia.** `ready()` deixou de sondar só `/v1/sys/seal-status` (não-autenticado, verde
+com o token morto): passou a exigir também o `lookup-self` e uma **margem**
+(`AOS_DSAR_VAULT_TOKEN_MIN_TTL`, default 5m) — o `/readyz` fica **503 ANTES** da expiração, não
+depois. `aos_dsar_vault_ready`/`aos_ready` seguem o mesmo veredicto.
+
+**(d) Erase/expire.** `Delete` (o funil único do `/dsar/erase` e da expiração de retenção)
+VERIFICA a destruição em vez de a assumir; uma destruição por confirmar mantém o nó UNREADY
+(`ErrVaultShredUnconfirmed`) até ser confirmada — uma afirmação falsa de irrecuperabilidade
+perante o titular deixa de ser possível em silêncio.
+
+Envs novas na tabela AOS-203 (`deploy/node/README.md`): `AOS_DSAR_VAULT_TOKEN_MIN_TTL`; a linha de
+`AOS_DSAR_VAULT_ADDR` passou a declarar a exigência de https e o exemplo `http://vault:8200` foi
+substituído por loopback.
 
 ---
 
@@ -767,12 +794,58 @@ Grupo B (análise 08-08): a expiração TTL só corre sob `POST /dsar/expire` �
 Ticker interno no loop de serviço (molde do sweeper de aprovações) com credencial de governação em nome próprio — ou decisão documentada de manter externo.
 
 ### Critérios de Aceitação
-- [ ] A política `AOS_RETENTION_*` definida ⇒ expiração corre periodicamente sem acção externa.
-- [ ] Credencial em nome próprio com selo WORM por varrimento (quem/o quê), respeitando legal hold.
-- [ ] Env de cadência com default declarado; fail-closed em valor inválido.
+- [x] A política `AOS_RETENTION_*` definida ⇒ expiração corre periodicamente sem acção externa.
+- [x] Credencial em nome próprio com selo WORM por varrimento (quem/o quê), respeitando legal hold.
+- [x] Env de cadência com default declarado; fail-closed em valor inválido.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO — pendente de auditoria.**
+
+**(a) O ticker.** `retention_sweeper.go`, no molde EXACTO de `approval_sweeper.go`/`deadline_sweeper.go`
+(ticker + o MESMO `sweepStop` fechado pelo `Shutdown`), ligado em `NewNodeService`. Corre o
+**MESMO** `audit.ExpirationJob` que a rota corre — não há segundo varredor escrito à mão, porque um
+segundo varredor seria um segundo sítio onde o legal hold podia ficar mais fraco.
+
+**(b) Legal hold, fail-closed em dois níveis.** A barreira é a do job (`ExpirationJob.held`:
+por-titular, pela partição do registo e, via o índice titular→partição, pelas **demais** partições
+do titular) — intacta. Acresce que o scheduler **não arranca** se o `audit.LegalHold` não estiver
+composto: com `holds` nil o job nunca retém nada, e uma expiração sob demanda ainda tem um humano
+autenticado a assumi-la, mas um varredor automático nessas condições não tem ninguém no caminho. O
+banner declara a postura e a **razão** de estar dormente. Guarda:
+`TestAOS267_ScheduledSweepRespectsLegalHold` (o titular sob hold sobrevive ao varrimento agendado e
+só expira após o *release*) e `TestAOS267_SchedulerRefusesToArmWithoutLegalHold`.
+
+**(c) Credencial em nome próprio.** Não há humano na origem, e as duas saídas erradas eram pedir
+emprestada a credencial de um operador (uma mentira selada na cadeia) ou não selar nada (destruição
+não-atribuível). O scheduler age sob `nhi:aos-node/retention-scheduler`, nomeado no selo junto do
+trust anchor do issuer deste deployment. Cada passagem sela **dois** registos na cadeia
+`governance.retention`: `retention.sweep.started` **ANTES** e **fail-closed** (WORM recusa ⇒ a
+passagem **não corre**) e `retention.sweep.completed` **depois**, com contagens
+(varridos/expirados/**retidos por hold**/saltados/não-expirados) e **sem PII**. O `started` era
+indispensável: o `retention.expired` que o job sela por-registo **não leva `Principal`**
+(`audit.BuildRetentionExpiredRecord`), pelo que a destruição automática ficaria na cadeia sem
+ninguém a quem a atribuir. Os três eventos partilham a partição de propósito — numa cadeia gapless
+a **ordem** é ela própria a prova (`TestAOS267_SweepSealsOwnCredentialAndCountsWithoutPII` asserta-a).
+
+**(d) Cadência.** `AOS_RETENTION_SWEEP_INTERVAL`, default **`1h`** declarado (não o minuto dos
+outros varrimentos: um TTL de retenção mede-se em dias/meses e cada passagem lê **todos** os
+streams do Event Store). Fail-closed: ilegível ou `≤0` ⇒ `ErrBadRetentionSweepInterval` e o nó não
+arranca. **Nenhum valor desliga** o scheduler — nem `0`, porque desligá-lo com a política definida é
+exactamente a violação de *storage limitation* que este ticket fecha; quem não quer expiração deixa
+`AOS_RETENTION_*` por definir.
+
+**(e) Serialização.** O guard `expireInFlight` **mudou do `apiHandler` para o `NodeService`**: um
+guard no handler só excluiria as invocações da rota entre si, e `POST /dsar/expire` voltaria a poder
+correr em simultâneo com o tick, selando dois `retention.expired` para o mesmo facto. Guarda:
+`TestAOS267_RouteAndSchedulerShareOneGuard`.
+
+**(f) Integridade.** Paridade AOS-221 com a rota: verificação pós-shred da hash-chain. Se ela deixar
+de validar, o laço **PARA** (não se destrói mais sobre um log de auditoria que já não se verifica) e
+o incidente fica no log com o eixo nomeado.
+
+Env nova na tabela AOS-203 (`deploy/node/README.md`): `AOS_RETENTION_SWEEP_INTERVAL`. Campos novos
+em `Node` (`Retention`, `IssuerID`) para que a decisão de armar e o selo em nome próprio digam a
+verdade sem uma segunda leitura do ambiente.
 
 ---
 
@@ -898,12 +971,51 @@ Tornar as extensões um artefacto comportamental versionado, com janela de supor
 Loop avaliador periódico no nó: constrói `WideEvent`s a partir dos spans/WORM, avalia alertas, expõe o resultado.
 
 ### Critérios de Aceitação
-- [ ] Avaliador composto no loop de serviço (molde sweeper); alertas disparam sobre dados reais.
-- [ ] Resultado exposto (endpoint/span/log estruturado) e ligado ao registo de runbooks (AOS-106).
-- [ ] Fail-open declarado (a observabilidade nunca derruba o nó); `otel-genai/doc.go` corrigido (o «DIFERIDO» do exporter fechou em AOS-173).
+- [x] Avaliador composto no loop de serviço (molde sweeper); alertas disparam sobre dados reais.
+- [x] Resultado exposto (endpoint/span/log estruturado) e ligado ao registo de runbooks (AOS-106).
+- [x] Fail-open declarado (a observabilidade nunca derruba o nó); `otel-genai/doc.go` corrigido (o «DIFERIDO» do exporter fechou em AOS-173).
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** `slo_evaluator.go` corre um laço periódico no loop de serviço, no molde EXACTO
+de `approval_sweeper.go`/`retention_sweeper.go` (mesmo `sweepStop`, parado pelo Shutdown com um só
+`close`), e é um avaliador **composto**: as DUAS famílias na MESMA passagem e sobre a MESMA janela
+— os 4 SLIs da mediação (AOS-085/086) e os 7 canónicos operacionais (AOS-104/105), cada uma com a
+sua config, a sua janela sustentada e o seu vocabulário (não fundidas: fundi-las obrigaria a
+escolher um dos dois SLOs para os dois SLIs que ambas observam).
+
+**Nenhuma métrica nova e nenhum dado sintético.** A fonte dos SLIs derivados de spans é uma
+TORNEIRA (`slo_span_tap.go`): um T no caminho de exportação que entrega ao exportador OTLP real e
+guarda uma cópia num anel limitado — o avaliador agrega, byte a byte, o que o colector recebeu, em
+vez de uma segunda instrumentação divergente. As duas fontes que NÃO dependem de spans (e são as
+de maior severidade) correm sempre: a sonda de prontidão do plano de controlo (a mesma condição do
+`/readyz`, acumulada como fracção na janela) e a verificação da hash-chain do WORM. O que não tem
+produtor no nó (headroom do scheduler, fidelidade de replay) fica **sem amostras** pela regra
+anti-vacuidade de AOS-085 — não dispara nem se declara cumprido.
+
+**Exposição + runbooks:** `GET /metrics` ganha `aos_slo_sli`/`aos_slo_target`/`aos_slo_samples`/
+`aos_slo_breached`/`aos_alert_firing`/`aos_alert_streak`, com o **runbook como label** (e
+`runbook_orphan="1"` quando não resolve); e cada alerta disparado deixa uma linha de log
+estruturado com o título, o doc e o ADR resolvidos em `runbooks.Lookup` (AOS-106). Os `Offenders`
+(trace_ids) ficam DE FORA do `/metrics` — a rota é não-autenticada e a filosofia não-enumerável do
+nó vale para ela; o drill-down por trace vive no log.
+
+**FAIL-OPEN declarado**, com a fronteira explícita: a AVALIAÇÃO é fail-open (pânico contido por
+`recover` — sem ele um pânico na goroutine derrubaria o processo; sem propagação ao caminho de
+execução; sondas com prazo próprio; e o laço NÃO pára nem ao detectar adulteração, ao contrário do
+de retenção, porque não destrói nada); a CONFIGURAÇÃO é fail-closed como todo o resto
+(`AOS_SLO_EVAL_INTERVAL`/`AOS_SLO_WINDOW` ilegíveis ABORTAM o arranque; `0` na cadência desliga
+explicitamente e o banner di-lo). Ambas na tabela AOS-203. `otel-genai/doc.go` corrigido: o
+«DIFERIDO» passou a declarar o adapter REAL (`otlpexporter.go`, stdlib-only) e a separar o que
+continua diferido (o SDK oficial/gRPC).
+
+Testes em `aos274_slo_evaluator_test.go` (13 casos): alerta a disparar sobre spans REAIS emitidos
+pelo tracer do nó nas duas famílias, o sentido inverso (abaixo do SLO não dispara, com o SLI
+avaliado), a janela sustentada (não dispara antes), os três estados da sonda do WORM (íntegro /
+adulterado ⇒ PROC-DR / ilegível ⇒ SEM amostra, nunca falso positivo de DR), anti-vacuidade,
+resolução de runbook para TODO o alerta, log estruturado com doc+ADR, pânico contido com o nó a
+continuar a aceitar runs, sonda pendurada que não segura o laço, config fail-closed, banner, e o
+laço a arrancar no loop de serviço e a parar no Shutdown. Falsificabilidade verificada: retirada a
+torneira da composição, os testes de alerta e de `/metrics` FALHAM.
 
 ---
 
@@ -916,12 +1028,54 @@ Loop avaliador periódico no nó: constrói `WideEvent`s a partir dos spans/WORM
 Superfície de submissão de ratificação no molde de `/approve` (admissão do plano de controlo + assinatura + frescura + nonce durável).
 
 ### Critérios de Aceitação
-- [ ] `POST /promote` (ou subcomando CLI) autenticado; ratificação registada no WORM com principal.
-- [ ] Anti-replay (`ratification_replayed`) provado pela rota externa, não só in-process.
-- [ ] Banner deixa de dizer «deferido» quando a rota existir.
+- [x] `POST /promote` (ou subcomando CLI) autenticado; ratificação registada no WORM com principal.
+- [x] Anti-replay (`ratification_replayed`) provado pela rota externa, não só in-process.
+- [x] Banner deixa de dizer «deferido» quando a rota existir.
 
 ### Estado
-**ABERTO** (depende de AOS-096 para candidatos reais; a rota pode anteceder).
+**IMPLEMENTADO.** `promotion_api.go` acrescenta `POST /promote` ao mux do nó com a **mesma
+admissão do `/approve`** — `admitControl` (token-bucket dedicado do plano de controlo) +
+`admitControlMTLS` (DEF-012, quando composto) — e **nenhum esquema novo** de autenticação: a
+barreira que decide continua a ser a **assinatura ed25519** do ratificador verificada contra a
+pubkey **pinada** em `AOS_RATIFIERS` (non-signing, ADR-016 §1). O handler **não decide nada**:
+descodifica o wire, recusa fail-closed o que é estruturalmente inválido *antes* de tocar no gate,
+e delega em `PromotionController.Promote` — o **mesmo** `hitl.NewProductionRatificationGate` de
+AOS-159/AOS-206, com *freshness* + *nonce-store* **durável** forçados por construção. Nenhuma
+`env` nova (a superfície AOS-203 fica intacta) e nenhuma dependência externa nova (ADR-017).
+
+**Anti-replay PELA ROTA (o CA central).** `aos275_promote_route_test.go` submete a ratificação
+assinada **só por HTTP** (nunca por `node.Promotion.Promote`): a 1.ª chamada devolve `200` e sela
+`reason=ratified` no WORM com `Principal = human:ratifier-route`; a 2.ª, com o **mesmo corpo**
+(mesmo *nonce*), devolve `403` e sela `ratification_replayed`. É falsificável: contra o
+`NewRatificationGate` cru a 2.ª chamada daria `200`/`ratified`. As provas de fronteira cobrem
+ainda: assinatura forjada ⇒ `403` **sem** consumir o *nonce* (a legítima que se segue promove — a
+verificação precede o consumo, pelo que ninguém pode *queimar* a ratificação de um humano);
+ratificador não-pinado ⇒ `403` e **nada** na cadeia do artefacto; mTLS de controlo ligado sem
+certificado ⇒ `403` **antes** do gate (nada selado); corpo malformado ⇒ `400` com o gate intocado;
+campo desconhecido ⇒ `400` (wire fechado).
+
+**Banner.** A linha «a submissão de ratificações … fica DEFERIDA» **desapareceu**; no lugar, o
+banner nomeia a rota, declara o que ela **não** afrouxa e aponta a ferramenta de assinatura. O
+teste `TestAOS275_BannerDeixaDeDizerDeferido` corre o **arranque real** e falha se qualquer linha
+do promotion controller voltar a dizer «deferid…».
+
+**Via de acesso do operador (fecha a mesma classe de defeito um nível acima).** Sem ferramenta, o
+corpo do `POST /promote` era inderivável à mão (assinatura sobre canónico com separador de domínio;
+`request_id` = `RatificationID` = SHA-256 do canónico do artefacto+eval) — a rota nasceria como
+outra capacidade-fantasma. `aos-issuer ratify-sign` (contraparte exacta do `approve-sign`, no
+mesmo binário externo) imprime o corpo COMPLETO, pronto a `curl`; a seed do ratificador vem de
+ficheiro montado e **nunca** é ecoada; o *nonce* é CSPRNG por invocação e não é configurável.
+`ratifysign_test.go` prova que o `request_id` emitido é o `RatificationID` do artefacto
+reconstruído a partir do próprio JSON de saída, e que a assinatura é **byte-a-byte** a de
+`hitl.SignApproval` (ed25519 determinístico) — ou seja, cobre o canónico que o gate verifica.
+
+**Residual nomeado.** O *pipeline* de promoção (staging → eval-gate → canary → produção, AOS-096)
+continua a montante e **fora** do nó: a rota ratifica um candidato **apresentado** pelo operador. O
+que o nó garante é que nenhum artefacto chega a produção sem ratificação humana assinada, fresca e
+de uso-único. Uma submissão não-autenticada sela na partição de quarentena
+`ratification-unratified` (ingresso não-autenticado com escrita limitada no WORM) — **mesma**
+postura do `/approve`, limitada pelo token-bucket e, quando composto, pelo mTLS; o eixo para a
+fechar é o do resto do plano de controlo (DEF-012, PKI de cliente).
 
 ---
 

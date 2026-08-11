@@ -427,13 +427,10 @@ type apiHandler struct {
 	controlMTLS bool
 	// readGov é a costura de soberania/conformidade de leitura (AOS-172, D7+D6). nil ⇒ legado.
 	readGov *readGovernance
-	// expireInFlight serializa as passagens do [audit.ExpirationJob] conduzidas por
-	// POST /dsar/expire (AOS-213). O Run do job é pensado para uma execução de cada vez
-	// (o check-then-Add da idempotency key não é atómico ao nível do registo), pelo que
-	// duas passagens concorrentes poderiam selar DOIS eventos retention.expired para o
-	// mesmo facto. O guard CAS admite UMA passagem activa; uma segunda invocação
-	// concorrente recebe 409 (no-op) em vez de poluir a cadeia WORM.
-	expireInFlight atomic.Bool
+	// O guard que serializa as passagens do [audit.ExpirationJob] vive em
+	// [NodeService.expireInFlight] — NÃO aqui. Mudou de sítio em AOS-267, quando o scheduler
+	// interno passou a conduzir a MESMA passagem: um guard no handler só excluiria as
+	// invocações da rota entre si, e a rota voltaria a poder correr em simultâneo com o tick.
 }
 
 // NewAPIHandler compõe o http.Handler do nó sobre o loop de serviço (AOS-164a) e o nó real
@@ -523,6 +520,12 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// quando a frescura está DORMENTE (Node.ChallengeIssuer nil). Ver handleChallenge.
 	mux.HandleFunc("POST /runs/{id}/challenge", h.handleChallenge)
 	mux.HandleFunc("POST /runs/{id}/resume", h.handleResume)
+	// Plano de CONTROLO TRUSTED — RATIFICAÇÃO de auto-modificação (AOS-275, achado F7). NÃO é
+	// por-run: o alvo é um ARTEFACTO (skill/memória procedural), pelo que a rota é de NÓ. Mesma
+	// admissão do /approve (admitControl + admitControlMTLS) e a MESMA disciplina non-signing — a
+	// assinatura ed25519 do ratificador vem no corpo e é o gate de PRODUÇÃO (freshness + nonce-store
+	// durável forçados) que a verifica contra a pubkey PINADA. Ver promotion_api.go.
+	mux.HandleFunc("POST /promote", h.handlePromote)
 	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
 	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
 	// composto (fail-closed). Ver handleDSAR.
@@ -967,10 +970,28 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		g("aos_dsar_vault_ready", "Custodia da KEK (Vault) operacional (1) ou selada/inalcancavel (0).", "gauge", b01(vaultReady), "")
 	}
+	// CAUSA do vermelho, sem revelar titulares (remediação da W6). O `aos_dsar_vault_ready` a 0
+	// tem TRÊS causas — Vault selado/inalcançável, token nosso a expirar, destruição de chave por
+	// confirmar — e o corpo do /readyz é uniforme de propósito. Sem este contador, uma política
+	// Transit sem `deletion_allowed` tirava o nó de rotação PERMANENTEMENTE com um sinal
+	// indistinguível do de um token a expirar. É uma CONTAGEM de chaves pendentes (nomes já
+	// derivados por sha256): nomeia o eixo, nunca o titular. Só sai quando a custódia sabe
+	// responder à pergunta.
+	if pend, ok := shredPendingOf(h.node.DSARVault); ok {
+		g("aos_dsar_vault_shred_unconfirmed", "Destruicoes de KEK (crypto-shred) por CONFIRMAR na custodia; >0 mantem o no unready e o conteudo pode continuar recuperavel.", "gauge", float64(pend), "")
+	}
 
 	// aos_ready espelha o veredito do /readyz (drain + Event Store + custódia da KEK) — o SLI de
 	// disponibilidade a partir do qual o alerta de SLO dispara.
 	g("aos_ready", "O no reporta-se pronto no /readyz (1) ou nao (0).", "gauge", b01(!draining && esHealthy && vaultReady), "")
+
+	// AOS-274 — SLOs/ALERTAS avaliados em runtime. É a superfície de EXPOSIÇÃO do produtor
+	// (slo_evaluator.go): o que aqui aparece foi calculado sobre dados REAIS do nó (spans
+	// emitidos, sonda de prontidão, verificação da hash-chain), não sobre valores injectados.
+	// Os `Offenders` (trace_ids) NÃO viajam para aqui de propósito: `/metrics` é
+	// não-autenticado e a filosofia não-enumerável do nó vale para ele — o drill-down por trace
+	// fica no log estruturado do serviço, junto do runbook.
+	h.writeSLOMetrics(&b)
 
 	// Runtime Go (USE): saturação de recursos do processo.
 	g("aos_goroutines", "Goroutines em execucao.", "gauge", float64(runtime.NumGoroutine()), "")

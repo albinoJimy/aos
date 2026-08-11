@@ -141,14 +141,58 @@ type cryptoShredSink struct {
 	vault audit.KeyVault
 }
 
+// shredConfirmer é a porta OPCIONAL de VERIFICAÇÃO do crypto-shred. A porta [audit.KeyVault]
+// não deixa o `Delete` devolver erro — mas nada obriga a IGNORAR o que a custódia sabe. Uma
+// custódia que VERIFICA a destruição (AOS-249: o Vault Transit relê a chave e exige 404)
+// implementa isto e responde, por titular, se a destruição ficou por confirmar.
+//
+// Quem não a implementa (o [audit.InMemoryKeyVault] de referência, onde apagar do mapa É a
+// destruição) mantém o comportamento anterior — nenhuma custódia ganha um veredicto inventado.
+type shredConfirmer interface {
+	shredConfirmed(subjectID string) error
+}
+
+// shredPendingReporter é a porta OPCIONAL de CONTAGEM das destruições por confirmar (não por
+// titular: quantas, no total, continuam pendentes). Alimenta o selo de desfecho do varrimento e
+// a métrica de operação — nomear o eixo sem nomear titulares.
+type shredPendingReporter interface {
+	shredPending() int
+}
+
+// shredPendingOf devolve o número de destruições de KEK por confirmar, e se a custódia sabe
+// sequer responder à pergunta.
+func shredPendingOf(vault audit.KeyVault) (int, bool) {
+	if r, ok := vault.(shredPendingReporter); ok {
+		return r.shredPending(), true
+	}
+	return 0, false
+}
+
 // Expire implementa [audit.ExpirationSink]. Crypto-shred a KEK do titular (idempotente). Um
 // registo SEM titular (rec.SubjectID vazio) é no-op: não há chave por-titular a destruir — é o
 // residual nomeado (só o conteúdo cifrado por-titular é expirável por crypto-shred).
+//
+// FAIL-CLOSED DE AUDITORIA (remediação da W6). O sink devolvia `nil` SEMPRE — mesmo quando a
+// custódia acabara de registar que a destruição NÃO foi confirmada. Essa informação existe
+// desde AOS-249 ([vaultKeyVault.Delete] relê a chave Transit e exige 404) e era descartada por
+// um sink que tem canal de erro na assinatura e não o usava. Com uma política Transit sem
+// `deletion_allowed`, uma replicação ou um token sem autoridade, o desfecho era: `retention.expired`
+// selado, `report.Expired++`, key de idempotência marcada — e a KEK viva, com o conteúdo
+// decifrável. É a "afirmação FALSA de irrecuperabilidade — pior do que não apagar, porque é
+// credível" que [ErrVaultShredUnconfirmed] existe para impedir.
+//
+// O erro devolvido NÃO desfaz a selagem (a WORM é append-only e o facto foi selado ANTES da
+// destruição, por desenho): fá-lo AFLORAR. `POST /dsar/expire` passa a responder 500 em vez de
+// 200, o varrimento agendado regista o incidente com o eixo nomeado e sela a contagem de
+// pendentes, e a sonda de prontidão fica vermelha — a passagem deixa de ser silenciosa.
 func (s cryptoShredSink) Expire(_ context.Context, rec audit.ExpirableRecord) error {
 	if s.vault == nil || rec.SubjectID == "" {
 		return nil
 	}
 	s.vault.Delete(rec.SubjectID)
+	if c, ok := s.vault.(shredConfirmer); ok {
+		return c.shredConfirmed(rec.SubjectID)
+	}
 	return nil
 }
 

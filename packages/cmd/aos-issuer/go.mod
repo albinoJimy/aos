@@ -5,15 +5,16 @@ go 1.25
 toolchain go1.25.12
 
 require (
+	github.com/aos-ref/control-plane/governance/hitl v0.0.0-00010101000000-000000000000
 	github.com/aos-ref/integration v0.0.0-00010101000000-000000000000
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
+	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
 require (
 	github.com/aos-ref/control-plane/budget v0.0.0 // indirect
 	github.com/aos-ref/control-plane/governance/autonomy v0.0.0 // indirect
-	github.com/aos-ref/control-plane/governance/hitl v0.0.0-00010101000000-000000000000 // indirect
 	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0 // indirect
 	github.com/aos-ref/control-plane/pdp v0.0.0 // indirect
 	github.com/aos-ref/kernel/agent-runtime v0.0.0 // indirect
@@ -23,7 +24,6 @@ require (
 	github.com/aos-ref/platform/model-gateway v0.0.0 // indirect
 	github.com/aos-ref/platform/registry v0.0.0 // indirect
 	github.com/aos-ref/substrate/eventstore v0.0.0 // indirect
-	github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
 	github.com/aos-ref/substrate/redaction v0.0.0 // indirect
 	github.com/aos-ref/substrate/sandbox v0.0.0 // indirect
 	github.com/cedar-policy/cedar-go v1.8.0 // indirect

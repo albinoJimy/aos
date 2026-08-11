@@ -555,6 +555,13 @@ type Node struct {
 	// sobre OTLP quando ligada, senão o [otelgenai.NoopTracer]. Exposto para inspecção.
 	Tracer otelgenai.Tracer
 
+	// sloTap é a TORNEIRA de spans que alimenta o avaliador de SLOs/alertas (AOS-274) com os
+	// MESMOS spans que saem para o colector OTLP — não uma segunda instrumentação. É nil quando
+	// a observabilidade está desligada (nesse caso o avaliador corre à mesma, sobre as fontes que
+	// não dependem de spans, e o banner declara quais ficaram sem produtor). Não-exportado: é um
+	// detalhe da composição do nó, não uma porta.
+	sloTap *sloSpanTap
+
 	// Ingestion é o motor de redacção/tokenização de PII (AOS-091) LIGADO de facto ao
 	// fecho transitivo do nó (AOS-208): a fronteira de minimização onde o objectivo de
 	// um run é redigido ANTES de alcançar o Event Store, a memória (platform/memory), os
@@ -585,12 +592,28 @@ type Node struct {
 	// exposto para o operador/testes colocarem/levantarem holds. O fluxo re-consulta-o ANTES de
 	// cada shred (fail-closed do apagamento).
 	DSARHolds *audit.LegalHold
+	// holdsRestored é a PROVA de que [DSARHolds] (e o índice titular→partição que o faz valer
+	// por-partição) foram RE-HIDRATADOS do substrato durável no arranque — não apenas
+	// construídos. É o antecedente do varredor AUTOMÁTICO de retenção (AOS-267): a
+	// não-nulidade do objecto prova que a barreira EXISTE, nunca que o seu CONTEÚDO sobreviveu
+	// ao restart, e um conjunto de holds vazio derrota a barreira em silêncio. Ver
+	// governance_restore.go e [retentionSchedulerArmed].
+	//
+	// Não-exportado de propósito: é estado interno de composição, não superfície do nó. Um teste
+	// que componha um [Node] à mão arma-o explicitamente, e essa explicitação é o ponto.
+	holdsRestored bool
 	// DSARVault é o vault de chaves de PII por-titular que o crypto-shredding destrói (a KEK é
 	// apagada ⇒ a PII fica irrecuperável sem mutar a hash-chain). É a PORTA [audit.KeyVault] EM
 	// VIGOR (AOS-215/DEF-302): o vault INJECTADO por [Config.DSARVault] (custódia externa) quando
 	// composto, ou o [audit.InMemoryKeyVault] de referência (demo-grade, KEK em memória) senão.
 	// Exposto para selar/provar a PII em testes de conformidade; produção liga um KMS/HSM real
 	// pela mesma porta (o real é infra-org).
+	//
+	// IMUTÁVEL DEPOIS DO BOOTSTRAP, e isto é um contrato de CORRIDA, não de estilo: o campo não
+	// tem sincronização e é lido por goroutines de FUNDO de qualquer [NodeService] composto sobre
+	// o nó — a manutenção do token da custódia ([NodeService.renewVaultToken], AOS-249) e o
+	// avaliador de SLOs ([NodeService.controlPlaneAvailable], AOS-274). Um teste que queira OUTRA
+	// custódia compõe OUTRO nó; reatribuir aqui depois de o serviço existir é um data race.
 	DSARVault audit.KeyVault
 	// DSARIndex mapeia titular→partições (torna executável o legal hold POR-PARTIÇÃO no shred).
 	DSARIndex *audit.InMemorySubjectPartitionIndex
@@ -600,6 +623,15 @@ type Node struct {
 	// reutilizando o vault de AOS-093). Conduzido por POST /dsar/expire. NUNCA nil: o Bootstrap
 	// compõe-o SEMPRE (com política vazia ⇒ nada expira, fail-closed). Respeita [DSARHolds].
 	ExpirationJob *audit.ExpirationJob
+	// Retention é a política de retenção TTL-por-classe EM VIGOR (a MESMA que alimentou o
+	// [ExpirationJob]). Exposta porque o loop de serviço precisa de saber se há TTL a aplicar
+	// antes de arrancar o scheduler interno (AOS-267) e porque a versão é selada em cada
+	// varrimento. Zero-value ⇒ nada expira (o default do nó).
+	Retention audit.RetentionConfig
+	// IssuerID é o trust anchor de identidade DESTE deployment (a config que o compôs). Exposto
+	// para que um selo emitido pelo nó EM NOME PRÓPRIO — o do scheduler de retenção, AOS-267 —
+	// possa nomear qual nó agiu, e não só qual papel. Material PÚBLICO (um identificador).
+	IssuerID string
 	// contentOpener é o cifrador por-titular do nó (o MESMO [contentSealer]/[agentruntime.ContentCipher]
 	// que o capturer/step-ledger usam para SELAR) exposto como [agentruntime.ContentOpener] para o
 	// REPLAY SOBERANO do lado do leitor (AOS-214): a reconstrução de um run selado por um TERCEIRO
@@ -967,10 +999,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		exporter = e
 		otlpExp = e
 	}
+	// AOS-274 — TORNEIRA DE SPANS para o avaliador de SLOs. Quando há observabilidade ligada,
+	// interpõe-se um T ([sloTeeExporter]) que entrega ao exportador REAL e guarda uma cópia num
+	// anel limitado. Os SLIs derivados de spans passam a agregar EXACTAMENTE os mesmos dados que
+	// saem para o colector — nenhuma instrumentação nova, nenhuma contabilidade paralela. Sem
+	// observabilidade a torneira NÃO é composta (nil): o nó fica byte-idêntico ao modo sem
+	// tracing, e o avaliador continua a correr sobre as fontes que não dependem de spans
+	// (prontidão do plano de controlo, integridade do WORM), declarando no banner o que ficou
+	// sem produtor. FAIL-OPEN: o T nunca devolve um erro seu — ver slo_span_tap.go.
+	var sloTap *sloSpanTap
 	tracer := otelgenai.Tracer(otelgenai.NoopTracer{})
 	tracingEnabled := exporter != nil
 	if tracingEnabled {
-		tracer = otelgenai.NewTracer(exporter, cfg.TracerOptions...)
+		sloTap = newSLOSpanTap(defaultSLOTapCapacity)
+		tracer = otelgenai.NewTracer(sloTeeExporter{primary: exporter, tap: sloTap}, cfg.TracerOptions...)
 	}
 
 	// (3) IDENTIDADE REAL. Em AMBOS os modos o que entra na CADEIA DE SEGURANÇA é SÓ o
@@ -1497,6 +1539,33 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (FECHADO-RESIDUAL) no REGISTO-Deferimentos.md; o residual de granularidade (por-titular vs
 	// por-registo) fica nomeado com eixo em retention.go e no registo.
 	dsarHolds := audit.NewLegalHold()
+
+	// (7c-ter) RE-HIDRATAÇÃO do estado de governação a partir do substrato DURÁVEL (remediação
+	// da W6). O legal hold e o índice titular→partição nascem VAZIOS, mas o facto que os origina
+	// — cada `POST /dsar/hold` selado em [legalHoldPartition], cada conteúdo cifrado no Event
+	// Store — sobrevive ao processo. Sem esta reposição, um restart deixava a cadeia a AFIRMAR
+	// uma preservação que o nó já não sabia fazer valer; com o varredor AUTOMÁTICO de AOS-267 no
+	// loop de serviço, isso é uma destruição de material sob ordem de preservação, sem ninguém no
+	// caminho e irreversível. Ver governance_restore.go.
+	//
+	// FAIL-CLOSED sem abortar o arranque: um erro de leitura deixa `holdsRestored` a false, e
+	// [retentionSchedulerArmed] recusa armar o varredor automático (a expiração continua
+	// conduzível por `POST /dsar/expire`, que tem um humano autenticado a assumi-la).
+	holdsRestored := true
+	nHolds, err := restoreLegalHolds(ctx, worm, dsarHolds)
+	if err != nil {
+		holdsRestored = false
+		log("legal hold: RE-HIDRATACAO FALHADA a partir da cadeia %q — o no nao consegue provar que as preservacoes seladas estao em vigor; o varredor AUTOMATICO de retencao (AOS-267) NAO arma (a expiracao fica so por POST /dsar/expire): %v", legalHoldPartition, err)
+	}
+	nLinks, err := restoreSubjectIndex(ctx, es, dsarIndex)
+	if err != nil {
+		holdsRestored = false
+		log("indice titular->particao: RE-HIDRATACAO FALHADA — o legal hold POR-PARTICAO nao cobriria as demais particoes dos titulares antigos; o varredor AUTOMATICO de retencao (AOS-267) NAO arma: %v", err)
+	}
+	if holdsRestored && (nHolds > 0 || nLinks > 0) {
+		log("estado de governacao RE-HIDRATADO do substrato duravel: %d alvo(s) sob legal hold repostos da cadeia %q, %d ligacao(oes) titular->particao repostas do Event Store", nHolds, legalHoldPartition, nLinks)
+	}
+
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
 	dsarFlow := dsar.NewFlow(
@@ -1521,6 +1590,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	expirationOpts := []audit.ExpirationOption{
 		audit.WithExpirationAudit(worm, retentionPartition),
 		audit.WithExpirationSubjectIndex(dsarIndex),
+	}
+	// IDEMPOTÊNCIA RE-HIDRATADA (remediação da W6). O seen-set default é in-memory: os eventos
+	// cifrados permanecem no Event Store durável (o crypto-shred destrói a KEK, não os registos),
+	// pelo que a fonte volta a listá-los com o TTL vencido e o PRIMEIRO varrimento após cada
+	// restart re-selava um SEGUNDO `retention.expired` para o mesmo facto, re-contado no
+	// `retention.sweep.completed`. Repõe-se o seen-set a partir dos eventos já selados — a mesma
+	// disciplina do legal hold: o que a cadeia durável já afirma não se re-afirma.
+	if idem, nIdem, ierr := restoreExpirationIdempotency(ctx, worm, retentionPartition); ierr != nil {
+		log("idempotencia da expiracao: RE-HIDRATACAO FALHADA da cadeia %q — o proximo varrimento pode RE-SELAR expiracoes ja seladas (a cadeia fica poluida, nada e destruido a mais): %v", retentionPartition, ierr)
+	} else {
+		expirationOpts = append(expirationOpts, audit.WithExpirationIdempotency(idem))
+		if nIdem > 0 {
+			log("idempotencia da expiracao RE-HIDRATADA: %d expiracao(oes) ja seladas na cadeia %q nao serao re-seladas", nIdem, retentionPartition)
+		}
 	}
 	if tracingEnabled {
 		expirationOpts = append(expirationOpts, audit.WithExpirationTracer(tracer))
@@ -1636,7 +1719,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("promotion controller (AOS-159/AOS-206) composto via NewProductionRatificationGate (freshness+nonce-store DURAVEL FORCADOS) mas SEM RATIFICADORES — toda a promocao sera NEGADA (ratifier_unknown); defina AOS_RATIFIERS=\"principal=hexpubkey\" para pinar ratificadores")
 	}
-	log("NOTA promotion controller: a capacidade e alcancavel PELO CAMINHO DO NO (node.Promotion.Promote, provada em teste); a submissao de ratificacoes pelo operador (endpoint HTTP/subcomando CLI) fica DEFERIDA — depende de AOS-096/pipeline de promocao")
+	// AOS-275 (achado F7): a submissao de ratificacoes DEIXOU de ser deferida — ha rota externa.
+	// O banner nomeia-a e declara o que ela NAO afrouxa (a decisao continua a ser do MESMO gate),
+	// para que nenhum operador leia "endpoint" como "caminho alternativo mais fraco".
+	log("promotion controller (AOS-275): ROTA EXTERNA POST /promote — MESMA admissao do /approve (token-bucket do plano de controlo + mTLS de controlo quando composto) e MESMA disciplina non-signing (a assinatura ed25519 do ratificador vem no corpo; o no nunca detem a chave privada); a decisao e do MESMO gate de producao (freshness + nonce-store DURAVEL), pelo que uma ratificacao re-submetida apos consumo e ratification_replayed TAMBEM pela rota; toda a decisao terminal e selada no WORM com o PRINCIPAL do ratificador")
+	log("promotion controller (AOS-275): o corpo do POST /promote produz-se FORA do no com `aos-issuer ratify-sign --artifact-id ... --version ... --content-hash ... --ratifier ... --key-file <seed>` — a chave privada do ratificador NUNCA entra neste processo (non-signing, ADR-016 §1)")
+	log("NOTA promotion controller: o PIPELINE de promocao (staging->eval-gate->canary->producao, AOS-096) continua a montante e fora do no — a rota ratifica um artefacto candidato APRESENTADO pelo operador; o que o no garante e que NENHUM chega a producao sem ratificacao humana assinada, fresca e de uso-unico")
 	log("substrato: %s", substrateMode(cfg))
 	// TAMPER-EVIDENCE DO WORM IMPOSTA (AOS-221). O banner declara o estado REALMENTE
 	// verificado (não a intenção): a hash-chain foi RE-ENCADEADA e verificada no arranque —
@@ -1757,7 +1845,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// capacidade-fantasma. A granularidade (por-titular) e o eixo residual são declarados.
 	log("legal hold (AOS-213): POST /dsar/hold / POST /dsar/release (por titular e/ou particao) — MESMA credencial forte do /dsar/erase (readGov); cada accao selada no WORM sem PII (particao %q)", legalHoldPartition)
 	if _, hasPII := cfg.Retention.Period(audit.ClassPIIOperational); hasPII || cfg.Retention.Version() != "" {
-		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO (politica %q) — conduzido por POST /dsar/expire (sob demanda/agendamento externo); expiracao = crypto-shred da KEK POR-TITULAR (AOS-093, apagamento real), RESPEITA o legal hold; retention.expired selado no WORM (particao %q)", cfg.Retention.Version(), retentionPartition)
+		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO (politica %q) — conduzido por POST /dsar/expire (sob demanda) e, QUANDO O NO SERVE, pelo scheduler INTERNO do loop de servico (AOS-267, cadencia AOS_RETENTION_SWEEP_INTERVAL; um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo nao tem scheduler — o banner do servico declara a postura real); expiracao = crypto-shred da KEK POR-TITULAR (AOS-093, apagamento real), RESPEITA o legal hold; retention.expired selado no WORM (particao %q)", cfg.Retention.Version(), retentionPartition)
 		log("NOTA granularidade (AOS-213): o TTL e por-registo/classe mas o crypto-shred e por-CHAVE-DE-TITULAR (uma KEK embrulha todos os registos do titular) => a expiracao e POR-TITULAR; a retencao diferencial por-classe DENTRO de um titular colapsa para a classe que expira primeiro (residual nomeado, eixo AOS-093/envelope; ver DEF-903)")
 	} else {
 		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO mas SEM politica de retencao (Config.Retention vazia) — POST /dsar/expire varre mas NADA expira (fail-closed); defina a politica de retencao TTL-por-classe para ligar o TTL")
@@ -1815,6 +1903,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
 		IdentityMode:     identityMode,
 		Tracer:           tracer,
+		sloTap:           sloTap, // AOS-274: nil quando a observabilidade OTLP está desligada
 		Ingestion:        ingestion,
 
 		Checkpointer: checkpointer, // nil quando a execução durável está desligada
@@ -1826,9 +1915,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		SovereignReadCredential: readCred,
 		DSAR:                    dsarFlow,
 		DSARHolds:               dsarHolds,
+		holdsRestored:           holdsRestored, // prova de re-hidratação (antecedente do varredor automático)
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
 		ExpirationJob:           expirationJob,
+		Retention:               cfg.Retention, // AOS-267: o loop de serviço decide o scheduler por ela
+		IssuerID:                cfg.IssuerID,  // AOS-267: nomeia o nó no selo em nome próprio
 		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		stateGates:              stateGates,    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)

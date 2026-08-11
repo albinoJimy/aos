@@ -759,6 +759,32 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 			svcOpts = append(svcOpts, WithApprovalSweepInterval(d))
 		}
 	}
+	// AOS-267 — CADÊNCIA DO SCHEDULER DE RETENÇÃO. Ao contrário da linha acima, esta é
+	// FAIL-CLOSED: um valor ilegível ou <= 0 ABORTA o arranque em vez de degradar para o default.
+	// A diferença não é estilo. O varrimento de aprovações é higiene operacional; este conduz a
+	// EXPIRAÇÃO POR TTL, e um operador que se engana na cadência e fica com outra qualquer não
+	// tem forma de o notar — o sintoma seria dados pessoais retidos para lá do prazo, meses
+	// depois. Ver [ErrBadRetentionSweepInterval]: nenhum valor desliga o scheduler.
+	retentionSweep, err := retentionSweepIntervalFromEnv()
+	if err != nil {
+		return err
+	}
+	svcOpts = append(svcOpts, WithRetentionSweepInterval(retentionSweep))
+	// AOS-274 — CADÊNCIA E JANELA DO AVALIADOR DE SLOs/ALERTAS. A avaliação em si é FAIL-OPEN (a
+	// observabilidade nunca derruba o nó), mas a CONFIGURAÇÃO é fail-closed como todas as outras:
+	// um valor ilegível ABORTA aqui, no arranque, em vez de degradar para o default. A fronteira
+	// é deliberada — um operador que pede uma cadência e fica com outra não tem como o notar, e
+	// isso não é a observabilidade a falhar, é a config a mentir. `0` na cadência DESLIGA
+	// explicitamente (e o banner di-lo).
+	sloInterval, err := sloEvalIntervalFromEnv()
+	if err != nil {
+		return err
+	}
+	sloWindow, err := sloWindowFromEnv()
+	if err != nil {
+		return err
+	}
+	svcOpts = append(svcOpts, WithSLOEvalInterval(sloInterval), WithSLOWindow(sloWindow))
 	// AOS-277 — KNOBS DE INGRESSO. As três variáveis são lidas UMA vez, AQUI (o arranque), e
 	// fail-closed: um valor inválido devolve [ErrBadIngressLimits] e o nó NÃO chega a servir.
 	// O que se liga é a admission que já existia desde AOS-166 (token-bucket + tecto de runs
@@ -1238,15 +1264,40 @@ func parseRetentionFromEnv() (audit.RetentionConfig, error) {
 // vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
 var ErrBadVaultDSAR = errors.New("aos: custódia DSAR no Vault mal configurada — AOS_DSAR_VAULT_ADDR exige AOS_DSAR_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
+// ErrInsecureVaultDSARAddr — AOS_DSAR_VAULT_ADDR com transporte inseguro (AOS-249, achado F6).
+// Fail-closed no ARRANQUE, com o MESMO critério do verificador de attestation remoto que vive no
+// MESMO binário ([integration.CheckSecureTransportURL]): https, ou http só em loopback.
+//
+// Não é zelo de esquema. Cada pedido a esta URL leva o token do Vault no cabeçalho X-Vault-Token
+// e os ciphertexts da KEK no corpo; em claro pela rede, um intermediário fica com a credencial
+// que DESTRÓI chaves de titulares (crypto-shred) — over-erasure irreversível — e com o material
+// de cifra. Ter o gémeo de attestation a recusar isto e a custódia da KEK a aceitá-lo era a
+// divergência que o desafio A3 apanhou.
+var ErrInsecureVaultDSARAddr = errors.New("aos: AOS_DSAR_VAULT_ADDR com transporte INSEGURO — o token do Vault (que destroi chaves de titulares) e o material de custodia atravessariam a rede em claro; exige https (http SO em loopback), o mesmo criterio do verificador de attestation remoto no mesmo binario")
+
+// ErrBadVaultTokenMinTTL — AOS_DSAR_VAULT_TOKEN_MIN_TTL presente mas não é uma duração Go > 0.
+// Fail-closed de config: uma margem malformada não degrada silenciosamente para o default — seria
+// o operador a julgar ter uma janela de aviso que não tem.
+var ErrBadVaultTokenMinTTL = errors.New("aos: AOS_DSAR_VAULT_TOKEN_MIN_TTL invalida (esperada uma duracao Go > 0, ex.: \"5m\") — a margem com que o /readyz fica VERMELHO ANTES de o token do Vault expirar")
+
 // parseVaultDSARFromEnv constrói a custódia da KEK por-titular em HashiCorp Vault (Transit) a
 // partir do ambiente — a via que preenche [Config.DSARVault] com custódia EXTERNA em vez do
 // [audit.InMemoryKeyVault] demo-grade. Vazio ⇒ nil (in-memory, inalterado). Presente ⇒ exige o
 // token por FICHEIRO montado (material privado nunca por env). O adaptador é key-never-leaves
 // ([vaultKeyVault] implementa [audit.KeyWrapper]): a KEK vive no Vault e o crypto-shred destrói-a lá.
+// AOS-249 acrescenta-lhe duas coisas: a VALIDAÇÃO DE ESQUEMA da URL (reutilizando o critério do
+// gémeo de attestation, não escrevendo um segundo) e a passagem do CAMINHO do token + margem de
+// prontidão ao adaptador, para que o token possa ser re-lido/renovado em vez de congelar no
+// arranque.
 func parseVaultDSARFromEnv() (audit.KeyVault, error) {
 	addr := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_ADDR"))
 	if addr == "" {
 		return nil, nil // não configurado ⇒ vault in-memory de referência (comportamento actual).
+	}
+	// AOS-249 (F6) — transporte. O critério é PARTILHADO com o verificador de attestation remoto
+	// (o mesmo binário recusava lá o que aceitava aqui); ver [ErrInsecureVaultDSARAddr].
+	if err := integration.CheckSecureTransportURL(addr); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInsecureVaultDSARAddr, err)
 	}
 	tokenPath := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_TOKEN_PATH"))
 	if tokenPath == "" {
@@ -1264,7 +1315,21 @@ func parseVaultDSARFromEnv() (audit.KeyVault, error) {
 	if mount == "" {
 		mount = "transit"
 	}
-	return newVaultKeyVault(addr, mount, token), nil
+	// AOS-249 (F6) — margem de prontidão do token. É a antecedência com que o /readyz fica
+	// VERMELHO face à expiração; vazia ⇒ [DefaultVaultTokenMinTTL].
+	minTTL := DefaultVaultTokenMinTTL
+	if v := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_TOKEN_MIN_TTL")); v != "" {
+		d, perr := time.ParseDuration(v)
+		if perr != nil || d <= 0 {
+			return nil, fmt.Errorf("%w: AOS_DSAR_VAULT_TOKEN_MIN_TTL=%q", ErrBadVaultTokenMinTTL, v)
+		}
+		minTTL = d
+	}
+	// O CAMINHO (nunca o valor) segue para o adaptador: é o que permite adoptar um token rodado
+	// por um agente externo sem reiniciar o nó.
+	return newVaultKeyVault(addr, mount, token,
+		withVaultTokenFile(tokenPath),
+		withVaultTokenMinTTL(minTTL)), nil
 }
 
 // ErrBadModelConfig — o gateway de modelos está pedido (AOS_MODEL_ENDPOINT presente) mas mal

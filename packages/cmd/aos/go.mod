@@ -21,6 +21,7 @@ require (
 	github.com/aos-ref/platform/memory v0.0.0
 	github.com/aos-ref/platform/model-gateway v0.0.0
 	github.com/aos-ref/platform/registry v0.0.0
+	github.com/aos-ref/platform/runbooks v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
 	github.com/aos-ref/substrate/otel-genai v0.0.0
 	github.com/aos-ref/substrate/redaction v0.0.0

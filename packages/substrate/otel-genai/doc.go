@@ -35,24 +35,39 @@
 //   - Contrato (contract.go): a tabela requiredAttrs por operação e
 //     [ValidateSpanData], o validador de conformidade semconv.
 //
-// # Adapter OTLP real — DIFERIDO (TODO de wiring de deployment)
+// # Adapter OTLP real — FECHADO em AOS-173 (correcção documental de AOS-274)
 //
-// O exportador OTLP-gRPC/HTTP REAL (sobre o SDK go.opentelemetry.io/otel e
-// go.opentelemetry.io/otel/exporters/otlp/...) é um ADAPTER DE DEPLOYMENT
-// deliberadamente DIFERIDO: implementá-lo aqui puxaria dependências externas e
-// partiria a regra de build offline/zero-dep do monorepo (e o baseline
-// SCA/govulncheck). O caminho de adopção, quando um deployment o exigir, é um
-// módulo/adapter SEPARADO que:
+// Este parágrafo dizia «DIFERIDO». Já não é verdade, e a correcção é o AC3 de
+// AOS-274: um TODO que sobrevive à sua própria resolução leva o leitor seguinte a
+// escrever de novo o que já existe — ou a concluir que o nó não exporta nada.
 //
-//  1. implementa a porta [Exporter] traduzindo [SpanData] → pdata/ptrace (o
-//     [MarshalOTLP] deste pacote já dá a forma OTLP/JSON de referência), e/ou
-//     implementa a porta [Tracer] sobre trace.Tracer do SDK;
-//  2. mapeia as constantes de semconv.go para attribute.Key sem renomear;
-//  3. é injectado no RT (agentruntime.WithTracer) e no RM
-//     (referencemonitor.WithTracer) no composition root — sem tocar no núcleo.
+// O adapter REAL existe e está LIGADO: `packages/cmd/aos/otlpexporter.go`
+// ([OTLPHTTPExporter]) implementa a porta [Exporter] fazendo POST de OTLP/JSON a um
+// colector OTLP/HTTP com **apenas net/http + o [MarshalOTLP] deste pacote** — sem o
+// SDK go.opentelemetry.io e sem uma única dependência externa, pelo que a regra de
+// build offline/zero-dep do monorepo (ADR-017) e o baseline SCA/govulncheck ficam
+// intactos. É composto no composition root do nó e injectado no RT/RM pela via já
+// prevista (agentruntime.WithTracer / referencemonitor.WithTracer), sem tocar no
+// núcleo. A exportação é fail-open (a telemetria nunca derruba o nó); um endpoint
+// malformado aborta o ARRANQUE (fail-closed de config).
 //
-// Até lá, o [SpanTracer] + [RecordingExporter] + [MarshalOTLP] provam a árvore de
-// spans e o wire format ponta-a-ponta, mantendo o build offline.
+// O que continua diferido — e é outra coisa — é um adapter sobre o SDK oficial
+// (pdata/ptrace, OTLP-gRPC). Só faria sentido num deployment que exija gRPC ou os
+// processadores do SDK, e continuaria a ser um módulo SEPARADO pela mesma razão de
+// sempre: as dependências externas não entram no binário do nó.
+//
+// O [SpanTracer] + [RecordingExporter] + [MarshalOTLP] mantêm-se como a prova
+// in-process da árvore de spans e do wire format ponta-a-ponta.
+//
+// # Consumidor em RUNTIME dos SLIs/alertas (AOS-274)
+//
+// [BuildDashboard]/[EvaluateAlerts] (AOS-085/086) e [DashboardCatalog.Render]/
+// [EvaluateOperationalAlerts] (AOS-104/105) já não são só superfície de teste: o nó
+// corre-os periodicamente no seu loop de serviço (`packages/cmd/aos/slo_evaluator.go`)
+// sobre os MESMOS spans que saem para o colector, e liga cada alerta ao registo de
+// runbooks de AOS-106. A regra ANTI-VACUIDADE deste pacote (Samples == 0 ⇒ nem breach
+// nem cumprimento afirmado) é o que mantém honesto um nó cujos produtores não estão
+// todos ligados — nenhum valor é injectado para preencher um painel.
 //
 // # Segredos
 //

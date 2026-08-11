@@ -45,7 +45,10 @@ import (
 const usage = `aos-issuer — autoridade de identidade externa (D4)
 uso:
   aos-issuer pubkey --key-file <ficheiro>
-  aos-issuer mint   --key-file <ficheiro> --issuer <id> --human <id> --agent <id> --class <c> --caps <c1,c2> [--ttl 15m] [--auth-method manual]`
+  aos-issuer mint   --key-file <ficheiro> --issuer <id> --human <id> --agent <id> --class <c> --caps <c1,c2> [--ttl 15m] [--auth-method manual]
+  aos-issuer approve-sign --request-id <id> --preview <b64> --approver <id> --session <s> --credential <c> --key-file <ficheiro>
+  aos-issuer ratify-sign  --artifact-id <id> --version <semver> --content-hash <b64> --ratifier <id> --key-file <ficheiro> [--canary-passed] [--eval-*]
+                          → imprime o corpo JSON de POST /promote (AOS-275)`
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -63,6 +66,8 @@ func run(args []string, out io.Writer) error {
 		return cmdPubkey(args[1:], out)
 	case "approve-sign":
 		return runApproveSign(args[1:])
+	case "ratify-sign":
+		return runRatifySign(args[1:], out)
 	case "mint":
 		return cmdMint(args[1:], out)
 	default:
