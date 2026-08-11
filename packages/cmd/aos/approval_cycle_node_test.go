@@ -19,8 +19,8 @@ import (
 	"github.com/aos-ref/kernel/reference-monitor/risk"
 	"github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
-	domain "github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/digest"
+	domain "github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
 )
@@ -45,10 +45,10 @@ import (
 // idas ao modelo.
 
 const (
-	acnClass    = "agent-worker" // classe presente na allowlist da política de referência
-	acnCap      = "cap:fs.read"  // capability permitida por allowlist + regra Cedar
-	acnAgent    = "agt-ciclo"
-	acnRunID    = "run-ciclo-no"
+	acnClass     = "agent-worker" // classe presente na allowlist da política de referência
+	acnCap       = "cap:fs.read"  // capability permitida por allowlist + regra Cedar
+	acnAgent     = "agt-ciclo"
+	acnRunID     = "run-ciclo-no"
 	acnPublisher = "publisher-ciclo"
 )
 

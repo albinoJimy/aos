@@ -65,7 +65,9 @@ type acrChain struct {
 }
 
 // acrSink capta os pendentes (o que o nó faria: registar e suspender).
-type acrSink struct{ pending []agentruntime.PendingApproval }
+type acrSink struct {
+	pending []agentruntime.PendingApproval
+}
 
 func (s *acrSink) Escalate(_ context.Context, p agentruntime.PendingApproval) error {
 	s.pending = append(s.pending, p)
