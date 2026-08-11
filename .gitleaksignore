@@ -1,0 +1,13 @@
+# Falsos-positivos do scan PROFUNDO (gitleaks). Não é a fonte de verdade do gate de
+# segredos — essa é `scripts/ci/secrets.sh` (material sensível em ficheiros rastreados),
+# que corre ANTES no mesmo job e é fail-closed. Esta lista só silencia achados do scan
+# extra que foram VERIFICADOS À MÃO e não são segredos.
+#
+# Regra desta lista: cada entrada traz o PORQUÊ, e o valor real NUNCA é escrito aqui.
+# Se uma entrada deixar de reproduzir, remove-se — não se acumula ruído.
+
+# specs/EPIC-20 §AOS-250 — critério de aceitação em Markdown: `max_turns=200`. A regra
+# `generic-api-key` casa o padrão chave=valor de qualquer `algo=<literal>` em prosa. Não é
+# credencial: é o valor de um TECTO DE TURNOS num teste de API descrito na spec. Verificado
+# à mão em 2026-08-11; `scripts/ci/secrets.sh` verde no mesmo commit.
+030033cd1474fa521699c65605eba693a7900647:specs/EPIC-20_Prontidao_Agentica_Remediacao.md:generic-api-key:190
