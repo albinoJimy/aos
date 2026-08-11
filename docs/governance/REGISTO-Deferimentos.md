@@ -244,7 +244,7 @@ cada execução.)*
 | packages/cmd/aos/dsar.go | DEFERIDO | 1 |
 | packages/cmd/aos/dsar.go | DEMO-GRADE | 2 |
 | packages/cmd/aos/main.go | DEFERIDO | 2 |
-| packages/cmd/aos/main.go | DEMO-GRADE | 3 |
+| packages/cmd/aos/main.go | DEMO-GRADE | 8 |
 | packages/cmd/aos/otlpexporter.go | DIFERIDO | 2 |
 | packages/cmd/aos/promotion.go | DEFERIDO | 1 |
 | packages/cmd/aos/service.go | DEFERIDO | 1 |

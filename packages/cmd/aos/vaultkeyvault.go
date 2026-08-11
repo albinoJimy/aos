@@ -1,7 +1,7 @@
 package main
 
 // Custódia da KEK por-titular em HashiCorp Vault (Transit), pela porta [audit.KeyWrapper]
-// (AOS-216, residual de DEF-302/AOS-215). É a alternativa REAL ao vault in-memory demo-grade: a
+// (AOS-216, residual de DEF-302/AOS-215). É a alternativa REAL ao vault in-memory de referência: a
 // KEK do titular vive DENTRO do Vault e NUNCA entra no processo do nó — o embrulho/desembrulho da
 // DEK corre no Vault (Transit encrypt/decrypt); o crypto-shred (GDPR Art. 17) é a DESTRUIÇÃO da
 // chave Transit do titular, após a qual o UnwrapDEK falha fechado e o conteúdo é irrecuperável.
