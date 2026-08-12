@@ -16,13 +16,29 @@
 # sejam falsos-positivos. Quem fechar a triagem REMOVE as linhas correspondentes.
 #
 # EIXO DE TRIAGEM, por prioridade de risco:
-#   - G115 (49x, overflow de conversao) — o grosso. Sobretudo substrate/sandbox e
-#     eventstore (isolamento e ORDEM DO LOG); triar primeiro os de caminhos de seguranca.
-#   - G101 (11x, credencial hardcoded) — MUITOS sao NOMES DE ATRIBUTO OTel (ex.: o
-#     AttrConsumedTokens do progress-surface, ja confirmado falso-positivo); confirmar
-#     caso a caso que nao ha material a serio.
-#   - G703/G704 (13x, regras NOVAS: erros de os.Getenv/conversao nao verificados).
-#   - G122 (1x, regra NOVA).
+#
+#   - G101 (13x, "credencial hardcoded") — **TRIADOS 2026-08-12: TODOS FALSOS-POSITIVOS.**
+#     Sao NOMES DE ATRIBUTO DE SPAN OTel cujo IDENTIFICADOR Go contem Token/Key/Passed:
+#     AttrInputTokens="gen_ai.usage.input_tokens", attrSpawnKey="aos.spawn.key",
+#     AttrRatCanaryPassed="aos.ratification.canary_passed", etc. Verificados um a um nos
+#     10 ficheiros (otel-genai/semconv, memory/{working,compression}, model-gateway/
+#     metering/cost, scheduler/{spawn_admission,routing,breaker}, agent-runtime/breaker,
+#     governance/{hitl/ratification,progress-surface/span}). Nenhum material sensivel.
+#     Ficam baselinados por serem ruido estrutural da regra, nao divida.
+#
+#   - G115 (49x, overflow de conversao) — POR TRIAR, e agora a prioridade real. Concentra-se
+#     em substrate/sandbox (15, incl. seccomp) e substrate/eventstore (8): ISOLAMENTO e
+#     ORDEM DO LOG. Uma conversao que trunque num syscall de seccomp ou num contador de
+#     sequencia nao e cosmetica.
+#
+#   - G703/G704 (12x) e G122 (1x) — regras NOVAS da ferramenta, nunca antes avaliadas.
+#
+# CORRECCAO DE REGISTO (2026-08-12): uma versao anterior deste cabecalho — e o corpo do
+# PR #7 — afirmavam existir achados G407 (nonce/IV hardcoded) nos caminhos de cifra, com
+# prioridade maxima. E FALSO: correndo o gosec do pin com -include=G407 em platform/audit,
+# platform/backup, platform/memory, substrate/redaction e substrate/eventstore o total e
+# ZERO. A afirmacao veio de uma listagem obtida por RASPAGEM DO LOG DA CI — o metodo que
+# esta mesma baseline declara nao-fiavel. Nao ha divida de nonce/IV nesta arvore.
 # ============================================================================
 packages/cmd/aos-attestation/synth.go|G115
 packages/cmd/aos/authority_directory.go|G703
