@@ -513,6 +513,14 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	if plan := replayPlanFrom(ctx); plan != nil {
 		runCtx = withReplayPlan(runCtx, plan)
 	}
+	// IDENTIDADE POR-RUN DO MODELO (AOS-278, CUTOVER DURO). O token NHI do RUN
+	// (goal.Credential) — o MESMO que cada tool call mediada verifica — anexa-se ao runCtx
+	// PRÓPRIO do run para o caminho do modelo o apresentar ao estágio authn REAL do GW.
+	// Anexa-se aqui, no runCtx que sobrevive ao retorno de Submit (o ctx de entrada e os seus
+	// valores morrem com o pedido), a par do plano de replay. Vazio ⇒ não anexa: o estágio
+	// authn nega atribuívelmente (sem principal forjado). Cobre a RETOMA — o Resume repovoa
+	// goal.Credential com a credencial fresca antes de re-submeter.
+	runCtx = withModelCredential(runCtx, goal.Credential)
 	s.mu.Lock()
 	if s.closed {
 		// Shutdown começou durante a aquisição do lease: aborta limpo (larga a posse

@@ -11,10 +11,38 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 )
+
+// aos278ModelIdentity constrói uma autoridade de identidade REAL (o mesmo
+// integration.NewIssuerAuthority/NewVerifierFromAuthority do nó) cuja classe concede
+// model:invoke, e devolve (verifier, ctxComCredencialValida). O ctx carrega um token NHI
+// verificável cujo escopo SELA model:invoke — o que o estágio authn REAL do GW (CUTOVER
+// DURO, AOS-278) exige para deixar o pipeline seguir. É o seam que os testes de egress/
+// allowlist/throughput reutilizam para exercitar o caminho nó→GW→provider com identidade
+// real em vez do antigo stub allow-all.
+func aos278ModelIdentity(t *testing.T) (*identity.Verifier, context.Context) {
+	t.Helper()
+	auth, err := integration.NewIssuerAuthority(integration.AuthorityConfig{
+		IssuerID:  "iss-aos278",
+		Classes:   map[string]identity.ClassPolicy{"reader": {TTL: time.Hour, Scope: []string{"model:invoke"}}},
+		Directory: integration.NewAllowlistDirectory("operator-alice"),
+	})
+	if err != nil {
+		t.Fatalf("NewIssuerAuthority: %v", err)
+	}
+	verifier := integration.NewVerifierFromAuthority(auth)
+	tok, err := auth.MintForHuman(context.Background(), "operator-alice", "agent-1", "reader", []string{"model:invoke"})
+	if err != nil {
+		t.Fatalf("MintForHuman: %v", err)
+	}
+	return verifier, withModelCredential(context.Background(), tok.Compact)
+}
 
 // TestGatewayModelClient_EndToEnd prova que newGatewayModelClient compõe o Model Gateway REAL
 // (NewProduction: allowlist assinada embebida + keypool + routing + authn + credential) e que o
@@ -42,14 +70,16 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 
 	// Ambos os modelos da regra board-eu da allowlist ASSINADA embebida têm de atravessar e chegar
 	// ao provider COM o nome correto. Um nome fora da allowlist seria negado fail-closed.
+	verifier, credCtx := aos278ModelIdentity(t)
 	for _, model := range []string{"gpt-4o", "gpt-4o-mini"} {
 		gotModel = ""
-		// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu embebida.
-		mc, err := newGatewayModelClient(srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+		// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu embebida. O
+		// verifier REAL + a credencial no ctx atravessam o estágio authn (AOS-278).
+		mc, err := newGatewayModelClient(verifier, srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("newGatewayModelClient(%q): %v", model, err)
 		}
-		resp, err := mc.Call(context.Background(), agentruntime.PromptView{
+		resp, err := mc.Call(credCtx, agentruntime.PromptView{
 			Turn:         1,
 			Materialized: []byte("=== SYSTEM ===\nx\n=== CONTEXT ===\nolá"),
 		})
@@ -89,7 +119,8 @@ func TestModelGateway_NoThroughputFuse(t *testing.T) {
 	// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu. É o MESMO caminho de
 	// composição que o nó usa em produção — a conta de infra (LimitRPM/TPM=0) vem de dentro de
 	// newGatewayModelClient, não do teste, pelo que um regresso do fusível é apanhado aqui.
-	mc, err := newGatewayModelClient(srv.URL, "gpt-4o-mini", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	verifier, credCtx := aos278ModelIdentity(t)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o-mini", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -99,7 +130,7 @@ func TestModelGateway_NoThroughputFuse(t *testing.T) {
 	const oldFuseRPM = 120
 	const total = oldFuseRPM + 10
 	for i := 1; i <= total; i++ {
-		if _, err := mc.Call(context.Background(), agentruntime.PromptView{Turn: i, Materialized: []byte("olá")}); err != nil {
+		if _, err := mc.Call(credCtx, agentruntime.PromptView{Turn: i, Materialized: []byte("olá")}); err != nil {
 			t.Fatalf("chamada #%d falhou (%v) — o fusível de throughput F1 voltou: o keypool não tem janela, logo um LimitRPM finito na conta única brownout-a o nó para sempre. Mantenha LimitRPM/LimitTPM=0 (o tecto vive no gateway externo).", i, err)
 		}
 	}
@@ -113,13 +144,13 @@ func TestModelGateway_NoThroughputFuse(t *testing.T) {
 func TestParseModelFromEnv_Unset(t *testing.T) {
 	t.Setenv("AOS_MODEL_ENDPOINT", "")
 	t.Setenv("AOS_MODEL_NAME", "")
-	mc, err := parseModelFromEnv(false)
-	if err != nil || mc != nil {
-		t.Fatalf("unset devia dar (nil,nil), veio (%v,%v)", mc, err)
+	mc, binder, err := parseModelFromEnv(false)
+	if err != nil || mc != nil || binder != nil {
+		t.Fatalf("unset devia dar (nil,nil,nil): mc==nil=%t binder==nil=%t err=%v", mc == nil, binder == nil, err)
 	}
 	t.Setenv("AOS_MODEL_ENDPOINT", "http://x/v1")
 	t.Setenv("AOS_MODEL_NAME", "")
-	if _, err := parseModelFromEnv(false); err == nil {
+	if _, _, err := parseModelFromEnv(false); err == nil {
 		t.Fatalf("endpoint sem AOS_MODEL_NAME devia abortar (ErrBadModelConfig)")
 	}
 }
@@ -151,11 +182,12 @@ func TestExternalAllowlist_AllowsNonEmbeddedModel(t *testing.T) {
 		t.Fatalf("loadModelAllowlistFromEnv: pol=%v err=%v", pol, err)
 	}
 	// kimi-for-coding/board-kimi NÃO estão na allowlist embebida — só passam pela externa.
-	mc, err := newGatewayModelClient(srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil, nil)
+	verifier, credCtx := aos278ModelIdentity(t)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
-	if _, err := mc.Call(context.Background(), agentruntime.PromptView{Turn: 1, Materialized: []byte("olá")}); err != nil {
+	if _, err := mc.Call(credCtx, agentruntime.PromptView{Turn: 1, Materialized: []byte("olá")}); err != nil {
 		t.Fatalf("Call com allowlist externa (modelo não-embebido) falhou: %v", err)
 	}
 	if gotModel != "kimi-for-coding" {

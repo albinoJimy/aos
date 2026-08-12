@@ -24,7 +24,14 @@ type ModelClientAdapter struct {
 	region  string
 	board   string
 	princip string
-	runID   string
+	// principCtx SOURCE o token do principal do CONTEXTO por-chamada (AOS-278). Quando
+	// != nil e devolve um valor não-vazio, esse valor TEM PRECEDÊNCIA sobre [princip]: é
+	// como a identidade REAL do RUN (o token NHI de Goal.Credential, o mesmo que cada tool
+	// call mediada verifica) chega ao estágio authn do GW, que é construção-time e nível-nó
+	// (não sabe qual run serve). Vazio/ausente ⇒ cai para [princip] (a omissão sob o cutover
+	// duro é ""), e o estágio authn nega ATRIBUÍVELMENTE — nunca se forja um principal.
+	principCtx func(context.Context) string
+	runID      string
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -41,6 +48,21 @@ func WithTools(tools []port.Tool) RuntimeAdapterOption {
 // WithPrincipal define o token scoped do principal (validação forte é AOS-057).
 func WithPrincipal(token string) RuntimeAdapterOption {
 	return func(a *ModelClientAdapter) { a.princip = token }
+}
+
+// WithPrincipalFromContext liga a fonte POR-CHAMADA do token do principal (AOS-278):
+// o adaptador é construído UMA vez ao nível do nó, mas a identidade a apresentar ao
+// estágio authn do GW é a do RUN, e essa só se conhece por-chamada — viaja no ctx que
+// flui de Run(ctx, goal) até Call(ctx, view), a MESMA mecânica por-run que o plano de
+// replay usa (ver resume_model.go). fn lê esse valor do ctx; um valor não-vazio tem
+// precedência sobre [WithPrincipal]. É o que estende ao turno de modelo a identidade
+// real que as tool calls já verificam. fn nil ⇒ opção inerte.
+func WithPrincipalFromContext(fn func(context.Context) string) RuntimeAdapterOption {
+	return func(a *ModelClientAdapter) {
+		if fn != nil {
+			a.principCtx = fn
+		}
+	}
 }
 
 // WithRegionBoard define a fronteira de soberania alvo (consumida por AOS-058).
@@ -69,11 +91,20 @@ func NewModelClient(gw port.Gateway, model string, opts ...RuntimeAdapterOption)
 // PromptView, invoca o GW (que atravessa a pipeline determinística) e traduz a
 // resposta normalizada de volta para o runtime.
 func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptView) (agentruntime.ModelResponse, error) {
+	// IDENTIDADE POR-RUN (AOS-278): a fonte de ctx (o token NHI do run) tem precedência
+	// sobre o token de construção. Ausente/vazia ⇒ fica o de construção (sob o cutover duro,
+	// ""), e o estágio authn do GW nega atribuívelmente — nenhum principal é forjado.
+	principal := a.princip
+	if a.principCtx != nil {
+		if p := a.principCtx(ctx); p != "" {
+			principal = p
+		}
+	}
 	req := port.ChatRequest{
 		Model:     a.model,
 		Messages:  []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}},
 		Tools:     a.tools,
-		Principal: a.princip,
+		Principal: principal,
 		Region:    a.region,
 		Board:     a.board,
 		RunID:     a.runID,

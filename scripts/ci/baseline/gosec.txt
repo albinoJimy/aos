@@ -54,10 +54,12 @@
 #     nao conhece a FRONTEIRA DE CONFIANCA do AOS. Aqui o nao-confiavel e o AGENTE (e o
 #     modelo); o OPERADOR e confiavel por construcao — e ele que faz o deployment.
 #
-#     G703 "path traversal" (modelgatewaywiring:149, modeltools:81, sandboxwiring:154):
-#       os caminhos vem de VARIAVEIS DE AMBIENTE lidas no ARRANQUE (AOS_MODEL_API_KEY_PATH,
-#       AOS_MODEL_TOOLS, ...) — config de deployment do operador, nunca entrada do agente.
-#       Um operador que queira ler um ficheiro seu nao precisa de traversal: monta-o.
+#     G703 "path traversal" (modelgatewaywiring:149, modeltools:81, sandboxwiring:154,
+#       main.go: AOS_WORM_CHECKPOINT_FILE de AOS-268): os caminhos vem de VARIAVEIS DE
+#       AMBIENTE lidas no ARRANQUE (AOS_MODEL_API_KEY_PATH, AOS_MODEL_TOOLS,
+#       AOS_WORM_CHECKPOINT_FILE, ...) — config de deployment do operador, nunca entrada do
+#       agente. Um operador que queira ler um ficheiro seu nao precisa de traversal: monta-o.
+#       (AOS-268: +1 ocorrencia main.go|G703 = a leitura da ancora assinada do checkpoint.)
 #     G704 "SSRF" (cli.go:278,293): o `base` e a flag --addr / AOS_API_ADDR do CLI — o
 #       operador a dizer ao SEU proprio cliente a que no se liga. Nao ha atacante a
 #       controlar o destino.
@@ -90,6 +92,7 @@ packages/cmd/aos/authority_directory.go|G703
 packages/cmd/aos/broker_vault_env.go|G703
 packages/cmd/aos/cli.go|G704
 packages/cmd/aos/cli.go|G704
+packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703

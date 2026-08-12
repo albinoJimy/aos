@@ -23,12 +23,14 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	audit "github.com/aos-ref/platform/audit"
+	"github.com/aos-ref/platform/identity"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
-	"github.com/aos-ref/platform/model-gateway/pipeline"
+	"github.com/aos-ref/platform/model-gateway/pipeline/authn"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
@@ -94,43 +96,60 @@ func (c staticModelCredential) Fetch(_ context.Context, _, _ string) (string, er
 	return c.secret, nil
 }
 
-// nodeModelAuthn implementa [pipeline.Stage] — o seam de IDENTIDADE (AOS-057) que torna as decisões
-// de soberania do gateway atribuíveis a um principal. Em produção liga-se aqui o estágio real
-// (identity.Verifier + policy); no nó de referência resolve um principal determinista quando o
-// pedido não traz um. É o gémeo do estágio de teste do model-gateway.
-type nodeModelAuthn struct{}
+// ErrModelIdentityNotComposed — o caminho do modelo foi INVOCADO mas o verifier REAL do nó
+// ainda não foi ligado ao estágio authn do GW (AOS-278, CUTOVER DURO). Estruturalmente
+// inalcançável no arranque normal: o [Bootstrap] compõe o verifier em AMBOS os modos e
+// liga-o (Config.ModelIdentityBinder) ANTES de servir. É a guarda fail-closed do estado
+// intermédio (gateway construído na fronteira de ambiente, antes de a identidade existir):
+// enquanto não-ligado, o estágio authn NEGA toda a chamada em vez de aceitar sem verificar.
+var ErrModelIdentityNotComposed = errors.New("aos: identidade do model gateway nao composta (AOS-278) — o verifier real do no ainda nao foi ligado ao estagio authn do GW; nenhum turno de modelo corre sem identidade real (fail-closed)")
 
-func (nodeModelAuthn) Name() string { return "auth-principal" }
+// lateBoundModelVerifier é o verifier do estágio authn do GW ligado TARDIAMENTE (AOS-278).
+// O Model Gateway REAL é construído na fronteira de ambiente ([parseModelFromEnv]) ANTES de
+// a IDENTIDADE estar composta — o verifier só nasce no [Bootstrap] (bootstrap.go, o MESMO
+// integration.NewVerifierFromAuthority que as tool calls usam). Este holder arranca VAZIO e
+// NEGA fail-closed ([ErrModelIdentityNotComposed]); o Bootstrap chama [bind] com o verifier
+// REAL, fechando o cutover. O ponteiro é atómico: o bind (uma vez, no arranque de um único
+// goroutine) e as leituras (por-chamada, nos goroutines dos runs) não corrompem nem correm.
+type lateBoundModelVerifier struct {
+	v atomic.Pointer[identity.Verifier]
+}
 
-// nodeReferencePrincipal é o token do principal de REFERÊNCIA do nó (o mesmo que
-// [nodeModelAuthn] resolve quando o pedido não traz identidade). É passado por
-// [modelgateway.WithPrincipal] no call site (AOS-264): torna a identidade EXPLÍCITA
-// no ponto de aquisição — o passo zero da troca mediada, cuja negação por identidade
-// mataria os turnos de modelo se o Principal chegasse vazio ao broker (desafio A3).
-const nodeReferencePrincipal = "aos-node/aos-agent"
+// bind liga o verifier REAL. Chamado UMA vez pelo Bootstrap depois de compor a identidade.
+func (l *lateBoundModelVerifier) bind(v *identity.Verifier) { l.v.Store(v) }
 
-func (nodeModelAuthn) Process(_ context.Context, ex *pipeline.Exchange) error {
-	// A ATRIBUIÇÃO ESTRUTURADA (utilizador/agente/classe/raiz humana) resolve-se por
-	// CAMPO e INDEPENDENTE do ex.Principal — não amarrada a `ex.Principal == ""`. É o
-	// que o estágio de allowlist exige para atribuir a decisão de soberania
-	// ([allowlist.ErrNoAttribution], ADR-010): sem utilizador NEM agente, nega
-	// fail-closed. O call site agora FIXA o ex.Principal (string) via
-	// [modelgateway.WithPrincipal] no passo zero da troca mediada (AOS-264); um guard
-	// preso só ao ex.Principal saltaria esta resolução e deixaria a atribuição
-	// estruturada VAZIA — o GW negaria "sem principal" e nenhum turno de modelo
-	// correria (exactamente o risco A3 que o passo zero devia FECHAR, reintroduzido
-	// pela porta dos fundos). Por isso a resolução guarda-se na AUSÊNCIA da atribuição.
-	if strings.TrimSpace(ex.PrincipalUser) == "" && strings.TrimSpace(ex.PrincipalAgent) == "" {
-		ex.PrincipalUser = "aos-node"
-		ex.PrincipalAgent = "aos-agent"
-		ex.AgentClass = "reader"
-		ex.HumanRoot = "aos-node"
+// Verify implementa [authn.Verifier]: delega no verifier REAL ligado; se ainda não ligado,
+// NEGA fail-closed — o nó não verifica tokens de modelo sem a raiz de confiança real.
+func (l *lateBoundModelVerifier) Verify(ctx context.Context, compact string) (identity.Principal, error) {
+	v := l.v.Load()
+	if v == nil {
+		return identity.Principal{}, ErrModelIdentityNotComposed
 	}
-	if strings.TrimSpace(ex.Principal) == "" {
-		ex.Principal = nodeReferencePrincipal
-	}
-	ex.Record("auth-principal", "allow", "identidade de referencia do no (seam AOS-057)")
-	return nil
+	return v.Verify(ctx, compact)
+}
+
+// modelInvokeCapability é a capability que o token do run tem de SELAR no escopo para
+// invocar um modelo (casa com token_policy.json embebido do estágio authn: require
+// model:invoke para as operações chat/embeddings).
+const modelInvokeCapability = "model:invoke"
+
+// nodeModelAuthority é o [authn.AuthorityResolver] do estágio authn do GW no nó (AOS-278). O
+// nó CONCEDE a capability de invocação de modelo a QUALQUER principal VERIFICADO — a
+// autoridade REAL não vem daqui: vem do ESCOPO SELADO no token NHI do run, com que o estágio
+// authn RECONCILIA esta concessão (authn.Stage: effective = utilizador ∩ classe ∩
+// token.Scope, menor privilégio). Espelha a descoberta de AOS-071/AOS-156 — a autoridade é
+// derivada do TOKEN verificado, não de um directório estático — e vale em AMBOS os modos
+// (referência e endurecido, onde NÃO há autoridade in-process, só o verifier). Um token cujo
+// escopo NÃO sela model:invoke é negado ATRIBUÍVELMENTE (authn.ErrScopeExceedsSeal / falta a
+// capability obrigatória): o nó não alarga o que o token concedeu.
+type nodeModelAuthority struct{}
+
+func (nodeModelAuthority) UserAuthority(context.Context, string) ([]string, error) {
+	return []string{modelInvokeCapability}, nil
+}
+
+func (nodeModelAuthority) ClassAuthority(context.Context, string) ([]string, error) {
+	return []string{modelInvokeCapability}, nil
 }
 
 // newGatewayModelClient compõe o [modelgateway.Gateway] de produção apontado ao endpoint dado e
@@ -143,7 +162,27 @@ func (nodeModelAuthn) Process(_ context.Context, ex *pipeline.Exchange) error {
 // de referência (governação VOLÁTIL — o comportamento até AOS-265); != nil ⇒ o WORM
 // DURÁVEL resolvido de AOS_MODEL_AUDIT_PATH (ver model_audit_env.go), onde a activação
 // da allowlist e as decisões por chamada sobrevivem ao restart.
-func newGatewayModelClient(baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store) (agentruntime.ModelClient, error) {
+//
+// verifier (AOS-278, CUTOVER DURO) é o verificador de identidade que o estágio authn REAL do
+// GW usa em CADA chamada: valida EdDSA + janela + revogação + raiz humana (ADR-003) do token
+// NHI do run. Tipicamente é o [lateBoundModelVerifier] (ligado pelo Bootstrap ao verifier
+// real do nó); nil ⇒ ErrModelIdentityNotComposed (o gateway não se compõe sem seam de
+// identidade — não há fallback para um stub allow-all).
+func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store) (agentruntime.ModelClient, error) {
+	// CUTOVER DURO: sem seam de identidade não há gateway. O estágio authn REAL substitui o
+	// antigo stub (nodeModelAuthn) que forjava o principal e devolvia allow incondicional.
+	if verifier == nil {
+		return nil, ErrModelIdentityNotComposed
+	}
+	// ESTÁGIO AUTHN REAL (AOS-057/AOS-278): verifier real + autoridade do nó (concede
+	// model:invoke, reconciliada com o escopo selado no token) + policy-as-code embebida
+	// (token_policy.json, default-deny: exige model:invoke para chat/embeddings). Qualquer um
+	// nil torna o estágio fail-closed por construção (authn.New).
+	authnPolicy, err := authn.LoadPolicy()
+	if err != nil {
+		return nil, fmt.Errorf("%w: policy de validacao de token do GW (AOS-278): %v", ErrBadModelConfig, err)
+	}
+	authnStage := authn.New(verifier, nodeModelAuthority{}, authnPolicy)
 	secret := ""
 	if apiKeyPath != "" {
 		raw, err := os.ReadFile(apiKeyPath)
@@ -188,28 +227,29 @@ func newGatewayModelClient(baseURL, model, apiKeyPath, region, board string, pol
 		Accounts: []modelgateway.InfraAccount{{
 			KeyID: "model-upstream", Provider: "openai", Region: region, LimitRPM: 0, LimitTPM: 0,
 		}},
-		Authn:     nodeModelAuthn{},
-		Allowlist: pol, // nil ⇒ allowlist EMBEBIDA (retro-compat); != nil ⇒ bundle externo montado
+		Authn:     authnStage, // estágio authn REAL (AOS-278) — verifica o token NHI do run; sem stub
+		Allowlist: pol,        // nil ⇒ allowlist EMBEBIDA (retro-compat); != nil ⇒ bundle externo montado
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBadModelConfig, err)
 	}
-	// PASSO ZERO DA TROCA MEDIADA (AOS-264). WithPrincipal fixa a identidade REAL de
-	// referência no ponto de aquisição — sem ela, o ex.Principal chegaria vazio ao
-	// broker e a troca seria negada por identidade ANTES do Cedar (o risco novo que o
-	// desafio A3 nomeia: "nenhum turno de modelo executa"). A negação por identidade
-	// passa a ser IMPOSSÍVEL por omissão, não por acaso.
+	// IDENTIDADE POR-RUN (AOS-278, CUTOVER DURO). WithPrincipalFromContext SOURCE o token
+	// NHI do RUN do ctx por-chamada (Goal.Credential, anexado ao runCtx em service.go) —
+	// o MESMO token que cada tool call mediada verifica. O adaptador é construído UMA VEZ
+	// ao nível do nó, mas a identidade a apresentar é a do run, que só o ctx conhece: a
+	// porta correcta é o ctx que flui Run→Call (a mesma mecânica do plano de replay). Sob o
+	// cutover duro NÃO se fixa WithPrincipal: sem credencial no ctx o ex.Principal chega
+	// VAZIO e o estágio authn nega ATRIBUÍVELMENTE — nunca se forja um principal (o antigo
+	// nodeReferencePrincipal "aos-node/aos-agent", que não era um token verificável, foi
+	// removido com o stub).
 	//
 	// WithRun NÃO se liga aqui de propósito: este adaptador é construído UMA VEZ, ao
-	// nível do nó (a amarra por-run é do decorador de Bootstrap, ver a nota no call
-	// site em main.go), pelo que um runID de construção seria CONSTANTE e agregaria
-	// todos os runs no mesmo balde de SLI/atribuição — a "auditoria que não distingue
-	// runs" que o A3 §V descreve. A amarra POR-RUN (WithRun + recordExchange que
-	// distingue runs) é a porta de aquisição com contexto de AOS-265; declara-se aqui
-	// para não ser reintroduzida como constante no calor do wiring.
+	// nível do nó, pelo que um runID de construção seria CONSTANTE e agregaria todos os
+	// runs no mesmo balde de SLI/atribuição — a "auditoria que não distingue runs" que o
+	// A3 §V descreve. A amarra POR-RUN é a porta de aquisição com contexto de AOS-265.
 	opts := []modelgateway.RuntimeAdapterOption{
 		modelgateway.WithRegionBoard(region, board),
-		modelgateway.WithPrincipal(nodeReferencePrincipal),
+		modelgateway.WithPrincipalFromContext(modelCredentialFromContext),
 	}
 	if len(tools) > 0 {
 		opts = append(opts, modelgateway.WithTools(tools))
