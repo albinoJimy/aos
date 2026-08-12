@@ -6,10 +6,35 @@
 | Documento | Epic — Remediação dos achados de prontidão (F1–F16), billing token-only ligado ao nó, e implementação dos ADR-021/022 |
 | Versão | 1.0 |
 | Data | 2026-08-08 |
-| Classificação | Documento de Referência — **Proposta** (tickets ABERTOS) |
+| Classificação | Documento de Referência — **Em execução** (25/34 tickets implementados e no trunk; 9 abertos — ver **§0 Balanço**, 2026-08-12) |
 | Documento-fonte | **`docs/reports/prontidao-modelos-agenticos.md`** (relatório consolidado, 2026-08-08) |
 | ADRs assumidos aprovados | **ADR-021** (scoring determinístico no GW) · **ADR-022** (arestas condicionais, papel verificador, payload tipado) |
 | Documentos relacionados | `docs/reports/desafio-A1..A4-*.md` (planos de fecho corrigidos + decisões do dono), ADR-008/010/011/012/013/018/020, `tecnica/06`, `tecnica/18` |
+
+---
+
+## 0. Balanço de execução — 2026-08-12
+
+**Estado global: 25 dos 34 tickets IMPLEMENTADOS e integrados no trunk `feature/AOS-128-ux-dx-tests`; 9 ABERTOS.** O eixo **D4** (autoridade de identidade real) está **fechado no código**. Dos 9 abertos, 7 dependem de uma decisão/gramática por resolver (decisão do dono no eixo $, ou a gramática concreta dos ADR-021/022) e 2 são de escopo próprio ainda por executar.
+
+### Implementados (25)
+- **Risco activo + higiene (F1–F6, F11–F15):** AOS-245 · AOS-246 · AOS-247 · AOS-248 · AOS-249 · AOS-250 · AOS-251 · AOS-252 · AOS-255.
+- **Billing token-only (dimensão de tokens):** AOS-256 · AOS-257 · AOS-258.
+- **Burn-down + exaustão:** AOS-261 · AOS-262 · AOS-263 *(prompt durável; cutover das 3 decisões do dono — extend fora, reúso HITL, paridade com a pausa)*.
+- **Broker de credenciais:** AOS-264 · AOS-265 *(consumo in-process v1)*.
+- **Operações do nó:** AOS-266 *(attestation: challenge freshness + device enrollment)* · AOS-267 *(scheduler de retenção)* · AOS-274 *(SLOs)* · AOS-275 *(promoção)* · AOS-276 *(keypool)* · AOS-277 *(ingresso)*.
+- **Eixo D4:** AOS-268 *(verificação ancorada do WORM no restart)* · AOS-278 *(cutover duro da identidade do GW)*.
+
+### Abertos (9), por bloqueio
+- **Decisão do dono — eixo $ do billing:** AOS-259 *(D2)* · AOS-260 *(D1)*. A dimensão de **tokens** está ligada (AOS-256..258); a de **dólares** aguarda D1/D2.
+- **Gramática de ADR (`tecnica/06`/`tecnica/18`):** AOS-269 *(ADR-021, scoring determinístico)* · AOS-270 · AOS-271 · AOS-272 · AOS-273 *(ADR-022: PlanDocument, `role: verifier`, payload tipado, migração)*. Zero código — dependem da gramática concreta.
+- **Escopo próprio, sem bloqueio de dono:** AOS-253 *(crash-resume por varredura no arranque)* · AOS-254 *(saga/compensação)*. Ambos dependem de AOS-252 (feito) e ficaram por executar.
+
+### Deferidos com eixo (infra-org, fora do código do nó)
+Selagem periódica out-of-process dos checkpoints do WORM (**DEF-268/DEF-269**, custódia de chave D4/AOS-156) · instância do IdP tenant + adaptador HSM/KMS (costura `crypto.Signer`, EPIC-16) · injecção do broker no executor remoto (**D8-B**).
+
+### Nota de reconciliação
+Os campos `### Estado` por-ticket de **AOS-245, AOS-250 e AOS-266** estavam desactualizados — descreviam a não-entrada na W0 (245/250) ou o estado inicial (266), mas a implementação e os testes dedicados existem e passam (`aos245_ledger_titular_test.go`, `apiMaxTurnsOptionFromEnv`, `aos266_challenge_freshness_test.go`/`aos266_device_enrollment_test.go`). Corrigidos nesta revisão.
 
 ---
 
@@ -101,7 +126,7 @@ Propagar o titular **por-`Apply`** (o ledger é um por processo, partilhado por 
 - [ ] Compatibilidade de leitura com WALs escritos pelo formato anterior (ou migração declarada).
 
 ### Estado
-**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
+**IMPLEMENTADO — adoptado após a W0** (o `Estado` anterior descrevia a não-entrada na W0 e ficou por reconciliar). O step-ledger sela o `Result.Payload` por-titular (o titular chega agora ao cifrador; o capturer regista `subject→stream` no DSARIndex) e o shred/expire apaga ambos os registos. Prova: `packages/cmd/aos/aos245_ledger_titular_test.go`. Ver o Balanço (§0).
 
 ---
 
@@ -253,7 +278,7 @@ Tecto de operador para `MaxTurns` na fronteira de ingresso — node-local, sem t
 - [ ] Teste de API: `max_turns=200` ⇒ clamp aplicado; ausente ⇒ default; inválido ⇒ fail-closed.
 
 ### Estado
-**ABERTO — declarado na W0 e NÃO entrou (zero linhas de código na branch `feature/epic20-w0-risco-activo`).** Registado na nota de âmbito da W0 em vez de ficar fechado por omissão; ver «Modelo de execução».
+**IMPLEMENTADO — adoptado após a W0** (o `Estado` anterior descrevia a não-entrada na W0 e ficou por reconciliar). `apiMaxTurnsOptionFromEnv()` lê `AOS_MAX_TURNS` e clampa `max_turns` na fronteira de ingresso, resolvido ANTES de compor o serviço — valor malformado **aborta o arranque** em vez de degradar para o default (`packages/cmd/aos/main.go`). Ver o Balanço (§0).
 
 ---
 
@@ -899,7 +924,7 @@ Ligar as duas portas e declarar o estado no arranque.
 - [ ] Testes de nó: replay recusado; dispositivo errado recusado.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO** (o `Estado` anterior ficou por reconciliar). Frescura por-cerimónia (`AOS_CHALLENGE_ISSUANCE`/`AOS_CHALLENGE_TTL`) + atribuição dispositivo↔aprovador (`AOS_DEVICE_ENROLLMENT_FILE`), com o banner a declarar LIGADA/DORMENTE. Provas: `packages/cmd/aos/aos266_challenge_freshness_test.go`, `aos266_device_enrollment_test.go`. Ver o Balanço (§0).
 
 ---
 
