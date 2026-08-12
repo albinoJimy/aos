@@ -6,35 +6,37 @@
 | Documento | Epic — Remediação dos achados de prontidão (F1–F16), billing token-only ligado ao nó, e implementação dos ADR-021/022 |
 | Versão | 1.0 |
 | Data | 2026-08-08 |
-| Classificação | Documento de Referência — **Em execução** (25/34 tickets implementados e no trunk; 9 abertos — ver **§0 Balanço**, 2026-08-12) |
+| Classificação | Documento de Referência — **Em execução** (27/34 implementados e no trunk, 1 parcial; 7 abertos, **todos à espera de decisão do dono** — ver **§0 Balanço**) |
 | Documento-fonte | **`docs/reports/prontidao-modelos-agenticos.md`** (relatório consolidado, 2026-08-08) |
 | ADRs assumidos aprovados | **ADR-021** (scoring determinístico no GW) · **ADR-022** (arestas condicionais, papel verificador, payload tipado) |
 | Documentos relacionados | `docs/reports/desafio-A1..A4-*.md` (planos de fecho corrigidos + decisões do dono), ADR-008/010/011/012/013/018/020, `tecnica/06`, `tecnica/18` |
 
 ---
 
-## 0. Balanço de execução — 2026-08-12
+## 0. Balanço de execução — 2026-08-13
 
-**Estado global: 25 dos 34 tickets IMPLEMENTADOS e integrados no trunk `feature/AOS-128-ux-dx-tests`; 9 ABERTOS.** O eixo **D4** (autoridade de identidade real) está **fechado no código**. Dos 9 abertos, 7 dependem de uma decisão/gramática por resolver (decisão do dono no eixo $, ou a gramática concreta dos ADR-021/022) e 2 são de escopo próprio ainda por executar.
+**Estado global: 27 dos 34 tickets IMPLEMENTADOS e integrados no trunk `feature/AOS-128-ux-dx-tests` (1 deles PARCIAL, com eixo); 7 ABERTOS.** O eixo **D4** (autoridade de identidade real) está **fechado no código**. **Os 7 abertos dependem TODOS de uma decisão do dono** — as duas do eixo $ (D1/D2) e a **ratificação dos ADR-021/022** (ambos estão `Estado: Proposto`, pelo que implementá-los seria comprometer desenho não congelado, contra a regra da Carta). **Não resta trabalho executável sem decisão.**
 
-### Implementados (25)
+### Implementados (27, um deles PARCIAL)
 - **Risco activo + higiene (F1–F6, F11–F15):** AOS-245 · AOS-246 · AOS-247 · AOS-248 · AOS-249 · AOS-250 · AOS-251 · AOS-252 · AOS-255.
+- **Durabilidade do run:** AOS-253 *(crash-resume: varredura de órfãos no arranque + `Resumer` composto; efeito já aplicado não repete, modelo não re-interrogado)* · **AOS-254 — PARCIAL** *(a CONDUÇÃO da saga está composta e o ramo alcançável — declarar a ausência com selo WORM — provado; a COMPENSAÇÃO REAL fica em **DEF-270**, à espera de um produtor de compensações e do registo run-scoped no kernel)*.
 - **Billing token-only (dimensão de tokens):** AOS-256 · AOS-257 · AOS-258.
 - **Burn-down + exaustão:** AOS-261 · AOS-262 · AOS-263 *(prompt durável; cutover das 3 decisões do dono — extend fora, reúso HITL, paridade com a pausa)*.
 - **Broker de credenciais:** AOS-264 · AOS-265 *(consumo in-process v1)*.
 - **Operações do nó:** AOS-266 *(attestation: challenge freshness + device enrollment)* · AOS-267 *(scheduler de retenção)* · AOS-274 *(SLOs)* · AOS-275 *(promoção)* · AOS-276 *(keypool)* · AOS-277 *(ingresso)*.
 - **Eixo D4:** AOS-268 *(verificação ancorada do WORM no restart)* · AOS-278 *(cutover duro da identidade do GW)*.
 
-### Abertos (9), por bloqueio
+### Abertos (7) — TODOS bloqueados por decisão do dono
 - **Decisão do dono — eixo $ do billing:** AOS-259 *(D2)* · AOS-260 *(D1)*. A dimensão de **tokens** está ligada (AOS-256..258); a de **dólares** aguarda D1/D2.
-- **Gramática de ADR (`tecnica/06`/`tecnica/18`):** AOS-269 *(ADR-021, scoring determinístico)* · AOS-270 · AOS-271 · AOS-272 · AOS-273 *(ADR-022: PlanDocument, `role: verifier`, payload tipado, migração)*. Zero código — dependem da gramática concreta.
-- **Escopo próprio, sem bloqueio de dono:** AOS-253 *(crash-resume por varredura no arranque)* · AOS-254 *(saga/compensação)*. Ambos dependem de AOS-252 (feito) e ficaram por executar.
+- **Ratificação de ADR:** AOS-269 *(ADR-021, scoring determinístico)* · AOS-270 · AOS-271 · AOS-272 · AOS-273 *(ADR-022: PlanDocument, `role: verifier`, payload tipado, migração)*. Zero código. **Bloqueio real:** `docs/adr/ADR-021-*.md` e `ADR-022-*.md` estão ambos em **`Estado: Proposto` — «pendente de ratificação»**, apesar de o cabeçalho desta epic os dar por «assumidos aprovados». Implementá-los antes da ratificação seria comprometer desenho **não congelado**, contra a regra de congelamento da Carta (§6). A gramática concreta em `tecnica/06`/`tecnica/18` é referência de apoio, não o bloqueio.
 
 ### Deferidos com eixo (infra-org, fora do código do nó)
-Selagem periódica out-of-process dos checkpoints do WORM (**DEF-268/DEF-269**, custódia de chave D4/AOS-156) · instância do IdP tenant + adaptador HSM/KMS (costura `crypto.Signer`, EPIC-16) · injecção do broker no executor remoto (**D8-B**).
+Selagem periódica out-of-process dos checkpoints do WORM (**DEF-268/DEF-269**, custódia de chave D4/AOS-156) · instância do IdP tenant + adaptador HSM/KMS (costura `crypto.Signer`, EPIC-16) · injecção do broker no executor remoto (**D8-B**) · compensação real da saga (**DEF-270**: exige um *produtor* de compensações — o loop nunca popula `activity.Activity.Compensation` — **e** o registo run-scoped no kernel; enquanto faltarem, habilitá-la compensaria o run errado).
 
 ### Nota de reconciliação
-Os campos `### Estado` por-ticket de **AOS-245, AOS-250 e AOS-266** estavam desactualizados — descreviam a não-entrada na W0 (245/250) ou o estado inicial (266), mas a implementação e os testes dedicados existem e passam (`aos245_ledger_titular_test.go`, `apiMaxTurnsOptionFromEnv`, `aos266_challenge_freshness_test.go`/`aos266_device_enrollment_test.go`). Corrigidos nesta revisão.
+Os campos `### Estado` por-ticket de **AOS-245, AOS-250 e AOS-266** estavam desactualizados — descreviam a não-entrada na W0 (245/250) ou o estado inicial (266), mas a implementação e os testes dedicados existem e passam (`aos245_ledger_titular_test.go`, `apiMaxTurnsOptionFromEnv`, `aos266_challenge_freshness_test.go`/`aos266_device_enrollment_test.go`). Corrigidos na revisão de 2026-08-12.
+
+**Sobre o «assumidos aprovados» do cabeçalho (ADR-021/022):** a linha «ADRs assumidos aprovados» descrevia a *premissa de planeamento* da epic, não o estado real dos documentos — ambos continuam `Estado: Proposto`. Enquanto assim for, AOS-269..273 não entram: a regra de congelamento (Carta §6) exige a ratificação **antes** da implementação, e não depois.
 
 ---
 
