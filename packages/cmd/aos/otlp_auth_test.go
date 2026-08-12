@@ -80,6 +80,14 @@ func (s *syncBuf) logf(format string, args ...any) {
 	fmt.Fprintf(&s.b, format+"\n", args...)
 }
 
+// Write torna o mesmo sink utilizável como io.Writer — a forma que [serveAPI] espera para o
+// banner de arranque (AOS-277), onde o loop de serviço escreve a partir de goroutines suas.
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
 func (s *syncBuf) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

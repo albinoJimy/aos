@@ -13,16 +13,30 @@ import (
 // silêncio com o nó a encaminhar tráfego. A sonda usa /v1/sys/seal-status (não-autenticado).
 
 func TestVaultReady_Unsealed(t *testing.T) {
+	// Desde AOS-249 a sonda faz DUAS perguntas: seal-status (o Vault está vivo?) e lookup-self
+	// (o NOSSO token ainda serve?). Um servidor que só respondesse à primeira já não é um Vault
+	// pronto do ponto de vista do nó — que é exactamente o ponto do ticket.
+	var viuSeal, viuLookup bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/sys/seal-status" {
-			t.Errorf("sonda devia bater em seal-status, veio %s", r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/sys/seal-status":
+			viuSeal = true
+			_, _ = w.Write([]byte(`{"type":"shamir","initialized":true,"sealed":false}`))
+		case "/v1/auth/token/lookup-self":
+			viuLookup = true
+			_, _ = w.Write([]byte(`{"data":{"ttl":3600,"renewable":true}}`))
+		default:
+			t.Errorf("sonda bateu num caminho inesperado: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
 		}
-		_, _ = w.Write([]byte(`{"type":"shamir","initialized":true,"sealed":false}`))
 	}))
 	defer srv.Close()
 	v := newVaultKeyVault(srv.URL, "transit", "tok")
 	if err := v.ready(context.Background()); err != nil {
-		t.Fatalf("vault unsealed devia estar pronto, veio: %v", err)
+		t.Fatalf("vault unsealed com token valido devia estar pronto, veio: %v", err)
+	}
+	if !viuSeal || !viuLookup {
+		t.Fatalf("a sonda tem de bater NOS DOIS endpoints (seal=%v, lookup-self=%v) — sem o lookup-self autenticado nao ha prova de que o token ainda serve", viuSeal, viuLookup)
 	}
 }
 

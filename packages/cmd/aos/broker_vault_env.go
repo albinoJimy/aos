@@ -1,0 +1,106 @@
+package main
+
+// CUSTÓDIA DO CREDENTIAL BROKER (AOS-070/AOS-264) — cliente/token Vault SEPARADOS.
+//
+// Decisão do dono D7 (2026-08-10): o Vault de credenciais downstream do broker tem
+// cliente e token PRÓPRIOS (AOS_BROKER_VAULT_*), DISTINTOS do Vault da custódia da
+// KEK (AOS_DSAR_VAULT_*, motor Transit key-never-leaves que RECUSA devolver
+// material). Dois eixos de autoridade que não se devem partilhar: um só token que
+// acumulasse "destruir chaves Transit" (crypto-shred) e "ler credenciais downstream"
+// seria over-privilege e um único comprometimento daria exfiltração E over-erasure.
+//
+// ÂMBITO DESTA ENTREGA (AOS-264 é PREPARAÇÃO): esta função PREPARA o cliente Vault
+// REAL (KV v2) e valida a config fail-closed, mas NÃO liga a troca mediada ao
+// gateway — isso é AOS-265 (a porta de aquisição in-process). O banner declara-o com
+// honestidade: "configurado, troca PENDENTE", nunca "broker ligado".
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	broker "github.com/aos-ref/platform/broker"
+)
+
+// ErrBadBrokerVault — o Vault de credenciais downstream do broker (AOS-264) está
+// pedido (AOS_BROKER_VAULT_ADDR presente) mas mal configurado: sem o token por
+// FICHEIRO montado, ou o ficheiro é ilegível/vazio. Fail-closed de CONFIG, no molde
+// de [ErrBadVaultDSAR]: distingue "não configurado" (addr vazio ⇒ dormente) de
+// "configurado mas inválido" (aborta, em vez de degradar em silêncio).
+var ErrBadBrokerVault = errors.New("aos: Vault do credential broker mal configurado — AOS_BROKER_VAULT_ADDR exige AOS_BROKER_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
+
+// brokerVaultSettings é o material PÚBLICO do broker Vault que o banner declara (uma
+// URL, um nome de mount). NÃO transporta o token nem qualquer segredo.
+type brokerVaultSettings struct {
+	Addr    string // URL do Vault do broker (público)
+	KVMount string // mount do motor KV v2 (público)
+}
+
+// parseBrokerVaultFromEnv PREPARA o cliente Vault REAL (KV v2) do credential broker
+// a partir do ambiente (AOS-264, decisão D7). Vazio ⇒ (nil, nil, nil): não
+// configurado (dormente). Presente ⇒ exige o token por FICHEIRO montado (material
+// privado nunca por env, no padrão de AOS_DSAR_VAULT_TOKEN_PATH) e constrói o
+// cliente por detrás da porta [broker.VaultClient] — provando que compõe ao arranque
+// (fail-closed). O cliente é ENCAMINHADO para [Config.BrokerVault]; a troca mediada
+// consome-o em AOS-265.
+//
+// Envs:
+//   - AOS_BROKER_VAULT_ADDR       — URL do Vault (público). Vazio ⇒ dormente.
+//   - AOS_BROKER_VAULT_TOKEN_PATH — ficheiro montado com o token (privado). Obrigatório se ADDR.
+//   - AOS_BROKER_VAULT_KV_MOUNT   — mount do KV v2 (default "secret"). Público.
+//   - AOS_BROKER_VAULT_PATH_PREFIX— prefixo de path opcional (namespacing). Público.
+func parseBrokerVaultFromEnv() (broker.VaultClient, *brokerVaultSettings, error) {
+	addr := strings.TrimSpace(os.Getenv("AOS_BROKER_VAULT_ADDR"))
+	if addr == "" {
+		return nil, nil, nil // não configurado ⇒ broker Vault DORMENTE (comportamento actual).
+	}
+	tokenPath := strings.TrimSpace(os.Getenv("AOS_BROKER_VAULT_TOKEN_PATH"))
+	if tokenPath == "" {
+		return nil, nil, ErrBadBrokerVault
+	}
+	raw, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: ler token: %v", ErrBadBrokerVault, err)
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return nil, nil, fmt.Errorf("%w: token vazio em %q", ErrBadBrokerVault, tokenPath)
+	}
+	mount := strings.TrimSpace(os.Getenv("AOS_BROKER_VAULT_KV_MOUNT"))
+	if mount == "" {
+		mount = "secret"
+	}
+	prefix := strings.TrimSpace(os.Getenv("AOS_BROKER_VAULT_PATH_PREFIX"))
+
+	client, err := broker.NewVaultKVv2(broker.VaultKVv2Config{
+		Addr:   addr,
+		Token:  token,
+		Mount:  mount,
+		Prefix: prefix,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrBadBrokerVault, err)
+	}
+	return client, &brokerVaultSettings{Addr: addr, KVMount: mount}, nil
+}
+
+// brokerVaultPostureBanner declara o MODO do Vault de credenciais downstream do
+// broker (AOS-264), amarrado ao ESTADO composto (o cliente REALMENTE preparado),
+// não à intenção da config — a mesma disciplina de [credentialBrokerPostureBanner] e
+// das restantes linhas de postura.
+//
+// A regra da linha 19 de posture_banner.go aplicada aqui: quando CONFIGURADO, a
+// linha diz "configurado" E "troca PENDENTE (AOS-265)" — porque anunciar "broker
+// LIGADO" sobre um Vault preparado mas cuja troca ainda não medeia nada seria a
+// promessa a mais que treina o operador a confiar numa protecção inexistente.
+func brokerVaultPostureBanner(s *brokerVaultSettings) []string {
+	if s == nil {
+		return []string{
+			"broker vault / credenciais downstream (AOS-070/AOS-264): DORMENTE — AOS_BROKER_VAULT_ADDR nao esta definida, logo NAO ha custodia externa de credenciais downstream para a troca mediada. Defina AOS_BROKER_VAULT_ADDR + AOS_BROKER_VAULT_TOKEN_PATH (cliente/token SEPARADOS do AOS_DSAR_VAULT_*, decisao D7) para PREPARAR o cliente Vault REAL (KV v2). Eixo: AOS-264/AOS-265",
+		}
+	}
+	return []string{
+		fmt.Sprintf("broker vault / credenciais downstream (AOS-070/AOS-264): CONFIGURADO (KV v2 @ %s, mount %q), troca PENDENTE — cliente Vault REAL preparado (stdlib, zero-dep), token de FICHEIRO montado, SEPARADO do Vault da KEK (D7). ATENCAO: a TROCA MEDIADA continua PENDENTE, ainda NAO esta ligada ao gateway nesta entrega — o cliente esta PREPARADO e sera CONSUMIDO por AOS-265 (porta de aquisicao in-process, D8). Ate la NENHUMA credencial downstream e trocada nem injectada. DECISAO REGISTADA: motor KV v2 (segredo estatico) — a lease do broker corta a INJECCAO in-process no TTL/revogacao, mas so DYNAMIC SECRETS dariam corte da credencial NO provedor (deferido, D8-B). Eixo: AOS-265", s.Addr, s.KVMount),
+	}
+}

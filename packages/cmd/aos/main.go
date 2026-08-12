@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -129,6 +131,25 @@ var ErrBadOperators = errors.New("aos: AOS_OPERATORS invalida (esperado \"emitte
 // privada satisfaz (capacidade anunciada e não cumprida, na versão perigosa).
 var ErrBadApproversFile = errors.New("aos: AOS_APPROVERS_FILE invalido (esperado JSON {\"approvers\":[{\"principal\":..., \"pubkey\":\"<64 hex>\", \"authority\":[\"approve:safe|gray|danger\"]}]} — ficheiro ilegivel, esquema invalido, principal duplicado, MESMA pubkey em dois principals, capability fora do vocabulario, autoridade vazia ou lista vazia abortam em vez de deixarem o four-eyes silenciosamente DESLIGADO ou ANULADO)")
 
+// ErrBadChallengeIssuance — AOS_CHALLENGE_ISSUANCE presente com um valor que NÃO é um booleano
+// reconhecido (AOS-266). Molde de [ErrBadDurableExecution]: lixo NÃO degrada silenciosamente
+// para "frescura desligada" — um `AOS_CHALLENGE_ISSUANCE=tru` que deixasse o replay em aberto
+// seria a pior degradação possível. Aborta.
+var ErrBadChallengeIssuance = errors.New("aos: AOS_CHALLENGE_ISSUANCE invalida (aceites: 1/true/t/yes/y/on para ligar a frescura por-cerimonia, 0/false/f/no/n/off ou vazio para desligar) — um valor nao reconhecido aborta em vez de deixar o replay de attestation em aberto")
+
+// ErrBadChallengeTTL — AOS_CHALLENGE_TTL presente mas não é uma duração Go válida e positiva
+// (AOS-266). O TTL é o tempo de uma CERIMÓNIA de aprovação; um valor negativo/zero/lixo aborta em
+// vez de silenciosamente cair no default (que poderia mascarar um erro de operador — ex. "5" sem
+// unidade, ou "-5m").
+var ErrBadChallengeTTL = errors.New("aos: AOS_CHALLENGE_TTL invalida (esperada duracao Go POSITIVA, ex. 5m, 90s — o tempo de UMA cerimonia de aprovacao, nao de uma sessao); vazio usa o default")
+
+// ErrBadDeviceEnrollmentFile — o ficheiro de enrollment de dispositivos (AOS_DEVICE_ENROLLMENT_FILE,
+// ou o AOS_APPROVERS_FILE por omissão) não é legível, não segue o esquema, tem um principal vazio,
+// um device_id não-base64, ou (quando o ficheiro foi EXPLICITAMENTE apontado) não traz dispositivo
+// nenhum. Fail-loud (molde AOS-193): descartar em silêncio daria um nó que arrancou a parecer
+// atribuir dispositivos e nunca atribui.
+var ErrBadDeviceEnrollmentFile = errors.New("aos: AOS_DEVICE_ENROLLMENT_FILE invalido (esperado JSON {\"approvers\":[{\"principal\":..., \"devices\":[\"<base64 do device_id opaco>\"]}]} — ficheiro ilegivel, esquema invalido, principal vazio, device_id nao-base64, ou ficheiro explicitamente apontado mas SEM dispositivos abortam em vez de deixarem a atribuicao silenciosamente DESLIGADA)")
+
 // ErrBadRatifiers — AOS_RATIFIERS presente mas com uma entrada MALFORMADA (sem '=', com
 // principal vazio, com pubkey que não é ed25519 hex de 32 bytes, com principal DUPLICADO, ou com
 // a MESMA pubkey em dois principals). Fail-closed de CONFIG do PROMOTION CONTROLLER (AOS-206), no
@@ -166,6 +187,19 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // captura de replay os tem) e impedir a dupla execução das activities já aplicadas do
 // mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
 var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
+
+// ErrProductionNeedsModelCredential — sob AOS_MODE=production COM o model gateway LIGADO
+// (AOS_MODEL_ENDPOINT), a credencial que o nó apresenta ao upstream NÃO pode ser o bearer de DEV
+// embebido no binário (AOS-247, achado F5). Sem AOS_MODEL_API_KEY_PATH, [staticModelCredential]
+// serve uma constante do código — a MESMA em todos os nós e legível por quem tenha o artefacto —
+// e o nó de produção falava com o gateway upstream com uma credencial que não identifica ninguém
+// e não se pode revogar. Pertence à mesma família de ErrProductionNeedsHardenedIdentity/
+// ErrProductionNeedsTLS: a produção não degrada silenciosamente para uma postura de referência.
+//
+// PORQUÊ NO ARRANQUE E NÃO NO Fetch. O `Fetch` corre POR-PEDIDO e não tem por onde abortar o
+// processo — devolver erro ali daria um nó que arranca, anuncia gateway e falha cada chamada em
+// runtime. A decisão é de CONFIG, logo vive na fronteira que lê o ambiente ([parseModelFromEnv]).
+var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com o model gateway ligado (AOS_MODEL_ENDPOINT) exige AOS_MODEL_API_KEY_PATH — sem ele o no apresentaria ao upstream um bearer de DEV embebido no binario (identico em todos os nos, legivel por quem tenha o artefacto, nao revogavel) em vez da credencial da organizacao; material privado por FICHEIRO montado, NUNCA por variavel de ambiente")
 
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
 
@@ -225,6 +259,23 @@ func run(w io.Writer) error {
 	// falsa que AOS-203 vem eliminar.
 	rawBoardRegions, boardRegionsDefined := os.LookupEnv("AOS_BOARD_REGIONS")
 	for _, line := range sovereignReadKillSwitchBanner(node.SovereignReadRegions != nil, node.WORM != nil, rawBoardRegions, boardRegionsDefined) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
+	// FALLBACK DE CREDENCIAL DO MODELO VISÍVEL (AOS-247, achado F5), pela mesma via: em produção
+	// este estado nem chega aqui (ErrProductionNeedsModelCredential abortou em
+	// [nodeConfigFromEnv]); fora de produção é aceite mas deixa de ser SILENCIOSO. O predicado é o
+	// estado composto — cfg.Model != nil significa que [parseModelFromEnv] construiu MESMO o
+	// gateway — para o aviso nunca sair quando o nó usa o referenceModel (que não apresenta bearer
+	// nenhum). Ver [devModelCredentialBanner].
+	for _, line := range devModelCredentialBanner(cfg.Model != nil, os.Getenv("AOS_MODEL_API_KEY_PATH")) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
+	// AUDIT DE GOVERNAÇÃO DO GATEWAY (AOS-265): declara se a activação da allowlist e as
+	// decisões por chamada selam num WORM DURÁVEL (AOS_MODEL_AUDIT_PATH) ou num MemStore
+	// volátil. Amarrado ao estado composto (cfg.Model != nil): sem gateway não há linha.
+	for _, line := range modelAuditPostureBanner(cfg.Model != nil, strings.TrimSpace(os.Getenv("AOS_MODEL_AUDIT_PATH"))) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
@@ -532,11 +583,15 @@ func nodeConfigFromEnv() (Config, error) {
 	// caía sempre em [pdp.NewUnloaded] (default-deny de TODA a tool call mediada). AOS_POLICY_BUNDLE_DIR
 	// → pdp.Open(dir, WithTrustAnchor(anchor de AOS_POLICY_TRUST_ANCHOR)); ausente ⇒ nil (default-deny
 	// EXPLÍCITO). Fail-closed: dir sem anchor / anchor malformado / bundle não-verificável ABORTAM.
-	policyDP, err := loadPolicyBundleFromEnv()
+	policyDP, autonomyCabling, err := loadPolicyBundleFromEnv()
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.PDP = policyDP // nil ⇒ NewUnloaded (default-deny EXPLÍCITO) no composition-root; != nil ⇒ precedência
+	// ORÁCULO DE AUTONOMIA (AOS-087/AOS-248), fase 1 de 2. O registo já vai com o sink de audit
+	// ligado, mas VAZIO: os níveis só são aplicados — e SELADOS — em [Bootstrap], que é quem tem
+	// o WORM. Ver [autonomyWiring]. nil ⇒ oráculo não ligado e nenhum `escalate` é emitido.
+	cfg.Autonomy = autonomyCabling
 
 	// POLÍTICA DE RETENÇÃO TTL (AOS-092/AOS-213) por ambiente. Preenche [Config.Retention] a partir
 	// de AOS_RETENTION_VERSION + AOS_RETENTION_PERIODS — sem isto o campo era INALCANÇÁVEL pelo
@@ -558,6 +613,22 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	if dsarVault != nil {
 		cfg.DSARVault = dsarVault
+	}
+
+	// CUSTÓDIA DAS CREDENCIAIS DOWNSTREAM do credential broker (AOS-070/AOS-264) por
+	// ambiente — SEPARADA da custódia da KEK (D7: cliente/token AOS_BROKER_VAULT_*
+	// próprios). Vazio ⇒ dormente (inalterado); presente ⇒ PREPARA o cliente Vault
+	// REAL (KV v2) e valida fail-closed (ErrBadBrokerVault). Fica em [Config.BrokerVault]
+	// para AOS-265 CONSUMIR (a troca mediada in-process); AOS-264 só o prepara e
+	// declara o modo no banner — a troca NÃO está ligada nesta entrega.
+	brokerVault, brokerVaultSet, err := parseBrokerVaultFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	if brokerVault != nil {
+		cfg.BrokerVault = brokerVault
+		cfg.BrokerVaultAddr = brokerVaultSet.Addr
+		cfg.BrokerVaultKVMount = brokerVaultSet.KVMount
 	}
 
 	// FAIL-CLOSED de produção (AOS-215/AOS-216) — a KEK tem de ser tão durável quanto o substrato
@@ -594,10 +665,47 @@ func nodeConfigFromEnv() (Config, error) {
 		cfg.AttestationVerifierToken = strings.TrimSpace(string(tb))
 	}
 
+	// FRESCURA POR-CERIMÓNIA DO 4-EYES (AOS-266, achado F10): AOS_CHALLENGE_ISSUANCE=1 liga o modo
+	// issue-then-consume — o nó EMITE o challenge de cada perna por (pedido, aprovador) com TTL e a
+	// verificação exige-o fresco. Sem ela, o anti-replay só dá dedup (sem frescura). O TTL opcional
+	// (AOS_CHALLENGE_TTL) é o tempo de uma cerimónia; fail-closed em valor não-positivo/lixo.
+	cfg.ChallengeIssuance, err = parseChallengeIssuance(os.Getenv("AOS_CHALLENGE_ISSUANCE"))
+	if err != nil {
+		return Config{}, err
+	}
+	if d := strings.TrimSpace(os.Getenv("AOS_CHALLENGE_TTL")); d != "" {
+		ttl, terr := time.ParseDuration(d)
+		if terr != nil || ttl <= 0 {
+			return Config{}, fmt.Errorf("%w: valor %q", ErrBadChallengeTTL, d)
+		}
+		cfg.ChallengeTTL = ttl
+	}
+
+	// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266, achado F10): AOS_DEVICE_ENROLLMENT_FILE alimenta
+	// NewStaticDeviceEnrollment; POR OMISSÃO é o próprio AOS_APPROVERS_FILE (os device_ids vivem no
+	// campo `devices` de cada aprovador). Distingue-se o ficheiro EXPLICITAMENTE apontado (vazio ⇒
+	// erro) do herdado por omissão (vazio ⇒ atribuição dormente — o caso comum de um roster sem
+	// dispositivos ainda enrolados). A atribuição EXIGE a porta de attestation (sem deviceID não há
+	// o que confrontar): dispositivos sem AOS_ATTESTATION_VERIFIER_URL ABORTAM (fail-loud).
+	enrollPath := strings.TrimSpace(os.Getenv("AOS_DEVICE_ENROLLMENT_FILE"))
+	enrollExplicit := enrollPath != ""
+	if enrollPath == "" {
+		enrollPath = strings.TrimSpace(os.Getenv("AOS_APPROVERS_FILE"))
+	}
+	cfg.DeviceEnrollment, err = parseDeviceEnrollmentFile(enrollPath, enrollExplicit)
+	if err != nil {
+		return Config{}, err
+	}
+	if len(cfg.DeviceEnrollment) > 0 && cfg.AttestationVerifierURL == "" {
+		return Config{}, ErrEnrollmentWithoutAttestationURL
+	}
+
 	// MODEL GATEWAY (OpenAI-compatível) por ambiente. Vazio ⇒ [Config.Model] fica nil e o Bootstrap
 	// usa o referenceModel (inalterado); AOS_MODEL_ENDPOINT presente ⇒ liga o adaptador ao gateway
-	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig).
-	modelClient, err := parseModelFromEnv()
+	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig) e, em
+	// produção, um gateway sem ficheiro de credencial ABORTA (ErrProductionNeedsModelCredential,
+	// AOS-247) em vez de apresentar o bearer de DEV embebido.
+	modelClient, err := parseModelFromEnv(production)
 	if err != nil {
 		return Config{}, err
 	}
@@ -651,13 +759,67 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 			svcOpts = append(svcOpts, WithApprovalSweepInterval(d))
 		}
 	}
+	// AOS-267 — CADÊNCIA DO SCHEDULER DE RETENÇÃO. Ao contrário da linha acima, esta é
+	// FAIL-CLOSED: um valor ilegível ou <= 0 ABORTA o arranque em vez de degradar para o default.
+	// A diferença não é estilo. O varrimento de aprovações é higiene operacional; este conduz a
+	// EXPIRAÇÃO POR TTL, e um operador que se engana na cadência e fica com outra qualquer não
+	// tem forma de o notar — o sintoma seria dados pessoais retidos para lá do prazo, meses
+	// depois. Ver [ErrBadRetentionSweepInterval]: nenhum valor desliga o scheduler.
+	retentionSweep, err := retentionSweepIntervalFromEnv()
+	if err != nil {
+		return err
+	}
+	svcOpts = append(svcOpts, WithRetentionSweepInterval(retentionSweep))
+	// AOS-274 — CADÊNCIA E JANELA DO AVALIADOR DE SLOs/ALERTAS. A avaliação em si é FAIL-OPEN (a
+	// observabilidade nunca derruba o nó), mas a CONFIGURAÇÃO é fail-closed como todas as outras:
+	// um valor ilegível ABORTA aqui, no arranque, em vez de degradar para o default. A fronteira
+	// é deliberada — um operador que pede uma cadência e fica com outra não tem como o notar, e
+	// isso não é a observabilidade a falhar, é a config a mentir. `0` na cadência DESLIGA
+	// explicitamente (e o banner di-lo).
+	sloInterval, err := sloEvalIntervalFromEnv()
+	if err != nil {
+		return err
+	}
+	sloWindow, err := sloWindowFromEnv()
+	if err != nil {
+		return err
+	}
+	svcOpts = append(svcOpts, WithSLOEvalInterval(sloInterval), WithSLOWindow(sloWindow))
+	// AOS-277 — KNOBS DE INGRESSO. As três variáveis são lidas UMA vez, AQUI (o arranque), e
+	// fail-closed: um valor inválido devolve [ErrBadIngressLimits] e o nó NÃO chega a servir.
+	// O que se liga é a admission que já existia desde AOS-166 (token-bucket + tecto de runs
+	// em curso, 429 em handleSubmit); o que estas opções mudam são os NÚMEROS, até aqui
+	// constantes do binário. Ver ingress_env.go.
+	ingressLim, ingressOpts, err := ingressLimitsFromEnv()
+	if err != nil {
+		return err
+	}
+	// TECTO DE TURNOS por run (AOS-203, F2/AOS-250): AOS_MAX_TURNS clampa `max_turns` na
+	// fronteira de ingresso. Resolvido ANTES de compor o serviço — um valor malformado aborta
+	// o arranque, como os limiares do disjuntor, em vez de degradar em silêncio para o default.
+	maxTurnsOpt, err := apiMaxTurnsOptionFromEnv()
+	if err != nil {
+		return err
+	}
 	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
 	}
-	srv, err := NewAPIServer(svc, node, append([]APIOption{WithAPILog(w)}, tlsOpts...)...)
+	apiOpts := append([]APIOption{WithAPILog(w)}, tlsOpts...)
+	apiOpts = append(apiOpts, ingressOpts...)
+	if maxTurnsOpt != nil {
+		apiOpts = append(apiOpts, maxTurnsOpt)
+	}
+	srv, err := NewAPIServer(svc, node, apiOpts...)
 	if err != nil {
 		return err
+	}
+	// Os limites EM VIGOR são declarados a partir do MESMO valor que alimentou as opções
+	// acima — postura anunciada = postura ligada (AOS-248). Sai aqui, e não no banner de
+	// bootstrap, porque a admission só existe quando o nó SERVE: um `aos` que faz bootstrap
+	// sem AOS_API_ADDR não tem ingresso nenhum para anunciar.
+	for _, line := range ingressPostureBanner(ingressLim) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 	// AVISO PROEMINENTE do opt-out (modelo do kill-switch de soberania, AOS-203): quem termina
 	// TLS a montante fica a saber, em CADA arranque, que o nó serve em claro POR DECISÃO sua.
@@ -759,6 +921,30 @@ func apiTLSOptionsFromEnv(production bool) ([]APIOption, []string, error) {
 	return opts, banner, nil
 }
 
+// ErrBadMaxTurns — AOS_MAX_TURNS está definido mas não é um inteiro POSITIVO. Fail-closed de
+// CONFIG (AOS-203, F2): um tecto malformado que fosse ignorado deixaria o operador convencido
+// de que limitou o orçamento de turnos por run quando não limitou — o mesmo raciocínio do
+// fail-closed dos limiares do disjuntor. Um tecto <= 0 não faz sentido (clampar tudo a 0 fá-lo-ia
+// recair no default do loop, reabrindo o buraco), por isso é recusado em vez de degradado.
+var ErrBadMaxTurns = errors.New("aos: AOS_MAX_TURNS invalido — esperado inteiro POSITIVO (o tecto node-local de turnos por run); vazio usa o default")
+
+// apiMaxTurnsOptionFromEnv resolve o TECTO node-local de turnos por run (AOS-203, achado F2)
+// a partir de AOS_MAX_TURNS. Vazio ⇒ (nil, nil): [NewAPIHandler] aplica o default
+// [agentruntime.DefaultMaxTurns] e o clamp de ingresso continua activo com esse tecto. Definido
+// e válido (> 0) ⇒ [WithMaxTurnsCeiling]. Definido e inválido ⇒ [ErrBadMaxTurns] (o nó recusa
+// arrancar, no molde dos limiares do disjuntor). É node-local — não importa nada do escalonador.
+func apiMaxTurnsOptionFromEnv() (APIOption, error) {
+	v := strings.TrimSpace(os.Getenv("AOS_MAX_TURNS"))
+	if v == "" {
+		return nil, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return nil, fmt.Errorf("%w: AOS_MAX_TURNS=%q", ErrBadMaxTurns, v)
+	}
+	return WithMaxTurnsCeiling(n), nil
+}
+
 // controlMTLSBanner declara que o mTLS do plano de controlo (DEF-012, EIXO 1) está LIGADO e que é
 // uma SEGUNDA barreira (transporte) ADITIVA à assinatura ed25519 do corpo (AOS-160), nunca um
 // substituto dela.
@@ -835,19 +1021,22 @@ func parseEd25519PubHex(raw string) (ed25519.PublicKey, error) {
 //     (ausente/adulterado/assinado por outra chave) ⇒ [ErrPolicyBundleLoad] via [pdp.Open].
 //
 // Devolve o [*pdp.PDP] verificado e compilado, pronto a ser injectado em [Config.PDP] (tem
-// PRECEDÊNCIA sobre o default não-carregado no Bootstrap).
-func loadPolicyBundleFromEnv() (*pdp.PDP, error) {
+// PRECEDÊNCIA sobre o default não-carregado no Bootstrap), e a cablagem do oráculo de autonomia
+// ([autonomyWiring]) que o composition-root tem de PROVISIONAR depois de abrir o WORM — o
+// oráculo é ligado ao PDP aqui (é opção de [pdp.Open]) mas os níveis só se registam lá, para que
+// nasçam selados na hash-chain (AOS-248). nil ⇒ oráculo não ligado.
+func loadPolicyBundleFromEnv() (*pdp.PDP, *autonomyWiring, error) {
 	dir := strings.TrimSpace(os.Getenv("AOS_POLICY_BUNDLE_DIR"))
 	if dir == "" {
-		return nil, nil // sem superfície ⇒ default-deny EXPLÍCITO (NewUnloaded no composition-root)
+		return nil, nil, nil // sem superfície ⇒ default-deny EXPLÍCITO (NewUnloaded no composition-root)
 	}
 	raw := strings.TrimSpace(os.Getenv("AOS_POLICY_TRUST_ANCHOR"))
 	if raw == "" {
-		return nil, ErrPolicyBundleNeedsTrustAnchor
+		return nil, nil, ErrPolicyBundleNeedsTrustAnchor
 	}
 	anchor, err := parsePolicyTrustAnchor(raw)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// O anchor é FORÇADO via WithTrustAnchor: [pdp.Open] verifica a assinatura do bundle contra
 	// ELE, ignorando qualquer trust_anchor.pub que exista no dir mutável do bundle. Um bundle
@@ -860,20 +1049,21 @@ func loadPolicyBundleFromEnv() (*pdp.PDP, error) {
 	// autonomy_levels.go para a razão de ser opt-in.
 	specs, aerr := parseAutonomyLevels()
 	if aerr != nil {
-		return nil, aerr
+		return nil, nil, aerr
 	}
-	oracle, aerr := buildAutonomyOracle(context.Background(), specs)
-	if aerr != nil {
-		return nil, aerr
-	}
-	if oracle != nil {
-		opts = append(opts, pdp.WithAutonomyOracle(oracle))
+	// FASE 1 da cablagem (AOS-248): o registo nasce com o [autonomy.Sink] ligado mas VAZIO. Os
+	// níveis são aplicados na FASE 2 ([autonomyWiring.provision], em Bootstrap), depois de o WORM
+	// existir — só assim cada SetLevel de provisionamento fica SELADO com motivo e actor. Registar
+	// aqui, como se fazia, deixava a mudança de nível sem rasto em lado nenhum.
+	cabling := buildAutonomyOracle(specs)
+	if cabling != nil {
+		opts = append(opts, pdp.WithAutonomyOracle(cabling.oracle()))
 	}
 	p, err := pdp.Open(dir, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("%w: dir %q: %v", ErrPolicyBundleLoad, dir, err)
+		return nil, nil, fmt.Errorf("%w: dir %q: %v", ErrPolicyBundleLoad, dir, err)
 	}
-	return p, nil
+	return p, cabling, nil
 }
 
 // parsePolicyTrustAnchor descodifica a pubkey ed25519 (64 hex chars) do trust anchor da política
@@ -1074,15 +1264,40 @@ func parseRetentionFromEnv() (audit.RetentionConfig, error) {
 // vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
 var ErrBadVaultDSAR = errors.New("aos: custódia DSAR no Vault mal configurada — AOS_DSAR_VAULT_ADDR exige AOS_DSAR_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
+// ErrInsecureVaultDSARAddr — AOS_DSAR_VAULT_ADDR com transporte inseguro (AOS-249, achado F6).
+// Fail-closed no ARRANQUE, com o MESMO critério do verificador de attestation remoto que vive no
+// MESMO binário ([integration.CheckSecureTransportURL]): https, ou http só em loopback.
+//
+// Não é zelo de esquema. Cada pedido a esta URL leva o token do Vault no cabeçalho X-Vault-Token
+// e os ciphertexts da KEK no corpo; em claro pela rede, um intermediário fica com a credencial
+// que DESTRÓI chaves de titulares (crypto-shred) — over-erasure irreversível — e com o material
+// de cifra. Ter o gémeo de attestation a recusar isto e a custódia da KEK a aceitá-lo era a
+// divergência que o desafio A3 apanhou.
+var ErrInsecureVaultDSARAddr = errors.New("aos: AOS_DSAR_VAULT_ADDR com transporte INSEGURO — o token do Vault (que destroi chaves de titulares) e o material de custodia atravessariam a rede em claro; exige https (http SO em loopback), o mesmo criterio do verificador de attestation remoto no mesmo binario")
+
+// ErrBadVaultTokenMinTTL — AOS_DSAR_VAULT_TOKEN_MIN_TTL presente mas não é uma duração Go > 0.
+// Fail-closed de config: uma margem malformada não degrada silenciosamente para o default — seria
+// o operador a julgar ter uma janela de aviso que não tem.
+var ErrBadVaultTokenMinTTL = errors.New("aos: AOS_DSAR_VAULT_TOKEN_MIN_TTL invalida (esperada uma duracao Go > 0, ex.: \"5m\") — a margem com que o /readyz fica VERMELHO ANTES de o token do Vault expirar")
+
 // parseVaultDSARFromEnv constrói a custódia da KEK por-titular em HashiCorp Vault (Transit) a
 // partir do ambiente — a via que preenche [Config.DSARVault] com custódia EXTERNA em vez do
 // [audit.InMemoryKeyVault] demo-grade. Vazio ⇒ nil (in-memory, inalterado). Presente ⇒ exige o
 // token por FICHEIRO montado (material privado nunca por env). O adaptador é key-never-leaves
 // ([vaultKeyVault] implementa [audit.KeyWrapper]): a KEK vive no Vault e o crypto-shred destrói-a lá.
+// AOS-249 acrescenta-lhe duas coisas: a VALIDAÇÃO DE ESQUEMA da URL (reutilizando o critério do
+// gémeo de attestation, não escrevendo um segundo) e a passagem do CAMINHO do token + margem de
+// prontidão ao adaptador, para que o token possa ser re-lido/renovado em vez de congelar no
+// arranque.
 func parseVaultDSARFromEnv() (audit.KeyVault, error) {
 	addr := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_ADDR"))
 	if addr == "" {
 		return nil, nil // não configurado ⇒ vault in-memory de referência (comportamento actual).
+	}
+	// AOS-249 (F6) — transporte. O critério é PARTILHADO com o verificador de attestation remoto
+	// (o mesmo binário recusava lá o que aceitava aqui); ver [ErrInsecureVaultDSARAddr].
+	if err := integration.CheckSecureTransportURL(addr); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInsecureVaultDSARAddr, err)
 	}
 	tokenPath := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_TOKEN_PATH"))
 	if tokenPath == "" {
@@ -1100,7 +1315,21 @@ func parseVaultDSARFromEnv() (audit.KeyVault, error) {
 	if mount == "" {
 		mount = "transit"
 	}
-	return newVaultKeyVault(addr, mount, token), nil
+	// AOS-249 (F6) — margem de prontidão do token. É a antecedência com que o /readyz fica
+	// VERMELHO face à expiração; vazia ⇒ [DefaultVaultTokenMinTTL].
+	minTTL := DefaultVaultTokenMinTTL
+	if v := strings.TrimSpace(os.Getenv("AOS_DSAR_VAULT_TOKEN_MIN_TTL")); v != "" {
+		d, perr := time.ParseDuration(v)
+		if perr != nil || d <= 0 {
+			return nil, fmt.Errorf("%w: AOS_DSAR_VAULT_TOKEN_MIN_TTL=%q", ErrBadVaultTokenMinTTL, v)
+		}
+		minTTL = d
+	}
+	// O CAMINHO (nunca o valor) segue para o adaptador: é o que permite adoptar um token rodado
+	// por um agente externo sem reiniciar o nó.
+	return newVaultKeyVault(addr, mount, token,
+		withVaultTokenFile(tokenPath),
+		withVaultTokenMinTTL(minTTL)), nil
 }
 
 // ErrBadModelConfig — o gateway de modelos está pedido (AOS_MODEL_ENDPOINT presente) mas mal
@@ -1112,8 +1341,13 @@ var ErrBadModelConfig = errors.New("aos: config do model gateway invalida — AO
 // parseModelFromEnv liga [Config.Model] a um gateway OpenAI-compatível (OmniRoute/OpenRouter/…) a
 // partir do ambiente — a via que preenche a porta [agentruntime.ModelClient] em vez do
 // referenceModel. Vazio ⇒ nil (referenceModel, inalterado). Presente ⇒ exige AOS_MODEL_NAME; a API
-// key (opcional) vem por FICHEIRO montado. O adaptador é zero-dep ([openAIModelClient]).
-func parseModelFromEnv() (agentruntime.ModelClient, error) {
+// key (opcional FORA de produção) vem por FICHEIRO montado. O adaptador é zero-dep
+// ([openAIModelClient]).
+//
+// production é a postura do nó (AOS_MODE=production), recebida por PARÂMETRO — como
+// [apiTLSOptionsFromEnv] — para que haja UMA única leitura de AOS_MODE por arranque e o gate de
+// AOS-247 não possa divergir das restantes exigências de produção impostas em [nodeConfigFromEnv].
+func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
 		return nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
@@ -1125,6 +1359,17 @@ func parseModelFromEnv() (agentruntime.ModelClient, error) {
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
 	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
+	// FAIL-CLOSED de produção (AOS-247, achado F5) — o gateway está LIGADO (chegámos aqui com
+	// AOS_MODEL_ENDPOINT não-vazio) e não há ficheiro de credencial: em produção RECUSA. Sem esta
+	// guarda o nó arrancava a apresentar ao upstream o bearer de DEV embebido no binário
+	// ([staticModelCredential.Fetch]) — uma credencial que não identifica o nó, é a mesma em todos
+	// e não se revoga — e NADA o declarava. É a guarda de ARRANQUE porque o `Fetch` é por-pedido:
+	// falhar lá daria um nó vivo que anuncia gateway e erra cada chamada. Fora de produção o
+	// fallback continua legítimo (a stack de dev fala com um OmniRoute/LiteLLM que pode nem exigir
+	// bearer), mas deixa de ser silencioso — ver [devModelCredentialBanner].
+	if production && apiKeyPath == "" {
+		return nil, ErrProductionNeedsModelCredential
+	}
 	// Fronteira de soberania (board/região) que o nó declara ao gateway. Defaults casam com a
 	// allowlist EMBEBIDA; com um bundle externo o operador escolhe-os livremente.
 	region := defaultModelGatewayRegion
@@ -1147,7 +1392,15 @@ func parseModelFromEnv() (agentruntime.ModelClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol, tools)
+	// AUDIT DE GOVERNAÇÃO DURÁVEL (AOS-265): AOS_MODEL_AUDIT_PATH ⇒ WORM tamper-evident
+	// onde a activação da allowlist e as decisões por chamada sobrevivem ao restart;
+	// vazio ⇒ MemStore de referência (volátil, inalterado). Fail-closed: um caminho
+	// definido que não abre ABORTA (ErrBadModelAudit), em vez de degradar em silêncio.
+	gwAudit, _, err := parseModelAuditFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	client, err := newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit)
 	if err != nil {
 		return nil, err
 	}
@@ -1295,6 +1548,37 @@ func sovereignReadKillSwitchBanner(regionsComposed, wormComposed bool, rawBoardR
 		"=> PARA RELIGAR: defina AOS_BOARD_REGIONS=\"board=regiao\" (ex.: AOS_BOARD_REGIONS=\"board:prod=eu\") ou REMOVA a variavel do ambiente para voltar ao default de referencia \"board:aos-demo=eu\"",
 		"=> IGNORE a linha \"defina Config.BoardRegions\" do banner acima: Config.BoardRegions e um campo de codigo (package main) que quem corre o binario/imagem NAO consegue escrever — o unico remedio alcancavel e AOS_BOARD_REGIONS, na linha anterior",
 		"=> AOS_MODE=production RECUSA arrancar neste estado (ErrProductionNeedsSovereignRead) — este aviso so existe porque o no NAO esta em modo de producao",
+	}
+}
+
+// devModelCredentialBanner DECLARA o fallback de credencial do model gateway (AOS-247, achado F5),
+// na disciplina de banner de AOS-203 (o molde de [tlsExternalTerminationBanner]): uma linha, só
+// quando o estado REALMENTE composto o justifica, com a causa e o remédio ALCANÇÁVEL pelo operador.
+// Devolve nil — nenhuma linha — nos dois casos honestos: sem gateway composto (o nó usa o
+// referenceModel e não apresenta bearer nenhum a ninguém) ou com AOS_MODEL_API_KEY_PATH definido
+// (a credencial veio do ficheiro montado, que [newGatewayModelClient] já validou não-vazio).
+//
+// O DEFEITO QUE FECHA. Sem AOS_MODEL_API_KEY_PATH, [staticModelCredential.Fetch] devolve um bearer
+// de DEV embebido no binário. Contra um upstream de dev que não exige bearer isso é inócuo; o que
+// não era aceitável é ser INDISTINGUÍVEL, do lado de fora, de um nó que apresenta a credencial da
+// organização — nenhum banner, nenhuma env, nenhuma linha de log o dizia.
+//
+// O VALOR NUNCA ENTRA NA LINHA — nem este nem o do ficheiro montado. O banner declara a POSTURA
+// (qual das duas credenciais está em uso e o que isso implica), nunca o segredo.
+//
+// PORQUÊ AVISO E NÃO RECUSA (fora de produção). O critério de AOS-191/AOS-203/AOS-209: em produção
+// RECUSA-SE ([ErrProductionNeedsModelCredential], imposta em [parseModelFromEnv], que é por onde
+// este estado nunca chega aqui em modo de produção); fora dela o estado é legítimo e o que não se
+// tolera é a PROMESSA FALSA.
+//
+// gatewayComposed é o estado REALMENTE composto (Config.Model != nil), não a intenção da config —
+// a mesma disciplina de [sovereignReadKillSwitchBanner]: o aviso nunca contradiz o que o nó faz.
+func devModelCredentialBanner(gatewayComposed bool, apiKeyPath string) []string {
+	if !gatewayComposed || strings.TrimSpace(apiKeyPath) != "" {
+		return nil
+	}
+	return []string{
+		"AVISO CREDENCIAL DE MODELO (AOS-247): BEARER DE DEV EM USO — o model gateway esta LIGADO (AOS_MODEL_ENDPOINT) sem AOS_MODEL_API_KEY_PATH, pelo que o no apresenta ao upstream um bearer de DEV embebido no binario (o mesmo em todos os nos, legivel por quem tenha o artefacto, nao revogavel) e NAO a credencial da organizacao; para apresentar a credencial real defina AOS_MODEL_API_KEY_PATH (ficheiro montado — material privado NUNCA por variavel de ambiente). AOS_MODE=production RECUSA arrancar neste estado (ErrProductionNeedsModelCredential)",
 	}
 }
 
@@ -1474,11 +1758,16 @@ type approversDoc struct {
 	Approvers []approverDoc `json:"approvers"`
 }
 
-// approverDoc é UMA entrada do ficheiro de aprovadores.
+// approverDoc é UMA entrada do ficheiro de aprovadores. O campo `devices` (AOS-266) é OPCIONAL e
+// só é consumido pelo caminho de ENROLLMENT ([parseDeviceEnrollmentFile]) — [parseApproversFile]
+// ignora-o (o roster de pubkeys e a atribuição de dispositivos são preocupações separadas, lidas
+// do MESMO ficheiro por omissão). Cada device_id é o digest OPACO base64 que o componente de
+// attestation devolve em /verify; NÃO é segredo.
 type approverDoc struct {
 	Principal string   `json:"principal"`
-	PubKey    string   `json:"pubkey"`    // 64 hex chars = 32 bytes ed25519 (== AOS_ISSUER_PUBKEY)
-	Authority []string `json:"authority"` // ex.: ["approve:danger", "approve:gray"]
+	PubKey    string   `json:"pubkey"`            // 64 hex chars = 32 bytes ed25519 (== AOS_ISSUER_PUBKEY)
+	Authority []string `json:"authority"`         // ex.: ["approve:danger", "approve:gray"]
+	Devices   []string `json:"devices,omitempty"` // AOS-266: device_ids opacos em base64 (atribuição)
 }
 
 // parseApproversFile lê o ficheiro MONTADO de aprovadores do FourEyesGate (AOS-162) apontado
@@ -1571,6 +1860,85 @@ func parseApproversFile(path string) ([]ApproverConfig, error) {
 			}
 		}
 		out = append(out, ApproverConfig{Principal: principal, PubKey: pub, Authority: authority})
+	}
+	return out, nil
+}
+
+// parseChallengeIssuance lê AOS_CHALLENGE_ISSUANCE (AOS-266) com a MESMA gramática booleana
+// fail-closed de [parseDurableExecution]: vazio ⇒ desligado; um valor não-reconhecido ABORTA
+// (nunca degrada em silêncio para "frescura desligada", que reabriria o replay).
+func parseChallengeIssuance(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return false, nil
+	case "1", "true", "t", "yes", "y", "on":
+		return true, nil
+	case "0", "false", "f", "no", "n", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: valor %q", ErrBadChallengeIssuance, strings.TrimSpace(s))
+	}
+}
+
+// parseDeviceEnrollmentFile lê o registo de ATRIBUIÇÃO dispositivo↔aprovador (AOS-266) de um
+// ficheiro montado, no MESMO esquema do ficheiro de aprovadores ({"approvers":[...]}), mas
+// consumindo APENAS `principal` + `devices`. Devolve o mapa aprovador → device_ids (bytes) que
+// alimenta [integration.NewStaticDeviceEnrollment].
+//
+// `explicit` distingue o ficheiro EXPLICITAMENTE apontado (AOS_DEVICE_ENROLLMENT_FILE) do herdado
+// por omissão (AOS_APPROVERS_FILE):
+//
+//   - path VAZIO ⇒ (nil, nil): sem enrollment (atribuição dormente).
+//   - ficheiro ilegível / JSON malformado / campo desconhecido / principal vazio / device_id
+//     não-base64 ⇒ [ErrBadDeviceEnrollmentFile] (fail-loud, nunca descartar em silêncio).
+//   - SEM nenhum dispositivo: se `explicit`, ABORTA (apontou-se um ficheiro de enrollment que não
+//     enrola nada — a degradação silenciosa que AOS-193 fecha); se herdado por omissão, devolve
+//     (nil, nil) — o caso comum de um roster de aprovadores ainda sem dispositivos enrolados.
+//
+// Entradas de aprovador SEM `devices` são simplesmente saltadas (quando o ficheiro é o de
+// aprovadores, a maioria não tem dispositivos). device_ids duplicados no mesmo aprovador são
+// idempotentes ([integration.NewStaticDeviceEnrollment] usa um conjunto).
+func parseDeviceEnrollmentFile(path string, explicit bool) (map[string][][]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ler %q: %v", ErrBadDeviceEnrollmentFile, path, err)
+	}
+	var doc approversDoc
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%w: %q: %v", ErrBadDeviceEnrollmentFile, path, err)
+	}
+	out := make(map[string][][]byte)
+	for i, a := range doc.Approvers {
+		if len(a.Devices) == 0 {
+			continue
+		}
+		principal := strings.TrimSpace(a.Principal)
+		if principal == "" {
+			return nil, fmt.Errorf("%w: %q entrada #%d com principal vazio mas com dispositivos", ErrBadDeviceEnrollmentFile, path, i)
+		}
+		for _, d := range a.Devices {
+			ds := strings.TrimSpace(d)
+			if ds == "" {
+				continue
+			}
+			// O device_id NÃO é ecoado no erro (é opaco mas evita-se expor identificadores).
+			id, derr := base64.StdEncoding.DecodeString(ds)
+			if derr != nil || len(id) == 0 {
+				return nil, fmt.Errorf("%w: %q principal %q com device_id nao-base64 utilizavel", ErrBadDeviceEnrollmentFile, path, principal)
+			}
+			out[principal] = append(out[principal], id)
+		}
+	}
+	if len(out) == 0 {
+		if explicit {
+			return nil, fmt.Errorf("%w: %q apontado explicitamente mas sem dispositivos (um ficheiro de enrollment que nao enrola nada deixaria a atribuicao DESLIGADA em silencio)", ErrBadDeviceEnrollmentFile, path)
+		}
+		return nil, nil // herdado do AOS_APPROVERS_FILE sem dispositivos ⇒ atribuição dormente.
 	}
 	return out, nil
 }

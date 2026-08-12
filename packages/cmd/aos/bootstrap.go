@@ -60,6 +60,7 @@ import (
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
+	broker "github.com/aos-ref/platform/broker"
 	identity "github.com/aos-ref/platform/identity"
 	memory "github.com/aos-ref/platform/memory"
 	memadapters "github.com/aos-ref/platform/memory/adapters"
@@ -149,6 +150,13 @@ var (
 	// `approve:<classe>` NUNCA satisfaz hitl.RequiredAuthority, pelo que compor o gate com ele
 	// seria anunciar dual-control com um roster que não aprova nada.
 	ErrBadApproverEntry = errors.New("aos: entrada de Config.Approvers invalida (principal vazio ou DUPLICADO, pubkey ed25519 de tamanho != 32 bytes, autoridade vazia ou fora do vocabulario approve:{safe,gray,danger}, ou pubkey PARTILHADA por dois principals) — um aprovador sem capability approve:<classe> nunca autoriza nada; dois principals com a MESMA pubkey deixariam UMA chave privada satisfazer o dual-control")
+	// ErrEnrollmentWithoutAttestationURL — [Config.DeviceEnrollment] traz dispositivos mas
+	// [Config.AttestationVerifierURL] está vazia (AOS-266, fail-loud molde AOS-193). Sem a porta
+	// de attestation não há deviceID a confrontar com o enrollment: [integration.NewFourEyesGate]
+	// recusaria com ErrEnrollmentWithoutAttestation, mas aqui aborta-se ANTES, nomeando as duas
+	// envs, para o operador não ficar a adivinhar. Descartar os dispositivos em silêncio daria um
+	// nó que arrancou a parecer atribuir e nunca atribui.
+	ErrEnrollmentWithoutAttestationURL = errors.New("aos: AOS_DEVICE_ENROLLMENT_FILE traz dispositivos registados mas AOS_ATTESTATION_VERIFIER_URL nao esta definida — a atribuicao dispositivo<->aprovador so vale com a porta de attestation ligada (sem ela nao ha deviceID a confrontar); defina a URL do verificador ou remova os dispositivos do ficheiro de enrollment")
 )
 
 // approveCapabilities devolve o VOCABULÁRIO FECHADO das capabilities de aprovação aceites num
@@ -165,6 +173,16 @@ func approveCapabilities() []string {
 		hitl.RequiredAuthority(risk.ClassGray),
 		hitl.RequiredAuthority(risk.ClassDanger),
 	}
+}
+
+// effectiveChallengeTTL devolve o TTL de challenge REALMENTE em vigor (AOS-266): o configurado
+// se > 0, senão o default do emissor. Só para o banner declarar o valor honesto — a mesma regra
+// que [hitl.NewEventStoreChallengeIssuer] aplica na construção.
+func effectiveChallengeTTL(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return hitl.DefaultChallengeTTL
 }
 
 // isApproveCapability indica se a capability pertence ao vocabulário de [approveCapabilities].
@@ -242,6 +260,30 @@ type Config struct {
 	// (material NÃO-secreto entra por env; o token vem de ficheiro montado, como o do Vault).
 	AttestationVerifierToken string
 
+	// ChallengeIssuance liga a FRESCURA POR-CERIMÓNIA do 4-eyes (AOS-266, achado F10): o modo
+	// issue-then-consume da porta [integration.ChallengeIssuance]. Com ela, o nó EMITE o
+	// challenge de cada perna por (pedido, aprovador) com TTL ([ChallengeTTL]) e a verificação
+	// EXIGE que o challenge conste do registo de emissão e esteja fresco — fecha o replay de
+	// uma prova capturada por quem detenha a chave de um aprovador (o anti-replay por uso-único
+	// só dá DEDUP, não frescura). INDIVISÍVEL da emissão: quando ligada, o MESMO
+	// [hitl.EventStoreChallengeIssuer] alimenta a porta do gate E o endpoint POST
+	// /runs/{id}/challenge ([Node.ChallengeIssuer]) — não há como compor a porta sem o caminho
+	// de emissão (compô-la sem emissão negaria TODA a perna com ErrChallengeNotIssued). Vazio ⇒
+	// modo histórico (dedup sem frescura). Exige aprovadores (senão não há gate a compor).
+	ChallengeIssuance bool
+	// ChallengeTTL é a validade de um challenge EMITIDO — o tempo de uma CERIMÓNIA de aprovação,
+	// não de uma sessão (não se guarda através de suspend/resume). <=0 ⇒ [hitl.DefaultChallengeTTL].
+	ChallengeTTL time.Duration
+
+	// DeviceEnrollment é o registo de ATRIBUIÇÃO dispositivo↔aprovador (AOS-266, achado F10):
+	// aprovador → identificadores OPACOS de dispositivo registados. Não-vazio ⇒ o gate é composto
+	// com [integration.WithDeviceEnrollment] e uma perna cujo dispositivo atestado NÃO esteja
+	// registado para o aprovador é RECUSADA ([integration.ErrDeviceNotEnrolled], default-deny) —
+	// é isto que faz a attestation provar de QUEM é o autenticador, não só o modelo. EXIGE
+	// [AttestationVerifierURL] (sem deviceID não há o que confrontar): dispositivos configurados
+	// sem attestation ABORTAM o boot ([ErrEnrollmentWithoutAttestationURL], fail-loud).
+	DeviceEnrollment map[string][][]byte
+
 	// --- Promotion controller / ratificação de produção (AOS-159/AOS-206) ------
 	// Ratifiers regista os ratificadores de PRODUÇÃO pinados do promotion controller
 	// (principal + pubkey; autoridade fixa "ratify:production"). Ao contrário de Approvers,
@@ -305,6 +347,17 @@ type Config struct {
 	// fornecido, tem PRECEDÊNCIA sobre o PDP default não-carregado.
 	PDP *pdp.PDP
 
+	// Autonomy é a cablagem do ORÁCULO DE NÍVEIS DE AUTONOMIA (AOS-087/AOS-248) que a fronteira
+	// de ambiente já ligou ao [Config.PDP] mas que ainda NÃO está provisionada: o Bootstrap tem
+	// de chamar [autonomyWiring.provision] com o WORM composto, e só aí os níveis declarados em
+	// AOS_AUTONOMY_LEVELS entram em vigor — selados na hash-chain, com motivo e actor. nil ⇒
+	// oráculo não ligado (nenhum `escalate` é emitido; ver autonomy_levels.go).
+	//
+	// PORQUÊ UM CAMPO E NÃO UMA LEITURA DE AMBIENTE AQUI: o oráculo é opção de [pdp.Open], que
+	// corre na config; separar as duas fases num campo mantém UMA só leitura do ambiente e deixa
+	// o composition-root dono da ordem (WORM primeiro, provisionamento depois).
+	Autonomy *autonomyWiring
+
 	// HumanDirectory é o directório de autenticação humana injectado na autoridade de
 	// identidade de REFERÊNCIA (co-localizada). nil ⇒ [integration.NewAllowlistDirectory]
 	// (allowlist de nomes de `Humans`, não autenticação real). Quando fornecido — ex.:
@@ -363,6 +416,19 @@ type Config struct {
 	// é INFRA-ORG por trás desta porta; um HSM key-never-leaves exige a porta de envelope (residual
 	// nomeado com eixo em DEF-302). nil ⇒ referência in-memory demo-grade.
 	DSARVault audit.KeyVault
+	// BrokerVault é o cliente Vault REAL (KV v2) da custódia de CREDENCIAIS DOWNSTREAM
+	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
+	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
+	// material). PREPARADO por AOS-264 a partir do ambiente, mas a TROCA MEDIADA ainda
+	// NÃO está ligada ao gateway nesta entrega: é CONSUMIDO em AOS-265 (a porta de
+	// aquisição in-process). nil ⇒ não configurado. O banner declara o modo e que a
+	// troca está pendente — nunca "broker ligado" (seria a promessa a mais que AOS-248
+	// proíbe). Ver broker_vault_env.go.
+	BrokerVault broker.VaultClient
+	// BrokerVaultAddr / BrokerVaultKVMount são material PÚBLICO (uma URL, um nome de
+	// mount) que o banner usa para declarar o modo do broker Vault. Vazios ⇒ dormente.
+	BrokerVaultAddr    string
+	BrokerVaultKVMount string
 	// IssuerKeyPath, quando definido no modo de REFERÊNCIA (não endurecido) e sem
 	// IssuerSigningKey explícita, faz o nó carregar a chave de assinatura do issuer de
 	// um ficheiro de seed PERSISTENTE (LoadOrCreateIssuerKey) em vez de a gerar por
@@ -448,6 +514,13 @@ type Node struct {
 	// cifrado por-titular quando há cifrador). É o que torna a retoma possível depois de
 	// o processo largar lease e goroutine. nil quando o four-eyes não está composto.
 	ResumeRecords *integration.ResumeRecords
+	// ChallengeIssuer é o emissor DURÁVEL de challenges do 4-eyes (AOS-266). É o LADO DE
+	// EMISSÃO da frescura por-cerimónia — o MESMO valor que alimenta a porta
+	// [integration.WithChallengeIssuance] do gate. Não-nil ⇒ o endpoint POST /runs/{id}/challenge
+	// emite; nil ⇒ frescura DORMENTE (o endpoint responde 501). Amarrar os dois lados ao MESMO
+	// valor é o que torna emissão↔composição INDIVISÍVEIS: nunca se compõe a porta (que sem
+	// emissão negaria toda a perna) sem o endpoint que a alimenta.
+	ChallengeIssuer *hitl.EventStoreChallengeIssuer
 	// Promotion é o promotion controller (AOS-159/AOS-206): a via SANCIONADA
 	// [hitl.NewProductionRatificationGate] (freshness + nonce-store durável FORÇADOS) que
 	// interpõe a ratificação humana assinada entre o canary e a produção de um artefacto de
@@ -482,6 +555,13 @@ type Node struct {
 	// sobre OTLP quando ligada, senão o [otelgenai.NoopTracer]. Exposto para inspecção.
 	Tracer otelgenai.Tracer
 
+	// sloTap é a TORNEIRA de spans que alimenta o avaliador de SLOs/alertas (AOS-274) com os
+	// MESMOS spans que saem para o colector OTLP — não uma segunda instrumentação. É nil quando
+	// a observabilidade está desligada (nesse caso o avaliador corre à mesma, sobre as fontes que
+	// não dependem de spans, e o banner declara quais ficaram sem produtor). Não-exportado: é um
+	// detalhe da composição do nó, não uma porta.
+	sloTap *sloSpanTap
+
 	// Ingestion é o motor de redacção/tokenização de PII (AOS-091) LIGADO de facto ao
 	// fecho transitivo do nó (AOS-208): a fronteira de minimização onde o objectivo de
 	// um run é redigido ANTES de alcançar o Event Store, a memória (platform/memory), os
@@ -512,12 +592,28 @@ type Node struct {
 	// exposto para o operador/testes colocarem/levantarem holds. O fluxo re-consulta-o ANTES de
 	// cada shred (fail-closed do apagamento).
 	DSARHolds *audit.LegalHold
+	// holdsRestored é a PROVA de que [DSARHolds] (e o índice titular→partição que o faz valer
+	// por-partição) foram RE-HIDRATADOS do substrato durável no arranque — não apenas
+	// construídos. É o antecedente do varredor AUTOMÁTICO de retenção (AOS-267): a
+	// não-nulidade do objecto prova que a barreira EXISTE, nunca que o seu CONTEÚDO sobreviveu
+	// ao restart, e um conjunto de holds vazio derrota a barreira em silêncio. Ver
+	// governance_restore.go e [retentionSchedulerArmed].
+	//
+	// Não-exportado de propósito: é estado interno de composição, não superfície do nó. Um teste
+	// que componha um [Node] à mão arma-o explicitamente, e essa explicitação é o ponto.
+	holdsRestored bool
 	// DSARVault é o vault de chaves de PII por-titular que o crypto-shredding destrói (a KEK é
 	// apagada ⇒ a PII fica irrecuperável sem mutar a hash-chain). É a PORTA [audit.KeyVault] EM
 	// VIGOR (AOS-215/DEF-302): o vault INJECTADO por [Config.DSARVault] (custódia externa) quando
 	// composto, ou o [audit.InMemoryKeyVault] de referência (demo-grade, KEK em memória) senão.
 	// Exposto para selar/provar a PII em testes de conformidade; produção liga um KMS/HSM real
 	// pela mesma porta (o real é infra-org).
+	//
+	// IMUTÁVEL DEPOIS DO BOOTSTRAP, e isto é um contrato de CORRIDA, não de estilo: o campo não
+	// tem sincronização e é lido por goroutines de FUNDO de qualquer [NodeService] composto sobre
+	// o nó — a manutenção do token da custódia ([NodeService.renewVaultToken], AOS-249) e o
+	// avaliador de SLOs ([NodeService.controlPlaneAvailable], AOS-274). Um teste que queira OUTRA
+	// custódia compõe OUTRO nó; reatribuir aqui depois de o serviço existir é um data race.
 	DSARVault audit.KeyVault
 	// DSARIndex mapeia titular→partições (torna executável o legal hold POR-PARTIÇÃO no shred).
 	DSARIndex *audit.InMemorySubjectPartitionIndex
@@ -527,6 +623,15 @@ type Node struct {
 	// reutilizando o vault de AOS-093). Conduzido por POST /dsar/expire. NUNCA nil: o Bootstrap
 	// compõe-o SEMPRE (com política vazia ⇒ nada expira, fail-closed). Respeita [DSARHolds].
 	ExpirationJob *audit.ExpirationJob
+	// Retention é a política de retenção TTL-por-classe EM VIGOR (a MESMA que alimentou o
+	// [ExpirationJob]). Exposta porque o loop de serviço precisa de saber se há TTL a aplicar
+	// antes de arrancar o scheduler interno (AOS-267) e porque a versão é selada em cada
+	// varrimento. Zero-value ⇒ nada expira (o default do nó).
+	Retention audit.RetentionConfig
+	// IssuerID é o trust anchor de identidade DESTE deployment (a config que o compôs). Exposto
+	// para que um selo emitido pelo nó EM NOME PRÓPRIO — o do scheduler de retenção, AOS-267 —
+	// possa nomear qual nó agiu, e não só qual papel. Material PÚBLICO (um identificador).
+	IssuerID string
 	// contentOpener é o cifrador por-titular do nó (o MESMO [contentSealer]/[agentruntime.ContentCipher]
 	// que o capturer/step-ledger usam para SELAR) exposto como [agentruntime.ContentOpener] para o
 	// REPLAY SOBERANO do lado do leitor (AOS-214): a reconstrução de um run selado por um TERCEIRO
@@ -542,6 +647,18 @@ type Node struct {
 	// resolve-o pelo gates func já cablado no [control.LoopSteer]. NIL só se o nó não tiver
 	// canal de steer (não acontece na via de produção — o Bootstrap compõe-o sempre).
 	stateGates *runStateGates
+
+	// breakers é o registo de disjuntores por-run (AOS-080/081). O loop de serviço
+	// LIBERTA o estado de cada run quando ele sai do registo de em-curso ([runBreakers.forget],
+	// ver service.go hostRun). NIL quando não há limiares configurados (disjuntor não composto).
+	breakers *runBreakers
+
+	// progress é o observador de burn-down por-run (AOS-261/AOS-262). O loop de serviço
+	// LIBERTA o estado de cada run (superfície, latch do aviso e cursor da fonte) no mesmo
+	// ponto em que liberta o disjuntor ([runProgress.forget], ver service.go hostRun). NIL
+	// quando o burn-down não está composto (sem AOS_BUDGET_MAX_TOKENS não há tecto ⇒ não há
+	// denominador ⇒ nenhum aviso poderia disparar).
+	progress *runProgress
 
 	ownsEventStore bool
 	ownsWORM       bool
@@ -771,6 +888,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, fmt.Errorf("aos: tamper-evidence do WORM (AOS-221) — hash-chain adulterada no arranque, o no recusa servir: %w", wormVerifyErr)
 	}
 
+	// (2b) PROVISIONAMENTO DOS NÍVEIS DE AUTONOMIA (AOS-087/AOS-248) — a FASE 2 da cablagem que
+	// a fronteira de ambiente deixou por fazer. AQUI, e não antes, porque só aqui existe o WORM:
+	// ligar o sink ao store composto é o que faz cada alteração de nível nascer SELADA (motivo +
+	// actor) na MESMA hash-chain que o `audit.VerifyStore` acima acabou de re-encadear.
+	//
+	// O defeito que fecha (F11): [buildAutonomyOracle] chamava NewLevelRegistry() SEM WithSink e
+	// registava os níveis ali mesmo — a autonomia com que o nó ia correr mudava sem ficar
+	// registada em lado nenhum. Fail-closed: uma selagem recusada ABORTA o arranque
+	// ([ErrAutonomyProvisioning]); a guarda de limpeza acima fecha os stores que o nó abriu.
+	if err := cfg.Autonomy.provision(ctx, worm); err != nil {
+		return nil, err
+	}
+
 	// (2c-pre) CIFRA POR-TITULAR DO CONTEÚDO DOS RUNS (AOS-093). O vault de chaves de
 	// PII por-titular e o índice titular→partição são criados AQUI — antes da execução
 	// durável — porque são PARTILHADOS por duas frentes que TÊM de usar a mesma chave:
@@ -820,9 +950,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("aos: capturer de replay (AOS-180): %w", err)
 		}
-		// AOS-093: o step-ledger cifra o Result.Payload por-titular (activa-se quando o
-		// run injecta o principal via Producer.NHIID; sem principal, retro-compat).
-		ledger, err = durable.NewStepLedger(es, durable.WithContentSealer(contentCipher))
+		// AOS-093/AOS-245: o step-ledger cifra o Result.Payload — o OUTPUT de cada tool
+		// call — sob a MESMA KEK por-titular que o capturer usa. O TITULAR é POR-RUN e
+		// este ledger é composto UMA vez, partilhado por todos os runs: por isso NÃO vem
+		// de um produtor fixo aqui, mas do contexto do despacho
+		// ([durable.ContextWithTitular], anexado pelo activity.Dispatcher a partir do
+		// Principal do run — o mesmo valor que loop.go passa ao capturer).
+		//
+		// [durable.WithRequireTitular] fecha a degradação silenciosa que ISTO corrige: até
+		// AOS-245 o cifrador estava composto mas o titular nunca chegava, pelo que o ledger
+		// caía no caminho retro-compatível e escrevia o output da tool EM CLARO no WAL — os
+		// mesmos bytes cifrados em replay.captured e em claro em step.ledger.applied, fora
+		// do alcance do crypto-shredding por-titular. Com a guarda, um passo sem titular é
+		// RECUSADO antes de qualquer efeito em vez de vazar. Não há degradação a temer no
+		// nó: o loop já recusa um run sem principal ([agentruntime.ErrNoPrincipal]), logo o
+		// titular é sempre resolvível no caminho de execução.
+		ledger, err = durable.NewStepLedger(es,
+			durable.WithContentSealer(contentCipher), durable.WithRequireTitular())
 		if err != nil {
 			return nil, fmt.Errorf("aos: step-ledger durável (AOS-180): %w", err)
 		}
@@ -855,10 +999,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		exporter = e
 		otlpExp = e
 	}
+	// AOS-274 — TORNEIRA DE SPANS para o avaliador de SLOs. Quando há observabilidade ligada,
+	// interpõe-se um T ([sloTeeExporter]) que entrega ao exportador REAL e guarda uma cópia num
+	// anel limitado. Os SLIs derivados de spans passam a agregar EXACTAMENTE os mesmos dados que
+	// saem para o colector — nenhuma instrumentação nova, nenhuma contabilidade paralela. Sem
+	// observabilidade a torneira NÃO é composta (nil): o nó fica byte-idêntico ao modo sem
+	// tracing, e o avaliador continua a correr sobre as fontes que não dependem de spans
+	// (prontidão do plano de controlo, integridade do WORM), declarando no banner o que ficou
+	// sem produtor. FAIL-OPEN: o T nunca devolve um erro seu — ver slo_span_tap.go.
+	var sloTap *sloSpanTap
 	tracer := otelgenai.Tracer(otelgenai.NoopTracer{})
 	tracingEnabled := exporter != nil
 	if tracingEnabled {
-		tracer = otelgenai.NewTracer(exporter, cfg.TracerOptions...)
+		sloTap = newSLOSpanTap(defaultSLOTapCapacity)
+		tracer = otelgenai.NewTracer(sloTeeExporter{primary: exporter, tap: sloTap}, cfg.TracerOptions...)
 	}
 
 	// (3) IDENTIDADE REAL. Em AMBOS os modos o que entra na CADEIA DE SEGURANÇA é SÓ o
@@ -947,17 +1101,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 
 	// (5) FOUR-EYES GATE (AOS-162) — opcional. Composto quando há aprovadores em config.
+	// As três portas de endurecimento (AOS-177/AOS-266) são declaradas ao banner pelo estado
+	// REALMENTE composto (não pela intenção da config): um "LIGADA" sobre uma porta não composta
+	// seria pior que o silêncio.
 	var foureyes *integration.FourEyesGate
+	var challengeIssuer *hitl.EventStoreChallengeIssuer
+	var attestationComposed, enrollmentComposed, freshnessComposed bool
 	if len(cfg.Approvers) > 0 {
 		registry := hitl.NewMemApproverRegistry()
 		for _, a := range cfg.Approvers {
 			registry.Register(a.Principal, a.PubKey, a.Authority...)
 		}
+		var feOpts []integration.FourEyesOption
+
 		// ATTESTATION DE DISPOSITIVO (AOS-177) — opcional. Com AttestationVerifierURL, liga o
 		// verificador REMOTO (cliente HTTP stdlib; o CBOR corre no componente externo) e cada perna
 		// de aprovação passa a EXIGIR attestationObject+clientDataJSON. Fail-closed: URL malformada
 		// ou não-https-fora-de-loopback ABORTA o boot (o enforcement não degrada para o modo dormente).
-		var feOpts []integration.FourEyesOption
 		if strings.TrimSpace(cfg.AttestationVerifierURL) != "" {
 			av, aerr := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
 				URL:       cfg.AttestationVerifierURL,
@@ -967,7 +1127,38 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 				return nil, fmt.Errorf("aos: verificador de attestation remoto (AOS-177): %w", aerr)
 			}
 			feOpts = append(feOpts, integration.WithDeviceAttestation(av))
+			attestationComposed = true
 		}
+
+		// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266) — opcional. Com dispositivos em config, o
+		// dispositivo atestado de cada perna tem de estar REGISTADO para o aprovador que a assinou
+		// (default-deny). EXIGE a porta de attestation (sem deviceID não há o que confrontar):
+		// aborta-se ANTES de NewFourEyesGate, nomeando as duas envs, em vez de descartar em silêncio.
+		if len(cfg.DeviceEnrollment) > 0 {
+			if !attestationComposed {
+				return nil, ErrEnrollmentWithoutAttestationURL
+			}
+			feOpts = append(feOpts, integration.WithDeviceEnrollment(integration.NewStaticDeviceEnrollment(cfg.DeviceEnrollment)))
+			enrollmentComposed = true
+		}
+
+		// FRESCURA POR-CERIMÓNIA (AOS-266, achado F10) — opcional, INDIVISÍVEL da emissão. O MESMO
+		// [hitl.EventStoreChallengeIssuer] é (a) passado ao gate por WithChallengeIssuance — o lado
+		// de CONSULTA (o challenge tem de constar do registo de emissão para (pedido, aprovador) e
+		// estar fresco) — e (b) guardado em Node.ChallengeIssuer, que o endpoint POST
+		// /runs/{id}/challenge usa para EMITIR. Um único sítio de construção amarra os dois lados:
+		// não existe caminho que componha a porta (que, sozinha, negaria TODA a perna com
+		// ErrChallengeNotIssued — a armadilha de indivisibilidade do desafio A6) sem o endpoint que
+		// a alimenta. O TTL é o tempo de uma cerimónia, não de uma sessão.
+		if cfg.ChallengeIssuance {
+			challengeIssuer, err = hitl.NewEventStoreChallengeIssuer(es, cfg.ChallengeTTL)
+			if err != nil {
+				return nil, fmt.Errorf("aos: emissor de challenges do four-eyes (AOS-266): %w", err)
+			}
+			feOpts = append(feOpts, integration.WithChallengeIssuance(challengeIssuer))
+			freshnessComposed = true
+		}
+
 		foureyes, err = integration.NewFourEyesGate(registry, hitl.NewEventStoreNonceStore(es), feOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("aos: four-eyes gate (AOS-162): %w", err)
@@ -1123,7 +1314,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// tinham chamador de produção e a correcção nunca chegava ao loop. O StateGate durável
 	// vem da FONTE REAL do nó: a máquina de estados de AOS-017 sobre o mesmo Event Store,
 	// aberta por-run pelo loop de serviço com o fencing token do lease (ver service.go).
-	stateGates := newRunStateGates(es, chainTracer)
+	//
+	// AOS-252: o tecto de wall-clock em `running` resolve-se ANTES dos gates — as máquinas
+	// abertas por eles precisam dele para o varrimento de deadlines (CheckDeadlines). É o
+	// MESMO valor do sinal wall-clock do breaker (UM conceito operador, dois pontos de
+	// enforcement: fronteira de fim-de-turno e backstop a meio do turno).
+	breakerProvider, berr := breakerThresholdsFromEnv()
+	if berr != nil {
+		return nil, berr
+	}
+	var runWallClock time.Duration
+	if breakerProvider != nil {
+		runWallClock = breakerProvider.Thresholds(breakerClass).MaxWallClock
+	}
+	stateGates := newRunStateGates(es, chainTracer, runWallClock)
 	loopSteer := control.NewLoopSteer(steer, stateGates.Resolve)
 
 	// (6d) BRIDGE DE APROVAÇÃO LIGADO AO LOOP (AOS-021). É esta composição que faz o ciclo
@@ -1138,12 +1342,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (6e) DISJUNTOR DO AGENTE VIVO (AOS-080/081) — POR-RUN, sobre a MESMA state.Machine
 	// que o steer e a escalada usam. Só é composto quando há limiares configurados: um
 	// disjuntor sem limiares é cego e daria a ilusão de protecção (ver breaker_thresholds.go).
-	breakerProvider, berr := breakerThresholdsFromEnv()
+	// O provider foi resolvido em (6c) — as máquinas de estado precisavam do wall-clock (AOS-252).
+	// AOS-246: a cablagem incompatível (limiar de velocidade ligado sem VelocitySource)
+	// aborta o ARRANQUE aqui — antes valia um disjuntor ausente em silêncio.
+	breakers, berr := newRunBreakers(stateGates, breakerProvider)
 	if berr != nil {
 		return nil, berr
 	}
-	breakers := newRunBreakers(stateGates, breakerProvider)
 	livenessBreaker := breakers.livenessAdapter()
+	// AOS-251: o detector de no-progress só vê acções se o loop as reportar — liga o
+	// observador ao runtime (method value nil-safe: sem disjuntor composto é inerte).
+	runtimeOpts = append(runtimeOpts, agentruntime.WithActionObserver(breakers.observeAction))
 
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
@@ -1176,6 +1385,38 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// (7-ante) ORÇAMENTO POR-RUN (AOS-008, ligado em AOS-256/AOS-257). nil ⇒ AOS_BUDGET_MAX_TOKENS
+	// não está definida ⇒ o ponto de injecção "budget" da cadeia fica com o stub neutro. É ESTE
+	// valor — o que foi REALMENTE composto, não a intenção da config — que alimenta a linha do
+	// banner mais abaixo. Fail-closed: um tecto ilegível/≤0 aborta o arranque (ErrBadBudget).
+	runBudget, err := budgetFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	// (7-ante-bis) BURN-DOWN + AVISO DE EXAUSTÃO (AOS-261/AOS-262). A fonte é o LEDGER DE
+	// TURNOS (o mesmo `es` onde o TurnRecorder logo abaixo grava — a coincidência não é
+	// acidental, é o contrato: se fossem stores diferentes a fonte denunciaria com
+	// ErrBurndownNoLedger em vez de somar zeros). O tecto vem do orçamento por-run.
+	//
+	// GATE FAIL-CLOSED: pedir o aviso (AOS_PROGRESS_THRESHOLD) sem tecto (AOS_BUDGET_MAX_TOKENS)
+	// é uma configuração impossível — sem denominador a fracção é 0 para sempre e o aviso
+	// nunca dispararia. Aborta aqui, como AOS-246 faz com o disjuntor sem VelocitySource.
+	progressThreshold, progressRequested, err := progressThresholdFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if progressRequested && runBudget == nil {
+		return nil, ErrProgressBudgetUnwired
+	}
+	burndownSource := newTurnLedgerBurndown(es)
+	// O `log` do nó entra aqui porque é a superfície onde o aviso é VISÍVEL sempre: sem
+	// AOS_OTLP_ENDPOINT o `tracer` acima é o NoopTracer e o span do aviso não vai a lado
+	// nenhum (ver runProgress.avisar).
+	progress := newRunProgress(stateGates, runBudget, burndownSource, tracer, progressThreshold, log)
+	// nil-safe: sem burn-down composto o observador é nil e o loop nunca o consulta
+	// (comportamento de AOS-013 byte-idêntico).
+	runtimeOpts = append(runtimeOpts, agentruntime.WithProgressObserver(progress.observer()))
+
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
 		EffectRewriter: newSandboxEffectRewriter(sandboxBindings), // AOS-005: args→ExecRequest; nil ⇒ sem reescrita
 		Model:          model,
@@ -1202,6 +1443,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		EscalationSink:   escalationSink,
 		ApprovalEvidence: approvalEvidence,
 		ApprovalVerifier: approvalVerifier,
+		// AOS-256/AOS-257: nó de orçamento por-run + BudgetCheck no lugar do stub + saldo da
+		// reserva no decorator do dispatcher. nil ⇒ stub neutro (nenhuma decisão consulta custo).
+		Budget: runBudget,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aos: secured runtime (cadeia real de produção): %w", err)
@@ -1261,16 +1505,27 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// KEK por-titular do vault. Essa MESMA KEK cifra o CONTEÚDO DOS RUNS que o Event Store
 	// persiste — a resposta do modelo e os resultados de tools do capturer de replay são
 	// cifrados por-titular (envelope DEK/KEK) ANTES de tocar o WAL (ver (2c-pre) e
-	// [replay.WithContentSealer]), e o step-ledger cifra o Result.Payload quando o run
-	// injecta o principal. O capturer regista subject→stream no DSARIndex (via
+	// [replay.WithContentSealer]), e o step-ledger cifra o Result.Payload sob o titular do
+	// run que o despacho lhe leva no contexto (AOS-245). O capturer regista subject→stream no DSARIndex (via
 	// [contentSealer.SealContent]), pelo que o crypto-shredding e o legal hold POR-PARTIÇÃO
 	// alcançam o SUBSTRATO. Apagar a KEK no /dsar/erase torna o conteúdo do run
 	// IRRECUPERÁVEL (a decifragem falha) sem mutar o log — a hash-chain continua a validar.
 	// RESIDUAL nomeado (eixo AOS-093): (a) turn.recorded persiste apenas hashes (prompt_hash/
 	// system_hash), nunca o objective/prompt cru — nada a cifrar aí; (b) o REPLAY de um run
 	// cujo conteúdo foi selado exige o acesso ao vault do titular pelo leitor (fora do âmbito
-	// deste núcleo); (c) o step-ledger só sela quando há Producer.NHIID (o run injecta o
-	// principal). Ver DEF-301/A-DEF-301 em docs/governance/REGISTO-Deferimentos.md.
+	// deste núcleo); (c) FECHADO por AOS-245 — o step-ledger selava só com Producer.NHIID, que o
+	// nó nunca passava (o titular é por-RUN e o ledger é composto uma vez), pelo que o OUTPUT de
+	// cada tool call ia EM CLARO para o WAL com o cifrador composto e inerte; agora o titular
+	// chega pelo contexto do despacho e a ausência dele é RECUSADA
+	// ([durable.WithRequireTitular]), não degradada. Ver DEF-301/A-DEF-301 em
+	// docs/governance/REGISTO-Deferimentos.md.
+	//
+	// DEPENDÊNCIA que a selagem do ledger cria (AOS-215): o registo canónico do ledger passa a
+	// ser decifrável só enquanto a KEK do titular viver. Num restart com a custódia de REFERÊNCIA
+	// (vault in-memory) o Rebuild deixa de re-hidratar os passos selados e um step re-despachado
+	// falha ao reler o canónico — é exactamente a combinação (substrato durável + KEK efémera)
+	// que [ErrProductionNeedsDurableKEK] já PROÍBE em produção. Fora de produção mantém-se a
+	// postura demo-grade declarada no banner.
 	//
 	// CON-02 (legal hold + job de expiração — superfície de ADMINISTRAÇÃO): foi DEFERIDA por
 	// decisão do dono (Opção C, docs/governance/DOSSIE-CON-02-legal-hold.md, 2026-07-29) e está
@@ -1284,6 +1539,33 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (FECHADO-RESIDUAL) no REGISTO-Deferimentos.md; o residual de granularidade (por-titular vs
 	// por-registo) fica nomeado com eixo em retention.go e no registo.
 	dsarHolds := audit.NewLegalHold()
+
+	// (7c-ter) RE-HIDRATAÇÃO do estado de governação a partir do substrato DURÁVEL (remediação
+	// da W6). O legal hold e o índice titular→partição nascem VAZIOS, mas o facto que os origina
+	// — cada `POST /dsar/hold` selado em [legalHoldPartition], cada conteúdo cifrado no Event
+	// Store — sobrevive ao processo. Sem esta reposição, um restart deixava a cadeia a AFIRMAR
+	// uma preservação que o nó já não sabia fazer valer; com o varredor AUTOMÁTICO de AOS-267 no
+	// loop de serviço, isso é uma destruição de material sob ordem de preservação, sem ninguém no
+	// caminho e irreversível. Ver governance_restore.go.
+	//
+	// FAIL-CLOSED sem abortar o arranque: um erro de leitura deixa `holdsRestored` a false, e
+	// [retentionSchedulerArmed] recusa armar o varredor automático (a expiração continua
+	// conduzível por `POST /dsar/expire`, que tem um humano autenticado a assumi-la).
+	holdsRestored := true
+	nHolds, err := restoreLegalHolds(ctx, worm, dsarHolds)
+	if err != nil {
+		holdsRestored = false
+		log("legal hold: RE-HIDRATACAO FALHADA a partir da cadeia %q — o no nao consegue provar que as preservacoes seladas estao em vigor; o varredor AUTOMATICO de retencao (AOS-267) NAO arma (a expiracao fica so por POST /dsar/expire): %v", legalHoldPartition, err)
+	}
+	nLinks, err := restoreSubjectIndex(ctx, es, dsarIndex)
+	if err != nil {
+		holdsRestored = false
+		log("indice titular->particao: RE-HIDRATACAO FALHADA — o legal hold POR-PARTICAO nao cobriria as demais particoes dos titulares antigos; o varredor AUTOMATICO de retencao (AOS-267) NAO arma: %v", err)
+	}
+	if holdsRestored && (nHolds > 0 || nLinks > 0) {
+		log("estado de governacao RE-HIDRATADO do substrato duravel: %d alvo(s) sob legal hold repostos da cadeia %q, %d ligacao(oes) titular->particao repostas do Event Store", nHolds, legalHoldPartition, nLinks)
+	}
+
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
 	dsarFlow := dsar.NewFlow(
@@ -1308,6 +1590,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	expirationOpts := []audit.ExpirationOption{
 		audit.WithExpirationAudit(worm, retentionPartition),
 		audit.WithExpirationSubjectIndex(dsarIndex),
+	}
+	// IDEMPOTÊNCIA RE-HIDRATADA (remediação da W6). O seen-set default é in-memory: os eventos
+	// cifrados permanecem no Event Store durável (o crypto-shred destrói a KEK, não os registos),
+	// pelo que a fonte volta a listá-los com o TTL vencido e o PRIMEIRO varrimento após cada
+	// restart re-selava um SEGUNDO `retention.expired` para o mesmo facto, re-contado no
+	// `retention.sweep.completed`. Repõe-se o seen-set a partir dos eventos já selados — a mesma
+	// disciplina do legal hold: o que a cadeia durável já afirma não se re-afirma.
+	if idem, nIdem, ierr := restoreExpirationIdempotency(ctx, worm, retentionPartition); ierr != nil {
+		log("idempotencia da expiracao: RE-HIDRATACAO FALHADA da cadeia %q — o proximo varrimento pode RE-SELAR expiracoes ja seladas (a cadeia fica poluida, nada e destruido a mais): %v", retentionPartition, ierr)
+	} else {
+		expirationOpts = append(expirationOpts, audit.WithExpirationIdempotency(idem))
+		if nIdem > 0 {
+			log("idempotencia da expiracao RE-HIDRATADA: %d expiracao(oes) ja seladas na cadeia %q nao serao re-seladas", nIdem, retentionPartition)
+		}
 	}
 	if tracingEnabled {
 		expirationOpts = append(expirationOpts, audit.WithExpirationTracer(tracer))
@@ -1380,8 +1676,39 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	if foureyes != nil {
 		log("four-eyes gate (AOS-162) composto: %d aprovador(es) pinado(s) via AOS_APPROVERS_FILE", len(cfg.Approvers))
+		// ATTESTATION DE DISPOSITIVO (AOS-177/AOS-266). O banner declara o estado REALMENTE
+		// composto (LIGADA/DORMENTE), nunca a intenção — SEGUE o wiring acima.
+		if attestationComposed {
+			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA")
+		} else {
+			log("  attestation de dispositivo (AOS-177): DORMENTE — sem AOS_ATTESTATION_VERIFIER_URL o 4-eyes e SO estrutural (nao prova modelo nem posse do dispositivo); defina a URL do verificador externo para a ligar")
+		}
+		// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266).
+		if enrollmentComposed {
+			log("  atribuicao dispositivo<->aprovador (AOS-266): LIGADA — %d aprovador(es) com dispositivo(s) registado(s) via AOS_DEVICE_ENROLLMENT_FILE; dispositivo atestado nao registado para o aprovador => perna RECUSADA (ErrDeviceNotEnrolled, default-deny)", len(cfg.DeviceEnrollment))
+		} else {
+			log("  atribuicao dispositivo<->aprovador (AOS-266): DORMENTE — sem dispositivos registados a attestation prova modelo+posse, NAO de quem e o autenticador; defina AOS_DEVICE_ENROLLMENT_FILE (default AOS_APPROVERS_FILE) para exigir atribuicao")
+		}
+		// FRESCURA POR-CERIMÓNIA (AOS-266, achado F10).
+		if freshnessComposed {
+			log("  frescura por-cerimonia (AOS-266): LIGADA — challenges EMITIDOS pelo no por (pedido, aprovador) com TTL=%s via POST /runs/{id}/challenge; a verificacao EXIGE challenge emitido e fresco (issue-then-consume); challenge nao emitido/expirado => perna RECUSADA (ErrChallengeNotIssued)", effectiveChallengeTTL(cfg.ChallengeTTL))
+		} else {
+			log("  frescura por-cerimonia (AOS-266): DORMENTE — anti-replay so por uso-unico duravel (dedup, sem frescura); quem detenha a chave de um aprovador pode reapresentar uma prova capturada num pedido novo; defina AOS_CHALLENGE_ISSUANCE=1 para exigir emissao server-side")
+		}
 	} else {
 		log("four-eyes gate (AOS-162): DESLIGADO (sem aprovadores) — POST /runs/{id}/approve responde 501; defina AOS_APPROVERS_FILE=<ficheiro JSON montado> para o compor")
+		// AVISO banner-mudo (AOS-266, achado F10): capacidades de endurecimento do 4-eyes
+		// definidas SEM aprovadores são IGNORADAS em silêncio (o gate nem sequer é composto). O
+		// banner deixa de ser mudo: nomeia cada env orfã e a razão de não ter efeito.
+		if strings.TrimSpace(cfg.AttestationVerifierURL) != "" {
+			log("  AVISO (AOS-266): AOS_ATTESTATION_VERIFIER_URL esta definida mas NAO ha aprovadores (AOS_APPROVERS_FILE) — o gate 4-eyes nao e composto e a URL de attestation e IGNORADA; a attestation so se liga AO 4-eyes")
+		}
+		if cfg.ChallengeIssuance {
+			log("  AVISO (AOS-266): AOS_CHALLENGE_ISSUANCE=1 mas NAO ha aprovadores — sem 4-eyes composto nao ha emissao de challenges nem endpoint /runs/{id}/challenge; defina AOS_APPROVERS_FILE")
+		}
+		if len(cfg.DeviceEnrollment) > 0 {
+			log("  AVISO (AOS-266): AOS_DEVICE_ENROLLMENT_FILE traz dispositivos mas NAO ha aprovadores — enrollment IGNORADO sem 4-eyes composto; defina AOS_APPROVERS_FILE")
+		}
 	}
 	// PROMOTION CONTROLLER (AOS-159/AOS-206). O banner declara o estado REALMENTE COMPOSTO (a
 	// via sancionada com anti-replay SEMPRE ligado) e a cardinalidade REAL de ratificadores
@@ -1392,7 +1719,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("promotion controller (AOS-159/AOS-206) composto via NewProductionRatificationGate (freshness+nonce-store DURAVEL FORCADOS) mas SEM RATIFICADORES — toda a promocao sera NEGADA (ratifier_unknown); defina AOS_RATIFIERS=\"principal=hexpubkey\" para pinar ratificadores")
 	}
-	log("NOTA promotion controller: a capacidade e alcancavel PELO CAMINHO DO NO (node.Promotion.Promote, provada em teste); a submissao de ratificacoes pelo operador (endpoint HTTP/subcomando CLI) fica DEFERIDA — depende de AOS-096/pipeline de promocao")
+	// AOS-275 (achado F7): a submissao de ratificacoes DEIXOU de ser deferida — ha rota externa.
+	// O banner nomeia-a e declara o que ela NAO afrouxa (a decisao continua a ser do MESMO gate),
+	// para que nenhum operador leia "endpoint" como "caminho alternativo mais fraco".
+	log("promotion controller (AOS-275): ROTA EXTERNA POST /promote — MESMA admissao do /approve (token-bucket do plano de controlo + mTLS de controlo quando composto) e MESMA disciplina non-signing (a assinatura ed25519 do ratificador vem no corpo; o no nunca detem a chave privada); a decisao e do MESMO gate de producao (freshness + nonce-store DURAVEL), pelo que uma ratificacao re-submetida apos consumo e ratification_replayed TAMBEM pela rota; toda a decisao terminal e selada no WORM com o PRINCIPAL do ratificador")
+	log("promotion controller (AOS-275): o corpo do POST /promote produz-se FORA do no com `aos-issuer ratify-sign --artifact-id ... --version ... --content-hash ... --ratifier ... --key-file <seed>` — a chave privada do ratificador NUNCA entra neste processo (non-signing, ADR-016 §1)")
+	log("NOTA promotion controller: o PIPELINE de promocao (staging->eval-gate->canary->producao, AOS-096) continua a montante e fora do no — a rota ratifica um artefacto candidato APRESENTADO pelo operador; o que o no garante e que NENHUM chega a producao sem ratificacao humana assinada, fresca e de uso-unico")
 	log("substrato: %s", substrateMode(cfg))
 	// TAMPER-EVIDENCE DO WORM IMPOSTA (AOS-221). O banner declara o estado REALMENTE
 	// verificado (não a intenção): a hash-chain foi RE-ENCADEADA e verificada no arranque —
@@ -1425,6 +1757,46 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("mediacao de politica (AOS-220): PDP com BUNDLE CARREGADO (AOS_POLICY_BUNDLE_DIR) — trust anchor FORCADO out-of-band (AOS_POLICY_TRUST_ANCHOR), NAO lido do bundle; politica em vigor versao %q; tool calls decididas pela allowlist assinada + regras Cedar", cfg.PDP.ActiveVersion())
 	} else {
 		log("mediacao de politica (AOS-220): PDP NAO-CARREGADO (NewUnloaded) — DEFAULT-DENY EXPLICITO de TODA a tool call mediada; defina AOS_POLICY_BUNDLE_DIR + AOS_POLICY_TRUST_ANCHOR (pubkey ed25519 out-of-band) para carregar um bundle assinado")
+	}
+	// AS QUATRO SUPERFÍCIES QUE O BANNER CALAVA (AOS-248, achado F14). Ficam JUNTAS e logo a
+	// seguir à mediação de política porque é com ela que o operador as compõe mentalmente: o PDP
+	// diz o que é permitido, a autonomia diz o que ainda assim EXIGE um humano, o modelo diz quem
+	// propõe as acções, e o orçamento/broker dizem o que NÃO as limita nem lhes guarda os
+	// segredos. Cada linha segue o estado REALMENTE composto — ver posture_banner.go, onde a
+	// justificação de cada afirmação está amarrada ao código que a suporta.
+	for _, line := range autonomyPostureBanner(cfg.Autonomy) {
+		log("%s", line)
+	}
+	for _, line := range modelPostureBanner(cfg.Model) {
+		log("%s", line)
+	}
+	// AOS-256/AOS-257: o argumento DERIVA do que foi REALMENTE composto — `runBudget` é o
+	// mesmo valor entregue a [integration.SecuredConfig.Budget], não a intenção da config. Um
+	// tecto configurado ⇒ o hook real está na cadeia e o nó por-run é registado em cada run;
+	// nil ⇒ o ponto de injecção ficou com o stub neutro. O guard-test de AOS-255
+	// (aos255_budget_scope_test.go) sela que este argumento nunca volta a ser um literal.
+	for _, line := range budgetPostureBanner(runBudget != nil) {
+		log("%s", line)
+	}
+	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
+	// (`progress`, o mesmo valor entregue a agentruntime.WithProgressObserver), nunca a
+	// intenção da config. Vem LOGO A SEGUIR ao orçamento porque é a leitura desse tecto.
+	for _, line := range burndownPostureBanner(progress != nil, progressThreshold) {
+		log("%s", line)
+	}
+	for _, line := range credentialBrokerPostureBanner() {
+		log("%s", line)
+	}
+	// AOS-264: o Vault de credenciais downstream do broker, PREPARADO por
+	// AOS_BROKER_VAULT_* (separado do KEK, D7). Declara "configurado, troca pendente"
+	// ou "dormente" — nunca "broker ligado" (a troca só medeia algo em AOS-265). O
+	// argumento deriva do ESTADO composto: `cfg.BrokerVault != nil` ⇒ preparado.
+	var brokerVaultSet *brokerVaultSettings
+	if cfg.BrokerVault != nil {
+		brokerVaultSet = &brokerVaultSettings{Addr: cfg.BrokerVaultAddr, KVMount: cfg.BrokerVaultKVMount}
+	}
+	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
+		log("%s", line)
 	}
 	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA
 	// da DORMENTE: sem directório externo, o ScopeGate acaba a re-verificar o que o hook
@@ -1473,7 +1845,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// capacidade-fantasma. A granularidade (por-titular) e o eixo residual são declarados.
 	log("legal hold (AOS-213): POST /dsar/hold / POST /dsar/release (por titular e/ou particao) — MESMA credencial forte do /dsar/erase (readGov); cada accao selada no WORM sem PII (particao %q)", legalHoldPartition)
 	if _, hasPII := cfg.Retention.Period(audit.ClassPIIOperational); hasPII || cfg.Retention.Version() != "" {
-		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO (politica %q) — conduzido por POST /dsar/expire (sob demanda/agendamento externo); expiracao = crypto-shred da KEK POR-TITULAR (AOS-093, apagamento real), RESPEITA o legal hold; retention.expired selado no WORM (particao %q)", cfg.Retention.Version(), retentionPartition)
+		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO (politica %q) — conduzido por POST /dsar/expire (sob demanda) e, QUANDO O NO SERVE, pelo scheduler INTERNO do loop de servico (AOS-267, cadencia AOS_RETENTION_SWEEP_INTERVAL; um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo nao tem scheduler — o banner do servico declara a postura real); expiracao = crypto-shred da KEK POR-TITULAR (AOS-093, apagamento real), RESPEITA o legal hold; retention.expired selado no WORM (particao %q)", cfg.Retention.Version(), retentionPartition)
 		log("NOTA granularidade (AOS-213): o TTL e por-registo/classe mas o crypto-shred e por-CHAVE-DE-TITULAR (uma KEK embrulha todos os registos do titular) => a expiracao e POR-TITULAR; a retencao diferencial por-classe DENTRO de um titular colapsa para a classe que expira primeiro (residual nomeado, eixo AOS-093/envelope; ver DEF-903)")
 	} else {
 		log("expiracao por TTL (AOS-092/AOS-213): ExpirationJob COMPOSTO mas SEM politica de retencao (Config.Retention vazia) — POST /dsar/expire varre mas NADA expira (fail-closed); defina a politica de retencao TTL-por-classe para ligar o TTL")
@@ -1522,14 +1894,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		ApprovalBroker:   approvalBroker,
 		PendingApprovals: pendingApprovals,
 		ResumeRecords:    resumeRecords,
-		Promotion:        promotion, // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
-		Authority:        authority, // nil no modo endurecido (a autoridade corre fora do processo)
+		ChallengeIssuer:  challengeIssuer, // nil quando a frescura por-cerimónia (AOS-266) está DORMENTE
+		Promotion:        promotion,       // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
+		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
 		EventStore:       es,
 		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
 		IdentityMode:     identityMode,
 		Tracer:           tracer,
+		sloTap:           sloTap, // AOS-274: nil quando a observabilidade OTLP está desligada
 		Ingestion:        ingestion,
 
 		Checkpointer: checkpointer, // nil quando a execução durável está desligada
@@ -1541,11 +1915,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		SovereignReadCredential: readCred,
 		DSAR:                    dsarFlow,
 		DSARHolds:               dsarHolds,
+		holdsRestored:           holdsRestored, // prova de re-hidratação (antecedente do varredor automático)
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
 		ExpirationJob:           expirationJob,
+		Retention:               cfg.Retention, // AOS-267: o loop de serviço decide o scheduler por ela
+		IssuerID:                cfg.IssuerID,  // AOS-267: nomeia o nó no selo em nome próprio
 		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		stateGates:              stateGates,    // AOS-218: fonte do StateGate durável por-run para o steer
+		breakers:                breakers,      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
+		progress:                progress,      // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
 
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,

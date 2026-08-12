@@ -157,9 +157,13 @@ type StepLedger struct {
 	sensitive bool
 	// cipher cifra o Result.Payload por chave POR-TITULAR antes de o persistir e
 	// decifra-o no rebuild (AOS-093). nil ⇒ sem cifra (payload tal-como-recebido,
-	// retro-compat). O titular é o [eventstore.Producer.NHIID] injectado via
-	// [WithProducer] — o principal do run.
+	// retro-compat). O titular vem de [ContextWithTitular] (o principal do RUN, que é
+	// por-chamada) e, na sua ausência, do [eventstore.Producer.NHIID] de [WithProducer]
+	// (identidade de COMPOSIÇÃO, fixa no arranque) — ver [StepLedger.titularOf].
 	cipher agentruntime.ContentCipher
+	// requireTitular liga a guarda fail-closed de [WithRequireTitular]: com cifra
+	// composta, um Apply sem titular resolvível é RECUSADO ([ErrNoTitular]).
+	requireTitular bool
 
 	mu       sync.Mutex
 	records  map[string]ledgerRecord
@@ -204,17 +208,86 @@ func WithSensitiveResults() LedgerOption { return func(l *StepLedger) { l.sensit
 // É OPT-IN e coexiste com [WithSensitiveResults]: com o sealer activo, um payload em
 // claro NÃO é recusado — é cifrado (a cifra é a garantia de confidencialidade). Sem
 // sealer, o comportamento documentado mantém-se (payload tal-como-recebido; recusa em
-// modo sensível). Requer um titular resolúvel (Producer.NHIID): sem ele o payload é
-// persistido como antes (retro-compat honesto — declarado, não silencioso).
+// modo sensível). Requer um titular resolúvel ([ContextWithTitular] ou, em fallback,
+// Producer.NHIID): sem ele o payload é persistido como antes (retro-compat honesto —
+// declarado, não silencioso), a menos que [WithRequireTitular] esteja ligada, que
+// transforma essa degradação numa RECUSA ([ErrNoTitular]).
 func WithContentSealer(cipher agentruntime.ContentCipher) LedgerOption {
 	return func(l *StepLedger) { l.cipher = cipher }
+}
+
+// WithRequireTitular exige um TITULAR resolvível quando a cifra por-titular está
+// composta (AOS-245). É a postura de PRODUÇÃO: com ela, [StepLedger.Apply] recusa
+// ([ErrNoTitular]) — ANTES de correr qualquer efeito — sempre que
+// [WithContentSealer] está ligada e nem o contexto ([ContextWithTitular]) nem o
+// produtor ([WithProducer]) dão um titular.
+//
+// PORQUÊ: sem ela, um ledger com cifrador composto mas sem titular NÃO falha — cai no
+// caminho retro-compatível e persiste o Result.Payload EM CLARO no WAL, ficando fora do
+// alcance do crypto-shredding por-titular (AOS-093). Era uma degradação SILENCIOSA de
+// uma garantia de protecção de dados: o cifrador ligado e inerte parece cobertura, e não
+// é. Com a guarda, a única forma de o WAL não levar o payload cifrado é o nó recusar o
+// passo — o modo de falha correcto. Sem cifrador composto a opção é inerte (nada a
+// proteger); é OPT-IN para não alterar o contrato de quem usa o ledger sem cifra.
+func WithRequireTitular() LedgerOption {
+	return func(l *StepLedger) { l.requireTitular = true }
 }
 
 // WithProducer define a identidade emissora (NHI + cadeia de delegação) gravada
 // nos eventos do ledger. Default: Producer zero (aceitável em teste; em produção
 // o run injecta o principal do agente).
+//
+// TITULAR (AOS-093/AOS-245): o NHIID do produtor serve de FALLBACK para o titular da
+// cifra por-titular, mas só é correcto quando o ledger é composto POR-RUN (o caso do
+// [engine] adapter). Um ledger PARTILHADO por vários runs — o do nó `aos`, composto uma
+// vez no arranque — não pode ter aqui o titular: ele é por-run e chega por
+// [ContextWithTitular], que tem precedência.
 func WithProducer(p eventstore.Producer) LedgerOption {
 	return func(l *StepLedger) { l.producer = p }
+}
+
+// titularKey é a chave (tipo privado, não-colidível) do titular do run no contexto.
+type titularKey struct{}
+
+// ContextWithTitular anexa ao contexto o TITULAR do run — o NHI-id do principal
+// (ADR-003) sob cuja KEK por-titular o ledger cifra o Result.Payload antes de o
+// persistir (AOS-093/AOS-245). Um subject vazio devolve o contexto inalterado.
+//
+// PORQUÊ NO CONTEXTO. O titular é POR-RUN; o [StepLedger] do nó é composto UMA vez no
+// arranque e servido a TODOS os runs. Fixá-lo na composição ([WithProducer]) selaria
+// todo o conteúdo sob a identidade do nó em vez da do titular — a chave errada para o
+// crypto-shredding — e mudar a assinatura de [StepLedger.Apply] partiria a porta
+// [activity.Ledger] e todos os seus implementadores. O contexto é a via que já
+// atravessa o despacho intacta (o mesmo idioma do plano de replay e da correlação de
+// sandbox), pelo que o titular chega ao ponto de selagem sem que nenhuma camada
+// intermédia o tenha de transportar.
+//
+// Quem o anexa é o ponto que CONHECE o run: o [activity.Dispatcher], a partir do
+// Principal da activity — o mesmo valor que o capturer sela (goal.Principal.NHIID),
+// para que os MESMOS bytes fiquem sob a MESMA KEK em replay.captured e em
+// step.ledger.applied.
+func ContextWithTitular(ctx context.Context, subject string) context.Context {
+	if subject == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, titularKey{}, subject)
+}
+
+// TitularFrom devolve o titular anexado por [ContextWithTitular] ("" se ausente).
+func TitularFrom(ctx context.Context) string {
+	s, _ := ctx.Value(titularKey{}).(string)
+	return s
+}
+
+// titularOf resolve o titular sob cuja KEK selar: o do RUN (contexto) tem PRECEDÊNCIA
+// sobre o da COMPOSIÇÃO (produtor). A ordem é deliberada — o titular dos dados é o
+// principal do run, não a identidade emissora do nó; o produtor só cobre o caso do
+// ledger composto por-run (engine adapter) e a retro-compatibilidade.
+func (l *StepLedger) titularOf(ctx context.Context) string {
+	if s := TitularFrom(ctx); s != "" {
+		return s
+	}
+	return l.producer.NHIID
 }
 
 // NewStepLedger constrói um ledger sobre o Event Store dado. store é obrigatório.
@@ -275,6 +348,14 @@ func (l *StepLedger) Apply(ctx context.Context, key string, effect func(context.
 	// dedup GLOBAL do ES. Recusa estruturalmente essa colisão.
 	if strings.HasPrefix(stepID, ledgerStepPrefix) {
 		return Result{}, false, ErrReservedStepID
+	}
+	// GUARDA FAIL-CLOSED DO TITULAR (AOS-245), ANTES de qualquer efeito e antes do
+	// fast-path de dedup: com a cifra por-titular composta e o modo estrito ligado, um
+	// Apply sem titular resolvível NÃO corre. Recusar aqui — e não no momento da
+	// selagem — evita a única alternativa possível, que seria correr o efeito externo e
+	// só depois descobrir que o seu resultado não pode ser persistido em segurança.
+	if l.requireTitular && l.cipher != nil && l.titularOf(ctx) == "" {
+		return Result{}, false, ErrNoTitular
 	}
 	keyHash := HashKey(key)
 
@@ -343,7 +424,10 @@ func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash 
 	// integridade/dedup por conteúdo, sem revelar nem recuperar o plaintext.
 	clearRec := ledgerRecord{Key: key, Status: res.Status, Result: res.Payload, Hash: res.hash()}
 	persistRec := clearRec
-	subject := l.producer.NHIID
+	// O titular é o do RUN (contexto) e, em fallback, o da composição (produtor) — ver
+	// [StepLedger.titularOf]. Com [WithRequireTitular] ligada, chegar aqui com o
+	// cifrador composto garante subject != "" (a guarda de Apply precede o efeito).
+	subject := l.titularOf(ctx)
 	if l.cipher != nil && subject != "" && len(res.Payload) > 0 {
 		sealed, serr := l.cipher.SealContent(ctx, subject, runID, res.Payload)
 		if serr != nil {

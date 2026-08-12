@@ -46,6 +46,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +64,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
+	"github.com/aos-ref/kernel/agent-runtime/state"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
 )
@@ -184,12 +186,20 @@ var (
 
 // apiConfig é a configuração resolvida da API.
 type apiConfig struct {
-	maxBodyBytes     int64
-	rateBurst        float64
-	ratePerSec       float64
-	ctrlRateBurst    float64
-	ctrlRatePerSec   float64
-	maxInFlight      int
+	maxBodyBytes   int64
+	rateBurst      float64
+	ratePerSec     float64
+	ctrlRateBurst  float64
+	ctrlRatePerSec float64
+	maxInFlight    int
+	// maxTurnsCeiling é o TECTO node-local do nº de turnos de um run (AOS-203, achado F2 do
+	// desafio A5). Um `max_turns` do corpo de POST /runs é CLAMPADO a este valor na fronteira
+	// de INGRESSO ANTES de construir o Goal, para que o submissor não escolha um orçamento de
+	// turnos arbitrário: sem tecto, um único `POST /runs {max_turns: 200}` esgota o LimitRPM do
+	// keypool do gateway e deixa o nó incapaz de chamar o modelo até reiniciar (o orçamento RPM
+	// é do PROCESSO, não do run). Default [agentruntime.DefaultMaxTurns]; endurecível por
+	// AOS_MAX_TURNS via [WithMaxTurnsCeiling]. É node-local: não importa nada do escalonador.
+	maxTurnsCeiling  int
 	trajWriteTimeout time.Duration // write-deadline por-escrita do SSE de trajectória
 	trajMaxConns     int           // tecto de streams SSE concorrentes por-nó
 	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
@@ -273,6 +283,21 @@ func WithControlRateLimit(perSec, burst float64) APIOption {
 // <= 0 desliga o tecto (só o rate-limit governa a admission).
 func WithMaxInFlight(n int) APIOption {
 	return func(c *apiConfig) { c.maxInFlight = n }
+}
+
+// WithMaxTurnsCeiling define o TECTO node-local do nº de turnos de um run (AOS-203, F2). Um
+// `max_turns` do corpo de POST /runs maior do que este tecto — ou ausente — é CLAMPADO a ele
+// na fronteira de ingresso, ANTES de o Goal chegar ao loop. Fecha o DoS de um pedido em que
+// um `max_turns` grande esgota o orçamento RPM do gateway (que é do processo, não do run) e
+// deixa o nó sem poder chamar o modelo. Default [agentruntime.DefaultMaxTurns]; n <= 0 é
+// ignorado (mantém o default) — o tecto NUNCA se desliga: um clamp "desligável" reabriria o
+// próprio buraco que fecha.
+func WithMaxTurnsCeiling(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.maxTurnsCeiling = n
+		}
+	}
 }
 
 // WithTrajectoryWriteTimeout define o write-deadline POR-ESCRITA do stream SSE de trajectória
@@ -402,13 +427,10 @@ type apiHandler struct {
 	controlMTLS bool
 	// readGov é a costura de soberania/conformidade de leitura (AOS-172, D7+D6). nil ⇒ legado.
 	readGov *readGovernance
-	// expireInFlight serializa as passagens do [audit.ExpirationJob] conduzidas por
-	// POST /dsar/expire (AOS-213). O Run do job é pensado para uma execução de cada vez
-	// (o check-then-Add da idempotency key não é atómico ao nível do registo), pelo que
-	// duas passagens concorrentes poderiam selar DOIS eventos retention.expired para o
-	// mesmo facto. O guard CAS admite UMA passagem activa; uma segunda invocação
-	// concorrente recebe 409 (no-op) em vez de poluir a cadeia WORM.
-	expireInFlight atomic.Bool
+	// O guard que serializa as passagens do [audit.ExpirationJob] vive em
+	// [NodeService.expireInFlight] — NÃO aqui. Mudou de sítio em AOS-267, quando o scheduler
+	// interno passou a conduzir a MESMA passagem: um guard no handler só excluiria as
+	// invocações da rota entre si, e a rota voltaria a poder correr em simultâneo com o tick.
 }
 
 // NewAPIHandler compõe o http.Handler do nó sobre o loop de serviço (AOS-164a) e o nó real
@@ -428,6 +450,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		ctrlRateBurst:    DefaultRateBurst,
 		ctrlRatePerSec:   DefaultRatePerSec,
 		maxInFlight:      DefaultMaxInFlight,
+		maxTurnsCeiling:  agentruntime.DefaultMaxTurns,
 		trajWriteTimeout: DefaultTrajectoryWriteTimeout,
 		trajMaxConns:     DefaultMaxTrajectoryConns,
 		now:              time.Now,
@@ -492,7 +515,17 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
 	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)
 	mux.HandleFunc("POST /runs/{id}/approve", h.handleApprove)
+	// FRESCURA POR-CERIMÓNIA (AOS-266, achado F10): EMISSÃO server-side do challenge do 4-eyes.
+	// É o LADO DE EMISSÃO indivisível da porta integration.WithChallengeIssuance — desligado (501)
+	// quando a frescura está DORMENTE (Node.ChallengeIssuer nil). Ver handleChallenge.
+	mux.HandleFunc("POST /runs/{id}/challenge", h.handleChallenge)
 	mux.HandleFunc("POST /runs/{id}/resume", h.handleResume)
+	// Plano de CONTROLO TRUSTED — RATIFICAÇÃO de auto-modificação (AOS-275, achado F7). NÃO é
+	// por-run: o alvo é um ARTEFACTO (skill/memória procedural), pelo que a rota é de NÓ. Mesma
+	// admissão do /approve (admitControl + admitControlMTLS) e a MESMA disciplina non-signing — a
+	// assinatura ed25519 do ratificador vem no corpo e é o gate de PRODUÇÃO (freshness + nonce-store
+	// durável forçados) que a verifica contra a pubkey PINADA. Ver promotion_api.go.
+	mux.HandleFunc("POST /promote", h.handlePromote)
 	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
 	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
 	// composto (fail-closed). Ver handleDSAR.
@@ -601,6 +634,19 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		req.PrincipalNHI = submitter.principal
 	}
 
+	// TECTO DE TURNOS na fronteira de INGRESSO (AOS-203, achado F2 do desafio A5). O `max_turns`
+	// vem do corpo do submissor e, sem clamp, é copiado cru para o Goal — o loop só aplica o
+	// default quando o campo é <= 0, pelo que um valor grande passa tal e qual. Composto com o
+	// orçamento RPM POR-PROCESSO do keypool do gateway, um único `POST /runs {max_turns: 200}`
+	// esgota-o e deixa o nó incapaz de chamar o modelo até reiniciar — um DoS de UM pedido que
+	// o rate-limit de ingresso (1 pedido, abaixo do burst) e o tecto de in-flight (1 run) não
+	// apanham. O clamp fecha-o aqui, node-local, ANTES de o Goal existir: um `max_turns` acima
+	// do tecto — ou ausente (<= 0) — é reduzido ao tecto (default [agentruntime.DefaultMaxTurns],
+	// endurecível por AOS_MAX_TURNS). Um valor legítimo abaixo do tecto passa intacto.
+	if req.MaxTurns <= 0 || req.MaxTurns > h.cfg.maxTurnsCeiling {
+		req.MaxTurns = h.cfg.maxTurnsCeiling
+	}
+
 	goal := agentruntime.Goal{
 		RunID:      req.RunID,
 		Objective:  req.Objective,
@@ -672,7 +718,7 @@ func submitErrorStatus(err error) int {
 // streaming é AOS-167.
 type runStateResponse struct {
 	RunID      string `json:"run_id"`
-	Status     string `json:"status"` // "in_progress" | "waiting_on_human" | "completed"
+	Status     string `json:"status"` // "in_progress" | "waiting_on_human" | "completed" | desfecho durável (AOS-252): "failed" | "timed_out" | "killed" | "paused"
 	Terminated bool   `json:"terminated,omitempty"`
 	Paused     bool   `json:"paused,omitempty"`
 	Panicked   bool   `json:"panicked,omitempty"`
@@ -807,6 +853,30 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// DESFECHO DURÁVEL (AOS-252): os baldes em memória são um cache que um restart (ou a
+	// poda FIFO) esvazia; o log não. Um run que esta réplica já não conhece mas cujo log
+	// tem um estado FINAL/SUSPENSO reflecte-o — completo, falhado, timed_out, killed ou
+	// paused (trip do breaker) — em vez do 404 de "nunca existiu". Um run em ready/running
+	// (crash ou órfão sem desfecho — AOS-253) ou inexistente cai no 404 uniforme: a leitura
+	// é um caminho de CONSULTA e um erro de leitura resolve-se pelo lado não-enumerável.
+	if st, derr := h.svc.DurableState(r.Context(), runID); derr == nil {
+		var resp runStateResponse
+		switch st {
+		case state.Complete:
+			resp = runStateResponse{RunID: runID, Status: "completed", Terminated: true}
+		case state.Failed, state.TimedOut, state.Killed:
+			resp = runStateResponse{RunID: runID, Status: string(st)}
+		case state.Paused:
+			resp = runStateResponse{RunID: runID, Status: string(state.Paused), Paused: true}
+		}
+		if resp.Status != "" {
+			if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
 	// Desconhecido ⇒ 404 UNIFORME (não vaza existência de runs alheios).
 	writeError(w, http.StatusNotFound, "not found")
 }
@@ -900,10 +970,28 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		g("aos_dsar_vault_ready", "Custodia da KEK (Vault) operacional (1) ou selada/inalcancavel (0).", "gauge", b01(vaultReady), "")
 	}
+	// CAUSA do vermelho, sem revelar titulares (remediação da W6). O `aos_dsar_vault_ready` a 0
+	// tem TRÊS causas — Vault selado/inalcançável, token nosso a expirar, destruição de chave por
+	// confirmar — e o corpo do /readyz é uniforme de propósito. Sem este contador, uma política
+	// Transit sem `deletion_allowed` tirava o nó de rotação PERMANENTEMENTE com um sinal
+	// indistinguível do de um token a expirar. É uma CONTAGEM de chaves pendentes (nomes já
+	// derivados por sha256): nomeia o eixo, nunca o titular. Só sai quando a custódia sabe
+	// responder à pergunta.
+	if pend, ok := shredPendingOf(h.node.DSARVault); ok {
+		g("aos_dsar_vault_shred_unconfirmed", "Destruicoes de KEK (crypto-shred) por CONFIRMAR na custodia; >0 mantem o no unready e o conteudo pode continuar recuperavel.", "gauge", float64(pend), "")
+	}
 
 	// aos_ready espelha o veredito do /readyz (drain + Event Store + custódia da KEK) — o SLI de
 	// disponibilidade a partir do qual o alerta de SLO dispara.
 	g("aos_ready", "O no reporta-se pronto no /readyz (1) ou nao (0).", "gauge", b01(!draining && esHealthy && vaultReady), "")
+
+	// AOS-274 — SLOs/ALERTAS avaliados em runtime. É a superfície de EXPOSIÇÃO do produtor
+	// (slo_evaluator.go): o que aqui aparece foi calculado sobre dados REAIS do nó (spans
+	// emitidos, sonda de prontidão, verificação da hash-chain), não sobre valores injectados.
+	// Os `Offenders` (trace_ids) NÃO viajam para aqui de propósito: `/metrics` é
+	// não-autenticado e a filosofia não-enumerável do nó vale para ele — o drill-down por trace
+	// fica no log estruturado do serviço, junto do runbook.
+	h.writeSLOMetrics(&b)
 
 	// Runtime Go (USE): saturação de recursos do processo.
 	g("aos_goroutines", "Goroutines em execucao.", "gauge", float64(runtime.NumGoroutine()), "")
@@ -1065,6 +1153,63 @@ type approvalLegWire struct {
 	DeviceAttestation string `json:"device_attestation,omitempty"`
 	DeviceClientData  string `json:"device_client_data,omitempty"`
 	Signature         string `json:"signature"` // base64(assinatura ed25519 da perna)
+}
+
+// challengeRequest pede a EMISSÃO de um challenge fresco para uma cerimónia de aprovação
+// (AOS-266). O scope é derivado de request_id (o mesmo âmbito anti-replay que o /approve usa),
+// e o challenge é atribuído ao aprovador nomeado — só ele o poderá usar numa perna válida.
+type challengeRequest struct {
+	RequestID string `json:"request_id"`
+	Approver  string `json:"approver"`
+}
+
+// handleChallenge EMITE um challenge server-side para (request_id, approver) e regista-o
+// duravelmente com TTL (AOS-266, achado F10). É o LADO DE EMISSÃO da frescura por-cerimónia: o
+// operador/aprovador pede aqui o challenge, assina a perna com ele (aos-issuer approve-sign
+// --challenge <hex>) e submete em /approve; o gate, composto com integration.WithChallengeIssuance,
+// só aceita challenges que constem deste registo e estejam frescos.
+//
+// DESLIGADO (501) quando a frescura está DORMENTE (Node.ChallengeIssuer nil) — o mesmo valor que
+// alimenta a porta do gate. Emissão e composição são INDIVISÍVEIS por construção (ver Bootstrap):
+// nunca há a porta ligada sem este endpoint operável, nem o contrário.
+//
+// O challenge NÃO é segredo (viaja em claro no clientDataJSON da attestation); é devolvido em
+// base64 (para o wire do /approve) e em hex (para a flag --challenge do aos-issuer), sem obrigar
+// a reescrever o cliente. Autenticado pela MESMA admission do plano de controlo que o /approve.
+func (h *apiHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
+	if !h.admitControl(w) {
+		return
+	}
+	if !h.admitControlMTLS(w, r) {
+		return
+	}
+	if h.node.ChallengeIssuer == nil {
+		writeError(w, http.StatusNotImplemented, "emissao de challenges desligada (frescura por-cerimonia dormente; defina AOS_CHALLENGE_ISSUANCE=1)")
+		return
+	}
+	var req challengeRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	approver := strings.TrimSpace(req.Approver)
+	if requestID == "" || approver == "" {
+		writeError(w, http.StatusBadRequest, "request_id e approver obrigatorios")
+		return
+	}
+	// O scope EXPORTADO amarra a emissão ao MESMO namespace que a verificação (checkIssued)
+	// consulta — uma divergência de prefixo faria o gate negar toda a perna.
+	challenge, err := h.node.ChallengeIssuer.IssueChallenge(r.Context(), integration.ChallengeScope(requestID), approver)
+	if err != nil {
+		// Falha do backend durável do Event Store ⇒ 500 (sem detalhe no corpo).
+		writeError(w, http.StatusInternalServerError, "emissao de challenge falhou")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"challenge":     base64.StdEncoding.EncodeToString(challenge), // wire do /approve
+		"challenge_hex": hex.EncodeToString(challenge),                // flag --challenge do aos-issuer
+	})
 }
 
 // handleApprove autoriza uma acção irreversível via o FourEyesGate (AOS-162), SE o nó o

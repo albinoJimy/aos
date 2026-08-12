@@ -129,6 +129,34 @@ func (b *Budget) AddNode(nodeID, parentID string, limit Amount) error {
 	return nil
 }
 
+// RemoveNode retira uma sub-árvore da árvore de orçamento. É o outro lado de
+// [Budget.AddNode] e existe porque um nó por-run tem de ser LIBERTADO no fim do run
+// (AOS-256): sem libertação, cada run deixaria um nó vivo para sempre (crescimento
+// ilimitado do mapa) e a RETOMA do mesmo run — que reutiliza o RunID — colidiria com
+// [ErrNodeExists].
+//
+// IDEMPOTENTE por desenho (nó inexistente ⇒ nil), pela mesma razão que
+// [Budget.Release] o é: a libertação é chamada por `defer` e tem de ser segura em
+// todos os caminhos (retorno normal, erro e panic), incluindo duas vezes.
+//
+// A RAIZ nunca se remove ([ErrRootRemoval]): removê-la deixaria os nós restantes com
+// uma cadeia de ancestrais que já não é alcançável por id — o tecto do topo passaria
+// a ser invisível a [Budget.AddNode] sem nunca deixar de ser debitado.
+//
+// SEMÂNTICA DAS RESERVAS PENDENTES: uma reserva já emitida guarda a sua PRÓPRIA
+// cadeia de ponteiros ([reservationState.chain]), pelo que Commit/Release de uma
+// reserva feita antes da remoção continuam a debitar/creditar correctamente os
+// ancestrais — remover o nó impede reservas NOVAS nele, não corrompe as em curso.
+func (b *Budget) RemoveNode(nodeID string) error {
+	if nodeID == b.treeID {
+		return ErrRootRemoval
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.nodes, nodeID)
+	return nil
+}
+
 // TreeID devolve a raiz da árvore.
 func (b *Budget) TreeID() string { return b.treeID }
 

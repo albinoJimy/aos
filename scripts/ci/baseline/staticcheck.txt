@@ -1,4 +1,17 @@
-packages/kernel/reference-monitor/eventsink.go: should convert h (type DelegationHop) to delegationHopDTO instead of using struct literal (S1016)
+# Baseline do staticcheck — descobertas PRE-EXISTENTES da ARVORE CONSOLIDADA (EPIC-20 + fix
+# de CI). Gerada pela ferramenta PINADA (staticcheck@v0.7.0) DENTRO do contentor com a
+# baseline vazia — NAO por observacao local (o staticcheck do host e outra versao e ve
+# menos) nem raspada de logs. O gate e fail-closed para tudo o que nao esteja aqui.
+#
+# NOTA: nesta arvore consolidada os U1000 de breaker_wiring.go (forget/observeAction)
+# DESAPARECERAM — o codigo das waves passou a ter chamadores dessas funcoes. A baseline
+# encolhe quando o codigo deixa de as accionar; e o comportamento correcto.
+#
+# Testes de outro ticket (orchestrator) — triviais, ficam declarados:
+packages/control-plane/orchestrator/planner/planner_test.go: this value of p is never used (SA4006)
+packages/control-plane/orchestrator/planneraut/governor_test.go: func (*stubOverride).set is unused (U1000)
+packages/kernel/agent-runtime/replay/nondeterminism_capture.go: error should be returned as the last argument (ST1008)
+packages/kernel/agent-runtime/replay/replay_source.go: error should be returned as the last argument (ST1008)
 packages/platform/identity/delegation/chain_test.go: identical expressions on the left and right side of the '!=' operator (SA4000)
 packages/substrate/bus/bus.go: func withClock is unused (U1000)
 packages/substrate/eventstore/store.go: func withClock is unused (U1000)

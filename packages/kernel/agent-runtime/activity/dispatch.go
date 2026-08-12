@@ -215,6 +215,19 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 	// replay (que lê rec.Payload) re-emitiria um custo que o efeito nunca voltou a incorrer.
 	var effectCostMicroUSD int64
 
+	// TITULAR DO RUN → LEDGER (AOS-093/AOS-245). O ledger cifra o Result.Payload — o
+	// OUTPUT da tool — sob a KEK POR-TITULAR antes de o persistir, mas só sabe QUEM é o
+	// titular se alguém lho disser: o ledger do nó é composto UMA vez no arranque e o
+	// titular é POR-RUN. Este é o ponto que o conhece (act.Principal), e é o MESMO valor
+	// que o capturer sela (goal.Principal.NHIID em loop.go), pelo que os mesmos bytes
+	// ficam sob a MESMA chave em replay.captured e em step.ledger.applied — e o
+	// crypto-shredding (GDPR Art. 17) alcança ambos ao destruir uma só KEK.
+	//
+	// Sem isto o ledger caía no fallback do produtor (vazio no nó) e persistia o output
+	// da tool EM CLARO no WAL, com o cifrador composto e inerte. O ledger de produção
+	// leva a guarda [durable.WithRequireTitular], que torna esse silêncio impossível.
+	ctx = durable.ContextWithTitular(ctx, act.Principal.NHIID)
+
 	// A verificação already-applied vive DENTRO de Apply (precede o efeito). O efeito
 	// abaixo é a ÚNICA via de execução: constrói o Call e chama Mediate — sem permit,
 	// a tool nunca corre (o RM só a despacha sob permit não-forjável).

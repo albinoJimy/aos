@@ -164,6 +164,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | Prefixo | Nº | Componente dono (onde as constantes vivem) |
 |---|---|---|
 | `admission.*` | 4 | `packages/control-plane/scheduler/admission.go` |
+| `approval.*` | 4 | `packages/integration/approval_store_durable.go` (ciclo de aprovação HITL durável, AOS-021: `granted`/`consumed`/`pending`/`expired`) |
 | `backpressure.*` | 5 | `packages/control-plane/scheduler/{queue,policy}.go` |
 | `budget.*` | 7 | `packages/control-plane/budget/events.go` (ciclo reserva/commit) e `packages/control-plane/scheduler/breaker.go` (circuit breaker) |
 | `control.*` | 3 | `packages/kernel/agent-runtime/control/steer_channel.go` |

@@ -264,6 +264,15 @@ func TestNode_DurableExecution_NoDoubleExecAfterRestart(t *testing.T) {
 	cfg.EventStorePath = filepath.Join(dir, "events.wal")
 	cfg.WORMPath = filepath.Join(dir, "worm.wal")
 	cfg.IssuerKeyPath = filepath.Join(dir, "issuer.seed") // chave estável entre reinícios
+	// CUSTÓDIA DE KEK ESTÁVEL ENTRE AS DUAS VIDAS (AOS-215/AOS-245). Desde AOS-245 o
+	// step-ledger sela o Result.Payload sob a KEK POR-TITULAR (AOS-093): o registo canónico
+	// que a 2.ª vida relê do WAL só volta a ser decifrável se a KEK sobreviver ao restart. O
+	// vault de REFERÊNCIA é in-memory e morre com o processo — precisamente a combinação
+	// (substrato durável + KEK efémera) que [ErrProductionNeedsDurableKEK] PROÍBE em produção.
+	// Partilhar a MESMA instância pelas duas vidas é o análogo de teste de AOS_DSAR_VAULT_ADDR;
+	// sem ela o Rebuild não re-hidrataria o passo e o teste mediria a evaporação da KEK em vez
+	// da deduplicação durável que é o seu objecto.
+	cfg.DSARVault = audit.NewInMemoryKeyVault(nil)
 	// Uma instância de modelo POR VIDA do nó — o estado NÃO atravessa o restart.
 	model1 := &restartToolModel{}
 	cfg.Model = model1

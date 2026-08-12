@@ -89,7 +89,11 @@ func TestProductionAcceptsDurableKEK(t *testing.T) {
 	if err := os.WriteFile(tok, []byte("dev-root"), 0o600); err != nil {
 		t.Fatalf("escrever token de teste: %v", err)
 	}
-	t.Setenv("AOS_DSAR_VAULT_ADDR", "http://vault:8200")
+	// https: desde AOS-249 o esquema de AOS_DSAR_VAULT_ADDR é validado fail-closed (o token do
+	// Vault não atravessa a rede em claro). Com http num host não-loopback este caso ficaria
+	// VACUAMENTE verde — abortaria com ErrInsecureVaultDSARAddr, que não é ErrProductionNeeds-
+	// DurableKEK, e a asserção passaria sem provar nada sobre a guarda de KEK durável.
+	t.Setenv("AOS_DSAR_VAULT_ADDR", "https://vault:8200")
 	t.Setenv("AOS_DSAR_VAULT_TOKEN_PATH", tok)
 	if _, err := nodeConfigFromEnv(); errors.Is(err, ErrProductionNeedsDurableKEK) {
 		t.Fatalf("producao COM custodia de KEK duravel NAO devia dar ErrProductionNeedsDurableKEK, veio: %v", err)

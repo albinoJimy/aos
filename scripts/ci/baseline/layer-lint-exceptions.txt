@@ -28,6 +28,11 @@ github.com/aos-ref/platform/model-gateway/metering/cost/budgetbridge|github.com/
 
 # ARQ-04: control-plane importa platform.
 github.com/aos-ref/control-plane/orchestrator|github.com/aos-ref/platform/identity # ADR-019
+# Subpacotes do orchestrator (capabilitygap/planmaterialize/planner, EPIC-19) — MESMO
+# acoplamento control-plane->platform/identity já legitimado por ADR-019 §2.5 na entrada
+# acima, só em subpacotes acrescentados depois. Não é decisão nova: é a mesma, por glob.
+# (O acoplamento REAL, se um dia se quiser eliminar, é eixo do dono — não deste gate.)
+github.com/aos-ref/control-plane/orchestrator/*|github.com/aos-ref/platform/identity # ADR-019 §2.5
 github.com/aos-ref/control-plane/scheduler|github.com/aos-ref/platform/identity # ADR-019
 
 # ARQ-05: inversões control-plane -> platform/substrate reveladas pela regra

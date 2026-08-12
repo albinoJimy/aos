@@ -102,7 +102,11 @@ func cmdRun(args []string, w io.Writer) error {
 	cred := fs.String("credential", "", "token NHI (Credential)")
 	system := fs.String("system", "", "system prompt")
 	scope := fs.String("scope", "", "scopes separados por virgula")
-	maxTurns := fs.Int("max-turns", 0, "tecto de turnos")
+	// --max-turns é um PEDIDO, não uma garantia: o valor viaja no corpo de POST /runs e o NÓ
+	// clampa-o ao seu tecto node-local (AOS_MAX_TURNS, default DefaultMaxTurns) na fronteira de
+	// ingresso (AOS-203, F2). Não se clampa aqui — o cliente não conhece (nem tem autoridade
+	// sobre) o tecto do nó; a decisão é do nó, pelo mesmo caminho de api que qualquer submissor.
+	maxTurns := fs.Int("max-turns", 0, "tecto de turnos pedido (o no clampa ao seu AOS_MAX_TURNS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

@@ -45,3 +45,25 @@ func WithLivenessBreaker(b LivenessBreaker) Option {
 		}
 	}
 }
+
+// ActionObserver recebe, no FECHO da mediação de UMA tool call (o span execute_tool já
+// terminou, qualquer que seja o veredicto — permit, deny ou escalate), o runID e o hash
+// canónico da acção. É a fonte do sinal de NO-PROGRESS do disjuntor (AOS-251): o hash é o
+// MESMO que o Reference Monitor anota no span execute_tool
+// ([otelgenai.CanonicalToolCallHash] sobre a call JÁ na forma final, pós-reescrita) — não
+// se inventa uma segunda noção de "acção". Uma call cuja reescrita falhou NÃO é observada
+// (nunca chegou a ser mediada: não há execute_tool).
+//
+// O observador é infra-estrutura TRUSTED do nó (o detector de action-dedup); o loop
+// limita-se a reportar. ADITIVO: sem [WithActionObserver] nada é reportado e o
+// comportamento de AOS-013 é byte-idêntico.
+type ActionObserver func(runID, toolCallHash string)
+
+// WithActionObserver injecta o observador de acções (AOS-251). Um valor nil é ignorado.
+func WithActionObserver(o ActionObserver) Option {
+	return func(rt *Runtime) {
+		if o != nil {
+			rt.actionObserver = o
+		}
+	}
+}

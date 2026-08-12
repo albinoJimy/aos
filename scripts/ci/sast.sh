@@ -17,7 +17,12 @@ while IFS= read -r mod; do
   #   [<abs-path>:<line>] - <CODE> (CWE-x): <details> (Confidence:.., Severity: HIGH)
   # Normaliza para: <relpath>|<CODE>  (multiconjunto => nova ocorrência é caçada).
   gs=0
-  out="$( cd "$REPO_ROOT/$mod" && gosec -quiet -fmt=text -severity=high ./... 2>&1 )" || gs=$?
+  # -exclude-dir=testdata: as pastas testdata/ sao FIXTURES (o Go ignora-as por convencao;
+  # ex.: archlint/testdata/badgwadapters e codigo DELIBERADAMENTE mal-formado para testar o
+  # arch-lint). O gosec, ao contrario do go, desce a testdata/ e a SSA rebenta num erro de
+  # tipo cuja mensagem ("expected ... found") casa o padrao fail-closed abaixo — um falso
+  # "scanner nao correu". testdata nunca e codigo de producao; excluir-la e correcto.
+  out="$( cd "$REPO_ROOT/$mod" && gosec -quiet -fmt=text -severity=high -exclude-dir=testdata ./... 2>&1 )" || gs=$?
   # FAIL-CLOSED: gosec sai 0 (limpo) ou 1 (encontrou issues, parseadas abaixo).
   # Código > 1, ou um erro de análise de pacotes (não compila / não carrega),
   # significa que o scanner NÃO correu — bloqueia em vez de reportar "limpo".

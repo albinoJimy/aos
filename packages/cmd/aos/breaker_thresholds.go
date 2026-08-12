@@ -18,13 +18,21 @@ package main
 // As VELOCIDADES DE QUEIMA (custo/s, tokens/s) ficam DESLIGADAS por omissão, e isso é uma
 // escolha, não um esquecimento: um tecto de velocidade errado mata runs saudáveis, e o
 // valor certo depende do modelo, do preço e do perfil da carga — coisas que este nó não
-// sabe. Ficam expostas por configuração para quem tiver os dados.
+// sabe.
+//
+// AOS-246: além disso, hoje elas NÃO SÃO LIGÁVEIS — o nó não cabla nenhuma
+// [breaker.VelocitySource], e um limiar de velocidade sem fonte fazia [breaker.NewBreaker]
+// recusar a construção, deixando o run SEM DISJUNTOR NENHUM (também sem no-progress nem
+// wall-clock). Ligá-las passou a ABORTAR O ARRANQUE, em breaker_wiring.go
+// ([ErrBreakerVelocitySourceUnwired]); a validação aqui continua a ser só sintáctica, para
+// que o erro que o operador vê nomeie a causa REAL (falta a fonte) e não um formato errado.
 //
 // Um limiar <= 0 desliga o respectivo sinal (contrato de [breaker.Thresholds]).
 
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -117,14 +125,23 @@ func envDuration(name string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// envFloat lê um número >= 0. Vazio ⇒ o default.
+// envFloat lê um número FINITO >= 0. Vazio ⇒ o default.
+//
+// NaN e ±Inf são rejeitados EXPLICITAMENTE, e não por zelo: `strconv.ParseFloat` aceita
+// "NaN"/"Inf", e `f < 0` é FALSO para NaN — pelo que um `AOS_BREAKER_MAX_TOKENS_PER_SEC=NaN`
+// atravessava esta validação intacto e chegava ao gate de AOS-246 (`> 0`), onde `NaN > 0`
+// também é falso: o tecto de velocidade que o operador escreveu ficava SILENCIOSAMENTE
+// desligado, com o arranque a passar. Um `+Inf` fazia o simétrico (passava o `> 0` e abortava
+// por VelocitySource, com uma mensagem que não explica o valor). É a mesma rejeição que
+// [parsePositiveFloat] faz do lado do ingresso (AOS-277) — a duplicação dos dois helpers está
+// justificada (forma raw exigida pelo gate AST de AOS-203), a divergência de semântica não.
 func envFloat(name string, def float64) (float64, error) {
 	v := strings.TrimSpace(os.Getenv(name))
 	if v == "" {
 		return def, nil
 	}
 	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f < 0 {
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
 		return 0, fmt.Errorf("%w: %s=%q", ErrBadBreakerThresholds, name, v)
 	}
 	return f, nil
