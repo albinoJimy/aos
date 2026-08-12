@@ -62,7 +62,7 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 - [ ] Nenhum output de tool call é persistido em claro: o step-ledger sela por-titular como o capturer (AOS-245), e o shred/expire apaga ambos (prova: erase → `ErrDecrypt` nos dois registos).
 - [x] O breaker **dispara** no run comum: teste de nó repete a mesma call negada e assere trip **antes** de `MaxTurns` (AOS-251); ligar velocidades sem fonte **aborta o arranque** (AOS-246).
 - [ ] O log durável distingue desfecho de crash: `complete`/`failed` escritos em todos os caminhos; `CheckDeadlines` com caller periódico **que interrompe o run** (AOS-252 — escrito e a correr; falta o teste crash-simulado vs fim-normal, ver AOS-252 CA3).
-- [ ] Um crash a meio de um run é retomado por varredura no arranque, sem re-executar efeitos (AOS-253).
+- [x] Um crash a meio de um run é retomado por varredura no arranque, sem re-executar efeitos (AOS-253). `NodeService.ResumeInterruptedRuns` (ligada em `main.go` entre `NewNodeService` e `Serve`) compõe o `durable.Resumer` (AOS-015, nunca antes lido), varre os streams em `running` (rasto de crash de AOS-252), reclama o lease via `worker.Assigner` (sem roubo) e retoma pelo replay-then-continue de AOS-021 (`RebuildLedger` + plano de replay); prova de não-double-execution em `aos253_crash_resume_test.go`.
 - [x] Um run com `AOS_BUDGET_MAX_TOKENS` definido é **negado por orçamento** com o deny selado e atribuído, e um run dentro do tecto obtém **permit** — ambos ao nível do nó (AOS-256..258). Prova em `packages/cmd/aos/aos258_budget_permit_node_test.go` (`Bootstrap` real, tecto pela env do operador; permit **com a tool a executar**, deny com `denied_by=budget` + hash-chain verificada, e o mesmo run a permitir e depois negar).
 - [x] O banner declara budget/broker/modelo/autonomia (AOS-248) — postura anunciada = postura ligada.
 - [x] Burn-down visível no run real com aviso a ~80% (AOS-261/262) — fonte no **ledger de turnos** (não spans, que ninguém retinha), aviso **uma vez por run** no **log do nó** (canal que existe sempre; o span `aos.control.budget_warning` exige `AOS_OTLP_ENDPOINT`, sem a qual o tracer é o `NoopTracer`), e **erro explícito** em vez de 0% silencioso quando não há fonte **ou quando o ledger tem turnos mas somou zero tokens** (`ErrBurndownNoUsage`).
@@ -368,13 +368,13 @@ log; falsificabilidade verificada — sem o cancelamento o teste não termina.
 No arranque do serviço, varrer streams com estado não-terminal, reconstruir o cursor (checkpoints + ledger) e retomar sem re-executar efeitos.
 
 ### Critérios de Aceitação
-- [ ] Varrimento no arranque reclama runs interrompidos (lease expirado, sem estado terminal) — depende de AOS-252 para distinguir órfão de terminado.
-- [ ] Retoma pelo `Resumer` continua do último checkpoint; efeitos não se repetem (dedup provado).
-- [ ] Teste de nó: kill a meio → restart → run completa sem double-execution e sem re-interrogar o modelo nos turnos já capturados.
-- [ ] Banner declara o resultado da varredura (N runs retomados).
+- [x] Varrimento no arranque reclama runs interrompidos (lease expirado, sem estado terminal) — depende de AOS-252 para distinguir órfão de terminado. `NodeService.ResumeInterruptedRuns` (`crash_resume.go`) enumera os streams do Event Store, reconstrói o estado durável de cada um pela máquina de AOS-017 e só age sobre `running` (o rasto de crash de AOS-252); a posse é reclamada pela MESMA `worker.Assigner.TryAcquire` (via `submit`), que SALTA sem roubo um lease vivo noutra réplica (`ErrRunLeaseHeldElsewhere`). Ligado no arranque em `main.go`, entre `NewNodeService` e `Serve`.
+- [x] Retoma pelo `Resumer` continua do último checkpoint; efeitos não se repetem (dedup provado). O `durable.Resumer` (AOS-015) — a peça que nunca fora composta — é agora construído na varredura e os checkpoints passam a ser LIDOS no arranque (reconstrói o cursor/próximo-turno). A retoma SEM re-executar efeitos reutiliza o replay-then-continue de AOS-021 (`replayPlanFor` + `submit(withReplayPlan…, resuming=true)` → `hostRun` chama `RebuildLedger`): o already-applied do step-ledger PRECEDE a mediação, pelo que os efeitos capturados não repetem. Provado em `aos253_crash_resume_test.go` (contador partilhado fica em 1 após a retoma).
+- [x] Teste de nó: kill a meio → restart → run completa sem double-execution e sem re-interrogar o modelo nos turnos já capturados. `TestAOS253_CrashResumeScanCompletesWithoutDoubleExecution` (cadeia REAL `obsPermitNodeWith`, substrato + KEK partilhados entre duas incarnações): o turno 1 aplica o efeito e "crasha" (`running` sem selo terminal); o nó NOVO retoma pela varredura, o run COMPLETA na continuação ao vivo (turno 2), o efeito NÃO repete (contador=1) e o modelo NÃO é interrogado no turno 1 (reproduzido do plano de replay). `TestAOS253_HostRunSeedsCrashResumeRecordAtStart` tranca a metade de produção (o hostRun semeia o registo de retoma no arranque de cada run, não só na escalada).
+- [x] Banner declara o resultado da varredura (N runs retomados). `crashResumeBanner`/`crashResumeDisabledBanner` (funções puras) declaram N órfãos vistos, N retomados, N saltados por lease vivo e N fail-closed — e a postura DESLIGADA com a razão quando o substrato falta. Trancado em `TestAOS253_CrashResumeBannerDeclaresResult`.
 
 ### Estado
-**ABERTO.**
+**FECHADO** (feature/epic20-consolidacao). Peças ligadas (nenhuma reinventada): `durable.Resumer` (AOS-015) + `worker.Assigner` (AOS-018) + estados terminais (AOS-252) + replay-then-continue (AOS-021). Alcance honesto declarado no banner: a retoma automática NÃO traz credencial fresca (um crash não tem humano no lacete); os turnos já capturados dispensam-na (already-applied precede a mediação), mas uma continuação AO VIVO que exija identidade de modelo (AOS-278) é NEGADA atribuivelmente — sem principal forjado.
 
 ---
 
@@ -387,12 +387,14 @@ No arranque do serviço, varrer streams com estado não-terminal, reconstruir o 
 Compor a compensação no caminho de falha durável, para efeitos reversíveis registados.
 
 ### Critérios de Aceitação
-- [ ] `WithCompensationRegistry` chamado na composição de produção; `failed→compensating` alcançável.
-- [ ] Abort com efeitos aplicados acciona compensação ou declara explicitamente a sua ausência (span + WORM).
-- [ ] Teste de composição pela cadeia real.
+- [~] `WithCompensationRegistry` chamado na composição de produção **[x]**; `failed→compensating` alcançável **[ ]** — ver o Estado: falta o **produtor** de compensações (o registo está sempre vazio), pelo que a transição é hoje código morto. Eixo **DEF-270**.
+- [x] Abort com efeitos aplicados acciona compensação ou declara explicitamente a sua ausência (span + WORM) — o ramo alcançável (**declarar a ausência**) está entregue e provado.
+- [x] Teste de composição pela cadeia real — `aos254_saga_compensation_test.go` (Bootstrap/`NewSecuredRuntime`, sem doubles).
 
 ### Estado
-**ABERTO.**
+**PARCIAL — a CONDUÇÃO está entregue e provada; a COMPENSAÇÃO REAL fica deferida (DEF-270).** O nó compõe o `saga.SagaCoordinator` na cadeia de produção (`Node.Compensations` + `WithCompensationRegistry` no dispatcher durável) e `sealTerminalState` conduz o desfecho `failed` — a única origem da saga — para `driveSagaCompensation`. O **único caminho alcançável hoje** está trancado por teste de nó pela cadeia REAL: com o registo VAZIO (a postura de produção), a ausência de compensação é **DECLARADA** (span + selo WORM, `reason=saga_no_compensation_registered`, `Decision=Deny`, titular atribuído) e o run **permanece `failed`** — nunca em silêncio.
+
+**Porque NÃO se declara fechado (honestidade de alcance):** faltam duas peças sem as quais `failed→compensating` é inalcançável — (a) um **PRODUTOR** de compensações (o loop base nunca popula `activity.Activity.Compensation`, logo o registo está sempre vazio); (b) o registo **RUN-SCOPED** (a struct `saga.Compensation` do kernel carrega só `StepID`; com compensações de vários runs, o gate `Len()==0` e o `Reversed()` global fariam um run compensar efeitos de OUTRO — landmine hoje inalcançável por (a), fechá-lo exige mudar o kernel). Testar aqui um caminho que a produção não percorre seria composição sem alcance real — o oposto da invariante do epic. Eixo: **DEF-270**.
 
 ---
 

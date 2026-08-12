@@ -661,7 +661,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		// MaxTurns, trip do breaker (no-op — já materializado) e panic.
 		defer func() {
 			r := recover()
-			s.sealTerminalState(rs, res, err, r != nil)
+			// AOS-254: o titular (goal.Principal.NHIID) acompanha o selo — a saga de rollback que
+			// um desfecho `failed` aciona corre no step-ledger cifrado por-titular, que o exige.
+			s.sealTerminalState(rs, goal.Principal.NHIID, res, err, r != nil)
 			if r != nil {
 				panic(r)
 			}
@@ -693,6 +695,14 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			}
 		}
 	}
+
+	// CRASH-RESUME (AOS-253): torna ESTE run reconstituível por uma varredura de arranque se o
+	// processo morrer a meio. Escrito ANTES do primeiro turno porque um crash NÃO escala — pára
+	// sem deixar, por si, quem o retome — e o Goal (objectivo, contexto de memória, tool set) não
+	// é reconstituível de mais lado nenhum do log (o turn.recorded guarda hashes, a ingestão
+	// redige, e a credencial nunca se persiste). É a MESMA escrita que a suspensão de AOS-021 já
+	// fazia, mas antecipada do momento da escalada para o arranque.
+	s.persistCrashResumeRecord(ctx, goal)
 
 	res, _, err = s.node.Runtime.Run(ctx, goal, nil)
 
@@ -726,6 +736,32 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	rs.err = err
 	rs.suspended = suspenso
 	s.mu.Unlock()
+}
+
+// persistCrashResumeRecord grava o registo de RETOMA do run (o Goal SEM credencial) no
+// ARRANQUE de cada hospedagem, para que [NodeService.ResumeInterruptedRuns] (AOS-253)
+// reconstitua um run interrompido a meio por um crash. É o MESMO registo que a suspensão de
+// AOS-021 escreve na escalada — mas antecipado para antes do primeiro turno, porque um crash
+// não escala e não deixa, por si, quem o retome.
+//
+// IDEMPOTENTE: a idempotency_key deriva do RunID, pelo que uma escalada posterior (AOS-021) ou
+// uma re-hospedagem na retoma re-escreve o MESMO registo e o Event Store deduplica — o Goal é o
+// mesmo objecto (já redigido) nos dois pontos. Só se grava COM titular (Principal.NHIID): o corpo
+// é cifrado por-titular e sem titular não há KEK sob que o selar — o MESMO guard da ingestão, e um
+// run sem principal não é retomável no modelo selado (o replayPlanFor precisa do titular para abrir
+// as capturas).
+//
+// FAIL-SOFT DECLARADO: uma falha é registada em VOZ ALTA mas NÃO aborta o run — só a
+// crash-resumibilidade se perde, não a correcção do run em curso. Abortar todo o run por um soluço
+// do registo de retoma trocaria uma degradação recuperável por uma paragem dura; a suspensão de
+// AOS-021 aborta porque aí o "suspenso" seria irretomável, o que é pior — aqui o run corre na mesma.
+func (s *NodeService) persistCrashResumeRecord(ctx context.Context, goal agentruntime.Goal) {
+	if s.node == nil || s.node.ResumeRecords == nil || goal.Principal.NHIID == "" {
+		return
+	}
+	if err := s.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
+		s.log("registo de retoma de arranque do run %q FALHOU (AOS-253) — o run corre, mas um crash a meio NAO sera retomavel pela varredura de arranque: %v", goal.RunID, err)
+	}
 }
 
 // resumeRecordFromGoal projecta o Goal no registo de retoma. A Credential é

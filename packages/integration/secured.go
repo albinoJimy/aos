@@ -9,6 +9,7 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/activity"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	"github.com/aos-ref/kernel/agent-runtime/saga"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	"github.com/aos-ref/platform/audit"
@@ -73,6 +74,20 @@ type SecuredConfig struct {
 	Checkpointer agentruntime.Checkpointer
 	Capturer     agentruntime.Capturer
 	Ledger       *durable.StepLedger
+
+	// CompensationRegistry liga o registo de compensações de AOS-020 ao dispatcher durável
+	// (AOS-021) via [activity.WithCompensationRegistry]. É a composição que a saga de rollback
+	// de AOS-254 exige: uma activity que traga uma [activity.Compensation] passa a ter ONDE
+	// registar a acção inversa (no momento do permit/dedup), e o [saga.SagaCoordinator] do
+	// caminho de FALHA DURÁVEL (failed→compensating) tem de ONDE as ler. É o MESMO ponteiro que
+	// o nó entrega ao coordinator — um único registo por instância de runtime.
+	//
+	// OPCIONAL: nil ⇒ [activity.WithCompensationRegistry] é omitida e uma activity com
+	// Compensation é recusada ([activity.ErrNoRegistry]) — o estado anterior a AOS-254. SÓ TEM
+	// EFEITO com execução durável (Ledger != nil): sem ledger não há dispatcher durável a que
+	// ligar o registrar, e sem ele a idempotência das compensações (0 reversões duplicadas) não
+	// teria substrato. Ver [NewSecuredRuntime].
+	CompensationRegistry *saga.CompensationRegistry
 
 	// --- Colaboradores de segurança da cadeia REAL (AOS-154) --------------------
 	// Todos são OPCIONAIS: quando nil caem para um default demo-grade que é um hook
@@ -409,6 +424,18 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		var actOpts []activity.Option
 		if cfg.Tracer != nil {
 			actOpts = append(actOpts, activity.WithTracer(cfg.Tracer))
+		}
+		// AOS-254: liga o REGISTO DE COMPENSAÇÕES (AOS-020) ao dispatcher durável. É a
+		// composição de produção de [activity.WithCompensationRegistry] — a costura que
+		// FALTAVA: sem ela uma [activity.Compensation] seria recusada ([activity.ErrNoRegistry])
+		// e a saga de rollback (failed→compensating) nunca teria de onde LER as acções inversas
+		// (registry só com chamadores de teste). O MESMO *saga.CompensationRegistry que aqui
+		// RECEBE as compensações é o que o [saga.SagaCoordinator] do caminho de falha PERCORRE.
+		// nil ⇒ opção omitida (estado anterior a AOS-254, byte-idêntico). Vive DENTRO do ramo
+		// do ledger durável de propósito: sem ledger não há dispatcher a que ligar o registrar,
+		// e a idempotência das compensações assenta nesse mesmo ledger (AOS-014).
+		if cfg.CompensationRegistry != nil {
+			actOpts = append(actOpts, activity.WithCompensationRegistry(cfg.CompensationRegistry))
 		}
 		actDisp, err := activity.NewDispatcher(rm, cfg.Ledger, actOpts...)
 		if err != nil {

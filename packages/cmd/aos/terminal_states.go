@@ -49,15 +49,23 @@ const (
 // O fencing token do lease acompanha o evento (correlação AOS-018); não é pré-condição —
 // só o claim ready→running a exige. Uma falha da transição é devolvida ao chamador (o
 // serviço regista-a em voz alta: sem ela o log volta à ambiguidade de F4).
-func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, runErr error, panicked bool) error {
+// sealTerminal devolve o estado TERMINAL para que materializou (para o chamador saber se foi
+// `failed` — a origem da saga de rollback, AOS-254) e o erro da transição. Um no-op (máquina fora
+// de `running`) devolve o estado corrente sem erro. Numa FALHA da transição devolve o estado
+// corrente (que não mudou) e o erro — o chamador não conduz a saga sobre um selo que não pegou.
+func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, runErr error, panicked bool) (state.State, error) {
 	if g.m.Current() != state.Running {
-		return nil
+		return g.m.Current(), nil
 	}
+	var (
+		to     state.State
+		reason string
+	)
 	switch {
 	case panicked:
-		return g.m.Transition(ctx, state.Failed, state.TransitionEvent{Token: g.token, Reason: reasonRunPanicked})
+		to, reason = state.Failed, reasonRunPanicked
 	case runErr == nil && res.Terminated:
-		return g.m.Transition(ctx, state.Complete, state.TransitionEvent{Token: g.token, Reason: reasonRunComplete})
+		to, reason = state.Complete, reasonRunComplete
 	case errors.Is(runErr, agentruntime.ErrMaxTurnsExceeded):
 		// ORÇAMENTO DE TURNOS ESGOTADO ⇒ `timed_out`, NÃO `failed`. A distinção não é
 		// cosmética: na tabela de AOS-017 `failed` é a falha RECUPERÁVEL cuja única aresta
@@ -67,12 +75,16 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 		// excedidos, absorvente por construção, e é para onde o disjuntor já manda o seu
 		// próprio tecto de wall-clock — mandar MaxTurns para `failed` deixaria dois tectos
 		// irmãos em estados diferentes.
-		return g.m.Transition(ctx, state.TimedOut, state.TransitionEvent{Token: g.token, Reason: reasonMaxTurnsExhausted})
+		to, reason = state.TimedOut, reasonMaxTurnsExhausted
 	default:
 		// Erro de loop, cancelamento — qualquer outra saída não-terminada é uma FALHA
 		// durável, e aí a saga de compensação é a recuperação certa.
-		return g.m.Transition(ctx, state.Failed, state.TransitionEvent{Token: g.token, Reason: reasonRunFailed})
+		to, reason = state.Failed, reasonRunFailed
 	}
+	if err := g.m.Transition(ctx, to, state.TransitionEvent{Token: g.token, Reason: reason}); err != nil {
+		return g.m.Current(), err
+	}
+	return to, nil
 }
 
 // sealTerminalState sela o desfecho do run no log durável, na saída do hostRun. Corre com
@@ -80,7 +92,10 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 // cancelado com o ctx do run (shutdown/deadline) — senão o fim de um run cancelado voltava
 // a ser invisível no log. Uma falha é registada em voz alta e NÃO sobrepõe o desfecho em
 // memória (o trabalho já aconteceu; o que falhou foi o registo).
-func (s *NodeService) sealTerminalState(rs *runState, res agentruntime.Result, runErr error, panicked bool) {
+// sealTerminalState sela o desfecho durável e, quando esse desfecho é `failed`, CONDUZ a saga de
+// rollback (AOS-254). titular é o Principal.NHIID do run (goal.Principal.NHIID), propagado do
+// hostRun: a compensação corre no step-ledger cifrado por-titular, que o recusa se ele faltar.
+func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentruntime.Result, runErr error, panicked bool) {
 	if s.node == nil || s.node.stateGates == nil {
 		return
 	}
@@ -88,7 +103,15 @@ func (s *NodeService) sealTerminalState(rs *runState, res agentruntime.Result, r
 	if gate == nil {
 		return
 	}
-	if err := gate.sealTerminal(context.Background(), res, runErr, panicked); err != nil {
+	sealed, err := gate.sealTerminal(context.Background(), res, runErr, panicked)
+	if err != nil {
 		s.log("selo do estado terminal do run %q FALHOU — o log duravel fica sem desfecho (indistinguivel de crash, F4): %v", rs.runID, err)
+		return
+	}
+	// AOS-254: um desfecho `failed` — a falha RECUPERÁVEL — é a ÚNICA origem da saga de rollback
+	// (failed→compensating). Os demais desfechos (complete/timed_out/killed) são absorventes e não
+	// têm compensação. A condução decide, atribuivelmente, entre compensar e declarar a ausência.
+	if sealed == state.Failed {
+		s.driveSagaCompensation(rs, titular)
 	}
 }
