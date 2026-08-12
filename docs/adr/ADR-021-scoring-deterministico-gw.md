@@ -4,13 +4,20 @@
 |---|---|
 | **ADR** | 021 |
 | **Título** | Roteamento por scoring ponderado determinístico no Model Gateway (selecção automática de modelo com sinal de qualidade, sem exploração online) |
-| **Estado** | Proposto |
-| **Data** | 2026-08-05 |
-| **Deciders** | Equipa AOS (proposta — pendente de ratificação) |
+| **Estado** | Aceite |
+| **Data** | 2026-08-05 (ratificado 2026-08-13) |
+| **Deciders** | Equipa AOS (**ratificação de dono**, 2026-08-13) |
 | **Contexto-fonte** | Análise comparativa do conceito «Auto-Combo» do OmniRoute ([AUTO-COMBO-GUIDE](https://github.com/diegosouzapw/OmniRoute/blob/release/v3.8.50/docs/getting-started/AUTO-COMBO-GUIDE.md)) contra o router AOS-059 em `packages/platform/model-gateway/routing/router/router.go` |
 | **ADRs relacionados** | ADR-008 (admission tokens/$), ADR-010 (observabilidade/replay), ADR-011 (policy-as-code + soberania por board), ADR-012 (SemVer + eval-gate para artefactos comportamentais) |
 | **Supersede** | — |
 
+> **RATIFICADO (2026-08-13, autoridade de dono).** O estado passou de *Proposto* a
+> *Aceite*: a decisão da §2 (as cinco regras) é agora **autoridade congelada** e não se
+> re-litiga sem emenda datada (Carta §6). O que fica fora — a gramática dos perfis, os
+> pesos iniciais e o formato da tabela assinada (§4 «Fora de escopo») — **continua fora**:
+> é trabalho de `tecnica/06` e do ticket de implementação (**AOS-269**, EPIC-20), não
+> decisão re-aberta por esta ratificação.
+>
 > Este ADR **propõe** evoluir a decisão de roteamento do Model Gateway (GW) de uma
 > composição lexicográfica de regras com prioridades fixas (AOS-059) para um **scoring
 > ponderado determinístico** com pesos declarados como policy-as-code e um sinal de

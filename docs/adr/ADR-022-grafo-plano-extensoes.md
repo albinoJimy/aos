@@ -4,13 +4,22 @@
 |---|---|
 | **ADR** | 022 |
 | **Título** | Extensões declarativas ao grafo de plano (PlanDocument): arestas condicionais, papel verificador de execução e payload tipado por aresta — sem ciclos, sem blackboard |
-| **Estado** | Proposto |
-| **Data** | 2026-08-05 |
-| **Deciders** | Equipa AOS (proposta — pendente de ratificação) |
+| **Estado** | Aceite |
+| **Data** | 2026-08-05 (ratificado 2026-08-13) |
+| **Deciders** | Equipa AOS (**ratificação de dono**, 2026-08-13) |
 | **Contexto-fonte** | Análise comparativa do conceito «Graph Engineering» ([AI Builder Club — Graph Engineering Guide 2026](https://www.aibuilderclub.com/blog/graph-engineering-guide-2026)) contra o grafo de plano do AOS (`packages/control-plane/orchestrator/`, EPIC-03/EPIC-19) |
 | **ADRs relacionados** | ADR-002 (RM mandatório), ADR-003 (NHI por agente), ADR-005 (control/data + taint), ADR-008 (admission tokens/$), ADR-010 (observabilidade/replay), ADR-013 (gates SA-ROC), ADR-018 (fronteira nó↔ORQ/SCH), ADR-020 (planeador como agente governado) |
 | **Supersede** | — |
 
+> **RATIFICADO (2026-08-13, autoridade de dono).** O estado passou de *Proposto* a
+> *Aceite*: a decisão da §2 — as três extensões **e** os cinco invariantes de §2.4 — é
+> agora **autoridade congelada** e não se re-litiga sem emenda datada (Carta §6). Em
+> particular, ficam congeladas as duas **rejeições**: ciclos livres por aresta (§3-b) e
+> *blackboard* mutável (§3-c). O que fica fora — a gramática das condições, o schema do
+> veredicto e os tipos de payload (§4 «Fora de escopo») — **continua fora**: é trabalho de
+> `tecnica/18` e dos tickets de implementação (**AOS-270..273**), não decisão re-aberta
+> por esta ratificação.
+>
 > Este ADR **propõe** três extensões ao schema do PlanDocument — arestas condicionais,
 > papel verificador com semântica de sistema e payload tipado por aresta — capturando o
 > que o «graph engineering» da indústria tem de genuinamente útil, **sem** importar os
