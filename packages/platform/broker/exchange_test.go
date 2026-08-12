@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -29,39 +30,77 @@ func TestExchange_HappyPath_DevolveHandleOpaco(t *testing.T) {
 	}
 }
 
+// assertHandleOpaco prova ESTRUTURALMENTE (sem depender da ausência de substrings
+// curtas num blob aleatório) que o handle é um token opaco de alta entropia e NÃO
+// deriva de campos não-secretos. Forma exigida: prefixo "h-" seguido do encoding
+// base64url de EXACTAMENTE handleEntropyBytes bytes de entropia crua.
+//
+// Esta forma é a que apanha a regressão de BRK-01 de maneira DETERMINISTA: o handle
+// antigo enumerável ("h-"+leaseID, ex.: "h-lease-stripe-eu-1") NÃO decodifica para
+// 16 bytes de base64url — ou o comprimento é inválido, ou o número de bytes não bate
+// —, logo falha aqui SEMPRE. Já a verificação antiga por strings.Contains(h, region)
+// colidia por acaso ("eu" ⊂ "...bEUz...") tornando o teste flaky. Ao exigir que TODO
+// o corpo do handle seja entropia crua de 16 bytes, provamos que nada mais (provider,
+// region, contador) está embebido.
+func assertHandleOpaco(t *testing.T, h Handle) {
+	t.Helper()
+	rest, ok := strings.CutPrefix(string(h), "h-")
+	if !ok {
+		t.Fatalf("handle sem prefixo opaco \"h-\": %q", h)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(rest)
+	if err != nil {
+		t.Fatalf("corpo do handle nao e base64url de entropia crua (enumeravel?): %q: %v", h, err)
+	}
+	if len(raw) != handleEntropyBytes {
+		t.Fatalf("handle nao carrega %d bytes de entropia (obteve %d): %q", handleEntropyBytes, len(raw), h)
+	}
+}
+
 // TestExchange_Handle_NaoAdivinhavel prova o corte de BRK-01: o handle NÃO é
 // derivável de campos não-secretos (provider/region/contador) nem sequencial — é
 // um token opaco de alta entropia. Como a injecção é autorizada por posse do
 // handle, um handle enumerável permitiria usar uma lease fora do escopo.
+//
+// A não-enumerabilidade é verificada por PROPRIEDADE ESTRUTURAL (ver
+// assertHandleOpaco), não por ausência de substrings num blob aleatório — esta
+// última colidia por acaso com a região curta "eu" e tornava o teste flaky.
 func TestExchange_Handle_NaoAdivinhavel(t *testing.T) {
 	st := newStack(t, time.Minute)
 	seen := make(map[Handle]struct{})
-	var handles []Handle
 	for i := 0; i < 8; i++ {
 		h, err := st.broker.Exchange(context.Background(), request("run-1", provInScopeCap))
 		if err != nil {
 			t.Fatalf("Exchange: %v", err)
 		}
-		// NÃO deve vazar campos não-secretos que o tornariam enumerável.
-		if strings.Contains(string(h), provider) || strings.Contains(string(h), region) {
-			t.Fatalf("handle enumeravel (contem provider/region): %q", h)
-		}
-		// NÃO deve conter o id de lease sequencial (o handle antigo era "h-"+leaseID).
-		if strings.Contains(string(h), "lease-") {
-			t.Fatalf("handle deriva do lease-id sequencial: %q", h)
-		}
+		// Forma opaca: "h-" + 16 bytes de entropia base64url e NADA mais embebido
+		// (nem provider/region, nem o lease-id sequencial). Comprimento fixo implícito.
+		assertHandleOpaco(t, h)
 		if _, dup := seen[h]; dup {
 			t.Fatalf("handle repetido (sem entropia): %q", h)
 		}
 		seen[h] = struct{}{}
-		handles = append(handles, h)
 	}
-	// os handles não podem ser um contador previsível: nenhum é sufixo/prefixo
-	// incremental do anterior.
-	for i := 1; i < len(handles); i++ {
-		if len(handles[i]) != len(handles[0]) {
-			t.Fatalf("comprimento de handle inconsistente: %q vs %q", handles[i], handles[0])
+}
+
+// TestNewHandle_OpacoEDeAltaEntropia prova no GERADOR (não no caminho completo) a
+// mesma propriedade, de forma determinista e com grande N: newHandle() não recebe
+// provider/region/contador, logo — por CONSTRUÇÃO — não os pode embeber; e produz
+// tokens opacos de 128 bits distintos. 1000 amostras sem colisão amarram a entropia
+// sem qualquer dependência de blobs aleatórios "não conterem" substrings.
+func TestNewHandle_OpacoEDeAltaEntropia(t *testing.T) {
+	const n = 1000
+	seen := make(map[Handle]struct{}, n)
+	for i := 0; i < n; i++ {
+		h, err := newHandle()
+		if err != nil {
+			t.Fatalf("newHandle: %v", err)
 		}
+		assertHandleOpaco(t, h)
+		if _, dup := seen[h]; dup {
+			t.Fatalf("colisao de handle em %d amostras (entropia insuficiente): %q", n, h)
+		}
+		seen[h] = struct{}{}
 	}
 }
 
