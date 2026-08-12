@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 
+	integration "github.com/aos-ref/integration"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 )
 
@@ -31,6 +32,21 @@ var (
 	ErrResumePrincipalMismatch = errors.New("aos: a credencial de retoma nao corresponde ao principal do run")
 	// ErrResumeUnavailable — o nó não tem o registo de retoma composto (sem four-eyes).
 	ErrResumeUnavailable = errors.New("aos: retoma indisponivel (four-eyes nao composto)")
+	// ErrExhaustionPromptUnanswered — o run tem um PROMPT DE EXAUSTÃO por responder (AOS-263)
+	// e a retoma recusa até ele ser decidido.
+	//
+	// PORQUÊ: o prompt pergunta «parar ou continuar?» e SUSPENDE o run à espera da resposta.
+	// Se a retoma passasse por cima dele, a metade «continuar» da decisão seria tomada com uma
+	// credencial NHI — a MESMA classe de credencial com que o run já corria — sem assinatura de
+	// operador pinado e sem registo no WORM de quem decidiu deixar queimar orçamento acima do
+	// limiar. A resposta ARRISCADA ficaria mais barata do que a segura, que é a regressão de
+	// postura que a decisão do dono (i) recusou. Além disso a pergunta continuaria na lista, e
+	// o varrimento acabaria por anunciar no log «expirado sem decisao» sobre algo decidido.
+	//
+	// NÃO É UMA PRISÃO: a decisão entra em `POST /runs/{id}/exhaustion` (`continue` ou
+	// `abort`), e se ninguém decidir o TTL de pendentes expira a pergunta e a retoma volta a
+	// ser aceite — a mesma escotilha fail-safe que o pendente sempre teve.
+	ErrExhaustionPromptUnanswered = errors.New("aos: run com prompt de exaustao por responder — decida em POST /runs/{id}/exhaustion (continue|abort) antes de retomar")
 )
 
 // Resume retoma um run SUSPENSO com uma credencial NHI FRESCA.
@@ -79,6 +95,20 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 		}
 	}
 
+	// (1-bis) HÁ UMA PERGUNTA DE EXAUSTÃO POR RESPONDER? (AOS-263) A retoma é a EXECUÇÃO de um
+	// `continue` já decidido — nunca a decisão. Ver [ErrExhaustionPromptUnanswered].
+	//
+	// A ORDEM importa: depois da verificação de suspensão, para que um run já abortado continue
+	// a devolver [ErrRunNotSuspended] (e o 404 uniforme) em vez de anunciar que tem uma pergunta
+	// aberta — um run morto não tem perguntas.
+	//
+	// FAIL-CLOSED na leitura: não se retoma sobre uma lista de pendentes que não se conseguiu
+	// ler. Degradar para "não há pergunta" seria transformar uma falha de substrato na via de
+	// contorno exacta que este travão fecha.
+	if err := s.exhaustionPromptPorResponder(ctx, runID); err != nil {
+		return err
+	}
+
 	// (2) É reconstituível?
 	rec, ok, err := s.node.ResumeRecords.Get(ctx, runID)
 	if err != nil {
@@ -118,6 +148,30 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 		return fmt.Errorf("aos: re-submeter run %q na retoma: %w", runID, err)
 	}
 	s.log("run %q RETOMADO: %d turno(s) reproduzidos da captura, credencial fresca, cadeia de mediacao COMPLETA a correr de novo", runID, len(plan))
+	return nil
+}
+
+// exhaustionPromptPorResponder devolve [ErrExhaustionPromptUnanswered] quando o run tem um
+// prompt de exaustão à espera de decisão, nil quando não tem, e o erro de leitura embrulhado
+// quando não se conseguiu saber.
+//
+// Lê a MESMA listagem que o operador vê em `GET /runs/{id}` e que a rota de decisão consulta
+// — [integration.PendingApprovals.ListForRun] já exclui expirados e decididos —, pelo que o
+// que barra a retoma é exactamente o que está por responder, nem mais nem menos. Um nó sem
+// registo de pendentes composto não tem prompts: não há nada a barrar.
+func (s *NodeService) exhaustionPromptPorResponder(ctx context.Context, runID string) error {
+	if s.node == nil || s.node.PendingApprovals == nil {
+		return nil
+	}
+	recs, err := s.node.PendingApprovals.ListForRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("aos: ler pendentes de exaustao do run %q antes da retoma (AOS-263): %w", runID, err)
+	}
+	for _, r := range recs {
+		if r.Kind.Resolved() == integration.PendingKindExhaustion {
+			return fmt.Errorf("%w: run=%q passo=%q", ErrExhaustionPromptUnanswered, runID, r.StepID)
+		}
+	}
 	return nil
 }
 

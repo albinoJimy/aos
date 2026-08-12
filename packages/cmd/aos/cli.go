@@ -40,6 +40,10 @@ var (
 	ErrRunIDRequired = errors.New("aos: --run-id obrigatorio")
 	// ErrEmitterRequired — falta o --emitter (ID do operador) num comando de controlo.
 	ErrEmitterRequired = errors.New("aos: --emitter obrigatorio")
+	// ErrStepIDRequired — falta o --step-id na resposta a um prompt de exaustão (AOS-263). A
+	// assinatura amarra a PERGUNTA concreta: sem o passo não há a que responder, e adivinhá-lo
+	// seria responder a outra.
+	ErrStepIDRequired = errors.New("aos: --step-id obrigatorio (o passo do prompt, em pending_exhaustion de GET /runs/{id})")
 	// ErrBadOperatorKey — o ficheiro da chave do operador não é uma seed ed25519 válida.
 	ErrBadOperatorKey = errors.New("aos: chave do operador invalida (esperado seed ed25519 de 32 bytes em hex)")
 )
@@ -61,6 +65,10 @@ func dispatch(args []string, w io.Writer) error {
 		return cmdControl(args[1:], control.SignalSteer, w)
 	case "pause":
 		return cmdControl(args[1:], control.SignalPause, w)
+	case "abort":
+		return cmdExhaustionDecision(args[1:], exhaustionOptionAbort, w)
+	case "continue":
+		return cmdExhaustionDecision(args[1:], exhaustionOptionContinue, w)
 	case "operator-pubkey":
 		return cmdOperatorPubKey(args[1:], w)
 	case "wal-count":
@@ -71,7 +79,7 @@ func dispatch(args []string, w io.Writer) error {
 		printUsage(w)
 		return nil
 	default:
-		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|operator-pubkey|wal-count|audit-trail|help)", args[0])
+		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|continue|abort|operator-pubkey|wal-count|audit-trail|help)", args[0])
 	}
 }
 
@@ -85,6 +93,12 @@ uso: aos <subcomando> [flags]
   observe --addr URL --run-id ID [--reader ID] [--board ID]   (--reader/--board exigidos por um no com soberania de leitura)
   steer   --addr URL --run-id ID --emitter ID --key FICHEIRO --correction TXT
   pause   --addr URL --run-id ID --emitter ID --key FICHEIRO
+  continue --addr URL --run-id ID --step-id ID --emitter ID --key FICHEIRO
+                                            (responde a um prompt de exaustao de orcamento: AUTORIZA o run a
+                                             prosseguir e destranca o POST /runs/{id}/resume; assinado)
+  abort   --addr URL --run-id ID --step-id ID --emitter ID --key FICHEIRO
+                                            (responde a um prompt de exaustao de orcamento: PARA o run,
+                                             assinado; --step-id e o passo em pending_exhaustion de GET /runs/{id})
   operator-pubkey --key FICHEIRO            (imprime a PUBKEY hex da seed do operador, para AOS_OPERATORS)
   wal-count --path WAL --run ID [--turns]   (diagnostico read-only de durabilidade do Event Store)
   audit-trail --path WORM --run ID [--denied-only]  (diagnostico read-only: o que foi decidido, por quem e porque)
@@ -212,6 +226,84 @@ func cmdControl(args []string, kind control.SignalKind, w io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(w, "%s enviado a %s (emissor %s)\n", kind, *runID, *emitterID)
+	return nil
+}
+
+// cmdExhaustionDecision RESPONDE a um prompt de exaustão de orçamento (AOS-263, parte 3):
+// assina a decisão (`continue` ou `abort`) com a chave PRIVADA do operador e submete-a em
+// `POST /runs/{id}/exhaustion`.
+//
+// Existe pela mesma razão que o `steer`/`pause` existem, e que AOS-275 deu rota ao promotion
+// controller: uma decisão que o binário entregue não consegue produzir seria uma pergunta que
+// só quem soubesse escrever ed25519 à mão poderia responder — e o run fica PARADO à espera
+// dela. Aqui a CLI é, como sempre, um CLIENTE: assina e transporta; quem autentica, verifica a
+// frescura, consome o nonce e decide é o NÓ.
+//
+// AS DUAS DECISÕES PARTILHAM ESTE CAMINHO de propósito: é o mesmo tuplo assinado, o mesmo
+// nonce fresco e a mesma rota, e só muda a decisão que a assinatura cobre. Duas
+// implementações seriam duas oportunidades de divergirem — e a que divergisse seria a que
+// desse a resposta arriscada mais barata.
+//
+// O `--step-id` é o passo que o `pending_exhaustion` de `GET /runs/{id}` traz. NÃO se adivinha
+// nem se deriva: é ele que a assinatura amarra, e responder ao passo errado é responder a outra
+// pergunta.
+func cmdExhaustionDecision(args []string, decision string, w io.Writer) error {
+	fs := flag.NewFlagSet(decision, flag.ContinueOnError)
+	fs.SetOutput(w)
+	addr := fs.String("addr", strings.TrimSpace(os.Getenv("AOS_API_ADDR")), "URL base da API")
+	runID := fs.String("run-id", "", "RunID cujo prompt de exaustao se decide")
+	stepID := fs.String("step-id", "", "passo do prompt (campo step_id de pending_exhaustion em GET /runs/{id})")
+	emitterID := fs.String("emitter", "", "ID do operador emissor (pubkey registada no no)")
+	keyPath := fs.String("key", "", "ficheiro da seed ed25519 (32 bytes hex) do operador")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	switch {
+	case strings.TrimSpace(*addr) == "":
+		return ErrAddrRequired
+	case strings.TrimSpace(*runID) == "":
+		return ErrRunIDRequired
+	case strings.TrimSpace(*stepID) == "":
+		return ErrStepIDRequired
+	case strings.TrimSpace(*emitterID) == "":
+		return ErrEmitterRequired
+	}
+	priv, err := loadOperatorKey(*keyPath)
+	if err != nil {
+		return err
+	}
+	// Nonce fresco por decisão (CSPRNG) — reutilizá-lo seria fabricar um replay, que o
+	// nonce-store durável do nó recusa. O carimbo é o da máquina do operador; a janela de
+	// frescura é imposta no nó.
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("aos: gerar nonce: %w", err)
+	}
+	em := integration.SignSignal(priv, *emitterID, *runID, exhaustionDecisionSignalKind,
+		exhaustionDecisionPayload(decision, *stepID), nonce, time.Now().UTC())
+	body := exhaustionDecisionRequest{
+		Decision: decision,
+		StepID:   *stepID,
+		Emitter: emitterWire{
+			ID:        em.ID,
+			Signature: base64.StdEncoding.EncodeToString(em.Signature),
+			Nonce:     base64.StdEncoding.EncodeToString(em.Nonce),
+			IssuedAt:  em.IssuedAt,
+		},
+	}
+	if err := apiCall(*addr, http.MethodPost, "/runs/"+*runID+"/exhaustion", body, nil); err != nil {
+		return err
+	}
+	// O QUE FICA A SEGUIR, por decisão: no abort o run é TERMINAL (dizê-lo evita que alguém
+	// espere poder retomá-lo); no continue o run continua SUSPENSO e a re-hospedagem é um acto
+	// à parte, com credencial fresca — anunciar "retomado" seria a mentira mais fácil de
+	// contar aqui.
+	if decision == exhaustionOptionAbort {
+		fmt.Fprintf(w, "abort de exaustao enviado a %s (passo %s, emissor %s) — o run fica em killed, NAO retomavel\n", *runID, *stepID, *emitterID)
+		return nil
+	}
+	fmt.Fprintf(w, "continue de exaustao enviado a %s (passo %s, emissor %s) — o run continua SUSPENSO e passa a RETOMAVEL: re-hospede-o com %s e credencial fresca\n",
+		*runID, *stepID, *emitterID, exhaustionResumeRoute)
 	return nil
 }
 

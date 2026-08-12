@@ -1409,10 +1409,21 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, ErrProgressBudgetUnwired
 	}
 	burndownSource := newTurnLedgerBurndown(es)
+	// (7-ante-ter) PROMPT DE EXAUSTÃO (AOS-263) — a CONSEQUÊNCIA do aviso. Reutiliza o que já
+	// está composto: o registo durável de pendentes (2.º tipo) e o registo de retoma do
+	// four-eyes em (5), os gates de estado (suspensão em waiting_on_human), e a ROTA DE DECISÃO
+	// — o autenticador ed25519 de (4) COM operadores pinados e o WORM. Falta uma ⇒ o prompt
+	// fica DESARMADO (o nó avisa como em AOS-262 e o banner di-lo): suspender um run para uma
+	// pergunta que ninguém pode responder, ou cuja resposta não se pode selar, seria matá-lo
+	// com outro nome.
+	exhaustion, err := newExhaustionPrompt(stateGates, pendingApprovals, resumeRecords, steerAuth, worm, log)
+	if err != nil {
+		return nil, err
+	}
 	// O `log` do nó entra aqui porque é a superfície onde o aviso é VISÍVEL sempre: sem
 	// AOS_OTLP_ENDPOINT o `tracer` acima é o NoopTracer e o span do aviso não vai a lado
 	// nenhum (ver runProgress.avisar).
-	progress := newRunProgress(stateGates, runBudget, burndownSource, tracer, progressThreshold, log)
+	progress := newRunProgress(stateGates, runBudget, burndownSource, tracer, progressThreshold, log, exhaustion)
 	// nil-safe: sem burn-down composto o observador é nil e o loop nunca o consulta
 	// (comportamento de AOS-013 byte-idêntico).
 	runtimeOpts = append(runtimeOpts, agentruntime.WithProgressObserver(progress.observer()))

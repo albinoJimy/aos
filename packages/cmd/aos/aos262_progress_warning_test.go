@@ -202,7 +202,9 @@ func novoAOS262Harness(t *testing.T, maxTokens int64, threshold float64) *aos262
 	gates := newRunStateGates(es, nil, 0)
 	logs := &syncBuf{}
 	log := func(format string, args ...any) { fmt.Fprintf(logs, "[aos] "+format+"\n", args...) }
-	prog := newRunProgress(gates, rb, newTurnLedgerBurndown(es), tracer, threshold, log)
+	// prompt=nil (AOS-263): estes testes selam o comportamento de AOS-262 PURO — avisar sem
+	// decidir. Com o prompt armado o run suspender-se-ia, que é o que aos263_*_test.go cobre.
+	prog := newRunProgress(gates, rb, newTurnLedgerBurndown(es), tracer, threshold, log, nil)
 	if prog == nil {
 		t.Fatal("o observador tinha de ser composto com orcamento e fonte")
 	}
@@ -332,7 +334,7 @@ func novoAOS262HarnessComStore(t *testing.T, maxTokens int64, threshold float64,
 	tracer := otelgenai.NewRecordingTracer(&otelgenai.SequentialIDGenerator{})
 	logs := &syncBuf{}
 	log := func(format string, args ...any) { fmt.Fprintf(logs, "[aos] "+format+"\n", args...) }
-	prog := newRunProgress(newRunStateGates(es, nil, 0), rb, newTurnLedgerBurndown(embrulha(es)), tracer, threshold, log)
+	prog := newRunProgress(newRunStateGates(es, nil, 0), rb, newTurnLedgerBurndown(embrulha(es)), tracer, threshold, log, nil)
 	if prog == nil {
 		t.Fatal("o observador tinha de ser composto")
 	}
@@ -441,7 +443,7 @@ func TestAOS262_LeituraNaoMutaOOrcamento(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunBudget: %v", err)
 	}
-	prog := newRunProgress(newRunStateGates(es, nil, 0), rb, newTurnLedgerBurndown(es), nil, 0.80, nil)
+	prog := newRunProgress(newRunStateGates(es, nil, 0), rb, newTurnLedgerBurndown(es), nil, 0.80, nil, nil)
 	rec := agentruntime.NewTurnRecorder(es)
 	const run = "run-262-leitura-pura"
 
