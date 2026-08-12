@@ -441,18 +441,56 @@ discover_modules() {
   } | sort
 }
 
+# --- Versão REAL de um binário Go ---------------------------------------------
+# tool_module_version <caminho-do-binário> — devolve a versão do MÓDULO principal
+# gravada no binário por `go install` (linha `mod` de `go version -m`).
+#
+# PORQUE NÃO `<bin> --version`: um binário construído por `go install` não leva
+# ldflags de release, pelo que várias ferramentas mentem — o gosec@v2.28.0 responde
+# literalmente "Version: dev". Os metadados de módulo, ao contrário, são gravados
+# sempre e são a versão VERDADEIRA. Vazio ⇒ não determinável (binário não-Go, ou
+# construído de outra forma).
+tool_module_version() {
+  go version -m "$1" 2>/dev/null | awk '$1=="mod"{print $3; exit}'
+}
+
 # --- Instalação idempotente de ferramentas (go install pinado) ----------------
-# ensure_tool <binário> <pin>. Só instala se o binário não estiver no PATH.
-# NÃO committa binários — instala em $(go env GOPATH)/bin.
+# ensure_tool <binário> <pin>. Instala em $(go env GOPATH)/bin; não committa binários.
+#
+# VERIFICA A VERSÃO CONTRA O PIN — e é essa a razão de ser desta função hoje. A versão
+# anterior devolvia 0 assim que `command -v` encontrasse QUALQUER binário com o nome
+# certo, sem nunca comparar com o pin. Consequência real (observada nesta base de código
+# em 2026-08-11): uma máquina com um `gosec`/`staticcheck` pré-instalado corria a versão
+# ERRADA em silêncio, via VERDE localmente, e a CI — que instalava o pin de raiz — via
+# VERMELHO com achados que o local nem detectava. Um pin que não é verificado não é um
+# pin: é uma sugestão. Perde-se mais tempo a perseguir a divergência do que a reinstalar.
+#
+# FAIL-CLOSED em três pontos: versão diferente ⇒ reinstala; instalação falhada ⇒ erro;
+# e — o caso que mais engana — se DEPOIS de instalar o binário resolvido pelo PATH
+# continuar na versão errada, ABORTA em vez de correr o gate com a ferramenta errada
+# (é o sintoma de outro binário com o mesmo nome à frente no PATH).
 ensure_tool() {
   local bin="$1" pin="$2"
+  local want="${pin##*@}"
   if command -v "$bin" >/dev/null 2>&1; then
-    log_step "ferramenta presente: $bin"
-    return 0
+    local got; got="$(tool_module_version "$(command -v "$bin")")"
+    if [ "$got" = "$want" ]; then
+      log_step "ferramenta presente: $bin ($got, casa o pin)"
+      return 0
+    fi
+    log_step "ferramenta $bin está em ${got:-versão indeterminada} mas o pin é $want — reinstalar"
   fi
   log_step "instalar $bin ($pin) ..."
   GOFLAGS="" go install "$pin"
   command -v "$bin" >/dev/null 2>&1 || { log_fail "instalação de $bin falhou"; return 1; }
+  # PÓS-CHECK: o que o PATH resolve TEM de ser o que se instalou. Se não for, há outro
+  # binário com o mesmo nome à frente de $(go env GOPATH)/bin — e o gate correria com a
+  # ferramenta errada, exactamente o silêncio que esta função existe para eliminar.
+  local now; now="$(tool_module_version "$(command -v "$bin")")"
+  if [ "$now" != "$want" ]; then
+    log_fail "$bin: instalou-se $pin mas o PATH resolve $(command -v "$bin") em ${now:-versão indeterminada} — outro binário com o mesmo nome está à frente de \$(go env GOPATH)/bin. Corrija o PATH: correr o gate com outra versão dá resultados diferentes dos da CI."
+    return 1
+  fi
 }
 
 # --- Normalização de caminhos -------------------------------------------------
