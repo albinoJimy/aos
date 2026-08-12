@@ -19,7 +19,7 @@ type VaultKVv2Config = vault.KVv2Config
 // NewVaultKVv2 constrói o cliente Vault REAL (KV v2, stdlib net/http) por detrás da
 // porta [VaultClient]. Fail-closed se a config for inválida ([vault.ErrKVConfig]).
 // Zero-dep (ADR-017): não importa o SDK Go do Vault. É a alternativa de PRODUÇÃO ao
-// [NewMemoryVault] demo-grade — o segredo vive no Vault e sai só encapsulado.
+// [NewMemoryVault] de referência — o segredo vive no Vault e sai só encapsulado.
 func NewVaultKVv2(cfg VaultKVv2Config) (VaultClient, error) {
 	return vault.NewKVv2(cfg)
 }

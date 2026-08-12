@@ -179,6 +179,12 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-211 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | `Config.BoardRegions` é a SEMENTE da fonte de autoridade board→região (AOS-205); resta o tenant concreto | AOS-203; provisionamento real AOS-205 | Arquitecto de Plataforma | Idem DEF-210 | MITIGADO |
 | DEF-212 | DEFERIDO | packages/cmd/aos/sovereign_authority.go | A FONTE DE AUTORIDADE board→região (rotação+auditoria de alterações) existe e é fail-closed; o provisionamento do TENANT concreto (serviço de config/IdP de soberania real que empurra as alterações autoritativas) é infra-org, não código do nó | AOS-205 | Arquitecto de Plataforma + Responsável de Segurança | Existir organização com boards/regiões reais (Carta §4.2, D7 CONDICIONAL) | MITIGADO |
 | DEF-213 | DEMO-GRADE | packages/cmd/aos/sovereign_authority.go | A semente e as rotações entram por config/API do operador (não de um tenant real); é demo-grade nesse sentido preciso, com a regra fail-closed e a auditoria de alterações reais | AOS-205 | Arquitecto de Plataforma | Idem DEF-212 | MITIGADO |
+| DEF-214 | DEFERIDO | packages/platform/broker/inprocess.go | Consumo v1 IN-PROCESS (D8, decisão do dono 2026-08-10). A injecção no executor REMOTO (microVM) NÃO resolve o valor no processo do nó: entrega o `Handle` OPACO ao orquestrador, que o resolve server-side. Escrito, não construído | AOS-265; desenho-alvo D8-B | Arquitecto de Plataforma | Executor remoto a precisar de credencial (hoje o broker não está live-ligado ao GW) | ABERTO |
+| DEF-215 | DEFERIDO | packages/platform/broker/inprocess.go | `Handle()` expõe o handle opaco só para CORRELAÇÃO; é o que se entregaria ao orquestrador no caminho remoto | AOS-265; idem D8-B | Arquitecto de Plataforma | Idem DEF-214 | ABERTO |
+| DEF-216 | DEFERIDO | packages/platform/broker/internal/vault/kvv2.go | KV v2 (D7): o corte downstream REAL no provedor — que só dynamic secrets dão — é o desenho-alvo de quando a injecção remota ligar. A v1 corta por lease TTL+revogável | AOS-264; D8-B | Responsável de Segurança | Idem DEF-214 | ABERTO |
+| DEF-217 | DEFERIDO | packages/cmd/aos/model_audit_env.go | O audit de governação do GW usa uma cadeia WORM DEDICADA. PARTILHAR o WORM único do nó exigiria construir o gateway DENTRO do Bootstrap (re-ordenação da composição do modelo); o ganho de AOS-265 é a DURABILIDADE, que este store entrega | AOS-265 | Arquitecto de Plataforma | Re-ordenação da composição do modelo no Bootstrap | ABERTO |
+| DEF-218 | DEFERIDO | packages/cmd/aos/broker_vault_env.go | O cliente Vault do broker está CONFIGURADO mas a troca fica PENDENTE: ligar ao vivo exige bundle PDP assinado + identidade infra com `cap:http.post`, senão o default-deny NEGA a troca e nenhum turno de modelo executa (o próprio risco do desafio A3) | AOS-264/AOS-265; eixo D4/AOS-156 | Responsável de Segurança | Autoridade de identidade real provisionada (D4) | ABERTO |
+| DEF-219 | DEFERIDO | packages/cmd/aos/promotion_api.go | Quarentena do artefacto promovido: a rota `POST /promote` ratifica e sela, mas a quarentena/rollback do artefacto em si é do controlador de promoção, não da rota | AOS-275; AOS-096 | Arquitecto de Plataforma | Pipeline de promoção com artefactos reais | ABERTO |
 | DEF-301 | DEFERIDO | packages/cmd/aos/bootstrap.go | **Cifra por-titular do substrato — NÚCLEO ENTREGUE (AOS-093).** O conteúdo não-determinístico dos runs (resposta do modelo + resultados de tools do capturer de replay) é agora CIFRADO por chave POR-TITULAR (envelope DEK/KEK, `audit.SealContent`) ANTES de tocar o WAL; a erasure DSAR destrói a MESMA KEK ⇒ o conteúdo fica IRRECUPERÁVEL (decifragem falha, provado ao nível do nó em `aos093_substrate_erase_test.go`) e a hash-chain do WORM continua a validar. O capturer regista subject→stream no DSARIndex (shred/hold alcançam o substrato). RESIDUAIS nomeados: (a) `turn.recorded` persiste só hashes (prompt_hash/system_hash), nunca o prompt cru — nada a cifrar; (b) o REPLAY do lado do LEITOR (reconstrução/inspecção de um run selado por um terceiro) — **ENTREGUE por AOS-214**: `ContentOpener` gated por soberania na reconstrução (`GET /runs/{id}/reconstruct` atrás de D7+D6), o leitor autorizado decifra, o não-autorizado nunca vê claro (`ErrPayloadAccessDenied`), o shred aguenta o replay (`ErrDecrypt`) e o legal hold preserva a reconstruibilidade; o resume durável in-process já ficava fail-closed em AOS-093 — este residual passa a nomear só o resume, **já resolvido**; (c) o step-ledger só sela com `Producer.NHIID` (o run injecta o principal) | AOS-093 (CA #1 — ver arbitragem A-DEF-301) | Responsável de Segurança | KMS real (DEF-302) | FECHADO-RESIDUAL |
 | DEF-302 | DEMO-GRADE | packages/cmd/aos/bootstrap.go | **COSTURA DE CUSTÓDIA EXTERNA — ENTREGUE por AOS-215.** `Config.DSARVault`/`Node.DSARVault` passam a ser a **porta** `audit.KeyVault` (não mais o tipo concreto `*audit.InMemoryKeyVault`), injectável no **mesmo molde de precedência** do Event Store/WORM: um vault INJECTADO (key-service/software-KMS de **custódia externa**, as KEK vivem FORA do processo e sobrevivem ao restart) é usado TAL-QUAL; sem injecção cai no `audit.InMemoryKeyVault` de referência (DEMO-GRADE, KEK em memória, não-durável — declarado no banner). A MESMA instância serve o cifrador de conteúdo (AOS-093), o shredder DSAR e o sink de expiração (AOS-213): o `/dsar/erase`/`/dsar/expire` destroem a KEK ONDE ela realmente vive. **FAIL-CLOSED:** um vault injectado que falha propaga o erro pela cifra/shred (aborta a escrita) — NUNCA há fallback silencioso para o in-memory. Provado ao nível do nó (`-race`) por `aos215_kek_custody_test.go` (vault-spy injectado é o que EnsureKey/Key/Delete usam; o erase destrói a KEK NELE e o conteúdo fica irrecuperável; vault que erra ⇒ captura falha). Custódia documentada em `deploy/node/README.md` (§Custódia da KEK). **RESIDUAL HSM *key-never-leaves* — FECHADO por AOS-216:** a porta de **envelope** `audit.KeyWrapper` (`WrapDEK(subjectID, dek) → (wrapped, keyRef)`, `UnwrapDEK(keyRef, wrapped) → (dek, ok)`) faz o embrulho/desembrulho da DEK correr DENTRO do módulo — a **KEK crua NUNCA entra no processo do nó**. `audit.SealContent`/`OpenContent` tomam a via de envelope QUANDO o vault injectado implementa `KeyWrapper` (type assertion), com **fallback** à via KEK-crua de AOS-093/215 quando só implementa `KeyVault` (serialização byte-a-byte idêntica; o formato de envelope é versionado retro-compativelmente por um campo `key_ref` só presente nesse caminho). Impl de referência `audit.InMemoryKeyWrapper` (stdlib AES-256-GCM, in-process) prova o contrato: a KEK nunca é devolvida; `Delete` destrói-a ⇒ `UnwrapDEK` falha (crypto-shred aguenta). Falsificável (`-race`): `aos216_hsm_envelope_test.go` (ao nível do audit — gate que PANICA em `Key()`/`EnsureKey()` ainda cifra/decifra; shred ⇒ `ErrDecrypt`; hash do blob estável) e `packages/cmd/aos/aos216_hsm_envelope_test.go` (ao nível do nó — wrapper injectado; o blob do substrato está em formato de envelope `key_ref`; `Key`/`EnsureKey` a ZERO; `/dsar/erase` torna-o irrecuperável). O **HSM concreto** (AWS KMS, Vault Transit, PKCS#11) permanece INFRA-ORG, não entregue no binário (zero-dep), análogo a AOS-175/DEF-201-212 | AOS-093, AOS-070 | Responsável de Segurança | Porta de envelope `WrapDEK`/`UnwrapDEK` ENTREGUE por AOS-216; só o HSM concreto fica infra-org | FECHADO-RESIDUAL |
 | DEF-303 | DOCUMENTAL | tecnica/02_Agent_Runtime_Execucao_Duravel.md | `Result.Payload` do step-ledger: com `durable.WithContentSealer` (composto no nó) é CIFRADO por-titular antes do Event Store; `WithSensitiveResults()` permanece como via de referência opt-in quando não há sealer | AOS-093 (ver A-DEF-301) | Responsável de Segurança | Idem DEF-301 (mesma cifra do substrato) | FECHADO-RESIDUAL |
@@ -239,14 +245,17 @@ cada execução.)*
 | packages/cmd/aos-demo/main.go | STUB | 3 |
 | packages/cmd/aos/api.go | DEFERIDO | 3 |
 | packages/cmd/aos/bootstrap.go | DEFERIDO | 7 |
-| packages/cmd/aos/bootstrap.go | DEMO-GRADE | 14 |
+| packages/cmd/aos/bootstrap.go | DEMO-GRADE | 15 |
 | packages/cmd/aos/bootstrap.go | STUB | 1 |
+| packages/cmd/aos/broker_vault_env.go | DEFERIDO | 1 |
 | packages/cmd/aos/dsar.go | DEFERIDO | 1 |
 | packages/cmd/aos/dsar.go | DEMO-GRADE | 2 |
 | packages/cmd/aos/main.go | DEFERIDO | 2 |
 | packages/cmd/aos/main.go | DEMO-GRADE | 8 |
+| packages/cmd/aos/model_audit_env.go | DEFERIDO | 2 |
 | packages/cmd/aos/otlpexporter.go | DIFERIDO | 2 |
 | packages/cmd/aos/promotion.go | DEFERIDO | 1 |
+| packages/cmd/aos/promotion_api.go | DEFERIDO | 1 |
 | packages/cmd/aos/service.go | DEFERIDO | 1 |
 | packages/cmd/aos/sovereign_authority.go | DEFERIDO | 1 |
 | packages/cmd/aos/sovereign_authority.go | DEMO-GRADE | 1 |
@@ -275,6 +284,8 @@ cada execução.)*
 | packages/kernel/reference-monitor/production.go | DIFERIDO | 2 |
 | packages/kernel/reference-monitor/scope_gate.go | DIFERIDO | 2 |
 | packages/kernel/reference-monitor/taint_gate.go | DIFERIDO | 2 |
+| packages/platform/broker/inprocess.go | DEFERIDO | 2 |
+| packages/platform/broker/internal/vault/kvv2.go | DEFERIDO | 1 |
 | packages/platform/broker/internal/vault/vault.go | NUNCA-EM-PRODUCAO | 1 |
 | packages/platform/broker/vault_client.go | NUNCA-EM-PRODUCAO | 1 |
 | packages/platform/eval/doc.go | DIFERIDO | 1 |
@@ -282,7 +293,7 @@ cada execução.)*
 | packages/platform/messaging/doc.go | DEFERIDO | 2 |
 | packages/platform/model-gateway/internal/adapters/adapter.go | NUNCA-EM-PRODUCAO | 1 |
 | packages/platform/model-gateway/internal/credentials/broker.go | NUNCA-EM-PRODUCAO | 1 |
-| packages/substrate/otel-genai/doc.go | DIFERIDO | 2 |
+| packages/substrate/otel-genai/doc.go | DIFERIDO | 1 |
 | packages/substrate/otel-genai/evaluation.go | DIFERIDO | 4 |
 | packages/substrate/otel-genai/exporter.go | DIFERIDO | 1 |
 | packages/substrate/otel-genai/idgen.go | NUNCA-EM-PRODUCAO | 1 |
