@@ -976,13 +976,13 @@ verdade sem uma segunda leitura do ambiente.
 No restart, verificar contra o último checkpoint assinado com `expectedHead` persistido; a selagem periódica é out-of-process (custódia D4/AOS-156).
 
 ### Critérios de Aceitação
-- [ ] Envs no molde `AOS_POLICY_TRUST_ANCHOR` (pubkey out-of-band + caminho do checkpoint); ausentes ⇒ comportamento actual declarado no banner.
-- [ ] Tail truncado ou cadeia re-escrita ⇒ arranque aborta com erro nomeado.
-- [ ] Teste: truncatura do WAL detectada; checkpoint forjado rejeitado.
-- [ ] DEF registado para a selagem out-of-process (dono: custódia de chave).
+- [x] Envs no molde `AOS_POLICY_TRUST_ANCHOR` (`AOS_WORM_TRUST_ANCHOR` pubkey out-of-band + `AOS_WORM_CHECKPOINT_FILE` + `AOS_WORM_EXPECTED_HEAD`, piso de frescura persistido); ausentes ⇒ comportamento actual declarado no banner (`wormAnchorPostureBanner`); parciais ⇒ arranque aborta (`ErrWormAnchorIncomplete`).
+- [x] Tail truncado **até ao checkpoint selado** (head cai a/abaixo de `cp.AuditSeq`) ou cadeia re-escrita ⇒ arranque aborta com erro nomeado (`audit.VerifyFromCheckpointAtHead` na etapa 2a-bis do `Bootstrap`, com `to == cp.AuditSeq`: `ErrCheckpointStale`/`ErrRangeBeyondHead` para truncatura/rollback, `ErrCheckpointAnchor` para reescrita da génese, `ErrCheckpointSignature` para checkpoint forjado). LIMITE HONESTO: a **janela não-selada** acima do checkpoint (registos anexados após a última selagem) é coberta só pelo re-encadeamento de AOS-221 — que NÃO vê a truncatura do tail — e encolhe com a selagem periódica out-of-process, deferida em DEF-268 (eixo AOS-156/D4). O piso `AOS_WORM_EXPECTED_HEAD` fecha o rollback, não esta janela.
+- [x] Teste: truncatura do WAL detectada; checkpoint forjado rejeitado (`packages/cmd/aos/aos268_worm_anchor_test.go`, com controlo de dois sentidos — o mesmo WORM truncado arranca SEM âncora e aborta COM âncora).
+- [x] DEF registado para a selagem out-of-process (DEF-268/DEF-269, dono: custódia de chave, eixo AOS-156/D4).
 
 ### Estado
-**ABERTO** (depende de D4/AOS-156 para a selagem).
+**FEITO** (verificação ancorada composta e testada; a selagem periódica out-of-process fica deferida em DEF-268, a jusante de D4/AOS-156).
 
 ---
 
@@ -1251,16 +1251,21 @@ burst, 429 por in-flight com prova de readmissão, banner pela via de `serveAPI`
 **F18 (média).** `production.go:178` exige `Authn` fail-closed mas só guarda contra nil; o nó passa `nodeModelAuthn{}` (`modelgatewaywiring.go:93-103`), que forja o principal e devolve allow incondicional. O estágio real (`pipeline/authn`, valida EdDSA + raiz humana ADR-003) tem zero importadores não-teste. Declarado no código como dívida de AOS-057 — liga-se ao eixo D4. Fonte: desafio A5 (achado E).
 
 ### Objectivo
-Ligar o estágio `pipeline/authn` real na composição do GW, com o principal propagado (pré-requisito parcial de AOS-265).
+Ligar o estágio `pipeline/authn` real na composição do GW, com o principal do RUN propagado. **CUTOVER DURO** (decisão do dono, 2026-08-12): o GW passa a EXIGIR SEMPRE um token NHI EdDSA real cuja cadeia on-behalf-of enraíza num humano (ADR-003); sem modo env-gated nem fallback silencioso para o stub.
+
+### Resolução
+- **Estágio real, sem stub.** `nodeModelAuthn` (forjava `aos-node/aos-agent` e devolvia allow) e a const `nodeReferencePrincipal` foram REMOVIDOS. `newGatewayModelClient` compõe agora `authn.New(verifier, nodeModelAuthority{}, authn.LoadPolicy())` — o estágio `pipeline/authn` REAL (EdDSA + janela + revogação + raiz humana + policy-as-code default-deny `model:invoke`). O `nodeModelAuthority` concede `model:invoke` a qualquer principal VERIFICADO, reconciliado com o escopo SELADO no token (menor privilégio; a autoridade deriva do token, não de um directório — molde AOS-071/AOS-156). Vale em ambos os modos (referência e endurecido).
+- **Threading por-run.** O token do run (`Goal.Credential`, o MESMO que as tool calls já verificam) viaja no `ctx` por-run: `service.go` anexa-o ao `runCtx` (`withModelCredential`, a par do plano de replay) e o adaptador do GW SOURCE o principal por-chamada via a nova opção `modelgateway.WithPrincipalFromContext(modelCredentialFromContext)`. Sem credencial no ctx ⇒ `ex.Principal` vazio ⇒ authn nega ATRIBUÍVELMENTE (nenhum principal forjado). Sobrevive à RETOMA (o Resume repovoa `Goal.Credential` com a credencial fresca antes de re-submeter).
+- **Cutover fail-closed de composição.** O GW é construído na fronteira de ambiente ANTES de a identidade existir; o seu estágio authn arranca com um verifier LIGADO TARDIAMENTE (`lateBoundModelVerifier`) que NEGA (`ErrModelIdentityNotComposed`). O `Bootstrap` liga-o (`Config.ModelIdentityBinder`) ao MESMO verifier REAL das tool calls (`integration.NewVerifierFromAuthority`), em ambos os modos. Sem esse bind, nenhum turno de modelo passa.
 
 ### Critérios de Aceitação
-- [ ] `nodeModelAuthn{}` substituído pelo estágio real (ou o stub passa a ser recusado em `AOS_MODE=production`).
-- [ ] Atribuição correcta: o principal do pedido ao GW é o do run, não forjado.
-- [ ] Teste: credencial inválida ⇒ deny atribuível; credencial válida ⇒ pipeline segue.
-- [ ] Enquanto não ligado: banner declara «authn do GW: stub (dívida AOS-057/D4)».
+- [x] `nodeModelAuthn{}` substituído pelo estágio real (CUTOVER DURO: estágio real sempre; sem fallback para stub).
+- [x] Atribuição correcta: o principal do pedido ao GW é o do run (`Goal.Credential`), não forjado.
+- [x] Teste: credencial inválida ⇒ deny atribuível; credencial válida ⇒ pipeline segue (`aos278_model_identity_test.go`, contentor, 6/6 PASS).
+- [x] Banner: declara a postura verdadeira — «IDENTIDADE REAL do GW LIGADA (AOS-278, CUTOVER DURO)» na dobra do gateway de `modelPostureBanner`, no lugar de qualquer implicação de stub.
 
 ### Estado
-**ABERTO** (depende de D4/EPIC-16 para a raiz humana real).
+**FEITO** (cutover duro; raiz humana real do EPIC-16/D4 já composta pelo verifier do nó).
 
 ---
 

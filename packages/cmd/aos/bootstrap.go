@@ -204,6 +204,29 @@ type ApproverConfig struct {
 	Authority []string
 }
 
+// WormAnchor é o material OUT-OF-BAND da verificação ancorada do WORM (AOS-268/AOS-072). É
+// DADOS parseados na fronteira de ambiente ([parseWormAnchorFromEnv]) — os três provêm,
+// juntos, de uma fonte de confiança FORA do store (deploy/VCS read-only), NUNCA do próprio WORM
+// mutável que se está a verificar. Os três TÊM de vir juntos: só o conjunto fecha o vector.
+//
+//   - Public é o TRUST-ANCHOR (pubkey ed25519 do selador dos checkpoints) — a raiz de confiança
+//     contra a qual a assinatura do checkpoint é validada. A chave PRIVADA correspondente vive
+//     e assina FORA do nó (molde AOS-156).
+//   - Checkpoint é a ÂNCORA ASSINADA já selada out-of-process (JSON de [audit.Checkpoint]): o
+//     par (Partition, AuditSeq, EntryHash) que a assinatura cobre.
+//   - ExpectedHead é o PISO DE FRESCURA persistido INDEPENDENTEMENTE do store — o audit_seq que
+//     a cadeia TEM de ter atingido. É o que torna o rollback de checkpoint fail-closed: um
+//     checkpoint LEGÍTIMO mas ANTERIOR (reapresentado para mascarar a truncatura dos registos
+//     posteriores) tem AuditSeq < ExpectedHead e é rejeitado ([audit.ErrCheckpointStale]). Por
+//     isso NÃO se deriva do próprio Checkpoint: derivá-lo dele tornaria o piso um no-op
+//     (AuditSeq == ExpectedHead sempre ⇒ nunca stale) e reabriria exactamente o rollback que
+//     [audit.VerifyFromCheckpointAtHead] existe para fechar.
+type WormAnchor struct {
+	Public       ed25519.PublicKey
+	Checkpoint   audit.Checkpoint
+	ExpectedHead uint64
+}
+
 // Config é a configuração MÍNIMA e EXPLÍCITA do nó `aos` (AC2). SEM segredos em código:
 // as chaves de assinatura (issuer/operadores) vêm de config/vault pelo chamador; o nó
 // só detém verifier + pubkeys. Os colaboradores de IDENTIDADE são obrigatórios
@@ -334,10 +357,18 @@ type Config struct {
 	// O foco de AOS-163 é a composição de SEGURANÇA/IDENTIDADE real; estes podem vir por
 	// config OU cair para um default de referência para o nó arrancar. O Model Gateway
 	// real é EPIC-06.
-	Model       agentruntime.ModelClient
-	Catalog     toolset.Catalog
-	Revalidator *revalidation.Revalidator
-	Policy      integration.PolicyProvider
+	Model agentruntime.ModelClient
+	// ModelIdentityBinder liga, no Bootstrap, o VERIFIER REAL do nó ao estágio authn do Model
+	// Gateway REAL (AOS-278, CUTOVER DURO). O gateway é construído na fronteira de ambiente
+	// (parseModelFromEnv), ANTES de a identidade estar composta; o seu estágio authn arranca
+	// com um verifier NÃO-LIGADO que NEGA toda a chamada (fail-closed). O Bootstrap chama este
+	// binder com o MESMO verifier que verifica as tool calls, fechando o cutover: sem este
+	// bind, nenhum turno de modelo passa. nil ⇒ sem gateway por ambiente (Config.Model
+	// injectado, ou referenceModel — nenhum exige este seam). Ver modelgatewaywiring.go.
+	ModelIdentityBinder func(verifier *identity.Verifier)
+	Catalog             toolset.Catalog
+	Revalidator         *revalidation.Revalidator
+	Policy              integration.PolicyProvider
 	// Authority é a fonte de autoridade user∩classe para o ScopeGate (AOS-071).
 	// nil ⇒ fonte vazia fail-closed (scope negado para toda a tool call); em testes
 	// e wiring de referência pode usar [authz.NewStaticAuthoritySource].
@@ -403,6 +434,21 @@ type Config struct {
 	// WORMPath é o caminho do WAL do WORM durável (AOS-170). Só consultado quando
 	// WORM == nil.
 	WORMPath string
+	// WORMAnchor é a VERIFICAÇÃO ANCORADA do WORM no arranque (AOS-268/AOS-072) — o material
+	// out-of-band que fecha os DOIS vectores que a re-verificação de hash-chain de AOS-221
+	// (audit.VerifyStore) NÃO apanha porque não tem raiz de confiança fora do próprio store: a
+	// TRUNCATURA DO TAIL (remover os registos mais recentes; a cadeia truncada re-encadeia como
+	// íntegra) e a REESCRITA DESDE A GÉNESE através de um restart (uma cadeia inteiramente
+	// forjada re-encadeia consigo mesma). nil ⇒ NÃO-ANCORADO: comportamento actual, declarado no
+	// banner ([wormAnchorPostureBanner]). != nil ⇒ [audit.VerifyFromCheckpointAtHead] corre
+	// DEPOIS de o store estar composto e re-encadeado (AOS-221) e ANTES de o nó servir; qualquer
+	// falha (assinatura forjada, rollback/stale, âncora que não corresponde, cadeia adulterada)
+	// ABORTA o arranque fail-closed. O material é parseado na fronteira de ambiente
+	// ([parseWormAnchorFromEnv]); a VERIFICAÇÃO contra o store só é possível aqui, com o store
+	// composto — daí a separação. A SELAGEM periódica de novos checkpoints exige a chave PRIVADA
+	// (fora do runtime, molde AOS-156) e fica DEFERIDA (DEF-268): este nó CONSOME uma âncora
+	// selada out-of-process, não a produz.
+	WORMAnchor *WormAnchor
 	// DSARVault é a CUSTÓDIA das chaves de PII por-titular (KEK) que o crypto-shredding destrói
 	// (AOS-215/DEF-302). É a PORTA [audit.KeyVault] (EnsureKey/Key/Delete), injectável: um
 	// deployment liga aqui um key-service/software-KMS de CUSTÓDIA EXTERNA (as KEK vivem FORA do
@@ -888,6 +934,37 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, fmt.Errorf("aos: tamper-evidence do WORM (AOS-221) — hash-chain adulterada no arranque, o no recusa servir: %w", wormVerifyErr)
 	}
 
+	// (2a-bis) VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072) — fecha os DOIS vectores que a
+	// re-verificação de hash-chain de (2a) não apanha por não ter raiz de confiança FORA do
+	// store: a TRUNCATURA DO TAIL (remover os registos mais recentes — a cadeia truncada
+	// re-encadeia como íntegra, ver o comentário de [audit.Verify]) e a REESCRITA DESDE A GÉNESE
+	// através de um restart (uma cadeia inteiramente forjada re-encadeia consigo mesma). A âncora
+	// assinada + o piso de frescura persistido INDEPENDENTEMENTE do store dão a raiz de confiança
+	// que faltava: [audit.VerifyFromCheckpointAtHead] valida a assinatura do checkpoint contra o
+	// trust-anchor out-of-band, rejeita ([audit.ErrCheckpointStale]) um checkpoint com AuditSeq
+	// abaixo do piso (rollback), confirma que a âncora corresponde ao registo real desse audit_seq
+	// (a reescrita da génese diverge do EntryHash assinado ⇒ [audit.ErrCheckpointAnchor]) e recusa
+	// um store cujo head caiu abaixo da âncora ([audit.ErrRangeBeyondHead], que é a truncatura
+	// abaixo do checkpoint). `to` == Checkpoint.AuditSeq: o intervalo além da âncora não se
+	// re-percorre aqui porque (2a) já re-encadeou a partição inteira; o que ESTA verificação ADICIONA
+	// é a raiz de confiança assinada no head e o piso de frescura — não a repetição do
+	// re-encadeamento. AUSENTE (WORMAnchor == nil) ⇒ comportamento actual, sem custo, declarado no
+	// banner. PRESENTE ⇒ FAIL-CLOSED: qualquer falha ABORTA o arranque — o nó nunca sobe a servir
+	// um WORM que não conseguiu ancorar. A guarda de limpeza acima fecha os stores que o nó abriu.
+	//
+	// LIMITE HONESTO declarado no banner: o piso só prova até ao audit_seq SELADO; registos
+	// legítimos APENDIDOS depois do último checkpoint e ainda não selados podem ser truncados sem
+	// esta verificação os apanhar. Encolher essa janela exige SELAGEM PERIÓDICA (chave privada,
+	// out-of-process, molde AOS-156) — DEFERIDA em DEF-268; este nó CONSOME a âncora, não a produz.
+	wormAnchored := false
+	if cfg.WORMAnchor != nil {
+		a := cfg.WORMAnchor
+		if err := audit.VerifyFromCheckpointAtHead(ctx, worm, a.Public, a.Checkpoint, a.ExpectedHead, a.Checkpoint.AuditSeq); err != nil {
+			return nil, fmt.Errorf("aos: verificacao ancorada do WORM (AOS-268/AOS-072) — o no recusa servir um WORM nao-ancorado no arranque: %w", err)
+		}
+		wormAnchored = true
+	}
+
 	// (2b) PROVISIONAMENTO DOS NÍVEIS DE AUTONOMIA (AOS-087/AOS-248) — a FASE 2 da cablagem que
 	// a fronteira de ambiente deixou por fazer. AQUI, e não antes, porque só aqui existe o WORM:
 	// ligar o sink ao store composto é o que faz cada alteração de nível nascer SELADA (motivo +
@@ -1072,6 +1149,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// VERIFIER REAL: só o trust anchor (issuerID + pubkey) da autoridade. NUNCA o
 		// identity.NewVerifier() sem anchors nem o IdentityStub do demo.
 		verifier = integration.NewVerifierFromAuthority(authority, verifierOpts...)
+	}
+
+	// (3-bis) CUTOVER DURO DE IDENTIDADE DO MODELO (AOS-278). O Model Gateway REAL foi
+	// construído na fronteira de ambiente (parseModelFromEnv) ANTES de a identidade existir; o
+	// seu estágio authn arrancou com um verifier NÃO-LIGADO que NEGA toda a chamada. Liga-se
+	// aqui o MESMO verifier REAL que as tool calls verificam — fechando o cutover: sem este
+	// bind nenhum turno de modelo passa. É SEMPRE alcançável (o verifier acima é composto em
+	// AMBOS os modos, hardened e referência); a guarda defensiva declara o invariante. nil ⇒
+	// sem gateway por ambiente (Config.Model injectado, ou referenceModel).
+	if cfg.ModelIdentityBinder != nil {
+		if verifier == nil {
+			return nil, fmt.Errorf("aos: model gateway composto sem verifier de identidade (AOS-278): %w", ErrModelIdentityNotComposed)
+		}
+		cfg.ModelIdentityBinder(verifier)
 	}
 
 	// (4) CANAL DE CONTROLO AUTENTICADO (AOS-160). Ed25519Authenticator sobre o
@@ -1740,15 +1831,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// TAMPER-EVIDENCE DO WORM IMPOSTA (AOS-221). O banner declara o estado REALMENTE
 	// verificado (não a intenção): a hash-chain foi RE-ENCADEADA e verificada no arranque —
 	// uma cadeia adulterada teria ABORTADO aqui, fail-closed — ou, para um WORM injectado
-	// opaco, que a verificação integral não foi possível PELO NÓ (custódia do chamador). E
-	// declara honestamente que o Signer/checkpoint ASSINADO (âncora de frescura da truncatura
-	// do tail) NÃO é composto, com o eixo nomeado — sem capacidade-fantasma.
+	// opaco, que a verificação integral não foi possível PELO NÓ (custódia do chamador).
 	if wormPartitionsOpaque {
 		log("tamper-evidence do WORM (AOS-221): WORM INJECTADO nao expoe as particoes (audit.PartitionLister) — verificacao integral da hash-chain NAO feita pelo no (custodia/durabilidade do chamador); o WORM duravel/in-memory do no re-encadeia sempre")
 	} else {
 		log("tamper-evidence do WORM (AOS-221): hash-chain RE-ENCADEADA e verificada no arranque (%d particao(oes)) — nao so o CRC de framing; uma cadeia adulterada ABORTARIA o arranque fail-closed (audit.Verify chamado no restart e pos-shred)", wormVerifiedParts)
 	}
-	log("NOTA AOS-221: o Signer/checkpoint ASSINADO (ancora de frescura que fecharia a truncatura do TAIL) NAO e composto — selar checkpoints exige a chave PRIVADA do operador, que nao vive no runtime do no; eixo AOS-072 (checkpoint) sob custodia out-of-process (molde AOS-156). A re-verificacao de hash-chain (sem chave privada) detecta mutacao/remocao-interna/insercao/encadeamento-quebrado")
+	// VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072). Linha PRÓPRIA e logo a seguir à de AOS-221
+	// porque é a metade complementar: AOS-221 re-encadeia (sem chave), AOS-268 ancora (com
+	// trust-anchor out-of-band). Duas dobras — ancorado (o piso de frescura + a âncora assinada
+	// fecham a truncatura do tail e a reescrita da génese) vs não-ancorado (declara o vector que
+	// FICA aberto e como o fechar). O argumento deriva do ESTADO real da verificação
+	// (`wormAnchored`), nunca da intenção da config: se WORMAnchor foi dado e a verificação
+	// PASSOU, `wormAnchored` é true; ausente ⇒ false.
+	for _, line := range wormAnchorPostureBanner(wormAnchored) {
+		log("%s", line)
+	}
 	// EXECUÇÃO DURÁVEL (AOS-180/AOS-191). O banner declara o estado REALMENTE COMPOSTO
 	// (não a intenção da config) e sobre que substrato — para que um operador nunca tenha
 	// de adivinhar se checkpointer/capturer/step-ledger estão ligados.

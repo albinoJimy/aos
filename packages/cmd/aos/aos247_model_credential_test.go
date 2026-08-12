@@ -165,10 +165,10 @@ func TestAOS247_GateVivePorPostura(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", "")
 	t.Setenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR", "")
 
-	if _, err := parseModelFromEnv(true); !errors.Is(err, ErrProductionNeedsModelCredential) {
+	if _, _, err := parseModelFromEnv(true); !errors.Is(err, ErrProductionNeedsModelCredential) {
 		t.Fatalf("production=true sem credencial devia recusar, veio: %v", err)
 	}
-	mc, err := parseModelFromEnv(false)
+	mc, _, err := parseModelFromEnv(false)
 	if err != nil {
 		t.Fatalf("production=false com a mesma config tem de compor o gateway, veio: %v", err)
 	}

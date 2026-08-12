@@ -149,7 +149,7 @@ func modelPostureBanner(m agentruntime.ModelClient) []string {
 		}
 	case *modelgateway.ModelClientAdapter:
 		return []string{
-			"modelo (EPIC-06): MODEL GATEWAY REAL composto (modelgateway.NewProduction) — allowlist regional ASSINADA, keypool, routing de failover, metering/pricing e endurecimento SSRF do gateway. RESIDUAIS DECLARADOS deste wiring: (1) o egress e DELEGADO no http.Client injectado (seam de dev) — o SSRF fail-closed de AOS-223 so volta a valer com BaseURL https + AllowedEgressHosts e SEM HTTPClient; (2) o audit de governacao do gateway (activacao da allowlist + decisoes) e um MemStore PROPRIO do gateway, NAO o WORM do no — nao entra na hash-chain que o no verifica; (3) o adaptador RT->GW NAO propaga custo (translateResponse nao preenche CostMicroUSD) ⇒ o span chat do turno leva custo ZERO, mesmo com o metering do gateway a contar",
+			"modelo (EPIC-06): MODEL GATEWAY REAL composto (modelgateway.NewProduction) — IDENTIDADE REAL do GW LIGADA (AOS-278, CUTOVER DURO): o estagio authn REAL substituiu o antigo stub allow-all; cada turno EXIGE o token NHI do RUN (Goal.Credential) verificado (EdDSA + janela + revogacao + raiz humana ADR-003) pelo MESMO verifier das tool calls, e o principal e RESOLVIDO do token, NUNCA forjado — sem credencial no ctx o pedido e NEGADO ATRIBUIVELMENTE; o token TEM de selar model:invoke no escopo. allowlist regional ASSINADA, keypool, routing de failover, metering/pricing e endurecimento SSRF do gateway. RESIDUAIS DECLARADOS deste wiring: (1) o egress e DELEGADO no http.Client injectado (seam de dev) — o SSRF fail-closed de AOS-223 so volta a valer com BaseURL https + AllowedEgressHosts e SEM HTTPClient; (2) o audit de governacao do gateway (activacao da allowlist + decisoes) e um MemStore PROPRIO do gateway, NAO o WORM do no — nao entra na hash-chain que o no verifica; (3) o adaptador RT->GW NAO propaga custo (translateResponse nao preenche CostMicroUSD) ⇒ o span chat do turno leva custo ZERO, mesmo com o metering do gateway a contar",
 		}
 	default:
 		return []string{
@@ -231,6 +231,48 @@ func burndownPostureBanner(composed bool, threshold float64) []string {
 	}
 	return []string{
 		"burn-down / aviso de exaustao (AOS-261/AOS-262): NAO COMPOSTO — AOS_BUDGET_MAX_TOKENS nao esta definida, logo NAO HA TECTO e portanto nao ha denominador: qualquer fraccao seria 0 para sempre e nenhum aviso poderia disparar. O loop nao consulta observador nenhum (o gancho de fim-de-turno fica inerte) e NADA neste no avisa que um run se aproxima de um limite de gasto — o que trava um run e MaxTurns, o disjuntor (no-progress/wall-clock) ou o steer do operador. Defina AOS_BUDGET_MAX_TOKENS para ligar o tecto e, com ele, o burn-down; AOS_PROGRESS_THRESHOLD ajusta o limiar do aviso (default ~0.80) e ABORTA o arranque se for definida SEM o tecto (ErrProgressBudgetUnwired). Eixo: AOS-261/AOS-262 / EPIC-20",
+	}
+}
+
+// wormAnchorPostureBanner declara a VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072) em função
+// do que está REALMENTE composto — o argumento é o ESTADO da verificação no arranque (passou/não
+// corre), nunca a intenção da config (mesma disciplina de [budgetPostureBanner] e
+// [exhaustionPromptPostureBanner]).
+//
+// É uma LINHA PRÓPRIA, complementar à de AOS-221, porque as duas verificações fecham vectores
+// DIFERENTES e um nó pode ter uma sem a outra: AOS-221 re-encadeia a hash-chain SEM chave
+// (detecta mutação, remoção-interna, inserção, encadeamento-quebrado) mas, por não ter raiz de
+// confiança FORA do store, NÃO apanha a TRUNCATURA DO TAIL (remover os registos mais recentes: a
+// cadeia truncada re-encadeia como íntegra) nem a REESCRITA DESDE A GÉNESE através de um restart
+// (uma cadeia forjada por inteiro re-encadeia consigo mesma). AOS-268 fecha esses dois com uma
+// âncora ASSINADA out-of-band + um piso de frescura persistido INDEPENDENTEMENTE do store.
+//
+// Duas dobras, ambas verdadeiras:
+//
+//   - composed == true (as três envs presentes e [audit.VerifyFromCheckpointAtHead] PASSOU no
+//     arranque): a assinatura do checkpoint validou contra o trust-anchor de AOS_WORM_TRUST_ANCHOR,
+//     o AuditSeq da âncora é >= ao piso de AOS_WORM_EXPECTED_HEAD (não é rollback) e a âncora
+//     corresponde ao registo real desse audit_seq. LIMITE HONESTO: o piso só prova até ao
+//     audit_seq SELADO — registos legítimos apendidos DEPOIS do último checkpoint e ainda não
+//     selados podem ser truncados sem esta verificação os apanhar; encolher a janela exige
+//     SELAGEM PERIÓDICA (chave privada, out-of-process) — DEFERIDA (DEF-268);
+//   - composed == false (default: nenhuma das três envs, ou a superfície ausente): a verificação
+//     ancorada NÃO corre e o nó fica com o que AOS-221 dá — que NÃO fecha a truncatura do tail
+//     nem a reescrita da génese. Declara-se o vector aberto e as três envs que o fecham, para que
+//     "não fecha a truncatura" nunca seja um silêncio.
+//
+// A regra da linha 19 (uma afirmação amarrada ao ESTADO, nunca à intenção) vale aqui em dobro: o
+// ramo composto SÓ é impresso quando a verificação PASSOU de facto — uma verificação FALHADA
+// abortou o arranque antes de chegar ao banner, pelo que nunca há uma linha "ancorado" sobre um
+// WORM que não ancorou.
+func wormAnchorPostureBanner(composed bool) []string {
+	if composed {
+		return []string{
+			"verificacao ancorada do WORM (AOS-268/AOS-072): ANCORADA — no arranque, audit.VerifyFromCheckpointAtHead validou a ANCORA ASSINADA do WORM (JSON de AOS_WORM_CHECKPOINT_FILE) contra o TRUST-ANCHOR out-of-band (AOS_WORM_TRUST_ANCHOR, pubkey ed25519) e contra o PISO DE FRESCURA persistido independentemente do store (AOS_WORM_EXPECTED_HEAD): a assinatura verificou, o AuditSeq da ancora e >= ao piso (nao e rollback de checkpoint — um checkpoint LEGITIMO mas anterior, reapresentado para mascarar truncatura do tail, teria dado ErrCheckpointStale) e a ancora corresponde ao registo real desse audit_seq (uma REESCRITA DESDE A GENESE diverge do EntryHash assinado ⇒ ErrCheckpointAnchor; um head caido abaixo da ancora ⇒ ErrRangeBeyondHead). Isto FECHA os dois vectores que AOS-221 (re-encadeamento sem chave) nao apanha: a TRUNCATURA DO TAIL e a reescrita da genese via restart. FAIL-CLOSED: qualquer uma destas falhas ABORTA o arranque — o no nao serve um WORM que nao ancorou. LIMITE HONESTO: o piso so prova ate ao audit_seq SELADO; registos legitimos apendidos DEPOIS do ultimo checkpoint e ainda nao selados podem ser truncados sem esta verificacao os apanhar — encolher essa janela exige SELAGEM PERIODICA de novos checkpoints (chave PRIVADA, out-of-process, molde AOS-156), DEFERIDA em DEF-268: este no CONSOME a ancora selada, nao a produz",
+		}
+	}
+	return []string{
+		"verificacao ancorada do WORM (AOS-268/AOS-072): NAO ANCORADA — as envs da ancora nao estao definidas, logo a verificacao ancorada NAO corre e o no fica so com a re-verificacao de hash-chain de AOS-221 (audit.VerifyStore no restart). Essa via SEM CHAVE detecta mutacao, remocao-interna, insercao e encadeamento-quebrado, mas NAO apanha a TRUNCATURA DO TAIL (remover os registos mais recentes: a cadeia truncada re-encadeia como integra) nem a REESCRITA DESDE A GENESE via restart (uma cadeia forjada por inteiro re-encadeia consigo mesma) — os dois vectores precisam de uma raiz de confianca FORA do store. Para os fechar, componha AS TRES juntas: AOS_WORM_TRUST_ANCHOR (pubkey ed25519 hex do selador, out-of-band), AOS_WORM_CHECKPOINT_FILE (JSON da ancora assinada selada out-of-process) e AOS_WORM_EXPECTED_HEAD (o audit_seq-piso persistido INDEPENDENTEMENTE do store — nao derivado do checkpoint, senao o piso seria um no-op e o rollback passaria). Definir ALGUMAS-mas-nao-todas ABORTA o arranque (ErrWormAnchorIncomplete). A selagem periodica de novos checkpoints exige a chave PRIVADA fora do runtime (molde AOS-156) e fica DEFERIDA (DEF-268). Eixo: AOS-268/AOS-072 / EPIC-20",
 	}
 }
 

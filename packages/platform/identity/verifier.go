@@ -60,6 +60,15 @@ type Verifier struct {
 	trust       map[string]ed25519.PublicKey
 	revocations RevocationChecker
 	now         func() time.Time
+	// leeway é a tolerância de relógio aplicada a nbf/exp (AOS-278). Espelha o
+	// verificador OIDC ([integration/oidc], 60s por omissão): o issuer e o nó são
+	// máquinas SEPARADAS (D4 Opção A — mint externo, verificação no nó), pelo que um
+	// token acabado de mintar cujo nbf caia do lado de lá de uma fronteira de segundo
+	// (nbf é segundos Unix truncados) NÃO pode ser rejeitado como "ainda não válido"
+	// por jitter/skew sub-segundo. Sem esta folga, um mint-then-verify quase-imediato
+	// entre relógios não-sincronizados ao milissegundo dá ErrTokenNotYetValid
+	// esporádico. É prática JWT padrão; a folga é pequena e simétrica (nbf e exp).
+	leeway time.Duration
 }
 
 // VerifierOption configura o Verifier.
@@ -91,12 +100,27 @@ func WithVerifierClock(f func() time.Time) VerifierOption {
 	}
 }
 
+// WithVerifierLeeway define a tolerância de relógio aplicada a nbf/exp (AOS-278),
+// no molde de [oidc.Config.Leeway]. Valor negativo é ignorado (mantém o default);
+// 0 explícito desliga a folga (verificação estrita — para testes determinísticos
+// que injectam o relógio). Sem a opção, [NewVerifier] usa 60s.
+func WithVerifierLeeway(d time.Duration) VerifierOption {
+	return func(v *Verifier) {
+		if d >= 0 {
+			v.leeway = d
+		}
+	}
+}
+
 // NewVerifier constrói um verificador. Registe pelo menos um trust anchor com
-// [WithTrustedIssuer], senão TODOS os tokens são rejeitados (fail-closed).
+// [WithTrustedIssuer], senão TODOS os tokens são rejeitados (fail-closed). A folga
+// de relógio (nbf/exp) é 60s por omissão, alinhada com o verificador OIDC do repo;
+// ajuste com [WithVerifierLeeway].
 func NewVerifier(opts ...VerifierOption) *Verifier {
 	v := &Verifier{
-		trust: make(map[string]ed25519.PublicKey),
-		now:   time.Now,
+		trust:  make(map[string]ed25519.PublicKey),
+		now:    time.Now,
+		leeway: 60 * time.Second,
 	}
 	for _, o := range opts {
 		o(v)
@@ -146,12 +170,13 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 		return Principal{}, fmt.Errorf("%w: user_id/agent_id vazios", ErrTokenMalformed)
 	}
 
-	// 4) Janela temporal (relógio injectável). exp ausente ⇒ expirado (fail-closed).
+	// 4) Janela temporal (relógio injectável) COM folga de relógio (AOS-278), no molde
+	// do verificador OIDC: nbf−leeway .. exp+leeway. exp ausente ⇒ expirado (fail-closed).
 	now := v.now()
-	if pt.claims.NotBefore != 0 && now.Before(time.Unix(pt.claims.NotBefore, 0)) {
+	if pt.claims.NotBefore != 0 && now.Before(time.Unix(pt.claims.NotBefore, 0).Add(-v.leeway)) {
 		return Principal{}, ErrTokenNotYetValid
 	}
-	if pt.claims.Expiry == 0 || !now.Before(time.Unix(pt.claims.Expiry, 0)) {
+	if pt.claims.Expiry == 0 || now.After(time.Unix(pt.claims.Expiry, 0).Add(v.leeway)) {
 		return Principal{}, ErrTokenExpired
 	}
 

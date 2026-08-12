@@ -48,6 +48,34 @@ func replayPlanFrom(ctx context.Context) replayPlan {
 	return plan
 }
 
+// modelCredentialKey é a chave (tipo privado — nenhum pacote externo a forja) do token
+// NHI do run no contexto (AOS-278).
+type modelCredentialKey struct{}
+
+// withModelCredential anexa o token NHI do run (Goal.Credential) ao ctx por-run, para o
+// caminho do MODELO o LER por-chamada e o apresentar ao estágio authn REAL do GW (CUTOVER
+// DURO). É a MESMA credencial que cada tool call mediada já verifica
+// (referencemonitor.Call.Credential); AOS-278 estende a MESMA identidade ao turno de
+// modelo. Viaja no MESMO runCtx que carrega o plano de replay — ambos valores por-run que
+// o cliente de modelo consome. SOBREVIVE À RETOMA: o Resume repovoa Goal.Credential com a
+// credencial FRESCA (rec.GoalWith) antes de re-submeter, pelo que o ctx da retoma também o
+// carrega. Vazio ⇒ ctx inalterado: sem credencial no ctx o estágio authn nega
+// atribuívelmente (nenhum principal forjado).
+func withModelCredential(ctx context.Context, credential string) context.Context {
+	if credential == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, modelCredentialKey{}, credential)
+}
+
+// modelCredentialFromContext lê o token NHI do run do ctx ("" se ausente). É a função
+// ligada ao adaptador do GW por [modelgateway.WithPrincipalFromContext] (ver
+// modelgatewaywiring.go): povoa o ex.Principal por-chamada a partir do valor de ctx.
+func modelCredentialFromContext(ctx context.Context) string {
+	c, _ := ctx.Value(modelCredentialKey{}).(string)
+	return c
+}
+
 // resumeAwareModelClient decora o [agentruntime.ModelClient] do nó: num turno COBERTO pelo
 // plano de replay devolve a resposta REGISTADA (sem tocar no modelo); nos restantes delega
 // no cliente real.

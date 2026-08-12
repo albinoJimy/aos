@@ -109,6 +109,41 @@ var ErrBadPolicyTrustAnchor = errors.New("aos: AOS_POLICY_TRUST_ANCHOR invalida 
 // não arranca a servir política que não conseguiu verificar contra o anchor de confiança.
 var ErrPolicyBundleLoad = errors.New("aos: falha ao carregar o bundle PDP de AOS_POLICY_BUNDLE_DIR (ausente/nao-assinado/adulterado ou assinatura nao verificavel pelo trust anchor out-of-band) — RECUSADO fail-closed, nao carregado")
 
+// --- VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072) -----------------------------------------
+// As três variáveis fecham, JUNTAS, os dois vectores que a re-verificação de hash-chain de
+// AOS-221 não apanha (truncatura do tail; reescrita da génese via restart). O molde é o do PDP
+// de AOS-220: material out-of-band (pubkey/checkpoint/piso) provisionado por deploy/VCS
+// read-only, NUNCA lido do próprio WORM mutável que se está a verificar. Fail-closed em qualquer
+// malformação e, sobretudo, na config PARCIAL — "algumas mas não todas" é ambiguidade de
+// integridade e NEGA o arranque.
+
+// ErrWormAnchorIncomplete — ALGUMAS mas NÃO TODAS as três envs da verificação ancorada do WORM
+// (AOS_WORM_TRUST_ANCHOR + AOS_WORM_CHECKPOINT_FILE + AOS_WORM_EXPECTED_HEAD) estão definidas.
+// Fail-closed de CONFIG (AOS-268), no padrão de [ErrPolicyBundleNeedsTrustAnchor]: as três só
+// fecham o vector EM CONJUNTO (âncora assinada + trust-anchor que a valida + piso de frescura que
+// prova que ela não é rollback). Uma config parcial — ex.: só o checkpoint sem o piso — daria um
+// operador convencido de que ancorou o WORM quando não ancorou; a ambiguidade NEGA o arranque em
+// vez de degradar em silêncio para a re-verificação de AOS-221 (que não fecha a truncatura do tail).
+var ErrWormAnchorIncomplete = errors.New("aos: verificacao ancorada do WORM incompleta — AOS_WORM_TRUST_ANCHOR, AOS_WORM_CHECKPOINT_FILE e AOS_WORM_EXPECTED_HEAD sao AS TRES obrigatorias em conjunto (definir algumas-mas-nao-todas aborta em vez de degradar para a re-verificacao de AOS-221, que NAO fecha a truncatura do tail nem a reescrita da genese)")
+
+// ErrBadWormTrustAnchor — AOS_WORM_TRUST_ANCHOR presente mas não é uma pubkey ed25519 válida
+// (32 bytes em hex, 64 chars). Fail-closed (AOS-268), gémeo de [ErrBadPolicyTrustAnchor]: um
+// trust-anchor malformado nunca valida checkpoint nenhum. Só material público bem-formado se
+// torna raiz de confiança da frescura do WORM.
+var ErrBadWormTrustAnchor = errors.New("aos: AOS_WORM_TRUST_ANCHOR invalida (esperado 64 hex chars = 32 bytes ed25519 — a pubkey do selador dos checkpoints do WORM; a chave PRIVADA sela FORA do no)")
+
+// ErrBadWormCheckpoint — AOS_WORM_CHECKPOINT_FILE presente mas o ficheiro não existe, não é
+// legível, ou não descodifica como JSON de [audit.Checkpoint]. Fail-closed (AOS-268): a âncora
+// assinada tem de ser material bem-formado antes sequer de a assinatura ser verificada contra o
+// trust-anchor (essa verificação acontece já dentro de [audit.VerifyFromCheckpointAtHead], no
+// Bootstrap, contra o store composto).
+var ErrBadWormCheckpoint = errors.New("aos: AOS_WORM_CHECKPOINT_FILE invalido (ficheiro inexistente/ilegivel ou JSON de audit.Checkpoint malformado) — a ancora assinada e lida de um ficheiro montado out-of-band, nunca do proprio WORM")
+
+// ErrBadWormExpectedHead — AOS_WORM_EXPECTED_HEAD presente mas não é um uint64 decimal válido
+// (>0). Fail-closed (AOS-268): o piso de frescura é o audit_seq que a cadeia TEM de ter atingido;
+// um valor não-parseável NÃO degrada para "sem piso" (que reabriria o rollback de checkpoint).
+var ErrBadWormExpectedHead = errors.New("aos: AOS_WORM_EXPECTED_HEAD invalida (esperado um audit_seq decimal > 0 — o piso de frescura persistido INDEPENDENTEMENTE do store; nao se deriva do checkpoint, senao o piso seria um no-op e o rollback passaria)")
+
 // ErrBadOperators — AOS_OPERATORS presente mas com uma entrada MALFORMADA (sem '=', com
 // emitterID vazio, com pubkey que não é ed25519 hex de 32 bytes, ou com emitterID DUPLICADO).
 // Fail-closed de CONFIG do CANAL DE CONTROLO (AOS-193), no padrão exacto de
@@ -593,6 +628,18 @@ func nodeConfigFromEnv() (Config, error) {
 	// o WORM. Ver [autonomyWiring]. nil ⇒ oráculo não ligado e nenhum `escalate` é emitido.
 	cfg.Autonomy = autonomyCabling
 
+	// SUPERFÍCIE DE CARREGAMENTO DA VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072). Preenche
+	// [Config.WORMAnchor] a partir do ambiente — sem isto o campo era INALCANÇÁVEL pelo binário e o
+	// nó ficava só com a re-verificação de hash-chain de AOS-221 (que não fecha a truncatura do
+	// tail nem a reescrita da génese). AS TRÊS envs presentes ⇒ o material é parseado e o Bootstrap
+	// verifica-o contra o store composto; ausentes ⇒ nil (não-ancorado, declarado no banner);
+	// parciais/malformadas ⇒ ABORTAM fail-closed.
+	wormAnchor, err := parseWormAnchorFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.WORMAnchor = wormAnchor
+
 	// POLÍTICA DE RETENÇÃO TTL (AOS-092/AOS-213) por ambiente. Preenche [Config.Retention] a partir
 	// de AOS_RETENTION_VERSION + AOS_RETENTION_PERIODS — sem isto o campo era INALCANÇÁVEL pelo
 	// binário e o /dsar/expire varria mas NADA expirava. Ambas vazias ⇒ zero-value (nada expira,
@@ -705,12 +752,15 @@ func nodeConfigFromEnv() (Config, error) {
 	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig) e, em
 	// produção, um gateway sem ficheiro de credencial ABORTA (ErrProductionNeedsModelCredential,
 	// AOS-247) em vez de apresentar o bearer de DEV embebido.
-	modelClient, err := parseModelFromEnv(production)
+	modelClient, modelBinder, err := parseModelFromEnv(production)
 	if err != nil {
 		return Config{}, err
 	}
 	if modelClient != nil {
 		cfg.Model = modelClient
+		// CUTOVER DURO (AOS-278): o binder liga, no Bootstrap, o verifier REAL do nó ao
+		// estágio authn do gateway construído aqui. Sem ele nenhum turno de modelo passa.
+		cfg.ModelIdentityBinder = modelBinder
 	}
 
 	// REGISTRY ASSINADO DE TOOLS (AOS_MODEL_TOOLS_REGISTER): regista as tools de AOS_MODEL_TOOLS
@@ -1078,6 +1128,73 @@ func parsePolicyTrustAnchor(raw string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
+// parseWormAnchorFromEnv é a SUPERFÍCIE DE CARREGAMENTO da verificação ancorada do WORM
+// (AOS-268/AOS-072) — o caminho entre o ambiente e o composition-root, no MESMO molde de
+// [loadPolicyBundleFromEnv]. Devolve o material out-of-band que [Bootstrap] usa para chamar
+// [audit.VerifyFromCheckpointAtHead] DEPOIS de o store estar composto e ANTES de servir.
+//
+// Contrato fail-closed, com o material FORÇADO out-of-band (nunca do próprio WORM):
+//   - AS TRÊS ausentes ⇒ (nil, nil): NÃO-ANCORADO, comportamento actual (só a re-verificação de
+//     AOS-221), declarado no banner ([wormAnchorPostureBanner]). É a retro-compatibilidade.
+//   - ALGUMAS mas não todas ⇒ [ErrWormAnchorIncomplete]: as três só fecham o vector em conjunto.
+//   - AOS_WORM_TRUST_ANCHOR malformada ⇒ [ErrBadWormTrustAnchor]; AOS_WORM_CHECKPOINT_FILE
+//     inexistente/ilegível/JSON malformado ⇒ [ErrBadWormCheckpoint]; AOS_WORM_EXPECTED_HEAD
+//     não-uint64-positivo ⇒ [ErrBadWormExpectedHead].
+//
+// A VERIFICAÇÃO da assinatura e da frescura NÃO acontece aqui (exige o store composto) — aqui só
+// se PARSEIA e se valida a FORMA. O piso de frescura (ExpectedHead) vem de uma env PRÓPRIA e NÃO
+// se deriva de Checkpoint.AuditSeq de propósito: derivá-lo tornaria a comparação AuditSeq >=
+// piso trivialmente verdadeira (no-op) e reabriria o rollback de checkpoint que
+// [audit.VerifyFromCheckpointAtHead] existe para fechar.
+func parseWormAnchorFromEnv() (*WormAnchor, error) {
+	rawAnchor := strings.TrimSpace(os.Getenv("AOS_WORM_TRUST_ANCHOR"))
+	rawFile := strings.TrimSpace(os.Getenv("AOS_WORM_CHECKPOINT_FILE"))
+	rawHead := strings.TrimSpace(os.Getenv("AOS_WORM_EXPECTED_HEAD"))
+
+	// AS TRÊS ausentes ⇒ não-ancorado (retro-compat). Config PARCIAL ⇒ aborta.
+	present := 0
+	if rawAnchor != "" {
+		present++
+	}
+	if rawFile != "" {
+		present++
+	}
+	if rawHead != "" {
+		present++
+	}
+	if present == 0 {
+		return nil, nil
+	}
+	if present != 3 {
+		return nil, ErrWormAnchorIncomplete
+	}
+
+	b, err := hex.DecodeString(rawAnchor)
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil, ErrBadWormTrustAnchor
+	}
+	public := ed25519.PublicKey(b)
+
+	// A âncora assinada é lida de um FICHEIRO montado out-of-band (não do WORM). O JSON é o de
+	// [audit.Checkpoint] selado out-of-process pelo [audit.Signer] (campos exportados, EntryHash/
+	// Signature em base64 pelo encoding/json da stdlib — zero-dep).
+	raw, err := os.ReadFile(rawFile)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadWormCheckpoint, err)
+	}
+	var cp audit.Checkpoint
+	if err := json.Unmarshal(raw, &cp); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadWormCheckpoint, err)
+	}
+
+	head, err := strconv.ParseUint(rawHead, 10, 64)
+	if err != nil || head == 0 {
+		return nil, ErrBadWormExpectedHead
+	}
+
+	return &WormAnchor{Public: public, Checkpoint: cp, ExpectedHead: head}, nil
+}
+
 // parseBoardRegions interpreta a config DEMO-GRADE do registo board→região (AOS-172, D7) na
 // forma "board=regiao,board2=regiao2". FAIL-CLOSED e sem degradação silenciosa:
 //
@@ -1347,14 +1464,20 @@ var ErrBadModelConfig = errors.New("aos: config do model gateway invalida — AO
 // production é a postura do nó (AOS_MODE=production), recebida por PARÂMETRO — como
 // [apiTLSOptionsFromEnv] — para que haja UMA única leitura de AOS_MODE por arranque e o gate de
 // AOS-247 não possa divergir das restantes exigências de produção impostas em [nodeConfigFromEnv].
-func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
+//
+// CUTOVER DURO DE IDENTIDADE (AOS-278): o gateway é construído aqui, ANTES de a identidade
+// estar composta, com um verifier LIGADO TARDIAMENTE ([lateBoundModelVerifier]) que nega
+// fail-closed até o [Bootstrap] o ligar ao verifier REAL do nó. Por isso devolve TAMBÉM o
+// binder — a closure que o Bootstrap chama com esse verifier (Config.ModelIdentityBinder).
+// Sem gateway (endpoint vazio) ⇒ (nil, nil, nil): sem modelo e sem binder.
+func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identity.Verifier), error) {
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
-		return nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
+		return nil, nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
 	}
 	model := strings.TrimSpace(os.Getenv("AOS_MODEL_NAME"))
 	if model == "" {
-		return nil, ErrBadModelConfig
+		return nil, nil, ErrBadModelConfig
 	}
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
@@ -1368,7 +1491,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
 	// fallback continua legítimo (a stack de dev fala com um OmniRoute/LiteLLM que pode nem exigir
 	// bearer), mas deixa de ser silencioso — ver [devModelCredentialBanner].
 	if production && apiKeyPath == "" {
-		return nil, ErrProductionNeedsModelCredential
+		return nil, nil, ErrProductionNeedsModelCredential
 	}
 	// Fronteira de soberania (board/região) que o nó declara ao gateway. Defaults casam com a
 	// allowlist EMBEBIDA; com um bundle externo o operador escolhe-os livremente.
@@ -1383,14 +1506,14 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
 	// Allowlist EXTERNA (bundle assinado montado) se pedida; nil ⇒ embebida. Ver modelgatewaywiring.go.
 	pol, err := loadModelAllowlistFromEnv()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Tool set OFERECIDO ao modelo (registry opt-in AOS_MODEL_TOOLS): sem ele o modelo não pede
 	// tools; com ele, cada tool call é MEDIADA pelo Reference Monitor (o binding capability/recurso
 	// vem do registry trusted, o AuthorizationTaint fica untrusted). Ver modeltools.go.
 	tools, bindings, err := loadModelToolsFromEnv()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// AUDIT DE GOVERNAÇÃO DURÁVEL (AOS-265): AOS_MODEL_AUDIT_PATH ⇒ WORM tamper-evident
 	// onde a activação da allowlist e as decisões por chamada sobrevivem ao restart;
@@ -1398,11 +1521,15 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
 	// definido que não abre ABORTA (ErrBadModelAudit), em vez de degradar em silêncio.
 	gwAudit, _, err := parseModelAuditFromEnv()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	client, err := newGatewayModelClient(endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit)
+	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a
+	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
+	// o MESMO que verifica as tool calls. NÃO há stub allow-all no caminho.
+	modelVerifier := &lateBoundModelVerifier{}
+	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Decora com o enriquecedor de governança só quando há bindings (o modelo escolhe a tool pelo
 	// nome; o RM recebe a capability do registry). Sem tools ⇒ cliente nu (comportamento inalterado).
@@ -1414,7 +1541,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, error) {
 	// replay-then-continue valha para QUALQUER modelo — incluindo um cfg.Model injectado,
 	// que por este caminho a perdia em silêncio. O decorador continua a ser o outermost:
 	// Bootstrap envolve o que quer que saia daqui, incluindo o enriquecedor de tools.
-	return client, nil
+	return client, modelVerifier.bind, nil
 }
 
 // parseHumanOIDCDirectory constrói o directório de autenticação humana OIDC (frente 1 do D4,
