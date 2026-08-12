@@ -16,13 +16,74 @@
 # sejam falsos-positivos. Quem fechar a triagem REMOVE as linhas correspondentes.
 #
 # EIXO DE TRIAGEM, por prioridade de risco:
-#   - G115 (49x, overflow de conversao) — o grosso. Sobretudo substrate/sandbox e
-#     eventstore (isolamento e ORDEM DO LOG); triar primeiro os de caminhos de seguranca.
-#   - G101 (11x, credencial hardcoded) — MUITOS sao NOMES DE ATRIBUTO OTel (ex.: o
-#     AttrConsumedTokens do progress-surface, ja confirmado falso-positivo); confirmar
-#     caso a caso que nao ha material a serio.
-#   - G703/G704 (13x, regras NOVAS: erros de os.Getenv/conversao nao verificados).
-#   - G122 (1x, regra NOVA).
+#
+#   - G101 (13x, "credencial hardcoded") — **TRIADOS 2026-08-12: TODOS FALSOS-POSITIVOS.**
+#     Sao NOMES DE ATRIBUTO DE SPAN OTel cujo IDENTIFICADOR Go contem Token/Key/Passed:
+#     AttrInputTokens="gen_ai.usage.input_tokens", attrSpawnKey="aos.spawn.key",
+#     AttrRatCanaryPassed="aos.ratification.canary_passed", etc. Verificados um a um nos
+#     10 ficheiros (otel-genai/semconv, memory/{working,compression}, model-gateway/
+#     metering/cost, scheduler/{spawn_admission,routing,breaker}, agent-runtime/breaker,
+#     governance/{hitl/ratification,progress-surface/span}). Nenhum material sensivel.
+#     Ficam baselinados por serem ruido estrutural da regra, nao divida.
+#
+#   - G115 (49x, overflow de conversao) — **TRIADOS 2026-08-12: TODOS FALSOS-POSITIVOS.**
+#     Quatro categorias, verificadas no codigo (nao presumidas):
+#
+#     (a) SERIALIZACAO big-endian byte-a-byte (a esmagadora maioria): `b[1]=byte(n>>48)`,
+#         `b[7]=byte(n)` em putUint64/putUint32/ULID (sandbox/snapshot, sandbox/seccomp,
+#         eventstore/ulid, registry/digest, audit). O truncamento E a operacao — e assim
+#         que se escreve um uint64 em 8 bytes. Sem ele nao havia serializacao.
+#
+#     (b) COMPRIMENTOS ja VALIDADOS a montante: eventstore/durable.go:108 converte
+#         len(payload) para uint32 DEPOIS da guarda `if len(payload) > maxRecordBytes`
+#         (64 MiB, folgado no tecto de 4 GiB do uint32). Idem nos putUint32(len(...)).
+#
+#     (c) INVARIANTES estruturais: eventstore/sharding.go:41 faz `uint64(size-1)` com size
+#         a comecar em 1 e so a duplicar (potencia de dois, minimo 1) — nunca 0, logo nunca
+#         underflow. sandbox/snapshot.go:43 e `seq % (span+1)` com span=25 ⇒ gama 0..25.
+#
+#     (d) CONTADORES atomicos para time.Duration: bus/metrics.go — a divisao esta guardada
+#         por `if cnt > 0`, e um uint64 de NANOSSEGUNDOS so excederia int64 ao fim de ~292
+#         anos de latencia acumulada.
+#
+#     Nenhum destes trunca dado real. Ficam baselinados como ruido estrutural da regra num
+#     codigo que serializa muito.
+#
+#   - G703/G704/G122 (13x, regras NOVAS de TAINT ANALYSIS) — **TRIADOS 2026-08-12: TODOS
+#     FALSOS-POSITIVOS**, e a razao e a mesma para todos: a analise de taint da ferramenta
+#     nao conhece a FRONTEIRA DE CONFIANCA do AOS. Aqui o nao-confiavel e o AGENTE (e o
+#     modelo); o OPERADOR e confiavel por construcao — e ele que faz o deployment.
+#
+#     G703 "path traversal" (modelgatewaywiring:149, modeltools:81, sandboxwiring:154):
+#       os caminhos vem de VARIAVEIS DE AMBIENTE lidas no ARRANQUE (AOS_MODEL_API_KEY_PATH,
+#       AOS_MODEL_TOOLS, ...) — config de deployment do operador, nunca entrada do agente.
+#       Um operador que queira ler um ficheiro seu nao precisa de traversal: monta-o.
+#     G704 "SSRF" (cli.go:278,293): o `base` e a flag --addr / AOS_API_ADDR do CLI — o
+#       operador a dizer ao SEU proprio cliente a que no se liga. Nao ha atacante a
+#       controlar o destino.
+#     G122 "TOCTOU symlink" (activity/separation/separation.go:164): o WalkDir corre sobre
+#       o CODIGO-FONTE do repo no analisador estatico de separacao de deveres — verificado
+#       que NAO tem chamador de producao (so testes/CI). Nao ha superficie viva.
+#     testkit/cmd/cov2lcov: ferramenta de CI que le o proprio relatorio de cobertura.
+#
+#     ATENCAO A QUEM MEXER: estes deixam de ser falsos-positivos NO MOMENTO em que algum
+#     destes caminhos passe a aceitar entrada derivada do AGENTE (ex.: uma tool que escolha
+#     ficheiro, ou um endpoint que aceite URL do modelo). Aí a entrada tem de sair da
+#     baseline e ganhar validacao — nao e a regra que esta errada, e a fronteira que muda.
+#
+# ============================================================================
+# RESUMO DA TRIAGEM (2026-08-12): as 75 ocorrencias foram triadas UMA A UMA contra o
+# codigo. NENHUMA e defeito vivo. Nao ha divida de seguranca por fechar nesta baseline —
+# ha ruido estrutural de tres tipos: serializacao byte-a-byte (G115), nomes de atributo
+# OTel (G101) e taint analysis que desconhece a fronteira operador/agente (G703/G704/G122).
+# ============================================================================
+#
+# CORRECCAO DE REGISTO (2026-08-12): uma versao anterior deste cabecalho — e o corpo do
+# PR #7 — afirmavam existir achados G407 (nonce/IV hardcoded) nos caminhos de cifra, com
+# prioridade maxima. E FALSO: correndo o gosec do pin com -include=G407 em platform/audit,
+# platform/backup, platform/memory, substrate/redaction e substrate/eventstore o total e
+# ZERO. A afirmacao veio de uma listagem obtida por RASPAGEM DO LOG DA CI — o metodo que
+# esta mesma baseline declara nao-fiavel. Nao ha divida de nonce/IV nesta arvore.
 # ============================================================================
 packages/cmd/aos-attestation/synth.go|G115
 packages/cmd/aos/authority_directory.go|G703
