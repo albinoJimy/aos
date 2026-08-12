@@ -56,6 +56,7 @@ import (
 	control "github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
+	"github.com/aos-ref/kernel/agent-runtime/saga"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
@@ -594,6 +595,17 @@ type Node struct {
 	Checkpointer agentruntime.Checkpointer
 	Capturer     agentruntime.Capturer
 	Ledger       *durable.StepLedger
+	// Compensations é o REGISTO DE COMPENSAÇÕES (AOS-020) do nó — a costura que AOS-254
+	// COMPÔS: o dispatcher durável regista aqui a acção inversa de cada activity reversível
+	// (via [activity.WithCompensationRegistry], ligado em [integration.SecuredConfig]), e o
+	// caminho de FALHA DURÁVEL percorre-o com um [saga.SagaCoordinator] para conduzir
+	// failed→compensating. NIL quando a execução durável está desligada (compõe-se EM CONJUNTO
+	// com Ledger: sem ledger não há idempotência de compensação nem dispatcher a que ligar o
+	// registrar). ALCANCE HONESTO: o loop base NUNCA povoa [activity.Activity.Compensation] (a
+	// call do modelo não traz acção inversa), pelo que em produção este registo está VAZIO e o
+	// caminho de falha declara "sem compensação" atribuivelmente (AOS-254/AC2); um produtor de
+	// activities reversíveis (AOS-022) alimentá-lo-ia pela mesma costura, sem re-compor nada.
+	Compensations *saga.CompensationRegistry
 	// IdentityMode é o modo de identidade em vigor (sempre IdentityModeReal aqui).
 	IdentityMode string
 
@@ -1013,6 +1025,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		checkpointer agentruntime.Checkpointer
 		capturer     agentruntime.Capturer
 		ledger       *durable.StepLedger
+		// compensations é o registo de compensações de AOS-020 (AOS-254). Composto EM CONJUNTO
+		// com o ledger: a saga de rollback reusa a idempotência do ledger (AOS-014) para "0
+		// reversões duplicadas", pelo que sem ledger durável não haveria substrato para o
+		// coordinator. nil ⇒ compensação desligada (o caminho de falha declara-o).
+		compensations *saga.CompensationRegistry
 	)
 	if cfg.DurableExecution {
 		var err error
@@ -1047,6 +1064,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("aos: step-ledger durável (AOS-180): %w", err)
 		}
+		// AOS-254: o REGISTO DE COMPENSAÇÕES (AOS-020). Composto aqui, no MESMO ramo do ledger,
+		// para que o dispatcher durável ([integration.SecuredConfig].CompensationRegistry) e o
+		// coordinator do caminho de falha partilhem a MESMA instância. Vazio por construção — só
+		// uma activity com Compensation (AOS-022) o povoaria; o loop base nunca o faz.
+		compensations = saga.NewCompensationRegistry()
 	}
 
 	// (2b) OBSERVABILIDADE OTLP (AOS-173). GATING: sem exporter injectado E sem endpoint
@@ -1534,10 +1556,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Checkpointer:   checkpointer,
 		Capturer:       capturer,
 		Ledger:         ledger,
-		FreezeOptions:  freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
-		RuntimeOptions: runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
-		Tracer:         chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
-		SteerSource:    loopSteer,   // AOS-218: liga o canal de steer ao loop de produção (ACHADO-2)
+		// AOS-254: liga o registo de compensações ao dispatcher durável (WithCompensationRegistry
+		// na composição de produção). nil quando a execução durável está desligada.
+		CompensationRegistry: compensations,
+		FreezeOptions:        freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
+		RuntimeOptions:       runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
+		Tracer:               chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
+		SteerSource:          loopSteer,   // AOS-218: liga o canal de steer ao loop de produção (ACHADO-2)
 		// AOS-080/081: disjuntor do agente vivo. nil quando não há limiares configurados.
 		LivenessBreaker: livenessBreaker,
 		// AOS-021: bridge de aprovação. nil quando não há four-eyes ⇒ escalate degrada para
@@ -2015,9 +2040,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		sloTap:           sloTap, // AOS-274: nil quando a observabilidade OTLP está desligada
 		Ingestion:        ingestion,
 
-		Checkpointer: checkpointer, // nil quando a execução durável está desligada
-		Capturer:     capturer,     // (os três são compostos/omitidos EM CONJUNTO)
-		Ledger:       ledger,
+		Checkpointer:  checkpointer, // nil quando a execução durável está desligada
+		Capturer:      capturer,     // (os três são compostos/omitidos EM CONJUNTO)
+		Ledger:        ledger,
+		Compensations: compensations, // AOS-254: registo de compensações (nil sem execução durável)
 
 		SovereignReadRegions:    readRegions,
 		SovereignAuthority:      readAuthority,

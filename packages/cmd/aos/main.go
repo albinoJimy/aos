@@ -855,6 +855,19 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
+	// CRASH-RESUME (AOS-253): ANTES de aceitar submissoes novas, varre o substrato por runs
+	// interrompidos a meio por um crash (estado `running` sem desfecho terminal, lease reclamavel)
+	// e retoma-os pela cadeia REAL, sem re-executar efeitos. Corre aqui — entre a composicao do
+	// loop de servico e o Serve — porque e o unico ponto onde o loop existe (para re-hospedar) mas
+	// ainda nao ha ingresso a competir pelos leases. Uma falha de COMPOSICAO do varredor aborta o
+	// arranque (fail-closed, encerra o loop); as falhas por-run sao declaradas e saltadas dentro
+	// do varredor (nunca retoma as cegas). O banner de resultado sai pelo log do servico.
+	if _, _, err := svc.ResumeInterruptedRuns(ctx); err != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = svc.Shutdown(shutCtx)
+		cancel()
+		return err
+	}
 	apiOpts := append([]APIOption{WithAPILog(w)}, tlsOpts...)
 	apiOpts = append(apiOpts, ingressOpts...)
 	if maxTurnsOpt != nil {
