@@ -124,7 +124,7 @@ de índice e o detalhe lá.
 | `AOS_BREAKER_MAX_COST_MICRO_USD_PER_SEC` | `0` *(**desligado**; **NÃO ligável hoje**)* | Tecto de **velocidade de queima** de custo. 🚫 **Só aceita `0`/ausente: este nó não cabla nenhuma `VelocitySource`, logo não há sinal de velocidade para medir.** Qualquer valor `> 0` faz o nó **ABORTAR o arranque** (`ErrBreakerVelocitySourceUnwired`, AOS-246) — deliberadamente, porque a alternativa era pior: sem fonte, `breaker.NewBreaker` recusa a construção e o run corria **sem disjuntor nenhum**, perdendo também o no-progress e o wall-clock. A env fica documentada como **inócua-até-existir-fonte**; volta a ser ligável quando o sinal de velocidade for cablado. |
 | `AOS_BREAKER_MAX_TOKENS_PER_SEC` | `0` *(**desligado**; **NÃO ligável hoje**)* | Tecto de velocidade de queima de tokens. Mesma fonte em falta, mesma consequência: `> 0` **ABORTA o arranque** (`ErrBreakerVelocitySourceUnwired`, AOS-246). |
 | `AOS_BUDGET_MAX_TOKENS` | *(vazio ⇒ **SEM orçamento**; o hook fica o stub neutro)* | Tecto de orçamento **em TOKENS**, **por *run*** (AOS-008, ligado em AOS-256/AOS-257). Presente ⇒ o ponto de injecção `budget` da cadeia de mediação deixa de ser o `BudgetStub` e passa a ser o **`BudgetCheck` real**: cada *run* regista o seu **nó de orçamento** ao arrancar (libertado no fim, incl. erro/*panic*) e **cada tool call reserva *headroom*** antes de executar; sem *headroom* a call é **NEGADA** *fail-closed* (`denied_by=budget`, selado no WORM). **Leia o [alcance declarado](#orçamento--tecto-de-custo--o-alcance-declarado-aos-008--aos-255) ANTES de ligar:** é **TOOL-ONLY** (o turno de modelo corre fora da cadeia e **não** tem tecto) e **TOKEN-ONLY** (não há equivalente em `$` — o canal micro-USD não está ligado ponta a ponta, eixo AOS-259; um tecto em dólares seria contado a **zero**). O tecto é **POR-RUN, nunca por-mandato**: dois *runs* concorrentes têm tectos independentes. ⚠️ É também **POR-INCARNAÇÃO**: a árvore vive em memória e cada **re-hospedagem** do mesmo *run* (retoma via `/resume`, *restart*) recebe o tecto **inteiro** — ver o [alcance declarado](#orçamento--tecto-de-custo--o-alcance-declarado-aos-008--aos-255). A estimativa é a da **call materializada** (AOS-258): argumentos na forma final do efeito **+** envelope (`tool_id`/`capability`/`resource`); **não** conta o turno de modelo, **não** conta o resultado da tool, **não** conta dólares — ver o [alcance declarado](#orçamento--tecto-de-custo--o-alcance-declarado-aos-008--aos-255). ⚠️ **Valor ilegível, negativo ou `0` ABORTA o arranque** (`ErrBadBudget`) — `0` **não** desliga o orçamento, negaria **todas** as tool calls; para correr sem orçamento **deixe a variável por definir**. Material **público** (um número). |
-| `AOS_PROGRESS_THRESHOLD` | `0.80` *(o aviso só existe se houver tecto — ver ⚠️)* | Limiar do **aviso de burn-down** (AOS-261/AOS-262): a **fracção consumida** a partir da qual o nó **avisa**, na fronteira de fim-de-turno, **uma vez por *run*** (*latch*; um *restart* re-avisa uma vez). **Onde se vê o aviso:** uma linha `[aos] AVISO DE BURN-DOWN` no **log do nó** — o canal que existe **sempre** — e, **só com `AOS_OTLP_ENDPOINT` definida**, também o span `aos.control.budget_warning`; sem OTLP o *tracer* do nó é o `NoopTracer` e o span **não tem destino**. A fonte do consumido é o **ledger de turnos** (eventos `turn.recorded` do event store, deduplicados por `run_id:step_id`): uma **re-emissão não infla** a contagem e uma **retoma não a zera** (a chave é o `run_id`, não o `trace_id`). ⚠️ **Conta os TURNOS DE MODELO e só eles** — o ledger não pesa *tool calls*, pelo que a leitura é um **limite inferior** do consumo do *run*: o aviso dispara **tarde**, nunca cedo por engano. A dimensão que decide é **tokens** (a de `$` está a **zero** até AOS-259). ⚠️ **O aviso NÃO decide nada:** não pára o *run*, não pede escolha e **não** apresenta `extend`/`summarize_stop`/`abort` — nenhuma dessas opções tem executor nem autoridade no nó (eixo AOS-263); quem pára um *run* é o disjuntor (veredicto durável) ou o operador. ⚠️ **Exige `AOS_BUDGET_MAX_TOKENS`**: sem tecto não há denominador e o aviso **nunca** dispararia — definir esta variável **sem** o tecto **ABORTA o arranque** (`ErrProgressBudgetUnwired`, molde de AOS-246). Valor ilegível ou fora de **(0,1)** ⇒ **ABORTA** (`ErrBadProgressThreshold`): `0` avisaria em **todos** os turnos e `1` nunca avisaria antes do tecto esgotado — **não** há *fallback* silencioso para o default. ⚠️ **Fail-closed da LEITURA:** o *run* **aborta** — nunca lê 0% — quando não há ledger, quando o ledger tem turnos mas somou **zero tokens** (o *provider* do modelo não ecoou `usage`; `ErrBurndownNoUsage`) ou quando o *payload* é ilegível. **Indisponibilidade transitória** do substrato (`ErrNoQuorum` numa troca de líder, contexto do *run* a cair) **não** mata o *run*: a leitura adia-se para a fronteira seguinte e só passa a fatal ao fim de **3 fronteiras consecutivas**. Material **público** (um número). |
+| `AOS_PROGRESS_THRESHOLD` | `0.80` *(o aviso só existe se houver tecto — ver ⚠️)* | Limiar do **aviso de burn-down** (AOS-261/AOS-262): a **fracção consumida** a partir da qual o nó **avisa**, na fronteira de fim-de-turno, **uma vez por *run*** (*latch*; um *restart* re-avisa uma vez). **Onde se vê o aviso:** uma linha `[aos] AVISO DE BURN-DOWN` no **log do nó** — o canal que existe **sempre** — e, **só com `AOS_OTLP_ENDPOINT` definida**, também o span `aos.control.budget_warning`; sem OTLP o *tracer* do nó é o `NoopTracer` e o span **não tem destino**. A fonte do consumido é o **ledger de turnos** (eventos `turn.recorded` do event store, deduplicados por `run_id:step_id`): uma **re-emissão não infla** a contagem e uma **retoma não a zera** (a chave é o `run_id`, não o `trace_id`). ⚠️ **Conta os TURNOS DE MODELO e só eles** — o ledger não pesa *tool calls*, pelo que a leitura é um **limite inferior** do consumo do *run*: o aviso dispara **tarde**, nunca cedo por engano. A dimensão que decide é **tokens** (a de `$` está a **zero** até AOS-259). ⚠️ **O aviso, em si, não decide nada:** não pede escolha e **não** apresenta opção nenhuma; quem as apresenta é o **prompt** de AOS-263, e só as que **têm executor** — `extend` e `summarize_stop` **não** aparecem (ver a linha seguinte); quem pára um *run* é o disjuntor (veredicto durável) ou o operador. ⚠️ **O que este aviso ACCIONA (AOS-263), quando o nó tem a maquinaria HITL composta (`AOS_APPROVERS_FILE`):** ao cruzar o limiar o *run* **SUSPENDE** em `waiting_on_human` e um **prompt de exaustão** durável é selado — visível em `GET /runs/{id}`, campo `pending_exhaustion`, com o limiar, os tokens consumidos e o tecto. As opções apresentadas são **exactamente as duas que têm executor**, e ambas entram pela **mesma rota assinada** `POST /runs/{id}/exhaustion` (ver [a secção da rota](#decisão-sobre-o-prompt-de-exaustão--post-runsidexhaustion-aos-263)): **`continue`** (o *run* fica autorizado a prosseguir) e **`abort`** (o *run* pára). ⚠️ **Enquanto a pergunta estiver por responder, `POST /runs/{id}/resume` RECUSA com `409`** — a retoma é a **execução** de um `continue` já decidido, nunca a decisão. Sem esse travão, a resposta arriscada («deixa queimar orçamento acima do limiar») seria a única que dispensava assinatura de operador e registo de quem a tomou, o que é a assimetria de postura que a decisão do dono (i) recusou. **NÃO** são apresentados `extend` — o `budget.Budget` não tem mutador de tecto e os limites são configuração declarativa **fora** do log de eventos (decisão do dono, 2026-08-12; eixo **DEF-220** em `docs/governance/REGISTO-Deferimentos.md`) — **nem** `summarize_stop`, que não tem caminho de resumo no *loop*. Sem decisão, o **mesmo varrimento de pendentes** das aprovações expira a pergunta (TTL de aprovação) e o *run* volta a ser **retomável** (a escotilha que impede o travão de ser uma prisão); uma pergunta **respondida** sai da lista por **decisão**, não por expiração. A **deliberação humana não mata o *run*** pelo relógio: a suspensão repõe o `enteredAt` da máquina de estados e o *deadline* de *wall-clock* (AOS-252) só conta tempo em `running`. Se a suspensão **falhar** (registo ou transição durável), o *run* **aborta** — não há *fail-open*: o sinal é emitido **uma vez por *run*** e engoli-lo deixaria o *run* a queimar orçamento com o operador à espera de um prompt que nunca apareceria. **Sem** `AOS_APPROVERS_FILE` — **ou sem operador pinado em `AOS_OPERATORS`** — o prompt fica **NÃO ARMADO** e o comportamento é o de AOS-262 (avisa e o *run* continua); o banner de arranque declara qual dos dois é. A segunda condição é deliberada: sem operador registado ninguém poderia responder à pergunta, e suspender um *run* para uma pergunta sem via seria matá-lo com outro nome. ⚠️ **Exige `AOS_BUDGET_MAX_TOKENS`**: sem tecto não há denominador e o aviso **nunca** dispararia — definir esta variável **sem** o tecto **ABORTA o arranque** (`ErrProgressBudgetUnwired`, molde de AOS-246). Valor ilegível ou fora de **(0,1)** ⇒ **ABORTA** (`ErrBadProgressThreshold`): `0` avisaria em **todos** os turnos e `1` nunca avisaria antes do tecto esgotado — **não** há *fallback* silencioso para o default. ⚠️ **Fail-closed da LEITURA:** o *run* **aborta** — nunca lê 0% — quando não há ledger, quando o ledger tem turnos mas somou **zero tokens** (o *provider* do modelo não ecoou `usage`; `ErrBurndownNoUsage`) ou quando o *payload* é ilegível. **Indisponibilidade transitória** do substrato (`ErrNoQuorum` numa troca de líder, contexto do *run* a cair) **não** mata o *run*: a leitura adia-se para a fronteira seguinte e só passa a fatal ao fim de **3 fronteiras consecutivas**. Material **público** (um número). |
 | `AOS_MAX_TURNS` | `16` *(= `DefaultMaxTurns`)* | **Tecto node-local do nº de turnos de um run** (AOS-203, achado F2). O `max_turns` do corpo de `POST /runs` é **CLAMPADO** a este valor na fronteira de **ingresso** — um valor **maior**, ou **ausente**, é reduzido ao tecto; um valor legítimo **abaixo** passa intacto. **Segurança/disponibilidade:** sem tecto, um `max_turns` grande escolhido pelo submissor esgota o orçamento **RPM por-processo** do keypool do gateway (que é do **processo**, não do run) e deixa o nó **incapaz de chamar o modelo até reiniciar** — um DoS de **um** pedido que o rate-limit de ingresso (1 pedido) e o tecto de in-flight (1 run) não apanham. O tecto **nunca se desliga** (um clamp desligável reabriria o buraco); `0`/negativo/não-inteiro ⇒ **ABORTA** (`ErrBadMaxTurns`), não degrada para o default. O `--max-turns` da CLI é um **pedido**, arbitrado por este tecto no nó. Material **público**. |
 | `AOS_APPROVAL_SWEEP_INTERVAL` | `1m` | Período do **varrimento de aprovações expiradas** (AOS-021), no loop de serviço. Passado o TTL de aprovação (15 min) sem decisão humana, o pendente **EXPIRA**: deixa de aparecer ao operador e o run deixa de estar à espera. **NÃO retoma nem re-executa nada** — o run permanece **retomável**, e a acção escalada será **negada** quando for retomado (o agente vê o marcador de negação e pode seguir outro caminho). `0` **desliga** o varrimento (os pendentes nunca expiram sozinhos). Sem four-eyes composto o varrimento não arranca. Material **público**. |
 | `AOS_SANDBOX_DRIVER` | `fake` | Driver de execução de tools em **sandbox** (AOS-005/AOS-064) quando alguma tool de `AOS_MODEL_TOOLS` declara um bloco `sandbox`. `fake` = **jail funcional in-process** (RootFS overlay read-only, seccomp default-deny, escape bloqueado, host **nunca** tocado) — determinista, sem host especial. `firecracker`/`gvisor` = **microVM/gVisor reais**: exigem **KVM**/`runsc` no host; sem eles o registo do launcher passa, mas a execução devolve `ErrDriverUnavailable` (o caminho de produção fica **WIRED**, só falta o host — **infra do dono, não código**). Ausente ⇒ `fake`. Material **público**. |
@@ -851,6 +851,85 @@ curl -sS -X POST --data @promote.json https://<no>/promote
 > read-only e fora da imagem, no padrão de `AOS_ISSUER_KEY_PATH`. A ferramenta **nunca** a ecoa: o
 > que imprime é só o corpo do pedido. O *nonce* é gerado por CSPRNG a cada invocação e **não** é
 > configurável — reutilizá-lo seria fabricar um *replay*.
+
+### Decisão sobre o prompt de exaustão — `POST /runs/{id}/exhaustion` (AOS-263)
+
+Quando o **prompt de exaustão** está armado (ver `AOS_PROGRESS_THRESHOLD`), o *run* que cruza o
+limiar **pára** em `waiting_on_human` à espera de um humano. Esta é a rota por onde esse humano
+**responde** — e a única com autoridade para o fazer:
+
+| Rota | O que faz | Colaborador |
+|---|---|---|
+| `POST /runs/{id}/exhaustion` | **Decide** um prompt de exaustão. Corpo: `{"decision":"continue"` ou `"abort"`, `"step_id":"<o step_id de pending_exhaustion>","emitter":{...}}`. `200` ⇒ decisão executada — com `abort` o *run* fica **abortado** (durável, `killed`); com `continue` fica **retomável** (continua em `waiting_on_human`, e a resposta traz `next: POST /runs/{id}/resume`); `403` ⇒ recusado (assinatura/frescura/*replay*); `404` ⇒ não há pergunta com esse `step_id`; `409` ⇒ o *run* já não está suspenso; `400` ⇒ decisão fora do vocabulário ou corpo inválido; `501` ⇒ maquinaria não composta. | `integration.Ed25519Authenticator` (AOS-160) + `state.Machine` (AOS-017/AOS-252) + WORM |
+
+**As duas metades da pergunta têm a MESMA autoridade.** `continue` e `abort` entram pela mesma
+rota, com a mesma assinatura de operador pinado, o mesmo *nonce* durável e o mesmo selo WORM. É
+o ponto, não simetria decorativa: a resposta **arriscada** é a de continuar a queimar orçamento
+acima do limiar, e desenhá-la mais barata do que a segura tornaria o *prompt* contornável
+exactamente na direcção errada. Por isso **`POST /runs/{id}/resume` recusa com `409` enquanto a
+pergunta estiver por responder** — a retoma é a *execução* que se segue a um `continue`
+decidido, não a decisão. Passado o TTL sem decisão, o varrimento de pendentes expira a pergunta
+e a retoma volta a ser aceite: o travão nunca vira prisão.
+
+**Autenticação: a MESMA do `/approve` e do `/pause`** — *token-bucket* do plano de controlo, mTLS
+de controlo quando composto (`AOS_CONTROL_MTLS_CA_PATH`) e a **assinatura ed25519** do operador
+verificada contra a **pubkey pinada** em `AOS_OPERATORS`, com **nonce durável de uso único** e
+**janela de frescura**. Não há esquema novo: é o mesmo autenticador e o mesmo *nonce-store* do
+canal de controlo. O nó continua **non-signing** — a chave privada do operador nunca entra no
+processo.
+
+> ⚠️ **A assinatura cobre a DECISÃO e a PERGUNTA**, não apenas o *run*. O tuplo assinado usa um
+> *kind* próprio (`exhaustion_decision`) e um *payload* canónico com `(decisão, step_id)`. É
+> deliberado: se a decisão viajasse como um `pause`, um sinal de pausa **capturado antes de ser
+> gasto** poderia ser submetido aqui como um `abort` — e o efeito passaria de «parar de forma
+> retomável» para «terminar o *run*». Pelo mesmo motivo, uma assinatura de decisão **não** vale
+> como `pause`/`steer` no canal.
+
+**O `abort` não é um *kill* novo.** Reusa as paragens duráveis que já existem e escolhe pelo
+**estado** do *run*:
+
+- *run* **suspenso** (o estado em que o prompt o pôs) ⇒ `waiting_on_human → killed`, a única
+  aresta de paragem que a tabela de AOS-017 dá a esse estado (a mesma do *timeout* humano de
+  ADR-013, com **razão própria**: `budget_exhaustion_abort`). **Terminal** — `POST /resume`
+  passa a responder `404`;
+- *run* que **voltou a correr** com a pergunta em aberto ⇒ **`409`**, e a resposta **nomeia** a
+  **pausa graciosa** `POST /runs/{id}/pause`, que o pára na **fronteira de fim-de-turno** (sem
+  efeitos parciais) e o deixa em `paused`, **retomável**. Um *abort* nunca mata um *run* a meio
+  de um turno.
+
+**Cada decisão escreve o seu próprio selo no WORM** (partição `governance.exhaustion`) com o
+**principal VERIFICADO**, o `run_id`, o passo, o **montante consumido** (os números do aviso de
+AOS-262 — nunca recalculados), o tecto, o limiar e a **razão**. O selo é **pré-condição do
+efeito**: se a *hash-chain* não o aceitar, o *run* **não** é abortado. Não há campo de texto
+livre — uma nota que a assinatura não cobrisse seriam palavras atribuídas a um principal que não
+as assinou.
+
+**Produzir e enviar a decisão (na máquina do operador):**
+
+```bash
+# 1) ver a pergunta e o seu step_id (o `aos observe` resume o ESTADO; o step_id vem do GET)
+curl -sS https://<no>/runs/run-42 | jq '.pending_exhaustion'
+
+# 2a) PARAR o run — a CLI assina com a seed do operador e transporta; quem decide e o no
+aos abort --addr https://<no> --run-id run-42 \
+  --step-id 'exhaustion@chat#7@1786...-9f2c1a08b7d34e51' --emitter ops:alice --key /etc/aos/operator.seed
+
+# 2b) DEIXAR CORRER — mesma cerimonia assinada. O run fica RETOMAVEL; a re-hospedagem e um
+#     acto a parte, com credencial fresca (e so passa a ser aceite depois desta decisao)
+aos continue --addr https://<no> --run-id run-42 \
+  --step-id 'exhaustion@chat#7@1786...-9f2c1a08b7d34e51' --emitter ops:alice --key /etc/aos/operator.seed
+curl -sS -X POST https://<no>/runs/run-42/resume -d '{"credential":"<token NHI fresco>"}'
+```
+
+> ⚠️ O `step_id` **não se adivinha nem se deriva**: traz o turno, o instante e um desambiguador
+> de ocorrência, e vem tal-qual do `pending_exhaustion`. É ele que a assinatura amarra — dois
+> *prompts* do mesmo *run* são perguntas diferentes (o contador de turnos **reinicia** em cada
+> re-hospedagem, pelo que o número do turno sozinho não as distingue), e responder ao passo
+> errado é responder a outra pergunta.
+
+> ⚠️ `--key` é a **seed ed25519 do operador** — material **PRIVADO por ficheiro montado**,
+> read-only e fora da imagem, no padrão de `AOS_ISSUER_KEY_PATH`. A CLI **nunca** a ecoa. O
+> *nonce* é gerado por CSPRNG a cada invocação e **não** é configurável.
 
 ### Bind-guardrail (fail-closed)
 

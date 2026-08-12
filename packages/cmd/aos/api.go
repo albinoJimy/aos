@@ -520,6 +520,13 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// quando a frescura está DORMENTE (Node.ChallengeIssuer nil). Ver handleChallenge.
 	mux.HandleFunc("POST /runs/{id}/challenge", h.handleChallenge)
 	mux.HandleFunc("POST /runs/{id}/resume", h.handleResume)
+	// DECISÃO sobre um PROMPT DE EXAUSTÃO de orçamento (AOS-263, parte 3). MESMA admissão do
+	// /approve e do /pause (admitControl + admitControlMTLS) e a MESMA autenticação non-signing
+	// do canal de controlo — o Ed25519Authenticator composto de AOS_OPERATORS, com nonce
+	// DURÁVEL de uso-único e frescura. A assinatura cobre a DECISÃO e a PERGUNTA (kind próprio +
+	// payload canónico), pelo que um pause capturado não se converte num abort. Ver
+	// exhaustion_decision.go.
+	mux.HandleFunc("POST /runs/{id}/exhaustion", h.handleExhaustionDecision)
 	// Plano de CONTROLO TRUSTED — RATIFICAÇÃO de auto-modificação (AOS-275, achado F7). NÃO é
 	// por-run: o alvo é um ARTEFACTO (skill/memória procedural), pelo que a rota é de NÓ. Mesma
 	// admissão do /approve (admitControl + admitControlMTLS) e a MESMA disciplina non-signing — a
@@ -730,6 +737,18 @@ type runStateResponse struct {
 	// valor que cada perna de aprovação assina em POST /runs/{id}/approve. Ausente
 	// quando não há nada por decidir (ou o four-eyes não está composto).
 	PendingApprovals []pendingApprovalWire `json:"pending_approvals,omitempty"`
+	// PendingExhaustion são os PROMPTS DE EXAUSTÃO DE ORÇAMENTO por responder (AOS-263) — a
+	// segunda decisão humana que suspende um run. CAMPO PRÓPRIO, e não mais uma entrada em
+	// PendingApprovals: um prompt de exaustão não tem preview, e apresentá-lo como aprovação
+	// daria ao operador um digest de coisa nenhuma para assinar. Ausente quando não há
+	// nenhum por responder (ou a maquinaria HITL não está composta).
+	PendingExhaustion []pendingExhaustionWire `json:"pending_exhaustion,omitempty"`
+	// PendingUnavailable declara que as duas listas acima saíram VAZIAS por não terem podido
+	// ser lidas — não por não haver nada. Sem este campo, uma falha de leitura era
+	// indistinguível de «nada por decidir», e num run suspenso por AOS-263 essa ambiguidade
+	// custa caro: o operador vê `waiting_on_human` sem pergunta e não sabe se espera ou se
+	// investiga. Ausente no caminho normal (é a leitura que degrada, não a resposta).
+	PendingUnavailable bool `json:"pending_unavailable,omitempty"`
 }
 
 // pendingApprovalWire é a face de wire de uma aprovação pendente. Descreve O QUE vai
@@ -750,33 +769,137 @@ type pendingApprovalWire struct {
 	Preview        string `json:"preview"` // base64 — o digest a assinar em /approve
 }
 
+// pendingExhaustionWire é a face de wire de um PROMPT DE EXAUSTÃO por responder (AOS-263).
+//
+// NÃO tem preview e nunca terá: no tipo aprovação a preview é a amarra criptográfica do
+// EFEITO exibido (WYSIWYS); aqui não há efeito nenhum a autorizar — a pergunta é sobre o
+// RUN, e a sua amarra são os números que a justificam (limiar, consumido, tecto), lidos do
+// aviso de burn-down de AOS-262 e não recalculados.
+//
+// As OPÇÕES são as que TÊM executor, e só essas: `continue` e `abort` (AOS-263 parte 3), ambas
+// na MESMA rota assinada — as duas metades da pergunta, com a mesma autoridade. A RETOMA não
+// está entre elas: é a execução que se segue a um `continue` selado, e enquanto a pergunta
+// estiver por responder a própria rota de retoma recusa. NÃO aparecem `extend` — decisão do
+// dono ((iii), 2026-08-12): o tecto não tem mutador e os limites são configuração fora do log
+// de eventos — nem `summarize_stop`, que não tem caminho de resumo no loop e seria uma paragem
+// comum com um nome que promete mais. Ambas ficam DECLARADAS (em exhaustion_decision.go, no
+// banner de arranque e no README do nó) e NENHUMA viaja no wire: uma lista de "não-oferecidas"
+// dentro da resposta convidaria um cliente a tentá-las. Oferecer uma escolha que ninguém
+// consegue executar é a mentira que AOS-262 se recusou a contar — e seria pior aqui, onde o run
+// está parado à espera dela.
+type pendingExhaustionWire struct {
+	StepID string `json:"step_id"`
+	Turn   int    `json:"turn"`
+	// Threshold/ConsumedTokens/LimitTokens são o PORQUÊ da pergunta, nos termos em que o
+	// burn-down a produziu. Os tokens são um LIMITE INFERIOR do consumo do run: o ledger de
+	// turnos conta os TURNOS DE MODELO e não pesa tool calls (AOS-261).
+	Threshold      float64 `json:"threshold"`
+	ConsumedTokens int64   `json:"consumed_tokens"`
+	LimitTokens    int64   `json:"limit_tokens"`
+	// CreatedAt é a âncora do TTL — a partir daqui o varrimento de pendentes conta a idade
+	// da pergunta (RFC3339). Ausente só num registo escrito sem relógio (nunca expira).
+	CreatedAt string `json:"created_at,omitempty"`
+	// Options são as decisões EXECUTÁVEIS, cada uma com a rota que a executa.
+	Options []exhaustionOptionWire `json:"options"`
+}
+
+// exhaustionOptionWire é uma opção do prompt e a ROTA que a executa. A rota viaja com a
+// opção de propósito: uma opção sem rota é indistinguível de uma promessa.
+type exhaustionOptionWire struct {
+	ID    string `json:"id"`
+	Route string `json:"route"`
+}
+
+// exhaustionOptions são as opções apresentadas. É uma função e não uma variável global para
+// não haver uma fatia partilhada que um handler pudesse mutar por engano.
+//
+// AS DUAS TÊM EXECUTOR — e o MESMO, que é o ponto: `continue` e `abort` são as duas metades
+// da pergunta e entram ambas por `POST /runs/{id}/exhaustion` (AOS-263 parte 3), com a mesma
+// assinatura de operador pinado e o mesmo selo WORM. Uma resposta «deixa correr» mais barata
+// de dar do que «pára» tornaria o prompt contornável precisamente na direcção arriscada.
+//
+// A RETOMA (`POST /runs/{id}/resume`) NÃO está nesta lista e não é uma opção: é a EXECUÇÃO que
+// se segue a um `continue` selado, e enquanto a pergunta estiver por responder a própria rota
+// recusa-a. Ficam de fora, DECLARADAS em exhaustion_decision.go, no banner e no README:
+// `extend` (o tecto não tem mutador — decisão do dono (iii)) e `summarize_stop` (o loop não tem
+// caminho de resumo). Apresentar uma escolha que ninguém executa é prometer o que não existe —
+// e aqui seria pior do que em AOS-262, porque o run está PARADO à espera da resposta.
+func exhaustionOptions() []exhaustionOptionWire {
+	return []exhaustionOptionWire{
+		{ID: exhaustionOptionContinue, Route: exhaustionDecisionRoute},
+		{ID: exhaustionOptionAbort, Route: exhaustionDecisionRoute},
+	}
+}
+
 // pendingApprovalsFor resolve as aprovações pendentes de um run para a resposta. Devolve
 // nil quando o four-eyes não está composto ou nada está por decidir. Uma falha de leitura
 // NÃO quebra a resposta de estado: o pendente é informação de administração, e degradar
 // para "sem pendentes" é preferível a negar a consulta do estado do run (o operador
 // percebe pela ausência; o run continua suspenso e nada executa).
 func (h *apiHandler) pendingApprovalsFor(ctx context.Context, runID string) []pendingApprovalWire {
+	aprovacoes, _, _ := h.pendingFor(ctx, runID)
+	return aprovacoes
+}
+
+// pendingFor lê UMA VEZ o registo de pendentes do run e separa-o pelas DUAS faces de wire —
+// aprovações (AOS-021) e prompts de exaustão (AOS-263). Uma leitura só: o registo é um
+// stream partilhado e este caminho é POLLING do operador; duas travessias por resposta
+// duplicariam o custo do endpoint sem acrescentar informação.
+//
+// A degradação é a de sempre: uma falha de leitura NÃO quebra a resposta de estado — mas
+// deixa de ser MUDA. O terceiro valor de retorno diz que a lista saiu por indisponibilidade e
+// não por vazio, e o chamador declara-o no wire (`pending_unavailable`).
+//
+// PORQUE PASSOU A IMPORTAR (AOS-263): numa aprovação, a ausência lê-se como «nada por fazer»
+// — o run está parado de qualquer modo e nada executa. Num prompt de exaustão a ausência é
+// ambígua e cara: o operador vê um run em `waiting_on_human` SEM pergunta nenhuma, e não tem
+// como distinguir uma falha transitória de leitura de uma pergunta que se perdeu. As duas
+// pedem acções opostas (esperar vs. investigar), e adivinhar mal deixa o run parado.
+//
+// Um tipo que ESTA superfície não saiba renderizar é OMITIDO dos dois lados, nunca
+// reinterpretado como o outro (ver [integration.PendingRecord]).
+func (h *apiHandler) pendingFor(ctx context.Context, runID string) ([]pendingApprovalWire, []pendingExhaustionWire, bool) {
 	if h.node.PendingApprovals == nil {
-		return nil
+		// Não é indisponibilidade: este nó não tem registo de pendentes de todo, e o banner de
+		// arranque di-lo. Anunciar "indisponível" mandaria investigar uma avaria inexistente.
+		return nil, nil, false
 	}
 	recs, err := h.node.PendingApprovals.ListForRun(ctx, runID)
-	if err != nil || len(recs) == 0 {
-		return nil
+	if err != nil {
+		h.svc.log("leitura de pendentes do run %q FALHOU — a resposta de estado sai sem a lista e declara-o em pending_unavailable (uma pergunta por responder pode existir e nao estar a ser mostrada): %v", runID, err)
+		return nil, nil, true
 	}
-	out := make([]pendingApprovalWire, 0, len(recs))
+	if len(recs) == 0 {
+		return nil, nil, false
+	}
+	var aprovacoes []pendingApprovalWire
+	var exaustoes []pendingExhaustionWire
 	for _, r := range recs {
-		out = append(out, pendingApprovalWire{
-			StepID:         r.StepID,
-			Turn:           r.Turn,
-			ToolID:         r.ToolID,
-			Capability:     r.Capability,
-			ResourceType:   r.ResourceType,
-			ResourceValue:  r.ResourceValue,
-			ResourceRegion: r.ResourceRegion,
-			Preview:        base64.StdEncoding.EncodeToString(r.Preview),
-		})
+		switch r.Kind.Resolved() {
+		case integration.PendingKindApproval:
+			aprovacoes = append(aprovacoes, pendingApprovalWire{
+				StepID:         r.StepID,
+				Turn:           r.Turn,
+				ToolID:         r.ToolID,
+				Capability:     r.Capability,
+				ResourceType:   r.ResourceType,
+				ResourceValue:  r.ResourceValue,
+				ResourceRegion: r.ResourceRegion,
+				Preview:        base64.StdEncoding.EncodeToString(r.Preview),
+			})
+		case integration.PendingKindExhaustion:
+			exaustoes = append(exaustoes, pendingExhaustionWire{
+				StepID:         r.StepID,
+				Turn:           r.Turn,
+				Threshold:      r.Threshold,
+				ConsumedTokens: r.ConsumedTokens,
+				LimitTokens:    r.LimitTokens,
+				CreatedAt:      r.CreatedAt,
+				Options:        exhaustionOptions(),
+			})
+		}
 	}
-	return out
+	return aprovacoes, exaustoes, false
 }
 
 // handleGet devolve o estado/desfecho de um run. NÃO-ENUMERÁVEL: um RunID que esta réplica
@@ -803,11 +926,17 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
 			return
 		}
+		// As DUAS decisões humanas que suspendem um run saem por aqui: a aprovação de uma tool
+		// call escalada (AOS-021) e o prompt de exaustão de orçamento (AOS-263). Uma leitura
+		// só, cada tipo na sua face de wire.
+		aprovacoes, exaustoes, indisponivel := h.pendingFor(r.Context(), runID)
 		writeJSON(w, http.StatusOK, runStateResponse{
-			RunID:            runID,
-			Status:           "waiting_on_human",
-			Turns:            oc.Result.Turns,
-			PendingApprovals: h.pendingApprovalsFor(r.Context(), runID),
+			RunID:              runID,
+			Status:             "waiting_on_human",
+			Turns:              oc.Result.Turns,
+			PendingApprovals:   aprovacoes,
+			PendingExhaustion:  exaustoes,
+			PendingUnavailable: indisponivel,
 		})
 		return
 	}
@@ -832,7 +961,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		}
 		// Um run TERMINADO pode ter deixado pendentes por decidir (ex.: expirou o TTL e
 		// voltou a correr sem a acção). Expô-los mantém o histórico legível ao operador.
-		resp.PendingApprovals = h.pendingApprovalsFor(r.Context(), runID)
+		resp.PendingApprovals, resp.PendingExhaustion, resp.PendingUnavailable = h.pendingFor(r.Context(), runID)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -844,11 +973,15 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			}
 			// É AQUI que o operador vê o que tem de aprovar: um run suspenso em
 			// waiting_on_human continua "in_progress" e traz a lista de pendentes com a
-			// preview a assinar em POST /runs/{id}/approve (AOS-021, polling).
+			// preview a assinar em POST /runs/{id}/approve (AOS-021, polling) — e, com ela, os
+			// prompts de exaustão por responder (AOS-263).
+			aprovacoes, exaustoes, indisponivel := h.pendingFor(r.Context(), runID)
 			writeJSON(w, http.StatusOK, runStateResponse{
-				RunID:            runID,
-				Status:           "in_progress",
-				PendingApprovals: h.pendingApprovalsFor(r.Context(), runID),
+				RunID:              runID,
+				Status:             "in_progress",
+				PendingApprovals:   aprovacoes,
+				PendingExhaustion:  exaustoes,
+				PendingUnavailable: indisponivel,
 			})
 			return
 		}
@@ -1815,6 +1948,12 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		// 404 UNIFORME (como o resto do read-path): não se distingue "não existe" de
 		// "existe mas não está suspenso" — não enumera runs alheios.
 		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, ErrExhaustionPromptUnanswered):
+		// 409, e NOMEANDO a via: o run existe, está suspenso e a retoma é legítima — só ainda
+		// não é a vez dela. Um 404 uniforme aqui esconderia do operador a única acção que
+		// destranca o run, e um 403 sugeriria falta de autoridade quando o que falta é a
+		// DECISÃO. Não revela nada que o GET do mesmo run não mostre.
+		writeError(w, http.StatusConflict, "ha um prompt de exaustao de orcamento POR RESPONDER neste run (pending_exhaustion em GET /runs/{id}) — decida em "+exhaustionDecisionRoute+" (\""+exhaustionOptionContinue+"\" ou \""+exhaustionOptionAbort+"\", assinado por operador registado) antes de retomar; sem decisao, o TTL de pendentes expira a pergunta e a retoma volta a ser aceite")
 	case errors.Is(err, ErrResumeUnavailable):
 		writeError(w, http.StatusNotImplemented, "retoma indisponivel (four-eyes nao composto)")
 	case errors.Is(err, ErrNoResumeRecord):

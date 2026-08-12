@@ -691,7 +691,8 @@ aviso **nunca** dispararia, com o banner a prometê-lo.
 `aos.control.budget_warning` — um op **distinto** de `aos.control.exhaustion_prompt`, para que nenhum
 consumidor do canal de leitura infira que houve uma escolha a apresentar. **Uma vez por run** (latch por
 `runID` na superfície, podado por `ForgetRun` no mesmo ponto de `runBreakers.forget`). `extend`,
-`summarize_stop` e `abort` **não** são apresentados: nenhum tem executor nem autoridade (eixo AOS-263), e
+`summarize_stop` e `abort` **não** são apresentados por ESTE aviso: à data de AOS-262 nenhum tinha executor
+nem autoridade (o `abort` passou a ter em AOS-263 parte 3, e é o **prompt** que o apresenta — não o aviso), e
 `BudgetExtender`/`Degrader` ficam **nil** — a superfície recusa-se se alguém as usar, em vez de haver um
 adaptador que finge decidir.
 
@@ -718,13 +719,130 @@ Desafio A2 (decisões D4/D5/D6): o desenho-alvo reutiliza a maquinaria HITL — 
 Implementar o prompt de exaustão como cidadão do plano de controlo, não como segundo mecanismo mais fraco.
 
 ### Critérios de Aceitação
-- [ ] `PendingRecord` generalizado; o prompt aparece em `GET /runs/{id}`; TTL varrido pelo sweeper.
-- [ ] `extend` exige assinatura de operador registado (piso D5) e escreve registo WORM próprio (principal, run, montante, razão).
-- [ ] `abort` adaptado sobre a pausa graciosa durável; `summarize_stop` advisory declarado como tal (ou modo de terminação real).
-- [ ] Suspensão repõe `enteredAt` — a deliberação não morre pelo wall-clock.
+- [x] `PendingRecord` generalizado; o prompt aparece em `GET /runs/{id}`; TTL varrido pelo sweeper.
+- [~] `extend` exige assinatura de operador registado (piso D5) e escreve registo WORM próprio (principal, run, montante, razão). — **SAI por decisão do dono (iii)**: sem mutador de tecto não há executor; o prompt **não** o apresenta. **EIXO REGISTADO: `DEF-220`** em `docs/governance/REGISTO-Deferimentos.md` (âncora `packages/cmd/aos/exhaustion_decision.go`, nota §6 `N-DEF-220` com o ticket de `budget` descrito: evento próprio + `Rebuild` a consumi-lo + ADR que reabra a decisão de desenho + a autoridade que AOS-263 já entregou).
+- [x] `abort` adaptado sobre a pausa graciosa durável; `summarize_stop` advisory declarado como tal (ou modo de terminação real). — **`abort` entregue** (rota autenticada `POST /runs/{id}/exhaustion`); **`summarize_stop` FICA FORA das opções apresentadas**, declarado com a razão (sem caminho de resumo no loop) no banner, no README do nó e em `exhaustion_decision.go`. **Desvio declarado:** o `abort` não é «sobre a pausa graciosa» — é sobre a aresta durável `waiting_on_human → killed` de AOS-017; a pausa graciosa é a via que a rota **nomeia** (409) quando o run voltou a correr, porque matar um run a meio de um turno seria o kill novo que este ticket não quer.
+- [x] Suspensão repõe `enteredAt` — a deliberação não morre pelo wall-clock.
+- [x] **(remediação)** A metade «continuar» da decisão tem a MESMA autoridade da metade «parar»: `continue` é uma decisão assinada da mesma rota, com selo WORM próprio, e a **retoma recusa (409) enquanto a pergunta estiver por responder** — sem isto, a resposta arriscada era a única sem assinatura de operador e sem registo de quem a tomou.
 
 ### Estado
-**ABERTO** (bloqueado por D4/D5/D6).
+**DESBLOQUEADO — decisões do dono registadas (2026-08-12).** As três decisões que o
+desafio A2 numera (i)/(ii)/(iii) — o ticket citava-as como «D4/D5/D6», rótulos que não
+existem no relatório:
+
+- **(iii) dono do tecto ⇒ opção (c): o `extend` SAI desta entrega.** Facto verificado: o
+  `budget.Budget` não tem mutador de tecto, e `events.go:107-109` declara que os limites
+  são «configuração declarativa FORA do log de eventos — por design não reconstruíveis por
+  `Rebuild`». Levantar o tecto exigiria quebrar essa decisão de desenho, com evento próprio
+  e ADR. Fica como ticket de `budget`. O prompt apresenta só as opções que TÊM executor.
+- **(i) mecanismo ⇒ opção (B): reutilizar a maquinaria HITL.** O prompt é um SEGUNDO TIPO
+  de `PendingRecord` (sem preview, amarrado a run+limiar+montante); o run suspende em
+  `waiting_on_human` pelo `runGate` já existente; aparece em `GET /runs/{id}`; a decisão
+  entra por rota de controlo autenticada. A opção A foi recusada: criaria um caminho de
+  decisão humana MAIS FRACO do que o four-eyes já entregue — regressão de postura.
+- **(ii) autoridade ⇒ paridade com `pause`.** Ed25519 de operador registado + nonce durável
+  + frescura, reutilizando o `Ed25519Authenticator` e `AOS_OPERATORS` que JÁ estão compostos
+  no nó. Nada de esquema novo.
+
+**PARTE 2 IMPLEMENTADA — o prompt é emitido e fica visível** (`packages/cmd/aos/exhaustion_prompt.go`).
+O aviso de burn-down de AOS-262 (`progress_wiring.go`) é a FONTE do sinal — não se recalcula
+consumo: ao disparar, sela um `PendingRecord` de tipo `exhaustion` (sem preview; amarrado a
+run+limiar+consumido+tecto) e SUSPENDE o run em `waiting_on_human` pelo `runGate` já
+existente. O prompt sai em `GET /runs/{id}` no campo próprio `pending_exhaustion` (uma
+leitura só, partilhada com `pending_approvals`) com as opções que TÊM executor — as DUAS
+decisões da rota assinada da parte 3 (`continue` e `abort`); o TTL é varrido pelo sweeper de
+pendentes já existente. O sinal viaja
+como `error` porque a porta `ProgressObserver` só devolve isso, e o serviço absorve-o na
+saída do run como SUSPENSÃO (mesma contabilidade de AOS-021: registo de retoma + balde de
+suspensos), não como falha. **Sem `AOS_APPROVERS_FILE`, ou sem operador pinado em
+`AOS_OPERATORS`, o prompt fica DESARMADO** (no primeiro caso não há a quem perguntar nem como
+re-hospedar; no segundo ninguém poderia responder e a resposta não teria onde ser selada — e
+suspender um run para uma pergunta sem via seria matá-lo com outro nome) e o comportamento é o
+de AOS-262, declarado no banner
+(`exhaustionPromptPostureBanner`). **Fail-closed:** o sinal é uma-vez-por-run, pelo que uma
+suspensão que falhe (registo ou transição) ABORTA o run em vez de o deixar seguir sem nunca
+perguntar. **`enteredAt`:** reposto pela própria transição durável — a deliberação não paga
+wall-clock, e a retoma recomeça o tecto de AOS-252 (selado com a metade não-vacuosa em
+`aos263_exhaustion_prompt_test.go`).
+
+**PARTE 3 IMPLEMENTADA — a decisão tem rota, e o `abort` executa**
+(`packages/cmd/aos/exhaustion_decision.go`). `POST /runs/{id}/exhaustion` é a via por onde o
+humano RESPONDE à pergunta que a parte 2 selou.
+
+- **Autoridade — paridade com o `pause` (decisão (ii)), sem esquema novo.** Mesma admissão do
+  `/approve` e do `/pause` (`admitControl` + `admitControlMTLS`) e o MESMO
+  `Ed25519Authenticator` composto de `AOS_OPERATORS`, com o **nonce-store durável** de uso
+  único e a janela de **frescura**. Non-signing: a chave privada do operador nunca entra no nó.
+- **A assinatura cobre a DECISÃO e a PERGUNTA**, não só o run: *kind* próprio
+  (`exhaustion_decision`, que o `SteerChannel` deliberadamente não conhece) e payload canónico
+  **length-prefixed** com `(decisão, step_id)`. Fecha a confusão de sinal que a alternativa
+  óbvia — reutilizar `SteerChannel.Pause` — abriria: um `pause` capturado antes de ser gasto
+  seria submetível como `abort`, trocando «parar de forma retomável» por «terminar o run».
+- **Registo WORM PRÓPRIO** na partição `governance.exhaustion`, com o **principal VERIFICADO**,
+  `run_id`, o passo, o **montante consumido** (os números do aviso de AOS-262, nunca
+  recalculados), o tecto, o limiar e a **razão** (`budget_exhaustion_abort`, rótulo estável —
+  sem texto livre, que a assinatura não cobriria). O selo é **pré-condição do efeito**.
+- **`abort` sobre o que já existe, nunca um kill novo.** Run **suspenso** ⇒
+  `waiting_on_human → killed`, a única aresta de paragem que a tabela de AOS-017 dá a esse
+  estado (a mesma de ADR-013, com razão própria) — TERMINAL no vocabulário de AOS-252, e o
+  `/resume` passa a 404. Run que **voltou a correr** ⇒ **409** nomeando a **pausa graciosa**
+  `POST /runs/{id}/pause`, que o pára na fronteira de fim-de-turno e o deixa **retomável**: um
+  abort nunca mata um run a meio de um turno.
+- **A pergunta respondida sai da lista por DECISÃO**, não por expiração
+  (`PendingApprovals.Decide`, facto `approval.decided` distinto de `approval.expired`) — senão
+  o varrimento acabaria por anunciar «expirado sem decisão» sobre algo decidido.
+- **Opções apresentadas = as que têm executor, e as duas na MESMA rota assinada:** `continue` e
+  `abort`. Não se apresentam `extend` (decisão (iii), eixo `DEF-220`) nem `summarize_stop` (sem
+  caminho de resumo), ambos DECLARADOS com a razão no banner, no README e no código — e nenhum
+  deles viaja no wire. A **retoma** (`POST /runs/{id}/resume`) NÃO é uma opção: é a execução que
+  se segue a um `continue` selado.
+- **Via de acesso do operador:** `aos continue|abort --run-id … --step-id … --emitter … --key …`
+  (a CLI assina e transporta; quem decide é o nó), para a rota não repetir o defeito «mecanismo
+  sem superfície» que AOS-275 fechou no promotion controller.
+
+**REMEDIAÇÃO (2026-08-12, pós-auditoria).** Quatro correcções de eixo, todas dentro de AOS-263:
+
+- **simetria de autoridade** — `continue` passou a ser uma DECISÃO desta rota (assinada, com
+  razão/capability próprias no WORM e retirada do pendente por `Decide`), e
+  `POST /runs/{id}/resume` **recusa com 409** enquanto a pergunta estiver por responder. Antes,
+  a metade arriscada da decisão entrava por uma retoma com credencial NHI: sem assinatura de
+  operador, sem selo, e deixando o pendente na lista para o varrimento o declarar «expirado sem
+  decisão». O TTL continua a ser a escotilha (expirada a pergunta, a retoma volta a ser aceite);
+- **chave de ocorrência** — o `step_id` do prompt ganhou âncora de ocorrência (instante +
+  desambiguador CSPRNG). Só-turno colidia entre incarnações (o contador de turnos reinicia em
+  cada re-hospedagem, o ledger de burn-down não), e a colisão era SILENCIOSA: o Event Store
+  deduplicava, a retirada anterior continuava a valer e o run ficava suspenso com uma pergunta
+  invisível — 404 na rota, ausente do `GET`, já expirada para o varrimento. `PendingApprovals.Put`
+  passou também a RECUSAR o duplicado de exaustão (fail-closed) em vez de o engolir;
+- **registo compensatório** — um `abort` selado cujo efeito falha (corrida com uma retoma)
+  escreve na MESMA cadeia uma linha `deny`/`budget_exhaustion_abort_failed` que referencia o
+  `audit_seq` corrigido. A cadeia deixou de poder afirmar um abort que não aconteceu;
+- **fail-open de leitura declarado** — uma falha ao ler os pendentes já não é indistinguível de
+  «nada por decidir»: fica no log do nó e no campo `pending_unavailable` da resposta de estado.
+
+Além disso, o prompt só ARMA onde a rota de decisão está composta (operador pinado + WORM), e a
+chave de deduplicação **em memória** das listagens passou a ser injectiva (a durável mantém-se
+byte-idêntica, por compatibilidade).
+
+**Testes (PELA ROTA, nunca in-process):** `packages/cmd/aos/aos263_exhaustion_decision_test.go`
+— decisão sem assinatura válida recusada nas 7 formas (adulterada, emissor não pinado, anónima,
+stale, outro passo, outra decisão, `pause` submetido como abort) com a não-vacuidade dupla (o
+`pause` continua gastável no `/pause` e a cerimónia legítima executa); **replay do nonce**
+recusado, distinguido do estado do run (nonce fresco dá outro código); WORM com principal, run,
+montante e razão; abort não mata run vivo e nomeia a pausa graciosa; mTLS de controlo herdado;
+vocabulário fechado sem queimar nonce; 501 fail-closed sem maquinaria (incl. sem gates de
+estado); e o balde de suspensos esvaziado (o cache não pode contradizer o log).
+`packages/cmd/aos/aos263_decisao_simetrica_test.go` — o `continue` pela rota (selo próprio,
+pendente fechado, retoma destrancada, com o 409 do ANTES como contraste), o travão da retoma e a
+escotilha do TTL, as duas perguntas do mesmo run que não colidem (com o abort da segunda a
+provar que o run não fica preso) e o registo compensatório do abort falhado.
+`packages/cmd/aos/aos263_cli_decisao_test.go` — `aos continue`/`aos abort` contra o nó REAL
+(servidor HTTP, handler real): a assinatura da CLI é ACEITE e tem efeito no estado durável, uma
+seed errada é 403, e os campos que amarram a decisão são exigidos antes de qualquer rede.
+`packages/integration/aos263_pending_kind_test.go` — a decisão retira das DUAS listagens, é
+idempotente e é POR TIPO; a listagem não funde chaves ambíguas; o duplicado de exaustão é
+recusado e a aprovação re-escalada continua idempotente. **Nenhuma dependência nova; nenhuma env
+nova.**
 
 ---
 

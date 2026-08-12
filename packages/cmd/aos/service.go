@@ -373,6 +373,13 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		s.log("varrimento de aprovacoes (AOS-021): LIGADO — periodo=%s, TTL de aprovacao=%s; um pendente sem decisao expira e o run fica RETOMAVEL",
 			sweepInterval, approvalTTL)
 	}
+	// AOS-263 — POSTURA DO PROMPT DE EXAUSTÃO. Declarada AQUI, e não no Bootstrap, porque é
+	// aqui que o TTL REAL dos pendentes é conhecido (o Bootstrap não o vê) e é este varrimento
+	// que expira a pergunta. O argumento é o estado do prompt REALMENTE composto no
+	// observador de burn-down — nunca um literal, nunca a intenção da config.
+	for _, line := range exhaustionPromptPostureBanner(node.progress.promptArmed(), approvalTTL) {
+		s.log("%s", line)
+	}
 	// AOS-252 — varrimento de DEADLINES duráveis (CheckDeadlines) no loop de serviço. Só
 	// arranca quando há máquinas de estado compostas e o período é > 0.
 	if deadlineSweepInterval > 0 && node.stateGates != nil {
@@ -695,6 +702,15 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		} else {
 			suspenso = true
 		}
+	}
+	// SUSPENSÃO POR EXAUSTÃO DE ORÇAMENTO (AOS-263). O run também parou à espera de um humano
+	// — a transição durável para `waiting_on_human` já aconteceu —, mas o sinal chegou pela
+	// porta do observador de burn-down, que só sabe devolver `error`. Sem esta absorção o run
+	// seria arquivado como FALHADO e o operador veria "completed" com erro num run que o log
+	// diz estar à espera dele. É a MESMA contabilidade de AOS-021 (registo de retoma + balde
+	// de suspensos), aplicada ao segundo tipo de decisão humana — ver exhaustion_prompt.go.
+	if !suspenso {
+		suspenso, err = s.absorveSuspensaoPorExaustao(ctx, goal, err)
 	}
 
 	s.mu.Lock()

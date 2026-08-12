@@ -58,12 +58,16 @@ func (s *NodeService) sweepApprovalsOnce(ctx context.Context) {
 		return
 	}
 	for _, rec := range expiraveis {
-		if err := pend.Expire(ctx, rec.RunID, rec.StepID); err != nil {
-			s.log("varrimento de aprovacoes: falha a expirar run=%q step=%q: %v", rec.RunID, rec.StepID, err)
+		// Expira COM O TIPO do registo (AOS-263): a chave de expiração é por tipo, e usar a do
+		// tipo default num pendente de outro tipo não o retiraria da lista — o varrimento
+		// re-tentaria o mesmo registo em cada tick, para sempre.
+		kind := rec.Kind.Resolved()
+		if err := pend.ExpireKind(ctx, kind, rec.RunID, rec.StepID); err != nil {
+			s.log("varrimento de pendentes: falha a expirar tipo=%q run=%q step=%q: %v", kind, rec.RunID, rec.StepID, err)
 			continue
 		}
-		s.log("aprovacao EXPIRADA (sem decisao em %s): run=%q step=%q tool=%q cap=%q — o run continua RETOMAVEL e a accao ficara negada",
-			s.approvalTTL, rec.RunID, rec.StepID, rec.ToolID, rec.Capability)
+		s.log("pendente EXPIRADO (sem decisao em %s): tipo=%q run=%q step=%q tool=%q cap=%q — o run continua RETOMAVEL e a accao ficara negada",
+			s.approvalTTL, kind, rec.RunID, rec.StepID, rec.ToolID, rec.Capability)
 	}
 }
 

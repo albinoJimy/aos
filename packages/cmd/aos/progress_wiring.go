@@ -12,13 +12,22 @@ package main
 // `aos.control.budget_warning`. O log não é redundância: sem OTLP o tracer é o
 // [otelgenai.NoopTracer] e o span não tem destino. Ver [runProgress.avisar].
 //
-// O QUE NÃO LIGA, deliberadamente: `extend`, `summarize_stop` e `abort`. Nenhuma tem
-// executor nem autoridade no nó — `extend` precisaria de um mutador do tecto e de um
-// principal autorizado (AOS-263, bloqueado em D4/D5/D6), `summarize_stop` de um caminho de
-// resumo que o loop não tem, e `abort` duplicaria o disjuntor sem o veredicto durável dele.
-// Por isso o observador consome [progresssurface.ProgressSurface.EvaluateRun] (aviso) e
-// NUNCA `Evaluate` (prompt com as 3 opções): apresentar uma escolha que ninguém consegue
-// executar é prometer o que não existe.
+// O QUE ESTE FICHEIRO NÃO LIGA, deliberadamente: as três opções da superfície de progresso
+// (`extend`, `summarize_stop` e `abort`). O observador continua a consumir
+// [progresssurface.ProgressSurface.EvaluateRun] (aviso) e NUNCA `Evaluate` (o prompt das 3
+// opções da superfície), porque apresentar uma escolha que ninguém consegue executar é
+// prometer o que não existe: `extend` precisaria de um mutador do tecto que o [budget.Budget]
+// não tem (decisão do dono (iii) de 2026-08-12: SAI de AOS-263, com eixo registado) e
+// `summarize_stop` de um caminho de resumo que o loop não tem.
+//
+// O QUE PASSOU A LIGAR (AOS-263): o MESMO aviso alimenta o PROMPT DE EXAUSTÃO — um pendente
+// durável de segundo tipo e a suspensão do run em `waiting_on_human` pelo runGate já
+// existente (ver exhaustion_prompt.go). As decisões que o prompt apresenta são as DUAS que a
+// rota assinada de AOS-263 parte 3 executa (`continue` e `abort`, ver exhaustion_decision.go)
+// — o `abort` de lá não é o da superfície de progresso: não duplica o disjuntor, materializa
+// a aresta durável waiting_on_human→killed de AOS-017 com selo WORM e principal verificado. O
+// prompt só se arma onde a maquinaria HITL E a rota de decisão estão compostas; sem elas o
+// comportamento é o de AOS-262, palavra por palavra.
 //
 // NODE-LOCAL (ADR-018, `boundary_orq_sch_test.go`): os adaptadores das duas portas de
 // leitura são construídos AQUI, sobre colaboradores que o nó já detém — o
@@ -177,6 +186,10 @@ type runProgress struct {
 	tracer    otelgenai.Tracer
 	threshold float64
 
+	// prompt é o PROMPT DE EXAUSTÃO (AOS-263) alimentado por este mesmo aviso. nil ⇒
+	// DESARMADO: o nó comporta-se exactamente como em AOS-262 (avisa e o run continua).
+	prompt *exhaustionPrompt
+
 	// log é o LOG DO NÓ — o mesmo io.Writer onde sai o banner de arranque. É a superfície
 	// de leitura do aviso que EXISTE SEMPRE (ver [runProgress.avisar]).
 	log func(format string, args ...any)
@@ -208,7 +221,11 @@ type runProgressState struct {
 // ser VISÍVEL: sem OTLP configurado o tracer é o [otelgenai.NoopTracer], pelo que o span do
 // aviso não vai a lado nenhum — ver [runProgress.avisar]. Um nil é tolerado (o observador
 // continua a funcionar), mas então o aviso só existe com OTLP ligado.
-func newRunProgress(gates *runStateGates, rb *integration.RunBudget, source *turnLedgerBurndown, tracer otelgenai.Tracer, threshold float64, log func(string, ...any)) *runProgress {
+//
+// O `prompt` (AOS-263) é EXPLÍCITO e não variádico, pela razão de [newRunStateGates]: um
+// parâmetro omissível tornaria o prompt de exaustão desligável POR ESQUECIMENTO, em silêncio,
+// num construtor com poucos call sites. nil ⇒ o nó avisa e o run continua (AOS-262 puro).
+func newRunProgress(gates *runStateGates, rb *integration.RunBudget, source *turnLedgerBurndown, tracer otelgenai.Tracer, threshold float64, log func(string, ...any), prompt *exhaustionPrompt) *runProgress {
 	if rb == nil || source == nil {
 		return nil
 	}
@@ -218,6 +235,7 @@ func newRunProgress(gates *runStateGates, rb *integration.RunBudget, source *tur
 		source:    source,
 		tracer:    tracer,
 		threshold: threshold,
+		prompt:    prompt,
 		log:       log,
 		surfaces:  make(map[string]*runProgressState),
 	}
@@ -291,7 +309,15 @@ func (p *runProgress) ObserveProgress(ctx context.Context, runID string, turn in
 		return nil
 	}
 	p.avisar(runID, ev)
-	return nil
+	// PROMPT DE EXAUSTÃO (AOS-263) — o MESMO sinal, agora com consequência. Corre DEPOIS do
+	// aviso para que a linha do log exista mesmo quando a suspensão falha: o operador tem de
+	// saber que o limiar foi cruzado, e não só que o run morreu a tentar parar.
+	//
+	// nil-safe: com o prompt desarmado devolve nil e o comportamento é o de AOS-262. Quando
+	// arma, devolve [errExhaustionSuspended] — que o kernel trata como qualquer erro do
+	// observador (aborta o turno) e que o nó reconhece na saída do run como SUSPENSÃO, não
+	// como falha (ver [NodeService.absorveSuspensaoPorExaustao]).
+	return p.prompt.raise(ctx, runID, ev)
 }
 
 // burndownTransitorio classifica um erro da leitura do burn-down como INDISPONIBILIDADE
@@ -361,6 +387,14 @@ func (p *runProgress) forget(runID string) {
 	}
 	p.source.forget(runID)
 }
+
+// promptArmed indica se o PROMPT DE EXAUSTÃO (AOS-263) está armado neste nó — isto é, se o
+// aviso de burn-down tem consequência (suspensão em `waiting_on_human`) ou é só um aviso.
+//
+// Existe para o BANNER derivar do que está REALMENTE composto e não da intenção da config:
+// é o mesmo `*exhaustionPrompt` que o observador consulta. nil-safe nos dois níveis (sem
+// burn-down composto não há prompt possível).
+func (p *runProgress) promptArmed() bool { return p != nil && p.prompt != nil }
 
 // observer devolve o [agentruntime.ProgressObserver] a entregar ao runtime, ou nil quando o
 // burn-down não está composto (um `*runProgress` nil embrulhado numa interface não-nil

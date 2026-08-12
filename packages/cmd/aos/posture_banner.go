@@ -25,6 +25,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -208,10 +209,16 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 //     consumo do run — dispara TARDE, nunca cedo por engano;
 //   - a dimensão que decide é TOKENS. A de dólares está a zero enquanto o canal de custo não
 //     estiver ligado ponta a ponta (AOS-259);
-//   - o aviso NÃO DECIDE NADA. Não pára o run, não pede escolha, não estende o tecto — as
-//     opções extend/summarize_stop/abort NÃO são apresentadas nesta entrega porque nenhuma
-//     tem executor nem autoridade no nó (AOS-263). Quem pára um run continua a ser o
-//     disjuntor (com veredicto durável) ou o operador;
+//   - o aviso, EM SI, NÃO DECIDE NADA. Não pede escolha e não estende o tecto — não apresenta
+//     extend/summarize_stop/abort. Quem apresenta opções é o PROMPT de AOS-263, e só as que
+//     TÊM executor: o `abort` passou a ter (a decisão assinada da parte 3), `extend` e
+//     `summarize_stop` continuam a não ter (o tecto não tem mutador — decisão do dono (iii);
+//     o loop não tem caminho de resumo). Quem pára um run continua a ser o disjuntor (com
+//     veredicto durável) ou o operador. O que o aviso PASSOU a poder fazer (AOS-263) é
+//     SUSPENDER o run à espera de decisão humana — e suspender não é parar: o run fica
+//     retomável. Se ESTE nó tem essa suspensão armada é a linha de
+//     [exhaustionPromptPostureBanner] que o diz, para que as duas afirmações não vivam numa só
+//     frase que só é verdadeira em metade dos nós;
 //   - ONDE O AVISO SE VÊ. A linha nomeia as duas superfícies e diz qual delas depende de
 //     config: o LOG do nó (sempre) e o span (só com `AOS_OTLP_ENDPOINT`). Anunciar só o
 //     span era a mentira exacta que esta função existe para evitar — na configuração por
@@ -219,10 +226,55 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 func burndownPostureBanner(composed bool, threshold float64) []string {
 	if composed {
 		return []string{
-			fmt.Sprintf("burn-down / aviso de exaustao (AOS-261/AOS-262): COMPOSTO — o loop le, na fronteira de fim-de-turno, o consumo ACUMULADO do run no LEDGER DE TURNOS (eventos turn.recorded do event store, deduplicados por run_id:step_id: uma re-emissao NAO infla a contagem e a retoma NAO a zera, porque a chave e o run_id e nao o trace_id) e compara-o com o tecto por-run de AOS_BUDGET_MAX_TOKENS. Ao atingir %.2f da fraccao consumida avisa UMA VEZ POR RUN (latch por-incarnacao do processo; um restart re-avisa uma vez). ONDE SE VE O AVISO: uma linha [aos] AVISO DE BURN-DOWN NESTE LOG, que e o canal que existe sempre; o span aos.control.budget_warning SO tem destino com AOS_OTLP_ENDPOINT definida — sem ela o tracer do no e o NoopTracer e o span nao vai a lado nenhum. ALCANCE: conta os TURNOS DE MODELO e SO eles — o ledger nao pesa tool calls, pelo que a leitura e um LIMITE INFERIOR do consumo (o aviso dispara TARDE, nunca cedo por engano); a dimensao que decide e TOKENS, a de dolares esta a ZERO ate AOS-259. O aviso NAO DECIDE NADA: nao para o run, nao pede escolha e NAO apresenta extend/summarize_stop/abort — nenhuma dessas opcoes tem executor nem autoridade no no (eixo AOS-263). Quem para um run e o disjuntor (veredicto duravel) ou o operador. FAIL-CLOSED: a leitura devolve ERRO e o run aborta — nunca 0%% — quando nao ha fonte, quando o ledger existe mas somou ZERO tokens (o provider nao ecoou usage, ErrBurndownNoUsage) ou quando o payload e ilegivel. Indisponibilidade TRANSITORIA do substrato (sem quorum, ctx do run a cair) NAO mata o run: a leitura adia-se para a fronteira seguinte e so passa a fatal ao fim de %d fronteiras consecutivas", threshold, maxLeiturasTransitoriasToleradas),
+			fmt.Sprintf("burn-down / aviso de exaustao (AOS-261/AOS-262): COMPOSTO — o loop le, na fronteira de fim-de-turno, o consumo ACUMULADO do run no LEDGER DE TURNOS (eventos turn.recorded do event store, deduplicados por run_id:step_id: uma re-emissao NAO infla a contagem e a retoma NAO a zera, porque a chave e o run_id e nao o trace_id) e compara-o com o tecto por-run de AOS_BUDGET_MAX_TOKENS. Ao atingir %.2f da fraccao consumida avisa UMA VEZ POR RUN (latch por-incarnacao do processo; um restart re-avisa uma vez). ONDE SE VE O AVISO: uma linha [aos] AVISO DE BURN-DOWN NESTE LOG, que e o canal que existe sempre; o span aos.control.budget_warning SO tem destino com AOS_OTLP_ENDPOINT definida — sem ela o tracer do no e o NoopTracer e o span nao vai a lado nenhum. ALCANCE: conta os TURNOS DE MODELO e SO eles — o ledger nao pesa tool calls, pelo que a leitura e um LIMITE INFERIOR do consumo (o aviso dispara TARDE, nunca cedo por engano); a dimensao que decide e TOKENS, a de dolares esta a ZERO ate AOS-259. O aviso, EM SI, NAO DECIDE NADA: nao pede escolha e NAO apresenta extend/summarize_stop/abort — quem apresenta opcoes e o PROMPT de AOS-263 (ver a linha seguinte), e mesmo esse so apresenta as que TEM executor: o abort passou a ter (decisao AUTENTICADA e selada, AOS-263 parte 3), extend e summarize_stop continuam a NAO ter (o budget.Budget nao tem mutador de tecto — decisao do dono; e o loop nao tem caminho de resumo). Quem para um run e o disjuntor (veredicto duravel) ou o operador; o que este aviso PODE accionar, quando o prompt de exaustao de AOS-263 esta ARMADO, e a SUSPENSAO do run em waiting_on_human a espera de decisao humana — suspender nao e parar: o run fica RETOMAVEL ate alguem decidir. FAIL-CLOSED: a leitura devolve ERRO e o run aborta — nunca 0%% — quando nao ha fonte, quando o ledger existe mas somou ZERO tokens (o provider nao ecoou usage, ErrBurndownNoUsage) ou quando o payload e ilegivel. Indisponibilidade TRANSITORIA do substrato (sem quorum, ctx do run a cair) NAO mata o run: a leitura adia-se para a fronteira seguinte e so passa a fatal ao fim de %d fronteiras consecutivas", threshold, maxLeiturasTransitoriasToleradas),
 		}
 	}
 	return []string{
 		"burn-down / aviso de exaustao (AOS-261/AOS-262): NAO COMPOSTO — AOS_BUDGET_MAX_TOKENS nao esta definida, logo NAO HA TECTO e portanto nao ha denominador: qualquer fraccao seria 0 para sempre e nenhum aviso poderia disparar. O loop nao consulta observador nenhum (o gancho de fim-de-turno fica inerte) e NADA neste no avisa que um run se aproxima de um limite de gasto — o que trava um run e MaxTurns, o disjuntor (no-progress/wall-clock) ou o steer do operador. Defina AOS_BUDGET_MAX_TOKENS para ligar o tecto e, com ele, o burn-down; AOS_PROGRESS_THRESHOLD ajusta o limiar do aviso (default ~0.80) e ABORTA o arranque se for definida SEM o tecto (ErrProgressBudgetUnwired). Eixo: AOS-261/AOS-262 / EPIC-20",
+	}
+}
+
+// exhaustionPromptPostureBanner declara o PROMPT DE EXAUSTÃO (AOS-263) em função do que está
+// REALMENTE composto — o argumento é o prompt entregue ao observador de burn-down, nunca a
+// intenção da config (mesma disciplina de [burndownPostureBanner]).
+//
+// É uma LINHA PRÓPRIA, e não mais uma frase na do aviso, por uma razão de verdade: o aviso e
+// o prompt têm condições de composição DIFERENTES (o aviso precisa de tecto; o prompt precisa
+// da maquinaria HITL do four-eyes E da rota de decisão composta) e um nó pode perfeitamente
+// ter um sem o outro. Numa só linha, metade dos nós leria uma afirmação falsa.
+//
+// O que a linha tem de dizer, e porquê:
+//
+//   - O QUE ACONTECE ao cruzar o limiar (suspensão em `waiting_on_human`), para que ninguém
+//     leia o aviso de AOS-262 e conclua que o run continua sempre;
+//   - ONDE SE VÊ a pergunta (`GET /runs/{id}`, campo `pending_exhaustion`) — um prompt sem
+//     superfície de leitura seria a mesma classe de defeito que AOS-262 fechou no aviso;
+//   - QUE OPÇÕES têm executor (`continue` e `abort`, ambas na rota assinada de AOS-263 parte
+//     3), COMO se decide (a assinatura ed25519 do operador cobre a decisão e a pergunta — não
+//     é o mesmo sinal que o `pause`) e que a RETOMA está BARRADA até haver decisão: é a metade
+//     que faltava para o prompt não ser contornável por quem já tinha credencial do run;
+//   - QUE `extend` e `summarize_stop` NÃO são oferecidos, com a razão de cada um: o tecto não
+//     tem mutador e os limites são configuração fora do log de eventos; o loop não tem caminho
+//     de resumo. Um operador que leia o banner não pode ficar à espera de uma opção que não vai
+//     encontrar — nem concluir que ela foi esquecida;
+//   - QUE A DELIBERAÇÃO NÃO MATA O RUN pelo relógio (a suspensão repõe o `enteredAt` da
+//     máquina de estados e o deadline de AOS-252 só conta tempo em `running`);
+//   - O QUE ACONTECE SE NINGUÉM DECIDIR (o TTL de pendentes expira a pergunta, o run continua
+//     retomável) e o que acontece se a SUSPENSÃO FALHAR (o run aborta — nunca segue em
+//     silêncio, porque o sinal que o alimenta é uma-vez-por-run e um erro engolido deixaria o
+//     run a queimar orçamento com o operador à espera de um prompt que nunca chegaria).
+func exhaustionPromptPostureBanner(armed bool, ttl time.Duration) []string {
+	if armed {
+		return []string{
+			fmt.Sprintf("prompt de exaustao de orcamento (AOS-263): ARMADO — quando o aviso de burn-down dispara, o run SUSPENDE em waiting_on_human (a MESMA aresta duravel da escalada de AOS-021, no MESMO runGate) e um pendente DURAVEL de tipo `exhaustion` e selado, amarrado a (run, limiar, tokens consumidos, tecto) e SEM preview — nao ha efeito exibido para assinar, a pergunta e sobre o run. ONDE SE VE: GET /runs/{id}, campo pending_exhaustion (a mesma via por onde as aprovacoes pendentes ja aparecem). AS DUAS OPCOES ENTRAM PELA MESMA ROTA E COM A MESMA AUTORIDADE — %s: (a) %s — o run fica AUTORIZADO a prosseguir e so entao a re-hospedagem %s (credencial fresca, turnos ja vividos reproduzidos da captura) e aceite; (b) %s — o run PARA de forma duravel. Enquanto a pergunta estiver POR RESPONDER, %s RECUSA com 409: a retoma e a EXECUCAO de um continue decidido, nunca a decisao — senao a resposta arriscada (deixar queimar orcamento acima do limiar) seria a unica que dispensava assinatura de operador e registo de quem a tomou. AUTENTICACAO: mesma admissao do /approve e do /pause (token-bucket de controlo + mTLS quando composto) e o MESMO Ed25519Authenticator de AOS_OPERATORS, com nonce DURAVEL de uso-unico e frescura; a assinatura cobre a DECISAO e a PERGUNTA (kind proprio + payload canonico), pelo que um pause capturado NAO se converte num abort nem um continue num abort. O abort so decide um run SUSPENSO e materializa waiting_on_human->killed (TERMINAL, o vocabulario de AOS-252; a mesma aresta que ADR-013 ja usa no timeout humano, com razao propria); um run que voltou a correr NAO se mata a meio de um turno — a rota recusa e nomeia a PAUSA GRACIOSA %s, que o para na fronteira de fim-de-turno e o deixa em paused, RETOMAVEL. CADA decisao (continue ou abort) escreve SELO PROPRIO na hash-chain WORM (particao %s) com o PRINCIPAL VERIFICADO, o run, o passo, o montante consumido e a razao — e o selo e PRE-CONDICAO do efeito: se nao selar, nada acontece. NAO se oferece extend: o budget.Budget nao tem mutador de tecto e os limites sao configuracao declarativa FORA do log de eventos (nao reconstruiveis por Rebuild) — levantar o tecto exige evento proprio e ADR (eixo DEF-220 no registo de deferimentos). NAO se oferece summarize_stop: nao tem executor (o loop nao tem caminho de resumo) — seria uma paragem comum com um nome que promete mais. A DELIBERACAO NAO MATA O RUN: a suspensao repoe o enteredAt da maquina de estados e o deadline de wall-clock de AOS-252 so conta tempo em `running`. SEM DECISAO: o varrimento de pendentes expira a pergunta ao fim de %s e o run volta a ser RETOMAVEL (expirar NAO autoriza nada, e uma pergunta RESPONDIDA sai da lista por DECISAO, nao por expiracao). SE A SUSPENSAO FALHAR (registo ou transicao duravel): o erro SOBE e o run ABORTA como falhado — nao ha fail-open, porque o sinal que alimenta este prompt e emitido uma vez por run e engoli-lo deixaria o run a queimar orcamento com o operador a espera de uma pergunta que nunca apareceria",
+				exhaustionDecisionRoute,
+				exhaustionOptionContinue, exhaustionResumeRoute,
+				exhaustionOptionAbort,
+				exhaustionResumeRoute,
+				exhaustionGracefulPauseRoute, exhaustionDecisionPartition, ttl),
+		}
+	}
+	return []string{
+		"prompt de exaustao de orcamento (AOS-263): NAO ARMADO — falta a este no pelo menos uma das pecas sem as quais a pergunta seria uma armadilha: o registo duravel de pendentes e o registo de retoma (four-eyes, AOS_APPROVERS_FILE — sem eles nao ha a quem perguntar nem como re-hospedar o run) ou a ROTA DE DECISAO composta (pelo menos um operador pinado em AOS_OPERATORS e WORM — sem eles ninguem poderia responder, nem a resposta poderia ser selada). O comportamento ao cruzar o limiar e o de AOS-262, palavra por palavra: avisa UMA VEZ no log (e no span com OTLP) e o run CONTINUA ate ao tecto, ao MaxTurns, ao disjuntor ou ao steer do operador. Para o armar, componha AS DUAS metades: o four-eyes (AOS_APPROVERS_FILE) e os operadores do canal de controlo (AOS_OPERATORS). Eixo: AOS-263 / EPIC-20",
 	}
 }
