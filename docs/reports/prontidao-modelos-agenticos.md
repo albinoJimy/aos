@@ -201,8 +201,8 @@ O que os desafios corrigiram no plano de fecho:
 
 | # | Decisão | Recomendação do desafio |
 |---|---|---|
-| D1 | Âmbito do orçamento v1: tool-only ou tool+turno de modelo? (A1) | A (tool-only) **com o banner a dizê-lo**; B como eixo |
-| D2 | Prioridade do eixo micro-USD (A1) | Token-only na v1; $ só depois do contrato `port` |
+| D1 | Âmbito do orçamento v1: tool-only ou tool+turno de modelo? (A1) | Recomendação: A (tool-only) **com o banner a dizê-lo**; B como eixo. **DECIDIDO 2026-08-13 (dono): OPÇÃO B** — tool calls **+** turno de modelo, com reserva antes da inferência (AOS-260). Razão do afastamento em `specs/EPIC-20` §0-bis |
+| D2 | Prioridade do eixo micro-USD (A1) | Recomendação: token-only na v1; $ só depois do contrato `port`. **DECIDIDO 2026-08-13 (dono): o eixo $ ENTRA na v1** (AOS-259 fecha o contrato `port` + dedup por parentesco). Razão em `specs/EPIC-20` §0-bis |
 | D3 | Tecto por-run (env) ou por-mandato (token)? (A1) | Por-run agora; por-mandato deferido (trabalho de identidade, D4/EPIC-16) |
 | D4 | Prompt de exaustão: caminho próprio ou 2.º tipo de `PendingRecord`? (A2) | **Reutilizar a maquinaria HITL**; primeira entrega = só aviso |
 | D5 | Autoridade exigida para `extend` (A2) | Piso: paridade com `pause` (Ed25519 de operador); four-eyes acima de limiar |

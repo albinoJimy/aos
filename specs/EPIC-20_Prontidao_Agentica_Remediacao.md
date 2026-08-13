@@ -41,6 +41,22 @@ Os campos `### Estado` por-ticket de **AOS-245, AOS-250 e AOS-266** estavam desa
 
 ---
 
+## 0-bis. Decisão do dono sobre D1/D2 — 2026-08-13
+
+**DECIDIDO: D2 = o eixo $ entra na v1; D1 = opção B (o orçamento cobre tool calls *e* o turno de modelo).** Desbloqueia **AOS-259** e **AOS-260**, e com eles o epic fecha em **34/34**.
+
+**A decisão AFASTA-SE da recomendação do desafio A1**, que era «A (tool-only) com o banner a dizê-lo» e «token-only na v1; $ só depois do contrato `port`». O afastamento é deliberado e a razão é que **os factos mudaram desde que a recomendação foi escrita**:
+
+- **O que motivava a cautela** era que a inferência — a linha de custo dominante — corria **sem controlo nenhum**: `rt.model.Call` é invocado directamente (`kernel/agent-runtime/loop.go`), fora da cadeia do Reference Monitor, sem hook e sem reserva.
+- **O que entretanto entrou** (AOS-261/262/263) foi o controlo *a posteriori*: o burn-down soma os tokens **reais** dos turnos de modelo a partir do ledger (`turn.recorded`), compara-os com o tecto por-run, **avisa** ao cruzar o limiar e pode **suspender o run para decisão humana**, com selo WORM. A inferência deixou de ser invisível ao orçamento; o que lhe falta é a **reserva prévia**.
+- **O canal de custo é ligação, não construção**: o GW já tem subsistema de metering (`metering/cost`, `cost.Amount{Tokens,CostMicroUSD}` + `budgetbridge`) e o runtime já tem o campo do outro lado (`resp.CostMicroUSD`, `TotalCostMicroUSD`, span `AttrCostUSD`) — a receber zero. O que falta é o campo em `port.Usage`, o preenchimento no adaptador, e o **dedup por parentesco** (sem ele, dois spans `chat` por trace somam tokens a **2×** — achado A2-E).
+
+**O que a decisão obriga a fazer bem** (e que fica como critério de aceitação, não como intenção): no esgotamento, **degradação declarada** — nunca um *deny-loop* cego que mate o run em silêncio; e **o replay não re-reserva** (dedup por `run_id:step_id`), senão a retoma cobrava duas vezes o mesmo turno.
+
+**Consequência para o banner:** a frase de âmbito de AOS-255 (`BudgetScopeDeclaration`) descreve a postura *tool-only/token-only* e **passa a ser falsa** quando AOS-259/260 entrarem. Actualizá-la faz parte de AOS-260 — a postura anunciada tem de continuar a ser a postura ligada (AOS-203/AOS-248).
+
+---
+
 ## 1. Visão do Epic
 
 O relatório de prontidão consolidou quatro vagas de avaliação: os gaps originais (efeitos, feedback, aprovação humana) estão **fechados**, mas as vagas 3–4 expuseram defeitos **activos hoje** — o step-ledger a persistir outputs de tools em claro (F1), o circuit breaker inerte no run comum (F2+F3), a máquina de estados sem desfecho durável (F4) — e um corpo de capacidades verdes em teste sem costura no deployment (budget, progress-surface, broker, portas de attestation). Esta epic executa **todas as acções do relatório**: primeiro remove o risco activo, depois liga o billing token-only (plano corrigido pelos desafios A1/A2), depois as capacidades dependentes de decisão do dono, e por fim implementa os **ADR-021 e ADR-022 como aprovados**.
@@ -52,8 +68,8 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | Frente | Código desta epic | Fora (dependência/decisão) |
 |---|---|---|
 | Risco activo (F1–F6, F11–F15) | Tudo — wiring e guards no nó | — |
-| Billing token-only | Wiring do hook, ciclo de vida por-run, envs, estimador | **D1/D2** (âmbito tool-only; eixo $) — recomendações registadas |
-| Turno de modelo no orçamento | Pré-requisito de contrato (`port.Usage`) | **D1 opção B** — ticket separado, pós-decisão |
+| Billing (tokens **e** $) | Wiring do hook, ciclo de vida por-run, envs, estimador, **canal de custo** | **D2 DECIDIDO 2026-08-13 (dono): eixo $ ENTRA na v1** — o custo real flui ponta-a-ponta (AOS-259). A recomendação do desafio A1 era «token-only na v1»; o dono decidiu graduar, e a razão está registada no §0-bis |
+| Turno de modelo no orçamento | Porta de reserva/settle no `agent-runtime` (usa o custo de AOS-259) | **D1 DECIDIDO 2026-08-13 (dono): OPÇÃO B** — o orçamento passa a cobrir **tool calls + turno de modelo**, com reserva ANTES da inferência e settle pelo usage real (AOS-260). A recomendação era «A (tool-only) com o banner a dizê-lo»; o dono decidiu fechar o eixo |
 | Exaustão graciosa completa | Retentor de spans, resolvedores, burn-down+aviso | **D4/D5/D6** (2.º tipo de PendingRecord, autoridade do `extend`, dono do tecto) |
 | Broker de credenciais | Passo zero de política/identidade, cliente Vault, porta com contexto | **D7/D8 DECIDIDOS 2026-08-10 (dono):** D7 = cliente/token Vault SEPARADOS (`AOS_BROKER_VAULT_*`); D8 = consumo v1 IN-PROCESS (injecção remota deferida, D8-B) |
 | Verificação ancorada do WORM | Env trust anchor + `VerifyFromCheckpointAtHead` no restart | **D4/AOS-156** — custódia da chave do operador (infra-org) |
