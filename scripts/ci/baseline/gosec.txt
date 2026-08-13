@@ -57,7 +57,7 @@
 #     G703 "path traversal" (modelgatewaywiring:149, modeltools:81, sandboxwiring:154,
 #       main.go: AOS_WORM_CHECKPOINT_FILE de AOS-268): os caminhos vem de VARIAVEIS DE
 #       AMBIENTE lidas no ARRANQUE (AOS_MODEL_API_KEY_PATH, AOS_MODEL_TOOLS,
-#       AOS_WORM_CHECKPOINT_FILE, ...) — config de deployment do operador, nunca entrada do
+#       AOS_WORM_CHECKPOINT_FILE, AOS_MODEL_PRICING_PATH, ...) — config de deployment do operador, nunca entrada do
 #       agente. Um operador que queira ler um ficheiro seu nao precisa de traversal: monta-o.
 #       (AOS-268: +1 ocorrencia main.go|G703 = a leitura da ancora assinada do checkpoint.)
 #     G704 "SSRF" (cli.go:278,293): o `base` e a flag --addr / AOS_API_ADDR do CLI — o
@@ -97,6 +97,7 @@ packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703
+packages/cmd/aos/model_pricing_env.go|G703
 packages/cmd/aos/modelgatewaywiring.go|G703
 packages/cmd/aos/modeltools.go|G703
 packages/cmd/aos/observability.go|G115

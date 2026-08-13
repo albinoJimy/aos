@@ -100,31 +100,58 @@ var ErrProgressBudgetUnwired = errors.New("aos: AOS_PROGRESS_THRESHOLD esta defi
 // adivinhada num resolvedor.
 type runBudgetReader struct{ rb *integration.RunBudget }
 
-// Limit devolve o tecto POR-RUN em tokens. É o mesmo para todos os runs (o tecto é
+// Limit devolve o tecto POR-RUN nas DUAS dimensões. É o mesmo para todos os runs (o tecto é
 // por-run, não por-árvore) e não depende do nó estar vivo — é a configuração, não o estado.
 //
-// A dimensão micro-USD fica a ZERO de propósito: não há tecto em dólares no nó (não há
-// canal de custo ponta a ponta, eixo AOS-259), e `consumedFraction` ignora as dimensões sem
-// limite positivo. Pôr aqui um número inventado faria a fracção sair de uma divisão que
-// ninguém configurou.
+// # A DIMENSÃO $ ENTRA AQUI, E SÓ QUANDO TEM TECTO
+//
+// Até AOS-259/AOS-260 esta função devolvia `CostMicroUSD: 0` de propósito, e a razão escrita
+// era «não há tecto em dólares no nó». Deixou de ser verdade nas três metades: existe
+// [integration.WithMaxCostMicroUSDPerRun] (via `AOS_BUDGET_MAX_COST_MICRO_USD`), o canal de
+// custo está ligado ponta a ponta (AOS-259) e a admissão do turno de modelo DEBITA dólares
+// (AOS-260). Manter o zero fazia o aviso ficar cego precisamente na dimensão que DECIDE: com
+// um modelo caro, um run atingia 100% do tecto em $ com 15% do tecto em tokens, `consumedFraction`
+// via só a fracção de tokens e NENHUM aviso disparava — o run era negado de repente pela
+// admissão, sem o pré-aviso que AOS-262 existe para dar.
+//
+// A condição é [integration.RunBudget.MaxCostMicroUSDPerRun] reportar um tecto REALMENTE
+// configurado. Sem ele a dimensão fica a zero — não por pudor, mas porque o valor em vigor é
+// [integration.UnlimitedCostMicroUSD] e uma fracção sobre esse denominador seria zero para
+// sempre; `consumedFraction` já trata a dimensão sem limite positivo como «não contribui», que
+// é exactamente a leitura certa de «medida mas não decide».
 func (r runBudgetReader) Limit(_ context.Context, _ string) (budget.Amount, error) {
-	return budget.Amount{Tokens: r.rb.MaxTokensPerRun()}, nil
+	limite := budget.Amount{Tokens: r.rb.MaxTokensPerRun()}
+	if tecto, capped := r.rb.MaxCostMicroUSDPerRun(); capped {
+		limite.CostMicroUSD = tecto
+	}
+	return limite, nil
 }
 
-// Available devolve o remanescente do nó de orçamento do run — o headroom que o hook de
-// mediação ainda concede a tool calls.
+// Available devolve o remanescente do nó de orçamento do run, nas duas dimensões — o headroom
+// que o orçamento por-run ainda concede.
 //
-// NÃO é o complemento do burn-down e não pode ser lido como tal: mede as RESERVAS de TOOL
-// CALL (AOS-255: alcance tool-only), enquanto o numerador do burn-down vem do ledger de
-// TURNOS DE MODELO. São dois consumos disjuntos do mesmo tecto, e é por isso que
+// NÃO é o complemento do burn-down e não pode ser lido como tal, mas a razão MUDOU com
+// AOS-260: já não é que meça outra coisa (o mesmo nó é hoje debitado pelas tool calls E pelos
+// turnos de modelo), é que mede o ENFORCEMENT desta incarnação enquanto o numerador do
+// burn-down vem do LEDGER DURÁVEL de turnos, que é cumulativo entre incarnações. É a assimetria
+// que o banner declara — o aviso vê o total, o enforcement recomeça —, e é por isso que
 // [progresssurface.ProgressSurface.EvaluateRun] usa o Limit e a fonte, nunca este valor.
-// Existe porque a porta o exige e porque um run sem nó vivo tem de dar ERRO, não zero.
+// Existe porque a porta o exige, porque um run sem nó vivo tem de dar ERRO e não zero, e porque
+// é daqui que a pergunta humana de exaustão tira o consumido do tecto que a bloqueou.
 func (r runBudgetReader) Available(_ context.Context, treeID string) (budget.Amount, error) {
 	tokens, ok := r.rb.AvailableTokens(treeID)
 	if !ok {
 		return budget.Amount{}, fmt.Errorf("aos: run %q sem no de orcamento vivo — o remanescente NAO e zero, e desconhecido", treeID)
 	}
-	return budget.Amount{Tokens: tokens}, nil
+	amt := budget.Amount{Tokens: tokens}
+	// A dimensão $ só é REPORTADA quando há tecto configurado: sem ele o remanescente é o de
+	// [integration.UnlimitedCostMicroUSD] e apresentá-lo daria um número gigante sem significado.
+	if _, capped := r.rb.MaxCostMicroUSDPerRun(); capped {
+		if custo, ok := r.rb.AvailableCostMicroUSD(treeID); ok {
+			amt.CostMicroUSD = custo
+		}
+	}
+	return amt, nil
 }
 
 var _ progresssurface.BudgetReader = runBudgetReader{}
@@ -317,7 +344,11 @@ func (p *runProgress) ObserveProgress(ctx context.Context, runID string, turn in
 	// arma, devolve [errExhaustionSuspended] — que o kernel trata como qualquer erro do
 	// observador (aborta o turno) e que o nó reconhece na saída do run como SUSPENSÃO, não
 	// como falha (ver [NodeService.absorveSuspensaoPorExaustao]).
-	return p.prompt.raise(ctx, runID, ev)
+	//
+	// A RAZÃO viaja explicitamente até ao registo durável: é ela que diz ao operador QUE
+	// grandeza o levou ali (ver [burndownDimensoes]) — sem ela, a pergunta assinada falaria
+	// só de tokens mesmo quando quem cruzou o limiar foi a dimensão $.
+	return p.prompt.raise(ctx, runID, ev, p.razaoDoAviso(ev))
 }
 
 // burndownTransitorio classifica um erro da leitura do burn-down como INDISPONIBILIDADE
@@ -358,8 +389,38 @@ func (p *runProgress) avisar(runID string, ev progresssurface.RunEvaluation) {
 	if ev.Warning == nil || !ev.Warning.SpanEmitted {
 		return
 	}
-	p.logf("AVISO DE BURN-DOWN (AOS-262) — run %q, turno %d: %.0f%% do tecto por-run consumido (%d de %d tokens, limiar %.2f). Contagem dos TURNOS DE MODELO e so deles (limite INFERIOR: o ledger nao pesa tool calls). Este aviso NAO para o run nem pede escolha — quem para e o disjuntor ou o steer do operador",
-		runID, ev.Warning.Turn, ev.Warning.Fraction*100, ev.Burndown.Consumed.Tokens, ev.Burndown.Limit.Tokens, ev.Warning.Threshold)
+	p.logf("AVISO DE BURN-DOWN (AOS-262) — run %q, turno %d: %.0f%% do tecto por-run consumido (%s, limiar %.2f). Contagem dos TURNOS DE MODELO e so deles (limite INFERIOR: o ledger nao pesa tool calls). Este aviso NAO para o run nem pede escolha — quem para e o disjuntor ou o steer do operador",
+		runID, ev.Warning.Turn, ev.Warning.Fraction*100, burndownDimensoes(ev), ev.Warning.Threshold)
+}
+
+// razaoDoAviso é a razão do AVISO, nas mesmas palavras e nos mesmos números da linha do log —
+// para que o registo durável e o log não possam divergir sobre o que aconteceu.
+//
+// É deliberadamente distinta da razão do TECTO ATINGIDO ([nodeModelAdmission.evaluationFor], que
+// propaga a razão atribuível da própria admissão): aqui o run ainda tem headroom e o que cruzou
+// foi um LIMIAR de aviso; lá o run foi negado. Uma pergunta humana que confundisse as duas
+// levaria o operador a decidir sobre a situação errada.
+func (p *runProgress) razaoDoAviso(ev progresssurface.RunEvaluation) string {
+	if ev.Warning == nil {
+		return ""
+	}
+	return fmt.Sprintf("limiar de burn-down cruzado no turno %d: %.0f%% do tecto por-run consumido (%s), limiar %.2f. A fraccao e o MAXIMO sobre as dimensoes COM tecto, pelo que a grandeza que a levantou e a que mais perto esta do seu tecto nesta lista. Fonte: ledger DURAVEL de turnos (turnos de modelo e so eles — limite INFERIOR do consumo do run, cumulativo entre incarnacoes). O tecto NAO foi atingido: o run tem headroom e continua se a decisao for `continue`",
+		ev.Warning.Turn, ev.Warning.Fraction*100, burndownDimensoes(ev), ev.Warning.Threshold)
+}
+
+// burndownDimensoes escreve o consumido/tecto nas dimensões que TÊM tecto — e só nessas.
+//
+// A fracção do aviso é o MÁXIMO sobre as duas dimensões (`consumedFraction`), pelo que uma linha
+// que só saiba falar de tokens pode ser LIDA AO CONTRÁRIO do que a decisão diz: um run avisado a
+// 100% do tecto em dólares mostraria «0,5% de tokens» ao lado de uma fracção de 1.00, e o
+// operador concluiria que há headroom de sobra. Nomear a grandeza é o que torna o aviso
+// accionável — e é a mesma exigência que a pergunta humana de exaustão faz ao registo durável.
+func burndownDimensoes(ev progresssurface.RunEvaluation) string {
+	linha := fmt.Sprintf("%d de %d tokens", ev.Burndown.Consumed.Tokens, ev.Burndown.Limit.Tokens)
+	if ev.Burndown.Limit.CostMicroUSD > 0 {
+		linha += fmt.Sprintf(" e %d de %d micro-USD", ev.Burndown.Consumed.CostMicroUSD, ev.Burndown.Limit.CostMicroUSD)
+	}
+	return linha
 }
 
 // logf escreve no log do nó quando há writer. nil-safe: um observador construído sem log

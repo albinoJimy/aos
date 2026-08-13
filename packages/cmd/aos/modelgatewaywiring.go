@@ -30,6 +30,7 @@ import (
 	audit "github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/platform/identity"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+	"github.com/aos-ref/platform/model-gateway/metering/cost"
 	"github.com/aos-ref/platform/model-gateway/pipeline/authn"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -168,7 +169,13 @@ func (nodeModelAuthority) ClassAuthority(context.Context, string) ([]string, err
 // NHI do run. Tipicamente é o [lateBoundModelVerifier] (ligado pelo Bootstrap ao verifier
 // real do nó); nil ⇒ ErrModelIdentityNotComposed (o gateway não se compõe sem seam de
 // identidade — não há fallback para um stub allow-all).
-func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store) (agentruntime.ModelClient, error) {
+//
+// costRec (AOS-259) é a contabilidade de custo do gateway, resolvida por
+// [parseModelPricingFromEnv]: != nil quando a tabela de preços em vigor cobre o par
+// (model, region) deste nó, e é o que faz o canal de custo transportar um número derivado
+// em vez de zero. nil ⇒ sem contabilidade (zero DECLARADO no banner, nunca um preço
+// inventado) — ver model_pricing_env.go.
+func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder) (agentruntime.ModelClient, error) {
 	// CUTOVER DURO: sem seam de identidade não há gateway. O estágio authn REAL substitui o
 	// antigo stub (nodeModelAuthn) que forjava o principal e devolvia allow incondicional.
 	if verifier == nil {
@@ -224,11 +231,24 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 		// O tecto de throughput REAL é do gateway EXTERNO (o LiteLLM do deployment endurecido, que
 		// tem janela e backpressure a sério). Ver deploy/node/README.md e, como guarda,
 		// TestModelGateway_NoThroughputFuse.
+		//
+		// A CONTA ÚNICA É TAMBÉM O QUE SUSTENTA A GARANTIA DE PREÇO DO ARRANQUE (AOS-259): a
+		// cobertura é verificada para o par PEDIDO, mas `Gateway.recordCost` calcula sobre o par
+		// RESOLVIDO pelo roteamento de failover. Com um só inventário na região pedida, resolvido
+		// == pedido sempre. Quem acrescentar aqui uma segunda conta ou região TEM de estender
+		// [resolveModelPricing] a verificar todos os pares alcançáveis — senão um failover resolve
+		// um par sem preço, `pricing.ErrNoPrice` recusa a chamada, e o mecanismo de resiliência
+		// passa a ser a causa de uma interrupção total.
 		Accounts: []modelgateway.InfraAccount{{
 			KeyID: "model-upstream", Provider: "openai", Region: region, LimitRPM: 0, LimitTPM: 0,
 		}},
 		Authn:     authnStage, // estágio authn REAL (AOS-278) — verifica o token NHI do run; sem stub
 		Allowlist: pol,        // nil ⇒ allowlist EMBEBIDA (retro-compat); != nil ⇒ bundle externo montado
+		// CONTABILIDADE DE CUSTO (AOS-062) ligada ao CANAL de AOS-259: com recorder, cada
+		// resposta leva o custo derivado em port.Usage.CostMicroUSD e o adaptador RT→GW
+		// projecta-o no turno (span + evento durável que o burn-down lê). nil ⇒ o canal
+		// existe e transporta zero — ausência de preço para este par, declarada no banner.
+		Cost: costRec,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBadModelConfig, err)

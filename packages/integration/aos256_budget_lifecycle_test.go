@@ -95,6 +95,15 @@ func bhEstimativa(c bhCall) int64 {
 // é o default do nó — e nesse caso [budgetHarness.rb] fica nil.
 func newBudgetHarness(t *testing.T, runID string, maxTokens int64, calls ...bhCall) *budgetHarness {
 	t.Helper()
+	return newBudgetHarnessWith(t, runID, maxTokens, nil, calls)
+}
+
+// newBudgetHarnessWith é o mesmo harness com um ponto de extensão: `extra` são opções do
+// [agentruntime.Runtime] a acrescentar à composição. Existe para AOS-260 poder ligar a porta
+// de admissão do turno de modelo NA CADEIA REAL (e não numa composição paralela) sem duplicar
+// as ~100 linhas de identidade/catálogo/PDP que este harness monta.
+func newBudgetHarnessWith(t *testing.T, runID string, maxTokens int64, extra []agentruntime.Option, calls []bhCall) *budgetHarness {
+	t.Helper()
 	ctx := context.Background()
 
 	anchor, err := base64.StdEncoding.DecodeString("tNHbo3n7mNWtl5Gt+GdRSkdUyrBjCdA+8TuoSPGReoY=")
@@ -165,17 +174,18 @@ func newBudgetHarness(t *testing.T, runID string, maxTokens int64, calls ...bhCa
 	})
 
 	sec, err := NewSecuredRuntime(SecuredConfig{
-		Model:         model,
-		Recorder:      agentruntime.NewTurnRecorder(trajStore),
-		Catalog:       catalog,
-		Revalidator:   rv,
-		Policy:        StaticPolicy{MaxEgress: domain.EgressExternal},
-		WORM:          audit.NewMemStore(),
-		Verifier:      verifier,
-		Authority:     authority,
-		PDP:           policyDP,
-		Budget:        rb, // <-- AOS-257: o BudgetCheck REAL no lugar do BudgetStub (nil ⇒ stub)
-		FreezeOptions: []toolset.Option{toolset.WithClock(fixedClock())},
+		Model:          model,
+		Recorder:       agentruntime.NewTurnRecorder(trajStore),
+		Catalog:        catalog,
+		Revalidator:    rv,
+		Policy:         StaticPolicy{MaxEgress: domain.EgressExternal},
+		WORM:           audit.NewMemStore(),
+		Verifier:       verifier,
+		Authority:      authority,
+		PDP:            policyDP,
+		Budget:         rb, // <-- AOS-257: o BudgetCheck REAL no lugar do BudgetStub (nil ⇒ stub)
+		FreezeOptions:  []toolset.Option{toolset.WithClock(fixedClock())},
+		RuntimeOptions: extra, // AOS-260: onde entra a porta de admissão do turno de modelo
 	})
 	if err != nil {
 		t.Fatalf("NewSecuredRuntime: %v", err)

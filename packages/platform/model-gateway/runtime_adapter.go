@@ -117,12 +117,25 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 }
 
 // translateResponse converte [port.ChatResponse] em [agentruntime.ModelResponse].
+//
+// AOS-259 — É AQUI QUE O CANAL DE CUSTO ATRAVESSA A FRONTEIRA RT↔GW. O custo derivado
+// pela contabilidade do gateway viaja em [port.Usage.CostMicroUSD] e projecta-se em
+// [agentruntime.ModelResponse.CostMicroUSD], que o runtime JÁ consome em três sítios
+// que até aqui recebiam zero: o acumulado do run (Result.TotalCostMicroUSD), o atributo
+// do span `chat` (aos.cost.micro_usd) e — o que decide — o campo `cost_micro_usd` do
+// evento durável `turn.recorded`, que é a fonte do burn-down do nó. Continua a ser UM
+// canal: não se abre uma segunda contabilidade no runtime, projecta-se a que existe.
+//
+// Micro-USD INTEIRO em toda a travessia: os dois lados da fronteira são int64 e a
+// projecção é uma cópia — sem conversão, sem float, sem arredondamento onde se pudesse
+// perder um micro-USD.
 func translateResponse(resp port.ChatResponse) agentruntime.ModelResponse {
 	out := agentruntime.ModelResponse{
 		Usage: agentruntime.Usage{
 			InputTokens:  resp.Usage.PromptTokens,
 			OutputTokens: resp.Usage.CompletionTokens,
 		},
+		CostMicroUSD: resp.Usage.CostMicroUSD,
 	}
 	if len(resp.Choices) == 0 {
 		out.Final = true

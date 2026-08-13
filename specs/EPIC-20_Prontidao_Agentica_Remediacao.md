@@ -6,7 +6,7 @@
 | Documento | Epic — Remediação dos achados de prontidão (F1–F16), billing token-only ligado ao nó, e implementação dos ADR-021/022 |
 | Versão | 1.0 |
 | Data | 2026-08-08 |
-| Classificação | Documento de Referência — **Em execução** (33/34 implementados e no trunk; ADR-021 e ADR-022 ratificados e implementados; **2 abertos**, ambos à espera de D1/D2 — ver **§0 Balanço**) |
+| Classificação | Documento de Referência — **Em execução** (34/34 implementados e no trunk; ADR-021 e ADR-022 ratificados e implementados; D1/D2 **decididas** pelo dono em 2026-08-13 e implementadas em AOS-259/AOS-260 — ver **§0 Balanço** e **§0-bis**) |
 | Documento-fonte | **`docs/reports/prontidao-modelos-agenticos.md`** (relatório consolidado, 2026-08-08) |
 | ADRs aprovados (RATIFICADOS 2026-08-13) | **ADR-021** (scoring determinístico no GW) · **ADR-022** (arestas condicionais, papel verificador, payload tipado) — ambos `Estado: Aceite` por **ratificação de dono**; antes eram premissa de planeamento (ver §0) |
 | Documentos relacionados | `docs/reports/desafio-A1..A4-*.md` (planos de fecho corrigidos + decisões do dono), ADR-008/010/011/012/013/018/020, `tecnica/06`, `tecnica/18` |
@@ -15,9 +15,9 @@
 
 ## 0. Balanço de execução — 2026-08-13 (ADR-021/022 ratificados e implementados)
 
-**Estado global: 33 dos 34 tickets IMPLEMENTADOS e integrados no trunk `feature/AOS-128-ux-dx-tests` (alguns com alcance PARCIAL declarado e eixo); 2 ABERTOS.** O eixo **D4** (autoridade de identidade real) está **fechado no código**. O **ADR-021** e o **ADR-022** foram **ratificados** (2026-08-13, autoridade de dono) e ambos estão **implementados**: AOS-269 (scoring determinístico no GW, com o alcance da emenda 1.1), e AOS-270..273 + DEF-274 (arestas condicionais, `role: verifier`, payload tipado, versionamento/janela/golden-sets, e o gate humano a ver as extensões). **Ficam à espera de decisão do dono apenas AOS-259/260** (eixo $, D1/D2).
+**Estado global: 34 dos 34 tickets IMPLEMENTADOS e integrados no trunk `feature/AOS-128-ux-dx-tests` (alguns com alcance PARCIAL declarado e eixo); 0 ABERTOS.** O eixo **D4** (autoridade de identidade real) está **fechado no código**. O **ADR-021** e o **ADR-022** foram **ratificados** (2026-08-13, autoridade de dono) e ambos estão **implementados**: AOS-269 (scoring determinístico no GW, com o alcance da emenda 1.1), e AOS-270..273 + DEF-274 (arestas condicionais, `role: verifier`, payload tipado, versionamento/janela/golden-sets, e o gate humano a ver as extensões). **AOS-259 e AOS-260 estão FECHADOS**: o canal de custo ponta a ponta com dedup por parentesco (AOS-259, fonte do preço declarada e residuais de cobertura de tabela e de pares alcançáveis com eixo em DEF-277/DEF-279) e a **admissão do turno de modelo** (AOS-260, D1=opção B) — reserva antes de `rt.model.Call`, saldo pelo consumo medido, esgotamento como degradação declarada e replay sem re-reserva, com os residuais em DEF-278. O epic fecha em **34/34**.
 
-### Implementados (33; alguns com alcance PARCIAL declarado e eixo)
+### Implementados (34; alguns com alcance PARCIAL declarado e eixo)
 - **Risco activo + higiene (F1–F6, F11–F15):** AOS-245 · AOS-246 · AOS-247 · AOS-248 · AOS-249 · AOS-250 · AOS-251 · AOS-252 · AOS-255.
 - **Durabilidade do run:** AOS-253 *(crash-resume: varredura de órfãos no arranque + `Resumer` composto; efeito já aplicado não repete, modelo não re-interrogado)* · **AOS-254 — PARCIAL** *(a CONDUÇÃO da saga está composta e o ramo alcançável — declarar a ausência com selo WORM — provado; a COMPENSAÇÃO REAL fica em **DEF-270**, à espera de um produtor de compensações e do registo run-scoped no kernel)*.
 - **Billing token-only (dimensão de tokens):** AOS-256 · AOS-257 · AOS-258.
@@ -28,8 +28,8 @@
 - **ADR-021 (ratificado 2026-08-13):** AOS-269 *(scoring ponderado determinístico no GW: portas de factores em aritmética inteira, tabela de pesos embebida e assinada com trust anchor pinado, guard-test AST contra float/`rand`/relógio, cenário que prova que nenhum peso elege cross-border)*. **Alcance pela emenda 1.1:** o scoring é composto **por opção** e não tem efeito em produção enquanto o estágio de roteamento não for composto — lacuna **pré-existente**, em **DEF-271**.
 - **ADR-022 (ratificado 2026-08-13) — FECHADO:** AOS-270 *(arestas condicionais; «ciclo disfarçado» rejeitado reutilizando o DAG de AOS-025; replay reproduz o ramo sem re-avaliar)* · AOS-271 *(`role: verifier` com semântica de sistema: read-only por construção, produtor ≠ verificador, veredicto tipado)* · AOS-272 *(payload tipado por aresta: contratos validados estaticamente, taint derivado da **autoridade** e não da palavra do planeador, transporte por referência — nunca blackboard)* · AOS-273 *(`plan_version` 1.2.0 com o carimbo **imposto** pelas features usadas, migração provada nas duas direcções com fixtures congeladas, janela de suporte ancorada em código, golden-sets)* · **DEF-274** *(o gate humano passa a **ver** as extensões — invariante §2.4(5) — em forma canónica e content-free, imposta também no wire)*.
 
-### Abertos (2) — ambos à espera de decisão do dono
-- **Eixo $ do billing:** AOS-259 *(D2)* · AOS-260 *(D1)*. A dimensão de **tokens** está ligada (AOS-256..258); a de **dólares** aguarda D1/D2. **Não há mais trabalho executável sem decisão.**
+### Abertos (0) — o epic fecha em 34/34
+- **Eixo $ do billing:** ~~AOS-259 *(D2)*~~ **FECHADO** · ~~AOS-260 *(D1)*~~ **FECHADO**. A dimensão de **tokens** está ligada (AOS-256..258, e desde AOS-260 também no turno de modelo); a de **dólares** é **medida** ponta a ponta (AOS-259, tabela do operador em `AOS_MODEL_PRICING_PATH`), **debitada** na árvore de orçamento e **negadora** quando `AOS_BUDGET_MAX_COST_MICRO_USD` está definida (AOS-260). Residuais com eixo: **DEF-277** (curadoria da tabela de preços), **DEF-278** (tecto em `$` admitido um turno tarde no primeiro turno de cada incarnação; orçamento durável por-`run_id`; reclamação de provisão órfã armada e ainda inalcançável) e **DEF-279** (a cobertura de preço é verificada para o par PEDIDO — vale enquanto o inventário do keypool tiver uma só conta/região).
 
 ### Deferidos com eixo (infra-org, fora do código do nó)
 Selagem periódica out-of-process dos checkpoints do WORM (**DEF-268/DEF-269**, custódia de chave D4/AOS-156) · instância do IdP tenant + adaptador HSM/KMS (costura `crypto.Signer`, EPIC-16) · injecção do broker no executor remoto (**D8-B**) · composição do estágio de roteamento no pipeline do GW (**DEF-271**, pré-existente a AOS-269) · emissão do veredicto e transporte do payload sem chamador de produção (**DEF-272/273**, eixo AOS-238) · gate de CI `evalgate.sh` a correr os golden-sets do planeador (**DEF-276**, eixo **AOS-279**) · compensação real da saga (**DEF-270**: exige um *produtor* de compensações — o loop nunca popula `activity.Activity.Compensation` — **e** o registo run-scoped no kernel; enquanto faltarem, habilitá-la compensaria o run errado).
@@ -38,6 +38,22 @@ Selagem periódica out-of-process dos checkpoints do WORM (**DEF-268/DEF-269**, 
 Os campos `### Estado` por-ticket de **AOS-245, AOS-250 e AOS-266** estavam desactualizados — descreviam a não-entrada na W0 (245/250) ou o estado inicial (266), mas a implementação e os testes dedicados existem e passam (`aos245_ledger_titular_test.go`, `apiMaxTurnsOptionFromEnv`, `aos266_challenge_freshness_test.go`/`aos266_device_enrollment_test.go`). Corrigidos na revisão de 2026-08-12.
 
 **Sobre o «assumidos aprovados» do cabeçalho (ADR-021/022) — RESOLVIDO em 2026-08-13.** A linha «ADRs assumidos aprovados» descrevia a *premissa de planeamento* da epic, não o estado real: ambos os documentos estavam em `Estado: Proposto — pendente de ratificação`, e enquanto assim fosse AOS-269..273 não podiam entrar (Carta §6: ratificar **antes** de implementar, não depois). O dono **ratificou ambos em 2026-08-13** (`Estado: Aceite`, ratificação de dono) — a premissa do cabeçalho passou a ser verdade e a frente ficou executável.
+
+---
+
+## 0-bis. Decisão do dono sobre D1/D2 — 2026-08-13
+
+**DECIDIDO: D2 = o eixo $ entra na v1; D1 = opção B (o orçamento cobre tool calls *e* o turno de modelo).** Desbloqueia **AOS-259** e **AOS-260**, e com eles o epic fecha em **34/34**.
+
+**A decisão AFASTA-SE da recomendação do desafio A1**, que era «A (tool-only) com o banner a dizê-lo» e «token-only na v1; $ só depois do contrato `port`». O afastamento é deliberado e a razão é que **os factos mudaram desde que a recomendação foi escrita**:
+
+- **O que motivava a cautela** era que a inferência — a linha de custo dominante — corria **sem controlo nenhum**: `rt.model.Call` é invocado directamente (`kernel/agent-runtime/loop.go`), fora da cadeia do Reference Monitor, sem hook e sem reserva.
+- **O que entretanto entrou** (AOS-261/262/263) foi o controlo *a posteriori*: o burn-down soma os tokens **reais** dos turnos de modelo a partir do ledger (`turn.recorded`), compara-os com o tecto por-run, **avisa** ao cruzar o limiar e pode **suspender o run para decisão humana**, com selo WORM. A inferência deixou de ser invisível ao orçamento; o que lhe falta é a **reserva prévia**.
+- **O canal de custo é ligação, não construção**: o GW já tem subsistema de metering (`metering/cost`, `cost.Amount{Tokens,CostMicroUSD}` + `budgetbridge`) e o runtime já tem o campo do outro lado (`resp.CostMicroUSD`, `TotalCostMicroUSD`, span `AttrCostUSD`) — a receber zero. O que falta é o campo em `port.Usage`, o preenchimento no adaptador, e o **dedup por parentesco** (sem ele, dois spans `chat` por trace somam tokens a **2×** — achado A2-E).
+
+**O que a decisão obriga a fazer bem** (e que fica como critério de aceitação, não como intenção): no esgotamento, **degradação declarada** — nunca um *deny-loop* cego que mate o run em silêncio; e **o replay não re-reserva** (dedup por `run_id:step_id`), senão a retoma cobrava duas vezes o mesmo turno.
+
+**Consequência para o banner:** a frase de âmbito de AOS-255 (`BudgetScopeDeclaration`) descreve a postura *tool-only/token-only* e **passa a ser falsa** quando AOS-259/260 entrarem. Actualizá-la faz parte de AOS-260 — a postura anunciada tem de continuar a ser a postura ligada (AOS-203/AOS-248).
 
 ---
 
@@ -52,8 +68,8 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | Frente | Código desta epic | Fora (dependência/decisão) |
 |---|---|---|
 | Risco activo (F1–F6, F11–F15) | Tudo — wiring e guards no nó | — |
-| Billing token-only | Wiring do hook, ciclo de vida por-run, envs, estimador | **D1/D2** (âmbito tool-only; eixo $) — recomendações registadas |
-| Turno de modelo no orçamento | Pré-requisito de contrato (`port.Usage`) | **D1 opção B** — ticket separado, pós-decisão |
+| Billing (tokens **e** $) | Wiring do hook, ciclo de vida por-run, envs, estimador, **canal de custo** | **D2 DECIDIDO 2026-08-13 (dono): eixo $ ENTRA na v1** — o custo real flui ponta-a-ponta (AOS-259). A recomendação do desafio A1 era «token-only na v1»; o dono decidiu graduar, e a razão está registada no §0-bis |
+| Turno de modelo no orçamento | Porta de reserva/settle no `agent-runtime` (usa o custo de AOS-259) | **D1 DECIDIDO 2026-08-13 (dono): OPÇÃO B** — o orçamento passa a cobrir **tool calls + turno de modelo**, com reserva ANTES da inferência e settle pelo usage real (AOS-260). A recomendação era «A (tool-only) com o banner a dizê-lo»; o dono decidiu fechar o eixo |
 | Exaustão graciosa completa | Retentor de spans, resolvedores, burn-down+aviso | **D4/D5/D6** (2.º tipo de PendingRecord, autoridade do `extend`, dono do tecto) |
 | Broker de credenciais | Passo zero de política/identidade, cliente Vault, porta com contexto | **D7/D8 DECIDIDOS 2026-08-10 (dono):** D7 = cliente/token Vault SEPARADOS (`AOS_BROKER_VAULT_*`); D8 = consumo v1 IN-PROCESS (injecção remota deferida, D8-B) |
 | Verificação ancorada do WORM | Env trust anchor + `VerifyFromCheckpointAtHead` no restart | **D4/AOS-156** — custódia da chave do operador (infra-org) |
@@ -91,8 +107,8 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | AOS-256 | Ciclo de vida do nó de orçamento por-run (`AddNode` + release no seam por-run) | feature | S | P1 | — | A1-risco 4 |
 | AOS-257 | `BudgetCheck` no lugar do stub + `Settle` como decorator do `ActivityDispatcher` + envs `AOS_BUDGET_*` (tokens) | feature | M | P1 | AOS-256 | billing |
 | AOS-258 | Estimador real via `CallContext` + teste de nó com permit (não-vacuoso) | feature | M | P1 | AOS-257 | billing |
-| AOS-259 | Canal de custo: campo em `port.Usage`/`ChatResponse` + `translateResponse` + dedup por parentesco + `WithCost` no wiring | feature | M | P2 | D2 | A1-risco 2, A2-E |
-| AOS-260 | Admissão do turno de modelo (reservar antes de `loop.go:549`) | feature | L | P2 | AOS-259, D1 | A1-risco 1 |
+| AOS-259 **(FECHADO)** | Canal de custo: campo em `port.Usage` + `translateResponse` + dedup por parentesco + `Cost` em `ProductionConfig`/wiring | feature | M | P2 | D2 | A1-risco 2, A2-E |
+| AOS-260 **(FECHADO)** | Admissão do turno de modelo (reservar antes de `loop.go:549`) | feature | L | P2 | AOS-259, D1 | A1-risco 1 |
 | AOS-261 | Retentor de spans por-run + resolvedores `runID→traceID/treeID` (ou `BurndownSource` por ledger de turnos) | feature | M | P1 | — | A2-C/F |
 | AOS-262 | Burn-down + aviso de exaustão no nó (sem decisão) + `AOS_PROGRESS_THRESHOLD` fail-closed | feature | M | P1 | AOS-261, AOS-257 | A2 parcial |
 | AOS-263 | Prompt de exaustão durável: 2.º tipo de `PendingRecord` + rota autenticada + autoridade do `extend` | feature | L | P2 | AOS-262, D4/D5/D6 | A2 |
@@ -412,6 +428,7 @@ Fixar o texto do banner e da doc **antes** de qualquer wiring de budget.
 
 ### Critérios de Aceitação
 - [x] Texto aprovado: «orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado por tempo (wall-clock), não por tecto».
+  **REESCRITO por AOS-260** (a frase descrevia um eixo aberto, e o eixo fechou): «orçamento: cobre tool calls E o turno de modelo em TOKENS — reserva antes da inferência, saldo pelo consumo medido; o tecto em dólares é opcional e só decide quando configurado». A disciplina é simétrica: enquanto a inferência esteve fora do tecto o banner tinha de o dizer; agora que está dentro, manter a frase velha seria a promessa a **menos**, e um operador que a lesse desligaria protecções por causa de um texto obsoleto.
 - [x] `deploy/node/README.md` e o relatório de prontidão referem a declaração.
 
 ### Estado
@@ -555,10 +572,15 @@ partidas a cada 4 caracteres, 1 token por sinal de pontuação/estrutura, 1 toke
 não-ASCII, e o **piso** da heurística de bytes do estimador anterior — o piso existe para que a
 troca **nunca baixe** uma estimativa (propriedade selada em `TestAOS258_NuncaSubestimaOPlaceholder`).
 
-**O que NÃO estima**, declarado no banner e no README: o **turno de modelo** (invocado fora da
-cadeia; nenhuma reserva o admite — AOS-260), o **resultado da tool** (volta à transcrição mas só
-é mensurável DEPOIS do efeito; o saldo confirma a RESERVA, não a medição — AOS-259) e **dólares**
-(dimensão `CostMicroUSD` a zero — AOS-259). O alcance declarado em AOS-255 NÃO foi alargado.
+**O que NÃO estima**, declarado no banner e no README: o **turno de modelo** — este estimador
+conta *tool calls*, e o *prompt* do turno é estimado pela **mesma contagem** do lado da admissão
+do turno de modelo (`integration.ModelPromptTokens`, AOS-260), que o **reserva antes** da
+inferência e o salda pelo consumo medido —, o **resultado da tool** (volta à transcrição mas só
+é mensurável DEPOIS do efeito; o saldo confirma a RESERVA, não a medição) e **dólares** — o
+estimador estima **tokens**, não preços, e continua a declarar `CostMicroUSD` a zero. Nota
+pós-AOS-259: o canal de custo passou a alimentar a dimensão de dólares do **burn-down** (via
+`turn.recorded`), mas isso é medição DEPOIS do turno; o que continua sem estimativa em dólares é
+a **admissão ANTES** — eixo AOS-260. O alcance declarado em AOS-255 NÃO foi alargado.
 
 **Alternativa REJEITADA, com a razão registada no cabeçalho do ficheiro:** ler uma estimativa
 declarada pelo chamador em `CallContext.BudgetTokensRemaining`. Nos dois produtores reais
@@ -592,12 +614,24 @@ Desafios A1 (risco 2) e A2 (achado E): `port.Usage`/`ChatResponse` não têm cam
 Campo de custo no contrato, preenchido no adaptador, agregação deduplicada por parentesco, `Cost` em `ProductionConfig` + `WithCost` no wiring.
 
 ### Critérios de Aceitação
-- [ ] `CostMicroUSD` flui do GW para o RT/`TurnRecord`/span.
-- [ ] `AggregateByTrace` deduplica por parentesco (ou o span do RT é suprimido) — teste prova tokens 1× com custo real.
-- [ ] Burn-down lê custo real (fonte de AOS-262).
+- [x] `CostMicroUSD` flui do GW para o RT/`TurnRecord`/span. — `port.Usage.CostMicroUSD` é o campo novo do contrato; `Gateway.Chat` escreve-o na resposta normalizada a partir da `cost.Reading` do metering (`recordCost`); `translateResponse` projecta-o em `agentruntime.ModelResponse.CostMicroUSD`, de onde o RT já o levava ao span `chat`, ao `Result.TotalCostMicroUSD` e ao `TurnRecord`. **Um canal só** — não se abriu contabilidade nova no runtime, ligou-se a que existia às duas pontas que já existiam.
+- [x] `AggregateByTrace` deduplica por parentesco — teste prova tokens 1× com custo real. — A dedup é em `otel-genai/cost_aggregation.go` e vale nas **três** leituras do mesmo trace (`AggregateByTrace`, `RollupByTrace`, `VelocityByTrace`), via `countableChatSamples`. Regra: um `chat` não conta se, subindo os ancestrais, se encontrar outro `chat` **antes** de uma fronteira de turno (`invoke_agent`/`execute_tool`) — o que suprime a re-observação RT↔GW e **preserva a delegação** (`chat → execute_tool → invoke_agent → chat` continua a contar 2). Conta-se o span **de fora** (o do RT), por ser o que carrega `run_id`/`step_id` e o único presente quando o GW não é traçado: a leitura fica idêntica nas duas topologias.
+- [x] Burn-down lê custo real (fonte de AOS-262). — O burn-down do nó lê `cost_micro_usd` dos eventos `turn.recorded` (AOS-261), e esse campo passa a trazer o custo derivado. Provado sobre o evento **durável**, não sobre o campo em memória.
+
+**Fonte do número (declarada):** a tabela de preços versionada e *tamper-evident* que já existe (`model-gateway/pricing`, digest sha256, quatro rates por `(modelo, região)` em micro-USD inteiro por 1M tokens) × os quatro contadores de token que o provider ecoa. **Nenhum preço foi inventado.** A API compatível OpenAI não devolve custo — devolve tokens; o custo é sempre derivado. Toda a travessia é **micro-USD int64**, sem um único `float` no caminho de dinheiro (**ADR-008**): os dois lados da fronteira RT↔GW são inteiros e a projecção é uma cópia, sem conversão onde se pudesse perder um micro-USD.
+
+**Residual declarado (com eixo): cobertura de preço num nó real.** A tabela **embebida** só cobre os pares de referência do repositório (`claude-sonnet`/`claude-haiku`/`gpt-4o` × `eu-west`/`us-east`) e o *default* `AOS_MODEL_REGION=eu` **nem sequer casa** com ela. Um nó real precisa de montar a sua tabela em **`AOS_MODEL_PRICING_PATH`** (mesmo formato, mesmo digest) — inventar rates para o modelo do operador seria pior do que não haver custo, porque o burn-down em dólares passaria a mentir com autoridade. Sem par coberto **o canal transporta zero declarado** no banner de postura (`custo do modelo / canal de custo (AOS-259)`), nunca um número fabricado. **Curar uma tabela de preços de mercado é decisão do dono / trabalho de operação, não de código.**
+
+**Segundo residual, aberto na remediação adversarial da wave (DEF-279): a verificação de arranque cobre o par PEDIDO, o cálculo por chamada usa o par RESOLVIDO.** `resolveModelPricing` consulta `table.RateFor(AOS_MODEL_NAME, AOS_MODEL_REGION)`, mas `Gateway.recordCost` calcula com `ex.ResolvedModel`/`ex.ResolvedRegion` — a região do endpoint que o *failover* escolheu. Hoje coincidem sempre porque `newGatewayModelClient` compõe **um único** `InfraAccount` na região pedida; a garantia é, portanto, do **inventário** e não da verificação. Acrescentar uma segunda conta/região torna alcançável um par sem preço e o *fail-closed* por chamada vira **brownout** — o mecanismo de resiliência a causar a interrupção. A afirmação do banner foi **qualificada** em vez de mantida absoluta, e o limite está declarado no ponto de composição do inventário.
+
+**Cobertura de preço verificada no arranque, não por chamada.** O cálculo de custo é *fail-closed* por chamada (`pricing.ErrNoPrice` recusa a chamada em vez de facturar zero) — postura correcta *dentro* do caminho metrado, mas compor a contabilidade num nó cujo par não tem preço transformaria esse *fail-closed* num nó que **erra todas as chamadas ao modelo**, um *brownout* total por falta de um dado de facturação. Por isso a cobertura é consultada **uma vez**, com a tabela em mão (`parseModelPricingFromEnv`): coberto ⇒ recorder ligado e o *fail-closed* por chamada vale de facto; não coberto ⇒ sem recorder, zero declarado. `AOS_MODEL_PRICING_PATH` definida mas ilegível/inválida ⇒ **aborta** (`ErrBadModelPricing`).
+
+**Alcance do canal no caminho de *streaming* (declarado):** o custo do `ChatStream` fica no span e nos agregados por run/árvore mas **não** no `Usage` do *chunk* final — esse já foi entregue ao consumidor quando o metering corre (é a razão de o metering ser adiado: antes do fim do stream não há usage). Sem efeito no runtime: o adaptador RT→GW usa o caminho **síncrono**.
+
+**Sem segundo canal de burn-down:** o `cost.Recorder` do nó é composto **sem sinks**. Ligar-lhe um `BurndownSink` criaria uma segunda contabilidade em memória, com outra chave e outra retenção — exactamente o que AOS-261 rejeitou. Quem decide o burn-down é o ledger de turnos, alimentado por este mesmo número.
 
 ### Estado
-**ABERTO.**
+**FECHADO.** Ficheiros: `model-gateway/port/port.go`, `model-gateway/gateway.go`, `model-gateway/runtime_adapter.go`, `model-gateway/production.go`, `substrate/otel-genai/cost_aggregation.go`, `cmd/aos/model_pricing_env.go` (novo), `cmd/aos/modelgatewaywiring.go`, `cmd/aos/main.go`, `cmd/aos/posture_banner.go`, `cmd/aos/burndown_ledger.go` (doc), `deploy/node/README.md`. Testes: `model-gateway/aos259_cost_channel_test.go` (composição **real** RT+GW+Event Store+tracer partilhado — prova, na mesma passagem, custo no runtime, custo no evento durável, **2 spans `chat` mesmo** e agregação com **tokens 1× e custo real**), `otel-genai/cost_aggregation_nested_test.go` (dedup, não-supressão da delegação, conjunto parcial, coerência rollup/velocity), `cmd/aos/aos259_model_pricing_test.go` (armado / zero declarado / *fail-closed* / banner casa com o composto). Uma env nova: `AOS_MODEL_PRICING_PATH`.
 
 ---
 
@@ -610,12 +644,182 @@ Desafio A1 (risco 1, CONFIRMADO/alta): a chamada ao modelo é directa (`loop.go:
 Reservar antes do turno de modelo e saldar com o usage/custo real da resposta.
 
 ### Critérios de Aceitação
-- [ ] Porta nova em `agent-runtime`: reserva antes de `loop.go:549`, settle com `resp.Usage`/`CostMicroUSD`.
-- [ ] Esgotamento ⇒ degradação declarada (não deny-loop cego — liga a AOS-262).
-- [ ] Replay não re-reserva (dedup por `run_id:step_id`).
+- [x] Porta nova em `agent-runtime`: reserva antes de `loop.go:549`, settle com `resp.Usage`/`CostMicroUSD`.
+- [x] Esgotamento ⇒ degradação declarada (não deny-loop cego — liga a AOS-262).
+- [x] Replay não re-reserva (dedup por `run_id:step_id`).
+
+### A porta, e porque tem esta forma
+
+`agentruntime.ModelAdmission` (`kernel/agent-runtime/model_admission.go`) é **reserva + saldo**, e as
+duas metades são obrigatórias. É o **mesmo** admission control de **ADR-008** — o orçamento hierárquico
+com reserva atómica em tokens/$ — aplicado ao ponto que lhe escapava; nenhum tecto novo, nenhuma
+segunda contabilidade: é o nó por-run de AOS-256 que passa a ser debitado também pela inferência. Contar depois é *burn-down* (AOS-261/262), que já existe e
+declaradamente **não decide**; o que faltava era ADMITIR — decidir antes de gastar.
+
+- `AdmitTurn` corre **imediatamente antes** de `rt.model.Call`, com o *prompt* já materializado (a
+  única base honesta para estimar o input) e devolve um **veredicto**, não um erro: **negar não é
+  avariar**. Um erro da porta é fatal (cegueira do tecto), como no `LivenessBreaker` e no
+  `ProgressObserver`;
+- `SettleTurn` corre logo a seguir com `Usage` + `CostMicroUSD` **medidos**. Sem ele, um tecto
+  composto por provisões esgotava-se com consumo fantasma e negava *runs* saudáveis — com uma
+  provisão de 1024 e turnos de 200 tokens, ~5× mais cedo do que o gasto real justifica.
+
+O loop **nunca retenta**: povoa `Result.BudgetExhausted` + `BudgetExhaustionReason` e retorna. Um
+*deny-loop* queimaria *wall-clock* sem progresso e o *run* morreria pelo disjuntor **com a causa
+errada no log** — que é o ponto (a) da decisão do dono.
+
+### A política de estimativa (declarada)
+
+**Input:** o *prompt* materializado, contado pela **mesma** aproximação por átomos de AOS-258
+(`integration.ModelPromptTokens` reutiliza `approxTokens`; nenhum segundo estimador é inventado).
+**Output:** desconhecido antes da chamada ⇒ uma **provisão fixa** (`DefaultOutputProvisionTokens` =
+1024), limitada a **1/8 do tecto por-run** (`OutputProvisionFor`). O limite não é zelo: uma provisão
+fixa **maior que o tecto** tornaria o tecto inatingível — o turno 1 seria negado sem o *run* ter
+gasto nada, e o operador leria «orçamento esgotado» num *run* que nunca correu. Quem nega tem de ser
+o **prompt**, que é uma verdade sobre o *run*.
+
+Provisão zero foi rejeitada (*fail-open* na dimensão que mais cresce: o output do último turno
+escaparia ao tecto); provisão igual ao máximo do modelo também (negaria *runs* com *headroom* de
+sobra). Sobre-provisionar custa **admissão momentânea**, nunca orçamento: o saldo devolve a folga no
+mesmo turno.
+
+**Dólares:** a projecção sai da **tarifa MEDIDA do próprio *run*** (custo/tokens já saldados), nunca
+de uma tarifa inventada — a tabela de preços é do Model Gateway (AOS-259) e importá-la para o
+*runtime* duplicaria a fonte de verdade do preço. Limitação declarada: no **primeiro turno de cada
+incarnação** ainda não há medição e esse turno decide só por *tokens* (DEF-278 (a)).
+
+### O saldo, com as primitivas que já existem
+
+`budget.Commit` confirma pelo montante **reservado** — por desenho, não recebe quantia. Saldar pelo
+real sem inventar uma primitiva nova faz-se **libertando a provisão e reservando o real**, nessa
+ordem: o nó do *run* é debitado sequencialmente (as tool calls do turno só são despachadas **depois**
+deste saldo) e a raiz da árvore é ilimitada, pelo que libertar E e reservar R ≤ E não pode falhar por
+contenção. A ordem inversa exigiria *headroom* para E+R ao mesmo tempo, e um *run* perto do tecto
+seria negado **no seu próprio saldo**, depois do dinheiro gasto.
+
+Casos limite, todos selados: **R > E** (subestimámos) ⇒ cobra-se até ao topo (*run* a 100%) e arma-se
+o *latch* de excedente, que faz a admissão seguinte negar com razão própria — o número exacto vive no
+ledger durável; **usage a zero** (provider que não ecoa) ⇒ fica **cobrada** a provisão, nunca zero (um
+orçamento que não desconta nada é pior do que nenhum) — mas **não é registada como medição**: a
+estimativa não entra no medidor do *run*, senão diluía a tarifa de `projectCost` e a admissão
+seguinte projectaria o custo abaixo do real, atravessando o tecto em `$` com turnos que devia ter
+negado (*fail-open* na dimensão que este ticket veio fechar); **falha do modelo** ⇒ a provisão é
+**libertada** inteira (sem isto, um provider intermitente esgotava o tecto com consumo inexistente).
+
+### A degradação declarada (ponto (a) da decisão do dono)
+
+Nenhum caminho novo. O adaptador do nó (`cmd/aos/model_admission_wiring.go`) reutiliza os dois que
+existem: com o **prompt de exaustão ARMADO** (AOS-263) a negação levanta o **mesmo** pendente durável
+e suspende o *run* em `waiting_on_human` — decidido em `POST /runs/{id}/exhaustion` (`continue`/
+`abort`, assinado), *run* **retomável**; **desarmado**, o *run* pára com razão própria e o selo
+terminal é **`timed_out`** com o rótulo **`budget_exhausted`** — ao lado de `max_turns_exhausted` e do
+*wall-clock*. **Nunca `failed`**: um tecto defensivo atingido não é falha recuperável, e `failed`
+accionaria a saga de *rollback* (AOS-254) sobre efeitos legítimos.
+
+### Replay não re-reserva (ponto (b))
+
+Duas camadas, e a que importa é a segunda: a **dedup por `run_id:step_id`** cobre a re-entrada no
+mesmo processo (molde do `already-applied` do *step-ledger*); o **`ReplayDetector`** cobre o caso que
+a decisão do dono nomeia — a **retoma**, onde o processo é outro e o mapa nasce vazio. O detector do
+nó lê o **mesmo plano de replay** (no `ctx` da retoma) que faz o `resumeAwareModelClient` devolver a
+captura, pelo que a simetria «**sem chamada, sem cobrança**» é estrutural e não duas regras a manter
+alinhadas. Selada por `TestAOS260_DetectorLeOMesmoPlanoDoModelClient`, que verifica a bicondicional
+contra o cliente real.
+
+### O caminho quente (ponto (c))
+
+Sem I/O novo: a admissão é O(prompt) + CAS em memória, e o estado por-run é podado pelo **seam que já
+existe** (`RunBudget.onRunRelease`, o mesmo `defer` de AOS-256) em vez de um `Forget` que alguém tenha
+de se lembrar de chamar. Determinismo do replay intacto: um turno reproduzido dá sempre o mesmo
+veredicto (admitido, sem reserva).
+
+### A raiz da árvore — a bomba que este ticket desarmou
+
+A raiz era `Amount{Tokens: MaxInt64}`, com a dimensão **$ a zero**. Era correcto enquanto **nada**
+reservava custo; a partir do momento em que o turno de modelo passou a debitar dólares, uma raiz a
+zero negaria a árvore **inteira**, em todos os *runs*, com uma razão que parece falta de orçamento.
+Selado por `TestAOS260_RaizIlimitadaNasDuasDimensoes`.
+
+### O banner (a postura anunciada mudou com a postura ligada)
+
+`BudgetScopeDeclaration` foi **reescrita** — ver AOS-255, cuja frase este ticket tornou falsa:
+
+> **orçamento: cobre tool calls E o turno de modelo em TOKENS — reserva antes da inferência, saldo pelo consumo medido; o tecto em dólares é opcional e só decide quando configurado**
+
+Os gates de texto acompanharam-na: saíram `TOOL-ONLY`/`TOKEN-ONLY` da lista de marcadores exigidos e
+saíram «cobre a inferencia»/«cobre o turno de modelo» da lista de *over-claim* (passaram a ser
+**verdade**); entraram `TURNO DE MODELO`, `DEGRADACAO DECLARADA`, `REPLAY NAO RE-RESERVA` e
+`AOS_BUDGET_MAX_COST_MICRO_USD`, mais um gate **negativo** que impede a frase velha de sobreviver na
+mesma linha que a nova.
+
+### Remediação adversarial da wave (correcções sobre a entrega inicial)
+
+Duas auditorias adversariais correram sobre AOS-259+AOS-260 e o que se segue é o que ficou corrigido.
+Nenhuma destas correcções alarga o alcance do ticket — todas fecham a distância entre o que a
+entrega **decidia** e o que ela **mostrava** ou **garantia**:
+
+1. **O tecto em `$` deixou de ser invisível à decisão humana.** `runBudgetReader.Limit` devolvia
+   `CostMicroUSD: 0` sempre, pelo que `consumedFraction` calculava a fracção **só sobre tokens**: um
+   *run* a 100% do tecto em dólares e a 15% do de tokens **nunca era avisado** e era negado de
+   repente. O `Limit` passa a trazer a dimensão `$` quando (e só quando)
+   `MaxCostMicroUSDPerRun` reporta um tecto configurado; `evaluationFor` preenche as duas dimensões a
+   partir do orçamento real; e o `PendingRecord` ganhou `consumed_cost_micro_usd`/`limit_cost_micro_usd`
+   **e um campo `reason`** — a razão atribuível da admissão, que antes vivia só no log do processo, que
+   não é o canal que a decisão assinada lê. Sem isso o operador respondia `continue` sobre a grandeza
+   errada e o *run* era re-negado no turno seguinte pelo mesmo tecto.
+2. **O tecto em `$` deixou de ser aceitável sem fonte de preço** (`ErrBudgetCostNoPriceSource`,
+   molde de `ErrProgressBudgetUnwired`). Com o par (modelo, região) sem preço na tabela em vigor — o
+   caso do *default* `AOS_MODEL_REGION=eu`, que a embebida não cobre — o custo medido seria **zero** em
+   todas as chamadas e a dimensão `$` **nunca negaria**; com o **modelo de referência** seria pior, por
+   dar autoridade de *enforcement* à constante fabricada de 1500 micro-USD (tarifa observada ~75
+   micro-USD/token, ~25× a real). O arranque **aborta** em vez de servir a capacidade-fantasma.
+3. **A poda de fim de *run* deixou de casar prefixos.** `pending` era chaveado por
+   `run_id + ":" + step_id` e `forgetRun` procurava por prefixo: o fim do *run* `t1` libertava as
+   provisões **vivas** de `t1:job` e o saldo desses turnos passava a *no-op* silencioso — o consumo
+   real nunca era debitado. A chave passou a ser o par estruturado e a poda é por **igualdade** do
+   `run_id`. O `run_id` vem do corpo do pedido sem validação de forma, pelo que era alcançável.
+4. **A provisão deixou de poder ficar órfã.** A entrada de `pending` continua a sair à entrada do
+   saldo (é o que torna um saldo repetido um *no-op* honesto) mas é **reposta** em cada caminho de
+   erro, para que `forgetRun` continue a ser a rede de reclamação que promete ser. Inalcançável hoje
+   (sem *emitter*, `Release`/`Commit` não falham) e **armado** para o orçamento durável — ver
+   DEF-278 (d).
+5. **`projectCost` deixou de poder transbordar.** O arredondamento passou a ser por quociente+resto
+   nos **dois** ramos: `(p + d - 1) / d` transbordava para negativo perto de `MaxInt64` (e o ramo do
+   produto inseguro devolvia **zero** com os três argumentos ao máximo — a projecção mais *fail-open*
+   possível, no caso mais caro). Uma quantia inválida passou também a ser **negação atribuível** e não
+   erro fatal da porta: `budget.ErrInvalidAmount` é um defeito de cálculo deste adaptador, não perda de
+   visibilidade do tecto, e subi-la abortava o *run* como `failed` — accionando a saga de compensação
+   sobre efeitos legítimos.
+6. **Comentários e banners realinhados.** `progress_wiring.go` declarava «não há tecto em dólares no
+   nó / alcance tool-only», o banner do *burn-down* dizia que a dimensão `$` continuava «a não ter
+   tecto próprio», e o README recomendava apertar o *wall-clock* como **único** travão da inferência.
+   Eram todos falsos depois desta wave — e o comentário que defende o defeito é o modo de falha que
+   AOS-255 nomeia, aplicado ao código em vez do banner.
+
+### Uma env nova
+
+`AOS_BUDGET_MAX_COST_MICRO_USD` (opcional): tecto **em dólares** por *run*, em micro-USD inteiro. Sem
+ela a dimensão `$` é **medida e debitada** mas nunca nega; com ela **decide a par dos tokens** (uma
+reserva só cabe se couber nas duas). *Fail-closed* na configuração: ilegível/`0`/negativa aborta, e
+**sem `AOS_BUDGET_MAX_TOKENS` também aborta** — não há orçamento onde pendurar o tecto em `$`, e
+escrevê-lo faria o operador ler uma protecção inexistente.
 
 ### Estado
-**ABERTO.**
+**IMPLEMENTADO.** Ficheiros: `kernel/agent-runtime/model_admission.go` (novo — a porta),
+`kernel/agent-runtime/loop.go` (o gancho + `Result.BudgetExhausted`/`BudgetExhaustionReason`),
+`integration/model_admission.go` (novo — o adaptador sobre o orçamento por-run),
+`integration/budget.go` (raiz ilimitada nas duas dimensões, tecto em `$` opcional, `onRunRelease`),
+`integration/secured.go` e `integration/budget_estimator.go` (alcance reescrito),
+`cmd/aos/model_admission_wiring.go` (novo — degradação declarada + detector de replay),
+`cmd/aos/bootstrap.go`, `cmd/aos/budget_env.go`, `cmd/aos/terminal_states.go`, `cmd/aos/service.go`,
+`cmd/aos/posture_banner.go`, `deploy/node/README.md`, `docs/reports/prontidao-modelos-agenticos.md`.
+Testes: `kernel/agent-runtime/model_admission_test.go` (ordem admit→call→settle, negação sem
+*deny-loop*, replay sem saldo, falha do modelo, erro fatal vs negação, retro-compat),
+`integration/aos260_model_admission_test.go` (árvore **real**: reserva/saldo contra gémeo derivado à
+mão, contrafactual do *commit*-da-estimativa, esgotamento, replay nas duas camadas, excedente, eixo
+`$` com tarifa medida, poda no *seam* de AOS-256, guarda AST anti-*float*, e a prova **composta** via
+`SecuredRuntime.Run`), `cmd/aos/aos260_model_admission_test.go` (os dois desfechos da degradação, a
+bicondicional detector⇄model client, selo terminal, env *fail-closed*, banner). Residuais: **DEF-278**.
 
 ---
 

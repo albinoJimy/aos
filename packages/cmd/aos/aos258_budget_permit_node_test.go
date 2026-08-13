@@ -37,6 +37,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -52,10 +53,39 @@ import (
 // [obsPermitNodeWith] compõe — sem ela a revalidação nega antes do PDP).
 const aos258Tool = "counter"
 
-// aos258Payload é o argumento da tool call. É deliberadamente longo: um payload de poucos
-// bytes estima ~2 tokens, e um tecto de "estimativa−1" não seria distinguível de zero (que a
-// config recusa). Com este tamanho a diferença entre "dentro" e "além" do tecto é ampla.
-var aos258Payload = []byte(`{"op":"tick","doc_id":"notes","filters":{"since":"2026-01-01","until":"2026-12-31"},"fields":["id","title","body","author","updated_at"],"limit":250}`)
+// aos258Payload é o argumento da tool call. É deliberadamente GRANDE, e cresceu em AOS-260
+// por uma razão que mudou o significado do tecto: desde que o turno de modelo passou a ser
+// ADMITIDO pelo mesmo orçamento por-run, o tecto deixou de ser um número que só as tool calls
+// consomem. Estes três testes continuam a ser sobre a decisão da TOOL CALL — para isso, a
+// estimativa da tool tem de DOMINAR a pegada do turno de modelo (prompt materializado +
+// provisão de output), senão o run pára por falta de orçamento para pensar antes de chegar a
+// pedir a tool, e a prova passa a ser sobre outra coisa.
+//
+// Com ~4 kB de argumentos a estimativa fica na ordem dos milhares de tokens, contra ~120 do
+// prompt deste run: a diferença entre "dentro" e "além" do tecto é ampla e os tectos abaixo
+// continuam a derivar da FUNÇÃO ([aos258Estimativa]), nunca de constantes calibradas à mão.
+var aos258Payload = aos258PayloadGrande()
+
+// aos258PayloadGrande constrói o argumento JSON denso. Estruturado de propósito: é sobre
+// payloads assim que a heurística de bytes subestima e a contagem por átomos de AOS-258
+// (que é a que está em vigor) se afasta dela.
+func aos258PayloadGrande() []byte {
+	var b strings.Builder
+	b.WriteString(`{"op":"tick","doc_id":"notes","fields":[`)
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&b, `{"id":%d,"title":"documento-%d","author":"equipa-%d","updated_at":"2026-01-%02d"},`, i, i, i%7, i%28+1)
+	}
+	b.WriteString(`{"id":"fim"}],"limit":250}`)
+	return []byte(b.String())
+}
+
+// aos258FolgaDoTurnoDeModelo é o headroom que se acrescenta ao tecto para os TURNOS DE MODELO
+// do run — a parte do orçamento que AOS-260 passou a admitir e que estes testes não querem
+// medir. Metade da estimativa da tool call: grande o bastante para vários turnos de modelo
+// deste run (prompt ~120 tokens + provisão, que é ela própria limitada a 1/8 do tecto), e
+// PEQUENA o bastante para não pagar uma segunda tool call — que é a distinção de que
+// [TestAOS258_No_OMesmoRunPermiteDepoisNega] vive.
+func aos258FolgaDoTurnoDeModelo() int64 { return aos258Estimativa() / 2 }
 
 // aos258Estimativa é o número de tokens que o estimador REAL (AOS-258) atribui à call que o
 // loop vai construir para esta invocação. É a fonte dos tectos dos três testes: o contrato
@@ -101,6 +131,12 @@ func (m *aos258Model) Call(_ context.Context, _ agentruntime.PromptView) (agentr
 func aos258Run(t *testing.T, runID string, maxTokens int64, calls int) (execs int64, worm audit.Store, permits, denials uint64) {
 	t.Helper()
 
+	// A pegada do TURNO DE MODELO (AOS-260) sai do mesmo tecto. Estes testes só são sobre a
+	// decisão da tool call se a estimativa da tool DOMINAR essa pegada — caso contrário o run
+	// pára por falta de orçamento para pensar e as asserções passam a medir outra coisa.
+	if est := aos258Estimativa(); est < 600 {
+		t.Fatalf("a estimativa da tool call (%d tokens) e pequena demais para isolar a decisao da TOOL CALL do turno de modelo (prompt ~120 tokens + provisao) — aumente aos258Payload", est)
+	}
 	t.Setenv("AOS_BUDGET_MAX_TOKENS", strconv.FormatInt(maxTokens, 10))
 
 	model := &aos258Model{calls: calls}
@@ -283,7 +319,11 @@ func TestAOS258_No_AlemDoTecto_DenyBudgetSeladoEAtribuido(t *testing.T) {
 // negava as duas. Só a composição correcta produz exactamente 1.
 func TestAOS258_No_OMesmoRunPermiteDepoisNega(t *testing.T) {
 	const runID = "run-aos258-queima"
-	tecto := aos258Estimativa() // cabe exactamente UMA reserva
+	// Cabe exactamente UMA reserva de tool call, mais a folga dos turnos de modelo (AOS-260):
+	// sem essa folga o run pararia por orçamento ANTES de emitir a segunda call, e a prova —
+	// que é sobre o par permit+deny da MESMA call — ficaria sobre outra coisa. A folga é
+	// menor do que uma estimativa, pelo que continua a não pagar a segunda call.
+	tecto := aos258Estimativa() + aos258FolgaDoTurnoDeModelo()
 
 	execs, worm, permits, denials := aos258Run(t, runID, tecto, 2)
 

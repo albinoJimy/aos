@@ -1506,6 +1506,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// CRUZAMENTO DAS DUAS POSTURAS (AOS-259 x AOS-260): um tecto em DÓLARES só é uma protecção
+	// se houver de onde derivar dólares. Sem fonte de preço — ou com o modelo de referência, cujo
+	// custo é fabricado — o tecto seria uma capacidade-fantasma escrita na config e anunciada no
+	// banner. Fail-closed no arranque, no molde de ErrProgressBudgetUnwired logo abaixo.
+	if err := requireCostSourceForBudgetCap(runBudget, cfg.Model); err != nil {
+		return nil, err
+	}
 	// (7-ante-bis) BURN-DOWN + AVISO DE EXAUSTÃO (AOS-261/AOS-262). A fonte é o LEDGER DE
 	// TURNOS (o mesmo `es` onde o TurnRecorder logo abaixo grava — a coincidência não é
 	// acidental, é o contrato: se fossem stores diferentes a fonte denunciaria com
@@ -1540,6 +1547,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// nil-safe: sem burn-down composto o observador é nil e o loop nunca o consulta
 	// (comportamento de AOS-013 byte-idêntico).
 	runtimeOpts = append(runtimeOpts, agentruntime.WithProgressObserver(progress.observer()))
+	// (7-ante-quater) ADMISSÃO DO TURNO DE MODELO (AOS-260, D1 opção B). É o MESMO orçamento
+	// por-run do hook de tool calls — nenhum tecto novo —, agora também a admitir a INFERÊNCIA,
+	// que era a linha de custo dominante sem admission control. A degradação por esgotamento
+	// reutiliza o MESMO `exhaustion` de AOS-263: armado ⇒ o run suspende-se à espera de decisão
+	// humana; desarmado ⇒ pára com razão própria (`timed_out`/`budget_exhausted`).
+	// nil (sem AOS_BUDGET_MAX_TOKENS) ⇒ porta não ligada e o loop corre como em AOS-013.
+	modelAdmission, err := newNodeModelAdmission(runBudget, exhaustion, log)
+	if err != nil {
+		return nil, err
+	}
+	runtimeOpts = append(runtimeOpts, agentruntime.WithModelAdmission(modelAdmission.port()))
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
 		EffectRewriter: newSandboxEffectRewriter(sandboxBindings), // AOS-005: args→ExecRequest; nil ⇒ sem reescrita
@@ -2144,17 +2162,32 @@ func describeSubstrate(provided bool, path string) string {
 // AOS-163 é a composição de segurança/identidade, não o modelo.
 type referenceModel struct{}
 
+// Os números FABRICADOS do modelo de referência. São constantes NOMEADAS e não literais porque
+// deixaram de ser só decoração de observabilidade: desde AOS-260 o custo de um turno é debitado na
+// árvore de orçamento, pelo que [requireCostSourceForBudgetCap] tem de os poder citar ao operador
+// quando RECUSA um tecto em dólares sobre este modelo. Ver o comentário de [ErrBudgetCostNoPriceSource].
+const (
+	referenceModelInputTokens  = 12
+	referenceModelOutputTokens = 8
+	// referenceModelCostMicroUSD é 0,0015 USD. NÃO é uma medição — é um valor de referência para
+	// que o span `chat` do modelo de referência não saia com custo nulo. Com um tecto em dólares
+	// configurado seria autoridade de enforcement derivada de um número inventado, e é por isso
+	// que o arranque recusa a combinação em vez de a servir.
+	referenceModelCostMicroUSD = 1500
+)
+
 // Call implementa [agentruntime.ModelClient]. Devolve um uso e um CUSTO não-nulos: o
 // span chat que o RT abre em volta desta chamada carrega AttrCostMicroUSD/AttrCostUSD
 // (ver kernel/agent-runtime/loop.go callModel), pelo que a observabilidade OTLP (AOS-173)
-// exporta um custo real por turno mesmo com o modelo de referência (o Model Gateway real,
-// com custo por provedor, é EPIC-06). O custo é micro-USD INTEIRO (fonte de verdade).
+// exporta um custo por turno mesmo com o modelo de referência (o Model Gateway real,
+// com custo por provedor, é EPIC-06). O custo é micro-USD INTEIRO (fonte de verdade) e
+// FABRICADO — o banner declara-o, e o arranque recusa pendurar-lhe um tecto em dólares.
 func (referenceModel) Call(context.Context, agentruntime.PromptView) (agentruntime.ModelResponse, error) {
 	return agentruntime.ModelResponse{
 		Text:         "no `aos`: modelo de referencia (Model Gateway real = EPIC-06)",
 		Final:        true,
-		Usage:        agentruntime.Usage{InputTokens: 12, OutputTokens: 8},
-		CostMicroUSD: 1500, // 0.0015 USD — custo de referência não-nulo (observável no span chat)
+		Usage:        agentruntime.Usage{InputTokens: referenceModelInputTokens, OutputTokens: referenceModelOutputTokens},
+		CostMicroUSD: referenceModelCostMicroUSD,
 	}, nil
 }
 

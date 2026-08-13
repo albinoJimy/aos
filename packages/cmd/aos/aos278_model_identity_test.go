@@ -73,7 +73,7 @@ func TestAOS278_ValidCredentialProceeds(t *testing.T) {
 	srv := aos278OpenAIServer(t, &reached)
 	auth, verifier := aos278AuthorityReader(t)
 
-	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestAOS278_InvalidCredentialDeniedAttributable(t *testing.T) {
 	srv := aos278OpenAIServer(t, &reached)
 	_, verifier := aos278AuthorityReader(t)
 
-	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestAOS278_MissingCredentialDeniedNotForged(t *testing.T) {
 	srv := aos278OpenAIServer(t, &reached)
 	_, verifier := aos278AuthorityReader(t)
 
-	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestAOS278_TokenWithoutModelInvokeDenied(t *testing.T) {
 	srv := aos278OpenAIServer(t, &reached)
 	auth, verifier := aos278AuthorityReader(t)
 
-	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestAOS278_UnboundVerifierFailsClosedThenBinds(t *testing.T) {
 	auth, realVerifier := aos278AuthorityReader(t)
 
 	holder := &lateBoundModelVerifier{} // NÃO-ligado
-	mc, err := newGatewayModelClient(holder, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	mc, err := newGatewayModelClient(holder, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestAOS278_CredentialSurvivesResumeThreading(t *testing.T) {
 	srv := aos278OpenAIServer(t, &reached)
 	auth, verifier := aos278AuthorityReader(t)
 
-	inner, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	inner, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}

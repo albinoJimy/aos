@@ -90,6 +90,20 @@ type Result struct {
 	// BreakerTarget é o rótulo do estado durável atingido no disparo ("paused" |
 	// "timed_out"). Vazio quando !Tripped.
 	BreakerTarget string
+	// BudgetExhausted indica que o run PAROU porque a ADMISSÃO DO TURNO DE MODELO
+	// (AOS-260) negou headroom: o orçamento do run não comporta mais uma inferência.
+	// NENHUMA chamada ao modelo ocorreu no turno em que isto ficou true — o turno não
+	// chegou a existir, e por isso [Result.Turns] conta os turnos COMPLETOS anteriores.
+	//
+	// É uma DEGRADAÇÃO DECLARADA e não uma falha: o loop não retenta (um deny-loop cego
+	// queimaria wall-clock e morreria com a causa errada) e não devolve erro. Distinto de
+	// Tripped (disjuntor), Paused (steer) e de ErrMaxTurnsExceeded (tecto de ITERAÇÕES, não
+	// de gasto).
+	BudgetExhausted bool
+	// BudgetExhaustionReason é o rótulo ATRIBUÍVEL da negação (nunca segredo) devolvido
+	// pela porta de admissão — é o que faz o log dizer «parou por orçamento» em vez de
+	// deixar o operador a procurar a causa no disjuntor. Vazio quando !BudgetExhausted.
+	BudgetExhaustionReason string
 	// Escalated indica que o run PAROU à espera de AVAL HUMANO (AOS-021): o Reference
 	// Monitor devolveu `escalate` numa tool call (nenhum efeito ocorreu) e o
 	// [EscalationSink] suspendeu o run (running → waiting_on_human). Distinto de Paused
@@ -115,6 +129,7 @@ type Runtime struct {
 	steer            SteerSource
 	breaker          LivenessBreaker        // AOS-080/081: disjuntor multi-sinal do agente vivo
 	actionObserver   ActionObserver         // AOS-251: fonte do sinal de no-progress (hash por acção mediada)
+	admission        ModelAdmission         // AOS-260: admissão do TURNO DE MODELO (reserva antes, saldo depois)
 	progressObserver ProgressObserver       // AOS-262: burn-down + aviso a ~limiar (leitura, nunca decisão)
 	escalation       EscalationSink         // AOS-021: tool call escalada → espera por humano
 	approvalEvidence ApprovalEvidenceSource // AOS-021: prova de aprovação a anexar na retoma
@@ -323,8 +338,46 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return res, err
 		}
 
+		// (2a) ADMITIR — RESERVA DE ORÇAMENTO DO TURNO DE MODELO (AOS-260, D1 opção B).
+		//
+		// Corre AQUI e não noutro sítio: DEPOIS de o prompt estar materializado (é dele que
+		// sai a estimativa honesta do input) e IMEDIATAMENTE ANTES de `rt.model.Call` — não
+		// há uma única instrução entre a admissão e o efeito que ela admite.
+		//
+		// NEGAÇÃO ⇒ o run PÁRA AQUI, uma vez, com razão própria. Não se retenta e não se
+		// devolve erro: um deny-loop cego queimaria o wall-clock e o run morreria pelo
+		// disjuntor com a causa errada no log. `res.Turns` conta os turnos COMPLETOS — este
+		// não chegou a existir, nenhum token foi gasto nele. Quem transforma esta paragem
+		// numa decisão humana (o prompt de exaustão de AOS-263) é o ADAPTADOR, que é quem
+		// tem a maquinaria HITL; o kernel pára e diz porquê.
+		adm, err := rt.admitTurn(ctx, goal, stepID, turn, view)
+		if err != nil {
+			// Fail-closed: uma FALHA da admissão (≠ negação) é cegueira do tecto — correr
+			// um agente autónomo com o admission control cego é a superfície verde que este
+			// ticket remove.
+			return res, err
+		}
+		if !adm.Admitted {
+			res.Turns = turn - 1
+			res.BudgetExhausted = true
+			res.BudgetExhaustionReason = adm.Reason
+			return res, nil
+		}
+
 		// (2) CHAMAR — Model Gateway sob span chat (ADR-010).
 		resp, err := rt.callModel(ctx, goal, stepID, view)
+		// (2b) SALDAR — a provisão reservada acima é substituída pelo consumo REAL da
+		// resposta (usage medido + custo micro-USD de AOS-259), ou LIBERTADA quando a
+		// chamada falhou. Corre nos DOIS caminhos, antes de qualquer return: uma reserva
+		// que ficasse pendente por um provider intermitente esgotaria o tecto do run com
+		// consumo que nunca existiu. Num turno REPRODUZIDO (replay) nada foi reservado e
+		// isto é no-op — a dedup é do adaptador, por `run_id:step_id`.
+		if serr := rt.settleTurn(ctx, goal, stepID, turn, adm, resp, err != nil); serr != nil && err == nil {
+			// O erro do MODELO tem precedência: é a causa primeira e o saldo já libertou o
+			// que havia a libertar. Só quando o turno correu bem é que a falha do saldo
+			// aborta — nesse caso o tecto deixou de ser fiável, e é fail-closed.
+			return res, serr
+		}
 		if err != nil {
 			return res, err
 		}

@@ -22,6 +22,35 @@ package otelgenai
 //     invoke_agents descendentes, seguindo o parent_span_id para cima);
 //   - por TRAJECTÓRIA (trace_id) = soma de TODOS os chats do trace.
 //
+// # Segunda regra de NÃO-DUPLA-CONTAGEM: chats ANINHADOS (AOS-259)
+//
+// A regra acima elimina a dupla-contagem VERTICAL entre operações diferentes
+// (invoke_agent agregado vs. chat por-turno). Falta a HORIZONTAL, entre spans da MESMA
+// operação: UM turno de modelo é observado por DUAS camadas quando ambas estão
+// instrumentadas com o mesmo tracer — o Agent Runtime abre o seu span `chat` em volta
+// da chamada (callModel) e o Model Gateway abre o SEU span `chat` em volta da mesma
+// chamada, um ANINHADO no outro pelo ctx que atravessa a porta ModelClient. Os dois
+// carregam os MESMOS tokens (o usage do provider) e — desde que o canal de custo de
+// AOS-259 está ligado — o MESMO custo. Somar ambos daria TOKENS E CUSTO A DOBRAR: o
+// burn-down por span avisaria ao dobro da velocidade e o prompt de exaustão dispararia
+// cedo, uma REGRESSÃO de algo que hoje está certo (a contagem 1x com custo zero).
+//
+// A dedup é por PARENTESCO, não por heurística de valores (dois turnos legítimos podem
+// ter tokens idênticos; comparar valores apagaria trabalho real). Um span `chat` NÃO é
+// contado quando, subindo a cadeia de ancestrais, se encontra OUTRO `chat` ANTES de
+// qualquer FRONTEIRA DE TURNO (invoke_agent ou execute_tool). Isto suprime exactamente
+// a re-observação do mesmo turno pela camada de baixo (RT → GW) e preserva o caso
+// legítimo da DELEGAÇÃO, em que o chat do sub-agente também tem um chat entre os seus
+// ancestrais mas com as fronteiras execute_tool + invoke_agent pelo meio:
+//
+//	chat(RT) → chat(GW)                                 ⇒ conta 1 (o de fora)
+//	chat(pai) → execute_tool → invoke_agent → chat(filho) ⇒ conta 2 (turnos distintos)
+//
+// Conta-se o span de FORA (o do RT) e não o de dentro: é o que carrega a correlação de
+// trajectória (run_id/step_id) e é o único presente quando o GW não está a ser traçado —
+// pelo que a leitura fica IDÊNTICA nas duas topologias, traçado ou não. Um chat cujo pai
+// não esteja no conjunto de spans dado é tratado como o de fora (conta-se o que se vê).
+//
 // # Dinheiro em micro-USD INTEIRO
 //
 // O custo soma-se em micro-USD int64 (ADR-008): sem drift de vírgula flutuante. Um
@@ -150,16 +179,84 @@ type chatSample struct {
 	endNano   int64
 }
 
-// AggregateByTrace soma o custo/tokens dos spans `chat` por trajectória (trace_id).
-// Conta SÓ chats — invoke_agent (agregado) e execute_tool são ignorados, evitando a
-// dupla-contagem. A chave do mapa é o trace_id hex.
-func AggregateByTrace(spans []SpanData) map[string]UsageTotals {
-	out := make(map[string]UsageTotals)
+// spanNode é a projecção de TOPOLOGIA de um span: o pai e a operação. Basta isto para
+// resolver a cadeia de ancestrais (rollup por sub-árvore) e para decidir se um `chat` é
+// uma re-observação ANINHADA do mesmo turno (dedup de AOS-259).
+type spanNode struct {
+	parentHex string
+	op        string
+}
+
+// spanTopology indexa span_id hex → [spanNode] sobre TODOS os spans dados (chat,
+// invoke_agent, execute_tool e quaisquer outros): a cadeia de ancestrais só se resolve
+// com o grafo completo, não apenas com os chats.
+func spanTopology(spans []SpanData) map[string]spanNode {
+	nodes := make(map[string]spanNode, len(spans))
+	for _, sd := range spans {
+		nodes[sd.SpanContext.SpanIDHex()] = spanNode{parentHex: parentHexOf(sd), op: operationOf(sd)}
+	}
+	return nodes
+}
+
+// nestedChat indica que um `chat` com este pai é uma RE-OBSERVAÇÃO ANINHADA do MESMO
+// turno de modelo (tipicamente o span do Model Gateway dentro do span do Agent Runtime)
+// e portanto NÃO deve ser contado — ver a regra de dedup no cabeçalho do ficheiro.
+//
+// Sobe a cadeia de ancestrais e pára no primeiro veredicto: outro `chat` ⇒ aninhado
+// (true); uma FRONTEIRA DE TURNO (invoke_agent/execute_tool) ⇒ turno próprio (false);
+// pai fora do conjunto dado ou raiz ⇒ turno próprio (conta-se o que se vê). O guard
+// `visited` protege contra um ciclo hipotético de parent_span_id (a árvore é acíclica
+// por construção; a leitura é defensiva).
+func nestedChat(parentHex string, nodes map[string]spanNode) bool {
+	visited := make(map[string]bool)
+	for cur := parentHex; cur != "" && !visited[cur]; {
+		visited[cur] = true
+		n, ok := nodes[cur]
+		if !ok {
+			return false
+		}
+		switch n.op {
+		case OpChat:
+			return true
+		case OpInvokeAgent, OpExecuteTool:
+			return false
+		}
+		cur = n.parentHex
+	}
+	return false
+}
+
+// countableChatSamples projecta os spans `chat` CONTÁVEIS do conjunto — os que são a
+// unidade-verdade de um turno de modelo — descartando as re-observações aninhadas
+// ([nestedChat]). Devolve também o índice de topologia, que o rollup por sub-árvore
+// reutiliza sem o reconstruir. É o ÚNICO ponto por onde a contabilidade lê chats, para
+// que a regra de dedup valha igualmente em [AggregateByTrace], [RollupByTrace] e
+// [VelocityByTrace] — uma regra que valesse só num deles seria uma incoerência entre
+// leituras do mesmo trace.
+func countableChatSamples(spans []SpanData) ([]chatSample, map[string]spanNode) {
+	nodes := spanTopology(spans)
+	out := make([]chatSample, 0, len(spans))
 	for _, sd := range spans {
 		cs, ok := chatSampleFromSpanData(sd)
 		if !ok {
 			continue
 		}
+		if nestedChat(cs.parentHex, nodes) {
+			continue
+		}
+		out = append(out, cs)
+	}
+	return out, nodes
+}
+
+// AggregateByTrace soma o custo/tokens dos spans `chat` por trajectória (trace_id).
+// Conta SÓ chats — invoke_agent (agregado) e execute_tool são ignorados — e, entre os
+// chats, SÓ os não-aninhados (um turno observado por RT e GW conta UMA vez). A chave do
+// mapa é o trace_id hex.
+func AggregateByTrace(spans []SpanData) map[string]UsageTotals {
+	out := make(map[string]UsageTotals)
+	samples, _ := countableChatSamples(spans)
+	for _, cs := range samples {
 		out[cs.traceHex] = out[cs.traceHex].add(cs.totals)
 	}
 	return out
@@ -174,23 +271,13 @@ func AggregateRecordedByTrace(spans []*RecordedSpan) map[string]UsageTotals {
 // invoke_agent, contando SÓ os spans `chat` (sem dupla-contagem — o agregado do
 // invoke_agent e o custo do execute_tool NUNCA são somados). Ver [TraceRollup].
 func RollupByTrace(spans []SpanData) map[string]TraceRollup {
-	// Índice de topologia: span_id hex → (parent hex, operação). Cobre TODOS os spans
-	// (chat, invoke_agent, execute_tool) para resolver a cadeia de ancestrais.
-	type node struct {
-		parentHex string
-		op        string
-	}
-	nodes := make(map[string]node, len(spans))
-	for _, sd := range spans {
-		nodes[sd.SpanContext.SpanIDHex()] = node{parentHex: parentHexOf(sd), op: operationOf(sd)}
-	}
+	// Chats CONTÁVEIS (sem re-observações aninhadas, AOS-259) + o índice de topologia:
+	// span_id hex → (parent hex, operação), sobre TODOS os spans (chat, invoke_agent,
+	// execute_tool) para resolver a cadeia de ancestrais.
+	samples, nodes := countableChatSamples(spans)
 
 	out := make(map[string]TraceRollup)
-	for _, sd := range spans {
-		cs, ok := chatSampleFromSpanData(sd)
-		if !ok {
-			continue
-		}
+	for _, cs := range samples {
 		tr, seen := out[cs.traceHex]
 		if !seen {
 			tr = TraceRollup{
@@ -233,14 +320,13 @@ func RollupRecordedByTrace(spans []*RecordedSpan) map[string]TraceRollup {
 }
 
 // VelocityByTrace deriva o sinal [CostVelocity] por trajectória, contando SÓ os spans
-// `chat`. A chave do mapa é o trace_id hex.
+// `chat` não-aninhados (a mesma regra de dedup da agregação — caso contrário a
+// velocidade que o disjuntor de AOS-080 lê viria ao dobro). A chave do mapa é o
+// trace_id hex.
 func VelocityByTrace(spans []SpanData) map[string]CostVelocity {
+	samples, _ := countableChatSamples(spans)
 	perTrace := make(map[string][]chatSample)
-	for _, sd := range spans {
-		cs, ok := chatSampleFromSpanData(sd)
-		if !ok {
-			continue
-		}
+	for _, cs := range samples {
 		perTrace[cs.traceHex] = append(perTrace[cs.traceHex], cs)
 	}
 	out := make(map[string]CostVelocity, len(perTrace))

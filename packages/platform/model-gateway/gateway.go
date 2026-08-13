@@ -333,6 +333,12 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		if err := g.recordCost(ctx, span, ex); err != nil {
 			return err
 		}
+		// AOS-259: o custo DERIVADO entra na resposta NORMALIZADA. É o passo que faltava
+		// ao canal — o metering já calculava o número e agregava-o por run/árvore, mas
+		// nada o devolvia ao chamador, pelo que o runtime somava zeros. Nenhum adaptador
+		// de provider preenche este campo (ver [port.Usage]): é escrito aqui, depois de o
+		// usage medido estar em mão e de o custo ter sido calculado fail-closed.
+		resp.Usage.CostMicroUSD = ex.Usage.CostMicroUSD
 		return nil
 	})
 	if runErr != nil {
@@ -415,6 +421,16 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 			// caminho SÍNCRONO, o stream já foi entregue ao chamador, pelo que um custo
 			// não-calculável não pode abortar a chamada — regista-se o erro no span (o
 			// custo do stream permanece observável como falha atribuível, não 0 silencioso).
+			//
+			// ALCANCE DO CANAL DE CUSTO (AOS-259) NESTE CAMINHO: o custo derivado fica em
+			// ex.Usage.CostMicroUSD, no span e nos agregados por run/árvore — mas NÃO no
+			// [port.ChatStreamDelta.Usage] do chunk final, porque esse chunk já foi
+			// entregue ao consumidor quando este metering corre (é essa a razão de o
+			// metering ser adiado: antes do fim do stream não há usage). Não é limitação
+			// do canal, é a ordem física do streaming. Sem efeito no runtime: o adaptador
+			// RT→GW ([ModelClientAdapter.Call]) usa o caminho SÍNCRONO (Chat), onde o custo
+			// vai na resposta. Um consumidor de stream que queira o custo por chamada
+			// lê-o do span/recorder.
 			if err := g.recordCost(ctx, span, ex); err != nil {
 				span.SetAttribute(agentruntime.AttrErrorType, errType(err))
 			}
@@ -599,6 +615,12 @@ func (g *Gateway) recordCacheSLI(ctx context.Context, span agentruntime.Span, ex
 // trajectória — em paralelo com a atribuição (AOS-057) que liga o principal no MESMO
 // span. No-op se não há recorder. Fail-closed: devolve erro se o custo for
 // NÃO-calculável (sem preço, tokens negativos, overflow) — nunca 0 silencioso.
+//
+// AOS-259: escreve o custo derivado em ex.Usage.CostMicroUSD — é daqui que o custo
+// entra no CANAL de ponta a ponta. O chamador projecta-o na resposta normalizada
+// ([port.Usage.CostMicroUSD]), de onde o adaptador RT→GW o leva ao runtime, ao span
+// `chat` do turno e ao evento durável que o burn-down lê. Sem recorder composto o campo
+// fica intacto (zero): ausência de contabilidade, não custo nulo.
 func (g *Gateway) recordCost(ctx context.Context, span agentruntime.Span, ex *pipeline.Exchange) error {
 	if g.cost == nil {
 		return nil
@@ -608,6 +630,7 @@ func (g *Gateway) recordCost(ctx context.Context, span agentruntime.Span, ex *pi
 	if rd.Err != nil {
 		return &costError{err: rd.Err}
 	}
+	ex.Usage.CostMicroUSD = rd.Amount.CostMicroUSD
 	return nil
 }
 

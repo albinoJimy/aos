@@ -706,6 +706,18 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 
 	res, _, err = s.node.Runtime.Run(ctx, goal, nil)
 
+	// DEGRADAÇÃO DECLARADA POR ORÇAMENTO (AOS-260): o run parou porque a admissão do turno de
+	// modelo negou headroom, SEM erro e SEM resposta final. Sem esta linha o desfecho seria
+	// legível apenas no log durável (`timed_out`/`budget_exhausted`, ver [runGate.sealTerminal])
+	// e o operador que olha para o log do processo veria um run a acabar em silêncio.
+	//
+	// Este caminho é o do prompt de exaustão DESARMADO: com ele armado o run não chega aqui
+	// assim — foi suspenso e o sinal viaja no `err`, absorvido mais abaixo.
+	if res.BudgetExhausted {
+		s.log("run %q PAROU por ORCAMENTO ESGOTADO (AOS-260) ao fim de %d turnos completos — %s. Estado duravel: timed_out (%s), NAO failed: um tecto defensivo atingido nao e uma falha recuperavel por compensacao. Para o run prosseguir e preciso levantar o tecto (AOS_BUDGET_MAX_TOKENS / AOS_BUDGET_MAX_COST_MICRO_USD) e re-submeter",
+			rs.runID, res.Turns, res.BudgetExhaustionReason, reasonBudgetExhausted)
+	}
+
 	// SUSPENSÃO À ESPERA DE HUMANO (AOS-021): o run NÃO terminou — uma tool call foi
 	// escalada e nenhum efeito ocorreu. Persiste-se o registo de RETOMA (o Goal SEM a
 	// credencial) para que qualquer réplica o possa retomar depois, e larga-se tudo o

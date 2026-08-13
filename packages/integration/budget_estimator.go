@@ -36,16 +36,21 @@ package integration
 // # O QUE **NÃO** ESTIMA (e porquê) — a lista é a razão de o alcance declarado em AOS-255 não mudar
 //
 //   - O TURNO DE MODELO. A inferência é invocada directamente pelo loop
-//     (`kernel/agent-runtime/loop.go`, `rt.model.Call`), FORA da cadeia do Reference Monitor:
-//     nenhuma reserva a admite, e por isso nenhuma estimativa aqui a poderia cobrir. É o eixo
-//     AOS-260, e é a linha de custo DOMINANTE. O banner continua a dizê-lo.
+//     (`kernel/agent-runtime/loop.go`, `rt.model.Call`), FORA da cadeia do Reference Monitor,
+//     pelo que nenhuma estimativa feita sobre uma [referencemonitor.Call] a poderia cobrir. O
+//     eixo NÃO ficou aberto: AOS-260 fechou-o do outro lado — porta de admissão no LOOP,
+//     estimativa sobre o PROMPT MATERIALIZADO (ver [ModelPromptTokens], que reutiliza a mesma
+//     contagem por átomos daqui) e saldo pelo consumo medido. Este estimador continua a ser o
+//     das tool calls, e só delas.
 //   - O RESULTADO DA TOOL. O output volta à transcrição e é reenviado em cada turno seguinte
 //     — é frequentemente maior do que os argumentos. Não é estimável ANTES do efeito (só se
-//     conhece depois de executar) e o saldo de AOS-257 confirma a RESERVA, não a MEDIÇÃO. O
-//     canal de custo medido é o eixo AOS-259.
-//   - DÓLARES. A dimensão `CostMicroUSD` é devolvida a ZERO de propósito: sem canal de custo
-//     ponta a ponta (AOS-259) uma tarifa aqui seria um número inventado, e um tecto em $
-//     comparado com consumo contado a zero é uma capacidade-fantasma. Token-only.
+//     conhece depois de executar) e o saldo de AOS-257 confirma a RESERVA, não a MEDIÇÃO. Não
+//     fica por pagar: entra no PROMPT do turno seguinte, e é aí que a admissão do turno de
+//     modelo (AOS-260) o conta — na estimativa desse turno, sobre o prompt materializado.
+//   - DÓLARES. A dimensão `CostMicroUSD` desta estimativa é devolvida a ZERO de propósito, e
+//     continua a sê-lo depois de AOS-259/AOS-260: o custo de um EFEITO não é conhecível antes
+//     dele, e uma tarifa inventada aqui seria pior do que zero. Quem debita dólares na árvore
+//     é o turno de modelo, com o número MEDIDO — nunca este estimador.
 //   - O TOKENIZADOR DO PROVIDER. Isto não é BPE: é uma aproximação sem vocabulário. Direcção
 //     do erro, declarada: SOBRESTIMA texto latino acentuado (1 token por rune não-ASCII),
 //     aproxima CJK, e deixa de SUBESTIMAR JSON/base64/URLs. Sobrestimar esgota o tecto mais

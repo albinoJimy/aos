@@ -61,8 +61,10 @@ var ErrBurndownNoLedger = errors.New("aos: sem ledger de turnos para o run (nenh
 //
 // NÃO É HIPOTÉTICO: o `translateResponse` do model gateway só preenche `Usage` a partir do
 // `resp.Usage.PromptTokens/CompletionTokens` que o provider ecoar. Um provider que não ecoe
-// usage grava turnos a zero, e a dimensão irmã (`CostMicroUSD`) já é comprovadamente zero
-// ponta a ponta (eixo AOS-259). Zero tokens em N turnos de modelo é IMPOSSÍVEL num caminho
+// usage grava turnos a zero — e arrasta consigo a dimensão irmã, porque desde AOS-259 o
+// `CostMicroUSD` é DERIVADO desses mesmos tokens pela tabela de preços: zero tokens ⇒ zero
+// custo, pelo que a cegueira é a mesma nas duas dimensões e o guarda continua a ser o
+// mesmo. Zero tokens em N turnos de modelo é IMPOSSÍVEL num caminho
 // bem composto — todo o turno tem pelo menos o prompt — logo é AUSÊNCIA DE DADOS disfarçada
 // de leitura, e a postura tem de ser a mesma: denunciar, nunca 0%.
 //

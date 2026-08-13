@@ -1,13 +1,22 @@
 package main
 
-// AOS-255 — A DECLARAÇÃO DE ALCANCE DO ORÇAMENTO (tool-only, token-only).
+// AOS-255 — A DECLARAÇÃO DE ALCANCE DO ORÇAMENTO (reescrita por AOS-260).
 //
 // O ticket é de TEXTO, mas o texto é a única coisa que separa um orçamento honesto de uma
-// CAPACIDADE-FANTASMA: o hook de orçamento vive na cadeia do Reference Monitor, que só é
-// atravessada por tool call, enquanto o turno de modelo é invocado directamente
-// (`kernel/agent-runtime/loop.go`, `rt.model.Call`). Ligar o hook sem o dizer produziria um
-// banner a anunciar "orçamento" a quem inferiria — legitimamente — que o gasto do agente passou
-// a ter tecto, quando a LINHA DE CUSTO DOMINANTE ficou de fora.
+// CAPACIDADE-FANTASMA. AOS-255 fixou a frase quando o alcance era TOOL-ONLY/TOKEN-ONLY: o hook
+// de orçamento vivia na cadeia do Reference Monitor, que só é atravessada por tool call,
+// enquanto o turno de modelo era invocado directamente (`kernel/agent-runtime/loop.go`,
+// `rt.model.Call`). Ligar o hook sem o dizer produziria um banner a anunciar "orçamento" a quem
+// inferiria — legitimamente — que o gasto do agente passou a ter tecto, quando a LINHA DE CUSTO
+// DOMINANTE ficava de fora.
+//
+// AOS-260 FECHOU esse buraco (porta de admissão do turno de modelo: reserva antes da
+// inferência, saldo pelo consumo medido), e com ele a frase MUDOU — este gate mudou com ela,
+// porque a disciplina é simétrica: enquanto a inferência esteve fora, o banner tinha de o
+// dizer; agora que está dentro, dizer o contrário é a promessa a MENOS, e um operador que leia
+// "o gasto de inferência não tem tecto" desligará protecções por causa de uma frase velha. O
+// que este ficheiro continua a garantir é o que sempre garantiu: a frase é a MESMA no banner e
+// nos documentos, e nenhum dos estados promete mais do que a composição sustenta.
 //
 // Por isso o texto é gateado, e em três eixos:
 //
@@ -35,23 +44,36 @@ import (
 // — a que vive nos documentos (o banner é ASCII, a prosa do repo não é). Duplicar a frase nas
 // duas formas é deliberado: o gate compara TEXTO, e uma normalização automática esconderia uma
 // reescrita que mudasse o sentido.
-const budgetScopeDeclarationAccented = "orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado por tempo (wall-clock), não por tecto"
+const budgetScopeDeclarationAccented = "orçamento: cobre tool calls E o turno de modelo em TOKENS — reserva antes da inferência, saldo pelo consumo medido; o tecto em dólares é opcional e só decide quando configurado"
 
 // budgetProntidaoReport é o relatório de prontidão, o segundo documento nomeado pelo critério de
 // aceitação de AOS-255 (a §7 é onde o plano de billing token-only está escrito).
 const budgetProntidaoReport = "../../../docs/reports/prontidao-modelos-agenticos.md"
 
-// budgetOverclaimPhrases são formulações que fariam a linha prometer COBERTURA TOTAL do gasto —
-// exactamente a leitura errada que a declaração existe para impedir. Nenhuma pode aparecer em
-// nenhum dos estados do banner enquanto o turno de modelo estiver fora da cadeia. Estão em
-// minúsculas e sem acentos porque o banner também está.
+// budgetOverclaimPhrases são formulações que fariam a linha prometer mais do que o orçamento
+// entrega. Nenhuma pode aparecer em nenhum dos estados do banner. Estão em minúsculas e sem
+// acentos porque o banner também está.
+//
+// A lista ENCOLHEU em AOS-260, e o que saiu diz o que mudou: «cobre a inferencia» e «cobre o
+// turno de modelo» eram over-claim enquanto a inferência corria fora de qualquer admissão —
+// passaram a ser a VERDADE (a porta [agentruntime.ModelAdmission] reserva antes de
+// `rt.model.Call` e salda pelo consumo medido), e proibi-las obrigaria o banner a calar o
+// facto mais importante que tem para dizer.
+//
+// O que FICA é o que continua a ser falso, e é falso por razões que AOS-260 não tocou:
+//
+//   - «tecto global» / «gasto total» — o tecto é POR-RUN e POR-INCARNACAO. Dois runs
+//     concorrentes têm tectos independentes e uma re-hospedagem recebe o tecto inteiro; um
+//     nó com N runs não tem tecto nenhum sobre a soma deles;
+//   - «todo o gasto» / «todo o custo» — o RESULTADO de uma tool call volta à transcrição e é
+//     reenviado em cada turno seguinte; é cobrado quando entra no prompt do turno seguinte,
+//     mas nunca ADMITIDO como linha própria. E o tecto em dólares só decide se o operador o
+//     configurar.
 var budgetOverclaimPhrases = []string{
 	"todo o gasto",
 	"todo o custo",
 	"gasto total",
 	"custo total",
-	"cobre a inferencia",
-	"cobre o turno de modelo",
 	"tecto global",
 }
 
@@ -84,14 +106,36 @@ func TestAOS255DeclaracaoDeAlcanceNosDoisEstados(t *testing.T) {
 	if strings.Contains(composto, "NAO COMPOSTO") {
 		t.Errorf("o estado composto NAO pode declarar-se nao-composto:\n%s", composto)
 	}
-	// "POR-INCARNACAO" está aqui pela mesma razão que os outros quatro, e não por zelo: um
-	// banner que diga só "POR-RUN" faz o operador ler um tecto que o run não excede, quando
-	// uma re-hospedagem (retoma apos escalada, restart) recebe o tecto INTEIRO e um run em
-	// ciclo pode gastar N x AOS_BUDGET_MAX_TOKENS. O FACTO que esta linha afirma está selado
-	// do outro lado, em integration.TestAOS256_TectoEPorIncarnacaoComoODeclarado.
-	for _, marcador := range []string{"TOOL-ONLY", "TOKEN-ONLY", "POR-RUN", "POR-INCARNACAO", "AOS_BREAKER_MAX_WALL_CLOCK"} {
+	// Os MARCADORES do estado composto — o que o operador tem de conseguir ler na linha. A
+	// lista mudou com AOS-260 e cada entrada corresponde a um facto que, se ficasse por dizer,
+	// deixaria o operador com um modelo mental errado do que o tecto faz:
+	//
+	//   - "TURNO DE MODELO" — o alcance NOVO. Sem isto o operador continuaria a assumir o
+	//     alcance tool-only de AOS-255 (era o que o banner dizia até aqui);
+	//   - "DEGRADACAO DECLARADA" — o que ACONTECE ao esgotar. É a diferença entre um run que
+	//     pára com nome e um deny-loop que morre pelo disjuntor com a causa errada;
+	//   - "REPLAY NAO RE-RESERVA" — a garantia sem a qual retomar um run o cobraria duas
+	//     vezes; o operador que gere retomas precisa de a saber sem ler o código;
+	//   - "AOS_BUDGET_MAX_COST_MICRO_USD" — o eixo $ existe mas é OPT-IN. Calá-lo faria a
+	//     frase «cobre ... em dólares» parecer automática;
+	//   - "POR-RUN" e "POR-INCARNACAO" — a granularidade. Um banner que diga só "POR-RUN" faz
+	//     o operador ler um tecto que o run não excede, quando uma re-hospedagem (retoma após
+	//     escalada, restart) recebe o tecto INTEIRO. O FACTO está selado do outro lado, em
+	//     integration.TestAOS256_TectoEPorIncarnacaoComoODeclarado;
+	//   - "AOS_BREAKER_MAX_WALL_CLOCK" — o tempo deixou de ser o ÚNICO travão da inferência,
+	//     mas continua a ser um travão, e a linha tem de o dizer para o operador não o desligar
+	//     por julgar o orçamento suficiente.
+	for _, marcador := range []string{"TURNO DE MODELO", "DEGRADACAO DECLARADA", "REPLAY NAO RE-RESERVA", "AOS_BUDGET_MAX_COST_MICRO_USD", "POR-RUN", "POR-INCARNACAO", "AOS_BREAKER_MAX_WALL_CLOCK"} {
 		if !strings.Contains(composto, marcador) {
-			t.Errorf("o estado composto devia conter %q — o alcance (so tool calls), a dimensao (tokens), a granularidade (por-run E por-incarnacao) e o travao REAL da inferencia (tempo) sao as coisas que o operador tem de ler:\n%s", marcador, composto)
+			t.Errorf("o estado composto devia conter %q — o alcance (tool calls E turno de modelo), o que acontece ao esgotar, a garantia de replay, o eixo $ opt-in, a granularidade (por-run E por-incarnacao) e os travoes complementares sao as coisas que o operador tem de ler:\n%s", marcador, composto)
+		}
+	}
+	// O alcance VELHO não pode sobreviver na linha: era exactamente a frase que AOS-260 tornou
+	// falsa, e uma sobrevivência dela (num banner que agora também diz o contrário) seria pior
+	// do que a frase velha sozinha — o operador leria as duas e acreditaria na mais assustadora.
+	for _, obsoleto := range []string{"ALCANCE TOOL-ONLY", "NENHUMA reserva o admite"} {
+		if strings.Contains(composto, obsoleto) {
+			t.Errorf("o estado composto ainda contem %q — o alcance tool-only deixou de ser verdade em AOS-260 (o turno de modelo e admitido pela porta agentruntime.ModelAdmission):\n%s", obsoleto, composto)
 		}
 	}
 }

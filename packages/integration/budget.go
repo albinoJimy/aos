@@ -18,11 +18,12 @@ package integration
 //     fugas reais são as NEGAÇÕES A JUSANTE (o egress é o único hook depois do orçamento na
 //     ordem canónica de AOS-154) e os ERROS FATAIS do despacho — não «permit sem Commit».
 //
-// ALCANCE (a declaração fixada em AOS-255, que este wiring NÃO alarga): o tecto é
-// TOOL-ONLY, porque a cadeia do Reference Monitor só é atravessada por tool call — o turno
-// de modelo é invocado directamente pelo loop e nenhuma reserva o admite; e é TOKEN-ONLY,
-// porque o canal de custo em micro-USD não está ligado ponta a ponta (eixo AOS-259) e um
-// tecto em dólares seria contado a zero.
+// ALCANCE — a declaração de AOS-255 dizia TOOL-ONLY/TOKEN-ONLY, e AOS-260 alargou-a nas duas
+// dimensões (decisão do dono D1 = opção B). O que este ficheiro compõe continua a ser SÓ a
+// metade das tool calls; a outra metade — a admissão do TURNO DE MODELO — vive em
+// `model_admission.go`, sobre esta MESMA árvore e este MESMO nó por-run, e entra no runtime
+// pela porta do loop. Um só tecto, dois pontos de admissão. A dimensão $ passou a ser
+// debitada com o custo MEDIDO de AOS-259, e nega quando [WithMaxCostMicroUSDPerRun] o fixa.
 //
 // GRANULARIDADE (D-A1.3): POR-RUN, nunca por-mandato/delegação. Dois runs concorrentes têm
 // nós irmãos e tectos INDEPENDENTES — esgotar um não nega o outro. E POR-INCARNAÇÃO: cada
@@ -46,6 +47,13 @@ var (
 	// (nenhuma estimativa cabe em zero) — exactamente o modo de falha que AOS-256 nomeia.
 	// Quem quer o nó SEM orçamento não fornece [SecuredConfig.Budget].
 	ErrBudgetLimitInvalid = errors.New("integration: tecto de orcamento por-run invalido (tokens tem de ser > 0; para correr SEM orcamento nao forneca SecuredConfig.Budget)")
+
+	// ErrBudgetCostLimitInvalid — tecto por-run em micro-USD <= 0 ([WithMaxCostMicroUSDPerRun]).
+	// Pela MESMA razão de [ErrBudgetLimitInvalid], e agora que a dimensão $ é debitada de
+	// facto (AOS-260): um tecto de 0 micro-USD não é «sem tecto em dólares», é «todo o turno
+	// de modelo com custo negado». Quem não quer tecto em $ omite a opção — o default é
+	// [UnlimitedCostMicroUSD] (mede, não decide).
+	ErrBudgetCostLimitInvalid = errors.New("integration: tecto de orcamento por-run em micro-USD invalido (tem de ser > 0; omita a opcao para medir sem tecto em dolares)")
 )
 
 // BudgetTreeID é a RAIZ da árvore de orçamento do nó. Os nós por-run pendem todos dela.
@@ -65,41 +73,112 @@ type RunBudget struct {
 	tree  *budget.Budget
 	check *budget.BudgetCheck
 	limit budget.Amount
+	// costCapped distingue um tecto em $ REALMENTE configurado do ilimitado por omissão
+	// ([UnlimitedCostMicroUSD]) — o banner e o burn-down têm de dizer qual dos dois é, e
+	// `limit.CostMicroUSD` sozinho não os distingue de forma legível.
+	costCapped bool
 
 	mu   sync.Mutex
-	live map[string]int // runID → nº de aquisições vivas (a retoma reentra no mesmo run)
+	live map[string]int       // runID → nº de aquisições vivas (a retoma reentra no mesmo run)
+	onGo []func(runID string) // AOS-260: notificados quando a última hospedagem do run larga o nó
 }
 
-// NewRunBudget constrói o orçamento por-run com um tecto de maxTokens POR RUN.
+// UnlimitedCostMicroUSD é a dimensão $ SEM tecto — o default de [NewRunBudget] desde
+// AOS-260. Não é «desligada»: com o canal de custo ligado ponta a ponta (AOS-259) o gasto em
+// micro-USD é REALMENTE debitado na árvore e legível por run; o que este valor diz é que
+// nenhuma reserva será NEGADA pela dimensão $, só pela de tokens. É a diferença entre medir
+// e decidir, e é ela que o banner declara.
 //
-// O estimador é [TokenOnlyEstimator] (AOS-258, em `budget_estimator.go`) — o estimador REAL
-// sobre a Call MATERIALIZADA, e não o [budget.DefaultEstimator] placeholder, que deixou de
-// ser usado em produção. A dimensão micro-USD é ZERADA de propósito, não por esquecimento: o
-// canal de custo não existe ponta a ponta (AOS-259) e uma estimativa em dólares seria
-// comparada com um tecto de dólares que ninguém configurou, negando tudo ou nada consoante o
-// arredondamento. Token-only é a única dimensão honesta hoje.
-func NewRunBudget(maxTokens int64) (*RunBudget, error) {
+// PORQUE NÃO ZERO (o valor de antes de AOS-260): com um tecto de 0 micro-USD qualquer
+// reserva com custo > 0 não caberia e o nó negaria TODOS os turnos de modelo assim que o
+// custo entrasse no caminho — a dimensão irmã a matar o run por não ter sido configurada.
+const UnlimitedCostMicroUSD = math.MaxInt64
+
+// NewRunBudget constrói o orçamento por-run com um tecto de maxTokens POR RUN e, desde
+// AOS-260, um tecto OPCIONAL em micro-USD ([WithMaxCostMicroUSDPerRun]).
+//
+// O estimador das TOOL CALLS é [TokenOnlyEstimator] (AOS-258, em `budget_estimator.go`) — o
+// estimador REAL sobre a Call MATERIALIZADA, e não o [budget.DefaultEstimator] placeholder,
+// que deixou de ser usado em produção. A dimensão micro-USD dessa estimativa continua a ZERO:
+// o custo de uma tool call não é conhecido antes do efeito (o canal medido de AOS-259 é o do
+// MODELO). Quem passou a debitar dólares é a admissão do TURNO DE MODELO
+// ([NewModelTurnAdmission], AOS-260), que os salda com o número MEDIDO.
+func NewRunBudget(maxTokens int64, opts ...RunBudgetOption) (*RunBudget, error) {
 	if maxTokens <= 0 {
 		return nil, ErrBudgetLimitInvalid
 	}
-	// Raiz ilimitada em tokens (ver [BudgetTreeID]) e a ZERO em micro-USD — que é o valor
-	// CORRECTO para a dimensão desligada: o estimador token-only reserva 0 nessa dimensão,
-	// logo `0 <= 0` cabe sempre e a dimensão nunca decide nada.
-	tree, err := budget.New(BudgetTreeID, budget.Amount{Tokens: math.MaxInt64})
+	rb := &RunBudget{
+		limit: budget.Amount{Tokens: maxTokens, CostMicroUSD: UnlimitedCostMicroUSD},
+		live:  make(map[string]int),
+	}
+	for _, o := range opts {
+		if o != nil {
+			o(rb)
+		}
+	}
+	if rb.limit.CostMicroUSD <= 0 {
+		return nil, ErrBudgetCostLimitInvalid
+	}
+	// Raiz ilimitada nas DUAS dimensões (ver [BudgetTreeID]): o tecto da v1 é por-run, e uma
+	// raiz finita faria o run B ser negado porque o run A gastou. A dimensão $ da raiz era 0
+	// até AOS-260 — correcto enquanto NADA reservava custo, e uma bomba a partir do momento
+	// em que a admissão do turno de modelo passou a fazê-lo (a raiz negaria toda a árvore).
+	tree, err := budget.New(BudgetTreeID, budget.Amount{Tokens: math.MaxInt64, CostMicroUSD: math.MaxInt64})
 	if err != nil {
 		return nil, err
 	}
-	rb := &RunBudget{
-		tree:  tree,
-		limit: budget.Amount{Tokens: maxTokens},
-		live:  make(map[string]int),
-	}
+	rb.tree = tree
 	rb.check = budget.NewBudgetCheck(tree, budget.WithEstimator(TokenOnlyEstimator))
 	return rb, nil
 }
 
+// RunBudgetOption configura o orçamento por-run na construção.
+type RunBudgetOption func(*RunBudget)
+
+// WithMaxCostMicroUSDPerRun fixa o tecto POR RUN na dimensão $ (micro-USD INTEIRO). Sem ela o
+// tecto em $ é [UnlimitedCostMicroUSD]: o custo é debitado e legível, mas nunca nega.
+//
+// Com ela, a dimensão $ DECIDE — e decide a par da de tokens, porque uma reserva só cabe se
+// couber em AMBAS ([budget.Amount] documenta-o): o run é negado pela primeira que esgotar.
+func WithMaxCostMicroUSDPerRun(microUSD int64) RunBudgetOption {
+	return func(rb *RunBudget) {
+		rb.limit.CostMicroUSD = microUSD
+		rb.costCapped = true
+	}
+}
+
 // MaxTokensPerRun devolve o tecto por-run configurado (para o banner/observabilidade).
 func (rb *RunBudget) MaxTokensPerRun() int64 { return rb.limit.Tokens }
+
+// MaxCostMicroUSDPerRun devolve o tecto por-run em micro-USD e se ele foi REALMENTE
+// configurado. `false` ⇒ a dimensão $ é medida mas não decide ([UnlimitedCostMicroUSD]) — e é
+// essa distinção, e não o número, que o banner e o burn-down têm de declarar.
+func (rb *RunBudget) MaxCostMicroUSDPerRun() (int64, bool) {
+	if !rb.costCapped {
+		return 0, false
+	}
+	return rb.limit.CostMicroUSD, true
+}
+
+// onRunRelease regista um observador do FIM da hospedagem de um run: chamado quando a última
+// aquisição viva de `runID` larga o nó de orçamento (o mesmo instante em que o nó é removido
+// da árvore).
+//
+// Existe para que o estado POR-RUN dos colaboradores do orçamento — hoje a dedup por
+// `run_id:step_id` da admissão do turno de modelo (AOS-260) — seja podado no MESMO seam que
+// já governa o ciclo de vida do nó, em vez de depender de alguém se lembrar de chamar um
+// `Forget` algures no composition root. Um mapa por-run sem poda é uma fuga num processo de
+// vida longa, e a poda esquecida é o modo de falha mais provável.
+//
+// Os observadores são chamados FORA do lock de [RunBudget] (nenhuma ordem de locks nova).
+func (rb *RunBudget) onRunRelease(f func(runID string)) {
+	if f == nil {
+		return
+	}
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.onGo = append(rb.onGo, f)
+}
 
 // acquire regista o nó de orçamento do run e devolve a libertação.
 //
@@ -142,15 +221,24 @@ func (rb *RunBudget) acquire(runID string) (func(), error) {
 	return func() {
 		once.Do(func() {
 			rb.mu.Lock()
-			defer rb.mu.Unlock()
 			rb.live[runID]--
 			if rb.live[runID] > 0 {
+				rb.mu.Unlock()
 				return
 			}
 			delete(rb.live, runID)
 			// RemoveNode é idempotente; um erro aqui só pode ser [budget.ErrRootRemoval],
 			// impossível com um runID (a raiz é [BudgetTreeID]).
 			_ = rb.tree.RemoveNode(runID)
+			// Cópia sob o lock, invocação FORA dele (ver [RunBudget.onRunRelease]): os
+			// observadores têm locks próprios e chamá-los aqui dentro criaria uma ordem de
+			// locks nova só para podar mapas.
+			hooks := make([]func(string), len(rb.onGo))
+			copy(hooks, rb.onGo)
+			rb.mu.Unlock()
+			for _, h := range hooks {
+				h(runID)
+			}
 		})
 	}, nil
 }
@@ -163,6 +251,26 @@ func (rb *RunBudget) AvailableTokens(runID string) (int64, bool) {
 		return 0, false
 	}
 	return amt.Tokens, true
+}
+
+// AvailableCostMicroUSD devolve o headroom corrente do nó de um run na dimensão $ (micro-USD).
+// Devolve 0 e false se o run não tiver nó vivo — o remanescente desconhecido NÃO é zero.
+//
+// É a irmã de [RunBudget.AvailableTokens] e existe pela razão exacta que o achado do «tecto em
+// dólares invisível» nomeia: quando [WithMaxCostMicroUSDPerRun] está em vigor, a dimensão que
+// DECIDE pode ser esta, e a superfície de decisão do operador (burn-down, pergunta humana
+// durável) tinha de conseguir reportar a grandeza que bloqueou o run em vez de números de tokens
+// que a contradizem. Como [AvailableTokens], é LEITURA — nunca decide nada.
+//
+// Sem tecto em $ configurado o valor é o remanescente de [UnlimitedCostMicroUSD], que não é uma
+// leitura útil: quem chama tem de cruzar com [RunBudget.MaxCostMicroUSDPerRun] antes de o
+// apresentar.
+func (rb *RunBudget) AvailableCostMicroUSD(runID string) (int64, bool) {
+	amt, err := rb.tree.Available(runID)
+	if err != nil {
+		return 0, false
+	}
+	return amt.CostMicroUSD, true
 }
 
 // ---------------------------------------------------------------------------

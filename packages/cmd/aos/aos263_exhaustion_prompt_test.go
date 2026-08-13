@@ -48,11 +48,27 @@ type aos263Harness struct {
 	gates *runStateGates
 	pend  *integration.PendingApprovals
 	logs  *syncBuf
+	// rb é o orçamento por-run que o observador lê — exposto porque os testes do eixo $
+	// (AOS-260) precisam de o partilhar com a admissão do turno de modelo, que é precisamente
+	// a propriedade «um só tecto, dois pontos de admissão».
+	rb *integration.RunBudget
 }
 
 // novoAOS263Harness monta tudo com o prompt ARMADO. runWallClock alimenta as máquinas de
 // estado abertas (é o tecto de AOS-252 cujo `enteredAt` o critério 4 protege).
 func novoAOS263Harness(t *testing.T, maxTokens int64, threshold float64, runWallClock time.Duration) *aos263Harness {
+	t.Helper()
+	rb, err := integration.NewRunBudget(maxTokens)
+	if err != nil {
+		t.Fatalf("NewRunBudget: %v", err)
+	}
+	return novoAOS263HarnessSobre(t, rb, threshold, runWallClock)
+}
+
+// novoAOS263HarnessSobre é o mesmo harness sobre um orçamento JÁ CONSTRUÍDO — o que permite
+// exercer um tecto em DÓLARES ([integration.WithMaxCostMicroUSDPerRun]) sem duplicar a
+// composição.
+func novoAOS263HarnessSobre(t *testing.T, rb *integration.RunBudget, threshold float64, runWallClock time.Duration) *aos263Harness {
 	t.Helper()
 	es, err := eventstore.New()
 	if err != nil {
@@ -60,10 +76,6 @@ func novoAOS263Harness(t *testing.T, maxTokens int64, threshold float64, runWall
 	}
 	t.Cleanup(func() { _ = es.Close() })
 
-	rb, err := integration.NewRunBudget(maxTokens)
-	if err != nil {
-		t.Fatalf("NewRunBudget: %v", err)
-	}
 	pend, err := integration.NewPendingApprovals(es)
 	if err != nil {
 		t.Fatalf("NewPendingApprovals: %v", err)
@@ -87,7 +99,7 @@ func novoAOS263Harness(t *testing.T, maxTokens int64, threshold float64, runWall
 	if prog == nil {
 		t.Fatal("o observador tinha de ser composto")
 	}
-	return &aos263Harness{prog: prog, rec: agentruntime.NewTurnRecorder(es), gates: gates, pend: pend, logs: logs}
+	return &aos263Harness{prog: prog, rec: agentruntime.NewTurnRecorder(es), gates: gates, pend: pend, logs: logs, rb: rb}
 }
 
 // aos263RotaDeDecisao compõe as duas peças da ROTA DE DECISÃO (AOS-263 parte 3) de que o
@@ -453,7 +465,7 @@ func TestAOS263_SemMaquinariaHITLNaoHaPrompt(t *testing.T) {
 				t.Fatal("o prompt nao pode armar sem a maquinaria completa")
 			}
 			// Desarmado é NIL-SAFE em todo o caminho quente.
-			if err := p.raise(context.Background(), "run-x", progressEvalDeAviso(4, 0.8, 800, 1000)); err != nil {
+			if err := p.raise(context.Background(), "run-x", progressEvalDeAviso(4, 0.8, 800, 1000), "limiar de burn-down cruzado (razao de teste)"); err != nil {
 				t.Fatalf("desarmado tem de ser um no-op: %v", err)
 			}
 		})
@@ -646,7 +658,7 @@ func TestAOS263_SuspensaoFalhadaAbortaORun(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	err = prompt.raise(context.Background(), run, progressEvalDeAviso(4, 0.8, 800, 1000))
+	err = prompt.raise(context.Background(), run, progressEvalDeAviso(4, 0.8, 800, 1000), "limiar de burn-down cruzado (razao de teste)")
 	if err == nil {
 		t.Fatal("uma suspensao que nao se consegue selar NAO pode devolver nil — seria fail-open com o sinal ja gasto")
 	}
