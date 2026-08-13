@@ -131,6 +131,7 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 | AOS-277 | Knobs de ingresso por env (token-bucket + tecto in-flight) + teste do 429 | feature | S | P1 | — | A5-passo 2 |
 | AOS-278 | Estágio de identidade real do GW (substituir o stub `nodeModelAuthn`) | feature | M | P2 | D4/EPIC-16 | F18 |
 | AOS-279 | Golden-set do planeador no gate de CI: ligar `plannerprompt.Evaluate` ao harness de `packages/platform/eval` (ou estender `evalgate.sh` a este conjunto), com o pass-rate a entrar no `AOS_EVAL_REPORT` | test | S-M | P3 | AOS-241, AOS-273 | DEF-276 — **ENTREGUE 2026-08-13** |
+| AOS-280 | Compor o estágio de roteamento no pipeline do GW: `failover` → `routingstage`+`router` (scoring armado), com classificador de produção que povoa candidatos e perfil | feature | L | P2 | AOS-269, ADR-021 emenda 1.1 | DEF-271 |
 
 ---
 
@@ -1639,3 +1640,53 @@ Cada wave é **uma branch** (`feature/epic20-wN-<slug>`), executada por um agent
 3. **Gates fail-closed por PR:** `make ci-build`, `ci-lint`, `ci-test` + o gate de domínio aplicável; cobertura sem regressão (pisos AOS-199). O PR só merge verde **e** com a revisão adversarial aprovada.
 4. **Tickets bloqueados por decisão do dono (D1–D12)** não entram na wave até a decisão estar registada no ticket — o agente não decide pelo dono.
 5. **Cada PR actualiza o relatório de prontidão** (estado do finding que fecha) e o `Estado` do ticket na epic — o documento continua a ser a fonte de verdade do que falta.
+## AOS-279 — Golden-set do planeador no gate de CI (fecha DEF-276)
+
+### Contexto
+O AC2 de AOS-273 pedia que os casos das extensões de ADR-022 «passassem no eval-gate». Passavam — no eval-gate do **planeador** (`plannerprompt.Evaluate`, AOS-241), que a CI corre como testes do módulo. Mas o gate de CI `evalgate.sh` corre **outro** harness (`packages/platform/eval`) e não conhecia este conjunto: uma regressão de cobertura ali não tinha sinal **com esse nome**. Essa metade ficou declarada «NÃO ENTREGUE» e registada em DEF-276.
+
+### Critérios de Aceitação
+- [x] Os casos do golden-set do planeador correm no gate de CI `evalgate.sh` e o pass-rate entra no relatório do gate — via a linha marcada **própria** `AOS_PLANNER_EVAL_REPORT` (emitida por `TestPlannerEvalReportEmitted`), capturada e imposta pelo gate.
+- [x] **Sem acoplar módulos:** o gate corre `control-plane/orchestrator` **separadamente** de `platform/eval`. Ligar `Evaluate` a esse harness faria `platform/eval` importar o orquestrador — acoplamento que o `layer-lint` guarda e que o `go.mod` teria de declarar.
+- [x] **Guardas do gate:** cobertura **não-vazia** primeiro (um relatório a zeros passaria por ausência de evidência), **segurança 100%** (regra, não limiar) e o **veredicto da política do próprio planeador** (`passed`).
+- [x] **Falsificável** nos quatro vectores: aceita o relatório real e recusa cobertura vazia, segurança degradada (11/12), `passed:false` e linha truncada.
+
+### Nota de desenho — a qualidade é SINAL, não limiar
+A taxa de qualidade é **8/10 por desenho**: dois candidatos fracos existem para **falhar** a rubrica do seu caso, e é isso que torna o conjunto discriminante. Impor-lhe o piso `EVAL_PASS_RATE_MIN` (0.90) do harness de acções seria medir uma coisa com a régua de outra — e a «correcção» natural seria apagar os candidatos fracos, ou seja apagar a cobertura que dá valor ao conjunto. O par de qualidade entra no log do gate como sinal; quem decide se é aceitável é a política do planeador.
+
+### Estado
+**FECHADO** (PR #22, 2026-08-13). Ticket **criado pela remediação deste próprio epic** para dar eixo executável a DEF-276 — não pertence ao âmbito original dos 34 (ver a nota de contagem no §0).
+
+---
+
+## AOS-280 — Compor o estágio de roteamento no pipeline do Model Gateway (fecha DEF-271)
+
+### Contexto
+**DEF-271.** O `router.Router` de **AOS-059** — soberania, carga, tiering, degradação por orçamento e, desde AOS-269, o scoring ponderado de ADR-021 — **nunca esteve composto em produção**: o `NewProduction` do gateway compõe `failover.NewStage` como estágio de roteamento e `router.New` não tem, em todo o repositório, um chamador fora de testes. O scoring foi construído **sobre** esse router e herdou o facto de não estar ligado (alcance fixado na **emenda 1.1 do ADR-021**).
+
+### Decisão de desenho — ENCADEAR (dono, 2026-08-13)
+`failover` **→** `routingstage`+`router`. Não substituir nem fundir. É o desenho **já declarado** no doc do pacote `failover` («AOS-059 refina a escolha SEMPRE dentro dos sobreviventes intra-fronteira que esta guarda autoriza — nunca a expande»), e é o único que não perde nada:
+
+- o **`failover`** mantém o que só ele faz: impor a soberania, fazer *failover por saúde* dentro da fronteira, e **selar o deny cross-border no WORM** (`audit.DecisionDeny`, via o `allowlist.Recorder` de AOS-058);
+- o **`router`** refina **dentro** dessa fronteira: carga (headroom real), tier mais barato capaz, degradação por orçamento e o ranking ponderado.
+
+A alternativa (o router substituir o failover) foi **recusada** com razão nomeada: a saúde passaria de decisão a *peso* do score, e perder-se-ia a selagem WORM do deny de soberania — o router só tem `DecisionSink`, que é análise post-hoc, não trilho de auditoria.
+
+### O que a investigação encontrou (e que o DEF-271 não nomeava)
+1. **Encadear ingenuamente está partido.** `routingstage.Stage.Process` lê `ex.RequestedRegion` e depois **sobrescreve** `ex.ResolvedRegion` — colocado a seguir ao `failover`, **descartaria a decisão dele em silêncio**, incluindo um failover por saúde deliberado.
+2. **Falta o classificador de produção.** Só existe o `DefaultClassifier`, que **não povoa `Candidates`** (o próprio doc diz «produção injecta um classificador que lê os hints da tarefa»). Sem candidatos, o `partition` trata a região pedida como único sobrevivente e **o headroom, o tiering e o scoring ficam degenerados** — compor o estágio assim seria ligar uma capacidade que continua sem efeito, exactamente o erro que DEF-271 regista.
+3. **As portas de factores precisam de fontes reais** — `LoadProvider` do keypool, `BudgetProvider` da degradação, *task-fit* do eval harness.
+
+### Critérios de Aceitação
+- [ ] `routingstage` consome a região **RESOLVIDA** pelo estágio anterior quando existe (e a pedida quando não existe), em vez de ler sempre a pedida — sem o que o encadeamento descarta o `failover`. Teste que prova que uma decisão de failover por saúde **sobrevive** ao routing.
+- [ ] Classificador de **produção** que povoa `Candidates` a partir do inventário de contas de infra e resolve o `Profile` de pesos a partir da classe/hints da tarefa; `DefaultClassifier` fica como referência.
+- [ ] Portas de factores ligadas às fontes reais (`LoadProvider` do keypool via `router.HeadroomReaderFrom`, `BudgetProvider`, *task-fit*).
+- [ ] `NewProduction` compõe `failover` **→** `routingstage(router.New(…, WithScoring(…)))` com a tabela de pesos embebida; sem tabela válida o scoring **recusa** (regra 3 do ADR-021, agora com efeito real).
+- [ ] **Prova pela cadeia real, ao nível do gateway composto** (não do router isolado): soberania (deny cross-border continua selado no WORM), saturação, degradação por orçamento, e o scoring a ordenar sobreviventes — mais o negativo de cada um.
+- [ ] Sem regressão: os cenários de AOS-063 e o gate `routing.sh` (11 cenários) continuam verdes.
+
+### Estado
+**ABERTO** — decisão de desenho tomada (encadear); implementação por fazer.
+
+---
+
