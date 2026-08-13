@@ -1,0 +1,23 @@
+{
+  "plan_version": "1.2.0",
+  "objective": "search the web and summarize findings, deepening on thin coverage",
+  "budget_total": {"tokens": 1900, "cost_micro_usd": 9500},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {
+      "node_id": "fetch", "role": "searcher", "objective": "fetch candidate sources",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 700, "cost_micro_usd": 3500}, "risk_class": "safe"
+    },
+    {
+      "node_id": "deepen", "role": "searcher", "objective": "pesquisa adicional se a cobertura de fontes for insuficiente",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 700, "cost_micro_usd": 3500}, "risk_class": "safe",
+      "conditional_on": [{"from": "fetch", "when": [{"subject": "metric", "metric": "source_count", "op": "lt", "number": 3}]}]
+    },
+    {
+      "node_id": "digest", "role": "summarizer", "objective": "distill the sources",
+      "tools": [], "depends_on": ["fetch"], "budget_estimate": {"tokens": 500, "cost_micro_usd": 2500}, "risk_class": "safe"
+    }
+  ]
+}

@@ -93,6 +93,13 @@ func checkSemantics(doc plan.PlanDocument, snap Snapshot) Verdict {
 	if !plan.CurrentPlanVersion.Compatible(doc.PlanVersion) {
 		return reject(plannerevents.RuleSchema, ReasonVersionIncompatible, Locator{})
 	}
+	// TECTO DA LINHA: dentro do MESMO MAJOR, um MINOR acima do que este leitor PUBLICA é
+	// um contrato que ninguém emitiu. Locator vazio — a violação é do documento, não de
+	// um nó. Corre antes do piso porque uma versão inventada para cima torna a pergunta
+	// «usa features acima do carimbo?» irrespondível.
+	if doc.PlanVersion.Minor > plan.CurrentPlanVersion.Minor {
+		return reject(plannerevents.RuleSchema, ReasonVersionAheadOfReader, Locator{})
+	}
 	// Binding do snapshot pinado: o plano tem de ter sido validado CONTRA este
 	// snapshot. Não computamos o hash (AOS-243) — só conferimos a igualdade do
 	// carimbo que o plano trouxe com o Hash do snapshot recebido. Fail-closed.
@@ -109,6 +116,22 @@ func checkSemantics(doc plan.PlanDocument, snap Snapshot) Verdict {
 		if !validNodeID(n.NodeID) {
 			return reject(plannerevents.RuleSchema, ReasonInvalidNodeID, Locator{})
 		}
+	}
+	// PISO DE VERSÃO DERIVADO DAS FEATURES USADAS (AOS-273, ADR-022 §4). O carimbo é um
+	// campo do documento UNTRUSTED; sem esta regra nada obrigava o produtor a bumpar a
+	// versão ao usar `conditional_on`/`outputs`/`consumes`/`role: verifier`, e o
+	// `plan_version` congelado no manifesto deixava de identificar o schema sob o qual o
+	// plano foi admitido — que é a coordenada em que assenta TODA a maquinaria de
+	// `planmigrate` (janela de suporte, binding reader↔captura, deprecação). A tabela
+	// feature→piso vive em [plan.FeatureFloor], ao lado da lista MINOR-a-MINOR, para que o
+	// próximo MINOR tenha um sítio óbvio onde entrar.
+	//
+	// CORRE AQUI, e não junto à verificação de MAJOR, por uma razão de DISCIPLINA e não de
+	// dependência: o veredicto propaga o `node_id` do uso ofensor, e o node_id só é um
+	// identificador estrutural DEPOIS do laço acima. Rejeitar antes seria ecoar texto
+	// untrusted no [Locator] — exactamente o que [validNodeID] existe para impedir.
+	if floor, use := plan.FeatureFloor(doc); doc.PlanVersion.Compare(floor) < 0 {
+		return reject(plannerevents.RuleSchema, ReasonVersionBelowFeatures, Locator{NodeID: use.NodeID})
 	}
 	// Integridade referencial: cada depends_on tem de apontar para um node_id
 	// existente. Uma aresta pendente é lixo semântico (e impediria construir o DAG).

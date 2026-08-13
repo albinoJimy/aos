@@ -37,6 +37,25 @@ type SupportWindow struct {
 	MaxMajor int
 }
 
+// DeclaredWindow é a JANELA DE SUPORTE DECLARADA da linha corrente do PlanDocument —
+// `tecnica/18` §3.6.1: só o MAJOR 1 tem reader retido. É a FONTE ÚNICA da regra em
+// código: antes de existir, o valor vivia só na prosa da §3.6.1 e numa variável de um
+// ficheiro `_test.go`, pelo que documento e código podiam divergir sem nada avermelhar
+// (um operador que avançasse o MinMajor num sítio e não no outro deprecava readers — e
+// com eles a admissibilidade de runs aprovados — por omissão, quando a §3.6.1 exige que
+// a deprecação seja EXPLÍCITA).
+//
+// NÃO é derivada de [plan.CurrentPlanVersion] de propósito: a janela é uma decisão de
+// OPERAÇÃO (o que se retém, o que se depreca), não uma consequência do schema — o schema
+// diz o que se emite, a janela diz o que ainda se lê. O que TEM de valer é a coerência
+// mínima entre as duas, e essa é um teste: a linha corrente tem de estar coberta pela
+// janela que este módulo declara.
+//
+// ALCANCE HONESTO: nenhuma composição de produção constrói hoje uma [Policy] a partir
+// dela — o wiring do ciclo-de-vida do run é AOS-238. Até lá os dois gates de MAJOR são
+// CAPACIDADE DE CONTRATO, não facto de fim-a-fim (registado em EPIC-20 §AOS-273).
+var DeclaredWindow = SupportWindow{MinMajor: 1, MaxMajor: 1}
+
 // Valid indica se a janela é coerente (Min <= Max). Uma janela inválida faz
 // [NewPolicy] falhar fail-closed — nunca se admite um run contra um gate incoerente.
 func (w SupportWindow) Valid() bool { return w.MinMajor <= w.MaxMajor }

@@ -37,10 +37,24 @@ type PlanCard struct {
 	Agent string
 	// Domain é o domínio de autonomia do plano.
 	Domain string
-	// Order é a ordenação topológica ESTÁVEL dos task_ids (o "plano" reproduzível).
+	// Order é a ordenação topológica ESTÁVEL dos task_ids (o "plano" reproduzível). Fecha
+	// sobre o grafo EFECTIVO — [Edges] MAIS [ConditionalEdges] —, porque é esse que vai
+	// correr: a origem de uma condição tem de ter terminado para a condição se avaliar.
 	Order []string
-	// Edges são as arestas de dependência From→To.
+	// Edges são as arestas de dependência DECLARADAS From→To (o canal `depends_on`). NÃO
+	// inclui as arestas induzidas por `conditional_on`: essas vivem em [ConditionalEdges],
+	// e a separação é deliberada — a edição humana devolve `RevisedEdges`, que são as
+	// declaradas, e fundi-las corromperia o que o humano editou.
 	Edges [][2]string
+	// ConditionalEdges são as arestas de precedência INDUZIDAS pelas condições de entrada
+	// (ADR-022 §2.1) e ausentes de [Edges]: origem→nó-guardado. Existem como campo próprio
+	// porque o cartão tem de expor UM grafo reconstruível — enquanto a ligação guardada
+	// vivia só dentro de [NodeExtensions], uma superfície que desenhasse o organigrama a
+	// partir de `edges` mostrava o nó guardado como RAIZ SEM ENTRADA (leitura: «corre
+	// incondicionalmente desde o início») e um consumidor que re-derivasse a topologia de
+	// `edges` obtinha uma ordem diferente da que o humano aprovou. Nil num plano sem
+	// condições — o cartão de sempre.
+	ConditionalEdges [][2]string
 	// NodeCards são os cards por-nó, na MESMA ordem de [Order] (o efeito concreto de
 	// cada nó, já redigido).
 	NodeCards []approvalcard.ApprovalCard
@@ -56,6 +70,14 @@ type PlanCard struct {
 	// custo POR RAMO de cada nó vive no card por-nó correspondente ([NodeCards][i].
 	// EstimatedCost) — "custo por ramo visível no card".
 	NodeReviews []NodeReview
+	// NodeExtensions é a projecção das EXTENSÕES DE ADR-022 por-nó (na MESMA ordem de
+	// [Order]): o PAPEL (quem julga vs. quem produz), as ARESTAS CONDICIONAIS que
+	// governam a entrada do nó, e os contratos de dados — todos em FORMA CANÓNICA. É o
+	// que torna verdadeiro o invariante §2.4(5) do ADR: o humano aprova o organigrama
+	// que vai correr, não uma sombra dele (DEF-274). NIL quando nenhum nó declara
+	// extensões — um plano pré-ADR-022 produz o cartão de sempre. Ver
+	// [PlanCard.VerificationView] para a leitura «quem verifica quem».
+	NodeExtensions []NodeExtension
 }
 
 // NodeCount devolve o número de nós do plano.
@@ -158,11 +180,13 @@ func BuildPlanCard(plan Plan, opts ...BuildOption) (PlanCard, error) {
 		Domain:                plan.Domain,
 		Order:                 order,
 		Edges:                 append([][2]string(nil), plan.Edges...),
+		ConditionalEdges:      plan.conditionalEdges(),
 		NodeCards:             cards,
 		AggregateClass:        aggregateClass(plan.Nodes),
 		AggregateIrreversible: aggregateIrreversible(plan.Nodes),
 		EstimatedCost:         cfg.cost,
 		NodeReviews:           buildNodeReviews(order, byID),
+		NodeExtensions:        buildNodeExtensions(order, byID),
 	}
 	if verr := pc.Validate(); verr != nil {
 		return PlanCard{}, verr
@@ -201,9 +225,62 @@ func (c PlanCard) Validate() error {
 		return ErrInvalidPlanCard
 	}
 	// Coerência da triagem (aditiva/retrocompatível): quando presente, há uma entrada de
-	// revisão por nó da ordem. Ausente (nil, ex.: card de wire antigo) é tolerado.
-	if len(c.NodeReviews) != 0 && len(c.NodeReviews) != len(c.Order) {
-		return ErrInvalidPlanCard
+	// revisão por nó da ordem — e ALINHADA com ela. O comprimento sozinho não chega: uma
+	// lista do mesmo tamanho com entradas trocadas ou duplicadas passaria, e a triagem
+	// apresentada seria a de outro nó. Ausente (nil, ex.: card de wire antigo) é tolerado.
+	if len(c.NodeReviews) != 0 {
+		if len(c.NodeReviews) != len(c.Order) {
+			return ErrInvalidPlanCard
+		}
+		for i := range c.NodeReviews {
+			if c.NodeReviews[i].TaskID != c.Order[i] {
+				return ErrInvalidPlanCard
+			}
+		}
+	}
+	// Coerência da projecção de extensões (mesma regra, mesma razão, e o eixo onde mais
+	// importa): quando presente, há uma entrada por nó da ordem, na MESMA posição, e cada
+	// entrada em forma canónica. Uma projecção parcial — ou desalinhada, que é a mesma
+	// coisa vista de outro lado — seria pior que nenhuma: o humano leria a ausência de
+	// condições num nó como «este nó não tem condições» em vez de «esta lista está
+	// truncada», e aprovaria um ramo guardado como se fosse incondicional.
+	//
+	// A re-imposição da FORMA é o que torna a regra de ouro do cartão estrutural TAMBÉM
+	// nesta porta: o wire entra por [PlanCard.UnmarshalJSON], que não passa por
+	// [Plan.Validate] — sem isto, `outputs`/`conditions[].canonical`/`role` eram texto
+	// livre na desserialização e o material do run chegava ao aprovador por aí.
+	if len(c.NodeExtensions) != 0 {
+		if len(c.NodeExtensions) != len(c.Order) {
+			return ErrInvalidPlanCard
+		}
+		for i := range c.NodeExtensions {
+			if c.NodeExtensions[i].TaskID != c.Order[i] {
+				return ErrInvalidPlanCard
+			}
+			if err := c.NodeExtensions[i].validate(); err != nil {
+				return err
+			}
+		}
+	}
+	// O GRAFO EFECTIVO TEM DE SER RECONSTRUÍVEL A PARTIR DO WIRE. Toda a condição
+	// projectada tem de ter a sua aresta de precedência em [Edges] ou em
+	// [ConditionalEdges] — senão o cartão volta a ter dois grafos (o que ordena e o que
+	// mostra) sem nada a assinalá-lo, que é o defeito que [ConditionalEdges] fecha.
+	if len(c.NodeExtensions) != 0 {
+		grafo := make(map[[2]string]bool, len(c.Edges)+len(c.ConditionalEdges))
+		for _, e := range c.Edges {
+			grafo[e] = true
+		}
+		for _, e := range c.ConditionalEdges {
+			grafo[e] = true
+		}
+		for _, ext := range c.NodeExtensions {
+			for _, cond := range ext.Conditions {
+				if !grafo[[2]string{cond.From, ext.TaskID}] {
+					return ErrInvalidPlanCard
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -218,12 +295,14 @@ type planCardWire struct {
 	Domain                string                      `json:"domain"`
 	Order                 []string                    `json:"order"`
 	Edges                 [][2]string                 `json:"edges"`
+	ConditionalEdges      [][2]string                 `json:"conditional_edges,omitempty"`
 	NodeCards             []approvalcard.ApprovalCard `json:"node_cards"`
 	NodeCount             int                         `json:"node_count"`
 	AggregateClass        string                      `json:"aggregate_class"`
 	AggregateIrreversible bool                        `json:"aggregate_irreversible"`
 	EstimatedCost         *CostEstimate               `json:"estimated_cost,omitempty"`
 	NodeReviews           []NodeReview                `json:"node_reviews,omitempty"`
+	NodeExtensions        []NodeExtension             `json:"node_extensions,omitempty"`
 }
 
 // MarshalJSON serializa o plan-card na forma de wire estável, carimbando a
@@ -237,12 +316,14 @@ func (c PlanCard) MarshalJSON() ([]byte, error) {
 		Domain:                c.Domain,
 		Order:                 c.Order,
 		Edges:                 c.Edges,
+		ConditionalEdges:      c.ConditionalEdges,
 		NodeCards:             c.NodeCards,
 		NodeCount:             c.NodeCount(),
 		AggregateClass:        c.AggregateClass.String(),
 		AggregateIrreversible: c.AggregateIrreversible,
 		EstimatedCost:         c.EstimatedCost,
 		NodeReviews:           c.NodeReviews,
+		NodeExtensions:        c.NodeExtensions,
 	})
 }
 
@@ -265,11 +346,13 @@ func (c *PlanCard) UnmarshalJSON(data []byte) error {
 		Domain:                w.Domain,
 		Order:                 w.Order,
 		Edges:                 w.Edges,
+		ConditionalEdges:      w.ConditionalEdges,
 		NodeCards:             w.NodeCards,
 		AggregateClass:        parseClass(w.AggregateClass),
 		AggregateIrreversible: w.AggregateIrreversible,
 		EstimatedCost:         w.EstimatedCost,
 		NodeReviews:           w.NodeReviews,
+		NodeExtensions:        w.NodeExtensions,
 	}
 	if verr := out.Validate(); verr != nil {
 		return verr

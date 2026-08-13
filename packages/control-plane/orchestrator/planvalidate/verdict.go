@@ -18,6 +18,25 @@ const (
 	ReasonMalformedNode            Reason = "malformed_node"             // node rejeitado pelo DAG (defesa)
 	ReasonInvalidNodeID            Reason = "invalid_node_id"            // node_id fora da grammar de identificador estrutural
 
+	// Regra 1-quater — O CARIMBO TEM DE IDENTIFICAR O SCHEMA (ADR-022 §4/§3.6.1,
+	// AOS-273). [ReasonVersionIncompatible] só compara MAJORs; estes dois fecham a
+	// distância entre o que o documento DECLARA ser e o que o documento USA.
+	//
+	// ReasonVersionBelowFeatures — o `plan_version` declarado é ANTERIOR ao MINOR em que
+	// uma feature que o documento usa passou a existir (`plan.FeatureFloor`). Sem esta
+	// regra o bump de MINOR era decorativo: um produtor carimbava a linha antiga, emitia
+	// os campos novos, o plano era aprovado e congelado — e o reader dessa linha antiga,
+	// retido legitimamente, falhava o replay com um erro de FORMA que nenhuma política de
+	// `planmigrate` sabe atribuir.
+	ReasonVersionBelowFeatures Reason = "plan_version_below_features"
+	// ReasonVersionAheadOfReader — o documento reivindica um MINOR do MAJOR corrente que
+	// ESTE leitor não publica. É o simétrico do anterior e não é redundante com a
+	// verificação de MAJOR: um documento 1.9.0 lido por um binário 1.2.0 ou usa campos que
+	// este não conhece (e [plan.Decode] recusa-o pela forma) ou não usa — e nesse caso o
+	// carimbo reivindica um contrato que ninguém emitiu, o que é indistinguível de um
+	// documento forjado para atravessar a janela de suporte de um par mais recente.
+	ReasonVersionAheadOfReader Reason = "plan_version_ahead_of_reader"
+
 	// Regra 1-bis — arestas condicionais (ADR-022 §2.1, AOS-270).
 	ReasonDanglingConditional          Reason = "dangling_conditional"           // conditional_on.from para node inexistente
 	ReasonConditionalShadowsDependency Reason = "conditional_shadows_dependency" // a mesma origem em depends_on E conditional_on

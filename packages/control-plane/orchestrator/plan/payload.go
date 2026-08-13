@@ -23,8 +23,8 @@ import (
 // `conditional_on` (a lista de [ConditionalEdge] de AOS-270). O `consumes` teria de
 // caber nos DOIS — um payload flui tanto por uma dependência simples como por um ramo
 // — e `depends_on` é `[]string`: alargá-lo a uma lista de objectos é uma QUEBRA de
-// forma, logo um MAJOR de `plan_version`, que é trabalho de AOS-273 e não deste
-// ticket.
+// forma, logo um MAJOR de `plan_version` — que ninguém quis pagar (`tecnica/18` §3.6.1;
+// a linha corrente é [CurrentPlanVersion], e ADR-022 saiu inteiro em MINORes).
 //
 // A forma escolhida declara a aresta de dados PELO SEU EXTREMO: [Node.Consumes] é uma
 // lista de [PayloadEdge], cada uma nomeando a ORIGEM (`from`), o OUTPUT dessa origem e

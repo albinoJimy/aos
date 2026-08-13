@@ -33,21 +33,142 @@ type PlanVersion struct {
 // propostas novas saem sempre na versão corrente (§3.6) e validam-se contra o
 // schema corrente. Bump governado (ADR-012) actualiza esta constante.
 //
-// 1.1.0 (AOS-270, ADR-022 §2.1) — MINOR: o `Node` ganhou `conditional_on`, campo
-// OPCIONAL e ADITIVO. Documentos 1.0.0 continuam a decodificar sem alteração
-// (o campo é `omitempty` e a sua ausência significa «sem condições»), pelo que
-// não há migração de dados a fazer — `planmigrate`, a janela de suporte e os
-// golden-sets são AOS-273.
+// A LINHA 1.x, MINOR A MINOR (a janela de suporte declarada vive em `tecnica/18`
+// §3.6.1 e a sua forma executável em `planmigrate.SupportWindow`):
+//
+//   - 1.0.0 — a linha base do PlanDocument (AOS-230).
+//   - 1.1.0 (AOS-270, ADR-022 §2.1) — MINOR: o `Node` ganhou `conditional_on`, campo
+//     OPCIONAL e ADITIVO.
+//   - 1.2.0 (AOS-271+AOS-272, ADR-022 §2.2/§2.3) — MINOR: o `Node` ganhou `outputs` e
+//     `consumes` (campos OPCIONAIS e ADITIVOS) e o literal `verifier` do campo `role`
+//     passou a ser RESERVADO, com a semântica de sistema de §2.2 imposta na admissão.
 //
 // PORQUE O MINOR PERTENCE A QUEM ALARGA O SCHEMA. Sem o bump, dois binários
-// carimbavam AMBOS 1.0.0 e discordavam sobre o schema aceite: um planeador novo
-// emitia `conditional_on` com `plan_version: 1.0.0` e um nó anterior — que passa a
-// verificação de MAJOR — falhava com «unknown field conditional_on»
+// carimbavam AMBOS a mesma versão e discordavam sobre o schema aceite: um planeador
+// novo emitia `outputs`/`consumes` com `plan_version: 1.1.0` e um nó anterior — que
+// passa a verificação de MAJOR — falhava com «unknown field outputs»
 // (DisallowUnknownFields). O operador via um erro de schema num documento cuja
 // versão declarada era idêntica à suportada, ou seja: o carimbo deixava de
 // identificar o schema, que é exactamente o que ADR-012/§3.6 exige dele. O caso
 // «aditivo retrocompatível» é literalmente a definição de MINOR neste ficheiro.
-var CurrentPlanVersion = PlanVersion{Major: 1, Minor: 1, Patch: 0}
+//
+// E O BUMP É IMPOSTO, não confiado: o `plan_version` é um campo do documento untrusted,
+// pelo que um produtor podia carimbar a linha antiga e usar os campos novos à mesma. A
+// tabela [schemaFeatures]/[FeatureFloor] deriva o PISO de versão das features que o
+// documento USA, e a regra 1 de `planvalidate` recusa um carimbo abaixo desse piso
+// (`plan_version_below_features`) — é isso que faz esta justificação realizar-se em vez
+// de ficar em prosa.
+//
+// PORQUE O `role: verifier` ENTRA NO MESMO MINOR, E NÃO NUM MAJOR. A reserva do
+// literal não muda campo nenhum: `role` era e continua a ser texto livre, e um
+// documento de 1.0.0/1.1.0 que já usasse a palavra `verifier` decodifica exactamente
+// como antes. O que muda é o que o sistema IMPÕE a esse nó na admissão — logo é
+// aditivo em SIGNIFICADO, e a direcção do risco é a segura (um leitor 1.2.0 vê
+// documentos antigos com MAIS regras, nunca com menos). O carimbo continua a ser
+// preciso ao MINOR porque é ele que distingue «este documento foi admitido por um
+// leitor que impõe §2.2» de «foi admitido por um que só via um rótulo».
+//
+// PORQUE NÃO É MAJOR (a decisão de AOS-273, escrita onde é lida). MAJOR é «campo
+// removido ou semântica alterada». Nenhuma das três extensões de ADR-022 remove um
+// campo, muda o tipo de um campo existente ou altera o significado de um documento
+// que não use os campos novos. Os três campos novos são `omitempty`, pelo que um
+// documento anterior — decodificado por este binário e re-serializado por [Encode] —
+// produz OS MESMOS BYTES que produzia antes das extensões existirem: é essa a
+// propriedade que sustenta o replay byte-a-byte de `planmigrate` e que o pacote prova
+// contra fixtures congeladas das versões anteriores. Inventar um MAJOR para ter uma
+// transformação de dados a exercitar seria quebrar a compatibilidade de graça e dar
+// trabalho a fingir ao `planmigrate` — a migração REAL desta linha é a ausência de
+// migração, e prova-se, não se declara.
+var CurrentPlanVersion = PlanVersion{Major: 1, Minor: 2, Patch: 0}
+
+// schemaFeature é UMA extensão do schema com o MINOR em que passou a EXISTIR. A tabela
+// abaixo é o outro lado da lista MINOR-a-MINOR de [CurrentPlanVersion]: aquela diz o que
+// cada linha ACRESCENTOU; esta diz, para cada acréscimo, qual é o piso de `plan_version`
+// que um documento TEM de carimbar para o poder usar.
+//
+// PORQUE A TABELA EXISTE, E PORQUE VIVE AQUI. Sem ela o bump de MINOR era um carimbo que
+// ninguém impunha: o `plan_version` é um campo do PlanDocument — dados UNTRUSTED escritos
+// pelo modelo —, [Decode] não olha para ele e a verificação de compatibilidade a jusante
+// é por MAJOR. Um produtor podia carimbar `1.0.0` e emitir `outputs`/`consumes`, o leitor
+// corrente aceitava (conhece os campos), o plano era aprovado e congelado com esse
+// carimbo, e MESES DEPOIS um reader `1.0.0` — retido legitimamente, porque a janela de
+// suporte é por MAJOR — falhava o replay com «unknown field outputs»: um erro NÃO
+// atribuível por nenhuma das políticas de `planmigrate` ([ErrOutsideSupportWindow],
+// ErrRetired, ErrReaderMismatch), no run que essa maquinaria existe para reproduzir. Pior:
+// o registo de auditoria dizia que o plano fora admitido sob a linha 1.0.0 quando fora
+// admitido por um validador que impõe as regras de §2.2/§2.3 de 1.2.0 — o carimbo mentia
+// sobre que conjunto de regras aprovou o plano.
+//
+// A IMPOSIÇÃO É DO VALIDADOR PURO, não deste pacote: [Decode] valida FORMA e a forma de
+// um documento 1.2.0 é a mesma independentemente do que ele carimba. O piso é SEMÂNTICA
+// (regra 1 de `planvalidate`, sub-código `plan_version_below_features`) — ver
+// [FeatureFloor], que é a função que o validador chama.
+//
+// O PRÓXIMO MINOR ENTRA AQUI. Uma linha nova nesta tabela (e a sua irmã na lista de
+// [CurrentPlanVersion]) é tudo o que um acréscimo de schema precisa para ficar imposto.
+type schemaFeature struct {
+	// Name é o nome ESTRUTURAL da feature (o campo, ou o literal reservado). É um
+	// símbolo fechado, seguro para telemetria — nunca conteúdo do documento.
+	Name string
+	// Since é o MINOR em que a feature passou a existir: o piso que um documento que a
+	// USE tem de carimbar.
+	Since PlanVersion
+	// Used indica se o nó usa a feature.
+	Used func(Node) bool
+}
+
+// schemaFeatures é a tabela feature→versão mínima, pela ordem de introdução. A ordem é
+// determinística e importa para o desempate de [FeatureFloor] (o primeiro uso encontrado
+// que fixa o piso é o que se reporta).
+var schemaFeatures = []schemaFeature{
+	// 1.1.0 (AOS-270, ADR-022 §2.1).
+	{Name: "conditional_on", Since: PlanVersion{Major: 1, Minor: 1, Patch: 0},
+		Used: func(n Node) bool { return len(n.ConditionalOn) > 0 }},
+	// 1.2.0 (AOS-272, ADR-022 §2.3).
+	{Name: "outputs", Since: PlanVersion{Major: 1, Minor: 2, Patch: 0},
+		Used: func(n Node) bool { return len(n.Outputs) > 0 }},
+	{Name: "consumes", Since: PlanVersion{Major: 1, Minor: 2, Patch: 0},
+		Used: func(n Node) bool { return len(n.Consumes) > 0 }},
+	// 1.2.0 (AOS-271, ADR-022 §2.2) — o literal RESERVADO do campo `role`. Não é um
+	// campo novo: é o significado que o sistema passou a IMPOR a esse nó.
+	{Name: "role_verifier", Since: PlanVersion{Major: 1, Minor: 2, Patch: 0},
+		Used: Node.IsVerifier},
+}
+
+// FeatureUse é o uso CONCRETO que fixa o piso de versão de um documento: que feature, em
+// que nó, desde que linha. Content-free — `Feature` é um símbolo da tabela fechada e
+// `NodeID` é o identificador estrutural que o veredicto já propaga.
+type FeatureUse struct {
+	Feature string
+	Since   PlanVersion
+	NodeID  string
+}
+
+// FeatureFloor devolve o PISO de `plan_version` exigido pelas features que doc USA — a
+// MAIOR das versões de introdução das features presentes — e o uso que o fixa. Um
+// documento que não use nenhuma extensão devolve o zero-value {0,0,0} (piso vazio: todas
+// as linhas o admitem) e um [FeatureUse] vazio.
+//
+// Pura e determinística: itera os nós pela ordem do slice e as features pela ordem da
+// tabela; em empate de versão vence o PRIMEIRO uso encontrado. É esta função que dá à
+// regra 1 de `planvalidate` a fronteira entre «o que o documento DECLARA ser» e «o que o
+// documento USA» — sem ela o carimbo não identifica o schema.
+func FeatureFloor(doc PlanDocument) (PlanVersion, FeatureUse) {
+	var floor PlanVersion
+	var use FeatureUse
+	for _, n := range doc.Nodes {
+		for _, f := range schemaFeatures {
+			if !f.Used(n) {
+				continue
+			}
+			if f.Since.Compare(floor) > 0 {
+				floor = f.Since
+				use = FeatureUse{Feature: f.Name, Since: f.Since, NodeID: n.NodeID}
+			}
+		}
+	}
+	return floor, use
+}
 
 // ParsePlanVersion aceita ESTRITAMENTE "X.Y.Z" com X,Y,Z inteiros não-negativos,
 // na forma CANÓNICA exacta — sem whitespace envolvente nem interno. Fail-closed:

@@ -1,0 +1,22 @@
+{
+  "plan_version": "1.1.0",
+  "objective": "search the web and summarize findings over a declared data contract",
+  "budget_total": {"tokens": 1400, "cost_micro_usd": 7000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {
+      "node_id": "recolha", "role": "searcher", "objective": "recolher fontes candidatas",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000}, "risk_class": "safe",
+      "outputs": [
+        {"name": "fontes", "type": "record"},
+        {"name": "notas", "type": "summary"}
+      ]
+    },
+    {
+      "node_id": "sintese", "role": "summarizer", "objective": "sintetizar as fontes recolhidas",
+      "tools": [], "depends_on": ["recolha"], "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000}, "risk_class": "safe",
+      "consumes": [{"from": "recolha", "output": "fontes", "type": "record"}]
+    }
+  ]
+}
