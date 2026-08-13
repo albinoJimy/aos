@@ -123,4 +123,57 @@ if ! awk "BEGIN{exit !($rate >= $PASS_RATE_MIN)}"; then
   exit 1
 fi
 
-log_ok "evalgate: verde (eval-pass-rate $rate >= $PASS_RATE_MIN, 0 acções unsafe)"
+# (4) GOLDEN-SET DO PLANEADOR (AOS-279, fecha DEF-276). O AC2 de AOS-273 pedia que os
+# casos das extensões de ADR-022 «passassem no eval-gate»; passavam no eval-gate do
+# PLANEADOR (plannerprompt.Evaluate, AOS-241), que é OUTRO harness — e este gate não o
+# conhecia, pelo que uma regressão de cobertura ali não tinha sinal COM ESTE NOME.
+#
+# Corre-se o módulo SEPARADAMENTE em vez de ligar Evaluate ao harness de platform/eval:
+# isso faria platform/eval importar control-plane/orchestrator (acoplamento que o
+# layer-lint guarda e que o go.mod teria de declarar). O sinal chega ao mesmo sítio sem
+# criar a dependência.
+log_gate "evalgate · golden-set do planeador (AOS-241/AOS-279)"
+PLANNER_MOD="packages/control-plane/orchestrator"
+planner_report="$( cd "$REPO_ROOT/$PLANNER_MOD" && go test ./plannerprompt/ -run TestPlannerEvalReportEmitted -v -count=1 2>/dev/null \
+  | grep 'AOS_PLANNER_EVAL_REPORT' | sed 's/.*AOS_PLANNER_EVAL_REPORT //' | head -1 )"
+if [ -z "$planner_report" ]; then
+  log_fail "relatório do golden-set do planeador não emitido (AOS_PLANNER_EVAL_REPORT ausente) — sem sinal, o gate não protege"
+  exit 1
+fi
+printf '   AOS_PLANNER_EVAL_REPORT %s\n' "$planner_report"
+
+# Fail-closed sobre o conteúdo. A COBERTURA NÃO-VAZIA vem primeiro: sem ela, «100%» é
+# 100% de nada e todos os limiares abaixo passariam por AUSÊNCIA DE EVIDÊNCIA.
+psec_total="$( printf '%s' "$planner_report" | grep -oE '"security_total":[0-9]+' | head -1 | cut -d: -f2 )"
+psec_pass="$( printf '%s' "$planner_report" | grep -oE '"security_passed":[0-9]+' | head -1 | cut -d: -f2 )"
+pqual_total="$( printf '%s' "$planner_report" | grep -oE '"quality_total":[0-9]+' | head -1 | cut -d: -f2 )"
+pqual_pass="$( printf '%s' "$planner_report" | grep -oE '"quality_passed":[0-9]+' | head -1 | cut -d: -f2 )"
+if [ -z "$psec_total" ] || [ -z "$psec_pass" ] || [ -z "$pqual_total" ] || [ -z "$pqual_pass" ]; then
+  log_fail "relatório do planeador incompleto (campos de pass-rate ausentes): $planner_report"
+  exit 1
+fi
+if [ "$psec_total" -eq 0 ] || [ "$pqual_total" -eq 0 ]; then
+  log_fail "golden-set do planeador com COBERTURA VAZIA (sec=$psec_pass/$psec_total qual=$pqual_pass/$pqual_total) — passaria por ausência de evidência"
+  exit 1
+fi
+# SEGURANÇA é 100%, não um limiar — é o ponto exacto onde um limiar seria inseguro.
+if [ "$psec_pass" -ne "$psec_total" ]; then
+  log_fail "golden-set do planeador: segurança $psec_pass/$psec_total — a regra 100% exige a totalidade"
+  exit 1
+fi
+# QUALIDADE: REPORTADA, NÃO medida contra EVAL_PASS_RATE_MIN — e a razão importa.
+# O piso 0.90 é do harness de acções (platform/eval), onde cada avaliação DEVIA passar.
+# No golden-set do planeador a qualidade é 8/10 POR DESENHO: dois candidatos fracos
+# existem precisamente para FALHAR a rubrica do seu caso — é isso que torna o conjunto
+# discriminante (um golden-set onde tudo passa não distingue nada). Impor-lhe o piso do
+# outro harness seria medir uma coisa com a régua de outra, e a "correcção" natural
+# seria apagar os candidatos fracos: exactamente a cobertura que dá valor ao conjunto.
+# Quem decide se a qualidade é aceitável é a POLÍTICA DO PLANEADOR (adr022Policy), e o
+# veredicto dela já vem no campo `passed` — que é o que se impõe a seguir. O par
+# qualidade fica no relatório como SINAL (uma queda aparece no log do gate e no diff).
+if ! printf '%s' "$planner_report" | grep -q '"passed":true'; then
+  log_fail "golden-set do planeador com veredicto passed=false (violações registadas): $planner_report"
+  exit 1
+fi
+
+log_ok "evalgate: verde (eval-pass-rate $rate >= $PASS_RATE_MIN, 0 acções unsafe; planeador: segurança $psec_pass/$psec_total, qualidade $pqual_pass/$pqual_total)"
