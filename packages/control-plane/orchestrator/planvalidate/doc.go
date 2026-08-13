@@ -16,6 +16,19 @@
 //     de eventos de AOS-025 vive no subpacote irmão `orchestrator/contract`).
 //   - NÃO computa o hash do snapshot (AOS-243): só ACEITA o snapshot pinado e
 //     confere que o seu Hash bate com o `capabilities_hash` que o plano carimbou.
+//   - NÃO avalia condições: a gramática das arestas condicionais (ADR-022 §2.1) é
+//     validada aqui na sua SEMÂNTICA DE GRAFO, mas a AVALIAÇÃO é do despachante sem
+//     estado (`plandispatch`) sobre o resultado REGISTADO — nunca do validador (que
+//     não vê resultados) e nunca do LLM em runtime.
+//
+// ARESTAS CONDICIONAIS (ADR-022 §2.1, AOS-270). O campo `conditional_on` atravessa
+// as regras existentes sem regra nova: a regra 1 confere a integridade referencial
+// da origem e recusa a sobreposição com `depends_on`; a regra 2 mete as arestas
+// condicionais NO MESMO DAG de AOS-025 — é isso, e só isso, que impõe «uma aresta
+// condicional nunca fecha ciclo» (o vector «ciclo disfarçado de condicional» morre
+// no primitivo que já existia, não num detector novo); a regra 4 conta-as no
+// fanout/profundidade, para que o outro canal de aresta não seja uma porta de saída
+// dos tectos estruturais.
 //
 // Regras 5–6 (AOS-232) — RISCO DERIVADO e ORÇAMENTO RE-PREÇADO — vivem no MESMO
 // pacote (risk.go, budget.go, resources.go) mas num ponto de entrada PRÓPRIO,

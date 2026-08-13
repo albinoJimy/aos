@@ -49,6 +49,8 @@ O GW concretiza três ADRs canónicos:
 
 Aplicam-se ainda, por adjacência, o **ADR-008** (admission control global em tokens/$, imposto a montante pelo Escalonador) e o **ADR-010** (cada chamada emite um span OTel GenAI com `gen_ai.usage.*` e custo em USD).
 
+Desde a ratificação de 2026-08-13 aplica-se também o **ADR-021 — roteamento por scoring ponderado determinístico** (§6.1): a ordenação dos sobreviventes passa a ser uma soma ponderada com pesos declarados como policy-as-code assinada (ADR-012), **depois** das guardas estruturais de soberania/allowlist/capacidade, sem exploração online (o replay do ADR-010 fica intacto).
+
 ---
 
 ## 3. O gateway unificado
@@ -244,6 +246,41 @@ O router *cost/load-aware* de produção vive em `packages/platform/model-gatewa
 
 O router **nunca viola a allowlist regional** (a filtragem é estrutural, ANTES de qualquer selecção), coordena com o *admission control* global (sem colapso agregado, ADR-008) e regista modelo/tier/razão por decisão (ADR-010). Mantém verdes o Escalonador (que consome a porta com a impl de referência) e os tickets AOS-055..058.
 
+### 6.1 Scoring ponderado determinístico (AOS-269, ADR-021)
+
+A composição de AOS-059 é **lexicográfica**: carga > custo > latência, com a ordem gravada em código. Isso não admite um sinal de **qualidade** (nada distingue «o tier mais barato capaz» de «o tier que historicamente resolve bem este tipo de tarefa», apesar de o *eval harness* do EPIC-08 já produzir essa medida) nem permite ao consumidor **declarar intenção** («o mais barato possível» *vs* «qualidade acima de tudo»). O ADR-021 fecha esses dois *gaps* substituindo a ordenação lexicográfica por uma **soma ponderada determinística** que corre **depois** das guardas estruturais.
+
+**As cinco regras (autoridade congelada do ADR-021) e onde estão impostas:**
+
+1. **Guardas primeiro, score depois.** A partição de soberania (`Router.partition`), a allowlist assinada do *board* e o piso de capacidade do tier correm **antes** de qualquer ranking e **não são factores**. O `Router.scoreSurvivors` só constrói candidatos para pares (região intra-fronteira × tier permitido e capaz) — um candidato *cross-border* ou fora da allowlist **nunca entra na lista pontuada**, pelo que nenhum peso o pode ressuscitar. A garantia é por **ausência**, não por uma verificação posterior.
+2. **Factores como portas injectáveis, aritmética inteira.** Os seis factores — *health*, *headroom*, custo, latência, *task-fit*, estabilidade — entram por uma porta comum `scoring.FactorProvider` com impls de referência determinísticas (`routing/scoring/providers.go`), à imagem de `LoadProvider`/`BudgetProvider`. **Dois deles não são sinal novo**: `CostFromLadder` deriva o custo da escada de tiers existente e `HeadroomFromReader` + `router.HeadroomReaderFrom` derivam o *headroom* da **mesma porta `LoadProvider`** que o modo lexicográfico já usa (o *token-bucket*/keypool de AOS-057 não é reimplementado). Tudo é **inteiro em milésimos** (`scoring.Scale = 1000`): factores 0..1000, pesos 0..1000, soma em `int64` e normalização por **divisão inteira** — zero *floats* no *data-plane*.
+3. **Pesos como policy-as-code versionada e assinada.** A tabela vive em `policy/weights` — o **molde exacto** de `policy/allowlist` (AOS-058): artefacto embebido (`weights_table.json`), digest canónico sha256 (material assinado e versão *tamper-evident*), assinatura **ed25519** (stdlib) e **trust anchor pinado em código**; `LoadTable` recusa *fail-closed* com `ErrTableMalformed`/`ErrSignatureInvalid`/`ErrTrustAnchorMismatch`. Traz um campo **SemVer obrigatório e validado**: alterar um peso exige *bump* + passagem no *eval-gate* antes de produção (ADR-012). A via externa (`LoadSignedTableFromDir` + anchor *out-of-band*) espelha a da allowlist, para o operador que curadoria a sua própria tabela.
+4. **Calibração offline, nunca online.** Não há *bandit*, exploração nem aprendizagem em runtime: sem `rand`, sem relógio, sem estado evolutivo no caminho de decisão. O *task-fit* e a evolução dos pesos vêm de análise **offline** (eval harness + `DecisionSink`) promovida por uma **nova versão assinada** da tabela. O replay (ADR-010) permanece byte-a-byte.
+5. **Swap continua variância explícita.** A `Decision.Reason` de uma escolha pontuada inclui **perfil, versão dos pesos, score e factores**; a pipeline propaga-a e a variância `model_swap` do GW passa a carregar a razão de *scoring* — inclusive quando a troca final foi por orçamento (a razão de degradação **preserva** o sufixo do score).
+
+**Formato da tabela de pesos.** Documento JSON de **schema fechado** (`DisallowUnknownFields`), com quatro campos obrigatórios:
+
+| Campo | Tipo | Regra fail-closed |
+|---|---|---|
+| `version` | string | não-vazia; compõe a identidade `versão#digest12` registada em cada decisão |
+| `semver` | string | `MAJOR.MINOR.PATCH` numérico, sem zeros à esquerda (ADR-012) |
+| `default_profile` | string | tem de nomear um perfil existente |
+| `profiles[]` | lista | ≥ 1; nomes únicos e não-vazios |
+| `profiles[].weights` | objecto | as seis chaves `health`, `headroom`, `cost`, `latency`, `task_fit`, `stability`, cada uma **inteira** em `[0,1000]`; **soma > 0** (um perfil de soma zero não ordenaria nada) |
+
+**Pesos iniciais** (`gw-scoring-weights/v1`, semver `1.0.0`; cada perfil soma 1000):
+
+| Perfil | health | headroom | cost | latency | task_fit | stability | Intenção declarada |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `balanced` *(default)* | 200 | 150 | 200 | 150 | 200 | 100 | equilíbrio; nenhum eixo domina |
+| `fast` | 150 | 150 | 50 | 400 | 150 | 100 | interactivo: latência acima de custo |
+| `cheap` | 150 | 150 | 450 | 50 | 100 | 100 | batch: custo acima de tudo |
+| `quality` | 150 | 100 | 50 | 100 | 450 | 150 | *task-fit* dos evals acima de custo/latência |
+
+**Postura de compatibilidade (decisão deste ticket, declarada).** O *scoring* é **opt-in por composição** (`router.WithScoring`). **Sem** essa opção o router mantém o comportamento de AOS-059 **inalterado** — um nó já implantado, que arranca sem tabela de pesos, continua a rotear exactamente como antes. **Com** essa opção a tabela é **obrigatória**: `scoring.NewScorer` não se constrói sem tabela verificada, e — defesa em profundidade — um *scorer* não-armado (valor-zero, tabela perdida, perfil de soma zero) faz o router **rejeitar toda a rota**, nunca cair em pesos implícitos. É esta a leitura da regra 3 («sem tabela válida o router recusa»): aplica-se **quando o *scoring* está composto**, não impõe uma tabela a quem não pediu *scoring*.
+
+**Observabilidade.** O span `model_routing` ganha `aos.routing.scored`, `aos.routing.score`, `aos.routing.score_profile`, `aos.routing.score_weights_version`, `aos.routing.score_factors` e `aos.routing.score_scale`; a `Decision` (e por ela o `DecisionSink`) transporta `Scored`, `ScoreProfile`, `WeightsVersion`, `Score` e `ScoreFactors` — o material de que a calibração offline da regra 4 se alimenta.
+
 ---
 
 ## 7. Layout cache-estável e economia
@@ -344,6 +381,12 @@ Os riscos que emergem só sob saturação e indisponibilidade (§9 — colapso a
 4. **Failover intra-fronteira** e rejeição quando não há capacidade intra-fronteira;
 5. **Cross-border** bloqueado *fail-closed*, com *deny* registado e atribuível a principal + *board* na *hash-chain* WORM (AOS-011).
 
+Com AOS-269 (§6.1) a suite alarga-se a três cenários de *scoring*, com os seus meta-testes:
+
+6. **Guardas antes do score** — um perfil de pesos deliberadamente ganancioso satura os factores a favor de um candidato *cross-border* e de um modelo fora da allowlist; ambos continuam inelegíveis (o meta-teste, com a guarda e a allowlist contornadas, mostra que esses **mesmos** pesos os elegeriam);
+7. **Função pura** — 64 execuções com os mesmos sinais devolvem o mesmo candidato, o mesmo *score*, os mesmos factores e a mesma razão, e a ordem dos candidatos não altera a decisão; a ausência de *floats*, `rand` e relógio no caminho de decisão (`routing/scoring`, `routing/router`, `policy/weights`, `routing/tiering`, `routing/degradation`) é provada por **análise AST do código**, com auto-verificação de não-vacuidade sobre um pacote que legitimamente usa vírgula flutuante (`metering/cost`);
+8. **Fail-closed dos pesos** — com o *scoring* composto e sem tabela válida/assinada o router recusa (e a razão nomeia a causa); sem o *scoring* composto o comportamento de AOS-059 fica inalterado. O meta-teste prova que a assinatura é *load-bearing*: trocar os pesos **muda** de facto a decisão.
+
 Os *fakes* de provider por região têm carga/orçamento/admissão/relógio injectáveis (as impls de referência determinísticas de AOS-057/059 e os *fakes* de AOS-055/056), sem segredos (ADR-006). O *gate* `scripts/ci/routing.sh` (molde de `supplychain.sh`) é fail-closed: exige que cada cenário e meta-teste tenha corrido (não-vácuo), corre `-race`, ancora ao veredicto agregado (`AOS_ROUTING_REPORT`) e não deixa a cobertura do módulo regredir; o `selftest.sh` (secção G) prova que um cenário desbloqueado o torna vermelho.
 
 ---
@@ -359,6 +402,9 @@ Os *fakes* de provider por região têm carga/orçamento/admissão/relógio inje
 | Agente vê chave do provider | Fuga de credencial de infra | Chaves obtidas via Credential Broker JIT server-side (ADR-006) |
 | Swap silencioso de modelo | Regressão comportamental não detectada | Porta versionada SemVer; troca como evento de variância registado |
 | Roteamento cego sob saturação | Colapso agregado de rate limit | Router load/token-aware coordenado com admission control global (`tecnica/03`) |
+| Pesos de scoring adulterados | Decisão do gateway mudada sem mudar código (rota para o modelo do atacante) | Tabela de pesos assinada ed25519 com trust anchor **pinado em código** e digest tamper-evident; carregamento fail-closed; alteração exige bump SemVer + eval-gate (ADR-012, §6.1) |
+| Score a contornar soberania/allowlist | Fuga cross-border «justificada» por um peso alto | Guardas correm ANTES do ranking e não são factores; o candidato descartado nunca entra na lista pontuada (ADR-021 regra 1); cenário 6 + meta-teste no gate `ci-routing` |
+| Exploração online (bandit) no roteamento | Replay quebrado; decisão irreprodutível | Proibida por desenho: calibração só offline por nova versão assinada; ausência de `rand`/relógio/floats provada por AST no cenário 7 |
 
 ---
 
@@ -390,3 +436,4 @@ Os *fakes* de provider por região têm carga/orçamento/admissão/relógio inje
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | Agosto 2026 | §2, §6.1 e §8.4: scoring ponderado determinístico do router (AOS-269 / ADR-021) — formato e pesos iniciais da tabela assinada, postura de compatibilidade opt-in, cenários 6–8 do gate | Equipa AOS |

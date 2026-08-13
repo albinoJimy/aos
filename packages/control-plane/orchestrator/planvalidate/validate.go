@@ -24,7 +24,8 @@ type Ceilings struct {
 	MaxFanout int
 }
 
-// Validate é o VALIDADOR PURO de AOS-231. Aplica as regras 1–4 por ORDEM FIXA
+// Validate é o VALIDADOR PURO de AOS-231. Aplica as regras 1–4 (mais as duas
+// regras de ADMISSÃO das arestas condicionais, em condition.go) por ORDEM FIXA
 // sobre o documento (assumido já aprovado na FORMA por [plan.Decode]), o snapshot
 // pinado e os tectos, e devolve o PRIMEIRO veredicto de rejeição — ou [accepted].
 //
@@ -36,7 +37,16 @@ func Validate(doc plan.PlanDocument, snap Snapshot, ceil Ceilings) Verdict {
 	if v := checkSemantics(doc, snap); v.Rejected() {
 		return v
 	}
+	if v := checkVerdictSupport(doc); v.Rejected() {
+		return v
+	}
 	if v := checkAcyclic(doc); v.Rejected() {
+		return v
+	}
+	// ALCANÇABILIDADE dos ramos (condition.go). Depois da aciclicidade — precisa da
+	// ordem topológica — e ANTES da resolução de tools, para que um plano
+	// estruturalmente morto seja recusado pela sua razão real e não por uma tool.
+	if v := checkBranchReachability(doc); v.Rejected() {
 		return v
 	}
 	if v := checkTools(doc, snap); v.Rejected() {
@@ -84,6 +94,36 @@ func checkSemantics(doc plan.PlanDocument, snap Snapshot) Verdict {
 			}
 		}
 	}
+	// Integridade referencial das ARESTAS CONDICIONAIS (ADR-022 §2.1, AOS-270). A
+	// forma já foi validada por [plan.Decode] (gramática do subconjunto fechado); o
+	// que falta é SEMÂNTICA de grafo, e é aqui que vive.
+	//
+	// (a) A origem tem de existir NO MESMO PLANO. É esta regra que dá corpo ao «o
+	// ramo aponta para nós DECLARADOS À PRIORI do mesmo plano» do ADR: uma condição
+	// sobre um nó de fora do documento não é uma aresta — é um oráculo externo.
+	//
+	// (b) A MESMA origem não pode aparecer em `depends_on` E em `conditional_on` do
+	// mesmo nó. As duas têm semânticas de espera DIFERENTES (a dependência exige
+	// CONCLUSÃO; a condicional exige TERMINALIDADE + predicado), pelo que a
+	// sobreposição é ou contraditória (`depends_on X` + `X terminal_state eq failed`
+	// ⇒ nó morto) ou redundante — e é exactamente a forma que um plano hostil usaria
+	// para esconder a semântica real de uma aresta ao revisor humano do gate. Como
+	// efeito colateral útil, a rejeição garante que os dois canais são DISJUNTOS, o
+	// que permite contar o fanout/profundidade sobre a sua UNIÃO sem duplicados.
+	for _, n := range doc.Nodes {
+		deps := make(map[string]struct{}, len(n.DependsOn))
+		for _, dep := range n.DependsOn {
+			deps[dep] = struct{}{}
+		}
+		for _, ce := range n.ConditionalOn {
+			if _, ok := ids[ce.From]; !ok {
+				return reject(plannerevents.RuleSchema, ReasonDanglingConditional, Locator{NodeID: n.NodeID})
+			}
+			if _, dup := deps[ce.From]; dup {
+				return reject(plannerevents.RuleSchema, ReasonConditionalShadowsDependency, Locator{NodeID: n.NodeID})
+			}
+		}
+	}
 	return accepted
 }
 
@@ -120,6 +160,22 @@ func validNodeID(id string) bool {
 //
 // Direcção das arestas: em `depends_on`, cada dep PRECEDE o nó; logo a aresta é
 // dep→node (o mesmo sentido de [orchestrator.DAG.AddEdge], "To depende de From").
+//
+// ARESTAS CONDICIONAIS (ADR-022 §2.1, AOS-270) — «uma aresta condicional NUNCA
+// pode fechar ciclo». O enforcement é ESTRUTURAL e NÃO tem código próprio: as
+// arestas condicionais entram NO MESMO DAG, com a MESMA direcção (from→node), pelo
+// que a aciclicidade incremental de AOS-025 as recusa pelo mesmo primitivo. É esta
+// unificação — um só grafo de admissão, dois canais de aresta — que fecha o vector
+// «ciclo disfarçado de condicional»: uma condicional que aponte para a região JÁ
+// EXECUTADA do plano teria de apontar para um ANTECESSOR, e apontar para um
+// antecessor É fechar um ciclo. Não há terceira hipótese, e não há detector novo
+// que se possa esquecer de correr.
+//
+// Ordem deliberada em DUAS passagens (não é um detalhe): primeiro TODAS as
+// `depends_on`, depois TODAS as condicionais. Assim, um ciclo que já exista só nas
+// dependências é reportado como [ReasonCycle], e só um ciclo que EXIJA a aresta
+// condicional para se fechar produz [ReasonConditionalCycle] — o feedback nomeia o
+// canal culpado, e o teste adversarial pode prová-lo em vez de o presumir.
 func checkAcyclic(doc plan.PlanDocument) Verdict {
 	dag := orchestrator.NewDAG("planvalidate")
 	for _, n := range doc.Nodes {
@@ -135,6 +191,13 @@ func checkAcyclic(doc plan.PlanDocument) Verdict {
 				// A única razão possível aqui é fecho de ciclo (auto-laço incluído):
 				// os nós existem (regra 1 garantiu a integridade referencial).
 				return reject(plannerevents.RuleAcyclicity, ReasonCycle, Locator{NodeID: n.NodeID})
+			}
+		}
+	}
+	for _, n := range doc.Nodes {
+		for _, ce := range n.ConditionalOn {
+			if err := dag.AddEdge(ce.From, n.NodeID); err != nil {
+				return reject(plannerevents.RuleAcyclicity, ReasonConditionalCycle, Locator{NodeID: n.NodeID})
 			}
 		}
 	}
@@ -191,13 +254,36 @@ func checkCeilings(doc plan.PlanDocument, ceil Ceilings) Verdict {
 	return accepted
 }
 
+// incomingEdges devolve a UNIÃO das arestas de entrada de um nó — `depends_on`
+// mais as origens das arestas CONDICIONAIS — pela ordem declarada (dependências
+// primeiro), que é a ordem determinística usada por todo este ficheiro.
+//
+// PORQUE A UNIÃO, e não só `depends_on`: os tectos estruturais (regra 4) existem
+// para limitar a TOPOLOGIA admitida. Se as condicionais não contassem, um plano
+// exaustivo escapava ao MaxFanout/MaxDepth apenas por declarar as suas arestas no
+// outro canal — o mesmo grafo, o mesmo custo, tecto nenhum. Contam. A regra 1
+// garantiu que os dois canais são DISJUNTOS por nó ([ReasonConditionalShadowsDependency]),
+// pelo que a união nunca conta a mesma aresta duas vezes. Puro, sem alocação quando
+// não há condicionais (o caso de todos os planos pré-ADR-022).
+func incomingEdges(n plan.Node) []string {
+	if len(n.ConditionalOn) == 0 {
+		return n.DependsOn
+	}
+	out := make([]string, 0, len(n.DependsOn)+len(n.ConditionalOn))
+	out = append(out, n.DependsOn...)
+	for _, ce := range n.ConditionalOn {
+		out = append(out, ce.From)
+	}
+	return out
+}
+
 // maxFanout devolve o nó com maior out-degree (quantos nós dependem dele
-// DIRECTAMENTE) e esse grau. Desempate estável pela ordem dos nós no slice (o
-// PRIMEIRO a atingir o máximo vence). Puro.
+// DIRECTAMENTE, por qualquer dos dois canais de aresta) e esse grau. Desempate
+// estável pela ordem dos nós no slice (o PRIMEIRO a atingir o máximo vence). Puro.
 func maxFanout(doc plan.PlanDocument) (string, int) {
 	outdeg := make(map[string]int, len(doc.Nodes))
 	for _, n := range doc.Nodes {
-		for _, dep := range n.DependsOn {
+		for _, dep := range incomingEdges(n) {
 			outdeg[dep]++ // dep→n: n conta para o fanout de dep
 		}
 	}
@@ -223,8 +309,9 @@ func maxDepth(doc plan.PlanDocument) (string, int) {
 	indeg := make(map[string]int, len(doc.Nodes))
 	dependents := make(map[string][]string, len(doc.Nodes))
 	for _, n := range doc.Nodes {
-		indeg[n.NodeID] = len(n.DependsOn)
-		for _, dep := range n.DependsOn {
+		in := incomingEdges(n) // união dos dois canais (ver [incomingEdges])
+		indeg[n.NodeID] = len(in)
+		for _, dep := range in {
 			dependents[dep] = append(dependents[dep], n.NodeID)
 		}
 	}

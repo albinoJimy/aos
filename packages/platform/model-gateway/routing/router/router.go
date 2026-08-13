@@ -28,19 +28,66 @@
 // degraus da cadeia — sem os executar. Cada decisão regista MODELO, TIER e RAZÃO
 // (span OTel + porta [DecisionSink]) para análise de custo post-hoc (ADR-010).
 //
+// # SCORING PONDERADO (AOS-269, ADR-021) — OPT-IN por composição
+//
+// Por omissão o router mantém EXACTAMENTE a ordenação lexicográfica de AOS-059
+// descrita acima (carga → tier mais barato capaz → orçamento). Ligando
+// [WithScoring], a ORDENAÇÃO dos sobreviventes passa a ser a soma ponderada
+// determinística de routing/scoring, com pesos vindos de um artefacto ASSINADO
+// (policy/weights). A POSTURA DE COMPATIBILIDADE é deliberada e declarada:
+//
+//   - sem [WithScoring] ⇒ comportamento lexicográfico INALTERADO. Um nó que hoje
+//     arranca sem tabela de pesos continua a rotear exactamente como antes;
+//   - com [WithScoring] ⇒ a tabela de pesos é OBRIGATÓRIA. O scorer só se constrói
+//     sobre uma tabela verificada (assinatura + trust anchor pinado) e, defesa em
+//     profundidade, um scorer não-armado faz o router REJEITAR toda a rota
+//     (fail-closed) em vez de cair em pesos implícitos.
+//
+// DEFERIDO (DEF-271) — ALCANCE HONESTO: este router NÃO está composto no pipeline de
+// produção do gateway. O `NewProduction` compõe `failover.NewStage` como estágio de
+// roteamento, e `router.New` não tem chamador fora de testes em todo o repositório —
+// uma lacuna PRÉ-EXISTENTE a AOS-269, não introduzida por ele. Enquanto o estágio não
+// for composto, o scoring aqui entregue (máquina completa, testada e assinada) NÃO tem
+// efeito em produção. O alcance está fixado na EMENDA 1.1 do ADR-021 (§5-bis,
+// 2026-08-13, autoridade de dono): na v1 o scoring é composto POR OPÇÃO e a regra 3
+// («sem tabela válida o router recusa») aplica-se QUANDO o scoring está composto.
+//
+// DIVERGÊNCIA DECLARADA FACE À REGRA 3 DO ADR-021 — ESCALADA, NÃO RESOLVIDA. O
+// ADR-021 §2 regra 3 diz, SEM qualificação, que «sem tabela válida, o router
+// recusa (não assume pesos implícitos)», e §5 repete-o. A implementação acima lê
+// isso como «quando o scoring está composto» — uma leitura que o implementador NÃO
+// tem autoridade para fixar: o ADR é AUTORIDADE CONGELADA desde 2026-08-13 e só
+// uma EMENDA DATADA de dono (Carta §6) a pode qualificar. Agrava que hoje NENHUM
+// ponto de composição do repositório arma o scoring (o composition root
+// modelgateway.NewProduction compõe failover.NewStage, não este router), pelo que
+// a regra 3 está INERTE na composição actual. A pendência está registada em
+// docs/governance/REGISTO-Deferimentos.md (DEF-269-R3) com as duas saídas
+// possíveis — emenda datada OU armar o scoring no composition root — e o critério
+// de saída §71 do EPIC-20 traz a nota correspondente. Enquanto não houver decisão
+// de dono, NÃO se deve tratar este comentário como ratificação da leitura opt-in.
+//
+// As GUARDAS continuam PRIMEIRO e não são factores (ADR-021 regra 1): a partição de
+// soberania, a allowlist do board e o piso de capacidade correm ANTES do ranking, e
+// o scorer só vê sobreviventes intra-fronteira, permitidos e capazes. Um score alto
+// NUNCA ressuscita um candidato cross-border — não porque se verifique depois, mas
+// porque esse candidato nunca entra na lista pontuada.
+//
 // # Determinismo
 //
-// Sem relógio nem aleatoriedade na decisão: carga, orçamento e admissão são
-// injectados por porta. A selecção é determinística (desempate estável).
+// Sem relógio nem aleatoriedade na decisão: carga, orçamento, admissão e os
+// factores de scoring são injectados por porta. A selecção é determinística
+// (desempate estável) e a aritmética do score é INTEIRA (ponto fixo, zero floats).
 package router
 
 import (
 	"context"
 	"sort"
+	"strconv"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/routing/degradation"
+	"github.com/aos-ref/platform/model-gateway/routing/scoring"
 	"github.com/aos-ref/platform/model-gateway/routing/sovereignty"
 	"github.com/aos-ref/platform/model-gateway/routing/tiering"
 )
@@ -58,6 +105,24 @@ const (
 	AttrRoutingToTier    = "aos.routing.to_tier"
 	AttrRoutingKeyID     = "aos.routing.key_id"
 	AttrRoutingExhausted = "aos.routing.budget_exhausted"
+
+	// Atributos do SCORING PONDERADO (AOS-269, ADR-021 §5 «Observabilidade»): o span
+	// model_routing regista o PERFIL de pesos aplicado, a VERSÃO tamper-evident da
+	// tabela assinada, o SCORE final e os FACTORES que o compuseram — sem isto a
+	// calibração offline (regra 4) não teria de onde partir e uma decisão ponderada
+	// seria inauditável.
+	AttrRoutingScored       = "aos.routing.scored"
+	AttrRoutingScore        = "aos.routing.score"
+	AttrRoutingScoreProfile = "aos.routing.score_profile"
+	AttrRoutingScoreWeights = "aos.routing.score_weights_version"
+	AttrRoutingScoreFactors = "aos.routing.score_factors"
+	AttrRoutingScoreDivisor = "aos.routing.score_scale"
+	// Candidato que o SCORER elegeu ANTES de a degradação por orçamento o trocar
+	// (só presente quando houve troca). Separa o «o que correu» — que é o que
+	// aos.routing.score/score_factors descrevem — do «o que o score tinha eleito»,
+	// para que a auditoria da troca não tenha de contaminar os campos de calibração.
+	AttrRoutingScoredModel = "aos.routing.scored_model"
+	AttrRoutingScoredScore = "aos.routing.scored_score"
 )
 
 // opRouting é o nome de operação do span por decisão de roteamento.
@@ -196,6 +261,11 @@ type Request struct {
 	Capability tiering.Capability
 	// Class é a classe latência/prioridade (interactiva vs batch).
 	Class tiering.Class
+	// Profile é o PERFIL DE PESOS pedido por ESTA chamada (ADR-021 §1 gap 2: a
+	// intenção declarada do consumidor). Vazio ⇒ o perfil composto no scorer.
+	// Ignorado no modo lexicográfico (não há pesos). Um perfil DESCONHECIDO é
+	// rejeição fail-closed com razão própria — nunca um fallback silencioso.
+	Profile string
 	// EstimatedTokens é o custo estimado (alimenta a reserva de admissão).
 	EstimatedTokens int64
 	// Candidates são os endpoints candidatos (KeyID + região) para a selecção
@@ -236,7 +306,38 @@ type Decision struct {
 	// HeadroomTokens/Requests é o headroom global observado (admissão).
 	HeadroomTokens   int64
 	HeadroomRequests int64
-	// Reason é a razão legível da decisão (registada para análise post-hoc).
+	// Scored marca que a ORDENAÇÃO dos sobreviventes foi feita por SCORING PONDERADO
+	// (ADR-021) e não pela composição lexicográfica de AOS-059. Falso ⇒ os campos de
+	// scoring abaixo estão vazios (o router corre no modo compatível).
+	Scored bool
+	// ScoreProfile é o perfil de pesos aplicado (ex.: "balanced") — a INTENÇÃO
+	// declarada do consumidor, que substitui a prioridade fixa gravada em código.
+	ScoreProfile string
+	// WeightsVersion é a identidade versionada e tamper-evident da tabela de pesos
+	// ("versão#digest12"): liga a decisão aos pesos EXACTOS em vigor (ADR-012).
+	WeightsVersion string
+	// Score é a soma ponderada NORMALIZADA do modelo EFECTIVAMENTE despachado
+	// (0..scoring.Scale), em aritmética inteira. Coerência exigida pela regra 4 do
+	// ADR-021: se uma degradação por orçamento trocar o tier, este score é
+	// RE-CALCULADO sobre o tier trocado — a calibração offline nunca recebe
+	// factores atribuídos a um modelo que não correu.
+	Score int
+	// ScoreFactors são os factores normalizados que compuseram [Decision.Score] —
+	// e, portanto, do modelo despachado (ver a nota de coerência acima). É o
+	// detalhe que a calibração OFFLINE consome pelo DecisionSink.
+	ScoreFactors scoring.Factors
+	// ScoredModel/ScoredTier/ScoredScore preservam o candidato que o SCORER elegeu
+	// ANTES de a degradação por orçamento o trocar. Ficam VAZIOS quando não houve
+	// troca. Existem para que a auditoria da troca continue possível sem
+	// contaminar os campos de calibração: [Decision.Score]/[Decision.ScoreFactors]
+	// descrevem o que correu; estes descrevem o que o score tinha eleito.
+	ScoredModel string
+	ScoredTier  string
+	ScoredScore int
+	// Reason é a razão legível da decisão (registada para análise post-hoc). Numa
+	// decisão pontuada inclui SEMPRE o perfil, a versão dos pesos, o score e os
+	// factores — é esta razão que a pipeline propaga para a variância model_swap
+	// (ADR-021 regra 5: o scoring nunca troca em silêncio).
 	Reason string
 }
 
@@ -253,6 +354,9 @@ type Router struct {
 	keypool   KeyPool
 	tracer    agentruntime.Tracer
 	sink      DecisionSink
+	// scoring é o scorer ponderado (ADR-021). NIL ⇒ ordenação lexicográfica de
+	// AOS-059 (postura de compatibilidade declarada no doc do pacote).
+	scoring *scoring.Scorer
 }
 
 // Option configura o [Router].
@@ -330,6 +434,30 @@ func WithTracer(t agentruntime.Tracer) Option {
 	}
 }
 
+// WithScoring ARMA o scoring ponderado determinístico (AOS-269, ADR-021): a partir
+// daqui a ORDENAÇÃO dos sobreviventes (região × tier) é a soma ponderada dos
+// factores injectados, com os pesos do artefacto ASSINADO (policy/weights), em vez
+// da composição lexicográfica de AOS-059.
+//
+// POSTURA DE COMPATIBILIDADE (ESCALADA ao dono — ver a secção «DIVERGÊNCIA
+// DECLARADA» no doc do pacote e DEF-269-R3): o scoring é OPT-IN por composição.
+// Não chamar esta opção mantém o router byte-a-byte no comportamento actual —
+// nenhum nó já implantado deixa de rotear por não ter tabela de pesos. Isto é uma
+// LEITURA da regra 3 do ADR-021, não a regra 3: a regra, como está escrita, não a
+// qualifica. Chamá-la torna a tabela OBRIGATÓRIA: [scoring.NewScorer] já não
+// se constrói sem tabela verificada, e um scorer não-armado (valor-zero, tabela
+// perdida, perfil de soma zero) faz o router REJEITAR toda a rota — nunca cair em
+// pesos implícitos (ADR-021 regra 3).
+//
+// Um s nil é no-op (mantém o modo lexicográfico), coerente com as restantes opções.
+func WithScoring(s *scoring.Scorer) Option {
+	return func(r *Router) {
+		if s != nil {
+			r.scoring = s
+		}
+	}
+}
+
 // WithDecisionSink injecta o sink de decisões (registo post-hoc modelo/tier/razão).
 func WithDecisionSink(s DecisionSink) Option {
 	return func(r *Router) {
@@ -360,20 +488,31 @@ func New(ladder *tiering.Ladder, opts ...Option) *Router {
 //  1. SOBERANIA: parte os candidatos em intra-fronteira e cross-border (a guarda
 //     descarta os cross-border ANTES de escolher). Sem sobreviventes intra ⇒
 //     REJECT (nunca cross-border).
+//
 //  2. CARGA: escolhe a região/endpoint MENOS CARREGADO entre os sobreviventes
 //     (headroom TPM/RPM via porta) — determinístico, desempate por KeyID.
+//
 //  3. TIER (custo/capacidade + latência): o tier mais barato que satisfaz a
 //     capacidade, DENTRO da allowlist da região escolhida (o filtro descarta
 //     modelos fora da fronteira). Sem tier elegível ⇒ REJECT fail-closed.
+//
+//     Com [WithScoring] composto, (2) e (3) são substituídos por UM ranking
+//     PONDERADO sobre o produto (região sobrevivente × tier permitido e capaz) —
+//     ver [Router.scoreSurvivors]. As guardas de (1) e os filtros de allowlist/
+//     capacidade continuam a correr ANTES, e o scorer só vê o que sobreviveu.
+//
 //  4. ORÇAMENTO: a ~80% (porta budget) OFERECE degradar para tier mais barato que
 //     AINDA satisfaz a capacidade (exaustão graciosa) — nunca hard-stop cego, nunca
 //     abaixo da capacidade exigida; a descida respeita a allowlist.
+//
 //  5. CONTA: escolhe a chave pooled menos-carregada da região (keypool, AOS-057)
 //     ANTES da reserva de admissão — se o pool saturar, ADIA sem ter reservado
 //     débito global (a porta de admissão não tem Release; a ordem é a garantia de
 //     não haver FUGA de reserva que sature o tecto partilhado — o colapso agregado).
+//
 //  6. ADMISSION GLOBAL: reserva débito a montante (ADR-008). Sem headroom ⇒ DEFER
 //     (retry_after), nunca despacha. Rejeição permanente ⇒ REJECT.
+//
 //  7. REGISTA modelo/tier/razão (span + sink) e devolve a [Decision].
 func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 	ctx, span := r.tracer.StartSpan(ctx, opRouting)
@@ -386,8 +525,10 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 		Region:   req.Region,
 	}
 
-	// (1) SOBERANIA — sobreviventes intra-fronteira; cross-border descartados.
-	region, dropped, ok := r.chooseRegion(ctx, req)
+	// (1) SOBERANIA — GUARDA ESTRUTURAL, sempre a primeira: parte os candidatos e
+	// DESCARTA os cross-border. É esta ausência (e não uma verificação posterior) que
+	// impede qualquer ranking — lexicográfico ou ponderado — de os eleger.
+	intra, dropped, ok := r.partition(req)
 	d.Dropped = dropped
 	if !ok {
 		d.Outcome = OutcomeRejected
@@ -398,18 +539,57 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 		}
 		return r.finish(ctx, span, d), nil
 	}
-	d.Region = region
 
-	// (3) TIER dentro da allowlist da região escolhida (custo/capacidade + latência).
-	filter := r.allowlistFilter(req.Board, region)
-	tier, ok := r.ladder.Select(tiering.Request{Capability: req.Capability, Class: req.Class}, filter)
-	if !ok {
-		d.Outcome = OutcomeRejected
-		d.Reason = "rejeitado: nenhum tier dentro da allowlist regional satisfaz a capacidade da tarefa"
-		return r.finish(ctx, span, d), nil
+	// (2+3) ORDENAÇÃO dos sobreviventes: ponderada (ADR-021) se o scoring estiver
+	// COMPOSTO, lexicográfica (AOS-059) caso contrário. Em AMBOS os ramos as guardas
+	// já correram: soberania acima, allowlist + piso de capacidade dentro de cada ramo.
+	var (
+		region   string
+		tier     tiering.Tier
+		scoreSuf string // sufixo da razão com perfil/score/factores (vazio no modo lexicográfico)
+	)
+	if r.scoring != nil {
+		var res scoring.Result
+		var why scoreOutcome
+		region, tier, res, why = r.scoreSurvivors(ctx, req, intra)
+		if why != scoreElected {
+			d.Outcome = OutcomeRejected
+			// A razão é ATRIBUÍVEL à causa real (ADR-010/AOS-011): cada modo de falha
+			// do ranking ponderado tem a sua, e NENHUM reutiliza a razão de outro. Um
+			// operador que leia "allowlist" tem de poder ir depurar a allowlist.
+			switch why {
+			case scoreUnarmed:
+				// Fail-closed da regra 3: scoring composto SEM tabela de pesos válida/
+				// assinada NÃO rota com pesos implícitos — recusa.
+				d.Reason = "rejeitado: scoring armado sem tabela de pesos valida/assinada (fail-closed, ADR-021 regra 3)"
+			case scoreProfileUnknown:
+				d.Reason = "rejeitado: perfil de pesos desconhecido na tabela em vigor (fail-closed, sem queda silenciosa no default)"
+			default:
+				d.Reason = "rejeitado: nenhum tier dentro da allowlist regional satisfaz a capacidade da tarefa"
+			}
+			return r.finish(ctx, span, d), nil
+		}
+		d.Scored = true
+		d.ScoreProfile, d.WeightsVersion = res.Profile, res.WeightsVersion
+		d.Score, d.ScoreFactors = res.Score, res.Factors
+		scoreSuf = " | " + scoring.Reason(res)
+	} else {
+		region = r.leastLoaded(ctx, req, intra)
+		d.Region = region
+		filter := r.allowlistFilter(req.Board, region)
+		tier, ok = r.ladder.Select(tiering.Request{Capability: req.Capability, Class: req.Class}, filter)
+		if !ok {
+			d.Outcome = OutcomeRejected
+			d.Reason = "rejeitado: nenhum tier dentro da allowlist regional satisfaz a capacidade da tarefa"
+			return r.finish(ctx, span, d), nil
+		}
 	}
+	d.Region = region
 	d.Model, d.Tier = tier.Model, tier.Name
-	d.Reason = "tier mais barato que satisfaz a capacidade (" + classReason(req.Class) + ")"
+	d.Reason = "tier mais barato que satisfaz a capacidade (" + classReason(req.Class) + ")" + scoreSuf
+	if d.Scored {
+		d.Reason = "melhor sobrevivente por score ponderado (" + classReason(req.Class) + ")" + scoreSuf
+	}
 
 	// (4) ORÇAMENTO — exaustão graciosa a ~80%: oferece degradar (nunca hard-stop).
 	if r.budget != nil {
@@ -426,17 +606,38 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 				// se degrada — uma tarefa de raciocínio (Frontier) nunca é servida por
 				// um tier incapaz.
 				if cheaper, ok := r.ladder.Cheaper(tier.Name, r.capableAllowlistFilter(req.Board, region, req.Capability)); ok {
+					scoredModel, scoredTier, scoredScore := d.Model, d.Tier, d.Score
 					d.Degraded = true
 					d.FromTier, d.ToTier = tier.Name, cheaper.Name
 					tier = cheaper
 					d.Model, d.Tier = tier.Model, tier.Name
-					d.Reason = offer.Reason
+					if d.Scored {
+						// COERÊNCIA MODELO↔FACTORES (ADR-021 regra 4). O tier trocado NÃO é
+						// o que o scorer pontuou: manter Score/ScoreFactors do candidato
+						// anterior faria o DecisionSink ensinar à calibração offline o
+						// custo/latência/task-fit de um modelo que não foi despachado — e a
+						// próxima versão da tabela seria promovida sobre dados corrompidos.
+						// RE-PONTUA-SE o tier escolhido com o MESMO scorer (as guardas já
+						// correram: capableAllowlistFilter impôs allowlist + piso de
+						// capacidade, logo é um Score sobre UM sobrevivente), e o candidato
+						// original fica preservado em ScoredModel/ScoredTier/ScoredScore
+						// para a auditoria da troca.
+						d.ScoredModel, d.ScoredTier, d.ScoredScore = scoredModel, scoredTier, scoredScore
+						reres := r.scoring.Score(ctx, taskOf(req), scoring.Candidate{Region: region, Tier: tier})
+						d.Score, d.ScoreFactors = reres.Score, reres.Factors
+						d.ScoreProfile, d.WeightsVersion = reres.Profile, reres.WeightsVersion
+						scoreSuf = " | " + scoring.Reason(reres)
+					}
+					// A razão da degradação PRESERVA o sufixo de scoring: a variância
+					// model_swap a jusante tem de continuar a carregar perfil+score
+					// (ADR-021 regra 5), mesmo quando a troca final foi por orçamento.
+					d.Reason = offer.Reason + scoreSuf
 				} else if offer.Exhausted {
 					// Esgotado (>=100%) e SEM degrau capaz mais barato: propaga o sinal
 					// "exhausted-no-cheaper" (distinto de "routed") para o Escalonador
 					// poder rejeitar de forma informada — nunca hard-stop cego aqui, mas
 					// também nunca um gasto silencioso sem sinal (observabilidade fiel).
-					d.Reason = "orcamento esgotado sem tier mais barato capaz (exhausted-no-cheaper): sinal para a cadeia do Escalonador rejeitar de forma informada"
+					d.Reason = "orcamento esgotado sem tier mais barato capaz (exhausted-no-cheaper): sinal para a cadeia do Escalonador rejeitar de forma informada" + scoreSuf
 				}
 				// Acima do limiar mas sem degrau capaz e não esgotado: mantém o tier
 				// capaz (a cadeia do Escalonador decide — nunca hard-stop cego aqui).
@@ -501,24 +702,21 @@ func (r *Router) Route(ctx context.Context, req Request) (Decision, error) {
 	return r.finish(ctx, span, d), nil
 }
 
-// chooseRegion aplica a guarda de soberania e escolhe a região/endpoint MENOS
-// CARREGADO entre os sobreviventes intra-fronteira. Os cross-border são
-// DESCARTADOS (nunca elegíveis — a prova estrutural). Sem candidatos, cai na
-// região pedida (fronteira de si própria). Devolve a região escolhida, os
-// descartados cross-border e ok=false se não há sobrevivente.
-func (r *Router) chooseRegion(ctx context.Context, req Request) (string, []sovereignty.Endpoint, bool) {
+// partition é a GUARDA DE SOBERANIA isolada (ADR-021 regra 1: guardas primeiro).
+// Parte os candidatos em sobreviventes INTRA-fronteira e DESCARTADOS cross-border,
+// SEM os ordenar. Devolvê-los separados é o que permite que o ramo lexicográfico
+// (AOS-059) e o ramo ponderado (AOS-269) partilhem EXACTAMENTE a mesma guarda — não
+// há um segundo caminho de soberania que se possa esquecer de aplicar.
+//
+// Sem candidatos explícitos, a própria região pedida é o único sobrevivente (é a
+// sua própria fronteira, por definição). ok=false quando não há sobrevivente algum.
+func (r *Router) partition(req Request) (intra, cross []sovereignty.Endpoint, ok bool) {
 	if req.Region == "" {
-		return "", nil, false // jurisdição indefinida: fail-closed
+		return nil, nil, false // jurisdição indefinida: fail-closed
 	}
 	if len(req.Candidates) == 0 {
-		// Sem candidatos explícitos: a própria região pedida é a rota (dentro da sua
-		// fronteira por definição).
-		return req.Region, nil, true
+		return []sovereignty.Endpoint{{Region: req.Region}}, nil, true
 	}
-	// Particiona por fronteira usando a API pública da guarda (SameBoundary): os
-	// cross-border são descartados ANTES de qualquer ranking por carga.
-	var intra []sovereignty.Endpoint
-	var cross []sovereignty.Endpoint
 	for _, c := range req.Candidates {
 		if c.KeyID == "" || c.Region == "" {
 			continue // jurisdição/chave indefinida: fail-closed
@@ -530,11 +728,19 @@ func (r *Router) chooseRegion(ctx context.Context, req Request) (string, []sover
 		}
 	}
 	if len(intra) == 0 {
-		return "", cross, false
+		return nil, cross, false
 	}
-	// Ranking determinístico por CARGA (menos carregado) entre os intra-fronteira,
-	// desempate estável por KeyID; se não houver LoadProvider, desempate por KeyID.
+	// Ordem de entrada normalizada por KeyID: torna o desempate ESTÁVEL e
+	// independente da ordem em que o chamador listou os candidatos.
 	sort.SliceStable(intra, func(i, j int) bool { return intra[i].KeyID < intra[j].KeyID })
+	return intra, cross, true
+}
+
+// leastLoaded é o ranking LEXICOGRÁFICO por CARGA de AOS-059 (o modo compatível):
+// entre os sobreviventes intra-fronteira escolhe a região do endpoint com mais
+// folga real de TPM/RPM, com desempate estável por KeyID. Sem LoadProvider, o
+// desempate por KeyID é a própria escolha. Inalterado por AOS-269.
+func (r *Router) leastLoaded(ctx context.Context, req Request, intra []sovereignty.Endpoint) string {
 	best := intra[0]
 	if r.load != nil {
 		bestLoad, bestOK := r.loadOf(ctx, req.Provider, best.Region)
@@ -548,7 +754,126 @@ func (r *Router) chooseRegion(ctx context.Context, req Request) (string, []sover
 			}
 		}
 	}
-	return best.Region, cross, true
+	return best.Region
+}
+
+// scoreOutcome descreve porque é que [Router.scoreSurvivors] não elegeu candidato.
+// Existe para que a razão registada seja ATRIBUÍVEL: cada modo de falha tem a sua
+// causa e a sua string, e nenhum herda a de outro (ADR-010/AOS-011 — um deny que
+// culpa a peça errada manda o operador depurar a coisa errada).
+type scoreOutcome int
+
+const (
+	// scoreElected — candidato eleito (o único caso de sucesso).
+	scoreElected scoreOutcome = iota
+	// scoreUnarmed — scoring composto sem tabela de pesos válida/assinada (regra 3).
+	scoreUnarmed
+	// scoreProfileUnknown — o perfil pedido não existe na tabela em vigor.
+	scoreProfileUnknown
+	// scoreNoSurvivor — as GUARDAS (soberania/allowlist/capacidade) não deixaram
+	// candidato algum. É a ÚNICA falha atribuível à allowlist/capacidade.
+	scoreNoSurvivor
+)
+
+// scoreSurvivors é o ranking PONDERADO de AOS-269 (ADR-021). Constrói o conjunto de
+// sobreviventes como o produto (região intra-fronteira × tier da escada) FILTRADO
+// pelas TRÊS guardas que o ADR-021 regra 1 enumera — e só por essas:
+//
+//   - soberania — já aplicada por [Router.partition] (só entram regiões intra);
+//   - allowlist do board — [Allowlist.Allows] por (board, modelo, região): um
+//     modelo fora da allowlist NUNCA é construído como candidato;
+//   - piso de capacidade — t.Capability >= req.Capability: um tier incapaz NUNCA é
+//     construído como candidato.
+//
+// A SATURAÇÃO NÃO É GUARDA — é FACTOR, e é deliberado. As três guardas acima são
+// invariantes de FRONTEIRA: violá-las é ilegal, e a violação é permanente. A
+// saturação (ou um erro transitório de leitura de carga) é PRESSÃO: tem degrau
+// próprio na cadeia do ADR-008 (shed→defer→degradar→rejeitar) e resolve-se com
+// retry_after, não com um drop. Descartar aqui a região saturada faria uma região
+// única saturada colapsar em `cands` vazio ⇒ REJEIÇÃO PERMANENTE — e com a razão
+// da allowlist, que está intacta. O modo lexicográfico não faz isso ([leastLoaded]
+// fica-se por intra[0] mesmo saturado, e o keypool/admission produzem o DEFER);
+// armar o scoring não pode converter «saturação ⇒ adia» em «saturação ⇒ dropa».
+// A normalização prevista pela regra 2 («sinal ausente resolve pelo lado seguro»)
+// é o VALOR 0 que [scoring.HeadroomFactor] já devolve para saturado/erro — não a
+// exclusão do candidato.
+//
+// Só DEPOIS é que o scorer ordena. Um peso, por maior que seja, não tem sobre que
+// candidato actuar se esse candidato não existe — é a regra 1 imposta por ausência.
+func (r *Router) scoreSurvivors(ctx context.Context, req Request, intra []sovereignty.Endpoint) (string, tiering.Tier, scoring.Result, scoreOutcome) {
+	if !r.scoring.Armed() {
+		return "", tiering.Tier{}, scoring.Result{}, scoreUnarmed
+	}
+	if !r.scoring.HasProfile(req.Profile) {
+		return "", tiering.Tier{}, scoring.Result{}, scoreProfileUnknown
+	}
+	// Regiões sobreviventes únicas, por ordem determinística (a slice já vem
+	// normalizada por KeyID; a deduplicação preserva a primeira ocorrência).
+	regions := make([]string, 0, len(intra))
+	seen := make(map[string]struct{}, len(intra))
+	for _, e := range intra {
+		if _, dup := seen[e.Region]; dup {
+			continue
+		}
+		seen[e.Region] = struct{}{}
+		regions = append(regions, e.Region)
+	}
+	sort.Strings(regions)
+
+	cands := make([]scoring.Candidate, 0, len(regions)*4)
+	for _, reg := range regions {
+		for _, t := range r.ladder.Tiers() {
+			if t.Capability < req.Capability {
+				continue // piso de capacidade (guarda)
+			}
+			if !r.allowlist.Allows(req.Board, t.Model, reg) {
+				continue // allowlist do board (guarda, default-deny)
+			}
+			cands = append(cands, scoring.Candidate{Region: reg, Tier: t})
+		}
+	}
+	best, res, ok := r.scoring.Best(ctx, taskOf(req), cands)
+	if !ok {
+		return "", tiering.Tier{}, scoring.Result{}, scoreNoSurvivor
+	}
+	return best.Region, best.Tier, res, scoreElected
+}
+
+// taskOf projecta o [Request] no [scoring.Task] — o input do lado da TAREFA da
+// função pura de scoring. Existe num só sítio para que a re-pontuação depois da
+// degradação por orçamento use EXACTAMENTE a mesma tarefa (incluindo o perfil) que
+// a pontuação inicial: dois construtores divergentes dariam dois scores que se
+// diriam comparáveis e não seriam.
+func taskOf(req Request) scoring.Task {
+	return scoring.Task{
+		Board:      req.Board,
+		Tenant:     req.Tenant,
+		Provider:   req.Provider,
+		Capability: req.Capability,
+		Class:      req.Class,
+		Profile:    req.Profile,
+	}
+}
+
+// HeadroomReaderFrom adapta a porta [LoadProvider] JÁ EXISTENTE do router à porta
+// mínima scoring.LoadReader do factor de headroom. É o ponto onde se declara que o
+// scoring NÃO tem uma fonte de carga própria: reutiliza o mesmo headroom TPM/RPM
+// (keypool AOS-057 / LoadProvider AOS-059) que o modo lexicográfico já usa.
+func HeadroomReaderFrom(lp LoadProvider) scoring.LoadReader {
+	if lp == nil {
+		return nil
+	}
+	return loadReaderAdapter{lp: lp}
+}
+
+type loadReaderAdapter struct{ lp LoadProvider }
+
+func (a loadReaderAdapter) Load(ctx context.Context, provider, region string) (int64, int64, bool, error) {
+	h, err := a.lp.Load(ctx, provider, region)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return h.WorstUsed, h.WorstLimit, h.Saturated, nil
 }
 
 // loadOf lê o headroom de um endpoint pela porta, excluindo saturados.
@@ -590,6 +915,23 @@ func (r *Router) finish(ctx context.Context, span agentruntime.Span, d Decision)
 	span.SetAttribute(AttrRoutingReason, d.Reason)
 	span.SetAttribute(AttrRoutingDegraded, d.Degraded)
 	span.SetAttribute(AttrRoutingExhausted, d.BudgetExhausted)
+	span.SetAttribute(AttrRoutingScored, d.Scored)
+	if d.Scored {
+		// ADR-021 §5: perfil, versão dos pesos, score e FACTORES no span — sem eles a
+		// decisão ponderada seria um número sem proveniência e a calibração offline
+		// (regra 4) não teria de onde partir.
+		span.SetAttribute(AttrRoutingScoreProfile, d.ScoreProfile)
+		span.SetAttribute(AttrRoutingScoreWeights, d.WeightsVersion)
+		span.SetAttribute(AttrRoutingScore, strconv.Itoa(d.Score))
+		span.SetAttribute(AttrRoutingScoreDivisor, strconv.Itoa(scoring.Scale))
+		span.SetAttribute(AttrRoutingScoreFactors, d.ScoreFactors.String())
+		if d.ScoredModel != "" {
+			// Houve degradação DEPOIS de pontuar: o span diz as duas coisas — o que o
+			// score elegeu e o que efectivamente correu (os atributos acima).
+			span.SetAttribute(AttrRoutingScoredModel, d.ScoredModel)
+			span.SetAttribute(AttrRoutingScoredScore, strconv.Itoa(d.ScoredScore))
+		}
+	}
 	if d.Degraded {
 		span.SetAttribute(AttrRoutingFromTier, d.FromTier)
 		span.SetAttribute(AttrRoutingToTier, d.ToTier)

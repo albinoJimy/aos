@@ -18,6 +18,20 @@
 // MAJOR = quebra, MINOR = aditivo retrocompatível, PATCH = clarificação. Um plano
 // materializa-se na versão em que foi aprovado — nunca auto-migrado (fail-closed).
 //
+// ARESTAS CONDICIONAIS (ADR-022 §2.1, AOS-270). O `Node` admite `conditional_on`:
+// arestas guardadas por uma expressão de um SUBCONJUNTO FECHADO (a gramática vive
+// em condition.go, com o argumento de fecho explícito). O campo é OPCIONAL e
+// ADITIVO — um documento sem ele decodifica e comporta-se exactamente como antes —,
+// pelo que a extensão é retrocompatível e NÃO consome um MAJOR de [PlanVersion]. O
+// carimbo de versão (o bump de MINOR e a migração em `planmigrate`) é trabalho de
+// AOS-273, que agrega as três extensões de ADR-022; este pacote mantém-se
+// compatível com [CurrentPlanVersion] em ambas as direcções: um leitor novo lê
+// documentos antigos, e um documento novo SEM condições é indistinguível de um
+// antigo. Nota honesta sobre a direcção inversa: por `DisallowUnknownFields`, um
+// leitor ANTIGO recusa um documento que USE `conditional_on` — é o comportamento
+// fail-closed desejado (nunca ignorar um guarda que não se sabe avaliar), e é
+// exactamente a razão por que o bump de MINOR pertence a AOS-273.
+//
 // risk_class É ADVISORY. O campo `risk_class` por nó é uma PROPOSTA do LLM. O
 // contrato documenta-o (ver [RiskClass]) como advisory que só pode ELEVAR o piso
 // de risco DERIVADO das ferramentas pinadas em AOS-232 — NUNCA baixá-lo. Este

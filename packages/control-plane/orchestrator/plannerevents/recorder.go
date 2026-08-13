@@ -27,6 +27,7 @@ const (
 	stepValidated        = "planstep:validated"
 	stepDecision         = "planstep:decision"
 	stepMaterialized     = "planstep:materialized"
+	stepBranchDecided    = "planstep:branch_decided"
 	stepCapabilityGap    = "planstep:capability_gap"
 	stepReplan           = "planstep:replan"
 )
@@ -183,6 +184,30 @@ func (r *Recorder) RecordMaterialized(ctx context.Context, p MaterializedPayload
 		}
 	}
 	return r.emit(ctx, p.PlanID, EventMaterialized, stepMaterialized, p)
+}
+
+// RecordBranchDecided apensa `plan.branch_decided` (ADR-022 §2.1, AOS-270): a
+// decisão de ramo de UM nó, avaliada pelo despachante sobre o resultado registado.
+//
+// O step id é `planstep:branch_decided:<node_id>` — UM por nó, sem discriminador de
+// tentativa, de propósito: a idempotency_key `plan_id:step_id` do Event Store torna
+// a decisão de ramo de um nó um facto ÚNICO e imutável no stream. Uma segunda
+// passagem do despachante sobre o mesmo nó não pode produzir um segundo facto
+// (nem, portanto, um ramo diferente) — é a metade durável da garantia «o replay
+// reproduz o ramo SEM re-avaliação»; a outra metade é o despachante ler a decisão
+// registada ANTES de avaliar seja o que for.
+//
+// Fail-closed: recusa node_id vazio ou digest ausente — sem o carimbo da expressão
+// não há como distinguir, no replay, um ramo do mesmo nó num documento editado.
+func (r *Recorder) RecordBranchDecided(ctx context.Context, p BranchDecidedPayload) (uint64, error) {
+	if p.NodeID == "" {
+		return 0, fmt.Errorf("plannerevents: node_id vazio na decisão de ramo")
+	}
+	if p.ConditionDigest == "" {
+		return 0, fmt.Errorf("plannerevents: condition_digest vazio na decisão de ramo (nó %q)", p.NodeID)
+	}
+	stepID := stepBranchDecided + ":" + p.NodeID
+	return r.emit(ctx, p.PlanID, EventBranchDecided, stepID, p)
 }
 
 // RecordCapabilityGap apensa `plan.capability_gap_opened`/`resolved`. Fail-closed:

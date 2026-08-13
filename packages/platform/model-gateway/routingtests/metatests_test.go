@@ -230,6 +230,17 @@ func TestSuiteReportEmitted(t *testing.T) {
 		{"failover_intra", probeFailoverIntra()},
 		{"reject_no_intra", probeRejectNoIntra()},
 		{"crossborder_blocked", probeCrossBorderBlocked()},
+		// SCORING PONDERADO (AOS-269, ADR-021): guardas antes do score, fail-closed dos
+		// pesos, determinismo/replay e a postura de compatibilidade declarada.
+		{"scoring_guards_first", probeScoringGuardsFirst()},
+		{"scoring_failclosed_weights", probeScoringFailClosedWeights()},
+		{"scoring_deterministic", probeScoringDeterministic()},
+		{"scoring_compat_lexicographic", probeScoringCompatLexicographic()},
+		// REMEDIAÇÃO da auditoria adversarial: a saturação é PRESSÃO (factor 0), não
+		// uma quarta guarda que converta pressão transitória em rejeição permanente;
+		// e o perfil pedido por decisão é fail-closed quando desconhecido.
+		{"scoring_saturation_not_guard", probeScoringSaturationNotGuard()},
+		{"scoring_unknown_profile_rejects", probeScoringUnknownProfileRejects()},
 		// Detecção (meta): com o controlo desligado, o ataque PASSA (não-vazio).
 		{"detection_aggregate_collapse", probeDetectAggregateCollapse()},
 		{"detection_crossborder_routed", probeDetectCrossBorderRouted()},

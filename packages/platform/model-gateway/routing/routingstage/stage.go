@@ -46,6 +46,13 @@ type Task struct {
 	Class           tiering.Class
 	EstimatedTokens int64
 	Candidates      []sovereignty.Endpoint
+	// Profile é o PERFIL DE PESOS que esta chamada pede ao scoring ponderado
+	// (ADR-021 §1 gap 2: a intenção declarada — «o mais barato possível» vs
+	// «qualidade acima de tudo»). É AQUI que a intenção entra, porque é o
+	// [Classifier] que conhece a tarefa; o router limita-se a resolvê-lo contra a
+	// tabela ASSINADA e a recusar fail-closed um perfil desconhecido. Vazio ⇒ o
+	// perfil composto no scorer. Sem efeito no modo lexicográfico.
+	Profile string
 }
 
 // Classifier deriva a [Task] de um [pipeline.Exchange]. Injectável para que a
@@ -111,6 +118,7 @@ func (s *Stage) Process(ctx context.Context, ex *pipeline.Exchange) error {
 		Region:          ex.RequestedRegion,
 		Capability:      task.Capability,
 		Class:           task.Class,
+		Profile:         task.Profile,
 		EstimatedTokens: task.EstimatedTokens,
 		Candidates:      task.Candidates,
 	})

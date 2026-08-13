@@ -89,6 +89,20 @@ func Reconstruct(ctx context.Context, reader EventReader, planID string) ([]Plan
 	return out, nil
 }
 
+// IsStreamAbsent indica se err é a AUSÊNCIA DO STREAM — o plano ainda não tem
+// nenhum facto apenso. É distinto de um erro de leitura: um stream vazio é o estado
+// inicial legítimo de qualquer plano, não uma avaria.
+//
+// Existe como predicado EXPORTADO porque os consumidores do domínio (o despachante,
+// que lê decisões de ramo antes de a primeira ser tomada) precisam de distinguir os
+// dois casos SEM importar o `substrate/eventstore` — o que, para o `plandispatch`,
+// seria uma quebra da fronteira ADR-018 que o seu guard de imports impõe. Sem este
+// predicado, a alternativa seria comparar mensagens de erro por string, que é a
+// forma habitual de um fail-closed se tornar frágil.
+func IsStreamAbsent(err error) bool {
+	return errors.Is(err, eventstore.ErrStreamNotFound)
+}
+
 // isPlanDomain indica se um tipo de evento pertence à família `plan.` deste
 // domínio. Usa o prefixo canónico — o mesmo primeiro segmento das constantes.
 func isPlanDomain(t string) bool {

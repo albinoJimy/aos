@@ -68,7 +68,7 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 - [x] Um run com `AOS_BUDGET_MAX_TOKENS` definido é **negado por orçamento** com o deny selado e atribuído, e um run dentro do tecto obtém **permit** — ambos ao nível do nó (AOS-256..258). Prova em `packages/cmd/aos/aos258_budget_permit_node_test.go` (`Bootstrap` real, tecto pela env do operador; permit **com a tool a executar**, deny com `denied_by=budget` + hash-chain verificada, e o mesmo run a permitir e depois negar).
 - [x] O banner declara budget/broker/modelo/autonomia (AOS-248) — postura anunciada = postura ligada.
 - [x] Burn-down visível no run real com aviso a ~80% (AOS-261/262) — fonte no **ledger de turnos** (não spans, que ninguém retinha), aviso **uma vez por run** no **log do nó** (canal que existe sempre; o span `aos.control.budget_warning` exige `AOS_OTLP_ENDPOINT`, sem a qual o tracer é o `NoopTracer`), e **erro explícito** em vez de 0% silencioso quando não há fonte **ou quando o ledger tem turnos mas somou zero tokens** (`ErrBurndownNoUsage`).
-- [ ] ADR-021: o router ordena por scoring determinístico com tabela de pesos assinada; guard-test prova função pura; nenhum peso elege candidato cross-border (AOS-269).
+- [x] ADR-021: o router ordena por scoring determinístico com tabela de pesos assinada; guard-test prova função pura; nenhum peso elege candidato cross-border (AOS-269). — `routing/scoring` + `policy/weights` (assinada, trust anchor pinado) + `router.WithScoring` (opt-in declarado); cenários 6–8 e 2 meta-testes novos no gate `ci-routing`.
 - [ ] ADR-022: PlanDocument aceita arestas condicionais, `role: verifier` e payload tipado — validador puro rejeita ciclo disfarçado, auto-verificação e taint incompatível (AOS-270..273).
 - [ ] Gates CI verdes; cobertura sem regressão (pisos AOS-199).
 
@@ -1024,14 +1024,21 @@ ADR-021 **assumido aprovado**: o router lexicográfico (AOS-059) passa a scoring
 Implementar o estágio de scoring no GW com tabela de pesos assinada e sinal de *task-fit* dos evals (fecha o loop EPIC-08 → EPIC-06).
 
 ### Critérios de Aceitação
-- [ ] Portas de factores (health, headroom, custo, latência, task-fit, estabilidade) com impls de referência determinísticas; aritmética inteira.
-- [ ] Tabela de pesos (perfis nomeados) carregada fail-closed — sem tabela válida/assinada, o router recusa.
-- [ ] Guard-test: a decisão é função pura dos inputs (sem `rand`/relógio); cenário AOS-063 alargado prova que nenhum peso elege candidato cross-border ou fora da allowlist.
-- [ ] Span `model_routing`/`DecisionSink` registam perfil, factores e score; `model_swap` inclui a razão de scoring.
-- [ ] Formato da tabela e pesos iniciais documentados em `tecnica/06`; cobertura ≥ `ROUTING_COVERAGE_MIN`.
+- [x] Portas de factores (health, headroom, custo, latência, task-fit, estabilidade) com impls de referência determinísticas; aritmética inteira. — porta comum `scoring.FactorProvider` + seis impls em `routing/scoring/providers.go` (`LadderCost`, `HeadroomFactor`, `StaticLatency`, `StaticHealth`, `StaticTaskFit`, `StaticStability`); **custo e headroom NÃO são sinal novo**: derivam da escada de tiers existente e da porta `LoadProvider` do router (`router.HeadroomReaderFrom`). Tudo inteiro em milésimos (`scoring.Scale = 1000`), normalização por divisão inteira.
+- [x] Tabela de pesos (perfis nomeados) carregada fail-closed — sem tabela válida/assinada, o router recusa. — `policy/weights` no **molde exacto** de `policy/allowlist`: artefacto embebido + digest canónico + assinatura ed25519 + **trust anchor pinado em código**, com `ErrTableMalformed`/`ErrSignatureInvalid`/`ErrTrustAnchorMismatch`/`ErrPubKeyInvalid`; schema fechado e **SemVer validado** (ADR-012). `scoring.NewScorer` não se constrói sem tabela; um scorer não-armado faz o router **rejeitar** toda a rota (defesa em profundidade). ⚠️ **ALCANCE (não confundir com efeito em produção):** o fail-closed vale **quando o scoring está composto**. O `router.Router` **não está composto no pipeline do GW** (`NewProduction` usa `failover.NewStage`; `router.New` não tem chamador fora de testes) — lacuna **pré-existente** a este ticket, registada em **DEF-271** e fixada em alcance pela **emenda 1.1 do ADR-021** (§5-bis). Enquanto essa dívida não fechar, este critério é verdade sobre a máquina entregue, **não** sobre o caminho de produção.
+- [x] Guard-test: a decisão é função pura dos inputs (sem `rand`/relógio); cenário AOS-063 alargado prova que nenhum peso elege candidato cross-border ou fora da allowlist. — `TestScenario7_Scoring_PureFunctionDeterministicNoFloats` (64 repetições idênticas + independência da ordem + **análise AST** que proíbe floats/`rand`/`time.Now` em `routing/scoring`, `routing/router`, `policy/weights`, `routing/tiering`, `routing/degradation`, com auto-verificação de não-vacuidade); `TestScenario6_Scoring_GuardsFirstNeverElectsCrossBorderOrNonAllowlisted` (pesos gananciosos a favor do cross-border e de um modelo fora da allowlist ⇒ REJECT/rota intra) + meta-teste `TestMetaDetects_ScoringElectsCrossBorderWhenGuardsBypassed`.
+- [x] Span `model_routing`/`DecisionSink` registam perfil, factores e score; `model_swap` inclui a razão de scoring. — atributos `aos.routing.scored|score|score_profile|score_weights_version|score_factors|score_scale`; `Decision` transporta `Scored`/`ScoreProfile`/`WeightsVersion`/`Score`/`ScoreFactors`; a razão de scoring é **preservada** mesmo quando a degradação por orçamento reescreve a razão, e a cadeia real (tabela assinada → scorer → router → `routingstage` → Gateway) é provada em `routing_scoring_wiring_test.go` a ver a variância `model_swap` carregar perfil+versão+score+factores.
+- [x] Formato da tabela e pesos iniciais documentados em `tecnica/06`; cobertura ≥ `ROUTING_COVERAGE_MIN`. — `tecnica/06` §6.1 (as cinco regras e onde estão impostas, tabela de campos do schema, pesos iniciais dos perfis `balanced`/`fast`/`cheap`/`quality`, postura de compatibilidade, observabilidade), §8.4 (cenários 6–8) e §9 (três riscos novos). Cobertura do módulo GW: **88,2 %** (piso 80).
+
+### Postura de compatibilidade (decisão declarada)
+O scoring é **opt-in por composição** (`router.WithScoring`). Sem essa opção o router mantém AOS-059 **byte-a-byte** — um nó já implantado, sem tabela de pesos, não deixa de rotear (provado por `TestScenario8_Scoring_FailClosedWithoutSignedWeights` (D) e por `TestAOS269_Gateway_SemScoringMantemComportamento`). Com essa opção a tabela é **obrigatória** e a sua ausência/invalidez é uma **recusa** — a leitura da regra 3 do ADR-021 («sem tabela válida o router recusa») que se aplica *quando o scoring está composto*, sem impor uma tabela a quem não pediu scoring.
 
 ### Estado
-**ABERTO.**
+**FEITO — a MÁQUINA; o WIRING fica em DEF-271.** Entregue: portas de factores em aritmética inteira, tabela de pesos embebida e assinada com carregamento fail-closed, guard-test AST (proíbe float/`rand`/relógio no caminho de decisão, com auto-verificação de não-vacuidade), cenário de soberania que prova que nenhum peso elege cross-border, e observabilidade (perfil/score/factores no span, `DecisionSink` e `model_swap`). Gate `scripts/ci/routing.sh` alargado: `REQUIRED` passa a 8 cenários + 10 meta-testes + relatório (novas entradas `scoring_guards_first`, `scoring_failclosed_weights`, `scoring_deterministic`, `scoring_compat_lexicographic` no `AOS_ROUTING_REPORT`).
+
+⚠️ **SEM EFEITO EM PRODUÇÃO, e isso está declarado, não escondido.** O `router.Router` (AOS-059) sobre o qual este scoring assenta **nunca esteve composto no pipeline do gateway** — `NewProduction` compõe `failover.NewStage`, e `router.New` não tem chamador fora de testes em todo o repositório. É lacuna **pré-existente** a este ticket. Registada em **DEF-271** (com o ticket próprio que a fecha: compor `routingstage`+`router` no pipeline, com prova pela cadeia real) e fixada em alcance pela **emenda 1.1 do ADR-021** (§5-bis, 2026-08-13, autoridade de dono): na v1 o scoring é composto **por opção** e a regra 3 aplica-se **quando está composto**.
+
+**NOTA DE CUSTÓDIA:** a seed ed25519 da tabela de pesos foi gerada com `crypto/rand` fora do repositório e **não** está comitada — o repo tem só `.json`/`.sig`/`.pub` (material público). Rodar a chave exige `AOS269_GENERATE_KEY=1 go run gen_signature.go` e actualizar `trustAnchorFingerprint` (code-review), como na allowlist regional.
 
 ---
 
@@ -1044,13 +1051,23 @@ ADR-022 **assumido aprovado**: o `Node` admite arestas com condição (subconjun
 Estender o schema e o despacho com arestas condicionais, preservando aciclicidade, replay e orçamento.
 
 ### Critérios de Aceitação
-- [ ] Schema fechado (`DisallowUnknownFields`) com o campo de condição; validador puro (AOS-231) rejeita condicional que feche ciclo (reusa a aciclicidade incremental).
-- [ ] `plandispatch` avalia a condição como função pura do resultado registado; evento de decisão de ramo emitido; replay reproduz o ramo sem re-avaliação.
-- [ ] Avaliação de condições debita orçamento da árvore (ADR-008).
-- [ ] Adversarial: «ciclo disfarçado de condicional» rejeitado (AOS-244 alargado).
+- [x] Schema fechado (`DisallowUnknownFields`) com o campo de condição; validador puro (AOS-231) rejeita condicional que feche ciclo (reusa a aciclicidade incremental).
+- [x] `plandispatch` avalia a condição como função pura do resultado registado; evento de decisão de ramo emitido; replay reproduz o ramo sem re-avaliação.
+- [x] Avaliação de condições debita orçamento da árvore (ADR-008).
+- [x] Adversarial: «ciclo disfarçado de condicional» rejeitado (AOS-244 alargado).
 
 ### Estado
-**ABERTO.**
+**FECHADO.**
+
+**O que ficou composto.**
+
+- **Gramática** (`plan/condition.go`, documentada em `tecnica/18` §3.3.1): `Node.conditional_on[]` — arestas *origem→destino* guardadas por uma **conjunção plana** de 1..8 predicados `(observável, operador, operando)`. Três observáveis (`terminal_state`, `verdict`, `metric`) e seis operadores, todos enums fechados; operandos de enum fechado ou **inteiros** (nunca float — determinismo de replay). Sem aninhamento, sem disjunção, sem aritmética, sem interpolação: um predicado compara, não computa. Todas as combinações são conjunções, pelo que uma condição só torna um nó **menos** despachável — nunca relaxa um `depends_on` nem o gate.
+- **Aciclicidade REUTILIZADA, não reimplementada** (`planvalidate/validate.go`): as arestas condicionais entram **no mesmo `orchestrator.NewDAG`/`AddEdge`** de AOS-025, numa segunda passagem (para o feedback nomear o canal culpado: `conditional_cycle` vs `cycle`). O «ciclo disfarçado de condicional» morre no primitivo que já existia. A regra 1 exige origem existente e recusa a sobreposição com `depends_on`; a regra 4 conta a **união** dos dois canais no `max_fanout`/`max_depth` (senão o canal novo era uma saída livre dos tectos).
+- **Avaliação e replay** (`plandispatch/condition.go`, `branches.go`): função pura do **resultado registado**; a decisão é apensa como `plan.branch_decided` (constante junto do emissor em `plannerevents`, step id determinístico por nó ⇒ facto único) com o **digest canónico** da expressão. Numa segunda passagem a decisão é **lida** e o avaliador não é alcançado — provado destrutivamente (a vista de resultados é posta a falhar e o despacho reproduz o mesmo ramo). Digest divergente ⇒ documento editado ⇒ fail-closed. Um ramo não tomado **poda** o nó e a descendência (`branch_not_taken`) em vez de os deixar bloqueados em silêncio.
+- **Orçamento** (`planbudget/`): `TreeBudgetMeter` liga a porta de débito ao `budget.Reserver` real (Reserve→Commit, cadeia de ancestrais). Debita **uma vez por decisão**, nunca por tentativa — uma condição indecisa não custa nada, senão o escalonador drenava a árvore à espera. Vive em pacote próprio porque o guard de imports de `plandispatch` (fronteira ADR-018) só admite `plan`+`plannerevents`; liga-se por tipo estrutural.
+- **Escopo.** Só a extensão §2.1. `role: verifier` (§2.2) e payload tipado (§2.3) são AOS-271/272; o bump de `plan_version` e a migração são AOS-273 — o campo é **opcional e aditivo**, pelo que **não** consome MAJOR e a compatibilidade fica preservada nos dois sentidos declarados em `plan/doc.go`.
+
+**Verificação:** `go test ./...` verde no módulo `control-plane/orchestrator` (inclui `plan`, `planvalidate`, `plandispatch`, `planbudget`, `planadversarial`); `gofmt`/`go vet` limpos; gate `event-catalog` OK (108 tipos, zero literais novos).
 
 ---
 

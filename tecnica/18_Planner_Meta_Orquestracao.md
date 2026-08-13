@@ -96,6 +96,34 @@ Regras de validação (função pura e determinística, **sem LLM**, executada s
 
 Uma proposta inválida não se "corrige por baixo da mesa": volta ao LLM com o diagnóstico (máx. N tentativas, N=3 por omissão) e esgota-se em falha de intake — fail-closed, sem plano fantasma.
 
+#### 3.3.1 Arestas condicionais — a gramática do subconjunto fechado
+
+ADR-022 §2.1 (ratificado 2026-08-13) decidiu **que** o `Node` admite arestas com condição — «expressão declarativa em subconjunto fechado do schema, sem código arbitrário, avaliada deterministicamente sobre o resultado registado do nó de origem» — e deixou a **gramática concreta** expressamente fora (§4). Esta secção fixa-a (AOS-270). É trabalho de implementação da decisão, não re-abertura dela.
+
+**Forma.** Cada nó pode declarar `conditional_on[]`: arestas *origem → este nó* guardadas por uma condição. Tal como `depends_on`, a aresta é declarada no **destino** e aponta para trás — é isso que permite que a aciclicidade reutilize, sem uma linha nova de travessia, a verificação incremental de AOS-025 (regra 2). Um «ramo» escreve-se como duas arestas simétricas sobre a mesma origem (o nó do caminho feliz condiciona-se a `verdict eq pass`; o do caminho de reprovação a `verdict eq fail`).
+
+**Gramática.** Cada aresta tem uma **conjunção plana** de 1..8 predicados; cada predicado é `(observável, operador, operando)`:
+
+| Observável (`subject`) | Operandos admissíveis | Operadores |
+|---|---|---|
+| `terminal_state` | `complete` \| `failed` | `eq`, `ne` |
+| `verdict` | `pass` \| `fail` | `eq`, `ne` |
+| `metric` (com `metric`: nome de charset fechado) | inteiro (`number`) | `eq`, `ne`, `lt`, `lte`, `gt`, `gte` |
+
+**Porque é fechado** (o argumento, não a afirmação): (i) *finitude* — três observáveis e seis operadores, ambos enums fechados; operandos ou de um enum fechado ou inteiros de máquina — **nunca vírgula flutuante**, que não é reproduzível byte-a-byte entre plataformas e partiria §3.4; (ii) *não-recursividade* — conjunção plana, sem aninhamento, parênteses, negação estrutural nem disjunção: não há profundidade a explorar e a aridade é limitada; (iii) *ausência de código* — não há chamadas, aritmética, indexação nem interpolação: um predicado **compara**, não **computa**; (iv) *totalidade* — todo o predicado bem-formado dá `true` ou `false`, e um observável **ausente** dá `false` (fail-closed na direcção de *não* despachar, a única sem efeito).
+
+**Monotonia.** Todas as combinações são conjunções — entre predicados de uma aresta e entre arestas de um nó. Logo, acrescentar uma aresta condicional só torna um nó **menos** despachável, nunca mais: uma condição é um travão adicional, jamais um atalho a um `depends_on` ou ao gate. A disjunção fica deliberadamente de fora (declara-se um nó por ramo).
+
+**Regras de validação** (as que já existem, atravessadas pelo campo novo — não uma regra 7):
+
+- *regra 1* — a origem tem de existir no **mesmo plano** (é o que dá corpo a «declarados à priori»); e a mesma origem **não pode** aparecer em `depends_on` **e** em `conditional_on` do mesmo nó (semânticas de espera diferentes; a sobreposição esconde do revisor humano qual delas vale).
+- *regra 2* — as arestas condicionais entram **no mesmo DAG de admissão**: é isto, e só isto, que impõe «uma aresta condicional nunca fecha ciclo». Um ramo que apontasse para a região já executada teria de apontar para um antecessor, e apontar para um antecessor **é** fechar um ciclo. O retorno a nós já executados continua a ser replan de subgrafo (§4.2).
+- *regra 4* — os tectos estruturais contam a **união** dos dois canais de aresta; caso contrário o canal novo seria uma saída livre do `max_fanout`/`max_depth`.
+
+**Avaliação e replay.** A condição é avaliada pelo despachante sem estado (§4.4) como **função pura do resultado registado** — nunca por um LLM em runtime, nunca sobre estado vivo. A decisão é apensa como facto (`plan.branch_decided`, §6.1) com o **digest canónico** da expressão; numa passagem posterior ou num replay a decisão é **lida**, e o avaliador nem chega a ser alcançado. Um digest divergente do documento significa plano editado — que não é um replay: volta ao gate (fail-closed). Avaliar **debita o orçamento da árvore** (ADR-008) uma vez por decisão; uma condição ainda indecisa não debita nada, para que re-invocações do escalonador durante a espera não drenem a árvore.
+
+**Versão de schema.** `conditional_on` é **opcional e aditivo**: um documento sem ele decodifica e comporta-se como antes, pelo que a extensão **não** consome um MAJOR (§3.6). O bump de MINOR e a migração que agregam as três extensões de ADR-022 são AOS-273.
+
 ### 3.4 Determinismo e replay
 
 A proposta do LLM é, por natureza, não-determinística — e o AOS exige replay byte-a-byte (ADR-001/010). A resolução é a já praticada para não-determinismo no runtime (AOS-016): **o ponto de não-determinismo é capturado, não eliminado**. O PlanDocument **aprovado** (mais o contexto de *capabilities* e a versão do prompt) é persistido como evento append-only (`plan.proposed`, `plan.validated`, `plan.approved`, `plan.materialized`, com hash do documento) e o manifesto do *run* inclui o plano aprovado. O replay **nunca re-chama o LLM**: **reproduz os eventos de materialização e execução capturados** (`plan.materialized` e os turnos gravados) — o documento aprovado é o registo/input, não o gerador do replay; nunca re-resolve o REG nem re-atravessa o RM. O planeamento acontece uma vez, na história; a execução é replayable **enquanto a captura for admissível** (AOS-016; sujeita a TTL/erasure — AOS-079/093).
@@ -170,6 +198,7 @@ O caso mais interessante é o plano que precisa de uma *capability* que o REG n�
 | `plan.validated` | validador | hash, nº de nós, budget_total, tectos aplicados |
 | `plan.approved` / `plan.rejected` / `plan.edited` | gate AOS-121 | hash final, decisão assinada (hitl.Channel), diff estrutural da edição |
 | `plan.materialized` | ORQ | hash; node_id → nó-folha `task.node.created` (AOS-025) ou papel-que-expande → `Delegator.Spawn` (AOS-026), com `tools[]` a vincular o `Authority[]` da NHI filha |
+| `plan.branch_decided` | SCH (despachante) | node_id, ramo tomado/não-tomado, digest canónico da condição, origens avaliadas (§3.3.1; ADR-022 §2.1) |
 | `plan.capability_gap_opened` / `plan.capability_gap_resolved` | ORQ | node_id, skill candidata, RatificationID (AOS-096) |
 | `plan.replan_requested` / `plan.replan_applied` | ORQ | subgrafo, orçamento residual, novo hash |
 
@@ -264,3 +293,4 @@ Tudo o que precede se constrói dentro da forma congelada. O passo seguinte — 
 | 0.1 | Julho 2026 | Proposta inicial de desenho (por ratificar). | Equipa AOS |
 | 0.2 | Julho 2026 | Emendas pós-revisão adversarial multi-perspectiva: risco derivado (não auto-declarado), validação sobre snapshot pinado, replay orientado a eventos, tectos de cardinalidade próprios, arranque do planeador, agente-autor governado, correções de referência; novas §3.5 (classificação de intake: routing-não-autoridade), §4.4 (papel do SCH), §3.6 (evolução/migração do `plan_version`) e §6.3 (golden-sets de decomposição); multi-host/soberania declarados fora de âmbito (§1.2) e cobertura OTel do planeamento (§3.2). | Equipa AOS |
 | 1.0 | Agosto 2026 | **Ratificado** (2026-08-02) sob autoridade de dono, após revisão adversarial multi-perspectiva com condições emendadas. Sem alteração de conteúdo face à v0.2; muda o estado de *proposta* para *ratificado*. | Armando Albino (dono) |
+| 1.1 | Agosto 2026 | **Aditivo, sem re-litígio.** Nova §3.3.1 (gramática das arestas condicionais) e linha `plan.branch_decided` em §6.1 — a materialização do que ADR-022 §2.1 (ratificado 2026-08-13) decidiu e deixou expressamente fora do ADR (§4: «a gramática concreta das condições … fica para o `tecnica/18` e para o(s) ticket(s) de implementação»). Nenhuma decisão da v1.0 é alterada; AOS-270. | Equipa AOS |

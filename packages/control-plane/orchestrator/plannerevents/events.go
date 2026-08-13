@@ -68,6 +68,11 @@ const (
 	EventEdited = "plan.edited"
 	// EventMaterialized — o plano APROVADO virou eventos do DAG / spawns delegados.
 	EventMaterialized = "plan.materialized"
+	// EventBranchDecided — o despachante avaliou as arestas CONDICIONAIS de um nó
+	// (ADR-022 §2.1, AOS-270) e fixou o ramo: tomado ou não-tomado. É o facto que
+	// torna a decisão REPRODUZÍVEL sem re-avaliação — o replay LÊ o ramo, não o
+	// recalcula (ADR-010).
+	EventBranchDecided = "plan.branch_decided"
 	// EventCapabilityGapOpened — um nó abriu um gap de capacidade (skill em falta).
 	EventCapabilityGapOpened = "plan.capability_gap_opened"
 	// EventCapabilityGapResolved — o gap foi ratificado e resolvido (AOS-096).
@@ -92,6 +97,7 @@ var canonicalLifecycle = []string{
 	EventRejected,
 	EventEdited,
 	EventMaterialized,
+	EventBranchDecided,
 	EventCapabilityGapOpened,
 	EventCapabilityGapResolved,
 	EventReplanRequested,
@@ -344,6 +350,32 @@ type MaterializedPayload struct {
 	PlanID   string             `json:"plan_id"`
 	PlanHash string             `json:"plan_hash"`
 	Nodes    []MaterializedNode `json:"nodes"`
+}
+
+// BranchDecidedPayload — corpo de `plan.branch_decided` (ADR-022 §2.1, AOS-270).
+// A DECISÃO de ramo de UM nó, fixada pelo despachante a partir do resultado
+// REGISTADO das origens.
+//
+// Content-free como todo este domínio: ids estruturais (node_ids, já limitados pela
+// grammar de AOS-231), um booleano e o DIGEST canónico da expressão avaliada. NUNCA
+// o valor observado (uma métrica pode ser derivada de conteúdo untrusted), nunca o
+// texto da condição, nunca prosa do modelo.
+//
+// O digest é o que amarra a decisão à expressão EXACTA que a produziu: no replay,
+// um digest divergente diz «o documento mudou» — e um plano editado não é um
+// replay, é um plano novo que volta ao gate (fail-closed a jusante).
+type BranchDecidedPayload struct {
+	PlanID string `json:"plan_id"`
+	NodeID string `json:"node_id"`
+	// Taken indica se o ramo foi TOMADO (todas as condições satisfeitas). Falso
+	// significa ramo DEFINITIVAMENTE não tomado — o nó não será despachado neste
+	// plano (o retorno a um nó já executado é replan de subgrafo, AOS-239, nunca
+	// uma re-avaliação).
+	Taken bool `json:"taken"`
+	// ConditionDigest é [plan.ConditionDigest] das arestas condicionais do nó.
+	ConditionDigest string `json:"condition_digest"`
+	// Sources são os node_ids das ORIGENS avaliadas, pela ordem declarada.
+	Sources []string `json:"sources"`
 }
 
 // GapState distingue a fase do gap de capacidade.
