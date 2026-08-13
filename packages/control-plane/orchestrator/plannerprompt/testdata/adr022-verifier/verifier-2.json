@@ -1,0 +1,26 @@
+{
+  "plan_version": "1.2.0",
+  "objective": "draft a briefing from web sources, audited before delivery",
+  "budget_total": {"tokens": 2400, "cost_micro_usd": 12000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {
+      "node_id": "pesquisa", "role": "searcher", "objective": "recolher material de base",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 700, "cost_micro_usd": 3500}, "risk_class": "safe"
+    },
+    {
+      "node_id": "redaccao", "role": "writer", "objective": "redigir o briefing",
+      "tools": [], "depends_on": ["pesquisa"], "budget_estimate": {"tokens": 700, "cost_micro_usd": 3500}, "risk_class": "safe"
+    },
+    {
+      "node_id": "auditoria", "role": "verifier", "objective": "auditar o briefing contra o material de base",
+      "tools": [], "depends_on": ["redaccao"], "budget_estimate": {"tokens": 500, "cost_micro_usd": 2500}, "risk_class": "safe"
+    },
+    {
+      "node_id": "entrega", "role": "publisher", "objective": "entregar o briefing aprovado",
+      "tools": [], "depends_on": ["redaccao"], "budget_estimate": {"tokens": 500, "cost_micro_usd": 2500}, "risk_class": "safe",
+      "conditional_on": [{"from": "auditoria", "when": [{"subject": "verdict", "op": "eq", "enum": "pass"}]}]
+    }
+  ]
+}

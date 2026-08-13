@@ -184,8 +184,8 @@ func TestSeparation_PlanCardOverGraphDistinctFromActionCard(t *testing.T) {
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		t.Fatalf("wire: %v", err)
 	}
-	if wire["schema_version"] != "1.0.0" {
-		t.Fatalf("schema_version no wire: %v (esperava 1.0.0)", wire["schema_version"])
+	if wire["schema_version"] != "1.1.0" {
+		t.Fatalf("schema_version no wire: %v (esperava 1.1.0)", wire["schema_version"])
 	}
 	if wire["node_count"].(float64) != 4 {
 		t.Fatalf("node_count no wire: %v (esperava 4)", wire["node_count"])
@@ -305,8 +305,8 @@ func TestAudit_PlanApprovalSpanLinkedToRunNoSecrets(t *testing.T) {
 	if sp.Attributes[AttrPlanAutoApproved] != false {
 		t.Fatalf("auto_approved no span: %v (esperava false)", sp.Attributes[AttrPlanAutoApproved])
 	}
-	if sp.Attributes[AttrPlanSchemaVersion] != "1.0.0" {
-		t.Fatalf("schema_version no span: %v (esperava 1.0.0)", sp.Attributes[AttrPlanSchemaVersion])
+	if sp.Attributes[AttrPlanSchemaVersion] != "1.1.0" {
+		t.Fatalf("schema_version no span: %v (esperava 1.1.0)", sp.Attributes[AttrPlanSchemaVersion])
 	}
 	if !sp.Ended {
 		t.Fatal("span plan_approval nao foi fechado")

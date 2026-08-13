@@ -1,0 +1,26 @@
+{
+  "plan_version": "1.2.0",
+  "objective": "index reviewed sources, consuming the verifier metrics",
+  "budget_total": {"tokens": 2100, "cost_micro_usd": 10500},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {
+      "node_id": "recolha", "role": "searcher", "objective": "recolher fontes candidatas",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000}, "risk_class": "safe",
+      "outputs": [{"name": "fontes", "type": "record"}]
+    },
+    {
+      "node_id": "revisao", "role": "verifier", "objective": "rever a cobertura de fontes da recolha",
+      "tools": [], "depends_on": ["recolha"], "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000}, "risk_class": "safe",
+      "outputs": [{"name": "metricas", "type": "metrics"}]
+    },
+    {
+      "node_id": "indexacao", "role": "indexer", "objective": "indexar as fontes revistas",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 700, "cost_micro_usd": 3500}, "risk_class": "gray",
+      "conditional_on": [{"from": "revisao", "when": [{"subject": "verdict", "op": "eq", "enum": "pass"}]}],
+      "consumes": [{"from": "revisao", "output": "metricas", "type": "metrics"}]
+    }
+  ]
+}

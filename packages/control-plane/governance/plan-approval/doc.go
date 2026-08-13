@@ -21,6 +21,20 @@
 //     binária é DEVOLVIDA ao [risk.ConfirmationChannel] (o [hitl.Channel]), que assina e
 //     sela. O gate não assina.
 //
+// AS EXTENSÕES DE ADR-022 SÃO VISÍVEIS NO CARTÃO (invariante §2.4(5), DEF-274): o
+// [PlanNode] transporta o PAPEL do nó ([RoleVerifier] distingue quem JULGA de quem
+// PRODUZ), as ARESTAS CONDICIONAIS que governam a sua entrada e os contratos de dados
+// (`outputs`/`consumes`) — todos em FORMA CANÓNICA (símbolos de charset fechado,
+// inteiros, referências a nós do próprio plano), e o [PlanCard] projecta-os em
+// [PlanCard.NodeExtensions] + [PlanCard.VerificationView] («quem verifica quem, sob que
+// condição»). A regra de ouro do cartão vale aqui com força de estrutura, não de
+// convenção, e nas DUAS portas: uma extensão fora da forma canónica RECUSA o plano
+// ([ErrNonCanonicalExtension]) tanto na CONSTRUÇÃO ([Plan.Validate]/[BuildPlanCard])
+// como no WIRE ([PlanCard.UnmarshalJSON], que re-parseia a mesma gramática) — em vez de
+// deixar conteúdo do run entrar na superfície de aprovação por qualquer uma delas. O
+// cartão expõe também as arestas induzidas por condição em [PlanCard.ConditionalEdges],
+// para que o grafo que ORDENA e o grafo que se MOSTRA sejam o mesmo. Ver extensions.go.
+//
 // O GRAFO e o SPAWN são PORTAS locais: [Plan]/[PlanNode] é a representação do grafo
 // sobre a qual o gate opera (o [orchestrator.DAG] mapeia para ela no wiring); [Spawner]
 // é a fronteira PRE-SPAWN (o [scheduler.SubtreeSpawner] adapta-se a ela no wiring). O

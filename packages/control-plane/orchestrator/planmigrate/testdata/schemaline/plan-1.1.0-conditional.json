@@ -1,0 +1,41 @@
+{
+  "plan_version": "1.1.0",
+  "objective": "recolher fontes, com pesquisa suplementar se a recolha falhar",
+  "budget_total": {"tokens": 2200, "cost_micro_usd": 11000},
+  "planner_meta": {"model": "planner-model-a", "prompt_version": "2.2.0", "capabilities_hash": "sha256:snap-conditional"},
+  "nodes": [
+    {
+      "node_id": "recolha",
+      "role": "searcher",
+      "objective": "recolher fontes candidatas",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [],
+      "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000},
+      "risk_class": "safe"
+    },
+    {
+      "node_id": "suplementar",
+      "role": "searcher",
+      "objective": "pesquisa suplementar quando a recolha falha",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [],
+      "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000},
+      "risk_class": "safe",
+      "conditional_on": [
+        {"from": "recolha", "when": [{"subject": "terminal_state", "op": "eq", "enum": "failed"}]}
+      ]
+    },
+    {
+      "node_id": "resumo",
+      "role": "summarizer",
+      "objective": "redigir o resumo executivo",
+      "tools": [],
+      "depends_on": [],
+      "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000},
+      "risk_class": "safe",
+      "conditional_on": [
+        {"from": "recolha", "when": [{"subject": "terminal_state", "op": "eq", "enum": "complete"}]}
+      ]
+    }
+  ]
+}

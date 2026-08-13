@@ -44,6 +44,34 @@ type PlanNode struct {
 	// GAP de capacidade que EXIGE revisão item-a-item (não colapsável), a par dos nós
 	// Class >= gray. LIDO do planeamento/orchestrator no wiring; o gate não o infere.
 	CapabilityGap bool
+
+	// --- Extensões declarativas de ADR-022, projectadas para o gate (DEF-274) ---
+	//
+	// Os quatro campos seguintes são o que torna VERDADEIRO o invariante §2.4(5) do
+	// ADR-022 («o humano no gate vê o organigrama COM as condições e os verificadores
+	// declarados»). São LIDOS do PlanDocument no wiring — o gate não os infere, não os
+	// valida semanticamente e não deriva taint: isso é do validador puro a montante
+	// (AOS-231). O gate impõe só a FORMA CANÓNICA (símbolos de charset fechado,
+	// inteiros, referências a nós do próprio plano) — ver extensions.go, que é onde a
+	// regra de ouro do cartão («sem segredos») deixa de ser convenção e passa a ser
+	// [ErrNonCanonicalExtension] fail-closed. Todos são OPCIONAIS e ADITIVOS: um plano
+	// que não os use produz o mesmo cartão de sempre.
+
+	// Role é o PAPEL DECLARADO do nó no plano (ADR-022 §2.2) — [RoleVerifier] é o
+	// único reservado. NÃO confundir com o `Role` de [RoleCapabilities], que é a
+	// identidade não-humana (o [PlanNode.Agent]): aqui é o papel de EXECUÇÃO — quem
+	// PRODUZ e quem JULGA. Vazio ⇒ papel não declarado.
+	Role string
+	// ConditionalOn são as arestas CONDICIONAIS que governam a ENTRADA deste nó
+	// (ADR-022 §2.1) — «sob que condição este ramo corre de todo». Contam também como
+	// PRECEDÊNCIA na ordenação do cartão (ver [Plan.effectiveEdges]).
+	ConditionalOn []PlanCondition
+	// Outputs são os contratos de SAÍDA declarados pelo nó (ADR-022 §2.3), em forma
+	// canónica (nome + tipo + taint EFECTIVO). Nunca o conteúdo do output.
+	Outputs []PlanOutput
+	// Consumes são as arestas de DADOS que entram no nó (ADR-022 §2.3) — que output de
+	// que origem alimenta este nó, com que tipo. Nunca o payload.
+	Consumes []PlanConsume
 }
 
 // Plan é a representação local do GRAFO DE TAREFAS proposto pelo orquestrador — o
@@ -78,6 +106,13 @@ type Spawner interface {
 // não-vazios, cada nó com task_id não-vazio e ÚNICO, e cada aresta a referenciar nós
 // existentes (From != To). Não computa a topologia — [Plan.TopoOrder] fá-lo e rejeita
 // ciclos.
+//
+// Desde DEF-274 valida TAMBÉM a FORMA CANÓNICA das extensões de ADR-022 de cada nó
+// ([PlanNode.validateExtensions]): papel, condições e contratos de dados têm de ser
+// símbolos/inteiros/referências ao próprio plano — nunca conteúdo. Fail-closed com
+// [ErrNonCanonicalExtension]: um plano cuja extensão não caiba na forma canónica NÃO é
+// aprovável, porque apresentá-lo exigiria mostrar conteúdo do run no cartão ou mentir
+// por omissão.
 func (p Plan) Validate() error {
 	if p.RunID == "" || p.Agent == "" {
 		return ErrInvalidPlan
@@ -100,7 +135,93 @@ func (p Plan) Validate() error {
 			return ErrInvalidPlan
 		}
 	}
+	// Segunda passagem: as referências das extensões só se conferem depois de o
+	// conjunto de task_ids estar completo (uma aresta condicional pode observar um nó
+	// declarado mais à frente na fatia) — e o mesmo vale para as arestas declaradas, de
+	// que a invariante de montante do `consumes` depende.
+	declared := make(map[[2]string]bool, len(p.Edges))
+	for _, e := range p.Edges {
+		declared[e] = true
+	}
+	for _, n := range p.Nodes {
+		if err := n.validateExtensions(seen, declared); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// effectiveEdges devolve as arestas de PRECEDÊNCIA efectivas do plano: as declaradas
+// em [Plan.Edges] MAIS as induzidas pelas arestas condicionais de cada nó
+// (From→TaskID), sem duplicados e em ordem estável.
+//
+// PORQUE UMA ARESTA *condicional* É TAMBÉM PRECEDÊNCIA: a condição avalia-se sobre o
+// RESULTADO REGISTADO da origem (ADR-022 §2.1), logo a origem TEM de correr primeiro.
+// Se a ordenação as ignorasse, um cartão com um ramo condicional podia mostrar o nó
+// guardado ANTES da origem que o guarda — o humano aprovaria uma ordem que não é a que
+// vai correr, que é o defeito exacto que DEF-274 fecha. E como entram na topologia,
+// entram também na detecção de ciclo ([ErrPlanCycle]): o invariante 1 do ADR
+// (aciclicidade) vale no cartão sem uma travessia nova.
+//
+// Retrocompatível por construção: sem `conditional_on`, devolve as arestas declaradas
+// tal-quais.
+func (p Plan) effectiveEdges() [][2]string {
+	total := 0
+	for _, n := range p.Nodes {
+		total += len(n.ConditionalOn)
+	}
+	if total == 0 {
+		return p.Edges
+	}
+	seen := make(map[[2]string]bool, len(p.Edges)+total)
+	out := make([][2]string, 0, len(p.Edges)+total)
+	add := func(e [2]string) {
+		if seen[e] {
+			return
+		}
+		seen[e] = true
+		out = append(out, e)
+	}
+	for _, e := range p.Edges {
+		add(e)
+	}
+	for _, n := range p.Nodes {
+		for _, c := range n.ConditionalOn {
+			add([2]string{c.From, n.TaskID})
+		}
+	}
+	return out
+}
+
+// conditionalEdges devolve as arestas de precedência INDUZIDAS por `conditional_on` e
+// que NÃO estão declaradas em [Plan.Edges] — a diferença exacta entre o grafo que
+// ORDENA ([Plan.effectiveEdges]) e o grafo que o cartão MOSTRA.
+//
+// É esta diferença que o cartão tem de expor separadamente (ver [PlanCard.ConditionalEdges]):
+// enquanto ela viveu só dentro de `node_extensions`, o único campo do cartão com forma de
+// GRAFO omitia precisamente as arestas que DEF-274 introduziu, e uma superfície que
+// desenhasse o organigrama a partir de `edges` mostrava um nó guardado por condição como
+// raiz sem entrada — «corre incondicionalmente desde o início», a leitura oposta à verdade.
+//
+// Ordem estável: nós pela ordem do slice, condições pela ordem declarada; sem duplicados.
+func (p Plan) conditionalEdges() [][2]string {
+	declared := make(map[[2]string]bool, len(p.Edges))
+	for _, e := range p.Edges {
+		declared[e] = true
+	}
+	var out [][2]string
+	seen := make(map[[2]string]bool)
+	for _, n := range p.Nodes {
+		for _, c := range n.ConditionalOn {
+			e := [2]string{c.From, n.TaskID}
+			if declared[e] || seen[e] {
+				continue
+			}
+			seen[e] = true
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // TopoOrder devolve uma ordenação topológica ESTÁVEL e REPRODUZÍVEL do grafo (Kahn com
@@ -108,6 +229,9 @@ func (p Plan) Validate() error {
 // semântica do [orchestrator.DAG.TopoOrder] (ADR-010): para os mesmos nós/arestas o
 // plano é IDÊNTICO. Devolve [ErrPlanCycle] se o grafo tiver um ciclo (fail-closed — um
 // plano com ciclo não é aprovável). Assume [Plan.Validate] já passou.
+//
+// Desde DEF-274 ordena sobre as arestas EFECTIVAS ([Plan.effectiveEdges]): as
+// declaradas mais as induzidas pelas arestas condicionais de ADR-022 §2.1.
 func (p Plan) TopoOrder() ([]string, error) {
 	indeg := make(map[string]int, len(p.Nodes))
 	for _, n := range p.Nodes {
@@ -116,7 +240,7 @@ func (p Plan) TopoOrder() ([]string, error) {
 		}
 	}
 	succ := make(map[string][]string, len(p.Nodes))
-	for _, e := range p.Edges {
+	for _, e := range p.effectiveEdges() {
 		succ[e[0]] = append(succ[e[0]], e[1])
 		indeg[e[1]]++
 	}

@@ -20,6 +20,19 @@ var (
 	// Fail-closed em [Plan.Validate]/[BuildPlanCard].
 	ErrInvalidPlan = errors.New("planapproval: plano invalido (run_id/agent/nos/arestas)")
 
+	// ErrNonCanonicalExtension — uma extensão de ADR-022 declarada num nó (papel,
+	// aresta condicional, contrato de output/consumo) NÃO está na FORMA CANÓNICA que o
+	// cartão apresenta: um símbolo fora do charset fechado, um operando que não é
+	// símbolo nem inteiro canónico, uma conjunção vazia, ou uma referência a um nó que
+	// não existe no plano.
+	//
+	// É a imposição ESTRUTURAL da regra de ouro do cartão («sem segredos»): a forma
+	// canónica não tem por onde deixar entrar um valor de payload, um excerto de output
+	// ou um locator — e um wiring que tente empurrá-los pela porta RECUSA o plano em vez
+	// de degradar o cartão. Fail-closed em [Plan.Validate]/[BuildPlanCard]: nada é
+	// saneado, truncado nem descartado silenciosamente.
+	ErrNonCanonicalExtension = errors.New("planapproval: extensao ADR-022 fora da forma canonica (simbolo/operando/referencia) — recusado (fail-closed)")
+
 	// ErrPlanCycle — o grafo de tarefas contém um ciclo (a ordenação topológica não
 	// cobre todos os nós). O plano NÃO é aprovável (fail-closed).
 	ErrPlanCycle = errors.New("planapproval: grafo de tarefas contem um ciclo (fail-closed)")

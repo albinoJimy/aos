@@ -1,0 +1,26 @@
+{
+  "plan_version": "1.0.0",
+  "objective": "recolher fontes e redigir o resumo executivo",
+  "budget_total": {"tokens": 1400, "cost_micro_usd": 7000},
+  "planner_meta": {"model": "planner-model-a", "prompt_version": "2.1.0", "capabilities_hash": "sha256:snap-baseline"},
+  "nodes": [
+    {
+      "node_id": "recolha",
+      "role": "searcher",
+      "objective": "recolher fontes candidatas",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [],
+      "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000},
+      "risk_class": "safe"
+    },
+    {
+      "node_id": "resumo",
+      "role": "summarizer",
+      "objective": "redigir o resumo executivo",
+      "tools": [],
+      "depends_on": ["recolha"],
+      "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000},
+      "risk_class": "safe"
+    }
+  ]
+}

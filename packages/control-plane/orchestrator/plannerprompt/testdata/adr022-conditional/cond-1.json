@@ -1,0 +1,24 @@
+{
+  "plan_version": "1.2.0",
+  "objective": "search the web and summarize findings, with a recovery branch",
+  "budget_total": {"tokens": 1800, "cost_micro_usd": 9000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.0.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {
+      "node_id": "recolha", "role": "searcher", "objective": "recolher fontes candidatas",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 700, "cost_micro_usd": 3500}, "risk_class": "safe"
+    },
+    {
+      "node_id": "suplementar", "role": "searcher", "objective": "pesquisa suplementar quando a recolha falha",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000}, "risk_class": "safe",
+      "conditional_on": [{"from": "recolha", "when": [{"subject": "terminal_state", "op": "eq", "enum": "failed"}]}]
+    },
+    {
+      "node_id": "sintese", "role": "summarizer", "objective": "sintetizar as fontes recolhidas",
+      "tools": [], "depends_on": [], "budget_estimate": {"tokens": 500, "cost_micro_usd": 2500}, "risk_class": "safe",
+      "conditional_on": [{"from": "recolha", "when": [{"subject": "terminal_state", "op": "eq", "enum": "complete"}]}]
+    }
+  ]
+}

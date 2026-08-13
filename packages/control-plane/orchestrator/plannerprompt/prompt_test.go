@@ -2,6 +2,7 @@ package plannerprompt
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -16,8 +17,17 @@ func TestCurrentPrompt_CacheStable(t *testing.T) {
 	if Current.CacheKey() != twin.CacheKey() {
 		t.Fatalf("cache-key nao determinista: %q != %q", Current.CacheKey(), twin.CacheKey())
 	}
-	if Current.MetaPromptVersion() != "1.0.0" {
-		t.Fatalf("prompt_version canonica esperada 1.0.0, obtive %q", Current.MetaPromptVersion())
+	if Current.MetaPromptVersion() != "1.1.0" {
+		t.Fatalf("prompt_version canonica esperada 1.1.0, obtive %q", Current.MetaPromptVersion())
+	}
+	// A regra 6 (AOS-273) nomeia a linha de schema que o documento tem de carimbar. É
+	// pinada aqui porque é o lado do PRODUTOR de uma regra cuja imposição vive noutro
+	// pacote (`planvalidate`): apagá-la do template deixaria o validador a recusar planos
+	// por uma instrução que o prompt nunca deu.
+	for _, agulha := range []string{"plan_version", "1.2.0", "conditional_on", "role: verifier"} {
+		if !strings.Contains(Current.Template, agulha) {
+			t.Fatalf("o template corrente nao nomeia %q", agulha)
+		}
 	}
 	// Conteudos diferentes ⇒ fingerprints diferentes (o hash discrimina).
 	other := Prompt{Version: Current.Version, Template: Current.Template + " x"}
@@ -36,13 +46,18 @@ func TestPromptMutation_ADR012Gate(t *testing.T) {
 	ap := PromptApproval{Approver: "owner", ADR012Ref: "ADR-012#42"}
 
 	// (a) conteudo muda, versao NAO sobe ⇒ ErrPromptVersionNotBumped.
-	sameVer := Prompt{Version: old.Version, Template: old.Template + "\nnova regra 6"}
+	sameVer := Prompt{Version: old.Version, Template: old.Template + "\nnova regra 7"}
 	if err := ValidatePromptMutation(old, sameVer, ap); !errors.Is(err, ErrPromptVersionNotBumped) {
 		t.Fatalf("mudanca sem bump devia dar ErrPromptVersionNotBumped, obtive %v", err)
 	}
 
-	// (b) conteudo muda, versao sobe, mas SEM aprovacao ⇒ ErrPromptUnapproved.
-	bumped := Prompt{Version: PromptVersion{Major: 1, Minor: 1}, Template: old.Template + "\nnova regra 6"}
+	// (b) conteudo muda, versao sobe, mas SEM aprovacao ⇒ ErrPromptUnapproved. A versao
+	// bumpada deriva da CORRENTE (e nao de um literal): um bump governado do prompt — como
+	// o de AOS-273 — nao pode fazer este teste passar a exercitar o caso (a).
+	bumped := Prompt{
+		Version:  PromptVersion{Major: old.Version.Major, Minor: old.Version.Minor + 1},
+		Template: old.Template + "\nnova regra 7",
+	}
 	if err := ValidatePromptMutation(old, bumped, PromptApproval{}); !errors.Is(err, ErrPromptUnapproved) {
 		t.Fatalf("mudanca sem aprovacao devia dar ErrPromptUnapproved, obtive %v", err)
 	}

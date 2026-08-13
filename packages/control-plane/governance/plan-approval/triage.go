@@ -88,12 +88,20 @@ type PlanDiff struct {
 	// AddedEdges/RemovedEdges são as arestas From→To acrescentadas/removidas (ordenadas).
 	AddedEdges   [][2]string `json:"added_edges,omitempty"`
 	RemovedEdges [][2]string `json:"removed_edges,omitempty"`
+	// ChangedExtensions são os task_ids (presentes nas DUAS versões) cujas extensões de
+	// ADR-022 mudaram — papel, condições de entrada ou contratos de dados (DEF-274).
+	// Sem este eixo, uma edição que transformasse um verificador num produtor, ou que
+	// reescrevesse a condição de um ramo, ficava registada como «sem mudança
+	// estrutural»: nós e arestas iguais, execução diferente. Ordenados.
+	ChangedExtensions []string `json:"changed_extensions,omitempty"`
 }
 
-// Empty indica que o diff não regista nenhuma mudança estrutural (nós e arestas iguais).
+// Empty indica que o diff não regista nenhuma mudança estrutural (nós, arestas e
+// extensões iguais).
 func (d PlanDiff) Empty() bool {
 	return len(d.AddedNodes) == 0 && len(d.RemovedNodes) == 0 &&
-		len(d.AddedEdges) == 0 && len(d.RemovedEdges) == 0
+		len(d.AddedEdges) == 0 && len(d.RemovedEdges) == 0 &&
+		len(d.ChangedExtensions) == 0
 }
 
 // DiffPlans computa o diff estrutural before→after ao nível dos nós (por task_id) e das
@@ -107,12 +115,33 @@ func DiffPlans(before, after Plan) PlanDiff {
 	afterEdges := edgeSet(after.Edges)
 
 	d := PlanDiff{
-		AddedNodes:   missingKeys(afterNodes, beforeNodes),
-		RemovedNodes: missingKeys(beforeNodes, afterNodes),
-		AddedEdges:   missingEdges(after.Edges, beforeEdges),
-		RemovedEdges: missingEdges(before.Edges, afterEdges),
+		AddedNodes:        missingKeys(afterNodes, beforeNodes),
+		RemovedNodes:      missingKeys(beforeNodes, afterNodes),
+		AddedEdges:        missingEdges(after.Edges, beforeEdges),
+		RemovedEdges:      missingEdges(before.Edges, afterEdges),
+		ChangedExtensions: changedExtensions(before.Nodes, after.Nodes),
 	}
 	return d
+}
+
+// changedExtensions devolve, ordenados, os task_ids presentes em AMBAS as versões cujas
+// extensões de ADR-022 diferem (comparação por [PlanNode.extensionSignature] — forma
+// canónica, determinística). Os nós só-antes/só-depois já estão cobertos por
+// Added/RemovedNodes; repeti-los aqui seria ruído no registo da decisão.
+func changedExtensions(before, after []PlanNode) []string {
+	sigs := make(map[string]string, len(before))
+	for _, n := range before {
+		sigs[n.TaskID] = n.extensionSignature()
+	}
+	var out []string
+	for _, n := range after {
+		old, both := sigs[n.TaskID]
+		if both && old != n.extensionSignature() {
+			out = append(out, n.TaskID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func nodeIDSet(nodes []PlanNode) map[string]bool {

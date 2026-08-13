@@ -210,9 +210,14 @@ func TestPayloadSchemaStaysClosed(t *testing.T) {
 	}
 }
 
-// TestPayloadAdditiveNoMajor prova a retro-compatibilidade que dispensa o bump de
-// MAJOR (que é AOS-273): um documento SEM os campos novos decodifica exactamente como
-// antes e os campos ficam nil — a ausência significa «sem contratos», não «desconhecido».
+// TestPayloadAdditiveNoMajor prova a retro-compatibilidade que dispensa o bump de MAJOR
+// (a decisão está em `plan/semver.go` e em `tecnica/18` §3.6.1: ADR-022 saiu inteiro em
+// MINORes): um documento SEM os campos novos decodifica exactamente como antes e os
+// campos ficam nil — a ausência significa «sem contratos», não «desconhecido».
+//
+// Nota de fronteira: o que este teste NÃO prova é que o carimbo desse documento seja
+// coerente com o que ele usa — isso é semântica, e vive na regra 1 de `planvalidate`
+// (`plan_version_below_features`, via [plan.FeatureFloor]).
 func TestPayloadAdditiveNoMajor(t *testing.T) {
 	raw := []byte(`{
 		"plan_version":"1.0.0","objective":"o",
