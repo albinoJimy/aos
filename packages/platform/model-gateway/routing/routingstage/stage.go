@@ -8,6 +8,32 @@
 // no Exchange (ResolvedModel/Region/Provider/KeyID) — ou FALHA-FECHA a chamada num
 // defer/reject (o provider não é invocado sem uma rota admitida). Mantém o núcleo
 // do router PURO (sem dependência da pipeline).
+//
+// # ENTRADA «RESOLVIDA-PRIMEIRO» (AOS-280) — a forma escolhida, declarada
+//
+// Este estágio pode correr SOZINHO no slot de roteamento (é como AOS-059 o compôs)
+// ou ENCADEADO a jusante da guarda de soberania/failover (AOS-058), que é a
+// composição de produção decidida em AOS-280: `failover` → `routingstage`. Nesse
+// encadeamento o estágio anterior JÁ resolveu a região (impondo a fronteira legal e,
+// se o primário estava doente, fazendo failover intra-fronteira deliberado).
+//
+// A entrada do refino é, por isso, a saída do estágio anterior QUANDO ELA EXISTE:
+//
+//	região   = ex.ResolvedRegion   se != ""   senão ex.RequestedRegion
+//	provider = ex.ResolvedProvider se != ""   senão ex.RequestedProvider
+//
+// A forma escolhida foi o FALLBACK (ler o resolvido, cair no pedido) e NÃO uma
+// Option explícita, por duas razões: (i) não há composição correcta em que o refino
+// deva ignorar uma resolução já tomada — uma Option seria um interruptor para uma
+// configuração errada; (ii) o fallback preserva byte-a-byte o uso standalone (sem
+// estágio anterior, ResolvedRegion está vazio à entrada da pipeline — o Gateway só
+// o preenche DEPOIS do roteamento), pelo que nada em AOS-059/AOS-063 muda.
+//
+// Ler sempre a região PEDIDA seria o encadeamento ingénuo e está PARTIDO: descartaria
+// em silêncio a decisão do failover — incluindo um failover por SAÚDE — e o refino
+// partiria outra vez da região que a guarda acabou de recusar. A regra acima é o que
+// torna «a decisão de soberania sobrevive ao refino» uma propriedade do código e não
+// uma convenção de quem compõe.
 package routingstage
 
 import (
@@ -53,6 +79,21 @@ type Task struct {
 	// tabela ASSINADA e a recusar fail-closed um perfil desconhecido. Vazio ⇒ o
 	// perfil composto no scorer. Sem efeito no modo lexicográfico.
 	Profile string
+	// NoRefine, quando NÃO-VAZIO, declara que o classificador não conseguiu
+	// CARACTERIZAR esta chamada (ex.: o modelo pedido está fora da escada de tiers
+	// declarada pelo deployment) e traz a RAZÃO. O estágio então PRESERVA a resolução
+	// do estágio anterior — a fronteira de soberania que o failover já impôs — e
+	// regista a razão no rasto, em vez de correr o router com uma capacidade
+	// INVENTADA. É deliberadamente uma string e não um bool: saltar o refino sem
+	// dizer porquê seria exactamente a degradação silenciosa que este estágio existe
+	// para não ter.
+	//
+	// PORQUE NÃO É FAIL-CLOSED. O que falta é a caracterização (custo/capacidade) de
+	// um modelo que a allowlist regional JÁ permitiu e que o failover JÁ resolveu
+	// dentro da fronteira: nenhuma guarda foi contornada, só não há por onde refinar.
+	// Recusar converteria uma escada mal declarada numa interrupção total do caminho
+	// quente; o refino é uma optimização de custo/carga, não um controlo de segurança.
+	NoRefine string
 }
 
 // Classifier deriva a [Task] de um [pipeline.Exchange]. Injectável para que a
@@ -111,11 +152,28 @@ func (s *Stage) Process(ctx context.Context, ex *pipeline.Exchange) error {
 		return fmt.Errorf("routingstage: router nao configurado (fail-closed)")
 	}
 	task := s.classify(ex)
+	if task.NoRefine != "" {
+		// Sem caracterização não se refina — mas também não se perde a resolução já
+		// tomada a montante. Se este estágio correr SOZINHO (sem failover à frente), a
+		// resolução ainda não existe: espelha-se o pedido, que é exactamente o que o
+		// pass-through de AOS-055 fazia. Nunca se deixa o Exchange sem rota.
+		if ex.ResolvedModel == "" {
+			ex.ResolvedModel = ex.RequestedModel
+		}
+		if ex.ResolvedRegion == "" {
+			ex.ResolvedRegion = ex.RequestedRegion
+		}
+		if ex.ResolvedProvider == "" {
+			ex.ResolvedProvider = ex.RequestedProvider
+		}
+		ex.Record(stageName, "no-refine", task.NoRefine)
+		return nil
+	}
 	dec, err := s.r.Route(ctx, router.Request{
 		Board:           ex.Board,
 		Tenant:          ex.Board, // o board é a unidade de soberania/quota do GW
-		Provider:        ex.RequestedProvider,
-		Region:          ex.RequestedRegion,
+		Provider:        inputProvider(ex),
+		Region:          inputRegion(ex),
 		Capability:      task.Capability,
 		Class:           task.Class,
 		Profile:         task.Profile,
@@ -150,6 +208,35 @@ func (s *Stage) Process(ctx context.Context, ex *pipeline.Exchange) error {
 	ex.Record(stageName, result, dec.Reason)
 	return nil
 }
+
+// inputRegion é a regra «RESOLVIDA-PRIMEIRO» do encadeamento (AOS-280, ver o doc do
+// pacote): a região de entrada do refino é a que o estágio anterior RESOLVEU e, só
+// na sua ausência (estágio a correr sozinho), a região PEDIDA. É a única linha que
+// impede o refino de descartar em silêncio um failover por saúde já decidido.
+func inputRegion(ex *pipeline.Exchange) string {
+	if ex.ResolvedRegion != "" {
+		return ex.ResolvedRegion
+	}
+	return ex.RequestedRegion
+}
+
+// inputProvider aplica a MESMA regra ao provedor (o failover fixa-o antes de
+// resolver a região): resolvido primeiro, pedido em fallback.
+func inputProvider(ex *pipeline.Exchange) string {
+	if ex.ResolvedProvider != "" {
+		return ex.ResolvedProvider
+	}
+	return ex.RequestedProvider
+}
+
+// InputRegion expõe a regra «resolvida-primeiro» a quem CLASSIFICA: um classificador
+// que derive candidatos (regiões de inventário) tem de partir da MESMA região de que
+// o estágio parte, senão as duas metades da decisão divergem — o refino ancorado numa
+// região e os candidatos noutra. Uma só definição, um só sítio.
+func InputRegion(ex *pipeline.Exchange) string { return inputRegion(ex) }
+
+// InputProvider expõe a regra «resolvida-primeiro» do provedor (ver [InputRegion]).
+func InputProvider(ex *pipeline.Exchange) string { return inputProvider(ex) }
 
 // AllowlistFrom adapta a *allowlist.Policy (AOS-058) à porta router.Allowlist: um
 // (board, modelo, região) é permitido se a policy o avaliar como allow

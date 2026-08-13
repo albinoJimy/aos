@@ -186,6 +186,40 @@ func (p *Pool) SetLoad(keyID string, rpm, tpm int) {
 	}
 }
 
+// Headroom devolve a FOLGA DE THROUGHPUT do pool como racional inteiro do PIOR
+// eixo (RPM ou TPM) da conta que [Pool.Select] escolheria — a menos carregada
+// não-saturada. É a MESMA aritmética que já governa a selecção (worstAxisLoad),
+// exposta para leitura: quem precisa do sinal de carga do pool (o router
+// cost/load-aware de AOS-059, pela porta LoadProvider) lê-o daqui em vez de manter
+// uma contabilidade paralela de TPM/RPM que divergiria desta.
+//
+// NÃO CONSOME NADA (ao contrário de [Pool.Select], que incrementa o RPM da conta
+// escolhida): é uma leitura pura, chamável no caminho de decisão sem alterar a
+// distribuição de carga. saturated=true quando TODAS as contas estão no limite (ou
+// o pool está vazio) — o lado seguro: sem capacidade não se presume folga.
+//
+// Sem floats (determinismo): devolve o par (usado, limite) do pior eixo; um limite
+// <=0 (ilimitado) é reportado como [unlimited] para que a razão usado/limite seja
+// comparável entre contas sem divisão por zero.
+func (p *Pool) Headroom() (used, limit int64, saturated bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var best *accountState
+	for _, a := range p.accounts {
+		if a.saturated() {
+			continue
+		}
+		if best == nil || lessLoaded(a, best) {
+			best = a
+		}
+	}
+	if best == nil {
+		return 0, 0, true
+	}
+	r := worstAxisLoad(best)
+	return r.num, r.den, false
+}
+
 // Observe acrescenta tokens consumidos ao TPM da conta (feedback de throughput
 // após a resposta). Contas desconhecidas são ignoradas.
 func (p *Pool) Observe(keyID string, tokens int) {
@@ -232,6 +266,21 @@ func (r *Registry) Select(provider, region string) (string, error) {
 		return "", ErrNoPool
 	}
 	return pool.Select()
+}
+
+// Headroom devolve a folga de throughput do pool de (provider, região) — o sinal
+// de CARGA que o router cost/load-aware consome pela porta LoadProvider. Um par SEM
+// pool é reportado como SATURADO (saturated=true), não como folga desconhecida: o
+// lado seguro é «sem pool não há capacidade», coerente com o fail-closed de
+// [Registry.Select] ([ErrNoPool]). Leitura pura (não consome throughput).
+func (r *Registry) Headroom(provider, region string) (used, limit int64, saturated bool) {
+	r.mu.RLock()
+	pool, ok := r.pools[key(provider, region)]
+	r.mu.RUnlock()
+	if !ok {
+		return 0, 0, true
+	}
+	return pool.Headroom()
 }
 
 // Observe encaminha o feedback de tokens para o pool do par (provider, região).

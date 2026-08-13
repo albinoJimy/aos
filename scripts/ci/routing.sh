@@ -133,6 +133,39 @@ fi
 # (não-vazio, fail-closed). É o coração do gate — a prova de que a suite não é vacuous.
 require_tests "$REPO_ROOT/$GW_MOD" "$SUITE_PKG" "$RE" "${REQUIRED[@]}" || exit 1
 
+# (1-bis) CADEIA REAL DE ROTEAMENTO (AOS-280, fecha DEF-271). A suite acima exercita
+# os controlos de roteamento pelo router ISOLADO; estes provam-nos no GATEWAY COMPOSTO
+# (modelgateway.NewProduction + Chat), que é onde o estágio `failover` →
+# `routingstage`+`router` (com o scoring assinado armado) passou a decidir o caminho
+# quente de TODAS as chamadas de modelo. Vivem no pacote RAIZ do módulo (é lá que está
+# o composition root e o harness de produção), pelo que precisam do seu próprio
+# require_tests — sem ele, apagar o ficheiro deixaria o gate verde.
+#
+# A REMEDIAÇÃO adversarial de AOS-280 acrescentou quatro: a troca de modelo decidida
+# pelo refino SELADA no audit WORM (o par EFECTIVO, não só o pedido); a recusa de
+# ARRANQUE de uma RoutingConfig preenchida SEM escada (que desligava em silêncio a
+# admissão global do ADR-008); a recusa de ARRANQUE quando a escada declara um modelo
+# sem preço numa região alcançável (que só falharia DEPOIS de facturar); e a
+# ATRIBUIBILIDADE do erro de perfil desconhecido (que acusava o artefacto de pesos).
+REQUIRED_CHAIN=(
+  TestAOS280_Chain_CrossBorderDenyStillSealedInWORM
+  TestAOS280_Chain_AdmissionSaturationDefersBeforeProvider
+  TestAOS280_Chain_BudgetDegradesToCheaperCapableTier
+  TestAOS280_Chain_ScoringOrdersSurvivorsByProfile
+  TestAOS280_Chain_HealthFailoverSurvivesRefinement
+  TestAOS280_NoTiersDeclared_KeepsFailoverOnly
+  TestAOS280_ModelOutsideLadder_KeepsSovereignRouteWithoutRefinement
+  TestAOS280_UnknownWeightProfile_FailsClosedAtBoot
+  TestAOS280_EmptyLadder_FailsClosedAtBoot
+  TestAOS280_Chain_ModelSwapSealedInWORM
+  TestAOS280_PartialRoutingConfigWithoutTiers_FailsClosedAtBoot
+  TestAOS280_UnpricedLadderTier_FailsClosedAtBoot
+  TestAOS280_UnknownDefaultProfile_BlamesProfileNotWeightsArtefact
+)
+RE_CHAIN="^($(IFS='|'; echo "${REQUIRED_CHAIN[*]}"))\$"
+log_gate "routing · cadeia real (AOS-280) · soberania+saturação+orçamento+scoring+failover por saúde no GW COMPOSTO"
+require_tests "$REPO_ROOT/$GW_MOD" "." "$RE_CHAIN" "${REQUIRED_CHAIN[@]}" || exit 1
+
 # (2) -race na suite completa (determinismo sob concorrência).
 log_step "go test -race $SUITE_PKG"
 if ! ( cd "$REPO_ROOT/$GW_MOD" && go test "$SUITE_PKG" -race -count=1 ); then

@@ -43,28 +43,38 @@
 //     profundidade, um scorer não-armado faz o router REJEITAR toda a rota
 //     (fail-closed) em vez de cair em pesos implícitos.
 //
-// DEFERIDO (DEF-271) — ALCANCE HONESTO: este router NÃO está composto no pipeline de
-// produção do gateway. O `NewProduction` compõe `failover.NewStage` como estágio de
-// roteamento, e `router.New` não tem chamador fora de testes em todo o repositório —
-// uma lacuna PRÉ-EXISTENTE a AOS-269, não introduzida por ele. Enquanto o estágio não
-// for composto, o scoring aqui entregue (máquina completa, testada e assinada) NÃO tem
-// efeito em produção. O alcance está fixado na EMENDA 1.1 do ADR-021 (§5-bis,
-// 2026-08-13, autoridade de dono): na v1 o scoring é composto POR OPÇÃO e a regra 3
-// («sem tabela válida o router recusa») aplica-se QUANDO o scoring está composto.
+// COMPOSIÇÃO EM PRODUÇÃO (AOS-280, fecha DEF-271). Este router JÁ ESTÁ composto no
+// pipeline de produção do gateway: `modelgateway.NewProduction` encadeia
+// `failover.NewStage` → `routingstage.NewStage(router.New(…, WithScoring(…)))` no
+// slot de roteamento — o failover impõe a soberania e sela o deny cross-border no
+// WORM, este router refina DENTRO dessa fronteira (carga, tier capaz mais barato,
+// degradação por orçamento, admissão global e ranking ponderado). A prova é pela
+// cadeia real, ao nível do gateway composto (routing_chain_aos280_test.go).
 //
-// DIVERGÊNCIA DECLARADA FACE À REGRA 3 DO ADR-021 — ESCALADA, NÃO RESOLVIDA. O
-// ADR-021 §2 regra 3 diz, SEM qualificação, que «sem tabela válida, o router
-// recusa (não assume pesos implícitos)», e §5 repete-o. A implementação acima lê
-// isso como «quando o scoring está composto» — uma leitura que o implementador NÃO
-// tem autoridade para fixar: o ADR é AUTORIDADE CONGELADA desde 2026-08-13 e só
-// uma EMENDA DATADA de dono (Carta §6) a pode qualificar. Agrava que hoje NENHUM
-// ponto de composição do repositório arma o scoring (o composition root
-// modelgateway.NewProduction compõe failover.NewStage, não este router), pelo que
-// a regra 3 está INERTE na composição actual. A pendência está registada em
-// docs/governance/REGISTO-Deferimentos.md (DEF-269-R3) com as duas saídas
-// possíveis — emenda datada OU armar o scoring no composition root — e o critério
-// de saída §71 do EPIC-20 traz a nota correspondente. Enquanto não houver decisão
-// de dono, NÃO se deve tratar este comentário como ratificação da leitura opt-in.
+// ALCANCE HONESTO DO QUE ISSO ARMA. A cadeia compõe-se quando o deployment DECLARA
+// a sua escada de tiers (`RoutingConfig.Tiers`) — o custo/capacidade dos modelos que
+// aquele nó pode servir, que nenhuma heurística pode adivinhar sem inventar política
+// de qualidade no caminho quente. Sem escada declarada, o slot mantém-se só com o
+// failover e este router não corre. É por isso a ESCADA, e não uma opção de scoring,
+// que decide se o ranking ponderado tem efeito num deployment concreto.
+//
+// REGRA 3 DO ADR-021 — LEITURA RATIFICADA E COM EFEITO REAL. A EMENDA 1.1 do ADR-021
+// (§5-bis, 2026-08-13, autoridade de dono) fixou que na v1 o scoring é composto POR
+// OPÇÃO e que a regra 3 («sem tabela válida o router recusa») se aplica QUANDO o
+// scoring está composto — a leitura que a implementação abaixo faz deixou de ser uma
+// divergência do implementador. E deixou de estar inerte: no caminho de produção o
+// scoring É armado sobre a tabela EMBEBIDA e ASSINADA, cuja verificação falhada
+// impede o gateway de ARRANCAR (modelgateway.ErrRoutingWeights), muito antes de
+// qualquer rota. Sem `WithScoring` o router mantém, inalterado, o ordenamento
+// lexicográfico de AOS-059.
+//
+// DIVERGÊNCIA DECLARADA (não silenciada). O §5-bis do ADR-021 — autoridade CONGELADA —
+// ainda diz, no texto da emenda 1.1, que o scoring «não tem efeito em produção»
+// enquanto DEF-271 não fechar. DEF-271 FECHOU (AOS-280) e este parágrafo descreve o
+// código que existe; actualizar o ADR é EMENDA de dono, não edição do implementador
+// (Carta §6). A divergência está registada com eixo em DEF-280-ADR021 (registo de
+// deferimentos), com o texto proposto para a emenda 1.2 — quem ler o ADR e este doc em
+// conflito encontra ali qual dos dois está à espera de assinatura.
 //
 // As GUARDAS continuam PRIMEIRO e não são factores (ADR-021 regra 1): a partição de
 // soberania, a allowlist do board e o piso de capacidade correm ANTES do ranking, e
@@ -246,6 +256,19 @@ type KeyPool interface {
 // (o span é sempre emitido). É a prova de que cada decisão fica registada.
 type DecisionSink interface {
 	Record(ctx context.Context, d Decision)
+}
+
+// DecisionSinkFunc adapta uma função à porta [DecisionSink] — o mesmo padrão do
+// VarianceSinkFunc da fachada do GW. Existe para que um composition root (ou um
+// teste) ligue o registo post-hoc sem declarar um tipo só para isso.
+type DecisionSinkFunc func(ctx context.Context, d Decision)
+
+// Record implementa [DecisionSink].
+func (f DecisionSinkFunc) Record(ctx context.Context, d Decision) {
+	if f == nil {
+		return
+	}
+	f(ctx, d)
 }
 
 // Request é o pedido de roteamento de uma model call.
@@ -439,12 +462,12 @@ func WithTracer(t agentruntime.Tracer) Option {
 // factores injectados, com os pesos do artefacto ASSINADO (policy/weights), em vez
 // da composição lexicográfica de AOS-059.
 //
-// POSTURA DE COMPATIBILIDADE (ESCALADA ao dono — ver a secção «DIVERGÊNCIA
-// DECLARADA» no doc do pacote e DEF-269-R3): o scoring é OPT-IN por composição.
-// Não chamar esta opção mantém o router byte-a-byte no comportamento actual —
-// nenhum nó já implantado deixa de rotear por não ter tabela de pesos. Isto é uma
-// LEITURA da regra 3 do ADR-021, não a regra 3: a regra, como está escrita, não a
-// qualifica. Chamá-la torna a tabela OBRIGATÓRIA: [scoring.NewScorer] já não
+// POSTURA DE COMPATIBILIDADE (RATIFICADA pela emenda 1.1 do ADR-021, §5-bis — ver o
+// doc do pacote): o scoring é OPT-IN por composição. Não chamar esta opção mantém o
+// router byte-a-byte no comportamento actual — nenhum nó já implantado deixa de
+// rotear por não ter tabela de pesos. O composition root de produção
+// (modelgateway.NewProduction) CHAMA-A quando o deployment declara a escada de
+// tiers. Chamá-la torna a tabela OBRIGATÓRIA: [scoring.NewScorer] já não
 // se constrói sem tabela verificada, e um scorer não-armado (valor-zero, tabela
 // perdida, perfil de soma zero) faz o router REJEITAR toda a rota — nunca cair em
 // pesos implícitos (ADR-021 regra 3).

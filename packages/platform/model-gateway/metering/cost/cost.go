@@ -165,6 +165,26 @@ func (c *Calculator) PricingVersion() string {
 	return c.table.Version()
 }
 
+// HasPrice reporta se o par (modelo, região) TEM preço na tabela em vigor. É uma
+// leitura PURA de COBERTURA — não calcula custo nenhum e não toca em estado.
+//
+// PORQUE EXISTE. O custo é fail-closed por (modelo, região): um par sem preço RECUSA
+// a chamada em [CostBreakdown]. Só que essa recusa acontece DEPOIS de o provider ter
+// sido invocado (e facturado) — o gateway calcula o custo com o usage em mão. Quem
+// COMPÕE um deployment que pode despachar mais do que o modelo pedido (a escada de
+// tiers do roteamento) precisa de cruzar essa escada com a tabela ANTES de servir
+// tráfego, e é para isso que esta porta existe: transformar uma falha por chamada,
+// depois de gastar dinheiro, numa recusa de ARRANQUE única e diagnosticável.
+//
+// Sem tabela, nada tem preço (fail-closed — nunca «cobre tudo» por ausência de dados).
+func (c *Calculator) HasPrice(model, region string) bool {
+	if c == nil || c.table == nil {
+		return false
+	}
+	_, ok := c.table.RateFor(model, region)
+	return ok
+}
+
 // CostBreakdown calcula o custo DECOMPOSTO e o [Amount] agregado de uma chamada,
 // para (modelo, região). Fail-closed:
 //   - tokens negativos ⇒ [ErrNegativeTokens];

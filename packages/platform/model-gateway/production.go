@@ -165,6 +165,13 @@ type ProductionConfig struct {
 	// catálogo). Nil ⇒ usa a embebida (trust anchor pinado) — comportamento inalterado. A
 	// governança (default-deny + assinatura + selagem WORM na activação) é IDÊNTICA nos dois casos.
 	Allowlist *allowlist.Policy
+	// Routing é o REFINO de roteamento (AOS-059 + ADR-021) encadeado a jusante da
+	// guarda de soberania: carga real, tier mais barato CAPAZ, degradação graciosa por
+	// orçamento, admissão global e ranking ponderado com pesos assinados. Zero-valor ⇒
+	// o slot de roteamento fica só com o failover (comportamento anterior a AOS-280,
+	// sem regressão). Declarar [RoutingConfig.Tiers] é o que ARMA a cadeia — ver
+	// production_routing.go.
+	Routing RoutingConfig
 }
 
 // NewProduction monta um GW de produção FAIL-CLOSED por construção a partir de seams
@@ -176,7 +183,9 @@ type ProductionConfig struct {
 //     servir tráfego — se qualquer passo falhar, NÃO devolve gateway;
 //  3. constrói o router de failover (routing/failover) sobre a mesma policy e o
 //     inventário de contas — a região resolve SÓ via a guarda de soberania;
-//  4. constrói o keypool (AOS-057) das mesmas contas (escolha da chave por throughput);
+//  4. constrói o keypool (AOS-057) das mesmas contas (escolha da chave por throughput)
+//     e, se o deployment declarou a escada de tiers, ENCADEIA o refino cost/load-aware
+//     (AOS-280: failover → routingstage+router com o scoring assinado armado);
 //  5. constrói o adaptador de provider interno + a ponte de credenciais;
 //  6. compõe o [Gateway] com a allowlist e o router reais ligados (WithAllowlistStage
 //     + WithRoutingStage + WithKeyPool) — nenhum estágio pass-through no caminho de
@@ -222,13 +231,24 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	// (3) Router de failover: fronteira de soberania derivada da MESMA policy; inventário
 	// de endpoints das contas de infra; deny cross-border selado pelo mesmo recorder.
 	inv := inventoryFromAccounts(cfg.Accounts)
-	routeStage := failover.NewStage(pol, inv,
+	failStage := failover.NewStage(pol, inv,
 		failover.WithHealth(adaptHealth(cfg.Health)),
 		failover.WithRecorder(govRec),
 	)
 
 	// (4) Keypool: escolha da chave por throughput, DESACOPLADA da identidade (AOS-057).
 	kp := keypoolFromAccounts(cfg.Accounts)
+
+	// (4-bis) REFINO de roteamento (AOS-280): o slot "roteamento" passa a ser a CADEIA
+	// failover → routingstage+router (carga, tier capaz mais barato, degradação por
+	// orçamento e ranking ponderado assinado) quando o deployment declara a escada de
+	// tiers, mais o elo que SELA no WORM a troca de modelo que o refino decida (o
+	// mesmo recorder de governação da allowlist). Sem escada declarada, fica o failover
+	// sozinho — inalterado. Ver production_routing.go para o desenho e as armadilhas.
+	routeStage, err := composeRoutingStage(failStage, cfg, pol, inv, kp, govRec)
+	if err != nil {
+		return nil, err
+	}
 
 	// (5) Adaptador de provider interno (no-bypass) + ponte de credenciais. No caminho
 	// de egress REAL (HTTPClient nil) o BaseURL é validado (https + allowlist) e um

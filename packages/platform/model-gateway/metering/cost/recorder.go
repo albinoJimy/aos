@@ -215,6 +215,18 @@ func NewRecorder(calc *Calculator, opts ...Option) *Recorder {
 	return r
 }
 
+// HasPrice reexpõe a COBERTURA de preço do [Calculator] subjacente (leitura pura,
+// sem agregação nem efeito): o composition root que declara uma escada de modelos
+// cruza-a com esta porta no ARRANQUE, em vez de descobrir a lacuna com [ErrNoPrice]
+// depois de o provider já ter sido invocado. Recorder ou calculador nil ⇒ nada tem
+// preço (fail-closed).
+func (r *Recorder) HasPrice(model, region string) bool {
+	if r == nil {
+		return false
+	}
+	return r.calc.HasPrice(model, region)
+}
+
 // Observe calcula o custo de UMA chamada, agrega por run e por árvore, emite a
 // métrica OTel (chamada + agregados), anota o span e alimenta o burn-down. Devolve a
 // [Reading]. Fail-closed: se o custo for NÃO-calculável (sem preço, tokens negativos,
