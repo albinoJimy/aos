@@ -6,18 +6,18 @@
 | Documento | Epic — Remediação dos achados de prontidão (F1–F16), billing token-only ligado ao nó, e implementação dos ADR-021/022 |
 | Versão | 1.0 |
 | Data | 2026-08-08 |
-| Classificação | Documento de Referência — **Em execução** (27/34 implementados e no trunk, 1 parcial; 7 abertos — 5 DESBLOQUEADOS pela ratificação dos ADR-021/022 em 2026-08-13, 2 à espera de D1/D2 — ver **§0 Balanço**) |
+| Classificação | Documento de Referência — **Em execução** (33/34 implementados e no trunk; ADR-021 e ADR-022 ratificados e implementados; **2 abertos**, ambos à espera de D1/D2 — ver **§0 Balanço**) |
 | Documento-fonte | **`docs/reports/prontidao-modelos-agenticos.md`** (relatório consolidado, 2026-08-08) |
 | ADRs aprovados (RATIFICADOS 2026-08-13) | **ADR-021** (scoring determinístico no GW) · **ADR-022** (arestas condicionais, papel verificador, payload tipado) — ambos `Estado: Aceite` por **ratificação de dono**; antes eram premissa de planeamento (ver §0) |
 | Documentos relacionados | `docs/reports/desafio-A1..A4-*.md` (planos de fecho corrigidos + decisões do dono), ADR-008/010/011/012/013/018/020, `tecnica/06`, `tecnica/18` |
 
 ---
 
-## 0. Balanço de execução — 2026-08-13 (ADR-021/022 ratificados)
+## 0. Balanço de execução — 2026-08-13 (ADR-021/022 ratificados e implementados)
 
-**Estado global: 27 dos 34 tickets IMPLEMENTADOS e integrados no trunk `feature/AOS-128-ux-dx-tests` (1 deles PARCIAL, com eixo); 7 ABERTOS — dos quais 5 DESBLOQUEADOS em 2026-08-13.** O eixo **D4** (autoridade de identidade real) está **fechado no código**. A **ratificação de dono do ADR-021 e do ADR-022** (2026-08-13) desbloqueou **AOS-269..273**, que passam a ser trabalho executável. Ficam à espera de decisão apenas **AOS-259/260** (eixo $, D1/D2).
+**Estado global: 33 dos 34 tickets IMPLEMENTADOS e integrados no trunk `feature/AOS-128-ux-dx-tests` (alguns com alcance PARCIAL declarado e eixo); 2 ABERTOS.** O eixo **D4** (autoridade de identidade real) está **fechado no código**. O **ADR-021** e o **ADR-022** foram **ratificados** (2026-08-13, autoridade de dono) e ambos estão **implementados**: AOS-269 (scoring determinístico no GW, com o alcance da emenda 1.1), e AOS-270..273 + DEF-274 (arestas condicionais, `role: verifier`, payload tipado, versionamento/janela/golden-sets, e o gate humano a ver as extensões). **Ficam à espera de decisão do dono apenas AOS-259/260** (eixo $, D1/D2).
 
-### Implementados (27, um deles PARCIAL)
+### Implementados (33; alguns com alcance PARCIAL declarado e eixo)
 - **Risco activo + higiene (F1–F6, F11–F15):** AOS-245 · AOS-246 · AOS-247 · AOS-248 · AOS-249 · AOS-250 · AOS-251 · AOS-252 · AOS-255.
 - **Durabilidade do run:** AOS-253 *(crash-resume: varredura de órfãos no arranque + `Resumer` composto; efeito já aplicado não repete, modelo não re-interrogado)* · **AOS-254 — PARCIAL** *(a CONDUÇÃO da saga está composta e o ramo alcançável — declarar a ausência com selo WORM — provado; a COMPENSAÇÃO REAL fica em **DEF-270**, à espera de um produtor de compensações e do registo run-scoped no kernel)*.
 - **Billing token-only (dimensão de tokens):** AOS-256 · AOS-257 · AOS-258.
@@ -25,13 +25,14 @@
 - **Broker de credenciais:** AOS-264 · AOS-265 *(consumo in-process v1)*.
 - **Operações do nó:** AOS-266 *(attestation: challenge freshness + device enrollment)* · AOS-267 *(scheduler de retenção)* · AOS-274 *(SLOs)* · AOS-275 *(promoção)* · AOS-276 *(keypool)* · AOS-277 *(ingresso)*.
 - **Eixo D4:** AOS-268 *(verificação ancorada do WORM no restart)* · AOS-278 *(cutover duro da identidade do GW)*.
+- **ADR-021 (ratificado 2026-08-13):** AOS-269 *(scoring ponderado determinístico no GW: portas de factores em aritmética inteira, tabela de pesos embebida e assinada com trust anchor pinado, guard-test AST contra float/`rand`/relógio, cenário que prova que nenhum peso elege cross-border)*. **Alcance pela emenda 1.1:** o scoring é composto **por opção** e não tem efeito em produção enquanto o estágio de roteamento não for composto — lacuna **pré-existente**, em **DEF-271**.
+- **ADR-022 (ratificado 2026-08-13) — FECHADO:** AOS-270 *(arestas condicionais; «ciclo disfarçado» rejeitado reutilizando o DAG de AOS-025; replay reproduz o ramo sem re-avaliar)* · AOS-271 *(`role: verifier` com semântica de sistema: read-only por construção, produtor ≠ verificador, veredicto tipado)* · AOS-272 *(payload tipado por aresta: contratos validados estaticamente, taint derivado da **autoridade** e não da palavra do planeador, transporte por referência — nunca blackboard)* · AOS-273 *(`plan_version` 1.2.0 com o carimbo **imposto** pelas features usadas, migração provada nas duas direcções com fixtures congeladas, janela de suporte ancorada em código, golden-sets)* · **DEF-274** *(o gate humano passa a **ver** as extensões — invariante §2.4(5) — em forma canónica e content-free, imposta também no wire)*.
 
-### Abertos (7) — 5 DESBLOQUEADOS, 2 à espera de decisão
-- **DESBLOQUEADOS (2026-08-13) — os ADR foram RATIFICADOS:** AOS-269 *(ADR-021, scoring determinístico)* · AOS-270 · AOS-271 · AOS-272 · AOS-273 *(ADR-022: PlanDocument, `role: verifier`, payload tipado, migração)*. Zero código ainda, mas **executáveis**: `ADR-021` e `ADR-022` passaram a **`Estado: Aceite` (ratificação de dono, 2026-08-13)**, pelo que o desenho está congelado e a implementação deixa de comprometer decisão não-tomada. A gramática concreta (perfis/pesos em `tecnica/06`; condições/veredicto/payload em `tecnica/18`) permanece **fora do ADR por desenho** — é trabalho destes tickets, não decisão re-aberta.
-- **AINDA bloqueados por decisão do dono — eixo $ do billing:** AOS-259 *(D2)* · AOS-260 *(D1)*. A dimensão de **tokens** está ligada (AOS-256..258); a de **dólares** aguarda D1/D2.
+### Abertos (2) — ambos à espera de decisão do dono
+- **Eixo $ do billing:** AOS-259 *(D2)* · AOS-260 *(D1)*. A dimensão de **tokens** está ligada (AOS-256..258); a de **dólares** aguarda D1/D2. **Não há mais trabalho executável sem decisão.**
 
 ### Deferidos com eixo (infra-org, fora do código do nó)
-Selagem periódica out-of-process dos checkpoints do WORM (**DEF-268/DEF-269**, custódia de chave D4/AOS-156) · instância do IdP tenant + adaptador HSM/KMS (costura `crypto.Signer`, EPIC-16) · injecção do broker no executor remoto (**D8-B**) · compensação real da saga (**DEF-270**: exige um *produtor* de compensações — o loop nunca popula `activity.Activity.Compensation` — **e** o registo run-scoped no kernel; enquanto faltarem, habilitá-la compensaria o run errado).
+Selagem periódica out-of-process dos checkpoints do WORM (**DEF-268/DEF-269**, custódia de chave D4/AOS-156) · instância do IdP tenant + adaptador HSM/KMS (costura `crypto.Signer`, EPIC-16) · injecção do broker no executor remoto (**D8-B**) · composição do estágio de roteamento no pipeline do GW (**DEF-271**, pré-existente a AOS-269) · emissão do veredicto e transporte do payload sem chamador de produção (**DEF-272/273**, eixo AOS-238) · gate de CI `evalgate.sh` a correr os golden-sets do planeador (**DEF-276**, eixo **AOS-279**) · compensação real da saga (**DEF-270**: exige um *produtor* de compensações — o loop nunca popula `activity.Activity.Compensation` — **e** o registo run-scoped no kernel; enquanto faltarem, habilitá-la compensaria o run errado).
 
 ### Nota de reconciliação
 Os campos `### Estado` por-ticket de **AOS-245, AOS-250 e AOS-266** estavam desactualizados — descreviam a não-entrada na W0 (245/250) ou o estado inicial (266), mas a implementação e os testes dedicados existem e passam (`aos245_ledger_titular_test.go`, `apiMaxTurnsOptionFromEnv`, `aos266_challenge_freshness_test.go`/`aos266_device_enrollment_test.go`). Corrigidos na revisão de 2026-08-12.
