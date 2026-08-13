@@ -128,15 +128,18 @@ var ErrLifecycleResultsDeps = errors.New("plandispatch: LifecycleResults exige L
 //
 // # O QUE ESTE ADAPTADOR *NÃO* PROJECTA (declarado, não esquecido)
 //
-//   - `verdict` — o veredicto estruturado é AOS-271 (ADR-022 §2.2: read-only,
-//     produtor ≠ verificador, schema tipado). Enquanto não existir produtor, este
-//     adaptador devolve [VerdictAbsent] e o VALIDADOR recusa, na ADMISSÃO, qualquer
-//     plano que ramifique sobre `verdict` (planvalidate, `verdict_unsupported`).
-//     Fail-closed LOUD: recusar o plano é honesto; deixá-lo entrar e podar em
-//     silêncio (ausência ⇒ predicado falso ⇒ ramo não tomado) não era.
-//   - `metric` — as métricas declaradas do resultado não têm produtor no nó; o
-//     mapa fica nil e um predicado sobre métrica é falso. Mesma disciplina: a
-//     admissão é que recusa, não o despacho.
+//   - `verdict` — o veredicto estruturado vem do facto `plan.verdict_recorded`
+//     (AOS-271), projectado por [ResultFromVerdict]; este adaptador não o conhece e
+//     devolve [VerdictAbsent]. A admissão JÁ NÃO recusa em bloco os ramos sobre
+//     `verdict` (AOS-271 substituiu o interruptor datado pelas regras reais de §2.2),
+//     pelo que o fail-closed LOUD passou para aqui: um observável AUSENTE deixa o
+//     predicado INDECIDO ([evalPredicate]) e o nó em `waiting_condition` — nunca falso,
+//     que seria podar o ramo e REGISTAR a poda. Enquanto um wiring não ligar uma
+//     [ResultView] que projecte veredictos, um plano com ramo de qualidade fica parado
+//     e VISÍVEL, em vez de mutilado em silêncio.
+//   - `metric` — as métricas declaradas do resultado não têm produtor neste adaptador;
+//     o mapa fica nil e um predicado sobre métrica fica igualmente INDECIDO. Mesma
+//     disciplina, mesma razão.
 //
 // Simétrico de [EventJournal] na assimetria que interessa: LÊ, nunca escreve.
 type LifecycleResults struct {

@@ -1,6 +1,10 @@
 package plandispatch
 
-import "context"
+import (
+	"context"
+
+	"github.com/aos-ref/control-plane/orchestrator/plan"
+)
 
 // TerminalOutcome é o ESTADO TERMINAL registado de um nó — o observável
 // `terminal_state` de ADR-022 §2.1. Os símbolos são EXACTAMENTE os do enum fechado
@@ -19,8 +23,13 @@ const (
 )
 
 // VerdictValue é o veredicto ESTRUTURADO registado por um nó — o observável
-// `verdict` de ADR-022 §2.1. O veredicto tipado do papel verificador (produtor,
-// schema e emissão) é AOS-271; aqui consome-se apenas o símbolo.
+// `verdict` de ADR-022 §2.1. O emissor é o papel verificador de §2.2 (AOS-271): o
+// facto `plan.verdict_recorded`, projectado para aqui por [ResultFromVerdict].
+//
+// Os símbolos DERIVAM da partição de [plan.SubjectVerdict], como os do emissor
+// ([plannerevents.VerdictOutcome]). As três pontas — schema da condição, evento
+// emitido, observável consumido — são o MESMO alfabeto por construção; nenhuma
+// tabela de tradução no meio, logo nenhuma que possa divergir.
 type VerdictValue string
 
 const (
@@ -28,8 +37,8 @@ const (
 	// predicado sobre `verdict` é satisfeito — nem sequer um `ne`. A ausência de
 	// observável não é um valor que se possa comparar: é razão para não ramificar.
 	VerdictAbsent VerdictValue = ""
-	VerdictPass   VerdictValue = "pass"
-	VerdictFail   VerdictValue = "fail"
+	VerdictPass   VerdictValue = VerdictValue(plan.EnumPass)
+	VerdictFail   VerdictValue = VerdictValue(plan.EnumFail)
 )
 
 // NodeResultRecord é o RESULTADO REGISTADO de um nó terminal — a ÚNICA superfície
@@ -44,8 +53,20 @@ type NodeResultRecord struct {
 	Terminal TerminalOutcome
 	// Verdict é o veredicto estruturado registado ([VerdictAbsent] se não houver).
 	Verdict VerdictValue
+	// Subjects são os nós que o veredicto declara ter EXAMINADO, pela ordem do facto.
+	// Vazio quando não há veredicto.
+	//
+	// PORQUE ATRAVESSA (correcção da auditoria da wave). O `subjects[]` era construído
+	// na admissão, validado na emissão e DESCARTADO aqui: `ResultFromVerdict` só
+	// projectava outcome+métricas. Consequência: um verificador legítimo podia emitir
+	// `pass` sobre o nó X enquanto o ramo que consome esse veredicto libertava o
+	// trabalho do nó Y, e nada no caminho quente verificava a correspondência — a
+	// atribuição era decorativa em runtime. O despachante exige agora que os sujeitos
+	// COBRAM os produtores que a aresta condicional guarda ([evalConditional]).
+	Subjects []string
 	// Metrics são as métricas DECLARADAS do resultado, por nome. Uma métrica ausente
-	// torna o predicado FALSO (fail-closed na direcção de não despachar).
+	// deixa o predicado INDECIDO (o nó espera) — nunca falso por omissão: ver
+	// [evalPredicate].
 	Metrics map[string]int64
 }
 

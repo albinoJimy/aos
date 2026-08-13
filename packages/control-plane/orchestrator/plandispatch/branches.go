@@ -102,7 +102,7 @@ func (d *Dispatcher) decideBranches(ctx context.Context, p Plan, nodes []Node, s
 		}
 
 		// (2) AVALIAÇÃO — função pura do resultado registado (condition.go).
-		ev := evalConditional(n.ConditionalOn, cache.lookup)
+		ev := evalConditional(n, cache.lookup)
 		if cache.err != nil {
 			return nil, 0, fmt.Errorf("plandispatch: resultado registado de uma origem do nó %q: %w", n.NodeID, cache.err)
 		}

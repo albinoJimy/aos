@@ -37,10 +37,25 @@ func Validate(doc plan.PlanDocument, snap Snapshot, ceil Ceilings) Verdict {
 	if v := checkSemantics(doc, snap); v.Rejected() {
 		return v
 	}
-	if v := checkVerdictSupport(doc); v.Rejected() {
+	dag, v := buildAdmissionDAG(doc)
+	if v.Rejected() {
 		return v
 	}
-	if v := checkAcyclic(doc); v.Rejected() {
+	// SEMÂNTICA DE SISTEMA DO VERIFICADOR (verifier.go, ADR-022 §2.2). Depois da
+	// aciclicidade porque a regra «produtor ≠ verificador» PERGUNTA AO GRAFO quem
+	// descende de quem — e um grafo cíclico não tem descendência bem-definida (o
+	// plano cíclico tem de morrer pela sua razão real, não por uma sub-árvore).
+	if v := checkVerdictSource(doc, dag); v.Rejected() {
+		return v
+	}
+	// SEMÂNTICA DE PAPEL do verificador (verifier.go, regras V4/V5): o verificador é
+	// sumidouro do canal `depends_on` e só declara outputs de forma fechada. Correm
+	// DEPOIS de [checkVerdictSource] de propósito — não por dependência, mas por
+	// ATRIBUIÇÃO: um plano que viole as duas coisas ao mesmo tempo (o caso (b) do
+	// vector 7, em que o verificador certifica a sua própria sub-árvore) tem de morrer
+	// pelo sub-código mais específico, `verifier_self_subtree`, que é o que nomeia a
+	// auto-certificação. Puras, sem grafo e sem snapshot.
+	if v := checkVerifierRole(doc); v.Rejected() {
 		return v
 	}
 	// ALCANÇABILIDADE dos ramos (condition.go). Depois da aciclicidade — precisa da
@@ -50,6 +65,20 @@ func Validate(doc plan.PlanDocument, snap Snapshot, ceil Ceilings) Verdict {
 		return v
 	}
 	if v := checkTools(doc, snap); v.Rejected() {
+		return v
+	}
+	// READ-ONLY POR CONSTRUÇÃO (verifier.go). Depois de [checkTools] de propósito: só
+	// faz sentido perguntar «esta tool tem efeito?» depois de ela RESOLVER contra o
+	// snapshot pinado — senão o veredicto acusaria o papel por uma referência que era,
+	// afinal, apenas lixo.
+	if v := checkVerifierAuthority(doc, snap); v.Rejected() {
+		return v
+	}
+	// CONTRATOS TIPADOS DE PAYLOAD (payload.go, ADR-022 §2.3). Também depois de
+	// [checkTools], e pela mesma razão: a AUTORIDADE do consumidor (que decide a
+	// compatibilidade de taint) deriva-se das tools PINADAS — perguntá-la a uma
+	// referência que não resolve seria acusar o contrato por um defeito que é da tool.
+	if v := checkPayloadContracts(doc, snap); v.Rejected() {
 		return v
 	}
 	return checkCeilings(doc, ceil)
@@ -127,33 +156,17 @@ func checkSemantics(doc plan.PlanDocument, snap Snapshot) Verdict {
 	return accepted
 }
 
-// maxNodeIDLen é o tecto de comprimento (bytes) de um node_id. Um valor generoso:
-// cobre identificadores realistas mas rejeita blobs de texto livre que um planeador
-// comprometido pudesse embeber num id para vazar via feedback.
-const maxNodeIDLen = 128
+// validNodeID confere que id é um IDENTIFICADOR ESTRUTURAL limitado — a invariante
+// que mantém o node_id (o único campo do documento propagado para o feedback
+// allowlisted) livre de texto arbitrário do documento untrusted.
+//
+// A grammar VIVE EM [plan.ValidNodeID], no pacote que DEFINE o campo, desde que os
+// payloads de veredicto de `aos.planner.v1` (AOS-271) passaram a propagar node_ids
+// também: uma segunda cópia aqui divergiria da do log, e a divergência entre «o que
+// o validador aceita» e «o que o evento admite» é ela própria uma superfície.
+func validNodeID(id string) bool { return plan.ValidNodeID(id) }
 
-// validNodeID confere que id é um IDENTIFICADOR ESTRUTURAL limitado: 1..maxNodeIDLen
-// bytes de um charset ASCII FECHADO (letras, dígitos e os separadores `_ - . :`).
-// É a invariante que mantém o node_id — o único campo do documento propagado para o
-// feedback allowlisted — livre de texto arbitrário (espaços, novas linhas, pontuação
-// de prosa) do documento untrusted. Puro, sem alocação.
-func validNodeID(id string) bool {
-	if len(id) == 0 || len(id) > maxNodeIDLen {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		c := id[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-		case c == '_' || c == '-' || c == '.' || c == ':':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// checkAcyclic — REGRA 2: aciclicidade. REUTILIZA o DAG de AOS-025 (o primitivo do
+// buildAdmissionDAG — REGRA 2: aciclicidade. REUTILIZA o DAG de AOS-025 (o primitivo do
 // pacote raiz `orchestrator`) — a aciclicidade é imposta INCREMENTALMENTE na
 // admissão de cada aresta, exactamente o mecanismo fail-closed de AOS-025. Não se
 // reimplementa nenhuma detecção de ciclos aqui.
@@ -176,13 +189,21 @@ func validNodeID(id string) bool {
 // dependências é reportado como [ReasonCycle], e só um ciclo que EXIJA a aresta
 // condicional para se fechar produz [ReasonConditionalCycle] — o feedback nomeia o
 // canal culpado, e o teste adversarial pode prová-lo em vez de o presumir.
-func checkAcyclic(doc plan.PlanDocument) Verdict {
+//
+// DEVOLVE O GRAFO CONSTRUÍDO, e não só o veredicto: o mesmo DAG de admissão é o
+// primitivo que a regra «produtor ≠ verificador» (ADR-022 §2.2, verifier.go)
+// interroga por alcançabilidade. Construí-lo UMA vez e passá-lo adiante é o que
+// garante que a descendência que a regra do verificador vê é EXACTAMENTE a mesma
+// topologia sobre a qual a aciclicidade foi imposta — não uma segunda travessia
+// escrita à parte, que podia divergir. Em rejeição o grafo devolvido está incompleto
+// e não deve ser usado (o chamador aborta).
+func buildAdmissionDAG(doc plan.PlanDocument) (*orchestrator.DAG, Verdict) {
 	dag := orchestrator.NewDAG("planvalidate")
 	for _, n := range doc.Nodes {
 		if err := dag.AddNode(orchestrator.NodeSpec{TaskID: n.NodeID}); err != nil {
 			// Defesa-em-profundidade: node_id vazio/duplicado já é recusado por
 			// [plan.Decode]; se ainda assim falhar, fail-closed em vez de continuar.
-			return reject(plannerevents.RuleSchema, ReasonMalformedNode, Locator{NodeID: n.NodeID})
+			return dag, reject(plannerevents.RuleSchema, ReasonMalformedNode, Locator{NodeID: n.NodeID})
 		}
 	}
 	for _, n := range doc.Nodes {
@@ -190,18 +211,18 @@ func checkAcyclic(doc plan.PlanDocument) Verdict {
 			if err := dag.AddEdge(dep, n.NodeID); err != nil {
 				// A única razão possível aqui é fecho de ciclo (auto-laço incluído):
 				// os nós existem (regra 1 garantiu a integridade referencial).
-				return reject(plannerevents.RuleAcyclicity, ReasonCycle, Locator{NodeID: n.NodeID})
+				return dag, reject(plannerevents.RuleAcyclicity, ReasonCycle, Locator{NodeID: n.NodeID})
 			}
 		}
 	}
 	for _, n := range doc.Nodes {
 		for _, ce := range n.ConditionalOn {
 			if err := dag.AddEdge(ce.From, n.NodeID); err != nil {
-				return reject(plannerevents.RuleAcyclicity, ReasonConditionalCycle, Locator{NodeID: n.NodeID})
+				return dag, reject(plannerevents.RuleAcyclicity, ReasonConditionalCycle, Locator{NodeID: n.NodeID})
 			}
 		}
 	}
-	return accepted
+	return dag, accepted
 }
 
 // checkTools — REGRA 3: resolução de cada [plan.ToolRef] contra o SNAPSHOT pinado.
@@ -263,19 +284,14 @@ func checkCeilings(doc plan.PlanDocument, ceil Ceilings) Verdict {
 // exaustivo escapava ao MaxFanout/MaxDepth apenas por declarar as suas arestas no
 // outro canal — o mesmo grafo, o mesmo custo, tecto nenhum. Contam. A regra 1
 // garantiu que os dois canais são DISJUNTOS por nó ([ReasonConditionalShadowsDependency]),
-// pelo que a união nunca conta a mesma aresta duas vezes. Puro, sem alocação quando
-// não há condicionais (o caso de todos os planos pré-ADR-022).
-func incomingEdges(n plan.Node) []string {
-	if len(n.ConditionalOn) == 0 {
-		return n.DependsOn
-	}
-	out := make([]string, 0, len(n.DependsOn)+len(n.ConditionalOn))
-	out = append(out, n.DependsOn...)
-	for _, ce := range n.ConditionalOn {
-		out = append(out, ce.From)
-	}
-	return out
-}
+// pelo que a união nunca conta a mesma aresta duas vezes.
+//
+// DELEGA a [plan.Node.IncomingEdges] — a definição vive no pacote que DECLARA os dois
+// canais, desde que o emissor do veredicto (`plannerevents`) passou a precisar da
+// MESMA noção para amarrar os `subjects[]` do facto às arestas de entrada do
+// verificador. Duas cópias divergiriam, e a divergência entre «o que o validador
+// conta como aresta» e «o que o log admite como sujeito» seria uma superfície.
+func incomingEdges(n plan.Node) []string { return n.IncomingEdges() }
 
 // maxFanout devolve o nó com maior out-degree (quantos nós dependem dele
 // DIRECTAMENTE, por qualquer dos dois canais de aresta) e esse grau. Desempate

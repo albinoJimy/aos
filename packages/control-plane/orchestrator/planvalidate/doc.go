@@ -30,6 +30,32 @@
 // fanout/profundidade, para que o outro canal de aresta não seja uma porta de saída
 // dos tectos estruturais.
 //
+// PAPEL VERIFICADOR (ADR-022 §2.2, AOS-271; verifier.go). O literal
+// [plan.RoleVerifier] é o ÚNICO papel reservado do schema, e declarar-o faz o
+// validador impor três coisas: (V1) só um verificador emite o `verdict` que um ramo
+// de qualidade consome — é isto que fecha a auto-certificação que AOS-270 deixou
+// aberta; (V2) «produtor ≠ verificador», lido como «o verificador não certifica
+// trabalho da sua PRÓPRIA sub-árvore de delegação» e decidido por ALCANÇABILIDADE no
+// MESMO DAG de admissão de AOS-025 (nunca uma travessia própria); (V3) «read-only por
+// construção» — um verificador não pina tools de EFEITO, com o critério DERIVADO dos
+// eixos de risco pinados que a regra 6 já consome ([IsEffectTool]), não de uma lista
+// de nomes. O clamp da NHI na materialização (AOS-237) é a segunda linha e consome o
+// MESMO critério via [Snapshot.EffectOracle]; o RiskGate do RM (AOS-074) é a terceira.
+//
+// PAYLOAD TIPADO POR ARESTA (ADR-022 §2.3, AOS-272; payload.go). O `consumes` de um
+// nó atravessa as regras existentes com quatro sub-códigos próprios: a origem tem de
+// ser uma ARESTA DE ENTRADA já declarada (o que faz do grafo de dados um SUB-GRAFO do
+// DAG de admissão — acíclico por construção, sem travessia nova); a origem tem de
+// DECLARAR o output pedido; os tipos têm de ser IGUAIS (compatibilidade é identidade,
+// sem subtipagem que o validador tivesse de raciocinar); e um payload de taint
+// EFECTIVO `untrusted` não alimenta um consumidor com AUTORIDADE PRIVILEGIADA
+// (ADR-005). O taint efectivo DERIVA do PRODUTOR ([plan.Node.EffectiveOutputTaint]:
+// forma fechada E papel verificador; o advisory do documento só eleva) e a autoridade
+// do consumidor DERIVA dos eixos pinados das suas tools, pelo MESMO critério
+// [IsEffectTool] de §2.2 — uma definição, duas perguntas, zero taxonomias novas. O transporte por REFERÊNCIA (o oposto do blackboard) não vive
+// aqui: é o facto `plan.payload_published` no emissor e o `PayloadResolver` no
+// consumidor.
+//
 // Regras 5–6 (AOS-232) — RISCO DERIVADO e ORÇAMENTO RE-PREÇADO — vivem no MESMO
 // pacote (risk.go, budget.go, resources.go) mas num ponto de entrada PRÓPRIO,
 // [ValidateResources] (e o composto [ValidatePlan]), porque exigem inputs que as

@@ -33,9 +33,10 @@ import (
 // failBranch é o predicado do «ramo de reprovação»: a forma inocente com que o
 // loop-back se apresenta («se o revisor reprovar, volta ao autor»).
 func failBranch() []plan.Predicate {
-	// `terminal_state` e não `verdict`: o observável `verdict` está recusado na
-	// admissão até AOS-271 impor produtor != verificador (planvalidate.verdictSupported),
-	// e estes vectores provam o CICLO/os tectos, não essa recusa.
+	// `terminal_state` e não `verdict`: o observável `verdict` arrasta a semântica de
+	// sistema do papel verificador (AOS-271) e estes vectores provam o CICLO/os
+	// tectos, não a atribuição do veredicto — que tem ficheiro próprio
+	// (verifier_test.go).
 	return []plan.Predicate{{Subject: plan.SubjectTerminalState, Op: plan.OpEq, Enum: plan.EnumFailed}}
 }
 

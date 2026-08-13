@@ -2,6 +2,7 @@ package planvalidate
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aos-ref/control-plane/orchestrator/plan"
@@ -372,7 +373,10 @@ func TestNodeIDGrammarLimites(t *testing.T) {
 			t.Fatalf("id estrutural válido foi rejeitado: %q", id)
 		}
 	}
-	invalid := []string{"", "has space", "line\nbreak", "quote\"", "unicodé", "a/b", string(make([]byte, maxNodeIDLen+1))}
+	// O último caso é o TECTO DE COMPRIMENTO (128 bytes em [plan.ValidNodeID], onde a
+	// grammar passou a viver desde AOS-271): 129 bytes de charset VÁLIDO, para que a
+	// rejeição prove o comprimento e não o alfabeto.
+	invalid := []string{"", "has space", "line\nbreak", "quote\"", "unicodé", "a/b", strings.Repeat("a", 129)}
 	for _, id := range invalid {
 		if validNodeID(id) {
 			t.Fatalf("id inválido/texto-livre foi aceite: %q", id)

@@ -179,8 +179,10 @@ const (
 	maxConditionalEdgesPerNode = 8
 	// maxPredicatesPerEdge limita os predicados de uma conjunção.
 	maxPredicatesPerEdge = 8
-	// maxMetricNameLen limita o nome de uma métrica observada.
-	maxMetricNameLen = 64
+	// maxIdentifierLen limita um IDENTIFICADOR do subconjunto fechado — o nome de uma
+	// métrica observada e, pela mesma grammar, o código de razão de um veredicto
+	// tipado (ADR-022 §2.2, AOS-271). Ver [ValidIdentifier].
+	maxIdentifierLen = 64
 )
 
 // Erros de forma das arestas condicionais. Fail-closed: recusam o documento
@@ -289,13 +291,25 @@ func (e ConditionEnum) validFor(s ConditionSubject) bool {
 	}
 }
 
-// validMetricName confere que o nome da métrica é um IDENTIFICADOR ESTRUTURAL
-// limitado: 1..[maxMetricNameLen] bytes, a começar por letra minúscula, de um
-// charset ASCII FECHADO (minúsculas, dígitos, `_` e `.`). É o mesmo raciocínio do
-// `node_id` em AOS-231: o nome viaja para a forma canónica (e daí para o digest e
-// para o approval-card), pelo que não pode veicular texto livre do modelo. Puro.
-func validMetricName(s string) bool {
-	if len(s) == 0 || len(s) > maxMetricNameLen {
+// validMetricName confere que o NOME DA MÉTRICA observada é um identificador do
+// subconjunto fechado. É [ValidIdentifier] — a mesma grammar, não uma cópia.
+func validMetricName(s string) bool { return ValidIdentifier(s) }
+
+// ValidIdentifier confere que s é um IDENTIFICADOR ESTRUTURAL limitado:
+// 1..[maxIdentifierLen] bytes, a começar por letra minúscula, de um charset ASCII
+// FECHADO (minúsculas, dígitos, `_` e `.`). É o mesmo raciocínio do `node_id`
+// ([ValidNodeID]): o símbolo viaja para a forma canónica (e daí para o digest, para
+// o approval-card e para o payload de evento), pelo que não pode veicular texto
+// livre do modelo.
+//
+// UMA grammar, DOIS usos declarados: o nome de uma métrica observada por um
+// predicado ([SubjectMetric]) e o CÓDIGO DE RAZÃO de um veredicto tipado (ADR-022
+// §2.2, AOS-271). A partilha é deliberada e é o ponto: uma razão de veredicto é um
+// CÓDIGO, não uma frase — se pudesse ser prosa, o veredicto seria o canal por onde
+// o conteúdo untrusted do trabalho verificado entrava no Event Store. Puro, sem
+// alocação.
+func ValidIdentifier(s string) bool {
+	if len(s) == 0 || len(s) > maxIdentifierLen {
 		return false
 	}
 	if s[0] < 'a' || s[0] > 'z' {

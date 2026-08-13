@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/aos-ref/control-plane/orchestrator/plan"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -28,6 +29,8 @@ const (
 	stepDecision         = "planstep:decision"
 	stepMaterialized     = "planstep:materialized"
 	stepBranchDecided    = "planstep:branch_decided"
+	stepVerdictRecorded  = "planstep:verdict_recorded"
+	stepPayloadPublished = "planstep:payload_published"
 	stepCapabilityGap    = "planstep:capability_gap"
 	stepReplan           = "planstep:replan"
 )
@@ -208,6 +211,64 @@ func (r *Recorder) RecordBranchDecided(ctx context.Context, p BranchDecidedPaylo
 	}
 	stepID := stepBranchDecided + ":" + p.NodeID
 	return r.emit(ctx, p.PlanID, EventBranchDecided, stepID, p)
+}
+
+// RecordVerdict apensa `plan.verdict_recorded` (ADR-022 §2.2, AOS-271): o VEREDICTO
+// ESTRUTURADO de um nó verificador sobre o trabalho que examinou.
+//
+// Passa SEMPRE por [NewVerdictRecorded] — a validação não é opcional nem do
+// chamador. É essa passagem obrigatória que faz do «pass/fail + razões + métricas» um
+// contrato imposto (enums fechados, códigos e não frases, sujeitos que não incluem o
+// emissor) em vez de uma convenção que a primeira integração apressada quebra.
+//
+// O step id é `planstep:verdict_recorded:<node_id>` — UM por verificador, sem
+// discriminador de tentativa. A idempotency_key `plan_id:step_id` do Event Store
+// torna o veredicto de um nó um facto ÚNICO e IMUTÁVEL: um verificador não emite dois
+// veredictos, e não há caminho por onde um segundo pass silencioso substitua um fail.
+// É a mesma disciplina de [Recorder.RecordBranchDecided], e é o que dá ao ramo de
+// qualidade a montante um observável estável entre passagens (ADR-010).
+//
+// EXIGE o NÓ do documento APROVADO (não só o payload) porque a validação de
+// [NewVerdictRecorded] passou a AMARRAR os `subjects[]` às arestas de entrada do
+// verificador: sem o nó, um veredicto podia atribuir-se a trabalho que o emissor nunca
+// observou e o log ficava com um facto que PARECE atribuído. Quem emite tem o
+// documento — é dele que sabe que o nó é um verificador.
+func (r *Recorder) RecordVerdict(ctx context.Context, p VerdictRecordedPayload, verifier plan.Node) (uint64, error) {
+	payload, err := NewVerdictRecorded(p, verifier)
+	if err != nil {
+		return 0, err
+	}
+	stepID := stepVerdictRecorded + ":" + payload.NodeID
+	return r.emit(ctx, payload.PlanID, EventVerdictRecorded, stepID, payload)
+}
+
+// RecordPayloadPublished apensa `plan.payload_published` (ADR-022 §2.3, AOS-272): A
+// REFERÊNCIA a um contrato de saída que um nó cumpriu — locator + digest + taint
+// efectivo + proveniência, nunca o conteúdo.
+//
+// Passa SEMPRE por [NewPayloadPublished] — a validação não é opcional nem do chamador.
+// É essa passagem obrigatória que faz do contrato tipado uma propriedade imposta em
+// vez de uma convenção que a primeira integração apressada quebra.
+//
+// O step id é `planstep:payload_published:<node_id>:<output>` — UM por CONTRATO, sem
+// discriminador de tentativa. A idempotency_key `plan_id:step_id` do Event Store torna
+// a publicação de um contrato um facto ÚNICO e IMUTÁVEL: um nó não publica duas
+// versões do mesmo output, e não há caminho por onde uma segunda referência substitua
+// em silêncio a que o consumidor já leu. É a mesma disciplina de
+// [Recorder.RecordVerdict] e [Recorder.RecordBranchDecided] — e é ela que separa isto
+// de um blackboard, onde o valor de uma chave muda debaixo de quem a lê.
+//
+// EXIGE o NÓ do documento APROVADO pela mesma razão de [Recorder.RecordVerdict]:
+// `type`, `taint` e `contract_digest` são DERIVADOS do contrato declarado, nunca
+// aceites do chamador — é isso que impede a publicação de desclassificar (um `summary`
+// marcado trusted) ou de se amarrar a um contrato que não existe.
+func (r *Recorder) RecordPayloadPublished(ctx context.Context, p PayloadPublishedPayload, producer plan.Node) (uint64, error) {
+	payload, err := NewPayloadPublished(p, producer)
+	if err != nil {
+		return 0, err
+	}
+	stepID := stepPayloadPublished + ":" + payload.NodeID + ":" + payload.Output
+	return r.emit(ctx, payload.PlanID, EventPayloadPublished, stepID, payload)
 }
 
 // RecordCapabilityGap apensa `plan.capability_gap_opened`/`resolved`. Fail-closed:

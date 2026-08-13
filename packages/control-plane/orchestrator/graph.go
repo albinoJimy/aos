@@ -167,6 +167,27 @@ func (d *DAG) reachable(src, dst string) bool {
 	return false
 }
 
+// Reachable indica se existe um caminho dirigido src→…→dst no grafo, contando
+// src==dst como alcançável (fecho REFLEXIVO-transitivo). Devolve falso se algum dos
+// task_ids não existir — a ausência não é um caminho.
+//
+// É a MESMA travessia que [DAG.AddEdge] usa para impor a aciclicidade incremental
+// ([DAG.reachable]): EXPOSTA, não duplicada. Existe porque a «sub-árvore de
+// delegação» de ADR-022 §2.2 (AOS-271) é exactamente uma pergunta de alcançabilidade
+// sobre este grafo, e a alternativa — o validador escrever a sua própria travessia —
+// criaria uma segunda noção de descendência que podia divergir desta em silêncio.
+// Não muta o grafo; a leitura é segura enquanto ninguém admitir arestas em paralelo
+// (o DAG não é seguro para uso concorrente, como o resto do tipo).
+func (d *DAG) Reachable(src, dst string) bool {
+	if _, ok := d.nodes[src]; !ok {
+		return false
+	}
+	if _, ok := d.nodes[dst]; !ok {
+		return false
+	}
+	return d.reachable(src, dst)
+}
+
 // TopoOrder devolve uma ordenação topológica ESTÁVEL e REPRODUZÍVEL do DAG
 // (Kahn com desempate por task_id lexicográfico — NUNCA a ordem de um mapa Go).
 // Para os mesmos nós/arestas o plano é IDÊNTICO, independentemente da ordem de

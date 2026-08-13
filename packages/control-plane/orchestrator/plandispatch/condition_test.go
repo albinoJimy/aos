@@ -466,10 +466,15 @@ func TestMetricAndTerminalObservables(t *testing.T) {
 			want: plandispatch.OutcomeBranchNotTaken,
 		},
 		{
-			name: "metrica AUSENTE poda (fail-closed: nao se ramifica sobre nada)",
+			// AUSENCIA = INDECISAO, NAO FALSIDADE (correccao da auditoria da wave). Um
+			// predicado falso NAO e uma espera: e branch_not_taken, que e TERMINAL, poda
+			// a descendencia e fica REGISTADO como facto imutavel. Sobre um observavel
+			// que ninguem produz, isso e podar o plano por causa de uma lacuna de
+			// wiring — e registar a poda como se alguem a tivesse decidido.
+			name: "metrica AUSENTE deixa o no a ESPERAR (nunca poda)",
 			rec:  plandispatch.NodeResultRecord{Terminal: plandispatch.TerminalComplete},
 			pred: []plan.Predicate{{Subject: plan.SubjectMetric, Metric: "coverage", Op: plan.OpLt, Number: &eighty}},
-			want: plandispatch.OutcomeBranchNotTaken,
+			want: plandispatch.OutcomeWaitingCondition,
 		},
 		{
 			name: "estado terminal FAILED abre o ramo de recuperacao",
@@ -478,10 +483,13 @@ func TestMetricAndTerminalObservables(t *testing.T) {
 			want: plandispatch.OutcomeDispatched,
 		},
 		{
-			name: "veredicto AUSENTE poda mesmo com o operador ne",
+			// Nem sequer com `ne`: um observavel que nao existe nao se compara. A
+			// alternativa (ausencia ⇒ diferente de tudo) deixaria um plano ramificar com
+			// base em nada; a que existia (ausencia ⇒ falso) podava-o em silencio.
+			name: "veredicto AUSENTE deixa o no a ESPERAR, mesmo com o operador ne",
 			rec:  plandispatch.NodeResultRecord{Terminal: plandispatch.TerminalComplete},
 			pred: []plan.Predicate{{Subject: plan.SubjectVerdict, Op: plan.OpNe, Enum: plan.EnumFail}},
-			want: plandispatch.OutcomeBranchNotTaken,
+			want: plandispatch.OutcomeWaitingCondition,
 		},
 		{
 			name: "conjuncao: basta um predicado falso",
@@ -624,13 +632,78 @@ func TestLifecycleResultsProjectsTerminalState(t *testing.T) {
 		if ok != tc.ok || rec.Terminal != tc.want {
 			t.Fatalf("Result(%q) = (%q,%v); queria (%q,%v)", tc.node, rec.Terminal, ok, tc.want, tc.ok)
 		}
-		// O que este adaptador NÃO projecta (declarado): veredicto e métricas são
-		// AOS-271 — e a ADMISSÃO recusa planos que ramifiquem sobre `verdict`.
+		// O que este adaptador NAO projecta (declarado): veredicto e metricas vem do
+		// facto `plan.verdict_recorded` (AOS-271), projectado por ResultFromVerdict. A
+		// admissao JA NAO recusa em bloco os ramos sobre `verdict`, pelo que o
+		// fail-closed LOUD vive agora no despacho: ausencia ⇒ INDECIDO, nunca falso.
 		if rec.Verdict != plandispatch.VerdictAbsent || rec.Metrics != nil {
 			t.Fatalf("Result(%q) inventou observáveis que o nó não produz: %+v", tc.node, rec)
 		}
 	}
 	if _, err := plandispatch.NewLifecycleResults(nil); !errors.Is(err, plandispatch.ErrLifecycleResultsDeps) {
 		t.Fatalf("construção com vista nil: err = %v; queria ErrLifecycleResultsDeps", err)
+	}
+}
+
+// TestQualityBranchWithoutEmitterRecordsNoDecision — O TESTE QUE FALTAVA, do lado do
+// DESPACHO (blocker da auditoria adversarial da wave).
+//
+// O CENARIO EXACTO que a auditoria demonstrou ao vivo: um plano APROVADO com um ramo de
+// qualidade (`ok` condicionado ao `verdict` de `v`) despachado com o adaptador de
+// PRODUCAO `NewLifecycleResults` — o unico que existe —, que devolve ok=true com
+// Verdict="" para um no COMPLETE. Antes, `evalPredicate` tratava a ausencia como FALSO,
+// `OutcomeBranchNotTaken` e TERMINAL, e a decisao ficava APENSA: o ramo de qualidade de
+// um plano aprovado morria em silencio e o log guardava a poda como facto.
+//
+// O que este teste fixa: enquanto nao houver emissor de veredicto ligado, o no ESPERA
+// (`waiting_condition`), NENHUM facto `plan.branch_decided` e apenso, e nada e
+// despachado. Falha ruidosamente — que e a direccao honesta — em vez de mutilar o plano.
+func TestQualityBranchWithoutEmitterRecordsNoDecision(t *testing.T) {
+	ctx := context.Background()
+	p := branchPlan()
+	r := newRig(t, p.PlanID, budget.Amount{Tokens: 1000, CostMicroUSD: 1000}, []string{"a", "v", "ok", "fix", "after"})
+	states := stateMap{
+		"a": plandispatch.NodeComplete, "v": plandispatch.NodeComplete,
+		"ok": plandispatch.NodePending, "fix": plandispatch.NodePending, "after": plandispatch.NodePending,
+	}
+	r.states = states
+
+	// A porta de resultados e o ADAPTADOR DE PRODUCAO, nao o double: projecta
+	// terminal_state a partir do ciclo de vida e NUNCA veredicto.
+	prod, err := plandispatch.NewLifecycleResults(states)
+	if err != nil {
+		t.Fatalf("NewLifecycleResults: %v", err)
+	}
+	d, err := plandispatch.NewDispatcher(okGate{}, r.states, freeHeadroom{}, openCards{}, r.sink,
+		plandispatch.WithConditionalBranches(prod, r.journal, r.meter))
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	before, _ := r.bud.Available(p.PlanID)
+
+	res, err := d.Dispatch(ctx, p)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	got := outcomes(res)
+	for _, id := range []string{"ok", "fix"} {
+		if got[id] != plandispatch.OutcomeWaitingCondition {
+			t.Fatalf("outcome[%s] = %q; queria waiting_condition — um ramo de qualidade SEM EMISSOR nao pode ser decidido", id, got[id])
+		}
+	}
+	if res.NotTaken != 0 {
+		t.Fatalf("PODA SILENCIOSA: %d nos podados por um veredicto que ninguem emitiu", res.NotTaken)
+	}
+	if res.BranchesEvaluated != 0 {
+		t.Fatalf("BranchesEvaluated = %d; nenhuma decisao pode ser tomada sem observavel", res.BranchesEvaluated)
+	}
+	if n := len(branchEvents(t, r.store, p.PlanID)); n != 0 {
+		t.Fatalf("%d decisoes de ramo REGISTADAS sobre um veredicto inexistente — o facto e imutavel", n)
+	}
+	if len(r.sink.nodes) != 0 {
+		t.Fatalf("despachou %v com o ramo por decidir", r.sink.nodes)
+	}
+	if after, _ := r.bud.Available(p.PlanID); after != before {
+		t.Fatal("esperar por um veredicto inexistente DEBITOU orcamento")
 	}
 }
