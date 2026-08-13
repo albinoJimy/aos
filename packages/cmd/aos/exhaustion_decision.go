@@ -378,8 +378,8 @@ func (h *apiHandler) handleExhaustionDecision(w http.ResponseWriter, r *http.Req
 		h.svc.log("decisao de exaustao (AOS-263): o run %q FOI abortado e selado (audit_seq=%d) mas o pendente nao saiu da lista por decisao (sai depois pelo TTL): %v", runID, seq, err)
 	}
 
-	h.svc.log("ABORT POR EXAUSTAO (AOS-263) — run %q TERMINADO em killed por decisao de %q: %d de %d tokens do tecto consumidos (limiar %.2f, turno %d). Decisao selada no WORM (particao %q, audit_seq=%d). NAO e retomavel: killed e terminal absorvente",
-		runID, principal, prompt.ConsumedTokens, prompt.LimitTokens, prompt.Threshold, prompt.Turn, exhaustionDecisionPartition, seq)
+	h.svc.log("ABORT POR EXAUSTAO (AOS-263) — run %q TERMINADO em killed por decisao de %q: %s do tecto consumidos (limiar %.2f, turno %d). Decisao selada no WORM (particao %q, audit_seq=%d). NAO e retomavel: killed e terminal absorvente",
+		runID, principal, exhaustionAmounts(prompt), prompt.Threshold, prompt.Turn, exhaustionDecisionPartition, seq)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_id":   runID,
@@ -413,8 +413,8 @@ func (h *apiHandler) finishExhaustionContinue(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "decisao selada mas nao registada na lista de trabalho — a retoma continua barrada")
 		return
 	}
-	h.svc.log("CONTINUAR APOS EXAUSTAO (AOS-263) — run %q AUTORIZADO a prosseguir por decisao de %q: %d de %d tokens do tecto consumidos (limiar %.2f, turno %d). Decisao selada no WORM (particao %q, audit_seq=%d). O run continua SUSPENSO e agora RETOMAVEL: a re-hospedagem e %s com credencial fresca",
-		runID, principal, prompt.ConsumedTokens, prompt.LimitTokens, prompt.Threshold, prompt.Turn,
+	h.svc.log("CONTINUAR APOS EXAUSTAO (AOS-263) — run %q AUTORIZADO a prosseguir por decisao de %q: %s do tecto consumidos (limiar %.2f, turno %d). Decisao selada no WORM (particao %q, audit_seq=%d). O run continua SUSPENSO e agora RETOMAVEL: a re-hospedagem e %s com credencial fresca",
+		runID, principal, exhaustionAmounts(prompt), prompt.Threshold, prompt.Turn,
 		exhaustionDecisionPartition, seq, exhaustionResumeRoute)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -493,13 +493,13 @@ func (h *apiHandler) sealExhaustionDecision(ctx context.Context, runID, principa
 		Resource:   audit.Resource{Type: exhaustionRunResourceType, Value: runID},
 		Obligations: []audit.Obligation{{
 			Type: exhaustionDecisionObl,
-			Params: map[string]string{
-				"decision":        decision,
-				"threshold":       strconv.FormatFloat(prompt.Threshold, 'f', -1, 64),
-				"consumed_tokens": strconv.FormatInt(prompt.ConsumedTokens, 10),
-				"limit_tokens":    strconv.FormatInt(prompt.LimitTokens, 10),
-				"turn":            strconv.Itoa(prompt.Turn),
-			},
+			// O selo grava a AMARRA COMPLETA da pergunta: as duas dimensões e a RAZÃO. Sem a
+			// dimensão $ e sem a razão, um selo de `continue` sobre um run bloqueado pelo tecto
+			// em dólares registaria para sempre números de tokens que não explicam a decisão —
+			// e o WORM é precisamente onde essa explicação tem de ficar. Os pares de $ só
+			// aparecem quando há tecto em $ (`omitempty` do registo ⇒ zero aqui), pela mesma
+			// razão de não escrever um denominador que ninguém configurou.
+			Params: exhaustionSealParams(decision, prompt),
 		}},
 	}
 	sealed, err := h.node.WORM.Append(ctx, rec)
@@ -507,6 +507,41 @@ func (h *apiHandler) sealExhaustionDecision(ctx context.Context, runID, principa
 		return 0, err
 	}
 	return sealed.AuditSeq, nil
+}
+
+// exhaustionSealParams monta os parâmetros da obrigação do selo de decisão — a AMARRA da
+// pergunta, tal como ela foi registada.
+//
+// Os pares de $ e a razão só entram quando EXISTEM: um `limit_cost_micro_usd` a zero num nó sem
+// tecto em dólares seria um denominador que ninguém configurou a fingir-se de facto, e é essa
+// classe de zero-que-parece-medição que o canal de custo de AOS-259 declara não escrever.
+func exhaustionSealParams(decision string, prompt integration.PendingRecord) map[string]string {
+	params := map[string]string{
+		"decision":        decision,
+		"threshold":       strconv.FormatFloat(prompt.Threshold, 'f', -1, 64),
+		"consumed_tokens": strconv.FormatInt(prompt.ConsumedTokens, 10),
+		"limit_tokens":    strconv.FormatInt(prompt.LimitTokens, 10),
+		"turn":            strconv.Itoa(prompt.Turn),
+	}
+	if prompt.LimitCostMicroUSD > 0 {
+		params["consumed_cost_micro_usd"] = strconv.FormatInt(prompt.ConsumedCostMicroUSD, 10)
+		params["limit_cost_micro_usd"] = strconv.FormatInt(prompt.LimitCostMicroUSD, 10)
+	}
+	if prompt.Reason != "" {
+		params["reason_detail"] = prompt.Reason
+	}
+	return params
+}
+
+// exhaustionAmounts descreve, numa linha de log, o consumido/tecto nas dimensões que TÊM tecto.
+// Molde (e razão) de [burndownDimensoes]: quando é a dimensão $ que decide, uma linha só com
+// tokens contradiz a decisão que está a relatar.
+func exhaustionAmounts(prompt integration.PendingRecord) string {
+	linha := fmt.Sprintf("%d de %d tokens", prompt.ConsumedTokens, prompt.LimitTokens)
+	if prompt.LimitCostMicroUSD > 0 {
+		linha += fmt.Sprintf(" e %d de %d micro-USD", prompt.ConsumedCostMicroUSD, prompt.LimitCostMicroUSD)
+	}
+	return linha
 }
 
 // sealExhaustionAbortFailure escreve o registo COMPENSATÓRIO de um abort que foi selado e NÃO

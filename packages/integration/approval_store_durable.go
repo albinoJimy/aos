@@ -400,6 +400,23 @@ type PendingRecord struct {
 	Threshold      float64 `json:"threshold,omitempty"`
 	ConsumedTokens int64   `json:"consumed_tokens,omitempty"`
 	LimitTokens    int64   `json:"limit_tokens,omitempty"`
+	// ConsumedCostMicroUSD/LimitCostMicroUSD são a MESMA amarra na dimensão $ (micro-USD
+	// INTEIRO), e existem porque sem elas a pergunta humana durável podia CONTRADIZER a razão
+	// da paragem: com `AOS_BUDGET_MAX_COST_MICRO_USD` configurada é a dimensão de dólares que
+	// nega, e um registo que só sabe falar de tokens apresentava ao operador «5000 de 1000000
+	// tokens consumidos» ao lado de uma fracção de 1.00 — auto-contraditório e sem uma única
+	// menção à grandeza que bloqueou o run. Ausentes (zero) quando não há tecto em $ em vigor,
+	// que é o estado em que a dimensão é medida mas não decide.
+	ConsumedCostMicroUSD int64 `json:"consumed_cost_micro_usd,omitempty"`
+	LimitCostMicroUSD    int64 `json:"limit_cost_micro_usd,omitempty"`
+	// Reason é a RAZÃO da pergunta nas palavras de quem a levantou — e, no caso do tecto
+	// atingido, a razão ATRIBUÍVEL que a admissão do turno de modelo produziu, com os dois
+	// pares (tokens, micro-USD) já lá dentro. Sem este campo a razão existia apenas no log do
+	// processo, que NÃO é o canal que a decisão assinada lê: o operador respondia `continue`
+	// sobre a grandeza errada, o run era re-hospedado e imediatamente re-negado pelo mesmo
+	// tecto — um ciclo de decisões humanas sobre um número que não é o que decide. Rótulo de
+	// diagnóstico legível, nunca segredo. Ausente no tipo aprovação.
+	Reason string `json:"reason,omitempty"`
 	// CreatedAt é o instante em que a acção foi escalada (RFC3339). É a âncora do TTL:
 	// passados [DefaultApprovalTTL] sem decisão, o pendente EXPIRA e o run deixa de
 	// esperar. Carimbado por quem regista (o nó tem o relógio); vazio ⇒ sem expiração

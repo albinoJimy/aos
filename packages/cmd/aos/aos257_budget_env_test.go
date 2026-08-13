@@ -63,7 +63,12 @@ func TestAOS257BudgetEnvValidaCompoeOTecto(t *testing.T) {
 	if strings.Contains(linha, "NAO COMPOSTO") {
 		t.Errorf("com orcamento composto o banner NAO pode declarar-se nao-composto:\n%s", linha)
 	}
-	for _, marcador := range []string{"COMPOSTO", "TOOL-ONLY", "TOKEN-ONLY", "POR-RUN", "AOS_BUDGET_MAX_TOKENS"} {
+	// Os marcadores do alcance mudaram em AOS-260 (o turno de modelo deixou de estar fora do
+	// tecto e o eixo $ passou a existir como opt-in) — "TOOL-ONLY"/"TOKEN-ONLY" saíram porque
+	// deixaram de ser verdade. A lista completa e a sua justificação vivem no gate de alcance,
+	// [TestAOS255DeclaracaoDeAlcanceNosDoisEstados]; aqui verifica-se apenas o que ESTE teste
+	// tem para verificar: que o estado composto se declara composto e nomeia a env que o ligou.
+	for _, marcador := range []string{"COMPOSTO", "POR-RUN", "AOS_BUDGET_MAX_TOKENS"} {
 		if !strings.Contains(linha, marcador) {
 			t.Errorf("o banner do estado composto devia conter %q:\n%s", marcador, linha)
 		}

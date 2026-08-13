@@ -162,9 +162,14 @@ type SecuredConfig struct {
 	//   - o dispatcher de efeitos é decorado para SALDAR a reserva (commit em permit;
 	//     release em deny/escalate/erro).
 	//
-	// ALCANCE, na declaração fixada em AOS-255: TOOL-ONLY (o turno de modelo é invocado fora
-	// da cadeia e nenhuma reserva o admite) e TOKEN-ONLY (o canal de custo micro-USD não está
-	// ligado ponta a ponta — eixo AOS-259). Construir com [NewRunBudget].
+	// ALCANCE (reescrito em AOS-260): o MESMO orçamento por-run passou a admitir também o
+	// TURNO DE MODELO, pela porta [agentruntime.ModelAdmission] — que NÃO entra por aqui: é
+	// composta sobre este mesmo [RunBudget] ([NewModelTurnAdmission]) e entregue ao runtime
+	// em [SecuredConfig.RuntimeOptions]. A separação é deliberada: o hook de tool calls é um
+	// hook do Reference Monitor e a admissão do turno é uma porta do LOOP — misturá-las num
+	// campo só esconderia que são dois pontos de mediação distintos, com desfechos distintos.
+	// A dimensão $ é debitada com o custo MEDIDO (AOS-259) e só nega com tecto configurado
+	// ([WithMaxCostMicroUSDPerRun]). Construir com [NewRunBudget].
 	//
 	// OPCIONAL: nil ⇒ [referencemonitor.BudgetStub] como antes (nenhuma decisão consulta
 	// custo) — e é ESSE o estado que o banner do nó tem de declarar.

@@ -14,6 +14,7 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
+	"github.com/aos-ref/platform/model-gateway/metering/cost"
 	"github.com/aos-ref/platform/model-gateway/pipeline"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/routing/failover"
@@ -146,6 +147,18 @@ type ProductionConfig struct {
 	Clock    func() time.Time
 	Tracer   agentruntime.Tracer
 	Variance VarianceSink
+	// Cost é a CONTABILIDADE DE CUSTO (AOS-062) — o agregador que deriva o custo em
+	// micro-USD de cada chamada pela tabela de preços versionada, agrega por run/árvore e
+	// alimenta o burn-down. Nil ⇒ SEM contabilidade: o gateway serve na mesma e o canal de
+	// custo de AOS-259 transporta ZERO até ao runtime (ausência de dados declarada, nunca
+	// custo nulo — ver [port.Usage.CostMicroUSD]).
+	//
+	// É opcional e não obrigatório porque o custo é FAIL-CLOSED por (modelo, região): com
+	// um recorder ligado, uma chamada a um par SEM preço na tabela é RECUSADA (nunca
+	// facturada a zero). Compor um recorder cujo tabela não cobre o modelo do nó tornaria
+	// TODAS as chamadas impossíveis — por isso quem compõe decide, com a tabela em mão, se
+	// o par está coberto. Ver o wiring do nó (model_pricing_env.go).
+	Cost *cost.Recorder
 	// Allowlist é a policy regional EXTERNA (bundle assinado montado, carregada via
 	// [allowlist.LoadSignedPolicyFromDir] com o trust anchor OUT-OF-BAND). Presente ⇒ substitui a
 	// policy EMBEBIDA (fim do acoplamento "modelos fixos no código"; o operador curadoria/assina o
@@ -244,6 +257,9 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	}
 	if cfg.Variance != nil {
 		opts = append(opts, WithVarianceSink(cfg.Variance))
+	}
+	if cfg.Cost != nil {
+		opts = append(opts, WithCost(cfg.Cost))
 	}
 	return New(adapter, opts...), nil
 }

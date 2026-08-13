@@ -91,15 +91,44 @@ type Tool struct {
 	Function FunctionDef `json:"function"`
 }
 
-// Usage é o consumo de tokens de uma chamada. Os nomes espelham a semconv OTel
-// GenAI (gen_ai.usage.*). Os campos de cache alimentam o SLI de cache-hit-rate
-// (AOS-061) e a contabilidade de custo (AOS-062) — aqui apenas transportados.
+// Usage é o consumo de uma chamada: os tokens medidos pelo provider e o custo
+// DERIVADO deles pelo gateway. Os nomes de token espelham a semconv OTel GenAI
+// (gen_ai.usage.*). Os campos de cache alimentam o SLI de cache-hit-rate (AOS-061)
+// e a contabilidade de custo (AOS-062).
+//
+// # As duas naturezas dos campos (importa para quem escreve um adaptador)
+//
+// Os cinco contadores de token são MEDIDOS: vêm do provider e são preenchidos pelo
+// adaptador que traduz a resposta. [Usage.CostMicroUSD] é DERIVADO: nenhum adaptador
+// de provider o preenche — é o gateway que o calcula no estágio de metering, a partir
+// destes mesmos tokens e da tabela de preços versionada, e o escreve na resposta
+// normalizada antes de a devolver.
 type Usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	TotalTokens      int64 `json:"total_tokens"`
 	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
+	// CostMicroUSD é o custo DERIVADO desta chamada em MICRO-USD INTEIRO (1 USD =
+	// 1_000_000 micro-USD), calculado pela contabilidade do gateway (metering/cost) a
+	// partir dos quatro tipos de token e da tabela de preços versionada por (modelo,
+	// região). NUNCA float: dinheiro é inteiro em todo o caminho (ADR-008), igual a
+	// [budget.Amount] e a [cost.Amount].
+	//
+	// É o CANAL DE CUSTO ponta a ponta (AOS-259): sem este campo o Agent Runtime somava
+	// zeros — a resposta normalizada não tinha por onde trazer o custo que a
+	// contabilidade do gateway já derivava, e o span `chat`, o TurnRecord e o burn-down
+	// do run mostravam 0 com o metering a funcionar. O adaptador RT→GW projecta-o em
+	// agentruntime.ModelResponse.CostMicroUSD, de onde flui para o span e para o evento
+	// durável `turn.recorded` que o burn-down lê.
+	//
+	// ZERO NÃO SIGNIFICA GRÁTIS, significa NÃO-DERIVADO: um gateway sem contabilidade de
+	// custo composta (sem recorder) deixa o campo a zero. Um custo NÃO-CALCULÁVEL (sem
+	// preço para o par (modelo, região), tokens negativos, overflow) NÃO chega aqui como
+	// zero — é fail-closed no metering (erro atribuível), precisamente para que um zero
+	// silencioso nunca falsifique o burn-down. Quem consome um zero deve tratá-lo como
+	// ausência de dados, nunca como custo nulo.
+	CostMicroUSD int64 `json:"cost_micro_usd,omitempty"`
 }
 
 // ChatRequest é o pedido de chat/completions NORMALIZADO. Os campos de controlo

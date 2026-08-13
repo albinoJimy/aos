@@ -102,7 +102,7 @@ func aos263Suspende(t *testing.T, node *Node, runID string, turn int, consumido,
 	if err != nil || prompt == nil {
 		t.Fatalf("newExhaustionPrompt: prompt=%v err=%v", prompt != nil, err)
 	}
-	if err := prompt.raise(ctx, runID, progressEvalDeAviso(turn, 0.80, consumido, tecto)); err == nil {
+	if err := prompt.raise(ctx, runID, progressEvalDeAviso(turn, 0.80, consumido, tecto), "limiar de burn-down cruzado (razao de teste)"); err == nil {
 		t.Fatal("a travessia do limiar tinha de suspender o run")
 	}
 	node.stateGates.Close(runID) // como na saída do hostRun: a verdade fica no log

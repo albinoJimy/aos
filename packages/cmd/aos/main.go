@@ -314,6 +314,15 @@ func run(w io.Writer) error {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
+	// CANAL DE CUSTO (AOS-259): declara se o custo por turno é DERIVADO de uma tabela de
+	// preços que cobre o par (modelo, região) deste nó — e portanto flui até ao ledger que o
+	// burn-down lê — ou se o canal transporta ZERO por o par não ter preço. A distinção
+	// importa: um zero de custo é ausência de dados, e sem esta linha seria indistinguível de
+	// «este run não gastou nada». Amarrado ao estado composto (cfg.Model != nil).
+	for _, line := range modelPricingPostureBanner(cfg.Model != nil, modelPricingPostureFromEnv()) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
 	// Superfície de REDE (AOS-166). Se AOS_API_ADDR estiver definido, o nó gradua para um nó
 	// OPERÁVEL de fora: levanta o loop de serviço + a API HTTP com o BIND-GUARDRAIL no
 	// CAMINHO DE PRODUÇÃO (é aqui, não só nos testes, que um bind não-loopback sem
@@ -1536,11 +1545,21 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if err != nil {
 		return nil, nil, err
 	}
+	// CANAL DE CUSTO (AOS-259): resolve a tabela de preços em vigor (embebida ou a do operador
+	// em AOS_MODEL_PRICING_PATH) e compõe a contabilidade SÓ se ela cobrir o par (modelo,
+	// região) deste nó. Coberto ⇒ cada turno leva o custo derivado até ao ledger que o
+	// burn-down lê; não coberto ⇒ nil, e o canal transporta zero DECLARADO no banner (não se
+	// inventa um preço para o modelo do operador). Fail-closed só quando o operador aponta uma
+	// tabela que não carrega (ErrBadModelPricing). Ver model_pricing_env.go.
+	costRec, _, err := parseModelPricingFromEnv(model, region)
+	if err != nil {
+		return nil, nil, err
+	}
 	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
 	// o MESMO que verifica as tool calls. NÃO há stub allow-all no caminho.
 	modelVerifier := &lateBoundModelVerifier{}
-	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit)
+	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec)
 	if err != nil {
 		return nil, nil, err
 	}

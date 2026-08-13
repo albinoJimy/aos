@@ -39,6 +39,18 @@ const (
 	// e do tecto do disjuntor: as três causas partilham o estado `timed_out` e só o rótulo as
 	// torna atribuíveis no log.
 	reasonMaxTurnsExhausted = "max_turns_exhausted"
+	// reasonBudgetExhausted — running→timed_out por esgotamento do ORÇAMENTO DE GASTO
+	// (AOS-260): a admissão do turno de modelo negou headroom e o loop parou ANTES da
+	// inferência, sem retentar.
+	//
+	// `timed_out` e NÃO `failed` pela MESMA razão de [reasonMaxTurnsExhausted], e com mais
+	// força ainda: um tecto de gasto atingido é um TECTO DEFENSIVO excedido, não uma falha
+	// recuperável — propor-lhe a saga de rollback (failed→compensating, AOS-254) seria
+	// desfazer efeitos legítimos por o run ter ficado sem orçamento. O que se quer é levantar
+	// o tecto e re-correr. O rótulo é distinto dos outros três que partilham `timed_out`
+	// (max_turns, wall-clock do disjuntor, deadline) porque só o rótulo torna a causa
+	// atribuível no log.
+	reasonBudgetExhausted = "budget_exhausted"
 )
 
 // sealTerminal materializa o estado TERMINAL do run no log durável. É NO-OP quando a
@@ -66,6 +78,11 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 		to, reason = state.Failed, reasonRunPanicked
 	case runErr == nil && res.Terminated:
 		to, reason = state.Complete, reasonRunComplete
+	case runErr == nil && res.BudgetExhausted:
+		// DEGRADAÇÃO DECLARADA (AOS-260): o loop parou por falta de orçamento, sem erro e sem
+		// resposta final. Sem este ramo cairia no `default` e o log diria `failed` — a causa
+		// errada, e ainda por cima a única que dispara a saga de compensação.
+		to, reason = state.TimedOut, reasonBudgetExhausted
 	case errors.Is(runErr, agentruntime.ErrMaxTurnsExceeded):
 		// ORÇAMENTO DE TURNOS ESGOTADO ⇒ `timed_out`, NÃO `failed`. A distinção não é
 		// cosmética: na tabela de AOS-017 `failed` é a falha RECUPERÁVEL cuja única aresta

@@ -148,23 +148,27 @@ Os desafios registam listas completas de achados refutados pelo céptico. Os mai
 
 ## 7. Billing/custos — o plano corrigido (cruzamento da análise com os desafios A1/A2)
 
-**Componentes verdes:** `budget` (CAS 0-overshoot, Rebuild do log, hook `BudgetCheck` com deny auditado), `metering/cost` (micro-USD inteiro, fail-closed sem preço), `pricing` (tabela versionada, alterações seladas no WORM), `progress-surface`, `planvalidate`. **Só o `budget` está ligado ao nó** (AOS-256/AOS-257: nó de orçamento por-run no seam de `SecuredRuntime.Run`, `BudgetCheck` no lugar do `BudgetStub`, saldo da reserva no decorator do `ActivityDispatcher`, opt-in por `AOS_BUDGET_MAX_TOKENS`) — e **token-only**, no alcance declarado abaixo; `metering/cost` e `pricing` continuam **sem chamador de produção** (eixo AOS-259).
+**Componentes verdes:** `budget` (CAS 0-overshoot, Rebuild do log, hook `BudgetCheck` com deny auditado), `metering/cost` (micro-USD inteiro, fail-closed sem preço), `pricing` (tabela versionada, alterações seladas no WORM), `progress-surface`, `planvalidate`. **Só o `budget` está ligado ao nó** (AOS-256/AOS-257: nó de orçamento por-run no seam de `SecuredRuntime.Run`, `BudgetCheck` no lugar do `BudgetStub`, saldo da reserva no decorator do `ActivityDispatcher`, opt-in por `AOS_BUDGET_MAX_TOKENS`) — e o alcance deixou de ser **token-only/tool-only**: AOS-259 ligou `metering/cost` e `pricing` ao caminho de produção (o `cost.Recorder` do Model Gateway é composto no arranque quando a tabela de preços cobre o par (modelo, região) do nó, e o custo derivado viaja até ao `cost_micro_usd` do evento `turn.recorded`), e AOS-260 pôs a **admissão do turno de modelo** a reservar no MESMO nó de orçamento por-run, com um tecto **opcional em dólares** (`AOS_BUDGET_MAX_COST_MICRO_USD`) que o nó **recusa** aceitar sem fonte de preço. Ver o alcance declarado abaixo.
 
-**Declaração de alcance da v1 (AOS-255, fixada antes de qualquer wiring)** — é este o texto que o
-nó imprime no banner e que `deploy/node/README.md` documenta, e é o vocabulário que os tickets
-AOS-256..262 usam:
+**Declaração de alcance da v1 — fixada em AOS-255 antes de qualquer wiring e REESCRITA em
+AOS-260**, quando o eixo que ela nomeava foi fechado. É este o texto que o nó imprime no banner e
+que `deploy/node/README.md` documenta:
 
-> **orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado por tempo (wall-clock), não por tecto**
+> **orçamento: cobre tool calls E o turno de modelo em TOKENS — reserva antes da inferência, saldo pelo consumo medido; o tecto em dólares é opcional e só decide quando configurado**
 
-**TOOL-ONLY** porque o *hook* vive na cadeia do Reference Monitor, atravessada só por tool call;
-**TOKEN-ONLY** porque a dimensão micro-USD não tem canal de dados ponta a ponta. O tecto é
-**por-run**, nunca por-mandato. Fixar a frase primeiro é o que impede que a linha de banner seja
-escrita, no calor do ticket que liga o hook, como se cobrisse o gasto todo.
+A frase de AOS-255 era «orçamento: cobre tool calls em TOKENS; o gasto de inferência é travado
+por tempo (wall-clock), não por tecto» — **TOOL-ONLY** porque o *hook* vivia na cadeia do
+Reference Monitor, atravessada só por tool call, e **TOKEN-ONLY** porque a dimensão micro-USD não
+tinha canal de dados ponta a ponta. Fixá-la primeiro foi o que impediu que a linha de banner
+fosse escrita, no calor do ticket que ligou o hook, como se cobrisse o gasto todo — e foi ela que
+manteve o eixo visível até AOS-259 (canal de custo medido) e AOS-260 (porta de admissão do turno
+de modelo, com reserva antes da inferência, saldo pelo real e dedup de replay) o fecharem. O
+tecto continua a ser **por-run** — e por-incarnação —, nunca por-mandato.
 
 O que os desafios corrigiram no plano de fecho:
 
-1. **A chamada ao modelo está fora da cadeia** (`loop.go:549` — directa, sem `Mediate`). Um orçamento sobre tool calls deixa a **linha de custo dominante (inferência) sem tecto**. A v1 deve declarar-se **TOOL-ONLY em voz alta** no banner, com o turno de modelo como eixo separado (reservar antes de `loop.go:549`, saldar com o usage real).
-2. **O eixo micro-USD não tem canal de dados** — `port.Usage` não tem campo de custo; `translateResponse` deixa `CostMicroUSD=0`. v1 **token-only por construção** (funciona ponta a ponta hoje); a primeira env em $ exige o contrato `port` primeiro. E ligar `WithCost` **duplica os tokens** (dois spans `chat` por trace somados sem dedup por parentesco) — tem de sair no mesmo commit que a deduplicação.
+1. **A chamada ao modelo está fora da cadeia** (`loop.go:549` — directa, sem `Mediate`). Um orçamento sobre tool calls deixa a **linha de custo dominante (inferência) sem tecto**. A v1 deve declarar-se **TOOL-ONLY em voz alta** no banner, com o turno de modelo como eixo separado (reservar antes de `loop.go:549`, saldar com o usage real). — **FECHADO em AOS-260** (decisão do dono D1 = opção B): porta `agentruntime.ModelAdmission`, reserva imediatamente antes de `rt.model.Call`, saldo pelo `usage`/`cost_micro_usd` reais, esgotamento como degradação declarada (suspensão HITL de AOS-263 ou `timed_out`/`budget_exhausted`) e replay sem re-reserva.
+2. **O eixo micro-USD não tem canal de dados** — `port.Usage` não tem campo de custo; `translateResponse` deixa `CostMicroUSD=0`. v1 **token-only por construção** (funciona ponta a ponta hoje); a primeira env em $ exige o contrato `port` primeiro. E ligar `WithCost` **duplica os tokens** (dois spans `chat` por trace somados sem dedup por parentesco) — tem de sair no mesmo commit que a deduplicação. — **FECHADO em AOS-259** (canal + dedup por parentesco, no mesmo commit, como exigido) e a primeira env em `$` existe desde AOS-260 (`AOS_BUDGET_MAX_COST_MICRO_USD`, opt-in).
 3. **Ordem errada = arranque partido:** compor o hook sem `AddNode(goal.RunID, …)` no seam `secured.go:460` ⇒ `ErrUnknownNode` ⇒ **100% das tool calls negadas** (fail-closed e ruidoso, mas partido). O `Settle` vive num **decorator do `ActivityDispatcher`**, não no loop.
 4. **A progress-surface precisa de um retentor de spans** (hoje o tracer é Noop por omissão e o `SpanTracer` dispara-e-esquece: `Evaluate` lê 0 **sem erro** — superfície verde a mentir) e de resolvedores `runID→traceID/treeID` que o nó não tem.
 5. **Primeira entrega da exaustão: só burn-down + aviso.** `extend` não tem mutador de tecto nem autoridade (a concessão mais forte pelo caminho mais fraco); `summarize_stop`/`abort` não têm executor; o «timeout» não existe. O desenho-alvo é um **segundo tipo de `PendingRecord`** reutilizando a maquinaria HITL (decisão do dono, D4 abaixo).

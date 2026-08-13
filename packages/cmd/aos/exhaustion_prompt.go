@@ -204,7 +204,21 @@ func exhaustionOccurrenceAnchor() (string, error) {
 // suspender. Se a suspensão falhar depois do registo, fica um pendente sem run vivo — inócuo
 // (não destrava nada) e varrido pelo TTL. A ordem inversa deixaria o run suspenso sem nada
 // que dissesse ao operador o que decidir, que é o pior dos dois estados.
-func (e *exhaustionPrompt) raise(ctx context.Context, runID string, ev progresssurface.RunEvaluation) error {
+//
+// # A RAZÃO É UM PARÂMETRO, E É PARÂMETRO DE PROPÓSITO
+//
+// `razao` é a explicação de quem levantou a pergunta, nas palavras dele: o AVISO de burn-down
+// (`limiar cruzado`, [runProgress.razaoDoAviso]) e o TECTO ATINGIDO (a razão atribuível que a
+// admissão do turno de modelo produziu, [nodeModelAdmission.evaluationFor]) são situações
+// DIFERENTES e a pergunta humana tem de as distinguir. Antes disto a razão vivia só no log do
+// processo — que NÃO é o canal que a decisão assinada lê: quando era a dimensão $ a bloquear, o
+// operador via uma pergunta que só falava de tokens, respondia `continue` por ver headroom de
+// tokens de sobra, e o run era re-hospedado para ser imediatamente re-negado pelo MESMO tecto.
+// Um ciclo de decisões humanas sobre a grandeza errada.
+//
+// Não vem dentro da [progresssurface.RunEvaluation] porque essa é a face de uma porta do plano
+// de controlo e a razão aqui é NODE-LOCAL (fala de envs e de rotas deste nó).
+func (e *exhaustionPrompt) raise(ctx context.Context, runID string, ev progresssurface.RunEvaluation, razao string) error {
 	if e == nil || ev.Warning == nil || !ev.Warning.SpanEmitted {
 		return nil
 	}
@@ -249,9 +263,23 @@ func (e *exhaustionPrompt) raise(ctx context.Context, runID string, ev progresss
 		Threshold:      ev.Warning.Threshold,
 		ConsumedTokens: ev.Burndown.Consumed.Tokens,
 		LimitTokens:    ev.Burndown.Limit.Tokens,
+		// A dimensão $, quando tem tecto. Zero ⇒ dólares são medidos mas não decidem, e o
+		// registo cala-os em vez de escrever um denominador que ninguém configurou (o wire
+		// omite-os por `omitempty`, e a superfície de leitura não passa a ter um campo a zero
+		// que pareça «consumo nenhum»).
+		ConsumedCostMicroUSD: ev.Burndown.Consumed.CostMicroUSD,
+		LimitCostMicroUSD:    ev.Burndown.Limit.CostMicroUSD,
+		// A RAZÃO — a grandeza que levou à pergunta, escrita por quem a levantou.
+		Reason: razao,
 		// Âncora do TTL: é daqui que o varrimento de pendentes JÁ EXISTENTE sabe que a
 		// pergunta envelheceu. Sem ela o prompt nunca expiraria sozinho (fail-safe).
 		CreatedAt: agora.Format(time.RFC3339Nano),
+	}
+	// Coerência do registo: sem tecto em $ a dimensão não se reporta de todo — um consumido
+	// sem denominador leria-se como «gastou X de nada».
+	if rec.LimitCostMicroUSD <= 0 {
+		rec.ConsumedCostMicroUSD = 0
+		rec.LimitCostMicroUSD = 0
 	}
 	if err := e.pending.Put(ctx, rec); err != nil {
 		return fmt.Errorf("aos: registar prompt de exaustao do run %q (AOS-263): %w", runID, err)
@@ -271,10 +299,10 @@ func (e *exhaustionPrompt) raise(ctx context.Context, runID string, ev progresss
 	if err := gate.EscalateToHuman(ctx, reasonExhaustionPrompt); err != nil {
 		return fmt.Errorf("aos: suspender run %q para o prompt de exaustao (AOS-263): %w", runID, err)
 	}
-	e.logf("PROMPT DE EXAUSTAO (AOS-263) — run %q SUSPENSO em waiting_on_human no turno %d (passo %q): %d de %d tokens do tecto por-run consumidos (limiar %.2f). A pergunta esta em GET /runs/{id} (pending_exhaustion) e as DUAS opcoes com executor sao %s e %s, ambas assinadas por operador pinado em %s; enquanto a pergunta estiver por responder o POST /runs/{id}/resume RECUSA (a retoma nao e via de fuga a decisao). NAO se oferece extend — o tecto nao tem mutador (eixo DEF-220). Sem decisao, o TTL de pendentes expira a pergunta e o run volta a ser RETOMAVEL",
-		runID, ev.Warning.Turn, rec.StepID, rec.ConsumedTokens, rec.LimitTokens, rec.Threshold,
+	e.logf("PROMPT DE EXAUSTAO (AOS-263) — run %q SUSPENSO em waiting_on_human no turno %d (passo %q): %s. A pergunta esta em GET /runs/{id} (pending_exhaustion), com esta MESMA razao no campo reason, e as DUAS opcoes com executor sao %s e %s, ambas assinadas por operador pinado em %s; enquanto a pergunta estiver por responder o POST /runs/{id}/resume RECUSA (a retoma nao e via de fuga a decisao). NAO se oferece extend — o tecto nao tem mutador (eixo DEF-220). Sem decisao, o TTL de pendentes expira a pergunta e o run volta a ser RETOMAVEL",
+		runID, ev.Warning.Turn, rec.StepID, rec.Reason,
 		exhaustionOptionContinue, exhaustionOptionAbort, exhaustionDecisionRoute)
-	return fmt.Errorf("%w: run %q turno %d (%d/%d tokens)", errExhaustionSuspended, runID, ev.Warning.Turn, rec.ConsumedTokens, rec.LimitTokens)
+	return fmt.Errorf("%w: run %q turno %d (%s)", errExhaustionSuspended, runID, ev.Warning.Turn, rec.Reason)
 }
 
 // pendenteVivo indica se o run já tem um prompt de exaustão por responder. Lê a MESMA

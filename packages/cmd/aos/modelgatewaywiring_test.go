@@ -75,7 +75,7 @@ func TestGatewayModelClient_EndToEnd(t *testing.T) {
 		gotModel = ""
 		// nil ⇒ allowlist EMBEBIDA; region/board casam com a regra board-eu embebida. O
 		// verifier REAL + a credencial no ctx atravessam o estágio authn (AOS-278).
-		mc, err := newGatewayModelClient(verifier, srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+		mc, err := newGatewayModelClient(verifier, srv.URL, model, "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("newGatewayModelClient(%q): %v", model, err)
 		}
@@ -120,7 +120,7 @@ func TestModelGateway_NoThroughputFuse(t *testing.T) {
 	// composição que o nó usa em produção — a conta de infra (LimitRPM/TPM=0) vem de dentro de
 	// newGatewayModelClient, não do teste, pelo que um regresso do fusível é apanhado aqui.
 	verifier, credCtx := aos278ModelIdentity(t)
-	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o-mini", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "gpt-4o-mini", "", defaultModelGatewayRegion, defaultModelGatewayBoard, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestExternalAllowlist_AllowsNonEmbeddedModel(t *testing.T) {
 	}
 	// kimi-for-coding/board-kimi NÃO estão na allowlist embebida — só passam pela externa.
 	verifier, credCtx := aos278ModelIdentity(t)
-	mc, err := newGatewayModelClient(verifier, srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil, nil)
+	mc, err := newGatewayModelClient(verifier, srv.URL, "kimi-for-coding", "", "eu", "board-kimi", pol, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("newGatewayModelClient: %v", err)
 	}

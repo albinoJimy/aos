@@ -796,6 +796,15 @@ type pendingExhaustionWire struct {
 	Threshold      float64 `json:"threshold"`
 	ConsumedTokens int64   `json:"consumed_tokens"`
 	LimitTokens    int64   `json:"limit_tokens"`
+	// A MESMA amarra na dimensão $ (micro-USD INTEIRO), presente só quando o nó tem tecto em
+	// dólares configurado (`AOS_BUDGET_MAX_COST_MICRO_USD`). Sem ela, um operador cujo run foi
+	// bloqueado pelo tecto em `$` lia números de TOKENS que contradiziam a razão da paragem.
+	ConsumedCostMicroUSD int64 `json:"consumed_cost_micro_usd,omitempty"`
+	LimitCostMicroUSD    int64 `json:"limit_cost_micro_usd,omitempty"`
+	// Reason é a RAZÃO da pergunta — a grandeza que a levantou, nas palavras de quem a
+	// levantou (limiar de burn-down cruzado vs tecto ATINGIDO, com os pares consumido/tecto lá
+	// dentro). É o campo que torna a pergunta decidível sem cruzar com o log do processo.
+	Reason string `json:"reason,omitempty"`
 	// CreatedAt é a âncora do TTL — a partir daqui o varrimento de pendentes conta a idade
 	// da pergunta (RFC3339). Ausente só num registo escrito sem relógio (nunca expira).
 	CreatedAt string `json:"created_at,omitempty"`
@@ -889,13 +898,16 @@ func (h *apiHandler) pendingFor(ctx context.Context, runID string) ([]pendingApp
 			})
 		case integration.PendingKindExhaustion:
 			exaustoes = append(exaustoes, pendingExhaustionWire{
-				StepID:         r.StepID,
-				Turn:           r.Turn,
-				Threshold:      r.Threshold,
-				ConsumedTokens: r.ConsumedTokens,
-				LimitTokens:    r.LimitTokens,
-				CreatedAt:      r.CreatedAt,
-				Options:        exhaustionOptions(),
+				StepID:               r.StepID,
+				Turn:                 r.Turn,
+				Threshold:            r.Threshold,
+				ConsumedTokens:       r.ConsumedTokens,
+				LimitTokens:          r.LimitTokens,
+				ConsumedCostMicroUSD: r.ConsumedCostMicroUSD,
+				LimitCostMicroUSD:    r.LimitCostMicroUSD,
+				Reason:               r.Reason,
+				CreatedAt:            r.CreatedAt,
+				Options:              exhaustionOptions(),
 			})
 		}
 	}
