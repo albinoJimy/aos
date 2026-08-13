@@ -117,7 +117,7 @@ Para cada ADR-001…019, os tickets `AOS-NNN` cujo bloco de especificação o ci
 | **ADR-015** | Durable execution: contrato próprio vs. engine externo | 1 | AOS-129 | `tecnica/12`, `tecnica/15` |
 | **ADR-016** | Fronteira de confiança da camada de UI | 13 | AOS-129, AOS-131, AOS-132, AOS-137, AOS-138, AOS-143, AOS-153, AOS-162, AOS-166, AOS-182, AOS-185, AOS-266, AOS-275 | `tecnica/02`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-017** | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | 12 | AOS-129, AOS-169, AOS-185, AOS-193, AOS-196, AOS-199, AOS-200, AOS-207, AOS-209, AOS-258, AOS-261, AOS-275 | `tecnica/02`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
-| **ADR-018** | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | 7 | AOS-164, AOS-185, AOS-204, AOS-222, AOS-234, AOS-238, AOS-262 | `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12` |
+| **ADR-018** | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | 8 | AOS-164, AOS-185, AOS-204, AOS-222, AOS-234, AOS-238, AOS-262, AOS-270 | `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12` |
 | **ADR-019** | Excepções intencionais às fronteiras canónicas de camada (v1 single-host) | 4 | AOS-179, AOS-190, AOS-200, AOS-202 | `tecnica/09`, `tecnica/11`, `tecnica/12` |
 
 **Cobertura: 19/19 ADRs têm ≥ 1 ticket implementador.**

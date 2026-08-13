@@ -32,7 +32,22 @@ type PlanVersion struct {
 // CurrentPlanVersion é a linha de schema corrente que este módulo publica. As
 // propostas novas saem sempre na versão corrente (§3.6) e validam-se contra o
 // schema corrente. Bump governado (ADR-012) actualiza esta constante.
-var CurrentPlanVersion = PlanVersion{Major: 1, Minor: 0, Patch: 0}
+//
+// 1.1.0 (AOS-270, ADR-022 §2.1) — MINOR: o `Node` ganhou `conditional_on`, campo
+// OPCIONAL e ADITIVO. Documentos 1.0.0 continuam a decodificar sem alteração
+// (o campo é `omitempty` e a sua ausência significa «sem condições»), pelo que
+// não há migração de dados a fazer — `planmigrate`, a janela de suporte e os
+// golden-sets são AOS-273.
+//
+// PORQUE O MINOR PERTENCE A QUEM ALARGA O SCHEMA. Sem o bump, dois binários
+// carimbavam AMBOS 1.0.0 e discordavam sobre o schema aceite: um planeador novo
+// emitia `conditional_on` com `plan_version: 1.0.0` e um nó anterior — que passa a
+// verificação de MAJOR — falhava com «unknown field conditional_on»
+// (DisallowUnknownFields). O operador via um erro de schema num documento cuja
+// versão declarada era idêntica à suportada, ou seja: o carimbo deixava de
+// identificar o schema, que é exactamente o que ADR-012/§3.6 exige dele. O caso
+// «aditivo retrocompatível» é literalmente a definição de MINOR neste ficheiro.
+var CurrentPlanVersion = PlanVersion{Major: 1, Minor: 1, Patch: 0}
 
 // ParsePlanVersion aceita ESTRITAMENTE "X.Y.Z" com X,Y,Z inteiros não-negativos,
 // na forma CANÓNICA exacta — sem whitespace envolvente nem interno. Fail-closed:

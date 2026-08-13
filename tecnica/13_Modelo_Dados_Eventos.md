@@ -175,7 +175,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `identity.nhi.*` | 2 | `packages/platform/identity/events.go` |
 | `lease.*` | 2 | `packages/kernel/agent-runtime/durable/lease.go` |
 | `memory.*` | 8 | `packages/platform/memory/{adapters,semantic,episodic,compression,migrations}` |
-| `plan.*` | 13 | `packages/control-plane/orchestrator/plannerevents/events.go` (domínio `aos.planner.v1`, EPIC-19/AOS-235) |
+| `plan.*` | 14 | `packages/control-plane/orchestrator/plannerevents/events.go` (domínio `aos.planner.v1`, EPIC-19/AOS-235; `plan.branch_decided` em AOS-270/ADR-022 §2.1) |
 | `ratification.*` | 1 | `packages/control-plane/governance/hitl/nonce_store.go` |
 | `registry.artifact.*` | 2 | `packages/platform/registry/events.go` |
 | `replay.captured` | 1 | `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |

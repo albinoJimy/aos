@@ -4,9 +4,9 @@
 |---|---|
 | **ADR** | 021 |
 | **Título** | Roteamento por scoring ponderado determinístico no Model Gateway (selecção automática de modelo com sinal de qualidade, sem exploração online) |
-| **Estado** | Aceite |
-| **Data** | 2026-08-05 (ratificado 2026-08-13) |
-| **Deciders** | Equipa AOS (**ratificação de dono**, 2026-08-13) |
+| **Estado** | Aceite (emenda 1.1, 2026-08-13) |
+| **Data** | 2026-08-05 (ratificado 2026-08-13; emendado 2026-08-13) |
+| **Deciders** | Equipa AOS (**ratificação de dono**, 2026-08-13; **emenda 1.1 de dono**, 2026-08-13) |
 | **Contexto-fonte** | Análise comparativa do conceito «Auto-Combo» do OmniRoute ([AUTO-COMBO-GUIDE](https://github.com/diegosouzapw/OmniRoute/blob/release/v3.8.50/docs/getting-started/AUTO-COMBO-GUIDE.md)) contra o router AOS-059 em `packages/platform/model-gateway/routing/router/router.go` |
 | **ADRs relacionados** | ADR-008 (admission tokens/$), ADR-010 (observabilidade/replay), ADR-011 (policy-as-code + soberania por board), ADR-012 (SemVer + eval-gate para artefactos comportamentais) |
 | **Supersede** | — |
@@ -140,6 +140,38 @@ impor admissão.
   factores e score final; variância `model_swap` inclui a razão de scoring.
 - **Cobertura:** o módulo GW não pode regredir abaixo de `ROUTING_COVERAGE_MIN` (piso
   AOS-199); os novos cenários entram no `require_tests` de `scripts/ci/routing.sh`.
+
+## 5-bis. Emenda 1.1 (2026-08-13, autoridade de dono) — alcance da regra 3 na v1
+
+**O que se emenda.** A regra 3 da §2 diz que «sem tabela válida, o router recusa», e a §2
+abre com «scoring ponderado determinístico que **substitui** o ordenamento lexicográfico».
+Lida à letra, essa frase implicaria que o scoring fosse o caminho de roteamento **por
+omissão** do gateway. Esta emenda fixa que, na **v1**, o scoring é **composto por opção**
+(`router.WithScoring`) e a regra 3 aplica-se **quando o scoring está composto**: sem tabela
+válida/assinada, um scoring armado **recusa** (é o que o código faz, `scoreUnarmed`); sem
+`WithScoring`, o router mantém o ordenamento lexicográfico de AOS-059, inalterado.
+
+**Porque se emenda — o facto que a implementação revelou.** Ao implementar AOS-269
+descobriu-se que o `router.Router` (AOS-059) **nunca esteve composto no pipeline de
+produção do gateway**: `NewProduction` compõe `failover.NewStage` como estágio de
+roteamento, e `router.New` não tem, em todo o repositório, um único chamador fora de
+testes. O scoring foi construído **sobre** esse router. Logo, «substituir o lexicográfico
+por omissão» não é uma linha de wiring: exigiria compor o estágio de roteamento inteiro no
+pipeline — substituindo ou complementando o failover —, uma mudança arquitectural do
+caminho quente de **todas** as chamadas de modelo, muito para além do âmbito de AOS-269.
+
+**O que NÃO se emenda.** As cinco regras da §2 mantêm-se congeladas na sua substância:
+guardas antes do score e nunca como factores; aritmética inteira; pesos assinados e
+versionados com carregamento fail-closed; calibração offline sem *bandit*; swap como
+variância explícita. A emenda altera **o alcance da composição**, não o desenho.
+
+**Dívida registada, não escondida.** A lacuna real — compor o estágio de roteamento
+(`routingstage` + `router`, com o scoring armado) no pipeline do gateway, hoje servido pelo
+`failover` — fica registada como deferimento com eixo (**DEF-271**, `REGISTO-Deferimentos`)
+e é **pré-existente a AOS-269**: o ticket entregou a máquina completa (portas de factores,
+tabela assinada, guard-tests de determinismo, cenários de soberania), não o wiring de um
+router que nunca esteve ligado. Enquanto essa dívida não fechar, o scoring **não tem efeito
+em produção**, e é isso — não outra coisa — que o ticket declara.
 
 ## 6. Referências
 

@@ -1,0 +1,23 @@
+{
+  "version": "gw-scoring-weights/v1",
+  "semver": "1.0.0",
+  "default_profile": "balanced",
+  "profiles": [
+    {
+      "name": "balanced",
+      "weights": {"health": 200, "headroom": 150, "cost": 200, "latency": 150, "task_fit": 200, "stability": 100}
+    },
+    {
+      "name": "fast",
+      "weights": {"health": 150, "headroom": 150, "cost": 50, "latency": 400, "task_fit": 150, "stability": 100}
+    },
+    {
+      "name": "cheap",
+      "weights": {"health": 150, "headroom": 150, "cost": 450, "latency": 50, "task_fit": 100, "stability": 100}
+    },
+    {
+      "name": "quality",
+      "weights": {"health": 150, "headroom": 100, "cost": 50, "latency": 100, "task_fit": 450, "stability": 150}
+    }
+  ]
+}

@@ -35,6 +35,19 @@
 //     ANTES de qualquer reserva de slot. Esperar no gate/deps/cartão é gratuito em
 //     concorrência.
 //
+//  5. RAMOS CONDICIONAIS DECIDIDOS UMA SÓ VEZ (ADR-022 §2.1, AOS-270). Quando o
+//     plano declara `conditional_on`, o ramo é avaliado como FUNÇÃO PURA do
+//     RESULTADO REGISTADO da origem (condition.go) — nunca por um LLM, nunca sobre
+//     estado vivo — e a decisão é apensa como facto (`plan.branch_decided`). Numa
+//     passagem posterior, ou num replay, a decisão é LIDA: o avaliador não é
+//     alcançado. Avaliar debita o orçamento da árvore (ADR-008), UMA vez por
+//     decisão. Um ramo não tomado PODA o nó e a sua descendência, com disposição
+//     própria ([OutcomeBranchNotTaken]) em vez de os deixar bloqueados em silêncio.
+//     Fail-closed por omissão: um plano com condições contra um despachante sem as
+//     portas ligadas é RECUSADO ([ErrConditionalUnsupported]) — nunca despachado com
+//     os guardas ignorados.
+//
 // Nada aqui declara tipos de evento novos: o domínio `aos.planner.v1` é reutilizado
-// de plannerevents (ex.: [plannerevents.MaterializedPayload] em [PlanFrom]).
+// de plannerevents (ex.: [plannerevents.MaterializedPayload] em [PlanFrom],
+// [plannerevents.BranchDecidedPayload] em [EventJournal]).
 package plandispatch

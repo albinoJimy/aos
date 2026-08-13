@@ -18,8 +18,27 @@ const (
 	ReasonMalformedNode            Reason = "malformed_node"             // node rejeitado pelo DAG (defesa)
 	ReasonInvalidNodeID            Reason = "invalid_node_id"            // node_id fora da grammar de identificador estrutural
 
+	// Regra 1-bis — arestas condicionais (ADR-022 §2.1, AOS-270).
+	ReasonDanglingConditional          Reason = "dangling_conditional"           // conditional_on.from para node inexistente
+	ReasonConditionalShadowsDependency Reason = "conditional_shadows_dependency" // a mesma origem em depends_on E conditional_on
+	// ReasonVerdictUnsupported — o plano ramifica sobre o observável `verdict` e a
+	// SEMÂNTICA DE SISTEMA do veredicto (read-only, produtor ≠ verificador, schema
+	// tipado) ainda não existe: é AOS-271. Ver [verdictSupported].
+	ReasonVerdictUnsupported Reason = "verdict_unsupported"
+
+	// Regra 2-bis — alcançabilidade dos ramos (ADR-022 §2.1).
+	// ReasonUnreachableJunction — a ancestralidade do nó exige DOIS ramos
+	// MUTUAMENTE EXCLUSIVOS sobre a MESMA origem, logo o nó é inalcançável em
+	// qualquer execução. Ver [checkBranchReachability].
+	ReasonUnreachableJunction Reason = "unreachable_junction"
+
 	// Regra 2 — aciclicidade (reutiliza AOS-025).
 	ReasonCycle Reason = "cycle"
+	// ReasonConditionalCycle — o ciclo FECHA-SE numa aresta *condicional* (o «ciclo
+	// disfarçado de condicional», ADR-022 §5). Sub-código distinto de [ReasonCycle]
+	// de propósito: o feedback tem de dizer QUAL canal de aresta fechou o ciclo, e o
+	// teste adversarial prova que foi a condicional — não uma coincidência.
+	ReasonConditionalCycle Reason = "conditional_cycle"
 
 	// Regra 3 — resolução de tools contra o snapshot pinado.
 	ReasonToolUnknown        Reason = "tool_unknown"         // nome+versão ausentes do snapshot

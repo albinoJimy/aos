@@ -75,6 +75,15 @@ type Node struct {
 	// RiskClass é ADVISORY (ver [RiskClass]): proposta do LLM que só eleva o piso
 	// derivado em AOS-232, nunca o baixa.
 	RiskClass RiskClass `json:"risk_class"`
+	// ConditionalOn são as arestas CONDICIONAIS de ADR-022 §2.1 (AOS-270): arestas
+	// origem→este-nó guardadas por uma expressão do subconjunto fechado
+	// (condition.go). OPCIONAL e ADITIVO: a ausência do campo (o caso de todos os
+	// planos existentes) significa «sem condições» e deixa a semântica de despacho
+	// exactamente como estava — por isso a extensão NÃO consome um MAJOR de
+	// `plan_version` (ver [CurrentPlanVersion] e o comentário de compatibilidade em
+	// [Decode]). Tal como `depends_on`, a existência da origem, a aciclicidade e a
+	// não-sobreposição com `depends_on` são AOS-231; aqui valida-se só a forma.
+	ConditionalOn []ConditionalEdge `json:"conditional_on,omitempty"`
 }
 
 // PlannerMeta são os metadados de topo do planeamento, pinados para
@@ -207,6 +216,12 @@ func (d PlanDocument) validateShape() error {
 				return fmt.Errorf("%w: %q em %q", ErrInvalidDependsOn, dep, n.NodeID)
 			}
 			deps[dep] = struct{}{}
+		}
+		// Arestas condicionais (ADR-022 §2.1): forma da gramática do subconjunto
+		// fechado. A semântica de grafo (origem existente, ciclo, sobreposição com
+		// `depends_on`) fica para AOS-231, como em `depends_on`.
+		if err := validateConditional(n.NodeID, n.ConditionalOn); err != nil {
+			return err
 		}
 	}
 	return nil

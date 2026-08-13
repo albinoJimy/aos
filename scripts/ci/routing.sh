@@ -17,12 +17,34 @@
 #                          failover intra; sem intra → REJEIÇÃO (nunca cross-border);
 #   5. CROSS-BORDER        — failover cross-border BLOQUEADO fail-closed, com DENY
 #                          registado e ATRIBUÍVEL a principal + board (audit WORM AOS-011).
+#   6. SCORING/GUARDAS     — (AOS-269, ADR-021) nenhum peso, por mais extremo, elege um
+#                          candidato cross-border ou um modelo fora da allowlist: as
+#                          guardas correm ANTES do ranking e NÃO são factores;
+#   7. SCORING/DETERMINISMO — a decisão pontuada é FUNÇÃO PURA dos inputs (repetição
+#                          byte-a-byte) e o caminho de decisão não tem floats, rand nem
+#                          relógio (provado por análise AST do código, com self-check
+#                          de não-vacuidade sobre um pacote que usa floats);
+#   8. SCORING/FAIL-CLOSED — com o scoring COMPOSTO mas sem tabela de pesos válida e
+#                          ASSINADA, o router RECUSA (nunca pesos implícitos); sem o
+#                          scoring composto, o comportamento AOS-059 fica INALTERADO
+#                          (postura de compatibilidade opt-in declarada);
+#   9. SCORING/SATURAÇÃO   — (remediação) uma região SATURADA, ou um erro transitório
+#                          de leitura de carga, é PRESSÃO (factor 0) e não uma quarta
+#                          guarda: a disposição é a MESMA com e sem scoring, nunca uma
+#                          rejeição permanente atribuída à allowlist;
+#  10. SCORING/COERÊNCIA   — (remediação) depois de uma degradação por orçamento, o
+#                          score e os factores registados descrevem o modelo
+#                          DESPACHADO (a calibração offline não aprende do errado);
+#  11. SCORING/INTENÇÃO    — (remediação) o perfil de pesos é seleccionável POR PEDIDO
+#                          e um perfil desconhecido é recusa fail-closed; a semântica
+#                          de CLASSE de AOS-059 (batch não paga o bónus `Fast`) não se
+#                          perde ao armar o scoring.
 # Cada cenário tem um META-TESTE que, com o controlo CONTORNADO, deixa o ataque PASSAR
 # (prova de detecção não-vácua — não green-vazio).
 #
 # É o análogo, para o ROTEAMENTO/FAILOVER, dos gates supplychain (AOS-054), memory
 # (AOS-044) e replay (AOS-024): fail-closed e NÃO-VAZIO. Usa require_tests (lib.sh) para
-# exigir que CADA teste obrigatório — os 5 CENÁRIOS + os 8 META-TESTES (detecção) + o
+# exigir que CADA teste obrigatório — os 11 CENÁRIOS + os 10 META-TESTES (detecção) + o
 # relatório — tenha EFECTIVAMENTE corrido (não basta o exit 0; um -run que não casasse
 # nada passaria vazio). O self-test (scripts/ci/selftest.sh, secção G) prova que um
 # cenário DESBLOQUEADO torna este gate VERMELHO.
@@ -41,7 +63,8 @@ SUITE_PKG="./routingtests/..."
 # Sobreponível por ambiente APENAS PARA APERTAR: piso FLOOR_MODULE_COVERAGE_MIN (AOS-199).
 gate_threshold ROUTING_COVERAGE_MIN 80 "$FLOOR_MODULE_COVERAGE_MIN" 100 "%" || exit 1
 
-# Testes OBRIGATÓRIOS: os 5 cenários + os 8 meta-testes (detecção) + o relatório.
+# Testes OBRIGATÓRIOS: os 11 cenários (5 de AOS-063 + 3 de scoring AOS-269 + 3 de
+# remediação da auditoria adversarial) + os 10 meta-testes (detecção) + o relatório.
 # require_tests exige que TODOS tenham corrido (fail-closed contra vacuous pass).
 REQUIRED=(
   TestScenario1_Saturation_LeastLoaded_NoAggregateCollapse
@@ -49,6 +72,12 @@ REQUIRED=(
   TestScenario3_Degradation_ShedDeferDegradeReject
   TestScenario4_Failover_IntraBoundary_And_Reject
   TestScenario5_CrossBorder_Blocked_DenyAttributable
+  TestScenario6_Scoring_GuardsFirstNeverElectsCrossBorderOrNonAllowlisted
+  TestScenario7_Scoring_PureFunctionDeterministicNoFloats
+  TestScenario8_Scoring_FailClosedWithoutSignedWeights
+  TestScenario9_Scoring_SaturationIsPressureNotGuard
+  TestScenario10_Scoring_DegradationRescoresChosenTier
+  TestScenario11_Scoring_ProfilePerRequestAndClass
   TestMetaDetects_AggregateCollapse
   TestMetaDetects_BlindUnderSaturation
   TestMetaDetects_IncapableTierWhenCapabilityIgnored
@@ -57,6 +86,8 @@ REQUIRED=(
   TestMetaDetects_AdmitWhenAdmissionOffCostExceedsCeiling
   TestMetaDetects_FailoverCrossBorderWhenBoundaryCollapsed
   TestMetaDetects_CrossBorderRoutedWhenSovereigntyBypassed
+  TestMetaDetects_ScoringElectsCrossBorderWhenGuardsBypassed
+  TestMetaDetects_TamperedWeightsFlipDecisionWhenSignatureIgnored
   TestSuiteReportEmitted
 )
 # Regex ancorado (^Test…$) por nome, unido por '|': casa EXACTAMENTE os obrigatórios e
@@ -64,7 +95,39 @@ REQUIRED=(
 # apanhar bónus por substring.
 RE="^($(IFS='|'; echo "${REQUIRED[*]}"))\$"
 
-log_gate "routing (AOS-063) · 5 cenários adversariais de roteamento/failover fail-closed"
+log_gate "routing (AOS-063 + AOS-269) · 11 cenários adversariais de roteamento/failover/scoring fail-closed"
+
+# (0) ARTEFACTO COMPORTAMENTAL — a tabela de pesos do scoring entra no ciclo ADR-012.
+# ADR-021 §5 exige «alteração de pesos = bump de versão + passagem no eval-gate ANTES
+# de produção». A assinatura ed25519 prova AUTENTICIDADE (quem assinou), não
+# GOVERNANÇA (que a mudança foi versionada e avaliada): quem tem a chave offline pode
+# reassinar pesos novos mantendo o mesmo `semver`, e nada ficaria vermelho. Este passo
+# fecha isso do lado do CI: se weights_table.json diverge do baseline commitado, o
+# campo `semver` TEM de subir estritamente. (O admission control do eval-gate sobre a
+# tabela é a segunda metade e está declarada como PROCEDIMENTAL em tecnica/06 §6.1 —
+# ver DEF-269-EVALGATE em docs/governance/REGISTO-Deferimentos.md.)
+WEIGHTS_JSON="$GW_MOD/policy/weights/weights_table.json"
+semver_of() { printf '%s' "$1" | tr -d ' \n' | sed -n 's/.*"semver":"\([0-9][0-9.]*\)".*/\1/p'; }
+semver_num() { printf '%s' "$1" | awk -F. '{printf "%d%03d%03d", $1, $2, $3}'; }
+if git -C "$REPO_ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1 \
+   && git -C "$REPO_ROOT" cat-file -e "HEAD:$WEIGHTS_JSON" 2>/dev/null; then
+  base_raw="$(git -C "$REPO_ROOT" show "HEAD:$WEIGHTS_JSON")"
+  head_raw="$(cat "$REPO_ROOT/$WEIGHTS_JSON")"
+  if [ "$base_raw" != "$head_raw" ]; then
+    base_sv="$(semver_of "$base_raw")"; head_sv="$(semver_of "$head_raw")"
+    if [ -z "$base_sv" ] || [ -z "$head_sv" ]; then
+      log_fail "tabela de pesos sem campo semver legivel (ADR-012)"
+      exit 1
+    fi
+    if [ "$(semver_num "$head_sv")" -le "$(semver_num "$base_sv")" ]; then
+      log_fail "tabela de pesos ALTERADA sem bump de SemVer (${base_sv} -> ${head_sv}): ADR-021 §5 exige bump + eval-gate ANTES de producao"
+      exit 1
+    fi
+    log_ok "tabela de pesos alterada COM bump de SemVer (${base_sv} -> ${head_sv})"
+  else
+    log_ok "tabela de pesos inalterada face ao baseline commitado (semver $(semver_of "$head_raw"))"
+  fi
+fi
 
 # (1) require_tests: os testes obrigatórios (incl. meta-testes) CORRERAM e passaram
 # (não-vazio, fail-closed). É o coração do gate — a prova de que a suite não é vacuous.
@@ -114,4 +177,4 @@ if ! printf '%s' "$report" | grep -Eq '"pass":true[[:space:]]*}[[:space:]]*$'; t
   exit 1
 fi
 
-log_ok "routing: verde (5 cenários de roteamento/failover + deny cross-border atribuível + meta-testes de detecção)"
+log_ok "routing: verde (11 cenários de roteamento/failover/scoring + deny cross-border atribuível + guardas antes do score + meta-testes de detecção)"

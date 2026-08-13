@@ -2,6 +2,131 @@ package plandispatch
 
 import "context"
 
+// TerminalOutcome é o ESTADO TERMINAL registado de um nó — o observável
+// `terminal_state` de ADR-022 §2.1. Os símbolos são EXACTAMENTE os do enum fechado
+// do schema ([plan.EnumComplete]/[plan.EnumFailed]): a avaliação compara símbolos
+// do mesmo alfabeto, sem tabela de tradução que pudesse divergir.
+type TerminalOutcome string
+
+const (
+	// TerminalUnset — sentinela fail-closed: sem estado terminal registado, nenhum
+	// predicado sobre `terminal_state` é satisfeito.
+	TerminalUnset TerminalOutcome = ""
+	// TerminalComplete — o nó terminou com sucesso.
+	TerminalComplete TerminalOutcome = "complete"
+	// TerminalFailed — o nó terminou em falha.
+	TerminalFailed TerminalOutcome = "failed"
+)
+
+// VerdictValue é o veredicto ESTRUTURADO registado por um nó — o observável
+// `verdict` de ADR-022 §2.1. O veredicto tipado do papel verificador (produtor,
+// schema e emissão) é AOS-271; aqui consome-se apenas o símbolo.
+type VerdictValue string
+
+const (
+	// VerdictAbsent — sentinela fail-closed: sem veredicto registado, NENHUM
+	// predicado sobre `verdict` é satisfeito — nem sequer um `ne`. A ausência de
+	// observável não é um valor que se possa comparar: é razão para não ramificar.
+	VerdictAbsent VerdictValue = ""
+	VerdictPass   VerdictValue = "pass"
+	VerdictFail   VerdictValue = "fail"
+)
+
+// NodeResultRecord é o RESULTADO REGISTADO de um nó terminal — a ÚNICA superfície
+// sobre a qual uma condição de ADR-022 §2.1 pode ser avaliada. É um retrato
+// IMUTÁVEL de um facto já apenso (não uma vista viva): é essa imutabilidade que
+// torna a avaliação uma função pura e a decisão de ramo estável entre passagens.
+//
+// Métricas são INTEIRAS por desenho (sem vírgula flutuante): uma comparação sobre
+// float não é reproduzível byte-a-byte entre plataformas e partiria ADR-010.
+type NodeResultRecord struct {
+	// Terminal é o estado terminal registado ([TerminalUnset] se não houver).
+	Terminal TerminalOutcome
+	// Verdict é o veredicto estruturado registado ([VerdictAbsent] se não houver).
+	Verdict VerdictValue
+	// Metrics são as métricas DECLARADAS do resultado, por nome. Uma métrica ausente
+	// torna o predicado FALSO (fail-closed na direcção de não despachar).
+	Metrics map[string]int64
+}
+
+// ResultView é a PORTA de LEITURA do resultado registado de um nó. Simétrica de
+// [LifecycleView] na assimetria que interessa: LÊ factos, nunca os escreve. É a
+// fronteira que garante que o despachante avalia o RESULTADO REGISTADO (ADR-022
+// §2.1) e não um estado vivo, opinião de um agente ou saída de um LLM.
+type ResultView interface {
+	// Result devolve o resultado registado de um nó. ok=false significa «ainda não
+	// registado» — a condição fica INDECIDA (o nó espera), nunca falsa por omissão de
+	// leitura. Um erro é fail-closed e SURFACED pela passagem de despacho.
+	Result(ctx context.Context, planID, nodeID string) (NodeResultRecord, bool, error)
+}
+
+// BranchDecision é a decisão de ramo de UM nó, tal como fica REGISTADA. É o
+// artefacto que torna o replay uma LEITURA: o despachante consulta-a antes de
+// avaliar seja o que for, e uma decisão presente vence sempre a avaliação.
+type BranchDecision struct {
+	// NodeID é o nó cujas arestas condicionais foram avaliadas.
+	NodeID string
+	// Taken indica se o ramo foi tomado (conjunção satisfeita).
+	Taken bool
+	// ConditionDigest é [plan.ConditionDigest] das arestas avaliadas. AMARRA a
+	// decisão à expressão exacta: um digest divergente no replay significa documento
+	// alterado, e um plano alterado não é um replay ([ErrBranchDigestMismatch]).
+	ConditionDigest string
+	// Sources são os node_ids das origens avaliadas, pela ordem declarada.
+	Sources []string
+}
+
+// BranchJournal é a PORTA do registo APPEND-ONLY das decisões de ramo. É o eixo do
+// determinismo de ADR-022 §2.4(3): a decisão é um FACTO, não um cálculo repetido.
+//
+// A leitura é do PLANO INTEIRO de uma vez ([BranchJournal.Decisions]) e não por nó:
+// uma passagem de despacho consulta o registo UMA vez, o que mantém o custo linear
+// no stream e — mais importante — dá à passagem uma vista COERENTE (todas as
+// decisões do mesmo instante), em vez de um mosaico de leituras intercaladas.
+type BranchJournal interface {
+	// Decisions devolve as decisões JÁ REGISTADAS do plano, indexadas por node_id.
+	Decisions(ctx context.Context, planID string) (map[string]BranchDecision, error)
+	// Record apensa UMA decisão. Tem de ser IDEMPOTENTE por (plan_id, node_id): a
+	// decisão de ramo de um nó é um facto único e imutável do stream.
+	Record(ctx context.Context, planID string, d BranchDecision) error
+}
+
+// BranchBudget é a PORTA de DÉBITO do orçamento da árvore pela avaliação de
+// condições (ADR-022 §2.4(4) / ADR-008): avaliar CUSTA, e o custo entra na mesma
+// hierarquia CAS de tokens/$ que qualquer outro trabalho — não há trabalho grátis
+// escondido no despachante.
+//
+// O débito acompanha a DECISÃO, não a tentativa: só se debita quando a condição
+// fica DECIDIDA (e, por isso, registada uma única vez). Uma condição ainda indecisa
+// — origem por terminar — não debita nada, o que impede que re-invocações do
+// escalonador enquanto se espera drenem a árvore.
+//
+// # PORQUE DUAS FASES (e não um único Debit)
+//
+// «Por decisão, não por tentativa» só se sustenta se o pagamento estiver amarrado
+// ao FACTO, e o facto é a escrita no journal — que pode falhar. Com um débito
+// único confirmado ANTES do registo, uma indisponibilidade do Event Store dava N
+// débitos pelo mesmo nó em N re-invocações do escalonador (o dreno). A porta é,
+// por isso, a mesma disciplina Reserve→Commit do ADR-008 que o [budget.Reserver]
+// já impõe internamente, apenas exposta: RESERVA (verifica headroom em toda a
+// ancestralidade, atomicamente) → REGISTA o facto → CONFIRMA (ou LIBERTA, se o
+// registo falhar).
+//
+// A reserva é identificada por (plan_id, node_id) — não há handle opaco a
+// transportar — porque a decisão de ramo de um nó é, por construção, ÚNICA: a
+// idempotency_key do facto `plan.branch_decided` é a mesma chave.
+type BranchBudget interface {
+	// ReserveConditionEval reserva o custo de UMA avaliação decidida do nó, sem o
+	// confirmar. Um erro (tipicamente falta de headroom) é fail-closed: a decisão
+	// NÃO é tomada nem registada, e o nó continua em espera.
+	ReserveConditionEval(ctx context.Context, planID, nodeID string) error
+	// CommitConditionEval confirma a reserva depois de o facto estar apenso.
+	CommitConditionEval(ctx context.Context, planID, nodeID string) error
+	// ReleaseConditionEval devolve a reserva quando o facto NÃO chegou a ser apenso
+	// — sem decisão registada não há nada a pagar.
+	ReleaseConditionEval(ctx context.Context, planID, nodeID string) error
+}
+
 // NodeState é o estado do ciclo de vida de um nó, LIDO da autoridade (a máquina de
 // estados durável do run, AOS-017) — nunca escrito por este pacote. A ordem de
 // declaração começa no sentinela fail-closed: um estado desconhecido ou um erro da

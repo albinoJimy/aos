@@ -27,6 +27,23 @@ var (
 	// ErrDispatchSink — o sink falhou o despacho de um nó. O slot é devolvido e o erro
 	// é propagado (nunca silencioso).
 	ErrDispatchSink = errors.New("plandispatch: sink recusou o despacho")
+	// ErrConditionalUnsupported — o plano declara arestas condicionais (ADR-022 §2.1)
+	// mas o Dispatcher não foi construído com as portas que as suportam
+	// ([WithConditionalBranches]). FAIL-CLOSED POR OMISSÃO: um despachante que não
+	// sabe avaliar um guarda NÃO o ignora — recusa o plano inteiro. Ignorar seria
+	// despachar nós que o plano condicionou, que é precisamente o efeito que a
+	// extensão existe para impedir.
+	ErrConditionalUnsupported = errors.New("plandispatch: plano com arestas condicionais num despachante sem suporte de ramos")
+	// ErrBranchDigestMismatch — há uma decisão de ramo REGISTADA para o nó, mas o
+	// digest da condição no documento diverge do digest registado: o documento mudou
+	// desde a decisão. Não é um replay — é um plano diferente, e um plano diferente
+	// volta ao gate. Fail-closed (ADR-010: o replay reproduz, não reconcilia).
+	ErrBranchDigestMismatch = errors.New("plandispatch: digest da condição diverge da decisão de ramo registada")
+	// ErrBranchJournal — o registo append-only das decisões de ramo falhou (leitura
+	// ou escrita). Sem o facto durável não há garantia de replay sem re-avaliação,
+	// pelo que a passagem ABORTA em vez de despachar sobre uma decisão que ninguém
+	// conseguiu registar.
+	ErrBranchJournal = errors.New("plandispatch: registo de decisões de ramo indisponível")
 )
 
 // Node é um nó despachável do plano APROVADO/MATERIALIZADO. Content-free: só o id, as
@@ -39,6 +56,11 @@ type Node struct {
 	// cartão resolvido ([CardOracle.Cleared]). Um nó safe/gray sem gap é inerentemente
 	// autorizado quanto a cartão.
 	RequiresCard bool
+	// ConditionalOn são as arestas CONDICIONAIS do documento APROVADO (ADR-022 §2.1).
+	// Content-free como o resto do nó: a expressão é feita de enums fechados, ids e
+	// inteiros — nada de texto livre do modelo. Vazio (o caso de todos os planos
+	// pré-ADR-022) ⇒ o despacho comporta-se exactamente como antes.
+	ConditionalOn []plan.ConditionalEdge
 }
 
 // Plan é o conjunto de nós de UM plano a despachar. É a projecção do que o ORQ
@@ -66,6 +88,17 @@ const (
 	// OutcomeInflightOrDone — o nó já não está pendente (running/complete/failed) ou o
 	// seu estado é desconhecido: nada a despachar.
 	OutcomeInflightOrDone Outcome = "inflight_or_done"
+	// OutcomeWaitingCondition — o nó tem arestas condicionais cuja decisão ainda NÃO
+	// é possível: alguma origem não tem resultado registado, ou o débito de orçamento
+	// da avaliação não passou. Espera — e, como as outras esperas, NÃO consome
+	// headroom.
+	OutcomeWaitingCondition Outcome = "waiting_condition"
+	// OutcomeBranchNotTaken — a condição foi DECIDIDA como falsa (directamente, ou
+	// por herança de uma origem cujo ramo não foi tomado): o nó não será despachado
+	// neste plano. É um estado TERMINAL da passagem, não uma espera — os resultados
+	// registados são imutáveis, pelo que a decisão não muda. Voltar a este nó é
+	// replan de subgrafo (AOS-239), nunca uma re-avaliação.
+	OutcomeBranchNotTaken Outcome = "branch_not_taken"
 )
 
 // NodeResult é a disposição de um nó nesta passagem (falsificável: o teste lê o
@@ -83,6 +116,16 @@ type Result struct {
 	Results      []NodeResult
 	Dispatched   int
 	Deferred     int
+	// NotTaken conta os nós PODADOS nesta passagem ([OutcomeBranchNotTaken]) — o
+	// ramo decidido como falso e a sua descendência. Contador próprio (e não uma
+	// variante de Deferred) porque a disposição é oposta: um diferido volta, um
+	// podado não.
+	NotTaken int
+	// BranchesEvaluated conta as decisões de ramo TOMADAS E REGISTADAS nesta
+	// passagem — as que debitaram orçamento. Uma passagem de replay, que lê as
+	// decisões do registo, deixa este contador a ZERO: é a falsificação directa de
+	// «o replay não re-avalia».
+	BranchesEvaluated int
 }
 
 // Dispatcher despacha nós de um plano aprovado, a jusante do gate. SEM ESTADO
@@ -94,28 +137,85 @@ type Dispatcher struct {
 	headroom  Headroom
 	cards     CardOracle
 	sink      DispatchSink
+	// Portas das ARESTAS CONDICIONAIS (ADR-022 §2.1). OPCIONAIS por construção — um
+	// despachante sem elas continua a ser o de AOS-238 e despacha planos sem
+	// condições exactamente como antes. Fail-closed por omissão: um plano QUE USE
+	// condições contra um despachante sem estas portas é recusado
+	// ([ErrConditionalUnsupported]), nunca despachado com os guardas ignorados.
+	results ResultView
+	journal BranchJournal
+	meter   BranchBudget
 }
 
-// NewDispatcher constrói um Dispatcher. TODAS as portas são obrigatórias — a sua
-// ausência é fail-closed ([ErrDeps]).
-func NewDispatcher(gate Gate, lifecycle LifecycleView, headroom Headroom, cards CardOracle, sink DispatchSink) (*Dispatcher, error) {
+// Option configura capacidades OPCIONAIS do [Dispatcher]. Variádica em
+// [NewDispatcher] de propósito: as cinco portas de AOS-238 continuam obrigatórias e
+// posicionais (nenhum chamador existente muda), e o que é opcional declara-se.
+type Option func(*Dispatcher)
+
+// WithConditionalBranches liga o suporte de ARESTAS CONDICIONAIS (ADR-022 §2.1,
+// AOS-270). As TRÊS portas andam juntas e são indivisíveis:
+//
+//   - `results` é o RESULTADO REGISTADO sobre o qual a condição é avaliada;
+//   - `journal` é o registo append-only da decisão — sem ele não há replay sem
+//     re-avaliação, logo não há conformidade com ADR-010;
+//   - `meter` é o débito de orçamento da árvore (ADR-008) — sem ele a avaliação
+//     seria trabalho grátis escondido no despachante.
+//
+// Passar uma delas a nil é o mesmo que não ligar nada (fail-closed): a opção é
+// ignorada e um plano com condições volta a ser recusado por
+// [ErrConditionalUnsupported]. Não há meio-suporte.
+func WithConditionalBranches(results ResultView, journal BranchJournal, meter BranchBudget) Option {
+	return func(d *Dispatcher) {
+		if results == nil || journal == nil || meter == nil {
+			return
+		}
+		d.results, d.journal, d.meter = results, journal, meter
+	}
+}
+
+// NewDispatcher constrói um Dispatcher. TODAS as portas posicionais são
+// obrigatórias — a sua ausência é fail-closed ([ErrDeps]). As capacidades
+// opcionais ligam-se por [Option].
+func NewDispatcher(gate Gate, lifecycle LifecycleView, headroom Headroom, cards CardOracle, sink DispatchSink, opts ...Option) (*Dispatcher, error) {
 	if gate == nil || lifecycle == nil || headroom == nil || cards == nil || sink == nil {
 		return nil, ErrDeps
 	}
-	return &Dispatcher{gate: gate, lifecycle: lifecycle, headroom: headroom, cards: cards, sink: sink}, nil
+	d := &Dispatcher{gate: gate, lifecycle: lifecycle, headroom: headroom, cards: cards, sink: sink}
+	for _, o := range opts {
+		if o != nil {
+			o(d)
+		}
+	}
+	return d, nil
+}
+
+// conditionalReady indica se as três portas de ramos condicionais estão ligadas.
+func (d *Dispatcher) conditionalReady() bool {
+	return d.results != nil && d.journal != nil && d.meter != nil
 }
 
 // Dispatch corre UMA passagem de despacho sobre o plano, DETERMINISTICAMENTE:
 //
 //  1. GATE — se o plano não está materializado, TODOS os nós ficam em espera de gate
 //     e NENHUM slot de headroom é tocado (fail-closed, a jusante do gate);
+//
 //  2. ordena os nós por node_id (ordem canónica, independente da ordem do slice);
+//
 //  3. lê o estado de cada nó UMA vez (vista do ciclo de vida) e calcula a
-//     elegibilidade: pendente + deps concluídas + (se exige) cartão resolvido. Esta
-//     avaliação NÃO toca no headroom — esperar é gratuito em concorrência;
+//     elegibilidade: pendente + ramo condicional tomado + deps concluídas + (se
+//     exige) cartão resolvido. Esta avaliação NÃO toca no headroom — esperar é
+//     gratuito em concorrência;
+//
+//     3-bis. RAMOS CONDICIONAIS (ADR-022 §2.1, AOS-270), quando o plano os declara: a
+//     decisão de cada nó é LIDA do registo append-only se já for um facto, e só é
+//     avaliada — pura, sobre o resultado REGISTADO — se ainda não existir. Uma
+//     decisão nova debita o orçamento da árvore (ADR-008) e é apensa como
+//     `plan.branch_decided`; um ramo não tomado PODA o nó e a sua descendência;
+//
 //  4. só para os nós ELEGÍVEIS, e por ordem, tenta [Headroom.Acquire] (re-verificação
 //     TOCTOU atómica). O primeiro false (pressão) adia esse e os restantes elegíveis
 //     (spawn diferido) — nunca oversubscreve;
+//
 //  5. um Acquire bem-sucedido entrega o nó ao [DispatchSink]. Uma falha do sink
 //     DEVOLVE o slot ([Headroom.Release]) e propaga o erro (nunca silencioso, nunca
 //     spawn parcial silencioso).
@@ -160,15 +260,39 @@ func (d *Dispatcher) Dispatch(ctx context.Context, p Plan) (Result, error) {
 		states[n.NodeID] = st
 	}
 
+	// 3-bis) RAMOS CONDICIONAIS (ADR-022 §2.1). Decide-se ANTES da elegibilidade e
+	// numa fase própria: a decisão de um nó pode PODAR outros (a descendência de um
+	// ramo não tomado), o que é uma propriedade do GRAFO e não de um nó isolado.
+	// Também não toca no headroom — decidir um ramo não é despachar.
+	res := Result{Materialized: true, Results: make([]NodeResult, 0, len(nodes))}
+	branches, evaluated, err := d.decideBranches(ctx, p, nodes, states)
+	if err != nil {
+		return Result{}, err
+	}
+	res.BranchesEvaluated = evaluated
+
 	// Calcula a elegibilidade SEM tocar no headroom. Os não-elegíveis recebem já o seu
 	// outcome de espera; os elegíveis entram na fila de Acquire por ordem canónica.
-	res := Result{Materialized: true, Results: make([]NodeResult, 0, len(nodes))}
 	eligible := make([]Node, 0, len(nodes))
 	for _, n := range nodes {
 		// Só um nó PENDENTE é candidato. Running/complete/failed/unknown → nada a fazer.
 		if states[n.NodeID] != NodePending {
 			res.Results = append(res.Results, NodeResult{NodeID: n.NodeID, Outcome: OutcomeInflightOrDone, Reason: reasonForState(states[n.NodeID])})
 			continue
+		}
+		// Ramo condicional: um ramo NÃO TOMADO é terminal (o nó sai do plano) e um
+		// ramo por decidir é espera. Ambos ANTES das dependências, porque são o sinal
+		// mais forte: um nó podado nunca correrá, por muito que as suas deps concluam.
+		switch branches[n.NodeID] {
+		case branchNotTaken:
+			res.Results = append(res.Results, NodeResult{NodeID: n.NodeID, Outcome: OutcomeBranchNotTaken, Reason: "ramo condicional não tomado"})
+			res.NotTaken++
+			continue
+		case branchUndecided:
+			if len(n.ConditionalOn) > 0 {
+				res.Results = append(res.Results, NodeResult{NodeID: n.NodeID, Outcome: OutcomeWaitingCondition, Reason: "condição por decidir (origem sem resultado registado ou orçamento indisponível)"})
+				continue
+			}
 		}
 		// Dependências: TODAS têm de estar CONCLUÍDAS. Fail-closed: uma dep desconhecida
 		// (não presente no plano/estado) conta como não satisfeita.
@@ -284,7 +408,10 @@ func validatePlan(p Plan) error {
 		ids[n.NodeID] = struct{}{}
 	}
 	// Arestas depends_on têm de referir nós do PRÓPRIO conjunto materializado (o SCH
-	// não despacha para fora do que o ORQ materializou).
+	// não despacha para fora do que o ORQ materializou). O MESMO vale para as arestas
+	// CONDICIONAIS: uma condição sobre um nó fora do conjunto materializado seria um
+	// oráculo externo disfarçado de aresta, e o despachante não tem — nem deve ter —
+	// como o observar.
 	for _, n := range p.Nodes {
 		for _, dep := range n.DependsOn {
 			if dep == "" {
@@ -292,6 +419,14 @@ func validatePlan(p Plan) error {
 			}
 			if _, ok := ids[dep]; !ok {
 				return fmt.Errorf("%w: depends_on %q do nó %q fora do conjunto materializado", ErrInvalidPlan, dep, n.NodeID)
+			}
+		}
+		for _, ce := range n.ConditionalOn {
+			if ce.From == "" {
+				return fmt.Errorf("%w: conditional_on vazio no nó %q", ErrInvalidPlan, n.NodeID)
+			}
+			if _, ok := ids[ce.From]; !ok {
+				return fmt.Errorf("%w: conditional_on %q do nó %q fora do conjunto materializado", ErrInvalidPlan, ce.From, n.NodeID)
 			}
 		}
 	}
@@ -305,10 +440,17 @@ func validatePlan(p Plan) error {
 	return nil
 }
 
-// findDependencyCycle corre uma DFS a três cores sobre o grafo depends_on. Devolve
-// ("", true) se é acíclico, ou (nodeID, false) num nó envolvido no primeiro ciclo
-// encontrado (auto-dependência incluída: um nó cinzento revisitado). Pressupõe o grafo
-// já validado quanto a arestas pendentes.
+// findDependencyCycle corre uma DFS a três cores sobre o grafo de arestas de
+// entrada — `depends_on` UNIDO às origens CONDICIONAIS. Devolve ("", true) se é
+// acíclico, ou (nodeID, false) num nó envolvido no primeiro ciclo encontrado
+// (auto-dependência incluída: um nó cinzento revisitado). Pressupõe o grafo já
+// validado quanto a arestas pendentes.
+//
+// A união é defesa-em-profundidade, não a defesa principal: a autoridade sobre «uma
+// aresta condicional nunca fecha ciclo» é o validador puro (AOS-231), que o impõe
+// no MESMO DAG de AOS-025 ANTES da admissão. Esta segunda linha existe porque
+// [Plan] pode ser construído por wiring que não passe pelo validador, e um ciclo
+// que chegasse aqui ficaria diferido para sempre em silêncio.
 func findDependencyCycle(nodes []Node) (string, bool) {
 	const (
 		white = 0 // não visitado
@@ -317,7 +459,16 @@ func findDependencyCycle(nodes []Node) (string, bool) {
 	)
 	adj := make(map[string][]string, len(nodes))
 	for _, n := range nodes {
-		adj[n.NodeID] = n.DependsOn
+		if len(n.ConditionalOn) == 0 {
+			adj[n.NodeID] = n.DependsOn
+			continue
+		}
+		in := make([]string, 0, len(n.DependsOn)+len(n.ConditionalOn))
+		in = append(in, n.DependsOn...)
+		for _, ce := range n.ConditionalOn {
+			in = append(in, ce.From)
+		}
+		adj[n.NodeID] = in
 	}
 	color := make(map[string]int, len(nodes))
 	var onCycle string
@@ -397,9 +548,12 @@ func PlanFrom(mat plannerevents.MaterializedPayload, doc plan.PlanDocument, need
 			requires = true
 		}
 		out.Nodes = append(out.Nodes, Node{
-			NodeID:       mn.NodeID,
-			DependsOn:    append([]string(nil), dn.DependsOn...),
-			RequiresCard: requires,
+			NodeID:    mn.NodeID,
+			DependsOn: append([]string(nil), dn.DependsOn...),
+			// Arestas condicionais do documento APROVADO (ADR-022 §2.1). Cópia, como
+			// as dependências: o plano de despacho não partilha slices com o documento.
+			ConditionalOn: append([]plan.ConditionalEdge(nil), dn.ConditionalOn...),
+			RequiresCard:  requires,
 		})
 	}
 	return out, nil
