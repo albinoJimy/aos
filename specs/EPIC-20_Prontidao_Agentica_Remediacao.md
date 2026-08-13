@@ -28,7 +28,10 @@
 - **ADR-021 (ratificado 2026-08-13):** AOS-269 *(scoring ponderado determinístico no GW: portas de factores em aritmética inteira, tabela de pesos embebida e assinada com trust anchor pinado, guard-test AST contra float/`rand`/relógio, cenário que prova que nenhum peso elege cross-border)*. **Alcance pela emenda 1.1:** o scoring é composto **por opção** e não tem efeito em produção enquanto o estágio de roteamento não for composto — lacuna **pré-existente**, em **DEF-271**.
 - **ADR-022 (ratificado 2026-08-13) — FECHADO:** AOS-270 *(arestas condicionais; «ciclo disfarçado» rejeitado reutilizando o DAG de AOS-025; replay reproduz o ramo sem re-avaliar)* · AOS-271 *(`role: verifier` com semântica de sistema: read-only por construção, produtor ≠ verificador, veredicto tipado)* · AOS-272 *(payload tipado por aresta: contratos validados estaticamente, taint derivado da **autoridade** e não da palavra do planeador, transporte por referência — nunca blackboard)* · AOS-273 *(`plan_version` 1.2.0 com o carimbo **imposto** pelas features usadas, migração provada nas duas direcções com fixtures congeladas, janela de suporte ancorada em código, golden-sets)* · **DEF-274** *(o gate humano passa a **ver** as extensões — invariante §2.4(5) — em forma canónica e content-free, imposta também no wire)*.
 
-### Abertos (0) — o epic fecha em 34/34
+### Abertos (0 do âmbito original) — o epic fecha em 34/34
+
+> **Precisão de contagem (validação de 2026-08-13):** o âmbito do epic são os **34** tickets `AOS-245..AOS-278`, e esses estão **todos** implementados. A tabela §4 tem hoje **35** linhas porque a remediação deste próprio epic **criou** o **AOS-279** (P3) para dar eixo executável ao **DEF-276** — é um ticket **novo e ABERTO**, derivado do trabalho, não um item do âmbito original por fechar. Não tem secção própria no corpo, de propósito: nasce aqui e vive no backlog.
+
 - **Eixo $ do billing:** ~~AOS-259 *(D2)*~~ **FECHADO** · ~~AOS-260 *(D1)*~~ **FECHADO**. A dimensão de **tokens** está ligada (AOS-256..258, e desde AOS-260 também no turno de modelo); a de **dólares** é **medida** ponta a ponta (AOS-259, tabela do operador em `AOS_MODEL_PRICING_PATH`), **debitada** na árvore de orçamento e **negadora** quando `AOS_BUDGET_MAX_COST_MICRO_USD` está definida (AOS-260). Residuais com eixo: **DEF-277** (curadoria da tabela de preços), **DEF-278** (tecto em `$` admitido um turno tarde no primeiro turno de cada incarnação; orçamento durável por-`run_id`; reclamação de provisão órfã armada e ainda inalcançável) e **DEF-279** (a cobertura de preço é verificada para o par PEDIDO — vale enquanto o inventário do keypool tiver uma só conta/região).
 
 ### Deferidos com eixo (infra-org, fora do código do nó)
@@ -78,9 +81,9 @@ Invariantes congeladas: toda a tool call mediada pelo RM (ADR-002); fail-closed 
 
 ## 3. Critérios de Saída do Epic
 
-- [ ] Nenhum output de tool call é persistido em claro: o step-ledger sela por-titular como o capturer (AOS-245), e o shred/expire apaga ambos (prova: erase → `ErrDecrypt` nos dois registos).
+- [x] Nenhum output de tool call é persistido em claro: o step-ledger sela por-titular como o capturer (AOS-245), e o shred/expire apaga ambos (prova: erase → `ErrDecrypt` nos dois registos). **Verificado na validação de 2026-08-13:** as duas metades estão provadas em ficheiros distintos — o **ledger** em `packages/cmd/aos/aos245_ledger_titular_test.go` (`TestNode_AOS245_ToolOutputSealedInLedger`, asserção `audit.ErrDecrypt` após o erase) e o **capturer** em `packages/cmd/aos/aos093_substrate_erase_test.go` (mesma asserção sobre `OpenContent`). O critério estava por marcar, não por cumprir.
 - [x] O breaker **dispara** no run comum: teste de nó repete a mesma call negada e assere trip **antes** de `MaxTurns` (AOS-251); ligar velocidades sem fonte **aborta o arranque** (AOS-246).
-- [ ] O log durável distingue desfecho de crash: `complete`/`failed` escritos em todos os caminhos; `CheckDeadlines` com caller periódico **que interrompe o run** (AOS-252 — escrito e a correr; falta o teste crash-simulado vs fim-normal, ver AOS-252 CA3).
+- [x] O log durável distingue desfecho de crash: `complete`/`failed` escritos em todos os caminhos; `CheckDeadlines` com caller periódico **que interrompe o run** (AOS-252). **Verificado na validação de 2026-08-13:** a ressalva antiga («falta o teste crash-simulado vs fim-normal») estava obsoleta — o subteste existe em `packages/cmd/aos/aos252_terminal_states_test.go` («crash simulado distingue-se do fim normal») e o próprio AC3 do ticket está `[x]` desde a W1. O critério estava por marcar, não por cumprir.
 - [x] Um crash a meio de um run é retomado por varredura no arranque, sem re-executar efeitos (AOS-253). `NodeService.ResumeInterruptedRuns` (ligada em `main.go` entre `NewNodeService` e `Serve`) compõe o `durable.Resumer` (AOS-015, nunca antes lido), varre os streams em `running` (rasto de crash de AOS-252), reclama o lease via `worker.Assigner` (sem roubo) e retoma pelo replay-then-continue de AOS-021 (`RebuildLedger` + plano de replay); prova de não-double-execution em `aos253_crash_resume_test.go`.
 - [x] Um run com `AOS_BUDGET_MAX_TOKENS` definido é **negado por orçamento** com o deny selado e atribuído, e um run dentro do tecto obtém **permit** — ambos ao nível do nó (AOS-256..258). Prova em `packages/cmd/aos/aos258_budget_permit_node_test.go` (`Bootstrap` real, tecto pela env do operador; permit **com a tool a executar**, deny com `denied_by=budget` + hash-chain verificada, e o mesmo run a permitir e depois negar).
 - [x] O banner declara budget/broker/modelo/autonomia (AOS-248) — postura anunciada = postura ligada.
@@ -961,7 +964,9 @@ Implementar o prompt de exaustão como cidadão do plano de controlo, não como 
 - [x] **(remediação)** A metade «continuar» da decisão tem a MESMA autoridade da metade «parar»: `continue` é uma decisão assinada da mesma rota, com selo WORM próprio, e a **retoma recusa (409) enquanto a pergunta estiver por responder** — sem isto, a resposta arriscada era a única sem assinatura de operador e sem registo de quem a tomou.
 
 ### Estado
-**DESBLOQUEADO — decisões do dono registadas (2026-08-12).** As três decisões que o
+**IMPLEMENTADO e MERGED** (PR #9, 2026-08-13; `exhaustion_prompt.go` + `exhaustion_decision.go` + testes; travão anti-contorno no `resume` com `ErrExhaustionPromptUnanswered`). O texto abaixo descrevia apenas o **desbloqueio** e ficou por reconciliar quando a entrega aconteceu — corrigido na validação de 2026-08-13.
+
+**Decisões do dono registadas (2026-08-12).** As três decisões que o
 desafio A2 numera (i)/(ii)/(iii) — o ticket citava-as como «D4/D5/D6», rótulos que não
 existem no relatório:
 
@@ -1096,7 +1101,7 @@ Preparar a troca mediada: capability nomeada (ou reutilização declarada de `ca
 - [ ] Higiene pré-wiring: reaper de leases (molde `approval_sweeper.go`) e superfície para `Revoke`.
 
 ### Estado
-**DESBLOQUEADO (D7/D8 decididos 2026-08-10: cliente Vault separado `AOS_BROKER_VAULT_*` + consumo in-process v1) — pronto para wave.**
+**IMPLEMENTADO e MERGED** (wave do broker; passo zero de política/identidade + cliente Vault real em `internal/vault` + `AOS_BROKER_VAULT_*`, com a postura declarada no banner — a linha «broker vault / credenciais downstream (AOS-070/AOS-264)» é emitida no arranque). D7/D8 decididos pelo dono em 2026-08-10 (cliente/token Vault **separados** do `AOS_DSAR_VAULT_*`; consumo v1 **in-process**, injecção remota deferida em D8-B). O `Estado` anterior dizia «pronto para wave» e ficou por reconciliar depois da entrega — corrigido na validação de 2026-08-13.
 
 ---
 
