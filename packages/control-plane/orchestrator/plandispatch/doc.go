@@ -47,6 +47,14 @@
 //     portas ligadas é RECUSADO ([ErrConditionalUnsupported]) — nunca despachado com
 //     os guardas ignorados.
 //
+//  6. PAYLOAD LIDO POR CONTRATO, NUNCA POR BLACKBOARD (ADR-022 §2.3, AOS-272). O
+//     [PayloadResolver] entrega a um nó as REFERÊNCIAS dos contratos que ele DECLAROU
+//     consumir — e nada mais: não existe método que devolva «tudo o que há», nem
+//     sequer «tudo o que este produtor publicou». O que atravessa é locator + digest +
+//     tipo + taint + proveniência ([PayloadRef]); o conteúdo obtém-se indo ao registo,
+//     sob a governação desse registo. Fail-closed e TOTAL: um contrato por publicar ou
+//     divergente aborta a resolução inteira — nunca uma entrega parcial silenciosa.
+//
 // Nada aqui declara tipos de evento novos: o domínio `aos.planner.v1` é reutilizado
 // de plannerevents (ex.: [plannerevents.MaterializedPayload] em [PlanFrom],
 // [plannerevents.BranchDecidedPayload] em [EventJournal]).

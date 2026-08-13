@@ -15,43 +15,15 @@ import (
 // [Verdict] com sub-código PRÓPRIO: o feedback ao re-planeamento tem de dizer o que
 // está errado, não «rejeitado».
 
-// verdictSupported é o INTERRUPTOR DATADO do observável `verdict` (ADR-022 §2.2).
-//
-// PORQUE ESTÁ A FALSO. A gramática de AOS-270 aceita `subject: verdict`, mas a
-// SEMÂNTICA DE SISTEMA do veredicto — «read-only por construção», «produtor ≠
-// verificador» (o validador rejeita plano em que o veredicto de um nó é emitido
-// pelo próprio produtor ou pela sua sub-árvore) e «veredicto ESTRUTURADO como
-// evento» — é AOS-271, que está ABERTO. Sem essa metade, um plano pode declarar
-// `conditional_on: [{from: A, when: [{subject: verdict, op: eq, enum: pass}]}]`
-// onde A é o próprio produtor do trabalho: uma superfície de ramificação sobre
-// AUTO-CERTIFICAÇÃO, que é precisamente o que o invariante de §2.2 existe para
-// impedir. Nenhum ponto do repositório produz [plandispatch.NodeResultRecord]
-// com veredicto, pelo que hoje um ramo desses avaliaria «ausente ⇒ falso» e PODARIA
-// o ramo em silêncio — pior do que recusar.
-//
-// FAIL-CLOSED NO INTERVALO, e loud: recusa-se o plano na ADMISSÃO, com sub-código
-// atribuível. AOS-271 põe isto a `true` no MESMO commit em que impõe produtor ≠
-// verificador — a constante existe para que a dependência dura AOS-270→AOS-271
-// seja um facto do código, e não uma nota num spec.
-const verdictSupported = false
-
-// checkVerdictSupport — REGRA 1-ter: recusa ramos sobre `verdict` enquanto a
-// semântica de sistema do veredicto não existir (ver [verdictSupported]). Puro.
-func checkVerdictSupport(doc plan.PlanDocument) Verdict {
-	if verdictSupported {
-		return accepted
-	}
-	for _, n := range doc.Nodes {
-		for _, ce := range n.ConditionalOn {
-			for _, p := range ce.When {
-				if p.Subject == plan.SubjectVerdict {
-					return reject(plannerevents.RuleSchema, ReasonVerdictUnsupported, Locator{NodeID: n.NodeID})
-				}
-			}
-		}
-	}
-	return accepted
-}
+// NOTA HISTÓRICA — o interruptor datado do observável `verdict`. Enquanto AOS-271
+// esteve aberto, este ficheiro recusava na ADMISSÃO qualquer ramo sobre `verdict`
+// (constante `verdictSupported = false`): a gramática de AOS-270 aceitava o símbolo,
+// mas nada impedia que o veredicto tivesse sido emitido pelo PRÓPRIO nó produtor —
+// ramificação sobre auto-certificação, exactamente o que ADR-022 §2.2 proíbe.
+// Recusar era fail-closed e loud, mas cego. AOS-271 substituiu o interruptor pelas
+// regras REAIS de §2.2 (verifier.go: só um verificador emite veredicto; o verificador
+// não certifica a sua própria sub-árvore de delegação; um verificador é read-only por
+// construção). O `verdict` deixou de ser recusado em bloco — passou a ser ATRIBUÍDO.
 
 // branchConstraint é UMA condição que a ancestralidade de um nó IMPÕE sobre uma
 // origem. `From` é a origem observada; `When` é a conjunção declarada sobre ela.

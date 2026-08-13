@@ -21,10 +21,58 @@ const (
 	// Regra 1-bis — arestas condicionais (ADR-022 §2.1, AOS-270).
 	ReasonDanglingConditional          Reason = "dangling_conditional"           // conditional_on.from para node inexistente
 	ReasonConditionalShadowsDependency Reason = "conditional_shadows_dependency" // a mesma origem em depends_on E conditional_on
-	// ReasonVerdictUnsupported — o plano ramifica sobre o observável `verdict` e a
-	// SEMÂNTICA DE SISTEMA do veredicto (read-only, produtor ≠ verificador, schema
-	// tipado) ainda não existe: é AOS-271. Ver [verdictSupported].
-	ReasonVerdictUnsupported Reason = "verdict_unsupported"
+	// Regra 1-ter — SEMÂNTICA DE SISTEMA DO VERIFICADOR (ADR-022 §2.2, AOS-271;
+	// verifier.go). Sub-códigos PRÓPRIOS: o feedback ao re-planeamento tem de dizer
+	// QUAL das quatro propriedades de §2.2 o plano violou — «rejeitado» não se corrige.
+	//
+	// ReasonVerdictNotFromVerifier — o ramo consome o `verdict` de um nó que NÃO
+	// declara o papel reservado [plan.RoleVerifier]. É a forma mais directa da
+	// auto-certificação: o produtor do trabalho a assinar o seu próprio pass.
+	ReasonVerdictNotFromVerifier Reason = "verdict_not_from_verifier"
+	// ReasonVerifierWithoutSubject — o verificador cujo veredicto o ramo consome não
+	// tem arestas de entrada: não observa nó nenhum, logo o seu veredicto não tem
+	// SUJEITO (um pass/fail sobre nada).
+	ReasonVerifierWithoutSubject Reason = "verifier_without_subject"
+	// ReasonVerifierSelfSubtree — «produtor ≠ verificador»: um produtor do consumidor
+	// está na SUB-ÁRVORE DE DELEGAÇÃO do verificador (é alcançável a partir dele),
+	// pelo que o veredicto certifica trabalho que o próprio verificador comissionou.
+	ReasonVerifierSelfSubtree Reason = "verifier_self_subtree"
+	// ReasonVerifierEffectTool — «read-only por construção»: um nó verificador pina
+	// uma tool DE EFEITO (egress ≠ none ou irreversível — ver [IsEffectTool]).
+	ReasonVerifierEffectTool Reason = "verifier_effect_tool"
+	// ReasonVerifierCommissionsWork — (V4) algum nó declara o verificador em
+	// `depends_on`: o verificador encabeçaria uma sub-árvore de delegação (o «spawn»
+	// que §2.2 nomeia como efeito) e julgaria trabalho que ele próprio comissionou.
+	// Quem consome o VEREDICTO usa `conditional_on`, não `depends_on`.
+	ReasonVerifierCommissionsWork Reason = "verifier_commissions_work"
+	// ReasonVerifierProducesWork — (V5) um verificador declara um `output` de forma
+	// ABERTA (summary/record/artifact): isso é trabalho, e quem produz trabalho é um
+	// produtor. A saída de um verificador é o veredicto (forma fechada).
+	ReasonVerifierProducesWork Reason = "verifier_produces_work"
+	// ReasonVerifierNotObservingWork — (V6) o verificador cujo veredicto liberta o
+	// consumidor NÃO é descendente de algum dos outros produtores desse consumidor:
+	// assina o pass de trabalho que nunca observou.
+	ReasonVerifierNotObservingWork Reason = "verifier_not_observing_work"
+
+	// Regra 1-quater — CONTRATOS TIPADOS DE PAYLOAD (ADR-022 §2.3, AOS-272;
+	// payload.go). Sub-códigos PRÓPRIOS pela mesma razão de sempre: as três rejeições
+	// que o ADR nomeia corrigem-se de maneiras diferentes, e «rejeitado» não se corrige.
+	//
+	// ReasonConsumesUnknownEdge — o `consumes` nomeia uma origem que NÃO é aresta de
+	// entrada declarada do consumidor. Uma aresta de dados sem aresta de execução por
+	// baixo é uma leitura em corrida com o produtor — e um canal de aresta invisível
+	// ao DAG de admissão.
+	ReasonConsumesUnknownEdge Reason = "consumes_unknown_edge"
+	// ReasonConsumesUnknownOutput — a origem não declara nenhum output com o nome
+	// pedido (a rejeição literal «consome um output inexistente»).
+	ReasonConsumesUnknownOutput Reason = "consumes_unknown_output"
+	// ReasonConsumesTypeMismatch — o tipo esperado pelo consumidor difere do declarado
+	// pelo produtor. A compatibilidade é IDENTIDADE: sem subtipagem nem coerção.
+	ReasonConsumesTypeMismatch Reason = "consumes_type_mismatch"
+	// ReasonConsumesTaintAuthority — um payload de taint EFECTIVO `untrusted` alimenta
+	// um consumidor com AUTORIDADE PRIVILEGIADA (ADR-005: untrusted não autoriza
+	// elevação). É a barreira P0 do TaintGate aplicada na admissão, antes do spawn.
+	ReasonConsumesTaintAuthority Reason = "consumes_taint_authority"
 
 	// Regra 2-bis — alcançabilidade dos ramos (ADR-022 §2.1).
 	// ReasonUnreachableJunction — a ancestralidade do nó exige DOIS ramos

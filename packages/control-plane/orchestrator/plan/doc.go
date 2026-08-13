@@ -32,6 +32,19 @@
 // fail-closed desejado (nunca ignorar um guarda que não se sabe avaliar), e é
 // exactamente a razão por que o bump de MINOR pertence a AOS-273.
 //
+// PAYLOAD TIPADO POR ARESTA (ADR-022 §2.3, AOS-272). O `Node` admite `outputs` (o
+// que produz: nome, schema, taint) e `consumes` (as arestas de dados que lê: origem,
+// output, tipo esperado) — a gramática vive em payload.go, com a derivação do taint
+// declarada. Ambos OPCIONAIS e ADITIVOS, pela mesma razão e com a mesma consequência
+// de `conditional_on`: um documento sem eles é indistinguível de um pré-ADR-022, logo
+// a extensão NÃO consome um MAJOR de [PlanVersion] (o bump de MINOR e a migração
+// continuam a ser AOS-273, que agrega as três extensões). Duas decisões desta extensão
+// vivem aqui e não no validador porque são do CONTRATO: o `consumes` é declarado no
+// extremo CONSUMIDOR e nomeia a origem — o que evita alargar `depends_on` de
+// `[]string` para uma lista de objectos, que seria uma quebra de forma; e o `taint` é
+// ADVISORY que SÓ ELEVA o piso DERIVADO DO TIPO, exactamente como `risk_class` só
+// eleva o piso derivado das tools.
+//
 // risk_class É ADVISORY. O campo `risk_class` por nó é uma PROPOSTA do LLM. O
 // contrato documenta-o (ver [RiskClass]) como advisory que só pode ELEVAR o piso
 // de risco DERIVADO das ferramentas pinadas em AOS-232 — NUNCA baixá-lo. Este

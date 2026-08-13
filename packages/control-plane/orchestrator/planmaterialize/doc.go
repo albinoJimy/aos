@@ -22,6 +22,19 @@
 //  3. o resultado projecta-se em `plan.materialized` (constante EXISTENTE
 //     [plannerevents.EventMaterialized], via [MaterializeRecorder]).
 //
+// PAPEL VERIFICADOR — READ-ONLY POR CONSTRUÇÃO (ADR-022 §2.2, AOS-271). Um nó que
+// declara [plan.RoleVerifier] materializa-se com a autoridade CLAMPADA duas vezes:
+// primeiro às tools do PAPEL (como qualquer nó), depois retirando as tools DE EFEITO
+// ([EffectOracle]). A NHI emitida não tem sequer a capability, pelo que não há nada
+// para o RM negar no caminho quente — e a tool call concreta de um nó-folha sai do
+// MESMO filtro que a autoridade ([Materializer.primaryTool]), nunca de `Tools[0]`.
+// O critério de «efeito» NÃO vive aqui: é `planvalidate.IsEffectTool`, derivado dos
+// eixos de risco pinados, e chega por [WithEffectOracle] ligado pelo composition
+// root. A admissão (AOS-231) já REJEITA um verificador com tools de efeito — este
+// clamp é defesa-em-profundidade para documentos que cheguem por outra porta
+// (replan, migração, edição no gate), e o que retirar fica VISÍVEL em
+// `plan.materialized`. O RiskGate do RM (AOS-074) continua a ser a linha final.
+//
 // ADMISSÃO GLOBAL POR NÓ (AOS-027/028). Nenhum nó materializa sem admissão global
 // (escalonador). Como o escalonador PODE não estar no módulo, a admissão é uma
 // PORTA ([Admission]) que o wiring liga; a materialização é DUAS FASES: admite-se

@@ -65,6 +65,32 @@ func DefaultCapabilityMapper(t plan.ToolRef) string {
 	return "cap:tool:" + t.Name
 }
 
+// EffectOracle decide se uma ferramenta PINADA tem EFEITO — o predicado que torna
+// «read-only por construção» (ADR-022 §2.2, AOS-271) uma propriedade da NHI emitida e
+// não uma promessa do organigrama.
+//
+// O CRITÉRIO NÃO VIVE AQUI, e isso é o ponto. O materializador não tem (nem deve ter)
+// o snapshot de capabilities pinado nem a taxonomia de risco: o critério é
+// `planvalidate.IsEffectTool` — derivado dos eixos de risco PINADOS que a regra 6
+// (AOS-232) já consome — e chega cá como `planvalidate.Snapshot.EffectOracle()`,
+// ligado pelo composition root POR TIPO ESTRUTURAL. Uma só definição de «efeito»,
+// dois pontos de enforcement (a admissão rejeita, a materialização clampa), zero
+// import entre os pacotes.
+type EffectOracle func(plan.ToolRef) bool
+
+// DefaultEffectOracle é o oráculo por omissão e é FAIL-CLOSED ATÉ AO FIM: sem
+// conhecimento dos eixos pinados, TODA a ferramenta conta como de efeito.
+//
+// A consequência é deliberada e vale a pena dizê-la em voz alta: um wiring que se
+// esqueça de ligar o oráculo real materializa verificadores com autoridade VAZIA — os
+// verificadores ficam inúteis, e nota-se. A alternativa (assumir «sem efeito» por
+// omissão) daria a um verificador toda a autoridade das suas tools num sistema onde
+// ninguém olhou, e NÃO se notava. Entre falhar visivelmente e falhar em silêncio, o
+// default escolhe o primeiro.
+//
+// Não afecta nós não-verificadores: o clamp de §2.2 só se aplica a [plan.Node.IsVerifier].
+func DefaultEffectOracle(plan.ToolRef) bool { return true }
+
 // SpawnClassifier decide, DETERMINISTICAMENTE a partir do documento, se um nó é uma
 // FOLHA ([plannerevents.SpawnLeaf] → task.node.created) ou um PAPEL-QUE-EXPANDE
 // ([plannerevents.SpawnRole] → Delegator.Spawn).
@@ -200,6 +226,7 @@ type Materializer struct {
 	recorder   MaterializeRecorder
 	mapper     CapabilityMapper
 	classify   SpawnClassifier
+	effect     EffectOracle
 	childClass string
 }
 
@@ -222,6 +249,18 @@ func WithClassifier(c SpawnClassifier) Option {
 	return func(mt *Materializer) {
 		if c != nil {
 			mt.classify = c
+		}
+	}
+}
+
+// WithEffectOracle injecta o predicado «esta tool tem efeito?» que governa o clamp
+// read-only da NHI do verificador (ADR-022 §2.2). O composition root liga-o a
+// `planvalidate.Snapshot.EffectOracle()` — o MESMO critério que a admissão usou para
+// rejeitar. Default: [DefaultEffectOracle] (fail-closed).
+func WithEffectOracle(o EffectOracle) Option {
+	return func(mt *Materializer) {
+		if o != nil {
+			mt.effect = o
 		}
 	}
 }
@@ -250,6 +289,7 @@ func NewMaterializer(admission Admission, leaf LeafAdmitter, spawner Spawner, re
 		recorder:   recorder,
 		mapper:     DefaultCapabilityMapper,
 		classify:   DefaultClassifier,
+		effect:     DefaultEffectOracle,
 		childClass: "worker",
 	}
 	for _, o := range opts {
@@ -260,6 +300,9 @@ func NewMaterializer(admission Admission, leaf LeafAdmitter, spawner Spawner, re
 	}
 	if m.classify == nil {
 		m.classify = DefaultClassifier
+	}
+	if m.effect == nil {
+		m.effect = DefaultEffectOracle
 	}
 	return m, nil
 }
@@ -319,6 +362,24 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 		if kind != plannerevents.SpawnLeaf && kind != plannerevents.SpawnRole {
 			return empty, fmt.Errorf("%w: %q (node %q)", ErrInvalidSpawnKind, kind, n.NodeID)
 		}
+		// UM VERIFICADOR É SEMPRE FOLHA (ADR-022 §2.2, correcção da auditoria da
+		// wave). A enumeração de §2.2 exclui o SPAWN da autoridade do verificador —
+		// e «spawn», no organigrama, não é uma tool: é materializar-se como
+		// [plannerevents.SpawnRole], encabeçando uma sub-árvore de delegação com
+		// `identity.ChildRequest` própria. O clamp de [authorityForNode] só filtrava
+		// capabilities derivadas de TOOLS, pelo que um verificador com dependentes
+		// era classificado papel-que-expande pelo [DefaultClassifier] e ganhava, por
+		// via da topologia, a autoridade de delegação que o ADR lhe nega.
+		//
+		// A admissão já recusa o plano (`planvalidate`, regra V4: nenhum nó declara
+		// um verificador em `depends_on`); este forço é a SEGUNDA linha, para
+		// documentos que cheguem por outra porta (replan, migração, edição no gate)
+		// ou com um [SpawnClassifier] injectado pelo wiring — e é por isso que NÃO
+		// depende do classificador: um verificador não delega, independentemente de
+		// quem classifica.
+		if n.IsVerifier() {
+			kind = plannerevents.SpawnLeaf
+		}
 		planned = append(planned, plannedNode{node: n, kind: kind, caps: m.authorityForNode(n)})
 	}
 
@@ -346,9 +407,9 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 				RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
 				Capabilities: p.caps,
 			}
-			if len(p.node.Tools) > 0 {
-				ln.ToolID = p.node.Tools[0].Name
-				ln.Capability = m.mapper(p.node.Tools[0])
+			if t, ok := m.primaryTool(p.node); ok {
+				ln.ToolID = t.Name
+				ln.Capability = m.mapper(t)
 			}
 			if err := m.leaf.AdmitLeaf(ctx, ln); err != nil {
 				return empty, fmt.Errorf("planmaterialize: admitir nó-folha %q: %w", p.node.NodeID, err)
@@ -398,10 +459,28 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 // pertence a OUTRO papel nunca entra nesta autoridade — é isto que impede a escalada
 // de privilégio na materialização (a falha-antes: uma implementação que usasse as
 // tools do PLANO INTEIRO em vez das do nó incluiria capabilities de papéis alheios).
+//
+// SEGUNDO CLAMP, PARA O VERIFICADOR (ADR-022 §2.2, AOS-271). Se o nó declara o papel
+// reservado [plan.RoleVerifier], as tools DE EFEITO ([EffectOracle]) são retiradas
+// ANTES do mapeamento: a NHI que se emite não tem sequer a capability, pelo que não
+// há nada para o RM negar no caminho quente. É o mesmo ponto do código, o mesmo
+// vínculo tools[] → Authority[] — um filtro a mais, não um caminho novo.
+//
+// DUAS LINHAS, NESTA ORDEM. A admissão (`planvalidate`, regra V3) já REJEITA um
+// verificador que pine tools de efeito, pelo que num plano APROVADO este filtro não
+// retira nada: é defesa-em-profundidade contra um documento que chegue por outra
+// porta (replan, migração, edição no gate). O que ele retirar fica VISÍVEL no facto
+// `plan.materialized` (Nodes[].Tools é a autoridade CLAMPADA, não a declarada) —
+// nunca é uma remoção silenciosa. E o RiskGate do RM (AOS-074) continua a ser a
+// TERCEIRA linha, fail-closed, para lá destas duas.
 func (m *Materializer) authorityForNode(n plan.Node) []string {
+	verifier := n.IsVerifier()
 	seen := make(map[string]struct{}, len(n.Tools))
 	caps := make([]string, 0, len(n.Tools))
 	for _, t := range n.Tools {
+		if verifier && m.effect(t) {
+			continue // read-only por construção: a autoridade de efeito não é emitida
+		}
 		c := m.mapper(t)
 		if c == "" {
 			continue
@@ -414,6 +493,26 @@ func (m *Materializer) authorityForNode(n plan.Node) []string {
 	}
 	sort.Strings(caps)
 	return caps
+}
+
+// primaryTool devolve a tool call CONCRETA de um nó-folha: a PRIMEIRA tool do papel
+// que sobrevive ao clamp de autoridade (ordem do documento).
+//
+// PORQUE NÃO É SIMPLESMENTE `Tools[0]`. Era, e num nó verificador isso seria um
+// buraco silencioso: se a primeira tool declarada fosse de efeito, o nó-folha ia para
+// o DAG com uma tool call que a sua PRÓPRIA autoridade clampada não cobre — um pedido
+// que nasce condenado (o RM nega) ou, pior, um pedido cuja autoridade alguém a
+// jusante fosse tentado a «arranjar». A tool call e a autoridade têm de sair do MESMO
+// filtro. Determinística e sem alocação.
+func (m *Materializer) primaryTool(n plan.Node) (plan.ToolRef, bool) {
+	verifier := n.IsVerifier()
+	for _, t := range n.Tools {
+		if verifier && m.effect(t) {
+			continue
+		}
+		return t, true
+	}
+	return plan.ToolRef{}, false
 }
 
 // planHash devolve o hash do documento aprovado: o fornecido (da decisão do gate)

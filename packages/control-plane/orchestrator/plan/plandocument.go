@@ -62,6 +62,57 @@ type ToolRef struct {
 	Digest  string `json:"digest"`
 }
 
+// RoleVerifier é o ÚNICO papel RESERVADO do schema (ADR-022 §2.2, AOS-271).
+//
+// O campo `role` continua a ser texto livre — o organigrama nomeia os seus papéis
+// como quiser. Mas ESTE literal deixou de ser um rótulo: declará-lo faz o sistema
+// impor as quatro propriedades de §2.2 ao nó (NHI read-only por construção,
+// produtor ≠ verificador, veredicto TIPADO como evento, débito normal da árvore).
+// Reservar UM literal é o mínimo que torna a semântica derivável do documento sem
+// acrescentar um campo novo — e, por ser aditivo em SIGNIFICADO e não em FORMA, não
+// consome um MAJOR de `plan_version`.
+//
+// CASE-SENSITIVE e sem normalização, deliberadamente: `Verifier`/`VERIFIER` NÃO são
+// o papel reservado. A alternativa — comparar sem distinção de maiúsculas, ou
+// aparar espaços — daria a um plano hostil um literal que PARECE «verificador» ao
+// revisor humano do approval-card (ADR-013) mas escapa ao clamp do sistema. Um só
+// literal, uma só leitura, nas duas pontas.
+const RoleVerifier = "verifier"
+
+// maxNodeIDLen é o tecto de comprimento (bytes) de um node_id. Generoso o
+// suficiente para identificadores realistas, curto o suficiente para recusar blobs
+// de texto livre que um planeador comprometido embebesse num id para vazar por um
+// canal allowlisted (feedback do validador, payload de evento).
+const maxNodeIDLen = 128
+
+// ValidNodeID confere que id é um IDENTIFICADOR ESTRUTURAL limitado: 1..[maxNodeIDLen]
+// bytes de um charset ASCII FECHADO (letras, dígitos e os separadores `_ - . :`).
+//
+// É a grammar ÚNICA do node_id no módulo — vive aqui, no pacote que DEFINE o campo,
+// e é consumida pelo validador semântico (AOS-231) e pelos payloads de evento que
+// propagam node_ids (`aos.planner.v1`). Ter uma só definição é o que garante que o
+// que o validador aceita é exactamente o que o log admite: duas cópias divergiriam
+// e a divergência seria uma superfície.
+//
+// FRONTEIRA (não é esquecimento): [Decode] NÃO a chama. A forma exige apenas
+// não-vazio e único; a grammar é uma invariante SEMÂNTICA e pertence a AOS-231, que
+// a impõe ANTES de propagar qualquer id para o feedback. Puro, sem alocação.
+func ValidNodeID(id string) bool {
+	if len(id) == 0 || len(id) > maxNodeIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_' || c == '-' || c == '.' || c == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Node é um nó-papel do organigrama. `depends_on` são as arestas (por node_id); a
 // aciclicidade e a resolução de dependências são AOS-231 — aqui valida-se só a
 // forma (ids não-vazios, sem duplicados triviais).
@@ -84,6 +135,48 @@ type Node struct {
 	// [Decode]). Tal como `depends_on`, a existência da origem, a aciclicidade e a
 	// não-sobreposição com `depends_on` são AOS-231; aqui valida-se só a forma.
 	ConditionalOn []ConditionalEdge `json:"conditional_on,omitempty"`
+	// Outputs são os CONTRATOS DE SAÍDA de ADR-022 §2.3 (AOS-272): o que este nó
+	// declara produzir, com nome, schema e rótulo de taint advisory (payload.go).
+	// OPCIONAL e ADITIVO, como `conditional_on`.
+	Outputs []Output `json:"outputs,omitempty"`
+	// Consumes são as ARESTAS DE DADOS (§2.3) declaradas no extremo consumidor:
+	// «desta origem leio o output X, do tipo T». A origem TEM de ser uma aresta de
+	// entrada já declarada (`depends_on` ou `conditional_on`) — o que mantém o grafo
+	// de dados como SUB-GRAFO do DAG de admissão e, por isso, acíclico por
+	// construção. Aqui valida-se só a forma; a resolução é AOS-231.
+	Consumes []PayloadEdge `json:"consumes,omitempty"`
+}
+
+// IsVerifier indica se o nó declara o papel RESERVADO [RoleVerifier] — e, com ele,
+// a semântica de sistema de ADR-022 §2.2. É a ÚNICA leitura do literal em todo o
+// módulo: o validador (AOS-231), o materializador (AOS-237) e o emissor do veredicto
+// passam todos por aqui, pelo que não há duas noções de «é um verificador».
+func (n Node) IsVerifier() bool { return n.Role == RoleVerifier }
+
+// IncomingEdges devolve a UNIÃO das arestas de entrada do nó — `depends_on` mais as
+// origens das arestas CONDICIONAIS — pela ordem declarada (dependências primeiro).
+//
+// VIVE AQUI, no pacote que DEFINE os dois canais, porque passou a ter TRÊS
+// consumidores com pontos de vista diferentes e a mesma pergunta: o validador
+// (tectos, atribuição do veredicto, resolução de `consumes`), o emissor do veredicto
+// (`plannerevents`: os SUJEITOS de um veredicto têm de ser arestas de entrada do
+// verificador) e o despachante. Uma segunda cópia divergiria, e a divergência entre
+// «o que o validador conta como aresta» e «o que o log admite como sujeito» é ela
+// própria uma superfície — a mesma lição de [ValidNodeID].
+//
+// Puro e sem alocação quando não há condicionais (o caso de todos os planos
+// pré-ADR-022). A regra 1 de AOS-231 garante que os dois canais são DISJUNTOS por nó,
+// pelo que a união nunca conta a mesma aresta duas vezes.
+func (n Node) IncomingEdges() []string {
+	if len(n.ConditionalOn) == 0 {
+		return n.DependsOn
+	}
+	out := make([]string, 0, len(n.DependsOn)+len(n.ConditionalOn))
+	out = append(out, n.DependsOn...)
+	for _, ce := range n.ConditionalOn {
+		out = append(out, ce.From)
+	}
+	return out
 }
 
 // PlannerMeta são os metadados de topo do planeamento, pinados para
@@ -221,6 +314,12 @@ func (d PlanDocument) validateShape() error {
 		// fechado. A semântica de grafo (origem existente, ciclo, sobreposição com
 		// `depends_on`) fica para AOS-231, como em `depends_on`.
 		if err := validateConditional(n.NodeID, n.ConditionalOn); err != nil {
+			return err
+		}
+		// Contratos tipados de payload (ADR-022 §2.3): forma dos `outputs` e das
+		// arestas de dados. A semântica (origem declarada como aresta, output
+		// existente, tipo compatível, taint vs autoridade) fica para AOS-231.
+		if err := validatePayload(n.NodeID, n.Outputs, n.Consumes); err != nil {
 			return err
 		}
 	}

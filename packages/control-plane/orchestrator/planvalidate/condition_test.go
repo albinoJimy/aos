@@ -15,12 +15,11 @@ import (
 
 // passTerminal é o predicado canónico destes testes: «a origem concluiu».
 //
-// PORQUE `terminal_state` E NÃO `verdict`: o observável `verdict` está recusado na
-// ADMISSÃO enquanto a semântica de sistema do veredicto não existir
-// ([verdictSupported], AOS-271) — usá-lo aqui faria estes testes provarem a regra
-// errada (todos rejeitariam por `verdict_unsupported`, e não pelo ciclo/tecto que
-// cada um existe para provar). A recusa do `verdict` tem teste PRÓPRIO
-// ([TestVerdictBranchRejectedUntilAOS271]).
+// PORQUE `terminal_state` E NÃO `verdict`: o observável `verdict` arrasta consigo a
+// semântica de sistema do papel verificador (AOS-271, verifier.go) — usá-lo aqui
+// faria estes testes provarem a regra errada (rejeitariam por atribuição do
+// veredicto, e não pelo ciclo/tecto que cada um existe para provar). As regras do
+// veredicto têm testes PRÓPRIOS (verifier_test.go).
 func passTerminal() []plan.Predicate {
 	return []plan.Predicate{{Subject: plan.SubjectTerminalState, Op: plan.OpEq, Enum: plan.EnumComplete}}
 }
@@ -211,34 +210,6 @@ func TestValidateStaysDeterministicWithConditionals(t *testing.T) {
 // REMEDIAÇÃO da auditoria adversarial da wave — as duas regras de ADMISSÃO que
 // faltavam às arestas condicionais (condition.go).
 // ===========================================================================
-
-// TestVerdictBranchRejectedUntilAOS271 — ramificar sobre `verdict` é recusado na
-// ADMISSÃO enquanto a semântica de sistema do veredicto (read-only, produtor ≠
-// verificador, schema tipado) não existir. É AOS-271.
-//
-// FALHA-ANTES: sem esta regra, um plano podia declarar `conditional_on` sobre o
-// veredicto do PRÓPRIO nó produtor — auto-certificação, exactamente o que ADR-022
-// §2.2 proíbe — e o validador aceitava-o; a jusante, como nada no nó produz
-// veredicto, o ramo era PODADO em silêncio. Recusar é loud; podar não era.
-func TestVerdictBranchRejectedUntilAOS271(t *testing.T) {
-	doc := baseDoc()
-	doc.Nodes = []plan.Node{
-		{NodeID: "a", Role: "producer", Objective: "produz", Tools: []plan.ToolRef{searchTool()}},
-		// O caso hostil: o veredicto de `a` é consumido como se fosse de um
-		// verificador — mas `a` é o próprio produtor.
-		{NodeID: "b", Role: "r", Objective: "publica",
-			ConditionalOn: []plan.ConditionalEdge{{From: "a", When: []plan.Predicate{
-				{Subject: plan.SubjectVerdict, Op: plan.OpEq, Enum: plan.EnumPass}}}}},
-	}
-	mustBeShapeValid(t, doc) // a FORMA é válida: a gramática admite o símbolo
-	v := Validate(doc, baseSnapshot(), Ceilings{})
-	if v.Rule != plannerevents.RuleSchema || v.Reason != ReasonVerdictUnsupported {
-		t.Fatalf("veredicto = (%s/%s); queria (schema/verdict_unsupported)", v.Rule, v.Reason)
-	}
-	if v.Locator.NodeID != "b" {
-		t.Fatalf("locator = %q; queria o nó ofensor \"b\"", v.Locator.NodeID)
-	}
-}
 
 // TestUnreachableJunctionRejected — o «ponto de junção depois de um ramo»: um nó a
 // jusante de DOIS ramos mutuamente exclusivos sobre a MESMA origem é inalcançável
