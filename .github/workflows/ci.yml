@@ -24,6 +24,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Invocável por outro workflow (release.yml). Os MESMOS 24 gates, sem duplicação: a entrega
+  # para o servidor não pode passar por uma cópia relaxada da CI — passa por ESTA, ou não passa.
+  workflow_call:
 
 permissions:
   contents: read

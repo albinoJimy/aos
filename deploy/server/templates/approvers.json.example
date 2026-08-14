@@ -1,0 +1,15 @@
+{
+  "_nota": "Roster do FOUR-EYES (AOS-162). SÓ material PÚBLICO: principals + pubkeys ed25519 hex + autoridade. As chaves PRIVADAS correspondentes ficam com cada aprovador (deploy/server/secrets-local/approver-*.seed na máquina do operador). Substitui os marcadores pelo output de gen-identity.sh — um roster com marcadores é PIOR do que nenhum: cria a expectativa de supervisão humana que ninguém consegue exercer, porque não há quem detenha a privada. As duas pubkeys TÊM de ser distintas (o dual-control recusa self-approval).",
+  "approvers": [
+    {
+      "principal": "human:alice",
+      "pubkey": "SUBSTITUI-ME-64-HEX-DA-PUBKEY-DO-APROVADOR-A-0000000000000",
+      "authority": ["approve:danger", "approve:gray"]
+    },
+    {
+      "principal": "human:bob",
+      "pubkey": "SUBSTITUI-ME-64-HEX-DA-PUBKEY-DO-APROVADOR-B-0000000000000",
+      "authority": ["approve:danger"]
+    }
+  ]
+}

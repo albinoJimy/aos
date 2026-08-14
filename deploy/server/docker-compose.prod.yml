@@ -1,0 +1,134 @@
+# =============================================================================
+# Stack de SERVIDOR do nó `aos` — 37.60.241.150 (ou qualquer host equivalente).
+#
+# Derivado de deploy/node/dev-hardened/docker-compose.yml, com TRÊS diferenças
+# que fazem dele um alvo de CD e não um stack de bancada:
+#
+#   1. A imagem NÃO é construída aqui — vem por REFERÊNCIA IMUTÁVEL (digest) em
+#      ${AOS_IMAGE}, escrita por deploy.sh a partir do que o release publicou.
+#      Um deploy é, por construção, a troca de um digest: reprodutível e
+#      reversível (ver rollback.sh).
+#   2. NENHUM caminho aponta para a árvore do repositório. Tudo o que o nó monta
+#      vive em /opt/aos no servidor — o servidor não tem (nem precisa de) o repo.
+#   3. NENHUM material PRIVADO está aqui nem chega aqui, com uma única excepção
+#      declarada: a chave TLS do edge. As chaves de issuer/operador/ratificador/
+#      aprovador ficam na máquina do operador; o servidor só recebe as PUBLICAS
+#      (ver README.md §"Onde vive cada chave").
+#
+# Arranque:  bash /opt/aos/deploy.sh <image-ref>
+# Paragem:   docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env down
+# =============================================================================
+name: aos
+
+services:
+  # --- o nó `aos`, endurecido, só na rede interna (cleartext NUNCA publicado) -----------------
+  aos:
+    image: ${AOS_IMAGE:?AOS_IMAGE por definir — corre deploy.sh, não `docker compose up` à mão}
+    restart: unless-stopped
+    mem_limit: ${AOS_MEM_LIMIT:-1g}
+    pids_limit: 1024
+    read_only: true               # root-fs read-only (ADR-017); estado durável só no volume.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      AOS_API_ADDR: "0.0.0.0:8080"
+
+      # POSTURA. Vazio ⇒ modo de REFERÊNCIA endurecido (o default deste ficheiro).
+      # `production` exige, TODAS, sob pena de o boot ABORTAR: AOS_ISSUER_PUBKEY,
+      # AOS_BOARD_REGIONS não-vazio, AOS_SOVEREIGN_OIDC_ISSUER+AUDIENCE e terminação
+      # TLS declarada. As três primeiras estão abaixo; a soberania forte exige um IdP
+      # real — ver README.md §"Passar a AOS_MODE=production".
+      AOS_MODE: "${AOS_MODE:-}"
+
+      # Identidade ENDURECIDA trust-anchor-only: só a PUBKEY do issuer externo entra
+      # neste processo. Nenhuma chave de assinatura vive no servidor.
+      AOS_ISSUER_ID: "${AOS_ISSUER_ID:?}"
+      AOS_ISSUER_PUBKEY: "${AOS_ISSUER_PUBKEY:?}"
+
+      # Plano de controlo: operadores (steer/pause), ratificadores (promoção), four-eyes.
+      # AOS_OPERATORS vazio ⇒ o bind não-loopback acima é RECUSADO (bind-guardrail).
+      AOS_OPERATORS: "${AOS_OPERATORS:?}"
+      AOS_RATIFIERS: "${AOS_RATIFIERS:?}"
+      AOS_APPROVERS_FILE: "/etc/aos/approvers.json"
+      AOS_AUTHORITY_FILE: "/etc/aos/authority.json"
+
+      # PDP: bundle Cedar ASSINADO + trust anchor FORÇADO out-of-band (hex).
+      # Sem estas duas o nó fica em default-deny explícito e nenhuma tool call passa.
+      AOS_POLICY_BUNDLE_DIR: "/etc/aos/policies"
+      AOS_POLICY_TRUST_ANCHOR: "${AOS_POLICY_TRUST_ANCHOR:?}"
+
+      # Substrato + execução DURÁVEIS no volume gravável. É o que faz o estado
+      # sobreviver a um deploy (o volume é nomeado e não é tocado pela troca de digest).
+      AOS_DURABLE_EXECUTION: "1"
+      AOS_EVENTSTORE_PATH: "/var/lib/aos/events.wal"
+      AOS_WORM_PATH: "/var/lib/aos/worm.wal"
+
+      # Soberania de leitura (regra board→região).
+      AOS_BOARD_REGIONS: "${AOS_BOARD_REGIONS:?}"
+
+      # Retenção TTL-por-classe + varredor INTERNO (sem cron externo).
+      AOS_RETENTION_VERSION: "${AOS_RETENTION_VERSION:-1.0.0}"
+      AOS_RETENTION_PERIODS: "${AOS_RETENTION_PERIODS:-pii_operational=720h,trajectory=2160h,diagnostic=168h}"
+      AOS_RETENTION_SWEEP_INTERVAL: "${AOS_RETENTION_SWEEP_INTERVAL:-1h}"
+
+      # Admissão de ingresso (backpressure, NÃO autorização).
+      AOS_INGRESS_RATE: "${AOS_INGRESS_RATE:-64}"
+      AOS_INGRESS_BURST: "${AOS_INGRESS_BURST:-128}"
+      AOS_INGRESS_MAX_INFLIGHT: "${AOS_INGRESS_MAX_INFLIGHT:-512}"
+
+      # TLS terminado A MONTANTE pelo `edge`. O nó serve em claro SÓ na rede interna
+      # do compose (`expose`, nunca `ports`) — é o que honra esta declaração.
+      AOS_TLS_EXTERNAL_TERMINATION: "1"
+
+      AOS_OTLP_ENDPOINT: "http://otel:4318"
+    volumes:
+      - aos-data:/var/lib/aos                            # estado durável (gravável)
+      - ./secrets/approvers.json:/etc/aos/approvers.json:ro
+      - ./secrets/authority.json:/etc/aos/authority.json:ro
+      - ./policies:/etc/aos/policies:ro                  # bundle PDP assinado (sincronizado pelo deploy)
+    expose:
+      - "8080"
+    depends_on:
+      otel:
+        condition: service_started
+
+  # --- edge de ingresso: termina TLS e é a ÚNICA porta publicada no host ----------------------
+  edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    pids_limit: 128
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./secrets/tls:/etc/nginx/tls:ro
+    # A porta INTERNA é sempre 8443 (é o que o nginx.conf escuta); a EXTERNA vem do .env,
+    # porque 8443 no host já pertence ao ingress-nginx do Kubernetes.
+    ports:
+      - "${AOS_EDGE_BIND:-0.0.0.0}:${AOS_EDGE_PORT:-8444}:8443"
+    depends_on:
+      aos:
+        condition: service_healthy   # espera o HEALTHCHECK do nó antes de aceitar tráfego.
+
+  # --- collector OTLP: recebe traces do nó e faz scrape de /metrics --------------------------
+  otel:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 512
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+
+volumes:
+  aos-data:

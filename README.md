@@ -147,6 +147,24 @@ kernel ≥ 80%, SAST (gosec, HIGH/CRITICAL), SCA (govulncheck) e teste de polít
 do PDP (golden allow/deny + assinatura). Detalhe, pré-requisitos, baselines e
 *required checks* em [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## CD — entrega para o servidor
+
+O *pipeline* de entrega é uma extensão da CI, não um caminho paralelo: uma tag `v*` dispara
+[`release.yml`](.github/workflows/release.yml), que **invoca a própria `ci.yml`** por
+`workflow_call` (os mesmos 24 gates — não há uma definição relaxada para releases), empacota com
+`scripts/ci/package.sh`, gera SBOM/proveniência, assina em DSSE e só então publica no GHCR.
+[`deploy.yml`](.github/workflows/deploy.yml) leva o **digest** ao servidor, atrás de um
+*environment* protegido.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0    # gates -> imagem atestada -> GHCR -> servidor
+```
+
+No servidor, um deploy é a troca de um digest — reprodutível, verificado (o job só fica verde
+depois de o nó ficar `healthy` **e** de o edge responder em TLS) e reversível
+(`bash /opt/aos/rollback.sh`). Instalação de raiz, custódia das chaves e residuais em
+[`deploy/server/README.md`](deploy/server/README.md).
+
 ## Onde ler a seguir
 
 - **Padrões de engenharia / DoR / DoD / gates:** [`specs/01_Engineering_Standards_e_Handoff.md`](specs/01_Engineering_Standards_e_Handoff.md)

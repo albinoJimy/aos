@@ -1,0 +1,194 @@
+# Release do nó `aos` — constrói, atesta e PUBLICA a imagem; o deploy é o passo seguinte.
+#
+# Disparo: tag `v*` (ex.: v0.1.0). Um deploy passa a ser sempre rastreável a uma tag assinável
+# do repositório, e não a "o que estava em main naquele minuto".
+#
+# ─── A cadeia, e porque é esta a ordem ────────────────────────────────────────────────────────
+#   1. gates      — INVOCA .github/workflows/ci.yml (os 24 gates fail-closed). Não há segunda
+#                   definição relaxada dos gates para releases: é a mesma, por `workflow_call`.
+#   2. publish    — package.sh constrói a imagem endurecida (mesma fonte de verdade local que
+#                   `make ci-package`), sbom.sh gera SBOM+proveniência, sign.sh assina em DSSE,
+#                   verify-attestation.sh RECUSA o que não valide, e só então se faz push.
+#   3. deploy     — chama deploy.yml, que entra em `production` (environment protegido).
+#
+# O push para o registry acontece DEPOIS da atestação, nunca antes: publicar primeiro e verificar
+# depois deixaria, numa falha, um artefacto não-verificado ao alcance de um `docker pull`.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Fazer deploy para o servidor após publicar"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/aos-node
+
+jobs:
+  # ── 1. Os MESMOS gates da CI ────────────────────────────────────────────────────────────────
+  gates:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
+  # ── 2. Empacotar, atestar, publicar ─────────────────────────────────────────────────────────
+  publish:
+    needs: [gates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # criar a GitHub Release
+      packages: write   # push para o GHCR
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache-dependency-path: "packages/**/go.sum"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Metadados da release
+        id: meta
+        run: |
+          set -euo pipefail
+          # if/else e não `[ ... ] && ...`: o runner corre com `set -e`, e um `&&` cujo teste dá
+          # falso devolve 1 como último estado do comando — mataria o passo exactamente no caso
+          # normal (um push de tag, em que o teste É falso).
+          if [ "${GITHUB_REF}" = "${GITHUB_REF#refs/tags/}" ]; then
+            version="0.0.0-$(git rev-parse --short HEAD)"
+          else
+            version="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=${REGISTRY,,}/${IMAGE_NAME,,}:${version}" >> "$GITHUB_OUTPUT"
+
+      # package.sh é a fonte de verdade do empacotamento (constrói a imagem distroless non-root e
+      # reutiliza os gates sast/sca/secrets). O workflow só lhe passa a tag de destino.
+      - name: Gate package (imagem endurecida + sast/sca/secrets)
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+        run: bash scripts/ci/package.sh
+
+      - name: Gate sbom (SBOM + proveniência)
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+        run: bash scripts/ci/sbom.sh
+
+      # A chave PRIVADA de release entra por FICHEIRO, nunca por valor no ambiente: sign.sh lê
+      # AOS_RELEASE_KEY_FILE. Sem o secret, a atestação fica declaradamente NÃO-ASSINADA — o que
+      # é o estado de hoje (deploy/node/release-pubkeys.json tem o roster VAZIO por decisão
+      # registada, e um roster vazio recusa tudo, fail-closed).
+      - name: Atestação DSSE (assina se houver chave de release provisionada)
+        id: sign
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+          AOS_RELEASE_KEY: ${{ secrets.AOS_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${AOS_RELEASE_KEY:-}" ]; then
+            umask 077
+            printf '%s' "$AOS_RELEASE_KEY" > "$RUNNER_TEMP/release.key"
+            export AOS_RELEASE_KEY_FILE="$RUNNER_TEMP/release.key"
+            echo "signed=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AOS_RELEASE_KEY não provisionada — a entrega vai NÃO-ASSINADA. Ver deploy/node/CUSTODIA-CHAVE-RELEASE.md."
+            echo "signed=0" >> "$GITHUB_OUTPUT"
+          fi
+          bash scripts/ci/sign.sh
+          rm -f "$RUNNER_TEMP/release.key"
+
+      # Fail-closed CONDICIONADO ao estado declarado, não relaxado: com chave provisionada a
+      # verificação TEM de ficar verde (exit 0). Sem chave, o exit 4 ("por verificar, não
+      # publicável") é o resultado ESPERADO e correcto — qualquer outro código é falha real.
+      - name: Verificar a atestação
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -uo pipefail
+          rc=0; bash scripts/ci/verify-attestation.sh || rc=$?
+          if [ "${{ steps.sign.outputs.signed }}" = "1" ]; then
+            [ "$rc" -eq 0 ] || { echo "::error::atestação assinada NÃO validou (rc=$rc) — release abortada"; exit 1; }
+          else
+            [ "$rc" -eq 0 ] || [ "$rc" -eq 4 ] \
+              || { echo "::error::verify-attestation falhou com rc=$rc (esperado 0 ou 4 sem chave)"; exit 1; }
+            echo "::warning::entrega POR VERIFICAR (rc=$rc) — sem chave de release, é o estado declarado."
+          fi
+
+      - name: Push para o GHCR
+        id: push
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          # Por `env:`, não interpolado no corpo do script: um secret expandido dentro do texto
+          # do `run` fica no ficheiro de script que o runner escreve em disco.
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login "$REGISTRY" -u "$GHCR_ACTOR" --password-stdin
+          docker push "$TAG"
+          # A referência que o servidor vai usar é o DIGEST, não a tag: imutável e reversível.
+          digest="$( docker image inspect --format '{{index .RepoDigests 0}}' "$TAG" )"
+          echo "image=$digest" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+          echo "Publicado: $digest"
+          docker logout "$REGISTRY"
+
+      - name: Artefactos de entrega
+        uses: actions/upload-artifact@v4
+        with:
+          name: aos-delivery-${{ steps.meta.outputs.version }}
+          path: deploy/node/build
+          if-no-files-found: error
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          IMAGE: ${{ steps.push.outputs.image }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Imagem"
+            echo '```'
+            echo "$IMAGE"
+            echo '```'
+            echo
+            echo "## Entrega"
+            echo "- Atestação assinada: ${{ steps.sign.outputs.signed == '1' && 'sim' || '**não** (roster de release vazio — ver CUSTODIA-CHAVE-RELEASE.md)' }}"
+            echo "- SBOM e proveniência no artefacto \`aos-delivery-$VERSION\`."
+            echo
+            echo "## Deploy"
+            echo '```bash'
+            echo "bash /opt/aos/deploy.sh $IMAGE"
+            echo '```'
+          } > notes.md
+          gh release create "$VERSION" --title "$VERSION" --notes-file notes.md \
+            deploy/node/build/sbom.json \
+            deploy/node/build/provenance.json \
+            deploy/node/build/attestation.dsse.json \
+            deploy/node/build/delivery-manifest.json || \
+          gh release create "$VERSION" --title "$VERSION" --notes-file notes.md
+
+  # ── 3. Deploy para o servidor (environment protegido) ───────────────────────────────────────
+  deploy:
+    needs: [publish]
+    if: github.event_name == 'push' || inputs.deploy
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image: ${{ needs.publish.outputs.image }}
+    secrets: inherit
