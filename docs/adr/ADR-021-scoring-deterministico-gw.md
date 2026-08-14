@@ -4,9 +4,9 @@
 |---|---|
 | **ADR** | 021 |
 | **Título** | Roteamento por scoring ponderado determinístico no Model Gateway (selecção automática de modelo com sinal de qualidade, sem exploração online) |
-| **Estado** | Aceite (emenda 1.1, 2026-08-13) |
-| **Data** | 2026-08-05 (ratificado 2026-08-13; emendado 2026-08-13) |
-| **Deciders** | Equipa AOS (**ratificação de dono**, 2026-08-13; **emenda 1.1 de dono**, 2026-08-13) |
+| **Estado** | Aceite (emenda 1.2, 2026-08-14) |
+| **Data** | 2026-08-05 (ratificado 2026-08-13; emendas 1.1 em 2026-08-13 e 1.2 em 2026-08-14) |
+| **Deciders** | Equipa AOS (**ratificação de dono**, 2026-08-13; **emendas 1.1 e 1.2 de dono**, 2026-08-13 / 2026-08-14) |
 | **Contexto-fonte** | Análise comparativa do conceito «Auto-Combo» do OmniRoute ([AUTO-COMBO-GUIDE](https://github.com/diegosouzapw/OmniRoute/blob/release/v3.8.50/docs/getting-started/AUTO-COMBO-GUIDE.md)) contra o router AOS-059 em `packages/platform/model-gateway/routing/router/router.go` |
 | **ADRs relacionados** | ADR-008 (admission tokens/$), ADR-010 (observabilidade/replay), ADR-011 (policy-as-code + soberania por board), ADR-012 (SemVer + eval-gate para artefactos comportamentais) |
 | **Supersede** | — |
@@ -172,6 +172,43 @@ e é **pré-existente a AOS-269**: o ticket entregou a máquina completa (portas
 tabela assinada, guard-tests de determinismo, cenários de soberania), não o wiring de um
 router que nunca esteve ligado. Enquanto essa dívida não fechar, o scoring **não tem efeito
 em produção**, e é isso — não outra coisa — que o ticket declara.
+
+> ⚠️ **SUPERADO pela emenda 1.2 (§5-ter).** O parágrafo acima descreve o estado de
+> 2026-08-13. **DEF-271 fechou** em 2026-08-14 (AOS-280) e o scoring **passou a ter efeito**
+> no caminho de produção do gateway. O texto fica por baixo, e não reescrito, para que a
+> revisão que o encontrar veja *quando* deixou de valer — a emenda 1.1 continua a ser a
+> autoridade sobre a **regra 3**; o que a 1.2 corrige é o **estado de facto**.
+
+## 5-ter. Emenda 1.2 (2026-08-14, autoridade de dono) — o scoring passou a ter efeito
+
+**O que se emenda: o ESTADO DE FACTO, não a decisão.** A emenda 1.1 (§5-bis) declarava que o
+scoring estava construído mas **sem efeito em produção**, porque o `router.Router` nunca fora
+composto no pipeline do gateway. Em **2026-08-14** o **AOS-280** compôs-o e **DEF-271 fechou**:
+o estágio de roteamento passou a ser `failover` **→** `routingstage`+`router`, por
+**encadeamento** (decisão de dono) — o `failover` mantém a soberania, o *failover* por saúde e
+a selagem do deny cross-border no WORM; o `router` refina dentro dessa fronteira.
+
+**A regra 3 deixou de ser postura e passou a recusa de ARRANQUE.** «Sem tabela válida/assinada
+o router recusa» era, na v1 opt-in, uma afirmação sobre um caminho que ninguém percorria. Com o
+estágio composto: um perfil de pesos desconhecido, uma tabela não-verificável ou **um modelo da
+escada sem preço na tabela de custo** fazem o gateway **recusar arrancar** — não falhar por
+chamada. Esta última guarda nasceu de uma regressão que a auditoria de AOS-280 apanhou e que o
+próprio ticket introduzira: sem ela, o refino podia degradar para um modelo sem preço, **o
+provider era invocado e facturado** e só depois a chamada falhava — o chamador retentava e
+repetia o gasto.
+
+**O que NÃO se emenda.** As cinco regras da §2 mantêm-se congeladas na substância — guardas
+antes do score e nunca como factores; aritmética inteira; pesos assinados e versionados com
+carregamento fail-closed; calibração offline sem *bandit*; swap como variância explícita. E
+mantém-se o mecanismo da 1.1: o scoring **compõe-se por declaração do deployment**
+(`RoutingConfig.Tiers`) — o que muda é que essa declaração agora **liga mesmo** o refino, em vez
+de o deixar inerte.
+
+**Alcance honesto, para não trocar uma imprecisão por outra.** «Tem efeito em produção»
+significa **no gateway**, quando o deployment declara a escada. O binário do nó
+(`packages/cmd/aos`) **não a declara**, pelo que aí o refino **ainda não corre** — deferido com
+eixo em **DEF-280-NO**. Declarar a escada é decisão de deployment (que modelos, com que
+cobertura de preço e de credencial), não uma linha de código em falta.
 
 ## 6. Referências
 
