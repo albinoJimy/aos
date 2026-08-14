@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate build
         run: bash scripts/ci/build.sh
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate lint (+ arch-lint AOS-003)
         run: bash scripts/ci/lint.sh
@@ -123,7 +123,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate layer-lint (fronteiras de camada sobre packages/ · baseline ADR-019)
         run: bash scripts/ci/layer-lint.sh --root "$GITHUB_WORKSPACE"
@@ -162,7 +162,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate test (-race + cobertura kernel >= 80%)
         run: bash scripts/ci/test.sh
@@ -174,7 +174,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate replay (fidelidade 100% + zero efeitos duplicados)
         run: bash scripts/ci/replay.sh
@@ -186,7 +186,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate memory (integridade/migração/proveniência + shredding/cache)
         run: bash scripts/ci/memory.sh
@@ -199,7 +199,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate supplychain (rug-pull · schema drift · tool poisoning · latest · fora-do-catálogo · replay)
         run: bash scripts/ci/supplychain.sh
@@ -213,7 +213,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate routing (saturação · tiering · degradação · failover intra · cross-border deny)
         run: bash scripts/ci/routing.sh
@@ -228,7 +228,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate apex (mediação total · fail-closed sem audit · allowlist regional · cross-border deny · freeze)
         run: bash scripts/ci/apex.sh
@@ -242,7 +242,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate security (prompt injection · exfiltração egress/DNS · segredos · isolamento)
         run: bash scripts/ci/security.sh
@@ -257,7 +257,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate evalgate (golden-sets curados + admission control · emit ligado ao trace)
         run: bash scripts/ci/evalgate.sh
@@ -272,7 +272,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate scale (saturação agregada · degradação em ordem · filas limitadas · breaker · NFRs)
         run: bash scripts/ci/scale.sh
@@ -286,7 +286,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate dr-e2e (node loss · failover · resume-from-step · zero-loss/zero-dup · soberania · MTTR)
         run: bash scripts/ci/dr-e2e.sh
@@ -301,7 +301,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate ux-dx (usabilidade · anti-fadiga override-rate · paridade · acessibilidade)
         run: bash scripts/ci/ux-dx.sh
@@ -312,7 +312,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate SAST (gosec)
         run: bash scripts/ci/sast.sh
@@ -323,7 +323,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate SCA (govulncheck)
         run: bash scripts/ci/sca.sh
@@ -334,7 +334,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate policy-test (PDP golden allow/deny + assinatura)
         run: bash scripts/ci/policy-test.sh
@@ -346,7 +346,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       # Python é dependência EXPLÍCITA do self-test desde AOS-198: §N4 (mutação do
       # documento de contratos), §P1 (predicado título↔ticket) e §P2 (prova
@@ -396,7 +396,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: "packages/**/go.sum"
       - name: Gate package (empacotamento + sast/sca + imagem distroless)
         run: bash scripts/ci/package.sh

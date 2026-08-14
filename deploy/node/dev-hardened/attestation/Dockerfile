@@ -1,7 +1,7 @@
 # Componente de autoridade de attestation WebAuthn (AOS-177) — corre o descodificador CBOR que o
 # binário do nó NUNCA pode importar (ADR-017). Build a partir da raiz do repo (contexto = repo root,
 # como o do nó), módulo próprio packages/cmd/aos-attestation.
-FROM golang:1.25.12-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
+FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS build
 WORKDIR /src
 COPY . .
 WORKDIR /src/packages/cmd/aos-attestation

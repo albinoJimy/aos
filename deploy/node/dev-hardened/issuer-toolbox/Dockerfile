@@ -8,7 +8,7 @@
 # a árvore packages/ inteira). Mesma disciplina reprodutível/offline do nó (ADR-017).
 #   docker build -f deploy/node/dev-hardened/issuer-toolbox/Dockerfile -t aos-issuer-toolbox:local .
 # =============================================================================
-FROM golang:1.25.12-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS builder
+FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS builder
 ENV CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local
 WORKDIR /src
 COPY packages/ ./packages/
