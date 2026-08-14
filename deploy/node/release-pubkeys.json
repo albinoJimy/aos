@@ -1,5 +1,15 @@
 {
   "format": "aos-release-pubkeys/v1",
-  "note": "ANCORA DE CONFIANCA da atestacao de entrega do no `aos` (AOS-207 / ADR-017 ponto 3). SO material PUBLICO vive aqui: chaves publicas ed25519 em hex, com detentor, custodia, estado e janela de validade. A chave PRIVADA correspondente NUNCA entra neste repositorio (ver deploy/node/CUSTODIA-CHAVE-RELEASE.md). `keys` VAZIO significa: nenhuma chave de release provisionada ainda — e por isso `scripts/ci/verify-attestation.sh` RECUSA qualquer envelope (fail-closed por omissao). Isto e o estado declarado, nao um esquecimento: a chave de release e provisionada pelo Arquitecto de Plataforma no primeiro release distribuido fora do repositorio, e a entrada abaixo e acrescentada nesse momento pelo procedimento documentado.",
-  "keys": []
+  "note": "ANCORA DE CONFIANCA da atestacao de entrega do no `aos` (AOS-207 / ADR-017 ponto 3). SO material PUBLICO vive aqui: chaves publicas ed25519 em hex, com detentor, custodia, estado e janela de validade. A chave PRIVADA correspondente NUNCA entra neste repositorio (ver deploy/node/CUSTODIA-CHAVE-RELEASE.md). `keys` VAZIO significa: nenhuma chave provisionada, e por isso `scripts/ci/verify-attestation.sh` RECUSA qualquer envelope (fail-closed por omissao). O roster deixou de estar vazio em 2026-08-14, no gatilho que CUSTODIA-CHAVE-RELEASE.md seccao 3 previa: o primeiro release distribuido fora do repositorio (v0.1.0). O `keyid` NAO e um rotulo em que se confie -- o verificador recalcula sha256(publicKey) e recusa a entrada que nao bata (a confianca e na chave, nao no nome).",
+  "keys": [
+    {
+      "keyid": "cd8112b1d6a04b47fdf5a7e1d24316558d1a37f55cdc2fafe9340bbf4ac66075",
+      "algorithm": "ed25519",
+      "publicKey": "b14171aaf4887cd43e1ab08dfe6edeb21c12ab387de5e8a616c144f842426f14",
+      "holder": "Arquitecto de Plataforma - albinoJimy (armandoalbino.jimy@gmail.com)",
+      "custody": "GitHub Actions secret AOS_RELEASE_KEY do repo albinoJimy/aos - custodia de SOFTWARE, nao HSM/KMS; residual declarado em CUSTODIA-CHAVE-RELEASE.md seccao 6",
+      "status": "active",
+      "notBefore": "2026-08-14T23:07:45Z"
+    }
+  ]
 }
