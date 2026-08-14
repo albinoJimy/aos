@@ -189,6 +189,15 @@ jobs:
     needs: [publish]
     if: github.event_name == 'push' || inputs.deploy
     uses: ./.github/workflows/deploy.yml
+    # OBRIGATÓRIO, e não cosmético: um workflow reutilizável NÃO pode pedir mais permissões do
+    # que o job que o chama detém. O deploy.yml declara `contents: read` + `packages: read` (o
+    # segundo para o `docker pull` do GHCR). Sem esta lista, este job herdaria o
+    # `permissions: contents: read` do nível do workflow — sem `packages` — e o GitHub REJEITA
+    # o run INTEIRO com `startup_failure`, a zero segundos, sem jobs, sem logs e sem anotação
+    # que o explique. Tem de ser um superconjunto do que o deploy.yml pede.
+    permissions:
+      contents: read
+      packages: read
     with:
       image: ${{ needs.publish.outputs.image }}
     secrets: inherit
