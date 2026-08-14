@@ -24,6 +24,11 @@ secrets.tfvars
 *.p12
 vault-token
 .vault-token
+# Material de identidade do deployment (deploy/server/gen-identity.sh). As seeds ed25519 e a
+# chave do issuer nascem e FICAM na máquina do operador — o servidor só recebe pubkeys. O
+# directório inteiro é ignorado: uma seed não é .key nem .pem e escaparia às regras acima.
+deploy/server/secrets-local/
+*.seed
 
 # --- Node / TS ---
 node_modules/

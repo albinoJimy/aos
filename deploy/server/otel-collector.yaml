@@ -1,0 +1,51 @@
+# Collector do servidor — recebe os TRACES que o nó exporta (AOS_OTLP_ENDPOINT) e faz SCRAPE
+# das MÉTRICAS do nó (GET /metrics na rede interna).
+#
+# Os dois pipelines saem para o stdout do contentor, que o docker rota para o journald do host
+# (ver o daemon.json escrito por bootstrap.sh). É deliberadamente o mínimo verificável: um
+# backend real (tempo/jaeger para traces, prometheus remote-write/mimir para métricas) entra
+# como um exporter adicional aqui, sem tocar no nó.
+#
+# Alertas de SLO a ligar quando houver backend: aos_ready, aos_eventstore_healthy,
+# aos_dsar_vault_ready (este último só conta com AOS_DSAR_VAULT_ADDR configurado).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: aos-node
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["aos:8080"]
+
+processors:
+  batch: {}
+  # Tecto de memória: um pico de traces não pode derrubar o collector e, com ele, a
+  # observabilidade do nó no momento em que ela é mais precisa.
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+
+exporters:
+  debug:
+    verbosity: normal
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

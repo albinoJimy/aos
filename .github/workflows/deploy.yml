@@ -1,0 +1,167 @@
+# Deploy do nó `aos` para o servidor — a única via automática que toca em 37.60.241.150.
+#
+# Chamado por release.yml depois de a imagem estar publicada e atestada, ou à mão
+# (workflow_dispatch) para repor uma versão anterior sem reconstruir nada.
+#
+# ─── O que torna este workflow seguro ────────────────────────────────────────────────────────
+#  · `environment: production` — porta de decisão HUMANA. Configura-se em Settings →
+#    Environments → production → Required reviewers. Sem isso, o gate é decorativo: o job
+#    corre à mesma. Ver deploy/server/README.md §"Segredos e environment".
+#  · known_hosts OBRIGATÓRIO (secret DEPLOY_KNOWN_HOSTS) — sem ele, o primeiro deploy aceitaria
+#    qualquer chave de host que respondesse no IP (TOFU), que é exactamente a janela de um MITM.
+#    Fail-closed: o job pára antes de abrir a ligação.
+#  · O servidor NUNCA guarda credenciais do registry: o GITHUB_TOKEN deste job é efémero e o
+#    deploy.sh faz `docker logout` num trap EXIT.
+#  · A referência é um DIGEST. `latest` seria uma promessa que o registry pode quebrar depois.
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Referência da imagem (preferencialmente por digest)"
+        required: true
+        type: string
+      environment:
+        description: "GitHub Environment a usar"
+        required: false
+        default: production
+        type: string
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Referência da imagem (ex.: ghcr.io/albinojimy/aos-node@sha256:...)"
+        required: true
+        type: string
+      environment:
+        description: "GitHub Environment a usar"
+        required: false
+        default: production
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      # Dois deploys em paralelo no mesmo host disputariam o image.env e o rollback perderia a
+      # referência do anterior. Serializa-se, e NÃO se cancela um deploy a meio (cancel-in-progress
+      # falso): abortar entre o `up -d` e o smoke deixaria o servidor num estado por verificar.
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar entradas e segredos
+        env:
+          IMAGE: ${{ inputs.image }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "$IMAGE" ]       || missing+=("inputs.image")
+          [ -n "$HOST" ]        || missing+=("secrets.DEPLOY_HOST")
+          [ -n "$USER" ]        || missing+=("secrets.DEPLOY_USER")
+          [ -n "$SSH_KEY" ]     || missing+=("secrets.DEPLOY_SSH_KEY")
+          [ -n "$KNOWN_HOSTS" ] || missing+=("secrets.DEPLOY_KNOWN_HOSTS")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::em falta: ${missing[*]} — ver deploy/server/README.md §Segredos"
+            exit 1
+          fi
+          case "$IMAGE" in
+            *@sha256:*) echo "referência por digest: OK" ;;
+            *) echo "::warning::'$IMAGE' não é um digest — o rollback deixa de ser garantido." ;;
+          esac
+
+      - name: Preparar SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY"     > ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_deploy ~/.ssh/known_hosts
+
+      # Sincroniza SÓ os ficheiros geridos pelo repositório. Sem --delete e sem tocar em
+      # .env, secrets/ ou image.env: esses são estado do servidor, não do repositório — um
+      # --delete apagaria as chaves TLS e a configuração no primeiro deploy.
+      - name: Sincronizar deploy/server -> /opt/aos
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o BatchMode=yes"
+          rsync -az -e "$SSH" \
+            deploy/server/docker-compose.prod.yml \
+            deploy/server/nginx.conf \
+            deploy/server/otel-collector.yaml \
+            deploy/server/deploy.sh \
+            deploy/server/rollback.sh \
+            deploy/server/provision.sh \
+            deploy/server/.env.example \
+            "$USER@$HOST:/opt/aos/"
+          rsync -az -e "$SSH" deploy/server/templates/ "$USER@$HOST:/opt/aos/templates/"
+          # O bundle PDP é totalmente gerido pelo repositório: aqui --delete é correcto e
+          # necessário (uma política removida do repo tem de desaparecer do servidor).
+          rsync -az --delete -e "$SSH" \
+            packages/control-plane/pdp/policies/ "$USER@$HOST:/opt/aos/policies/"
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          IMAGE: ${{ inputs.image }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # O token vai por STDIN, nunca em argv: um token na linha de comando remota fica
+          # visível em `ps` para qualquer processo do servidor durante a execução do deploy.
+          printf '%s' "$GH_TOKEN" | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o BatchMode=yes "$USER@$HOST" \
+            "GHCR_USER='$GH_ACTOR' GHCR_TOKEN=\"\$(cat)\" bash /opt/aos/deploy.sh '$IMAGE'"
+
+      # Smoke DE FORA: o deploy.sh já testou pelo loopback do servidor. Este passo prova o que
+      # aquele não pode provar — que o serviço está alcançável pela rede, com a porta publicada
+      # e a firewall a deixar passar. É a diferença entre "arrancou" e "está a servir".
+      - name: Smoke externo
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ vars.DEPLOY_EDGE_PORT || '8444' }}
+        run: |
+          set -euo pipefail
+          # -k: o certificado é self-signed por omissão. Com um cert de CA real, tira o -k —
+          # e passa a ser também um teste da cadeia de confiança.
+          # `|| echo 000`: um erro de LIGAÇÃO (firewall, porta fechada) faz o curl sair != 0 e,
+          # sob `set -e`, mataria o passo com uma mensagem do curl em vez do diagnóstico útil.
+          code="$( curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://$HOST:$PORT/healthz" || echo 000 )"
+          [ "$code" = "200" ] || { echo "::error::smoke externo falhou (HTTP $code) — o nó pode estar saudável e a porta $PORT fechada na firewall"; exit 1; }
+          echo "https://$HOST:$PORT/healthz -> HTTP $code"
+
+      - name: Resumo
+        if: always()
+        env:
+          IMAGE: ${{ inputs.image }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          {
+            echo "### Deploy — ${{ job.status }}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Imagem | \`$IMAGE\` |"
+            echo "| Servidor | \`$HOST\` |"
+            echo "| Environment | \`${{ inputs.environment }}\` |"
+            echo
+            echo "Reverter: \`ssh $HOST 'bash /opt/aos/rollback.sh'\`"
+          } >> "$GITHUB_STEP_SUMMARY"
