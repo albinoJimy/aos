@@ -68,13 +68,15 @@
 // qualquer rota. Sem `WithScoring` o router mantém, inalterado, o ordenamento
 // lexicográfico de AOS-059.
 //
-// DIVERGÊNCIA DECLARADA (não silenciada). O §5-bis do ADR-021 — autoridade CONGELADA —
-// ainda diz, no texto da emenda 1.1, que o scoring «não tem efeito em produção»
-// enquanto DEF-271 não fechar. DEF-271 FECHOU (AOS-280) e este parágrafo descreve o
-// código que existe; actualizar o ADR é EMENDA de dono, não edição do implementador
-// (Carta §6). A divergência está registada com eixo em DEF-280-ADR021 (registo de
-// deferimentos), com o texto proposto para a emenda 1.2 — quem ler o ADR e este doc em
-// conflito encontra ali qual dos dois está à espera de assinatura.
+// AUTORIDADE ALINHADA (a divergência fechou). Entre AOS-280 e 2026-08-14 este doc e o
+// ADR-021 disseram coisas opostas: o §5-bis, da emenda 1.1, declarava que o scoring «não
+// tem efeito em produção» enquanto DEF-271 não fechasse — e DEF-271 tinha fechado. A
+// divergência foi REGISTADA e não silenciada (DEF-280-ADR021), porque actualizar um ADR é
+// EMENDA de dono e não edição do implementador (Carta §6). O dono **ratificou a emenda 1.2
+// em 2026-08-14**: o ADR ganhou o §5-ter, que declara DEF-271 fechado, o scoring com efeito
+// no caminho de produção do gateway quando o deployment declara a escada, e a regra 3 já não
+// como postura mas como RECUSA DE ARRANQUE. O §5-bis ficou por baixo, marcado SUPERADO — é
+// lá que se vê *quando* deixou de valer.
 //
 // As GUARDAS continuam PRIMEIRO e não são factores (ADR-021 regra 1): a partição de
 // soberania, a allowlist do board e o piso de capacidade correm ANTES do ranking, e
