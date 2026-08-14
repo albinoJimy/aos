@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -245,17 +246,41 @@ func TestScenario7_Scoring_PureFunctionDeterministicNoFloats(t *testing.T) {
 	// ZERO FLOATS / ZERO RAND / ZERO RELÓGIO no caminho de decisão — provado sobre o
 	// CÓDIGO (AST), não por inspecção humana: um float64 introduzido no scorer, na
 	// tabela de pesos ou no router faz este teste ficar vermelho. A LISTA DE
-	// DIRECTÓRIOS é DERIVADA do fecho transitivo de imports do router (ver
-	// [decisionPathDirs]) e não fixada à mão: um pacote NOVO no caminho de decisão
-	// passa a ser analisado sem ninguém se lembrar de o acrescentar aqui.
-	dirs := decisionPathDirs(t, "../routing/router")
-	if len(dirs) < 5 {
+	// DIRECTÓRIOS é DERIVADA do fecho transitivo de imports (ver [decisionPathDirs]) e
+	// não fixada à mão: um pacote NOVO no caminho de decisão passa a ser analisado sem
+	// ninguém se lembrar de o acrescentar aqui.
+	//
+	// O fecho parte de DUAS raízes ([decisionPathRoots]) e não de uma: derivá-lo só do
+	// router excluía, por direcção do grafo, quem o CHAMA e decide com ele — o
+	// `routingstage`/ProductionClassifier de AOS-280, que escolhe o conjunto de
+	// candidatos que o scorer ordena. A fronteira do varrimento é declarada em
+	// [transportDirs], com razão nomeada, em vez de ser um efeito lateral de quem
+	// importa quem.
+	dirs := decisionPathClosure(t)
+	if len(dirs) < 7 {
 		t.Fatalf("fecho de imports do caminho de decisão suspeitosamente pequeno (%d): %v", len(dirs), dirs)
+	}
+	// O fecho tem de conter quem DECIDE, não só quem é importado por quem decide: o
+	// estágio/classificador de produção (AOS-280) e a allowlist que ele avalia entram
+	// por serem RAÍZES, e não por serem alcançados a partir do router.
+	for _, must := range []string{"../routing/routingstage", "../policy/allowlist"} {
+		if !slices.Contains(dirs, must) {
+			t.Fatalf("o fecho do caminho de decisão perdeu %s (guard a encolher em silêncio): %v", must, dirs)
+		}
 	}
 	for _, dir := range dirs {
 		if viol := scanDeterminismViolations(t, dir); len(viol) > 0 {
 			t.Fatalf("caminho de decisão contaminado em %s: %s", dir, strings.Join(viol, "; "))
 		}
+	}
+	// O FICHEIRO de composição do caminho quente (pacote RAIZ do módulo). O pacote
+	// inteiro não é varrível — `gateway.go`/`production.go` usam legitimamente o
+	// relógio da fachada (carimbos, timeouts de egress) —, mas `production_routing.go`
+	// hospeda código que corre POR CHAMADA dentro da decisão: o factor de saúde, o
+	// adaptador de carga do keypool e a guarda de fronteira derivada da policy. Varre-se
+	// por FICHEIRO, que é o recorte honesto.
+	if viol := scanDeterminismFiles(t, "../production_routing.go", []string{"../production_routing.go"}); len(viol) > 0 {
+		t.Fatalf("composição do caminho de decisão contaminada: %s", strings.Join(viol, "; "))
 	}
 	// NÃO-VACUIDADE, UM CASO POR REGRA. Um scanner partido numa regra qualquer daria
 	// verde-vazio sobre o caminho de decisão, e o self-check antigo (só floats
@@ -326,6 +351,41 @@ const modulePrefix = "github.com/aos-ref/platform/model-gateway/"
 // acrescentasse um pacote ao caminho de decisão — sem nada ficar vermelho. Com o
 // fecho de imports, o guard cresce com o código: o único modo de escapar passa a
 // ser não estar no caminho de decisão de todo.
+// decisionPathRoots são as RAÍZES do caminho de decisão. Duas, e não uma, porque o
+// fecho de imports só anda para JUSANTE: `routingstage` (o estágio + o
+// ProductionClassifier de AOS-280, que derivam capacidade, classe, perfil de pesos e
+// — decisivo — o CONJUNTO DE CANDIDATOS que o scorer ordena) IMPORTA o router, logo
+// nunca seria visitado a partir dele. Partir só do router deixava de fora quem decide.
+var decisionPathRoots = []string{"../routing/router", "../routing/routingstage"}
+
+// transportDirs são os pacotes que o fecho NÃO atravessa, com a razão nomeada. Não é
+// uma lista de conveniência: `pipeline` (e o `port` que ele transporta) é a FRONTEIRA
+// do caminho de decisão — carrega o Exchange, o relógio INJECTADO dos carimbos de
+// auditoria e os DTOs do protocolo do provider (onde `Temperature`/`Embedding` são
+// floats do wire, não aritmética de decisão). Nada em `pipeline` escolhe uma rota.
+var transportDirs = map[string]string{
+	"../pipeline": "transporte da chamada (Exchange + DTOs do wire): relógio injectado e floats de protocolo, nenhuma decisão de rota",
+}
+
+// decisionPathClosure é o fecho UNIDO das raízes de decisão, sem os pacotes de
+// transporte. Ordenado e determinístico.
+func decisionPathClosure(t *testing.T) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var out []string
+	for _, root := range decisionPathRoots {
+		for _, dir := range decisionPathDirs(t, root) {
+			if seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			out = append(out, dir)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func decisionPathDirs(t *testing.T, root string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -339,6 +399,9 @@ func decisionPathDirs(t *testing.T, root string) []string {
 			continue
 		}
 		seen[dir] = true
+		if _, transport := transportDirs[dir]; transport {
+			continue // fronteira declarada: não se varre nem se atravessa (ver transportDirs)
+		}
 		out = append(out, dir)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -405,19 +468,33 @@ var clockSelectors = map[string]bool{"Now": true, "Since": true, "Until": true}
 // Os testes do próprio pacote continuam fora (não entram no binário).
 func scanDeterminismViolations(t *testing.T, dir string) []string {
 	t.Helper()
-	fset := token.NewFileSet()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ler %s: %v", dir, err)
 	}
-	var viol []string
-	scanned := 0
+	var paths []string
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments|parser.SkipObjectResolution)
+		paths = append(paths, filepath.Join(dir, name))
+	}
+	return scanDeterminismFiles(t, dir, paths)
+}
+
+// scanDeterminismFiles é o núcleo do guard sobre um conjunto EXPLÍCITO de ficheiros.
+// Existe porque nem todo o caminho de decisão é um pacote inteiro: o composition root
+// vive num pacote que também hospeda a fachada (com relógio legítimo), e o recorte
+// correcto aí é o ficheiro. O `label` só serve as mensagens de erro.
+func scanDeterminismFiles(t *testing.T, label string, paths []string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	var viol []string
+	scanned := 0
+	for _, path := range paths {
+		name := filepath.Base(path)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse de %s: %v", name, err)
 		}
@@ -477,7 +554,7 @@ func scanDeterminismViolations(t *testing.T, dir string) []string {
 	if scanned == 0 {
 		// Guarda anti-vacuidade do próprio guard: um caminho errado tornaria este
 		// teste verde-vazio (nada analisado = nada encontrado).
-		t.Fatalf("nenhum ficheiro analisado em %s — o guard de determinismo seria vácuo", dir)
+		t.Fatalf("nenhum ficheiro analisado em %s — o guard de determinismo seria vácuo", label)
 	}
 	return viol
 }

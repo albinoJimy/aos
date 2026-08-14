@@ -31,6 +31,14 @@
 // gateway. AOS-059 (cost/load-aware) refina a escolha SEMPRE dentro dos
 // sobreviventes intra-fronteira que esta guarda autoriza — nunca a expande.
 //
+// Desde AOS-280 esse refino está EFECTIVAMENTE ENCADEADO a jusante deste estágio no
+// gateway de produção (`failover` → `routingstage`+`router`, ver
+// modelgateway/production_routing.go), e não apenas descrito aqui. O que este estágio
+// resolve é a ENTRADA do refino (a regra «resolvida-primeiro» de routingstage), pelo
+// que um failover por SAÚDE decidido aqui não é desfeito lá; e o DENY cross-border
+// continua a ser selado AQUI, no audit WORM, antes de o refino sequer correr — é a
+// razão pela qual o router não substituiu este estágio.
+//
 // # Determinismo
 //
 // A saúde do primário é INJECTÁVEL ([sovereignty.HealthFunc]); sem rede nem rand na
