@@ -76,57 +76,44 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=${REGISTRY,,}/${IMAGE_NAME,,}:${version}" >> "$GITHUB_OUTPUT"
 
-      # package.sh é a fonte de verdade do empacotamento (constrói a imagem distroless non-root e
-      # reutiliza os gates sast/sca/secrets). O workflow só lhe passa a tag de destino.
-      - name: Gate package (imagem endurecida + sast/sca/secrets)
+      # package.sh é a fonte de verdade da ENTREGA INTEIRA (imagem distroless non-root, sast/sca/
+      # secrets, SBOM, proveniência, assinatura e verificação). O workflow só lhe dá duas coisas:
+      # a tag de destino e o CAMINHO da chave. A chave TEM de estar lá ANTES, e não depois.
+      #
+      # `package.sh` NÃO é um gate isolado: ele próprio ORQUESTRA o sbom, o sign e o
+      # verify-attestation como sub-gates (vê-se nos seus logs — `GATE: package · sign`).
+      # A versão anterior deste workflow escrevia a chave num passo POSTERIOR e chamava
+      # sbom/sign/verify outra vez à mão: o package.sh corria primeiro, sem
+      # AOS_RELEASE_KEY_FILE, saltava a assinatura e terminava em VERDE PARCIAL (saída 3) —
+      # que é fail-closed correcto do lado do projecto e erro de sequência do lado do workflow.
+      #
+      # A chave entra por FICHEIRO (sign.sh lê o CAMINHO, nunca o valor) e o caminho vai para
+      # $GITHUB_ENV para o package.sh o herdar.
+      - name: Provisionar a chave de release (por ficheiro, para o package.sh)
+        env:
+          AOS_RELEASE_KEY: ${{ secrets.AOS_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AOS_RELEASE_KEY:-}" ]; then
+            echo "::error::AOS_RELEASE_KEY não provisionada. Sem ela o package.sh termina em VERDE PARCIAL e a entrega NÃO é publicável (ADR-017 ponto 3). Ver deploy/node/CUSTODIA-CHAVE-RELEASE.md."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$AOS_RELEASE_KEY" > "$RUNNER_TEMP/release.key"
+          echo "AOS_RELEASE_KEY_FILE=$RUNNER_TEMP/release.key" >> "$GITHUB_ENV"
+
+      # Um único gate: empacota a imagem endurecida, reutiliza sast/sca/secrets, gera SBOM e
+      # proveniência, ASSINA a atestação DSSE e RECUSA o que não valide. Fail-closed por
+      # construção — qualquer etapa não-verificada dá saída != 0 e aborta a entrega.
+      - name: Gate package (empacota · assina · verifica — fail-closed)
         env:
           IMAGE_TAG: ${{ steps.meta.outputs.tag }}
         run: bash scripts/ci/package.sh
 
-      - name: Gate sbom (SBOM + proveniência)
-        env:
-          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
-        run: bash scripts/ci/sbom.sh
-
-      # A chave PRIVADA de release entra por FICHEIRO, nunca por valor no ambiente: sign.sh lê
-      # AOS_RELEASE_KEY_FILE. Sem o secret, a atestação fica declaradamente NÃO-ASSINADA — o que
-      # é o estado de hoje (deploy/node/release-pubkeys.json tem o roster VAZIO por decisão
-      # registada, e um roster vazio recusa tudo, fail-closed).
-      - name: Atestação DSSE (assina se houver chave de release provisionada)
-        id: sign
-        env:
-          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
-          AOS_RELEASE_KEY: ${{ secrets.AOS_RELEASE_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -n "${AOS_RELEASE_KEY:-}" ]; then
-            umask 077
-            printf '%s' "$AOS_RELEASE_KEY" > "$RUNNER_TEMP/release.key"
-            export AOS_RELEASE_KEY_FILE="$RUNNER_TEMP/release.key"
-            echo "signed=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::AOS_RELEASE_KEY não provisionada — a entrega vai NÃO-ASSINADA. Ver deploy/node/CUSTODIA-CHAVE-RELEASE.md."
-            echo "signed=0" >> "$GITHUB_OUTPUT"
-          fi
-          bash scripts/ci/sign.sh
-          rm -f "$RUNNER_TEMP/release.key"
-
-      # Fail-closed CONDICIONADO ao estado declarado, não relaxado: com chave provisionada a
-      # verificação TEM de ficar verde (exit 0). Sem chave, o exit 4 ("por verificar, não
-      # publicável") é o resultado ESPERADO e correcto — qualquer outro código é falha real.
-      - name: Verificar a atestação
-        env:
-          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          set -uo pipefail
-          rc=0; bash scripts/ci/verify-attestation.sh || rc=$?
-          if [ "${{ steps.sign.outputs.signed }}" = "1" ]; then
-            [ "$rc" -eq 0 ] || { echo "::error::atestação assinada NÃO validou (rc=$rc) — release abortada"; exit 1; }
-          else
-            [ "$rc" -eq 0 ] || [ "$rc" -eq 4 ] \
-              || { echo "::error::verify-attestation falhou com rc=$rc (esperado 0 ou 4 sem chave)"; exit 1; }
-            echo "::warning::entrega POR VERIFICAR (rc=$rc) — sem chave de release, é o estado declarado."
-          fi
+      # `always()`: a chave sai do runner mesmo quando o gate falha.
+      - name: Remover a chave do runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.key"
 
       - name: Push para o GHCR
         id: push
@@ -169,8 +156,11 @@ jobs:
             echo '```'
             echo
             echo "## Entrega"
-            echo "- Atestação assinada: ${{ steps.sign.outputs.signed == '1' && 'sim' || '**não** (roster de release vazio — ver CUSTODIA-CHAVE-RELEASE.md)' }}"
+            echo "- Atestação DSSE **assinada e verificada** — o \`package.sh\` é fail-closed:"
+            echo "  se a assinatura ou a verificação não corressem, esta release não existiria."
             echo "- SBOM e proveniência no artefacto \`aos-delivery-$VERSION\`."
+            echo "- ⚠️ A atestação **não viaja com a imagem** (sem OCI referrers): um \`docker pull\`"
+            echo "  não a traz. Residual declarado em ADR-017."
             echo
             echo "## Deploy"
             echo '```bash'
