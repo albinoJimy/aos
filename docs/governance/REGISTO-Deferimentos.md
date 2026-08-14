@@ -1,4 +1,4 @@
-# Registo único de deferimentos — onde cada dívida declarada tem um eixo verificável
+﻿# Registo único de deferimentos — onde cada dívida declarada tem um eixo verificável
 
 | Campo | Valor |
 |---|---|
@@ -558,6 +558,16 @@ perfil e guard AST alargado a quem decide — e acrescentou dois residuais com e
 `DEF-280-ADR021` (o §5-bis do ADR-021 continua a dizer que o scoring não tem efeito em
 produção: é autoridade congelada e exige emenda 1.2 de dono, não uma edição do
 implementador).
+
+**Actualização 2026-08-14 — `DEF-280-ADR021` FECHOU.** O dono **ratificou a emenda 1.2**
+do ADR-021: o documento ganhou o **§5-ter** (o scoring passou a ter efeito; a regra 3
+vale como RECUSA DE ARRANQUE para quem declare a escada) e o **§5-bis ficou marcado
+SUPERADO por baixo, não reescrito** — para se ver *quando* deixou de valer. O caminho foi
+o correcto e é o que este registo existe para provar: o implementador **não editou o ADR**,
+registou a divergência aqui e esperou pela autoridade de dono (Carta §6). O doc do pacote
+`routing/router` deixou de declarar divergência e passa a citar a emenda. **Continuam
+abertos os outros quatro residuais de AOS-280** (`DEF-280-PORTAS`, `DEF-280-TOKENS`,
+`DEF-280-NO`, `DEF-280-REGIAO`).
 
 O registo histórico segue abaixo, por leitura.
 
