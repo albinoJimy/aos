@@ -73,6 +73,39 @@ if grep -q 'SUBSTITUI-ME' "${SECRETS}/approvers.json" 2>/dev/null; then
   log "     ⚠️ approvers.json ainda tem marcadores SUBSTITUI-ME — o four-eyes NÃO destrava nada assim."
 fi
 
+# CAMPOS DESCONHECIDOS ABORTAM O NÓ. O descodificador usa DisallowUnknownFields: um `"_nota"`
+# a documentar o ficheiro basta para o arranque falhar em restart loop, com o erro só visível
+# em `docker logs`. Apanha-se aqui, onde a mensagem chega a quem está a provisionar.
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "${SECRETS}/authority.json" "${SECRETS}/approvers.json" <<'PY' || fail "roster com campo desconhecido — corrige antes de continuar (ver README §\"Os ficheiros JSON montados não toleram um único campo a mais\")"
+import json, sys
+schema = {
+    "authority.json": ({"revision", "subjects"}, {"subject", "capabilities"}),
+    "approvers.json": ({"approvers"}, {"principal", "pubkey", "authority", "devices"}),
+}
+rc = 0
+for path in sys.argv[1:]:
+    name = path.rsplit("/", 1)[-1]
+    allowed_top, allowed_item = schema[name]
+    try:
+        doc = json.load(open(path, encoding="utf-8"))
+    except Exception as e:
+        print(f"     {name}: JSON invalido — {e}"); rc = 1; continue
+    extra = set(doc) - allowed_top
+    if extra:
+        print(f"     {name}: campo(s) DESCONHECIDO(s) no topo: {sorted(extra)} — o no ABORTA o arranque"); rc = 1
+    for item in next((v for v in doc.values() if isinstance(v, list)), []):
+        if isinstance(item, dict):
+            bad = set(item) - allowed_item
+            if bad:
+                print(f"     {name}: campo(s) DESCONHECIDO(s) numa entrada: {sorted(bad)}"); rc = 1
+sys.exit(rc)
+PY
+  log "     esquema validado (sem campos desconhecidos)"
+else
+  log "     ⚠️ sem python3 — validacao de esquema SALTADA; um campo a mais aborta o no no arranque"
+fi
+
 # --- 3. TLS do edge ----------------------------------------------------------------------------
 log "3/4 TLS do edge (${AOS_EDGE_HOST}) ..."
 if [ -s "${SECRETS}/tls/edge.crt" ] && [ "${FORCE_TLS:-0}" != "1" ]; then
