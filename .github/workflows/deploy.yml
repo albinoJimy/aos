@@ -109,6 +109,7 @@ jobs:
             deploy/server/deploy.sh \
             deploy/server/rollback.sh \
             deploy/server/provision.sh \
+            deploy/server/sync-tls.sh \
             deploy/server/.env.example \
             "$USER@$HOST:/opt/aos/"
           rsync -az -e "$SSH" deploy/server/templates/ "$USER@$HOST:/opt/aos/templates/"
@@ -138,15 +139,31 @@ jobs:
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           PORT: ${{ vars.DEPLOY_EDGE_PORT || '8444' }}
+          PUBLIC_HOST: ${{ vars.DEPLOY_PUBLIC_HOST }}
         run: |
           set -euo pipefail
-          # -k: o certificado é self-signed por omissão. Com um cert de CA real, tira o -k —
-          # e passa a ser também um teste da cadeia de confiança.
-          # `|| echo 000`: um erro de LIGAÇÃO (firewall, porta fechada) faz o curl sair != 0 e,
-          # sob `set -e`, mataria o passo com uma mensagem do curl em vez do diagnóstico útil.
+          # Duas perguntas DIFERENTES, e por isso duas verificações.
+          #
+          # (1) ALCANCE — por IP, com `-k`. "A porta está aberta e a aplicação serve?"
+          # O `-k` é deliberado: o certificado é emitido para o NOME, pelo que uma ligação por IP
+          # nunca validaria — e falharia por uma razão que nada tem a ver com o deploy.
+          # `|| echo 000`: um erro de LIGAÇÃO faz o curl sair != 0 e, sob `set -e`, mataria o
+          # passo com uma mensagem do curl em vez do diagnóstico útil.
           code="$( curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://$HOST:$PORT/healthz" || echo 000 )"
-          [ "$code" = "200" ] || { echo "::error::smoke externo falhou (HTTP $code) — o nó pode estar saudável e a porta $PORT fechada na firewall"; exit 1; }
-          echo "https://$HOST:$PORT/healthz -> HTTP $code"
+          [ "$code" = "200" ] || { echo "::error::alcance falhou (HTTP $code) — o nó pode estar saudável e a porta $PORT fechada"; exit 1; }
+          echo "alcance   : porta $PORT -> HTTP $code"
+
+          # (2) CONFIANÇA — pelo nome, SEM `-k`. "A cadeia TLS valida?"
+          # Só corre com a variável definida: sem ela o TLS pode ainda ser self-signed, e exigir
+          # validação seria um falso vermelho. É também o canário da ponte sync-tls: se o
+          # certificado deixar de ser renovado para o edge, é aqui que se vê.
+          if [ -n "${PUBLIC_HOST:-}" ]; then
+            vcode="$( curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "https://$PUBLIC_HOST:$PORT/healthz" || echo 000 )"
+            [ "$vcode" = "200" ] || { echo "::error::cadeia TLS NÃO valida em https://$PUBLIC_HOST:$PORT (HTTP $vcode) — certificado expirado, errado para o nome, ou a ponte sync-tls parada"; exit 1; }
+            echo "confiança : https://$PUBLIC_HOST:$PORT/healthz -> HTTP $vcode (cadeia verificada)"
+          else
+            echo "::warning::vars.DEPLOY_PUBLIC_HOST não definida — só o alcance foi verificado, não a cadeia TLS."
+          fi
 
       - name: Resumo
         if: always()
