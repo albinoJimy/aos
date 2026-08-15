@@ -1,0 +1,58 @@
+# =============================================================================
+# LiteLLM — gateway de modelos EXTERNO e config-driven, para o nó `aos` de produção.
+#
+# ─── A divisão que interessa perceber ────────────────────────────────────────────────────────
+# `model_name`  é o ALIAS que o NÓ pede. TEM de constar da allowlist ASSINADA e EMBEBIDA do
+#               gateway do nó — para `board-eu` nas regiões `eu`/`eu-west` são exactamente:
+#               `gpt-4o`, `gpt-4o-mini` (chat) e `text-embedding-3-large` (embeddings).
+#               A política é `default: deny`; um nome fora dela é NEGADO no nó, antes de
+#               qualquer chamada sair. É a fronteira de GOVERNANÇA, imutável sem re-assinar.
+#
+# `litellm_params.model` é o provider/modelo REAL. Isto é ROTEAMENTO, e é livre: trocar de
+#               provider, de modelo ou de região faz-se AQUI, sem tocar no nó nem no código.
+#
+# Ou seja: o nó governa QUE nomes podem ser pedidos; este ficheiro decide o que eles significam.
+#
+# As chaves dos providers vivem em `../secrets/model.env` (git-ignored) e NUNCA aqui.
+# =============================================================================
+
+model_list:
+  # ⚠️ POR CONFIGURAR — descomenta o bloco do teu provider e põe a chave em secrets/model.env.
+  #
+  # Enquanto nenhum estiver activo, o LiteLLM arranca mas não serve modelo nenhum, e o nó
+  # continua no modelo de REFERÊNCIA (texto fixo). É deliberado: melhor um nó que declara não
+  # ter modelo do que um que falha cada run com um erro de provider.
+
+  # --- OpenAI -------------------------------------------------------------------------------
+  # - model_name: gpt-4o-mini
+  #   litellm_params:
+  #     model: openai/gpt-4o-mini
+  #     api_key: os.environ/OPENAI_API_KEY
+  # - model_name: gpt-4o
+  #   litellm_params:
+  #     model: openai/gpt-4o
+  #     api_key: os.environ/OPENAI_API_KEY
+
+  # --- Anthropic (o alias continua a ser um nome allowlisted; o modelo real é livre) ---------
+  # - model_name: gpt-4o
+  #   litellm_params:
+  #     model: anthropic/claude-sonnet-4-5
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+  # --- Provider OpenAI-compatível genérico (Kimi, Groq, Together, vLLM local…) ---------------
+  # - model_name: gpt-4o-mini
+  #   litellm_params:
+  #     model: openai/kimi-for-coding
+  #     api_key: os.environ/MOONSHOT_API_KEY
+  #     api_base: https://api.kimi.com/coding/v1
+
+litellm_settings:
+  drop_params: true      # tolera parâmetros que um provider não suporte, em vez de rebentar
+  telemetry: false       # sem telemetria externa
+
+general_settings:
+  background_health_checks: false
+  # Com `LITELLM_MASTER_KEY` definida em secrets/model.env, o nó tem de a apresentar como
+  # bearer — e aí define-se `AOS_MODEL_API_KEY_PATH` no nó, apontando a um ficheiro montado.
+  # Sem ela, o nó fala com o LiteLLM sem autenticação: aceitável APENAS porque o LiteLLM não
+  # publica porta nenhuma no host e só é alcançável na rede interna do compose.
