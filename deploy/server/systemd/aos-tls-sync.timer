@@ -1,0 +1,13 @@
+[Unit]
+Description=Verificacao diaria do certificado TLS do no AOS
+
+[Timer]
+# Diario com dispersao: o cert-manager renova ~30 dias antes de expirar, pelo que uma
+# passagem por dia apanha a renovacao com semanas de folga.
+OnCalendar=daily
+RandomizedDelaySec=1h
+# Apanha a passagem em falta se a maquina tiver estado desligada.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Sincroniza o certificado TLS do no AOS a partir do cert-manager
+Documentation=file:///opt/aos/README.md
+After=docker.service
+Wants=aos-tls-sync.timer
+
+[Service]
+Type=oneshot
+Environment=KUBECONFIG=/etc/kubernetes/admin.conf
+ExecStart=/opt/aos/sync-tls.sh
+# Sem Restart: a falha TEM de ficar visivel em `systemctl --failed`. Um retry automatico
+# esconderia exactamente o sinal que este servico existe para dar.

@@ -236,34 +236,66 @@ imagem. É o que torna a reversão segura.
 
 ---
 
-## TLS real
+## TLS real — instalado, via cert-manager do cluster
 
-O `provision.sh` gera *self-signed* porque um IP não tem certificado de CA pública.
+O nó serve `https://aos.elysiumii.site:8444` com certificado **Let's Encrypt válido**, cadeia
+verificada sem `-k`. O `provision.sh` continua a gerar um *self-signed* como ponto de partida —
+ele é substituído pelo real assim que o `sync-tls.sh` corre.
 
-⚠️ **O caminho óbvio não funciona neste host.** `certbot --standalone` precisa da porta 80, que
-pertence ao `ingress-nginx` do cluster — o container nem chega a arrancar. O desafio **HTTP-01
-está fechado** a qualquer emissor fora do cluster.
+**Porquê pelo cluster e não por `certbot`:** `certbot --standalone` precisa da porta 80, que
+pertence ao `ingress-nginx` — o container nem arranca. E o `letsencrypt-prod-dns` (Cloudflare,
+DNS-01) tem o selector limitado à zona **`elysiumii.com`**, que não casa com `elysiumii.site`.
+O que funciona é **HTTP-01 pelo `letsencrypt-prod`**, o mesmo caminho que renova `api.` e
+`longhorn.` neste cluster.
 
-Restam dois caminhos, e o domínio já existe (`elysiumii.site`, com `api.`, `grafana.` e
-`longhorn.` servidos pelo ingress):
-
-**DNS-01 — independente do cluster, é o recomendado.** Não usa a porta 80 de todo: prova-se a
-posse do domínio por registo TXT. Com o *plugin* do teu operador de DNS:
+O `Certificate` vive em `default/aos-node-tls`:
 
 ```bash
-docker run --rm -it -v /opt/aos/letsencrypt:/etc/letsencrypt certbot/dns-cloudflare certonly --dns-cloudflare --dns-cloudflare-credentials /etc/letsencrypt/cf.ini -d aos.elysiumii.site
+kubectl get certificate -n default aos-node-tls
 ```
 
-Depois aponta `secrets/tls/edge.crt`/`edge.key` para `fullchain.pem`/`privkey.pem`, põe
-`AOS_EDGE_HOST=aos.elysiumii.site` no `.env` e tira o `-k` do smoke externo em `deploy.yml` —
-passa a ser também um teste da cadeia de confiança, e não só da porta.
+### A ponte, e porque ela é a parte que interessa
 
-**Via cert-manager do cluster.** Seria o coerente com os certificados que já lá estão, mas **não
-é viável hoje**: os três pods do `cert-manager` estão `Pending` há 25 dias. Os certificados
-existentes (`grafana-tls`, `neural-hive-gateway-tls`, `longhorn-tls`) ainda constam como válidos
-porque foram emitidos há 195–247 dias — mas **ninguém os vai renovar** enquanto o cert-manager
-não voltar. É um problema do cluster que existe independentemente do AOS, e convém olhar para
-ele antes de expirarem.
+O cert-manager renova **dentro** do cluster. O edge é um contentor Docker **fora** dele, que lê
+`/opt/aos/secrets/tls`. Sem ponte, o certificado renovava no Kubernetes e o nó servia o antigo
+até expirar — **pior do que self-signed, porque expira em silêncio**.
+
+Essa ponte é o [`sync-tls.sh`](sync-tls.sh), agendado por systemd
+([`systemd/`](systemd/)):
+
+```bash
+install -m 755 sync-tls.sh /opt/aos/sync-tls.sh
+install -m 644 systemd/aos-tls-sync.* /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now aos-tls-sync.timer
+```
+
+É idempotente (compara *fingerprints*, só recarrega o nginx quando o material muda de facto),
+recusa escrever um par cert/chave que não corresponda, e escreve atomicamente.
+
+**Fail-loud, e por duas vias distintas:**
+
+1. O certificado **em vigor no edge** expira dentro de 15 dias → falha.
+2. **A ponte partiu-se** — não consegue ler o secret — → falha **mesmo com 89 dias de folga**.
+
+A segunda é a que importa e custou um teste para descobrir: sob systemd o serviço não herda o
+ambiente do root, o `kubectl` não encontrava o `~/.kube/config`, e a sincronização falhava **em
+silêncio**. À mão funcionava; pelo timer não. Por isso o `KUBECONFIG` é explícito na unidade
+**e** detectado no script, e por isso uma leitura falhada é falha e não aviso — esperar pelos
+15 dias finais seria descobrir tarde de mais.
+
+Ver o estado:
+
+```bash
+systemctl list-timers aos-tls-sync.timer
+journalctl -u aos-tls-sync.service -n 20
+```
+
+> ⚠️ Isto acopla o TLS do nó à saúde do cluster — o mesmo cluster que deixou um certificado
+> expirar durante um mês. É o compromisso aceite em troca de renovação automática, e as duas
+> guardas acima existem precisamente para que a falha seja ruidosa em vez de silenciosa.
+
+> O acesso por **IP** continua a falhar a validação, e correctamente: o certificado é para o
+> nome. Usa `https://aos.elysiumii.site:8444`.
 
 ---
 
