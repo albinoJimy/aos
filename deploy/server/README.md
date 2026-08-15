@@ -89,6 +89,37 @@ O servidor, portanto, **não guarda nenhuma credencial que conceda autoridade so
 
 ---
 
+## Acrescentar uma variável ao `.env` não chega
+
+⚠️ **O bloco `environment:` do `docker-compose.prod.yml` é uma *allowlist*.** O `.env` alimenta
+apenas a **interpolação** do compose; o contentor recebe só o que estiver mapeado explicitamente.
+Acrescentar `AOS_XPTO=…` ao `.env` e reiniciar não faz nada — o nó continua a declarar a
+funcionalidade como não-composta, e a única pista é o banner.
+
+Para ligar uma variável nova são **dois** sítios:
+
+```yaml
+# docker-compose.prod.yml, no bloco environment: do serviço `aos`
+AOS_XPTO: "${AOS_XPTO:-}"
+```
+```bash
+# /opt/aos/.env
+AOS_XPTO=valor
+```
+
+É deliberado — a superfície de configuração do nó fica explícita e auditável em vez de herdar
+tudo o que estiver no ambiente. Mas custa uma iteração a quem não sabe.
+
+**Verificar sempre pelo banner, não pelo ficheiro:**
+
+```bash
+docker logs aos-aos-1 2>&1 | grep -iE 'COMPOSTO|ARMADO|DORMENTE|NAO LIGAD'
+```
+
+> Exemplo real: ligar `AOS_BUDGET_MAX_TOKENS` armou **três** subsistemas de uma vez — orçamento,
+> burn-down e prompt de exaustão. Os dois últimos estavam dormentes só por lhes faltar o
+> denominador; o four-eyes e o operador já lá estavam.
+
 ## Os ficheiros JSON montados não toleram um único campo a mais
 
 ⚠️ **Não acrescentes comentários, notas ou campos de documentação a `secrets/authority.json` ou

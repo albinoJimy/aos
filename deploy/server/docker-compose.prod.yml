@@ -80,6 +80,17 @@ services:
       AOS_INGRESS_BURST: "${AOS_INGRESS_BURST:-128}"
       AOS_INGRESS_MAX_INFLIGHT: "${AOS_INGRESS_MAX_INFLIGHT:-512}"
 
+      # Tecto de ORÇAMENTO por-run, em tokens (AOS-008/AOS-256/AOS-260). Vazio ⇒ o ponto de
+      # injecção `budget` fica o stub neutro e a porta de admissão do turno de modelo NÃO é
+      # ligada. Definido ⇒ cada tool call reserva headroom antes de executar (sem headroom é
+      # NEGADA, selada no WORM) e a inferência reserva antes e salda pelo consumo MEDIDO.
+      # Esgotar NÃO é deny-loop: com o four-eyes composto o run SUSPENDE em `waiting_on_human`
+      # e fica retomável; sem ele sela `timed_out`/`budget_exhausted` — nunca `failed`.
+      AOS_BUDGET_MAX_TOKENS: "${AOS_BUDGET_MAX_TOKENS:-}"
+      # Tecto em DÓLARES (micro-USD), opcional. Vazio ⇒ dólares são medidos e debitados mas
+      # NUNCA negam; a decisão fica só na dimensão tokens.
+      AOS_BUDGET_MAX_COST_MICRO_USD: "${AOS_BUDGET_MAX_COST_MICRO_USD:-}"
+
       # TLS terminado A MONTANTE pelo `edge`. O nó serve em claro SÓ na rede interna
       # do compose (`expose`, nunca `ports`) — é o que honra esta declaração.
       AOS_TLS_EXTERNAL_TERMINATION: "1"
