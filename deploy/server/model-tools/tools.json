@@ -1,0 +1,36 @@
+[
+  {
+    "name": "doc_read",
+    "description": "Lê um documento local por id. Usa isto quando te pedirem para ler ou consultar um documento.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "doc_id": { "type": "string", "description": "id do documento a ler" }
+      },
+      "required": ["doc_id"]
+    },
+    "capability": "cap:fs.read",
+    "resource_type": "file",
+    "resource_value": "doc://notes",
+    "resource_region": "eu",
+    "egress": "none",
+    "sandbox": { "command": "read", "path_arg": "doc_id" }
+  },
+  {
+    "name": "web_post",
+    "description": "Publica um resultado fazendo um HTTP POST a um URL. Usa isto quando te pedirem para publicar, enviar ou submeter algo para a web.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "URL alvo do POST" },
+        "body": { "type": "string", "description": "corpo a enviar" }
+      },
+      "required": ["url", "body"]
+    },
+    "capability": "cap:http.post",
+    "resource_type": "http",
+    "resource_value": "https://api.example.com/results",
+    "resource_region": "eu",
+    "egress": "external"
+  }
+]

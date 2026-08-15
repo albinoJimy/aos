@@ -96,11 +96,42 @@ services:
       AOS_TLS_EXTERNAL_TERMINATION: "1"
 
       AOS_OTLP_ENDPOINT: "http://otel:4318"
+
+      # --- MODEL GATEWAY (EPIC-06) ---------------------------------------------------------
+      # VAZIO ⇒ modelo de REFERÊNCIA: cada turno devolve texto fixo, sem tool calls, e o
+      # RM/PDP nunca chega a mediar nada. É o estado por omissão, e é honesto: um nó que
+      # declara não ter modelo vale mais do que um que falha cada run com erro de provider.
+      #
+      # ⚠️ ENDPOINT e NAME são AMBOS obrigatórios — definir só um ABORTA o arranque
+      # (`ErrBadModelConfig`). Por isso o default vazio de ambos é seguro.
+      #
+      # AOS_MODEL_NAME tem de constar da allowlist ASSINADA embebida: para `board-eu` em
+      # `eu`/`eu-west` são `gpt-4o`, `gpt-4o-mini` e `text-embedding-3-large`. Fora disso é
+      # negado NO NÓ, antes de sair uma única chamada.
+      AOS_MODEL_ENDPOINT: "${AOS_MODEL_ENDPOINT:-}"
+      AOS_MODEL_NAME: "${AOS_MODEL_NAME:-}"
+      AOS_MODEL_REGION: "${AOS_MODEL_REGION:-eu}"
+      AOS_MODEL_BOARD: "${AOS_MODEL_BOARD:-board-eu}"
+      # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
+      # LiteLLM tiver LITELLM_MASTER_KEY definida.
+      AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
+      # WORM DEDICADO da governação do gateway: activação da allowlist regional e cada decisão
+      # allow/deny por chamada, incluindo o deny de failover cross-border. Vazio ⇒ in-memory,
+      # e essa governação NÃO sobrevive a um restart.
+      AOS_MODEL_AUDIT_PATH: "${AOS_MODEL_AUDIT_PATH:-/var/lib/aos/model-audit.wal}"
+      # REGISTRY DE TOOLS oferecidas ao modelo. Sem ele o modelo não emite `tool_calls` e o
+      # Reference Monitor não tem o que mediar. Com ele, cada call é mediada no ponto único:
+      # o binding de governança vem DAQUI (config trusted), o modelo só escolhe o NOME, e o
+      # taint fica `untrusted` — pelo que uma capability privilegiada pedida pelo modelo é
+      # NEGADA pelo taint-gate ("untrusted não comanda").
+      AOS_MODEL_TOOLS: "${AOS_MODEL_TOOLS:-}"
+      AOS_MODEL_TOOLS_REGISTER: "${AOS_MODEL_TOOLS_REGISTER:-}"
     volumes:
       - aos-data:/var/lib/aos                            # estado durável (gravável)
       - ./secrets/approvers.json:/etc/aos/approvers.json:ro
       - ./secrets/authority.json:/etc/aos/authority.json:ro
       - ./policies:/etc/aos/policies:ro                  # bundle PDP assinado (sincronizado pelo deploy)
+      - ./model-tools/tools.json:/etc/aos/model-tools.json:ro
     expose:
       - "8080"
     depends_on:
@@ -130,6 +161,32 @@ services:
     depends_on:
       aos:
         condition: service_healthy   # espera o HEALTHCHECK do nó antes de aceitar tráfego.
+
+  # --- LiteLLM: gateway de modelos externo e config-driven ------------------------------------
+  # Trocar de provider ou de modelo faz-se em litellm/config.yaml + secrets/model.env, SEM tocar
+  # no nó. Nunca publica porta no host: só é alcançável na rede interna do compose, o que é o
+  # que torna aceitável falar sem master key.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    # 2g e não 1g: com 1 GiB o processo é morto pelo OOM killer do cgroup DURANTE o arranque
+    # (medido: anon-rss 1 036 MB contra o tecto de 1 024). O contentor reaparece como `Up` e
+    # `OOMKilled` fica `false` — quem morreu foi o processo lá dentro, não o contentor — e os
+    # logs ficam VAZIOS, o que torna o diagnóstico enganador. A pista real está no `dmesg`.
+    mem_limit: ${LITELLM_MEM_LIMIT:-2g}
+    pids_limit: 512
+    security_opt:
+      - no-new-privileges:true
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    env_file:
+      # `required: false` — o ficheiro das chaves é criado pelo operador e não está no git.
+      # Sem ele o LiteLLM arranca na mesma; simplesmente não tem provider configurado.
+      - path: ./secrets/model.env
+        required: false
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    expose:
+      - "4000"
 
   # --- collector OTLP: recebe traces do nó e faz scrape de /metrics --------------------------
   otel:
