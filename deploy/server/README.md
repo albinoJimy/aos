@@ -89,6 +89,48 @@ O servidor, portanto, **não guarda nenhuma credencial que conceda autoridade so
 
 ---
 
+## Sandbox das tool calls — porquê gVisor e não Firecracker
+
+O nó medeia cada tool call, mas **onde** ela corre depende do driver, e os três não são
+equivalentes:
+
+| Driver | Fronteira | Neste servidor |
+|---|---|---|
+| `fake` (default) | Jail **in-process**: overlay read-only, seccomp default-deny, escape bloqueado | Funciona — mas o próprio pacote marca-o **"NUNCA usar em produção"** |
+| `firecracker` | microVM com KVM (ADR-004) | ❌ **Impossível**: sem `/dev/kvm`, 0 CPUs com `vmx`/`svm`. O host é ele próprio um convidado sem virtualização aninhada |
+| `gvisor` | Interposição de syscalls em user-space (`systrap`) | ✅ **Em uso** — não precisa de KVM |
+
+O `fake` não é um stub vazio: tem isolamento real. Mas a fronteira é o processo do nó, e é por
+isso que o repositório o proíbe em produção.
+
+### O componente
+
+O `GVisorDriver` já tinha a porta certa (`WithGVisorExecutor`) e ninguém a injectava — pelo que
+`AOS_SANDBOX_DRIVER=gvisor` devolvia `ErrDriverUnavailable`. Faltava o executor, não configuração.
+
+[`gvisor/`](gvisor/) é esse executor, no mesmo molde do componente Firecracker e com o **mesmo
+contrato de fio** (`/healthz`, `POST /exec`): o nó não sabe qual dos dois está do outro lado, e
+trocar de driver passa a ser topologia.
+
+Cada execução tem bundle OCI **novo e efémero**, rootfs read-only, `/seed` em bind read-only,
+zero capabilities, `noNewPrivileges`, uid não-root e sem rede.
+
+```bash
+AOS_SANDBOX_DRIVER=gvisor
+AOS_SANDBOX_GVISOR_URL=http://gvisor:9101/exec
+```
+
+Sem a URL, o driver fica o skeleton e o exec é recusado — **o gap honesto**, nunca uma execução
+fora do sandbox.
+
+> ⚠️ O componente corre **privilegiado**: o `runsc` precisa de criar namespaces e montar bundles.
+> É a concessão desta escolha, e a razão de ser um processo **separado** do nó — o nó nunca corre
+> privilegiado, e a fronteira entre os dois é HTTP.
+
+> ⚠️ Ao contrário do `fake`, o skeleton **não** faz verificações de escape em Go. A contenção é a
+> interposição de syscalls do `runsc`. A verificação de path no guest é defesa em profundidade,
+> não a fronteira.
+
 ## Acrescentar uma variável ao `.env` não chega
 
 ⚠️ **O bloco `environment:` do `docker-compose.prod.yml` é uma *allowlist*.** O `.env` alimenta

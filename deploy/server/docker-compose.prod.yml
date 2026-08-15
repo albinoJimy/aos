@@ -126,6 +126,21 @@ services:
       # NEGADA pelo taint-gate ("untrusted não comanda").
       AOS_MODEL_TOOLS: "${AOS_MODEL_TOOLS:-}"
       AOS_MODEL_TOOLS_REGISTER: "${AOS_MODEL_TOOLS_REGISTER:-}"
+
+      # --- SANDBOX (AOS-005/AOS-064) --------------------------------------------------------
+      # `fake` é o DEFAULT e é um jail in-process REAL (overlay read-only, seccomp default-deny,
+      # escape bloqueado) — mas o próprio pacote marca-o "NUNCA usar em produção", e com razão:
+      # a fronteira é o processo do nó, não o kernel.
+      #
+      # `firecracker` exige /dev/kvm. Num host que seja ele próprio um convidado sem
+      # virtualização aninhada esse caminho está FECHADO — e é o caso deste servidor.
+      #
+      # `gvisor` interpõe syscalls em user-space (systrap) e NÃO precisa de KVM. Exige a URL
+      # abaixo: sem ela o driver fica o skeleton e o exec devolve ErrDriverUnavailable — o gap
+      # honesto, nunca uma execução fora do sandbox.
+      AOS_SANDBOX_DRIVER: "${AOS_SANDBOX_DRIVER:-}"
+      AOS_SANDBOX_GVISOR_URL: "${AOS_SANDBOX_GVISOR_URL:-}"
+      AOS_SANDBOX_FIRECRACKER_URL: "${AOS_SANDBOX_FIRECRACKER_URL:-}"
     volumes:
       - aos-data:/var/lib/aos                            # estado durável (gravável)
       - ./secrets/approvers.json:/etc/aos/approvers.json:ro
@@ -161,6 +176,33 @@ services:
     depends_on:
       aos:
         condition: service_healthy   # espera o HEALTHCHECK do nó antes de aceitar tráfego.
+
+  # --- gVisor: executor de sandbox REAL (interposição de syscalls, sem KVM) --------------------
+  # Componente SEPARADO do nó de propósito: é ele que corre privilegiado — o runsc precisa de
+  # criar namespaces e montar bundles — e o nó nunca corre. A fronteira entre os dois é HTTP,
+  # exactamente como no componente Firecracker.
+  #
+  # ⚠️ `privileged: true` neste host partilhado é a concessão desta escolha, e deve ser lida
+  # como tal: troca-se privilégio no componente por isolamento ao nível do kernel para as tool
+  # calls. Sem ele, o runsc não arranca dentro de um contentor.
+  gvisor:
+    build:
+      context: ../..
+      dockerfile: deploy/server/gvisor/Dockerfile
+    image: aos-gvisor:local
+    restart: unless-stopped
+    privileged: true
+    mem_limit: ${GVISOR_MEM_LIMIT:-1g}
+    pids_limit: 512
+    environment:
+      GV_ADDR: ":9101"
+      GV_SEED_DIR: "/seed"
+      GV_PLATFORM: "${GV_PLATFORM:-systrap}"
+    volumes:
+      # Raiz semeada READ-ONLY: o único conteúdo que uma tool `read` alcança.
+      - ./gvisor/seed:/seed:ro
+    expose:
+      - "9101"
 
   # --- LiteLLM: gateway de modelos externo e config-driven ------------------------------------
   # Trocar de provider ou de modelo faz-se em litellm/config.yaml + secrets/model.env, SEM tocar
