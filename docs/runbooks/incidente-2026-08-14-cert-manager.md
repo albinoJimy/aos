@@ -143,9 +143,8 @@ revelar-se causa de outro problema.
 
 ## 5. O que continua aberto
 
-1. **Certificados do kubeadm expiram a 29/10/2026 (75 dias).** Quando expirarem, o cluster fica
-   inoperável até serem renovados (`kubeadm certs renew all` + reinício dos static pods +
-   kubeconfigs). As CAs só expiram em 2035. **Agendar, não esperar.**
+1. ~~**Certificados do kubeadm expiram a 29/10/2026 (75 dias).**~~ **FECHADO em 2026-08-15** —
+   renovados para **15/08/2027 (364 dias)**. Procedimento em §6.
 2. **O verdadeiro consumidor da máquina não é o Kubernetes.** Com o `metrics-server` de pé foi
    possível medir: os pods somam ~2 cores, mas o nó usa 5,6–6,5 de 8. A diferença são os
    **containers Docker órfãos do Coolify — ~4,8 cores (60% da máquina)** — para serviços que
@@ -182,3 +181,47 @@ revelar-se causa de outro problema.
    Três saídas, todas decisão de política: alargar o `LimitRange`; sobrepor os recursos do
    sidecar (`sidecar.istio.io/proxyCPULimit`, `proxyMemory`); ou tirar `istio-injection=enabled`
    ao namespace.
+
+---
+
+## 6. Renovação dos certificados do kubeadm (feita em 2026-08-15)
+
+Expiravam a 29/10/2026; ficaram em **15/08/2027 (364 dias)**. As CAs continuam até 2035 — só
+os certificados-folha é que rodam anualmente.
+
+**Backup primeiro, sempre:** `/root/k8s-pki-backup-20260815-022335` (PKI completo + os quatro
+kubeconfigs + o `/root/.kube/config`). Reverter é repor essa árvore e reiniciar os static pods.
+
+```bash
+kubeadm certs renew all          # só ESCREVE os ficheiros; os processos em curso não notam
+kubeadm certs check-expiration   # confirmar as novas datas ANTES de reiniciar
+```
+
+O reinício é a parte que interrompe. Em vez de mover os manifestos de
+`/etc/kubernetes/manifests` — que deixa o cluster sem control-plane se algo correr mal a meio —
+removem-se os **containers**, com os manifestos intactos: o kubelet recria-os em segundos.
+
+```bash
+export CONTAINER_RUNTIME_ENDPOINT=unix:///run/containerd/containerd.sock
+for c in etcd kube-apiserver kube-controller-manager kube-scheduler; do
+  crictl rm -f "$(crictl ps -q --name "^${c}$")"
+done
+```
+
+> Na prática bastou remover o `etcd`: os outros três seguiram por cascata (as *liveness probes*
+> falharam sem ele) e o kubelet recriou os quatro. O apiserver voltou a responder em **15 s**.
+
+**Verificar pelo que é servido, não pelo que está em disco** — é a única prova de que os
+processos pegaram nos certificados novos:
+
+```bash
+echo | openssl s_client -connect 127.0.0.1:6443 2>/dev/null | openssl x509 -noout -dates
+```
+
+**Depois:** `/root/.kube/config` é uma cópia do `admin.conf` e **não** é actualizado pela
+renovação. Repor com `cp -a /etc/kubernetes/admin.conf /root/.kube/config`. O kubelet tem
+`rotateCertificates: true` e roda o seu sozinho — não precisa de intervenção.
+
+**O que não foi afectado:** o nó AOS atravessou tudo sem falhar um pedido (`Up 34 minutes
+(healthy)`, `HTTP 200` de fora durante e depois). Corre em Docker, fora do cluster — a
+independência é por desenho, e esta foi a primeira vez que ficou demonstrada.
