@@ -89,6 +89,35 @@ O servidor, portanto, **não guarda nenhuma credencial que conceda autoridade so
 
 ---
 
+## Os ficheiros JSON montados não toleram um único campo a mais
+
+⚠️ **Não acrescentes comentários, notas ou campos de documentação a `secrets/authority.json` ou
+`secrets/approvers.json`.** O nó descodifica-os com `DisallowUnknownFields`: um campo que o
+esquema não preveja — mesmo um inofensivo `"_nota"` a explicar o ficheiro — **aborta o arranque**:
+
+```
+AOS_AUTHORITY_FILE invalido: json: unknown field "_nota"
+```
+
+Foi assim que o primeiro deploy real falhou: os templates traziam um `_nota` explicativo, o
+`provision.sh` copiou-o e o nó entrou em *restart loop*. A rigidez é deliberada — o mesmo
+descodificador que recusa um campo decorativo recusa um `capabilities` mal escrito que passaria
+despercebido e deixaria o directório de autoridade sem efeito.
+
+Por isso a semântica destes ficheiros vive **aqui**, e não dentro deles:
+
+**`authority.json`** — directório de autoridade externo do `ScopeGate`. O escopo efectivo passa a
+ser `token ∩ directório`: **restringe e revoga, nunca amplia**. ⚠️ Semântica que engana: um
+sujeito **ausente não é restringido** (cai na autoridade plena do seu token) — é o que torna
+seguro ligar um directório parcial, mas por isso **revogar não é remover**. Para negar tudo a
+alguém, lista-o com `"capabilities": []`. Incrementa `revision` a cada alteração. Não é assinado
+(ao contrário do bundle PDP) porque só pode restringir: adulterá-lo nega acções — indisponibilidade
+visível e auditável — mas não concede nenhuma.
+
+**`approvers.json`** — roster do *four-eyes*. Só material público: principals, pubkeys ed25519 em
+hex e autoridade. As privadas ficam com cada aprovador. As pubkeys **têm de ser distintas** — o
+dual-control recusa *self-approval*.
+
 ## Instalação, do zero
 
 ### 0. Gerar a identidade (na tua máquina, uma vez)
