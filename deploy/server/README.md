@@ -309,6 +309,53 @@ imagem. É o que torna a reversão segura.
 
 ---
 
+## Submeter um run — a receita que funciona, e porquê
+
+Quatro parâmetros deste nó não são adivinháveis a partir dos exemplos genéricos do repositório.
+Errar qualquer um devolve uma recusa correcta mas opaca, por isso ficam aqui fixados:
+
+```bash
+# 1. Cunhar a credencial (na tua máquina — a issuer.key nunca vai para o servidor)
+cd packages/cmd/aos-issuer
+NHI=$(go run . mint --key-file ../../../deploy/server/secrets-local/issuer.key \
+  --issuer iss:aos-issuer --human human:alice --agent agt-teste-01 --class agent-worker \
+  --caps 'model:invoke,cap:fs.read' --ttl 45m | tr -d '\r\n')
+
+# 2. Submeter, pelo nome público e com TLS validado (sem -k)
+RID="run-$(date +%s)"
+curl -s -X POST https://aos.elysiumii.site:8444/runs \
+  -H "Authorization: Bearer $NHI" \
+  -H 'X-Aos-Reader: human:alice' -H 'X-Aos-Board: board:prod' \
+  -H 'Content-Type: application/json' \
+  -d "{\"run_id\":\"$RID\",\"objective\":\"Le o documento 'notes' com a tool doc_read.\",\
+\"principal_nhi\":\"agt-teste-01\",\"credential\":\"$NHI\",\"scope\":[\"cap:fs.read\"]}"
+
+curl -s "https://aos.elysiumii.site:8444/runs/$RID" -H "Authorization: Bearer $NHI" \
+  -H 'X-Aos-Reader: human:alice' -H 'X-Aos-Board: board:prod'
+```
+
+Porque é que cada um tem de ser assim:
+
+- **`--caps` tem de incluir `model:invoke`.** O `nodeModelAuthority` concede `model:invoke` a
+  qualquer principal verificado, e o estágio `auth-principal` RECONCILIA essa concessão com o
+  escopo SELADO no token (menor privilégio: `utilizador ∩ classe ∩ token.Scope`). Um token que
+  sele só `cap:fs.read` produz uma intersecção VAZIA e é negado com
+  `authn: autoridade efectiva excede o escopo selado no token` — que soa a escopo a mais e é
+  escopo a menos. É o corte duro de AOS-278; o contrato está fixado em
+  `aos278_model_identity_test.go`.
+- **`--caps` tem de incluir também a capability da TOOL** (`cap:fs.read` para `doc_read`, ver
+  `model-tools/tools.json`). O ScopeGate de AOS-071 intersecta o token com o `authority.json`, e
+  `human:alice` lá tem `cap:fs.read` + `cap:http.post`.
+- **`X-Aos-Board` é `board:prod`**, não `default`: é o único board em `AOS_BOARD_REGIONS`
+  (`board:prod=eu-west`) e um board que não resolva para região NEGA fail-closed (D7/AOS-094).
+- **`X-Aos-Reader` é o principal humano** (`human:alice`), não um rótulo de papel.
+
+> ⚠️ Os `demo-*.sh` de `deploy/node/dev-hardened/` cunham SEM `model:invoke` e não enviam headers
+> de board. Foram escritos antes de AOS-278 e antes de este nó ter `AOS_BOARD_REGIONS`; **não os
+> uses como referência para este servidor** — falham aqui, e falham por razão legítima.
+
+---
+
 ## TLS real — instalado, via cert-manager do cluster
 
 O nó serve `https://aos.elysiumii.site:8444` com certificado **Let's Encrypt válido**, cadeia
