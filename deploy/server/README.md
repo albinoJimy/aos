@@ -59,16 +59,28 @@ tag v*  ──►  release.yml
    37.60.241.150                                                                        ▼
    ┌──────────────────────────────────────────────────────────────────┐        rsync + ssh
    │  :8444  edge (nginx)  ── TLS ──┐                                 │◄───────────────┘
-   │                                ▼                                 │
-   │             aos (distroless, non-root, root-fs read-only)        │   rede interna: sem
-   │              ├─ volume aos-data  (Event Store WAL + WORM)        │   porta publicada
-   │              └─► otel-collector  (traces + scrape /metrics)      │
+   │  :9443  idp  (Keycloak) ───┐   │                                 │
+   │                            │   ▼                                 │
+   │            aos (distroless, non-root, root-fs read-only)         │   rede interna: sem
+   │             ├─ volume aos-data   (Event Store WAL + WORM)        │   porta publicada
+   │             ├─► gvisor           (runsc — tool calls)            │
+   │             ├─► litellm          (model gateway → Kimi)          │
+   │             ├─► vault            (KEK por-titular, Transit)      │
+   │             │    ▲ vault-unseal  (watchdog do selo)              │
+   │             ├─◄──┘ idp ──► idp-db (Postgres)                     │
+   │             └─► otel-collector   (traces + scrape /metrics)      │
    └──────────────────────────────────────────────────────────────────┘
 ```
 
-Uma só porta chega ao mundo: **8444/tcp**. O nó serve em claro apenas na rede interna do
-compose (`expose`, nunca `ports`) e declara `AOS_TLS_EXTERNAL_TERMINATION=1` — declaração que o
-`edge` honra ao cifrar o transporte.
+**Duas** portas chegam ao mundo: **8444/tcp** (a API, via `edge`) e **9443/tcp** (o IdP). A
+segunda existe porque o chamador tem de conseguir obter um token — sem isso, em modo produção,
+ninguém fala com o nó. Tudo o resto (`aos`, `vault`, `litellm`, `gvisor`, `idp-db`, `otel`) vive
+só na rede interna do compose (`expose`, nunca `ports`).
+
+O nó serve em claro apenas nessa rede interna e declara `AOS_TLS_EXTERNAL_TERMINATION=1` —
+declaração que o `edge` honra ao cifrar o transporte. O `idp` termina TLS ele próprio, com
+certificado da **CA interna**; o `edge` usa Let's Encrypt real. São cadeias diferentes de
+propósito: o IdP não precisa de ser confiável pelo mundo, só pelo nó e pelo operador.
 
 ---
 
@@ -82,7 +94,11 @@ compose (`expose`, nunca `ports`) e declara `AOS_TLS_EXTERNAL_TERMINATION=1` —
 | `operator.seed`, `ratifier.seed`, `approver-*.seed` | máquina do operador | **máquina do operador** | Idem: `steer`/`pause`, promoção e *four-eyes* são autoridade **sobre** o nó, não autoridade **do** nó. |
 | Pubkeys (issuer, operadores, ratificadores, aprovadores) | derivadas das seeds | `/opt/aos/.env` + `secrets/approvers.json` | Material **público**. É tudo o que o servidor precisa para verificar. |
 | Trust anchor do PDP | `packages/control-plane/pdp/policies/trust_anchor.pub` | `/opt/aos/.env` (hex) | Forçado *out-of-band*: nunca lido do directório mutável do bundle, senão quem tivesse escrita lá trocava âncora **e** assinatura de uma vez. |
-| Chave TLS do edge | servidor (`provision.sh`) | **servidor** | Única privada no servidor. Cifra transporte; não autentica sujeitos nem autoriza nada. |
+| Chave TLS do edge | servidor (`provision.sh`) | **servidor** | Cifra transporte; não autentica sujeitos nem autoriza nada. |
+| **CA interna** (`internal-ca/ca.key`) | máquina do operador | **máquina do operador** | Assina os certificados do `idp` e do `vault`. Quem a detivesse forjava um certificado para `idp` e **personificava o IdP perante o nó** — isso é fronteira de autoridade, não de transporte, e por isso fica ao lado da `issuer.key`. Só as folhas (`idp.crt/key`, `vault.crt/key`) e a `ca.crt` viajam. |
+| Segredo do `aos-reader` | Keycloak (no servidor) | `secrets/reader-client-secret` (0400) | Credencial de máquina, gerada pelo IdP. Nunca escolhida por ninguém. |
+| Token do Vault | Vault (no servidor) | `secrets/vault-token` | **Não é o root.** Token periódico com política só sobre `aos-kek-*`. O root fica em `secrets/vault-init.json`. |
+| Unseal do Vault | Vault (no servidor) | `secrets/vault-init.json` | Ver §"O selo do Vault" — está aqui por decisão declarada, e limita o que o selo protege. |
 | Chave de release (DSSE) | custódia do Arquitecto de Plataforma | secret `AOS_RELEASE_KEY` | Ver [`../node/CUSTODIA-CHAVE-RELEASE.md`](../node/CUSTODIA-CHAVE-RELEASE.md). |
 
 O servidor, portanto, **não guarda nenhuma credencial que conceda autoridade sobre o sistema**.
@@ -314,27 +330,47 @@ imagem. É o que torna a reversão segura.
 Quatro parâmetros deste nó não são adivinháveis a partir dos exemplos genéricos do repositório.
 Errar qualquer um devolve uma recusa correcta mas opaca, por isso ficam aqui fixados:
 
+> ⚠️ **Esta receita mudou com `AOS_MODE=production`.** Os headers `X-Aos-Reader`/`X-Aos-Board`
+> deixaram de autorizar — hoje devolvem `403`. O que vale é a versão abaixo. A anterior fica
+> descrita em §"O que o corte para produção mudou", porque a diferença explica-se melhor a par.
+
 ```bash
-# 1. Cunhar a credencial (na tua máquina — a issuer.key nunca vai para o servidor)
+# 1. Cunhar a credencial NHI (na tua máquina — a issuer.key nunca vai para o servidor).
+#    É quem o RUN age em nome de. NÃO é o que autentica a chamada.
 cd packages/cmd/aos-issuer
 NHI=$(go run . mint --key-file ../../../deploy/server/secrets-local/issuer.key \
   --issuer iss:aos-issuer --human human:alice --agent agt-teste-01 --class agent-worker \
   --caps 'model:invoke,cap:fs.read' --ttl 45m | tr -d '\r\n')
 
-# 2. Submeter, pelo nome público e com TLS validado (sem -k)
+# 2. Obter um token do IdP. É quem CHAMA a API. Token NOVO a cada chamada — ver o aviso do jti.
+tok() { curl -s --cacert deploy/server/secrets-local/internal-ca/ca.crt \
+  -X POST https://aos.elysiumii.site:9443/realms/aos/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=aos-reader \
+  --data-urlencode "client_secret=$READER_SECRET" \
+  | python -c 'import sys,json; print(json.load(sys.stdin)["access_token"])'; }
+
+# 3. Submeter, pelo nome público e com TLS validado (sem -k)
 RID="run-$(date +%s)"
 curl -s -X POST https://aos.elysiumii.site:8444/runs \
-  -H "Authorization: Bearer $NHI" \
-  -H 'X-Aos-Reader: human:alice' -H 'X-Aos-Board: board:prod' \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $(tok)" -H 'Content-Type: application/json' \
   -d "{\"run_id\":\"$RID\",\"objective\":\"Le o documento 'notes' com a tool doc_read.\",\
 \"principal_nhi\":\"agt-teste-01\",\"credential\":\"$NHI\",\"scope\":[\"cap:fs.read\"]}"
 
-curl -s "https://aos.elysiumii.site:8444/runs/$RID" -H "Authorization: Bearer $NHI" \
-  -H 'X-Aos-Reader: human:alice' -H 'X-Aos-Board: board:prod'
+curl -s "https://aos.elysiumii.site:8444/runs/$RID" -H "Authorization: Bearer $(tok)"
 ```
 
-Porque é que cada um tem de ser assim:
+**Duas credenciais, e confundi-las custa tempo.** O `Bearer` é o token do IdP — quem *chama*. O
+NHI vai no campo `credential` do corpo — quem o *run* age em nome de. Pôr o NHI no `Authorization`
+dá `403`; trocar a ordem dá uma recusa que parece de escopo e é de autenticação.
+
+> ⚠️ **Um token por chamada.** O nó recusa reutilização de `jti` (anti-replay). O token vale 5
+> minutos, mas **não vale duas vezes** — daí `$(tok)` ser uma função invocada em cada `curl`, e
+> não uma variável guardada. Reutilizar dá `403` sem explicação melhor.
+
+O `--cacert` é preciso porque o certificado do IdP vem da **CA interna**, não de uma pública. O do
+nó (`:8444`) é Let's Encrypt real e valida sem nada.
+
+Porque é que cada parâmetro tem de ser assim:
 
 - **`--caps` tem de incluir `model:invoke`.** O `nodeModelAuthority` concede `model:invoke` a
   qualquer principal verificado, e o estágio `auth-principal` RECONCILIA essa concessão com o
@@ -346,13 +382,15 @@ Porque é que cada um tem de ser assim:
 - **`--caps` tem de incluir também a capability da TOOL** (`cap:fs.read` para `doc_read`, ver
   `model-tools/tools.json`). O ScopeGate de AOS-071 intersecta o token com o `authority.json`, e
   `human:alice` lá tem `cap:fs.read` + `cap:http.post`.
-- **`X-Aos-Board` é `board:prod`**, não `default`: é o único board em `AOS_BOARD_REGIONS`
-  (`board:prod=eu-west`) e um board que não resolva para região NEGA fail-closed (D7/AOS-094).
-- **`X-Aos-Reader` é o principal humano** (`human:alice`), não um rótulo de papel.
+- **O `board` já não é um header.** Vem do claim `board` do token, e tem de constar de
+  `AOS_BOARD_REGIONS` (`board:prod=eu-west`). Um board que não resolva para região NEGA
+  fail-closed (D7/AOS-094) — a regra não mudou, só a fonte.
+- **O leitor já não é um header.** Vem do `sub` do mesmo payload assinado.
 
-> ⚠️ Os `demo-*.sh` de `deploy/node/dev-hardened/` cunham SEM `model:invoke` e não enviam headers
-> de board. Foram escritos antes de AOS-278 e antes de este nó ter `AOS_BOARD_REGIONS`; **não os
-> uses como referência para este servidor** — falham aqui, e falham por razão legítima.
+> ⚠️ Os `demo-*.sh` de `deploy/node/dev-hardened/` cunham SEM `model:invoke` e não enviam
+> credencial de leitura nenhuma. Foram escritos antes de AOS-278 e antes de este nó ter soberania
+> composta; **não os uses como referência para este servidor** — falham aqui, e falham por razão
+> legítima.
 
 ---
 
@@ -419,21 +457,88 @@ journalctl -u aos-tls-sync.service -n 20
 
 ---
 
-## Passar a `AOS_MODE=production`
+## `AOS_MODE=production` — ligado
 
-O nó **aborta o arranque** em modo `production` sem, todas: `AOS_ISSUER_PUBKEY` (já está),
-`AOS_BOARD_REGIONS` não-vazio (já está), terminação TLS declarada (já está), e credencial forte
-de soberania — `AOS_SOVEREIGN_OIDC_ISSUER` + `AOS_SOVEREIGN_OIDC_AUDIENCE`.
+O nó corre em modo produção. Não foi um interruptor: são **três** portas fail-closed, e o
+arranque aborta em qualquer uma. Foram enumeradas empiricamente — arrancando a imagem num
+contentor descartável e acrescentando um requisito de cada vez até passar — e não por leitura do
+código, que é como a terceira tinha passado despercebida.
 
-Só esta última falta, e exige um **IdP OIDC real**. O que muda com ela: o *read-path* soberano
-deixa de aceitar o header auto-declarado `X-Aos-Board` e passa a derivar o board das *claims* de
-um ID-token verificado. Há um Keycloak com realm pronto em
-[`../node/dev-hardened/`](../node/dev-hardened/) (`keycloak/realm-aos.json`,
-`docker-compose.oidc.yml`) que serve de ponto de partida.
+| Porta | Exige | Servida por |
+|---|---|---|
+| Identidade endurecida | `AOS_ISSUER_PUBKEY` | já estava |
+| Soberania de leitura | `AOS_BOARD_REGIONS` | já estava |
+| TLS do ingresso | `AOS_TLS_EXTERNAL_TERMINATION=1` | já estava (edge) |
+| **Credencial forte** | `AOS_SOVEREIGN_OIDC_ISSUER` + `_AUDIENCE` | **Keycloak** (`idp`, `idp-db`) |
+| **Custódia da KEK** | `AOS_DSAR_VAULT_ADDR` + `_TOKEN_PATH` | **Vault** (`vault`, `vault-unseal`) |
+| **Credencial do modelo** | `AOS_MODEL_API_KEY_PATH` | master key do LiteLLM |
 
-Enquanto isso não existir, correr sem `AOS_MODE=production` é a postura **honesta**: um nó
-exposto sem essa variável não é um nó de produção, é um nó de referência a servir tráfego — e o
-banner de arranque di-lo em cada boot.
+As duas últimas não constavam da versão anterior deste documento. A da KEK nunca tinha sido
+nomeada; a do modelo **nasceu** quando o gateway foi ligado — antes disso `AOS_MODEL_ENDPOINT`
+estava vazia e a porta não existia. Um documento sobre pré-requisitos envelhece com a
+configuração, e este envelheceu em menos de um dia.
+
+### O que o corte para produção mudou
+
+**A via por headers morreu.** `X-Aos-Reader`/`X-Aos-Board` já não autorizam: devolvem `403`. O
+board passa a vir do claim `board` de um token verificado e o leitor do `sub` do mesmo payload
+assinado — imune a forja por header, que era o ponto.
+
+**E não guarda só as leituras.** Guarda a **submissão** também:
+
+```go
+// api.go, handleSubmit
+if h.readGov != nil {
+    submitter, ok := h.readGov.authorize(r)
+    if !ok { writeError(w, http.StatusForbidden, "nao autorizado"); return }
+```
+
+Sem uma identidade no IdP, o nó em produção não aceita **nada** — nem leituras nem runs novos.
+Não é degradação parcial: é a API fechada. Provisiona a identidade **antes** de ligar o modo,
+não depois.
+
+**Anti-replay por `jti`.** Um token não vale duas vezes, mesmo dentro dos 5 minutos de validade.
+Obtém-se um por chamada.
+
+### Porque é que a KEK justifica um Vault
+
+Com substrato durável, a KEK por-titular vivia no vault **em memória** de referência. Um restart
+tornaria o conteúdo cifrado dos runs — texto do modelo, resultados de tools — permanentemente
+indecifrável. Não é perda de cache: é apagamento silencioso de dados que o *legal hold* promete
+preservar. O motor Transit do Vault mantém as KEKs fora do processo, e o `/dsar/erase` destrói-as
+lá (crypto-shred real).
+
+O token do nó **não é o root**: é um token periódico com uma política que só permite as operações
+Transit sobre `aos-kek-*`. O root fica em `secrets/vault-init.json`, para administração.
+
+### O selo do Vault, e o que ele protege mesmo
+
+Storage `file` significa que o Vault sobe **selado** — e um Vault selado é um nó que não decifra.
+O serviço `vault-unseal` destrava-o automaticamente, o que exige que a chave de unseal esteja
+acessível à máquina.
+
+Consequência, dita sem rodeios: **o selo protege contra roubo do volume, não contra compromisso
+desta máquina.** Quem tiver root aqui destrava o Vault. A alternativa séria é auto-unseal por
+KMS/HSM externo, que este servidor não tem; a outra é unseal manual, que troca esta exposição por
+indisponibilidade — um reboot não vigiado deixaria o nó sem decifrar até alguém agir. Escolheu-se
+a disponibilidade.
+
+O watchdog é um serviço do compose e não uma unidade systemd de propósito: não exige root para
+instalar, e cobre mais casos do que um `After=docker.service` — se o Vault selar por qualquer
+razão, ele destrava. Verificado selando-o à mão.
+
+### Identidade
+
+Ver [`keycloak/README.md`](keycloak/README.md). Dois clientes:
+
+- **`aos-reader`** — cliente confidencial com *service account*. É o que está em uso. O segredo é
+  gerado pelo Keycloak e vive em `secrets/reader-client-secret` (0400).
+- **`aos-node`** — cliente público, *password grant*, para leitores **humanos**, cada um com o seu
+  atributo `board`.
+
+A distinção importa: um service account colapsa "quem lê" numa identidade de máquina. A soberania
+**por-leitor** — que é o argumento de todo o mecanismo — só é real quando existirem identidades
+humanas distintas. Hoje não existem.
 
 ---
 
@@ -456,9 +561,23 @@ Nomeado, não escondido:
    de firewall nenhuma — mas o resto do host continua exposto, e isso não é problema que um
    script de deploy possa resolver sem risco.
 5. **O nó partilha 8 vCPU com um control-plane saturado.** O `kube-apiserver` sozinho consome
-   ~95% de um core e a *load average* observada foi 21–36 numa máquina de 8. O `mem_limit` de
+   ~95% de um core e a *load average* observada foi 17–36 numa máquina de 8. O `mem_limit` de
    1 GB protege os vizinhos do nó, mas não protege o nó dos vizinhos: sob contenção, espera
-   latência de mediação acima dos alvos de `tecnica/10`.
-5. **Sem Model Gateway.** Por omissão o nó usa o modelo de **referência** (turno único fixo):
-   valida o pipeline, não faz trabalho real. Ligar `AOS_MODEL_ENDPOINT`/`AOS_MODEL_NAME` —
-   secção comentada no `.env.example`.
+   latência de mediação acima dos alvos de `tecnica/10`. Os serviços acrescentados para o modo
+   produção têm `cpus:` declarado; os mais antigos deste ficheiro **não têm** — dívida conhecida,
+   e a razão pela qual o arranque da JVM do Keycloak leva 1–2 minutos aqui.
+6. **Nenhum backup do `aos-data`.** O Event Store e o trilho WORM vivem num único volume, num
+   único host, sem cópia. O alvo que existia — o MinIO do Velero — perdeu-se com os nós mortos do
+   cluster. Um deploy não lhes toca e a reversão por digest é segura, mas uma falha de disco
+   leva-os. É hoje o risco mais concreto desta instalação.
+7. **Soberania por-leitor ainda não é real.** O read-path exige credencial verificada, mas em uso
+   está uma identidade de **máquina** partilhada (`aos-reader`). Enquanto não houver leitores
+   humanos distintos com o seu próprio `board`, o mecanismo está armado e não exercido.
+8. **A verificação ancorada do WORM não corre.** Sem `AOS_WORM_TRUST_ANCHOR` +
+   `_CHECKPOINT_FILE` + `_EXPECTED_HEAD`, fica só a re-verificação de hash-chain: apanha mutação,
+   remoção e encadeamento quebrado, mas **não** truncatura do tail nem reescrita desde a génese.
+   O banner de arranque di-lo em cada boot.
+9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
+   o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
+   tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de
+   fonte de preço, em vez de comparar sempre contra zero.
