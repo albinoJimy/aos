@@ -70,6 +70,36 @@ services:
       # Soberania de leitura (regra board→região).
       AOS_BOARD_REGIONS: "${AOS_BOARD_REGIONS:?}"
 
+      # --- CREDENCIAL FORTE DA SOBERANIA DE LEITURA (AOS-205) --------------------------------
+      # Vazio ⇒ via LEGADA demo-grade: o leitor DECLARA principal+board nos headers
+      # X-Aos-Reader/X-Aos-Board e o nó acredita. Fail-closed na mesma (ausência nega), mas
+      # quem declara é o cliente. Sob AOS_MODE=production isso é RECUSADO no arranque.
+      #
+      # Composta ⇒ o board/principal vêm das CLAIMS de um ID-token VERIFICADO contra o IdP; um
+      # X-Aos-Board forjado deixa de valer. O nó impõe ainda idade máxima e recusa reutilização
+      # de `jti` (anti-replay) — um token capturado não vale duas vezes.
+      #
+      # ⚠️ HORIZONTE DIVIDIDO, e é deliberado: ISSUER é o que o Keycloak ASSERE no `iss` (o URL
+      # público, que o nó NÃO alcança de dentro da rede do compose); JWKS_URI é o caminho que o
+      # nó usa mesmo — o nome de rede interno. O certificado do IdP tem SAN para ambos.
+      AOS_SOVEREIGN_OIDC_ISSUER: "${AOS_SOVEREIGN_OIDC_ISSUER:-}"
+      AOS_SOVEREIGN_OIDC_JWKS_URI: "${AOS_SOVEREIGN_OIDC_JWKS_URI:-}"
+      AOS_SOVEREIGN_OIDC_AUDIENCE: "${AOS_SOVEREIGN_OIDC_AUDIENCE:-}"
+      # A CA INTERNA assinou os certificados do `idp` e do `vault`. É um BUNDLE (raízes públicas
+      # + a nossa), não só a CA: o Go SUBSTITUI o trust store por este ficheiro, e uma CA
+      # sozinha deixaria o nó incapaz de verificar qualquer CA pública.
+      SSL_CERT_FILE: "${AOS_INTERNAL_CA_BUNDLE:-}"
+
+      # --- CUSTÓDIA DURÁVEL DA KEK (AOS-215/AOS-216) ----------------------------------------
+      # Com substrato durável (acima), a KEK por-titular NÃO pode viver em memória: um restart
+      # tornaria o conteúdo cifrado dos runs PERMANENTEMENTE indecifrável — apagamento
+      # silencioso, e o legal hold deixaria de preservar o que promete. Sob
+      # AOS_MODE=production o nó recusa arrancar sem isto.
+      # O transporte tem de ser https (http só em loopback) e o token vem por FICHEIRO montado,
+      # nunca por variável — material privado não entra no ambiente do processo.
+      AOS_DSAR_VAULT_ADDR: "${AOS_DSAR_VAULT_ADDR:-}"
+      AOS_DSAR_VAULT_TOKEN_PATH: "${AOS_DSAR_VAULT_TOKEN_PATH:-}"
+
       # Retenção TTL-por-classe + varredor INTERNO (sem cron externo).
       AOS_RETENTION_VERSION: "${AOS_RETENTION_VERSION:-1.0.0}"
       AOS_RETENTION_PERIODS: "${AOS_RETENTION_PERIODS:-pii_operational=720h,trajectory=2160h,diagnostic=168h}"
@@ -147,6 +177,12 @@ services:
       - ./secrets/authority.json:/etc/aos/authority.json:ro
       - ./policies:/etc/aos/policies:ro                  # bundle PDP assinado (sincronizado pelo deploy)
       - ./model-tools/tools.json:/etc/aos/model-tools.json:ro
+      # CA interna (bundle) + material privado por FICHEIRO. Os três são montados sempre; o que
+      # decide se são USADOS são as envs acima. Montar um ficheiro que o nó ignora é inócuo —
+      # já um `volumes:` condicional não existe em compose, e um bind em falta impede o arranque.
+      - ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro
+      - ./secrets/vault-token:/etc/aos/vault-token:ro
+      - ./secrets/model-api.key:/etc/aos/model-api.key:ro
     expose:
       - "8080"
     depends_on:
@@ -236,9 +272,156 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     pids_limit: 512
+    cpus: 0.5
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
 
+  # ============================================================================================
+  # SOBERANIA E CUSTÓDIA — os dois serviços que AOS_MODE=production exige
+  # ============================================================================================
+  # ⚠️ LIMITES DE CPU. Este host corre um control-plane Kubernetes e foi medido com load average
+  # ~17 em 8 vCPU — já a mais do dobro. Os serviços abaixo têm `cpus:` DECLARADO por isso: sem
+  # tecto, o arranque da JVM do Keycloak compete de igual para igual com o kube-apiserver e
+  # degrada o nó que estamos a tentar endurecer. Os serviços mais antigos deste ficheiro não têm
+  # (dívida conhecida, ver README §"O que esta configuração ainda não fecha").
+
+  # --- base de dados do IdP -------------------------------------------------------------------
+  # Keycloak com storage em memória (modo `dev`) perderia utilizadores e sessões a cada restart —
+  # e com eles a capacidade de LER runs. Postgres é o que torna a identidade durável.
+  idp-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 256
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_DB: "keycloak"
+      POSTGRES_USER: "keycloak"
+      POSTGRES_PASSWORD: "${IDP_DB_PASSWORD:?IDP_DB_PASSWORD por definir — gerada por provision-identity.sh}"
+    volumes:
+      - idp-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # --- Keycloak: a autoridade sobre QUEM lê ---------------------------------------------------
+  # `start` (não `start-dev`): modo produção do próprio Keycloak — https obrigatório, hostname
+  # fixo. KC_HOSTNAME fixa o `iss` que os tokens levam; é o URL PÚBLICO, porque é o que o cliente
+  # vê. O nó não o usa para alcançar o IdP (ver AOS_SOVEREIGN_OIDC_JWKS_URI).
+  idp:
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    mem_limit: 1200m
+    pids_limit: 512
+    cpus: 1.5
+    security_opt:
+      - no-new-privileges:true
+    command: ["start", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${IDP_ADMIN_USER:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${IDP_ADMIN_PASSWORD:?IDP_ADMIN_PASSWORD por definir — gerada por provision-identity.sh}"
+      KC_DB: "postgres"
+      KC_DB_URL: "jdbc:postgresql://idp-db:5432/keycloak"
+      KC_DB_USERNAME: "keycloak"
+      KC_DB_PASSWORD: "${IDP_DB_PASSWORD:?}"
+      KC_HOSTNAME: "${IDP_PUBLIC_URL:?IDP_PUBLIC_URL por definir — ex. https://aos.elysiumii.site:9443}"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "false"                # só https — o nó exige transporte cifrado ao IdP
+      KC_HTTPS_CERTIFICATE_FILE: "/etc/keycloak/tls/idp.crt"
+      KC_HTTPS_CERTIFICATE_KEY_FILE: "/etc/keycloak/tls/idp.key"
+      KC_HEALTH_ENABLED: "true"
+      # KC_PROXY_HEADERS fica DELIBERADAMENTE por definir: o IdP publica a sua própria porta e
+      # não tem proxy à frente, pelo que confiar em X-Forwarded-* seria aceitar cabeçalhos que
+      # ninguém sanitiza. (Defini-la a "" não a desliga — o Keycloak recusa o valor vazio e
+      # entra em ciclo de reinício.)
+    volumes:
+      - ./keycloak/realm-aos.json:/opt/keycloak/data/import/realm-aos.json:ro
+      - ./tls-internal/idp:/etc/keycloak/tls:ro
+    ports:
+      # O OPERADOR tem de alcançar o IdP para obter um ID-token; sem isso ninguém lê runs. 8444
+      # pertence ao edge e 8443 ao ingress-nginx do Kubernetes, daí 9443.
+      - "${IDP_BIND:-0.0.0.0}:${IDP_PORT:-9443}:8443"
+    depends_on:
+      idp-db:
+        condition: service_healthy
+    healthcheck:
+      # LIVENESS, não readiness — e a diferença está declarada de propósito. O /health/ready do
+      # Keycloak 26 vive na porta de management 9000, que quando o servidor tem HTTPS configurado
+      # fala TLS; e esta imagem não traz curl, wget nem openssl, pelo que não há dentro do
+      # contentor nada que saiba falar TLS. Um healthcheck que não se consegue satisfazer marca o
+      # serviço unhealthy para sempre e nunca deixa um `depends_on: service_healthy` completar —
+      # foi o que aconteceu na primeira tentativa. Isto prova que o listener aceita ligações, e
+      # não que o realm está servível. Quem impõe a postura real é o nó: sem IdP alcançável, o
+      # read-path NEGA fail-closed em vez de degradar em silêncio.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8443"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+
+  # --- Vault: custódia da KEK por-titular (motor Transit) -------------------------------------
+  # Storage `file`, NÃO `-dev`: as KEKs SOBREVIVEM a restart. É a razão de existir — com a KEK em
+  # memória, um restart tornaria o conteúdo cifrado dos runs indecifrável para sempre.
+  # ⚠️ O custo é real: com storage file o Vault sobe SELADO. Ver secrets/vault-unseal.sh e o
+  # README §"O selo do Vault" — a escolha de disponibilidade está lá declarada, não escondida.
+  vault:
+    image: hashicorp/vault:1.18
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 256
+    cpus: 0.5
+    cap_add:
+      - IPC_LOCK                    # mlock: impede que o material de chave vá para swap
+    environment:
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/ca.crt"
+    command: ["server"]
+    volumes:
+      - vault-data:/vault/file
+      - ./vault/config.hcl:/vault/config/config.hcl:ro
+      - ./tls-internal/vault:/vault/tls:ro
+    expose:
+      - "8200"
+    healthcheck:
+      # 501 = inicializado mas SELADO; 200 = destravado. Ambos provam que o processo responde —
+      # `vault status` devolve exit != 0 quando selado, o que marcaria o serviço unhealthy para
+      # sempre e impediria o `depends_on` do nó de alguma vez ser satisfeito.
+      test: ["CMD-SHELL", "wget -q --no-check-certificate -O- https://127.0.0.1:8200/v1/sys/health?sealedcode=501 >/dev/null 2>&1 || [ $$? -eq 8 ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # --- watchdog de unseal -------------------------------------------------------------------
+  # Com storage `file` o Vault sobe SELADO, e um Vault selado é um nó que não decifra o conteúdo
+  # dos runs. Isto destrava-o — ao arranque da stack, depois de um reboot do host, e sempre que
+  # ele voltar a selar. É um serviço do compose e não uma unidade systemd de propósito: não
+  # exige root para instalar e cobre mais casos do que um `After=docker.service`.
+  # O trade-off de segurança está declarado em vault/unseal-watchdog.sh — leia-o antes de
+  # assumir que o selo protege mais do que protege.
+  vault-unseal:
+    image: hashicorp/vault:1.18
+    restart: unless-stopped
+    mem_limit: 64m
+    pids_limit: 32
+    cpus: 0.1
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VAULT_ADDR: "https://vault:8200"
+    entrypoint: ["/bin/sh", "/unseal-watchdog.sh"]
+    volumes:
+      - ./vault/unseal-watchdog.sh:/unseal-watchdog.sh:ro
+      - ./secrets/vault-init.json:/vault/init/vault-init.json:ro
+    depends_on:
+      vault:
+        condition: service_started
+
 volumes:
   aos-data:
+  idp-db:
+  vault-data:
