@@ -1,0 +1,11 @@
+Reuniao de 15/08/2026 — nota de trabalho.
+
+Decisao: o no AOS passa a correr tool calls em gVisor (runsc, plataforma systrap),
+porque este servidor nao expoe /dev/kvm e o Firecracker fica fora de alcance.
+
+Accoes:
+  - alice: fechar a curadoria do cluster (89 pods Pending para 22)
+  - bob: tabela de precos do Kimi, para o custo deixar de ser zero por ausencia de dados
+
+Este ficheiro e a raiz semeada READ-ONLY do sandbox: e o unico conteudo que uma
+tool `doc_read` consegue alcancar, e existe para que o modelo tenha algo real que ler.

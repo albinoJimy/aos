@@ -88,16 +88,30 @@ func (e *remoteFirecrackerExecutor) RunInGuest(ctx context.Context, inst sandbox
 
 var _ sandbox.GuestExecutor = (*remoteFirecrackerExecutor)(nil)
 
-// buildSandboxDriver constrói o driver de sandbox do kind pedido. Para firecracker, quando
-// AOS_SANDBOX_FIRECRACKER_URL está definido, INJECTA o executor remoto (o componente externo que
-// conduz o firecracker REAL sobre KVM) — e a execução deixa de ser ErrDriverUnavailable. Sem a
-// URL, firecracker devolve o skeleton (ErrDriverUnavailable no exec: o gap honesto, o executor
-// não está provisionado). fake/gvisor vêm de [sandbox.NewDriver].
+// buildSandboxDriver constrói o driver de sandbox do kind pedido.
+//
+// Cada skeleton tem a MESMA forma de activação: uma URL de componente externo. Quando ela está
+// definida, INJECTA-SE o executor remoto e a execução deixa de ser ErrDriverUnavailable; sem
+// ela, o driver fica o skeleton — o gap HONESTO, o executor não está provisionado.
+//
+//   - firecracker + AOS_SANDBOX_FIRECRACKER_URL ⇒ microVM real sobre KVM (ADR-004).
+//   - gvisor      + AOS_SANDBOX_GVISOR_URL      ⇒ runsc real, interposição de syscalls em
+//     user-space. NÃO exige KVM, e é por isso a única fronteira ao nível do kernel disponível
+//     num host que seja ele próprio um convidado sem virtualização aninhada.
+//
+// fake continua a vir de [sandbox.NewDriver] — jail in-process que o próprio pacote marca como
+// "NUNCA usar em produção".
 func buildSandboxDriver(kind sandbox.DriverKind) (sandbox.SandboxDriver, error) {
-	if kind == sandbox.DriverFirecracker {
+	switch kind {
+	case sandbox.DriverFirecracker:
 		if url := strings.TrimSpace(os.Getenv("AOS_SANDBOX_FIRECRACKER_URL")); url != "" {
 			exec := &remoteFirecrackerExecutor{url: url, client: &http.Client{Timeout: 60 * time.Second}}
 			return sandbox.NewFirecrackerDriver(sandbox.WithFirecrackerExecutor(exec)), nil
+		}
+	case sandbox.DriverGVisor:
+		if url := strings.TrimSpace(os.Getenv("AOS_SANDBOX_GVISOR_URL")); url != "" {
+			exec := &remoteGVisorExecutor{url: url, client: &http.Client{Timeout: 60 * time.Second}}
+			return sandbox.NewGVisorDriver(sandbox.WithGVisorExecutor(exec)), nil
 		}
 	}
 	return sandbox.NewDriver(kind)
