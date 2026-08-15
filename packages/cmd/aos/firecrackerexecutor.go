@@ -99,8 +99,9 @@ var _ sandbox.GuestExecutor = (*remoteFirecrackerExecutor)(nil)
 //     user-space. NÃO exige KVM, e é por isso a única fronteira ao nível do kernel disponível
 //     num host que seja ele próprio um convidado sem virtualização aninhada.
 //
-// fake continua a vir de [sandbox.NewDriver] — jail in-process que o próprio pacote marca como
-// "NUNCA usar em produção".
+// fake continua a vir de [sandbox.NewDriver] — jail in-process que o próprio pacote declara
+// impróprio para produção (ver o comentário de [sandbox.DriverFake]): tem isolamento real, mas
+// a fronteira é o PROCESSO do nó, não o kernel.
 func buildSandboxDriver(kind sandbox.DriverKind) (sandbox.SandboxDriver, error) {
 	switch kind {
 	case sandbox.DriverFirecracker:
