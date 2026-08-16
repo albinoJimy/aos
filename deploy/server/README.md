@@ -542,6 +542,37 @@ humanas distintas. Hoje não existem.
 
 ---
 
+## O que está verificado, e por que meio
+
+Um teste ponta-a-ponta que só percorre o caminho feliz confirma que a coisa funciona; não confirma
+que os controlos existem. Estas verificações foram feitas contra o servidor real e cada uma tem
+um **controlo** — sem ele, um resultado positivo não distingue "o controlo actuou" de "não havia
+nada a controlar".
+
+| Afirmação | Como foi provada | Controlo |
+|---|---|---|
+| O sandbox é fronteira de **kernel** | Diagnóstico corrido dentro de um bundle idêntico ao de produção: `Linux version 4.19.0-gvisor`, só a interface `lo`, `1.1.1.1:53 → network is unreachable`, raiz `9p` read-only, ficheiros do host inexistentes | leitura de `/seed/notes` funciona no mesmo bundle |
+| Capability não selada é **negada na execução** | WORM: `Decision:deny`, `Code:E_DENIED_BY_HOOK`, `DeniedBy:identity`, `Reason:E_OUT_OF_SCOPE` | 71 `allow` e **1** `deny` em todo o trilho — a negação é única e atribuível |
+| Claims **sobrepõem-se** a headers | Token válido + `X-Aos-Board: board:inexistente` → `200`. Se o header fosse honrado, não resolveria para região e negaria | mesma leitura só com token → `200` |
+| Recusa **cross-region** | Run residente em `eu-west`: leitor `eu-west` → `200`, leitor `us-east` → `404`. Dois tokens válidos; a única variável é a região | ambos os boards resolvíveis, ambos os tokens verificados |
+| Conteúdo **cifrado em repouso** | Cinco frases distintas do run: **zero** ocorrências em claro em `events.wal` | metadados (transições de estado, `run_id`) legíveis ao lado — não é o ficheiro a ser opaco |
+| **Crypto-shred** real | `/dsar/erase` → KEK desaparece do Vault, `reconstrucao indisponivel` | run de **outro** titular reconstrói na íntegra, `tool_outputs` intactos |
+| A cadeia **sobrevive** ao shred | Reinício após o apagamento: 55 partições re-encadeadas e verificadas | uma cadeia adulterada abortaria o arranque fail-closed |
+| **Anti-replay** por `jti` | Mesmo token, três leituras ao mesmo run: `200` → `404` → `404` | ⚠️ inferência de comportamento, não linha de log |
+
+### Duas armadilhas de diagnóstico
+
+**A recusa por replay devolve `404`, não `403`.** É o 404 uniforme e não-enumerável: negar e "não
+existe" são deliberadamente indistinguíveis, para ninguém poder sondar run IDs válidos. O efeito
+prático é que um token reutilizado faz o run **parecer ter desaparecido**, sem mensagem nenhuma.
+Testar replay contra um run inexistente é, por isso, inconclusivo por construção.
+
+**Um `grep` ao `events.wal` não encontra a negação** — porque o conteúdo está cifrado. O registo
+autoritativo das decisões de governação está no `worm.wal`, cujos metadados são legíveis por
+desenho. Procurar no sítio errado dá zero resultados e parece ausência de controlo.
+
+---
+
 ## O que esta configuração ainda não fecha
 
 Nomeado, não escondido:
@@ -570,9 +601,16 @@ Nomeado, não escondido:
    único host, sem cópia. O alvo que existia — o MinIO do Velero — perdeu-se com os nós mortos do
    cluster. Um deploy não lhes toca e a reversão por digest é segura, mas uma falha de disco
    leva-os. É hoje o risco mais concreto desta instalação.
-7. **Soberania por-leitor ainda não é real.** O read-path exige credencial verificada, mas em uso
-   está uma identidade de **máquina** partilhada (`aos-reader`). Enquanto não houver leitores
-   humanos distintos com o seu próprio `board`, o mecanismo está armado e não exercido.
+7. **Soberania por-leitor ainda não é real.** O read-path exige credencial verificada e a recusa
+   cross-region **está provada**, mas em uso está uma identidade de **máquina** partilhada
+   (`aos-reader`). O mecanismo funciona; falta-lhe exercício — enquanto não houver leitores
+   humanos distintos com o seu próprio `board`, há uma fronteira só.
+10. **A raiz humana da cadeia de delegação é auto-declarada.** O NHI traz
+   `delegation_chain` enraizada num humano com `auth_method: manual` — quem detém a `issuer.key`
+   declarou-o por *flag*. Nada prova que esse humano autorizou o que quer que seja. O
+   `aos-issuer` suporta `--assertion` com ID-token OIDC verificado, e agora existe um IdP para o
+   servir; ligar as duas pontas fecha o eixo de ADR-003, que hoje está sintacticamente presente e
+   semanticamente vazio.
 8. **A verificação ancorada do WORM não corre.** Sem `AOS_WORM_TRUST_ANCHOR` +
    `_CHECKPOINT_FILE` + `_EXPECTED_HEAD`, fica só a re-verificação de hash-chain: apanha mutação,
    remoção e encadeamento quebrado, mas **não** truncatura do tail nem reescrita desde a génese.

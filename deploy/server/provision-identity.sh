@@ -178,6 +178,71 @@ for _ in $(seq 1 30); do
 done
 
 # ------------------------------------------------------------------------------------------
+# 4c. CLIENTE `aos-reader` — a identidade de MÁQUINA que chama a API.
+#
+#     Existe porque, sob AOS_MODE=production, TODA a chamada precisa de um token verificado —
+#     leituras E submissões. Sem uma identidade provisionada, o nó não aceita nada: não é
+#     degradação parcial, é a API fechada.
+#
+#     O `board` vem do ATRIBUTO do utilizador de service account, não de um
+#     oidc-hardcoded-claim-mapper. A diferença não é cosmética: com o mapper fixo, a fronteira
+#     de soberania passa a ser uma constante na configuração do CLIENTE, e duas identidades do
+#     mesmo cliente nunca poderiam ter boards diferentes — que é exactamente o defeito do realm
+#     de dev, onde `board:demo` está cravado.
+#
+#     O segredo é GERADO pelo Keycloak e escrito num ficheiro 0400. Ninguém o escolhe.
+# ------------------------------------------------------------------------------------------
+log "4c/6 cliente aos-reader (service account)"
+if [[ -n "${ADMTOK:-}" ]] || ADMTOK="$(curl -sk --max-time 20 -X POST "${IDP_LOCAL}/realms/master/protocol/openid-connect/token" \
+      -d grant_type=password -d client_id=admin-cli \
+      -d "username=$(grep -E '^IDP_ADMIN_USER=' "${ENV_FILE}" | cut -d= -f2-)" \
+      --data-urlencode "password=$(grep -E '^IDP_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)" \
+      | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)"; then :; fi
+
+kc() { curl -sk --max-time 20 -H "Authorization: Bearer ${ADMTOK}" "$@"; }
+READER_CID="$(kc "${IDP_LOCAL}/admin/realms/aos/clients?clientId=aos-reader" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
+if [[ -z "${READER_CID}" ]]; then
+  # `aud` TEM de ser aos-node e de VALOR ÚNICO: com múltiplas audiences o verificador do nó
+  # passa a exigir que `azp` seja o client configurado — e o azp aqui é aos-reader, não
+  # aos-node. Daí defaultClientScopes/optionalClientScopes vazios e fullScopeAllowed false.
+  kc -o /dev/null -X POST "${IDP_LOCAL}/admin/realms/aos/clients" -H 'Content-Type: application/json' -d '{
+    "clientId":"aos-reader","name":"AOS — leitor de servico (client credentials)",
+    "enabled":true,"publicClient":false,"protocol":"openid-connect",
+    "standardFlowEnabled":false,"implicitFlowEnabled":false,"directAccessGrantsEnabled":false,
+    "serviceAccountsEnabled":true,"fullScopeAllowed":false,
+    "defaultClientScopes":[],"optionalClientScopes":[],
+    "attributes":{"access.token.lifespan":"300"},
+    "protocolMappers":[
+      {"name":"board-claim","protocol":"openid-connect","protocolMapper":"oidc-usermodel-attribute-mapper",
+       "config":{"user.attribute":"board","claim.name":"board","jsonType.label":"String",
+                 "id.token.claim":"true","access.token.claim":"true","multivalued":"false"}},
+      {"name":"aud-aos-node","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper",
+       "config":{"included.client.audience":"aos-node","access.token.claim":"true"}}]}'
+  READER_CID="$(kc "${IDP_LOCAL}/admin/realms/aos/clients?clientId=aos-reader" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
+  [[ -n "${READER_CID}" ]] || fail "nao consegui criar o cliente aos-reader"
+  log "  criado"
+else
+  log "  ja existia (mantido)"
+fi
+
+# O board vive no utilizador de service account. Sem ele o token sai SEM claim `board` e toda a
+# chamada e negada com "id-token verificado sem claim board" — que parece um bug do no.
+SA_ID="$(kc "${IDP_LOCAL}/admin/realms/aos/clients/${READER_CID}/service-account-user" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
+READER_BOARD="$(grep -E '^AOS_BOARD_REGIONS=' "${ENV_FILE}" | cut -d= -f2- | cut -d= -f1 | cut -d, -f1)"
+kc -o /dev/null -X PUT "${IDP_LOCAL}/admin/realms/aos/users/${SA_ID}" -H 'Content-Type: application/json' \
+  -d "{\"attributes\":{\"board\":[\"${READER_BOARD}\"]}}"
+log "  board do leitor = ${READER_BOARD} (atributo da identidade, nao constante do cliente)"
+
+if [[ ! -s "${SECRETS}/reader-client-secret" ]]; then
+  kc "${IDP_LOCAL}/admin/realms/aos/clients/${READER_CID}/client-secret" \
+    | grep -o '"value":"[^"]*"' | cut -d'"' -f4 > "${SECRETS}/reader-client-secret"
+  chmod 400 "${SECRETS}/reader-client-secret"
+  [[ -s "${SECRETS}/reader-client-secret" ]] || fail "nao consegui obter o segredo do aos-reader"
+  log "  segredo em ${SECRETS}/reader-client-secret (0400)"
+fi
+unset ADMTOK
+
+# ------------------------------------------------------------------------------------------
 # 5. Vault: init -> unseal -> Transit -> token scoped. Tudo idempotente.
 # ------------------------------------------------------------------------------------------
 log "5/6 Vault: init/unseal/Transit"

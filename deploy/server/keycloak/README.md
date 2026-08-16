@@ -56,6 +56,23 @@ Fica no script e não neste `realm-aos.json` de propósito: a importação do re
 quando ele já existe (`Strategy: IGNORE_EXISTING`, verificado), pelo que um realm provisionado
 antes desta correcção nunca a receberia. No script é idempotente e alcança os dois casos.
 
+## Dois clientes, e a diferença entre eles
+
+| Cliente | Tipo | Quem é | Onde vive |
+|---|---|---|---|
+| `aos-reader` | confidencial, *service account* | identidade de **máquina** — é a que está em uso | criado por `provision-identity.sh`; segredo em `secrets/reader-client-secret` (0400) |
+| `aos-node` | público, *password grant* | leitores **humanos**, cada um com o seu `board` | neste `realm-aos.json` |
+
+Em ambos, o `board` vem do **atributo do utilizador**, nunca de um `oidc-hardcoded-claim-mapper`.
+A diferença não é cosmética: com o mapper fixo a fronteira de soberania passa a ser uma constante
+na configuração do *cliente*, e duas identidades do mesmo cliente nunca poderiam ter boards
+diferentes. É o defeito do realm de dev, onde `board:demo` está cravado.
+
+> ⚠️ Enquanto só houver `aos-reader`, a soberania **por-leitor** está armada e **não exercida** —
+> uma identidade de máquina partilhada tem uma fronteira só. O mecanismo em si está verificado:
+> um leitor de outra região recebe `404` ao tentar ler um run residente em `eu-west`, com um
+> token igualmente válido. A variável era só a região.
+
 ## Obter um token
 
 ```bash
