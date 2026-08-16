@@ -542,6 +542,61 @@ humanas distintas. Hoje não existem.
 
 ---
 
+## Backup
+
+`backup.sh`, por cron do utilizador `aos` (03:17 diário, sem root), com 14 cópias em rotação.
+
+### As três peças só valem juntas
+
+Copiar o `events.wal` sozinho produz um ficheiro **inútil**. O conteúdo dos runs está cifrado por
+KEK-por-titular e as KEKs vivem no Vault; sem `vault-data` o restauro dá metadados e *ciphertext*
+indecifrável. E sem `secrets/vault-init.json` nem se destrava o Vault restaurado. O backup leva as
+três, mais o `pg_dump` do IdP.
+
+> O Postgres é copiado por **`pg_dump`, nunca a ficheiro**. Um `tar` do `PGDATA` em execução
+> apanha páginas a meio de escrita e restaura corrompido — em silêncio, que é pior do que falhar.
+
+### E é por isso que é cifrado
+
+Juntas, aquelas peças valem exactamente o mesmo que a máquina: quem tiver o backup tem o conteúdo,
+as chaves que o decifram e o material que destrava o Vault. Uma cópia em claro anularia a cifra em
+repouso — e é ao **sair do host** que ela fica exposta.
+
+Cifra-se para um certificado cuja privada **nunca esteve no servidor**
+(`secrets-local/backup-key/`, ao lado da `issuer.key`). Duas consequências, ambas deliberadas:
+
+- um atacante com root no servidor **não lê** os backups que a própria máquina produz;
+- **perder a chave privada é perder os backups.** Não há recuperação.
+
+### O que protege, e o que não
+
+Ficheiros no mesmo disco protegem contra apagamento do volume, corrupção da aplicação e um deploy
+mau. **Não** protegem contra perda do host nem falha de disco — e essa é a razão de existirem
+cifrados: para poderem sair daqui.
+
+```bash
+# recolher para a máquina do operador (o único passo que cobre a perda do host)
+scp -i deploy/server/secrets-local/deploy_key \
+  aos@37.60.241.150:/opt/aos/backups/aos-*.tar.gz.enc ./backups/
+```
+
+### Restaurar
+
+```bash
+openssl smime -decrypt -binary -inform DER -in aos-<stamp>.tar.gz.enc \
+  -inkey deploy/server/secrets-local/backup-key/backup.key -out bundle.tar.gz
+tar xzf bundle.tar.gz          # MANIFEST, idp-db.sql, volumes.tar.gz, config.tar.gz
+```
+
+Este ciclo foi **exercitado**, não presumido: recolhido, decifrado com a privada local e o
+conteúdo conferido — `events.wal`, `worm.wal`, o `pg_dump` com 87 tabelas, e a chave Transit
+`aos-kek-…` no storage do Vault. Sem essa última, o resto não serviria de nada.
+
+O `backup.sh` verifica cada artefacto que produz: PKCS#7 íntegro **e** do tipo `envelopedData` —
+que confirma que o conteúdo está mesmo cifrado, e não só que o ficheiro é bem-formado.
+
+---
+
 ## O que está verificado, e por que meio
 
 Um teste ponta-a-ponta que só percorre o caminho feliz confirma que a coisa funciona; não confirma
@@ -597,10 +652,11 @@ Nomeado, não escondido:
    latência de mediação acima dos alvos de `tecnica/10`. Os serviços acrescentados para o modo
    produção têm `cpus:` declarado; os mais antigos deste ficheiro **não têm** — dívida conhecida,
    e a razão pela qual o arranque da JVM do Keycloak leva 1–2 minutos aqui.
-6. **Nenhum backup do `aos-data`.** O Event Store e o trilho WORM vivem num único volume, num
-   único host, sem cópia. O alvo que existia — o MinIO do Velero — perdeu-se com os nós mortos do
-   cluster. Um deploy não lhes toca e a reversão por digest é segura, mas uma falha de disco
-   leva-os. É hoje o risco mais concreto desta instalação.
+6. **Os backups não saem do host sozinhos.** Existem, são cifrados e o ciclo de restauro está
+   exercitado (ver §Backup) — mas vivem no **mesmo disco**. Isso cobre apagamento do volume,
+   corrupção e um deploy mau; **não** cobre perda da máquina nem falha de disco. A recolha para
+   fora é um comando manual, e enquanto for manual não é uma garantia. Automatizá-la exige um
+   destino que ninguém escolheu ainda.
 7. **Soberania por-leitor ainda não é real.** O read-path exige credencial verificada e a recusa
    cross-region **está provada**, mas em uso está uma identidade de **máquina** partilhada
    (`aos-reader`). O mecanismo funciona; falta-lhe exercício — enquanto não houver leitores
