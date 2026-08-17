@@ -107,7 +107,7 @@ ficheiros **reais** em CI — para que a migração não dependa de alguém se l
 
 ---
 
-## A2 · `run_id` duplicado devolve `201` e perde a submissão em silêncio
+## A2 · `run_id` duplicado devolve `201` e perde a submissão em silêncio ✅ RESOLVIDO
 
 **Severidade: média.** Mitigação correcta cuja premissa deixou de valer.
 
@@ -139,10 +139,33 @@ mitigação protege deixou de existir nesta configuração.
 Sobra o custo — perda silenciosa de trabalho de um chamador legítimo — sem o benefício, porque já
 não há a quem esconder a existência do run.
 
-### O que fecharia
+### ✅ RESOLVIDO
 
-`409` quando a credencial soberana está composta; manter o `201` uniforme apenas no modo de
-referência, onde a premissa continua verdadeira.
+Uma colisão de `run_id` passa a devolver **`409`** — mas a condição **não** é *"o chamador está
+autenticado"*: é *"o chamador **poderia ler** este run"*.
+
+A distinção é o que impede a correcção de abrir um buraco. Um `409` a quem o `GET` esconde
+revelaria por `POST` a existência de um run de **outra região** — exactamente o que
+`authorizeRead` fecha. Por isso o `409` exige **residência selada e coincidente** com a região do
+submissor; caso contrário mantém-se o `201` uniforme.
+
+Dois detalhes de implementação que valem por si:
+
+- A região do submissor é a **já resolvida** no início do `handleSubmit`. Não se re-verifica a
+  credencial: uma segunda verificação **consumiria o `jti`** e transformaria a resposta num falso
+  replay.
+- Sem credencial forte composta (modo de referência), nada muda. A premissa do oráculo continua
+  verdadeira quando o plano de dados pode ter chamadores anónimos.
+
+**Uma preocupação que se revelou infundada.** Ao desenhar isto suspeitei que uma re-submissão de
+outra região pudesse **re-selar** a residência e assim mudar a fronteira do run. Não pode:
+`sealResidency` é idempotente e o primeiro registo é autoritativo — *"uma re-submissão do MESMO
+RunID, incluindo uma vinda de credencial de OUTRA região, NÃO acrescenta um segundo registo"*. O
+desenho já o fechava.
+
+Três testes, um por face: o `409` que passa a existir, o `201` que **tem** de continuar a esconder
+(com âncora de não-vacuidade que confirma o `404` no `GET` para o mesmo leitor), e a retro-compat
+sem credencial forte.
 
 ---
 

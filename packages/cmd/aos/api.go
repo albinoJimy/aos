@@ -606,12 +606,16 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// o submit é RECUSADO; se o WORM não selar, é RECUSADO. Em modo LEGADO (readGov nil) nada muda
 	// — sem residência, sem check cross-region, como o resto do read-path D6/D7 sem topologia
 	// soberana.
+	// Região do submissor, retida para a decisão de colisão de run_id mais abaixo. Vazia ⇒ modo
+	// legado (sem gate soberano), onde a colisão continua a responder 201 uniforme.
+	var submitterRegion string
 	if h.readGov != nil {
 		submitter, ok := h.readGov.authorize(r)
 		if !ok {
 			writeError(w, http.StatusForbidden, "nao autorizado")
 			return
 		}
+		submitterRegion = submitter.region
 		// AOS-217 (achado A1+A7) — TITULAR FAIL-CLOSED, DERIVADO DA CREDENCIAL VERIFICADA. Em modo
 		// SOBERANO o TITULAR do run (o `Subject` sob cuja chave por-titular AOS-093 cifra o conteúdo
 		// não-determinístico — texto do modelo, outputs de tools — ANTES do WAL do Event Store) é
@@ -668,6 +672,28 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// sobrevive ao retorno (é cancelado só por Shutdown).
 	err := h.svc.Submit(r.Context(), goal)
 	if err != nil {
+		// COLISÃO DE run_id COM CHAMADOR AUTENTICADO (achado A2 da auditoria de 2026-08-17).
+		//
+		// O 201 uniforme abaixo existe para não ser um ORÁCULO DE EXISTÊNCIA a um chamador
+		// ANÓNIMO — a premissa de ADR-016, quando o plano de dados não autenticava. Sob
+		// credencial FORTE composta essa premissa deixa de valer: `handleSubmit` já recusou com
+		// 403 quem não se autenticou, e o oráculo que o 201 protege não tem a quem revelar.
+		//
+		// Fica só o custo, e ele é real: um chamador legítimo que colida num run_id recebe
+		// "accepted", PERDE a submissão em silêncio, e ao consultar o resultado lê o run de
+		// OUTRA pessoa. Foi observado.
+		//
+		// A condição é `pode LER este run`, não `está autenticado`: um 409 a quem o GET esconde
+		// abriria por POST a porta que [readGovernance.authorizeRead] fecha — a existência de um
+		// run de OUTRA REGIÃO. Daí exigir residência selada E coincidente. Compara-se contra o
+		// `submitterRegion` já resolvido acima, e não se re-verifica a credencial: uma segunda
+		// verificação consumiria o `jti` e transformaria a resposta num falso replay.
+		if isIdempotentResubmit(err) && h.readGov != nil && h.readGov.cred != nil && submitterRegion != "" {
+			if regiao, selada, rerr := h.readGov.runResidency(r.Context(), req.RunID); rerr == nil && selada && regiao == submitterRegion {
+				writeError(w, http.StatusConflict, "run_id ja existe")
+				return
+			}
+		}
 		if isIdempotentResubmit(err) {
 			// NÃO-ENUMERÁVEL + IDEMPOTENTE. Um run_id que ESTA réplica já hospeda/hospedou, ou
 			// cujo lease é detido por OUTRA réplica, é tratado como RE-SUBMISSÃO idempotente:
