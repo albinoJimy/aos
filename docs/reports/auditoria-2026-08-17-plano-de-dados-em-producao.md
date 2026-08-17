@@ -122,9 +122,14 @@ referência, onde a premissa continua verdadeira.
 
 ---
 
-## A3 · As acções de controlo não são seladas no WORM
+## A3 · O plano de controlo sela **umas** acções e não outras
 
 **Severidade: média.**
+
+> **Correcção.** A primeira versão desta secção dizia *"as acções de controlo não são seladas no
+> WORM"*. É **demasiado largo** e está errado: uma ronda posterior mostrou que a decisão de
+> exaustão **é** selada, em partição própria. O achado real não é ausência de selagem — é
+> **inconsistência** dentro do mesmo plano.
 
 ### Observação
 
@@ -144,8 +149,20 @@ worm.wal   — ocorrências de "pause" ou "ops:prod": 0
 events.wal — control.pause (seq 4) + ratification.nonce.consumed
 ```
 
-Uma **leitura** de run fica na cadeia encadeada (`gov.read`). Uma **intervenção na execução** fica
-só no Event Store.
+Mas uma **decisão de exaustão de orçamento**, também assinada por operador e pela mesma via, **é**
+selada — e em partição dedicada:
+
+```json
+{"AuditSeq":1,"Partition":"governance.exhaustion","Decision":"allow",
+ "Reason":"budget_exhaustion_continue","Principal":{"NHIID":"ops:prod"},
+ "Capability":"exhaustion:continue"}
+```
+
+O critério, portanto, não é *"acções de controlo não se selam"*. É que **umas selam-se e outras
+não**, sem que a diferença siga a consequência: `pause` interrompe a execução e fica só no Event
+Store; a resposta a uma pergunta de orçamento não interrompe nada e fica na cadeia encadeada.
+
+Uma **leitura** de run também fica na cadeia (`gov.read`).
 
 ### Nuance que atenua
 
@@ -260,6 +277,22 @@ uma credencial viva para trabalho que já foi autorizado antes do crash.
 - **Crypto-shred real**: `/dsar/erase` destrói a KEK no Vault e o run fica `reconstrucao
   indisponivel`. Controlo: run de outro titular reconstrói intacto. A cadeia sobrevive — 55
   partições re-encadeadas no arranque seguinte.
+- **A escalada de orçamento é um protocolo fechado, e resiste a troca de decisão.** Com o tecto
+  forçado a 400 tokens num nó descartável, o run **suspende-se** em `waiting_on_human` com
+  `pending_exhaustion` (`88% do tecto consumido, 352 de 400`) em vez de morrer. A partir daí:
+  - `POST /resume` é **recusado com `409`** enquanto a pergunta estiver por responder, com a
+    mensagem a nomear a rota que a responde;
+  - uma decisão assinada para `abort` e **enviada como `continue`** é recusada com `403` — a
+    decisão está presa ao payload assinado, e o domínio (`aos263:exhaustion-decision`) separa-a
+    de qualquer outro sinal do mesmo autenticador;
+  - o `continue` legítimo devolve `200` com `audit_seq`, `principal` e a rota seguinte;
+  - o `resume` subsequente exige credencial **fresca** — *"a original não é persistida"* — e
+    devolve `202 resumed`.
+
+  O run reentra e volta a esgotar, porque **cada re-hospedagem recebe o tecto inteiro**. É a
+  assimetria por-incarnação que o banner declara, observada.
+- **`steer` sobrepõe-se ao objectivo.** Correcção assinada injectada a meio: `202 steered`, e o
+  `final_text` passou a ser exactamente a palavra-marcador da correcção.
 - **A allowlist regional nega ANTES do egress.** Um nó descartável com
   `AOS_MODEL_NAME=claude-3-opus` (fora da allowlist assinada) recusa no estágio
   `allowlist-regional` com *default-deny*, e o LiteLLM regista **zero** ocorrências desse nome.
@@ -284,11 +317,12 @@ disso não é teórico.
 
 ## O que NÃO foi testado
 
-Nomeado para que a ausência não passe por cobertura: `steer` e `resume` (só `pause`), o *four-eyes*
-de aprovação, o disjuntor por wall-clock, o *legal hold*, e o stream SSE de trajectória.
+Nomeado para que a ausência não passe por cobertura: o *four-eyes* de aprovação, o disjuntor por
+wall-clock, o *legal hold*, e o stream SSE de trajectória.
 
-*(O rate-limit, a allowlist do gateway, o `MaxTurns` e a retoma após crash constavam desta lista e
-passaram a estar cobertos — ver O9, O10 e §A4.)*
+*(Saíram desta lista, por passarem a ter evidência: o rate-limit e a allowlist do gateway (O9 e
+§Sólido), o `MaxTurns` (O10), a retoma após crash (§A4), e `steer`/`resume` mais a escalada de
+exaustão que os liga (§Sólido).)*
 
 ## Higiene
 
