@@ -27,7 +27,7 @@ Duas correcções a afirmações minhas anteriores, pelo mesmo motivo:
 
 ---
 
-## A1 · O PDP autoriza uma constante; o sandbox executa uma variável
+## A1 · O PDP autoriza uma constante; o sandbox executa uma variável ✅ RESOLVIDO
 
 **Severidade: alta.** Achado de arquitectura, não de configuração.
 
@@ -74,12 +74,36 @@ O instinto do desenho está certo — o binding de governança vem de config *tr
 escolhe o nome da tool (AOS-069). O que falta é o passo seguinte: o recurso **efectivo** tem de
 entrar na decisão e no selo.
 
-### O que fecharia
+### ✅ RESOLVIDO
 
-Um `resource_value` com template sobre os argumentos (`doc://{doc_id}`), avaliado *após* a reescrita
-do efeito e *antes* da decisão do PDP — para que a autorização e a auditoria incidam sobre o que
-vai mesmo acontecer. Enquanto não existir, o campo `Resource` do WORM deve ser lido como *"a que
-recurso a política foi ligada"* e nunca como *"que recurso foi tocado"*.
+`resource_value` passa a aceitar slots `{arg}`, preenchidos com os argumentos que o modelo emitiu,
+**antes** de a tool call chegar ao Reference Monitor. A decisão do PDP e o selo do WORM incidem
+agora sobre o recurso **efectivo**.
+
+Três propriedades tornam a correcção mais do que uma opção de configuração:
+
+1. **Não é opt-in.** Uma tool cujo efeito o modelo parametriza (`sandbox.path_arg`, `write_arg`,
+   `args_from`) mas cujo `resource_value` é uma **constante** faz o nó **recusar arrancar**
+   (`ErrBadModelTools`). Se fosse opcional, uma configuração não migrada continuaria a mentir em
+   silêncio — que é exactamente como este defeito sobreviveu.
+2. **Um slot por resolver NEGA, não degrada.** Argumentos ilegíveis, slot ausente, vazio ou
+   não-escalar limpam a `Capability` ⇒ *default-deny* no RM. Cair na constante reporia a
+   divergência; a string vazia também.
+3. **O valor substituído não é sanitizado**, de propósito: sanitizá-lo faria o selo divergir do
+   efeito outra vez. O trilho regista o que vai ser tentado; a fronteira que impede o alcance
+   indevido é o sandbox.
+
+O que **não** muda: `capability`, `resource_type`, `resource_region` continuam constantes do
+registry trusted, e o taint continua `untrusted` (AOS-069). O modelo passa a influenciar apenas
+**qual instância** do recurso é nomeada — que é o que ele já controlava no efeito.
+
+**Fronteira deliberada:** um `resource_value` **vazio** é isento. O defeito era o trilho *afirmar*
+um recurso que não foi o tocado; um valor vazio não afirma nada, e é ausência visível em vez de
+misatribuição. Que uma tool mediada deva sempre nomear o seu recurso é uma exigência mais forte, e
+separada desta.
+
+Os dois registries do repositório foram migrados, e um teste corre a validação de arranque sobre os
+ficheiros **reais** em CI — para que a migração não dependa de alguém se lembrar antes de um deploy.
 
 ---
 
