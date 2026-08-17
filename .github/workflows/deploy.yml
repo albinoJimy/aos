@@ -110,9 +110,24 @@ jobs:
             deploy/server/rollback.sh \
             deploy/server/provision.sh \
             deploy/server/sync-tls.sh \
+            deploy/server/provision-identity.sh \
+            deploy/server/backup.sh \
             deploy/server/.env.example \
             "$USER@$HOST:/opt/aos/"
           rsync -az -e "$SSH" deploy/server/templates/ "$USER@$HOST:/opt/aos/templates/"
+          # CONFIGURAÇÃO QUE O REPOSITÓRIO POSSUI e que o compose MONTA. Faltava aqui, e a
+          # ausência não era inócua: o registry de tools ficava a derivar entre repo e servidor
+          # — uma migração feita no repo (ex.: o `resource_value` com slots, que o nó passou a
+          # EXIGIR quando o efeito é parametrizado) chegava com a imagem nova mas sem o ficheiro,
+          # e o nó recusava arrancar. O deploy reverteria sozinho, mas por uma razão que não
+          # estava no código: estava no que o deploy não levava.
+          #
+          # SEM --delete, ao contrário das políticas: estes directórios podem conter material do
+          # OPERADOR a par do do repositório (a raiz semeada do sandbox é o caso claro), e
+          # apagá-lo seria destruir configuração que ninguém pediu para remover.
+          for d in model-tools litellm keycloak vault gvisor; do
+            rsync -az -e "$SSH" "deploy/server/$d/" "$USER@$HOST:/opt/aos/$d/"
+          done
           # O bundle PDP é totalmente gerido pelo repositório: aqui --delete é correcto e
           # necessário (uma política removida do repo tem de desaparecer do servidor).
           rsync -az --delete -e "$SSH" \
