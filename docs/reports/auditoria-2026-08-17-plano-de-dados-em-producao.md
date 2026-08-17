@@ -277,6 +277,16 @@ uma credencial viva para trabalho que já foi autorizado antes do crash.
 - **Crypto-shred real**: `/dsar/erase` destrói a KEK no Vault e o run fica `reconstrucao
   indisponivel`. Controlo: run de outro titular reconstrói intacto. A cadeia sobrevive — 55
   partições re-encadeadas no arranque seguinte.
+- **O *legal hold* bloqueia mesmo o apagamento — e o controlo é a contagem de chaves.** Sobre um
+  titular descartável com KEK própria: `hold` → `{"status":"held"}`; `erase` →
+  `{"status":"blocked","blocked":true}` **e a KEK sobrevive** (2 chaves no Vault); `release` →
+  `{"status":"released"}`; `erase` → `{"status":"erased"}` **e a KEK desaparece** (1 chave).
+  Sem a contagem, o `blocked:true` seria apenas uma string de estado — é a chave sobreviver ao
+  bloqueio e cair depois do *release* que prova que o *hold* actua sobre o mecanismo e não sobre
+  o relatório. Todas as quatro acções seladas, com `seq` próprio.
+- **O stream SSE de trajectória entrega em tempo real.** Framing correcto (`id:`/`data:`),
+  sequência monótona, e os eventos a chegarem à medida que o run progride:
+  `run.state.transition` → `run.toolset.frozen` → `step.checkpoint` → `turn.recorded`.
 - **A escalada de orçamento é um protocolo fechado, e resiste a troca de decisão.** Com o tecto
   forçado a 400 tokens num nó descartável, o run **suspende-se** em `waiting_on_human` com
   `pending_exhaustion` (`88% do tecto consumido, 352 de 400`) em vez de morrer. A partir daí:
@@ -317,12 +327,19 @@ disso não é teórico.
 
 ## O que NÃO foi testado
 
-Nomeado para que a ausência não passe por cobertura: o *four-eyes* de aprovação, o disjuntor por
-wall-clock, o *legal hold*, e o stream SSE de trajectória.
+**Por testar:** o *four-eyes* de aprovação.
+
+**Testado e INCONCLUSIVO — o disjuntor por wall-clock.** Um nó descartável com
+`AOS_BREAKER_MAX_WALL_CLOCK=3s` recebeu um run que costuma levar 20–40 s. Resultado:
+`{"status":"completed","turns":1}`, **sem veredicto de disjuntor e sem erro**. A variável *é* lida
+(`breaker_thresholds.go:78`), e o breaker avalia em fronteiras de iteração — com um único turno
+pode não ter havido segunda fronteira onde avaliar. Não tenho evidência para nenhuma das
+hipóteses, e fica registado como inconclusivo em vez de dado por bom. Um teste válido precisa de
+um run garantidamente multi-iteração para lá do limiar.
 
 *(Saíram desta lista, por passarem a ter evidência: o rate-limit e a allowlist do gateway (O9 e
-§Sólido), o `MaxTurns` (O10), a retoma após crash (§A4), e `steer`/`resume` mais a escalada de
-exaustão que os liga (§Sólido).)*
+§Sólido), o `MaxTurns` (O10), a retoma após crash (§A4), `steer`/`resume` mais a escalada de
+exaustão que os liga, o *legal hold* e o stream SSE (§Sólido).)*
 
 ## Higiene
 
