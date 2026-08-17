@@ -169,6 +169,7 @@ nenhuma. A acção mais consequente tem o registo mais fraco.
 | O6 | **O orçamento nunca engata.** 1 749 tokens contra tecto de 200 000 (0,87%); o aviso aos 80% exigiria ~180 turnos. Protecção por exercitar. | `input_tokens`/`output_tokens` dos `turn.recorded` |
 | O7 | **`policy_ref` é um nome, não um hash.** Um token continua a apontar para `policy://agent-worker` depois de essa classe mudar de conteúdo. | payload do NHI |
 | O8 | **O plano de controlo não está atrás da credencial soberana.** O `pause` foi aceite sem `Authorization`. Defensável — a autoridade é *sobre* o nó — mas a fronteira de região não se aplica ao controlo. | `handlePause`: só `admitControl` + `admitControlMTLS` |
+| O9 | **A admissão actua ANTES da autenticação, e o balde é global.** 500 pedidos sem credencial nenhuma: 442 `403` + **58 `429`**. Os 58 foram rejeitados pela admissão sem chegarem à verificação de credencial — logo um chamador anónimo consome orçamento de admissão de todos. É *tradeoff* declarado (o banner nomeia o balde como global e por-processo) e a ordem é defensável — rejeitar barato protege a maquinaria de authn de carga. O que a torna consequente aqui é a conjunção: porta pública, sem firewall no host, balde global, e `429` sem `Retry-After`. | 500 POST /runs sem `Authorization` |
 
 ---
 
@@ -193,16 +194,36 @@ nenhuma. A acção mais consequente tem o registo mais fraco.
 - **Crypto-shred real**: `/dsar/erase` destrói a KEK no Vault e o run fica `reconstrucao
   indisponivel`. Controlo: run de outro titular reconstrói intacto. A cadeia sobrevive — 55
   partições re-encadeadas no arranque seguinte.
+- **A allowlist regional nega ANTES do egress.** Um nó descartável com
+  `AOS_MODEL_NAME=claude-3-opus` (fora da allowlist assinada) recusa no estágio
+  `allowlist-regional` com *default-deny*, e o LiteLLM regista **zero** ocorrências desse nome.
+  É o zero no gateway que torna a prova não-vacuosa: sem ele, a recusa podia ter acontecido
+  *depois* de a chamada sair. Nota lateral: o nó **arranca** com um nome não-allowlisted — a
+  verificação é por-chamada, não no boot.
 - **O taint é registado mesmo quando permite** (`untrusted` + `allow`), **o WAL guarda
   `prompt_hash` e não o prompt**, **o sandbox é criado e destruído por chamada**, e o
   **`run.toolset.frozen`** fixa o catálogo no arranque do run.
+- **Recusas atribuíveis no estágio de identidade.** Um NHI expirado é recusado com
+  `E_TOKEN_EXPIRED: token expirado ou sem exp` — nomeado, não genérico.
+
+## Uma nota sobre a armadilha do `jti`, por experiência própria
+
+A primeira tentativa do teste da allowlist reutilizou **o mesmo token** para submeter e para ler.
+O anti-replay devolveu o `404` uniforme, o run pareceu não existir, e o teste ficou sem resposta —
+sem qualquer indicação da causa.
+
+Registo-o porque aconteceu a quem tinha documentado a armadilha duas secções acima. Um `404` que
+significa *"reutilizaste o token"* é indistinguível de *"o run não existe"* por desenho, e o custo
+disso não é teórico.
 
 ## O que NÃO foi testado
 
 Nomeado para que a ausência não passe por cobertura: `steer` e `resume` (só `pause`), o *four-eyes*
-de aprovação, o disjuntor e `MaxTurns`, o rate-limit de ingresso (`429`), o *legal hold*, o stream
-SSE de trajectória, a negação da allowlist do gateway de modelo, e a retoma após restart do
-processo.
+de aprovação, o disjuntor e `MaxTurns`, o *legal hold*, o stream SSE de trajectória, e a retoma
+após restart do processo.
+
+*(O rate-limit e a allowlist do gateway constavam desta lista e passaram a estar cobertos — ver
+O9 e §"O que está sólido".)*
 
 ## Higiene
 
