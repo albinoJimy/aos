@@ -394,6 +394,101 @@ Porque é que cada parâmetro tem de ser assim:
 
 ---
 
+## Operar o plano de controlo
+
+Quatro rotas mudam o curso de um run em execução, e **nenhuma** aceita o token do IdP: são
+autoridade **sobre** o nó, não autoridade dentro de um run, e autenticam-se por **assinatura
+ed25519 por-sinal** feita no dispositivo do operador. O nó nunca vê chave privada nenhuma.
+
+| Rota | Quem assina | Chave |
+|---|---|---|
+| `POST /runs/{id}/pause` · `/steer` | operador | `secrets-local/operator.seed` |
+| `POST /runs/{id}/exhaustion` | operador | idem |
+| `POST /runs/{id}/approve` | **dois** aprovadores distintos | `secrets-local/approver-{a,b}.seed` |
+
+### A codificação assinada, e o ataque que ela fecha
+
+Todos os tuplos usam **length-prefix** — `uint64` big-endian com o comprimento, seguido do campo —
+e nunca separadores. A razão está no código e vale a pena repetir: um separador de byte único
+**não é injectivo**, porque o byte separador pode ocorrer *dentro* de um campo variável (um nonce
+binário contém `0x00` em ~6% dos casos). Com separadores, quem capturasse um sinal poderia
+**deslizar a fronteira** entre dois campos, obtendo um tuplo logicamente diferente — nonce novo, e
+por isso invisível ao anti-replay — com a **mesma** sequência de bytes e a **mesma** assinatura
+válida. O comprimento fixa cada fronteira e elimina a ambiguidade.
+
+**`pause` / `steer`:**
+
+```
+lp(run_id) ‖ lp(kind) ‖ lp(payload) ‖ lp(nonce) ‖ u64be(issued_at.UnixNano())
+```
+
+`kind` é `"pause"` ou `"steer"`; `payload` é vazio no pause e a **correcção em bytes crus** no
+steer (que viaja em base64 no campo `payload` do corpo).
+
+**Decisão de exaustão** — `kind = "exhaustion_decision"`, e o payload é ele próprio um tuplo
+prefixado, com etiqueta de domínio para não colidir com outro sinal do mesmo autenticador:
+
+```
+payload = lp("aos263:exhaustion-decision") ‖ lp(decisão) ‖ lp(step_id)
+```
+
+**Perna de aprovação** *four-eyes* — domínio próprio e o `preview` (digest do efeito exibido,
+*what you see is what you sign*):
+
+```
+lp("aos.integration.foureyes.v1") ‖ lp(request_id) ‖ lp(preview)
+  ‖ lp([risk_class, dual_control]) ‖ lp(approver) ‖ lp(session)
+  ‖ lp(credential) ‖ lp(challenge)
+```
+
+`risk_class` é um byte: **`0` = danger** (o valor-zero, fail-closed), `1` = safe, `2` = gray.
+
+### O corpo de fio
+
+```jsonc
+// pause
+{"emitter":{"id":"ops:prod","signature":"<b64>","nonce":"<b64>","issued_at":"<RFC3339>"}}
+// steer — o mesmo emitter, mais a correcção
+{"emitter":{…},"payload":"<b64 da correcção>"}
+// decisão de exaustão
+{"decision":"continue","step_id":"<o da pending_exhaustion>","emitter":{…}}
+// aprovação
+{"request":{"request_id":"…","preview":"<b64>","risk_class":0,"dual_control_required":true},
+ "legs":[{"approver":"human:alice","session":"…","credential":"…",
+          "challenge":"<b64>","signature":"<b64>"}, …]}
+```
+
+### O que estes canais garantem, verificado
+
+- **Anti-replay durável, independente da criptografia.** Um sinal **re-assinado** com `issued_at`
+  novo mas o **mesmo nonce** é recusado com `403`. A assinatura era válida e fresca; o nonce
+  estava consumido. Sobrevive a restart.
+- **O alvo está preso à assinatura.** Uma assinatura válida para *outro* `run_id` → `403`.
+- **A decisão está presa à assinatura.** Assinar `abort` e enviar `continue` → `403`.
+- **Duplo controlo é mesmo duplo.** Uma perna só → `403`; duas, de aprovadores distintos → `200`
+  com um grant que **expira**.
+
+### Sequências que a API impõe
+
+**Exaustão de orçamento.** Um run que cruza o limiar suspende-se em `waiting_on_human` com
+`pending_exhaustion`. A partir daí, `POST /resume` devolve **`409`** até a pergunta ser
+respondida — e `"resume"` **não é** uma decisão aceite em `/exhaustion` (a rota di-lo). A ordem é:
+decidir `continue` → depois `resume`.
+
+**Aprovação escalada.** Idêntico: aprovar **autoriza**, não re-hospeda. O run só avança com um
+`POST /resume` explícito.
+
+Em ambos os casos o `resume` exige uma **credencial NHI fresca** — *"a original não é
+persistida"*. É deliberado: re-autentica-se para retomar.
+
+> ⚠️ **A emissão de challenges está DORMENTE neste nó.** `POST /runs/{id}/challenge` devolve
+> `501` — *"frescura por-cerimónia dormente; defina `AOS_CHALLENGE_ISSUANCE=1`"*. Sem ela, o
+> anti-replay **por-cerimónia** da aprovação não está armado (o anti-replay por-nonce dos sinais
+> de operador **está**, e é outro mecanismo). Ligar exige decidir que o operador consegue pedir
+> um challenge antes de cada cerimónia.
+
+---
+
 ## TLS real — instalado, via cert-manager do cluster
 
 O nó serve `https://aos.elysiumii.site:8444` com certificado **Let's Encrypt válido**, cadeia
@@ -675,3 +770,17 @@ Nomeado, não escondido:
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
    tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de
    fonte de preço, em vez de comparar sempre contra zero.
+11. **A frescura por-cerimónia da aprovação está dormente.** `AOS_CHALLENGE_ISSUANCE` por definir
+   ⇒ `POST /runs/{id}/challenge` devolve `501`. O *four-eyes* continua a exigir duas assinaturas
+   válidas de aprovadores distintos, mas **sem challenge fresco por cerimónia** — o anti-replay
+   por-nonce dos sinais de operador é outro mecanismo e esse está armado. Ver §"Operar o plano de
+   controlo".
+12. **O orçamento está configurado onde nunca morde.** `AOS_BUDGET_MAX_TOKENS=200000` contra um
+   consumo medido de ~1 750 tokens por run: o tecto e o aviso aos 80% ficam ~114× acima do uso
+   real. O mecanismo **funciona** — verificado forçando-o a 400 tokens, com suspensão em
+   `waiting_on_human` — mas na configuração actual é protecção que não engata.
+13. **A auditoria não regista quem aprovou.** Uma cerimónia *four-eyes* sela na hash-chain que
+   **um** gate humano foi satisfeito (`human_gate: "satisfied"`), mas não **quem** o satisfez: as
+   identidades dos aprovadores e o `request_id` do grant não aparecem no `worm.wal`. Para uma
+   autorização cujo propósito é o não-repúdio, é a peça que falta. Detalhe e evidência em
+   [`../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md`](../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md).
