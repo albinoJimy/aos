@@ -628,12 +628,13 @@ Ver [`keycloak/README.md`](keycloak/README.md). Dois clientes:
 
 - **`aos-reader`** — cliente confidencial com *service account*. É o que está em uso. O segredo é
   gerado pelo Keycloak e vive em `secrets/reader-client-secret` (0400).
-- **`aos-node`** — cliente público, *password grant*, para leitores **humanos**, cada um com o seu
-  atributo `board`.
+- **`aos-node`** — cliente público, **código de autorização + PKCE S256**, para leitores
+  **humanos**, cada um com o seu atributo `board`. O humano autentica-se no browser com
+  [`get-id-token.ps1`](get-id-token.ps1); a password nunca passa pela linha de comandos.
 
 A distinção importa: um service account colapsa "quem lê" numa identidade de máquina. A soberania
 **por-leitor** — que é o argumento de todo o mecanismo — só é real quando existirem identidades
-humanas distintas. Hoje não existem.
+humanas distintas.
 
 ---
 
@@ -771,10 +772,19 @@ Nomeado, não escondido:
    privada local, e a chave Transit confirmada lá dentro. **O residual que fica:** se a máquina
    ficar dias desligada, a cópia envelhece e **ninguém avisa** — não há alerta de recência. Um
    destino sempre ligado (bucket S3-compatível ou outro host) removeria essa dependência.
-7. **Soberania por-leitor ainda não é real.** O read-path exige credencial verificada e a recusa
-   cross-region **está provada**, mas em uso está uma identidade de **máquina** partilhada
-   (`aos-reader`). O mecanismo funciona; falta-lhe exercício — enquanto não houver leitores
-   humanos distintos com o seu próprio `board`, há uma fronteira só.
+7. **Soberania por-leitor: o caminho está armado, falta a password.** O read-path exige credencial
+   verificada e a recusa cross-region **está provada**, mas em uso continua uma identidade de
+   **máquina** partilhada (`aos-reader`) — uma identidade de máquina tem uma fronteira só.
+   O que passou a existir: o utilizador `jimy` com `board:prod`, o cliente `aos-node` com
+   **código de autorização + PKCE S256** (imposto — sem `code_challenge` ou com `plain` o IdP
+   recusa) e [`get-id-token.ps1`](get-id-token.ps1) a fazer o fluxo com a CA interna fixada.
+   **O que falta é um único passo, e é seu:** definir a password de arranque na consola
+   (*Users → jimy → Credentials*). O `UPDATE_PASSWORD` já está pendente, portanto o valor que
+   escolher ali é substituído por si à primeira entrada — a consola não fica a ser o sítio onde
+   a password vive. Não a defino eu, e é por desenho.
+   Feito isso, fecha-se com o `directAccessGrantsEnabled` do `aos-node` — o *password grant* fica
+   ligado só até o fluxo de browser estar provado ponta-a-ponta, para não haver janela sem
+   caminho nenhum.
 10. **A raiz humana da cadeia de delegação é auto-declarada.** O NHI traz
    `delegation_chain` enraizada num humano com `auth_method: manual` — quem detém a `issuer.key`
    declarou-o por *flag*. Nada prova que esse humano autorizou o que quer que seja. O
