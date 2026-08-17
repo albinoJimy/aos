@@ -1247,6 +1247,9 @@ func (h *apiHandler) handleSteer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, controlErrorStatus(err), "sinal recusado")
 		return
 	}
+	// A1/A3: a correcção em si NÃO entra no selo — é conteúdo, e o trilho é sem PII. O que entra
+	// é QUEM interveio, SOBRE QUE run e COM QUE tipo de sinal. Ver control_seal.go.
+	h.sealControlAction(r.Context(), "steer", runID, emitter.ID)
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "steered"})
 }
 
@@ -1273,6 +1276,7 @@ func (h *apiHandler) handlePause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, controlErrorStatus(err), "sinal recusado")
 		return
 	}
+	h.sealControlAction(r.Context(), "pause", runID, emitter.ID)
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "paused"})
 }
 
@@ -1474,6 +1478,14 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "aprovacao recusada")
 			return
 		}
+		// A3: a cadeia selava que UM gate humano fora satisfeito, sem selar QUEM. Para uma
+		// autorização cujo propósito é o não-repúdio, era a peça em falta. O selo nomeia os
+		// aprovadores e amarra o grant que destrava a acção na retoma.
+		obl := approversObligation(grant.Approvers)
+		if grant.ID != "" {
+			obl = append(obl, audit.Obligation{Type: controlGrantObl, Fields: []string{grant.ID}})
+		}
+		h.sealControlAction(r.Context(), "approve", feReq.RequestID, strings.Join(grant.Approvers, ","), obl...)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":    "authorized",
 			"approvers": grant.Approvers,
@@ -1492,6 +1504,8 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "aprovacao recusada")
 		return
 	}
+	h.sealControlAction(r.Context(), "approve", feReq.RequestID,
+		strings.Join(decision.Approvers, ","), approversObligation(decision.Approvers)...)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "authorized", "approvers": decision.Approvers})
 }
 

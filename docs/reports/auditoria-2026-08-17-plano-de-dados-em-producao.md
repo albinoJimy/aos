@@ -169,7 +169,7 @@ sem credencial forte.
 
 ---
 
-## A3 · O plano de controlo sela **umas** acções e não outras
+## A3 · O plano de controlo sela **umas** acções e não outras ✅ RESOLVIDO
 
 **Severidade: média.**
 
@@ -232,6 +232,34 @@ Fica selado que **um** gate humano foi satisfeito. **Não fica selado QUEM o sat
 > participa em nenhuma cadeia de delegação, é o teste limpo — e dá zero.
 
 Para uma autorização cujo propósito **é** o não-repúdio de quem autorizou, é a peça que falta.
+
+### ✅ RESOLVIDO
+
+As acções de controlo que **surtem efeito** passam a ser seladas na hash-chain, em partição
+própria `governance.control`, com a `Capability` a nomear o tipo (`control:pause`,
+`control:steer`, `control:approve`) e o **`Principal` a nomear quem interveio**. E a aprovação
+*four-eyes* passa a selar os **aprovadores** e o **grant** — a peça que faltava a uma autorização
+cujo propósito é o não-repúdio de quem autorizou.
+
+Quatro decisões que a correcção fixa:
+
+1. **Só se sela o que surtiu efeito.** Um sinal recusado (assinatura inválida, replay, alvo
+   errado) não muda estado nenhum e não entra na cadeia. Selá-lo daria a quem inunda o canal um
+   vector para **inchar o trilho** sem autoridade nenhuma — e o trilho é a coisa que se está a
+   proteger.
+2. **Partição separada da exaustão.** `governance.exhaustion` regista uma *resposta a uma
+   pergunta do nó*; `governance.control` regista uma *intervenção não solicitada* sobre um run em
+   curso. Mesma chave, consequências diferentes.
+3. **O selo não transporta a correcção do `steer`.** É conteúdo submetido por um humano, e o
+   trilho é sem PII. Entra quem interveio, sobre que run, com que tipo de sinal — e há teste que
+   falha se a correcção lá aparecer.
+4. **O selo vem depois do efeito, e isso é um residual declarado.** A autenticação do sinal
+   acontece *dentro* do canal (nonce de uso-único); selar antes obrigaria a verificar duas vezes,
+   e a segunda verificação consumiria o nonce e recusaria o próprio sinal que se quer registar.
+   Se o WORM falhar, a acção aconteceu e o registo não existe: grita-se no log e **não** se
+   devolve erro, porque o erro levaria o operador a repetir o sinal — o que consumiria outro
+   nonce e daria replay, trocando um registo em falta por um registo em falta **mais** um
+   operador confuso.
 
 ### Nuance que atenua
 

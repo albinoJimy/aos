@@ -1,0 +1,97 @@
+package main
+
+// SELO DAS ACÇÕES DE CONTROLO (achado A3 da auditoria de 2026-08-17).
+//
+// O QUE FECHA. Uma LEITURA de run ficava na hash-chain tamper-evidente (`gov.read`). Uma
+// INTERVENÇÃO NA EXECUÇÃO — `pause`, `steer` — ficava só no Event Store. A acção mais
+// consequente tinha o registo mais fraco, e a diferença não seguia a consequência: a decisão de
+// exaustão, que não interrompe nada, já era selada em `governance.exhaustion`.
+//
+// O evento do Event Store carrega o `emitter_id` E a assinatura ed25519, pelo que ADULTERÁ-LO é
+// detectável por quem tenha a pubkey do operador. O que faltava era a REMOÇÃO: o Event Store não
+// é encadeado, e apagar o evento não parte cadeia nenhuma. O selo fecha isso.
+//
+// A APROVAÇÃO four-eyes tinha o mesmo defeito noutra forma: a cadeia selava que UM gate humano
+// fora satisfeito (`human_gate: "satisfied"`) sem selar QUEM o satisfez — as identidades dos
+// aprovadores e o grant não apareciam no WORM. Para uma autorização cujo propósito É o
+// não-repúdio de quem autorizou, era a peça que faltava.
+
+import (
+	"context"
+	"strings"
+
+	audit "github.com/aos-ref/platform/audit"
+)
+
+const (
+	// controlSealPartition é a partição das acções do plano de CONTROLO. Separada de
+	// `governance.exhaustion` de propósito: aquela regista uma RESPOSTA a uma pergunta do nó;
+	// esta regista uma INTERVENÇÃO não solicitada sobre um run em curso. São autoridades com a
+	// mesma chave e consequências diferentes, e a auditoria ganha em não as misturar.
+	controlSealPartition = "governance.control"
+	// controlSealToolID identifica a origem do registo (o canal, não uma tool).
+	controlSealToolID = "gov.control"
+	// controlRunResourceType é o tipo do recurso selado: o próprio run sobre o qual se agiu.
+	controlRunResourceType = "run"
+	// controlApproversObl transporta os aprovadores da cerimónia four-eyes. É o campo que
+	// responde "quem autorizou" — sem ele o selo diz que houve aval e não de quem.
+	controlApproversObl = "four_eyes.approvers"
+	// controlGrantObl transporta o id do grant emitido, para amarrar o selo à evidência que
+	// destrava a acção na retoma.
+	controlGrantObl = "four_eyes.grant"
+)
+
+// sealControlAction sela uma acção de controlo JÁ AUTENTICADA E JÁ APLICADA na hash-chain
+// tamper-evidente.
+//
+// ORDEM, e porque é esta. O selo vem DEPOIS do efeito porque a autenticação do sinal (nonce
+// de uso-único, assinatura sobre o tuplo) acontece DENTRO do canal — selar antes obrigaria a
+// verificar duas vezes, e a segunda verificação consumiria o nonce e recusaria o próprio sinal
+// que se quer registar.
+//
+// RESIDUAL DECLARADO: entre o efeito e o selo há uma janela. Se o WORM falhar, a acção
+// aconteceu e o registo não existe. Não se devolve erro ao chamador nesse caso — a acção
+// ACONTECEU, e responder erro levá-lo-ia a repetir o sinal, o que consumiria outro nonce e daria
+// um replay: trocaria um registo em falta por um registo em falta MAIS um operador confuso. A
+// falha é gritada no log, que é o canal que existe sempre.
+//
+// Só se selam acções que SURTIRAM EFEITO. Um sinal recusado (assinatura inválida, replay, alvo
+// errado) não muda estado nenhum e não entra na cadeia — mesmo critério da decisão de exaustão.
+// Selá-los daria a quem inunda o canal um vector para inchar o trilho.
+func (h *apiHandler) sealControlAction(ctx context.Context, kind, runID, emitterID string, obrigacoes ...audit.Obligation) {
+	if h.node == nil || h.node.WORM == nil {
+		return // sem substrato tamper-evidente composto: nada a selar (modo de referência).
+	}
+	rec := audit.AuditRecord{
+		Partition: controlSealPartition,
+		Timestamp: h.cfg.now().UTC(),
+		// O veredicto é sobre a ACÇÃO DE GOVERNAÇÃO (foi exercida), não sobre o run.
+		Decision:    audit.DecisionAllow,
+		Reason:      "control_" + kind,
+		Principal:   audit.Principal{NHIID: emitterID},
+		Capability:  "control:" + kind,
+		RunID:       runID,
+		ToolID:      controlSealToolID,
+		Resource:    audit.Resource{Type: controlRunResourceType, Value: runID},
+		Obligations: obrigacoes,
+	}
+	if _, err := h.node.WORM.Append(ctx, rec); err != nil {
+		// Nunca a assinatura nem o nonce: só o caminho e a classe de falha.
+		h.svc.log("SELO DE CONTROLO EM FALTA: a accao %q sobre run=%q por %q FOI APLICADA mas NAO ficou na hash-chain: %v", kind, runID, emitterID, err)
+	}
+}
+
+// approversObligation constrói a obrigação que nomeia quem aprovou. Vazia ⇒ nil, para não selar
+// uma lista vazia que se leria como "aprovado por ninguém".
+func approversObligation(approvers []string) []audit.Obligation {
+	limpos := make([]string, 0, len(approvers))
+	for _, a := range approvers {
+		if a = strings.TrimSpace(a); a != "" {
+			limpos = append(limpos, a)
+		}
+	}
+	if len(limpos) == 0 {
+		return nil
+	}
+	return []audit.Obligation{{Type: controlApproversObl, Fields: limpos}}
+}
