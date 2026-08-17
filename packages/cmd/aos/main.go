@@ -877,6 +877,17 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 		cancel()
 		return err
 	}
+	// A4: a varredura acima corre UMA VEZ, e num no UNICO isso nao chega — no primeiro arranque o
+	// lease da encarnacao ANTERIOR DO MESMO PROCESSO ainda nao expirou, o orfao e saltado, e nada
+	// re-varre. Ver orphan_sweeper.go. AOS_CRASH_RESUME_INTERVAL=0 desliga (opt-out explicito).
+	sweepInterval, serr := parseOrphanSweepInterval()
+	if serr != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = svc.Shutdown(shutCtx)
+		cancel()
+		return serr
+	}
+	svc.StartOrphanSweeper(ctx, sweepInterval)
 	apiOpts := append([]APIOption{WithAPILog(w)}, tlsOpts...)
 	apiOpts = append(apiOpts, ingressOpts...)
 	if maxTurnsOpt != nil {
