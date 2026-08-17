@@ -19,18 +19,20 @@
     {
       "clientId": "aos-node",
       "name": "AOS — credencial forte de soberania de leitura",
-      "description": "Cliente do read-path soberano (AOS-205). O leitor obtem um ID-token por password grant; o no verifica-o e DERIVA o board das claims. O header X-Aos-Board deixa de autorizar.",
+      "description": "Cliente do read-path soberano (AOS-205). O leitor humano obtem um ID-token por CODIGO DE AUTORIZACAO + PKCE S256 (ver get-id-token.ps1); o no verifica-o e DERIVA o board das claims. O header X-Aos-Board deixa de autorizar.",
       "enabled": true,
       "publicClient": true,
-      "standardFlowEnabled": false,
+      "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": false,
       "fullScopeAllowed": false,
-      "redirectUris": [],
+      "redirectUris": ["http://127.0.0.1:47821/callback"],
       "webOrigins": [],
       "attributes": {
-        "access.token.lifespan": "300"
+        "access.token.lifespan": "300",
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
       },
       "protocolMappers": [
         {

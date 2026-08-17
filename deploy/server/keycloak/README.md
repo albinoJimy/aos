@@ -33,6 +33,14 @@ que se delegue.
    minúscula, dígito e símbolo).
 4. Separador *Attributes* → acrescentar a chave **`board`** com o valor **`board:prod`**.
 
+> A password definida aqui é **de arranque, não a definitiva**: o utilizador leva a acção
+> obrigatória `UPDATE_PASSWORD`, e o Keycloak força a troca à primeira entrada. É deliberado — a
+> consola de administração é um sítio por onde uma password não deve ficar a valer.
+>
+> Isso só funciona porque existe um ecrã onde a apresentar. Ver **"Como o humano se autentica"**
+> abaixo: com o antigo *password grant* não havia, e a acção obrigatória tornava a conta
+> inutilizável em vez de segura.
+
 O valor tem de constar de `AOS_BOARD_REGIONS` no nó (hoje `board:prod=eu-west`). Um board que não
 resolva para região faz a leitura ser **negada fail-closed** — não é um aviso, é um 403.
 
@@ -61,7 +69,7 @@ antes desta correcção nunca a receberia. No script é idempotente e alcança o
 | Cliente | Tipo | Quem é | Onde vive |
 |---|---|---|---|
 | `aos-reader` | confidencial, *service account* | identidade de **máquina** — é a que está em uso | criado por `provision-identity.sh`; segredo em `secrets/reader-client-secret` (0400) |
-| `aos-node` | público, *password grant* | leitores **humanos**, cada um com o seu `board` | neste `realm-aos.json` |
+| `aos-node` | público, *código de autorização + PKCE S256* | leitores **humanos**, cada um com o seu `board` | neste `realm-aos.json` |
 
 Em ambos, o `board` vem do **atributo do utilizador**, nunca de um `oidc-hardcoded-claim-mapper`.
 A diferença não é cosmética: com o mapper fixo a fronteira de soberania passa a ser uma constante
@@ -73,18 +81,67 @@ diferentes. É o defeito do realm de dev, onde `board:demo` está cravado.
 > um leitor de outra região recebe `404` ao tentar ler um run residente em `eu-west`, com um
 > token igualmente válido. A variável era só a região.
 
-## Obter um token
+## Como o humano se autentica
 
-```bash
-curl -s --cacert deploy/server/secrets-local/internal-ca/ca.crt \
-  -X POST https://aos.elysiumii.site:9443/realms/aos/protocol/openid-connect/token \
-  -d grant_type=password -d client_id=aos-node \
-  -d username=<o-seu-utilizador> --data-urlencode "password=$PW" \
-  | python -c 'import sys,json; print(json.load(sys.stdin)["id_token"])'
+**Código de autorização + PKCE**, no browser. A password é escrita no ecrã de login do próprio
+Keycloak e mais lado nenhum:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 -Run <run-id>
 ```
+
+O script abre o browser, recebe o código num ouvinte em `http://127.0.0.1:47821/callback`,
+troca-o pelo token com o `code_verifier` que gerou, e faz a leitura. Sem `-Run` só mostra as
+claims e descarta o token.
 
 É o **`id_token`** que o nó quer, não o `access_token`. Apresenta-se como `Authorization: Bearer`
 nas leituras (`GET /runs/{id}`, trajectória, DSAR).
+
+### Porque não é o *password grant*
+
+Era. O `aos-node` tinha `directAccessGrantsEnabled` e a instrução era um `curl` com
+`grant_type=password`. Três defeitos, nenhum deles de estilo:
+
+1. **a password passava por onde não devia** — histórico da shell, `ps`, logs do processo;
+2. **o Keycloak não conseguia impor nada** — sem ecrã não há acção obrigatória (a troca da
+   password inicial) nem MFA. Uma conta com `UPDATE_PASSWORD` pendente simplesmente falhava o
+   ROPC com *"Account is not fully set up"*: a defesa tornava a conta inútil em vez de segura;
+3. **o ROPC está removido do OAuth 2.1** — não é uma preferência, é um beco.
+
+O cliente é **público** (não guarda segredo — um segredo numa aplicação que corre na máquina do
+utilizador não é segredo), com `redirect_uri` de loopback em porta fixa e **PKCE S256
+obrigatório**. Verificado com controlos, porque "o login apareceu" não prova configuração nenhuma:
+
+| Pedido | Resposta do IdP |
+|---|---|
+| `redirect_uri` registado, `S256` | `200`, ecrã de login |
+| `redirect_uri` não registado | `400` — recusado |
+| sem `code_challenge` | `302 error=invalid_request&…Missing+parameter%3A+code_challenge_method` |
+| `code_challenge_method=plain` | `302 …code+challenge+method+is+not+matching+the+configured+one` |
+
+A porta é **fixa** (`47821`) e não aleatória porque o Keycloak exige correspondência exacta do
+`redirect_uri` — a alternativa seria um curinga, que alarga o alvo sem necessidade.
+
+### O certificado do IdP, e porque o script o fixa
+
+O IdP é servido por um certificado da **CA interna**, ausente da loja do Windows. O script não
+desliga a validação — **fixa a âncora**: aceita `SslPolicyErrors.RemoteCertificateChainErrors` e
+mais nada, reconstruindo a cadeia com a nossa CA e exigindo que a raiz seja ela. Um nome errado
+continua a recusar, portanto um certificado que a mesma CA emitiu para *outro* serviço (o Vault,
+por exemplo) **não** passa neste endpoint.
+
+O passo da troca do código transporta uma credencial. Aceitar qualquer certificado aqui abriria
+exactamente a porta que o resto do sistema fecha.
+
+> O pino está em **C#** (`Add-Type`) e não num *scriptblock* por uma razão prática que custa a
+> diagnosticar: o .NET invoca o callback numa thread de I/O **sem runspace de PowerShell**. Um
+> scriptblock ali rebenta com `There is no Runspace available to run scripts in this thread`, e o
+> que chega ao utilizador é um genérico *"a ligação subjacente foi fechada"* — que se confunde
+> com um problema de rede.
+
+O browser vai avisar do certificado desconhecido. Instalar a CA interna na loja de raízes
+confiáveis da máquina resolve-o, mas é uma alteração de segurança do sistema e fica ao seu
+critério — o script não depende disso.
 
 O certificado do IdP é assinado pela **CA interna**, não por uma CA pública — daí o `--cacert`. A
 CA privada vive só na máquina do operador, em `secrets-local/internal-ca/` (git-ignored): quem a
