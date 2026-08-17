@@ -243,7 +243,7 @@ nenhuma. A acção mais consequente tem o registo mais fraco.
 
 ---
 
-## A4 · Uma falha em nó único deixa o run inalcançável até ao **segundo** arranque
+## A4 · Uma falha em nó único deixa o run inalcançável até ao **segundo** arranque ✅ RESOLVIDO (parcial)
 
 **Severidade: alta em topologia de nó único.** Comportamento correcto para multi-réplica cujo
 custo é pago inteiro por quem corre uma réplica só.
@@ -300,11 +300,39 @@ O NHI é selado na submissão mas **consumido a cada turno**. Se `crash + TTL do
 reacção humana` exceder o TTL do NHI (aqui 30 min), o run retoma para morrer na identidade. A
 retoma preserva o trabalho e não preserva a credencial que o autoriza.
 
-### O que fecharia
+### ✅ RESOLVIDO (a primeira parte)
 
-Uma re-varredura periódica (ou disparada pela expiração do lease) em vez de só ao arranque; e, para
-o segundo efeito, uma decisão explícita sobre o que autoriza um turno **reproduzido** — hoje exige
-uma credencial viva para trabalho que já foi autorizado antes do crash.
+A varredura passa a **re-correr periodicamente** — `AOS_CRASH_RESUME_INTERVAL`, por omissão o TTL
+do lease. Um órfão é apanhado dentro de ~2 TTL do crash: o primeiro ciclo ainda encontra o lease
+vivo, o seguinte já o encontra expirado. Sem segundo arranque manual.
+
+**A correcção que NÃO se fez, e é a parte que importa.** A tentação era reconhecer que o lease é da
+encarnação anterior do *mesmo* processo e reclamá-lo de imediato. Seria errado: se o processo
+antigo ainda estivesse vivo — um restart que não matou o anterior, um relógio a andar para trás —
+reclamar produz **dupla execução**, exactamente o que o lease existe para impedir. A re-varredura
+não enfraquece invariante nenhum: respeita o lease e limita-se a voltar a tentar depois de ele
+expirar. O próprio varredor já se declarava *"idempotente e seguro de re-correr"*, e é esse
+contrato que a peça usa.
+
+Detalhes que a tornam operável: silenciosa quando não há órfãos (senão o banner completo a cada
+ciclo afogaria no ruído o sinal que ela existe para dar); `0` desliga com opt-out **declarado no
+banner**; valor ilegível **aborta** o arranque.
+
+O teste é comportamental e não de instrumentação: constrói um órfão real e arranca **só** o
+varredor periódico — nunca chama a varredura de arranque. Verifica também que o efeito já aplicado
+**não** é re-executado, porque uma retoma que duplicasse efeitos seria pior do que o defeito.
+
+### ⚠️ Continua aberto: a credencial do turno reproduzido
+
+O segundo efeito **não** é fechado por isto. O NHI é selado na submissão mas consumido a cada
+turno: se `crash + TTL do lease + tempo de reacção` exceder o TTL do NHI, o run retoma para morrer
+em `E_TOKEN_EXPIRED`.
+
+E há aqui uma assimetria que a ronda seguinte tornou precisa: a via **humana** de retoma
+(`POST /resume`) **já** exige re-autenticação explícita — *"a original não é persistida"*. Quem não
+a exige é a varredura automática, que retoma com o que estava selado. São duas vias com semânticas
+de credencial diferentes, e só uma foi pensada para este problema. Decidir o que autoriza um turno
+**reproduzido** — já autorizado antes do crash — é decisão de arquitectura, não correcção.
 
 ---
 

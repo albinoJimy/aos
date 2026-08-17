@@ -64,11 +64,22 @@ import (
 // [APIServer.Serve]). É idempotente e seguro de re-correr: um run já re-hospedado por esta réplica
 // devolve [ErrRunAlreadyInProgress] e é saltado.
 func (s *NodeService) ResumeInterruptedRuns(ctx context.Context) (scanned, resumed int, err error) {
+	return s.resumeInterruptedRuns(ctx, true)
+}
+
+// resumeInterruptedRuns é o varredor. `anuncia` distingue a passagem de ARRANQUE — que declara
+// sempre a postura, ligada ou desligada, porque postura anunciada = postura ligada — da
+// RE-VARREDURA periódica de [StartOrphanSweeper], que só fala quando encontrou alguma coisa. Sem
+// essa distinção, a re-varredura escreveria o banner completo a cada ciclo e afogaria no ruído
+// exactamente o sinal que ela existe para dar.
+func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (scanned, resumed int, err error) {
 	// SUBSTRATO MÍNIMO para distinguir órfão de terminado (AOS-252) e para o reconstituir
 	// (AOS-021). Sem qualquer uma destas peças a varredura não teria como decidir com verdade —
 	// e decidir sem verdade seria retomar às cegas. Declara-se DESLIGADA em vez de calar.
 	if s.node == nil || s.node.EventStore == nil || s.node.stateGates == nil || s.node.ResumeRecords == nil {
-		s.log("%s", crashResumeDisabledBanner())
+		if anuncia {
+			s.log("%s", crashResumeDisabledBanner())
+		}
 		return 0, 0, nil
 	}
 	// O [durable.Resumer] — a peça de AOS-015 que nunca fora composta. O default de step-identity
@@ -149,7 +160,10 @@ func (s *NodeService) ResumeInterruptedRuns(ctx context.Context) (scanned, resum
 		}
 	}
 
-	s.log("%s", crashResumeBanner(len(streams), scanned, resumed, heldElsewhere, failed))
+	// A re-varredura periódica só declara quando há o que declarar. O arranque declara sempre.
+	if anuncia || scanned > 0 {
+		s.log("%s", crashResumeBanner(len(streams), scanned, resumed, heldElsewhere, failed))
+	}
 	return scanned, resumed, nil
 }
 
