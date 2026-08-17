@@ -164,6 +164,28 @@ Store; a resposta a uma pergunta de orçamento não interrompe nada e fica na ca
 
 Uma **leitura** de run também fica na cadeia (`gov.read`).
 
+### E o caso mais consequente: a aprovação *four-eyes*
+
+Uma cerimónia de duplo controlo que liberta um efeito escalado deixa na cadeia **dois** registos
+encadeados — a escalada e a libertação:
+
+```json
+seq 1  {"Decision":"escalate","Code":"E_ESCALATED","DeniedBy":"policy",
+        "Reason":"autonomia L0 x danger -> suggest (gate humano)"}
+seq 2  {"Decision":"allow","Obligations":[…,{"Type":"autonomy","Params":{
+          "human_gate":"satisfied","requires_human":"true","risk_class":"danger"}}]}
+```
+
+Fica selado que **um** gate humano foi satisfeito. **Não fica selado QUEM o satisfez.** Em todo o
+`worm.wal`: `human:bob` → 0 ocorrências, `grant` → 0, o `request_id` da cerimónia → 0.
+
+> ⚠️ **Armadilha de verificação.** `human:alice` aparece 2 vezes, mas é a **cadeia de delegação do
+> agente** (`Sub: human:alice, ActAs: agt-4e-01`) — não o aprovador. Quem procurasse por `alice`
+> concluiria que os aprovadores ficam registados. O segundo aprovador (`human:bob`), que não
+> participa em nenhuma cadeia de delegação, é o teste limpo — e dá zero.
+
+Para uma autorização cujo propósito **é** o não-repúdio de quem autorizou, é a peça que falta.
+
 ### Nuance que atenua
 
 O evento carrega o `emitter_id` **e a assinatura ed25519 completa**, pelo que o registo é
@@ -277,6 +299,18 @@ uma credencial viva para trabalho que já foi autorizado antes do crash.
 - **Crypto-shred real**: `/dsar/erase` destrói a KEK no Vault e o run fica `reconstrucao
   indisponivel`. Controlo: run de outro titular reconstrói intacto. A cadeia sobrevive — 55
   partições re-encadeadas no arranque seguinte.
+- **O *four-eyes* exige mesmo duas pernas — e o controlo é a perna única.** Com
+  `AOS_AUTONOMY_LEVELS=agt-4e-01:fs=L0` (L0 = tudo escala), a tool call escala e o run para em
+  `waiting_on_human` com `pending_approvals` e um `preview` (digest do efeito — *what you see is
+  what you sign*). Depois: **uma** perna assinada por `human:alice` → **`403`**; as **duas**
+  (alice + bob, cada uma sobre o seu *challenge* fresco) → `200` com
+  `{"approvers":["human:alice","human:bob"],"status":"authorized"}` e `expires_at`. O `resume`
+  com credencial fresca devolve `202` e o run **completa**. Sem a recusa da perna única, o `200`
+  provaria só que assinaturas verificam — não que dois aprovadores **distintos** são exigidos.
+- **A emissão de *challenges* está DORMENTE neste nó.** `POST /runs/{id}/challenge` devolve
+  `501`: *"frescura por-cerimónia dormente; defina `AOS_CHALLENGE_ISSUANCE=1`"*. A cerimónia
+  acima só foi possível ligando a flag num nó descartável. Em produção, o anti-replay
+  por-cerimónia da aprovação **não está armado**.
 - **O *legal hold* bloqueia mesmo o apagamento — e o controlo é a contagem de chaves.** Sobre um
   titular descartável com KEK própria: `hold` → `{"status":"held"}`; `erase` →
   `{"status":"blocked","blocked":true}` **e a KEK sobrevive** (2 chaves no Vault); `release` →
@@ -327,7 +361,8 @@ disso não é teórico.
 
 ## O que NÃO foi testado
 
-**Por testar:** o *four-eyes* de aprovação.
+**Por testar:** nada — a lista, que começou com nove entradas, está fechada. Fica um único
+resultado inconclusivo, abaixo.
 
 **Testado e INCONCLUSIVO — o disjuntor por wall-clock.** Um nó descartável com
 `AOS_BREAKER_MAX_WALL_CLOCK=3s` recebeu um run que costuma levar 20–40 s. Resultado:
