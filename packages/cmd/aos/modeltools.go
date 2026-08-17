@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -93,8 +94,92 @@ func readModelToolSpecs() ([]modelToolSpec, error) {
 		if strings.TrimSpace(s.Name) == "" || strings.TrimSpace(s.Capability) == "" {
 			return nil, fmt.Errorf("%w: tool #%d sem name/capability", ErrBadModelTools, i)
 		}
+		if err := validateResourceBinding(s); err != nil {
+			return nil, fmt.Errorf("%w: tool %q: %v", ErrBadModelTools, strings.TrimSpace(s.Name), err)
+		}
 	}
 	return specs, nil
+}
+
+// resourceSlots extrai os nomes dos slots `{arg}` de um resource_value. Devolve erro quando a
+// sintaxe é ambígua — uma chaveta por fechar ou um slot vazio deixariam o operador a julgar que
+// declarou um template quando declarou uma constante com chavetas.
+func resourceSlots(value string) ([]string, error) {
+	var slots []string
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '}':
+			return nil, fmt.Errorf("resource_value com '}' sem '{' correspondente")
+		case '{':
+			fim := strings.IndexByte(value[i:], '}')
+			if fim < 0 {
+				return nil, fmt.Errorf("resource_value com '{' sem fecho")
+			}
+			nome := value[i+1 : i+fim]
+			if strings.TrimSpace(nome) == "" || strings.ContainsAny(nome, "{") {
+				return nil, fmt.Errorf("slot vazio ou mal formado em resource_value")
+			}
+			slots = append(slots, nome)
+			i += fim
+		}
+	}
+	return slots, nil
+}
+
+// validateResourceBinding impõe, no ARRANQUE, que o recurso auditado corresponda ao recurso
+// EFECTIVAMENTE tocado.
+//
+// O PROBLEMA QUE FECHA. `resource_value` era sempre uma constante do registry, enquanto o efeito
+// usava o argumento que o MODELO escolheu (`sandbox.path_arg` e companhia). O PDP decidia — e o
+// WORM selava — sobre um valor fixo enquanto a execução tocava outro. Com dois documentos na raiz
+// semeada, o modelo lia o segundo e o trilho à prova de adulteração continuava a nomear o
+// primeiro: uma afirmação FALSA num registo cuja razão de existir é ser fiel.
+//
+// PORQUE É FAIL-CLOSED E NÃO OPT-IN. Se o template fosse apenas uma opção, uma configuração
+// não migrada continuaria a mentir EM SILÊNCIO — e em silêncio é exactamente como este defeito
+// sobreviveu. Uma tool cujo efeito é parametrizado pelo modelo TEM de declarar um recurso
+// parametrizado; caso contrário o nó recusa arrancar. Quem declara, obtém-no coerente, ou não
+// arranca.
+//
+// O que NÃO muda: capability, resource_type e resource_region continuam CONSTANTES do registry
+// trusted, e o taint continua `untrusted` (AOS-069). O modelo passa a influenciar apenas QUAL
+// instância do recurso é nomeada — que é precisamente o que ele já controlava no efeito.
+func validateResourceBinding(s modelToolSpec) error {
+	slots, err := resourceSlots(s.ResourceValue)
+	if err != nil {
+		return err
+	}
+	// Efeito parametrizado = o modelo escolhe o que é tocado, por qualquer um dos slots do
+	// mapeamento de sandbox.
+	var parametrizado []string
+	if s.Sandbox != nil {
+		if a := strings.TrimSpace(s.Sandbox.PathArg); a != "" {
+			parametrizado = append(parametrizado, a)
+		}
+		if a := strings.TrimSpace(s.Sandbox.WriteArg); a != "" {
+			parametrizado = append(parametrizado, a)
+		}
+		for _, a := range s.Sandbox.ArgsFrom {
+			if a = strings.TrimSpace(a); a != "" {
+				parametrizado = append(parametrizado, a)
+			}
+		}
+	}
+	// Um resource_value VAZIO é isentado, e a distinção é deliberada: o defeito que esta
+	// validação fecha é o trilho AFIRMAR um recurso que não foi o tocado. Um valor vazio não
+	// afirma nada — é ausência, visível a quem lê o selo, e não misatribuição. Isentá-lo não é
+	// um bypass útil: quem o usasse ficaria sem recurso nenhum na decisão e na auditoria, que é
+	// pior para si e não lhe permite reclamar um recurso falso. (Que uma tool mediada deva
+	// SEMPRE nomear o seu recurso é uma exigência mais forte, e separada desta.)
+	if strings.TrimSpace(s.ResourceValue) != "" && len(parametrizado) > 0 && len(slots) == 0 {
+		return fmt.Errorf(
+			"o efeito e PARAMETRIZADO pelo modelo (sandbox: %s) mas resource_value=%q e uma CONSTANTE — "+
+				"a decisao do PDP e o selo do WORM nomeariam um recurso diferente do que a execucao toca. "+
+				"Use um slot, ex.: %q",
+			strings.Join(parametrizado, ", "), s.ResourceValue,
+			s.ResourceValue+"{"+parametrizado[0]+"}")
+	}
+	return nil
 }
 
 // toolBinding é o mapeamento trusted nome-da-tool → (capability, recurso) aplicado à ToolInvocation
@@ -161,11 +246,73 @@ func (c *toolEnrichingClient) Call(ctx context.Context, view agentruntime.Prompt
 		if !ok {
 			continue // desconhecida do registry ⇒ Capability vazia ⇒ RM nega fail-closed.
 		}
+		// RECURSO EFECTIVO: os slots `{arg}` do registry são preenchidos com os argumentos que o
+		// modelo emitiu, para que o PDP decida — e o WORM sele — sobre o que a execução vai mesmo
+		// tocar. Sem slots, o valor é a constante de sempre (retro-compat exacta).
+		valor, err := resolveResourceValue(b.resourceValue, resp.ToolCalls[i].Input)
+		if err != nil {
+			// NÃO se degrada para a constante: isso reporia a mentira que este caminho existe
+			// para fechar. Capability vazia ⇒ default-deny no RM, o mesmo lugar onde uma tool
+			// fora do registry já para.
+			resp.ToolCalls[i].Capability = ""
+			resp.ToolCalls[i].ResourceType = b.resourceType
+			resp.ToolCalls[i].ResourceRegion = b.resourceRegion
+			continue
+		}
 		resp.ToolCalls[i].Capability = b.capability
 		resp.ToolCalls[i].ResourceType = b.resourceType
-		resp.ToolCalls[i].ResourceValue = b.resourceValue
+		resp.ToolCalls[i].ResourceValue = valor
 		resp.ToolCalls[i].ResourceRegion = b.resourceRegion
 		// AuthorizationTaint: DELIBERADAMENTE não preenchido (vazio ⇒ untrusted). Ver AOS-069.
 	}
 	return resp, nil
+}
+
+// resolveResourceValue preenche os slots `{arg}` do resource_value com os argumentos da tool call.
+//
+// Sem slots devolve o valor tal e qual — as configurações que não parametrizam o efeito não mudam
+// de comportamento.
+//
+// FAIL-CLOSED em tudo o resto: args ilegíveis, slot ausente, ou valor não-escalar ⇒ erro, e o
+// chamador NEGA. Um slot por resolver nunca vira string vazia nem cai na constante: qualquer uma
+// dessas saídas produziria de novo um recurso auditado diferente do recurso tocado.
+//
+// O valor substituído vem do modelo e NÃO é sanitizado — de propósito. Sanitizá-lo faria o selo
+// divergir outra vez do efeito; o que o trilho tem de registar é o que vai ser tentado. A
+// fronteira que impede o alcance indevido é o sandbox, não a cosmética da string.
+func resolveResourceValue(template string, input []byte) (string, error) {
+	slots, err := resourceSlots(template)
+	if err != nil {
+		return "", err
+	}
+	if len(slots) == 0 {
+		return template, nil
+	}
+	var args map[string]any
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", fmt.Errorf("argumentos da tool call ilegiveis: %v", err)
+	}
+	out := template
+	for _, nome := range slots {
+		bruto, presente := args[nome]
+		if !presente {
+			return "", fmt.Errorf("resource_value refere o slot %q e a tool call nao o traz", nome)
+		}
+		var texto string
+		switch v := bruto.(type) {
+		case string:
+			texto = v
+		case float64:
+			texto = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			texto = strconv.FormatBool(v)
+		default:
+			return "", fmt.Errorf("slot %q nao e escalar (%T): nao ha forma canonica de o nomear", nome, bruto)
+		}
+		if texto == "" {
+			return "", fmt.Errorf("slot %q veio vazio", nome)
+		}
+		out = strings.ReplaceAll(out, "{"+nome+"}", texto)
+	}
+	return out, nil
 }

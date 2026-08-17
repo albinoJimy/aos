@@ -11,7 +11,7 @@
     },
     "capability": "cap:fs.read",
     "resource_type": "file",
-    "resource_value": "doc://notes",
+    "resource_value": "doc://{doc_id}",
     "resource_region": "eu",
     "egress": "none",
     "sandbox": { "command": "read", "path_arg": "doc_id" }
