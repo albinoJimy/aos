@@ -54,6 +54,13 @@ services:
       AOS_OPERATORS: "${AOS_OPERATORS:?}"
       AOS_RATIFIERS: "${AOS_RATIFIERS:?}"
       AOS_APPROVERS_FILE: "/etc/aos/approvers.json"
+      # FRESCURA POR-CERIMÓNIA da aprovação four-eyes (AOS-266). Vazio ⇒ DORMENTE, e o banner
+      # de arranque diz o que isso custa: o anti-replay fica só pelo uso-único durável (dedup),
+      # pelo que **quem detenha a chave de um aprovador pode reapresentar uma prova capturada
+      # num pedido novo**. Com `1`, cada perna exige um challenge EMITIDO pelo servidor e
+      # atribuído àquele aprovador — a prova deixa de ser reutilizável fora da cerimónia para
+      # que foi pedida. Exige aprovadores compostos (sem eles o endpoint nem existe).
+      AOS_CHALLENGE_ISSUANCE: "${AOS_CHALLENGE_ISSUANCE:-}"
       AOS_AUTHORITY_FILE: "/etc/aos/authority.json"
 
       # PDP: bundle Cedar ASSINADO + trust anchor FORÇADO out-of-band (hex).
