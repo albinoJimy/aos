@@ -157,6 +157,71 @@ nenhuma. A acção mais consequente tem o registo mais fraco.
 
 ---
 
+## A4 · Uma falha em nó único deixa o run inalcançável até ao **segundo** arranque
+
+**Severidade: alta em topologia de nó único.** Comportamento correcto para multi-réplica cujo
+custo é pago inteiro por quem corre uma réplica só.
+
+### Observação
+
+Submeteu-se um run, esperou-se que estivesse `in_progress`, e matou-se o nó (`docker restart -t 0`).
+
+**Primeiro arranque** — a varredura encontra o run e **salta-o**:
+
+```
+crash-resume: run "run-crash-…" em `running` mas com LEASE VIVO noutra replica
+              — saltado (sem roubo de particao)
+```
+
+Não há outra réplica. O lease era da **encarnação anterior do mesmo processo**, com TTL de 2m0s
+por expirar. Durante essa janela, e depois dela:
+
+```
+GET /runs/{id}  →  {"error":"not found"}     (durante ~2 minutos de observação)
+```
+
+Mas o run **existe**: 12 registos no `events.wal`, 4 partições no `worm.wal`, um `turn.recorded`,
+um `sandbox.exec.completed`, seis `step.checkpoint` e um `step.ledger.applied`. A última transição
+é `ready → running`, sem estado terminal. **Trabalho real feito, durável, e inalcançável pela API.**
+
+**Segundo arranque**, já com o lease expirado:
+
+```
+crash-resume: run "run-crash-…" RETOMADO pela varredura de arranque
+              — cursor: proximo_turno=2  fromScratch=false
+```
+
+O `fromScratch=false` com `proximo_turno=2` prova o *replay-then-continue* de AOS-021: o turno 1
+capturado foi reproduzido e a execução continuou do 2, sem repetir trabalho. **O mecanismo de
+retoma funciona.**
+
+### O que falha, então
+
+A varredura é **só de arranque**. Nada a repete quando o lease expira. Em multi-réplica isso é
+irrelevante — outra réplica reclama o lease e retoma. Em nó único, ninguém o faz: o run fica
+órfão, em `running`, e a API responde `404` — indistinguível de "nunca existiu" — até alguém
+reiniciar **outra vez**.
+
+### E um segundo efeito, encadeado
+
+O run retomado morreu ao turno 2:
+
+```
+estagio auth-principal recusou: E_TOKEN_EXPIRED
+```
+
+O NHI é selado na submissão mas **consumido a cada turno**. Se `crash + TTL do lease + tempo de
+reacção humana` exceder o TTL do NHI (aqui 30 min), o run retoma para morrer na identidade. A
+retoma preserva o trabalho e não preserva a credencial que o autoriza.
+
+### O que fecharia
+
+Uma re-varredura periódica (ou disparada pela expiração do lease) em vez de só ao arranque; e, para
+o segundo efeito, uma decisão explícita sobre o que autoriza um turno **reproduzido** — hoje exige
+uma credencial viva para trabalho que já foi autorizado antes do crash.
+
+---
+
 ## Observações secundárias
 
 | # | Observação | Evidência |
@@ -169,6 +234,8 @@ nenhuma. A acção mais consequente tem o registo mais fraco.
 | O6 | **O orçamento nunca engata.** 1 749 tokens contra tecto de 200 000 (0,87%); o aviso aos 80% exigiria ~180 turnos. Protecção por exercitar. | `input_tokens`/`output_tokens` dos `turn.recorded` |
 | O7 | **`policy_ref` é um nome, não um hash.** Um token continua a apontar para `policy://agent-worker` depois de essa classe mudar de conteúdo. | payload do NHI |
 | O8 | **O plano de controlo não está atrás da credencial soberana.** O `pause` foi aceite sem `Authorization`. Defensável — a autoridade é *sobre* o nó — mas a fronteira de região não se aplica ao controlo. | `handlePause`: só `admitControl` + `admitControlMTLS` |
+| O10 | **`MaxTurns` corta com razão própria.** `max_turns: 1` num objectivo que costuma levar 2–3 turnos: `"error":"agentruntime: MaxTurns excedido sem resposta final","turns":1`. O estado é `completed` com erro, **não `failed`** — coerente com a postura de que um tecto atingido não é falha recuperável por compensação. | run com `max_turns: 1` |
+| O9 | **A admissão actua ANTES da autenticação, e o balde é global.** 500 pedidos sem credencial nenhuma: 442 `403` + **58 `429`**. Os 58 foram rejeitados pela admissão sem chegarem à verificação de credencial — logo um chamador anónimo consome orçamento de admissão de todos. É *tradeoff* declarado (o banner nomeia o balde como global e por-processo) e a ordem é defensável — rejeitar barato protege a maquinaria de authn de carga. O que a torna consequente aqui é a conjunção: porta pública, sem firewall no host, balde global, e `429` sem `Retry-After`. | 500 POST /runs sem `Authorization` |
 
 ---
 
@@ -193,16 +260,35 @@ nenhuma. A acção mais consequente tem o registo mais fraco.
 - **Crypto-shred real**: `/dsar/erase` destrói a KEK no Vault e o run fica `reconstrucao
   indisponivel`. Controlo: run de outro titular reconstrói intacto. A cadeia sobrevive — 55
   partições re-encadeadas no arranque seguinte.
+- **A allowlist regional nega ANTES do egress.** Um nó descartável com
+  `AOS_MODEL_NAME=claude-3-opus` (fora da allowlist assinada) recusa no estágio
+  `allowlist-regional` com *default-deny*, e o LiteLLM regista **zero** ocorrências desse nome.
+  É o zero no gateway que torna a prova não-vacuosa: sem ele, a recusa podia ter acontecido
+  *depois* de a chamada sair. Nota lateral: o nó **arranca** com um nome não-allowlisted — a
+  verificação é por-chamada, não no boot.
 - **O taint é registado mesmo quando permite** (`untrusted` + `allow`), **o WAL guarda
   `prompt_hash` e não o prompt**, **o sandbox é criado e destruído por chamada**, e o
   **`run.toolset.frozen`** fixa o catálogo no arranque do run.
+- **Recusas atribuíveis no estágio de identidade.** Um NHI expirado é recusado com
+  `E_TOKEN_EXPIRED: token expirado ou sem exp` — nomeado, não genérico.
+
+## Uma nota sobre a armadilha do `jti`, por experiência própria
+
+A primeira tentativa do teste da allowlist reutilizou **o mesmo token** para submeter e para ler.
+O anti-replay devolveu o `404` uniforme, o run pareceu não existir, e o teste ficou sem resposta —
+sem qualquer indicação da causa.
+
+Registo-o porque aconteceu a quem tinha documentado a armadilha duas secções acima. Um `404` que
+significa *"reutilizaste o token"* é indistinguível de *"o run não existe"* por desenho, e o custo
+disso não é teórico.
 
 ## O que NÃO foi testado
 
 Nomeado para que a ausência não passe por cobertura: `steer` e `resume` (só `pause`), o *four-eyes*
-de aprovação, o disjuntor e `MaxTurns`, o rate-limit de ingresso (`429`), o *legal hold*, o stream
-SSE de trajectória, a negação da allowlist do gateway de modelo, e a retoma após restart do
-processo.
+de aprovação, o disjuntor por wall-clock, o *legal hold*, e o stream SSE de trajectória.
+
+*(O rate-limit, a allowlist do gateway, o `MaxTurns` e a retoma após crash constavam desta lista e
+passaram a estar cobertos — ver O9, O10 e §A4.)*
 
 ## Higiene
 
