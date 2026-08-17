@@ -481,7 +481,7 @@ decidir `continue` → depois `resume`.
 Em ambos os casos o `resume` exige uma **credencial NHI fresca** — *"a original não é
 persistida"*. É deliberado: re-autentica-se para retomar.
 
-> ⚠️ **A emissão de challenges está DORMENTE neste nó.** `POST /runs/{id}/challenge` devolve
+> ✅ **A emissão de challenges está LIGADA** (`AOS_CHALLENGE_ISSUANCE=1`): `POST /runs/{id}/challenge` devolve um challenge por `(pedido, aprovador)` com TTL de 5 min, e cada perna passa a exigi-lo. Antes devolvia
 > `501` — *"frescura por-cerimónia dormente; defina `AOS_CHALLENGE_ISSUANCE=1`"*. Sem ela, o
 > anti-replay **por-cerimónia** da aprovação não está armado (o anti-replay por-nonce dos sinais
 > de operador **está**, e é outro mecanismo). Ligar exige decidir que o operador consegue pedir
@@ -669,11 +669,27 @@ Ficheiros no mesmo disco protegem contra apagamento do volume, corrupção da ap
 mau. **Não** protegem contra perda do host nem falha de disco — e essa é a razão de existirem
 cifrados: para poderem sair daqui.
 
-```bash
-# recolher para a máquina do operador (o único passo que cobre a perda do host)
-scp -i deploy/server/secrets-local/deploy_key \
-  aos@37.60.241.150:/opt/aos/backups/aos-*.tar.gz.enc ./backups/
+A recolha para fora **está automatizada** na máquina do operador — é o único passo que cobre a
+perda do host:
+
+```powershell
+# tarefa AOS-RecolherBackups: 04:30 diário, StartWhenAvailable
+powershell -ExecutionPolicy Bypass -File deploy\server\pull-backups.ps1   # à mão, quando precisar
+Get-ScheduledTaskInfo -TaskName AOS-RecolherBackups                       # última/próxima execução
 ```
+
+Destino `%USERPROFILE%\aos-backups`, rotação local de 30 (independente das 14 do servidor, porque
+esta é a única que sobrevive à perda da máquina remota). `StartWhenAvailable` faz uma execução
+perdida ser recuperada no arranque seguinte em vez de ser saltada.
+
+> ⚠️ **O que isto ainda não cobre:** se a máquina do operador ficar dias desligada, a cópia
+> envelhece e **ninguém avisa** — não há alerta de recência. Um destino sempre ligado (bucket
+> S3-compatível ou outro host) removeria a dependência; ficou por decidir.
+
+> 🔐 As chaves em `secrets-local/` estavam legíveis por `BUILTIN\Utilizadores` e **modificáveis**
+> por `Utilizadores Autenticados` — o OpenSSH do Windows recusou a `deploy_key` por isso, e foi
+> assim que apareceu. Todo o directório passou a ACE único do dono. Vale a pena reter: é onde
+> vivem a `issuer.key`, as seeds de operador e aprovadores, a CA interna e a chave dos backups.
 
 ### Restaurar
 
@@ -747,11 +763,14 @@ Nomeado, não escondido:
    latência de mediação acima dos alvos de `tecnica/10`. Os serviços acrescentados para o modo
    produção têm `cpus:` declarado; os mais antigos deste ficheiro **não têm** — dívida conhecida,
    e a razão pela qual o arranque da JVM do Keycloak leva 1–2 minutos aqui.
-6. **Os backups não saem do host sozinhos.** Existem, são cifrados e o ciclo de restauro está
-   exercitado (ver §Backup) — mas vivem no **mesmo disco**. Isso cobre apagamento do volume,
-   corrupção e um deploy mau; **não** cobre perda da máquina nem falha de disco. A recolha para
-   fora é um comando manual, e enquanto for manual não é uma garantia. Automatizá-la exige um
-   destino que ninguém escolheu ainda.
+6. **A cópia off-host depende de a máquina do operador estar ligada.** Já não é manual: a tarefa
+   `AOS-RecolherBackups` (Windows, 04:30 diário, `StartWhenAvailable`) puxa os `.enc` do servidor
+   para `%USERPROFILE%\aos-backups` via [`pull-backups.ps1`](pull-backups.ps1), com rotação
+   própria de 30 cópias. `StartWhenAvailable` recupera uma execução perdida no arranque seguinte
+   em vez de a saltar em silêncio. Verificado ponta-a-ponta: recolhida, **decifrada** com a
+   privada local, e a chave Transit confirmada lá dentro. **O residual que fica:** se a máquina
+   ficar dias desligada, a cópia envelhece e **ninguém avisa** — não há alerta de recência. Um
+   destino sempre ligado (bucket S3-compatível ou outro host) removeria essa dependência.
 7. **Soberania por-leitor ainda não é real.** O read-path exige credencial verificada e a recusa
    cross-region **está provada**, mas em uso está uma identidade de **máquina** partilhada
    (`aos-reader`). O mecanismo funciona; falta-lhe exercício — enquanto não houver leitores
@@ -770,11 +789,12 @@ Nomeado, não escondido:
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
    tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de
    fonte de preço, em vez de comparar sempre contra zero.
-11. **A frescura por-cerimónia da aprovação está dormente.** `AOS_CHALLENGE_ISSUANCE` por definir
-   ⇒ `POST /runs/{id}/challenge` devolve `501`. O *four-eyes* continua a exigir duas assinaturas
-   válidas de aprovadores distintos, mas **sem challenge fresco por cerimónia** — o anti-replay
-   por-nonce dos sinais de operador é outro mecanismo e esse está armado. Ver §"Operar o plano de
-   controlo".
+11. ~~A frescura por-cerimónia da aprovação está dormente.~~ **✅ LIGADA.** `AOS_CHALLENGE_ISSUANCE=1`
+   ⇒ `POST /runs/{id}/challenge` emite um challenge por `(pedido, aprovador)` com TTL de 5 min, e
+   cada perna da cerimónia passa a exigi-lo. Dormente, o anti-replay ficava só pelo uso-único
+   durável, e o banner dizia o que isso custava: **quem detivesse a chave de um aprovador podia
+   reapresentar uma prova capturada num pedido novo**. Verificado em produção — o endpoint passou
+   de `501` a `200` com challenges distintos por aprovador. Ver §"Operar o plano de controlo".
 12. **O orçamento está configurado onde nunca morde.** `AOS_BUDGET_MAX_TOKENS=200000` contra um
    consumo medido de ~1 750 tokens por run: o tecto e o aviso aos 80% ficam ~114× acima do uso
    real. O mecanismo **funciona** — verificado forçando-o a 400 tokens, com suspensão em
