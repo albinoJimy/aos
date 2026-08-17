@@ -669,11 +669,27 @@ Ficheiros no mesmo disco protegem contra apagamento do volume, corrupção da ap
 mau. **Não** protegem contra perda do host nem falha de disco — e essa é a razão de existirem
 cifrados: para poderem sair daqui.
 
-```bash
-# recolher para a máquina do operador (o único passo que cobre a perda do host)
-scp -i deploy/server/secrets-local/deploy_key \
-  aos@37.60.241.150:/opt/aos/backups/aos-*.tar.gz.enc ./backups/
+A recolha para fora **está automatizada** na máquina do operador — é o único passo que cobre a
+perda do host:
+
+```powershell
+# tarefa AOS-RecolherBackups: 04:30 diário, StartWhenAvailable
+powershell -ExecutionPolicy Bypass -File deploy\server\pull-backups.ps1   # à mão, quando precisar
+Get-ScheduledTaskInfo -TaskName AOS-RecolherBackups                       # última/próxima execução
 ```
+
+Destino `%USERPROFILE%\aos-backups`, rotação local de 30 (independente das 14 do servidor, porque
+esta é a única que sobrevive à perda da máquina remota). `StartWhenAvailable` faz uma execução
+perdida ser recuperada no arranque seguinte em vez de ser saltada.
+
+> ⚠️ **O que isto ainda não cobre:** se a máquina do operador ficar dias desligada, a cópia
+> envelhece e **ninguém avisa** — não há alerta de recência. Um destino sempre ligado (bucket
+> S3-compatível ou outro host) removeria a dependência; ficou por decidir.
+
+> 🔐 As chaves em `secrets-local/` estavam legíveis por `BUILTIN\Utilizadores` e **modificáveis**
+> por `Utilizadores Autenticados` — o OpenSSH do Windows recusou a `deploy_key` por isso, e foi
+> assim que apareceu. Todo o directório passou a ACE único do dono. Vale a pena reter: é onde
+> vivem a `issuer.key`, as seeds de operador e aprovadores, a CA interna e a chave dos backups.
 
 ### Restaurar
 
@@ -747,11 +763,14 @@ Nomeado, não escondido:
    latência de mediação acima dos alvos de `tecnica/10`. Os serviços acrescentados para o modo
    produção têm `cpus:` declarado; os mais antigos deste ficheiro **não têm** — dívida conhecida,
    e a razão pela qual o arranque da JVM do Keycloak leva 1–2 minutos aqui.
-6. **Os backups não saem do host sozinhos.** Existem, são cifrados e o ciclo de restauro está
-   exercitado (ver §Backup) — mas vivem no **mesmo disco**. Isso cobre apagamento do volume,
-   corrupção e um deploy mau; **não** cobre perda da máquina nem falha de disco. A recolha para
-   fora é um comando manual, e enquanto for manual não é uma garantia. Automatizá-la exige um
-   destino que ninguém escolheu ainda.
+6. **A cópia off-host depende de a máquina do operador estar ligada.** Já não é manual: a tarefa
+   `AOS-RecolherBackups` (Windows, 04:30 diário, `StartWhenAvailable`) puxa os `.enc` do servidor
+   para `%USERPROFILE%\aos-backups` via [`pull-backups.ps1`](pull-backups.ps1), com rotação
+   própria de 30 cópias. `StartWhenAvailable` recupera uma execução perdida no arranque seguinte
+   em vez de a saltar em silêncio. Verificado ponta-a-ponta: recolhida, **decifrada** com a
+   privada local, e a chave Transit confirmada lá dentro. **O residual que fica:** se a máquina
+   ficar dias desligada, a cópia envelhece e **ninguém avisa** — não há alerta de recência. Um
+   destino sempre ligado (bucket S3-compatível ou outro host) removeria essa dependência.
 7. **Soberania por-leitor ainda não é real.** O read-path exige credencial verificada e a recusa
    cross-region **está provada**, mas em uso está uma identidade de **máquina** partilhada
    (`aos-reader`). O mecanismo funciona; falta-lhe exercício — enquanto não houver leitores
