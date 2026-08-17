@@ -76,10 +76,14 @@ A diferença não é cosmética: com o mapper fixo a fronteira de soberania pass
 na configuração do *cliente*, e duas identidades do mesmo cliente nunca poderiam ter boards
 diferentes. É o defeito do realm de dev, onde `board:demo` está cravado.
 
-> ⚠️ Enquanto só houver `aos-reader`, a soberania **por-leitor** está armada e **não exercida** —
-> uma identidade de máquina partilhada tem uma fronteira só. O mecanismo em si está verificado:
-> um leitor de outra região recebe `404` ao tentar ler um run residente em `eu-west`, com um
-> token igualmente válido. A variável era só a região.
+> ✅ A soberania **por-leitor** deixou de estar só armada. O WORM tem, na partição
+> `gov.read/<run>` e na **mesma cadeia de hash**, leituras do service account
+> (`91a30a69-…`) e uma de um humano (`a2b5947c-…`, o `sub` do `jimy`) — mesma capability
+> `read:outcome`, mesmas obrigações `board:prod`/`eu-west`. A única variável é o principal.
+>
+> A recusa cross-region também está verificada: um leitor de outra região recebe `404` ao tentar
+> ler um run residente em `eu-west`, com um token igualmente válido. Aí a variável era só a
+> região.
 
 ## Como o humano se autentica
 
@@ -107,6 +111,11 @@ Era. O `aos-node` tinha `directAccessGrantsEnabled` e a instrução era um `curl
    password inicial) nem MFA. Uma conta com `UPDATE_PASSWORD` pendente simplesmente falhava o
    ROPC com *"Account is not fully set up"*: a defesa tornava a conta inútil em vez de segura;
 3. **o ROPC está removido do OAuth 2.1** — não é uma preferência, é um beco.
+
+O `directAccessGrantsEnabled` foi **desligado** assim que o fluxo novo ficou provado
+ponta-a-ponta — não antes, para não existir uma janela em que nenhum caminho funcionasse.
+Verificado: `400 unauthorized_client / Client not allowed for direct access grants`, com o
+`/auth` a continuar a devolver `200`.
 
 O cliente é **público** (não guarda segredo — um segredo numa aplicação que corre na máquina do
 utilizador não é segredo), com `redirect_uri` de loopback em porta fixa e **PKCE S256

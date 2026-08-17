@@ -634,7 +634,8 @@ Ver [`keycloak/README.md`](keycloak/README.md). Dois clientes:
 
 A distinção importa: um service account colapsa "quem lê" numa identidade de máquina. A soberania
 **por-leitor** — que é o argumento de todo o mecanismo — só é real quando existirem identidades
-humanas distintas.
+humanas distintas. **Já existem:** o WORM tem, na mesma cadeia, leituras do service account e uma
+de um humano com o seu próprio `sub` (ver §"O que continua por fechar", ponto 7).
 
 ---
 
@@ -772,19 +773,29 @@ Nomeado, não escondido:
    privada local, e a chave Transit confirmada lá dentro. **O residual que fica:** se a máquina
    ficar dias desligada, a cópia envelhece e **ninguém avisa** — não há alerta de recência. Um
    destino sempre ligado (bucket S3-compatível ou outro host) removeria essa dependência.
-7. **Soberania por-leitor: o caminho está armado, falta a password.** O read-path exige credencial
-   verificada e a recusa cross-region **está provada**, mas em uso continua uma identidade de
-   **máquina** partilhada (`aos-reader`) — uma identidade de máquina tem uma fronteira só.
-   O que passou a existir: o utilizador `jimy` com `board:prod`, o cliente `aos-node` com
-   **código de autorização + PKCE S256** (imposto — sem `code_challenge` ou com `plain` o IdP
-   recusa) e [`get-id-token.ps1`](get-id-token.ps1) a fazer o fluxo com a CA interna fixada.
-   **O que falta é um único passo, e é seu:** definir a password de arranque na consola
-   (*Users → jimy → Credentials*). O `UPDATE_PASSWORD` já está pendente, portanto o valor que
-   escolher ali é substituído por si à primeira entrada — a consola não fica a ser o sítio onde
-   a password vive. Não a defino eu, e é por desenho.
-   Feito isso, fecha-se com o `directAccessGrantsEnabled` do `aos-node` — o *password grant* fica
-   ligado só até o fluxo de browser estar provado ponta-a-ponta, para não haver janela sem
-   caminho nenhum.
+7. ~~Soberania por-leitor ainda não é real.~~ **✅ EXERCIDA.** Deixou de haver só uma identidade
+   de **máquina**: um humano (`jimy`, `board:prod`) autenticou-se por **código de autorização +
+   PKCE S256** no browser e leu um run em produção. A prova não é o `200` — é o WORM. Na mesma
+   cadeia de hash da partição `gov.read/run-humano-1787005443`:
+
+   | `AuditSeq` | `Principal.NHIID` | quem |
+   |---|---|---|
+   | 1, 2 | `91a30a69-781d-448e-90c9-1de9f5e7bcbe` | service account `aos-reader` |
+   | **3** | **`a2b5947c-09e2-40bc-8c58-a7f4b0bbdfef`** | **`jimy`**, UUID do Keycloak |
+
+   Mesmo run, mesma `read:outcome`, mesmas obrigações (`gov.read.board: board:prod`,
+   `gov.read.residency: eu-west`), `PrevHash` a encadear. **A única variável é o principal** — o
+   controlo está embutido na prova, não ao lado dela.
+
+   O *password grant* foi **fechado** a seguir (`directAccessGrantsEnabled: false`), e verificado:
+   `400 unauthorized_client / Client not allowed for direct access grants`, com o fluxo de código
+   a continuar a responder `200`. Ficou ligado só até o caminho novo estar provado ponta-a-ponta,
+   para não existir uma janela sem caminho nenhum.
+
+   **O que fica por exercer:** há **um só board** (`AOS_BOARD_REGIONS=board:prod=eu-west`). A
+   recusa cross-region está provada (ver §"Provar a recusa cross-region"), mas com um board só não
+   há como voltar a exercê-la com leitores humanos — para isso é preciso uma segunda região no
+   mapa e um segundo leitor.
 10. **A raiz humana da cadeia de delegação é auto-declarada.** O NHI traz
    `delegation_chain` enraizada num humano com `auth_method: manual` — quem detém a `issuer.key`
    declarou-o por *flag*. Nada prova que esse humano autorizou o que quer que seja. O
