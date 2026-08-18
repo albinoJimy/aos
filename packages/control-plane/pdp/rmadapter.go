@@ -121,7 +121,16 @@ func inputFromCall(call *rm.Call) Input {
 			Taint:                 call.Context.Taint,
 			BudgetTokensRemaining: call.Context.BudgetTokensRemaining,
 			Reversibility:         call.Context.Reversibility,
-			Sensitivity:           call.Context.Sensitivity,
+			// A CLASSE DE RISCO tem de atravessar. O RiskGate calcula-a e escreve-a em
+			// call.Context.RiskClass; o overlay de autonomia lê-a de in.Context.RiskClass; e
+			// este adaptador — o único fio entre os dois — não a copiava.
+			//
+			// A consequência não era um deny visível: riskClassFromString("") resolve para
+			// ClassDanger (fail-closed), portanto TODA a acção era tratada como danger e a
+			// taxonomia L0–L5 colapsava em dois estados — L5 corre, tudo o resto escala.
+			// Um mecanismo graduado presente, documentado, e semanticamente inerte.
+			RiskClass:   call.Context.RiskClass,
+			Sensitivity: call.Context.Sensitivity,
 			// AOS-021: prova NÃO-FORJÁVEL de que o gate humano exigido pela autonomia já
 			// ocorreu para esta acção. Vem de um campo não-exportado do Call que só o
 			// ApprovalGate escreve após verificar a evidência contra o broker (amarra à
