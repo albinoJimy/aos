@@ -727,6 +727,10 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			// (fail-closed). O [referencemonitor.TaintGate] impõe: uma autorização
 			// untrusted não pode originar uma capability privilegiada.
 			Taint: authorizationTaintOf(inv),
+			// A reversibilidade DECLARADA pelo registry. Sem isto o classificador recebe vazio,
+			// trata a acção como irreversível, e toda a tool call sai `danger` — o que colapsa
+			// a taxonomia de autonomia L0–L5 em dois estados.
+			Reversibility: inv.Reversibility,
 		},
 		Input: inv.Input,
 	}

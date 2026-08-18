@@ -10,6 +10,8 @@
       "required": ["doc_id"]
     },
     "capability": "cap:fs.read",
+    "reversibility": "reversible",
+    "reversibility": "reversible",
     "resource_type": "file",
     "resource_value": "doc://{doc_id}",
     "resource_region": "eu",

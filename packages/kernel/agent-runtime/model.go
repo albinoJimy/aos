@@ -63,6 +63,15 @@ type ToolInvocation struct {
 	// ticket de integração de superfície que liga [SeparatePlanes] ao loop (ver
 	// loop.go, "SEPARAÇÃO DE PLANOS ... DIFERIDA").
 	AuthorizationTaint string
+
+	// Reversibility é a REVERSIBILIDADE DECLARADA do efeito ("reversible"), vinda do
+	// registry de tools. Chega ao [risk.Classify] pelo CallContext e é a PRIMEIRA regra do
+	// classificador — sem ela, `IsIrreversible()` devolve true (o valor-zero é desconhecido,
+	// e desconhecido conta como irreversível) e TODA a acção sai `danger`.
+	//
+	// FAIL-CLOSED: vazio continua a significar irreversível. Declarar custa uma linha no
+	// registry; NÃO declarar nunca é interpretado como benigno.
+	Reversibility string
 }
 
 // ModelResponse é o resultado de uma chamada ao Model Gateway.
