@@ -779,15 +779,34 @@ Nomeado, não escondido:
    latência de mediação acima dos alvos de `tecnica/10`. Os serviços acrescentados para o modo
    produção têm `cpus:` declarado; os mais antigos deste ficheiro **não têm** — dívida conhecida,
    e a razão pela qual o arranque da JVM do Keycloak leva 1–2 minutos aqui.
-6. **A cópia off-host depende de a máquina do operador estar ligada.** Já não é manual: a tarefa
-   `AOS-RecolherBackups` (Windows, 04:30 diário, `StartWhenAvailable`) puxa os `.enc` do servidor
-   para `%USERPROFILE%\aos-backups` via [`pull-backups.ps1`](pull-backups.ps1), com rotação
-   própria de 30 cópias. `StartWhenAvailable` recupera uma execução perdida no arranque seguinte
-   em vez de a saltar em silêncio. Verificado ponta-a-ponta: recolhida, **decifrada** com a
-   privada local, e a chave Transit confirmada lá dentro. **O residual que fica:** se a máquina
-   ficar dias desligada, a cópia envelhece e **ninguém avisa** — não há alerta de recência. Um
-   destino sempre ligado (bucket S3-compatível ou outro host) removeria essa dependência.
-7. ~~Soberania por-leitor ainda não é real.~~ **✅ EXERCIDA.** Deixou de haver só uma identidade
+6. **A cópia off-host depende de a máquina do operador estar ligada — e agora AVISA quando algo
+   envelhece.** A tarefa `AOS-RecolherBackups` (Windows, 04:30 diário, `StartWhenAvailable`) puxa
+   os `.enc` para `%USERPROFILE%\aos-backups` via [`pull-backups.ps1`](pull-backups.ps1), com
+   rotação própria de 30. Verificado ponta-a-ponta: recolhida, **decifrada** com a privada local,
+   e a chave Transit confirmada lá dentro.
+
+   **O que a versão anterior escondia.** Ela era idempotente por nome e terminava com
+   `FEITO — 0 novo(s)`, código de saída zero. Se o cron do servidor morresse, diria exactamente
+   isso **para sempre** — a mensagem de um sistema saudável e a de um que não produz backups há
+   semanas eram a mesma. Um sucesso vacuoso.
+
+   Passa a verificar a idade dos **dois** lados: a cópia local (apanha "a máquina esteve
+   desligada") e o backup **remoto** (apanha "o cron morreu", que é o caso que ninguém notaria,
+   porque a recolha continua a correr bem). Alerta por três canais deliberadamente redundantes —
+   código de saída (visível no *Last Run Result* do Agendador), `ESTADO.txt` no destino, e o
+   Registo de Eventos, que degrada em silêncio se a tarefa não correr elevada.
+
+   Verificado a falhar quando deve, que é o que torna o "OK" informativo: tecto de 1h → saída
+   `3` com os dois alertas nomeados; servidor inalcançável → saída `2` **com `ESTADO.txt`
+   escrito**; normal → `0`.
+
+   > O controlo do servidor inalcançável apanhou um defeito real: com `$ErrorActionPreference
+   > = 'Stop'`, o PowerShell trata a escrita do `ssh` para *stderr* como erro **terminante**, e o
+   > script **morria** antes de alertar — sem `ESTADO.txt`, com código `1` de crash. O único
+   > cenário em que o aviso interessa era o único em que não saía.
+
+   **Residual:** a máquina desligada não alerta enquanto está desligada — nenhum processo local
+   pode. O que deixou de existir é a cópia velha **silenciosa** com a máquina ligada.
    de **máquina**: um humano (`jimy`, `board:prod`) autenticou-se por **código de autorização +
    PKCE S256** no browser e leu um run em produção. A prova não é o `200` — é o WORM. Na mesma
    cadeia de hash da partição `gov.read/run-humano-1787005443`:
@@ -916,3 +935,43 @@ Nomeado, não escondido:
 > O erro era silencioso e plausível: 69 é um número credível, e nada indicava que faltasse um
 > terço. Só apareceu por confrontar a contagem com o que o **próprio nó** declara no arranque —
 > que é o hábito que vale a pena reter, e não a correcção em si.
+
+---
+
+## Telemetria: o canal está em claro, e um bearer não o resolvia
+
+O nó exporta traces para `AOS_OTLP_ENDPOINT=http://otel:4318` — **HTTP em claro**, na rede do
+compose. O banner diz que a autenticação do cliente está desligada (DEF-012) e sugere
+`AOS_OTLP_BEARER_TOKEN_PATH`. Seguir essa sugestão seria **teatro**: sobre um canal em claro, o
+token viaja em claro *na mesma rede de onde vem a ameaça*, e quem o capturasse forjava à mesma.
+
+O que autentica de facto é **mTLS**, que o nó já suporta (`AOS_OTLP_CLIENT_CERT_PATH` + `_KEY`) e
+que de caminho cifra o canal — coisa que o bearer não faz.
+
+[`otel-collector-mtls.yaml`](otel-collector-mtls.yaml) é a variante endurecida, **pronta e não
+activa**. Provada num coletor descartável no servidor (porta 14318, sem tocar no que corre):
+
+| Cliente | Resultado |
+|---|---|
+| sem certificado de cliente | handshake **recusado** |
+| com o certificado do nó | `200` |
+| em HTTP claro (como hoje) | `400` |
+
+Para ligar — e é um passo **deliberado**, não um `sed`:
+
+```bash
+# 1. levar o material para o servidor (as privadas nascem e ficam na máquina do operador)
+scp -i deploy/server/secrets-local/deploy_key \
+  deploy/server/secrets-local/internal-ca/{ca.crt,otel.crt,otel.key,node-otlp.crt,node-otlp.key} \
+  aos@37.60.241.150:/opt/aos/tls-internal/otlp/
+# 2. apontar o volume do serviço `otel` para otel-collector-mtls.yaml e montar /opt/aos/tls-internal/otlp
+# 3. no .env:  AOS_OTLP_ENDPOINT=https://otel:4318
+#              AOS_OTLP_CLIENT_CERT_PATH=/etc/aos/otlp/node.crt
+#              AOS_OTLP_CLIENT_KEY_PATH=/etc/aos/otlp/node.key
+# 4. reiniciar `otel` e `aos` JUNTOS
+```
+
+> ⚠️ **O passo 4 tem de ser verificado, não presumido.** O exportador OTLP do nó é **fail-open**:
+> com o mTLS mal configurado os spans param **em silêncio** e o nó continua a servir como se nada
+> fosse. A observabilidade desaparece sem um erro — o pior modo de falha possível justamente para
+> observabilidade. Confirme que os spans voltam a chegar antes de dar o passo por feito.
