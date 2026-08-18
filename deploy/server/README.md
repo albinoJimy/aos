@@ -1084,3 +1084,39 @@ TLS visível no pedido.
 Tudo removido no fim — contentores, rede, e o *bundle* em claro apagado com `shred`. Produção
 `healthy` durante todo o exercício, com tectos de CPU explícitos nos contentores de ensaio porque
 o host corre com *load average* ~22 em 8 vCPU.
+
+### O ensaio é repetível — [`restore-drill.sh`](restore-drill.sh)
+
+Um ensaio feito uma vez prova o dia em que foi feito. O que acima está descrito é agora um script
+que se corre depois de qualquer mudança:
+
+```bash
+# na máquina do operador, onde vive a chave privada
+openssl smime -decrypt -binary -inform DER -in ~/aos-backups/aos-<stamp>.tar.gz.enc \
+  -inkey deploy/server/secrets-local/backup-key/backup.key -out bundle.tar.gz
+scp -i deploy/server/secrets-local/deploy_key bundle.tar.gz aos@37.60.241.150:/tmp/
+```
+```bash
+# no servidor
+bash /opt/aos/restore-drill.sh /tmp/bundle.tar.gz
+```
+
+Levanta Vault, Postgres, Keycloak e nó numa rede isolada, faz uma leitura autenticada, e **só
+passa se os controlos também valerem**: token válido `200`, mesmo token outra vez `404`, sem
+credencial `404`, header forjado `404`. Limpa tudo num `trap` — incluindo `shred` do material em
+claro, porque enquanto corre tem o `.env`, os `secrets/` e as chaves TLS desembrulhados em disco.
+
+> **Escrevê-lo apanhou três defeitos que o ensaio à mão não tinha mostrado**, e vale a pena
+> registá-los porque são todos do género que passa despercebido:
+>
+> - **`set -o pipefail` + `grep -q`.** O `grep -q` fecha o *pipe* mal encontra o padrão, o comando
+>   a montante leva `SIGPIPE` e sai não-zero, e **o pipeline inteiro falha apesar de o padrão ter
+>   sido encontrado**. O Vault desselava sempre; era a verificação que mentia. Todas as buscas do
+>   script capturam para variável antes de procurar.
+> - **`config.tar.gz` e `volumes.tar.gz` têm ambos `vault/`** — um é a *configuração*, o outro são
+>   os *dados*. Extraídos para o mesmo sítio colidem, e o sintoma é o Vault a não desselar: lê-se
+>   como "o backup está mau" e não como "o ensaio está mal montado".
+> - **O Postgres não estava pronto** e o `psql` rebentava contra ele; o sintoma era "o dump
+>   restaurou 0 tabelas". Falhou uma vez e passou na seguinte — o pior comportamento possível,
+>   porque um ensaio intermitente ensina a ignorá-lo. Passou a esperar explicitamente e a falhar
+>   com a razão certa.
