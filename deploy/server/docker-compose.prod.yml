@@ -97,6 +97,97 @@ services:
       # sozinha deixaria o nó incapaz de verificar qualquer CA pública.
       SSL_CERT_FILE: "${AOS_INTERNAL_CA_BUNDLE:-}"
 
+      # --- SUPERFÍCIE DE CONFIGURAÇÃO QUE ESTAVA INALCANÇÁVEL -------------------------------
+      # O bloco `environment` do compose é um ALLOWLIST: uma variável definida no `.env` mas
+      # ausente daqui NÃO chega ao contentor. O nó lê 77 variáveis `AOS_*` e este ficheiro
+      # passava 41 — as outras 38 eram INDEFINÍVEIS nesta instalação, e não "por definir". Entram
+      # aqui 35; três ficam de fora de propósito, e a razão está no fim do bloco.
+      #
+      # A diferença importa porque a leitura natural do banner de arranque é "isto está
+      # desligado, define a variável e liga". Não estava: não havia variável a definir. Oito dos
+      # doze conceitos não-provados do inventário estavam bloqueados por aqui.
+      #
+      # Todas entram VAZIAS (`${VAR:-}`), portanto este bloco NÃO muda comportamento nenhum —
+      # todos os parsers do nó tratam vazio como ausente (verificado um a um: `strings.TrimSpace`
+      # + guarda `!= ""`, ou default explícito). O que muda é passarem a ser definíveis.
+
+      # Autonomia (AOS-087). ATENÇÃO ao ligar: um par (agente, domínio) NÃO registado resolve
+      # para L0 ⇒ escalate. Definir isto faz TODO o agente não listado passar a exigir aprovação
+      # humana — é fail-closed e correcto, e é uma mudança de comportamento real.
+      AOS_AUTONOMY_LEVELS: "${AOS_AUTONOMY_LEVELS:-}"
+
+      # Attestation de dispositivo (AOS-177/AOS-266) — sem isto o four-eyes é SÓ estrutural.
+      AOS_ATTESTATION_VERIFIER_URL: "${AOS_ATTESTATION_VERIFIER_URL:-}"
+      AOS_ATTESTATION_VERIFIER_TOKEN_PATH: "${AOS_ATTESTATION_VERIFIER_TOKEN_PATH:-}"
+      AOS_DEVICE_ENROLLMENT_FILE: "${AOS_DEVICE_ENROLLMENT_FILE:-}"
+
+      # Broker de credenciais downstream (AOS-070/AOS-264) — hoje entram por ficheiro montado.
+      AOS_BROKER_VAULT_ADDR: "${AOS_BROKER_VAULT_ADDR:-}"
+      AOS_BROKER_VAULT_TOKEN_PATH: "${AOS_BROKER_VAULT_TOKEN_PATH:-}"
+      AOS_BROKER_VAULT_KV_MOUNT: "${AOS_BROKER_VAULT_KV_MOUNT:-}"
+      AOS_BROKER_VAULT_PATH_PREFIX: "${AOS_BROKER_VAULT_PATH_PREFIX:-}"
+
+      # Verificação ancorada do WORM (AOS-268/AOS-072). AS TRÊS em conjunto ou nenhuma —
+      # definir algumas aborta o arranque em vez de degradar. Ver a análise em README §8: um
+      # checkpoint ancora UMA partição e este WORM tem 108.
+      AOS_WORM_TRUST_ANCHOR: "${AOS_WORM_TRUST_ANCHOR:-}"
+      AOS_WORM_CHECKPOINT_FILE: "${AOS_WORM_CHECKPOINT_FILE:-}"
+      AOS_WORM_EXPECTED_HEAD: "${AOS_WORM_EXPECTED_HEAD:-}"
+
+      # Autenticação do cliente OTLP (DEF-012) — hoje só TLS de servidor.
+      AOS_OTLP_BEARER_TOKEN_PATH: "${AOS_OTLP_BEARER_TOKEN_PATH:-}"
+      AOS_OTLP_CLIENT_CERT_PATH: "${AOS_OTLP_CLIENT_CERT_PATH:-}"
+      AOS_OTLP_CLIENT_KEY_PATH: "${AOS_OTLP_CLIENT_KEY_PATH:-}"
+
+      # Tabela de preços do modelo (AOS-259) — sem ela o custo é ZERO POR AUSÊNCIA DE DADOS,
+      # que não é custo nulo, e um tecto em dólares compararia sempre contra zero.
+      AOS_MODEL_PRICING_PATH: "${AOS_MODEL_PRICING_PATH:-}"
+
+      # Allowlist de modelos assinada (EPIC-06).
+      AOS_MODEL_ALLOWLIST_BUNDLE_DIR: "${AOS_MODEL_ALLOWLIST_BUNDLE_DIR:-}"
+      AOS_MODEL_ALLOWLIST_TRUST_ANCHOR: "${AOS_MODEL_ALLOWLIST_TRUST_ANCHOR:-}"
+
+      # Directório humano OIDC (AOS-174) — só tem efeito no modo de REFERÊNCIA; no endurecido
+      # o directório humano vive com o issuer externo. Aqui por completude da superfície.
+      AOS_HUMAN_OIDC_ISSUER: "${AOS_HUMAN_OIDC_ISSUER:-}"
+      AOS_HUMAN_OIDC_AUDIENCE: "${AOS_HUMAN_OIDC_AUDIENCE:-}"
+      AOS_HUMAN_OIDC_JWKS_URI: "${AOS_HUMAN_OIDC_JWKS_URI:-}"
+
+      # Endurecimento do read-path soberano: tecto de idade e exigência de jti.
+      AOS_SOVEREIGN_OIDC_MAX_AGE: "${AOS_SOVEREIGN_OIDC_MAX_AGE:-}"
+      AOS_SOVEREIGN_OIDC_REQUIRE_JTI: "${AOS_SOVEREIGN_OIDC_REQUIRE_JTI:-}"
+
+      # TLS NO PRÓPRIO NÓ — alternativa a AOS_TLS_EXTERNAL_TERMINATION. A chave privada entra
+      # por FICHEIRO MONTADO, nunca por variável de ambiente (é o caminho, não o material).
+      AOS_TLS_CERT_PATH: "${AOS_TLS_CERT_PATH:-}"
+      AOS_TLS_KEY_PATH: "${AOS_TLS_KEY_PATH:-}"
+      AOS_CONTROL_MTLS_CA_PATH: "${AOS_CONTROL_MTLS_CA_PATH:-}"
+
+      # Custódia DSAR/Vault: mount do Transit e piso de TTL do token.
+      AOS_DSAR_VAULT_TRANSIT_MOUNT: "${AOS_DSAR_VAULT_TRANSIT_MOUNT:-}"
+      AOS_DSAR_VAULT_TOKEN_MIN_TTL: "${AOS_DSAR_VAULT_TOKEN_MIN_TTL:-}"
+
+      # Cadências e limites do loop de serviço.
+      AOS_CRASH_RESUME_INTERVAL: "${AOS_CRASH_RESUME_INTERVAL:-}"
+      AOS_APPROVAL_SWEEP_INTERVAL: "${AOS_APPROVAL_SWEEP_INTERVAL:-}"
+      AOS_CHALLENGE_TTL: "${AOS_CHALLENGE_TTL:-}"
+      AOS_MAX_TURNS: "${AOS_MAX_TURNS:-}"
+      AOS_PROGRESS_THRESHOLD: "${AOS_PROGRESS_THRESHOLD:-}"
+      AOS_SLO_WINDOW: "${AOS_SLO_WINDOW:-}"
+      AOS_SLO_EVAL_INTERVAL: "${AOS_SLO_EVAL_INTERVAL:-}"
+      AOS_SANDBOX_SEED_DIR: "${AOS_SANDBOX_SEED_DIR:-}"
+
+      # --- TRÊS QUE FICAM DE FORA, E PORQUÊ --------------------------------------------------
+      #
+      # AOS_ISSUER_KEY_PATH — daria ao nó um caminho para uma CHAVE DE ASSINATURA. O modo de
+      #   identidade deste nó é trust-anchor-only (AOS-156): "nenhuma chave de assinatura entra
+      #   no runtime do nó", e é isso que faz com que código comprometido in-process não tenha
+      #   material com que cunhar. Tornar isto definível é oferecer a porta que a postura fecha.
+      #
+      # AOS_READER / AOS_BOARD — a credencial de leitor DEMO-GRADE por variável de ambiente.
+      #   Sob AOS_MODE=production não autoriza nada (o board vem das claims), mas passá-las
+      #   convidaria a tentar, e o sintoma seria uma recusa opaca. A ausência é a documentação.
+
       # --- CUSTÓDIA DURÁVEL DA KEK (AOS-215/AOS-216) ----------------------------------------
       # Com substrato durável (acima), a KEK por-titular NÃO pode viver em memória: um restart
       # tornaria o conteúdo cifrado dos runs PERMANENTEMENTE indecifrável — apagamento
