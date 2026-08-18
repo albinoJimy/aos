@@ -1040,7 +1040,47 @@ ficheiro cifrado e da chave privada que vive noutra máquina.
 Tudo foi removido no fim, e o bundle em claro apagado com `shred` e não `rm`: enquanto existiu,
 tinha lá dentro `.env`, `secrets/` e o material TLS interno.
 
-> **O que este ensaio ainda não cobre:** o Keycloak. O `idp-db.sql` (87 tabelas) está no artefacto
-> e não foi restaurado — exigiria um Postgres descartável e um Keycloak a importar por cima. O
-> read-path do ensaio usou o IdP **em produção** para obter o token, portanto o que está provado é
-> que os *dados* e o *nó* voltam; a identidade voltar é plausível e **não está exercida**.
+
+#### Segunda metade: a identidade também volta
+
+O primeiro ensaio deixou uma lacuna nomeada — *"o que está provado é que os dados e o nó voltam; a
+identidade voltar é plausível e não está exercida"*. Exercida a **18/08**, do mesmo artefacto:
+
+| Passo | Resultado |
+|---|---|
+| `idp-db.sql` restaurado num Postgres descartável | **87 tabelas**, zero erros do `psql` |
+| Realms no schema restaurado | `aos`, `master` |
+| Keycloak arrancado sobre essa base | ~110 s (a JVM, sob carga 22) |
+| Admin do IdP restaurado | autentica com a password do `.env` do backup |
+| Clientes no realm restaurado | `aos-issuer`, `aos-node`, `aos-reader` |
+| Utilizador humano | `jimy`, com `board:["board:prod"]` |
+| Segredo do `aos-reader` **vindo do backup** | emite token no IdP restaurado |
+| **Ciclo fechado:** token do IdP restaurado → nó restaurado | **`200`** |
+
+E os controlos, no sistema restaurado e não no de produção:
+
+| Pedido | Resposta |
+|---|---|
+| sem credencial | `404` |
+| `X-Aos-Board: board:prod` forjado | `404` |
+| token válido | `200` |
+| o **mesmo** token outra vez | `404` |
+
+O último par é o que interessa: o anti-replay do `jti` **também** voltou. Não é só que o sistema
+arranque — as suas decisões continuam a ser tomadas.
+
+#### O restauro tem de reproduzir os NOMES, não só os dados
+
+A primeira tentativa deste ciclo deu `404` em tudo, incluindo com um token válido. A causa não era
+o backup: eu tinha chamado aos contentores `drill-idp` e `drill-vault`, e os certificados internos
+têm SAN para **`idp`** e **`vault`**. O nó buscou o JWKS a `https://drill-idp:8443`, a verificação
+TLS falhou, e ele **negou tudo** — com o `404` uniforme, indistinguível de "não existe".
+
+Isso é o comportamento correcto, e é a razão pela qual a tentativa seguinte usou uma rede própria
+com `--alias idp` e `--alias vault`. Fica como aviso operacional: um restauro que renomeie os
+serviços **falha, e falha em silêncio semântico** — o sintoma é uma recusa opaca e não um erro de
+TLS visível no pedido.
+
+Tudo removido no fim — contentores, rede, e o *bundle* em claro apagado com `shred`. Produção
+`healthy` durante todo o exercício, com tectos de CPU explícitos nos contentores de ensaio porque
+o host corre com *load average* ~22 em 8 vCPU.
