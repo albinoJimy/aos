@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,8 +49,8 @@ const assertionMaxAge = 5 * time.Minute
 // delegationNonce devolve o nonce que o humano TEM de ter trazido no ID-token para que esta
 // emissão concreta seja autorizada por ele.
 //
-// Codificação INJECTIVA por length-prefix (uvarint), o mesmo molde de hitl/encode.go, e pela
-// mesma razão: com um separador simples, (agent="a", class="bc") e (agent="ab", class="c")
+// Codificação INJECTIVA por comprimento à cabeça (netstring), pela mesma razão que hitl/encode.go
+// usa length-prefix: com um separador simples, (agent="a", class="bc") e (agent="ab", class="c")
 // produziriam os MESMOS bytes. Um atacante que controlasse um campo podia deslizar a fronteira
 // para o seguinte e obter um digest que o humano autorizou para outra coisa.
 //
@@ -73,11 +73,14 @@ func delegationNonce(agent, class string, caps []string, ttl time.Duration) stri
 	buf = putStr(buf, delegationBindingDomain)
 	buf = putStr(buf, agent)
 	buf = putStr(buf, class)
-	buf = putU64(buf, uint64(len(normalizadas))) // a CARDINALIDADE também é prefixo
+	buf = putStr(buf, strconv.Itoa(len(normalizadas))) // a CARDINALIDADE também é prefixo
 	for _, c := range normalizadas {
 		buf = putStr(buf, c)
 	}
-	buf = putU64(buf, uint64(ttl)) // nanossegundos; um TTL maior é mais poder, logo entra
+	// O TTL entra pela forma CANÓNICA ("45m0s") e não pelo inteiro: um TTL maior é mais poder,
+	// logo faz parte do que o humano autoriza. A forma textual é injectiva para durações
+	// distintas e evita uma conversão int64→uint64 que, com um TTL negativo, daria a volta.
+	buf = putStr(buf, ttl.String())
 
 	soma := sha256.Sum256(buf)
 	// base64url sem padding: o nonce viaja num query param do pedido de autorização.
@@ -108,17 +111,18 @@ func cmdDelegationNonce(args []string, out io.Writer) error {
 	return err
 }
 
+// putStr escreve um campo em forma de NETSTRING: <comprimento decimal>':'<bytes>.
+//
+// Injectivo — o ':' não ocorre num decimal, logo a fronteira de cada campo é inequívoca. É a
+// mesma propriedade que o length-prefix uvarint de hitl/encode.go dá, por outra via: aqui não há
+// nenhuma conversão int→uint de largura fixa, e portanto nenhum caminho em que um valor
+// inesperado dê a volta ao tipo. Num digest de autorização, uma conversão que transborda não
+// falha ruidosamente: colide em silêncio, que é o modo de falha exacto que isto existe para
+// impedir.
 func putStr(buf []byte, s string) []byte {
-	var lb [binary.MaxVarintLen64]byte
-	n := binary.PutUvarint(lb[:], uint64(len(s)))
-	buf = append(buf, lb[:n]...)
+	buf = append(buf, strconv.Itoa(len(s))...)
+	buf = append(buf, ':')
 	return append(buf, s...)
-}
-
-func putU64(buf []byte, v uint64) []byte {
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], v)
-	return append(buf, b[:]...)
 }
 
 // ------------------------------------------------------------------------------------------
