@@ -394,3 +394,48 @@ func DefaultHooksWithRisk(policy *risk.Policy, gate *risk.Gate) []Hook {
 	}
 	return out
 }
+
+// RiskClassifier ANOTA a classe de risco SA-ROC no contexto da call e NUNCA DECIDE.
+//
+// Existe porque o oráculo de autonomia (AOS-087) vive DENTRO da política, e a política corre
+// ANTES de qualquer hook de risco na cadeia canónica. O overlay lê `Context.RiskClass`; se
+// ninguém a tiver escrito até lá, `riskClassFromString("")` resolve para danger (fail-closed) e a
+// taxonomia L0–L5 colapsa: a L3 comporta-se como a L1 e a L4 escala tudo.
+//
+// PORQUE NÃO SE RESOLVE PONDO O [RiskGate] ANTES DA POLÍTICA — duas razões, ambas fatais:
+//
+//   - A cadeia faz CURTO-CIRCUITO no primeiro não-permit. Com o RiskGate à frente, uma acção que
+//     a política NEGA passaria a ser ESCALADA por risco — um deny transformado em pergunta a um
+//     humano, e a existência de uma acção proibida revelada a quem a aprova.
+//   - Sem um [risk.Gate] composto (o caso deste nó), o RiskGate NEGA tudo o que não seja `safe`.
+//     E nada é `safe` enquanto a sensibilidade não for declarada. Acrescentá-lo pararia o nó por
+//     inteiro, fail-closed, com a aparência de "ligar a classificação de risco".
+//
+// Este hook faz SÓ os dois primeiros passos do RiskGate — classificar e anotar — e devolve
+// sempre [HookAllow]. Não pode negar, não pode escalar, não pode curto-circuitar: o pior que
+// pode acontecer é a anotação estar presente. A imposição (SAROC-04, gate ausente, canal de
+// confirmação) continua onde estava, com a precedência de sempre.
+//
+// A classificação é PURA e determinística, pelo que o RiskGate a recalcular a jusante obtém o
+// mesmo valor — não há estado partilhado além da anotação, que é reescrita com o mesmo conteúdo.
+type RiskClassifier struct{ policy *risk.Policy }
+
+// NewRiskClassifier constrói o anotador. `policy` nil ⇒ [risk.DefaultPolicy] (o mesmo default de
+// [risk.Classify]), para que a anotação exista mesmo sem política versionada composta.
+func NewRiskClassifier(policy *risk.Policy) RiskClassifier { return RiskClassifier{policy: policy} }
+
+// Name implementa [Hook].
+func (RiskClassifier) Name() string { return "risk-classify" }
+
+// Evaluate implementa [Hook]: classifica, anota, e PERMITE — sempre.
+func (c RiskClassifier) Evaluate(_ context.Context, call *Call) (HookResult, error) {
+	egress := egressForCall(call)
+	classification := risk.Classify(c.policy, risk.Action{
+		Sensitivity:   sensitivityForCall(call, egress),
+		Egress:        egress,
+		Reversibility: reversibilityForCall(call),
+		Taint:         taint.ParseLabel(call.Context.Taint),
+	})
+	call.Context.RiskClass = classification.Class.String()
+	return HookResult{Decision: HookAllow, PolicyVersion: classification.PolicyVersion}, nil
+}
