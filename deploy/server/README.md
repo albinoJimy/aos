@@ -876,10 +876,11 @@ Nomeado, não escondido:
    frescura — não uma linha no `.env`.
 
    **(b) Um checkpoint ancora UMA partição, e este WORM tem 69.** `Checkpoint.Partition` é um
-   campo só, e o nó recebe uma `WormAnchor` só. Contadas no WORM de produção: **69 cadeias
-   independentes** (`governance.retention`, `gov.read/<run>`, uma por run, …). Ligar a âncora
-   como está hoje cobriria **1 em 69** — e a leitura natural do banner passaria a ser "o WORM
-   está ancorado", que seria falso para 68 delas. Uma cobertura parcial anunciada como total é
+   campo só, e o nó recebe uma `WormAnchor` só. Contadas no WORM de produção: **108 cadeias
+   independentes** (`governance.retention`, `gov.read/<run>`, uma por run, …) — o banner reportou
+   104 no arranque e são 108 agora, porque cada run submetido desde então cria duas. Ligar a âncora
+   como está hoje cobriria **1 em 108** — e a leitura natural do banner passaria a ser "o WORM
+   está ancorado", que seria falso para as outras 107. Uma cobertura parcial anunciada como total é
    pior do que a ausência declarada que temos agora.
 
    O que fecharia isto a sério: um selador que emite um checkpoint **por partição** e um nó que
@@ -905,3 +906,13 @@ Nomeado, não escondido:
    identidades dos aprovadores e o `request_id` do grant não aparecem no `worm.wal`. Para uma
    autorização cujo propósito é o não-repúdio, é a peça que falta. Detalhe e evidência em
    [`../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md`](../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md).
+
+> 🔍 **Nota de método, porque me enganou primeiro.** Contar partições no `worm.wal` com
+> `grep -ao '"Partition":"[^"]*"'` devolve **69** — e está errado. O WAL é binário enquadrado, e o
+> `grep` processa-o por linhas: registos cujo enquadramento parte a linha antes do padrão
+> escapam-lhe. `strings -n 8` sobre o mesmo ficheiro devolve **108**, que é o número que fecha com
+> o banner (104 no arranque + 2 partições por cada um dos 2 runs submetidos desde então).
+>
+> O erro era silencioso e plausível: 69 é um número credível, e nada indicava que faltasse um
+> terço. Só apareceu por confrontar a contagem com o que o **próprio nó** declara no arranque —
+> que é o hábito que vale a pena reter, e não a correcção em si.
