@@ -1012,6 +1012,35 @@ Corrida uma cópia nova depois da reparação (`aos-20260818T123900Z`), decifrad
 leva os dois modelos e **nenhuma chave em claro** — as chaves continuam a vir de `os.environ`, não
 do ficheiro.
 
-> **Fica por fazer, e é o teste que falta:** um **restauro de ensaio** para um host limpo. Sem ele,
-> a frase "temos backups" é uma hipótese. É o único exercício que responde à segunda pergunta, e
-> não se pode responder a ela lendo o artefacto.
+### O restauro de ensaio — feito, e o que provou
+
+Corrido a **18/08** sobre `aos-20260818T123900Z`, num ambiente descartável no próprio servidor,
+**sem tocar no que estava a correr** (nomes próprios, sem portas publicadas, volumes à parte).
+A chave privada nunca foi para o servidor: o artefacto foi decifrado na máquina do operador e só o
+conteúdo viajou.
+
+| Passo | Resultado |
+|---|---|
+| Vault restaurado, desselado com a chave **de dentro do backup** | `Sealed false` |
+| Transit no Vault restaurado | a KEK lá está |
+| Nó arrancado contra os dados restaurados | `healthy` |
+| Hash-chain do WORM re-encadeada no arranque | **108 partições**, iguais às de produção |
+| Estado de governação re-hidratado | 68 ligações titular→partição |
+| `GET /runs/{id}` de um run que veio do backup | **`200`** |
+| O mesmo `GET` sem credencial | `404` |
+| Produção durante todo o exercício | `healthy`, `/healthz` `200` |
+
+A última linha da tabela é o que faz as outras significarem alguma coisa: sem o controlo do `404`,
+o `200` provaria apenas que o nó responde, não que o read-path restaurado ainda **decide**.
+
+**Portanto a resposta à segunda pergunta é sim, e agora é um facto e não uma hipótese:** o
+artefacto levanta o sistema — Vault, WORM, event store, governação e read-path — a partir de um
+ficheiro cifrado e da chave privada que vive noutra máquina.
+
+Tudo foi removido no fim, e o bundle em claro apagado com `shred` e não `rm`: enquanto existiu,
+tinha lá dentro `.env`, `secrets/` e o material TLS interno.
+
+> **O que este ensaio ainda não cobre:** o Keycloak. O `idp-db.sql` (87 tabelas) está no artefacto
+> e não foi restaurado — exigiria um Postgres descartável e um Keycloak a importar por cima. O
+> read-path do ensaio usou o IdP **em produção** para obter o token, portanto o que está provado é
+> que os *dados* e o *nó* voltam; a identidade voltar é plausível e **não está exercida**.
