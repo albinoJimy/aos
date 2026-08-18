@@ -17,6 +17,25 @@
   "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername(undefined) and passwordHistory(3)",
   "clients": [
     {
+      "clientId": "aos-issuer",
+      "name": "AOS — raiz humana da cadeia de delegacao (ADR-003)",
+      "description": "Audiencia SEPARADA de aos-node, de proposito: um ID-token obtido para LER um run NAO pode cunhar uma raiz de delegacao. Sao dois poderes distintos e cada um tem a sua audiencia. O aos-issuer verifica a assercao contra este cliente e exige que o nonce seja o DIGEST DA DELEGACAO que esta a cunhar — o humano autoriza aquela delegacao concreta, nao apenas 'esteve presente'. Sem mapper de board: cunhar nao e ler, e o token nao precisa desse dado.",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": ["http://127.0.0.1:47821/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.lifespan": "300"
+      }
+    },
+    {
       "clientId": "aos-node",
       "name": "AOS — credencial forte de soberania de leitura",
       "description": "Cliente do read-path soberano (AOS-205). O leitor humano obtem um ID-token por CODIGO DE AUTORIZACAO + PKCE S256 (ver get-id-token.ps1); o no verifica-o e DERIVA o board das claims. O header X-Aos-Board deixa de autorizar.",

@@ -334,6 +334,20 @@ Errar qualquer um devolve uma recusa correcta mas opaca, por isso ficam aqui fix
 > deixaram de autorizar — hoje devolvem `403`. O que vale é a versão abaixo. A anterior fica
 > descrita em §"O que o corte para produção mudou", porque a diferença explica-se melhor a par.
 
+> 🔑 **A raiz da delegação já não se declara por *flag*.** O `--human human:alice` abaixo produz
+> `auth_method: manual` — sobrevive porque há caminhos sem IdP (CI, dev), mas **não é o caminho
+> de produção**. Em produção o humano autentica-se no browser e a autenticação fica **ligada a
+> esta delegação concreta**:
+>
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 `
+>   -Cunhar agt-teste-01 -Caps 'model:invoke,cap:fs.read' -Ttl 45m -Submeter
+> ```
+>
+> São **dois logins**, e não é atrito por descuido: o primeiro autoriza a delegação (audiência
+> `aos-issuer`), o segundo chama a API (audiência `aos-node`). Ver §"O que continua por fechar",
+> ponto 10.
+
 ```bash
 # 1. Cunhar a credencial NHI (na tua máquina — a issuer.key nunca vai para o servidor).
 #    É quem o RUN age em nome de. NÃO é o que autentica a chamada.
@@ -796,12 +810,57 @@ Nomeado, não escondido:
    recusa cross-region está provada (ver §"Provar a recusa cross-region"), mas com um board só não
    há como voltar a exercê-la com leitores humanos — para isso é preciso uma segunda região no
    mapa e um segundo leitor.
-10. **A raiz humana da cadeia de delegação é auto-declarada.** O NHI traz
-   `delegation_chain` enraizada num humano com `auth_method: manual` — quem detém a `issuer.key`
-   declarou-o por *flag*. Nada prova que esse humano autorizou o que quer que seja. O
-   `aos-issuer` suporta `--assertion` com ID-token OIDC verificado, e agora existe um IdP para o
-   servir; ligar as duas pontas fecha o eixo de ADR-003, que hoje está sintacticamente presente e
-   semanticamente vazio.
+10. ~~A raiz humana da cadeia de delegação é auto-declarada.~~ **✅ AUTORIZADA, não só autenticada.**
+   Era `auth_method: manual` — quem detinha a `issuer.key` declarava o humano por *flag*, e nada
+   provava que ele tivesse autorizado o que quer que fosse.
+
+   **A correcção óbvia não bastava.** Trocar `--human` por `--assertion` sobe de *"declarado"*
+   para *"esteve presente"*, e não para *"autorizou isto"*: um ID-token não diz nada sobre
+   `--agent`, `--class`, `--caps` ou `--ttl`. Quem detivesse a chave **mais** um token fresco do
+   humano cunhava *qualquer* NHI enraizada nele. O defeito sobreviveria com uma etiqueta melhor.
+
+   **O que fecha de facto** é o `nonce` do fluxo de código a transportar o **digest da
+   delegação**: o IdP ecoa-o no ID-token, e o `aos-issuer` **calcula o esperado a partir das
+   flags que está a cunhar** — nunca o aceita por parâmetro, senão far-se-ia coincidir com o que
+   quer que se estivesse a cunhar. O digest é *length-prefixed* (molde de
+   [`hitl/encode.go`](../../packages/control-plane/governance/hitl/encode.go)) porque com um
+   separador simples `(agent="a", class="bc")` e `(agent="ab", class="c")` dariam os mesmos
+   bytes, e quem controlasse um campo deslizava a fronteira para o seguinte.
+
+   O rótulo passa a distinguir os dois estados, e o fraco continua a existir porque nem toda a
+   autenticação tem *nonce* — mas fica **escrito no registo**:
+
+   | `auth_method` | o que significa |
+   |---|---|
+   | `manual` | declarado por *flag*. Nada prova nada. |
+   | `oidc:<iss>` | o humano **esteve presente** (`--assertion-unbound`) |
+   | `oidc-bound:<iss>` | o humano **autorizou esta delegação** |
+
+   **Verificado em produção:** `auth_method = oidc-bound:…`, raiz
+   `human:a2b5947c-09e2-40bc-8c58-a7f4b0bbdfef` — o `sub` do IdP, não um nome escrito à mão.
+   O controlo que torna isto não-vacuoso está em
+   [`delegationbinding_test.go`](../../packages/cmd/aos-issuer/delegationbinding_test.go): um
+   token do **mesmo humano**, com assinatura igualmente válida, emitido para uma delegação com
+   uma capability a mais é **recusado**. Sem esse caso, um token que passa seria compatível com
+   "o verificador aceita tudo".
+
+   **Audiências separadas.** O cliente `aos-issuer` existe para que um ID-token obtido para
+   **ler um run** não sirva para **cunhar uma raiz de delegação**. Verificado: recusa
+   *password grant* (`400 unauthorized_client`), e o fluxo de código responde `200` em ambos.
+
+   **O que fica por fechar, e é preciso dizê-lo:**
+
+   - **O nó não verifica nada disto — confia no issuer.** A âncora do nó é a pubkey do issuer, e
+     `auth_method` é uma afirmação *dele*. Com o issuer comprometido, `oidc-bound:` é tão
+     forjável como `manual`. A garantia vive no issuer, e o valor de auditoria está limitado
+     pela integridade dele.
+   - **O `RequireJTI` aqui seria um placebo.** O armazém anti-replay é um campo do `Verifier`, e
+     o `aos-issuer` é um processo de vida curta: o mapa nasce vazio a cada invocação. Pareceria
+     anti-replay e não seria nenhum. O que ficou foi o `MaxAge` de 5 min — este era o **mais
+     fraco** dos três verificadores OIDC do sistema, o único sem tecto de idade.
+   - **Falta um run submetido com uma NHI assim.** O mint está provado; a cadeia enraizada no
+     `sub` verificado ainda não passou pelo WORM. `get-id-token.ps1 -Cunhar <agente> -Submeter`
+     fá-lo (dois logins, um por audiência).
 8. **A verificação ancorada do WORM não corre.** Sem `AOS_WORM_TRUST_ANCHOR` +
    `_CHECKPOINT_FILE` + `_EXPECTED_HEAD`, fica só a re-verificação de hash-chain: apanha mutação,
    remoção e encadeamento quebrado, mas **não** truncatura do tail nem reescrita desde a génese.
