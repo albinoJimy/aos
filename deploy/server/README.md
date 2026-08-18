@@ -861,10 +861,32 @@ Nomeado, não escondido:
    - **Falta um run submetido com uma NHI assim.** O mint está provado; a cadeia enraizada no
      `sub` verificado ainda não passou pelo WORM. `get-id-token.ps1 -Cunhar <agente> -Submeter`
      fá-lo (dois logins, um por audiência).
-8. **A verificação ancorada do WORM não corre.** Sem `AOS_WORM_TRUST_ANCHOR` +
-   `_CHECKPOINT_FILE` + `_EXPECTED_HEAD`, fica só a re-verificação de hash-chain: apanha mutação,
-   remoção e encadeamento quebrado, mas **não** truncatura do tail nem reescrita desde a génese.
-   O banner de arranque di-lo em cada boot.
+8. **A verificação ancorada do WORM não corre — e não é um interruptor.** Sem
+   `AOS_WORM_TRUST_ANCHOR` + `_CHECKPOINT_FILE` + `_EXPECTED_HEAD`, fica só a re-verificação de
+   hash-chain: apanha mutação, remoção e encadeamento quebrado, mas **não** truncatura do tail
+   nem reescrita desde a génese. O banner de arranque di-lo em cada boot.
+
+   Fui ligá-la e **parei**, por duas razões que a formulação anterior deste ponto escondia:
+
+   **(a) O nó consome a âncora, não a produz.** `audit.Signer.Seal` precisa de acesso ao *store* e
+   de uma chave privada que vive fora do nó — não há binário no repositório que produza um
+   `audit.Checkpoint` selado. O próprio código o declara: *"este nó CONSOME a âncora, não a
+   produz"*, com a selagem periódica **deferida em DEF-268**. Ligá-la exige um selador
+   out-of-process novo, custódia da chave, e um ciclo operacional que reselcie e avance o piso de
+   frescura — não uma linha no `.env`.
+
+   **(b) Um checkpoint ancora UMA partição, e este WORM tem 108.** `Checkpoint.Partition` é um
+   campo só, e o nó recebe uma `WormAnchor` só. Contadas no WORM de produção: **108 cadeias
+   independentes** (`governance.retention`, `gov.read/<run>`, uma por run, …) — o banner reportou
+   104 no arranque e são 108 agora, porque cada run submetido desde então cria duas. Ligar a âncora
+   como está hoje cobriria **1 em 108** — e a leitura natural do banner passaria a ser "o WORM
+   está ancorado", que seria falso para as outras 107. Uma cobertura parcial anunciada como total é
+   pior do que a ausência declarada que temos agora.
+
+   O que fecharia isto a sério: um selador que emite um checkpoint **por partição** e um nó que
+   os verifica em conjunto, ou uma partição de topo que encadeie as raízes das outras. É trabalho
+   de desenho, não de configuração — fica aqui nomeado em vez de escondido atrás de três
+   variáveis de ambiente que dariam a impressão de bastar.
 9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
    tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de
@@ -884,3 +906,13 @@ Nomeado, não escondido:
    identidades dos aprovadores e o `request_id` do grant não aparecem no `worm.wal`. Para uma
    autorização cujo propósito é o não-repúdio, é a peça que falta. Detalhe e evidência em
    [`../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md`](../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md).
+
+> 🔍 **Nota de método, porque me enganou primeiro.** Contar partições no `worm.wal` com
+> `grep -ao '"Partition":"[^"]*"'` devolve **69** — e está errado. O WAL é binário enquadrado, e o
+> `grep` processa-o por linhas: registos cujo enquadramento parte a linha antes do padrão
+> escapam-lhe. `strings -n 8` sobre o mesmo ficheiro devolve **108**, que é o número que fecha com
+> o banner (104 no arranque + 2 partições por cada um dos 2 runs submetidos desde então).
+>
+> O erro era silencioso e plausível: 69 é um número credível, e nada indicava que faltasse um
+> terço. Só apareceu por confrontar a contagem com o que o **próprio nó** declara no arranque —
+> que é o hábito que vale a pena reter, e não a correcção em si.
