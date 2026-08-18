@@ -228,17 +228,27 @@ sempre um controlo que teria de falhar, e falhou.
 
 ## Contagem
 
-**70 conceitos** em 13 eixos:
+**65 conceitos** em 13 eixos:
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 45 |
-| 🧪 Provado por teste | 10 |
-| ⚠️ Armado, não exercido | 4 |
-| 💤 Dormente por configuração | 6 |
-| ❌ Ausente e declarado | 5 |
+| ✅ Provado em produção | 44 |
+| 🧪 Provado por teste | 9 |
+| ⚠️ Armado, não exercido | 3 |
+| 💤 Dormente por configuração | 5 |
+| ❌ Ausente e declarado | 4 |
 
-Os **15 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **12 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
+
+> 🔍 **Segunda nota de método, pela mesma razão que a primeira.** A contagem inicial dizia **70 /
+> 15**. Contava as linhas da própria **legenda** como conceitos — cinco linhas com o mesmo formato
+> `| símbolo | texto |`. Contar só as linhas que começam por `| **` (o negrito do nome do
+> conceito) dá **65 / 12**.
+>
+> Duas contagens erradas no mesmo dia, ambas por medir o artefacto em vez da coisa: um `grep` de
+> aspas num ficheiro binário, e um `grep` de símbolos numa tabela que também os usa para se
+> explicar a si própria. O que as apanhou foi a mesma coisa — cruzar o número com uma fonte
+> independente.
