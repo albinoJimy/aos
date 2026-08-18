@@ -52,6 +52,15 @@ type modelToolSpec struct {
 	// AOS_MODEL_TOOLS_REGISTER regista o catálogo assinado; ver modelcatalog.go). Egress ∈
 	// {none,internal,external} (default none); CredentialScopes são scopes DECLARADOS (nunca
 	// segredos). Não afectam a decisão Cedar (essa avalia a Capability), só a REVALIDAÇÃO.
+	// Reversibility DECLARA se o efeito é desfazível: só "reversible" conta, e o vazio
+	// continua a valer IRREVERSÍVEL. Não é zelo redundante face ao `egress`: são eixos
+	// diferentes do classificador de risco, e a reversibilidade é a PRIMEIRA regra —
+	// `IsIrreversible()` devolve true para tudo o que não seja "reversible", pelo que uma
+	// tool sem esta declaração sai `danger` por muito local que seja o seu egress.
+	//
+	// Era a peça em falta: o registry sabia dizer "isto não sai da máquina" e não sabia dizer
+	// "isto não altera nada", e por isso a taxonomia de autonomia L0–L5 tinha dois estados.
+	Reversibility    string   `json:"reversibility"`
 	Egress           string   `json:"egress"`
 	CredentialScopes []string `json:"credential_scopes"`
 	// Sandbox, quando presente, LIGA a tool à execução mediada em sandbox (AOS-005/AOS-064):
@@ -189,6 +198,7 @@ type toolBinding struct {
 	resourceType   string
 	resourceValue  string
 	resourceRegion string
+	reversibility  string
 }
 
 // loadModelToolsFromEnv lê AOS_MODEL_TOOLS. Devolve (tools p/ WithTools, bindings p/ enriquecimento,
@@ -206,6 +216,10 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 	for _, s := range specs {
 		name := strings.TrimSpace(s.Name)
 		capab := strings.TrimSpace(s.Capability)
+		rev, rerr := validateReversibility(s.Reversibility)
+		if rerr != nil {
+			return nil, nil, fmt.Errorf("tool %q: %w", name, rerr)
+		}
 		tools = append(tools, port.Tool{
 			Type: "function",
 			Function: port.FunctionDef{
@@ -219,6 +233,7 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 			resourceType:   strings.TrimSpace(s.ResourceType),
 			resourceValue:  strings.TrimSpace(s.ResourceValue),
 			resourceRegion: strings.TrimSpace(s.ResourceRegion),
+			reversibility:  rev,
 		}
 	}
 	return tools, bindings, nil
@@ -263,6 +278,10 @@ func (c *toolEnrichingClient) Call(ctx context.Context, view agentruntime.Prompt
 		resp.ToolCalls[i].ResourceType = b.resourceType
 		resp.ToolCalls[i].ResourceValue = valor
 		resp.ToolCalls[i].ResourceRegion = b.resourceRegion
+		// A reversibilidade DECLARADA acompanha o binding. NAO e propagada no ramo de erro
+		// acima, de proposito: uma call que ja vai ser negada nao deve levar consigo uma
+		// declaracao de benignidade.
+		resp.ToolCalls[i].Reversibility = b.reversibility
 		// AuthorizationTaint: DELIBERADAMENTE não preenchido (vazio ⇒ untrusted). Ver AOS-069.
 	}
 	return resp, nil
@@ -315,4 +334,30 @@ func resolveResourceValue(template string, input []byte) (string, error) {
 		out = strings.ReplaceAll(out, "{"+nome+"}", texto)
 	}
 	return out, nil
+}
+
+// ErrBadReversibility — `reversibility` no registry fora do vocabulário.
+var ErrBadReversibility = errors.New("aos: reversibility invalida no registry de tools (esperado \"reversible\", \"irreversible\" ou ausente)")
+
+// validateReversibility valida a reversibilidade DECLARADA de uma tool.
+//
+// FAIL-CLOSED em duas direcções, e as duas importam:
+//
+//   - AUSENTE devolve "" — que o classificador trata como IRREVERSÍVEL. Não declarar nunca é
+//     interpretado como benigno, e é por isso que acrescentar este campo não muda o
+//     comportamento de nenhuma tool que não o use.
+//   - UM VALOR QUE NÃO ESTÁ NO VOCABULÁRIO ABORTA O ARRANQUE, em vez de cair no silêncio. Um
+//     `"reversable"` mal escrito, ou um `"yes"`, resolveria para irreversível — o lado seguro —
+//     mas o operador acreditaria ter declarado o contrário, e descobri-lo-ia por a tool escalar
+//     sem razão aparente. Um typo que produz a postura certa pela razão errada é pior do que um
+//     erro: ninguém o vai procurar.
+func validateReversibility(s string) (string, error) {
+	switch v := strings.ToLower(strings.TrimSpace(s)); v {
+	case "":
+		return "", nil
+	case "reversible", "irreversible":
+		return v, nil
+	default:
+		return "", fmt.Errorf("%w: %q", ErrBadReversibility, s)
+	}
 }
