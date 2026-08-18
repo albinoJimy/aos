@@ -975,3 +975,43 @@ scp -i deploy/server/secrets-local/deploy_key \
 > com o mTLS mal configurado os spans param **em silêncio** e o nó continua a servir como se nada
 > fosse. A observabilidade desaparece sem um erro — o pior modo de falha possível justamente para
 > observabilidade. Confirme que os spans voltam a chegar antes de dar o passo por feito.
+
+---
+
+## Um backup fiel não é um backup correcto
+
+Descoberto ao reparar o `litellm/config.yaml` que o deploy tinha esmagado (ver o histórico do
+`deploy.sh`). O ficheiro foi substituído no host a **17/08 23:04**. Os backups correm às 03:17.
+Logo:
+
+| Cópia | `litellm/config.yaml` lá dentro |
+|---|---|
+| `aos-20260817T011703Z` | **2 modelos activos** — a configuração real |
+| `aos-20260818T011701Z` | **0 modelos** — o *placeholder* |
+
+O backup mais recente levava a configuração partida. Um restauro a partir dele teria produzido um
+nó **sem modelo** — e a rotação de 14 dias acabaria por levar a última cópia boa, altura em que a
+configuração deixaria de existir em qualquer sítio.
+
+**O backup fez exactamente o que devia.** Copiou fielmente o que estava no host. O problema é que
+o que estava no host era o placeholder, e nada no processo de backup podia sabê-lo.
+
+### O que isto corrige na forma de verificar
+
+Eu tinha escrito que os backups estavam *"verificados ponta-a-ponta: recolhida, **decifrada** com a
+privada local, e a chave Transit confirmada lá dentro"*. Isso é verdade e continua a ser — mas
+verifica **integridade**, não **correcção**. Prova que o artefacto abre; não prova que o que lá
+está serve para levantar o sistema.
+
+São perguntas diferentes, e a segunda é a que interessa no dia mau:
+
+- *o artefacto decifra e não está truncado?* — verificado, e automatizado no `pull-backups.ps1`
+- *o que lá está levantaria o sistema?* — só se sabe **restaurando**, e isso nunca foi feito aqui
+
+Corrida uma cópia nova depois da reparação (`aos-20260818T123900Z`), decifrada, e confirmado que
+leva os dois modelos e **nenhuma chave em claro** — as chaves continuam a vir de `os.environ`, não
+do ficheiro.
+
+> **Fica por fazer, e é o teste que falta:** um **restauro de ensaio** para um host limpo. Sem ele,
+> a frase "temos backups" é uma hipótese. É o único exercício que responde à segunda pergunta, e
+> não se pode responder a ela lendo o artefacto.
