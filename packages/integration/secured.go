@@ -361,8 +361,17 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		hooks = append(hooks, referencemonitor.NewApprovalGate(cfg.ApprovalVerifier))
 	}
 	hooks = append(hooks,
-		identity.NewIdentityCheck(verifier),       // identity — resolve Call.Principal
-		revalHook,                                 // revalidation (AOS-051)
+		identity.NewIdentityCheck(verifier), // identity — resolve Call.Principal
+		revalHook,                           // revalidation (AOS-051)
+		// risk-classify ANOTA a classe SA-ROC e NUNCA decide. Tem de vir ANTES da política
+		// porque o oráculo de autonomia vive DENTRO dela e lê Context.RiskClass; sem esta
+		// anotação o overlay vê vazio, resolve para danger (fail-closed) e a taxonomia
+		// L0–L5 fica com dois estados — a L3 igual à L1, a L4 a escalar tudo.
+		//
+		// NÃO é o RiskGate. O RiskGate IMPÕE (SAROC-04, canal de confirmação) e, sem um
+		// risk.Gate composto — o caso deste nó — NEGA tudo o que não seja safe. Pô-lo aqui
+		// pararia o nó por inteiro. Este hook devolve sempre HookAllow.
+		referencemonitor.NewRiskClassifier(nil),
 		pdp.NewPolicyCheck(policyDP),              // policy (PDP, AOS-004)
 		referencemonitor.NewTaintGate(privileged), // taint (AOS-069)
 		referencemonitor.NewScopeGate(authority),  // scope (AOS-071)
