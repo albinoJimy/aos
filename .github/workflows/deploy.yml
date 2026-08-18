@@ -125,8 +125,29 @@ jobs:
           # SEM --delete, ao contrário das políticas: estes directórios podem conter material do
           # OPERADOR a par do do repositório (a raiz semeada do sandbox é o caso claro), e
           # apagá-lo seria destruir configuração que ninguém pediu para remover.
+          #
+          # --ignore-existing PARA O QUE O OPERADOR POSSUI. "Coexistir" não chega quando os dois
+          # lados usam o MESMO NOME. Aconteceu: o `litellm/config.yaml` do repositório é um
+          # PLACEHOLDER com todos os providers comentados, e um deploy escreveu-o por cima do
+          # ficheiro real do operador. O contentor a correr não notou — um bind-mount de FICHEIRO
+          # fica agarrado ao inode antigo, e o `rsync` cria um inode novo — pelo que o LiteLLM
+          # continuou a servir o Kimi a partir de um inode ÓRFÃO durante dois dias.
+          #
+          # O sintoma que isto teria produzido: no restart seguinte o LiteLLM subia com
+          # `model_list:` VAZIO, o nó ficava sem modelo, e a configuração que funcionava não
+          # existia em lado nenhum — nem no host, nem no git. Um restart de rotina apagaria
+          # trabalho que ninguém tinha guardado.
+          #
+          # Os ficheiros abaixo são SEMENTE, não verdade: o repositório dá-os quando faltam e
+          # nunca os reescreve. O que o repositório POSSUI de facto (tools.json, o realm, as
+          # políticas) continua a ser sincronizado normalmente.
+          for f in litellm/config.yaml keycloak/realm-aos.json; do
+            [ -f "deploy/server/$f" ] || continue
+            rsync -az --ignore-existing -e "$SSH" "deploy/server/$f" "$USER@$HOST:/opt/aos/$f"
+          done
           for d in model-tools litellm keycloak vault gvisor; do
-            rsync -az -e "$SSH" "deploy/server/$d/" "$USER@$HOST:/opt/aos/$d/"
+            rsync -az --exclude='config.yaml' --exclude='realm-aos.json' \
+              -e "$SSH" "deploy/server/$d/" "$USER@$HOST:/opt/aos/$d/"
           done
           # O bundle PDP é totalmente gerido pelo repositório: aqui --delete é correcto e
           # necessário (uma política removida do repo tem de desaparecer do servidor).
