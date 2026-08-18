@@ -175,3 +175,34 @@ O nó, porém, **não sai à internet para o alcançar** — busca o JWKS por `h
 nome de rede interno, via `AOS_SOVEREIGN_OIDC_JWKS_URI`. É o que resolve o horizonte dividido: o
 `iss` que o cliente vê e o caminho que o nó usa são deliberadamente diferentes, e o certificado do
 IdP tem SAN para ambos os nomes.
+
+## Dois poderes, duas audiências
+
+| Cliente | Para quê | Audiência do ID-token |
+|---|---|---|
+| `aos-node` | **ler** um run (o `board` resolve a região) | `aos-node` |
+| `aos-issuer` | **cunhar** uma raiz de delegação (ADR-003) | `aos-issuer` |
+
+Não é simetria decorativa. Com uma audiência só, um ID-token obtido para **ler um run** servia
+para **cunhar uma NHI enraizada no leitor** — dois poderes muito diferentes atrás da mesma prova.
+A audiência do OAuth existe exactamente para dizer *a quem* um token se destina, e usá-la é o que
+impede a confusão.
+
+O `aos-issuer` **não tem** o mapper de `board`: cunhar não é ler, e um token que não precisa do
+dado não deve trazê-lo.
+
+### O que o `aos-issuer` exige a mais
+
+O `nonce` do fluxo de código tem de ser o **digest da delegação** — agente, classe, capabilities
+e TTL. O IdP ecoa-o no ID-token, e o `aos-issuer` **calcula o esperado a partir das flags que
+está a cunhar**, nunca o aceita por parâmetro (um nonce fornecido ao lado dos parâmetros far-se-ia
+coincidir com o que quer que se estivesse a cunhar).
+
+A consequência é a que interessa: um ID-token capturado **não serve para cunhar outra coisa**. Sem
+isto, `--assertion` provava que o humano *se autenticou*, não que *autorizou aquilo* — e o eixo do
+ADR-003 continuava semanticamente vazio com uma etiqueta melhor.
+
+O digest sai do próprio binário (`aos-issuer delegation-nonce`) e **não é reimplementado** no
+script de browser. Duas implementações do mesmo cálculo divergem, e a divergência aqui não daria
+um erro legível: daria `nonce nao corresponde`, que parece um ataque e seria um bug de
+portabilidade (ordem dos campos, codificação do texto, unidade do TTL).

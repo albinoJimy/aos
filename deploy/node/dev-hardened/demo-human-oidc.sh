@@ -42,9 +42,17 @@ SUB="$(claim_of "${ASSERT}" sub)"
 echo "[human]   sub verificado do Keycloak = ${SUB}"
 
 echo "[human] 3/4 aos-issuer mint --assertion (verifica o ID-token contra o Keycloak, deriva o humano) ..."
+# --assertion-unbound: este ID-token vem do PASSWORD GRANT, que nao tem `nonce` — logo nao ha
+# como ligar a autenticacao a esta delegacao concreta. O rotulo que sai fica em `oidc:<iss>`
+# ("o humano esteve presente"), e nao `oidc-bound:` ("autorizou ISTO"), e essa diferenca fica
+# ESCRITA no registo de binding em vez de indistinguivel.
+#
+# Nao e uma limitacao desta demo: e a razao pela qual o caminho de PRODUCAO usa codigo de
+# autorizacao no browser (deploy/server/get-id-token.ps1 -Cunhar), onde o nonce existe. Ver
+# deploy/server/README.md §"O que continua por fechar", ponto 10.
 NHI="$("${DC[@]}" run --rm -T issuer \
   mint --key-file issuer.key --issuer iss:aos-issuer \
-       --assertion "${ASSERT}" --oidc-issuer "${ISS}" --oidc-jwks "${JWKS}" --oidc-audience aos-node \
+       --assertion "${ASSERT}" --assertion-unbound --oidc-issuer "${ISS}" --oidc-jwks "${JWKS}" --oidc-audience aos-node \
        --agent agt-human --class researcher --caps cap:doc.read --ttl 15m 2>/dev/null | tr -d '\r\n')"
 [[ -n "${NHI}" ]] || fail "mint --assertion falhou (ver: ${DC[*]} run --rm issuer mint --assertion ...)"
 NHI_HUMAN="$(claim_of "${NHI}" user_id)"

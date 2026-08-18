@@ -86,7 +86,7 @@ a `AOS_MODE=production` e liga a **credencial forte de soberania**. O nó faz ve
 | Frente | Onde | Como / prova |
 |---|---|---|
 | **Soberania — credencial FORTE OIDC** (`AOS_SOVEREIGN_OIDC_ISSUER`/`_AUDIENCE`) | no **NÓ** | `POST /runs` exige `Authorization: Bearer <id-token>`; o `board` vem das CLAIMS assinadas. Prova: run aceite **201**; `X-Aos-Board` forjado sem Bearer **403**. |
-| **Identidade humana OIDC** (`aos-issuer --assertion`) | no **ISSUER externo** (não no nó, em modo endurecido) | `bash demo-human-oidc.sh`: o humano-raiz do NHI é DERIVADO do `sub` de um ID-token verificado contra o Keycloak, não de uma flag manual. |
+| **Identidade humana OIDC** (`aos-issuer --assertion`) | no **ISSUER externo** (não no nó, em modo endurecido) | `bash demo-human-oidc.sh`: o humano-raiz do NHI é DERIVADO do `sub` de um ID-token verificado contra o Keycloak, não de uma flag manual. Fica em `oidc:<iss>` e **não** `oidc-bound:` — o *password grant* não tem `nonce`, logo não há como ligar a autenticação a esta delegação concreta. |
 
 Detalhes de topologia que tornam isto real:
 - **TLS ao IdP:** o Keycloak serve https com cert da **CA de dev** (gerada em `up-oidc.sh`); o nó
@@ -161,7 +161,7 @@ Detalhes de topologia que tornam isto real:
 | `up-oidc.sh` | Gera CA+cert do IdP + token do Vault, sobe Postgres+Keycloak+Vault + nó em produção, habilita Transit e prova o run com Bearer OIDC (balde B). |
 | `docker-compose.oidc.yml` | Override: `postgres` (DB do Keycloak), `idp` (Keycloak), `vault` (Transit), nó em `AOS_MODE=production`+sovereign OIDC+custódia Vault, e o toolbox `issuer` (profile `tools`). |
 | `keycloak/realm-aos.json` | Realm importável: client `aos-node`, user `alice`, mapper `board`→claim. |
-| `demo-human-oidc.sh` | Autentica o humano por OIDC (`aos-issuer --assertion`) e submete um run. |
+| `demo-human-oidc.sh` | Autentica o humano por OIDC (`aos-issuer --assertion`) e submete um run. Autenticação **não ligada** à delegação (`--assertion-unbound`): prova *quem é*, não *o que autorizou*. |
 | `demo-vault-shred.sh` | Prova o crypto-shred: um run cria a KEK no Vault; o `/dsar/erase` destrói-a. |
 | `litellm/config.yaml` | Gateway de modelos EXTERNO (LiteLLM): mapeia os nomes allowlisted → providers/modelos reais (Kimi/Moonshot, …). Multi-provider/modelo, sem código. |
 | `postgres-init/` | SQL que cria a DB `litellm` (UI/keys) no 1º init do Postgres. |

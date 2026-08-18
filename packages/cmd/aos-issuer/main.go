@@ -70,6 +70,8 @@ func run(args []string, out io.Writer) error {
 		return runRatifySign(args[1:], out)
 	case "mint":
 		return cmdMint(args[1:], out)
+	case "delegation-nonce":
+		return cmdDelegationNonce(args[1:], out)
 	default:
 		return fmt.Errorf("subcomando desconhecido %q\n%s", args[0], usage)
 	}
@@ -115,6 +117,13 @@ func cmdMint(args []string, out io.Writer) error {
 	oidcIssuer := fs.String("oidc-issuer", "", "issuer OIDC (URL) — exigido com --assertion")
 	oidcAudience := fs.String("oidc-audience", "", "audience OIDC — exigido com --assertion")
 	oidcJWKS := fs.String("oidc-jwks", "", "JWKS URI do IdP (opcional; vazio ⇒ discovery via issuer)")
+	oidcCA := fs.String("oidc-ca", "", "CA PEM do IdP quando serve TLS com CA privada (vazio ⇒ trust store do sistema)")
+	// LIGAÇÃO À DELEGAÇÃO: por omissão, --assertion EXIGE que o humano se tenha autenticado PARA
+	// ESTA delegação (nonce == digest de agent/class/caps/ttl). Desligá-la é possível e fica
+	// ESCRITO NO REGISTO — o rótulo desce de oidc-bound: para oidc:, e um auditor distingue
+	// "autorizou isto" de "esteve presente". Existe porque nem toda a autenticação tem nonce (o
+	// password grant não tem), não porque a ligação seja opcional em produção.
+	assertionUnbound := fs.Bool("assertion-unbound", false, "aceitar a asserção SEM a ligar a esta delegação (rótulo desce a oidc:<iss>)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -130,15 +139,41 @@ func cmdMint(args []string, out io.Writer) error {
 		}
 		// HTTPClient/Clock nil ⇒ defaults endurecidos do verificador (AOS-229: TLS 1.2 + timeout +
 		// limite de redirects + anti-SSRF); sem AllowInsecureTransport ⇒ https exigido ao IdP.
+		hc, err := idpHTTPClient(*oidcCA)
+		if err != nil {
+			return err
+		}
+		// O nonce esperado é DERIVADO das flags que estamos a cunhar — nunca recebido por
+		// parâmetro. Um nonce fornecido ao lado dos parâmetros far-se-ia coincidir com o que
+		// quer que se estivesse a cunhar, e a "ligação" não ligaria nada.
+		nonce := ""
+		if !*assertionUnbound {
+			nonce = delegationNonce(*agent, *class, splitCSV(*caps), *ttl)
+		}
 		h, m, err := authenticateOIDC(context.Background(), oidc.Config{
-			Issuer:   *oidcIssuer,
-			Audience: *oidcAudience,
-			JWKSURI:  *oidcJWKS, // vazio ⇒ discovery via issuer
+			Issuer:     *oidcIssuer,
+			Audience:   *oidcAudience,
+			JWKSURI:    *oidcJWKS, // vazio ⇒ discovery via issuer
+			HTTPClient: hc,        // nil quando não há --oidc-ca ⇒ default endurecido de AOS-229
+			Nonce:      nonce,     // vazio ⇒ sem ligação (rótulo desce; ver --assertion-unbound)
+			// TECTO DE IDADE. Sem isto o token era aceite durante toda a janela do exp, o que
+			// fazia deste o MAIS FRACO dos três verificadores OIDC do sistema (o read soberano e
+			// o directório humano do nó já impunham 5 min). Não se liga aqui o RequireJTI: o
+			// armazém anti-replay é um campo do Verifier, e este binário é um processo de vida
+			// curta — o mapa nasce vazio a cada invocação, pelo que pareceria anti-replay e não
+			// seria nenhum. O que serve de facto é este tecto, mais a ligação ao nonce.
+			MaxAge: assertionMaxAge,
 		}, *assertion)
 		if err != nil {
 			return fmt.Errorf("autenticação OIDC do humano: %w", err)
 		}
 		rootHuman, method = h, m
+		if !*assertionUnbound {
+			// Rótulo FORTE: o humano autenticou-se PARA ESTA delegação, não apenas "esteve
+			// presente". *oidcIssuer é seguro como fonte porque Validate já exigiu que o `iss`
+			// do token lhe fosse igual.
+			method = "oidc-bound:" + *oidcIssuer
+		}
 	}
 	if rootHuman == "" {
 		return errors.New("mint exige --human ou --assertion (o humano-raiz da delegação)")
