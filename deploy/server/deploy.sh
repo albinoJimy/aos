@@ -124,31 +124,75 @@ dc up -d --remove-orphans || fail "compose up falhou"
 # arrancar, o processo ou já não o lê (substituído) ou leu-o antes (escrito por cima e não
 # relido). Nos dois casos recriar realinha. O custo é um restart a mais quando o ficheiro foi
 # escrito por cima — barato, e do lado certo do erro.
+# hash_no_contentor devolve o md5 do ficheiro TAL COMO O PROCESSO O VÊ, ou vazio.
+#
+# A VALIDAÇÃO DA FORMA NÃO É ZELO. Uma imagem distroless não tem shell nem `md5sum`, e o
+# `docker exec` devolve o erro do OCI — `OCI runtime exec failed: ...`. Esse texto entra numa
+# variável tão bem como um hash entraria, e comparado com o do host DIFERE SEMPRE. Já produziu
+# três falsos "*** DERIVA ***" neste projecto, e o pior deles apontava para o WORM do nó.
+#
+# Um hash tem 32 hex. Tudo o resto é "não sei", e "não sei" nunca pode ser "diferente".
+hash_no_contentor() {
+  local cid="$1" dst="$2" h
+  h="$( docker exec "${cid}" md5sum "${dst}" 2>/dev/null | cut -d' ' -f1 )"
+  case "${h}" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s' "${h}" ;;
+    *) printf '' ;;
+  esac
+}
+
 log "4b/6 a verificar config montada mais nova que o processo ..."
-: > /tmp/aos-realinhar.txt
+DET=/tmp/aos-deriva-detalhe.txt
+: > "${DET}"
 for svc in $( dc ps --services 2>/dev/null ); do
   cid="$( dc ps -q "${svc}" 2>/dev/null )"
   [ -n "${cid}" ] || continue
   inicio="$( docker inspect -f '{{.State.StartedAt}}' "${cid}" 2>/dev/null )" || continue
   ini_epoch="$( date -d "${inicio}" +%s 2>/dev/null )" || continue
-  docker inspect "${cid}" --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{println}}{{end}}{{end}}' 2>/dev/null \
-  | while read -r src; do
+  docker inspect "${cid}" --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}|{{.Destination}}{{println}}{{end}}{{end}}' 2>/dev/null \
+  | while IFS='|' read -r src dst; do
       [ -n "${src}" ] && [ -f "${src}" ] || continue
       f_epoch="$( stat -c %Y "${src}" 2>/dev/null )" || continue
       [ "${f_epoch}" -gt "${ini_epoch}" ] || continue
-      log "     ${svc}: $( basename "${src}" ) mudou depois do arranque do processo"
-      echo "${svc}"
-    done
-done | sort -u > /tmp/aos-realinhar.txt || true
 
-if [ -s /tmp/aos-realinhar.txt ]; then
-  log "     a recriar: $( tr '\n' ' ' < /tmp/aos-realinhar.txt )"
-  # shellcheck disable=SC2046
-  dc up -d --force-recreate $( tr '\n' ' ' < /tmp/aos-realinhar.txt ) || fail "recriação por config nova falhou"
+      # O ficheiro é mais novo que o processo. Isso SUSPEITA de deriva; não a prova. Quando dá
+      # para ler de dentro, o CONTEÚDO decide — e poupa um restart a quem só levou uma data nova
+      # do rsync. Reiniciar o `edge` por causa de um mtime é uma interrupção pública sem motivo.
+      hc="$( hash_no_contentor "${cid}" "${dst}" )"
+      if [ -n "${hc}" ]; then
+        hh="$( md5sum "${src}" | cut -d' ' -f1 )"
+        [ "${hh}" = "${hc}" ] && continue          # mais novo, mas IGUAL ⇒ nada a fazer
+        printf '%s\t%s\t%s\n' "${svc}" "$( basename "${src}" )" "conteudo" >> "${DET}"
+      else
+        # Sem leitor lá dentro (distroless). Fica a data, que é conservadora: no pior caso
+        # recria-se um serviço que já estava alinhado.
+        printf '%s\t%s\t%s\n' "${svc}" "$( basename "${src}" )" "data (sem leitor)" >> "${DET}"
+      fi
+    done
+done
+
+if [ -s "${DET}" ]; then
+  while IFS="$(printf '\t')" read -r s f m; do
+    log "     ${s}: ${f} diverge por ${m}"
+  done < "${DET}"
+
+  # GUARDA: só passam nomes que o compose RECONHECE. Se algo além de um nome de serviço chegar
+  # aqui outra vez, pára com uma mensagem que o diz — em vez de o entregar ao docker.
+  SERVICOS="$( dc ps --services 2>/dev/null | tr '\n' ' ' )"
+  ALVOS=""
+  for s in $( cut -f1 "${DET}" | sort -u ); do
+    case " ${SERVICOS} " in
+      *" ${s} "*) ALVOS="${ALVOS} ${s}" ;;
+      *) fail "deriva: ${s} nao e um servico do compose — a lista foi contaminada" ;;
+    esac
+  done
+  log "     a recriar:${ALVOS}"
+  # shellcheck disable=SC2086
+  dc up -d --force-recreate ${ALVOS} || fail "recriacao por config nova falhou"
 else
-  log "     nenhuma config mais nova que o seu processo"
+  log "     nenhuma config divergente"
 fi
-rm -f /tmp/aos-realinhar.txt
+rm -f "${DET}"
 
 # --- 5. Espera pelo healthy do NÓ (não do edge: o edge só arranca depois) -------------------------
 log "5/6 a aguardar o nó healthy (tecto ${HEALTH_TIMEOUT}s) ..."
