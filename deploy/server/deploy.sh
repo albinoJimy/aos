@@ -99,6 +99,57 @@ RESOLVED="$( docker image inspect --format '{{index .RepoDigests 0}}' "${IMAGE_R
 log "4/6 docker compose up -d ..."
 dc up -d --remove-orphans || fail "compose up falhou"
 
+
+# --- 4b. CONFIG MONTADA MAIS NOVA QUE O PROCESSO ----------------------------------------------
+# `docker compose up -d` recria um serviço quando a DEFINIÇÃO muda — imagem, env, montagens. NÃO
+# o recria quando muda apenas o CONTEÚDO de um ficheiro montado, porque a definição é a mesma. E
+# um bind-mount de FICHEIRO fica agarrado ao INODE: o `rsync` escreve um ficheiro novo e renomeia,
+# o inode muda, e o processo continua a ler o antigo — que já não está em caminho nenhum.
+#
+# O nó escapa por acidente: a imagem muda a cada deploy, é recriado, relê tudo. Os OUTROS
+# serviços — litellm, otel, edge, idp, vault — ficam com o inode antigo INDEFINIDAMENTE, e a
+# divergência não produz sintoma até alguém reiniciar.
+#
+# Foi assim que o LiteLLM serviu dois dias a partir de um inode órfão: o host tinha `model_list:`
+# vazio, o processo tinha o encaminhamento real, e um restart de rotina teria deixado o nó sem
+# modelo — com a configuração a existir só na vista de um processo.
+#
+# COMPARAR HASHES NÃO SERVE, e vale a pena dizer porquê: um contentor auxiliar com
+# `--volumes-from` RE-RESOLVE o caminho de origem, monta o ficheiro de novo, e vê sempre o do
+# host. Concorda sempre. Verificado — o detector que o fazia passou o caso de deriva sem o notar.
+# Ler `/proc/<pid>/root/...` do host mostraria a vista real, mas exige root, que este deploy
+# deliberadamente não tem.
+#
+# O sinal que resta é sólido e conservador: se o ficheiro no host foi TOCADO depois de o processo
+# arrancar, o processo ou já não o lê (substituído) ou leu-o antes (escrito por cima e não
+# relido). Nos dois casos recriar realinha. O custo é um restart a mais quando o ficheiro foi
+# escrito por cima — barato, e do lado certo do erro.
+log "4b/6 a verificar config montada mais nova que o processo ..."
+: > /tmp/aos-realinhar.txt
+for svc in $( dc ps --services 2>/dev/null ); do
+  cid="$( dc ps -q "${svc}" 2>/dev/null )"
+  [ -n "${cid}" ] || continue
+  inicio="$( docker inspect -f '{{.State.StartedAt}}' "${cid}" 2>/dev/null )" || continue
+  ini_epoch="$( date -d "${inicio}" +%s 2>/dev/null )" || continue
+  docker inspect "${cid}" --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{println}}{{end}}{{end}}' 2>/dev/null \
+  | while read -r src; do
+      [ -n "${src}" ] && [ -f "${src}" ] || continue
+      f_epoch="$( stat -c %Y "${src}" 2>/dev/null )" || continue
+      [ "${f_epoch}" -gt "${ini_epoch}" ] || continue
+      log "     ${svc}: $( basename "${src}" ) mudou depois do arranque do processo"
+      echo "${svc}"
+    done
+done | sort -u > /tmp/aos-realinhar.txt || true
+
+if [ -s /tmp/aos-realinhar.txt ]; then
+  log "     a recriar: $( tr '\n' ' ' < /tmp/aos-realinhar.txt )"
+  # shellcheck disable=SC2046
+  dc up -d --force-recreate $( tr '\n' ' ' < /tmp/aos-realinhar.txt ) || fail "recriação por config nova falhou"
+else
+  log "     nenhuma config mais nova que o seu processo"
+fi
+rm -f /tmp/aos-realinhar.txt
+
 # --- 5. Espera pelo healthy do NÓ (não do edge: o edge só arranca depois) -------------------------
 log "5/6 a aguardar o nó healthy (tecto ${HEALTH_TIMEOUT}s) ..."
 CID="$( dc ps -q aos )"
