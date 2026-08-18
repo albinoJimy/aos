@@ -875,7 +875,7 @@ Nomeado, não escondido:
    out-of-process novo, custódia da chave, e um ciclo operacional que reselcie e avance o piso de
    frescura — não uma linha no `.env`.
 
-   **(b) Um checkpoint ancora UMA partição, e este WORM tem 69.** `Checkpoint.Partition` é um
+   **(b) Um checkpoint ancora UMA partição, e este WORM tem 108.** `Checkpoint.Partition` é um
    campo só, e o nó recebe uma `WormAnchor` só. Contadas no WORM de produção: **108 cadeias
    independentes** (`governance.retention`, `gov.read/<run>`, uma por run, …) — o banner reportou
    104 no arranque e são 108 agora, porque cada run submetido desde então cria duas. Ligar a âncora
