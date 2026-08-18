@@ -203,6 +203,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Backups cifrados** | PKCS#7 para um certificado cuja privada **nunca esteve no servidor** | ✅ |
 | **Recolha off-host** | Tarefa diária `StartWhenAvailable`; verificado **decifrando** e confirmando a chave Transit lá dentro | ✅ |
 | **Reversão por digest** | `rollback.sh` com digest da imagem | ✅ |
+| **O backup levanta o sistema** | Não é o mesmo que "o backup decifra". Ensaio completo do artefacto: Vault desselado com a chave de dentro do backup, WORM re-encadeado (108 partições), `idp-db.sql` restaurado (87 tabelas), Keycloak sobre ele, e **token do IdP restaurado a ler no nó restaurado** → `200`. Controlos no sistema restaurado: sem credencial `404`, header forjado `404`, replay do `jti` `404` | ✅ |
 | **Alerta de recência do backup** | Verifica a idade dos **dois** lados: a cópia local (apanha "a máquina esteve desligada") e o backup **remoto** (apanha "o cron do servidor morreu" — o caso invisível, porque a recolha continua a correr sem erro e a dizer `0 novo(s)`). Alerta por código de saída, `ESTADO.txt` e Registo de Eventos. Controlos: tecto de 1h → saída `3`; servidor inalcançável → saída `2`; normal → `0` | ✅ |
 
 ---
@@ -228,11 +229,11 @@ sempre um controlo que teria de falhar, e falhou.
 
 ## Contagem
 
-**65 conceitos** em 13 eixos:
+**66 conceitos** em 13 eixos:
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 45 |
+| ✅ Provado em produção | 46 |
 | 🧪 Provado por teste | 9 |
 | ⚠️ Armado, não exercido | 3 |
 | 💤 Dormente por configuração | 5 |
