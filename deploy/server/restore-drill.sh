@@ -48,16 +48,36 @@ RID_PADRAO="${RESTORE_DRILL_RUN_ID:-}"
 
 log()  { printf '[ensaio] %s\n' "$*"; }
 fail() { printf '[ensaio] ERRO: %s\n' "$*" >&2; exit 1; }
+# contem <padrão> <texto> — TODA a busca deste script passa por aqui, e existe para que
+# `cmd | grep -q` deixe de ser escrevível por distracção. Com `set -o pipefail`, o `grep -q` fecha
+# o pipe mal encontra, o comando a montante leva SIGPIPE, e o pipeline falha APESAR de ter
+# encontrado. Foi o defeito mais caro deste ficheiro — e reintroduzi-o uma vez, no próprio código
+# que escrevi para o corrigir.
+contem() { grep -qE "$1" <<<"$2"; }
 
 [[ -n "${BUNDLE}" && -f "${BUNDLE}" ]] || fail "uso: $0 <bundle.tar.gz decifrado>"
 command -v docker >/dev/null || fail "docker em falta"
 
 D="$(mktemp -d /tmp/restore-drill.XXXXXX)"
 
-# LIMPEZA EM TRAP, e com shred. Enquanto o ensaio corre, ${D} tem lá dentro o .env, os secrets/ e
-# o material TLS interno em CLARO. Sair a meio sem isto deixaria segredos no disco do host.
+# RESTORE_DRILL_KEEP=1 deixa a pilha DE PÉ no fim, para servir de laboratório: é onde se podem
+# exercitar mecanismos que em produção estão armados e nunca dispararam (o escalate de autonomia,
+# o burn-down do orçamento, a cerimónia four-eyes) sem pedir a ninguém que mude o comportamento
+# do nó que serve.
+#
+# O PREÇO É EXPLÍCITO: o directório temporário fica, e tem lá dentro o .env, os secrets/ e as
+# chaves TLS EM CLARO. O script diz onde e como o apagar; não o esconde, e não o apaga sozinho
+# porque os contentores ainda o têm montado.
 limpar() {
   local st=$?
+  if [[ "${RESTORE_DRILL_KEEP:-}" = "1" ]]; then
+    log "PILHA MANTIDA DE PÉ (RESTORE_DRILL_KEEP=1)"
+    log "  contentores: ${PREFIX}-aos ${PREFIX}-idp ${PREFIX}-vault ${PREFIX}-pg   rede: ${NET}"
+    log "  ⚠ ${D} tem .env/secrets/TLS EM CLARO. Ao terminar:"
+    log "     docker rm -f ${PREFIX}-aos ${PREFIX}-idp ${PREFIX}-vault ${PREFIX}-pg; docker network rm ${NET}"
+    log "     find ${D} -type f -exec shred -u {} +; rm -rf ${D}"
+    exit "${st}"
+  fi
   log "a limpar ..."
   docker rm -f "${PREFIX}-aos" "${PREFIX}-idp" "${PREFIX}-vault" "${PREFIX}-pg" >/dev/null 2>&1 || true
   docker network rm "${NET}" >/dev/null 2>&1 || true
@@ -93,14 +113,30 @@ docker run -d --name "${PREFIX}-vault" --network "${NET}" --network-alias vault 
   -v "${D}/vol/vault:/vault/file" -v /opt/aos/tls-internal/vault:/vault/tls:ro \
   -v /opt/aos/vault/config.hcl:/vault/config/config.hcl:ro \
   hashicorp/vault:1.17 vault server -config=/vault/config/config.hcl >/dev/null
-sleep 6
+# ESPERA EXPLÍCITA, como no Postgres. Um `sleep` fixo é uma aposta na carga da máquina.
+#
+# Duas armadilhas aqui, e caí nas duas:
+#   · `vault status` devolve 2 quando o Vault está SELADO — que é exactamente o estado que
+#     queremos alcançar antes de desselar. O código de saída não serve de sinal de "está pronto";
+#     o que serve é ele RESPONDER.
+#   · e a busca tem de ser sobre uma VARIÁVEL. Escrevi `| grep -q` aqui logo a seguir a corrigir
+#     o mesmo defeito noutro sítio deste ficheiro: com pipefail, o grep -q fecha o pipe, o
+#     comando a montante leva SIGPIPE, e a condição nunca é verdadeira. Daí o `contem`.
+pronto_v=0
+for _ in $(seq 1 45); do
+  ST="$(docker exec -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_SKIP_VERIFY=1 "${PREFIX}-vault" \
+         vault status 2>&1 || true)"
+  if contem 'Sealed' "${ST}"; then pronto_v=1; break; fi
+  sleep 2
+done
+[[ "${pronto_v}" = 1 ]] || fail "o Vault do ensaio não respondeu em 90s (host sob carga?)"
 # SEM `| grep -q`: com `set -o pipefail`, o `grep -q` fecha o pipe mal encontra o padrão, o
 # comando a montante leva SIGPIPE e sai não-zero, e o PIPELINE INTEIRO falha — apesar de o padrão
 # TER SIDO ENCONTRADO. Custou duas iterações a diagnosticar: o Vault desselava sempre, era a
 # verificação que mentia. Todas as buscas deste script capturam para variável antes de procurar.
 SAIDA="$(docker exec -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_SKIP_VERIFY=1 "${PREFIX}-vault" \
   vault operator unseal "${UK}" 2>&1 || true)"
-grep -qE 'Sealed +false' <<<"${SAIDA}" || fail "o Vault restaurado NAO desselou: $(tail -2 <<<"${SAIDA}")"
+contem 'Sealed +false' "${SAIDA}" || fail "o Vault restaurado NAO desselou: $(tail -2 <<<"${SAIDA}")"
 log "  desselado com a chave que veio de dentro do backup"
 
 log "3/7 Postgres + dump do IdP"
@@ -138,9 +174,9 @@ pronto=0
 for i in $(seq 1 36); do
   sleep 10
   LOGIDP="$(docker logs "${PREFIX}-idp" 2>&1 || true)"
-  grep -q "Listening on" <<<"${LOGIDP}" && { pronto=1; log "  arrancou em ~$((i*10))s"; break; }
+  contem "Listening on" "${LOGIDP}" && { pronto=1; log "  arrancou em ~$((i*10))s"; break; }
   ESTIDP="$(docker ps -a --filter "name=${PREFIX}-idp" --format "{{.Status}}" || true)"
-  grep -q Exited <<<"${ESTIDP}" && {
+  contem "Exited" "${ESTIDP}" && {
     docker logs "${PREFIX}-idp" 2>&1 | tail -5; fail "o Keycloak restaurado SAIU"; }
 done
 [[ "${pronto}" = 1 ]] || fail "o Keycloak restaurado não ficou pronto"
@@ -150,6 +186,14 @@ AOS_IMG="$(docker inspect aos-aos-1 --format '{{.Image}}')"
 docker inspect aos-aos-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^[A-Z]' > "${D}/env-aos"
 sed -i 's#^AOS_DSAR_VAULT_ADDR=.*#AOS_DSAR_VAULT_ADDR=https://vault:8200#' "${D}/env-aos"
 sed -i 's#^AOS_SOVEREIGN_OIDC_JWKS_URI=.*#AOS_SOVEREIGN_OIDC_JWKS_URI=https://idp:8443/realms/aos/protocol/openid-connect/certs#' "${D}/env-aos"
+# RESTORE_DRILL_EXTRA_ENV acrescenta variáveis ao nó do ensaio — é o que torna esta pilha um
+# LABORATÓRIO e não só uma verificação. Mecanismos que em produção estão armados e nunca
+# dispararam (o `escalate` da autonomia, o burn-down do orçamento) podem ser exercitados aqui,
+# contra dados reais, sem pedir a ninguém que mude o comportamento do nó que serve.
+if [[ -n "${RESTORE_DRILL_EXTRA_ENV:-}" ]]; then
+  printf '%s\n' ${RESTORE_DRILL_EXTRA_ENV} >> "${D}/env-aos"
+  log "  env de exercício: ${RESTORE_DRILL_EXTRA_ENV}"
+fi
 docker run -d --name "${PREFIX}-aos" --network "${NET}" --cpus 2 --env-file "${D}/env-aos" \
   -v "${D}/vol/aos:/var/lib/aos" \
   -v "${D}/cfg/model-tools/tools.json:/etc/aos/model-tools.json:ro" \
@@ -161,7 +205,7 @@ docker run -d --name "${PREFIX}-aos" --network "${NET}" --cpus 2 --env-file "${D
   -v "${D}/cfg/policies:/etc/aos/policies:ro" "${AOS_IMG}" >/dev/null
 sleep 28
 LOGAOS="$(docker logs "${PREFIX}-aos" 2>&1 || true)"
-grep -q "bootstrap concluido" <<<"${LOGAOS}" || {
+contem "bootstrap concluido" "${LOGAOS}" || {
   docker logs "${PREFIX}-aos" 2>&1 | tail -6; fail "o nó restaurado NÃO arrancou"; }
 PART="$(docker logs "${PREFIX}-aos" 2>&1 | sed -n 's/.*verificada no arranque (\([0-9]*\) particao.*/\1/p' | head -1)"
 log "  arrancou; hash-chain re-encadeada em ${PART} partição(ões)"
