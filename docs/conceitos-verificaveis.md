@@ -138,7 +138,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Replay não re-reserva** | Dedup por `run_id:step_id` | 🧪 |
 | **Burn-down** (AOS-261/262) — aviso aos 80% | Lê o ledger durável; fail-closed se o ledger somou zero | ⚠️ |
 | **Tecto em dólares recusado sem fonte de preço** | Definir `AOS_BUDGET_MAX_COST_MICRO_USD` sem preço na tabela **aborta o arranque** | 🧪 |
-| **Custo do modelo** (AOS-259) | Canal ligado, **fonte ausente**: o par (`gpt-4o-mini`, `eu`) não está na tabela → custo zero **por ausência de dados**, não custo nulo | ⚠️ |
+| **Custo do modelo** (AOS-259) | Canal ligado, **fonte ausente**. E a chave da tabela é o **alias** `(gpt-4o-mini, eu)`, não o modelo real (`kimi-for-coding`) — pôr aí o preço do gpt-4o-mini daria um custo numericamente preciso e factualmente falso. Ver §"o modelo que o nó nomeia não é o modelo que corre" | ⚠️ |
 
 > ❗ **Assimetria declarada:** o tecto é por-run **e por-incarnação**, e o aviso é cumulativo. Um run
 > em ciclo de escalada/retoma pode gastar até N × tecto. Fechar isto exige estado de orçamento
@@ -252,3 +252,30 @@ do nó, ou em §"O que continua por fechar" do
 > aspas num ficheiro binário, e um `grep` de símbolos numa tabela que também os usa para se
 > explicar a si própria. O que as apanhou foi a mesma coisa — cruzar o número com uma fonte
 > independente.
+
+---
+
+## Adenda: o modelo que o nó nomeia não é o modelo que corre
+
+Levantado ao investigar o item do custo (AOS-259), e é maior do que o custo.
+
+O nó pede `gpt-4o-mini`. Esse nome é um **alias governado** — tem de constar da allowlist
+assinada e embebida do gateway — e o LiteLLM traduz-o para o modelo real:
+
+| Alias que o nó pede | Modelo que corre | Onde |
+|---|---|---|
+| `gpt-4o-mini` | `openai/kimi-for-coding` | `api.kimi.com/coding/v1` |
+| `gpt-4o` | `openai/k3` | `api.kimi.com/coding/v1` |
+
+A separação é **deliberada e boa**: o nó governa *que nomes podem ser pedidos* (fronteira
+imutável sem re-assinar), e o ficheiro de encaminhamento decide *o que eles significam*. Trocar de
+provider não toca no nó.
+
+Mas tem uma consequência que muda o item do custo. A tabela de preços é chaveada pelo par
+**(alias, região)** — `(gpt-4o-mini, eu)`. Pôr aí o preço do `gpt-4o-mini` da OpenAI produziria um
+custo **numericamente preciso e factualmente falso**, porque quem responde é o Kimi. Hoje o custo
+é *zero por ausência de dados*, e isso é honesto; um preço errado seria pior do que nenhum, porque
+teria a aparência de informação.
+
+O que fecha o item, portanto, não é "acrescentar uma linha à tabela": é a tarifa **do Kimi**, e a
+consciência de que a chave da tabela é o alias.
