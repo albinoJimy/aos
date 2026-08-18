@@ -975,3 +975,72 @@ scp -i deploy/server/secrets-local/deploy_key \
 > com o mTLS mal configurado os spans param **em silêncio** e o nó continua a servir como se nada
 > fosse. A observabilidade desaparece sem um erro — o pior modo de falha possível justamente para
 > observabilidade. Confirme que os spans voltam a chegar antes de dar o passo por feito.
+
+---
+
+## Um backup fiel não é um backup correcto
+
+Descoberto ao reparar o `litellm/config.yaml` que o deploy tinha esmagado (ver o histórico do
+`deploy.sh`). O ficheiro foi substituído no host a **17/08 23:04**. Os backups correm às 03:17.
+Logo:
+
+| Cópia | `litellm/config.yaml` lá dentro |
+|---|---|
+| `aos-20260817T011703Z` | **2 modelos activos** — a configuração real |
+| `aos-20260818T011701Z` | **0 modelos** — o *placeholder* |
+
+O backup mais recente levava a configuração partida. Um restauro a partir dele teria produzido um
+nó **sem modelo** — e a rotação de 14 dias acabaria por levar a última cópia boa, altura em que a
+configuração deixaria de existir em qualquer sítio.
+
+**O backup fez exactamente o que devia.** Copiou fielmente o que estava no host. O problema é que
+o que estava no host era o placeholder, e nada no processo de backup podia sabê-lo.
+
+### O que isto corrige na forma de verificar
+
+Eu tinha escrito que os backups estavam *"verificados ponta-a-ponta: recolhida, **decifrada** com a
+privada local, e a chave Transit confirmada lá dentro"*. Isso é verdade e continua a ser — mas
+verifica **integridade**, não **correcção**. Prova que o artefacto abre; não prova que o que lá
+está serve para levantar o sistema.
+
+São perguntas diferentes, e a segunda é a que interessa no dia mau:
+
+- *o artefacto decifra e não está truncado?* — verificado, e automatizado no `pull-backups.ps1`
+- *o que lá está levantaria o sistema?* — só se sabe **restaurando**, e isso nunca foi feito aqui
+
+Corrida uma cópia nova depois da reparação (`aos-20260818T123900Z`), decifrada, e confirmado que
+leva os dois modelos e **nenhuma chave em claro** — as chaves continuam a vir de `os.environ`, não
+do ficheiro.
+
+### O restauro de ensaio — feito, e o que provou
+
+Corrido a **18/08** sobre `aos-20260818T123900Z`, num ambiente descartável no próprio servidor,
+**sem tocar no que estava a correr** (nomes próprios, sem portas publicadas, volumes à parte).
+A chave privada nunca foi para o servidor: o artefacto foi decifrado na máquina do operador e só o
+conteúdo viajou.
+
+| Passo | Resultado |
+|---|---|
+| Vault restaurado, desselado com a chave **de dentro do backup** | `Sealed false` |
+| Transit no Vault restaurado | a KEK lá está |
+| Nó arrancado contra os dados restaurados | `healthy` |
+| Hash-chain do WORM re-encadeada no arranque | **108 partições**, iguais às de produção |
+| Estado de governação re-hidratado | 68 ligações titular→partição |
+| `GET /runs/{id}` de um run que veio do backup | **`200`** |
+| O mesmo `GET` sem credencial | `404` |
+| Produção durante todo o exercício | `healthy`, `/healthz` `200` |
+
+A última linha da tabela é o que faz as outras significarem alguma coisa: sem o controlo do `404`,
+o `200` provaria apenas que o nó responde, não que o read-path restaurado ainda **decide**.
+
+**Portanto a resposta à segunda pergunta é sim, e agora é um facto e não uma hipótese:** o
+artefacto levanta o sistema — Vault, WORM, event store, governação e read-path — a partir de um
+ficheiro cifrado e da chave privada que vive noutra máquina.
+
+Tudo foi removido no fim, e o bundle em claro apagado com `shred` e não `rm`: enquanto existiu,
+tinha lá dentro `.env`, `secrets/` e o material TLS interno.
+
+> **O que este ensaio ainda não cobre:** o Keycloak. O `idp-db.sql` (87 tabelas) está no artefacto
+> e não foi restaurado — exigiria um Postgres descartável e um Keycloak a importar por cima. O
+> read-path do ensaio usou o IdP **em produção** para obter o token, portanto o que está provado é
+> que os *dados* e o *nó* voltam; a identidade voltar é plausível e **não está exercida**.
