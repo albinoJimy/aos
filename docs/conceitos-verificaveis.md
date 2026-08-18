@@ -20,7 +20,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | | Significado |
 |---|---|
 | ✅ | **Provado em produção** — exercido no nó real, com controlo |
-| 🧪 | **Provado por teste** — controlo no repositório, não exercido em produção |
+| 🧪 | **Provado por teste, ou em clone restaurado** — o mecanismo está exercido com controlos, mas não no nó que serve |
 | ⚠️ | **Armado, não exercido** — o mecanismo está ligado e nunca disparou |
 | 💤 | **Dormente** — desligado por configuração, declarado no banner |
 | ❌ | **Ausente** — lacuna declarada |
@@ -120,12 +120,12 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | Conceito | Como se verifica | Estado |
 |---|---|---|
 | **Canal de controlo Ed25519** (AOS-160) | 1 operador registado; HMAC demo **desligado** | ✅ |
-| **Four-eyes** (AOS-162) | 2 aprovadores pinados por ficheiro | ✅ |
+| **Four-eyes** (AOS-162) — a cerimónia inteira, não só os aprovadores pinados | 2 aprovadores pinados por ficheiro. **Exercitada num clone restaurado:** *challenges* distintos por aprovador, duas pernas assinadas com sessões e credenciais distintas, `authorized` nomeando ambos + `grant_id`. **Controlo:** a primeira tentativa foi **recusada** (`403`) por o `risk_class` do pedido divergir do assinado nas pernas — a assinatura cobre o tuplo canónico, e apanhou-o | 🧪 |
 | **Frescura por-cerimónia** (AOS-266) | `POST /runs/{id}/challenge` emite por (pedido, aprovador), TTL 5 min, *issue-then-consume*. Passou de `501` a `200` com challenges distintos | ✅ |
 | **Ratificação de promoção** (AOS-159/206/275) — assinatura produzida **fora** do nó | `aos-issuer ratify-sign`; freshness + nonce store durável forçados | 🧪 |
 | **Attestation de dispositivo** (AOS-177) | Sem `AOS_ATTESTATION_VERIFIER_URL`, o four-eyes é **só estrutural** — não prova modelo nem posse | 💤 |
 | **Atribuição dispositivo↔aprovador** (AOS-266) | Sem dispositivos registados, a attestation não prova **de quem** é o autenticador | 💤 |
-| **Autonomia / escalate** (AOS-087) | Oráculo **não ligado**: nenhum veredicto `escalate` é emitido, logo o bridge de aprovação humana fica inalcançável | 💤 |
+| **Autonomia / escalate** (AOS-087) | **Dormente em produção por escolha** (nenhum `escalate` é emitido, logo o *bridge* humano é inalcançável). **O mecanismo está provado:** com `AOS_AUTONOMY_LEVELS` ligado num clone, um agente não registado resolveu para L0 e a tool call escalou → `waiting_on_human`, com o `resource_value` real (`doc://notes`) na pendência. Ligá-lo em produção faz **todo** o agente não listado escalar — não há *wildcard* | 🧪 |
 
 ---
 
@@ -233,13 +233,13 @@ sempre um controlo que teria de falhar, e falhou.
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 46 |
-| 🧪 Provado por teste | 9 |
+| ✅ Provado em produção | 45 |
+| 🧪 Provado por teste (ou em clone restaurado) | 11 |
 | ⚠️ Armado, não exercido | 3 |
-| 💤 Dormente por configuração | 5 |
+| 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 3 |
 
-Os **11 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **10 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
@@ -280,3 +280,40 @@ teria a aparência de informação.
 
 O que fecha o item, portanto, não é "acrescentar uma linha à tabela": é a tarifa **do Kimi**, e a
 consciência de que a chave da tabela é o alias.
+
+---
+
+## Adenda: o *bridge* de aprovação humana, exercitado pela primeira vez
+
+O ponto mais consequente do inventário era este: o oráculo de autonomia não está ligado, **logo
+nenhum veredicto `escalate` é emitido, logo o four-eyes e todo o caminho de aprovação humana são
+inalcançáveis**. Dois aprovadores pinados que nunca seriam chamados.
+
+Ligá-lo em produção muda comportamento a sério — sem *wildcard*, um par (agente, domínio) não
+registado resolve para L0 e **escala**. Em vez de pedir essa decisão, exercitei-o no clone
+restaurado, contra dados reais:
+
+| Passo | Resultado |
+|---|---|
+| `AOS_AUTONOMY_LEVELS` ligado no clone | banner passa a `ORACULO LIGADO`, o par selado na partição `autonomy` |
+| Run com agente **não** registado | `waiting_on_human`, pendência com `resource_value: doc://notes` |
+| `POST /challenge` por aprovador | challenges **distintos** para `human:alice` e `human:bob` |
+| Duas pernas assinadas | sessões e credenciais distintas |
+| **1.ª tentativa de aprovar** | **`403` recusada** |
+| 2.ª tentativa | `authorized`, `approvers:[alice,bob]`, `grant_id` |
+| `POST /resume` sem corpo | `400` — a credencial original **não é persistida** |
+| `POST /resume` com credencial fresca | `202 resumed` |
+| Estado final | `completed`, com o conteúdo real do documento |
+| Selo em `governance.control` | `Capability: control:approve`, `four_eyes.approvers: [alice, bob]`, e o `grant_id` |
+
+**A linha que faz isto valer é a do `403`.** A primeira tentativa foi recusada porque enviei
+`risk_class: 2` no pedido enquanto as pernas tinham sido assinadas com `danger` — que é `0`, não
+`2` (`ClassDanger = iota`). A assinatura cobre o **tuplo canónico**, e apanhou a divergência. Sem
+essa recusa, o `authorized` seguinte seria compatível com "o gate carimba o que lhe derem".
+
+E a pendência mostra `resource_value: doc://notes` — o argumento real, não a constante. É a
+correcção A1 a aparecer no sítio onde um humano a lê antes de decidir.
+
+> **O que continua verdade:** em produção isto está **desligado**. O que mudou é que deixou de ser
+> "não sabemos se funciona" e passou a ser "sabemos que funciona, e não está ligado". Ligá-lo é
+> uma decisão de operação, e o preço está nomeado: todo o agente não listado passa a escalar.
