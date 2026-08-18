@@ -107,6 +107,11 @@ services:
       # desligado, define a variável e liga". Não estava: não havia variável a definir. Oito dos
       # doze conceitos não-provados do inventário estavam bloqueados por aqui.
       #
+      # VERIFICADO POR ARRANQUE, e nao so por `docker compose config`: o mesmo binario, as mesmas
+      # montagens, um volume de dados NOVO (para nao tocar no WORM em servico) e estas 35 a vazio
+      # arranca ate "bootstrap concluido" e fica healthy. Os 47 rotulos de postura do banner sao
+      # IDENTICOS aos de producao salvo um — "estado de governacao RE-HIDRATADO" — que falta
+      # porque o WORM do teste esta vazio e nao ha nada que repor. Nenhuma postura mudou.
       # Todas entram VAZIAS (`${VAR:-}`), portanto este bloco NÃO muda comportamento nenhum —
       # todos os parsers do nó tratam vazio como ausente (verificado um a um: `strings.TrimSpace`
       # + guarda `!= ""`, ou default explícito). O que muda é passarem a ser definíveis.
