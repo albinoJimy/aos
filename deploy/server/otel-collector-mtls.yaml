@@ -1,0 +1,75 @@
+# Collector do servidor — VARIANTE ENDURECIDA (mTLS). NÃO está activa.
+#
+# O que o `otel-collector.yaml` activo faz hoje: recebe OTLP em `http://otel:4318`, EM CLARO, na
+# rede do compose. Qualquer processo dessa rede pode injectar traces forjados, e o banner do nó
+# diz apenas que a autenticação do cliente está desligada.
+#
+# POR QUE NÃO É UM BEARER. A variável `AOS_OTLP_BEARER_TOKEN_PATH` existe e seria o caminho
+# aparente. Sobre HTTP em claro, o token viaja em claro na mesma rede de onde vem a ameaça: quem
+# o capturasse forjava à mesma. Seria teatro. O que autentica de facto é o certificado de
+# cliente — e de caminho cifra o canal, que o bearer não faz.
+#
+# COMO SE LIGA (um passo deliberado, ver README §"Telemetria"):
+#   1. levar otel.crt/otel.key/node-otlp.crt/node-otlp.key/ca.crt para /opt/aos/tls-internal/otlp/
+#   2. no compose, apontar o volume do `otel` para ESTE ficheiro
+#   3. no .env: AOS_OTLP_ENDPOINT=https://otel:4318
+#               AOS_OTLP_CLIENT_CERT_PATH=/etc/aos/otlp/node.crt
+#               AOS_OTLP_CLIENT_KEY_PATH=/etc/aos/otlp/node.key
+#   4. reiniciar `otel` e `aos` JUNTOS, e VERIFICAR que os spans voltam a chegar
+#
+# O passo 4 não é zelo: o exportador OTLP do nó é FAIL-OPEN. Se o mTLS ficar mal configurado, os
+# spans param EM SILÊNCIO e o nó continua a servir como se nada fosse. A observabilidade
+# desaparece sem um erro — que é o pior modo de falha possível para observabilidade.
+#
+# VERIFICADO num coletor descartável no servidor (porta 14318, sem tocar no que corre):
+#   sem certificado de cliente  -> handshake RECUSADO
+#   com o certificado do nó     -> 200
+#   em HTTP claro               -> 400
+# aos_dsar_vault_ready (este último só conta com AOS_DSAR_VAULT_ADDR configurado).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        tls:
+          cert_file: /etc/otelcol-contrib/tls/otel.crt
+          key_file: /etc/otelcol-contrib/tls/otel.key
+          # É ESTA linha que AUTENTICA o cliente. Sem ela o TLS só cifra, e qualquer
+          # processo da rede continua a poder injectar traces forjados.
+          client_ca_file: /etc/otelcol-contrib/tls/ca.crt
+      grpc:
+        endpoint: 0.0.0.0:4317
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: aos-node
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["aos:8080"]
+
+processors:
+  batch: {}
+  # Tecto de memória: um pico de traces não pode derrubar o collector e, com ele, a
+  # observabilidade do nó no momento em que ela é mais precisa.
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+
+exporters:
+  debug:
+    verbosity: normal
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

@@ -179,7 +179,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | Conceito | Como se verifica | Estado |
 |---|---|---|
 | **Tracer OTLP real** (AOS-173) | Spans `invoke_agent`/`chat`/`execute_tool`/`freeze` + selos WORM | ✅ |
-| **Autenticação OTLP** (DEF-012) | Só TLS de servidor; sem certificado de cliente nem bearer | 💤 |
+| **Autenticação OTLP** (DEF-012) | O canal é `http://otel:4318`, **em claro** na rede do compose. Um *bearer* aí seria teatro — viaja em claro na mesma rede de onde vem a ameaça. O que autentica é **mTLS**: variante pronta em [`otel-collector-mtls.yaml`](../deploy/server/otel-collector-mtls.yaml), **provada** num coletor descartável (sem cert de cliente → handshake recusado; com o do nó → `200`; HTTP claro → `400`). Por activar — o exportador é *fail-open* e uma má configuração pára os spans **em silêncio**. | 💤 |
 
 ---
 
@@ -203,7 +203,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Backups cifrados** | PKCS#7 para um certificado cuja privada **nunca esteve no servidor** | ✅ |
 | **Recolha off-host** | Tarefa diária `StartWhenAvailable`; verificado **decifrando** e confirmando a chave Transit lá dentro | ✅ |
 | **Reversão por digest** | `rollback.sh` com digest da imagem | ✅ |
-| **Alerta de recência do backup** | Se a máquina do operador ficar dias desligada, a cópia envelhece e **ninguém avisa** | ❌ |
+| **Alerta de recência do backup** | Verifica a idade dos **dois** lados: a cópia local (apanha "a máquina esteve desligada") e o backup **remoto** (apanha "o cron do servidor morreu" — o caso invisível, porque a recolha continua a correr sem erro e a dizer `0 novo(s)`). Alerta por código de saída, `ESTADO.txt` e Registo de Eventos. Controlos: tecto de 1h → saída `3`; servidor inalcançável → saída `2`; normal → `0` | ✅ |
 
 ---
 
@@ -232,13 +232,13 @@ sempre um controlo que teria de falhar, e falhou.
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 44 |
+| ✅ Provado em produção | 45 |
 | 🧪 Provado por teste | 9 |
 | ⚠️ Armado, não exercido | 3 |
 | 💤 Dormente por configuração | 5 |
-| ❌ Ausente e declarado | 4 |
+| ❌ Ausente e declarado | 3 |
 
-Os **12 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **11 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
