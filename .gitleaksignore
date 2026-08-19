@@ -11,3 +11,21 @@
 # credencial: é o valor de um TECTO DE TURNOS num teste de API descrito na spec. Verificado
 # à mão em 2026-08-11; `scripts/ci/secrets.sh` verde no mesmo commit.
 030033cd1474fa521699c65605eba693a7900647:specs/EPIC-20_Prontidao_Agentica_Remediacao.md:generic-api-key:190
+
+# docs/testing/ciclo-de-vida-manual.md — comando `curl` documentado que reativa o motor Transit
+# do Vault no ambiente LOCAL `dev-hardened`. O header casa `curl-auth-header`, mas o valor é o
+# token root do Vault em MODO DEV (literal conhecido, gerado pelo próprio `vault server -dev`),
+# contra `http://vault:8200` na rede `aos-dev-hardened_default`. Verificado em 2026-08-19: esse
+# literal NÃO aparece em `deploy/server/` — o Vault de produção é `https://127.0.0.1:8200` com a
+# CA interna e é desselado com chaves reais, que nunca entraram no repositório.
+4a4f4a67e307dccc18b39cd9d91ae8a75da972df:docs/testing/ciclo-de-vida-manual.md:curl-auth-header:353
+
+# packages/substrate/sandbox/manifest_test.go — fixture `CredentialsHandle` cujo valor é
+# literalmente descrito como handle OPACO. O teste existe para provar o contrário do que a regra
+# suspeita: que o segredo real NUNCA é passado à sandbox, só o handle. Verificado em 2026-08-19.
+c833c620ee25200a9a50623d0b97406cfcf84510:packages/substrate/sandbox/manifest_test.go:generic-api-key:93
+
+# packages/platform/model-gateway/.../credentials_test.go — constante fabricada num teste que
+# prova a REDACÇÃO do lease em MarshalJSON. É o dado de entrada de um teste de redacção: se fosse
+# removido, o teste deixaria de poder falhar. Verificado em 2026-08-19.
+b75a7069c107f8eb11696939fd1192afc98f51ae:packages/platform/model-gateway/internal/credentials/credentials_test.go:generic-api-key:669
