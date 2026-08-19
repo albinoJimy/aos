@@ -536,6 +536,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// selada, em vez de uma edicao de ficheiro no servidor seguida de reiniciar o no.
 	mux.HandleFunc("POST /autonomy", h.handleAutonomySet)
 	mux.HandleFunc("GET /autonomy", h.handleAutonomyGet)
+	mux.HandleFunc("POST /autonomy/simular", h.handleAutonomySimular)
 	mux.HandleFunc("POST /promote", h.handlePromote)
 	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
 	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
