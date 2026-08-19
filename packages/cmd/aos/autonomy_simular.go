@@ -54,6 +54,28 @@ func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Reques
 	// não do corpo. Foi precisamente aqui que a convenção falhou: estas três rotas nasceram sem as
 	// duas barreiras enquanto o plano e o comentário afirmavam que passavam "pela mesma admissão do
 	// /approve". Agora a classificação é obrigatória no registo e o valor-zero aborta o arranque.
+	// AUTENTICACAO DE GOVERNACAO — a MESMA credencial forte do /dsar/erase e do legal hold.
+	//
+	// Esta rota devolve run ids, step ids, NHIs de agente, capabilities e dominios de recurso
+	// lidos do WORM SELADO. E a mesma classe de dados que o read-path protege com 404 uniformes,
+	// e a primeira versao desta rota nao verificava credencial NENHUMA.
+	//
+	// A classificacao `planoControlo` da-lhe o balde de admissao e o mTLS — mas o mTLS NAO esta
+	// composto em producao e o edge encaminha `location /` para o no. Sem esta barreira, quem
+	// alcancasse a porta lia um resumo do historico selado sem apresentar nada.
+	//
+	// Foi o defeito do dia repetido numa forma nova: a rota nasceu com a barreira de TRANSPORTE
+	// classificada e sem a de IDENTIDADE, e nenhum teste perguntou por ela porque eu so tinha
+	// pensado na primeira.
+	if h.readGov == nil {
+		writeError(w, http.StatusNotImplemented, "simulacao desligada (governanca soberana nao composta)")
+		return
+	}
+	leitor, ok := h.readGov.authorize(r)
+	if !ok {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
 	if h.node == nil || h.node.WORM == nil {
 		writeError(w, http.StatusNotImplemented, "sem WORM composto — nao ha historico para simular")
 		return
@@ -95,7 +117,7 @@ func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	registos := lerMediacoes(r.Context(), h.node.WORM, max)
+	registos := h.mediacoesVisiveisPara(r, leitor, max)
 	efeitos := make([]simularEfeito, 0, len(registos))
 	var correm, escalam int
 	for _, rec := range registos {
@@ -197,4 +219,39 @@ func reclassificar(rec audit.AuditRecord) risk.Class {
 	default:
 		return risk.ClassDanger
 	}
+}
+
+// mediacoesVisiveisPara recolhe as mediações que ESTE leitor pode ver, e não as do nó inteiro.
+//
+// A autenticação sozinha não chegava. `authorize` diz QUEM é o leitor e qual a sua região; não
+// diz que ele pode ler um run concreto. Sem o filtro, um leitor de um board veria os run ids,
+// NHIs e recursos de TODAS as regiões — a recusa cross-region (AOS-172/205) contornada por uma
+// rota de conforto, que é a forma mais barata de perder a propriedade central deste sistema.
+//
+// A decisão por run vem de `authorizeRead`, a MESMA função que o `GET /runs/{id}` usa. Não se
+// reimplementa a regra de residência aqui: uma segunda implementação divergiria da primeira, e a
+// que divergisse em silêncio seria esta — a que ninguém olha.
+//
+// O veredicto é MEMORIZADO por run: um lote de 200 mediações costuma cair sobre poucas dezenas de
+// runs, e sem cache seria uma consulta à autoridade por registo.
+func (h *apiHandler) mediacoesVisiveisPara(r *http.Request, leitor readerIdentity, max int) []audit.AuditRecord {
+	todas := lerMediacoes(r.Context(), h.node.WORM, max)
+	if h.readGov == nil {
+		return nil // fail-closed: sem gate composto não se devolve histórico.
+	}
+	pode := make(map[string]bool, 16)
+	out := make([]audit.AuditRecord, 0, len(todas))
+	for _, rec := range todas {
+		v, visto := pode[rec.RunID]
+		if !visto {
+			_, _, ok := h.readGov.authorizeRead(r.Context(), r, rec.RunID)
+			v = ok
+			pode[rec.RunID] = v
+		}
+		if v {
+			out = append(out, rec)
+		}
+	}
+	_ = leitor // a identidade fica nomeada no sítio da decisão; a regra é a de `authorizeRead`.
+	return out
 }

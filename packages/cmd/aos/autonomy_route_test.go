@@ -394,11 +394,13 @@ func TestSeloNomeiaQuemAssinouENaoOQueOCorpoDiz(t *testing.T) {
 // acreditaria ter mudado o sistema. É o mesmo raciocínio pelo qual a rota devolve `501` quando o
 // oráculo não está composto, em vez de um `200` que não faz nada.
 func TestGetReflecteOPost(t *testing.T) {
-	h, priv, _ := noParaTeste(t)
+	h, priv, worm := noParaTeste(t)
+	// O GET passou a exigir a credencial forte do gate soberano, como o /dsar/erase.
+	comLeitura(h, worm, regioesFixas{"board:prod": "eu"})
 
 	// CONTROLO ANTES: o par ainda não existe, e o GET não o inventa.
 	w0 := httptest.NewRecorder()
-	h.handleAutonomyGet(w0, httptest.NewRequest("GET", "/autonomy", nil))
+	h.handleAutonomyGet(w0, pedidoComLeitor("GET", "/autonomy", "board:prod", ""))
 	if strings.Contains(w0.Body.String(), "agt-7") {
 		t.Fatalf("o GET ja mostra um par que nunca foi registado: %s", w0.Body.String())
 	}
@@ -410,7 +412,7 @@ func TestGetReflecteOPost(t *testing.T) {
 	}
 
 	w2 := httptest.NewRecorder()
-	h.handleAutonomyGet(w2, httptest.NewRequest("GET", "/autonomy", nil))
+	h.handleAutonomyGet(w2, pedidoComLeitor("GET", "/autonomy", "board:prod", ""))
 	if w2.Code != http.StatusOK {
 		t.Fatalf("GET: %d", w2.Code)
 	}
@@ -446,5 +448,172 @@ func emissorDeWire(em control.Emitter) emitterWire {
 		Signature: base64.StdEncoding.EncodeToString(em.Signature),
 		Nonce:     base64.StdEncoding.EncodeToString(em.Nonce),
 		IssuedAt:  em.IssuedAt,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AUTENTICACAO DAS ROTAS DE LEITURA DE AUTONOMIA.
+//
+// `GET /autonomy` e `POST /autonomy/simular` nasceram SEM verificacao de credencial. A
+// classificacao `planoControlo` da-lhes o balde de admissao e o mTLS — e eu tratei isso como se
+// fosse a barreira toda. Nao e: o mTLS NAO esta composto em producao e o edge encaminha tudo, pelo
+// que a barreira de transporte e, hoje, um no-op.
+//
+// A de identidade faltava, e nenhum teste perguntou por ela porque eu so tinha pensado na
+// primeira. E a mesma falha do dia numa forma nova: verificar o eixo em que se esta a pensar.
+// ---------------------------------------------------------------------------
+
+// regioesFixas é um resolvedor board→região de teste.
+type regioesFixas map[string]string
+
+func (m regioesFixas) RegionFor(board string) (string, bool) { r, ok := m[board]; return r, ok }
+
+// comLeitura compõe o gate soberano por HEADERS (cred nil = via legada), que é o suficiente para
+// exercitar "há credencial" vs "não há".
+func comLeitura(h *apiHandler, worm audit.Store, boards regioesFixas) {
+	h.readGov = newReadGovernance(boards, nil, worm, time.Now)
+}
+
+func pedidoComLeitor(metodo, caminho, board, corpo string) *http.Request {
+	r := httptest.NewRequest(metodo, caminho, strings.NewReader(corpo))
+	r.Header.Set("X-Aos-Reader", "human:auditor")
+	r.Header.Set("X-Aos-Board", board)
+	return r
+}
+
+// TestLeiturasDeAutonomiaExigemCredencial — as duas rotas de leitura recusam sem credencial, e
+// respondem com ela. Os dois ramos, porque só o par distingue "a barreira decide" de "recusa tudo".
+func TestLeiturasDeAutonomiaExigemCredencial(t *testing.T) {
+	h, priv, worm := noParaTeste(t)
+	comLeitura(h, worm, regioesFixas{"board:prod": "eu"})
+
+	// Um par registado, para o GET ter o que devolver.
+	w := httptest.NewRecorder()
+	h.handleAutonomySet(w, pedidoDeAutonomia(t, priv, "human:op", "agt-9", "fs", "L4", "rotina"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("preparacao falhou: %d %s", w.Code, w.Body.String())
+	}
+
+	casos := []struct {
+		nome    string
+		handler func(http.ResponseWriter, *http.Request)
+		metodo  string
+		caminho string
+		corpo   string
+	}{
+		{"GET /autonomy", h.handleAutonomyGet, "GET", "/autonomy", ""},
+		{"POST /autonomy/simular", h.handleAutonomySimular, "POST", "/autonomy/simular", `{"levels":"","default":"L4","max":5}`},
+	}
+	for _, k := range casos {
+		// (a) SEM credencial ⇒ 403, e nada do corpo é revelado.
+		w1 := httptest.NewRecorder()
+		k.handler(w1, httptest.NewRequest(k.metodo, k.caminho, strings.NewReader(k.corpo)))
+		if w1.Code != http.StatusForbidden {
+			t.Errorf("%s sem credencial devolveu %d, quero 403 — corpo: %s", k.nome, w1.Code, w1.Body.String())
+		}
+		if strings.Contains(w1.Body.String(), "agt-9") {
+			t.Errorf("%s sem credencial REVELOU um par: %s", k.nome, w1.Body.String())
+		}
+
+		// (b) CONTROLO — com credencial válida responde. Sem este ramo, um handler que recusasse
+		// sempre passaria em (a) e o teste ficaria verde a medir nada.
+		w2 := httptest.NewRecorder()
+		k.handler(w2, pedidoComLeitor(k.metodo, k.caminho, "board:prod", k.corpo))
+		if w2.Code != http.StatusOK {
+			t.Errorf("%s COM credencial devolveu %d — %s", k.nome, w2.Code, w2.Body.String())
+		}
+
+		// (c) CONTROLO — um board DESCONHECIDO é recusado. É o que distingue "verifica a
+		// credencial" de "aceita qualquer header".
+		w3 := httptest.NewRecorder()
+		k.handler(w3, pedidoComLeitor(k.metodo, k.caminho, "board:inventado", k.corpo))
+		if w3.Code != http.StatusForbidden {
+			t.Errorf("%s com board desconhecido devolveu %d, quero 403", k.nome, w3.Code)
+		}
+	}
+}
+
+// TestSimulacaoDesligadaSemGateComposto — fail-closed: sem governança soberana composta a rota
+// não devolve histórico, devolve 501.
+//
+// A alternativa seria devolver tudo "porque não há gate", que é como uma barreira opcional se
+// transforma numa fuga: o ambiente onde ela não está composta é precisamente o menos vigiado.
+func TestSimulacaoDesligadaSemGateComposto(t *testing.T) {
+	h, _, _ := noParaTeste(t) // readGov fica nil
+	for nome, hf := range map[string]func(http.ResponseWriter, *http.Request){
+		"GET /autonomy":          h.handleAutonomyGet,
+		"POST /autonomy/simular": h.handleAutonomySimular,
+	} {
+		w := httptest.NewRecorder()
+		hf(w, httptest.NewRequest("POST", "/x", strings.NewReader(`{"max":5}`)))
+		if w.Code != http.StatusNotImplemented {
+			t.Errorf("%s sem gate composto devolveu %d, quero 501", nome, w.Code)
+		}
+	}
+}
+
+// TestSimulacaoNaoAtravessaRegioes é o controlo da propriedade que a autenticação sozinha NÃO dá.
+//
+// `authorize` diz QUEM é o leitor. Não diz que ele pode ler um run concreto. Sem o filtro por
+// residência, um leitor de um board veria run ids, NHIs e recursos de TODAS as regiões — a recusa
+// cross-region (AOS-172/205) contornada por uma rota de conforto, que é a maneira mais barata de
+// perder a propriedade central deste sistema.
+//
+// O filtro não reimplementa a regra: pergunta a `authorizeRead`, a MESMA que o `GET /runs/{id}`
+// usa. Este teste prova a consequência.
+func TestSimulacaoNaoAtravessaRegioes(t *testing.T) {
+	h, _, worm := noParaTeste(t)
+	comLeitura(h, worm, regioesFixas{"board:eu": "eu", "board:us": "us"})
+	ctx := t.Context()
+
+	// Dois runs em regiões diferentes: residência selada + uma mediação de tool call em cada.
+	for _, k := range []struct{ run, regiao, recurso string }{
+		{"run-eu", "eu", "doc://europa"},
+		{"run-us", "us", "doc://america"},
+	} {
+		if _, err := worm.Append(ctx, audit.AuditRecord{
+			Partition: "gov.residency/" + k.run,
+			Resource:  audit.Resource{Type: "run", Value: k.run, Region: k.regiao},
+		}); err != nil {
+			t.Fatalf("selar residencia de %s: %v", k.run, err)
+		}
+		if _, err := worm.Append(ctx, audit.AuditRecord{
+			Partition: k.run, RunID: k.run, StepID: "s1", ToolID: "doc_read",
+			Capability: "cap:fs.read",
+			Principal:  audit.Principal{NHIID: "agt-" + k.regiao},
+			Resource:   audit.Resource{Type: "file", Value: k.recurso, Region: k.regiao},
+		}); err != nil {
+			t.Fatalf("selar mediacao de %s: %v", k.run, err)
+		}
+	}
+
+	corpo := `{"levels":"","default":"L4","max":50}`
+	w := httptest.NewRecorder()
+	h.handleAutonomySimular(w, pedidoComLeitor("POST", "/autonomy/simular", "board:eu", corpo))
+	if w.Code != http.StatusOK {
+		t.Fatalf("simular como leitor eu: %d %s", w.Code, w.Body.String())
+	}
+	resp := w.Body.String()
+
+	// O leitor da UE vê o seu run...
+	if !strings.Contains(resp, "run-eu") {
+		t.Errorf("o leitor da UE nao viu o SEU proprio run — o filtro esta a recusar tudo: %s", resp)
+	}
+	// ...e NÃO vê o da outra região, nem o NHI, nem o recurso.
+	for _, proibido := range []string{"run-us", "agt-us", "doc://america"} {
+		if strings.Contains(resp, proibido) {
+			t.Errorf("a simulacao revelou %q a um leitor de outra regiao: %s", proibido, resp)
+		}
+	}
+
+	// CONTROLO SIMÉTRICO: o leitor dos EUA vê o seu e não vê o europeu. Sem esta metade, um filtro
+	// que devolvesse sempre APENAS "run-eu" passaria no bloco acima.
+	w2 := httptest.NewRecorder()
+	h.handleAutonomySimular(w2, pedidoComLeitor("POST", "/autonomy/simular", "board:us", corpo))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("simular como leitor us: %d", w2.Code)
+	}
+	if r2 := w2.Body.String(); !strings.Contains(r2, "run-us") || strings.Contains(r2, "run-eu") {
+		t.Errorf("o leitor dos EUA devia ver run-us e nao run-eu: %s", r2)
 	}
 }
