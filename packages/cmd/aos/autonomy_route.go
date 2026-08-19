@@ -150,6 +150,21 @@ func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
 	// não do corpo. Foi precisamente aqui que a convenção falhou: estas três rotas nasceram sem as
 	// duas barreiras enquanto o plano e o comentário afirmavam que passavam "pela mesma admissão do
 	// /approve". Agora a classificação é obrigatória no registo e o valor-zero aborta o arranque.
+	// AUTENTICACAO DE GOVERNACAO — a mesma do /autonomy/simular e do DSAR.
+	//
+	// O que esta rota devolve e um MAPA DE ONDE A SUPERVISAO E MAIS FRACA: que pares
+	// agente:dominio correm a que nivel, e para onde resolve um par nao registado. Nao ha dados
+	// de run aqui, mas ha a informacao de que alguem precisaria para escolher por onde entrar.
+	//
+	// Nasceu sem verificacao nenhuma. Nao e leitura publica.
+	if h.readGov == nil {
+		writeError(w, http.StatusNotImplemented, "leitura de autonomia desligada (governanca soberana nao composta)")
+		return
+	}
+	if _, ok := h.readGov.authorize(r); !ok {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
 	if h.node == nil || h.node.Autonomy == nil || h.node.Autonomy.registry == nil {
 		writeError(w, http.StatusNotImplemented, "oraculo de autonomia nao composto")
 		return
