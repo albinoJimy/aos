@@ -31,7 +31,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 
 | Conceito | Como se verifica | Estado |
 |---|---|---|
-| **Modo de identidade real endurecido** (AOS-156) — nenhuma chave de assinatura entra no runtime do nó | Banner de arranque: `trust-anchor-only`. Controlo: só a *pubkey* entra na cadeia; código comprometido in-process não tem material com que cunhar | ✅ |
+| **Modo de identidade real endurecido** (AOS-156) — nenhuma chave de assinatura entra no runtime do nó | **Imposto, não deduzido.** `AOS_MODE=production` exige a âncora (`ErrProductionNeedsHardenedIdentity`, main.go:519); com a âncora activa, `IssuerSigningKey` **ou** `IssuerKeyPath` fazem o nó **recusar arrancar** (`ErrConflictingIssuerKey`, bootstrap.go:778) — carregar a chave de disco para o processo derrotaria a propriedade tanto como recebê-la em memória. **Controlos:** os dois ramos abortam (`bootstrap_test.go:396`, `durable_test.go:100`); e o modo de REFERÊNCIA aceita a mesma `IssuerKeyPath` sem se queixar (dezenas de testes), que é o controlo simétrico — a recusa é da âncora, não de tudo. Em produção, o processo tem `AOS_ISSUER_PUBKEY` e **nenhum** `AOS_ISSUER_KEY_PATH` (verificado em `/proc/<pid>/environ`) | ✅ |
 | **Raiz humana da delegação AUTORIZADA** (ADR-003) — o humano autorizou *esta* delegação, não apenas "esteve presente" | `nonce` = digest de (agente, classe, caps, TTL); o issuer calcula-o das flags que cunha. Controlo: token do mesmo humano para outra delegação → **recusado** (`delegationbinding_test.go`) | ✅ |
 | **Rótulo honesto do método** — `manual` / `oidc:` / `oidc-bound:` | O rótulo desce quando a ligação não é possível (`--assertion-unbound`), e fica escrito no registo de binding | ✅ |
 | **Autoridade de escopo** (AOS-071) — o escopo efectivo é o token **intersectado** com o directório externo | Banner: 4 sujeitos, revisão 1, fingerprint. Revogar = listar com `"capabilities": []` | 🧪 |
@@ -50,7 +50,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | Conceito | Como se verifica | Estado |
 |---|---|---|
 | **Read-path soberano fail-closed** (AOS-172/205, D7) — o `board` vem das *claims*, não de um header | `X-Aos-Board: board:prod` forjado **sem token** → `404`. É o ponto todo | ✅ |
-| **Residência do run na criação** (AOS-182) — a região sela-se na submissão | Selo `gov.read/<run>` com `Resource.Region` | ✅ |
+| **Residência do run na criação** (AOS-182) — a região sela-se na submissão | Selo na partiÃ§Ã£o `gov.residency/<run>` com `Resource.Region` (`readResidencyPartition`, sovereignty.go). **NÃ£o** Ã© `gov.read/<run>`: essa Ã© a partiÃ§Ã£o do selo de LEITURA sensÃ­vel (D6), e o cÃ³digo namespaceia-as separadamente de propÃ³sito | ✅ |
 | **`404` uniforme e não-enumerável** — "não existe" e "existe noutra soberania" são indistinguíveis | Sem credencial, credencial inválida e outra região dão **todos** `404` | ✅ |
 | **Soberania POR-LEITOR** — cada leitor traz a sua fronteira | Mesma cadeia de hash, mesma capability, principals distintos: service account (`91a30a69-…`) e humano (`a2b5947c-…`) | ✅ |
 | **Recusa cross-region** | Leitor de outra região, token igualmente válido → `404` | ✅ |
@@ -68,7 +68,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **ScopeGate** — capability fora do escopo é negada | Teste negativo com capability ausente → deny | ✅ |
 | **Taint gate** — conteúdo `untrusted` restringe o efeito seguinte | `Context.Taint: untrusted` nos selos | ✅ |
 | **O que o PDP autoriza é o que o sandbox executa** (A1) | Antes: o PDP autorizava `doc://notes` constante enquanto o sandbox lia o argumento. Corrigido com *slots* `{arg}`; **não opt-in** — um efeito parametrizado com `resource_value` constante **aborta o arranque** | ✅ |
-| **Sem bypass estrutural** — as tools só entram pelo `MediatedLauncher` | Banner: `args→ExecRequest pelo EffectRewriter` | ✅ |
+| **Sem bypass estrutural** — as tools só entram pelo caminho mediado | **Gate sobre o repositório INTEIRO** (`TestArchLint_NenhumBypassNoRepositorio`, `AnalyzeTree`): 166 pacotes, e **invocação directa de `ToolFunc` = ZERO** — é essa a metade que importa, porque `ToolFunc` é *exportado* e uma chamada directa executa o efeito **sem PDP, sem orçamento e sem selo**. Restam 3 colisões de NOME (`dispatch` da CLI, método do Scheduler, o `m.dispatch` do próprio RM), cada uma listada **com a razão**, e uma excepção que deixe de reproduzir **falha** o teste — a lista não pode apodrecer. **Controlos (mutação):** bypass real noutro pacote → cai; `dispatchTool` num pacote não listado → cai; excepção obsoleta → cai. Imposto em CI via `require_tests` (fail-closed contra passagem vacuosa) | ✅ |
 
 ---
 
@@ -208,7 +208,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 |---|---|---|
 | **Backups cifrados** | PKCS#7 para um certificado cuja privada **nunca esteve no servidor** | ✅ |
 | **Recolha off-host** | Tarefa diária `StartWhenAvailable`; verificado **decifrando** e confirmando a chave Transit lá dentro | ✅ |
-| **Reversão por digest** | `rollback.sh` com digest da imagem | ✅ |
+| **Reversão por digest** | `rollback.sh` com o digest anterior, guardado em `image.env.prev` pelo `deploy.sh` (verificado presente no servidor). **NUNCA foi exercido**: não há registo de um rollback executado, pelo que o provado é que o digest anterior fica guardado — não que a reversão funciona | ⚠️ |
 | **O backup levanta o sistema** | Não é o mesmo que "o backup decifra". Ensaio completo do artefacto: Vault desselado com a chave de dentro do backup, WORM re-encadeado (108 partições), `idp-db.sql` restaurado (87 tabelas), Keycloak sobre ele, e **token do IdP restaurado a ler no nó restaurado** → `200`. Controlos no sistema restaurado: sem credencial `404`, header forjado `404`, replay do `jti` `404` | ✅ |
 | **Alerta de recência do backup** | Verifica a idade dos **dois** lados: a cópia local (apanha "a máquina esteve desligada") e o backup **remoto** (apanha "o cron do servidor morreu" — o caso invisível, porque a recolha continua a correr sem erro e a dizer `0 novo(s)`). Alerta por código de saída, `ESTADO.txt` e Registo de Eventos. Controlos: tecto de 1h → saída `3`; servidor inalcançável → saída `2`; normal → `0` | ✅ |
 
@@ -221,11 +221,19 @@ leitura por-leitor, mediação de política, isolamento, auditabilidade da cadei
 delegação.
 
 **Dormente por configuração, não por defeito:** attestation de dispositivo, atribuição
-dispositivo↔aprovador, autonomia/escalate, broker vault, autenticação OTLP. Cada um está nomeado
-no banner de arranque com o que perde por estar desligado — o nó nunca finge.
+dispositivo↔aprovador, broker vault, autenticação OTLP. Cada um está nomeado no banner de arranque
+com o que perde por estar desligado.
 
-**Ausente e declarado:** verificação ancorada do WORM, credential broker, selo do Vault, alerta de
-recência do backup.
+**Ligado e sem efeito — a categoria que faltava:** a autonomia/escalate. O banner diz `ORACULO
+LIGADO` e a configuração aponta a um agente que nunca correu, pelo que tudo escala e nada o mostra.
+Não é o nó a fingir: é o banner a afirmar com verdade um facto (o oráculo está composto) que se lê
+como outro (a postura está a ser aplicada). A frase que aqui estava — «o nó nunca finge» — era
+verdadeira sobre o mecanismo e enganadora sobre o efeito, e foi por isso que ninguém reparou
+durante doze horas.
+
+**Ausente e declarado:** verificação ancorada do WORM, credential broker, selo do Vault, e o DSAR
+sem barreira de transporte. (O alerta de recência do backup **não** pertence a esta lista — está
+provado, com controlos; ver eixo M.)
 
 O padrão que se repete em todos os achados desta auditoria — A1 a A4, a contagem de partições, a
 âncora do WORM — é o mesmo: **a coisa parecia funcionar**. O que a distinguiu de funcionar foi
@@ -239,13 +247,13 @@ sempre um controlo que teria de falhar, e falhou.
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 45 |
+| ✅ Provado em produção | 44 |
 | 🧪 Provado por teste (ou em clone restaurado) | 15 |
-| ⚠️ Armado, não exercido | 4 |
+| ⚠️ Armado, não exercido | 5 |
 | 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 4 |
 
-Os **12 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **13 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
@@ -330,3 +338,58 @@ correcção A1 a aparecer no sítio onde um humano a lê antes de decidir.
 > **O que continua verdade:** em produção isto está **desligado**. O que mudou é que deixou de ser
 > "não sabemos se funciona" e passou a ser "sabemos que funciona, e não está ligado". Ligá-lo é
 > uma decisão de operação, e o preço está nomeado: todo o agente não listado passa a escalar.
+
+---
+
+## Auditoria adversarial do próprio inventário (2026-08-19)
+
+Este documento foi confrontado, linha a linha, com o código — não com a memória de quem o escreveu.
+O que se procurou foi o oposto do que ele afirma: nomes que não existem, mecanismos que não fazem o
+descrito, e ✅ sem o controlo que a regra da casa exige.
+
+**Corrigido nesta passagem**
+
+| O que dizia | O que o código diz |
+|---|---|
+| a residência sela em `gov.read/<run>` | sela em `gov.residency/<run>` (`readResidencyPartition`); `gov.read` é o selo de LEITURA sensível — o código namespaceia-as separadamente **de propósito**, e o documento reintroduzia a colisão que o código evita |
+| «Reversão por digest» ✅ | o digest anterior fica guardado em `image.env.prev` (verificado no servidor), mas **nenhum rollback foi executado**. Pela legenda deste documento, ✅ é «exercido no nó real» ⇒ passa a ⚠️ — a mesma leitura que já se aplicava ao burn-down |
+| «Ausente: … alerta de recência do backup» | esse alerta está ✅ com três controlos (eixo M). A quarta ausência é o **DSAR sem barreira de transporte** |
+| «Dormente: … autonomia/escalate … o nó nunca finge» | a autonomia está **LIGADA** desde 2026-08-19 00:03. E a frase final era verdadeira sobre o mecanismo e enganadora sobre o efeito |
+
+**Os dois que ficaram em aberto — RESOLVIDOS na mesma passagem**
+
+Nenhum era uma afirmação falsa. Ambos eram uma afirmação **verdadeira apoiada na evidência
+errada** — que é pior do que parece, porque uma prova errada não avisa quando a propriedade se
+perde.
+
+- **«Sem bypass estrutural».** A prova citada era uma linha de BANNER, e o único gate em CI
+  analisava um directório: `AnalyzeDir` **não recorre**. Acrescentou-se `AnalyzeTree` e um gate
+  sobre os **166 pacotes** do repositório. O número que interessa: **invocação directa de
+  `ToolFunc` = ZERO** — `ToolFunc` é *exportado*, e chamá-lo directamente executa o efeito sem
+  PDP, sem orçamento e sem selo. As 3 violações restantes são colisões de nome (`dispatch` da CLI,
+  método do Scheduler, o dispatcher do próprio RM), listadas com a razão de cada uma; uma
+  excepção que deixe de reproduzir **falha** o teste, para a lista não apodrecer.
+
+- **«Modo de identidade real endurecido».** O «controlo» era uma dedução da configuração. O
+  controlo a sério já existia e não estava citado: `AOS_MODE=production` **exige** a âncora
+  (`ErrProductionNeedsHardenedIdentity`) e a âncora **proíbe** qualquer chave de assinatura, seja
+  em memória ou por caminho de ficheiro (`ErrConflictingIssuerKey`). Os dois ramos têm teste, e o
+  modo de referência aceita a mesma chave — o controlo simétrico, sem o qual «recusa» seria
+  indistinguível de «recusa tudo».
+
+A lição é a mesma nos dois: **o que estava frágil não era o sistema, era a prova.** Um `✅` apoiado
+num banner ou numa dedução descreve o mundo tal como está e cala-se no dia em que mudar.
+
+**Um achado que era meu erro, e fica escrito porque o método falhou antes de acertar.** Li em
+`resolveResourceValue` que «sem slots, o valor é a constante de sempre» e estive a um passo de
+acusar o eixo C de afirmar um aborto que não existe. Existe: é `validateResourceBinding`
+(`modeltools.go:156`), chamada no carregamento, e recusa exactamente o caso descrito. Tinha lido o
+caminho de RUNTIME e concluído sobre o de CONFIGURAÇÃO. Verificar contra o código só vale se for
+contra o código **certo**.
+
+**Confirmado correcto, e vale dizê-lo:** o `409` de `run_id` duplicado é mesmo condicionado a quem
+poderia LER o run (residência selada **e** coincidente, sem re-verificar a credencial para não
+consumir o `jti`); `assertionMaxAge` e o TTL do challenge são ambos 5 min; os números do ingresso
+(64/128/512) batem com o `.env` de produção; as 108 partições batem com o banner; o selo de leitura
+sensível é mesmo uma **pré-condição** do desfecho; e a interseção do escopo «restringe e REVOGA,
+nunca amplia» está imposta, não só narrada.

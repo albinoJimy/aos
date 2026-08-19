@@ -75,8 +75,9 @@ log_gate "lint · arch-lint AOS-003 (proibição de despacho directo)"
 # require_tests: fail-closed contra "vacuous pass" — exige que ESTES testes tenham
 # mesmo corrido (não basta 'go test -run' sair 0 sem casar nada).
 if require_tests "$REPO_ROOT/packages/kernel/reference-monitor" "./archlint/" \
-     'TestArchLint_RMNaoTemBypass|TestAnalyze_CasoBom|TestAnalyze_CasoMau' \
-     TestArchLint_RMNaoTemBypass TestAnalyze_CasoBom TestAnalyze_CasoMau; then
+     'TestArchLint_RMNaoTemBypass|TestArchLint_NenhumBypassNoRepositorio|TestArchLint_InvocacaoDirectaDeToolFuncEZero|TestAnalyze_CasoBom|TestAnalyze_CasoMau' \
+     TestArchLint_RMNaoTemBypass TestArchLint_NenhumBypassNoRepositorio \
+     TestArchLint_InvocacaoDirectaDeToolFuncEZero TestAnalyze_CasoBom TestAnalyze_CasoMau; then
   log_ok "arch-lint: regra de despacho directo verde"
 else
   log_fail "arch-lint: violação da regra AOS-003 (ou teste crítico não correu)"
