@@ -237,12 +237,6 @@ func exhaustionDecisionPayload(decision, stepID string) []byte {
 // replay e stale partilham o MESMO 403 sem dizer qual foi — o corpo não é um oráculo. Quem
 // precisa do detalhe tem o log do nó e o WORM.
 func (h *apiHandler) handleExhaustionDecision(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
 	runID := r.PathValue("id")
 	if runID == "" {
 		writeError(w, http.StatusNotFound, "not found")

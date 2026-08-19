@@ -153,10 +153,7 @@ type dsarResponse struct {
 //     e sela received/key_destroyed/blocked no WORM. Um titular sob hold NÃO é apagado
 //     (200 blocked); um erro genuíno ⇒ 500 (corpo uniforme, sem PII).
 func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
-	// (1) ADMISSION do plano de controlo (mesmo bucket dedicado de /steer,/pause,/approve).
-	if !h.admitControl(w) {
-		return
-	}
+	// (1) ADMISSION do plano de controlo: vem da TABELA DE ROTAS (planoGovernacao, planos.go).
 	// (2) O fluxo DSAR tem de estar composto no nó.
 	if h.node.DSAR == nil {
 		writeError(w, http.StatusNotImplemented, "dsar desligado (fluxo nao composto)")

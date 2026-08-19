@@ -490,65 +490,10 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	}
 
 	mux := http.NewServeMux()
-	// SONDAS de orquestrador (AOS-171, E5): liveness + readiness. SEM autenticação (probes
-	// de k8s/orquestrador não assinam) e SEM admission/rate-limit (probes são frequentes;
-	// passá-las pelo token-bucket causaria falso-unready). NÃO consomem os buckets de
-	// admitData/admitControl nem o tecto de trajConns. O padrão método+rota da stdlib
-	// (Go 1.22+) já devolve 405 a métodos != GET.
-	mux.HandleFunc("GET /healthz", h.handleHealthz)
-	mux.HandleFunc("GET /readyz", h.handleReadyz)
-	// Observabilidade MÉTRICA (revisão de prontidão #5): via de métricas em texto Prometheus. O
-	// nó só exportava traces — os SLOs (disponibilidade, saúde de dependências, USE) são métricos e
-	// eram indetectáveis. Não-autenticada como healthz/readyz (scrapers não assinam; sem PII/segredos;
-	// restringir por rede). Zero-dep: texto emitido à mão, sem SDK de métricas.
-	mux.HandleFunc("GET /metrics", h.handleMetrics)
-	// Plano de DADOS.
-	mux.HandleFunc("POST /runs", h.handleSubmit)
-	mux.HandleFunc("GET /runs/{id}", h.handleGet)
-	// Plano de DADOS — read-path TEMPO-REAL (AOS-167): SSE dos eventos da trajectória.
-	mux.HandleFunc("GET /runs/{id}/trajectory", h.handleTrajectory)
-	// Plano de DADOS — RECONSTRUÇÃO SOBERANA de conteúdo selado (AOS-214): decifra o conteúdo
-	// cifrado por-titular (AOS-093) de um run para um leitor autorizado por soberania (D7+D6).
-	// Desligado (501) sem o gate soberano composto. Ver sovereign_replay.go.
-	mux.HandleFunc("GET /runs/{id}/reconstruct", h.handleReconstruct)
-	// Plano de CONTROLO TRUSTED (cada um autenticado na fronteira real do nó).
-	mux.HandleFunc("POST /runs/{id}/steer", h.handleSteer)
-	mux.HandleFunc("POST /runs/{id}/pause", h.handlePause)
-	mux.HandleFunc("POST /runs/{id}/approve", h.handleApprove)
-	// FRESCURA POR-CERIMÓNIA (AOS-266, achado F10): EMISSÃO server-side do challenge do 4-eyes.
-	// É o LADO DE EMISSÃO indivisível da porta integration.WithChallengeIssuance — desligado (501)
-	// quando a frescura está DORMENTE (Node.ChallengeIssuer nil). Ver handleChallenge.
-	mux.HandleFunc("POST /runs/{id}/challenge", h.handleChallenge)
-	mux.HandleFunc("POST /runs/{id}/resume", h.handleResume)
-	// DECISÃO sobre um PROMPT DE EXAUSTÃO de orçamento (AOS-263, parte 3). MESMA admissão do
-	// /approve e do /pause (admitControl + admitControlMTLS) e a MESMA autenticação non-signing
-	// do canal de controlo — o Ed25519Authenticator composto de AOS_OPERATORS, com nonce
-	// DURÁVEL de uso-único e frescura. A assinatura cobre a DECISÃO e a PERGUNTA (kind próprio +
-	// payload canónico), pelo que um pause capturado não se converte num abort. Ver
-	// exhaustion_decision.go.
-	mux.HandleFunc("POST /runs/{id}/exhaustion", h.handleExhaustionDecision)
-	// Plano de CONTROLO TRUSTED — RATIFICAÇÃO de auto-modificação (AOS-275, achado F7). NÃO é
-	// por-run: o alvo é um ARTEFACTO (skill/memória procedural), pelo que a rota é de NÓ. Mesma
-	// admissão do /approve (admitControl + admitControlMTLS) e a MESMA disciplina non-signing — a
-	// assinatura ed25519 do ratificador vem no corpo e é o gate de PRODUÇÃO (freshness + nonce-store
-	// durável forçados) que a verifica contra a pubkey PINADA. Ver promotion_api.go.
-	// AUTONOMIA (AOS-087) — mudar niveis passa a ser uma operacao de governacao assinada e
-	// selada, em vez de uma edicao de ficheiro no servidor seguida de reiniciar o no.
-	mux.HandleFunc("POST /autonomy", h.handleAutonomySet)
-	mux.HandleFunc("GET /autonomy", h.handleAutonomyGet)
-	mux.HandleFunc("POST /autonomy/simular", h.handleAutonomySimular)
-	mux.HandleFunc("POST /promote", h.handlePromote)
-	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
-	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver
-	// composto (fail-closed). Ver handleDSAR.
-	mux.HandleFunc("POST /dsar/erase", h.handleDSAR)
-	// Plano de GOVERNANÇA — ADMINISTRAÇÃO de legal hold e expiração (AOS-213, CON-02/DEF-903).
-	// Autenticadas pela MESMA credencial forte do /dsar/erase (readGov) + admission do plano de
-	// controlo; desligadas (501) se o legal hold / job de expiração ou o gate soberano não
-	// estiverem compostos (fail-closed). Ver legalhold.go.
-	mux.HandleFunc("POST /dsar/hold", h.handleHold)
-	mux.HandleFunc("POST /dsar/release", h.handleRelease)
-	mux.HandleFunc("POST /dsar/expire", h.handleExpire)
+	if err := registar(mux, h, h.tabelaDeRotas()); err != nil {
+		return nil, err
+	}
+
 	return mux, nil
 }
 
@@ -1226,12 +1171,6 @@ type pauseRequest struct {
 // (assinatura ed25519 produzida no dispositivo do operador) a node.Steer.Steer, que
 // AUTENTICA na fronteira real (AOS-160). Assinatura inválida/replay/stale ⇒ 403 SEM efeito.
 func (h *apiHandler) handleSteer(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
 	runID := r.PathValue("id")
 	var req steerRequest
 	if status, ok := h.decodeJSON(w, r, &req); !ok {
@@ -1260,12 +1199,6 @@ func (h *apiHandler) handleSteer(w http.ResponseWriter, r *http.Request) {
 
 // handlePause emite um pause gracioso AUTENTICADO (mesma fronteira do steer).
 func (h *apiHandler) handlePause(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
 	runID := r.PathValue("id")
 	var req pauseRequest
 	if status, ok := h.decodeJSON(w, r, &req); !ok {
@@ -1357,12 +1290,6 @@ type challengeRequest struct {
 // base64 (para o wire do /approve) e em hex (para a flag --challenge do aos-issuer), sem obrigar
 // a reescrever o cliente. Autenticado pela MESMA admission do plano de controlo que o /approve.
 func (h *apiHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
 	if h.node.ChallengeIssuer == nil {
 		writeError(w, http.StatusNotImplemented, "emissao de challenges desligada (frescura por-cerimonia dormente; defina AOS_CHALLENGE_ISSUANCE=1)")
 		return
@@ -1396,12 +1323,6 @@ func (h *apiHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 // compôs; senão o endpoint está DESLIGADO (501). Non-signing: as assinaturas das pernas
 // vêm no corpo; o gate verifica-as contra as pubkeys pinadas. Negação ⇒ 403 SEM efeito.
 func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
 	if h.node.FourEyes == nil {
 		writeError(w, http.StatusNotImplemented, "four-eyes desligado (sem aprovadores compostos)")
 		return
@@ -1974,12 +1895,6 @@ type resumeRequest struct {
 // a cadeia de mediação COMPLETA volta a correr sobre a credencial fresca (identidade,
 // revalidação, PDP, taint, escopo, egress). Este endpoint só reconstitui e re-submete.
 func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
 	runID := r.PathValue("id")
 	if runID == "" {
 		writeError(w, http.StatusNotFound, "not found")

@@ -106,10 +106,8 @@ func (h *apiHandler) handleRelease(w http.ResponseWriter, r *http.Request) {
 //  5. SELA a acção no WORM (sem PII) ANTES de a aplicar (fail-closed: WORM não sela ⇒ 503, acção
 //     não acontece); depois aplica no [audit.LegalHold].
 func (h *apiHandler) handleLegalHold(w http.ResponseWriter, r *http.Request, place bool) {
-	// (1) ADMISSION do plano de controlo.
-	if !h.admitControl(w) {
-		return
-	}
+	// (1) ADMISSION do plano de controlo: vem da TABELA DE ROTAS (planoGovernacao, planos.go) — e
+	// aplica-se em /dsar/hold e /dsar/release, as rotas REGISTADAS que entram por aqui.
 	// (2) O legal hold tem de estar composto.
 	if h.node.DSARHolds == nil {
 		writeError(w, http.StatusNotImplemented, "legal hold desligado (nao composto)")
@@ -236,9 +234,6 @@ func (h *apiHandler) sealLegalHold(ctx context.Context, reader readerIdentity, r
 // O guard vive no SERVIÇO (AOS-267) e não no handler: desde que o scheduler interno conduz a mesma
 // passagem, a exclusão tem de ser entre a ROTA e o TICK, não apenas entre invocações da rota.
 func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
 	if h.node.ExpirationJob == nil {
 		writeError(w, http.StatusNotImplemented, "expiracao desligada (job nao composto)")
 		return

@@ -219,12 +219,6 @@ func (w ratificationWire) decode() (hitl.SignedApproval, string) {
 // (motivo no WORM, resposta uniforme); 429 ⇒ admissão; 501 ⇒ controller não composto (defensivo:
 // o [Bootstrap] compõe-o SEMPRE, mas um [Node] montado à mão não fica a devolver 500).
 func (h *apiHandler) handlePromote(w http.ResponseWriter, r *http.Request) {
-	if !h.admitControl(w) {
-		return
-	}
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
 	if h.node == nil || h.node.Promotion == nil {
 		writeError(w, http.StatusNotImplemented, "promotion controller nao composto")
 		return

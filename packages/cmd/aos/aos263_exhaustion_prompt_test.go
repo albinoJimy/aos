@@ -345,11 +345,21 @@ func TestAOS263_PromptApareceNoWireDoRun(t *testing.T) {
 	}
 	// E a rota apresentada TEM de existir no mux (uma opção cuja rota não está registada é uma
 	// promessa, que é exactamente o que AOS-262 se recusou a fazer).
-	fonte, ferr := os.ReadFile("api.go")
-	if ferr != nil {
-		t.Fatalf("ler api.go: %v", ferr)
+	//
+	// Consulta a TABELA DE ROTAS real, e já não o texto do api.go: a verificação textual partiu-se
+	// quando o registo passou a ser uma tabela, e teria dito "rota em falta" sobre uma rota que
+	// estava lá — o modo de falha errado, porque acusa em vez de avisar.
+	registada := false
+	for _, rt := range (&apiHandler{}).tabelaDeRotas() {
+		if rt.padrao == "POST /runs/{id}/exhaustion" {
+			registada = true
+			// E tem de ser plano de CONTROLO: a decisão de exaustão muda o destino de um run.
+			if rt.plano != planoControlo {
+				t.Errorf("a rota de exaustao esta em %v, tem de ser controlo", rt.plano)
+			}
+		}
 	}
-	if !strings.Contains(string(fonte), `mux.HandleFunc("POST /runs/{id}/exhaustion"`) {
+	if !registada {
 		t.Error("a rota das opcoes apresentadas tem de estar REGISTADA no mux")
 	}
 }
