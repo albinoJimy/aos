@@ -131,22 +131,32 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Ensaio antes de virar o interruptor** — `POST /autonomy/simular` | Relê os selos de mediação do WORM e re-classifica com o **mesmo** classificador do nó, num registo efémero **sem sink**. **Controlos:** a simulação e o classificador real **concordam** para os mesmos factos; usa o **parser do arranque** (recusa o que o nó recusaria); **não sela** — o ensaio não contamina o trilho. Limite declarado na resposta: avalia **só** o overlay de autonomia | 🧪 |
 | **Autonomia / escalate** (AOS-087) — o overlay nível × classe de risco rebaixa um `permit` para `escalate` | **PROVADO NO NÓ QUE SERVE, com controlo, em 2026-08-19.** Duas submissões idênticas em tudo — `cap:fs.read`, tool `doc_read`, recurso `doc://notes`, taint `untrusted`, reversibilidade `reversible`, classe de risco `gray` — mudando **uma só** variável, a classe do agente: `agent-reader` (na tabela) resolveu **L4** e correu até `complete`; `agent-break-glass` (fora dela) caiu no piso **L0** e o selo diz `Decision: escalate`, `Code: E_ESCALATED`, `Reason: "autonomia L0 x gray -> suggest (gate humano)"`, com o run em `waiting_on_human`. Nenhum dos dois agentes existia antes: o L4 veio da **regra de CLASSE**, que é a propriedade que a cascata acrescenta | ✅ |
 | **A decisão de autonomia fica SELADA por tool call** | No caminho `allow`, o selo de mediação carrega uma obrigação `autonomy` com `domain`, `level`, `oversight`, `requires_human` e `risk_class` — a decisão é **auditável**, não inferida da ausência de escalada. ⚠️ **Assimetria declarada:** no caminho `escalate` o registo traz `Obligations: null` e a mesma informação em texto livre no campo `Reason`. Um auditor que percorra obrigações vê as autorizações e **não vê** as escaladas; tem de ler também o `Reason` | ✅ |
-
-> ⚠️ **Dois achados que só a cerimónia REAL revelou** (2026-08-19):
+> ✅ **Dois achados que só a cerimónia REAL revelou — CORRIGIDOS e PROVADOS em produção**
+> (encontrados 2026-08-19, fechados no mesmo dia):
 >
-> **1. A retoma re-classifica MAIS severamente.** A mesma tool call foi selada `autonomia L0 x
-> **gray**` na primeira execução e `autonomia L0 x **danger**` ao ser reproduzida da captura na
-> retoma. A direcção é fail-closed (o pior caso), mas é uma **divergência**: a classe de risco de
-> uma acção retomada não é a da acção original, e quem assinar uma perna com a classe da primeira
-> vê a assinatura recusada na segunda.
+> **1. A retoma re-classificava mais severamente.** `toolCallCapture` não guardava a
+> reversibilidade declarada; na retoma voltava vazia e `IsIrreversible()` trata o desconhecido
+> como irreversível, pelo que a mesma tool call passava de `gray` a `danger`. **Provado corrigido
+> no nó que serve:** os dois selos do mesmo run dizem `"Reversibility":"reversible"` e
+> `L0 x gray`. O CONTROLO é histórico — a mesma experiência, horas antes, com o código antigo,
+> deu `reversible → gray` e depois `"" → danger`.
 >
-> **2. Uma re-escalada depois de expirar NÃO anuncia pendência nova.** O evento `approval.pending`
-> é emitido com a chave de idempotência `approval:pending-<run>-<step>`. Depois de
-> `approval.expired`, retomar o run faz a acção escalar outra vez — e o WORM sela a escalada — mas
-> **nenhum** `approval.pending` é emitido. O run esteve 10 minutos em `waiting_on_human` com o
-> stream `gov.approvals` a mostrar «expirado» como último estado. A cerimónia funciona à mesma (o
-> grant liga-se à acção pela **preview**, não pelo pendente), mas quem vigia pendências não vê o
-> que está à espera.
+> **2. Uma re-escalada depois de expirar não anunciava pendência nova.** Duas causas compostas: o
+> Event Store deduplicava por `(run_id, step_id)` e a listagem retirava por CONJUNTO de chaves,
+> sem ordem. A correcção dá identidade à ENCARNAÇÃO — `(run, step, geração)` — mantendo a chave da
+> geração ZERO byte-idêntica, para o log já selado continuar a ser lido pelas mesmas regras.
+> **Provado no nó que serve**, ciclo completo sobre duas encarnações:
+>
+> ```
+> seq 35  approval.pending   pending-…-tool-1        (geração 0)
+> seq 36  approval.expired   expired-…-tool-1
+> seq 37  approval.pending   pending-…-tool-1#1      (geração 1)
+> seq 38  approval.expired   expired-…-tool-1#1
+> ```
+>
+> O `seq 38` é o que fecha a segunda metade: a encarnação nova **expirou sozinha**, logo o
+> varrimento VIU-A — e o varrimento usa a mesma função de retirada que a listagem do operador.
+> Ver o evento no stream provaria só que foi escrito, não que alguém o vê.
 
 ---
 
