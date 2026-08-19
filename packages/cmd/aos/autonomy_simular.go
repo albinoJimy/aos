@@ -50,6 +50,12 @@ type simularEfeito struct {
 
 // handleAutonomySimular avalia a configuração proposta contra o histórico selado.
 func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Request) {
+	// ADMISSÃO do plano de controlo, ANTES do mTLS — a mesma ordem das outras rotas de controlo.
+	// Rejeitar barato protege a maquinaria de autenticação de carga; é o tradeoff que o banner
+	// já declara para o balde de ingresso.
+	if !h.admitControl(w) {
+		return
+	}
 	// mTLS DO PLANO DE CONTROLO. Isto é plano de controlo tanto como o /approve e o /pause, e
 	// tem de passar pela MESMA barreira — que NÃO é middleware: cada handler de controlo
 	// chama-a explicitamente, e um handler novo que se esqueça fica de fora sem que nada avise.

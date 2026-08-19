@@ -52,6 +52,16 @@ func TestTodaRotaDeControloPassaPeloMTLS(t *testing.T) {
 		t.Fatalf("so extrai %d handlers — o varredor partiu-se e o teste ficaria vacuoso", len(corpo))
 	}
 
+	// AS DUAS BARREIRAS, e a razao de o teste as verificar juntas: quando escrevi este ficheiro
+	// verifiquei so o mTLS, porque foi o que me ocorreu primeiro. As mesmas tres rotas estavam
+	// TAMBEM fora do balde de admissao, e o teste — verde — nao me disse nada.
+	//
+	// Um teste que verifica metade de uma afirmacao e mais perigoso do que nenhum: cobre o
+	// suficiente para se confiar nele, e deixa passar o resto sem sinal.
+	barreiras := map[string]string{
+		"admitControl":     "balde de admissao do plano de controlo (rate limit)",
+		"admitControlMTLS": "mTLS do plano de controlo (certificado de cliente verificado)",
+	}
 	var faltam []string
 	for nome, porque := range rotasDeControlo {
 		texto, ok := corpo[nome]
@@ -59,8 +69,10 @@ func TestTodaRotaDeControloPassaPeloMTLS(t *testing.T) {
 			t.Errorf("%s consta da lista de rotas de controlo mas NAO existe — remova-o ou corrija o nome", nome)
 			continue
 		}
-		if !strings.Contains(texto, "admitControlMTLS") {
-			faltam = append(faltam, nome+" ("+porque+")")
+		for barreira, oQueE := range barreiras {
+			if !strings.Contains(texto, barreira+"(") {
+				faltam = append(faltam, nome+" nao passa por "+barreira+" — "+oQueE+" ("+porque+")")
+			}
 		}
 	}
 	sort.Strings(faltam)
