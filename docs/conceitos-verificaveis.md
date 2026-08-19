@@ -120,7 +120,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | Conceito | Como se verifica | Estado |
 |---|---|---|
 | **Canal de controlo Ed25519** (AOS-160) | 1 operador registado; HMAC demo **desligado** | ✅ |
-| **Four-eyes** (AOS-162) — a cerimónia inteira, não só os aprovadores pinados | 2 aprovadores pinados por ficheiro. **Exercitada num clone restaurado:** *challenges* distintos por aprovador, duas pernas assinadas com sessões e credenciais distintas, `authorized` nomeando ambos + `grant_id`. **Controlo:** a primeira tentativa foi **recusada** (`403`) por o `risk_class` do pedido divergir do assinado nas pernas — a assinatura cobre o tuplo canónico, e apanhou-o | 🧪 |
+| **Four-eyes** (AOS-162) — a cerimónia inteira, não só os aprovadores pinados | **PROVADO NO NÓ QUE SERVE, com controlo, em 2026-08-19.** `POST /challenge` emitiu challenges **distintos** por aprovador; duas pernas assinadas fora do nó (`aos-issuer approve-sign`) com aprovador, sessão e credencial distintos ⇒ `authorized`, `approvers:[alice,bob]`, `grant_id`; `POST /resume` com credencial fresca fez a acção **antes escalada** correr até `complete`. Selado em `governance.control` com `Capability: control:approve`, `NHIID: "human:alice,human:bob"` e as obrigações `four_eyes.approvers` / `four_eyes.grant`; o stream `gov.approvals` regista `pending → expired → granted → consumed`. **Controlo:** as MESMAS duas pernas com o mesmo aprovador nos dois lados — sessões, credenciais e challenges todos distintos, muda só a identidade — deram **`403`**. É a única variável alterada | ✅ |
 | **Frescura por-cerimónia** (AOS-266) | `POST /runs/{id}/challenge` emite por (pedido, aprovador), TTL 5 min, *issue-then-consume*. Passou de `501` a `200` com challenges distintos | ✅ |
 | **Ratificação de promoção** (AOS-159/206/275) — assinatura produzida **fora** do nó | `aos-issuer ratify-sign`; freshness + nonce store durável forçados | 🧪 |
 | **Attestation de dispositivo** (AOS-177) | Sem `AOS_ATTESTATION_VERIFIER_URL`, o four-eyes é **só estrutural** — não prova modelo nem posse | 💤 |
@@ -131,6 +131,22 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Ensaio antes de virar o interruptor** — `POST /autonomy/simular` | Relê os selos de mediação do WORM e re-classifica com o **mesmo** classificador do nó, num registo efémero **sem sink**. **Controlos:** a simulação e o classificador real **concordam** para os mesmos factos; usa o **parser do arranque** (recusa o que o nó recusaria); **não sela** — o ensaio não contamina o trilho. Limite declarado na resposta: avalia **só** o overlay de autonomia | 🧪 |
 | **Autonomia / escalate** (AOS-087) — o overlay nível × classe de risco rebaixa um `permit` para `escalate` | **PROVADO NO NÓ QUE SERVE, com controlo, em 2026-08-19.** Duas submissões idênticas em tudo — `cap:fs.read`, tool `doc_read`, recurso `doc://notes`, taint `untrusted`, reversibilidade `reversible`, classe de risco `gray` — mudando **uma só** variável, a classe do agente: `agent-reader` (na tabela) resolveu **L4** e correu até `complete`; `agent-break-glass` (fora dela) caiu no piso **L0** e o selo diz `Decision: escalate`, `Code: E_ESCALATED`, `Reason: "autonomia L0 x gray -> suggest (gate humano)"`, com o run em `waiting_on_human`. Nenhum dos dois agentes existia antes: o L4 veio da **regra de CLASSE**, que é a propriedade que a cascata acrescenta | ✅ |
 | **A decisão de autonomia fica SELADA por tool call** | No caminho `allow`, o selo de mediação carrega uma obrigação `autonomy` com `domain`, `level`, `oversight`, `requires_human` e `risk_class` — a decisão é **auditável**, não inferida da ausência de escalada. ⚠️ **Assimetria declarada:** no caminho `escalate` o registo traz `Obligations: null` e a mesma informação em texto livre no campo `Reason`. Um auditor que percorra obrigações vê as autorizações e **não vê** as escaladas; tem de ler também o `Reason` | ✅ |
+
+> ⚠️ **Dois achados que só a cerimónia REAL revelou** (2026-08-19):
+>
+> **1. A retoma re-classifica MAIS severamente.** A mesma tool call foi selada `autonomia L0 x
+> **gray**` na primeira execução e `autonomia L0 x **danger**` ao ser reproduzida da captura na
+> retoma. A direcção é fail-closed (o pior caso), mas é uma **divergência**: a classe de risco de
+> uma acção retomada não é a da acção original, e quem assinar uma perna com a classe da primeira
+> vê a assinatura recusada na segunda.
+>
+> **2. Uma re-escalada depois de expirar NÃO anuncia pendência nova.** O evento `approval.pending`
+> é emitido com a chave de idempotência `approval:pending-<run>-<step>`. Depois de
+> `approval.expired`, retomar o run faz a acção escalar outra vez — e o WORM sela a escalada — mas
+> **nenhum** `approval.pending` é emitido. O run esteve 10 minutos em `waiting_on_human` com o
+> stream `gov.approvals` a mostrar «expirado» como último estado. A cerimónia funciona à mesma (o
+> grant liga-se à acção pela **preview**, não pelo pendente), mas quem vigia pendências não vê o
+> que está à espera.
 
 ---
 
@@ -251,8 +267,8 @@ sempre um controlo que teria de falhar, e falhou.
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 46 |
-| 🧪 Provado por teste (ou em clone restaurado) | 15 |
+| ✅ Provado em produção | 47 |
+| 🧪 Provado por teste (ou em clone restaurado) | 14 |
 | ⚠️ Armado, não exercido | 4 |
 | 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 4 |
