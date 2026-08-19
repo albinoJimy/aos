@@ -46,7 +46,16 @@ type autonomyLevelSpec struct {
 // parseAutonomyLevels lê AOS_AUTONOMY_LEVELS. Vazio ⇒ (nil, nil): oráculo NÃO ligado,
 // comportamento inalterado.
 func parseAutonomyLevels() ([]autonomyLevelSpec, error) {
-	raw := strings.TrimSpace(os.Getenv("AOS_AUTONOMY_LEVELS"))
+	return parseAutonomyLevelsFrom(os.Getenv("AOS_AUTONOMY_LEVELS"))
+}
+
+// parseAutonomyLevelsFrom analisa a MESMA gramatica a partir de uma string qualquer.
+//
+// Extraido para que a SIMULACAO use exactamente o parser do arranque. Se usasse outro, aceitaria
+// configuracoes que o no recusaria — e daria luz verde a uma tabela que nunca chegaria a entrar
+// em vigor.
+func parseAutonomyLevelsFrom(entrada string) ([]autonomyLevelSpec, error) {
+	raw := strings.TrimSpace(entrada)
 	if raw == "" {
 		return nil, nil
 	}
