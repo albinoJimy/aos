@@ -58,6 +58,16 @@ type autonomyPairWire struct {
 // O `actor` selado vem do EMISSOR VERIFICADO, nunca do corpo. Quem assina é quem fica no registo;
 // aceitar um actor do pedido seria deixar o chamador escolher em nome de quem a mudança aparece.
 func (h *apiHandler) handleAutonomySet(w http.ResponseWriter, r *http.Request) {
+	// mTLS DO PLANO DE CONTROLO. Isto é plano de controlo tanto como o /approve e o /pause, e
+	// tem de passar pela MESMA barreira — que NÃO é middleware: cada handler de controlo
+	// chama-a explicitamente, e um handler novo que se esqueça fica de fora sem que nada avise.
+	//
+	// Foi o que aconteceu: escrevi no plano e no comentário desta rota que ela passava pela
+	// mesma admissão do /approve, e não passava. Uma barreira imposta por convenção de escrita
+	// só resiste enquanto ninguém escrever distraído.
+	if !h.admitControlMTLS(w, r) {
+		return
+	}
 	// Oráculo não composto ⇒ 501, e NÃO um 200 que não fez nada. Um sucesso que não muda o
 	// sistema é a resposta mais cara que uma API de governação pode dar: o operador acredita ter
 	// mudado a postura e não mudou.
@@ -142,6 +152,16 @@ func (h *apiHandler) handleAutonomySet(w http.ResponseWriter, r *http.Request) {
 // que ela muda em runtime essa linha passa a poder mentir. Sem leitura, a rota seria escrever sem
 // poder confirmar — e a única fonte de verdade seria um log de há horas.
 func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
+	// mTLS DO PLANO DE CONTROLO. Isto é plano de controlo tanto como o /approve e o /pause, e
+	// tem de passar pela MESMA barreira — que NÃO é middleware: cada handler de controlo
+	// chama-a explicitamente, e um handler novo que se esqueça fica de fora sem que nada avise.
+	//
+	// Foi o que aconteceu: escrevi no plano e no comentário desta rota que ela passava pela
+	// mesma admissão do /approve, e não passava. Uma barreira imposta por convenção de escrita
+	// só resiste enquanto ninguém escrever distraído.
+	if !h.admitControlMTLS(w, r) {
+		return
+	}
 	if h.node == nil || h.node.Autonomy == nil || h.node.Autonomy.registry == nil {
 		writeError(w, http.StatusNotImplemented, "oraculo de autonomia nao composto")
 		return
