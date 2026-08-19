@@ -30,6 +30,12 @@ const (
 	SignalSteer SignalKind = "steer"
 	// SignalResume retoma o run paused, aplicando a correcção gravada (se houver).
 	SignalResume SignalKind = "resume"
+
+	// SignalAutonomy é uma mudança de NÍVEL DE AUTONOMIA de um par (agente, domínio).
+	// Não pertence a um run: o `runID` do tuplo assinado é o âmbito fixo "autonomy", e o
+	// alvo concreto vai no PAYLOAD — é o que faz uma assinatura capturada não servir para
+	// outro par nem para outro nível.
+	SignalAutonomy SignalKind = "autonomy"
 )
 
 // Tipos canónicos dos eventos append-only do canal de controlo no Event Store. Cada

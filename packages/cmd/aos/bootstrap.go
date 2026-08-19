@@ -583,6 +583,10 @@ type Node struct {
 	Verifier *identity.Verifier
 	// SteerAuth é o autenticador ed25519 do canal de controlo (só pubkeys).
 	SteerAuth *integration.Ed25519Authenticator
+	// Autonomy é a cablagem do oráculo de níveis (AOS-087/AOS-248). Exposta no nó — e não só
+	// na Config — porque o plano de CONTROLO precisa dela: sem isto, mudar um nível continuaria
+	// a exigir editar o `.env` e recriar o processo. nil ⇒ oráculo não composto.
+	Autonomy *autonomyWiring
 	// EventStore e WORM são o substrato partilhado.
 	EventStore *eventstore.Store
 	WORM       audit.Store
@@ -2051,6 +2055,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
+		Autonomy:         cfg.Autonomy,
 		EventStore:       es,
 		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
 		IdentityMode:     identityMode,
