@@ -60,13 +60,32 @@ func parseAutonomyLevels() ([]autonomyLevelSpec, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: entrada %q sem `=`", ErrBadAutonomyLevels, entrada)
 		}
-		agente, dominio, ok := strings.Cut(strings.TrimSpace(par), ":")
+		// ALVO: instância `agt-1:fs`, ou CLASSE `class:agent-worker:fs`.
+		//
+		// A classe é a unidade ESTÁVEL: os agent_id são cunhados por run, pelo que registar
+		// instâncias é registar coisas que ainda não existem. O prefixo é explícito e não
+		// adivinhado — não se tenta inferir "isto parece uma classe" do formato do nome, porque
+		// uma inferência errada aqui muda silenciosamente o alcance de uma regra de autonomia.
+		alvo := strings.TrimSpace(par)
+		ehClasse := strings.HasPrefix(alvo, autonomy.ClassPrefix)
+		if ehClasse {
+			alvo = strings.TrimPrefix(alvo, autonomy.ClassPrefix)
+		}
+		agente, dominio, ok := strings.Cut(alvo, ":")
 		if !ok {
-			return nil, fmt.Errorf("%w: entrada %q sem `agente:dominio`", ErrBadAutonomyLevels, entrada)
+			return nil, fmt.Errorf("%w: entrada %q sem `agente:dominio` (ou `class:<classe>:<dominio>`)", ErrBadAutonomyLevels, entrada)
 		}
 		agente, dominio = strings.TrimSpace(agente), strings.TrimSpace(dominio)
 		if agente == "" || dominio == "" {
 			return nil, fmt.Errorf("%w: entrada %q com agente ou dominio vazio", ErrBadAutonomyLevels, entrada)
+		}
+		// Um id de INSTÂNCIA não pode invadir o namespace das classes: senão `class:x:fs` seria
+		// ambíguo entre "a classe x" e "o agente literalmente chamado class:x".
+		if !ehClasse && strings.HasPrefix(agente, strings.TrimSuffix(autonomy.ClassPrefix, ":")) && strings.Contains(agente, ":") {
+			return nil, fmt.Errorf("%w: entrada %q — um agente nao pode usar o prefixo reservado %q", ErrBadAutonomyLevels, entrada, autonomy.ClassPrefix)
+		}
+		if ehClasse {
+			agente = autonomy.ClassPrefix + agente
 		}
 		lvl, err := parseAutonomyLevel(strings.TrimSpace(nivel))
 		if err != nil {
