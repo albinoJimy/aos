@@ -129,7 +129,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Piso de autonomia DECLARADO** (`AOS_AUTONOMY_DEFAULT`) — um par ausente cai no que alguém escolheu, não no valor-zero | `WithDefaultLevel`. **Controlos:** com piso L1, par desconhecido dá **L1**; **sem** piso continua **L0** (fail-closed inalterado); um registo explícito **ganha** ao piso; piso fora do domínio é ignorado e fica em L0 | 🧪 |
 | **Resolução em cascata por CLASSE** (`class:`) — instância → classe → piso | `LevelForAgentOrClass`. **Controlos:** a instância ganha à classe quando ambas existem; a classe aplica-se a um agente **nunca visto**; classe vazia não herda nada; quem só usa `LevelFor` não é afectado | 🧪 |
 | **Ensaio antes de virar o interruptor** — `POST /autonomy/simular` | Relê os selos de mediação do WORM e re-classifica com o **mesmo** classificador do nó, num registo efémero **sem sink**. **Controlos:** a simulação e o classificador real **concordam** para os mesmos factos; usa o **parser do arranque** (recusa o que o nó recusaria); **não sela** — o ensaio não contamina o trilho. Limite declarado na resposta: avalia **só** o overlay de autonomia | 🧪 |
-| **Autonomia / escalate** (AOS-087) | **Dormente em produção por escolha** (nenhum `escalate` é emitido, logo o *bridge* humano é inalcançável). **O mecanismo está provado:** com `AOS_AUTONOMY_LEVELS` ligado num clone, um agente não registado resolveu para L0 e a tool call escalou → `waiting_on_human`, com o `resource_value` real (`doc://notes`) na pendência. Ligá-lo em produção faz **todo** o agente não listado escalar — não há *wildcard* | 🧪 |
+| **Autonomia / escalate** (AOS-087) | **LIGADO em produção desde 2026-08-19 00:03** (banner: `ORACULO LIGADO`) — e a configuração **não tem efeito**: a única regra é `agt-rotina-01:fs=L4`, uma INSTÂNCIA que nunca correu (aparece só no selo de provisionamento; os agentes reais são outros, e os `agent_id` são cunhados por run). Todo o run real cai no piso **L0** ⇒ **tudo escala**. Nenhum run foi submetido desde então, pelo que o WORM não tem UM ÚNICO `escalate` — ninguém observou a diferença. **O mecanismo está provado** num clone restaurado (agente não registado ⇒ `waiting_on_human` com o `resource_value` real). Fica **por provar no nó que serve** | ⚠️ |
 
 ---
 
@@ -240,12 +240,12 @@ sempre um controlo que teria de falhar, e falhou.
 | Estado | Nº |
 |---|---|
 | ✅ Provado em produção | 45 |
-| 🧪 Provado por teste (ou em clone restaurado) | 16 |
-| ⚠️ Armado, não exercido | 3 |
+| 🧪 Provado por teste (ou em clone restaurado) | 15 |
+| ⚠️ Armado, não exercido | 4 |
 | 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 4 |
 
-Os **11 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **12 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
