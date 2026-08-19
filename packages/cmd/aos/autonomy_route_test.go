@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +250,201 @@ func TestBannerNaoAfirmaOPresente(t *testing.T) {
 	l2 := strings.Join(autonomyPostureBanner(w2), "\n")
 	if !strings.Contains(l2, "por omissao") {
 		t.Errorf("sem piso declarado o banner devia dizer que L0 e por OMISSAO:\n%s", l2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OS DOIS CONTROLOS QUE O PLANO EXIGIU À FASE 1 E QUE NÃO ESTAVAM COBERTOS.
+//
+// O plano (docs/plano-autonomia-operavel.md) escreveu quatro controlos para a rota. Três estavam
+// exercidos — emissor não registado recusado, nonce reutilizado recusado, assinatura amarrada ao
+// nível. Ao ir marcar a fase como feita, dei por mim a escrevê-lo de memória: faltavam DOIS.
+//
+// É o mesmo padrão do resto do dia — a verificação cobre o que ocorreu a quem a escreveu — e a
+// única defesa que funcionou até agora foi ir CONFERIR em vez de recordar.
+// ---------------------------------------------------------------------------
+
+// noParaTeste monta o mínimo da rota: registo com sink ligado a um WORM em memória, autenticador
+// com um emissor registado, e o par de chaves para assinar.
+func noParaTeste(t *testing.T) (*apiHandler, ed25519.PrivateKey, audit.Store) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worm := audit.NewMemStore()
+	sink := &autonomyWORMSink{}
+	sink.bind(worm)
+	reg := autonomy.NewLevelRegistry(autonomy.WithSink(sink))
+
+	auth, err := integration.NewEd25519Authenticator(memNonceStore{vistos: map[string]bool{}}, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.Register("human:op", pub)
+
+	h := &apiHandler{
+		node: &Node{
+			Autonomy:  &autonomyWiring{registry: reg, sink: sink},
+			SteerAuth: auth,
+			WORM:      worm,
+		},
+		cfg: apiConfig{maxBodyBytes: 1 << 20, now: time.Now},
+	}
+	return h, priv, worm
+}
+
+func pedidoDeAutonomia(t *testing.T, priv ed25519.PrivateKey, id, agente, dominio, nivel, motivo string) *http.Request {
+	t.Helper()
+	payload := integration.CanonicalAutonomyPayload(agente, dominio, nivel, motivo)
+	em, err := integration.SignEmitter(id, priv, integration.AutonomyScope, control.SignalAutonomy, payload, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpo, err := json.Marshal(map[string]any{
+		"emitter": emissorDeWire(em), "agent": agente, "domain": dominio, "level": nivel, "reason": motivo,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewRequest("POST", "/autonomy", bytes.NewReader(corpo))
+}
+
+// TestSeloNomeiaQuemAssinouENaoOQueOCorpoDiz — o `actor` selado vem do EMISSOR VERIFICADO.
+//
+// Se viesse do corpo, o chamador escolheria em nome de quem a mudança aparece no registo — e a
+// pergunta a que uma auditoria destas tem de responder ("quem baixou a supervisão, e porquê")
+// passaria a ser respondida por quem tem interesse na resposta.
+func TestSeloNomeiaQuemAssinouENaoOQueOCorpoDiz(t *testing.T) {
+	h, priv, worm := noParaTeste(t)
+
+	w := httptest.NewRecorder()
+	h.handleAutonomySet(w, pedidoDeAutonomia(t, priv, "human:op", "agt-1", "fs", "L4", "leitura de rotina corre sozinha"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST devia aplicar: %d %s", w.Code, w.Body.String())
+	}
+
+	// (1) O selo da partição de AUTONOMIA nomeia o emissor e guarda o motivo.
+	head, err := worm.Head(t.Context(), autonomy.DefaultAutonomyPartition)
+	if err != nil || head == 0 {
+		t.Fatalf("nada selado na particao de autonomia (head=%d, err=%v)", head, err)
+	}
+	recs, err := worm.Read(t.Context(), autonomy.DefaultAutonomyPartition, 1, head)
+	if err != nil || len(recs) == 0 {
+		t.Fatalf("ler particao de autonomia: %v", err)
+	}
+	selo := recs[len(recs)-1]
+	if selo.Principal.NHIID != "human:op" {
+		t.Errorf("o selo nomeia %q, tinha de nomear o EMISSOR VERIFICADO human:op", selo.Principal.NHIID)
+	}
+	// O motivo e o actor ficam nos PARAMS da obrigacao `autonomy.level_changed` — ligados ao
+	// EntryHash pelo conteudo canonico, como o resto do registo. Procurei-os primeiro no campo
+	// `Reason` do registo e nao estavam la: o teste acusava o sistema de nao selar o motivo
+	// quando o defeito era meu. Vale a pena o comentario porque a proxima pessoa procura no
+	// mesmo sitio errado.
+	if len(selo.Obligations) == 0 {
+		t.Fatalf("o selo nao tem obrigacao autonomy.level_changed: %+v", selo)
+	}
+	params := selo.Obligations[0].Params
+	if !strings.Contains(params["reason"], "leitura de rotina") {
+		t.Errorf("o motivo nao ficou no selo: %q — uma mudanca de nivel sem justificacao nao e auditavel", params["reason"])
+	}
+	if params["actor"] != "human:op" {
+		t.Errorf("o actor do selo e %q, tinha de ser o emissor verificado", params["actor"])
+	}
+	if params["new_level"] != "L4" {
+		t.Errorf("o selo diz new_level=%q, o POST aplicou L4", params["new_level"])
+	}
+
+	// (2) O selo de ACÇÃO DE CONTROLO nomeia o mesmo emissor.
+	hc, err := worm.Head(t.Context(), controlSealPartition)
+	if err != nil || hc == 0 {
+		t.Fatalf("nada selado em %s (head=%d)", controlSealPartition, hc)
+	}
+	rc, err := worm.Read(t.Context(), controlSealPartition, 1, hc)
+	if err != nil || len(rc) == 0 {
+		t.Fatalf("ler %s: %v", controlSealPartition, err)
+	}
+	if got := rc[len(rc)-1].Principal.NHIID; got != "human:op" {
+		t.Errorf("o selo de controlo nomeia %q, quero human:op", got)
+	}
+
+	// (3) CONTROLO — o corpo NÃO PODE transportar um actor. O decodificador recusa campos
+	// desconhecidos, pelo que a tentativa nem chega à autenticação. É a forma mais forte da
+	// afirmação: não é que o actor do corpo seja ignorado — é que não existe campo onde o pôr.
+	payload := integration.CanonicalAutonomyPayload("agt-1", "fs", "L5", "outra")
+	em, err := integration.SignEmitter("human:op", priv, integration.AutonomyScope, control.SignalAutonomy, payload, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpo, _ := json.Marshal(map[string]any{
+		"emitter": emissorDeWire(em), "agent": "agt-1", "domain": "fs", "level": "L5", "reason": "outra",
+		"actor": "human:outro-qualquer",
+	})
+	w2 := httptest.NewRecorder()
+	h.handleAutonomySet(w2, httptest.NewRequest("POST", "/autonomy", bytes.NewReader(corpo)))
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("um corpo com `actor` devolveu %d, quero 400 — se passar, ha um campo onde escolher o autor", w2.Code)
+	}
+}
+
+// TestGetReflecteOPost — o quarto controlo da Fase 1.
+//
+// Sem isto, `POST` podia devolver `200` e o `GET` continuar a mostrar a postura antiga: o operador
+// acreditaria ter mudado o sistema. É o mesmo raciocínio pelo qual a rota devolve `501` quando o
+// oráculo não está composto, em vez de um `200` que não faz nada.
+func TestGetReflecteOPost(t *testing.T) {
+	h, priv, _ := noParaTeste(t)
+
+	// CONTROLO ANTES: o par ainda não existe, e o GET não o inventa.
+	w0 := httptest.NewRecorder()
+	h.handleAutonomyGet(w0, httptest.NewRequest("GET", "/autonomy", nil))
+	if strings.Contains(w0.Body.String(), "agt-7") {
+		t.Fatalf("o GET ja mostra um par que nunca foi registado: %s", w0.Body.String())
+	}
+
+	w := httptest.NewRecorder()
+	h.handleAutonomySet(w, pedidoDeAutonomia(t, priv, "human:op", "agt-7", "http", "L3", "tiering para egress"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST: %d %s", w.Code, w.Body.String())
+	}
+
+	w2 := httptest.NewRecorder()
+	h.handleAutonomyGet(w2, httptest.NewRequest("GET", "/autonomy", nil))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET: %d", w2.Code)
+	}
+	var resp struct {
+		Pairs []autonomyPairWire `json:"pairs"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("resposta do GET ilegivel: %v (%s)", err, w2.Body.String())
+	}
+	achou := false
+	for _, p := range resp.Pairs {
+		if p.Agent == "agt-7" && p.Domain == "http" {
+			achou = true
+			if p.Level != "L3" {
+				t.Errorf("o GET mostra %s, o POST aplicou L3 — a leitura nao reflecte a escrita", p.Level)
+			}
+		}
+	}
+	if !achou {
+		t.Errorf("o par aplicado pelo POST nao aparece no GET: %s", w2.Body.String())
+	}
+}
+
+// emissorDeWire converte o [control.Emitter] na forma de WIRE que a rota aceita.
+//
+// `control.Emitter` não tem tags JSON e o `Signature`/`Nonce` são `[]byte`; serializá-lo directo
+// produz `ID`/`Signature` em maiúsculas, que o `decodeJSON` — com `DisallowUnknownFields` —
+// recusa com 400. Foi o que aconteceu à primeira versão deste teste, e é a razão de esta
+// conversão existir explicitamente em vez de se confiar no marshal por omissão.
+func emissorDeWire(em control.Emitter) emitterWire {
+	return emitterWire{
+		ID:        em.ID,
+		Signature: base64.StdEncoding.EncodeToString(em.Signature),
+		Nonce:     base64.StdEncoding.EncodeToString(em.Nonce),
+		IssuedAt:  em.IssuedAt,
 	}
 }

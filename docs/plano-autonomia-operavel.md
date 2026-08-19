@@ -1,4 +1,4 @@
-# Plano — tornar a autonomia operável
+# Plano — tornar a autonomia operável  ✅ FEITO (ver «Estado em 2026-08-19»)
 
 Hoje o oráculo de autonomia (AOS-087) é o **único** mecanismo de governação deste sistema que se
 muda editando um ficheiro no servidor: `AOS_AUTONOMY_LEVELS` no `.env`, seguido de recriar o nó.
@@ -10,6 +10,55 @@ aplica** não tem nada disso.
 Faltar-lhe a rota é ao mesmo tempo o que o torna difícil de ligar e o que o torna difícil de
 auditar. É o mesmo defeito visto de dois lados.
 
+
+---
+
+## Estado em 2026-08-19 — as quatro fases estão FEITAS
+
+Este documento nasceu como plano e passa a ser **registo**. O que cada fase entregou, e o
+artefacto onde vive:
+
+| Fase | Entregue | Onde |
+|---|---|---|
+| 1 — a rota | `POST /autonomy`, `GET /autonomy` | `packages/cmd/aos/autonomy_route.go` |
+| 2 — chave por CLASSE | `ClassPrefix`, `LevelForAgentOrClass` (instância → classe → piso) | `packages/control-plane/governance/autonomy/registry.go` |
+| 3 — piso DECLARADO | `WithDefaultLevel`, `AOS_AUTONOMY_DEFAULT` | idem, + `autonomy_levels.go` |
+| 4 — ensaio | `POST /autonomy/simular` | `packages/cmd/aos/autonomy_simular.go` |
+
+As três rotas são **plano de CONTROLO** (`planoControlo` na tabela de `packages/cmd/aos/planos.go`):
+admissão + mTLS de cliente aplicados no registo, assinatura ed25519 do corpo a decidir depois.
+Nasceram **sem** essas barreiras, com o comentário da própria rota a afirmar o contrário — ver a
+secção dos planos em `deploy/node/README.md`.
+
+### O que cada fase PROVOU, e com que controlo
+
+| Fase | Controlo exigido | Onde está exercido |
+|---|---|---|
+| 1 | emissor **não registado** recusado | `TestEmissorAssinadoEAceiteEOsOutrosNao` (caso 3) |
+| 1 | o mesmo *nonce* duas vezes recusado | idem (caso 2) |
+| 1 | assinatura amarrada ao **nível** e ao **motivo** | idem (caso 4) + `TestPayloadDeAutonomiaAmarraNivelEMotivo` |
+| 1 | o selo **nomeia** quem mudou e o motivo | `TestSeloNomeiaQuemAssinouENaoOQueOCorpoDiz` |
+| 1 | `GET` reflecte o `POST` | `TestGetReflecteOPost` |
+| 2 | instância **ganha** à classe; classe aplica-se a agente nunca visto; sem nenhuma, cai no piso | `TestCascataInstanciaGanhaAClasse`, `TestClasseVaziaNaoHerdaNada` |
+| 3 | piso L1 ⇒ par desconhecido dá **L1**; sem piso ⇒ **L0** | `TestPisoDeclaradoAplicaSeAPariAusentes`, `TestPisoInvalidoNaoBaixaAGuarda` |
+| 4 | a simulação e a execução real **concordam** | `TestSimulacaoConcordaComOClassificadorReal` |
+
+> Os dois controlos da Fase 1 sobre o **selo** e sobre o **`GET`** foram acrescentados em
+> 2026-08-19, ao conferir esta tabela em vez de a recordar: os outros três estavam exercidos e
+> estes dois não, apesar de o plano os ter exigido desde o início. Ambos foram verificados por
+> **mutação** — selar um actor do corpo, e devolver `200` sem aplicar — e ambos os testes caem.
+
+### O que falta, e não é código
+
+O oráculo continua **desligado em produção**, por decisão do operador. Ligá-lo é escrever
+`AOS_AUTONOMY_LEVELS` (e, se quiser, `AOS_AUTONOMY_DEFAULT`) no `.env` do servidor e recriar o nó
+— a partir daí as mudanças passam pela rota, assinadas e seladas, sem editar ficheiros.
+
+Ligar exige provar duas coisas no nó real: um run do agente **registado** completa sem escalar, e
+um run com um id **novo** suspende. Sem esse par, o banner afirmaria uma postura que ninguém
+observou.
+
+---
 ## O que já existe, e é a razão de isto ser pequeno
 
 | Peça | Estado |

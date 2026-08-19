@@ -125,6 +125,10 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Ratificação de promoção** (AOS-159/206/275) — assinatura produzida **fora** do nó | `aos-issuer ratify-sign`; freshness + nonce store durável forçados | 🧪 |
 | **Attestation de dispositivo** (AOS-177) | Sem `AOS_ATTESTATION_VERIFIER_URL`, o four-eyes é **só estrutural** — não prova modelo nem posse | 💤 |
 | **Atribuição dispositivo↔aprovador** (AOS-266) | Sem dispositivos registados, a attestation não prova **de quem** é o autenticador | 💤 |
+| **Rota de autonomia assinada e selada** (AOS-087) — mudar níveis deixou de ser editar um ficheiro no servidor | `POST /autonomy` com assinatura ed25519 sobre o payload canónico (agente‖domínio‖nível‖motivo), *nonce* de uso único durável, motivo **obrigatório**. O `actor` selado vem do **emissor verificado**, nunca do corpo. **Controlos:** emissor não registado → `403`; mesmo *nonce* duas vezes → `403`; assinatura de `L1` reapresentada como `L5` → `403`; o selo nomeia quem assinou e guarda o motivo; `GET` reflecte o `POST` | 🧪 |
+| **Piso de autonomia DECLARADO** (`AOS_AUTONOMY_DEFAULT`) — um par ausente cai no que alguém escolheu, não no valor-zero | `WithDefaultLevel`. **Controlos:** com piso L1, par desconhecido dá **L1**; **sem** piso continua **L0** (fail-closed inalterado); um registo explícito **ganha** ao piso; piso fora do domínio é ignorado e fica em L0 | 🧪 |
+| **Resolução em cascata por CLASSE** (`class:`) — instância → classe → piso | `LevelForAgentOrClass`. **Controlos:** a instância ganha à classe quando ambas existem; a classe aplica-se a um agente **nunca visto**; classe vazia não herda nada; quem só usa `LevelFor` não é afectado | 🧪 |
+| **Ensaio antes de virar o interruptor** — `POST /autonomy/simular` | Relê os selos de mediação do WORM e re-classifica com o **mesmo** classificador do nó, num registo efémero **sem sink**. **Controlos:** a simulação e o classificador real **concordam** para os mesmos factos; usa o **parser do arranque** (recusa o que o nó recusaria); **não sela** — o ensaio não contamina o trilho. Limite declarado na resposta: avalia **só** o overlay de autonomia | 🧪 |
 | **Autonomia / escalate** (AOS-087) | **Dormente em produção por escolha** (nenhum `escalate` é emitido, logo o *bridge* humano é inalcançável). **O mecanismo está provado:** com `AOS_AUTONOMY_LEVELS` ligado num clone, um agente não registado resolveu para L0 e a tool call escalou → `waiting_on_human`, com o `resource_value` real (`doc://notes`) na pendência. Ligá-lo em produção faz **todo** o agente não listado escalar — não há *wildcard* | 🧪 |
 
 ---
@@ -165,6 +169,8 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 |---|---|---|
 | **Ingresso / admission** (AOS-166/277) | 64 pedidos/s, burst 128, máx. 512 runs em curso | ✅ |
 | **Terminação TLS a montante** (AOS-209) | **Declarada**: o nó serve em texto-claro por decisão de quem o configurou; a cifra depende do ingress | ⚠️ |
+| **Classificação de PLANO por rota** — as barreiras derivam do registo, não da memória de quem escreve | Tabela em `packages/cmd/aos/planos.go`: 3 abertas, 4 de dados, 4 de governação, 10 de controlo. O **valor-zero é inválido** e **aborta o arranque** (`ErrRotaPorClassificar`). **Controlos (por mutação, todos caem):** mTLS fora do ramo de controlo; balde fora do ramo de controlo; balde fora do ramo de governação; rota despromovida de plano; rota registada fora de `registar` | 🧪 |
+| **DSAR sem barreira de TRANSPORTE** — as 4 rotas de governação autenticam-se por asserção OIDC verificada mas **não** exigem certificado de cliente | É a única superfície de governação sem mTLS, e inclui o `/dsar/erase` (crypto-shred, que nenhum restore drill desfaz). **Decisão em aberto, escrita** em `barreirasDe` e no README: promovê-la obriga a emitir PKI de cliente a operadores DSAR — a provisão que o DEF-012 defere para fora do nó | ❌ |
 | **PKCE S256 obrigatório** | Sem `code_challenge` → `Missing parameter`; com `plain` → `not matching the configured one` | ✅ |
 | **`redirect_uri` registado** | Porta não registada → `400` | ✅ |
 
@@ -229,17 +235,17 @@ sempre um controlo que teria de falhar, e falhou.
 
 ## Contagem
 
-**66 conceitos** em 13 eixos:
+**72 conceitos** em 13 eixos:
 
 | Estado | Nº |
 |---|---|
 | ✅ Provado em produção | 45 |
-| 🧪 Provado por teste (ou em clone restaurado) | 11 |
+| 🧪 Provado por teste (ou em clone restaurado) | 16 |
 | ⚠️ Armado, não exercido | 3 |
 | 💤 Dormente por configuração | 4 |
-| ❌ Ausente e declarado | 3 |
+| ❌ Ausente e declarado | 4 |
 
-Os **10 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **11 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
@@ -249,6 +255,13 @@ do nó, ou em §"O que continua por fechar" do
 > `| símbolo | texto |`. Contar só as linhas que começam por `| **` (o negrito do nome do
 > conceito) dá **65 / 12**.
 >
+> **Terceira, em 2026-08-19.** Ao acrescentar os conceitos da autonomia e dos planos de rota, o
+> mesmo `grep` deu **73** — e as parcelas somavam **72**. A linha a mais era `| **1.ª tentativa de
+> aprovar** |`, um passo de uma adenda que começa como um conceito e não é um. O critério correcto
+> é **começar por `| **` E terminar num símbolo de estado**; só o segundo troço distingue um
+> conceito de uma linha de tabela qualquer. Três contagens erradas, sempre por medir o formato em
+> vez da coisa — e as três apanhadas por cruzar o total com a soma das parcelas.
+
 > Duas contagens erradas no mesmo dia, ambas por medir o artefacto em vez da coisa: um `grep` de
 > aspas num ficheiro binário, e um `grep` de símbolos numa tabela que também os usa para se
 > explicar a si própria. O que as apanhou foi a mesma coisa — cruzar o número com uma fonte
