@@ -129,7 +129,8 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Piso de autonomia DECLARADO** (`AOS_AUTONOMY_DEFAULT`) — um par ausente cai no que alguém escolheu, não no valor-zero | `WithDefaultLevel`. **Controlos:** com piso L1, par desconhecido dá **L1**; **sem** piso continua **L0** (fail-closed inalterado); um registo explícito **ganha** ao piso; piso fora do domínio é ignorado e fica em L0 | 🧪 |
 | **Resolução em cascata por CLASSE** (`class:`) — instância → classe → piso | `LevelForAgentOrClass`. **Controlos:** a instância ganha à classe quando ambas existem; a classe aplica-se a um agente **nunca visto**; classe vazia não herda nada; quem só usa `LevelFor` não é afectado | 🧪 |
 | **Ensaio antes de virar o interruptor** — `POST /autonomy/simular` | Relê os selos de mediação do WORM e re-classifica com o **mesmo** classificador do nó, num registo efémero **sem sink**. **Controlos:** a simulação e o classificador real **concordam** para os mesmos factos; usa o **parser do arranque** (recusa o que o nó recusaria); **não sela** — o ensaio não contamina o trilho. Limite declarado na resposta: avalia **só** o overlay de autonomia | 🧪 |
-| **Autonomia / escalate** (AOS-087) | **LIGADO em produção desde 2026-08-19 00:03** (banner: `ORACULO LIGADO`) — e a configuração **não tem efeito**: a única regra é `agt-rotina-01:fs=L4`, uma INSTÂNCIA que nunca correu (aparece só no selo de provisionamento; os agentes reais são outros, e os `agent_id` são cunhados por run). Todo o run real cai no piso **L0** ⇒ **tudo escala**. Nenhum run foi submetido desde então, pelo que o WORM não tem UM ÚNICO `escalate` — ninguém observou a diferença. **O mecanismo está provado** num clone restaurado (agente não registado ⇒ `waiting_on_human` com o `resource_value` real). Fica **por provar no nó que serve** | ⚠️ |
+| **Autonomia / escalate** (AOS-087) — o overlay nível × classe de risco rebaixa um `permit` para `escalate` | **PROVADO NO NÓ QUE SERVE, com controlo, em 2026-08-19.** Duas submissões idênticas em tudo — `cap:fs.read`, tool `doc_read`, recurso `doc://notes`, taint `untrusted`, reversibilidade `reversible`, classe de risco `gray` — mudando **uma só** variável, a classe do agente: `agent-reader` (na tabela) resolveu **L4** e correu até `complete`; `agent-break-glass` (fora dela) caiu no piso **L0** e o selo diz `Decision: escalate`, `Code: E_ESCALATED`, `Reason: "autonomia L0 x gray -> suggest (gate humano)"`, com o run em `waiting_on_human`. Nenhum dos dois agentes existia antes: o L4 veio da **regra de CLASSE**, que é a propriedade que a cascata acrescenta | ✅ |
+| **A decisão de autonomia fica SELADA por tool call** | No caminho `allow`, o selo de mediação carrega uma obrigação `autonomy` com `domain`, `level`, `oversight`, `requires_human` e `risk_class` — a decisão é **auditável**, não inferida da ausência de escalada. ⚠️ **Assimetria declarada:** no caminho `escalate` o registo traz `Obligations: null` e a mesma informação em texto livre no campo `Reason`. Um auditor que percorra obrigações vê as autorizações e **não vê** as escaladas; tem de ler também o `Reason` | ✅ |
 
 ---
 
@@ -224,12 +225,15 @@ delegação.
 dispositivo↔aprovador, broker vault, autenticação OTLP. Cada um está nomeado no banner de arranque
 com o que perde por estar desligado.
 
-**Ligado e sem efeito — a categoria que faltava:** a autonomia/escalate. O banner diz `ORACULO
-LIGADO` e a configuração aponta a um agente que nunca correu, pelo que tudo escala e nada o mostra.
-Não é o nó a fingir: é o banner a afirmar com verdade um facto (o oráculo está composto) que se lê
-como outro (a postura está a ser aplicada). A frase que aqui estava — «o nó nunca finge» — era
-verdadeira sobre o mecanismo e enganadora sobre o efeito, e foi por isso que ninguém reparou
-durante doze horas.
+**Ligado, e agora com efeito PROVADO.** A autonomia esteve doze horas ligada e inerte: o banner
+dizia `ORACULO LIGADO` sobre uma regra que apontava a um agente que nunca correu, pelo que tudo
+escalava e nada o mostrava. Não era o nó a fingir — era o banner a afirmar com verdade um facto
+(o oráculo está composto) que se lia como outro (a postura está a ser aplicada). A frase que aqui
+estava — «o nó nunca finge» — era verdadeira sobre o mecanismo e enganadora sobre o efeito.
+
+Fechou-se em 2026-08-19 com regras de **classe** e duas submissões que diferem numa variável só.
+A categoria continua a fazer falta ao vocabulário: **ligado ≠ a aplicar-se**, e a única coisa que
+distingue os dois é um par de execuções em que uma corre e a outra escala.
 
 **Ausente e declarado:** verificação ancorada do WORM, credential broker, selo do Vault, e o DSAR
 sem barreira de transporte. (O alerta de recência do backup **não** pertence a esta lista — está
@@ -243,17 +247,17 @@ sempre um controlo que teria de falhar, e falhou.
 
 ## Contagem
 
-**72 conceitos** em 13 eixos:
+**73 conceitos** em 13 eixos:
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 44 |
+| ✅ Provado em produção | 46 |
 | 🧪 Provado por teste (ou em clone restaurado) | 15 |
-| ⚠️ Armado, não exercido | 5 |
+| ⚠️ Armado, não exercido | 4 |
 | 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 4 |
 
-Os **13 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **12 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
