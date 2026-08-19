@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aos-ref/substrate/eventstore"
@@ -465,11 +467,18 @@ func (p *PendingApprovals) Put(ctx context.Context, rec PendingRecord) error {
 	if err != nil {
 		return err
 	}
+	// ENCARNAÇÃO. Sem isto, um pendente que já expirou e volta a escalar é engolido pela
+	// deduplicação do Event Store — e o run fica à espera de um humano sem nada na lista dele.
+	events, err := readApprovalStream(ctx, p.store)
+	if err != nil {
+		return err
+	}
+	ger := geracaoDe(events, kind, rec.RunID, rec.StepID)
 	res, err := p.store.Append(ctx, approvalStream, eventstore.EventInput{
 		Type:    approvalPendingEventType,
 		Payload: body,
 		RunID:   approvalRunID,
-		StepID:  pendingKey("pending-", kind, rec.RunID, rec.StepID),
+		StepID:  chaveDeGeracao("pending-", kind, rec.RunID, rec.StepID, ger),
 	})
 	if err != nil {
 		return err
@@ -528,7 +537,7 @@ func (p *PendingApprovals) ListForRun(ctx context.Context, runID string) ([]Pend
 		if rec.RunID != runID {
 			continue
 		}
-		if jaRetirado(retirados, rec.Kind, rec.RunID, rec.StepID) {
+		if jaRetiradoDoEvento(retirados, ev.StepID) {
 			continue
 		}
 		jaDecidida := false
@@ -577,11 +586,16 @@ func (p *PendingApprovals) ExpireKind(ctx context.Context, kind PendingKind, run
 	if kind.Resolved() != PendingKindApproval {
 		discriminador = `"kind":` + quoteJSON(string(kind.Resolved())) + `,`
 	}
+	// A expiração retira a encarnação EM CURSO, e por isso precisa de saber qual é.
+	eventosParaGeracao, gerr := readApprovalStream(ctx, p.store)
+	if gerr != nil {
+		return gerr
+	}
 	_, err := p.store.Append(ctx, approvalStream, eventstore.EventInput{
 		Type:    approvalExpiredEventType,
 		Payload: json.RawMessage(`{` + discriminador + `"run_id":` + quoteJSON(runID) + `,"step_id":` + quoteJSON(stepID) + `}`),
 		RunID:   approvalRunID,
-		StepID:  pendingKey("expired-", kind, runID, stepID),
+		StepID:  chaveDeGeracao("expired-", kind, runID, stepID, geracaoDe(eventosParaGeracao, kind, runID, stepID)),
 	})
 	return err
 }
@@ -612,6 +626,11 @@ func (p *PendingApprovals) Decide(ctx context.Context, kind PendingKind, runID, 
 	if kind.Resolved() != PendingKindApproval {
 		discriminador = `"kind":` + quoteJSON(string(kind.Resolved())) + `,`
 	}
+	// Idem: a decisão retira a encarnação em curso, não a primeira de sempre.
+	eventosParaGeracao, gerr := readApprovalStream(ctx, p.store)
+	if gerr != nil {
+		return gerr
+	}
 	_, err := p.store.Append(ctx, approvalStream, eventstore.EventInput{
 		Type: approvalDecidedEventType,
 		Payload: json.RawMessage(`{` + discriminador +
@@ -620,7 +639,7 @@ func (p *PendingApprovals) Decide(ctx context.Context, kind PendingKind, runID, 
 			`,"decision":` + quoteJSON(decision) +
 			`,"principal":` + quoteJSON(principal) + `}`),
 		RunID:  approvalRunID,
-		StepID: pendingKey("decided-", kind, runID, stepID),
+		StepID: chaveDeGeracao("decided-", kind, runID, stepID, geracaoDe(eventosParaGeracao, kind, runID, stepID)),
 	})
 	return err
 }
@@ -668,7 +687,7 @@ func (p *PendingApprovals) ListExpirable(ctx context.Context, now time.Time, ttl
 		if perr != nil || now.Sub(criado) < ttl {
 			continue
 		}
-		if jaRetirado(retirados, rec.Kind, rec.RunID, rec.StepID) {
+		if jaRetiradoDoEvento(retirados, ev.StepID) {
 			continue
 		}
 		jaDecidida := false
@@ -689,4 +708,72 @@ func (p *PendingApprovals) ListExpirable(ctx context.Context, now time.Time, ttl
 		out = append(out, rec)
 	}
 	return out, nil
+}
+
+// ------------------------------------------------------------------------------------------
+// GERAÇÕES DE UM PENDENTE — o que faltava para uma re-escalada voltar a ser visível.
+//
+// O DEFEITO, observado em produção a 2026-08-19 ao exercitar a cerimónia four-eyes: um run
+// escalou, o pendente EXPIROU sem decisão (TTL 15m), o run foi retomado, a acção escalou OUTRA
+// VEZ — e nada apareceu na lista do operador. O run ficou 10 minutos em `waiting_on_human` com o
+// stream a mostrar «expirado» como último estado.
+//
+// Duas causas que se compõem, e nenhuma sozinha explicava tudo:
+//
+//  1. o Event Store deduplica por `idempotency_key = f(run_id, step_id)` e o [Put] usava SEMPRE a
+//     mesma chave para o mesmo (run, step). O segundo anúncio era engolido em SILÊNCIO — que o
+//     comentário do [Put] até declara como «certo para o tipo aprovação», e é, enquanto o
+//     pendente está VIVO;
+//
+//  2. [jaRetirado] é um CONJUNTO de chaves, sem ordem. Uma vez expirado, qualquer pendente com
+//     aquela chave ficava escondido para sempre — logo, mesmo que (1) fosse resolvido, a
+//     listagem continuaria a não o mostrar.
+//
+// A CORRECÇÃO é dar identidade à ENCARNAÇÃO: (run, step, geração), onde a geração é quantas vezes
+// aquele pendente já foi retirado. A primeira encarnação mantém a chave BYTE-IDÊNTICA à de hoje —
+// o comentário de [chaveDeDeduplicacao] exige-o, e reescrever a durável partiria a deduplicação e
+// a expiração de tudo o que já está no log.
+// ------------------------------------------------------------------------------------------
+
+// geracaoDe conta quantas vezes este (kind, run, step) já foi RETIRADO — por expiração ou por
+// decisão. É esse número que identifica a encarnação em curso.
+func geracaoDe(events []eventstore.Event, kind PendingKind, runID, stepID string) int {
+	suf := pendingKey("", kind, runID, stepID)
+	n := 0
+	for _, ev := range events {
+		if ev.Type != approvalExpiredEventType && ev.Type != approvalDecidedEventType {
+			continue
+		}
+		for _, p := range []string{"expired-", "decided-"} {
+			if ev.StepID == p+suf || strings.HasPrefix(ev.StepID, p+suf+"#") {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// chaveDeGeracao é [pendingKey] com a encarnação. A geração ZERO não leva sufixo — é o que
+// mantém o log existente legível pelas mesmas regras.
+func chaveDeGeracao(prefix string, kind PendingKind, runID, stepID string, ger int) string {
+	k := pendingKey(prefix, kind, runID, stepID)
+	if ger == 0 {
+		return k
+	}
+	return k + "#" + strconv.Itoa(ger)
+}
+
+// jaRetiradoDoEvento decide se ESTE evento de pendente já foi retirado, derivando as duas chaves
+// de saída do StepID do PRÓPRIO evento.
+//
+// É o que faz a correspondência ser POR ENCARNAÇÃO sem que a listagem precise de saber o que é
+// uma geração: a expiração de `pending-X` produz `expired-X`, e a de `pending-X#1` produz
+// `expired-X#1`. Uma não pode esconder a outra.
+func jaRetiradoDoEvento(retirados map[string]struct{}, pendingStepID string) bool {
+	suf := strings.TrimPrefix(pendingStepID, "pending-")
+	if _, ja := retirados["expired-"+suf]; ja {
+		return true
+	}
+	_, ja := retirados["decided-"+suf]
+	return ja
 }

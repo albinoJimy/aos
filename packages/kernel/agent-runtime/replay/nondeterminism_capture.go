@@ -42,7 +42,20 @@ type toolCallCapture struct {
 	ResourceType   string `json:"resource_type,omitempty"`
 	ResourceValue  string `json:"resource_value,omitempty"`
 	ResourceRegion string `json:"resource_region,omitempty"`
-	Input          []byte `json:"input,omitempty"`
+	// Reversibility é a REVERSIBILIDADE DECLARADA pelo registry de tools. FALTAVA aqui, e a
+	// falta era observável em produção: um run RETOMADO reclassificava a MESMA tool call de
+	// `gray` para `danger`, porque o classificador recebia o campo vazio e
+	// `IsIrreversible()` devolve true para o desconhecido.
+	//
+	// O comentário do loop já dizia o que isso custa — «sem isto o classificador trata a acção
+	// como irreversível, e toda a tool call sai danger, o que colapsa a taxonomia L0–L5 em dois
+	// estados». A retoma fazia exactamente isso, e ninguém o via porque a direcção é
+	// fail-closed: mais severo, nunca menos.
+	//
+	// NÃO é PII: é uma declaração do REGISTRY sobre a tool, não um argumento do modelo. Por
+	// isso fica FORA do bloco de redacção abaixo — redigi-la reporia o defeito.
+	Reversibility string `json:"reversibility,omitempty"`
+	Input         []byte `json:"input,omitempty"`
 }
 
 // responseCapture serializa a resposta do modelo COMPLETA de um turno.
@@ -361,6 +374,7 @@ func (c *EventStoreCapturer) encodeResponse(r agentruntime.ModelResponse) respon
 			ResourceType:   tc.ResourceType,
 			ResourceValue:  tc.ResourceValue,
 			ResourceRegion: tc.ResourceRegion,
+			Reversibility:  tc.Reversibility,
 			Input:          tc.Input,
 		}
 		if c.sensitive {
@@ -432,6 +446,7 @@ func (r responseCapture) decode() agentruntime.ModelResponse {
 			ResourceType:   tc.ResourceType,
 			ResourceValue:  tc.ResourceValue,
 			ResourceRegion: tc.ResourceRegion,
+			Reversibility:  tc.Reversibility,
 			Input:          tc.Input,
 		})
 	}
