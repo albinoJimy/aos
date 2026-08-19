@@ -174,7 +174,7 @@ func TestIssuer_OIDCAuthenticatesHumanBeforeMint(t *testing.T) {
 	}
 
 	// (2) ADULTERADO: recusa fail-closed — nenhum humano é derivado de um token não-verificado.
-	tampered := idToken[:len(idToken)-2] + "AA"
+	tampered := adulterarAssinatura(idToken)
 	if h, _, err := authenticateOIDC(context.Background(), cfg, tampered); err == nil {
 		t.Fatalf("ID-token adulterado devia ser RECUSADO fail-closed, veio humano=%q", h)
 	}
@@ -193,4 +193,28 @@ func TestIssuer_OIDCRefusesInsecureTransport(t *testing.T) {
 	if err == nil {
 		t.Fatal("o issuer devia RECUSAR um IdP com transporte http não-loopback (fail-closed)")
 	}
+}
+
+// adulterarAssinatura corrompe a cauda de um JWT de forma DETERMINISTA.
+//
+// A versão anterior fazia `tok[:len(tok)-2] + "AA"`. Isso falha em 1 de cada 4096 execuções: se
+// os dois últimos caracteres base64url da assinatura JÁ FOREM "AA", o token "adulterado" é
+// IDÊNTICO ao original, verifica com sucesso, e o teste acusa o sistema de aceitar um token
+// falsificado — quando o que aconteceu foi não haver falsificação nenhuma.
+//
+// Num teste de segurança fail-closed esse falso positivo é particularmente caro: manda procurar
+// uma vulnerabilidade que não existe, e da próxima vez que a mesma mensagem aparecer — talvez por
+// um defeito a sério — já ninguém acredita nela.
+//
+// Aqui o último caractere é trocado por um GARANTIDAMENTE diferente do que lá está.
+func adulterarAssinatura(tok string) string {
+	if tok == "" {
+		return "x"
+	}
+	ultimo := tok[len(tok)-1]
+	novo := byte('A')
+	if ultimo == 'A' {
+		novo = 'B'
+	}
+	return tok[:len(tok)-1] + string(novo)
 }

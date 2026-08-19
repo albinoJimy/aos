@@ -162,7 +162,7 @@ func TestOIDCDirectory_TamperedAssertionRefused(t *testing.T) {
 	auth := newOIDCAuthority(t, idp)
 
 	idToken := idp.signIDToken(t, "alice@corp.example", nil)
-	tampered := idToken[:len(idToken)-2] + "AA" // corrompe a cauda da assinatura
+	tampered := adulterarAssinatura(idToken)
 
 	tok, err := auth.MintForAssertion(ctx, tampered, odAgent, odClass, []string{odCap})
 	if err == nil {
@@ -252,5 +252,48 @@ func TestAllowlistDirectory_AssertionDoubleStillWorks(t *testing.T) {
 	}
 	if _, err := dir.AuthenticateAssertion(ctx, "mallory"); !errors.Is(err, ErrHumanNotRegistered) {
 		t.Fatalf("erro=%v, quero ErrHumanNotRegistered", err)
+	}
+}
+
+// adulterarAssinatura corrompe a cauda de um JWT de forma DETERMINISTA.
+//
+// A versão anterior fazia `tok[:len(tok)-2] + "AA"`. Isso falha em 1 de cada 4096 execuções: se
+// os dois últimos caracteres base64url da assinatura JÁ FOREM "AA", o token "adulterado" é
+// IDÊNTICO ao original, verifica com sucesso, e o teste acusa o sistema de aceitar um token
+// falsificado — quando o que aconteceu foi não haver falsificação nenhuma.
+//
+// Num teste de segurança fail-closed esse falso positivo é particularmente caro: manda procurar
+// uma vulnerabilidade que não existe, e da próxima vez que a mesma mensagem aparecer — talvez por
+// um defeito a sério — já ninguém acredita nela.
+//
+// Aqui o último caractere é trocado por um GARANTIDAMENTE diferente do que lá está.
+func adulterarAssinatura(tok string) string {
+	if tok == "" {
+		return "x"
+	}
+	ultimo := tok[len(tok)-1]
+	novo := byte('A')
+	if ultimo == 'A' {
+		novo = 'B'
+	}
+	return tok[:len(tok)-1] + string(novo)
+}
+
+// TestAdulterarAssinaturaMudaSempre é o controlo do próprio helper.
+//
+// O defeito que ele corrige era invisível precisamente porque ninguém verificava que a
+// "adulteração" adulterava. Um helper de teste que às vezes não faz nada transforma um teste de
+// segurança num sorteio — e o resultado do sorteio lê-se como "o sistema aceitou um token
+// falsificado", que é a acusação mais grave que este teste pode fazer.
+func TestAdulterarAssinaturaMudaSempre(t *testing.T) {
+	// Inclui de propósito a cauda "AA", que é exactamente o caso em que a versão anterior
+	// devolvia o token INTACTO.
+	for _, tok := range []string{"abc.def.ghAA", "abc.def.ghAB", "abc.def.ghiA", "x", "AA"} {
+		if got := adulterarAssinatura(tok); got == tok {
+			t.Errorf("adulterarAssinatura(%q) devolveu o MESMO token — a adulteracao nao adulterou", tok)
+		}
+	}
+	if adulterarAssinatura("") == "" {
+		t.Error("token vazio devia continuar a produzir algo diferente")
 	}
 }
