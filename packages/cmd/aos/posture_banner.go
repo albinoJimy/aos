@@ -198,10 +198,30 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 				len(w.specs)),
 		}
 	}
+	// DUAS AFIRMAÇÕES QUE DEIXARAM DE SER VERDADE, e foi este trabalho que as quebrou:
+	//
+	//  · "par NAO registado ⇒ L0" — falso desde que existe AOS_AUTONOMY_DEFAULT. O piso é
+	//    declarável, e anunciar L0 quando alguém declarou L3 diria ao operador que o sistema é
+	//    MAIS supervisionado do que é.
+	//  · a contagem é a DO ARRANQUE. Com POST /autonomy os níveis mudam em runtime, e esta linha
+	//    envelhece no instante seguinte. Um banner que afirma o presente e descreve o passado é
+	//    pior do que um que não afirma nada — e esta é, por confissão do próprio ficheiro, uma
+	//    superfície com histórico de mentir.
 	return []string{
-		fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO LIGADO — %d par(es) agente:dominio provisionado(s) de AOS_AUTONOMY_LEVELS, cada um SELADO na hash-chain WORM como autonomy.level_changed (particao %q, motivo %q, actor %q): uma mudanca de autonomia deixa de poder acontecer sem rasto. E a composicao nivel x classe de risco que rebaixa um permit para ESCALATE — e portanto e esta ligacao que torna o bridge de aprovacao humana (AOS-021) ALCANCAVEL. Par NAO registado ⇒ L0 fail-closed (tudo escala)",
-			len(w.sealedPairs), autonomy.DefaultAutonomyPartition, autonomyProvisionReason, autonomyProvisionActor),
+		fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO LIGADO — %d par(es) alvo:dominio provisionado(s) NO ARRANQUE de AOS_AUTONOMY_LEVELS, cada um SELADO na hash-chain WORM como autonomy.level_changed (particao %q, motivo %q, actor %q): uma mudanca de autonomia deixa de poder acontecer sem rasto. O alvo pode ser uma INSTANCIA (agt-1:fs) ou uma CLASSE (class:agent-worker:fs), com resolucao em CASCATA: instancia -> classe -> piso -> L0. Par sem instancia NEM classe registadas ⇒ %s (piso%s). E a composicao nivel x classe de risco que rebaixa um permit para ESCALATE — e portanto e esta ligacao que torna o bridge de aprovacao humana (AOS-021) ALCANCAVEL. ATENCAO: esta linha e o ESTADO NO ARRANQUE; POST /autonomy muda niveis em runtime (assinado e selado) e GET /autonomy e a FONTE DE VERDADE do que vigora agora",
+			len(w.sealedPairs), autonomy.DefaultAutonomyPartition, autonomyProvisionReason, autonomyProvisionActor,
+			w.piso.String(), pisoOrigem(w.piso)),
 	}
+}
+
+// pisoOrigem distingue o piso HERDADO do DECLARADO. A diferença não é cosmética: "L0 por
+// omissão" e "L0 porque alguém o escreveu" são posturas idênticas com responsáveis diferentes,
+// e um banner que as confunde apaga precisamente a informação que o piso declarável introduziu.
+func pisoOrigem(p autonomy.Level) string {
+	if p == autonomy.L0 {
+		return " por omissao, AOS_AUTONOMY_DEFAULT ausente"
+	}
+	return " DECLARADO em AOS_AUTONOMY_DEFAULT"
 }
 
 // burndownPostureBanner declara o BURN-DOWN e o AVISO DE EXAUSTÃO (AOS-261/AOS-262) em

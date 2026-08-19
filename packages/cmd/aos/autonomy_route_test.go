@@ -5,12 +5,14 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	"github.com/aos-ref/integration"
 	"github.com/aos-ref/kernel/agent-runtime/control"
+	audit "github.com/aos-ref/platform/audit"
 )
 
 // TestPayloadDeAutonomiaAmarraNivelEMotivo é o controlo central desta rota.
@@ -196,5 +198,52 @@ func TestConfigAceitaClasseERecusaAmbiguidade(t *testing.T) {
 		if _, err := parseAutonomyLevels(); err == nil {
 			t.Errorf("config %q foi aceite", mau)
 		}
+	}
+}
+
+// TestBannerNaoAfirmaOPresente fecha duas mentiras que ESTE trabalho introduziu no banner.
+//
+// A primeira: enquanto o piso era sempre L0, dizer "par nao registado ⇒ L0" era verdade. Com
+// AOS_AUTONOMY_DEFAULT deixou de ser, e anunciar L0 quando alguem declarou L3 diz ao operador que
+// o sistema e MAIS supervisionado do que e — o sentido errado para uma imprecisao de seguranca.
+//
+// A segunda: a contagem e a do ARRANQUE. Com POST /autonomy os niveis mudam em runtime, e uma
+// linha que afirme o presente descrevendo o passado e pior do que nao afirmar nada. O banner tem
+// de dizer que e uma fotografia, e apontar onde esta o filme.
+func TestBannerNaoAfirmaOPresente(t *testing.T) {
+	w := buildAutonomyOracle([]autonomyLevelSpec{
+		{agent: "agt-1", domain: "fs", level: autonomy.L4},
+	}, autonomy.L3)
+	if err := w.provision(context.Background(), audit.NewMemStore()); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	linha := strings.Join(autonomyPostureBanner(w), "\n")
+
+	// O piso ANUNCIADO tem de ser o piso REAL.
+	if !strings.Contains(linha, "L3") {
+		t.Errorf("o banner nao anuncia o piso declarado L3:\n%s", linha)
+	}
+	if strings.Contains(linha, "⇒ L0") {
+		t.Errorf("o banner continua a afirmar L0 com um piso L3 declarado:\n%s", linha)
+	}
+	// E tem de declarar que e uma fotografia do arranque, com o GET como fonte de verdade.
+	for _, exigido := range []string{"NO ARRANQUE", "GET /autonomy", "DECLARADO em AOS_AUTONOMY_DEFAULT"} {
+		if !strings.Contains(linha, exigido) {
+			t.Errorf("o banner nao contem %q:\n%s", exigido, linha)
+		}
+	}
+
+	// CONTROLO — sem piso declarado, o banner tem de dizer L0 E que e por OMISSAO. Sao posturas
+	// identicas com responsaveis diferentes, e confundi-las apaga a informacao que o piso
+	// declaravel introduziu.
+	w2 := buildAutonomyOracle([]autonomyLevelSpec{
+		{agent: "agt-1", domain: "fs", level: autonomy.L4},
+	}, autonomy.L0)
+	if err := w2.provision(context.Background(), audit.NewMemStore()); err != nil {
+		t.Fatal(err)
+	}
+	l2 := strings.Join(autonomyPostureBanner(w2), "\n")
+	if !strings.Contains(l2, "por omissao") {
+		t.Errorf("sem piso declarado o banner devia dizer que L0 e por OMISSAO:\n%s", l2)
 	}
 }
