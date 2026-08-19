@@ -58,6 +58,12 @@ type autonomyPairWire struct {
 // O `actor` selado vem do EMISSOR VERIFICADO, nunca do corpo. Quem assina é quem fica no registo;
 // aceitar um actor do pedido seria deixar o chamador escolher em nome de quem a mudança aparece.
 func (h *apiHandler) handleAutonomySet(w http.ResponseWriter, r *http.Request) {
+	// ADMISSÃO do plano de controlo, ANTES do mTLS — a mesma ordem das outras rotas de controlo.
+	// Rejeitar barato protege a maquinaria de autenticação de carga; é o tradeoff que o banner
+	// já declara para o balde de ingresso.
+	if !h.admitControl(w) {
+		return
+	}
 	// mTLS DO PLANO DE CONTROLO. Isto é plano de controlo tanto como o /approve e o /pause, e
 	// tem de passar pela MESMA barreira — que NÃO é middleware: cada handler de controlo
 	// chama-a explicitamente, e um handler novo que se esqueça fica de fora sem que nada avise.
@@ -152,6 +158,12 @@ func (h *apiHandler) handleAutonomySet(w http.ResponseWriter, r *http.Request) {
 // que ela muda em runtime essa linha passa a poder mentir. Sem leitura, a rota seria escrever sem
 // poder confirmar — e a única fonte de verdade seria um log de há horas.
 func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
+	// ADMISSÃO do plano de controlo, ANTES do mTLS — a mesma ordem das outras rotas de controlo.
+	// Rejeitar barato protege a maquinaria de autenticação de carga; é o tradeoff que o banner
+	// já declara para o balde de ingresso.
+	if !h.admitControl(w) {
+		return
+	}
 	// mTLS DO PLANO DE CONTROLO. Isto é plano de controlo tanto como o /approve e o /pause, e
 	// tem de passar pela MESMA barreira — que NÃO é middleware: cada handler de controlo
 	// chama-a explicitamente, e um handler novo que se esqueça fica de fora sem que nada avise.
