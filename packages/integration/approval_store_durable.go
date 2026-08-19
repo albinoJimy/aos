@@ -341,24 +341,6 @@ func chaveDeDeduplicacao(kind PendingKind, runID, stepID string) string {
 	return fmt.Sprintf("%s|%d:%s|%d:%s", kind.Resolved(), len(runID), runID, len(stepID), stepID)
 }
 
-// jaRetirado indica se um pendente já SAIU da lista do operador. São duas saídas, e não uma:
-// a EXPIRAÇÃO (o TTL passou sem decisão) e a DECISÃO humana (AOS-263 parte 3). Ambas são
-// factos append-only com chave POR TIPO, e os seus prefixos (`expired-`/`decided-`) tornam-nas
-// inconfundíveis dentro do mesmo conjunto — pelo que um só mapa serve as duas leituras sem
-// que uma possa mascarar a outra.
-//
-// A verificação é feita AQUI, e não em linha, para que as duas listagens
-// ([PendingApprovals.ListForRun] e [PendingApprovals.ListExpirable]) não possam divergir: uma
-// listagem que conhecesse a expiração mas não a decisão devolveria ao varrimento um pendente
-// já respondido, e o log ganharia um «expirado sem decisao» sobre uma decisão tomada.
-func jaRetirado(retirados map[string]struct{}, kind PendingKind, runID, stepID string) bool {
-	if _, ja := retirados[pendingKey("expired-", kind, runID, stepID)]; ja {
-		return true
-	}
-	_, ja := retirados[pendingKey("decided-", kind, runID, stepID)]
-	return ja
-}
-
 // decodePending desserializa um pendente do log e NORMALIZA o discriminador. É o único
 // ponto por onde os registos entram: nenhum chamador vê um Kind vazio, e por isso nenhum
 // chamador tem de conhecer a regra da ausência.
@@ -725,7 +707,8 @@ func (p *PendingApprovals) ListExpirable(ctx context.Context, now time.Time, ttl
 //     comentário do [Put] até declara como «certo para o tipo aprovação», e é, enquanto o
 //     pendente está VIVO;
 //
-//  2. [jaRetirado] é um CONJUNTO de chaves, sem ordem. Uma vez expirado, qualquer pendente com
+//  2. a verificação de «já retirado» era um CONJUNTO de chaves, sem ordem (o antigo
+//     `jaRetirado`, hoje substituído por [jaRetiradoDoEvento]). Uma vez expirado, qualquer pendente com
 //     aquela chave ficava escondido para sempre — logo, mesmo que (1) fosse resolvido, a
 //     listagem continuaria a não o mostrar.
 //
@@ -765,6 +748,15 @@ func chaveDeGeracao(prefix string, kind PendingKind, runID, stepID string, ger i
 
 // jaRetiradoDoEvento decide se ESTE evento de pendente já foi retirado, derivando as duas chaves
 // de saída do StepID do PRÓPRIO evento.
+//
+// São DUAS saídas e não uma: a EXPIRAÇÃO (o TTL passou sem decisão) e a DECISÃO humana
+// (AOS-263 parte 3). Ambas são factos append-only, e os prefixos `expired-`/`decided-` tornam-nas
+// inconfundíveis dentro do mesmo conjunto — pelo que um só mapa serve as duas leituras sem que
+// uma possa mascarar a outra.
+//
+// A verificação vive AQUI, e não em linha, para que as duas listagens não possam divergir: uma
+// que conhecesse a expiração mas não a decisão devolveria ao varrimento um pendente já
+// respondido, e o log ganharia um «expirado sem decisao» sobre uma decisão tomada.
 //
 // É o que faz a correspondência ser POR ENCARNAÇÃO sem que a listagem precise de saber o que é
 // uma geração: a expiração de `pending-X` produz `expired-X`, e a de `pending-X#1` produz
