@@ -532,6 +532,10 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// admissão do /approve (admitControl + admitControlMTLS) e a MESMA disciplina non-signing — a
 	// assinatura ed25519 do ratificador vem no corpo e é o gate de PRODUÇÃO (freshness + nonce-store
 	// durável forçados) que a verifica contra a pubkey PINADA. Ver promotion_api.go.
+	// AUTONOMIA (AOS-087) — mudar niveis passa a ser uma operacao de governacao assinada e
+	// selada, em vez de uma edicao de ficheiro no servidor seguida de reiniciar o no.
+	mux.HandleFunc("POST /autonomy", h.handleAutonomySet)
+	mux.HandleFunc("GET /autonomy", h.handleAutonomyGet)
 	mux.HandleFunc("POST /promote", h.handlePromote)
 	// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pelo gate
 	// soberano de leitura + admission do plano de controlo; desligado se o fluxo não estiver

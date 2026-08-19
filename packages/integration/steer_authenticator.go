@@ -296,3 +296,45 @@ func SignSignal(priv ed25519.PrivateKey, emitterID, runID string, kind control.S
 		IssuedAt:  issuedAt,
 	}
 }
+
+// AutonomyScope é o `runID` do tuplo assinado das mudanças de autonomia. Não há run: o âmbito é
+// fixo, e o alvo concreto (par e nível) vive no PAYLOAD.
+const AutonomyScope = "autonomy"
+
+// CanonicalAutonomyPayload é o payload assinado de uma mudança de nível de autonomia.
+//
+// Length-prefixed pela MESMA razão que [signedMessage]: com um separador simples, um `agent` e um
+// `domain` podiam deslizar a fronteira entre si e produzir o mesmo tuplo de bytes para uma
+// mudança logicamente diferente — a mesma assinatura válida para outro alvo.
+//
+// O NÍVEL e o MOTIVO entram no payload de propósito. É o que impede reapresentar uma assinatura
+// legítima de "L1" como se fosse de "L5", e o que amarra a justificação ao acto: o motivo que
+// fica selado é o que foi assinado, não um que se acrescente depois.
+func CanonicalAutonomyPayload(agent, domain, level, reason string) []byte {
+	out := make([]byte, 0, 32+len(agent)+len(domain)+len(level)+len(reason))
+	out = appendLenPrefixed(out, []byte("aos.autonomy.set_level/v1"))
+	out = appendLenPrefixed(out, []byte(agent))
+	out = appendLenPrefixed(out, []byte(domain))
+	out = appendLenPrefixed(out, []byte(level))
+	out = appendLenPrefixed(out, []byte(reason))
+	return out
+}
+
+// SignEmitter produz um [control.Emitter] assinado para (runID, kind, payload).
+//
+// Existe para que quem emite um sinal de controlo NÃO reimplemente o tuplo canónico. Duas
+// implementações do mesmo encoding divergem, e a divergência não dá um erro legível — dá "assinatura
+// inválida", que se lê como chave errada e manda o operador procurar no sítio errado. A mesma razão
+// pela qual o digest da delegação vive no `aos-issuer` e não no script de browser.
+func SignEmitter(id string, priv ed25519.PrivateKey, runID string, kind control.SignalKind, payload []byte, issuedAt time.Time) (control.Emitter, error) {
+	nonce, err := NewNonce()
+	if err != nil {
+		return control.Emitter{}, err
+	}
+	return control.Emitter{
+		ID:        id,
+		Nonce:     nonce,
+		IssuedAt:  issuedAt.UTC(),
+		Signature: ed25519.Sign(priv, signedMessage(runID, kind, payload, nonce, issuedAt.UTC())),
+	}, nil
+}
