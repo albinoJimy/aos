@@ -121,6 +121,12 @@ services:
       # humana — é fail-closed e correcto, e é uma mudança de comportamento real.
       AOS_AUTONOMY_LEVELS: "${AOS_AUTONOMY_LEVELS:-}"
 
+      # PISO dos pares SEM nível registado. Vazio ⇒ L0 (o mais supervisionado), exactamente
+      # como sem esta variável. Existe para o piso ser uma DECLARAÇÃO e não uma herança: hoje
+      # um par desconhecido cai em L0 em silêncio, e é isso que faz "ligar a autonomia"
+      # significar "todo o agente novo bloqueia". Um valor fora de L0..L5 ABORTA o arranque.
+      AOS_AUTONOMY_DEFAULT: "${AOS_AUTONOMY_DEFAULT:-}"
+
       # Attestation de dispositivo (AOS-177/AOS-266) — sem isto o four-eyes é SÓ estrutural.
       AOS_ATTESTATION_VERIFIER_URL: "${AOS_ATTESTATION_VERIFIER_URL:-}"
       AOS_ATTESTATION_VERIFIER_TOKEN_PATH: "${AOS_ATTESTATION_VERIFIER_TOKEN_PATH:-}"

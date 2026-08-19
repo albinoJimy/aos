@@ -1134,11 +1134,17 @@ func loadPolicyBundleFromEnv() (*pdp.PDP, *autonomyWiring, error) {
 	if aerr != nil {
 		return nil, nil, aerr
 	}
+	// PISO DECLARADO dos pares sem nível registado. Vazio ⇒ L0, como sempre; um valor inválido
+	// aborta em vez de cair no valor-zero e ignorar em silêncio o que o operador escreveu.
+	piso, perr := parseAutonomyDefault()
+	if perr != nil {
+		return nil, nil, perr
+	}
 	// FASE 1 da cablagem (AOS-248): o registo nasce com o [autonomy.Sink] ligado mas VAZIO. Os
 	// níveis são aplicados na FASE 2 ([autonomyWiring.provision], em Bootstrap), depois de o WORM
 	// existir — só assim cada SetLevel de provisionamento fica SELADO com motivo e actor. Registar
 	// aqui, como se fazia, deixava a mudança de nível sem rasto em lado nenhum.
-	cabling := buildAutonomyOracle(specs)
+	cabling := buildAutonomyOracle(specs, piso)
 	if cabling != nil {
 		opts = append(opts, pdp.WithAutonomyOracle(cabling.oracle()))
 	}

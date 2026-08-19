@@ -60,13 +60,32 @@ func parseAutonomyLevels() ([]autonomyLevelSpec, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: entrada %q sem `=`", ErrBadAutonomyLevels, entrada)
 		}
-		agente, dominio, ok := strings.Cut(strings.TrimSpace(par), ":")
+		// ALVO: instância `agt-1:fs`, ou CLASSE `class:agent-worker:fs`.
+		//
+		// A classe é a unidade ESTÁVEL: os agent_id são cunhados por run, pelo que registar
+		// instâncias é registar coisas que ainda não existem. O prefixo é explícito e não
+		// adivinhado — não se tenta inferir "isto parece uma classe" do formato do nome, porque
+		// uma inferência errada aqui muda silenciosamente o alcance de uma regra de autonomia.
+		alvo := strings.TrimSpace(par)
+		ehClasse := strings.HasPrefix(alvo, autonomy.ClassPrefix)
+		if ehClasse {
+			alvo = strings.TrimPrefix(alvo, autonomy.ClassPrefix)
+		}
+		agente, dominio, ok := strings.Cut(alvo, ":")
 		if !ok {
-			return nil, fmt.Errorf("%w: entrada %q sem `agente:dominio`", ErrBadAutonomyLevels, entrada)
+			return nil, fmt.Errorf("%w: entrada %q sem `agente:dominio` (ou `class:<classe>:<dominio>`)", ErrBadAutonomyLevels, entrada)
 		}
 		agente, dominio = strings.TrimSpace(agente), strings.TrimSpace(dominio)
 		if agente == "" || dominio == "" {
 			return nil, fmt.Errorf("%w: entrada %q com agente ou dominio vazio", ErrBadAutonomyLevels, entrada)
+		}
+		// Um id de INSTÂNCIA não pode invadir o namespace das classes: senão `class:x:fs` seria
+		// ambíguo entre "a classe x" e "o agente literalmente chamado class:x".
+		if !ehClasse && strings.HasPrefix(agente, strings.TrimSuffix(autonomy.ClassPrefix, ":")) && strings.Contains(agente, ":") {
+			return nil, fmt.Errorf("%w: entrada %q — um agente nao pode usar o prefixo reservado %q", ErrBadAutonomyLevels, entrada, autonomy.ClassPrefix)
+		}
+		if ehClasse {
+			agente = autonomy.ClassPrefix + agente
 		}
 		lvl, err := parseAutonomyLevel(strings.TrimSpace(nivel))
 		if err != nil {
@@ -196,19 +215,23 @@ type autonomyWiring struct {
 	// composition-root, na mesma goroutine e antes de o nó servir seja o que for. O que é
 	// consultado concorrentemente (LevelFor) vive no registo, que tem o seu.
 	sealedPairs map[string]struct{}
+	// piso e o nivel dos pares SEM registo (AOS_AUTONOMY_DEFAULT). Guardado para o banner e para
+	// o GET /autonomy poderem DECLARA-LO: um par ausente da lista nao e "sem politica".
+	piso autonomy.Level
 }
 
 // buildAutonomyOracle constrói o registo de níveis a partir das entradas declaradas, com o
 // [autonomy.Sink] JÁ ligado (fase 1). nil ⇒ oráculo não ligado (o PDP não aplica oversight de
 // autonomia e nada escala). Não regista nível nenhum aqui: registar antes de haver WORM daria
 // alterações de nível sem selo — ver [autonomyWiring].
-func buildAutonomyOracle(specs []autonomyLevelSpec) *autonomyWiring {
+func buildAutonomyOracle(specs []autonomyLevelSpec, piso autonomy.Level) *autonomyWiring {
 	if len(specs) == 0 {
 		return nil
 	}
 	sink := &autonomyWORMSink{}
 	return &autonomyWiring{
-		registry:    autonomy.NewLevelRegistry(autonomy.WithSink(sink)),
+		registry:    autonomy.NewLevelRegistry(autonomy.WithSink(sink), autonomy.WithDefaultLevel(piso)),
+		piso:        piso,
 		sink:        sink,
 		specs:       specs,
 		sealedPairs: make(map[string]struct{}),
@@ -247,4 +270,25 @@ func (w *autonomyWiring) provision(ctx context.Context, worm audit.Store) error 
 		w.sealedPairs[s.agent+":"+s.domain] = struct{}{}
 	}
 	return nil
+}
+
+// ErrBadAutonomyDefault — AOS_AUTONOMY_DEFAULT presente mas fora de L0..L5.
+var ErrBadAutonomyDefault = errors.New("aos: AOS_AUTONOMY_DEFAULT invalida (esperado L0..L5, ou ausente para o piso L0)")
+
+// parseAutonomyDefault interpreta o PISO dos pares sem nível registado.
+//
+// VAZIO ⇒ L0, exactamente como antes: um nó que não a defina não muda de comportamento. Um valor
+// FORA do vocabulário ABORTA o arranque em vez de cair no valor-zero — que é L0 e passaria por
+// "aceite" enquanto ignorava em silêncio o que o operador escreveu. Um typo que produz a postura
+// mais restritiva é o pior tipo de typo: ninguém o vai procurar, porque nada parece errado.
+func parseAutonomyDefault() (autonomy.Level, error) {
+	raw := strings.TrimSpace(os.Getenv("AOS_AUTONOMY_DEFAULT"))
+	if raw == "" {
+		return autonomy.L0, nil
+	}
+	lvl, err := parseAutonomyLevel(raw)
+	if err != nil {
+		return autonomy.L0, fmt.Errorf("%w: %q", ErrBadAutonomyDefault, raw)
+	}
+	return lvl, nil
 }

@@ -56,6 +56,9 @@ type LevelRegistry struct {
 	history []LevelChange
 	now     func() time.Time
 	sink    Sink
+	// defaultLevel e o PISO dos pares SEM registo. Valor-zero = L0 (fail-closed), pelo que um
+	// registo construido sem [WithDefaultLevel] se comporta exactamente como antes.
+	defaultLevel Level
 }
 
 // RegistryOption configura um [LevelRegistry].
@@ -65,6 +68,21 @@ type RegistryOption func(*LevelRegistry)
 // [LevelRegistry.SetLevel] aplica e regista no histórico em memória mas não sela na
 // hash-chain WORM — usar [NewAuditSink] em produção.
 func WithSink(s Sink) RegistryOption { return func(r *LevelRegistry) { r.sink = s } }
+
+// WithDefaultLevel define o PISO para pares SEM nível registado. Sem esta opção o piso é [L0] —
+// o mais supervisionado — e nada muda para quem não a use.
+//
+// Existe para que o piso seja uma DECLARAÇÃO e não uma herança. Hoje um par desconhecido cai em
+// L0 em silêncio: é fail-closed e correcto, mas é uma decisão de governação que ninguém tomou
+// explicitamente — e é a razão pela qual "ligar a autonomia" significa, sem mais nada, "todo o
+// agente novo bloqueia". A diferença não é de comportamento; é de quem responde por ele.
+func WithDefaultLevel(l Level) RegistryOption {
+	return func(r *LevelRegistry) {
+		if l.Valid() {
+			r.defaultLevel = l
+		}
+	}
+}
 
 // WithClock injecta o relógio usado para datar as alterações (testes
 // deterministas). Por omissão usa [time.Now] em UTC.
@@ -97,7 +115,9 @@ func (r *LevelRegistry) LevelFor(agent, domain string) Level {
 	if lvl, ok := r.levels[pairKey{agent, domain}]; ok {
 		return lvl
 	}
-	return L0
+	// PISO. Valor-zero = L0, portanto um registo construído sem [WithDefaultLevel] comporta-se
+	// exactamente como antes — fail-closed no mais supervisionado.
+	return r.defaultLevel
 }
 
 // Get devolve o nível registado do par e um bool a indicar se HAVIA registo
@@ -189,4 +209,45 @@ func (r *LevelRegistry) HistoryFor(agent, domain string) []LevelChange {
 		}
 	}
 	return out
+}
+
+// ClassPrefix marca uma entrada de nível cujo alvo é uma CLASSE de agente e não uma instância.
+//
+// Porquê um prefixo e não um mapa separado: assim uma regra de classe passa pelo MESMO SetLevel —
+// logo pelo mesmo selo na hash-chain, o mesmo histórico e o mesmo Get. Não há segunda máquina de
+// estado a manter em sincronia, e uma regra de classe é tão auditável como uma de instância.
+//
+// A fronteira de configuração RECUSA um agente cujo id comece por este prefixo, para o namespace
+// não ser ambíguo.
+const ClassPrefix = "class:"
+
+// ClassOracle é a resolução EM CASCATA: instância → classe → piso.
+//
+// É uma interface SEPARADA de [Oracle] de propósito. Quem só implementa LevelFor continua a
+// funcionar sem alterações, e quem precisa da cascata faz um type-assert. Alargar a Oracle
+// obrigaria todos os implementadores (incluindo os duplos de teste) a mudar de assinatura, o que
+// transforma uma adição numa migração.
+type ClassOracle interface {
+	LevelForAgentOrClass(agent, class, domain string) Level
+}
+
+// LevelForAgentOrClass resolve do MAIS ESPECÍFICO para o mais geral:
+//
+//	(agente, domínio)  →  (class:<classe>, domínio)  →  piso  →  L0
+//
+// A instância ganha à classe, e a classe ganha ao piso. É o que torna a cascata utilizável sem
+// abrir nada: continua a poder tratar-se um agente à parte quando há razão para isso, sem obrigar
+// a enumerar identidades que ainda não existem — e os agent_id deste sistema são cunhados por run.
+func (r *LevelRegistry) LevelForAgentOrClass(agent, class, domain string) Level {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if lvl, ok := r.levels[pairKey{agent, domain}]; ok {
+		return lvl
+	}
+	if class != "" {
+		if lvl, ok := r.levels[pairKey{ClassPrefix + class, domain}]; ok {
+			return lvl
+		}
+	}
+	return r.defaultLevel
 }

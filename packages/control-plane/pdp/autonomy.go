@@ -47,7 +47,16 @@ func (p *PDP) applyAutonomy(ctx context.Context, in Input, base Decision) Decisi
 
 	agent := in.Principal.ID
 	domain := autonomy.DomainOf(in.Capability, in.Resource.Value)
+	// RESOLUÇÃO EM CASCATA quando o oráculo a suporta: instância → classe → piso. Um oráculo que
+	// só implemente LevelFor continua a funcionar exactamente como antes — a cascata é uma
+	// capacidade opcional, não uma mudança de contrato.
+	//
+	// A classe é a unidade ESTÁVEL de governação: os agent_id são cunhados por run, pelo que
+	// registar instâncias é registar coisas que ainda não existem.
 	level := p.autonomyOracle.LevelFor(agent, domain)
+	if casc, ok := p.autonomyOracle.(autonomy.ClassOracle); ok {
+		level = casc.LevelForAgentOrClass(agent, in.Principal.AgentClass, domain)
+	}
 	class := riskClassFromString(in.Context.RiskClass)
 	mode := autonomy.Oversight(level, class)
 

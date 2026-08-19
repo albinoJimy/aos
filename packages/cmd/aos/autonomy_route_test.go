@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/aos-ref/control-plane/governance/autonomy"
 	"github.com/aos-ref/integration"
 	"github.com/aos-ref/kernel/agent-runtime/control"
 )
@@ -134,4 +136,65 @@ func (m memNonceStore) ConsumeNonce(_ context.Context, scope string, nonce []byt
 	}
 	m.vistos[k] = true
 	return true, nil
+}
+
+// TestPisoDeAmbienteEFailClosed — a fronteira de ambiente do piso.
+//
+// VAZIO ⇒ L0, exactamente como sem a variável: um nó que não a defina não muda de comportamento.
+// Um valor FORA do vocabulário ABORTA em vez de cair no valor-zero — que é L0 e passaria por
+// "aceite" enquanto ignorava em silêncio o que o operador escreveu. Um typo que produz a postura
+// mais restritiva é o pior tipo de typo: nada parece errado, logo ninguém o procura.
+func TestPisoDeAmbienteEFailClosed(t *testing.T) {
+	t.Setenv("AOS_AUTONOMY_DEFAULT", "")
+	if lvl, err := parseAutonomyDefault(); err != nil || lvl.String() != "L0" {
+		t.Fatalf("vazio -> (%v,%v), quero (L0,nil)", lvl, err)
+	}
+	t.Setenv("AOS_AUTONOMY_DEFAULT", "L3")
+	if lvl, err := parseAutonomyDefault(); err != nil || lvl.String() != "L3" {
+		t.Fatalf("L3 -> (%v,%v), quero (L3,nil)", lvl, err)
+	}
+	for _, mau := range []string{"L9", "alto", "3", "LX"} {
+		t.Setenv("AOS_AUTONOMY_DEFAULT", mau)
+		if _, err := parseAutonomyDefault(); !errors.Is(err, ErrBadAutonomyDefault) {
+			t.Errorf("AOS_AUTONOMY_DEFAULT=%q devia abortar, veio %v", mau, err)
+		}
+	}
+}
+
+// TestConfigAceitaClasseERecusaAmbiguidade — a fronteira de configuração da cascata.
+func TestConfigAceitaClasseERecusaAmbiguidade(t *testing.T) {
+	t.Setenv("AOS_AUTONOMY_LEVELS", "agt-1:fs=L4,class:agent-worker:http=L3")
+	specs, err := parseAutonomyLevels()
+	if err != nil {
+		t.Fatalf("config valida recusada: %v", err)
+	}
+	if len(specs) != 2 {
+		t.Fatalf("li %d entradas, quero 2", len(specs))
+	}
+	if specs[0].agent != "agt-1" || specs[0].domain != "fs" {
+		t.Errorf("instancia mal lida: %+v", specs[0])
+	}
+	// A entrada de classe fica com o PREFIXO no alvo — é o que a distingue de uma instância no
+	// registo, e o que faz a regra passar pelo mesmo selo e histórico das outras.
+	if specs[1].agent != autonomy.ClassPrefix+"agent-worker" || specs[1].domain != "http" {
+		t.Errorf("classe mal lida: %+v", specs[1])
+	}
+
+	// CONTROLO — um agente NÃO pode invadir o namespace das classes. Sem esta recusa,
+	// `class:x:fs` seria ambíguo entre "a classe x" e "o agente literalmente chamado class:x", e
+	// a ambiguidade decidir-se-ia por ordem de código em vez de por intenção.
+	t.Setenv("AOS_AUTONOMY_LEVELS", "class:x:fs=L4")
+	if s, err := parseAutonomyLevels(); err != nil {
+		t.Fatalf("class:x:fs devia ser lido como CLASSE x: %v", err)
+	} else if s[0].agent != autonomy.ClassPrefix+"x" {
+		t.Errorf("class:x:fs foi lido como %q", s[0].agent)
+	}
+
+	// E as recusas de sempre continuam.
+	for _, mau := range []string{"agt-1=L4", "agt-1:fs", "agt-1:fs=L9", ":fs=L4", "agt-1:=L4"} {
+		t.Setenv("AOS_AUTONOMY_LEVELS", mau)
+		if _, err := parseAutonomyLevels(); err == nil {
+			t.Errorf("config %q foi aceite", mau)
+		}
+	}
 }

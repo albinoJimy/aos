@@ -39,7 +39,7 @@ func TestAOS248_ProvisionamentoSelaNoWORM(t *testing.T) {
 		{agent: "agt-1", domain: "http", level: autonomy.L4},
 		{agent: "agt-1", domain: "fs", level: autonomy.L5},
 	}
-	wiring := buildAutonomyOracle(specs)
+	wiring := buildAutonomyOracle(specs, autonomy.L0)
 	if wiring == nil {
 		t.Fatal("com specs devia haver cablagem")
 	}
@@ -75,7 +75,7 @@ func TestAOS248_ProvisionamentoSelaNoWORM(t *testing.T) {
 // a ordem do arranque e provisionar antes de o WORM existir, o nó RECUSA em vez de aplicar
 // níveis sem rasto. É a guarda que impede F11 de regressar por uma reordenação inocente.
 func TestAOS248_SemWORMOProvisionamentoRecusa(t *testing.T) {
-	wiring := buildAutonomyOracle([]autonomyLevelSpec{{agent: "agt-1", domain: "http", level: autonomy.L4}})
+	wiring := buildAutonomyOracle([]autonomyLevelSpec{{agent: "agt-1", domain: "http", level: autonomy.L4}}, autonomy.L0)
 	if err := wiring.provision(context.Background(), nil); !errors.Is(err, ErrAutonomySinkUnbound) {
 		t.Fatalf("provisionar sem WORM devia dar ErrAutonomySinkUnbound, veio: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestAOS248_SemWORMOProvisionamentoRecusa(t *testing.T) {
 // que em [Bootstrap] aborta. Um nó que não consegue AUDITAR a autonomia com que vai correr não
 // deve correr com ela.
 func TestAOS248_SelagemRecusadaAbortaOArranque(t *testing.T) {
-	wiring := buildAutonomyOracle([]autonomyLevelSpec{{agent: "agt-1", domain: "http", level: autonomy.L4}})
+	wiring := buildAutonomyOracle([]autonomyLevelSpec{{agent: "agt-1", domain: "http", level: autonomy.L4}}, autonomy.L0)
 	err := wiring.provision(context.Background(), aos248WormQueRecusa{})
 	if !errors.Is(err, ErrAutonomyProvisioning) {
 		t.Fatalf("uma selagem recusada devia dar ErrAutonomyProvisioning, veio: %v", err)
@@ -100,7 +100,7 @@ func TestAOS248_SelagemRecusadaAbortaOArranque(t *testing.T) {
 // TestAOS248_SemSpecsNaoHaCablagem delimita o opt-in: sem AOS_AUTONOMY_LEVELS não há cablagem,
 // não há oráculo e nada muda (o comportamento retro-compatível descrito em autonomy_levels.go).
 func TestAOS248_SemSpecsNaoHaCablagem(t *testing.T) {
-	w := buildAutonomyOracle(nil)
+	w := buildAutonomyOracle(nil, autonomy.L0)
 	if w != nil {
 		t.Fatalf("sem specs nao devia haver cablagem, veio %v", w)
 	}
@@ -135,7 +135,7 @@ func TestAOS248_BannerAutonomiaNosDoisSentidos(t *testing.T) {
 	// A cablagem TEM DE ESTAR PROVISIONADA para o ramo "LIGADO" sair: a linha afirma que cada
 	// par está SELADO na hash-chain, e essa afirmação deriva dos selos que existem, não das
 	// entradas declaradas (F-A6).
-	wiring := buildAutonomyOracle([]autonomyLevelSpec{{agent: "agt-1", domain: "http", level: autonomy.L4}})
+	wiring := buildAutonomyOracle([]autonomyLevelSpec{{agent: "agt-1", domain: "http", level: autonomy.L4}}, autonomy.L0)
 	if err := wiring.provision(context.Background(), audit.NewMemStore()); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAOS248_BannerNaoAfirmaSeloSemProvisionamento(t *testing.T) {
 
 	naoProvisionado := strings.Join(autonomyPostureBanner(buildAutonomyOracle([]autonomyLevelSpec{
 		{agent: "agt-1", domain: "http", level: autonomy.L4},
-	})), "\n")
+	}, autonomy.L0)), "\n")
 	if strings.Contains(naoProvisionado, "SELADO") || strings.Contains(naoProvisionado, "ORACULO LIGADO") {
 		t.Fatalf("sem provisionamento NAO ha selo nenhum na hash-chain — o banner nao pode afirmar que ha:\n%s", naoProvisionado)
 	}
@@ -186,7 +186,7 @@ func TestAOS248_BannerContaParesDistintos(t *testing.T) {
 	wiring := buildAutonomyOracle([]autonomyLevelSpec{
 		{agent: "agt-1", domain: "http", level: autonomy.L4},
 		{agent: "agt-1", domain: "http", level: autonomy.L5},
-	})
+	}, autonomy.L0)
 	if err := wiring.provision(context.Background(), audit.NewMemStore()); err != nil {
 		t.Fatalf("provision: %v", err)
 	}

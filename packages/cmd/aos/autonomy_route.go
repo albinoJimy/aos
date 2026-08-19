@@ -163,10 +163,10 @@ func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
 	pares = dedupPares(pares)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pairs": pares,
-		// Declarado de propósito: um par AUSENTE desta lista não é "sem política" — é L0, o mais
-		// supervisionado. Omitir esta nota deixaria a lista parecer exaustiva quando o silêncio
-		// é ele próprio uma decisão.
-		"unregistered_resolves_to": autonomy.L0.String(),
+		// Declarado de propósito: um par AUSENTE desta lista não é "sem política" — resolve para o
+		// PISO. Omitir isto deixaria a lista parecer exaustiva quando o silêncio é ele próprio uma
+		// decisão, e agora é uma decisão que alguém pode ter DECLARADO (AOS_AUTONOMY_DEFAULT).
+		"unregistered_resolves_to": h.node.Autonomy.piso.String(),
 	})
 }
 

@@ -24,7 +24,7 @@ func TestAutonomy_NaoConfiguradoNaoLigaOOraculo(t *testing.T) {
 	if err != nil || specs != nil {
 		t.Fatalf("não configurado devia dar (nil,nil); specs=%+v err=%v", specs, err)
 	}
-	if w := buildAutonomyOracle(specs); w != nil {
+	if w := buildAutonomyOracle(specs, autonomy.L0); w != nil {
 		t.Fatalf("sem specs não devia haver cablagem de oráculo; veio %v", w)
 	}
 }
@@ -43,7 +43,7 @@ func TestAutonomy_ParseEConstroiORegisto(t *testing.T) {
 	// AOS-248: a cablagem é em DUAS FASES — o registo nasce vazio (com o sink ligado) e os níveis
 	// só entram em vigor no `provision`, com o WORM composto. É por isso que este teste sela num
 	// [audit.NewMemStore]: sem store não haveria selo e o provisionamento RECUSARIA.
-	wiring := buildAutonomyOracle(specs)
+	wiring := buildAutonomyOracle(specs, autonomy.L0)
 	if wiring == nil {
 		t.Fatal("buildAutonomyOracle: com specs devia devolver cablagem")
 	}
