@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -134,4 +135,27 @@ func (m memNonceStore) ConsumeNonce(_ context.Context, scope string, nonce []byt
 	}
 	m.vistos[k] = true
 	return true, nil
+}
+
+// TestPisoDeAmbienteEFailClosed — a fronteira de ambiente do piso.
+//
+// VAZIO ⇒ L0, exactamente como sem a variável: um nó que não a defina não muda de comportamento.
+// Um valor FORA do vocabulário ABORTA em vez de cair no valor-zero — que é L0 e passaria por
+// "aceite" enquanto ignorava em silêncio o que o operador escreveu. Um typo que produz a postura
+// mais restritiva é o pior tipo de typo: nada parece errado, logo ninguém o procura.
+func TestPisoDeAmbienteEFailClosed(t *testing.T) {
+	t.Setenv("AOS_AUTONOMY_DEFAULT", "")
+	if lvl, err := parseAutonomyDefault(); err != nil || lvl.String() != "L0" {
+		t.Fatalf("vazio -> (%v,%v), quero (L0,nil)", lvl, err)
+	}
+	t.Setenv("AOS_AUTONOMY_DEFAULT", "L3")
+	if lvl, err := parseAutonomyDefault(); err != nil || lvl.String() != "L3" {
+		t.Fatalf("L3 -> (%v,%v), quero (L3,nil)", lvl, err)
+	}
+	for _, mau := range []string{"L9", "alto", "3", "LX"} {
+		t.Setenv("AOS_AUTONOMY_DEFAULT", mau)
+		if _, err := parseAutonomyDefault(); !errors.Is(err, ErrBadAutonomyDefault) {
+			t.Errorf("AOS_AUTONOMY_DEFAULT=%q devia abortar, veio %v", mau, err)
+		}
+	}
 }

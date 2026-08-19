@@ -196,19 +196,23 @@ type autonomyWiring struct {
 	// composition-root, na mesma goroutine e antes de o nó servir seja o que for. O que é
 	// consultado concorrentemente (LevelFor) vive no registo, que tem o seu.
 	sealedPairs map[string]struct{}
+	// piso e o nivel dos pares SEM registo (AOS_AUTONOMY_DEFAULT). Guardado para o banner e para
+	// o GET /autonomy poderem DECLARA-LO: um par ausente da lista nao e "sem politica".
+	piso autonomy.Level
 }
 
 // buildAutonomyOracle constrói o registo de níveis a partir das entradas declaradas, com o
 // [autonomy.Sink] JÁ ligado (fase 1). nil ⇒ oráculo não ligado (o PDP não aplica oversight de
 // autonomia e nada escala). Não regista nível nenhum aqui: registar antes de haver WORM daria
 // alterações de nível sem selo — ver [autonomyWiring].
-func buildAutonomyOracle(specs []autonomyLevelSpec) *autonomyWiring {
+func buildAutonomyOracle(specs []autonomyLevelSpec, piso autonomy.Level) *autonomyWiring {
 	if len(specs) == 0 {
 		return nil
 	}
 	sink := &autonomyWORMSink{}
 	return &autonomyWiring{
-		registry:    autonomy.NewLevelRegistry(autonomy.WithSink(sink)),
+		registry:    autonomy.NewLevelRegistry(autonomy.WithSink(sink), autonomy.WithDefaultLevel(piso)),
+		piso:        piso,
 		sink:        sink,
 		specs:       specs,
 		sealedPairs: make(map[string]struct{}),
@@ -247,4 +251,25 @@ func (w *autonomyWiring) provision(ctx context.Context, worm audit.Store) error 
 		w.sealedPairs[s.agent+":"+s.domain] = struct{}{}
 	}
 	return nil
+}
+
+// ErrBadAutonomyDefault — AOS_AUTONOMY_DEFAULT presente mas fora de L0..L5.
+var ErrBadAutonomyDefault = errors.New("aos: AOS_AUTONOMY_DEFAULT invalida (esperado L0..L5, ou ausente para o piso L0)")
+
+// parseAutonomyDefault interpreta o PISO dos pares sem nível registado.
+//
+// VAZIO ⇒ L0, exactamente como antes: um nó que não a defina não muda de comportamento. Um valor
+// FORA do vocabulário ABORTA o arranque em vez de cair no valor-zero — que é L0 e passaria por
+// "aceite" enquanto ignorava em silêncio o que o operador escreveu. Um typo que produz a postura
+// mais restritiva é o pior tipo de typo: ninguém o vai procurar, porque nada parece errado.
+func parseAutonomyDefault() (autonomy.Level, error) {
+	raw := strings.TrimSpace(os.Getenv("AOS_AUTONOMY_DEFAULT"))
+	if raw == "" {
+		return autonomy.L0, nil
+	}
+	lvl, err := parseAutonomyLevel(raw)
+	if err != nil {
+		return autonomy.L0, fmt.Errorf("%w: %q", ErrBadAutonomyDefault, raw)
+	}
+	return lvl, nil
 }

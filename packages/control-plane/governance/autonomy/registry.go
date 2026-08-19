@@ -56,6 +56,9 @@ type LevelRegistry struct {
 	history []LevelChange
 	now     func() time.Time
 	sink    Sink
+	// defaultLevel e o PISO dos pares SEM registo. Valor-zero = L0 (fail-closed), pelo que um
+	// registo construido sem [WithDefaultLevel] se comporta exactamente como antes.
+	defaultLevel Level
 }
 
 // RegistryOption configura um [LevelRegistry].
@@ -65,6 +68,21 @@ type RegistryOption func(*LevelRegistry)
 // [LevelRegistry.SetLevel] aplica e regista no histórico em memória mas não sela na
 // hash-chain WORM — usar [NewAuditSink] em produção.
 func WithSink(s Sink) RegistryOption { return func(r *LevelRegistry) { r.sink = s } }
+
+// WithDefaultLevel define o PISO para pares SEM nível registado. Sem esta opção o piso é [L0] —
+// o mais supervisionado — e nada muda para quem não a use.
+//
+// Existe para que o piso seja uma DECLARAÇÃO e não uma herança. Hoje um par desconhecido cai em
+// L0 em silêncio: é fail-closed e correcto, mas é uma decisão de governação que ninguém tomou
+// explicitamente — e é a razão pela qual "ligar a autonomia" significa, sem mais nada, "todo o
+// agente novo bloqueia". A diferença não é de comportamento; é de quem responde por ele.
+func WithDefaultLevel(l Level) RegistryOption {
+	return func(r *LevelRegistry) {
+		if l.Valid() {
+			r.defaultLevel = l
+		}
+	}
+}
 
 // WithClock injecta o relógio usado para datar as alterações (testes
 // deterministas). Por omissão usa [time.Now] em UTC.
@@ -97,7 +115,9 @@ func (r *LevelRegistry) LevelFor(agent, domain string) Level {
 	if lvl, ok := r.levels[pairKey{agent, domain}]; ok {
 		return lvl
 	}
-	return L0
+	// PISO. Valor-zero = L0, portanto um registo construído sem [WithDefaultLevel] comporta-se
+	// exactamente como antes — fail-closed no mais supervisionado.
+	return r.defaultLevel
 }
 
 // Get devolve o nível registado do par e um bool a indicar se HAVIA registo
