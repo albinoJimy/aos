@@ -285,6 +285,18 @@ vpost 'https://127.0.0.1:8200/v1/sys/mounts/transit' "X-Vault-Token: ${ROOT_TOKE
 vaultx() { docker exec -i -e VAULT_TOKEN="${ROOT_TOKEN}" -e VAULT_ADDR=https://127.0.0.1:8200 \
              -e VAULT_CACERT=/vault/tls/ca.crt aos-vault-1 "$@"; }
 vaultx vault policy write aos-node - <<'POL' >/dev/null
+# AUTO-CONSULTA E RENOVAÇÃO. Sem estes dois caminhos o token é emitido com `no_default_policy` e
+# fica SEM eles — é a política `default` que normalmente os concede. Duas consequências, e a
+# segunda é silenciosa:
+#
+#   · `lookup-self` negado ⇒ a sonda de saúde do nó recebe 403 e, até 2026-08-19, lia-o como
+#     «token expirado/revogado»: /readyz VERMELHO sobre um token perfeitamente bom;
+#   · `renew-self` negado ⇒ o token PERIÓDICO nunca é renovado e MORRE no fim do período, sem
+#     que nada avise antes.
+#
+# Foi observado em produção: o token de 2026-08-15 (período 720h) nunca pôde ser renovado.
+path "auth/token/lookup-self" { capabilities = ["read"] }
+path "auth/token/renew-self"  { capabilities = ["update"] }
 path "transit/keys" { capabilities = ["list"] }
 path "transit/keys/aos-kek-*" { capabilities = ["create","read","update","delete"] }
 path "transit/keys/aos-kek-*/config" { capabilities = ["update"] }
@@ -305,6 +317,24 @@ if [[ "$(cat "${SECRETS}/vault-token" 2>/dev/null)" == "placeholder-ate-init" ]]
 else
   log "  token do nó já existia (mantido)"
 fi
+
+# CONTROLO — com o token DO NÓ, não com a raiz. Emitir um token e não verificar o que ele
+# consegue fazer foi exactamente como o defeito de 2026-08-19 passou: a política estava escrita,
+# o token estava emitido, e faltavam-lhe os dois caminhos de que o nó depende para se manter vivo.
+#
+# Fail-closed: se o token não se consegue auto-consultar, a custódia da KEK arranca já a caminho
+# de uma morte silenciosa, e é melhor sabê-lo aqui do que daqui a 30 dias.
+NODE_TOK="$(cat "${SECRETS}/vault-token")"
+nodex() { docker exec -i -e VAULT_TOKEN="${NODE_TOK}" -e VAULT_ADDR=https://127.0.0.1:8200 \
+            -e VAULT_CACERT=/vault/tls/ca.crt aos-vault-1 "$@"; }
+nodex vault token lookup >/dev/null 2>&1 \
+  || fail "o token do no NAO consegue lookup-self — a sonda de saude lera 403 e o /readyz ficara VERMELHO sobre um token bom; confirme os paths auth/token/* na politica aos-node"
+nodex vault token renew >/dev/null 2>&1 \
+  || fail "o token do no NAO consegue renew-self — um token periodico que nunca e renovado MORRE no fim do periodo, sem aviso"
+nodex vault list transit/keys >/dev/null 2>&1 \
+  || fail "o token do no NAO consegue listar transit/keys — a prova de capacidade da sonda falharia"
+unset NODE_TOK
+log "  token do no verificado: lookup-self, renew-self e list transit/keys PASSAM"
 unset ROOT_TOKEN UNSEAL_KEY
 
 # ------------------------------------------------------------------------------------------

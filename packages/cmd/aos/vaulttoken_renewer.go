@@ -85,6 +85,14 @@ func (s *NodeService) renewVaultTokenOnce(ctx context.Context) {
 	if err := r.refreshToken(ctx); err != nil {
 		// O erro traz caminho e veredicto — NUNCA o token.
 		s.log("custodia da KEK (AOS-249): manutencao do token do Vault FALHOU (re-tenta no proximo tick; o /readyz fica VERMELHO antes da expiracao): %v", err)
+		return
+	}
+	// POSTURA OPACA: a credencial serve mas não se deixa medir. Sai UMA vez — a versão anterior
+	// repetia o alarme a cada tick e ninguém o leu em 43 repetições.
+	if a, ok := r.(interface{ avisoDeOpacidade() string }); ok {
+		if msg := a.avisoDeOpacidade(); msg != "" {
+			s.log("%s", msg)
+		}
 	}
 }
 

@@ -98,6 +98,10 @@ type vaultKeyVault struct {
 	// tokenErr é o último veredicto negativo do token (nil = servível). Sticky até um lookup
 	// bem-sucedido o limpar.
 	tokenErr error
+	// tokenOpaco: a credencial FUNCIONA (prova de capacidade passou) mas a política não deixa
+	// medir o TTL nem renovar. Serve, e tem uma data de morte que ninguém vê chegar.
+	tokenOpaco   bool
+	opacoAvisado bool
 	// refreshing é a porta de SINGLEFLIGHT do refresh conduzido pela SONDA (ver [tokenHealth]).
 	// Fora do mutex de propósito: é um gate de admissão, não estado partilhado — o refresh que
 	// ganha o CAS segura o `mu` só nas escritas de estado, e quem perde não bloqueia.
@@ -229,6 +233,20 @@ func (v *vaultKeyVault) reloadTokenFile() (bool, error) {
 	return true, nil
 }
 
+// errLookupNegado distingue as DUAS causas de um 403 em `lookup-self`, que o código anterior
+// confundia — e a confusão custou um /readyz VERMELHO sobre um token perfeitamente bom:
+//
+//  1. a credencial MORREU (expirou/foi revogada) — o caso que a sonda quer apanhar;
+//  2. a credencial está VIVA mas a política não lhe concede `auth/token/lookup-self`.
+//
+// (2) é o caso NOMINAL de um token least-privilege: `provision-identity.sh` emite-o com
+// `no_default_policy: true` e uma política só sobre `transit/*`, e é a política `default` que
+// concede o `lookup-self`. Ou seja: o provisionamento deste projecto produz um token que a sonda
+// deste projecto não sabe interrogar.
+//
+// Um 403 aqui NÃO é evidência de token morto. É evidência de que ESTE canal está fechado.
+var errLookupNegado = errors.New("aos: lookup-self negado pela politica do token")
+
 // lookupSelf é a PROVA de que o nosso token ainda serve: /v1/auth/token/lookup-self é AUTENTICADO
 // e é o único endpoint do Vault que responde à pergunta certa — não "o Vault está vivo?" (que o
 // seal-status já respondia, e responderia na mesma com o token morto) mas "esta credencial ainda
@@ -240,8 +258,12 @@ func (v *vaultKeyVault) lookupSelf(ctx context.Context) (time.Duration, bool, er
 		return 0, false, fmt.Errorf("%w: lookup-self: %v", ErrVaultToken, err)
 	}
 	if code != http.StatusOK {
-		// 403 é o caso nominal de token expirado/revogado; qualquer outro status também não
-		// prova nada a favor da credencial.
+		if code == http.StatusForbidden {
+			// NÃO se conclui daqui que o token morreu — ver [errLookupNegado]. Quem decide é a
+			// prova de capacidade, contra a operação que o nó realmente precisa de fazer.
+			return 0, false, fmt.Errorf("%w: %w (HTTP 403)", ErrVaultToken, errLookupNegado)
+		}
+		// Qualquer outro status não prova nada a favor da credencial.
 		return 0, false, fmt.Errorf("%w: lookup-self recusado (HTTP %d)", ErrVaultToken, code)
 	}
 	var out struct {
@@ -291,6 +313,15 @@ func (v *vaultKeyVault) refreshToken(ctx context.Context) error {
 	}
 	ttl, renovavel, err := v.lookupSelf(ctx)
 	if err != nil {
+		// O canal de MEDIÇÃO estar fechado não é o mesmo que a credencial estar morta. Antes de
+		// pôr o /readyz vermelho, testa-se a PROPRIEDADE que a prontidão protege: consigo ainda
+		// falar com o Transit? Se sim, o nó serve — e o que se perdeu (o horizonte) é declarado.
+		if errors.Is(err, errLookupNegado) {
+			if perr := v.provaDeCapacidade(ctx); perr == nil {
+				v.setTokenOpaco()
+				return nil
+			}
+		}
 		v.setTokenErr(err)
 		return err
 	}
@@ -318,6 +349,9 @@ func (v *vaultKeyVault) setTokenState(ttl time.Duration) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.tokenTTL, v.tokenSeen, v.tokenErr = ttl, time.Now(), nil
+	// Um lookup bem-sucedido significa que o canal de medição REABRIU (política corrigida): o
+	// estado opaco levanta-se, e um aviso futuro volta a poder ser dado.
+	v.tokenOpaco, v.opacoAvisado = false, false
 }
 
 // setTokenErr regista um veredicto negativo. É STICKY: só um lookup-self bem-sucedido o limpa.
@@ -579,3 +613,67 @@ var (
 	_ audit.KeyVault   = (*vaultKeyVault)(nil)
 	_ audit.KeyWrapper = (*vaultKeyVault)(nil)
 )
+
+// provaDeCapacidade responde à pergunta que a prontidão realmente faz — «esta credencial ainda
+// consegue fazer o TRABALHO?» — em vez da pergunta que o `lookup-self` faz, que é «o Vault
+// deixa-me consultar-me a mim próprio?».
+//
+// Lista as chaves do motor Transit: é a operação mais barata que a política do nó concede
+// (`path "transit/keys" { capabilities = ["list"] }`), é READ-ONLY e não tem efeito nenhum.
+//
+// É evidência ESTRITAMENTE MAIS FORTE do que o `lookup-self` para a prontidão: testa a
+// capacidade directamente em vez de a inferir da validade. O que se perde é o HORIZONTE — o TTL
+// e a renovação — e essa perda é declarada, nunca escondida.
+//
+// LIMITE DECLARADO: se uma implantação também não conceder o `list`, esta prova falha e o nó
+// declara o token morto sem o ser. Fica fail-closed (a direcção segura), e o remédio está escrito
+// na mensagem: conceder `auth/token/lookup-self` à política.
+func (v *vaultKeyVault) provaDeCapacidade(ctx context.Context) error {
+	_, code, err := v.doCtx(ctx, "LIST", "/v1/"+v.mount+"/keys", nil)
+	if err != nil {
+		return fmt.Errorf("%w: prova de capacidade: %v", ErrVaultToken, err)
+	}
+	switch code {
+	case http.StatusOK, http.StatusNotFound:
+		// 404 é o Vault a dizer «autorizado, e não há chaves nenhumas» — um motor Transit
+		// ainda vazio. Tratá-lo como falha faria o primeiro arranque de um nó novo nascer
+		// vermelho, que é o oposto do que esta prova existe para evitar.
+		return nil
+	default:
+		return fmt.Errorf("%w: prova de capacidade recusada (HTTP %d)", ErrVaultToken, code)
+	}
+}
+
+// setTokenOpaco regista que a credencial FUNCIONA mas não se deixa medir.
+//
+// `tokenSeen` é actualizado porque houve, de facto, evidência fresca de que serve; `tokenTTL`
+// fica a zero, que [tokenVerdict] já lê como «sem expiração conhecida». O flag próprio existe
+// para o banner e as métricas NÃO confundirem este caso com um token periódico saudável: são
+// posturas diferentes, e só uma delas tem uma data de morte que ninguém vê chegar.
+func (v *vaultKeyVault) setTokenOpaco() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.tokenTTL, v.tokenSeen, v.tokenErr, v.tokenOpaco = 0, time.Now(), nil, true
+}
+
+// avisoDeOpacidade devolve o aviso a escrever no log — UMA vez, e não a cada tick.
+//
+// O comportamento anterior escrevia a mesma linha a cada minuto: 43 repetições em produção antes
+// de alguém reparar. Um aviso repetido a essa cadência deixa de ser um aviso e passa a ser papel
+// de parede, e foi exactamente isso que aconteceu.
+func (v *vaultKeyVault) avisoDeOpacidade() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.tokenOpaco || v.opacoAvisado {
+		return ""
+	}
+	v.opacoAvisado = true
+	return "custodia da KEK (AOS-249): o token do Vault FUNCIONA (prova de capacidade contra " +
+		v.mount + "/keys PASSOU) mas NAO SE DEIXA MEDIR — a politica nao lhe concede " +
+		"`auth/token/lookup-self`, logo tambem nao concede `auth/token/renew-self`. CONSEQUENCIA: " +
+		"o no NAO consegue renovar o token nem avisar antes de ele expirar. Um token periodico que " +
+		"nunca e renovado MORRE no fim do periodo, e o /readyz so fica vermelho NESSE dia, sem " +
+		"aviso previo. REMEDIO: acrescentar `path \"auth/token/lookup-self\" { capabilities = " +
+		"[\"read\"] }` e `path \"auth/token/renew-self\" { capabilities = [\"update\"] }` a politica " +
+		"do token (ver deploy/server/provision-identity.sh)"
+}
