@@ -31,7 +31,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 
 | Conceito | Como se verifica | Estado |
 |---|---|---|
-| **Modo de identidade real endurecido** (AOS-156) — nenhuma chave de assinatura entra no runtime do nó | Banner de arranque: `trust-anchor-only`. Controlo: só a *pubkey* entra na cadeia; código comprometido in-process não tem material com que cunhar | ✅ |
+| **Modo de identidade real endurecido** (AOS-156) — nenhuma chave de assinatura entra no runtime do nó | **Imposto, não deduzido.** `AOS_MODE=production` exige a âncora (`ErrProductionNeedsHardenedIdentity`, main.go:519); com a âncora activa, `IssuerSigningKey` **ou** `IssuerKeyPath` fazem o nó **recusar arrancar** (`ErrConflictingIssuerKey`, bootstrap.go:778) — carregar a chave de disco para o processo derrotaria a propriedade tanto como recebê-la em memória. **Controlos:** os dois ramos abortam (`bootstrap_test.go:396`, `durable_test.go:100`); e o modo de REFERÊNCIA aceita a mesma `IssuerKeyPath` sem se queixar (dezenas de testes), que é o controlo simétrico — a recusa é da âncora, não de tudo. Em produção, o processo tem `AOS_ISSUER_PUBKEY` e **nenhum** `AOS_ISSUER_KEY_PATH` (verificado em `/proc/<pid>/environ`) | ✅ |
 | **Raiz humana da delegação AUTORIZADA** (ADR-003) — o humano autorizou *esta* delegação, não apenas "esteve presente" | `nonce` = digest de (agente, classe, caps, TTL); o issuer calcula-o das flags que cunha. Controlo: token do mesmo humano para outra delegação → **recusado** (`delegationbinding_test.go`) | ✅ |
 | **Rótulo honesto do método** — `manual` / `oidc:` / `oidc-bound:` | O rótulo desce quando a ligação não é possível (`--assertion-unbound`), e fica escrito no registo de binding | ✅ |
 | **Autoridade de escopo** (AOS-071) — o escopo efectivo é o token **intersectado** com o directório externo | Banner: 4 sujeitos, revisão 1, fingerprint. Revogar = listar com `"capabilities": []` | 🧪 |
@@ -68,7 +68,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **ScopeGate** — capability fora do escopo é negada | Teste negativo com capability ausente → deny | ✅ |
 | **Taint gate** — conteúdo `untrusted` restringe o efeito seguinte | `Context.Taint: untrusted` nos selos | ✅ |
 | **O que o PDP autoriza é o que o sandbox executa** (A1) | Antes: o PDP autorizava `doc://notes` constante enquanto o sandbox lia o argumento. Corrigido com *slots* `{arg}`; **não opt-in** — um efeito parametrizado com `resource_value` constante **aborta o arranque** | ✅ |
-| **Sem bypass estrutural** — as tools só entram pelo `MediatedLauncher` | Banner: `args→ExecRequest pelo EffectRewriter` | ✅ |
+| **Sem bypass estrutural** — as tools só entram pelo caminho mediado | **Gate sobre o repositório INTEIRO** (`TestArchLint_NenhumBypassNoRepositorio`, `AnalyzeTree`): 166 pacotes, e **invocação directa de `ToolFunc` = ZERO** — é essa a metade que importa, porque `ToolFunc` é *exportado* e uma chamada directa executa o efeito **sem PDP, sem orçamento e sem selo**. Restam 3 colisões de NOME (`dispatch` da CLI, método do Scheduler, o `m.dispatch` do próprio RM), cada uma listada **com a razão**, e uma excepção que deixe de reproduzir **falha** o teste — a lista não pode apodrecer. **Controlos (mutação):** bypass real noutro pacote → cai; `dispatchTool` num pacote não listado → cai; excepção obsoleta → cai. Imposto em CI via `require_tests` (fail-closed contra passagem vacuosa) | ✅ |
 
 ---
 
@@ -356,18 +356,29 @@ descrito, e ✅ sem o controlo que a regra da casa exige.
 | «Ausente: … alerta de recência do backup» | esse alerta está ✅ com três controlos (eixo M). A quarta ausência é o **DSAR sem barreira de transporte** |
 | «Dormente: … autonomia/escalate … o nó nunca finge» | a autonomia está **LIGADA** desde 2026-08-19 00:03. E a frase final era verdadeira sobre o mecanismo e enganadora sobre o efeito |
 
-**Fica em aberto — o juízo é de quem mantém o sistema**
+**Os dois que ficaram em aberto — RESOLVIDOS na mesma passagem**
 
-- **«Sem bypass estrutural» (eixo C, ✅).** A prova citada é uma linha de BANNER (`sandboxwiring.go`),
-  que é o nó a descrever a sua própria cablagem. O único gate imposto em CI,
-  `TestArchLint_RMNaoTemBypass`, analisa **só** `packages/kernel/reference-monitor/` e verifica que o
-  RM não invoca `ToolFunc` directamente. Nada impede, por gate, que um caminho fora dessa árvore
-  registe uma tool sem mediação. A propriedade pode ser verdadeira por construção; o que se afirma
-  é mais largo do que o que se verifica.
-- **«Modo de identidade real endurecido» (eixo A, ✅).** O «controlo» citado — *só a pubkey entra na
-  cadeia; código comprometido não tem com que cunhar* — é uma **dedução da configuração**, não um
-  exercício que pudesse falhar. É um existencial negativo (não há chave privada no processo), e
-  esses são genuinamente difíceis de controlar — mas então não é um ✅ pela regra deste documento.
+Nenhum era uma afirmação falsa. Ambos eram uma afirmação **verdadeira apoiada na evidência
+errada** — que é pior do que parece, porque uma prova errada não avisa quando a propriedade se
+perde.
+
+- **«Sem bypass estrutural».** A prova citada era uma linha de BANNER, e o único gate em CI
+  analisava um directório: `AnalyzeDir` **não recorre**. Acrescentou-se `AnalyzeTree` e um gate
+  sobre os **166 pacotes** do repositório. O número que interessa: **invocação directa de
+  `ToolFunc` = ZERO** — `ToolFunc` é *exportado*, e chamá-lo directamente executa o efeito sem
+  PDP, sem orçamento e sem selo. As 3 violações restantes são colisões de nome (`dispatch` da CLI,
+  método do Scheduler, o dispatcher do próprio RM), listadas com a razão de cada uma; uma
+  excepção que deixe de reproduzir **falha** o teste, para a lista não apodrecer.
+
+- **«Modo de identidade real endurecido».** O «controlo» era uma dedução da configuração. O
+  controlo a sério já existia e não estava citado: `AOS_MODE=production` **exige** a âncora
+  (`ErrProductionNeedsHardenedIdentity`) e a âncora **proíbe** qualquer chave de assinatura, seja
+  em memória ou por caminho de ficheiro (`ErrConflictingIssuerKey`). Os dois ramos têm teste, e o
+  modo de referência aceita a mesma chave — o controlo simétrico, sem o qual «recusa» seria
+  indistinguível de «recusa tudo».
+
+A lição é a mesma nos dois: **o que estava frágil não era o sistema, era a prova.** Um `✅` apoiado
+num banner ou numa dedução descreve o mundo tal como está e cala-se no dia em que mudar.
 
 **Um achado que era meu erro, e fica escrito porque o método falhou antes de acertar.** Li em
 `resolveResourceValue` que «sem slots, o valor é a constante de sempre» e estive a um passo de

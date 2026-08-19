@@ -44,6 +44,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -281,4 +282,48 @@ func isToolFuncConversion(expr ast.Expr) bool {
 func mkViolation(fset *token.FileSet, path string, pos token.Pos, kind, msg string) Violation {
 	p := fset.Position(pos)
 	return Violation{File: path, Line: p.Line, Col: p.Column, Kind: kind, Message: msg}
+}
+
+// AnalyzeTree analisa RECURSIVAMENTE todos os pacotes sob `root`, e existe porque
+// [AnalyzeDir] não desce: durante muito tempo a única imposição desta regra correu sobre UM
+// directório — o do próprio Reference Monitor — enquanto a propriedade afirmada («as tools só
+// entram pelo caminho mediado») é do SISTEMA INTEIRO.
+//
+// Uma auditoria ao inventário de conceitos em 2026-08-19 apanhou a discrepância: o que se
+// afirmava era mais largo do que o que se verificava. A regra não estava errada; estava a olhar
+// para um canto.
+//
+// Salta `.git`, `vendor`, `node_modules` e `testdata` — o último de propósito: os ficheiros de
+// caso do próprio analisador VIOLAM a regra por construção, e contá-los faria o gate acusar-se a
+// si mesmo.
+func AnalyzeTree(root string) ([]Violation, error) {
+	var out []Violation
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		switch d.Name() {
+		case ".git", "vendor", "node_modules", "testdata":
+			return filepath.SkipDir
+		}
+		vs, aerr := AnalyzeDir(p)
+		if aerr != nil {
+			return aerr
+		}
+		out = append(out, vs...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].File != out[j].File {
+			return out[i].File < out[j].File
+		}
+		return out[i].Line < out[j].Line
+	})
+	return out, nil
 }
