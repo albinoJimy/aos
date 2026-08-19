@@ -174,7 +174,7 @@ func TestIssuer_OIDCAuthenticatesHumanBeforeMint(t *testing.T) {
 	}
 
 	// (2) ADULTERADO: recusa fail-closed — nenhum humano é derivado de um token não-verificado.
-	tampered := idToken[:len(idToken)-2] + "AA"
+	tampered := adulterarAssinatura(t, idToken)
 	if h, _, err := authenticateOIDC(context.Background(), cfg, tampered); err == nil {
 		t.Fatalf("ID-token adulterado devia ser RECUSADO fail-closed, veio humano=%q", h)
 	}
@@ -193,4 +193,47 @@ func TestIssuer_OIDCRefusesInsecureTransport(t *testing.T) {
 	if err == nil {
 		t.Fatal("o issuer devia RECUSAR um IdP com transporte http não-loopback (fail-closed)")
 	}
+}
+
+// adulterarAssinatura corrompe a assinatura de um JWT de forma que os BYTES mudem SEMPRE — e
+// PROVA-O antes de devolver.
+//
+// DUAS VERSÕES ANTERIORES ESTAVAM ERRADAS, e a segunda foi PIOR do que a primeira:
+//
+//  1. `tok[:len(tok)-2] + "AA"` — se a cauda já fosse "AA", devolvia o token INTACTO. ~1 em 4096.
+//
+//  2. trocar só o ÚLTIMO caractere por um diferente — falha ~25% DAS VEZES. Uma assinatura
+//     ed25519 tem 64 bytes = 512 bits, mas os 86 caracteres base64url transportam 516: os
+//     últimos 4 bits NÃO SÃO USADOS. O último caractere carrega apenas 2 bits significativos, e
+//     o descodificador do Go (não-estrito) ignora os restantes. Trocar 'A'→'B' mexe só em
+//     enchimento: os bytes ficam IGUAIS, a assinatura verifica, e o teste acusa o sistema de
+//     aceitar um token falsificado. O mesmo vale para RSA-2048 (256 bytes em 342 caracteres).
+//
+// A lição não é sobre base64. É que uma função auxiliar de teste também precisa de prova: as duas
+// versões anteriores pareciam obviamente correctas, e nenhuma verificava o que afirmava fazer.
+// Esta verifica, e falha ruidosamente se alguma vez não adulterar.
+func adulterarAssinatura(t *testing.T, tok string) string {
+	t.Helper()
+	i := strings.LastIndex(tok, ".")
+	if i < 0 || i == len(tok)-1 {
+		t.Fatalf("token sem segmento de assinatura: %q", tok)
+	}
+	sig := tok[i+1:]
+	// O PRIMEIRO caractere do segmento carrega 6 bits significativos — ao contrário do último,
+	// que partilha o byte final com bits de enchimento.
+	novo := byte('A')
+	if sig[0] == 'A' {
+		novo = 'B'
+	}
+	adulterado := tok[:i+1] + string(novo) + sig[1:]
+
+	// CONTROLO INTERNO: os bytes DESCODIFICADOS têm de diferir. Sem isto, um helper que não
+	// adultera transforma um teste de segurança num sorteio cujo resultado se lê como
+	// "fail-closed violado" — a acusação mais grave que aquele teste sabe fazer.
+	a, err1 := base64.RawURLEncoding.DecodeString(sig)
+	b, err2 := base64.RawURLEncoding.DecodeString(adulterado[i+1:])
+	if err1 != nil || err2 != nil || bytes.Equal(a, b) {
+		t.Fatalf("adulterarAssinatura NAO alterou os bytes da assinatura (err=%v/%v) — o teste seria um sorteio", err1, err2)
+	}
+	return adulterado
 }
