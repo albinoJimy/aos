@@ -1,8 +1,10 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -12,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,7 +165,7 @@ func TestOIDCDirectory_TamperedAssertionRefused(t *testing.T) {
 	auth := newOIDCAuthority(t, idp)
 
 	idToken := idp.signIDToken(t, "alice@corp.example", nil)
-	tampered := adulterarAssinatura(idToken)
+	tampered := adulterarAssinatura(t, idToken)
 
 	tok, err := auth.MintForAssertion(ctx, tampered, odAgent, odClass, []string{odCap})
 	if err == nil {
@@ -255,45 +258,68 @@ func TestAllowlistDirectory_AssertionDoubleStillWorks(t *testing.T) {
 	}
 }
 
-// adulterarAssinatura corrompe a cauda de um JWT de forma DETERMINISTA.
+// adulterarAssinatura corrompe a assinatura de um JWT de forma que os BYTES mudem SEMPRE — e
+// PROVA-O antes de devolver.
 //
-// A versão anterior fazia `tok[:len(tok)-2] + "AA"`. Isso falha em 1 de cada 4096 execuções: se
-// os dois últimos caracteres base64url da assinatura JÁ FOREM "AA", o token "adulterado" é
-// IDÊNTICO ao original, verifica com sucesso, e o teste acusa o sistema de aceitar um token
-// falsificado — quando o que aconteceu foi não haver falsificação nenhuma.
+// DUAS VERSÕES ANTERIORES ESTAVAM ERRADAS, e a segunda foi PIOR do que a primeira:
 //
-// Num teste de segurança fail-closed esse falso positivo é particularmente caro: manda procurar
-// uma vulnerabilidade que não existe, e da próxima vez que a mesma mensagem aparecer — talvez por
-// um defeito a sério — já ninguém acredita nela.
+//  1. `tok[:len(tok)-2] + "AA"` — se a cauda já fosse "AA", devolvia o token INTACTO. ~1 em 4096.
 //
-// Aqui o último caractere é trocado por um GARANTIDAMENTE diferente do que lá está.
-func adulterarAssinatura(tok string) string {
-	if tok == "" {
-		return "x"
+//  2. trocar só o ÚLTIMO caractere por um diferente — falha ~25% DAS VEZES. Uma assinatura
+//     ed25519 tem 64 bytes = 512 bits, mas os 86 caracteres base64url transportam 516: os
+//     últimos 4 bits NÃO SÃO USADOS. O último caractere carrega apenas 2 bits significativos, e
+//     o descodificador do Go (não-estrito) ignora os restantes. Trocar 'A'→'B' mexe só em
+//     enchimento: os bytes ficam IGUAIS, a assinatura verifica, e o teste acusa o sistema de
+//     aceitar um token falsificado. O mesmo vale para RSA-2048 (256 bytes em 342 caracteres).
+//
+// A lição não é sobre base64. É que uma função auxiliar de teste também precisa de prova: as duas
+// versões anteriores pareciam obviamente correctas, e nenhuma verificava o que afirmava fazer.
+// Esta verifica, e falha ruidosamente se alguma vez não adulterar.
+func adulterarAssinatura(t *testing.T, tok string) string {
+	t.Helper()
+	i := strings.LastIndex(tok, ".")
+	if i < 0 || i == len(tok)-1 {
+		t.Fatalf("token sem segmento de assinatura: %q", tok)
 	}
-	ultimo := tok[len(tok)-1]
+	sig := tok[i+1:]
+	// O PRIMEIRO caractere do segmento carrega 6 bits significativos — ao contrário do último,
+	// que partilha o byte final com bits de enchimento.
 	novo := byte('A')
-	if ultimo == 'A' {
+	if sig[0] == 'A' {
 		novo = 'B'
 	}
-	return tok[:len(tok)-1] + string(novo)
+	adulterado := tok[:i+1] + string(novo) + sig[1:]
+
+	// CONTROLO INTERNO: os bytes DESCODIFICADOS têm de diferir. Sem isto, um helper que não
+	// adultera transforma um teste de segurança num sorteio cujo resultado se lê como
+	// "fail-closed violado" — a acusação mais grave que aquele teste sabe fazer.
+	a, err1 := base64.RawURLEncoding.DecodeString(sig)
+	b, err2 := base64.RawURLEncoding.DecodeString(adulterado[i+1:])
+	if err1 != nil || err2 != nil || bytes.Equal(a, b) {
+		t.Fatalf("adulterarAssinatura NAO alterou os bytes da assinatura (err=%v/%v) — o teste seria um sorteio", err1, err2)
+	}
+	return adulterado
 }
 
-// TestAdulterarAssinaturaMudaSempre é o controlo do próprio helper.
+// TestAdulterarAssinaturaMudaSempre é o controlo do próprio helper, e existe porque DUAS versões
+// dele estiveram erradas sem que nada o dissesse.
 //
-// O defeito que ele corrige era invisível precisamente porque ninguém verificava que a
-// "adulteração" adulterava. Um helper de teste que às vezes não faz nada transforma um teste de
-// segurança num sorteio — e o resultado do sorteio lê-se como "o sistema aceitou um token
-// falsificado", que é a acusação mais grave que este teste pode fazer.
+// Corre sobre assinaturas REAIS e muitas: é nelas que os bits de enchimento do base64 aparecem, e
+// foi exactamente aí que a versão anterior falhava um quarto das vezes.
 func TestAdulterarAssinaturaMudaSempre(t *testing.T) {
-	// Inclui de propósito a cauda "AA", que é exactamente o caso em que a versão anterior
-	// devolvia o token INTACTO.
-	for _, tok := range []string{"abc.def.ghAA", "abc.def.ghAB", "abc.def.ghiA", "x", "AA"} {
-		if got := adulterarAssinatura(tok); got == tok {
-			t.Errorf("adulterarAssinatura(%q) devolveu o MESMO token — a adulteracao nao adulterou", tok)
+	for i := 0; i < 300; i++ {
+		_, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if adulterarAssinatura("") == "" {
-		t.Error("token vazio devia continuar a produzir algo diferente")
+		sig := base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, []byte("m")))
+		tok := "aGRy.cGF5." + sig
+		got := adulterarAssinatura(t, tok)
+
+		a, _ := base64.RawURLEncoding.DecodeString(sig)
+		b, _ := base64.RawURLEncoding.DecodeString(got[strings.LastIndex(got, ".")+1:])
+		if bytes.Equal(a, b) {
+			t.Fatalf("iteracao %d: os BYTES da assinatura nao mudaram — so o enchimento", i)
+		}
 	}
 }
