@@ -50,22 +50,10 @@ type simularEfeito struct {
 
 // handleAutonomySimular avalia a configuração proposta contra o histórico selado.
 func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Request) {
-	// ADMISSÃO do plano de controlo, ANTES do mTLS — a mesma ordem das outras rotas de controlo.
-	// Rejeitar barato protege a maquinaria de autenticação de carga; é o tradeoff que o banner
-	// já declara para o balde de ingresso.
-	if !h.admitControl(w) {
-		return
-	}
-	// mTLS DO PLANO DE CONTROLO. Isto é plano de controlo tanto como o /approve e o /pause, e
-	// tem de passar pela MESMA barreira — que NÃO é middleware: cada handler de controlo
-	// chama-a explicitamente, e um handler novo que se esqueça fica de fora sem que nada avise.
-	//
-	// Foi o que aconteceu: escrevi no plano e no comentário desta rota que ela passava pela
-	// mesma admissão do /approve, e não passava. Uma barreira imposta por convenção de escrita
-	// só resiste enquanto ninguém escrever distraído.
-	if !h.admitControlMTLS(w, r) {
-		return
-	}
+	// ADMISSÃO e mTLS do plano de controlo vêm da TABELA DE ROTAS (planoControlo, ver planos.go),
+	// não do corpo. Foi precisamente aqui que a convenção falhou: estas três rotas nasceram sem as
+	// duas barreiras enquanto o plano e o comentário afirmavam que passavam "pela mesma admissão do
+	// /approve". Agora a classificação é obrigatória no registo e o valor-zero aborta o arranque.
 	if h.node == nil || h.node.WORM == nil {
 		writeError(w, http.StatusNotImplemented, "sem WORM composto — nao ha historico para simular")
 		return
