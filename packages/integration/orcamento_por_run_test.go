@@ -172,4 +172,111 @@ func TestSegundaHospedagemCONCORRENTENaoRecriaONo(t *testing.T) {
 	if got := limiteDoNo(t, rb, "run-5").Tokens; got != 900 {
 		t.Errorf("o no mudou de limite com a 2.a hospedagem viva: %d", got)
 	}
+	// E a fonte e consultada UMA vez, nao duas.
+	//
+	// Este contador ja existia neste teste e nunca era AFIRMADO — um teste latente que teria
+	// apanhado o defeito que a revisao do proprio codigo apanhou: `limiteParaIncarnacao` corria
+	// em TODAS as aquisicoes, incluindo as reentrantes onde o valor e deitado fora.
+	if chamadas != 1 {
+		t.Errorf("a fonte duravel foi consultada %d vezes para 2 hospedagens do MESMO run — a "+
+			"leitura ao ledger corre onde o valor e descartado", chamadas)
+	}
+}
+
+// TestReentranteNaoAVISA fecha a metade que fazia o desperdício ser um DEFEITO e não só uma
+// ineficiência.
+//
+// Com o ledger ilegível, uma aquisição reentrante corria `limiteParaIncarnacao`, deitava o valor
+// fora — e escrevia à mesma o aviso «arranca com o tecto INTEIRO». Uma linha de log a descrever
+// uma decisão que NÃO foi tomada: o nó já existia e aquele limite nem chegou a ser usado.
+//
+// É a mesma família do que este dia inteiro andou a caçar — uma declaração que não corresponde ao
+// efeito — desta vez em código meu, e encontrada a rever o que acabara de pôr em produção.
+func TestReentranteNaoAVISA(t *testing.T) {
+	var linhas []string
+	rb := orcamentoDeTeste(t, 1000,
+		WithConsumoDuravel(func(context.Context, string) (budget.Amount, error) {
+			return budget.Amount{}, errors.New("event store em baixo")
+		}),
+		WithBudgetLogger(func(f string, a ...any) { linhas = append(linhas, f) }),
+	)
+	r1, err := rb.acquire(context.Background(), "run-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+	if len(linhas) != 1 {
+		t.Fatalf("a PRIMEIRA aquisicao devia avisar uma vez, veio %d", len(linhas))
+	}
+
+	// A segunda hospedagem do MESMO run não decide limite nenhum — e não pode avisar.
+	r2, err := rb.acquire(context.Background(), "run-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2()
+	if len(linhas) != 1 {
+		t.Errorf("a aquisicao REENTRANTE avisou (%d linhas no total) — o aviso descreve uma decisao "+
+			"que nao foi tomada, porque o no ja existia", len(linhas))
+	}
+}
+
+// TestDuasHospedagensNaJanelaDaPrimeira força a corrida que a re-verificação sob o lock existe
+// para tratar — e que nenhum teste cobria.
+//
+// A leitura do ledger acontece FORA do lock (é I/O). Nessa janela, DUAS hospedagens do mesmo run
+// podem ambas concluir «eu sou a primeira». Se a criação do nó confiasse nessa conclusão em vez de
+// a RE-VERIFICAR sob o lock, a segunda chamaria `AddNode` sobre um nó já criado, receberia
+// `ErrNodeExists`, e a hospedagem FALHARIA — um run que não arranca por ter sido retomado duas
+// vezes ao mesmo tempo.
+//
+// A fonte bloqueia até as duas lá estarem: sem isso o teste seria um sorteio e passaria quase
+// sempre, que é o pior tipo de teste de concorrência.
+func TestDuasHospedagensNaJanelaDaPrimeira(t *testing.T) {
+	chegaram := make(chan struct{}, 2)
+	solta := make(chan struct{})
+	rb := orcamentoDeTeste(t, 1000, WithConsumoDuravel(
+		func(context.Context, string) (budget.Amount, error) {
+			chegaram <- struct{}{}
+			<-solta // segura as duas DENTRO da janela em que ambas se julgam a primeira
+			return budget.Amount{Tokens: 100}, nil
+		},
+	))
+
+	type resultado struct {
+		rel func()
+		err error
+	}
+	saidas := make(chan resultado, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			rel, err := rb.acquire(context.Background(), "run-corrida")
+			saidas <- resultado{rel: rel, err: err}
+		}()
+	}
+	// Espera que AMBAS estejam dentro da fonte, e só então liberta.
+	<-chegaram
+	<-chegaram
+	close(solta)
+
+	// As libertações ficam para DEPOIS da asserção: soltá-las aqui removeria o nó antes de o
+	// medir — foi o que a primeira versão deste teste fez, e acusou o nó de não existir.
+	var libertar []func()
+	for i := 0; i < 2; i++ {
+		r := <-saidas
+		if r.err != nil {
+			t.Errorf("hospedagem %d falhou numa corrida legitima: %v — sem a re-verificacao sob o "+
+				"lock, a segunda tenta AddNode sobre um no ja criado", i+1, r.err)
+			continue
+		}
+		libertar = append(libertar, r.rel)
+	}
+	defer func() {
+		for _, f := range libertar {
+			f()
+		}
+	}()
+	if got := limiteDoNo(t, rb, "run-corrida").Tokens; got != 900 {
+		t.Errorf("limite = %d, quero 900 (1000-100)", got)
+	}
 }
