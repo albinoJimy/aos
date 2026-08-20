@@ -209,9 +209,22 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **PKCE S256 obrigatório** | Sem `code_challenge` → `Missing parameter`; com `plain` → `not matching the configured one` | ✅ |
 | **`redirect_uri` registado** | Porta não registada → `400` | ✅ |
 
-> ❗ **Ordem declarada:** a admissão actua **antes** da autenticação e o balde é global. 500 pedidos
-> sem credencial produziram 442 `403` + 58 `429` — um chamador anónimo consome orçamento de
-> admissão de todos. É *tradeoff* nomeado no banner, agravado por não haver firewall no host.
+> ❗ **Ordem declarada, e o que mudou.** A admissão actua **antes** da autenticação — de propósito:
+> rejeitar barato protege a maquinaria de cripto de carga. Mas o balde do nó é **global**, sem chave
+> por chamador: 500 pedidos sem credencial produziram 442 `403` + 58 `429`, e o operador legítimo
+> que chegasse a seguir levava `429` por causa do anónimo.
+>
+> **Corrigido na camada certa (2026-08-20):** o edge passa a limitar **por origem**
+> (`limit_req_zone $binary_remote_addr`, 16 r/s com burst 32, contra 64/s + burst 128 globais do
+> nó), e devolve `429` — o mesmo código do nó para o mesmo significado. O nó **não publica porta
+> nenhuma** para o host (só o edge publica a 8444), pelo que esta camada é incontornável de fora.
+> **Provado com controlo, em nginx real:** 120 pedidos concorrentes deram `120×200` sem o limite e
+> `65×200 + 55×429` com ele — mesma carga, mesma imagem, mesmos montes.
+>
+> ⚠️ **O que NÃO fecha:** um flood **distribuído**. Um limite por-origem impede que *uma* origem
+> esgote o orçamento de todas; quatro em simultâneo ainda o conseguem. E a primeira medição deste
+> limite deu `120×200` porque `curl` em ciclo é sequencial e nunca atingiu o ritmo — a sonda é que
+> não sondava.
 
 ---
 
