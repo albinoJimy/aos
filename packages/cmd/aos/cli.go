@@ -347,7 +347,14 @@ func loadOperatorKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("aos: ler chave do operador: %w", err)
 	}
-	seed, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+	// semBOM porque as seeds do operador nascem em Windows e o `>` do PowerShell escreve BOM,
+	// que o `strings.TrimSpace` do Go NAO remove (U+FEFF deixou de contar como espaco).
+	//
+	// Aqui NAO se separa o diagnostico de UTF-16 como no `aos-issuer`: este caminho devolve
+	// [ErrBadOperatorKey] uniformemente por desenho, e partir o erro em variantes mudaria um
+	// contrato que outros sitios comparam. O ganho de diagnostico fica do lado do emissor, que
+	// e onde as chaves sao GERADAS e portanto onde o engano acontece.
+	seed, err := hex.DecodeString(strings.TrimSpace(string(semBOM(raw))))
 	if err != nil || len(seed) != ed25519.SeedSize {
 		return nil, ErrBadOperatorKey
 	}

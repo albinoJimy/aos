@@ -270,7 +270,11 @@ func vaultSignerFlags(fs *flag.FlagSet, keyFile *string) func() (crypto.Signer, 
 func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
 	raw, err := os.ReadFile(path)
 	if err == nil {
-		seed, derr := hex.DecodeString(strings.TrimSpace(string(raw)))
+		texto, cerr := limparSeedHex(raw) // ver [limparSeedHex].
+		if cerr != nil {
+			return nil, cerr
+		}
+		seed, derr := hex.DecodeString(texto)
 		if derr != nil || len(seed) != ed25519.SeedSize {
 			return nil, fmt.Errorf("ficheiro de chave %q inválido (esperado seed ed25519 de %d bytes em hex)", path, ed25519.SeedSize)
 		}
