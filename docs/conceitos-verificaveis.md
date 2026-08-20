@@ -70,6 +70,22 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **O que o PDP autoriza é o que o sandbox executa** (A1) | Antes: o PDP autorizava `doc://notes` constante enquanto o sandbox lia o argumento. Corrigido com *slots* `{arg}`; **não opt-in** — um efeito parametrizado com `resource_value` constante **aborta o arranque** | ✅ |
 | **Sem bypass estrutural** — as tools só entram pelo caminho mediado | **Gate sobre o repositório INTEIRO** (`TestArchLint_NenhumBypassNoRepositorio`, `AnalyzeTree`): 166 pacotes, e **invocação directa de `ToolFunc` = ZERO** — é essa a metade que importa, porque `ToolFunc` é *exportado* e uma chamada directa executa o efeito **sem PDP, sem orçamento e sem selo**. Restam 3 colisões de NOME (`dispatch` da CLI, método do Scheduler, o `m.dispatch` do próprio RM), cada uma listada **com a razão**, e uma excepção que deixe de reproduzir **falha** o teste — a lista não pode apodrecer. **Controlos (mutação):** bypass real noutro pacote → cai; `dispatchTool` num pacote não listado → cai; excepção obsoleta → cai. Imposto em CI via `require_tests` (fail-closed contra passagem vacuosa) | ✅ |
 
+> ⚠️ **Oferecer não é executar — e agora é declarado (2026-08-20).** O manifesto de produção
+> oferece ao modelo `doc_read` **e** `web_post`; só a primeira tem bloco `sandbox`, logo só a
+> primeira tem despacho registado no Reference Monitor. O banner dizia «1 tool(s) [doc_read]
+> ligadas ao driver» e **calava-se sobre a segunda**: o modelo gasta um turno a chamá-la e a
+> chamada morre no caminho de recusa.
+>
+> Isto pode ser **deliberado** — é exactamente o que a `demo-pdp-tool-deny.sh` demonstra: *«o
+> modelo NÃO executa uma tool só porque lha ofereceram; o RM re-valida contra o SEU registry
+> assinado»*. A primeira correcção que escrevi **recusava o arranque**, e teria destruído a
+> propriedade que a demonstração existe para mostrar; foi o teste `TestRegistriesDoRepoArrancam`
+> que me apanhou.
+>
+> O que faltava não era uma recusa — era a **declaração**. O banner passa a nomear as tools
+> oferecidas sem executor. A decisão continua a ser de quem monta o manifesto; deixa é de ser
+> herdada em silêncio.
+
 ---
 
 ## D. Execução isolada
