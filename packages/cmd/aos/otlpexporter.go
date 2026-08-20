@@ -108,10 +108,13 @@ type OTLPHTTPExporter struct {
 	// ficheiro do bearer. São só CAMINHOS (resolvidos uma vez em [NewOTLPHTTPExporter]); o
 	// material carregado vive no transport (certificado) ou em bearerToken (o segredo). O
 	// bearerToken NUNCA é logado nem colocado em spans/erros.
-	clientCertPath  string
-	clientKeyPath   string
-	bearerTokenPath string
-	bearerToken     string
+	clientCertPath   string
+	clientKeyPath    string
+	queixaMu         sync.Mutex
+	queixaUltima     time.Time
+	queixaSuprimidas int
+	bearerTokenPath  string
+	bearerToken      string
 
 	queue chan otelgenai.SpanData
 	done  chan struct{}
@@ -464,7 +467,9 @@ func (e *OTLPHTTPExporter) send(spans []otelgenai.SpanData) {
 	}
 	// Falha DEFINITIVA após esgotar os retries: contabilizada e logada, NUNCA propagada.
 	e.failed.Add(int64(len(spans)))
-	e.logf("[aos] OTLP (AOS-173): export de %d span(s) falhou apos %d tentativa(s) (fail-open: run inalterado)", len(spans), e.maxRetries+1)
+	if msg := e.queixaDeExport(time.Now(), len(spans)); msg != "" {
+		e.logf("%s", msg)
+	}
 }
 
 // sleep espera d respeitando o sinal de shutdown. Devolve false se o shutdown
@@ -576,3 +581,35 @@ func (e *OTLPHTTPExporter) Stats() OTLPStats {
 
 // compile-time: o exporter satisfaz a porta do substrato.
 var _ otelgenai.Exporter = (*OTLPHTTPExporter)(nil)
+
+// intervaloDeQueixa é a cadência MÁXIMA da linha de falha de export.
+//
+// O comportamento anterior escrevia uma linha por CADA lote falhado. Com um colector mal
+// configurado e tráfego normal, isso inunda o log do nó — e a linha que interessa afoga-se entre
+// as suas próprias repetições. É o mesmo defeito que a manutenção do token do Vault tinha: 43
+// repetições da mesma frase antes de alguém reparar.
+//
+// A primeira falha sai IMEDIATAMENTE (é a que muda o mundo de «funciona» para «não funciona»); as
+// seguintes ficam represadas e saem uma vez por intervalo, dizendo QUANTAS foram. Contar é o que
+// distingue «continua mau» de «voltou a acontecer».
+const intervaloDeQueixa = time.Minute
+
+// queixaDeExport devolve a mensagem a escrever, ou "" se esta falha deve ficar represada.
+//
+// Não substitui os contadores de [OTLPHTTPExporter.Stats] — esses saem em `/metrics` e são o que
+// se alerta. Isto é para quem está a ler o log.
+func (e *OTLPHTTPExporter) queixaDeExport(agora time.Time, spans int) string {
+	e.queixaMu.Lock()
+	defer e.queixaMu.Unlock()
+	e.queixaSuprimidas++
+	if !e.queixaUltima.IsZero() && agora.Sub(e.queixaUltima) < intervaloDeQueixa {
+		return ""
+	}
+	n := e.queixaSuprimidas
+	e.queixaSuprimidas = 0
+	e.queixaUltima = agora
+	if n == 1 {
+		return fmt.Sprintf("[aos] OTLP (AOS-173): export de %d span(s) FALHOU apos %d tentativa(s) (fail-open: run inalterado). Se persistir, ver aos_otlp_spans_failed_total em /metrics", spans, e.maxRetries+1)
+	}
+	return fmt.Sprintf("[aos] OTLP (AOS-173): %d lote(s) de export FALHARAM no ultimo %s (fail-open: runs inalterados). Ver aos_otlp_spans_failed_total em /metrics", n, intervaloDeQueixa)
+}
