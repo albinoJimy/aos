@@ -143,12 +143,20 @@ try {
     Bom ("checkpoints -> " + $anteriorFile)
     Bom ("pisos       -> " + (Join-Path $Pisos 'heads.json'))
 
-    Passo "6. O QUE FALTA, e nao e este script que o faz"
-    Nota "Para o no PASSAR A VERIFICAR, as tres variaveis tem de ir para o servidor JUNTAS"
-    Nota "(algumas ⇒ ErrWormAnchorIncomplete, aborta o arranque):"
-    Nota "  AOS_WORM_TRUST_ANCHOR        = a PUBLICA do selador, em hex"
-    Nota "  AOS_WORM_CHECKPOINT_FILE     = caminho montado do checkpoints.json"
-    Nota "  AOS_WORM_EXPECTED_HEADS_FILE = caminho montado do heads.json"
+    Passo "6. A ANCORA, e o que falta para o no a USAR"
+    # A PUBLICA sai daqui e nao do operador a descobri-la. A primeira versao deste script pedia
+    # «a PUBLICA do selador, em hex» e nao dizia onde a ir buscar — deixava por fazer o unico
+    # passo que o script podia fazer sozinho, e que nao envolve segredo nenhum: a pubkey e para
+    # ser PUBLICADA, e vai literalmente para uma variavel de ambiente no servidor.
+    Push-Location $Issuer
+    try { $pub = (& go run . pubkey --key-file $Chave 2>&1 | Select-Object -Last 1).ToString().Trim() }
+    finally { Pop-Location }
+    if ($pub -notmatch '^[0-9a-f]{64}$') { throw "pubkey do selador invalida: $pub" }
+
+    Nota "As tres em conjunto ou NENHUMA (algumas -> ErrWormAnchorIncomplete, aborta o arranque):"
+    Write-Host ("    AOS_WORM_TRUST_ANCHOR={0}" -f $pub) -ForegroundColor Green
+    Nota "    AOS_WORM_CHECKPOINT_FILE     = caminho MONTADO do checkpoints.json"
+    Nota "    AOS_WORM_EXPECTED_HEADS_FILE = caminho MONTADO do heads.json"
     Nota ""
     Nota "E a cobertura NUNCA e total: as particoes nascem por run, logo o run seguinte cria uma"
     Nota "que esta ancora nao cobre. Ancorado ate ao ultimo selo; depois disso, so re-encadeamento."
