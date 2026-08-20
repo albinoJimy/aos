@@ -565,7 +565,7 @@ func (s *SecuredRuntime) Run(ctx context.Context, goal agentruntime.Goal, sel *t
 	// Fail-closed: se o nó não se consegue registar, o run NÃO arranca — correr sem nó seria
 	// correr com tudo negado, e o operador procuraria a causa no sítio errado.
 	if s.budget != nil {
-		releaseBudget, berr := s.budget.acquire(goal.RunID)
+		releaseBudget, berr := s.budget.acquire(ctx, goal.RunID)
 		if berr != nil {
 			return agentruntime.Result{}, nil, berr
 		}

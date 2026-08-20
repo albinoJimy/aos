@@ -171,8 +171,16 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Tecto em dólares recusado sem fonte de preço** | Definir `AOS_BUDGET_MAX_COST_MICRO_USD` sem preço na tabela **aborta o arranque** | 🧪 |
 | **Custo do modelo** (AOS-259) | Canal ligado, **fonte ausente**. E a chave da tabela é o **alias** `(gpt-4o-mini, eu)`, não o modelo real (`kimi-for-coding`) — pôr aí o preço do gpt-4o-mini daria um custo numericamente preciso e factualmente falso. Ver §"o modelo que o nó nomeia não é o modelo que corre" | ⚠️ |
 
-> ❗ **Assimetria declarada:** o tecto é por-run **e por-incarnação**, e o aviso é cumulativo. Um run
-> em ciclo de escalada/retoma pode gastar até N × tecto. Fechar isto exige estado de orçamento
+> ✅ **Assimetria fechada em parte (2026-08-20).** Isto dizia que o tecto era por-run **e
+> por-incarnação**, que o aviso era cumulativo e o *enforcement* recomeçava, e que fechá-lo exigia
+> «estado de orçamento durável por run, que este nó não tem». **Tinha** — é o mesmo ledger de
+> turnos que o burn-down já lia, chaveado por `run_id` e sobrevivente à retoma; o *enforcement* é
+> que não o consultava. O nó do run passa a nascer com o tecto **menos o já consumido**, e o aviso
+> e o *enforcement* vêem o mesmo total. **Alcance parcial, declarado:** o ledger conta turnos de
+> modelo e só eles, pelo que o que continua por-incarnação é o consumo de **tool calls** — a fuga
+> encolheu, não fechou. **Degradação declarada:** ledger ilegível ⇒ tecto inteiro **e uma linha no
+> log**; recusar hospedar transformaria um soluço do Event Store num run encravado, e o orçamento é
+> controlo de custo, não de segurança.
 > durável por run, que este nó não tem.
 
 ---
