@@ -139,8 +139,19 @@ services:
       AOS_BROKER_VAULT_PATH_PREFIX: "${AOS_BROKER_VAULT_PATH_PREFIX:-}"
 
       # Verificação ancorada do WORM (AOS-268/AOS-072). AS TRÊS em conjunto ou nenhuma —
-      # definir algumas aborta o arranque em vez de degradar. Ver a análise em README §8: um
-      # checkpoint ancora UMA partição e este WORM tem 108.
+      # definir algumas ABORTA o arranque (ErrWormAnchorIncomplete) em vez de degradar.
+      #
+      # A objecção antiga («um checkpoint ancora UMA partição e este WORM tem 108») foi
+      # RESOLVIDA a 2026-08-20: o `aos-issuer worm-seal` emite um checkpoint POR PARTIÇÃO e os
+      # pisos de frescura à parte (--heads), e o nó recebe-os em conjunto. A forma singular
+      # AOS_WORM_EXPECTED_HEAD é recusada em voz alta (ErrWormExpectedHeadObsoleta).
+      #
+      # O que falta é OPERACIONAL — chave do selador em custódia fora do servidor, selagem
+      # contra a cópia do backup, e uma cadência. Ver README §8, ponto 8.
+      #
+      # LIMITE que a cadência não fecha: as partições nascem por run, logo o run seguinte cria
+      # uma que nenhuma selagem anterior cobre. «Ancorado até ao último selo; depois disso, só
+      # re-encadeamento.» Selar mais vezes encolhe a janela; não a fecha.
       AOS_WORM_TRUST_ANCHOR: "${AOS_WORM_TRUST_ANCHOR:-}"
       AOS_WORM_CHECKPOINT_FILE: "${AOS_WORM_CHECKPOINT_FILE:-}"
       AOS_WORM_EXPECTED_HEADS_FILE: "${AOS_WORM_EXPECTED_HEADS_FILE:-}"
