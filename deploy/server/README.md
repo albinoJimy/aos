@@ -877,35 +877,62 @@ Nomeado, não escondido:
      o `aos-issuer` é um processo de vida curta: o mapa nasce vazio a cada invocação. Pareceria
      anti-replay e não seria nenhum. O que ficou foi o `MaxAge` de 5 min — este era o **mais
      fraco** dos três verificadores OIDC do sistema, o único sem tecto de idade.
-   - **Falta um run submetido com uma NHI assim.** O mint está provado; a cadeia enraizada no
-     `sub` verificado ainda não passou pelo WORM. `get-id-token.ps1 -Cunhar <agente> -Submeter`
-     fá-lo (dois logins, um por audiência).
-8. **A verificação ancorada do WORM não corre — e não é um interruptor.** Sem
-   `AOS_WORM_TRUST_ANCHOR` + `_CHECKPOINT_FILE` + `_EXPECTED_HEAD`, fica só a re-verificação de
-   hash-chain: apanha mutação, remoção e encadeamento quebrado, mas **não** truncatura do tail
-   nem reescrita desde a génese. O banner de arranque di-lo em cada boot.
+   - **Um run com uma NHI assim JÁ passou pelo WORM (2026-08-20).** Submetido por
+     `get-id-token.ps1 -Cunhar agt-prova-96 -Submeter`, o caminho exacto que este ponto nomeava;
+     `POST /autonomy/simular` passou depois a contar `avaliados: 3` onde antes contava `0`, o que
+     confirma que as tool calls do run foram seladas.
 
-   Fui ligá-la e **parei**, por duas razões que a formulação anterior deste ponto escondia:
+     **O que fica por confirmar, e é uma linha:** o script imprime `auth_method` e distingue
+     `oidc-bound:` (a verde — a delegação ficou **ligada** à autenticação) de qualquer outro valor
+     (a amarelo — o registo diz «esteve presente», não «autorizou isto»). Essa linha não foi
+     registada. Enquanto não o for, o que está provado é que a cadeia **passa** pelo WORM, não que
+     ficou **enraizada** num `sub` verificado — e a diferença entre as duas é precisamente o que
+     este ponto existia para medir.
+8. **A verificação ancorada do WORM não corre — mas já não é trabalho de desenho.** Sem
+   `AOS_WORM_TRUST_ANCHOR` + `AOS_WORM_CHECKPOINT_FILE` + `AOS_WORM_EXPECTED_HEADS_FILE`, fica só
+   a re-verificação de hash-chain: apanha mutação, remoção e encadeamento quebrado, mas **não**
+   truncatura do tail nem reescrita desde a génese. O banner de arranque di-lo em cada boot.
 
-   **(a) O nó consome a âncora, não a produz.** `audit.Signer.Seal` precisa de acesso ao *store* e
-   de uma chave privada que vive fora do nó — não há binário no repositório que produza um
-   `audit.Checkpoint` selado. O próprio código o declara: *"este nó CONSOME a âncora, não a
-   produz"*, com a selagem periódica **deferida em DEF-268**. Ligá-la exige um selador
-   out-of-process novo, custódia da chave, e um ciclo operacional que reselcie e avance o piso de
-   frescura — não uma linha no `.env`.
+   **As duas razões pelas quais parei aqui foram RESOLVIDAS a 2026-08-20.** Este ponto dizia que
+   fechar isto exigia «um selador que emite um checkpoint por partição e um nó que os verifica em
+   conjunto», e classificava-o como trabalho de desenho. É agora o que existe:
 
-   **(b) Um checkpoint ancora UMA partição, e este WORM tem 108.** `Checkpoint.Partition` é um
-   campo só, e o nó recebe uma `WormAnchor` só. Contadas no WORM de produção: **108 cadeias
-   independentes** (`governance.retention`, `gov.read/<run>`, uma por run, …) — o banner reportou
-   104 no arranque e são 108 agora, porque cada run submetido desde então cria duas. Ligar a âncora
-   como está hoje cobriria **1 em 108** — e a leitura natural do banner passaria a ser "o WORM
-   está ancorado", que seria falso para as outras 107. Uma cobertura parcial anunciada como total é
-   pior do que a ausência declarada que temos agora.
+   - **(a) O selador existe.** `aos-issuer worm-seal` (PR #88) percorre o store, re-encadeia
+     **antes** de assinar, e emite um `audit.Checkpoint` **por partição**. Os pisos de frescura
+     saem por `--heads`, num ficheiro **à parte** — de propósito: se viajassem com os
+     checkpoints, quem trocasse o ficheiro trocava os dois, e o piso deixaria de morder no
+     rollback de checkpoint que existe para fechar.
+   - **(b) O nó verifica-os em conjunto.** `WormAnchor.Checkpoints` é `[]audit.Checkpoint` e
+     `ExpectedHeads` é `map[string]uint64`. A forma singular antiga é recusada **em voz alta**
+     (`ErrWormExpectedHeadObsoleta`) em vez de degradar para «sem âncora» com a env lá e o
+     operador convencido.
 
-   O que fecharia isto a sério: um selador que emite um checkpoint **por partição** e um nó que
-   os verifica em conjunto, ou uma partição de topo que encadeie as raízes das outras. É trabalho
-   de desenho, não de configuração — fica aqui nomeado em vez de escondido atrás de três
-   variáveis de ambiente que dariam a impressão de bastar.
+   **A cobertura nunca será completa, e isso é do desenho.** As partições nascem por run
+   (`run-<id>`, `ingestion:<id>`, `gov.residency/<id>`), pelo que o run seguinte cria uma partição
+   que nenhuma selagem anterior cobre. A propriedade honesta é **«ancorado até ao último selo;
+   depois disso, só re-encadeamento»** — e é isso que o banner declara, com o número. Selar mais
+   vezes **encolhe a janela; não a fecha**. Quem espere «o WORM está ancorado» sem qualificação
+   vai ler mal o banner.
+
+   **O que falta é operacional, e é isto — por ordem:**
+
+   1. **Gerar a chave do selador**, na máquina do operador, e **nunca** a pôr no servidor. É a
+      mesma regra do molde AOS-156 que já governa a `issuer.key`: a chave assina **fora** do nó;
+      o nó só recebe a pública, em hex, na `AOS_WORM_TRUST_ANCHOR`.
+   2. **Selar contra a cópia do backup**, não contra o servidor vivo. `audit.Signer.Seal` precisa
+      do *store*, e o store vive onde a chave não pode estar. `pull-backups.ps1` traz a cópia
+      off-host; é essa que se sela.
+   3. **Montar os dois ficheiros e a pública**, e só então definir as três env. **As três em
+      conjunto ou nenhuma** — definir algumas **aborta** o arranque (`ErrWormAnchorIncomplete`)
+      em vez de degradar.
+   4. **Decidir a cadência**, que é a única decisão que sobra e não tem resposta certa: é o
+      tamanho da janela não-ancorada que se aceita. Cada selagem nova tem de recusar selar sobre
+      uma história divergente — `exigirContinuidade` corre a **mesma** `VerifyFromCheckpoint` que
+      o nó corre no arranque — e tem de **avançar** o piso de frescura, senão o piso deixa de
+      distinguir uma âncora fresca de uma antiga reapresentada.
+
+   Nenhum destes quatro é código. O primeiro é custódia, o segundo é o ensaio de restauro que já
+   está provado, o terceiro é configuração e o quarto é uma decisão de operação.
 9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
    tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de
