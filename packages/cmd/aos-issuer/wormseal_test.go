@@ -568,3 +568,51 @@ func TestWormSealRecusaParticaoDESAPARECIDA(t *testing.T) {
 			"encolhida, e a resposta do operador difere: %v", err)
 	}
 }
+
+// TestWormSealLeAnteriorComBOM — o selador tem de conseguir ler o que ele proprio escreveu.
+//
+// Descoberto a correr `selar-worm.ps1` DUAS vezes: a segunda recusou com «--anterior nao e JSON
+// de checkpoints: invalid character 'ï'». O `Set-Content -Encoding utf8` do PowerShell 5.1 poe
+// BOM, e o `encoding/json` recusa-o.
+//
+// Sem esta rede, a selagem DIARIA partia-se no segundo dia — e a mensagem de erro nao aponta para
+// codificacao nenhuma.
+func TestWormSealLeAnteriorComBOM(t *testing.T) {
+	caminho, store := wormDeTeste(t)
+	seed, _ := seedDeTeste(t)
+	_ = store
+
+	var primeira bytes.Buffer
+	if err := runWormSeal([]string{"--worm", caminho, "--key-file", seed}, &primeira); err != nil {
+		t.Fatalf("primeira selagem: %v", err)
+	}
+	// O ficheiro tal como o PowerShell 5.1 o escrevia: com BOM.
+	comBom := append([]byte{0xEF, 0xBB, 0xBF}, primeira.Bytes()...)
+	anteriorFile := filepath.Join(t.TempDir(), "anterior.json")
+	if err := os.WriteFile(anteriorFile, comBom, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runWormSeal([]string{"--worm", caminho, "--key-file", seed, "--anterior", anteriorFile}, &out); err != nil {
+		t.Fatalf("o BOM impediu a segunda selagem: %v — a cadencia diaria partia-se no 2o dia", err)
+	}
+	if out.Len() == 0 {
+		t.Error("selou sem emitir checkpoints")
+	}
+}
+
+// TestWormSealRecusaAnteriorQueELIXO é o controlo: retirar o BOM não pode virar tolerância.
+func TestWormSealRecusaAnteriorQueELIXO(t *testing.T) {
+	caminho, _ := wormDeTeste(t)
+	seed, _ := seedDeTeste(t)
+	anteriorFile := filepath.Join(t.TempDir(), "anterior.json")
+	// Lixo SEGUIDO de JSON válido: uma normalização gulosa aparava o prefixo e aceitava.
+	if err := os.WriteFile(anteriorFile, []byte(`LIXO ANTES [{"Partition":"run-a","AuditSeq":1}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runWormSeal([]string{"--worm", caminho, "--key-file", seed, "--anterior", anteriorFile}, &out); err == nil {
+		t.Fatal("aceitou um --anterior que e LIXO — a normalizacao do BOM virou tolerancia")
+	}
+}

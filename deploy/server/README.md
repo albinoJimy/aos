@@ -933,6 +933,41 @@ Nomeado, não escondido:
 
    Nenhum destes quatro é código. O primeiro é custódia, o segundo é o ensaio de restauro que já
    está provado, o terceiro é configuração e o quarto é uma decisão de operação.
+
+   **DECIDIDO a 2026-08-20: selagem DIÁRIA e automática** (`selar-worm.ps1`, tarefa agendada na
+   máquina do operador). A janela não-ancorada passa a ser ≤ 24 h.
+
+   > ⚠️ **O QUE ISSO CUSTA, e é maior do que parece à primeira.** Uma tarefa que sela sozinha é
+   > uma tarefa que tem de alcançar **duas** chaves privadas sem ninguém presente: a do **selador**
+   > (forja âncoras) e a do **backup** (`backup.key` — decifra **todas** as cópias de produção,
+   > incluindo a base do IdP). O segundo não estava no enunciado quando a cadência foi escolhida, e
+   > fica aqui porque a escolha foi feita sem ele.
+   >
+   > Quem comprometer a máquina do operador durante a janela diária leva as duas capacidades ao
+   > mesmo tempo. Não é a mesma coisa que «a chave do selador corre sozinha».
+   >
+   > **Mitigação que reduz isto a metade, e não está feita:** puxar `worm.wal` directamente do
+   > servidor por SSH (chave de deploy) em vez de o extrair do backup cifrado. A cópia continua
+   > off-host — que é a condição que interessa — e a tarefa diária deixa de precisar da
+   > `backup.key`. O custo é que o WORM viaja fora do envelope do backup, protegido só pelo
+   > transporte.
+
+   **O que o `selar-worm.ps1` já faz, e foi provado contra o WORM real de produção (120 partições,
+   re-encadeadas sem erro):** decifra, extrai, sela **todas** as partições, escreve as duas metades
+   em directórios separados, arquiva a âncora anterior, e apaga sempre os dados decifrados — também
+   quando falha, que é quando alguém estaria distraído a ler o erro.
+
+   **Dois defeitos apanhados a correr o ciclo DUAS vezes**, e nenhum apareceria numa só execução:
+
+   1. o `Set-Content -Encoding utf8` do PowerShell 5.1 escreve **BOM**, e o `encoding/json` do Go
+      recusa-o. A segunda selagem não conseguia ler o ficheiro que a primeira escrevera, e o **nó
+      lê os mesmos ficheiros** — teria abortado no arranque com «invalid character 'ï'», que é
+      fail-closed correcto e diagnóstico inútil. Corrigido nos dois lados: o script escreve sem
+      BOM, e os três leitores (checkpoints e pisos no nó, `--anterior` no selador) retiram um BOM
+      inicial — **um prefixo conhecido e mais nada**, para que normalizar não vire tolerar;
+   2. o script anunciava «**1** partição ancorada» sobre um ficheiro com **120** — `@(...)` à volta
+      de um `ConvertFrom-Json` não conta elementos em PowerShell 5.1. A âncora estava certa; a
+      mensagem repetia exactamente a falha «1 em 108» que esta secção descrevia.
 9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
    tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de
