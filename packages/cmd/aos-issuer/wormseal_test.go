@@ -336,3 +336,235 @@ func TestWormSealRecusaSelarCadeiaPartida(t *testing.T) {
 		t.Errorf("emitiu checkpoint apesar da recusa: %s", out.String())
 	}
 }
+
+// TestWormSealRecusaSelarSobreHistoriaREESCRITA é o vector que a guarda de comprimento NÃO via, e
+// é o pior dos dois.
+//
+// `exigirMonotonia` — como a escrevi — comparava apenas o COMPRIMENTO: recusava uma partição que
+// tivesse encolhido. Uma história REESCRITA com o mesmo número de registos passava por ela sem
+// tocar em nada, e o selador produzia uma âncora PERFEITAMENTE VÁLIDA sobre a falsificação. O nó
+// aceitá-la-ia para sempre: a reescrita desde a génese, assinada pela chave do selador.
+//
+// O cenário aqui é exactamente esse: MESMA partição, MESMO número de registos, conteúdo
+// DIFERENTE. O comprimento não encolhe; a história não é a mesma.
+func TestWormSealRecusaSelarSobreHistoriaREESCRITA(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, "original.wal")
+	ctx := context.Background()
+
+	// Store 1: a história honesta, e a sua âncora.
+	s1, err := audit.OpenFileStore(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := s1.Append(ctx, audit.AuditRecord{
+			Partition: "run-a", RunID: "run-a", StepID: "s", ToolID: "t",
+			Capability: "cap:fs.read", Resource: audit.Resource{Value: "doc://honesto"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s1.Close()
+
+	seed, _ := seedDeTeste(t)
+	var ancora bytes.Buffer
+	if err := runWormSeal([]string{"--worm", original, "--key-file", seed}, &ancora); err != nil {
+		t.Fatalf("selagem honesta: %v", err)
+	}
+	anteriorFile := filepath.Join(dir, "anterior.json")
+	if err := os.WriteFile(anteriorFile, ancora.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Store 2: MESMA partição, MESMO comprimento, conteúdo DIFERENTE — a reescrita.
+	reescrito := filepath.Join(dir, "reescrito.wal")
+	s2, err := audit.OpenFileStore(reescrito)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := s2.Append(ctx, audit.AuditRecord{
+			Partition: "run-a", RunID: "run-a", StepID: "s", ToolID: "t",
+			Capability: "cap:fs.read", Resource: audit.Resource{Value: "doc://FORJADO"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// CONTROLO DO CENÁRIO: a reescrita re-encadeia sozinha (é uma cadeia forjada por inteiro,
+	// coerente consigo mesma) e tem o MESMO head. Se falhasse aqui, este teste estaria a
+	// exercitar outro vector.
+	if _, verr := audit.VerifyStore(ctx, s2); verr != nil {
+		t.Fatalf("a cadeia reescrita devia re-encadear sozinha: %v", verr)
+	}
+	if h, _ := s2.Head(ctx, "run-a"); h != 3 {
+		t.Fatalf("head da reescrita = %d, queria 3 (mesmo comprimento)", h)
+	}
+	_ = s2.Close()
+
+	var out bytes.Buffer
+	err = runWormSeal([]string{"--worm", reescrito, "--key-file", seed, "--anterior", anteriorFile}, &out)
+	if err == nil {
+		t.Fatal("selou sobre uma historia REESCRITA — a ancora daria a autoridade da chave do " +
+			"selador a uma cadeia forjada, que e exactamente o vector que a verificacao ancorada " +
+			"existe para fechar")
+	}
+	if !errors.Is(err, ErrWormSealDivergencia) {
+		t.Errorf("recusou pela razao errada: %v", err)
+	}
+	if out.Len() > 0 {
+		t.Errorf("emitiu checkpoint apesar da recusa: %s", out.String())
+	}
+}
+
+// TestWormSealRecusaParticaoQueENCOLHEU dá cenário PRÓPRIO ao ramo do comprimento.
+//
+// COMO APARECEU. Mutei as duas guardas de `exigirContinuidade` uma de cada vez e NENHUMA fez cair
+// a bateria. A razão não era redundância no código: a truncatura física do
+// `TestWormSealRecusaSelarSobreTruncatura` apaga a partição `run-b` INTEIRA e deixa `run-a` intacta
+// em head=3. Ou seja, o único ramo exercitado era o do DESAPARECIMENTO — e como `head` fica a 0,
+// `0 < cp.AuditSeq` também é verdade, pelo que cada guarda tapava a ausência da outra.
+//
+// Duas guardas que só se provam uma à outra não estão provadas. Este teste exercita o caso que
+// faltava: a partição SOBREVIVE, com MENOS registos — um prefixo honesto da história ancorada.
+func TestWormSealRecusaParticaoQueENCOLHEU(t *testing.T) {
+	dir := t.TempDir()
+	caminho := filepath.Join(dir, "worm.wal")
+	ctx := context.Background()
+
+	store, err := audit.OpenFileStore(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 8; i++ { // UMA só partição: a truncatura tem de a encolher, não de a apagar.
+		if _, err := store.Append(ctx, audit.AuditRecord{
+			Partition: "run-a", RunID: "run-a", StepID: "s", ToolID: "t", Capability: "cap:fs.read",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = store.Close()
+
+	seed, _ := seedDeTeste(t)
+	var primeira bytes.Buffer
+	if err := runWormSeal([]string{"--worm", caminho, "--key-file", seed}, &primeira); err != nil {
+		t.Fatalf("primeira selagem: %v", err)
+	}
+	anteriorFile := filepath.Join(dir, "anterior.json")
+	if err := os.WriteFile(anteriorFile, primeira.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bs, err := os.ReadFile(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caminho, bs[:len(bs)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// CONTROLO DO CENÁRIO, e é ele que distingue este teste do da truncatura: a partição tem de
+	// CONTINUAR LÁ, com head entre 1 e 7. Se tivesse desaparecido, isto seria o outro teste outra
+	// vez e o ramo do comprimento voltaria a não ter prova nenhuma.
+	s2, oerr := audit.OpenFileStore(caminho)
+	if oerr != nil {
+		t.Skipf("o store nao abre depois da truncatura (%v)", oerr)
+	}
+	head, _ := s2.Head(ctx, "run-a")
+	_, verr := audit.VerifyStore(ctx, s2)
+	_ = s2.Close()
+	if verr != nil {
+		t.Fatalf("o prefixo NAO re-encadeou (%v) — o vector aqui e o que o re-encadeamento nao ve", verr)
+	}
+	if head == 0 || head >= 8 {
+		t.Fatalf("head=%d — a particao tinha de SOBREVIVER encolhida (1..7); com 0 este teste "+
+			"exercitaria o ramo do DESAPARECIMENTO e o do comprimento ficaria outra vez sem cenario", head)
+	}
+
+	var out bytes.Buffer
+	err = runWormSeal([]string{"--worm", caminho, "--key-file", seed, "--anterior", anteriorFile}, &out)
+	if err == nil {
+		t.Fatal("selou sobre uma particao ENCOLHIDA")
+	}
+	// E a razão importa: quem lê o alerta tem de distinguir «perdeu registos» de «foi reescrita».
+	// São incidentes diferentes, com respostas diferentes.
+	if !errors.Is(err, ErrWormSealRecuo) {
+		t.Errorf("diagnostico errado — encolher e RECUO, nao divergencia: %v", err)
+	}
+}
+
+// TestWormSealRecusaParticaoDESAPARECIDA dá cenário PRÓPRIO ao outro ramo, pelo mesmo motivo.
+//
+// Aqui a partição ancorada não encolheu: não existe de todo no store que se apresenta para selar.
+// É o caso limite do recuo, e sem este teste ele só era atingido de raspão pelo teste da truncatura.
+func TestWormSealRecusaParticaoDESAPARECIDA(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	seed, _ := seedDeTeste(t)
+
+	completo := filepath.Join(dir, "completo.wal")
+	s1, err := audit.OpenFileStore(completo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"run-a", "run-b"} {
+		if _, err := s1.Append(ctx, audit.AuditRecord{
+			Partition: p, RunID: p, StepID: "s", ToolID: "t", Capability: "cap:fs.read",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s1.Close()
+
+	var primeira bytes.Buffer
+	if err := runWormSeal([]string{"--worm", completo, "--key-file", seed}, &primeira); err != nil {
+		t.Fatalf("primeira selagem: %v", err)
+	}
+	anteriorFile := filepath.Join(dir, "anterior.json")
+	if err := os.WriteFile(anteriorFile, primeira.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Um store onde `run-b` NUNCA existiu — e `run-a` está impecável.
+	parcial := filepath.Join(dir, "parcial.wal")
+	s2, err := audit.OpenFileStore(parcial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s2.Append(ctx, audit.AuditRecord{
+		Partition: "run-a", RunID: "run-a", StepID: "s", ToolID: "t", Capability: "cap:fs.read",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, verr := audit.VerifyStore(ctx, s2); verr != nil {
+		t.Fatalf("o store parcial devia re-encadear: %v", verr)
+	}
+	_ = s2.Close()
+
+	var out bytes.Buffer
+	err = runWormSeal([]string{"--worm", parcial, "--key-file", seed, "--anterior", anteriorFile}, &out)
+	if err == nil {
+		t.Fatal("selou um store onde uma particao JA ANCORADA nao existe — a ancora nova nao " +
+			"mencionaria run-b e a sua desaparicao passaria a ser invisivel")
+	}
+	if !errors.Is(err, ErrWormSealRecuo) {
+		t.Errorf("recusou pela razao errada: %v", err)
+	}
+	if !strings.Contains(err.Error(), "run-b") {
+		t.Errorf("a recusa nao NOMEIA a particao que desapareceu — o operador nao sabe o que procurar: %v", err)
+	}
+	// E o DIAGNOSTICO tem de dizer «desapareceu», nao «encolheu para 0».
+	//
+	// Este ramo nao e uma segunda defesa: uma particao ausente da head=0, e `0 < cp.AuditSeq`
+	// apanha-a de qualquer maneira — mutei o ramo e a bateria nao caiu enquanto nao exigi esta
+	// linha. O que ele acrescenta e a LEITURA CERTA do incidente. «O store so tem 0 registos» faz
+	// procurar registos apagados; «a particao desapareceu» faz procurar um ficheiro trocado, e
+	// distingue ainda o caso em que o `Head` nem sequer conseguiu responder.
+	//
+	// Um ramo que so existe pela mensagem tem de ter a mensagem testada, senao e codigo morto a
+	// espera de ser limpo por quem nao souber porque la esta.
+	if !strings.Contains(err.Error(), "DESAPARECEU") {
+		t.Errorf("diagnostico impreciso: uma particao AUSENTE nao e o mesmo incidente que uma "+
+			"encolhida, e a resposta do operador difere: %v", err)
+	}
+}

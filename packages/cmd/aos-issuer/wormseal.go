@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -45,8 +46,11 @@ import (
 // como tal em vez de contada como a defesa principal.
 //
 // A defesa que FECHA o vector principal é outra, e não é o re-encadeamento: uma cadeia TRUNCADA
-// re-encadeia como íntegra. É a MONOTONIA face à selagem anterior ([exigirMonotonia]) que impede
-// fabricar uma âncora válida sobre um WORM que perdeu registos.
+// re-encadeia como íntegra, e uma cadeia REESCRITA de raiz também. É a CONTINUIDADE face à selagem
+// anterior ([exigirContinuidade]) que impede fabricar uma âncora válida sobre um WORM que perdeu
+// registos — ou sobre um que os tenha todos, mas OUTROS. A guarda comparou primeiro só o
+// COMPRIMENTO, e essa metade sozinha deixava passar a reescrita; hoje corre a MESMA verificação
+// ancorada que o nó corre no arranque.
 //
 // O LIMITE QUE FICA, e é inerente a qualquer esquema de checkpoint sem testemunha independente:
 // a âncora prova que a cadeia NÃO MUDOU DESDE A SELAGEM. Não prova que era honesta ANTES dela. O
@@ -110,8 +114,9 @@ func runWormSeal(args []string, out io.Writer) error {
 		return fmt.Errorf("%w: %v", ErrWormSealChainBroken, verr)
 	}
 
-	// MONOTONIA face a selagem anterior. O re-encadeamento acima NAO chega: uma cadeia truncada
-	// re-encadeia como integra, e sem esta guarda selar-se-ia uma ancora valida sobre a truncatura.
+	// CONTINUIDADE face a selagem anterior. O re-encadeamento acima NAO chega: uma cadeia truncada
+	// re-encadeia como integra, e uma REESCRITA tambem â sem esta guarda selar-se-ia uma ancora
+	// valida sobre qualquer das duas.
 	if *anterior != "" {
 		bs, rerr := os.ReadFile(*anterior)
 		if rerr != nil {
@@ -121,7 +126,7 @@ func runWormSeal(args []string, out io.Writer) error {
 		if jerr := json.Unmarshal(bs, &anteriores); jerr != nil {
 			return fmt.Errorf("aos-issuer: --anterior nao e JSON de checkpoints: %w", jerr)
 		}
-		if merr := exigirMonotonia(ctx, store, anteriores); merr != nil {
+		if merr := exigirContinuidade(ctx, store, priv.Public().(ed25519.PublicKey), anteriores); merr != nil {
 			return merr
 		}
 	}
@@ -164,7 +169,8 @@ func runWormSeal(args []string, out io.Writer) error {
 // ErrWormSealRecuo — o store a selar perdeu registos face à selagem anterior. Não se sela.
 var ErrWormSealRecuo = errors.New("aos-issuer: o WORM RECUOU face a selagem anterior (particao desaparecida ou head abaixo do ja ancorado) — selar aqui daria uma ancora VALIDA a uma cadeia TRUNCADA")
 
-// exigirMonotonia recusa selar um store que perdeu registos desde a selagem anterior.
+// exigirContinuidade recusa selar um store cuja historia ancorada nao seja a mesma â por ter
+// PERDIDO registos, ou por os ter SUBSTITUIDO.
 //
 // PORQUE EXISTE, e foi um teste a falhar pela razão certa que o revelou: o re-encadeamento
 // (`VerifyStore`) NÃO apanha a truncatura. Uma cadeia truncada re-encadeia como íntegra — é o
@@ -178,7 +184,7 @@ var ErrWormSealRecuo = errors.New("aos-issuer: o WORM RECUOU face a selagem ante
 // É o mesmo princípio do `AOS_WORM_EXPECTED_HEAD`, aplicado do lado da PRODUÇÃO: o piso recusa
 // uma âncora antiga reapresentada; isto recusa fabricar uma âncora nova sobre menos do que já
 // havia. As duas metades do mesmo argumento, e nenhuma serve sozinha.
-func exigirMonotonia(ctx context.Context, store *audit.FileStore, anteriores []audit.Checkpoint) error {
+func exigirContinuidade(ctx context.Context, store *audit.FileStore, pub ed25519.PublicKey, anteriores []audit.Checkpoint) error {
 	for _, cp := range anteriores {
 		head, err := store.Head(ctx, cp.Partition)
 		if err != nil || head == 0 {
@@ -189,6 +195,23 @@ func exigirMonotonia(ctx context.Context, store *audit.FileStore, anteriores []a
 			return fmt.Errorf("%w: particao %q ancorada em %d e o store so tem %d",
 				ErrWormSealRecuo, cp.Partition, cp.AuditSeq, head)
 		}
+		// CONTINUIDADE, e não só comprimento. Esta é a metade que faltava: a verificação acima
+		// recusa uma partição que ENCOLHEU, mas uma história REESCRITA com o mesmo número de
+		// registos — ou mais — passava por ela sem tocar em nada. O selador produziria então uma
+		// âncora PERFEITAMENTE VÁLIDA sobre a falsificação, e o nó aceitá-la-ia para sempre: a
+		// reescrita desde a génese, assinada pela chave do selador, que é o pior desfecho possível.
+		//
+		// A verificação é a MESMA que o nó corre no arranque ([audit.VerifyFromCheckpoint]): a
+		// âncora anterior tem de continuar a bater com o registo real daquele audit_seq, e a
+		// cadeia daí até ao head tem de re-encadear. Não se reimplementa a regra.
+		if err := audit.VerifyFromCheckpoint(ctx, store, pub, cp, head); err != nil {
+			return fmt.Errorf("%w: a particao %q DIVERGIU do que ja estava ancorado em %d (%v) — "+
+				"o comprimento nao encolheu, mas a historia nao e a mesma",
+				ErrWormSealDivergencia, cp.Partition, cp.AuditSeq, err)
+		}
 	}
 	return nil
 }
+
+// ErrWormSealDivergencia — a história ancorada mudou. Não se sela por cima.
+var ErrWormSealDivergencia = errors.New("aos-issuer: o WORM DIVERGIU do que ja estava ancorado — selar aqui daria a autoridade da chave do selador a uma historia REESCRITA, que e o vector que a verificacao ancorada existe para fechar")

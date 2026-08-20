@@ -235,23 +235,32 @@ func reclassificar(rec audit.AuditRecord) risk.Class {
 // O veredicto é MEMORIZADO por run: um lote de 200 mediações costuma cair sobre poucas dezenas de
 // runs, e sem cache seria uma consulta à autoridade por registo.
 func (h *apiHandler) mediacoesVisiveisPara(r *http.Request, leitor readerIdentity, max int) []audit.AuditRecord {
-	todas := lerMediacoes(r.Context(), h.node.WORM, max)
 	if h.readGov == nil {
 		return nil // fail-closed: sem gate composto não se devolve histórico.
 	}
+	todas := lerMediacoes(r.Context(), h.node.WORM, max)
+
+	// A identidade JÁ foi verificada pelo handler. Pergunta-se por run com [podeLerRun], que
+	// aplica a MESMA regra de residência do `GET /runs/{id}` — e NÃO se volta a verificar a
+	// credencial.
+	//
+	// A primeira versão chamava `authorizeRead` por cada run, e isso re-verificava o token a cada
+	// vez. Com credencial OIDC — que é a de produção — o verificador tem anti-replay por `jti`:
+	// a primeira verificação (a do handler) consome-o, e todas as seguintes devolvem
+	// `ErrTokenReplayed`. A rota teria devolvido `avaliados: 0` SEMPRE, em silêncio. O teste não o
+	// via porque compunha o gate pela via legada de headers, que nunca chama o verificador —
+	// testei o caminho que produção não usa.
 	pode := make(map[string]bool, 16)
 	out := make([]audit.AuditRecord, 0, len(todas))
 	for _, rec := range todas {
 		v, visto := pode[rec.RunID]
 		if !visto {
-			_, _, ok := h.readGov.authorizeRead(r.Context(), r, rec.RunID)
-			v = ok
+			_, v = h.readGov.podeLerRun(r.Context(), leitor, rec.RunID)
 			pode[rec.RunID] = v
 		}
 		if v {
 			out = append(out, rec)
 		}
 	}
-	_ = leitor // a identidade fica nomeada no sítio da decisão; a regra é a de `authorizeRead`.
 	return out
 }
