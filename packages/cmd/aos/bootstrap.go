@@ -743,6 +743,10 @@ type Node struct {
 	// ou se foi injectado um OTLPExporter por config, cujo ciclo de vida é do chamador).
 	// [Node.Close] drena-o.
 	otlp *OTLPHTTPExporter
+	// orcamento e o tecto por-run. Guardado aqui pela MESMA razao que o `otlp`: para a cablagem
+	// ser observavel por um teste. Sem isto, «o no liga a fonte duravel ao orcamento» era uma
+	// afirmacao sem prova — e uma mutacao que removesse a ligacao passava despercebida.
+	orcamento *integration.RunBudget
 }
 
 // Bootstrap compõe o nó `aos` de PRODUÇÃO a partir de cfg, escrevendo o banner de
@@ -1559,6 +1563,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, ErrProgressBudgetUnwired
 	}
 	burndownSource := newTurnLedgerBurndown(es)
+	// (7-ante-quinquies) O TECTO POR-RUN DEIXA DE RECOMEÇAR A CADA HOSPEDAGEM (AOS-256).
+	//
+	// A árvore de orçamento vive em memória e o nó do run nascia, a cada hospedagem, com o tecto
+	// INTEIRO — pelo que um run em ciclo de escalada/retoma podia gastar N × tecto. Escalar e
+	// retomar é o fluxo NORMAL de tudo o que precisa de aprovação humana, não um caso exótico.
+	//
+	// AQUI, e não na fronteira de ambiente, porque só aqui existe o Event Store: é o MESMO ledger
+	// de turnos que o burn-down lê, chaveado por `run_id` e sobrevivente à retoma. O aviso já via
+	// o total; o enforcement passa a vê-lo também.
+	//
+	// ALCANCE PARCIAL, declarado: o ledger conta turnos de MODELO e só eles. As tool calls
+	// reservam do mesmo nó e não entram no ledger, pelo que a fuga ENCOLHE (do tecto inteiro por
+	// incarnação para o consumo de tool calls por incarnação) em vez de fechar.
+	if runBudget != nil && burndownSource != nil {
+		runBudget.LigarConsumoDuravel(consumoDuravelParaOrcamento(burndownSource), log)
+	}
 	// (7-ante-ter) PROMPT DE EXAUSTÃO (AOS-263) — a CONSEQUÊNCIA do aviso. Reutiliza o que já
 	// está composto: o registo durável de pendentes (2.º tipo) e o registo de retoma do
 	// four-eyes em (5), os gates de estado (suspensão em waiting_on_human), e a ROTA DE DECISÃO
@@ -2113,6 +2133,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		ownsEventStore: ownsES,
 		ownsWORM:       ownsWORM,
 		otlp:           otlpExp,
+		orcamento:      runBudget,
 	}, nil
 }
 

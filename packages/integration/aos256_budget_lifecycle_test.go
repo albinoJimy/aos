@@ -280,7 +280,7 @@ func TestAOS256_LibertacaoGarantidaEmRetornoErroEPanic(t *testing.T) {
 	}
 
 	// (a) retorno normal.
-	release, err := rb.acquire("run-a")
+	release, err := rb.acquire(context.Background(), "run-a")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestAOS256_LibertacaoGarantidaEmRetornoErroEPanic(t *testing.T) {
 	// (b) PANIC a atravessar o `defer`.
 	func() {
 		defer func() { _ = recover() }()
-		rel, aerr := rb.acquire("run-b")
+		rel, aerr := rb.acquire(context.Background(), "run-b")
 		if aerr != nil {
 			t.Errorf("acquire: %v", aerr)
 			return
@@ -309,7 +309,7 @@ func TestAOS256_LibertacaoGarantidaEmRetornoErroEPanic(t *testing.T) {
 
 	// (c) o MESMO RunID pode voltar a ser adquirido (retoma) — sem libertação isto seria
 	//     ErrNodeExists e a retoma nunca mais corria.
-	rel, err := rb.acquire("run-a")
+	rel, err := rb.acquire(context.Background(), "run-a")
 	if err != nil {
 		t.Fatalf("re-acquire do mesmo RunID falhou (%v) — a libertacao nao removeu o no", err)
 	}
@@ -357,7 +357,7 @@ func TestAOS256_DoisRunsEmParaleloNaoPartilhamTecto(t *testing.T) {
 	arranca := make(chan struct{})
 	var wg sync.WaitGroup
 	for i, run := range runs {
-		rel, aerr := rb.acquire(run)
+		rel, aerr := rb.acquire(context.Background(), run)
 		if aerr != nil {
 			t.Fatalf("acquire %s: %v", run, aerr)
 		}
@@ -417,7 +417,7 @@ func TestAOS257_PanicDaToolLibertaAReservaPelaCadeiaComposta(t *testing.T) {
 	// Segunda aquisição do MESMO run: mantém o nó vivo depois de o `defer` de
 	// [SecuredRuntime.Run] o libertar, para que o headroom seja OBSERVÁVEL a seguir ao
 	// panic. Sem isto o nó desaparecia e a asserção não teria onde olhar.
-	rel, err := h.rb.acquire(h.goal.RunID)
+	rel, err := h.rb.acquire(context.Background(), h.goal.RunID)
 	if err != nil {
 		t.Fatalf("acquire (observador): %v", err)
 	}
@@ -462,12 +462,12 @@ func TestAOS256_DoisRunsSequenciaisNaoPartilhamTecto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunBudget: %v", err)
 	}
-	relA, err := rb.acquire("run-A")
+	relA, err := rb.acquire(context.Background(), "run-A")
 	if err != nil {
 		t.Fatalf("acquire A: %v", err)
 	}
 	defer relA()
-	relB, err := rb.acquire("run-B")
+	relB, err := rb.acquire(context.Background(), "run-B")
 	if err != nil {
 		t.Fatalf("acquire B: %v", err)
 	}
@@ -531,7 +531,7 @@ func TestAOS256_TectoEPorIncarnacaoComoODeclarado(t *testing.T) {
 	}
 
 	// --- Incarnação 1: esgota o tecto ---
-	rel1, err := rb.acquire(run)
+	rel1, err := rb.acquire(context.Background(), run)
 	if err != nil {
 		t.Fatalf("acquire (incarnacao 1): %v", err)
 	}
@@ -543,7 +543,7 @@ func TestAOS256_TectoEPorIncarnacaoComoODeclarado(t *testing.T) {
 	}
 
 	// --- Hospedagem SOBREPOSTA: reentra no MESMO nó, NÃO repõe o tecto ---
-	rel1b, err := rb.acquire(run)
+	rel1b, err := rb.acquire(context.Background(), run)
 	if err != nil {
 		t.Fatalf("acquire sobreposto (a retoma reentra no mesmo RunID): %v", err)
 	}
@@ -563,7 +563,7 @@ func TestAOS256_TectoEPorIncarnacaoComoODeclarado(t *testing.T) {
 	}
 
 	// --- Incarnação 2 (re-hospedagem: /resume apos aprovacao, ou restart) ---
-	rel2, err := rb.acquire(run)
+	rel2, err := rb.acquire(context.Background(), run)
 	if err != nil {
 		t.Fatalf("acquire (incarnacao 2): %v", err)
 	}
@@ -702,7 +702,7 @@ func TestAOS257_SaldoDoDecorator(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewRunBudget: %v", err)
 			}
-			rel, err := rb.acquire("run-x")
+			rel, err := rb.acquire(context.Background(), "run-x")
 			if err != nil {
 				t.Fatalf("acquire: %v", err)
 			}

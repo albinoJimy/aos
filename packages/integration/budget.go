@@ -81,6 +81,9 @@ type RunBudget struct {
 	mu   sync.Mutex
 	live map[string]int       // runID → nº de aquisições vivas (a retoma reentra no mesmo run)
 	onGo []func(runID string) // AOS-260: notificados quando a última hospedagem do run larga o nó
+	// consumo/logf: ver [WithConsumoDuravel] — o tecto por-run deixa de recomecar a cada hospedagem.
+	consumo ConsumoDuravel
+	logf    func(string, ...any)
 }
 
 // UnlimitedCostMicroUSD é a dimensão $ SEM tecto — o default de [NewRunBudget] desde
@@ -110,6 +113,9 @@ func NewRunBudget(maxTokens int64, opts ...RunBudgetOption) (*RunBudget, error) 
 	rb := &RunBudget{
 		limit: budget.Amount{Tokens: maxTokens, CostMicroUSD: UnlimitedCostMicroUSD},
 		live:  make(map[string]int),
+		// No-op por omissao: sem logger injectado, a degradacao fica muda — e e por isso que
+		// [WithBudgetLogger] existe e o no o liga.
+		logf: func(string, ...any) {},
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -206,12 +212,15 @@ func (rb *RunBudget) onRunRelease(f func(runID string)) {
 // primeiro restart, porque nada disto é durável. O que fecha o eixo é estado de orçamento
 // DURÁVEL por run (mesma família de AOS-259), não um remendo em memória que mudaria a
 // garantia de libertação que AOS-256 exige sem tornar o tecto verdadeiramente por-run.
-func (rb *RunBudget) acquire(runID string) (func(), error) {
+func (rb *RunBudget) acquire(ctx context.Context, runID string) (func(), error) {
+	// O limite lê-se ANTES do lock: a leitura do consumo durável é I/O e não pode segurar o mutex
+	// que todas as hospedagens partilham.
+	limite := rb.limiteParaIncarnacao(ctx, runID)
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
 	if rb.live[runID] == 0 {
-		if err := rb.tree.AddNode(runID, BudgetTreeID, rb.limit); err != nil {
+		if err := rb.tree.AddNode(runID, BudgetTreeID, limite); err != nil {
 			return nil, err
 		}
 	}
@@ -333,3 +342,107 @@ func (d mediateDispatcher) Dispatch(ctx context.Context, call referencemonitor.C
 }
 
 var _ agentruntime.ActivityDispatcher = mediateDispatcher{}
+
+// ------------------------------------------------------------------------------------------
+// O TECTO POR-RUN DEIXA DE RECOMEÇAR A CADA HOSPEDAGEM.
+//
+// O DEFEITO, declarado no banner do nó e neste ficheiro desde AOS-256: a árvore de orçamento vive
+// EM MEMÓRIA e o nó do run nasce a cada hospedagem com o tecto INTEIRO. Um run em ciclo de
+// escalada/retoma podia gastar até N × tecto — e escalar/retomar é o fluxo NORMAL de tudo o que
+// precisa de aprovação humana, não um caso exótico. Um run que exerci hoje passou por três
+// incarnações.
+//
+// PORQUE SE PODE CORRIGIR AQUI AGORA. O comentário de [RunBudget.acquire] rejeitava corrigi-lo
+// RETENDO o nó — e com razão: nós vivos para sempre num processo de vida longa, e zerados na
+// mesma ao primeiro restart. Mas nomeava o remédio: «o que fecha o eixo é estado de orçamento
+// DURÁVEL por run». Esse estado EXISTE — é o ledger de turnos que o burn-down (AOS-261) já lê,
+// chaveado por `run_id`, deduplicado por `run_id:step_id` e sobrevivente à retoma. O aviso via o
+// total; o enforcement é que não o consultava.
+//
+// Não se retém nada: o nó continua a nascer e a morrer com a hospedagem. O que muda é o LIMITE com
+// que nasce — `tecto − já consumido`.
+//
+// ALCANCE HONESTO, e é parcial: o ledger conta TURNOS DE MODELO e só eles. As tool calls reservam
+// do mesmo nó mas não entram no ledger, pelo que a fuga não fecha — ENCOLHE, do tecto inteiro por
+// incarnação para o consumo de tool calls por incarnação. Fechá-la de todo exige contabilizar
+// também as tool calls de forma durável (mesma família, eixo por abrir).
+// ------------------------------------------------------------------------------------------
+
+// ConsumoDuravel devolve o que este run JÁ consumiu, de uma fonte que sobrevive à retoma.
+//
+// Um run sem turnos ainda registados NÃO é um erro: é o caso normal da primeira incarnação, e
+// tem de devolver zero com erro nil. Só um ledger ILEGÍVEL é erro.
+type ConsumoDuravel func(ctx context.Context, runID string) (budget.Amount, error)
+
+// WithConsumoDuravel liga o tecto por-run ao consumo já registado, para que a retoma NÃO
+// recomece o orçamento.
+func WithConsumoDuravel(f ConsumoDuravel) RunBudgetOption {
+	return func(rb *RunBudget) { rb.consumo = f }
+}
+
+// WithBudgetLogger injecta o logger da DEGRADAÇÃO declarada de [WithConsumoDuravel].
+func WithBudgetLogger(logf func(string, ...any)) RunBudgetOption {
+	return func(rb *RunBudget) {
+		if logf != nil {
+			rb.logf = logf
+		}
+	}
+}
+
+// limiteParaIncarnacao devolve o limite com que o nó deste run deve nascer.
+//
+// DEGRADAÇÃO DECLARADA, e é uma escolha: se o ledger não se consegue ler, nasce com o tecto
+// INTEIRO e a linha sai no log. A alternativa — recusar hospedar — transformaria um soluço
+// transitório do Event Store num run encravado, e o orçamento é controlo de CUSTO, não de
+// segurança. O que não se faz é degradar em silêncio: era assim que a fuga vivia.
+func (rb *RunBudget) limiteParaIncarnacao(ctx context.Context, runID string) budget.Amount {
+	if rb.consumo == nil {
+		return rb.limit
+	}
+	consumido, err := rb.consumo(ctx, runID)
+	if err != nil {
+		rb.logf("[aos] orcamento por-run (AOS-256): consumo duravel de %q ILEGIVEL (%v) — a "+
+			"incarnacao arranca com o tecto INTEIRO e o run pode exceder o tecto por-run. "+
+			"Degradacao declarada, nao silenciosa", runID, err)
+		return rb.limit
+	}
+	restante := rb.limit.Sub(consumido)
+	// Consumido ≥ tecto ⇒ nasce a ZERO. É o veredicto certo (o orçamento acabou) e não um erro:
+	// quem trata disso é o prompt de exaustão (AOS-263), que suspende o run em vez de o matar.
+	if restante.Tokens < 0 {
+		restante.Tokens = 0
+	}
+	if restante.CostMicroUSD < 0 {
+		restante.CostMicroUSD = 0
+	}
+	return restante
+}
+
+// LigarConsumoDuravel liga a fonte DEPOIS da construção, e é deliberado que exista.
+//
+// O tecto por-run nasce na fronteira de AMBIENTE (`AOS_BUDGET_MAX_TOKENS`), onde ainda não há
+// Event Store; o ledger de turnos só existe depois de o substrato estar composto. É a MESMA
+// fase-2 do provisionamento dos níveis de autonomia — ligar o sink ao store que ainda não existia
+// quando a config foi lida.
+//
+// Sem esta chamada o comportamento é o de antes: cada hospedagem nasce com o tecto inteiro.
+func (rb *RunBudget) LigarConsumoDuravel(f ConsumoDuravel, logf func(string, ...any)) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.consumo = f
+	if logf != nil {
+		rb.logf = logf
+	}
+}
+
+// TemConsumoDuravel diz se o tecto por-run está ligado ao consumo já registado.
+//
+// Existe para o teste de CABLAGEM: os testes de comportamento provam o que a semeadura faz, e
+// nenhum deles prova que o nó chega a LIGÁ-LA. Foi uma mutação — remover a chamada em
+// `Bootstrap` — a mostrar que essa metade não tinha teste; é o mesmo padrão que apareceu três
+// vezes neste dia, sempre a testar a unidade e não a ligação.
+func (rb *RunBudget) TemConsumoDuravel() bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.consumo != nil
+}

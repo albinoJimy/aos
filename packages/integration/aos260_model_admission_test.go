@@ -54,7 +54,7 @@ func newAdmissionFixtureOver(t *testing.T, rb *RunBudget, runID string, opts ...
 	if err != nil {
 		t.Fatalf("NewModelTurnAdmission: %v", err)
 	}
-	release, err := rb.acquire(runID)
+	release, err := rb.acquire(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("acquire (o seam por-run de AOS-256): %v", err)
 	}
@@ -554,11 +554,11 @@ func TestAOS260_PodaDeRunNaoTocaEmRunsCujoIdPartilhaOPrefixo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewModelTurnAdmission: %v", err)
 	}
-	libertaCurto, err := rb.acquire(curto)
+	libertaCurto, err := rb.acquire(context.Background(), curto)
 	if err != nil {
 		t.Fatalf("acquire(%q): %v", curto, err)
 	}
-	libertaLongo, err := rb.acquire(longo)
+	libertaLongo, err := rb.acquire(context.Background(), longo)
 	if err != nil {
 		t.Fatalf("acquire(%q): %v", longo, err)
 	}
@@ -662,7 +662,7 @@ func TestAOS260_EstadoPorRunEPodadoNoSeamDeAOS256(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewModelTurnAdmission: %v", err)
 	}
-	release, err := rb.acquire("run-poda")
+	release, err := rb.acquire(context.Background(), "run-poda")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -782,7 +782,7 @@ func TestAOS260_AdmissaoLigadaACadeiaReal(t *testing.T) {
 	// O harness não compôs orçamento (Budget nil ⇒ stub neutro no hook de tool calls), mas a
 	// admissão do turno de modelo tem o SEU orçamento: é a árvore acima. O nó por-run tem de
 	// ser registado para ela — o mesmo `acquire` que o seam faz.
-	release, err := rb.acquire(h.goal.RunID)
+	release, err := rb.acquire(context.Background(), h.goal.RunID)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}

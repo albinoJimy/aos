@@ -29,12 +29,14 @@ package main
 // Quem quer o nó sem orçamento deixa a variável por definir.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
+	budget "github.com/aos-ref/control-plane/budget"
 	"github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 )
@@ -137,4 +139,29 @@ func requireCostSourceForBudgetCap(rb *integration.RunBudget, model agentruntime
 			ErrBudgetCostNoPriceSource, p.TableVersion, p.Model, p.Region, tecto)
 	}
 	return nil
+}
+
+// consumoDuravelParaOrcamento adapta o ledger de turnos ao contrato que o tecto por-run espera.
+//
+// A ADAPTAÇÃO QUE IMPORTA é a do erro: [ErrBurndownNoLedger] significa «este run ainda não tem
+// turnos», que é o caso NORMAL da primeira incarnação — e tem de virar consumo ZERO com erro nil,
+// nunca uma degradação. Confundir os dois faria cada run novo arrancar com um aviso de ledger
+// ilegível, e o aviso que interessa afogava-se nesses.
+//
+// Qualquer OUTRO erro passa como erro: aí o tecto degrada para inteiro, e essa degradação é
+// declarada em voz alta pelo [integration.RunBudget].
+func consumoDuravelParaOrcamento(s *turnLedgerBurndown) integration.ConsumoDuravel {
+	if s == nil {
+		return nil
+	}
+	return func(ctx context.Context, runID string) (budget.Amount, error) {
+		c, err := s.ConsumedByRun(ctx, runID)
+		if errors.Is(err, ErrBurndownNoLedger) {
+			return budget.Amount{}, nil // run ainda sem turnos: consumo zero, e nao e falha
+		}
+		if err != nil {
+			return budget.Amount{}, err
+		}
+		return c.Consumed, nil
+	}
 }
