@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -123,7 +124,7 @@ func runWormSeal(args []string, out io.Writer) error {
 			return fmt.Errorf("aos-issuer: ler --anterior %q: %w", *anterior, rerr)
 		}
 		var anteriores []audit.Checkpoint
-		if jerr := json.Unmarshal(bs, &anteriores); jerr != nil {
+		if jerr := json.Unmarshal(semBOM(bs), &anteriores); jerr != nil {
 			return fmt.Errorf("aos-issuer: --anterior nao e JSON de checkpoints: %w", jerr)
 		}
 		if merr := exigirContinuidade(ctx, store, priv.Public().(ed25519.PublicKey), anteriores); merr != nil {
@@ -215,3 +216,15 @@ func exigirContinuidade(ctx context.Context, store *audit.FileStore, pub ed25519
 
 // ErrWormSealDivergencia — a história ancorada mudou. Não se sela por cima.
 var ErrWormSealDivergencia = errors.New("aos-issuer: o WORM DIVERGIU do que ja estava ancorado — selar aqui daria a autoridade da chave do selador a uma historia REESCRITA, que e o vector que a verificacao ancorada existe para fechar")
+
+// semBOM retira um BOM UTF-8 inicial. Ver a nota gémea no nó (`bom.go`) para o porquê: o
+// PowerShell 5.1 escreve BOM em `Set-Content -Encoding utf8`, e o `encoding/json` recusa-o com
+// «invalid character 'ï'». Descobri-o a correr o selador DUAS vezes seguidas — a segunda não leu
+// o ficheiro que a primeira escreveu.
+//
+// Está duplicado de propósito e não factorizado: são módulos diferentes, e três linhas partilhadas
+// não valem uma dependência nova entre o emissor e o nó. A duplicação está declarada nos dois
+// sítios, que é o que a torna manutenível em vez de acidental.
+func semBOM(raw []byte) []byte {
+	return bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
+}

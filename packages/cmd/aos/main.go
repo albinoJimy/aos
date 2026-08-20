@@ -1234,7 +1234,7 @@ func parseWormAnchorFromEnv() (*WormAnchor, error) {
 		return nil, fmt.Errorf("%w: %v", ErrBadWormExpectedHead, err)
 	}
 	var heads map[string]uint64
-	if err := json.Unmarshal(rawHeadsBytes, &heads); err != nil {
+	if err := json.Unmarshal(semBOM(rawHeadsBytes), &heads); err != nil {
 		return nil, fmt.Errorf("%w: esperado JSON {\"particao\": audit_seq} (saida de `aos-issuer worm-seal --heads`): %v", ErrBadWormExpectedHead, err)
 	}
 	// TODA a partição ancorada tem de trazer piso. Sem ele, a âncora dessa partição seria
@@ -1252,6 +1252,7 @@ func parseWormAnchorFromEnv() (*WormAnchor, error) {
 // parseCheckpoints aceita o ARRAY que `aos-issuer worm-seal` emite e, por conveniência, também um
 // objecto único — a forma que o contrato singular documentava.
 func parseCheckpoints(raw []byte) ([]audit.Checkpoint, error) {
+	raw = semBOM(raw) // ver [semBOM]: o selador em Windows escrevia BOM e isto abortava o arranque.
 	var muitos []audit.Checkpoint
 	if err := json.Unmarshal(raw, &muitos); err == nil {
 		return muitos, nil
