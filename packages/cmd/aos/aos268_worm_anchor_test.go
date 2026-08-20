@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -118,7 +119,7 @@ func TestNode_WORMAnchor_IntegroAncora(t *testing.T) {
 
 	cfg := tnBaseConfig()
 	cfg.WORMPath = path
-	cfg.WORMAnchor = &WormAnchor{Public: pub, Checkpoint: cp, ExpectedHead: 3}
+	cfg.WORMAnchor = &WormAnchor{Public: pub, Checkpoints: []audit.Checkpoint{cp}, ExpectedHeads: map[string]uint64{cp.Partition: 3}}
 
 	var banner bytes.Buffer
 	node, err := Bootstrap(ctx, cfg, &banner)
@@ -159,7 +160,7 @@ func TestNode_WORMAnchor_TruncaturaDoTailDetectada(t *testing.T) {
 	t.Run("com_ancora_aborta", func(t *testing.T) {
 		cfg := tnBaseConfig()
 		cfg.WORMPath = path
-		cfg.WORMAnchor = &WormAnchor{Public: pub, Checkpoint: cp, ExpectedHead: 3}
+		cfg.WORMAnchor = &WormAnchor{Public: pub, Checkpoints: []audit.Checkpoint{cp}, ExpectedHeads: map[string]uint64{cp.Partition: 3}}
 		node, err := Bootstrap(ctx, cfg, io.Discard)
 		if err == nil {
 			_ = node.Close()
@@ -182,7 +183,7 @@ func TestNode_WORMAnchor_RollbackStaleRejeitado(t *testing.T) {
 
 	cfg := tnBaseConfig()
 	cfg.WORMPath = path
-	cfg.WORMAnchor = &WormAnchor{Public: pub, Checkpoint: cpOld, ExpectedHead: 3}
+	cfg.WORMAnchor = &WormAnchor{Public: pub, Checkpoints: []audit.Checkpoint{cpOld}, ExpectedHeads: map[string]uint64{cpOld.Partition: 3}}
 
 	node, err := Bootstrap(ctx, cfg, io.Discard)
 	if err == nil {
@@ -210,7 +211,7 @@ func TestNode_WORMAnchor_CheckpointForjadoRejeitado(t *testing.T) {
 
 	cfg := tnBaseConfig()
 	cfg.WORMPath = path
-	cfg.WORMAnchor = &WormAnchor{Public: wrongPub, Checkpoint: cp, ExpectedHead: 3}
+	cfg.WORMAnchor = &WormAnchor{Public: wrongPub, Checkpoints: []audit.Checkpoint{cp}, ExpectedHeads: map[string]uint64{cp.Partition: 3}}
 
 	node, err := Bootstrap(ctx, cfg, io.Discard)
 	if err == nil {
@@ -243,6 +244,18 @@ func TestParseWormAnchorFromEnv(t *testing.T) {
 		t.Setenv("AOS_WORM_TRUST_ANCHOR", "")
 		t.Setenv("AOS_WORM_CHECKPOINT_FILE", "")
 		t.Setenv("AOS_WORM_EXPECTED_HEAD", "")
+		t.Setenv("AOS_WORM_EXPECTED_HEADS_FILE", "")
+	}
+
+	// Ficheiro de pisos no formato NOVO: {"particao": audit_seq} — o que
+	// `aos-issuer worm-seal --heads` emite.
+	headsFile := filepath.Join(t.TempDir(), "heads.json")
+	if err := os.WriteFile(headsFile, []byte(fmt.Sprintf("{%q: 2}", cp.Partition)), 0o600); err != nil {
+		t.Fatalf("write heads file: %v", err)
+	}
+	headsZero := filepath.Join(t.TempDir(), "heads-zero.json")
+	if err := os.WriteFile(headsZero, []byte(fmt.Sprintf("{%q: 0}", cp.Partition)), 0o600); err != nil {
+		t.Fatalf("write heads-zero: %v", err)
 	}
 
 	t.Run("ausencia_total_nao_ancora", func(t *testing.T) {
@@ -265,7 +278,7 @@ func TestParseWormAnchorFromEnv(t *testing.T) {
 		clearWormEnv(t)
 		t.Setenv("AOS_WORM_TRUST_ANCHOR", "nao-e-hex")
 		t.Setenv("AOS_WORM_CHECKPOINT_FILE", cpFile)
-		t.Setenv("AOS_WORM_EXPECTED_HEAD", "2")
+		t.Setenv("AOS_WORM_EXPECTED_HEADS_FILE", headsFile)
 		if _, err := parseWormAnchorFromEnv(); !errors.Is(err, ErrBadWormTrustAnchor) {
 			t.Fatalf("esperava ErrBadWormTrustAnchor, veio: %v", err)
 		}
@@ -275,7 +288,7 @@ func TestParseWormAnchorFromEnv(t *testing.T) {
 		clearWormEnv(t)
 		t.Setenv("AOS_WORM_TRUST_ANCHOR", anchorHex)
 		t.Setenv("AOS_WORM_CHECKPOINT_FILE", filepath.Join(t.TempDir(), "inexistente.json"))
-		t.Setenv("AOS_WORM_EXPECTED_HEAD", "2")
+		t.Setenv("AOS_WORM_EXPECTED_HEADS_FILE", headsFile)
 		if _, err := parseWormAnchorFromEnv(); !errors.Is(err, ErrBadWormCheckpoint) {
 			t.Fatalf("esperava ErrBadWormCheckpoint, veio: %v", err)
 		}
@@ -285,7 +298,7 @@ func TestParseWormAnchorFromEnv(t *testing.T) {
 		clearWormEnv(t)
 		t.Setenv("AOS_WORM_TRUST_ANCHOR", anchorHex)
 		t.Setenv("AOS_WORM_CHECKPOINT_FILE", cpFile)
-		t.Setenv("AOS_WORM_EXPECTED_HEAD", "0") // piso 0 é inválido
+		t.Setenv("AOS_WORM_EXPECTED_HEADS_FILE", headsZero) // piso 0 e invalido
 		if _, err := parseWormAnchorFromEnv(); !errors.Is(err, ErrBadWormExpectedHead) {
 			t.Fatalf("esperava ErrBadWormExpectedHead, veio: %v", err)
 		}
@@ -295,12 +308,12 @@ func TestParseWormAnchorFromEnv(t *testing.T) {
 		clearWormEnv(t)
 		t.Setenv("AOS_WORM_TRUST_ANCHOR", anchorHex)
 		t.Setenv("AOS_WORM_CHECKPOINT_FILE", cpFile)
-		t.Setenv("AOS_WORM_EXPECTED_HEAD", "2")
+		t.Setenv("AOS_WORM_EXPECTED_HEADS_FILE", headsFile)
 		got, err := parseWormAnchorFromEnv()
 		if err != nil {
 			t.Fatalf("config completa devia parsear: %v", err)
 		}
-		if got == nil || got.ExpectedHead != 2 || got.Checkpoint.AuditSeq != 2 || !got.Public.Equal(pub) {
+		if got == nil || len(got.Checkpoints) != 1 || got.ExpectedHeads[cp.Partition] != 2 || got.Checkpoints[0].AuditSeq != 2 || !got.Public.Equal(pub) {
 			t.Fatalf("material parseado incoerente: %+v", got)
 		}
 	})
@@ -309,11 +322,11 @@ func TestParseWormAnchorFromEnv(t *testing.T) {
 // TestWormAnchorPostureBanner — as duas dobras da linha de banner declaram estados DIFERENTES e
 // ambos verdadeiros (mesma disciplina de posture_banner.go).
 func TestWormAnchorPostureBanner(t *testing.T) {
-	anchored := strings.Join(wormAnchorPostureBanner(true), "\n")
+	anchored := strings.Join(wormAnchorPostureBanner(1, 1), "\n")
 	if !strings.Contains(anchored, "ANCORADA") || strings.Contains(anchored, "NAO ANCORADA") {
 		t.Fatalf("dobra composta devia declarar ANCORADA:\n%s", anchored)
 	}
-	notAnchored := strings.Join(wormAnchorPostureBanner(false), "\n")
+	notAnchored := strings.Join(wormAnchorPostureBanner(0, 0), "\n")
 	if !strings.Contains(notAnchored, "NAO ANCORADA") {
 		t.Fatalf("dobra nao-composta devia declarar NAO ANCORADA:\n%s", notAnchored)
 	}
@@ -323,4 +336,166 @@ func TestWormAnchorPostureBanner(t *testing.T) {
 			t.Fatalf("dobra nao-ancorada nao nomeou %s:\n%s", env, notAnchored)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// COBERTURA MULTI-PARTIÇÃO.
+//
+// O campo era SINGULAR e o nó ancorava, quando muito, UMA partição — o WORM de produção tinha 108.
+// O inventário dizia «ancoraria 1 em 108»; com o selador em falta, ancorava zero.
+// ---------------------------------------------------------------------------
+
+// TestAncoraCobreVariasParticoes prova que o consumo deixou de ser singular.
+func TestAncoraCobreVariasParticoes(t *testing.T) {
+	if _, err := parseCheckpoints([]byte(`[{"Partition":"a","AuditSeq":1},{"Partition":"b","AuditSeq":2}]`)); err != nil {
+		t.Fatalf("o array que `worm-seal` emite nao parseia: %v", err)
+	}
+	cps, err := parseCheckpoints([]byte(`[{"Partition":"a","AuditSeq":1},{"Partition":"b","AuditSeq":2}]`))
+	if err != nil || len(cps) != 2 {
+		t.Fatalf("esperava 2 checkpoints, veio %d (%v)", len(cps), err)
+	}
+	// CONTROLO: o objecto ÚNICO — a forma que o contrato singular documentava — continua a
+	// parsear. Sem este ramo, a mudança partiria quem tivesse seguido a documentação anterior.
+	um, err := parseCheckpoints([]byte(`{"Partition":"a","AuditSeq":1}`))
+	if err != nil || len(um) != 1 {
+		t.Fatalf("o objecto unico deixou de parsear: %d (%v)", len(um), err)
+	}
+}
+
+// TestPisoEmFaltaAbortaPorParticao — uma partição com checkpoint e SEM piso é recusada.
+//
+// Sem esta guarda a âncora dessa partição seria verificada sem frescura, e um checkpoint legítimo
+// mas ANTERIOR passaria — que é exactamente o rollback que o piso existe para recusar. O buraco
+// abrir-se-ia por OMISSÃO, na partição que alguém se esquecesse de listar.
+func TestPisoEmFaltaAbortaPorParticao(t *testing.T) {
+	path := aos268BuildDurableWORM(t, 2)
+	cp, pub := aos268Seal(t, path, 2)
+
+	dir := t.TempDir()
+	cpFile := filepath.Join(dir, "cp.json")
+	bs, _ := json.Marshal([]audit.Checkpoint{cp})
+	if err := os.WriteFile(cpFile, bs, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Pisos com OUTRA partição — a ancorada fica sem piso.
+	headsFile := filepath.Join(dir, "heads.json")
+	if err := os.WriteFile(headsFile, []byte(`{"outra-particao": 9}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("AOS_WORM_TRUST_ANCHOR", hex.EncodeToString(pub))
+	t.Setenv("AOS_WORM_CHECKPOINT_FILE", cpFile)
+	t.Setenv("AOS_WORM_EXPECTED_HEAD", "")
+	t.Setenv("AOS_WORM_EXPECTED_HEADS_FILE", headsFile)
+
+	if _, err := parseWormAnchorFromEnv(); !errors.Is(err, ErrBadWormExpectedHead) {
+		t.Fatalf("particao ancorada SEM piso devia abortar, veio: %v", err)
+	}
+
+	// CONTROLO: com o piso da partição certa, parseia.
+	if err := os.WriteFile(headsFile, []byte(fmt.Sprintf("{%q: 2}", cp.Partition)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseWormAnchorFromEnv(); err != nil {
+		t.Fatalf("com o piso correcto devia parsear: %v", err)
+	}
+}
+
+// TestEnvObsoletaAbortaEmVozAlta — `AOS_WORM_EXPECTED_HEAD` (singular) já não é o contrato, e
+// ignorá-la seria a pior das saídas.
+//
+// Uma env obsoleta ignorada deixa o operador convencido de que ancorou o que não ancorou. É a
+// forma de falha que este projecto já pagou uma vez, com o banner a dizer ORACULO LIGADO sobre uma
+// configuração inerte.
+func TestEnvObsoletaAbortaEmVozAlta(t *testing.T) {
+	t.Setenv("AOS_WORM_TRUST_ANCHOR", "")
+	t.Setenv("AOS_WORM_CHECKPOINT_FILE", "")
+	t.Setenv("AOS_WORM_EXPECTED_HEADS_FILE", "")
+	t.Setenv("AOS_WORM_EXPECTED_HEAD", "42")
+
+	_, err := parseWormAnchorFromEnv()
+	if !errors.Is(err, ErrWormExpectedHeadObsoleta) {
+		t.Fatalf("a env obsoleta foi IGNORADA (err=%v) — o operador ficaria convencido de que ancorou", err)
+	}
+	// CONTROLO: sem ela, a ausência total continua a ser «não ancora», sem erro.
+	t.Setenv("AOS_WORM_EXPECTED_HEAD", "")
+	got, err := parseWormAnchorFromEnv()
+	if err != nil || got != nil {
+		t.Fatalf("ausencia total devia dar (nil, nil), veio (%v, %v)", got, err)
+	}
+}
+
+// TestBannerDeclaraACobertura — o banner tem de dizer QUANTAS de quantas.
+//
+// Dizer só «ANCORADA» seria verdadeiro sobre o mecanismo e enganador sobre o efeito: a cobertura
+// nunca é completa por desenho, porque as partições nascem por run. É a mesma distinção que custou
+// doze horas com o oráculo de autonomia — ligado, e sem efeito.
+func TestBannerDeclaraACobertura(t *testing.T) {
+	parcial := strings.Join(wormAnchorPostureBanner(3, 108), "\n")
+	for _, exigido := range []string{"3 de 108", "105"} {
+		if !strings.Contains(parcial, exigido) {
+			t.Errorf("o banner nao declara a cobertura (falta %q): %s", exigido, parcial)
+		}
+	}
+	// CONTROLO: sem âncoras, continua a ser a linha de NÃO ANCORADA — e não «0 de N ancorada»,
+	// que se leria como se algo tivesse corrido.
+	nenhuma := strings.Join(wormAnchorPostureBanner(0, 108), "\n")
+	if !strings.Contains(nenhuma, "NAO ANCORADA") {
+		t.Errorf("sem ancoras o banner devia dizer NAO ANCORADA: %s", nenhuma)
+	}
+}
+
+// TestTodosOsCheckpointsSaoVerificados é a propriedade CENTRAL da ancoragem multi-partição, e
+// ficou por provar até uma mutação a revelar: substituir o ciclo por `a.Checkpoints[:1]` — o
+// defeito singular de origem — não fazia cair teste nenhum.
+//
+// O cenário: DUAS âncoras, a primeira boa e a SEGUNDA com o piso acima do que o store tem. Quem
+// verificar as duas aborta; quem verificar só a primeira arranca — e serviria um WORM cuja segunda
+// partição ninguém ancorou, com o banner a dizer que ancorou.
+func TestTodosOsCheckpointsSaoVerificados(t *testing.T) {
+	ctx := context.Background()
+	path := aos268BuildDurableWORM(t, 3)
+	cp, pub := aos268Seal(t, path, 3)
+
+	// A segunda âncora nomeia uma partição que o store NÃO tem. É a forma mais nítida de
+	// "esta âncora não verifica": se for avaliada, falha; se for saltada, o arranque passa.
+	fantasma := cp
+	fantasma.Partition = cp.Partition + "-inexistente"
+
+	cfg := tnBaseConfig()
+	cfg.WORMPath = path
+	cfg.WORMAnchor = &WormAnchor{
+		Public:      pub,
+		Checkpoints: []audit.Checkpoint{cp, fantasma},
+		ExpectedHeads: map[string]uint64{
+			cp.Partition:       3,
+			fantasma.Partition: 3,
+		},
+	}
+
+	var banner bytes.Buffer
+	node, err := Bootstrap(ctx, cfg, &banner)
+	if err == nil {
+		node.Close()
+		t.Fatal("arrancou com a SEGUNDA ancora por verificar — o no serviria um WORM cuja particao " +
+			"ninguem ancorou, com o banner a dizer que ancorou")
+	}
+	if !strings.Contains(err.Error(), "verificacao ancorada do WORM") {
+		t.Errorf("abortou pela razao errada: %v", err)
+	}
+
+	// CONTROLO: SÓ com a primeira (a boa), o mesmo caminho ARRANCA. Sem este ramo, o teste acima
+	// passaria mesmo que o Bootstrap estivesse a abortar por qualquer outro motivo.
+	cfg2 := tnBaseConfig()
+	cfg2.WORMPath = path
+	cfg2.WORMAnchor = &WormAnchor{
+		Public:        pub,
+		Checkpoints:   []audit.Checkpoint{cp},
+		ExpectedHeads: map[string]uint64{cp.Partition: 3},
+	}
+	n2, err2 := Bootstrap(ctx, cfg2, &bytes.Buffer{})
+	if err2 != nil {
+		t.Fatalf("so com a ancora boa devia arrancar: %v", err2)
+	}
+	n2.Close()
 }

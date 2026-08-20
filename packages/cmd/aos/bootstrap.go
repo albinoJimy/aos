@@ -223,9 +223,24 @@ type ApproverConfig struct {
 //     (AuditSeq == ExpectedHead sempre ⇒ nunca stale) e reabriria exactamente o rollback que
 //     [audit.VerifyFromCheckpointAtHead] existe para fechar.
 type WormAnchor struct {
-	Public       ed25519.PublicKey
-	Checkpoint   audit.Checkpoint
-	ExpectedHead uint64
+	Public ed25519.PublicKey
+	// Checkpoints são as âncoras assinadas, UMA POR PARTIÇÃO. Plural desde 2026-08-20: o campo
+	// era singular e o nó ancorava, quando muito, UMA partição — e o WORM de produção tinha 108.
+	//
+	// A cobertura NUNCA pode ser completa, e isso é do desenho e não uma falta: as partições
+	// nascem POR RUN (`run-<id>`, `ingestion:<id>`, `gov.residency/<id>`), pelo que o run seguinte
+	// cria uma partição que nenhuma selagem anterior cobre. A propriedade honesta é «ancorado até
+	// ao último selo; depois disso, só re-encadeamento» — e é isso que o banner declara, com o
+	// número. Selar mais vezes encolhe a janela; não a fecha.
+	Checkpoints []audit.Checkpoint
+	// ExpectedHeads é o PISO DE FRESCURA por partição, persistido INDEPENDENTEMENTE do store e
+	// TAMBÉM do ficheiro de checkpoints: se viajassem juntos, quem trocasse o ficheiro trocava os
+	// dois e o piso deixaria de morder no rollback de checkpoint que existe para fechar.
+	//
+	// Toda a partição com checkpoint TEM de ter piso — sem ele a âncora dessa partição seria
+	// aceite sem frescura, que é precisamente o no-op que [audit.VerifyFromCheckpointAtHead] tenta
+	// impedir.
+	ExpectedHeads map[string]uint64
 }
 
 // Config é a configuração MÍNIMA e EXPLÍCITA do nó `aos` (AC2). SEM segredos em código:
@@ -971,14 +986,25 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// LIMITE HONESTO declarado no banner: o piso só prova até ao audit_seq SELADO; registos
 	// legítimos APENDIDOS depois do último checkpoint e ainda não selados podem ser truncados sem
 	// esta verificação os apanhar. Encolher essa janela exige SELAGEM PERIÓDICA (chave privada,
-	// out-of-process, molde AOS-156) — DEFERIDA em DEF-268; este nó CONSOME a âncora, não a produz.
-	wormAnchored := false
+	wormAncoradas, wormTotal := 0, 0
 	if cfg.WORMAnchor != nil {
 		a := cfg.WORMAnchor
-		if err := audit.VerifyFromCheckpointAtHead(ctx, worm, a.Public, a.Checkpoint, a.ExpectedHead, a.Checkpoint.AuditSeq); err != nil {
-			return nil, fmt.Errorf("aos: verificacao ancorada do WORM (AOS-268/AOS-072) — o no recusa servir um WORM nao-ancorado no arranque: %w", err)
+		for _, cp := range a.Checkpoints {
+			// FAIL-CLOSED POR PARTIÇÃO. Uma âncora que não verifique aborta o arranque inteiro —
+			// incluindo o caso em que a partição ancorada DESAPARECEU: o checkpoint nomeia-a, o
+			// store não a tem, e a leitura falha. É a metade de consumo do mesmo argumento que a
+			// monotonia faz do lado da produção.
+			if err := audit.VerifyFromCheckpointAtHead(ctx, worm, a.Public, cp, a.ExpectedHeads[cp.Partition], cp.AuditSeq); err != nil {
+				return nil, fmt.Errorf("aos: verificacao ancorada do WORM (AOS-268/AOS-072) — o no recusa servir um WORM nao-ancorado no arranque (particao %q): %w", cp.Partition, err)
+			}
+			wormAncoradas++
 		}
-		wormAnchored = true
+		// COBERTURA. O denominador é o que o store tem AGORA; o numerador é o que a selagem cobriu.
+		// Declarar só «ANCORADA» seria repetir o erro que custou doze horas: um banner verdadeiro
+		// sobre o mecanismo e enganador sobre o efeito.
+		if lister, ok := worm.(interface{ Partitions() []string }); ok {
+			wormTotal = len(lister.Partitions())
+		}
 	}
 
 	// (2b) PROVISIONAMENTO DOS NÍVEIS DE AUTONOMIA (AOS-087/AOS-248) — a FASE 2 da cablagem que
@@ -1891,7 +1917,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// FICA aberto e como o fechar). O argumento deriva do ESTADO real da verificação
 	// (`wormAnchored`), nunca da intenção da config: se WORMAnchor foi dado e a verificação
 	// PASSOU, `wormAnchored` é true; ausente ⇒ false.
-	for _, line := range wormAnchorPostureBanner(wormAnchored) {
+	for _, line := range wormAnchorPostureBanner(wormAncoradas, wormTotal) {
 		log("%s", line)
 	}
 	// EXECUÇÃO DURÁVEL (AOS-180/AOS-191). O banner declara o estado REALMENTE COMPOSTO
