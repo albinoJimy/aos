@@ -36,10 +36,16 @@ import (
 // devolve o mapa toolID → [sandbox.SandboxBinding] das tools que declaram um bloco `sandbox`.
 // Vazio ⇒ (nil, nil): nenhuma tool tem executor de sandbox ligado (comportamento inalterado).
 // Fail-closed: um bloco `sandbox` sem `command` aborta o arranque.
-func sandboxBindingsFromEnv() (map[string]sandbox.SandboxBinding, error) {
+// Devolve TAMBEM as tools OFERECIDAS ao modelo sem executor: calculam-se AQUI, onde o manifesto
+// ja esta lido, e nao a jusante com uma segunda leitura.
+//
+// A primeira versao relia o ficheiro em `registerSandboxLaunchers` e, se essa leitura falhasse,
+// SALTAVA a declaracao sem dizer nada — o mesmo defeito silencioso que a declaracao existe para
+// corrigir, dentro da propria correccao.
+func sandboxBindingsFromEnv() (map[string]sandbox.SandboxBinding, []string, error) {
 	specs, err := readModelToolSpecs()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make(map[string]sandbox.SandboxBinding)
 	for _, s := range specs {
@@ -49,7 +55,7 @@ func sandboxBindingsFromEnv() (map[string]sandbox.SandboxBinding, error) {
 		name := strings.TrimSpace(s.Name)
 		cmd := strings.TrimSpace(s.Sandbox.Command)
 		if cmd == "" {
-			return nil, fmt.Errorf("%w: tool %q tem bloco `sandbox` mas `command` vazio (o Command é FIXO e trusted, nunca dos args)", ErrBadModelTools, name)
+			return nil, nil, fmt.Errorf("%w: tool %q tem bloco `sandbox` mas `command` vazio (o Command é FIXO e trusted, nunca dos args)", ErrBadModelTools, name)
 		}
 		out[name] = sandbox.SandboxBinding{
 			Command:  cmd,
@@ -58,10 +64,13 @@ func sandboxBindingsFromEnv() (map[string]sandbox.SandboxBinding, error) {
 			WriteArg: strings.TrimSpace(s.Sandbox.WriteArg),
 		}
 	}
+	// As orfas calculam-se com o manifesto que ACABOU de ser lido — mesmo quando nao ha binding
+	// nenhum, porque «nenhuma tool tem executor» e precisamente o caso que mais precisa de ser dito.
+	orfas := toolsSemExecutor(specs, out)
 	if len(out) == 0 {
-		return nil, nil
+		return nil, orfas, nil
 	}
-	return out, nil
+	return out, orfas, nil
 }
 
 // newSandboxEffectRewriter devolve o [integration.SecuredConfig.EffectRewriter] que traduz os
@@ -95,7 +104,12 @@ func newSandboxEffectRewriter(bindings map[string]sandbox.SandboxBinding) func(r
 // no MESMO Event Store do nó) e, por cada tool com binding, regista um [sandbox.MediatedLauncher]
 // no RM do nó. Deve correr DEPOIS de NewSecuredRuntime (precisa de sec.Monitor()). bindings
 // vazio ⇒ no-op. Fail-closed: qualquer falha de construção/registo aborta o arranque.
-func registerSandboxLaunchers(sec *integration.SecuredRuntime, es *eventstore.Store, bindings map[string]sandbox.SandboxBinding, log func(string, ...any)) error {
+func registerSandboxLaunchers(sec *integration.SecuredRuntime, es *eventstore.Store, bindings map[string]sandbox.SandboxBinding, semExecutor []string, log func(string, ...any)) error {
+	// A DECLARACAO das orfas vem ANTES do return antecipado, e e deliberado: sem bindings
+	// nenhuns nao ha driver a montar, mas «NENHUMA tool tem executor» e precisamente o caso que
+	// mais precisa de ser dito — e a primeira versao desta correccao calava-se exactamente ai,
+	// contrariando o comentario que eu proprio tinha escrito duas funcoes acima.
+	declararSemExecutor(semExecutor, log)
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -135,11 +149,6 @@ func registerSandboxLaunchers(sec *integration.SecuredRuntime, es *eventstore.St
 	}
 	log("execucao de tools em sandbox (AOS-005/AOS-064): %d tool(s) %v ligadas ao driver %q via MediatedLauncher (no-bypass estrutural; args→ExecRequest pelo EffectRewriter)", len(names), names, kind)
 	// AS QUE FICAM DE FORA. Ver [toolsSemExecutor]: podem ser deliberadas, mas nao podem ser MUDAS.
-	if specs, serr := readModelToolSpecs(); serr == nil {
-		if orfas := toolsSemExecutor(specs, bindings); len(orfas) > 0 {
-			log("execucao de tools em sandbox (AOS-005/AOS-064): %d tool(s) %v sao OFERECIDAS ao modelo e NAO TEM EXECUTOR neste no — sem bloco `sandbox` nao se regista despacho, e cada chamada morre no caminho de recusa DEPOIS de o modelo gastar um turno a tenta-la. Pode ser DELIBERADO (e o que a demo de defesa-em-profundidade mostra: oferecer nao e executar); o que nao pode e ficar por dizer", len(orfas), orfas)
-		}
-	}
 	return nil
 }
 
@@ -201,4 +210,20 @@ func toolsSemExecutor(specs []modelToolSpec, bindings map[string]sandbox.Sandbox
 	}
 	sort.Strings(out)
 	return out
+}
+
+// declararSemExecutor escreve a linha das tools oferecidas ao modelo que o nó não executa.
+//
+// Função própria porque tem de ser chamada ANTES do return antecipado de
+// [registerSandboxLaunchers]: sem bindings nenhuns não há driver a montar, mas «NENHUMA tool tem
+// executor» é o caso que mais precisa de ser dito, e não o menos.
+func declararSemExecutor(semExecutor []string, log func(string, ...any)) {
+	if len(semExecutor) == 0 {
+		return
+	}
+	log("execucao de tools em sandbox (AOS-005/AOS-064): %d tool(s) %v sao OFERECIDAS ao modelo e "+
+		"NAO TEM EXECUTOR neste no — sem bloco `sandbox` nao se regista despacho, e cada chamada "+
+		"morre no caminho de recusa DEPOIS de o modelo gastar um turno a tenta-la. Pode ser "+
+		"DELIBERADO (e o que a demo de defesa-em-profundidade mostra: oferecer nao e executar); o "+
+		"que nao pode e ficar por dizer", len(semExecutor), semExecutor)
 }

@@ -27,7 +27,7 @@ func TestSandboxBindingsFromEnv_ParseESelecao(t *testing.T) {
 	  {"name":"doc_read","capability":"cap:fs.read","sandbox":{"command":"read","path_arg":"doc_id"}},
 	  {"name":"web_get","capability":"cap:http.get"}
 	]`)
-	b, err := sandboxBindingsFromEnv()
+	b, _, err := sandboxBindingsFromEnv()
 	if err != nil {
 		t.Fatalf("sandboxBindingsFromEnv: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestSandboxBindingsFromEnv_ParseESelecao(t *testing.T) {
 // (o Command é FIXO e trusted; não pode faltar).
 func TestSandboxBindingsFromEnv_FailClosedSemCommand(t *testing.T) {
 	writeToolsEnv(t, `[{"name":"doc_read","capability":"cap:fs.read","sandbox":{"path_arg":"doc_id"}}]`)
-	if _, err := sandboxBindingsFromEnv(); err == nil {
+	if _, _, err := sandboxBindingsFromEnv(); err == nil {
 		t.Fatal("bloco sandbox sem command devia falhar (fail-closed)")
 	}
 }

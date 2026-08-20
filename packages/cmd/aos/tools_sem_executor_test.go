@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -70,7 +72,7 @@ func TestManifestoDeProducaoTemUmaToolSemExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("o manifesto de producao nao carrega: %v", err)
 	}
-	bindings, err := sandboxBindingsFromEnv()
+	bindings, _, err := sandboxBindingsFromEnv()
 	if err != nil {
 		t.Fatalf("bindings: %v", err)
 	}
@@ -113,5 +115,80 @@ func TestBannerDeclaraAsToolsSemExecutor(t *testing.T) {
 	// uma linha pela outra passaria — e perder-se-ia a declaração de qual driver executa o quê.
 	if !strings.Contains(saida, "ligadas ao driver") {
 		t.Error("o banner perdeu a linha das tools LIGADAS")
+	}
+}
+
+// TestNENHUMAToolTemExecutorTambemEDeclarado é o caso que a primeira versão desta correcção
+// calava — e é o que mais precisa de ser dito.
+//
+// `registerSandboxLaunchers` tinha um `return` antecipado quando não há bindings: sem tools com
+// bloco `sandbox` não há driver a montar. Mas «NENHUMA tool tem executor» não é um caso menor do
+// problema; é o caso máximo dele. A declaração passou para ANTES desse return.
+//
+// O comentário que eu próprio escrevi duas funções acima já dizia que devia ser assim. O código
+// fazia o contrário.
+func TestNENHUMAToolTemExecutorTambemEDeclarado(t *testing.T) {
+	manifesto := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(manifesto, []byte(
+		`[{"name":"web_post","capability":"cap:http.post","resource_type":"http",`+
+			`"resource_value":"https://x.test/y","resource_region":"eu"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AOS_MODEL_TOOLS", manifesto)
+	t.Setenv("AOS_MODEL_TOOLS_REGISTER", "")
+
+	var banner bytes.Buffer
+	node, err := Bootstrap(t.Context(), tnBaseConfig(), &banner)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	defer node.Close()
+
+	saida := banner.String()
+	if !strings.Contains(saida, "NAO TEM EXECUTOR") || !strings.Contains(saida, "web_post") {
+		t.Errorf("com ZERO tools executaveis o banner calou-se — e o caso maximo do problema, "+
+			"nao o menor:\n%s", saida)
+	}
+	// CONTROLO: e a linha das LIGADAS nao sai, porque nao ha nenhuma. Sem este ramo, uma
+	// implementacao que declarasse tudo sempre passaria no teste acima.
+	if strings.Contains(saida, "ligadas ao driver") {
+		t.Error("declarou tools LIGADAS quando nao ha nenhuma com executor")
+	}
+}
+
+// TestSemOrfasOBannerCALA-SE é o controlo que faltava, e apareceu por mutação.
+//
+// Remover a guarda de «lista vazia» fazia o banner escrever «0 tool(s) [] sao OFERECIDAS…» em
+// CADA arranque de um nó perfeitamente configurado. Nenhum teste caía: os que existiam ou mediam
+// o cálculo, ou usavam um manifesto que TEM uma órfã, pelo que a linha aparecia de qualquer forma.
+//
+// Uma linha de aviso que sai sempre deixa de ser aviso — é a mesma lição do token do Vault (43
+// repetições) e do log do OTLP (uma por lote).
+func TestSemOrfasOBannerCalaSe(t *testing.T) {
+	manifesto := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(manifesto, []byte(
+		`[{"name":"doc_read","capability":"cap:fs.read","resource_type":"file",`+
+			`"resource_value":"doc://{doc_id}","resource_region":"eu",`+
+			`"sandbox":{"command":"read","path_arg":"doc_id"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AOS_MODEL_TOOLS", manifesto)
+	t.Setenv("AOS_MODEL_TOOLS_REGISTER", "")
+
+	var banner bytes.Buffer
+	node, err := Bootstrap(t.Context(), tnBaseConfig(), &banner)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	defer node.Close()
+
+	saida := banner.String()
+	if strings.Contains(saida, "NAO TEM EXECUTOR") {
+		t.Errorf("um no COM todas as tools executaveis escreveu a linha de aviso — sai sempre, "+
+			"logo deixa de ser aviso:\n%s", saida)
+	}
+	// CONTROLO: a linha das LIGADAS sai, senao este teste passaria num nó onde nada foi montado.
+	if !strings.Contains(saida, "ligadas ao driver") {
+		t.Errorf("o banner nao declarou a tool LIGADA — o cenario nao foi montado:\n%s", saida)
 	}
 }
