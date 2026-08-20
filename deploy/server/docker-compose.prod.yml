@@ -152,6 +152,18 @@ services:
       # LIMITE que a cadência não fecha: as partições nascem por run, logo o run seguinte cria
       # uma que nenhuma selagem anterior cobre. «Ancorado até ao último selo; depois disso, só
       # re-encadeamento.» Selar mais vezes encolhe a janela; não a fecha.
+      # AS TRES CONTINUAM A VIR DO .env DO SERVIDOR, e nao fixadas aqui. Se eu fixasse os dois
+      # caminhos e deixasse a pública por preencher, ficariam «algumas das três» — e isso ABORTA
+      # o arranque (ErrWormAnchorIncomplete). Vindo as três do mesmo sítio, ligam-se de uma vez.
+      #
+      # OS CAMINHOS A USAR, dado o que o bloco `volumes:` monta:
+      #   AOS_WORM_TRUST_ANCHOR=<saida de `aos-issuer pubkey --key-file wormseal.key`>
+      #   AOS_WORM_CHECKPOINT_FILE=/etc/aos/ancoras/checkpoints.json
+      #   AOS_WORM_EXPECTED_HEADS_FILE=/etc/aos/pisos/heads.json
+      #
+      # E LIGAR ISTO É IRREVERSÍVEL SEM UM DEPLOY: a verificação é fail-closed POR PARTIÇÃO, e uma
+      # âncora que não bata com o WORM impede o nó de servir. Ligue depois de a selagem diária já
+      # estar a entregar os ficheiros, nunca antes.
       AOS_WORM_TRUST_ANCHOR: "${AOS_WORM_TRUST_ANCHOR:-}"
       AOS_WORM_CHECKPOINT_FILE: "${AOS_WORM_CHECKPOINT_FILE:-}"
       AOS_WORM_EXPECTED_HEADS_FILE: "${AOS_WORM_EXPECTED_HEADS_FILE:-}"
@@ -297,6 +309,29 @@ services:
       - ./secrets/authority.json:/etc/aos/authority.json:ro
       - ./policies:/etc/aos/policies:ro                  # bundle PDP assinado (sincronizado pelo deploy)
       - ./model-tools/tools.json:/etc/aos/model-tools.json:ro
+      # ÂNCORA DO WORM (AOS-268/AOS-072). DOIS bind-mounts SEPARADOS, e a separação é o mecanismo,
+      # não arrumação: o piso de frescura existe para recusar um checkpoint LEGÍTIMO mas ANTERIOR,
+      # reapresentado para mascarar a truncatura do que veio depois. Quem substituir SÓ um dos
+      # ficheiros é apanhado (`ErrCheckpointStale`); se viajassem juntos, trocar um trocaria os
+      # dois e o piso deixava de morder no ataque que existe para fechar.
+      #
+      # O CONTEÚDO NÃO VEM DO DEPLOY, e isso é deliberado por duas razões:
+      #  1. o `checkpoints.json` nomeia as partições, que incluem `gov.read/<run-id>` — commitá-lo
+      #     publicaria no git o que o 404 uniforme existe para não deixar enumerar;
+      #  2. a cadência de selagem é DIÁRIA e os deploys não são. Uma âncora que viajasse com o
+      #     deploy só se renovaria quando houvesse deploy, o que anularia a cadência.
+      #
+      # O deploy MONTA e LIGA (uma vez); a selagem diária ENTREGA o conteúdo por scp. Ver
+      # README §8 e `selar-worm.ps1`.
+      #
+      # `:ro` porque o nó CONSOME a âncora e nunca a produz (molde AOS-156).
+      # MONTAM-SE OS DIRECTORIOS, nao os ficheiros, e por duas razoes concretas:
+      #  · um bind-mount de FICHEIRO inexistente faz o Docker criar um DIRECTORIO com esse nome no
+      #    host — e o `scp` da selagem diaria deixaria de conseguir escrever por cima;
+      #  · um bind-mount de ficheiro prende o INODE (ja documentado neste ficheiro para o LiteLLM):
+      #    a entrega seguinte escreveria um inode novo que o contentor nunca veria.
+      - ./ancoras:/etc/aos/ancoras:ro
+      - ./pisos:/etc/aos/pisos:ro
       # CA interna (bundle) + material privado por FICHEIRO. Os três são montados sempre; o que
       # decide se são USADOS são as envs acima. Montar um ficheiro que o nó ignora é inócuo —
       # já um `volumes:` condicional não existe em compose, e um bind em falta impede o arranque.

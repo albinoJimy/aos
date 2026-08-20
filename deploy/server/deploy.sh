@@ -59,6 +59,34 @@ esac
 [ -s "${APP_DIR}/policies/aos_authz.cedar" ] && [ -s "${APP_DIR}/policies/aos_authz.sig" ] \
   || fail "bundle PDP ausente em ${APP_DIR}/policies — o nó abortaria o arranque (AOS_POLICY_BUNDLE_DIR)"
 
+# --- 0b. Âncora do WORM coerente? --------------------------------------------------------------
+# A verificação ancorada é FAIL-CLOSED POR PARTIÇÃO: uma âncora que não bata com o WORM impede o
+# nó de SERVIR. Se as três variáveis estão ligadas, os ficheiros TÊM de estar cá — e é melhor
+# dizê-lo agora do que descobrir depois de derrubar o que estava a correr.
+#
+# Os directórios criam-se sempre, ligada ou não a verificação: o compose monta-os, e um bind-mount
+# de origem ausente deixa o Docker criar o que lhe apetecer.
+#
+# As variáveis vêm da shell e NÃO de um `grep` ao ficheiro: o `.env` já foi carregado acima
+# (`set -a; . "${ENV_FILE}"`). Grepar um ficheiro já lido seria frágil por nada — um padrão
+# errado nunca casaria, o guarda nunca dispararia, e diria «DESLIGADA» sobre um nó com a âncora
+# ligada. Um guarda que não pode falhar em voz alta é pior do que não ter guarda.
+mkdir -p "${APP_DIR}/ancoras" "${APP_DIR}/pisos"
+if [ -n "${AOS_WORM_TRUST_ANCHOR:-}" ]; then
+  [ -s "${APP_DIR}/ancoras/checkpoints.json" ] \
+    || fail "AOS_WORM_TRUST_ANCHOR está ligada mas ${APP_DIR}/ancoras/checkpoints.json não existe (ou está vazio) — o nó abortaria no arranque. Corra a selagem e entregue o ficheiro ANTES de ligar a âncora"
+  [ -s "${APP_DIR}/pisos/heads.json" ] \
+    || fail "AOS_WORM_TRUST_ANCHOR está ligada mas ${APP_DIR}/pisos/heads.json não existe (ou está vazio) — o piso de frescura é obrigatório: sem ele a âncora seria aceite SEM frescura, que é o no-op que a verificação existe para impedir"
+  # As TRÊS ou NENHUMA — a mesma regra que o nó impõe, dita aqui antes de custar uma paragem.
+  [ -n "${AOS_WORM_CHECKPOINT_FILE:-}" ] \
+    || fail "AOS_WORM_TRUST_ANCHOR ligada sem AOS_WORM_CHECKPOINT_FILE — algumas das três aborta o arranque (ErrWormAnchorIncomplete)"
+  [ -n "${AOS_WORM_EXPECTED_HEADS_FILE:-}" ] \
+    || fail "AOS_WORM_TRUST_ANCHOR ligada sem AOS_WORM_EXPECTED_HEADS_FILE — algumas das três aborta o arranque (ErrWormAnchorIncomplete)"
+  log "0b/6 âncora do WORM ligada: checkpoints e pisos presentes."
+else
+  log "0b/6 âncora do WORM DESLIGADA (AOS_WORM_TRUST_ANCHOR vazia) — só re-encadeamento, sem truncatura do tail nem reescrita da génese."
+fi
+
 # --- 1. Login efémero no registry (se fornecido) ------------------------------------------------
 LOGGED_IN=0
 if [ -n "${GHCR_TOKEN:-}" ]; then
