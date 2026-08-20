@@ -119,3 +119,55 @@ func TestLixoContinuaARecusar(t *testing.T) {
 			"um ficheiro corrompido passa a poder ancorar")
 	}
 }
+
+// ---------------------------------------------------------------------------------------------
+// A SEED DO OPERADOR TAMBÉM NASCE EM WINDOWS.
+//
+// O nó tem o seu próprio carregador ([loadOperatorKey]) — módulo diferente do `aos-issuer`, e
+// portanto uma terceira cópia do mesmo padrão. Sem esta ligação, `aos approve --key ...` recusaria
+// uma seed perfeitamente boa escrita com `>` no PowerShell, e devolveria [ErrBadOperatorKey], que
+// é indistinguível de «a chave está errada».
+//
+// Aqui NÃO se separa o diagnóstico de UTF-16 como no emissor: este caminho devolve
+// [ErrBadOperatorKey] uniformemente por desenho. O ganho de diagnóstico fica do lado onde as
+// chaves são GERADAS, que é onde o engano acontece.
+// ---------------------------------------------------------------------------------------------
+
+func TestSeedDoOperadorComBOMCarrega(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i + 1)
+	}
+	h := hex.EncodeToString(seed)
+
+	p := filepath.Join(t.TempDir(), "operator.seed")
+	if err := os.WriteFile(p, append([]byte{0xEF, 0xBB, 0xBF}, []byte(h+"\r\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priv, err := loadOperatorKey(p)
+	if err != nil {
+		t.Fatalf("a seed do operador com BOM nao carregou: %v — `aos approve` recusaria uma "+
+			"chave boa com ErrBadOperatorKey, indistinguivel de «a chave esta errada»", err)
+	}
+	if !priv.Public().(ed25519.PublicKey).Equal(ed25519.NewKeyFromSeed(seed).Public()) {
+		t.Error("carregou a chave ERRADA — a limpeza mexeu no material")
+	}
+}
+
+// TestSeedDoOperadorINVALIDAContinuaARecusar é o controlo.
+func TestSeedDoOperadorINVALIDAContinuaARecusar(t *testing.T) {
+	for nome, conteudo := range map[string][]byte{
+		"lixo":     []byte("nao e uma seed"),
+		"curta":    []byte("aabbcc"),
+		"so_o_bom": {0xEF, 0xBB, 0xBF},
+		"com_lixo": append([]byte{0xEF, 0xBB, 0xBF}, []byte("LIXO aabb")...),
+	} {
+		p := filepath.Join(t.TempDir(), nome)
+		if err := os.WriteFile(p, conteudo, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadOperatorKey(p); err == nil {
+			t.Errorf("%s foi aceite como seed do operador", nome)
+		}
+	}
+}

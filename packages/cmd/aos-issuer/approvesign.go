@@ -113,7 +113,11 @@ func loadApproverKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("approve-sign: ler chave do aprovador: %w", err)
 	}
-	seed, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+	texto, cerr := limparSeedHex(raw) // ver [limparSeedHex]: as seeds nascem em Windows.
+	if cerr != nil {
+		return nil, cerr
+	}
+	seed, err := hex.DecodeString(texto)
 	if err != nil {
 		return nil, fmt.Errorf("approve-sign: chave do aprovador nao e hex: %w", err)
 	}
