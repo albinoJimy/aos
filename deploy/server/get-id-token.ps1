@@ -30,6 +30,11 @@
 .EXAMPLE
   # a rota que atravessa TODOS os runs visiveis - a prova do anti-replay por `jti` (PR #96)
   powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 -Simular
+
+.EXAMPLE
+  # apresenta o MESMO token duas vezes - a prova de que o memo do leitor NAO atravessa
+  # a fronteira do pedido (PR #100). A segunda apresentacao TEM de ser recusada.
+  powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 -Fronteira
 #>
 [CmdletBinding()]
 param(
@@ -38,6 +43,10 @@ param(
     # os runs visiveis ao leitor. E a unica leitura que aplica a regra de residencia mais do que
     # uma vez na mesma chamada â foi ai que o replay de `jti` mordia (PR #96).
     [switch]$Simular,
+    # -Fronteira: apresenta o MESMO token DUAS vezes. E a prova de producao do PR #100 — se o memo
+    # do leitor atravessasse a fronteira do pedido, a segunda chamada passava, e isso seria um
+    # bypass de autenticacao. A segunda TEM de ser recusada.
+    [switch]$Fronteira,
     # -Cunhar <agente>: em vez de ler, autentica-se para CUNHAR uma NHI cuja raiz de delegacao e
     # o humano que se autenticar. A autenticacao fica LIGADA a esta delegacao pelo nonce.
     [string]$Cunhar  = "",
@@ -222,6 +231,54 @@ try {
     # AUDIENCIAS SEPARADAS de proposito: ler um run e cunhar uma raiz de delegacao sao dois
     # poderes distintos. Com uma audiencia so, um token obtido para LER servia para CUNHAR.
     if (-not $Cliente) { $Cliente = if ($Cunhar) { 'aos-issuer' } else { 'aos-node' } }
+
+    if ($Fronteira) {
+        # A PROVA DE PRODUCAO DO PR #100.
+        #
+        # O memo do leitor faz com que a credencial seja verificada UMA VEZ POR PEDIDO. A maneira
+        # de o escrever mal nao e subtil: basta cria-lo FORA do closure por pedido, e uma
+        # verificacao passa a servir TODOS os pedidos — um bypass de autenticacao completo, que
+        # passaria em qualquer teste de caminho feliz e em qualquer teste de «o memo funciona».
+        #
+        # Este modo apresenta o MESMO token DUAS vezes, em pedidos SEPARADOS. Nenhum outro modo do
+        # script consegue faze-lo: todos vao buscar um token novo por chamada, precisamente porque
+        # o anti-replay existe.
+        #
+        # LEITURA:
+        #   1a aceite + 2a RECUSADA -> a fronteira do pedido esta inteira
+        #   1a aceite + 2a ACEITE   -> o memo atravessou a fronteira: BYPASS, parar tudo
+        #   1a recusada             -> inconclusivo (token ja gasto, IdP, ou rota indisponivel)
+        $tok = Obter-IdToken 'aos-node' (B64Url (Aleatorio 24))
+        Write-Host "`nA APRESENTAR O MESMO TOKEN DUAS VEZES ..." -ForegroundColor Cyan
+
+        function Invoke-Simular($t) {
+            try {
+                $r = Invoke-WebRequest -Uri "$No/autonomy/simular" -Method POST `
+                     -Headers @{ Authorization = "Bearer $t" } -ContentType 'application/json' `
+                     -Body '{"max":50}' -UseBasicParsing
+                return [int]$r.StatusCode
+            } catch {
+                return [int]$_.Exception.Response.StatusCode.value__
+            }
+        }
+
+        $a = Invoke-Simular $tok
+        $b = Invoke-Simular $tok
+        Write-Host ("  1a apresentacao -> HTTP {0}" -f $a)
+        Write-Host ("  2a apresentacao -> HTTP {0}" -f $b)
+
+        if ($a -ne 200) {
+            Write-Host "  INCONCLUSIVO: a PRIMEIRA nao foi aceite, portanto a segunda nao diz nada." -ForegroundColor Yellow
+            Write-Host "  Token ja gasto, IdP indisponivel, ou a rota nao esta a servir." -ForegroundColor DarkGray
+        } elseif ($b -eq 200) {
+            Write-Host "  BYPASS DE AUTENTICACAO: o mesmo token foi aceite DUAS vezes." -ForegroundColor Red
+            Write-Host "  O memo do leitor atravessou a fronteira do pedido. Parar o no." -ForegroundColor Red
+        } else {
+            Write-Host ("  A FRONTEIRA DO PEDIDO ESTA INTEIRA: a 2a apresentacao deu {0}." -f $b) -ForegroundColor Green
+            Write-Host "  O memo nao atravessa pedidos; o anti-replay por jti continua a morder." -ForegroundColor Green
+        }
+        return
+    }
 
     if ($Cunhar) {
         # O nonce E o digest da delegacao, e vem do PROPRIO aos-issuer - nunca recalculado aqui.
