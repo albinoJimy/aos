@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	integration "github.com/aos-ref/integration"
@@ -133,6 +134,12 @@ func registerSandboxLaunchers(sec *integration.SecuredRuntime, es *eventstore.St
 		names = append(names, name)
 	}
 	log("execucao de tools em sandbox (AOS-005/AOS-064): %d tool(s) %v ligadas ao driver %q via MediatedLauncher (no-bypass estrutural; args→ExecRequest pelo EffectRewriter)", len(names), names, kind)
+	// AS QUE FICAM DE FORA. Ver [toolsSemExecutor]: podem ser deliberadas, mas nao podem ser MUDAS.
+	if specs, serr := readModelToolSpecs(); serr == nil {
+		if orfas := toolsSemExecutor(specs, bindings); len(orfas) > 0 {
+			log("execucao de tools em sandbox (AOS-005/AOS-064): %d tool(s) %v sao OFERECIDAS ao modelo e NAO TEM EXECUTOR neste no — sem bloco `sandbox` nao se regista despacho, e cada chamada morre no caminho de recusa DEPOIS de o modelo gastar um turno a tenta-la. Pode ser DELIBERADO (e o que a demo de defesa-em-profundidade mostra: oferecer nao e executar); o que nao pode e ficar por dizer", len(orfas), orfas)
+		}
+	}
 	return nil
 }
 
@@ -163,4 +170,35 @@ func sandboxSnapshotFromEnv() (*sandbox.Snapshot, error) {
 		return nil, fmt.Errorf("aos: snapshot de sandbox: %w", err)
 	}
 	return snap, nil
+}
+
+// toolsSemExecutor devolve as tools que o manifesto OFERECE ao modelo e para as quais o nó NÃO
+// regista despacho — as que não têm bloco `sandbox`.
+//
+// PORQUE ISTO É DECLARADO E NÃO RECUSADO. Uma tool sem executor pode ser DELIBERADA: é o que a
+// `demo-pdp-tool-deny.sh` demonstra — «o modelo NÃO executa uma tool só porque lha ofereceram; o
+// RM re-valida contra o SEU registry assinado». Recusar o arranque destruiria exactamente a
+// propriedade que essa demonstração existe para mostrar. Tentei-o antes de ler a demo, e o teste
+// `TestRegistriesDoRepoArrancam` apanhou-me.
+//
+// O QUE FALTAVA, então, não era uma recusa — era a DECLARAÇÃO. O banner dizia «1 tool(s)
+// [doc_read] ligadas ao driver» e calava-se sobre a segunda: em produção, o manifesto oferecia
+// `doc_read` e `web_post`, e nada dizia que uma delas nunca correria. O modelo gasta um turno a
+// tentá-la e o operador não sabe porquê.
+//
+// «A postura anunciada = a postura ligada» é a regra desta casa (AOS-203/AOS-248). Uma tool
+// oferecida e não executável é postura, e passa a ser anunciada.
+func toolsSemExecutor(specs []modelToolSpec, bindings map[string]sandbox.SandboxBinding) []string {
+	var out []string
+	for _, s := range specs {
+		nome := strings.TrimSpace(s.Name)
+		if nome == "" {
+			continue
+		}
+		if _, tem := bindings[nome]; !tem {
+			out = append(out, nome)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
