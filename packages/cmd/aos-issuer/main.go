@@ -74,6 +74,8 @@ func run(args []string, out io.Writer) error {
 		return cmdDelegationNonce(args[1:], out)
 	case "autonomy-sign":
 		return runAutonomySign(args[1:], out)
+	case "worm-seal":
+		return runWormSeal(args[1:], out)
 	default:
 		return fmt.Errorf("subcomando desconhecido %q\n%s", args[0], usage)
 	}
