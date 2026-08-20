@@ -213,12 +213,30 @@ func (rb *RunBudget) onRunRelease(f func(runID string)) {
 // DURÁVEL por run (mesma família de AOS-259), não um remendo em memória que mudaria a
 // garantia de libertação que AOS-256 exige sem tornar o tecto verdadeiramente por-run.
 func (rb *RunBudget) acquire(ctx context.Context, runID string) (func(), error) {
-	// O limite lê-se ANTES do lock: a leitura do consumo durável é I/O e não pode segurar o mutex
-	// que todas as hospedagens partilham.
-	limite := rb.limiteParaIncarnacao(ctx, runID)
+	// PRIMEIRA passagem: só para saber se ESTA hospedagem vai criar o nó.
+	//
+	// Sem esta verificação, [limiteParaIncarnacao] — que faz I/O ao ledger — corria em TODAS as
+	// aquisições, incluindo as reentrantes onde o valor é deitado fora. O desperdício era o menor
+	// dos problemas: com o ledger ilegível, escrevia o aviso de degradação («arranca com o tecto
+	// INTEIRO») sobre uma decisão que NÃO foi tomada, porque o nó já existia e o limite nem chegou
+	// a ser usado. Uma linha de log a descrever um efeito que não aconteceu.
+	rb.mu.Lock()
+	primeira := rb.live[runID] == 0
+	rb.mu.Unlock()
+
+	// A leitura fica FORA do lock: é I/O e não pode segurar o mutex que todas as hospedagens
+	// partilham.
+	limite := rb.limit
+	if primeira {
+		limite = rb.limiteParaIncarnacao(ctx, runID)
+	}
+
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
+	// RE-VERIFICAÇÃO sob o lock: entre as duas passagens, outra hospedagem do MESMO run pode ter
+	// criado o nó. Nesse caso não se recria — e o limite que se leu descarta-se, que é o preço
+	// (raro) de não fazer I/O sob o mutex.
 	if rb.live[runID] == 0 {
 		if err := rb.tree.AddNode(runID, BudgetTreeID, limite); err != nil {
 			return nil, err
