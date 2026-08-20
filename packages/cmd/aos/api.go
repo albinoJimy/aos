@@ -1122,6 +1122,29 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_memory_sys_bytes", "Memoria obtida do SO (bytes).", "gauge", float64(ms.Sys), "")
 	g("aos_gc_cycles_total", "Ciclos de GC completos desde o arranque.", "counter", float64(ms.NumGC), "")
 
+	// EXPORTAÇÃO OTLP (AOS-173/DEF-012) — a única via por onde a observabilidade pode morrer sem
+	// parar mais nada.
+	//
+	// O exporter é FAIL-OPEN por decisão declarada: a recusa do colector não quebra o run. É a
+	// escolha certa — observabilidade não deve derrubar o caminho de negócio — mas tem um preço,
+	// e o preço é este: uma má configuração (certificado de cliente errado, colector que rejeita)
+	// pára os spans sem parar nada mais.
+	//
+	// O inventário dizia que isso acontecia «em silêncio». Não acontece: cada lote falhado ESCREVE
+	// no log. O que faltava era outra coisa — nenhum destes números saía em `/metrics`, pelo que a
+	// falha não era ALERTÁVEL: só se via lendo logs, à mão, depois de alguém desconfiar.
+	//
+	// `failed` cresce quando o colector recusa ou está em baixo; `dropped` quando a fila enche
+	// (o produtor não bloqueia — é o que mantém o fail-open). Os dois a subir com `exported`
+	// parado é a assinatura exacta de uma autenticação mal configurada.
+	if h.node != nil && h.node.otlp != nil {
+		s := h.node.otlp.Stats()
+		g("aos_otlp_spans_exported_total", "Spans que um POST 2xx do colector confirmou.", "counter", float64(s.Exported), "")
+		g("aos_otlp_spans_failed_total", "Spans cujo export FALHOU apos as retentativas (fail-open: o run seguiu).", "counter", float64(s.Failed), "")
+		g("aos_otlp_spans_dropped_total", "Spans descartados por fila cheia (o produtor nunca bloqueia).", "counter", float64(s.Dropped), "")
+		g("aos_otlp_batches_total", "Lotes de export tentados.", "counter", float64(s.Batches), "")
+	}
+
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, b.String())

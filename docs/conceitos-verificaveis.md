@@ -89,7 +89,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | **Selo de leitura sensível** (D6) — o desfecho não se serve sem o registo | O selo é **pré-condição**: se o WORM não selar, nega | ✅ |
 | **Selo de acções de controlo** (A3) — `pause`/`steer`/`approve` na partição `governance.control` | Antes ficavam só no Event Store, e o four-eyes não registava *quem* aprovou | ✅ |
 | **Audit do model gateway** (AOS-265) — WORM próprio em disco | `/var/lib/aos/model-audit.wal`; sobrevive a restart | ✅ |
-| **Verificação ancorada** (AOS-268/072) — fecharia truncatura do tail e reescrita desde a génese | Exige um selador out-of-process (**DEF-268**) e um checkpoint **por partição**: hoje ancoraria 1 em 108 | ❌ |
+| **Verificação ancorada** (AOS-268/072) — fecha a truncatura do tail e a reescrita desde a génese, que o re-encadeamento sem chave NÃO apanha | **MECANISMO COMPLETO desde 2026-08-20; por exercer no nó que serve.** Esta linha dizia que «hoje ancoraria 1 em 108» — ancorava **zero**: o nó sabia CONSUMIR a âncora e nada no repositório a PRODUZIA, pelo que as três envs nunca podiam ser preenchidas. Entregue `aos-issuer worm-seal` (sela out-of-process, chave privada fora do nó, contra a cópia do backup) e a ancoragem **multi-partição** no consumo. **Controlos:** ciclo fechado (o que o selador assina é o que `VerifyFromCheckpointAtHead` — a função do arranque — aceita) e o simétrico (outra chave não valida); selar sobre um WORM que RECUOU é recusado (`--anterior`); toda a partição ancorada TEM de trazer piso; **todos** os checkpoints são verificados, não só o primeiro. **Limites declarados:** a âncora prova que a cadeia não mudou DESDE a selagem, não que era honesta antes; e a cobertura NUNCA é completa por desenho — as partições nascem por run, pelo que o banner declara `N de M` e selar mais vezes encolhe a janela sem a fechar. Falta a **cadência** (DEF-268) e exercê-la em produção | 🧪 |
 
 > 🔍 **Nota de método:** contar partições com `grep -ao` sobre o `worm.wal` devolve **69** e está
 > errado — o WAL é binário enquadrado e o `grep` processa-o por linhas. `strings -n 8` devolve
@@ -212,7 +212,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | Conceito | Como se verifica | Estado |
 |---|---|---|
 | **Tracer OTLP real** (AOS-173) | Spans `invoke_agent`/`chat`/`execute_tool`/`freeze` + selos WORM | ✅ |
-| **Autenticação OTLP** (DEF-012) | O canal é `http://otel:4318`, **em claro** na rede do compose. Um *bearer* aí seria teatro — viaja em claro na mesma rede de onde vem a ameaça. O que autentica é **mTLS**: variante pronta em [`otel-collector-mtls.yaml`](../deploy/server/otel-collector-mtls.yaml), **provada** num coletor descartável (sem cert de cliente → handshake recusado; com o do nó → `200`; HTTP claro → `400`). Por activar — o exportador é *fail-open* e uma má configuração pára os spans **em silêncio**. | 💤 |
+| **Autenticação OTLP** (DEF-012) | O canal é `http://otel:4318`, **em claro** na rede do compose. Um *bearer* aí seria teatro — viaja em claro na mesma rede de onde vem a ameaça. O que autentica é **mTLS**: variante pronta em [`otel-collector-mtls.yaml`](../deploy/server/otel-collector-mtls.yaml), **provada** num coletor descartável (sem cert de cliente → handshake recusado; com o do nó → `200`; HTTP claro → `400`). Por activar. ⚠️ **Correcção de 2026-08-20:** esta linha dizia que uma má configuração pára os spans «em silêncio». **Não pára** — cada lote falhado escreve no log. Faltavam outras duas coisas, agora feitas: os contadores do exporter passam a sair em `/metrics` (`aos_otlp_spans_failed_total`, `_dropped_total`, `_exported_total`, `_batches_total`), o que torna a falha **alertável** em vez de legível só à mão; e a linha de falha passou a ser **represada** (a 1.ª sai já, as seguintes uma vez por minuto, dizendo quantas) — antes saía por CADA lote e inundava o log, afogando-se nas próprias repetições | 💤 |
 
 ---
 
@@ -261,8 +261,10 @@ Fechou-se em 2026-08-19 com regras de **classe** e duas submissões que diferem 
 A categoria continua a fazer falta ao vocabulário: **ligado ≠ a aplicar-se**, e a única coisa que
 distingue os dois é um par de execuções em que uma corre e a outra escala.
 
-**Ausente e declarado:** verificação ancorada do WORM, credential broker, selo do Vault, e o DSAR
-sem barreira de transporte. (O alerta de recência do backup **não** pertence a esta lista — está
+**Ausente e declarado:** credential broker, selo do Vault, e o DSAR sem barreira de transporte.
+A verificação ancorada do WORM SAIU desta lista em 2026-08-20 — o mecanismo ficou completo
+(selador + ancoragem multi-partição + cobertura declarada) e passou a 🧪, à espera de ser exercida
+no nó que serve. (O alerta de recência do backup **não** pertence a esta lista — está
 provado, com controlos; ver eixo M.)
 
 O padrão que se repete em todos os achados desta auditoria — A1 a A4, a contagem de partições, a
@@ -278,12 +280,12 @@ sempre um controlo que teria de falhar, e falhou.
 | Estado | Nº |
 |---|---|
 | ✅ Provado em produção | 47 |
-| 🧪 Provado por teste (ou em clone restaurado) | 14 |
+| 🧪 Provado por teste (ou em clone restaurado) | 15 |
 | ⚠️ Armado, não exercido | 4 |
 | 💤 Dormente por configuração | 4 |
-| ❌ Ausente e declarado | 4 |
+| ❌ Ausente e declarado | 3 |
 
-Os **12 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
+Os **11 que não estão provados** (⚠️ + 💤 + ❌) estão todos nomeados acima, e cada um diz o que
 perde por não estar. Nenhum é uma surpresa que apareça em produção: ou está no banner de arranque
 do nó, ou em §"O que continua por fechar" do
 [`deploy/server/README.md`](../deploy/server/README.md).
