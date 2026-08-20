@@ -307,44 +307,52 @@ try {
         # Esta rota atravessa TODOS os runs visiveis e aplicava a regra de residencia com uma
         # RE-VERIFICACAO da credencial por cada run distinto. O no impoe anti-replay por `jti`:
         # a segunda verificacao do MESMO token devolve replay. Resultado, antes da correccao:
-        # a lista saia VAZIA — com a credencial certa, sem erro, sem log.
+        # `avaliados: 0` — com a credencial certa, sem erro e sem log.
         #
         # A bateria nao via isto porque compunha o guardiao de leitura com `cred = nil`, o
         # caminho legado por cabecalho, onde nao ha token para repetir.
         #
-        # COMO SE LE O RESULTADO:
-        #   mediacoes com pelo menos UMA entrada  -> a correccao esta viva neste no
-        #   mediacoes VAZIA e ha runs mediados    -> a regressao voltou
-        #   mediacoes VAZIA e nao ha runs mediados-> inconclusivo; submeta um run que escale
+        # A PRIMEIRA VERSAO DESTE BLOCO ESTAVA ERRADA EM TRES PONTOS, e correu assim uma vez:
+        # fazia GET em vez de POST, pedia `/v1/autonomy/simular` quando a rota e
+        # `/autonomy/simular`, e lia um campo `mediacoes` que a resposta nao tem. O resultado
+        # vazio que produziu nao era um facto sobre o no — era o script a nao lhe chegar. Fica
+        # escrito porque uma prova que falha ao lado do alvo e pior do que nenhuma: parece
+        # evidencia.
         #
-        # O terceiro caso e o que torna esta prova honesta: uma lista vazia NAO e, por si so,
-        # sinal de avaria. Por isso o script diz qual dos tres esta a ver, em vez de cantar
-        # vitoria por o HTTP ser 200.
+        # COMO SE LE O RESULTADO:
+        #   avaliados > 0                          -> a travessia por run NAO caiu em replay
+        #   avaliados = 0 e ha runs mediados       -> a regressao voltou
+        #   avaliados = 0 e nao ha runs mediados   -> INCONCLUSIVO; submeta um run que escale
         Write-Host "`nA SIMULAR autonomia como este humano ..." -ForegroundColor Cyan
         try {
-            $r = Invoke-WebRequest -Uri "$No/v1/autonomy/simular" -Headers @{ Authorization = "Bearer $tok" } -UseBasicParsing
+            $r = Invoke-WebRequest -Uri "$No/autonomy/simular" -Method POST `
+                -Headers @{ Authorization = "Bearer $tok" } `
+                -ContentType "application/json" -Body '{"max":200}' -UseBasicParsing
             Write-Host ("  HTTP {0}" -f $r.StatusCode) -ForegroundColor Green
             Write-Host $r.Content
             try {
                 $j = $r.Content | ConvertFrom-Json
-                $n = @($j.mediacoes).Count
+                $n = [int]$j.avaliados
                 if ($n -gt 0) {
-                    Write-Host ("  {0} mediacao(oes) visiveis — a travessia por run NAO caiu em replay." -f $n) -ForegroundColor Green
+                    Write-Host ("  avaliados={0}  correriam={1}  escalariam={2}" -f $n, $j.correriam, $j.escalariam) -ForegroundColor Green
+                    Write-Host "  A travessia por run NAO caiu em replay — o PR #96 esta vivo neste no." -ForegroundColor Green
                 } else {
-                    Write-Host "  LISTA VAZIA. Isto e inconclusivo, nao e prova de avaria:" -ForegroundColor Yellow
-                    Write-Host "    · se nao houve runs que escalassem, vazio e a resposta CERTA;" -ForegroundColor DarkGray
-                    Write-Host "    · se houve, entao a travessia por run voltou a cair em replay." -ForegroundColor DarkGray
-                    Write-Host "  Submeta um run que escale e volte a correr — o token gasta-se, obtenha outro." -ForegroundColor DarkGray
+                    Write-Host "  avaliados=0. Isto e INCONCLUSIVO, nao e prova de avaria:" -ForegroundColor Yellow
+                    Write-Host "    - se nao houve tool calls seladas, zero e a resposta CERTA;" -ForegroundColor DarkGray
+                    Write-Host "    - se houve, entao a travessia por run voltou a cair em replay." -ForegroundColor DarkGray
+                    Write-Host "  Submeta um run com tool calls e volte a correr (o token gasta-se: obtenha outro)." -ForegroundColor DarkGray
                 }
             } catch {
-                Write-Host "  (resposta nao e JSON de mediacoes — leia o corpo acima)" -ForegroundColor DarkGray
+                Write-Host "  (resposta nao e o JSON esperado — leia o corpo acima)" -ForegroundColor DarkGray
             }
         } catch {
             $cod = $_.Exception.Response.StatusCode.value__
             Write-Host ("  HTTP {0}" -f $cod) -ForegroundColor Yellow
-            if ($cod -eq 404) {
-                Write-Host "  404 e UNIFORME nesta rota tambem: sem credencial aceite, 'nao ha' e" -ForegroundColor DarkGray
-                Write-Host "  'nao te mostro' sao indistinguiveis. Se ja usou este token, ele ESTA GASTO." -ForegroundColor DarkGray
+            switch ($cod) {
+                403 { Write-Host "  403: a credencial nao foi aceite. Se ja usou este token, ESTA GASTO (anti-replay por jti)." -ForegroundColor DarkGray }
+                404 { Write-Host "  404: rota inexistente neste no — confirme o path (/autonomy/simular, sem /v1)." -ForegroundColor DarkGray }
+                405 { Write-Host "  405: metodo errado — esta rota e POST." -ForegroundColor DarkGray }
+                501 { Write-Host "  501: governanca soberana ou WORM nao compostos neste no." -ForegroundColor DarkGray }
             }
         }
     } elseif ($Run) {
