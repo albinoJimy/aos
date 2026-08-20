@@ -143,7 +143,7 @@ services:
       # checkpoint ancora UMA partição e este WORM tem 108.
       AOS_WORM_TRUST_ANCHOR: "${AOS_WORM_TRUST_ANCHOR:-}"
       AOS_WORM_CHECKPOINT_FILE: "${AOS_WORM_CHECKPOINT_FILE:-}"
-      AOS_WORM_EXPECTED_HEAD: "${AOS_WORM_EXPECTED_HEAD:-}"
+      AOS_WORM_EXPECTED_HEADS_FILE: "${AOS_WORM_EXPECTED_HEADS_FILE:-}"
 
       # Autenticação do cliente OTLP (DEF-012) — hoje só TLS de servidor.
       AOS_OTLP_BEARER_TOKEN_PATH: "${AOS_OTLP_BEARER_TOKEN_PATH:-}"

@@ -59,7 +59,7 @@
 #       AMBIENTE lidas no ARRANQUE (AOS_MODEL_API_KEY_PATH, AOS_MODEL_TOOLS,
 #       AOS_WORM_CHECKPOINT_FILE, AOS_MODEL_PRICING_PATH, ...) — config de deployment do operador, nunca entrada do
 #       agente. Um operador que queira ler um ficheiro seu nao precisa de traversal: monta-o.
-#       (AOS-268: +1 ocorrencia main.go|G703 = a leitura da ancora assinada do checkpoint.)
+#       (AOS-268: +2 ocorrencias main.go|G703 = a leitura da ancora assinada do checkpoint e a do ficheiro de PISOS de frescura, AOS_WORM_EXPECTED_HEADS_FILE. Ambas sao ficheiros MONTADOS pelo operador; e o mesmo caminho de confianca.)
 #     G704 "SSRF" (cli.go:278,293): o `base` e a flag --addr / AOS_API_ADDR do CLI — o
 #       operador a dizer ao SEU proprio cliente a que no se liga. Nao ha atacante a
 #       controlar o destino.
@@ -92,6 +92,7 @@ packages/cmd/aos/authority_directory.go|G703
 packages/cmd/aos/broker_vault_env.go|G703
 packages/cmd/aos/cli.go|G704
 packages/cmd/aos/cli.go|G704
+packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703
 packages/cmd/aos/main.go|G703

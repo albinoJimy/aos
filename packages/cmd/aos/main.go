@@ -1188,18 +1188,21 @@ func parsePolicyTrustAnchor(raw string) (ed25519.PublicKey, error) {
 func parseWormAnchorFromEnv() (*WormAnchor, error) {
 	rawAnchor := strings.TrimSpace(os.Getenv("AOS_WORM_TRUST_ANCHOR"))
 	rawFile := strings.TrimSpace(os.Getenv("AOS_WORM_CHECKPOINT_FILE"))
-	rawHead := strings.TrimSpace(os.Getenv("AOS_WORM_EXPECTED_HEAD"))
+	rawHeads := strings.TrimSpace(os.Getenv("AOS_WORM_EXPECTED_HEADS_FILE"))
 
-	// AS TRÊS ausentes ⇒ não-ancorado (retro-compat). Config PARCIAL ⇒ aborta.
+	// CONTRATO ANTIGO, RECUSADO EM VOZ ALTA. `AOS_WORM_EXPECTED_HEAD` (singular, um decimal)
+	// ancorava UMA partição. Quem a tiver definida está a pedir uma cobertura que já não existe
+	// nessa forma, e degradar em silêncio para «sem âncora» seria o pior dos mundos: a env lá,
+	// o operador convencido, e nada a verificar.
+	if velho := strings.TrimSpace(os.Getenv("AOS_WORM_EXPECTED_HEAD")); velho != "" {
+		return nil, ErrWormExpectedHeadObsoleta
+	}
+
 	present := 0
-	if rawAnchor != "" {
-		present++
-	}
-	if rawFile != "" {
-		present++
-	}
-	if rawHead != "" {
-		present++
+	for _, v := range []string{rawAnchor, rawFile, rawHeads} {
+		if v != "" {
+			present++
+		}
 	}
 	if present == 0 {
 		return nil, nil
@@ -1214,24 +1217,50 @@ func parseWormAnchorFromEnv() (*WormAnchor, error) {
 	}
 	public := ed25519.PublicKey(b)
 
-	// A âncora assinada é lida de um FICHEIRO montado out-of-band (não do WORM). O JSON é o de
-	// [audit.Checkpoint] selado out-of-process pelo [audit.Signer] (campos exportados, EntryHash/
-	// Signature em base64 pelo encoding/json da stdlib — zero-dep).
 	raw, err := os.ReadFile(rawFile)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBadWormCheckpoint, err)
 	}
-	var cp audit.Checkpoint
-	if err := json.Unmarshal(raw, &cp); err != nil {
+	cps, err := parseCheckpoints(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(cps) == 0 {
+		return nil, fmt.Errorf("%w: ficheiro sem checkpoints", ErrBadWormCheckpoint)
+	}
+
+	rawHeadsBytes, err := os.ReadFile(rawHeads)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadWormExpectedHead, err)
+	}
+	var heads map[string]uint64
+	if err := json.Unmarshal(rawHeadsBytes, &heads); err != nil {
+		return nil, fmt.Errorf("%w: esperado JSON {\"particao\": audit_seq} (saida de `aos-issuer worm-seal --heads`): %v", ErrBadWormExpectedHead, err)
+	}
+	// TODA a partição ancorada tem de trazer piso. Sem ele, a âncora dessa partição seria
+	// verificada SEM frescura — e um checkpoint legítimo mas anterior passaria, que é exactamente
+	// o rollback que o piso existe para recusar.
+	for _, cp := range cps {
+		h, ok := heads[cp.Partition]
+		if !ok || h == 0 {
+			return nil, fmt.Errorf("%w: a particao %q tem checkpoint mas NAO tem piso de frescura", ErrBadWormExpectedHead, cp.Partition)
+		}
+	}
+	return &WormAnchor{Public: public, Checkpoints: cps, ExpectedHeads: heads}, nil
+}
+
+// parseCheckpoints aceita o ARRAY que `aos-issuer worm-seal` emite e, por conveniência, também um
+// objecto único — a forma que o contrato singular documentava.
+func parseCheckpoints(raw []byte) ([]audit.Checkpoint, error) {
+	var muitos []audit.Checkpoint
+	if err := json.Unmarshal(raw, &muitos); err == nil {
+		return muitos, nil
+	}
+	var um audit.Checkpoint
+	if err := json.Unmarshal(raw, &um); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBadWormCheckpoint, err)
 	}
-
-	head, err := strconv.ParseUint(rawHead, 10, 64)
-	if err != nil || head == 0 {
-		return nil, ErrBadWormExpectedHead
-	}
-
-	return &WormAnchor{Public: public, Checkpoint: cp, ExpectedHead: head}, nil
+	return []audit.Checkpoint{um}, nil
 }
 
 // parseBoardRegions interpreta a config DEMO-GRADE do registo board→região (AOS-172, D7) na
@@ -2141,3 +2170,14 @@ func splitCSV(s string) []string {
 	}
 	return out
 }
+
+// ErrWormExpectedHeadObsoleta — `AOS_WORM_EXPECTED_HEAD` (singular) já não é o contrato.
+//
+// Era um decimal e ancorava UMA partição; o WORM deste nó tem mais de uma centena. Substituiu-a
+// `AOS_WORM_EXPECTED_HEADS_FILE`, um JSON `{"particao": audit_seq}` — o que
+// `aos-issuer worm-seal --heads` emite.
+//
+// Recusa-se em voz alta em vez de se ignorar: uma env obsoleta ignorada deixa o operador
+// convencido de que ancorou o que não ancorou, e essa é a forma de falha que este projecto já
+// pagou caro uma vez (o banner a dizer ORACULO LIGADO sobre uma configuração inerte).
+var ErrWormExpectedHeadObsoleta = errors.New("aos: AOS_WORM_EXPECTED_HEAD (singular) foi SUBSTITUIDA por AOS_WORM_EXPECTED_HEADS_FILE — um ficheiro JSON {\"particao\": audit_seq}, gerado por `aos-issuer worm-seal --heads`. A forma singular ancorava UMA particao; as particoes deste WORM nascem por run e sao muitas. Remova a env antiga e monte o ficheiro")

@@ -67,6 +67,11 @@ func TestManifestoDeDeployPassaTodaAConfigQueONoLe(t *testing.T) {
 // A razão fica aqui e não num comentário do YAML porque é uma decisão de postura, e este teste é
 // quem a faz valer.
 var excluidasComRazao = map[string]string{
+	"AOS_WORM_EXPECTED_HEAD": "e OBSOLETA e o no le-a apenas para a RECUSAR " +
+		"(ErrWormExpectedHeadObsoleta). Passa-la no manifesto seria oferecer ao operador uma " +
+		"variavel cujo unico efeito possivel e impedir o arranque. Foi substituida por " +
+		"AOS_WORM_EXPECTED_HEADS_FILE, que da o piso de frescura POR PARTICAO; a forma singular " +
+		"ancorava UMA particao, e as deste WORM nascem por run.",
 	"AOS_ISSUER_KEY_PATH": "daria ao nó um caminho para uma CHAVE DE ASSINATURA. Este nó é " +
 		"trust-anchor-only (AOS-156) — nenhuma chave de assinatura entra no runtime, e é isso " +
 		"que faz com que código comprometido in-process não tenha material com que cunhar. " +
