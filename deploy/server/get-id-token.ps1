@@ -26,10 +26,18 @@
 .EXAMPLE
   # obter e LER um run (a prova que interessa)
   powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 -Run run-abc123
+
+.EXAMPLE
+  # a rota que atravessa TODOS os runs visiveis - a prova do anti-replay por `jti` (PR #96)
+  powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 -Simular
 #>
 [CmdletBinding()]
 param(
     [string]$Run     = "",
+    # -Simular: em vez de ler UM run, chama a rota de simulacao de autonomia, que atravessa TODOS
+    # os runs visiveis ao leitor. E a unica leitura que aplica a regra de residencia mais do que
+    # uma vez na mesma chamada â foi ai que o replay de `jti` mordia (PR #96).
+    [switch]$Simular,
     # -Cunhar <agente>: em vez de ler, autentica-se para CUNHAR uma NHI cuja raiz de delegacao e
     # o humano que se autenticar. A autenticacao fica LIGADA a esta delegacao pelo nonce.
     [string]$Cunhar  = "",
@@ -293,7 +301,61 @@ try {
     $tok = Obter-IdToken $Cliente (B64Url (Aleatorio 24))
     Mostrar-Claims $tok $false
 
-    if ($Run) {
+    if ($Simular) {
+        # A PROVA DO PR #96, e e uma prova que so producao pode dar.
+        #
+        # Esta rota atravessa TODOS os runs visiveis e aplicava a regra de residencia com uma
+        # RE-VERIFICACAO da credencial por cada run distinto. O no impoe anti-replay por `jti`:
+        # a segunda verificacao do MESMO token devolve replay. Resultado, antes da correccao:
+        # `avaliados: 0` — com a credencial certa, sem erro e sem log.
+        #
+        # A bateria nao via isto porque compunha o guardiao de leitura com `cred = nil`, o
+        # caminho legado por cabecalho, onde nao ha token para repetir.
+        #
+        # A PRIMEIRA VERSAO DESTE BLOCO ESTAVA ERRADA EM TRES PONTOS, e correu assim uma vez:
+        # fazia GET em vez de POST, pedia `/v1/autonomy/simular` quando a rota e
+        # `/autonomy/simular`, e lia um campo `mediacoes` que a resposta nao tem. O resultado
+        # vazio que produziu nao era um facto sobre o no — era o script a nao lhe chegar. Fica
+        # escrito porque uma prova que falha ao lado do alvo e pior do que nenhuma: parece
+        # evidencia.
+        #
+        # COMO SE LE O RESULTADO:
+        #   avaliados > 0                          -> a travessia por run NAO caiu em replay
+        #   avaliados = 0 e ha runs mediados       -> a regressao voltou
+        #   avaliados = 0 e nao ha runs mediados   -> INCONCLUSIVO; submeta um run que escale
+        Write-Host "`nA SIMULAR autonomia como este humano ..." -ForegroundColor Cyan
+        try {
+            $r = Invoke-WebRequest -Uri "$No/autonomy/simular" -Method POST `
+                -Headers @{ Authorization = "Bearer $tok" } `
+                -ContentType "application/json" -Body '{"max":200}' -UseBasicParsing
+            Write-Host ("  HTTP {0}" -f $r.StatusCode) -ForegroundColor Green
+            Write-Host $r.Content
+            try {
+                $j = $r.Content | ConvertFrom-Json
+                $n = [int]$j.avaliados
+                if ($n -gt 0) {
+                    Write-Host ("  avaliados={0}  correriam={1}  escalariam={2}" -f $n, $j.correriam, $j.escalariam) -ForegroundColor Green
+                    Write-Host "  A travessia por run NAO caiu em replay — o PR #96 esta vivo neste no." -ForegroundColor Green
+                } else {
+                    Write-Host "  avaliados=0. Isto e INCONCLUSIVO, nao e prova de avaria:" -ForegroundColor Yellow
+                    Write-Host "    - se nao houve tool calls seladas, zero e a resposta CERTA;" -ForegroundColor DarkGray
+                    Write-Host "    - se houve, entao a travessia por run voltou a cair em replay." -ForegroundColor DarkGray
+                    Write-Host "  Submeta um run com tool calls e volte a correr (o token gasta-se: obtenha outro)." -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "  (resposta nao e o JSON esperado — leia o corpo acima)" -ForegroundColor DarkGray
+            }
+        } catch {
+            $cod = $_.Exception.Response.StatusCode.value__
+            Write-Host ("  HTTP {0}" -f $cod) -ForegroundColor Yellow
+            switch ($cod) {
+                403 { Write-Host "  403: a credencial nao foi aceite. Se ja usou este token, ESTA GASTO (anti-replay por jti)." -ForegroundColor DarkGray }
+                404 { Write-Host "  404: rota inexistente neste no — confirme o path (/autonomy/simular, sem /v1)." -ForegroundColor DarkGray }
+                405 { Write-Host "  405: metodo errado — esta rota e POST." -ForegroundColor DarkGray }
+                501 { Write-Host "  501: governanca soberana ou WORM nao compostos neste no." -ForegroundColor DarkGray }
+            }
+        }
+    } elseif ($Run) {
         Write-Host "`nA LER $Run como este humano ..." -ForegroundColor Cyan
         # O no em :8444 tem certificado publico (Let's Encrypt) - validacao normal, sem fixacao.
         try {
@@ -309,7 +371,7 @@ try {
             }
         }
     } else {
-        Write-Host "`n(sem -Run: token obtido e descartado, nao foi gravado em lado nenhum)" -ForegroundColor DarkGray
+        Write-Host "`n(sem -Run nem -Simular: token obtido e descartado, nao foi gravado em lado nenhum)" -ForegroundColor DarkGray
     }
 }
 finally {
