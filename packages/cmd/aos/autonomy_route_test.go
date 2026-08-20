@@ -668,13 +668,37 @@ func TestSimulacaoVerificaACredencialUMAVez(t *testing.T) {
 		}
 	}
 
+	// PELO INVÓLUCRO REAL, e não chamando o handler à mão.
+	//
+	// A versão anterior chamava `handleAutonomySimular` directamente. Passava — mas passava por
+	// acidente: sem invólucro não há memo do leitor, logo cada autorização ia mesmo ao
+	// verificador e `verificoes` contava a verdade. No dia em que alguém encaminhasse este teste
+	// pelo mux, o memo absorveria as repetições e a prova ficava muda SEM UMA LINHA MUDAR.
+	//
+	// Agora vai pelo caminho de produção e mede as DUAS coisas: quantas vezes o verificador foi
+	// chamado, e quantas vezes ALGUÉM PEDIU para verificar outra vez. A segunda é a que continua
+	// a morder quando o memo está lá.
+	h.ctrlBucket = &tokenBucket{}
+	var repetidas int
+	envolvido := h.barreirasDe(planoControlo, func(w http.ResponseWriter, r *http.Request) {
+		h.handleAutonomySimular(w, r)
+		if m := memoDe(r); m != nil {
+			repetidas = m.repetidas
+		}
+	})
+
 	w := httptest.NewRecorder()
-	h.handleAutonomySimular(w, httptest.NewRequest("POST", "/autonomy/simular",
+	envolvido(w, httptest.NewRequest("POST", "/autonomy/simular",
 		strings.NewReader(`{"levels":"","default":"L4","max":50}`)))
 	if w.Code != http.StatusOK {
 		t.Fatalf("simular: %d %s", w.Code, w.Body.String())
 	}
 
+	if repetidas != 0 {
+		t.Errorf("a rota PEDIU %d re-verificacao(oes) da credencial no mesmo pedido — o memo "+
+			"impede que isso custe em producao, mas a travessia por run continua errada e em "+
+			"qualquer caminho sem memo volta a devolver `avaliados: 0` em silencio", repetidas)
+	}
 	if cred.verificoes != 1 {
 		t.Errorf("a credencial foi verificada %d vezes — com anti-replay por jti, a segunda falha "+
 			"e o historico desaparece em silencio", cred.verificoes)

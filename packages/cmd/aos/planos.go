@@ -128,7 +128,7 @@ func (h *apiHandler) barreirasDe(p plano, next http.HandlerFunc) http.HandlerFun
 			if !h.admitControl(w) {
 				return
 			}
-			next(w, r)
+			next(w, comMemoLeitor(r))
 		}
 	case planoControlo:
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -138,11 +138,13 @@ func (h *apiHandler) barreirasDe(p plano, next http.HandlerFunc) http.HandlerFun
 			if !h.admitControlMTLS(w, r) {
 				return
 			}
-			next(w, r)
+			next(w, comMemoLeitor(r))
 		}
 	default:
-		// planoAberto e planoDados: sem barreira no invólucro, pelas razões escritas em cada um.
-		return next
+		// planoAberto e planoDados: sem barreira de ADMISSÃO no invólucro, pelas razões escritas em
+		// cada um — mas o memo do leitor entra na mesma, porque a propriedade que ele defende não é
+		// de admissão e vale para TODAS as rotas.
+		return func(w http.ResponseWriter, r *http.Request) { next(w, comMemoLeitor(r)) }
 	}
 }
 

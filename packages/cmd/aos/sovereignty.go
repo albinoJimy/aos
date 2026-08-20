@@ -125,7 +125,7 @@ func newReadGovernance(regions boardRegionResolver, cred readCredentialVerifier,
 // board resolve para uma região autorizada; caso contrário (_, false) — NEGA fail-closed. NÃO
 // revela PII nem a existência de qualquer run (a decisão depende só dos headers do leitor e do
 // registo GOV, nunca do run pedido).
-func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
+func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool) {
 	var principal, board string
 	if g.cred != nil {
 		// CREDENCIAL FORTE (AOS-205): o principal e o board vêm das CLAIMS VERIFICADAS do
@@ -362,4 +362,30 @@ func (h *apiHandler) sealSensitiveRead(w http.ResponseWriter, r *http.Request, i
 		return false
 	}
 	return true
+}
+
+// authorize resolve a identidade do leitor, VERIFICANDO A CREDENCIAL UMA VEZ POR PEDIDO.
+//
+// O corpo real está em [readGovernance.autorizarSemMemo]; esta camada só decide se é preciso
+// correr. Ver [memoLeitor] para o porquê — e para a razão pela qual isto NÃO enfraquece o
+// anti-replay entre pedidos.
+//
+// Sem memo no contexto (pedido construído à mão, contexto derivado), verifica como sempre
+// verificou: degrada para o comportamento anterior, nunca para «aceita sem verificar».
+func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
+	m := memoDe(r)
+	if m == nil {
+		return g.autorizarSemMemo(r)
+	}
+	if m.feito {
+		// SEGUNDA chamada no MESMO pedido. Contá-la é deliberado: a repetição continua a ser um
+		// erro de desenho, e o memo só impede que se pague em PRODUÇÃO. Sem este contador, um
+		// teste que afirme «a credencial foi verificada uma vez» passaria a passar mesmo com a
+		// travessia repetida de volta — o memo absorveria a prova junto com o defeito.
+		m.repetidas++
+		return m.id, m.ok
+	}
+	id, ok := g.autorizarSemMemo(r)
+	m.feito, m.id, m.ok = true, id, ok
+	return id, ok
 }
