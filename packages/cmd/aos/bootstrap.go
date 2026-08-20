@@ -1528,7 +1528,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// declaram um bloco `sandbox`. Vazio ⇒ EffectRewriter nil (comportamento inalterado). O
 	// rewriter traduz args→ExecRequest no dispatcher (onde há RunID/StepID reais); o registo
 	// dos MediatedLaunchers no RM faz-se A SEGUIR (precisa de sec.Monitor()). Ver sandboxwiring.go.
-	sandboxBindings, err := sandboxBindingsFromEnv()
+	sandboxBindings, sandboxSemExecutor, err := sandboxBindingsFromEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -1650,7 +1650,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// binding NO RM do nó (sec.Monitor()) — no-bypass estrutural. Só agora, porque precisa do RM
 	// já construído. Casado com o EffectRewriter acima, fecha o caminho args→ExecRequest→sandbox
 	// para o loop live. Vazio ⇒ no-op. Fail-closed: uma falha de registo aborta o arranque.
-	if err := registerSandboxLaunchers(sec, es, sandboxBindings, log); err != nil {
+	if err := registerSandboxLaunchers(sec, es, sandboxBindings, sandboxSemExecutor, log); err != nil {
 		return nil, err
 	}
 
