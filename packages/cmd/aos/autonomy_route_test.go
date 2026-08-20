@@ -617,3 +617,72 @@ func TestSimulacaoNaoAtravessaRegioes(t *testing.T) {
 		t.Errorf("o leitor dos EUA devia ver run-us e nao run-eu: %s", r2)
 	}
 }
+
+// credencialDeUmaVez imita o ANTI-REPLAY por `jti` do verificador OIDC: a primeira verificação
+// passa, as seguintes devolvem replay — que é o que [oidc.Verifier.checkReplay] faz ao marcar o
+// token como usado.
+type credencialDeUmaVez struct {
+	board      string
+	verificoes int
+}
+
+func (c *credencialDeUmaVez) verify(context.Context, *http.Request) (string, string, error) {
+	c.verificoes++
+	if c.verificoes > 1 {
+		return "", "", errors.New("oidc: token reutilizado (replay de jti)")
+	}
+	return "human:auditor", c.board, nil
+}
+
+// TestSimulacaoVerificaACredencialUMAVez é o teste que faltava — e a sua ausência escondeu um
+// defeito que teria tornado a rota INÚTIL em produção.
+//
+// A primeira versão do filtro de região chamava `authorizeRead` por CADA run distinto, e isso
+// re-verifica a credencial de cada vez. Com a credencial OIDC — a de produção — o verificador tem
+// anti-replay por `jti`: a verificação do handler consome-o e todas as seguintes falham como
+// replay. A rota teria devolvido `avaliados: 0` sempre, e em silêncio.
+//
+// Os testes existentes não o viam porque compunham o gate com `cred = nil` (a via LEGADA de
+// headers), que nunca chama o verificador. Testavam o caminho que produção não usa.
+func TestSimulacaoVerificaACredencialUMAVez(t *testing.T) {
+	h, _, worm := noParaTeste(t)
+	cred := &credencialDeUmaVez{board: "board:eu"}
+	h.readGov = newReadGovernance(regioesFixas{"board:eu": "eu"}, cred, worm, time.Now)
+	ctx := t.Context()
+
+	// DOIS runs distintos, ambos da região do leitor: o filtro tem de os ver aos dois.
+	for _, run := range []string{"run-a", "run-b"} {
+		if _, err := worm.Append(ctx, audit.AuditRecord{
+			Partition: "gov.residency/" + run,
+			Resource:  audit.Resource{Type: "run", Value: run, Region: "eu"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := worm.Append(ctx, audit.AuditRecord{
+			Partition: run, RunID: run, StepID: "s1", ToolID: "doc_read",
+			Capability: "cap:fs.read",
+			Principal:  audit.Principal{NHIID: "agt-" + run},
+			Resource:   audit.Resource{Type: "file", Value: "doc://" + run, Region: "eu"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	h.handleAutonomySimular(w, httptest.NewRequest("POST", "/autonomy/simular",
+		strings.NewReader(`{"levels":"","default":"L4","max":50}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("simular: %d %s", w.Code, w.Body.String())
+	}
+
+	if cred.verificoes != 1 {
+		t.Errorf("a credencial foi verificada %d vezes — com anti-replay por jti, a segunda falha "+
+			"e o historico desaparece em silencio", cred.verificoes)
+	}
+	corpo := w.Body.String()
+	for _, run := range []string{"run-a", "run-b"} {
+		if !strings.Contains(corpo, run) {
+			t.Errorf("o run %q da REGIAO DO LEITOR desapareceu da simulacao: %s", run, corpo)
+		}
+	}
+}

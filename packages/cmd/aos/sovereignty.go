@@ -178,20 +178,44 @@ func (g *readGovernance) authorizeRead(ctx context.Context, r *http.Request, run
 	if !ok {
 		return readerIdentity{}, "", false
 	}
-	region, sealed, err := g.runResidency(ctx, runID)
-	if err != nil {
-		// Falha ao resolver a residência do run ⇒ NEGA fail-closed (nunca se serve na dúvida).
-		return readerIdentity{}, "", false
-	}
-	if !sealed {
-		// Run sem residência selada (legado) ⇒ sem check cross-region (retro-compat).
-		return id, "", true
-	}
-	if !regionsCoincide(id.region, region) {
-		// CROSS-REGION: leitor de região != residência do run ⇒ NEGA (nunca servido).
+	region, ok := g.podeLerRun(ctx, id, runID)
+	if !ok {
 		return readerIdentity{}, "", false
 	}
 	return id, region, true
+}
+
+// podeLerRun aplica a REGRA DE RESIDÊNCIA a uma identidade JÁ VERIFICADA.
+//
+// Está separada de [readGovernance.authorizeRead] por uma razão concreta, e não por arrumação: há
+// caminhos que precisam de decidir sobre MUITOS runs a partir de UMA credencial, e re-verificar a
+// credencial por cada run é impossível — o verificador OIDC tem anti-replay por `jti`
+// ([oidc.Verifier.checkReplay] marca o token como usado), pelo que a SEGUNDA verificação do mesmo
+// pedido devolve `ErrTokenReplayed`.
+//
+// Foi exactamente o que aconteceu ao `POST /autonomy/simular` quando o escrevi: autenticava uma
+// vez, e depois chamava `authorizeRead` por cada run distinto. Em produção — onde a credencial é
+// OIDC — a primeira chamada consumia o `jti` e TODAS as seguintes falhavam como replay, pelo que a
+// resposta seria `avaliados: 0` sempre, e em silêncio. O teste não o apanhou porque compunha o
+// gate pela via LEGADA de headers, que nunca chama o verificador.
+//
+// A regra fica AQUI e não duplicada: quem tem a identidade verificada pergunta por run, e a
+// resposta é a mesma que o `GET /runs/{id}` daria.
+func (g *readGovernance) podeLerRun(ctx context.Context, id readerIdentity, runID string) (string, bool) {
+	region, sealed, err := g.runResidency(ctx, runID)
+	if err != nil {
+		// Falha ao resolver a residência do run ⇒ NEGA fail-closed (nunca se serve na dúvida).
+		return "", false
+	}
+	if !sealed {
+		// Run sem residência selada (legado) ⇒ sem check cross-region (retro-compat).
+		return "", true
+	}
+	if !regionsCoincide(id.region, region) {
+		// CROSS-REGION: leitor de região != residência do run ⇒ NEGA (nunca servido).
+		return "", false
+	}
+	return region, true
 }
 
 // regionsCoincide compara duas regiões de governação. Ambas são saídas de [govsov.Registry.RegionFor]
