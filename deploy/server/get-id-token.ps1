@@ -26,10 +26,18 @@
 .EXAMPLE
   # obter e LER um run (a prova que interessa)
   powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 -Run run-abc123
+
+.EXAMPLE
+  # a rota que atravessa TODOS os runs visiveis - a prova do anti-replay por `jti` (PR #96)
+  powershell -ExecutionPolicy Bypass -File deploy\server\get-id-token.ps1 -Simular
 #>
 [CmdletBinding()]
 param(
     [string]$Run     = "",
+    # -Simular: em vez de ler UM run, chama a rota de simulacao de autonomia, que atravessa TODOS
+    # os runs visiveis ao leitor. E a unica leitura que aplica a regra de residencia mais do que
+    # uma vez na mesma chamada â foi ai que o replay de `jti` mordia (PR #96).
+    [switch]$Simular,
     # -Cunhar <agente>: em vez de ler, autentica-se para CUNHAR uma NHI cuja raiz de delegacao e
     # o humano que se autenticar. A autenticacao fica LIGADA a esta delegacao pelo nonce.
     [string]$Cunhar  = "",
@@ -293,7 +301,53 @@ try {
     $tok = Obter-IdToken $Cliente (B64Url (Aleatorio 24))
     Mostrar-Claims $tok $false
 
-    if ($Run) {
+    if ($Simular) {
+        # A PROVA DO PR #96, e e uma prova que so producao pode dar.
+        #
+        # Esta rota atravessa TODOS os runs visiveis e aplicava a regra de residencia com uma
+        # RE-VERIFICACAO da credencial por cada run distinto. O no impoe anti-replay por `jti`:
+        # a segunda verificacao do MESMO token devolve replay. Resultado, antes da correccao:
+        # a lista saia VAZIA — com a credencial certa, sem erro, sem log.
+        #
+        # A bateria nao via isto porque compunha o guardiao de leitura com `cred = nil`, o
+        # caminho legado por cabecalho, onde nao ha token para repetir.
+        #
+        # COMO SE LE O RESULTADO:
+        #   mediacoes com pelo menos UMA entrada  -> a correccao esta viva neste no
+        #   mediacoes VAZIA e ha runs mediados    -> a regressao voltou
+        #   mediacoes VAZIA e nao ha runs mediados-> inconclusivo; submeta um run que escale
+        #
+        # O terceiro caso e o que torna esta prova honesta: uma lista vazia NAO e, por si so,
+        # sinal de avaria. Por isso o script diz qual dos tres esta a ver, em vez de cantar
+        # vitoria por o HTTP ser 200.
+        Write-Host "`nA SIMULAR autonomia como este humano ..." -ForegroundColor Cyan
+        try {
+            $r = Invoke-WebRequest -Uri "$No/v1/autonomy/simular" -Headers @{ Authorization = "Bearer $tok" } -UseBasicParsing
+            Write-Host ("  HTTP {0}" -f $r.StatusCode) -ForegroundColor Green
+            Write-Host $r.Content
+            try {
+                $j = $r.Content | ConvertFrom-Json
+                $n = @($j.mediacoes).Count
+                if ($n -gt 0) {
+                    Write-Host ("  {0} mediacao(oes) visiveis — a travessia por run NAO caiu em replay." -f $n) -ForegroundColor Green
+                } else {
+                    Write-Host "  LISTA VAZIA. Isto e inconclusivo, nao e prova de avaria:" -ForegroundColor Yellow
+                    Write-Host "    · se nao houve runs que escalassem, vazio e a resposta CERTA;" -ForegroundColor DarkGray
+                    Write-Host "    · se houve, entao a travessia por run voltou a cair em replay." -ForegroundColor DarkGray
+                    Write-Host "  Submeta um run que escale e volte a correr — o token gasta-se, obtenha outro." -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "  (resposta nao e JSON de mediacoes — leia o corpo acima)" -ForegroundColor DarkGray
+            }
+        } catch {
+            $cod = $_.Exception.Response.StatusCode.value__
+            Write-Host ("  HTTP {0}" -f $cod) -ForegroundColor Yellow
+            if ($cod -eq 404) {
+                Write-Host "  404 e UNIFORME nesta rota tambem: sem credencial aceite, 'nao ha' e" -ForegroundColor DarkGray
+                Write-Host "  'nao te mostro' sao indistinguiveis. Se ja usou este token, ele ESTA GASTO." -ForegroundColor DarkGray
+            }
+        }
+    } elseif ($Run) {
         Write-Host "`nA LER $Run como este humano ..." -ForegroundColor Cyan
         # O no em :8444 tem certificado publico (Let's Encrypt) - validacao normal, sem fixacao.
         try {
@@ -309,7 +363,7 @@ try {
             }
         }
     } else {
-        Write-Host "`n(sem -Run: token obtido e descartado, nao foi gravado em lado nenhum)" -ForegroundColor DarkGray
+        Write-Host "`n(sem -Run nem -Simular: token obtido e descartado, nao foi gravado em lado nenhum)" -ForegroundColor DarkGray
     }
 }
 finally {
