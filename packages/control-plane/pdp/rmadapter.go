@@ -59,6 +59,15 @@ func (c *PolicyCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookResul
 		}, nil
 	}
 
+	return paraRM(dec), nil
+}
+
+// paraRM converte a decisão do PDP para o modelo do Reference Monitor.
+//
+// Está extraída do [PolicyCheck.Evaluate] porque cada ramo encerra uma DECISÃO — o que
+// atravessa a fronteira e o que fica — e essas decisões merecem ser exercitáveis sem montar
+// um PDP inteiro. Foi num destes ramos que a obrigação da escalada se perdia.
+func paraRM(dec Decision) rm.HookResult {
 	switch dec.Effect {
 	case Permit:
 		return rm.HookResult{
@@ -66,19 +75,34 @@ func (c *PolicyCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookResul
 			Reason:        dec.Reason,
 			Obligations:   toRMObligations(dec.Obligations),
 			PolicyVersion: dec.PolicyVersion,
-		}, nil
+		}
 	case Escalate:
 		return rm.HookResult{
-			Decision:      rm.HookEscalate,
-			Reason:        dec.Reason,
+			Decision: rm.HookEscalate,
+			Reason:   dec.Reason,
+			// AS OBRIGAÇÕES VIAJAM TAMBÉM NA ESCALADA. A de autonomia traz o nível, o domínio, o
+			// modo de oversight e a classe de risco — a resposta ESTRUTURADA ao «porquê» que esta
+			// decisão precisa de deixar no trilho. `applyAutonomy` anexa-a ANTES de rebaixar o
+			// efeito, e este ramo deitava-a fora: o selo saía com `Obligations: null` e a razão só
+			// em TEXTO LIVRE. Observado em produção a 2026-08-19 — um auditor que percorra
+			// obrigações via as autorizações e NÃO via as escaladas.
+			//
+			// Registar NÃO é impor: no RM, uma escalada regista e devolve ANTES de
+			// `enforceObligations`, que só corre no caminho de permit. Ver [Monitor.fail].
+			//
+			// O ramo de DENY continua a NÃO as levar, e é deliberado: `applyAutonomy` só corre
+			// sobre uma base permit, pelo que ali não existe obrigação de autonomia — e registar as
+			// da base (redacção, ttl) sobre uma acção que NÃO aconteceu sugeriria que algo lhes foi
+			// aplicado.
+			Obligations:   toRMObligations(dec.Obligations),
 			PolicyVersion: dec.PolicyVersion,
-		}, nil
+		}
 	default: // Deny e qualquer efeito não reconhecido → fail-closed.
 		return rm.HookResult{
 			Decision:      rm.HookDeny,
 			Reason:        dec.Reason,
 			PolicyVersion: dec.PolicyVersion,
-		}, nil
+		}
 	}
 }
 

@@ -281,7 +281,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	//    é [DefaultHooks]; [WithHooks] com cadeia vazia é misconfiguração).
 	if len(m.hooks) == 0 {
 		return m.fail(ctx, call, EffectDeny, CodeEmptyHookChain, "config",
-			"cadeia de hooks vazia (fail-closed)", start, ""), nil
+			"cadeia de hooks vazia (fail-closed)", nil, start, ""), nil
 	}
 
 	// 1) Cadeia de hooks pela ordem fornecida (ver [WithHooks]; a ordem canónica
@@ -300,19 +300,19 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		}
 		switch {
 		case err != nil:
-			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), start, policyVersion), nil
+			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), nil, start, policyVersion), nil
 		case res.Decision == HookDeny:
 			reason := res.Reason
 			if reason == "" {
 				reason = fmt.Sprintf("negado por %q", h.Name())
 			}
-			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, start, policyVersion), nil
+			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, nil, start, policyVersion), nil
 		case res.Decision == HookEscalate:
 			reason := res.Reason
 			if reason == "" {
 				reason = fmt.Sprintf("escalado por %q", h.Name())
 			}
-			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, start, policyVersion), nil
+			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, res.Obligations, start, policyVersion), nil
 		}
 		obligations = append(obligations, res.Obligations...)
 	}
@@ -322,7 +322,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	_, registered := m.tools[call.ToolID]
 	m.mu.RUnlock()
 	if !registered {
-		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", start, policyVersion), nil
+		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", nil, start, policyVersion), nil
 	}
 
 	// 2.5) ENFORCEMENT DE OBRIGAÇÕES ANTES DO EFEITO (AOS-087, AC4). O PEP não só
@@ -333,7 +333,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	//    Corre ANTES do audit-before-effect para que uma violação seja registada como
 	//    deny (via fail), e ANTES do dispatch para que nenhum efeito viole a obrigação.
 	if reason, ok := enforceObligations(&call, obligations); !ok {
-		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, start, policyVersion), nil
+		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, nil, start, policyVersion), nil
 	}
 
 	// 3) Auditoria ANTES do efeito (audit-before-effect). Se falhar, fail-closed.
@@ -349,7 +349,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	if err != nil {
 		// Uma acção não-auditável não é permitida (ADR-002/010).
 		d := m.fail(ctx, call, EffectDeny, CodeAuditUnavailable, "audit-sink",
-			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), start, policyVersion)
+			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), nil, start, policyVersion)
 		return d, nil
 	}
 
@@ -376,7 +376,20 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 // fail constrói uma Decision de negação/escalonamento, grava o evento
 // correspondente (best-effort — a negação nunca deve ser bloqueada por uma
 // falha de registo) e actualiza métricas. Nunca despacha a tool.
-func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, start time.Time, policyVersion string) Decision {
+// O parâmetro `obligations` é EXPLÍCITO e não tem valor por omissão: cada sítio que recusa tem
+// de DECIDIR se o registo leva obrigações. É a mesma disciplina do valor-zero das rotas — obrigar
+// a escolher em vez de deixar o esquecimento produzir silêncio.
+//
+// PORQUE ISTO EXISTE. Uma ESCALADA de autonomia carrega uma obrigação `autonomy` com o nível, o
+// domínio, o modo de oversight e a classe de risco — a resposta estruturada à pergunta «porquê».
+// Ela chegava até aqui e morria: o registo saía com `Obligations: null` e a razão só em TEXTO
+// LIVRE. Observado em produção a 2026-08-19: um auditor que percorra obrigações via as
+// autorizações e NÃO via as escaladas.
+//
+// Registar não é impor: no caminho de recusa esta função devolve ANTES de `enforceObligations`,
+// que só corre no permit. Acrescentar obrigações ao REGISTO não pode, por construção, mudar o que
+// o nó deixa acontecer.
+func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, obligations []Obligation, start time.Time, policyVersion string) Decision {
 	latency := m.now().Sub(start)
 	// Registo best-effort: em deny/escalate o efeito já está bloqueado, pelo que
 	// uma falha de auditoria não altera a decisão (contrasta com o permit path).
@@ -388,6 +401,7 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		Resource: call.Resource, Context: call.Context,
 		Principal: call.Principal, Latency: latency,
 		PolicyVersion: policyVersion,
+		Obligations:   obligations,
 	})
 	if eff == EffectEscalate {
 		m.metrics.Escalations.Add(1)
