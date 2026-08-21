@@ -1135,12 +1135,27 @@ provado é que a métrica **lê** o campo, não que o varredor o **escreve**.
    apareceria infinita num nó que ainda não mediu coisa nenhuma. É por processo, não durável — um
    restart repõe-o, e a pergunta que a métrica responde («este tecto chega a apertar?»)
    responde-se com dias de observação, não com histórico eterno.
-13. **A auditoria não regista quem aprovou.** Uma cerimónia *four-eyes* sela na hash-chain que
-   **um** gate humano foi satisfeito (`human_gate: "satisfied"`), mas não **quem** o satisfez: as
-   identidades dos aprovadores e o `request_id` do grant não aparecem no `worm.wal`. Para uma
-   autorização cujo propósito é o não-repúdio, é a peça que falta. Detalhe e evidência em
-   [`../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md`](../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md).
+13. ~~**A auditoria não regista quem aprovou.**~~ **RESOLVIDO — e provado a 2026-08-21.** A
+   cerimónia *four-eyes* sela em `governance.control` as **identidades dos aprovadores**
+   (`four_eyes.approvers`) e o **id do grant** (`four_eyes.grant`), a par do
+   `human_gate: "satisfied"` que o PDP já registava.
 
+   **O código já o fazia; o que faltava era a prova — e este documento dizia o contrário.** Os
+   três estados discordavam: o handler preenchia, nenhum teste o exercitava, e a §13 declarava a
+   lacuna aberta. Nenhum deles é inofensivo: uma lacuna **inventada** trava a mesma acção que uma
+   escondida, e uma correcção **sem prova** é uma que a próxima refactorização apaga sem ninguém
+   notar. Para uma autorização cujo propósito **é** o não-repúdio, esta é a propriedade central.
+
+   Três testes, com as mutações a cair: selar sem nomear os aprovadores; a obrigação a devolver
+   vazio; e selar **também** as recusas — que inflaria a cadeia com avales que não houve.
+
+   **Limite declarado:** o selo nomeia identidades e nada mais. A assinatura e o challenge da
+   perna **não** entram na cadeia (há um teste que o exige): são material de autenticação, e a
+   hash-chain é lida por quem tem autoridade de **auditoria**, que não é a mesma coisa que
+   autoridade para reapresentar uma prova.
+
+   Contexto original em
+   [`../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md`](../../docs/reports/auditoria-2026-08-17-plano-de-dados-em-producao.md).
 > 🔍 **Nota de método, porque me enganou primeiro.** Contar partições no `worm.wal` com
 > `grep -ao '"Partition":"[^"]*"'` devolve **69** — e está errado. O WAL é binário enquadrado, e o
 > `grep` processa-o por linhas: registos cujo enquadramento parte a linha antes do padrão
