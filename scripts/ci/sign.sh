@@ -79,7 +79,20 @@ skip_declared() {
 
 OUT_DIR="${1:-$REPO_ROOT/deploy/node/build}"
 IMAGE_TAG="${IMAGE_TAG:-aos-node:local}"
-ROSTER="${AOS_RELEASE_PUBKEYS:-$REPO_ROOT/deploy/node/release-pubkeys.json}"
+# A ÂNCORA DE CONFIANÇA NÃO SE DESVIA EM CI (AOS-199).
+#
+# `AOS_RELEASE_PUBKEYS` decide CONTRA QUE CHAVES a assinatura é verificada. Sem guarda, quem a
+# definisse apontava a verificação para um roster próprio e obtinha VERDE sobre um envelope
+# forjado — demonstrado a 2026-08-21: statement a atestar uma imagem inexistente, assinado por
+# chave de atacante, `EXIT=0` contra o roster do atacante e `EXIT=1` contra o real.
+#
+# O `gate_path` existia para isto e a sua docstring nomeia cinco gates candidatos à adopção. O
+# roster da assinatura NÃO estava entre eles: o botão mais consequente da cadeia nunca chegou à
+# lista. Passa a estar, e é o primeiro a adoptá-lo.
+#
+# Fora de CI o desvio continua a ser aceite — é como se testa um roster novo antes de o commitar.
+gate_path AOS_RELEASE_PUBKEYS "$REPO_ROOT/deploy/node/release-pubkeys.json" || exit 4
+ROSTER="$AOS_RELEASE_PUBKEYS"
 KEY_FILE="${AOS_RELEASE_KEY_FILE:-}"
 
 PROV="$OUT_DIR/provenance.json"

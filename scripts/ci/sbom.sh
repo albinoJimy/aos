@@ -52,8 +52,36 @@ IMAGE_TAG="${IMAGE_TAG:-aos-node:local}"
 mkdir -p "$OUT_DIR"
 
 # Bases pinadas por digest (têm de casar com deploy/node/Dockerfile — proveniência honesta).
-BUILDER_IMAGE="golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40"
+BUILDER_IMAGE="golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48"
 RUNTIME_IMAGE="gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35"
+
+# --- GATE: a proveniência tem de declarar as imagens que o Dockerfile USA ----------------------
+#
+# O DEFEITO QUE ISTO FECHA, descoberto a 2026-08-21: o Dockerfile constrói com
+# `golang:1.25.13` e esta proveniência — ASSINADA — declarava `golang:1.24.5`. Assim desde a
+# v0.1.2. O comentário acima dizia «têm de casar com deploy/node/Dockerfile»: era uma frase, não
+# um gate, e duas actualizações do Go passaram por cima dela.
+#
+# É pior do que não ter proveniência: o campo mais consequente de uma atestação SLSA — com que
+# toolchain isto foi construído — fica criptograficamente AUTENTICADO e materialmente FALSO. Quem
+# pergunte «este binário tem as CVEs da stdlib do 1.24.5?» consultando a atestação obtém a
+# resposta errada com assinatura válida por cima.
+#
+# A imagem de runtime CASAVA, o que tornava o desalinhamento mais fácil de não ver — e é por isso
+# que o gate compara as DUAS.
+_df="$REPO_ROOT/deploy/node/Dockerfile"
+_df_builder="$( grep -m1 -E '^FROM .* AS builder$' "$_df" | sed -E 's/^FROM +([^ ]+) +AS builder$/\1/' )"
+_df_runtime="$( grep -E '^FROM ' "$_df" | tail -1 | sed -E 's/^FROM +([^ ]+).*$/\1/' )"
+if [ "$_df_builder" != "$BUILDER_IMAGE" ]; then
+  echo "FAIL proveniência DESALINHADA (builder): o Dockerfile usa '$_df_builder' e a proveniência assinada declararia '$BUILDER_IMAGE'" >&2
+  echo "     Uma atestação que declara a toolchain errada é uma afirmação FALSA com assinatura válida." >&2
+  exit 1
+fi
+if [ "$_df_runtime" != "$RUNTIME_IMAGE" ]; then
+  echo "FAIL proveniência DESALINHADA (runtime): o Dockerfile usa '$_df_runtime' e a proveniência assinada declararia '$RUNTIME_IMAGE'" >&2
+  exit 1
+fi
+unset _df _df_builder _df_runtime
 
 log_gate "sbom · binário estático + SBOM + proveniência (ADR-017 ponto 3; assina-se em sign.sh)"
 

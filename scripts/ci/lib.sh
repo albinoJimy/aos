@@ -438,6 +438,25 @@ discover_modules() {
     if [ -n "${AOS_EXTRA_GATE_MODULES:-}" ]; then
       printf '%s\n' ${AOS_EXTRA_GATE_MODULES}
     fi
+# O VERIFICADOR DA PRÓPRIA CADEIA ENTRA SEMPRE, e não pelo knob opt-in acima.
+#
+# `scripts/ci/attest` é o binário que RECUSA um envelope DSSE inválido — a única peça da entrega
+# cuja função é dizer «não». Vive fora de `packages/`, pelo que a descoberta nunca o via, e os
+# únicos usos dele em toda a cadeia são `go build` (sign.sh, verify-attestation.sh), nunca
+# `go test`.
+#
+# CONSEQUÊNCIA MEDIDA a 2026-08-21: neutralizar a verificação da assinatura (a) É apanhado pelos
+# 12 controlos negativos do módulo — não são vacuosos; (b) COMPILA, que é tudo o que a cadeia
+# fazia; (c) o binário mutado aceita uma falsificação total contra o roster REAL de produção, com
+# assinatura de 64 bytes de zeros. Ou seja: uma alteração que transformava o verificador de
+# release num carimbo passava os 26 gates.
+#
+# Não entra por `AOS_EXTRA_GATE_MODULES` de propósito: esse knob é para módulos que SHIPAM e a CI
+# global deliberadamente não o define. Este não shipa — guarda o que shipa —, e tem de correr
+# SEMPRE, incluindo na CI global.
+    if [ -f "$REPO_ROOT/scripts/ci/attest/go.mod" ]; then
+      printf '%s\n' "scripts/ci/attest"
+    fi
   } | sort
 }
 
