@@ -2,6 +2,8 @@ package modelgateway
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -113,8 +115,37 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	if err != nil {
 		return agentruntime.ModelResponse{}, err
 	}
-	return translateResponse(resp), nil
+	return translateResponse(resp)
 }
+
+// ErrRespostaSemChoices — o gateway devolveu 200 e o corpo não produziu nenhuma escolha.
+//
+// O DEFEITO QUE ISTO FECHA, encontrado na varredura adversarial de 2026-08-21. O tradutor tratava
+// `len(Choices) == 0` como um turno FINAL sem erro, e a cadeia a jusante selava o run como
+// CONCLUÍDO COM SUCESSO:
+//
+//	Choices vazio ⇒ Final=true, err=nil ⇒ res.Terminated ⇒ running → complete (run_complete)
+//
+// Reproduzido pela função de composição de produção com cinco corpos diferentes — incluindo um
+// PAYLOAD DE ERRO do provider devolvido com 200, que é o que proxies compatíveis com OpenAI fazem.
+// Sem compensação (a saga só dispara a partir de `failed`) e sem sinal para o operador: no log
+// durável, a avaria era indistinguível de um run que respondeu e concluiu.
+//
+// PORQUE É ERRO E NÃO CONCLUSÃO. Uma resposta de chat bem-formada tem SEMPRE pelo menos uma
+// escolha. `choices` vazio ou ausente não é «um turno legitimamente vazio» — é uma resposta
+// malformada, e o nó não tem como distinguir «o modelo não disse nada» de «o provider avariou».
+// Fail-closed: assume-se o segundo.
+//
+// A POSTURA JÁ EXISTIA NO RAMO DE STREAMING e estava invertida aqui. O `CollectStream` sintetiza
+// uma escolha para um fluxo que ENTREGOU conteúdo e só lhe falta o marcador terminal — caso
+// diferente —, e o [adapters.ErrTruncatedStream] existe precisamente para recusar fabricar uma
+// conclusão limpa a partir de um fluxo que terminou mal. É essa a regra; o caminho síncrono
+// deixa de ser a excepção.
+//
+// LIMITE DECLARADO: um `finish_reason` VAZIO com uma escolha presente continua a contar como
+// final. É outro caso — há conteúdo — e mudá-lo partiria providers que o omitem legitimamente.
+// Fica nomeado em vez de arrastado nesta correcção.
+var ErrRespostaSemChoices = errors.New("model-gateway: o gateway respondeu sem nenhuma escolha — resposta malformada, nao um turno vazio (um 200 com corpo de erro do provider chega aqui assim)")
 
 // translateResponse converte [port.ChatResponse] em [agentruntime.ModelResponse].
 //
@@ -129,7 +160,7 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 // Micro-USD INTEIRO em toda a travessia: os dois lados da fronteira são int64 e a
 // projecção é uma cópia — sem conversão, sem float, sem arredondamento onde se pudesse
 // perder um micro-USD.
-func translateResponse(resp port.ChatResponse) agentruntime.ModelResponse {
+func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, error) {
 	out := agentruntime.ModelResponse{
 		Usage: agentruntime.Usage{
 			InputTokens:  resp.Usage.PromptTokens,
@@ -138,8 +169,8 @@ func translateResponse(resp port.ChatResponse) agentruntime.ModelResponse {
 		CostMicroUSD: resp.Usage.CostMicroUSD,
 	}
 	if len(resp.Choices) == 0 {
-		out.Final = true
-		return out
+		// FAIL-CLOSED. Ver [ErrRespostaSemChoices]: isto NAO e um turno vazio.
+		return agentruntime.ModelResponse{}, fmt.Errorf("%w (modelo %q)", ErrRespostaSemChoices, resp.Model)
 	}
 	choice := resp.Choices[0]
 	out.Text = choice.Message.Content
@@ -151,5 +182,5 @@ func translateResponse(resp port.ChatResponse) agentruntime.ModelResponse {
 	}
 	// Sem tool calls e finish_reason terminal ⇒ o turno é final.
 	out.Final = len(out.ToolCalls) == 0 && (choice.FinishReason == "stop" || choice.FinishReason == "")
-	return out
+	return out, nil
 }
