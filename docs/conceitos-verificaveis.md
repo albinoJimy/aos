@@ -93,7 +93,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 | Conceito | Como se verifica | Estado |
 |---|---|---|
 | **Sandbox gVisor** (AOS-005/064) | `Linux version 4.19.0-gvisor` **dentro** do sandbox; `runsc` systrap; bundle OCI efémero por chamada | ✅ |
-| **Tool set congelado** (AOS-155) — o conjunto de tools de um run não muda a meio | Persiste no event store com o run | 🧪 |
+| **Tool set congelado** (AOS-155) — o conjunto de tools de um run não muda a meio | Persiste no event store com o run (`run.toolset.frozen`) e é reconstruído na retoma; a revalidação por chamada compara a definição actual com o snapshot e **nega fail-closed** um run sem entrada. **A PERSISTÊNCIA foi observada em PRODUÇÃO a 2026-08-21**, no `events.wal` vivo trazido do servidor e **parseado pelo replay do próprio Event Store — não por `strings`**, que num WAL enquadrado dá números errados (a nota de método no README de operação). Em 720 eventos: **33 streams com freeze e 33 com transição de run** — todos os runs congelaram —, 23 executaram tools, e **0 executaram sem freeze no mesmo stream**. **LIMITE DECLARADO:** o que produção mostra é a persistência e a ausência de contra-exemplo; que um manifesto ALTERADO a meio seja recusado continua provado só por teste, porque exigiria mudar o manifesto durante um run em curso | ✅ |
 
 ---
 
@@ -316,8 +316,8 @@ sempre um controlo que teria de falhar, e falhou.
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 51 |
-| 🧪 Provado por teste (ou em clone restaurado) | 12 |
+| ✅ Provado em produção | 52 |
+| 🧪 Provado por teste (ou em clone restaurado) | 11 |
 | ⚠️ Armado, não exercido | 3 |
 | 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 3 |
