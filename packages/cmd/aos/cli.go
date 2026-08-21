@@ -81,7 +81,7 @@ func dispatch(args []string, w io.Writer) error {
 		printUsage(w)
 		return nil
 	default:
-		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|continue|abort|operator-pubkey|wal-count|audit-trail|help)", args[0])
+		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|continue|abort|operator-pubkey|wal-count|wal-summary|audit-trail|help)", args[0])
 	}
 }
 
@@ -103,7 +103,11 @@ uso: aos <subcomando> [flags]
                                              assinado; --step-id e o passo em pending_exhaustion de GET /runs/{id})
   operator-pubkey --key FICHEIRO            (imprime a PUBKEY hex da seed do operador, para AOS_OPERATORS)
   wal-count --path WAL --run ID [--turns]   (diagnostico read-only de durabilidade do Event Store)
+  wal-summary --path WAL                    (diagnostico read-only: que tipos de evento ha no WAL e
+                                             quantos; AGREGADO — nunca nomeia streams, porque os
+                                             stream ids sao run ids e lista-los seria enumeracao)
   audit-trail --path WORM --run ID [--denied-only]  (diagnostico read-only: o que foi decidido, por quem e porque)
+  help | -h | --help                        (esta ajuda)
 `)
 }
 
