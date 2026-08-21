@@ -73,6 +73,8 @@ func dispatch(args []string, w io.Writer) error {
 		return cmdOperatorPubKey(args[1:], w)
 	case "wal-count":
 		return cmdWALCount(args[1:], w)
+	case "wal-summary":
+		return cmdWALSummary(args[1:], w)
 	case "audit-trail":
 		return cmdAuditTrail(args[1:], w)
 	case "help", "-h", "--help":
