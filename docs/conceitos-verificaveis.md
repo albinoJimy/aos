@@ -220,7 +220,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 |---|---|---|
 | **Ingresso / admission** (AOS-166/277) | 64 pedidos/s, burst 128, máx. 512 runs em curso | ✅ |
 | **Terminação TLS a montante** (AOS-209) | **Declarada**: o nó serve em texto-claro por decisão de quem o configurou; a cifra depende do ingress | ⚠️ |
-| **Classificação de PLANO por rota** — as barreiras derivam do registo, não da memória de quem escreve | Tabela em `packages/cmd/aos/planos.go`: 3 abertas, 4 de dados, 4 de governação, 10 de controlo. O **valor-zero é inválido** e **aborta o arranque** (`ErrRotaPorClassificar`). **Controlos (por mutação, todos caem):** mTLS fora do ramo de controlo; balde fora do ramo de controlo; balde fora do ramo de governação; rota despromovida de plano; rota registada fora de `registar` | 🧪 |
+| **Classificação de PLANO por rota** — as barreiras derivam do registo, não da memória de quem escreve | Tabela em `packages/cmd/aos/planos.go`: 3 abertas, 4 de dados, 4 de governação, 10 de controlo. O **valor-zero é inválido** e **aborta o arranque** (`ErrRotaPorClassificar`). **Controlos (por mutação, todos caem):** mTLS fora do ramo de controlo; balde fora do ramo de controlo; balde fora do ramo de governação; rota despromovida de plano; rota registada fora de `registar`. **EXERCIDA EM PRODUÇÃO a 2026-08-21**, e por COMPORTAMENTO e não por leitura do código: 300 pedidos em paralelo, de DENTRO da rede do compose para não medir o nginx. `POST /autonomy` (plano de CONTROLO) → **129 × 429** e 171 × 400 — o balde mordeu, e as que passaram chegaram ao handler. **CONTROLO:** o MESMO volume em `GET /healthz` (plano ABERTO) → **300 × 200, zero 429**. A barreira aparece onde a tabela a coloca e não aparece onde ela não a coloca; sem a segunda metade, o 429 seria só «há um limite algures» | ✅ |
 | **DSAR sem barreira de TRANSPORTE** — as 4 rotas de governação autenticam-se por asserção OIDC verificada mas **não** exigem certificado de cliente | É a única superfície de governação sem mTLS, e inclui o `/dsar/erase` (crypto-shred, que nenhum restore drill desfaz). **Decisão em aberto, escrita** em `barreirasDe` e no README: promovê-la obriga a emitir PKI de cliente a operadores DSAR — a provisão que o DEF-012 defere para fora do nó | ❌ |
 | **PKCE S256 obrigatório** | Sem `code_challenge` → `Missing parameter`; com `plain` → `not matching the configured one` | ✅ |
 | **`redirect_uri` registado** | Porta não registada → `400` | ✅ |
@@ -316,8 +316,8 @@ sempre um controlo que teria de falhar, e falhou.
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 50 |
-| 🧪 Provado por teste (ou em clone restaurado) | 13 |
+| ✅ Provado em produção | 51 |
+| 🧪 Provado por teste (ou em clone restaurado) | 12 |
 | ⚠️ Armado, não exercido | 3 |
 | 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 3 |
