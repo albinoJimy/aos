@@ -747,6 +747,13 @@ type Node struct {
 	// ser observavel por um teste. Sem isto, «o no liga a fonte duravel ao orcamento» era uma
 	// afirmacao sem prova — e uma mutacao que removesse a ligacao passava despercebida.
 	orcamento *integration.RunBudget
+	// ancora e a verificacao ancorada do WORM que PASSOU no arranque (nil se desligada ou se o
+	// arranque a recusou — nesse caso o no nem chega aqui, porque e fail-closed).
+	//
+	// Guardada pela MESMA razao que o `otlp` e o `orcamento`: para o /metrics a poder ler. Sem
+	// isto, a cobertura da ancora existia so no banner de arranque — legivel por quem estivesse
+	// a ver o boot, e invisivel para um alerta. Ver [apiHandler.handleMetrics].
+	ancora *WormAnchor
 }
 
 // Bootstrap compõe o nó `aos` de PRODUÇÃO a partir de cfg, escrevendo o banner de
@@ -1009,6 +1016,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if lister, ok := worm.(interface{ Partitions() []string }); ok {
 			wormTotal = len(lister.Partitions())
 		}
+
 	}
 
 	// (2b) PROVISIONAMENTO DOS NÍVEIS DE AUTONOMIA (AOS-087/AOS-248) — a FASE 2 da cablagem que
@@ -2090,7 +2098,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	success = true // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	return &Node{
-		Runtime:          sec,
+		Runtime: sec,
+		// A ancora que PASSOU no arranque, para o /metrics a poder declarar. Fail-closed acima:
+		// se nao tivesse passado, nao se chegava aqui.
+		ancora:           cfg.WORMAnchor,
 		Steer:            steer,
 		FourEyes:         foureyes,
 		ApprovalBroker:   approvalBroker,

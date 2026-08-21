@@ -1022,6 +1022,33 @@ Nomeado, não escondido:
 
    O `deploy.sh` verifica-as antes de mexer no que corre (passo `0b/6`), e o nó verifica a âncora
    no arranque — **fail-closed por partição**. A partir daí o banner declara a cobertura com
+
+   ### Como se sabe que a selagem morreu
+
+   A âncora é produzida **fora** do nó, por uma tarefa que corre sozinha. Se essa tarefa morrer,
+   **nada no nó dá por isso**: a verificação continua a passar — o que ela verifica não mudou — e
+   a cobertura congela enquanto o WORM continua a crescer. Uma âncora de há um ano verifica
+   exactamente como a de ontem.
+
+   Três séries em `/metrics` fecham isso:
+
+   | série | o que diz |
+   |---|---|
+   | `aos_worm_partitions` | partições que o WORM tem **agora** (lidas na altura da recolha, não no arranque) |
+   | `aos_worm_partitions_anchored` | partições cobertas pela âncora que passou no arranque |
+   | `aos_worm_anchor_age_seconds` | segundos desde a **última** selagem |
+
+   **O alerta que interessa** é o terceiro: com cadência diária, `> 172800` (48 h) significa que a
+   tarefa de selagem morreu. É o dobro da cadência, pela mesma razão que o `pull-backups.ps1` usa
+   48 h — um dia falhado não alerta, dois sim.
+
+   A razão do primeiro ser lido **na altura da recolha** e não no arranque: as partições nascem por
+   run, e um valor medido no boot e servido como *gauge* pareceria vivo estando congelado. Faria o
+   contrário do que a métrica existe para fazer.
+
+   **Sem âncora composta, as duas séries de âncora NÃO saem.** Emitir `anchored 0` e `age 0` faria
+   um nó desprotegido parecer um nó acabado de selar — pior do que não emitir nada. É a mesma regra
+   das séries de OTLP.
    número, em vez de dizer que a verificação ancorada está desligada.
 9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é

@@ -1122,6 +1122,50 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_memory_sys_bytes", "Memoria obtida do SO (bytes).", "gauge", float64(ms.Sys), "")
 	g("aos_gc_cycles_total", "Ciclos de GC completos desde o arranque.", "counter", float64(ms.NumGC), "")
 
+	// VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072) — a cobertura tem de ser ALERTÁVEL, não só
+	// legível no banner de arranque.
+	//
+	// O QUE ISTO FECHA. A âncora é produzida FORA do nó, por uma tarefa que corre sozinha
+	// (`selar-worm.ps1`, cadência diária). Se essa tarefa morrer, nada no nó dá por isso: a
+	// verificação continua a passar — o que ela verifica não mudou — e a COBERTURA congela
+	// enquanto o WORM continua a crescer. O operador fica a acreditar que o WORM está ancorado.
+	//
+	// A contagem de partições é LIDA AGORA e não no arranque, de propósito. As partições nascem
+	// por run; um valor medido no boot e servido como gauge pareceria vivo e estaria congelado —
+	// e faria exactamente o contrário do que esta métrica existe para fazer.
+	if h.node != nil && h.node.WORM != nil {
+		if lister, ok := h.node.WORM.(interface{ Partitions() []string }); ok {
+			g("aos_worm_partitions", "Particoes que a hash-chain do WORM tem AGORA (nascem por run).",
+				"gauge", float64(len(lister.Partitions())), "")
+		}
+	}
+	if h.node != nil && h.node.ancora != nil {
+		a := h.node.ancora
+		g("aos_worm_partitions_anchored", "Particoes cobertas pela ancora assinada que passou no arranque. Comparada com aos_worm_partitions da a COBERTURA — que decai sozinha entre selagens, por desenho.",
+			"gauge", float64(len(a.Checkpoints)), "")
+
+		// IDADE — a série que deteta a tarefa de selagem morta, e a única que o faz.
+		//
+		// O `Timestamp` do checkpoint É ASSINADO (entra no `canonicalCheckpoint`) e, até aqui,
+		// nunca era LIDO por ninguém. Uma âncora de há um ano verifica exactamente como a de
+		// ontem: a assinatura continua válida e o piso continua satisfeito. O que envelhece não
+		// é a validade — é a COBERTURA, e é isso que esta série torna alertável.
+		//
+		// Usa-se o MAIS RECENTE: todos os checkpoints de uma selagem partilham o instante, e o
+		// mais recente é «quando foi a última vez que isto correu». O mais antigo responderia a
+		// outra pergunta.
+		var ultimo time.Time
+		for _, cp := range a.Checkpoints {
+			if cp.Timestamp.After(ultimo) {
+				ultimo = cp.Timestamp
+			}
+		}
+		if !ultimo.IsZero() {
+			g("aos_worm_anchor_age_seconds", "Segundos desde a ULTIMA selagem que produziu esta ancora. Com cadencia diaria, acima de 172800 (48h) a tarefa de selagem morreu — o dobro da cadencia, para que um dia falhado nao alerte e dois sim.",
+				"gauge", time.Since(ultimo).Seconds(), "")
+		}
+	}
+
 	// EXPORTAÇÃO OTLP (AOS-173/DEF-012) — a única via por onde a observabilidade pode morrer sem
 	// parar mais nada.
 	//
