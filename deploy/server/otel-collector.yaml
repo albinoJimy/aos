@@ -33,9 +33,34 @@ processors:
     spike_limit_percentage: 15
 
 exporters:
+  # debug — o destino das TRACES, e fica declarado o que isso significa: os spans são recebidos e
+  # DESCARTADOS. O `aos_otlp_spans_exported_total` conta os spans que o colector ACEITOU, não os
+  # que alguém guardou. Ligar um backend real de traces (tempo/jaeger) é uma decisão de infra por
+  # tomar, e continua nomeada em vez de escondida.
   debug:
     verbosity: normal
 
+  # prometheus — o destino das MÉTRICAS.
+  #
+  # O DEFEITO QUE ISTO FECHA, encontrado a 2026-08-21 a perguntar «alguém lê estas séries?»: o
+  # pipeline de métricas exportava para `debug`, cuja saída é de nível INFO — e
+  # `service.telemetry.logs.level` está em `warn`. As séries eram raspadas de 15 em 15 segundos,
+  # empacotadas, e DEITADAS FORA em silêncio. Tudo o que este repositório descreve como
+  # «alertável» — idade da âncora do WORM, folga do orçamento, saúde do varredor de retenção,
+  # falhas de export OTLP — caía num buraco negro.
+  #
+  # Com este exportador, o colector passa a MANTER o último valor de cada série e a servi-la num
+  # endpoint estável. Não publica porta no host: só é alcançável de dentro da rede do compose,
+  # a mesma postura do :8080 do nó.
+  #
+  # O QUE ISTO NÃO DÁ, e é metade da verdade: não há retenção histórica nem regras de alerta.
+  # Isto torna as séries LEGÍVEIS e RASPÁVEIS; alertar sobre elas exige um Prometheus (ou
+  # equivalente) apontado aqui, que é uma decisão de infra por tomar.
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+    # Sem sufixo de unidade nem `_total` acrescentado: os nomes que o nó emite são os que este
+    # repositório documenta, e reescrevê-los faria as consultas do README deixarem de casar.
+    add_metric_suffixes: false
 service:
   telemetry:
     logs:
@@ -48,4 +73,4 @@ service:
     metrics:
       receivers: [prometheus]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [prometheus]

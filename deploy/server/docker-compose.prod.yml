@@ -428,6 +428,15 @@ services:
     mem_limit: 512m
     pids_limit: 512
     cpus: 0.5
+    # 9464 é o endpoint agregado de MÉTRICAS que o exportador `prometheus` serve. `expose` e NÃO
+    # `ports`: fica alcançável de dentro da rede do compose e invisível do host, a mesma postura
+    # do :8080 do nó. Publicá-lo daria um `/metrics` não-autenticado na Internet.
+    #
+    # Antes de 2026-08-21 o pipeline de métricas exportava para `debug`, cuja saída é de nível
+    # INFO enquanto `telemetry.logs.level` está em `warn`: as séries eram raspadas de 15 em 15
+    # segundos e DEITADAS FORA. Ver a nota no `otel-collector.yaml`.
+    expose:
+      - "9464"
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro

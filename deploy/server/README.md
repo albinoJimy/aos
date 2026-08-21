@@ -1024,6 +1024,35 @@ Nomeado, não escondido:
    no arranque — **fail-closed por partição**. A partir daí o banner declara a cobertura com
 
 
+
+### Onde as métricas vão parar — e o que isso NÃO dá
+
+Encontrado a 2026-08-21, a perguntar **«alguém lê estas séries?»** depois de acrescentar nove
+delas: o colector raspava `aos:8080/metrics` de 15 em 15 segundos e exportava-as para o `debug`,
+cuja saída é de nível **INFO** — enquanto `service.telemetry.logs.level` está em `warn`.
+
+**As séries eram recolhidas, empacotadas e deitadas fora em silêncio.** Tudo o que este documento
+descreve como «alertável» — idade da âncora do WORM, folga do orçamento, saúde do varredor de
+retenção, falhas de export OTLP — caía num buraco negro. O alvo respondia bem (verificado: HTTP
+200, 89 séries); o problema era do outro lado.
+
+Agora o pipeline de métricas exporta para um `prometheus` que serve tudo em `otel:9464`, dentro da
+rede do compose e invisível do host.
+
+**O que isto dá:** as séries ficam legíveis e raspáveis num sítio estável.
+
+```
+docker run --rm --network aos_default curlimages/curl -s http://otel:9464/metrics | grep aos_worm
+```
+
+**O que isto NÃO dá, e é metade da verdade:** não há retenção histórica nem regras de alerta.
+Alertar exige um Prometheus (ou equivalente) apontado a este endpoint — decisão de infra **por
+tomar**. Até lá, «alertável» quer dizer «um alerta pode ser escrito contra isto», não «há um
+alerta a correr».
+
+**As TRACES continuam a ir para o `debug`, ou seja, a ser descartadas.** O
+`aos_otlp_spans_exported_total` conta os spans que o colector **aceitou**, não os que alguém
+guardou. Fica nomeado em vez de escondido; ligar um backend de traces é a mesma decisão de infra.
 ### «A expiração por TTL está a correr?»
 
 Era uma pergunta **sem resposta em runtime**. O escalonador declara-se no banner de arranque e a
