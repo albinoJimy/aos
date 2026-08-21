@@ -150,6 +150,24 @@ type NodeService struct {
 	// AOS-267 — scheduler interno de RETENÇÃO (expiração por TTL sem cron externo). Partilha o
 	// MESMO sweepStop: o Shutdown pára os quatro laços com UM close.
 	retentionSweepInterval time.Duration // cadência do varrimento; <= 0 desliga
+	// ---- OBSERVABILIDADE DO VARREDOR DE RETENÇÃO (AOS-267) ----------------------------------
+	//
+	// «A expiração por TTL está a correr?» era uma pergunta sem resposta em runtime. O
+	// escalonador declara-se no banner de ARRANQUE e, a partir daí, é invisível: se nunca for
+	// armado (política ausente, intervalo <= 0), ou se PARAR — e ele pára para sempre depois de
+	// um incidente de integridade da hash-chain, deliberadamente —, o único sinal é uma linha de
+	// log que ninguém está a ver. E o que deixa de acontecer é o apagamento de dados fora do TTL,
+	// que é uma obrigação com prazo.
+	//
+	// Estes três campos alimentam `/metrics`. Ver [apiHandler.handleMetrics].
+	varrimentosTotal atomic.Int64
+	// ultimoVarrimentoUnix é o instante da última passagem CONCLUÍDA (0 = nenhuma ainda). Unix
+	// e não time.Time por ser lido sem lock a partir do handler das métricas.
+	ultimoVarrimentoUnix atomic.Int64
+	// varredorParado marca a paragem DEFINITIVA por incidente de integridade — distinta de
+	// «ainda não armado» e de «armado, à espera do primeiro tick». As três leem-se de maneira
+	// diferente e exigem acções diferentes.
+	varredorParado atomic.Bool
 
 	// AOS-274 — AVALIADOR DE SLOs/ALERTAS. Partilha o MESMO sweepStop: o Shutdown pára os cinco
 	// laços com UM close. nil ⇒ desligado (AOS_SLO_EVAL_INTERVAL=0 ou nó não composto). É o ÚNICO
