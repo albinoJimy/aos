@@ -1064,6 +1064,24 @@ Nomeado, não escondido:
    consumo medido de ~1 750 tokens por run: o tecto e o aviso aos 80% ficam ~114× acima do uso
    real. O mecanismo **funciona** — verificado forçando-o a 400 tokens, com suspensão em
    `waiting_on_human` — mas na configuração actual é protecção que não engata.
+
+   **Isto passou a ser MENSURÁVEL a 2026-08-21, e não só declarado aqui.** Duas séries em
+   `/metrics` dão a folga:
+
+   | série | |
+   |---|---|
+   | `aos_budget_max_tokens_per_run` | o tecto em vigor |
+   | `aos_budget_run_tokens_peak` | o **maior** consumo por-run que este processo viu |
+
+   O rácio entre elas é a folga: hoje ~114×, ou seja um tecto decorativo; perto de 1 seria um
+   tecto prestes a suspender runs. **Nenhum dos dois extremos se via no banner**, que declara o
+   tecto em detalhe e por isso se lê como protecção activa — e uma protecção cuja folga ninguém
+   mede é indistinguível de uma que morde.
+
+   O pico **não sai** antes de o primeiro run fechar: emitir `0` diria «nada gasta nada» e a folga
+   apareceria infinita num nó que ainda não mediu coisa nenhuma. É por processo, não durável — um
+   restart repõe-o, e a pergunta que a métrica responde («este tecto chega a apertar?»)
+   responde-se com dias de observação, não com histórico eterno.
 13. **A auditoria não regista quem aprovou.** Uma cerimónia *four-eyes* sela na hash-chain que
    **um** gate humano foi satisfeito (`human_gate: "satisfied"`), mas não **quem** o satisfez: as
    identidades dos aprovadores e o `request_id` do grant não aparecem no `worm.wal`. Para uma

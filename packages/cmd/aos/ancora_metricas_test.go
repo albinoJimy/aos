@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	integration "github.com/aos-ref/integration"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -213,5 +214,38 @@ func TestOArranqueLIGAAAncoraAoMetrics(t *testing.T) {
 	// estaria a medir um `Bootstrap` que a ignora.
 	if !strings.Contains(banner.String(), "ancorad") {
 		t.Errorf("o banner nao declara a verificacao ancorada — o cenario nao foi montado:\n%s", banner.String())
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// A FOLGA DO ORÇAMENTO — o tecto que nunca morde tem de ser visível.
+// ---------------------------------------------------------------------------------------------
+
+// TestFolgaDoOrcamentoSaiEmMetrics — as duas séries que permitem calcular a folga.
+func TestFolgaDoOrcamentoSaiEmMetrics(t *testing.T) {
+	rb, err := integration.NewRunBudget(200000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &apiHandler{node: &Node{orcamento: rb}, svc: &NodeService{}}
+
+	corpo := metricasDe(t, h)
+	if v, ok := valorDe(t, corpo, "aos_budget_max_tokens_per_run"); !ok || v != 200000 {
+		t.Errorf("aos_budget_max_tokens_per_run = %v (presente=%v), queria 200000", v, ok)
+	}
+	// CONTROLO: sem nenhum run fechado o PICO nao sai. Emitir 0 diria «nada gasta nada» e a
+	// folga apareceria infinita num no que ainda nao mediu coisa nenhuma — a leitura mais errada
+	// possivel, e a que faria um tecto por calibrar parecer calibrado.
+	if _, ok := valorDe(t, corpo, "aos_budget_run_tokens_peak"); ok {
+		t.Error("o pico saiu ANTES de qualquer run fechar")
+	}
+}
+
+// TestSemOrcamentoNAOSaemSeriesDeOrcamento — a mesma regra das outras famílias.
+func TestSemOrcamentoNAOSaemSeriesDeOrcamento(t *testing.T) {
+	h := &apiHandler{node: &Node{}, svc: &NodeService{}}
+	corpo := metricasDe(t, h)
+	if _, ok := valorDe(t, corpo, "aos_budget_max_tokens_per_run"); ok {
+		t.Error("sem orcamento composto sairam series de orcamento — um no sem tecto pareceria ter um")
 	}
 }

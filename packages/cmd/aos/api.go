@@ -1122,6 +1122,28 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_memory_sys_bytes", "Memoria obtida do SO (bytes).", "gauge", float64(ms.Sys), "")
 	g("aos_gc_cycles_total", "Ciclos de GC completos desde o arranque.", "counter", float64(ms.NumGC), "")
 
+	// ORÇAMENTO (AOS-008/256/257) — a FOLGA entre o tecto e o uso real.
+	//
+	// O README declara há semanas que «o orçamento está configurado onde nunca morde»: 200 000
+	// tokens contra ~1 750 medidos por run. O mecanismo funciona; nesta configuração é protecção
+	// que não engata. O problema é isso estar só num parágrafo — o banner declara o tecto em
+	// detalhe e lê-se como protecção activa.
+	//
+	// Estas duas séries dão a FOLGA, e a folga é o que se alerta: `max / pico` muito grande
+	// significa um tecto decorativo; perto de 1 significa um tecto que vai começar a suspender
+	// runs. Nenhum dos dois extremos se vê no banner.
+	if h.node != nil && h.node.orcamento != nil {
+		g("aos_budget_max_tokens_per_run", "Tecto de tokens POR RUN em vigor (AOS_BUDGET_MAX_TOKENS).",
+			"gauge", float64(h.node.orcamento.MaxTokensPerRun()), "")
+		// O pico só sai DEPOIS de um run fechar. Emitir 0 antes disso diria «nenhum run gasta
+		// nada», que e a leitura mais errada possivel — a folga apareceria infinita num no que
+		// ainda nao mediu coisa nenhuma.
+		if pico, visto := h.node.orcamento.PicoDeConsumo(); visto {
+			g("aos_budget_run_tokens_peak", "Maior consumo POR RUN (tokens) observado por este processo. Cruzado com aos_budget_max_tokens_per_run da a FOLGA: um racio muito grande e um tecto que nunca morde; perto de 1 e um tecto prestes a suspender runs. Por PROCESSO — um restart repoe-o.",
+				"gauge", float64(pico), "")
+		}
+	}
+
 	// VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072) — a cobertura tem de ser ALERTÁVEL, não só
 	// legível no banner de arranque.
 	//
