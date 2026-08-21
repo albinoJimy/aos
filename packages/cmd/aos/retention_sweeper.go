@@ -294,8 +294,21 @@ func (s *NodeService) sweepRetentionOnce(ctx context.Context) bool {
 	// expiração.
 	if verr := s.node.VerifyWORM(ctx); verr != nil && !errors.Is(verr, audit.ErrPartitionsUnavailable) {
 		s.log("scheduler de retencao (AOS-267): INCIDENTE DE INTEGRIDADE — a hash-chain do WORM NAO valida apos a passagem; o scheduler PARA (nao se destroi mais sobre um log de auditoria que ja nao se verifica). Investigue o WORM antes de religar o no: %v", verr)
+		// A paragem e DEFINITIVA e ate agora so existia nesta linha de log. Marca-se para que
+		// `/metrics` a possa dizer: sem isto, um no que deixou de expirar dados fora do TTL e
+		// indistinguivel de um no que expira bem, ate alguem ler o log ate ao fim.
+		// POR PROVAR, e fica declarado em vez de contado como coberto: nenhum teste exercita
+		// ESTA linha pelo caminho real. Para o fazer seria preciso o `VerifyWORM` falhar DEPOIS
+		// de uma passagem, e nem o MemStore nem o FileStore se deixam adulterar em memória — a
+		// verificação lê a vista já carregada. Uma mutação que remova esta linha NÃO faz cair a
+		// bateria; o que está provado é que a métrica LÊ o campo, não que o varredor o escreve.
+		s.varredorParado.Store(true)
 		return false
 	}
+	// PASSAGEM CONCLUIDA. O contador e o instante alimentam `aos_retention_*` — a resposta a
+	// «a expiracao por TTL esta a correr?», que ate agora nao existia em runtime.
+	s.varrimentosTotal.Add(1)
+	s.ultimoVarrimentoUnix.Store(time.Now().Unix())
 	return true
 }
 

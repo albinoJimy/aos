@@ -1122,6 +1122,39 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_memory_sys_bytes", "Memoria obtida do SO (bytes).", "gauge", float64(ms.Sys), "")
 	g("aos_gc_cycles_total", "Ciclos de GC completos desde o arranque.", "counter", float64(ms.NumGC), "")
 
+	// VARREDOR DE RETENÇÃO (AOS-267) — «a expiração por TTL está a correr?»
+	//
+	// Era uma pergunta sem resposta em runtime. O escalonador declara-se no banner de ARRANQUE e
+	// depois é invisível. As três coisas que podem estar a acontecer leem-se de maneira diferente
+	// e exigem acções diferentes, e por isso são TRÊS séries e não uma:
+	//
+	//   armed=0                      ⇒ nunca foi armado (política ausente, ou intervalo <= 0)
+	//   armed=1, stopped=1           ⇒ PAROU por incidente de integridade da hash-chain, e não
+	//                                  volta sozinho: exige investigar o WORM e reiniciar o nó
+	//   armed=1, stopped=0, sem age  ⇒ armado, à espera do primeiro tick
+	//   armed=1, stopped=0, age alta ⇒ deixou de correr sem o dizer
+	//
+	// O que deixa de acontecer quando isto morre é o apagamento de dados fora do TTL — uma
+	// obrigação com prazo, e a única que não dá sinal nenhum por si mesma.
+	if h.svc != nil {
+		armado := retentionSchedulerArmed(h.node, h.svc.retentionSweepInterval)
+		g("aos_retention_scheduler_armed", "O escalonador de expiracao por TTL esta armado (1) ou nao (0). 0 significa que NADA expira sozinho.",
+			"gauge", b01(armado), "")
+		if armado {
+			g("aos_retention_sweeps_total", "Passagens de expiracao CONCLUIDAS desde o arranque.",
+				"counter", float64(h.svc.varrimentosTotal.Load()), "")
+			g("aos_retention_scheduler_stopped", "O escalonador PAROU definitivamente por incidente de integridade da hash-chain (1). Nao volta sozinho.",
+				"gauge", b01(h.svc.varredorParado.Load()), "")
+			// A idade só sai DEPOIS da primeira passagem. Antes disso, emitir 0 diria «acabou de
+			// varrer» sobre um nó que ainda não varreu nada — e um nó recém-arrancado ficaria
+			// indistinguível de um nó saudável durante a primeira hora.
+			if u := h.svc.ultimoVarrimentoUnix.Load(); u > 0 {
+				g("aos_retention_last_sweep_age_seconds", "Segundos desde a ultima passagem CONCLUIDA. Acima do dobro de AOS_RETENTION_SWEEP_INTERVAL, a expiracao deixou de correr.",
+					"gauge", time.Since(time.Unix(u, 0)).Seconds(), "")
+			}
+		}
+	}
+
 	// ORÇAMENTO (AOS-008/256/257) — a FOLGA entre o tecto e o uso real.
 	//
 	// O README declara há semanas que «o orçamento está configurado onde nunca morde»: 200 000

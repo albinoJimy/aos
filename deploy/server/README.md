@@ -1023,6 +1023,30 @@ Nomeado, não escondido:
    O `deploy.sh` verifica-as antes de mexer no que corre (passo `0b/6`), e o nó verifica a âncora
    no arranque — **fail-closed por partição**. A partir daí o banner declara a cobertura com
 
+
+### «A expiração por TTL está a correr?»
+
+Era uma pergunta **sem resposta em runtime**. O escalonador declara-se no banner de arranque e a
+partir daí é invisível — e o que deixa de acontecer quando ele morre é o apagamento de dados fora
+do TTL, uma obrigação com prazo, e a única que não dá sinal nenhum por si mesma.
+
+Quatro séries, porque há **quatro estados** que se leem de maneira diferente e exigem acções
+diferentes:
+
+| observado | significa |
+|---|---|
+| `armed=0` | nunca foi armado — política ausente, ou intervalo ≤ 0. **Nada expira sozinho.** |
+| `armed=1`, `stopped=1` | parou por incidente de integridade da hash-chain. **Não volta sozinho**: investigar o WORM e reiniciar o nó |
+| `armed=1`, `stopped=0`, sem `age` | armado, à espera do primeiro tick |
+| `armed=1`, `stopped=0`, `age` alta | deixou de correr sem o dizer — alerta acima do **dobro** de `AOS_RETENTION_SWEEP_INTERVAL` |
+
+Com o escalonador desarmado, as séries que descrevem **passagens** não saem: emitir `sweeps_total 0`
+e `age 0` faria um nó que nunca vai expirar nada parecer um nó acabado de varrer.
+
+**Por provar, e declarado:** o marcador de paragem definitiva (`stopped`) não é exercitado por
+nenhum teste pelo caminho real — fazer o `VerifyWORM` falhar depois de uma passagem exigiria
+adulterar um store em memória, o que nem o `MemStore` nem o `FileStore` permitem. O que está
+provado é que a métrica **lê** o campo, não que o varredor o **escreve**.
    ### Como se sabe que a selagem morreu
 
    A âncora é produzida **fora** do nó, por uma tarefa que corre sozinha. Se essa tarefa morrer,
