@@ -968,6 +968,61 @@ Nomeado, não escondido:
    2. o script anunciava «**1** partição ancorada» sobre um ficheiro com **120** — `@(...)` à volta
       de um `ConvertFrom-Json` não conta elementos em PowerShell 5.1. A âncora estava certa; a
       mensagem repetia exactamente a falha «1 em 108» que esta secção descrevia.
+
+   ### O ciclo, como está montado hoje
+
+   ```
+   selar-worm.ps1 -PorSSH -Entregar
+   ```
+
+   | passo | o que faz | que chave usa |
+   |---|---|---|
+   | traz | `worm.wal` **vivo** do servidor, como root dentro de um contentor, entregando logo a posse | deploy |
+   | verifica | re-encadeia o store **antes** de assinar, e exige **continuidade** com a âncora anterior | — |
+   | sela | um checkpoint **por partição**; pisos em ficheiro separado | selador |
+   | entrega | sobe os dois com nomes temporários e troca-os **lado a lado** | deploy |
+   | limpa | apaga a cópia no servidor **e** confirma que desapareceu | deploy |
+
+   **A `backup.key` não entra.** Foi essa a razão de existir o `-PorSSH`: uma tarefa que corre
+   sozinha não deve alcançar a chave que decifra todas as cópias de produção.
+
+   **Porque a entrega é atómica e não ordenada.** Não há ordem segura entre os dois ficheiros:
+   entregar os checkpoints primeiro deixa as partições novas **com checkpoint e sem piso**
+   (`ErrBadWormExpectedHead`); entregar os pisos primeiro deixa os checkpoints antigos **abaixo dos
+   pisos novos** (`ErrCheckpointStale`). Ambas impedem o nó de arrancar. Por isso os dois sobem com
+   nomes temporários e são renomeados num só comando. A janela residual — o intervalo entre dois
+   `mv` — fica declarada: não é zero, e um arranque exactamente aí apanharia um par incoerente.
+   Recupera-se correndo o ciclo outra vez.
+
+   **Uma regra que só apareceu por correr os dois modos seguidos:** depois de selar do WORM vivo,
+   selar de um backup **anterior** é um recuo, e a guarda recusa — com a mesma mensagem que
+   significaria «alguém truncou o teu trilho». Escolha-se uma fonte e só se avance no tempo.
+
+   ### A tarefa diária
+
+   ```
+   schtasks /create /tn "AOS selar WORM" /sc DAILY /st 03:30 ^
+     /tr "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm.ps1 -PorSSH -Entregar" ^
+     /ru %USERNAME%
+   ```
+
+   O `schtasks` pede a password do Windows — é o Windows a pedi-la, e ela não passa por mais lado
+   nenhum. Sem `/ru`, a tarefa só corre com sessão iniciada.
+
+   ### Ligar a verificação — o último gesto, e o único irreversível sem outro deploy
+
+   **Só depois de a entrega diária já estar a correr há dias.** No `.env` do servidor, as três
+   **juntas**:
+
+   ```
+   AOS_WORM_TRUST_ANCHOR=<saída de `aos-issuer pubkey --key-file wormseal.key`>
+   AOS_WORM_CHECKPOINT_FILE=/etc/aos/ancoras/checkpoints.json
+   AOS_WORM_EXPECTED_HEADS_FILE=/etc/aos/pisos/heads.json
+   ```
+
+   O `deploy.sh` verifica-as antes de mexer no que corre (passo `0b/6`), e o nó verifica a âncora
+   no arranque — **fail-closed por partição**. A partir daí o banner declara a cobertura com
+   número, em vez de dizer que a verificação ancorada está desligada.
 9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
    tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de

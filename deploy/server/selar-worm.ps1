@@ -44,12 +44,64 @@ param(
     # controlos DIFERENTES. Aqui prepara-se a forma; a substancia depende de para onde vao.
     [string]$Ancoras   = "C:\Jimy\aos\deploy\server\secrets-local\ancoras",
     [string]$Pisos     = "C:\Jimy\aos\deploy\server\secrets-local\pisos",
-    [switch]$Puxar
+    [switch]$Puxar,
+    # -PorSSH: traz o `worm.wal` VIVO do servidor em vez de o extrair do backup cifrado.
+    #
+    # PORQUE EXISTE, e a razao e de EXPOSICAO e nao de comodidade. A selagem diaria corre sozinha;
+    # pelo caminho do backup teria de alcancar DUAS chaves privadas sem ninguem presente — a do
+    # selador (forja ancoras) e a `backup.key`, que decifra TODAS as copias de producao, incluindo
+    # a base do IdP. Quem comprometesse esta maquina durante a janela diaria levava as duas. Por
+    # SSH, a tarefa precisa da chave de DEPLOY e da do selador; a `backup.key` fica de fora.
+    #
+    # O QUE SE PERDE, e fica dito: o WORM viaja FORA do envelope do backup, protegido so pelo
+    # transporte. E o que se ganha e maior do que isso, porque a `backup.key` abre tudo o resto.
+    #
+    # CONSISTENCIA DA COPIA VIVA: o no escreve no ficheiro enquanto se copia, logo apanha-se um
+    # PREFIXO — e um prefixo de hash-chain e uma cadeia valida truncada. O `backup.sh` ja tem
+    # exactamente a mesma propriedade e declara-a. NAO produz falsos alarmes de recuo: o WAL e
+    # append-only, portanto o prefixo de hoje CONTEM o de ontem, e um `head` nunca desce por causa
+    # de uma leitura rasgada. Se algum dia o WAL passar a ser compactado, isto deixa de valer — e
+    # ai o alarme de recuo estaria certo a disparar.
+    #
+    # NAO SE MISTURAM AS DUAS FONTES PARA TRAS, e descobri-o a correr as duas seguidas: depois de
+    # selar do WORM VIVO, selar de um backup ANTERIOR e um RECUO — e o `exigirContinuidade`
+    # recusa, com a mesma mensagem que significaria «alguem truncou o teu trilho». Nao e defeito:
+    # e a guarda a fazer o que existe para fazer. A regra de operacao que daqui sai e simples —
+    # escolha uma fonte para a cadencia e so avance no tempo. O modo de backup fica para quando o
+    # servidor estiver inalcancavel ou sob suspeita, e nesse caso a ancora seguinte comeca de novo.
+    [switch]$PorSSH,
+    # -Entregar: leva os dois ficheiros ao servidor depois de selar. Ver o passo 7 para a razao
+    # pela qual sobem com nomes temporarios e sao trocados lado a lado.
+    [switch]$Entregar,
+    [string]$Servidor  = "aos@37.60.241.150",
+    [string]$ChaveSSH  = "C:\Jimy\aos\deploy\server\secrets-local\deploy_key",
+    [string]$KnownHosts = "C:\Jimy\aos\deploy\server\secrets-local\known_hosts.txt"
 )
 
 $ErrorActionPreference = 'Stop'
 $tmp = $null
+# Declarado AQUI e nao dentro do bloco try: o finally le-o, e uma falha antes da atribuicao
+# deixaria a limpeza a decidir sobre uma variavel que nunca existiu.
+$remoto = $false
 
+
+# Nativo — corre um executavel externo SEM que o stderr dele mate o script.
+#
+# MESMO PADRAO do `pull-backups.ps1` (procurei antes de escrever). Com
+# $ErrorActionPreference='Stop', qualquer linha que um executavel escreva em stderr vira erro
+# TERMINANTE em PowerShell 5.1 — mesmo quando o comando teve sucesso.
+#
+# CUSTOU-ME UM WORM DE PRODUCAO ESQUECIDO NUM SERVIDOR. O ssh emitiu um aviso sobre uma chave
+# inacessivel, o script morreu DEPOIS de a extraccao ja ter corrido, e a limpeza — que vive no
+# `finally` — morreu pela MESMA razao antes de apagar o que ficara la. A falha aconteceu num
+# teste de falha deliberado, que e o unico sitio onde queria que acontecesse.
+#
+# O sucesso passa a medir-se por $LASTEXITCODE, que e o que sempre devia ter sido.
+function Nativo([scriptblock]$bloco) {
+    $anterior = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $bloco } finally { $ErrorActionPreference = $anterior }
+}
 function Passo($t) { Write-Host "`n$t" -ForegroundColor Cyan }
 function Bom($t)   { Write-Host "  $t" -ForegroundColor Green }
 function Mau($t)   { Write-Host "  $t" -ForegroundColor Red }
@@ -66,11 +118,48 @@ try {
         throw "chave do selador ausente"
     }
 
-    if ($Puxar) {
+    if ($Puxar -and -not $PorSSH) {
         Passo "1. A PUXAR o backup mais recente do servidor"
         & (Join-Path $PSScriptRoot 'pull-backups.ps1') -Destino $Backups
     }
 
+    if ($PorSSH) {
+        Passo "2. A TRAZER o worm.wal VIVO do servidor (sem tocar na backup.key)"
+        $sshArgs = @('-i', $ChaveSSH, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+                     '-o', "UserKnownHostsFile=$KnownHosts")
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aos-selo-" + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+        $remoto = $true
+
+        # O worm.wal e 600 e pertence ao uid 65532 (distroless): o utilizador de deploy NAO o le.
+        # A copia corre como root DENTRO do contentor e entrega logo a posse, para o ficheiro nunca
+        # ficar legivel a terceiros — este servidor NAO e dedicado (README §1).
+        # BASE64, e nao e adorno. Entre aqui e o `cp` ha QUATRO camadas de citacao — PowerShell,
+        # ssh, o shell remoto, o docker e o `sh -c` de dentro do contentor. O PowerShell 5.1 nao
+        # escapa aspas ao passar argumentos a um executavel nativo, e o comando chegava truncado:
+        # o `cp` do BusyBox respondia com a sua pagina de ajuda. Codificar o script inteiro reduz
+        # as quatro camadas a uma, e o que viaja passa a ser um blob sem aspas nenhumas.
+        $script = 'set -e' + "`n" +
+                  'mkdir -p ~/selo && chmod 700 ~/selo' + "`n" +
+                  'U=$(id -u); G=$(id -g)' + "`n" +
+                  'docker run --rm -v aos_aos-data:/aos:ro -v "$HOME/selo":/out alpine:3.20 \' + "`n" +
+                  '  sh -c "cp /aos/worm.wal /out/worm.wal && chown $U:$G /out/worm.wal && chmod 600 /out/worm.wal"' + "`n"
+        $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($script))
+        $extrair = 'echo ' + $b64 + ' | base64 -d | sh'
+        Nativo { & ssh @sshArgs $Servidor $extrair }
+        $codigo = $LASTEXITCODE
+        # 255 e o codigo do ssh para «nem houve ligacao». Distinguir isso de uma falha DEPOIS de
+        # ligar e o que impede a limpeza de gritar em cada falha de rede — um aviso que dispara
+        # sempre deixa de ser aviso, e este e o que diz que ficou um WORM de producao no servidor.
+        if ($codigo -eq 255) { $remoto = $false }
+        if ($codigo -ne 0) { throw "extraccao remota do worm.wal falhou ($codigo)" }
+
+        Nativo { & scp -q @sshArgs "${Servidor}:selo/worm.wal" (Join-Path $tmp 'worm.wal') }
+        if ($LASTEXITCODE -ne 0) { throw "scp do worm.wal falhou ($LASTEXITCODE)" }
+        $worm = Join-Path $tmp 'worm.wal'
+        Bom ("worm.wal VIVO: {0:N0} bytes" -f (Get-Item $worm).Length)
+        Nota "(o backup nao foi tocado, e a backup.key nao entrou nesta execucao)"
+    } else {
     Passo "2. A ESCOLHER a copia mais recente"
     $enc = Get-ChildItem -Path $Backups -Filter '*.tar.gz.enc' -ErrorAction SilentlyContinue |
            Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -94,6 +183,7 @@ try {
     $worm = Join-Path $tmp 'aos\worm.wal'
     if (-not (Test-Path $worm)) { throw "worm.wal nao apareceu na extraccao" }
     Bom ("worm.wal: {0:N0} bytes" -f (Get-Item $worm).Length)
+    }
 
     Passo "4. A SELAR"
     $anteriorFile = Join-Path $Ancoras 'checkpoints.json'
@@ -160,8 +250,69 @@ try {
     Nota ""
     Nota "E a cobertura NUNCA e total: as particoes nascem por run, logo o run seguinte cria uma"
     Nota "que esta ancora nao cobre. Ancorado ate ao ultimo selo; depois disso, so re-encadeamento."
+
+    if ($Entregar) {
+        Passo "7. A ENTREGAR a ancora ao servidor"
+        # ATOMICIDADE, e nao ordenacao. Tentei primeiro decidir QUAL dos dois ficheiros entregar
+        # primeiro, e a resposta e que NENHUMA ordem e segura:
+        #
+        #   checkpoints primeiro -> as particoes novas ficam COM checkpoint e SEM piso, e o no
+        #                           recusa arrancar (ErrBadWormExpectedHead: «tem checkpoint mas
+        #                           NAO tem piso de frescura»);
+        #   pisos primeiro       -> os checkpoints antigos ficam ABAIXO dos pisos novos, e o no
+        #                           recusa arrancar (ErrCheckpointStale).
+        #
+        # Logo os dois sobem com nomes temporarios e sao renomeados LADO A LADO, num so comando.
+        # A janela de inconsistencia deixa de ser os segundos do scp e passa a ser o intervalo
+        # entre dois `mv` — e fica declarada, porque nao e zero: um arranque do no exactamente
+        # nesse intervalo apanharia um par incoerente. Recupera-se correndo isto outra vez.
+        #
+        # E NOTE-SE QUE O NO ESTAR FAIL-CLOSED E O QUE TORNA ISTO TOLERAVEL: o pior caso e um no
+        # que NAO ARRANCA ate o par voltar a ser coerente. Nunca um no que arranca com uma ancora
+        # que nao bate.
+        $sshE = @('-i', $ChaveSSH, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+                  '-o', "UserKnownHostsFile=$KnownHosts")
+        $destino = '/opt/aos'
+
+        Nativo { & scp -q @sshE (Join-Path $Ancoras 'checkpoints.json') "${Servidor}:${destino}/ancoras/.checkpoints.novo" }
+        if ($LASTEXITCODE -ne 0) { throw "scp dos checkpoints falhou ($LASTEXITCODE)" }
+        Nativo { & scp -q @sshE (Join-Path $Pisos 'heads.json') "${Servidor}:${destino}/pisos/.heads.novo" }
+        if ($LASTEXITCODE -ne 0) { throw "scp dos pisos falhou ($LASTEXITCODE)" }
+
+        $trocar = 'set -e; cd /opt/aos; mv ancoras/.checkpoints.novo ancoras/checkpoints.json; mv pisos/.heads.novo pisos/heads.json; echo TROCADO'
+        $r = Nativo { & ssh @sshE $Servidor $trocar 2>&1 }
+        if ($LASTEXITCODE -ne 0 -or (($r -join ' ') -notmatch 'TROCADO')) {
+            throw "a troca no servidor falhou — o par pode estar incoerente. Corra isto outra vez"
+        }
+        Bom "ancora entregue (checkpoints e pisos trocados lado a lado)"
+        Nota "o no so a LE no arranque; nada muda ate ao proximo restart"
+    }
 }
 finally {
+    if ($remoto) {
+        # A copia do lado do SERVIDOR vai-se embora SEMPRE — incluindo quando a selagem falha, que
+        # e precisamente quando alguem estaria distraido a ler o erro.
+        #
+        # `Nativo` + try/catch: NADA pode impedir esta limpeza de correr. Sem isto, o aviso do ssh
+        # em stderr matava o proprio `finally` e o worm.wal ficava num home do servidor — foi o que
+        # aconteceu no primeiro teste de falha.
+        #
+        # E VERIFICA-SE. Uma limpeza que falha em silencio e pior do que nao ter limpeza: deixa o
+        # WORM de producao fora do volume, com toda a gente convencida de que nao ficou.
+        try {
+            $r = Nativo { & ssh -i $ChaveSSH -o IdentitiesOnly=yes -o BatchMode=yes `
+                    -o "UserKnownHostsFile=$KnownHosts" $Servidor `
+                    'rm -f ~/selo/worm.wal; rmdir ~/selo 2>/dev/null; ls -d ~/selo 2>/dev/null || echo LIMPO' 2>&1 }
+            if (($r -join ' ') -match 'LIMPO') {
+                Nota "servidor limpo (worm.wal removido)"
+            } else {
+                Mau "NAO consegui confirmar a limpeza do ~/selo no servidor — o worm.wal pode ter"
+                Mau "ficado la. Corra: ssh $Servidor 'rm -rf ~/selo'"
+            }
+        } catch {
+            Mau "a limpeza do servidor FALHOU ($_) — corra: ssh $Servidor 'rm -rf ~/selo'"
+        }
+    }
     if ($tmp -and (Test-Path $tmp)) {
         # Dados de PRODUCAO decifrados. Vao-se embora sempre — incluindo quando a selagem falha,
         # que e precisamente quando alguem estaria distraido a ler o erro.
