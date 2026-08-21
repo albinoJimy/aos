@@ -272,7 +272,7 @@ credencial deu `404`". Só a segunda diz alguma coisa.
 |---|---|---|
 | **Backups cifrados** | PKCS#7 para um certificado cuja privada **nunca esteve no servidor** | ✅ |
 | **Recolha off-host** | Tarefa diária `StartWhenAvailable`; verificado **decifrando** e confirmando a chave Transit lá dentro | ✅ |
-| **Reversão por digest** | `rollback.sh` com o digest anterior, guardado em `image.env.prev` pelo `deploy.sh` (verificado presente no servidor). **NUNCA foi exercido**: não há registo de um rollback executado, pelo que o provado é que o digest anterior fica guardado — não que a reversão funciona | ⚠️ |
+| **Reversão por digest** | `rollback.sh` volta ao digest guardado em `image.env.prev`. **EXERCIDO EM PRODUÇÃO a 2026-08-21**, ida e volta: `26baccd3…` → `69f5e29b…` → `26baccd3…`, com `deploy verde` e smoke `200` nas duas pernas, e o par `image.env`/`image.env.prev` de volta ao estado inicial. **Indisponibilidade MEDIDA**, não estimada, por sonda externa com tecto de 3 s: **1 × 502** na reversão e **2 × 502** no regresso, contra 88 × 200 em cada — a janela é de um a dois segundos, não das dezenas que o tecto de 180 s deixaria supor. **Controlos:** a reversão passa pelos MESMOS gates do deploy (pull, health, smoke), com `NO_ROLLBACK=1` para não se auto-reverter em ciclo; e o `docker pull` do digest anterior foi testado ANTES do ensaio, por ser o passo que mais falha — e que falha de forma segura («o stack em execução NÃO foi tocado») | ✅ |
 | **O backup levanta o sistema** | Não é o mesmo que "o backup decifra". Ensaio completo do artefacto: Vault desselado com a chave de dentro do backup, WORM re-encadeado (108 partições), `idp-db.sql` restaurado (87 tabelas), Keycloak sobre ele, e **token do IdP restaurado a ler no nó restaurado** → `200`. Controlos no sistema restaurado: sem credencial `404`, header forjado `404`, replay do `jti` `404` | ✅ |
 | **Alerta de recência do backup** | Verifica a idade dos **dois** lados: a cópia local (apanha "a máquina esteve desligada") e o backup **remoto** (apanha "o cron do servidor morreu" — o caso invisível, porque a recolha continua a correr sem erro e a dizer `0 novo(s)`). Alerta por código de saída, `ESTADO.txt` e Registo de Eventos. Controlos: tecto de 1h → saída `3`; servidor inalcançável → saída `2`; normal → `0` | ✅ |
 
@@ -316,9 +316,9 @@ sempre um controlo que teria de falhar, e falhou.
 
 | Estado | Nº |
 |---|---|
-| ✅ Provado em produção | 48 |
+| ✅ Provado em produção | 49 |
 | 🧪 Provado por teste (ou em clone restaurado) | 14 |
-| ⚠️ Armado, não exercido | 4 |
+| ⚠️ Armado, não exercido | 3 |
 | 💤 Dormente por configuração | 4 |
 | ❌ Ausente e declarado | 3 |
 
@@ -421,7 +421,7 @@ descrito, e ✅ sem o controlo que a regra da casa exige.
 | O que dizia | O que o código diz |
 |---|---|
 | a residência sela em `gov.read/<run>` | sela em `gov.residency/<run>` (`readResidencyPartition`); `gov.read` é o selo de LEITURA sensível — o código namespaceia-as separadamente **de propósito**, e o documento reintroduzia a colisão que o código evita |
-| «Reversão por digest» ✅ | o digest anterior fica guardado em `image.env.prev` (verificado no servidor), mas **nenhum rollback foi executado**. Pela legenda deste documento, ✅ é «exercido no nó real» ⇒ passa a ⚠️ — a mesma leitura que já se aplicava ao burn-down |
+| ~~«Reversão por digest» ✅~~ **RESOLVIDO a 2026-08-21** | o digest anterior ficava guardado, mas nenhum rollback tinha sido executado — pelo que ✅ era «o digest fica guardado» a fingir-se de «a reversão funciona». O ensaio correu: ida e volta em produção, com a indisponibilidade **medida** em vez de estimada. Quatro deploys tinham-se apoiado nesta rede sem ela alguma vez ter sido puxada |
 | «Ausente: … alerta de recência do backup» | esse alerta está ✅ com três controlos (eixo M). A quarta ausência é o **DSAR sem barreira de transporte** |
 | «Dormente: … autonomia/escalate … o nó nunca finge» | a autonomia está **LIGADA** desde 2026-08-19 00:03. E a frase final era verdadeira sobre o mecanismo e enganadora sobre o efeito |
 
