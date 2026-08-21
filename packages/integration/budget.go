@@ -70,9 +70,13 @@ const BudgetTreeID = "aos-node"
 // Seguro para concorrência (a árvore e o adaptador já o são; o mapa de nós vivos aqui é
 // protegido por mu).
 type RunBudget struct {
-	tree  *budget.Budget
-	check *budget.BudgetCheck
-	limit budget.Amount
+	// pico e o maior consumo por-run visto por este processo; picoVisto distingue «nenhum run
+	// fechou» de «consumo zero». Ver [RunBudget.PicoDeConsumo].
+	pico      int64
+	picoVisto bool
+	tree      *budget.Budget
+	check     *budget.BudgetCheck
+	limit     budget.Amount
 	// costCapped distingue um tecto em $ REALMENTE configurado do ilimitado por omissão
 	// ([UnlimitedCostMicroUSD]) — o banner e o burn-down têm de dizer qual dos dois é, e
 	// `limit.CostMicroUSD` sozinho não os distingue de forma legível.
@@ -252,6 +256,12 @@ func (rb *RunBudget) acquire(ctx context.Context, runID string) (func(), error) 
 			if rb.live[runID] > 0 {
 				rb.mu.Unlock()
 				return
+			}
+			// CONSUMO FECHADO. Este é o único instante em que o consumo desta incarnação está
+			// completo: ler DEPOIS do RemoveNode devolveria «nó inexistente». Ver
+			// [RunBudget.PicoDeConsumo] para o porquê de isto existir.
+			if st, err := rb.tree.Available(runID); err == nil {
+				rb.registarConsumo(limite.Tokens - st.Tokens)
 			}
 			delete(rb.live, runID)
 			// RemoveNode é idempotente; um erro aqui só pode ser [budget.ErrRootRemoval],
@@ -463,4 +473,47 @@ func (rb *RunBudget) TemConsumoDuravel() bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.consumo != nil
+}
+
+// ---------------------------------------------------------------------------------------------
+// O TECTO QUE NUNCA MORDE TEM DE SER VISÍVEL.
+//
+// O README declara-o há semanas: `AOS_BUDGET_MAX_TOKENS=200000` contra um consumo MEDIDO de
+// ~1 750 tokens por run — o tecto e o aviso aos 80% ficam ~114× acima do uso real. O mecanismo
+// FUNCIONA; nesta configuração é protecção que não engata.
+//
+// O problema não é a configuração: é que **isso só está escrito num parágrafo**. O banner declara
+// o tecto e o mecanismo em detalhe, e lê-se como protecção activa. Quem opera o nó não tem por
+// onde ver a distância entre o tecto e o uso real — e uma protecção cuja folga ninguém mede é
+// indistinguível de uma que morde.
+//
+// [RunBudget.PicoDeConsumo] é a outra metade do rácio. Guarda o MAIOR consumo por-run que este
+// processo viu, medido no momento em que o nó do run é destruído (o único instante em que o
+// consumo daquela incarnação está fechado). Cruzado com [RunBudget.MaxTokensPerRun] dá a FOLGA,
+// e a folga é o que se alerta.
+//
+// LIMITE DECLARADO: é por PROCESSO, não durável. Um restart repõe-o a zero, e o valor volta a
+// subir com o primeiro run. Persistir isto exigiria um sítio para o guardar e uma decisão sobre
+// retenção — e o que a métrica precisa de responder («este tecto chega a apertar?») responde-se
+// com dias de observação, não com histórico eterno.
+// ---------------------------------------------------------------------------------------------
+
+// PicoDeConsumo devolve o maior consumo por-run (tokens) observado por este processo, e se houve
+// alguma observação. (0, false) ⇒ nenhum run fechou ainda — que NÃO é o mesmo que consumo zero, e
+// por isso não se emite métrica nenhuma nesse caso.
+func (rb *RunBudget) PicoDeConsumo() (int64, bool) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.pico, rb.picoVisto
+}
+
+// registarConsumo actualiza o pico. Chamado com rb.mu JÁ SEGURO.
+func (rb *RunBudget) registarConsumo(tokens int64) {
+	if tokens < 0 {
+		return
+	}
+	rb.picoVisto = true
+	if tokens > rb.pico {
+		rb.pico = tokens
+	}
 }
