@@ -70,6 +70,9 @@ param(
     # escolha uma fonte para a cadencia e so avance no tempo. O modo de backup fica para quando o
     # servidor estiver inalcancavel ou sob suspeita, e nesse caso a ancora seguinte comeca de novo.
     [switch]$PorSSH,
+    # -Entregar: leva os dois ficheiros ao servidor depois de selar. Ver o passo 7 para a razao
+    # pela qual sobem com nomes temporarios e sao trocados lado a lado.
+    [switch]$Entregar,
     [string]$Servidor  = "aos@37.60.241.150",
     [string]$ChaveSSH  = "C:\Jimy\aos\deploy\server\secrets-local\deploy_key",
     [string]$KnownHosts = "C:\Jimy\aos\deploy\server\secrets-local\known_hosts.txt"
@@ -247,6 +250,43 @@ try {
     Nota ""
     Nota "E a cobertura NUNCA e total: as particoes nascem por run, logo o run seguinte cria uma"
     Nota "que esta ancora nao cobre. Ancorado ate ao ultimo selo; depois disso, so re-encadeamento."
+
+    if ($Entregar) {
+        Passo "7. A ENTREGAR a ancora ao servidor"
+        # ATOMICIDADE, e nao ordenacao. Tentei primeiro decidir QUAL dos dois ficheiros entregar
+        # primeiro, e a resposta e que NENHUMA ordem e segura:
+        #
+        #   checkpoints primeiro -> as particoes novas ficam COM checkpoint e SEM piso, e o no
+        #                           recusa arrancar (ErrBadWormExpectedHead: «tem checkpoint mas
+        #                           NAO tem piso de frescura»);
+        #   pisos primeiro       -> os checkpoints antigos ficam ABAIXO dos pisos novos, e o no
+        #                           recusa arrancar (ErrCheckpointStale).
+        #
+        # Logo os dois sobem com nomes temporarios e sao renomeados LADO A LADO, num so comando.
+        # A janela de inconsistencia deixa de ser os segundos do scp e passa a ser o intervalo
+        # entre dois `mv` — e fica declarada, porque nao e zero: um arranque do no exactamente
+        # nesse intervalo apanharia um par incoerente. Recupera-se correndo isto outra vez.
+        #
+        # E NOTE-SE QUE O NO ESTAR FAIL-CLOSED E O QUE TORNA ISTO TOLERAVEL: o pior caso e um no
+        # que NAO ARRANCA ate o par voltar a ser coerente. Nunca um no que arranca com uma ancora
+        # que nao bate.
+        $sshE = @('-i', $ChaveSSH, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+                  '-o', "UserKnownHostsFile=$KnownHosts")
+        $destino = '/opt/aos'
+
+        Nativo { & scp -q @sshE (Join-Path $Ancoras 'checkpoints.json') "${Servidor}:${destino}/ancoras/.checkpoints.novo" }
+        if ($LASTEXITCODE -ne 0) { throw "scp dos checkpoints falhou ($LASTEXITCODE)" }
+        Nativo { & scp -q @sshE (Join-Path $Pisos 'heads.json') "${Servidor}:${destino}/pisos/.heads.novo" }
+        if ($LASTEXITCODE -ne 0) { throw "scp dos pisos falhou ($LASTEXITCODE)" }
+
+        $trocar = 'set -e; cd /opt/aos; mv ancoras/.checkpoints.novo ancoras/checkpoints.json; mv pisos/.heads.novo pisos/heads.json; echo TROCADO'
+        $r = Nativo { & ssh @sshE $Servidor $trocar 2>&1 }
+        if ($LASTEXITCODE -ne 0 -or (($r -join ' ') -notmatch 'TROCADO')) {
+            throw "a troca no servidor falhou — o par pode estar incoerente. Corra isto outra vez"
+        }
+        Bom "ancora entregue (checkpoints e pisos trocados lado a lado)"
+        Nota "o no so a LE no arranque; nada muda ate ao proximo restart"
+    }
 }
 finally {
     if ($remoto) {
