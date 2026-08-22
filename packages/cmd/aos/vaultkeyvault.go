@@ -677,3 +677,23 @@ func (v *vaultKeyVault) avisoDeOpacidade() string {
 		"[\"read\"] }` e `path \"auth/token/renew-self\" { capabilities = [\"update\"] }` a politica " +
 		"do token (ver deploy/server/provision-identity.sh)"
 }
+
+// marcarShredPorConfirmar implementa [shredPendingMarker]: repõe, no ARRANQUE, uma pendência que
+// a cadeia DSAR ainda afirma.
+//
+// PORQUE NÃO SE RE-SONDA O VAULT AQUI: a pergunta «esta chave existe?» é ambígua depois de um
+// apagamento. Um titular apagado pode voltar a gerar dados, e o `EnsureKey` re-provisiona uma KEK
+// NOVA — legitimamente. A cadeia é a única fonte que distingue «a destruição falhou» de «a
+// destruição correu e o titular voltou». Ver [restoreShredPending].
+//
+// A pendência reposta limpa-se pelo caminho normal: um [vaultKeyVault.Delete] confirmado sobre a
+// mesma chave apaga-a do conjunto.
+func (v *vaultKeyVault) marcarShredPorConfirmar(subjectID string) {
+	if subjectID == "" {
+		return
+	}
+	name := vaultKeyName(audit.KeyRefFor(subjectID))
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.shredPend[name] = struct{}{}
+}

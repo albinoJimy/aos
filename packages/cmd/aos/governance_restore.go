@@ -38,6 +38,7 @@ import (
 	"context"
 	"fmt"
 
+	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	audit "github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -196,4 +197,80 @@ func restoreExpirationIdempotency(ctx context.Context, store audit.Store, partit
 		}
 	}
 	return idem, n, nil
+}
+
+// ---------------------------------------------------------------------------------------------
+// O DESMENTIDO SOBREVIVE AO RESTART.
+//
+// Segunda metade do achado 1.6 da varredura adversarial de 2026-08-21, demonstrada com output:
+//
+//	DEPOIS DE UM RESTART:  chave viva? true    prontidão? VERDE    por confirmar: 0
+//
+// O conjunto de destruições por confirmar vivia só em memória, no adaptador do Vault. Um restart
+// — um deploy, um OOM, uma máquina que reinicia — apagava o desmentido e deixava a cadeia sozinha
+// a afirmar uma irrecuperabilidade por provar, com o /readyz verde a dizer que estava tudo bem.
+//
+// É O MESMO EIXO QUE O `holdsRestored` JÁ FECHOU para o legal hold, e a lição repete-se: a
+// barreira EXISTIA, o CONTEÚDO dela é que não sobrevivia. Uma guarda cujo estado se perde no
+// arranque não é uma guarda; é uma guarda até ao próximo deploy.
+//
+// PORQUE É QUE ISTO SÓ AGORA É DERIVÁVEL: a cadeia passou a distinguir os dois casos
+// ([dsar.EventShredUnconfirmed]). Antes, o único sinal disponível era «a cadeia diz destruída e a
+// chave existe» — que é AMBÍGUO: um titular apagado pode voltar a gerar dados e o `EnsureKey`
+// re-provisiona uma KEK NOVA, legitimamente. Reconstruir a pendência a partir dessa conjunção
+// teria posto o /readyz vermelho para sempre sobre um apagamento que correu bem.
+// ---------------------------------------------------------------------------------------------
+
+// shredPendingMarker é a porta de RE-MARCAÇÃO da pendência no arranque. Só a custódia que sabe
+// CONFIRMAR sabe re-marcar — as outras não têm pendência nenhuma a restaurar.
+type shredPendingMarker interface {
+	marcarShredPorConfirmar(subjectID string)
+}
+
+// restoreShredPending reconstrói o conjunto de destruições POR CONFIRMAR a partir da cadeia DSAR.
+//
+// Reproduz por ordem de armazenamento — a cadeia é append-only e gapless, logo a ordem de leitura
+// É a cronologia — e o ÚLTIMO facto sobre cada titular ganha:
+//
+//	dsar.shred_unconfirmed  ⇒ pendente
+//	dsar.key_destroyed      ⇒ confirmado (limpa uma tentativa anterior falhada)
+//
+// A segunda regra não é simetria decorativa: sem ela, uma destruição que falhou e foi REPETIDA
+// com sucesso continuaria a pôr o nó UNREADY após cada restart, para sempre. Um alarme que não
+// sabe desligar-se deixa de ser lido.
+func restoreShredPending(ctx context.Context, store audit.Store, partition string, vault audit.KeyVault) (int, error) {
+	marker, ok := vault.(shredPendingMarker)
+	if !ok || store == nil {
+		return 0, nil // custódia que não sabe confirmar não tem pendência a restaurar
+	}
+	head, err := store.Head(ctx, partition)
+	if err != nil {
+		return 0, fmt.Errorf("shred por confirmar: head da cadeia %q: %w", partition, err)
+	}
+	if head == 0 {
+		return 0, nil
+	}
+	recs, err := store.Read(ctx, partition, 1, head)
+	if err != nil {
+		return 0, fmt.Errorf("shred por confirmar: leitura da cadeia %q: %w", partition, err)
+	}
+	pendente := make(map[string]bool)
+	for _, rec := range recs {
+		switch rec.Capability {
+		case dsar.EventShredUnconfirmed:
+			pendente[rec.Resource.Value] = true
+		case dsar.EventKeyDestroyed:
+			pendente[rec.Resource.Value] = false
+		default:
+			continue // dsar.received / dsar.blocked não decidem sobre a custódia
+		}
+	}
+	n := 0
+	for subject, pend := range pendente {
+		if pend && subject != "" {
+			marker.marcarShredPorConfirmar(subject)
+			n++
+		}
+	}
+	return n, nil
 }

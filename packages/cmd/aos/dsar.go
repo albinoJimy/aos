@@ -233,6 +233,19 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "subject_id em falta")
 			return
 		}
+		if errors.Is(err, dsar.ErrShredUnconfirmed) {
+			// A CUSTÓDIA NÃO CONFIRMOU. O fluxo já selou `dsar.shred_unconfirmed` na cadeia — e é
+			// essa a diferença face ao estado anterior a 2026-08-22, em que o 500 abaixo era a
+			// única marca do problema e a hash-chain afirmava «apagado» com os mesmos bytes do
+			// caso honesto.
+			//
+			// LOG para o OPERADOR: o 500 vai ao REQUERENTE; sem esta linha, quem opera via o nó ir
+			// a UNREADY após um erase manual sem causa em lado nenhum até ao varrimento de
+			// retenção seguinte (que só corre de hora a hora). Nomeia o EIXO, nunca o titular.
+			h.svc.log("DSAR/crypto-shred (AOS-172, Art. 17): apagamento manual de um titular NAO CONFIRMADO pela custodia da KEK — selado na cadeia como dsar.shred_unconfirmed, o /readyz fica VERMELHO ate uma destruicao confirmada e o conteudo pode continuar recuperavel. Causas tipicas: politica Transit sem deletion_allowed, replicacao, ou token sem autoridade para destruir. Metrica: aos_dsar_vault_shred_unconfirmed: %v", err)
+			writeError(w, http.StatusInternalServerError, "apagamento NAO confirmado pela custodia da KEK")
+			return
+		}
 		// Erro genuíno (selagem/store) ⇒ 500 sem detalhe no corpo.
 		writeError(w, http.StatusInternalServerError, "dsar recusado")
 		return
