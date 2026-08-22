@@ -192,7 +192,7 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	// `running` dentro do arranque — a recusa por suspensão não se aplica a si próprio.
 	if err := s.submit(withReplayPlan(ctx, plan), goal, true); err != nil {
 		if rs != nil {
-			// REPOSIÇÃO CONDICIONAL, pela mesma razão do ramo acima e com a mesma honestidade: repor
+			// A reposição fica sujeita ao estado, pela mesma razão do ramo acima e com a mesma honestidade: repor
 			// por cima de um run que entretanto avançou é como o fantasma nascia, e a asserção custa
 			// duas leituras sob o lock que já se tem. TAMBÉM NÃO ESTÁ PROVADA POR TESTE — a mutação
 			// que a torna incondicional não cai.
