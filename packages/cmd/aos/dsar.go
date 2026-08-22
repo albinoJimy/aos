@@ -199,6 +199,22 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// (4c) AUTORIDADE SOBRE O TITULAR — a confrontação que faltava.
+	//
+	// Até 2026-08-21 esta rota resolvia a região de QUEM CHAMA e mais nada. Um chamador de outra
+	// região não conseguia LER um run (404 uniforme) e conseguia DESTRUIR os dados do titular
+	// desse run (200 "erased"). Ver [readGovernance.podeApagarTitular] para a regra e para o
+	// custo, que era menor do que eu tinha estimado.
+	//
+	// 403 e NÃO 404: esta rota já responde 403 a um board desconhecido, e um código diferente
+	// aqui distinguiria «titular noutra região» de «titular desconhecido». RESIDUAL DECLARADO —
+	// a recusa revela que o pseudónimo existe algures, o que é um vazamento MENOR do que deixar
+	// a destruição acontecer, mas é um vazamento e fica escrito.
+	if !h.readGov.podeApagarTitular(r.Context(), leitor, req.SubjectID, h.node.DSARIndex) {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
+
 	// (5) EXECUTA o fluxo DSAR (legal hold → crypto-shredding → selo WORM).
 	res, err := h.node.DSAR.Receive(r.Context(), dsar.Request{RequestID: req.RequestID, SubjectID: req.SubjectID, Principal: leitor.principal})
 	if err != nil {
