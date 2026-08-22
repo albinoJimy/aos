@@ -1491,6 +1491,38 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "preview invalido")
 		return
 	}
+	// QUANTOS HUMANOS SÃO PRECISOS É DECISÃO DO NÓ, e não de quem pede. Ver
+	// [exigenciaDeDuploControlo] para o achado 1.10 e para a razão de a fonte ser o registo
+	// pendente que o Reference Monitor selou ANTES de haver pedido nenhum.
+	exigirDuplo, pendente, reconhecida, derr := exigenciaDeDuploControlo(
+		r.Context(), h.node.PendingApprovals, r.PathValue("id"), preview, req.Request.DualControlRequired)
+	if derr != nil {
+		writeError(w, http.StatusInternalServerError, "nao foi possivel classificar a accao")
+		return
+	}
+	if h.node.PendingApprovals != nil && !reconhecida {
+		// PREVIEW QUE O NÓ NUNCA ESCALOU. Sem isto, quem pede escolhe a preview E o número de
+		// aprovadores: inventa um efeito, assina-o com um humano, e recebe um grant que a
+		// mediação depois honra — porque a amarra compara o grant com a MESMA preview inventada.
+		//
+		// O registo de pendentes é composto sempre que o four-eyes o é (mesmo bloco do
+		// bootstrap), pelo que esta recusa não desliga aprovações em nó nenhum que as tenha.
+		h.svc.log("four-eyes (achado 1.10): cerimonia RECUSADA — a preview nao corresponde a nenhuma escalada pendente do run %q; o no so aprova efeitos que ele proprio escalou", r.PathValue("id"))
+		writeError(w, http.StatusForbidden, "preview nao corresponde a nenhuma escalada pendente")
+		return
+	}
+	if exigirDuplo && !req.Request.DualControlRequired {
+		// O corpo declarou que UMA perna basta para uma acção que o nó classifica como
+		// IRREVERSÍVEL. Recusa-se — e não se corrige em silêncio, porque o
+		// `dual_control_required` entra na MENSAGEM ASSINADA de cada perna: sobrepô-lo seria
+		// verificar assinaturas contra uma afirmação diferente daquela que os humanos assinaram.
+		//
+		// A cerimónia repete-se com a exigência certa declarada, e aí as assinaturas cobrem a
+		// afirmação verdadeira.
+		h.svc.log("four-eyes (achado 1.10): cerimonia RECUSADA — o pedido declarou dual_control_required=false e a capability %q e IRREVERSIVEL; repita a cerimonia declarando duplo controlo, para que as pernas assinem a exigencia REAL", pendente.Capability)
+		writeError(w, http.StatusForbidden, "esta accao exige duplo controlo — repita a cerimonia com dual_control_required=true")
+		return
+	}
 	feReq := integration.FourEyesRequest{
 		RequestID:           req.Request.RequestID,
 		Preview:             preview,

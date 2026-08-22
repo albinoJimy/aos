@@ -439,3 +439,18 @@ func (c RiskClassifier) Evaluate(_ context.Context, call *Call) (HookResult, err
 	call.Context.RiskClass = classification.Class.String()
 	return HookResult{Decision: HookAllow, PolicyVersion: classification.PolicyVersion}, nil
 }
+
+// CapabilityIrreversible expõe, como predicado PÚBLICO e puro, se uma capability é por si só
+// IRREVERSÍVEL — o mesmo juízo que [reversibilityForCall] faz na mediação, e o único caminho que
+// produz [risk.Irreversible] (o rótulo declarado no contexto só consegue baixar de `unknown` para
+// `reversible`; nunca desfaz este).
+//
+// PORQUE É EXPORTADO. O plano de controlo precisa de decidir, na cerimónia de aprovação, se a
+// acção EXIGE dois aprovadores — e até 2026-08-22 aceitava essa decisão do CORPO DO PEDIDO
+// (`dual_control_required`), sem consultar coisa nenhuma. Reimplementar o juízo do lado do nó
+// criaria uma SEGUNDA fonte de verdade que divergiria em silêncio na primeira capability nova.
+//
+// A classificação é pura e determinística — recalculá-la a jusante dá o MESMO valor, como a nota
+// de [RiskClassifier] já declara. É por isso que este predicado pode ser consultado depois, sem
+// arrastar a classificação por cinco camadas até à rota.
+func CapabilityIrreversible(capability string) bool { return capabilityIrreversible(capability) }
