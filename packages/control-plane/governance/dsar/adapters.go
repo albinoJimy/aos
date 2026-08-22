@@ -33,13 +33,32 @@ type redactionShredder interface {
 // redactionStore adapta um KeySource shreddable (tokenização de PII, AOS-091) à
 // porta [ShreddableKeyStore].
 type redactionStore struct {
-	name string
-	ks   redactionShredder
+	name  string
+	ks    redactionShredder
+	holds HoldOracle
+}
+
+// barreiraDeDestruicao é a porta OPCIONAL que um [HoldOracle] pode implementar para que um passo
+// de destruição EXCLUA a colocação de um legal hold enquanto decorre. O `*audit.LegalHold`
+// satisfá-la; um oráculo de teste pode não a ter.
+type barreiraDeDestruicao interface {
+	BeginDestruction() func()
 }
 
 // RedactionStore liga o crypto-shredding da redação ao fluxo DSAR sob o rótulo dado.
-func RedactionStore(name string, ks redactionShredder) ShreddableKeyStore {
-	return redactionStore{name: name, ks: ks}
+//
+// O `holds` é OBRIGATÓRIO, e é o ponto: até 2026-08-22 este adaptador construía-se sem ele e
+// destruía a chave de tokenização SEM consultar preservação nenhuma e SEM barreira. Não era
+// alcançável — o nó compõe só o [AuditStore] —, mas estava exportado, e a invariante que o
+// `POST /dsar/hold` publica é ABSOLUTA:
+//
+//	um 200 do /dsar/hold significa que NENHUMA destruição posterior deixa de ver este hold.
+//
+// Uma invariante com uma excepção é uma invariante que ninguém consegue citar. Compor este
+// adaptador era o suficiente para a reintroduzir, e nada o impedia. Agora não se consegue
+// construir sem cobertura de preservação.
+func RedactionStore(name string, ks redactionShredder, holds HoldOracle) ShreddableKeyStore {
+	return redactionStore{name: name, ks: ks, holds: holds}
 }
 
 func (r redactionStore) Name() string { return r.name }
@@ -47,7 +66,27 @@ func (r redactionStore) Name() string { return r.name }
 // Shred destrói a chave de tokenização do titular. A chave devolvida é IGNORADA
 // (nunca logada nem propagada); existed=false (chave ausente/já apagada) é um no-op
 // idempotente sem erro — após o shred qualquer token do titular fica irresolúvel.
+//
+// FAIL-CLOSED sob legal hold, e a barreira envolve a leitura E a destruição — a MESMA forma de
+// [audit.Shredder.Shred], deliberadamente.
+//
+// PORQUE AQUI E NÃO NO FLUXO: o fluxo já re-consulta o hold antes de cada store, mas fora de
+// qualquer barreira — sobra a janela `Held()`→`Shred()` que o achado 1.9 nomeia. Tomá-la no ciclo
+// do fluxo seria o desenho óbvio e ANINHARIA a barreira dentro da que o `audit.Shredder.Shred`
+// já toma, e um `RLock` recursivo do mesmo `RWMutex` bloqueia para sempre assim que um escritor
+// fique à espera. Por-store não aninha.
 func (r redactionStore) Shred(subjectID string) error {
+	if r.holds == nil {
+		// Não deveria acontecer (o construtor exige-o), mas destruir sem saber é o pior desfecho
+		// possível: recusa-se.
+		return audit.ErrLegalHold
+	}
+	if b, ok := r.holds.(barreiraDeDestruicao); ok {
+		defer b.BeginDestruction()()
+	}
+	if r.holds.Held(subjectID) {
+		return audit.ErrLegalHold
+	}
 	_, _ = r.ks.Shred(subjectID)
 	return nil
 }

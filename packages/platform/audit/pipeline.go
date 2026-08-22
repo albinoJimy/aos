@@ -278,3 +278,21 @@ func (s *Shredder) PurgeExpired(subjectID string, class DataClass, age time.Dura
 	}
 	return s.Shred(subjectID)
 }
+
+// BeginDestruction delega a BARREIRA DE DESTRUIÇÃO do legal hold que este shredder faz valer, para
+// que OUTROS stores shreddable do mesmo fluxo DSAR — que não têm o `*LegalHold` mas têm este
+// oráculo — possam tomá-la com a mesma semântica.
+//
+// Existe porque a invariante do `POST /dsar/hold` é ABSOLUTA («nenhuma destruição posterior deixa
+// de ver este hold») e um store que a não pudesse tomar seria uma excepção. Ver
+// [dsar.RedactionStore].
+//
+// NÃO ANINHAR: quem chama isto NÃO pode estar dentro de outro `BeginDestruction`. Um `RLock`
+// recursivo do mesmo `RWMutex` bloqueia para sempre assim que um escritor fique à espera. Os
+// stores de um fluxo tomam-na em SEQUÊNCIA (um por iteração do ciclo), nunca encaixados.
+func (s *Shredder) BeginDestruction() func() {
+	if s == nil || s.holds == nil {
+		return func() {}
+	}
+	return s.holds.BeginDestruction()
+}

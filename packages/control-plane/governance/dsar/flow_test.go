@@ -96,7 +96,7 @@ func newHarness(t *testing.T, opts ...dsar.Option) *harness {
 
 	stores := []dsar.ShreddableKeyStore{
 		dsar.AuditStore("audit", shredder),
-		dsar.RedactionStore("redaction", ks),
+		dsar.RedactionStore("redaction", ks, shredder),
 	}
 	allOpts := append([]dsar.Option{dsar.WithTracer(tracer)}, opts...)
 	flow := dsar.NewFlow(pipe, shredder, stores, allOpts...)
@@ -582,11 +582,15 @@ func TestLegalHoldMidErasureBlocksBeforeNonEnforcingStore(t *testing.T) {
 	}
 
 	hold := &flipHold{}
-	// Ordem deliberada: um store que activa o hold ao shredar, SEGUIDO da redação
-	// (não-enforcing). O hold aparece entre os dois.
+	// Ordem deliberada: um store que activa o hold ao shredar, SEGUIDO da redação. O hold
+	// aparece entre os dois, e o fluxo re-consulta antes de cada store.
+	//
+	// A redação DEIXOU de ser não-enforcing (2026-08-22): passa a consultar o hold e a tomar a
+	// barreira, como o store de audit. Este teste continua a provar o mesmo — que o fluxo bloqueia
+	// ANTES de lá chegar — e deixou de depender de o segundo store nao se defender sozinho.
 	stores := []dsar.ShreddableKeyStore{
 		flippingStore{name: "trigger", hold: hold},
-		dsar.RedactionStore("redaction", ks),
+		dsar.RedactionStore("redaction", ks, hold),
 	}
 	flow := dsar.NewFlow(pipe, hold, stores)
 
