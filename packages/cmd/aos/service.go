@@ -183,6 +183,11 @@ type NodeService struct {
 	// voltaria a poder sobrepor-se ao tick. CAS não-bloqueante — quem perde não espera.
 	expireInFlight atomic.Bool
 
+	// resumeInFlight serializa as retomas POR RUN. Ver a nota (0) em [NodeService.Resume]: sem
+	// ela, a via DURAVEL escapa a reclamacao do balde de suspensos e duas retomas do mesmo run
+	// chegam ambas ao submit. Chave = runID, porque retomas de runs diferentes nao competem.
+	resumeInFlight map[string]struct{}
+
 	mu             sync.Mutex
 	runs           map[string]*runState // em curso (por RunID)
 	completed      map[string]*runState // terminados (inspecção/observabilidade)

@@ -69,6 +69,28 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 		return ErrResumeUnavailable
 	}
 
+	// (0) UMA RETOMA DE CADA VEZ POR RUN, e é aqui e não mais abaixo.
+	//
+	// A reclamação do balde de suspensos (passo 4) fecha a via EM MEMÓRIA. NÃO fecha a via
+	// DURÁVEL — e isto não é teoria: a asserção «ninguém chega ao submit sem ser dono» apanhou-o
+	// na primeira correcção que escrevi. Quando outra retoma já removeu a entrada, o chamador
+	// seguinte lê `susp=false`, cai no caminho durável (que continua a dizer «suspenso», porque
+	// é verdade), chega ao submit com `rs == nil` e colide.
+	//
+	// Sem fantasma — com `rs == nil` não há reposição — mas com um submit desperdiçado e um erro
+	// ao chamador que descreve mal o que aconteceu.
+	//
+	// Molde de [NodeService.expireInFlight], que já serializa a rota de expiração e o varredor
+	// pela mesma razão; aqui a chave é o run, porque retomas de runs DIFERENTES não competem.
+	libertar, souDono := s.reclamarRetoma(runID)
+	if !souDono {
+		// Está suspenso — mas não para este chamador: outra retoma tem a transição. Devolve-se o
+		// erro EXISTENTE em vez de inventar estado novo na API; quem perdeu não tem nada a fazer,
+		// porque o vencedor faz exactamente o mesmo trabalho.
+		return ErrRunNotSuspended
+	}
+	defer libertar()
+
 	// (1) Está suspenso? O balde em memória é um cache — um restart do nó esvazia-o sem
 	// que a suspensão deixe de ser verdade (registo de retoma, pendente, grant e transição
 	// são todos duráveis). Um run que esta réplica não conhece é procurado NO LOG; sem
@@ -132,17 +154,54 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	// — o run não pode ficar nem suspenso nem submetido. Depois de um restart não há nada
 	// a repor (rs == nil): a suspensão continua verdadeira no log e é de lá que a próxima
 	// tentativa a lê.
+	// RECLAMAR, e não apagar. Achado 1.12 da varredura adversarial de 2026-08-21.
+	//
+	// O `delete` incondicional não distingue «tirei-o eu» de «já não estava lá», e duas retomas
+	// concorrentes passam as verificações acima com o MESMO `rs`: a primeira apaga, submete e o
+	// run corre; a segunda apaga um nada, o `submit` recusa-o (o run já existe) e o ramo de erro
+	// REPÕE o estado velho por cima de um run que já avançou.
+	//
+	// O resultado era um FANTASMA: `GET /runs/{id}` a responder `waiting_on_human` sobre um run
+	// `complete`, com o RunID bloqueado e a escotilha de contorno a recusar 409 (exige estado
+	// durável `waiting_on_human`, e o do fantasma é `complete`). Permanente durante a vida do
+	// processo — só um restart o limpava.
+	//
+	// Quem NÃO reclamou não submete. Não é uma optimização: é a única forma de o segundo saber
+	// que não é dono da transição.
 	s.mu.Lock()
+	_, reclamado := s.suspended[runID]
 	delete(s.suspended, runID)
 	s.mu.Unlock()
+	if rs != nil && !reclamado {
+		// Entrámos pela via EM MEMÓRIA (rs != nil) e a entrada desapareceu entretanto.
+		//
+		// COM a reclamação de (0), não pode ter sido outra retoma. Pode ter sido um ABORTO: a
+		// decisão de exaustão chama [NodeService.esqueceSuspensao], que remove a entrada e NÃO
+		// consulta `resumeInFlight`. Sem este ramo, uma retoma em voo re-submeteria um run que um
+		// humano acabou de mandar parar — pior do que o fantasma que (0) fecha.
+		//
+		// NÃO ESTÁ PROVADO POR TESTE, e fica dito: a mutação que o remove não cai em nenhum dos
+		// testes deste ficheiro, porque exercitá-lo exige um aborto entre o passo (1) e o (4) e
+		// não há gancho para o interleaving. Mantém-se por defender um caminho REAL e nomeado,
+		// não por precaução genérica.
+		return ErrRunNotSuspended
+	}
 
 	goal := rec.GoalWith(credential)
 	// resuming=true: é este o run suspenso a ser re-hospedado, e o log só passa a dizer
 	// `running` dentro do arranque — a recusa por suspensão não se aplica a si próprio.
 	if err := s.submit(withReplayPlan(ctx, plan), goal, true); err != nil {
 		if rs != nil {
+			// REPOSIÇÃO CONDICIONAL, pela mesma razão do ramo acima e com a mesma honestidade: repor
+			// por cima de um run que entretanto avançou é como o fantasma nascia, e a asserção custa
+			// duas leituras sob o lock que já se tem. TAMBÉM NÃO ESTÁ PROVADA POR TESTE — a mutação
+			// que a torna incondicional não cai.
 			s.mu.Lock()
-			s.suspended[runID] = rs
+			_, done := s.completed[runID]
+			_, running := s.runs[runID]
+			if !done && !running {
+				s.suspended[runID] = rs
+			}
 			s.mu.Unlock()
 		}
 		return fmt.Errorf("aos: re-submeter run %q na retoma: %w", runID, err)
@@ -209,4 +268,32 @@ func (s *NodeService) replayPlanFor(ctx context.Context, runID, subject string) 
 		plan[t.Turn] = t.Response
 	}
 	return plan, nil
+}
+
+// reclamarRetoma dá a UM chamador a transição de retoma de `runID`, e recusa-a aos restantes
+// enquanto ela durar. Devolve a função que a liberta e se a reclamação foi concedida.
+//
+// PORQUE É UMA FUNÇÃO E NÃO CÓDIGO INLINE: inline, a única forma de a exercitar era ganhar uma
+// corrida — e o teste concorrente que escrevi para isso NÃO matou a mutação que a remove (10
+// corridas, 10 passagens). Uma propriedade que só se observa por acaso não está provada. Extraída,
+// prova-se em duas linhas, e a cablagem prova-se reclamando-a a partir do teste e exigindo que o
+// `Resume` recuse.
+//
+// Molde de [NodeService.expireInFlight], que já serializa a rota de expiração e o varredor pela
+// mesma razão; aqui a chave é o run, porque retomas de runs DIFERENTES não competem.
+func (s *NodeService) reclamarRetoma(runID string) (func(), bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resumeInFlight == nil {
+		s.resumeInFlight = make(map[string]struct{})
+	}
+	if _, jaVai := s.resumeInFlight[runID]; jaVai {
+		return func() {}, false
+	}
+	s.resumeInFlight[runID] = struct{}{}
+	return func() {
+		s.mu.Lock()
+		delete(s.resumeInFlight, runID)
+		s.mu.Unlock()
+	}, true
 }
