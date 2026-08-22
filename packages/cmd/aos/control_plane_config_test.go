@@ -568,6 +568,7 @@ func TestApproversFileAuthorizesDualControlEndToEnd(t *testing.T) {
 		"legs": []map[string]any{wire(legA), wire(legB)},
 	}
 
+	semearPendente(t, node, "run-aos193", capIrreversivelDeTeste, []byte("apagar o bucket de producao"))
 	rec := postJSON(h, "POST", "/runs/run-aos193/approve", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("o roster vindo de AOS_APPROVERS_FILE tem de conseguir AUTORIZAR (200), veio %d (%s)",

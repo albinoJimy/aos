@@ -135,6 +135,7 @@ func TestAOS266FreshnessIssueThenConsume(t *testing.T) {
 	leg := integration.SignFourEyesLeg(priv, req, approverID, "sess-1", "cred-1", challenge, nil)
 
 	body := approveBody(req, leg)
+	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))
 	rec := postJSON(h, "POST", "/runs/run-x/approve", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/approve com challenge EMITIDO devia autorizar (200), veio %d (%s)", rec.Code, rec.Body.String())
@@ -175,6 +176,7 @@ func TestAOS266FreshnessRejectsUnissuedChallenge(t *testing.T) {
 		t.Fatalf("rand: %v", err)
 	}
 	leg := integration.SignFourEyesLeg(priv, req, approverID, "sess-1", "cred-1", unissued, nil)
+	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))
 	rec := postJSON(h, "POST", "/runs/run-x/approve", approveBody(req, leg))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("/approve com challenge NAO-EMITIDO devia dar 403 (ErrChallengeNotIssued), veio %d (%s)", rec.Code, rec.Body.String())
@@ -211,6 +213,7 @@ func TestAOS266ChallengeTTLHonoured(t *testing.T) {
 	challenge := issueChallenge(t, h, req.RequestID, approverID)
 	leg := integration.SignFourEyesLeg(priv, req, approverID, "sess-1", "cred-1", challenge, nil)
 	// Dentro do TTL (o relógio real avança segundos, não um minuto) ⇒ autoriza.
+	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))
 	rec := postJSON(h, "POST", "/runs/run-x/approve", approveBody(req, leg))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/approve dentro do TTL devia autorizar (200), veio %d (%s)", rec.Code, rec.Body.String())

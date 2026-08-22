@@ -132,6 +132,7 @@ func TestAOS266EnrollmentAcceptsRegistedRejectsForeign(t *testing.T) {
 
 	// (i) Dispositivo REGISTADO ⇒ 200.
 	reqOK, legOK := newLeg("req-enroll-ok", enrolledAtt)
+	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))
 	rec := postJSON(h, "POST", "/runs/run-x/approve", attestedApproveBody(reqOK, legOK))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/approve com dispositivo REGISTADO devia autorizar (200), veio %d (%s)", rec.Code, rec.Body.String())

@@ -103,6 +103,7 @@ func TestAprovacaoSelaQUEMAutorizou(t *testing.T) {
 		t.Fatalf("a particao de controlo ja tinha %d selo(s) — o cenario nao esta limpo", n)
 	}
 
+	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))
 	rec := postJSON(h, "POST", "/runs/run-x/approve", corpoDeAprovacao(priv, aprovador, "req-selo-1"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/approve devolveu %d: %s", rec.Code, rec.Body.String())
@@ -171,6 +172,7 @@ func TestOSeloNaoTransportaMaterialSecreto(t *testing.T) {
 	node, priv := noComAprovador(t, aprovador)
 	_, h := newAPI(t, node)
 
+	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))
 	corpo := corpoDeAprovacao(priv, aprovador, "req-selo-2")
 	if rec := postJSON(h, "POST", "/runs/run-x/approve", corpo); rec.Code != http.StatusOK {
 		t.Fatalf("/approve devolveu %d", rec.Code)

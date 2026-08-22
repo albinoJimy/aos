@@ -571,6 +571,7 @@ func TestAPIApproveAuthorizesViaGate(t *testing.T) {
 			"signature":  base64.StdEncoding.EncodeToString(leg.Signature),
 		}},
 	}
+	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))
 	rec := postJSON(h, "POST", "/runs/run-x/approve", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/approve com perna valida devia autorizar (200), veio %d (%s)", rec.Code, rec.Body.String())
