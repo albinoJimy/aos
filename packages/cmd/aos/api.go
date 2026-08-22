@@ -1585,6 +1585,14 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 	if h.node.ApprovalBroker != nil {
 		grant, gerr := h.node.ApprovalBroker.Approve(r.Context(), feReq.RequestID, feReq, legs...)
 		if gerr != nil {
+			// ID DE APROVAÇÃO REUTILIZADO (achado 1.11) — nomeado no LOG DO OPERADOR, embora a
+			// resposta continue uniforme. O 403 uniforme existe para não revelar ao chamador qual
+			// invariante falhou; este caso, porém, é o único que significa «dois humanos
+			// completaram uma cerimónia que NÃO ficou registada», e ninguém o investigaria a
+			// partir de um 403 igual a todos os outros.
+			if errors.Is(gerr, integration.ErrGrantIDReused) {
+				h.svc.log("four-eyes (achado 1.11): cerimonia RECUSADA — o request_id %q ja tem na cadeia um grant com conteudo DIFERENTE. Sem esta recusa, os aprovadores desta cerimonia receberiam 200 e a prova registada nomearia OUTRO par: %v", feReq.RequestID, gerr)
+			}
 			// Fail-closed e resposta UNIFORME: não se revela qual invariante falhou (o audit
 			// tem o erro dedicado).
 			writeError(w, http.StatusForbidden, "aprovacao recusada")

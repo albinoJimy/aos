@@ -161,3 +161,72 @@ func TestUmaPreviewQueONoNuncaEscalouERecusada(t *testing.T) {
 			rec.Code, rec.Body.String())
 	}
 }
+
+// noComTresAprovadores pina alice, bob e carol no MESMO nó — sem os três pinados, a segunda
+// cerimónia falharia por «aprovador desconhecido» e o teste mediria outra coisa.
+func noComTresAprovadores(t *testing.T) (*Node, http.Handler, []string, [][]byte) {
+	t.Helper()
+	pubA, privA := tnPubHex(t)
+	pubB, privB := tnPubHex(t)
+	pubC, privC := tnPubHex(t)
+	const alice, bob, carol = "human:alice-1.11", "human:bob-1.11", "human:carol-1.11"
+	path := writeApproversFile(t, `{"approvers":[
+		{"principal":"`+alice+`","pubkey":"`+pubA+`","authority":["approve:danger"]},
+		{"principal":"`+bob+`","pubkey":"`+pubB+`","authority":["approve:danger"]},
+		{"principal":"`+carol+`","pubkey":"`+pubC+`","authority":["approve:danger"]}
+	]}`)
+	approvers, err := parseApproversFile(path)
+	if err != nil {
+		t.Fatalf("parseApproversFile: %v", err)
+	}
+	cfg := tnBaseConfig()
+	cfg.SteerClock = tnClock()
+	cfg.Approvers = approvers
+	node, err := Bootstrap(context.Background(), cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Close() })
+	_, h := newAPI(t, node)
+	return node, h, []string{alice, bob, carol}, [][]byte{privA, privB, privC}
+}
+
+// TestASegundaCerimoniaComOUTROParERecusadaPELAROTA prova a PROPRIEDADE do achado 1.11 na rota —
+// e o nome desta nota é o que ela prova, depois de uma correcção.
+//
+// ESCREVI-A PRIMEIRO COMO TESTE DE CABLAGEM da guarda do `Put`, e a mutação denunciou-a: remover
+// a guarda NÃO a fazia cair. A razão é uma interacção que eu não tinha visto — a correcção do
+// achado 1.10, feita horas antes, já FECHA esta via: emitido o grant da primeira cerimónia, o
+// pendente sai da lista de «à espera de decisão», e a segunda cerimónia é recusada com «preview
+// não corresponde a nenhuma escalada pendente» ANTES de chegar ao broker.
+//
+// Fica dito porque a conclusão importa: ao nível da ROTA, o 1.11 já era inalcançável. A guarda do
+// `Put` é defesa em profundidade para quem chegue ao store por outra via, e é lá — no pacote
+// `integration` — que está coberta por mutação.
+//
+// O que esta função continua a provar, e é a propriedade que interessa ao operador: a segunda
+// cerimónia NÃO recebe 200, e a cadeia continua a nomear o par que realmente assinou.
+func TestASegundaCerimoniaComOUTROParERecusadaPELAROTA(t *testing.T) {
+	node, h, quem, chaves := noComTresAprovadores(t)
+	alice, bob, carol := quem[0], quem[1], quem[2]
+	_ = bob
+	privA, privB, privC := chaves[0], chaves[1], chaves[2]
+	preview := []byte("apagar o bucket de producao (1.11)")
+	semearPendente(t, node, "run-1-11", capIrreversivelDeTeste, preview)
+
+	// CERIMÓNIA 1 — alice e bob.
+	rec := postJSON(h, "POST", "/runs/run-1-11/approve",
+		corpoDual(t, preview, true, []string{alice, bob}, [][]byte{privA, privB}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a primeira cerimonia devia autorizar; veio %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// CERIMÓNIA 2 — MESMO request_id (o `corpoDual` usa sempre "req-1.10"), par DIFERENTE.
+	rec2 := postJSON(h, "POST", "/runs/run-1-11/approve",
+		corpoDual(t, preview, true, []string{alice, carol}, [][]byte{privA, privC}))
+	if rec2.Code == http.StatusOK {
+		t.Errorf("a SEGUNDA cerimonia, com outro par, recebeu 200 — e a prova registada continua a "+
+			"nomear o primeiro par. Dois humanos autorizaram e a cadeia nomeia quem nao assinou: %s",
+			rec2.Body.String())
+	}
+}

@@ -37,6 +37,12 @@ var (
 	ErrGrantExpired = errors.New("integration: aprovação expirada")
 	// ErrGrantPreviewMismatch — o grant é de OUTRA acção (a preview não bate).
 	ErrGrantPreviewMismatch = errors.New("integration: aprovação pertence a outra accao")
+	// ErrGrantIDReused — o id do grant JÁ tem, na cadeia, um grant com conteúdo DIFERENTE.
+	//
+	// Não é uma falha de disponibilidade: é a recusa de devolver 200 sobre uma cerimónia que NÃO
+	// ficou registada. Ver a nota no `Put` do store durável — o desfecho que isto impede é uma
+	// prova de autorização que NOMEIA quem não assinou aquela cerimónia.
+	ErrGrantIDReused = errors.New("integration: id de aprovacao REUTILIZADO com conteudo diferente")
 )
 
 // DefaultApprovalTTL é a janela de validade de uma aprovação concluída. Decisão do dono:
