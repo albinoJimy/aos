@@ -167,7 +167,15 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "dsar desligado (governanca soberana nao composta)")
 		return
 	}
-	if _, ok := h.readGov.authorize(r); !ok {
+	// QUEM pede a destruição fica SELADO. Até 2026-08-21 esta linha era
+	// `if _, ok := h.readGov.authorize(r); !ok` — o handler autenticava e deitava fora a
+	// identidade, e a cadeia provava que a KEK morreu sem provar por ordem de quem.
+	//
+	// Para uma operação IRREVERSÍVEL cujo propósito é o não-repúdio perante o titular e o
+	// regulador, era a peça que faltava — e a assimetria era indefensável: o `/dsar/hold`,
+	// REVERSÍVEL, já selava principal e região.
+	leitor, ok := h.readGov.authorize(r)
+	if !ok {
 		writeError(w, http.StatusForbidden, "nao autorizado")
 		return
 	}
@@ -192,7 +200,7 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// (5) EXECUTA o fluxo DSAR (legal hold → crypto-shredding → selo WORM).
-	res, err := h.node.DSAR.Receive(r.Context(), dsar.Request{RequestID: req.RequestID, SubjectID: req.SubjectID})
+	res, err := h.node.DSAR.Receive(r.Context(), dsar.Request{RequestID: req.RequestID, SubjectID: req.SubjectID, Principal: leitor.principal})
 	if err != nil {
 		if errors.Is(err, dsar.ErrLegalHold) {
 			// BLOQUEADO por legal hold: nada foi apagado (fail-closed do apagamento); o evento

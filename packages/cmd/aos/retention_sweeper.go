@@ -114,6 +114,10 @@ const (
 	// (a rota mantém a superfície de AOS-213 intacta), mas o campo existe para que acrescentar
 	// outra origem amanhã não obrigue a reinterpretar os selos já escritos.
 	retentionTriggerScheduler = "scheduler"
+	// retentionTriggerRota distingue a expiração pedida por um HUMANO pela rota. O selo passa a
+	// carregar o principal autenticado em vez da NHI do nó — e é isso que torna as duas passagens
+	// comparáveis na cadeia: mesma forma, gatilho e autor diferentes.
+	retentionTriggerRota = "rota"
 )
 
 // ErrBadRetentionSweepInterval — AOS_RETENTION_SWEEP_INTERVAL está definida mas não é uma duração
@@ -321,9 +325,20 @@ func (s *NodeService) sweepRetentionOnce(ctx context.Context) bool {
 // auditável a periodicidade realmente em vigor; `legal_hold=enforced` regista que a passagem correu
 // com a barreira de preservação composta — o scheduler não arranca sem ela ([retentionSchedulerArmed]).
 func (s *NodeService) sealRetentionSweep(ctx context.Context, event, sweepID string, at time.Time, report *audit.ExpirationReport) error {
+	return s.selarPassagemDeRetencao(ctx, event, sweepID, at, report, retentionTriggerScheduler, retentionSchedulerNHI)
+}
+
+// selarPassagemDeRetencao e o selo de atribuicao, com o GATILHO e o PRINCIPAL parametrizados.
+//
+// Existia so para o varredor automatico, com os dois valores fixos. A rota `POST /dsar/expire`
+// — que destroi KEKs de TODOS os titulares fora do TTL — nao selava atribuicao NENHUMA: o
+// caminho SEM humano registava quem, o caminho COM humano nao registava ninguem.
+//
+// Uma so forma de registo para os dois gatilhos, porque um auditor tem de os poder comparar.
+func (s *NodeService) selarPassagemDeRetencao(ctx context.Context, event, sweepID string, at time.Time, report *audit.ExpirationReport, gatilho, principal string) error {
 	version := s.node.Retention.Version()
 	params := map[string]string{
-		"trigger":        retentionTriggerScheduler,
+		"trigger":        gatilho,
 		"cadence":        s.retentionSweepInterval.String(),
 		"config_version": version,
 		"issuer":         s.node.IssuerID,
@@ -337,7 +352,7 @@ func (s *NodeService) sealRetentionSweep(ctx context.Context, event, sweepID str
 	}
 	obligations := []audit.Obligation{{
 		Type:   obRetentionSweepTrigger,
-		Fields: []string{retentionTriggerScheduler},
+		Fields: []string{gatilho},
 		Params: params,
 	}}
 	if report != nil {
@@ -367,7 +382,7 @@ func (s *NodeService) sealRetentionSweep(ctx context.Context, event, sweepID str
 		Partition:     retentionPartition,
 		Timestamp:     at,
 		Decision:      audit.DecisionAllow,
-		Principal:     audit.Principal{NHIID: retentionSchedulerNHI},
+		Principal:     audit.Principal{NHIID: principal},
 		Capability:    capRetentionSweep,
 		PolicyVersion: version,
 		RequestID:     sweepID,

@@ -56,6 +56,23 @@ type Request struct {
 	SubjectID string
 	// Partition sobrepõe (opcional) a partição de audit onde os eventos são selados.
 	Partition string
+	// Principal é QUEM pediu a destruição — o principal autenticado, não o titular.
+	//
+	// O DEFEITO QUE FECHA, encontrado na varredura adversarial de 2026-08-21: o handler
+	// autenticava o chamador e depois DEITAVA FORA a identidade (`if _, ok := ...`), pelo que os
+	// registos selados ficavam com `Principal.NHIID` vazio. A cadeia tamper-evident provava que a
+	// KEK de um titular fora destruída e não provava POR ORDEM DE QUEM.
+	//
+	// A assimetria que isso criava era indefensável: o `/dsar/hold` — REVERSÍVEL — sela principal
+	// e região; o varredor AUTOMÁTICO sela uma NHI própria e RECUSA correr sem ela; e a via humana
+	// de destruição IRREVERSÍVEL não selava ninguém. A auditoria era mais forte no que se pode
+	// desfazer do que no que não se pode.
+	//
+	// RESÍDUO DECLARADO: o fluxo NÃO o exige. 29 dos 30 chamadores de [Flow.Receive] são testes
+	// que exercitam outras propriedades, e obrigá-lo aqui seria uma mudança de outra natureza. A
+	// obrigatoriedade vive no handler HTTP, que é a única via por onde um humano destrói — e há
+	// um teste que falha se ela lá desaparecer.
+	Principal string
 }
 
 // Result é o desfecho de um [Flow.Receive]. Os *Seq referenciam os audit_seq dos
@@ -207,7 +224,7 @@ func (f *Flow) Receive(ctx context.Context, req Request) (Result, error) {
 	res := Result{RequestID: req.RequestID, SubjectID: subject}
 
 	// 1. dsar.received — o pedido é um facto de conformidade selado.
-	recv, err := f.seal(ctx, partition, subject, req.RequestID, EventReceived, audit.DecisionAllow, nil)
+	recv, err := f.seal(ctx, partition, subject, req.RequestID, req.Principal, EventReceived, audit.DecisionAllow, nil)
 	if err != nil {
 		span.SetAttribute(attrStage, "received")
 		return res, err
@@ -216,7 +233,7 @@ func (f *Flow) Receive(ctx context.Context, req Request) (Result, error) {
 
 	// 2. legal hold (subject OU partição) — fail-closed: nada é destruído.
 	if f.holds.Held(subject) {
-		return f.sealBlocked(ctx, span, res, partition, subject, req.RequestID, nil, "blocked_legal_hold", ErrLegalHold)
+		return f.sealBlocked(ctx, span, res, partition, subject, req.RequestID, req.Principal, nil, "blocked_legal_hold", ErrLegalHold)
 	}
 
 	// 3. erasure unificada: destruir a chave por-titular em CADA store. O legal hold é
@@ -230,7 +247,7 @@ func (f *Flow) Receive(ctx context.Context, req Request) (Result, error) {
 			// Hold apareceu durante a erasure: bloqueia ANTES de tocar neste store.
 			// destroyed pode já conter stores destruídos (erasure parcial irreversível
 			// — sinalizada em Result.Partial e no evento/span).
-			return f.sealBlocked(ctx, span, res, partition, subject, req.RequestID, destroyed, "blocked_legal_hold", ErrLegalHold)
+			return f.sealBlocked(ctx, span, res, partition, subject, req.RequestID, req.Principal, destroyed, "blocked_legal_hold", ErrLegalHold)
 		}
 		if serr := st.Shred(subject); serr != nil {
 			// Fail-closed: um store recusou (ex.: legal hold re-checado no store). Sela
@@ -240,14 +257,14 @@ func (f *Flow) Receive(ctx context.Context, req Request) (Result, error) {
 			if errors.Is(serr, audit.ErrLegalHold) {
 				outcome, cause = "blocked_legal_hold", ErrLegalHold
 			}
-			return f.sealBlocked(ctx, span, res, partition, subject, req.RequestID, destroyed, outcome, cause)
+			return f.sealBlocked(ctx, span, res, partition, subject, req.RequestID, req.Principal, destroyed, outcome, cause)
 		}
 		destroyed = append(destroyed, st.Name())
 	}
 	res.StoresShredded = destroyed
 
 	// 4. dsar.key_destroyed — apagamento satisfeito, timestamp + rótulos dos stores.
-	done, err := f.seal(ctx, partition, subject, req.RequestID, EventKeyDestroyed, audit.DecisionAllow, destroyed)
+	done, err := f.seal(ctx, partition, subject, req.RequestID, req.Principal, EventKeyDestroyed, audit.DecisionAllow, destroyed)
 	if err != nil {
 		span.SetAttribute(attrStage, "key_destroyed")
 		return res, err
@@ -265,7 +282,7 @@ func (f *Flow) Receive(ctx context.Context, req Request) (Result, error) {
 // antes do bloqueio (janela TOCTOU: hold a meio da erasure unificada), marca
 // Result.Partial e o span — o Blocked=true NÃO esconde a erasure parcial irreversível.
 // Nunca expõe PII nem chave: só subjectID/rótulos/desfecho.
-func (f *Flow) sealBlocked(ctx context.Context, span otelgenai.Span, res Result, partition, subject, requestID string, destroyed []string, outcome string, cause error) (Result, error) {
+func (f *Flow) sealBlocked(ctx context.Context, span otelgenai.Span, res Result, partition, subject, requestID, principal string, destroyed []string, outcome string, cause error) (Result, error) {
 	res.Blocked = true
 	res.StoresShredded = destroyed
 	res.Partial = len(destroyed) > 0
@@ -275,7 +292,7 @@ func (f *Flow) sealBlocked(ctx context.Context, span otelgenai.Span, res Result,
 		span.SetAttribute(attrPartial, true)
 		span.SetAttribute(attrStores, len(destroyed))
 	}
-	blk, berr := f.seal(ctx, partition, subject, requestID, EventBlocked, audit.DecisionDeny, destroyed)
+	blk, berr := f.seal(ctx, partition, subject, requestID, principal, EventBlocked, audit.DecisionDeny, destroyed)
 	if berr != nil {
 		span.SetAttribute(attrStage, "blocked")
 		return res, berr
@@ -287,8 +304,10 @@ func (f *Flow) sealBlocked(ctx context.Context, span otelgenai.Span, res Result,
 // seal constrói e sela um AuditRecord de evento DSAR — SEM PII: o RawRecord não leva
 // PII, pelo que a ingestão não cria PayloadRef nem cifra nada. O subjectID
 // pseudónimo vai no Resource; os rótulos dos stores (se houver) numa Obligation.
-func (f *Flow) seal(ctx context.Context, partition, subject, requestID, verb string, decision audit.Decision, stores []string) (audit.AuditRecord, error) {
+func (f *Flow) seal(ctx context.Context, partition, subject, requestID, principal, verb string, decision audit.Decision, stores []string) (audit.AuditRecord, error) {
 	rec := audit.AuditRecord{
+		// QUEM pediu. Vazio so quando o chamador nao o forneceu — ver [Request.Principal].
+		Principal:  audit.Principal{NHIID: principal},
 		Partition:  partition,
 		Timestamp:  f.now().UTC(),
 		Decision:   decision,
