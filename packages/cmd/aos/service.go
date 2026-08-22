@@ -102,6 +102,12 @@ type runState struct {
 	// suspended marca um run que PAROU à espera de aval humano (AOS-021). NÃO terminou:
 	// é arquivado no balde `suspended` e continua RETOMÁVEL por POST /runs/{id}/resume.
 	suspended bool
+	// suspendedAtUnix é QUANDO o run entrou no balde de suspensos, para a idade do mais antigo
+	// (ver [NodeService.suspensosAgora]). Escrito sob o mutex do serviço, como o resto.
+	//
+	// Unix e não time.Time por simetria com `ultimoVarrimentoUnix`: a mesma unidade, a mesma
+	// forma de calcular a idade, e um zero que se distingue de «agora».
+	suspendedAtUnix int64
 }
 
 // RunOutcome é a fotografia imutável do desfecho de um run terminado (inspecção/testes).
@@ -886,6 +892,12 @@ func (s *NodeService) finish(rs *runState) {
 		// À ESPERA DE HUMANO: não é um desfecho. Fica no balde de suspensos — fora da
 		// retenção FIFO de terminados (que o podaria e o tornaria irretomável) — e
 		// continua a bloquear uma re-submissão do mesmo RunID, mas por POST /resume.
+		if rs.suspendedAtUnix == 0 {
+			// NÃO se re-carimba: a idade que interessa é a de quando este estado começou a
+			// esperar por um humano, e uma re-suspensão do MESMO runState (a reposição do
+			// ramo de erro da retoma) não é uma espera nova.
+			rs.suspendedAtUnix = time.Now().Unix()
+		}
 		s.suspended[rs.runID] = rs
 	} else {
 		if _, seen := s.completed[rs.runID]; !seen {
@@ -1165,4 +1177,33 @@ func (s *NodeService) log(format string, args ...any) {
 	s.logMu.Lock()
 	defer s.logMu.Unlock()
 	fmt.Fprintf(s.logw, "[aos-service] "+format+"\n", args...)
+}
+
+// suspensosAgora devolve quantos runs esperam por um humano NESTA réplica e o instante em que o
+// mais antigo começou a esperar (0 se nenhum tem carimbo).
+//
+// PORQUE EXISTE. A serialização das retomas (achado 1.12) entrou em produção sem observabilidade
+// nenhuma: um run preso em `waiting_on_human` que não conseguisse retomar não aparecia em série
+// nenhuma — só se dava por ele quando alguém tentasse retomá-lo e falhasse. Uma guarda sem sinal
+// é uma guarda que ninguém vê falhar.
+//
+// POR RÉPLICA, e isso é uma limitação e não um detalhe: a suspensão é DURÁVEL e decidível de
+// qualquer réplica, mas este balde é o cache em-memória desta. Um run suspenso que esta réplica
+// nunca hospedou não é contado aqui. A série mede «quantos esperam por mim», não «quantos esperam».
+func (s *NodeService) suspensosAgora() (int, int64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var maisAntigo int64
+	for _, rs := range s.suspended {
+		if rs == nil || rs.suspendedAtUnix == 0 {
+			continue
+		}
+		if maisAntigo == 0 || rs.suspendedAtUnix < maisAntigo {
+			maisAntigo = rs.suspendedAtUnix
+		}
+	}
+	return len(s.suspended), maisAntigo
 }
