@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -98,13 +99,78 @@ func (s *eventStoreApprovalStore) Put(ctx context.Context, g ApprovalGrant) erro
 	if err != nil {
 		return err
 	}
-	_, err = s.store.Append(ctx, approvalStream, eventstore.EventInput{
+	res, err := s.store.Append(ctx, approvalStream, eventstore.EventInput{
 		Type:    approvalGrantedEventType,
 		Payload: body,
 		RunID:   approvalRunID,
 		StepID:  "grant-" + g.ID,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if res.Status != eventstore.StatusDuplicate {
+		return nil
+	}
+	// ---------------------------------------------------------------------------------------
+	// DUPLICADO NÃO É SUCESSO SILENCIOSO. Achado 1.11 da varredura adversarial de 2026-08-21:
+	//
+	//	cerimónia 1 (alice,bob)   -> grant persistido
+	//	cerimónia 2 (alice,carol) -> 200 OK
+	//	VerifyApproval: destrava, PROVA REGISTADA approvers=[alice bob]
+	//
+	// O `Append` devolvia `StatusDuplicate` e este método deitava o estado fora. Dois humanos
+	// completavam uma cerimónia, recebiam 200, e o que ficou na cadeia nomeia OUTRO par — quem
+	// não assinou aquela cerimónia. Para um mecanismo cujo propósito É o não-repúdio, é o pior
+	// desfecho possível: não é uma falha de disponibilidade, é uma atribuição FALSA a pessoas
+	// concretas.
+	//
+	// A amarra de preview continua fail-closed, portanto não há escalada de privilégio — há
+	// sucesso falso e uma prova que mente sobre quem autorizou.
+	//
+	// O QUE SE PRESERVA: a idempotência REAL. Reemitir o MESMO grant (mesmo id, mesmo conteúdo)
+	// continua a ser no-op sem erro — é para isso que o dedup existe, e é o que acontece numa
+	// re-tentativa após timeout de rede. O que passa a falhar é REUTILIZAR o id com conteúdo
+	// DIFERENTE, que é outra coisa a pedir emprestado o mesmo mecanismo.
+	// ---------------------------------------------------------------------------------------
+	persistido, ok, lerr := s.lookup(ctx, g.ID)
+	if lerr != nil {
+		return lerr
+	}
+	if !ok {
+		// Reclamado como duplicado e ausente do log: não se afirma que ficou persistido.
+		return fmt.Errorf("%w: id %q", ErrGrantIDReused, g.ID)
+	}
+	if !mesmoGrant(persistido, g) {
+		return fmt.Errorf("%w: id %q ja tem um grant DIFERENTE na cadeia (aprovadores %v; esta cerimonia trazia %v)",
+			ErrGrantIDReused, g.ID, persistido.Approvers, g.Approvers)
+	}
+	return nil
+}
+
+// mesmoGrant compara o que interessa para a idempotência: o efeito amarrado, quem autorizou, e a
+// exigência de duplo controlo. O `ExpiresAt` NÃO entra — deriva do relógio no momento da emissão,
+// e uma re-tentativa legítima após timeout de rede traria um valor diferente sem que nada de
+// substantivo tivesse mudado.
+func mesmoGrant(a, b ApprovalGrant) bool {
+	if a.ID != b.ID || a.DualControl != b.DualControl {
+		return false
+	}
+	if !bytes.Equal(a.Preview, b.Preview) {
+		return false
+	}
+	if len(a.Approvers) != len(b.Approvers) {
+		return false
+	}
+	// ORDEM INCLUÍDA, deliberadamente: (alice,bob) e (bob,alice) são a mesma autorização, mas o
+	// gate devolve os aprovadores por ordem de verificação e uma divergência de ordem significa
+	// que as pernas chegaram de forma diferente. Na dúvida RECUSA — o custo é uma re-emissão; o
+	// custo do contrário é uma prova que não corresponde à cerimónia.
+	for i := range a.Approvers {
+		if a.Approvers[i] != b.Approvers[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Consume reclama o grant de forma ATÓMICA e devolve-o. A atomicidade vem do dedup do
