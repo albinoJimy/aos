@@ -1001,13 +1001,31 @@ Nomeado, não escondido:
    ### A tarefa diária
 
    ```
-   schtasks /create /tn "AOS selar WORM" /sc DAILY /st 03:30 ^
-     /tr "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm.ps1 -PorSSH -Entregar" ^
-     /ru %USERNAME%
+   schtasks /Create /TN "AOS - selagem WORM diaria" /SC DAILY /ST 03:30 /RL LIMITED /F ^
+     /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm-diario.ps1" ^
+     /RU %USERNAME%
    ```
 
-   O `schtasks` pede a password do Windows — é o Windows a pedi-la, e ela não passa por mais lado
-   nenhum. Sem `/ru`, a tarefa só corre com sessão iniciada.
+   Sintaxe verificada em 2026-08-22 criando e apagando a tarefa.
+
+   **Aponta ao `selar-worm-diario.ps1` e não ao `selar-worm.ps1` directamente.** O invólucro
+   guarda a saída em `%USERPROFILE%\aos-selagem-logs` e propaga o código de saída **intacto** para
+   o agendador. Sem ele, o que sobra de uma falha diária é uma coluna «Last Result» com um número:
+   a selagem toca no WORM de produção, traz material por SSH e entrega uma âncora, e quem for ler
+   a falha quer saber porquê — não vai reproduzi-la à mão às 03:30 do dia seguinte.
+
+   Um erro diário que ninguém lê é um erro que não existe.
+
+   Para saber se a cadência está viva sem ordenar um directório por data:
+
+   ```
+   type %USERPROFILE%\aos-selagem-logs\ULTIMA.txt
+   ```
+
+   O `schtasks` pede a password do Windows por causa do `/RU` — é o Windows a pedi-la, e ela não
+   passa por mais lado nenhum. **Sem `/RU`, a tarefa só corre com sessão iniciada** — o que numa
+   máquina que se desliga à noite significa que não corre. É a escolha entre dar a password ao
+   agendador do Windows ou aceitar que a cadência depende de haver sessão.
 
    ### Ligar a verificação — o último gesto, e o único irreversível sem outro deploy
 
