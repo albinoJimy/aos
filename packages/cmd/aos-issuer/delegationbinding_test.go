@@ -8,6 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,29 +94,116 @@ func TestAssercaoLigadaADelegacao(t *testing.T) {
 	}
 }
 
+// tectoAssercaoDefensavel é o limite superior ARGUMENTADO do tecto de idade, e é uma constante DO
+// TESTE — nunca derivada de [assertionMaxAge], que é o que se quer vigiar.
+//
+// Acima disto o tecto deixa de limitar o que quer que seja: a janela em que um ID-token humano
+// roubado ainda serve para mintar uma delegação passa a ser da ordem da própria vida do token.
+const tectoAssercaoDefensavel = 15 * time.Minute
+
 // TestAssercaoTemTectoDeIdade — o mint impunha MaxAge 0 (nenhum), o que o tornava o mais fraco
 // dos três verificadores OIDC do sistema. Um ID-token antigo mas ainda não expirado tem de ser
 // recusado.
+//
+// A VERSÃO ANTERIOR DESTE TESTE NÃO PODIA FALHAR, e a varredura adversarial de 2026-08-21
+// demonstrou-o: `assertionMaxAge` mutado para DEZ ANOS ficava tudo verde. Duas razões, e ambas
+// se repetem noutros sítios:
+//
+//  1. AUTO-REFERÊNCIA DE PARÂMETRO — o relógio de teste era `idpClock() + assertionMaxAge + 10min`,
+//     ou seja, construído a partir da própria constante sob teste. Movia-se com ela, e por isso
+//     o token estava sempre «para lá do tecto», fosse o tecto qual fosse;
+//  2. `assertionMaxAge <= 0` NÃO É A PROPRIEDADE — dez anos é maior que zero e é indistinguível
+//     de não haver tecto.
+//
+// Fica com um limite de valor ABSOLUTO e desvios de relógio ABSOLUTOS, que enquadram a constante
+// pelos dois lados sem nunca a consultar.
 func TestAssercaoTemTectoDeIdade(t *testing.T) {
 	if assertionMaxAge <= 0 {
 		t.Fatal("assertionMaxAge tem de ser > 0 — sem tecto, a janela de replay é o exp inteiro")
 	}
+	if assertionMaxAge > tectoAssercaoDefensavel {
+		t.Fatalf("assertionMaxAge = %v, acima do tecto defensável de %v — um tecto desta ordem nao "+
+			"limita nada: a assercao roubada serve durante quase toda a vida do exp",
+			assertionMaxAge, tectoAssercaoDefensavel)
+	}
+
 	idp := newTestIDP(t)
-	// Relógio adiantado muito para lá do tecto, com o token ainda dentro do exp.
-	relogioTarde := func() time.Time { return idpClock()().Add(assertionMaxAge + 10*time.Minute) }
-	cfg := oidc.Config{
-		Issuer: idpIssuer, Audience: idpAudience, JWKSURI: idp.jwksURI(),
-		HTTPClient: idp.server.Client(), Clock: relogioTarde, MaxAge: assertionMaxAge,
-	}
 	tok := signIDTokenComNonce(t, idp, "jimy-uuid", "")
-	if _, _, err := authenticateOIDC(context.Background(), cfg, tok); err == nil {
-		t.Fatal("um ID-token mais velho que o tecto foi ACEITE")
+	cfgAos := func(desvio time.Duration) oidc.Config {
+		return oidc.Config{
+			Issuer: idpIssuer, Audience: idpAudience, JWKSURI: idp.jwksURI(),
+			HTTPClient: idp.server.Client(), MaxAge: assertionMaxAge,
+			Clock: func() time.Time { return idpClock()().Add(desvio) },
+		}
 	}
-	// CONTROLO: o MESMO token, dentro do tecto, passa — senão o teste acima passaria por
-	// qualquer razão (JWKS em baixo, assinatura má) e não pela idade.
-	cfg.Clock = idpClock()
-	if _, _, err := authenticateOIDC(context.Background(), cfg, tok); err != nil {
-		t.Fatalf("o mesmo token dentro do tecto devia passar: %v", err)
+
+	// FORA: 20 minutos depois, com o token ainda MUITO dentro do exp (que é de uma hora). O 20 é
+	// absoluto e não sabe quanto vale o tecto.
+	if _, _, err := authenticateOIDC(context.Background(), cfgAos(20*time.Minute), tok); err == nil {
+		t.Fatal("um ID-token com 20 minutos foi ACEITE — o tecto de idade nao esta a limitar nada")
+	}
+	// DENTRO: 4 minutos depois passa. Este ramo enquadra por BAIXO — sem ele, um tecto reduzido a
+	// um segundo (ou um verificador que recusasse tudo por outra razão: JWKS em baixo, assinatura
+	// má) faria o ramo acima passar sem que fosse a IDADE a decidir.
+	if _, _, err := authenticateOIDC(context.Background(), cfgAos(4*time.Minute), tok); err != nil {
+		t.Fatalf("o mesmo token com 4 minutos devia passar: %v", err)
+	}
+}
+
+// TestOMintLIGAOTectoDeIdade é o teste de CABLAGEM, e é a décima vez que este padrão aparece no
+// repositório: a constante pode estar certa e não ser passada a ninguém.
+//
+// O `oidc.Config` de produção é um literal INLINE dentro do fluxo do `main.go`, inalcançável por
+// teste sem um refactor daquele caminho. Lê-se a FONTE, no mesmo idioma — e pela mesma razão — de
+// `cli_subcomandos_test.go` no nó: qualquer verificação que partilhasse a convenção que quer
+// vigiar não a vigiaria.
+//
+// RESIDUAL DECLARADO: isto prova que a linha ESTÁ ESCRITA, não que corre. É estritamente menos do
+// que um teste de integração daquele caminho, e estritamente mais do que nada — que era o que
+// havia.
+func TestOMintLIGAOTectoDeIdade(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse de main.go: %v", err)
+	}
+	var achouConfig, achouMaxAge bool
+	ast.Inspect(f, func(n ast.Node) bool {
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		sel, ok := cl.Type.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Config" {
+			return true
+		}
+		if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "oidc" {
+			return true
+		}
+		achouConfig = true
+		for _, el := range cl.Elts {
+			kv, ok := el.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if k, ok := kv.Key.(*ast.Ident); !ok || k.Name != "MaxAge" {
+				continue
+			}
+			if v, ok := kv.Value.(*ast.Ident); ok && v.Name == "assertionMaxAge" {
+				achouMaxAge = true
+			}
+		}
+		return true
+	})
+	// CONTROLO DO PRÓPRIO TESTE: se o parser não encontrar o literal, a asserção seguinte seria
+	// vacuosa — e vacuosa a acusar, que é a pior forma.
+	if !achouConfig {
+		t.Fatal("o parser nao encontrou nenhum oidc.Config em main.go — a leitura da fonte falhou " +
+			"e a asercao seguinte nao significaria nada")
+	}
+	if !achouMaxAge {
+		t.Error("o oidc.Config do mint NAO passa MaxAge: assertionMaxAge — a constante existe, esta " +
+			"certa, e nao chega ao verificador. O tecto e decorativo")
 	}
 }
 
