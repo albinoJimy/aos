@@ -1000,13 +1000,37 @@ Nomeado, não escondido:
 
    ### A tarefa diária
 
+   **A CONSOLA IMPORTA, e custou duas tentativas falhadas.** O `%USERNAME%` é sintaxe do
+   `cmd.exe`: em PowerShell não expande, vai literalmente como texto, e o `schtasks` responde
+   «não foi efetuado qualquer mapeamento entre nomes de contas e IDs de segurança». O nome da
+   tarefa também não leva espaços — alinhado com a `AOS-RecolherBackups` que já existe.
+
+   Em **PowerShell**:
+
+   ```powershell
+   schtasks /Create /TN "AOS-SelarWORM" /SC DAILY /ST 03:30 /RL LIMITED /F /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm-diario.ps1" /RU $env:USERNAME
    ```
-   schtasks /Create /TN "AOS - selagem WORM diaria" /SC DAILY /ST 03:30 /RL LIMITED /F ^
-     /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm-diario.ps1" ^
+
+   Em **cmd.exe**:
+
+   ```
+   schtasks /Create /TN "AOS-SelarWORM" /SC DAILY /ST 03:30 /RL LIMITED /F ^
+     /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm-diario.ps1" ^
      /RU %USERNAME%
    ```
 
-   Sintaxe verificada em 2026-08-22 criando e apagando a tarefa.
+   Se a conta for recusada, prefixe-a com a máquina: `/RU "$env:COMPUTERNAME\$env:USERNAME"`.
+
+   O `-WindowStyle Hidden` é o que a `AOS-RecolherBackups` já usa — sem ele, a selagem abre uma
+   janela às 03:30.
+
+   E CONFIRME QUE FICOU, porque uma tarefa presumida é pior do que nenhuma: ficam ambos os lados
+   à espera de uma cadência que não corre, e dias depois alguém conclui que a âncora está pronta
+   a ligar.
+
+   ```powershell
+   schtasks /Query /TN "AOS-SelarWORM" /FO LIST
+   ```
 
    **Aponta ao `selar-worm-diario.ps1` e não ao `selar-worm.ps1` directamente.** O invólucro
    guarda a saída em `%USERPROFILE%\aos-selagem-logs` e propaga o código de saída **intacto** para
