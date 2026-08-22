@@ -116,7 +116,12 @@ type Config struct {
 	HTTPClient *http.Client
 	// Clock injectável para a janela temporal. nil ⇒ time.Now.
 	Clock func() time.Time
-	// Leeway é a tolerância de relógio aplicada a exp/nbf/iat. 0 ⇒ 60s.
+	// Leeway é a tolerância de relógio aplicada a exp/nbf/iat. 0 ⇒ [defaultLeeway].
+	//
+	// NÃO É SÓ TOLERÂNCIA DE RELÓGIO. O leeway SOMA-SE ao [Config.MaxAge] na verificação de
+	// idade (`now > iat + MaxAge + leeway`), pelo que a janela efectiva em que um ID-token
+	// roubado ainda serve é `MaxAge + Leeway` — e não `MaxAge`. Quem afina um destes está a
+	// afinar o outro; ver `tectos_test.go`.
 	Leeway time.Duration
 	// Nonce, quando != "", exige que o claim nonce coincida (defesa anti-replay do
 	// fluxo de autenticação).
@@ -192,6 +197,18 @@ type refreshCall struct {
 	err  error
 }
 
+// defaultLeeway é a tolerância de relógio aplicada quando [Config.Leeway] não é dada.
+//
+// PORQUE É UMA CONSTANTE NOMEADA E NÃO UM 60 INLINE. Este valor não é cosmético: a verificação
+// de idade é `now > iat + maxAge + leeway`, pelo que o leeway ALARGA O TECTO DE REPLAY. Com
+// maxAge de 5 min, um leeway de 5 min não é «tolerância de relógio» — é o dobro da janela em que
+// um ID-token roubado continua a servir. Um valor inline não tem onde levar esta frase, e uma
+// varredura adversarial mostrou que era mutável até 299 s sem nenhum teste protestar.
+//
+// 60 s é a ordem de grandeza do desvio que se tolera entre um IdP e um verificador com NTP. O
+// tecto defensável e a bracketing do valor vivem em `tectos_test.go`.
+const defaultLeeway = 60 * time.Second
+
 // NewVerifier constrói o verifier. Sem Issuer ([ErrNoIssuer]) ou sem Audience
 // ([ErrNoAudience]) recusa fail-closed.
 func NewVerifier(cfg Config) (*Verifier, error) {
@@ -211,7 +228,7 @@ func NewVerifier(cfg Config) (*Verifier, error) {
 	}
 	leeway := cfg.Leeway
 	if leeway == 0 {
-		leeway = 60 * time.Second
+		leeway = defaultLeeway
 	}
 	minRefetch := cfg.MinJWKSRefetchInterval
 	if minRefetch == 0 {
