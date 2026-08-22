@@ -1769,6 +1769,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("estado de governacao RE-HIDRATADO do substrato duravel: %d alvo(s) sob legal hold repostos da cadeia %q, %d ligacao(oes) titular->particao repostas do Event Store", nHolds, legalHoldPartition, nLinks)
 	}
 
+	// (7c-ter) O DESMENTIDO DA CUSTÓDIA SOBREVIVE AO RESTART. Sem isto, o conjunto de destruições
+	// por confirmar nascia vazio a cada arranque e o /readyz ficava VERDE sobre uma cadeia que
+	// afirma um apagamento por provar. Mesmo eixo do `holdsRestored`; ver [restoreShredPending].
+	//
+	// FAIL-CLOSED SEM ABORTAR O ARRANQUE, na disciplina dos restauros acima: um erro de leitura
+	// é anunciado e o nó arranca — recusar arrancar deixaria o serviço em baixo por causa de uma
+	// cadeia ilegível, que é um remédio pior do que o mal.
+	if nPend, perr := restoreShredPending(ctx, worm, "governance.dsar", dsarVault); perr != nil {
+		log("DSAR/crypto-shred (achado 1.6): NAO foi possivel reconstruir as destruicoes por confirmar a partir da cadeia — o /readyz pode ficar VERDE sobre um apagamento por provar: %v", perr)
+	} else if nPend > 0 {
+		log("DSAR/crypto-shred (achado 1.6): %d destruicao(oes) de KEK POR CONFIRMAR repostas da cadeia governance.dsar — o /readyz fica VERMELHO ate uma destruicao confirmada das mesmas chaves; o desmentido deixou de morrer no restart", nPend)
+	}
+
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
 	dsarFlow := dsar.NewFlow(
@@ -1776,6 +1789,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		dsarShredder,
 		[]dsar.ShreddableKeyStore{dsar.AuditStore("audit", dsarShredder)},
 		dsar.WithPartition("governance.dsar"),
+		dsar.WithShredConfirmer(confirmadorDeShredDe(dsarVault)),
 	)
 
 	// (7c-bis) AOS-213 (CON-02/DEF-903) — JOB DE EXPIRAÇÃO por TTL COMPOSTO no nó. Fecha a

@@ -3,6 +3,7 @@ package dsar
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -19,6 +20,11 @@ const (
 	// EventKeyDestroyed — a(s) chave(s) do titular foram destruídas (apagamento
 	// satisfeito); carrega o timestamp e os rótulos dos stores afectados.
 	EventKeyDestroyed = "dsar.key_destroyed"
+	// EventShredUnconfirmed — os stores aceitaram o shred e a CUSTÓDIA da KEK não confirmou a
+	// destruição. NÃO é o mesmo facto que [EventKeyDestroyed]: o conteúdo pode continuar
+	// recuperável, e a distinção existe para que a hash-chain deixe de ser byte-idêntica entre
+	// o caso honesto e o caso falhado. Ver [ErrShredUnconfirmed].
+	EventShredUnconfirmed = "dsar.shred_unconfirmed"
 	// EventBlocked — o apagamento foi BLOQUEADO (legal hold ou store que recusou);
 	// nenhuma chave foi destruída para além das já listadas no evento.
 	EventBlocked = "dsar.blocked"
@@ -102,6 +108,7 @@ type Flow struct {
 	sealer    EventSealer
 	holds     HoldOracle
 	stores    []ShreddableKeyStore
+	confirmer ShredConfirmer
 	partition string
 	tracer    otelgenai.Tracer
 	now       func() time.Time
@@ -262,6 +269,31 @@ func (f *Flow) Receive(ctx context.Context, req Request) (Result, error) {
 		destroyed = append(destroyed, st.Name())
 	}
 	res.StoresShredded = destroyed
+
+	// 3-bis. A CUSTÓDIA CONFIRMA, ANTES DE A CADEIA AFIRMAR.
+	//
+	// Cada store aceitou o `Shred` — mas `ShreddableKeyStore.Shred` responde sobre a ORDEM, não
+	// sobre o EFEITO, e a porta [audit.KeyVault.Delete] nem sequer tem canal de erro. Perguntar
+	// aqui, e não depois, é o que impede a hash-chain de afirmar uma irrecuperabilidade que
+	// ninguém verificou.
+	//
+	// Sela um evento PRÓPRIO e com `Decision: Deny`: um registo que se distingue do caso honesto
+	// pelo verbo E pela decisão, para que nem uma leitura por decisão nem uma por capability o
+	// confundam com um apagamento satisfeito.
+	if f.confirmer != nil {
+		if cerr := f.confirmer.ShredConfirmed(subject); cerr != nil {
+			pend, serr := f.seal(ctx, partition, subject, req.RequestID, req.Principal,
+				EventShredUnconfirmed, audit.DecisionDeny, destroyed)
+			if serr != nil {
+				span.SetAttribute(attrStage, "shred_unconfirmed")
+				return res, serr
+			}
+			res.OutcomeSeq = pend.AuditSeq
+			span.SetAttribute(attrStores, len(destroyed))
+			span.SetAttribute(attrOutcome, "shred_unconfirmed")
+			return res, fmt.Errorf("%w: %v", ErrShredUnconfirmed, cerr)
+		}
+	}
 
 	// 4. dsar.key_destroyed — apagamento satisfeito, timestamp + rótulos dos stores.
 	done, err := f.seal(ctx, partition, subject, req.RequestID, req.Principal, EventKeyDestroyed, audit.DecisionAllow, destroyed)

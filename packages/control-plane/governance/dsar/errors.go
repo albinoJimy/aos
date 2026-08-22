@@ -20,3 +20,15 @@ var (
 	// EXPLÍCITO (opt-in auditável), nunca nil — para o fail-open nunca ser silencioso.
 	ErrNoHoldOracle = errors.New("dsar: hold oracle obrigatorio (use NoHold{} para opt-in explicito de sem-preservacao)")
 )
+
+// ErrShredUnconfirmed — a custódia da KEK NÃO confirmou a destruição.
+//
+// É distinto de um erro de transporte: o fluxo chegou ao fim, cada store aceitou o `Shred`, e a
+// custódia externa continua a não conseguir provar que a chave deixou de existir. O conteúdo pode
+// continuar recuperável.
+//
+// Existe porque a alternativa era pior. Até 2026-08-22 o fluxo selava `dsar.key_destroyed` a
+// seguir ao shred, sem perguntar — e o registo era BYTE-IDÊNTICO ao do caso honesto. A hash-chain
+// afirmava uma irrecuperabilidade que ninguém tinha verificado, e é sobre essa afirmação que o
+// titular decide não voltar a pedir e o regulador decide não investigar.
+var ErrShredUnconfirmed = errors.New("dsar: a custodia da KEK NAO confirmou a destruicao (o conteudo pode continuar recuperavel)")
