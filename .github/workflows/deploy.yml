@@ -33,11 +33,22 @@ on:
         description: "Referência da imagem (ex.: ghcr.io/albinojimy/aos-node@sha256:...)"
         required: true
         type: string
+      # `choice` e NAO `string`, e isto e uma barreira e nao arrumacao.
+      #
+      # O DEFEITO QUE FECHA, encontrado na varredura adversarial de 2026-08-21: com texto livre,
+      # quem dispara escolhe o environment — e um environment SEM `required reviewers` nao tem
+      # porta de aprovacao nenhuma. A «porta de decisao HUMANA» que o cabecalho deste ficheiro
+      # promete era OPCIONAL no momento do disparo, bastando escrever outro nome.
+      #
+      # A lista e a dos environments que EXISTEM (hoje so `production`, com 1 revisor). Acrescentar
+      # um exige um PR a este ficheiro, que e revisto — que e exactamente a propriedade que falta.
       environment:
-        description: "GitHub Environment a usar"
+        description: "GitHub Environment a usar (so os declarados)"
         required: false
         default: production
-        type: string
+        type: choice
+        options:
+          - production
 
 permissions:
   contents: read
@@ -55,6 +66,32 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+      # DEFESA EM PROFUNDIDADE, para a via que o `choice` nao cobre.
+      #
+      # `workflow_call` NAO suporta `type: choice` — so `workflow_dispatch` o suporta. Logo a
+      # entrada por chamada de workflow continua a aceitar qualquer string, e um `release.yml`
+      # alterado poderia passar um environment sem revisores.
+      #
+      # Este passo corre ANTES de qualquer accao de deploy. Se o environment nao for um dos
+      # declarados, o job aborta — o deploy nao acontece, mesmo que a porta de aprovacao tenha
+      # sido contornada por ter sido nomeado um environment que nao a tem.
+      #
+      # NAO substitui o `choice`: fecha a segunda porta. O `choice` impede que o nome errado seja
+      # sequer escolhido na UI; isto impede que produza efeito se vier por outro caminho.
+      - name: Environment declarado (a porta humana nao e opcional)
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "${ENVIRONMENT}" in
+            production) echo "environment declarado: ${ENVIRONMENT}" ;;
+            *)
+              echo "::error::environment '${ENVIRONMENT}' NAO esta declarado neste workflow."
+              echo "::error::Um environment sem 'required reviewers' nao tem porta de aprovacao — e a"
+              echo "::error::porta humana e a razao de este workflow existir. Acrescente-o a lista de"
+              echo "::error::opcoes (e ao case deste passo) num PR revisto, ou use 'production'."
+              exit 1 ;;
+          esac
+
 
       - name: Validar entradas e segredos
         env:
