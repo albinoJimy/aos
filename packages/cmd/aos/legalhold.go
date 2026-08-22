@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	audit "github.com/aos-ref/platform/audit"
 )
@@ -242,7 +243,20 @@ func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "expiracao desligada (governanca soberana nao composta)")
 		return
 	}
-	if _, ok := h.readGov.authorize(r); !ok {
+	// QUEM dispara a expiração em massa fica SELADO, ANTES de ela correr.
+	//
+	// O DEFEITO QUE FECHA, e é o pior dos dois achados de atribuição: esta rota destrói KEKs de
+	// TODOS os titulares fora do TTL e não selava atribuição NENHUMA. O `sealRetentionSweep` só
+	// tinha chamadores no varredor AUTOMÁTICO — que sela a sua NHI própria antes de correr e
+	// RECUSA a passagem se o WORM não aceitar («sem o quem selado, a passagem NÃO corre»).
+	//
+	// Ou seja: o caminho sem humano registava quem; o caminho COM humano não registava ninguém.
+	//
+	// Mesma postura do varredor: FAIL-CLOSED. Se o WORM não aceitar o selo de atribuição, a
+	// expiração não corre. Um apagamento em massa que a cadeia não consegue atribuir não deve
+	// acontecer.
+	leitor, ok := h.readGov.authorize(r)
+	if !ok {
 		writeError(w, http.StatusForbidden, "nao autorizado")
 		return
 	}
@@ -250,6 +264,16 @@ func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 	// houver uma passagem activa, recusa 409 em vez de correr uma segunda concorrente.
 	if !h.svc.expireInFlight.CompareAndSwap(false, true) {
 		writeError(w, http.StatusConflict, "expiracao ja em curso")
+		return
+	}
+	// SELO DE ATRIBUIÇÃO ANTES DE CORRER, e fail-closed — mesma postura do varredor automático.
+	// Se o WORM não aceitar, a expiração NÃO acontece: um apagamento em massa que a cadeia não
+	// consegue atribuir não deve acontecer.
+	expiracaoID := "retexpire-" + time.Now().UTC().Format(time.RFC3339Nano)
+	if err := h.svc.selarPassagemDeRetencao(r.Context(), retentionSweepStartedEvent, expiracaoID,
+		time.Now().UTC(), nil, retentionTriggerRota, leitor.principal); err != nil {
+		h.svc.expireInFlight.Store(false)
+		writeError(w, http.StatusInternalServerError, "selo de atribuicao recusado pelo WORM — a expiracao NAO corre")
 		return
 	}
 	defer h.svc.expireInFlight.Store(false)

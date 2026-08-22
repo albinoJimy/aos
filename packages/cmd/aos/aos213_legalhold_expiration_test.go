@@ -364,8 +364,36 @@ func TestExpireRouteConcurrentPassesDoNotDoubleSeal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Head retencao: %v", err)
 	}
-	if head != n {
-		t.Fatalf("esperava EXACTAMENTE %d selos retention.expired (um por facto), veio %d (duplicacao sob concorrencia?)", n, head)
+	// CONTA-SE O TIPO, e não o comprimento da partição. Esta cadeia é HETEROGÉNEA — desde que a
+	// rota passou a selar a sua atribuição antes de correr (ver [apiHandler.handleExpire]), a
+	// partição leva também `retention.sweep.started`, exactamente como já levava do varredor
+	// automático. O `restoreExpirationIdempotency` sempre filtrou por `Resource.Type` pela mesma
+	// razão; a versão anterior deste teste comparava `head` com `n` e, ao fazê-lo, dependia de
+	// nada mais nunca ser selado aqui.
+	//
+	// A invariante que este teste defende é «nenhum FACTO selado duas vezes», e é essa que fica.
+	recs, err := node.WORM.Read(ctx, retentionPartition, 1, head)
+	if err != nil {
+		t.Fatalf("Read retencao: %v", err)
+	}
+	var expirados, atribuicoes int
+	for _, r := range recs {
+		switch r.Resource.Type {
+		case audit.RetentionExpiredEventType:
+			expirados++
+		case retentionSweepStartedEvent:
+			atribuicoes++
+		}
+	}
+	if expirados != n {
+		t.Fatalf("esperava EXACTAMENTE %d selos retention.expired (um por facto), veio %d (duplicacao sob concorrencia?)", n, expirados)
+	}
+	// E CADA PASSAGEM QUE CORREU DEIXOU A SUA ATRIBUIÇÃO. Sem este ramo, uma alteração que
+	// deixasse de selar o «quem» na rota passaria aqui: `expirados` continuaria a bater certo e a
+	// contagem de atribuições era ignorada.
+	if atribuicoes != got200 {
+		t.Errorf("%d passagem(ns) devolveram 200 e a cadeia so tem %d selo(s) de atribuicao — houve "+
+			"um apagamento que a cadeia nao consegue atribuir a ninguem", got200, atribuicoes)
 	}
 	if err := audit.Verify(ctx, node.WORM, retentionPartition, 1, head); err != nil {
 		t.Fatalf("hash-chain de retencao NAO valida apos passagens concorrentes: %v", err)
