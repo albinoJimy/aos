@@ -412,8 +412,19 @@ func TestExpirationIdempotentAcrossSinkFailure(t *testing.T) {
 	if rep1.Expired != 1 {
 		t.Fatalf("a expiração selada deve contar como expirada mesmo com o sink a falhar: %+v", rep1)
 	}
-	if head, _ := store.Head(ctx, DefaultRetentionPartition); head != 1 {
-		t.Fatalf("esperava 1 evento selado após a passagem #1, head=%d", head)
+	// CONTA-SE O TIPO, e não o comprimento da partição. Desde o achado 1.7 a cadeia leva também
+	// um `retention.expire_unconfirmed` quando o sink falha — e é esse selo que torna a
+	// reconciliação possível. A invariante que este teste defende é «NÃO se re-sela um segundo
+	// retention.expired para o mesmo facto», e é essa que fica.
+	expirados, desmentidos := contarPorTipo(t, store, DefaultRetentionPartition)
+	if expirados != 1 {
+		t.Fatalf("esperava 1 `retention.expired` após a passagem #1, veio %d", expirados)
+	}
+	// E O DESMENTIDO FICOU. Sem este ramo, uma alteração que deixasse de o selar passaria aqui —
+	// e a falha do sink voltaria a ser indistinguível de uma destruição bem-sucedida.
+	if desmentidos != 1 {
+		t.Fatalf("o sink falhou e a cadeia NAO selou `retention.expire_unconfirmed` (%d) — o facto "+
+			"falhado fica byte-identico ao bem-sucedido", desmentidos)
 	}
 
 	// Passagem #2 sobre o MESMO registo: a key já está marcada → NÃO re-sela.
@@ -424,10 +435,17 @@ func TestExpirationIdempotentAcrossSinkFailure(t *testing.T) {
 	if rep2.Expired != 0 || rep2.Skipped != 1 {
 		t.Fatalf("reexecução devia saltar o registo já selado: %+v", rep2)
 	}
-	head, _ := store.Head(ctx, DefaultRetentionPartition)
-	if head != 1 {
-		t.Fatalf("a WORM NÃO devia ganhar um segundo evento retention.expired, head=%d", head)
+	// Mesma correcção de eixo: conta-se o TIPO. O que não pode acontecer é um SEGUNDO
+	// `retention.expired`; o desmentido do sink é outro facto e continua a ser um só.
+	expirados2, desmentidos2 := contarPorTipo(t, store, DefaultRetentionPartition)
+	if expirados2 != 1 {
+		t.Fatalf("a WORM NAO devia ganhar um segundo evento retention.expired, veio %d", expirados2)
 	}
+	if desmentidos2 != 1 {
+		t.Fatalf("a reexecucao SALTOU o registo e mesmo assim mexeu no desmentido (%d) — sem "+
+			"reconciliacao ligada, a segunda passagem nao devia selar nada", desmentidos2)
+	}
+	head, _ := store.Head(ctx, DefaultRetentionPartition)
 	if err := Verify(ctx, store, DefaultRetentionPartition, 1, head); err != nil {
 		t.Fatalf("cadeia devia continuar a verificar: %v", err)
 	}
@@ -584,4 +602,28 @@ func TestNoSourceFailsClosed(t *testing.T) {
 	if _, err := job.Run(context.Background()); !errors.Is(err, ErrNoExpirationSource) {
 		t.Fatalf("esperava ErrNoExpirationSource, veio %v", err)
 	}
+}
+
+// contarPorTipo devolve quantos `retention.expired` e quantos `retention.expire_unconfirmed` a
+// partição tem. Existe porque esta cadeia é HETEROGÉNEA e contar `head` presume que não é.
+func contarPorTipo(t *testing.T, store Store, partition string) (expirados, desmentidos int) {
+	t.Helper()
+	ctx := context.Background()
+	head, err := store.Head(ctx, partition)
+	if err != nil || head == 0 {
+		return 0, 0
+	}
+	recs, err := store.Read(ctx, partition, 1, head)
+	if err != nil {
+		t.Fatalf("Read(%s): %v", partition, err)
+	}
+	for _, r := range recs {
+		switch r.Resource.Type {
+		case RetentionExpiredEventType:
+			expirados++
+		case RetentionExpireUnconfirmedEventType:
+			desmentidos++
+		}
+	}
+	return expirados, desmentidos
 }

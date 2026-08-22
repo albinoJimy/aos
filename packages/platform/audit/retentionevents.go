@@ -142,3 +142,73 @@ func SealRetentionConfigChange(store Store, old, cur RetentionConfig, author, re
 	_, err := store.Append(context.Background(), rec)
 	return err
 }
+
+// ---------------------------------------------------------------------------------------------
+// A DESTRUIÇÃO SELADA E A DESTRUIÇÃO CONFIRMADA DEIXAM DE SER O MESMO FACTO.
+//
+// Achado 1.7 da varredura adversarial de 2026-08-21:
+//
+//	passagem 2:                     tentado outra vez? false
+//	após restart COM re-hidratação: tentado outra vez? false
+//
+// A ordem em `expireOne` é SELA → marca idempotência → só então chama o sink, e é deliberada: a
+// WORM é append-only e re-selar produziria um segundo `retention.expired` para o mesmo facto. A
+// marca acompanha o FACTO SELADO, não o sucesso do sink.
+//
+// O docstring dizia que «o sink, idempotente por contrato, é RECONCILIADO NOUTRA PASSAGEM». Essa
+// passagem nunca acontecia: o `Seen` é permanente e a re-hidratação reconstrói-o dos PRÓPRIOS
+// eventos selados, pelo que ter selado «expirado» tornava a marca eterna. Era uma promessa
+// documentada sem mecanismo — e o efeito é uma KEK viva com a cadeia a dizer que morreu.
+//
+// É O MESMO EIXO DO ACHADO 1.6, noutro caminho: um registo append-only que afirma o efeito ANTES
+// de o confirmar. Aqui não se pode perguntar primeiro (a selagem PRECEDE a destruição por
+// desenho fail-closed), portanto sela-se DEPOIS o desmentido — e a reconciliação passa a ter de
+// onde ser reconstruída.
+// ---------------------------------------------------------------------------------------------
+
+const (
+	// RetentionExpireUnconfirmedEventType — o facto foi selado como expirado e o SINK FALHOU: a
+	// destruição NÃO está confirmada e o registo fica por reconciliar.
+	RetentionExpireUnconfirmedEventType = "retention.expire_unconfirmed"
+	// RetentionExpireConfirmedEventType — uma passagem POSTERIOR conseguiu o que o sink não
+	// tinha conseguido. Limpa a pendência; sem ele, um alarme que não sabe desligar-se deixa de
+	// ser lido.
+	RetentionExpireConfirmedEventType = "retention.expire_confirmed"
+
+	retentionExpireUnconfirmedCapability = "retention:expire_unconfirmed"
+	retentionExpireConfirmedCapability   = "retention:expire_confirmed"
+)
+
+// buildRetentionSinkOutcome constrói o registo de desfecho do SINK para um facto já selado.
+//
+// NÃO repete o `retention.expired` — repeti-lo seria o segundo evento para o mesmo facto que
+// toda a disciplina de idempotência existe para impedir. É um facto NOVO sobre o mesmo registo:
+// o que aconteceu à destruição depois de a expiração ter ficado auditada.
+func buildRetentionSinkOutcome(rec ExpirableRecord, confirmado bool, configVersion string, at time.Time, partition string) AuditRecord {
+	if partition == "" {
+		partition = DefaultRetentionPartition
+	}
+	tipo, cap, decisao := RetentionExpireUnconfirmedEventType, retentionExpireUnconfirmedCapability, DecisionDeny
+	if confirmado {
+		tipo, cap, decisao = RetentionExpireConfirmedEventType, retentionExpireConfirmedCapability, DecisionAllow
+	}
+	return AuditRecord{
+		Partition:     partition,
+		Timestamp:     at,
+		Decision:      decisao,
+		Capability:    cap,
+		PolicyVersion: configVersion,
+		Resource:      Resource{Type: tipo, Value: rec.ID},
+		Obligations: []Obligation{{
+			Type:   tipo,
+			Fields: []string{string(rec.Class)},
+			Params: map[string]string{
+				"record_id":      rec.ID,
+				"class":          string(rec.Class),
+				"subject_id":     rec.SubjectID,
+				"partition":      rec.Partition,
+				"config_version": configVersion,
+			},
+		}},
+	}
+}

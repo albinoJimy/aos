@@ -1804,9 +1804,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (fail-closed), com períodos definidos o TTL entra em vigor. Conduzido por POST /dsar/expire
 	// (sob demanda / agendamento externo); a granularidade (por-titular) está resolvida e o eixo
 	// residual nomeado em retention.go.
+	// (7c-quater) A RECONCILIAÇÃO SOBREVIVE AO RESTART (achado 1.7). Sem isto, um deploy bastava
+	// para o nó esquecer que uma destruição tinha ficado por confirmar, e a cadeia ficava sozinha
+	// a afirmar uma irrecuperabilidade que não aconteceu. Ver [restoreReconciliation].
+	//
+	// FAIL-CLOSED SEM ABORTAR O ARRANQUE, na disciplina dos restauros acima: um erro de leitura é
+	// anunciado e o nó arranca com o conjunto VAZIO — nesse caso perde-se a re-tentativa, não se
+	// ganha uma destruição indevida.
+	reconciliacao, nRec, rerr := restoreReconciliation(ctx, worm, retentionPartition)
+	if rerr != nil {
+		log("expiracao por TTL (achado 1.7): NAO foi possivel reconstruir os registos POR RECONCILIAR a partir da cadeia — uma destruicao que falhou antes do restart nao sera re-tentada: %v", rerr)
+	} else if nRec > 0 {
+		log("expiracao por TTL (achado 1.7): %d registo(s) com a destruicao POR CONFIRMAR repostos da cadeia %q — a proxima passagem re-tenta o sink SEM re-selar o retention.expired", nRec, retentionPartition)
+	}
+
 	expirationOpts := []audit.ExpirationOption{
 		audit.WithExpirationAudit(worm, retentionPartition),
 		audit.WithExpirationSubjectIndex(dsarIndex),
+		audit.WithExpirationReconciliation(reconciliacao),
 	}
 	// IDEMPOTÊNCIA RE-HIDRATADA (remediação da W6). O seen-set default é in-memory: os eventos
 	// cifrados permanecem no Event Store durável (o crypto-shred destrói a KEK, não os registos),

@@ -126,6 +126,8 @@ type ExpirationJob struct {
 	partition string
 	clock     func() time.Time
 	tracer    otelgenai.Tracer
+	// porReconciliar guarda os registos selados cujo sink NAO confirmou a destruicao (achado 1.7).
+	porReconciliar ReconciliationSet
 }
 
 // ExpirationOption configura o [ExpirationJob].
@@ -274,6 +276,31 @@ func (j *ExpirationJob) Run(ctx context.Context) (ExpirationReport, error) {
 		}
 		key := idempotencyKey(rec.ID, rec.Class)
 		if j.idem.Seen(key) {
+			// RECONCILIAÇÃO (achado 1.7). Um registo já SELADO cujo sink não confirmou a
+			// destruição é re-tentado AQUI — sem re-selar o `retention.expired`, que é o segundo
+			// evento para o mesmo facto que a marca de idempotência existe para impedir.
+			//
+			// É a «outra passagem» que o docstring do [ExpirationJob.expireOne] sempre prometeu e
+			// que nunca existiu: o `Seen` era permanente (a re-hidratação reconstrói-o dos
+			// próprios eventos selados), pelo que ter selado «expirado» tornava a falha eterna.
+			if j.porReconciliar != nil && j.porReconciliar.Pending(rec.ID) {
+				if err := j.sink.Expire(sweepCtx, rec); err != nil {
+					fimBarreira()
+					// Continua pendente. NÃO se re-sela o desmentido: a cadeia já o tem, e um
+					// segundo por cada passagem enchê-la-ia de ruído de hora a hora.
+					report.Skipped++
+					errs = append(errs, err)
+					continue
+				}
+				j.confirmarReconciliacao(sweepCtx, rec, now)
+				fimBarreira()
+				// CONTA COMO `Expired`, e é deliberado: é nesta passagem que a destruição
+				// aconteceu de facto. Contá-la como `skipped` esconderia no relatório o único
+				// momento em que o trabalho foi feito.
+				report.Expired++
+				report.ExpiredIDs = append(report.ExpiredIDs, rec.ID)
+				continue
+			}
 			fimBarreira()
 			report.Skipped++
 			continue
@@ -336,10 +363,44 @@ func (j *ExpirationJob) expireOne(ctx context.Context, rec ExpirableRecord, key 
 	if err := j.sink.Expire(ctx, rec); err != nil {
 		span.SetAttribute(attrRetentionResult, retentionResultSinkFailed)
 		span.SetAttribute(otelgenai.AttrErrorType, "sink_failed")
+		// O SINK FALHOU E A CADEIA PASSA A DIZÊ-LO (achado 1.7). Sem este selo, o único registo
+		// do facto é o `retention.expired` — byte-idêntico ao caso em que a destruição correu — e
+		// a marca de idempotência, reconstruída dele, tornava a falha PERMANENTE: o registo era
+		// contado como `skipped` em todas as passagens seguintes e o sink nunca voltava a ser
+		// chamado. A KEK ficava viva com a cadeia a afirmar que morreu.
+		j.marcarPorReconciliar(ctx, rec, at)
 		return true, err
 	}
 	span.SetAttribute(attrRetentionResult, retentionResultExpired)
 	return true, nil
+}
+
+// marcarPorReconciliar sela o desmentido e regista a pendência em memória.
+//
+// FAIL-OPEN DELIBERADO E DECLARADO, ao contrário de quase tudo o resto neste ficheiro: se o selo
+// do desmentido não entrar, NÃO se propaga um segundo erro nem se aborta a passagem. O erro do
+// sink já vai subir ao chamador, e transformar uma falha de destruição numa falha de selagem
+// esconderia a primeira atrás da segunda. A pendência em memória vale para esta vida do processo;
+// o que se perde é a sobrevivência ao restart, e isso fica dito em vez de fingido.
+func (j *ExpirationJob) marcarPorReconciliar(ctx context.Context, rec ExpirableRecord, at time.Time) {
+	if j.porReconciliar != nil {
+		j.porReconciliar.Add(rec.ID)
+	}
+	if j.audit == nil {
+		return
+	}
+	_, _ = j.audit.Append(ctx, buildRetentionSinkOutcome(rec, false, j.config.Version(), at, j.partition))
+}
+
+// confirmarReconciliacao sela o desfecho POSITIVO de uma reconciliação e limpa a pendência.
+func (j *ExpirationJob) confirmarReconciliacao(ctx context.Context, rec ExpirableRecord, at time.Time) {
+	if j.porReconciliar != nil {
+		j.porReconciliar.Remove(rec.ID)
+	}
+	if j.audit == nil {
+		return
+	}
+	_, _ = j.audit.Append(ctx, buildRetentionSinkOutcome(rec, true, j.config.Version(), at, j.partition))
 }
 
 // held indica se o registo está sob legal hold — por-titular OU por qualquer
@@ -391,3 +452,78 @@ func idempotencyKey(id string, class DataClass) string {
 func IdempotencyKeyFor(id string, class DataClass) string {
 	return id + "|" + string(class)
 }
+
+// ReconciliationSet é o conjunto DURÁVEL-POR-RECONSTRUÇÃO de registos cuja expiração ficou
+// SELADA e cuja destruição o sink NÃO confirmou.
+//
+// A porta existe para que a durabilidade seja de quem compõe o nó, não deste pacote: o
+// composition root reconstrói o conjunto a partir da própria cadeia no arranque (a mesma
+// disciplina de `restoreExpirationIdempotency` e `restoreShredPending`), e injecta-o aqui.
+type ReconciliationSet interface {
+	Add(recordID string)
+	Remove(recordID string)
+	Pending(recordID string) bool
+}
+
+// InMemoryReconciliationSet é a implementação de referência, segura para concorrência.
+type InMemoryReconciliationSet struct {
+	mu  sync.Mutex
+	ids map[string]bool
+}
+
+// NewInMemoryReconciliationSet constrói um conjunto vazio.
+func NewInMemoryReconciliationSet() *InMemoryReconciliationSet {
+	return &InMemoryReconciliationSet{ids: make(map[string]bool)}
+}
+
+// Add implementa [ReconciliationSet].
+func (s *InMemoryReconciliationSet) Add(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ids[id] = true
+}
+
+// Remove implementa [ReconciliationSet].
+func (s *InMemoryReconciliationSet) Remove(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.ids, id)
+}
+
+// Pending implementa [ReconciliationSet].
+func (s *InMemoryReconciliationSet) Pending(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ids[id]
+}
+
+// Len devolve quantos registos estão por reconciliar (observabilidade).
+func (s *InMemoryReconciliationSet) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.ids)
+}
+
+// WithExpirationReconciliation liga o conjunto de registos POR RECONCILIAR — os que ficaram
+// selados como expirados e cuja destruição o sink não confirmou.
+//
+// SEM ESTA OPÇÃO o comportamento é o anterior ao achado 1.7: uma falha do sink fica selada como
+// desmentido na cadeia (isso acontece sempre) mas NÃO é re-tentada, porque não há onde registar
+// que ficou por fazer.
+func WithExpirationReconciliation(s ReconciliationSet) ExpirationOption {
+	return func(j *ExpirationJob) {
+		if s != nil {
+			j.porReconciliar = s
+		}
+	}
+}
+
+// ReconciliationComposed diz se o conjunto de registos POR RECONCILIAR foi LIGADO a este job.
+//
+// Existe para o teste de CABLAGEM do composition root: sem ela, a única forma de provar que o
+// `WithExpirationReconciliation` está mesmo ligado seria fazer um sink real falhar num nó real —
+// e o padrão «a unidade está certa e ninguém a chama» já apareceu doze vezes neste repositório.
+func (j *ExpirationJob) ReconciliationComposed() bool { return j != nil && j.porReconciliar != nil }

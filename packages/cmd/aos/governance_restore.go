@@ -274,3 +274,66 @@ func restoreShredPending(ctx context.Context, store audit.Store, partition strin
 	}
 	return n, nil
 }
+
+// ---------------------------------------------------------------------------------------------
+// A RECONCILIAÇÃO SOBREVIVE AO RESTART.
+//
+// Segunda metade do achado 1.7, e é a que o relatório mede explicitamente:
+//
+//	após restart COM re-hidratação: tentado outra vez? false
+//
+// O conjunto de registos por reconciliar vive em memória do job. Sem o reconstruir, um deploy
+// bastava para o nó esquecer que uma destruição tinha ficado por confirmar — e a cadeia ficava
+// sozinha a afirmar uma irrecuperabilidade que não aconteceu.
+//
+// É a TERCEIRA vez que este eixo aparece: `holdsRestored` para o legal hold, `restoreShredPending`
+// para a custódia da KEK, e agora este. Sempre a mesma forma — a barreira existia, o CONTEÚDO
+// dela é que não sobrevivia ao arranque.
+// ---------------------------------------------------------------------------------------------
+
+// restoreReconciliation reconstrói, a partir da cadeia de retenção, os registos cuja expiração
+// ficou SELADA e cuja destruição o sink NÃO confirmou.
+//
+// Último facto por `record_id` ganha:
+//
+//	retention.expire_unconfirmed ⇒ por reconciliar
+//	retention.expire_confirmed   ⇒ reconciliado (limpa)
+//
+// O `retention.expired` NÃO decide: ele existe em ambos os casos, e é precisamente por ser
+// indistinguível que o achado 1.7 existia.
+func restoreReconciliation(ctx context.Context, store audit.Store, partition string) (*audit.InMemoryReconciliationSet, int, error) {
+	set := audit.NewInMemoryReconciliationSet()
+	if store == nil {
+		return set, 0, nil
+	}
+	head, err := store.Head(ctx, partition)
+	if err != nil {
+		return set, 0, fmt.Errorf("reconciliacao de retencao: head da cadeia %q: %w", partition, err)
+	}
+	if head == 0 {
+		return set, 0, nil
+	}
+	recs, err := store.Read(ctx, partition, 1, head)
+	if err != nil {
+		return set, 0, fmt.Errorf("reconciliacao de retencao: leitura da cadeia %q: %w", partition, err)
+	}
+	pendente := make(map[string]bool)
+	for _, rec := range recs {
+		switch rec.Resource.Type {
+		case audit.RetentionExpireUnconfirmedEventType:
+			pendente[rec.Resource.Value] = true
+		case audit.RetentionExpireConfirmedEventType:
+			pendente[rec.Resource.Value] = false
+		default:
+			continue
+		}
+	}
+	n := 0
+	for id, pend := range pendente {
+		if pend && id != "" {
+			set.Add(id)
+			n++
+		}
+	}
+	return set, n, nil
+}
