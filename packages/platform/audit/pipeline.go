@@ -220,6 +220,13 @@ func (s *Shredder) Shred(subjectID string) error {
 	if subjectID == "" {
 		return ErrNoSubject
 	}
+	// BARREIRA DE DESTRUIÇÃO (ver [LegalHold.BeginDestruction]). Aqui a janela `held`→`Delete` é
+	// de microssegundos — não há `fsync` pelo meio, ao contrário do varredor. Toma-se na mesma
+	// para que a invariante seja UMA e não duas: um 200 do /dsar/hold significa que nenhuma
+	// destruição posterior deixa de ver este hold, venha ela do varredor ou do /dsar/erase. Uma
+	// invariante com uma excepção é uma invariante que ninguém consegue citar.
+	defer s.holds.BeginDestruction()()
+
 	if s.held(subjectID) {
 		return ErrLegalHold
 	}

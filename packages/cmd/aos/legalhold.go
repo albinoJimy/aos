@@ -146,6 +146,18 @@ func (h *apiHandler) handleLegalHold(w http.ResponseWriter, r *http.Request, pla
 	// selar, a acção NÃO acontece: para o hold, não se afirma uma preservação não-auditada; para o
 	// release, a preservação em vigor MANTÉM-SE (nunca se reabre um titular ao apagamento sem o
 	// registo de que o hold foi levantado).
+	//
+	// BARREIRA DE DESTRUIÇÃO (ver [audit.LegalHold.BeginDestruction]), tomada em modo EXCLUSIVO e
+	// a ENVOLVER a selagem E a aplicação. Era aqui que estava a segunda metade do defeito: a
+	// selagem é um `fsync` de 21–58 ms e acontece ANTES de `HoldSubject`, portanto durante a sua
+	// própria selagem o hold NÃO vigorava — e o varredor, que avalia `held()` no topo do ciclo e
+	// destrói ~30 ms depois, podia destruir material pelo qual este operador já esperava um 200.
+	//
+	// Com a barreira, o 200 significa o que parece significar: nenhuma destruição posterior deixa
+	// de ver este hold. O custo é esperar, no máximo, por UM passo de destruição em voo.
+	fimBarreira := h.node.DSARHolds.BeginPlacement()
+	defer fimBarreira()
+
 	seq, err := h.sealLegalHold(r.Context(), reader, req, place)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "indisponivel")

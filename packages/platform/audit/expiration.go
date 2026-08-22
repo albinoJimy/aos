@@ -256,19 +256,32 @@ func (j *ExpirationJob) Run(ctx context.Context) (ExpirationReport, error) {
 			report.NotExpired++
 			continue
 		}
+		// BARREIRA DE DESTRUIÇÃO (ver [LegalHold.BeginDestruction]). Tomada AQUI e largada só
+		// depois do sink, porque a propriedade não é «li o hold atomicamente» — é «entre ter lido
+		// o hold e ter destruído, nenhuma colocação de hold pôde intercalar-se». Entre as duas
+		// coisas há um `fsync` de ~30 ms, e era essa a janela em que um /dsar/hold respondido 200
+		// não protegia nada.
+		//
+		// POR REGISTO, não por passagem: um operador a colocar um hold espera no máximo por um
+		// passo de destruição, nunca pelo varrimento inteiro.
+		fimBarreira := j.holds.BeginDestruction()
+
 		// AC3 — legal hold suspende a expiração (fail-closed).
 		if j.held(rec) {
+			fimBarreira()
 			report.Held++
 			continue
 		}
 		key := idempotencyKey(rec.ID, rec.Class)
 		if j.idem.Seen(key) {
+			fimBarreira()
 			report.Skipped++
 			continue
 		}
 
 		ttl, _ := j.policy.Period(rec.Class)
 		sealed, err := j.expireOne(sweepCtx, rec, key, ttl, now)
+		fimBarreira()
 		if sealed {
 			// A expiração está AUDITADA e a key MARCADA (dentro de expireOne):
 			// conta-a e não a re-sela em reexecuções, MESMO que o sink tenha
