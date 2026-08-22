@@ -1155,6 +1155,38 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// RUNS À ESPERA DE UM HUMANO — a única paragem do nó que é DELIBERADA, e a única que não
+	// dava sinal nenhum.
+	//
+	// A serialização das retomas (achado 1.12 da varredura de 2026-08-21) entrou em produção sem
+	// observabilidade: um run preso em `waiting_on_human` que não conseguisse retomar não
+	// aparecia em série nenhuma — só se dava por ele quando alguém tentasse retomá-lo e falhasse.
+	// Uma guarda sem sinal é uma guarda que ninguém vê falhar.
+	//
+	// COMO SE LÊ, e as duas séries só dizem alguma coisa juntas:
+	//
+	//	suspended=0                    ⇒ ninguém espera. É uma afirmação VERDADEIRA, e sai.
+	//	suspended>0, idade baixa       ⇒ fluxo normal: houve escalada, o humano vai decidir
+	//	suspended>0, idade a CRESCER   ⇒ ou ninguém está a decidir, ou a retoma está a falhar —
+	//	                                 e é este o caso que não se via de todo
+	//
+	// POR RÉPLICA. A suspensão é durável e decidível de qualquer réplica; este balde é o cache
+	// em-memória desta. Mede «quantos esperam por mim», não «quantos esperam» — e um restart
+	// zera-o sem que a suspensão deixe de ser verdade. Fica dito aqui porque a série sozinha
+	// convida à leitura errada.
+	if h.svc != nil {
+		suspensos, maisAntigo := h.svc.suspensosAgora()
+		g("aos_runs_suspended", "Runs A ESPERA DE AVAL HUMANO nesta replica (AOS-021). Nao terminaram: continuam retomaveis por POST /runs/{id}/resume. POR REPLICA — um restart zera a contagem sem que a suspensao deixe de ser verdade.",
+			"gauge", float64(suspensos), "")
+		// A idade só sai se houver alguém à espera COM carimbo. Emitir 0 com o balde vazio diria
+		// «alguém acabou de suspender» sobre um nó onde ninguém espera — e um nó saudável ficaria
+		// indistinguível de um nó com uma escalada acabada de acontecer.
+		if maisAntigo > 0 {
+			g("aos_runs_suspended_oldest_age_seconds", "Segundos desde que o run mais antigo comecou a esperar por um humano. A CRESCER sem a contagem descer significa que ninguem esta a decidir, ou que a retoma esta a falhar.",
+				"gauge", time.Since(time.Unix(maisAntigo, 0)).Seconds(), "")
+		}
+	}
+
 	// ORÇAMENTO (AOS-008/256/257) — a FOLGA entre o tecto e o uso real.
 	//
 	// O README declara há semanas que «o orçamento está configurado onde nunca morde»: 200 000
