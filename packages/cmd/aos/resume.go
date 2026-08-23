@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/aos-ref/kernel/agent-runtime/state"
 
 	integration "github.com/aos-ref/integration"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
@@ -104,9 +105,32 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	s.mu.Unlock()
 	if !susp || rs == nil {
 		rs = nil
-		if done || running {
-			// Esta réplica conhece-o e não como suspenso: a memória é autoritativa.
+		if running {
+			// Um run VIVO não se retoma: a memória é autoritativa e não há nada a repor.
 			return ErrRunNotSuspended
+		}
+		// UMA PAUSA NÃO É UM DESFECHO, e o balde `completed` confundia as duas coisas.
+		//
+		// `service.go` arquiva em `completed` tudo o que não seja `rs.suspended` — e
+		// `rs.suspended` só é verdade na escalada e na exaustão. Um run PAUSADO caía aí, e
+		// esta linha, ao tratar a memória como autoritativa, recusava-o antes de olhar para o
+		// log. Era o primeiro dos dois travões que faziam de `paused` um estado absorvente.
+		//
+		// A MEMÓRIA CONTINUA AUTORITATIVA PARA OS DESFECHOS — é a regra que
+		// `TestSuspensaoDuravel_NaoSobrepoeAContabilidadeLocal` guarda, e ela mantém-se: um run
+		// que ESTA réplica viu terminar não é retomável, mesmo que o log diga o contrário.
+		//
+		// O que se abre é SÓ a pausa: pergunta-se à máquina de estados e prossegue-se apenas se
+		// ela disser `paused`. Qualquer outro estado — incluindo `waiting_on_human` em conflito
+		// com um desfecho local — continua a ser recusado como antes.
+		if done {
+			st, derr := s.DurableState(ctx, runID)
+			if derr != nil {
+				return fmt.Errorf("aos: ler o estado duravel do run %q: %w", runID, derr)
+			}
+			if st != state.Paused {
+				return ErrRunNotSuspended
+			}
 		}
 		durable, derr := s.suspendedDurably(ctx, runID)
 		if derr != nil {
