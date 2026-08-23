@@ -48,6 +48,9 @@ uso:
   aos-issuer mint   --key-file <ficheiro> --issuer <id> --human <id> --agent <id> --class <c> --caps <c1,c2> [--ttl 15m] [--auth-method manual]
   aos-issuer approve-sign --request-id <id> --preview <b64> --approver <id> --session <s> --credential <c> --key-file <ficheiro>
   aos-issuer ratify-sign  --artifact-id <id> --version <semver> --content-hash <b64> --ratifier <id> --key-file <ficheiro> [--canary-passed] [--eval-*]
+  aos-issuer delegation-nonce --agent <id> --class <c> --caps <c1,c2> [--ttl 15m]
+  aos-issuer autonomy-sign --emitter <id> --key-file <ficheiro> --agent <id> --domain <d> --level <L0..L5> [--reason <texto>]
+  aos-issuer worm-seal --worm <ficheiro> --key-file <ficheiro> [--partition <p>] [--anterior <ficheiro>] [--heads]
                           → imprime o corpo JSON de POST /promote (AOS-275)`
 
 func main() {
