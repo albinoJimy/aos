@@ -185,7 +185,39 @@ func (a SelfModArtifact) canonical() []byte {
 	buf = putString(buf, string(r.Verdict))
 	buf = putUint64(buf, math.Float64bits(r.Score))
 	buf = putBytes(buf, r.TargetTraceID[:])
+	// O CANÁRIO ENTRA NO CANÓNICO, e é a correcção do achado da verificação de completude de
+	// 2026-08-23.
+	//
+	// O `CanaryPassed` estava FORA daquilo que a assinatura humana cobre, e mesmo assim o nó
+	// fazia DUAS coisas com ele: recusava a promoção quando era falso (pré-condição, ver o gate)
+	// e SELAVA-O na cadeia como facto (`"canary_passed"` no registo de ratificação). Flipá-lo não
+	// mudava o [SelfModArtifact.RatificationID] e não invalidava assinatura nenhuma.
+	//
+	// O QUE ISTO NÃO ERA, e a distinção importa: não é um bypass de autorização. O nó DECLARA no
+	// arranque que «o PIPELINE de promoção (staging→eval-gate→canary→produção) continua a montante
+	// e FORA DO NÓ» — nunca prometeu verificar o canário. O que ele promete é que nada chega a
+	// produção sem ratificação humana assinada, fresca e de uso-único.
+	//
+	// O QUE ERA: a cadeia registava `canary_passed=true` como parte de uma promoção RATIFICADA, e
+	// o humano não tinha atestado esse facto. É o mesmo eixo dos outros achados desta varredura —
+	// o registo tamper-evident a afirmar o que ninguém assinou.
+	//
+	// CONSEQUÊNCIA DECLARADA: o `RatificationID` MUDA. Uma ratificação assinada antes desta
+	// alteração deixa de casar e é recusada. A janela é curta por desenho — as ratificações são
+	// frescas e de uso-único, com TTL — mas existe, e uma que esteja em voo no momento do deploy
+	// tem de ser re-assinada.
+	buf = putBool(buf, a.CanaryPassed)
 	return buf
+}
+
+// putBool serializa um booleano no canónico com um byte fixo. Não se reutiliza `putString` com
+// "true"/"false": o canónico é comparado byte a byte e uma representação textual convidaria a
+// variações ("1", "True") que produziriam ids diferentes para o mesmo facto.
+func putBool(buf []byte, v bool) []byte {
+	if v {
+		return append(buf, 1)
+	}
+	return append(buf, 0)
 }
 
 // RatificationID é o token estável que a [SignedApproval] de ratificação tem de
