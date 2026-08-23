@@ -1523,6 +1523,21 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "esta accao exige duplo controlo — repita a cerimonia com dual_control_required=true")
 		return
 	}
+	// A CLASSE DE RISCO É DO NÓ, pela mesma razão e com a mesma forma. Ver [classeExigida]: do
+	// pendente deriva-se um LIMITE INFERIOR — irreversível ⇒ danger — e nada mais.
+	//
+	// RECUSA-SE, não se corrige, e a razão é a mesma do duplo controlo: a classe entra na
+	// MENSAGEM ASSINADA de cada perna. Sobrepô-la em silêncio seria verificar assinaturas contra
+	// uma afirmação diferente da que os humanos assinaram — e nem verificariam, porque a
+	// assinatura deixaria de casar.
+	if exigida, derivavel := classeExigida(pendente); reconhecida && derivavel &&
+		risk.Class(req.Request.RiskClass) != exigida {
+		h.svc.log("four-eyes (completude 2026-08-23): cerimonia RECUSADA — o pedido declarou risk_class=%q e a capability %q e IRREVERSIVEL, logo exige %q. Sem esta recusa, aprovadores com autoridade `approve:%s` destravariam um efeito irreversivel: a classe declarada escolhe o escalao de autoridade exigido a cada perna",
+			risk.Class(req.Request.RiskClass).String(), pendente.Capability, exigida.String(),
+			risk.Class(req.Request.RiskClass).String())
+		writeError(w, http.StatusForbidden, "esta accao e irreversivel — repita a cerimonia com risk_class=danger")
+		return
+	}
 	feReq := integration.FourEyesRequest{
 		RequestID:           req.Request.RequestID,
 		Preview:             preview,
