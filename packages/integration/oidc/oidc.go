@@ -509,15 +509,37 @@ func (v *Verifier) Validate(ctx context.Context, rawIDToken string) (Claims, err
 }
 
 // checkReplay regista e detecta reutilização de (iss,jti). Recusa [ErrTokenReplayed] se
-// o par já foi visto dentro da sua janela; caso contrário regista-o (com TTL = exp).
+// o par já foi visto dentro da sua janela; caso contrário regista-o (com TTL = exp+leeway).
 // Atómico (check-and-record sob o mesmo lock) para que dois replays concorrentes não
 // passem ambos. Faz eviction preguiçosa das entradas expiradas para limitar memória.
+//
+// # O TTL É `exp+leeway` E NÃO `exp` — A ENTRADA TEM DE COBRIR A JANELA DE ACEITAÇÃO INTEIRA
+//
+// [Verifier.Validate] aceita enquanto `now <= exp + leeway` (a verificação de expiração
+// acima). Despejar a entrada em `exp` abria `leeway` segundos — 60 s por omissão — em que o
+// token AINDA passava a verificação de expiração e o par (iss,jti) já não estava registado:
+// o mesmo token voltava a ser aceite. Um anti-replay que caduca ANTES do que protege não é
+// anti-replay no fim da vida do token, que é exactamente quando um token capturado é
+// reapresentado.
+//
+// E no empate exacto `now == exp` o `<=` apagava a entrada enquanto `now.After(exp)` ainda
+// dizia «válido» — o mesmo enviesamento de resolução-de-segundo que [saudeDeSelagem] teve, em
+// que o desempate no mesmo segundo caía para o lado errado. A comparação é agora ESTRITA, pelo
+// que o segundo do empate é retido em vez de despejado.
+//
+// CUSTO DECLARADO: cada entrada vive `leeway` segundos a mais. Com os tokens de 5 min do realm
+// entregue são ~20 % mais entradas retidas em pico. É o preço de a janela de protecção cobrir
+// a janela de aceitação, e é a direcção segura — reter a mais nunca aceita um replay, reter a
+// menos aceita.
 func (v *Verifier) checkReplay(iss, jti string, exp int64) error {
 	now := v.clock().Unix()
+	// Segundos inteiros: `now` é truncado por [time.Time.Unix]. Truncar para baixo faz a
+	// entrada durar ATÉ UM SEGUNDO A MAIS, nunca a menos — a direcção segura.
+	leeway := int64(v.leeway.Seconds())
 	v.replayMu.Lock()
 	defer v.replayMu.Unlock()
 	for k, e := range v.seen {
-		if e <= now {
+		if e+leeway < now {
 			delete(v.seen, k)
 		}
 	}
