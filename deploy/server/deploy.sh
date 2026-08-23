@@ -29,6 +29,10 @@ ENV_FILE="${APP_DIR}/.env"
 IMAGE_ENV="${APP_DIR}/image.env"
 IMAGE_ENV_PREV="${APP_DIR}/image.env.prev"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
+# Tecto da espera por PRONTIDÃO (passo 6), separado do de LIVENESS (passo 5) porque medem coisas
+# diferentes: o 5 espera que o processo responda, o 6 espera que ele aceite servir. Um Vault
+# recriado sobe SELADO e o watchdog destrava-o em até 30s — a espera tem de absorver essa janela.
+READY_TIMEOUT="${READY_TIMEOUT:-90}"
 
 IMAGE_REF="${1:-}"
 
@@ -122,6 +126,22 @@ RESOLVED="$( docker image inspect --format '{{index .RepoDigests 0}}' "${IMAGE_R
   echo "# Escrito por deploy.sh — NÃO editar à mão."
   echo "AOS_IMAGE=${RESOLVED}"
 } > "${IMAGE_ENV}"
+
+# --- 3b. LINHA DE BASE DE PRONTIDÃO --------------------------------------------------------------
+# O gate do passo 6 passou a exigir `/readyz`, e o `/readyz` tem uma condição que NÃO depende da
+# imagem: um crypto-shred por confirmar é RE-HIDRATADO da cadeia a cada arranque e mantém o nó
+# não-pronto INDEFINIDAMENTE. Sem esta medição, uma entrega falharia — e reverteria — por um estado
+# durável que a imagem anterior tinha exactamente igual, e a reversão NÃO o resolveria: o nó antigo
+# subiria igualmente não-pronto.
+#
+# Mede-se ANTES de tocar em nada. Verde antes e vermelho depois é regressão DESTA entrega. Vermelho
+# antes e vermelho depois é uma avaria que já lá estava, e travar a entrega por ela seria pior do
+# que deixá-la passar: bloquearia justamente a correcção que a resolveria.
+#
+# 000 (edge em baixo, primeiro deploy) NÃO é linha de base verde — na dúvida não se atribui culpa.
+ready_antes="$( curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
+                "https://127.0.0.1:${EDGE_PORT}/readyz" 2>/dev/null || echo 000 )"
+log "3b/6 prontidão ANTES da entrega: HTTP ${ready_antes}"
 
 # --- 4. Sobe ---------------------------------------------------------------------------------------
 log "4/6 docker compose up -d ..."
@@ -244,20 +264,52 @@ while [ "$(date +%s)" -lt "${deadline}" ]; do
 done
 
 # --- 6. Smoke em TLS pelo edge (o caminho REAL do cliente) ----------------------------------------
+# SONDA-SE O `/readyz`, NÃO O `/healthz`. O `handleHealthz` devolve 200 INCONDICIONALMENTE — é
+# liveness, "o processo responde" — pelo que um nó que recusa 100% dos pedidos passava este gate.
+# E este gate é a ÚNICA entrada automática da reversão: as duas variáveis que a decidiam (`healthy`
+# e `smoke_ok`) vinham as DUAS do `/healthz`.
+#
+# O `/healthz` continua a ser o certo no passo 5 (HEALTHCHECK do contentor) e no `depends_on` do
+# edge: aí a acção é REINICIAR, e reiniciar um nó que arrancou bem mas não está pronto não ajuda.
 smoke_ok=0
 if [ "${healthy}" -eq 1 ]; then
-  log "6/6 smoke: GET https://127.0.0.1:${EDGE_PORT}/healthz ..."
-  for _ in 1 2 3 4 5; do
+  log "6/6 smoke: GET https://127.0.0.1:${EDGE_PORT}/readyz (tecto ${READY_TIMEOUT}s) ..."
+  # ESPERA-ATÉ-PRONTO, e não 5 confirmações: o edge só arranca depois do `service_healthy` do nó, e
+  # um Vault recriado pelo passo 4b sobe SELADO com o watchdog a destravá-lo em até 30s. Cinco
+  # tentativas de 3s transformariam essa janela normal num deploy vermelho.
+  fim=$(( SECONDS + READY_TIMEOUT ))
+  while [ "${SECONDS}" -lt "${fim}" ]; do
     code="$( curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
-             "https://127.0.0.1:${EDGE_PORT}/healthz" || echo 000 )"
+             "https://127.0.0.1:${EDGE_PORT}/readyz" || echo 000 )"
     if [ "${code}" = "200" ]; then smoke_ok=1; log "     HTTP ${code}"; break; fi
     sleep 3
   done
-  [ "${smoke_ok}" -eq 1 ] || log "     smoke vermelho (último código: ${code:-000})"
+  [ "${smoke_ok}" -eq 1 ] || log "     prontidão vermelha (último código: ${code:-000})"
 fi
 
-if [ "${healthy}" -eq 1 ] && [ "${smoke_ok}" -eq 1 ]; then
-  log "✅ deploy verde — ${RESOLVED}"
+# A ATRIBUIÇÃO. `smoke_ok` diz se o nó está pronto; `gate_ok` diz se ESTA entrega é a culpada.
+# São coisas distintas e só a segunda decide reverter.
+gate_ok=0
+if [ "${smoke_ok}" -eq 1 ]; then
+  gate_ok=1
+elif [ "${ready_antes}" = "200" ]; then
+  log "     ANTES da entrega estava 200 — a regressão é DESTA entrega"
+else
+  log "     mas ANTES da entrega já estava ${ready_antes} — a causa é ANTERIOR e a reversão não a resolve"
+  log "     o nó continua NÃO-PRONTO: ver GET /readyz e o log do nó. A entrega NÃO é revertida por isto."
+  gate_ok=1
+fi
+
+if [ "${healthy}" -eq 1 ] && [ "${gate_ok}" -eq 1 ]; then
+  # A LINHA NÃO PODE DIZER "verde" SOBRE UM NÓ NÃO-PRONTO. `gate_ok` sem `smoke_ok` significa
+  # "a entrega não é a culpada", que não é a mesma coisa que "está tudo bem" — e escrever a
+  # segunda quando só a primeira é verdade seria a mesma mentira de anúncio que este gate veio
+  # corrigir. Duas linhas distintas para dois desfechos distintos.
+  if [ "${smoke_ok}" -eq 1 ]; then
+    log "✅ deploy verde — ${RESOLVED}"
+  else
+    log "⚠️  deploy ENTREGUE mas o nó NÃO está pronto (causa anterior a esta entrega) — ${RESOLVED}"
+  fi
   dc logs --tail 25 aos 2>&1 | grep -iE 'endurecid|operador|four-eyes|ratificador|BUNDLE CARREGADO|durav|WORM|soberania|OTLP|AVISO' | sed 's/^/       /' || true
   exit 0
 fi

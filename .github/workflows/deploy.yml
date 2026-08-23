@@ -223,11 +223,27 @@ jobs:
           # nunca validaria — e falharia por uma razão que nada tem a ver com o deploy.
           # `|| echo 000`: um erro de LIGAÇÃO faz o curl sair != 0 e, sob `set -e`, mataria o
           # passo com uma mensagem do curl em vez do diagnóstico útil.
-          code="$( curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://$HOST:$PORT/healthz" || echo 000 )"
-          [ "$code" = "200" ] || { echo "::error::alcance falhou (HTTP $code) — o nó pode estar saudável e a porta $PORT fechada"; exit 1; }
-          echo "alcance   : porta $PORT -> HTTP $code"
+          # SONDA-SE O `/readyz` E NÃO O `/healthz`: o `/healthz` devolve 200 INCONDICIONALMENTE, pelo
+          # que "a aplicação serve" nunca era realmente perguntado — um nó que recusasse 100% dos
+          # pedidos respondia 200 aqui.
+          code="$( curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://$HOST:$PORT/readyz" || echo 000 )"
+          case "$code" in
+            200) echo "alcance   : porta $PORT -> HTTP $code (alcançável e PRONTO)" ;;
+            # 503 é o nó a RESPONDER que não está pronto — logo a porta está aberta e a aplicação
+            # serve, que é o que ESTE cheque pergunta. Não se avermelha aqui porque o gate
+            # AUTORITATIVO de prontidão é o do `deploy.sh`, que tem a linha de base para saber se a
+            # culpa é desta entrega; chegar a este passo significa que ele já decidiu que não é.
+            # Duplicá-lo aqui, sem linha de base, reintroduziria exactamente o defeito que ele fecha.
+            503) echo "::warning::o nó responde mas está NÃO-PRONTO (HTTP 503 em /readyz). O deploy.sh atribuiu a causa a estado ANTERIOR a esta entrega — investigar GET /readyz e o log do nó." ;;
+            *)   echo "::error::alcance falhou (HTTP $code) — o nó pode estar saudável e a porta $PORT fechada"; exit 1 ;;
+          esac
 
           # (2) CONFIANÇA — pelo nome, SEM `-k`. "A cadeia TLS valida?"
+          # ESTE FICA DELIBERADAMENTE NO `/healthz`. A pergunta é sobre o CERTIFICADO, e o
+          # `/healthz` é o único endpoint que responde 200 seja qual for o estado da aplicação — o
+          # que faz dele o melhor canário de TLS possível: um vermelho aqui só pode ser da cadeia.
+          # Apontá-lo ao `/readyz` faria um nó não-pronto avermelhar um cheque que afirma, na sua
+          # própria mensagem de erro, que o problema é o certificado.
           # Só corre com a variável definida: sem ela o TLS pode ainda ser self-signed, e exigir
           # validação seria um falso vermelho. É também o canário da ponte sync-tls: se o
           # certificado deixar de ser renovado para o edge, é aqui que se vê.

@@ -642,6 +642,56 @@ if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
 else
   bad "P3: o ref-lint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
 fi
+# ============================================================================
+# Q) o gate de ENTREGA bloqueia um smoke apontado a liveness (2026-08-23)
+# ============================================================================
+# O defeito real: `handleHealthz` devolve 200 INCONDICIONALMENTE, e as duas variaveis
+# que decidiam a reversao automatica do deploy vinham as duas do /healthz. Um no que
+# recusasse 100% dos pedidos era entregue VERDE. Aqui prova-se que o gate que fecha
+# isso REJEITA a regressao, em vez de a afirmar por comentario.
+log_gate "self-test Q · o gate de entrega bloqueia um smoke em /healthz"
+DG_TMP="$(mktemp -d)"
+mkdir -p "$DG_TMP/deploy/server" "$DG_TMP/.github/workflows"
+cp "$REPO_ROOT/deploy/server/deploy.sh"        "$DG_TMP/deploy/server/deploy.sh"
+cp "$REPO_ROOT/.github/workflows/deploy.yml"   "$DG_TMP/.github/workflows/deploy.yml"
+
+# Q1 — a REGRESSAO: o smoke volta a sondar liveness.
+sed -i 's|EDGE_PORT}/readyz"|EDGE_PORT}/healthz"|g' "$DG_TMP/deploy/server/deploy.sh"
+if bash "$CI_DIR/deploy-gate-lint.sh" --root "$DG_TMP" >/dev/null 2>&1; then
+  bad "Q1: o gate passou com o smoke do deploy.sh apontado a /healthz — NAO bloqueou a regressao"
+else
+  pass "Q1: o gate bloqueou o smoke do deploy.sh apontado a /healthz"
+fi
+
+# Q2 — a ATRIBUICAO removida: fica so o smoke, sem a linha de base. Sem ela uma avaria
+# ANTERIOR reverte uma entrega que nao a causou, e a reversao nao a resolve.
+cp "$REPO_ROOT/deploy/server/deploy.sh" "$DG_TMP/deploy/server/deploy.sh"
+perl -0pi -e 's/EDGE_PORT\}\/readyz"/EDGE_PORT}\/healthzz"/' "$DG_TMP/deploy/server/deploy.sh"
+if bash "$CI_DIR/deploy-gate-lint.sh" --root "$DG_TMP" >/dev/null 2>&1; then
+  bad "Q2: o gate passou com UMA so sonda /readyz no deploy.sh — a linha de base pode desaparecer sem ninguem dar por isso"
+else
+  pass "Q2: o gate bloqueou o deploy.sh com uma so sonda /readyz (linha de base em falta)"
+fi
+
+# Q3 — o cheque de ALCANCE do workflow revertido.
+cp "$REPO_ROOT/deploy/server/deploy.sh"      "$DG_TMP/deploy/server/deploy.sh"
+sed -i 's|//\$HOST:\$PORT/readyz|//$HOST:$PORT/healthz|g' "$DG_TMP/.github/workflows/deploy.yml"
+if bash "$CI_DIR/deploy-gate-lint.sh" --root "$DG_TMP" >/dev/null 2>&1; then
+  bad "Q3: o gate passou com o cheque de ALCANCE do workflow em /healthz"
+else
+  pass "Q3: o gate bloqueou o cheque de ALCANCE do workflow em /healthz"
+fi
+rm -rf "$DG_TMP"
+
+# Q4 — CONTROLO POSITIVO (o molde do P3): depois de tres mutacoes, a arvore REAL tem de
+# continuar verde. Sem esta linha, um gate que rejeitasse TUDO passaria Q1..Q3 e o
+# selftest estaria a medir "o gate diz sempre que nao" em vez de "o gate distingue".
+if bash "$CI_DIR/deploy-gate-lint.sh" >/dev/null 2>&1; then
+  pass "Q4: controlo — o gate de entrega continua verde contra a arvore REAL (distingue, nao rejeita tudo)"
+else
+  bad "Q4: o gate de entrega ficou vermelho contra a arvore real — POSSIVEL RASTO no repo"
+fi
+
 
 # ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"

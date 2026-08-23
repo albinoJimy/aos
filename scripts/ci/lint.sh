@@ -136,5 +136,18 @@ if [ -d "$unidades" ]; then
     log_ok "entrega do servidor: $n_exec ExecStart verificado(s)"
   fi
 fi
+# --- 2f. o gate de ENTREGA sonda prontidao, nao liveness ----------------------
+# Vive em `deploy-gate-lint.sh` (e nao aqui) por uma razao: para o selftest poder
+# corre-lo contra uma arvore MUTADA e provar que morde. Um gate embebido neste
+# ficheiro so seria alcancavel a par do gofmt/vet/staticcheck, e nao ha arvore
+# sintetica que passe nesses.
+log_gate "lint · o gate de entrega sonda /readyz"
+if bash "$CI_DIR/deploy-gate-lint.sh"; then
+  log_ok "gate de entrega: verde"
+else
+  log_fail "gate de entrega: o smoke de deploy nao sonda /readyz"
+  rc=1
+fi
+
 [ "$rc" -eq 0 ] && log_ok "lint: verde" || log_fail "lint: vermelho"
 exit "$rc"
