@@ -94,6 +94,8 @@ type boardRegionResolver interface {
 // nó (AOS-170). É imutável após construção e seguro para uso concorrente (a fonte board→região é
 // concorrente-segura e o Store também).
 type readGovernance struct {
+	// saude observa os `Append` desta via — ver [saudeDeSelagem]. Pode ser nil (composicao legada).
+	saude *saudeDeSelagem
 	// regions é a fonte board→região (AOS-094/ADR-011): [govsov.Registry] no caminho legado ou a
 	// [SovereignRegionAuthority] com rotação+auditoria (AOS-205). RegionFor resolve fail-closed.
 	regions boardRegionResolver
@@ -262,6 +264,9 @@ func (g *readGovernance) sealResidency(ctx context.Context, submitter readerIden
 		Obligations: []audit.Obligation{{Type: readBoardObligation, Fields: []string{submitter.board}}},
 	}
 	_, err := g.worm.Append(ctx, rec)
+	if g.saude != nil {
+		err = g.saude.registar(err)
+	}
 	return err
 }
 
@@ -313,6 +318,9 @@ func (g *readGovernance) seal(ctx context.Context, id readerIdentity, residency,
 		Obligations: obligations,
 	}
 	_, err := g.worm.Append(ctx, rec)
+	if g.saude != nil {
+		err = g.saude.registar(err)
+	}
 	return err
 }
 
