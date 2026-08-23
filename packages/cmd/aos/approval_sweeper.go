@@ -13,6 +13,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -78,4 +82,43 @@ func (s *NodeService) SweepApprovalsNow(ctx context.Context) {
 		return
 	}
 	s.sweepApprovalsOnce(ctx)
+}
+
+// ErrBadApprovalSweepInterval — `AOS_APPROVAL_SWEEP_INTERVAL` ilegível ou <= 0.
+//
+// FAIL-CLOSED, e passou a sê-lo em 2026-08-23 porque a JUSTIFICAÇÃO DA EXCEPÇÃO CADUCOU.
+//
+// A linha que tratava esta variável descartava em silêncio um valor ilegível, e o comentário
+// vizinho explicava a diferença: «o varrimento de aprovações é higiene operacional; [o de
+// retenção] conduz a EXPIRAÇÃO POR TTL». Era verdade quando foi escrito.
+//
+// DEIXOU DE SER com AOS-263. A retoma de um run recusa enquanto houver um prompt de exaustão POR
+// RESPONDER ([NodeService.exhaustionPromptPorResponder]); o `ListForRun` só o deixa de devolver
+// depois de RETIRADO; e quem o retira é o `ExpireKind`, chamado APENAS por este varredor. O
+// próprio log dele di-lo: «o run continua RETOMAVEL» — é a expiração que o torna retomável outra
+// vez.
+//
+// Logo, com `AOS_APPROVAL_SWEEP_INTERVAL=0` — que era aceite — um run com pergunta de exaustão
+// fica PERMANENTEMENTE irretomável, e o operador não tem forma de o notar: o run aparece em
+// `waiting_on_human`, a rota de retoma recusa com 409, e a causa está numa variável de ambiente
+// que ninguém volta a ler.
+//
+// NENHUM VALOR DESLIGA, tal como no de retenção. A opção [WithApprovalSweepInterval] continua a
+// aceitar 0 — os testes precisam de desligar o laço — mas o AMBIENTE já não.
+var ErrBadApprovalSweepInterval = errors.New("aos: AOS_APPROVAL_SWEEP_INTERVAL invalido (duracao > 0; nenhum valor desliga o varrimento — dele depende a retoma de runs com prompt de exaustao)")
+
+// approvalSweepIntervalFromEnv resolve a cadência a partir do ambiente. Vazia ⇒
+// [DefaultApprovalSweepInterval]; malformada ou <= 0 ⇒ [ErrBadApprovalSweepInterval] (aborta o
+// arranque). Devolve SEMPRE a duração EM VIGOR, para que o valor anunciado e o valor ligado sejam
+// o mesmo por construção — a disciplina de [retentionSweepIntervalFromEnv].
+func approvalSweepIntervalFromEnv() (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv("AOS_APPROVAL_SWEEP_INTERVAL"))
+	if raw == "" {
+		return DefaultApprovalSweepInterval, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%w: AOS_APPROVAL_SWEEP_INTERVAL=%q", ErrBadApprovalSweepInterval, raw)
+	}
+	return d, nil
 }

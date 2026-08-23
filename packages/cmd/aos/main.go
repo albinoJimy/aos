@@ -813,16 +813,24 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	// é ignorado (mantém o default): o varrimento é higiene operacional, não um gate de
 	// segurança — degradar para o default é preferível a recusar o arranque do nó.
 	svcOpts := []NodeServiceOption{WithServiceLog(w)}
-	if v := strings.TrimSpace(os.Getenv("AOS_APPROVAL_SWEEP_INTERVAL")); v != "" {
-		if d, derr := time.ParseDuration(v); derr == nil {
-			svcOpts = append(svcOpts, WithApprovalSweepInterval(d))
-		}
+	// CADÊNCIA DO VARRIMENTO DE APROVAÇÕES — FAIL-CLOSED desde 2026-08-23, como as irmãs.
+	//
+	// Era a excepção do ficheiro: um valor ilegível era descartado em SILÊNCIO e ficava o default.
+	// A justificação escrita ao lado — «o varrimento de aprovações é higiene operacional» — era
+	// verdade quando foi escrita e CADUCOU com AOS-263. Ver [ErrBadApprovalSweepInterval]: a
+	// retoma de um run com prompt de exaustão depende deste varredor, e `=0` deixava-o
+	// PERMANENTEMENTE irretomável.
+	approvalSweep, err := approvalSweepIntervalFromEnv()
+	if err != nil {
+		return err
 	}
-	// AOS-267 — CADÊNCIA DO SCHEDULER DE RETENÇÃO. Ao contrário da linha acima, esta é
+	svcOpts = append(svcOpts, WithApprovalSweepInterval(approvalSweep))
+	// AOS-267 — CADÊNCIA DO SCHEDULER DE RETENÇÃO. Como a linha acima, esta é
 	// FAIL-CLOSED: um valor ilegível ou <= 0 ABORTA o arranque em vez de degradar para o default.
-	// A diferença não é estilo. O varrimento de aprovações é higiene operacional; este conduz a
-	// EXPIRAÇÃO POR TTL, e um operador que se engana na cadência e fica com outra qualquer não
-	// tem forma de o notar — o sintoma seria dados pessoais retidos para lá do prazo, meses
+	// A diferença não é estilo — e desde 2026-08-23 já não há diferença: o varrimento de
+	// aprovações passou a ser fail-closed pela mesma razão (ver [ErrBadApprovalSweepInterval]).
+	// Este conduz a EXPIRAÇÃO POR TTL, e um operador que se engana na cadência e fica com outra
+	// qualquer não tem forma de o notar — o sintoma seria dados pessoais retidos para lá do prazo, meses
 	// depois. Ver [ErrBadRetentionSweepInterval]: nenhum valor desliga o scheduler.
 	retentionSweep, err := retentionSweepIntervalFromEnv()
 	if err != nil {
