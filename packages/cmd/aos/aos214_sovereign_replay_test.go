@@ -119,15 +119,13 @@ func TestNode_AOS214_AuthorizedReaderDecrypts(t *testing.T) {
 	if seal.Principal.NHIID != govReader || seal.Resource.Region != govRegion || seal.Resource.Value != runID {
 		t.Fatalf("selo devia registar leitor/regiao/run, veio %q/%q/%q", seal.Principal.NHIID, seal.Resource.Region, seal.Resource.Value)
 	}
-	assertNoPIIInPartition(t, node.WORM, part)
-	// Defesa em profundidade: o conteúdo sintético NUNCA aparece num selo de conformidade.
-	recs, _ := node.WORM.Read(context.Background(), part, 1, head)
-	for _, rc := range recs {
-		blob, _ := json.Marshal(rc)
-		if bytes.Contains(blob, []byte(aos214SynthSecret)) {
-			t.Fatalf("o selo de reconstrução vaza o conteúdo sintético — PII num selo!")
-		}
-	}
+	// A SONDA passa a ir DENTRO do auxiliar. O varrimento de bytes que este teste fazia por conta
+	// própria — e a que chamava «defesa em profundidade» — era a prova de que o autor desconfiava
+	// do `assertNoPIIInPartition`, que verificava apenas o `PayloadRef`. Estava certo: sete outros
+	// testes tratavam-no como o seu controlo de PII e um `Reason` com conteúdo pessoal passaria.
+	//
+	// Generalizado no auxiliar, o varrimento deixa de ser privilégio deste teste.
+	assertNoPIIInPartition(t, node.WORM, part, aos214SynthSecret)
 }
 
 // TestNode_AOS214_UnauthorizedReaderDenied prova o DENY fail-closed nos DOIS sentidos:
