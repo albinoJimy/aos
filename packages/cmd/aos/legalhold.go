@@ -290,9 +290,43 @@ func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.svc.expireInFlight.Store(false)
 	report, err := h.node.ExpirationJob.Run(r.Context())
+
+	// O DESFECHO TAMBÉM SE SELA — achado da verificação de completude de 2026-08-23.
+	//
+	// A correcção de 2026-08-21 fechou a assimetria de ATRIBUIÇÃO entre a via automática e a
+	// humana: ambas passaram a selar QUEM. Deixou intacta a de DESFECHO, que é a metade que diz
+	// se o apagamento chegou a acontecer.
+	//
+	// O varredor selava DOIS registos — `sweep.started` e `sweep.completed` com as contagens e,
+	// ao lado delas, as destruições POR CONFIRMAR. A rota selava UM. Um auditor que lesse a
+	// partição anos depois obtinha, para a via automática, «quem, quantos, e quantas ficaram por
+	// confirmar»; para um apagamento em massa ordenado por uma PESSOA obtinha «quem começou» — e
+	// um `started` órfão é indistinguível de uma passagem que morreu a meio.
+	//
+	// AS CONTAGENS IAM SÓ NO CORPO HTTP, que não é durável e desaparece com a sessão.
+	//
+	// SELA-SE MESMO COM ERRO, e é a mesma postura do varredor («o desfecho é selado a seguir de
+	// qualquer forma»): uma passagem que falhou a meio é precisamente aquela cujo resumo mais
+	// falta faz.
+	if serr := h.svc.selarPassagemDeRetencao(r.Context(), retentionSweepCompletedEvent, expiracaoID,
+		time.Now().UTC(), &report, retentionTriggerRota, leitor.principal); serr != nil {
+		// NÃO é fail-closed, e a razão é a do varredor: cada destruição já foi selada pelo job
+		// ANTES de acontecer. O que se perde é o RESUMO — registado aqui de forma ruidosa em vez
+		// de transformar uma falha de selagem do sumário numa falha da expiração inteira.
+		h.svc.log("expiracao por rota (completude 2026-08-23): selo de DESFECHO recusado pelo WORM (as destruicoes desta passagem ficaram seladas uma a uma pelo job; falta o resumo): %v", serr)
+	}
+
+	// DESTRUIÇÃO POR CONFIRMAR — o eixo tem de ter CAUSA no log, na rota como no varredor. Sem
+	// isto, uma política Transit sem `deletion_allowed` deixava o nó UNREADY sem causa em lado
+	// nenhum até ao varrimento seguinte. A contagem não nomeia titulares.
+	if pend, ok := shredPendingOf(h.node.DSARVault); ok && pend > 0 {
+		h.svc.log("expiracao por rota (completude 2026-08-23): ATENCAO — %d destruicao(oes) de KEK POR CONFIRMAR na custodia. A expiracao esta SELADA na cadeia mas a chave pode continuar viva e o conteudo recuperavel; o /readyz fica VERMELHO ate uma destruicao confirmada. Causas tipicas: politica Transit sem deletion_allowed, replicacao, ou token sem autoridade para destruir", pend)
+	}
+
 	if err != nil {
 		// Um passo falhou (ex.: selagem do retention.expired): 500 sem detalhe no corpo. Os
-		// registos restantes foram processados na mesma (errors.Join no job).
+		// registos restantes foram processados na mesma (errors.Join no job), e o desfecho JÁ
+		// ficou selado acima.
 		writeError(w, http.StatusInternalServerError, "expiracao recusada")
 		return
 	}
