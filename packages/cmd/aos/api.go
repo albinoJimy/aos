@@ -1122,9 +1122,24 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		g("aos_dsar_vault_shred_unconfirmed", "Destruicoes de KEK (crypto-shred) por CONFIRMAR na custodia; >0 mantem o no unready e o conteudo pode continuar recuperavel.", "gauge", float64(pend), "")
 	}
 
-	// aos_ready espelha o veredito do /readyz (drain + Event Store + custódia da KEK) — o SLI de
-	// disponibilidade a partir do qual o alerta de SLO dispara.
-	g("aos_ready", "O no reporta-se pronto no /readyz (1) ou nao (0).", "gauge", b01(!draining && esHealthy && vaultReady), "")
+	// aos_ready espelha o veredito do /readyz — AS QUATRO condições: drain, Event Store,
+	// custódia da KEK e a hash-chain do WORM a ACEITAR ESCRITAS. É o SLI de disponibilidade a
+	// partir do qual o alerta de SLO dispara.
+	//
+	// A QUARTA FALTAVA, e é o achado F da verificação de funcionamento de 2026-08-23. Quando
+	// a cláusula do WORM entrou no `/readyz`, esta linha não a acompanhou — e o comentário
+	// continuou a dizer que "espelha o veredito do /readyz", enumerando as três antigas. O
+	// resultado era o pior arranjo possível: um mount remontado `:ro` fazia o nó recusar
+	// `POST /runs`, `GET /runs/{id}` e `POST /dsar/hold`, o `/readyz` dava 503 — e este
+	// `aos_ready`, que é o que o colector RASPA, continuava a ler 1. O painel ficava verde
+	// sobre um nó que não servia nada.
+	//
+	// RESSALVA HONESTA sobre o "espelha": a sonda da custódia corre aqui com o MESMO prazo de
+	// 2 s do `/readyz`, mas o avaliador de SLOs usa 5 s ([sloProbeTimeout]). São o mesmo
+	// predicado com prazos diferentes, pelo que num nó sob carga o `/readyz` pode dar 503 por
+	// prazo enquanto o SLI ainda mede disponível. Está nomeado em vez de calado.
+	wormRecusa := h.svc != nil && h.svc.seloWORM.aRecusarEscritas()
+	g("aos_ready", "O no reporta-se pronto no /readyz (1) ou nao (0). Cobre as QUATRO condicoes: drain, Event Store, custodia da KEK e WORM a aceitar escritas.", "gauge", b01(!draining && esHealthy && vaultReady && !wormRecusa), "")
 
 	// AOS-274 — SLOs/ALERTAS avaliados em runtime. É a superfície de EXPOSIÇÃO do produtor
 	// (slo_evaluator.go): o que aqui aparece foi calculado sobre dados REAIS do nó (spans

@@ -442,11 +442,28 @@ func (s *NodeService) SLOEvaluatorArmed() bool { return s.slo != nil }
 // violação de SLO. (Na prática o laço já parou — o Shutdown fecha o `sweepStop` antes de drenar —
 // mas a exclusão é explícita para que a semântica não dependa dessa ordem.)
 //
-// O que a sonda cobre, honestamente: o substrato de eventos e a custódia da KEK. NÃO cobre o PDP
-// (o nó não retém um handle para o sondar) — o SLI mede a disponibilidade do plano de controlo
-// DESTE nó, e o alerta encaminha para RB-04 porque é lá que o diagnóstico de PDP começa.
+// O que a sonda cobre, honestamente: o substrato de eventos, a custódia da KEK e a hash-chain do
+// WORM a ACEITAR ESCRITAS. NÃO cobre o PDP (o nó não retém um handle para o sondar) — o SLI mede a
+// disponibilidade do plano de controlo DESTE nó, e o alerta encaminha para RB-04 porque é lá que o
+// diagnóstico de PDP começa.
+//
+// A CLÁUSULA DO WORM FALTAVA (achado F, 2026-08-23). Quando entrou no `/readyz`, esta sonda não a
+// acompanhou, e o doc acima continuou a prometer "a MESMA condição que o /readyz responde, menos o
+// drain". Era menos o drain E menos o WORM — e a consequência era grave por composição: o
+// `control_plane_availability_low` é um dos DOIS únicos alertas deste nó com produtor real, e
+// ficava cego precisamente ao eixo mais recente do desenho fail-closed. Um nó que recusasse 100%
+// das escritas mantinha o SLI a 1.0 e o alerta calado.
+//
+// O PRAZO DA SONDA CONTINUA A DIVERGIR, e fica dito: aqui é [sloProbeTimeout] (5 s), no `/readyz`
+// são 2 s. Mesmo predicado, prazos diferentes — num nó sob carga o `/readyz` avermelha por prazo
+// antes de este SLI o acompanhar. É um eixo à parte deste achado.
 func (s *NodeService) controlPlaneAvailable(ctx context.Context) bool {
 	if s.node == nil || s.node.EventStore == nil || !s.node.EventStore.Healthy() {
+		return false
+	}
+	// Uma via de governação que já falhou a selar e ainda não recuperou: o nó devolve 503 nas
+	// rotas que dependem de um `Append`, e isso É indisponibilidade do plano de controlo.
+	if s.seloWORM.aRecusarEscritas() {
 		return false
 	}
 	if p, ok := s.node.DSARVault.(readinessProber); ok {
