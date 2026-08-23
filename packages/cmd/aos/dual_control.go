@@ -6,6 +6,7 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	rm "github.com/aos-ref/kernel/reference-monitor"
+	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 )
 
 // ---------------------------------------------------------------------------------------------
@@ -74,4 +75,52 @@ func exigenciaDeDuploControlo(
 		}
 	}
 	return false, integration.PendingRecord{}, false, nil
+}
+
+// ---------------------------------------------------------------------------------------------
+// A CLASSE DE RISCO TAMBÉM NÃO É ESCOLHA DE QUEM PEDE.
+//
+// Achado da verificação de completude de 2026-08-23, e é o campo VIZINHO do que se fechou na
+// véspera — na MESMA struct do wire, a três linhas de distância. Fechou-se o
+// `dual_control_required` e deixou-se o `risk_class` aberto.
+//
+// O QUE ELE DECIDE: `hitl.RequiredAuthority(class)` devolve `approve:<classe>`, e cada perna só
+// é aceite se a autoridade do aprovador CONTIVER essa string. A comparação é de igualdade exacta,
+// sem hierarquia — `approve:danger` NÃO implica `approve:gray`. Logo a classe declarada escolhe
+// que escalão de autoridade a cerimónia exige.
+//
+// A EXPLORAÇÃO, e não é forja: a classe entra na mensagem assinada de cada perna
+// (`fourEyesMessage` → `policy := []byte{byte(riskClass), dualByte}`), portanto ninguém a rebaixa
+// sozinho. O que acontece é que QUEM PEDE ESCOLHE O QUADRO EM QUE OS HUMANOS ASSINAM: dois
+// aprovadores que só têm `approve:gray` assinam «gray» e, no quadro deles, fazem exactamente
+// aquilo para que têm autoridade. O nó nunca deriva a classe verdadeira nem a confronta — e
+// nada exige que o roster contenha sequer um detentor de `approve:danger`.
+//
+// NÃO HÁ SEGUNDA LINHA DE DEFESA. Na retoma o Reference Monitor RE-CLASSIFICA e obtém `danger`,
+// e depois deita-a fora: as três verificações a jusante perguntam `humanApproved != nil`, um
+// booleano. O `ApprovalProof` que lá chega é `{Approvers, DualControl}` — sem classe.
+//
+// ---------------------------------------------------------------------------------------------
+// PORQUE É UM LIMITE INFERIOR, e não a classe exacta.
+//
+// A classificação completa precisa de três eixos — sensibilidade, egress e reversibilidade — e o
+// registo pendente só carrega a capability. Do que ele tem deriva-se UMA implicação, e é a que
+// interessa: capability irreversível ⇒ [risk.ClassDanger] (`classifier.go:327`).
+//
+// Por isso a regra é BINÁRIA e não precisa de comparador de severidade — que, aliás, não existe
+// no pacote `risk`. Uma acção irreversível TEM de ser aprovada como `danger`; para as outras o
+// nó não sabe mais do que quem pede, e não finge que sabe.
+// ---------------------------------------------------------------------------------------------
+
+// classeExigida devolve a classe de risco que o NÓ exige para o efeito que este pendente
+// representa, e se essa exigência é derivável de todo.
+//
+// `derivavel=false` significa «o nó não consegue dizer», e o chamador deixa passar a declaração —
+// recusar aí seria transformar «não sei» em «não», e travava toda a aprovação de acções que o
+// pendente não permite classificar.
+func classeExigida(rec integration.PendingRecord) (risk.Class, bool) {
+	if rm.CapabilityIrreversible(rec.Capability) {
+		return risk.ClassDanger, true
+	}
+	return risk.ClassSafe, false
 }
