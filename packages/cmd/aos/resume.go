@@ -140,6 +140,37 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 		return ErrNoResumeRecord
 	}
 
+	// (2-bis) A CREDENCIAL É DE QUEM? — a verificação que o comentário deste ficheiro afirmava
+	// existir "em (4)" e que não existia em lado nenhum.
+	//
+	// O [ErrResumePrincipalMismatch] estava declarado, com docstring, desde sempre — e NUNCA era
+	// devolvido: a credencial entrava em `rec.GoalWith(credential)` sem alguma vez ser confrontada
+	// com `rec.Principal.NHIID`. É o molde do `gate_path`: uma defesa que o código afirma ter.
+	//
+	// PORQUE A DEFESA A JUSANTE NÃO CHEGA. O comentário remetia para o hook de identidade do RM
+	// na primeira tool call mediada. Mas (a) a retoma REPRODUZ os turnos da captura sem
+	// reinterrogar o modelo, pelo que um run cuja acção escalada já não gera nova mediação nunca
+	// lá chega; e (b) mesmo chegando, nada compara o principal resolvido do token com o
+	// `Goal.Principal` — que vem do REGISTO. Procurei essa comparação em todo o repositório e não
+	// existe. O run continuaria atribuído a quem era, com o token de outro.
+	//
+	// SEM ANTI-REPLAY: [identity.Verifier.Verify] consulta revogação por `jti` mas NÃO marca o
+	// token como usado, pelo que verificá-lo aqui não o consome. Foi a armadilha que partiu o
+	// `POST /autonomy/simular` (ver [readGovernance.podeLerRun]) e foi verificada antes de escrever
+	// esta linha.
+	//
+	// RESIDUAL DECLARADO: só se recusa a DIVERGÊNCIA. Uma credencial que não verifica de todo não
+	// é recusada aqui — continua a ser negada a jusante, atribuivelmente, e transformar «não
+	// consegui verificar» em «não és tu» diria uma coisa diferente da que se sabe.
+	if v := s.node.Verifier; v != nil && rec.Principal.NHIID != "" {
+		if p, verr := v.Verify(ctx, credential); verr == nil && p.AgentID != rec.Principal.NHIID {
+			// O mapeamento identidade→NHI é o canónico de `identity/rmadapter.go`
+			// (`NHIID: principal.AgentID`), e não uma segunda regra escrita aqui.
+			return fmt.Errorf("%w: run %q e de %q e a credencial e de %q",
+				ErrResumePrincipalMismatch, runID, rec.Principal.NHIID, p.AgentID)
+		}
+	}
+
 	// (3) Plano de replay: as respostas do modelo JÁ REGISTADAS, por turno. Sem elas a
 	// retoma reinterrogaria o modelo e a aprovação — amarrada à preview da call original —
 	// nunca se aplicaria.
