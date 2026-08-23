@@ -25,6 +25,18 @@ services:
   aos:
     image: ${AOS_IMAGE:?AOS_IMAGE por definir — corre deploy.sh, não `docker compose up` à mão}
     restart: unless-stopped
+    # FOLGA DE ENCERRAMENTO, declarada AO LADO da env que a consome para que a relação entre
+    # as duas fique num sítio só. Sem `stop_grace_period` vale o default do Docker — 10s — e
+    # o nó não tem tempo de drenar: o dreno HTTP espera pelos pedidos activos (um SSE de
+    # trajectória ocioso nunca fecha sozinho) e o dreno do SERVIÇO, que liberta leases e sela
+    # desfechos terminais, corria a seguir e era o que ficava sem tempo.
+    #
+    # 35s de folga para 30s de orçamento: 5s de margem para tratar o sinal e esvaziar o log.
+    # Subir AOS_SHUTDOWN_BUDGET sem subir isto traz o SIGKILL a meio do dreno.
+    #
+    # NÃO atrasa os deploys no caso normal: `Shutdown` devolve assim que não há ligações
+    # activas. A folga só é gasta quando há mesmo trabalho a drenar, que é quando se quer.
+    stop_grace_period: 35s
     mem_limit: ${AOS_MEM_LIMIT:-1g}
     pids_limit: 1024
     read_only: true               # root-fs read-only (ADR-017); estado durável só no volume.
@@ -36,6 +48,12 @@ services:
       - /tmp
     environment:
       AOS_API_ADDR: "0.0.0.0:8080"
+
+      # Orçamento TOTAL do encerramento gracioso, repartido em dois drenos com prazos
+      # SEPARADOS (2/5 para o ingresso HTTP, a maioria para o serviço, que é quem liberta
+      # leases e sela desfechos). Tem de caber no `stop_grace_period` acima — as duas estão
+      # declaradas juntas de propósito.
+      AOS_SHUTDOWN_BUDGET: "30s"
 
       # POSTURA. Vazio ⇒ modo de REFERÊNCIA endurecido (o default deste ficheiro).
       # `production` exige, TODAS, sob pena de o boot ABORTAR: AOS_ISSUER_PUBKEY,
