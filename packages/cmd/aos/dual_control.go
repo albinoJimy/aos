@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"time"
 
 	integration "github.com/aos-ref/integration"
 	rm "github.com/aos-ref/kernel/reference-monitor"
@@ -52,10 +53,27 @@ func exigenciaDeDuploControlo(
 	runID string,
 	preview []byte,
 	_ bool,
-) (exigir bool, rec integration.PendingRecord, encontrado bool, err error) {
+	ttl time.Duration,
+) (exigir bool, rec integration.PendingRecord, encontrado bool, expirado bool, err error) {
 	if pendentes == nil || len(preview) == 0 {
-		return false, integration.PendingRecord{}, false, nil
+		return false, integration.PendingRecord{}, false, false, nil
 	}
+	// O TTL DO PENDENTE VALE AQUI, e não só no varredor — achado da verificação de completude
+	// de 2026-08-23.
+	//
+	// `ListForRun` filtra por grant emitido e por retirada; a IDADE só é avaliada no
+	// `ListExpirable`, que é o varredor. Entre o instante em que um pendente cruza o TTL e o tick
+	// seguinte havia uma janela — até `AOS_APPROVAL_SWEEP_INTERVAL`, 1 min por omissão — em que
+	// ele continuava aprovável e produzia um grant VÁLIDO, com TTL fresco.
+	//
+	// COM O VARREDOR DESLIGADO (`interval=0`, suportado) a janela é INFINITA: o pendente nunca
+	// expira e fica aprovável para sempre.
+	//
+	// O QUE A EXPIRAÇÃO SIGNIFICA, e é o que estava a ser contornado: o varredor regista que «a
+	// accao ficara NEGADA» e o run volta a ser retomável. Aprovar depois do prazo converte um
+	// «vai ser negado» num «autorizado» — a decisão que o TTL existe para tomar por omissão.
+	//
+	// Passa a ser uma INVARIANTE DA ROTA em vez de uma corrida com um trabalho de fundo.
 	recs, err := pendentes.ListForRun(ctx, runID)
 	if err != nil {
 		// FAIL-CLOSED na leitura: não se decide o número de aprovadores sobre um registo que não
@@ -65,16 +83,23 @@ func exigenciaDeDuploControlo(
 		// cai, porque o [integration.PendingApprovals] é um struct concreto sobre o Event Store
 		// e não há forma de lhe induzir um erro de leitura sem remodelar código de produção para
 		// caber num teste. O ramo mantém-se por ser a única postura defensável, não por prova.
-		return false, integration.PendingRecord{}, false, err
+		return false, integration.PendingRecord{}, false, false, err
 	}
 	for _, r := range recs {
 		// Tempo constante: a preview é o segredo da amarra WYSIWYS, e uma comparação que sai
 		// cedo transforma esta rota num oráculo de adivinhação de previews.
 		if len(r.Preview) == len(preview) && subtle.ConstantTimeCompare(r.Preview, preview) == 1 {
-			return rm.CapabilityIrreversible(r.Capability), r, true, nil
+			// EXPIRADO? A idade vem do carimbo que o proprio no selou na escalada.
+			if ttl > 0 && r.CreatedAt != "" {
+				if nascido, perr := time.Parse(time.RFC3339Nano, r.CreatedAt); perr == nil &&
+					time.Since(nascido) > ttl {
+					return false, r, true, true, nil
+				}
+			}
+			return rm.CapabilityIrreversible(r.Capability), r, true, false, nil
 		}
 	}
-	return false, integration.PendingRecord{}, false, nil
+	return false, integration.PendingRecord{}, false, false, nil
 }
 
 // ---------------------------------------------------------------------------------------------
