@@ -1124,7 +1124,22 @@ func (s *NodeService) suspendedDurably(ctx context.Context, runID string) (bool,
 	if err != nil {
 		return false, err
 	}
-	return st == state.WaitingOnHuman, nil
+	// A PAUSA CONTA, e é o que fecha o achado da verificação de completude de 2026-08-23:
+	// `paused` era ABSORVENTE de facto. Nada no binário conduzia `paused → running` — o
+	// condutor existe ([runGate.Resume], `steer_gates.go`) e tinha ZERO chamadores de
+	// produção, mantido vivo pelo compilador por um `var _ control.StateGate`.
+	//
+	// E o nó ANUNCIAVA o contrário: a recusa de `POST /exhaustion` e o banner de arranque
+	// dizem ambos ao operador que a pausa graciosa «deixa o run RETOMÁVEL». O disjuntor
+	// chega lá SOZINHO com os defaults (3 iterações estéreis, 30 min de wall-clock).
+	//
+	// DOIS EFEITOS, e o segundo é tão importante como o primeiro:
+	//   (a) `POST /runs/{id}/resume` passa a aceitar um run pausado;
+	//   (b) `Submit` passa a RECUSAR a re-submissão do mesmo run id — que era a única
+	//       saída existente e a pior possível: `claimRunning` é no-op fora de `Ready`, pelo
+	//       que a segunda execução corria com o disjuntor CEGO
+	//       (`CountsAsActiveWork` exige `Running`), sem selo terminal e sem deadline.
+	return st == state.WaitingOnHuman || st == state.Paused, nil
 }
 
 // DurableState devolve o estado durável do run reconstruído do log (AOS-252). É uma

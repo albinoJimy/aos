@@ -205,10 +205,23 @@ func (g *runGate) EscalateToHuman(ctx context.Context, reason string) error {
 // Só transita QUANDO o estado é mesmo esse: um run novo (ready) ou já a correr não é
 // tocado, e o stream/replay ficam byte-idênticos.
 func (g *runGate) resumeIfWaiting(ctx context.Context) error {
-	if g.m.Current() != state.WaitingOnHuman {
+	switch g.m.Current() {
+	case state.WaitingOnHuman:
+		return g.ResumeFromHuman(ctx, "retoma explicita apos aval humano (AOS-021)")
+	case state.Paused:
+		// A PAUSA TAMBÉM SE RETOMA, e é aqui que o condutor morto ganha o seu primeiro
+		// chamador de produção. Até 2026-08-23 o [runGate.Resume] existia, estava ligado à
+		// porta `control.StateGate`, e ninguém o abria: `paused` era absorvente de facto.
+		//
+		// Sem esta aresta, uma retoma de run pausado deixaria a máquina em `paused` durante
+		// toda a nova hospedagem — e o disjuntor, o selo terminal e o deadline ficariam
+		// todos desarmados, porque os três exigem `Running`.
+		return g.Resume(ctx, "retoma explicita apos pausa graciosa")
+	default:
+		// Um run novo (ready) ou já a correr não é tocado, e o stream/replay ficam
+		// byte-idênticos.
 		return nil
 	}
-	return g.ResumeFromHuman(ctx, "retoma explicita apos aval humano (AOS-021)")
 }
 
 // ResumeFromHuman materializa waiting_on_human→running: o run volta a correr depois de o
