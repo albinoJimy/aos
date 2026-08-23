@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -192,7 +194,7 @@ func TestReadPathLegacyWhenSovereigntyOff(t *testing.T) {
 
 // assertNoPIIInPartition percorre a cadeia da partição e exige que NENHUM registo carregue
 // um PayloadRef (a via da PII no audit). Os selos de conformidade são metadados puros.
-func assertNoPIIInPartition(t *testing.T, worm audit.Store, partition string) {
+func assertNoPIIInPartition(t *testing.T, worm audit.Store, partition string, sondas ...string) {
 	t.Helper()
 	head, err := worm.Head(context.Background(), partition)
 	if err != nil {
@@ -202,11 +204,65 @@ func assertNoPIIInPartition(t *testing.T, worm audit.Store, partition string) {
 	if err != nil {
 		t.Fatalf("Read(%s): %v", partition, err)
 	}
+	if err := piiEmSelos(recs, sondas); err != nil {
+		t.Fatalf("particao %s: %v", partition, err)
+	}
+}
+
+// piiEmSelos é a verificação PURA, e é pura de propósito: um `t.Fatalf` dentro de um auxiliar não
+// se consegue provar. Extraída, ela própria fica falsificável — ver
+// `assert_sem_pii_test.go`, que a alimenta com selos que VAZAM e exige que ela recuse.
+//
+// Uma guarda sem caso negativo é uma guarda por provar, e este auxiliar existe precisamente
+// porque a versão anterior era isso.
+func piiEmSelos(recs []audit.AuditRecord, sondas []string) error {
+	// CONTROLO ANTI-VACUIDADE: um auxiliar que se chama «sem PII» e que não examina registo
+	// nenhum passa por não ter feito nada. É o mesmo defeito que já apareceu num teste que
+	// iterava sobre uma lista vazia.
+	if len(recs) == 0 {
+		return errors.New("particao VAZIA — nao se verificou nada, e quem chama nao prova " +
+			"ausencia de PII nenhuma")
+	}
 	for _, r := range recs {
 		if r.PayloadRef != nil {
-			t.Fatalf("selo em %s (seq %d) carrega PayloadRef — PII num selo de conformidade!", partition, r.AuditSeq)
+			return fmt.Errorf("selo (seq %d) carrega PayloadRef — PII num selo de conformidade", r.AuditSeq)
+		}
+		// O `Reason` É TEXTO LIVRE, e nenhum destes selos o preenche. Verificado em
+		// `sovereignty.go`, `legalhold.go` e `sovereign_authority.go`: o campo existe no
+		// [audit.AuditRecord] e nunca é escrito por estes caminhos.
+		//
+		// PORQUE ISTO ESTAVA A FALTAR: até 2026-08-23 este auxiliar verificava UM ponteiro — o
+		// `PayloadRef` — e mais nada. É o vector principal, e por isso a versão anterior não era
+		// inútil; mas o NOME promete «sem PII na partição» e SETE testes tratavam-no como o seu
+		// controlo de PII. Escrever conteúdo pessoal no `Reason` passava intacto por todos.
+		if r.Reason != "" {
+			return fmt.Errorf("selo (seq %d) carrega Reason=%q — estes selos nao preenchem texto livre, "+
+				"e um campo de texto livre num selo de conformidade e uma via de PII", r.AuditSeq, r.Reason)
+		}
+		// SONDAS EXPLÍCITAS: o chamador nomeia o que NÃO pode aparecer. Varre-se o registo
+		// SERIALIZADO, e não campo a campo — assim uma PII escondida numa obrigação nova, ou num
+		// campo que ainda não existe, é apanhada na mesma.
+		//
+		// Generalizado a partir do varrimento que o `aos214_sovereign_replay_test.go` já fazia por
+		// conta própria, e a que chamava «defesa em profundidade» — o autor desconfiava do
+		// auxiliar, e tinha razão.
+		if len(sondas) > 0 {
+			blob, merr := json.Marshal(r)
+			if merr != nil {
+				return fmt.Errorf("marshal do selo (seq %d): %w", r.AuditSeq, merr)
+			}
+			for _, s := range sondas {
+				if s == "" {
+					continue
+				}
+				if bytes.Contains(blob, []byte(s)) {
+					return fmt.Errorf("selo (seq %d) VAZA %q — o conteudo que o no deliberadamente "+
+						"nao persiste em claro apareceu num selo de conformidade", r.AuditSeq, s)
+				}
+			}
 		}
 	}
+	return nil
 }
 
 // TestSensitiveReadSealsVerifiableWORM prova D6: uma leitura sensível (GET de desfecho) emite
