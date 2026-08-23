@@ -1494,10 +1494,21 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 	// QUANTOS HUMANOS SÃO PRECISOS É DECISÃO DO NÓ, e não de quem pede. Ver
 	// [exigenciaDeDuploControlo] para o achado 1.10 e para a razão de a fonte ser o registo
 	// pendente que o Reference Monitor selou ANTES de haver pedido nenhum.
-	exigirDuplo, pendente, reconhecida, derr := exigenciaDeDuploControlo(
-		r.Context(), h.node.PendingApprovals, r.PathValue("id"), preview, req.Request.DualControlRequired)
+	exigirDuplo, pendente, reconhecida, expirado, derr := exigenciaDeDuploControlo(
+		r.Context(), h.node.PendingApprovals, r.PathValue("id"), preview,
+		req.Request.DualControlRequired, h.svc.approvalTTL)
 	if derr != nil {
 		writeError(w, http.StatusInternalServerError, "nao foi possivel classificar a accao")
+		return
+	}
+	if expirado {
+		// PENDENTE JÁ FORA DO PRAZO. Sem esta recusa, a expiração era uma corrida com o varredor:
+		// entre cruzar o TTL e o tick seguinte (1 min por omissão, INFINITO com o varredor
+		// desligado) a cerimónia produzia um grant válido, com TTL fresco — convertendo o
+		// «vai ser negado» que o TTL decide num «autorizado».
+		h.svc.log("four-eyes (completude 2026-08-23): cerimonia RECUSADA — o pendente do run %q passo %q ja passou o prazo de %s e a accao vai ser NEGADA; o varredor ainda nao lhe chegou, mas o prazo nao e uma corrida com ele",
+			pendente.RunID, pendente.StepID, h.svc.approvalTTL)
+		writeError(w, http.StatusForbidden, "o pedido de aprovacao expirou")
 		return
 	}
 	if h.node.PendingApprovals != nil && !reconhecida {
