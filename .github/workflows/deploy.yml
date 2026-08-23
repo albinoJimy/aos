@@ -149,6 +149,7 @@ jobs:
             deploy/server/sync-tls.sh \
             deploy/server/provision-identity.sh \
             deploy/server/backup.sh \
+            deploy/server/restore-drill.sh \
             deploy/server/.env.example \
             "$USER@$HOST:/opt/aos/"
           rsync -az -e "$SSH" deploy/server/templates/ "$USER@$HOST:/opt/aos/templates/"
