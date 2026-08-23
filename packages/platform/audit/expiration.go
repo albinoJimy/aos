@@ -266,60 +266,40 @@ func (j *ExpirationJob) Run(ctx context.Context) (ExpirationReport, error) {
 		//
 		// POR REGISTO, não por passagem: um operador a colocar um hold espera no máximo por um
 		// passo de destruição, nunca pelo varrimento inteiro.
-		fimBarreira := j.holds.BeginDestruction()
-
-		// AC3 — legal hold suspende a expiração (fail-closed).
-		if j.held(rec) {
-			fimBarreira()
+		// A SECÇÃO SOB BARREIRA vive numa função PRÓPRIA, para que a barreira seja largada por
+		// `defer` — em TODOS os caminhos de saída, incluindo um `panic`.
+		//
+		// PORQUÊ, e o achado é da verificação de completude de 2026-08-23: aqui a barreira era
+		// tomada e largada À MÃO em cinco sítios. Auditados um a um, os cinco cobrem todos os
+		// `return`/`continue` — sem pânico não havia fuga. Mas os outros dois tomadores da MESMA
+		// barreira (`Shredder.Shred` e `handleLegalHold`) usam `defer` e são panic-safe, e o
+		// contrato escrito em `retention.go` exige que ela seja largada «em TODOS os caminhos de
+		// saída».
+		//
+		// O QUE UM PÂNICO CUSTARIA: o `RLock` fica detido para sempre. O `POST /dsar/hold`
+		// seguinte bloqueia em `Lock()` sem timeout e, com um escritor pendente, TODO
+		// `BeginDestruction()` posterior bloqueia também — `/dsar/erase` e este varredor param, com
+		// `/healthz` e `/readyz` a 200. Pela via do `/dsar/expire` o `net/http` recupera o pânico e
+		// o processo SOBREVIVE encravado; pela via do tick o processo morre e o Docker reinicia-o.
+		//
+		// GRAVIDADE HONESTA: nenhum pânico é hoje alcançável neste caminho — o cliente do Vault
+		// devolve erro em todos os ramos e os candidatos a nil estão fechados nos construtores. A
+		// porta abre-se com um `Store`, `KeyVault` ou `ExpirationSink` de TERCEIRO, que é
+		// precisamente o contrato que este pacote publica.
+		d := j.processarSobBarreira(sweepCtx, rec, now)
+		if d.held {
 			report.Held++
 			continue
 		}
-		key := idempotencyKey(rec.ID, rec.Class)
-		if j.idem.Seen(key) {
-			// RECONCILIAÇÃO (achado 1.7). Um registo já SELADO cujo sink não confirmou a
-			// destruição é re-tentado AQUI — sem re-selar o `retention.expired`, que é o segundo
-			// evento para o mesmo facto que a marca de idempotência existe para impedir.
-			//
-			// É a «outra passagem» que o docstring do [ExpirationJob.expireOne] sempre prometeu e
-			// que nunca existiu: o `Seen` era permanente (a re-hidratação reconstrói-o dos
-			// próprios eventos selados), pelo que ter selado «expirado» tornava a falha eterna.
-			if j.porReconciliar != nil && j.porReconciliar.Pending(rec.ID) {
-				if err := j.sink.Expire(sweepCtx, rec); err != nil {
-					fimBarreira()
-					// Continua pendente. NÃO se re-sela o desmentido: a cadeia já o tem, e um
-					// segundo por cada passagem enchê-la-ia de ruído de hora a hora.
-					report.Skipped++
-					errs = append(errs, err)
-					continue
-				}
-				j.confirmarReconciliacao(sweepCtx, rec, now)
-				fimBarreira()
-				// CONTA COMO `Expired`, e é deliberado: é nesta passagem que a destruição
-				// aconteceu de facto. Contá-la como `skipped` esconderia no relatório o único
-				// momento em que o trabalho foi feito.
-				report.Expired++
-				report.ExpiredIDs = append(report.ExpiredIDs, rec.ID)
-				continue
-			}
-			fimBarreira()
-			report.Skipped++
-			continue
-		}
-
-		ttl, _ := j.policy.Period(rec.Class)
-		sealed, err := j.expireOne(sweepCtx, rec, key, ttl, now)
-		fimBarreira()
-		if sealed {
-			// A expiração está AUDITADA e a key MARCADA (dentro de expireOne):
-			// conta-a e não a re-sela em reexecuções, MESMO que o sink tenha
-			// falhado a seguir — a WORM append-only não pode ganhar um segundo
-			// evento para o mesmo facto já selado.
+		if d.expired {
 			report.Expired++
 			report.ExpiredIDs = append(report.ExpiredIDs, rec.ID)
 		}
-		if err != nil {
-			errs = append(errs, err)
-			continue
+		if d.skipped {
+			report.Skipped++
+		}
+		if d.err != nil {
+			errs = append(errs, d.err)
 		}
 	}
 
@@ -527,3 +507,65 @@ func WithExpirationReconciliation(s ReconciliationSet) ExpirationOption {
 // `WithExpirationReconciliation` está mesmo ligado seria fazer um sink real falhar num nó real —
 // e o padrão «a unidade está certa e ninguém a chama» já apareceu doze vezes neste repositório.
 func (j *ExpirationJob) ReconciliationComposed() bool { return j != nil && j.porReconciliar != nil }
+
+// desfechoDeRegisto é o que a secção sob barreira decidiu, para o laço contabilizar DEPOIS de a
+// barreira ser largada. Existe para que o `defer` possa cobrir a secção inteira sem que os
+// `continue` do laço lhe escapem.
+//
+// `expired` e `err` NÃO são exclusivos: a expiração pode ficar SELADA (e portanto contada) e o
+// sink falhar a seguir — é o desenho fail-closed de [ExpirationJob.expireOne], e o relatório tem
+// de reflectir as duas coisas.
+type desfechoDeRegisto struct {
+	held    bool
+	skipped bool
+	expired bool
+	err     error
+}
+
+// processarSobBarreira corre o passo POR REGISTO com a BARREIRA DE DESTRUIÇÃO tomada, e larga-a
+// por `defer` — em todos os caminhos de saída, incluindo pânico.
+//
+// A propriedade não é «li o hold atomicamente»: é «entre ter lido o hold e ter destruído, nenhuma
+// colocação de hold pôde intercalar-se». Entre as duas coisas há um `fsync` de ~30 ms, e era essa
+// a janela em que um `/dsar/hold` respondido 200 não protegia nada.
+//
+// POR REGISTO, não por passagem: um operador a colocar um hold espera no máximo por um passo de
+// destruição, nunca pelo varrimento inteiro.
+func (j *ExpirationJob) processarSobBarreira(ctx context.Context, rec ExpirableRecord, now time.Time) desfechoDeRegisto {
+	defer j.holds.BeginDestruction()()
+
+	// AC3 — legal hold suspende a expiração (fail-closed).
+	if j.held(rec) {
+		return desfechoDeRegisto{held: true}
+	}
+	key := idempotencyKey(rec.ID, rec.Class)
+	if j.idem.Seen(key) {
+		// RECONCILIAÇÃO (achado 1.7). Um registo já SELADO cujo sink não confirmou a destruição é
+		// re-tentado AQUI — sem re-selar o `retention.expired`, que é o segundo evento para o
+		// mesmo facto que a marca de idempotência existe para impedir.
+		//
+		// É a «outra passagem» que o docstring do [ExpirationJob.expireOne] sempre prometeu e que
+		// nunca existiu: o `Seen` era permanente (a re-hidratação reconstrói-o dos próprios
+		// eventos selados), pelo que ter selado «expirado» tornava a falha eterna.
+		if j.porReconciliar != nil && j.porReconciliar.Pending(rec.ID) {
+			if err := j.sink.Expire(ctx, rec); err != nil {
+				// Continua pendente. NÃO se re-sela o desmentido: a cadeia já o tem, e um segundo
+				// por cada passagem enchê-la-ia de ruído de hora a hora.
+				return desfechoDeRegisto{skipped: true, err: err}
+			}
+			j.confirmarReconciliacao(ctx, rec, now)
+			// CONTA COMO `Expired`, e é deliberado: é nesta passagem que a destruição aconteceu de
+			// facto. Contá-la como `skipped` esconderia no relatório o único momento em que o
+			// trabalho foi feito.
+			return desfechoDeRegisto{expired: true}
+		}
+		return desfechoDeRegisto{skipped: true}
+	}
+
+	ttl, _ := j.policy.Period(rec.Class)
+	sealed, err := j.expireOne(ctx, rec, key, ttl, now)
+	// A expiração está AUDITADA e a key MARCADA (dentro de expireOne): conta-se e não se re-sela
+	// em reexecuções, MESMO que o sink tenha falhado a seguir — a WORM append-only não pode ganhar
+	// um segundo evento para o mesmo facto já selado.
+	return desfechoDeRegisto{expired: sealed, err: err}
+}
