@@ -661,15 +661,48 @@ func (h *apiHandler) writeSLOMetrics(b *strings.Builder) {
 	// Os alertas, com o RUNBOOK como label — é a ligação a AOS-106 visível no próprio sinal: quem
 	// receber o alerta no alertmanager já sabe qual o procedimento, sem cruzar tabelas. Um alerta
 	// cujo runbook não resolve leva `runbook_orphan="1"` em vez de ser omitido.
-	b.WriteString("# HELP aos_alert_firing Alerta de SLO a disparar (1) apos a janela sustentada; 0 = regra avaliada sem disparar.\n# TYPE aos_alert_firing gauge\n")
+	// AVALIÁVEL — o rótulo que faltava, e o achado da verificação de completude de 2026-08-23.
+	//
+	// O HELP dizia «0 = regra avaliada sem disparar», e para três regras isso era FALSO: os SLIs
+	// `headroom_tokens` e `replay_fidelity` não têm produtor neste binário (o escalonador e o
+	// motor de replay vivem noutro processo), pelo que nunca terão amostra e a regra é
+	// ESTRUTURALMENTE incapaz de disparar. Medido em produção: `aos_slo_samples` a 0 para ambos,
+	// e o `firing` a 0 — indistinguível do `audit_worm_integrity_broken`, que TEM amostra e
+	// reporta 0 legitimamente.
+	//
+	// Um painel todo a verde não distinguia «avaliado e bem» de «nunca poderá ficar vermelho», e
+	// três dos cinco runbooks canónicos estavam desse lado.
+	//
+	// PORQUE UM RÓTULO E NÃO A OMISSÃO, que é a disciplina do resto do `/metrics` («uma série que
+	// mentiria fica AUSENTE»): para ALERTAS esta casa já decidiu o contrário, duas linhas acima —
+	// «um alerta cujo runbook não resolve leva `runbook_orphan="1"` EM VEZ DE SER OMITIDO».
+	// Omitir uma regra fá-la desaparecer do painel, que é perder a própria regra. A ressalva
+	// viaja no sinal, como a do runbook.
+	//
+	// COMPATÍVEL COM AS CONSULTAS EXISTENTES: um `aos_alert_firing{alert="x"}` continua a casar,
+	// porque os matchers do Prometheus são por subconjunto de rótulos.
+	amostras := make(map[string]int, 16)
+	forEachSLI(ev, func(catalog string, v otelgenai.SLIValue) {
+		// Chave por CATÁLOGO e nome: `cache_hit_rate` existe nos DOIS catálogos e são SLIs
+		// distintos — juntá-los faria um herdar as amostras do outro.
+		//
+		// RESIDUAL DECLARADO: é correcção por CONSTRUÇÃO e não está provada por teste. Hoje os dois
+		// `cache_hit_rate` têm ZERO amostras, pelo que juntá-los daria o mesmo resultado e a
+		// mutação que remove o catálogo da chave NÃO cai. Fica escrito em vez de contar como
+		// coberto: quando um dos dois ganhar produtor, esta linha passa a morder — e é aí que um
+		// teste a poderia apanhar.
+		amostras[catalog+"\x00"+v.Name] = v.Samples
+	})
+	b.WriteString("# HELP aos_alert_firing Alerta de SLO a disparar (1) apos a janela sustentada. 0 com avaliavel=\"1\" = regra AVALIADA sem disparar; 0 com avaliavel=\"0\" = o SLI nao tem produtor neste no e a regra NUNCA pode disparar.\n# TYPE aos_alert_firing gauge\n")
 	for _, sa := range ev.Alerts {
 		orphan := 0
 		if !sa.RunbookResolved {
 			orphan = 1
 		}
-		fmt.Fprintf(b, "aos_alert_firing{alert=%q,catalog=%q,severity=%q,sli=%q,runbook=%q,owner=%q,runbook_orphan=\"%d\"} %d\n",
+		avaliavel := boolMetric(amostras[sa.Catalog+"\x00"+sa.Alert.SLI] > 0)
+		fmt.Fprintf(b, "aos_alert_firing{alert=%q,catalog=%q,severity=%q,sli=%q,runbook=%q,owner=%q,runbook_orphan=\"%d\",avaliavel=\"%d\"} %d\n",
 			sa.Alert.Name, sa.Catalog, string(sa.Alert.Severity), sa.Alert.SLI,
-			sa.Alert.Route.Runbook, sa.Alert.Route.Owner, orphan, boolMetric(sa.Alert.Fired))
+			sa.Alert.Route.Runbook, sa.Alert.Route.Owner, orphan, avaliavel, boolMetric(sa.Alert.Fired))
 	}
 	b.WriteString("# HELP aos_alert_streak Observacoes consecutivas em breach que suportam o alerta.\n# TYPE aos_alert_streak gauge\n")
 	for _, sa := range ev.Alerts {
