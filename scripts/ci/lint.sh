@@ -84,5 +84,57 @@ else
   rc=1
 fi
 
+
+# --- 2e. entrega do servidor: modo de execucao e cobertura do rsync -----------
+#
+# O DEFEITO QUE FECHA, encontrado em producao a 2026-08-23: o `aos-tls-sync.service`
+# falhava ha dias com `203/EXEC` porque o `/opt/aos/sync-tls.sh` chegava ao servidor
+# SEM bit de execucao. O deploy entregava-o — o `rsync -az` preserva o modo, e o modo
+# no git era `100644`. O systemd nao consegue executar um ficheiro sem `+x`, e falhava
+# em silencio: o timer disparava todos os dias, o servico falhava, e nada alertava.
+#
+# DUAS VERIFICACOES, e sao independentes:
+#   (a) todo o ficheiro que um `ExecStart=` nomeia TEM de ter modo 755 no git;
+#   (b) todo o ficheiro que um `ExecStart=` nomeia TEM de estar na lista do `rsync`
+#       do deploy — um bit de execucao correcto num ficheiro que nunca chega ao
+#       servidor nao serve de nada.
+#
+# NAO se exige `+x` a TODOS os `.sh`: o `deploy.sh`, o `rollback.sh` e o `backup.sh`
+# sao invocados via `bash /opt/aos/...` e nao precisam. Exigi-lo seria ceremonia sem
+# propriedade, e a proxima pessoa desligaria o gate em vez de o obedecer.
+log_gate "lint · entrega do servidor (ExecStart)"
+unidades="$REPO_ROOT/deploy/server/systemd"
+if [ -d "$unidades" ]; then
+  n_exec=0
+  while IFS= read -r alvo; do
+    [ -n "$alvo" ] || continue
+    n_exec=$((n_exec + 1))
+    ficheiro="deploy/server/$(basename "$alvo")"
+    if [ ! -f "$REPO_ROOT/$ficheiro" ]; then
+      log_fail "ExecStart nomeia $alvo e $ficheiro NAO existe no repositorio"
+      rc=1
+      continue
+    fi
+    modo="$( cd "$REPO_ROOT" && git ls-files -s "$ficheiro" | awk '{print $1}' )"
+    if [ "$modo" != "100755" ]; then
+      log_fail "$ficheiro e executado por systemd (ExecStart=$alvo) e tem modo $modo — o systemd responde 203/EXEC. Corrige com: git update-index --chmod=+x $ficheiro"
+      rc=1
+    else
+      log_ok "$ficheiro: modo 755 (executavel pelo systemd)"
+    fi
+    if ! grep -q "$ficheiro" "$REPO_ROOT/.github/workflows/deploy.yml"; then
+      log_fail "$ficheiro e executado por systemd e NAO consta do rsync do deploy — nunca chega ao servidor"
+      rc=1
+    fi
+  done < <(grep -rhoE '^ExecStart=[^ ]+' "$unidades" 2>/dev/null | sed 's/^ExecStart=//')
+  # CONTROLO ANTI-VACUIDADE: se nenhum ExecStart for encontrado, este bloco passa por
+  # nao ter feito nada. Um gate que nao encontra o que verifica tem de gritar.
+  if [ "$n_exec" -eq 0 ]; then
+    log_fail "nenhum ExecStart encontrado em $unidades — o gate nao verificou nada"
+    rc=1
+  else
+    log_ok "entrega do servidor: $n_exec ExecStart verificado(s)"
+  fi
+fi
 [ "$rc" -eq 0 ] && log_ok "lint: verde" || log_fail "lint: vermelho"
 exit "$rc"
