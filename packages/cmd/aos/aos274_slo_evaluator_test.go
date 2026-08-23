@@ -617,7 +617,9 @@ func TestAOS274_MetricsExpoeSLOsEAlertas(t *testing.T) {
 		"aos_slo_spans_in_window",
 		`aos_slo_sli{catalog="operational",sli="audit_worm_integrity"}`,
 		`aos_slo_samples{catalog="operational",sli="headroom_tokens"} 0`,
-		`aos_alert_firing{alert="mediation_overhead_high",catalog="mediation",severity="critical",sli="mediation_overhead_p95",runbook="RB-04",owner="DevOps/SRE",runbook_orphan="0"} 1`,
+		// O `avaliavel="1"` diz que este alerta TEM produtor e foi mesmo avaliado — sem ele, um 1
+		// e um 0 desta serie seriam indistinguiveis de uma regra que nunca pode disparar.
+		`aos_alert_firing{alert="mediation_overhead_high",catalog="mediation",severity="critical",sli="mediation_overhead_p95",runbook="RB-04",owner="DevOps/SRE",runbook_orphan="0",avaliavel="1"} 1`,
 		`aos_alert_streak{alert="mediation_overhead_high",catalog="mediation"}`,
 	} {
 		if !strings.Contains(body, want) {
