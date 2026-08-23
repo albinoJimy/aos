@@ -67,5 +67,38 @@ for gmod in "${COVERAGE_GATED_MODULES[@]}"; do
   fi
 done
 
+
+# --- TODO O MÓDULO DO KERNEL TEM DE ESTAR SOB O LIMIAR ---------------------------------------
+#
+# O DEFEITO QUE FECHA: o `packages/kernel/agent-runtime` — metade do kernel — nunca esteve em
+# COVERAGE_GATED_MODULES, apesar de CINCO documentos declararem «cobertura do kernel >= 80%». Era
+# descoberto e medido, e simplesmente não era comparado. Estava a 93,5%, o que é o ponto: esse
+# verde saía igual com o gate desligado.
+#
+# A disciplina de «acrescentar em dois sítios» — criar o módulo e lembrar de o listar aqui — já
+# falhou uma vez. Não é uma disciplina que se possa confiar à memória de quem vier a seguir.
+log_gate "test · cobertura: todo o kernel esta sob o limiar"
+kfaltam=0
+while IFS= read -r kmod; do
+  [ -n "$kmod" ] || continue
+  encontrado=0
+  for gmod in "${COVERAGE_GATED_MODULES[@]}"; do
+    [ "$gmod" = "$kmod" ] && encontrado=1 && break
+  done
+  if [ "$encontrado" -eq 0 ]; then
+    log_fail "$kmod e um modulo do KERNEL e NAO esta em COVERAGE_GATED_MODULES — os documentos prometem «cobertura do kernel >= 80%» e este modulo nao e comparado com limiar nenhum"
+    rc=1
+    kfaltam=$((kfaltam + 1))
+  fi
+done < <(cd "$REPO_ROOT" && find packages/kernel -name go.mod -printf '%h\n' 2>/dev/null | sort)
+# CONTROLO ANTI-VACUIDADE: se o `find` não encontrar módulo nenhum, este bloco passa por não ter
+# feito nada. Um gate que não encontra o que verifica tem de gritar.
+kencontrados="$( cd "$REPO_ROOT" && find packages/kernel -name go.mod 2>/dev/null | wc -l )"
+if [ "$kencontrados" -eq 0 ]; then
+  log_fail "nenhum go.mod encontrado sob packages/kernel — a verificacao nao correu"
+  rc=1
+elif [ "$kfaltam" -eq 0 ]; then
+  log_ok "cobertura: os $kencontrados modulo(s) do kernel estao todos sob o limiar"
+fi
 [ "$rc" -eq 0 ] && log_ok "test: verde" || log_fail "test: vermelho"
 exit "$rc"
