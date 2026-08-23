@@ -143,7 +143,10 @@ type NodeService struct {
 	// AOS-021 — varrimento de aprovações expiradas (decisão do dono: no loop de serviço).
 	sweepInterval time.Duration // período do varrimento; <= 0 desliga
 	approvalTTL   time.Duration // janela de validade de uma aprovação pendente
-	sweepStop     chan struct{} // fechado no Shutdown para parar o varrimento
+	// seloWORM observa os `Append` das vias de governacao — ver [saudeDeSelagem]. NAO e ponteiro:
+	// o valor-zero e valido (nunca falhou, nunca teve sucesso) e evita um nil a esquecer.
+	seloWORM  saudeDeSelagem
+	sweepStop chan struct{} // fechado no Shutdown para parar o varrimento
 
 	// AOS-252 — varrimento de deadlines duráveis (CheckDeadlines). Partilha o sweepStop:
 	// o Shutdown pára os dois varrimentos com UM close.

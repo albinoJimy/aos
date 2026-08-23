@@ -479,6 +479,11 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 			readGov = newReadGovernance(node.SovereignReadRegions, nil, node.WORM, cfg.now)
 		}
 	}
+	// O MESMO registo de saude do servico: as tres vias de selagem partilham a cadeia, logo
+	// partilham o desfecho. Ver [saudeDeSelagem].
+	if readGov != nil && svc != nil {
+		readGov.saude = &svc.seloWORM
+	}
 	h := &apiHandler{
 		svc:         svc,
 		node:        node,
@@ -1043,6 +1048,21 @@ func (h *apiHandler) handleReadyz(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// DEPENDÊNCIA CRÍTICA: a hash-chain do WORM ACEITAR ESCRITAS. Três rotas fail-closed dependem
+	// de um `Append` — `POST /runs`, `GET /runs/{id}` e `POST /dsar/hold` — e um nó que as recusa
+	// todas não está pronto a servir, por mais que o `/healthz` responda.
+	//
+	// NÃO SE SONDA A ESCRITA AQUI: escrever no WORM a cada `/readyz` poluiria a cadeia
+	// tamper-evident com registos de sonda. Lê-se o desfecho das escritas que REALMENTE
+	// aconteceram — ver [saudeDeSelagem.aRecusarEscritas].
+	//
+	// É a ÚLTIMA selagem que decide, não «alguma vez falhou»: uma selagem bem-sucedida posterior
+	// limpa o estado, sem intervenção. Um nó que nunca selou nada não é afectado — o valor-zero é
+	// «nunca falhou».
+	if h.svc != nil && h.svc.seloWORM.aRecusarEscritas() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unready"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
@@ -1152,6 +1172,30 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				g("aos_retention_last_sweep_age_seconds", "Segundos desde a ultima passagem CONCLUIDA. Acima do dobro de AOS_RETENTION_SWEEP_INTERVAL, a expiracao deixou de correr.",
 					"gauge", time.Since(time.Unix(u, 0)).Seconds(), "")
 			}
+		}
+	}
+
+	// SELAGEM NO WORM — o que acontece quando a cadeia deixa de aceitar escritas.
+	//
+	// TRÊS rotas fail-closed dependem de um `Append` e recusavam com o mesmo 503 uniforme, sem
+	// log e sem contador: `POST /runs` (residência), `GET /runs/{id}` (selo de leitura sensível) e
+	// `POST /dsar/hold`. Nada mais se movia — o `/readyz` não conhecia o WORM, o
+	// `aos_worm_partitions` continuava em 126 porque as partições nascem por run e nenhum run novo
+	// entrava, e o SLI de integridade LÊ (um erro de I/O fica SEM AMOSTRA, de propósito).
+	//
+	// COMO SE LÊ:
+	//
+	//	failures_total a subir              ⇒ o nó está a recusar escritas AGORA
+	//	failures_total > 0, sem last_failure_age ⇒ impossível (a idade sai sempre que houve falha)
+	//	sem nenhuma das duas                ⇒ nunca falhou nesta vida do processo
+	if h.svc != nil {
+		g("aos_worm_seal_failures_total", "Selagens no WORM RECUSADAS nas vias de governacao (residencia de run, leitura sensivel, legal hold) desde o arranque. Cada uma corresponde a uma rota que devolveu 503 ao chamador. POR PROCESSO — um restart repoe.",
+			"counter", float64(h.svc.seloWORM.falhas.Load()), "")
+		// A idade só sai DEPOIS de haver uma falha. Emitir 0 antes disso diria «acabou de falhar»
+		// sobre um nó que nunca falhou.
+		if u := h.svc.seloWORM.ultimaFalhaSeg.Load(); u > 0 {
+			g("aos_worm_seal_last_failure_age_seconds", "Segundos desde a ultima selagem RECUSADA. Cruzada com aos_worm_seal_failures_total distingue «falhou e recuperou» de «esta a falhar agora».",
+				"gauge", time.Since(time.Unix(u, 0)).Seconds(), "")
 		}
 	}
 

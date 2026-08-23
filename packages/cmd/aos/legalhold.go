@@ -223,6 +223,9 @@ func (h *apiHandler) sealLegalHold(ctx context.Context, reader readerIdentity, r
 		},
 	}
 	sealed, err := h.node.WORM.Append(ctx, rec)
+	if h.svc != nil {
+		err = h.svc.seloWORM.registar(err)
+	}
 	if err != nil {
 		return 0, err
 	}
