@@ -2201,3 +2201,9 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "retoma falhou")
 	}
 }
+
+// Close FECHA o http.Server à força, sem esperar por ligações activas. É o par documentado
+// do [APIServer.Shutdown]: quando o dreno gracioso não cabe no seu orçamento, as ligações
+// remanescentes ficam — e um SSE de trajectória ocioso limpa o write-deadline entre escritas
+// de propósito, logo nunca fecha sozinho. Ver [encerrarGraciosamente].
+func (s *APIServer) Close() error { return s.http.Close() }

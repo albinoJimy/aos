@@ -936,11 +936,19 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 		_ = svc.Shutdown(shutCtx)
 		return e
 	case <-ctx.Done():
-		fmt.Fprintf(w, "[aos] sinal de paragem recebido — a encerrar graciosamente (drena runs em curso, liberta leases)\n")
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-		_ = svc.Shutdown(shutCtx)
+		// ORÇAMENTOS SEPARADOS. Partilhar um só contexto entre os dois drenos fazia com que
+		// um único SSE ocioso consumisse o prazo inteiro no `srv.Shutdown` e o dreno do
+		// SERVIÇO — o que liberta leases e sela desfechos — recebesse um contexto já
+		// expirado. A linha abaixo prometia drenar; cancelava. Ver [encerrarGraciosamente].
+		orc, oerr := encerramentoDoAmbiente()
+		if oerr != nil {
+			// Fail-closed na LEITURA, não no encerramento: uma env ilegível não pode
+			// impedir o nó de encerrar — reporta-se e usa-se o default.
+			fmt.Fprintf(w, "[aos] %v — a encerrar com o orcamento por omissao (%s)\n", oerr, DefaultShutdownBudget)
+			orc = repartirEncerramento(DefaultShutdownBudget)
+		}
+		fmt.Fprintf(w, "[aos] sinal de paragem recebido — a encerrar graciosamente (drena runs em curso, liberta leases); orcamento: HTTP %s + servico %s\n", orc.HTTP, orc.Servico)
+		encerrarGraciosamente(w, srv, svc, orc)
 		return <-serveErr
 	}
 }
