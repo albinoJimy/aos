@@ -97,6 +97,34 @@ func TestBackpressureDropOldest(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// BARREIRA DE CATCH-UP — sem ela este teste corria uma CORRIDA e falhava ~1 em 5.
+	//
+	// [subscription.run] tem DUAS fases: a de catch-up lê o histórico do Event Store e
+	// entrega DIRECTAMENTE (`s.deliver`), sem passar pelo buffer nem pela política de
+	// overflow; só a fase live usa o `offer`. O `Subscribe` devolve ANTES de a fase 1 ter
+	// feito a leitura, pelo que o produtor corria à frente e o catch-up apanhava parte dos
+	// eventos — entregando-os sem descarte nenhum.
+	//
+	// Medido com uma sonda antes de corrigir, seis corridas:
+	//
+	//	entregues=5   descartados=194
+	//	entregues=58  descartados=189
+	//	entregues=200 descartados=196   <- o caso que fazia cair a asserção final
+	//
+	// A soma EXCEDE os 200 porque os mesmos eventos seguiam os dois caminhos: entregues pelo
+	// catch-up e, em paralelo, oferecidos ao buffer e lá descartados. O `drainLive` já
+	// deduplica a costura por watermark, portanto o handler nunca os via duas vezes — mas o
+	// CONTADOR de descartes conta-os na mesma (ver a nota de residual no fim deste teste).
+	//
+	// A barreira: um evento de aquecimento e a espera pela sua ENTREGA. Quando `Delivered`
+	// sobe, a leitura de catch-up de "s1" já aconteceu e o consumidor está preso no `gate` —
+	// tudo o que se publique a seguir passa OBRIGATORIAMENTE pelo buffer live. Um facto
+	// observável em vez de um `sleep`.
+	appendEv(t, es, "s1", "t1", "aquecimento")
+	waitFor(t, 2*time.Second, "a subscricao concluir o catch-up e prender-se no gate", func() bool {
+		return b.Metrics().Delivered >= 1
+	})
+
 	start := time.Now()
 	for i := 0; i < n; i++ {
 		appendEv(t, es, "s1", "t1", "p1")
@@ -114,13 +142,49 @@ func TestBackpressureDropOldest(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	close(gate)
-	// Deve ter entregue estritamente menos do que n (houve descarte).
+	// Deve ter entregue estritamente menos do que os n do FLUXO (houve descarte). O +1 é o
+	// evento de aquecimento da barreira, que foi entregue pelo catch-up de propósito e não
+	// conta como parte do fluxo sob teste.
 	time.Sleep(100 * time.Millisecond)
-	if got := delivered.Load(); got >= int64(n) {
-		t.Fatalf("DropOldest não reduziu entregas: %d de %d", got, n)
+	if got := delivered.Load(); got >= int64(n)+1 {
+		t.Fatalf("DropOldest não reduziu entregas: %d de %d (mais o aquecimento)", got, n)
+	}
+	// CONTROLO ANTI-VACUIDADE: com buffer=4 e o consumidor preso durante todo o fluxo, o que
+	// chega tem de ser da ORDEM DO BUFFER, não "um bocadinho menos do que n". Sem esta
+	// asserção, uma implementação que descartasse UM único evento passaria a asserção de
+	// cima e o teste continuaria a dizer que DropOldest funciona.
+	// CONTROLO ANTI-VACUIDADE: a asercao de cima e fraca — UM unico descarte satisfa-la, e o
+	// teste continuaria a dizer que DropOldest funciona. O que se exige aqui e que o buffer
+	// tenha ALIJADO CARGA a serio: uma reducao de 10x sobre o fluxo.
+	//
+	// PORQUE n/10 E NAO buffer+1, que era o meu primeiro palpite e estava ERRADO: o que chega
+	// nao e so o que esta no buffer no momento do `close(gate)`. Os eventos que a subscricao
+	// live ainda tem em voo continuam a chegar durante a janela seguinte, ja sem encontrar o
+	// buffer cheio. Medido em 15 corridas: entre 5 e 12 entregas. O tecto de 20 tem folga
+	// sobre o observado sem deixar de ser uma reducao inequivoca.
+	if got := delivered.Load(); got > int64(n/10) {
+		t.Fatalf("DropOldest deixou passar %d entregas de %d com buffer=4 — o buffer nao esta a alijar carga", got, n)
 	}
 	sub.Unsubscribe()
 }
+
+// RESIDUAL DECLARADO, descoberto ao corrigir a corrida acima e NÃO fechado aqui.
+//
+// O contador `Metrics().Dropped` conta as evicções do buffer SEM consultar o watermark, pelo
+// que conta como perda os eventos que a costura catch-up→live duplica — eventos que o
+// `drainLive` deduplicaria de qualquer forma e que o subscritor JÁ RECEBEU. Medido: 196
+// "descartados" numa corrida em que os 200 chegaram todos ao handler.
+//
+// Em produção isto faz um subscritor que arranca com histórico mostrar um pico de `Dropped`
+// que não corresponde a perda nenhuma.
+//
+// NÃO se corrige aqui porque a correcção atravessa uma fronteira de posse DOCUMENTADA: o
+// cabeçalho de `subscription.go` declara que a goroutine `run` é DONA do `watermark` e que só
+// a `queue` é partilhada. O `offer` corre na goroutine da subscrição live — ler o watermark de
+// lá introduziria a corrida que o `-race` existe para apanhar. As duas saídas plausíveis
+// (adiar a contagem para o `drainLive`, que é quem tem a posse; ou não contar evicções
+// enquanto o catch-up decorre) têm compromissos diferentes de sub/sobre-contagem e merecem
+// decisão do dono, não um palpite.
 
 // TestBackpressureDeadLetterOverflow verifica a política DeadLetter em overflow:
 // os eventos em excesso vão para a dead-letter, inspecionáveis, sem bloquear.
