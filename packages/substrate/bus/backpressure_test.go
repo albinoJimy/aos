@@ -133,14 +133,24 @@ func TestBackpressureDropOldest(t *testing.T) {
 		t.Fatalf("produtor bloqueado sob DropOldest: %v", el)
 	}
 
-	// Dá tempo ao pipeline para encher e descartar.
-	deadline := time.Now().Add(2 * time.Second)
-	for b.Metrics().Dropped == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("DropOldest não descartou nada (buffer=4, n=%d)", n)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// ESPERA-SE QUE O FLUXO TENHA SIDO TODO OFERECIDO, e nao que haja UM descarte.
+	//
+	// Era esta a raiz da variancia. Sair a primeira gota fechava o gate enquanto o produtor
+	// ainda estava a ser oferecido a subscricao live, e o que restava chegava na janela de
+	// drenagem — dando 5 a 12 entregas localmente e 25 sob `-race` na CI. Nao era o buffer
+	// a falhar: era a medicao a ser feita cedo demais.
+	//
+	// O NUMERO DE DESCARTES NAO DEPENDE DO TEMPO. Com o consumidor preso, o buffer segura 4
+	// e tudo o resto e alijado — logo os descartes tendem para `n - buffer - 1`, seja a
+	// maquina rapida ou lenta. Medido em 8 corridas: 196 e 197, sem outra dispersao.
+	//
+	// E POR ISSO QUE ESTA E A ASERCAO FORTE do teste. Fecha a fraqueza que a analise
+	// profunda expos: com o tecto de entregas sozinho, uma regressao que alijasse 80% em vez
+	// de 98% deixaria passar 40 de 200 e PASSARIA. Aqui nao passa — os descartes nao
+	// chegariam a `n-6`.
+	waitFor(t, 3*time.Second, "o buffer alijar praticamente todo o fluxo", func() bool {
+		return b.Metrics().Dropped >= uint64(n-6)
+	})
 	close(gate)
 	// Deve ter entregue estritamente menos do que os n do FLUXO (houve descarte). O +1 é o
 	// evento de aquecimento da barreira, que foi entregue pelo catch-up de propósito e não
@@ -157,12 +167,19 @@ func TestBackpressureDropOldest(t *testing.T) {
 	// teste continuaria a dizer que DropOldest funciona. O que se exige aqui e que o buffer
 	// tenha ALIJADO CARGA a serio: uma reducao de 10x sobre o fluxo.
 	//
-	// PORQUE n/10 E NAO buffer+1, que era o meu primeiro palpite e estava ERRADO: o que chega
-	// nao e so o que esta no buffer no momento do `close(gate)`. Os eventos que a subscricao
-	// live ainda tem em voo continuam a chegar durante a janela seguinte, ja sem encontrar o
-	// buffer cheio. Medido em 15 corridas: entre 5 e 12 entregas. O tecto de 20 tem folga
-	// sobre o observado sem deixar de ser uma reducao inequivoca.
-	if got := delivered.Load(); got > int64(n/10) {
+	// O TECTO JA ESTEVE ERRADO DUAS VEZES, e as duas licoes ficam escritas.
+	//
+	// 1) `buffer+1` foi o primeiro palpite. Errado: o que chega nao e so o que esta no buffer
+	//    no momento do `close(gate)` — os eventos que a subscricao live ainda tem em voo
+	//    continuam a chegar durante a janela seguinte, ja sem encontrar o buffer cheio.
+	//
+	// 2) `n/10` foi calibrado em 15 corridas LOCAIS, que deram 5 a 12. Mas a CI corre com
+	//    `-race`, a janela de drenagem estica, e la passaram 25 — o gate ficou vermelho. O
+	//    ambiente que MANDA e o da CI, e eu media no outro.
+	//
+	// `n/4` e uma reducao de 4x sobre o fluxo: inequivoca como prova de alijamento (um unico
+	// descarte deixaria 199) e com folga de 2x sobre o pior valor observado sob `-race`.
+	if got := delivered.Load(); got > int64(n/4) {
 		t.Fatalf("DropOldest deixou passar %d entregas de %d com buffer=4 — o buffer nao esta a alijar carga", got, n)
 	}
 	sub.Unsubscribe()

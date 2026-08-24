@@ -422,6 +422,38 @@ COVERAGE_LCOV_OUT="${COVERAGE_LCOV_OUT:-$REPO_ROOT/coverage/lcov.info}"
 # scoop se existir. NÃO falha se um caminho não existir — apenas o acrescenta.
 setup_env() {
   export CGO_ENABLED=1
+
+  # A TOOLCHAIN DOS GATES É A QUE CONSTRÓI PRODUÇÃO — e é fixada AQUI, num sítio só.
+  #
+  # O DEFEITO QUE FECHA. O gate de SCA, corrido nesta máquina (Go 1.26.5), acusava CINCO
+  # vulnerabilidades de stdlib que a CI (1.25.13) nunca viu:
+  #
+  #   Found in: encoding/asn1@go1.26.5   Fixed in: encoding/asn1@go1.26.6
+  #
+  # Não era o repositório a ter vulnerabilidades: era a toolchain do posto de trabalho a
+  # estar atrás dos patches. Mas quem corresse o gate lia o contrário — e um gate que falha
+  # por uma razão que não é a que anuncia treina as pessoas a ignorá-lo.
+  #
+  # PORQUE NÃO CHEGA A DIRECTIVA `toolchain` DO go.mod, e enganei-me nisto primeiro: ela é
+  # um PISO, não um pino. `toolchain go1.25.13` pede «pelo menos 1.25.13», e um 1.26.5
+  # instalado satisfá-la — o Go nunca DESCE de versão. Medido: com a directiva posta em
+  # todos os módulos, o govulncheck continuava a reportar `encoding/asn1@go1.26.5`. Só
+  # `GOTOOLCHAIN` força a versão exacta, e aí dá «No vulnerabilities found».
+  #
+  # A AUTORIDADE é o `FROM golang:` do Dockerfile de produção, pinado por digest — quem
+  # constrói o binário que corre lá. Ler daí em vez de escrever uma constante impede que
+  # esta linha e a imagem divirjam em silêncio; `toolchain-lint.sh` guarda a ligação.
+  #
+  # Se a leitura falhar, NÃO se fixa nada: um gate que corre com a toolchain errada é
+  # preferível a um que não corre de todo, e o `toolchain-lint.sh` grita de qualquer forma.
+  if [ -z "${GOTOOLCHAIN:-}" ] && [ -f "$REPO_ROOT/deploy/node/Dockerfile" ]; then
+    local vgo
+    vgo="$(grep -oE '^FROM golang:[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/deploy/node/Dockerfile" 2>/dev/null | head -1 | sed 's/^FROM golang://' || true)"
+    if [ -n "$vgo" ]; then
+      export GOTOOLCHAIN="go${vgo}"
+    fi
+  fi
+
   local gobin; gobin="$(go env GOPATH)/bin"
   case ":$PATH:" in *":$gobin:"*) ;; *) PATH="$gobin:$PATH";; esac
   # Windows + scoop mingw (gcc para o -race). Silencioso se ausente.
