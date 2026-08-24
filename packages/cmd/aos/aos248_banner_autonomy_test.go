@@ -240,7 +240,7 @@ func TestAOS248_BannerOrcamentoEBrokerNaoPrometem(t *testing.T) {
 		t.Errorf("a linha devia dizer porque os tectos de velocidade tambem nao sao ligaveis hoje:\n%s", orcamento)
 	}
 
-	broker := strings.Join(credentialBrokerPostureBanner(), "\n")
+	broker := strings.Join(credentialBrokerPostureBanner(materialPrivadoDoNo{Endurecido: true}), "\n")
 	if !strings.Contains(broker, "AUSENTE") {
 		t.Fatalf("a linha do broker tem de declarar a AUSENCIA:\n%s", broker)
 	}

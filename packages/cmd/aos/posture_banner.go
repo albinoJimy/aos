@@ -25,6 +25,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
@@ -129,9 +130,56 @@ func budgetPostureBanner(composed bool) []string {
 //     credenciais — e nenhuma delas é gerida por broker.
 //
 // Os VALORES nunca aparecem no banner — nem aqui nem em [devModelCredentialBanner].
-func credentialBrokerPostureBanner() []string {
+// materialPrivadoDoNo é o material privado que o COMPOSITION ROOT carrega — o estado, não a
+// intenção da config. Existe porque [credentialBrokerPostureBanner] era a ÚNICA das dezasseis
+// funções de banner do binário SEM parâmetro de estado: uma constante que afirmava, no
+// presente do indicativo, que o processo detinha três chaves privadas.
+//
+// O achado A da verificação de funcionamento de 2026-08-23: em produção o processo detém
+// ZERO das três, e a primeira — a chave de assinatura do issuer — é ESTRUTURALMENTE
+// impossível no modo em que produção corre. `bootstrap.go` recusa o arranque com
+// [ErrConflictingIssuerKey] se ela estiver definida em modo endurecido. A linha não estava só
+// errada neste destacamento: descrevia um estado que, se existisse, teria impedido o nó de
+// arrancar — e fazia-o quatro linhas depois de outra linha do MESMO banner dizer «NENHUMA
+// chave de assinatura entra no runtime do nó».
+type materialPrivadoDoNo struct {
+	// Endurecido: identidade trust-anchor-only (AOS-156). Nesse modo uma chave de assinatura
+	// do issuer no processo ABORTA o arranque — ausência ESTRUTURAL, não escolha de config.
+	Endurecido bool
+	// IssuerKey: a chave ed25519 de assinatura da autoridade co-localizada está carregada.
+	IssuerKey bool
+	// OTLPClientKey: a chave de cliente mTLS do colector está carregada.
+	OTLPClientKey bool
+	// OTLPBearer: o bearer do colector está carregado.
+	OTLPBearer bool
+}
+
+func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
+	detidas := []string{}
+	if m.IssuerKey {
+		detidas = append(detidas, "AOS_ISSUER_KEY_PATH (chave ed25519 de ASSINATURA da autoridade co-localizada — quem a obtiver cunha tokens deste emissor)")
+	}
+	if m.OTLPClientKey {
+		detidas = append(detidas, "AOS_OTLP_CLIENT_KEY_PATH (chave de cliente mTLS do colector)")
+	}
+	posse := "NENHUM material privado carregado por este composition-root"
+	if len(detidas) > 0 {
+		posse = "material privado CARREGADO por este composition-root: " + strings.Join(detidas, "; ")
+	}
+	issuer := "a chave de assinatura do issuer NAO esta definida (AOS_ISSUER_KEY_PATH vazia)"
+	if m.Endurecido {
+		issuer = "a chave de assinatura do issuer e ESTRUTURALMENTE IMPOSSIVEL neste modo: identidade endurecida trust-anchor-only, e defini-la ABORTA o arranque (ErrConflictingIssuerKey)"
+	} else if m.IssuerKey {
+		issuer = "a chave de assinatura do issuer ESTA no processo (modo de REFERENCIA, autoridade co-localizada) — e o segredo de maior valor que o no detem"
+	}
+	notaColector := "" // nome NAO-credencial de proposito: um local chamado `bearer` dispara G101 no gosec
+	if m.OTLPBearer {
+		notaColector = " Bearer do colector CARREGADO."
+	}
 	return []string{
-		"credential broker (AOS-070/EPIC-07, ADR-006): AUSENTE — este no NAO compoe o platform/broker. As credenciais downstream entram por FICHEIRO MONTADO (AOS_MODEL_API_KEY_PATH, AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH), sao lidas UMA VEZ no arranque e ficam em MEMORIA do processo enquanto o no viver: sem troca token-scoped server-side, sem TTL curto, sem revogacao por lease e sem injeccao no ponto de execucao. Pelo MESMO caminho (ficheiro montado, lido no arranque, retido em memoria) entram tambem as CHAVES PRIVADAS do proprio no: AOS_ISSUER_KEY_PATH (chave ed25519 de ASSINATURA da autoridade co-localizada — quem a obtiver cunha tokens deste emissor), AOS_TLS_KEY_PATH (chave do ingresso TLS) e AOS_OTLP_CLIENT_KEY_PATH (chave de cliente mTLS do colector). Esta lista e a superficie COMPLETA de material privado que o processo detem — e o que ha a rodar e a proteger. O invariante do ADR-006 (\"o agente apresenta identidade, NUNCA segredo\") NAO e imposto por este no — e responsabilidade de quem monta os ficheiros. Nenhum VALOR e impresso, aqui ou em qualquer linha. Eixo: EPIC-07",
+		"credential broker (AOS-070/EPIC-07, ADR-006): AUSENTE — este no NAO compoe o platform/broker. As credenciais downstream entram por FICHEIRO MONTADO (AOS_MODEL_API_KEY_PATH, AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH), sao lidas UMA VEZ no arranque e ficam em MEMORIA do processo enquanto o no viver: sem troca token-scoped server-side, sem TTL curto, sem revogacao por lease e sem injeccao no ponto de execucao. O invariante do ADR-006 (\"o agente apresenta identidade, NUNCA segredo\") NAO e imposto por este no — e responsabilidade de quem monta os ficheiros. Nenhum VALOR e impresso, aqui ou em qualquer linha. Eixo: EPIC-07",
+		"credential broker (AOS-070): " + posse + "." + notaColector + " " + issuer,
+		"=> ALCANCE desta declaracao: cobre o que ESTE composition-root carrega. A chave do ingresso TLS (AOS_TLS_KEY_PATH) e composta pela camada de API e declarada por ela — nao se afirma aqui posse que nao se observa. As credenciais downstream nomeadas acima entram pelo MESMO padrao (ficheiro montado, lido no arranque, retido em memoria) e sao o que ha a rodar e a proteger junto com o que esta linha nomeia",
 	}
 }
 
