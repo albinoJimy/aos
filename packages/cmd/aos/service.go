@@ -1097,9 +1097,17 @@ func (s *NodeService) Suspended(ctx context.Context, runID string) (RunOutcome, 
 // uniforme e não-enumerável é preferível a inventar um estado. A admissão (Submit) e a
 // retoma tratam o erro de leitura como fatal — ver [NodeService.suspendedDurably].
 func (s *NodeService) suspendedFromLog(ctx context.Context, runID string) (RunOutcome, bool) {
-	susp, err := s.suspendedDurably(ctx, runID)
+	st, susp, err := s.suspensaoDuravel(ctx, runID)
 	if err != nil || !susp {
 		return RunOutcome{}, false
+	}
+	// UMA PAUSA NÃO É UMA ESCALADA. Marcar `Escalated` aqui era a segunda metade do achado
+	// C: o read-path passava a descrever um run que parou sozinho — por interrupt gracioso
+	// ou por disparo do disjuntor — como um run à espera de decisão humana. Ninguém pediu
+	// decisão a ninguém, e não há pendentes para listar: procurá-los devolveria sempre uma
+	// lista vazia, que na resposta parece um erro de leitura em vez do que é.
+	if st == state.Paused {
+		return RunOutcome{RunID: runID, Result: agentruntime.Result{Paused: true}}, true
 	}
 	oc := RunOutcome{RunID: runID, Result: agentruntime.Result{Escalated: true}}
 	if s.node != nil && s.node.PendingApprovals != nil {
@@ -1120,13 +1128,6 @@ func (s *NodeService) suspendedFromLog(ctx context.Context, runID string) (RunOu
 // Sem registo de gates de estado composto, devolve false sem erro: um deployment que não
 // tem a máquina de estados também não tem suspensão para recuperar.
 func (s *NodeService) suspendedDurably(ctx context.Context, runID string) (bool, error) {
-	if s.node == nil || s.node.stateGates == nil {
-		return false, nil
-	}
-	st, err := s.node.stateGates.currentState(ctx, runID)
-	if err != nil {
-		return false, err
-	}
 	// A PAUSA CONTA, e é o que fecha o achado da verificação de completude de 2026-08-23:
 	// `paused` era ABSORVENTE de facto. Nada no binário conduzia `paused → running` — o
 	// condutor existe ([runGate.Resume], `steer_gates.go`) e tinha ZERO chamadores de
@@ -1142,7 +1143,37 @@ func (s *NodeService) suspendedDurably(ctx context.Context, runID string) (bool,
 	//       saída existente e a pior possível: `claimRunning` é no-op fora de `Ready`, pelo
 	//       que a segunda execução corria com o disjuntor CEGO
 	//       (`CountsAsActiveWork` exige `Running`), sem selo terminal e sem deadline.
-	return st == state.WaitingOnHuman || st == state.Paused, nil
+	//
+	// O PREDICADO É O CERTO PARA AS DUAS VIAS FAIL-CLOSED que o consomem (a retoma e a
+	// admissão): as duas só precisam de saber que o run está suspenso e é retomável. Quem
+	// precisa de saber QUAL das duas suspensões é o read-path — e para esse existe
+	// [NodeService.suspensaoDuravel], que devolve o estado em vez de o achatar. Ver o achado
+	// C da verificação de funcionamento de 2026-08-23: achatar aqui fez o `GET /runs/{id}`
+	// reportar `waiting_on_human` sobre runs PAUSADOS.
+	_, susp, err := s.suspensaoDuravel(ctx, runID)
+	return susp, err
+}
+
+// suspensaoDuravel devolve o ESTADO de suspensão do run e se ele está suspenso. É o
+// [NodeService.suspendedDurably] SEM o achatamento — as duas suspensões do nó não são a
+// mesma coisa para quem LÊ:
+//
+//   - [state.WaitingOnHuman] — alguém PEDIU uma decisão humana (aprovação de tool call
+//     escalada, ou o prompt de exaustão de orçamento). Há pendentes a listar.
+//   - [state.Paused] — o run parou GRACIOSAMENTE (interrupt out-of-band, ou disparo do
+//     disjuntor). Ninguém pediu decisão a ninguém e NÃO há pendentes.
+//
+// Reportar a segunda como a primeira manda o operador esperar por uma aprovação que nunca
+// foi pedida, com a lista de pendentes vazia a parecer um erro de leitura.
+func (s *NodeService) suspensaoDuravel(ctx context.Context, runID string) (state.State, bool, error) {
+	if s.node == nil || s.node.stateGates == nil {
+		return "", false, nil
+	}
+	st, err := s.node.stateGates.currentState(ctx, runID)
+	if err != nil {
+		return "", false, err
+	}
+	return st, st == state.WaitingOnHuman || st == state.Paused, nil
 }
 
 // DurableState devolve o estado durável do run reconstruído do log (AOS-252). É uma

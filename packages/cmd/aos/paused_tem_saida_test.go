@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
+
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 
 	durable "github.com/aos-ref/kernel/agent-runtime/durable"
 	state "github.com/aos-ref/kernel/agent-runtime/state"
@@ -32,9 +35,9 @@ import (
 // ---------------------------------------------------------------------------------------------
 
 // runPausado devolve um nó com um run genuinamente PAUSADO na máquina de estados durável.
-func runPausado(t *testing.T, runID string) (*Node, *NodeService) {
+func runPausado(t *testing.T, runID string) (*Node, *NodeService, http.Handler) {
 	t.Helper()
-	node, svc, _, _ := aos263Node(t)
+	node, svc, h, _ := aos263Node(t)
 	ctx := context.Background()
 	aos263TornaRetomavel(t, node, svc, runID)
 
@@ -58,19 +61,23 @@ func runPausado(t *testing.T, runID string) (*Node, *NodeService) {
 	// E tambem o cenario REAL que interessa: depois de um restart o balde esta vazio.
 	svc.mu.Lock()
 	delete(svc.suspended, runID)
-	svc.completed[runID] = &runState{runID: runID, done: make(chan struct{})}
+	// COM O `Result` DA PAUSA, que e o que o caminho REAL produz: o `finish` arquiva o
+	// desfecho do loop, e uma pausa graciosa traz `Paused` (o disparo do disjuntor traz
+	// `Tripped`+`BreakerTarget`). Um `runState` vazio aqui seria uma fixture que o binario
+	// nunca produz — e faria o teste medir um caminho que nao existe.
+	svc.completed[runID] = &runState{runID: runID, result: agentruntime.Result{Paused: true}, done: make(chan struct{})}
 	svc.mu.Unlock()
 
 	// CONTROLO DO CENÁRIO: sem isto o teste mediria outra coisa.
 	if st, _ := svc.DurableState(ctx, runID); st != state.Paused {
 		t.Fatalf("o run devia estar PAUSADO na maquina duravel; esta em %q", st)
 	}
-	return node, svc
+	return node, svc, h
 }
 
 func TestUmRunPAUSADOERetomavel(t *testing.T) {
 	const run = "run-pausa-saida"
-	_, svc := runPausado(t, run)
+	_, svc, _ := runPausado(t, run)
 
 	err := svc.Resume(context.Background(), run, "cred-fresca")
 	if errors.Is(err, ErrRunNotSuspended) {
@@ -86,7 +93,7 @@ func TestUmRunPAUSADOERetomavel(t *testing.T) {
 // durante toda a nova hospedagem — que é exactamente o que a re-submissão fazia.
 func TestARetomaDeUmaPausaPOEOrunEmRunning(t *testing.T) {
 	const run = "run-pausa-running"
-	node, _ := runPausado(t, run)
+	node, _, _ := runPausado(t, run)
 	ctx := context.Background()
 
 	g := node.stateGates.resolveGate(run)

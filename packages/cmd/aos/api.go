@@ -919,6 +919,26 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
 			return
 		}
+		// UMA PAUSA SAI COMO PAUSA. Achado C da verificação de funcionamento de 2026-08-23:
+		// quando o `suspendedDurably` passou a contar `paused` (PR #139, para o `/resume`
+		// funcionar), este ramo passou a APANHAR os runs pausados e a rotulá-los
+		// `waiting_on_human` — com a lista de pendentes vazia, porque nunca houve pedido
+		// nenhum. O `case state.Paused` do switch mais abaixo ficou INALCANÇÁVEL, e o
+		// operador ficou à espera de uma decisão que ninguém lhe pediu.
+		//
+		// A distinção vem no DESFECHO e não de uma segunda leitura do durável: quem a
+		// resolve é [NodeService.suspensaoDuravel], na mesma leitura que decidiu a suspensão.
+		// O selo da leitura sensível já foi feito acima, para os DOIS ramos — selá-lo outra
+		// vez aqui poria dois registos na cadeia WORM para uma leitura só.
+		if oc.Result.Paused {
+			writeJSON(w, http.StatusOK, runStateResponse{
+				RunID:  runID,
+				Status: string(state.Paused),
+				Paused: true,
+				Turns:  oc.Result.Turns,
+			})
+			return
+		}
 		// As DUAS decisões humanas que suspendem um run saem por aqui: a aprovação de uma tool
 		// call escalada (AOS-021) e o prompt de exaustão de orçamento (AOS-263). Uma leitura
 		// só, cada tipo na sua face de wire.
@@ -951,6 +971,27 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		}
 		if oc.Err != nil {
 			resp.Error = oc.Err.Error()
+		}
+		// UM RUN PARADO NÃO ESTÁ COMPLETO — a outra metade do achado C.
+		//
+		// Este ramo escrevia `"completed"` fixo e, ao mesmo tempo, copiava `Paused` do
+		// desfecho: a resposta contradizia-se a si própria (`{"status":"completed",
+		// "paused":true}`). Um run parado pelo disjuntor — que chega lá SOZINHO com os
+		// defaults, 3 iterações estéreis ou 30 min de wall-clock — lia-se como trabalho
+		// FEITO. O operador via "completed", parava de olhar, e o run ficava retomável para
+		// sempre sem ninguém o retomar.
+		//
+		// O desfecho já sabe a verdade: a pausa graciosa põe `Paused`, e o disjuntor põe
+		// `Tripped` com o `BreakerTarget` que ELE materializou na máquina durável. Usa-se
+		// esse rótulo em vez de o achatar — vale para `paused` e para `timed_out`, que são
+		// os dois alvos que o disjuntor produz.
+		switch {
+		case oc.Result.Paused:
+			resp.Status = string(state.Paused)
+			resp.Paused = true
+		case oc.Result.Tripped && oc.Result.BreakerTarget != "":
+			resp.Status = oc.Result.BreakerTarget
+			resp.Paused = oc.Result.BreakerTarget == string(state.Paused)
 		}
 		// Um run TERMINADO pode ter deixado pendentes por decidir (ex.: expirou o TTL e
 		// voltou a correr sem a acção). Expô-los mantém o histórico legível ao operador.
