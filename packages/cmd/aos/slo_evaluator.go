@@ -710,16 +710,25 @@ func (h *apiHandler) writeSLOMetrics(b *strings.Builder) {
 		// teste a poderia apanhar.
 		amostras[catalog+"\x00"+v.Name] = v.Samples
 	})
-	b.WriteString("# HELP aos_alert_firing Alerta de SLO a disparar (1) apos a janela sustentada. 0 com avaliavel=\"1\" = regra AVALIADA sem disparar; 0 com avaliavel=\"0\" = o SLI nao tem produtor neste no e a regra NUNCA pode disparar.\n# TYPE aos_alert_firing gauge\n")
+	// O TEXTO MUDOU PORQUE PROMETIA O QUE NAO MEDIA (achado D). Dizia que `avaliavel="0"`
+	// significava «o SLI nao tem produtor neste no e a regra NUNCA pode disparar» — uma
+	// afirmacao ESTRUTURAL — quando o rotulo era calculado das amostras da JANELA corrente.
+	// Um SLI vivo num no sem trafego lia-se como permanentemente morto, e isso incluia tres
+	// alertas `critical`. As duas coisas passam a ter rotulo proprio: ver [produtorNoNo].
+	b.WriteString("# HELP aos_alert_firing Alerta de SLO a disparar (1) apos a janela sustentada. produtor=\"0\" = este binario NAO compoe quem alimenta o SLI e a regra NUNCA dispara. produtor=\"1\" avaliavel=\"0\" = o produtor existe e a janela esta VAZIA (nó sem trafego, ou acabado de arrancar) — a regra PODE disparar. produtor=\"1\" avaliavel=\"1\" = regra AVALIADA nesta passagem.\n# TYPE aos_alert_firing gauge\n")
 	for _, sa := range ev.Alerts {
 		orphan := 0
 		if !sa.RunbookResolved {
 			orphan = 1
 		}
+		// `avaliavel` continua a ser o que sempre foi: esta passagem avaliou a regra. O que
+		// se acrescenta é o facto ESTRUTURAL ao lado — sem ele, os dois zeros diferentes
+		// («nunca vai disparar» e «ainda não houve tráfego») liam-se como o mesmo.
 		avaliavel := boolMetric(amostras[sa.Catalog+"\x00"+sa.Alert.SLI] > 0)
-		fmt.Fprintf(b, "aos_alert_firing{alert=%q,catalog=%q,severity=%q,sli=%q,runbook=%q,owner=%q,runbook_orphan=\"%d\",avaliavel=\"%d\"} %d\n",
+		produtor := boolMetric(produtorNoNo(sa.Alert.SLI, h.node != nil && h.node.sloTap != nil))
+		fmt.Fprintf(b, "aos_alert_firing{alert=%q,catalog=%q,severity=%q,sli=%q,runbook=%q,owner=%q,runbook_orphan=\"%d\",avaliavel=\"%d\",produtor=\"%d\"} %d\n",
 			sa.Alert.Name, sa.Catalog, string(sa.Alert.Severity), sa.Alert.SLI,
-			sa.Alert.Route.Runbook, sa.Alert.Route.Owner, orphan, avaliavel, boolMetric(sa.Alert.Fired))
+			sa.Alert.Route.Runbook, sa.Alert.Route.Owner, orphan, avaliavel, produtor, boolMetric(sa.Alert.Fired))
 	}
 	b.WriteString("# HELP aos_alert_streak Observacoes consecutivas em breach que suportam o alerta.\n# TYPE aos_alert_streak gauge\n")
 	for _, sa := range ev.Alerts {
