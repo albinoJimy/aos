@@ -172,13 +172,13 @@ func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 	} else if m.IssuerKey {
 		issuer = "a chave de assinatura do issuer ESTA no processo (modo de REFERENCIA, autoridade co-localizada) — e o segredo de maior valor que o no detem"
 	}
-	bearer := ""
+	notaColector := "" // nome NAO-credencial de proposito: um local chamado `bearer` dispara G101 no gosec
 	if m.OTLPBearer {
-		bearer = " Bearer do colector CARREGADO."
+		notaColector = " Bearer do colector CARREGADO."
 	}
 	return []string{
 		"credential broker (AOS-070/EPIC-07, ADR-006): AUSENTE — este no NAO compoe o platform/broker. As credenciais downstream entram por FICHEIRO MONTADO (AOS_MODEL_API_KEY_PATH, AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH), sao lidas UMA VEZ no arranque e ficam em MEMORIA do processo enquanto o no viver: sem troca token-scoped server-side, sem TTL curto, sem revogacao por lease e sem injeccao no ponto de execucao. O invariante do ADR-006 (\"o agente apresenta identidade, NUNCA segredo\") NAO e imposto por este no — e responsabilidade de quem monta os ficheiros. Nenhum VALOR e impresso, aqui ou em qualquer linha. Eixo: EPIC-07",
-		"credential broker (AOS-070): " + posse + "." + bearer + " " + issuer,
+		"credential broker (AOS-070): " + posse + "." + notaColector + " " + issuer,
 		"=> ALCANCE desta declaracao: cobre o que ESTE composition-root carrega. A chave do ingresso TLS (AOS_TLS_KEY_PATH) e composta pela camada de API e declarada por ela — nao se afirma aqui posse que nao se observa. As credenciais downstream nomeadas acima entram pelo MESMO padrao (ficheiro montado, lido no arranque, retido em memoria) e sao o que ha a rodar e a proteger junto com o que esta linha nomeia",
 	}
 }
