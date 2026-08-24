@@ -88,6 +88,27 @@ type Entry struct {
 	// diagnóstico operacional por lease/heartbeat, não um SLI). Obrigatório sse
 	// Kind==Canonical e Alert=="".
 	NoAlertReason string
+	// SemProdutorReason justifica um TERCEIRO estado, que este registo não modelava e que
+	// passava calado: o runbook TEM alerta, o alerta encaminha para cá, a validação
+	// bidireccional fica verde — e mesmo assim NENHUM alerta que aqui chega pode disparar,
+	// porque o SLI que o alimenta não tem produtor no binário do nó.
+	//
+	// A diferença entre isto e [Entry.NoAlertReason] é a diferença entre «não há alerta» e
+	// «há alerta e ele está morto». O segundo é pior: o operador lê o runbook, vê o alerta
+	// na tabela, e conclui que está coberto.
+	//
+	// Achado da verificação de funcionamento de 2026-08-23. A varredura contou QUATRO
+	// runbooks nesta situação; a contagem estava inflacionada porque usava o rótulo
+	// `avaliavel`, que confunde «sem produtor» com «janela vazia» — o defeito que o eixo do
+	// `produtor` fechou. Com o sinal corrigido são DOIS: RB-01 e PROC-ESCALA, ambos
+	// alimentados por SLIs de um plano de controlo que corre NOUTRO processo.
+	//
+	// A verificação vive no binário do nó, e não aqui, porque «tem produtor» é uma
+	// propriedade DESTE binário e não do registo: um destacamento que componha o scheduler
+	// torna RB-01 alcançável sem uma linha mudar neste ficheiro. Obrigatório sse Kind==
+	// Alert!="" e nenhum alerta encaminhado tiver produtor. Vale para canonicos E forward-refs:
+	// o problema do operador e o mesmo, seja qual for a proveniencia do documento.
+	SemProdutorReason string
 }
 
 // canonicalIDs é a lista ordenada dos cinco runbooks canónicos que o ticket AOS-106
@@ -108,6 +129,10 @@ var registry = []Entry{
 		ID: otelgenai.RunbookRateLimitCollapse, Title: "Colapso de rate limit (agregado)",
 		Kind: KindCanonical, ADR: "ADR-008", DocPath: "docs/runbooks/RB-01.md",
 		OwnerTicket: "AOS-106", Alert: otelgenai.AlertHeadroomRateLimitCollapse,
+		SemProdutorReason: "o SLI `headroom_tokens` e produzido pelo SCHEDULER (control-plane/scheduler), " +
+			"que corre NOUTRO processo e cujo Meter de producao nao existe (so NoopMeter/RecordingMeter); " +
+			"o no nao importa esse pacote, logo `headroom_rate_limit_collapse` NUNCA dispara neste binario. " +
+			"Alcancavel num destacamento que componha o scheduler e partilhe o tracer.",
 	},
 	{
 		ID: RunbookZombieCrossHost, Title: "Zumbi cross-host (falso-positivo/positivo)",
@@ -141,6 +166,9 @@ var registry = []Entry{
 		ID: otelgenai.ProcScaleOut, Title: "Procedimento de escala (pool/cold-start)",
 		Kind: KindForwardRef, DocPath: "docs/runbooks/PROC-ESCALA.md", OwnerTicket: "AOS-107", Pending: false,
 		Alert: otelgenai.AlertSandboxColdStartP95High,
+		SemProdutorReason: "o SLI `sandbox_cold_start_p95` sai do POOL DE SANDBOX, que so alimenta este " +
+			"caminho se partilhar o tracer do no — e o no nao o compoe. Logo `sandbox_cold_start_p95_high` " +
+			"NUNCA dispara neste binario. Alcancavel quando o pool for instrumentado no MESMO tracer.",
 	},
 }
 
