@@ -2023,7 +2023,15 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range burndownPostureBanner(progress != nil, progressThreshold) {
 		log("%s", line)
 	}
-	for _, line := range credentialBrokerPostureBanner() {
+	// O ESTADO, não a intenção: os campos vêm do que este composition-root REALMENTE carregou.
+	// `hardened` é o mesmo predicado que a guarda de [ErrConflictingIssuerKey] usa, para que a
+	// linha do banner e a recusa do arranque não possam divergir.
+	for _, line := range credentialBrokerPostureBanner(materialPrivadoDoNo{
+		Endurecido:    hardened,
+		IssuerKey:     cfg.IssuerKeyPath != "" || cfg.IssuerSigningKey != nil,
+		OTLPClientKey: cfg.OTLPClientKeyPath != "",
+		OTLPBearer:    cfg.OTLPBearerTokenPath != "",
+	}) {
 		log("%s", line)
 	}
 	// AOS-264: o Vault de credenciais downstream do broker, PREPARADO por
