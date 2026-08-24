@@ -133,14 +133,24 @@ func TestBackpressureDropOldest(t *testing.T) {
 		t.Fatalf("produtor bloqueado sob DropOldest: %v", el)
 	}
 
-	// Dá tempo ao pipeline para encher e descartar.
-	deadline := time.Now().Add(2 * time.Second)
-	for b.Metrics().Dropped == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("DropOldest não descartou nada (buffer=4, n=%d)", n)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// ESPERA-SE QUE O FLUXO TENHA SIDO TODO OFERECIDO, e nao que haja UM descarte.
+	//
+	// Era esta a raiz da variancia. Sair a primeira gota fechava o gate enquanto o produtor
+	// ainda estava a ser oferecido a subscricao live, e o que restava chegava na janela de
+	// drenagem — dando 5 a 12 entregas localmente e 25 sob `-race` na CI. Nao era o buffer
+	// a falhar: era a medicao a ser feita cedo demais.
+	//
+	// O NUMERO DE DESCARTES NAO DEPENDE DO TEMPO. Com o consumidor preso, o buffer segura 4
+	// e tudo o resto e alijado — logo os descartes tendem para `n - buffer - 1`, seja a
+	// maquina rapida ou lenta. Medido em 8 corridas: 196 e 197, sem outra dispersao.
+	//
+	// E POR ISSO QUE ESTA E A ASERCAO FORTE do teste. Fecha a fraqueza que a analise
+	// profunda expos: com o tecto de entregas sozinho, uma regressao que alijasse 80% em vez
+	// de 98% deixaria passar 40 de 200 e PASSARIA. Aqui nao passa — os descartes nao
+	// chegariam a `n-6`.
+	waitFor(t, 3*time.Second, "o buffer alijar praticamente todo o fluxo", func() bool {
+		return b.Metrics().Dropped >= uint64(n-6)
+	})
 	close(gate)
 	// Deve ter entregue estritamente menos do que os n do FLUXO (houve descarte). O +1 é o
 	// evento de aquecimento da barreira, que foi entregue pelo catch-up de propósito e não
