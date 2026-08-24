@@ -157,12 +157,19 @@ func TestBackpressureDropOldest(t *testing.T) {
 	// teste continuaria a dizer que DropOldest funciona. O que se exige aqui e que o buffer
 	// tenha ALIJADO CARGA a serio: uma reducao de 10x sobre o fluxo.
 	//
-	// PORQUE n/10 E NAO buffer+1, que era o meu primeiro palpite e estava ERRADO: o que chega
-	// nao e so o que esta no buffer no momento do `close(gate)`. Os eventos que a subscricao
-	// live ainda tem em voo continuam a chegar durante a janela seguinte, ja sem encontrar o
-	// buffer cheio. Medido em 15 corridas: entre 5 e 12 entregas. O tecto de 20 tem folga
-	// sobre o observado sem deixar de ser uma reducao inequivoca.
-	if got := delivered.Load(); got > int64(n/10) {
+	// O TECTO JA ESTEVE ERRADO DUAS VEZES, e as duas licoes ficam escritas.
+	//
+	// 1) `buffer+1` foi o primeiro palpite. Errado: o que chega nao e so o que esta no buffer
+	//    no momento do `close(gate)` — os eventos que a subscricao live ainda tem em voo
+	//    continuam a chegar durante a janela seguinte, ja sem encontrar o buffer cheio.
+	//
+	// 2) `n/10` foi calibrado em 15 corridas LOCAIS, que deram 5 a 12. Mas a CI corre com
+	//    `-race`, a janela de drenagem estica, e la passaram 25 — o gate ficou vermelho. O
+	//    ambiente que MANDA e o da CI, e eu media no outro.
+	//
+	// `n/4` e uma reducao de 4x sobre o fluxo: inequivoca como prova de alijamento (um unico
+	// descarte deixaria 199) e com folga de 2x sobre o pior valor observado sob `-race`.
+	if got := delivered.Load(); got > int64(n/4) {
 		t.Fatalf("DropOldest deixou passar %d entregas de %d com buffer=4 — o buffer nao esta a alijar carga", got, n)
 	}
 	sub.Unsubscribe()

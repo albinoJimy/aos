@@ -37,16 +37,16 @@ fi
 esperado="go${versao}"
 log_step "autoridade: a imagem de producao constroi com $esperado"
 
-# (a) O setup_env FIXOU a variavel?
+# NAO SE VERIFICA A VARIAVEL, VERIFICA-SE O RESULTADO — e a CI ensinou-mo por me partir.
+#
+# A primeira versao deste gate exigia `GOTOOLCHAIN == go1.25.13`. Falhou na CI, que define
+# `GOTOOLCHAIN=local` DE PROPOSITO: la o `setup-go` instala exactamente a versao certa e um
+# pino que forcasse descarregamento seria desperdicio. A variavel e MECANISMO; o que importa
+# e a versao com que o `go` acaba mesmo por correr, e essa esta certa nos DOIS ambientes.
+#
+# Verificar o mecanismo em vez da propriedade e o erro que este repositorio ja corrigiu
+# dezasseis vezes noutros sitios. Aqui fui eu a comete-lo.
 setup_env
-if [ "${GOTOOLCHAIN:-}" != "$esperado" ]; then
-  log_fail "setup_env deixou GOTOOLCHAIN=${GOTOOLCHAIN:-<vazia>} mas producao constroi com $esperado"
-  rc=1
-fi
-
-# (b) E o `go` OBEDECEU? E esta a asercao que importa: a variavel podia estar certa e o
-#     comando correr com outra coisa (GOTOOLCHAIN=local no ambiente, toolchain por
-#     descarregar, GOFLAGS a interferir). Pergunta-se ao proprio binario.
 efectiva="$(go version | grep -oE 'go[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
 if [ -z "$efectiva" ]; then
   log_fail "nao consegui ler a versao efectiva de \`go version\` — o gate nao pode afirmar alinhamento"
