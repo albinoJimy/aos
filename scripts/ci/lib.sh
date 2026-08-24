@@ -482,7 +482,36 @@ discover_modules() {
 # sempre e são a versão VERDADEIRA. Vazio ⇒ não determinável (binário não-Go, ou
 # construído de outra forma).
 tool_module_version() {
-  go version -m "$1" 2>/dev/null | awk '$1=="mod"{print $3; exit}'
+  local p="$1"
+  # Git Bash devolve caminhos POSIX (/c/Users/...); go version -m no Windows
+  # precisa do caminho nativo (C:\Users\...). O PATH pode conter misturas de
+  # estilos (C:\.../bin), pelo que normalizamos primeiro para POSIX.
+  #
+  # O QUE ACONTECE SEM ISTO, medido nesta máquina:
+  #
+  #   $ go version -m /c/Users/<u>/go/bin/gosec
+  #   GetFileAttributesEx C:/Users/<u>/go/bin/gosec: o sistema nao conseguiu
+  #   localizar o ficheiro especificado
+  #
+  # Duas coisas falham ao mesmo tempo e o `cygpath -w` resolve as duas: o estilo
+  # do caminho E a extensão — `command -v gosec` resolve para um nome SEM `.exe`,
+  # que o Go no Windows não abre. A conversão devolve `C:\...\gosec.exe`, e daí
+  # `go version -m` responde `v2.28.0`.
+  #
+  # NÃO É COSMÉTICO: com a versão indeterminada, [ensure_tool] reinstala e depois
+  # FALHA o gate (a asserção pós-instalação compara `now` com o pin). Ou seja,
+  # sem esta conversão NENHUM gate que use `ensure_tool` corre nesta máquina —
+  # e um gate que só corre na CI é um gate que se descobre tarde.
+  #
+  # COBERTURA, declarada: a CI corre em Linux, onde `command -v cygpath` falha e
+  # este bloco é INERTE. Logo a CI não pode testar este caminho — um teste no
+  # `selftest.sh` seria vácuo precisamente onde corre. A prova é a medição acima,
+  # reproduzível com o comando que lá está.
+  if command -v cygpath >/dev/null 2>&1; then
+    p="$(cygpath -u "$p")"
+    p="$(cygpath -w "$p")"
+  fi
+  go version -m "$p" 2>/dev/null | awk '$1=="mod"{print $3; exit}'
 }
 
 # --- Instalação idempotente de ferramentas (go install pinado) ----------------
