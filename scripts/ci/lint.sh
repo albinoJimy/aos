@@ -149,5 +149,22 @@ else
   rc=1
 fi
 
+# --- 2g. todo o go.mod declara a toolchain que constroi PRODUCAO --------------
+# Vive em ficheiro proprio pela MESMA razao que o de cima: para poder ser corrido
+# contra uma arvore mutada e provar que morde.
+#
+# Sem isto, 44 dos 47 modulos nao declaravam toolchain e o `go` local usava o que
+# estivesse instalado. O gate de SCA, corrido a mao com Go 1.26.5, acusava cinco
+# vulnerabilidades de stdlib que a CI (1.25.13) nunca via — e quem o corresse lia
+# "o repositorio tem vulnerabilidades" quando o que havia era deriva de toolchain
+# no posto de trabalho.
+log_gate "lint · toolchain alinhada com a imagem de producao"
+if bash "$CI_DIR/toolchain-lint.sh"; then
+  log_ok "toolchain: verde"
+else
+  log_fail "toolchain: ha go.mod que nao declara a toolchain que constroi producao"
+  rc=1
+fi
+
 [ "$rc" -eq 0 ] && log_ok "lint: verde" || log_fail "lint: vermelho"
 exit "$rc"
