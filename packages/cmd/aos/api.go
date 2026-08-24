@@ -1035,6 +1035,28 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			resp = runStateResponse{RunID: runID, Status: string(st)}
 		case state.Paused:
 			resp = runStateResponse{RunID: runID, Status: string(state.Paused), Paused: true}
+		case state.Compensating:
+			// A SAGA DE ROLLBACK É TRABALHO EM CURSO, NÃO UM DESFECHO — e não era o 404 de
+			// "nunca existiu" que este switch dá a quem não cobre.
+			//
+			// Este `case` faltava por OMISSÃO e não por decisão, e a diferença importa: o
+			// `ready`/`running` caem no 404 por escolha declarada logo acima (um órfão sem
+			// desfecho não se distingue de um inexistente, AOS-253), enquanto o
+			// `compensating` simplesmente não estava enumerado. Um run interrompido a meio
+			// da compensação — o processo morre entre `failed→compensating` e o regresso a
+			// `ready` — lia-se como um run que nunca existiu.
+			//
+			// ALCANCE, dito em vez de fingido: hoje isto é INALCANÇÁVEL em produção. O loop
+			// base nunca povoa `activity.Activity.Compensation`, logo o registo está vazio e
+			// um run falhado FICA em `failed` com a ausência declarada e selada no WORM (ver
+			// [NodeService.declareSagaAbsence]). O que este `case` fecha é a omissão
+			// estrutural — e o gate de exaustividade que o acompanha é o que impede o
+			// próximo estado de ser esquecido pela mesma via.
+			//
+			// NÃO se marca `Terminated`: a compensação não terminou o run, está a desfazê-lo.
+			// E continua a NÃO haver condutor que a retome após um crash — isso é trabalho de
+			// AOS-022 e não se finge aqui.
+			resp = runStateResponse{RunID: runID, Status: string(state.Compensating)}
 		}
 		if resp.Status != "" {
 			if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
