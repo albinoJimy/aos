@@ -540,15 +540,53 @@ func (s *SecuredRuntime) RegisterCosting(toolID string, fn referencemonitor.Cost
 // asserção/observabilidade). Um erro de congelamento aborta antes de correr o loop
 // (fail-closed: sem tool set congelado, nenhuma tool executaria de qualquer forma).
 func (s *SecuredRuntime) Run(ctx context.Context, goal agentruntime.Goal, sel *toolset.Selector) (agentruntime.Result, *toolset.FrozenToolSet, error) {
-	frozen, err := toolset.FreezeToolSet(ctx, s.catalog, goal.RunID, sel, s.freezeOpt...)
-	if err != nil {
-		return agentruntime.Result{}, nil, err
+	// RE-HOSPEDAGEM: O SNAPSHOT DURÁVEL GANHA AO CATÁLOGO VIVO.
+	//
+	// Este é o achado E da verificação de funcionamento de 2026-08-23. [RunToolSets.Rebuild]
+	// existe desde AOS-155 e tinha ZERO chamadores de produção — a documentação, aqui e em
+	// `freeze.go`, prometia que «a retoma reconstrói-o», e nada reconstruía. Em vez disso
+	// TODA a re-hospedagem — incluindo a do crash-resume que corre a seguir a um deploy —
+	// re-congelava do catálogo VIVO.
+	//
+	// E a divergência era SILENCIOSA: o `Append` do snapshot usa o StepID fixo
+	// "toolset-freeze", pelo que a re-escrita era engolida por dedup (`StatusDuplicate`, sem
+	// erro). O disco ficava com o snapshot ORIGINAL, a memória com o NOVO, e ninguém
+	// comparava os dois. A revalidação por chamada passava a comparar congelado(actual)
+	// contra actual — uma tautologia. A barreira corria, media-se, e não negava nada: o
+	// próprio *drift* que AOS-050/AOS-155 existem para apanhar.
+	//
+	// O `sel` NÃO se reaplica na reposição, e é deliberado: o snapshot durável já codifica a
+	// selecção com que o run arrancou. Reaplicar um selector diferente ao retomar seria
+	// mudar o conjunto congelado a meio do run, que é a mesma classe de defeito por outra via.
+	//
+	// FAIL-CLOSED: um snapshot durável ilegível ABORTA o run em vez de re-congelar por
+	// omissão. Re-congelar seria continuar sob um conjunto que ninguém autorizou, e é
+	// precisamente o comportamento que este bloco vem fechar.
+	reposto, rerr := s.toolsets.Rebuild(ctx, goal.RunID)
+	if rerr != nil {
+		return agentruntime.Result{}, nil, rerr
 	}
-	// Registo DURÁVEL do arranque (AOS-155): persiste o snapshot (se durável) antes de
-	// correr, para a revalidação o reconstruir após um failover em vez de negar tudo.
-	// Fail-closed: uma falha de persistência aborta o run (não seria crash-safe).
-	if err := s.toolsets.Freeze(ctx, frozen); err != nil {
-		return agentruntime.Result{}, nil, err
+
+	var frozen *toolset.FrozenToolSet
+	if reposto {
+		var ok bool
+		if frozen, ok = s.toolsets.Frozen(goal.RunID); !ok {
+			// Inalcançável por construção — [RunToolSets.Rebuild] só devolve `true` depois
+			// de [RunToolSets.Put]. Fail-closed na mesma: sem snapshot nenhuma tool
+			// executaria, e um `nil` daqui seria um panic mais à frente.
+			return agentruntime.Result{}, nil, fmt.Errorf("integration: tool set do run %q dado como reposto mas ausente do registo", goal.RunID)
+		}
+	} else {
+		var err error
+		if frozen, err = toolset.FreezeToolSet(ctx, s.catalog, goal.RunID, sel, s.freezeOpt...); err != nil {
+			return agentruntime.Result{}, nil, err
+		}
+		// Registo DURÁVEL do arranque (AOS-155): persiste o snapshot (se durável) antes de
+		// correr, para a revalidação o reconstruir após um failover em vez de negar tudo.
+		// Fail-closed: uma falha de persistência aborta o run (não seria crash-safe).
+		if err := s.toolsets.Freeze(ctx, frozen); err != nil {
+			return agentruntime.Result{}, nil, err
+		}
 	}
 	defer s.toolsets.Release(frozen.RunID())
 
