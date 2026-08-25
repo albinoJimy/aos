@@ -88,6 +88,11 @@ func (s *NodeService) StartOrphanSweeper(ctx context.Context, interval time.Dura
 				if _, _, err := s.resumeInterruptedRuns(ctx, false); err != nil {
 					s.log("re-varredura de orfaos FALHOU neste ciclo (o proximo tenta de novo): %v", err)
 				}
+				// Conta-se a PASSAGEM, mesmo quando ela falhou: o que a idade denuncia e o
+				// laco ter PARADO, e um ciclo que correu e falhou nao e um laco parado — essa
+				// distincao vive no log, nao aqui.
+				s.passagensOrfaos.Add(1)
+				s.ultimoOrfaoUnix.Store(time.Now().Unix())
 			}
 		}
 	}()

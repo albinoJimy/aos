@@ -173,6 +173,37 @@ type NodeService struct {
 	// ultimoVarrimentoUnix é o instante da última passagem CONCLUÍDA (0 = nenhuma ainda). Unix
 	// e não time.Time por ser lido sem lock a partir do handler das métricas.
 	ultimoVarrimentoUnix atomic.Int64
+	// --- OS LAÇOS QUE NÃO TINHAM SINAL NENHUM -----------------------------------------
+	//
+	// Achado da validação longitudinal de 2026-08-25. Dos oito laços periódicos do nó, três
+	// varredores de SERVIÇO não expunham NADA: `approval_sweeper` (expira aprovações
+	// pendentes), `deadline_sweeper` (impõe os prazos dos runs) e `orphan_sweeper` (retoma
+	// runs interrompidos). Se qualquer um deles parasse, o efeito seria SILENCIOSO — as
+	// aprovações nunca expirariam, os runs nunca esgotariam prazo, os órfãos nunca seriam
+	// retomados — e nenhuma série do `/metrics` se moveria.
+	//
+	// O `aos_runs_suspended 0` que o nó publica hoje tem DUAS leituras que ninguém consegue
+	// separar: «não há ninguém à espera» e «o varredor de aprovações morreu há três dias».
+	//
+	// PORQUE A IDADE E NÃO SÓ O CONTADOR. Um contador só denuncia paragem por COMPARAÇÃO de
+	// duas leituras — foi precisamente o que a validação teve de fazer à mão, com uma espera
+	// de horas. A IDADE denuncia numa leitura só, que é o que um operador tem. O contador
+	// fica para a taxa; a idade é o detector.
+	//
+	// Seguem o molde do varredor de retenção, que é o único que já estava completo — mesma
+	// unidade (Unix), mesma leitura sem lock a partir do handler, e a MESMA regra de que a
+	// idade só sai DEPOIS da primeira passagem (antes disso, um `0` diria «acabou de varrer»
+	// sobre um nó que ainda não varreu nada).
+	//
+	// O `heartbeat` fica DE FORA de propósito e a razão é que ele é de outra natureza: é
+	// por-run e não de serviço, e a sua falha JÁ tem consequência observável — o lease expira
+	// e o run é cancelado. Instrumentá-lo seria contar uma coisa por cada run em voo.
+	passagensAprovacao  atomic.Int64
+	ultimaAprovacaoUnix atomic.Int64
+	passagensPrazo      atomic.Int64
+	ultimoPrazoUnix     atomic.Int64
+	passagensOrfaos     atomic.Int64
+	ultimoOrfaoUnix     atomic.Int64
 	// varredorParado marca a paragem DEFINITIVA por incidente de integridade — distinta de
 	// «ainda não armado» e de «armado, à espera do primeiro tick». As três leem-se de maneira
 	// diferente e exigem acções diferentes.

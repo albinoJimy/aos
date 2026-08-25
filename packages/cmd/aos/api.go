@@ -1253,6 +1253,50 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// OS TRÊS VARREDORES DE SERVIÇO QUE NÃO TINHAM SINAL NENHUM.
+	//
+	// Achado da validação longitudinal de 2026-08-25: se qualquer um destes parasse, o efeito
+	// era SILENCIOSO. As aprovações nunca expirariam, os runs nunca esgotariam prazo, os
+	// órfãos nunca seriam retomados — e nenhuma série se movia. O `aos_runs_suspended 0`
+	// publicado aqui ao lado tinha duas leituras que ninguém conseguia separar: «não há
+	// ninguém à espera» e «o varredor morreu há três dias».
+	//
+	// A IDADE É O DETECTOR, o contador é a taxa. Um contador só denuncia paragem comparando
+	// duas leituras — o que exige alguém a esperar. A idade denuncia numa leitura só.
+	//
+	// MESMA REGRA DO RETENÇÃO, e é a disciplina desta casa: a idade só sai DEPOIS da primeira
+	// passagem. Antes disso, emitir `0` diria «acabou de varrer» sobre um nó que ainda não
+	// varreu nada — e um nó recém-arrancado ficaria indistinguível de um saudável.
+	if h.svc != nil {
+		type varredor struct {
+			nome, oQueDeixaDeAcontecer string
+			total                      int64
+			ultimo                     int64
+		}
+		for _, v := range []varredor{
+			{"approval", "aprovacoes pendentes deixam de EXPIRAR e ficam a espera para sempre",
+				h.svc.passagensAprovacao.Load(), h.svc.ultimaAprovacaoUnix.Load()},
+			{"deadline", "runs deixam de esgotar PRAZO e correm sem tecto de tempo",
+				h.svc.passagensPrazo.Load(), h.svc.ultimoPrazoUnix.Load()},
+			{"orphan", "runs interrompidos por um crash deixam de ser RETOMADOS",
+				h.svc.passagensOrfaos.Load(), h.svc.ultimoOrfaoUnix.Load()},
+		} {
+			// SÓ SE O LAÇO EXISTE. Um `0` num nó que nunca compôs o varredor leria-se como
+			// «armado e parado», que é a mentira simétrica da que isto vem fechar.
+			if v.total == 0 && v.ultimo == 0 {
+				continue
+			}
+			g("aos_"+v.nome+"_sweeps_total",
+				"Passagens CONCLUIDAS do varredor de "+v.nome+" desde o arranque.",
+				"counter", float64(v.total), "")
+			if v.ultimo > 0 {
+				g("aos_"+v.nome+"_last_sweep_age_seconds",
+					"Segundos desde a ultima passagem CONCLUIDA do varredor de "+v.nome+". Acima do dobro da cadencia, o laco parou — e entao "+v.oQueDeixaDeAcontecer+".",
+					"gauge", time.Since(time.Unix(v.ultimo, 0)).Seconds(), "")
+			}
+		}
+	}
+
 	// SELAGEM NO WORM — o que acontece quando a cadeia deixa de aceitar escritas.
 	//
 	// TRÊS rotas fail-closed dependem de um `Append` e recusavam com o mesmo 503 uniforme, sem

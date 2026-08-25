@@ -28,7 +28,25 @@ const DefaultApprovalSweepInterval = 1 * time.Minute
 // WithApprovalSweepInterval sobrepõe o período de varrimento. <= 0 DESLIGA o varrimento
 // (os pendentes nunca expiram sozinhos — usado em testes que conduzem o tempo à mão).
 func WithApprovalSweepInterval(d time.Duration) NodeServiceOption {
-	return func(c *nodeServiceConfig) { c.sweepInterval = d }
+	return func(c *nodeServiceConfig) {
+		c.sweepInterval = d
+		// O `...Set` NÃO É REDUNDANTE, e a sua ausência era um defeito com efeito em
+		// PRODUÇÃO. [NewNodeService] decide a cadência com `if cfg.sweepIntervalSet` — sem
+		// esta linha o valor era escrito e IGNORADO, e o construtor caía sempre no default
+		// de um minuto.
+		//
+		// O composition-root usa esta opção para entregar `AOS_APPROVAL_SWEEP_INTERVAL`
+		// (`main.go`), pelo que a variável era lida, VALIDADA com um fail-closed que aborta
+		// o arranque em valores maus — e depois deitada fora. Medido antes da correcção:
+		//
+		//	pedido=5m   ->  efectivo=1m0s
+		//	pedido=30s  ->  efectivo=1m0s
+		//
+		// A irmã [WithDeadlineSweepInterval] sempre pôs as duas; esta só punha uma. E o
+		// `<= 0 DESLIGA` que o doc acima promete também nunca funcionou por a mesma razão —
+		// dois testes usavam-no a contar desligar o varredor e corriam com ele LIGADO.
+		c.sweepIntervalSet = true
+	}
 }
 
 // sweepApprovals é o laço periódico. Termina quando stop fecha (shutdown do serviço).
@@ -44,6 +62,11 @@ func (s *NodeService) sweepApprovals(stop <-chan struct{}) {
 			return
 		case <-t.C:
 			s.sweepApprovalsOnce(context.Background())
+			// Marca-se DEPOIS de a passagem concluir, nunca antes: o que interessa ao
+			// operador e a ultima vez que o varredor CORREU ate ao fim, nao a ultima
+			// vez que tentou.
+			s.passagensAprovacao.Add(1)
+			s.ultimaAprovacaoUnix.Store(time.Now().Unix())
 		}
 	}
 }
