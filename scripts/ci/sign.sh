@@ -163,6 +163,9 @@ fi
 
 # --- (1) FINALIZAR a proveniência: o bloco `signature` deixa de ser um diferimento.
 log_step "finalizar o bloco signature de provenance.json"
+# O interpretador e uma DEPENDENCIA do gate: sem ele o vermelho seria por falta de
+# ferramenta e nao por defeito. Ver [ensure_python] em lib.sh.
+ensure_python || exit 1
 python3 - "$PROV" "$signed" "$keyid" "$ROSTER" "$image_bound" <<'PY'
 import json, sys, os
 prov_path, signed, keyid, roster = sys.argv[1], sys.argv[2] == "1", sys.argv[3], sys.argv[4]

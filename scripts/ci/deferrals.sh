@@ -11,4 +11,7 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CI_DIR/lib.sh"
 
 log_gate "deferrals — marcador com entrada no registo · eixo com ticket EXISTENTE · POR ATRIBUIR com nota"
+# O interpretador e uma DEPENDENCIA do gate: sem ele o vermelho seria por falta de
+# ferramenta e nao por defeito. Ver [ensure_python] em lib.sh.
+ensure_python || exit 1
 python3 "$CI_DIR/deferrals.py"

@@ -71,3 +71,7 @@ Thumbs.db
 !.vscode/extensions.json
 *.log
 .claude/
+
+# Directorio do ARNES de CI: artefactos de maquina que o proprio arnes provisiona
+# (ver [ensure_python] em scripts/ci/lib.sh). Nao e fonte — nao se versiona.
+.tools/
