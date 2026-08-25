@@ -190,6 +190,9 @@ if [ -f "$REPO_ROOT/$ATT_MOD/go.mod" ]; then
   log_step "go list -m $ATT_MOD (componente externo de autoridade)"
   att_json="$( cd "$REPO_ROOT/$ATT_MOD" && go list -m -json all 2>/dev/null )" || att_json=""
   if [ -n "$att_json" ]; then
+# O interpretador e uma DEPENDENCIA do gate: sem ele o vermelho seria por falta de
+# ferramenta e nao por defeito. Ver [ensure_python] em lib.sh.
+ensure_python || exit 1
     python3 -c 'import json, sys
 sbom_path = sys.argv[1]
 data = sys.stdin.read()

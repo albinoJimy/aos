@@ -438,6 +438,9 @@ fi
 # gate ficava VERDE, a dívida reconhecida caía de 10 para 6 entradas, e a string
 # do contrato desaparecia por completo da saída — sem um único aviso.
 N_DOC="$(mktemp)"
+# O interpretador e uma DEPENDENCIA do gate: sem ele o vermelho seria por falta de
+# ferramenta e nao por defeito. Ver [ensure_python] em lib.sh.
+ensure_python || exit 1
 python3 - "$REPO_ROOT/tecnica/12_Contratos_de_Interface.md" "$N_DOC" <<'PY'
 import sys
 src, dst = sys.argv[1], sys.argv[2]

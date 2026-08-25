@@ -456,6 +456,10 @@ setup_env() {
 
   local gobin; gobin="$(go env GOPATH)/bin"
   case ":$PATH:" in *":$gobin:"*) ;; *) PATH="$gobin:$PATH";; esac
+  # DIRECTÓRIO DO ARNÊS. É onde [ensure_python] põe o shim que ele próprio provisiona —
+  # a mesma ideia de `$(go env GOPATH)/bin` para as ferramentas Go, mas de posse do arnês.
+  # Está no `.gitignore`: é artefacto de máquina, não fonte.
+  case ":$PATH:" in *":$REPO_ROOT/.tools:"*) ;; *) PATH="$REPO_ROOT/.tools:$PATH";; esac
   # Windows + scoop mingw (gcc para o -race). Silencioso se ausente.
   if [ -n "${HOME:-}" ] && [ -d "$HOME/scoop/apps/mingw/current/bin" ]; then
     case ":$PATH:" in *":$HOME/scoop/apps/mingw/current/bin:"*) ;;
@@ -583,6 +587,70 @@ ensure_tool() {
     log_fail "$bin: instalou-se $pin mas o PATH resolve $(command -v "$bin") em ${now:-versão indeterminada} — outro binário com o mesmo nome está à frente de \$(go env GOPATH)/bin. Corrija o PATH: correr o gate com outra versão dá resultados diferentes dos da CI."
     return 1
   fi
+}
+
+# ensure_python garante um `python3` utilizável, PROVISIONANDO-O quando é possível.
+#
+# O DEFEITO QUE FECHA. Nove gates deste arnês correm lógica em Python — deferrals,
+# event-catalog, integration, ref-lint, rtm, sbom, selftest, sign, verify-attestation — e
+# NENHUM verificava que o interpretador existe. Numa máquina sem `python3` o gate saía com o
+# código do stub do Windows (49) e o agregador reportava `FAIL deferrals`, que na linha de
+# resumo é indistinguível de "o repositório tem deferimentos por documentar".
+#
+# A CAUSA REAL ficava visível no output — o stub imprime a sua mensagem — e isso é um
+# atenuante honesto: quem corre os gates VÊ. Mas ver não é ser atribuído: a linha de resumo,
+# que é o que fica, não distingue.
+#
+# E HAVIA UM SHIM MANUAL. Alguém tinha criado `.tools/python3` (36 bytes: `exec py -3 "$@"`)
+# para desbloquear a máquina — não versionado, não ignorado, não documentado em lado nenhum.
+# Um ficheiro invisível de que nove gates dependiam para dizer a verdade.
+#
+# A ESCOLHA: PROVISIONAR, NÃO DOCUMENTAR. É o mesmo princípio de [ensure_tool], que não pede
+# que instalem o gosec — instala-o. Documentar uma dependência transfere para a pessoa o
+# trabalho que o arnês pode fazer sozinho, e a próxima pessoa volta a tropeçar.
+#
+# ORDEM DAS TENTATIVAS, e cada uma tem razão:
+#   1. `python3` no PATH — o caso normal (Linux, CI, macOS). Nada a fazer.
+#   2. `python` que reporte 3.x — algumas instalações Windows só expõem este nome. Verifica-se
+#      a VERSÃO, não o nome: um `python` que seja 2.x não serve e mentiria.
+#   3. `py -3` — o launcher oficial do Windows. Cria-se o shim em `.tools/`, que o
+#      [setup_env] já pôs no PATH.
+#   4. nada disto — FAIL-CLOSED com atribuição: diz o que falta e como resolver.
+#
+# O `py -3 -c` executa mesmo um programa em vez de só perguntar a versão: um launcher que
+# responde `--version` mas não corre nada deixaria o gate a falhar mais à frente, com outra
+# mensagem, e a atribuição perder-se-ia outra vez.
+ensure_python() {
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; sys.exit(0 if sys.version_info[0]==3 else 1)' 2>/dev/null; then
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(0 if sys.version_info[0]==3 else 1)' 2>/dev/null; then
+    mkdir -p "$REPO_ROOT/.tools"
+    printf '#!/usr/bin/env bash\nexec python "$@"\n' > "$REPO_ROOT/.tools/python3"
+    chmod +x "$REPO_ROOT/.tools/python3"
+    log_step "python3 provisionado em .tools/ (delega no \`python\` 3.x do PATH)"
+  elif command -v py >/dev/null 2>&1 && py -3 -c 'import sys; sys.exit(0)' 2>/dev/null; then
+    mkdir -p "$REPO_ROOT/.tools"
+    printf '#!/usr/bin/env bash\nexec py -3 "$@"\n' > "$REPO_ROOT/.tools/python3"
+    chmod +x "$REPO_ROOT/.tools/python3"
+    log_step "python3 provisionado em .tools/ (delega no launcher \`py -3\` do Windows)"
+  else
+    log_fail "python3 AUSENTE e nao provisionavel — este gate corre logica em Python e NAO correu. Nao e um veredicto sobre o repositorio: instale Python 3 (ou o launcher \`py\`) e repita. Sem isto o vermelho seria por falta de ferramenta, nao por defeito."
+    return 1
+  fi
+  # O PATH E RESPONSABILIDADE DE QUEM PROVISIONA. Depender de o [setup_env] ja ter corrido
+  # nao serve: sete dos nove gates que chamam esta funcao NAO o chamam, e o shim ficava
+  # criado e inalcancavel. Descoberto pela propria re-verificacao abaixo, na primeira
+  # execucao — que e exactamente porque ela existe.
+  case ":$PATH:" in *":$REPO_ROOT/.tools:"*) ;; *) PATH="$REPO_ROOT/.tools:$PATH"; export PATH;; esac
+
+  # VOLTA A VERIFICAR, como o [ensure_tool] faz depois de instalar: provisionar e assumir que
+  # resultou seria a mesma classe de defeito que este arnes existe para apanhar.
+  if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import sys; sys.exit(0)' 2>/dev/null; then
+    log_fail "python3 foi provisionado em .tools/ mas continua a NAO executar — verifique se \$REPO_ROOT/.tools esta no PATH (o setup_env poe-no) e se o shim tem permissao de execucao"
+    return 1
+  fi
+  return 0
 }
 
 # --- Normalização de caminhos -------------------------------------------------

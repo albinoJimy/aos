@@ -166,6 +166,9 @@ log_step "cobertura + recomparação dos subjects ASSINADOS com os artefactos re
 # correriam (o processo saía com o código certo e sem dizer porquê). Capturar em condição é o
 # que mantém o `errexit` ligado e o diagnóstico vivo.
 rc=0
+# O interpretador e uma DEPENDENCIA do gate: sem ele o vermelho seria por falta de
+# ferramenta e nao por defeito. Ver [ensure_python] em lib.sh.
+ensure_python || exit 1
 python3 - "$PAYLOAD" "$MANIFEST" "$OUT_DIR" "$image_id" "$image_available" "$UNVER" "$IMAGE_TAG" <<'PY' || rc=$?
 import hashlib, json, os, sys
 
