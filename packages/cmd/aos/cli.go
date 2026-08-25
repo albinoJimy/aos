@@ -91,7 +91,11 @@ func printUsage(w io.Writer) {
 uso: aos <subcomando> [flags]
 
   serve                        arranca o no (config por ambiente; AOS_API_ADDR levanta a API)
-  run     --addr URL --objective TXT [--nhi ID] [--credential TOK] [--run-id ID] [--system TXT] [--scope CSV] [--max-turns N]
+  run     --addr URL --objective TXT --run-id ID [--reader ID] [--board ID] [--nhi ID] [--credential TOK] [--system TXT] [--scope CSV] [--max-turns N]
+                                            (--run-id e EXIGIDO pelo no: sem ele o submit e 400.
+                                             --reader/--board exigidos por um no com soberania de
+                                             leitura, tal como no observe — a soberania esta
+                                             composta POR OMISSAO)
   observe --addr URL --run-id ID [--reader ID] [--board ID]   (--reader/--board exigidos por um no com soberania de leitura)
   steer   --addr URL --run-id ID --emitter ID --key FICHEIRO --correction TXT
   pause   --addr URL --run-id ID --emitter ID --key FICHEIRO
@@ -127,17 +131,45 @@ func cmdRun(args []string, w io.Writer) error {
 	// ingresso (AOS-203, F2). Não se clampa aqui — o cliente não conhece (nem tem autoridade
 	// sobre) o tecto do nó; a decisão é do nó, pelo mesmo caminho de api que qualquer submissor.
 	maxTurns := fs.Int("max-turns", 0, "tecto de turnos pedido (o no clampa ao seu AOS_MAX_TURNS)")
+	// AUTORIZAÇÃO DO SUBMISSOR — o `run` não a transportava e por isso NÃO CONSEGUIA SUBMETER.
+	//
+	// `POST /runs` atravessa a MESMA governação de leitura soberana que o `GET /runs/{id}`
+	// ([apiHandler.handleSubmit] chama `readGov.authorize`), e o `observe` já levava estas
+	// duas flags com a nota «exigidos por um nó com soberania de leitura». O `run` não as
+	// tinha — e a soberania está composta POR OMISSÃO, que é também a postura de produção.
+	//
+	// Medido antes da correcção, no mesmo nó e com o mesmo pedido:
+	//
+	//	aos run --addr … --objective … --run-id … --nhi …   ->  403 nao autorizado
+	//	curl + X-Aos-Reader + X-Aos-Board                    ->  201 accepted
+	//
+	// O servidor aceitava; o cliente é que não chegava lá. Um nó cuja porta de entrada não é
+	// alcançável pelo seu próprio cliente oficial é, na prática, um nó sem porta de entrada.
+	//
+	// NÃO É O `--credential`, e a distinção importa: esse é a credencial do AGENTE (viaja no
+	// CORPO, identifica o principal NHI que o run encarna). Estas são a autorização do
+	// SUBMISSOR (viaja nos HEADERS, resolve board→região). São coisas diferentes e um nó
+	// soberano exige as duas.
+	reader := fs.String("reader", strings.TrimSpace(os.Getenv("AOS_READER")), "principal (NHI) do SUBMISSOR — exigido por um no com soberania de leitura")
+	board := fs.String("board", strings.TrimSpace(os.Getenv("AOS_BOARD")), "board do submissor (resolve a regiao autorizada) — exigido por um no com soberania de leitura")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*addr) == "" {
 		return ErrAddrRequired
 	}
+	// Mesma forma do [cmdObserve]: só se envia quando há alguma coisa a enviar. Um nó em modo
+	// LEGADO (sem soberania composta) continua a aceitar o submit sem headers nenhuns, e um
+	// cliente que os mande a um nó legado não é penalizado por isso.
+	var headers map[string]string
+	if strings.TrimSpace(*reader) != "" || strings.TrimSpace(*board) != "" {
+		headers = map[string]string{HeaderReaderPrincipal: *reader, HeaderReaderBoard: *board}
+	}
 	var resp submitResponse
 	if err := apiCall(*addr, http.MethodPost, "/runs", submitRequest{
 		RunID: *runID, Objective: *objective, PrincipalNHI: *nhi,
 		Credential: *cred, System: *system, Scope: splitCSV(*scope), MaxTurns: *maxTurns,
-	}, &resp); err != nil {
+	}, &resp, headers); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "run submetido: run_id=%s status=%s\n", resp.RunID, resp.Status)
