@@ -53,6 +53,9 @@ func (s *NodeService) sweepDeadlines(stop <-chan struct{}) {
 			return
 		case <-t.C:
 			s.sweepDeadlinesOnce(context.Background())
+			// Ver a nota em [NodeService]: marca-se na CONCLUSAO.
+			s.passagensPrazo.Add(1)
+			s.ultimoPrazoUnix.Store(time.Now().Unix())
 		}
 	}
 }
