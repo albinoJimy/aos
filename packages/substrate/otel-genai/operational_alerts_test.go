@@ -16,7 +16,7 @@ func healthyOpInputs() OperationalInputs {
 		Events: []WideEvent{
 			{Operation: OpChat, TraceIDHex: "t1", RunID: "run-1", InputTokens: 1000,
 				Attributes: map[string]any{AttrCacheHitRate: 0.95}},
-			{Operation: OpExecuteTool, TraceIDHex: "t1", RunID: "run-1", LatencyNanos: int64(3 * time.Millisecond)},
+			{Operation: OpExecuteTool, TraceIDHex: "t1", RunID: "run-1", Decision: DecisionPermit, LatencyNanos: int64(3 * time.Millisecond)},
 			coldStartEvent("run-1", 40),
 			headroomEvent("run-1", 5000),
 			replayEvent("run-1", 1.0),
@@ -208,10 +208,10 @@ func TestOperationalAlertTripPerSLI(t *testing.T) {
 			name:  "mediation_overhead_p95",
 			alert: AlertMediationOverheadP95High,
 			breach: OperationalInputs{Events: []WideEvent{
-				{Operation: OpExecuteTool, TraceIDHex: "t", LatencyNanos: int64(50 * time.Millisecond)},
+				{Operation: OpExecuteTool, TraceIDHex: "t", Decision: DecisionPermit, LatencyNanos: int64(50 * time.Millisecond)},
 			}},
 			recovered: OperationalInputs{Events: []WideEvent{
-				{Operation: OpExecuteTool, TraceIDHex: "t", LatencyNanos: int64(2 * time.Millisecond)},
+				{Operation: OpExecuteTool, TraceIDHex: "t", Decision: DecisionPermit, LatencyNanos: int64(2 * time.Millisecond)},
 			}},
 		},
 		{

@@ -13,8 +13,10 @@ package otelgenai
 //     [AttrCacheHitRate] dos wide events. Torna o CACHE THRASH visível como SLI
 //     (ADR-009): um run com cache-hit baixo aparece como SLI degradado. SLO: > 0.80.
 //   - OVERHEAD DE MEDIAÇÃO p95 — percentil 95 da [WideEvent.LatencyNanos] dos spans
-//     [OpExecuteTool] (o ponto ÚNICO de mediação; a sua latência É o overhead que a
-//     mediação acrescenta). SLO: p95 < 15 ms.
+//     [OpExecuteTool] QUE TOMARAM UMA DECISÃO. O nome da operação já não identifica uma
+//     coisa só: o worker abre um `execute_tool` que envolve a EXECUÇÃO DO EFEITO e o
+//     Reference Monitor abre outro, filho dele, com só a mediação. Contar ambos fazia o
+//     percentil medir a tool call inteira — ver [overheadP95SLI]. SLO: p95 < 15 ms.
 //   - CUSTO POR TRAJECTÓRIA — custo agregado por trace, reutilizando
 //     [AggregateByTrace] (AOS-078) SEM dupla-contagem (conta só os spans `chat`). O
 //     SLI é o PIOR (máximo) custo por trajectória — a restrição vinculativa. SLO: um
@@ -404,9 +406,35 @@ func cacheHitRateSLI(events []WideEvent, target float64) SLIValue {
 }
 
 // overheadP95SLI deriva o p95 do OVERHEAD DE MEDIAÇÃO: o percentil 95 da
-// [WideEvent.LatencyNanos] dos eventos [OpExecuteTool] — o ponto único de mediação,
-// cuja latência é o custo que a mediação acrescenta. Drill-down: quando degradado,
-// os trace_ids dos execute_tool acima do tecto (pior latência primeiro).
+// [WideEvent.LatencyNanos] dos eventos [OpExecuteTool] que TOMARAM UMA DECISÃO — a
+// mediação propriamente dita, cuja latência é o custo que ela acrescenta. Drill-down:
+// quando degradado, os trace_ids acima do tecto (pior latência primeiro).
+//
+// # PORQUE O FILTRO DA DECISÃO, e porque o nome da operação NÃO CHEGA
+//
+// `execute_tool` deixou de identificar uma coisa só. Há DOIS spans com esse nome, e o
+// segundo é filho do primeiro:
+//
+//	worker  (agent-runtime/worker) — gate fenced + ledger.Apply(mediação + EXECUÇÃO DO EFEITO)
+//	monitor (reference-monitor)    — só a mediação: fecha quando Mediate devolve o veredicto
+//
+// Cada span projecta o seu próprio [WideEvent], pelo que os dois entravam nesta amostra. E
+// como isto é um PERCENTIL 95, o valor era dominado pela população mais lenta — a do worker,
+// que inclui a execução no sandbox. Um SLO de 15ms, calibrado para o custo da MEDIAÇÃO, era
+// comparado com o tempo de uma tool a correr em gVisor: o alerta `critical` (RB-04) disparava
+// sempre que uma tool call real acontecia, por construção, e o número que publicava não era o
+// que o seu nome dizia. Medido em produção a 2026-08-26: p95 de 4,017s contra um tecto de
+// 15ms — 268x, com streak de 5.
+//
+// O DISCRIMINADOR É COMPLETO, e é por isso que é este e não a parentela. [Monitor.Mediate]
+// anota `aos.decision` num `defer` que cobre TODOS os caminhos de retorno — permit, deny,
+// escalate, erro — e a cadeia é fail-closed: não existe um único `return Decision{}` que
+// deixasse o efeito vazio. O span do worker NUNCA anota decisão, e o do Launcher (EPIC-07),
+// que também usa `OpExecuteTool`, também não — e ambos ficam de fora, que é o correcto: não
+// são mediações.
+//
+// Inferir pela parentela seria mais frágil: o RM instrumenta QUALQUER chamador (ADR-002), não
+// só o loop do worker, pelo que o pai de uma mediação nem sempre é um `execute_tool`.
 func overheadP95SLI(events []WideEvent, maxNanos int64) SLIValue {
 	sli := SLIValue{Name: SLIMediationOverheadP95, SLO: float64(maxNanos), Direction: DirMax, Met: true}
 
@@ -417,7 +445,7 @@ func overheadP95SLI(events []WideEvent, maxNanos int64) SLIValue {
 	var lat []int64
 	var samples []sample
 	for _, e := range events {
-		if e.Operation != OpExecuteTool {
+		if e.Operation != OpExecuteTool || e.Decision == "" {
 			continue
 		}
 		lat = append(lat, e.LatencyNanos)
