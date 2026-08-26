@@ -114,15 +114,31 @@ func TestCredencialRecusada_SemColectorNaoRebenta(t *testing.T) {
 	}
 }
 
-// TestCredencialRecusada_ErrosSaoComparaveis guarda a premissa de que o filtro depende: os
-// sentinelas TÊM de ser comparáveis com errors.Is através da fronteira do verificador. Se um
-// refactor os embrulhar de forma opaca, o filtro anti-vector deixa de reconhecer a ausência —
-// e volta a haver por onde encher o log, sem nada ficar vermelho nos outros testes.
-func TestCredencialRecusada_ErrosSaoComparaveis(t *testing.T) {
-	if !errors.Is(ErrNoReadCredential, ErrNoReadCredential) {
-		t.Fatal("ErrNoReadCredential deixou de ser comparavel — o filtro anti-vector nao o reconhece")
+// TestCredencialRecusada_SentinelaEmbrulhadaAindaEReconhecida guarda a premissa de que o
+// filtro anti-vector depende: a ausência de credencial tem de continuar reconhecível DEPOIS de
+// atravessar a fronteira do verificador.
+//
+// É o caso realista, e não a comparação de um sentinela consigo próprio (que seria trivialmente
+// verdadeira e não observaria nada): [oidcReadCredential.verify] propaga erros tipados, e um
+// refactor que passasse a embrulhá-los com `fmt.Errorf` SEM `%w` faria o `errors.Is` deixar de
+// casar. O filtro passaria então a declarar no log toda a sonda anónima — o vector que
+// [readGovernance.nomearCredencialRecusada] existe para não abrir — e nenhum dos outros testes
+// ficaria vermelho, porque todos injectam o sentinela cru.
+func TestCredencialRecusada_SentinelaEmbrulhadaAindaEReconhecida(t *testing.T) {
+	embrulhada := fmt.Errorf("verify: %w", ErrNoReadCredential)
+
+	var log []string
+	g := govComCredencialQueFalha(embrulhada, &log)
+
+	if _, ok := g.autorizarSemMemo(httptest.NewRequest(http.MethodGet, "/runs/x", nil)); ok {
+		t.Fatal("uma credencial ausente, ainda que embrulhada, NAO pode autorizar")
 	}
-	if errors.Is(oidc.ErrTokenReplayed, ErrNoReadCredential) {
-		t.Fatal("replay e ausencia colapsaram no mesmo sentinela — o filtro deixaria de distinguir")
+	if len(log) != 0 {
+		t.Fatalf("VECTOR: a ausencia deixou de ser reconhecida depois de embrulhada e foi para o log.\nlog: %v", log)
+	}
+	// A metade que prova que o teste acima não passa por vacuidade: se o `errors.Is` deixasse
+	// de casar, ISTO é o que mudaria — e o caso do replay continua a ser nomeado.
+	if !errors.Is(embrulhada, ErrNoReadCredential) {
+		t.Fatal("o embrulho perdeu o sentinela — %w em falta na cadeia de verify")
 	}
 }
