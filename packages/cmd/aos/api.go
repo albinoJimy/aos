@@ -482,6 +482,9 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// O MESMO registo de saude do servico: as tres vias de selagem partilham a cadeia, logo
 	// partilham o desfecho. Ver [saudeDeSelagem].
 	if readGov != nil && svc != nil {
+		// A recusa de uma credencial APRESENTADA passa a ter nome no log do operador. A
+		// resposta HTTP não muda — ver [readGovernance.nomearCredencialRecusada].
+		readGov.declararRecusa = svc.log
 		readGov.saude = &svc.seloWORM
 	}
 	h := &apiHandler{

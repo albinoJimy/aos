@@ -113,11 +113,19 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 // rollback (AOS-254). titular é o Principal.NHIID do run (goal.Principal.NHIID), propagado do
 // hostRun: a compensação corre no step-ledger cifrado por-titular, que o recusa se ele faltar.
 func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentruntime.Result, runErr error, panicked bool) {
+	// TERMINOU EM MEMÓRIA? É esta premissa que separa uma DIVERGÊNCIA de um no-op legítimo.
+	// O desfecho em memória é construído pelo mesmo tuplo que o `switch` de
+	// [runGate.sealTerminal] classifica: um panic, um erro de loop, ou um resultado
+	// terminado. Se nenhum se verifica, o run não acabou — parou (paused) ou espera decisão
+	// (waiting_on_human) — e a ausência de selo terminal é exactamente o que se quer.
+	terminouEmMemoria := panicked || runErr != nil || res.Terminated
 	if s.node == nil || s.node.stateGates == nil {
+		s.declararDesfechoNaoSelado(rs.runID, terminouEmMemoria, "nao ha maquina de estados composta neste no", "")
 		return
 	}
 	gate := s.node.stateGates.resolveGate(rs.runID)
 	if gate == nil {
+		s.declararDesfechoNaoSelado(rs.runID, terminouEmMemoria, "nao foi resolvido gate de estado para este run", "")
 		return
 	}
 	sealed, err := gate.sealTerminal(context.Background(), res, runErr, panicked)
@@ -125,10 +133,71 @@ func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentr
 		s.log("selo do estado terminal do run %q FALHOU — o log duravel fica sem desfecho (indistinguivel de crash, F4): %v", rs.runID, err)
 		return
 	}
+	// O SELO PODE TER SIDO UM NO-OP SEM O DIZER. [runGate.sealTerminal] devolve
+	// `(estadoCorrente, nil)` quando a máquina não está em `running` — indistinguível, para
+	// este chamador, de uma transição bem sucedida. Comparar o estado devolvido com o
+	// conjunto dos que REGISTAM um desfecho é o que torna o no-op observável.
+	if !desfechoDuravelRegistado(sealed) {
+		s.declararDesfechoNaoSelado(rs.runID, terminouEmMemoria, "o selo foi NO-OP: a maquina nao estava em running", sealed)
+	}
 	// AOS-254: um desfecho `failed` — a falha RECUPERÁVEL — é a ÚNICA origem da saga de rollback
 	// (failed→compensating). Os demais desfechos (complete/timed_out/killed) são absorventes e não
 	// têm compensação. A condução decide, atribuivelmente, entre compensar e declarar a ausência.
 	if sealed == state.Failed {
 		s.driveSagaCompensation(rs, titular)
 	}
+}
+
+// desfechoDuravelRegistado indica se `st` é um estado em que o log durável REGISTA o fim do
+// run. São os três absorventes de [state.IsTerminal] (complete/killed/timed_out) MAIS
+// `failed`, que este ficheiro também materializa.
+//
+// `failed` está DE FORA do [state.IsTerminal] por uma razão que continua válida — tem aresta
+// de saída para a saga de compensação (AOS-254) e portanto não é absorvente — mas para a
+// pergunta que aqui se faz («o fim do run ficou registado?») a resposta é sim. Usar
+// `IsTerminal` sozinho declararia como não-selado todo o run falhado, que é ruído sobre o
+// caminho mais sensível do sistema.
+func desfechoDuravelRegistado(st state.State) bool {
+	return state.IsTerminal(st) || st == state.Failed
+}
+
+// declararDesfechoNaoSelado DECLARA o que antes era silêncio: um run cujo desfecho existe em
+// memória mas cujo log durável NÃO ficou com o fim registado.
+//
+// PORQUÊ EXISTE. Os três caminhos que aqui desembocam — sem máquina de estados, sem gate
+// resolvido, e o no-op do selo — devolviam SEM UMA PALAVRA. O efeito só aparece muito
+// depois e noutro sítio: enquanto o desfecho viver no cache em memória o `GET /runs/{id}`
+// responde-o normalmente; quando a poda FIFO ou um restart o levarem, a mesma leitura passa
+// a 404 — que o handler documenta como «nunca existiu». Um run que correu, terminou e
+// produziu resposta final torna-se, para quem consulta, um run que nunca aconteceu.
+//
+// O DEFEITO É ESTRUTURAL, não observado. Vale a pena dizê-lo com precisão, porque a primeira
+// versão deste comentário citava uma "anomalia em produção" que se revelou ser um erro de
+// medição de quem a escreveu — quatro runs a responderem 404 por o token de leitura ser de
+// USO ÚNICO e ter sido reutilizado, não por desfecho nenhum se ter perdido. Corrigido a
+// 2026-08-26 depois de o isolar: token fresco por leitura devolve 200 nos quatro.
+//
+// O que sustenta esta declaração é o CÓDIGO, e basta: [runGate.sealTerminal] devolve
+// `(estadoCorrente, nil)` no no-op, que é indistinguível de sucesso para quem chama, e as duas
+// guardas acima devolvem sem valor de retorno nenhum. Um desfecho que não chega ao log durável
+// é, por construção, invisível até alguém ler o run depois de o cache o ter perdido — e nessa
+// altura a leitura diz 404, que o handler documenta como «nunca existiu». Não é preciso ter
+// visto acontecer para saber que, quando acontecer, não haverá por onde começar.
+//
+// NÃO É RUÍDO. A guarda `terminouEmMemoria` deixa passar apenas a divergência: os no-ops que
+// [runGate.sealTerminal] documenta como legítimos — `paused` pelo steer ou pelo disjuntor,
+// `waiting_on_human` à espera de decisão — não terminaram, e por isso não chegam aqui. Um
+// run já materializado por outro condutor (`timed_out`/`killed`) também não, porque esses
+// estados REGISTAM o desfecho e passam no [desfechoDuravelRegistado].
+//
+// NÃO ALTERA COMPORTAMENTO. É uma declaração, não uma correcção: o desfecho em memória
+// mantém-se (o trabalho aconteceu; o que falhou foi o registo), tal como no ramo de erro
+// vizinho. Corrigir a CAUSA exige primeiro saber qual dos três é — que é o que isto permite.
+func (s *NodeService) declararDesfechoNaoSelado(runID string, terminouEmMemoria bool, causa string, maquinaEm state.State) {
+	if !terminouEmMemoria {
+		return
+	}
+	s.log("desfecho NAO SELADO (AOS-252): o run %q TERMINOU em memoria mas o log duravel ficou SEM estado terminal — %s (maquina em %q). "+
+		"Enquanto o desfecho viver no cache o GET /runs/{id} responde-o; quando a poda FIFO ou um restart o levarem, a leitura passa a 404, "+
+		"indistinguivel de \"nunca existiu\"", runID, causa, maquinaEm)
 }
