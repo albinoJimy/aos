@@ -182,10 +182,19 @@ func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool
 //
 // O caso que mais custa é o REPLAY, e custa por ser contra-intuitivo: o verificador OIDC marca o
 // `jti` como usado ([oidc.Verifier.checkReplay]), pelo que um cliente que reutilize o MESMO token
-// de submissor numa segunda escrita é recusado — com a credencial certa, dentro do prazo, e sem
-// nada que o explique. Observado em produção a 2026-08-26: uma escrita passou com token fresco e
-// credencial já usada, e a seguinte falhou com token usado e credencial fresca. Só o isolamento
-// de variáveis o identificou; o log não ajudou porque não dizia nada.
+// é recusado — com a credencial certa, dentro do prazo, e sem nada que o explique.
+//
+// O ALCANCE É TODO O PEDIDO AUTENTICADO, leituras incluídas, e é isso que o torna caro. Medido
+// em produção a 2026-08-26:
+//
+//	um token,  o MESMO run tres vezes  ->  200, 404, 404
+//	token fresco por leitura, 4 runs   ->  200, 200, 200, 200
+//
+// A segunda leitura em diante é recusada, e a recusa sai como o 404 uniforme e não-enumerável do
+// read-path — indistinguível de «esse run não existe». Custou-me várias horas e uma conclusão
+// ERRADA (dei quatro runs por perdidos e fui procurar a causa no selo do estado terminal, que
+// estava bom). O log não ajudou em nenhum momento, porque não dizia nada. É exactamente esta a
+// hora que a declaração abaixo poupa a quem vier a seguir.
 //
 // O FILTRO NÃO É COSMÉTICO. `ErrNoReadCredential` — não veio Bearer nenhum — é EXCLUÍDO de
 // propósito: é o que qualquer sonda anónima produz, e registá-lo daria a quem não está

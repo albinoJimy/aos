@@ -171,13 +171,18 @@ func desfechoDuravelRegistado(st state.State) bool {
 // a 404 — que o handler documenta como «nunca existiu». Um run que correu, terminou e
 // produziu resposta final torna-se, para quem consulta, um run que nunca aconteceu.
 //
-// Observado em produção a 2026-08-26: `ciclo-completo-4` respondia 200 pelo caminho durável
-// (AOS-252) enquanto quatro runs mais recentes — todos concluídos, um deles com `final_text`
-// servido minutos antes — respondiam 404. Sem falha de selo no log (o ramo de erro acima
-// nunca disparou), sem restart do processo (um único arranque), sem poda FIFO (tecto 1024) e
-// sem expiração de retenção (168h). Nenhuma das quatro explicações fáceis sobrevivia, e não
-// havia rasto de qual dos três silêncios tinha ocorrido — nem para quem escreveu o código,
-// nem para o operador.
+// O DEFEITO É ESTRUTURAL, não observado. Vale a pena dizê-lo com precisão, porque a primeira
+// versão deste comentário citava uma "anomalia em produção" que se revelou ser um erro de
+// medição de quem a escreveu — quatro runs a responderem 404 por o token de leitura ser de
+// USO ÚNICO e ter sido reutilizado, não por desfecho nenhum se ter perdido. Corrigido a
+// 2026-08-26 depois de o isolar: token fresco por leitura devolve 200 nos quatro.
+//
+// O que sustenta esta declaração é o CÓDIGO, e basta: [runGate.sealTerminal] devolve
+// `(estadoCorrente, nil)` no no-op, que é indistinguível de sucesso para quem chama, e as duas
+// guardas acima devolvem sem valor de retorno nenhum. Um desfecho que não chega ao log durável
+// é, por construção, invisível até alguém ler o run depois de o cache o ter perdido — e nessa
+// altura a leitura diz 404, que o handler documenta como «nunca existiu». Não é preciso ter
+// visto acontecer para saber que, quando acontecer, não haverá por onde começar.
 //
 // NÃO É RUÍDO. A guarda `terminouEmMemoria` deixa passar apenas a divergência: os no-ops que
 // [runGate.sealTerminal] documenta como legítimos — `paused` pelo steer ou pelo disjuntor,
