@@ -26,10 +26,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/aos-ref/integration/oidc"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -104,6 +106,15 @@ type readGovernance struct {
 	// X-Aos-Board auto-declarado deixa de autorizar. nil ⇒ via LEGADA (headers demo-grade),
 	// aceite só FORA de produção (a produção exige a credencial — ver main.go).
 	cred readCredentialVerifier
+	// declararRecusa nomeia, no LOG DO OPERADOR, uma credencial que foi APRESENTADA e
+	// RECUSADA. nil ⇒ silencioso (composição legada e testes que não observam o log). Ligado
+	// depois da construção, como o `saude` — ver [NewAPIHandler].
+	//
+	// NÃO altera a resposta: a recusa continua uniforme, pela mesma razão que o 403 do
+	// four-eyes o é (não se revela ao chamador qual invariante falhou). O que muda é do lado
+	// de DENTRO — ver [readGovernance.autorizarSemMemo] para o porquê e para o filtro que
+	// impede isto de ser um vector de enchimento do log.
+	declararRecusa func(format string, args ...any)
 	// worm é o audit.Store tamper-evident (o MESMO do nó) onde o selo de leitura é encadeado.
 	worm audit.Store
 	// now carimba o selo (injectável para testes determinísticos; default time.Now).
@@ -137,6 +148,7 @@ func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool
 		// (sem Bearer, assinatura/janela/replay inválidos, sem claim board) ⇒ NEGA fail-closed.
 		p, b, err := g.cred.verify(r.Context(), r)
 		if err != nil {
+			g.nomearCredencialRecusada(err)
 			return readerIdentity{}, false
 		}
 		principal, board = p, b
@@ -159,6 +171,42 @@ func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool
 		return readerIdentity{}, false
 	}
 	return readerIdentity{principal: principal, board: board, region: region}, true
+}
+
+// nomearCredencialRecusada regista, no log do operador, uma credencial APRESENTADA e recusada.
+//
+// PORQUÊ. O `err` de [readCredentialVerifier.verify] era descartado: replay do `jti`, assinatura
+// inválida, janela fora de prazo e claim `board` em falta colapsavam todos num `false` mudo, e a
+// resposta HTTP é — correctamente — uniforme. O resultado era que a causa NÃO EXISTIA em lado
+// nenhum: nem na resposta (por desenho), nem no log (por omissão).
+//
+// O caso que mais custa é o REPLAY, e custa por ser contra-intuitivo: o verificador OIDC marca o
+// `jti` como usado ([oidc.Verifier.checkReplay]), pelo que um cliente que reutilize o MESMO token
+// de submissor numa segunda escrita é recusado — com a credencial certa, dentro do prazo, e sem
+// nada que o explique. Observado em produção a 2026-08-26: uma escrita passou com token fresco e
+// credencial já usada, e a seguinte falhou com token usado e credencial fresca. Só o isolamento
+// de variáveis o identificou; o log não ajudou porque não dizia nada.
+//
+// O FILTRO NÃO É COSMÉTICO. `ErrNoReadCredential` — não veio Bearer nenhum — é EXCLUÍDO de
+// propósito: é o que qualquer sonda anónima produz, e registá-lo daria a quem não está
+// autenticado a capacidade de escrever no log do nó à vontade. Só se nomeia o que exigiu uma
+// credencial para acontecer.
+//
+// NUNCA O TOKEN. Os erros de [oidcReadCredential.verify] são tipados e propagados SEM o material
+// sensível (o próprio `bearerToken` documenta que o valor não é logado em lado nenhum); o que
+// aqui se escreve é o erro, não a credencial.
+func (g *readGovernance) nomearCredencialRecusada(err error) {
+	if g.declararRecusa == nil || errors.Is(err, ErrNoReadCredential) {
+		return
+	}
+	if errors.Is(err, oidc.ErrTokenReplayed) {
+		// Nomeado à parte porque é o único cujo diagnóstico não se deduz: a credencial é
+		// válida e o cliente está a fazer algo razoável (reutilizar um token dentro do prazo).
+		g.declararRecusa("credencial de leitura RECUSADA por REPLAY de jti: o token ja foi usado noutro pedido. " +
+			"A resposta e uniforme por desenho; a causa fica aqui. Quem escreve tem de obter um token NOVO por pedido")
+		return
+	}
+	g.declararRecusa("credencial de leitura RECUSADA (apresentada e invalida): %v", err)
 }
 
 // authorizeRead é a authz de LEITURA POR-RUN (AOS-182, DEF-202): resolve o leitor (via
