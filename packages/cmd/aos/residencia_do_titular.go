@@ -15,7 +15,7 @@ import (
 //	POST /dsar/erase sobre o titular dessa região → 200 "erased"  (pode DESTRUIR)
 //	CONTROLO: board desconhecido → 403, e a KEK sobrevive
 //
-// `authorize` resolve a região de QUEM CHAMA; `authorizeRead` acrescenta a do RECURSO. O erase
+// `authorize` resolve a região de QUEM CHAMA; `authorizeReadComCausa` acrescenta a do RECURSO. O erase
 // usava a primeira, e mais nada — nem capability, nem authority.json, nem PDP no caminho. Uma
 // fronteira de soberania que trava a leitura e deixa passar a destruição irreversível não é uma
 // fronteira; é uma preferência.

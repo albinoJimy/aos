@@ -642,7 +642,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// OUTRA pessoa. Foi observado.
 		//
 		// A condição é `pode LER este run`, não `está autenticado`: um 409 a quem o GET esconde
-		// abriria por POST a porta que [readGovernance.authorizeRead] fecha — a existência de um
+		// abriria por POST a porta que [readGovernance.authorizeReadComCausa] fecha — a existência de um
 		// run de OUTRA REGIÃO. Daí exigir residência selada E coincidente. Compara-se contra o
 		// `submitterRegion` já resolvido acima, e não se re-verifica a credencial: uma segunda
 		// verificação consumiria o `jti` e transformaria a resposta num falso replay.

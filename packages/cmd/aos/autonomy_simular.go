@@ -228,9 +228,9 @@ func reclassificar(rec audit.AuditRecord) risk.Class {
 // NHIs e recursos de TODAS as regiões — a recusa cross-region (AOS-172/205) contornada por uma
 // rota de conforto, que é a forma mais barata de perder a propriedade central deste sistema.
 //
-// A decisão por run vem de `authorizeRead`, a MESMA função que o `GET /runs/{id}` usa. Não se
-// reimplementa a regra de residência aqui: uma segunda implementação divergiria da primeira, e a
-// que divergisse em silêncio seria esta — a que ninguém olha.
+// A decisão por run vem de [readGovernance.podeLerRun], a MESMA função que o `GET /runs/{id}` usa
+// para a fronteira de residência. Não se reimplementa a regra aqui: uma segunda implementação
+// divergiria da primeira, e a que divergisse em silêncio seria esta — a que ninguém olha.
 //
 // O veredicto é MEMORIZADO por run: um lote de 200 mediações costuma cair sobre poucas dezenas de
 // runs, e sem cache seria uma consulta à autoridade por registo.
@@ -244,7 +244,7 @@ func (h *apiHandler) mediacoesVisiveisPara(r *http.Request, leitor readerIdentit
 	// aplica a MESMA regra de residência do `GET /runs/{id}` — e NÃO se volta a verificar a
 	// credencial.
 	//
-	// A primeira versão chamava `authorizeRead` por cada run, e isso re-verificava o token a cada
+	// A primeira versão chamava a authz de leitura POR-RUN a cada run, e isso re-verificava o token a cada
 	// vez. Com credencial OIDC — que é a de produção — o verificador tem anti-replay por `jti`:
 	// a primeira verificação (a do handler) consome-o, e todas as seguintes devolvem
 	// `ErrTokenReplayed`. A rota teria devolvido `avaliados: 0` SEMPRE, em silêncio. O teste não o

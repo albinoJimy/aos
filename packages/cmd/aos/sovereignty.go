@@ -10,6 +10,11 @@
 //     (a razão nomeia SÓ o board — identificador de governação, nunca PII). NÃO se duplica a
 //     regra: RegionFor é a autoridade board→região de AOS-094/ADR-011.
 //
+//     UMA EXCEPÇÃO, e só uma: a credencial APRESENTADA e RECUSADA (replay de `jti`, assinatura,
+//     janela) sai em 401. Não cede não-enumerabilidade — essa recusa é decidida só pela
+//     credencial, antes de qualquer consulta de existência, e é idêntica para um run que existe,
+//     um que não existe e um id inventado. Ver [apiHandler.admitSovereignRead].
+//
 //   - (D6) SELO WORM DE LEITURA SENSÍVEL. Cada leitura sensível (abertura do stream SSE; o
 //     GET de desfecho) sela UM registo na hash-chain WORM tamper-evident (audit.Store.Append)
 //     que regista QUEM leu (principal/board), QUE run, a REGIÃO resolvida e o instante —
@@ -110,10 +115,11 @@ type readGovernance struct {
 	// RECUSADA. nil ⇒ silencioso (composição legada e testes que não observam o log). Ligado
 	// depois da construção, como o `saude` — ver [NewAPIHandler].
 	//
-	// NÃO altera a resposta: a recusa continua uniforme, pela mesma razão que o 403 do
-	// four-eyes o é (não se revela ao chamador qual invariante falhou). O que muda é do lado
-	// de DENTRO — ver [readGovernance.autorizarSemMemo] para o porquê e para o filtro que
-	// impede isto de ser um vector de enchimento do log.
+	// O QUE ESCREVE AQUI NÃO É O QUE O WIRE DIZ. Este log nomeia a causa CONCRETA (replay,
+	// assinatura, janela); a resposta continua a não a revelar — o chamador de uma credencial
+	// recusada recebe um 401 sem detalhe, e as recusas de GOVERNAÇÃO continuam no 404 uniforme.
+	// Ver [apiHandler.admitSovereignRead] para a escolha do status e [readGovernance.autorizarComCausa]
+	// para o filtro que impede isto de ser um vector de enchimento do log.
 	declararRecusa func(format string, args ...any)
 	// worm é o audit.Store tamper-evident (o MESMO do nó) onde o selo de leitura é encadeado.
 	worm audit.Store
@@ -138,7 +144,24 @@ func newReadGovernance(regions boardRegionResolver, cred readCredentialVerifier,
 // board resolve para uma região autorizada; caso contrário (_, false) — NEGA fail-closed. NÃO
 // revela PII nem a existência de qualquer run (a decisão depende só dos headers do leitor e do
 // registo GOV, nunca do run pedido).
-func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool) {
+// recusaDeLeitura é a CAUSA de uma recusa de admissão de leitura. Existe para separar as duas
+// que o `false` colapsava, e a distinção tem consequência no wire — ver [apiHandler.admitSovereignRead].
+type recusaDeLeitura uint8
+
+const (
+	// recusaNenhuma — admitido.
+	recusaNenhuma recusaDeLeitura = iota
+	// recusaCredencial — a credencial foi APRESENTADA e RECUSADA (replay de jti, assinatura,
+	// janela). O chamador NÃO está autenticado, e a decisão foi tomada SEM tocar em run nenhum.
+	recusaCredencial
+	// recusaGovernacao — a identidade resolveu, mas a GOVERNAÇÃO nega: board desconhecido, região
+	// não resolvível, ou residência do run distinta da do leitor. Esta pode revelar existência de
+	// runs e por isso mantém-se indistinguível de «não existe».
+	recusaGovernacao
+)
+
+// autorizarSemMemo aplica a regra e devolve a CAUSA da recusa, não só um booleano.
+func (g *readGovernance) autorizarComCausa(r *http.Request) (readerIdentity, recusaDeLeitura) {
 	var principal, board string
 	if g.cred != nil {
 		// CREDENCIAL FORTE (AOS-205): o principal e o board vêm das CLAIMS VERIFICADAS do
@@ -149,7 +172,20 @@ func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool
 		p, b, err := g.cred.verify(r.Context(), r)
 		if err != nil {
 			g.nomearCredencialRecusada(err)
-			return readerIdentity{}, false
+			if errors.Is(err, ErrNoReadCredential) {
+				// SEM Bearer nenhum ⇒ trata-se como GOVERNAÇÃO e sai em 404, como sempre saiu.
+				//
+				// É o MESMO predicado que exclui este caso do log do operador, e por uma razão
+				// aparentada: quem não apresentou credencial não está a ser informado de nada
+				// — está a sondar. Dar-lhe uma resposta distinta da de um run inexistente
+				// separaria «este endpoint existe e quer autenticação» de «não há aqui nada»,
+				// e é a leitura anónima que a não-enumerabilidade protege primeiro.
+				//
+				// Um predicado, duas consequências: não se regista, e não se distingue.
+				return readerIdentity{}, recusaGovernacao
+			}
+			// APRESENTADA e recusada — a única que não olha para run nenhum. Ver [recusaCredencial].
+			return readerIdentity{}, recusaCredencial
 		}
 		principal, board = p, b
 	} else {
@@ -159,18 +195,31 @@ func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool
 		board = strings.TrimSpace(r.Header.Get(HeaderReaderBoard))
 	}
 	// Credencial de leitura ausente ⇒ NEGA (nunca uma leitura anónima é autorizada).
+	//
+	// GOVERNAÇÃO e não credencial, deliberadamente: este ramo é alcançado sobretudo pela VIA
+	// LEGADA de headers, onde o board é AUTO-DECLARADO e um chamador escolhe o que envia.
+	// Tratá-lo como falha de autenticação daria a quem inventa headers uma resposta diferente
+	// da de um run inexistente — precisamente a distinção que a não-enumerabilidade recusa.
 	if principal == "" || board == "" {
-		return readerIdentity{}, false
+		return readerIdentity{}, recusaGovernacao
 	}
 	// Board→região é a autoridade de AOS-094: board vazio/desconhecido, ou região não
-	// resolvível ⇒ (_, false) ⇒ NEGA (nunca cross-border/leitura por omissão — ADR-011). Com a
+	// resolvível ⇒ NEGA (nunca cross-border/leitura por omissão — ADR-011). Com a
 	// credencial forte, `board` é o claim VERIFICADO — resolver aqui é resolver a fronteira que
 	// o IdP asseriu, não a que o cliente afirmou.
 	region, ok := g.regions.RegionFor(board)
 	if !ok {
-		return readerIdentity{}, false
+		return readerIdentity{}, recusaGovernacao
 	}
-	return readerIdentity{principal: principal, board: board, region: region}, true
+	return readerIdentity{principal: principal, board: board, region: region}, recusaNenhuma
+}
+
+// autorizarSemMemo mantém a face BOOLEANA para os chamadores que só precisam de saber se podem
+// prosseguir. A causa fica em [readGovernance.autorizarComCausa]; quem escolhe o status do wire
+// usa essa.
+func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool) {
+	id, causa := g.autorizarComCausa(r)
+	return id, causa == recusaNenhuma
 }
 
 // nomearCredencialRecusada regista, no log do operador, uma credencial APRESENTADA e recusada.
@@ -218,11 +267,11 @@ func (g *readGovernance) nomearCredencialRecusada(err error) {
 	g.declararRecusa("credencial de leitura RECUSADA (apresentada e invalida): %v", err)
 }
 
-// authorizeRead é a authz de LEITURA POR-RUN (AOS-182, DEF-202): resolve o leitor (via
+// authorizeReadComCausa é a authz de LEITURA POR-RUN (AOS-182, DEF-202): resolve o leitor (via
 // [readGovernance.authorize]) E impõe a fronteira de SOBERANIA POR-RUN — leitor.região tem de
 // COINCIDIR com a REGIÃO DE RESIDÊNCIA do run (a que o submissor selou na criação). Devolve
-// (identidade, residência-do-run, true) só quando o leitor está autorizado E a residência
-// coincide; caso contrário (_, _, false) — NEGA fail-closed (o chamador devolve o 404 uniforme e
+// (identidade, residência-do-run, recusaNenhuma) só quando o leitor está autorizado E a residência
+// coincide; caso contrário devolve a CAUSA — NEGA fail-closed (o chamador escolhe o status e
 // não-enumerável). É a comparação que faltava: [authorize] resolvia a região do LEITOR mas não
 // tinha a região do RUN com que a confrontar, pelo que um leitor de OUTRA região (com credencial
 // válida do SEU board) podia ler um run alheio.
@@ -232,28 +281,32 @@ func (g *readGovernance) nomearCredencialRecusada(err error) {
 // para residência AUSENTE e é lido SEM check cross-region, exactamente como o resto do read-path
 // D6/D7 se comporta sem topologia soberana. Em modo SOBERANO todo o run criado via ingresso tem
 // residência selada (fail-closed no submit), pelo que NENHUM run soberano é servido cross-region.
-func (g *readGovernance) authorizeRead(ctx context.Context, r *http.Request, runID string) (readerIdentity, string, bool) {
-	id, ok := g.authorize(r)
-	if !ok {
-		return readerIdentity{}, "", false
+// A CAUSA vem no retorno, e não um booleano: é ela que decide o status no wire. A residência
+// NUNCA produz `recusaCredencial` — um leitor autenticado que pede um run de OUTRA região tem de
+// continuar indistinguível de quem pede um run inexistente, porque é ESSA recusa que revelaria
+// existência.
+func (g *readGovernance) authorizeReadComCausa(ctx context.Context, r *http.Request, runID string) (readerIdentity, string, recusaDeLeitura) {
+	id, causa := g.authorizeComCausa(r)
+	if causa != recusaNenhuma {
+		return readerIdentity{}, "", causa
 	}
 	region, ok := g.podeLerRun(ctx, id, runID)
 	if !ok {
-		return readerIdentity{}, "", false
+		return readerIdentity{}, "", recusaGovernacao
 	}
-	return id, region, true
+	return id, region, recusaNenhuma
 }
 
 // podeLerRun aplica a REGRA DE RESIDÊNCIA a uma identidade JÁ VERIFICADA.
 //
-// Está separada de [readGovernance.authorizeRead] por uma razão concreta, e não por arrumação: há
+// Está separada de [readGovernance.authorizeReadComCausa] por uma razão concreta, e não por arrumação: há
 // caminhos que precisam de decidir sobre MUITOS runs a partir de UMA credencial, e re-verificar a
 // credencial por cada run é impossível — o verificador OIDC tem anti-replay por `jti`
 // ([oidc.Verifier.checkReplay] marca o token como usado), pelo que a SEGUNDA verificação do mesmo
 // pedido devolve `ErrTokenReplayed`.
 //
 // Foi exactamente o que aconteceu ao `POST /autonomy/simular` quando o escrevi: autenticava uma
-// vez, e depois chamava `authorizeRead` por cada run distinto. Em produção — onde a credencial é
+// vez, e depois chamava a authz de leitura por-run por cada run distinto. Em produção — onde a credencial é
 // OIDC — a primeira chamada consumia o `jti` e TODAS as seguintes falhavam como replay, pelo que a
 // resposta seria `avaliados: 0` sempre, e em silêncio. O teste não o apanhou porque compunha o
 // gate pela via LEGADA de headers, que nunca chama o verificador.
@@ -404,12 +457,33 @@ func (h *apiHandler) admitSovereignRead(w http.ResponseWriter, r *http.Request, 
 	if h.readGov == nil {
 		return readerIdentity{}, "", true
 	}
-	id, residency, ok := h.readGov.authorizeRead(r.Context(), r, runID)
-	if !ok {
+	id, residency, causa := h.readGov.authorizeReadComCausa(r.Context(), r, runID)
+	switch causa {
+	case recusaNenhuma:
+		return id, residency, true
+	case recusaCredencial:
+		// 401 E NÃO 404, e a distinção NÃO cede não-enumerabilidade.
+		//
+		// Esta recusa é decidida SÓ pela credencial, ANTES de qualquer consulta de existência:
+		// a resposta é a mesma para um run que existe, um que não existe e um id inventado.
+		// Quem a recebe aprende «a minha credencial não presta» — que é exactamente o que
+		// estava a apresentar. Sobre runs, não aprende nada.
+		//
+		// O QUE ISTO RESOLVE. O token de leitura é de USO ÚNICO (anti-replay de `jti`), pelo que
+		// reutilizá-lo devolvia `404` — indistinguível de «esse run não existe». Medido em
+		// produção a 2026-08-26: mesmo token, mesmo run, três vezes ⇒ 200, 404, 404; token
+		// fresco por leitura ⇒ 200 nos quatro runs. Custou horas e uma conclusão errada, e o
+		// log do operador (PR #167) só ajuda quem tem acesso ao servidor — o cliente ficava sem
+		// forma de distinguir.
+		//
+		// As TRÊS recusas que poderiam revelar existência — board desconhecido, cross-region e
+		// run inexistente — continuam no MESMO 404 indistinguível.
+		writeError(w, http.StatusUnauthorized, "nao autenticado")
+		return readerIdentity{}, "", false
+	default:
 		writeError(w, http.StatusNotFound, "not found")
 		return readerIdentity{}, "", false
 	}
-	return id, residency, true
 }
 
 // sealSensitiveRead emite o SELO WORM de leitura sensível (D6) como PRÉ-CONDIÇÃO da leitura.
@@ -450,7 +524,23 @@ func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
 		m.repetidas++
 		return m.id, m.ok
 	}
-	id, ok := g.autorizarSemMemo(r)
-	m.feito, m.id, m.ok = true, id, ok
-	return id, ok
+	id, causa := g.autorizarComCausa(r)
+	m.feito, m.id, m.ok, m.causa = true, id, causa == recusaNenhuma, causa
+	return id, m.ok
+}
+
+// authorizeComCausa é [readGovernance.authorize] com a CAUSA da recusa. Partilha o MESMO memo —
+// a credencial é verificada uma vez por pedido, e o anti-replay do `jti` continua a valer.
+func (g *readGovernance) authorizeComCausa(r *http.Request) (readerIdentity, recusaDeLeitura) {
+	m := memoDe(r)
+	if m == nil {
+		return g.autorizarComCausa(r)
+	}
+	if m.feito {
+		m.repetidas++
+		return m.id, m.causa
+	}
+	id, causa := g.autorizarComCausa(r)
+	m.feito, m.id, m.ok, m.causa = true, id, causa == recusaNenhuma, causa
+	return id, causa
 }

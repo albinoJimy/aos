@@ -49,6 +49,11 @@ type memoLeitor struct {
 	feito bool
 	id    readerIdentity
 	ok    bool
+	// causa é a CAUSA da recusa, memorizada a par do `ok`. Sem ela, a segunda consulta no mesmo
+	// pedido saberia que foi recusada mas não porquê — e quem escolhe o status do wire
+	// ([apiHandler.admitSovereignRead]) cairia no `404` uniforme mesmo quando a causa era uma
+	// credencial recusada.
+	causa recusaDeLeitura
 	// repetidas conta as chamadas a AUTORIZAR que o memo serviu de cache — ou seja, quantas
 	// vezes este pedido PEDIU para verificar outra vez. Em produção é inofensivo; num teste é a
 	// prova que impede o memo de tornar vacuosa a bateria que guarda o defeito do PR #96.

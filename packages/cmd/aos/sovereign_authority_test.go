@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,7 +189,7 @@ func newSovOIDCNodeMaxAge(t *testing.T, model agentruntime.ModelClient, idp *sov
 
 // TestReadPathMaxAgeBoundsReplayWindow prova END-TO-END o fecho do achado de anti-replay
 // (auditoria v4): um ID-token de soberania com exp AINDA VÁLIDO mas iat ANTIGO (o cenário de um
-// token legitimamente emitido e capturado) é RECUSADO (404) quando MaxAge está aplicado — e o
+// token legitimamente emitido e capturado) é RECUSADO quando MaxAge está aplicado — e o
 // MESMO token é ACEITE (200) num nó com MaxAge=0 (o comportamento ANTIGO). Os dois sentidos
 // isolam o MaxAge como a garantia real, não um efeito colateral do exp. Sem MaxAge=0 o token
 // passaria pela janela exp inteira; parseSovereignReadOIDC garante que a produção nunca cai nesse 0.
@@ -197,13 +198,15 @@ func TestReadPathMaxAgeBoundsReplayWindow(t *testing.T) {
 	// Token com iat 1h no passado mas exp 1h no futuro: válido por exp, ANTIGO por idade.
 	staleTok := idp.mintTokenIat(t, sovReaderSub, govBoard, -time.Hour, time.Hour)
 
-	// COM MaxAge=5m ⇒ recusado (ErrTokenTooOld ⇒ 404 uniforme).
+	// COM MaxAge=5m ⇒ recusado. [oidc.ErrTokenTooOld] é uma credencial APRESENTADA e recusada,
+	// logo sai em 401 — não no 404 uniforme, que fica reservado às recusas que poderiam revelar
+	// a existência de um run (board, cross-region, inexistente).
 	nodeBounded := newSovOIDCNodeMaxAge(t, &countingModel{}, idp, 5*time.Minute)
 	svcB, hB := newAPI(t, nodeBounded)
 	submitAndWait(t, svcB, "run-maxage")
 	den := getReq(hB, "/runs/run-maxage", bearerHeaders(staleTok))
-	if den.Code != http.StatusNotFound {
-		t.Fatalf("token de soberania ANTIGO (iat -1h) devia ser recusado sob MaxAge=5m (404), veio %d (%s)", den.Code, den.Body.String())
+	if den.Code != http.StatusUnauthorized {
+		t.Fatalf("token de soberania ANTIGO (iat -1h) devia ser recusado sob MaxAge=5m (401 — credencial APRESENTADA e recusada), veio %d (%s)", den.Code, den.Body.String())
 	}
 
 	// COM MaxAge=0 (comportamento antigo) ⇒ o MESMO token passa (prova que é o MaxAge que recusa,
@@ -301,6 +304,12 @@ func TestReadPathCredentialDerivesReaderFromClaims(t *testing.T) {
 
 // TestReadPathCredentialInvalidTokenDenied prova que um Bearer INVÁLIDO (assinatura de OUTRA
 // chave) é recusado fail-closed — a verificação é real, não uma mera presença de header.
+//
+// O STATUS é 401 e não o 404 uniforme: a credencial foi APRESENTADA e recusada, e essa recusa é
+// decidida SÓ pela credencial, antes de qualquer consulta de existência — a resposta é a mesma
+// para um run que existe, um que não existe e um id inventado. As recusas que PODERIAM revelar
+// existência (board desconhecido, cross-region, run inexistente) continuam no 404 indistinguível;
+// ver [apiHandler.admitSovereignRead].
 func TestReadPathCredentialInvalidTokenDenied(t *testing.T) {
 	idp := newSovTestIDP(t)
 	node := newSovOIDCNode(t, &countingModel{}, idp)
@@ -311,8 +320,13 @@ func TestReadPathCredentialInvalidTokenDenied(t *testing.T) {
 	rogue := newSovTestIDP(t)
 	rogueTok := rogue.mintToken(t, sovReaderSub, govBoard) // iss do rogue != issuer configurado
 	rec := getReq(h, "/runs/run-205-bad", bearerHeaders(rogueTok))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("token de IdP alheio devia dar 404, veio %d (%s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("token de IdP alheio devia dar 401 (credencial APRESENTADA e recusada), veio %d (%s)", rec.Code, rec.Body.String())
+	}
+	// O corpo NÃO diz nada sobre o run: a recusa é da credencial, e é a mesma para um run que
+	// existe, um que não existe e um id inventado.
+	if strings.Contains(rec.Body.String(), "run-205-bad") {
+		t.Fatalf("a recusa de credencial nomeia o run — passa a distinguir existencia: %q", rec.Body.String())
 	}
 }
 
