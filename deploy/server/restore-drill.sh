@@ -231,13 +231,18 @@ c_nada="$(cod)"
 c_forjado="$(cod -H 'X-Aos-Board: board:prod' -H 'X-Aos-Reader: alguem')"
 printf '[ensaio]   run lido ................. %s\n'                 "${RID}"
 printf '[ensaio]   token valido ............. HTTP %s  (quero 200)\n' "${c_ok}"
-printf '[ensaio]   MESMO token outra vez .... HTTP %s  (quero 404)\n' "${c_replay}"
+printf '[ensaio]   MESMO token outra vez .... HTTP %s  (quero 401)\n' "${c_replay}"
 printf '[ensaio]   sem credencial ........... HTTP %s  (quero 404)\n' "${c_nada}"
 printf '[ensaio]   header forjado ........... HTTP %s  (quero 404)\n' "${c_forjado}"
 
 falhas=0
 [[ "${c_ok}"      = 200 ]] || { log "  FALHA: a leitura autenticada não passou"; falhas=1; }
-[[ "${c_replay}"  = 404 ]] || { log "  FALHA: o anti-replay do jti NÃO voltou"; falhas=1; }
+# 401 e NAO 404: o replay e uma credencial APRESENTADA e recusada, e essa recusa deixou de ser
+# indistinguivel de "esse run nao existe" (AOS-172). As DUAS linhas abaixo continuam em 404 de
+# proposito -- sem credencial e header forjado sao recusas de GOVERNACAO, que poderiam revelar a
+# existencia de um run e por isso ficam uniformes. Se este ensaio voltar a ver 404 aqui, ou a ver
+# 401 em qualquer das outras duas, a distincao partiu-se num dos dois sentidos.
+[[ "${c_replay}"  = 401 ]] || { log "  FALHA: o anti-replay do jti NÃO voltou (ou perdeu o 401 e voltou ao 404 indistinguivel)"; falhas=1; }
 [[ "${c_nada}"    = 404 ]] || { log "  FALHA: leitura SEM credencial passou"; falhas=1; }
 [[ "${c_forjado}" = 404 ]] || { log "  FALHA: o header auto-declarado AUTORIZOU"; falhas=1; }
 [[ "${falhas}" = 0 ]] || fail "o sistema restaurado arrancou mas NÃO decide como devia"

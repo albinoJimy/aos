@@ -299,14 +299,14 @@ func (g *readGovernance) authorizeReadComCausa(ctx context.Context, r *http.Requ
 
 // podeLerRun aplica a REGRA DE RESIDÊNCIA a uma identidade JÁ VERIFICADA.
 //
-// Está separada de [readGovernance.authorizeRead] por uma razão concreta, e não por arrumação: há
+// Está separada de [readGovernance.authorizeReadComCausa] por uma razão concreta, e não por arrumação: há
 // caminhos que precisam de decidir sobre MUITOS runs a partir de UMA credencial, e re-verificar a
 // credencial por cada run é impossível — o verificador OIDC tem anti-replay por `jti`
 // ([oidc.Verifier.checkReplay] marca o token como usado), pelo que a SEGUNDA verificação do mesmo
 // pedido devolve `ErrTokenReplayed`.
 //
 // Foi exactamente o que aconteceu ao `POST /autonomy/simular` quando o escrevi: autenticava uma
-// vez, e depois chamava `authorizeRead` por cada run distinto. Em produção — onde a credencial é
+// vez, e depois chamava a authz de leitura por-run por cada run distinto. Em produção — onde a credencial é
 // OIDC — a primeira chamada consumia o `jti` e TODAS as seguintes falhavam como replay, pelo que a
 // resposta seria `avaliados: 0` sempre, e em silêncio. O teste não o apanhou porque compunha o
 // gate pela via LEGADA de headers, que nunca chama o verificador.
