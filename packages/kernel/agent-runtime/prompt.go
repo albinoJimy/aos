@@ -344,9 +344,10 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // # O QUE ISTO NÃO É
 //
 // NÃO é separação de planos. O `loop.go` declara que o conteúdo untrusted entra INLINE no tail e
-// que o wiring de SeparatePlanes/Quarantine fica DIFERIDO para EPIC-12. Isto impede a FORJA DE
-// SEGMENTOS; não impede que conteúdo untrusted, correctamente rotulado e no seu próprio segmento,
-// tente instruir o modelo. Quem ler esta função não deve concluir que a injecção está resolvida.
+// que o wiring de SeparatePlanes/Quarantine é trabalho por fazer — ver DEF-806, que é onde essa
+// dívida está registada. Isto impede a FORJA DE SEGMENTOS; não impede que conteúdo untrusted,
+// correctamente rotulado e no seu próprio segmento, tente instruir o modelo. Quem ler esta função
+// não deve concluir que a injecção está resolvida.
 //
 // # CUSTO NOS BYTES
 //
