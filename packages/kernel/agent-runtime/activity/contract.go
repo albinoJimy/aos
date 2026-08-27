@@ -188,7 +188,7 @@ type Mediator interface {
 // modo normal: Apply (efeito idempotente com already-applied ANTES do efeito).
 // *[durable.StepLedger] satisfá-lo.
 type Ledger interface {
-	Apply(ctx context.Context, key string, effect func(context.Context) (durable.Result, error)) (durable.Result, bool, error)
+	Apply(ctx context.Context, key string, effect func(context.Context) (durable.Result, error), opts ...durable.ApplyOption) (durable.Result, bool, error)
 }
 
 // ReplaySource devolve o resultado REGISTADO de uma activity pela sua idempotency

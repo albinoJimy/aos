@@ -48,7 +48,7 @@ func CompensationKey(runID, stepID string) (string, error) {
 // idempotente com already-applied antes do efeito) e Rebuild (reconstrução do conjunto
 // de compensações já commitadas, para crash-resume). *durable.StepLedger satisfaz-o.
 type StepLedger interface {
-	Apply(ctx context.Context, key string, effect func(context.Context) (durable.Result, error)) (durable.Result, bool, error)
+	Apply(ctx context.Context, key string, effect func(context.Context) (durable.Result, error), opts ...durable.ApplyOption) (durable.Result, bool, error)
 	Rebuild(ctx context.Context, runID string) error
 }
 

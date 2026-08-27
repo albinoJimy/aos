@@ -45,7 +45,7 @@ func (m mediadorQueFalhaFatal) Mediate(context.Context, referencemonitor.Call) (
 // interessa: o passo falhado NÃO fica aplicado.
 type ledgerQueCorre struct{}
 
-func (ledgerQueCorre) Apply(ctx context.Context, _ string, effect func(context.Context) (durable.Result, error)) (durable.Result, bool, error) {
+func (ledgerQueCorre) Apply(ctx context.Context, _ string, effect func(context.Context) (durable.Result, error), _ ...durable.ApplyOption) (durable.Result, bool, error) {
 	r, err := effect(ctx)
 	return r, err == nil, err
 }
