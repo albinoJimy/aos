@@ -114,11 +114,18 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 // hostRun: a compensação corre no step-ledger cifrado por-titular, que o recusa se ele faltar.
 func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentruntime.Result, runErr error, panicked bool) {
 	// TERMINOU EM MEMÓRIA? É esta premissa que separa uma DIVERGÊNCIA de um no-op legítimo.
-	// O desfecho em memória é construído pelo mesmo tuplo que o `switch` de
-	// [runGate.sealTerminal] classifica: um panic, um erro de loop, ou um resultado
-	// terminado. Se nenhum se verifica, o run não acabou — parou (paused) ou espera decisão
-	// (waiting_on_human) — e a ausência de selo terminal é exactamente o que se quer.
-	terminouEmMemoria := panicked || runErr != nil || res.Terminated
+	//
+	// A guarda TEM DE COBRIR OS MESMOS CASOS que o `switch` de [runGate.sealTerminal]: se
+	// classificar menos, cala-se justamente onde o selo era devido. É o que acontecia — a
+	// primeira versão omitia `BudgetExhausted`, e esse é o ÚNICO desfecho que não traz erro
+	// nem `Terminated`, pelo que era o único que a guarda deixava passar em silêncio. Um run
+	// parado por esgotar o orçamento é um desfecho para o log durável (`timed_out` com razão
+	// `budget_exhausted`) e a sua ausência merece o mesmo alarme que as outras.
+	//
+	// Se `sealTerminal` ganhar um ramo novo, esta linha tem de ganhar o termo correspondente —
+	// e o teste que o acompanha compara os dois conjuntos precisamente para que o esquecimento
+	// fique vermelho em vez de silencioso.
+	terminouEmMemoria := panicked || runErr != nil || res.Terminated || res.BudgetExhausted
 	if s.node == nil || s.node.stateGates == nil {
 		s.declararDesfechoNaoSelado(rs.runID, terminouEmMemoria, "nao ha maquina de estados composta neste no", "")
 		return

@@ -496,8 +496,24 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// (efeito externo concluído). O cursor carrega o sub-passo confirmado e
 			// as activities ainda pendentes do turno — o resume retoma no próximo
 			// sub-passo não confirmado sem repetir os já aplicados.
-			if err := rt.cpActivity(ctx, goal.RunID, stepID, turn, j, len(resp.ToolCalls)); err != nil {
-				return res, err
+			//
+			// SÓ CONFIRMA O QUE PRODUZIU EFEITO, e é essa a condição que faltava. O
+			// doc de [Runtime.cpActivity] promete «consistência checkpoint↔ledger»,
+			// mas o checkpoint corria para TODO o j — incluindo os que o ledger NÃO
+			// memoriza:
+			//
+			//	negado/escalado ⇒ o effect nem chega a correr (activity.ErrMediationDenied)
+			//	tool falhada    ⇒ nada memorizado, passo declarado RETRIÁVEL
+			//
+			// Confirmar um desses põe o cursor a dizer «feito» sobre um passo que o
+			// ledger diz «por aplicar», e a retoma SALTA-O — é a mesma corrupção que o
+			// ramo da escalada evita ao retornar antes (ver o bloco acima). A diferença
+			// é que a escalada é uma paragem e estes dois continuam o turno, pelo que
+			// não bastava retornar: é preciso não confirmar e seguir.
+			if out.Denial == nil && out.ToolErr == nil {
+				if err := rt.cpActivity(ctx, goal.RunID, stepID, turn, j, len(resp.ToolCalls)); err != nil {
+					return res, err
+				}
 			}
 		}
 
