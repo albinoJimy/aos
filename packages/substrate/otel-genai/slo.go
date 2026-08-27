@@ -13,10 +13,11 @@ package otelgenai
 //     [AttrCacheHitRate] dos wide events. Torna o CACHE THRASH visível como SLI
 //     (ADR-009): um run com cache-hit baixo aparece como SLI degradado. SLO: > 0.80.
 //   - OVERHEAD DE MEDIAÇÃO p95 — percentil 95 da [WideEvent.LatencyNanos] dos spans
-//     [OpExecuteTool] QUE TOMARAM UMA DECISÃO. O nome da operação já não identifica uma
-//     coisa só: o worker abre um `execute_tool` que envolve a EXECUÇÃO DO EFEITO e o
-//     Reference Monitor abre outro, filho dele, com só a mediação. Contar ambos fazia o
-//     percentil medir a tool call inteira — ver [overheadP95SLI]. SLO: p95 < 15 ms.
+//     [OpExecuteTool] QUE TOMARAM UMA DECISÃO. ATENÇÃO ao nome: os dois produtores de
+//     `execute_tool` INCLUEM o despacho da tool, pelo que este SLI é um tecto SUPERIOR do custo
+//     de uma tool call mediada e NÃO o custo que a mediação acrescenta — DEF-281, ver
+//     [overheadP95SLI]. O filtro escolhe a janela mais estreita disponível (a do Reference
+//     Monitor); a janela HONESTA exige instrumentação nova. SLO: p95 < 15 ms.
 //   - CUSTO POR TRAJECTÓRIA — custo agregado por trace, reutilizando
 //     [AggregateByTrace] (AOS-078) SEM dupla-contagem (conta só os spans `chat`). O
 //     SLI é o PIOR (máximo) custo por trajectória — a restrição vinculativa. SLO: um
@@ -410,31 +411,45 @@ func cacheHitRateSLI(events []WideEvent, target float64) SLIValue {
 // mediação propriamente dita, cuja latência é o custo que ela acrescenta. Drill-down:
 // quando degradado, os trace_ids acima do tecto (pior latência primeiro).
 //
-// # PORQUE O FILTRO DA DECISÃO, e porque o nome da operação NÃO CHEGA
+// # DEFERIDO (DEF-281) — ESTE SLI NÃO MEDE OVERHEAD DE MEDIAÇÃO, E É PRECISO DIZÊ-LO
 //
-// `execute_tool` deixou de identificar uma coisa só. Há DOIS spans com esse nome, e o
-// segundo é filho do primeiro:
+// O nome promete mais do que a instrumentação dá. `execute_tool` é emitido por DOIS produtores,
+// e o segundo é filho do primeiro:
 //
-//	worker  (agent-runtime/worker) — gate fenced + ledger.Apply(mediação + EXECUÇÃO DO EFEITO)
-//	monitor (reference-monitor)    — só a mediação: fecha quando Mediate devolve o veredicto
+//	worker  (agent-runtime/worker) — gate fenced + ledger.Apply(mediação + despacho)
+//	monitor (reference-monitor)    — cadeia de política + DESPACHO da tool
 //
-// Cada span projecta o seu próprio [WideEvent], pelo que os dois entravam nesta amostra. E
-// como isto é um PERCENTIL 95, o valor era dominado pela população mais lenta — a do worker,
-// que inclui a execução no sandbox. Um SLO de 15ms, calibrado para o custo da MEDIAÇÃO, era
-// comparado com o tempo de uma tool a correr em gVisor: o alerta `critical` (RB-04) disparava
-// sempre que uma tool call real acontecia, por construção, e o número que publicava não era o
-// que o seu nome dizia. Medido em produção a 2026-08-26: p95 de 4,017s contra um tecto de
-// 15ms — 268x, com streak de 5.
+// AMBOS incluem a execução da tool. O do monitor parece «só a mediação» — e a primeira versão
+// deste comentário afirmava-o — mas [Monitor.evaluate] chama `m.dispatch` ANTES de devolver a
+// decisão (`monitor.go`, ramo do permit), pelo que o span só fecha depois de a tool correr.
 //
-// O DISCRIMINADOR É COMPLETO, e é por isso que é este e não a parentela. [Monitor.Mediate]
-// anota `aos.decision` num `defer` que cobre TODOS os caminhos de retorno — permit, deny,
-// escalate, erro — e a cadeia é fail-closed: não existe um único `return Decision{}` que
-// deixasse o efeito vazio. O span do worker NUNCA anota decisão, e o do Launcher (EPIC-07),
-// que também usa `OpExecuteTool`, também não — e ambos ficam de fora, que é o correcto: não
-// são mediações.
+// MEDIDO EM PRODUÇÃO a 2026-08-27, com o filtro já activo: UMA amostra (a do monitor, como
+// desenhado) e o valor a `3,047s` contra um tecto de `15ms`. Antes do filtro eram duas amostras
+// e `4,017s`. O filtro faz o que promete — exclui um span que seguramente não é mediação — mas
+// NÃO torna o SLI honesto quanto ao seu nome, e o alerta `critical` (RB-04) continua a disparar
+// em qualquer nó com tráfego real.
 //
-// Inferir pela parentela seria mais frágil: o RM instrumenta QUALQUER chamador (ADR-002), não
-// só o loop do worker, pelo que o pai de uma mediação nem sempre é um `execute_tool`.
+// # O QUE O FILTRO FAZ, ENTÃO, E PORQUE FICA
+//
+// Escolhe a JANELA MAIS ESTREITA que a instrumentação actual oferece. O span do worker inclui,
+// além do despacho, o gate fenced e o ledger de idempotência — trabalho que não é mediação nem
+// execução. Contar os dois fazia o percentil misturar duas populações e reportar a mais larga.
+//
+// O DISCRIMINADOR É COMPLETO. [Monitor.Mediate] anota `aos.decision` num `defer` que cobre TODOS
+// os caminhos de retorno — permit, deny, escalate, erro — e a cadeia é fail-closed: não existe um
+// único `return Decision{}` que deixasse o efeito vazio. O span do worker NUNCA anota decisão, e
+// o do Launcher (EPIC-07), que também usa `OpExecuteTool`, também não.
+//
+// Inferir pela parentela seria mais frágil: o RM instrumenta QUALQUER chamador (ADR-002), não só
+// o loop do worker, pelo que o pai de uma mediação nem sempre é um `execute_tool`.
+//
+// # O QUE FALTA (DEF-281)
+//
+// Medir overhead de mediação exige cronometrar a cadeia de política EXCLUINDO a janela do
+// `dispatch` — instrumentação que hoje não existe em span nenhum. É o mesmo follow-up que
+// `packages/cmd/aos/api.go` já declarava ao dizer que as latências de request «exigem
+// histogramas instrumentados no kernel». Até lá, este SLI é um tecto SUPERIOR do custo de uma
+// tool call mediada, e não o custo que a mediação acrescenta.
 func overheadP95SLI(events []WideEvent, maxNanos int64) SLIValue {
 	sli := SLIValue{Name: SLIMediationOverheadP95, SLO: float64(maxNanos), Direction: DirMax, Met: true}
 
