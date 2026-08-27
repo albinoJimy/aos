@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -76,6 +77,19 @@ type ledgerRecord struct {
 	Hash    string `json:"result_hash"`
 	Sealed  bool   `json:"sealed,omitempty"`
 	Subject string `json:"subject,omitempty"`
+	// Fingerprint é a impressão digital da ACÇÃO que produziu esta entrada — não do seu
+	// resultado (esse é o `Hash`). Existe porque a chave de idempotência é `f(run_id,
+	// step_id)` e o step_id é POSICIONAL: nada da acção entra nele.
+	//
+	// A premissa de [StepSequencer.StepID] — «o mesmo passo lógico recebe SEMPRE o mesmo
+	// step_id» — é falsa numa retoma em que o turno não tenha captura: o modelo é
+	// re-interrogado ao vivo, pode emitir OUTRA tool call, e essa call recebe o step_id já
+	// aplicado. Sem esta impressão, o dedup devolvia-lhe o resultado da acção ANTERIOR — sem
+	// executar, sem passar pelo Reference Monitor, e sem que o laço distinguisse.
+	//
+	// `omitempty` de propósito: entradas ANTERIORES a este campo não o têm, e a ausência é
+	// tratada como «não verificável» e não como «diferente» — ver [ledgerRecord.mesmaAccao].
+	Fingerprint string `json:"action_fingerprint,omitempty"`
 }
 
 func (r ledgerRecord) result() Result { return Result{Status: r.Status, Payload: r.Result} }
@@ -335,7 +349,7 @@ func NewStepLedger(store EventStore, opts ...LedgerOption) (*StepLedger, error) 
 //
 // key deve ser a forma canónica run_id:step_id (produto de [IdempotencyKey]);
 // caso contrário devolve [ErrMalformedKey].
-func (l *StepLedger) Apply(ctx context.Context, key string, effect func(context.Context) (Result, error)) (Result, bool, error) {
+func (l *StepLedger) Apply(ctx context.Context, key string, effect func(context.Context) (Result, error), opts ...ApplyOption) (Result, bool, error) {
 	if effect == nil {
 		return Result{}, false, ErrNilEffect
 	}
@@ -359,10 +373,15 @@ func (l *StepLedger) Apply(ctx context.Context, key string, effect func(context.
 	}
 	keyHash := HashKey(key)
 
+	cfg := aplicarOpcoes(opts)
+
 	// (1) already-applied / single-flight ANTES de qualquer efeito.
 	l.mu.Lock()
 	if rec, ok := l.records[key]; ok {
 		l.mu.Unlock()
+		if err := rec.mesmaAccao(cfg.fingerprint); err != nil {
+			return Result{}, false, err
+		}
 		l.obs.Deduplicated(keyHash)
 		return rec.result(), false, nil
 	}
@@ -373,6 +392,12 @@ func (l *StepLedger) Apply(ctx context.Context, key string, effect func(context.
 		<-call.done
 		if call.err != nil {
 			return Result{}, false, call.err
+		}
+		// A MESMA verificação do ramo acima. Sem ela, duas acções DIFERENTES com o mesmo
+		// step_id que chegassem em concorrência colapsavam no single-flight e a segunda
+		// recebia o resultado da primeira — a janela é estreita, mas é a mesma corrupção.
+		if err := call.rec.mesmaAccao(cfg.fingerprint); err != nil {
+			return Result{}, false, err
 		}
 		l.obs.Deduplicated(keyHash)
 		return call.rec.result(), false, nil
@@ -396,14 +421,14 @@ func (l *StepLedger) Apply(ctx context.Context, key string, effect func(context.
 		close(call.done)
 	}()
 
-	res, applied, rec, err = l.runEffect(ctx, key, runID, stepID, keyHash, effect)
+	res, applied, rec, err = l.runEffect(ctx, key, runID, stepID, keyHash, cfg.fingerprint, effect)
 	return res, applied, err
 }
 
 // runEffect corre o effect e materializa o registo durável. Devolve o resultado,
 // se foi o líder a aplicar, e o registo CANÓNICO (o do vencedor, em caso de corrida
 // entre workers) para o single-flight publicar aos seguidores.
-func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash string, effect func(context.Context) (Result, error)) (Result, bool, ledgerRecord, error) {
+func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash, fingerprint string, effect func(context.Context) (Result, error)) (Result, bool, ledgerRecord, error) {
 	// (2) corre o effect (efeito externo; propaga a key ao downstream).
 	res, err := effect(ctx)
 	if err != nil {
@@ -422,7 +447,7 @@ func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash 
 	// envelope DEK/KEK ANTES de tocar o WAL; o texto-claro fica só em memória (dedup
 	// intra-processo) e nunca é persistido. O Hash é sempre do payload EM CLARO —
 	// integridade/dedup por conteúdo, sem revelar nem recuperar o plaintext.
-	clearRec := ledgerRecord{Key: key, Status: res.Status, Result: res.Payload, Hash: res.hash()}
+	clearRec := ledgerRecord{Key: key, Status: res.Status, Result: res.Payload, Hash: res.hash(), Fingerprint: fingerprint}
 	persistRec := clearRec
 	// O titular é o do RUN (contexto) e, em fallback, o da composição (produtor) — ver
 	// [StepLedger.titularOf]. Com [WithRequireTitular] ligada, chegar aqui com o
@@ -435,7 +460,7 @@ func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash 
 		}
 		persistRec = ledgerRecord{
 			Key: key, Status: res.Status, Result: sealed, Hash: clearRec.Hash,
-			Sealed: true, Subject: subject,
+			Sealed: true, Subject: subject, Fingerprint: fingerprint,
 		}
 	}
 
@@ -565,4 +590,68 @@ func decodeRecord(raw json.RawMessage) (ledgerRecord, error) {
 		return ledgerRecord{}, err
 	}
 	return rec, nil
+}
+
+// ---------------------------------------------------------------------------
+// IMPRESSÃO DIGITAL DA ACÇÃO — a chave não muda; o que muda é o que se compara.
+// ---------------------------------------------------------------------------
+
+// ApplyOption configura uma chamada a [StepLedger.Apply]. Variádica de propósito: os
+// chamadores que não a usam compilam e comportam-se como antes.
+type ApplyOption func(*applyConfig)
+
+type applyConfig struct{ fingerprint string }
+
+func aplicarOpcoes(opts []ApplyOption) applyConfig {
+	var c applyConfig
+	for _, o := range opts {
+		if o != nil {
+			o(&c)
+		}
+	}
+	return c
+}
+
+// WithActionFingerprint declara QUE ACÇÃO este Apply pretende aplicar.
+//
+// PORQUE EXISTE, e porque não vai na chave. A forma `f(run_id, step_id)` da chave está
+// fixada no ADR-001 e [IdempotencyKey] é uma BIJECÇÃO declarada, com [SplitKey] como
+// inversa exacta que o próprio [StepLedger.Apply] usa para recuperar o par. Meter o digest
+// da acção na chave partiria as três coisas e obrigaria a migrar todos os registos.
+//
+// A alternativa é a que o [integration.ApprovalBroker] já usa para os grants de aprovação:
+// mesmo id, conteúdo diferente ⇒ RECUSA (`ErrGrantIDReused`). Aqui é o mesmo problema uma
+// camada abaixo — e a mesma resposta.
+func WithActionFingerprint(fp string) ApplyOption {
+	return func(c *applyConfig) { c.fingerprint = fp }
+}
+
+// ErrActionMismatch — a chave já tem uma entrada aplicada por uma acção DIFERENTE.
+//
+// Fail-closed: devolver o resultado memorizado seria executar zero vezes a acção submetida
+// e responder-lhe com o desfecho de outra. É a corrupção que este erro existe para tornar
+// visível — e que, sem ele, não deixava rasto nenhum.
+var ErrActionMismatch = errors.New("durable: idempotency key ja aplicada por uma ACCAO DIFERENTE (o step_id e posicional; a accao submetida nao e a que produziu o resultado memorizado)")
+
+// mesmaAccao decide se o resultado memorizado pode ser devolvido a esta submissão.
+//
+// TRÊS CASOS, e o do meio é o residual declarado:
+//
+//	registada != "" e submetida != "" e diferentes ⇒ RECUSA (o defeito)
+//	registada == ""                                ⇒ ACEITA — entrada anterior a este campo
+//	submetida == ""                                ⇒ ACEITA — chamador que não declara acção
+//
+// A ausência é tratada como «não verificável», nunca como «diferente». Recusar aí fecharia a
+// janela por completo mas tornaria IRRETOMÁVEL qualquer run cujo ledger seja anterior à
+// mudança — trocaria uma correcção de segurança por uma perda de disponibilidade. A janela
+// que fica aberta é estreita: exige um crash a meio do despacho seguido de re-interrogação
+// do modelo, e só afecta entradas já existentes.
+func (r ledgerRecord) mesmaAccao(submetida string) error {
+	if r.Fingerprint == "" || submetida == "" {
+		return nil
+	}
+	if r.Fingerprint != submetida {
+		return fmt.Errorf("%w: registada=%s submetida=%s", ErrActionMismatch, r.Fingerprint, submetida)
+	}
+	return nil
 }

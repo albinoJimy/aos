@@ -231,6 +231,18 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 	// A verificação already-applied vive DENTRO de Apply (precede o efeito). O efeito
 	// abaixo é a ÚNICA via de execução: constrói o Call e chama Mediate — sem permit,
 	// a tool nunca corre (o RM só a despacha sob permit não-forjável).
+	// A IMPRESSÃO DIGITAL DA ACÇÃO acompanha o Apply, e o ledger recusa se a chave já
+	// estiver aplicada por OUTRA acção.
+	//
+	// A chave é `f(run_id, step_id)` e o step_id é POSICIONAL — nada da acção entra nele. Numa
+	// retoma em que o turno não tenha captura, o modelo é re-interrogado ao vivo e pode emitir
+	// outra tool call, que recebe o step_id já aplicado; sem esta impressão o dedup devolvia-lhe
+	// o resultado da acção ANTERIOR, sem executar e sem passar pelo Reference Monitor.
+	//
+	// Reutiliza o MESMO hash canónico que o RM já calcula para o span (`aos.tool.call_hash`):
+	// um segundo digest com outra canonicalização divergiria do primeiro, e a divergência
+	// apareceria como recusa espúria numa retoma legítima.
+	fingerprint := otelgenai.CanonicalToolCallHash(act.ToolID, act.Input)
 	res, applied, err := d.ledger.Apply(ctx, key, func(ctx context.Context) (durable.Result, error) {
 		dec, mErr := d.rm.Mediate(ctx, act.toCall())
 		if mErr != nil {
@@ -256,7 +268,7 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 			status = StatusOK
 		}
 		return durable.Result{Status: status, Payload: dec.Output}, nil
-	})
+	}, durable.WithActionFingerprint(fingerprint))
 	if err != nil {
 		if errors.Is(err, ErrMediationDenied) {
 			span.SetAttribute(AttrDecision, "denied")
