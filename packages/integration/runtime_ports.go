@@ -227,11 +227,16 @@ var _ agentruntime.CompactionTrigger = (*CompactionTriggerAdapter)(nil)
 // materializa um resultado vazio untrusted no tail). O adaptador traduz esse erro numa
 // Decision{Effect: Deny}, mantendo o contrato do loop.
 //
-// LIMITAÇÃO (documentada): o [activity.Result] memoriza o Output mas NÃO transporta o
-// erro de RUNTIME da tool (ToolErr) — uma tool PERMITIDA que falhe devolve Output vazio
-// sem o marcador de erro. O default [directDispatcher] preserva o ToolErr; esta via
-// durável, ao memoizar pelo ledger, perde-o. É aceitável para o efeito idempotente
-// (o desfecho memorizado é o Output), mas o modelo não vê "tool_error=" nesta via.
+// ERRO DE RUNTIME DA TOOL: o [activity.Result] memoriza o Output e NÃO transporta o `ToolErr`,
+// pelo que o dispatcher o sinaliza pelo ERRO ([activity.ErrToolExecution], nada memorizado, passo
+// retriável). O adaptador reconstitui-o em `Decision{Permit, ToolErr}` — ver o ramo `errors.As`
+// em [DurableDispatcher.Dispatch] — para o loop materializar `tool_error=` no tail, como faz na
+// via default.
+//
+// A versão anterior desta nota descrevia o sintoma ERRADO: dizia «devolve Output vazio sem o
+// marcador de erro», quando o comportamento real era ABORTAR O RUN. O erro não-tipado subia até
+// `loop.go` e terminava a trajectória. Uma limitação documentada mas mal descrita é pior do que
+// uma por documentar — quem a leu não foi procurar o defeito.
 type DurableDispatcher struct {
 	dispatcher *activity.Dispatcher
 }
@@ -290,6 +295,25 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 				dec.DeniedBy = md.DeniedBy
 			}
 			return dec, nil
+		}
+		// TOOL PERMITIDA QUE FALHOU A JUSANTE — não é fatal ao loop, e era-o.
+		//
+		// [activity.Dispatcher] devolve [activity.ErrToolExecution] quando o RM PERMITIU e o
+		// efeito falhou: nada é memorizado no ledger e o passo fica RETRIÁVEL (ver o comentário
+		// em `dispatch.go`, no ramo `dec.ToolErr != nil`). Sem esta conversão o erro subia até
+		// `loop.go` e MATAVA O RUN INTEIRO — e o retry que o ledger promete nunca acontecia,
+		// porque não ficava quem retentasse.
+		//
+		// A assimetria era com o irmão: o [directDispatcher] do kernel preserva o `ToolErr`, o
+		// loop materializa `tool_error=` no tail, e o modelo reage. Duas implementações da MESMA
+		// porta comportavam-se de forma diferente perante o mesmo evento — um HTTP 500 numa tool
+		// permitida terminava a trajectória na via de produção e era um turno normal na outra.
+		//
+		// Effect PERMIT com ToolErr preenchido é exactamente o contrato que o loop espera: o RM
+		// autorizou (não é negação de política), a execução é que falhou.
+		var te *activity.ToolError
+		if errors.As(err, &te) {
+			return referencemonitor.Decision{Effect: referencemonitor.EffectPermit, ToolErr: te.Err}, nil
 		}
 		return referencemonitor.Decision{}, err // cancelamento/erro fatal do loop
 	}

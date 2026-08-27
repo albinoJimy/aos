@@ -127,3 +127,59 @@ func TestDesfechoDuravelRegistado(t *testing.T) {
 		}
 	}
 }
+
+// TestDesfechoNaoSelado_OrcamentoEsgotadoTambemEDeclarado fecha o caso que a primeira versão da
+// guarda deixava passar.
+//
+// `BudgetExhausted` é o ÚNICO desfecho que [runGate.sealTerminal] classifica sem haver erro nem
+// `Terminated` — o run parou porque a admissão do turno negou headroom, sem falhar. Uma guarda
+// escrita a olhar só para «panic, erro, terminado» cala-se exactamente aí, e cala-se sobre um
+// desfecho que o log durável devia ter registado como `timed_out`/`budget_exhausted`.
+func TestDesfechoNaoSelado_OrcamentoEsgotadoTambemEDeclarado(t *testing.T) {
+	var buf bytes.Buffer
+	s := nodeServiceSoComLog(&buf)
+
+	s.sealTerminalState(&runState{runID: "run-sem-orcamento"}, "nhi:titular",
+		agentruntime.Result{BudgetExhausted: true}, nil, false)
+
+	if saida := buf.String(); !strings.Contains(saida, marcaDeclaracao) {
+		t.Fatalf("um run parado por ORCAMENTO nao foi selado e o no CALOU-SE.\nlog: %q", saida)
+	}
+}
+
+// TestDesfechoNaoSelado_GuardaCobreTodosOsDesfechos é a metade que impede o PRÓXIMO esquecimento.
+//
+// Não testa um caso — testa a CORRESPONDÊNCIA entre a guarda e o `switch` que sela. Cada entrada
+// aqui é um desfecho que [runGate.sealTerminal] materializa; se alguém acrescentar um ramo novo
+// ao switch sem acrescentar o termo à guarda, o desfecho novo entra nesta tabela e o teste fica
+// vermelho — em vez de o nó se calar em produção e ninguém dar por isso.
+//
+// Foi assim que o `BudgetExhausted` se perdeu: a guarda foi escrita a partir do que eu tinha na
+// cabeça, não a partir do switch.
+func TestDesfechoNaoSelado_GuardaCobreTodosOsDesfechos(t *testing.T) {
+	desfechos := []struct {
+		nome     string
+		res      agentruntime.Result
+		runErr   error
+		panicked bool
+	}{
+		{"complete (resultado terminado)", agentruntime.Result{Terminated: true}, nil, false},
+		{"failed (panic recuperado)", agentruntime.Result{}, nil, true},
+		{"failed (erro de loop)", agentruntime.Result{}, errors.New("erro"), false},
+		{"timed_out (max_turns)", agentruntime.Result{}, agentruntime.ErrMaxTurnsExceeded, false},
+		{"timed_out (budget_exhausted)", agentruntime.Result{BudgetExhausted: true}, nil, false},
+	}
+	for _, d := range desfechos {
+		t.Run(d.nome, func(t *testing.T) {
+			var buf bytes.Buffer
+			s := nodeServiceSoComLog(&buf)
+
+			s.sealTerminalState(&runState{runID: "run-x"}, "nhi", d.res, d.runErr, d.panicked)
+
+			if !strings.Contains(buf.String(), marcaDeclaracao) {
+				t.Fatalf("o switch de sealTerminal materializa este desfecho, mas a guarda nao o reconhece — "+
+					"um run que acabe assim SEM selo fica em silencio.\nlog: %q", buf.String())
+			}
+		})
+	}
+}
