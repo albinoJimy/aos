@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -168,5 +169,47 @@ func TestAncoraDeDesfecho_SemAncoraOsBytesNaoMudam(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(linha), []byte(`"outcome_anchored":true`)) {
 		t.Errorf("a âncora satisfeita não é visível no relatório: %s", linha)
+	}
+}
+
+// TestAncoraDeDesfecho_RelatorioDeclaraAsAncorasDoReplay é o irmão do
+// [TestAncoraDeDesfecho_LogIntactoContinuaVerde] para as comparações NÃO-prompt: as três
+// são opt-in no replay e uma spec que as omita desliga-as EM SILÊNCIO. O relatório passa a
+// dizer quais correram, pela MESMA razão que diz se a âncora de desfecho correu.
+func TestAncoraDeDesfecho_RelatorioDeclaraAsAncorasDoReplay(t *testing.T) {
+	f, err := BuildEchoGolden("golden_ancoras_do_replay")
+	if err != nil {
+		t.Fatalf("BuildEchoGolden: %v", err)
+	}
+	defer f.Close()
+	c := f.Case()
+
+	rep, err := Verify(context.Background(), c)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	quero := map[string]bool{"model": true, "assembly_version": true}
+	for _, a := range rep.AnchorsVerified {
+		delete(quero, a)
+	}
+	if len(quero) != 0 {
+		t.Fatalf("a fixture re-fornece Model e AssemblyVersion, logo as duas âncoras correm; "+
+			"o relatório declarou %v", rep.AnchorsVerified)
+	}
+
+	// E uma spec sem elas continua VERDE — o opt-in mantém-se — mas o relatório deixa de
+	// afirmar comparações que não fez. É o contraste inteiro deste campo.
+	fraca := c
+	fraca.Spec.Model = agentruntime.ModelConfig{}
+	fraca.Spec.AssemblyVersion = ""
+	repFraco, err := Verify(context.Background(), fraca)
+	if err != nil {
+		t.Fatalf("Verify (spec fraca): %v", err)
+	}
+	if !repFraco.Pass {
+		t.Fatalf("o opt-in mantém-se: a spec fraca devia continuar a passar\n%s", repFraco.JSON())
+	}
+	if len(repFraco.AnchorsVerified) != 0 {
+		t.Fatalf("spec sem Model nem AssemblyVersion: âncoras = %v, queria nenhuma", repFraco.AnchorsVerified)
 	}
 }
