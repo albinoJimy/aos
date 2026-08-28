@@ -123,6 +123,7 @@ type config struct {
 	regionSet      bool
 	obs            Observer
 	now            func() time.Time
+	walTruncaCorr  bool
 }
 
 // WithReplicas define o número de réplicas do cluster (>= 1).
@@ -164,6 +165,19 @@ func WithReplicaRegions(regions ...string) Option {
 
 // WithObserver injecta um gancho de observabilidade.
 func WithObserver(o Observer) Option { return func(c *config) { c.obs = o } }
+
+// WithWALTruncateOnCorruption autoriza [Open] a TRUNCAR o WAL num ponto de corrupção
+// a MEIO do log — apagando em disco os registos íntegros que vinham depois.
+//
+// Por omissão [Open] RECUSA esse caso ([ErrWALCorruptedMidLog]), porque truncar ali é
+// destruir dados que estão bons. A cauda rasgada de um crash continua a ser truncada
+// sem esta opção: aí não há nada íntegro a seguir, e truncar é a recuperação correcta.
+//
+// É a via de recuperação DELIBERADA de um operador que já leu a mensagem de erro,
+// tem cópia de segurança e decidiu que perder o troço vale mais do que ficar parado.
+// NUNCA a ligue por omissão num serviço: transforma a recusa num apagamento silencioso,
+// que é exactamente o comportamento que a recusa existe para impedir.
+func WithWALTruncateOnCorruption() Option { return func(c *config) { c.walTruncaCorr = true } }
 
 // withClock injecta um relógio (uso interno/testes).
 func withClock(f func() time.Time) Option { return func(c *config) { c.now = f } }
