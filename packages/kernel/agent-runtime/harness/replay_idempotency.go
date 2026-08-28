@@ -79,6 +79,39 @@ type Case struct {
 	Effects []Effect
 	// Faults são os pontos de crash a exercitar (resume-from-step).
 	Faults []FaultPoint
+
+	// ExpectedFinalStateHash / ExpectedFinalText são a ÂNCORA DE DESFECHO: o desfecho
+	// que este run teve, conhecido por FORA do log. Vazio ⇒ sem verificação
+	// (retro-compatível), tal como [replay.TrajectorySpec].Model e .AssemblyVersion.
+	//
+	// # O PONTO CEGO QUE FECHAM, medido
+	//
+	// A fidelidade de replay compara `prompt_hash` turno a turno. O texto do ÚLTIMO
+	// turno não alimenta o tail de turno nenhum, pelo que alterá-lo no log não move
+	// hash nenhum dos que são comparados. Medido a 2026-08-28, trocando "concluído"
+	// por "ADULTERADO" no `replay.captured` do turno 3:
+	//
+	//	{"turns":3,"replay_fidelity":1,"diverged":false,...,"pass":true}
+	//
+	// Um `pass=true` sobre um run cujo desfecho — o produto do run — foi alterado. O
+	// sinal existia e era deitado fora: o `FinalStateHash` MUDOU, mas o harness só o
+	// usava para comparar a retoma contra o replay completo, e ambos lêem o mesmo log
+	// adulterado, logo concordavam. Faltava uma âncora vinda de fora.
+	//
+	// # QUAL DOS DOIS USAR
+	//
+	// ExpectedFinalStateHash é o mais forte (cobre o tail inteiro, incluindo o texto
+	// final), mas exige que o chamador tenha GRAVADO o hash fora do log — não o pode
+	// derivar do log que está a verificar, ou volta a comparar o texto consigo mesmo.
+	//
+	// ExpectedFinalText é o desfecho legível, e para um run guionado (as golden
+	// fixtures) vem do GUIÃO, que é código: uma testemunha genuinamente independente
+	// do log. É o que as fixtures usam.
+	//
+	// CAVEAT do vazio: um run que termine legitimamente com texto vazio não é
+	// distinguível de "sem âncora" por este campo. Nesse caso use o hash.
+	ExpectedFinalStateHash string
+	ExpectedFinalText      string
 }
 
 // FidelityReport é o RELATÓRIO de fidelidade de UM run. A serialização é canónica e
@@ -96,7 +129,22 @@ type FidelityReport struct {
 	DuplicatedEffects int     `json:"duplicated_effects"`
 	ResumePoints      int     `json:"resume_points_verified"`
 	ResumeMismatches  int     `json:"resume_mismatches"`
-	Pass              bool    `json:"pass"`
+	// OutcomeAnchored diz se a âncora de desfecho ([Case.ExpectedFinalStateHash] /
+	// [Case.ExpectedFinalText]) foi FORNECIDA e portanto verificada; OutcomeMismatch,
+	// se o desfecho reconstruído NÃO bateu com ela.
+	//
+	// OutcomeAnchored existe porque uma verificação que não corre tem de ser VISÍVEL
+	// no relatório. Sem ele, um `pass=true` sem âncora seria indistinguível de um
+	// `pass=true` com âncora satisfeita — que é a crítica que este campo fecha, e a
+	// mesma que continua por fechar no Model/AssemblyVersion do replay.
+	//
+	// Campos ADITIVOS com `omitempty` e colocados ANTES de Pass DE PROPÓSITO: sem
+	// âncora os dois são false e OMITIDOS, logo os bytes do relatório mantêm-se
+	// EXACTAMENTE os de antes desta funcionalidade; e o gate 8 ancora o veredicto ao
+	// FIM da linha ("pass":<bool>}), pelo que Pass tem de continuar a ser o último.
+	OutcomeAnchored bool `json:"outcome_anchored,omitempty"`
+	OutcomeMismatch bool `json:"outcome_mismatch,omitempty"`
+	Pass            bool `json:"pass"`
 }
 
 // verifyConfig e VerifyOption parametrizam [Verify] / [VerifyAll].
@@ -170,10 +218,26 @@ func Verify(ctx context.Context, c Case, opts ...VerifyOption) (FidelityReport, 
 	rep.ResumePoints = points
 	rep.ResumeMismatches = mismatches
 
+	// (d) ÂNCORA DE DESFECHO. Comparada contra o desfecho reconstruído do log; a
+	// âncora vem de FORA do log (ver [Case.ExpectedFinalStateHash]).
+	if c.ExpectedFinalStateHash != "" {
+		rep.OutcomeAnchored = true
+		if full.FinalStateHash != c.ExpectedFinalStateHash {
+			rep.OutcomeMismatch = true
+		}
+	}
+	if c.ExpectedFinalText != "" {
+		rep.OutcomeAnchored = true
+		if full.FinalText != c.ExpectedFinalText {
+			rep.OutcomeMismatch = true
+		}
+	}
+
 	rep.Pass = !rep.Diverged &&
 		rep.ReplayFidelity == 1.0 &&
 		rep.DuplicatedEffects == 0 &&
-		rep.ResumeMismatches == 0
+		rep.ResumeMismatches == 0 &&
+		!rep.OutcomeMismatch
 	return rep, nil
 }
 
@@ -313,6 +377,9 @@ func (r FidelityReport) Err() error {
 		return fmt.Errorf("harness: %d efeito(s) observável(eis) duplicado(s)", r.DuplicatedEffects)
 	case r.ResumeMismatches > 0:
 		return fmt.Errorf("harness: %d ponto(s) de retoma divergente(s)", r.ResumeMismatches)
+	case r.OutcomeMismatch:
+		return errors.New("harness: o DESFECHO reconstruído não bate com a âncora — o replay é fiel turno a turno, " +
+			"logo a divergência não está no prompt: está no que o log diz que o run produziu")
 	default:
 		return errors.New("harness: verificação falhou")
 	}

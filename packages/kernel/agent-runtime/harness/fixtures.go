@@ -37,6 +37,9 @@ type Fixture struct {
 	spec        replay.TrajectorySpec
 	effects     []Effect
 	faults      []FaultPoint
+	// desfecho é o texto final do GUIÃO — código, não o log. É a âncora independente
+	// que [Case.ExpectedFinalText] compara contra o desfecho reconstruído.
+	desfecho string
 }
 
 // Case constrói a [Case] verificável desta fixture.
@@ -49,6 +52,9 @@ func (f *Fixture) Case() Case {
 		LedgerStore: f.ledgerStore,
 		Effects:     f.effects,
 		Faults:      f.faults,
+		// A âncora vem do GUIÃO e nunca do log que está a ser verificado: derivá-la do
+		// log seria compará-lo consigo mesmo, e o ponto cego voltava intacto.
+		ExpectedFinalText: f.desfecho,
 	}
 }
 
@@ -198,6 +204,7 @@ func BuildEchoGolden(runID string) (fix *Fixture, err error) {
 	}
 	return &Fixture{
 		Name:        "echo-3turns",
+		desfecho:    model.responses[len(model.responses)-1].Text,
 		RunID:       runID,
 		trajectory:  traj,
 		ledgerStore: ledgerStore,
@@ -253,6 +260,7 @@ func BuildImmediateFinalGolden(runID string) (fix *Fixture, err error) {
 	}
 	return &Fixture{
 		Name:        "immediate-final",
+		desfecho:    model.responses[len(model.responses)-1].Text,
 		RunID:       runID,
 		trajectory:  traj,
 		ledgerStore: ledgerStore,
@@ -435,6 +443,7 @@ func BuildDelegationGolden(runID string) (fix *Fixture, err error) {
 	}
 	return &Fixture{
 		Name:        "delegation-3turns",
+		desfecho:    model.responses[len(model.responses)-1].Text,
 		RunID:       runID,
 		trajectory:  traj,
 		ledgerStore: ledgerStore,
