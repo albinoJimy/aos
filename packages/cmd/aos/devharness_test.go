@@ -309,7 +309,7 @@ func TestDevHarness_SteerReachesLoop(t *testing.T) {
 	if len(views) < 2 {
 		t.Fatalf("esperava >= 2 turnos (a fronteira de fim-de-turno não foi cruzada), tive %d", len(views))
 	}
-	if !strings.Contains(string(views[1].Materialized), "correction=prioriza a superficie desktop") {
+	if !strings.Contains(string(views[1].Materialized), "<correction taint=trusted>\nprioriza a superficie desktop") {
 		t.Fatalf("a correção NÃO chegou ao prompt do turno 2 — steer não ligado ao loop de produção\nprompt: %s", views[1].Materialized)
 	}
 	if !strings.Contains(string(views[1].Materialized), "taint="+agentruntime.TaintTrusted) {
@@ -323,7 +323,7 @@ func TestDevHarness_SteerReachesLoop(t *testing.T) {
 	if _, _, err := node2.Runtime.Run(ctx, steerGoal("dev-no-steer"), nil); err != nil {
 		t.Fatalf("Run (sem steer): %v", err)
 	}
-	if len(views2) >= 2 && strings.Contains(string(views2[1].Materialized), "correction=") {
+	if len(views2) >= 2 && strings.Contains(string(views2[1].Materialized), "<correction") {
 		t.Fatal("o prompt sem steer NÃO devia conter uma correção — o efeito não seria aditivo")
 	}
 	t.Log("[OK]   steer→loop: a correção humana chega ao loop (AOS-218); sem steer, o prompt é inalterado (dois sentidos).")

@@ -37,8 +37,15 @@ func TestTailFromCorrection_Trusted(t *testing.T) {
 	if seg.Kind != TailCorrection {
 		t.Fatalf("Kind=%q, quero %q", seg.Kind, TailCorrection)
 	}
-	if !bytes.HasPrefix(seg.Content, append([]byte("taint="), TaintTrusted...)) {
-		t.Fatalf("conteúdo não começa com taint=trusted: %q", seg.Content)
+	// AssemblyVersion 1.3.0: o rotulo trusted vive na LINHA DE DELIMITACAO.
+	if got := rotuloDe(seg, "taint"); got != TaintTrusted {
+		t.Fatalf("taint=%q, quero %q", got, TaintTrusted)
+	}
+	if bytes.Contains(seg.Content, []byte("taint=")) {
+		t.Fatalf("o rotulo TRUSTED voltou ao CORPO: %q", seg.Content)
+	}
+	if !bytes.Equal(seg.Content, []byte("corrige o rumo")) {
+		t.Fatalf("o corpo devia ser so a correccao: %q", seg.Content)
 	}
 }
 
@@ -97,11 +104,15 @@ func TestLoop_SteerCorrectionInjectedTrusted(t *testing.T) {
 		t.Fatalf("esperava >= 2 turnos, tive %d", len(views))
 	}
 	mat := views[1].Materialized // prompt do turno seguinte à correcção
-	if !bytes.Contains(mat, []byte("correction=prioriza a superficie desktop")) {
+	if !bytes.Contains(mat, []byte("prioriza a superficie desktop")) {
 		t.Fatal("correcção não injectada no prompt do turno seguinte")
 	}
-	if !bytes.Contains(mat, append([]byte("taint="), TaintTrusted...)) {
-		t.Fatal("correcção não marcada taint=trusted (dado de controlo, não untrusted)")
+	// AssemblyVersion 1.3.0: o rotulo trusted esta na LINHA DE DELIMITACAO do segmento,
+	// nao numa linha do corpo. Procurar so por "taint=trusted" passaria com o rotulo em
+	// qualquer sitio — incluindo escrito por conteudo untrusted, que e o que a 1.3.0
+	// impede. A asserção tem de ser sobre o DELIMITADOR.
+	if !bytes.Contains(mat, []byte("<"+string(TailCorrection)+" taint="+TaintTrusted+">")) {
+		t.Fatalf("correcção não marcada trusted na linha de delimitação:\n%s", mat)
 	}
 }
 

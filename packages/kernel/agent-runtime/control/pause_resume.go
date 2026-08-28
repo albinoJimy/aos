@@ -81,10 +81,15 @@ func (c Correction) Tainted() agentruntime.Tainted {
 // explícita no prompt materializado (coerente com o esquema de marcação do loop base),
 // e o kind [TailSteer] distingue-a visivelmente dos segmentos untrusted.
 func (c Correction) TailSegment() agentruntime.TailSegment {
-	content := append([]byte("taint="), agentruntime.TaintTrusted...)
-	content = append(content, '\n')
-	content = append(content, c.Value...)
-	return agentruntime.TailSegment{Kind: TailSteer, Content: content}
+	// AssemblyVersion 1.3.0: o rotulo de proveniencia passou do CORPO para a LINHA DE
+	// DELIMITACAO — `<steer taint=trusted>`. Este segmento e o SEGUNDO rotulo trusted da
+	// janela (o outro e o TailCorrection do proprio loop), pelo que tinha exactamente a
+	// mesma exposicao: escrito no corpo, ficava no mesmo espaco de linhas que o valor.
+	return agentruntime.TailSegment{
+		Kind:    TailSteer,
+		Meta:    []agentruntime.TailMeta{{Key: "taint", Value: agentruntime.TaintTrusted}},
+		Content: c.Value,
+	}
 }
 
 // GracefulPause é a BARREIRA DE FIM DE TURNO. O loop chama-a no FIM do turno corrente

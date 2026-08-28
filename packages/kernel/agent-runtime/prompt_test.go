@@ -11,8 +11,12 @@ import (
 // quando a tool falhou, o marcador "tool_error=" — mantendo o Value untrusted.
 func TestTailFromResultMarksProvenance(t *testing.T) {
 	ok := tailFromResult(Untrusted([]byte("saida")), nil)
-	if !bytes.HasPrefix(ok.Content, []byte("taint=untrusted\n")) {
-		t.Fatalf("faltava marcador taint: %q", ok.Content)
+	// AssemblyVersion 1.3.0: o rotulo vive na LINHA DE DELIMITACAO; o corpo e SO o valor.
+	if got := rotuloDe(ok, "taint"); got != TaintUntrusted {
+		t.Fatalf("taint=%q, quero %q", got, TaintUntrusted)
+	}
+	if bytes.Contains(ok.Content, []byte("taint=")) {
+		t.Fatalf("o rotulo voltou ao CORPO — o segundo vector da forja reabre: %q", ok.Content)
 	}
 	if bytes.Contains(ok.Content, []byte("tool_error=")) {
 		t.Fatalf("não devia haver tool_error sem erro: %q", ok.Content)
@@ -30,9 +34,28 @@ func TestTailFromHistoryMarksProvenance(t *testing.T) {
 	if h.Kind != TailHistory {
 		t.Fatalf("kind errado: %q", h.Kind)
 	}
-	if !bytes.Equal(h.Content, []byte("taint=untrusted\nresposta do modelo")) {
-		t.Fatalf("marcação inconsistente: %q", h.Content)
+	// AssemblyVersion 1.3.0: o rotulo vive na LINHA DE DELIMITACAO, nao no corpo.
+	if got := rotuloDe(h, "taint"); got != TaintUntrusted {
+		t.Fatalf("taint=%q, quero %q", got, TaintUntrusted)
 	}
+	// E a metade que importa: o corpo e SO conteudo. Se o rotulo voltasse para ca,
+	// voltaria a partilhar espaco de linhas com o que a tool escreve.
+	if bytes.Contains(h.Content, []byte("taint=")) {
+		t.Fatalf("o rotulo voltou ao CORPO — o segundo vector da forja reabre: %q", h.Content)
+	}
+	if !bytes.Equal(h.Content, []byte("resposta do modelo")) {
+		t.Fatalf("corpo alterado: %q", h.Content)
+	}
+}
+
+// rotuloDe devolve o valor do rotulo k na linha de delimitacao do segmento ("" se ausente).
+func rotuloDe(seg TailSegment, k string) string {
+	for _, m := range seg.Meta {
+		if m.Key == k {
+			return m.Value
+		}
+	}
+	return ""
 }
 
 func toolSet() []ToolSpec {

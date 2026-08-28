@@ -102,7 +102,7 @@ func TestNodeSteerCorrectionReachesLoop(t *testing.T) {
 	if len(views) < 2 {
 		t.Fatalf("esperava >= 2 turnos, tive %d (a fronteira de fim-de-turno não foi cruzada)", len(views))
 	}
-	if !strings.Contains(string(views[1].Materialized), "correction=prioriza a superficie desktop") {
+	if !strings.Contains(string(views[1].Materialized), "<correction taint=trusted>\nprioriza a superficie desktop") {
 		t.Fatalf("correcção NÃO chegou ao prompt do turno 2 — steer não está ligado ao loop de produção.\nprompt: %s", views[1].Materialized)
 	}
 	if !strings.Contains(string(views[1].Materialized), "taint="+agentruntime.TaintTrusted) {
@@ -118,7 +118,7 @@ func TestNodeSteerCorrectionReachesLoop(t *testing.T) {
 	if len(views2) < 2 {
 		t.Fatalf("esperava >= 2 turnos no controlo, tive %d", len(views2))
 	}
-	if strings.Contains(string(views2[1].Materialized), "correction=") {
+	if strings.Contains(string(views2[1].Materialized), "<correction") {
 		t.Fatal("prompt sem steer NÃO devia conter uma correcção — comportamento não é aditivo")
 	}
 }

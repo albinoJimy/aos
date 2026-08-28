@@ -70,6 +70,11 @@ const (
 // reordenar quebraria a estabilidade byte-a-byte do prefixo.
 type ToolSpec = agentruntime.ToolSpec
 
+// TailMeta é o rótulo de proveniência de um segmento. Alias do tipo canónico do
+// agent-runtime, pela mesma razão que [TailKind]: um tipo próprio aqui obrigaria a
+// converter em cada fronteira, e uma conversão esquecida perde o rótulo em silêncio.
+type TailMeta = agentruntime.TailMeta
+
 // TailKind classifica um segmento do tail append-only. Alias do tipo canónico do
 // Agent Runtime.
 type TailKind = agentruntime.TailKind
@@ -302,6 +307,12 @@ func (w *WindowManager) NewRunWith(runID string, extra ...ToolSpec) (*WindowMana
 type TailInput struct {
 	// Kind classifica o segmento (memory/tool_result/history/...).
 	Kind TailKind
+	// Meta são os RÓTULOS de proveniência do segmento (`taint`, `tool_denied`, …), que a
+	// AssemblyVersion 1.3.0 materializa na LINHA DE DELIMITAÇÃO e não no corpo. TÊM de
+	// atravessar esta porta: sem eles, um prompt montado pela janela GERIDA sai sem
+	// marca de proveniência nenhuma, enquanto o caminho inline a traz — e a diferença
+	// não seria cosmética, seria o modelo a deixar de ver o que é untrusted.
+	Meta []TailMeta
 	// Content é o conteúdo já serializado (bytes opacos).
 	Content string
 	// Priority governa a eviction: MAIOR prioridade é retida por mais tempo. A
@@ -321,7 +332,7 @@ func (w *WindowManager) Append(in TailInput) Occupancy {
 	tokens := w.estimator(in.Content)
 	w.seq++
 	w.tail = append(w.tail, tailEntry{
-		seg:      agentruntime.TailSegment{Kind: in.Kind, Content: []byte(in.Content)},
+		seg:      agentruntime.TailSegment{Kind: in.Kind, Meta: in.Meta, Content: []byte(in.Content)},
 		tokens:   tokens,
 		priority: in.Priority,
 		turn:     w.turn,

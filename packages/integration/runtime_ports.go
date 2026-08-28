@@ -127,7 +127,7 @@ type windowManagerPort struct {
 // agentruntime.TailKind, logo o Kind atravessa sem conversão. A prioridade de eviction
 // fica no default (0): não afecta os bytes materializados (só a ordem de eviction).
 func (p *windowManagerPort) Append(seg agentruntime.TailSegment) {
-	p.wm.Append(working.TailInput{Kind: seg.Kind, Content: string(seg.Content)})
+	p.wm.Append(working.TailInput{Kind: seg.Kind, Meta: seg.Meta, Content: string(seg.Content)})
 }
 
 // Assemble materializa o turno via WindowManager.Turn. O WindowManager usa o SEU
