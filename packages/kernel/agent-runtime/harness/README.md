@@ -33,6 +33,13 @@ os mesmos inputs dão sempre os mesmos bytes), consumível pelas métricas do ba
 que o gate de CI e os testes usam para transformar uma quebra de fidelidade/
 idempotência/retoma num `exit != 0`.
 
+**O relatório diz o que NÃO verificou.** `outcome_anchored` (âncora de desfecho) e
+`anchors_verified` (as comparações não-prompt do replay: `model`, `assembly_version`,
+`step_id`) declaram quais verificações **correram de facto**. As três do replay são
+*opt-in* — uma spec que as omita desliga-as, e sem estes campos um `pass` fraco seria
+indistinguível de um `pass` forte. Todos com `omitempty`: sem âncoras, os bytes do
+relatório são os de sempre.
+
 ## Golden trajectories / fixtures
 
 Trajectórias de referência **determinísticas e versionadas**, construídas por

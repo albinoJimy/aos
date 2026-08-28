@@ -135,8 +135,8 @@ type FidelityReport struct {
 	//
 	// OutcomeAnchored existe porque uma verificação que não corre tem de ser VISÍVEL
 	// no relatório. Sem ele, um `pass=true` sem âncora seria indistinguível de um
-	// `pass=true` com âncora satisfeita — que é a crítica que este campo fecha, e a
-	// mesma que continua por fechar no Model/AssemblyVersion do replay.
+	// `pass=true` com âncora satisfeita. A MESMA crítica valia para o Model/
+	// AssemblyVersion do replay, e está fechada por [FidelityReport.AnchorsVerified].
 	//
 	// Campos ADITIVOS com `omitempty` e colocados ANTES de Pass DE PROPÓSITO: sem
 	// âncora os dois são false e OMITIDOS, logo os bytes do relatório mantêm-se
@@ -144,7 +144,15 @@ type FidelityReport struct {
 	// FIM da linha ("pass":<bool>}), pelo que Pass tem de continuar a ser o último.
 	OutcomeAnchored bool `json:"outcome_anchored,omitempty"`
 	OutcomeMismatch bool `json:"outcome_mismatch,omitempty"`
-	Pass            bool `json:"pass"`
+	// AnchorsVerified nomeia as comparações NÃO-prompt que o replay CORREU de facto
+	// ("model", "assembly_version", "step_id"). As três são opt-in na
+	// [replay.TrajectorySpec]/[replay.Options] e uma spec que as omita desliga-as EM
+	// SILÊNCIO — medido a 2026-08-28: o mesmo log com Model e AssemblyVersion omitidos
+	// devolvia fidelidade 1 e nenhuma divergência, indistinguível de uma verificação
+	// completa. Vem de [replay.ReplayResult.AnchorsVerified], que é onde a condição
+	// vive; este campo só a propaga.
+	AnchorsVerified []string `json:"anchors_verified,omitempty"`
+	Pass            bool     `json:"pass"`
 }
 
 // verifyConfig e VerifyOption parametrizam [Verify] / [VerifyAll].
@@ -196,6 +204,7 @@ func Verify(ctx context.Context, c Case, opts ...VerifyOption) (FidelityReport, 
 	}
 	rep.Turns = len(full.Steps)
 	rep.ReplayFidelity = full.Fidelity
+	rep.AnchorsVerified = full.AnchorsVerified
 	if full.Divergence != nil {
 		rep.Diverged = true
 		rep.DivergenceStepID = full.Divergence.StepID

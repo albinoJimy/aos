@@ -146,6 +146,21 @@ type ReplayResult struct {
 	FinalStateHash string
 	// Fidelity é a fracção de turnos verificados cujo hash coincidiu (1.0 = 100%).
 	Fidelity float64
+	// AnchorsVerified nomeia as comparações NÃO-prompt que CORRERAM de facto neste
+	// replay: "model", "assembly_version", "step_id". Ver [activeAnchors].
+	//
+	// # PORQUE ISTO EXISTE
+	//
+	// As três são OPT-IN — só correm quando o chamador re-fornece o campo esperado
+	// ([TrajectorySpec].Model.ModelID, .AssemblyVersion, [Options].StepIdentity). Uma
+	// spec que os omita desliga-as EM SILÊNCIO, e até aqui nada no resultado o dizia:
+	// medido a 2026-08-28, o MESMO log com Model e AssemblyVersion omitidos devolvia
+	// `Fidelity=1, Divergence=nil` — indistinguível de uma verificação completa.
+	//
+	// O opt-in é deliberado e mantém-se (retro-compatibilidade). O que muda é que
+	// deixa de ser invisível: quem consome o resultado passa a poder distinguir «não
+	// divergiu» de «não foi comparado».
+	AnchorsVerified []string
 	// Divergence é não-nil se uma divergência foi detectada e localizada.
 	Divergence *ReplayDivergence
 }
@@ -415,7 +430,12 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 	// O MESMO assembler que o loop usou (mesmo system + tool set congelado).
 	asm := agentruntime.NewPromptAssembler(opts.Spec.System, opts.Spec.Tools)
 
-	res := ReplayResult{RunID: runID, ResumedFromStepID: opts.FromStepID, Fidelity: 1.0}
+	res := ReplayResult{
+		RunID:             runID,
+		ResumedFromStepID: opts.FromStepID,
+		Fidelity:          1.0,
+		AnchorsVerified:   activeAnchors(opts.Spec, opts.StepIdentity),
+	}
 
 	// Semeia o tail EXACTAMENTE como o loop (memory_context + objectivo).
 	tail := seedTail(opts.Spec)
@@ -541,6 +561,29 @@ func (e *ReplayEngine) detectDivergence(runID string, turn int, stepID, actual s
 		}
 	}
 	return nil
+}
+
+// activeAnchors nomeia as comparações não-prompt que [ReplayEngine.detectDivergence]
+// vai de facto correr, dadas a spec e a identidade de passo.
+//
+// As condições AQUI têm de espelhar EXACTAMENTE as de [ReplayEngine.detectDivergence].
+// Duas cópias de uma condição divergem, e a que mente seria esta — um relatório a dizer
+// que comparou o que ninguém comparou é pior do que relatório nenhum. É por isso que
+// [TestAnchorsVerifiedEspelhaOQueEComparado] amarra as duas: por cada âncora que esta
+// função declara activa, o teste força a divergência correspondente e exige que ela
+// saia — se uma condição mudar num sítio e não no outro, fica vermelho.
+func activeAnchors(spec TrajectorySpec, ident agentruntime.StepIdentity) []string {
+	var out []string
+	if spec.Model.ModelID != "" {
+		out = append(out, "model")
+	}
+	if spec.AssemblyVersion != "" {
+		out = append(out, "assembly_version")
+	}
+	if ident != nil {
+		out = append(out, "step_id")
+	}
+	return out
 }
 
 // canonicalModel devolve uma representação estável e comparável da configuração de
