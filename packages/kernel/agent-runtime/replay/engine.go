@@ -316,10 +316,19 @@ func (e *ReplayEngine) resolvePayload(ctx context.Context, ref capturePayload) (
 		return capturePayload{}, ErrCorruptCapture
 	}
 	// Fail-closed sobre o blob externo (defesa-em-profundidade, AOS-079): embora a
-	// PayloadRef seja content-addressed (o Get já rejeita bytes adulterados) e a ref
-	// esteja ancorada no ES tamper-evident (AOS-072), NÃO confiamos no conteúdo interno
-	// para (a) indexar o turno nem (b) interpretar o schema. Um schema não suportado ou
-	// um Turn interno divergente do envelope do ES é captura corrupta, não um silêncio.
+	// PayloadRef seja content-addressed (o Get já rejeita bytes adulterados), NÃO
+	// confiamos no conteúdo interno para (a) indexar o turno nem (b) interpretar o
+	// schema. Um schema não suportado ou um Turn interno divergente do envelope do ES
+	// é captura corrupta, não um silêncio.
+	//
+	// CORRIGIDO a 2026-08-28: esta nota dizia que a ref «está ancorada no ES
+	// tamper-evident (AOS-072)», e a premissa é FALSA. AOS-072 é «Audit tamper-evident
+	// (hash-chain + WORM + assinatura)» e vive em packages/platform/audit — um store
+	// SEPARADO, alimentado pelas mediações do RM e pelo egress, que é o que a selagem
+	// diária ancora. O Event Store onde a captura vive é append-only na API e tem um
+	// crc32 por registo no WAL, que é detecção de ERRO e não um MAC: recalcula-se.
+	// A verificação abaixo estava certa; a razão declarada é que mandava quem a lesse
+	// concluir que podia confiar noutro sítio qualquer.
 	if full.SchemaVersion != captureSchemaVersion {
 		return capturePayload{}, ErrCorruptCapture
 	}

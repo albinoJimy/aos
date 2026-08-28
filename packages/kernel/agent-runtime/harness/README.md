@@ -10,6 +10,7 @@ ADR-001, ADR-010):
 | **(a) Replay determinístico** | Corre o motor de replay de **AOS-016** ([`replay.ReplayEngine`]) sobre a trajectória; suporta `resume-from-step`. | Algum passo diverge (prompt_hash, modelo/seed, versão do assembler ou sequência de step_id). |
 | **(b) Idempotência por passo** | Reexecuta cada passo com efeito sob um calendário *at-least-once* com **crash intercalado** (ledger reconstruído do log), via o **step-ledger de AOS-014** ([`durable.StepLedger`]). | Um efeito observável corre mais do que uma vez (ex.: idempotency key não-determinística). |
 | **(c) Fault-injection** | Retoma a partir de pontos de crash configuráveis ([`FaultPoint`]) e compara o estado reconstruído. | A retoma não reproduz o mesmo estado/desfecho que o replay completo. |
+| **(d) Âncora de desfecho** | Compara o desfecho reconstruído contra um esperado vindo de **fora do log** ([`Case`].`ExpectedFinalText` / `ExpectedFinalStateHash`). Opcional: vazio ⇒ sem verificação. | O desfecho gravado não bate com a âncora. |
 
 > **Reutiliza, não reimplementa.** O harness **orquestra e afere** peças já
 > Done: o replay (`agent-runtime/replay`, AOS-016) e o ledger
@@ -85,15 +86,21 @@ trajectória adulterada bloqueia o gate.
 
 ## Meta-testes (a prova de que o harness FUNCIONA)
 
-- `TestHarnessDetectsTamperedTrajectory` — o harness **apanha** uma trajectória
-  adulterada (system/objectivo/tools/seed/assembly) e reprova (divergência
-  localizada no passo exacto).
+- `TestHarnessDetectsTamperedTrajectory` — o harness **apanha** deriva do CÓDIGO
+  (system/objectivo/tools/seed/assembly) e reprova, com a divergência localizada no
+  passo exacto. O nome diz «trajectória adulterada», mas o que estes cinco casos
+  mutam é a **spec** — o lado do código —, nunca o log. A distinção importa porque
+  são ameaças diferentes: deriva de código, que isto cobre, e adulteração do
+  registo, que só é apanhada quando o troço adulterado alimenta o prompt de um turno
+  seguinte (ver a âncora de desfecho, para o caso em que não alimenta).
 - `TestHarnessDetectsDuplicatedEffect` — o harness **apanha** um efeito duplicado
   injectado (idempotency key não-determinística) e reprova.
 - `TestFixturesReproducible` — as fixtures produzem relatórios **byte-idênticos**
   entre execuções (`-count` alto).
 - `TestFaultInjectionResume` — pontos de crash retomam no **estado correcto**.
 - `TestFidelityReportEmitted` — o relatório é emitido, estável e consumível.
+- `TestAncoraDeDesfecho_TextoFinalAdulteradoEhApanhado` — o harness apanha um run cujo
+  **texto final** foi adulterado no log. Nasceu vermelho: (a), (b) e (c) não o viam.
 
 ## Alinhamento com EPIC-11
 
@@ -109,6 +116,7 @@ golden-set de comportamento). Este pacote não lhe toca.
 [`FidelityReport`]: ./replay_idempotency.go
 [`AggregateReport`]: ./replay_idempotency.go
 [`FaultPoint`]: ./replay_idempotency.go
+[`Case`]: ./replay_idempotency.go
 [`BuildEchoGolden`]: ./fixtures.go
 [`BuildImmediateFinalGolden`]: ./fixtures.go
 [`GoldenSet`]: ./fixtures.go
