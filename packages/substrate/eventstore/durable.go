@@ -36,6 +36,11 @@ import (
 //   - CRASH-SAFETY: uma escrita PARCIAL/truncada no fim do ficheiro (crash a meio de
 //     um write) ou um registo com checksum inválido é DETECTADO e IGNORADO no replay
 //     (pára no último registo íntegro) — nunca corrompe o store nem duplica.
+//   - CORRUPÇÃO A MEIO ≠ CAUDA RASGADA: se houver registos ÍNTEGROS DEPOIS do ponto de
+//     quebra, não é a cauda de um crash e truncar apagaria dados bons. [Open] RECUSA
+//     ([ErrWALCorruptedMidLog]) em vez de truncar, e não toca no ficheiro — a cópia de
+//     segurança continua a ter contra o que reconciliar. Ver [WithWALTruncateOnCorruption]
+//     para a recuperação deliberada.
 //
 // FORMATO DE REGISTO (framing que detecta truncamento):
 //
@@ -158,50 +163,96 @@ func (w *wal) close() error {
 // reabrir em append, para que os writes novos fiquem contíguos e replayáveis (sem
 // isto, uns bytes parciais no meio tornariam registos posteriores inalcançáveis). Um
 // ficheiro inexistente devolve zero eventos e offset 0 (arranque a frio).
-func replayWAL(path string) ([]Event, int64, error) {
+// orfaos é o nº de registos ÍNTEGROS encontrados DEPOIS do ponto onde o replay parou.
+// Zero ⇒ cauda rasgada (o caso do crash), e truncar é a recuperação correcta. Maior
+// que zero ⇒ corrupção a MEIO do log, e truncar apagaria dados bons — ver [Open].
+func replayWAL(path string) (_ []Event, validEnd int64, orfaos int, _ error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		}
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	defer f.Close()
 
 	r := bufio.NewReader(f)
 	var out []Event
-	var validEnd int64
+	// enquadramentoIntacto: o registo que fez parar foi lido POR INTEIRO (len+payload+crc),
+	// pelo que o leitor ficou posicionado na fronteira do registo SEGUINTE e dá para
+	// procurar o que vem depois. Quando o próprio enquadramento se perdeu (header/payload/
+	// checksum truncados, comprimento absurdo), não há fronteira seguinte que se possa
+	// achar — e, por construção, estamos no fim do que é interpretável.
+	enquadramentoIntacto := false
 	for {
-		var hdr [4]byte
-		if _, err := io.ReadFull(r, hdr[:]); err != nil {
-			// EOF limpo (fim do log) OU header truncado (crash a meio) — em ambos
-			// paramos no último registo íntegro. Nunca é um erro de integridade.
+		payload, ok, enquadrado := leRegisto(r)
+		if !ok {
+			enquadramentoIntacto = enquadrado
 			break
-		}
-		n := binary.BigEndian.Uint32(hdr[:])
-		if n == 0 || n > maxRecordBytes {
-			// Comprimento absurdo ⇒ header corrompido/lixo de um write parcial: pára.
-			break
-		}
-		payload := make([]byte, n)
-		if _, err := io.ReadFull(r, payload); err != nil {
-			break // payload truncado ⇒ registo final incompleto: descarta.
-		}
-		var tr [4]byte
-		if _, err := io.ReadFull(r, tr[:]); err != nil {
-			break // checksum truncado ⇒ registo final incompleto: descarta.
-		}
-		if binary.BigEndian.Uint32(tr[:]) != crc32.Checksum(payload, crcTable) {
-			break // checksum inválido ⇒ corrupção: pára no último registo íntegro.
 		}
 		var ev Event
 		if err := json.Unmarshal(payload, &ev); err != nil {
-			break // payload não desserializa ⇒ trata como corrupção: pára.
+			// Payload não desserializa: os bytes são os que foram escritos (o crc bate),
+			// logo o enquadramento está bom e o registo seguinte é alcançável.
+			enquadramentoIntacto = true
+			break
 		}
 		out = append(out, ev)
-		validEnd += int64(4 + int(n) + 4)
+		validEnd += int64(4 + len(payload) + 4)
 	}
-	return out, validEnd, nil
+	if enquadramentoIntacto {
+		orfaos = contaRegistosIntegros(r)
+	}
+	return out, validEnd, orfaos, nil
+}
+
+// leRegisto lê UM registo framed do WAL.
+//
+//	ok=true                      — registo íntegro; payload devolvido.
+//	ok=false, enquadrado=false   — fim-de-log limpo, ou enquadramento perdido (write
+//	                               rasgado): não há fronteira seguinte a partir daqui.
+//	ok=false, enquadrado=true    — checksum inválido, mas o frame foi consumido por
+//	                               inteiro: o leitor está na fronteira do registo seguinte.
+func leRegisto(r *bufio.Reader) (payload []byte, ok bool, enquadrado bool) {
+	var hdr [4]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		// EOF limpo (fim do log) OU header truncado (crash a meio).
+		return nil, false, false
+	}
+	n := binary.BigEndian.Uint32(hdr[:])
+	if n == 0 || n > maxRecordBytes {
+		return nil, false, false // comprimento absurdo ⇒ header corrompido/lixo.
+	}
+	payload = make([]byte, n)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, false, false // payload truncado ⇒ registo incompleto.
+	}
+	var tr [4]byte
+	if _, err := io.ReadFull(r, tr[:]); err != nil {
+		return nil, false, false // checksum truncado ⇒ registo incompleto.
+	}
+	if binary.BigEndian.Uint32(tr[:]) != crc32.Checksum(payload, crcTable) {
+		return nil, false, true // corrupção DENTRO de um frame bem-formado.
+	}
+	return payload, true, true
+}
+
+// contaRegistosIntegros conta os registos que ainda desserializam a partir da posição
+// corrente do leitor. É o que distingue «cauda rasgada» (zero) de «corrupção a meio»
+// (mais que zero) — a única pergunta cuja resposta muda o remédio.
+func contaRegistosIntegros(r *bufio.Reader) int {
+	n := 0
+	for {
+		payload, ok, _ := leRegisto(r)
+		if !ok {
+			return n
+		}
+		var ev Event
+		if err := json.Unmarshal(payload, &ev); err != nil {
+			return n
+		}
+		n++
+	}
 }
 
 // Open cria OU reabre um Event Store DURÁVEL respaldado pelo WAL em path. No
@@ -218,9 +269,27 @@ func replayWAL(path string) ([]Event, int64, error) {
 // (fidelidade byte-a-byte do envelope). Um path inexistente cria um store durável
 // novo (WAL vazio). Chame Close para libertar o Store e fechar o WAL.
 func Open(path string, opts ...Option) (*Store, error) {
-	events, validEnd, err := replayWAL(path)
+	events, validEnd, orfaos, err := replayWAL(path)
 	if err != nil {
 		return nil, fmt.Errorf("eventstore: replay do WAL %q: %w", path, err)
+	}
+	// CORRUPÇÃO A MEIO ≠ CAUDA RASGADA, e a diferença decide se se apaga ou se se pára.
+	//
+	// Truncar a validEnd é a recuperação CORRECTA para um write interrompido no fim do
+	// ficheiro: os bytes parciais não são dados de ninguém. Aplicado a uma corrupção no
+	// MEIO, o mesmo gesto apaga do disco todos os registos que vinham a seguir — que
+	// podem estar byte-a-byte íntegros. Medido antes desta guarda: 5 eventos, um byte
+	// corrompido no 2º, e o ficheiro passou de 1765 para 353 bytes ao reabrir; os
+	// eventos 3, 4 e 5 estavam intactos e desapareceram, com Read a devolver err=nil.
+	//
+	// Fail-closed: com registos íntegros a seguir ao ponto de quebra, o Open RECUSA.
+	// Um nó que não arranca é um problema visível; um log que encolheu em silêncio não é.
+	if orfaos > 0 && !walTruncaCorrompido(opts) {
+		return nil, fmt.Errorf(
+			"eventstore: WAL %q: %w — quebra ao byte %d, com %d registo(s) integro(s) depois dela; "+
+				"truncar aqui apagaria esses registos. Restaure de uma copia de seguranca, ou "+
+				"— se decidir DELIBERADAMENTE perder o troco — reabra com WithWALTruncateOnCorruption()",
+			path, ErrWALCorruptedMidLog, validEnd, orfaos)
 	}
 	// CRASH-SAFETY: se o ficheiro tinha um tail parcial/corrompido para lá do último
 	// registo íntegro, trunca-o a validEnd ANTES de reabrir em append — assim os
@@ -249,6 +318,18 @@ func Open(path string, opts ...Option) (*Store, error) {
 	}
 	s.wal = w
 	return s, nil
+}
+
+// walTruncaCorrompido lê APENAS o interruptor de [WithWALTruncateOnCorruption] das
+// Option, sem construir um Store: a decisão de truncar tem de ser tomada ANTES de
+// mexer no ficheiro, e o [New] só corre depois. Não replica defaults com significado
+// — o único campo lido tem zero-value fail-closed (não truncar).
+func walTruncaCorrompido(opts []Option) bool {
+	c := &config{}
+	for _, o := range opts {
+		o(c)
+	}
+	return c.walTruncaCorr
 }
 
 // Reopen é um alias explícito de Open para o caminho de ARRANQUE do nó (reconstrói o

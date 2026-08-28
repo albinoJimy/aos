@@ -52,4 +52,12 @@ var (
 	// diferente do stream alvo ou EventID vazio). O restauro reinsere o envelope
 	// intacto; recusa fail-closed qualquer envelope malformado.
 	ErrRestoreEnvelope = &StoreError{Code: "E_RESTORE_ENVELOPE", msg: "envelope de evento de restauro incoerente (stream_id/event_id)"}
+
+	// ErrWALCorruptedMidLog — o WAL tem um registo corrompido com registos ÍNTEGROS
+	// depois dele. NÃO é a cauda rasgada de um crash: é corrupção no MEIO do log, e
+	// a diferença importa porque o remédio da cauda (truncar) apagaria em disco
+	// registos que estão intactos. Fail-closed: [Open] recusa em vez de truncar.
+	//
+	// Ver [WithWALTruncateOnCorruption] para a via de recuperação DELIBERADA.
+	ErrWALCorruptedMidLog = &StoreError{Code: "E_WAL_CORRUPTED_MID_LOG", msg: "registo corrompido no MEIO do WAL, com registos integros a seguir"}
 )
