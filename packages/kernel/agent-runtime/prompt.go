@@ -22,7 +22,7 @@ import (
 // neutralização existe para impedir. A versão sobe na mesma: o que ela versiona é o
 // CÓDIGO de montagem, e uma divergência tem de sair como `assembly_version` — atribuível
 // — e não como um `prompt_hash` que ninguém sabe explicar.
-const AssemblyVersion = "1.2.0"
+const AssemblyVersion = "1.3.0"
 
 // hashPrefix é o prefixo dos hashes emitidos (formato tecnica/13 §3: "sha256:…").
 const hashPrefix = "sha256:"
@@ -63,8 +63,36 @@ const (
 // TailSegment é uma unidade append-only do tail. O tail cresce a cada turno; o
 // prefixo NUNCA. Content é opaco (bytes já serializados pelo chamador).
 type TailSegment struct {
-	Kind    TailKind
+	Kind TailKind
+	// Meta são os RÓTULOS de proveniência do segmento (`taint`, `tool_denied`, …),
+	// materializados na LINHA DE DELIMITAÇÃO e NUNCA no corpo — ver [TailMeta] e
+	// [AssemblyVersion] 1.3.0. A ordem é significativa e nunca é reordenada.
+	Meta    []TailMeta
 	Content []byte
+}
+
+// TailMeta é um RÓTULO de proveniência de um segmento: o par chave/valor que diz ao
+// modelo o que aquele segmento É (`taint=untrusted`, `tool_denied=deny`, …).
+//
+// # PORQUE VIVE NA LINHA DE DELIMITAÇÃO E NÃO NO CORPO
+//
+// Até à [AssemblyVersion] 1.2.0 estes rótulos eram escritos como as primeiras linhas
+// do CORPO do segmento — no MESMO espaço de linhas que o conteúdo. Um resultado de
+// tool cujo conteúdo fosse `taint=trusted` produzia um segmento com DUAS linhas
+// `taint=`, e o conteúdo untrusted escrevia assim no vocabulário de controlo do
+// prompt. Era o segundo vector da forja no tail, e ficou aberto e declarado quando a
+// 1.2.0 fechou o primeiro (a forja de SEGMENTOS).
+//
+// A linha de delimitação já é INFORJÁVEL: [neutralizarDelimitadores] garante que
+// nenhuma linha do conteúdo consegue começar por '<'. Mover os rótulos para lá faz
+// com que herdem essa propriedade POR CONSTRUÇÃO — sem lista de chaves a proteger e
+// sem regra nova que alguém possa contornar com uma chave que ninguém previu.
+//
+// Não se resolvia alargando a neutralização às chaves: um documento legítimo com
+// `nome=Ana` passaria a ser mutilado. O problema não era a chave — era o SÍTIO.
+type TailMeta struct {
+	Key   string
+	Value string
 }
 
 // PromptView é o resultado de materializar o prompt de um turno. Expõe o prefixo
@@ -148,6 +176,15 @@ func (a *PromptAssembler) Assemble(turn int, tail []TailSegment) PromptView {
 	for _, seg := range tail {
 		mat = append(mat, '<')
 		mat = append(mat, string(seg.Kind)...)
+		// Rótulos de proveniência na LINHA DE DELIMITAÇÃO — ver [TailMeta]. Os valores
+		// passam por [sanitizarRotulo] mesmo vindo todos de enumerações fechadas: a
+		// garantia tem de ser ESTRUTURAL e não uma promessa sobre os chamadores de hoje.
+		for _, m := range seg.Meta {
+			mat = append(mat, ' ')
+			mat = append(mat, sanitizarRotulo(m.Key)...)
+			mat = append(mat, '=')
+			mat = append(mat, sanitizarRotulo(m.Value)...)
+		}
 		mat = append(mat, ">\n"...)
 		mat = append(mat, neutralizarDelimitadores(seg.Content)...)
 		mat = append(mat, '\n')
@@ -228,30 +265,37 @@ type ToolDenial struct {
 // resultado de uma call negada continua a ser untrusted-VAZIO (invariante selado por
 // teste), e o marcador é metadado de proveniência, não conteúdo devolvido por uma tool.
 func tailFromResultDenied(r Tainted, toolErr error, den *ToolDenial) TailSegment {
-	content := append([]byte("taint="), r.Taint...)
-	content = append(content, '\n')
+	meta := []TailMeta{{Key: "taint", Value: r.Taint}}
 	if den != nil {
-		content = append(content, "tool_denied="...)
-		content = append(content, den.Effect...)
-		content = append(content, '\n')
+		meta = append(meta, TailMeta{Key: "tool_denied", Value: den.Effect})
 		if den.Code != "" {
-			content = append(content, "denied_code="...)
-			content = append(content, den.Code...)
-			content = append(content, '\n')
+			meta = append(meta, TailMeta{Key: "denied_code", Value: den.Code})
 		}
 		if den.DeniedBy != "" {
-			content = append(content, "denied_by="...)
-			content = append(content, den.DeniedBy...)
-			content = append(content, '\n')
+			meta = append(meta, TailMeta{Key: "denied_by", Value: den.DeniedBy})
 		}
 	}
+	// `tool_error` fica no CORPO, e é uma decisão, não um esquecimento.
+	//
+	// O valor é [error.Error] — texto LIVRE, vindo de uma tool ou de uma camada
+	// downstream. Pô-lo na linha de delimitação exigiria escapá-lo ou mutilá-lo:
+	// escapá-lo devolve-nos a regra de escape que esta versão existe para eliminar;
+	// mutilá-lo por [sanitizarRotulo] destruiria a mensagem, que é precisamente o que
+	// ela tem de útil para o modelo.
+	//
+	// Fica no corpo porque NÃO é um rótulo de confiança. O que a 1.3.0 tira do corpo é
+	// o vocabulário que decide se o modelo pode obedecer a um segmento; `tool_error` é
+	// diagnóstico. Conteúdo untrusted continua a poder escrever uma linha
+	// `tool_error=` no corpo — e isso continua a ser ruído, não uma reivindicação de
+	// privilégio, porque o rótulo genuíno já não vive ao lado dele.
+	var content []byte
 	if toolErr != nil {
 		content = append(content, "tool_error="...)
 		content = append(content, toolErr.Error()...)
 		content = append(content, '\n')
 	}
 	content = append(content, r.Value...)
-	return TailSegment{Kind: TailToolResult, Content: content}
+	return TailSegment{Kind: TailToolResult, Meta: meta, Content: content}
 }
 
 // tailFromHistory constrói um segmento de tail a partir do texto do modelo. A
@@ -259,10 +303,11 @@ func tailFromResultDenied(r Tainted, toolErr error, den *ToolDenial) TailSegment
 // MESMO esquema de marcação de proveniência dos resultados de tool ("taint=…"),
 // para consistência e auditabilidade do prompt materializado (defesa-em-profundidade).
 func tailFromHistory(text string) TailSegment {
-	content := append([]byte("taint="), TaintUntrusted...)
-	content = append(content, '\n')
-	content = append(content, text...)
-	return TailSegment{Kind: TailHistory, Content: content}
+	return TailSegment{
+		Kind:    TailHistory,
+		Meta:    []TailMeta{{Key: "taint", Value: TaintUntrusted}},
+		Content: []byte(text),
+	}
 }
 
 // tailFromCorrection constrói o segmento de tail de uma correcção humana out-of-band
@@ -272,11 +317,15 @@ func tailFromHistory(text string) TailSegment {
 // MESMO esquema de prefixo de proveniência ("taint=…") para consistência do prompt
 // materializado.
 func tailFromCorrection(correction []byte) TailSegment {
-	content := append([]byte("taint="), TaintTrusted...)
-	content = append(content, '\n')
-	content = append(content, "correction="...)
-	content = append(content, correction...)
-	return TailSegment{Kind: TailCorrection, Content: content}
+	// O prefixo textual `correction=` DESAPARECEU do corpo com a 1.3.0, e nao faz falta:
+	// o kind do segmento ja diz `<correction ...>`, e a linha de delimitacao e inforjavel.
+	// Mante-lo seria conservar no corpo — onde o conteudo alcanca — uma chave que o
+	// proprio delimitador ja exprime.
+	return TailSegment{
+		Kind:    TailCorrection,
+		Meta:    []TailMeta{{Key: "taint", Value: TaintTrusted}},
+		Content: correction,
+	}
 }
 
 // TailFromCorrection constrói o segmento de tail de uma correcção. É a MESMA
@@ -355,6 +404,61 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // produz bytes IDÊNTICOS e a trajectória continua a reproduzir. Só diverge o conteúdo que
 // contenha exactamente aquilo que esta função existe para neutralizar. Ainda assim a
 // [AssemblyVersion] sobe: o CÓDIGO de montagem mudou, e é isso que ela versiona.
+// sanitizarRotulo restringe uma chave ou valor de [TailMeta] a um alfabeto que NÃO
+// consegue fechar a linha de delimitação nem abrir uma linha nova.
+//
+// Permitido: letras, dígitos, e `_ : . - /`. Tudo o resto — incluindo '>', espaço,
+// '\n' e '\r' — vira '_'.
+//
+// # PORQUE EXISTE SE OS VALORES SÃO TODOS DE ENUMERAÇÃO FECHADA
+//
+// Porque «enumeração fechada» é uma afirmação sobre os chamadores de HOJE, e esta
+// função é uma propriedade do MATERIALIZADOR. O dia em que alguém puser aqui um rótulo
+// derivado de texto de terceiros — a mensagem de um erro, o nome de um recurso — a
+// fronteira já está fechada e ninguém tem de se lembrar dela. É a diferença entre
+// «ninguém faz isso» e «isso não é expressável».
+//
+// NÃO é escape reversível e não pretende sê-lo: um rótulo não é conteúdo, é vocabulário
+// de controlo. Mutilar um rótulo malformado é o comportamento certo; mutilar conteúdo
+// não seria — e é por isso que o corpo passa por [neutralizarDelimitadores], que
+// preserva o texto, e não por aqui.
+func sanitizarRotulo(s string) string {
+	limpo := true
+	for i := 0; i < len(s); i++ {
+		if !byteDeRotulo(s[i]) {
+			limpo = false
+			break
+		}
+	}
+	if limpo {
+		// Caminho comum: nada a fazer, sem alocar.
+		return s
+	}
+	out := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		if byteDeRotulo(s[i]) {
+			out[i] = s[i]
+			continue
+		}
+		out[i] = '_'
+	}
+	return string(out)
+}
+
+// byteDeRotulo é o alfabeto de [sanitizarRotulo]. Allowlist, nunca denylist: uma
+// denylist esquece-se sempre de um byte, e o esquecimento seria exactamente a via de
+// escape que esta correcção existe para não deixar existir.
+func byteDeRotulo(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '_', b == ':', b == '.', b == '-', b == '/':
+		return true
+	default:
+		return false
+	}
+}
+
 func neutralizarDelimitadores(content []byte) []byte {
 	if len(content) == 0 {
 		return content

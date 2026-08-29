@@ -154,8 +154,18 @@ func TestResume_AppliesCorrection(t *testing.T) {
 	if seg.Kind != control.TailSteer {
 		t.Fatalf("tail kind = %q, quer steer", seg.Kind)
 	}
-	if !strings.Contains(string(seg.Content), "taint="+agentruntime.TaintTrusted) {
-		t.Fatalf("segmento de tail não marca trusted: %q", seg.Content)
+	// AssemblyVersion 1.3.0: o rotulo trusted migrou do CORPO para a linha de delimitacao.
+	trusted := false
+	for _, m := range seg.Meta {
+		if m.Key == "taint" && m.Value == agentruntime.TaintTrusted {
+			trusted = true
+		}
+	}
+	if !trusted {
+		t.Fatalf("segmento de tail não marca trusted no delimitador: %+v", seg.Meta)
+	}
+	if strings.Contains(string(seg.Content), "taint=") {
+		t.Fatalf("o rotulo TRUSTED voltou ao CORPO: %q", seg.Content)
 	}
 	if !strings.Contains(string(seg.Content), string(correction)) {
 		t.Fatal("segmento de tail não contém a correcção")

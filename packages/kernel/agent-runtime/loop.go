@@ -312,8 +312,32 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		agentSpan.End()
 	}()
 
-	// Tail append-only, semeado com memory_context + objectivo (trusted). O tail é agora
-	// propriedade da [WindowPort] (D-TAIL) — o loop só lhe entrega segmentos.
+	// Tail append-only, semeado com memory_context + objectivo. O tail é agora propriedade
+	// da [WindowPort] (D-TAIL) — o loop só lhe entrega segmentos.
+	//
+	// OS DOIS NÃO TÊM O MESMO ESTATUTO, e esta nota dizia "(trusted)" para ambos.
+	//
+	// O OBJECTIVO é trusted com fundamento: vem de `req.Objective` de uma submissão
+	// autenticada (cmd/aos/api.go) e nunca de saída de modelo — verificado a 2026-08-28,
+	// incluindo o caminho de delegação, cujo `SpawnRequest` transporta identidade,
+	// orçamento e profundidade, mas NÃO um objectivo.
+	//
+	// O MEMORY_CONTEXT não tem fundamento nenhum, e hoje isso não custa nada porque
+	// NINGUÉM O PREENCHE: nenhum caminho de produção atribui `Goal.MemoryContext` (o
+	// EPIC-04 ainda não o ligou), pelo que este segmento nunca chega a ser emitido.
+	//
+	// QUANDO O EPIC-04 O LIGAR, A CORRECÇÃO NÃO É PÔR-LHE UM RÓTULO AQUI. Um `taint=` na
+	// linha de delimitação deste segmento seria uma tag in-band, e `tecnica/04` §
+	// "memory poisoning" e `specs/EPIC-07` recusam-nas explicitamente para esta classe:
+	// «tags in-band não são separação de privilégio». A defesa declarada é taint tracking
+	// com proveniência (ADR-005) e a separação de planos, cujo registo é o DEF-806.
+	//
+	// (A palavra-marcador foi evitada de propósito nesta nota: isto CITA o DEF-806, não
+	// cria dívida nova, e o gate `deferrals` — que faz bem em não distinguir uma da outra
+	// — contaria a citação como um deferimento por registar.)
+	//
+	// Um rótulo aqui seria pior do que a ausência dele: leria como se o envenenamento de
+	// memória estivesse tratado.
 	if len(goal.MemoryContext) > 0 {
 		win.Append(TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
 	}
