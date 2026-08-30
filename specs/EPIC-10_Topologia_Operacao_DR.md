@@ -55,6 +55,9 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-107 | Escala horizontal + degradação graciosa em produção | feature | L | P1 | AOS-099, EPIC-03 |
 | AOS-108 | Hipercare e operacionalização | chore | M | P2 | AOS-102, AOS-105, AOS-106, AOS-107 |
 | AOS-281 | Composição ORQ/SCH↔nó sob disciplina de lease | feature | L | P1 | AOS-099, AOS-100, EPIC-03, EPIC-19 |
+| AOS-282 | Orçamento por árvore durável e partilhado entre réplicas | feature | L | P0 | AOS-100, AOS-008 |
+| AOS-283 | Eleição de líder para os laços de serviço do nó | feature | M | P0 | AOS-100, AOS-018 |
+| AOS-284 | Disciplina de partição da hash-chain de auditoria sob múltiplos escritores | feature | M | P0 | AOS-100 |
 
 ---
 
@@ -622,22 +625,22 @@ O ADR-018 já nomeia a saída: num deployment distribuído, o ORQ e o SCH tornam
 **Objectivo.** Definir e entregar a composição em que o ORQ e o SCH tomam, exercem e largam a posse de um run pelo **mesmo lease durável** que o nó usa, de modo a que em cada instante exista **exactamente um dono** — sem que qualquer das duas fronteiras guardadas por teste seja violada.
 
 **Critérios de Aceitação**
-- [ ] Um run tem, em qualquer instante, **um só detentor de lease**, e todas as escritas de ciclo de vida apresentam o **fencing token** corrente; uma escrita com token obsoleto é recusada, não aplicada.
-- [ ] A passagem de autoridade a jusante do gate usa `lease.released` + `lease.claimed` (não a expiração por TTL): o detentor anterior **anuncia** que largou, e o novo reclama sob concorrência optimista no stream `lease:<run_id>`.
-- [ ] **Um só escritor** das transições de estado por-run. O outro DERIVA do log em vez de escrever — decidido e declarado neste ticket, não deixado ao wiring.
-- [ ] Um componente que tome posse a meio **re-hidrata** o grafo a partir do log (`RebuildDAG`) em vez de começar vazio; não existe caminho que admita arestas cegas às já duráveis.
-- [ ] As duas fronteiras guardadas por teste (ADR-018 no nó; allowlist de imports no dispatcher) continuam **verdes e inalteradas**, ou o ADR-018 é formalmente emendado com a razão registada.
-- [ ] `DEF-272` (emissão do veredicto) e `DEF-273` (transporte do payload tipado) passam a ter emissor e implementação de produção, e fecham.
+- [x] Um run tem, em qualquer instante, **um só detentor de lease**, e todas as escritas de ciclo de vida apresentam o **fencing token** corrente; uma escrita com token obsoleto é recusada, não aplicada. — *Entregue e provado **in-process** (`TestPosse_DisputaConcorrente_UmSoVencedor`, `TestEscrita_TokenObsoleto_Recusada`, `TestGrafo_EscritaDeDonoSuperado_Recusada`). **A disputa ENTRE PROCESSOS não é satisfazível com o Event Store de referência** — as réplicas de AOS-100 são cópias in-process e cada `Open` fica com a sua cabeça; medido deterministicamente. Ver **DEF-282** (eixo AOS-100) e ADR-023 §4.*
+- [x] A passagem de autoridade a jusante do gate usa `lease.released` + `lease.claimed` (não a expiração por TTL): o detentor anterior **anuncia** que largou, e o novo reclama sob concorrência optimista no stream `lease:<run_id>`. — *`TestHandoff_PorAnuncio_SemJanelaDeDuplaPosse` e, com processos reais, `TestDoisProcessos_HandoffERehidratacaoPeloLog`.*
+- [x] **Um só escritor** das transições de estado por-run. O outro DERIVA do log em vez de escrever — decidido e declarado neste ticket, não deixado ao wiring. — *Decidido e registado em **ADR-023** (a autoridade é o LEASE; o SCH deriva; o ORQ escreve só sob posse). Demonstrado com o despachante REAL em `TestDerivacao_DespachanteDecideDoLogSemEscrever`.*
+- [x] Um componente que tome posse a meio **re-hidrata** o grafo a partir do log (`RebuildDAG`) em vez de começar vazio; não existe caminho que admita arestas cegas às já duráveis. — *`orchestrator.NewGraphBuilderFromLog` + guarda `TestGuard_SemBuilderCego`; provado através da fronteira do processo.*
+- [x] As duas fronteiras guardadas por teste (ADR-018 no nó; allowlist de imports no dispatcher) continuam **verdes e inalteradas**, ou o ADR-018 é formalmente emendado com a razão registada. — *Verdes e com zero linhas alteradas. **Nenhuma emenda ao ADR-018 foi necessária**: o ADR-023 estende-o ao caso que ele próprio deferiu.*
+- [x] `DEF-272` (emissão do veredicto) e `DEF-273` (transporte do payload tipado) passam a ter emissor e implementação de produção, e fecham. — *Ambos **FECHADOS**. `DEF-273` fecha nas DUAS metades: o transporte (emissor + `PayloadView`, provados pelo `PayloadResolver` real) e o **oráculo de efeito**, derivado de `planvalidate.Snapshot.EffectOracle()` por `Tenure.Materializer` — não como opção a ligar, mas por construção (acrescentado depois das opções do chamador; snapshot vazio recusado). A propriedade medida é a consequência: um `verifier` materializa com a tool read-only intacta e a de efeito retirada, provado também através de um processo real.*
 
 **Detalhes Técnicos.** Reutiliza `durable.LeaseManager` (`lease.claimed`/`renewed`/`released`, stream `lease:` namespaceado e serializado por `expected_seq`). Coordenação por Event Store replicado (AOS-100), não por memória partilhada. O `RebuildDAG` de AOS-025 já existe e é fiel; o que falta é uma via de construção que o aceite. Ver o inventário de defeitos do grafo levantado pela auditoria adversarial de 2026-08-30 — vários deles (inversão de ordem entre escritores, `restoreState` sem CAS, ausência de re-hidratação) são **sintomas de não haver árbitro**, e resolvem-se com esta decisão em vez de um a um.
 
 **Testes Requeridos.** Dois processos a disputar o mesmo run: só um ganha o claim, o outro vê o `expected_seq` falhar. Escrita com token obsoleto recusada. Handoff a jusante do gate sem janela de dupla-posse. Tomada de posse a meio reconstrói o grafo e continua sem divergir do log. Os dois guard-tests de fronteira verdes.
 
 **Definition of Done**
-- [ ] Critérios de Aceitação satisfeitos e demonstráveis com dois processos reais.
-- [ ] `-race` verde; nenhum guard-test de fronteira alterado sem emenda registada ao ADR-018.
-- [ ] `DEF-272` e `DEF-273` fechados no registo; `DEF-803` reavaliado.
-- [ ] `tecnica/10` actualizado com o diagrama de posse e handoff.
+- [x] Critérios de Aceitação satisfeitos e demonstráveis com dois processos reais. — *`packages/cmd/aos-orq` com testes de dois processos do SO cujo único canal é o WAL do Event Store. **Limite declarado:** a demonstração cobre a posse SEQUENCIAL (handoff + re-hidratação através da fronteira do processo); a contenção CONCORRENTE fica provada in-process, porque o substrato de referência não arbitra entre processos (DEF-282).*
+- [x] `-race` verde; nenhum guard-test de fronteira alterado sem emenda registada ao ADR-018. — *Guardas de fronteira: **inalterados e verdes** (zero linhas tocadas — `git status` confirma-o), e **nenhuma emenda ao ADR-018 foi necessária**. `-race`: **VERDE EM CI** (run [33318949655](https://github.com/albinoJimy/aos/actions/runs/33318949655), 2026-08-30) — `test` (`-race -covermode=atomic` por módulo, `CGO_ENABLED=1`) **pass** em 4m50s e `apex` (que corre `go test -race` sobre `packages/integration`) **pass** em 59s. Confirmado no log do job que os dois módulos novos correram sob `-race` por nome, com a MESMA cobertura da corrida local — `control-plane/runlifecycle` 80,4% e `cmd/aos-orq` 18,1% —, o que fecha o código concorrente desta entrega: `TestPosse_DisputaConcorrente_UmSoVencedor` (8 goroutines a reclamar o mesmo run) e `TestKeep_*` (renovador em segundo plano + join). Correu em CI e não localmente por decisão do dono (2026-08-30): a máquina de desenvolvimento não tem toolchain C e `-race` exige cgo. **Os 25 checks do PR passam** (1 skip: `delivery`); em particular `sca` **pass**, confirmando que o vermelho local era falha de DNS a `vuln.go.dev` e não vulnerabilidade.*
+- [x] `DEF-272` e `DEF-273` fechados no registo; `DEF-803` reavaliado. — *Os dois **FECHADOS** (`FECHADO-RESIDUAL`); `DEF-803` reavaliado e **mantido ABERTO** com a razão registada. Acrescentado `DEF-282` (o limite medido do substrato).*
+- [x] `tecnica/10` actualizado com o diagrama de posse e handoff. — *§3-bis, com o diagrama do ciclo de posse, a tabela de quem escreve o quê e o limite operacional.*
 
 **Handoff para Claude Code**
 ```text
@@ -653,6 +656,179 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 
 ---
 
+
+## AOS-282 — Orçamento por árvore durável e partilhado entre réplicas
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Tipo | feature |
+| Prioridade | P0 |
+| Estimativa | L |
+| Dependências | AOS-100 (Event Store replicado), AOS-008 (orçamento hierárquico), ADR-008 |
+| Bloqueia | AOS-107 (escala horizontal em produção) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | ADR-008 (admission control global), `packages/control-plane/budget/budget.go`, `packages/control-plane/budget/events.go` (`Rebuild`), `docs/reports/desafio-A1-budget-admission-control.md`, `docs/reports/analise-v1-single-host-para-distribuido.md` §3.1 |
+
+**Contexto.** `budget.Budget` mantém os contadores da árvore **em memória, por processo** (`nodes map[string]*node` sob mutex). Existe `budget.Rebuild`, que devolve `map[string]NodeState` a partir do log — mas **nenhum método do `Budget` o aceita**, e não há chamador de produção. O tecto que o ADR-008 promete é, hoje, um tecto **por-processo**.
+
+Duas consequências, e não são a mesma:
+
+1. **Restart ⇒ fail-open.** Os contadores nascem a zero enquanto o log durável diz `reserved`. Já levantado pelo `desafio-A1`, cuja recomendação é literal: «**não** ligar o hook em produção multi-réplica sem essa declaração escrita, porque o comportamento após restart é fail-open, não fail-closed».
+2. **N réplicas ⇒ N tectos independentes.** Cada processo aplica o tecto ao *seu* tráfego. Com 3 réplicas o tecto efectivo de tokens/$ por árvore é **o triplo** do declarado — a garantia central do ADR-008 a falhar em silêncio, e na direcção cara.
+
+**NÃO confundir com AOS-027.** O admission control do *provider* (`scheduler.Admission`, chave `provider:model:region`) já reserva sobre o log com CAS e **não** tem este problema. O que falta é o orçamento **por árvore**. São admissões diferentes e complementares; tratá-las como uma só levaria a concluir que isto já está resolvido.
+
+**Objectivo.** Tornar o tecto por árvore uma propriedade **do sistema** e não do processo: sobrevive a restart e é o mesmo para todas as réplicas.
+
+**Critérios de Aceitação**
+- [ ] O `Budget` tem via de **re-hidratação** a partir do log (`Rebuild` deixa de ser uma função sem consumidor) e há chamador de produção no arranque.
+- [ ] Após restart, o headroom reflecte as reservas **committed** no log — não zero. Um teste que semeia reservas, reinicia e verifica que o tecto continua a ser imposto.
+- [ ] Com N réplicas sobre o mesmo Event Store, o consumo agregado de uma árvore **nunca** excede o tecto declarado. Falha-antes: hoje excede-o N vezes.
+- [ ] A reserva é identificada por chave **durável** (`run_id:step_id`), para que a reconciliação após crash distinga uma reserva pendente de uma perdida.
+- [ ] Existe via de **reconciliação/TTL** para reservas órfãs (o processo que reservou morreu entre o `Reserve` e o `Commit`/`Release`) — sem ela, a árvore drena monotonicamente.
+- [ ] Fail-closed em toda a direita: um erro de leitura do log na re-hidratação **recusa** admitir, nunca admite por omissão.
+
+**Detalhes Técnicos.** O mecanismo de reserva atómica sobre o log já existe e é o de `scheduler.Admission` (CAS por `expected_seq`) — reutilizá-lo em vez de inventar um segundo. A disciplina Reserve→Commit/Release mantém-se; o que muda é onde vive o contador. Ver `runlifecycle.BudgetAdmission` (AOS-281) para o padrão de saldo de reservas pendentes por `(plan_id, node_id)`.
+
+**Testes Requeridos.** Restart com reservas pendentes: o tecto sobrevive. Duas réplicas a reservar sobre a mesma árvore: o agregado respeita o tecto e a segunda vê a negação. Reserva órfã reconciliada por TTL. Fail-closed com o log indisponível.
+
+**Definition of Done**
+- [ ] Critérios de Aceitação satisfeitos, com o teste de N réplicas a falhar-antes demonstrado.
+- [ ] `-race` verde.
+- [ ] `desafio-A1` actualizado: a recomendação «não ligar em multi-réplica» deixa de ser necessária, ou é reafirmada com a razão que resta.
+- [ ] `tecnica/10` §3-bis actualizado se o limite operacional mudar.
+
+**Handoff para Claude Code**
+```text
+És o executor do ticket AOS-282 do Agentic OS de Referência (AOS).
+Lê AOS-282 na íntegra em specs/EPIC-10_Topologia_Operacao_DR.md, o ADR-008, e
+docs/reports/desafio-A1-budget-admission-control.md (que já mediu o defeito).
+O tecto por árvore é hoje por-PROCESSO. Não confundas com o admission control do
+provider (AOS-027, scheduler.Admission), que já reserva sobre o log e está correcto.
+Reutiliza o mecanismo de reserva atómica que já existe; não inventes um segundo —
+duas implementações do mesmo conceito divergem, e a que diverge em silêncio é a que
+concede. A disciplina Reserve→Commit/Release mantém-se.
+Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
+```
+
+---
+
+## AOS-283 — Eleição de líder para os laços de serviço do nó
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Tipo | feature |
+| Prioridade | P0 |
+| Estimativa | M |
+| Dependências | AOS-100 (Event Store replicado), AOS-018 (lease/fencing) |
+| Bloqueia | AOS-107 (escala horizontal em produção) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/service.go` (os laços e o `expireInFlight`), `packages/kernel/agent-runtime/durable/lease.go` (AOS-018), ADR-023 (a autoridade é o lease), `docs/reports/analise-v1-single-host-para-distribuido.md` §3.2 |
+
+**Contexto.** O `NodeService` corre **oito** laços periódicos de serviço: aprovações expiradas, prazos duráveis, órfãos, retenção, avaliador de SLO, renovação do token do Vault, e outros. **Não existe eleição de líder em lado nenhum do repositório.**
+
+Com N réplicas, os oito laços correm N vezes sobre o mesmo Event Store. Alguns são idempotentes por construção; pelo menos um **declara no próprio código que não é**:
+
+> `expireInFlight` serializa as passagens do `audit.ExpirationJob` […] o check-then-Add da idempotency key **não é atómico ao nível do registo**, pelo que duas passagens concorrentes poderiam selar **DOIS** eventos `retention.expired` para o mesmo facto.
+
+Esse guard é um `atomic.Bool` **no processo**. Com N processos há N guards e **nenhuma exclusão entre eles** — que é exactamente a falha que o comentário existe para evitar. O comentário chega a explicar que o guard «tem de ser UM SÓ», e em multi-réplica deixa de o ser.
+
+**A excepção honrosa** é o varredor de órfãos: passa por `submit`, que reclama lease, e salta sem roubo um run detido por outra réplica. Foi escrito a pensar nisto — e é o modelo a seguir.
+
+**Objectivo.** Garantir que cada laço de serviço tem, em qualquer instante, **no máximo um executor** entre as réplicas — pelo mesmo mecanismo de lease durável que o ADR-023 já fixa para os runs, sem inventar um segundo.
+
+**Critérios de Aceitação**
+- [ ] Cada laço de serviço só corre sob posse de um lease durável próprio (p.ex. `lease:svc:<nome-do-laço>`); uma réplica sem posse **não corre** o laço.
+- [ ] A posse é renovada por heartbeat e largada por anúncio no shutdown — a réplica seguinte assume **sem esperar o TTL**.
+- [ ] A morte da réplica líder é recuperada por expiração de TTL: outra réplica assume, e o laço volta a correr dentro de um limite declarado.
+- [ ] Nenhum facto é selado **duas vezes** por duas réplicas — em particular `retention.expired`, que é o caso que o código já nomeia.
+- [ ] Cada laço declara se é **idempotente** ou **exige exclusão**; os que exigem exclusão são fail-closed sem posse (não correm), os idempotentes podem correr sem ela se houver razão escrita.
+- [ ] Os contadores/idade de varrimento em `/metrics` distinguem «não sou líder» de «armado e à espera» e de «parado» — as três leem-se de maneira diferente e exigem acções diferentes.
+
+**Detalhes Técnicos.** Reutiliza `durable.LeaseManager` (AOS-018) e o padrão de posse de `runlifecycle.Tenure` (AOS-281): claim → `Keep` com heartbeat → `Release` como último acto. Não introduzir um segundo mecanismo de posse. O `heartbeat` por-run fica **de fora**: é de outra natureza (por-run, não de serviço) e a sua falha já tem consequência observável.
+
+**Testes Requeridos.** Duas réplicas, um laço: só uma o corre. Líder morre sem anunciar: a outra assume por TTL. Líder anuncia no shutdown: a outra assume de imediato. Um facto de retenção não é selado duas vezes com duas réplicas activas. Sem posse, um laço de exclusão obrigatória não corre.
+
+**Definition of Done**
+- [ ] Critérios de Aceitação satisfeitos e demonstráveis com duas réplicas.
+- [ ] `-race` verde.
+- [ ] Cada um dos oito laços classificado (idempotente vs exige exclusão) e a classificação registada no código, junto do laço.
+- [ ] `tecnica/10` actualizado com a tabela de laços e o seu regime de posse.
+
+**Handoff para Claude Code**
+```text
+És o executor do ticket AOS-283 do Agentic OS de Referência (AOS).
+Lê AOS-283 na íntegra em specs/EPIC-10_Topologia_Operacao_DR.md, e o ADR-023.
+NÃO comeces por escrever wiring: a primeira entrega é a CLASSIFICAÇÃO dos oito laços —
+quais são idempotentes e quais exigem exclusão — com a razão de cada um registada.
+Só depois o código.
+Fundação a respeitar: a posse é arbitrada pelo MESMO lease durável do ADR-023
+(claim → heartbeat → release como último acto). Não introduzas um segundo mecanismo de
+posse: duas implementações do mesmo conceito divergem.
+O varredor de órfãos já está correcto — é o modelo, não o alvo.
+Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
+```
+
+---
+
+## AOS-284 — Disciplina de partição da hash-chain de auditoria sob múltiplos escritores
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Tipo | feature |
+| Prioridade | P0 |
+| Estimativa | M |
+| Dependências | AOS-100 (Event Store replicado) |
+| Bloqueia | AOS-107 (escala horizontal em produção) |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | ADR-010 (observabilidade + audit WORM), `packages/platform/audit/chain.go` (`GenesisHash`), `packages/platform/audit/filestore.go` (`wmu`), `packages/platform/audit/checkpoint.go`, `docs/reports/analise-v1-single-host-para-distribuido.md` §3.3 |
+
+**Contexto.** A hash-chain de auditoria é sequencial por construção: cada registo sela o `PrevHash` do anterior, e é isso que a torna *tamper-evident*. Hoje as escritas são serializadas por um mutex **em processo** (`filestore.go`: `wmu sync.Mutex // serializa os writes ao ficheiro único`).
+
+Dois processos a escrever a **mesma** partição computariam `PrevHash` a partir de vistas diferentes — e uma cadeia com um elo mal encadeado não é uma cadeia com um defeito: é uma cadeia que **deixa de provar o que existe para provar**. A verificação por checkpoint (`checkpoint.go`) passaria a falhar sem distinguir adulteração de corrida.
+
+O desenho parece antecipar o problema — a `GenesisHash` fala do «PRIMEIRO registo de uma **partição**** —, mas **não está verificado** que exista disciplina a garantir que duas réplicas nunca partilham partição. Esta é a lacuna que o relatório de análise marcou como a que **mais merece segunda leitura**: o trabalho começa por confirmar se o problema existe.
+
+**Objectivo.** Garantir que, com N réplicas, cada partição da hash-chain tem **um só escritor** em qualquer instante — ou, se o desenho já o garantir, tornar essa garantia **verificável** em vez de presumida.
+
+**Critérios de Aceitação**
+- [ ] Está **estabelecido por leitura do código, e escrito**, se duas réplicas podem hoje escrever a mesma partição. Se não podem, o mecanismo que o impede é nomeado e ganha teste; se podem, o resto destes critérios aplica-se.
+- [ ] Cada partição tem um escritor exclusivo, arbitrado por lease durável (ADR-023) e não por mutex em processo.
+- [ ] A verificação da cadeia (`checkpoint.go`) distingue **adulteração** de **elo em falta por corrida** — um diagnóstico que confunde as duas leva o operador a investigar um ataque onde houve uma corrida, ou o contrário.
+- [ ] Uma tentativa de escrita numa partição de que a réplica não é dona é **recusada**, não aplicada — e o facto de recusa é observável.
+- [ ] O `GenesisHash` e a atribuição de partições são determinísticos e reconstruíveis: quem verifica a cadeia consegue saber que partições existiram sem estado externo.
+
+**Detalhes Técnicos.** Reutiliza a disciplina de posse do ADR-023 (o mesmo lease, o mesmo fencing) — a partição de auditoria é mais um recurso com dono único. O `FencedAppender` é o precedente do enforcement no ponto de escrita. Ver a nota de `filestore.go` sobre o ficheiro único: em multi-réplica o «ficheiro único» é, ele próprio, a suposição a rever.
+
+**Testes Requeridos.** Duas réplicas sobre a mesma partição: só uma escreve, a outra é recusada. Cadeia verificável ponta-a-ponta após handoff de partição entre réplicas. Um elo em falta por corrida é diagnosticado como tal e não como adulteração. Adulteração real continua a ser detectada.
+
+**Definition of Done**
+- [ ] Critérios de Aceitação satisfeitos, com o AC1 (existe ou não o problema) respondido por escrito ANTES do código.
+- [ ] `-race` verde.
+- [ ] Se o problema não existir, o ticket fecha com a prova disso e o §3.3 do relatório de análise é corrigido — fechar por «não se aplica» é um desfecho legítimo e tem de ficar registado.
+- [ ] `tecnica/09` e/ou `tecnica/10` actualizados com o modelo de partição.
+
+**Handoff para Claude Code**
+```text
+És o executor do ticket AOS-284 do Agentic OS de Referência (AOS).
+Lê AOS-284 na íntegra em specs/EPIC-10_Topologia_Operacao_DR.md, o ADR-010 e o ADR-023.
+A PRIMEIRA entrega NÃO é código: é a resposta, por leitura do código e escrita em voz
+alta, à pergunta «duas réplicas podem hoje escrever a mesma partição da hash-chain?».
+O relatório de análise (§3.3) declara que NÃO verificou isto — é onde começas.
+Se a resposta for não, fecha o ticket com a prova e corrige o relatório. Fechar por
+«não se aplica» é um desfecho legítimo; fingir que se corrigiu algo não é.
+Se for sim: a posse de partição usa o MESMO lease durável do ADR-023, não um segundo
+mecanismo, e a recusa acontece no ponto de escrita.
+Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
+```
+
+---
 
 ## Tabela de aprovação
 

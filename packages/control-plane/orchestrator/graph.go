@@ -44,7 +44,12 @@ var ErrEmptyTaskID = errors.New("orchestrator: task_id vazio")
 //
 // O erro NÃO reverte nada: quando ele dispara, a memória e o log ACABARAM de concordar.
 // O que está errado não é o estado — é o chamador, que se julgava dono de um run novo.
-// Ver [NewGraphBuilder], que ainda não sabe re-hidratar a partir de [RebuildDAG] (AOS-281).
+//
+// DESDE AOS-281 (ADR-023 §2.3) HÁ COMO NÃO CHEGAR AQUI: [NewGraphBuilderFromLog]
+// parte do DAG que [RebuildDAG] reconstrói, pelo que não existe «cego» de que se
+// recuperar. Este erro fica como o que sempre foi — a denúncia de quem construiu com
+// [NewGraphBuilder] sobre um run que já existia — e é agora um erro EVITÁVEL, não uma
+// fatalidade do desenho.
 var ErrLogAhead = errors.New("orchestrator: o log ja contem este facto e o DAG em memoria tratou-o como novo — builder cego sobre um run existente")
 
 // NodeSpec descreve um nó-tarefa a admitir no DAG.
@@ -394,8 +399,14 @@ func WithGraphTracer(t agentruntime.Tracer) GraphOption {
 	}
 }
 
-// NewGraphBuilder constrói um GraphBuilder para o run dado. store e runID são
-// obrigatórios; producer identifica a NHI emissora dos eventos do grafo.
+// NewGraphBuilder constrói um GraphBuilder para o run dado, sobre um DAG VAZIO.
+// store e runID são obrigatórios; producer identifica a NHI emissora dos eventos do
+// grafo.
+//
+// USAR SÓ PARA UM RUN NOVO. Sobre um run que já existe no log isto é o «builder
+// cego» que o [ErrLogAhead] denuncia — e denunciar é o melhor que ele pode fazer,
+// porque a essa altura o chamador já se julgava dono de um run que não é novo. Para
+// TOMAR POSSE DE UM RUN A MEIO, usar [NewGraphBuilderFromLog], que re-hidrata.
 func NewGraphBuilder(store EventStore, runID string, producer eventstore.Producer, opts ...GraphOption) (*GraphBuilder, error) {
 	if store == nil {
 		return nil, errors.New("orchestrator: event store nil")
@@ -410,6 +421,43 @@ func NewGraphBuilder(store EventStore, runID string, producer eventstore.Produce
 	if b.tracer == nil {
 		b.tracer = agentruntime.NoopTracer{}
 	}
+	return b, nil
+}
+
+// NewGraphBuilderFromLog constrói um GraphBuilder RE-HIDRATADO: o DAG de partida é o
+// que [RebuildDAG] reconstrói do Event Store, não um DAG vazio (AOS-281 / ADR-023 §2.3).
+//
+// # A via que faltava, e o defeito que ela fecha
+//
+// O [ErrLogAhead] existe porque um builder «retomado» sobre um run existente admitia
+// factos que o log já tinha, com ZERO eventos novos a entrar e o chamador convencido
+// de que retomara. O que ele NÃO podia fazer era evitar o problema: detectar é tudo o
+// que resta a quem já construiu cego. Esta via evita-o — o grafo de partida É o log,
+// pelo que não há «cego» de que se recuperar.
+//
+// Concretamente, o que passa a ser impossível: admitir uma aresta invisível às que já
+// estão duráveis. Era esse o caminho para o log ficar com `a→b` E `b→a` e o
+// [RebuildDAG] — função pura sobre um log append-only — falhar PARA SEMPRE, sem
+// reparação em banda.
+//
+// Num run NOVO (stream inexistente) o [RebuildDAG] devolve um DAG vazio e esta via é
+// exactamente equivalente a [NewGraphBuilder]: é seguro usá-la sempre, e é por isso
+// que quem toma posse não precisa de saber, à partida, se o run é novo ou não —
+// pergunta que o chamador tipicamente não sabe responder e que era a origem do erro.
+//
+// Fail-closed: um log que já não sustente um DAG válido (payload corrompido, ciclo,
+// transição inválida) aborta aqui. Não se constrói por cima de um log que o replay
+// recusa.
+func NewGraphBuilderFromLog(ctx context.Context, store EventStore, runID string, producer eventstore.Producer, opts ...GraphOption) (*GraphBuilder, error) {
+	b, err := NewGraphBuilder(store, runID, producer, opts...)
+	if err != nil {
+		return nil, err
+	}
+	dag, err := RebuildDAG(ctx, store, runID)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: re-hidratação do grafo do run %q: %w", runID, err)
+	}
+	b.dag = dag
 	return b, nil
 }
 

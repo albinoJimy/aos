@@ -46,6 +46,8 @@ Equipas de DevOps/SRE, arquitectos de plataforma, engenheiros de observabilidade
 | ADR-007 | Event Store replicado | Fonte de verdade replicada, append-only, transporte push; elimina o SPOF do single-writer e é a base do backup e do replay como recuperação. |
 | ADR-010 | Observabilidade OTel GenAI + audit WORM | Trajectória completa como árvore de spans e audit hash-chain + WORM; alimenta dashboards, SLIs, alertas e a fidelidade do replay em DR. |
 | ADR-008 | Admission control global em tokens/$ | Token-bucket distribuído com reserva de headroom; é o mecanismo de degradação graciosa e a defesa contra o colapso agregado de rate limit. |
+| ADR-018 | Fronteira nó↔ORQ/SCH (v1 single-host) | O loop de serviço do nó é a fonte única de verdade do ciclo de vida; ORQ/SCH são consumidos DENTRO de um run, nunca como autoridade concorrente. Imposto por guarda de importação directo **e** transitivo sobre o grafo de build do nó. |
+| ADR-023 | Escritor único do ciclo de vida por-run — a autoridade é o LEASE | Estende o ADR-018 ao distribuído: o direito de escrever uma transição É a posse do fencing token de `lease:<run_id>`. O SCH DERIVA do log; o ORQ escreve só sob posse e sobre grafo re-hidratado. Ver §3-bis. |
 
 Aplicam-se ainda, de forma transversal, ADR-001 (durabilidade que torna o replay possível), ADR-002 (mediação total, cuja disponibilidade condiciona a operação) e ADR-011 (PDP, cuja falha exige runbook próprio).
 
@@ -104,6 +106,107 @@ flowchart TB
 **Replicação do Event Store — sem single-writer (AOS-100, ADR-007).** O modelo de referência in-process do `eventstore` elimina o SPOF de escrita: como a ordem total é **por stream** (`(stream_id, seq)`, gapless), a serialização é **por-stream** (locks listrados por *stream*/partição), não global. Escritas ao **mesmo** stream serializam-se (preservando o seq gapless, o CAS optimista `WithExpectedSeq`, a deduplicação idempotente por stream e a ordem do transporte push); escritas a streams **distintos** progridem **em paralelo** — múltiplos workers escrevem e leem para replay sem contenção de escritor único. A replicação síncrona por **quorum** e a eleição de líder mantêm-se (a perda de uma réplica dentro do quorum não perde dados nem interrompe escritas); o que muda é a remoção do mutex global que serializava *todas* as escritas através de um líder único. As invariantes de **ordem-por-stream** e **imutabilidade** (log append-only, `Read` devolve cópias) são preservadas — são a base do audit *hash-chain* (ADR-010). Em produção o backend é NATS JetStream (R3/R5, Raft); este modelo é a referência determinística e testável (falha de nó, escrita concorrente multi-worker, integridade append-only, tudo sob `-race`).
 
 **Soberania regional das réplicas (ADR-011).** As réplicas e os backups do Event Store **nunca** cruzam a fronteira regional de soberania do board. Quando a fronteira é declarada (região do board), o cluster é validado **fail-closed** na construção: uma réplica fora da região — ou com região ausente/desconhecida — é **rejeitada** (`E_SOVEREIGNTY_VIOLATION`); o quorum é computado **dentro** da região e a eleição de líder nunca promove liderança *cross-border*. Isto materializa, ao nível do armazenamento, a mesma postura *"região desconhecida ⇒ deny"* que o PDP emite como obrigação `region` e o PEP impõe (AOS-094).
+
+---
+
+## 3-bis. Posse de um run e passagem de autoridade (AOS-281, ADR-023)
+
+A topologia distribuída acrescenta uma pergunta que a v1 single-host não tinha de fazer:
+quando a autoridade sobre um run pode **mudar de processo**, quem tem o direito de escrever
+uma transição de estado? A resposta está selada no ADR-023 e resume-se a uma frase: **o
+direito de escrever É a posse do fencing token corrente de `lease:<run_id>`** — não um
+atributo de um módulo, de um binário nem de um papel.
+
+### O ciclo de posse
+
+```text
+                    stream lease:<run_id>              stream <run_id>
+                    (arbitragem, expected_seq)         (factos do ciclo de vida)
+                    ─────────────────────────          ────────────────────────
+  P1  ── Claim ───▶  lease.claimed  token=1
+      │                                          ──▶  task.node.created  (fenced, token=1)
+      ├─ Keep ────▶  lease.renewed  token=1      ──▶  task.edge.added    (fenced, token=1)
+      │                                          ──▶  task.node.state_changed
+      │
+      └─ Release ─▶  lease.released token=1
+                     expira := agora
+                          │
+                          │   ◀── JANELA SEM ESCRITOR ──▶
+                          │   P1 já é recusado (lease expirado);
+                          │   P2 ainda não reclamou.
+                          │   NINGUÉM escreve. É esta a forma correcta
+                          │   de um handoff — não uma corrida rápida.
+                          ▼
+  P2  ── Claim ───▶  lease.claimed  token=2
+      │                          ┌─── RebuildDAG(<run_id>) ────┐
+      │                          │  re-hidrata a topologia e o │
+      │                          │  estado por-nó do LOG       │
+      │                          └─────────────────────────────┘
+      └────────────────────────────────────▶  task.node.created (fenced, token=2)
+
+  P1 (zombie, se ressuscitar) ──▶ ✗ ErrStaleFencingToken — a escrita NÃO chega ao log
+```
+
+### Porque o handoff não tem janela de dupla-posse
+
+Três factos encadeados, todos do mecanismo que já existia (AOS-018):
+
+1. `Release` só é escrito pelo detentor do token corrente, e o seu único efeito é **encurtar
+   a expiração do próprio token para `agora`**;
+2. a partir desse instante `LeaseManager.CurrentLeaseExpired` devolve `true`, e o
+   `FencedAppender` — que consulta essa capacidade — **recusa as escritas do detentor
+   anterior imediatamente**, antes sequer de existir um novo detentor;
+3. só então um `Claim` de outro processo passa e minta `token+1`, serializado contra
+   concorrentes pelo `expected_seq` do stream de lease.
+
+O handoff é por **anúncio**, não por expiração de TTL. A expiração é a semântica certa para
+uma réplica que **morreu** (não há quem anuncie); para uma que **parou de propósito**, o
+anúncio é a semântica certa — e evita segurar um run durante todo o TTL.
+
+### Quem escreve o quê
+
+| Componente | Stream do run (`<run_id>`) | Stream do plano (`<plan_id>`) | Sob posse? |
+|---|---|---|---|
+| **ORQ** (topologia, estado por-nó) | **ESCREVE** — sempre por `FencedAppender`, sobre grafo re-hidratado | — | Sim |
+| **Emissores do plano** (veredicto, payload) | — | **ESCREVE** — fenced pelo lease do RUN, destino redireccionado | Sim |
+| **SCH** (despacho) | **NUNCA escreve** — deriva por `LifecycleView`/`ResultView` | escreve só as SUAS decisões (`plan.branch_decided`) | n/a |
+
+A assimetria do SCH não é disciplina de quem o usa: o `plandispatch` não conhece o Event
+Store e o seu guard-test de imports admite só `plan` e `plannerevents`. A razão de fundo é
+que o despachante é **re-invocável à discrição** — dar autoridade de transição a um
+componente re-invocável seria dar-lhe autoridade para *re*-transitar.
+
+### O que mais esta composição liga (e porquê aqui)
+
+Ser o composition root do ciclo de vida traz consigo duas ligações que não tinham casa e
+que o registo de deferimentos nomeava como «sem chamador de produção»:
+
+| Ligação | O que estava em falta | O que muda |
+|---|---|---|
+| Veredicto e payload (DEF-272/273) | Contrato tipado e validação fechados dos dois lados, **vazios no meio** — ninguém emitia, ninguém implementava a `PayloadView` | Emissores fenced pelo lease do run, e leitores que DERIVAM do log. O consumidor real (`PayloadResolver`) re-verifica tipo, taint e `contract_digest` contra o documento aprovado |
+| Oráculo de efeito (DEF-273) | `planmaterialize` clampa a autoridade do papel `verifier` retirando as tools **de efeito**, mas o predicado chega por opção do composition root — que não existia. Sem ela, o default trata **tudo** como efeito e o verificador materializa com autoridade **vazia** | O oráculo é `planvalidate.Snapshot.EffectOracle()`, derivado do snapshot PINADO. Não é opcional: entra depois das opções do chamador (a última vence) e um snapshot vazio é recusado — um snapshot em que nada resolve é o default por outro nome |
+
+A segunda merece a nota porque a sua falha era **fail-closed e por isso invisível**: nada
+ficava permissivo, ficava inerte. Um verificador sem autoridade não verifica; o ramo de
+qualidade a jusante fica INDECIDO para sempre; e metade de um organigrama aprovado nunca
+corre — sem um único erro no log.
+
+### Onde a composição corre
+
+Num processo próprio, `aos-orq` (`packages/cmd/aos-orq`), sobre o módulo
+`packages/control-plane/runlifecycle`. **Desligado por omissão**: nenhum deployment v1
+single-host o arranca, e o grafo de build do nó `aos` não o contém — verificado dos dois
+lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
+
+> **LIMITE OPERACIONAL DECLARADO (DEF-282, eixo AOS-100).** A arbitragem da posse depende de
+> o `expected_seq` do stream de lease ser atómico **entre escritores**. O Event Store de
+> referência não o é entre **processos**: as réplicas de AOS-100 são cópias *in-process* do
+> log, e cada `Open` fica com a sua própria cabeça. Medido a 2026-08-30: dois `Open` sobre o
+> mesmo WAL e dois `Claim` do mesmo run passam **ambos**, com o mesmo token. **Correr dois
+> `aos-orq` em paralelo sobre um WAL partilhado não é uma configuração suportada.** A
+> topologia suportada é a posse **sequencial** (servir → anunciar → o seguinte reclama). O
+> paralelismo real exige o backend replicado de produção (NATS JetStream), onde o CAS é
+> atómico entre processos.
 
 ---
 
@@ -315,3 +418,4 @@ O **encerramento** é decidido por um gate **fail-closed** que *compõe* (não r
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-08-30 | **§3-bis — posse de um run e passagem de autoridade (AOS-281, ADR-023).** Acrescenta o diagrama do ciclo de posse, a razão pela qual o handoff por anúncio não tem janela de dupla-posse, a tabela de quem escreve o quê, as duas ligações que o composition root traz consigo (veredicto/payload e oráculo de efeito) e o **limite operacional medido**: o Event Store de referência não arbitra entre processos (DEF-282). ADR-018 e ADR-023 acrescentados a §2 | Executor de AOS-281 |
