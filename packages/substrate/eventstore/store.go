@@ -12,6 +12,29 @@ import (
 // operação de update ou delete: o log é append-only estrito.
 type EventStore interface {
 	// Append escreve um evento novo no fim do stream e devolve o seq atribuído.
+	//
+	// # ERRO ⇒ NADA FICOU DURÁVEL (garantia EXIGIDA a qualquer implementação)
+	//
+	// Se Append devolver erro, o evento NÃO pode ter ficado durável, nem visível a um
+	// Read, nem ocupar um seq — nem NESTE processo, nem NUM ARRANQUE POSTERIOR sobre o
+	// mesmo substrato. Um retry reusa o mesmo seq e é o comportamento correcto.
+	//
+	// Isto é CONTRATO, não descrição do que a implementação de hoje calha fazer. Está
+	// escrito aqui porque a sua ausência custou um defeito real: chamadores como o
+	// GraphBuilder de AOS-025 REVERTEM a sua mutação em memória quando o Append falha,
+	// e esse revert só é correcto sob esta garantia. Até 2026-08-30 ela não estava
+	// prometida em lado nenhum — e a implementação durável violava-a: um `fsync`
+	// falhado depois de um `Flush` bem-sucedido deixava o registo COMPLETO no ficheiro,
+	// o retry reusava o mesmo seq, e o arranque seguinte recusava o WAL inteiro com
+	// E_RESTORE_ORDER (o nó não arrancava). Ver [wal.desfazer] e
+	// durable_fsync_falhado_test.go, que é o que a impõe no store durável.
+	//
+	// Quem escrever uma implementação nova — remota, com group-commit, com escrita
+	// assíncrona — tem de a cumprir. Se não a conseguir cumprir, o que muda não é este
+	// comentário: são os chamadores que revertem, que deixam de o poder fazer às cegas.
+	//
+	// A deduplicação por (run_id, step_id) NÃO é uma excepção: devolve
+	// [StatusDuplicate] com erro NIL, e portanto não é um erro.
 	Append(ctx context.Context, streamID string, in EventInput, opts ...AppendOption) (AppendResult, error)
 	// Read devolve os eventos committed do stream com seq >= fromSeq, ordenados
 	// por seq ascendente. fromSeq é inclusivo; seq começa em 1.
