@@ -14,6 +14,37 @@ import (
 //
 // Um tecto <= 0 significa "sem limite" nessa dimensão (dimensão desligada), não
 // "rejeita tudo": a ausência de política não é uma violação.
+// DefaultMaxNodes é o tecto de CARDINALIDADE derivado da REVISIBILIDADE HUMANA — a
+// derivação que o `tecnica/18` §3.3 exige («derivação declarada e auditável… nunca
+// constantes mágicas») para os tectos de tamanho do plano.
+//
+// # A DERIVAÇÃO
+//
+// O gate de aprovação de plano (AOS-121) apresenta ao humano um cartão POR NÓ, em ordem
+// topológica, cada um com o efeito concreto já redigido, o custo do ramo e a marca de
+// irreversibilidade ([plan-approval.PlanCard].NodeCards). O humano aprova ANTES de se
+// queimarem tokens: a decisão dele é a última porta antes do spawn.
+//
+// Logo o tecto do TAMANHO do organigrama é, por construção, o número de cartões que uma
+// pessoa lê numa sentada antes de autorizar despesa. É a mesma lógica que fixa os tectos
+// de ARIDADE em 8 («um nó com mais não é legível no approval-card», ADR-013) — aplicada
+// ao plano inteiro em vez de a um nó.
+//
+// # O QUE É DERIVADO E O QUE É JUÍZO, dito sem disfarce
+//
+// DERIVADO: a base — um cartão por nó, todos lidos por um humano antes de autorizar.
+// JUÍZO: o número. 64 é «algumas dezenas»: folgado para um organigrama real e ainda
+// legível de uma vez. Não cai de nenhuma conta, e fingir que caía seria a constante
+// mágica com uma fórmula em cima.
+//
+// Um plano que precise de mais não deve subir o tecto — deve ser decomposto em planos
+// que um humano aprove separadamente, que é o que a porta existe para forçar.
+//
+// NÃO é aplicado por omissão: [Ceilings] continua a ser política passada como argumento,
+// e um tecto <= 0 continua a significar «sem limite». Este é o valor a usar por quem o
+// compuser, não um default silencioso.
+const DefaultMaxNodes = 64
+
 type Ceilings struct {
 	// MaxNodes limita o número total de nós do plano.
 	MaxNodes int
@@ -36,6 +67,26 @@ type Ceilings struct {
 func Validate(doc plan.PlanDocument, snap Snapshot, ceil Ceilings) Verdict {
 	if v := checkSemantics(doc, snap); v.Rejected() {
 		return v
+	}
+	// CARDINALIDADE, ANTES DE QUALQUER TRABALHO DE GRAFO. É o único dos três tectos
+	// estruturais que é O(1) e não depende de nada: `len(doc.Nodes)`. Os irmãos ficam
+	// onde estavam, em [checkCeilings], porque PRECISAM do grafo — o MaxDepth exige
+	// aciclicidade garantida (Kahn) e o MaxFanout percorre as arestas.
+	//
+	// PORQUE MUDOU DE SÍTIO. Corria no FIM, com os outros dois, e isso fazia o plano
+	// pagar o custo INTEIRO de [buildAdmissionDAG] — O(E·(V+E)), porque cada AddEdge
+	// impõe a aciclicidade com uma travessia — ANTES de o tecto sequer olhar para ele.
+	// Medido a 2026-08-30: `MaxNodes=50` sobre um plano de 2000 nós demorava 54,3 s a
+	// devolver `max_nodes_exceeded`. O tecto existe para BARRAR planos grandes; pagá-los
+	// primeiro é o modelo de custo invertido, e é na única função cujo trabalho inteiro
+	// é sobreviver a um documento hostil.
+	//
+	// CONSEQUÊNCIA DE ATRIBUIÇÃO, assumida. Um plano que exceda a cardinalidade E tenha
+	// um ciclo passa a morrer por `max_nodes_exceeded` em vez de `cycle`. É a razão
+	// certa: um organigrama que nunca devia ter sido construído não merece um diagnóstico
+	// sobre a sua topologia interna — e a alternativa é pagar V⁴ para o descobrir.
+	if ceil.MaxNodes > 0 && len(doc.Nodes) > ceil.MaxNodes {
+		return reject(plannerevents.RuleStructuralCeiling, ReasonMaxNodesExceeded, Locator{})
 	}
 	dag, v := buildAdmissionDAG(doc)
 	if v.Rejected() {
@@ -282,9 +333,8 @@ func checkTools(doc plan.PlanDocument, snap Snapshot) Verdict {
 // termina. Ordem determinística: nós, depois fanout, depois profundidade. Um tecto
 // <= 0 está desligado.
 func checkCeilings(doc plan.PlanDocument, ceil Ceilings) Verdict {
-	if ceil.MaxNodes > 0 && len(doc.Nodes) > ceil.MaxNodes {
-		return reject(plannerevents.RuleStructuralCeiling, ReasonMaxNodesExceeded, Locator{})
-	}
+	// O MaxNodes NÃO está aqui: corre no início de [Validate], antes de qualquer
+	// trabalho de grafo — ver a justificação lá. Ficam os dois que PRECISAM do grafo.
 	if ceil.MaxFanout > 0 {
 		if node, deg := maxFanout(doc); deg > ceil.MaxFanout {
 			return reject(plannerevents.RuleStructuralCeiling, ReasonMaxFanoutExceeded, Locator{NodeID: node})
