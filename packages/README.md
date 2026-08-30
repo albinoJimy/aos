@@ -9,7 +9,7 @@ ainda têm seams condicionais documentados nos respectivos epics.
 
 | Subpasta | Papel |
 |---|---|
-| `cmd/` | Binários: `aos` (nó de produção), `aos-demo` |
+| `cmd/` | Binários: `aos` (nó de produção), `aos-orq` (ciclo de vida de run sob lease — AOS-281, desligado por omissão), `aos-attestation`, `aos-issuer`, `aos-demo` |
 | `control-plane/` | Plano de controlo: ORQ, SCH, PDP, budget, governance/* |
 | `integration/` | Composition-root / wiring / ápice de enforcement composto |
 | `kernel/` | Plano de execução: RM (Reference Monitor), RT (Agent Runtime) |
