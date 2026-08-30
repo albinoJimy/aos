@@ -58,6 +58,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-282 | Orçamento por árvore durável e partilhado entre réplicas | feature | L | P0 | AOS-100, AOS-008 |
 | AOS-283 | Eleição de líder para os laços de serviço do nó | feature | M | P0 | AOS-100, AOS-018 |
 | AOS-284 | Disciplina de partição da hash-chain de auditoria sob múltiplos escritores | feature | M | P0 | AOS-100 |
+| AOS-285 | Guard de arranque: o nó recusa arrancar sobre um Event Store já detido | feature | S | P0 | — |
 
 ---
 
@@ -826,6 +827,67 @@ Se a resposta for não, fecha o ticket com a prova e corrige o relatório. Fecha
 Se for sim: a posse de partição usa o MESMO lease durável do ADR-023, não um segundo
 mecanismo, e a recusa acontece no ponto de escrita.
 Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
+```
+
+---
+
+## AOS-285 — Guard de arranque: o nó recusa arrancar sobre um Event Store já detido
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 0 — Fundações |
+| Tipo | feature |
+| Prioridade | P0 |
+| Estimativa | S |
+| Dependências | — |
+| Bloqueia | — (é o guard que torna seguro adiar AOS-282/283/284) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/analise-v1-single-host-para-distribuido.md` §5 Opção C; `DEF-282` no `REGISTO-Deferimentos`; `packages/substrate/eventstore/durable.go` (`Open`); `packages/cmd/aos/bootstrap.go` (`AOS_EVENTSTORE_PATH`); `packages/cmd/aos/wal_inspect.go`, `wal_summary.go`; Carta §7 (v1 single-host) |
+
+**Contexto.** A v1 é single-host por decisão datada (Carta §7, emenda 1.2), e correr duas réplicas do nó sobre o **mesmo** Event Store não é seguro: `DEF-282` mede que o Event Store de referência **não arbitra entre processos** — dois `eventstore.Open` sobre o mesmo WAL e dois `Claim` do mesmo run passam **ambos**, com o mesmo token.
+
+O que hoje impede alguém de o fazer é **um parágrafo** em `tecnica/10` §3-bis. Não há nada no código a impedi-lo, e a consequência de o fazer não é um erro visível: é a maquinaria de posse a **dar a impressão** de estar a arbitrar enquanto duas réplicas escrevem o mesmo run. O `FencedAppender` não salva — ele consulta o token corrente pelo mesmo Event Store que não arbitra.
+
+Este ticket converte a declaração documental numa **barreira real**.
+
+**A ARMADILHA DE DESENHO — ler antes de escolher o mecanismo.** A implementação óbvia é um lease singleton (`lease:node`) reclamado no arranque. **É vacuosa, e pela razão exacta que este ticket existe:** dois processos reclamam, ambos ganham, ambos concluem que são o único. O guard não pode assentar na arbitragem do Event Store — seria circular. Tem de usar um mecanismo **fora** dele: uma tranca de ficheiro ao nível do SO sobre o WAL (`LockFileEx`/`flock`), em que o árbitro é o SO e não o log. Bónus dessa escolha: o SO liberta a tranca na morte do processo, pelo que não há TTL a afinar nem tranca órfã após crash.
+
+**Objectivo.** Um segundo nó sobre o mesmo Event Store **não arranca**, e diz porquê.
+
+**Critérios de Aceitação**
+- [ ] Um segundo processo do nó apontado ao mesmo `AOS_EVENTSTORE_PATH` **recusa arrancar**, com erro que nomeia o ficheiro, o `DEF-282` e a razão — não um erro genérico de I/O.
+- [ ] O guard **não** assenta em lease/CAS do Event Store (seria circular — ver a armadilha acima); o teste que o prova corre **dois processos reais**, não duas goroutines.
+- [ ] As vias de **LEITURA** continuam a funcionar com o nó a correr: `aos wal-inspect` e `aos wal-summary` abrem o mesmo WAL hoje (`wal_inspect.go:59`, `wal_summary.go:69`) e **não podem** ser quebradas — uma tranca exclusiva ingénua parte as duas, e parte-as no momento em que um operador mais precisa delas (a diagnosticar um incidente).
+- [ ] A tranca é libertada em shutdown gracioso **e** na morte abrupta do processo (é a propriedade que a tranca do SO dá de graça e um lease com TTL não dá).
+- [ ] Um store **in-memory** (sem `AOS_EVENTSTORE_PATH`) não é afectado: não há ficheiro a trancar e não há partilha possível.
+- [ ] **O guard sabe quando deixar de se aplicar.** Com um backend genuinamente partilhado (pós-`AOS-100`), recusar N réplicas seria recusar exactamente o que se quer. O guard é condicional ao substrato ser de escritor único, e essa condição é explícita no código — não uma suposição que alguém terá de descobrir a remover.
+
+**Detalhes Técnicos.** Tranca advisory ao nível do SO sobre o ficheiro do WAL, adquirida no `Open` do caminho de ESCRITA e não no de leitura — o que exige distinguir os dois no `eventstore`, que hoje não os distingue. Alternativa a avaliar: manter o `Open` como está e pôr a tranca no `bootstrap` do nó, deixando o `eventstore` intacto; é menos abrangente (não protege outro binário que abra o WAL directamente) mas não toca no substrato. A escolha entre as duas é do executor, com a razão registada.
+
+**Testes Requeridos.** Dois processos reais sobre o mesmo WAL: o segundo recusa e o código de saída distingue-o de uma avaria. O primeiro morre abruptamente (`kill`): o segundo passa a arrancar. `wal-inspect`/`wal-summary` funcionam com o nó a correr. Store in-memory não é afectado.
+
+**Definition of Done**
+- [ ] Critérios de Aceitação satisfeitos, demonstrados com dois processos reais.
+- [ ] `-race` verde.
+- [ ] `tecnica/10` §3-bis actualizado: o limite operacional deixa de ser só uma declaração e passa a citar a barreira.
+- [ ] `DEF-282` actualizado — o deferimento **mantém-se aberto** (o substrato continua sem arbitrar), mas passa a registar que a configuração insegura está agora **impedida**, não apenas desaconselhada.
+
+**Handoff para Claude Code**
+```text
+És o executor do ticket AOS-285 do Agentic OS de Referência (AOS).
+Lê AOS-285 na íntegra em specs/EPIC-10_Topologia_Operacao_DR.md e o DEF-282 no
+docs/governance/REGISTO-Deferimentos.md.
+LÊ A ARMADILHA DE DESENHO antes de escolheres o mecanismo: um lease singleton sobre o
+Event Store é a solução óbvia e é VACUOSA — dois processos reclamam e ambos ganham, que
+é precisamente o defeito que este guard existe para cobrir. O árbitro tem de ser o SO.
+NÃO quebres as vias de leitura: `aos wal-inspect` e `aos wal-summary` abrem o mesmo WAL
+e têm de continuar a funcionar com o nó a correr — são o que um operador usa a meio de
+um incidente.
+O guard tem de saber quando deixar de se aplicar (pós-AOS-100), e isso fica explícito no
+código, não por descobrir.
+Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7) — pelo
+contrário, é o que a torna cumprida em vez de apenas declarada.
 ```
 
 ---
