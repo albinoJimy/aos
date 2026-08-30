@@ -27,6 +27,26 @@ var ErrNodeNotFound = errors.New("orchestrator: nó inexistente no grafo")
 // ErrEmptyTaskID é devolvido ao admitir um nó com task_id vazio.
 var ErrEmptyTaskID = errors.New("orchestrator: task_id vazio")
 
+// ErrLogAhead — o Event Store JÁ continha este facto, mas o DAG em memória tratou-o
+// como NOVO. Significa uma coisa só: este [GraphBuilder] está a construir CEGO sobre um
+// run que já existe no log.
+//
+// # O DEFEITO QUE TORNA VISÍVEL
+//
+// O `emit` descartava o [eventstore.AppendResult], pelo que um `StatusDuplicate` — que
+// vem com erro NIL — era indistinguível de um commit fresco. Consequência medida a
+// 2026-08-30: um builder «retomado» sobre um run existente faz `AddNode` e `MarkRunning`,
+// AMBOS devolvem nil, ZERO eventos novos entram no stream, e o chamador fica com a
+// ILUSÃO de retoma segura. Depois admite arestas cegas às que já estão duráveis — e uma
+// aresta que no log fecharia um ciclo é aceite, porque a memória vazia não a vê. O log
+// passa a ter a→b E b→a, e o [RebuildDAG] falha PARA SEMPRE (é função pura do log e o
+// log é append-only: não há reparação em banda).
+//
+// O erro NÃO reverte nada: quando ele dispara, a memória e o log ACABARAM de concordar.
+// O que está errado não é o estado — é o chamador, que se julgava dono de um run novo.
+// Ver [NewGraphBuilder], que ainda não sabe re-hidratar a partir de [RebuildDAG] (AOS-281).
+var ErrLogAhead = errors.New("orchestrator: o log ja contem este facto e o DAG em memoria tratou-o como novo — builder cego sobre um run existente")
+
 // NodeSpec descreve um nó-tarefa a admitir no DAG.
 type NodeSpec struct {
 	// TaskID identifica o nó dentro do run. É a CHAVE ESTÁVEL de desempate na
@@ -81,6 +101,12 @@ func (d *DAG) Len() int { return len(d.nodes) }
 
 // Has indica se o task_id está no DAG.
 func (d *DAG) Has(taskID string) bool { _, ok := d.nodes[taskID]; return ok }
+
+// HasEdge indica se a aresta from→to já está admitida. Existe para o [GraphBuilder]
+// poder distinguir «acabei de adicionar» de «já lá estava» ANTES de chamar [DAG.AddEdge]
+// — distinção que ele não conseguia fazer, porque o AddEdge devolve nil nos dois casos
+// (o curto-circuito idempotente não muta). Ver [GraphBuilder.AddEdge].
+func (d *DAG) HasEdge(from, to string) bool { return d.succ[from][to] }
 
 // State devolve o estado corrente do nó (state.State de AOS-017) e se existe.
 func (d *DAG) State(taskID string) (state.State, bool) {
@@ -414,9 +440,16 @@ func (b *GraphBuilder) AddNode(ctx context.Context, spec NodeSpec) error {
 		ToolID:     spec.Task.ToolID,
 		Capability: spec.Task.Capability,
 	}
-	if err := b.emit(ctx, contract.EventTaskNodeCreated, stepID, payload); err != nil {
+	st, err := b.emit(ctx, contract.EventTaskNodeCreated, stepID, payload)
+	if err != nil {
 		b.dag.removeNode(spec.TaskID) // revert: mantém o DAG consistente com o log
 		return err
+	}
+	if st == eventstore.StatusDuplicate {
+		// O log já tinha este nó e a memória tratou-o como novo: builder cego sobre um
+		// run existente. NÃO reverte — memória e log acabaram de concordar; quem está
+		// errado é o chamador. Ver [ErrLogAhead].
+		return fmt.Errorf("%w: %s %q", ErrLogAhead, contract.EventTaskNodeCreated, spec.TaskID)
 	}
 	return nil
 }
@@ -439,9 +472,16 @@ func (b *GraphBuilder) MarkRunning(ctx context.Context, taskID string) error {
 		To:     string(state.Running),
 	}
 	step := contract.StepNodeStateChanged(taskID, string(state.Running))
-	if err := b.emit(ctx, contract.EventTaskNodeStateChanged, step, payload); err != nil {
+	st, eerr := b.emit(ctx, contract.EventTaskNodeStateChanged, step, payload)
+	if eerr != nil {
 		b.dag.restoreState(taskID, from) // revert: transição não durável
-		return err
+		return eerr
+	}
+	if st == eventstore.StatusDuplicate {
+		// Idem [GraphBuilder.AddNode]: o log já tinha esta transição. Sem isto, um nó
+		// abortado por política (running→failed pelo detector de deadlock) voltava a
+		// `running` num builder retomado, com ZERO eventos novos a registá-lo.
+		return fmt.Errorf("%w: %s %q→%s", ErrLogAhead, contract.EventTaskNodeStateChanged, taskID, state.Running)
 	}
 	return nil
 }
@@ -451,6 +491,22 @@ func (b *GraphBuilder) MarkRunning(ctx context.Context, taskID string) error {
 // razão explícita e devolve [ErrEdgeClosesCycle] SEM alterar o grafo. Caso
 // contrário adiciona a aresta e persiste task.edge.added.
 func (b *GraphBuilder) AddEdge(ctx context.Context, from, to string) error {
+	// JÁ EXISTIA? A pergunta tem de ser feita ANTES, e é o que fecha o defeito abaixo.
+	//
+	// [DAG.AddEdge] devolve nil em DOIS casos que o builder tratava como um só: quando
+	// acabou de adicionar a aresta, e quando ela JÁ LÁ ESTAVA (curto-circuito
+	// idempotente, que NÃO muta). Em erro do `emit`, o revert corria nos dois — e no
+	// segundo removia da memória uma aresta que estava DURÁVEL no log.
+	//
+	// Medido a 2026-08-30 com o Event Store REAL: o vivo perdia a→b, o log mantinha-a, e
+	// a inversa b→a deixava de parecer um ciclo, era admitida e persistida. O log ficava
+	// com as duas e o [RebuildDAG] falhava para sempre. A `TopoOrder` viva passava a
+	// devolver uma ordem que VIOLA uma dependência ainda durável no log.
+	//
+	// O gatilho não é uma falha genérica de Append — o store deduplica antes de tudo e
+	// devolve nil. São as verificações que correm ANTES da dedup: ctx cancelado, store
+	// fechado, sem líder.
+	jaExistia := b.dag.HasEdge(from, to)
 	err := b.dag.AddEdge(from, to)
 	if errors.Is(err, ErrEdgeClosesCycle) {
 		rej := contract.EdgeRejectedCyclePayload{
@@ -459,7 +515,7 @@ func (b *GraphBuilder) AddEdge(ctx context.Context, from, to string) error {
 			To:     to,
 			Reason: err.Error(),
 		}
-		if perr := b.emit(ctx, contract.EventEdgeRejectedCycle, contract.StepEdgeRejected(from, to), rej); perr != nil {
+		if _, perr := b.emit(ctx, contract.EventEdgeRejectedCycle, contract.StepEdgeRejected(from, to), rej); perr != nil {
 			// O registo da rejeição falhou, mas a aresta CONTINUA rejeitada por
 			// ciclo: preserva o sentinel para o chamador (errors.Is(…,
 			// ErrEdgeClosesCycle) continua verdadeiro) sem mascarar o erro de infra.
@@ -477,9 +533,20 @@ func (b *GraphBuilder) AddEdge(ctx context.Context, from, to string) error {
 	span.SetAttribute(attrEdgeTo, to)
 	defer span.End()
 	added := contract.TaskEdgeAddedPayload{RunID: b.dag.runID, From: from, To: to}
-	if eerr := b.emit(ctx, contract.EventTaskEdgeAdded, contract.StepEdgeAdded(from, to), added); eerr != nil {
-		b.dag.removeEdge(from, to) // revert: mantém o DAG consistente com o log
+	st, eerr := b.emit(ctx, contract.EventTaskEdgeAdded, contract.StepEdgeAdded(from, to), added)
+	if eerr != nil {
+		if !jaExistia {
+			// Só reverte o que ESTA chamada adicionou. Reverter uma aresta pré-existente
+			// removeria da memória algo que está durável no log — era o defeito.
+			b.dag.removeEdge(from, to)
+		}
 		return eerr
+	}
+	if st == eventstore.StatusDuplicate && !jaExistia {
+		// A memória tratou a aresta como nova e o log já a tinha: builder cego. Com a
+		// aresta já em memória a coisa é outra — é reemissão idempotente legítima, e
+		// devolve nil como sempre.
+		return fmt.Errorf("%w: %s %s→%s", ErrLogAhead, contract.EventTaskEdgeAdded, from, to)
 	}
 	return nil
 }
@@ -487,20 +554,26 @@ func (b *GraphBuilder) AddEdge(ctx context.Context, from, to string) error {
 // TopoOrder devolve a ordenação topológica estável do DAG em construção.
 func (b *GraphBuilder) TopoOrder() ([]string, error) { return b.dag.TopoOrder() }
 
-// emit serializa payload e escreve-o como evento no stream = run_id.
-func (b *GraphBuilder) emit(ctx context.Context, evType, stepID string, payload any) error {
+// emit serializa payload e escreve-o como evento no stream = run_id, e DEVOLVE O
+// ESTADO do append.
+//
+// Devolver o status não é arrumação: era o descarte dele que tornava o
+// [StatusDuplicate] — que vem com erro NIL — indistinguível de um commit fresco, e é
+// isso que [ErrLogAhead] passa a denunciar. O irmão `DeadlockDetector.emit` já o
+// consumia para gatear efeitos; este não.
+func (b *GraphBuilder) emit(ctx context.Context, evType, stepID string, payload any) (eventstore.Status, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = b.store.Append(ctx, b.dag.runID, eventstore.EventInput{
+	res, err := b.store.Append(ctx, b.dag.runID, eventstore.EventInput{
 		Type:     evType,
 		Payload:  raw,
 		RunID:    b.dag.runID,
 		StepID:   stepID,
 		Producer: b.producer,
 	})
-	return err
+	return res.Status, err
 }
 
 // RebuildDAG reconstrói o DAG de um run RELENDO os eventos de grafo do Event
