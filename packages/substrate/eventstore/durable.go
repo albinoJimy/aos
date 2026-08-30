@@ -60,14 +60,40 @@ const maxRecordBytes = 64 << 20
 // crcTable é a tabela IEEE reutilizada (evita realocar por registo).
 var crcTable = crc32.MakeTable(crc32.IEEE)
 
+// ficheiroWAL é a fatia de *os.File de que o [wal] precisa. Existe por uma razão de
+// TESTABILIDADE, e a razão é um defeito real: o ramo em que o `Flush` passa e o `Sync`
+// falha não era exercitável com um *os.File, e por isso o teste de regressão que devia
+// cobri-lo (TestDurable_PersistErrorNoPhantom) fecha o descritor — o que faz falhar o
+// `Write`, NÃO o `Sync`. O ramo perigoso ficou por testar precisamente por não haver
+// costura. Ver [wal.desfazer].
+type ficheiroWAL interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
 // wal é o escritor append-only do log em disco. Serializa os writes com o seu
 // próprio mutex (appends de streams distintos correm concorrentes no Store, mas o
 // ficheiro é único) e faz fsync após cada registo para durabilidade real.
 type wal struct {
-	mu     sync.Mutex
-	f      *os.File
-	w      *bufio.Writer
-	closed bool
+	mu sync.Mutex
+	f  ficheiroWAL
+	w  *bufio.Writer
+	// tamanho são os bytes CONFIRMADOS no ficheiro (só sobe depois de um registo
+	// ficar durável). É o ponto de reposição de [wal.desfazer]. Mantido em memória em
+	// vez de um Stat por append: o append é caminho quente e o valor é exacto — só
+	// esta goroutine escreve, sob w.mu.
+	tamanho int64
+	// truncar repõe o ficheiro a um tamanho dado. NÃO é um método do descritor de
+	// escrita DE PROPÓSITO: o WAL é aberto com O_APPEND, e em Windows esse modo concede
+	// FILE_APPEND_DATA, que NÃO autoriza truncar — medido, `Acesso negado`. A truncatura
+	// vai por caminho ([os.Truncate]), que abre o seu próprio descritor. Manter o
+	// O_APPEND é o que garante que a escrita seguinte aterra no novo fim do ficheiro.
+	truncar func(int64) error
+	// envenenado != nil ⇒ o WAL ficou num estado que não se conseguiu repor e NÃO pode
+	// aceitar mais escritas. Ver [wal.desfazer].
+	envenenado error
+	closed     bool
 }
 
 // openWALAppend abre (criando se necessário) o ficheiro do WAL em modo append para
@@ -82,7 +108,20 @@ func openWALAppend(path string) (*wal, error) {
 	// WAL e gravar o 1º registo (já com File.Sync) pode perder a própria entrada de
 	// directório, deixando um ficheiro de tamanho 0 ou nenhum. Torna a criação durável.
 	fsyncDir(filepath.Dir(path))
-	return &wal{f: f, w: bufio.NewWriter(f)}, nil
+	// O tamanho de partida é o ponto de reposição do PRIMEIRO append ([wal.desfazer]).
+	// O Open já truncou qualquer cauda parcial antes de chegar aqui, pelo que este valor
+	// é o fim do último registo íntegro.
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return &wal{
+		f:       f,
+		w:       bufio.NewWriter(f),
+		tamanho: fi.Size(),
+		truncar: func(n int64) error { return os.Truncate(path, n) },
+	}, nil
 }
 
 // fsyncDir torna durável a entrada de directório (criação/truncatura de ficheiros
@@ -119,6 +158,10 @@ func (w *wal) append(ev Event) error {
 	if w.closed {
 		return ErrClosed
 	}
+	if w.envenenado != nil {
+		return w.envenenado
+	}
+	antes := w.tamanho
 	if _, err := w.w.Write(hdr[:]); err != nil {
 		return err
 	}
@@ -128,11 +171,72 @@ func (w *wal) append(ev Event) error {
 	if _, err := w.w.Write(tr[:]); err != nil {
 		return err
 	}
+	// A PARTIR DAQUI OS BYTES PODEM JÁ ESTAR NO FICHEIRO, e é isso que o revert do
+	// chamador assume que não acontece. Qualquer falha destas duas chamadas passa por
+	// [wal.desfazer], que repõe a invariante «erro devolvido ⇒ nada ficou durável».
+	//
+	// O `Flush` conta tanto como o `Sync`: o `bufio.Writer` propaga o erro do Write
+	// subjacente mesmo quando ESCREVEU TUDO (só acrescenta io.ErrShortWrite quando
+	// n < len), pelo que um Flush falhado também pode deixar o registo inteiro em disco.
 	if err := w.w.Flush(); err != nil {
-		return err
+		return w.desfazer(antes, err)
 	}
 	// fsync: durabilidade real — o evento committed sobrevive a um crash do processo/SO.
-	return w.f.Sync()
+	if err := w.f.Sync(); err != nil {
+		return w.desfazer(antes, err)
+	}
+	w.tamanho = antes + int64(len(hdr)+len(payload)+len(tr))
+	return nil
+}
+
+// desfazer repõe a invariante «Append devolveu erro ⇒ nada ficou durável» truncando o
+// ficheiro ao tamanho que tinha antes deste registo.
+//
+// # O DEFEITO QUE FECHA, medido
+//
+// `wal.append` escrevia, fazia `Flush` e só depois `Sync`. Um `Flush` bem-sucedido
+// significa que os bytes JÁ passaram por write(2); se o `fsync` seguinte falhar com o
+// processo vivo — EIO, ENOSPC sob delayed allocation, EDQUOT, volume thin-provisioned
+// ou em rede — o registo fica COMPLETO e com CRC VÁLIDO no ficheiro e o `Append`
+// devolve erro. Medido a 2026-08-30: `head` vivo=1, WAL em disco=2 registos; e como os
+// bytes estão na page cache independentemente do fsync, bastava um REINÍCIO DE PROCESSO
+// para o evento dado como falhado ressuscitar.
+//
+// A consequência aguda não era sequer essa. O índice de deduplicação do Store só é
+// povoado DEPOIS da escrita no WAL, pelo que um retry não recebia `StatusDuplicate` —
+// recebia o MESMO seq do órfão. O WAL ficava com seqs [1 2 2] e o `Open` seguinte
+// recusava com `E_RESTORE_ORDER: lote de restauro nao e gapless`: o nó deixava de
+// arrancar. O comentário de `restoreInto` antecipa esse caso como «que um WAL
+// bem-formado nunca produz» — e este era o caminho que o produzia.
+//
+// # PORQUE TRUNCAR, E O QUE FAZER QUANDO NEM ISSO SE CONSEGUE
+//
+// O registo NUNCA foi confirmado ao chamador, logo removê-lo não perde dado de ninguém:
+// repõe exactamente a invariante que o `Store.Append` e o revert do `GraphBuilder`
+// assumem. Se o fsync falhou porque o kernel já largou as páginas sujas, tanto melhor —
+// aqui o objectivo é justamente que os bytes NÃO fiquem.
+//
+// Se a truncatura (ou o fsync dela) também falhar, a invariante não é reponível e o WAL
+// fica ENVENENADO: qualquer append seguinte é recusado. É deliberado e é o mal menor —
+// um Store que recusa escritas em voz alta é um problema visível; um que continua a
+// aceitar acaba com um seq duplicado no ficheiro e um nó que não volta a arrancar.
+func (w *wal) desfazer(antes int64, causa error) error {
+	if err := w.truncar(antes); err != nil {
+		w.envenenado = fmt.Errorf("eventstore/wal: %w; a truncatura de reposicao para %d bytes FALHOU (%v) — "+
+			"o WAL pode conter um registo NAO confirmado e nao aceita mais escritas", causa, antes, err)
+		return w.envenenado
+	}
+	// O fsync da truncatura é BEST-EFFORT, e a assimetria face ao caso de cima é
+	// deliberada. Se a truncatura FALHOU, o registo órfão está lá e a invariante está
+	// quebrada agora — envenenar é a resposta. Se a truncatura PASSOU e só o seu fsync
+	// falhou, o ficheiro já está no tamanho certo para este processo: a invariante
+	// vale, e o que fica incerto é apenas a durabilidade da mudança de tamanho num
+	// crash subsequente. Parar de aceitar escritas por causa disso seria trocar um
+	// risco condicional por uma indisponibilidade certa — e as escritas seguintes
+	// reescrevem essa região de qualquer forma.
+	_ = w.f.Sync()
+	// Reposto: o ficheiro voltou ao estado anterior a este registo.
+	return causa
 }
 
 // close descarrega e fecha o ficheiro do WAL (idempotente).
