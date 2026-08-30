@@ -222,7 +222,38 @@ var (
 	ErrInvalidRiskClass = errors.New("plan: risk_class invalido (enum: safe|gray|danger)")
 	// ErrInvalidDependsOn — depends_on com id vazio ou duplicado.
 	ErrInvalidDependsOn = errors.New("plan: depends_on com id vazio ou duplicado")
+	// ErrTooManyDependsOn — depends_on acima do tecto de aridade
+	// ([maxDependsOnPerNode]). Ver o comentário dessa constante: é o tecto que faltava
+	// para o número de ARESTAS ser função do de NÓS.
+	ErrTooManyDependsOn = errors.New("plan: depends_on acima do tecto de aridade")
 )
+
+// maxDependsOnPerNode limita as dependências declaradas por nó — o tecto de ARIDADE que
+// faltava, a par dos irmãos de `condition.go` (arestas condicionais, predicados) e dos
+// contratos de payload.
+//
+// # O QUE FECHA, medido
+//
+// Sem ele o número de ARESTAS não é função do número de NÓS: um documento podia declarar
+// E = O(V²). E o custo de `planvalidate.buildAdmissionDAG` é O(E·(V+E)) — cada
+// `DAG.AddEdge` corre uma travessia de alcançabilidade para impor a aciclicidade —, logo
+// o trabalho crescia com V⁴. Medido a 2026-08-30: 600 nós DENTRO de um tecto
+// `MaxNodes=1000` respeitado, plano ACEITE, 179 700 arestas → 3 minutos e 48 segundos
+// numa só chamada a `Validate`. E a ordem de declaração, escolhida por quem escreve o
+// documento, valia entre 3× e 27× de diferença.
+//
+// # PORQUE O TECTO TEM DE SER SOBRE ARESTAS, e não sobre nós
+//
+// O primeiro diagnóstico foi que bastava verificar o `Ceilings.MaxNodes` mais cedo — ele
+// é conferido no FIM de `Validate`, depois de o DAG já estar construído. Está errado:
+// mover a verificação não fecha nada, porque com V limitado e E livre o custo continua a
+// explodir. É o número de arestas POR NÓ que tem de ser limitado, e é aqui — na FORMA,
+// no `Decode` — que se limita, antes de qualquer trabalho de grafo.
+//
+// O valor acompanha [maxConditionalEdgesPerNode]: um nó com mais de 8 dependências
+// declaradas não é um plano legível no approval-card do gate (ADR-013), é um grafo que
+// ninguém revê. Um plano que precise de mais fan-in exprime-o com um nó de junção.
+const maxDependsOnPerNode = 8
 
 // Decode desserializa e valida a FORMA de um PlanDocument fail-closed a partir de
 // bytes JSON (sem I/O: opera sobre o buffer que recebe). Espelha a disciplina de
@@ -299,6 +330,9 @@ func (d PlanDocument) validateShape() error {
 			if t.Name == "" || t.Version == "" || t.Digest == "" {
 				return fmt.Errorf("%w (no %q)", ErrIncompleteToolRef, n.NodeID)
 			}
+		}
+		if len(n.DependsOn) > maxDependsOnPerNode {
+			return fmt.Errorf("%w: %d > %d (no %q)", ErrTooManyDependsOn, len(n.DependsOn), maxDependsOnPerNode, n.NodeID)
 		}
 		deps := make(map[string]struct{}, len(n.DependsOn))
 		for _, dep := range n.DependsOn {
