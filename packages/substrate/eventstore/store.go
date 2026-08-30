@@ -387,10 +387,17 @@ func (s *Store) Append(ctx context.Context, streamID string, in EventInput, opts
 	//     estado in-memory NUNCA foi mutado — sem divergência nem duplicação;
 	//   - ERRO de I/O (disco cheio/EIO/quota) com o processo vivo: devolve erro
 	//     FAIL-CLOSED sem tocar no estado in-memory. Não há phantom-commit (Read/
-	//     StreamHead não expõem o evento falhado), não há gap de seq no WAL (o seq
-	//     não foi materializado, um retry reusa last+1) e o chamador vê a falha —
-	//     nada foi acked. A antiga ordem apply-before-log deixava justamente esses
-	//     três defeitos sob um único erro de escrita.
+	//     StreamHead não expõem o evento falhado) e o chamador vê a falha — nada foi
+	//     acked. A antiga ordem apply-before-log deixava esses defeitos sob um único
+	//     erro de escrita.
+	//
+	//     A cláusula «o seq não foi materializado, um retry reusa last+1» ESTAVA AQUI
+	//     e era FALSA — corrigida a 2026-08-30. Ela vale para uma falha do `Write`, mas
+	//     não valia para uma falha do `fsync` (nem para um `Flush` que escreva tudo e
+	//     devolva erro): aí o registo ficava COMPLETO no ficheiro, o retry reusava o
+	//     mesmo seq, e o `Open` seguinte recusava com E_RESTORE_ORDER — o nó deixava de
+	//     arrancar. Quem repõe a invariante é agora [wal.desfazer], que trunca o
+	//     ficheiro ao tamanho anterior ao registo; a garantia é dele, não deste ponto.
 	// Ainda sob o stripe do stream — persistências do MESMO stream serializam na
 	// ordem de seq. O ficheiro é único; o wal serializa os seus próprios writes.
 	if s.wal != nil {
