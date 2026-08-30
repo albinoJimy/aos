@@ -211,14 +211,17 @@ varredores.
   impedir («um eixo que aponta para um epic sem ticket é operacionalmente indistinguível
   de não ter eixo nenhum»).
 
-### Opção C — v1 single-host, mas com o limite imposto por código
+### Opção C — v1 single-host, mas com o limite imposto por código → **AOS-285**
 
 Manter a forma, e acrescentar ao nó um guard de arranque que **recusa** arrancar se
-detectar outra réplica viva sobre o mesmo Event Store.
+detectar outra réplica viva sobre o mesmo Event Store. **Ticket criado a 2026-08-30.**
 
 - **A favor:** barato, e converte uma declaração documental numa barreira real. Hoje, o
   que impede alguém de correr duas réplicas é um parágrafo em `tecnica/10`.
 - **Contra:** não dá HA a ninguém. É higiene, não solução — mas é higiene que falta.
+- **Armadilha registada no ticket:** a implementação óbvia — um lease singleton sobre o
+  Event Store — é **vacuosa**, e pela razão exacta que o guard existe para cobrir (dois
+  processos reclamam, ambos ganham). O árbitro tem de ser o SO, não o log.
 
 **A minha recomendação: A, com C como trabalho imediato**, e B só quando existir um
 requisito de HA nomeado por um utilizador real. A razão é a mesma que a Carta usa para o
