@@ -54,6 +54,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-106 | Runbooks operacionais | chore | M | P1 | AOS-104, AOS-105 |
 | AOS-107 | Escala horizontal + degradação graciosa em produção | feature | L | P1 | AOS-099, EPIC-03 |
 | AOS-108 | Hipercare e operacionalização | chore | M | P2 | AOS-102, AOS-105, AOS-106, AOS-107 |
+| AOS-281 | Composição ORQ/SCH↔nó sob disciplina de lease | feature | L | P1 | AOS-099, AOS-100, EPIC-03, EPIC-19 |
 
 ---
 
@@ -598,6 +599,60 @@ Não expandas escopo. Abre PR com o template e evidências (relatórios, métric
 ```
 
 ---
+## AOS-281 — Composição ORQ/SCH↔nó sob disciplina de lease
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 5 — Operacionalização |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-099 (workers stateless), AOS-100 (Event Store replicado), EPIC-03 (portas ORQ/SCH), EPIC-19 (planeador, gate e materialização) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | ADR-018 (fronteira nó↔ORQ/SCH), ADR-007 (uma só fonte de verdade), ADR-015 (execução durável), `packages/kernel/agent-runtime/durable/lease.go`, `specs/EPIC-19` (AOS-237/238), `docs/governance/REGISTO-Deferimentos.md` (DEF-272, DEF-273, DEF-803) |
+
+**Contexto.** O planeador, o gate de aprovação, a materialização e o dispatcher estão **entregues e testados** (EPIC-19, AOS-231..239) — e **nenhum deles corre**. Não é wiring esquecido: é o ADR-018 a impedi-lo por desenho. Na v1 single-host o **loop de serviço do nó é o dono único do ciclo de vida**, com posse por lease durável (`lease:<run_id>`, fencing token monotónico, TTL por heartbeat). Correr em paralelo um `Scheduler` do EPIC-03 — que também conduz `ready→running→complete|failed` — daria **duas autoridades sobre o mesmo run**, que é a segunda fonte de verdade que o ADR-007 proíbe.
+
+As duas fronteiras estão guardadas por teste: `packages/cmd/aos/boundary_orq_sch_test.go` impede o nó de importar o orquestrador e o escalonador; `TestBoundary_ProductionImportsAreAllowlisted` impede o dispatcher de importar o módulo de ciclo de vida. **Nenhum dos lados pode compor o outro**, e não existe hoje um terceiro sítio a quem isso pertença — daí este ticket.
+
+O ADR-018 já nomeia a saída: num deployment distribuído, o ORQ e o SCH tornam-se **componentes autónomos que coordenam *através* do Event Store replicado**, e a invariante «um só dono por run» mantém-se, arbitrada pelo mesmo lease. O mecanismo de fencing não precisa de ser inventado — precisa de passar a ser usado por **mais do que um processo**.
+
+**Objectivo.** Definir e entregar a composição em que o ORQ e o SCH tomam, exercem e largam a posse de um run pelo **mesmo lease durável** que o nó usa, de modo a que em cada instante exista **exactamente um dono** — sem que qualquer das duas fronteiras guardadas por teste seja violada.
+
+**Critérios de Aceitação**
+- [ ] Um run tem, em qualquer instante, **um só detentor de lease**, e todas as escritas de ciclo de vida apresentam o **fencing token** corrente; uma escrita com token obsoleto é recusada, não aplicada.
+- [ ] A passagem de autoridade a jusante do gate usa `lease.released` + `lease.claimed` (não a expiração por TTL): o detentor anterior **anuncia** que largou, e o novo reclama sob concorrência optimista no stream `lease:<run_id>`.
+- [ ] **Um só escritor** das transições de estado por-run. O outro DERIVA do log em vez de escrever — decidido e declarado neste ticket, não deixado ao wiring.
+- [ ] Um componente que tome posse a meio **re-hidrata** o grafo a partir do log (`RebuildDAG`) em vez de começar vazio; não existe caminho que admita arestas cegas às já duráveis.
+- [ ] As duas fronteiras guardadas por teste (ADR-018 no nó; allowlist de imports no dispatcher) continuam **verdes e inalteradas**, ou o ADR-018 é formalmente emendado com a razão registada.
+- [ ] `DEF-272` (emissão do veredicto) e `DEF-273` (transporte do payload tipado) passam a ter emissor e implementação de produção, e fecham.
+
+**Detalhes Técnicos.** Reutiliza `durable.LeaseManager` (`lease.claimed`/`renewed`/`released`, stream `lease:` namespaceado e serializado por `expected_seq`). Coordenação por Event Store replicado (AOS-100), não por memória partilhada. O `RebuildDAG` de AOS-025 já existe e é fiel; o que falta é uma via de construção que o aceite. Ver o inventário de defeitos do grafo levantado pela auditoria adversarial de 2026-08-30 — vários deles (inversão de ordem entre escritores, `restoreState` sem CAS, ausência de re-hidratação) são **sintomas de não haver árbitro**, e resolvem-se com esta decisão em vez de um a um.
+
+**Testes Requeridos.** Dois processos a disputar o mesmo run: só um ganha o claim, o outro vê o `expected_seq` falhar. Escrita com token obsoleto recusada. Handoff a jusante do gate sem janela de dupla-posse. Tomada de posse a meio reconstrói o grafo e continua sem divergir do log. Os dois guard-tests de fronteira verdes.
+
+**Definition of Done**
+- [ ] Critérios de Aceitação satisfeitos e demonstráveis com dois processos reais.
+- [ ] `-race` verde; nenhum guard-test de fronteira alterado sem emenda registada ao ADR-018.
+- [ ] `DEF-272` e `DEF-273` fechados no registo; `DEF-803` reavaliado.
+- [ ] `tecnica/10` actualizado com o diagrama de posse e handoff.
+
+**Handoff para Claude Code**
+```text
+És o executor do ticket AOS-281 do Agentic OS de Referência (AOS).
+Lê AOS-281 na íntegra em specs/EPIC-10_Topologia_Operacao_DR.md, e ADR-018 na íntegra.
+NÃO comeces por escrever wiring: a primeira entrega é a DECISÃO de quem escreve as transições
+de estado por-run, com a razão registada. Só depois o código.
+Fundações a respeitar: um só dono por run arbitrado pelo lease durável (fencing token
+monotónico); coordenação através do Event Store replicado, nunca por memória partilhada;
+as duas fronteiras guardadas por teste não se alteram sem emenda formal ao ADR-018.
+Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
+```
+
+---
+
 
 ## Tabela de aprovação
 
