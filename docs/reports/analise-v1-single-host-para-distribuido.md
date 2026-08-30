@@ -97,9 +97,9 @@ a maquinaria de posse **daria a impressão** de estar a arbitrar.
 ## 3. Os três buracos que o AOS-100 **não** tapa
 
 Se o Event Store fosse trocado amanhã por JetStream, restariam três problemas reais.
-Nenhum deles é resolvido pelo substrato, e **dois não têm ticket**.
+Nenhum deles é resolvido pelo substrato. **Não tinham ticket quando este relatório foi escrito; passaram a ter a 2026-08-30** — `AOS-282`, `AOS-283` e `AOS-284`, criados a pedido do dono na sequência desta análise.
 
-### 3.1 Orçamento por árvore — N réplicas = N× o tecto (sem ticket)
+### 3.1 Orçamento por árvore — N réplicas = N× o tecto → **AOS-282**
 
 `budget.Budget` mantém os contadores **em memória**, por processo
 (`nodes map[string]*node` sob mutex). Existe `budget.Rebuild`, mas **devolve
@@ -122,9 +122,9 @@ AOS-027) **não** tem este problema — reserva sobre o log com CAS. É o orçam
 árvore** que é per-processo. São admissões diferentes; confundi-las levaria a concluir
 que o problema já está resolvido.
 
-**Não existe ticket.** O `AOS-027` cobre o token-bucket do provider, não a árvore.
+**Ticket: `AOS-282`** (criado 2026-08-30). O `AOS-027` cobre o token-bucket do provider, não a árvore — não o confundir com este.
 
-### 3.2 Laços de serviço sem eleição de líder (sem ticket)
+### 3.2 Laços de serviço sem eleição de líder → **AOS-283**
 
 O nó corre **oito** laços periódicos: aprovações expiradas, prazos, órfãos, retenção,
 avaliador de SLO, renovação do token do Vault, e mais. **Não há eleição de líder em lado
@@ -143,7 +143,7 @@ exclusão entre eles** — que é exactamente a falha que o comentário diz esta
 O varredor de órfãos é a excepção honrosa: passa por `submit`, que reclama lease, e salta
 sem roubo. Foi escrito a pensar nisto.
 
-### 3.3 Cadeia de auditoria com escritor único em processo
+### 3.3 Cadeia de auditoria com escritor único em processo → **AOS-284**
 
 `audit/filestore.go` serializa as escritas com um mutex **em processo**
 (`wmu sync.Mutex // serializa os writes ao ficheiro único`). A hash-chain é sequencial por
@@ -166,14 +166,14 @@ Ordenado por dependência, não por esforço:
 | 1 | **Event Store real replicado** (JetStream R3/R5) | `AOS-100` | P0, por fazer | **Bloqueia tudo.** Sem ele o resto não é testável em multi-processo |
 | 2 | Backup + PITR | `AOS-101` | P0, por fazer | Depende de (1) |
 | 3 | DR por replay com RPO/RTO | `AOS-102` | P0, por fazer | Depende de (1)+(2) |
-| 4 | **Orçamento por árvore durável/partilhado** | **nenhum** | — | §3.1. Correctness, não operação |
-| 5 | **Eleição de líder para laços de serviço** | **nenhum** | — | §3.2 |
-| 6 | **Disciplina de partição da hash-chain** | **nenhum** | — | §3.3, e por confirmar |
+| 4 | **Orçamento por árvore durável/partilhado** | `AOS-282` | P0, criado 2026-08-30 | §3.1. Correctness, não operação |
+| 5 | **Eleição de líder para laços de serviço** | `AOS-283` | P0, criado 2026-08-30 | §3.2 |
+| 6 | **Disciplina de partição da hash-chain** | `AOS-284` | P0, criado 2026-08-30 | §3.3 — o AC1 do ticket é confirmar se o problema existe |
 | 7 | IaC do plano de controlo/dados | `AOS-098` | P0, por fazer | |
 | 8 | Pool de microVMs em produção | `AOS-103` | P0, por fazer | |
 | 9 | Escala horizontal + degradação | `AOS-107` | P1, por fazer | Depende de (1) e de `AOS-099` |
 
-**Três dos nove não têm ticket.** Isso é, por si, um resultado desta análise: o EPIC-10
+**Três dos nove não tinham ticket** quando esta análise foi escrita. Isso foi, por si, um resultado dela: o EPIC-10
 foi escrito assumindo que «workers stateless» (AOS-099) cobria o estado por-processo, e
 o orçamento por árvore, os laços de serviço e a cadeia de auditoria escaparam.
 
@@ -205,8 +205,8 @@ três produz um sistema que *parece* distribuído e falha em silêncio no orçam
 varredores.
 
 - **A favor:** é a única forma de dizer «HA» com verdade.
-- **Contra:** é a maior expansão de escopo da v1 até hoje, e três dos itens ainda nem
-  ticket têm. Exige criar os tickets **antes** da emenda, senão a emenda aponta para o
+- **Contra:** é a maior expansão de escopo da v1 até hoje. Os três itens em falta **já têm
+  ticket** (`AOS-282`/`283`/`284`, criados 2026-08-30), pelo que a emenda deixa de apontar para o
   vazio — que é literalmente o defeito que o `REGISTO-Deferimentos` foi criado para
   impedir («um eixo que aponta para um epic sem ticket é operacionalmente indistinguível
   de não ter eixo nenhum»).
