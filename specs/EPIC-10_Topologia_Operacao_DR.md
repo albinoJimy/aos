@@ -856,22 +856,22 @@ Este ticket converte a declaração documental numa **barreira real**.
 **Objectivo.** Um segundo nó sobre o mesmo Event Store **não arranca**, e diz porquê.
 
 **Critérios de Aceitação**
-- [ ] Um segundo processo do nó apontado ao mesmo `AOS_EVENTSTORE_PATH` **recusa arrancar**, com erro que nomeia o ficheiro, o `DEF-282` e a razão — não um erro genérico de I/O.
-- [ ] O guard **não** assenta em lease/CAS do Event Store (seria circular — ver a armadilha acima); o teste que o prova corre **dois processos reais**, não duas goroutines.
-- [ ] As vias de **LEITURA** continuam a funcionar com o nó a correr: `aos wal-inspect` e `aos wal-summary` abrem o mesmo WAL hoje (`wal_inspect.go:59`, `wal_summary.go:69`) e **não podem** ser quebradas — uma tranca exclusiva ingénua parte as duas, e parte-as no momento em que um operador mais precisa delas (a diagnosticar um incidente).
-- [ ] A tranca é libertada em shutdown gracioso **e** na morte abrupta do processo (é a propriedade que a tranca do SO dá de graça e um lease com TTL não dá).
-- [ ] Um store **in-memory** (sem `AOS_EVENTSTORE_PATH`) não é afectado: não há ficheiro a trancar e não há partilha possível.
-- [ ] **O guard sabe quando deixar de se aplicar.** Com um backend genuinamente partilhado (pós-`AOS-100`), recusar N réplicas seria recusar exactamente o que se quer. O guard é condicional ao substrato ser de escritor único, e essa condição é explícita no código — não uma suposição que alguém terá de descobrir a remover.
+- [x] Um segundo processo do nó apontado ao mesmo `AOS_EVENTSTORE_PATH` **recusa arrancar**, com erro que nomeia o ficheiro, o `DEF-282` e a razão — não um erro genérico de I/O. — *`ErrEventStoreJaDetido`, com o basename do WAL, o `DEF-282` e a acção do operador na mensagem (`TestAOS285_SegundoNoSobreOMesmoEventStoreRecusa`).*
+- [x] O guard **não** assenta em lease/CAS do Event Store (seria circular — ver a armadilha acima); o teste que o prova corre **dois processos reais**, não duas goroutines. — *`eventstore.LockWAL` sobre `<wal>.lock`, arbitrado pelo SO (`CreateFile` sem partilha no Windows, `flock LOCK_EX|LOCK_NB` em Unix), zero-dep (stdlib `syscall`). `TestLockWAL_SegundoProcessoERecusado` re-invoca o binário de teste como SUBPROCESSO — exigido porque em Unix o `flock` é por descritor e em Windows a exclusão é por handle: um teste in-process passaria nas duas plataformas por razões diferentes e não provaria a propriedade entre processos.*
+- [x] As vias de **LEITURA** continuam a funcionar com o nó a correr: `aos wal-inspect` e `aos wal-summary` abrem o mesmo WAL hoje (`wal_inspect.go:59`, `wal_summary.go:69`) e **não podem** ser quebradas — uma tranca exclusiva ingénua parte as duas, e parte-as no momento em que um operador mais precisa delas (a diagnosticar um incidente). — *a tranca está no ficheiro IRMÃO, não no WAL: `TestLockWAL_NaoBloqueiaQuemLe` abre e lê o mesmo WAL com a posse tomada.*
+- [x] A tranca é libertada em shutdown gracioso **e** na morte abrupta do processo (é a propriedade que a tranca do SO dá de graça e um lease com TTL não dá). — *`TestLockWAL_MorteDoDetentorLibertaAPosse` mata o detentor com `kill` e o seguinte arranca. `TestLockWAL_FicheiroResidualNaoBloqueia` prova que arbitra a posse do descritor e não a existência do ficheiro — a diferença face a um lock-file ingénuo.*
+- [x] Um store **in-memory** (sem `AOS_EVENTSTORE_PATH`) não é afectado: não há ficheiro a trancar e não há partilha possível.
+- [x] **O guard sabe quando deixar de se aplicar.** Com um backend genuinamente partilhado (pós-`AOS-100`), recusar N réplicas seria recusar exactamente o que se quer. O guard é condicional ao substrato ser de escritor único, e essa condição é explícita no código — não uma suposição que alguém terá de descobrir a remover. — *`guardDePosseAplicavel` é função NOMEADA com a condição comentada e `TestAOS285_CondicaoDeAplicabilidade` a exercer os três casos; o eixo do `DEF-282` traz a revisão junto quando o AOS-100 landar.*
 
 **Detalhes Técnicos.** Tranca advisory ao nível do SO sobre o ficheiro do WAL, adquirida no `Open` do caminho de ESCRITA e não no de leitura — o que exige distinguir os dois no `eventstore`, que hoje não os distingue. Alternativa a avaliar: manter o `Open` como está e pôr a tranca no `bootstrap` do nó, deixando o `eventstore` intacto; é menos abrangente (não protege outro binário que abra o WAL directamente) mas não toca no substrato. A escolha entre as duas é do executor, com a razão registada.
 
 **Testes Requeridos.** Dois processos reais sobre o mesmo WAL: o segundo recusa e o código de saída distingue-o de uma avaria. O primeiro morre abruptamente (`kill`): o segundo passa a arrancar. `wal-inspect`/`wal-summary` funcionam com o nó a correr. Store in-memory não é afectado.
 
 **Definition of Done**
-- [ ] Critérios de Aceitação satisfeitos, demonstrados com dois processos reais.
-- [ ] `-race` verde.
-- [ ] `tecnica/10` §3-bis actualizado: o limite operacional deixa de ser só uma declaração e passa a citar a barreira.
-- [ ] `DEF-282` actualizado — o deferimento **mantém-se aberto** (o substrato continua sem arbitrar), mas passa a registar que a configuração insegura está agora **impedida**, não apenas desaconselhada.
+- [x] Critérios de Aceitação satisfeitos, demonstrados com dois processos reais. — *dois processos reais em `wallock_test.go`. **RESIDUAL DECLARADO:** o guard cobre o NÓ; um segundo escritor que não seja o nó (`aos-orq`, ou outro binário a abrir o WAL sem pedir a posse) continua a não ser impedido — escolha de escopo, registada em `tecnica/10` §3-bis em vez de descoberta.*
+- [ ] `-race` verde. — ***POR VERIFICAR EM CI***, pela mesma razão de AOS-281: a máquina de desenvolvimento não tem toolchain C.
+- [x] `tecnica/10` §3-bis actualizado: o limite operacional deixa de ser só uma declaração e passa a citar a barreira.
+- [x] `DEF-282` actualizado — o deferimento **mantém-se aberto** (o substrato continua sem arbitrar), mas passa a registar que a configuração insegura está agora **impedida**, não apenas desaconselhada.
 
 **Handoff para Claude Code**
 ```text
