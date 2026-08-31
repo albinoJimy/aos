@@ -307,3 +307,49 @@ Sem PR e sem o template de `specs/01` §7; sem os dois revisores que um P0 exige
 
 Um `git add -A` meu varreu para um commit um ficheiro temporário de auditoria de outra
 sessão; removido, e declarado no commit que o remove.
+
+---
+
+# ADENDA 2 — o adaptador, e o que ele muda (2026-08-31)
+
+A §A1 dizia que o achado que governava tudo era não existir adaptador: media-se o
+substrato, não o Event Store do AOS. **Esse achado deixou de valer.**
+
+`packages/substrate/eventstore/jetstream` implementa `eventstore.EventStore` sobre o
+cluster. O **mesmo** instrumento que reporta as quatro sondas AUSENTES contra o store de
+referência reporta-as **PRESENTES** contra ele:
+
+```
+[visibilidade-entre-handles] presente — A escreveu seq=1; B lê 1 evento(s), o primeiro em seq=1
+[cas-entre-handles]          presente — B afirmou o mesmo expected_seq=0 e foi recusado
+[dedup-entre-handles]        presente — B vê duplicate no seq ORIGINAL
+[corrida-um-so-vencedor]     presente — 4 escritores sobre expected_seq=0: 1 vencedor, 3 recusados
+```
+
+Handles independentes são ligações TCP distintas com caches próprias — o que dois
+processos são um para o outro.
+
+## O que o adaptador tem de decidir, e como decidiu
+
+| Problema | Decisão | Porquê |
+|---|---|---|
+| Duas numerações | O `seq` do AOS vive no envelope; o do JetStream é só token de CAS e nunca é exposto | O JetStream numera globalmente por stream físico; o C2 exige gapless desde 1 **por stream**. Confundi-los daria um log com buracos. Fixado em teste com dois streams intercalados |
+| Idempotência | Índice **derivado do log**; `Nats-Msg-Id` só como rede de segurança | A janela do servidor é temporal (§4/§A4); a do AOS não tem prazo |
+| CAS recusado | Se o chamador afirmou `expected_seq`, a recusa é dele; se não afirmou, re-hidrata e repete | Devolver-lhe um conflito que não pediu seria transformar concorrência entre streams num erro do chamador |
+| Indeterminado | Re-hidrata e procura o `EventID` gerado agora | Torna resolúvel o que de outro modo seria fatal para o contrato C2 |
+| `stream_id` não representável | **Recusa** | Um ponto seria escapado para um subject vizinho, onde outro stream leria os nossos eventos. `lease:<run>` continua a passar — tem teste |
+
+## O que continua por fazer, medido
+
+**O nó não pode usar isto.** `Config.EventStore` é do tipo **concreto** `*eventstore.Store`,
+não da interface. Medido o que falta exactamente: `Healthy()` e `Streams()` são os
+**dois únicos** métodos fora da interface que o nó usa — ambos já implementados no
+adaptador. Alargar o campo à interface é a decisão seguinte.
+
+Por isso o `DEF-282` **continua ABERTO** e o sensor de `aos-orq` **continua certo**: o
+gatilho de fecho está satisfeito num substrato, não no nó.
+
+E continua por fazer, do próprio adaptador: **soberania (AC5)** — falta `placement` no
+`StreamConfig`, e enquanto faltar este backend **não serve um board com fronteira
+declarada**; consumidor **durável** com acks e flow control; leitura em lote (hoje é um
+round-trip por evento); e o **benchmark** de throughput.
