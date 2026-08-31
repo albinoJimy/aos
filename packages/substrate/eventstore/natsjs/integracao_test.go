@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,4 +145,182 @@ func TestIntegracao_DedupDoServidorEUmaJanela(t *testing.T) {
 	}
 	t.Logf("dentro da janela: A=%d, B=duplicate no mesmo seq=%d — mas a janela expira, "+
 		"e é por isso que a idempotência do AOS não pode assentar aqui", primeiro.Seq, segundo.Seq)
+}
+
+// criarStreamR3 cria um stream de medição com a configuração que o AOS-100 exige, e
+// devolve o seu nome e um subject virgem dentro dele.
+func criarStreamR3(t *testing.T, cn *natsjs.Conn, prefixo string, janela time.Duration) (stream, subject string) {
+	t.Helper()
+	s := sufixo(t)
+	stream, subject = prefixo+"_"+s, prefixo+"."+s+".run"
+	if err := cn.CriarStream(natsjs.ConfigStream{
+		Name:        stream,
+		Subjects:    []string{prefixo + "." + s + ".>"},
+		NumReplicas: 3,
+		Storage:     "file",
+		DenyDelete:  true,
+		DenyPurge:   true,
+		Duplicates:  int64(janela),
+	}, prazo); err != nil {
+		t.Fatalf("criar stream R3 %q: %v", stream, err)
+	}
+	return stream, strings.ToLower(subject)
+}
+
+// TestIntegracao_CASSobContencao fecha o buraco que a auditoria adversarial de
+// 2026-08-31 abriu: TODAS as medições anteriores do CAS eram SEQUENCIAIS (A, depois B),
+// e o próprio `conformance/doc.go` nomeia o modo de falha que só a contenção revela —
+// «o CAS existe mas não é serializável sob contenção».
+//
+// N ligações INDEPENDENTES afirmam o mesmo expected_seq AO MESMO TEMPO. Exactamente uma
+// pode ganhar. Se ganharem duas, o substrato não arbitra e todo o AOS-100 cai.
+func TestIntegracao_CASSobContencao(t *testing.T) {
+	addr := servidor(t)
+	const n = 8
+
+	abridor := ligar(t, addr)
+	_, subject := criarStreamR3(t, abridor, "aosconc", 2*time.Minute)
+
+	conns := make([]*natsjs.Conn, n)
+	for i := range conns {
+		conns[i] = ligar(t, addr)
+	}
+
+	// Barreira: todas as goroutines ficam bloqueadas até o canal fechar, para que as
+	// escritas se cruzem de facto em vez de se sucederem.
+	largada := make(chan struct{})
+	var wg sync.WaitGroup
+	acks := make([]natsjs.PubAck, n)
+	errs := make([]error, n)
+	for i := range conns {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-largada
+			acks[i], errs[i] = conns[i].PublicarComCAS(subject, 0, nil,
+				[]byte(`{"escritor":`+strconv.Itoa(i)+`}`), prazo)
+		}(i)
+	}
+	close(largada)
+	wg.Wait()
+
+	vencedores, recusados, outros := 0, 0, 0
+	var seqVencedor uint64
+	for i := range conns {
+		switch {
+		case errs[i] == nil:
+			vencedores++
+			seqVencedor = acks[i].Seq
+		case errors.Is(errs[i], natsjs.ErrSeqErrada):
+			recusados++
+			if acks[i].Seq != 0 {
+				t.Errorf("escritor %d recusado mas com seq=%d, quer 0 — uma recusa não pode ocupar posição", i, acks[i].Seq)
+			}
+		default:
+			outros++
+			t.Logf("escritor %d com erro que não é recusa de CAS: %v", i, errs[i])
+		}
+	}
+
+	if outros != 0 {
+		t.Fatalf("%d de %d escritores falharam com erro que não é E_SEQ_ERRADA — "+
+			"recusar tem de ser distinguível de avariar, senão a medição não distingue arbitragem de indisponibilidade", outros, n)
+	}
+	if vencedores != 1 || recusados != n-1 {
+		t.Fatalf("vencedores=%d recusados=%d de %d escritores em contenção; quer exactamente 1 e %d — "+
+			"o expected_seq NÃO é serializável sob contenção e o AOS-100 não está cumprido", vencedores, recusados, n, n-1)
+	}
+	t.Logf("%d escritores concorrentes sobre expected_seq=0: 1 vencedor (seq=%d), %d recusados com seq=0", n, seqVencedor, recusados)
+}
+
+// TestIntegracao_RecusaNaoDeixaRasto observa NO LOG o que a recusa fez — em vez de o
+// inferir do `seq:0` da resposta, que foi o que a auditoria apontou como lacuna.
+//
+// O contrato C2 exige «ERRO ⇒ NADA FICOU DURÁVEL», e o revert em memória do GraphBuilder
+// depende disso. Aqui lê-se a mensagem que ficou na posição disputada e confirma-se que
+// é a do vencedor, não a do recusado.
+func TestIntegracao_RecusaNaoDeixaRasto(t *testing.T) {
+	addr := servidor(t)
+	a, b := ligar(t, addr), ligar(t, addr)
+	stream, subject := criarStreamR3(t, a, "aosrasto", 2*time.Minute)
+
+	vencedor, err := a.PublicarComCAS(subject, 0, nil, []byte(`{"escritor":"vencedor"}`), prazo)
+	if err != nil {
+		t.Fatalf("A.PublicarComCAS: %v", err)
+	}
+	if _, err := b.PublicarComCAS(subject, 0, nil, []byte(`{"escritor":"recusado"}`), prazo); !errors.Is(err, natsjs.ErrSeqErrada) {
+		t.Fatalf("B: quero recusa, veio %v", err)
+	}
+
+	// A posição disputada tem de conter o vencedor.
+	_, dados, err := a.MensagemPorSeq(stream, vencedor.Seq, prazo)
+	if err != nil {
+		t.Fatalf("ler seq=%d: %v", vencedor.Seq, err)
+	}
+	if string(dados) != `{"escritor":"vencedor"}` {
+		t.Fatalf("seq=%d contém %q — a posição disputada não é do vencedor", vencedor.Seq, dados)
+	}
+
+	// E o log não cresceu: o recusado não ficou noutra posição qualquer.
+	info, err := a.InfoDoStream(stream, prazo)
+	if err != nil {
+		t.Fatalf("InfoDoStream: %v", err)
+	}
+	if info.Messages != 1 || info.LastSeq != vencedor.Seq {
+		t.Fatalf("stream com messages=%d last_seq=%d; quer 1 e %d — a escrita recusada deixou rasto",
+			info.Messages, info.LastSeq, vencedor.Seq)
+	}
+	t.Logf("posição disputada (seq=%d) contém o vencedor; stream com 1 mensagem — a recusa não deixou rasto", vencedor.Seq)
+}
+
+// TestIntegracao_DedupExpiraComAJanela mede o LIMITE, que é o que
+// TestIntegracao_DedupDoServidorEUmaJanela nomeia mas não observa: a mesma chave, no
+// mesmo stream, deduplica DENTRO da janela e volta a ser aceite DEPOIS dela.
+//
+// O controlo positivo (a 2.ª publicação, dentro da janela) é o que exclui a hipótese
+// rival «a deduplicação nunca esteve activa neste stream» — sem ele, a 3.ª publicação a
+// receber seq novo não prova nada sobre janelas.
+//
+// CONSEQUÊNCIA: a idempotência do AOS por (run_id, step_id) não tem prazo, logo NÃO pode
+// assentar aqui. É a razão de o índice continuar derivado do log.
+func TestIntegracao_DedupExpiraComAJanela(t *testing.T) {
+	if testing.Short() {
+		t.Skip("mede a expiração de uma janela: precisa de esperar por ela")
+	}
+	addr := servidor(t)
+	cn := ligar(t, addr)
+
+	const janela = 3 * time.Second
+	_, subject := criarStreamR3(t, cn, "aosjanela", janela)
+	chave := natsjs.Header{natsjs.HdrMsgID: "run:passo-1"}
+
+	primeiro, err := cn.Publicar(subject, chave, []byte(`{"n":1}`), prazo)
+	if err != nil {
+		t.Fatalf("1.ª publicação: %v", err)
+	}
+
+	// CONTROLO POSITIVO: dentro da janela tem de deduplicar.
+	dentro, err := cn.Publicar(subject, chave, []byte(`{"n":2}`), prazo)
+	if err != nil {
+		t.Fatalf("2.ª publicação (dentro da janela): %v", err)
+	}
+	if !dentro.Duplicate || dentro.Seq != primeiro.Seq {
+		t.Fatalf("dentro da janela: duplicate=%v seq=%d, quer true e %d — "+
+			"sem este controlo a experiência não distingue «a janela expirou» de «a dedup nunca esteve activa»",
+			dentro.Duplicate, dentro.Seq, primeiro.Seq)
+	}
+
+	time.Sleep(janela + 2*time.Second)
+
+	fora, err := cn.Publicar(subject, chave, []byte(`{"n":3}`), prazo)
+	if err != nil {
+		t.Fatalf("3.ª publicação (fora da janela): %v", err)
+	}
+	if fora.Duplicate || fora.Seq == primeiro.Seq {
+		t.Fatalf("fora da janela: duplicate=%v seq=%d — a dedup do servidor NÃO é uma janela temporal. "+
+			"Se isto mudou, a conclusão de que a idempotência do AOS não pode assentar aqui tem de ser reavaliada",
+			fora.Duplicate, fora.Seq)
+	}
+	t.Logf("janela=%v: 1.ª seq=%d; dentro da janela duplicate no mesmo seq; %v depois a MESMA chave ficou committed em seq=%d",
+		janela, primeiro.Seq, janela+2*time.Second, fora.Seq)
 }

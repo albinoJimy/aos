@@ -73,12 +73,12 @@ func (cn *Conn) Publicar(subject string, h Header, dados []byte, timeout time.Du
 // É esta chamada — e não o cliente, e não o lease — que arbitra entre escritores. A
 // disciplina de posse do AOS (LeaseManager/AOS-018, FencedAppender, ADR-023) é correcta
 // SOB esta propriedade e vacuosa sem ela.
+// O Header do chamador NUNCA é mutado — ver [Header.Clonar] para o defeito que isso
+// causava.
 func (cn *Conn) PublicarComCAS(subject string, ultimoSeq uint64, h Header, dados []byte, timeout time.Duration) (PubAck, error) {
-	if h == nil {
-		h = Header{}
-	}
-	h[HdrExpectedLastSubjectSeq] = strconv.FormatUint(ultimoSeq, 10)
-	return cn.Publicar(subject, h, dados, timeout)
+	cab := h.Clonar()
+	cab[HdrExpectedLastSubjectSeq] = strconv.FormatUint(ultimoSeq, 10)
+	return cn.Publicar(subject, cab, dados, timeout)
 }
 
 // --- Gestão mínima de streams ----------------------------------------------
@@ -159,4 +159,44 @@ func (cn *Conn) InfoDoStream(nome string, timeout time.Duration) (InfoStream, er
 		return InfoStream{}, r.Error
 	}
 	return InfoStream{Messages: r.State.Messages, LastSeq: r.State.LastSeq}, nil
+}
+
+// --- Leitura directa de mensagens ------------------------------------------
+
+type pedidoMsgGet struct {
+	Seq uint64 `json:"seq,omitempty"`
+}
+
+type respostaMsgGet struct {
+	Error   *JSError `json:"error"`
+	Message struct {
+		Subject string `json:"subject"`
+		Seq     uint64 `json:"seq"`
+		Data    []byte `json:"data"` // base64 no fio; encoding/json descodifica para []byte
+	} `json:"message"`
+}
+
+// MensagemPorSeq lê uma mensagem do stream pelo seu seq.
+//
+// Existe para uma pergunta que o PubAck sozinho não responde: depois de uma escrita
+// RECUSADA, o que está no log? Sem esta leitura, «a recusa não deixou rasto» seria
+// inferido de `seq:0` na resposta em vez de observado no log — e a inferência é
+// exactamente o que a regra de método do repo proíbe.
+func (cn *Conn) MensagemPorSeq(stream string, seq uint64, timeout time.Duration) (subject string, dados []byte, err error) {
+	corpo, err := json.Marshal(pedidoMsgGet{Seq: seq})
+	if err != nil {
+		return "", nil, err
+	}
+	m, err := cn.Request("$JS.API.STREAM.MSG.GET."+stream, nil, corpo, timeout)
+	if err != nil {
+		return "", nil, err
+	}
+	var r respostaMsgGet
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return "", nil, fmt.Errorf("%w: resposta de MSG.GET ilegível (%q): %v", ErrProtocolo, m.Data, err)
+	}
+	if r.Error != nil {
+		return "", nil, r.Error
+	}
+	return r.Message.Subject, r.Message.Data, nil
 }
