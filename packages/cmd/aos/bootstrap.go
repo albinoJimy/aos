@@ -901,6 +901,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if errPosse != nil {
 		return nil, errPosse
 	}
+	// A libertação tem de ser armada AQUI, e não na guarda de limpeza mais abaixo.
+	// Entre este ponto e essa guarda há `return`s — a abertura do WORM é um deles, e é
+	// o que um WORM adulterado faz disparar. Com a libertação só lá em baixo, um
+	// arranque abortado nesse intervalo deixava os ficheiros DETIDOS por um processo
+	// que nunca existiu, e o reinício seguinte era recusado por um fantasma.
+	// (Medido: `TestNode_RestartRejectsTamperedWORM` falhava na limpeza do TempDir.)
+	arranqueOK := false
+	defer func() {
+		if !arranqueOK {
+			_ = posse.Largar()
+		}
+	}()
 
 	es := cfg.EventStore
 	ownsES := false
@@ -962,7 +974,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// tentativa seguinte (o supervisor a reiniciar o serviço) seria recusada por um
 		// detentor que já não existe. Largar DEPOIS de fechar o store, pela mesma ordem
 		// em que foram adquiridos ao contrário.
-		_ = posse.Largar()
+		// A posse é largada pelo defer ARMADO na aquisição (ver `arranqueOK`), que cobre
+		// também os returns anteriores a esta guarda. Aqui só se marca o sucesso.
 	}()
 
 	// (2a) AOS-221 — IMPOR a tamper-evidence do WORM no RESTART. Re-encadeia e VERIFICA a
@@ -2154,7 +2167,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("observabilidade OTLP (AOS-173): DESLIGADA (NoopTracer, zero overhead) — defina AOS_OTLP_ENDPOINT para exportar traces")
 	}
 
-	success = true // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
+	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
+	arranqueOK = true // ... nem larga a posse dos ficheiros (AOS-285/284): passa a ser do Node.Close.
 	return &Node{
 		Runtime: sec,
 		// A ancora que PASSOU no arranque, para o /metrics a poder declarar. Fail-closed acima:

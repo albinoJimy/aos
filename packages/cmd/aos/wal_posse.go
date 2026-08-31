@@ -31,19 +31,32 @@ import (
 // ganham, ambos concluem que são o único. O árbitro tem de estar FORA do log — ver
 // [eventstore.LockWAL].
 
-// posseDoWAL é a posse que este nó detém sobre o seu Event Store durável, ou nil se o
+// posseDoWAL é a posse que este nó detém sobre os seus ficheiros duráveis, ou nil se o
 // guard não se aplica (ver [guardDePosseAplicavel]).
+//
+// São DOIS ficheiros distintos e ambos precisam de posse — ver [tomarPosseDoWAL].
 type posseDoWAL struct {
-	largar eventstore.WALUnlocker
-	path   string
+	largar []eventstore.WALUnlocker
+	paths  []string
 }
 
-// Largar devolve a posse. Idempotente e nil-safe: chamar num nó sem guard é no-op.
+// Largar devolve as posses, pela ordem INVERSA da aquisição. Idempotente e nil-safe:
+// chamar num nó sem guard é no-op.
 func (p *posseDoWAL) Largar() error {
-	if p == nil || p.largar == nil {
+	if p == nil {
 		return nil
 	}
-	return p.largar()
+	var primeiro error
+	for i := len(p.largar) - 1; i >= 0; i-- {
+		if p.largar[i] == nil {
+			continue
+		}
+		if err := p.largar[i](); err != nil && primeiro == nil {
+			primeiro = err
+		}
+		p.largar[i] = nil
+	}
+	return primeiro
 }
 
 // guardDePosseAplicavel decide se o guard de arranque se aplica a esta configuração —
@@ -78,6 +91,32 @@ func guardDePosseAplicavel(cfg Config) (path string, aplica bool) {
 	return cfg.EventStorePath, true
 }
 
+// guardDoWORMAplicavel é o MESMO teste para o WORM durável, que é um ficheiro
+// SEPARADO (`WORMPath`) e não estava coberto pelo guard original de AOS-285.
+//
+// # Porque precisa de posse própria, e não por simetria
+//
+// MEDIDO a 2026-08-31 (AOS-284, AC1): dois `audit.OpenFileStore` sobre o mesmo ficheiro
+// e um `Append` de cada na MESMA partição produzem **FORK** — ambos escrevem
+// `audit_seq=1`. A consequência não é degradação: ao reabrir, a verificação de
+// integridade do arranque (AOS-221) **RECUSA** a cadeia e o nó NÃO ARRANCA — e
+// classifica-a como `adulteracao insertion`, indistinguível de um ataque.
+//
+// O caso comum já estava coberto **por consequência**: com os dois caminhos
+// partilhados, o guard do Event Store recusa o arranque ANTES de o WORM ser aberto
+// (a posse é tomada em `New` antes de ambos os `Open`). O que ficava a descoberto era
+// a configuração ASSIMÉTRICA — mesmo WORM, Event Stores diferentes —, que nenhum dos
+// dois guardas via.
+func guardDoWORMAplicavel(cfg Config) (path string, aplica bool) {
+	if cfg.WORM != nil {
+		return "", false // fornecido pelo chamador — o ciclo de vida é dele
+	}
+	if cfg.WORMPath == "" {
+		return "", false // in-memory — nada partilhável
+	}
+	return cfg.WORMPath, true
+}
+
 // ErrEventStoreJaDetido — outro processo já detém este Event Store. É a recusa do guard
 // de AOS-285, e é DISTINTA de um erro de I/O: a acção do operador é parar a outra
 // réplica, não arranjar o disco.
@@ -91,17 +130,46 @@ var ErrEventStoreJaDetido = errors.New("aos: Event Store já detido por outro pr
 // para ler», escreveria na mesma no primeiro run — e é a escrita concorrente que
 // corrompe.
 func tomarPosseDoWAL(cfg Config) (*posseDoWAL, error) {
-	path, aplica := guardDePosseAplicavel(cfg)
-	if !aplica {
+	p := &posseDoWAL{}
+	// Cada alvo com a sua razão: o Event Store porque não arbitra entre processos
+	// (DEF-282); o WORM porque dois escritores forkam a hash-chain e o nó deixa de
+	// arrancar (medido — ver [guardDoWORMAplicavel]).
+	alvos := []struct {
+		path   string
+		aplica bool
+		nome   string
+		porque string
+	}{
+		{mustPath(guardDePosseAplicavel(cfg)), mustOK(guardDePosseAplicavel(cfg)), "Event Store",
+			"o Event Store de referência não arbitra entre processos — ver DEF-282 e ADR-023 §4"},
+		{mustPath(guardDoWORMAplicavel(cfg)), mustOK(guardDoWORMAplicavel(cfg)), "WORM",
+			"dois escritores FORKAM a hash-chain (medido: ambos escrevem audit_seq=1) e o arranque seguinte RECUSA a cadeia como adulterada — ver AOS-284"},
+	}
+	for _, a := range alvos {
+		if !a.aplica {
+			continue
+		}
+		largar, err := eventstore.LockWAL(a.path)
+		if err != nil {
+			// Largar o que já foi tomado: um arranque recusado não pode deixar
+			// ficheiros detidos por um processo que não vai existir.
+			_ = p.Largar()
+			if errors.Is(err, eventstore.ErrWALHeld) {
+				return nil, fmt.Errorf("%w (%s): %q. Pare a outra réplica, ou aponte esta a ficheiros próprios. Razão: %s",
+					ErrEventStoreJaDetido, a.nome, a.path, a.porque)
+			}
+			return nil, fmt.Errorf("aos: posse do %s %q: %w", a.nome, a.path, err)
+		}
+		p.largar = append(p.largar, largar)
+		p.paths = append(p.paths, a.path)
+	}
+	if len(p.largar) == 0 {
 		return nil, nil
 	}
-	largar, err := eventstore.LockWAL(path)
-	if err != nil {
-		if errors.Is(err, eventstore.ErrWALHeld) {
-			return nil, fmt.Errorf("%w: %q. Pare a outra réplica, ou aponte esta a um Event Store próprio (AOS_EVENTSTORE_PATH). Razão: o Event Store de referência não arbitra entre processos — ver DEF-282 e ADR-023 §4",
-				ErrEventStoreJaDetido, path)
-		}
-		return nil, fmt.Errorf("aos: posse do Event Store %q: %w", path, err)
-	}
-	return &posseDoWAL{largar: largar, path: path}, nil
+	return p, nil
 }
+
+// mustPath/mustOK desempacotam o par (path, aplica) para a tabela acima — existem só
+// porque Go não deixa desestruturar duas devoluções dentro de um literal de slice.
+func mustPath(path string, _ bool) string { return path }
+func mustOK(_ string, ok bool) bool       { return ok }

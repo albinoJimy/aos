@@ -776,6 +776,33 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 | Responsável sugerido | Responsável de Segurança |
 | Documentos de referência | ADR-010 (observabilidade + audit WORM), `packages/platform/audit/chain.go` (`GenesisHash`), `packages/platform/audit/filestore.go` (`wmu`), `packages/platform/audit/checkpoint.go`, `docs/reports/analise-v1-single-host-para-distribuido.md` §3.3 |
 
+
+> **AC1 RESPONDIDO — MEDIDO a 2026-08-31. O problema EXISTE, e é pior do que este ticket descrevia.**
+>
+> Dois `audit.OpenFileStore` sobre o mesmo ficheiro, um `Append` de cada na MESMA
+> partição:
+>
+> ```
+> A: seq=1   B: seq=1        → FORK (ambos escrevem audit_seq=1)
+> reabrir:   RECUSADO — «adulteracao insertion na particao "gov", audit_seq=1»
+> ```
+>
+> A consequência **não é** «a cadeia deixa de provar o que existe para provar», como este
+> ticket dizia. É mais dura: **o nó não arranca**. A verificação de integridade do arranque
+> (AOS-221) recusa a cadeia — e classifica-a como **adulteração**, indistinguível de um
+> ataque para quem lê o erro. O AC3 deste ticket, que pedia essa distinção, fica assim
+> confirmado como necessário.
+>
+> **CORRECÇÃO AO GUARD, JÁ ENTREGUE.** A medição expôs um buraco que era de **v1**, não de
+> v1.1: o guard de AOS-285 trancava só o `AOS_EVENTSTORE_PATH`, e o WORM é um ficheiro
+> SEPARADO (`WORMPath`). O caso comum estava coberto por consequência (com ambos os
+> caminhos partilhados, o guard do Event Store recusa antes de o WORM abrir), mas a
+> configuração **assimétrica** — mesmo WORM, Event Stores diferentes — não era vista por
+> guarda nenhum. O guard passou a trancar os dois ficheiros.
+>
+> **O QUE RESTA PARA ESTE TICKET (v1.1).** O guard impede dois escritores; não dá
+> disciplina de partição a um deployment em que dois escritores sejam LEGÍTIMOS. É isso
+> que fica, e só isso — os AC abaixo aplicam-se a partir daqui, com o AC1 já respondido.
 **Contexto.** A hash-chain de auditoria é sequencial por construção: cada registo sela o `PrevHash` do anterior, e é isso que a torna *tamper-evident*. Hoje as escritas são serializadas por um mutex **em processo** (`filestore.go`: `wmu sync.Mutex // serializa os writes ao ficheiro único`).
 
 Dois processos a escrever a **mesma** partição computariam `PrevHash` a partir de vistas diferentes — e uma cadeia com um elo mal encadeado não é uma cadeia com um defeito: é uma cadeia que **deixa de provar o que existe para provar**. A verificação por checkpoint (`checkpoint.go`) passaria a falhar sem distinguir adulteração de corrida.
@@ -785,7 +812,7 @@ O desenho parece antecipar o problema — a `GenesisHash` fala do «PRIMEIRO reg
 **Objectivo.** Garantir que, com N réplicas, cada partição da hash-chain tem **um só escritor** em qualquer instante — ou, se o desenho já o garantir, tornar essa garantia **verificável** em vez de presumida.
 
 **Critérios de Aceitação**
-- [ ] Está **estabelecido por leitura do código, e escrito**, se duas réplicas podem hoje escrever a mesma partição. Se não podem, o mecanismo que o impede é nomeado e ganha teste; se podem, o resto destes critérios aplica-se.
+- [x] **RESPONDIDO 2026-08-31 (medido — ver o bloco acima): o problema EXISTE.** Está **estabelecido por leitura do código, e escrito**, se duas réplicas podem hoje escrever a mesma partição. Se não podem, o mecanismo que o impede é nomeado e ganha teste; se podem, o resto destes critérios aplica-se.
 - [ ] Cada partição tem um escritor exclusivo, arbitrado por lease durável (ADR-023) e não por mutex em processo.
 - [ ] A verificação da cadeia (`checkpoint.go`) distingue **adulteração** de **elo em falta por corrida** — um diagnóstico que confunde as duas leva o operador a investigar um ataque onde houve uma corrida, ou o contrário.
 - [ ] Uma tentativa de escrita numa partição de que a réplica não é dona é **recusada**, não aplicada — e o facto de recusa é observável.
