@@ -56,7 +56,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-108 | Hipercare e operacionalização | chore | M | P2 | AOS-102, AOS-105, AOS-106, AOS-107 |
 | AOS-281 | Composição ORQ/SCH↔nó sob disciplina de lease | feature | L | P1 | AOS-099, AOS-100, EPIC-03, EPIC-19 |
 | ~~AOS-282~~ | ~~Tecto do orçamento por árvore partilhado entre réplicas~~ — **INVÁLIDO** (premissa falsa; mandaria violar D-A1.3) | — | — | — | — |
-| AOS-283 | Eleição de líder para os laços de serviço do nó *(v1.1)* | feature | M | P0 | AOS-100, AOS-018 |
+| AOS-283 | Exclusão para o laço de retenção (era: eleição de líder para os laços) *(v1.1)* | feature | S | P1 | AOS-100 |
 | AOS-284 | Disciplina de partição da hash-chain de auditoria sob múltiplos escritores *(v1.1)* | feature | M | P0 | AOS-100 |
 | AOS-285 | Guard de arranque: o nó recusa arrancar sobre um Event Store já detido | feature | S | P0 | — |
 | AOS-286 | Estender o guard de posse do WAL aos restantes escritores | feature | S | P1 | AOS-285 |
@@ -700,7 +700,7 @@ não do distribuído: o consumo de **tool calls** não é contabilizado de forma
 
 ---
 
-## AOS-283 — Eleição de líder para os laços de serviço do nó
+## AOS-283 — Exclusão para o laço de retenção — *era: eleição de líder para os laços de serviço*
 
 | Campo | Valor |
 |---|---|
@@ -725,6 +725,35 @@ Esse guard é um `atomic.Bool` **no processo**. Com N processos há N guards e *
 
 **A excepção honrosa** é o varredor de órfãos: passa por `submit`, que reclama lease, e salta sem roubo um run detido por outra réplica. Foi escrito a pensar nisto — e é o modelo a seguir.
 
+> **PRIMEIRA ENTREGA FEITA — A CLASSIFICAÇÃO (2026-08-31). E ela ENCOLHE o ticket.**
+>
+> O handoff pedia a classificação antes do wiring, precisamente para não pôr lease em tudo.
+> Feita por leitura do código — **o que cada laço ESCREVE**, não o que parece fazer:
+>
+> | laço | classificação | evidência |
+> |---|---|---|
+> | **retenção** | **EXIGE EXCLUSÃO** | é o único. O guard `expireInFlight` é um `atomic.Bool` **no processo**, e o `IdempotencyStore` composto é `NewInMemoryIdempotencyStore` — cujo próprio doc diz «basta para um job de **processo único**». O código declara a consequência: duas passagens concorrentes podiam selar **DOIS** `retention.expired` para o mesmo facto |
+> | órfãos | **JÁ SEGURO** | passa por `submit`, que reclama lease; o código declara «SALTA sem roubo se outra réplica detiver o lease vivo» |
+> | prazos | **SEGURO POR PARTIÇÃO** | opera só sobre os runs do registo de EM-CURSO **desta réplica** — e um run tem um só dono (ADR-023). Outra réplica tem outros runs |
+> | aprovações | **IDEMPOTENTE POR CHAVE DURÁVEL** | `ExpireKind` apensa com `step_id` DETERMINÍSTICO (`chaveDeGeracao` sobre kind+run+step+geração); duas réplicas produzem a MESMA chave e o Event Store deduplica |
+> | avaliador de SLO | **SEM ESCRITA PARTILHADA** | lê o span-tap in-process e sonda o WORM; não apensa nada. Cada réplica avalia os SEUS spans, que é o comportamento certo |
+> | renovação do token do Vault | **CREDENCIAL POR PROCESSO** | mantém o token DESTE processo; sem token (custódia in-memory) é no-op |
+>
+> **Correcção à contagem deste ticket:** dizia «oito laços». São **oito tickers**, mas dois
+> não são laços de serviço sobre estado partilhado — o flush do OTLP (telemetria do
+> processo) e o `heartbeat` (por-RUN, e este ticket já o excluía por escrito). Os laços de
+> serviço são **seis**.
+>
+> **CONSEQUÊNCIA PARA O ESCOPO.** «Eleição de líder para os laços de serviço» é maior do que
+> o problema. Cinco dos seis já estão seguros, cada um por uma razão diferente e verificável
+> — e três dessas razões (lease, partição por run, chave durável) são mecanismos que o
+> repositório já tem. O que resta é **um** laço.
+>
+> **E para esse, a eleição de líder pode não ser o remédio certo.** O defeito da retenção é
+> a idempotência viver em memória; torná-la **durável** resolve-o sem introduzir eleição de
+> líder nenhuma, e sem o custo operacional de um mecanismo de liderança (TTL, split-brain,
+> observabilidade própria). A alternativa deve ser avaliada ANTES de se construir a eleição.
+
 **Objectivo.** Garantir que cada laço de serviço tem, em qualquer instante, **no máximo um executor** entre as réplicas — pelo mesmo mecanismo de lease durável que o ADR-023 já fixa para os runs, sem inventar um segundo.
 
 **Critérios de Aceitação**
@@ -732,7 +761,7 @@ Esse guard é um `atomic.Bool` **no processo**. Com N processos há N guards e *
 - [ ] A posse é renovada por heartbeat e largada por anúncio no shutdown — a réplica seguinte assume **sem esperar o TTL**.
 - [ ] A morte da réplica líder é recuperada por expiração de TTL: outra réplica assume, e o laço volta a correr dentro de um limite declarado.
 - [ ] Nenhum facto é selado **duas vezes** por duas réplicas — em particular `retention.expired`, que é o caso que o código já nomeia.
-- [ ] Cada laço declara se é **idempotente** ou **exige exclusão**; os que exigem exclusão são fail-closed sem posse (não correm), os idempotentes podem correr sem ela se houver razão escrita.
+- [x] **FEITO 2026-08-31 (ver a tabela acima).** Cada laço declara se é **idempotente** ou **exige exclusão**; os que exigem exclusão são fail-closed sem posse (não correm), os idempotentes podem correr sem ela se houver razão escrita.
 - [ ] Os contadores/idade de varrimento em `/metrics` distinguem «não sou líder» de «armado e à espera» e de «parado» — as três leem-se de maneira diferente e exigem acções diferentes.
 
 **Detalhes Técnicos.** Reutiliza `durable.LeaseManager` (AOS-018) e o padrão de posse de `runlifecycle.Tenure` (AOS-281): claim → `Keep` com heartbeat → `Release` como último acto. Não introduzir um segundo mecanismo de posse. O `heartbeat` por-run fica **de fora**: é de outra natureza (por-run, não de serviço) e a sua falha já tem consequência observável.
