@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -119,7 +120,7 @@ func medirVisibilidade(hs []eventstore.EventStore, stream string) Resultado {
 	ctx := context.Background()
 	a, b := hs[0], hs[1]
 
-	res, err := a.Append(ctx, stream, facto("visibilidade"))
+	res, err := a.Append(ctx, stream, facto(TipoVisibilidade, "a"))
 	if err != nil {
 		return Resultado{Detalhe: "o primeiro escritor não conseguiu escrever", Erro: fmt.Errorf("A.Append: %w", err)}
 	}
@@ -145,12 +146,12 @@ func medirCAS(hs []eventstore.EventStore, stream string) Resultado {
 	ctx := context.Background()
 	a, b := hs[0], hs[1]
 
-	primeiro, err := a.Append(ctx, stream, facto("cas-a"), eventstore.WithExpectedSeq(0))
+	primeiro, err := a.Append(ctx, stream, facto(TipoCAS, "a"), eventstore.WithExpectedSeq(0))
 	if err != nil {
 		return Resultado{Detalhe: "o primeiro CAS não passou num stream vazio", Erro: fmt.Errorf("A.Append: %w", err)}
 	}
 
-	segundo, err := b.Append(ctx, stream, facto("cas-b"), eventstore.WithExpectedSeq(0))
+	segundo, err := b.Append(ctx, stream, facto(TipoCAS, "b"), eventstore.WithExpectedSeq(0))
 	switch {
 	case eRecusaDeCAS(err):
 		return Resultado{Tem: true, Detalhe: fmt.Sprintf(
@@ -175,7 +176,7 @@ func medirDedup(hs []eventstore.EventStore, stream string) Resultado {
 	ctx := context.Background()
 	a, b := hs[0], hs[1]
 
-	in := facto("dedup")
+	in := facto(TipoDedup, "a")
 	in.RunID, in.StepID = stream, "passo-1"
 
 	primeiro, err := a.Append(ctx, stream, in)
@@ -211,7 +212,7 @@ func medirCorrida(hs []eventstore.EventStore, stream string) Resultado {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			r, err := hs[i].Append(ctx, stream, facto(fmt.Sprintf("corrida-%d", i)), eventstore.WithExpectedSeq(0))
+			r, err := hs[i].Append(ctx, stream, facto(TipoCorrida, strconv.Itoa(i)), eventstore.WithExpectedSeq(0))
 			seqs[i], errs[i] = r.Seq, err
 		}(i)
 	}
@@ -252,11 +253,25 @@ func eRecusaDeCAS(err error) bool {
 	return errors.Is(err, eventstore.ErrAppendOnlyViolation) || errors.Is(err, eventstore.ErrSeqConflict)
 }
 
+// Tipos de evento das sondas. São CONSTANTES junto do emissor, e não composições — o
+// gate `event-catalog` recusa um `Type` construído por concatenação, e tem razão: um
+// tipo composto em runtime não é enumerável a partir do código, e o catálogo de
+// tecnica/13 §3 deixa de poder ser verificado contra a árvore.
+const (
+	TipoVisibilidade = "conformance.visibilidade"
+	TipoCAS          = "conformance.cas"
+	TipoDedup        = "conformance.dedup"
+	TipoCorrida      = "conformance.corrida"
+)
+
 // facto devolve um EventInput mínimo e válido. O envelope (event_id, seq, ts,
 // idempotency_key) é atribuído pelo store, nunca pelo chamador.
-func facto(tipo string) eventstore.EventInput {
+//
+// QUEM escreve vai no payload, não no tipo: distinguir escritores é dado da sonda, não
+// uma família nova de factos.
+func facto(tipo, escritor string) eventstore.EventInput {
 	return eventstore.EventInput{
-		Type:    "conformance." + tipo,
-		Payload: json.RawMessage(`{}`),
+		Type:    tipo,
+		Payload: json.RawMessage(`{"escritor":` + strconv.Quote(escritor) + `}`),
 	}
 }
