@@ -15,32 +15,40 @@
 // # O que este comando demonstra
 //
 // A posse de um run por LEASE DURÁVEL, exercida por PROCESSOS REAIS cujo ÚNICO canal
-// de coordenação é o Event Store — nunca memória partilhada (AOS-100). O store é
-// aberto sobre um WAL em disco, pelo que dois arranques do binário partilham
-// exactamente aquilo que dois processos partilham em produção: o log, e mais nada.
+// de coordenação é o Event Store — nunca memória partilhada (AOS-100). Dois arranques
+// do binário partilham exactamente aquilo que dois processos partilham em produção: o
+// log, e mais nada.
 //
-//	aos-orq serve   --wal F --run R [--plan P] [--nodes a,b,c] [--release]
-//	aos-orq inspect --wal F --run R
+//	aos-orq serve   --wal F  --run R [--plan P] [--nodes a,b,c] [--release]
+//	aos-orq serve   --nats HOST:PORTA --run R [...]
+//	aos-orq inspect --wal F  --run R
 //
 // `serve` reclama a posse, re-hidrata o grafo do log, escreve sob fencing e — com
 // `--release` — ANUNCIA que largou. `inspect` lê e não escreve nada.
 //
-// # LIMITE DEFERIDO — este comando NÃO se corre em paralelo sobre o mesmo WAL
+// # DUAS TOPOLOGIAS, e o substrato é que decide qual
 //
-// A arbitragem da posse depende de o `expected_seq` do stream `lease:<run_id>` ser
-// atómico ENTRE ESCRITORES. O Event Store de REFERÊNCIA não o é entre PROCESSOS: as
-// réplicas de AOS-100 são cópias in-process do log e o índice de dedup vive em
-// memória, pelo que cada `Open` fica com a sua própria cabeça. Medido a 2026-08-30:
-// dois `eventstore.Open` sobre o mesmo ficheiro e dois `Claim` do mesmo run passam
-// AMBOS e mintam AMBOS o token 1.
+// Este comando corria numa só topologia porque só havia um substrato. Com o AOS-100
+// há dois, e a diferença entre eles é a única coisa que importa aqui:
 //
-// DEFERIDO para AOS-100 (Event Store genuinamente partilhado/replicado — NATS
-// JetStream da tabela de stack). Até lá, a topologia SUPORTADA por este comando é a
-// posse SEQUENCIAL: um processo serve, ANUNCIA que larga, e o seguinte reclama. É essa
-// que os testes de dois processos exercem, e é essa que o handoff do ADR-023 §2.5
-// descreve. Correr dois `serve` em simultâneo sobre o mesmo `--wal` NÃO é seguro e não
-// é uma configuração suportada — ver DEF-282 no registo de deferimentos e a declaração
-// de ADR-023 §4.
+// **--wal (Event Store de REFERÊNCIA).** A arbitragem da posse depende de o
+// `expected_seq` do stream `lease:<run_id>` ser atómico ENTRE ESCRITORES, e este
+// substrato não o é entre PROCESSOS: as réplicas são cópias in-process do log e o
+// índice de dedup vive em memória, pelo que cada `Open` fica com a sua própria cabeça.
+// MEDIDO a 2026-08-30 — dois `Open` sobre o mesmo ficheiro e dois `Claim` do mesmo run
+// passam AMBOS e mintam AMBOS o token 1. A topologia suportada é a posse SEQUENCIAL
+// (um serve, ANUNCIA que larga, o seguinte reclama) e correr dois `serve` em simultâneo
+// é IMPEDIDO pela posse exclusiva do ficheiro (AOS-285/286, código de saída 5). Ver
+// DEF-282 e ADR-023 §4.
+//
+// **--nats (Event Store REPLICADO).** O `expected_seq` é imposto pelo SERVIDOR e é
+// atómico entre escritores — MEDIDO a 2026-08-31 contra um cluster real. Correr N
+// `serve` em paralelo sobre o mesmo run passa a ser SUPORTADO: o vencedor é decidido
+// pelo LEASE (código 3, «posse do RUN negada»), não por um guard de ficheiro (código
+// 5). É a diferença de código que diz ao operador onde procurar.
+//
+// DESLIGADO POR OMISSÃO continua a valer: nenhum deployment single-host arranca este
+// binário, e a v1 não é reaberta (Carta §7).
 package main
 
 import (
@@ -104,9 +112,16 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `aos-orq — composição ORQ/SCH↔nó sob disciplina de lease (AOS-281, ADR-023)
 
-  aos-orq serve   --wal FICHEIRO --run ID [--plan ID] [--nodes a,b,c] [--release] [--worker NOME]
-                  [--plan-doc DOC.json --snapshot SNAP.json]   # materializa com o oraculo de efeito REAL
-  aos-orq inspect --wal FICHEIRO --run ID
+  aos-orq serve   (--wal FICHEIRO | --nats HOST:PORTA) --run ID [--plan ID] [--nodes a,b,c]
+                  [--release] [--worker NOME] [--plan-doc DOC.json --snapshot SNAP.json]
+  aos-orq inspect (--wal FICHEIRO | --nats HOST:PORTA) --run ID
+
+Substrato (EXCLUSIVO — um ou outro, nunca ambos):
+  --wal   Event Store de referencia sobre ficheiro. NAO arbitra entre processos:
+          posse SEQUENCIAL, e um segundo «serve» e recusado com 5.
+  --nats  Event Store REPLICADO (JetStream). ARBITRA entre processos: N instancias
+          em paralelo sao suportadas e o vencedor e decidido pelo LEASE (3).
+          [--nats-stream NOME] [--nats-replicas N]
 
 Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL detido por outro ESCRITOR
 `)
@@ -128,61 +143,14 @@ func codigoDe(err error) int {
 	}
 }
 
-// abrir abre o Event Store DURÁVEL sobre o WAL indicado, para LEITURA.
-//
-// É este ficheiro que faz de dois arranques do binário dois processos que coordenam
-// PELO LOG. Com um store in-memory, cada processo teria a sua própria verdade e a
-// demonstração não provaria nada — seria dois programas a não se verem.
-//
-// NÃO pede posse: quem só lê não a pede e não é bloqueado por quem a detém. Para o
-// caminho de ESCRITA, ver [abrirParaEscrita].
-func abrir(wal string) (*eventstore.Store, error) {
-	if wal == "" {
-		return nil, errors.New("--wal é obrigatório (o log é o único canal de coordenação)")
-	}
-	return eventstore.Open(wal)
-}
-
-// abrirParaEscrita toma a POSSE EXCLUSIVA do WAL e só então o abre (AOS-286).
-//
-// # Porque a posse vem ANTES do Open
-//
-// Abrir primeiro e trancar depois deixaria uma janela em que dois escritores teriam
-// ambos o WAL aberto — que é precisamente o estado a impedir. É a mesma ordem que o nó
-// usa (`wal_posse.go`), e pela mesma razão.
-//
-// # Porque este comando também pede posse
-//
-// O AOS-285 ligou o guard ao NÓ e declarou o residual: outro binário a escrever o mesmo
-// WAL continuava a não ser impedido. `serve` ESCREVE (topologia, estado por-nó, factos
-// do domínio do plano), pelo que correr `aos` e `aos-orq serve` sobre o mesmo WAL é a
-// mesma configuração insegura do AOS-285 — só que com dois binários diferentes.
-//
-// O `inspect` continua a usar [abrir]: é leitura, e a leitura nunca pede posse.
-func abrirParaEscrita(wal string) (*eventstore.Store, eventstore.WALUnlocker, error) {
-	if wal == "" {
-		return nil, nil, errors.New("--wal é obrigatório (o log é o único canal de coordenação)")
-	}
-	largar, err := eventstore.LockWAL(wal)
-	if err != nil {
-		if errors.Is(err, eventstore.ErrWALHeld) {
-			return nil, nil, fmt.Errorf("%w. Outro ESCRITOR (o nó `aos`, ou outro `aos-orq serve`) detém este Event Store. Pare-o, ou aponte este a um WAL próprio. Razão: o Event Store de referência não arbitra entre processos — ver DEF-282", err)
-		}
-		return nil, nil, err
-	}
-	store, err := eventstore.Open(wal)
-	if err != nil {
-		// Largar a posse se o Open falhar: uma posse retida por um arranque abortado
-		// recusaria a tentativa seguinte em nome de um detentor que já não existe.
-		_ = largar()
-		return nil, nil, err
-	}
-	return store, largar, nil
-}
+// A abertura do Event Store — e a escolha entre o substrato de ficheiro e o REPLICADO —
+// vive em substrato.go. O `inspect` abre para LEITURA (nunca pede posse); o `serve` abre
+// para ESCRITA, e é aí que a posse do ficheiro é (ou não) tomada.
 
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	wal := fs.String("wal", "", "caminho do WAL do Event Store durável")
+	var sub substrato
+	sub.registarFlags(fs)
 	runID := fs.String("run", "", "run_id a possuir")
 	planID := fs.String("plan", "", "plan_id do run (default: <run>-plan)")
 	nodes := fs.String("nodes", "", "nós a admitir no grafo, separados por vírgula")
@@ -202,17 +170,15 @@ func cmdServe(args []string) error {
 	}
 
 	ctx := context.Background()
-	// ESCRITA ⇒ posse exclusiva do WAL (AOS-286). A ordem de libertação é a inversa da
-	// aquisição: fecha-se o store e só depois se larga a posse, para não haver instante
-	// em que outro escritor a tome com o WAL ainda aberto por nós.
-	store, largarWAL, err := abrirParaEscrita(*wal)
+	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
+	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).
+	// Ver substrato.go, onde essa diferença está nomeada.
+	store, fechar, err := sub.abrirParaEscrita()
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = store.Close()
-		_ = largarWAL()
-	}()
+	defer func() { _ = fechar() }()
+	fmt.Println(sub.descrever())
 
 	leases, err := durable.NewLeaseManager(store, leaseTTL, durable.WithWorkerID(*worker))
 	if err != nil {
@@ -300,7 +266,9 @@ func cmdServe(args []string) error {
 
 func cmdInspect(args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
-	wal := fs.String("wal", "", "caminho do WAL do Event Store durável")
+	var sub substrato
+	sub.registarFlags(fs)
+
 	runID := fs.String("run", "", "run_id a inspeccionar")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -309,11 +277,11 @@ func cmdInspect(args []string) error {
 		return errors.New("--run é obrigatório")
 	}
 	ctx := context.Background()
-	store, err := abrir(*wal)
+	store, fechar, err := sub.abrirParaLeitura()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = fechar() }()
 
 	// Inspeccionar NÃO reclama posse e NÃO escreve: ler não move estado, e o replay é
 	// função pura do log (ADR-010).

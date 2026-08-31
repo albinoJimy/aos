@@ -219,6 +219,31 @@ lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
 > replicado de produção (NATS JetStream), e nessa altura a condição de aplicabilidade do
 > guard (`guardDePosseAplicavel`) tem de ser revista — está nomeada no código por essa razão.
 >
+> **DEF-282 FECHADO a 2026-08-31 (AOS-100) — e o limite acima continua verdadeiro para o
+> substrato a que se refere.** O backend replicado passou a existir
+> (`packages/substrate/eventstore/jetstream`) e ambos os binários o alcançam: o nó por
+> `AOS_EVENTSTORE_NATS`, o `aos-orq` por `--nats`. A revisão do guard que este parágrafo
+> anunciava foi FEITA — a condição passou a ser sobre o substrato *efectivamente
+> escolhido*, e não sobre a presença de um caminho de ficheiro.
+>
+> **As duas topologias, e o que as distingue à vista do operador.** A MESMA corrida entre
+> quatro processos, medida nos dois substratos:
+>
+> | Substrato | Desfecho | Quem arbitra |
+> |---|---|---|
+> | `--wal` (referência) | `vencedores=1 guardados(WAL)=3 negados(lease)=0` | o **ficheiro** (guard AOS-285/286, saída **5**) |
+> | `--nats` (replicado) | `vencedores=1 guardados(WAL)=0 negados-pelo-lease=3` | o **lease** (AOS-018, saída **3**) |
+>
+> É a diferença de código de saída que diz ao operador onde ir: no primeiro caso pára-se
+> o outro ESCRITOR do store; no segundo, o outro dono do RUN. Sobre `--wal` nada mudou —
+> o Event Store de referência continua a não arbitrar entre processos, e é por isso que o
+> sensor `TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos` continua verde e
+> continua CERTO: a propriedade foi ganha por um substrato **diferente**, não por aquele.
+>
+> **Residual do backend replicado, nomeado:** a soberania regional (AC5 do AOS-100) ainda
+> não é exprimível — falta `placement` na configuração do stream —, pelo que este
+> substrato **não serve um board com fronteira declarada** (ADR-011).
+>
 > **Residual PAGO (AOS-286).** O AOS-285 cobria só o nó, e o residual — outro binário a
 > escrever o mesmo WAL sem pedir posse — ficou aqui nomeado. O `aos-orq serve` pede agora
 > a posse (código de saída **5**, distinto do 3: ali a remediação é parar quem detém
