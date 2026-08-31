@@ -180,3 +180,91 @@ func contemTexto(s, sub string) bool {
 	}
 	return false
 }
+
+// ---------------------------------------------------------------------------
+// TESTE — O WORM TAMBÉM PEDE POSSE (AOS-284 AC1 → correcção ao guard).
+//
+// # Porque este teste existe, e o que foi MEDIDO
+//
+// O AC1 do AOS-284 pedia para descobrir se duas réplicas podem escrever a mesma
+// partição da hash-chain. Medido a 2026-08-31, com dois `audit.OpenFileStore` sobre o
+// mesmo ficheiro e um `Append` de cada na mesma partição:
+//
+//	A: seq=1   B: seq=1        → FORK
+//	reabrir:   RECUSADO — «adulteracao insertion na particao "gov", audit_seq=1»
+//
+// A consequência não é degradação: o nó **deixa de arrancar**, e o diagnóstico diz
+// ADULTERAÇÃO — indistinguível de um ataque para quem lê o erro.
+//
+// O caso COMUM já estava coberto por consequência: com Event Store e WORM ambos
+// partilhados, o guard do Event Store recusa antes de o WORM ser aberto. O que ficava
+// a descoberto — e é o que este teste fixa — é a configuração ASSIMÉTRICA: **mesmo
+// WORM, Event Stores diferentes**. Nenhum dos dois guardas a via.
+// ---------------------------------------------------------------------------
+
+func TestAOS285_WORMTambemPedePosse(t *testing.T) {
+	dir := t.TempDir()
+	worm := filepath.Join(dir, "worm.wal")
+
+	// Réplica A: Event Store próprio + WORM partilhado.
+	a, err := tomarPosseDoWAL(Config{
+		EventStorePath: filepath.Join(dir, "es-a.wal"),
+		WORMPath:       worm,
+	})
+	if err != nil {
+		t.Fatalf("posse de A: %v", err)
+	}
+	defer func() { _ = a.Largar() }()
+
+	// Réplica B: Event Store DIFERENTE (logo o guard do ES não a apanha) e o MESMO WORM.
+	_, err = tomarPosseDoWAL(Config{
+		EventStorePath: filepath.Join(dir, "es-b.wal"),
+		WORMPath:       worm,
+	})
+	if err == nil {
+		t.Fatal("B arrancou com o MESMO WORM de A — é a configuração assimétrica que forka a hash-chain e faz o arranque seguinte recusar a cadeia como ADULTERADA")
+	}
+	if !errors.Is(err, ErrEventStoreJaDetido) {
+		t.Fatalf("erro = %v, quer ErrEventStoreJaDetido", err)
+	}
+	if !contemTexto(err.Error(), "WORM") || !contemTexto(err.Error(), "AOS-284") {
+		t.Errorf("a recusa não diz QUAL o ficheiro em conflito nem porquê — o operador tem dois caminhos para investigar: %s", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TESTE — um arranque RECUSADO não deixa ficheiros detidos.
+//
+// A posse é tomada em série (Event Store, depois WORM). Se a segunda falhar, a
+// primeira TEM de ser largada — senão a tentativa seguinte, a do supervisor a
+// reiniciar, seria recusada por um processo que nunca chegou a existir.
+// ---------------------------------------------------------------------------
+
+func TestAOS285_ArranqueRecusadoNaoDeixaPosseOrfa(t *testing.T) {
+	dir := t.TempDir()
+	worm := filepath.Join(dir, "worm.wal")
+	esB := filepath.Join(dir, "es-b.wal")
+
+	// Alguém detém o WORM.
+	largarWorm, err := eventstore.LockWAL(worm)
+	if err != nil {
+		t.Fatalf("posse do WORM: %v", err)
+	}
+
+	// B tenta: obtém o Event Store, falha no WORM. O ES tem de ficar livre.
+	if _, err := tomarPosseDoWAL(Config{EventStorePath: esB, WORMPath: worm}); err == nil {
+		t.Fatal("B arrancou com o WORM detido")
+	}
+	if err := largarWorm(); err != nil {
+		t.Fatalf("largar o WORM: %v", err)
+	}
+
+	// Agora tudo livre: B arranca. Se o ES tivesse ficado órfão, isto falhava.
+	p, err := tomarPosseDoWAL(Config{EventStorePath: esB, WORMPath: worm})
+	if err != nil {
+		t.Fatalf("arranque após o conflito resolvido = %v — o Event Store ficou DETIDO por um arranque que abortou", err)
+	}
+	if err := p.Largar(); err != nil {
+		t.Fatalf("largar: %v", err)
+	}
+}
