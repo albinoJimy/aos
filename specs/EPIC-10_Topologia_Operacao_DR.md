@@ -59,6 +59,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-283 | Eleição de líder para os laços de serviço do nó | feature | M | P0 | AOS-100, AOS-018 |
 | AOS-284 | Disciplina de partição da hash-chain de auditoria sob múltiplos escritores | feature | M | P0 | AOS-100 |
 | AOS-285 | Guard de arranque: o nó recusa arrancar sobre um Event Store já detido | feature | S | P0 | — |
+| AOS-286 | Estender o guard de posse do WAL aos restantes escritores | feature | S | P1 | AOS-285 |
 
 ---
 
@@ -888,6 +889,59 @@ O guard tem de saber quando deixar de se aplicar (pós-AOS-100), e isso fica exp
 código, não por descobrir.
 Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7) — pelo
 contrário, é o que a torna cumprida em vez de apenas declarada.
+```
+
+---
+
+## AOS-286 — Estender o guard de posse do WAL aos restantes escritores
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 0 — Fundações |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-285 (o mecanismo) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/substrate/eventstore/wallock.go` (`LockWAL`), `packages/cmd/aos/wal_posse.go`, `packages/cmd/aos-orq/main.go`, `tecnica/10` §3-bis (o residual declarado), `DEF-282` |
+
+**Contexto.** O AOS-285 entregou a posse exclusiva de escrita do WAL e ligou-a ao **nó**. O seu escopo foi declarado — os critérios eram sobre o nó — e o residual ficou **nomeado** em `tecnica/10` §3-bis em vez de descoberto mais tarde:
+
+> o guard cobre o **nó**. Um segundo escritor que não seja o nó — `aos-orq`, ou outro binário a abrir o mesmo WAL sem pedir a posse — continua a não ser impedido.
+
+Este ticket paga esse residual. O caso concreto é `aos-orq serve`, que **escreve** no Event Store (topologia, estado por-nó, factos do domínio do plano) e hoje abre o WAL sem pedir posse nenhuma. Correr `aos` e `aos-orq serve` sobre o mesmo WAL é a mesma configuração insegura que o AOS-285 impede — apenas com dois binários diferentes em vez de duas cópias do mesmo.
+
+**Objectivo.** Que a posse do WAL seja pedida por **todos** os caminhos de escrita, e por nenhum caminho de leitura.
+
+**Critérios de Aceitação**
+- [x] `aos-orq serve` pede a posse do WAL e **recusa** arrancar se ela estiver tomada, com código de saída próprio — distinto do de «lease do run detido», porque a remediação é outra (parar o outro ESCRITOR do store, não o outro dono daquele run). — *código de saída **5** (`exitWALDetido`), distinto do 3.*
+- [x] `aos-orq inspect` **não** pede posse e continua a correr com um escritor activo — é uma via de leitura, como `wal-inspect`. — *`inspect` usa `abrir`, que não pede posse; `TestAOS286_InspectLeSobPosse_ServeERecusado` lê a topologia com a posse tomada.*
+- [x] `aos` e `aos-orq serve` sobre o mesmo WAL: o segundo a arrancar recusa, qualquer que seja a ordem. — *mesmo mecanismo (`eventstore.LockWAL`) dos dois lados, pelo que a ordem é indiferente por construção.*
+- [x] O teste que documenta o limite do substrato (`TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos`) continua a provar o que diz — a sonda determinística in-process (dois `Open`, dois `Claim`, o mesmo token) **não** é afectada pelo guard e continua a ser o sensor do `DEF-282`. — *e o teste ficou MAIS FORTE: a corrida passou de «pelo menos um vencedor» (fraca, porque o desfecho dependia do escalonador e os perdedores iam para um balde `outros` que passaria mesmo que tivessem crashado) para «exactamente 1 vencedor e 3 recusados com o código 5, zero inesperados». É o guard que torna a corrida determinística e, com ela, a asserção honesta. A sonda determinística in-process NÃO foi tocada e continua a medir o substrato: `claim#1 token=1 · claim#2 token=1`.*
+- [x] O residual em `tecnica/10` §3-bis é **retirado** ou reescrito para o que sobrar — declarar um residual já pago seria mentir na direcção oposta. — *reescrito: o residual passa a PAGO, com a nota de que um binário futuro que escreva no WAL tem de chamar `LockWAL` — não há nada que o obrigue.*
+
+**Detalhes Técnicos.** Reutiliza `eventstore.LockWAL` (AOS-285) sem o alterar. O padrão do nó (`wal_posse.go`) é o modelo: pedir a posse ANTES de abrir o store, largá-la depois de o fechar.
+
+**Testes Requeridos.** `aos-orq serve` recusado com o WAL detido. `aos-orq inspect` funciona com o WAL detido. A sonda determinística do `DEF-282` mantém-se verde e continua a medir o substrato, não o guard.
+
+**Definition of Done**
+- [x] Critérios de Aceitação satisfeitos, demonstrados com processos reais. — *`TestAOS286_*` e `TestLimite_*` com processos reais.*
+- [ ] `-race` verde. — ***POR VERIFICAR EM CI***, pela mesma razão dos anteriores: sem toolchain C nesta máquina.
+- [x] `tecnica/10` §3-bis actualizado (residual pago ou reduzido ao que resta).
+
+**Handoff para Claude Code**
+```text
+És o executor do ticket AOS-286 do Agentic OS de Referência (AOS).
+Lê AOS-286 e AOS-285 em specs/EPIC-10_Topologia_Operacao_DR.md.
+O mecanismo JÁ EXISTE (eventstore.LockWAL) e não se altera — isto é cablagem.
+CUIDADO com o teste `TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos`: ele
+corre processos aos-orq em paralelo de propósito, para documentar que o SUBSTRATO não
+arbitra. Com o guard, esses processos passam a ser recusados — o que é correcto, mas
+muda o que a parte de corrida do teste mede. A sonda determinística in-process é que é
+o sensor do DEF-282 e essa NÃO pode ser tocada: continua a ter de medir o substrato.
+Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 ```
 
 ---

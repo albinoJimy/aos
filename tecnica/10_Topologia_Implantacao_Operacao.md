@@ -219,10 +219,13 @@ lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
 > replicado de produção (NATS JetStream), e nessa altura a condição de aplicabilidade do
 > guard (`guardDePosseAplicavel`) tem de ser revista — está nomeada no código por essa razão.
 >
-> **Residual declarado:** o guard cobre o **nó**. Um segundo escritor que não seja o nó —
-> `aos-orq`, ou outro binário a abrir o mesmo WAL sem pedir a posse — continua a não ser
-> impedido. Foi escolha de escopo do AOS-285, cujos critérios são sobre o nó; fica nomeado
-> aqui em vez de descoberto.
+> **Residual PAGO (AOS-286).** O AOS-285 cobria só o nó, e o residual — outro binário a
+> escrever o mesmo WAL sem pedir posse — ficou aqui nomeado. O `aos-orq serve` pede agora
+> a posse (código de saída **5**, distinto do 3: ali a remediação é parar quem detém
+> aquele *run*, aqui é parar o outro escritor do *store*); o `aos-orq inspect` continua a
+> ler sem a pedir. **Todos os caminhos de escrita conhecidos pedem posse; nenhum caminho
+> de leitura a pede.** Um binário futuro que abra o WAL para escrever tem de chamar
+> `eventstore.LockWAL` — não há nada que o obrigue, e é por isso que fica escrito aqui.
 
 ---
 
