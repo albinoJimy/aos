@@ -26,7 +26,30 @@ type BudgetCheck struct {
 
 	mu      sync.Mutex
 	pending map[string]Reservation
+
+	// onCommit e notificado depois de CADA confirmacao de reserva. nil = desligado.
+	onCommit CommitObserver
 }
+
+// CommitObserver e notificado quando uma reserva de tool call fica CONFIRMADA, com a
+// quantia efectivamente debitada (AOS-287).
+//
+// # Porque existe, e porque NAO e o emissor de eventos do Budget
+//
+// O tecto por-run sobrevive a re-incarnacao lendo o consumo ja registado (AOS-256), mas
+// essa leitura conta TURNOS DE MODELO e so eles: as tool calls reservam do mesmo no e nao
+// deixam rasto duravel, pelo que cada incarnacao as esquece. Este gancho e o ponto onde a
+// quantia confirmada de uma tool call fica DISPONIVEL para quem a queira registar.
+//
+// NAO se usou [WithEmitter]/[Rebuild] para isto, e a razao e concreta: eles registam TODAS
+// as movimentacoes do Budget — incluindo as do turno de modelo, que o ledger de turnos JA
+// conta. Somar as duas fontes contaria os turnos DUAS VEZES. O gancho e estreito de
+// proposito: so confirmacoes, e o chamador sabe que sao de tool calls porque e ele que
+// liga o adaptador do RM.
+//
+// E OBSERVACIONAL: um erro do observador nao desfaz o debito, que ja aconteceu. Quem
+// observa decide o que fazer com uma falha de registo — e essa decisao e de quem compoe.
+type CommitObserver func(ctx context.Context, call *rm.Call, res Reservation)
 
 // CostFunc estima a quantia (tokens/$) que um Call vai consumir.
 type CostFunc func(call *rm.Call) Amount
@@ -123,12 +146,22 @@ func (b *BudgetCheck) take(call *rm.Call) (Reservation, bool) {
 // Commit confirma a reserva feita para este Call (débito final). Chamado pelo
 // consumidor quando a [rm.Decision] foi permit. Se não houver reserva pendente
 // (ex.: o budget negou), é no-op.
+//
+// Depois de o débito ficar confirmado, notifica o [CommitObserver] (AOS-287) com a
+// quantia EFECTIVAMENTE confirmada. A ordem importa: observar ANTES de confirmar
+// registaria um consumo que podia não acontecer.
 func (b *BudgetCheck) Commit(ctx context.Context, call *rm.Call) error {
 	r, ok := b.take(call)
 	if !ok {
 		return nil
 	}
-	return b.budget.Commit(ctx, r)
+	if err := b.budget.Commit(ctx, r); err != nil {
+		return err
+	}
+	if obs := b.commitObserver(); obs != nil {
+		obs(ctx, call, r)
+	}
+	return nil
 }
 
 // Release liberta a reserva feita para este Call (rollback, sem leak). Chamado
@@ -167,3 +200,37 @@ func DefaultEstimator(call *rm.Call) Amount {
 
 // Assegura em compile-time que BudgetCheck satisfaz o contrato Hook do RM.
 var _ rm.Hook = (*BudgetCheck)(nil)
+
+// WithCommitObserver liga o gancho de CONFIRMAÇÃO (AOS-287). Default: desligado, e o
+// comportamento é bit-a-bit o de antes.
+func WithCommitObserver(f CommitObserver) AdapterOption {
+	return func(b *BudgetCheck) {
+		if f != nil {
+			b.onCommit = f
+		}
+	}
+}
+
+// SetCommitObserver liga o gancho de confirmação DEPOIS da construção (AOS-287).
+//
+// Existe pela mesma razão que o lado da leitura precisa de fase 2: o `BudgetCheck` nasce
+// na fronteira de ambiente (o tecto vem de uma env), onde ainda não há Event Store; o
+// registo durável só pode ser ligado quando o substrato estiver composto.
+//
+// Seguro para concorrência: o gancho é lido sob o mesmo mutex que guarda as reservas
+// pendentes, pelo que ligá-lo enquanto há tool calls em voo não é uma corrida.
+func (b *BudgetCheck) SetCommitObserver(f CommitObserver) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.onCommit = f
+	b.mu.Unlock()
+}
+
+// commitObserver lê o gancho sob o lock. Devolve nil quando desligado.
+func (b *BudgetCheck) commitObserver() CommitObserver {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.onCommit
+}

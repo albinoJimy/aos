@@ -117,6 +117,19 @@ type turnLedgerCursor struct {
 	turns    int
 	lastTurn int
 	nextSeq  uint64 // primeiro seq AINDA não somado
+
+	// AOS-287 — as tool calls somam ao MESMO acumulado (saem do mesmo nó de orçamento),
+	// mas são contadas à parte por uma razão de SEGURANÇA DO SINAL: os dois guardas
+	// fail-closed abaixo perguntam coisas sobre o MODELO, e misturar as grandezas fá-los-ia
+	// calar-se quando mais fazem falta.
+	//
+	//   - `turns == 0` denuncia «o recorder escreve noutro store». Um run que ainda só fez
+	//     tool calls tem turns=0 LEGITIMAMENTE — e o seu consumo NÃO pode ser descartado,
+	//     senão o AOS-287 não fecha nada;
+	//   - `turnTokens == 0` denuncia «o provider não ecoou usage». Se olhasse para o total,
+	//     os tokens das tool calls mascarariam esse silêncio e o detector morria.
+	toolCalls  int
+	turnTokens int64
 }
 
 // newTurnLedgerBurndown constrói a fonte. store nil ⇒ (nil, nil): sem Event Store não há
@@ -169,6 +182,22 @@ func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (p
 		if ev.Seq >= cur.nextSeq {
 			cur.nextSeq = ev.Seq + 1
 		}
+		// CONSUMO DE TOOL CALL (AOS-287). Soma-se ao dos turnos porque sai do MESMO nó de
+		// orçamento — e não conta como turno: o contador de turnos governa a fracção de
+		// burn-down e a última rodada, que são grandezas do modelo.
+		//
+		// Não há dupla contagem com os turnos: são tipos de evento disjuntos, e este facto
+		// existe precisamente porque o `turn.recorded` NÃO vê as tool calls.
+		if ev.Type == EventTypeToolCallBudget {
+			var tc toolCallBudgetPayload
+			if err := json.Unmarshal(ev.Payload, &tc); err != nil {
+				return progresssurface.RunConsumption{}, fmt.Errorf("aos: payload de %s ilegivel no run %q (seq %d): %w", EventTypeToolCallBudget, runID, ev.Seq, err)
+			}
+			cur.consumed.Tokens += tc.Tokens
+			cur.consumed.CostMicroUSD += tc.CostMicroUSD
+			cur.toolCalls++
+			continue
+		}
 		if ev.Type != agentruntime.EventTypeTurnRecorded {
 			continue
 		}
@@ -179,6 +208,7 @@ func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (p
 			return progresssurface.RunConsumption{}, fmt.Errorf("aos: payload de turn.recorded ilegivel no run %q (seq %d): %w", runID, ev.Seq, err)
 		}
 		cur.consumed.Tokens += p.InputTokens + p.OutputTokens
+		cur.turnTokens += p.InputTokens + p.OutputTokens
 		cur.consumed.CostMicroUSD += p.CostMicroUSD
 		cur.turns++
 		if p.Turn > cur.lastTurn {
@@ -186,19 +216,21 @@ func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (p
 		}
 	}
 
-	if cur.turns == 0 {
-		// Stream existe mas SEM turnos gravados. Na fronteira de fim-de-turno isto é
+	if cur.turns == 0 && cur.toolCalls == 0 {
+		// Stream existe mas SEM turnos gravados E sem tool calls (AOS-287: um run que
+		// ainda so fez tool calls tem turns=0 legitimamente, e o seu consumo TEM de
+		// contar — descarta-lo era a fuga que este eixo fecha). Na fronteira de fim-de-turno isto é
 		// impossível num nó bem composto (o turno é gravado antes) — logo é sintoma de
 		// que o recorder escreve noutro store. Denunciar, nunca devolver 0%.
 		return progresssurface.RunConsumption{}, fmt.Errorf("%w: run %q (stream existe, zero eventos %s)", ErrBurndownNoLedger, runID, agentruntime.EventTypeTurnRecorded)
 	}
-	if cur.consumed.Tokens == 0 {
+	if cur.turns > 0 && cur.turnTokens == 0 {
 		// HÁ turnos e a GRANDEZA QUE DECIDE somou zero. O guarda de cima (contagem de
 		// turnos) não apanha este caso, e é o caso que sobrevive num nó onde tudo o resto
 		// está bem composto: o recorder grava no store certo, o cursor avança, e mesmo
 		// assim a fracção é 0 para sempre porque o provider do modelo não ecoou usage.
 		// Ver [ErrBurndownNoUsage].
-		return progresssurface.RunConsumption{}, fmt.Errorf("%w: run %q (%d turno(s) somado(s), 0 tokens)", ErrBurndownNoUsage, runID, cur.turns)
+		return progresssurface.RunConsumption{}, fmt.Errorf("%w: run %q (%d turno(s) somado(s), 0 tokens de turno)", ErrBurndownNoUsage, runID, cur.turns)
 	}
 	return progresssurface.RunConsumption{
 		Consumed: cur.consumed,
