@@ -778,16 +778,16 @@ pena fechar, mesmo tendo encolhido.
 MESMA via que o consumo de turnos já usa.
 
 **Critérios de Aceitação**
-- [ ] O consumo de tool calls de um run é registado de forma **durável**, chaveado por
+- [x] O consumo de tool calls de um run é registado de forma **durável**, chaveado por
       `run_id` e sobrevivente à retoma — como o ledger de turnos já faz.
-- [ ] A fonte que `integration.ConsumoDuravel` devolve passa a incluir esse consumo: o nó da
+- [x] A fonte que `integration.ConsumoDuravel` devolve passa a incluir esse consumo: o nó da
       incarnação seguinte nasce com `tecto − (turnos + tool calls)`.
-- [ ] Um run que consome tecto em tool calls, escala e retoma, **não** recupera esse tecto.
+- [x] Um run que consome tecto em tool calls, escala e retoma, **não** recupera esse tecto.
       Falha-antes: hoje recupera-o.
-- [ ] A degradação declarada mantém-se: ledger ilegível ⇒ tecto inteiro **com linha no log**,
+- [x] A degradação declarada mantém-se: ledger ilegível ⇒ tecto inteiro **com linha no log**,
       nunca em silêncio. Não se troca uma fuga por um run encravado — o orçamento é controlo
       de custo, não de segurança.
-- [ ] As notas de alcance parcial em `integration/budget.go` e `cmd/aos/bootstrap.go` são
+- [x] As notas de alcance parcial em `integration/budget.go` e `cmd/aos/bootstrap.go` são
       **actualizadas**: deixar «a fuga ENCOLHE» escrito depois de ela fechar seria a mentira
       simétrica da que este ticket corrige.
 

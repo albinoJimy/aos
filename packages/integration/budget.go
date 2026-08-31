@@ -390,10 +390,13 @@ var _ agentruntime.ActivityDispatcher = mediateDispatcher{}
 // Não se retém nada: o nó continua a nascer e a morrer com a hospedagem. O que muda é o LIMITE com
 // que nasce — `tecto − já consumido`.
 //
-// ALCANCE HONESTO, e é parcial: o ledger conta TURNOS DE MODELO e só eles. As tool calls reservam
-// do mesmo nó mas não entram no ledger, pelo que a fuga não fecha — ENCOLHE, do tecto inteiro por
-// incarnação para o consumo de tool calls por incarnação. Fechá-la de todo exige contabilizar
-// também as tool calls de forma durável (mesma família, eixo por abrir).
+// ALCANCE — COMPLETO desde AOS-287. Era parcial: o ledger conta TURNOS DE MODELO e só eles, e
+// as tool calls reservavam do mesmo nó sem deixar rasto durável, pelo que a fuga ENCOLHIA (do
+// tecto inteiro por incarnação para o consumo de tool calls por incarnação) em vez de fechar.
+//
+// O AOS-287 fechou-a pela via simétrica: [RunBudget.LigarRegistoDeConsumo] regista a quantia
+// CONFIRMADA de cada tool call no stream do run, e o `ConsumedByRun` soma-a ao lado dos turnos.
+// As duas metades — escrita e leitura — são ligadas no MESMO ponto de fase 2 do nó.
 // ------------------------------------------------------------------------------------------
 
 // ConsumoDuravel devolve o que este run JÁ consumiu, de uma fonte que sobrevive à retoma.
@@ -516,4 +519,58 @@ func (rb *RunBudget) registarConsumo(tokens int64) {
 	if tokens > rb.pico {
 		rb.pico = tokens
 	}
+}
+
+// ------------------------------------------------------------------------------------------
+// AOS-287 — A OUTRA METADE DO CONSUMO DURÁVEL: as tool calls.
+//
+// O AOS-256 fez o tecto por-run sobreviver à re-incarnação, mas a fonte que ele lê — o
+// ledger de turnos — conta TURNOS DE MODELO e só eles. As tool calls reservam do MESMO nó e
+// não deixam rasto durável, pelo que cada incarnação as esquece: um run que escale/retome N
+// vezes pode gastar até `tecto + N × (tool calls por incarnação)`. Escalar e retomar é o
+// fluxo NORMAL de tudo o que exige aprovação humana.
+//
+// A fuga tinha ENCOLHIDO com o AOS-256; isto fecha-a. A simetria é deliberada:
+// [RunBudget.LigarConsumoDuravel] liga a LEITURA, [RunBudget.LigarRegistoDeConsumo] liga a
+// ESCRITA, e ambas são de fase 2 pela mesma razão — o tecto nasce na fronteira de ambiente,
+// onde ainda não há Event Store.
+// ------------------------------------------------------------------------------------------
+
+// RegistoDeConsumo grava, de forma DURÁVEL e por run, a quantia que uma tool call
+// CONFIRMOU. É a escrita cuja leitura é a [ConsumoDuravel].
+//
+// `stepID` identifica o passo do run e serve de chave de idempotência: a MESMA tool call
+// re-tentada não pode contar duas vezes. Quem implementa é responsável por essa
+// idempotência — o Event Store dá-a por `run_id:step_id`.
+type RegistoDeConsumo func(ctx context.Context, runID, stepID string, amt budget.Amount) error
+
+// LigarRegistoDeConsumo liga a ESCRITA do consumo de tool calls. Sem esta chamada o
+// comportamento é o de antes do AOS-287: as tool calls consomem e a incarnação seguinte
+// esquece-as.
+//
+// FAIL-SOFT DECLARADO, e é a mesma escolha do lado da leitura: uma falha a registar é
+// gritada no log mas NÃO desfaz o débito — que já aconteceu — nem aborta a tool call, que
+// já produziu efeito. Abortar aqui trocaria uma fuga de orçamento por um run partido, e o
+// orçamento é controlo de custo, não de segurança. O que não se faz é degradar em silêncio.
+func (rb *RunBudget) LigarRegistoDeConsumo(f RegistoDeConsumo, logf func(string, ...any)) {
+	if rb == nil || f == nil {
+		return
+	}
+	rb.mu.Lock()
+	if logf != nil {
+		rb.logf = logf
+	}
+	log := rb.logf
+	rb.mu.Unlock()
+
+	rb.check.SetCommitObserver(func(ctx context.Context, call *referencemonitor.Call, res budget.Reservation) {
+		if call == nil {
+			return
+		}
+		if err := f(ctx, call.RunID, call.StepID, res.Amount); err != nil {
+			log("[aos] orcamento por-run (AOS-287): registo do consumo da tool call %q do run %q FALHOU (%v) — "+
+				"o debito ESTA feito nesta incarnacao, mas a incarnacao seguinte NAO o vera e o run pode exceder "+
+				"o tecto por-run. Degradacao declarada, nao silenciosa", call.StepID, call.RunID, err)
+		}
+	})
 }

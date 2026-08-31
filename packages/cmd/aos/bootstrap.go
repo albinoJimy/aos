@@ -1615,11 +1615,15 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// de turnos que o burn-down lê, chaveado por `run_id` e sobrevivente à retoma. O aviso já via
 	// o total; o enforcement passa a vê-lo também.
 	//
-	// ALCANCE PARCIAL, declarado: o ledger conta turnos de MODELO e só eles. As tool calls
-	// reservam do mesmo nó e não entram no ledger, pelo que a fuga ENCOLHE (do tecto inteiro por
-	// incarnação para o consumo de tool calls por incarnação) em vez de fechar.
+	// ALCANCE COMPLETO desde AOS-287: o ledger conta turnos de MODELO, e o registo de consumo
+	// de tool calls (ligado logo a seguir) cobre a outra metade. Antes disso a fuga ENCOLHIA
+	// (do tecto inteiro por incarnação para o consumo de tool calls por incarnação) sem fechar.
 	if runBudget != nil && burndownSource != nil {
 		runBudget.LigarConsumoDuravel(consumoDuravelParaOrcamento(burndownSource), log)
+		// AOS-287 — A ESCRITA, simétrica da leitura acima e ligada no MESMO ponto e pela
+		// mesma razão (só aqui existe Event Store). Sem ela, a leitura continua a ver só
+		// turnos de modelo e as tool calls continuam a ser esquecidas a cada incarnação.
+		runBudget.LigarRegistoDeConsumo(registoDeConsumoDeToolCall(es, producerDoConsumoDeToolCall()), log)
 	}
 	// (7-ante-ter) PROMPT DE EXAUSTÃO (AOS-263) — a CONSEQUÊNCIA do aviso. Reutiliza o que já
 	// está composto: o registo durável de pendentes (2.º tipo) e o registo de retoma do
