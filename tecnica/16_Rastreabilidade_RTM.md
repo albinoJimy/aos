@@ -27,7 +27,7 @@ Este documento é a **Matriz de Rastreabilidade de Requisitos** (*Requirements T
 
 ### 1.2 Âmbito
 
-A rastreabilidade cobre os 19 ADRs canónicos (`_BRIEF` §3), as 11 capacidades funcionais (`specs/00` §4), os 10 *drivers* não-funcionais (`specs/00` §7) e os **286 tickets** `AOS-001`–`AOS-286` distribuídos por 20 epics. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
+A rastreabilidade cobre os 19 ADRs canónicos (`_BRIEF` §3), as 11 capacidades funcionais (`specs/00` §4), os 10 *drivers* não-funcionais (`specs/00` §7) e os **287 tickets** `AOS-001`–`AOS-287` distribuídos por 20 epics. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
 
 ### 1.3 Audiência
 
@@ -107,7 +107,7 @@ Para cada ADR-001…019, os tickets `AOS-NNN` cujo bloco de especificação o ci
 | **ADR-005** | Separação control/data-plane + taint | 19 | AOS-013, AOS-023, AOS-039, AOS-042, AOS-044, AOS-046, AOS-049, AOS-054, AOS-069, AOS-071, AOS-075, AOS-117, AOS-133, AOS-158, AOS-219, AOS-224, AOS-242, AOS-244, AOS-272 | `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-006** | Credential Broker com tokens JIT | 15 | AOS-048, AOS-051, AOS-055, AOS-056, AOS-057, AOS-064, AOS-070, AOS-073, AOS-075, AOS-093, AOS-098, AOS-101, AOS-129, AOS-132, AOS-156 | `tecnica/02`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-007** | Event Store replicado | 16 | AOS-001, AOS-002, AOS-015, AOS-022, AOS-027, AOS-030, AOS-035, AOS-038, AOS-045, AOS-098, AOS-099, AOS-100, AOS-101, AOS-102, AOS-118, AOS-281 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
-| **ADR-008** | Admission control global em tokens/$ | 26 | AOS-008, AOS-026, AOS-027, AOS-028, AOS-029, AOS-030, AOS-031, AOS-032, AOS-033, AOS-034, AOS-037, AOS-059, AOS-062, AOS-063, AOS-078, AOS-080, AOS-105, AOS-106, AOS-107, AOS-116, AOS-123, AOS-259, AOS-260, AOS-270, AOS-280, AOS-282 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
+| **ADR-008** | Admission control global em tokens/$ | 27 | AOS-008, AOS-026, AOS-027, AOS-028, AOS-029, AOS-030, AOS-031, AOS-032, AOS-033, AOS-034, AOS-037, AOS-059, AOS-062, AOS-063, AOS-078, AOS-080, AOS-105, AOS-106, AOS-107, AOS-116, AOS-123, AOS-259, AOS-260, AOS-270, AOS-280, AOS-282, AOS-287 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-009** | Layout de prompt cache-estável | 15 | AOS-013, AOS-015, AOS-037, AOS-043, AOS-044, AOS-047, AOS-050, AOS-055, AOS-060, AOS-061, AOS-085, AOS-086, AOS-152, AOS-157, AOS-241 | `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-010** | Observabilidade OTel GenAI + audit WORM | 53 | AOS-011, AOS-013, AOS-016, AOS-024, AOS-025, AOS-034, AOS-036, AOS-038, AOS-048, AOS-051, AOS-055, AOS-057, AOS-058, AOS-059, AOS-060, AOS-061, AOS-062, AOS-064, AOS-065, AOS-072, AOS-076, AOS-077, AOS-078, AOS-079, AOS-080, AOS-081, AOS-082, AOS-083, AOS-084, AOS-085, AOS-086, AOS-088, AOS-093, AOS-096, AOS-097, AOS-099, AOS-100, AOS-101, AOS-102, AOS-103, AOS-104, AOS-105, AOS-107, AOS-111, AOS-114, AOS-115, AOS-118, AOS-127, AOS-235, AOS-269, AOS-272, AOS-280, AOS-284 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-011** | Policy-as-code + GDPR por desenho (soberania por board) | 32 | AOS-004, AOS-035, AOS-038, AOS-039, AOS-044, AOS-055, AOS-057, AOS-058, AOS-063, AOS-067, AOS-071, AOS-079, AOS-083, AOS-087, AOS-088, AOS-091, AOS-092, AOS-093, AOS-094, AOS-095, AOS-097, AOS-098, AOS-100, AOS-101, AOS-102, AOS-106, AOS-113, AOS-129, AOS-141, AOS-154, AOS-161, AOS-181 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
@@ -150,7 +150,7 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 
 | Doc técnico | Epic(s) implementador(es) | Gama de tickets |
 |---|---|---|
-| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-286 |
+| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-287 |
 | `tecnica/01_Reference_Monitor_Plano_Controlo.md` | EPIC-01 | AOS-001 – AOS-012 |
 | `tecnica/02_Agent_Runtime_Execucao_Duravel.md` | EPIC-02 | AOS-013 – AOS-024 |
 | `tecnica/03_Orquestracao_Escalonamento.md` | EPIC-03 | AOS-025 – AOS-034 |
@@ -159,14 +159,14 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 | `tecnica/06_Model_Gateway_Custos.md` | EPIC-06 | AOS-055 – AOS-063 |
 | `tecnica/07_Seguranca_Isolamento.md` | EPIC-07 | AOS-064 – AOS-075 |
 | `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |
-| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-20 | AOS-087 – AOS-097 (+ AOS-190 – AOS-286) |
+| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-20 | AOS-087 – AOS-097 (+ AOS-190 – AOS-287) |
 | `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |
-| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-20 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-286) |
+| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-20 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-287) |
 | `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |
 | `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |
 | `tecnica/14_Matriz_Conformidade.md` | EPIC-08, EPIC-09 | AOS-072, 076–097 |
 | `tecnica/15_Experiencia_HITL_UX.md` | EPIC-12 (+ EPIC-13 frontend) | AOS-119 – AOS-143 |
-| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | AOS-001 – AOS-286 |
+| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | AOS-001 – AOS-287 |
 | `tecnica/17_Analise_STRIDE.md` | EPIC-07, EPIC-15, EPIC-16 (análise em EPIC-20/AOS-194) | AOS-064–075, AOS-163–173, AOS-174–177 |
 
 ```mermaid
@@ -174,7 +174,7 @@ flowchart LR
     RF["RF-01..RF-11 (capacidades)"] --> ADR["ADR-001..019 (decisoes)"]
     NFR["NFR-01..NFR-10 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-20 (entregas)"]
-    EPIC --> TICK["AOS-001..AOS-286 (tickets)"]
+    EPIC --> TICK["AOS-001..AOS-287 (tickets)"]
     DOC["tecnica/00..17 (docs)"] --> EPIC
     TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]
     NFR --> TEST

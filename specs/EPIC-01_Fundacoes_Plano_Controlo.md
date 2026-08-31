@@ -55,6 +55,7 @@ A regra de ouro herdada da fonte: **as fronteiras fazem o SO, não as features**
 | AOS-010 | CI inicial + gates (build/lint/test/SAST/SCA/teste de política) | chore | M | P0 | AOS-001, AOS-004 |
 | AOS-011 | Base de audit tamper-evident (hash-chain) | feature | M | P1 | AOS-002 |
 | AOS-012 | Esqueleto do plano de controlo (Orquestrador/Escalonador stubs) | feature | S | P1 | AOS-003, AOS-009 |
+| AOS-287 | Durabilidade do orçamento por árvore: sobreviver a um reinício | fix | M | P0 | AOS-008, AOS-002 |
 
 ---
 
@@ -728,6 +729,65 @@ Cria o esqueleto do plano de controlo do AOS: packages/control-plane/orchestrato
 - Máquina de estados mínima ready->running->complete|failed; estado persistido como eventos (AOS-002).
 - Interfaces estáveis que a EPIC-03 estende sem quebra; marca claramente o que é stub (sem leases/fencing/deadlock ainda).
 Inclui um fluxo end-to-end de brinquedo (submit -> schedule -> tool call mediada -> resultado).
+```
+
+---
+
+## AOS-287 — Durabilidade do orçamento por árvore: sobreviver a um reinício
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 — Fundações do Plano de Controlo |
+| Fase | Fase 0 — Fundações |
+| Tipo | fix |
+| Prioridade | P0 |
+| Estimativa | M |
+| Dependências | AOS-008 (orçamento hierárquico), AOS-002 (Event Store) |
+| Bloqueia | AOS-282 (tecto partilhado entre réplicas) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | ADR-008, `packages/control-plane/budget/budget.go`, `packages/control-plane/budget/events.go` (`Rebuild`, `NewEventStoreEmitter`), `packages/integration/budget.go`, `docs/reports/desafio-A1-budget-admission-control.md`, `docs/reports/analise-v1-single-host-para-distribuido.md` §3.1 |
+
+**Contexto.** Este é um defeito **da v1**, numa máquina só — não do distribuído. Foi encontrado ao analisar o distribuído, e é essa a única razão pela qual quase ficou no epic errado.
+
+O orçamento por árvore **está composto em produção**: `budget.New(BudgetTreeID, …)` em `packages/integration/budget.go`, ligado ao nó como `n.orcamento`. Mas faltam-lhe as **duas** metades da durabilidade:
+
+1. **não emite** — não existe um único chamador de produção de `budget.WithEmitter`/`NewEventStoreEmitter`;
+2. **não re-hidrata** — `budget.Rebuild` continua sem chamador, e o `Budget` não tem API que aceite o `map[string]NodeState` que ele devolve.
+
+**A ordem importa, e é o que este ticket corrige em relação ao que estava registado.** O `desafio-A1` descreveu o sintoma como «o log durável diz `reserved`, a memória diz 0». Medido a 2026-08-31: **o log não diz nada**. Sem emissor não há de onde re-hidratar — ligar o `Rebuild` primeiro seria ligar um leitor a um stream vazio.
+
+**Consequência.** Num reinício (deploy, crash, supervisor), o consumo acumulado desaparece: um run que gastou 90% do seu tecto retoma com 100%. É a garantia central do ADR-008 a falhar **na direcção cara**, hoje, em single-host.
+
+**Objectivo.** Que o tecto por árvore sobreviva a um reinício do processo.
+
+**Critérios de Aceitação**
+- [ ] O `Budget` **emite** os factos de reserva/confirmação/libertação para o Event Store (emissor ligado no composition root, não opcional por omissão em produção).
+- [ ] O `Budget` **re-hidrata** no arranque a partir desses factos; `Rebuild` deixa de ser uma função sem consumidor.
+- [ ] Um run com consumo acumulado que passa por um reinício **mantém** o consumo: o teste semeia consumo, reinicia, e o tecto continua a ser imposto no ponto certo. Falha-antes: hoje o contador nasce a zero.
+- [ ] A reserva é identificada por chave **durável**, para que a reconciliação distinga uma reserva pendente de uma perdida.
+- [ ] Existe via de **reconciliação/TTL** para reservas órfãs (o processo morreu entre `Reserve` e `Commit`/`Release`) — sem ela a árvore drena monotonicamente, que é o defeito simétrico e igualmente mau.
+- [ ] Fail-closed: um erro a ler o log na re-hidratação **recusa** admitir, nunca admite por omissão. É a direcção oposta à do defeito actual, e é deliberada.
+
+**Detalhes Técnicos.** As peças existem — `NewEventStoreEmitter` e `Rebuild` estão escritos e testados; o que falta é o wiring e a API de carregamento. Ver `runlifecycle.BudgetAdmission` (AOS-281) para o padrão de saldo de reservas pendentes.
+
+**Testes Requeridos.** Consumo sobrevive a reinício. Reserva órfã reconciliada. Log indisponível ⇒ recusa (não admissão silenciosa). O tecto é imposto no mesmo ponto antes e depois do reinício.
+
+**Definition of Done**
+- [ ] Critérios de Aceitação satisfeitos, com o teste de reinício a falhar-antes demonstrado.
+- [ ] `-race` verde.
+- [ ] `desafio-A1` actualizado: a sua descrição do sintoma («o log diz reserved») é corrigida para o que foi medido.
+
+**Handoff para Claude Code**
+```text
+És o executor do ticket AOS-287 do Agentic OS de Referência (AOS).
+Lê AOS-287 em specs/EPIC-01, o ADR-008 e docs/reports/desafio-A1-budget-admission-control.md.
+Isto é um defeito da v1 em SINGLE-HOST — não é trabalho do distribuído. O tecto
+partilhado entre réplicas é o AOS-282 e depende deste.
+A ORDEM importa: sem emissor não há de onde re-hidratar. Ligar o `Rebuild` primeiro
+seria ligar um leitor a um stream vazio — e o verde daria a impressão de estar feito.
+Não inventes um segundo mecanismo de reserva: o `Reserve`/`Commit`/`Release` do
+budget.Budget é o que existe e é o que se torna durável.
+Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 ```
 
 ---

@@ -55,9 +55,9 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-107 | Escala horizontal + degradação graciosa em produção | feature | L | P1 | AOS-099, EPIC-03 |
 | AOS-108 | Hipercare e operacionalização | chore | M | P2 | AOS-102, AOS-105, AOS-106, AOS-107 |
 | AOS-281 | Composição ORQ/SCH↔nó sob disciplina de lease | feature | L | P1 | AOS-099, AOS-100, EPIC-03, EPIC-19 |
-| AOS-282 | Orçamento por árvore durável e partilhado entre réplicas | feature | L | P0 | AOS-100, AOS-008 |
-| AOS-283 | Eleição de líder para os laços de serviço do nó | feature | M | P0 | AOS-100, AOS-018 |
-| AOS-284 | Disciplina de partição da hash-chain de auditoria sob múltiplos escritores | feature | M | P0 | AOS-100 |
+| AOS-282 | Tecto do orçamento por árvore partilhado entre réplicas *(v1.1)* | feature | M | P0 | AOS-287, AOS-100 |
+| AOS-283 | Eleição de líder para os laços de serviço do nó *(v1.1)* | feature | M | P0 | AOS-100, AOS-018 |
+| AOS-284 | Disciplina de partição da hash-chain de auditoria sob múltiplos escritores *(v1.1)* | feature | M | P0 | AOS-100 |
 | AOS-285 | Guard de arranque: o nó recusa arrancar sobre um Event Store já detido | feature | S | P0 | — |
 | AOS-286 | Estender o guard de posse do WAL aos restantes escritores | feature | S | P1 | AOS-285 |
 
@@ -659,7 +659,7 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 ---
 
 
-## AOS-282 — Orçamento por árvore durável e partilhado entre réplicas
+## AOS-282 — Tecto do orçamento por árvore partilhado entre réplicas
 
 | Campo | Valor |
 |---|---|
@@ -667,51 +667,52 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 | Fase | 3 — Escala e controlo |
 | Tipo | feature |
 | Prioridade | P0 |
-| Estimativa | L |
-| Dependências | AOS-100 (Event Store replicado), AOS-008 (orçamento hierárquico), ADR-008 |
+| Estimativa | M |
+| Milestone | **v1.1 (distribuído)** — decisão do dono, 2026-08-31 |
+| Dependências | **AOS-287** (durabilidade do orçamento — a metade v1), AOS-100 (Event Store replicado), ADR-008 |
 | Bloqueia | AOS-107 (escala horizontal em produção) |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | ADR-008 (admission control global), `packages/control-plane/budget/budget.go`, `packages/control-plane/budget/events.go` (`Rebuild`), `docs/reports/desafio-A1-budget-admission-control.md`, `docs/reports/analise-v1-single-host-para-distribuido.md` §3.1 |
+| Documentos de referência | ADR-008, `packages/control-plane/budget/budget.go`, `docs/reports/analise-v1-single-host-para-distribuido.md` §3.1 |
 
-**Contexto.** `budget.Budget` mantém os contadores da árvore **em memória, por processo** (`nodes map[string]*node` sob mutex). Existe `budget.Rebuild`, que devolve `map[string]NodeState` a partir do log — mas **nenhum método do `Budget` o aceita**, e não há chamador de produção. O tecto que o ADR-008 promete é, hoje, um tecto **por-processo**.
+**Contexto.** Este ticket foi **cindido a 2026-08-31**, quando o dono decidiu tratar o distribuído como **v1.1**. Ele juntava dois defeitos que a decisão separou:
 
-Duas consequências, e não são a mesma:
+| defeito | milestone | onde |
+|---|---|---|
+| o consumo não sobrevive a um reinício | **v1** — está vivo hoje, em single-host | **AOS-287** (EPIC-01) |
+| N réplicas aplicam N tectos independentes | **v1.1** — só existe com réplicas | **este ticket** |
 
-1. **Restart ⇒ fail-open.** Os contadores nascem a zero enquanto o log durável diz `reserved`. Já levantado pelo `desafio-A1`, cuja recomendação é literal: «**não** ligar o hook em produção multi-réplica sem essa declaração escrita, porque o comportamento após restart é fail-open, não fail-closed».
-2. **N réplicas ⇒ N tectos independentes.** Cada processo aplica o tecto ao *seu* tráfego. Com 3 réplicas o tecto efectivo de tokens/$ por árvore é **o triplo** do declarado — a garantia central do ADR-008 a falhar em silêncio, e na direcção cara.
+Mantê-los juntos teria deferido o defeito da v1 por associação ao distribuído — que é exactamente o modo de falha «eixo errado» que o `REGISTO-Deferimentos` existe para impedir.
 
-**NÃO confundir com AOS-027.** O admission control do *provider* (`scheduler.Admission`, chave `provider:model:region`) já reserva sobre o log com CAS e **não** tem este problema. O que falta é o orçamento **por árvore**. São admissões diferentes e complementares; tratá-las como uma só levaria a concluir que isto já está resolvido.
+O que resta aqui: `budget.Budget` mantém os contadores **por processo**. Mesmo depois do AOS-287 (que os torna duráveis num processo), com 3 réplicas o tecto efectivo de tokens/$ por árvore é **o triplo** do declarado — cada uma aplica o tecto ao *seu* tráfego. É a garantia central do ADR-008 a falhar em silêncio, e na direcção cara.
 
-**Objectivo.** Tornar o tecto por árvore uma propriedade **do sistema** e não do processo: sobrevive a restart e é o mesmo para todas as réplicas.
+**NÃO confundir com AOS-027.** O admission control do *provider* (`scheduler.Admission`, chave `provider:model:region`) já reserva sobre o log com CAS e não tem este problema. O que falta é o orçamento **por árvore**.
+
+**Objectivo.** Que o tecto por árvore seja o mesmo para todas as réplicas.
 
 **Critérios de Aceitação**
-- [ ] O `Budget` tem via de **re-hidratação** a partir do log (`Rebuild` deixa de ser uma função sem consumidor) e há chamador de produção no arranque.
-- [ ] Após restart, o headroom reflecte as reservas **committed** no log — não zero. Um teste que semeia reservas, reinicia e verifica que o tecto continua a ser imposto.
 - [ ] Com N réplicas sobre o mesmo Event Store, o consumo agregado de uma árvore **nunca** excede o tecto declarado. Falha-antes: hoje excede-o N vezes.
-- [ ] A reserva é identificada por chave **durável** (`run_id:step_id`), para que a reconciliação após crash distinga uma reserva pendente de uma perdida.
-- [ ] Existe via de **reconciliação/TTL** para reservas órfãs (o processo que reservou morreu entre o `Reserve` e o `Commit`/`Release`) — sem ela, a árvore drena monotonicamente.
-- [ ] Fail-closed em toda a direita: um erro de leitura do log na re-hidratação **recusa** admitir, nunca admite por omissão.
+- [ ] A reserva é atómica **entre processos** — reutiliza o CAS do log (`expected_seq`), não um segundo mecanismo.
+- [ ] Uma réplica que morre com reserva pendente não bloqueia as outras: a reconciliação de AOS-287 aplica-se na mesma.
+- [ ] Fail-closed: sem conseguir ler o estado partilhado, **recusa** admitir.
 
-**Detalhes Técnicos.** O mecanismo de reserva atómica sobre o log já existe e é o de `scheduler.Admission` (CAS por `expected_seq`) — reutilizá-lo em vez de inventar um segundo. A disciplina Reserve→Commit/Release mantém-se; o que muda é onde vive o contador. Ver `runlifecycle.BudgetAdmission` (AOS-281) para o padrão de saldo de reservas pendentes por `(plan_id, node_id)`.
+**Detalhes Técnicos.** A durabilidade num processo é do AOS-287; este ticket move o contador de «durável no meu processo» para «partilhado entre processos». Depende de o `expected_seq` ser atómico entre escritores — ver `DEF-282` e `AOS-100`.
 
-**Testes Requeridos.** Restart com reservas pendentes: o tecto sobrevive. Duas réplicas a reservar sobre a mesma árvore: o agregado respeita o tecto e a segunda vê a negação. Reserva órfã reconciliada por TTL. Fail-closed com o log indisponível.
+**Testes Requeridos.** Duas réplicas a reservar sobre a mesma árvore: o agregado respeita o tecto e a segunda vê a negação. Réplica morta com reserva pendente. Fail-closed com o log indisponível.
 
 **Definition of Done**
 - [ ] Critérios de Aceitação satisfeitos, com o teste de N réplicas a falhar-antes demonstrado.
 - [ ] `-race` verde.
-- [ ] `desafio-A1` actualizado: a recomendação «não ligar em multi-réplica» deixa de ser necessária, ou é reafirmada com a razão que resta.
-- [ ] `tecnica/10` §3-bis actualizado se o limite operacional mudar.
+- [ ] `tecnica/10` actualizado se o limite operacional mudar.
 
 **Handoff para Claude Code**
 ```text
 És o executor do ticket AOS-282 do Agentic OS de Referência (AOS).
-Lê AOS-282 na íntegra em specs/EPIC-10_Topologia_Operacao_DR.md, o ADR-008, e
-docs/reports/desafio-A1-budget-admission-control.md (que já mediu o defeito).
-O tecto por árvore é hoje por-PROCESSO. Não confundas com o admission control do
-provider (AOS-027, scheduler.Admission), que já reserva sobre o log e está correcto.
-Reutiliza o mecanismo de reserva atómica que já existe; não inventes um segundo —
-duas implementações do mesmo conceito divergem, e a que diverge em silêncio é a que
-concede. A disciplina Reserve→Commit/Release mantém-se.
+Lê AOS-282 e AOS-287 (EPIC-01), o ADR-008 e a análise da v1.
+Este ticket é v1.1 e depende do AOS-287: a durabilidade do contador NUM processo é
+de lá. Aqui só se resolve o tecto PARTILHADO entre réplicas — começar por aqui seria
+partilhar um contador que ainda evapora no reinício.
+Não confundas com AOS-027 (token-bucket do PROVIDER), que já reserva sobre o log.
+Reutiliza o CAS do log; não inventes um segundo mecanismo de reserva.
 Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 ```
 
@@ -723,6 +724,7 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 |---|---|
 | Epic | EPIC-10 — Topologia, Operação e DR |
 | Fase | 3 — Escala e controlo |
+| Milestone | **v1.1 (distribuído)** — decisão do dono, 2026-08-31 |
 | Tipo | feature |
 | Prioridade | P0 |
 | Estimativa | M |
@@ -783,6 +785,7 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 |---|---|
 | Epic | EPIC-10 — Topologia, Operação e DR |
 | Fase | 3 — Escala e controlo |
+| Milestone | **v1.1 (distribuído)** — decisão do dono, 2026-08-31 |
 | Tipo | feature |
 | Prioridade | P0 |
 | Estimativa | M |
