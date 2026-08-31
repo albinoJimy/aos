@@ -739,6 +739,10 @@ type Node struct {
 
 	ownsEventStore bool
 	ownsWORM       bool
+	// posseWAL e a posse EXCLUSIVA de escrita do Event Store duravel (AOS-285), ou nil
+	// se o guard nao se aplica a esta configuracao. [Node.Close] larga-a — e a morte
+	// abrupta do processo larga-a na mesma, pelo SO, que e a razao de o arbitro ser ele.
+	posseWAL *posseDoWAL
 	// otlp é o exporter OTLP/HTTP que o nó ABRIU (nil se a observabilidade está desligada
 	// ou se foi injectado um OTLPExporter por config, cujo ciclo de vida é do chamador).
 	// [Node.Close] drena-o.
@@ -886,6 +890,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (2) SUBSTRATO DURÁVEL (AOS-170). Precedência: fornecido por config > durável em
 	// disco (path) > in-memory de referência. Um store durável aberto AQUI é propriedade
 	// do nó (fecha-o em Close); um fornecido por config é do chamador.
+	// (2-pre) GUARD DE ARRANQUE (AOS-285). A posse EXCLUSIVA de escrita do Event Store é
+	// tomada ANTES de o abrir: abrir primeiro e trancar depois deixaria uma janela em que
+	// duas réplicas teriam ambas o WAL aberto, que é precisamente o estado a impedir.
+	// Fail-closed — uma posse já tomada aborta o arranque. Ver wal_posse.go.
+	// A libertação num arranque ABORTADO é feita na guarda de limpeza fail-closed que já
+	// existe mais abaixo (a do `success`), junto com os stores que o nó abriu — é a mesma
+	// preocupação e não merece um segundo mecanismo.
+	posse, errPosse := tomarPosseDoWAL(cfg)
+	if errPosse != nil {
+		return nil, errPosse
+	}
+
 	es := cfg.EventStore
 	ownsES := false
 	if es == nil {
@@ -942,6 +958,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if ownsWORM {
 			_ = closeIfCloser(worm)
 		}
+		// AOS-285: um arranque abortado NÃO pode deixar o Event Store detido — a
+		// tentativa seguinte (o supervisor a reiniciar o serviço) seria recusada por um
+		// detentor que já não existe. Largar DEPOIS de fechar o store, pela mesma ordem
+		// em que foram adquiridos ao contrário.
+		_ = posse.Largar()
 	}()
 
 	// (2a) AOS-221 — IMPOR a tamper-evidence do WORM no RESTART. Re-encadeia e VERIFICA a
@@ -2179,6 +2200,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		progress:                progress,      // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
 
 		ownsEventStore: ownsES,
+		posseWAL:       posse,
 		ownsWORM:       ownsWORM,
 		otlp:           otlpExp,
 		orcamento:      runBudget,
@@ -2207,6 +2229,13 @@ func (n *Node) Close() error {
 		if err := closeIfCloser(n.WORM); err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	// AOS-285 — largar a posse do Event Store DEPOIS de o fechar. A ordem importa: entre
+	// largar e fechar haveria um instante em que outra réplica podia tomar a posse com o
+	// WAL ainda aberto por nós, que é exactamente o estado que o guard existe para não
+	// haver. Nil-safe num nó sem guard.
+	if err := n.posseWAL.Largar(); err != nil && firstErr == nil {
+		firstErr = err
 	}
 	return firstErr
 }

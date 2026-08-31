@@ -198,15 +198,31 @@ Num processo próprio, `aos-orq` (`packages/cmd/aos-orq`), sobre o módulo
 single-host o arranca, e o grafo de build do nó `aos` não o contém — verificado dos dois
 lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
 
-> **LIMITE OPERACIONAL DECLARADO (DEF-282, eixo AOS-100).** A arbitragem da posse depende de
-> o `expected_seq` do stream de lease ser atómico **entre escritores**. O Event Store de
-> referência não o é entre **processos**: as réplicas de AOS-100 são cópias *in-process* do
-> log, e cada `Open` fica com a sua própria cabeça. Medido a 2026-08-30: dois `Open` sobre o
-> mesmo WAL e dois `Claim` do mesmo run passam **ambos**, com o mesmo token. **Correr dois
-> `aos-orq` em paralelo sobre um WAL partilhado não é uma configuração suportada.** A
-> topologia suportada é a posse **sequencial** (servir → anunciar → o seguinte reclama). O
-> paralelismo real exige o backend replicado de produção (NATS JetStream), onde o CAS é
-> atómico entre processos.
+> **LIMITE OPERACIONAL DECLARADO (DEF-282, eixo AOS-100) — e agora IMPOSTO (AOS-285).** A
+> arbitragem da posse depende de o `expected_seq` do stream de lease ser atómico **entre
+> escritores**. O Event Store de referência não o é entre **processos**: as réplicas de
+> AOS-100 são cópias *in-process* do log, e cada `Open` fica com a sua própria cabeça.
+> Medido a 2026-08-30: dois `Open` sobre o mesmo WAL e dois `Claim` do mesmo run passam
+> **ambos**, com o mesmo token.
+>
+> **O nó recusa agora arrancar sobre um Event Store já detido** (AOS-285). A posse é
+> arbitrada pelo **sistema operativo** sobre um ficheiro irmão `<wal>.lock`
+> (`eventstore.LockWAL`) — e não pelo log, o que seria circular: um lease singleton sobre o
+> próprio Event Store seria vacuoso pela razão exacta que o guard existe para cobrir. A
+> escolha do SO como árbitro dispensa TTL e torna impossível a posse órfã: o descritor
+> fecha-se na morte do processo. As vias de **leitura** (`aos wal-inspect`,
+> `aos wal-summary`) continuam a abrir o mesmo WAL com o nó a correr — é para isso que a
+> tranca está no ficheiro irmão e não no WAL.
+>
+> **O DEF-282 continua ABERTO:** o guard não dá ao substrato a arbitragem que lhe falta,
+> fecha a via por onde alguém lá chegaria sem saber. O paralelismo real exige o backend
+> replicado de produção (NATS JetStream), e nessa altura a condição de aplicabilidade do
+> guard (`guardDePosseAplicavel`) tem de ser revista — está nomeada no código por essa razão.
+>
+> **Residual declarado:** o guard cobre o **nó**. Um segundo escritor que não seja o nó —
+> `aos-orq`, ou outro binário a abrir o mesmo WAL sem pedir a posse — continua a não ser
+> impedido. Foi escolha de escopo do AOS-285, cujos critérios são sobre o nó; fica nomeado
+> aqui em vez de descoberto.
 
 ---
 
