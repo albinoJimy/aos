@@ -17,7 +17,10 @@ import (
 // Padrões da implantação de referência. O nome do stream e o prefixo dos subjects são
 // configuráveis porque um cluster serve mais do que um board.
 const (
-	NomeStreamPorOmissao  = "AOS_EVENTS"
+	NomeStreamPorOmissao = "AOS_EVENTS"
+	// PrefixoSubjectOmissao e a RAIZ dos subjects. O prefixo efectivo deriva dela e do
+	// nome do stream (ver prefixoDe) para que dois streams no mesmo cluster nao se
+	// sobreponham.
 	PrefixoSubjectOmissao = "aos.es"
 	PrazoPorOmissao       = 10 * time.Second
 	ReplicasPorOmissao    = 3
@@ -88,7 +91,6 @@ func SemCriarStream() Option { return func(c *config) { c.criar = false } }
 func Abrir(addr string, opts ...Option) (*Store, error) {
 	cfg := config{
 		stream:   NomeStreamPorOmissao,
-		prefixo:  PrefixoSubjectOmissao,
 		prazo:    PrazoPorOmissao,
 		replicas: ReplicasPorOmissao,
 		criar:    true,
@@ -96,6 +98,9 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 	}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.prefixo == "" {
+		cfg.prefixo = prefixoDe(cfg.stream)
 	}
 	if err := validarPrefixo(cfg.prefixo); err != nil {
 		return nil, err
@@ -567,3 +572,37 @@ func (s *Store) Streams() []string {
 	sort.Strings(out)
 	return out
 }
+
+// prefixoDe deriva o prefixo de subjects do NOME DO STREAM.
+//
+// # O defeito que isto fecha, medido
+//
+// O prefixo era uma constante única. Consequência: dois streams no MESMO cluster —
+// dois boards, ou dois ambientes — declaravam ambos `aos.es.>` e o servidor recusava o
+// segundo com «subjects overlap with an existing stream» (10065). Ou seja, dar um nome
+// próprio ao stream (ComNomeDeStream) NÃO o separava de facto, e a promessa «um cluster
+// serve mais do que um board» era falsa. MEDIDO a 2026-08-31 pelo teste do nó sobre o
+// substrato replicado, que não conseguia criar dois streams seguidos.
+//
+// O prefixo passa a derivar do nome, o que torna a separação uma consequência de dar o
+// nome — em vez de uma segunda coisa que alguém tem de se lembrar de configurar. Quem
+// quiser um layout próprio continua a poder fixá-lo com [ComPrefixoDeSubject].
+func prefixoDe(stream string) string {
+	var b strings.Builder
+	b.WriteString(PrefixoSubjectOmissao)
+	b.WriteByte('.')
+	for _, r := range strings.ToLower(stream) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-') // ponto, espaço e curingas nunca chegam ao subject
+		}
+	}
+	return b.String()
+}
+
+// ApagarStream apaga o stream JetStream inteiro. Ver a advertência em
+// [natsjs.Conn.DeleteStream]: destrói a fonte de verdade, e existe para streams
+// EFÉMEROS. Um teste que não o chame deixa lixo acumulado no cluster.
+func (s *Store) ApagarStream() error { return s.cn.DeleteStream(s.stream, s.prazo) }

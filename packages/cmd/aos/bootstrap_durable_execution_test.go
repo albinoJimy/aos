@@ -23,7 +23,6 @@ import (
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
-	"github.com/aos-ref/substrate/eventstore"
 )
 
 const (
@@ -182,7 +181,7 @@ func (m *restartToolModel) sawInPrompt(needle string) bool {
 // chave é derivada do que foi REALMENTE commitado — o step_id do envelope, namespaced
 // com o prefixo reservado do ledger — em vez de hardcoded, para o teste não depender do
 // formato de step_id do loop. Falha se não houver exactamente um registo.
-func durLedgerKeyFromWAL(t *testing.T, es *eventstore.Store, runID string) string {
+func durLedgerKeyFromWAL(t *testing.T, es EventStorePort, runID string) string {
 	t.Helper()
 	events, err := es.Read(context.Background(), runID, 0)
 	if err != nil {

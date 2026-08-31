@@ -221,6 +221,11 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // escalado com fidelidade (o log durável NÃO guarda os inputs das tool calls — só a
 // captura de replay os tem) e impedir a dupla execução das activities já aplicadas do
 // mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
+// ErrBadEventStoreReplicas — AOS_EVENTSTORE_NATS_REPLICAS presente mas nao e um inteiro
+// positivo. Fail-closed: um factor de replicacao invalido nao pode degradar para R1 em
+// silencio, porque o no anunciaria substrato replicado sobre um stream sem replicas.
+var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem de ser um inteiro positivo (3 ou 5; 1 e so dev)")
+
 var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
 
 // ErrProductionNeedsModelCredential — sob AOS_MODE=production COM o model gateway LIGADO
@@ -445,8 +450,32 @@ func nodeConfigFromEnv() (Config, error) {
 	// EventStore injectado por config; aqui, na fronteira de ambiente, a condição é
 	// simplesmente "AOS_DURABLE_EXECUTION=1 exige AOS_EVENTSTORE_PATH".
 	eventStorePath := strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_PATH"))
-	if durableExecution && eventStorePath == "" {
-		return Config{}, fmt.Errorf("%w (defina AOS_EVENTSTORE_PATH, ex.: /var/lib/aos/events.wal)", ErrDurableExecutionNeedsDurableSubstrate)
+	// EVENT STORE REPLICADO (AOS-100) por ambiente. Endereço de um cluster NATS
+	// JetStream; tem PRECEDÊNCIA sobre AOS_EVENTSTORE_PATH e conta como substrato
+	// DURÁVEL para esta guarda — é replicado por quórum, que é mais do que o WAL local
+	// dá, não menos.
+	//
+	// É esta variável que liga o nó ao substrato que ARBITRA ENTRE PROCESSOS. Com ela
+	// preenchida, correr N réplicas do nó sobre o mesmo Event Store passa a ser a
+	// configuração PRETENDIDA — e é por isso que o guard de posse de AOS-285 deixa de
+	// se aplicar ao Event Store (ver guardDePosseAplicavel). O guard do WORM mantém-se:
+	// o WORM continua a ser um ficheiro local.
+	eventStoreNATS := strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS"))
+	// Factor de replicação: ausente ⇒ padrão do adaptador (R3). Presente e inválido ⇒
+	// RECUSA. Degradar em silêncio para R1 daria um nó que anuncia substrato replicado
+	// sobre um stream sem réplicas — exactamente a classe de «capacidade anunciada que
+	// o artefacto não cumpre» que ErrDurableExecutionNeedsDurableSubstrate já fecha do
+	// outro lado.
+	eventStoreNATSReplicas := 0
+	if v := strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_REPLICAS")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("%w: AOS_EVENTSTORE_NATS_REPLICAS=%q", ErrBadEventStoreReplicas, v)
+		}
+		eventStoreNATSReplicas = n
+	}
+	if durableExecution && eventStorePath == "" && eventStoreNATS == "" {
+		return Config{}, fmt.Errorf("%w (defina AOS_EVENTSTORE_NATS, ex.: aos-es-0:4222, ou AOS_EVENTSTORE_PATH, ex.: /var/lib/aos/events.wal)", ErrDurableExecutionNeedsDurableSubstrate)
 	}
 
 	// CANAL DE CONTROLO AUTENTICADO (AOS-160) — PUBKEYS DOS OPERADORES por ambiente
@@ -570,7 +599,12 @@ func nodeConfigFromEnv() (Config, error) {
 		// -v aos-data:/var/lib/aos). É esta ligação que torna real o estado durável que o
 		// Dockerfile documenta e que a durabilidade de kill+reinício-sem-duplicação exige.
 		EventStorePath: eventStorePath,
-		WORMPath:       strings.TrimSpace(os.Getenv("AOS_WORM_PATH")),
+		// SUBSTRATO REPLICADO (AOS-100). Quando presente, o Event Store arbitra entre
+		// processos e N réplicas do nó sobre ele são a configuração pretendida.
+		EventStoreNATS:         eventStoreNATS,
+		EventStoreNATSStream:   strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_STREAM")),
+		EventStoreNATSReplicas: eventStoreNATSReplicas,
+		WORMPath:               strings.TrimSpace(os.Getenv("AOS_WORM_PATH")),
 		// EXECUÇÃO DURÁVEL (AOS-180) por ambiente (AOS_DURABLE_EXECUTION — AOS-191): liga o
 		// checkpointer, o capturer de não-determinismo e o step-ledger sobre o Event Store
 		// durável já validado acima. Sem a variável fica false ⇒ os três permanecem nil

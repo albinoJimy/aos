@@ -29,7 +29,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // appendTraj apende um evento ao stream (= runID) e devolve o seq atribuído.
-func appendTraj(t *testing.T, es *eventstore.Store, streamID, stepID string) uint64 {
+func appendTraj(t *testing.T, es EventStorePort, streamID, stepID string) uint64 {
 	t.Helper()
 	res, err := es.Append(context.Background(), streamID, eventstore.EventInput{
 		Type:     "traj.step",
@@ -121,7 +121,7 @@ func waitUntil(t *testing.T, timeout time.Duration, cond func() bool, msg string
 
 // newTrajServer compõe um nó + serviço + handler e serve-o num httptest.Server. Devolve o
 // servidor, o Event Store partilhado, e limpa tudo no t.Cleanup.
-func newTrajServer(t *testing.T, opts ...APIOption) (*httptest.Server, *eventstore.Store) {
+func newTrajServer(t *testing.T, opts ...APIOption) (*httptest.Server, EventStorePort) {
 	t.Helper()
 	node, _ := newAPINode(t, &countingModel{}, false)
 	_, h := newAPI(t, node, opts...)

@@ -341,3 +341,24 @@ func (cn *Conn) SubjectsWithMessages(stream, filter string, timeout time.Duratio
 	}
 	return r.State.Subjects, nil
 }
+
+// DeleteStream apaga um stream e tudo o que ele contém.
+//
+// NÃO é uma operação do Event Store — o log do AOS é append-only e o `deny_delete` do
+// servidor impede apagar mensagens. Isto apaga o CONTENTOR, e existe para o ciclo de
+// vida de streams EFÉMEROS (testes, ambientes descartáveis). Usar isto sobre um stream
+// de produção destrói a fonte de verdade; não há aqui rede de segurança nenhuma.
+func (cn *Conn) DeleteStream(stream string, timeout time.Duration) error {
+	m, err := cn.Request("$JS.API.STREAM.DELETE."+stream, nil, nil, timeout)
+	if err != nil {
+		return err
+	}
+	var r streamResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return fmt.Errorf("%w: resposta de DELETE ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return r.Error
+	}
+	return nil
+}

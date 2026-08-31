@@ -70,6 +70,7 @@ import (
 	"github.com/aos-ref/platform/registry/signing"
 	"github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
+	"github.com/aos-ref/substrate/eventstore/jetstream"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 	"github.com/aos-ref/substrate/redaction"
 )
@@ -135,7 +136,7 @@ var (
 	// coerente com ErrBadBoardRegions (config auto-contraditória aborta sempre, não só
 	// em produção). Um EventStore INJECTADO por config não dispara esta guarda: a sua
 	// durabilidade é do chamador (o nó não a pode atestar) e o banner declara-o.
-	ErrDurableExecutionNeedsDurableSubstrate = errors.New("aos: DurableExecution exige um Event Store DURAVEL (Config.EventStorePath / AOS_EVENTSTORE_PATH) — checkpointer, capturer e step-ledger sobre um store in-memory evaporam no reinicio (durabilidade anunciada e nao cumprida)")
+	ErrDurableExecutionNeedsDurableSubstrate = errors.New("aos: DurableExecution exige um Event Store DURAVEL (Config.EventStoreNATS / AOS_EVENTSTORE_NATS, ou Config.EventStorePath / AOS_EVENTSTORE_PATH) — checkpointer, capturer e step-ledger sobre um store in-memory evaporam no reinicio (durabilidade anunciada e nao cumprida)")
 
 	// ErrBadOperatorEntry — uma entrada de [Config.Operators] que o
 	// [integration.Ed25519Authenticator.Register] DESCARTARIA em silêncio (emitterID vazio ou
@@ -432,15 +433,46 @@ type Config struct {
 	DurableExecution bool
 	// EventStore é a espinha append-only partilhada (turnos + sinais de controlo +
 	// nonce-store anti-replay). Precedência: se != nil, usa-o tal-qual (o chamador é
-	// dono do ciclo de vida); senão, se EventStorePath != "", ABRE um Event Store
-	// DURÁVEL respaldado em disco (eventstore.Open — WAL append-only + fsync + replay
+	// dono do ciclo de vida); senão, se EventStoreNATS != "", liga-se ao Event Store
+	// REPLICADO (AOS-100); senão, se EventStorePath != "", ABRE um Event Store DURÁVEL
+	// respaldado em disco (eventstore.Open — WAL append-only + fsync + replay
 	// crash-safe no arranque, o reinício não perde nem duplica); senão, um in-memory
 	// de referência (não-durável).
-	EventStore *eventstore.Store
+	EventStore EventStorePort
 	// EventStorePath é o caminho do WAL do Event Store durável (AOS-170). Só é
-	// consultado quando EventStore == nil. Um ficheiro inexistente é criado (store
-	// novo); um existente é reconstruído byte-a-byte no arranque.
+	// consultado quando EventStore == nil e EventStoreNATS == "". Um ficheiro
+	// inexistente é criado (store novo); um existente é reconstruído byte-a-byte no
+	// arranque.
 	EventStorePath string
+	// EventStoreNATS é o endereço ("host:porta") de um cluster NATS JetStream que
+	// serve de Event Store REPLICADO (AOS-100, ADR-007). Só é consultado quando
+	// EventStore == nil, e tem PRECEDÊNCIA sobre EventStorePath.
+	//
+	// # O que muda quando isto está preenchido, e não é pouco
+	//
+	// O substrato deixa de ser local e passa a ARBITRAR ENTRE PROCESSOS: o
+	// expected_seq é imposto pelo servidor, medido (ver
+	// docs/reports/medicao-jetstream-arbitragem-2026-08-31.md). É a propriedade de que
+	// toda a disciplina de posse do AOS depende — LeaseManager (AOS-018),
+	// FencedAppender, a composição ORQ/SCH↔posse (ADR-023) — e sem ela essas peças
+	// estavam correctas mas assentes numa suposição (DEF-282).
+	//
+	// CONSEQUÊNCIA DIRECTA: correr N réplicas do nó sobre o MESMO Event Store passa a
+	// ser o OBJECTIVO, e o guard de arranque de AOS-285 deixa de se aplicar ao Event
+	// Store — ver [guardDePosseAplicavel], onde essa condição está nomeada. O guard do
+	// WORM MANTÉM-SE: o WORM continua a ser um ficheiro local, e dois escritores
+	// FORKAM a hash-chain (AOS-284, medido).
+	//
+	// LIMITE POR FECHAR (AC5 do AOS-100): este backend ainda NÃO exprime a fronteira
+	// regional de soberania (falta `placement` na configuração do stream). Não deve
+	// servir um board com fronteira declarada — ver o doc de eventstore/jetstream.
+	EventStoreNATS string
+	// EventStoreNATSStream é o nome do stream JetStream. Vazio usa o padrão
+	// (jetstream.NomeStreamPorOmissao). Só é consultado com EventStoreNATS != "".
+	EventStoreNATSStream string
+	// EventStoreNATSReplicas é o factor de replicação do stream (3 ou 5; 1 é só dev).
+	// Zero usa o padrão. Só é consultado com EventStoreNATS != "".
+	EventStoreNATSReplicas int
 	// WORM é o audit.Store tamper-evident único do RM. Precedência análoga: se != nil,
 	// usa-o; senão, se WORMPath != "", ABRE um WORM DURÁVEL (audit.OpenFileStore —
 	// mesma mecânica; a hash-chain sobrevive ao restart E é RE-ENCADEADA e verificada no
@@ -603,7 +635,7 @@ type Node struct {
 	// a exigir editar o `.env` e recriar o processo. nil ⇒ oráculo não composto.
 	Autonomy *autonomyWiring
 	// EventStore e WORM são o substrato partilhado.
-	EventStore *eventstore.Store
+	EventStore EventStorePort
 	WORM       audit.Store
 
 	// --- Execução durável (AOS-180, activável por AOS_DURABLE_EXECUTION — AOS-191) ---
@@ -883,7 +915,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// seja o que for. Só se aplica quando o substrato seria criado PELO NÓ e sem caminho
 	// (⇒ in-memory); um EventStore fornecido por config é do chamador (a sua durabilidade
 	// não é atestável aqui) e o banner declara essa fronteira.
-	if cfg.DurableExecution && cfg.EventStore == nil && cfg.EventStorePath == "" {
+	if cfg.DurableExecution && cfg.EventStore == nil && cfg.EventStorePath == "" && cfg.EventStoreNATS == "" {
 		return nil, ErrDurableExecutionNeedsDurableSubstrate
 	}
 
@@ -917,13 +949,31 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	es := cfg.EventStore
 	ownsES := false
 	if es == nil {
-		if cfg.EventStorePath != "" {
+		switch {
+		case cfg.EventStoreNATS != "":
+			// EVENT STORE REPLICADO (AOS-100). Precede o WAL local: quando o operador
+			// aponta o nó a um cluster, é isso que ele quer — e um fallback silencioso
+			// para um ficheiro local daria um nó que ARRANCA a anunciar substrato
+			// partilhado sobre um substrato que não arbitra. Falha fail-closed.
+			opts := []jetstream.Option{jetstream.ComPrazo(30 * time.Second)}
+			if cfg.EventStoreNATSStream != "" {
+				opts = append(opts, jetstream.ComNomeDeStream(cfg.EventStoreNATSStream))
+			}
+			if cfg.EventStoreNATSReplicas > 0 {
+				opts = append(opts, jetstream.ComReplicas(cfg.EventStoreNATSReplicas))
+			}
+			created, err := jetstream.Abrir(cfg.EventStoreNATS, opts...)
+			if err != nil {
+				return nil, fmt.Errorf("aos: event store replicado (AOS-100) em %q: %w", cfg.EventStoreNATS, err)
+			}
+			es = created
+		case cfg.EventStorePath != "":
 			created, err := eventstore.Open(cfg.EventStorePath)
 			if err != nil {
 				return nil, fmt.Errorf("aos: event store durável (AOS-170) %q: %w", cfg.EventStorePath, err)
 			}
 			es = created
-		} else {
+		default:
 			created, err := eventstore.New()
 			if err != nil {
 				return nil, fmt.Errorf("aos: event store de referência: %w", err)
@@ -2019,7 +2069,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (não a intenção da config) e sobre que substrato — para que um operador nunca tenha
 	// de adivinhar se checkpointer/capturer/step-ledger estão ligados.
 	if checkpointer != nil && capturer != nil && ledger != nil {
-		log("execucao duravel (AOS-180): LIGADA — checkpointer + capturer + step-ledger COMPOSTOS sobre o event store (%s); o tool set congelado (AOS-155) persiste no mesmo store", describeSubstrate(cfg.EventStore != nil, cfg.EventStorePath))
+		log("execucao duravel (AOS-180): LIGADA — checkpointer + capturer + step-ledger COMPOSTOS sobre o event store (%s); o tool set congelado (AOS-155) persiste no mesmo store", describeSubstrateEx(cfg.EventStore != nil, cfg.EventStorePath, cfg.EventStoreNATS))
 		if cfg.EventStore != nil {
 			log("NOTA execucao duravel: o event store foi FORNECIDO POR CONFIG — a durabilidade dos checkpoints/capturas/ledger e a DESSE store; o no nao a pode atestar (com AOS_EVENTSTORE_PATH e duravel em disco por construcao)")
 		}
@@ -2283,7 +2333,7 @@ func closeIfCloser(v any) error {
 // substrateMode descreve a proveniência do substrato para o banner de arranque,
 // distinguindo o durável (AOS-170) do in-memory de referência.
 func substrateMode(cfg Config) string {
-	es := describeSubstrate(cfg.EventStore != nil, cfg.EventStorePath)
+	es := describeSubstrateEx(cfg.EventStore != nil, cfg.EventStorePath, cfg.EventStoreNATS)
 	worm := describeSubstrate(cfg.WORM != nil, cfg.WORMPath)
 	if es == worm {
 		return es
@@ -2294,9 +2344,19 @@ func substrateMode(cfg Config) string {
 // describeSubstrate classifica a proveniência de um store: fornecido por config,
 // durável em disco (AOS-170) ou in-memory de referência (não-durável).
 func describeSubstrate(provided bool, path string) string {
+	return describeSubstrateEx(provided, path, "")
+}
+
+// describeSubstrateEx acrescenta o caso do Event Store REPLICADO (AOS-100). O banner
+// tem de o distinguir do WAL local: sao substratos com garantias DIFERENTES, e um
+// operador que leia «duravel em disco» quando esta sobre um cluster fica sem saber se
+// pode correr uma segunda replica.
+func describeSubstrateEx(provided bool, path, nats string) string {
 	switch {
 	case provided:
 		return "fornecido por config"
+	case nats != "":
+		return "replicado em " + nats + " (AOS-100 — arbitra entre processos)"
 	case path != "":
 		return "duravel em disco (AOS-170)"
 	default:

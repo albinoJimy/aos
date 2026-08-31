@@ -89,6 +89,13 @@ services:
       # Substrato + execução DURÁVEIS no volume gravável. É o que faz o estado
       # sobreviver a um deploy (o volume é nomeado e não é tocado pela troca de digest).
       AOS_DURABLE_EXECUTION: "1"
+      # AOS-100 — Event Store REPLICADO. Vazio (o default) mantem o WAL local acima;
+      # preenchido, PRECEDE-O e o substrato passa a arbitrar entre processos, tornando
+      # N replicas do no a configuracao pretendida. NAO usar num board com fronteira
+      # regional declarada: o backend ainda nao exprime `placement` (AC5 por fechar).
+      AOS_EVENTSTORE_NATS: "${AOS_EVENTSTORE_NATS:-}"
+      AOS_EVENTSTORE_NATS_STREAM: "${AOS_EVENTSTORE_NATS_STREAM:-}"
+      AOS_EVENTSTORE_NATS_REPLICAS: "${AOS_EVENTSTORE_NATS_REPLICAS:-}"
       AOS_EVENTSTORE_PATH: "/var/lib/aos/events.wal"
       AOS_WORM_PATH: "/var/lib/aos/worm.wal"
 

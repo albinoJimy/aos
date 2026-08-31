@@ -55,6 +55,10 @@ func substratoJetStream(t *testing.T, addr string) conformance.Substrate {
 
 		var abertos []*jetstream.Store
 		release := func() {
+			// Apaga o stream: sem isto cada execucao deixa lixo acumulado no cluster.
+			if len(abertos) > 0 {
+				_ = abertos[0].ApagarStream()
+			}
 			for _, st := range abertos {
 				_ = st.Close()
 			}

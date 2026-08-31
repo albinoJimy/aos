@@ -10,7 +10,6 @@ import (
 
 	hitl "github.com/aos-ref/control-plane/governance/hitl"
 	audit "github.com/aos-ref/platform/audit"
-	"github.com/aos-ref/substrate/eventstore"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -135,7 +134,7 @@ func validateRatifiers(ratifiers []RatifierConfig) error {
 // eval é o eval-gate de referência (default fail-closed) OU o injectado por config; sealer é o
 // WORM do nó (a decisão de ratificação é selada na cadeia tamper-evident); es é o Event Store
 // partilhado sobre o qual o nonce-store durável impõe o uso-único.
-func newPromotionController(eval otelgenai.EvalGate, registry hitl.ApproverRegistry, sealer audit.Store, es *eventstore.Store, ttl, skew time.Duration, ratifiers int, clock func() time.Time) (*PromotionController, error) {
+func newPromotionController(eval otelgenai.EvalGate, registry hitl.ApproverRegistry, sealer audit.Store, es EventStorePort, ttl, skew time.Duration, ratifiers int, clock func() time.Time) (*PromotionController, error) {
 	if ttl <= 0 {
 		ttl = defaultRatifyTTL
 	}
