@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -239,5 +240,94 @@ func TestAOS100_GuardNaoTrancaUmWALQueONoNuncaAbre(t *testing.T) {
 	}
 	if _, err := os.Stat(walResidual); err == nil {
 		t.Fatal("o WAL residual foi CRIADO — o nó abriu um ficheiro que a precedência diz que não usa")
+	}
+}
+
+// --- Soberania (AC5 do AOS-100, ADR-011) ------------------------------------
+
+// TestAOS100_BoardsDeclaradosExigemRegiaoDoEventStore — um nó que declara boards com
+// região autorizada (read-path soberano, AOS-094) sobre um Event Store REPLICADO sem
+// fronteira é uma contradição servida em silêncio: as leituras respeitam a região e os
+// DADOS podem estar em qualquer par do cluster.
+//
+// A recusa é ANTERIOR a qualquer ligação — daí o endereço inalcançável: se dependesse de
+// ligar, este teste falharia com um erro de rede em vez do sentinela.
+func TestAOS100_BoardsDeclaradosExigemRegiaoDoEventStore(t *testing.T) {
+	cfg := tnBaseConfig()
+	cfg.EventStoreNATS = "127.0.0.1:1"
+	cfg.BoardRegions = map[string]string{"board-ue": "eu-west"}
+	cfg.WORMPath = filepath.Join(t.TempDir(), "worm.wal")
+
+	_, err := Bootstrap(context.Background(), cfg, io.Discard)
+	if !errors.Is(err, ErrEventStoreReplicadoSemRegiao) {
+		t.Fatalf("erro = %v; quer ErrEventStoreReplicadoSemRegiao — um read-path soberano sobre um "+
+			"Event Store sem fronteira não pode arrancar", err)
+	}
+}
+
+// TestAOS100_RegiaoDoEventStoreForaDosBoardsERecusada — config auto-contraditória:
+// declarar que os dados vivem numa região que board nenhum autoriza.
+func TestAOS100_RegiaoDoEventStoreForaDosBoardsERecusada(t *testing.T) {
+	cfg := tnBaseConfig()
+	cfg.EventStoreNATS = "127.0.0.1:1"
+	cfg.EventStoreNATSRegion = "us-east"
+	cfg.BoardRegions = map[string]string{"board-ue": "eu-west"}
+	cfg.WORMPath = filepath.Join(t.TempDir(), "worm.wal")
+
+	_, err := Bootstrap(context.Background(), cfg, io.Discard)
+	if !errors.Is(err, ErrEventStoreRegiaoForaDosBoards) {
+		t.Fatalf("erro = %v; quer ErrEventStoreRegiaoForaDosBoards", err)
+	}
+}
+
+// TestAOS100_SemBoardsAFronteiraFicaDormente — quem não declara soberania não passa a
+// precisar dela. Retro-compatibilidade, medida e não assumida.
+func TestAOS100_SemBoardsAFronteiraFicaDormente(t *testing.T) {
+	addr := clusterAOS100(t)
+	stream := "AOSDORM_" + sufixoAOS100(t)
+	cfg := configReplicada(t, addr, stream, t.TempDir()) // sem BoardRegions, sem região
+
+	node, err := Bootstrap(context.Background(), cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("Bootstrap sem fronteira declarada: %v", err)
+	}
+	t.Cleanup(func() {
+		if js, ok := node.EventStore.(*jetstream.Store); ok {
+			_ = js.ApagarStream()
+		}
+		_ = node.Close()
+	})
+}
+
+// TestAOS100_NoArrancaComFronteiraRegionalImposta — o caminho completo, contra o
+// cluster: o nó declara board+região, o stream fica com colocação, e o nó escreve.
+func TestAOS100_NoArrancaComFronteiraRegionalImposta(t *testing.T) {
+	addr := clusterAOS100(t)
+	stream := "AOSSOB_" + sufixoAOS100(t)
+	cfg := configReplicada(t, addr, stream, t.TempDir())
+	cfg.EventStoreNATSRegion = "eu-west" // a região que o cluster de medição anuncia
+	cfg.BoardRegions = map[string]string{"board-ue": "eu-west"}
+
+	node, err := Bootstrap(context.Background(), cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("Bootstrap com fronteira regional: %v", err)
+	}
+	t.Cleanup(func() {
+		if js, ok := node.EventStore.(*jetstream.Store); ok {
+			_ = js.ApagarStream()
+		}
+		_ = node.Close()
+	})
+
+	js, ok := node.EventStore.(*jetstream.Store)
+	if !ok {
+		t.Fatalf("node.EventStore é %T", node.EventStore)
+	}
+	if js.Regiao() != "eu-west" {
+		t.Fatalf("Regiao() = %q, quer eu-west — a fronteira não chegou ao substrato", js.Regiao())
+	}
+	if _, err := node.EventStore.Append(context.Background(), "run-soberano",
+		eventstore.EventInput{Type: "aos100.soberania", Payload: json.RawMessage(`{}`)}); err != nil {
+		t.Fatalf("Append num nó com fronteira: %v", err)
 	}
 }

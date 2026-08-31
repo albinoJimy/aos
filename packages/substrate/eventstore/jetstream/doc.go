@@ -46,9 +46,9 @@
 //     fanout do que é escrito depois da subscrição. Não é um consumidor durável: sem
 //     acks, sem flow control, sem heartbeats. É a configuração em que o push foi
 //     MEDIDO, e não se finge cobrir mais.
-//   - SOBERANIA (AC5 do AOS-100) NÃO IMPLEMENTADA. Restringir réplicas a uma região
-//     exige `placement` na configuração do stream, que [natsjs.StreamConfig] ainda não
-//     exprime. Enquanto assim for, este backend NÃO satisfaz o ADR-011 e não deve
-//     servir um board com fronteira declarada.
+//   - SOBERANIA (AC5, ADR-011): IMPLEMENTADA por `placement` no stream e VERIFICADA
+//     contra a configuração armazenada — ver soberania.go. Sem [ComRegiao] a fronteira
+//     fica DORMENTE (retro-compatível), tal como no store de referência; com ela, um
+//     stream sem colocação — ou com a de outra região — ABORTA fail-closed.
 //   - SEM RECONEXÃO. Herdado do cliente: uma ligação partida devolve erro ao chamador.
 package jetstream

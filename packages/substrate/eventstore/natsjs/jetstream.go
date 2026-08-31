@@ -15,6 +15,17 @@ const (
 	// CodeWrongLastSeq — o expected_seq afirmado não corresponde ao último seq do
 	// subject. É a RECUSA que dá a arbitragem entre escritores.
 	CodeWrongLastSeq = 10071
+
+	// CodeNoSuitablePeers — nenhum par do cluster satisfaz a `placement` pedida.
+	//
+	// É o FAIL-CLOSED do SERVIDOR à fronteira de soberania, e é o mais forte que existe
+	// porque não depende de nós verificarmos nada: se ninguém pode alojar as réplicas
+	// dentro da região, o stream simplesmente NÃO é criado.
+	//
+	// Valor CONFIRMADO contra um cluster real a 2026-08-31 — resposta literal:
+	// «no suitable peers for placement, tags not matched ['region:...']»,
+	// code=400 err_code=10005.
+	CodeNoSuitablePeers = 10005
 )
 
 // ErrWrongLastSeq — o servidor recusou a escrita por o expected_seq não bater. Nada ficou
@@ -100,6 +111,9 @@ type StreamConfig struct {
 	// Duplicates é a janela de deduplicação, em nanossegundos. NÃO é a garantia de
 	// idempotência do AOS — ver [HdrMsgID].
 	Duplicates int64 `json:"duplicate_window,omitempty"`
+	// Placement restringe onde as replicas podem ser colocadas. nil = sem restricao —
+	// e sem restricao NAO ha fronteira de soberania nenhuma (ADR-011).
+	Placement *Placement `json:"placement,omitempty"`
 }
 
 // streamResponse é o envelope das respostas da API de streams.
@@ -361,4 +375,57 @@ func (cn *Conn) DeleteStream(stream string, timeout time.Duration) error {
 		return r.Error
 	}
 	return nil
+}
+
+// --- Colocação (soberania regional, ADR-011) ---------------------------------
+
+// Placement restringe ONDE o servidor pode colocar as réplicas de um stream.
+//
+// É a única via pela qual a fronteira regional de soberania é IMPOSTA no substrato: sem
+// ela, o JetStream coloca as réplicas em quaisquer pares elegíveis do cluster, e a
+// promessa «as réplicas nunca cruzam a fronteira» seria uma frase num documento.
+//
+// As Tags casam com o `server_tags` declarado na configuração de cada servidor. Se
+// nenhum par tiver as tags pedidas, o servidor RECUSA criar o stream — o fail-closed é
+// dele, e é isso que o torna confiável: não depende de nós verificarmos nada.
+type Placement struct {
+	Cluster string   `json:"cluster,omitempty"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
+// StreamConfigLida é o subconjunto da configuração ARMAZENADA que se lê de volta.
+//
+// Existe por uma razão de segurança, não de conveniência: quem se LIGA a um stream já
+// existente (sem o criar) não sabe com que colocação ele foi criado. Sem ler isto de
+// volta, um nó com fronteira declarada poderia ligar-se a um stream SEM colocação e
+// julgar-se soberano — a falha mais silenciosa possível, porque tudo funciona.
+type StreamConfigLida struct {
+	NumReplicas int        `json:"num_replicas"`
+	Placement   *Placement `json:"placement"`
+	DenyDelete  bool       `json:"deny_delete"`
+	DenyPurge   bool       `json:"deny_purge"`
+}
+
+type streamConfigResponse struct {
+	Error  *JSError          `json:"error"`
+	Config *StreamConfigLida `json:"config"`
+}
+
+// ConfigDoStream lê a configuração ARMAZENADA do stream, tal como o servidor a tem.
+func (cn *Conn) ConfigDoStream(stream string, timeout time.Duration) (StreamConfigLida, error) {
+	m, err := cn.Request("$JS.API.STREAM.INFO."+stream, nil, nil, timeout)
+	if err != nil {
+		return StreamConfigLida{}, err
+	}
+	var r streamConfigResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return StreamConfigLida{}, fmt.Errorf("%w: resposta de INFO ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return StreamConfigLida{}, r.Error
+	}
+	if r.Config == nil {
+		return StreamConfigLida{}, fmt.Errorf("%w: INFO sem `config`", ErrProtocol)
+	}
+	return *r.Config, nil
 }

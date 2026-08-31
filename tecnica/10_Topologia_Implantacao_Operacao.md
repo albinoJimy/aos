@@ -240,9 +240,22 @@ lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
 > sensor `TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos` continua verde e
 > continua CERTO: a propriedade foi ganha por um substrato **diferente**, não por aquele.
 >
-> **Residual do backend replicado, nomeado:** a soberania regional (AC5 do AOS-100) ainda
-> não é exprimível — falta `placement` na configuração do stream —, pelo que este
-> substrato **não serve um board com fronteira declarada** (ADR-011).
+> **Soberania regional (AC5) — FECHADA a 2026-08-31.** O stream é criado com `placement`
+> restrita a servidores que anunciem `server_tags: ["region:<regiao>"]`, e a colocação é
+> **VERIFICADA contra a configuração armazenada** no arranque. Cobre os três modos de
+> falha, todos medidos: pedir uma região que nenhum par serve **aborta** (é o servidor a
+> recusar, `err_code=10005`); ligar-se a um stream **sem** colocação **aborta** (o caso
+> silencioso — julgar-se soberano sobre dados que podem estar em qualquer par); e uma
+> fronteira declarada **sem região** aborta antes de haver ligação. O nó exige
+> `AOS_EVENTSTORE_NATS_REGION` quando há `AOS_BOARD_REGIONS`, e o `aos-orq` tem
+> `--nats-region`.
+>
+> **O que a medição NÃO cobre, e é honesto dizê-lo:** os três servidores do cluster de
+> medição anunciam a MESMA região, pelo que não se exercitou um cluster genuinamente
+> multi-região. O que fica provado é que a restrição é PEDIDA, ARMAZENADA e VERIFICADA, e
+> que a sua ausência aborta; a distribuição das réplicas por regiões distintas é lógica do
+> JetStream, não nossa.
+>
 >
 > **Residual PAGO (AOS-286).** O AOS-285 cobria só o nó, e o residual — outro binário a
 > escrever o mesmo WAL sem pedir posse — ficou aqui nomeado. O `aos-orq serve` pede agora

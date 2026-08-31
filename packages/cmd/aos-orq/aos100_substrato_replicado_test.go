@@ -167,3 +167,42 @@ func TestAOS100_SemSubstratoERecusado(t *testing.T) {
 		t.Fatal("`serve` sem --wal nem --nats foi aceite")
 	}
 }
+
+// TestAOS100_FronteiraRegionalNoOrq — o AC5 também vale aqui: o `aos-orq` escreve no
+// mesmo Event Store que o nó, e uma fronteira que só o nó respeitasse não seria uma
+// fronteira.
+func TestAOS100_FronteiraRegionalNoOrq(t *testing.T) {
+	addr := clusterORQ(t)
+	bin := construir(t)
+	stream := streamProprio(t, "ORQSOB_")
+
+	dentro := correr(t, bin, "serve", "--nats", addr, "--nats-stream", stream,
+		"--nats-region", "eu-west", "--run", "run-soberano", "--nodes", "a", "--release")
+	if dentro.code != exitOK {
+		t.Fatalf("serve com fronteira na região do cluster saiu %d\nstderr:\n%s", dentro.code, dentro.stderr)
+	}
+	if !strings.Contains(dentro.stdout, "confinado a") {
+		t.Fatalf("o banner não declara a fronteira — um operador não consegue saber se está a correr "+
+			"confinado ou não.\nstdout:\n%s", dentro.stdout)
+	}
+
+	// E uma região que o cluster não serve tem de ABORTAR.
+	fora := correr(t, bin, "serve", "--nats", addr, "--nats-stream", streamProprio(t, "ORQFORA_"),
+		"--nats-region", "us-east-que-ninguem-serve", "--run", "run-fora")
+	if fora.code == exitOK {
+		t.Fatal("`serve` arrancou numa região que nenhum servidor do cluster anuncia")
+	}
+	if !strings.Contains(fora.stderr, "E_SOVEREIGNTY_VIOLATION") {
+		t.Fatalf("a recusa não é de soberania:\n%s", fora.stderr)
+	}
+}
+
+// TestAOS100_RegiaoSemNatsERecusada — `--nats-region` sem `--nats` não tem substrato onde
+// significar coisa nenhuma, e aceitá-lo em silêncio faria alguém julgar-se confinado.
+func TestAOS100_RegiaoSemNatsERecusada(t *testing.T) {
+	bin := construir(t)
+	r := correr(t, bin, "serve", "--wal", t.TempDir()+"/x.wal", "--nats-region", "eu-west", "--run", "r")
+	if r.code == exitOK {
+		t.Fatal("--nats-region sem --nats foi aceite")
+	}
+}

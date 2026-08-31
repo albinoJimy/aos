@@ -121,7 +121,7 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
           posse SEQUENCIAL, e um segundo «serve» e recusado com 5.
   --nats  Event Store REPLICADO (JetStream). ARBITRA entre processos: N instancias
           em paralelo sao suportadas e o vencedor e decidido pelo LEASE (3).
-          [--nats-stream NOME] [--nats-replicas N]
+          [--nats-stream NOME] [--nats-replicas N] [--nats-region REGIAO]
 
 Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL detido por outro ESCRITOR
 `)

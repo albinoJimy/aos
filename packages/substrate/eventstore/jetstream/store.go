@@ -33,6 +33,8 @@ type Store struct {
 	cn      *natsjs.Conn
 	stream  string
 	prefixo string
+	regiao  string
+	board   string
 	prazo   time.Duration
 	now     func() time.Time
 
@@ -55,12 +57,15 @@ type estado struct {
 }
 
 type config struct {
-	stream   string
-	prefixo  string
-	prazo    time.Duration
-	replicas int
-	criar    bool
-	now      func() time.Time
+	stream    string
+	prefixo   string
+	prazo     time.Duration
+	replicas  int
+	criar     bool
+	regiao    string
+	board     string
+	fronteira bool
+	now       func() time.Time
 }
 
 // Option configura o Store.
@@ -105,6 +110,12 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 	if err := validarPrefixo(cfg.prefixo); err != nil {
 		return nil, err
 	}
+	// Fronteira sem região é recusada ANTES de haver ligação: uma configuração
+	// auto-contraditória não merece um socket aberto para descobrir isso.
+	if err := cfg.validarFronteira(); err != nil {
+		return nil, err
+	}
+	regiao := normalizarRegiao(cfg.regiao)
 
 	cn, err := natsjs.Connect(addr, cfg.prazo)
 	if err != nil {
@@ -119,9 +130,35 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 			DenyDelete:  true,
 			DenyPurge:   true,
 			Duplicates:  int64(janelaDedupDoServidor),
+			Placement:   cfg.colocacaoExigida(),
 		}, cfg.prazo); err != nil {
 			_ = cn.Close()
+			// «Nenhum par satisfaz a colocação» é o servidor a RECUSAR a fronteira, não
+			// um erro qualquer de criação — e o chamador tem de os distinguir. Só este
+			// código é traduzido: mapear todas as falhas de criação para
+			// E_SOVEREIGNTY_VIOLATION esconderia um nome-em-uso atrás de um problema de
+			// soberania que não existe.
+			var js *natsjs.JSError
+			if errors.As(err, &js) && js.ErrCode == natsjs.CodeNoSuitablePeers {
+				return nil, fmt.Errorf("%w: nenhum servidor do cluster anuncia %q — as réplicas não podem ser colocadas dentro da fronteira do board (%v)",
+					eventstore.ErrSovereigntyViolation, tagDaRegiao(regiao), err)
+			}
 			return nil, fmt.Errorf("jetstream: criar stream %q: %w", cfg.stream, err)
+		}
+	}
+	// SOBERANIA (AC5, ADR-011): a fronteira é verificada contra a configuração
+	// ARMAZENADA, não contra a que pedimos. Ver soberania.go para os três modos de
+	// falha que isto cobre — o pior deles é ligar-se a um stream pré-existente SEM
+	// colocação e julgar-se soberano.
+	if cfg.fronteira {
+		lida, err := cn.ConfigDoStream(cfg.stream, cfg.prazo)
+		if err != nil {
+			_ = cn.Close()
+			return nil, fmt.Errorf("jetstream: ler a configuração de %q para verificar a fronteira de soberania: %w", cfg.stream, err)
+		}
+		if err := verificarColocacao(lida, regiao, cfg.stream); err != nil {
+			_ = cn.Close()
+			return nil, err
 		}
 	}
 	return &Store{
@@ -130,6 +167,8 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		prefixo: cfg.prefixo,
 		prazo:   cfg.prazo,
 		now:     cfg.now,
+		regiao:  regiao,
+		board:   cfg.board,
 		streams: map[string]*estado{},
 		subs:    map[string]*subscricao{},
 	}, nil

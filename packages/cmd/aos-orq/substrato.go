@@ -32,6 +32,7 @@ type substrato struct {
 	wal      string
 	nats     string
 	stream   string
+	regiao   string
 	replicas int
 }
 
@@ -41,6 +42,7 @@ func (s *substrato) registarFlags(fs *flag.FlagSet) {
 	fs.StringVar(&s.nats, "nats", "", "endereço host:porta de um cluster NATS JetStream (Event Store REPLICADO — arbitra entre processos, AOS-100)")
 	fs.StringVar(&s.stream, "nats-stream", "", "nome do stream JetStream (só com --nats; vazio usa o padrão)")
 	fs.IntVar(&s.replicas, "nats-replicas", 0, "factor de replicação do stream (só com --nats; vazio usa 3)")
+	fs.StringVar(&s.regiao, "nats-region", "", "região da fronteira de soberania do board (só com --nats; vazio deixa a fronteira dormente — ADR-011)")
 }
 
 var errSubstratoAmbiguo = errors.New("--wal e --nats são EXCLUSIVOS: um é o store de referência sobre ficheiro (posse sequencial), o outro é o replicado que arbitra entre processos. Aceitar ambos daria um processo a anunciar coordenação distribuída enquanto trancava um ficheiro local")
@@ -51,8 +53,8 @@ func (s substrato) validar() error {
 		return errors.New("indique --wal FICHEIRO ou --nats HOST:PORTA (o Event Store é o único canal de coordenação)")
 	case s.wal != "" && s.nats != "":
 		return errSubstratoAmbiguo
-	case s.nats == "" && (s.stream != "" || s.replicas != 0):
-		return errors.New("--nats-stream/--nats-replicas só fazem sentido com --nats")
+	case s.nats == "" && (s.stream != "" || s.replicas != 0 || s.regiao != ""):
+		return errors.New("--nats-stream/--nats-replicas/--nats-region só fazem sentido com --nats")
 	case s.replicas < 0:
 		return errors.New("--nats-replicas tem de ser um inteiro positivo (3 ou 5; 1 é só dev)")
 	}
@@ -66,7 +68,10 @@ func (s substrato) replicado() bool { return s.nats != "" }
 // adivinhar, se pode correr uma segunda instância.
 func (s substrato) descrever() string {
 	if s.replicado() {
-		return fmt.Sprintf("substrato: REPLICADO em %s — arbitra entre processos (AOS-100); N instâncias em paralelo são suportadas", s.nats)
+		if s.regiao != "" {
+			return fmt.Sprintf("substrato: REPLICADO em %s, confinado a %q — arbitra entre processos (AOS-100); N instâncias em paralelo são suportadas", s.nats, s.regiao)
+		}
+		return fmt.Sprintf("substrato: REPLICADO em %s, SEM fronteira regional — arbitra entre processos (AOS-100); N instâncias em paralelo são suportadas", s.nats)
 	}
 	return fmt.Sprintf("substrato: ficheiro %s — NÃO arbitra entre processos (DEF-282); posse SEQUENCIAL, uma instância de cada vez", s.wal)
 }
@@ -138,6 +143,9 @@ func (s substrato) abrirReplicado() (eventstore.EventStore, func() error, error)
 	opts := []jetstream.Option{}
 	if s.stream != "" {
 		opts = append(opts, jetstream.ComNomeDeStream(s.stream))
+	}
+	if s.regiao != "" {
+		opts = append(opts, jetstream.ComRegiao(s.regiao))
 	}
 	if s.replicas > 0 {
 		opts = append(opts, jetstream.ComReplicas(s.replicas))

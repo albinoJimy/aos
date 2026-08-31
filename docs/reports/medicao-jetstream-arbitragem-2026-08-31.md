@@ -353,3 +353,65 @@ E continua por fazer, do próprio adaptador: **soberania (AC5)** — falta `plac
 `StreamConfig`, e enquanto faltar este backend **não serve um board com fronteira
 declarada**; consumidor **durável** com acks e flow control; leitura em lote (hoje é um
 round-trip por evento); e o **benchmark** de throughput.
+
+---
+
+# ADENDA 3 — soberania regional (AC5), fechada e medida
+
+A §A8 dava o AC5 como **NÃO-SATISFEITO**, com a razão exacta: `StreamConfig` não tinha
+campo `Placement`, logo o cliente era *incapaz de exprimir* a restrição regional. Está
+fechado.
+
+## O mecanismo, e porque não bastava pedir
+
+A fronteira é imposta pela `placement` do stream, restrita a servidores que anunciem
+`server_tags: ["region:<regiao>"]`. Mas **pedir e assumir** seria o mesmo erro de método
+que este relatório já retractou uma vez. Há um caminho em que o pedido nem chega a ser
+feito: ligar-se a um stream **já existente**. Por isso a colocação é **lida de volta da
+configuração armazenada** e verificada no arranque.
+
+## Os três modos de falha, todos medidos
+
+| Caso | Resultado |
+|---|---|
+| Região que nenhum par do cluster serve | O **servidor** recusa: `no suitable peers for placement, tags not matched ['region:...']` (`err_code=10005`), traduzido para `E_SOVEREIGNTY_VIOLATION` |
+| Ligar-se a um stream **sem** colocação | `E_SOVEREIGNTY_VIOLATION: o stream "…" está SEM colocação no servidor, e a fronteira do board exige "region:eu-west" — as réplicas podem estar em qualquer par do cluster` |
+| Fronteira declarada **sem região** | Aborta **antes de haver ligação** (região desconhecida ⇒ deny) |
+
+O segundo é o que importa mais: sem ele, um nó com fronteira declarada ligar-se-ia a um
+stream sem colocação e **julgar-se-ia soberano**. Tudo funcionaria — escritas, leituras —
+e os dados estariam onde a política diz que não podem estar.
+
+## O que o nó acrescenta, e só ele podia
+
+`AOS_BOARD_REGIONS` (read-path soberano, AOS-094) com `AOS_EVENTSTORE_NATS` **sem**
+região passa a **negar o arranque**: leituras que respeitam a região sobre dados que podem
+estar em qualquer par é uma contradição servida em silêncio. E uma região que não é a de
+nenhum board declarado também aborta.
+
+## O que a medição NÃO cobre
+
+Os três servidores do cluster de medição anunciam a **mesma** região, pelo que **não se
+exercitou um cluster genuinamente multi-região**. Fica provado que a restrição é pedida,
+armazenada e verificada, e que a sua ausência aborta; a distribuição das réplicas por
+regiões distintas é lógica do JetStream, não nossa.
+
+## Reprodução — o cluster tem de anunciar as tags
+
+`server_tags` é config de ficheiro; não há flag de CLI. Cada nó corre com:
+
+```
+server_name: aos-medicao-es-N
+port: 4222
+http_port: 8222
+server_tags: ["region:eu-west"]
+jetstream { store_dir: "/data/jetstream" }
+cluster { name: "aos-medicao-es", port: 6222, routes: [...] }
+```
+
+```bash
+docker run -d --name aos-medicao-es-$i --network aos-medicao-net \
+  -v aos-medicao-es-$i-data:/data/jetstream \
+  -v /opt/aos-medicao/es-$i.conf:/etc/nats.conf:ro \
+  nats:2.10-alpine -c /etc/nats.conf
+```

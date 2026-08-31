@@ -96,6 +96,9 @@ services:
       AOS_EVENTSTORE_NATS: "${AOS_EVENTSTORE_NATS:-}"
       AOS_EVENTSTORE_NATS_STREAM: "${AOS_EVENTSTORE_NATS_STREAM:-}"
       AOS_EVENTSTORE_NATS_REPLICAS: "${AOS_EVENTSTORE_NATS_REPLICAS:-}"
+      # AC5 do AOS-100 — fronteira regional. Vazia deixa a soberania DORMENTE; com
+      # AOS_BOARD_REGIONS declarado passa a ser OBRIGATORIA (o no recusa arrancar).
+      AOS_EVENTSTORE_NATS_REGION: "${AOS_EVENTSTORE_NATS_REGION:-}"
       AOS_EVENTSTORE_PATH: "/var/lib/aos/events.wal"
       AOS_WORM_PATH: "/var/lib/aos/worm.wal"
 

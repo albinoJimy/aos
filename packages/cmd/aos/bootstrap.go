@@ -136,6 +136,18 @@ var (
 	// coerente com ErrBadBoardRegions (config auto-contraditória aborta sempre, não só
 	// em produção). Um EventStore INJECTADO por config não dispara esta guarda: a sua
 	// durabilidade é do chamador (o nó não a pode atestar) e o banner declara-o.
+	// ErrEventStoreReplicadoSemRegiao — o no declara boards com regiao autorizada
+	// (AOS_BOARD_REGIONS, read-path soberano AOS-094) mas aponta o Event Store REPLICADO
+	// a um cluster SEM fronteira. Seria uma contradicao servida em silencio: as leituras
+	// respeitariam a regiao e os DADOS poderiam estar em qualquer par do cluster. E a
+	// mesma classe de ErrDurableExecutionNeedsDurableSubstrate — capacidade anunciada que
+	// o artefacto nao cumpre — e resolve-se do mesmo modo: negando o arranque.
+	ErrEventStoreReplicadoSemRegiao = errors.New("aos: AOS_BOARD_REGIONS declarado com AOS_EVENTSTORE_NATS exige AOS_EVENTSTORE_NATS_REGION — um read-path soberano sobre um Event Store replicado SEM fronteira regional poe os dados onde a politica diz que eles nao podem estar (ADR-011, AC5 de AOS-100)")
+
+	// ErrEventStoreRegiaoForaDosBoards — a regiao do Event Store nao e a regiao de
+	// nenhum board declarado. Config auto-contraditoria: aborta sempre.
+	ErrEventStoreRegiaoForaDosBoards = errors.New("aos: a regiao do Event Store replicado nao corresponde a nenhum board declarado em AOS_BOARD_REGIONS")
+
 	ErrDurableExecutionNeedsDurableSubstrate = errors.New("aos: DurableExecution exige um Event Store DURAVEL (Config.EventStoreNATS / AOS_EVENTSTORE_NATS, ou Config.EventStorePath / AOS_EVENTSTORE_PATH) — checkpointer, capturer e step-ledger sobre um store in-memory evaporam no reinicio (durabilidade anunciada e nao cumprida)")
 
 	// ErrBadOperatorEntry — uma entrada de [Config.Operators] que o
@@ -470,6 +482,12 @@ type Config struct {
 	// EventStoreNATSStream é o nome do stream JetStream. Vazio usa o padrão
 	// (jetstream.NomeStreamPorOmissao). Só é consultado com EventStoreNATS != "".
 	EventStoreNATSStream string
+	// EventStoreNATSRegion é a REGIÃO da fronteira de soberania do board (ADR-011).
+	// Vazia ⇒ fronteira DORMENTE (retro-compatível). Preenchida ⇒ o stream é criado com
+	// `placement` restrita a servidores que anunciem `region:<valor>`, e a colocação é
+	// VERIFICADA contra a configuração armazenada — ligar-se a um stream sem colocação
+	// ABORTA. Ver packages/substrate/eventstore/jetstream/soberania.go.
+	EventStoreNATSRegion string
 	// EventStoreNATSReplicas é o factor de replicação do stream (3 ou 5; 1 é só dev).
 	// Zero usa o padrão. Só é consultado com EventStoreNATS != "".
 	EventStoreNATSReplicas int
@@ -919,6 +937,32 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, ErrDurableExecutionNeedsDurableSubstrate
 	}
 
+	// (1c) COERÊNCIA DA SOBERANIA (AC5 do AOS-100, ADR-011). Um nó que declara boards com
+	// região autorizada (read-path soberano, AOS-094) sobre um Event Store REPLICADO sem
+	// fronteira seria uma contradição servida em silêncio: as leituras respeitariam a
+	// região e os DADOS poderiam estar em qualquer par do cluster. Fail-closed, e antes de
+	// abrir seja o que for.
+	//
+	// Só se aplica ao substrato replicado: o WAL local está onde o processo está, e não
+	// há colocação a declarar.
+	if cfg.EventStoreNATS != "" && len(cfg.BoardRegions) > 0 {
+		regiao := strings.ToLower(strings.TrimSpace(cfg.EventStoreNATSRegion))
+		if regiao == "" {
+			return nil, ErrEventStoreReplicadoSemRegiao
+		}
+		conhecida := false
+		for _, r := range cfg.BoardRegions {
+			if strings.ToLower(strings.TrimSpace(r)) == regiao {
+				conhecida = true
+				break
+			}
+		}
+		if !conhecida {
+			return nil, fmt.Errorf("%w: AOS_EVENTSTORE_NATS_REGION=%q não é a região de nenhum board declarado em AOS_BOARD_REGIONS (%v)",
+				ErrEventStoreRegiaoForaDosBoards, cfg.EventStoreNATSRegion, cfg.BoardRegions)
+		}
+	}
+
 	// (2) SUBSTRATO DURÁVEL (AOS-170). Precedência: fornecido por config > durável em
 	// disco (path) > in-memory de referência. Um store durável aberto AQUI é propriedade
 	// do nó (fecha-o em Close); um fornecido por config é do chamador.
@@ -958,6 +1002,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			opts := []jetstream.Option{jetstream.ComPrazo(30 * time.Second)}
 			if cfg.EventStoreNATSStream != "" {
 				opts = append(opts, jetstream.ComNomeDeStream(cfg.EventStoreNATSStream))
+			}
+			if r := strings.TrimSpace(cfg.EventStoreNATSRegion); r != "" {
+				opts = append(opts, jetstream.ComRegiao(r))
 			}
 			if cfg.EventStoreNATSReplicas > 0 {
 				opts = append(opts, jetstream.ComReplicas(cfg.EventStoreNATSReplicas))

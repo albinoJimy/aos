@@ -603,6 +603,7 @@ func nodeConfigFromEnv() (Config, error) {
 		// processos e N réplicas do nó sobre ele são a configuração pretendida.
 		EventStoreNATS:         eventStoreNATS,
 		EventStoreNATSStream:   strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_STREAM")),
+		EventStoreNATSRegion:   strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_REGION")),
 		EventStoreNATSReplicas: eventStoreNATSReplicas,
 		WORMPath:               strings.TrimSpace(os.Getenv("AOS_WORM_PATH")),
 		// EXECUÇÃO DURÁVEL (AOS-180) por ambiente (AOS_DURABLE_EXECUTION — AOS-191): liga o
