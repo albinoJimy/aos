@@ -73,7 +73,7 @@ na mesma ronda da EPIC-13 v1.0).
 | ADR-020 | Planeador como agente governado (o planeamento é um agente do runtime, não um caminho especial) | **Aceite** | [`ADR-020-planeador-agente-governado.md`](ADR-020-planeador-agente-governado.md) |
 | ADR-021 | Roteamento por scoring ponderado determinístico no Model Gateway (task-fit + perfis de pesos versionados, sem exploração online) | **Proposto** | [`ADR-021-scoring-deterministico-gw.md`](ADR-021-scoring-deterministico-gw.md) |
 | ADR-022 | Extensões declarativas ao grafo de plano: arestas condicionais, papel verificador e payload tipado por aresta — sem ciclos, sem blackboard | **Proposto** | [`ADR-022-grafo-plano-extensoes.md`](ADR-022-grafo-plano-extensoes.md) |
-| ADR-023 | Escritor único do ciclo de vida por-run: a autoridade é o LEASE, não o componente (o SCH deriva do log; o ORQ escreve só sob posse e sobre grafo re-hidratado) — extende o ADR-018 ao distribuído | **Aceite (ratificado 2026-08-30, AOS-281)** | [`ADR-023-escritor-unico-ciclo-vida-por-run.md`](ADR-023-escritor-unico-ciclo-vida-por-run.md) |
+| ADR-023 | Escritor único do ciclo de vida por-run: a autoridade é o LEASE, não o componente (o SCH deriva do log; o ORQ escreve só sob posse e sobre grafo re-hidratado) — extende o ADR-018 ao distribuído | **Ratificado (2026-08-30) e ASSINADO (2026-08-31, AOS-281)** | [`ADR-023-escritor-unico-ciclo-vida-por-run.md`](ADR-023-escritor-unico-ciclo-vida-por-run.md) |
 
 > Nota: os ficheiros ligados na coluna «Ficheiro» para **006/011/012/013/016** são
 > criados nesta ronda de ratificação; **015** (execução durável, AOS-022), **017**

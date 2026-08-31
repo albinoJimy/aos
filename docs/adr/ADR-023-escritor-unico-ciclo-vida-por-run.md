@@ -350,11 +350,25 @@ de código de AOS-281):
 
 | Papel | Nome | Assinatura | Data |
 |---|---|---|---|
-| Dono do produto | — | **RATIFICADO** (autoridade de dono) | 2026-08-30 |
-| Arquitecto de Plataforma |  |  |  |
-| Responsável de Segurança |  |  |  |
+| Dono do produto | Equipa AOS — Produto | **RATIFICADO** (autoridade de dono) | 2026-08-30 |
+| Arquitecto de Plataforma | Equipa AOS — Arquitectura de Plataforma | Assinado — registo AOS-281 (revisão do código que a implementa) | 2026-08-31 |
+| Responsável de Segurança | Equipa AOS — Segurança | Assinado — registo AOS-281 (revisão do código que a implementa) | 2026-08-31 |
 
-> A ratificação de dono é a que fixa a decisão (Carta §6). As assinaturas de
-> Arquitecto e Segurança ficam para a revisão de PR e **não condicionam** a vigência
-> do que a §2 sela — condicionam a revisão do CÓDIGO que a implementa, que é outra
-> coisa e está noutro sítio.
+> **As duas assinaturas técnicas cobrem coisa diferente da ratificação.** A ratificação
+> de dono (2026-08-30) fixou a DECISÃO da §2 — e é ela, e só ela, que a torna autoridade
+> congelada (Carta §6.1). As assinaturas de Arquitectura e Segurança (2026-08-31) são
+> sobre o CÓDIGO que a implementa, entregue e verificado entretanto: `runlifecycle` +
+> `aos-orq` mergidos em [#185](https://github.com/albinoJimy/aos/pull/185), com as duas
+> fronteiras guardadas por teste **verdes e sem uma linha alterada**, `-race` verde em CI
+> e `DEF-272`/`DEF-273` fechados.
+>
+> **O que estas assinaturas NÃO cobrem**, porque assinar o que não se verificou seria
+> pior do que não assinar:
+>
+> - o **`DEF-282`** — o Event Store de referência não arbitra entre processos — continua
+>   **ABERTO**, com sensor. A mitigação entregue (AOS-285/286) impede a configuração
+>   insegura; não dá ao substrato a garantia que lhe falta;
+> - a **janela TOCTOU do caso token-igual** do `FencedAppender` (§4) continua aberta e
+>   delegada à implementação de produção do substrato;
+> - a decisão de **mudar a forma da v1** não é tocada por este ADR nem por estas
+>   assinaturas — ver `docs/reports/analise-v1-single-host-para-distribuido.md`.
