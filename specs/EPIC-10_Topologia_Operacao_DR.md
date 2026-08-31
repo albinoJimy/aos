@@ -201,15 +201,101 @@ Emite spans OTel + custo. Não expandas escopo. Abre PR com o template e evidên
 - [ ] Revisão por dois revisores (P0); ADR-007 referenciado; documentação e `tecnica/10` §3/§6 actualizadas.
 
 **Handoff para Claude Code**
-```text
-És o executor do ticket AOS-100 do AOS.
-Lê AOS-100 em specs/EPIC-10, tecnica/10 §3 e §6, tecnica/04 e o ADR-007.
-Objectivo: Event Store replicado por quorum, append-only, transporte push; elimina single-writer/SPOF; suporta escrita e replay multi-worker em paralelo.
-Fundações: fonte de verdade append-only (ADR-007); réplicas nunca cruzam fronteira regional (ADR-011); ordenação/integridade verificáveis (base do audit hash-chain, ADR-010).
-Testes: falha de nó com continuidade e zero perda no quorum, escrita concorrente, integridade append-only, conformidade de soberania.
-Não expandas escopo. Abre PR com o template e evidências.
-```
 
+> **Actualizado a 2026-08-31, na sequência do AOS-281.** O handoff anterior descrevia o
+> objectivo mas não o CONTEXTO que entretanto se mediu — e há dois pontos que, sem estarem
+> escritos, custam ao executor um dia cada: a propriedade que decide se este ticket foi
+> cumprido, e um conflito com o ADR-017 que tem de ser resolvido ANTES de haver código.
+
+```text
+És o executor do ticket AOS-100 do Agentic OS de Referência (AOS).
+Lê AOS-100 na íntegra em specs/EPIC-10, o ADR-007, o ADR-011 (soberania) e o ADR-017
+(supply-chain do nó). Lê TAMBÉM, e antes de desenhar seja o que for:
+  - docs/reports/analise-v1-single-host-para-distribuido.md §2 (o bloqueador, medido);
+  - o DEF-282 em docs/governance/REGISTO-Deferimentos.md;
+  - docs/reports/auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md §6 (a regra de
+    método — a que este ticket é mais sensível do que qualquer outro).
+
+=== A PROPRIEDADE QUE DECIDE SE ESTE TICKET FOI CUMPRIDO ===
+
+Uma só, e é MEDÍVEL em cinco linhas:
+
+    o `expected_seq` (concorrência optimista) tem de ser ATÓMICO ENTRE PROCESSOS.
+
+O Event Store de referência NÃO a tem, e isso está medido (DEF-282): dois
+`eventstore.Open` sobre o mesmo WAL e dois `Claim` do mesmo run passam AMBOS, com o
+MESMO token. As réplicas de AOS-100 são cópias IN-PROCESS do log e o índice de dedup
+vive em memória.
+
+ESCREVE ESSE TESTE PRIMEIRO, contra o backend novo, e vê-o FALHAR com o backend
+actual. Se o teste não distinguir os dois, não estás a medir a propriedade certa — e
+tudo o resto do ticket assenta nela.
+
+=== O QUE JÁ ESTÁ CONSTRUÍDO E DEPENDE DISTO ===
+
+Não construas de novo. Existe e está testado:
+  - posse por lease com fencing token monotónico (durable.LeaseManager, AOS-018);
+  - enforcement de escrita fenced (durable.FencedAppender);
+  - a composição ORQ/SCH↔posse (control-plane/runlifecycle, ADR-023);
+  - re-hidratação do grafo a partir do log (orchestrator.NewGraphBuilderFromLog).
+
+Tudo isto está CORRECTO — e a sua correcção é CONDICIONAL à propriedade acima. Hoje
+passa nos testes porque estes correm in-process, onde o log é de facto partilhado. Não
+leias esse verde como prova de que funciona entre processos: não é.
+
+=== TRÊS COISAS QUE TÊM DE MUDAR QUANDO ISTO LANDAR (e vão falhar, de propósito) ===
+
+1. TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos (packages/cmd/aos-orq)
+   asserta HOJE que a propriedade está AUSENTE. É um sensor deliberado: quando a
+   ganhares, ele FALHA. Falhar é o comportamento certo — converte-o na asserção forte
+   (exactamente 1 vencedor) e retira a declaração de ADR-023 §4 e o DEF-282.
+2. guardDePosseAplicavel / guardDoWORMAplicavel (packages/cmd/aos/wal_posse.go) recusam
+   duas réplicas sobre os mesmos ficheiros. Com um backend genuinamente partilhado,
+   recusar N réplicas é recusar o objectivo. A condição está NOMEADA nessas funções
+   precisamente para ser revista aqui — mas revê-a, não a apagues: o guard continua
+   certo para um deployment de ficheiro local.
+3. tecnica/10 §3-bis declara o limite operacional. Actualiza-o, ou passa a mentir.
+
+=== O CONFLITO QUE TENS DE RESOLVER ANTES DE ESCREVER CÓDIGO ===
+
+O ADR-017 sela que o binário do nó é ZERO-DEP: só stdlib + cedar-go (confirmado no
+go.mod de packages/cmd/aos, cujas únicas deps externas são cedar-go e golang.org/x/exp).
+Um cliente NATS JetStream é uma dependência externa, e o Event Store vive DENTRO do nó.
+
+Isto é um conflito directo, e não é teu para decidir sozinho. Há precedente de como se
+resolve: a Carta §4.1 (emenda 1.3) abriu uma excepção ESCOPADA para a lib WebAuthn,
+mantendo-a FORA do binário do nó. As saídas plausíveis, por ordem de custo:
+  (a) o backend replicado vive num processo SEPARADO e o nó fala com ele por uma porta
+      que a stdlib serve (o nó mantém-se zero-dep);
+  (b) excepção escopada ao ADR-017, com emenda datada e a razão registada;
+  (c) um backend que a stdlib alcance (ex.: Postgres via database/sql exige driver, que
+      é dep externa na mesma — verifica antes de assumir).
+
+Traz a análise e a recomendação ao dono ANTES de escolher. Escolher em código e pedir
+perdão depois é o que a regra de congelamento (Carta §6) existe para impedir.
+
+=== A REGRA DE MÉTODO, e porque este ticket é o mais sensível a ela ===
+
+NÃO INFIRAS que uma propriedade está ausente por um mecanismo não ter chamadores. Mede-a,
+ou lê a ausência DECLARADA no código. Esta sessão produziu três afirmações falsas por
+esse erro, e uma delas mandava violar uma decisão selada.
+
+Aqui o risco é o simétrico e pior: assumir que o backend novo TEM a propriedade porque
+a documentação dele o diz. Um backend replicado dá ordem total por stream; se o teu
+`expected_seq` for implementado por leitura-depois-escrita sem CAS nativo, continuas sem
+arbitragem — e agora com a aparência de a ter. Mede.
+
+=== O QUE ISTO DESBLOQUEIA (e não é para fazer aqui) ===
+
+AOS-283 (exclusão do laço de retenção), AOS-284 (partição da hash-chain sob múltiplos
+escritores), AOS-101/102 (backup/PITR e DR), AOS-107 (escala horizontal). Nenhum é
+testável em multi-réplica sem este.
+
+=== ESCOPO ===
+
+Este ticket NÃO reabre a forma do produto v1 (Carta §7). O distribuído é a v1.1
+(Carta, emenda 1.4). Não expandas escopo. Abre PR com o template e evidências.
+```
 ---
 
 ## AOS-101 — Backup + PITR do Event Store
