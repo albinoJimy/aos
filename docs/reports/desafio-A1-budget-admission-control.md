@@ -6,6 +6,32 @@
 > objectivo declarado foi **desafiar** o plano, sobretudo o que ele dá por «em falta».
 >
 > **Data:** 2026-08-08 · **HEAD avaliado:** `ac5042f` (branch `feature/AOS-128-ux-dx-tests`)
+>
+> ---
+>
+> ## ⚠ PARCIALMENTE OBSOLETO DESDE O AOS-256 — ler com a data em mente
+>
+> Este relatório estava **correcto à data**. O `AOS-256` é **posterior** e mudou o facto
+> central da secção do orçamento:
+>
+> - **Já não é verdade** que «o comportamento após restart é fail-open». O
+>   `RunBudget.limiteParaIncarnacao` lê o consumo do ledger de turnos (durável, por
+>   `run_id`) e faz o nó do run nascer com `tecto − já consumido`. Ligado em produção.
+> - **Continua verdade**, e é o que resta: o ledger conta turnos de **modelo** e só eles.
+>   As tool calls reservam do mesmo nó e não entram nele — a fuga **encolheu**, não fechou.
+>   É o eixo do **`AOS-287`**.
+> - A recomendação «não ligar o hook em produção multi-réplica» perdeu o seu fundamento
+>   principal por outra razão ainda: **não há tecto de árvore** para multiplicar (a raiz é
+>   deliberadamente ilimitada) e um run tem **um só dono** (ADR-023).
+>
+> **PORQUE ESTE AVISO EXISTE.** A 2026-08-31, este relatório foi usado como corroboração
+> para uma conclusão errada — verificou-se que a afirmação dele continuava verdadeira no
+> eixo do *mecanismo* (`Rebuild` sem chamadores) e não se verificou o eixo da
+> *propriedade*, que tinha mudado. Ver
+> [`auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md`](./auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md).
+>
+> Um relatório datado que concorda contigo é uma **hipótese a testar contra o HEAD**, não
+> confirmação.
 
 ## Proveniência e método
 

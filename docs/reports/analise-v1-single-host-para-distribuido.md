@@ -8,28 +8,26 @@
 > seja tomada sobre factos verificáveis e não sobre impressão.
 >
 > **HEAD analisado:** `fe4f3ad` (branch `feat/AOS-281-escritor-unico-sob-lease`).
->
 > ---
 >
 > ## DECIDIDO (2026-08-31, dono): **OPÇÃO A — o distribuído é a v1.1**
 >
 > A forma da v1 **mantém-se**. O distribuído passa a ter nome e ordem: **v1.1**.
-> Registado como emenda **1.4** na Carta §7. Não é reabertura da forma do produto nem
-> alteração ao DoD da v1 — é dar identidade a um milestone que já existia sem ela.
+> Registado como emenda **1.4** na Carta §7.
 >
-> **Duas coisas mudaram depois de esta análise ser escrita, e ambas a corrigem:**
+> ## ⚠ ESTE RELATÓRIO TEM UMA SECÇÃO RETRACTADA
 >
-> 1. **A Opção C está ENTREGUE** (AOS-285 + AOS-286): o nó — e todo o escritor conhecido
->    do WAL — recusa arrancar sobre um Event Store já detido. O limite deixou de ser um
->    parágrafo e passou a ser uma barreira.
-> 2. **O §3.1 estava SUBESTIMADO, e a correcção muda o plano.** Ver a nota lá: o
->    orçamento tem um defeito **da v1**, vivo hoje em single-host, que esta análise
->    tratou como parte do problema distribuído. Por isso o `AOS-282` foi **cindido** —
->    `AOS-287` (v1) e `AOS-282` (v1.1).
+> A **§3.1 (orçamento) estava ERRADA** e está retractada no lugar. Assentava numa
+> inferência inválida — «o mecanismo não tem chamadores, logo a propriedade está ausente»
+> — que é falsa: o `AOS-256` já fornecia a propriedade por outra via. Ver
+> [`auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md`](./auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md),
+> que audita as onze afirmações desta sessão e isola a regra que as separa.
 >
-> A afirmação da Opção A de que «a v1 é honesta hoje» fica, por isso, **qualificada**:
-> é honesta quanto ao distribuído — nada é prometido e não entregue — mas tem um defeito
-> de durabilidade do orçamento que nada tem a ver com réplicas.
+> **A §2 (o Event Store não arbitra entre processos) foi MEDIDA e mantém-se** — é a
+> conclusão central deste relatório e não é afectada. A §3.2 e a §3.3 também se mantêm.
+>
+> **A Opção C está ENTREGUE** (AOS-285 + AOS-286): o limite deixou de ser um parágrafo e
+> passou a ser uma barreira imposta pelo sistema operativo.
 
 ---
 
@@ -121,45 +119,33 @@ a maquinaria de posse **daria a impressão** de estar a arbitrar.
 Se o Event Store fosse trocado amanhã por JetStream, restariam três problemas reais.
 Nenhum deles é resolvido pelo substrato. **Não tinham ticket quando este relatório foi escrito; passaram a ter a 2026-08-30** — `AOS-282`, `AOS-283` e `AOS-284`, criados a pedido do dono na sequência desta análise.
 
-### 3.1 Orçamento por árvore — N réplicas = N× o tecto → **AOS-282**
+### 3.1 Orçamento — **ESTA SECÇÃO ESTAVA ERRADA. Retirada.**
 
-`budget.Budget` mantém os contadores **em memória**, por processo
-(`nodes map[string]*node` sob mutex). Existe `budget.Rebuild`, mas **devolve
-`map[string]NodeState` e nenhum método do `Budget` o aceita** — não há via de
-re-hidratação, e zero chamadores de produção.
-
-Duas consequências, e a segunda é a grave:
-
-- **Restart ⇒ fail-open.** Os contadores nascem a zero enquanto o log durável diz
-  `reserved`. Já estava documentado no `desafio-A1`, cuja recomendação é explícita:
-  > «**não** ligar o hook em produção multi-réplica sem essa declaração escrita, porque o
-  > comportamento após restart é fail-open, não fail-closed.»
-- **N réplicas ⇒ N tectos independentes.** Cada processo aplica o tecto da árvore ao *seu*
-  tráfego. Com 3 réplicas, o tecto efectivo de tokens/$ por árvore é **o triplo** do
-  declarado. Isto é a garantia central do ADR-008 a falhar em silêncio, e falha na
-  direcção cara.
-
-**Distinção importante:** o admission control do *provider* (`scheduler.Admission`,
-AOS-027) **não** tem este problema — reserva sobre o log com CAS. É o orçamento **por
-árvore** que é per-processo. São admissões diferentes; confundi-las levaria a concluir
-que o problema já está resolvido.
-
-**CORRIGIDO a 2026-08-31 — esta secção estava subestimada em dois pontos, e o segundo muda o plano.**
-
-**(a) A ordem.** Escrevi acima, seguindo o `desafio-A1`, que «os contadores nascem a zero enquanto o log durável diz `reserved`». **O log não diz nada.** Não existe um único chamador de produção de `budget.WithEmitter`/`NewEventStoreEmitter`: o orçamento **não emite**. Logo não é «falta chamar o `Rebuild`» — falta a metade anterior, e ligar o leitor primeiro seria ligá-lo a um stream vazio.
-
-**(b) O milestone.** Tratei isto como um problema do distribuído. **Metade não é.** O «restart ⇒ fail-open» é um defeito **da v1**, numa máquina só, vivo hoje — o orçamento *está* composto em produção (`integration/budget.go`, ligado ao nó como `n.orcamento`). Só a outra metade — N réplicas, N tectos — precisa de réplicas para existir.
-
-Por isso o ticket foi **cindido** com a decisão de 2026-08-31:
-
-| metade | milestone | ticket |
-|---|---|---|
-| o consumo não sobrevive a um reinício | **v1** | **`AOS-287`** (EPIC-01) |
-| N réplicas aplicam N tectos | **v1.1** | **`AOS-282`** (EPIC-10) |
-
-Mantê-los juntos teria deferido o defeito da v1 por associação ao distribuído.
-
-O `AOS-027` cobre o token-bucket do provider, não a árvore — não o confundir com nenhum dos dois.
+> **RETRACTADA a 2026-08-31.** Tudo o que esta secção afirmava sobre o orçamento assentava
+> numa inferência inválida: concluí que a propriedade estava ausente por o mecanismo
+> (`budget.Rebuild`/`WithEmitter`) não ter chamadores, sem perguntar se outra coisa a
+> fornecia. Fornecia. A dissecação está em
+> [`auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md`](./auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md).
+>
+> **O que era falso:**
+>
+> - *«o consumo não sobrevive a um reinício»* — o `AOS-256` resolve-o pelo ledger de turnos
+>   (`limiteParaIncarnacao`), ligado em produção. Sobrevive, para turnos de modelo.
+> - *«N réplicas ⇒ N tectos»* — não há tecto de árvore para multiplicar (a raiz é
+>   deliberadamente ilimitada), e o tecto por-run não é multiplicado porque **um run tem um
+>   só dono** (ADR-023). Além disso, um tecto partilhado é **proibido** pela decisão
+>   **D-A1.3**, com guard-test a selá-la.
+>
+> **O que é verdade, e é muito mais estreito:** o consumo de **tool calls** não é
+> contabilizado de forma durável, pelo que cada re-incarnação o esquece — a fuga que o
+> `AOS-256` declarou em voz alta ao fechar a principal. É o **`AOS-287`**, reescrito, e é
+> **v1**, não distribuído.
+>
+> **O `AOS-282` foi FECHADO COMO INVÁLIDO** — não reescrito. Executá-lo partiria o
+> guard-test de D-A1.3.
+>
+> Esta secção fica retractada em vez de apagada: o registo de que a análise errou aqui é o
+> que impede a mesma conclusão de voltar por outro caminho.
 
 ### 3.2 Laços de serviço sem eleição de líder → **AOS-283**
 
@@ -203,8 +189,8 @@ Ordenado por dependência, não por esforço:
 | 1 | **Event Store real replicado** (JetStream R3/R5) | `AOS-100` | P0, por fazer | **Bloqueia tudo.** Sem ele o resto não é testável em multi-processo |
 | 2 | Backup + PITR | `AOS-101` | P0, por fazer | Depende de (1) |
 | 3 | DR por replay com RPO/RTO | `AOS-102` | P0, por fazer | Depende de (1)+(2) |
-| 4a | **Durabilidade do orçamento (sobreviver a reinício)** | `AOS-287` | P0, **v1** — criado 2026-08-31 | §3.1(b). NÃO espera pelo AOS-100: é um defeito vivo em single-host |
-| 4b | **Tecto do orçamento partilhado entre réplicas** | `AOS-282` | P0, **v1.1** | §3.1. Depende de 4a e do AOS-100 |
+| 4a | ~~Durabilidade do orçamento~~ → **consumo de tool calls durável** | `AOS-287` | P1, **v1** — reescrito 2026-08-31 | §3.1 RETRACTADA: o resto já estava feito (AOS-256) |
+| 4b | ~~Tecto partilhado entre réplicas~~ | ~~`AOS-282`~~ | **INVÁLIDO** — fechado 2026-08-31 | premissa falsa; mandaria violar D-A1.3 |
 | 5 | **Eleição de líder para laços de serviço** | `AOS-283` | P0, **v1.1** | §3.2 |
 | 6 | **Disciplina de partição da hash-chain** | `AOS-284` | P0, **v1.1** | §3.3 — o AC1 é confirmar se o problema existe; barato, e pode fechar como «não se aplica» |
 | 7 | IaC do plano de controlo/dados | `AOS-098` | P0, por fazer | |

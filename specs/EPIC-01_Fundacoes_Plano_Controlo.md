@@ -55,7 +55,7 @@ A regra de ouro herdada da fonte: **as fronteiras fazem o SO, não as features**
 | AOS-010 | CI inicial + gates (build/lint/test/SAST/SCA/teste de política) | chore | M | P0 | AOS-001, AOS-004 |
 | AOS-011 | Base de audit tamper-evident (hash-chain) | feature | M | P1 | AOS-002 |
 | AOS-012 | Esqueleto do plano de controlo (Orquestrador/Escalonador stubs) | feature | S | P1 | AOS-003, AOS-009 |
-| AOS-287 | Durabilidade do orçamento por árvore: sobreviver a um reinício | fix | M | P0 | AOS-008, AOS-002 |
+| AOS-287 | Consumo de tool calls durável: fechar a fuga que o AOS-256 deixou declarada | fix | M | P1 | AOS-256, AOS-008 |
 
 ---
 
@@ -733,60 +733,98 @@ Inclui um fluxo end-to-end de brinquedo (submit -> schedule -> tool call mediada
 
 ---
 
-## AOS-287 — Durabilidade do orçamento por árvore: sobreviver a um reinício
+## AOS-287 — Consumo de tool calls durável: fechar a fuga que o AOS-256 deixou declarada
 
 | Campo | Valor |
 |---|---|
 | Epic | EPIC-01 — Fundações do Plano de Controlo |
 | Fase | Fase 0 — Fundações |
 | Tipo | fix |
-| Prioridade | P0 |
+| Prioridade | P1 |
 | Estimativa | M |
-| Dependências | AOS-008 (orçamento hierárquico), AOS-002 (Event Store) |
-| Bloqueia | AOS-282 (tecto partilhado entre réplicas) |
+| Milestone | **v1** — é um defeito de single-host, não do distribuído |
+| Dependências | AOS-256 (consumo durável de turnos, ENTREGUE), AOS-008 |
+| Bloqueia | — |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | ADR-008, `packages/control-plane/budget/budget.go`, `packages/control-plane/budget/events.go` (`Rebuild`, `NewEventStoreEmitter`), `packages/integration/budget.go`, `docs/reports/desafio-A1-budget-admission-control.md`, `docs/reports/analise-v1-single-host-para-distribuido.md` §3.1 |
+| Documentos de referência | `packages/integration/budget.go` (`limiteParaIncarnacao`, `ConsumoDuravel` e a nota de alcance), `packages/cmd/aos/budget_env.go` (`consumoDuravelParaOrcamento`), ADR-008, `docs/reports/auditoria-das-minhas-proprias-afirmacoes-2026-08-31.md` |
 
-**Contexto.** Este é um defeito **da v1**, numa máquina só — não do distribuído. Foi encontrado ao analisar o distribuído, e é essa a única razão pela qual quase ficou no epic errado.
+> **VERSÃO ANTERIOR DESTE TICKET ERA FALSA.** A primeira redacção (2026-08-31) afirmava
+> que «o consumo do orçamento não sobrevive a um reinício» e mandava ligar
+> `budget.WithEmitter` + `budget.Rebuild`. **Não é verdade** — o `AOS-256` já resolveu a
+> maior parte disso por outra via — e ligar aquelas duas peças criaria uma SEGUNDA
+> contabilidade do mesmo tecto. A dissecação do erro está no relatório de auditoria acima;
+> este cabeçalho fica para que ninguém reconstitua a versão errada a partir do histórico.
 
-O orçamento por árvore **está composto em produção**: `budget.New(BudgetTreeID, …)` em `packages/integration/budget.go`, ligado ao nó como `n.orcamento`. Mas faltam-lhe as **duas** metades da durabilidade:
+**Contexto — o que JÁ está feito, e é preciso saber antes de tocar em nada.**
 
-1. **não emite** — não existe um único chamador de produção de `budget.WithEmitter`/`NewEventStoreEmitter`;
-2. **não re-hidrata** — `budget.Rebuild` continua sem chamador, e o `Budget` não tem API que aceite o `map[string]NodeState` que ele devolve.
+O `AOS-256` fechou a fuga principal: o nó de orçamento de um run **não** nasce com o tecto
+inteiro a cada hospedagem. `RunBudget.limiteParaIncarnacao` lê o consumo já registado de uma
+fonte durável e faz o nó nascer com `tecto − já consumido`. Está ligado em produção
+(`bootstrap.go`, `LigarConsumoDuravel`), e degrada em voz alta (não em silêncio) se o ledger
+for ilegível.
 
-**A ordem importa, e é o que este ticket corrige em relação ao que estava registado.** O `desafio-A1` descreveu o sintoma como «o log durável diz `reserved`, a memória diz 0». Medido a 2026-08-31: **o log não diz nada**. Sem emissor não há de onde re-hidratar — ligar o `Rebuild` primeiro seria ligar um leitor a um stream vazio.
+**O que falta, e está declarado no código em dois sítios:**
 
-**Consequência.** Num reinício (deploy, crash, supervisor), o consumo acumulado desaparece: um run que gastou 90% do seu tecto retoma com 100%. É a garantia central do ADR-008 a falhar **na direcção cara**, hoje, em single-host.
+> o ledger conta turnos de **MODELO** e só eles. As tool calls reservam do mesmo nó e **não
+> entram no ledger**, pelo que a fuga **ENCOLHE** — do tecto inteiro por incarnação para o
+> consumo de tool calls por incarnação — em vez de fechar.
 
-**Objectivo.** Que o tecto por árvore sobreviva a um reinício do processo.
+**Consequência real.** Um run que escale/retome N vezes pode gastar até
+`tecto + N × (consumo de tool calls por incarnação)`. Escalar e retomar é o fluxo **normal**
+de tudo o que exige aprovação humana, não um caso exótico — é por isso que a fuga vale a
+pena fechar, mesmo tendo encolhido.
+
+**Objectivo.** Que o consumo de **tool calls** de um run sobreviva à re-incarnação, pela
+MESMA via que o consumo de turnos já usa.
 
 **Critérios de Aceitação**
-- [ ] O `Budget` **emite** os factos de reserva/confirmação/libertação para o Event Store (emissor ligado no composition root, não opcional por omissão em produção).
-- [ ] O `Budget` **re-hidrata** no arranque a partir desses factos; `Rebuild` deixa de ser uma função sem consumidor.
-- [ ] Um run com consumo acumulado que passa por um reinício **mantém** o consumo: o teste semeia consumo, reinicia, e o tecto continua a ser imposto no ponto certo. Falha-antes: hoje o contador nasce a zero.
-- [ ] A reserva é identificada por chave **durável**, para que a reconciliação distinga uma reserva pendente de uma perdida.
-- [ ] Existe via de **reconciliação/TTL** para reservas órfãs (o processo morreu entre `Reserve` e `Commit`/`Release`) — sem ela a árvore drena monotonicamente, que é o defeito simétrico e igualmente mau.
-- [ ] Fail-closed: um erro a ler o log na re-hidratação **recusa** admitir, nunca admite por omissão. É a direcção oposta à do defeito actual, e é deliberada.
+- [ ] O consumo de tool calls de um run é registado de forma **durável**, chaveado por
+      `run_id` e sobrevivente à retoma — como o ledger de turnos já faz.
+- [ ] A fonte que `integration.ConsumoDuravel` devolve passa a incluir esse consumo: o nó da
+      incarnação seguinte nasce com `tecto − (turnos + tool calls)`.
+- [ ] Um run que consome tecto em tool calls, escala e retoma, **não** recupera esse tecto.
+      Falha-antes: hoje recupera-o.
+- [ ] A degradação declarada mantém-se: ledger ilegível ⇒ tecto inteiro **com linha no log**,
+      nunca em silêncio. Não se troca uma fuga por um run encravado — o orçamento é controlo
+      de custo, não de segurança.
+- [ ] As notas de alcance parcial em `integration/budget.go` e `cmd/aos/bootstrap.go` são
+      **actualizadas**: deixar «a fuga ENCOLHE» escrito depois de ela fechar seria a mentira
+      simétrica da que este ticket corrige.
 
-**Detalhes Técnicos.** As peças existem — `NewEventStoreEmitter` e `Rebuild` estão escritos e testados; o que falta é o wiring e a API de carregamento. Ver `runlifecycle.BudgetAdmission` (AOS-281) para o padrão de saldo de reservas pendentes.
+**Detalhes Técnicos.**
 
-**Testes Requeridos.** Consumo sobrevive a reinício. Reserva órfã reconciliada. Log indisponível ⇒ recusa (não admissão silenciosa). O tecto é imposto no mesmo ponto antes e depois do reinício.
+**A VIA ESCOLHIDA É O LEDGER, não o event-sourcing do `budget`.** `budget.WithEmitter` e
+`budget.Rebuild` existem e não têm chamadores — e isso é **deliberado**, não esquecimento: o
+`AOS-256` avaliou reter o nó vivo, rejeitou-o por escrito («nós vivos para sempre num
+processo de vida longa, e zerados na mesma ao primeiro restart») e escolheu ler o consumo de
+onde ele já era durável. Ligar agora o `Rebuild` daria duas contabilidades do mesmo tecto, a
+divergir em silêncio — o modo de falha que este repositório trata como defeito de primeira
+ordem.
+
+O trabalho é, portanto: **onde se regista o custo de uma tool call de forma durável**, e
+**como o `ConsumedByRun` passa a somá-lo**. O saldo da reserva já existe
+(`budgetSettlingDispatcher`); o que falta é o facto durável.
+
+**Testes Requeridos.** Run consome em tool calls → re-incarna → o tecto restante reflecte-o.
+Ledger ilegível ⇒ degradação declarada com linha no log. Turnos + tool calls somam sem
+dupla contagem (a mesma tool call não conta duas vezes num retry idempotente).
 
 **Definition of Done**
-- [ ] Critérios de Aceitação satisfeitos, com o teste de reinício a falhar-antes demonstrado.
+- [ ] Critérios de Aceitação satisfeitos, com o teste de re-incarnação a falhar-antes.
 - [ ] `-race` verde.
-- [ ] `desafio-A1` actualizado: a sua descrição do sintoma («o log diz reserved») é corrigida para o que foi medido.
+- [ ] Notas de alcance parcial actualizadas nos dois sítios onde estão escritas.
 
 **Handoff para Claude Code**
 ```text
 És o executor do ticket AOS-287 do Agentic OS de Referência (AOS).
-Lê AOS-287 em specs/EPIC-01, o ADR-008 e docs/reports/desafio-A1-budget-admission-control.md.
-Isto é um defeito da v1 em SINGLE-HOST — não é trabalho do distribuído. O tecto
-partilhado entre réplicas é o AOS-282 e depende deste.
-A ORDEM importa: sem emissor não há de onde re-hidratar. Ligar o `Rebuild` primeiro
-seria ligar um leitor a um stream vazio — e o verde daria a impressão de estar feito.
-Não inventes um segundo mecanismo de reserva: o `Reserve`/`Commit`/`Release` do
-budget.Budget é o que existe e é o que se torna durável.
+Lê AOS-287 na íntegra, e lê ANTES a nota de alcance em packages/integration/budget.go
+(a que começa em «O TECTO POR-RUN DEIXA DE RECOMEÇAR A CADA HOSPEDAGEM»): metade deste
+problema JÁ está resolvida pelo AOS-256, e o que falta é só o consumo de TOOL CALLS.
+NÃO ligues budget.WithEmitter nem budget.Rebuild. Não têm chamadores por DECISÃO — o
+AOS-256 rejeitou essa via por escrito. Ligá-los criaria duas contabilidades do mesmo
+tecto, a divergir em silêncio.
+A via é a do ledger: registar o custo da tool call de forma durável por run_id, e somá-lo
+no ConsumedByRun que o ConsumoDuravel já lê.
 Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 ```
 
