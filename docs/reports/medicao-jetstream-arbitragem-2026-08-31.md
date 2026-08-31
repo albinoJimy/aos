@@ -415,3 +415,77 @@ docker run -d --name aos-medicao-es-$i --network aos-medicao-net \
   -v /opt/aos-medicao/es-$i.conf:/etc/nats.conf:ro \
   nats:2.10-alpine -c /etc/nats.conf
 ```
+
+---
+
+# ADENDA 4 — benchmark de throughput (Testes Requeridos do AOS-100)
+
+O ticket pede «*benchmark* básico de throughput contra o baseline single-writer». Aqui
+está, com a metodologia primeiro porque sem ela os números não significam nada.
+
+## Metodologia, e o que ela evita
+
+**Corrido CO-LOCALIZADO com o cluster.** Um benchmark contra um cluster remoto através de
+um túnel SSH mediria o túnel. O binário de teste é cross-compilado
+(`GOOS=linux CGO_ENABLED=0 go test -c`) e corrido no servidor, contra os três nós na
+mesma máquina. 8 escritores, `-benchtime=1000x`, `-count=3`.
+
+**Reportam-se MEDIANAS e INTERVALOS, não amostras.** A primeira corrida deu
+`referencia-wal/8-streams` a 35 ops/s; a segunda, 57. Reportar a primeira teria produzido
+um «achado» — «o WAL fica mais lento com mais streams» — que **não reproduziu**. É a
+diferença entre medir e ter sorte.
+
+## Escrita
+
+| Caso | ops/s (mediana) | intervalo | ms/op |
+|---|---|---|---|
+| `referencia-memoria` / 1 stream | 18 792 | — | 0,053 |
+| `referencia-memoria` / 8 streams | 10 972 | — | 0,091 |
+| `referencia-wal` / 1 stream | 54,2 | 46–56 | ~18 |
+| `referencia-wal` / 8 streams | 48,6 | 44–51 | ~21 |
+| `jetstream-r3` / 1 stream | 72,0 | 66–119 | ~14 |
+| `jetstream-r3` / 8 streams | **278,8** | 263–522 | ~3,6 |
+
+**1. O caminho durável de referência NÃO escala com o número de streams.** 54 → 49 ops/s,
+dentro do ruído; em três corridas a direcção variou e a magnitude nunca melhorou. A causa
+é lida no código e consistente com a medição: `wal.append` toma um **mutex global**
+(`durable.go:156`) que cobre a escrita e o `fsync`. A ordem-por-stream (stripes) paraleliza
+as estruturas em memória — o in-memory faz 18 792 ops/s, ~350× mais — mas o WAL é **um
+ficheiro com um fsync por registo**, e é ele que fixa o tecto.
+
+> **Nota de rigor sobre uma frase do `eventstore/doc.go`.** Ela diz que «appends a streams
+> DIFERENTES progridem EM PARALELO, sem contenção global». É verdade para o modelo
+> in-process a que se refere, e a medição confirma-o (o in-memory é 350× mais rápido). Mas
+> **não descreve o caminho DURÁVEL**, que ganhou um ponto de serialização global quando o
+> WAL chegou (AOS-170). Não é falsidade — é uma frase que envelheceu ao lado de uma
+> funcionalidade posterior, e o benchmark é o que a data.
+
+**2. O substrato replicado ESCALA: ~3,9× de 1 para 8 streams** (72 → 279). É o AC3 —
+«múltiplos workers escrevem em paralelo, sem contenção de escritor único» — medido em vez
+de afirmado.
+
+**3. O replicado bate o WAL local, ~5,7× a 8 streams — e isso diz tanto do disco como dos
+substratos.** O `fsync` desta VPS custa ~18 ms; a «rede» do cluster é uma bridge Docker na
+mesma máquina. **Um deployment multi-host inverteria parte desta comparação**, e quem a
+citar sem esta linha estará a citar mal.
+
+## Replay — o resultado que muda a avaliação do adaptador
+
+| Caso | eventos/s |
+|---|---|
+| `referencia-wal` | 3 856 011 – 5 366 429 |
+| `jetstream-r3` | **113 – 120** |
+
+Ler um stream de 200 eventos custa **~1,7 s** no replicado contra ~40 µs no local.
+
+Isto estava DECLARADO no `doc.go` do adaptador («um pedido por evento… um stream longo
+custa proporcionalmente»), mas declarado como custo proporcional e não como **ordem de
+grandeza**. Quantificado, muda a avaliação: a re-hidratação de um run (`RebuildLedger`,
+`RebuildDAG`) lê o stream inteiro, pelo que **um run de 200 eventos paga ~1,7 s por
+arranque**. Não é aceitável em regime, e é a próxima coisa a fazer no adaptador.
+
+**O que NÃO se sabe, e não se finge saber:** uma ida-e-volta simples à API mede
+**0,46–1,29 ms** (`BenchmarkLatenciaDeBase`), pelo que 200 delas seriam ~200 ms, não
+1 700 ms. O custo por evento (~8,5 ms) é **dominado por algo que não é o RTT** — o candidato
+óbvio é o `next_by_subj` do lado do servidor, mas isso é hipótese, não medição.
+Identificá-lo é o primeiro passo da optimização, não uma conclusão desta adenda.

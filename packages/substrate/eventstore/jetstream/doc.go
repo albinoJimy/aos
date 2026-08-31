@@ -38,9 +38,12 @@
 //
 // # Limites, declarados e não descobertos
 //
-//   - LEITURA POR ROUND-TRIP. Reconstruir um stream caminha o subject com
-//     `next_by_subj`, um pedido por evento. É a operação mais simples que é correcta;
-//     não há batching nem cache de eventos. Um stream longo custa proporcionalmente.
+//   - LEITURA POR ROUND-TRIP — e o custo está MEDIDO, não estimado. Reconstruir um
+//     stream caminha o subject com
+//     `next_by_subj`, um pedido por evento: **113–120 eventos/s**, contra ~4–5 MILHÕES/s
+//     do WAL local (benchmark co-localizado, 2026-09-01). Um run de 200 eventos paga
+//     ~1,7 s de re-hidratação POR ARRANQUE — o que não é aceitável em regime e é a
+//     próxima coisa a corrigir. Sem batching nem cache de eventos.
 //   - SUBSCRIÇÃO SÓ DO NOVO. [Store.Subscribe] cria um consumidor efémero com
 //     deliver_policy "new" — a mesma semântica do modelo de referência, que só faz
 //     fanout do que é escrito depois da subscrição. Não é um consumidor durável: sem

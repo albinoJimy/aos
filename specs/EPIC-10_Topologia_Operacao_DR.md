@@ -193,6 +193,8 @@ Emite spans OTel + custo. Não expandas escopo. Abre PR com o template e evidên
 
 **Testes Requeridos.** Teste de falha de nó (kill de uma réplica) com verificação de continuidade e zero perda dentro do quorum; teste de escrita concorrente multi-worker; teste de ordenação/integridade append-only; teste de conformidade de soberania (réplica fora da região é rejeitada); *benchmark* básico de throughput contra o baseline single-writer.
 
+*Estado dos Testes Requeridos (2026-09-01):* escrita concorrente multi-worker **FEITO** (`TestIntegracao_CASSobContencao`, 8 escritores: 1 vencedor, 7 recusados); ordenação/integridade append-only **FEITO** (delete/purge recusados pelo servidor, `10057`/`10110`; seq gapless por stream fixado em `TestContrato_SeqDoAOSEGaplessDesdeUm`); conformidade de soberania **FEITO** (`soberania_test.go`, três modos de falha); ***benchmark* de throughput FEITO** (`throughput_test.go`, co-localizado — ver adenda 4 do relatório: o replicado escala ~3,9× de 1 para 8 streams, o caminho durável de referência não escala, e o **replay do replicado é ~113 eventos/s**, que é a fraqueza a corrigir a seguir); **falha de nó com ZERO PERDA — POR FAZER**: a continuidade está medida (novo líder, escritas continuam), mas a reconciliação dos seqs confirmados antes do kill contra o log relido **não foi concluída** e a afirmação «zero perda» foi RETRACTADA (ver adenda 1 §A3).
+
 **Definition of Done**
 - [ ] Critérios de Aceitação satisfeitos e demonstráveis.
 - [ ] Replicação por quorum e transporte push testados sob falha de nó.
