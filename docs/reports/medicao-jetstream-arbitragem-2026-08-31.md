@@ -18,8 +18,9 @@ full-mesh entre 3 nós). Rede Docker dedicada, **sem portas expostas no host**.
 > Reproduziu-se **só** o módulo `eventstore`, com nomes próprios (`aos-medicao-es-*`).
 
 Cliente da medição: **`natsio/nats-box`** (CLI), deliberadamente — medir a propriedade do
-**substrato** não pode depender de qual cliente Go venhamos a escrever. Essa decisão está
-em aberto (ver §4) e a medição não a antecipa.
+**substrato** não podia depender de qual cliente Go viéssemos a escrever — essa decisão ainda
+estava em aberto (ver §6) e a medição não a podia antecipar. O cliente próprio foi medido
+depois, contra o mesmo cluster (§7).
 
 ## 1. A propriedade que decide o ticket — **PRESENTE**
 
@@ -95,19 +96,53 @@ imediatos, nunca como a garantia.
 | 3 | **Benchmark de throughput** | O AOS-100 pede-o contra o baseline single-writer; não corrido |
 | 4 | **Dedup para lá da janela, com o índice derivado** | §4 mede o **limite do backend**; a correcção da solução (índice derivado do log) só se mede contra a implementação, que ainda não existe |
 
-## 6. A decisão que continua aberta
+## 6. A decisão do ADR-017 — TOMADA
 
-A medição **não** resolve o conflito com o **ADR-017** (binário do nó zero-dep: só stdlib
-+ cedar-go, verificado no `go.mod` de `packages/cmd/aos`). Um cliente JetStream em Go é
-dependência externa, e o Event Store vive dentro do nó. As saídas — cliente próprio em
-stdlib (o padrão que o próprio ADR-017 usou ao escolher `crypto/ed25519` sobre
-cosign/sigstore), sidecar em processo separado, ou excepção escopada por emenda datada —
-continuam a ser decisão do dono (Carta §6).
+O conflito era real: o binário do nó é zero-dep (só stdlib + cedar-go, verificado no
+`go.mod` de `packages/cmd/aos`), e o Event Store vive dentro do nó.
 
-O que a medição acrescenta a essa decisão é que **ela vale a pena ser tomada**: o
-substrato tem a propriedade, e o AOS-100 é executável.
+**Decisão do dono, 2026-08-31: cliente próprio em stdlib.** É o padrão que o próprio
+ADR-017 já tinha usado ao escolher `crypto/ed25519` sobre cosign/sigstore — «decisão
+declarada, com o custo em §Consequências». O ADR-017 fica **intacto**: sem emenda à
+Carta, sem processo extra, sem dependência nova no artefacto do nó.
 
-## 7. Reprodução
+O custo fica declarado no `doc.go` do pacote: passamos a ser donos de um cliente de
+protocolo em caminho crítico. Mitiga-se por âmbito — implementa-se o subconjunto de que
+o Event Store precisa, e a medição mostrou que esse subconjunto é estreito, porque as
+garantias do AOS-100 são todas do SERVIDOR (CAS por cabeçalho, append-only por
+`deny_delete`/`deny_purge`, quórum e failover por Raft). A parte difícil não é nossa.
+
+**Risco nomeado:** o transporte push (AC2) é a parte não medida e é a que traz
+flow-control, heartbeats e acks. É aí que este custo pode crescer, e é o próximo sítio
+a medir antes de construir.
+
+## 7. O cliente, medido contra o cluster
+
+`packages/substrate/eventstore/natsjs` — stdlib apenas (`net`, `bufio`, `encoding/json`,
+`crypto/rand`). Handshake INFO/CONNECT, PING/PONG, PUB/HPUB, SUB/UNSUB, MSG/HMSG,
+request-reply, e a API de streams do JetStream.
+
+Medido a partir do **código do AOS**, não do CLI, contra o mesmo cluster R3
+(`TestIntegracao_CASArbitraEntreDuasLigacoes`, duas ligações independentes — que é o que
+dois processos são um para o outro):
+
+```
+A=1; B recusado com seq=0 (natsjs: expected_seq não corresponde ao último seq
+do subject: wrong last sequence: 1); B após reler=2
+```
+
+As três linhas que interessam: **A ganha; B, afirmando o mesmo `expected_seq`, é
+recusado e fica com `seq=0` — nada durável; B relê e passa.** É a arbitragem entre
+escritores, a garantia «ERRO ⇒ NADA FICOU DURÁVEL» e a recuperabilidade do conflito, nas
+mesmas três chamadas.
+
+`TestIntegracao_DedupDoServidorEUmaJanela` fixa em teste o limite do §4, para que
+ninguém volte a assumir que a `Nats-Msg-Id` resolve a idempotência do AOS.
+
+Ambos são **saltados** sem `AOS_NATS_URL` — a CI sem cluster fica verde sem fingir que
+mediu. Um mock do JetStream mediria o mock.
+
+## 8. Reprodução
 
 ```bash
 P=aos-medicao
@@ -121,9 +156,23 @@ for i in 0 1 2; do
 done
 ```
 
-Teardown: `docker rm -f -v aos-medicao-es-{0,1,2}; docker network rm aos-medicao-net`.
+Para correr os testes Go a partir de fora do servidor, um túnel SSH para o nó 0 (o cluster
+não expõe portas no host, e não deve passar a expor):
 
-## 8. O instrumento que mede isto em Go
+```bash
+ssh -N -L 14222:$(docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" aos-medicao-es-0):4222 root@SERVIDOR
+AOS_NATS_URL=127.0.0.1:14222 go test ./natsjs/ -v
+```
+
+Teardown completo (o `-v` do `rm` NÃO apaga volumes nomeados — daí a linha própria):
+
+```bash
+docker rm -f aos-medicao-es-0 aos-medicao-es-1 aos-medicao-es-2
+docker volume rm aos-medicao-es-0-data aos-medicao-es-1-data aos-medicao-es-2-data
+docker network rm aos-medicao-net
+```
+
+## 9. O instrumento que mede isto em Go
 
 `packages/substrate/eventstore/conformance` mede as mesmas propriedades contra qualquer
 `eventstore.EventStore`, com quatro sondas (visibilidade, CAS, dedup, corrida). Hoje
