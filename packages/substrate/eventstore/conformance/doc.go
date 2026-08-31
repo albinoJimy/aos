@@ -7,8 +7,8 @@
 //
 // O AOS-100 troca o substrato por baixo de toda a disciplina de posse do AOS — o
 // LeaseManager (AOS-018), o FencedAppender, a composição ORQ/SCH↔posse (ADR-023) e a
-// re-hidratação do grafo. Essas peças estão CORRECTAS, e a sua correcção é CONDICIONAL
-// a esta propriedade. Hoje passam nos testes porque estes correm in-process, onde o log
+// re-hidratação do grafo. Essas peças estão CORRECTAS, e a sua correcção DEPENDE INTEIRAMENTE
+// desta propriedade. Hoje passam nos testes porque estes correm in-process, onde o log
 // é de facto partilhado; esse verde NÃO é prova de que funcionam entre processos.
 //
 // A propriedade tem, por isso, de ser MEDIDA contra o substrato — nunca inferida da
@@ -20,7 +20,7 @@
 //
 // # O que é um "handle independente"
 //
-// [Substrato] devolve N handles que, do ponto de vista do substrato, são ESCRITORES
+// [Substrate] devolve N handles que, do ponto de vista do substrato, são ESCRITORES
 // DISTINTOS sobre o MESMO log — o que dois processos são um para o outro. Para o Event
 // Store de referência isso é N chamadas a eventstore.Open sobre o mesmo WAL; para um
 // backend remoto, N ligações. A medição é deliberadamente indiferente a essa diferença:
@@ -33,12 +33,12 @@
 //
 // # Como se usa
 //
-//   - Contra um backend CANDIDATO: [RunArbitragem], que FALHA se qualquer sonda
+//   - Contra um backend CANDIDATO: [RunArbitration], que FALHA se qualquer sonda
 //     acusar ausência. É o gate do AOS-100.
-//   - Contra o backend ACTUAL: [Sondar], que devolve o relatório sem falhar, para que
+//   - Contra o backend ACTUAL: [Measure], que devolve o relatório sem falhar, para que
 //     um sensor possa assertar a ausência hoje e ACUSAR o dia em que ela desaparecer.
 //
-// As quatro sondas não são independentes por acaso: cada uma falha sozinha num
+// As quatro probes não são independentes por acaso: cada uma falha sozinha num
 // substrato plausível. A visibilidade cai em qualquer cache local; o CAS cai num
 // backend sem compare-and-set nativo; a dedup cai num backend cuja deduplicação é uma
 // JANELA temporal e não um índice permanente; a corrida cai quando o CAS existe mas

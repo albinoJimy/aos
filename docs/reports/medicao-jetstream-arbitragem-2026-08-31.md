@@ -184,3 +184,126 @@ O instrumento mediu ainda, na primeira execução, um custo que não estava regi
 **dois escritores commitam ambos `seq=1` e o WAL deixa de abrir** (`E_RESTORE_ORDER`) —
 o nó não arranca. É o mesmo desfecho que o AOS-284 mediu para a hash-chain do WORM.
 Registado em `TestDefeito_DoisEscritoresTornamOWALInabrivel`.
+
+---
+
+# ADENDA — validação adversarial das afirmações acima (2026-08-31, fim do dia)
+
+Este relatório foi submetido a quatro auditorias independentes: completude contra o
+ticket, revisão adversarial do cliente, auditoria de veracidade das afirmações, e
+conformidade com os gates. **Muita coisa acima não sobreviveu.** O que segue corrige-a;
+o texto original fica, para que a correcção seja legível como correcção.
+
+## A1. O achado que governa tudo, e que o relatório acima não dizia
+
+**MEDIDO:** `natsjs` não implementa `eventstore.EventStore`, e **ninguém importa
+`natsjs`**. `RunArbitration` não tem chamadores. Não existe adaptador.
+
+```
+$ grep -rn "eventstore/natsjs" --include=*.go packages/   → ZERO importadores
+$ grep -rn "RunArbitragem"     --include=*.go packages/   → ZERO chamadores
+```
+
+**Consequência, e é severa:** mediu-se o **substrato**, não o **Event Store do AOS**. O
+nó continua a abrir o WAL de sempre. A prova mais limpa é que os três sensores que o
+handoff mandava observar — `TestSensor_ReferenciaNaoArbitraEntreEscritores`,
+`TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos`, e a condição de
+`guardDePosseAplicavel` — continuam todos no estado «propriedade ausente», e continuam
+**certos**. Nenhum disparou. **O AOS-100 não está cumprido**; ver §A7.
+
+## A2. «cluster R3 real» — qualificação em falta
+
+O cluster são **três contentores no mesmo host**, na mesma rede Docker, com o mesmo
+kernel e o mesmo disco. Não houve partição de rede. A ressalva existia no §5 só onde
+servia para justificar o que não se mediu (AC5), e faltava onde limitaria o que se
+afirma. Onde acima se lê «cluster R3 real», leia-se **«três réplicas JetStream num só
+host»**.
+
+## A3. «zero perda» — RETIRADA
+
+O §2 provava «zero perda» com `messages: 4`. Isso prova a **contagem final**, não a
+preservação. Faltava o registo dos seqs confirmados antes do kill e uma releitura
+pós-failover a reconciliá-los. Tentei essa medição e **não a concluí** (o script não
+produziu saída).
+
+**O que sobrevive, e só isto:** o stream continuou a aceitar escritas depois de o líder
+morrer, com nova eleição, e a contagem final é coerente com os commits conhecidos.
+Retira-se também «com escritas em curso»: observou-se **uma** escrita, e posterior à
+eleição.
+
+## A4. A dedup — a conclusão mantém-se, a prova foi refeita
+
+O §4 usava `--dupe-window=1s` com rótulos qualitativos («t=0+»). Cada invocação do CLI
+demora 1–2 s, pelo que a 2.ª publicação já caía **fora** da janela — a experiência não
+distinguia «a janela expirou» de «a dedup nunca esteve activa neste stream».
+
+Refeita com janela de 30s e **controlo positivo**, que exclui a hipótese rival:
+
+```
+t=+0s   1a: {"stream":"JANELA", "seq":1}
+t=+2s   2a (DENTRO da janela):  {"stream":"JANELA", "seq":1,"duplicate": true}
+t=+38s  3a (FORA da janela):    {"stream":"JANELA", "seq":2}
+```
+
+A mesma chave, no mesmo stream, deduplica a +2s e volta a passar a +38s. A única
+variável é o tempo. **A conclusão do §4 mantém-se e está agora provada.** Fixada em
+`TestIntegracao_DedupExpiraComAJanela`.
+
+## A5. O CAS estava medido só SEQUENCIALMENTE — agora está sob contenção
+
+Todas as medições do §1 e o `TestIntegracao_CASArbitraEntreDuasLigacoes` são
+sequenciais. O modo de falha «o CAS existe mas não é serializável sob contenção» ficava
+por excluir. Medido com 8 ligações independentes e barreira de largada:
+
+```
+8 escritores concorrentes sobre expected_seq=0: 1 vencedor (seq=1), 7 recusados com seq=0
+```
+
+## A6. «a recusa não deixa rasto» era inferido do `seq:0` — agora é observado
+
+`TestIntegracao_RecusaNaoDeixaRasto` lê a posição disputada e confirma que contém o
+vencedor, e que o stream tem exactamente uma mensagem.
+
+## A7. Transporte push (AC2) — medido, com limite
+
+Três eventos publicados **antes de existir subscritor** foram entregues por push ao
+`deliver subject`, com `$JS.ACK`. Inclui replay (`deliver_policy: all`).
+
+**Limite:** medido com `ack_policy: none` e flow-control **desligado**. Um consumidor
+durável de produção quer acks e flow control, e é aí que o custo do cliente próprio pode
+crescer. O cliente **não tem** consumidores push.
+
+## A8. Estado real dos Critérios de Aceitação
+
+Nenhum AC está satisfeito **para o Event Store do AOS**. O que existe:
+
+| AC | Estado | Nota |
+|---|---|---|
+| AC1 append-only + quórum | PARCIAL | in-process pré-existente; contra JetStream medido por CLI, sem teste Go de falha de nó |
+| AC2 push | MEDIDO no substrato, AUSENTE no cliente | ver §A7 |
+| AC3 multi-worker paralelo | PARCIAL | contenção de escrita medida (§A5); **sem API de leitura para replay** |
+| AC4 SPOF eliminado | PARCIAL | medição manual, não teste; ver §A3 |
+| AC5 soberania | NÃO-SATISFEITO | `StreamConfig` **não tem campo `Placement`** — o cliente é hoje incapaz de exprimir a restrição regional |
+| AC6 integridade verificável | PARCIAL | delete/purge recusados medidos por CLI; sem sentinela nem teste no cliente |
+
+**Em falta e nomeado:** o adaptador `natsjs` → `eventstore.EventStore`; benchmark de
+throughput; teste de falha de nó em Go; `Placement` para soberania.
+
+## A9. Defeitos MEDIDOS no cliente, e corrigidos
+
+A revisão adversarial mediu-os com um servidor NATS falso. Três matavam o processo do
+nó (`send on closed channel` no leitor; `concurrent map writes` em `PublishExpectingSeq`;
+panics por tamanhos negativos vindos do fio), um corrompia a ligação a cada invocação
+(`PUB` de payload vazio sem CRLF — que tornava `FetchStreamState` inutilizável), dois
+eram injecção (cabeçalhos e subject), e um corrompia a semântica em silêncio (uma rotura
+depois do escoamento devolvia EOF genérico em vez de indeterminado). Todos fechados, com
+nove regressões que correm **sem cluster**.
+
+## A10. Processo — o que foi saltado
+
+Sem PR e sem o template de `specs/01` §7; sem os dois revisores que um P0 exige; o
+`CHANGELOG` não foi alimentado até esta adenda; `tecnica/10` §3/§6 não foi tocada — e
+**está correcto não tocar**, porque o limite que ela declara continua verdadeiro (§A1).
+
+Um `git add -A` meu varreu para um commit um ficheiro temporário de auditoria de outra
+sessão; removido, e declarado no commit que o remove.

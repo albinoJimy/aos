@@ -93,20 +93,20 @@ func (f *fake) fio() string {
 
 func ligarAoFake(t *testing.T, f *fake) *natsjs.Conn {
 	t.Helper()
-	cn, err := natsjs.Ligar(f.addr(), 3*time.Second)
+	cn, err := natsjs.Connect(f.addr(), 3*time.Second)
 	if err != nil {
-		t.Fatalf("Ligar ao fake: %v", err)
+		t.Fatalf("Connect ao fake: %v", err)
 	}
 	t.Cleanup(func() { _ = cn.Close() })
 	return cn
 }
 
 // TestRegressao_PUBSemCorpoLevaTerminador — DEFEITO: `enviarPartes` tratava `corpo ==
-// nil` como «comando sem payload», mas `publicar` passava o `dados` do chamador, que é
+// nil` como «comando sem payload», mas `publicar` passava o `data` do chamador, que é
 // nil quando não há corpo. Um PUB de comprimento zero saía SEM o CRLF terminador, o
 // servidor lia o comando seguinte no sítio errado e matava a ligação com
 // `-ERR 'Unknown Protocol Operation'`. Toda a API do JetStream sem corpo passa por aqui
-// — incluindo o InfoDoStream de que a re-hidratação de arranque depende.
+// — incluindo o FetchStreamState de que a re-hidratação de arranque depende.
 func TestRegressao_PUBSemCorpoLevaTerminador(t *testing.T) {
 	f := arrancarFake(t, infoComHeaders, func(c net.Conn, br *bufio.Reader, f *fake) {
 		f.consumir(c, br, 2*time.Second)
@@ -138,7 +138,7 @@ func TestRegressao_PUBSemCorpoLevaTerminador(t *testing.T) {
 // cabeçalhos verdadeiros — incluindo um segundo Nats-Expected-Last-Subject-Sequence.
 // Qual dos dois vence depende da ordem de iteração do mapa, que é aleatória: era uma
 // via NÃO-DETERMINISTA de contornar a arbitragem em que todo o AOS-100 assenta, a
-// partir de dados de workflow (a chave de dedup é f(run_id, step_id)).
+// partir de data de workflow (a chave de dedup é f(run_id, step_id)).
 func TestRegressao_InjeccaoDeCabecalhoERecusada(t *testing.T) {
 	f := arrancarFake(t, infoComHeaders, func(c net.Conn, br *bufio.Reader, f *fake) {
 		f.consumir(c, br, 2*time.Second)
@@ -148,7 +148,7 @@ func TestRegressao_InjeccaoDeCabecalhoERecusada(t *testing.T) {
 	venenoso := natsjs.Header{
 		natsjs.HdrMsgID: "run-1\r\n" + natsjs.HdrExpectedLastSubjectSeq + ": 99999\r\nNats-Rollup: sub",
 	}
-	_, err := cn.Publicar("teste.injeccao", venenoso, []byte(`{}`), 300*time.Millisecond)
+	_, err := cn.Publish("teste.injeccao", venenoso, []byte(`{}`), 300*time.Millisecond)
 	if err == nil {
 		t.Fatal("um valor de cabeçalho com CRLF foi ACEITE — é injecção de cabeçalhos")
 	}
@@ -169,7 +169,7 @@ func TestRegressao_InjeccaoNoSubjectERecusada(t *testing.T) {
 	cn := ligarAoFake(t, f)
 
 	for _, mau := range []string{"aos.outro _INBOX.forjado", "aos.x\r\nSUB forjado 9", ""} {
-		if _, err := cn.Publicar(mau, nil, []byte(`{}`), 300*time.Millisecond); err == nil {
+		if _, err := cn.Publish(mau, nil, []byte(`{}`), 300*time.Millisecond); err == nil {
 			t.Errorf("subject %q foi aceite", mau)
 		}
 	}
@@ -214,7 +214,7 @@ func TestRegressao_TamanhosDoFioNaoDerrubamOProcesso(t *testing.T) {
 // TestRegressao_Status503EOperacionalNaoDeProtocolo — DEFEITO: o CONNECT pede
 // `no_responders:true`, pelo que o servidor RESPONDE com uma mensagem de estado
 // `NATS/1.0 503` e corpo vazio. O código de estado era descartado, a mensagem chegava
-// como «sem cabeçalhos e sem corpo», e o Publicar devolvia «violação de protocolo:
+// como «sem cabeçalhos e sem corpo», e o Publish devolvia «violação de protocolo:
 // PubAck ilegível» — que o próprio pacote documenta como «sempre um defeito nosso,
 // nunca do operador». Mas 503 é a condição OPERACIONAL mais comum que existe: JetStream
 // desligado, stream inexistente, subject fora do stream, sem permissões. O operador era
@@ -241,16 +241,16 @@ func TestRegressao_Status503EOperacionalNaoDeProtocolo(t *testing.T) {
 	})
 	cn := ligarAoFake(t, f)
 
-	_, err := cn.Publicar("sem.responders", nil, nil, 2*time.Second)
-	if !errors.Is(err, natsjs.ErrSemResponders) {
-		t.Fatalf("erro = %v; queria ErrSemResponders — um 503 é condição do operador, não defeito do cliente", err)
+	_, err := cn.Publish("sem.responders", nil, nil, 2*time.Second)
+	if !errors.Is(err, natsjs.ErrNoResponders) {
+		t.Fatalf("erro = %v; queria ErrNoResponders — um 503 é condição do operador, não defeito do cliente", err)
 	}
-	if errors.Is(err, natsjs.ErrProtocolo) {
+	if errors.Is(err, natsjs.ErrProtocol) {
 		t.Fatal("o 503 continua classificado como violação de protocolo")
 	}
 }
 
-// TestRegressao_PublicarComCASNaoMutaOHeaderDoChamador — DEFEITO: PublicarComCAS
+// TestRegressao_PublicarComCASNaoMutaOHeaderDoChamador — DEFEITO: PublishExpectingSeq
 // escrevia o expected_seq NO MAPA DO CHAMADOR. Duas consequências medidas: publicações
 // seguintes com o mesmo Header levavam uma afirmação de CAS que ninguém pediu; e duas
 // goroutines a partilhar um Header davam `fatal error: concurrent map writes`, que nem
@@ -262,7 +262,7 @@ func TestRegressao_PublicarComCASNaoMutaOHeaderDoChamador(t *testing.T) {
 	cn := ligarAoFake(t, f)
 
 	h := natsjs.Header{natsjs.HdrMsgID: "run:passo-1"}
-	_, _ = cn.PublicarComCAS("teste.cas", 7, h, []byte(`{}`), 200*time.Millisecond)
+	_, _ = cn.PublishExpectingSeq("teste.cas", 7, h, []byte(`{}`), 200*time.Millisecond)
 
 	if _, existe := h[natsjs.HdrExpectedLastSubjectSeq]; existe {
 		t.Fatalf("o Header do chamador foi mutado: %v", h)
@@ -278,7 +278,7 @@ func TestRegressao_PublicarComCASNaoMutaOHeaderDoChamador(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				_, _ = cn.PublicarComCAS("teste.cas", uint64(j), h, []byte(`{}`), 50*time.Millisecond)
+				_, _ = cn.PublishExpectingSeq("teste.cas", uint64(j), h, []byte(`{}`), 50*time.Millisecond)
 			}
 		}(i)
 	}
@@ -312,9 +312,9 @@ func TestRegressao_RoturaAposEscoamentoEIndeterminada(t *testing.T) {
 	})
 	cn := ligarAoFake(t, f)
 
-	_, err := cn.PublicarComCAS("teste.rotura", 0, nil, []byte(`{"e":1}`), 3*time.Second)
-	if !errors.Is(err, natsjs.ErrIndeterminado) {
-		t.Fatalf("erro = %v; queria ErrIndeterminado — a ligação partiu DEPOIS de o comando sair, "+
+	_, err := cn.PublishExpectingSeq("teste.rotura", 0, nil, []byte(`{"e":1}`), 3*time.Second)
+	if !errors.Is(err, natsjs.ErrIndeterminate) {
+		t.Fatalf("erro = %v; queria ErrIndeterminate — a ligação partiu DEPOIS de o comando sair, "+
 			"logo não se pode afirmar que nada ficou durável", err)
 	}
 }
@@ -377,7 +377,7 @@ func TestRegressao_RequestConcorrenteComPrazoCurtoNaoEntraEmPanico(t *testing.T)
 func TestRegressao_ServidorSemCabecalhosERecusadoNoHandshake(t *testing.T) {
 	semHeaders := `INFO {"server_id":"FAKE","version":"2.10.0","headers":false,"max_payload":1048576}` + "\r\n"
 	f := arrancarFake(t, semHeaders, nil)
-	_, err := natsjs.Ligar(f.addr(), 2*time.Second)
+	_, err := natsjs.Connect(f.addr(), 2*time.Second)
 	if err == nil {
 		t.Fatal("ligação aceite a um servidor sem suporte de cabeçalhos")
 	}

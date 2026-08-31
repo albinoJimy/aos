@@ -31,11 +31,11 @@ const (
 // Store não precisa de valores repetidos e admiti-los só criaria ambiguidade.
 type Header map[string]string
 
-// Clonar devolve uma cópia. Existe porque acrescentar um cabeçalho ao mapa DO CHAMADOR
+// Clone devolve uma cópia. Existe porque acrescentar um cabeçalho ao mapa DO CHAMADOR
 // é um defeito de dupla face, medido a 2026-08-31: contamina publicações seguintes com
 // um expected_seq que ninguém pediu, e duas goroutines a partilhar um Header dão
 // `fatal error: concurrent map writes` — que nem `recover` apanha.
-func (h Header) Clonar() Header {
+func (h Header) Clone() Header {
 	cp := make(Header, len(h)+1)
 	for k, v := range h {
 		cp[k] = v
@@ -44,7 +44,7 @@ func (h Header) Clonar() Header {
 }
 
 // prefixo da versão do bloco de cabeçalhos no protocolo.
-const versaoHeader = "NATS/1.0"
+const headerVersion = "NATS/1.0"
 
 // codificar produz o bloco de cabeçalhos no formato do protocolo:
 //
@@ -61,18 +61,18 @@ const versaoHeader = "NATS/1.0"
 // "\r\nNats-Expected-Last-Subject-Sequence: 99999" injecta um segundo CAS — e qual dos
 // dois o servidor lê depende da ordem de iteração do mapa, que é aleatória. Seria uma
 // via não-determinista de contornar a arbitragem em que todo o AOS-100 assenta, a
-// partir de dados de workflow (a chave é f(run_id, step_id)).
-func (h Header) codificar() ([]byte, error) {
+// partir de data de workflow (a chave é f(run_id, step_id)).
+func (h Header) encode() ([]byte, error) {
 	var b strings.Builder
-	b.WriteString(versaoHeader)
+	b.WriteString(headerVersion)
 	b.WriteString("\r\n")
 	for k, v := range h {
 		if k == "" || strings.ContainsAny(k, " \t\r\n:") {
-			return nil, fmt.Errorf("%w: nome de cabeçalho inválido %q", ErrProtocolo, k)
+			return nil, fmt.Errorf("%w: nome de cabeçalho inválido %q", ErrProtocol, k)
 		}
 		if strings.ContainsAny(v, "\r\n") {
 			return nil, fmt.Errorf("%w: valor do cabeçalho %q contém fim-de-linha — "+
-				"seria injecção de cabeçalhos", ErrProtocolo, k)
+				"seria injecção de cabeçalhos", ErrProtocol, k)
 		}
 		b.WriteString(k)
 		b.WriteString(": ")
@@ -83,16 +83,16 @@ func (h Header) codificar() ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// descodificarHeader lê o bloco de cabeçalhos de um HMSG e devolve também o CÓDIGO DE
+// decodeHeader lê o bloco de cabeçalhos de um HMSG e devolve também o CÓDIGO DE
 // ESTADO da linha de versão, quando existe (ex.: "NATS/1.0 503" → 503).
 //
 // O estado é devolvido em separado porque uma mensagem de estado NÃO TEM cabeçalhos: sem
 // isto, um 503 («ninguém serve este subject» — JetStream desligado, stream inexistente,
 // sem permissões) era indistinguível de uma resposta sem cabeçalhos e chegava ao
 // chamador como «PubAck ilegível», mandando o operador caçar um bug do cliente.
-func descodificarHeader(b []byte) (Header, int) {
+func decodeHeader(b []byte) (Header, int) {
 	linhas := strings.Split(string(b), "\r\n")
-	if len(linhas) == 0 || !strings.HasPrefix(linhas[0], versaoHeader) {
+	if len(linhas) == 0 || !strings.HasPrefix(linhas[0], headerVersion) {
 		return nil, 0
 	}
 	estado := 0

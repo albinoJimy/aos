@@ -35,7 +35,7 @@ func servidor(t *testing.T) string {
 
 func ligar(t *testing.T, addr string) *natsjs.Conn {
 	t.Helper()
-	cn, err := natsjs.Ligar(addr, prazo)
+	cn, err := natsjs.Connect(addr, prazo)
 	if err != nil {
 		t.Fatalf("ligar a %s: %v", addr, err)
 	}
@@ -65,7 +65,7 @@ func TestIntegracao_CASArbitraEntreDuasLigacoes(t *testing.T) {
 
 	s := sufixo(t)
 	stream, subject := "AOSCAS_"+s, "aoscas."+s+".run"
-	if err := a.CriarStream(natsjs.ConfigStream{
+	if err := a.CreateStream(natsjs.StreamConfig{
 		Name:        stream,
 		Subjects:    []string{"aoscas." + s + ".>"},
 		NumReplicas: 3,
@@ -77,16 +77,16 @@ func TestIntegracao_CASArbitraEntreDuasLigacoes(t *testing.T) {
 		t.Fatalf("criar stream R3: %v", err)
 	}
 
-	primeiro, err := a.PublicarComCAS(subject, 0, nil, []byte(`{"escritor":"a"}`), prazo)
+	primeiro, err := a.PublishExpectingSeq(subject, 0, nil, []byte(`{"escritor":"a"}`), prazo)
 	if err != nil {
-		t.Fatalf("A.PublicarComCAS(expected=0): %v", err)
+		t.Fatalf("A.PublishExpectingSeq(expected=0): %v", err)
 	}
 	if primeiro.Seq == 0 {
 		t.Fatalf("A ficou com seq=0 e sem erro — um committed tem de ter seq")
 	}
 
-	segundo, recusa := b.PublicarComCAS(subject, 0, nil, []byte(`{"escritor":"b"}`), prazo)
-	if !errors.Is(recusa, natsjs.ErrSeqErrada) {
+	segundo, recusa := b.PublishExpectingSeq(subject, 0, nil, []byte(`{"escritor":"b"}`), prazo)
+	if !errors.Is(recusa, natsjs.ErrWrongLastSeq) {
 		t.Fatalf("B afirmou o MESMO expected_seq=0 e o substrato aceitou (seq=%d, err=%v) — "+
 			"não há arbitragem entre escritores e o AOS-100 não está cumprido", segundo.Seq, recusa)
 	}
@@ -97,27 +97,28 @@ func TestIntegracao_CASArbitraEntreDuasLigacoes(t *testing.T) {
 	}
 
 	// E o escritor que RELÊ e reavalia passa: a recusa é de conflito, não de avaria.
-	terceiro, err := b.PublicarComCAS(subject, primeiro.Seq, nil, []byte(`{"escritor":"b2"}`), prazo)
+	terceiro, err := b.PublishExpectingSeq(subject, primeiro.Seq, nil, []byte(`{"escritor":"b2"}`), prazo)
 	if err != nil {
-		t.Fatalf("B.PublicarComCAS(expected=%d) depois de reler: %v", primeiro.Seq, err)
+		t.Fatalf("B.PublishExpectingSeq(expected=%d) depois de reler: %v", primeiro.Seq, err)
 	}
 	t.Logf("A=%d; B recusado com seq=%d (%v); B após reler=%d", primeiro.Seq, segundo.Seq, recusa, terceiro.Seq)
 }
 
-// TestIntegracao_DedupDoServidorEUmaJanela fixa em teste o limite MEDIDO a 2026-08-31,
-// para que ninguém volte a assumir que a Nats-Msg-Id resolve a idempotência do AOS.
+// TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal mede a dedup do servidor A FUNCIONAR
+// dentro da janela — e SÓ isso. O nome anterior («EUmaJanela») prometia medir o limite;
+// quem o mede é TestIntegracao_DedupExpiraComAJanela, que espera pela expiração.
 //
 // Dentro da janela o servidor devolve duplicate com o seq ORIGINAL — que é o
 // StatusDuplicate do contrato C2. Com a janela vencida, a MESMA chave ficaria committed
 // de novo. É por isso que a idempotência por (run_id, step_id) continua derivada do
 // log, com este cabeçalho apenas como rede de segurança para retries imediatos.
-func TestIntegracao_DedupDoServidorEUmaJanela(t *testing.T) {
+func TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal(t *testing.T) {
 	addr := servidor(t)
 	a, b := ligar(t, addr), ligar(t, addr)
 
 	s := sufixo(t)
 	stream, subject := "AOSDUP_"+s, "aosdup."+s+".run"
-	if err := a.CriarStream(natsjs.ConfigStream{
+	if err := a.CreateStream(natsjs.StreamConfig{
 		Name:        stream,
 		Subjects:    []string{"aosdup." + s + ".>"},
 		NumReplicas: 3,
@@ -130,13 +131,13 @@ func TestIntegracao_DedupDoServidorEUmaJanela(t *testing.T) {
 	}
 
 	chave := natsjs.Header{natsjs.HdrMsgID: "run-" + s + ":passo-1"}
-	primeiro, err := a.Publicar(subject, chave, []byte(`{"n":1}`), prazo)
+	primeiro, err := a.Publish(subject, chave, []byte(`{"n":1}`), prazo)
 	if err != nil {
-		t.Fatalf("A.Publicar: %v", err)
+		t.Fatalf("A.Publish: %v", err)
 	}
-	segundo, err := b.Publicar(subject, chave, []byte(`{"n":2}`), prazo)
+	segundo, err := b.Publish(subject, chave, []byte(`{"n":2}`), prazo)
 	if err != nil {
-		t.Fatalf("B.Publicar (mesma chave): %v", err)
+		t.Fatalf("B.Publish (mesma chave): %v", err)
 	}
 
 	if !segundo.Duplicate || segundo.Seq != primeiro.Seq {
@@ -153,7 +154,7 @@ func criarStreamR3(t *testing.T, cn *natsjs.Conn, prefixo string, janela time.Du
 	t.Helper()
 	s := sufixo(t)
 	stream, subject = prefixo+"_"+s, prefixo+"."+s+".run"
-	if err := cn.CriarStream(natsjs.ConfigStream{
+	if err := cn.CreateStream(natsjs.StreamConfig{
 		Name:        stream,
 		Subjects:    []string{prefixo + "." + s + ".>"},
 		NumReplicas: 3,
@@ -197,7 +198,7 @@ func TestIntegracao_CASSobContencao(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-largada
-			acks[i], errs[i] = conns[i].PublicarComCAS(subject, 0, nil,
+			acks[i], errs[i] = conns[i].PublishExpectingSeq(subject, 0, nil,
 				[]byte(`{"escritor":`+strconv.Itoa(i)+`}`), prazo)
 		}(i)
 	}
@@ -211,7 +212,7 @@ func TestIntegracao_CASSobContencao(t *testing.T) {
 		case errs[i] == nil:
 			vencedores++
 			seqVencedor = acks[i].Seq
-		case errors.Is(errs[i], natsjs.ErrSeqErrada):
+		case errors.Is(errs[i], natsjs.ErrWrongLastSeq):
 			recusados++
 			if acks[i].Seq != 0 {
 				t.Errorf("escritor %d recusado mas com seq=%d, quer 0 — uma recusa não pode ocupar posição", i, acks[i].Seq)
@@ -244,27 +245,27 @@ func TestIntegracao_RecusaNaoDeixaRasto(t *testing.T) {
 	a, b := ligar(t, addr), ligar(t, addr)
 	stream, subject := criarStreamR3(t, a, "aosrasto", 2*time.Minute)
 
-	vencedor, err := a.PublicarComCAS(subject, 0, nil, []byte(`{"escritor":"vencedor"}`), prazo)
+	vencedor, err := a.PublishExpectingSeq(subject, 0, nil, []byte(`{"escritor":"vencedor"}`), prazo)
 	if err != nil {
-		t.Fatalf("A.PublicarComCAS: %v", err)
+		t.Fatalf("A.PublishExpectingSeq: %v", err)
 	}
-	if _, err := b.PublicarComCAS(subject, 0, nil, []byte(`{"escritor":"recusado"}`), prazo); !errors.Is(err, natsjs.ErrSeqErrada) {
+	if _, err := b.PublishExpectingSeq(subject, 0, nil, []byte(`{"escritor":"recusado"}`), prazo); !errors.Is(err, natsjs.ErrWrongLastSeq) {
 		t.Fatalf("B: quero recusa, veio %v", err)
 	}
 
 	// A posição disputada tem de conter o vencedor.
-	_, dados, err := a.MensagemPorSeq(stream, vencedor.Seq, prazo)
+	_, data, err := a.MessageBySeq(stream, vencedor.Seq, prazo)
 	if err != nil {
 		t.Fatalf("ler seq=%d: %v", vencedor.Seq, err)
 	}
-	if string(dados) != `{"escritor":"vencedor"}` {
-		t.Fatalf("seq=%d contém %q — a posição disputada não é do vencedor", vencedor.Seq, dados)
+	if string(data) != `{"escritor":"vencedor"}` {
+		t.Fatalf("seq=%d contém %q — a posição disputada não é do vencedor", vencedor.Seq, data)
 	}
 
 	// E o log não cresceu: o recusado não ficou noutra posição qualquer.
-	info, err := a.InfoDoStream(stream, prazo)
+	info, err := a.FetchStreamState(stream, prazo)
 	if err != nil {
-		t.Fatalf("InfoDoStream: %v", err)
+		t.Fatalf("FetchStreamState: %v", err)
 	}
 	if info.Messages != 1 || info.LastSeq != vencedor.Seq {
 		t.Fatalf("stream com messages=%d last_seq=%d; quer 1 e %d — a escrita recusada deixou rasto",
@@ -274,7 +275,7 @@ func TestIntegracao_RecusaNaoDeixaRasto(t *testing.T) {
 }
 
 // TestIntegracao_DedupExpiraComAJanela mede o LIMITE, que é o que
-// TestIntegracao_DedupDoServidorEUmaJanela nomeia mas não observa: a mesma chave, no
+// TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal nomeia mas não observa: a mesma chave, no
 // mesmo stream, deduplica DENTRO da janela e volta a ser aceite DEPOIS dela.
 //
 // O controlo positivo (a 2.ª publicação, dentro da janela) é o que exclui a hipótese
@@ -294,13 +295,13 @@ func TestIntegracao_DedupExpiraComAJanela(t *testing.T) {
 	_, subject := criarStreamR3(t, cn, "aosjanela", janela)
 	chave := natsjs.Header{natsjs.HdrMsgID: "run:passo-1"}
 
-	primeiro, err := cn.Publicar(subject, chave, []byte(`{"n":1}`), prazo)
+	primeiro, err := cn.Publish(subject, chave, []byte(`{"n":1}`), prazo)
 	if err != nil {
 		t.Fatalf("1.ª publicação: %v", err)
 	}
 
 	// CONTROLO POSITIVO: dentro da janela tem de deduplicar.
-	dentro, err := cn.Publicar(subject, chave, []byte(`{"n":2}`), prazo)
+	dentro, err := cn.Publish(subject, chave, []byte(`{"n":2}`), prazo)
 	if err != nil {
 		t.Fatalf("2.ª publicação (dentro da janela): %v", err)
 	}
@@ -312,7 +313,7 @@ func TestIntegracao_DedupExpiraComAJanela(t *testing.T) {
 
 	time.Sleep(janela + 2*time.Second)
 
-	fora, err := cn.Publicar(subject, chave, []byte(`{"n":3}`), prazo)
+	fora, err := cn.Publish(subject, chave, []byte(`{"n":3}`), prazo)
 	if err != nil {
 		t.Fatalf("3.ª publicação (fora da janela): %v", err)
 	}

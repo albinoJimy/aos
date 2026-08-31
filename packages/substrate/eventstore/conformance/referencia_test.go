@@ -12,13 +12,13 @@ import (
 	"github.com/aos-ref/substrate/eventstore/conformance"
 )
 
-// referenciaWAL é o substrato de HOJE: n chamadas a [eventstore.Open] sobre o MESMO
+// referenceWAL é o substrato de HOJE: n chamadas a [eventstore.Open] sobre o MESMO
 // ficheiro WAL. É exactamente o que n processos do nó têm — cada um faz replay do WAL
 // no arranque e, a partir daí, tem a SUA cabeça em memória.
-// Cada chamada abre um WAL PRÓPRIO, como [conformance.Substrato] exige: sem isso, a
+// Cada chamada abre um WAL PRÓPRIO, como [conformance.Substrate] exige: sem isso, a
 // sonda do CAS deixa dois registos no mesmo seq e o Open seguinte recusa o ficheiro
 // inteiro com E_RESTORE_ORDER — ver [TestDefeito_DoisEscritoresTornamOWALInabrivel].
-func referenciaWAL(t *testing.T) conformance.Substrato {
+func referenceWAL(t *testing.T) conformance.Substrate {
 	t.Helper()
 	dir := t.TempDir()
 	var n0 int
@@ -26,7 +26,7 @@ func referenciaWAL(t *testing.T) conformance.Substrato {
 		n0++
 		wal := filepath.Join(dir, fmt.Sprintf("referencia-%d.wal", n0))
 		hs := make([]eventstore.EventStore, 0, n)
-		largar := func() {
+		release := func() {
 			for _, h := range hs {
 				_ = h.Close()
 			}
@@ -34,12 +34,12 @@ func referenciaWAL(t *testing.T) conformance.Substrato {
 		for i := 0; i < n; i++ {
 			s, err := eventstore.Open(wal)
 			if err != nil {
-				largar()
+				release()
 				return nil, func() {}, err
 			}
 			hs = append(hs, s)
 		}
-		return hs, largar, nil
+		return hs, release, nil
 	}
 }
 
@@ -49,7 +49,7 @@ func referenciaWAL(t *testing.T) conformance.Substrato {
 //
 // # Porque asserta a ausência
 //
-// A alternativa — correr [conformance.RunArbitragem] e vê-lo vermelho — deixaria a
+// A alternativa — correr [conformance.RunArbitration] e vê-lo vermelho — deixaria a
 // suite permanentemente vermelha, e uma suite que se espera vermelha deixa de ser lida.
 // Assim o repo fica verde enquanto a ausência for verdade, e ACUSA no dia em que
 // deixar de ser: qualquer sonda que passe a reportar «presente» faz este teste falhar.
@@ -58,7 +58,7 @@ func referenciaWAL(t *testing.T) conformance.Substrato {
 //
 // Falhar é a BOA notícia e é o objectivo do AOS-100. Nessa altura:
 //
-//  1. trocar este sensor por uma chamada a [conformance.RunArbitragem] contra o
+//  1. trocar este sensor por uma chamada a [conformance.RunArbitration] contra o
 //     substrato novo — a mesma medição, agora como gate;
 //  2. converter TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos
 //     (packages/cmd/aos-orq) na asserção forte, como o próprio teste instrui;
@@ -68,40 +68,49 @@ func referenciaWAL(t *testing.T) conformance.Substrato {
 //     continua certo para um deployment de ficheiro local, por isso REVER, não apagar;
 //  5. actualizar tecnica/10 §3-bis, que declara o limite operacional.
 func TestSensor_ReferenciaNaoArbitraEntreEscritores(t *testing.T) {
-	relatorio := conformance.Sondar(referenciaWAL(t))
+	relatorio := conformance.Measure(referenceWAL(t))
 	if len(relatorio) == 0 {
-		t.Fatal("Sondar não devolveu sondas — o instrumento de medição está vazio")
+		t.Fatal("Measure não devolveu probes — o instrumento de medição está vazio")
 	}
 
 	for _, r := range relatorio {
-		if r.Erro != nil {
+		if r.Err != nil {
 			t.Errorf("[%s] INCONCLUSIVA: %v — %s\n"+
 				"Um sensor inconclusivo não mede nada: nem confirma a ausência de hoje nem acusa a sua "+
-				"chegada. Arranjar a sonda antes de tirar conclusões do substrato.", r.Sonda, r.Erro, r.Detalhe)
+				"chegada. Arranjar a sonda antes de tirar conclusões do substrato.", r.Probe, r.Err, r.Detail)
 			continue
 		}
-		if r.Tem {
+		if r.Has {
 			t.Errorf("[%s] O SUBSTRATO GANHOU A PROPRIEDADE — %s\n"+
 				"Isto é uma BOA notícia e este teste é o sensor dela. Ver o que fazer no doc deste teste: "+
-				"converter em gate (RunArbitragem), converter o sensor de aos-orq, fechar o DEF-282, rever "+
-				"os guardas de posse e actualizar tecnica/10 §3-bis.", r.Sonda, r.Detalhe)
+				"converter em gate (RunArbitration), converter o sensor de aos-orq, fechar o DEF-282, rever "+
+				"os guardas de posse e actualizar tecnica/10 §3-bis.", r.Probe, r.Detail)
 			continue
 		}
-		t.Logf("[%s] ausente (esperado hoje) — %s", r.Sonda, r.Detalhe)
+		t.Logf("[%s] ausente (esperado hoje) — %s", r.Probe, r.Detail)
 	}
 }
 
-// TestDefeito_DoisEscritoresTornamOWALInabrivel regista o que o instrumento MEDIU a
-// 2026-08-31, na sua primeira execução, e que não estava registado em lado nenhum:
+// TestDefeito_DoisEscritoresTornamOWALInabrivel COMPÕE, num só teste, dois factos que
+// já estavam registados SEPARADAMENTE — e a composição é a única coisa nova aqui.
 //
-// a consequência da propriedade em falta não é apenas «ambos ganham» — é que o log
-// fica INABRÍVEL. Dois handles independentes commitam ambos seq=1 no mesmo stream, o
-// WAL passa a ter dois registos na mesma posição, e o `Open` SEGUINTE recusa o ficheiro
-// inteiro com E_RESTORE_ORDER. O nó não arranca.
+// # Uma afirmação retirada, e porquê
 //
-// É o mesmo desfecho que guardDoWORMAplicavel (packages/cmd/aos/wal_posse.go) mediu
-// para a hash-chain do WORM — «o arranque seguinte RECUSA a cadeia» —, agora medido
-// para o WAL do Event Store. Reforça, sem o substituir, o argumento do guard de
+// A primeira versão deste comentário dizia que o custo «não estava registado em lado
+// nenhum». É FALSO, e é falso pelo erro exacto que a regra de método do repo proíbe:
+// inferi a ausência de não ter procurado. O modo de falha está escrito, datado de
+// 2026-08-30, em [wal.desfazer] («O WAL ficava com seqs [1 2 2] e o `Open` seguinte
+// recusava com `E_RESTORE_ORDER`: o nó deixava de arrancar»), e repetido em store.go.
+// Uma auditoria adversarial encontrou-o em três sítios; verifiquei e tinha razão.
+//
+// O que está registado é o modo de falha pela via do FSYNC FALHADO (um só escritor, um
+// registo órfão). O que este teste acrescenta é que a via dos DOIS ESCRITORES —
+// medida no DEF-282 como «ambos ganham» — desemboca no MESMO estado terminal: o log
+// fica INABRÍVEL e o nó não arranca. O DEF-282 registava o fork; o durable.go registava
+// o desfecho; ninguém tinha ligado os dois.
+//
+// É também o mesmo desfecho que guardDoWORMAplicavel (packages/cmd/aos/wal_posse.go)
+// mediu para a hash-chain do WORM. Reforça, sem o substituir, o argumento do guard de
 // arranque de AOS-285/286: o custo de dois escritores não é degradação, é indisponibilidade.
 //
 // Este teste NÃO é o sensor da propriedade (esse é
@@ -150,14 +159,14 @@ func TestDefeito_DoisEscritoresTornamOWALInabrivel(t *testing.T) {
 }
 
 // TestNaoVacuidade_UmSubstratoQueArbitraEDetectado prova que o sensor acima NÃO é
-// decorativo. Um sensor que asserta ausência passa trivialmente se as sondas nunca
+// decorativo. Um sensor que asserta ausência passa trivialmente se as probes nunca
 // souberem reconhecer a presença — seria verde hoje, verde depois do AOS-100, e não
 // diria nada em nenhum dos dois dias.
 //
 // A mutação é a mais forte disponível sem o backend novo: um substrato que arbitra
 // PERFEITAMENTE, porque os n handles são o MESMO store in-memory. Não simula um
 // backend replicado — não é para isso que serve. Serve para responder à única pergunta
-// que valida o instrumento: as sondas conseguem dizer «presente»?
+// que valida o instrumento: as probes conseguem dizer «presente»?
 //
 // Se este teste falhar, [TestSensor_ReferenciaNaoArbitraEntreEscritores] deixou de ser
 // prova de coisa nenhuma, independentemente de estar verde.
@@ -174,15 +183,15 @@ func TestNaoVacuidade_UmSubstratoQueArbitraEDetectado(t *testing.T) {
 		return hs, func() { _ = s.Close() }, nil
 	}
 
-	for _, r := range conformance.Sondar(arbitro) {
+	for _, r := range conformance.Measure(arbitro) {
 		switch {
-		case r.Erro != nil:
-			t.Errorf("[%s] INCONCLUSIVA contra um substrato que arbitra: %v — %s", r.Sonda, r.Erro, r.Detalhe)
-		case !r.Tem:
+		case r.Err != nil:
+			t.Errorf("[%s] INCONCLUSIVA contra um substrato que arbitra: %v — %s", r.Probe, r.Err, r.Detail)
+		case !r.Has:
 			t.Errorf("[%s] reportou AUSENTE contra um substrato que arbitra por construção — %s\n"+
-				"A sonda não sabe reconhecer a propriedade, logo o sensor de ausência é vácuo.", r.Sonda, r.Detalhe)
+				"A sonda não sabe reconhecer a propriedade, logo o sensor de ausência é vácuo.", r.Probe, r.Detail)
 		default:
-			t.Logf("[%s] presente, como tem de ser — %s", r.Sonda, r.Detalhe)
+			t.Logf("[%s] presente, como tem de ser — %s", r.Probe, r.Detail)
 		}
 	}
 }
