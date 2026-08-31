@@ -74,6 +74,10 @@ const (
 	exitErro        = 1
 	exitPosseNegada = 3 // outro processo detém um lease VIVO (durable.ErrLeaseHeld)
 	exitFenced      = 4 // a posse foi superada/expirou a meio (ErrStaleFencingToken)
+	// exitWALDetido — outro ESCRITOR detém o Event Store inteiro (AOS-285/286). É
+	// DISTINTO do 3: ali a remediação é parar quem detém aquele RUN; aqui é parar o
+	// outro escritor do STORE. Um código só faria o operador procurar no sítio errado.
+	exitWALDetido = 5
 )
 
 func main() {
@@ -104,13 +108,15 @@ func usage() {
                   [--plan-doc DOC.json --snapshot SNAP.json]   # materializa com o oraculo de efeito REAL
   aos-orq inspect --wal FICHEIRO --run ID
 
-Códigos de saída: 0 ok · 1 erro · 3 posse negada (lease vivo de outro) · 4 posse superada/expirada
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL detido por outro ESCRITOR
 `)
 }
 
 // codigoDe traduz o erro no código de saída que o distingue.
 func codigoDe(err error) int {
 	switch {
+	case errors.Is(err, eventstore.ErrWALHeld):
+		return exitWALDetido
 	case errors.Is(err, durable.ErrLeaseHeld):
 		return exitPosseNegada
 	case errors.Is(err, durable.ErrStaleFencingToken),
@@ -122,16 +128,56 @@ func codigoDe(err error) int {
 	}
 }
 
-// abrir abre o Event Store DURÁVEL sobre o WAL indicado.
+// abrir abre o Event Store DURÁVEL sobre o WAL indicado, para LEITURA.
 //
 // É este ficheiro que faz de dois arranques do binário dois processos que coordenam
 // PELO LOG. Com um store in-memory, cada processo teria a sua própria verdade e a
 // demonstração não provaria nada — seria dois programas a não se verem.
+//
+// NÃO pede posse: quem só lê não a pede e não é bloqueado por quem a detém. Para o
+// caminho de ESCRITA, ver [abrirParaEscrita].
 func abrir(wal string) (*eventstore.Store, error) {
 	if wal == "" {
 		return nil, errors.New("--wal é obrigatório (o log é o único canal de coordenação)")
 	}
 	return eventstore.Open(wal)
+}
+
+// abrirParaEscrita toma a POSSE EXCLUSIVA do WAL e só então o abre (AOS-286).
+//
+// # Porque a posse vem ANTES do Open
+//
+// Abrir primeiro e trancar depois deixaria uma janela em que dois escritores teriam
+// ambos o WAL aberto — que é precisamente o estado a impedir. É a mesma ordem que o nó
+// usa (`wal_posse.go`), e pela mesma razão.
+//
+// # Porque este comando também pede posse
+//
+// O AOS-285 ligou o guard ao NÓ e declarou o residual: outro binário a escrever o mesmo
+// WAL continuava a não ser impedido. `serve` ESCREVE (topologia, estado por-nó, factos
+// do domínio do plano), pelo que correr `aos` e `aos-orq serve` sobre o mesmo WAL é a
+// mesma configuração insegura do AOS-285 — só que com dois binários diferentes.
+//
+// O `inspect` continua a usar [abrir]: é leitura, e a leitura nunca pede posse.
+func abrirParaEscrita(wal string) (*eventstore.Store, eventstore.WALUnlocker, error) {
+	if wal == "" {
+		return nil, nil, errors.New("--wal é obrigatório (o log é o único canal de coordenação)")
+	}
+	largar, err := eventstore.LockWAL(wal)
+	if err != nil {
+		if errors.Is(err, eventstore.ErrWALHeld) {
+			return nil, nil, fmt.Errorf("%w. Outro ESCRITOR (o nó `aos`, ou outro `aos-orq serve`) detém este Event Store. Pare-o, ou aponte este a um WAL próprio. Razão: o Event Store de referência não arbitra entre processos — ver DEF-282", err)
+		}
+		return nil, nil, err
+	}
+	store, err := eventstore.Open(wal)
+	if err != nil {
+		// Largar a posse se o Open falhar: uma posse retida por um arranque abortado
+		// recusaria a tentativa seguinte em nome de um detentor que já não existe.
+		_ = largar()
+		return nil, nil, err
+	}
+	return store, largar, nil
 }
 
 func cmdServe(args []string) error {
@@ -156,11 +202,17 @@ func cmdServe(args []string) error {
 	}
 
 	ctx := context.Background()
-	store, err := abrir(*wal)
+	// ESCRITA ⇒ posse exclusiva do WAL (AOS-286). A ordem de libertação é a inversa da
+	// aquisição: fecha-se o store e só depois se larga a posse, para não haver instante
+	// em que outro escritor a tome com o WAL ainda aberto por nós.
+	store, largarWAL, err := abrirParaEscrita(*wal)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() {
+		_ = store.Close()
+		_ = largarWAL()
+	}()
 
 	leases, err := durable.NewLeaseManager(store, leaseTTL, durable.WithWorkerID(*worker))
 	if err != nil {

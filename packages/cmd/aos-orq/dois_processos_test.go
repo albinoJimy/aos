@@ -254,22 +254,40 @@ func TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos(t *testing.T) {
 	}
 	wg.Wait()
 
-	vencedores, negados, outros := 0, 0, 0
+	vencedores, negadosPeloLease, guardados, outros := 0, 0, 0, 0
 	for _, r := range res {
 		switch r.code {
 		case exitOK:
 			vencedores++
 		case exitPosseNegada:
-			negados++
+			negadosPeloLease++
+		case exitWALDetido:
+			guardados++
 		default:
 			outros++
+			t.Logf("processo com desfecho inesperado (%d):\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
 		}
 	}
-	t.Logf("desfecho da corrida entre %d processos: vencedores=%d negados=%d outros=%d", n, vencedores, negados, outros)
+	t.Logf("desfecho da corrida entre %d processos: vencedores=%d guardados(WAL)=%d negados(lease)=%d outros=%d",
+		n, vencedores, guardados, negadosPeloLease, outros)
 
-	// A CORRIDA TEM DE TER EXERCIDO ALGUMA COISA (não-vacuidade).
-	if vencedores == 0 {
-		t.Fatalf("nenhum processo obteve a posse (negados=%d, outros=%d) — a corrida não exerceu nada", negados, outros)
+	// DESDE O AOS-286 esta corrida mede o GUARD, não o substrato: `serve` toma a posse
+	// exclusiva do WAL antes de abrir o store, pelo que exactamente UM processo passa e
+	// os restantes são recusados com [exitWALDetido].
+	//
+	// A asserção é FORTE — «exactamente 1» — e antes não podia ser: sem o guard, o
+	// desfecho dependia do escalonador do SO e o teste só podia somar os perdedores num
+	// balde `outros` que passaria na mesma se eles tivessem CRASHADO. É o guard que torna
+	// a corrida determinística e, com ela, a asserção honesta.
+	if vencedores != 1 {
+		t.Fatalf("vencedores = %d, quer exactamente 1 — o guard de posse do WAL (AOS-285/286) não está a arbitrar entre estes processos", vencedores)
+	}
+	if guardados != n-1 {
+		t.Fatalf("recusados pelo guard = %d, quer %d — os perdedores têm de sair com o código do WAL DETIDO (%d), que é o que diz ao operador para parar o outro ESCRITOR e não o outro dono do run",
+			guardados, n-1, exitWALDetido)
+	}
+	if outros != 0 {
+		t.Fatalf("%d processo(s) com desfecho inesperado — recusar tem de ser distinguível de avariar", outros)
 	}
 
 	// A DECLARAÇÃO: com o Event Store de referência, a arbitragem entre processos NÃO
@@ -482,3 +500,49 @@ const planoComVerificador = `{
      "budget_estimate":{"tokens":10,"cost_micro_usd":10}}
   ]
 }`
+
+// ---------------------------------------------------------------------------
+// TESTE — `inspect` LÊ com o WAL detido; `serve` é RECUSADO (AOS-286).
+//
+// É a assimetria que faz o guard ser utilizável: quem só lê nunca pede posse e nunca é
+// bloqueado. O `inspect` é, para o `aos-orq`, o que o `wal-inspect` é para o nó — a via
+// que um operador usa a meio de um incidente, com o escritor a correr.
+// ---------------------------------------------------------------------------
+
+func TestAOS286_InspectLeSobPosse_ServeERecusado(t *testing.T) {
+	bin := construir(t)
+	dir := t.TempDir()
+	wal := filepath.Join(dir, "es.wal")
+	const run = "run-286"
+
+	// Semeia topologia com um escritor que LARGA no fim (o WAL fica livre).
+	if r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--nodes", "a,b", "--release"); r.code != exitOK {
+		t.Fatalf("semeadura saiu %d\nstderr:\n%s", r.code, r.stderr)
+	}
+
+	// Agora um ESCRITOR segura a posse do WAL — modelado pelo próprio mecanismo, que é o
+	// que o nó `aos` usaria.
+	largar, err := eventstore.LockWAL(wal)
+	if err != nil {
+		t.Fatalf("posse do escritor: %v", err)
+	}
+	defer func() { _ = largar() }()
+
+	// (a) `serve` é RECUSADO, com o código que manda parar o outro ESCRITOR.
+	s := correr(t, bin, "serve", "--wal", wal, "--run", run, "--nodes", "c")
+	if s.code != exitWALDetido {
+		t.Fatalf("`serve` com o WAL detido saiu %d, quer %d\nstdout:\n%s\nstderr:\n%s", s.code, exitWALDetido, s.stdout, s.stderr)
+	}
+	if !strings.Contains(s.stderr, "ESCRITOR") {
+		t.Errorf("a recusa não explica que o conflito é com outro ESCRITOR do store (e não com o dono de um run):\n%s", s.stderr)
+	}
+
+	// (b) `inspect` LÊ na mesma, e vê a topologia toda.
+	i := correr(t, bin, "inspect", "--wal", wal, "--run", run)
+	if i.code != exitOK {
+		t.Fatalf("`inspect` com o WAL detido saiu %d — a via de LEITURA foi bloqueada pelo guard, e é a que o operador usa a meio de um incidente\nstderr:\n%s", i.code, i.stderr)
+	}
+	if !strings.Contains(i.stdout, "nos=2") {
+		t.Fatalf("`inspect` não leu a topologia com a posse tomada:\n%s", i.stdout)
+	}
+}
