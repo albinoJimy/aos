@@ -164,7 +164,8 @@ func (cn *Conn) FetchStreamState(name string, timeout time.Duration) (StreamStat
 // --- Leitura directa de mensagens ------------------------------------------
 
 type msgGetRequest struct {
-	Seq uint64 `json:"seq,omitempty"`
+	Seq           uint64 `json:"seq,omitempty"`
+	NextBySubject string `json:"next_by_subj,omitempty"`
 }
 
 type msgGetResponse struct {
@@ -199,4 +200,144 @@ func (cn *Conn) MessageBySeq(stream string, seq uint64, timeout time.Duration) (
 		return "", nil, r.Error
 	}
 	return r.Message.Subject, r.Message.Data, nil
+}
+
+// ErrNoMessage — não há mensagem que satisfaça o pedido. É a resposta NORMAL a
+// caminhar um subject até ao fim, não uma falha: quem lê um log para o reconstruir
+// precisa de distinguir «acabou» de «avariou».
+var ErrNoMessage = errors.New("natsjs: não há mensagem")
+
+// codeNoMessage é o err_code do servidor para «no message found».
+const codeNoMessage = 10037
+
+// NextMessageOnSubject devolve a PRIMEIRA mensagem com seq >= fromSeq publicada em
+// subject, e o seq que ela ocupa no stream.
+//
+// É a via de LEITURA de um log por subject sem criar consumidores: caminha-se com
+// fromSeq = seq devolvido + 1 até vir [ErrNoMessage]. Cada passo é um round-trip — é
+// deliberadamente a operação mais simples que reconstrói um stream, e o custo está
+// declarado em quem a usa.
+func (cn *Conn) NextMessageOnSubject(stream string, fromSeq uint64, subject string, timeout time.Duration) (seq uint64, data []byte, err error) {
+	body, err := json.Marshal(msgGetRequest{Seq: fromSeq, NextBySubject: subject})
+	if err != nil {
+		return 0, nil, err
+	}
+	m, err := cn.Request("$JS.API.STREAM.MSG.GET."+stream, nil, body, timeout)
+	if err != nil {
+		return 0, nil, err
+	}
+	var r msgGetResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return 0, nil, fmt.Errorf("%w: resposta de MSG.GET ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		if r.Error.ErrCode == codeNoMessage {
+			return 0, nil, ErrNoMessage
+		}
+		return 0, nil, r.Error
+	}
+	return r.Message.Seq, r.Message.Data, nil
+}
+
+// --- Subscrição e consumidores push ----------------------------------------
+
+// SubscribeSubject subscreve subject e devolve o canal de entrega e a função que a
+// cancela. É a via de PUSH: o servidor empurra, ninguém faz polling.
+func (cn *Conn) SubscribeSubject(subject string) (<-chan Msg, func(), error) {
+	if err := validateToken("subject", subject); err != nil {
+		return nil, nil, err
+	}
+	ch, sid, err := cn.subscribe(subject)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ch, func() { cn.unsubscribe(sid) }, nil
+}
+
+// NewInbox devolve um subject único, próprio para servir de destino de entrega de um
+// consumidor push.
+func NewInbox() (string, error) { return newInbox() }
+
+// ConsumerConfig é o subconjunto da configuração de consumidor que o Event Store usa.
+//
+// Os campos ausentes são tão significativos como os presentes: NÃO se declara
+// flow-control nem heartbeats, e o `AckPolicy` é "none". É uma escolha DECLARADA e
+// medida: o transporte push foi verificado contra um cluster nesta configuração e só
+// nesta. Um consumidor DURÁVEL de produção quer acks e flow control, e é aí que o custo
+// de termos o cliente cresce — não se finge o contrário construindo campos que ninguém
+// exerceu.
+type ConsumerConfig struct {
+	// DeliverSubject é o subject para onde o servidor empurra. Vazio = pull.
+	DeliverSubject string `json:"deliver_subject"`
+	// DeliverPolicy "new" entrega só o que for publicado a partir de agora; "all"
+	// entrega o histórico e depois o novo.
+	DeliverPolicy string `json:"deliver_policy"`
+	AckPolicy     string `json:"ack_policy"`
+	ReplayPolicy  string `json:"replay_policy"`
+	FilterSubject string `json:"filter_subject,omitempty"`
+}
+
+type consumerCreateRequest struct {
+	Stream string         `json:"stream_name"`
+	Config ConsumerConfig `json:"config"`
+}
+
+// CreateEphemeralConsumer cria um consumidor efémero (sem durable_name) sobre stream.
+// Efémero é o que corresponde ao contrato de [Subscribe] do Event Store: a subscrição
+// vive enquanto o subscritor viver, e não deixa estado no servidor quando desaparece.
+func (cn *Conn) CreateEphemeralConsumer(stream string, cfg ConsumerConfig, timeout time.Duration) error {
+	body, err := json.Marshal(consumerCreateRequest{Stream: stream, Config: cfg})
+	if err != nil {
+		return err
+	}
+	m, err := cn.Request("$JS.API.CONSUMER.CREATE."+stream, nil, body, timeout)
+	if err != nil {
+		return err
+	}
+	var r streamResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return fmt.Errorf("%w: resposta de CONSUMER.CREATE ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return r.Error
+	}
+	return nil
+}
+
+// --- Subjects de um stream --------------------------------------------------
+
+type streamInfoRequest struct {
+	SubjectsFilter string `json:"subjects_filter,omitempty"`
+}
+
+type streamSubjectsResponse struct {
+	Error *JSError `json:"error"`
+	State struct {
+		Subjects map[string]uint64 `json:"subjects"`
+	} `json:"state"`
+}
+
+// SubjectsWithMessages devolve os subjects que casam com filter e que TÊM mensagens,
+// com a contagem de cada um.
+//
+// O servidor só devolve este mapa quando `subjects_filter` é pedido explicitamente — por
+// omissão o INFO traz o estado agregado e não a lista. É a via de descoberta de streams
+// para um backend em que «que streams existem?» não é uma pergunta local.
+func (cn *Conn) SubjectsWithMessages(stream, filter string, timeout time.Duration) (map[string]uint64, error) {
+	body, err := json.Marshal(streamInfoRequest{SubjectsFilter: filter})
+	if err != nil {
+		return nil, err
+	}
+	m, err := cn.Request("$JS.API.STREAM.INFO."+stream, nil, body, timeout)
+	if err != nil {
+		return nil, err
+	}
+	var r streamSubjectsResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return nil, fmt.Errorf("%w: resposta de INFO ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return nil, r.Error
+	}
+	return r.State.Subjects, nil
 }

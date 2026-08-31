@@ -379,27 +379,7 @@ func (s *Store) Append(ctx context.Context, streamID string, in EventInput, opts
 
 	// 4) Construção do envelope e replicação síncrona a todas as réplicas vivas.
 	seq := last + 1
-	schema := in.SchemaVersion
-	if schema == "" {
-		schema = SchemaVersion
-	}
-	ev := Event{
-		EventID:        newULID(),
-		StreamID:       streamID,
-		Seq:            seq,
-		Type:           in.Type,
-		Ts:             s.now().UTC().Format(time.RFC3339Nano),
-		Producer:       in.Producer.clone(),
-		SchemaVersion:  schema,
-		RunID:          in.RunID,
-		StepID:         in.StepID,
-		ParentStepID:   in.ParentStepID,
-		IdempotencyKey: key,
-	}
-	if in.Payload != nil {
-		ev.Payload = make([]byte, len(in.Payload))
-		copy(ev.Payload, in.Payload)
-	}
+	ev := NewEvent(streamID, seq, in, s.now())
 	// DURABILIDADE (AOS-170) — WRITE-AHEAD. Persiste o evento no WAL e faz fsync
 	// ANTES de o aplicar às réplicas in-memory, elevar o commit index ou fazer
 	// fanout. É a ORDEM correcta face a falha (idêntica ao WORM audit/filestore.go
