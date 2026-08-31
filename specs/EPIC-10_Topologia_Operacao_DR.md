@@ -869,7 +869,7 @@ Este ticket converte a declaração documental numa **barreira real**.
 
 **Definition of Done**
 - [x] Critérios de Aceitação satisfeitos, demonstrados com dois processos reais. — *dois processos reais em `wallock_test.go`. **RESIDUAL DECLARADO:** o guard cobre o NÓ; um segundo escritor que não seja o nó (`aos-orq`, ou outro binário a abrir o WAL sem pedir a posse) continua a não ser impedido — escolha de escopo, registada em `tecnica/10` §3-bis em vez de descoberta.*
-- [ ] `-race` verde. — ***POR VERIFICAR EM CI***, pela mesma razão de AOS-281: a máquina de desenvolvimento não tem toolchain C.
+- [x] `-race` verde. — ***VERDE EM CI** (run [33341010989](https://github.com/albinoJimy/aos/actions/runs/33341010989), 2026-08-31): `test` pass em 4m39s sobre **Ubuntu 24.04** com `CGO_ENABLED=1`, e `substrate/eventstore` verde com **92,4%** de cobertura. A confirmação em Linux é a que interessa a este ticket e não é formalidade: o caminho `flock` de `wallock_unix.go` NUNCA correu na máquina de desenvolvimento (Windows) — foi apenas compilado com `GOOS=linux`. É em CI que os cinco testes do `LockWAL`, incluindo o dos DOIS PROCESSOS reais e o da MORTE do detentor, exercitam de facto o `flock`. `apex` pass em 1m1s; `dr-e2e` (35s) e `scale` (36s) também verdes — são os que mexem no Event Store sob falha e carga, e um guard mal posto no arranque tê-los-ia partido.*
 - [x] `tecnica/10` §3-bis actualizado: o limite operacional deixa de ser só uma declaração e passa a citar a barreira.
 - [x] `DEF-282` actualizado — o deferimento **mantém-se aberto** (o substrato continua sem arbitrar), mas passa a registar que a configuração insegura está agora **impedida**, não apenas desaconselhada.
 
