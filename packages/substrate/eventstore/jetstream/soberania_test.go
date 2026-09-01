@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/aos-ref/substrate/eventstore"
@@ -169,4 +171,53 @@ func TestSoberania_SemFronteiraFicaDormente(t *testing.T) {
 		eventstore.EventInput{Type: "soberania.dormente", Payload: json.RawMessage(`{}`)}); err != nil {
 		t.Fatalf("Append sem fronteira: %v", err)
 	}
+}
+
+// TestSoberania_ReplicasNaoCaemForaDaRegiao é a forma FORTE do AC5, e a que faltava.
+//
+// Os testes acima provam que a restrição é PEDIDA, ARMAZENADA e VERIFICADA, e que a sua
+// ausência aborta. Nenhum deles prova que as réplicas ficam DE FACTO dentro da fronteira —
+// e essa é a promessa do ADR-011: «as réplicas e os backups NUNCA cruzam a fronteira».
+//
+// Aqui o cluster tem nós em DUAS regiões. Cria-se um stream confinado a uma delas e
+// pergunta-se ao servidor ONDE ele ficou. Se algum par da outra região aparecer, a
+// fronteira é decorativa.
+//
+//	AOS_NODES_OUTRA_REGIAO=aos-medicao-es-3
+func TestSoberania_ReplicasNaoCaemForaDaRegiao(t *testing.T) {
+	addr := servidor(t)
+	fora := os.Getenv("AOS_NODES_OUTRA_REGIAO")
+	if fora == "" {
+		t.Skip("define AOS_NODES_OUTRA_REGIAO (nós do cluster que estão FORA da região do board) — " +
+			"sem um cluster multi-região, esta propriedade não é observável")
+	}
+	proibidos := map[string]bool{}
+	for _, n := range strings.Split(fora, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			proibidos[n] = true
+		}
+	}
+
+	st, err := abrirComOpcoes(t, addr, append(opcoesBase(t, "SOBMULTI_"),
+		jetstream.ComBoardDeSoberania("board-ue", regiaoDoCluster))...)
+	if err != nil {
+		t.Fatalf("abrir com fronteira %q: %v", regiaoDoCluster, err)
+	}
+
+	col, err := st.ColocacaoEfectiva()
+	if err != nil {
+		t.Fatalf("ler a colocação efectiva: %v", err)
+	}
+	todos := col.Todos()
+	if len(todos) == 0 {
+		t.Fatal("o servidor não reporta pares para o stream — sem isso não se pode afirmar onde ele está")
+	}
+	for _, par := range todos {
+		if proibidos[par] {
+			t.Fatalf("o stream está alojado em %q, que está FORA da fronteira do board — "+
+				"a colocação é decorativa. Pares: %v (líder=%q)", par, todos, col.Lider)
+		}
+	}
+	t.Logf("fronteira %q CUMPRIDA: o stream está em %v (líder=%q), e nenhum dos %d pares proibidos aparece",
+		regiaoDoCluster, todos, col.Lider, len(proibidos))
 }

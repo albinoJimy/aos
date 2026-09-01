@@ -59,9 +59,10 @@
 //     exponencial até 5 s) e as escritas RETOMAM — MEDIDO: 1 s depois de morrer o nó a
 //     que estava ligado, sem reiniciar o processo. Antes disto, NUNCA retomavam. Dê-lhe
 //     VÁRIOS endereços separados por vírgula: com um só, só há cura quando esse nó voltar.
-//     As subscrições são RE-ESTABELECIDAS (o canal fecha, o Store recria o consumidor) mas
-//     os eventos escritos ENTRE a quebra e o retomar NÃO são entregues — o consumidor novo
-//     é `deliver_policy: new`. Retomar sem recuperar o intervalo é melhor do que morrer em
-//     silêncio e pior do que não perder nada; fechar isso exige um consumidor DURÁVEL com
-//     acks, que é o residual do AC2.
+//     As subscrições RECUPERAM, e não apenas retomam: o consumidor é DURÁVEL com acks
+//     explícitos, pelo que o servidor sabe até onde a entrega foi confirmada e recomeça
+//     aí — os eventos escritos ENTRE a quebra e o retomar SÃO entregues (medido). O ACK
+//     vai depois do handler, para confirmar o que foi processado e não o que chegou.
+//     LIMITE: o consumidor é R1, logo se o nó que o aloja morrer definitivamente ele
+//     perde-se e o intervalo com ele; e não há flow control nem heartbeats.
 package jetstream

@@ -613,3 +613,77 @@ pelo que os eventos escritos **entre a quebra e o retomar não são entregues**.
 subscrição *retoma*, não *recupera*. Fechar isso exige um consumidor DURÁVEL com acks —
 o residual já nomeado do AC2. Retomar sem recuperar o intervalo é melhor do que morrer em
 silêncio e pior do que não perder nada: são três coisas diferentes, e esta é a do meio.
+
+---
+
+# ADENDA 7 — os três residuais, fechados (2026-09-01)
+
+## 1. Soberania — a forma FORTE do AC5
+
+A adenda 3 declarava o limite: *«os três servidores anunciam a MESMA região, pelo que não
+se exercitou um cluster genuinamente multi-região. Prova-se que a restrição é pedida,
+armazenada e verificada; a distribuição por regiões distintas é lógica do JetStream, não
+nossa.»*
+
+Acrescentou-se um **quarto nó noutra região** (`region:us-east`), sem reetiquetar os três
+existentes — o que já estava medido continua válido, e a medição nova acrescenta. Cria-se
+um stream confinado a `eu-west` e pergunta-se ao servidor **onde ele ficou**:
+
+```
+fronteira "eu-west" CUMPRIDA: o stream está em
+[aos-medicao-es-2 aos-medicao-es-0 aos-medicao-es-1] (líder="aos-medicao-es-2"),
+e nenhum dos 1 pares proibidos aparece
+```
+
+Deixa de ser «a restrição está armazenada» e passa a ser **«as réplicas não cruzaram a
+fronteira»** — que é a promessa do ADR-011.
+
+**O que continua fora do alcance do nó, e é honesto:** o mapeamento par→região não é
+legível sem a conta de sistema do cluster. Quem sabe que servidores estão em que região é
+quem configura o cluster; o `ColocacaoEfectiva()` dá-lhe os nomes para confrontar.
+
+## 2. Leitura paralela — a ressalva escrita ao lado do AC3
+
+Estava escrito: *«a leitura paralela não é serializada por construção (`Read` não toma o
+mutex por-stream) mas NÃO foi medida em separado»*. «Não é serializada por construção» é
+um argumento sobre o código; isto é a medição — 4 streams de 100 eventos:
+
+| | eventos/s |
+|---|---|
+| Sequencial | 1 191 – 2 160 |
+| Paralelo (4 goroutines) | 4 334 – 4 993 |
+
+**Escala ~2,3–4×** com 4 streams. Não é linear, e o limitador provável é a **ligação
+única** — o que é uma hipótese, não uma medição, e fica dito como tal.
+
+## 3. A subscrição passa a RECUPERAR, não só a retomar
+
+A adenda 6 fechou o cliente que não se curava, e deixou um buraco nomeado: o consumidor
+era efémero e recriado com `deliver_policy: new`, pelo que **os eventos escritos entre a
+quebra e o retomar não eram entregues**. Um buraco silencioso no fluxo — a pior forma de
+perder eventos, porque ninguém dá por ela.
+
+O consumidor passa a ser **DURÁVEL com acks explícitos**. O servidor sabe até onde a
+entrega foi confirmada e recomeça aí:
+
+```
+matar o nó da ligação: morto: o no da ligacao (es-0)
+todos os eventos escritos durante a quebra foram ENTREGUES depois dela
+  — a subscrição recuperou, não só retomou
+```
+
+**Três decisões que valem mais do que o mecanismo:**
+
+- **O ACK vai DEPOIS do handler.** Confirma o que foi *processado*, não o que *chegou*.
+  Confirmar antes tornaria o durável um efémero com passos extra.
+- **O ponto de partida é fixado UMA vez** (`by_start_sequence` no seq do momento da
+  subscrição) e reafirmado tal-qual na reconexão. Recalculá-lo reabriria exactamente o
+  buraco que o durável fecha.
+- **Quem cria um durável é dono de o apagar.** O `Unsubscribe` apaga-o: um durável órfão
+  fica no servidor para sempre a acumular estado de entrega.
+
+**Limites que ficam, e são reais:** o consumidor é **R1** — se o nó que o aloja morrer
+definitivamente, ele perde-se e o intervalo com ele. E não há **flow control** nem
+heartbeats, pelo que um subscritor muito lento pode ser ultrapassado. Fechar os dois exige
+um consumidor replicado (que a medição de 2026-09-01 mostrou ser caro de criar sob
+degradação) e o tratamento das mensagens de controlo do protocolo.

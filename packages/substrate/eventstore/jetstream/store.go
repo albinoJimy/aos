@@ -544,11 +544,14 @@ func (st *estado) aplicar(_ []eventstore.Event, jsUltimo uint64, dedup map[strin
 // --- Subscribe -------------------------------------------------------------
 
 type subscricao struct {
-	id    string
-	store *Store
-	feito chan struct{}
-	parar chan struct{}
-	uma   sync.Once
+	id      string
+	store   *Store
+	duravel string // nome do consumidor no servidor; apagado no Unsubscribe
+	entrega string // deliver subject ESTAVEL: e o que permite ao duravel retomar
+	inicio  uint64 // seq de partida FIXADO na criacao; reafirmar com outro seria recusado
+	feito   chan struct{}
+	parar   chan struct{}
+	uma     sync.Once
 
 	mu       sync.Mutex
 	cancelar func() // o da ligação CORRENTE; troca a cada re-estabelecimento
@@ -576,6 +579,12 @@ func (sub *subscricao) Unsubscribe() {
 		close(sub.parar) // interrompe uma re-tentativa em curso
 		sub.cancelarCorrente()
 		<-sub.feito
+		// O DURÁVEL é nosso para apagar. Um consumidor durável que ninguém apaga fica
+		// no servidor para sempre a acumular estado de entrega — o preço de ele
+		// sobreviver a uma quebra é alguém ser dono do seu fim.
+		if sub.duravel != "" {
+			_ = sub.store.cn.DeleteConsumer(sub.store.stream, sub.duravel, sub.store.prazo)
+		}
 		sub.store.esquecerSub(sub.id)
 	})
 }
@@ -601,13 +610,32 @@ func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h event
 	id := fmt.Sprintf("sub-%d", s.proxSub)
 	s.mu.Unlock()
 
-	ch, cancelar, err := s.estabelecerEntrega(ctx)
+	// O ponto de partida é fixado AGORA: só o que for escrito a seguir é entregue, que é
+	// a semântica do modelo de referência.
+	estado, err := s.cn.FetchStreamState(s.stream, s.prazoDe(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: ler o estado de %q para fixar o início da subscrição: %w", s.stream, err)
+	}
+	entrega, err := natsjs.NewInbox()
 	if err != nil {
 		return nil, err
 	}
+	sub := &subscricao{
+		id: id, store: s, duravel: "aos-" + strings.ReplaceAll(entrega, "_INBOX.", ""),
+		entrega: entrega,
+		inicio:  estado.LastSeq + 1,
+		feito:   make(chan struct{}), parar: make(chan struct{}),
+	}
+	ch, cancelar, err := s.cn.SubscribeSubject(entrega)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.criarDuravel(ctx, sub); err != nil {
+		cancelar()
+		return nil, err
+	}
+	sub.cancelar = cancelar
 
-	sub := &subscricao{id: id, store: s, cancelar: cancelar,
-		feito: make(chan struct{}), parar: make(chan struct{})}
 	go func() {
 		defer close(sub.feito)
 		for {
@@ -619,14 +647,20 @@ func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h event
 				if filtro.Matches(ev) {
 					h(ev.Clone())
 				}
+				// O ACK vai DEPOIS do handler, e é isso que o torna útil: confirma o
+				// que foi ENTREGUE E PROCESSADO. Confirmar antes tornaria o durável um
+				// efémero com passos extra — perder-se-ia na mesma o que estivesse em
+				// voo quando a ligação parte.
+				if m.Reply != "" {
+					_ = s.cn.PublishSemResposta(m.Reply, nil)
+				}
 			}
 			// O canal fechou. Ou foi o dono (Unsubscribe/Close), ou a LIGAÇÃO PARTIU-SE.
 			//
-			// Reconectar o socket não ressuscita o consumidor efémero — ele morreu com a
-			// ligação. Se aqui se saísse em silêncio, a subscrição deixava de entregar sem
-			// que ninguém soubesse, que é pior do que falhar: quem depende dela nunca
-			// desconfia. Por isso re-estabelece-se, com recuo, até conseguir ou o dono
-			// mandar parar.
+			// Se aqui se saísse em silêncio, a subscrição deixava de entregar sem que
+			// ninguém soubesse — pior do que falhar, porque quem depende dela nunca
+			// desconfia. Re-subscreve-se o MESMO deliver subject: o consumidor é DURÁVEL
+			// e retoma no último ACK, pelo que o que foi escrito no intervalo é entregue.
 			select {
 			case <-sub.parar:
 				return
@@ -800,42 +834,48 @@ func prefixoDe(stream string) string {
 // EFÉMEROS. Um teste que não o chame deixa lixo acumulado no cluster.
 func (s *Store) ApagarStream() error { return s.cn.DeleteStream(s.stream, s.prazo) }
 
-// estabelecerEntrega cria o inbox, subscreve-o e cria o consumidor efémero que empurra
-// para lá. É a unidade que a reconexão tem de repetir.
-func (s *Store) estabelecerEntrega(ctx context.Context) (<-chan natsjs.Msg, func(), error) {
-	entrega, err := natsjs.NewInbox()
-	if err != nil {
-		return nil, nil, err
-	}
-	ch, cancelar, err := s.cn.SubscribeSubject(entrega)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := s.cn.CreateEphemeralConsumer(s.stream, natsjs.ConsumerConfig{
-		DeliverSubject: entrega,
-		DeliverPolicy:  "new",
-		AckPolicy:      "none",
+// criarDuravel cria (ou reafirma) o consumidor DURÁVEL da subscrição.
+//
+// # Porque durável, e não efémero
+//
+// Um consumidor efémero morre com a ligação, e o que for escrito entre a quebra e o
+// retomar PERDE-SE: a subscrição RETOMA mas não RECUPERA. Com um durável, o servidor
+// guarda até onde a entrega foi confirmada e recomeça aí — é a diferença entre um buraco
+// silencioso no fluxo de eventos e nenhum buraco.
+//
+// O `CREATE` é idempotente para a mesma configuração, pelo que o caminho de reconexão
+// pode reafirmá-lo sem primeiro perguntar se sobreviveu.
+//
+// # O ponto de partida, e porque é fixado UMA vez
+//
+// `by_start_sequence` a partir do último seq do stream no momento da subscrição dá a
+// semântica do modelo de referência (só o que for escrito DEPOIS). Fixá-lo na criação e
+// nunca mais é o que faz o durável retomar do ACK e não do presente — recalcular na
+// reconexão reintroduziria exactamente o buraco que ele existe para fechar.
+func (s *Store) criarDuravel(ctx context.Context, sub *subscricao) error {
+	return s.cn.CreateConsumer(s.stream, natsjs.ConsumerConfig{
+		Durable:        sub.duravel,
+		DeliverSubject: sub.entrega,
+		DeliverPolicy:  "by_start_sequence",
+		OptStartSeq:    sub.inicio,
+		AckPolicy:      "explicit",
+		AckWait:        int64(30 * time.Second),
 		ReplayPolicy:   "instant",
 		FilterSubject:  s.prefixo + ".>",
 		NumReplicas:    1,
-		MemStorage:     true,
-	}, s.prazoDe(ctx)); err != nil {
-		cancelar()
-		return nil, nil, err
-	}
-	return ch, cancelar, nil
+	}, s.prazoDe(ctx))
 }
 
-// reestabelecerEntrega repete [Store.estabelecerEntrega] com recuo, até conseguir ou o
-// dono mandar parar. Devolve erro só nesse último caso.
+// reestabelecerEntrega volta a subscrever o MESMO deliver subject, com recuo, até
+// conseguir ou o dono mandar parar.
 //
-// # O buraco que fica, e é preciso dizê-lo em voz alta
+// # Porque NÃO cria um consumidor novo
 //
-// O consumidor novo é criado com `deliver_policy: new`. Os eventos escritos ENTRE a
-// quebra e o re-estabelecimento NÃO são entregues — a subscrição retoma, não recupera.
-// Fechar esse buraco exige um consumidor DURÁVEL com acks, que é o residual já nomeado do
-// AC2. Retomar sem entregar o intervalo é melhor do que morrer em silêncio, e é pior do
-// que não perder nada: as três coisas são diferentes e esta é a do meio.
+// O consumidor é DURÁVEL e sobreviveu à quebra: ele sabe até onde a entrega foi
+// confirmada e retoma aí. Criar um novo (ou recalcular o ponto de partida) reabriria
+// exactamente o buraco que o durável fecha — os eventos escritos no intervalo. Reafirma-se
+// a criação por idempotência, para o caso de o consumidor ter sido perdido com o nó que o
+// alojava, e nesse caso — declarado — o intervalo perde-se na mesma: o consumidor é R1.
 func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func(), error) {
 	espera := 200 * time.Millisecond
 	const tecto = 5 * time.Second
@@ -848,9 +888,14 @@ func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func()
 		if s.estaFechado() {
 			return nil, nil, errPararSubscricao
 		}
-		ch, cancelar, err := s.estabelecerEntrega(context.Background())
+		ch, cancelar, err := s.cn.SubscribeSubject(sub.entrega)
 		if err == nil {
-			return ch, cancelar, nil
+			// Reafirma o durável: se sobreviveu, o CREATE é idempotente; se o nó que o
+			// alojava morreu, recria-se — e aí o intervalo perde-se, o que fica dito.
+			if errC := s.criarDuravel(context.Background(), sub); errC == nil || errors.Is(errC, eventstore.ErrClosed) {
+				return ch, cancelar, nil
+			}
+			cancelar()
 		}
 		if espera < tecto {
 			espera *= 2

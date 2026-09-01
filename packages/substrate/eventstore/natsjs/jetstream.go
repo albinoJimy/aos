@@ -282,6 +282,15 @@ func NewInbox() (string, error) { return newInbox() }
 // de termos o cliente cresce — não se finge o contrário construindo campos que ninguém
 // exerceu.
 type ConsumerConfig struct {
+	// Durable dá nome ao consumidor e torna-o PERSISTENTE no servidor. Vazio = efémero.
+	//
+	// É o que distingue «a subscrição retoma» de «a subscrição recupera»: um consumidor
+	// efémero morre com a ligação e o que foi escrito no intervalo perde-se; um durável
+	// sobrevive, e a entrega recomeça no ponto em que o último ACK ficou.
+	Durable string `json:"durable_name,omitempty"`
+	// AckWait, em nanossegundos, é quanto o servidor espera por um ACK antes de
+	// reentregar. Só tem efeito com AckPolicy "explicit".
+	AckWait int64 `json:"ack_wait,omitempty"`
 	// DeliverSubject é o subject para onde o servidor empurra. Vazio = pull.
 	DeliverSubject string `json:"deliver_subject"`
 	// DeliverPolicy "new" entrega só o que for publicado a partir de agora; "all"
@@ -314,14 +323,30 @@ type consumerCreateRequest struct {
 }
 
 // CreateEphemeralConsumer cria um consumidor efémero (sem durable_name) sobre stream.
-// Efémero é o que corresponde ao contrato de [Subscribe] do Event Store: a subscrição
-// vive enquanto o subscritor viver, e não deixa estado no servidor quando desaparece.
+// Efémero serve a leitura de um lote: vive o que a leitura viver e não deixa estado.
+//
+// Para uma SUBSCRIÇÃO, um efémero é a escolha errada — morre com a ligação e o que for
+// escrito no intervalo perde-se. Ver [Conn.CreateConsumer] com `Durable`.
 func (cn *Conn) CreateEphemeralConsumer(stream string, cfg ConsumerConfig, timeout time.Duration) error {
+	return cn.CreateConsumer(stream, cfg, timeout)
+}
+
+// CreateConsumer cria um consumidor sobre stream. Com `Durable` preenchido é persistente;
+// sem ele, efémero.
+//
+// Um `CREATE` sobre um durável que JÁ EXISTE com a mesma configuração é idempotente do
+// lado do servidor — e é isso que permite a um subscritor voltar a pedir o seu consumidor
+// depois de uma reconexão sem se preocupar em saber se ele sobreviveu.
+func (cn *Conn) CreateConsumer(stream string, cfg ConsumerConfig, timeout time.Duration) error {
 	body, err := json.Marshal(consumerCreateRequest{Stream: stream, Config: cfg})
 	if err != nil {
 		return err
 	}
-	m, err := cn.Request("$JS.API.CONSUMER.CREATE."+stream, nil, body, timeout)
+	assunto := "$JS.API.CONSUMER.CREATE." + stream
+	if cfg.Durable != "" {
+		assunto = "$JS.API.CONSUMER.DURABLE.CREATE." + stream + "." + cfg.Durable
+	}
+	m, err := cn.Request(assunto, nil, body, timeout)
 	if err != nil {
 		return err
 	}
@@ -491,4 +516,87 @@ func (cn *Conn) SubscribeSubjectBuffered(subject string, buf int) (<-chan Msg, f
 		return nil, nil, err
 	}
 	return ch, func() { cn.unsubscribe(sid) }, nil
+}
+
+// --- Onde as réplicas caíram ------------------------------------------------
+
+// ColocacaoEfectiva é ONDE o stream está, e não onde foi pedido que estivesse.
+//
+// A distinção é a que separa uma restrição declarada de uma restrição CUMPRIDA. A
+// `placement` diz o que se exigiu; isto diz o que o servidor fez.
+type ColocacaoEfectiva struct {
+	Lider    string
+	Replicas []string // pares NÃO-líderes
+}
+
+// Todos devolve o conjunto completo de pares que alojam o stream (líder incluído).
+func (c ColocacaoEfectiva) Todos() []string {
+	out := make([]string, 0, len(c.Replicas)+1)
+	if c.Lider != "" {
+		out = append(out, c.Lider)
+	}
+	return append(out, c.Replicas...)
+}
+
+type streamClusterResponse struct {
+	Error   *JSError `json:"error"`
+	Cluster *struct {
+		Leader   string `json:"leader"`
+		Replicas []struct {
+			Name    string `json:"name"`
+			Current bool   `json:"current"`
+		} `json:"replicas"`
+	} `json:"cluster"`
+}
+
+// ColocacaoDoStream lê que pares do cluster alojam o stream.
+//
+// Um stream não-replicado (R1 fora de cluster) não traz bloco `cluster`; devolve-se o
+// zero-value, que é a resposta honesta a «onde está replicado?» quando não está.
+func (cn *Conn) ColocacaoDoStream(stream string, timeout time.Duration) (ColocacaoEfectiva, error) {
+	m, err := cn.Request("$JS.API.STREAM.INFO."+stream, nil, nil, timeout)
+	if err != nil {
+		return ColocacaoEfectiva{}, err
+	}
+	var r streamClusterResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return ColocacaoEfectiva{}, fmt.Errorf("%w: resposta de INFO ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return ColocacaoEfectiva{}, r.Error
+	}
+	if r.Cluster == nil {
+		return ColocacaoEfectiva{}, nil
+	}
+	out := ColocacaoEfectiva{Lider: r.Cluster.Leader}
+	for _, rep := range r.Cluster.Replicas {
+		out.Replicas = append(out.Replicas, rep.Name)
+	}
+	return out, nil
+}
+
+// PublishSemResposta publica sem esperar resposta. É o que um ACK é: uma mensagem vazia
+// para o subject de resposta que a entrega trouxe.
+func (cn *Conn) PublishSemResposta(subject string, data []byte) error {
+	return cn.publish(subject, "", nil, data)
+}
+
+// DeleteConsumer apaga um consumidor durável.
+//
+// Um durável que ninguém apaga fica no servidor para sempre a acumular estado de
+// entrega — e, pior, a reter mensagens que o stream julgaria já consumidas. Quem cria um
+// durável é dono de o apagar.
+func (cn *Conn) DeleteConsumer(stream, durable string, timeout time.Duration) error {
+	m, err := cn.Request("$JS.API.CONSUMER.DELETE."+stream+"."+durable, nil, nil, timeout)
+	if err != nil {
+		return err
+	}
+	var r streamResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return fmt.Errorf("%w: resposta de CONSUMER.DELETE ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return r.Error
+	}
+	return nil
 }

@@ -117,3 +117,18 @@ func (s *Store) Regiao() string { return s.regiao }
 // declarada sem board ou não há fronteira. É rótulo de observabilidade; a decisão da
 // fronteira é da região.
 func (s *Store) BoardDeSoberania() string { return s.board }
+
+// ColocacaoEfectiva devolve os pares do cluster que alojam de facto o stream.
+//
+// Serve para MEDIR a fronteira em vez de a assumir: a `placement` verificada em [Abrir]
+// prova que a restrição está ARMAZENADA, e isto prova onde as réplicas CAÍRAM. São
+// perguntas diferentes, e só a segunda fecha a promessa «as réplicas nunca cruzam a
+// fronteira».
+//
+// O mapeamento par→região NÃO é feito aqui, e a razão é honesta: as `server_tags` só são
+// legíveis pela conta de sistema do cluster ou pelo endpoint HTTP de monitorização, e o
+// nó não tem nenhuma das duas. Quem sabe que servidores estão em que região é quem
+// configura o cluster — este método dá-lhe os nomes para confrontar.
+func (s *Store) ColocacaoEfectiva() (natsjs.ColocacaoEfectiva, error) {
+	return s.cn.ColocacaoDoStream(s.stream, s.prazo)
+}

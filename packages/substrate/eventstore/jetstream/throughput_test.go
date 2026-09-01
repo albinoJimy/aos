@@ -256,3 +256,67 @@ func BenchmarkLatenciaDeBase(b *testing.B) {
 	b.StopTimer()
 	b.ReportMetric(float64(decorrido.Nanoseconds())/float64(b.N)/1e6, "rtt_ms")
 }
+
+// BenchmarkReplayParalelo fecha a ressalva que ficou escrita ao lado do AC3: «a leitura
+// paralela não é serializada por construção (Read não toma o mutex por-stream) mas NÃO
+// foi medida em separado».
+//
+// «Não é serializada por construção» é um argumento sobre o código. Isto é a medição: S
+// streams lidos por S goroutines contra os mesmos S lidos em sequência. Se o paralelismo
+// existir, o agregado sobe; se houver um serializador escondido (a ligação única, por
+// exemplo), fica plano — e é isso que interessa saber antes de alguém desenhar um
+// arranque que re-hidrata vinte runs ao mesmo tempo.
+func BenchmarkReplayParalelo(b *testing.B) {
+	const (
+		streams = 4
+		eventos = 100
+	)
+	st, largar := storeJetStream(b)
+	defer largar()
+	ctx := context.Background()
+
+	for s := 0; s < streams; s++ {
+		for i := 0; i < eventos; i++ {
+			if _, err := st.Append(ctx, nomeStreamBench(s), factoBench(i)); err != nil {
+				b.Fatalf("semear stream %d evento %d: %v", s, i, err)
+			}
+		}
+	}
+
+	ler := func(s int) {
+		evs, err := st.Read(ctx, nomeStreamBench(s), 1)
+		if err != nil {
+			b.Fatalf("Read do stream %d: %v", s, err)
+		}
+		if len(evs) != eventos {
+			b.Fatalf("stream %d devolveu %d eventos, quer %d", s, len(evs), eventos)
+		}
+	}
+
+	b.Run("sequencial", func(b *testing.B) {
+		b.ResetTimer()
+		inicio := time.Now()
+		for i := 0; i < b.N; i++ {
+			for s := 0; s < streams; s++ {
+				ler(s)
+			}
+		}
+		b.StopTimer()
+		b.ReportMetric(float64(streams*eventos*b.N)/time.Since(inicio).Seconds(), "eventos/s")
+	})
+
+	b.Run("paralelo", func(b *testing.B) {
+		b.ResetTimer()
+		inicio := time.Now()
+		for i := 0; i < b.N; i++ {
+			var wg sync.WaitGroup
+			for s := 0; s < streams; s++ {
+				wg.Add(1)
+				go func(s int) { defer wg.Done(); ler(s) }(s)
+			}
+			wg.Wait()
+		}
+		b.StopTimer()
+		b.ReportMetric(float64(streams*eventos*b.N)/time.Since(inicio).Seconds(), "eventos/s")
+	})
+}
