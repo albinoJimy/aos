@@ -36,6 +36,7 @@ type Store struct {
 	regiao  string
 	board   string
 	prazo   time.Duration
+	obs     eventstore.Observer
 	now     func() time.Time
 
 	mu      sync.Mutex
@@ -67,6 +68,7 @@ type config struct {
 	regiao    string
 	board     string
 	fronteira bool
+	obs       eventstore.Observer
 	now       func() time.Time
 }
 
@@ -102,6 +104,7 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		replicas: ReplicasPorOmissao,
 		criar:    true,
 		now:      time.Now,
+		obs:      observadorNulo{},
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -178,6 +181,7 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		now:     cfg.now,
 		regiao:  regiao,
 		board:   cfg.board,
+		obs:     cfg.obs,
 		streams: map[string]*estado{},
 		subs:    map[string]*subscricao{},
 	}, nil
@@ -214,6 +218,7 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 	}
 	esperado, temEsperado := eventstore.ExpectedSeqOf(opts)
 	prazo := s.prazoDe(ctx)
+	inicio := s.now()
 
 	st := s.estadoDe(streamID)
 	st.mu.Lock()
@@ -231,6 +236,7 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 				// O evento vem do indice derivado, sem ir ao servidor: a hidratacao
 				// ja o tinha em maos, e um round-trip para o repetir seria trabalho
 				// a mais no caminho mais quente que existe (o retry de um passo).
+				s.obs.AppendDuplicate(streamID, ev.Seq)
 				return eventstore.AppendResult{Seq: ev.Seq, Status: eventstore.StatusDuplicate, Event: ev.Clone()}, nil
 			}
 		}
@@ -240,8 +246,10 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 			switch {
 			case esperado == st.aosSeq: // ok
 			case esperado < st.aosSeq:
+				s.obs.AppendRejected(streamID, eventstore.ErrAppendOnlyViolation)
 				return eventstore.AppendResult{}, eventstore.ErrAppendOnlyViolation
 			default:
+				s.obs.AppendRejected(streamID, eventstore.ErrSeqConflict)
 				return eventstore.AppendResult{}, eventstore.ErrSeqConflict
 			}
 		}
@@ -271,6 +279,7 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 			if eventstore.HasIdempotency(in.RunID, in.StepID) {
 				st.dedup[eventstore.IdempotencyKey(in.RunID, in.StepID)] = ev
 			}
+			s.obs.AppendCommitted(streamID, ev.Seq, s.now().Sub(inicio))
 			return eventstore.AppendResult{Seq: ev.Seq, Status: eventstore.StatusCommitted, Event: ev}, nil
 
 		case errors.Is(err, natsjs.ErrWrongLastSeq):
@@ -281,8 +290,10 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 					return eventstore.AppendResult{}, err
 				}
 				if esperado < st.aosSeq {
+					s.obs.AppendRejected(streamID, eventstore.ErrAppendOnlyViolation)
 					return eventstore.AppendResult{}, eventstore.ErrAppendOnlyViolation
 				}
+				s.obs.AppendRejected(streamID, eventstore.ErrSeqConflict)
 				return eventstore.AppendResult{}, eventstore.ErrSeqConflict
 			}
 			if tentativa >= maxRetentativasSemCAS {
@@ -304,6 +315,7 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 			return eventstore.AppendResult{}, err
 
 		default:
+			s.obs.AppendRejected(streamID, err)
 			return eventstore.AppendResult{}, err
 		}
 	}
