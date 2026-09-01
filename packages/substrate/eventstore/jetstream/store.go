@@ -140,8 +140,15 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 			// código é traduzido: mapear todas as falhas de criação para
 			// E_SOVEREIGNTY_VIOLATION esconderia um nome-em-uso atrás de um problema de
 			// soberania que não existe.
+			//
+			// E SÓ COM FRONTEIRA DECLARADA. O DEFEITO QUE ISTO FECHA, medido a
+			// 2026-09-01: o mesmo código 10005 é devolvido por «peer offline» — um
+			// stream R3 não é criável com um nó em baixo, HAJA OU NÃO colocação pedida.
+			// Sem esta condição, um cluster degradado dava «violação de soberania» a
+			// quem nunca declarou fronteira nenhuma (com a região a aparecer VAZIA na
+			// mensagem), mandando o operador arranjar uma política em vez de um nó.
 			var js *natsjs.JSError
-			if errors.As(err, &js) && js.ErrCode == natsjs.CodeNoSuitablePeers {
+			if cfg.fronteira && errors.As(err, &js) && js.ErrCode == natsjs.CodeNoSuitablePeers {
 				return nil, fmt.Errorf("%w: nenhum servidor do cluster anuncia %q — as réplicas não podem ser colocadas dentro da fronteira do board (%v)",
 					eventstore.ErrSovereigntyViolation, tagDaRegiao(regiao), err)
 			}
@@ -400,11 +407,14 @@ func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Durat
 	evs := make([]eventstore.Event, 0, total)
 	var inicio uint64 // 0 = desde o princípio do stream
 	for uint64(len(evs)) < total {
-		se := janelaDeLeitura
-		if restam := total - uint64(len(evs)); restam < uint64(se) {
-			se = int(restam)
+		// A janela fica toda em uint64: converter a contagem do servidor para int
+		// seria uma conversão que o compilador não pode provar segura (G115), e a
+		// resposta certa a isso é não a fazer — não silenciá-la.
+		quantos := total - uint64(len(evs))
+		if quantos > janelaDeLeitura {
+			quantos = janelaDeLeitura
 		}
-		lote, ultimoJS, err := s.lerLote(ctx, subject, inicio, se, prazo)
+		lote, ultimoJS, err := s.lerLote(ctx, subject, inicio, quantos, prazo)
 		if err != nil {
 			return nil, 0, nil, 0, err
 		}
@@ -436,13 +446,15 @@ func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Durat
 
 // lerLote traz até `quantos` eventos do subject a partir do seq físico `inicio`, por
 // entrega push num consumidor efémero.
-func (s *Store) lerLote(ctx context.Context, subject string, inicio uint64, quantos int, prazo time.Duration) ([]eventstore.Event, uint64, error) {
+func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uint64, prazo time.Duration) ([]eventstore.Event, uint64, error) {
 	entrega, err := natsjs.NewInbox()
 	if err != nil {
 		return nil, 0, err
 	}
 	// A fila comporta o lote INTEIRO mais folga: ver [janelaDeLeitura].
-	ch, cancelar, err := s.cn.SubscribeSubjectBuffered(entrega, quantos+16)
+	// A fila é dimensionada pela JANELA (constante), não por `quantos`: o tecto é o
+	// mesmo e não há conversão de um valor vindo do servidor.
+	ch, cancelar, err := s.cn.SubscribeSubjectBuffered(entrega, janelaDeLeitura+16)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -466,11 +478,11 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio uint64, quan
 		return nil, 0, err
 	}
 
-	evs := make([]eventstore.Event, 0, quantos)
+	evs := make([]eventstore.Event, 0, janelaDeLeitura)
 	var ultimoJS uint64
 	temporizador := time.NewTimer(prazo)
 	defer temporizador.Stop()
-	for len(evs) < quantos {
+	for uint64(len(evs)) < quantos {
 		select {
 		case m, ok := <-ch:
 			if !ok {
