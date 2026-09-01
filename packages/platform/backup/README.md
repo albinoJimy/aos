@@ -66,7 +66,9 @@ exp, _ := backup.NewExporter(src, dst, signer,
     backup.WithPeriodicity(30*time.Second),
     backup.WithRetention(policy, audit.ClassAudit))
 
-// Ciclo contínuo/incremental (scheduler/loop operacional):
+// Ciclo contínuo/incremental. QUEM O CORRE não é este módulo: o agendador vive no
+// loop de serviço do nó (packages/cmd/aos/backup_scheduler.go), com a cadência lida
+// de exp.Periodicity() — fonte única, para o RPO anunciado ser o RPO ligado.
 exp.Export(ctx)
 
 // PITR até um seq-alvo por stream, verificado por hash-chain:
@@ -75,6 +77,20 @@ ev, _ := rst.RestoreTo(ctx, exp.Manifest(), exp.Checkpoint(),
     knownHead, map[string]uint64{"run-a": 42}, freshStore)
 // ev.Verified == true; ev é a evidência do restauro (AC6).
 ```
+
+## Limite conhecido — o exportador é de UMA VIDA DE PROCESSO
+
+`NewExporter` começa **sempre do génesis**: não há opção de retoma de um manifesto
+anterior, pelo que o primeiro ciclo de qualquer arranque escreve `<região>/seg-00000001`.
+Sobre um destino que **sobreviva ao processo**, o arranque seguinte colide com
+`ErrImmutable` — e colide para sempre, porque o índice não avança. Medido em
+`reinicio_test.go`. A segunda metade do mesmo limite: `RestoreTo` recebe o `Manifest` e o
+`Checkpoint` **como argumentos** — nada aqui os persiste, pelo que segmentos duráveis sem
+manifesto guardado não são restauráveis por este módulo.
+
+**Consequência para quem compõe:** o nó exige o `ImmutableStore` **injectado**
+(`Config.BackupDestination`) e não inventa um backend de ficheiro. Um destino durável
+exige primeiro retoma de manifesto + persistência de checkpoint.
 
 ## Runbook — Restauro / PITR do Event Store (esboço, liga a AOS-106)
 

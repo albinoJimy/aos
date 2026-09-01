@@ -61,6 +61,7 @@ import (
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
+	backup "github.com/aos-ref/platform/backup"
 	broker "github.com/aos-ref/platform/broker"
 	identity "github.com/aos-ref/platform/identity"
 	memory "github.com/aos-ref/platform/memory"
@@ -562,6 +563,47 @@ type Config struct {
 	// agora−CreatedAt). nil ⇒ time.Now. Uso interno/testes deterministas.
 	RetentionClock func() time.Time
 
+	// --- Backup imutável + PITR do Event Store (AOS-101) -----------------------
+	//
+	// DESLIGADO POR OMISSÃO, e a omissão é o ponto: um nó não passa a exportar o seu log para
+	// lado nenhum sem alguém o pedir explicitamente. Enquanto [BackupDestination] for nil, o
+	// exportador NÃO é composto, o laço de exportação NÃO arranca e nada muda face ao
+	// comportamento anterior — que é o que 100% dos deployments têm hoje.
+	//
+	// BackupDestination é o armazenamento imutável (object-lock/WORM) para onde os segmentos
+	// cifrados são escritos. É uma PORTA injectada, e o nó NÃO inventa uma implementação por
+	// ambiente de propósito: está MEDIDO (packages/platform/backup/reinicio_test.go) que
+	// `platform/backup` não sabe RETOMAR um manifesto — o exportador começa sempre do génesis e
+	// o primeiro ciclo depois de um reinício colide com [backup.ErrImmutable] sobre qualquer
+	// destino que sobreviva ao processo; e [backup.Restorer.RestoreTo] recebe o manifesto e o
+	// checkpoint COMO ARGUMENTOS, sem que nada os persista. Um backend de ficheiro composto por
+	// `AOS_BACKUP_DIR` produziria segmentos write-once não-restauráveis que deixavam de ser
+	// escritos ao segundo arranque — uma promessa de backup pior do que a ausência dela. Quem
+	// injecta este destino assume as duas propriedades.
+	//
+	// FAIL-CLOSED na composição: com destino presente, um Event Store que não satisfaça
+	// [eventstore.BackupSource], uma chave de assinatura em falta ou uma violação de soberania
+	// (ADR-011 — destino noutra região, ou sem região) ABORTAM o arranque. Pedir backup e ficar
+	// sem ele em silêncio é o modo de falha que este campo existe para excluir.
+	BackupDestination backup.ImmutableStore
+	// BackupSigningKey é a chave ed25519 que sela os CHECKPOINTS do manifesto hash-chain do
+	// backup. É um TRUST DOMAIN PRÓPRIO (ADR-017 §5): NÃO se reutiliza a chave do issuer nem a
+	// de release. Obrigatória quando [BackupDestination] está presente — o nó não auto-gera uma
+	// autoridade de assinatura de backup, porque uma chave nova a cada arranque tornaria os
+	// checkpoints anteriores inverificáveis ([backup.ErrCheckpointSignature]) sem que ninguém
+	// desse por isso até ao dia do restauro.
+	BackupSigningKey ed25519.PrivateKey
+	// BackupPeriodicity é a periodicidade-alvo do ciclo de exportação — e a BASE DO RPO. É a
+	// FONTE ÚNICA: o laço do loop de serviço lê-a de volta pelo [backup.Exporter.Periodicity],
+	// nunca de uma segunda variável (ver backup_scheduler.go). <= 0 ⇒ o default do próprio
+	// módulo `platform/backup` (não se duplica aqui uma constante que é dele). Por ambiente:
+	// AOS_BACKUP_EXPORT_INTERVAL, fail-closed.
+	BackupPeriodicity time.Duration
+	// BackupClock injecta o relógio do exportador — o que carimba os segmentos, o object-lock e
+	// a janela de RPO ([backup.Exporter.RPOWindow]). nil ⇒ time.Now. Uso interno/testes
+	// deterministas: a janela de RPO mede-se avançando ESTE relógio, nunca com `time.Sleep`.
+	BackupClock func() time.Time
+
 	// --- Observabilidade OTLP (AOS-173, EPIC-15 §13) ---------------------------
 	// OTLPEndpoint é o endpoint do colector OTLP/HTTP (ex.: "http://collector:4318").
 	// GATING: vazio ⇒ NoopTracer (zero overhead, comportamento inalterado — a
@@ -756,6 +798,13 @@ type Node struct {
 	// antes de arrancar o scheduler interno (AOS-267) e porque a versão é selada em cada
 	// varrimento. Zero-value ⇒ nada expira (o default do nó).
 	Retention audit.RetentionConfig
+	// BackupExporter é o exportador incremental do Event Store para backup imutável (AOS-101),
+	// composto SÓ quando [Config.BackupDestination] foi dado — nil ⇒ o nó não exporta backups (o
+	// estado por omissão). Exposto porque o loop de serviço precisa dele para arrancar o
+	// agendador ([backupSchedulerArmed]) e porque `/metrics` lê dele a periodicidade em vigor, a
+	// janela efectiva de RPO e a região do destino: sem isso, «o log está a ser exportado?»
+	// voltaria a ser uma pergunta sem resposta em runtime. Ver backup_scheduler.go.
+	BackupExporter *backup.Exporter
 	// IssuerID é o trust anchor de identidade DESTE deployment (a config que o compôs). Exposto
 	// para que um selo emitido pelo nó EM NOME PRÓPRIO — o do scheduler de retenção, AOS-267 —
 	// possa nomear qual nó agiu, e não só qual papel. Material PÚBLICO (um identificador).
@@ -2283,10 +2332,30 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("observabilidade OTLP (AOS-173): DESLIGADA (NoopTracer, zero overhead) — defina AOS_OTLP_ENDPOINT para exportar traces")
 	}
 
+	// BACKUP IMUTÁVEL + PITR (AOS-101) — a LIGAÇÃO AO NÓ, desligada por omissão.
+	//
+	// Até aqui `platform/backup` não estava ligado a binário nenhum (medido: zero ocorrências no
+	// `go list -deps` do módulo do nó). O módulo sabia exportar, cifrar, encadear e restaurar; o
+	// que não existia era alguém a chamá-lo. Sem destino ([Config.BackupDestination] nil) nada
+	// muda — o exportador não é composto e o laço do loop de serviço não arranca. COM destino, a
+	// composição é fail-closed em cada perna (fonte, chave, soberania) e o arranque ABORTA em vez
+	// de deixar o operador com um backup que não existe. Ver backup_scheduler.go.
+	backupExporter, err := comporExportadorDeBackup(cfg, es, dsarVault)
+	if err != nil {
+		return nil, err
+	}
+	if backupExporter != nil {
+		log("backup imutavel + PITR (AOS-101): exportador COMPOSTO — destino regiao=%q tipo=%T, periodicidade=%s, KEK do backup na custodia do no (audit.KeyVault); cada ciclo exporta so o INCREMENTO (envelope intacto), cifra-o AES-256-GCM em repouso, encadeia-o no manifesto hash-chain e sela o head num checkpoint ed25519. Soberania fail-closed (ADR-011) validada na construcao E a cada ciclo. QUEM O CORRE e o agendador do loop de servico (AOS_BACKUP_EXPORT_INTERVAL): um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo NAO exporta — o banner do servico declara a postura real",
+			backupExporter.Immutable().Region(), backupExporter.Immutable(), backupExporter.Periodicity())
+	} else {
+		log("backup imutavel + PITR (AOS-101): DESLIGADO (por omissao) — sem Config.BackupDestination o Event Store NAO e exportado para backup imutavel por este no; o que corre no servidor e o deploy/server/backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa e nao produz segmentos cifrados nem manifesto verificavel")
+	}
+
 	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	arranqueOK = true // ... nem larga a posse dos ficheiros (AOS-285/284): passa a ser do Node.Close.
 	return &Node{
-		Runtime: sec,
+		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
+		Runtime:        sec,
 		// A ancora que PASSOU no arranque, para o /metrics a poder declarar. Fail-closed acima:
 		// se nao tivesse passado, nao se chegava aqui.
 		ancora:           cfg.WORMAnchor,
