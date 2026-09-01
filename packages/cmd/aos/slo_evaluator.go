@@ -86,6 +86,13 @@ package main
 // runbook que não resolve é gritado como `runbook_ORFAO` em vez de silenciosamente omitido: é o
 // mesmo invariante que [runbooks.Validate] verifica no CI, aqui em runtime, onde a config pode
 // ter sido substituída por uma do operador.
+//
+// REGIME DE POSSE (AOS-283): SEM ESCRITA PARTILHADA — corre em TODAS as réplicas, sem
+// lease. O avaliador LÊ (o span-tap in-process, a sonda de prontidão, a hash-chain do
+// WORM) e não apensa nada: não há facto que duas réplicas possam selar duas vezes. E cada
+// réplica avalia os SEUS spans, que é o comportamento certo — sob posse exclusiva, os SLIs
+// das réplicas não-líderes deixariam de ser avaliados e o SLO passaria a descrever uma
+// fracção da frota a fingir de todo.
 
 import (
 	"context"

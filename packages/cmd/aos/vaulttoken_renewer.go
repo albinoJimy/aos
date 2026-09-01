@@ -20,6 +20,12 @@ package main
 // sozinha falha calada, e a sonda sozinha só transforma a morte silenciosa numa morte anunciada.
 //
 // NUNCA se loga o VALOR do token — só o CAMINHO do ficheiro e o veredicto.
+//
+// REGIME DE POSSE (AOS-283): CREDENCIAL POR PROCESSO — corre em TODAS as réplicas, sem
+// lease, e um lease aqui seria ACTIVAMENTE ERRADO. O que este laço mantém vivo é o token
+// DESTE processo; sob posse exclusiva, as réplicas não-líderes deixariam o seu token
+// expirar e a custódia da KEK morria nelas — a falha exacta que este ficheiro fecha. Não
+// há estado partilhado: não há nada que duas réplicas possam duplicar.
 
 import (
 	"context"

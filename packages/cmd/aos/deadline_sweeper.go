@@ -18,6 +18,12 @@ package main
 //
 // O varrimento é BEST-EFFORT e idempotente: um erro de transição é registado e re-tentado
 // no tick seguinte; uma máquina sem deadline configurado é no-op.
+//
+// REGIME DE POSSE (AOS-283): SEGURO POR PARTIÇÃO — corre em TODAS as réplicas, sem lease.
+// A razão é o ALCANCE, não a idempotência: o varrimento opera só sobre os runs do registo
+// de EM-CURSO **desta** réplica, e um run tem um só dono (ADR-023). Outra réplica tem
+// outros runs, e nenhuma toca nos runs da outra. Pôr um lease aqui daria a UMA réplica os
+// prazos de todas — e as outras deixariam de impor prazo nenhum aos runs que hospedam.
 
 import (
 	"context"

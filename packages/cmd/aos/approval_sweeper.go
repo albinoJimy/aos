@@ -10,6 +10,12 @@ package main
 // permanece RETOMÁVEL (decisão do dono) — quando alguém o retomar, a call escalada já não
 // encontra grant e é NEGADA, e o agente segue outro caminho com o marcador de negação. A
 // retoma é sempre um acto explícito e re-autenticado (POST /runs/{id}/resume).
+//
+// REGIME DE POSSE (AOS-283): IDEMPOTENTE POR CHAVE DURÁVEL — corre em TODAS as réplicas,
+// sem lease. Não é uma dispensa por conveniência: `ExpireKind` apensa com um `step_id`
+// DETERMINÍSTICO (`chaveDeGeracao` sobre kind+run+step+geração), pelo que duas réplicas
+// produzem a MESMA chave de idempotência e o Event Store deduplica a segunda. A exclusão
+// existe — vive no substrato, não num lease.
 
 import (
 	"context"

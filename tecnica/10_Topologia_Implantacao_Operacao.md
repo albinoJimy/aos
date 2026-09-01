@@ -267,6 +267,82 @@ lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
 
 ---
 
+## 3-ter. Posse dos LAÇOS DE SERVIÇO (AOS-283, ADR-023)
+
+A §3-bis trata da posse de um **run**. Esta trata da posse de um **laço**: os varrimentos
+periódicos do nó, que não pertencem a run nenhum e que, com N réplicas, correm N vezes
+sobre o mesmo Event Store.
+
+**A pergunta não é «quantos laços há», é «o que é que cada um ESCREVE».** Feita por leitura
+do código, a resposta encolheu o problema de seis laços para um:
+
+| Laço | Regime | Corre em | Porquê |
+|---|---|---|---|
+| **retenção** | **EXIGE EXCLUSÃO** | só o líder | **o único.** O guard `expireInFlight` é um `atomic.Bool` **por processo** e a idempotência do `ExpirationJob` vive num seen-set in-memory re-hidratado uma vez no arranque |
+| órfãos | JÁ SEGURO | todas | a retoma passa por `submit`, que reclama o lease do run e salta sem roubo. O laço corre em N, cada órfão é retomado por UMA |
+| prazos | SEGURO POR PARTIÇÃO | todas | opera só sobre os runs EM-CURSO **desta** réplica, e um run tem um só dono (ADR-023) |
+| aprovações | IDEMPOTENTE POR CHAVE DURÁVEL | todas | `ExpireKind` apensa com `step_id` determinístico; duas réplicas produzem a MESMA chave e o Event Store deduplica |
+| avaliador de SLO | SEM ESCRITA PARTILHADA | todas | lê e não apensa; cada réplica avalia os SEUS spans |
+| renovação do token do Vault | CREDENCIAL POR PROCESSO | todas | mantém o token DESTE processo |
+
+**Correcção de contagem:** o nó tem oito *tickers*, não oito laços de serviço. O flush do
+OTLP é telemetria do processo e o `heartbeat` é por-**run** — nenhum dos dois é um laço de
+serviço sobre estado partilhado.
+
+**As quatro últimas linhas não são dispensas por conveniência, e três delas invertem-se se
+alguém lhes puser um lease.** Sob posse exclusiva, as réplicas não-líderes deixariam de
+impor prazos aos runs que hospedam, deixariam o seu token do Vault expirar (matando a
+custódia da KEK nelas) e deixariam de avaliar os seus SLIs — o SLO passaria a descrever uma
+fracção da frota a fingir de toda. Pôr lease a mais é um defeito, não um excesso de zelo.
+
+### O que o laço da retenção usa
+
+O **mesmo** `durable.LeaseManager` de AOS-018 que possui os runs, sobre `lease:svc:retention`
+em vez de `lease:<run_id>`, com a disciplina de ADR-023 §2.5: claim → heartbeat → `Release`
+como **último acto**. Nenhum segundo mecanismo de posse: duas implementações do mesmo
+conceito divergem.
+
+**Porque não uma idempotência durável**, que era a alternativa a avaliar primeiro:
+`Seen(key)`…`Add(key)` é um check-then-act sem atomicidade — o próprio código do job o
+declara. Um índice durável fecha a janela larga (duas passagens desfasadas) e **não** a
+estreita (duas réplicas a ler a mesma key por-marcar no mesmo instante). Torná-lo atómico
+exigiria um CAS por-registo no substrato, isto é, um **segundo** mecanismo de exclusão ao
+lado do que já existe.
+
+**O que o operador lê em `/metrics`**, e é a distinção que faltava:
+
+| Leitura | Significado | Acção |
+|---|---|---|
+| `armed=0` | nada expira sozinho neste nó | definir a política de retenção |
+| `armed=1, leader=0` | outra réplica é a executora | **nenhuma** |
+| `armed=1, leader=1, sem age` | armado, à espera do primeiro tick | nenhuma |
+| `armed=1, leader=1, age alta` | deixou de correr sem o dizer | investigar o laço |
+| `stopped=1` | parou por incidente de integridade da hash-chain; não volta sozinho | investigar o WORM e reiniciar |
+
+Sem `aos_retention_scheduler_leader`, as N−1 réplicas não-líderes publicam `sweeps_total=0`
+e nenhuma `age` — **indistinguível de um laço morto**, que é a leitura que exige a acção
+oposta.
+
+> **LIMITE HERDADO, o mesmo da §3-bis.** A exclusão entre processos vale exactamente na
+> medida em que o `expected_seq` do stream de posse for atómico entre escritores: sobre
+> `--nats` é, sobre o WAL de referência não é — e aí a configuração de duas réplicas já está
+> impedida à partida pelo guard de AOS-285/286. Este mecanismo usa a garantia que o
+> substrato tem; não lha dá.
+>
+> **JANELA RESIDUAL DECLARADA.** O `Shutdown` anuncia a largada depois de parar os laços,
+> mas o `close` do `sweepStop` não interrompe uma passagem **já a meio**: um shutdown que a
+> apanhe em voo anuncia com ela ainda a selar. A consequência é limitada — a réplica
+> seguinte reclama e a sua passagem salta por idempotência os factos já selados — e fechá-la
+> exigiria a passagem participar no WaitGroup do drain.
+>
+> **FORA DE ÂMBITO, e nomeado para não passar por resolvido:** `POST /dsar/expire` **não**
+> é gatilhado por posse. Duas réplicas a servir a rota em simultâneo continuam a poder
+> selar o mesmo facto duas vezes. Não é um laço de serviço — tem um operador autenticado na
+> origem — e gatilhá-la faria uma acção sob demanda responder «não sou líder», que é uma
+> semântica diferente e uma decisão de produto.
+
+---
+
 ## 4. Opções de implantação
 
 O AOS é um blueprint neutro quanto ao provedor. A mesma topologia lógica materializa-se em três modelos, que diferem sobretudo no substrato do Event Store, no isolamento das microVMs e nas fronteiras de soberania.

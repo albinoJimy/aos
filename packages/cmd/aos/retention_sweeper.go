@@ -4,6 +4,13 @@ package main
 // varrimento de aprovações (approval_sweeper.go) e do de deadlines (deadline_sweeper.go): um
 // ticker que termina com o MESMO `sweepStop` fechado pelo Shutdown.
 //
+// REGIME DE POSSE (AOS-283): EXIGE EXCLUSÃO — é o ÚNICO dos seis laços de serviço que a
+// exige, e corre SÓ sob posse de `lease:svc:retention` (fail-closed: sem posse não corre).
+// Medido a 2026-09-01: duas réplicas sobre o mesmo substrato selavam DOIS
+// `retention.expired` para o MESMO facto, porque o guard `expireInFlight` é um
+// `atomic.Bool` por-processo e a idempotência do job vive num seen-set in-memory. Ver
+// posse_de_laco.go para o mecanismo e para a razão de não ser uma idempotência durável.
+//
 // O PROBLEMA QUE FECHA. O [audit.ExpirationJob] estava composto e correcto, mas tinha UM condutor:
 // `POST /dsar/expire`. Ou seja, com `AOS_RETENTION_VERSION`+`AOS_RETENTION_PERIODS` definidas — um
 // operador que fez tudo o que o README lhe pediu — NADA expirava enquanto não existisse um cron
