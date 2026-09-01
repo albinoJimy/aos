@@ -291,8 +291,23 @@ deferiu, com a mesma invariante e o mesmo mecanismo.
   handoff por anúncio (AC2) e a re-hidratação (AC4) a atravessarem a fronteira do
   processo; a contenção concorrente fica provada **in-process**, onde o log é
   efectivamente partilhado. O limite tem sensor:
-  `TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos`, que **falha no dia em que
-  o substrato ganhar a propriedade** e obriga a retirar esta declaração.
+  `TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos`.
+
+  > **RESOLVIDO por AOS-100 (2026-08-31) — o backend passou a existir, e o limite era do
+  > SUBSTRATO, não desta decisão.** `eventstore/jetstream` implementa o contrato sobre
+  > JetStream, onde o `expected_seq` é imposto pelo servidor. O **AC1 de AOS-281 passa a
+  > ser satisfazível e está MEDIDO com PROCESSOS REAIS**: quatro `aos-orq serve --nats` em
+  > paralelo sobre o mesmo run dão `vencedores=1 negados-pelo-lease=3 guardados(WAL)=0` —
+  > todos admitidos ao Event Store, e o vencedor decidido pelo **lease**
+  > (`TestAOS100_NServeEmParaleloSobreOSubstratoReplicado`).
+  >
+  > **O que NÃO muda, e por isso o sensor fica:** o Event Store de REFERÊNCIA continua a
+  > não arbitrar entre processos. O sensor mede-o a ele, não «o substrato» em geral, pelo
+  > que continua verde e continua CERTO — a propriedade foi ganha por um substrato
+  > DIFERENTE, não por aquele. Sobre `--wal` a topologia suportada continua a ser a posse
+  > sequencial, com o guard de ficheiro (AOS-285/286) a impedir a configuração insegura.
+  > Ver `DEF-282` (FECHADO-RESIDUAL) e o doc de `packages/cmd/aos-orq`, que descreve as
+  > duas topologias e o código de saída que as distingue.
 - **A janela TOCTOU do `FencedAppender` mantém-se aberta no caso token-IGUAL.** O
   `fencing.go` documenta-a: o token é lido *externamente* e não é dobrado no `expected_seq`
   do evento de negócio, pelo que entre a leitura e o `Append` um novo claim pode elevar o

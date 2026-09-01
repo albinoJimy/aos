@@ -43,6 +43,10 @@ var requiredAttrs = map[string][]string{
 	OpExecuteTool: {AttrOperationName, AttrToolName, AttrToolCallHash, AttrResultTaint},
 	OpEvaluation:  {AttrOperationName, AttrEvalVerdict, AttrEvalDataset},
 	OpActivity:    {AttrOperationName, AttrToolName, AttrRunID, AttrStepID},
+	// O stream e o desfecho são obrigatórios porque um span de Event Store sem eles não
+	// responde a nenhuma das duas perguntas que se lhe fazem: de que run é, e correu bem.
+	OpLogAppend: {AttrOperationName, AttrLogStream, AttrLogOutcome},
+	OpLogRead:   {AttrOperationName, AttrLogStream, AttrLogOutcome},
 }
 
 // RequiredAttributes devolve (uma cópia d)os atributos obrigatórios para a

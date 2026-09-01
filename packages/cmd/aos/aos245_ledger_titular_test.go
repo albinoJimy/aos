@@ -26,7 +26,6 @@ import (
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
-	"github.com/aos-ref/substrate/eventstore"
 )
 
 // AOS-245 — O OUTPUT DA TOOL EM CLARO NO WAL (protecção de dados).
@@ -173,7 +172,7 @@ func newAOS245Node(t *testing.T, model agentruntime.ModelClient) (node *Node, es
 // aos245LedgerRecord devolve o registo "step.ledger.applied" ÚNICO do stream do run, na forma de
 // wire (o que ficou REALMENTE no WAL): resultado (claro ou ciphertext), marca de selagem e
 // titular. Falha se não houver exactamente um.
-func aos245LedgerRecord(t *testing.T, es *eventstore.Store, runID string) (result []byte, sealed bool, subject string) {
+func aos245LedgerRecord(t *testing.T, es EventStorePort, runID string) (result []byte, sealed bool, subject string) {
 	t.Helper()
 	events, err := es.Read(context.Background(), runID, 1)
 	if err != nil {

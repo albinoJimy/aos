@@ -28,7 +28,6 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
-	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/sandbox"
 )
 
@@ -104,7 +103,7 @@ func newSandboxEffectRewriter(bindings map[string]sandbox.SandboxBinding) func(r
 // no MESMO Event Store do nó) e, por cada tool com binding, regista um [sandbox.MediatedLauncher]
 // no RM do nó. Deve correr DEPOIS de NewSecuredRuntime (precisa de sec.Monitor()). bindings
 // vazio ⇒ no-op. Fail-closed: qualquer falha de construção/registo aborta o arranque.
-func registerSandboxLaunchers(sec *integration.SecuredRuntime, es *eventstore.Store, bindings map[string]sandbox.SandboxBinding, semExecutor []string, log func(string, ...any)) error {
+func registerSandboxLaunchers(sec *integration.SecuredRuntime, es EventStorePort, bindings map[string]sandbox.SandboxBinding, semExecutor []string, log func(string, ...any)) error {
 	// A DECLARACAO das orfas vem ANTES do return antecipado, e e deliberado: sem bindings
 	// nenhuns nao ha driver a montar, mas «NENHUMA tool tem executor» e precisamente o caso que
 	// mais precisa de ser dito — e a primeira versao desta correccao calava-se exactamente ai,

@@ -76,14 +76,35 @@ func (p *posseDoWAL) Largar() error {
 //   - o store é FORNECIDO por config: o seu ciclo de vida é do chamador, e trancar um
 //     recurso que não abrimos seria tomar uma decisão que não é nossa.
 //
-// **QUANDO O AOS-100 LANDAR** um Event Store genuinamente partilhado (NATS JetStream),
-// correr N réplicas passa a ser o OBJECTIVO e recusá-las seria recusar exactamente o
-// que se quer. Nessa altura esta condição TEM de ser revista — e é por isso que ela
-// está aqui, nomeada e comentada, em vez de implícita num `if path != ""` que alguém
-// teria de descobrir a remover. O `DEF-282` é o eixo que traz a revisão junto.
+// # A REVISÃO PREVISTA, feita (AOS-100, 2026-08-31)
+//
+// Este comentário dizia: «QUANDO O AOS-100 LANDAR um Event Store genuinamente
+// partilhado (NATS JetStream), correr N réplicas passa a ser o OBJECTIVO e recusá-las
+// seria recusar exactamente o que se quer. Nessa altura esta condição TEM de ser
+// revista.» Chegou essa altura, e a revisão é a linha do `EventStoreNATS` abaixo.
+//
+// O guard NÃO foi apagado, e não deve ser: continua CERTO para um deployment de
+// ficheiro local, que é o que a v1 é. O que mudou é que passou a haver um terceiro
+// caso, e ele tinha uma ARMADILHA — com `EventStoreNATS` preenchido, um
+// `EventStorePath` deixado na config (de um deployment anterior, ou de um default de
+// ambiente) faria o guard trancar um WAL que o nó NUNCA ABRE. Duas réplicas apontadas
+// ao mesmo cluster — a configuração correcta — seriam recusadas por um ficheiro que
+// nenhuma delas usa. Por isso a condição é sobre o substrato EFECTIVAMENTE ESCOLHIDO, e
+// não sobre a mera presença de um caminho.
+//
+// O guard do WORM MANTÉM-SE em qualquer dos casos: o WORM continua a ser um ficheiro
+// local e dois escritores FORKAM a hash-chain (AOS-284, medido). Um Event Store
+// partilhado não muda nada quanto a isso — e é precisamente por isso que os dois guards
+// são funções SEPARADAS.
 func guardDePosseAplicavel(cfg Config) (path string, aplica bool) {
 	if cfg.EventStore != nil {
 		return "", false // fornecido pelo chamador — não é nosso para trancar
+	}
+	if cfg.EventStoreNATS != "" {
+		// Substrato PARTILHADO e que ARBITRA (AOS-100): N réplicas é o objectivo.
+		// A precedência aqui espelha a de New: NATS ganha ao path, pelo que um path
+		// residual não é aberto — e trancá-lo recusaria o que se quer permitir.
+		return "", false
 	}
 	if cfg.EventStorePath == "" {
 		return "", false // in-memory — nada partilhável

@@ -50,7 +50,7 @@ import (
 // capturer escreve, pelo que a fonte reflecte o substrato real. Seguro para uso concorrente na
 // medida em que o Event Store o é (List só faz leituras).
 type eventStoreRecordSource struct {
-	es *eventstore.Store
+	es EventStorePort
 }
 
 // capturedSubjectWire é a projecção MÍNIMA do payload de "replay.captured" que a fonte precisa: o

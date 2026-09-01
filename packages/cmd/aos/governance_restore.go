@@ -40,7 +40,6 @@ import (
 
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	audit "github.com/aos-ref/platform/audit"
-	"github.com/aos-ref/substrate/eventstore"
 )
 
 // restoreLegalHolds repõe em `holds` os legal holds que a cadeia [legalHoldPartition] ainda
@@ -133,7 +132,7 @@ func legalHoldTargetOf(rec audit.AuditRecord) (subject, partition string) {
 // partições — a via exacta que [audit.ExpirationJob.held] consulta pelo índice.
 //
 // Só ACRESCENTA ligações (Link é idempotente) e nunca lê conteúdo (que é opaco/cifrado).
-func restoreSubjectIndex(ctx context.Context, es *eventstore.Store, index *audit.InMemorySubjectPartitionIndex) (int, error) {
+func restoreSubjectIndex(ctx context.Context, es EventStorePort, index *audit.InMemorySubjectPartitionIndex) (int, error) {
 	if es == nil || index == nil {
 		return 0, nil
 	}

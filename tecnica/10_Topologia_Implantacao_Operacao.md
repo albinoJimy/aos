@@ -103,7 +103,7 @@ flowchart TB
 
 **Materialização por IaC (AOS-098).** A separação de planos não é apenas lógica: o IaC em `infra/` instancia o módulo `network` **uma vez por plano** (rede de controlo e rede de dados, ambas *default-deny* com egress allowlist explícita — ADR-004) e dois módulos de *scaffold*, `control-plane` (ORQ/SCH/ADM/PDP) e `data-plane` (workers + pool de microVMs), cada um com a **sua contagem de réplicas** (`control_plane_replicas`, `data_plane_worker_replicas`, `microvm_pool_size`) — donde a escala independente de cada plano. Os componentes ficam como *placeholders* mínimos; a lógica interna é entregue por AOS-099 (workers *stateless* + estado particionado), AOS-100 (replicação do Event Store) e AOS-103 (pool de microVMs). O Event Store (módulo `eventstore`) e o audit WORM vivem no plano de dados; o Credential Broker/Vault no plano de controlo.
 
-**Replicação do Event Store — sem single-writer (AOS-100, ADR-007).** O modelo de referência in-process do `eventstore` elimina o SPOF de escrita: como a ordem total é **por stream** (`(stream_id, seq)`, gapless), a serialização é **por-stream** (locks listrados por *stream*/partição), não global. Escritas ao **mesmo** stream serializam-se (preservando o seq gapless, o CAS optimista `WithExpectedSeq`, a deduplicação idempotente por stream e a ordem do transporte push); escritas a streams **distintos** progridem **em paralelo** — múltiplos workers escrevem e leem para replay sem contenção de escritor único. A replicação síncrona por **quorum** e a eleição de líder mantêm-se (a perda de uma réplica dentro do quorum não perde dados nem interrompe escritas); o que muda é a remoção do mutex global que serializava *todas* as escritas através de um líder único. As invariantes de **ordem-por-stream** e **imutabilidade** (log append-only, `Read` devolve cópias) são preservadas — são a base do audit *hash-chain* (ADR-010). Em produção o backend é NATS JetStream (R3/R5, Raft); este modelo é a referência determinística e testável (falha de nó, escrita concorrente multi-worker, integridade append-only, tudo sob `-race`).
+**Replicação do Event Store — sem single-writer (AOS-100, ADR-007).** O modelo de referência in-process do `eventstore` elimina o SPOF de escrita: como a ordem total é **por stream** (`(stream_id, seq)`, gapless), a serialização é **por-stream** (locks listrados por *stream*/partição), não global. Escritas ao **mesmo** stream serializam-se (preservando o seq gapless, o CAS optimista `WithExpectedSeq`, a deduplicação idempotente por stream e a ordem do transporte push); escritas a streams **distintos** progridem **em paralelo** — múltiplos workers escrevem e leem para replay sem contenção de escritor único. A replicação síncrona por **quorum** e a eleição de líder mantêm-se (a perda de uma réplica dentro do quorum não perde dados nem interrompe escritas); o que muda é a remoção do mutex global que serializava *todas* as escritas através de um líder único. As invariantes de **ordem-por-stream** e **imutabilidade** (log append-only, `Read` devolve cópias) são preservadas — são a base do audit *hash-chain* (ADR-010). Em produção o backend é NATS JetStream (R3/R5, Raft); este modelo é a referência determinística e testável. **A partir de AOS-100 esse backend EXISTE e é alcançável** — `packages/substrate/eventstore/jetstream` implementa o contrato sobre um cluster, o nó liga-se por `AOS_EVENTSTORE_NATS` e o `aos-orq` por `--nats`, e é sobre ele que o `expected_seq` passa a ser atómico ENTRE PROCESSOS (ver §3-bis). O modelo in-process deixa de ser o único substrato e passa a ser o de referência para testes deterministas (falha de nó, escrita concorrente multi-worker, integridade append-only, tudo sob `-race`).
 
 **Soberania regional das réplicas (ADR-011).** As réplicas e os backups do Event Store **nunca** cruzam a fronteira regional de soberania do board. Quando a fronteira é declarada (região do board), o cluster é validado **fail-closed** na construção: uma réplica fora da região — ou com região ausente/desconhecida — é **rejeitada** (`E_SOVEREIGNTY_VIOLATION`); o quorum é computado **dentro** da região e a eleição de líder nunca promove liderança *cross-border*. Isto materializa, ao nível do armazenamento, a mesma postura *"região desconhecida ⇒ deny"* que o PDP emite como obrigação `region` e o PEP impõe (AOS-094).
 
@@ -219,6 +219,44 @@ lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
 > replicado de produção (NATS JetStream), e nessa altura a condição de aplicabilidade do
 > guard (`guardDePosseAplicavel`) tem de ser revista — está nomeada no código por essa razão.
 >
+> **DEF-282 FECHADO a 2026-08-31 (AOS-100) — e o limite acima continua verdadeiro para o
+> substrato a que se refere.** O backend replicado passou a existir
+> (`packages/substrate/eventstore/jetstream`) e ambos os binários o alcançam: o nó por
+> `AOS_EVENTSTORE_NATS`, o `aos-orq` por `--nats`. A revisão do guard que este parágrafo
+> anunciava foi FEITA — a condição passou a ser sobre o substrato *efectivamente
+> escolhido*, e não sobre a presença de um caminho de ficheiro.
+>
+> **As duas topologias, e o que as distingue à vista do operador.** A MESMA corrida entre
+> quatro processos, medida nos dois substratos:
+>
+> | Substrato | Desfecho | Quem arbitra |
+> |---|---|---|
+> | `--wal` (referência) | `vencedores=1 guardados(WAL)=3 negados(lease)=0` | o **ficheiro** (guard AOS-285/286, saída **5**) |
+> | `--nats` (replicado) | `vencedores=1 guardados(WAL)=0 negados-pelo-lease=3` | o **lease** (AOS-018, saída **3**) |
+>
+> É a diferença de código de saída que diz ao operador onde ir: no primeiro caso pára-se
+> o outro ESCRITOR do store; no segundo, o outro dono do RUN. Sobre `--wal` nada mudou —
+> o Event Store de referência continua a não arbitrar entre processos, e é por isso que o
+> sensor `TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos` continua verde e
+> continua CERTO: a propriedade foi ganha por um substrato **diferente**, não por aquele.
+>
+> **Soberania regional (AC5) — FECHADA a 2026-08-31.** O stream é criado com `placement`
+> restrita a servidores que anunciem `server_tags: ["region:<regiao>"]`, e a colocação é
+> **VERIFICADA contra a configuração armazenada** no arranque. Cobre os três modos de
+> falha, todos medidos: pedir uma região que nenhum par serve **aborta** (é o servidor a
+> recusar, `err_code=10005`); ligar-se a um stream **sem** colocação **aborta** (o caso
+> silencioso — julgar-se soberano sobre dados que podem estar em qualquer par); e uma
+> fronteira declarada **sem região** aborta antes de haver ligação. O nó exige
+> `AOS_EVENTSTORE_NATS_REGION` quando há `AOS_BOARD_REGIONS`, e o `aos-orq` tem
+> `--nats-region`.
+>
+> **O que a medição NÃO cobre, e é honesto dizê-lo:** os três servidores do cluster de
+> medição anunciam a MESMA região, pelo que não se exercitou um cluster genuinamente
+> multi-região. O que fica provado é que a restrição é PEDIDA, ARMAZENADA e VERIFICADA, e
+> que a sua ausência aborta; a distribuição das réplicas por regiões distintas é lógica do
+> JetStream, não nossa.
+>
+>
 > **Residual PAGO (AOS-286).** O AOS-285 cobria só o nó, e o residual — outro binário a
 > escrever o mesmo WAL sem pedir posse — ficou aqui nomeado. O `aos-orq serve` pede agora
 > a posse (código de saída **5**, distinto do 3: ali a remediação é parar quem detém
@@ -297,7 +335,7 @@ sequenceDiagram
     RT->>OP: Servico restabelecido dentro do RTO
 ```
 
-**Backup do Event Store.** O log é replicado por quorum em contínuo (RPO tende a zero dentro da região) e adicionalmente exportado para backup imutável, com verificação periódica da hash-chain do audit WORM (ADR-010). O backup respeita a soberania: réplicas e cópias nunca cruzam a fronteira regional (ADR-011) — a mesma guarda *fail-closed* que rejeita, na construção do cluster, qualquer réplica fora da região do board (AOS-100). A base do backup e do replay é a replicação por quorum sem single-writer de AOS-100: a **ordem-por-stream** e a **imutabilidade** append-only são preserváveis e verificáveis independentemente do paralelismo de escrita entre streams, pelo que o log restaurado é integralmente reproduzível passo-a-passo.
+**Backup do Event Store.** O log é replicado por quorum em contínuo (RPO tende a zero dentro da região) e adicionalmente exportado para backup imutável, com verificação periódica da hash-chain do audit WORM (ADR-010). O backup respeita a soberania: réplicas e cópias nunca cruzam a fronteira regional (ADR-011) — a mesma guarda *fail-closed* que rejeita qualquer réplica fora da região do board (AOS-100). **Os dois substratos impõem-na por mecanismos diferentes, e a diferença importa a quem opera:** o modelo de referência recusa na CONSTRUÇÃO do cluster (as réplicas são objectos dele); o replicado declara a restrição na `placement` do stream e **VERIFICA-A contra a configuração armazenada** no arranque — porque as réplicas não são dele, são pares do cluster, e ligar-se a um stream sem colocação seria julgar-se soberano sem o ser. A base do backup e do replay é a replicação por quorum sem single-writer de AOS-100: a **ordem-por-stream** e a **imutabilidade** append-only são preserváveis e verificáveis independentemente do paralelismo de escrita entre streams, pelo que o log restaurado é integralmente reproduzível passo-a-passo.
 
 **Backup imutável + PITR (AOS-101).** A exportação materializa-se em duas camadas de referência, zero-dep, com os *backends* de produção (object storage WORM, KMS) modelados por portas injectáveis:
 

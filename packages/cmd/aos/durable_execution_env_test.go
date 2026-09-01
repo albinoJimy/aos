@@ -142,7 +142,7 @@ func dexRunTool(t *testing.T, node *Node, runID string) int64 {
 
 // dexEventTypes lê o stream do run no Event Store e devolve o conjunto de tipos de evento
 // nele persistidos. É a observação do EFEITO da execução durável no substrato.
-func dexEventTypes(t *testing.T, es *eventstore.Store, runID string) map[string]int {
+func dexEventTypes(t *testing.T, es EventStorePort, runID string) map[string]int {
 	t.Helper()
 	events, err := es.Read(context.Background(), runID, 0)
 	if err != nil && !errors.Is(err, eventstore.ErrStreamNotFound) {
