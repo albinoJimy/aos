@@ -159,6 +159,11 @@ type NodeService struct {
 	// AOS-267 — scheduler interno de RETENÇÃO (expiração por TTL sem cron externo). Partilha o
 	// MESMO sweepStop: o Shutdown pára os quatro laços com UM close.
 	retentionSweepInterval time.Duration // cadência do varrimento; <= 0 desliga
+	// AOS-283 — POSSE do laço de retenção por lease durável (`lease:svc:retention`). É o
+	// laço que EXIGE exclusão entre réplicas: medido, duas réplicas sobre o mesmo
+	// substrato selavam DOIS `retention.expired` para o mesmo facto, porque o guard
+	// [NodeService.expireInFlight] é um `atomic.Bool` POR PROCESSO. Ver posse_de_laco.go.
+	posseRetencao *posseDeLaco
 	// ---- OBSERVABILIDADE DO VARREDOR DE RETENÇÃO (AOS-267) ----------------------------------
 	//
 	// «A expiração por TTL está a correr?» era uma pergunta sem resposta em runtime. O
@@ -427,6 +432,10 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		vaultTokenRenewInterval: vaultTokenRenewInterval,
 		retentionSweepInterval:  retentionSweepInterval,
 	}
+	// AOS-283 — a posse do laço de retenção usa a MESMA autoridade de lease que possui os
+	// runs (nenhum segundo mecanismo) e o MESMO período de renovação (TTL/3 por omissão),
+	// que é folgado o suficiente para a posse nunca expirar entre duas renovações.
+	s.posseRetencao = novaPosseDeLaco(lacoRetencao, leases, hbInterval, s.log)
 	s.log("loop de servico do no `aos` pronto (AOS-164a): TTL de lease=%s, heartbeat=%s, worker=%q, retencao=%d",
 		cfg.ttl, hbInterval, cfg.workerID, completedCap)
 	// AOS-021 — varrimento de aprovações expiradas no LOOP DE SERVIÇO. Só arranca quando
@@ -1005,6 +1014,20 @@ func (s *NodeService) Shutdown(ctx context.Context) error {
 	// Para os laços periódicos (AOS-021/252/249/267/274) com UM close — idempotente: o Shutdown já
 	// retornou cedo se `closed` estava armado, pelo que este close acontece uma só vez.
 	close(s.sweepStop)
+	// AOS-283 — a posse dos laços de serviço é largada por ANÚNCIO, não deixada a expirar:
+	// a réplica seguinte assume o laço de imediato em vez de esperar o TTL inteiro (ADR-023
+	// §2.5). Depois do `close` acima, porque o anúncio é o ÚLTIMO acto da posse — largar
+	// antes de o laço parar deixaria uma passagem a correr sobre uma posse já anunciada
+	// como largada.
+	//
+	// JANELA RESIDUAL, declarada em vez de calada: o `close` pára o laço no PRÓXIMO tick,
+	// não interrompe uma passagem já a meio. Um shutdown que apanhe uma passagem em voo
+	// anuncia a largada com ela ainda a selar. A consequência é limitada pelo que a réplica
+	// seguinte faz a seguir — reclama e corre a SUA passagem, que salta por idempotência os
+	// factos já selados (o seen-set é re-hidratado da cadeia no arranque) — e é a mesma
+	// janela que o desenho por-run tem. Fechá-la exigiria a passagem participar no
+	// WaitGroup do drain, que é trabalho de outro ticket.
+	s.posseRetencao.largar(ctx)
 	s.log("shutdown gracioso iniciado — %d run(s) em curso a drenar (nao aceita novos)", inflight)
 
 	drained := make(chan struct{})

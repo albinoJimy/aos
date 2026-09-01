@@ -20,6 +20,12 @@ package main
 // A re-varredura periódica não enfraquece invariante nenhum: respeita o lease e limita-se a
 // tentar outra vez depois de ele expirar. O próprio varredor declara-se "idempotente e seguro de
 // re-correr", e é esse contrato que esta peça usa.
+//
+// REGIME DE POSSE (AOS-283): JÁ SEGURO — corre em TODAS as réplicas, sem lease PRÓPRIO,
+// porque a exclusão já está lá onde importa. A retoma passa por `submit`, que RECLAMA o
+// lease do run e SALTA sem roubo se outra réplica o detiver: o laço pode correr em N
+// réplicas, mas cada órfão é retomado por UMA. Foi escrito a pensar nisto e é o MODELO que
+// AOS-283 seguiu para a retenção — não o alvo.
 
 import (
 	"context"

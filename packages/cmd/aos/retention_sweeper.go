@@ -4,6 +4,13 @@ package main
 // varrimento de aprovações (approval_sweeper.go) e do de deadlines (deadline_sweeper.go): um
 // ticker que termina com o MESMO `sweepStop` fechado pelo Shutdown.
 //
+// REGIME DE POSSE (AOS-283): EXIGE EXCLUSÃO — é o ÚNICO dos seis laços de serviço que a
+// exige, e corre SÓ sob posse de `lease:svc:retention` (fail-closed: sem posse não corre).
+// Medido a 2026-09-01: duas réplicas sobre o mesmo substrato selavam DOIS
+// `retention.expired` para o MESMO facto, porque o guard `expireInFlight` é um
+// `atomic.Bool` por-processo e a idempotência do job vive num seen-set in-memory. Ver
+// posse_de_laco.go para o mecanismo e para a razão de não ser uma idempotência durável.
+//
 // O PROBLEMA QUE FECHA. O [audit.ExpirationJob] estava composto e correcto, mas tinha UM condutor:
 // `POST /dsar/expire`. Ou seja, com `AOS_RETENTION_VERSION`+`AOS_RETENTION_PERIODS` definidas — um
 // operador que fez tudo o que o README lhe pediu — NADA expirava enquanto não existisse um cron
@@ -241,6 +248,19 @@ func (s *NodeService) sweepRetention(stop <-chan struct{}) {
 //
 // Exportada-por-teste através de [NodeService.SweepRetentionNow].
 func (s *NodeService) sweepRetentionOnce(ctx context.Context) bool {
+	// EXCLUSÃO ENTRE RÉPLICAS (AOS-283), e é a PRIMEIRA porta porque é a única que fala do
+	// mundo fora deste processo. Sem ela, o guard `expireInFlight` abaixo — um `atomic.Bool`
+	// POR PROCESSO — dava a impressão de serializar as passagens quando só serializava as
+	// DESTA réplica: medido, duas réplicas sobre o mesmo substrato selavam DOIS
+	// `retention.expired` para o MESMO facto, poluindo a cadeia gapless que a idempotência
+	// do job existe para proteger. Ver posse_de_laco.go.
+	//
+	// Devolve TRUE quando não é líder: não há incidente nenhum — há outra réplica a fazer
+	// este trabalho. O laço continua vivo e volta a tentar a posse no tick seguinte, que é
+	// o que lhe permite assumir quando a líder morrer (TTL) ou anunciar a largada.
+	if !s.posseRetencao.assumir(ctx, s.sweepStop) {
+		return true
+	}
 	// SERIALIZAÇÃO partilhada com POST /dsar/expire (ver a nota em [apiHandler.handleExpire]): o
 	// Run do job faz Seen(key)…Add(key) sem atomicidade check-then-act, pelo que duas passagens
 	// concorrentes poderiam selar DOIS `retention.expired` para o mesmo facto. O guard é UM só,
