@@ -22,6 +22,7 @@ require (
 
 require (
 	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0 // indirect
+	github.com/aos-ref/platform/backup v0.0.0
 	github.com/aos-ref/platform/messaging v0.0.0 // indirect
 	github.com/cedar-policy/cedar-go v1.8.0 // indirect
 	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect

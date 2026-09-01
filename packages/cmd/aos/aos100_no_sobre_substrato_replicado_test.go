@@ -323,8 +323,8 @@ func TestAOS100_NoArrancaComFronteiraRegionalImposta(t *testing.T) {
 	if !ok {
 		t.Fatalf("node.EventStore é %T", node.EventStore)
 	}
-	if js.Regiao() != "eu-west" {
-		t.Fatalf("Regiao() = %q, quer eu-west — a fronteira não chegou ao substrato", js.Regiao())
+	if js.Region() != "eu-west" {
+		t.Fatalf("Region() = %q, quer eu-west — a fronteira não chegou ao substrato", js.Region())
 	}
 	if _, err := node.EventStore.Append(context.Background(), "run-soberano",
 		eventstore.EventInput{Type: "aos100.soberania", Payload: json.RawMessage(`{}`)}); err != nil {
