@@ -78,11 +78,30 @@ func VerifyStore(ctx context.Context, store Store) (int, error) {
 func verifyReplayedChain(partition string, recs []AuditRecord) error {
 	expectedSeq := uint64(1)
 	expectedPrev := GenesisHash(partition)
+	// Guarda o EntryHash de cada seq já verificado, para poder responder à pergunta que
+	// distingue uma CORRIDA de uma ADULTERAÇÃO: o registo repetido encadeia no elo
+	// anterior e recomputa? Sem isto, o duplicado é indistinguível de uma inserção.
+	hashPorSeq := make([][]byte, 0, len(recs))
 	for _, rec := range recs {
 		switch {
 		case rec.AuditSeq > expectedSeq:
 			return tamper(TamperRemoval, partition, expectedSeq, "audit_seq em falta no replay (esperado contiguo)")
 		case rec.AuditSeq < expectedSeq:
+			// O REGISTO REPETIDO. Duas causas com o mesmo sintoma e remédios opostos.
+			//
+			// Se este registo encadeia no elo ANTERIOR e o seu EntryHash recomputa,
+			// então é um segundo ramo BEM FORMADO — a assinatura de dois escritores que
+			// partiram da mesma vista (AOS-284), e não a de quem enfia um registo no
+			// meio de um log. Ver TamperFork para o que esta distinção NÃO prova.
+			prevEsperadoAqui := GenesisHash(partition)
+			if rec.AuditSeq >= 2 && int(rec.AuditSeq)-2 < len(hashPorSeq) {
+				prevEsperadoAqui = hashPorSeq[rec.AuditSeq-2]
+			}
+			if bytes.Equal(rec.PrevHash, prevEsperadoAqui) &&
+				bytes.Equal(ComputeEntryHash(rec.PrevHash, rec), rec.EntryHash) {
+				return tamper(TamperFork, partition, rec.AuditSeq,
+					"dois registos bem formados disputam este audit_seq — assinatura de escritores concorrentes na mesma particao, nao de adulteracao (AOS-284)")
+			}
 			return tamper(TamperInsertion, partition, rec.AuditSeq, "audit_seq duplicado ou fora de ordem no replay")
 		}
 		if !bytes.Equal(rec.PrevHash, expectedPrev) {
@@ -91,6 +110,7 @@ func verifyReplayedChain(partition string, recs []AuditRecord) error {
 		if !bytes.Equal(ComputeEntryHash(rec.PrevHash, rec), rec.EntryHash) {
 			return tamper(TamperMutation, partition, rec.AuditSeq, "entry_hash recalculado diverge do armazenado (replay)")
 		}
+		hashPorSeq = append(hashPorSeq, rec.EntryHash)
 		expectedPrev = rec.EntryHash
 		expectedSeq++
 	}

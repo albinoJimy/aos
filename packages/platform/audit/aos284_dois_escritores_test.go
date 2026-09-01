@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -159,15 +158,23 @@ func TestAOS284_MEDICAO_UmForkPorCorridaEReportadoComoAdulteracao(t *testing.T) 
 		t.Fatalf("MEDIÇÃO DESMENTIDA: a recusa não desembrulha para ErrTampered (%v) — já existe distinção que eu não vi", err)
 	}
 
-	// É ESTA a confusão que o AC2 nomeia, e é pior do que o AC2 supõe: não é só um
-	// diagnóstico enganador num relatório de verificação — é a mensagem que o operador
-	// lê quando o nó se recusa a arrancar. Diz-lhe «adulteração», ou seja ATAQUE, quando
-	// o que houve foram duas réplicas legítimas a escrever ao mesmo tempo. Manda chamar
-	// o segurança em vez de mandar arranjar a disciplina de partição.
-	if !containsTodas(err.Error(), "adultera") {
-		t.Fatalf("a recusa devia nomear adulteração (é essa a confusão a medir): %v", err)
+	// O AC2, agora fechado: a recusa CLASSIFICA a causa em vez de a confundir.
+	//
+	// A PRIMEIRA VERSÃO DESTA ASSERÇÃO ERA FRACA, e o registo fica porque a lição é a
+	// que mais custa aprender: eu afirmava `strings.Contains(err.Error(), "adultera")`.
+	// Passava antes da correcção (a mensagem dizia «adulteracao insertion») E DEPOIS
+	// dela (o invólucro novo diz «nao adulteracao»). Uma asserção sobre PROSA casa com
+	// os dois mundos e não discrimina nenhum — parecia um teste e não era.
+	//
+	// A asserção certa é sobre a CLASSIFICAÇÃO, que é o que a correcção mudou.
+	if !errors.Is(err, ErrChainForked) {
+		t.Fatalf("a recusa devia classificar BIFURCAÇÃO e não adulteração: %v", err)
 	}
-	t.Logf("CONFUSÃO CONFIRMADA, e no arranque e não na verificação: %v", err)
+	var ve *VerifyError
+	if !errors.As(err, &ve) || ve.Type != TamperFork {
+		t.Fatalf("o tipo devia ser TamperFork; veio %v", err)
+	}
+	t.Logf("CLASSIFICADO como bifurcação, no arranque: %v", err)
 
 	// E o checkpoint assinado sobre a história comum continua válido por si — o que
 	// mostra que a raiz de confiança não é o problema: o problema é o log por baixo dela.
@@ -175,10 +182,6 @@ func TestAOS284_MEDICAO_UmForkPorCorridaEReportadoComoAdulteracao(t *testing.T) 
 		t.Fatalf("o checkpoint da história comum devia continuar a verificar: %v", err)
 	}
 }
-
-// containsTodas diz se s contém sub. Existe para o teste nomear o que procura na mensagem
-// de erro sem arrastar `strings` só para isso ser legível na asserção.
-func containsTodas(s, sub string) bool { return strings.Contains(s, sub) }
 
 // TestAOS284_CONTROLO_ComParticoesDISTINTASNaoHaFork é a prova de NÃO-VACUIDADE das duas
 // medições acima — e, ao mesmo tempo, a demonstração da forma que a correcção tem de ter.

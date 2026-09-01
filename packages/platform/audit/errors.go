@@ -88,6 +88,24 @@ const (
 	// campo de versão corrompido), e reportá-lo como "mutação" mandaria o operador
 	// procurar um adulterador onde há um problema de versões.
 	TamperUnknownSchema TamperType = "unknown_schema"
+	// TamperFork — DOIS registos legítimos disputam o mesmo audit_seq, cada um bem
+	// formado: PrevHash encadeia no elo anterior e EntryHash recomputa. Não é o
+	// sintoma de quem adultera um log — é o de dois ESCRITORES a partir da mesma
+	// vista, que é o que duas réplicas são uma para a outra quando partilham partição
+	// (AOS-284, medido).
+	//
+	// TIPO PRÓPRIO, pela mesma razão que [TamperUnknownSchema] o tem: reportar isto
+	// como "insertion" manda o operador procurar um atacante onde há um defeito de
+	// deployment. E o custo dessa confusão não é teórico — é a mensagem que ele lê
+	// quando o nó SE RECUSA A ARRANCAR sobre o WORM bifurcado.
+	//
+	// O QUE ISTO NÃO É, e tem de ficar dito: prova de inocência. O EntryHash é um
+	// hash e não um MAC, pelo que um adulterador com acesso ao ficheiro CONSEGUE
+	// fabricar um ramo bem formado. O que se distingue são FORMAS, não intenções: a
+	// forma de uma corrida é esta; a de uma adulteração desastrada é outra. Quem quer
+	// prova de integridade contra um adversário usa o checkpoint ASSINADO — que
+	// continua a ser a raiz de confiança e continua a verificar.
+	TamperFork TamperType = "fork"
 )
 
 // VerifyError identifica o registo e o tipo de adulteração detectados na
@@ -105,12 +123,35 @@ type VerifyError struct {
 }
 
 func (e *VerifyError) Error() string {
+	// A PALAVRA IMPORTA, e é metade do AC2 do AOS-284: «adulteracao» manda chamar o
+	// segurança; uma bifurcação manda arranjar a disciplina de partição do deployment.
+	// Classificar bem e continuar a escrever a palavra errada não corrigiria nada — quem
+	// lê o erro lê a frase, não o campo Type.
+	if e.Type == TamperFork {
+		return fmt.Sprintf("audit: cadeia BIFURCADA na particao %q, audit_seq=%d: %s",
+			e.Partition, e.Seq, e.Detail)
+	}
 	return fmt.Sprintf("audit: adulteracao %s na particao %q, audit_seq=%d: %s",
 		e.Type, e.Partition, e.Seq, e.Detail)
 }
 
 // Unwrap liga o VerifyError ao sentinela-raiz [ErrTampered].
 func (e *VerifyError) Unwrap() error { return ErrTampered }
+
+// ErrChainForked — sentinela para a BIFURCAÇÃO por escritores concorrentes ([TamperFork]).
+//
+// Acrescentado e não substituído: um erro de fork continua a desembrulhar para
+// [ErrTampered], pelo que quem já testava «a cadeia é de confiar?» continua a ver falha e
+// NADA enfraquece. Quem quiser AGIR sobre a causa — e a acção é diferente: arranjar a
+// disciplina de partição, não chamar o segurança — testa este.
+var ErrChainForked = errors.New("audit: cadeia bifurcada por escritores concorrentes")
+
+// Is deixa um erro de fork casar TAMBÉM com [ErrChainForked], sem tocar no
+// desembrulhamento para [ErrTampered] (devolver false aqui deixa o errors.Is seguir para
+// o Unwrap). É o que permite acrescentar a distinção sem remover a garantia antiga.
+func (e *VerifyError) Is(target error) bool {
+	return target == ErrChainForked && e.Type == TamperFork
+}
 
 // tamper constrói um *VerifyError.
 func tamper(t TamperType, partition string, seq uint64, detail string) *VerifyError {
