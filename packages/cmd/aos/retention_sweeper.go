@@ -241,6 +241,19 @@ func (s *NodeService) sweepRetention(stop <-chan struct{}) {
 //
 // Exportada-por-teste através de [NodeService.SweepRetentionNow].
 func (s *NodeService) sweepRetentionOnce(ctx context.Context) bool {
+	// EXCLUSÃO ENTRE RÉPLICAS (AOS-283), e é a PRIMEIRA porta porque é a única que fala do
+	// mundo fora deste processo. Sem ela, o guard `expireInFlight` abaixo — um `atomic.Bool`
+	// POR PROCESSO — dava a impressão de serializar as passagens quando só serializava as
+	// DESTA réplica: medido, duas réplicas sobre o mesmo substrato selavam DOIS
+	// `retention.expired` para o MESMO facto, poluindo a cadeia gapless que a idempotência
+	// do job existe para proteger. Ver posse_de_laco.go.
+	//
+	// Devolve TRUE quando não é líder: não há incidente nenhum — há outra réplica a fazer
+	// este trabalho. O laço continua vivo e volta a tentar a posse no tick seguinte, que é
+	// o que lhe permite assumir quando a líder morrer (TTL) ou anunciar a largada.
+	if !s.posseRetencao.assumir(ctx, s.sweepStop) {
+		return true
+	}
 	// SERIALIZAÇÃO partilhada com POST /dsar/expire (ver a nota em [apiHandler.handleExpire]): o
 	// Run do job faz Seen(key)…Add(key) sem atomicidade check-then-act, pelo que duas passagens
 	// concorrentes poderiam selar DOIS `retention.expired` para o mesmo facto. O guard é UM só,

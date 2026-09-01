@@ -1229,11 +1229,19 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// depois é invisível. As três coisas que podem estar a acontecer leem-se de maneira diferente
 	// e exigem acções diferentes, e por isso são TRÊS séries e não uma:
 	//
-	//   armed=0                      ⇒ nunca foi armado (política ausente, ou intervalo <= 0)
-	//   armed=1, stopped=1           ⇒ PAROU por incidente de integridade da hash-chain, e não
-	//                                  volta sozinho: exige investigar o WORM e reiniciar o nó
-	//   armed=1, stopped=0, sem age  ⇒ armado, à espera do primeiro tick
-	//   armed=1, stopped=0, age alta ⇒ deixou de correr sem o dizer
+	//   armed=0                                  ⇒ nunca foi armado (política ausente, ou intervalo <= 0)
+	//   armed=1, stopped=1                       ⇒ PAROU por incidente de integridade da hash-chain, e não
+	//                                              volta sozinho: exige investigar o WORM e reiniciar o nó
+	//   armed=1, leader=0                        ⇒ NÃO SOU LÍDER: outra réplica detém `lease:svc:retention`
+	//                                              e é ela que expira. Nada a fazer NESTE nó
+	//   armed=1, leader=1, stopped=0, sem age    ⇒ armado, à espera do primeiro tick
+	//   armed=1, leader=1, stopped=0, age alta   ⇒ deixou de correr sem o dizer
+	//
+	// A TERCEIRA LINHA É AOS-283, e sem ela as outras mentem. Com N réplicas, N−1 publicam
+	// `sweeps_total=0` e nenhuma `age` — indistinguível de «armado e nunca correu», que é o
+	// sintoma de um laço morto. As três leituras exigem acções diferentes: investigar o WORM,
+	// não fazer nada, e investigar o laço. Uma série que as confunde faz o operador agir sobre
+	// a réplica errada.
 	//
 	// O que deixa de acontecer quando isto morre é o apagamento de dados fora do TTL — uma
 	// obrigação com prazo, e a única que não dá sinal nenhum por si mesma.
@@ -1246,6 +1254,8 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				"counter", float64(h.svc.varrimentosTotal.Load()), "")
 			g("aos_retention_scheduler_stopped", "O escalonador PAROU definitivamente por incidente de integridade da hash-chain (1). Nao volta sozinho.",
 				"gauge", b01(h.svc.varredorParado.Load()), "")
+			g("aos_retention_scheduler_leader", "Esta replica detem a posse do laco de retencao (lease:svc:retention) e e a UNICA que expira (1), ou outra replica detem-na (0). Com 0, sweeps_total=0 e a ausencia de age NAO significam laco parado: significam que este no nao e o executor.",
+				"gauge", b01(h.svc.posseRetencao.souLider()), "")
 			// A idade só sai DEPOIS da primeira passagem. Antes disso, emitir 0 diria «acabou de
 			// varrer» sobre um nó que ainda não varreu nada — e um nó recém-arrancado ficaria
 			// indistinguível de um nó saudável durante a primeira hora.
