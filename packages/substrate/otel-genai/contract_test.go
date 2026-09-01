@@ -1,6 +1,8 @@
 package otelgenai
 
 import (
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -91,8 +93,24 @@ func TestRequiredAttributesIsolation(t *testing.T) {
 	if RequiredAttributes("desconhecida") != nil {
 		t.Error("operação desconhecida devia devolver nil")
 	}
-	if ops := KnownOperations(); len(ops) != 5 {
-		t.Errorf("KnownOperations = %v, esperava 5", ops)
+	// O conjunto é afirmado por EXTENSO, e não por contagem.
+	//
+	// A contagem («esperava 5») dizia que algo mudou mas não O QUÊ, e passava na mesma
+	// se uma operação fosse trocada por outra. Enumerar torna a revisão de uma operação
+	// nova uma leitura de uma linha, e é o que se quer de um contrato: acrescentar uma
+	// operação é uma decisão, não um efeito secundário.
+	esperadas := []string{
+		OpActivity,
+		OpLogAppend,
+		OpLogRead,
+		OpChat,
+		OpExecuteTool,
+		OpEvaluation,
+		OpInvokeAgent,
+	}
+	sort.Strings(esperadas)
+	if ops := KnownOperations(); !reflect.DeepEqual(ops, esperadas) {
+		t.Errorf("KnownOperations = %v, esperava %v", ops, esperadas)
 	}
 }
 

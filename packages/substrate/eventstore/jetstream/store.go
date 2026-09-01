@@ -37,6 +37,7 @@ type Store struct {
 	board   string
 	prazo   time.Duration
 	obs     eventstore.Observer
+	rastro  eventstore.Rastreador
 	now     func() time.Time
 
 	mu      sync.Mutex
@@ -44,6 +45,7 @@ type Store struct {
 	subs    map[string]*subscricao
 	proxSub uint64
 	fechado bool
+	usado   bool // fecha a janela de LigarRastreador
 }
 
 // estado é a vista LOCAL de um stream do AOS. É uma cache, não a verdade: a verdade
@@ -69,6 +71,7 @@ type config struct {
 	board     string
 	fronteira bool
 	obs       eventstore.Observer
+	rastro    eventstore.Rastreador
 	now       func() time.Time
 }
 
@@ -105,6 +108,7 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		criar:    true,
 		now:      time.Now,
 		obs:      observadorNulo{},
+		rastro:   eventstore.NopRastreador{},
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -186,6 +190,7 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		regiao:  regiao,
 		board:   cfg.board,
 		obs:     cfg.obs,
+		rastro:  cfg.rastro,
 		streams: map[string]*estado{},
 		subs:    map[string]*subscricao{},
 	}, nil
@@ -210,7 +215,14 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 // novo. Devolver-lhe um conflito que ele não pediu seria transformar a concorrência
 // entre streams num erro do chamador.
 func (s *Store) Append(ctx context.Context, streamID string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	// O span abre com o `ctx` do CHAMADOR, e é isso que o põe por baixo do span do passo
+	// que causou a escrita em vez de o deixar órfão (EPIC-08 / AOS-077).
+	s.marcarUsado()
+	ctx, span := s.rastro.Iniciar(ctx, eventstore.OperacaoAppend)
+	defer span.Fim()
+	span.Atributo(eventstore.AtributoStream, streamID)
 	if err := ctx.Err(); err != nil {
+		registarRecusa(span, err)
 		return eventstore.AppendResult{}, err
 	}
 	if s.estaFechado() {
@@ -241,6 +253,8 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 				// ja o tinha em maos, e um round-trip para o repetir seria trabalho
 				// a mais no caminho mais quente que existe (o retry de um passo).
 				s.obs.AppendDuplicate(streamID, ev.Seq)
+				span.Atributo(eventstore.AtributoDesfecho, "duplicate")
+				span.Atributo(eventstore.AtributoSeq, ev.Seq)
 				return eventstore.AppendResult{Seq: ev.Seq, Status: eventstore.StatusDuplicate, Event: ev.Clone()}, nil
 			}
 		}
@@ -251,9 +265,11 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 			case esperado == st.aosSeq: // ok
 			case esperado < st.aosSeq:
 				s.obs.AppendRejected(streamID, eventstore.ErrAppendOnlyViolation)
+				registarRecusa(span, eventstore.ErrAppendOnlyViolation)
 				return eventstore.AppendResult{}, eventstore.ErrAppendOnlyViolation
 			default:
 				s.obs.AppendRejected(streamID, eventstore.ErrSeqConflict)
+				registarRecusa(span, eventstore.ErrSeqConflict)
 				return eventstore.AppendResult{}, eventstore.ErrSeqConflict
 			}
 		}
@@ -284,6 +300,8 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 				st.dedup[eventstore.IdempotencyKey(in.RunID, in.StepID)] = ev
 			}
 			s.obs.AppendCommitted(streamID, ev.Seq, s.now().Sub(inicio))
+			span.Atributo(eventstore.AtributoDesfecho, "committed")
+			span.Atributo(eventstore.AtributoSeq, ev.Seq)
 			return eventstore.AppendResult{Seq: ev.Seq, Status: eventstore.StatusCommitted, Event: ev}, nil
 
 		case errors.Is(err, natsjs.ErrWrongLastSeq):
@@ -295,9 +313,11 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 				}
 				if esperado < st.aosSeq {
 					s.obs.AppendRejected(streamID, eventstore.ErrAppendOnlyViolation)
+					registarRecusa(span, eventstore.ErrAppendOnlyViolation)
 					return eventstore.AppendResult{}, eventstore.ErrAppendOnlyViolation
 				}
 				s.obs.AppendRejected(streamID, eventstore.ErrSeqConflict)
+				registarRecusa(span, eventstore.ErrSeqConflict)
 				return eventstore.AppendResult{}, eventstore.ErrSeqConflict
 			}
 			if tentativa >= maxRetentativasSemCAS {
@@ -320,6 +340,7 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 
 		default:
 			s.obs.AppendRejected(streamID, err)
+			registarRecusa(span, err)
 			return eventstore.AppendResult{}, err
 		}
 	}
@@ -349,7 +370,12 @@ func (s *Store) escritaAplicada(ctx context.Context, st *estado, subject, eventI
 // Lê SEMPRE do servidor, nunca de uma cache local: é a diferença entre um Event Store
 // partilhado e N cópias in-process, e é o defeito que o DEF-282 mediu.
 func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error) {
+	s.marcarUsado()
+	ctx, span := s.rastro.Iniciar(ctx, eventstore.OperacaoRead)
+	defer span.Fim()
+	span.Atributo(eventstore.AtributoStream, streamID)
 	if err := ctx.Err(); err != nil {
+		registarRecusa(span, err)
 		return nil, err
 	}
 	if s.estaFechado() {
@@ -364,6 +390,7 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]ev
 		return nil, err
 	}
 	if len(evs) == 0 {
+		registarRecusa(span, eventstore.ErrStreamNotFound)
 		return nil, eventstore.ErrStreamNotFound
 	}
 	out := make([]eventstore.Event, 0, len(evs))
@@ -372,6 +399,8 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]ev
 			out = append(out, ev.Clone())
 		}
 	}
+	span.Atributo(eventstore.AtributoDesfecho, "ok")
+	span.Atributo(eventstore.AtributoContagem, len(out))
 	return out, nil
 }
 
@@ -607,6 +636,7 @@ func (sub *subscricao) Unsubscribe() {
 // subscrição), materializada por um consumidor EFÉMERO com deliver_policy "new". Ver os
 // limites no doc do pacote: sem acks, sem flow control, sem heartbeats.
 func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h eventstore.Handler) (eventstore.Subscription, error) {
+	s.marcarUsado()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

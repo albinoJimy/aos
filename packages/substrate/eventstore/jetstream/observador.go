@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"errors"
 	"time"
 
 	"github.com/aos-ref/substrate/eventstore"
@@ -64,3 +65,73 @@ func (observadorNulo) AppendCommitted(string, uint64, time.Duration) {}
 func (observadorNulo) AppendDuplicate(string, uint64)                {}
 func (observadorNulo) AppendRejected(string, error)                  {}
 func (observadorNulo) Published(string, uint64, int)                 {}
+
+// ComRastreador injecta a porta de rastreio (EPIC-08). Sem ela não se abre span nenhum.
+//
+// É DISTINTA de [ComObservador] por uma razão que o doc do `Observer` já dava: aquele é
+// o gancho de contagem/auditoria durável, chamado depois da operação e sem contexto; este
+// recebe o `ctx` e por isso o span nasce POR BAIXO do span que causou a escrita, em vez
+// de órfão. Ter os dois é o que permite que a auditoria de rejeições e a árvore de spans
+// não se atrapalhem uma à outra.
+func ComRastreador(r eventstore.Rastreador) Option {
+	return func(c *config) {
+		if r != nil {
+			c.rastro = r
+		}
+	}
+}
+
+// registarRecusa marca o span como RECUSADO e nomeia a causa.
+//
+// A causa vai no span porque é ela que diz ao operador o que fazer: um
+// E_APPEND_ONLY_VIOLATION é um escritor a afirmar o passado, um E_SEQ_CONFLICT é um a
+// afirmar o futuro, e um erro de ligação não é nem uma coisa nem outra. Um span que só
+// dissesse «rejected» mandaria toda a gente ler os logs.
+func registarRecusa(span eventstore.Rastro, err error) {
+	span.Atributo(eventstore.AtributoDesfecho, "rejected")
+	var se *eventstore.StoreError
+	if errors.As(err, &se) {
+		span.Atributo(eventstore.AtributoErro, se.Code)
+		return
+	}
+	span.Atributo(eventstore.AtributoErro, err.Error())
+}
+
+// LigarRastreador liga o rastreio DEPOIS da construção do store.
+//
+// # Porque existe, em vez de ser só a opção de construtor
+//
+// No ápice de composição do nó, o Event Store é construído ANTES do tracer — e a ordem
+// não é gratuita: mover a construção do tracer para cima arrastaria consigo a guarda de
+// limpeza do exportador, que é exactamente onde esse ficheiro já teve um defeito
+// registado (uma posse retida por um arranque abortado). Trocar um risco conhecido por um
+// mexer numa ordem delicada seria mau negócio.
+//
+// # Porque RECUSA depois do primeiro uso, em vez de o desaconselhar
+//
+// Um rastreador ligado a meio produziria spans para umas operações e não para outras, sem
+// nada a dizê-lo — uma observabilidade com buracos silenciosos é pior do que nenhuma,
+// porque quem a lê não sabe que está incompleta. A invariante «liga-se antes de usar» é
+// IMPOSTA e não recomendada: depois do primeiro Append, Read ou Subscribe, isto devolve
+// erro.
+func (s *Store) LigarRastreador(r eventstore.Rastreador) error {
+	if r == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.usado {
+		return errors.New("jetstream: rastreador ligado depois de o store já ter sido usado — " +
+			"produziria spans só para parte das operações, e uma observabilidade com buracos " +
+			"silenciosos é pior do que nenhuma")
+	}
+	s.rastro = r
+	return nil
+}
+
+// marcarUsado fecha a janela em que [Store.LigarRastreador] é aceite.
+func (s *Store) marcarUsado() {
+	s.mu.Lock()
+	s.usado = true
+	s.mu.Unlock()
+}

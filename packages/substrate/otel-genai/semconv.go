@@ -157,6 +157,48 @@ const (
 	// kernel (agent-runtime/activity) referencia esta constante como a sua OpActivity,
 	// pelo que a string é ÚNICA e não pode divergir entre as duas camadas (AOS-211).
 	OpActivity = "aos.activity"
+
+	// OpLogAppend / OpLogRead — spans do Event Store (EPIC-08 sobre
+	// AOS-100). Uma escrita e uma leitura do log são trabalho observável: é onde a
+	// latência de um passo aparece, e é onde uma recusa de concorrência optimista se
+	// distingue de uma avaria.
+	//
+	// # Porque a string está DUPLICADA aqui, ao contrário de OpActivity
+	//
+	// O OpActivity resolve o mesmo problema PARTILHANDO a constante: o kernel importa
+	// este módulo e referencia-a. Com o Event Store isso não é possível —
+	// `substrate/eventstore` tem ZERO dependências, e é essa propriedade que sustenta o
+	// binário zero-dep do nó (ADR-017 §1). Importar este módulo para obter uma string
+	// trocaria a propriedade pela conveniência.
+	//
+	// A divergência é impedida por um GUARD-TEST no ápice de composição
+	// (`packages/integration`), que é o único sítio que pode importar os dois e por isso
+	// o único que pode comparar as constantes. Sem esse teste isto seria uma cópia à
+	// espera de divergir.
+	OpLogAppend = "aos.eventstore.append"
+	OpLogRead   = "aos.eventstore.read"
+)
+
+// Atributos dos spans do Event Store. Mesma duplicação deliberada, mesmo guard-test.
+//
+// # Porque os identificadores NÃO dizem «Event»
+//
+// O gate `event-catalog` — e um leitor — identificam uma constante de TIPO DE EVENTO pelo
+// `Event` no identificador (tecnica/13 §3.3). Estas não são tipos de evento: são o nome de
+// uma operação de span e os seus atributos, e nada disto chega a um `EventInput.Type`. Um
+// identificador que sugerisse o contrário fazia o gate classificá-las mal — como fez, na
+// primeira versão — e faria um humano classificá-las mal a seguir.
+const (
+	// AttrLogStream — o stream_id do AOS (que é o run_id).
+	AttrLogStream = "aos.eventstore.stream_id"
+	// AttrLogSeq — o seq atribuído (0 quando a escrita foi recusada).
+	AttrLogSeq = "aos.eventstore.seq"
+	// AttrLogOutcome — o desfecho: committed, duplicate ou rejected para a
+	// escrita; ok ou not_found para a leitura. É o que separa «recusámos» de «avariou»
+	// numa vista de query-time.
+	AttrLogOutcome = "aos.eventstore.outcome"
+	// AttrLogCount — quantos eventos uma leitura devolveu.
+	AttrLogCount = "aos.eventstore.events"
 )
 
 // Efeitos de mediação (valores de [AttrDecision]). São o conjunto documentado no

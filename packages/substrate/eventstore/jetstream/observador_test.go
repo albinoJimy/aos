@@ -129,3 +129,127 @@ func TestObservador_SemObservadorNaoRebenta(t *testing.T) {
 		t.Fatalf("Append com observador nil: %v", err)
 	}
 }
+
+// rastreadorEspiao regista os spans abertos e os seus atributos.
+type rastreadorEspiao struct {
+	mu     sync.Mutex
+	spans  []*spanEspiao
+	fechos int
+}
+
+type spanEspiao struct {
+	operacao string
+	attrs    map[string]any
+	dono     *rastreadorEspiao
+}
+
+func (r *rastreadorEspiao) Iniciar(ctx context.Context, operacao string) (context.Context, eventstore.Rastro) {
+	s := &spanEspiao{operacao: operacao, attrs: map[string]any{}, dono: r}
+	r.mu.Lock()
+	r.spans = append(r.spans, s)
+	r.mu.Unlock()
+	return ctx, s
+}
+
+func (s *spanEspiao) Atributo(k string, v any) {
+	s.dono.mu.Lock()
+	s.attrs[k] = v
+	s.dono.mu.Unlock()
+}
+
+func (s *spanEspiao) Fim() {
+	s.dono.mu.Lock()
+	s.dono.fechos++
+	s.dono.mu.Unlock()
+}
+
+// TestRastreio_CadaDesfechoDeixaSpanComACausa — um span que só dissesse «rejected»
+// mandaria toda a gente ler os logs. O desfecho E a causa vão no span, e é isso que o
+// torna útil numa vista de query-time.
+func TestRastreio_CadaDesfechoDeixaSpanComACausa(t *testing.T) {
+	addr := servidor(t)
+	espiao := &rastreadorEspiao{}
+	st, err := abrirComOpcoes(t, addr, append(opcoesBase(t, "RASTRO_"),
+		jetstream.ComRastreador(espiao))...)
+	if err != nil {
+		t.Fatalf("abrir: %v", err)
+	}
+	ctx := context.Background()
+	const stream = "run-rastreado"
+	facto := func(tipo string) eventstore.EventInput {
+		return eventstore.EventInput{Type: tipo, Payload: json.RawMessage(`{}`)}
+	}
+
+	if _, err := st.Append(ctx, stream, facto("rastro.ok"), eventstore.WithExpectedSeq(0)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := st.Append(ctx, stream, facto("rastro.passado"), eventstore.WithExpectedSeq(0)); !errors.Is(err, eventstore.ErrAppendOnlyViolation) {
+		t.Fatalf("quero E_APPEND_ONLY_VIOLATION, veio %v", err)
+	}
+	if _, err := st.Read(ctx, stream, 1); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if _, err := st.Read(ctx, "run-que-nao-existe", 1); !errors.Is(err, eventstore.ErrStreamNotFound) {
+		t.Fatalf("quero E_STREAM_NOT_FOUND, veio %v", err)
+	}
+
+	espiao.mu.Lock()
+	defer espiao.mu.Unlock()
+	if len(espiao.spans) != 4 {
+		t.Fatalf("spans abertos = %d, quer 4 (2 appends + 2 reads)", len(espiao.spans))
+	}
+	if espiao.fechos != len(espiao.spans) {
+		t.Errorf("abertos %d spans e fechados %d — um span que não fecha nunca é exportado",
+			len(espiao.spans), espiao.fechos)
+	}
+
+	esperado := []struct {
+		operacao, desfecho, erro string
+	}{
+		{eventstore.OperacaoAppend, "committed", ""},
+		{eventstore.OperacaoAppend, "rejected", "E_APPEND_ONLY_VIOLATION"},
+		{eventstore.OperacaoRead, "ok", ""},
+		{eventstore.OperacaoRead, "rejected", "E_STREAM_NOT_FOUND"},
+	}
+	for i, e := range esperado {
+		s := espiao.spans[i]
+		if s.operacao != e.operacao {
+			t.Errorf("span[%d] operação = %q, quer %q", i, s.operacao, e.operacao)
+		}
+		if got := s.attrs[eventstore.AtributoDesfecho]; got != e.desfecho {
+			t.Errorf("span[%d] desfecho = %v, quer %q", i, got, e.desfecho)
+		}
+		if e.erro != "" {
+			if got := s.attrs[eventstore.AtributoErro]; got != e.erro {
+				t.Errorf("span[%d] erro = %v, quer %q — sem a CAUSA o span não diz ao operador o que fazer", i, got, e.erro)
+			}
+		}
+		if s.attrs[eventstore.AtributoStream] == nil {
+			t.Errorf("span[%d] sem stream_id — não se sabe de que run é", i)
+		}
+	}
+}
+
+// TestRastreio_LigarDepoisDeUsarERECUSADO — a invariante «liga-se antes de usar» é
+// IMPOSTA, não recomendada. Um rastreador ligado a meio produziria spans para umas
+// operações e não para outras, sem nada a dizê-lo.
+func TestRastreio_LigarDepoisDeUsarERECUSADO(t *testing.T) {
+	addr := servidor(t)
+	st, err := abrirComOpcoes(t, addr, opcoesBase(t, "RASTROTARDE_")...)
+	if err != nil {
+		t.Fatalf("abrir: %v", err)
+	}
+	// Antes de usar: aceite.
+	if err := st.LigarRastreador(&rastreadorEspiao{}); err != nil {
+		t.Fatalf("ligar antes de usar devia ser aceite: %v", err)
+	}
+	if _, err := st.Append(context.Background(), "run-tarde",
+		eventstore.EventInput{Type: "rastro.tarde", Payload: json.RawMessage(`{}`)}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// Depois de usar: recusado.
+	if err := st.LigarRastreador(&rastreadorEspiao{}); err == nil {
+		t.Fatal("ligar o rastreador DEPOIS do primeiro uso foi aceite — produziria observabilidade " +
+			"com buracos silenciosos, que é pior do que nenhuma")
+	}
+}

@@ -1286,6 +1286,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		sloTap = newSLOSpanTap(defaultSLOTapCapacity)
 		tracer = otelgenai.NewTracer(sloTeeExporter{primary: exporter, tap: sloTap}, cfg.TracerOptions...)
 	}
+	// EPIC-08 sobre AOS-100 — o Event Store REPLICADO passa a emitir spans.
+	//
+	// A ligacao e TARDIA porque o store e construido antes do tracer, e antecipar a
+	// construcao do tracer arrastaria a guarda de limpeza do exportador — o sitio onde
+	// este ficheiro ja teve um defeito registado. `LigarRastreador` RECUSA depois do
+	// primeiro uso, pelo que a janela nao pode ser perdida em silencio.
+	//
+	// O store de REFERENCIA nao entra aqui: o rastreio dele e o `Observer` que ele proprio
+	// declara, e misturar os dois daria duas fontes para o mesmo facto.
+	if js, ok := es.(*jetstream.Store); ok && tracingEnabled {
+		if errR := js.LigarRastreador(integration.NovoRastreioDoEventStore(tracer)); errR != nil {
+			return nil, fmt.Errorf("aos: ligar o rastreio ao Event Store replicado: %w", errR)
+		}
+	}
 
 	// (3) IDENTIDADE REAL. Em AMBOS os modos o que entra na CADEIA DE SEGURANÇA é SÓ o
 	// verifier (pubkey) — nunca uma chave de assinatura. A diferença é ONDE vive a

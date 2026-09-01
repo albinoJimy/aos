@@ -6,6 +6,17 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Added — EPIC-08 sobre AOS-100 Os spans do Event Store replicado, sob contrato semconv
+- `feat(AOS-100)` (P1/EPIC-08) — a última linha do DoD que estava por fazer: o adaptador emitia o gancho de auditoria (`Observer`) mas nenhum span.
+  - **Uma porta NOVA, e não o `Observer` repropôsto.** O `Observer` declara-se, no seu próprio doc, como um gancho que «não puxa o SDK OTel (isso é EPIC-08)» — e, decisivamente, é chamado **depois** da operação e **sem contexto**, pelo que um span nascido dele seria **órfão**. A porta `Rastreador`/`Rastro` recebe o `ctx`, e por isso o span fica **por baixo do span do passo que o causou** (AOS-077).
+  - **Declarada no `eventstore`, que continua ZERO-DEP.** Importar o módulo de observabilidade para obter uma interface de três métodos trocaria a propriedade que sustenta o binário zero-dep do nó (ADR-017 §1) por conveniência. A forma é deliberadamente a mesma do `Tracer`/`Span` de `otel-genai`, para que a ponte seja um adaptador fino e não uma tradução.
+  - **A ponte vive no ápice de composição** (`packages/integration`), o único sítio que pode importar os dois — que é exactamente o que ele existe para fazer.
+  - **O span cumpre a semconv, e há teste que o prova.** `OpLogAppend`/`OpLogRead` entram em `requiredAttrs` com stream e desfecho obrigatórios; sem isso o span resolveria a operação por fallback e seria **aceite sem validar** — o defeito exacto que o AOS-211 corrigiu no `aos.activity`.
+  - **As strings estão duplicadas de propósito, e um GUARD-TEST impede a divergência.** O `OpActivity` resolve o mesmo partilhando a constante; aqui não é possível (zero-dep), e a divergência não daria erro nenhum: o span cairia numa operação sem contrato e passaria a ser aceite sem validação.
+  - **O desfecho E a causa vão no span** (`committed`/`duplicate`/`rejected`/`ok`/`not_found`, mais o `E_*`): um span que só dissesse «rejected» mandaria toda a gente ler os logs.
+  - **A ligação no nó é TARDIA e a janela é IMPOSTA.** O Event Store é construído antes do tracer, e antecipar o tracer arrastaria a guarda de limpeza do exportador — onde este ficheiro já teve um defeito registado. `LigarRastreador` **recusa** depois do primeiro uso: um rastreador ligado a meio daria spans para umas operações e não para outras, e uma observabilidade com buracos silenciosos é pior do que nenhuma.
+  - **O gate `event-catalog` apanhou os nomes, e tinha razão.** `OpEventStoreAppend` e companhia contêm `Event`, que é como o gate (e um leitor) identificam uma constante de **tipo de evento** — e estas não são: são metadados de span e nunca chegam a um `EventInput.Type`. Renomeadas para `OpLog*`/`AttrLog*`. O nome é que estava errado, não o gate.
+
 ### Fixed — AOS-100 A última falha silenciosa: batimento e flow control na subscrição
 - `fix(AOS-100)` (P0) — a adenda 7 deixou dois residuais nomeados. O segundo escondia algo pior do que a perda.
   - **O cenário.** O consumidor da subscrição morre **do lado do servidor**. Do lado do cliente **nada acontece**: a ligação está viva, o canal aberto, o `SUB` registado. Simplesmente não chega nada — e sem batimento isso é **indistinguível de um stream sossegado**. A subscrição ficava morta para sempre: nem excepção, nem log, nem erro devolvido.
