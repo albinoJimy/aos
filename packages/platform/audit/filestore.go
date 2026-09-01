@@ -46,15 +46,15 @@ type FileStore struct {
 	mu    sync.RWMutex
 	parts map[string][]AuditRecord
 
-	wmu    sync.Mutex // serializa os writes ao ficheiro único
+	wmu sync.Mutex // serializa os writes ao ficheiro único
 
 	// posse arbitra a EXCLUSIVIDADE de escrita por partição entre PROCESSOS — o que o
 	// mutex acima não faz. nil mantém o comportamento anterior. Ver posse.go.
 	posse   PosseDeParticao
 	recusas recusasDePosse
-	f      *os.File
-	w      *bufio.Writer
-	closed bool
+	f       *os.File
+	w       *bufio.Writer
+	closed  bool
 }
 
 // OpenFileStore cria OU reabre um WORM durável respaldado pelo WAL em path. No

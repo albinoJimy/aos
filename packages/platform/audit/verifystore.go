@@ -81,7 +81,12 @@ func verifyReplayedChain(partition string, recs []AuditRecord) error {
 	// Guarda o EntryHash de cada seq já verificado, para poder responder à pergunta que
 	// distingue uma CORRIDA de uma ADULTERAÇÃO: o registo repetido encadeia no elo
 	// anterior e recomputa? Sem isto, o duplicado é indistinguível de uma inserção.
-	hashPorSeq := make([][]byte, 0, len(recs))
+	//
+	// MAPA e não fatia: indexar uma fatia por um seq obriga a converter uint64→int, e
+	// essa conversão é um transbordo à espera de acontecer (G115 do gosec, que a apanhou
+	// aqui). Um mapa chaveado pelo próprio seq dispensa a conversão e a verificação de
+	// limites — e diz melhor o que guarda.
+	hashPorSeq := make(map[uint64][]byte, len(recs))
 	for _, rec := range recs {
 		switch {
 		case rec.AuditSeq > expectedSeq:
@@ -94,8 +99,8 @@ func verifyReplayedChain(partition string, recs []AuditRecord) error {
 			// partiram da mesma vista (AOS-284), e não a de quem enfia um registo no
 			// meio de um log. Ver TamperFork para o que esta distinção NÃO prova.
 			prevEsperadoAqui := GenesisHash(partition)
-			if rec.AuditSeq >= 2 && int(rec.AuditSeq)-2 < len(hashPorSeq) {
-				prevEsperadoAqui = hashPorSeq[rec.AuditSeq-2]
+			if h, ok := hashPorSeq[rec.AuditSeq-1]; ok {
+				prevEsperadoAqui = h
 			}
 			if bytes.Equal(rec.PrevHash, prevEsperadoAqui) &&
 				bytes.Equal(ComputeEntryHash(rec.PrevHash, rec), rec.EntryHash) {
@@ -110,7 +115,7 @@ func verifyReplayedChain(partition string, recs []AuditRecord) error {
 		if !bytes.Equal(ComputeEntryHash(rec.PrevHash, rec), rec.EntryHash) {
 			return tamper(TamperMutation, partition, rec.AuditSeq, "entry_hash recalculado diverge do armazenado (replay)")
 		}
-		hashPorSeq = append(hashPorSeq, rec.EntryHash)
+		hashPorSeq[rec.AuditSeq] = rec.EntryHash
 		expectedPrev = rec.EntryHash
 		expectedSeq++
 	}
