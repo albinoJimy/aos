@@ -63,6 +63,13 @@
 //     explícitos, pelo que o servidor sabe até onde a entrega foi confirmada e recomeça
 //     aí — os eventos escritos ENTRE a quebra e o retomar SÃO entregues (medido). O ACK
 //     vai depois do handler, para confirmar o que foi processado e não o que chegou.
-//     LIMITE: o consumidor é R1, logo se o nó que o aloja morrer definitivamente ele
-//     perde-se e o intervalo com ele; e não há flow control nem heartbeats.
+//     Há FLOW CONTROL (um subscritor lento é travado, não atropelado) e BATIMENTO: sem
+//     ele, um consumidor morto do lado do servidor é indistinguível de um stream
+//     sossegado, e a subscrição ficava morta sem ninguém saber. Ao fim de 15 s sem nada —
+//     nem evento nem batimento — o consumidor é dado por morto e a entrega
+//     re-estabelecida (MEDIDO, apagando o consumidor pelas costas do subscritor).
+//     LIMITE ACEITE: o consumidor recriado parte do seq fixado na subscrição, logo os
+//     eventos desde então são REENTREGUES. É at-least-once — nada se perde, algumas
+//     coisas repetem-se —, e para um log cuja idempotência é por (run_id, step_id) essa é
+//     a troca certa. O consumidor é R1: se o nó que o aloja morrer, é isto que o cobre.
 package jetstream

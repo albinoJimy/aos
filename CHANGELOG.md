@@ -6,6 +6,13 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Fixed — AOS-100 A última falha silenciosa: batimento e flow control na subscrição
+- `fix(AOS-100)` (P0) — a adenda 7 deixou dois residuais nomeados. O segundo escondia algo pior do que a perda.
+  - **O cenário.** O consumidor da subscrição morre **do lado do servidor**. Do lado do cliente **nada acontece**: a ligação está viva, o canal aberto, o `SUB` registado. Simplesmente não chega nada — e sem batimento isso é **indistinguível de um stream sossegado**. A subscrição ficava morta para sempre: nem excepção, nem log, nem erro devolvido.
+  - **MEDIDO**, apagando o consumidor pelas costas do subscritor: *«consumidor apagado do lado do servidor — o cliente não foi avisado de nada»* → *«silêncio DETECTADO e entrega re-estabelecida: o evento posterior chegou sem ninguém reiniciar nada»*. `idle_heartbeat` de 5 s; 15 s sem **nada** dá o consumidor por morto. **Silêncio deixa de ser indistinguível de paz.**
+  - **Flow control** resolve o problema simétrico. Um pedido de fluxo é uma mensagem de estado 100 **com** subject de resposta; um batimento é a mesma **sem** ele — e distingui-los importa, porque não responder a um pedido de fluxo **pára a entrega**, também em silêncio. Com ele, um subscritor lento é **travado**, não atropelado.
+  - **O que se ACEITA, e fica dito:** o consumidor recriado parte do seq fixado na subscrição, logo os eventos desde então são **reentregues**. É *at-least-once* — nada se perde, algumas coisas repetem-se. Para um log cuja idempotência é por `(run_id, step_id)` é a troca certa; a alternativa era perder.
+
 ### Added — AOS-100 Os três residuais fechados: soberania multi-região, leitura paralela, subscrição que RECUPERA
 - `feat(AOS-100)` + `test(AOS-100)` (P0)
   - **Soberania na forma FORTE (AC5).** A adenda 3 declarava o limite: o cluster tinha uma só região, pelo que se provava que a restrição é *pedida, armazenada e verificada* — não que as réplicas ficam lá. Acrescentou-se um **quarto nó noutra região** (sem reetiquetar os três, para não invalidar o já medido) e pergunta-se ao servidor **onde o stream ficou**: *«fronteira "eu-west" CUMPRIDA: o stream está em [es-2 es-0 es-1], e nenhum dos pares proibidos aparece»*. Passa de «a restrição está armazenada» a **«as réplicas não cruzaram a fronteira»**, que é a promessa do ADR-011. Continua fora do alcance do nó o mapeamento par→região (exige a conta de sistema do cluster); `ColocacaoEfectiva()` dá os nomes para quem configura o cluster confrontar.

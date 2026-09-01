@@ -291,6 +291,18 @@ type ConsumerConfig struct {
 	// AckWait, em nanossegundos, é quanto o servidor espera por um ACK antes de
 	// reentregar. Só tem efeito com AckPolicy "explicit".
 	AckWait int64 `json:"ack_wait,omitempty"`
+	// IdleHeartbeat, em nanossegundos, manda o servidor emitir um sinal de vida quando
+	// não há nada a entregar.
+	//
+	// É o que torna DETECTÁVEL um consumidor que morreu: sem batimento, um consumidor
+	// apagado do lado do servidor é indistinguível de um stream sossegado — o subscritor
+	// fica à espera para sempre e ninguém dá por isso. Silêncio não é a mesma coisa que
+	// paz.
+	IdleHeartbeat int64 `json:"idle_heartbeat,omitempty"`
+	// FlowControl faz o servidor pedir confirmação periódica antes de continuar a
+	// empurrar. Sem ele, um subscritor lento é ATROPELADO — as mensagens acumulam-se e o
+	// cliente descarta-as.
+	FlowControl bool `json:"flow_control,omitempty"`
 	// DeliverSubject é o subject para onde o servidor empurra. Vazio = pull.
 	DeliverSubject string `json:"deliver_subject"`
 	// DeliverPolicy "new" entrega só o que for publicado a partir de agora; "all"
@@ -599,4 +611,57 @@ func (cn *Conn) DeleteConsumer(stream, durable string, timeout time.Duration) er
 		return r.Error
 	}
 	return nil
+}
+
+// EstadoDeControlo classifica uma mensagem de CONTROLO do push (as que não são eventos).
+type EstadoDeControlo int
+
+const (
+	// NaoEControlo — é uma mensagem normal, com dados.
+	NaoEControlo EstadoDeControlo = iota
+	// BatimentoOcioso — sinal de vida do servidor; não há nada a entregar.
+	BatimentoOcioso
+	// PedidoDeFluxo — o servidor pede confirmação para continuar a empurrar. TEM de ser
+	// respondido, senão a entrega PÁRA. É a diferença entre um subscritor lento ser
+	// travado e ser atropelado.
+	PedidoDeFluxo
+)
+
+// Controlo classifica a mensagem. Uma mensagem de estado 100 com subject de resposta é um
+// pedido de fluxo; sem ele, um batimento.
+//
+// Distingui-los importa: responder a um batimento é inofensivo mas inútil, e NÃO responder
+// a um pedido de fluxo pára a entrega — em silêncio, que é o modo de falha caro.
+func (m Msg) Controlo() EstadoDeControlo {
+	if m.Status != 100 {
+		return NaoEControlo
+	}
+	if m.Reply != "" {
+		return PedidoDeFluxo
+	}
+	return BatimentoOcioso
+}
+
+type consumerNamesResponse struct {
+	Error     *JSError `json:"error"`
+	Consumers []string `json:"consumers"`
+}
+
+// ConsumidoresDoStream lista os nomes dos consumidores de um stream.
+//
+// Existe para operação — e para o teste que mata um consumidor pelas costas do subscritor,
+// que é a única forma de verificar que o silêncio é DETECTADO em vez de tolerado.
+func (cn *Conn) ConsumidoresDoStream(stream string, timeout time.Duration) ([]string, error) {
+	m, err := cn.Request("$JS.API.CONSUMER.NAMES."+stream, nil, nil, timeout)
+	if err != nil {
+		return nil, err
+	}
+	var r consumerNamesResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return nil, fmt.Errorf("%w: resposta de CONSUMER.NAMES ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return nil, r.Error
+	}
+	return r.Consumers, nil
 }

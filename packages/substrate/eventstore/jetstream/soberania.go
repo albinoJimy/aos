@@ -132,3 +132,16 @@ func (s *Store) BoardDeSoberania() string { return s.board }
 func (s *Store) ColocacaoEfectiva() (natsjs.ColocacaoEfectiva, error) {
 	return s.cn.ColocacaoDoStream(s.stream, s.prazo)
 }
+
+// ConsumidoresDoStream lista os consumidores do stream. É superfície de OPERAÇÃO — e o
+// que permite a um teste matar um consumidor pelas costas do subscritor, para verificar
+// que o silêncio é DETECTADO em vez de tolerado.
+func (s *Store) ConsumidoresDoStream() ([]string, error) {
+	return s.cn.ConsumidoresDoStream(s.stream, s.prazo)
+}
+
+// ApagarConsumidor apaga um consumidor pelo nome. Ver a advertência em
+// [natsjs.Conn.DeleteConsumer].
+func (s *Store) ApagarConsumidor(nome string) error {
+	return s.cn.DeleteConsumer(s.stream, nome, s.prazo)
+}

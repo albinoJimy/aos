@@ -687,3 +687,50 @@ definitivamente, ele perde-se e o intervalo com ele. E não há **flow control**
 heartbeats, pelo que um subscritor muito lento pode ser ultrapassado. Fechar os dois exige
 um consumidor replicado (que a medição de 2026-09-01 mostrou ser caro de criar sob
 degradação) e o tratamento das mensagens de controlo do protocolo.
+
+---
+
+# ADENDA 8 — a última falha silenciosa (2026-09-01)
+
+A adenda 7 fechou três residuais e deixou dois nomeados: sem flow control, e o consumidor
+R1 que se perde com o nó que o aloja. O segundo escondia uma coisa pior do que a perda.
+
+## O cenário, e porque era o pior de todos
+
+O consumidor da subscrição morre **do lado do servidor**. Do lado do cliente **nada
+acontece**: a ligação está viva, o canal está aberto, o `SUB` continua registado.
+Simplesmente não chega nada.
+
+Sem batimento, isso é **indistinguível de um stream sossegado**. A subscrição fica morta
+para sempre e ninguém dá por isso — nem uma excepção, nem um log, nem um erro devolvido.
+É a única classe de falha contra a qual este pacote foi desenhado desde a primeira linha,
+e era a última que ainda estava por cobrir.
+
+## Medido
+
+O teste apaga o consumidor **pelas costas do subscritor** e escreve a seguir:
+
+```
+consumidor(es) [aos-ef85dd521634b9616b6eb762] apagado(s) do lado do servidor
+  — o cliente não foi avisado de nada
+silêncio DETECTADO e entrega re-estabelecida: o evento posterior chegou
+  sem ninguém reiniciar nada
+```
+
+`idle_heartbeat` de 5 s; ao fim de 15 s sem **nada** — nem evento nem batimento — o
+consumidor é dado por morto e a entrega re-estabelecida. **Silêncio deixa de ser
+indistinguível de paz.**
+
+## E o flow control, que resolve o problema simétrico
+
+Um pedido de fluxo é uma mensagem de estado 100 **com** subject de resposta; um batimento
+é a mesma coisa **sem** ele. Distingui-los importa: não responder a um pedido de fluxo
+**pára a entrega**, também em silêncio. Com ele, um subscritor lento é **travado**, não
+atropelado — antes, as mensagens acumulavam-se e o cliente descartava-as.
+
+## O que se ACEITA, e fica dito
+
+O consumidor recriado parte do seq **fixado na subscrição**, pelo que os eventos desde
+então são **reentregues**. É *at-least-once*: nada se perde, algumas coisas repetem-se.
+Para um Event Store cuja idempotência é por `(run_id, step_id)` essa é a troca certa —
+a alternativa era perder, e é pior.

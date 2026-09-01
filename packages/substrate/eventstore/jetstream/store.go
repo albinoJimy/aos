@@ -386,6 +386,18 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]ev
 // voltar ao pedido-por-evento.
 const janelaDeLeitura = 2048
 
+// batimentoDaSubscricao é de quanto em quanto tempo o servidor dá sinal de vida numa
+// subscrição ociosa, e silencioMaximo é quanto tempo sem NADA — nem evento nem batimento —
+// se tolera antes de dar o consumidor por morto.
+//
+// Sem isto, um consumidor apagado do lado do servidor é indistinguível de um stream
+// sossegado: o subscritor fica à espera para sempre e ninguém dá por isso. Silêncio não é
+// paz — é a única falha que este pacote combate desde a primeira linha.
+const (
+	batimentoDaSubscricao = 5 * time.Second
+	silencioMaximo        = 3 * batimentoDaSubscricao
+)
+
 // lerSubject lê os eventos do subject EM LOTES e devolve-os, o seq JetStream do último
 // (o token de CAS) e o índice de deduplicação derivado.
 //
@@ -639,20 +651,62 @@ func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h event
 	go func() {
 		defer close(sub.feito)
 		for {
-			for m := range ch {
-				var ev eventstore.Event
-				if err := json.Unmarshal(m.Data, &ev); err != nil {
-					continue // envelope ilegível: não é do AOS, ou é de outra versão
-				}
-				if filtro.Matches(ev) {
-					h(ev.Clone())
-				}
-				// O ACK vai DEPOIS do handler, e é isso que o torna útil: confirma o
-				// que foi ENTREGUE E PROCESSADO. Confirmar antes tornaria o durável um
-				// efémero com passos extra — perder-se-ia na mesma o que estivesse em
-				// voo quando a ligação parte.
-				if m.Reply != "" {
-					_ = s.cn.PublishSemResposta(m.Reply, nil)
+			silencio := time.NewTimer(silencioMaximo)
+		entrega:
+			for {
+				select {
+				case <-sub.parar:
+					silencio.Stop()
+					return
+
+				case <-silencio.C:
+					// Nem um evento, nem um batimento. O consumidor morreu do lado do
+					// servidor (o nó R1 que o alojava caiu, alguém apagou-o) e a nossa
+					// subscrição continua tecnicamente viva a não receber nada.
+					//
+					// É a falha SILENCIOSA, e é a razão de haver batimento: sem ele isto
+					// seria indistinguível de um stream sossegado, e a subscrição ficava
+					// morta para sempre sem ninguém saber.
+					sub.cancelarCorrente()
+					break entrega
+
+				case m, ok := <-ch:
+					if !ok {
+						silencio.Stop()
+						break entrega
+					}
+					if !silencio.Stop() {
+						select {
+						case <-silencio.C:
+						default:
+						}
+					}
+					silencio.Reset(silencioMaximo)
+
+					switch m.Controlo() {
+					case natsjs.PedidoDeFluxo:
+						// TEM de ser respondido: sem resposta a entrega PÁRA, e pára em
+						// silêncio. É o que impede um subscritor lento de ser atropelado.
+						_ = s.cn.PublishSemResposta(m.Reply, nil)
+						continue
+					case natsjs.BatimentoOcioso:
+						continue // sinal de vida; nada a entregar
+					}
+
+					var ev eventstore.Event
+					if err := json.Unmarshal(m.Data, &ev); err != nil {
+						continue // envelope ilegível: não é do AOS, ou é de outra versão
+					}
+					if filtro.Matches(ev) {
+						h(ev.Clone())
+					}
+					// O ACK vai DEPOIS do handler, e é isso que o torna útil: confirma o
+					// que foi ENTREGUE E PROCESSADO. Confirmar antes tornaria o durável um
+					// efémero com passos extra — perder-se-ia na mesma o que estivesse em
+					// voo quando a ligação parte.
+					if m.Reply != "" {
+						_ = s.cn.PublishSemResposta(m.Reply, nil)
+					}
 				}
 			}
 			// O canal fechou. Ou foi o dono (Unsubscribe/Close), ou a LIGAÇÃO PARTIU-SE.
@@ -860,6 +914,8 @@ func (s *Store) criarDuravel(ctx context.Context, sub *subscricao) error {
 		OptStartSeq:    sub.inicio,
 		AckPolicy:      "explicit",
 		AckWait:        int64(30 * time.Second),
+		IdleHeartbeat:  int64(batimentoDaSubscricao),
+		FlowControl:    true,
 		ReplayPolicy:   "instant",
 		FilterSubject:  s.prefixo + ".>",
 		NumReplicas:    1,

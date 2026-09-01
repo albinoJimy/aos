@@ -163,3 +163,92 @@ func TestReconexao_SubscricaoRECUPERAOIntervalo(t *testing.T) {
 	}
 	t.Logf("todos os eventos escritos durante a quebra foram ENTREGUES depois dela — a subscrição recuperou, não só retomou")
 }
+
+// TestSubscricao_SilencioDoConsumidorEDETECTADO mede a falha SILENCIOSA — a única contra a
+// qual todo este pacote foi desenhado, e a última que ainda estava por cobrir.
+//
+// # O cenário
+//
+// O consumidor da subscrição morre DO LADO DO SERVIDOR — o nó R1 que o alojava cai, ou
+// alguém o apaga. Do lado do cliente nada acontece: a ligação está viva, o canal está
+// aberto, o `SUB` continua registado. Simplesmente **não chega nada**.
+//
+// Sem batimento, isso é indistinguível de um stream sossegado, e a subscrição fica morta
+// para sempre sem ninguém saber. Com batimento, a ausência dele é um SINAL: ao fim de
+// `silencioMaximo` o consumidor é dado por morto e a entrega re-estabelecida.
+//
+// # O que se aceita, e é preciso dizê-lo
+//
+// O consumidor recriado parte do seq FIXADO na subscrição, pelo que os eventos desde então
+// são REENTREGUES. É at-least-once — nada se perde, algumas coisas repetem-se. Para um
+// Event Store cuja idempotência é por `(run_id, step_id)` essa é a troca certa; perder era
+// a alternativa, e é pior.
+func TestSubscricao_SilencioDoConsumidorEDETECTADO(t *testing.T) {
+	addr := servidor(t)
+	st, err := abrirComOpcoes(t, addr, opcoesBase(t, "SILENCIO_")...)
+	if err != nil {
+		t.Fatalf("abrir: %v", err)
+	}
+	ctx := context.Background()
+	const stream = "run-silencio"
+
+	recebidos := make(chan string, 64)
+	sub, err := st.Subscribe(ctx, eventstore.Filter{Types: []string{"silencio.evento"}},
+		func(ev eventstore.Event) { recebidos <- string(ev.Payload) })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Unsubscribe()
+	time.Sleep(time.Second)
+
+	escrever := func(marca string) {
+		t.Helper()
+		if _, err := st.Append(ctx, stream, eventstore.EventInput{
+			Type: "silencio.evento", Payload: json.RawMessage(`{"m":"` + marca + `"}`),
+		}); err != nil {
+			t.Fatalf("escrever %s: %v", marca, err)
+		}
+	}
+	esperar := func(marca string, prazo time.Duration) bool {
+		t.Helper()
+		limite := time.After(prazo)
+		for {
+			select {
+			case p := <-recebidos:
+				if strings.Contains(p, `"`+marca+`"`) {
+					return true
+				}
+			case <-limite:
+				return false
+			}
+		}
+	}
+
+	escrever("antes")
+	if !esperar("antes", 15*time.Second) {
+		t.Fatal("o evento anterior não chegou — a subscrição não está a funcionar")
+	}
+
+	// A MORTE SILENCIOSA: apaga-se o consumidor pelas costas do subscritor.
+	nomes, err := st.ConsumidoresDoStream()
+	if err != nil {
+		t.Fatalf("listar consumidores: %v", err)
+	}
+	if len(nomes) == 0 {
+		t.Fatal("o stream não tem consumidores — a subscrição não criou nenhum")
+	}
+	for _, n := range nomes {
+		if err := st.ApagarConsumidor(n); err != nil {
+			t.Fatalf("apagar o consumidor %q: %v", n, err)
+		}
+	}
+	t.Logf("consumidor(es) %v apagado(s) do lado do servidor — o cliente não foi avisado de nada", nomes)
+
+	// Agora escreve-se. Sem detecção do silêncio, isto nunca chegaria.
+	escrever("depois-do-silencio")
+	if !esperar("depois-do-silencio", 90*time.Second) {
+		t.Fatal("o evento escrito depois da morte silenciosa do consumidor NUNCA chegou — " +
+			"a subscrição ficou morta sem ninguém saber, que é a falha que o batimento existe para tornar detectável")
+	}
+	t.Logf("silêncio DETECTADO e entrega re-estabelecida: o evento posterior chegou sem ninguém reiniciar nada")
+}
