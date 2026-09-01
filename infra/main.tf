@@ -93,6 +93,14 @@ module "eventstore" {
   name         = local.name_prefix
   network_name = module.network_data.network_name
   image        = var.eventstore_image
+  # Região das RÉPLICAS, não a do ambiente: os nós do Event Store SÃO onde as réplicas do
+  # stream ficam, e é essa colocação que a fronteira de soberania governa (ADR-011). Usar
+  # `var.region` aqui divergiria de `replica_region` sempre que o board tem mais de uma
+  # região — e a divergência só apareceria contra um cluster real.
+  # `effective_replica_region` já passou pelas duas camadas de guarda deste ficheiro: a
+  # `validation` de replica_region (falha o plan, offline) e o `check "soberania_regional"`
+  # acima. As `server_tags` são a TERCEIRA camada, e a única que o SERVIDOR impõe.
+  region       = local.effective_replica_region
   cluster_size = var.eventstore_cluster_size
   client_port  = var.eventstore_client_port
   store_dir    = var.eventstore_store_dir

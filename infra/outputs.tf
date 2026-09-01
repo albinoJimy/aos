@@ -34,6 +34,12 @@ output "sovereignty" {
     allowed_regions   = local.sovereignty_allowed_regions
     effective_backup  = local.effective_backup_region
     effective_replica = local.effective_replica_region
+
+    # As tags que os nós do Event Store ANUNCIAM. É o que torna a fronteira imposta pelo
+    # SERVIDOR e não só declarada por nós: sem elas a `placement` do stream não tem pares
+    # elegíveis e o nó com fronteira declarada não arranca (ADR-011, AC5 do AOS-100).
+    eventstore_server_tags = module.eventstore.server_tags
+    eventstore_region      = module.eventstore.region
   }
 }
 
