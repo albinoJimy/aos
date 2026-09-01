@@ -179,6 +179,7 @@ func (cn *Conn) FetchStreamState(name string, timeout time.Duration) (StreamStat
 
 type msgGetRequest struct {
 	Seq           uint64 `json:"seq,omitempty"`
+	LastBySubject string `json:"last_by_subj,omitempty"`
 	NextBySubject string `json:"next_by_subj,omitempty"`
 }
 
@@ -289,6 +290,22 @@ type ConsumerConfig struct {
 	AckPolicy     string `json:"ack_policy"`
 	ReplayPolicy  string `json:"replay_policy"`
 	FilterSubject string `json:"filter_subject,omitempty"`
+	// NumReplicas do CONSUMIDOR, que NAO tem de ser o do stream. Para LER, 1 e o
+	// valor certo: um consumidor de leitura e transitorio e nao guarda nada que
+	// precise de sobreviver a nada.
+	//
+	// O DEFEITO QUE FECHA, medido: com o consumidor a herdar as 3 replicas do stream,
+	// a sua criacao e uma operacao REPLICADA — e com um no em baixo ela EXPIROU (20s),
+	// deixando a leitura indisponivel exactamente no cenario que o AC4 mede. A leitura
+	// ficava MENOS disponivel do que a escrita, que continuou a passar. Ver perda_test.go.
+	NumReplicas int `json:"num_replicas,omitempty"`
+	// MemStorage mantem o estado do consumidor em memoria: nao ha nada a persistir
+	// num consumidor que morre com a leitura.
+	MemStorage bool `json:"mem_storage,omitempty"`
+	// OptStartSeq e o seq do STREAM FISICO por onde a entrega comeca. So tem efeito
+	// com DeliverPolicy "by_start_sequence"; e o que permite ler um log em JANELAS em
+	// vez de o trazer todo de uma vez para uma fila que teria de o comportar.
+	OptStartSeq uint64 `json:"opt_start_seq,omitempty"`
 }
 
 type consumerCreateRequest struct {
@@ -428,4 +445,50 @@ func (cn *Conn) ConfigDoStream(stream string, timeout time.Duration) (StreamConf
 		return StreamConfigLida{}, fmt.Errorf("%w: INFO sem `config`", ErrProtocol)
 	}
 	return *r.Config, nil
+}
+
+// UltimoSeqDoSubject devolve o seq JetStream da ÚLTIMA mensagem publicada em subject.
+//
+// É o token de CAS de quem se re-hidrata: sem ele, uma escrita afirmaria uma posição que
+// não conhece. Um subject vazio devolve (0, nil) — 0 é a afirmação correcta para «ainda
+// não há nada aqui», e não um erro.
+func (cn *Conn) UltimoSeqDoSubject(stream, subject string, timeout time.Duration) (uint64, error) {
+	body, err := json.Marshal(msgGetRequest{LastBySubject: subject})
+	if err != nil {
+		return 0, err
+	}
+	m, err := cn.Request("$JS.API.STREAM.MSG.GET."+stream, nil, body, timeout)
+	if err != nil {
+		return 0, err
+	}
+	var r msgGetResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return 0, fmt.Errorf("%w: resposta de MSG.GET ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		if r.Error.ErrCode == codeNoMessage {
+			return 0, nil
+		}
+		return 0, r.Error
+	}
+	return r.Message.Seq, nil
+}
+
+// SubscribeSubjectBuffered é [Conn.SubscribeSubject] com a profundidade da fila escolhida
+// pelo chamador.
+//
+// Existe porque a fila por omissão é pequena e o leitor DESCARTA quando ela enche (um
+// subscritor lento não pode bloquear o leitor, que serve todas as subscrições). Isso é
+// certo para request-reply, e é RUINOSO para ler um log: um lote entregue a um canal
+// pequeno perderia mensagens, e um log truncado não é um log lento — é um log ERRADO.
+// Quem lê um lote de N mensagens dimensiona a fila para N.
+func (cn *Conn) SubscribeSubjectBuffered(subject string, buf int) (<-chan Msg, func(), error) {
+	if err := validateToken("subject", subject); err != nil {
+		return nil, nil, err
+	}
+	ch, sid, err := cn.subscribeBuffered(subject, buf)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ch, func() { cn.unsubscribe(sid) }, nil
 }

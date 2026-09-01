@@ -179,16 +179,25 @@ func BenchmarkEscrita(b *testing.B) {
 // subject com `next_by_subj`, um round-trip POR EVENTO. Contra o WAL local, que lê de
 // memória, a diferença não é de percentagem — é de ordem de grandeza. Está aqui para ser
 // vista, não para ser escondida até alguém a descobrir em produção.
+// BenchmarkReplay corre com DOIS tamanhos de stream de proposito: 200 e 2000 eventos.
+//
+// Nao e zelo — e o discriminante que separa duas hipoteses sobre o custo restante depois
+// do batching. Se o tempo por leitura for aproximadamente CONSTANTE entre os dois, o custo
+// e por LEITURA (criar o consumidor efemero, que num stream R3 e uma operacao replicada);
+// se escalar com o tamanho, e por EVENTO. Sem os dois pontos, qualquer explicacao seria
+// uma historia.
 func BenchmarkReplay(b *testing.B) {
-	const eventos = 200
 	casos := []struct {
-		nome string
-		fab  fabricaDeStore
+		nome    string
+		fab     fabricaDeStore
+		eventos int
 	}{
-		{"referencia-wal", storeDeReferencia},
-		{"jetstream-r3", storeJetStream},
+		{"referencia-wal/200", storeDeReferencia, 200},
+		{"jetstream-r3/200", storeJetStream, 200},
+		{"jetstream-r3/2000", storeJetStream, 2000},
 	}
 	for _, c := range casos {
+		eventos := c.eventos
 		b.Run(c.nome, func(b *testing.B) {
 			st, largar := c.fab(b)
 			defer largar()

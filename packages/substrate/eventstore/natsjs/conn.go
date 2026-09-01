@@ -227,6 +227,15 @@ func (cn *Conn) Request(subject string, h Header, data []byte, timeout time.Dura
 // --- Protocolo -------------------------------------------------------------
 
 func (cn *Conn) subscribe(subject string) (<-chan Msg, string, error) {
+	return cn.subscribeBuffered(subject, 8)
+}
+
+// subscribeBuffered subscreve com a profundidade de fila dada. Ver
+// [Conn.SubscribeSubjectBuffered] para porque a profundidade e do CHAMADOR.
+func (cn *Conn) subscribeBuffered(subject string, buf int) (<-chan Msg, string, error) {
+	if buf < 1 {
+		buf = 1
+	}
 	cn.mu.Lock()
 	if cn.closed {
 		cn.mu.Unlock()
@@ -234,7 +243,7 @@ func (cn *Conn) subscribe(subject string) (<-chan Msg, string, error) {
 	}
 	cn.sid++
 	sid := strconv.FormatUint(cn.sid, 10)
-	ch := make(chan Msg, 8)
+	ch := make(chan Msg, buf)
 	cn.subs[sid] = ch
 	cn.mu.Unlock()
 

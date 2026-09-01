@@ -489,3 +489,73 @@ arranque**. Não é aceitável em regime, e é a próxima coisa a fazer no adapt
 1 700 ms. O custo por evento (~8,5 ms) é **dominado por algo que não é o RTT** — o candidato
 óbvio é o `next_by_subj` do lado do servidor, mas isso é hipótese, não medição.
 Identificá-lo é o primeiro passo da optimização, não uma conclusão desta adenda.
+
+---
+
+# ADENDA 5 — as duas coisas que faltavam (2026-09-01)
+
+## 1. Leitura em lotes — de ~1,7 s para ~25–51 ms por run
+
+A adenda 4 mediu o replay a **113–120 eventos/s** e chamou-lhe «a próxima coisa a
+corrigir». Corrigida: um lote é agora um consumidor efémero que EMPURRA a janela inteira,
+em vez de um pedido `next_by_subj` por evento.
+
+| Versão | eventos/s (200 eventos) | por leitura |
+|---|---|---|
+| Pedido por evento | 113–120 | ~1,7 s |
+| Lote, consumidor R3 | 1 724–1 910 | ~105–116 ms |
+| Lote, consumidor **R1 em memória** | 3 881–7 967 | ~25–51 ms |
+
+**~32–66×.** A variância desta VPS é alta; são intervalos observados, não garantias.
+
+**A completude é VERIFICÁVEL, e tinha de ser.** Com entrega push e `ack_policy: none`
+não há nada que diga «acabou» — só mensagens que param de chegar, o que é indistinguível
+de uma que se perdeu. Por isso o número de eventos do subject é pedido ao servidor
+ANTES, e um lote incompleto é um ERRO. Servir um log truncado em silêncio seria o pior
+desfecho possível: o replay reconstruiria estado errado sem ninguém dar por isso.
+
+**Onde estava o custo, medido e não suposto.** A adenda 4 dizia que o custo por evento
+era «dominado por algo que não é o RTT» e recusou-se a nomear a causa. Com dois tamanhos
+de stream (200 e 2000), 10× mais eventos custaram só ~1,5–2× mais tempo: o custo era
+**por LEITURA**, não por evento — a criação do consumidor. Daí a segunda correcção.
+
+## 2. Zero perda sob falha de nó — a afirmação retractada, agora PROVADA
+
+A §A3 retractou o «zero perda» porque ele assentava numa contagem final. A prova exige
+reconciliar, e é o que agora existe:
+
+```
+fase A: 40 escritas CONFIRMADAS antes da falha
+matar nó: stream=AC4_545f8eac803a lider=aos-medicao-es-1
+fase B: 80 escritas confirmadas no total, 0 tentativas falharam durante o failover
+reconciliação: 80/80 escritas confirmadas presentes e íntegras depois da morte de um nó
+```
+
+Cada `seq` confirmado é registado no momento do ACK e reprocurado no log relido por uma
+ligação NOVA, com a carga verificada. E o inverso também: o log não pode ter eventos que
+ninguém confirmou — um fantasma seria a garantia «ERRO ⇒ NADA FICOU DURÁVEL» a partir-se,
+e é tão grave como uma perda.
+
+**A propriedade medida é precisa, e mais fraca do que «nada se perde»:** *toda a escrita
+CONFIRMADA sobrevive*. Escritas que falham durante um failover não são perdas — são
+recusas. Confundir as duas foi o que produziu a afirmação retractada.
+
+**Nota de método sobre o comando de falha:** o script mata o LÍDER do stream e nunca o nó
+a que o cliente está ligado (força um step-down se a liderança lá estiver). Não é
+conveniência: o cliente não tem reconexão automática — limite declarado —, e matar a
+ligação mediria o CLIENTE, não o cluster.
+
+## 3. O teste do AC4 apanhou um defeito no trabalho da alínea 1
+
+Na primeira execução, as escritas continuaram (0 falhas) e a **leitura** falhou:
+`CONSUMER.CREATE` expirou ao fim de 20 s com um nó em baixo.
+
+Causa: o consumidor de leitura herdava as **3 réplicas** do stream, pelo que criá-lo era
+uma operação replicada — e a leitura ficava **menos disponível do que a escrita**,
+exactamente no cenário que o AC4 mede. O `next_by_subj` que eu tinha substituído não
+tinha esse problema: lia sem criar nada.
+
+Ou seja, a optimização trocou disponibilidade sob falha por velocidade, e só se soube
+porque as duas tarefas foram feitas juntas. Os consumidores de leitura passam a ser
+**R1 em memória** — não há nada a replicar num consumidor que morre com a leitura — e a
+correcção deu, de lado, mais 2–4× de velocidade.

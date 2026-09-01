@@ -38,12 +38,14 @@
 //
 // # Limites, declarados e não descobertos
 //
-//   - LEITURA POR ROUND-TRIP — e o custo está MEDIDO, não estimado. Reconstruir um
-//     stream caminha o subject com
-//     `next_by_subj`, um pedido por evento: **113–120 eventos/s**, contra ~4–5 MILHÕES/s
-//     do WAL local (benchmark co-localizado, 2026-09-01). Um run de 200 eventos paga
-//     ~1,7 s de re-hidratação POR ARRANQUE — o que não é aceitável em regime e é a
-//     próxima coisa a corrigir. Sem batching nem cache de eventos.
+//   - LEITURA EM LOTES, e o custo está MEDIDO. Um lote é um consumidor efémero que
+//     empurra a janela inteira (ver janelaDeLeitura); a completude é VERIFICÁVEL porque
+//     a contagem do subject é pedida ao servidor antes, e um lote incompleto é ERRO — um
+//     log truncado em silêncio faria o replay reconstruir estado errado. Um stream de 200
+//     eventos lê-se em ~25–51 ms (3 881–7 967 eventos/s), contra ~1,7 s da versão
+//     pedido-por-evento que isto substituiu. O WAL local continua ~4–5 MILHÕES/s: é
+//     memória contra rede, e a diferença é o preço da replicação. Sem cache de eventos —
+//     cada Read vai ao servidor, que é a diferença entre um log partilhado e N cópias.
 //   - SUBSCRIÇÃO SÓ DO NOVO. [Store.Subscribe] cria um consumidor efémero com
 //     deliver_policy "new" — a mesma semântica do modelo de referência, que só faz
 //     fanout do que é escrito depois da subscrição. Não é um consumidor durável: sem

@@ -51,9 +51,11 @@ type Store struct {
 type estado struct {
 	mu        sync.Mutex
 	hidratado bool
-	aosSeq    uint64            // último Event.Seq committed (gapless desde 1)
-	jsSeq     uint64            // seq JetStream da última mensagem do subject (token de CAS)
-	dedup     map[string]uint64 // idempotency_key -> seq JetStream do evento original
+	aosSeq    uint64 // último Event.Seq committed (gapless desde 1)
+	jsSeq     uint64 // seq JetStream da última mensagem do subject (token de CAS)
+	// dedup guarda o EVENTO, nao o seq: o caminho do duplicado responde sem ir ao
+	// servidor, e a hidratacao ja o tinha em maos.
+	dedup map[string]eventstore.Event
 }
 
 type config struct {
@@ -218,12 +220,11 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 		// 1) Idempotência.
 		if eventstore.HasIdempotency(in.RunID, in.StepID) {
 			chave := eventstore.IdempotencyKey(in.RunID, in.StepID)
-			if jsSeq, ok := st.dedup[chave]; ok {
-				ev, err := s.eventoPorJSSeq(ctx, jsSeq, prazo)
-				if err != nil {
-					return eventstore.AppendResult{}, err
-				}
-				return eventstore.AppendResult{Seq: ev.Seq, Status: eventstore.StatusDuplicate, Event: ev}, nil
+			if ev, ok := st.dedup[chave]; ok {
+				// O evento vem do indice derivado, sem ir ao servidor: a hidratacao
+				// ja o tinha em maos, e um round-trip para o repetir seria trabalho
+				// a mais no caminho mais quente que existe (o retry de um passo).
+				return eventstore.AppendResult{Seq: ev.Seq, Status: eventstore.StatusDuplicate, Event: ev.Clone()}, nil
 			}
 		}
 
@@ -261,7 +262,7 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 		case err == nil:
 			st.aosSeq, st.jsSeq = ev.Seq, ack.Seq
 			if eventstore.HasIdempotency(in.RunID, in.StepID) {
-				st.dedup[eventstore.IdempotencyKey(in.RunID, in.StepID)] = ack.Seq
+				st.dedup[eventstore.IdempotencyKey(in.RunID, in.StepID)] = ev
 			}
 			return eventstore.AppendResult{Seq: ev.Seq, Status: eventstore.StatusCommitted, Event: ev}, nil
 
@@ -353,51 +354,147 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]ev
 
 // lerSubject caminha o subject do princípio ao fim e devolve os eventos, o seq
 // JetStream do último, o índice de dedup derivado e o último seq do AOS.
-func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Duration) ([]eventstore.Event, uint64, map[string]uint64, uint64, error) {
-	var (
-		evs      []eventstore.Event
-		jsUltimo uint64
-		aosSeq   uint64
-		dedup           = map[string]uint64{}
-		proximo  uint64 = 1
-	)
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, 0, nil, 0, err
+// janelaDeLeitura é quantos eventos se trazem por lote.
+//
+// Não é um número arbitrário: é o tecto da fila de entrega que o lote exige, e essa fila
+// tem de comportar o lote INTEIRO. O leitor do cliente DESCARTA quando a fila enche (um
+// subscritor lento não pode bloquear o leitor, que serve todas as subscrições) — e um log
+// truncado não é um log lento, é um log ERRADO. Ler em janelas mantém a fila limitada sem
+// voltar ao pedido-por-evento.
+const janelaDeLeitura = 2048
+
+// lerSubject lê os eventos do subject EM LOTES e devolve-os, o seq JetStream do último
+// (o token de CAS) e o índice de deduplicação derivado.
+//
+// # O defeito que isto fecha, medido
+//
+// A versão anterior caminhava o subject com `next_by_subj`, UM PEDIDO POR EVENTO.
+// MEDIDO a 2026-09-01, co-localizado com o cluster: **113–120 eventos/s**, contra 3,9–5,4
+// MILHÕES/s do WAL local. Um run de 200 eventos pagava ~1,7 s de re-hidratação POR
+// ARRANQUE — e a re-hidratação está no caminho de arranque de todos os runs.
+//
+// Agora um lote é um consumidor efémero que EMPURRA a janela inteira: dois round-trips
+// por janela em vez de um por evento.
+//
+// # Porque a contagem é pedida ao servidor primeiro
+//
+// Com entrega push e `ack_policy: none` não há nada que diga «acabou» — só mensagens que
+// param de chegar, que é indistinguível de uma que se perdeu. Perguntar ao servidor
+// quantas há ANTES torna a completude VERIFICÁVEL: ou chegam todas, ou o erro diz que
+// faltaram. Devolver um log truncado em silêncio seria o pior desfecho possível, porque o
+// replay reconstruiria estado errado sem ninguém dar por isso.
+func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Duration) ([]eventstore.Event, uint64, map[string]eventstore.Event, uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, nil, 0, err
+	}
+	contagens, err := s.cn.SubjectsWithMessages(s.stream, subject, prazo)
+	if err != nil {
+		return nil, 0, nil, 0, err
+	}
+	total := contagens[subject]
+	dedup := map[string]eventstore.Event{}
+	if total == 0 {
+		return nil, 0, dedup, 0, nil
+	}
+
+	evs := make([]eventstore.Event, 0, total)
+	var inicio uint64 // 0 = desde o princípio do stream
+	for uint64(len(evs)) < total {
+		se := janelaDeLeitura
+		if restam := total - uint64(len(evs)); restam < uint64(se) {
+			se = int(restam)
 		}
-		jsSeq, dados, err := s.cn.NextMessageOnSubject(s.stream, proximo, subject, prazo)
-		if errors.Is(err, natsjs.ErrNoMessage) {
-			return evs, jsUltimo, dedup, aosSeq, nil
-		}
+		lote, ultimoJS, err := s.lerLote(ctx, subject, inicio, se, prazo)
 		if err != nil {
 			return nil, 0, nil, 0, err
 		}
-		var ev eventstore.Event
-		if err := json.Unmarshal(dados, &ev); err != nil {
-			return nil, 0, nil, 0, fmt.Errorf("jetstream: envelope ilegível em seq=%d do stream físico: %w", jsSeq, err)
+		if len(lote) == 0 {
+			return nil, 0, nil, 0, fmt.Errorf(
+				"jetstream: lote vazio a meio da leitura de %q (%d de %d eventos lidos) — o log não pode ser servido truncado",
+				subject, len(evs), total)
 		}
-		evs = append(evs, ev)
-		jsUltimo, aosSeq = jsSeq, ev.Seq
-		if eventstore.HasIdempotency(ev.RunID, ev.StepID) {
-			dedup[ev.IdempotencyKey] = jsSeq
-		}
-		proximo = jsSeq + 1
+		evs = append(evs, lote...)
+		inicio = ultimoJS + 1
 	}
+
+	var aosSeq uint64
+	for _, ev := range evs {
+		aosSeq = ev.Seq
+		if eventstore.HasIdempotency(ev.RunID, ev.StepID) {
+			dedup[ev.IdempotencyKey] = ev
+		}
+	}
+
+	// O token de CAS vem do servidor, não do lote: é a afirmação sobre a qual a próxima
+	// escrita vai assentar, e derivá-la de uma leitura seria assentá-la numa suposição.
+	jsUltimo, err := s.cn.UltimoSeqDoSubject(s.stream, subject, prazo)
+	if err != nil {
+		return nil, 0, nil, 0, err
+	}
+	return evs, jsUltimo, dedup, aosSeq, nil
 }
 
-func (s *Store) eventoPorJSSeq(ctx context.Context, jsSeq uint64, prazo time.Duration) (eventstore.Event, error) {
-	if err := ctx.Err(); err != nil {
-		return eventstore.Event{}, err
-	}
-	_, dados, err := s.cn.MessageBySeq(s.stream, jsSeq, prazo)
+// lerLote traz até `quantos` eventos do subject a partir do seq físico `inicio`, por
+// entrega push num consumidor efémero.
+func (s *Store) lerLote(ctx context.Context, subject string, inicio uint64, quantos int, prazo time.Duration) ([]eventstore.Event, uint64, error) {
+	entrega, err := natsjs.NewInbox()
 	if err != nil {
-		return eventstore.Event{}, err
+		return nil, 0, err
 	}
-	var ev eventstore.Event
-	if err := json.Unmarshal(dados, &ev); err != nil {
-		return eventstore.Event{}, fmt.Errorf("jetstream: envelope ilegível em seq=%d: %w", jsSeq, err)
+	// A fila comporta o lote INTEIRO mais folga: ver [janelaDeLeitura].
+	ch, cancelar, err := s.cn.SubscribeSubjectBuffered(entrega, quantos+16)
+	if err != nil {
+		return nil, 0, err
 	}
-	return ev, nil
+	defer cancelar()
+
+	cfg := natsjs.ConsumerConfig{
+		DeliverSubject: entrega,
+		DeliverPolicy:  "all",
+		AckPolicy:      "none",
+		ReplayPolicy:   "instant",
+		FilterSubject:  subject,
+		// R1 em memoria: ler nao precisa de replicacao, e heranca das 3 replicas do
+		// stream tornava a LEITURA indisponivel com um no em baixo — medido.
+		NumReplicas: 1,
+		MemStorage:  true,
+	}
+	if inicio > 0 {
+		cfg.DeliverPolicy, cfg.OptStartSeq = "by_start_sequence", inicio
+	}
+	if err := s.cn.CreateEphemeralConsumer(s.stream, cfg, prazo); err != nil {
+		return nil, 0, err
+	}
+
+	evs := make([]eventstore.Event, 0, quantos)
+	var ultimoJS uint64
+	temporizador := time.NewTimer(prazo)
+	defer temporizador.Stop()
+	for len(evs) < quantos {
+		select {
+		case m, ok := <-ch:
+			if !ok {
+				return nil, 0, fmt.Errorf("jetstream: a subscrição do lote de %q fechou com %d de %d eventos", subject, len(evs), quantos)
+			}
+			var ev eventstore.Event
+			if err := json.Unmarshal(m.Data, &ev); err != nil {
+				return nil, 0, fmt.Errorf("jetstream: envelope ilegível na leitura de %q: %w", subject, err)
+			}
+			evs = append(evs, ev)
+		case <-temporizador.C:
+			return nil, 0, fmt.Errorf("jetstream: leitura de %q parou em %d de %d eventos ao fim de %s — um log servido truncado seria pior do que este erro",
+				subject, len(evs), quantos, prazo)
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		}
+	}
+	// O seq físico do último é pedido ao servidor por [Store.lerSubject]; aqui basta
+	// avançar a janela, e o avanço é feito pelo seq do ÚLTIMO evento lido.
+	ultimoJS, err = s.cn.UltimoSeqDoSubject(s.stream, subject, prazo)
+	if err != nil {
+		return nil, 0, err
+	}
+	return evs, ultimoJS, nil
 }
 
 func (s *Store) hidratar(ctx context.Context, st *estado, subject string, prazo time.Duration) error {
@@ -412,7 +509,7 @@ func (s *Store) hidratar(ctx context.Context, st *estado, subject string, prazo 
 	return nil
 }
 
-func (st *estado) aplicar(_ []eventstore.Event, jsUltimo uint64, dedup map[string]uint64, aosSeq uint64) {
+func (st *estado) aplicar(_ []eventstore.Event, jsUltimo uint64, dedup map[string]eventstore.Event, aosSeq uint64) {
 	st.jsSeq, st.aosSeq, st.dedup, st.hidratado = jsUltimo, aosSeq, dedup, true
 }
 
@@ -537,7 +634,7 @@ func (s *Store) estadoDe(streamID string) *estado {
 	defer s.mu.Unlock()
 	st := s.streams[streamID]
 	if st == nil {
-		st = &estado{dedup: map[string]uint64{}}
+		st = &estado{dedup: map[string]eventstore.Event{}}
 		s.streams[streamID] = st
 	}
 	return st
