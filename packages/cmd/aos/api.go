@@ -1266,6 +1266,49 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AGENDADOR DE EXPORTAÇÃO DE BACKUP (AOS-101) — «o log está a ser exportado, e para onde?»
+	//
+	// A pergunta não tinha resposta em runtime porque a coisa não corria: nenhum binário importava
+	// `platform/backup`. Agora que corre, herda a disciplina do varredor de retenção — as três
+	// leituras que exigem acções diferentes são TRÊS séries, não uma:
+	//
+	//	armed=0                      ⇒ não há destino composto (o estado por omissão): nada é exportado
+	//	armed=1, stopped=1           ⇒ PAROU por erro PERMANENTE (soberania cross-border, ou colisão
+	//	                               de referência num destino que sobreviveu ao processo). Não
+	//	                               volta sozinho; exige mudar o destino e reiniciar
+	//	armed=1, stopped=0, age alta ⇒ deixou de exportar sem o dizer
+	//
+	// O DESTINO viaja na LABEL de `aos_backup_export_periodicity_seconds` porque é o par que o
+	// operador precisa de ler junto: a periodicidade é a base do RPO e a região é a fronteira de
+	// soberania que o backup nunca cruza. Uma região sem cadência (ou o contrário) não responde à
+	// pergunta. NÃO viaja aqui nada que identifique conteúdo — `/metrics` é não-autenticado e a
+	// filosofia não-enumerável vale para ele.
+	if h.svc != nil {
+		armadoBackup := backupSchedulerArmed(h.node)
+		g("aos_backup_scheduler_armed", "O agendador de exportacao do Event Store para backup imutavel esta armado (1) ou nao (0). 0 significa que o log NAO e exportado por este no.",
+			"gauge", b01(armadoBackup), "")
+		if armadoBackup {
+			exp := h.node.BackupExporter
+			g("aos_backup_export_periodicity_seconds", "Periodicidade do ciclo de exportacao (a BASE do RPO). A label region e a fronteira de soberania do destino, que o backup nunca cruza (ADR-011).",
+				"gauge", exp.Periodicity().Seconds(), fmt.Sprintf("{region=%q}", exp.Immutable().Region()))
+			g("aos_backup_export_cycles_total", "Ciclos de exportacao CONCLUIDOS desde o arranque (incluindo os que nada tinham a exportar — esses sao a prova de que o backup esta EM DIA).",
+				"counter", float64(h.svc.ciclosDeBackup.Load()), "")
+			g("aos_backup_export_failures_total", "Ciclos de exportacao FALHADOS desde o arranque (fail-open: nao afectam os runs).",
+				"counter", float64(h.svc.backupFalhas.Load()), "")
+			g("aos_backup_scheduler_stopped", "O agendador PAROU definitivamente por erro permanente (violacao de soberania ou colisao de referencia no destino) (1). Nao volta sozinho.",
+				"gauge", b01(h.svc.backupParado.Load()), "")
+			// A JANELA EFECTIVA DE RPO, medida pelo próprio exportador: quanto tempo passou desde
+			// que o backup confirmou estar em dia com o head do Store. É o número que o critério
+			// de aceitação AC4 do AOS-101 fala, agora medido em produção e não só em teste.
+			// Só sai DEPOIS do primeiro ciclo — antes disso `RPOWindow` devolve 0, e um 0 aqui
+			// leria-se como «acabou de exportar» sobre um nó que ainda não exportou nada.
+			if h.svc.ultimoBackupUnix.Load() > 0 {
+				g("aos_backup_rpo_window_seconds", "Janela EFECTIVA de RPO: segundos desde que o backup confirmou estar em dia com o head do Event Store. Deve manter-se <= aos_backup_export_periodicity_seconds.",
+					"gauge", h.node.BackupExporter.RPOWindow(time.Now()).Seconds(), "")
+			}
+		}
+	}
+
 	// OS TRÊS VARREDORES DE SERVIÇO QUE NÃO TINHAM SINAL NENHUM.
 	//
 	// Achado da validação longitudinal de 2026-08-25: se qualquer um destes parasse, o efeito

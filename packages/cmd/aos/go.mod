@@ -8,14 +8,15 @@ require (
 	github.com/aos-ref/control-plane/budget v0.0.0
 	github.com/aos-ref/control-plane/governance/autonomy v0.0.0
 	github.com/aos-ref/control-plane/governance/dsar v0.0.0
-	github.com/aos-ref/control-plane/governance/progress-surface v0.0.0
 	github.com/aos-ref/control-plane/governance/hitl v0.0.0
+	github.com/aos-ref/control-plane/governance/progress-surface v0.0.0
 	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0
 	github.com/aos-ref/control-plane/pdp v0.0.0
 	github.com/aos-ref/integration v0.0.0
 	github.com/aos-ref/kernel/agent-runtime v0.0.0
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
+	github.com/aos-ref/platform/backup v0.0.0
 	github.com/aos-ref/platform/broker v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
 	github.com/aos-ref/platform/memory v0.0.0

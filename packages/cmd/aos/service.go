@@ -219,6 +219,23 @@ type NodeService struct {
 	// laço deste loop declaradamente FAIL-OPEN — ver slo_evaluator.go.
 	slo *sloEvaluator
 
+	// AOS-101 — AGENDADOR DE EXPORTAÇÃO DE BACKUP. Partilha o MESMO sweepStop: o Shutdown pára os
+	// seis laços com UM close. NÃO tem cadência própria — lê [backup.Exporter.Periodicity] do
+	// exportador composto no nó, para que o RPO anunciado e o RPO ligado sejam o mesmo por
+	// construção. Ver backup_scheduler.go.
+	//
+	// AS SÉRIES QUE O TORNAM OBSERVÁVEL. «O log está a ser exportado?» tem, como a expiração por
+	// TTL de AOS-267, três leituras que exigem acções diferentes: nunca armado (não há destino),
+	// armado e PARADO (soberania ou colisão de referência — não volta sozinho), armado e a
+	// correr. O contador dá a taxa; a IDADE é o detector, porque denuncia numa leitura só.
+	ciclosDeBackup   atomic.Int64
+	ultimoBackupUnix atomic.Int64
+	backupFalhas     atomic.Int64
+	backupPanicos    atomic.Int64
+	// backupParado marca a paragem DEFINITIVA por erro permanente — distinta de «não armado» e de
+	// «armado, à espera do primeiro tick», exactamente como [varredorParado] no de retenção.
+	backupParado atomic.Bool
+
 	// expireInFlight serializa as passagens do [audit.ExpirationJob] — as conduzidas por
 	// POST /dsar/expire (AOS-213) E as do scheduler interno (AOS-267). O Run do job é pensado
 	// para uma execução de cada vez (o check-then-Add da idempotency key não é atómico ao nível
@@ -482,6 +499,16 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		go s.evaluateSLOs(s.sweepStop)
 	}
 	s.log("%s", sloEvaluatorBanner(node, sloEvalInterval, sloWindow))
+	// AOS-101 — AGENDADOR DE EXPORTAÇÃO DE BACKUP no loop de serviço. Só arranca quando o
+	// [Bootstrap] compôs o exportador (o que exige um destino imutável EXPLÍCITO — desligado por
+	// omissão) e a periodicidade dele é > 0. A cadência NÃO é uma opção deste serviço de
+	// propósito: é a do exportador, para que o RPO anunciado seja o RPO ligado. O banner DECLARA
+	// sempre a postura — ligada, dormente ou desligada — e, quando desligada, a ressalva de que
+	// não há hoje backend durável para a porta. Ver backup_scheduler.go.
+	if backupSchedulerArmed(node) {
+		go s.exportarBackups(s.sweepStop)
+	}
+	s.log("%s", backupSchedulerBanner(node))
 	return s, nil
 }
 
@@ -1011,7 +1038,7 @@ func (s *NodeService) Shutdown(ctx context.Context) error {
 	s.draining.Store(true) // espelha o drain (armado SOB mu, no mesmo ponto que closed) para leitura lock-free da sonda
 	inflight := len(s.runs)
 	s.mu.Unlock()
-	// Para os laços periódicos (AOS-021/252/249/267/274) com UM close — idempotente: o Shutdown já
+	// Para os laços periódicos (AOS-021/252/249/267/274/101) com UM close — idempotente: o Shutdown já
 	// retornou cedo se `closed` estava armado, pelo que este close acontece uma só vez.
 	close(s.sweepStop)
 	// AOS-283 — a posse dos laços de serviço é largada por ANÚNCIO, não deixada a expirar:

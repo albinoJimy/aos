@@ -694,6 +694,23 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	cfg.Retention = retention
 
+	// PERIODICIDADE DA EXPORTAÇÃO DE BACKUP (AOS-101) por ambiente. É a BASE DO RPO: a janela de
+	// perda é limitada pela cadência com que o Event Store é exportado para o backup imutável.
+	// Vazia ⇒ 0, que o [Bootstrap] traduz no default do próprio `platform/backup`; malformada ou
+	// <= 0 ⇒ ABORTA ([ErrBadBackupExportInterval]), fail-closed como as irmãs — um operador que
+	// pede 30s e fica com outra coisa qualquer não tem forma de o notar, e o sintoma seria um RPO
+	// real diferente do anunciado, descoberto no dia do restauro.
+	//
+	// ISTO NÃO LIGA O BACKUP. O interruptor é [Config.BackupDestination], que é uma PORTA
+	// injectada e não tem superfície de ambiente — ver a nota nesse campo: não há hoje backend
+	// DURÁVEL para `backup.ImmutableStore` e o nó recusa-se a inventar um. Definir só esta
+	// variável configura a cadência de um exportador que continua por compor.
+	backupPeriodicity, err := backupExportIntervalFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.BackupPeriodicity = backupPeriodicity
+
 	// CUSTÓDIA EXTERNA DA KEK em HashiCorp Vault (AOS-215/AOS-216) por ambiente. Vazio ⇒
 	// [Config.DSARVault] fica nil e o Bootstrap usa o vault in-memory demo-grade (inalterado);
 	// AOS_DSAR_VAULT_ADDR presente ⇒ liga a custódia key-never-leaves via Transit. Fail-closed:

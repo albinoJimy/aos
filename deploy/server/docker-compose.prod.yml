@@ -245,6 +245,12 @@ services:
       AOS_PROGRESS_THRESHOLD: "${AOS_PROGRESS_THRESHOLD:-}"
       AOS_SLO_WINDOW: "${AOS_SLO_WINDOW:-}"
       AOS_SLO_EVAL_INTERVAL: "${AOS_SLO_EVAL_INTERVAL:-}"
+      # AOS-101 — periodicidade do ciclo de exportacao para backup imutavel (a BASE do RPO).
+      # NAO liga o backup: o interruptor e o DESTINO (Config.BackupDestination), que hoje nao tem
+      # superficie de ambiente porque nao existe backend DURAVEL para a porta backup.ImmutableStore
+      # (ver deploy/node/README.md). Definir isto sozinho configura a cadencia de um exportador que
+      # continua por compor — e e por isso que fica vazio por omissao.
+      AOS_BACKUP_EXPORT_INTERVAL: "${AOS_BACKUP_EXPORT_INTERVAL:-}"
       AOS_SANDBOX_SEED_DIR: "${AOS_SANDBOX_SEED_DIR:-}"
 
       # --- TRÊS QUE FICAM DE FORA, E PORQUÊ --------------------------------------------------
