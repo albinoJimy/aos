@@ -232,8 +232,8 @@ func (spanDeTesteRastreador) Iniciar(ctx context.Context, _ string) (context.Con
 
 func TestAcessores_RefletemAConfiguracao(t *testing.T) {
 	s := &Store{regiao: "eu-west", board: "b1", streams: map[string]*estado{}, subs: map[string]*subscricao{}}
-	if s.Regiao() != "eu-west" || s.BoardDeSoberania() != "b1" {
-		t.Errorf("acessores = (%q,%q)", s.Regiao(), s.BoardDeSoberania())
+	if s.Region() != "eu-west" || s.SovereigntyBoard() != "b1" {
+		t.Errorf("acessores = (%q,%q)", s.Region(), s.SovereigntyBoard())
 	}
 	if !s.Healthy() {
 		t.Error("um store aberto devia estar Healthy")

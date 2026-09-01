@@ -53,6 +53,13 @@ var (
 	// intacto; recusa fail-closed qualquer envelope malformado.
 	ErrRestoreEnvelope = &StoreError{Code: "E_RESTORE_ENVELOPE", msg: "envelope de evento de restauro incoerente (stream_id/event_id)"}
 
+	// ErrRestoreDivergent — um lote de restauro sobrepõe-se a eventos JÁ presentes no
+	// log e o que lá está NÃO é o que o backup diz (EventID diferente no mesmo seq).
+	// É a falha que nunca se pode aceitar em silêncio: significa que o alvo tem OUTRA
+	// história, e continuar produziria um log costurado de dois passados diferentes
+	// que verificaria como íntegro. Recusa fail-closed, e nomeia o seq onde divergiu.
+	ErrRestoreDivergent = &StoreError{Code: "E_RESTORE_DIVERGENT", msg: "o log alvo ja tem outro evento neste seq — o restauro divergiria da historia armazenada"}
+
 	// ErrWALCorruptedMidLog — o WAL tem um registo corrompido com registos ÍNTEGROS
 	// depois dele. NÃO é a cauda rasgada de um crash: é corrupção no MEIO do log, e
 	// a diferença importa porque o remédio da cauda (truncar) apagaria em disco

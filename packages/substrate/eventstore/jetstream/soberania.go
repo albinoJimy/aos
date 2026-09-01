@@ -110,13 +110,20 @@ func verificarColocacao(lida natsjs.StreamConfigLida, regiao, stream string) err
 		eventstore.ErrSovereigntyViolation, stream, lida.Placement.Tags, exigida)
 }
 
-// Regiao devolve a região da fronteira de soberania, ou "" se não há fronteira.
-func (s *Store) Regiao() string { return s.regiao }
+// Region devolve a região da fronteira de soberania, ou "" se não há fronteira.
+//
+// Chama-se `Region` e não `Regiao` porque é nome de PORTA: satisfaz
+// [eventstore.BackupSource], que o exportador de backup usa para fazer valer a
+// fronteira (ADR-011, AOS-101). A regra do adaptador é essa — o que satisfaz um
+// contrato do `eventstore` leva o nome do contrato (`Append`, `Read`, `Streams`,
+// `Healthy`), o que é do adaptador leva o nosso (`ComRegiao`, `ColocacaoEfectiva`).
+// Ter as duas grafias para o mesmo conceito seria o convite exacto à divergência.
+func (s *Store) Region() string { return s.regiao }
 
-// BoardDeSoberania devolve o id do board associado à fronteira, ou "" se a fronteira foi
+// SovereigntyBoard devolve o id do board associado à fronteira, ou "" se a fronteira foi
 // declarada sem board ou não há fronteira. É rótulo de observabilidade; a decisão da
-// fronteira é da região.
-func (s *Store) BoardDeSoberania() string { return s.board }
+// fronteira é da região. Nome de porta, como [Store.Region].
+func (s *Store) SovereigntyBoard() string { return s.board }
 
 // ColocacaoEfectiva devolve os pares do cluster que alojam de facto o stream.
 //

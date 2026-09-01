@@ -42,6 +42,33 @@ type BackupSource interface {
 // contrário de Append (reatribui EventID/Ts/Seq), IngestStream reinsere os
 // eventos exactamente como estavam no backup, validando a ordem gapless e a
 // idempotência. Nunca faz parte da interface EventStore.
+//
+// # A regra de recuperação, e porque NÃO é «atómico»
+//
+// A tentação era exigir all-or-nothing. O [Store] de referência dá-o de graça (valida
+// o lote todo antes de escrever, e escreve em memória sob lock), mas um substrato
+// REPLICADO não pode: no JetStream cada evento é um publish, e uma falha de rede ao
+// k-ésimo deixa 1..k-1 DURÁVEIS. Exigir atomicidade produziria uma porta que uma das
+// implementações cumpriria a mentir.
+//
+// Pior: nesse substrato o log é append-only imposto pelo SERVIDOR (deny_purge, AOS-100),
+// pelo que um restauro falhado a meio NÃO SE LIMPA — não há como truncar o que ficou.
+// Se a porta não previsse isto, um erro a meio envenenaria o stream-alvo para sempre e
+// a única saída seria restaurar para outro.
+//
+// Por isso a propriedade exigida é outra, e é a que o chamador realmente precisa:
+//
+//	REPETIR A CHAMADA IDÊNTICA APÓS UM ERRO CONVERGE PARA O ESTADO PRETENDIDO.
+//
+// As duas implementações honram-na por caminhos diferentes — a de referência porque
+// não deixou rasto nenhum, a replicada porque RETOMA do que já lá está, verificando
+// que o prefixo presente é o mesmo do lote. Um prefixo que NÃO bata certo é
+// [ErrRestoreDivergent]: duas histórias diferentes costuradas verificariam como
+// íntegras, e é precisamente o que nunca pode passar em silêncio.
+//
+// Consequência para quem escreve um restaurador: ao erro, repita a MESMA chamada com o
+// MESMO lote. Não corte o lote pelo que julga ter passado — quem sabe o que passou é o
+// sink, e é ele que o vai descobrir.
 type RestoreSink interface {
 	// IngestStream reinsere, preservando o envelope, os eventos dados no stream,
 	// validando que continuam o log de forma gapless (seq = último+1, +2, ...) e

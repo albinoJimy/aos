@@ -52,11 +52,11 @@ func TestSoberania_StreamFicaConfinadoARegiaoDoBoard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abrir com fronteira %q: %v", regiaoDoCluster, err)
 	}
-	if st.Regiao() != regiaoDoCluster {
-		t.Fatalf("Regiao() = %q, quer %q", st.Regiao(), regiaoDoCluster)
+	if st.Region() != regiaoDoCluster {
+		t.Fatalf("Region() = %q, quer %q", st.Region(), regiaoDoCluster)
 	}
-	if st.BoardDeSoberania() != "board-ue" {
-		t.Fatalf("BoardDeSoberania() = %q, quer board-ue", st.BoardDeSoberania())
+	if st.SovereigntyBoard() != "board-ue" {
+		t.Fatalf("SovereigntyBoard() = %q, quer board-ue", st.SovereigntyBoard())
 	}
 	// E o store funciona — uma fronteira que impedisse escrever não seria soberania,
 	// seria indisponibilidade.
@@ -149,8 +149,8 @@ func TestSoberania_RegiaoENormalizadaComoNoStoreDeReferencia(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abrir com região não-normalizada: %v", err)
 	}
-	if st.Regiao() != regiaoDoCluster {
-		t.Fatalf("Regiao() = %q, quer %q — a normalização diverge do store de referência", st.Regiao(), regiaoDoCluster)
+	if st.Region() != regiaoDoCluster {
+		t.Fatalf("Region() = %q, quer %q — a normalização diverge do store de referência", st.Region(), regiaoDoCluster)
 	}
 }
 
@@ -163,9 +163,9 @@ func TestSoberania_SemFronteiraFicaDormente(t *testing.T) {
 	if err != nil {
 		t.Fatalf("abrir sem fronteira: %v", err)
 	}
-	if st.Regiao() != "" || st.BoardDeSoberania() != "" {
-		t.Fatalf("sem fronteira declarada, Regiao()=%q BoardDeSoberania()=%q — deviam estar vazios",
-			st.Regiao(), st.BoardDeSoberania())
+	if st.Region() != "" || st.SovereigntyBoard() != "" {
+		t.Fatalf("sem fronteira declarada, Region()=%q SovereigntyBoard()=%q — deviam estar vazios",
+			st.Region(), st.SovereigntyBoard())
 	}
 	if _, err := st.Append(context.Background(), "run-sem-fronteira",
 		eventstore.EventInput{Type: "soberania.dormente", Payload: json.RawMessage(`{}`)}); err != nil {
