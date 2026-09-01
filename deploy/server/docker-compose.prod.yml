@@ -91,8 +91,16 @@ services:
       AOS_DURABLE_EXECUTION: "1"
       # AOS-100 — Event Store REPLICADO. Vazio (o default) mantem o WAL local acima;
       # preenchido, PRECEDE-O e o substrato passa a arbitrar entre processos, tornando
-      # N replicas do no a configuracao pretendida. NAO usar num board com fronteira
-      # regional declarada: o backend ainda nao exprime `placement` (AC5 por fechar).
+      # N replicas do no a configuracao pretendida.
+      # SOBERANIA (AC5): esta fechado. A fronteira regional e IMPLEMENTADA — o stream e
+      # criado com `placement` restrita a servidores que anunciem `region:<valor>` — e
+      # sobretudo VERIFICADA: a colocacao e LIDA DE VOLTA da configuracao armazenada, e
+      # ligar-se a um stream JA EXISTENTE sem colocacao (ou com a de outra regiao) ABORTA
+      # o arranque. Num board com fronteira declarada isto usa-se, mas exige preencher
+      # AOS_EVENTSTORE_NATS_REGION abaixo — com AOS_BOARD_REGIONS o no recusa arrancar sem ela.
+      # BACKUP: com esta variavel preenchida o log SAI do volume aos_aos-data, e o
+      # deploy/server/backup.sh — que copia o volume — RECUSA-SE a produzir um artefacto
+      # verde e sem log. Copiar o log replicado tem de ser resolvido ANTES de ligar isto.
       AOS_EVENTSTORE_NATS: "${AOS_EVENTSTORE_NATS:-}"
       AOS_EVENTSTORE_NATS_STREAM: "${AOS_EVENTSTORE_NATS_STREAM:-}"
       AOS_EVENTSTORE_NATS_REPLICAS: "${AOS_EVENTSTORE_NATS_REPLICAS:-}"

@@ -103,6 +103,27 @@ tar xzf "${D}/x/volumes.tar.gz" -C "${D}/vol"
 chmod -R a+rwX "${D}/vol"
 log "  $(sed -n 's/^stamp=//p' "${D}/x/MANIFEST"), $(du -sh "${D}/vol/aos" | cut -f1) de dados do nó"
 
+# DE ONDE VEIO O LOG, segundo quem o produziu. O backup.sh grava-o no MANIFEST porque um bundle
+# feito com o Event Store num cluster (AOS-100) NÃO traz o log dos runs — só sai assim com uma
+# declaração explícita de que ele é copiado noutro sítio.
+#
+# Sem esta leitura, o ensaio seguia em frente e falhava três minutos depois no passo 6, com "não
+# encontrei nenhum run no WORM restaurado" — um sintoma que se lê como "o backup está corrompido"
+# e não como "este backup nunca teve o log". Recusar aqui é dizer a verdade mais cedo.
+ES_ORIGEM="$(sed -n 's/^eventstore=//p' "${D}/x/MANIFEST")"
+case "${ES_ORIGEM}" in
+  externo)
+    fail "este bundle foi produzido com o Event Store FORA do volume — declarado no MANIFEST:
+    eventstore-nats=$(sed -n 's/^eventstore-nats=//p' "${D}/x/MANIFEST")
+    eventstore-externo=$(sed -n 's/^eventstore-externo=//p' "${D}/x/MANIFEST")
+  O log dos runs NÃO está aqui dentro. O passo 6 lê um run cujo estado se reconstrói do log, e não
+  teria de onde: o ensaio não pode provar nada sobre este artefacto. Restaure primeiro o log
+  replicado num cluster de ensaio e aponte-lhe RESTORE_DRILL_EXTRA_ENV='AOS_EVENTSTORE_NATS=…'." ;;
+  volume) : ;;
+  "")     log "  MANIFEST sem linha eventstore= — bundle anterior à guarda de substrato do backup.sh; presume-se log no volume" ;;
+  *)      fail "MANIFEST diz eventstore=${ES_ORIGEM}, que este ensaio não sabe interpretar. Recusa-se em vez de adivinhar" ;;
+esac
+
 # Rede PRÓPRIA com os nomes de produção como aliases — ver a nota 1 do cabeçalho.
 docker network create "${NET}" >/dev/null 2>&1 || true
 
@@ -186,6 +207,20 @@ AOS_IMG="$(docker inspect aos-aos-1 --format '{{.Image}}')"
 docker inspect aos-aos-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^[A-Z]' > "${D}/env-aos"
 sed -i 's#^AOS_DSAR_VAULT_ADDR=.*#AOS_DSAR_VAULT_ADDR=https://vault:8200#' "${D}/env-aos"
 sed -i 's#^AOS_SOVEREIGN_OIDC_JWKS_URI=.*#AOS_SOVEREIGN_OIDC_JWKS_URI=https://idp:8443/realms/aos/protocol/openid-connect/certs#' "${D}/env-aos"
+# ISOLAMENTO — e é uma recusa de duas causas, qualquer uma delas suficiente.
+#
+# O env deste nó é COPIADO do contentor de produção (a linha acima). Se a produção corre sobre o
+# Event Store replicado, essa cópia traz AOS_EVENTSTORE_NATS com o endereço do cluster REAL:
+#
+#   1. o nó do ensaio LIGAR-SE-IA a ele e passaria a ESCREVER no log de produção. Este script
+#      promete "não toca no que está a correr" — deixaria de ser verdade, em silêncio;
+#   2. e o 200 do passo 6 seria lido do cluster VIVO, não do bundle. O ensaio passaria, sem ter
+#      provado coisa nenhuma sobre o artefacto — que é exactamente o modo de falha que ele existe
+#      para não ter.
+#
+# Lê-se ANTES do RESTORE_DRILL_EXTRA_ENV: o que se recusa é o endereço HERDADO. Apontar o ensaio
+# a um cluster de ensaio é uso legítimo, e é a saída que a mensagem indica.
+ES_HERDADO="$(sed -n 's/^AOS_EVENTSTORE_NATS=//p' "${D}/env-aos")"
 # RESTORE_DRILL_EXTRA_ENV acrescenta variáveis ao nó do ensaio — é o que torna esta pilha um
 # LABORATÓRIO e não só uma verificação. Mecanismos que em produção estão armados e nunca
 # dispararam (o `escalate` da autonomia, o burn-down do orçamento) podem ser exercitados aqui,
@@ -193,6 +228,18 @@ sed -i 's#^AOS_SOVEREIGN_OIDC_JWKS_URI=.*#AOS_SOVEREIGN_OIDC_JWKS_URI=https://id
 if [[ -n "${RESTORE_DRILL_EXTRA_ENV:-}" ]]; then
   printf '%s\n' ${RESTORE_DRILL_EXTRA_ENV} >> "${D}/env-aos"
   log "  env de exercício: ${RESTORE_DRILL_EXTRA_ENV}"
+fi
+ES_FINAL="$(sed -n 's/^AOS_EVENTSTORE_NATS=//p' "${D}/env-aos")"; ES_FINAL="${ES_FINAL##*$'\n'}"
+if [[ -n "${ES_HERDADO}" && "${ES_FINAL}" = "${ES_HERDADO}" ]]; then
+  fail "o nó de produção corre sobre o Event Store REPLICADO (AOS_EVENTSTORE_NATS=${ES_HERDADO}), e o
+  nó deste ensaio herdaria esse endereço. Duas razões para parar, e chega qualquer uma:
+    1. ESCREVERIA no log de produção — a isolação que este script promete deixaria de existir;
+    2. o 200 do passo 6 viria do cluster VIVO e não do bundle — o ensaio passaria sem provar nada.
+  Levante um cluster de ensaio a partir da cópia do log replicado e aponte-lhe o nó:
+    RESTORE_DRILL_EXTRA_ENV='AOS_EVENTSTORE_NATS=drill-es:4222' bash $0 ${BUNDLE}"
+fi
+if [[ -n "${ES_FINAL}" ]]; then
+  log "  ⚠️  Event Store replicado apontado a ${ES_FINAL} por RESTORE_DRILL_EXTRA_ENV — o 200 do passo 7 prova ESSE cluster, não o volume que veio no bundle"
 fi
 docker run -d --name "${PREFIX}-aos" --network "${NET}" --cpus 2 --env-file "${D}/env-aos" \
   -v "${D}/vol/aos:/var/lib/aos" \

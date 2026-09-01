@@ -475,9 +475,10 @@ type Config struct {
 	// WORM MANTÉM-SE: o WORM continua a ser um ficheiro local, e dois escritores
 	// FORKAM a hash-chain (AOS-284, medido).
 	//
-	// LIMITE POR FECHAR (AC5 do AOS-100): este backend ainda NÃO exprime a fronteira
-	// regional de soberania (falta `placement` na configuração do stream). Não deve
-	// servir um board com fronteira declarada — ver o doc de eventstore/jetstream.
+	// SOBERANIA (AC5 do AOS-100): FECHADA neste backend. A fronteira regional exprime-se
+	// por `placement` no stream e — o que a torna verdadeira quando o stream JÁ EXISTIA —
+	// é LIDA DE VOLTA da configuração armazenada, abortando se divergir. Declara-se em
+	// [Config.EventStoreNATSRegion]; ver packages/substrate/eventstore/jetstream/soberania.go.
 	EventStoreNATS string
 	// EventStoreNATSStream é o nome do stream JetStream. Vazio usa o padrão
 	// (jetstream.NomeStreamPorOmissao). Só é consultado com EventStoreNATS != "".
