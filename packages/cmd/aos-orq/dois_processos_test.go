@@ -272,19 +272,32 @@ func TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos(t *testing.T) {
 		n, vencedores, guardados, negadosPeloLease, outros)
 
 	// DESDE O AOS-286 esta corrida mede o GUARD, não o substrato: `serve` toma a posse
-	// exclusiva do WAL antes de abrir o store, pelo que exactamente UM processo passa e
-	// os restantes são recusados com [exitWALDetido].
+	// exclusiva do WAL antes de abrir o store, pelo que exactamente UM processo passa.
 	//
-	// A asserção é FORTE — «exactamente 1» — e antes não podia ser: sem o guard, o
-	// desfecho dependia do escalonador do SO e o teste só podia somar os perdedores num
-	// balde `outros` que passaria na mesma se eles tivessem CRASHADO. É o guard que torna
-	// a corrida determinística e, com ela, a asserção honesta.
+	// # A asserção que foi RELAXADA, e porquê — não por conveniência
+	//
+	// Esta corrida exigia que TODOS os n-1 perdedores saíssem com [exitWALDetido]. Isso
+	// era FALSO por uma razão de TEMPO que nada tem que ver com a propriedade medida: os
+	// perdedores correm contra o TEMPO DE VIDA do vencedor, e um que chegue ao ficheiro
+	// DEPOIS de ele sair apanha o lease vivo em vez do guard — saindo com
+	// [exitPosseNegada]. As duas são recusas CORRECTAS; qual delas se apanha depende do
+	// escalonador.
+	//
+	// MEDIDO a 2026-09-01: verde 8/8 localmente (incluindo sob carga paralela) e vermelho
+	// na CI com `guardados=2 negados(lease)=1`. Era intermitência latente, não regressão —
+	// o ficheiro não foi tocado desde AOS-286.
+	//
+	// O que a corrida passa a afirmar é o que uma corrida PODE afirmar: **um só escreve, e
+	// todos os outros são recusados por uma causa NOMEADA**. A propriedade que a asserção
+	// antiga queria — «o guard recusa um segundo escritor» — passou para
+	// [TestGuardDoWAL_SegundoEscritorERecusadoDeterministicamente], onde é medida SEM
+	// corrida nenhuma. Relaxar aqui sem a mover para lá teria sido perder cobertura.
 	if vencedores != 1 {
 		t.Fatalf("vencedores = %d, quer exactamente 1 — o guard de posse do WAL (AOS-285/286) não está a arbitrar entre estes processos", vencedores)
 	}
-	if guardados != n-1 {
-		t.Fatalf("recusados pelo guard = %d, quer %d — os perdedores têm de sair com o código do WAL DETIDO (%d), que é o que diz ao operador para parar o outro ESCRITOR e não o outro dono do run",
-			guardados, n-1, exitWALDetido)
+	if recusados := guardados + negadosPeloLease; recusados != n-1 {
+		t.Fatalf("recusados = %d (guard=%d lease=%d), quer %d — todo o perdedor tem de sair por uma causa nomeada",
+			recusados, guardados, negadosPeloLease, n-1)
 	}
 	if outros != 0 {
 		t.Fatalf("%d processo(s) com desfecho inesperado — recusar tem de ser distinguível de avariar", outros)
@@ -544,5 +557,45 @@ func TestAOS286_InspectLeSobPosse_ServeERecusado(t *testing.T) {
 	}
 	if !strings.Contains(i.stdout, "nos=2") {
 		t.Fatalf("`inspect` não leu a topologia com a posse tomada:\n%s", i.stdout)
+	}
+}
+
+// TestGuardDoWAL_SegundoEscritorERecusadoDeterministicamente mede, SEM corrida nenhuma, a
+// propriedade que a corrida de [TestLimite_EventStoreDeReferenciaNaoArbitraEntreProcessos]
+// afirmava por acidente de tempo: um segundo escritor sobre o mesmo WAL é RECUSADO, e com
+// o código que manda o operador parar o outro ESCRITOR (5) e não o outro dono do run (3).
+//
+// A diferença face à corrida é que aqui a posse é tomada PELO TESTE e mantida enquanto o
+// processo corre. Não há janela: o `serve` encontra sempre o ficheiro detido. Uma
+// propriedade que só se observa quando o escalonador colabora não é uma propriedade
+// medida — é uma que se calhou de ver.
+func TestGuardDoWAL_SegundoEscritorERecusadoDeterministicamente(t *testing.T) {
+	bin := construir(t)
+	wal := filepath.Join(t.TempDir(), "detido.wal")
+
+	// O TESTE é o primeiro escritor, e não larga.
+	largar, err := eventstore.LockWAL(wal)
+	if err != nil {
+		t.Fatalf("tomar a posse do WAL: %v", err)
+	}
+	defer func() { _ = largar() }()
+
+	r := correr(t, bin, "serve", "--wal", wal, "--run", "run-detido", "--nodes", "a")
+	if r.code != exitWALDetido {
+		t.Fatalf("`serve` sobre um WAL DETIDO saiu %d, quer %d.\nstdout:\n%s\nstderr:\n%s",
+			r.code, exitWALDetido, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "detido") && !strings.Contains(r.stderr, "DETIDO") {
+		t.Fatalf("a recusa não diz ao operador que o Event Store está detido por outro escritor:\n%s", r.stderr)
+	}
+
+	// E depois de largar, o mesmo comando passa — o guard recusa quem chega a más horas,
+	// não quem chega.
+	if err := largar(); err != nil {
+		t.Fatalf("largar a posse: %v", err)
+	}
+	if r := correr(t, bin, "serve", "--wal", wal, "--run", "run-detido", "--nodes", "a"); r.code != exitOK {
+		t.Fatalf("`serve` depois de a posse ser largada saiu %d, quer 0 — o guard tem de ser uma porta, não um muro.\nstderr:\n%s",
+			r.code, r.stderr)
 	}
 }
