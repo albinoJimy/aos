@@ -722,6 +722,36 @@ conteúdo conferido — `events.wal`, `worm.wal`, o `pg_dump` com 87 tabelas, e 
 O `backup.sh` verifica cada artefacto que produz: PKCS#7 íntegro **e** do tipo `envelopedData` —
 que confirma que o conteúdo está mesmo cifrado, e não só que o ficheiro é bem-formado.
 
+### O backup só é um backup se o log estiver onde ele copia
+
+Este script copia um **volume**. Isso só é um backup do Event Store enquanto o Event Store viver
+nesse volume — e desde o [AOS-100](../../packages/cmd/aos/bootstrap.go) pode não viver. Com
+`AOS_EVENTSTORE_NATS` preenchido, o log dos runs passa a viver num cluster NATS JetStream e
+**precede** o WAL local; o `events.wal` do volume fica obsoleto, ou vazio.
+
+O que acontecia sem guarda é o modo de falha caro: o `tar` do volume corria, o envelope PKCS#7
+verificava, e o cron saía **verde** sobre um artefacto **sem o log dos runs**. Um backup verde e
+vazio é pior do que backup nenhum — não falha o suficiente para alguém ir ver, e **ocupa o lugar
+do alarme**.
+
+O `backup.sh` faz agora duas verificações, e são perguntas diferentes:
+
+| | Pergunta | Como responde | Se der errado |
+|---|---|---|---|
+| **passo 0** | que substrato está **configurado**? | `AOS_EVENTSTORE_NATS` no contentor `aos-aos-1` (o que corre hoje) **e** no `.env` (o que o próximo `deploy.sh` aplica) | **recusa**, nomeando a fonte, e não produz artefacto nenhum |
+| **passo 2b** | que ficheiros o `tar` **trouxe mesmo**? | lê o índice de `volumes.tar.gz` e exige lá `aos/events.wal` e `aos/worm.wal` | **recusa**; um `events.wal` presente mas vazio passa com aviso — é legítimo num nó que nunca escreveu |
+
+A primeira apanha o log que se mudou de casa; a segunda apanha o volume que se esvaziou. Nenhuma
+substitui a outra. O passo 2b confirma ainda o **mapa** que usa (`AOS_EVENTSTORE_PATH` e
+`AOS_WORM_PATH` do contentor contra `/var/lib/aos/…`): se o nó passar a correr com outros
+caminhos, a guarda recusa em vez de verificar com sucesso o ficheiro errado.
+
+> **A saída, e o que ela não é.** Com o log num cluster ainda se quer copiar Vault, IdP e
+> configuração — e é isso que `BACKUP_EVENTSTORE_EXTERNO='<onde e como>'` permite. O texto fica
+> gravado no `MANIFEST` (`eventstore=externo`), é o que o `restore-drill.sh` lê para recusar um
+> ensaio que não poderia provar nada, e **não copia coisa nenhuma**: é uma declaração, não um
+> mecanismo. Copiar o log replicado continua por fazer — o `backup.sh` deixou de o poder fingir.
+
 ---
 
 ## O que está verificado, e por que meio
@@ -1392,3 +1422,16 @@ claro, porque enquanto corre tem o `.env`, os `secrets/` e as chaves TLS desembr
 >   restaurou 0 tabelas". Falhou uma vez e passou na seguinte — o pior comportamento possível,
 >   porque um ensaio intermitente ensina a ignorá-lo. Passou a esperar explicitamente e a falhar
 >   com a razão certa.
+
+**O ensaio também recusa, e por duas razões distintas.** Nenhuma delas é sobre o backup estar mau:
+
+- **O bundle diz que não traz o log.** O `MANIFEST` com `eventstore=externo` é recusado ao
+  desembrulhar. Sem essa leitura, o ensaio seguia e falhava três minutos depois no passo 6 com
+  *"não encontrei nenhum run no WORM restaurado"* — que se lê como "o backup está corrompido" e
+  não como "este backup nunca teve o log".
+- **O nó de produção corre sobre um cluster.** O `env` do nó de ensaio é **copiado** do contentor
+  de produção; se este trouxer `AOS_EVENTSTORE_NATS`, o nó do ensaio ligar-se-ia ao cluster
+  **real** — passaria a **escrever no log de produção**, e o `200` do passo 7 viria do cluster
+  vivo e não do *bundle*. O ensaio passaria sem provar nada, que é o oposto daquilo para que
+  existe. Apontá-lo a um cluster de ensaio com
+  `RESTORE_DRILL_EXTRA_ENV='AOS_EVENTSTORE_NATS=…'` continua a ser uso legítimo, e diz-se no log.
