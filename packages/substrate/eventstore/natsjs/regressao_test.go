@@ -385,3 +385,59 @@ func TestRegressao_ServidorSemCabecalhosERecusadoNoHandshake(t *testing.T) {
 		t.Fatalf("erro = %v; queria a recusa explícita por falta de cabeçalhos", err)
 	}
 }
+
+// --- Lógica pura: decisões que não precisam de servidor ---------------------
+//
+// As regressões acima medem o PROTOCOLO contra um servidor falso. Estas medem as decisões
+// que o cliente toma antes de haver fio nenhum — validação, codificação e classificação.
+// Deixá-las cobertas só pelos testes de integração seria ter as regras a correr sem rede
+// de segurança no sítio onde ela corre sempre.
+
+func TestControlo_DistingueBatimentoDePedidoDeFluxo(t *testing.T) {
+	// A distinção não é cosmética: NÃO responder a um pedido de fluxo PÁRA a entrega,
+	// e responder a um batimento é inútil. Confundi-los quebra a subscrição em silêncio.
+	casos := []struct {
+		nome   string
+		m      natsjs.Msg
+		quer   natsjs.EstadoDeControlo
+		porque string
+	}{
+		{"mensagem normal", natsjs.Msg{Data: []byte("x")}, natsjs.NaoEControlo, "tem dados"},
+		{"batimento", natsjs.Msg{Status: 100}, natsjs.BatimentoOcioso, "estado 100 sem reply"},
+		{"pedido de fluxo", natsjs.Msg{Status: 100, Reply: "$JS.FC.x"}, natsjs.PedidoDeFluxo, "estado 100 COM reply"},
+		{"503 não é controlo", natsjs.Msg{Status: 503}, natsjs.NaoEControlo, "é uma condição do operador"},
+	}
+	for _, c := range casos {
+		if got := c.m.Controlo(); got != c.quer {
+			t.Errorf("%s: Controlo() = %v, quer %v (%s)", c.nome, got, c.quer, c.porque)
+		}
+	}
+}
+
+func TestColocacaoEfectiva_TodosIncluiOLider(t *testing.T) {
+	c := natsjs.ColocacaoEfectiva{Lider: "n1", Replicas: []string{"n2", "n3"}}
+	if got := c.Todos(); len(got) != 3 || got[0] != "n1" {
+		t.Fatalf("Todos() = %v, quer o líder e as réplicas — sem o líder, a verificação de "+
+			"soberania deixaria de fora o par mais importante", got)
+	}
+	if got := (natsjs.ColocacaoEfectiva{}).Todos(); len(got) != 0 {
+		t.Errorf("sem líder nem réplicas, Todos() = %v, quer vazio", got)
+	}
+}
+
+func TestHeaderClone_NaoPartilhaOMapaDoChamador(t *testing.T) {
+	orig := natsjs.Header{"A": "1"}
+	cp := orig.Clone()
+	cp["B"] = "2"
+	if _, existe := orig["B"]; existe {
+		t.Fatal("o Clone partilha o mapa do chamador — foi este defeito que dava `concurrent map writes`")
+	}
+	if cp["A"] != "1" {
+		t.Error("o Clone perdeu uma entrada")
+	}
+	// Clonar um nil tem de dar um mapa utilizável: é o caminho de PublishExpectingSeq
+	// quando o chamador não passa cabeçalhos.
+	if n := natsjs.Header(nil).Clone(); n == nil {
+		t.Fatal("Clone de um Header nil devolveu nil — o CAS não teria onde pôr o expected_seq")
+	}
+}
