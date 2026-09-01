@@ -559,3 +559,57 @@ Ou seja, a optimização trocou disponibilidade sob falha por velocidade, e só 
 porque as duas tarefas foram feitas juntas. Os consumidores de leitura passam a ser
 **R1 em memória** — não há nada a replicar num consumidor que morre com a leitura — e a
 correcção deu, de lado, mais 2–4× de velocidade.
+
+---
+
+# ADENDA 6 — o cliente não se curava, e isso furava o AC1 (2026-09-01)
+
+## O buraco, e como estava escondido
+
+O AC1 diz que «a perda de uma réplica não perde dados **nem interrompe escritas**». A
+adenda 5 provou-o — mas o script de falha usado lá **evita deliberadamente** matar o nó a
+que o cliente está ligado, e força um *step-down* se a liderança estiver nele. A razão
+estava escrita («o cliente não tem reconexão automática — limite declarado — e matar a
+ligação mediria o cliente, não o cluster»), o que a tornava honesta e **incompleta**: a
+propriedade só estava provada para a metade sortuda dos casos.
+
+## Medido antes de corrigir
+
+```
+matar o nó da ligação: morto: o no da ligacao (es-0)
+escrita imediata após a falha: natsjs: ligação fechada
+20s depois ... as escritas continuam a falhar (natsjs: ligação fechada)
+```
+
+E continuariam indefinidamente. **A morte de UM nó do cluster virava um incidente do NÓ
+INTEIRO** — o oposto do que um Event Store replicado existe para dar.
+
+## Depois
+
+```
+matar o nó da ligação: morto: o no da ligacao (es-0)
+escritas RETOMARAM 1s depois da morte do nó da ligação, sem reiniciar o processo
+```
+
+O cliente aceita **vários endereços** (`AOS_EVENTSTORE_NATS=n1:4222,n2:4222,n3:4222`) e
+reconecta com recuo exponencial até 5 s, sem desistir — desistir transformaria uma falha
+transitória do cluster numa falha permanente do nó.
+
+## Duas decisões que valem mais do que o mecanismo
+
+**Uma operação tentada sem socket falha com `ErrDesligado`, não com `ErrIndeterminate`.**
+São promessas diferentes: a primeira nem chegou a sair (nada ficou durável, seguro repetir
+sem pensar); a segunda saiu e não sabemos (exige o CAS). Colapsá-las teria feito o
+chamador tratar como incerto algo que é certo.
+
+**As subscrições NÃO são retomadas em silêncio.** Reconectar o socket não ressuscita um
+consumidor efémero: ele morreu com a ligação. Se o cliente reconectasse e ficasse calado,
+uma subscrição deixaria de entregar sem ninguém saber — e uma subscrição morta em silêncio
+é pior do que uma que falha, porque quem depende dela nunca desconfia. O canal é fechado,
+o Store é informado, e recria o consumidor.
+
+**O que fica por fechar, e é preciso dizê-lo:** o consumidor novo é `deliver_policy: new`,
+pelo que os eventos escritos **entre a quebra e o retomar não são entregues**. A
+subscrição *retoma*, não *recupera*. Fechar isso exige um consumidor DURÁVEL com acks —
+o residual já nomeado do AC2. Retomar sem recuperar o intervalo é melhor do que morrer em
+silêncio e pior do que não perder nada: são três coisas diferentes, e esta é a do meio.

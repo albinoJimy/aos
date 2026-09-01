@@ -55,5 +55,13 @@
 //     contra a configuração armazenada — ver soberania.go. Sem [ComRegiao] a fronteira
 //     fica DORMENTE (retro-compatível), tal como no store de referência; com ela, um
 //     stream sem colocação — ou com a de outra região — ABORTA fail-closed.
-//   - SEM RECONEXÃO. Herdado do cliente: uma ligação partida devolve erro ao chamador.
+//   - RECONEXÃO AUTOMÁTICA, com um limite nomeado. O cliente reconecta-se sozinho (recuo
+//     exponencial até 5 s) e as escritas RETOMAM — MEDIDO: 1 s depois de morrer o nó a
+//     que estava ligado, sem reiniciar o processo. Antes disto, NUNCA retomavam. Dê-lhe
+//     VÁRIOS endereços separados por vírgula: com um só, só há cura quando esse nó voltar.
+//     As subscrições são RE-ESTABELECIDAS (o canal fecha, o Store recria o consumidor) mas
+//     os eventos escritos ENTRE a quebra e o retomar NÃO são entregues — o consumidor novo
+//     é `deliver_policy: new`. Retomar sem recuperar o intervalo é melhor do que morrer em
+//     silêncio e pior do que não perder nada; fechar isso exige um consumidor DURÁVEL com
+//     acks, que é o residual do AC2.
 package jetstream

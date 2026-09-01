@@ -122,7 +122,11 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 	}
 	regiao := normalizarRegiao(cfg.regiao)
 
-	cn, err := natsjs.Connect(addr, cfg.prazo)
+	// addr aceita VÁRIOS endereços separados por vírgula, e a razão é a que a medição de
+	// 2026-09-01 tornou concreta: com um só, a morte desse nó deixa o cliente a tentar
+	// sempre o mesmo. O AC1 diz que a perda de uma réplica não interrompe escritas — com
+	// um endereço só, isso é verdade apenas se o nó morto não for o nosso.
+	cn, err := natsjs.ConnectServers(enderecos(addr), cfg.prazo)
 	if err != nil {
 		return nil, err
 	}
@@ -540,18 +544,37 @@ func (st *estado) aplicar(_ []eventstore.Event, jsUltimo uint64, dedup map[strin
 // --- Subscribe -------------------------------------------------------------
 
 type subscricao struct {
-	id       string
-	store    *Store
-	cancelar func()
-	feito    chan struct{}
-	uma      sync.Once
+	id    string
+	store *Store
+	feito chan struct{}
+	parar chan struct{}
+	uma   sync.Once
+
+	mu       sync.Mutex
+	cancelar func() // o da ligação CORRENTE; troca a cada re-estabelecimento
+}
+
+func (sub *subscricao) trocarCancelar(f func()) {
+	sub.mu.Lock()
+	sub.cancelar = f
+	sub.mu.Unlock()
+}
+
+func (sub *subscricao) cancelarCorrente() {
+	sub.mu.Lock()
+	f := sub.cancelar
+	sub.mu.Unlock()
+	if f != nil {
+		f()
+	}
 }
 
 func (sub *subscricao) ID() string { return sub.id }
 
 func (sub *subscricao) Unsubscribe() {
 	sub.uma.Do(func() {
-		sub.cancelar()
+		close(sub.parar) // interrompe uma re-tentativa em curso
+		sub.cancelarCorrente()
 		<-sub.feito
 		sub.store.esquecerSub(sub.id)
 	})
@@ -578,36 +601,46 @@ func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h event
 	id := fmt.Sprintf("sub-%d", s.proxSub)
 	s.mu.Unlock()
 
-	entrega, err := natsjs.NewInbox()
+	ch, cancelar, err := s.estabelecerEntrega(ctx)
 	if err != nil {
-		return nil, err
-	}
-	ch, cancelar, err := s.cn.SubscribeSubject(entrega)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.cn.CreateEphemeralConsumer(s.stream, natsjs.ConsumerConfig{
-		DeliverSubject: entrega,
-		DeliverPolicy:  "new",
-		AckPolicy:      "none",
-		ReplayPolicy:   "instant",
-		FilterSubject:  s.prefixo + ".>",
-	}, s.prazoDe(ctx)); err != nil {
-		cancelar()
 		return nil, err
 	}
 
-	sub := &subscricao{id: id, store: s, cancelar: cancelar, feito: make(chan struct{})}
+	sub := &subscricao{id: id, store: s, cancelar: cancelar,
+		feito: make(chan struct{}), parar: make(chan struct{})}
 	go func() {
 		defer close(sub.feito)
-		for m := range ch {
-			var ev eventstore.Event
-			if err := json.Unmarshal(m.Data, &ev); err != nil {
-				continue // envelope ilegível: não é do AOS, ou é de outra versão
+		for {
+			for m := range ch {
+				var ev eventstore.Event
+				if err := json.Unmarshal(m.Data, &ev); err != nil {
+					continue // envelope ilegível: não é do AOS, ou é de outra versão
+				}
+				if filtro.Matches(ev) {
+					h(ev.Clone())
+				}
 			}
-			if filtro.Matches(ev) {
-				h(ev.Clone())
+			// O canal fechou. Ou foi o dono (Unsubscribe/Close), ou a LIGAÇÃO PARTIU-SE.
+			//
+			// Reconectar o socket não ressuscita o consumidor efémero — ele morreu com a
+			// ligação. Se aqui se saísse em silêncio, a subscrição deixava de entregar sem
+			// que ninguém soubesse, que é pior do que falhar: quem depende dela nunca
+			// desconfia. Por isso re-estabelece-se, com recuo, até conseguir ou o dono
+			// mandar parar.
+			select {
+			case <-sub.parar:
+				return
+			default:
 			}
+			if s.estaFechado() {
+				return
+			}
+			novoCh, novoCancelar, err := s.reestabelecerEntrega(sub)
+			if err != nil {
+				return // o dono mandou parar durante a espera
+			}
+			ch = novoCh
+			sub.trocarCancelar(novoCancelar)
 		}
 	}()
 
@@ -766,3 +799,74 @@ func prefixoDe(stream string) string {
 // [natsjs.Conn.DeleteStream]: destrói a fonte de verdade, e existe para streams
 // EFÉMEROS. Um teste que não o chame deixa lixo acumulado no cluster.
 func (s *Store) ApagarStream() error { return s.cn.DeleteStream(s.stream, s.prazo) }
+
+// estabelecerEntrega cria o inbox, subscreve-o e cria o consumidor efémero que empurra
+// para lá. É a unidade que a reconexão tem de repetir.
+func (s *Store) estabelecerEntrega(ctx context.Context) (<-chan natsjs.Msg, func(), error) {
+	entrega, err := natsjs.NewInbox()
+	if err != nil {
+		return nil, nil, err
+	}
+	ch, cancelar, err := s.cn.SubscribeSubject(entrega)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.cn.CreateEphemeralConsumer(s.stream, natsjs.ConsumerConfig{
+		DeliverSubject: entrega,
+		DeliverPolicy:  "new",
+		AckPolicy:      "none",
+		ReplayPolicy:   "instant",
+		FilterSubject:  s.prefixo + ".>",
+		NumReplicas:    1,
+		MemStorage:     true,
+	}, s.prazoDe(ctx)); err != nil {
+		cancelar()
+		return nil, nil, err
+	}
+	return ch, cancelar, nil
+}
+
+// reestabelecerEntrega repete [Store.estabelecerEntrega] com recuo, até conseguir ou o
+// dono mandar parar. Devolve erro só nesse último caso.
+//
+// # O buraco que fica, e é preciso dizê-lo em voz alta
+//
+// O consumidor novo é criado com `deliver_policy: new`. Os eventos escritos ENTRE a
+// quebra e o re-estabelecimento NÃO são entregues — a subscrição retoma, não recupera.
+// Fechar esse buraco exige um consumidor DURÁVEL com acks, que é o residual já nomeado do
+// AC2. Retomar sem entregar o intervalo é melhor do que morrer em silêncio, e é pior do
+// que não perder nada: as três coisas são diferentes e esta é a do meio.
+func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func(), error) {
+	espera := 200 * time.Millisecond
+	const tecto = 5 * time.Second
+	for {
+		select {
+		case <-sub.parar:
+			return nil, nil, errPararSubscricao
+		case <-time.After(espera):
+		}
+		if s.estaFechado() {
+			return nil, nil, errPararSubscricao
+		}
+		ch, cancelar, err := s.estabelecerEntrega(context.Background())
+		if err == nil {
+			return ch, cancelar, nil
+		}
+		if espera < tecto {
+			espera *= 2
+		}
+	}
+}
+
+var errPararSubscricao = errors.New("jetstream: subscrição parada pelo dono")
+
+// enderecos parte uma lista separada por vírgulas em endereços, ignorando vazios.
+func enderecos(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
