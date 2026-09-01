@@ -78,8 +78,16 @@ env_do_no() {
 }
 env_do_ficheiro() {
   [[ -r "${AOS_DIR}/.env" ]] || return 0
-  local v; v="$(sed -n "s/^[[:space:]]*$1=//p" "${AOS_DIR}/.env")"
-  tr -d "\"'\r" <<<"${v##*$'\n'}"   # última definição vence, como no docker compose
+  # `tail -n 1` e NAO `${v##*$'\n'}`: a substituicao de comando come as linhas vazias do FIM,
+  # pelo que uma redefinicao para VAZIO desaparecia e o valor antigo e que vencia. O sentido do
+  # erro era seguro (recusava a mais), mas nao inofensivo: um .env com uma linha obsoleta acima
+  # de uma vazia faria o cron recusar TODAS as noites, e um alarme que toca sempre e o mesmo
+  # silencio que esta guarda existe para evitar. Medido nos cinco casos (valor->vazio,
+  # vazio->valor, dois valores, aspas, comentado).
+  #
+  # `tail` le a entrada TODA, pelo que nao ha aqui o SIGPIPE que proibe o `| head` acima.
+  local v; v="$(sed -n "s/^[[:space:]]*$1=//p" "${AOS_DIR}/.env" | tail -n 1)"
+  tr -d "\"'\r" <<<"${v}"
 }
 
 log "0/4 substrato do Event Store"
