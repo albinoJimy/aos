@@ -78,9 +78,9 @@ func aos101Node(t *testing.T, cfg Config) *Node {
 
 // aos101Service compõe o loop de serviço sobre o nó. Devolve também o log do serviço, porque a
 // POSTURA DECLARADA (o banner) é parte do que o critério exige poder ler.
-func aos101Service(t *testing.T, node *Node) (*NodeService, *strings.Builder) {
+func aos101Service(t *testing.T, node *Node) (*NodeService, *registoSeguro) {
 	t.Helper()
-	var logs strings.Builder
+	var logs registoSeguro
 	svc, err := NewNodeService(node,
 		WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute),
 		WithSLOEvalInterval(0), WithServiceLog(&logs))
@@ -569,4 +569,36 @@ func TestAOS101_OShutdownParaOAgendador(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("o laco NAO retornou com o sweepStop fechado — fuga de goroutine no Shutdown")
 	}
+}
+
+// registoSeguro é um destino de log seguro para concorrência.
+//
+// DEFEITO QUE FECHA (apanhado pelo `-race` no CI, run 33568169691): o teste usava um
+// `strings.Builder` e lia-o com `logs.String()` enquanto a goroutine do agendador lhe
+// escrevia. O serviço escreve sob o seu `logMu`, mas o TESTE não detém esse lock — e um
+// `strings.Builder` não é seguro para concorrência. A corrida era do teste, não do código
+// de produção; o `-race` não distingue, e ainda bem.
+//
+// Porque não bastava «ler só no fim»: o laço corre a 1 ms e nunca pára durante o teste,
+// pelo que não há «fim» sem parar o serviço — e parar o serviço para poder ler o banner
+// mediria outra coisa.
+//
+// O teste do avaliador de SLOs (aos274) usa o mesmo `strings.Builder` e NÃO disparou:
+// corre com o avaliador desligado, logo não há escritor concorrente. É latente lá, e é por
+// isso que este tipo fica exportado dentro do pacote de teste em vez de embutido aqui.
+type registoSeguro struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (r *registoSeguro) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.b.Write(p)
+}
+
+func (r *registoSeguro) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.b.String()
 }
