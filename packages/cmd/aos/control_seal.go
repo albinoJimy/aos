@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"strings"
+	"time"
 
 	audit "github.com/aos-ref/platform/audit"
 )
@@ -62,19 +63,7 @@ func (h *apiHandler) sealControlAction(ctx context.Context, kind, runID, emitter
 	if h.node == nil || h.node.WORM == nil {
 		return // sem substrato tamper-evidente composto: nada a selar (modo de referência).
 	}
-	rec := audit.AuditRecord{
-		Partition: controlSealPartition,
-		Timestamp: h.cfg.now().UTC(),
-		// O veredicto é sobre a ACÇÃO DE GOVERNAÇÃO (foi exercida), não sobre o run.
-		Decision:    audit.DecisionAllow,
-		Reason:      "control_" + kind,
-		Principal:   audit.Principal{NHIID: emitterID},
-		Capability:  "control:" + kind,
-		RunID:       runID,
-		ToolID:      controlSealToolID,
-		Resource:    audit.Resource{Type: controlRunResourceType, Value: runID},
-		Obligations: obrigacoes,
-	}
+	rec := controlSealRecord(kind, runID, emitterID, h.cfg.now(), obrigacoes...)
 	if _, err := h.node.WORM.Append(ctx, rec); err != nil {
 		// Nunca a assinatura nem o nonce: só o caminho e a classe de falha.
 		h.svc.log("SELO DE CONTROLO EM FALTA: a accao %q sobre run=%q por %q FOI APLICADA mas NAO ficou na hash-chain: %v", kind, runID, emitterID, err)
@@ -94,4 +83,50 @@ func approversObligation(approvers []string) []audit.Obligation {
 		return nil
 	}
 	return []audit.Obligation{{Type: controlApproversObl, Fields: limpos}}
+}
+
+// controlSealRecord constrói o registo de uma acção de controlo. É partilhado por
+// [apiHandler.sealControlAction] e por [NodeService.selarRetomaPeloCanal] porque o selo de uma
+// retoma TEM de ser indistinguível do selo de uma pausa: um auditor compara-os, e uma forma
+// diferente para a mesma classe de acção leria como duas coisas diferentes.
+func controlSealRecord(kind, runID, emitterID string, ts time.Time, obrigacoes ...audit.Obligation) audit.AuditRecord {
+	return audit.AuditRecord{
+		Partition: controlSealPartition,
+		Timestamp: ts.UTC(),
+		// O veredicto é sobre a ACÇÃO DE GOVERNAÇÃO (foi exercida), não sobre o run.
+		Decision:    audit.DecisionAllow,
+		Reason:      "control_" + kind,
+		Principal:   audit.Principal{NHIID: emitterID},
+		Capability:  "control:" + kind,
+		RunID:       runID,
+		ToolID:      controlSealToolID,
+		Resource:    audit.Resource{Type: controlRunResourceType, Value: runID},
+		Obligations: obrigacoes,
+	}
+}
+
+// selarRetomaPeloCanal sela na hash-chain a retoma que JÁ SURTIU EFEITO (AOS-304).
+//
+// PORQUE NÃO NO HANDLER, ao contrário das outras cinco acções de controlo. `handleResume` devolve
+// 202 assim que `NodeService.Resume` re-submete o run; a retoma pelo canal acontece DEPOIS e
+// noutra goroutine, dentro do `hostRun`, e pode ainda falhar (transição recusada, escrita de
+// auditoria em erro). Selar no handler gravaria na cadeia tamper-evidente uma retoma que podia não
+// ter acontecido — pior do que não selar, porque uma entrada FALSA numa cadeia cuja única
+// propriedade é a fidedignidade estraga o registo inteiro, e não só esta linha.
+//
+// Aqui o efeito é certo: o `SteerChannel.Resume` devolveu sem erro, o `control.resume` é durável e
+// a máquina transitou.
+//
+// A ORDEM É A MESMA DAS OUTRAS CINCO — selo DEPOIS do efeito —, e a falha do WORM também: grita-se
+// no log e NÃO se devolve erro. Devolver erro aqui abortaria a hospedagem de um run que já foi
+// retomado, trocando um registo em falta por um run preso.
+func (s *NodeService) selarRetomaPeloCanal(ctx context.Context, runID, emitterID string) {
+	if s.node == nil || s.node.WORM == nil {
+		return // sem substrato tamper-evidente composto: nada a selar (modo de referência).
+	}
+	rec := controlSealRecord("resume", runID, emitterID, time.Now())
+	if _, err := s.node.WORM.Append(ctx, rec); err != nil {
+		// Nunca a assinatura nem o nonce: só a classe de falha.
+		s.log("SELO DE CONTROLO EM FALTA: a retoma do run %q por %q FOI APLICADA mas NAO ficou na hash-chain: %v", runID, emitterID, err)
+	}
 }

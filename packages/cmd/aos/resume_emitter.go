@@ -86,6 +86,11 @@ func (s *NodeService) retomarPausaPeloCanal(ctx context.Context, runID string, g
 	// A correcção devolvida NÃO se usa aqui, e é deliberado: desde AOS-292 o `Resume` deixa-a
 	// PENDENTE para o loop a injectar no turno seguinte, e é a entrega que a consome. Usá-la
 	// aqui seria injectá-la duas vezes.
-	_, err := s.node.Steer.Resume(ctx, runID, em, gate)
-	return err
+	if _, err := s.node.Steer.Resume(ctx, runID, em, gate); err != nil {
+		return err
+	}
+	// AOS-304: a retoma entra na hash-chain, como a pausa. Só DEPOIS de surtir efeito, e sem
+	// poder falhar a hospedagem — a disciplina de [NodeService.selarRetomaPeloCanal].
+	s.selarRetomaPeloCanal(ctx, runID, em.ID)
+	return nil
 }

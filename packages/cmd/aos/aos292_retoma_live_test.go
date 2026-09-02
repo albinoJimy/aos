@@ -58,6 +58,7 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
+	audit "github.com/aos-ref/platform/audit"
 	eventstore "github.com/aos-ref/substrate/eventstore"
 )
 
@@ -74,6 +75,7 @@ type liveEnv struct {
 	// Opcionais.
 	goal     string // AOS_LIVE_GOAL — objectivo do run (default: um que dá vários turnos)
 	walPath  string // AOS_LIVE_WAL  — WAL do nó; activa a fase durável (a prova da AC2)
+	wormPath string // AOS_LIVE_WORM — hash-chain do nó; activa a asserção de AOS-304
 	certPath string // AOS_LIVE_CLIENT_CERT — mTLS do plano de controlo
 	keyFile  string // AOS_LIVE_CLIENT_KEY
 	caPath   string // AOS_LIVE_CA
@@ -91,6 +93,7 @@ func liveEnvOrSkip(t *testing.T) liveEnv {
 		principal:  os.Getenv("AOS_LIVE_PRINCIPAL"),
 		goal:       os.Getenv("AOS_LIVE_GOAL"),
 		walPath:    os.Getenv("AOS_LIVE_WAL"),
+		wormPath:   os.Getenv("AOS_LIVE_WORM"),
 		certPath:   os.Getenv("AOS_LIVE_CLIENT_CERT"),
 		keyFile:    os.Getenv("AOS_LIVE_CLIENT_KEY"),
 		caPath:     os.Getenv("AOS_LIVE_CA"),
@@ -315,6 +318,52 @@ func TestAOSLive_292_CicloDeControloPeloNoReal(t *testing.T) {
 		t.Fatalf("AOS_LIVE_WAL nao definido: os passos 1-6 correram, mas a materializacao da correccao NAO foi verificada — a AC2 pede as duas metades, e declarar esta por verificar seria fechar a AC com meia prova")
 	}
 	verificarLogDeControlo(t, e.walPath, runID)
+
+	// (8) AOS-304, quando a hash-chain estiver acessível: o PAR de selos. É a asserção que o
+	// `driver.sh` não consegue fazer — o run do smoke completa num turno e `/resume` sobre um run
+	// completo dá 404 —, e por isso vive aqui, na única corrida que percorre o ciclo inteiro.
+	if e.wormPath != "" {
+		verificarParDeSelos(t, e.wormPath, runID)
+	} else {
+		t.Logf("AOS_LIVE_WORM nao definido: o par de selos control:pause/control:resume (AOS-304) NAO foi verificado")
+	}
+}
+
+// verificarParDeSelos exige, na hash-chain tamper-evidente, a pausa E a retoma do mesmo run.
+//
+// A assimetria é o defeito de AOS-304: a imposição ficava registada e a libertação não. Um teste
+// que exigisse só `control:resume` passaria a verde num nó onde a pausa deixasse de selar, pelo que
+// o que se afirma é o par.
+func verificarParDeSelos(t *testing.T, wormPath, runID string) {
+	t.Helper()
+	store, err := audit.OpenFileStore(wormPath)
+	if err != nil {
+		t.Fatalf("abrir a hash-chain em %s: %v", wormPath, err)
+	}
+	ctx := context.Background()
+	head, err := store.Head(ctx, "governance.control")
+	if err != nil {
+		t.Fatalf("Head(governance.control): %v", err)
+	}
+	if head == 0 {
+		t.Fatal("a particao governance.control esta vazia — nem a pausa foi selada")
+	}
+	recs, err := store.Read(ctx, "governance.control", 1, head)
+	if err != nil {
+		t.Fatalf("Read(governance.control): %v", err)
+	}
+	porCap := map[string]int{}
+	for _, r := range recs {
+		if r.RunID == runID {
+			porCap[r.Capability]++
+		}
+	}
+	if porCap["control:pause"] == 0 {
+		t.Errorf("a hash-chain nao tem control:pause para %s; visto=%v", runID, porCap)
+	}
+	if porCap["control:resume"] == 0 {
+		t.Errorf("a hash-chain nao tem control:resume para %s (AOS-304): quem pausou fica no registo e quem retomou nao; visto=%v", runID, porCap)
+	}
 }
 
 // verificarLogDeControlo exige, no log DURÁVEL do nó, os quatro sinais do ciclo.

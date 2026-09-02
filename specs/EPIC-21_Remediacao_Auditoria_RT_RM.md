@@ -882,8 +882,47 @@ observável do ciclo, e o `control:resume` não estava lá para ser observado.
 
 ### Estado
 
-**POR INICIAR.** P2. Não quebra nada em execução: é uma lacuna de evidência, do lado do
-não-repúdio, sobre uma acção que o nó já exige que seja assinada.
+**IMPLEMENTADO**; **AC1 e AC3 fechadas, AC2 decidida e declarada, AC4 NÃO FEITA com razão
+medida.** P2.
+
+**AC1 — O SELO NÃO FICOU NO HANDLER, apesar de a AC dizer `handleResume`.** O `handleResume`
+devolve 202 assim que o `NodeService.Resume` re-submete o run; a retoma pelo canal acontece
+**depois**, noutra goroutine, dentro do `hostRun`, e pode ainda falhar. Selar no handler gravaria
+na cadeia uma retoma que podia não ter acontecido — e uma entrada falsa numa cadeia cuja única
+propriedade é a fidedignidade estraga o registo inteiro, não só aquela linha. Isso violaria a
+disciplina que o próprio `control_seal.go` declara: «só se selam acções que SURTIRAM EFEITO».
+O selo vive em `retomarPausaPeloCanal`, depois de o `SteerChannel.Resume` devolver sem erro.
+O registo é construído por `controlSealRecord`, agora partilhado com os outros cinco chamadores:
+o selo de uma retoma tem de ser **indistinguível** do de uma pausa, porque é o par que um auditor
+compara.
+
+**AC2 — DECIDIDA: a retoma de um `waiting_on_human` NÃO sela**, e a decisão foi tomada sem
+consulta porque as duas alternativas são piores por razões que o repositório já escreveu.
+Selá-la com principal vazio escreveria «retomado por ninguém» — exactamente o que
+`approversObligation` recusa fazer com uma lista de aprovadores vazia. Selá-la com o principal
+certo exigiria devolver a identidade resolvida de dentro do `svc.Resume` até à rota, que hoje
+não a tem: a credencial só é verificada a jusante. E a autoridade desse caminho **já está na
+cadeia**: o aval four-eyes que o destranca é selado como `control:approve`. Fica o registo de que
+o acto da retoma em si não aparece — se isso for insuficiente, é trabalho de plumbing próprio.
+
+**AC3 — dois testes**, e o par é o ponto: `TestAOS304_ARetomaFicaNaHashChainComoAPausa` exige as
+duas entradas para o mesmo run, porque um teste que exigisse só `control:resume` passaria a verde
+num nó onde a pausa deixasse de selar. `TestAOS304_UmaRetomaRECUSADANaoSela` é a face que impede
+o selo de virar vector — quem inundasse a rota com retomas sem autoridade inchava a cadeia sem
+nunca retomar nada. Falsificado: removida a chamada ao selo, falha com «a cadeia NAO tem
+control:resume».
+
+**AC4 — NÃO FEITA, e a razão é medida, não uma estimativa.** O `driver.sh` não consegue exercer
+a retoma: o run do smoke **completa** num turno (modelo de referência), e `POST /resume` sobre um
+run completo dá 404 porque não está suspenso. Precisaria de um run multi-turno genuinamente
+pausável. Faltaria ainda a via de assinatura — o CLI `aos` não tem subcomando `resume` e o
+`aos-issuer` não tem `resume-sign`, pelo que o driver não consegue produzir o emissor assinado
+que a rota exige desde AOS-292. São duas peças novas, e nenhuma delas é este ticket.
+
+A asserção do par foi para onde pode mesmo correr: `aos292_retoma_live_test.go` (build-tag
+`aoslive`), que percorre o ciclo inteiro contra um nó real e verifica `control:pause` +
+`control:resume` quando `AOS_LIVE_WORM` estiver definido. **Nunca corrida** — a mesma ressalva da
+AC2 de AOS-292.
 
 ---
 
