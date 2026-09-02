@@ -48,7 +48,7 @@ oficializar a afirmação falsa.
 | Ticket | Defeito | P | Estado |
 |---|---|---|---|
 | AOS-288 | A verificação de revogação de tokens NHI nunca corre, e o banner do nó anuncia que corre | P0 | **implementado** (3 ressalvas) |
-| AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 | por iniciar |
+| AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 | **implementado** |
 | AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | **implementado** (AC2 re-fundamentada) |
 | AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 | **implementado** `5100a48` (AC2 em parte) |
 | AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | **implementado** `63decf5`+`d169198`+`b1d8322` (AC4 fechada; AC2 escrita e **NÃO CORRIDA** — exige cluster) |
@@ -223,7 +223,55 @@ caso de uso da escalada.
 
 ### Estado
 
-**POR INICIAR.** P1. A recusa é uma linha; a captura completa é desenho.
+**IMPLEMENTADO**; as cinco ACs fechadas. P1.
+
+**DECISÃO DO DONO: RECUSAR NOS DOIS CAMINHOS.** E a descoberta que a motivou muda o ticket: o
+`admit()` **não está no caminho da retoma**. Só corre em `ReplayEngine.Replay`; a retoma usa
+`Reconstruct` (`cmd/aos/resume.go`), tal como o read-path soberano. Corrigir apenas o `admit`
+fecharia o replay de DR e deixaria aberto **exactamente o caso de uso que o defeito descreve** —
+a escalada existe para ser retomada. A AC1 e a AC4, lidas à letra, eram incompatíveis.
+
+**A GUARDA VIVE NUM PREDICADO PARTILHADO** (`capturaCompleta`), usado pelos dois pontos de
+entrada. No `Reconstruct` corre **depois** de mode 3 e do envelope selado estarem resolvidos —
+antes disso mediria uma captura por re-hidratar e recusaria todos os runs cifrados.
+
+**O SENTIDO DA COMPARAÇÃO É DELIBERADO, e tem teste próprio.** Recusa-se `ToolCalls >
+ToolResults` — resultados a menos, que é o fabrico. O caso inverso não fabrica nada (o motor
+itera sobre as chamadas e nunca alcança o excedente) e não há caminho no loop que o produza;
+recusá-lo alargaria a guarda para além do defeito medido.
+
+**PRODUTOR ÚNICO, MEDIDO.** Enumeradas todas as saídas do laço de tool calls: não há `break`
+nem `continue`, e das cinco saídas por `return` só o ramo de escalada produz divergência de
+comprimentos. A negação do RM e o erro de tool acumulam o resultado **antes** de qualquer ramo;
+orçamento, disjuntor e pausa correm na fronteira de fim-de-turno, depois da captura.
+
+**OS TESTES NÃO CONSTROEM A CAPTURA À MÃO.** A truncada é produzida pelo **loop real**, com o RM
+a escalar a primeira de duas tool calls. Um literal provaria que a guarda compara dois inteiros;
+isto prova que o produtor existe — e **nenhum teste do repositório combinava escalada com
+replay**, que é a razão medida por que o defeito passou e por que a recusa custou **zero testes
+partidos**.
+
+**FALSIFICADO CAMINHO A CAMINHO, e é essa a evidência que importa:** removida a guarda só do
+`admit`, falha **só** o teste do `Replay`; removida só do `Reconstruct`, falha **só** o da
+retoma. Mais uma âncora de não-vacuidade — um run intacto continua admissível nos dois caminhos
+—, sem a qual uma guarda avariada que recusasse tudo passaria nos outros testes.
+
+**AC2 — o comentário falso corrigido, e não apagado.** `replay_source.go` declarava «o motor
+garante `idx < len(ToolCalls)`»: verdadeiro e **irrelevante**, porque a guarda testa
+`len(ToolResults)`, que é outro número. Passa a declarar o invariante que agora **vale** —
+`ToolCalls <= ToolResults`, imposto no gate — e o fallback fica como defesa em profundidade,
+inalcançável pelo `Replay` e fail-safe para qualquer chamador futuro.
+
+**AC5 — decidido: RECUSAR, e a captura completa NÃO foi feita.** A razão é medida e não de
+esforço: a captura completa mexe num tipo **público** do kernel (`CapturedToolResult`), e é
+aditiva ao WAL só enquanto o `captureSchemaVersion` ficar em `"1.0"` — subi-lo tornaria
+**irrecuperável toda a captura já gravada**, porque `engine.go` rejeita por igualdade estrita
+sem janela de compatibilidade. Fica como trabalho próprio, com o desenho por decidir: o que o
+motor dobra no tail para uma call não despachada tem de ser **nada**, não um segmento vazio.
+
+**RESIDUAL DECLARADO:** os runs escalados **já gravados** continuam truncados e não são
+reescritos na retoma, por dedup de `cap-<step_id>`. Passam a ser inadmissíveis — que é o
+fail-closed pretendido, e é uma consequência sobre dados históricos, não um efeito lateral.
 
 ---
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -373,12 +374,49 @@ func (e *ReplayEngine) resolvePayload(ctx context.Context, ref capturePayload) (
 // de payload falhou aí); aqui confirma-se que cada turno tem o conteúdo presente.
 func admit(tr trajectory) error {
 	for _, turn := range tr.turns {
-		if _, ok := tr.capture[turn]; !ok {
+		capt, ok := tr.capture[turn]
+		if !ok {
 			return ErrIncompleteCapture
 		}
 		if tr.manifest[turn].PromptHash == "" {
 			return ErrIncompleteCapture
 		}
+		if err := capturaCompleta(capt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// capturaCompleta recusa uma captura de turno em que a resposta registada tem MAIS tool calls
+// do que resultados capturados (AOS-289).
+//
+// # DE ONDE VEM A ASSIMETRIA
+//
+// O loop acumula um resultado por iteração e, ao ESCALAR, sai do laço tendo capturado `j+1`
+// resultados — mas grava `Response` INTEIRA, com as M tool calls. O ramo de escalada é o ÚNICO
+// produtor desta divergência: nenhuma outra saída do laço a produz (a negação do RM e o erro de
+// tool acumulam o resultado ANTES de qualquer ramo, e as fronteiras de orçamento, disjuntor e
+// pausa correm depois da captura).
+//
+// # PORQUE ISTO TEM DE RECUSAR
+//
+// O motor itera sobre as M tool calls da resposta e o dispatcher devolve um resultado untrusted
+// VAZIO para os índices sem registo — um segmento que o run original nunca produziu, dobrado no
+// tail. A auditoria mediu o efeito: `Fidelity=1`, `Divergence=nil`, e um `FinalStateHash`
+// diferente do original. Uma fidelidade de 1,0 sobre uma trajectória fabricada é pior do que uma
+// recusa: é uma prova a afirmar o que não observou.
+//
+// # O SENTIDO DA COMPARAÇÃO É DELIBERADO
+//
+// Recusa-se `len(ToolCalls) > len(ToolResults)` — resultados a MENOS do que chamadas, que é o
+// fabrico. O caso inverso (mais resultados do que chamadas) não fabrica nada no tail: o motor
+// itera sobre as chamadas e nunca alcança o excedente. Recusá-lo seria alargar a guarda para
+// além do defeito medido, e não há caminho no loop que o produza.
+func capturaCompleta(capt capturePayload) error {
+	if len(capt.Response.ToolCalls) > len(capt.ToolResults) {
+		return fmt.Errorf("%w: turno %d tem %d tool calls na resposta e %d resultados capturados (AOS-289)",
+			ErrIncompleteCapture, capt.Turn, len(capt.Response.ToolCalls), len(capt.ToolResults))
 	}
 	return nil
 }
