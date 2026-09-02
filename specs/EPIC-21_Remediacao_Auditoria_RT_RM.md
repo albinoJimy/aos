@@ -730,9 +730,41 @@ não foi imposto de contrabando dentro daquele ticket.
 
 ### Estado
 
-**POR INICIAR.** P1. Depende de uma decisão do dono sobre o que `AOS_MODE=production` passa a
-exigir. Interage com AOS-302: são o mesmo predicado aplicado a duas superfícies, e decidi-los em
-separado deixaria o nó a exigir durabilidade para uma e não para a outra.
+**IMPLEMENTADO**; as três ACs aplicáveis fechadas. P1.
+
+**DECISÃO DO DONO: EXIGIR, não degradar** — a mesma que `ErrProductionNeedsDurableApproval` já
+tinha registado para o four-eyes. `AOS_MODE=production` passa a exigir `AOS_EVENTSTORE_PATH` ou
+`AOS_EVENTSTORE_NATS`, fail-closed com `ErrProductionNeedsDurableSubstrate`.
+
+**INCONDICIONAL, ao contrário das outras duas guardas de durabilidade.**
+`ErrDurableExecutionNeedsDurableSubstrate` exige o substrato a quem pede execução durável;
+`ErrProductionNeedsDurableApproval` exige-o a quem configura four-eyes. Ambas dependem de uma
+opção que o operador ligou. A revogação não é opcional: desde AOS-288 o registo é composto no
+verifier **sempre**.
+
+**O CUSTO QUE ESTE TICKET REGISTAVA ESTAVA ERRADO, NOS DOIS SENTIDOS.** Media-se «seis testes»;
+são **nove**. E nenhum é conflito de desenho — são guard-tests de recusa que montam o mínimo para
+chegar à guarda que testam, e a nova disparava antes. Colocando-a **no fim** do bloco de postura,
+depois de identidade, soberania, KEK e four-eyes, caem para **quatro**, e a correcção é uma linha
+de `t.Setenv` em **dois** ficheiros (três dos quatro partilham a fixture `aos247ProdEnvBase`).
+
+**A ORDEM PASSOU A SER TESTADA.** Um nó mal configurado deve ouvir primeiro o que é mais
+fundamental, e cinco guard-tests já dependiam disso. `TestAOS300_AGuardaVEMDEPOISDasOutrasColunas`
+fixa-o, para ninguém a «arrumar» para o início do bloco. Falsificado nas duas direcções: removida
+a guarda, a produção arranca (`veio: <nil>`); movida para antes da identidade, o teste de ordem
+falha nomeando o erro que passou a ser mascarado.
+
+**UM DOS MEUS PRÓPRIOS TESTES PASSAVA PELA RAZÃO ERRADA**, e foi a asserção forte que o apanhou. O
+caso «four-eyes antes do substrato» apontava para um ficheiro de aprovadores **inexistente**: a
+config abortava na leitura, sem nunca chegar ao guarda que o caso dizia medir. Enquanto a asserção
+era só «não é o erro de AOS-300», passava a verde. Passou a reusar `prodApprovalEnvBase`.
+
+**AC4 — a decisão NÃO cobre AOS-302**, ao contrário do que a AC pedia: os dois não partilham o
+predicado. Ver o Estado de AOS-302 — a poda vive **dentro** da execução durável, que já exige
+substrato durável; a revogação não.
+
+**Documentação:** `deploy/node/README.md` deixa de dizer que `AOS_MODE=production` torna
+obrigatórias «quatro» exigências. São cinco.
 
 ---
 

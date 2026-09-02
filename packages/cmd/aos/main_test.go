@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,10 @@ func TestRunProductionWithTrustAnchorSucceeds(t *testing.T) {
 	// JWKS é buscado preguiçosamente, pelo que o arranque não faz I/O de rede.
 	t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp-soberania.example")
 	t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
+	// AOS-300: a produção exige Event Store DURÁVEL, incondicionalmente — sem ele a revogação
+	// de NHI não sobrevive a um restart. É a última coluna de postura que este arranque tem de
+	// satisfazer para chegar ao que o teste mede: o banner de identidade.
+	t.Setenv("AOS_EVENTSTORE_PATH", filepath.Join(t.TempDir(), "events.wal"))
 
 	if err := run(&sb); err != nil {
 		t.Fatalf("production com trust anchor valido devia arrancar, veio: %v", err)
