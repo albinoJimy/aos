@@ -180,8 +180,8 @@ func TestResume_TransitionFailureAfterAuditIsFailClosed(t *testing.T) {
 	if m.Current() != state.Paused {
 		t.Fatalf("máquina = %s, quer paused (lado seguro)", m.Current())
 	}
-	// O control.resume é durável: um canal fresco reconstrói projecção resumida (sem
-	// pausa/correcção pendentes) — coerente com o log.
+	// O control.resume é durável: um canal fresco reconstrói a projecção coerente com o LOG.
+	// O invariante testado é esse — projecção == Rebuild —, e não um valor em concreto.
 	fresh := newChannel(t, st, a)
 	if err := fresh.Rebuild(ctx, runID); err != nil {
 		t.Fatal(err)
@@ -189,8 +189,17 @@ func TestResume_TransitionFailureAfterAuditIsFailClosed(t *testing.T) {
 	if fresh.PendingPause(runID) {
 		t.Fatal("Rebuild: pausa ainda pendente apesar do control.resume durável")
 	}
-	if _, ok := fresh.PendingCorrection(runID); ok {
-		t.Fatal("Rebuild: correcção ainda pendente apesar do control.resume durável")
+	// A CORRECÇÃO FICA PENDENTE, e desde AOS-292 é isso o correcto. O `Resume` deixou de a
+	// consumir — quem a consome é a ENTREGA ao loop
+	// ([SteerChannel.ConsumeCorrection]/`control.correction_consumed`), e aqui não houve
+	// entrega nenhuma: a transição falhou e o run nem sequer voltou a correr.
+	//
+	// Antes, o resume consumia-a, e uma retoma falhada ficava com a máquina em paused e a
+	// correcção do operador PERDIDA — a reconciliação futura de que o comentário do Resume
+	// fala retomaria o run sem a correcção que alguém escreveu. Manter pendente é o lado
+	// seguro nos dois eixos, não só no da máquina.
+	if _, ok := fresh.PendingCorrection(runID); !ok {
+		t.Fatal("Rebuild: a correcção devia continuar PENDENTE — a retoma nao a consome (AOS-292), e esta nem transitou")
 	}
 }
 
@@ -362,6 +371,11 @@ func TestConcurrent_ResumeExactlyOneWins(t *testing.T) {
 	}
 	if m.Current() != state.Running {
 		t.Fatalf("estado final = %s, quer running", m.Current())
+	}
+	// A ENTREGA consome a correcção (AOS-292): o resume levanta só a pausa. Fecha-se o ciclo
+	// aqui para que a asserção de consistência abaixo continue a ser sobre um ciclo COMPLETO.
+	if _, err := ch.ConsumeCorrection(ctx, runID); err != nil {
+		t.Fatalf("ConsumeCorrection: %v", err)
 	}
 	// Consistência final: um canal fresco reconstrói a mesma projecção (ciclo consumido).
 	fresh := newChannel(t, st, a)

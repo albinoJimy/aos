@@ -468,8 +468,15 @@ func TestReplay_CycleReproducesFaithfully(t *testing.T) {
 		}
 	}
 
+	// (2-bis) A ENTREGA da correcção ao loop é o que a consome desde AOS-292 — o `Resume`
+	// levanta a pausa e mais nada. Sem este passo o ciclo não está completo, e é ele que
+	// grava o `control.correction_consumed` que o replay abaixo tem de dobrar.
+	if consumida, err := ch.ConsumeCorrection(ctx, runID); err != nil || !consumida {
+		t.Fatalf("ConsumeCorrection = (%v, %v), quer (true, nil)", consumida, err)
+	}
+
 	// (3) Um canal FRESCO que dobra o log recupera a MESMA projecção final: após um
-	// ciclo completo não há pausa nem correcção pendentes (a resume consumiu-as).
+	// ciclo completo não há pausa nem correcção pendentes.
 	fresh := newChannel(t, st, a)
 	if err := fresh.Rebuild(ctx, runID); err != nil {
 		t.Fatal(err)

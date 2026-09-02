@@ -583,7 +583,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// pendingCorrection para a captura do turno SEGUINTE a persistir (AOS-218): é
 			// no prompt desse turno que a correcção entra, logo é lá que o replay tem de a
 			// reconstruir para o prompt_hash bater.
-			if corr, ok := rt.steer.PendingCorrection(goal.RunID); ok {
+			if corr, ok := rt.steer.PendingCorrection(ctx, goal.RunID); ok {
 				win.Append(tailFromCorrection(corr))
 				pendingCorrection = corr
 			} else {
