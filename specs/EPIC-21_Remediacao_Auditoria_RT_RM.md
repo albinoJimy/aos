@@ -797,9 +797,41 @@ AOS-291 mudou do que ficou por mudar — e o doc-comment desse teste declara est
 
 ### Estado
 
-**POR INICIAR.** P2. Subsistema sensível: a máquina de estados durável é a autoridade de
-transição de todos os runs, e a atomicidade validação↔escrita é o que AOS-291 assumiu ao largar
-o lock do disjuntor. Escopo próprio.
+**IMPLEMENTADO**; as quatro ACs fechadas. P2.
+
+**DESENHO: DOIS LOCKS**, e não «persistir fora do mutex com CAS». `mu` continua detido do
+princípio ao fim de cada mutação — é ele que mantém a validação atómica face à escrita (AC3), a
+propriedade que AOS-291 assumiu ao largar o lock do disjuntor. Um `estadoMu` novo protege
+**apenas** `current`, `enteredAt` e `nStates`, e nunca é detido durante I/O. Ordem de aquisição
+sempre `mu` → `estadoMu`; os leitores tomam só o segundo, pelo que não há deadlock possível.
+
+**A SECÇÃO CRÍTICA COBRIA CINCO FONTES DE ESPERA, e o ticket nomeava uma.** Além do Append:
+a consulta à `FencingAuthority` (rede), o `span.End()` (`Exporter.Export`, síncrono) e o callback
+do `TransitionObserver` — código de quem compõe o nó, exactamente a classe que AOS-291 tirou do
+disjuntor. E `Rebuild` fazia `store.Read` sob o mesmo mutex: a quinta.
+
+**O QUE UM LEITOR PASSA A OBSERVAR, e é correcto:** durante a janela de I/O de uma transição, o
+estado é o **anterior**. Já era assim — o código só avança o estado in-memory depois do commit
+durável —, pelo que o desdobramento não introduz visibilidade nova: troca «o leitor espera pelo
+resultado» por «o leitor vê o estado que ainda está em vigor». Os testes afirmam-no
+explicitamente, em vez de o deixarem implícito.
+
+**TRÊS TESTES, e o do meio não distingue a correcção — de propósito.**
+`UmAppendPresoNaoPrendeCurrentNemEnteredAt` e `UmRebuildLentoNaoPrendeALeitura` ficam vermelhos
+com o código anterior; `AValidacaoContinuaATOMICAFaceAEscrita` passa nos **dois**, e é isso que o
+torna útil: é a guarda de que o desdobramento não enfraqueceu a AC3. Prova-o com 200 corridas de
+`running→{paused, complete}` — os dois pares estão na tabela, o par que sobra nunca está — e exige
+exactamente uma aceite e uma recusada.
+
+**AC4 — o limite deixa de ser declarado.** O doc-comment de
+`TestAOS291_AppendBloqueadoNaoPrendeOMutexDoDisjuntor` passa a dizer que fechou e onde. A injecção
+da fonte de wall-clock **mantém-se**, e não por inércia: aquele teste é sobre `b.mu`, e voltar ao
+wall-clock por omissão ataria outra vez o seu veredicto ao lock da máquina — uma regressão em
+AOS-301 deve avermelhar o teste de AOS-301, não o de AOS-291.
+
+Validado com `-race` no módulo `agent-runtime` inteiro e no `cmd/aos`; gate `replay` verde
+(fidelidade 100%, 0 efeitos duplicados), que é o que exercita a máquina como autoridade de
+transição.
 
 ---
 

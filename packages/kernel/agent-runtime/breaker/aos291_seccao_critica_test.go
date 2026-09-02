@@ -150,14 +150,19 @@ func (s *blockingStore) Append(ctx context.Context, streamID string, in eventsto
 //
 // A primeira versão deste teste usava o wall-clock por omissão e FALHAVA. A causa não era o
 // disjuntor: `Snapshot` → `snapshotLocked` → `b.wall.Elapsed()` e, no default,
-// [NewMachineWallClock] chama `m.EnteredAt()`, que toma o mutex da [state.Machine] — o MESMO que
-// `Transition` segura durante o Append (machine.go:412-416 fecha `m.mu` sobre a persistência).
-// `Snapshot` esperava pelo append, mas por `machine.mu`, não por `b.mu`.
+// [NewMachineWallClock] chama `m.EnteredAt()`, que tomava o mutex da [state.Machine] — o MESMO
+// que `Transition` segurava durante o Append. `Snapshot` esperava pelo append, mas por
+// `machine.mu`, não por `b.mu`.
 //
-// Isso é um limite REAL e fica DECLARADO: enquanto a [state.Machine] persistir com o seu mutex
-// detido, tudo o que leia o estado — `Snapshot` com o wall-clock default, e também `Abort` e
-// `EscalateToHuman`, que chamam `Current()` — espera por um Append lento. AOS-291 não fecha isso,
-// e não podia: a correcção vive na máquina, não no disjuntor. Tem eixo próprio: **AOS-301**.
+// ESSE LIMITE FECHOU — **AOS-301**. A máquina passou a ter dois locks: `mu` serializa as mutações
+// (e mantém a validação atómica face à escrita, que é o que AOS-291 assumiu ao largar `b.mu`),
+// e um segundo, tomado só para publicar/ler os três campos de estado, nunca é detido durante I/O.
+// `Current()` e `EnteredAt()` deixaram de esperar por um Append lento; a prova está em
+// `state/aos301_leitura_sem_io_test.go`.
+//
+// A INJECÇÃO DA FONTE MANTÉM-SE, e não por inércia: este teste é sobre `b.mu`, e depender do
+// wall-clock por omissão voltaria a atar o seu veredicto ao lock da máquina. Uma regressão em
+// AOS-301 deve avermelhar o teste de AOS-301, não este.
 //
 // O que este teste isola, injectando uma fonte que NÃO toca na máquina, é a parte que AOS-291
 // mudou mesmo: `b.mu` deixou de ser detido durante o I/O. Antes, esta asserção falhava com
