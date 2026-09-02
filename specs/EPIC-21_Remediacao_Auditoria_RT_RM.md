@@ -23,7 +23,7 @@ Os **doze** que restam não são dívida — são **defeitos**. Registá-los com
 sido convertê-los em dívida aceite por decreto, que é a lavagem que o §1 daquele documento
 existe para impedir. Este epic é o destino deles.
 
-Fechar os doze produziu **mais três** (AOS-300..302, §0.4): propriedades que uma correcção
+Fechar os doze produziu **mais quatro** (AOS-300..303, §0.4): propriedades que uma correcção
 deixou parcialmente cumpridas. Não vieram da auditoria — vieram da remediação —, e por isso
 estão numerados e listados em separado. Registá-los como deferimentos seria o mesmo erro que o
 parágrafo acima descreve: nenhum é «sabemos e aceitamos», os três são «isto ainda não é
@@ -371,9 +371,14 @@ consumação tem de acontecer no ponto da entrega), e o wiring do nó.
    epic persegue. Idioma: `//go:build`, no molde de `packages/substrate/sandbox/fclive_test.go`,
    com o cabeçalho a nomear o que o teste exige e o comando exacto. Fica fora da CI normal e
    nunca passa em silêncio por ausência de ambiente.
-2. **AC4 — o `ControlSurface` não foi removido.** `NewControlSurface` e `Dispatch` não têm
-   consumidor externo, mas o pacote tem `NewStateProjector`, usado por `cmd/aos-demo`, e apagar
-   o `surface.go` mexe em ~1100 linhas de testes do próprio pacote.
+2. ~~**AC4 — o `ControlSurface` não foi removido.**~~ **FECHADA.** Removido: `surface.go`,
+   `span.go` e os três testes que só o exerciam (`span_test.go`, `graceful_pause_test.go`,
+   `outofband_test.go`), mais os erros `ErrNilChannel`/`ErrNilBinding` e três testes em
+   `extras_test.go`. A estimativa que aqui estava — «~1100 linhas de testes» — era alta: são
+   **697**, e nenhuma prova algo que sobreviva à remoção. `StateProjector` (`reflection.go`,
+   `cmd/aos-demo`), `ChannelID` (`surface-adapter`) e `ControlSchemaVersion` (`approval-card`)
+   ficam, porque têm consumidor real. **Residual aberto em AOS-303**, e não fechado aqui em
+   silêncio.
 
 **TORNOU O AOS-293 URGENTE, E ERA PIOR DO QUE ISTO.** Com a projecção vazia, o
 `SteerChannel.Resume` recusa por não haver pausa pendente, o `retomarPausaPeloCanal` falha e o
@@ -669,13 +674,13 @@ o registo diz que se sabe, não que está feito.
 
 ---
 
-## 0.4 Residuais apurados DURANTE a remediação — AOS-300..302
+## 0.4 Residuais apurados DURANTE a remediação — AOS-300..303
 
-Os doze acima vieram da auditoria. Estes três vieram de fechar os doze: são propriedades que
-uma correcção deixou **parcialmente** cumpridas, e cada um está declarado no código que o
-produziu. Registam-se como tickets, e não como deferimentos, pela mesma regra do §0: nenhum é
-«sabemos e aceitamos» — os três são «isto ainda não é verdade», e dois deles são propriedades
-que o nó anuncia.
+Os doze acima vieram da auditoria. Estes quatro vieram de fechar os doze: são propriedades que
+uma correcção deixou **parcialmente** cumpridas, ou material que uma remoção deixou órfão, e
+cada um está declarado no código que o produziu. Registam-se como tickets, e não como
+deferimentos, pela mesma regra do §0: nenhum é «sabemos e aceitamos» — são «isto ainda não é
+verdade», e dois deles são propriedades que o nó anuncia.
 
 O que os distingue dos doze é a origem, não a natureza. Estão aqui, e não nos epics dos
 respectivos eixos, porque o contexto que os torna compreensíveis é a remediação que os
@@ -782,6 +787,50 @@ predicado de AOS-300: «produção exige substrato durável».
 
 **POR INICIAR.** P3. Documentação e uma decisão partilhada com AOS-300; nenhuma correcção de
 comportamento é obrigatória se a decisão for declarar em vez de exigir.
+
+---
+
+## AOS-303 — O payload do contrato de controlo ficou sem consumidor
+
+### Contexto
+
+A AC4 de AOS-292 removeu a `ControlSurface` — o tradutor que convertia cada `ControlMessage`
+validada nas chamadas reais do `control.SteerChannel`. Nunca foi composto em produção: o nó
+sempre chamou o canal directamente, e a superfície só se construía em testes.
+
+O tradutor era o **único** consumidor da metade de *payload* do contrato. Depois de sair,
+`ControlMessage`, `DecodeMessage`, `NewInterrupt`, `NewSteer`, `NewResume`,
+`NewResumeWithCorrection`, `NewStateQuery` e `Kind` não têm consumidor nenhum — nem de produção,
+nem de outro pacote, nem sequer interno fora dos testes que os validam a si próprios.
+
+A metade que **tem** consumidor real fica, e é por isso que o pacote não desaparece: `ChannelID`
+é usado por `control-plane/governance/surface-adapter` (4 ficheiros), `ControlSchemaVersion` por
+`control-plane/governance/approval-card`, e `StateProjector` por `cmd/aos-demo` — este último
+rastreado pelos EPIC-13, EPIC-14 e EPIC-15.
+
+**Porque não se resolveu ao remover a superfície:** `ControlMessage` é um deliverable nomeado de
+AOS-119/EPIC-12 — um protocolo versionado, com teste de schema próprio (`contract_test.go`) e
+uma promessa de estabilidade em SemVer. Alargar uma AC de remoção da *superfície* até apagar o
+*protocolo* seria decidir o destino de um deliverable de outro epic em silêncio, que é
+exactamente o que o §0 deste epic recusa. E o destino não é óbvio: um protocolo versionado sem
+implementação pode ser dívida a limpar **ou** o contrato que um canal futuro (desktop, chatbot)
+vai adoptar — a distinção é de produto, não de código.
+
+É o mesmo eixo de AOS-296 (`engine/`: consumir a porta ou removê-la), com a mesma pergunta e
+factos diferentes; não é o mesmo ticket porque os deliverables e os epics de origem são outros.
+
+### Critérios de Aceitação
+
+- [ ] Decidido: ou um canal passa a produzir `ControlMessage` no caminho de produção, ou o payload é removido e o que AOS-119/EPIC-12 afirma sobre o protocolo é reavaliado
+- [ ] Se removido, `contract_test.go` (156 linhas, schema e fail-closed) é reaproveitado ou descartado com razão escrita
+- [ ] `ChannelID`, `ControlSchemaVersion` e `StateProjector` ficam intactos em qualquer dos destinos — têm consumidor
+- [ ] O `doc.go` do pacote deixa de declarar o residual e passa a descrever o que o pacote é
+
+### Estado
+
+**POR INICIAR.** P3. Sem urgência técnica — nada quebra por o payload existir. A urgência é de
+rastreabilidade, como em AOS-296: um contrato versionado sem produtor não pode ser citado como
+evidência de que o protocolo funciona.
 
 ---
 
