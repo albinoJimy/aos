@@ -41,7 +41,7 @@ oficializar a afirmação falsa.
 
 | Ticket | Defeito | P | Estado |
 |---|---|---|---|
-| AOS-288 | A verificação de revogação de tokens NHI nunca corre, e o banner do nó anuncia que corre | P0 | por iniciar |
+| AOS-288 | A verificação de revogação de tokens NHI nunca corre, e o banner do nó anuncia que corre | P0 | **implementado** (3 ressalvas) |
 | AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 | por iniciar |
 | AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | por iniciar |
 | AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 | **implementado** `5100a48` (AC2 em parte) |
@@ -116,7 +116,37 @@ AOS-222 abriu um guard-test para impedir, a repetir-se sem guarda.
 
 ### Estado
 
-**POR INICIAR.** P0. Depende de uma decisão do dono: ligar a revogação, ou retirar a alegação
+**IMPLEMENTADO**; critérios por fechar formalmente. P0. Decisão do dono: **ligar a revogação**,
+com a via a ser uma **rota HTTP do plano de controlo**. As âncoras do Contexto acima são as do
+código ANTES da correcção.
+
+O que ficou: `Revocations` composto no `bootstrap` (um ponto, `verifierOpts`, que cobre os dois
+ramos); `POST /nhi/revoke` no `planoControlo`, com assinatura ed25519 produzida fora do nó por
+`aos-issuer revoke-sign` e selo na hash-chain; a frase do banner passou a ser DERIVADA do estado
+composto; e um teste que prova `ErrTokenRevoked` pela cadeia do NÓ, falsificado contra a
+composição removida — reproduz `Verify = <nil>`, a medição da auditoria.
+
+**ACHADO NOVO, e é o que o epic não previa:** o `Revocations` **não tinha rebuild**. A projecção
+é um mapa em memória; o evento `identity.nhi.revoked` ficava durável e nada o relia, pelo que um
+restart ressuscitava todos os tokens revogados por expirar, em silêncio. «O mecanismo não está
+partido — está por ligar» era optimista: estava também a esquecer. Acrescentou-se
+`Revocations.Rebuild`, fail-closed, chamado no arranque (falha ⇒ o nó não arranca).
+
+**TRÊS RESSALVAS por endereçar:**
+
+1. **AC1, terceiro sítio:** `integration/secured.go` NÃO recebe `WithRevocations`, com razão
+   escrita no local — é o fallback sem trust anchors, que nega toda a NHI antes de a revogação
+   decidir; compor lá um registo próprio criaria um SEGUNDO conjunto desligado do que a rota
+   alimenta.
+2. **AC3 (abort em produção):** cumprida no sentido «registo inutilizável ⇒ o arranque aborta»,
+   e em TODOS os modos, não só em produção. O que NÃO fica fechado é a durabilidade: sobre o
+   substrato de referência in-memory o stream morre com o processo, e a revogação dura até ao
+   restart. Uma guarda `AOS_MODE=production ⇒ substrato durável` foi implementada, medida a
+   partir **seis** testes de produção sem relação com revogação, e revertida — é um requisito
+   mais forte do que a AC pede e merece decisão própria.
+3. **Reversão em falha de escrita:** `Revoke` mutava o conjunto em memória antes do `Append` e
+   não desfazia em caso de erro, contra o idioma que o contrato do Event Store nomeia. Corrigido
+   aqui (fora das ACs, dentro do âmbito do epic).
 do banner. A terceira via — deixar como está — é a única que este ticket recusa.
 
 ---
