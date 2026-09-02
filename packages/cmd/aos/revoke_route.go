@@ -30,6 +30,7 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
+	audit "github.com/aos-ref/platform/audit"
 )
 
 // revokeRequest é o corpo de POST /nhi/revoke. Espelha o de POST /autonomy: o alvo em claro
@@ -96,7 +97,18 @@ func (h *apiHandler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "revogacao nao gravada")
 		return
 	}
-	h.sealControlAction(r.Context(), "nhi_revoke", jti, emitter.ID)
+	// O MOTIVO VAI NO SELO, e não só na assinatura (achado da revisão de segurança). O
+	// `reason` era exigido, verificado como parte do payload assinado — e depois descartado:
+	// nada o gravava. O comentário do topo deste ficheiro dizia que ficava selado, e não
+	// ficava. O /autonomy parece fazer o mesmo e não faz: o motivo dele é selado pelo
+	// `LevelRegistry.SetLevel` na partição própria.
+	//
+	// Sem isto, uma auditoria que pergunte «porque foi este token revogado?» não tem resposta
+	// em lado nenhum — o que torna a exigência do motivo uma formalidade em vez de uma
+	// obrigação. É uma [audit.Obligation] e não um campo do registo porque é isso que a
+	// hash-chain aceita sem mudar o esquema.
+	h.sealControlAction(r.Context(), "nhi_revoke", jti, emitter.ID,
+		audit.Obligation{Type: "gov.nhi.revoke.reason", Fields: []string{reason}})
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "revoked",
