@@ -190,6 +190,18 @@ func (s *NodeService) exportarBackups(stop <-chan struct{}) {
 	if !backupSchedulerArmed(s.node) {
 		return
 	}
+	// RETOMA ANTES DO PRIMEIRO CICLO. Sem isto, um processo novo sobre um destino que
+	// sobreviva ao processo tenta reescrever `<região>/seg-00000001` e o write-once
+	// recusa-o — para sempre, porque o índice não avança. Ver platform/backup/retoma.go.
+	//
+	// Fail-closed, ao contrário do resto deste laço: um ciclo falhado re-tenta-se, mas uma
+	// retoma falhada significa que NÃO SE SABE onde o backup ia. Continuar daí ou escreveria
+	// por cima de história alheia ou colidiria em cada ciclo — e nos dois casos o laço
+	// estaria a produzir ruído em vez de backup. Pára e diz porquê.
+	if err := s.node.BackupExporter.RetomarDoDestino(context.Background(), s.node.BackupExporter.Public()); err != nil {
+		s.log("agendador de backup (AOS-101): PARADO — nao foi possivel retomar do destino: %v", err)
+		return
+	}
 	t := time.NewTicker(s.node.BackupExporter.Periodicity())
 	defer t.Stop()
 	for {
