@@ -54,6 +54,13 @@ var (
 	// já começou: o nó PARA de aceitar novos runs (drena os em curso). Fail-closed.
 	ErrServiceShuttingDown = errors.New("aos: no em shutdown — nao aceita novos runs")
 
+	// ErrLeaseHeartbeatNotBelowTTL — [WithLeaseHeartbeat] recebeu um intervalo >= ao TTL do
+	// lease (AOS-297). Não é uma afinação apertada: com o heartbeat a chegar depois de o
+	// lease expirar, a posse cai em TODOS os runs, sempre, ao fim de um TTL. Recusa-se na
+	// construção porque o par é conhecido lá e porque um nó que arranca assim parece são —
+	// o sintoma só aparece um TTL mais tarde, longe da causa.
+	ErrLeaseHeartbeatNotBelowTTL = errors.New("aos: intervalo de heartbeat do lease >= TTL do lease — a posse expiraria antes da primeira renovacao em todos os runs (use um intervalo estritamente inferior; o default e TTL/3)")
+
 	// ErrRunAlreadyInProgress — submeteu-se um RunID JÁ hospedado (em curso) por esta
 	// réplica. O registo por RunID recusa a duplicação (não se hospeda o mesmo run duas
 	// vezes).
@@ -312,8 +319,14 @@ func WithLeaseTTL(ttl time.Duration) NodeServiceOption {
 }
 
 // WithLeaseHeartbeat define o período de renovação (heartbeat) da posse do lease durante
-// um run. Default: TTL/3. Um valor <= 0 é ignorado (mantém o default). Deve ser
-// confortavelmente inferior ao TTL para a posse nunca expirar a meio de um run vivo.
+// um run. Default: TTL/3. Um valor <= 0 é ignorado (mantém o default).
+//
+// Tem de ser ESTRITAMENTE INFERIOR ao TTL, e isso é IMPOSTO — não sugerido. Um intervalo
+// >= TTL produz perda de posse determinística em TODOS os runs, ao fim de um TTL, e antes
+// de AOS-297 o nó arrancava sem aviso: a frase «deve ser confortavelmente inferior ao TTL»
+// estava aqui e nada a verificava. A recusa vive em [NewNodeService] e não neste closure,
+// porque as opções são aplicadas por ordem e o TTL pode ainda não ter sido definido quando
+// esta correr — validar aqui recusaria um par legítimo só por causa da ordem das opções.
 func WithLeaseHeartbeat(interval time.Duration) NodeServiceOption {
 	return func(c *nodeServiceConfig) {
 		if interval > 0 {
@@ -372,6 +385,16 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 	// Período de heartbeat: explícito, ou derivado de TTL/3 (renova ~3x por TTL, dando
 	// margem folgada para a posse nunca expirar a meio de um run vivo).
+	//
+	// CABLAGEM FAIL-CLOSED (AOS-297). Um intervalo explícito >= TTL não é uma afinação
+	// agressiva: é perda de posse GARANTIDA em todos os runs, ao fim de um TTL, porque a
+	// primeira renovação chega sempre depois de o lease já ter expirado. Recusa-se aqui —
+	// depois de TODAS as opções aplicadas, que é o único ponto onde os dois valores são
+	// ambos conhecidos — no mesmo molde de [breaker.ErrProgressSourceInert]: uma cablagem
+	// que não pode funcionar não arranca em silêncio.
+	if cfg.hbInterval > 0 && cfg.hbInterval >= cfg.ttl {
+		return nil, fmt.Errorf("%w: heartbeat=%s, ttl=%s", ErrLeaseHeartbeatNotBelowTTL, cfg.hbInterval, cfg.ttl)
+	}
 	hbInterval := cfg.hbInterval
 	if hbInterval <= 0 {
 		hbInterval = cfg.ttl / 3
