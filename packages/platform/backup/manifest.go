@@ -141,12 +141,18 @@ func (s *Ed25519Signer) Sign(message []byte) []byte { return ed25519.Sign(s.priv
 // Public implementa [Signer].
 func (s *Ed25519Signer) Public() ed25519.PublicKey { return s.priv.Public().(ed25519.PublicKey) }
 
-// sealCheckpoint sela o head corrente do manifesto num checkpoint assinado.
-func sealCheckpoint(signer Signer, m *Manifest, now time.Time) Checkpoint {
+// sealCheckpoint sela um head num checkpoint assinado.
+//
+// Recebe o ciclo e o head EXPLICITAMENTE, e não um *Manifest de onde os derivar, porque desde a
+// retoma (AOS-101) o manifesto em memória deixou de ser a cadeia toda: um exportador retomado
+// continua o ciclo N+1 com zero segmentos em memória, e `len(m.Segments)` daria 1. Derivar o ciclo
+// da memória do processo produziria checkpoints com um Cycle errado — assinados, e portanto
+// convincentes.
+func sealCheckpoint(signer Signer, region string, cycle uint64, head []byte, now time.Time) Checkpoint {
 	cp := Checkpoint{
-		Region:    normalizeRegion(m.Region),
-		Cycle:     uint64(len(m.Segments)),
-		HeadHash:  m.head(),
+		Region:    normalizeRegion(region),
+		Cycle:     cycle,
+		HeadHash:  cloneBytes(head),
 		Timestamp: now.UTC(),
 	}
 	cp.Signature = signer.Sign(canonicalCheckpoint(cp))

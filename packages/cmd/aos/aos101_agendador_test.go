@@ -418,24 +418,33 @@ func TestAOS101_ASoberaniaPARAOLacoDefinitivamente(t *testing.T) {
 	}
 }
 
-// TestAOS101_AColisaoDeReferenciaPARAOLaco: é o que acontece a TODOS os arranques depois do
-// primeiro sobre um destino que sobrevive ao processo (medido em
-// platform/backup/reinicio_test.go). Re-tentar seria 2880 erros por dia sobre uma condição que
-// nunca melhora.
-func TestAOS101_AColisaoDeReferenciaPARAOLaco(t *testing.T) {
-	dst := novaLojaQueFalha("eu-west", backup.ErrImmutable)
+// TestAOS101_ACadeiaComOUTRODonoPARAOLaco: dois exportadores sobre o mesmo destino colidem no
+// registo de ciclo, e a colisão não melhora com o tempo — re-tentar seria 2880 erros por dia sobre
+// a mesma corrida.
+//
+// ESTE TESTE MUDOU DE CAUSA. Media a colisão de referência do SEGMENTO ([backup.ErrImmutable]),
+// que era o que acontecia a todos os arranques depois do primeiro sobre um destino durável. Essa
+// causa deixou de existir com a retoma de manifesto (packages/platform/backup/resume.go): a
+// referência do segmento passou a ser endereçada por conteúdo e o exportador continua a cadeia em
+// vez de a recomeçar. O que resta ser permanente é a cadeia ter OUTRO dono — e a mensagem tem de
+// mandar corrigir a configuração, não procurar um atacante (a mesma distinção do AOS-284).
+func TestAOS101_ACadeiaComOUTRODonoPARAOLaco(t *testing.T) {
+	dst := novaLojaQueFalha("eu-west", backup.ErrChainOwned)
 	node := aos101Node(t, aos101Config(t, dst, time.Hour))
 	aos101Seed(t, node, "run-colisao", 2)
 	svc, logs := aos101Service(t, node)
 
 	if svc.ExportBackupNow(context.Background()) {
-		t.Fatal("uma colisao de referencia e PERMANENTE: o laco tem de parar")
+		t.Fatal("uma cadeia com outro dono e PERMANENTE: o laco tem de parar")
 	}
 	if !svc.backupParado.Load() {
-		t.Fatal("a paragem por colisao tem de ficar MARCADA para o /metrics")
+		t.Fatal("a paragem tem de ficar MARCADA para o /metrics")
 	}
-	if !strings.Contains(logs.String(), "JA EXISTE no destino") {
-		t.Errorf("o log tem de NOMEAR a causa (o operador leria 'o backup avariou' em vez de 'este destino nao e utilizavel'); log=%q", logs.String())
+	if !strings.Contains(logs.String(), "JA FOI SELADO") {
+		t.Errorf("o log tem de NOMEAR a causa (dois escritores, nao adulteracao); log=%q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "um destino por exportador") {
+		t.Errorf("o log tem de dizer o que CORRIGIR, e a correccao e de configuracao; log=%q", logs.String())
 	}
 }
 

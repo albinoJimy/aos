@@ -572,14 +572,21 @@ type Config struct {
 	//
 	// BackupDestination é o armazenamento imutável (object-lock/WORM) para onde os segmentos
 	// cifrados são escritos. É uma PORTA injectada, e o nó NÃO inventa uma implementação por
-	// ambiente de propósito: está MEDIDO (packages/platform/backup/reinicio_test.go) que
-	// `platform/backup` não sabe RETOMAR um manifesto — o exportador começa sempre do génesis e
-	// o primeiro ciclo depois de um reinício colide com [backup.ErrImmutable] sobre qualquer
-	// destino que sobreviva ao processo; e [backup.Restorer.RestoreTo] recebe o manifesto e o
-	// checkpoint COMO ARGUMENTOS, sem que nada os persista. Um backend de ficheiro composto por
-	// `AOS_BACKUP_DIR` produziria segmentos write-once não-restauráveis que deixavam de ser
-	// escritos ao segundo arranque — uma promessa de backup pior do que a ausência dela. Quem
-	// injecta este destino assume as duas propriedades.
+	// ambiente.
+	//
+	// A RAZÃO MUDOU, e é justo que fique escrito qual era: até à retoma de manifesto, um destino
+	// DURÁVEL era simplesmente inutilizável — o exportador começava sempre do génesis, o primeiro
+	// ciclo depois de qualquer reinício colidia com [backup.ErrImmutable], e o restauro precisava
+	// de um manifesto que nada persistia. Um `AOS_BACKUP_DIR` teria produzido segmentos
+	// write-once não-restauráveis que deixavam de ser escritos ao segundo arranque — uma promessa
+	// de backup pior do que a ausência dela.
+	//
+	// Isso está fechado (`packages/platform/backup/resume.go`): o exportador retoma a cadeia do
+	// destino, verificada fail-closed, e [backup.Restorer.LoadManifest] reconstrói-a para
+	// restauro. O que continua a não existir neste repositório é uma IMPLEMENTAÇÃO durável da
+	// porta — só a de referência, em memória. A injecção mantém-se pela razão ordinária: onde é
+	// que os backups de uma organização vivem não é uma escolha que um default deva fazer por
+	// ela.
 	//
 	// FAIL-CLOSED na composição: com destino presente, um Event Store que não satisfaça
 	// [eventstore.BackupSource], uma chave de assinatura em falta ou uma violação de soberania

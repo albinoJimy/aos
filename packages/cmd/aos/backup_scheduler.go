@@ -45,11 +45,21 @@ package main
 //   - [backup.ErrSovereigntyViolation] — o destino deixou de respeitar a fronteira regional
 //     (o exportador revalida a soberania a CADA ciclo, fail-closed). Cada re-tentativa é uma
 //     tentativa de cópia cross-border negada. O laço PÁRA.
-//   - [backup.ErrImmutable] — a referência do segmento já existe no destino. Num destino que
-//     sobrevive ao processo é o que acontece a CADA arranque depois do primeiro, e é permanente:
-//     [backup.NewExporter] começa sempre do génesis e o índice nunca avança. Está MEDIDO em
-//     `packages/platform/backup/reinicio_test.go`. O laço PÁRA e o log NOMEIA a causa — sem isso,
-//     o operador leria «o backup avariou» em vez de «este destino não é utilizável».
+//   - [backup.ErrChainOwned] — o ciclo já foi selado neste destino por OUTRO exportador. Não é
+//     transitório: cada re-tentativa é a mesma corrida entre dois donos da mesma cadeia. O laço
+//     PÁRA e o log manda corrigir a CONFIGURAÇÃO (um destino por exportador) — que é o oposto do
+//     que uma mensagem de adulteração mandaria fazer, e é a mesma distinção que o AOS-284 fez na
+//     hash-chain da auditoria.
+//   - [backup.ErrSegmentRefCollision] — o destino tem, na referência endereçada por conteúdo do
+//     segmento, um blob DIFERENTE. Continuar selaria no manifesto um content-hash que o destino
+//     não guarda, e o sintoma só apareceria no restauro, como adulteração. O laço PÁRA e escala.
+//
+// ESTA LISTA ENCOLHEU. Havia aqui uma terceira paragem — [backup.ErrImmutable] na referência do
+// segmento —, que era o que acontecia a CADA arranque sobre um destino que sobrevivesse ao
+// processo, porque o exportador começava sempre do génesis. Deixou de existir: [backup.NewExporter]
+// RETOMA a cadeia do destino e a referência do segmento passou a ser endereçada por conteúdo
+// (`packages/platform/backup/resume.go`). O reinicio_test.go, que media esse limite, mede agora o
+// seu fecho.
 //
 // Em ambos os casos a paragem é DEFINITIVA e fica marcada ([NodeService.backupParado]), para que
 // `/metrics` a possa dizer: um nó que deixou de exportar tem de ser distinguível de um nó que
@@ -230,9 +240,13 @@ func (s *NodeService) exportarBackupUmCiclo(ctx context.Context) (continua bool)
 			s.backupParado.Store(true)
 			s.log("agendador de backup (AOS-101): PARAGEM DEFINITIVA — o destino deixou de respeitar a fronteira regional de soberania (ADR-011) e o exportador RECUSOU fail-closed. Nao se re-tenta: cada tentativa e uma copia cross-border negada. O backup deixa de correr ate o no ser reiniciado com um destino na regiao do board: %v", err)
 			return false
-		case errors.Is(err, backup.ErrImmutable):
+		case errors.Is(err, backup.ErrChainOwned):
 			s.backupParado.Store(true)
-			s.log("agendador de backup (AOS-101): PARAGEM DEFINITIVA — a referencia do segmento JA EXISTE no destino. Num destino que sobrevive ao processo isto acontece em TODOS os arranques depois do primeiro e e PERMANENTE: o exportador comeca sempre do genesis e o indice nunca avanca (medido em platform/backup/reinicio_test.go). Este destino NAO e utilizavel enquanto o modulo nao souber RETOMAR um manifesto: %v", err)
+			s.log("agendador de backup (AOS-101): PARAGEM DEFINITIVA — o ciclo JA FOI SELADO neste destino por OUTRO exportador. Nao e adulteracao e nao e um destino avariado: sao DOIS ESCRITORES sobre a mesma cadeia, e a referencia indexada do registo de ciclo existe para que o segundo seja recusado em vez de bifurcar o backup em silencio. Nao se re-tenta, porque cada tentativa e a mesma corrida. CORRIJA: um destino por exportador (ou uma so replica a exportar): %v", err)
+			return false
+		case errors.Is(err, backup.ErrSegmentRefCollision):
+			s.backupParado.Store(true)
+			s.log("agendador de backup (AOS-101): PARAGEM DEFINITIVA — a referencia (enderecada por conteudo) do segmento ja existe no destino com CONTEUDO DIFERENTE. Continuar escreveria no manifesto um content-hash que o destino nao guarda, e isso so apareceria no dia do restauro, como adulteracao. ESCALE: o destino esta a servir conteudo que nao foi este no a escrever: %v", err)
 			return false
 		default:
 			s.log("agendador de backup (AOS-101): ciclo com erro (fail-open — os runs nao sao afectados); re-tenta no proximo tick: %v", err)
@@ -274,7 +288,7 @@ func (s *NodeService) BackupSchedulerArmed() bool { return backupSchedulerArmed(
 func backupSchedulerBanner(node *Node) string {
 	if !backupSchedulerArmed(node) {
 		if node == nil || node.BackupExporter == nil {
-			return "agendador de backup (AOS-101): DESLIGADO (por omissao) — nenhum destino imutavel composto (Config.BackupDestination). O Event Store NAO e exportado para backup imutavel por este no; o que existe no servidor e o backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa. RESSALVA HONESTA: nao ha hoje backend DURAVEL para a porta backup.ImmutableStore — o exportador comeca sempre do genesis e colide (ErrImmutable) no segundo arranque sobre um destino persistente, e o Restorer recebe o manifesto como ARGUMENTO (nada o persiste). Por isso o no nao inventa um destino: exige um injectado, e quem o injecta assume estas duas propriedades"
+			return "agendador de backup (AOS-101): DESLIGADO (por omissao) — nenhum destino imutavel composto (Config.BackupDestination). O Event Store NAO e exportado para backup imutavel por este no; o que existe no servidor e o backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa. O QUE MUDOU: um destino DURAVEL passou a ser utilizavel — o exportador RETOMA a cadeia que ja esteja no destino (sonda o ultimo ciclo, verifica-o fail-closed e continua no seguinte) e a cadeia e reconstruivel para restauro sem manifesto guardado a parte (backup.Restorer.LoadManifest). O que ainda NAO existe neste repositorio e uma IMPLEMENTACAO duravel da porta backup.ImmutableStore (so a de referencia, em memoria): o no continua a nao inventar um destino, e exige um injectado"
 		}
 		return "agendador de backup (AOS-101): DORMENTE — ha destino composto mas a periodicidade do exportador e <= 0; nenhum ciclo corre sozinho"
 	}
@@ -284,6 +298,14 @@ func backupSchedulerBanner(node *Node) string {
 	if exp.WithinRPO(time.Minute) {
 		veredicto = "satisfaz o alvo de RPO <= 1 min (AOS-102): sob um ciclo a cada periodicidade, a janela de perda mantem-se <= 1 min"
 	}
-	return fmt.Sprintf("agendador de backup (AOS-101): LIGADO — o Event Store e exportado de %s em %s (AOS_BACKUP_EXPORT_INTERVAL) para o destino imutavel regiao=%q tipo=%T; %s. Cada ciclo e INCREMENTAL (so o que passou do head anterior), cifrado em repouso (AES-256-GCM, KEK do audit.KeyVault do no) e encadeado num manifesto hash-chain com checkpoint ed25519. FAIL-OPEN: um ciclo falhado NAO derruba o no; a violacao de soberania e a colisao de referencia PARAM o laco (ver /metrics aos_backup_scheduler_stopped)",
-		periodicidade, periodicidade, exp.Immutable().Region(), exp.Immutable(), veredicto)
+	// A CADEIA é uma das duas coisas que o operador tem de poder ler no arranque, a par da
+	// periodicidade: um nó que RETOMOU um backup e um que COMEÇOU um são estados diferentes, e
+	// confundi-los é ler «o backup está a correr» quando o que está a correr é um backup novo que
+	// não cobre nada do que veio antes.
+	cadeia := "cadeia NOVA (destino virgem — este no selou o ciclo 1)"
+	if retomado := exp.ResumedFrom(); retomado > 0 {
+		cadeia = fmt.Sprintf("cadeia RETOMADA do ciclo %d que ja estava no destino (verificada fail-closed no arranque: assinatura do checkpoint, encadeamento e cursor)", retomado)
+	}
+	return fmt.Sprintf("agendador de backup (AOS-101): LIGADO — o Event Store e exportado de %s em %s (AOS_BACKUP_EXPORT_INTERVAL) para o destino imutavel regiao=%q tipo=%T; %s; %s. Cada ciclo e INCREMENTAL (so o que passou do head anterior), cifrado em repouso (AES-256-GCM, KEK do audit.KeyVault do no) e encadeado num manifesto hash-chain com checkpoint ed25519. FAIL-OPEN: um ciclo falhado NAO derruba o no; a violacao de soberania, a cadeia com outro dono e a colisao de conteudo PARAM o laco (ver /metrics aos_backup_scheduler_stopped)",
+		periodicidade, periodicidade, exp.Immutable().Region(), exp.Immutable(), veredicto, cadeia)
 }
