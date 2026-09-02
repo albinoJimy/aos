@@ -55,7 +55,7 @@ oficializar a afirmação falsa.
 | AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | **implementado** `1f019ec` |
 | AOS-294 | A tabela de `neutralizarDelimitadores` contradiz a função que ilustra | P3 | **implementado** `76d3692` |
 | AOS-295 | `activity/doc.go` declara o deferimento sem a ressalva de modo | P3 | **implementado** `4bbd367` |
-| AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 | por iniciar |
+| AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 | **removido** |
 | AOS-297 | `WithLeaseHeartbeat` aceita um intervalo superior ao TTL sem validar | P3 | **implementado** `db215f5` |
 | AOS-298 | Uma divergência de replay por eviction sairia inatribuível | P2 | por iniciar |
 | AOS-299 | A AC «escritas no Event Store carregam o fencing token» está por cumprir | P2 | por iniciar |
@@ -589,7 +589,42 @@ nada consome a porta, logo nada poderia ter de mudar.
 
 ### Estado
 
-**POR INICIAR.** P2. Não há urgência técnica; há de rastreabilidade.
+**REMOVIDO.** As três ACs fechadas. P2.
+
+**DECISÃO DO DONO: REMOVER**, e a medição mostrou que nenhuma das duas vias preservava a
+afirmação que o pacote existia para sustentar.
+
+**PORQUE CONSUMIR NÃO ERA WIRING.** Dos cinco métodos da porta, só o `Checkpoint` bate com o
+que o RT usa. O `Dispatch` da porta é `(ctx, activity.Activity) (activity.Result, error)`; o do
+loop é `(ctx, referencemonitor.Call) (referencemonitor.Decision, error)`. Ligá-los exigiria
+mudar a assinatura de `ActivityDispatcher` — **interface pública do kernel** —, o que tornaria
+**falso** o próprio critério `EPIC-02:688`, «sem alterações à API do RT». Além disso o default
+não-durável (o do binário por omissão) não pode satisfazer a porta, por não ter Event Store; e
+dois dos três consumidores de replay do nó chamam `Reconstruct`, que a porta não expõe —
+alargá-la contradiria a sua promessa de seguir «exactamente» as APIs de AOS-014/015/016/021.
+
+**O QUE SAIU:** 1113 linhas Go (367 de produção, 746 de teste) e um README. Zero importadores
+fora do pacote, nenhum ADR, nenhuma linha da RTM, nenhum gate — verificado, não inferido.
+
+**O QUE SE PERDEU, E ESTÁ DECLARADO:** o teste de contrato tinha a **única prova executável de
+backend-swap do repositório** — o mesmo driver contra dois backends com asserções idênticas.
+Crash+retoma e divergência de replay continuam cobertos em `durable/`, `replay/`, `harness/`,
+`cmd/aos` e `platform/dr`; a **substituibilidade do backend** não. O critério de teste
+`EPIC-02:700` passa a dizer isso em vez de ficar silenciosamente vazio.
+
+**AC1 — os quatro `[x]` reavaliados, um a um.** 688, 689 e 704 voltam a `[ ]` com a razão
+escrita ao lado; **707 mantém-se**, porque é uma afirmação sobre documentação e a remoção não a
+falsifica — e `tecnica/02` §4.4 foi reescrito para registar a porta, a razão da remoção e o que
+se perdeu, em vez de a apagar.
+
+**AC2 — o teste de contrato foi DESCARTADO com razão escrita**, e não reaproveitado: prova a
+substituibilidade de uma porta que deixou de existir. Reaproveitá-lo exigiria uma porta nova
+para ele testar, que é a via que a decisão recusou.
+
+**O que a remoção NÃO desfaz:** o ADR-015 continua ratificado. A reversibilidade é uma
+propriedade do desenho — as peças assentam todas num só log — e é isso que distingue o contrato
+próprio de um engine externo. O que deixou de existir é a *demonstração em código*, não a
+decisão.
 
 ---
 

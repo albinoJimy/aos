@@ -12,9 +12,8 @@
 //
 // # Composição, não reimplementação
 //
-// Este módulo COMPÕE as peças já Done, um nível acima de
-// engine.NewOwnContractEngine — NÃO reimplementa restauro, replay, resume, verificação
-// ou idempotência:
+// Este módulo COMPÕE as peças já Done — NÃO reimplementa restauro, replay, resume,
+// verificação ou idempotência:
 //
 //   - [github.com/aos-ref/platform/backup] (AOS-101): Restorer.RestoreTo verifica o
 //     manifesto hash-chain e reinsere o log preservando o envelope até ao seq-alvo de

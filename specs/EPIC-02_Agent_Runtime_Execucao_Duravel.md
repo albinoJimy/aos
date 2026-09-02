@@ -685,8 +685,8 @@ Avaliar, através de um spike com provas de conceito comparáveis, se o AOS deve
 - [ ] Existe uma matriz de decisão comparando pelo menos Temporal, Restate, DBOS e o contrato próprio, sobre eixos: garantias de idempotência/replay, operação/HA, custo, lock-in, latência e ajuste ao Event Store replicado (ADR-007).
 - [ ] Cada opção tem uma PoC mínima que corre o mesmo cenário de referência (run multi-passo com crash e retoma) e reporta fidelidade de replay e efeitos duplicados.
 - [ ] A decisão é registada num ADR novo (contexto, decisão, consequências, alternativas) sem contradizer os ADRs canónicos, em particular ADR-001.
-- [x] O adaptador escolhido implementa o contrato de activity de AOS-021 e passa os testes de idempotência (AOS-014) e replay (AOS-016) sem alterações à API do RT.
-- [x] Se a decisão for "contrato próprio", o spike confirma que AOS-014/015/016/021 cobrem integralmente o contrato e documenta o gap, se houver.
+- [ ] O adaptador escolhido implementa o contrato de activity de AOS-021 e passa os testes de idempotência (AOS-014) e replay (AOS-016) sem alterações à API do RT. **REAVALIADO em AOS-296:** era verdadeiro do adaptador `OwnContractEngine`, que foi **removido** por não ter consumidor de produção. A segunda metade — «sem alterações à API do RT» — só se manteve verdadeira *porque* o RT nunca programou contra a porta; ligá-la exigiria mudar a assinatura de `ActivityDispatcher`, uma interface pública do kernel. Volta a `[ ]`: o que existe hoje é o despacho cablado individualmente, não um adaptador atrás de uma porta.
+- [ ] Se a decisão for "contrato próprio", o spike confirma que AOS-014/015/016/021 cobrem integralmente o contrato e documenta o gap, se houver. **REAVALIADO em AOS-296:** a composição que o demonstrava era o `OwnContractEngine`, removido. A cobertura das quatro peças continua a existir individualmente e testada nos respectivos pacotes; o que deixou de existir é a demonstração de que **compostas atrás de uma porta única** cobrem o contrato.
 
 ### Detalhes Técnicos
 - Componente: `RT` (camada de durabilidade). Ficheiros sugeridos: `runtime/durable/engine_adapter.*`, `docs/adr/ADR-0XX-durable-execution.md`.
@@ -697,14 +697,14 @@ Avaliar, através de um spike com provas de conceito comparáveis, se o AOS deve
 ### Testes Requeridos
 - PoC comparável: cenário de referência corre em cada opção; métricas de replay e duplicação recolhidas.
 - Contrato: o adaptador escolhido passa a suíte de idempotência e replay (harness de AOS-024).
-- Isolamento: trocar o backend não altera a API do RT (teste de contrato).
+- Isolamento: trocar o backend não altera a API do RT (teste de contrato). **SEM TESTE desde AOS-296:** era o `engine_contract_test.go`, a única prova executável de backend-swap do repositório, removido com a porta. Fica declarado em vez de silenciosamente vazio — nenhum outro teste troca o backend de execução durável.
 
 ### Definition of Done
 - [ ] Matriz de decisão e PoCs entregues; ADR novo escrito e ratificado (assinado).
-- [x] Adaptador do backend escolhido implementado e a passar idempotência + replay.
+- [ ] Adaptador do backend escolhido implementado e a passar idempotência + replay. **REAVALIADO em AOS-296:** o adaptador foi removido; não há adaptador de backend a passar coisa nenhuma. Idempotência e replay continuam provados nos pacotes próprios (`durable/`, `replay/`, `harness/`), fora de qualquer porta.
 - [ ] Sem contradição com ADR-001/007; lock-in avaliado e documentado.
 - [ ] Código revisto (dois revisores — decisão de arquitectura); testes verdes.
-- [x] `tecnica/02` e `specs/00_System_Spec.md` actualizados com a decisão.
+- [x] `tecnica/02` e `specs/00_System_Spec.md` actualizados com a decisão. **MANTÉM-SE:** é uma afirmação sobre documentação, e a remoção não a falsifica — `tecnica/02` §4.4 foi reescrito em AOS-296 para registar a porta, a razão da remoção e o que se perdeu.
 
 ### Handoff para Claude Code
 ```text

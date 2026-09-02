@@ -164,8 +164,8 @@ type Evidence struct {
 // Recoverer é o ORQUESTRADOR de DR: encadeia, como TRANSACÇÃO FAIL-CLOSED, o restauro
 // verificado do log, a verificação do WORM, a prova de fidelidade do replay e a retoma
 // idempotente resume-from-step, dentro da fronteira de soberania. NÃO reimplementa
-// nenhuma garantia — COMPÕE as peças Done (backup/audit/replay/worker/eventstore), um
-// nível acima de engine.NewOwnContractEngine. Qualquer falha aborta SEM tocar em
+// nenhuma garantia — COMPÕE as peças Done (backup/audit/replay/worker/eventstore).
+// Qualquer falha aborta SEM tocar em
 // produção (opera sempre sobre um Event Store de DR limpo e descartável).
 //
 // Sem estado mutável ⇒ seguro para uso concorrente.
