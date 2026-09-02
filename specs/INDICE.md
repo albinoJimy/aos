@@ -48,8 +48,9 @@ e fechar de forma independente.
 | **EPIC-18 Remediação Auditoria Multiagente v4** *(proposta)* | Epic | Remediação dos achados da auditoria v4: wiring/imposição/veracidade do composition-root do nó; §8-bis (deferimentos + STRIDE) | [EPIC-18_Remediacao_Auditoria_Multiagente_v4.md](EPIC-18_Remediacao_Auditoria_Multiagente_v4.md) | 1750 |
 | **EPIC-19 Planeador e Meta-Orchestração** *(proposta)* | Epic | Graduação do planeador (goal→DAG), meta-runs e gate como fronteira; deriva `tecnica/18` v1.0 (Ratificado) | [EPIC-19_Planeador_Meta_Orquestracao.md](EPIC-19_Planeador_Meta_Orquestracao.md) | 489 |
 | **EPIC-20 Prontidão Agêntica: remediação + custo governado + ADR-021/022** *(proposta)* | Epic | Remediação dos achados F1–F16 do relatório de prontidão, billing token-only ligado ao nó, implementação dos ADR-021/022 (assumidos aprovados) | [EPIC-20_Prontidao_Agentica_Remediacao.md](EPIC-20_Prontidao_Agentica_Remediacao.md) | ~600 |
+| **EPIC-21 Remediação dos defeitos da auditoria adversarial RT/RM** *(proposta)* | Epic | Os doze DEFEITOS (não as dívidas) apurados na auditoria adversarial do Plano de Execução; os quatro limites aceites foram para DEF-904..907 | [EPIC-21_Remediacao_Auditoria_RT_RM.md](EPIC-21_Remediacao_Auditoria_RT_RM.md) | ~380 |
 
-**Total: 22 ficheiros referenciados, ~12.900+ linhas. Backlog ratificado/aceite: EPIC-01..17 (AOS-001..189). Propostas por ratificar: EPIC-18 (AOS-190..225), EPIC-19 (AOS-230..244) e EPIC-20 (AOS-245..278).**
+**Total: 23 ficheiros referenciados, ~12.900+ linhas. Backlog ratificado/aceite: EPIC-01..17 (AOS-001..189). Propostas por ratificar: EPIC-18 (AOS-190..225), EPIC-19 (AOS-230..244) e EPIC-20 (AOS-245..278) e EPIC-21 (AOS-288..299).**
 
 ---
 
