@@ -691,6 +691,12 @@ type Node struct {
 	Verifier *identity.Verifier
 	// SteerAuth é o autenticador ed25519 do canal de controlo (só pubkeys).
 	SteerAuth *integration.Ed25519Authenticator
+	// Revocations é o registo de revogação de NHI que o [Verifier] consulta (AOS-288).
+	// Exposto no nó — e não só passado ao verifier — porque o plano de CONTROLO precisa
+	// dele: sem uma via alcançável para escrever aqui, ligar a consulta seria compor um
+	// mecanismo que ninguém consegue accionar. nil ⇒ revogação não composta, e o banner
+	// não pode anunciá-la.
+	Revocations *identity.Revocations
 	// Autonomy é a cablagem do oráculo de níveis (AOS-087/AOS-248). Exposta no nó — e não só
 	// na Config — porque o plano de CONTROLO precisa dela: sem isto, mudar um nível continuaria
 	// a exigir editar o `.env` e recriar o processo. nil ⇒ oráculo não composto.
@@ -1363,6 +1369,30 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.VerifierClock != nil {
 		verifierOpts = append(verifierOpts, identity.WithVerifierClock(cfg.VerifierClock))
 	}
+
+	// REVOGAÇÃO DE NHI, LIGADA (AOS-288). O passo de revogação do `Verify` vive dentro de
+	// `if v.revocations != nil`, e esse guarda era SEMPRE falso no nó: `WithRevocations` não
+	// tinha um único chamador de produção. Media-se um token com o `jti` revogado a ser
+	// aceite com `err=<nil>` e um `Principal` completo — enquanto o banner do nó anunciava
+	// «EdDSA + janela + revogacao + raiz humana». O mecanismo não estava partido; estava por
+	// ligar, e é aqui que se liga.
+	//
+	// COMPÕE-SE UMA VEZ E COBRE OS DOIS RAMOS. `verifierOpts` é consumido tanto pelo ramo
+	// endurecido (que lhe antepõe o trust anchor) como pelo de referência (via
+	// [integration.NewVerifierFromAuthority], que faz append por cima do anchor da
+	// autoridade). Acrescentar aqui evita a assimetria que seria ligar num e esquecer o
+	// outro — e essa assimetria seria invisível, porque os dois ramos passam nos mesmos
+	// testes.
+	//
+	// O REBUILD NÃO É OPCIONAL. A projecção é um mapa em memória; sem o repovoar do stream
+	// durável, um restart ressuscita todos os tokens revogados que ainda não expiraram, em
+	// silêncio. Falha do rebuild ABORTA o arranque: um nó que não sabe o que foi revogado
+	// não pode anunciar que verifica revogação.
+	revocations := identity.NewRevocations(es)
+	if err := revocations.Rebuild(ctx); err != nil {
+		return nil, fmt.Errorf("aos: reconstruir o registo de revogacao de NHI: %w", err)
+	}
+	verifierOpts = append(verifierOpts, identity.WithRevocations(revocations))
 	var authority *integration.IssuerAuthority
 	var verifier *identity.Verifier
 	var err error
@@ -2205,7 +2235,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range autonomyPostureBanner(cfg.Autonomy) {
 		log("%s", line)
 	}
-	for _, line := range modelPostureBanner(cfg.Model) {
+	// O predicado é HOJE sempre verdadeiro — a composição da revogação é incondicional desde
+	// AOS-288, e um `Rebuild` falhado aborta antes de chegar aqui. Passa-se na mesma, e não é
+	// cerimónia: enquanto a frase for DERIVADA, desligar a composição desliga a alegação no
+	// mesmo commit. Foi a literal fixa que deixou o banner a anunciar revogação durante todo o
+	// tempo em que ela não corria.
+	for _, line := range modelPostureBanner(cfg.Model, revocations != nil) {
 		log("%s", line)
 	}
 	// AOS-256/AOS-257: o argumento DERIVA do que foi REALMENTE composto — `runBudget` é o
@@ -2369,6 +2404,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
+		Revocations:      revocations,
 		Autonomy:         cfg.Autonomy,
 		EventStore:       es,
 		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este

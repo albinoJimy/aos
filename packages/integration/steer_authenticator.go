@@ -320,6 +320,29 @@ func CanonicalAutonomyPayload(agent, domain, level, reason string) []byte {
 	return out
 }
 
+// RevokeScope é o `runID` do tuplo assinado das revogações de NHI (AOS-288). Não há run: o
+// âmbito é fixo, e o `jti` alvo vive no PAYLOAD. É um valor DISTINTO de [AutonomyScope] de
+// propósito — se os dois partilhassem âmbito, uma assinatura de mudança de autonomia e uma de
+// revogação diferiam apenas pelo payload, e o `kind` deixaria de ser a segunda amarra.
+const RevokeScope = "nhi.revoke"
+
+// CanonicalRevokePayload é o payload assinado de uma revogação de token NHI.
+//
+// Length-prefixed pela mesma razão de [CanonicalAutonomyPayload]: sem isso, um `jti` e um
+// `reason` podiam deslizar a fronteira entre si e produzir o mesmo tuplo para uma revogação
+// logicamente diferente.
+//
+// O MOTIVO entra no payload e não é decorativo. Revogar um token é uma acção de governação
+// irreversível dentro da janela de vida dele; o que fica selado tem de ser o motivo que foi
+// ASSINADO, não um que se acrescente depois de a assinatura estar feita.
+func CanonicalRevokePayload(jti, reason string) []byte {
+	out := make([]byte, 0, 32+len(jti)+len(reason))
+	out = appendLenPrefixed(out, []byte("aos.nhi.revoke/v1"))
+	out = appendLenPrefixed(out, []byte(jti))
+	out = appendLenPrefixed(out, []byte(reason))
+	return out
+}
+
 // SignEmitter produz um [control.Emitter] assinado para (runID, kind, payload).
 //
 // Existe para que quem emite um sinal de controlo NÃO reimplemente o tuplo canónico. Duas

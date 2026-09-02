@@ -227,6 +227,12 @@ func (h *apiHandler) tabelaDeRotas() []rota {
 		// ratificador vem no corpo e é o gate de PRODUÇÃO (freshness + nonce-store durável
 		// forçados) que a verifica contra a pubkey PINADA. Ver promotion_api.go.
 		{"POST /promote", h.handlePromote, planoControlo},
+		// REVOGAÇÃO DE NHI (AOS-288) — a via alcançável que faltava para o registo que o
+		// `identity.Verifier` consulta. É de NÓ, não por-run: o alvo é um `jti`. MESMA
+		// admissão e MESMA disciplina non-signing do /autonomy e do /promote — a assinatura
+		// ed25519 do operador vem no corpo, produzida por `aos-issuer revoke-sign`, e a chave
+		// privada nunca entra neste processo. Ver revoke_route.go.
+		{"POST /nhi/revoke", h.handleRevoke, planoControlo},
 
 		// Plano de GOVERNANÇA — DSAR / crypto-shredding (AOS-172, Art. 17). Autenticado pela
 		// credencial FORTE do gate soberano (readGov) no corpo + admission do plano de controlo;

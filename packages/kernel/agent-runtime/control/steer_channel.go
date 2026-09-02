@@ -36,6 +36,18 @@ const (
 	// alvo concreto vai no PAYLOAD — é o que faz uma assinatura capturada não servir para
 	// outro par nem para outro nível.
 	SignalAutonomy SignalKind = "autonomy"
+
+	// SignalRevoke é a REVOGAÇÃO de um token NHI pelo seu `jti` (AOS-288). Como o
+	// [SignalAutonomy], não pertence a um run — o `runID` do tuplo assinado é o âmbito fixo
+	// "nhi.revoke" e o `jti` alvo vai no PAYLOAD, para que uma assinatura capturada não
+	// sirva para revogar outro token.
+	//
+	// NÃO atravessa o [SteerChannel]: a revogação é um facto de IDENTIDADE, não de controlo
+	// de um run, e vive no registo consultado por `identity.Verifier.Verify`. O que traz
+	// deste pacote é só o vocabulário do tuplo assinado, que é o que o
+	// `integration.Ed25519Authenticator` exige e o que impede reutilizar a assinatura de um
+	// pause como se fosse de uma revogação.
+	SignalRevoke SignalKind = "nhi.revoke"
 )
 
 // Tipos canónicos dos eventos append-only do canal de controlo no Event Store. Cada

@@ -50,6 +50,8 @@ uso:
   aos-issuer ratify-sign  --artifact-id <id> --version <semver> --content-hash <b64> --ratifier <id> --key-file <ficheiro> [--canary-passed] [--eval-*]
   aos-issuer delegation-nonce --agent <id> --class <c> --caps <c1,c2> [--ttl 15m]
   aos-issuer autonomy-sign --emitter <id> --key-file <ficheiro> --agent <id> --domain <d> --level <L0..L5> [--reason <texto>]
+  aos-issuer revoke-sign   --emitter <id> --key-file <ficheiro> --jti <jti> --reason <texto>
+                          → imprime o corpo JSON de POST /nhi/revoke (AOS-288)
   aos-issuer worm-seal --worm <ficheiro> --key-file <ficheiro> [--partition <p>] [--anterior <ficheiro>] [--heads]
                           → imprime o corpo JSON de POST /promote (AOS-275)`
 
@@ -77,6 +79,8 @@ func run(args []string, out io.Writer) error {
 		return cmdDelegationNonce(args[1:], out)
 	case "autonomy-sign":
 		return runAutonomySign(args[1:], out)
+	case "revoke-sign":
+		return runRevokeSign(args[1:], out)
 	case "worm-seal":
 		return runWormSeal(args[1:], out)
 	default:

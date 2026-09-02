@@ -286,7 +286,13 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	// allowlist de egress por deployment) são AOS-156 — gated por D4, fora deste ticket.
 	verifier := cfg.Verifier
 	if verifier == nil {
-		verifier = identity.NewVerifier() // sem trust anchors ⇒ nega toda a NHI
+		// Sem trust anchors ⇒ nega TODA a NHI, e é por isso que este é o único dos três
+		// sítios de composição de verifier que NÃO recebe `identity.WithRevocations`
+		// (AOS-288). A revogação decide DEPOIS da assinatura; aqui nenhum token chega lá,
+		// porque nenhum tem emissor reconhecido. Compor um registo próprio seria pior do
+		// que inerte: seria um SEGUNDO conjunto de revogações, desligado daquele que o nó
+		// alimenta pela rota, a dar a impressão de cobertura que não existe.
+		verifier = identity.NewVerifier()
 	}
 	policyDP := cfg.PDP
 	if policyDP == nil {

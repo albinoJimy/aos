@@ -42,6 +42,13 @@ var (
 	// de revogação falhou (fail-closed: revogação indisponível ⇒ negação).
 	ErrTokenRevoked = &IdentityError{Code: "E_TOKEN_REVOKED", msg: "token revogado ou revogacao indisponivel"}
 
+	// ErrRevocationsNotDurable — [Revocations.Rebuild] foi chamado num registo construído
+	// SEM Event Store. Devolve-se erro em vez de um conjunto vazio porque os dois são
+	// indistinguíveis para o chamador e significam coisas opostas: «nada foi revogado» e
+	// «não sei o que foi revogado». Quem compõe a revogação tem de saber qual dos dois tem
+	// antes de o verifier começar a servir (AOS-288).
+	ErrRevocationsNotDurable = &IdentityError{Code: "E_REVOCATIONS_NOT_DURABLE", msg: "registo de revogacao sem Event Store: nao ha de onde reconstruir, e a projeccao nao sobrevive a um restart"}
+
 	// ErrOutOfScope — a capability pedida no Call não está no escopo do token
 	// (fora de escopo). Imposta pelo hook IdentityCheck na fronteira do RM.
 	ErrOutOfScope = &IdentityError{Code: "E_OUT_OF_SCOPE", msg: "capability fora do escopo da NHI"}

@@ -193,6 +193,14 @@ func TestClassificacaoDasRotasEDeliberada(t *testing.T) {
 		"GET /autonomy":              planoControlo,
 		"POST /autonomy/simular":     planoControlo,
 		"POST /promote":              planoControlo,
+		// REVOGAÇÃO DE NHI (AOS-288). Plano de CONTROLO, e a decisão é deliberada: revogar um
+		// token é uma acção de governação irreversível dentro da janela de vida dele, com a
+		// mesma forma das outras — alvo de NÓ (um `jti`, não um run), assinatura ed25519 do
+		// operador no corpo produzida fora do processo, nonce durável de uso único, e selo na
+		// hash-chain. Não é planoGovernacao porque não se autentica pela credencial forte do
+		// gate soberano: autentica-se pelos operadores pinados em AOS_OPERATORS, como o
+		// /autonomy e o /promote. Não é planoAberto por razões que não precisam de escrita.
+		"POST /nhi/revoke": planoControlo,
 
 		// DECISÃO EM ABERTO, escrita em vez de omitida: o DSAR autentica-se pela credencial forte
 		// do gate soberano (readGov) mas NÃO exige certificado de cliente. É a única superfície de

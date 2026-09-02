@@ -17,13 +17,23 @@
 //     Event Store (só metadados — nunca o token bearer nem a assinatura).
 //
 //   - [Verifier] valida o token: assinatura (contra a chave pública do emissor —
-//     o trust anchor), janela temporal (nbf/exp, com relógio injectável) e
-//     revogação. Rejeita fail-closed assinatura inválida, alg/none confusion,
-//     token expirado, ainda-não-válido, emissor desconhecido e revogado. Em
-//     sucesso resolve um [Principal].
+//     o trust anchor), janela temporal (nbf/exp, com relógio injectável) e —
+//     QUANDO composta com [WithRevocations] — revogação. Rejeita fail-closed
+//     assinatura inválida, alg/none confusion, token expirado, ainda-não-válido,
+//     emissor desconhecido e revogado. Em sucesso resolve um [Principal].
+//
+//     A RESSALVA «quando composta» não é rodapé (AOS-288). O passo de revogação
+//     vive sob `if v.revocations != nil`, e durante todo o tempo em que nenhum
+//     caminho de produção passou [WithRevocations] esta lista dizia «e revogação»
+//     sobre um verifier que aceitava tokens revogados com `err=<nil>`. Uma lista
+//     de garantias que não distingue as que dependem de composição treina quem a
+//     lê a confiar numa protecção que pode não estar ligada.
 //
 //   - [Revocations] mantém o conjunto de jti revogados e grava identity.nhi.revoked
 //     no Event Store. O TTL curto minimiza a janela entre revogação e expiração.
+//     O conjunto é uma projecção EM MEMÓRIA: [Revocations.Rebuild] repovoa-o do
+//     stream durável e TEM de correr no arranque, senão um restart ressuscita todos
+//     os tokens revogados que ainda não expiraram.
 //
 // A integração com o Reference Monitor (AOS-003) é o hook [IdentityCheck], que
 // ocupa o ponto de injecção "identity": lê o token do Call, verifica-o, resolve
