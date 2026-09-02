@@ -796,8 +796,38 @@ predicado de AOS-300: «produção exige substrato durável».
 
 ### Estado
 
-**POR INICIAR.** P3. Documentação e uma decisão partilhada com AOS-300; nenhuma correcção de
-comportamento é obrigatória se a decisão for declarar em vez de exigir.
+**FECHADO — A PREMISSA NÃO SOBREVIVEU À VERIFICAÇÃO, e a premissa era minha.** P3. Nenhuma
+alteração de código foi precisa, e é esse o resultado.
+
+**O ESTADO QUE O TICKET DESCREVE NÃO É ALCANÇÁVEL PELO CAMINHO DE DEPLOYMENT.** O
+`StepLedger` só é composto dentro de `if cfg.DurableExecution` (`bootstrap.go:1291`), e o
+`Bootstrap` **recusa** execução durável sem substrato durável — `ErrDurableExecutionNeedsDurableSubstrate`
+(`bootstrap.go:993`), fail-closed **sempre**, não só em produção, e imposto nas duas fronteiras
+(ambiente e composition-root, com testes próprios em `durable_execution_env_test.go`). Logo: sem
+substrato durável não há ledger, e sem ledger não há poda. Não existe o nó que este ticket
+descreve.
+
+**O QUE FICA, E É MUITO MAIS ESTREITO:** um *embedder* que injecte `Config.EventStore` in-memory
+com `DurableExecution`. A guarda isenta-o **de propósito** — «um EventStore fornecido por config é
+do chamador; a sua durabilidade não é atestável aqui» — e o banner **declara-o**
+(`bootstrap.go:2230`), nomeando o ledger. É uma fronteira de embedding assumida, não uma
+degradação silenciosa.
+
+**AC1 — não se aplica:** não partilha o predicado de AOS-300, ao contrário do que escrevi ao abrir
+o ticket. AOS-300 é real porque a revogação é composta **independentemente** da execução durável;
+a poda não, porque vive dentro dela.
+
+**AC2 — já estava cumprida** antes de o ticket existir: o doc-comment de `StepLedger.ForgetRun`
+declara o alcance sobre substrato não-durável desde AOS-290, na secção «ALCANCE SOBRE SUBSTRATO
+NÃO-DURÁVEL».
+
+**AC3 — não se escreve:** o cenário «poda + restart + retoma sobre substrato não-durável» não é
+encenável pelo caminho de deployment, e sobre um store injectado in-memory a asserção seria
+tautológica (o que não sobrevive a um restart de processo é, por definição, a memória do
+processo).
+
+Fica registado como o §1 aplicado a mim: abri este ticket a partir do comportamento do ledger sem
+verificar se a configuração que o torna perigoso é sequer construível. Não era.
 
 ---
 
