@@ -762,6 +762,45 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		s.mu.Unlock()
 		return
 	}
+	// AOS-293: e a projecção do CANAL DE CONTROLO, pela mesma razão e no mesmo instante.
+	//
+	// O log de controlo é durável — `control.pause`, `control.steer`, `control.resume` e
+	// `control.correction_consumed` são todos escritos — mas `SteerChannel.Rebuild` não tinha
+	// um único chamador de produção. Depois de um reinício, `c.runs` está vazio e o
+	// `control/doc.go` prometia o contrário: «um crash em paused → um worker novo relê o log e
+	// recupera a correcção INTACTA».
+	//
+	// POR HOSPEDAGEM, E NÃO NO ARRANQUE, apesar de a AC do ticket dizer «no arranque». Três
+	// razões, todas verificadas: (a) a varredura de arranque SALTA deliberadamente os runs
+	// `paused` (crash_resume.go trata só `state.Running`), pelo que um rebuild no arranque não
+	// tocaria no caso que interessa; (b) o padrão do repositório é este — o `RebuildLedger`
+	// acima, a `state.Machine` no `Open` abaixo, e o `RunToolSets.Rebuild`, que foi fechado
+	// exactamente assim depois de ter estado sem chamador; (c) um rebuild global no arranque
+	// exigiria reler todos os streams por inteiro DUAS vezes, e não cobriria os runs
+	// hospedados depois.
+	//
+	// TEM DE SER ANTES do `resumeIfWaiting` (abaixo): desde AOS-292, retomar uma pausa passa
+	// por `SteerChannel.Resume`, que RECUSA quando não há pausa pendente na projecção. Com a
+	// projecção vazia após restart, um run pausado deixava de se conseguir retomar de todo —
+	// e isso é uma regressão que AOS-292 introduziu e que este ticket fecha.
+	//
+	// FAIL-CLOSED como os vizinhos: um log de controlo corrupto não deixa o run correr com uma
+	// projecção que não representa o que foi decidido.
+	//
+	// CUSTO, declarado porque não é óbvio: o `Rebuild` relê o stream INTEIRO do run e filtra os
+	// quatro tipos `control.*` em memória — o store não filtra por tipo. Com o `RebuildLedger`
+	// logo acima a fazer a sua própria leitura completa, são DUAS passagens sobre todos os
+	// eventos do run a cada hospedagem, e o custo cresce com a idade do run. É aceitável porque
+	// uma hospedagem é rara (arranque de run ou retoma), mas quem investigar uma retoma lenta
+	// num run antigo tem de encontrar isto escrito, e não a descobri-lo com um profiler.
+	if s.node.Steer != nil {
+		if err := s.node.Steer.Rebuild(ctx, rs.runID); err != nil {
+			s.mu.Lock()
+			rs.err = fmt.Errorf("aos: rebuild da projeccao do canal de controlo do run %q (AOS-293): %w", rs.runID, err)
+			s.mu.Unlock()
+			return
+		}
+	}
 	// AOS-290: e à SAÍDA da hospedagem, larga-se o que se acabou de repor. O mapa do ledger é
 	// PARTILHADO por todos os runs do nó e nunca era podado — crescia linearmente com
 	// Σ(runs × passos), sem patamar, num processo de vida longa.

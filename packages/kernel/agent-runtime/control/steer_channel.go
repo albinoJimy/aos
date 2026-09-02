@@ -507,9 +507,28 @@ func (c *SteerChannel) Rebuild(ctx context.Context, runID string) error {
 		c.apply(rc, rec)
 	}
 
+	// INSTALAÇÃO CONDICIONAL (AOS-293). A leitura acima corre FORA de `c.mu` — de propósito,
+	// porque é I/O e prendê-lo durante I/O é o defeito que AOS-291 removeu do disjuntor. Mas
+	// isso abre uma janela: um sinal aceite entre o `Read` e esta instalação ficaria de fora
+	// da projecção substituída, com o evento durável no log e a memória atrasada. Pior, o
+	// `nControls` ficaria abaixo do real e o `appendControl` seguinte reutilizaria um `ctrl-N`
+	// já usado — o ES devolveria StatusDuplicate e a reconciliação daria
+	// [ErrControlLogDivergence], derrubando um sinal legítimo.
+	//
+	// A janela existia antes, e era inalcançável: `Rebuild` não tinha chamador de produção.
+	// AOS-293 passou a chamá-lo em cada hospedagem, e com isso tornou-a real.
+	//
+	// Fecha-se comparando, sob o lock, o que se leu com o que a memória entretanto viu. Se a
+	// memória está À FRENTE do que o `Read` alcançou, NÃO se substitui: a projecção corrente
+	// já dobra tudo o que estaria no log mais o sinal novo, e mantê-la é estritamente melhor
+	// do que instalar uma versão que perdeu um sinal. Devolve-se nil — reconstruir sobre uma
+	// projecção que já está em dia é um no-op legítimo, não um erro.
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if actual, existe := c.runs[runID]; existe && actual.nControls > rc.nControls {
+		return nil
+	}
 	c.runs[runID] = rc
-	c.mu.Unlock()
 	return nil
 }
 

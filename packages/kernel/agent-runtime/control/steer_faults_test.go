@@ -454,3 +454,63 @@ func TestConcurrent_SignalsAndReads(t *testing.T) {
 		t.Fatal("pausa pendente in-memory diverge da reconstruída")
 	}
 }
+
+// leituraTruncada devolve o stream SEM o último evento — simula a janela em que o `Rebuild`
+// lê, e um sinal é aceite antes de a projecção ser instalada.
+type leituraTruncada struct {
+	*eventstore.Store
+	truncar bool
+}
+
+func (s *leituraTruncada) Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error) {
+	evs, err := s.Store.Read(ctx, streamID, fromSeq)
+	if err != nil || !s.truncar || len(evs) == 0 {
+		return evs, err
+	}
+	return evs[:len(evs)-1], nil
+}
+
+// TestAOS293_RebuildNaoRegridiUmaProjeccaoMaisAVANCADA fixa a guarda que AOS-293 acrescentou.
+//
+// O `Rebuild` lê o stream FORA do lock — de propósito, porque prender um mutex durante I/O é o
+// defeito que AOS-291 removeu do disjuntor. Isso abre uma janela: um sinal aceite entre a
+// leitura e a instalação ficaria de fora da projecção substituída, com o evento durável no log
+// e a memória atrasada.
+//
+// A janela existia antes e era inalcançável — `Rebuild` não tinha chamador de produção. AOS-293
+// passou a chamá-lo em cada hospedagem e tornou-a real, por isso a guarda entra com ele.
+func TestAOS293_RebuildNaoRegridiUmaProjeccaoMaisAVANCADA(t *testing.T) {
+	ctx := context.Background()
+	const runID = "run-rebuild-corrida"
+	a := authWith(t)
+	st := newStore(t)
+	truncado := &leituraTruncada{Store: st}
+	ch, err := control.NewChannel(truncado, a)
+	if err != nil {
+		t.Fatalf("NewChannel: %v", err)
+	}
+
+	// Dois sinais reais: a projecção em memória fica com nControls == 2.
+	if err := ch.Pause(ctx, runID, signed(t, a, runID, control.SignalPause, nil)); err != nil {
+		t.Fatal(err)
+	}
+	corr := []byte("correccao a preservar")
+	if err := ch.Steer(ctx, runID, corr, signed(t, a, runID, control.SignalSteer, corr)); err != nil {
+		t.Fatal(err)
+	}
+
+	// O Rebuild vê o stream SEM o último evento — exactamente o que uma corrida produz.
+	truncado.truncar = true
+	if err := ch.Rebuild(ctx, runID); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	// A projecção NÃO pode ter regredido: o steer continua lá.
+	got, ok := ch.PendingCorrection(runID)
+	if !ok || string(got) != string(corr) {
+		t.Fatalf("o Rebuild instalou uma projeccao ATRASADA e perdeu o sinal concorrente; PendingCorrection=(%q,%v)", got, ok)
+	}
+	if !ch.PendingPause(runID) {
+		t.Fatal("a pausa tambem se perdeu")
+	}
+}
