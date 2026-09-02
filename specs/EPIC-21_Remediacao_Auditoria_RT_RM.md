@@ -51,7 +51,7 @@ oficializar a afirmação falsa.
 | AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 | por iniciar |
 | AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | **implementado** (AC2 re-fundamentada) |
 | AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 | **implementado** `5100a48` (AC2 em parte) |
-| AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | por iniciar |
+| AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | **implementado** (AC2 e AC4 por fechar) |
 | AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | por iniciar |
 | AOS-294 | A tabela de `neutralizarDelimitadores` contradiz a função que ilustra | P3 | **implementado** `76d3692` |
 | AOS-295 | `activity/doc.go` declara o deferimento sem a ressalva de modo | P3 | **implementado** `4bbd367` |
@@ -342,7 +342,36 @@ Nota de âmbito: o canal em si funciona. Este ticket é de integração, não do
 
 ### Estado
 
-**POR INICIAR.** P1.
+**IMPLEMENTADO** em `63decf5` (canal) e `d169198` (nó); **duas ACs por fechar**. P1. As âncoras
+do Contexto acima são as do código ANTES da correcção.
+
+**Decisões do dono:** (a) a retoma de um run PAUSADO exige emissor assinado de operador — quebra
+de API deliberada, e fecha a assimetria de o `/pause` exigir operador e o `/resume` não exigir
+ninguém; (b) o `ControlSurface` a remover; (c) a bifurcação da correcção resolvida por
+**separar limpar-a-pausa de consumir-a-correcção**, em vez de re-injectar ou emendar a AC2.
+
+**A BIFURCAÇÃO QUE O TICKET NÃO PREVIA.** A AC1 manda passar pelo canal e a AC2 exige a
+correcção no `PromptView`; encadeadas, eram incompatíveis. O `Resume` consumia a correcção, e o
+loop só a lê DEPOIS de a pausa levantar — pelo que a retoma pelo canal deixava o loop sem nada
+para injectar. Separar custou três peças: um sinal durável novo
+(`control.correction_consumed`), a porta `SteerSource.PendingCorrection` a ganhar `ctx` (a
+consumação tem de acontecer no ponto da entrega), e o wiring do nó.
+
+**POR FECHAR:**
+
+1. **AC2 — o teste por HTTP ponta-a-ponta não existe.** Razão de fixture, já reconhecida neste
+   repositório (`aos263_decisao_simetrica_test.go`): os runs destas fixtures nunca correram um
+   turno a sério, não têm capturas, e a retoma falha no plano de replay. Nenhum teste do repo
+   consegue hoje uma retoma HTTP bem-sucedida. Os testes entregues entram por
+   `retomarPausaPeloCanal` e provam a decisão e o efeito no canal; a lacuna está declarada no
+   cabeçalho do ficheiro. Fechar exige uma fixture que corra um turno real antes de pausar.
+2. **AC4 — o `ControlSurface` não foi removido.** `NewControlSurface` e `Dispatch` não têm
+   consumidor externo, mas o pacote tem `NewStateProjector`, usado por `cmd/aos-demo`, e apagar
+   o `surface.go` mexe em ~1100 linhas de testes do próprio pacote.
+
+**E TORNA O AOS-293 URGENTE:** a retoma normal passa agora pelo canal e a pós-crash não, porque
+a projecção volta vazia. O epic avisou que fechá-los em ordem trocada deixaria os dois caminhos
+inconsistentes — a inconsistência existe a partir daqui.
 
 ---
 
