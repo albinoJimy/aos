@@ -702,9 +702,10 @@ func nodeConfigFromEnv() (Config, error) {
 	// real diferente do anunciado, descoberto no dia do restauro.
 	//
 	// ISTO NÃO LIGA O BACKUP. O interruptor é [Config.BackupDestination], que é uma PORTA
-	// injectada e não tem superfície de ambiente — ver a nota nesse campo: não há hoje backend
-	// DURÁVEL para `backup.ImmutableStore` e o nó recusa-se a inventar um. Definir só esta
-	// variável configura a cadência de um exportador que continua por compor.
+	// injectada e não tem superfície de ambiente — ver a nota nesse campo. Um destino durável já é
+	// utilizável (o exportador retoma a cadeia), mas este repositório não traz nenhuma
+	// implementação durável da porta, e o nó não inventa uma. Definir só esta variável configura a
+	// cadência de um exportador que continua por compor.
 	backupPeriodicity, err := backupExportIntervalFromEnv()
 	if err != nil {
 		return Config{}, err
