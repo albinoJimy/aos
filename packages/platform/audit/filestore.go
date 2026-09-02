@@ -46,17 +46,22 @@ type FileStore struct {
 	mu    sync.RWMutex
 	parts map[string][]AuditRecord
 
-	wmu    sync.Mutex // serializa os writes ao ficheiro único
-	f      *os.File
-	w      *bufio.Writer
-	closed bool
+	wmu sync.Mutex // serializa os writes ao ficheiro único
+
+	// posse arbitra a EXCLUSIVIDADE de escrita por partição entre PROCESSOS — o que o
+	// mutex acima não faz. nil mantém o comportamento anterior. Ver posse.go.
+	posse   PosseDeParticao
+	recusas recusasDePosse
+	f       *os.File
+	w       *bufio.Writer
+	closed  bool
 }
 
 // OpenFileStore cria OU reabre um WORM durável respaldado pelo WAL em path. No
 // arranque faz replay do ficheiro (crash-safe), reconstruindo as cadeias por
 // partição na ordem de escrita, e reabre o ficheiro em append (truncando um tail
 // parcial). Um path inexistente cria um WORM durável novo. Chame Close para fechar.
-func OpenFileStore(path string) (*FileStore, error) {
+func OpenFileStore(path string, opts ...FileStoreOption) (*FileStore, error) {
 	recs, validEnd, err := replayAuditWAL(path)
 	if err != nil {
 		return nil, fmt.Errorf("audit: replay do WAL %q: %w", path, err)
@@ -80,6 +85,11 @@ func OpenFileStore(path string) (*FileStore, error) {
 		f:     f,
 		w:     bufio.NewWriter(f),
 	}
+	// Opções aplicadas ANTES do replay: uma porta de posse armada aqui já vale para
+	// qualquer escrita que o chamador faça a seguir.
+	for _, o := range opts {
+		o(s)
+	}
 	// Reconstrói as cadeias por partição na ordem de escrita (a ordem no ficheiro é a
 	// ordem de Append, que dentro de cada partição é a ordem de audit_seq).
 	for _, rec := range recs {
@@ -97,6 +107,12 @@ func OpenFileStore(path string) (*FileStore, error) {
 	for _, part := range sortedPartitions(s.parts) {
 		if err := verifyReplayedChain(part, s.parts[part]); err != nil {
 			_ = f.Close()
+			// O INVÓLUCRO TAMBÉM TEM DE DIZER A VERDADE. Classificar a causa lá dentro e
+			// embrulhá-la em «hash-chain adulterada» não corrigiria a leitura de ninguém:
+			// é esta a primeira linha que o operador vê quando o nó se recusa a arrancar.
+			if errors.Is(err, ErrChainForked) {
+				return nil, fmt.Errorf("audit: hash-chain BIFURCADA no WAL %q (dois escritores na mesma particao, nao adulteracao — ver AOS-284): %w", path, err)
+			}
 			return nil, fmt.Errorf("audit: hash-chain adulterada no WAL %q: %w", path, err)
 		}
 	}
@@ -132,7 +148,14 @@ func (s *FileStore) Partitions() []string {
 //
 // A prova está em filestore_concurrency_test.go (-race). O wmu de [persist] é uma segunda
 // linha defensiva para o ficheiro; o dono da ORDENAÇÃO da cadeia é este s.mu.
-func (s *FileStore) Append(_ context.Context, rec AuditRecord) (AuditRecord, error) {
+func (s *FileStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, error) {
+	// POSSE ANTES DE TUDO (AC1/AC3 do AOS-284). Fora do s.mu de propósito: a porta pode ir
+	// à rede, e serializar todas as escritas atrás de uma chamada remota trocaria um
+	// defeito de correcção por um de desempenho. A recusa acontece ANTES de haver efeito:
+	// nada selado, nada persistido, audit_seq não consumido.
+	if err := s.autorizadoAEscrever(ctx, rec.Partition); err != nil {
+		return AuditRecord{}, err
+	}
 	s.mu.Lock()
 	part := s.parts[rec.Partition]
 	var prev []byte
