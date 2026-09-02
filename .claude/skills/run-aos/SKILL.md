@@ -152,9 +152,17 @@ bash scripts/ci/test.sh         # gate 3: unit suites -race + coverage → cover
 `scripts/ci/run.sh` chains all of those plus `sast.sh` / `sca.sh`, which `go install`
 `gosec` and `govulncheck` on first use — it needs network and was not exercised here.
 
-`scripts/ci/rtm-regenerate.py` and `ref-lint.py` need `python3`, which is **not
-installed here** (`python3` resolves to the Microsoft Store stub). Skip `make ci-rtm` /
-`make ci-ref-lint` locally.
+The nine Python-backed gates (`deferrals`, `event-catalog`, `integration`, `ref-lint`,
+`rtm`, `sbom`, `selftest`, `sign`, `verify-attestation`) run fine even though bare
+`python3` on this machine resolves to the Microsoft Store stub: `ensure_python` in
+`scripts/ci/lib.sh` provisions a shim into `.tools/` that delegates to the `python` on
+PATH, and prepends it. Call them through their `.sh` wrapper, never the `.py` directly:
+
+```bash
+bash scripts/ci/deferrals.sh   # deferral markers ↔ registry, axis must cite a real AOS-NNN
+bash scripts/ci/ref-lint.sh    # AOS/ADR cross-references resolve
+bash scripts/ci/rtm.sh         # RTM in sync with the corpus
+```
 
 ## Run (human path)
 
@@ -233,6 +241,6 @@ subsystem is off and which env var turns it on. `Ctrl-C` drains and exits.
 | `{"error":"oraculo de autonomia nao composto (AOS_AUTONOMY_LEVELS ausente no arranque)"}` | `AOS_AUTONOMY_LEVELS` was set but `AOS_POLICY_BUNDLE_DIR` was not. Both, or neither. |
 | `aos-issuer: o ficheiro da seed esta em UTF-16` | The seed was written by PowerShell `>`/`Out-File`. Rewrite it as UTF-8 no-BOM. |
 | `make: command not found` | Not on PATH in Git Bash. Use `bash scripts/ci/<gate>.sh`. |
-| `python3` opens the Microsoft Store | Python isn't installed. `ci-rtm` and `ci-ref-lint` can't run locally. |
+| `python3` opens the Microsoft Store | Only when you call `python3` (or a gate's `.py`) **directly**. The `.sh` wrappers work: `ensure_python` provisions a shim into `.tools/` that delegates to the `python` on PATH. Run `bash scripts/ci/<gate>.sh`, not `python3 scripts/ci/<gate>.py`. |
 | `ERROR: The process "aos.exe" not found` from a manual `taskkill` | The driver builds with `go build -o .../aos`, so the Windows image name is **`aos`**, not `aos.exe`. Check with `tasklist \| grep -i aos`; `driver.sh down` kills both names. |
 | A second `aos-orq serve --wal <f> --run <id>` exits **3** with `run já tem um lease válido detido` | Working as designed — the first instance holds the lease. Exit 4 = lease superseded/expired, 5 = the WAL is held by another *writer*. The file Event Store does not arbitrate between processes (sequential ownership, DEF-282). |

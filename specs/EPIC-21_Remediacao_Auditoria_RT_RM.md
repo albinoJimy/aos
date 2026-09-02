@@ -39,20 +39,42 @@ oficializar a afirmação falsa.
 
 ### 0.2 Tabela-resumo
 
-| Ticket | Defeito | P |
+| Ticket | Defeito | P | Estado |
+|---|---|---|---|
+| AOS-288 | A verificação de revogação de tokens NHI nunca corre, e o banner do nó anuncia que corre | P0 | por iniciar |
+| AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 | por iniciar |
+| AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | por iniciar |
+| AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 | **implementado** `5100a48` (AC2 em parte) |
+| AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | por iniciar |
+| AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | por iniciar |
+| AOS-294 | A tabela de `neutralizarDelimitadores` contradiz a função que ilustra | P3 | **implementado** `76d3692` |
+| AOS-295 | `activity/doc.go` declara o deferimento sem a ressalva de modo | P3 | **implementado** `4bbd367` |
+| AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 | por iniciar |
+| AOS-297 | `WithLeaseHeartbeat` aceita um intervalo superior ao TTL sem validar | P3 | **implementado** `db215f5` |
+| AOS-298 | Uma divergência de replay por eviction sairia inatribuível | P2 | por iniciar |
+| AOS-299 | A AC «escritas no Event Store carregam o fencing token» está por cumprir | P2 | por iniciar |
+
+### 0.3 As citações deste epic foram verificadas contra o código
+
+Ao entrar na implementação, cada `file:line` citado foi aberto. **Seis** afirmações não
+resistiram e estão corrigidas no corpo, marcadas onde ocorrem:
+
+| Ticket | O que estava escrito | O que é |
 |---|---|---|
-| AOS-288 | A verificação de revogação de tokens NHI nunca corre, e o banner do nó anuncia que corre | P0 |
-| AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 |
-| AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 |
-| AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 |
-| AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 |
-| AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 |
-| AOS-294 | A tabela de `neutralizarDelimitadores` contradiz a função que ilustra | P3 |
-| AOS-295 | `activity/doc.go` declara o deferimento sem a ressalva de modo | P3 |
-| AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 |
-| AOS-297 | `WithLeaseHeartbeat` aceita um intervalo superior ao TTL sem validar | P3 |
-| AOS-298 | Uma divergência de replay por eviction sairia inatribuível | P2 |
-| AOS-299 | A AC «escritas no Event Store carregam o fencing token» está por cumprir | P2 |
+| AOS-288 | ramos do verifier em `bootstrap.go:1380` e `:1417` | `:1374` e `:1410` — e há um **terceiro** sítio, `integration/secured.go:289` |
+| AOS-289 | iteração do motor em `replay/engine.go:487-491` | `:508`; o fallback do dispatcher é `replay_source.go:82-84` e o comentário falso `:78-79` |
+| AOS-292 | AC pede selar `control.resume` «a par de pause e steer» | o selo **já existe** e é o mesmo `appendControl`; falta um chamador de produção |
+| AOS-296 | «os **únicos** `[x]` (688, 689, 704)» | são **quatro**: 688, 689, 704 e 707 |
+| AOS-299 | «o marcador de worker escreve **sem** token» | escreve **com** token (`worker.go:469`); o facto é que `worker.NewWorker` não é composto no nó — o que ALARGA o âmbito da AC2 |
+| AOS-299 | `fencing_test.go:298-300` «exige que a escrita **obsoleta** comite» | exige o caso-fronteira token-**igual**; o estritamente inferior é rejeitado em `:308-311` |
+
+Uma sétima afirmação foi VERIFICADA e está correcta, contra a suspeita inicial: em AOS-289, o
+epic diz «tendo capturado `j+1` resultados» e a captura corre mesmo (`loop.go:505`) — o texto
+não induz em erro, apenas não nomeia a assimetria, que ficou agora explícita.
+
+Nada disto invalida nenhum dos doze defeitos: os factos mediram-se e sobreviveram. O que não
+sobreviveu foram seis âncoras — o que é, em si, o argumento do §1 deste epic aplicado a ele
+próprio.
 
 ---
 
@@ -63,8 +85,15 @@ oficializar a afirmação falsa.
 O passo de revogação do `Verify` vive dentro de `if v.revocations != nil`
 (`packages/platform/identity/verifier.go:184-192`). Esse guarda é sempre falso no nó:
 `identity.WithRevocations` não tem chamador de produção e `NewRevocations` nunca é sequer
-construído — ambos os ramos de composição do verifier (`packages/cmd/aos/bootstrap.go:1380` e
-`:1417`) montam `verifierOpts` apenas com `WithVerifierClock`.
+construído — ambos os ramos de composição do verifier (`packages/cmd/aos/bootstrap.go:1374`,
+ramo *hardened*, e `:1410`, ramo de referência) montam `verifierOpts` apenas com
+`WithVerifierClock` (`:1362-1365`).
+
+E são **três**, não dois. Fora de `cmd/aos` há um terceiro sítio que constrói um verifier:
+`packages/integration/secured.go:289` — `identity.NewVerifier()` sem trust anchors, o fallback
+fail-closed que nega toda a NHI. Ligar a revogação nos dois ramos do `bootstrap` e esquecer
+este deixaria a propriedade por cumprir precisamente no caminho que já é o mais restritivo, e
+a AC abaixo diz «nos dois ramos» porque foi escrita antes de este ser contado.
 
 **Medido** (auditoria §3.1): o verifier construído por cópia literal do `bootstrap` aceita um
 token cujo `jti` está revogado, devolvendo `err=<nil>` e um `Principal` completo e utilizável.
@@ -79,7 +108,7 @@ AOS-222 abriu um guard-test para impedir, a repetir-se sem guarda.
 
 ### Critérios de Aceitação
 
-- [ ] O nó compõe um `Revocations` real e passa-o ao verifier por `WithRevocations`, nos dois ramos de composição
+- [ ] O nó compõe um `Revocations` real e passa-o ao verifier por `WithRevocations`, nos **três** sítios de composição: os dois ramos de `bootstrap.go` (`:1374`, `:1410`) e o fallback de `integration/secured.go:289`
 - [ ] Existe uma via de revogação alcançável (rota ou comando) que grava o `jti` no Event Store, e um teste que prova que o token revogado passa a ser recusado com `ErrTokenRevoked` **pela cadeia do nó**, não por um verifier de teste
 - [ ] Sob `AOS_MODE=production` a ausência de registo de revogação **aborta o arranque**, no molde de `ErrProductionNeedsHardenedIdentity` — a propriedade não pode voltar a ficar por ligar em silêncio
 - [ ] Um **guard-test de veracidade**, no molde de `aos222_fencing_truthfulness_test.go`, impede o banner de anunciar «revogacao» sem a composição correspondente. Se a decisão for não ligar, é o banner que muda — e o teste falha na direcção oposta
@@ -97,13 +126,20 @@ do banner. A terceira via — deixar como está — é a única que este ticket 
 ### Contexto
 
 Ao escalar, o loop sai do laço de tool calls tendo capturado `j+1` resultados
-(`packages/kernel/agent-runtime/loop.go:493-516`), mas a resposta registada guarda todas as
-`M` tool calls. O motor de replay itera sobre as `M`
-(`packages/kernel/agent-runtime/replay/engine.go:487-491`) e o dispatcher devolve
+(`packages/kernel/agent-runtime/loop.go:493-517`; a captura CORRE — `captureTurn()` em `:505`,
+antes do `return` em `:516`), mas a resposta registada guarda todas as `M` tool calls. O defeito
+é a ASSIMETRIA: `turnCaptured` (`:448`, acumulado em `:480`) leva os índices `0..j`, e
+`Response: resp` (`:460`) leva a resposta inteira. O motor de replay itera sobre as `M`
+(`packages/kernel/agent-runtime/replay/engine.go:508`) e o dispatcher devolve
 `Untrusted(nil), nil, nil` para índices fora de alcance
-(`packages/kernel/agent-runtime/replay/replay_source.go:76-85`) — sob um comentário que declara
-um invariante **falso**: «o motor garante `idx < len(ToolCalls)`», quando o invariante
-necessário é `idx < len(ToolResults)`, que é outro número.
+(`packages/kernel/agent-runtime/replay/replay_source.go:82-84`) — sob um comentário
+(`replay_source.go:78-79`) que declara um invariante **falso**: «o motor garante
+`idx < len(ToolCalls)`», quando o invariante necessário é `idx < len(ToolResults)`, que é outro
+número — e é sobre `ToolResults` que o dispatcher é construído (`replay_source.go:66-67`).
+
+`admit()` está em `engine.go:374`, chamada em `:406`, e hoje devolve `ErrIncompleteCapture`
+(`replay/errors.go:38`) em duas condições apenas: captura do turno ausente e `prompt_hash`
+vazio. Não compara os dois comprimentos.
 
 **Medido** (auditoria §3.2): `len(response.ToolCalls)=2`, `len(tool_results)=1`, `Fidelity=1`,
 `Divergence=nil`, e um segmento `<tool_result taint=untrusted> corpo=""` fabricado no tail. O
@@ -196,7 +232,20 @@ pela mesma coisa que a torna necessária.
 
 ### Estado
 
-**POR INICIAR.** P1.
+**IMPLEMENTADO** em `5100a48`; critérios por fechar formalmente. P1. As âncoras do Contexto
+acima são as do código ANTES da correcção e já não resolvem.
+
+O que ficou: a transição durável, o `span.End()` — terceira fonte de bloqueio, que a AC não
+nomeava — e o `AlertSink` correm fora de `b.mu`; a AC4 foi decidida a favor do contrato
+**não-bloqueante**; dois testes com `-race` que não medem tempo, falsificados contra o
+`breaker.go` original.
+
+**A AC2 ficou cumprida em parte, e isso é um residual por endereçar.** `Snapshot` com o
+wall-clock por omissão lê `m.EnteredAt()`, e `Abort`/`EscalateToHuman` lêem `Current()`: os
+três tomam `machine.mu`, que `state.Machine.Transition` (`state/machine.go:412-416`) segura
+DURANTE a persistência. Um Append lento continua a prendê-los — por `machine.mu`, não por
+`b.mu`. A correcção vive na máquina e não no disjuntor, pelo que fica fora do âmbito deste
+ticket e merece o seu.
 
 ---
 
@@ -225,7 +274,7 @@ Nota de âmbito: o canal em si funciona. Este ticket é de integração, não do
 
 - [ ] A retoma pelo nó passa pelo `SteerChannel`, limpando `pauseRequested` e consumindo a correcção pendente
 - [ ] Teste de aceitação que corre o ciclo completo pelo nó real — `POST /pause` → `POST /steer` → `POST /resume` — e exige `Result.Paused == false` no turno seguinte **e** a correcção materializada no `PromptView`
-- [ ] O evento `control.resume` é selado no WORM, a par de `control.pause` e `control.steer` — hoje quem pausou fica no registo e quem retomou não
+- [ ] O evento `control.resume` passa a ser MESMO escrito. Nota de precisão: o mecanismo de selagem **já existe e é o mesmo** — `SteerChannel.Resume` (`control/pause_resume.go:147`) chama `appendControl` (`pause_resume.go:184`), a mesma função que serve pause e steer (`steer_channel.go:293` → `:330`), e `EventTypeControlResume` está definido (`steer_channel.go:60`). Não há selo a construir: o que falta é um CHAMADOR de produção. Hoje quem pausou fica no registo e quem retomou não, porque a rota HTTP não passa pelo canal — não porque o evento não exista
 - [ ] Decidido o destino do `ControlSurface`: compor no nó, ou remover
 
 ### Estado
@@ -291,7 +340,11 @@ documentação errada é o pior sítio para deixar um resíduo.
 
 ### Estado
 
-**POR INICIAR.** P3. Documentação; o comportamento não muda.
+**IMPLEMENTADO** em `76d3692`; critérios por fechar formalmente. P3. Documentação; o
+comportamento não muda. A tabela passou a mostrar o duplo escape, e
+`tabela_de_neutralizacao_test.go` fixa-a linha a linha, mais a injectividade e o alcance da
+regra. Falsificado: removido o escape do `\`, o teste de tabela e o de injectividade ficam
+vermelhos, e o segundo nomeia a colisão.
 
 ---
 
@@ -318,7 +371,12 @@ que a tornou plausível.
 
 ### Estado
 
-**POR INICIAR.** P3. Documentação.
+**IMPLEMENTADO** em `4bbd367`; critérios por fechar formalmente. P3. Documentação. O texto
+distingue os dois modos e nomeia o do binário por omissão; o MARCADOR de deferimento ficou, sem
+o qual o gate `deferrals` acusaria DEF-801/DEF-805 como obsoletos ao corrigir-se a redacção.
+AC2 **verificada**: `bash scripts/ci/deferrals.sh` verde após a alteração — «todos os
+deferimentos declarados no código têm entrada no registo com eixo verificável», com o registo
+em ABERTO=33 · FECHADO-RESIDUAL=35 · MITIGADO=30.
 
 ---
 
@@ -332,10 +390,11 @@ que a tornou plausível.
 `durable.Resumer` e `replay.Engine` **individualmente**, contornando a porta que
 `engine/engine_adapter.go:33-39` declara ser «a PORTA contra a qual o RT programa».
 
-O que torna isto mais do que código morto: os **únicos** `[x]` do `specs/EPIC-02` (linhas 688,
-689, 704) pertencem a AOS-022 e afirmam que o adaptador cumpre o contrato «sem alterações à API
-do RT». São verdadeiras e cobertas por um teste de contrato de 581 LOC contra dois backends —
-mas nada consome a porta, logo nada poderia ter de mudar.
+O que torna isto mais do que código morto: os **únicos** `[x]` do `specs/EPIC-02` — linhas 688,
+689, 704 e **707**, quatro e não três — pertencem todos a AOS-022, e os três primeiros afirmam
+que o adaptador cumpre o contrato «sem alterações à API do RT». São verdadeiras e cobertas por
+um teste de contrato de 581 LOC (`engine/engine_contract_test.go`) contra dois backends — mas
+nada consome a porta, logo nada poderia ter de mudar.
 
 ### Critérios de Aceitação
 
@@ -373,7 +432,16 @@ Alcance honesto: `WithLeaseHeartbeat` não tem chamador de produção, pelo que 
 
 ### Estado
 
-**POR INICIAR.** P3.
+**IMPLEMENTADO** em `db215f5`; critérios por fechar formalmente. P3. As âncoras de `service.go`
+no Contexto acima são anteriores à correcção. A recusa fail-closed vive em `NewNodeService`, e
+não no closure da opção, porque as opções são aplicadas por ordem — há um teste que fixa isso.
+
+**AC3 resolvida pela via da «razão escrita»**, que ela própria admitia: a validação NÃO foi
+imposta em `worker.WithHeartbeatInterval`. Nenhuma das duas opções tem chamador de produção,
+mas do lado do nó a guarda custou zero enquanto aqui parte cinco fixtures em três módulos
+(`worker/`, `platform/dr`, `qa/dr-e2e`), todas a passar `time.Hour` sobre um TTL de 30 s com
+relógio manual — onde o valor significa «não renovar durante este teste», não um intervalo. A
+razão está no doc-comment da opção.
 
 ---
 
@@ -419,8 +487,22 @@ a primeira eviction em produção produz uma divergência que ninguém sabe atri
 `specs/EPIC-02_Agent_Runtime_Execucao_Duravel.md:428` declara a AC e ela está por marcar. O
 estado verificado: o único payload que grava o token é o `leaseRecord`
 (`durable/lease.go:107`) e o `transitionRecord.TokenValue` (`state/machine.go:149`).
-`StepLedger.Apply` (`durable/step_ledger.go:473`), o `EventStoreCheckpointer`
-(`durable/checkpoint.go:182`) e o marcador de worker escrevem **sem** token.
+`StepLedger.Apply` (o append em `durable/step_ledger.go:473`) e o `EventStoreCheckpointer`
+(`durable/checkpoint.go:182`) escrevem **sem** token — ambos sobre um `EventStore` cru, não
+sobre um `FencedAppender`.
+
+**Correcção a este ticket:** o marcador de worker **carrega** token. `worker.go:469` escreve por
+`w.fenced.Append(ctx, sess.runID, sess.token, …)`, e o doc-comment de `fencedGate` di-lo por
+escrito. O facto que sustenta o ticket é outro, e é mais forte: `worker.NewWorker` e
+`durable.NewFencedAppender` **não têm chamador em `packages/cmd/aos`** (fora dele, só
+`control-plane/runlifecycle/emitters.go:108` e `tenure.go:100`). O caminho que fenceia as
+escritas existe e não é composto no nó.
+
+Isso muda o ÂMBITO da AC2 abaixo. A condição de auto-`t.Skip` do guard-test é a presença da
+substring `NewFencedAppender` **ou** `worker.NewWorker` nos `.go` não-teste do pacote do nó —
+logo o guard-test não se desactiva por se acrescentar token a estas duas escritas: exige
+COMPOR o worker ou o appender fenceado em `cmd/aos`. Quem planear este ticket a partir da
+redacção anterior subestima-o.
 
 O que **está** composto, e a auditoria confirmou contra uma alegação larga demais: o serviço
 passa o token real do lease ao claim `ready→running` (`cmd/aos/service.go:744` →
@@ -436,7 +518,7 @@ o registo diz que se sabe, não que está feito.
 - [ ] Decidido o âmbito: fencing de todas as escritas do caminho de run, ou uma lista explícita das que ficam de fora com razão escrita
 - [ ] O guard-test do AOS-222 passa a `t.Skip` por si próprio, que é o sinal que ele foi construído para dar
 - [ ] A AC de `EPIC-02:428` é marcada, ou emendada para o âmbito que ficar decidido
-- [ ] A janela TOCTOU de `durable/fencing.go:102-113` é fechada ou re-declarada como limite aceite — hoje há um teste que **exige** que a escrita obsoleta comite (`fencing_test.go:298-300`)
+- [ ] A janela TOCTOU de `durable/fencing.go:102-113` é fechada ou re-declarada como limite aceite. Precisão do caso: `fencing_test.go:298-300` exige que comite a escrita do detentor cujo token era **IGUAL** ao corrente no instante da leitura e foi superado durante o `Append` — o caso-fronteira `==`. Uma escrita de token **estritamente inferior** é rejeitada com `ErrStaleFencingToken`, e o mesmo teste exige-o logo a seguir (`:308-311`). «Escrita obsoleta» é forte demais para o que o teste fixa
 
 ### Estado
 
