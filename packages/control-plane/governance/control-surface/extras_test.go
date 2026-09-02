@@ -7,33 +7,13 @@ import (
 	"time"
 
 	controlsurface "github.com/aos-ref/control-plane/governance/control-surface"
-	"github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/agent-runtime/state"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
-// TestSurface_ConstructorFailClosed — a superfície recusa-se a existir sem um canal.
-func TestSurface_ConstructorFailClosed(t *testing.T) {
-	if _, err := controlsurface.NewControlSurface(nil); !errors.Is(err, controlsurface.ErrNilChannel) {
-		t.Fatalf("NewControlSurface(nil)=%v, quero ErrNilChannel", err)
-	}
-}
-
-// TestSurface_VersionOption — a superfície aceita e reporta a versão configurada.
-func TestSurface_VersionOption(t *testing.T) {
-	st := newStore(t)
-	ch := newChannel(t, st, authWith(t), nil)
-	v := controlsurface.ControlSchemaVersion{Major: 1, Minor: 7, Patch: 2}
-	s, err := controlsurface.NewControlSurface(ch, controlsurface.WithVersion(v))
-	if err != nil {
-		t.Fatalf("NewControlSurface: %v", err)
-	}
-	if !s.Version().Equal(v) {
-		t.Fatalf("Version()=%s, quero %s", s.Version(), v)
-	}
-}
-
-// TestVersion_StringAndChangeKindString — cobertura das formas textuais.
+// TestVersion_StringAndChangeKindString fixa a serialização e a comparação do contrato
+// versionado — que sobrevive à remoção da ControlSurface porque a ChannelID e a
+// ControlSchemaVersion têm consumidores reais (surface-adapter, approval-card).
 func TestVersion_StringAndChangeKindString(t *testing.T) {
 	if got := (controlsurface.ControlSchemaVersion{Major: 3, Minor: 4, Patch: 5}).String(); got != "3.4.5" {
 		t.Fatalf("String()=%q, quero 3.4.5", got)
@@ -75,38 +55,6 @@ func TestValidate_ResumeInlineCorrectionNeedsSignature(t *testing.T) {
 	}
 }
 
-// TestResume_WithCorrectionOnNonPausedRunLeavesNoDanglingCorrection — um
-// resume-com-correcção sobre um run NÃO pausado é recusado com state.ErrInvalidTransition
-// (como um resume limpo) e NÃO deixa a correcção injectada pendente no log (guarda de
-// ordenação): não haveria retoma a consumi-la, e uma correcção órfã seria aplicada numa
-// retoma futura. Fail-early sem escrever nada.
-func TestResume_WithCorrectionOnNonPausedRunLeavesNoDanglingCorrection(t *testing.T) {
-	ctx := context.Background()
-	st := newStore(t)
-	auth := authWith(t)
-	ch := newChannel(t, st, auth, nil)
-	surface := newSurface(t, ch, nil)
-	_, binding := runningMachine(t, st, testRunID) // running, NUNCA pausado
-
-	correction := []byte("corrige o rumo")
-	corrSig := sign(t, auth, testRunID, control.SignalSteer, correction, testEmitter)
-	resumeSig := sign(t, auth, testRunID, control.SignalResume, nil, testEmitter)
-	msg := controlsurface.NewResumeWithCorrection(testRunID, controlsurface.ChannelChatbot, testEmitter, resumeSig, correction, corrSig)
-
-	_, err := surface.Dispatch(ctx, msg, binding)
-	if !errors.Is(err, state.ErrInvalidTransition) {
-		t.Fatalf("Dispatch(resume+correcção, run não pausado)=%v, quero state.ErrInvalidTransition", err)
-	}
-	// A correcção NÃO ficou pendente (a guarda impediu o steer inline).
-	if _, ok := ch.PendingCorrection(testRunID); ok {
-		t.Fatalf("resume recusado deixou uma correcção órfã pendente (não devia)")
-	}
-	if ch.PendingPause(testRunID) {
-		t.Fatalf("resume recusado não devia deixar pausa pendente")
-	}
-}
-
-// TestReflection_ConstructorFailClosed — o projector recusa subscritor nil e run vazio.
 func TestReflection_ConstructorFailClosed(t *testing.T) {
 	ctx := context.Background()
 	if _, err := controlsurface.NewStateProjector(ctx, nil, testRunID); !errors.Is(err, controlsurface.ErrNilSubscriber) {

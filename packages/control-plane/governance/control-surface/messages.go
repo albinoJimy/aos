@@ -98,39 +98,6 @@ func (m ControlMessage) Emitter() control.Emitter {
 	return control.Emitter{ID: m.EmitterID, Signature: m.Signature}
 }
 
-// correctionEmitter projecta a identidade para a INJECÇÃO da correcção inline de um
-// resume — usa a [ControlMessage.CorrectionSignature] (assinatura sobre o sinal steer
-// da correcção), não a assinatura do sinal resume.
-func (m ControlMessage) correctionEmitter() control.Emitter {
-	return control.Emitter{ID: m.EmitterID, Signature: m.CorrectionSignature}
-}
-
-// signalKind mapeia o kind do contrato ao [control.SignalKind] de AOS-023 (o
-// vocabulário que o autenticador e o log de controlo usam). O state não é um sinal
-// (é leitura) — devolve ("", false).
-func (m ControlMessage) signalKind() (control.SignalKind, bool) {
-	switch m.Kind {
-	case KindInterrupt:
-		return control.SignalPause, true
-	case KindSteer:
-		return control.SignalSteer, true
-	case KindResume:
-		return control.SignalResume, true
-	default:
-		return "", false
-	}
-}
-
-// signalLabel devolve o rótulo do sinal para o span de interacção (aos.control.signal).
-// Reusa o vocabulário de [control.SignalKind] (pause/steer/resume) e nomeia a query
-// como "state".
-func (m ControlMessage) signalLabel() string {
-	if sk, ok := m.signalKind(); ok {
-		return string(sk)
-	}
-	return "state"
-}
-
 // mutates indica se o kind altera o run (exige emissor e autenticação), por oposição
 // à leitura pura do state.
 func (k Kind) mutates() bool {

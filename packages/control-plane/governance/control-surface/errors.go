@@ -39,16 +39,6 @@ var (
 	// steer a correcção não pode ser injectada como control-plane. Fail-closed.
 	ErrEmptyCorrectionSignature = errors.New("controlsurface: resume com correcção inline sem correction_signature (a injecção steer exige assinatura própria)")
 
-	// ErrNilChannel — a [ControlSurface] foi construída sem um [control.SteerChannel]
-	// (nil). Sem o canal de AOS-023 não há para onde traduzir os sinais — a superfície
-	// recusa-se a existir (fail-closed na construção).
-	ErrNilChannel = errors.New("controlsurface: SteerChannel em falta (a superfície compõe AOS-023)")
-
-	// ErrNilBinding — uma acção que precisa do binding do run (resume, que materializa
-	// paused→running via o [control.StateGate]) recebeu um [RunBinding] sem gate. Sem
-	// gate não há como delegar a transição no runtime.
-	ErrNilBinding = errors.New("controlsurface: binding do run em falta (o resume exige um StateGate para delegar a transição)")
-
 	// ErrNilSubscriber — o [StateProjector] foi construído sem uma fonte de subscrição
 	// (nil). Sem Subscribe não há read-model de reflexão.
 	ErrNilSubscriber = errors.New("controlsurface: subscritor de eventos em falta")
