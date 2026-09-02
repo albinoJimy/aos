@@ -43,7 +43,7 @@ oficializar a afirmação falsa.
 |---|---|---|---|
 | AOS-288 | A verificação de revogação de tokens NHI nunca corre, e o banner do nó anuncia que corre | P0 | **implementado** (3 ressalvas) |
 | AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 | por iniciar |
-| AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | por iniciar |
+| AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | **implementado** (AC2 re-fundamentada) |
 | AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 | **implementado** `5100a48` (AC2 em parte) |
 | AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | por iniciar |
 | AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | por iniciar |
@@ -226,7 +226,34 @@ O AOS-093 promete apagamento **real** por titular. Alcança o WAL e não alcanç
 
 ### Estado
 
-**POR INICIAR.** P0 pelo eixo de privacidade (AOS-093), P1 pelo de memória.
+**IMPLEMENTADO**; critérios por fechar formalmente. P0 pelo eixo de privacidade (AOS-093), P1
+pelo de memória. **AC4 decidida como o próprio ticket recomenda: poda do ledger PARTILHADO**,
+não ledger por-run.
+
+O que ficou: `StepLedger.ForgetSubject` (privacidade) e `ForgetRun` (memória); um índice reverso
+titular→chaves, porque o registo em memória **não guarda o titular** — `clearRec` nunca o
+preenche e `toClear` limpa-o; o ledger entra na lista de stores do `dsar.Flow` como
+`dsar.StepLedgerStore`; e a poda corre no `hostRun`, colada ao `RebuildLedger` que é o seu par.
+
+**A AC2 estava mal colocada, e é o achado do ticket.** Oferecia «TTL, conclusão de run, ou tecto
+de entradas» como equivalentes. Não são: o ledger é o registo de IDEMPOTÊNCIA, e
+`TestApplyIdempotentReexecution` exige que uma re-execução devolva o payload memorizado —
+o ADR-015 fixa «0 efeitos observáveis duplicados». Um TTL ou um tecto LRU escolhem vítimas sem
+saber se a entrada é reponível, e trocam memória por duplicação de efeitos externos. A poda por
+run é segura por outra razão, mais forte do que «o run terminou»: o nó chama `RebuildLedger` no
+início de CADA hospedagem, pelo que a poda é simétrica com a reposição.
+
+**AC3 — o teste de heap não é um dump.** Em Go um dump não é asseverável de forma estável
+(`debug.WriteHeapDump` tem formato interno; um perfil `pprof` guarda pilhas, não conteúdo). Fez-
+se a mesma pergunta ao GC: um finalizador sobre o array que sustenta o payload corre quando — e
+só quando — nada no processo lhe chega. A primeira versão do teste passava pela razão errada
+(sem `runtime.KeepAlive`, o GC colhia o LEDGER inteiro e o teste lia isso como «largou o
+payload»); apanhou-se na falsificação, onde a premissa falhava sempre aos 0,00 s.
+
+**Achado da revisão de segurança, corrigido:** o `POST /nhi/revoke` de AOS-288 exigia e
+verificava o `reason` como parte do payload assinado — e depois descartava-o. O comentário do
+ficheiro afirmava que ficava selado. Passa a ir na hash-chain como obrigação
+`gov.nhi.revoke.reason`.
 
 ---
 
