@@ -2016,7 +2016,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	dsarFlow := dsar.NewFlow(
 		wormEventSealer{store: worm},
 		dsarShredder,
-		[]dsar.ShreddableKeyStore{dsar.AuditStore("audit", dsarShredder)},
+		// O STEP-LEDGER É UM STORE DE APAGAMENTO (AOS-290). A lista tinha um só elemento, e
+		// o que faltava não era um mecanismo — era esta linha. O ledger é composto uma vez e
+		// partilhado por todos os runs, e o seu mapa guarda o resultado de cada passo EM
+		// CLARO: destruída a KEK, o WAL ficava indecifrável e `Applied` continuava a devolver
+		// o payload. Sem o ledger aqui, o Art. 17 alcançava o disco e parava na memória.
+		//
+		// `ledger` é nil quando a execução durável está desligada — e aí não há projecção que
+		// apagar. Passa-se na mesma, e o que torna isso seguro NÃO é a guarda `lg == nil` do
+		// adaptador: um `*durable.StepLedger` nil metido numa interface produz uma interface
+		// NÃO-nil, pelo que essa guarda não dispara. Quem salva é a guarda de RECEPTOR nil em
+		// [durable.StepLedger.ForgetSubject], que devolve 0. As duas existem porque protegem
+		// casos diferentes, e confundi-las é a armadilha clássica do nil tipado.
+		[]dsar.ShreddableKeyStore{
+			dsar.AuditStore("audit", dsarShredder),
+			dsar.StepLedgerStore("step-ledger", ledger),
+		},
 		dsar.WithPartition("governance.dsar"),
 		dsar.WithShredConfirmer(confirmadorDeShredDe(dsarVault)),
 	)

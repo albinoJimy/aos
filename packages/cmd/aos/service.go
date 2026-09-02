@@ -754,6 +754,21 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		s.mu.Unlock()
 		return
 	}
+	// AOS-290: e à SAÍDA da hospedagem, larga-se o que se acabou de repor. O mapa do ledger é
+	// PARTILHADO por todos os runs do nó e nunca era podado — crescia linearmente com
+	// Σ(runs × passos), sem patamar, num processo de vida longa.
+	//
+	// O `defer` fica AQUI, colado ao rebuild, e não junto aos de `breakers`/`progress`: aquele
+	// bloco corre só com `stateGates` composto, e `stateGates` e `Ledger` são compostos
+	// INDEPENDENTEMENTE — a poda teria deixado de correr precisamente numa composição
+	// degradada, que é onde ninguém iria procurá-la. Aqui é simétrica com a reposição, que é
+	// também o que a torna segura: o que se larga é relido do Event Store se o run voltar.
+	//
+	// O que NÃO volta é o de um titular apagado — o `Rebuild` salta o que já não decifra. Essa
+	// assimetria não é um defeito: é o Art. 17 a funcionar.
+	if s.node.Ledger != nil {
+		defer s.node.Ledger.ForgetRun(rs.runID)
+	}
 
 	// AOS-218: ABRE a máquina de estados durável do run (AOS-017) e regista o
 	// [control.StateGate] que o canal de steer usa para materializar running↔paused. É
