@@ -77,8 +77,9 @@ identificado.
 
 ### 0.3 As citações deste epic foram verificadas contra o código
 
-Ao entrar na implementação, cada `file:line` citado foi aberto. **Seis** afirmações não
-resistiram e estão corrigidas no corpo, marcadas onde ocorrem:
+Ao entrar na implementação, cada `file:line` citado foi aberto. **Oito** afirmações não
+resistiram e estão corrigidas no corpo, marcadas onde ocorrem — as duas últimas apareceram na
+preparação de AOS-299, muito depois de este parágrafo dizer «seis»:
 
 | Ticket | O que estava escrito | O que é |
 |---|---|---|
@@ -88,13 +89,23 @@ resistiram e estão corrigidas no corpo, marcadas onde ocorrem:
 | AOS-296 | «os **únicos** `[x]` (688, 689, 704)» | são **quatro**: 688, 689, 704 e 707 |
 | AOS-299 | «o marcador de worker escreve **sem** token» | escreve **com** token (`worker.go:469`); o facto é que `worker.NewWorker` não é composto no nó — o que ALARGA o âmbito da AC2 |
 | AOS-299 | `fencing_test.go:298-300` «exige que a escrita **obsoleta** comite» | exige o caso-fronteira token-**igual**; o estritamente inferior é rejeitado em `:308-311` |
+| AOS-299 | as escritas do ledger no Event Store, sem fencing token, em `durable/step_ledger.go:473` | `:483` — a linha 473 é o meio do literal de `persistRec` |
+| AOS-299 | o token chega ao claim em `cmd/aos/service.go:744` | `:744` é um `defer func()` de recover de panic; o token entra em `:829` e o claim é em `:863` |
 
-Uma sétima afirmação foi VERIFICADA e está correcta, contra a suspeita inicial: em AOS-289, o
-epic diz «tendo capturado `j+1` resultados» e a captura corre mesmo (`loop.go:505`) — o texto
-não induz em erro, apenas não nomeia a assimetria, que ficou agora explícita.
+Duas afirmações foram VERIFICADAS e estão CORRECTAS, contra a suspeita inicial — e ficam
+registadas, porque uma correcção que não era precisa é informação tão útil como as que eram:
+
+1. em AOS-289, o epic diz «tendo capturado `j+1` resultados» e a captura corre mesmo
+   (`loop.go:505`) — o texto não induz em erro, apenas não nomeia a assimetria, que ficou agora
+   explícita;
+2. suspeitou-se que a AC de guard-test de veracidade que fala de «revogacao» tivesse sido
+   copiada para AOS-299 por engano. **Não foi.** As quatro ACs de AOS-299 não mencionam banner
+   nem revogação; o texto pertence à AC3 de AOS-288, que tomou o
+   `aos222_fencing_truthfulness_test.go` — o teste de *fencing* — como **molde** da sua própria
+   guarda de banner. A suspeita nasceu de uma extracção mal ancorada, não do documento.
 
 Nada disto invalida nenhum dos doze defeitos: os factos mediram-se e sobreviveram. O que não
-sobreviveu foram seis âncoras — o que é, em si, o argumento do §1 deste epic aplicado a ele
+sobreviveu foram oito âncoras — o que é, em si, o argumento do §1 deste epic aplicado a ele
 próprio.
 
 ---
@@ -661,7 +672,7 @@ a primeira eviction em produção produz uma divergência que ninguém sabe atri
 `specs/EPIC-02_Agent_Runtime_Execucao_Duravel.md:428` declara a AC e ela está por marcar. O
 estado verificado: o único payload que grava o token é o `leaseRecord`
 (`durable/lease.go:107`) e o `transitionRecord.TokenValue` (`state/machine.go:149`).
-`StepLedger.Apply` (o append em `durable/step_ledger.go:473`) e o `EventStoreCheckpointer`
+`StepLedger.Apply` (o append em `durable/step_ledger.go:483`) e o `EventStoreCheckpointer`
 (`durable/checkpoint.go:182`) escrevem **sem** token — ambos sobre um `EventStore` cru, não
 sobre um `FencedAppender`.
 
@@ -679,7 +690,7 @@ COMPOR o worker ou o appender fenceado em `cmd/aos`. Quem planear este ticket a 
 redacção anterior subestima-o.
 
 O que **está** composto, e a auditoria confirmou contra uma alegação larga demais: o serviço
-passa o token real do lease ao claim `ready→running` (`cmd/aos/service.go:744` →
+passa o token real do lease ao claim `ready→running` (`cmd/aos/service.go:829` → `:863` →
 `steer_gates.go:158`). O que falta é o fencing das **escritas** no caminho de `Runtime.Run` — e
 isso está declarado em **ADR-018 §5-bis** e vigiado pelo guard-test
 `aos222_fencing_truthfulness_test.go`, que se auto-desactiva quando a dívida for paga.
