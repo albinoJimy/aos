@@ -51,14 +51,29 @@ oficializar a afirmação falsa.
 | AOS-289 | O `admit()` do replay aceita uma captura com menos resultados do que tool calls | P1 | por iniciar |
 | AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | **implementado** (AC2 re-fundamentada) |
 | AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 | **implementado** `5100a48` (AC2 em parte) |
-| AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | **implementado** (AC2 e AC4 por fechar) |
-| AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | implementado (`1f019ec`) |
+| AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | **implementado** `63decf5`+`d169198`+`b1d8322` (AC4 fechada; AC2 escrita e **NÃO CORRIDA** — exige cluster) |
+| AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | **implementado** `1f019ec` |
 | AOS-294 | A tabela de `neutralizarDelimitadores` contradiz a função que ilustra | P3 | **implementado** `76d3692` |
 | AOS-295 | `activity/doc.go` declara o deferimento sem a ressalva de modo | P3 | **implementado** `4bbd367` |
 | AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 | por iniciar |
 | AOS-297 | `WithLeaseHeartbeat` aceita um intervalo superior ao TTL sem validar | P3 | **implementado** `db215f5` |
 | AOS-298 | Uma divergência de replay por eviction sairia inatribuível | P2 | por iniciar |
 | AOS-299 | A AC «escritas no Event Store carregam o fencing token» está por cumprir | P2 | por iniciar |
+
+E os cinco residuais de §0.4, que a remediação produziu:
+
+| Ticket | Defeito | P | Estado |
+|---|---|---|---|
+| AOS-300 | A revogação de NHI não sobrevive a um restart em produção | P1 | **implementado** `148c7c5` |
+| AOS-301 | A `state.Machine` persiste com o seu mutex detido | P2 | **implementado** `c69098f` |
+| AOS-302 | A poda do step-ledger não obriga a substrato durável em produção | P3 | **fechado sem código** — premissa falsificada |
+| AOS-303 | O payload do contrato de controlo ficou sem consumidor | P3 | por iniciar |
+| AOS-304 | A retoma não é selada na hash-chain, e a pausa é | P2 | **implementado** `43845a0` |
+
+**Onze fechados, seis abertos.** Dos seis, quatro — AOS-289, AOS-296, AOS-298, AOS-299 —
+esperam uma decisão do dono que a própria AC nomeia («decidido: … ou …»); AOS-303 é da mesma
+família; e a AC2 de AOS-292 espera ambiente de cluster. Nenhum espera trabalho que não esteja
+identificado.
 
 ### 0.3 As citações deste epic foram verificadas contra o código
 
