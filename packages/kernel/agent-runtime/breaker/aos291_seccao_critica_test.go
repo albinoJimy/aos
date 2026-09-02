@@ -157,7 +157,7 @@ func (s *blockingStore) Append(ctx context.Context, streamID string, in eventsto
 // Isso é um limite REAL e fica DECLARADO: enquanto a [state.Machine] persistir com o seu mutex
 // detido, tudo o que leia o estado — `Snapshot` com o wall-clock default, e também `Abort` e
 // `EscalateToHuman`, que chamam `Current()` — espera por um Append lento. AOS-291 não fecha isso,
-// e não podia: a correcção vive na máquina, não no disjuntor. Registado como residual do ticket.
+// e não podia: a correcção vive na máquina, não no disjuntor. Tem eixo próprio: **AOS-301**.
 //
 // O que este teste isola, injectando uma fonte que NÃO toca na máquina, é a parte que AOS-291
 // mudou mesmo: `b.mu` deixou de ser detido durante o I/O. Antes, esta asserção falhava com

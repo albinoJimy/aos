@@ -620,6 +620,12 @@ func (l *StepLedger) ForgetSubject(subject string) int {
 //
 // Quem chamar isto num contexto SEM essa reconstrução à entrada reintroduz o defeito que a
 // secção anterior descreve.
+//
+// ALCANCE SOBRE SUBSTRATO NÃO-DURÁVEL — eixo **AOS-302**. A simetria acima assenta no Event
+// Store sobreviver ao processo. Sobre o substrato de referência in-memory a reposição continua a
+// valer DENTRO do processo, mas um restart leva tudo: um run retomado depois disso não encontra
+// as entradas, e a garantia volta a ser a que este ledger sempre declarou — at-least-once com
+// dedup no commit do Event Store e idempotência downstream —, não a memória.
 func (l *StepLedger) ForgetRun(runID string) int {
 	if l == nil || runID == "" {
 		return 0

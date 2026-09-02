@@ -77,6 +77,11 @@ func NewRevocations(store eventstore.EventStore, opts ...RevocationsOption) *Rev
 //
 // É idempotente e aditivo: chamar duas vezes não remove nada, e o conjunto nunca
 // encolhe — não há evento de «des-revogação» no vocabulário, por desenho.
+//
+// ALCANCE — eixo **AOS-300**. Isto repõe do stream; o stream tem de existir. Sobre um Event
+// Store não-durável (o de referência, in-memory) não há nada a repor depois de um restart, e um
+// token revogado volta a ser aceite até expirar. Quem compõe a revogação num deployment que
+// anuncie a propriedade tem de compor também um substrato que a sustente.
 func (r *Revocations) Rebuild(ctx context.Context) error {
 	if r == nil {
 		return nil

@@ -23,6 +23,12 @@ Os **doze** que restam não são dívida — são **defeitos**. Registá-los com
 sido convertê-los em dívida aceite por decreto, que é a lavagem que o §1 daquele documento
 existe para impedir. Este epic é o destino deles.
 
+Fechar os doze produziu **mais três** (AOS-300..302, §0.4): propriedades que uma correcção
+deixou parcialmente cumpridas. Não vieram da auditoria — vieram da remediação —, e por isso
+estão numerados e listados em separado. Registá-los como deferimentos seria o mesmo erro que o
+parágrafo acima descreve: nenhum é «sabemos e aceitamos», os três são «isto ainda não é
+verdade».
+
 **A distinção que governa o epic:** um deferimento diz «sabemos, aceitamos, eis o eixo». Um
 defeito diz «isto está errado». O caso que decidiu a regra é o AOS-288: o nó anuncia no seu
 banner que verifica revogação de tokens e não verifica. Declarar isso como dívida aceite seria
@@ -580,6 +586,122 @@ o registo diz que se sabe, não que está feito.
 ### Estado
 
 **POR INICIAR.** P2. Subsistema sensível; escopo próprio.
+
+---
+
+## 0.4 Residuais apurados DURANTE a remediação — AOS-300..302
+
+Os doze acima vieram da auditoria. Estes três vieram de fechar os doze: são propriedades que
+uma correcção deixou **parcialmente** cumpridas, e cada um está declarado no código que o
+produziu. Registam-se como tickets, e não como deferimentos, pela mesma regra do §0: nenhum é
+«sabemos e aceitamos» — os três são «isto ainda não é verdade», e dois deles são propriedades
+que o nó anuncia.
+
+O que os distingue dos doze é a origem, não a natureza. Estão aqui, e não nos epics dos
+respectivos eixos, porque o contexto que os torna compreensíveis é a remediação que os
+descobriu.
+
+---
+
+## AOS-300 — A revogação de NHI tem de sobreviver a um restart em produção
+
+### Contexto
+
+AOS-288 ligou a revogação e acrescentou `Revocations.Rebuild`, que repovoa a projecção a partir
+do stream `identity.nhi.revoked` no arranque. Isso fecha o esquecimento **quando o substrato é
+durável**. Não fecha quando não é: sobre o Event Store de referência in-memory (o default, sem
+`AOS_EVENTSTORE_PATH` nem `AOS_EVENTSTORE_NATS`) o stream morre com o processo, e um token
+revogado volta a ser aceite ao primeiro restart — em silêncio, com um `Principal` completo.
+
+É a mesma forma do defeito que AOS-288 fechou, por outra porta: o banner anuncia «revogacao» —
+e agora anuncia-o com verdade, porque o registo ESTÁ composto e consultado —, mas num
+deployment não-durável a propriedade dura até ao próximo arranque.
+
+**A guarda foi escrita e revertida, e a razão importa.** Um
+`AOS_MODE=production ⇒ AOS_EVENTSTORE_PATH|NATS` na fronteira de ambiente, no molde de
+`ErrProductionNeedsHardenedIdentity`, faz o nó recusar arrancar. Mediu-se: quebra **seis**
+testes que forçam `AOS_MODE=production` sem substrato durável e que nada têm que ver com
+revogação (`aos215_durable_kek_test.go`, `aos247_model_credential_test.go`, `main_test.go`,
+entre outros). É um requisito de produção mais forte do que a AC3 de AOS-288 pedia, e por isso
+não foi imposto de contrabando dentro daquele ticket.
+
+### Critérios de Aceitação
+
+- [ ] Decidido: produção exige substrato durável (e os seis testes passam a compô-lo), **ou** o banner declara explicitamente que a revogação não sobrevive a restart neste deployment
+- [ ] Se a decisão for exigir: fail-closed na fronteira de ambiente, com erro que nomeie a env var em falta, e um teste no molde de `TestRunProductionRequiresHardenedIdentity`
+- [ ] Se a decisão for declarar: a linha do banner deriva do estado do substrato, e um guard-test impede que ela volte a afirmar durabilidade que não há
+- [ ] A mesma decisão cobre AOS-302 — os dois eixos partilham o predicado
+
+### Estado
+
+**POR INICIAR.** P1. Depende de uma decisão do dono sobre o que `AOS_MODE=production` passa a
+exigir. Interage com AOS-302: são o mesmo predicado aplicado a duas superfícies, e decidi-los em
+separado deixaria o nó a exigir durabilidade para uma e não para a outra.
+
+---
+
+## AOS-301 — A `state.Machine` persiste com o seu mutex detido
+
+### Contexto
+
+AOS-291 tirou o I/O da secção crítica do disjuntor: a transição durável, o `span.End()` e o
+`AlertSink` correm todos fora de `b.mu`. A AC2 pedia mais do que isso — que
+`Snapshot`/`Abort`/`EscalateToHuman` **não esperem por I/O** — e essa metade não fica fechada
+pelo disjuntor, porque a espera não é dele.
+
+`state.Machine.Transition` (`packages/kernel/agent-runtime/state/machine.go:412-416`) faz
+`m.mu.Lock()` com `defer` e persiste DENTRO dessa secção. `Current()` (`:268`) e `EnteredAt()`
+(`:285`) tomam o mesmo mutex. Logo: `Abort` e `EscalateToHuman` lêem `Current()`, e `Snapshot`
+com o wall-clock por omissão ([`NewMachineWallClock`]) lê `EnteredAt()` — os três esperam por um
+Append lento, por `machine.mu` e não por `b.mu`.
+
+Foi medido ao escrever o teste de AOS-291: a primeira versão de
+`TestAOS291_AppendBloqueadoNaoPrendeOMutexDoDisjuntor` usava o wall-clock por omissão e falhava.
+A versão que ficou injecta uma fonte independente da máquina, precisamente para isolar o que
+AOS-291 mudou do que ficou por mudar — e o doc-comment desse teste declara este limite.
+
+### Critérios de Aceitação
+
+- [ ] Decidido o desenho: persistir fora do mutex da máquina (com o CAS a serializar), ou separar a leitura do estado da escrita por dois locks, ou re-declarar como limite aceite com o custo escrito
+- [ ] Se corrigido: um teste concorrente com `-race` que prenda o `Append` e exija que `Current()` e `EnteredAt()` COMPLETEM — o molde está em `breaker/aos291_seccao_critica_test.go`
+- [ ] A validação de transição (`IsValidTransition` contra o estado corrente) continua a ser atómica face à escrita — é ela que garante a idempotência de que o disjuntor passou a depender em AOS-291
+- [ ] O doc-comment do teste de AOS-291 deixa de declarar o limite, ou a declaração é actualizada
+
+### Estado
+
+**POR INICIAR.** P2. Subsistema sensível: a máquina de estados durável é a autoridade de
+transição de todos os runs, e a atomicidade validação↔escrita é o que AOS-291 assumiu ao largar
+o lock do disjuntor. Escopo próprio.
+
+---
+
+## AOS-302 — A poda do step-ledger não obriga a substrato durável em produção
+
+### Contexto
+
+AOS-290 pôs o step-ledger a podar por run, e o que torna isso seguro é a simetria: o nó chama
+`RebuildLedger` no início de CADA hospedagem, pelo que o que se larga é relido do Event Store se
+o run voltar.
+
+A simetria assenta no substrato ser durável. Sobre o Event Store de referência in-memory a
+reposição existe na mesma dentro do processo, mas nada disto sobrevive a um restart — e aí a
+poda deixa de ser uma cache a encolher e passa a ser perda: um run retomado depois do restart
+não encontra as entradas, e a idempotência volta a depender só da dedup do Event Store no commit
+e da idempotência downstream (o contrato at-least-once que o `StepLedger` já declara).
+
+Não é um defeito novo — é o alcance honesto da poda, que não estava escrito. E é o MESMO
+predicado de AOS-300: «produção exige substrato durável».
+
+### Critérios de Aceitação
+
+- [ ] Decidido em conjunto com AOS-300 (mesmo predicado, mesma env var)
+- [ ] O doc-comment de `StepLedger.ForgetRun` declara o alcance sobre substrato não-durável, em vez de descrever só o caso durável
+- [ ] Teste que fixe o comportamento no caso não-durável: poda + «restart» + retoma, e o que fica garantido é a dedup do commit, não a memória
+
+### Estado
+
+**POR INICIAR.** P3. Documentação e uma decisão partilhada com AOS-300; nenhuma correcção de
+comportamento é obrigatória se a decisão for declarar em vez de exigir.
 
 ---
 
