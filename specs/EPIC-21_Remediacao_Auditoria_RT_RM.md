@@ -23,7 +23,7 @@ Os **doze** que restam não são dívida — são **defeitos**. Registá-los com
 sido convertê-los em dívida aceite por decreto, que é a lavagem que o §1 daquele documento
 existe para impedir. Este epic é o destino deles.
 
-Fechar os doze produziu **mais quatro** (AOS-300..303, §0.4): propriedades que uma correcção
+Fechar os doze produziu **mais cinco** (AOS-300..304, §0.4): propriedades que uma correcção
 deixou parcialmente cumpridas. Não vieram da auditoria — vieram da remediação —, e por isso
 estão numerados e listados em separado. Registá-los como deferimentos seria o mesmo erro que o
 parágrafo acima descreve: nenhum é «sabemos e aceitamos», os três são «isto ainda não é
@@ -359,18 +359,29 @@ consumação tem de acontecer no ponto da entrega), e o wiring do nó.
 
 **POR FECHAR:**
 
-1. **AC2 — o teste por HTTP ponta-a-ponta não existe.** Razão de fixture, já reconhecida neste
-   repositório (`aos263_decisao_simetrica_test.go`): os runs destas fixtures nunca correram um
-   turno a sério, não têm capturas, e a retoma falha no plano de replay. Nenhum teste do repo
-   consegue hoje uma retoma HTTP bem-sucedida. Os testes entregues entram por
-   `retomarPausaPeloCanal` e provam a decisão e o efeito no canal; a lacuna está declarada no
-   cabeçalho do ficheiro.
-   **Caminho de resolução decidido pelo dono:** o teste corre no **cluster**, contra ambiente
-   real, e não se substitui por uma fixture que simule um turno — uma fixture que finge o
-   ambiente produz um teste que passa sem provar nada, que é a falsificação de teste que este
-   epic persegue. Idioma: `//go:build`, no molde de `packages/substrate/sandbox/fclive_test.go`,
-   com o cabeçalho a nomear o que o teste exige e o comando exacto. Fica fora da CI normal e
-   nunca passa em silêncio por ausência de ambiente.
+1. **AC2 — o teste existe e NÃO FOI CORRIDO.** `packages/cmd/aos/aos292_retoma_live_test.go`,
+   build-tag `aoslive`, no molde de `packages/substrate/sandbox/fclive_test.go`. Compila e faz
+   skip com a lista das variáveis em falta; **nunca correu** — esta máquina não tem cluster.
+   Não é evidência de que a AC passa: é a evidência que falta produzir, e o sítio onde
+   produzi-la.
+
+   A razão que aqui estava antes — «exige uma fixture que corra um turno real antes de pausar»
+   — estava errada, e a decisão do dono corrigiu-a: uma fixture que finge o ambiente produz um
+   teste que passa sem provar nada, que é a falsificação de teste que este epic persegue. Corre
+   no cluster, contra um Model Gateway real, onde o run executa turnos e produz capturas.
+
+   **O que o teste prova:** submete um run, espera que corra, pausa e faz steer assinados,
+   exige **403 numa retoma sem emissor** (a metade da AC1 que só é observável por HTTP — antes
+   de AOS-292 quem detivesse a credencial do run desfazia a pausa de um operador sem assinar
+   nada), retoma com emissor assinado, e exige `Paused == false` a seguir. Depois lê o log
+   durável do nó e exige os quatro sinais do ciclo.
+
+   **O que NÃO consegue provar, e está declarado no ficheiro:** «a correcção materializada no
+   `PromptView`» ao pé da letra. O `PromptView` não é observável por HTTP — o `turn.recorded`
+   carrega o `prompt_hash`, não o texto. A prova de materialização usada é o
+   `control.correction_consumed`, escrito **no ponto da entrega ao loop**: se existe, a
+   correcção chegou ao prompt. É mais preciso do que comparar hashes, e não é a mesma coisa que
+   ler o prompt.
 2. ~~**AC4 — o `ControlSurface` não foi removido.**~~ **FECHADA.** Removido: `surface.go`,
    `span.go` e os três testes que só o exerciam (`span_test.go`, `graceful_pause_test.go`,
    `outofband_test.go`), mais os erros `ErrNilChannel`/`ErrNilBinding` e três testes em
@@ -674,9 +685,9 @@ o registo diz que se sabe, não que está feito.
 
 ---
 
-## 0.4 Residuais apurados DURANTE a remediação — AOS-300..303
+## 0.4 Residuais apurados DURANTE a remediação — AOS-300..304
 
-Os doze acima vieram da auditoria. Estes quatro vieram de fechar os doze: são propriedades que
+Os doze acima vieram da auditoria. Estes cinco vieram de fechar os doze: são propriedades que
 uma correcção deixou **parcialmente** cumpridas, ou material que uma remoção deixou órfão, e
 cada um está declarado no código que o produziu. Registam-se como tickets, e não como
 deferimentos, pela mesma regra do §0: nenhum é «sabemos e aceitamos» — são «isto ainda não é
@@ -831,6 +842,48 @@ factos diferentes; não é o mesmo ticket porque os deliverables e os epics de o
 **POR INICIAR.** P3. Sem urgência técnica — nada quebra por o payload existir. A urgência é de
 rastreabilidade, como em AOS-296: um contrato versionado sem produtor não pode ser citado como
 evidência de que o protocolo funciona.
+
+---
+
+## AOS-304 — A retoma não é selada na hash-chain, e a pausa é
+
+### Contexto
+
+`sealControlAction` (`packages/cmd/aos/control_seal.go:61`) escreve na partição
+`governance.control` do WORM — a cadeia tamper-evidente — uma entrada por acção de governação
+exercida. Tem cinco chamadores: `steer` e `pause` (`api.go:1572`, `:1593`), `approve`
+(`:1856`, `:1875`), `autonomy` (`autonomy_route.go:127`) e `nhi_revoke`
+(`revoke_route.go:110`).
+
+**`handleResume` não é um deles.** Nenhum outro caminho o compensa: os restantes `WORM.Append`
+do pacote são de exaustão, legal hold, sweeper de retenção, compensação de saga e soberania —
+nenhum sela a retoma.
+
+O efeito: quem lê a hash-chain vê `control:pause` sobre um run e **não vê** quem levantou a
+pausa. Um auditor encontra a imposição sem a libertação — e a assinatura do operador que
+retomou, que AOS-292 passou a exigir, não fica no registo tamper-evidente onde as outras estão.
+
+**NÃO É A AC3 DE AOS-292, e a distinção importa.** A AC3 pede o evento `control.resume` no LOG
+DE CONTROLO, e esse é escrito: `SteerChannel.Resume` (`control/pause_resume.go:183`) chama
+`appendControl` audit-first, antes da transição. São dois registos diferentes com propriedades
+diferentes — o Event Store dá replay e reconstrução; o WORM dá evidência tamper-evidente para
+auditoria. AOS-292 fechou o primeiro; o segundo nunca esteve fechado, e a frase do epic «quem
+pausou fica no registo e quem retomou não» continua verdadeira **do WORM**.
+
+Descoberto ao escrever o teste ao vivo da AC2 de AOS-292: a primeira ideia foi usar o WORM como
+observável do ciclo, e o `control:resume` não estava lá para ser observado.
+
+### Critérios de Aceitação
+
+- [ ] `handleResume` sela na hash-chain a retoma que SURTIU EFEITO, com a identidade do emissor, pela mesma disciplina dos outros cinco chamadores (selo DEPOIS do efeito, sem devolver erro ao chamador se o WORM falhar)
+- [ ] Decidido se a retoma de um `waiting_on_human` — que não tem emissor assinado — também sela, e com que principal; são dois caminhos com autoridades diferentes na mesma rota
+- [ ] Teste que exige `control:pause` **e** `control:resume` na partição `governance.control` para o mesmo run, e que falha se só o primeiro existir
+- [ ] O passo 4 do `driver.sh` da skill `run-aos` passa a exercer a retoma, para o smoke cobrir o par
+
+### Estado
+
+**POR INICIAR.** P2. Não quebra nada em execução: é uma lacuna de evidência, do lado do
+não-repúdio, sobre uma acção que o nó já exige que seja assinada.
 
 ---
 
