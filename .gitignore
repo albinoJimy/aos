@@ -70,7 +70,13 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 *.log
-.claude/
+# Definições LOCAIS do Claude Code (sessões, settings.local.json) — não são fonte.
+# O padrão é `.claude/*` e não `.claude/`: o git não desce a um directório excluído,
+# pelo que a excepção seguinte só funciona se o que se exclui forem os FILHOS.
+.claude/*
+# Excepção: as SKILLS versionam-se. São fonte partilhada — agentes e humanos correm-nas
+# (ver .claude/skills/run-aos/, que arranca e conduz o nó `aos`).
+!.claude/skills/
 
 # Directorio do ARNES de CI: artefactos de maquina que o proprio arnes provisiona
 # (ver [ensure_python] em scripts/ci/lib.sh). Nao e fonte — nao se versiona.
