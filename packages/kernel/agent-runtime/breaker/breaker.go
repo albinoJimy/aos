@@ -33,9 +33,27 @@ const (
 
 // Breaker é o circuit breaker multi-sinal de UM run. Agrega os colectores (velocity/
 // wall-clock/progress), corre o avaliador puro [Evaluate] e executa a acção de trip
-// (transição durável + span + alerta). Seguro para uso concorrente (um mutex serializa
-// observação/decisão/transição, à imagem da Machine de AOS-017 — dono único). Construir
-// com [NewBreaker].
+// (transição durável + span + alerta). Construir com [NewBreaker].
+//
+// # O QUE O MUTEX PROTEGE, E O QUE DELIBERADAMENTE NÃO PROTEGE (AOS-291)
+//
+// Seguro para uso concorrente, mas a garantia é MAIS ESTREITA do que era. `b.mu` serializa
+// a leitura/escrita de `stale` e a recolha do [SignalSnapshot]; TODO o resto do estado é
+// imutável após a construção. A sequência observação → decisão → transição JÁ NÃO é uma
+// secção atómica: a transição durável, o `span.End()` e o [AlertSink] correm fora do lock,
+// porque tê-los lá dentro trancava `Snapshot`/`Abort`/`EscalateToHuman` durante I/O — e
+// trancava-os exactamente no instante em que o disjuntor dispara, que é o instante em que
+// se quer abortar.
+//
+// A ATOMICIDADE PERDIDA NÃO ERA A QUE PARECIA. Quem serializa a transição é a
+// [state.Machine], que tem mutex próprio e revalida `IsValidTransition` sob ele; o lock do
+// disjuntor nunca protegeu contra mutações da máquina por outras vias (o varredor de
+// prazos e os gates de controlo do nó mexem nela sem passar por aqui). O que muda de facto
+// é o DESFECHO de dois `Observe` concorrentes sobre o MESMO breaker: antes o segundo
+// reavaliava o estado sob o lock e devolvia no-op silencioso; agora chega ao `Transition`
+// e devolve o erro de recusa da máquina. Não é alcançável no uso actual — `Observe` é
+// chamado uma vez por turno, pela goroutine do run, e o breaker é por-run — mas é a
+// diferença a conhecer antes de o chamar de dois sítios.
 type Breaker struct {
 	machine  *state.Machine
 	class    string
@@ -199,8 +217,20 @@ func (b *Breaker) snapshotLocked() SignalSnapshot {
 // Idempotente: se o run já não estiver em running (trip anterior sem resume intermédio),
 // a acção é no-op — sem duplicar transições nem alertas.
 func (b *Breaker) Observe(ctx context.Context) (Decision, error) {
+	// O ESTADO DURÁVEL LÊ-SE ANTES DO LOCK (AOS-291): `machine.Current()` toma o mutex da
+	// [state.Machine], e mantê-lo fora de `b.mu` encurta o tempo em que os dois estão
+	// tomados ao mesmo tempo.
+	//
+	// NÃO elimina o aninhamento b.mu → machine.mu, e seria falso dizê-lo: `snapshotLocked`
+	// corre sob `b.mu` e o wall-clock POR OMISSÃO ([NewMachineWallClock]) chama
+	// `m.EnteredAt()`, que toma `machine.mu`. O que se garante é que a ordem é SEMPRE a
+	// mesma — b.mu antes de machine.mu, nunca ao contrário: `trip` e `manualTransition`
+	// tomam `machine.mu` já sem `b.mu` detido. Sem inversão não há ciclo.
+	if !liveness.CountsAsActiveWork(b.machine.Current()) {
+		return Decision{}, nil
+	}
+
 	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	// EXCLUSÃO DO TEMPO DE ESPERA (AOS-019 / tecnica/08 §6). Os sinais wall-clock e
 	// no-progress medem TRABALHO ACTIVO, não tempo-de-parede bruto — senão uma espera
@@ -209,10 +239,8 @@ func (b *Breaker) Observe(ctx context.Context) (Decision, error) {
 	// running — via [liveness.CountsAsActiveWork]), não acumula, não avalia e não age: é
 	// no-op. O contador de iterações estéreis PRESERVA-SE através da espera (uma retoma
 	// parte de onde parou, sem falso reset). É também o guard de idempotência natural: um
-	// run já parado por um trip anterior não conta como trabalho activo.
-	if !liveness.CountsAsActiveWork(b.machine.Current()) {
-		return Decision{}, nil
-	}
+	// run já parado por um trip anterior não conta como trabalho activo. A verificação
+	// está acima, ANTES do lock — ver a nota de AOS-291 no topo da função.
 
 	// Sinal de no-progress: sem progresso na iteração ⇒ incrementa o contador de
 	// iterações estéreis; com progresso ⇒ reinicia. Sem porta ligada, o contador fica a 0.
@@ -226,6 +254,19 @@ func (b *Breaker) Observe(ctx context.Context) (Decision, error) {
 
 	snap := b.snapshotLocked()
 	dec := Evaluate(snap, b.th)
+
+	// A SECÇÃO CRÍTICA ACABA AQUI (AOS-291). O que `b.mu` protege é `b.stale` e mais nada —
+	// todos os outros campos do [Breaker] são imutáveis após a construção. O que estava a
+	// mais dentro dela era I/O: a transição durável (rede, no substrato replicado), o
+	// `span.End()` (que chama `Exporter.Export`, síncrono) e o `AlertSink` injectado, que é
+	// código arbitrário de terceiros. Com um sink bloqueado 3 s, medimos `Snapshot()`,
+	// `Abort()` e `EscalateToHuman()` a esperar 3,0008 s contra 1,669 µs em repouso.
+	//
+	// E o custo não é a latência: o instante em que o disjuntor dispara é exactamente o
+	// instante em que se quer abortar, e era esse o instante em que a via de saída graciosa
+	// ficava trancada — pela mesma coisa que a tornava necessária.
+	b.mu.Unlock()
+
 	if !dec.Trip {
 		return dec, nil
 	}
@@ -241,9 +282,12 @@ func (b *Breaker) Observe(ctx context.Context) (Decision, error) {
 // uma falha da transição durável propaga o erro (não é engolida) e o alerta NÃO dispara.
 // Preserva a trajectória: a transição apenas APENDE ao event log; nada é destruído.
 func (b *Breaker) trip(ctx context.Context, dec Decision, snap SignalSnapshot) error {
-	// Pré-condição garantida por [Observe] sob o MESMO lock: o run conta como trabalho
-	// activo (running). A idempotência do re-trip é assegurada a montante — um run já
-	// parado por um trip anterior não conta como trabalho activo e nunca reentra aqui.
+	// CORRE SEM `b.mu` DETIDO (AOS-291). A idempotência do re-trip NÃO dependia do lock do
+	// disjuntor e continua a não depender: quem a garante é a [state.Machine], que tem mutex
+	// próprio e valida `IsValidTransition(from, to)` contra o estado corrente SOB ESSE mutex.
+	// Dois `Observe` concorrentes que ambos decidam disparar são serializados lá, e o segundo
+	// vê `from` já no alvo e é recusado — que é o mesmo desfecho que o lock do disjuntor
+	// produzia, só que sem prender `Snapshot`/`Abort` durante o I/O.
 	ctx, span := b.tracer.StartSpan(ctx, OpBreakerTrip)
 	b.decorateSpan(span, AlertTrip, dec.Reason, dec.Target, snap)
 	span.SetAttribute(attrBreakerCrossed, joinSignals(dec.Crossed))
@@ -259,8 +303,12 @@ func (b *Breaker) trip(ctx context.Context, dec Decision, snap SignalSnapshot) e
 	span.End()
 
 	// A transição consumada reinicia o contador de no-progress: um resume posterior parte
-	// de zero (evita re-trip imediato sem novas iterações estéreis).
+	// de zero (evita re-trip imediato sem novas iterações estéreis). Retoma-se o lock só
+	// para esta escrita — é o ÚNICO campo mutável do disjuntor, e o alerta que vem a seguir
+	// não pode voltar a ficar debaixo dele.
+	b.mu.Lock()
 	b.stale = 0
+	b.mu.Unlock()
 
 	b.alert.Alert(ctx, Alert{
 		RunID:      b.machine.RunID(),
@@ -294,9 +342,17 @@ func (b *Breaker) Abort(ctx context.Context, note string) error {
 // pré-condição de running, emite o span, transita e alerta. Fail-closed no erro da
 // transição.
 func (b *Breaker) manualTransition(ctx context.Context, target state.State, kind AlertKind, reason, note string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	// PRÉ-CONDIÇÃO FORA DO LOCK (AOS-291), pela mesma razão de [Observe] — e com a mesma
+	// ressalva: isto encurta o tempo em que `b.mu` e `machine.mu` estão tomados ao mesmo
+	// tempo, mas NÃO elimina o aninhamento, porque `snapshotLocked` logo abaixo corre sob
+	// `b.mu` e o wall-clock por omissão lê `m.EnteredAt()`. O que se garante é a ORDEM
+	// constante: b.mu antes de machine.mu, nunca ao contrário.
+	//
+	// A verificação passa a ser ADVISORY — entre lê-la e transitar, o estado pode mudar. Não
+	// é escotilha: a
+	// [state.Machine] revalida `IsValidTransition` sob o SEU mutex, pelo que uma corrida sai
+	// como recusa da máquina em vez de [ErrNotRunning] daqui. Sem concorrência — que é todo o
+	// uso actual — o comportamento é idêntico ao anterior, erro a erro.
 	cur := b.machine.Current()
 	if cur == target {
 		return nil // idempotente: já no alvo
@@ -305,7 +361,10 @@ func (b *Breaker) manualTransition(ctx context.Context, target state.State, kind
 		return ErrNotRunning
 	}
 
+	b.mu.Lock()
 	snap := b.snapshotLocked()
+	b.mu.Unlock()
+
 	ctx, span := b.tracer.StartSpan(ctx, OpBreakerTrip)
 	b.decorateSpan(span, kind, "", target, snap)
 
@@ -318,7 +377,10 @@ func (b *Breaker) manualTransition(ctx context.Context, target state.State, kind
 	}
 	span.SetAttribute(attrBreakerTripped, true)
 	span.End()
+
+	b.mu.Lock()
 	b.stale = 0
+	b.mu.Unlock()
 
 	b.alert.Alert(ctx, Alert{
 		RunID:      b.machine.RunID(),
