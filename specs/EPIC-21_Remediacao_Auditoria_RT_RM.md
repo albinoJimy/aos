@@ -57,7 +57,7 @@ oficializar a afirmação falsa.
 | AOS-295 | `activity/doc.go` declara o deferimento sem a ressalva de modo | P3 | **implementado** `4bbd367` |
 | AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 | **removido** |
 | AOS-297 | `WithLeaseHeartbeat` aceita um intervalo superior ao TTL sem validar | P3 | **implementado** `db215f5` |
-| AOS-298 | Uma divergência de replay por eviction sairia inatribuível | P2 | por iniciar |
+| AOS-298 | Uma divergência de replay por eviction sairia inatribuível | P2 | **fechado — porta removida** |
 | AOS-299 | A AC «escritas no Event Store carregam o fencing token» está por cumprir | P2 | por iniciar |
 
 E os cinco residuais de §0.4, que a remediação produziu:
@@ -743,8 +743,48 @@ pressão de janela e não a alivia; o gatilho de compactação só enfileira.
 
 ### Estado
 
-**POR INICIAR.** P2. **Bloqueante para qualquer ticket que ligue a eviction** — fechado depois,
-a primeira eviction em produção produz uma divergência que ninguém sabe atribuir.
+**FECHADO — A PORTA DE SINAL FOI REMOVIDA.** As três ACs resolvidas pela decisão. P2.
+
+**DECISÃO DO DONO: REMOVER**, e a medição mostrou que a cadeia não estava «por ligar» — estava
+inteira a zero. Não só a porta: o `EvictToTailBudget` que aliviaria a janela, o
+`EvictionSink.Persist` que preservaria o despejado e o `CheckpointTrigger.RunCheckpoint` que
+drenaria a fila do gatilho, **todos sem chamador de produção ao mesmo tempo**. O sinal
+atravessava quatro camadas e terminava num `append` a um slice que ninguém consumia.
+
+**A EVICTION ERA INALCANÇÁVEL PELA PORTA, e é isso que resolve o ticket.** `WindowPort`
+declarava quatro métodos — `Append`, `Assemble`, `SystemHash`, `Signal` — e nenhum era eviction.
+Mesmo com a fábrica ligada, o loop não tinha por onde a invocar. Logo a divergência inatribuível
+que o ticket descreve não era um defeito **presente**: era um defeito **à espera de um
+chamador**, e removida a porta deixa de haver quem o chame.
+
+**AC1 — não se acrescenta `Reason` nem se toca no `TrajectorySpec`.** Ambas foram medidas e
+ambas eram viáveis: a `Reason` é genuinamente aditiva (é `string` cru, não há `switch` sobre ela
+em lado nenhum, não há golden files), e o `TrajectorySpec` não é persistido. O que decidiu foi o
+custo real da segunda: os **dados não existem** — não há evento no log que registe que um
+segmento saiu da vista, pelo que transportar estado da janela exigiria um **tipo de evento
+novo**. Acrescentar vocabulário de divergência para um caminho que ninguém percorre seria
+descrever um defeito em vez de o fechar.
+
+**AC2 — o teste não se escreve**, pela mesma razão: exigiria ligar uma `WindowPort` com eviction,
+que é precisamente o que a decisão recusa.
+
+**AC3 — o destino do sinal de exaustão é a remoção.** Saem `WindowSignal`, `WindowPort.Signal`,
+a `CompactionTrigger`, o `noopCompactionTrigger`, o `WithCompactionTrigger`, a chamada no
+`loop.go`, o `windowManagerPort.Signal` e o `CompactionTriggerAdapter` inteiro, com os dois erros
+de construção que só ele usava. O binário entregue não muda: nada disto tinha chamador.
+
+**O QUE FICA, E PORQUÊ.** A `WindowFactory` e o resto do `WindowPort` mantêm-se: têm prova de
+equivalência **byte-a-byte** com o caminho inline
+(`TestWindowManagerFactory_ByteIdenticalToInline`), que é o contrato de D-TAIL — saiu o sinal,
+não a posse do tail. E o `working.WindowManager` e o `compression.CheckpointTrigger` ficam
+**intactos** em `platform/memory`: são API própria daquele pilar, com testes próprios. Saiu a
+ligação ao loop, não a maquinaria. O gate `memory` verde confirma-o.
+
+**RESSALVA SOBRE A MEDIÇÃO DO PRÓPRIO TICKET:** o número «`169 → 1889` contra `Limit=120`» só
+existe em prosa — neste epic e na análise 09. **Não há harness committado que o reproduza**, pelo
+que não é uma medição verificável no repositório. O *mecanismo* que o produziria está verificado
+por leitura: `WindowManager.Append` nunca rejeita nem evicta, e `Signal` escala e devolve sem
+agir.
 
 ---
 

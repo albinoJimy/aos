@@ -30,21 +30,25 @@ import (
 // AOS-037 — WindowFactory / WindowPort (dono único do tail/assembly, D-TAIL)
 // ---------------------------------------------------------------------------
 
-// WindowSignal é o sinal de ocupação da janela na fronteira de fim-de-turno, num tipo
-// KERNEL-LOCAL (o loop nunca importa platform/memory). O adaptador de produção mapeia-o
-// de/para o sinal rico do pilar (working.Exhaustion). O valor-zero (Triggered=false) é a
-// resposta do [inlineWindow] default — sem pressão, sem compressão (byte-idêntico AOS-013).
-type WindowSignal struct {
-	// Triggered indica que a ocupação cruzou o limiar de exaustão graciosa (~80%).
-	Triggered bool
-	// Action é o rótulo OPACO da acção recomendada ("", "mark_for_compression",
-	// "escalate") — espelha working.ExhaustionAction sem importar o pilar.
-	Action string
-	// OccupancyTokens é a ocupação corrente em tokens (0 no default inline).
-	OccupancyTokens int
-	// LimitTokens é o limite de tokens do modelo para a janela (0 no default inline).
-	LimitTokens int
-}
+// A PORTA DE SINAL DE OCUPAÇÃO FOI REMOVIDA (AOS-298).
+//
+// Existiu aqui um `WindowSignal` (ocupação/limiar de exaustão), um método `Signal()` no
+// [WindowPort] e um `CompactionTrigger` que o loop observava na fronteira de fim-de-turno. A
+// cadeia inteira tinha ZERO chamadores de produção — e não só a porta: o `EvictToTailBudget`
+// que aliviaria a janela, o `EvictionSink` que preservaria o despejado, e o `RunCheckpoint`
+// que drenaria a fila do gatilho, todos a zero ao mesmo tempo. O sinal atravessava quatro
+// camadas e terminava num `append` a um slice que ninguém consumia: expunha pressão e não a
+// aliviava.
+//
+// O QUE A REMOÇÃO FECHA, e é a razão de ser de AOS-298: a eviction era **inalcançável** pela
+// porta ([WindowPort] declarava quatro métodos e nenhum era eviction), mas se alguém a ligasse,
+// o motor de replay dobraria o tail integralmente a partir da captura, sem notícia de que
+// segmentos saíram da vista — e a divergência sairia como `prompt_hash`, INATRIBUÍVEL. Enquanto
+// a porta existisse ligada-mas-inerte, esse era um defeito à espera de um chamador.
+//
+// A [WindowFactory] e o resto do [WindowPort] FICAM: têm prova de equivalência byte-a-byte com
+// o caminho inline (`integration.TestWindowManagerFactory_ByteIdenticalToInline`), que é o
+// contrato de D-TAIL. O que saiu foi o sinal, não a posse do tail.
 
 // WindowFactory constrói o [WindowPort] POR RUN a partir dos inputs congelados do
 // prefixo (run_id + system + tool set). É injectada via [WithWindowFactory]; o default
@@ -75,9 +79,6 @@ type WindowPort interface {
 	// SystemHash devolve sha256("<system>") no formato "sha256:<hex>" — o system_hash
 	// que o manifesto por trajectória grava (ADR-010).
 	SystemHash() string
-	// Signal devolve o sinal de ocupação corrente (consumido pelo [CompactionTrigger]
-	// na fronteira de fim-de-turno). O default inline devolve o valor-zero.
-	Signal() WindowSignal
 }
 
 // inlineWindow é o [WindowPort] DEFAULT: o [PromptAssembler] + tail inline que o loop
@@ -93,8 +94,7 @@ func (w *inlineWindow) Append(seg TailSegment) { w.tail = append(w.tail, seg) }
 func (w *inlineWindow) Assemble(_ context.Context, turn int) PromptView {
 	return w.asm.Assemble(turn, w.tail)
 }
-func (w *inlineWindow) SystemHash() string   { return w.asm.SystemHash() }
-func (w *inlineWindow) Signal() WindowSignal { return WindowSignal{} }
+func (w *inlineWindow) SystemHash() string { return w.asm.SystemHash() }
 
 // defaultWindowFactory constrói um [inlineWindow] — o comportamento AOS-013.
 type defaultWindowFactory struct{}
@@ -105,32 +105,6 @@ func (defaultWindowFactory) NewWindow(_ /*runID*/, system string, tools []ToolSp
 
 var _ WindowPort = (*inlineWindow)(nil)
 var _ WindowFactory = defaultWindowFactory{}
-
-// ---------------------------------------------------------------------------
-// AOS-043 — CompactionTrigger (compressão em checkpoint, fora do turno)
-// ---------------------------------------------------------------------------
-
-// CompactionTrigger observa o sinal de ocupação da janela na fronteira de fim-de-turno
-// e pode enfileirar compressão assíncrona (AOS-043). É injectado via
-// [WithCompactionTrigger]; o default ([noopCompactionTrigger]) nunca observa nem
-// comprime (byte-idêntico AOS-013). A compressão em si corre FORA do turno (num
-// checkpoint), nunca na hot path — este ponto de ligação só ENTREGA o sinal.
-type CompactionTrigger interface {
-	// Observe reporta o sinal de fim-de-turno. Devolve se uma compactação foi
-	// enfileirada (observacional) e um erro FATAL (fail-closed: aborta o run). O
-	// adaptador decide o que é fatal — ex.: pode absorver backpressure de fila cheia
-	// devolvendo (false, nil) em vez de propagar.
-	Observe(ctx context.Context, runID string, turn int, sig WindowSignal) (bool, error)
-}
-
-// noopCompactionTrigger é o default: nunca enfileira nada.
-type noopCompactionTrigger struct{}
-
-func (noopCompactionTrigger) Observe(context.Context, string, int, WindowSignal) (bool, error) {
-	return false, nil
-}
-
-var _ CompactionTrigger = noopCompactionTrigger{}
 
 // ---------------------------------------------------------------------------
 // AOS-021 — ActivityDispatcher (despacho durável idempotente do efeito)
@@ -173,16 +147,6 @@ func WithWindowFactory(f WindowFactory) Option {
 	return func(rt *Runtime) {
 		if f != nil {
 			rt.windowFactory = f
-		}
-	}
-}
-
-// WithCompactionTrigger injecta o gatilho de compressão em checkpoint (AOS-043). Um
-// valor nil é ignorado (mantém o default no-op).
-func WithCompactionTrigger(t CompactionTrigger) Option {
-	return func(rt *Runtime) {
-		if t != nil {
-			rt.compaction = t
 		}
 	}
 }

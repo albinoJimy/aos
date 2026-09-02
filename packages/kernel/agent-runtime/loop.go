@@ -134,7 +134,6 @@ type Runtime struct {
 	escalation       EscalationSink         // AOS-021: tool call escalada → espera por humano
 	approvalEvidence ApprovalEvidenceSource // AOS-021: prova de aprovação a anexar na retoma
 	windowFactory    WindowFactory          // AOS-037: dono único do tail/assembly (D-TAIL)
-	compaction       CompactionTrigger      // AOS-043: compressão em checkpoint
 	dispatcher       ActivityDispatcher     // AOS-021: despacho durável do efeito
 	callRewriter     CallRewriter           // AOS-005/064: forma final do efeito, na construção
 	assemblyVersion  string
@@ -193,7 +192,6 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 		checkpointer:    noopCheckpointer{},
 		capturer:        noopCapturer{},
 		windowFactory:   defaultWindowFactory{},
-		compaction:      noopCompactionTrigger{},
 		assemblyVersion: AssemblyVersion,
 		defaultMaxTurns: DefaultMaxTurns,
 	}
@@ -214,9 +212,6 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 	}
 	if rt.windowFactory == nil {
 		rt.windowFactory = defaultWindowFactory{}
-	}
-	if rt.compaction == nil {
-		rt.compaction = noopCompactionTrigger{}
 	}
 	// Dispatcher default = Mediate directo sobre o RM do runtime (AOS-013). Definido
 	// APÓS as opções para poder ligar rt.rm; um WithActivityDispatcher sobrepõe-no.
@@ -628,14 +623,6 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			}
 		}
 
-		// COMPACTAÇÃO EM CHECKPOINT (AOS-043) — observa a ocupação da janela na fronteira
-		// de fim-de-turno (com o tail do turno completo, incluindo eventual correcção) e
-		// pode enfileirar compressão assíncrona FORA do turno. Aditivo: default no-op ⇒
-		// AOS-013 inalterado. Corre só em turnos NÃO-terminais (um run concluído/pausado
-		// já retornou acima) — a compressão prepara a janela do turno SEGUINTE.
-		if _, err := rt.compaction.Observe(ctx, goal.RunID, turn, win.Signal()); err != nil {
-			return res, err
-		}
 	}
 
 	res.Turns = maxTurns

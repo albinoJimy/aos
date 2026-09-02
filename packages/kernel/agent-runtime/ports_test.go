@@ -99,7 +99,6 @@ type fakeWindow struct {
 	tail          []TailSegment
 	appended      []TailKind
 	assembleTurns []int
-	signal        WindowSignal
 }
 
 func (w *fakeWindow) Append(seg TailSegment) {
@@ -110,8 +109,7 @@ func (w *fakeWindow) Assemble(_ context.Context, turn int) PromptView {
 	w.assembleTurns = append(w.assembleTurns, turn)
 	return w.asm.Assemble(turn, w.tail)
 }
-func (w *fakeWindow) SystemHash() string   { return w.asm.SystemHash() }
-func (w *fakeWindow) Signal() WindowSignal { return w.signal }
+func (w *fakeWindow) SystemHash() string { return w.asm.SystemHash() }
 
 type fakeWindowFactory struct {
 	win    *fakeWindow
@@ -170,57 +168,6 @@ func (f failingWindowFactory) NewWindow(string, string, []ToolSpec) (WindowPort,
 	return nil, f.err
 }
 
-// ---------------------------------------------------------------------------
-// AOS-043 — CompactionTrigger
-// ---------------------------------------------------------------------------
-
-type fakeCompaction struct {
-	observedTurns []int
-	sigs          []WindowSignal
-	err           error
-}
-
-func (c *fakeCompaction) Observe(_ context.Context, _ string, turn int, sig WindowSignal) (bool, error) {
-	c.observedTurns = append(c.observedTurns, turn)
-	c.sigs = append(c.sigs, sig)
-	return false, c.err
-}
-
-// TestLoop_CompactionTrigger_ObservedOnNonTerminalTurns prova que o gatilho de
-// compactação é observado na fronteira de fim-de-turno SÓ em turnos não-terminais (o
-// turno final retorna antes) — a compressão prepara a janela do turno seguinte.
-func TestLoop_CompactionTrigger_ObservedOnNonTerminalTurns(t *testing.T) {
-	h := newHarness(t, echoToolset())
-	c := &fakeCompaction{}
-	rt := New(toolThenFinalModel(), h.rm, h.recorder, WithCompactionTrigger(c))
-	if _, err := rt.Run(context.Background(), sampleGoal()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	// Turno 1 não-terminal ⇒ Observe(1). Turno 2 terminal ⇒ retorna antes de observar.
-	if len(c.observedTurns) != 1 || c.observedTurns[0] != 1 {
-		t.Fatalf("observedTurns=%v, quero [1] (só turnos não-terminais)", c.observedTurns)
-	}
-}
-
-// TestLoop_CompactionError_FailClosed prova que um erro do gatilho aborta o run
-// (fail-closed): o adaptador é quem decide o que é fatal (o kernel propaga).
-func TestLoop_CompactionError_FailClosed(t *testing.T) {
-	h := newHarness(t, echoToolset())
-	sentinel := errors.New("fila cheia")
-	// Modelo que NUNCA termina ⇒ garante que a fronteira de fim-de-turno (e o Observe)
-	// corre pelo menos uma vez antes de o erro abortar.
-	model := ModelClientFunc(func(context.Context, PromptView) (ModelResponse, error) {
-		return ModelResponse{ToolCalls: []ToolInvocation{{ToolID: "echo", Capability: "cap:echo", Input: []byte("x")}}}, nil
-	})
-	rt := New(model, h.rm, h.recorder, WithCompactionTrigger(&fakeCompaction{err: sentinel}))
-	_, err := rt.Run(context.Background(), sampleGoal())
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("err=%v, quero a sentinela do gatilho (fail-closed)", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// AOS-021 — ActivityDispatcher (preservação do Credential, AOS-152)
 // ---------------------------------------------------------------------------
 
 type fakeDispatcher struct {

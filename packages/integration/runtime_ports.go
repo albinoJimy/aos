@@ -8,7 +8,6 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/activity"
 	"github.com/aos-ref/kernel/agent-runtime/breaker"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
-	"github.com/aos-ref/platform/memory/compression"
 	"github.com/aos-ref/platform/memory/working"
 )
 
@@ -19,18 +18,12 @@ import (
 //
 //   - [WindowManagerFactory] → agentruntime.WindowFactory (AOS-037): o working.WindowManager
 //     passa a ser o DONO ÚNICO do tail/assembly do run (resolução D-TAIL).
-//   - [CompactionTriggerAdapter] → agentruntime.CompactionTrigger (AOS-043): o
-//     compression.CheckpointTrigger observa o sinal de fim-de-turno e enfileira compressão.
 //   - [DurableDispatcher] → agentruntime.ActivityDispatcher (AOS-021): o activity.Dispatcher
 //     acrescenta idempotência/replay durável à volta de Mediate, PRESERVANDO o Credential
 //     (AOS-152) do Call construído pelo loop.
 
 // Erros de construção dos adaptadores (fail-closed, comparáveis com errors.Is).
 var (
-	// ErrNilTrigger — [NewCompactionTriggerAdapter] sem CheckpointTrigger.
-	ErrNilTrigger = errors.New("integration: compression.CheckpointTrigger nil")
-	// ErrNilSourceBuilder — [NewCompactionTriggerAdapter] sem construtor de source.
-	ErrNilSourceBuilder = errors.New("integration: CompactionSourceBuilder nil")
 	// ErrNilDispatcher — [NewDurableDispatcher] sem activity.Dispatcher.
 	ErrNilDispatcher = errors.New("integration: activity.Dispatcher nil")
 	// ErrNilBreakerResolver — [NewLivenessBreakerAdapter] sem resolvedor por-run.
@@ -144,73 +137,22 @@ func (p *windowManagerPort) Assemble(ctx context.Context, turn int) agentruntime
 // SystemHash delega no assembler congelado do WindowManager (para o manifesto do loop).
 func (p *windowManagerPort) SystemHash() string { return p.wm.SystemHash() }
 
-// Signal projecta o sinal de exaustão do WindowManager no tipo kernel-local.
-func (p *windowManagerPort) Signal() agentruntime.WindowSignal {
-	s := p.wm.Signal()
-	return agentruntime.WindowSignal{
-		Triggered:       s.Triggered,
-		Action:          string(s.Action),
-		OccupancyTokens: s.Occupancy.Total(),
-		LimitTokens:     s.Occupancy.Limit,
-	}
-}
-
 var _ agentruntime.WindowFactory = (*WindowManagerFactory)(nil)
 var _ agentruntime.WindowPort = (*windowManagerPort)(nil)
 
 // ---------------------------------------------------------------------------
-// AOS-043 — CompactionTriggerAdapter → agentruntime.CompactionTrigger
+// AOS-043 — CompactionTriggerAdapter: REMOVIDO (AOS-298)
 // ---------------------------------------------------------------------------
 
-// CompactionSourceBuilder constrói a [compression.CompactionSource] a enfileirar para um
-// run na fronteira de fim-de-turno. Devolve ok=false quando ainda não há nada a compactar
-// (o adaptador não enfileira). O apex fornece-o porque é ele que detém o registo/trajectória
-// (Event Store) com o CONTEÚDO a compactar — a porta do loop só entrega o SINAL, nunca o
-// conteúdo (o kernel não conhece a semântica de compressão).
-type CompactionSourceBuilder func(runID string, turn int) (compression.CompactionSource, bool)
-
-// CompactionTriggerAdapter adapta o [compression.CheckpointTrigger] à
-// [agentruntime.CompactionTrigger]: mapeia o sinal kernel-local para working.Exhaustion e
-// observa-o no trigger, que enfileira a compressão para correr FORA do turno.
-type CompactionTriggerAdapter struct {
-	trigger *compression.CheckpointTrigger
-	source  CompactionSourceBuilder
-}
-
-// NewCompactionTriggerAdapter constrói o adaptador. Ambos obrigatórios (fail-closed).
-func NewCompactionTriggerAdapter(trigger *compression.CheckpointTrigger, source CompactionSourceBuilder) (*CompactionTriggerAdapter, error) {
-	if trigger == nil {
-		return nil, ErrNilTrigger
-	}
-	if source == nil {
-		return nil, ErrNilSourceBuilder
-	}
-	return &CompactionTriggerAdapter{trigger: trigger, source: source}, nil
-}
-
-// Observe implementa [agentruntime.CompactionTrigger]. Só enfileira se o sinal disparou E
-// o construtor devolve uma source. Backpressure de fila cheia NÃO é fatal ao run (a
-// compressão é preparação, não hard-stop): absorve-se devolvendo (false, nil).
-func (a *CompactionTriggerAdapter) Observe(ctx context.Context, runID string, turn int, sig agentruntime.WindowSignal) (bool, error) {
-	if !sig.Triggered {
-		return false, nil
-	}
-	src, ok := a.source(runID, turn)
-	if !ok {
-		return false, nil
-	}
-	ex := working.Exhaustion{
-		Triggered: sig.Triggered,
-		Action:    working.ExhaustionAction(sig.Action),
-	}
-	enqueued, err := a.trigger.Observe(ctx, ex, src)
-	if errors.Is(err, compression.ErrQueueFull) {
-		return false, nil
-	}
-	return enqueued, err
-}
-
-var _ agentruntime.CompactionTrigger = (*CompactionTriggerAdapter)(nil)
+// O adaptador que ligava o [compression.CheckpointTrigger] à porta do loop saiu com a própria
+// porta. A cadeia completa — sinal da janela → porta → adaptador → trigger — terminava num
+// `append` a uma fila que ninguém drenava (`CheckpointTrigger.RunCheckpoint` também não tinha
+// chamador de produção), e a porta não tinha por onde ALIVIAR a janela: o `EvictToTailBudget`
+// do WindowManager nunca esteve na interface do kernel.
+//
+// O `compression.CheckpointTrigger` e o `working.WindowManager` FICAM intactos em
+// `platform/memory` — são API própria daquele pilar, com testes próprios. O que saiu foi a
+// ligação ao loop, não a maquinaria.
 
 // ---------------------------------------------------------------------------
 // AOS-021 — DurableDispatcher → agentruntime.ActivityDispatcher
