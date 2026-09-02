@@ -204,19 +204,28 @@ func (g *runGate) EscalateToHuman(ctx context.Context, reason string) error {
 //
 // Só transita QUANDO o estado é mesmo esse: um run novo (ready) ou já a correr não é
 // tocado, e o stream/replay ficam byte-idênticos.
-func (g *runGate) resumeIfWaiting(ctx context.Context) error {
+func (g *runGate) resumeIfWaiting(ctx context.Context, retomarPausa func(context.Context) error) error {
 	switch g.m.Current() {
 	case state.WaitingOnHuman:
 		return g.ResumeFromHuman(ctx, "retoma explicita apos aval humano (AOS-021)")
 	case state.Paused:
-		// A PAUSA TAMBÉM SE RETOMA, e é aqui que o condutor morto ganha o seu primeiro
-		// chamador de produção. Até 2026-08-23 o [runGate.Resume] existia, estava ligado à
-		// porta `control.StateGate`, e ninguém o abria: `paused` era absorvente de facto.
+		// A PAUSA RETOMA-SE PELO CANAL DE CONTROLO, NÃO AQUI (AOS-292).
 		//
-		// Sem esta aresta, uma retoma de run pausado deixaria a máquina em `paused` durante
-		// toda a nova hospedagem — e o disjuntor, o selo terminal e o deadline ficariam
-		// todos desarmados, porque os três exigem `Running`.
-		return g.Resume(ctx, "retoma explicita apos pausa graciosa")
+		// Até 2026-08-23 `paused` era absorvente e ninguém abria o [runGate.Resume]. Ligá-lo
+		// directamente à máquina resolveu metade e criou outra: a projecção do canal ficava
+		// com `pauseRequested` a true, o `GracefulPause` via-o na fronteira do primeiro turno
+		// e o run RE-PAUSAVA — com a correcção do operador por consumir. Uma correcção
+		// aceite, selada, e nunca entregue.
+		//
+		// Quem limpa a pausa é `SteerChannel.Resume`, e ele exige um emissor ASSINADO. Por
+		// isso a retoma da pausa é INJECTADA por quem tem esse emissor (o caminho HTTP), em
+		// vez de decidida aqui: este gate não conhece o canal nem tem como autenticar
+		// ninguém. Sem função injectada, a pausa NÃO se levanta — recusar é o lado seguro,
+		// porque transitar à revelia do canal é exactamente o defeito de AOS-292.
+		if retomarPausa == nil {
+			return ErrResumePausaExigeCanal
+		}
+		return retomarPausa(ctx)
 	default:
 		// Um run novo (ready) ou já a correr não é tocado, e o stream/replay ficam
 		// byte-idênticos.

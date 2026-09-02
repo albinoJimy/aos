@@ -635,6 +635,14 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	if plan := replayPlanFrom(ctx); plan != nil {
 		runCtx = withReplayPlan(runCtx, plan)
 	}
+	// O EMISSOR DA RETOMA (AOS-292) é outro desses valores, e pela mesma razão: o
+	// `SteerChannel.Resume` que levanta a pausa corre em `hostRun`, sob o runCtx, e exige o
+	// emissor ASSINADO que só existe no corpo do pedido. Perdê-lo aqui faria a retoma de um
+	// run pausado recusar sempre — e recusar é o lado seguro, mas seria uma recusa por
+	// acidente de plumbing, não por decisão. Re-anexa-se só este valor, como o plano.
+	if em, ok := resumeEmitterFrom(ctx); ok {
+		runCtx = withResumeEmitter(runCtx, em)
+	}
 	// IDENTIDADE POR-RUN DO MODELO (AOS-278, CUTOVER DURO). O token NHI do RUN
 	// (goal.Credential) — o MESMO que cada tool call mediada verifica — anexa-se ao runCtx
 	// PRÓPRIO do run para o caminho do modelo o apresentar ao estágio authn REAL do GW.
@@ -824,7 +832,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			// voltar a corrê-lo — repõe-se `running`. Sem isto, uma segunda escalada (o caso
 			// normal: o agente pede outra acção de risco no turno seguinte) tentaria
 			// waiting_on_human→waiting_on_human e o run morreria como FALHADO.
-			if err := gate.resumeIfWaiting(ctx); err != nil {
+			if err := gate.resumeIfWaiting(ctx, func(c context.Context) error {
+				return s.retomarPausaPeloCanal(c, rs.runID, gate)
+			}); err != nil {
 				s.mu.Lock()
 				rs.err = fmt.Errorf("aos: repor o run %q em execucao na retoma (AOS-021): %w", rs.runID, err)
 				s.mu.Unlock()
