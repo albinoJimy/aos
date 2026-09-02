@@ -52,7 +52,7 @@ oficializar a afirmação falsa.
 | AOS-290 | O texto claro retido pelo step-ledger fica fora do alcance do crypto-shredding | P0 | **implementado** (AC2 re-fundamentada) |
 | AOS-291 | O mutex do disjuntor cobre I/O durável e o `AlertSink`, congelando o aborto gracioso | P1 | **implementado** `5100a48` (AC2 em parte) |
 | AOS-292 | `POST /runs/{id}/resume` contorna o canal de steer e não consome a correcção | P1 | **implementado** (AC2 e AC4 por fechar) |
-| AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | por iniciar |
+| AOS-293 | A projecção do canal de controlo não é reconstruída no arranque | P2 | implementado (`1f019ec`) |
 | AOS-294 | A tabela de `neutralizarDelimitadores` contradiz a função que ilustra | P3 | **implementado** `76d3692` |
 | AOS-295 | `activity/doc.go` declara o deferimento sem a ressalva de modo | P3 | **implementado** `4bbd367` |
 | AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 | por iniciar |
@@ -364,14 +364,23 @@ consumação tem de acontecer no ponto da entrega), e o wiring do nó.
    turno a sério, não têm capturas, e a retoma falha no plano de replay. Nenhum teste do repo
    consegue hoje uma retoma HTTP bem-sucedida. Os testes entregues entram por
    `retomarPausaPeloCanal` e provam a decisão e o efeito no canal; a lacuna está declarada no
-   cabeçalho do ficheiro. Fechar exige uma fixture que corra um turno real antes de pausar.
+   cabeçalho do ficheiro.
+   **Caminho de resolução decidido pelo dono:** o teste corre no **cluster**, contra ambiente
+   real, e não se substitui por uma fixture que simule um turno — uma fixture que finge o
+   ambiente produz um teste que passa sem provar nada, que é a falsificação de teste que este
+   epic persegue. Idioma: `//go:build`, no molde de `packages/substrate/sandbox/fclive_test.go`,
+   com o cabeçalho a nomear o que o teste exige e o comando exacto. Fica fora da CI normal e
+   nunca passa em silêncio por ausência de ambiente.
 2. **AC4 — o `ControlSurface` não foi removido.** `NewControlSurface` e `Dispatch` não têm
    consumidor externo, mas o pacote tem `NewStateProjector`, usado por `cmd/aos-demo`, e apagar
    o `surface.go` mexe em ~1100 linhas de testes do próprio pacote.
 
-**E TORNA O AOS-293 URGENTE:** a retoma normal passa agora pelo canal e a pós-crash não, porque
-a projecção volta vazia. O epic avisou que fechá-los em ordem trocada deixaria os dois caminhos
-inconsistentes — a inconsistência existe a partir daqui.
+**TORNOU O AOS-293 URGENTE, E ERA PIOR DO QUE ISTO.** Com a projecção vazia, o
+`SteerChannel.Resume` recusa por não haver pausa pendente, o `retomarPausaPeloCanal` falha e o
+`hostRun` aborta fail-closed: um run pausado deixava de se conseguir retomar **de todo** após um
+reinício — e não apenas de perder a correcção. O epic avisou que fechá-los em ordem trocada
+deixaria os dois caminhos inconsistentes; foi o que aconteceu. **Reposto em `1f019ec`
+(AOS-293).**
 
 ---
 
@@ -399,9 +408,51 @@ citação não. As âncoras corretas são as acima.
 
 ### Estado
 
-**POR INICIAR.** P2. Interage com AOS-292: numa retoma pós-crash a projecção volta vazia, o
-que *acidentalmente* anula o defeito daquele ticket — fechá-los em ordem trocada deixaria o
-comportamento inconsistente entre retoma normal e retoma pós-crash.
+**IMPLEMENTADO** em `1f019ec`; **as três ACs fechadas**, a terceira por não se aplicar. P2. As
+âncoras do Contexto acima são as do código ANTES da correcção.
+
+**O DEFEITO ERA MAIOR DO QUE O CONTEXTO DESCREVE, E A METADE NOVA FOI INTRODUZIDA POR
+AOS-292.** Não era só uma correcção descartada em silêncio: desde `d169198`, retomar uma pausa
+passa por `SteerChannel.Resume`, que recusa quando a projecção não tem pausa pendente — pelo
+que com `c.runs` vazio o `hostRun` abortava fail-closed e **um run pausado não se conseguia
+retomar de todo** após um reinício. Este ticket repõe as duas coisas.
+
+**AC1 — POR HOSPEDAGEM, NÃO NO ARRANQUE**, apesar da letra da AC, e a evidência é que o literal
+não resolveria o caso:
+
+1. a varredura de arranque **salta deliberadamente** os runs `paused` — `crash_resume.go` trata
+   só `state.Running` —, pelo que um rebuild no arranque não tocaria no run que interessa;
+2. o padrão dominante do repositório é por hospedagem: `RebuildLedger`, `state.Machine` no
+   `Open`, e o `RunToolSets.Rebuild`, que foi fechado exactamente assim depois de ter estado
+   sem chamador;
+3. um rebuild global exigiria reler todos os streams por inteiro duas vezes e não cobriria os
+   runs hospedados depois.
+
+A chamada fica **antes** do `resumeIfWaiting` — depois, a retoma pelo canal já recusou.
+
+**AC2 — TRÊS TESTES, E A SEPARAÇÃO É O PONTO.** Dois provam o *mecanismo* com um reinício
+genuíno (novo `Bootstrap` sobre o mesmo WAL em disco, projecção realmente vazia): um recupera a
+correcção, o outro prova que uma correcção **já entregue** não ressuscita — a de-duplicação
+durável de AOS-292 a atravessar um restart, que o `applied` in-process do `LoopSteer` não podia
+dar. O terceiro prova a *cablagem*, hospedando um run pelo caminho real do serviço.
+Falsificados: removida a linha do `hostRun`, **só o de cablagem falha** — que é a distinção que
+faltava, porque o mecanismo já tinha testes quando o defeito existia.
+
+**AC3 — NÃO SE APLICA.** É condicional à decisão de *não* reconstruir; reconstruiu-se, e o
+`steer_channel.go:43-46` passa a dizer a verdade em vez de deixar de a prometer.
+
+**UMA CORRIDA QUE ESTE TICKET TORNOU ALCANÇÁVEL, E FECHOU.** O `Rebuild` lê o stream **fora** do
+lock — de propósito, porque prender um mutex durante I/O é o defeito que AOS-291 removeu do
+disjuntor — e **substituía** a projecção. Um sinal aceite entre a leitura e a instalação ficava
+de fora: evento durável, memória atrasada, `nControls` desalinhado, e o `appendControl` seguinte
+a reutilizar um `ctrl-N` já usado ⇒ `ErrControlLogDivergence` a derrubar um sinal legítimo. A
+janela existia e era inalcançável sem chamador. Fechada com instalação **condicional** — se a
+memória está à frente do que a leitura alcançou, não se substitui —, sem segurar o lock durante
+o I/O. Com teste próprio, também falsificado.
+
+**CUSTO DECLARADO:** o `Rebuild` relê o stream **inteiro** e filtra os quatro tipos `control.*`
+em memória. Com o `RebuildLedger` logo acima, são duas passagens por hospedagem, e o custo
+cresce com a idade do run. Fica escrito no local, para quem investigar uma retoma lenta.
 
 ---
 
