@@ -86,12 +86,26 @@
 //
 // # Adopção pelo loop (AOS-013): DIFERIDA
 //
-// O ESCOPO estrito de AOS-021 é o CONTRATO de activity (este pacote + testes). O loop
-// base (AOS-013, agent-runtime/loop.go) medeia hoje cada tool call DIRECTAMENTE via
-// [referencemonitor.Monitor.Mediate] (no-bypass + taint garantidos), mas ainda NÃO
-// despacha via [Dispatcher.Dispatch] — logo a idempotência/replay pelo step-ledger NÃO
-// cobre ainda o efeito externo REAL do loop em execução. A ligação do loop ao Dispatcher
-// (substituir o rm.Mediate directo por um despacho ledger-backed) é trabalho de wiring
-// DEFERIDO (adopção AOS-022 / ticket de integração), fora do âmbito da entrega do
-// contrato. Ver agent-runtime/loop.go (mediateToolCall).
+// O ESCOPO estrito de AOS-021 é o CONTRATO de activity (este pacote + testes). O que o loop
+// faz com esse contrato DEPENDE DO MODO, e a redacção anterior deste parágrafo não o dizia —
+// afirmava de forma INCONDICIONAL que o loop «ainda NÃO despacha via [Dispatcher.Dispatch]»,
+// o que é verdade num modo e falso no outro. Uma auditoria concluiu a partir daí que DEF-801 e
+// DEF-805 contavam dívida inexistente; a conclusão estava errada, mas foi esta frase que a
+// tornou plausível. Os dois modos (AOS-295):
+//
+//   - MODO POR OMISSÃO — o do binário sem execução durável. Ninguém injecta dispatcher, e o
+//     runtime atribui `directDispatcher{rm}` (agent-runtime/loop.go, na resolução de defaults):
+//     cada tool call é mediada DIRECTAMENTE via [referencemonitor.Monitor.Mediate] (no-bypass e
+//     taint garantidos) e NÃO passa por [Dispatcher.Dispatch]. Neste modo a idempotência/replay
+//     pelo step-ledger não cobre o efeito externo REAL do loop em execução.
+//
+//   - MODO DURÁVEL — nó com AOS_DURABLE_EXECUTION=1. O composition-root
+//     (packages/integration, secured.go) constrói o [Dispatcher] ledger-backed a partir do
+//     StepLedger + RM e injecta-o por WithActivityDispatcher. Neste modo o despacho É
+//     ledger-backed e a afirmação acima não se aplica.
+//
+// O que continua DEFERIDO, e é o que DEF-801/DEF-805 registam, é a adopção no caminho POR
+// OMISSÃO: tornar o despacho ledger-backed o comportamento do loop base em vez de uma opção que
+// o composition-root tem de ligar. Eixo: AOS-022 (adopção do dispatcher ledger-backed no loop).
+// Ver agent-runtime/loop.go (mediateToolCall).
 package activity
