@@ -38,23 +38,6 @@ func TestVersion_StringAndChangeKindString(t *testing.T) {
 	}
 }
 
-// TestValidate_ResumeInlineCorrectionNeedsSignature — fail-closed: resume com
-// correcção inline sem a assinatura da injecção é rejeitado.
-func TestValidate_ResumeInlineCorrectionNeedsSignature(t *testing.T) {
-	m := controlsurface.ControlMessage{
-		SchemaVersion: controlsurface.CurrentVersion.String(),
-		Kind:          controlsurface.KindResume,
-		RunID:         testRunID,
-		EmitterID:     testEmitter,
-		Signature:     []byte("resume-sig"),
-		Correction:    []byte("corrige"),
-		// CorrectionSignature em falta.
-	}
-	if err := m.Validate(controlsurface.CurrentVersion); !errors.Is(err, controlsurface.ErrEmptyCorrectionSignature) {
-		t.Fatalf("Validate=%v, quero ErrEmptyCorrectionSignature", err)
-	}
-}
-
 func TestReflection_ConstructorFailClosed(t *testing.T) {
 	ctx := context.Background()
 	if _, err := controlsurface.NewStateProjector(ctx, nil, testRunID); !errors.Is(err, controlsurface.ErrNilSubscriber) {

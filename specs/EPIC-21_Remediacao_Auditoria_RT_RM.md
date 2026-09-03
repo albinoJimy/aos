@@ -67,7 +67,7 @@ E os cinco residuais de §0.4, que a remediação produziu:
 | AOS-300 | A revogação de NHI não sobrevive a um restart em produção | P1 | **implementado** `148c7c5` |
 | AOS-301 | A `state.Machine` persiste com o seu mutex detido | P2 | **implementado** `c69098f` |
 | AOS-302 | A poda do step-ledger não obriga a substrato durável em produção | P3 | **fechado sem código** — premissa falsificada |
-| AOS-303 | O payload do contrato de controlo ficou sem consumidor | P3 | por iniciar |
+| AOS-303 | O payload do contrato de controlo ficou sem consumidor | P3 | **removido** |
 | AOS-304 | A retoma não é selada na hash-chain, e a pausa é | P2 | **implementado** `43845a0` |
 
 **Onze fechados, seis abertos.** Dos seis, quatro — AOS-289, AOS-296, AOS-298, AOS-299 —
@@ -1127,9 +1127,35 @@ factos diferentes; não é o mesmo ticket porque os deliverables e os epics de o
 
 ### Estado
 
-**POR INICIAR.** P3. Sem urgência técnica — nada quebra por o payload existir. A urgência é de
-rastreabilidade, como em AOS-296: um contrato versionado sem produtor não pode ser citado como
-evidência de que o protocolo funciona.
+**REMOVIDO.** As quatro ACs fechadas. P3.
+
+**DECISÃO DO DONO: APAGAR O PAYLOAD.** Saem `ControlMessage`, o seu codec JSON, a `Validate`
+fail-closed, o discriminador `Kind` e os cinco construtores (`NewInterrupt`, `NewSteer`,
+`NewResume`, `NewResumeWithCorrection`, `NewStateQuery`), mais os cinco erros de validação que
+só a `Validate` produzia. **309 linhas**, contra 404 de remoção total incluindo testes.
+
+**FICA O QUE TEM CONSUMIDOR REAL, e foi verificado um a um:** `StateProjector` (`cmd/aos-demo`,
+rastreado pelos EPIC-13/14/15), `ControlSchemaVersion` (`governance/approval-card`) e `ChannelID`
+(`governance/surface-adapter`). Os três módulos passam com `-race` depois da remoção.
+
+**AC2 — o `contract_test.go` foi DESCARTADO EM PARTE, com razão escrita, e reaproveitado na
+parte que ainda tem código para exercitar.** Dos cinco testes, quatro validavam a
+`ControlMessage` e saíram com ela: provam a validação de um payload que deixou de existir, e
+reaproveitá-los exigiria manter o payload — a via que a decisão recusou. **Fica o
+`TestContract_SemVerParseCompareClassify`**, porque o que ele exercita sobreviveu: parse
+fail-closed, ordenação total, classificação de mudança e o `SchemaDomain`, todos em `version.go`.
+
+**AC4 — o `doc.go` deixa de declarar o residual e passa a descrever o pacote.** Nomeia as três
+peças que ficam e quem as consome, e regista a remoção em DOIS passos — AOS-292 (AC4) tirou a
+`ControlSurface`, AOS-303 tirou o payload que ela era a única a consumir — com a razão de terem
+sido dois tickets: arrastar o protocolo teria sido decidir o destino de um deliverable de
+AOS-119/EPIC-12 em silêncio.
+
+**A GARANTIA QUE NUNCA ESTEVE AQUI, e fica dita no `doc.go`:** o mecanismo durável de HITL —
+sinal sempre aceite, pausa graciosa no fim do turno, tudo gravável e reconstruível por replay
+(ADR-013) — sempre viveu em `kernel/agent-runtime/control` (AOS-023), composto e em uso. Este
+pacote nunca o implementou: compunha-o. O que se removeu foi a camada de apresentação que
+ninguém adoptou.
 
 ---
 

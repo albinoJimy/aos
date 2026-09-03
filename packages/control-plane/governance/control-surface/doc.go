@@ -1,66 +1,41 @@
-// Package controlsurface é o CONTRATO UNIFICADO da superfície de controlo HITL
-// out-of-band do AOS (AOS-119, EPIC-12, ADR-013).
+// Package controlsurface é o que RESTA da superfície de controlo HITL out-of-band do AOS
+// (AOS-119, EPIC-12, ADR-013) — três peças com consumidor real, e nada mais.
 //
-// # O que é (e o que NÃO é)
+// # O QUE ESTE PACOTE É HOJE
 //
-// É uma camada FINA de APRESENTAÇÃO/PROTOCOLO. Define um protocolo estável e
-// VERSIONADO (SemVer) — steer, interrupt, resume-com-correcção, query-estado — que
-// QUALQUER canal (desktop, chatbot, API) usa para sinalizar o loop do agente, e que
-// reflecte de volta o estado durável (running/paused/waiting_on_human) de forma
-// consistente a todos os canais.
-//
-// NÃO reimplementa a máquina de estados, o estado `paused` nem o graceful pause —
-// esse MECANISMO DURÁVEL já existe e é completo em kernel/agent-runtime/control
-// (AOS-023, EPIC-02, Done). Este módulo COMPÕE-o:
-//
-//   - [ControlMessage] é o contrato único (um schema versionado, independente do
-//     canal) — [messages.go].
-//   - [ControlSchemaVersion] versiona-o em SemVer com o domínio
-//     [SchemaDomain] = "aos.control.surface.v1" — [version.go].
-//   - [StateProjector] é o read-model por run que subscreve
-//     [eventstore.Store.Subscribe] e faz FAN-OUT do estado corrente a todos os
-//     canais subscritos — dois canais vêem o MESMO estado (fonte única) —
+//   - [StateProjector] — o read-model por run que subscreve [eventstore.Store.Subscribe] e faz
+//     FAN-OUT do estado corrente a todos os canais subscritos: dois canais vêem o MESMO estado
+//     (fonte única). Consumido por `cmd/aos-demo` e rastreado pelos EPIC-13/14/15 —
 //     [reflection.go].
+//   - [ControlSchemaVersion] — o contrato de versão em SemVer, com o domínio
+//     [SchemaDomain] = "aos.control.surface.v1". Consumido por `governance/approval-card` —
+//     [version.go].
+//   - [ChannelID] — o rótulo da superfície de origem (desktop/chatbot/API), presentation pura.
+//     Consumido por `governance/surface-adapter` — [messages.go].
 //
-// # O TRADUTOR FOI REMOVIDO (AOS-292 AC4)
+// # O QUE SAIU, E EM QUE ORDEM
 //
-// Existia aqui um ControlSurface que traduzia cada [ControlMessage] validada para as
-// APIs de AOS-023 (interrupt → Pause, steer → Steer, resume → Resume via MachineGate),
-// mais o span de interacção que cada acção emitia. NUNCA foi composto em produção:
-// construía-se apenas em testes, enquanto o nó chamava o [control.SteerChannel]
-// directamente. Eram DUAS vias de retoma, e a que estava ligada era a outra.
+// Este pacote foi desenhado como um CONTRATO UNIFICADO: um protocolo versionado
+// (`ControlMessage`) que qualquer canal emitiria, e uma `ControlSurface` que o traduzia para as
+// APIs reais de AOS-023. Nenhuma das duas metades chegou a produção, e saíram em dois passos
+// deliberadamente separados:
 //
-// Removê-lo não perdeu cobertura: as propriedades que os seus testes provavam — recusa
-// de sinal não autenticado, graceful pause, materialização paused→running pela máquina —
-// são provadas em kernel/agent-runtime/control ao nível que corre em produção, e com mais
-// casos. O que morreu com ele foi o guarda de ordenação do resume-com-correcção, que só
-// fazia sentido para a operação composta que ele oferecia.
+//   - **AOS-292 (AC4)** removeu a `ControlSurface`. Nunca foi composta: construía-se só em
+//     testes, enquanto o nó chamava o [control.SteerChannel] directamente. Eram duas vias de
+//     retoma, e a ligada era a outra.
+//   - **AOS-303** removeu o PAYLOAD que ela era a única a consumir — `ControlMessage`, o seu
+//     codec, a `Validate`, o discriminador `Kind` e os cinco construtores.
 //
-// FICA UM RESIDUAL DECLARADO: sem o tradutor, a metade de PAYLOAD deste contrato
-// ([ControlMessage], [DecodeMessage], [NewInterrupt], [NewSteer], [NewResume],
-// [NewResumeWithCorrection], [NewStateQuery], [Kind]) deixou de ter consumidor — de
-// produção ou de outro pacote. O que TEM consumidor real e por isso fica é [ChannelID]
-// (governance/surface-adapter) e [ControlSchemaVersion] (governance/approval-card).
-// Alargar esta remoção ao payload seria decidir, em silêncio, o destino de um
-// deliverable de AOS-119/EPIC-12; está aberto em AOS-303.
+// Foram dois tickets e não um porque não era a mesma decisão. Remover a superfície fechava uma AC
+// de AOS-292; remover o protocolo decide o destino de um deliverable nomeado de AOS-119/EPIC-12,
+// com teste de schema próprio e promessa de estabilidade em SemVer. Arrastá-lo teria sido decidir
+// por outro epic em silêncio.
 //
-// # Três garantias inegociáveis (ADR-013), herdadas de AOS-023
+// # A GARANTIA QUE NÃO ESTAVA AQUI
 //
-//  1. Sinal SEMPRE ACEITE — [control.SteerChannel.Pause] marca a pausa PENDENTE
-//     mesmo a meio de um turno; o sinal nunca é descartado.
-//  2. Pausa GRACIOSA — a transição running→paused só se materializa no FIM do turno
-//     via [control.SteerChannel.GracefulPause]; este módulo NÃO a implementa,
-//     delega no runtime.
-//  3. TUDO GRAVÁVEL — o sinal e a correcção viram eventos append-only no Event
-//     Store (não-repúdio); o estado durável é reconstruível por replay.
-//
-// # Separação control/data-plane (out-of-band)
-//
-// O canal de controlo é DISTINTO do canal de dados/conteúdo. Uma correcção de
-// utilizador entra AUTENTICADA por [control.SteerChannel.Steer]; a
-// [control.Correction] resultante é SEMPRE [agentruntime.TaintTrusted] (origem
-// [taint.OriginAuthenticatedUser]). Conteúdo untrusted (resultado de tool / web)
-// não carrega uma assinatura de emissor válida — o autenticador rejeita-o
-// ([control.ErrUnauthenticated]) e ele NUNCA se torna um sinal nem uma instrução no
-// data-plane.
+// O mecanismo durável de HITL — sinal sempre aceite, pausa graciosa no fim do turno, tudo
+// gravável e reconstruível por replay (ADR-013) — sempre viveu em
+// kernel/agent-runtime/control (AOS-023), e continua lá, composto e em uso. Este pacote nunca o
+// implementou: compunha-o. O que se removeu foi a camada de apresentação que ninguém adoptou,
+// não uma garantia.
 package controlsurface
