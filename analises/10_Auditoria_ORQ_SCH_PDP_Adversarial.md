@@ -9,6 +9,7 @@
 | Tipo | Sete lentes independentes → **refutação adversarial** → **medição executada no nó real** → **validação cruzada externa** (§8) |
 | Auditoria anterior | `analises/09_Auditoria_RT_RM_Adversarial.md` (2026-09-02), cujo §7 declara: «O PDP, o orquestrador e o model-gateway só foram tocados nas fronteiras» |
 | Contratos verificados contra | `_BRIEF.md` (linhas 50-52, 94), `specs/EPIC-01`, `EPIC-03`, `EPIC-09`, `EPIC-19`, ADR-011/013/015/018/019/020/022/023, `tecnica/01`, `03`, `12`, `14`, `16`, `17`, `18` |
+| Remediação | `specs/EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md` (AOS-305..311) — os sete defeitos activos do §6 |
 
 ---
 
@@ -457,13 +458,13 @@ registá-lo seria convertê-lo em dívida aceite por decreto. Um **limite aceite
 
 | Sobrevivente | Estado | Destino |
 |---|---|---|
-| `/autonomy`: uma assinatura, sem papel, sem tecto, sem four-eyes | **activo, medido** | **Defeito** — ticket (autoridade `autonomy:set` no molde de `approve:<classe>`; four-eyes para transições que atravessem o limiar do gate humano) |
-| `/autonomy`: nível aplicado com selagem falhada, API responde 400 | **activo, medido** | **Defeito** — ticket (o contrato está escrito em `registry.go:142-146`; corrigir o **consumidor**, não o registo) |
-| `/challenge` sem autenticação, com o comentário a declarar o contrário | **reclassificado (§8)** — emissão inerte para autoridade | **Limite aceite + 2 defeitos**: escrita durável anónima a registar; comentário/classe a corrigir; **e** `/approve` nega com 403 uniforme **sem selo nem log** (`api.go:1868-1874`, `Authorize` sem nenhuma chamada de audit) |
+| `/autonomy`: uma assinatura, sem papel, sem tecto, sem four-eyes | **activo, medido** | **AOS-305** (EPIC-22) |
+| `/autonomy`: nível aplicado com selagem falhada, API responde 400 | **activo, medido** | **AOS-306** (EPIC-22) |
+| `/challenge` sem autenticação, com o comentário a declarar o contrário | **reclassificado (§8)** — emissão inerte para autoridade | **AOS-308** (EPIC-22); **e** `/approve` nega sem selo → **AOS-309** (EPIC-22) |
 | Obrigações hardcoded em Go, fora do bundle assinado | **reclassificado (§8)** | **Limitação ratificada** — ADR-011:58,143 documenta a derivação em Go; emenda de precisão ao ADR sobre a equivalência com o golden Rego; linha de registo para o `ttl` sem emissor |
 | Região do recurso auto-declarada, sem atestação | **rebaixado (§8)** — inalcançável pelo caminho cablado | **Observação documental** — a única regra com região exige `taint != "untrusted"`, e o caminho real fixa sempre `untrusted`; **emenda a CON-04** mantém-se |
 | PDP sem tracer, `Reload` sem via, decisão sem métrica | **reformulado (§8)** | «Cego» cai (WORM leva `policy_version` por decisão); ficam 3 lacunas: `WithTracer` por ligar, span sem `policy_version`, `aos audit-trail` omite-o |
-| `policy.changed` nunca emitido em produção (AOS-088) | activo | **Defeito** — ticket |
+| `policy.changed` nunca emitido em produção (AOS-088) | activo | **AOS-310** (EPIC-22) |
 | Exemplo normativo C1 contradiz o código (obrigação `ttl` inexistente) | documental | **Defeito** — remediação P0-D por executar, com teste de contrato no gate 7 |
 | AOS-090 (`autonomy.NewController`) sem chamador | activo por omissão | **DEF novo** — limite aceite, eixo AOS-090 |
 | AOS-094 AC#2: obrigação `region` inerte para tool calls | latente | **DEF novo** — eixo AOS-094 (os outros 4 CA estão cobertos por AOS-058/182/205) |
@@ -477,8 +478,8 @@ registá-lo seria convertê-lo em dívida aceite por decreto. Um **limite aceite
 | RTM §7: 20/20 contra 19/19 no mesmo ficheiro; §7 sem guarda | documental | **Defeito** — corrigir a §7 e alargar o âmbito do regenerador ou do ref-lint |
 | `scheduler/README.md:465` «≥90%» contra 81,8% medido | documental | **Defeito** — uma linha, conhecida desde 2026-08-08 |
 | «10 rotas do plano de controlo» em quatro sítios (são 11) | documental | **Defeito** — e substituir a enumeração manual por derivação da tabela |
-| Deny por prazo esgotado atribuído ao `audit-sink` | **eliminado (§8)** — eixo novo no lugar | O «timeout fail-closed» de `tecnica/17` §4.3-D é **condicional ao sink**: o `audit.FileStore` de produção não consulta `ctx`, pelo que um prazo esgotado a meio da cadeia sai *permit* e tenta o efeito sob contexto morto. **Defeito** — `ctx.Err()` em `FileStore.Append`, ou declarar a condição |
-| `/autonomy` não sobrevive a reinício: `provision` reaplica `AOS_AUTONOMY_LEVELS` sobre registo novo | **novo (§8)** | **Defeito** — o WORM diz L5, o nó serve o nível do ficheiro; trilho e efeito divergem após restart |
+| Deny por prazo esgotado atribuído ao `audit-sink` | **eliminado (§8)** — eixo novo no lugar | O «timeout fail-closed» de `tecnica/17` §4.3-D é **condicional ao sink**: o `audit.FileStore` de produção não consulta `ctx`. **AOS-311** (EPIC-22) |
+| `/autonomy` não sobrevive a reinício: `provision` reaplica `AOS_AUTONOMY_LEVELS` sobre registo novo | **novo (§8)** | **AOS-307** (EPIC-22) |
 
 **Não entram como achado próprio**, por serem a leitura de uma decisão ratificada: a não-composição do ORQ
 e do SCH (ADR-018 §4, ADR-023, AOS-281 §Contexto), o stub de `orchestrator.Submit` (**DEF-803**, ABERTO,
