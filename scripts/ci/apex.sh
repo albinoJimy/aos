@@ -54,7 +54,11 @@ REQUIRED=(
   TestProvenanceQuarantiner_Admits
   TestWindowManagerFactory_ByteIdenticalToInline
   TestDurableDispatcher_PreservesCredential
-  TestCompactionTriggerAdapter_ObserveGating
+  # TestCompactionTriggerAdapter_ObserveGating saiu em AOS-298 com o adaptador que testava: a
+  # porta de sinal de janela (WindowSignal/CompactionTrigger) foi REMOVIDA por ter zero
+  # chamadores de produção em toda a cadeia — sinal, eviction, sink e drenagem da fila. Este
+  # gate apanhou a remoção, que é o que ele existe para fazer; a entrada sai porque o
+  # adaptador saiu, e não porque o teste se tornou inconveniente.
 )
 # Regex ancorado (^Test…$) unido por '|': casa EXACTAMENTE os obrigatórios e nunca
 # um teste-veneno por substring.

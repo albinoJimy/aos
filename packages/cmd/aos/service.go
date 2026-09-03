@@ -453,6 +453,17 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	if err != nil {
 		return nil, fmt.Errorf("aos: assigner (posse por lease) do loop de servico: %w", err)
 	}
+	// AOS-299: liga a autoridade de token às escritas fenceadas do ledger/checkpointer.
+	//
+	// A RECUSA É DE COMPOSIÇÃO, e é o que impede o fencing de ficar inerte em silêncio: se há
+	// ledger durável mas não há autoridade, o nó hospedaria runs a escrever sem fencing sem que
+	// nada o denunciasse. Recusa-se aqui, no arranque, em vez de o descobrir em produção.
+	if node.Ledger != nil && node.fencingAuth == nil {
+		return nil, ErrFencingAuthorityMissing
+	}
+	if node.fencingAuth != nil {
+		node.fencingAuth.ligar(leases)
+	}
 
 	s := &NodeService{
 		node:          node,
@@ -723,6 +734,16 @@ func (s *NodeService) unreserve(rs *runState) {
 func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentruntime.Goal) {
 	defer s.wg.Done()
 	defer s.finish(rs)
+
+	// AOS-299: o token do lease entra no CONTEXTO do run. É daqui que o Event Store fenceado o
+	// lê em cada escrita do step-ledger e do checkpointer — o ledger é composto UMA vez e
+	// partilhado por todos os runs, pelo que o token não pode viver nele. Mesmo idioma de
+	// [durable.ContextWithTitular], e pela mesma razão.
+	//
+	// AQUI, E NÃO MAIS ABAIXO: a goroutine do heartbeat (logo a seguir) fecha sobre a VARIÁVEL
+	// `ctx`, não sobre o seu valor. Reatribuí-la depois de a goroutine arrancar é uma corrida de
+	// dados — foi assim que a primeira versão desta linha ficou, e foi o `-race` que a apanhou.
+	ctx = durable.ContextWithFencingToken(ctx, rs.lease.Token)
 
 	// Renovador de posse por-run: mantém o lease vivo enquanto o run corre (fecha a janela
 	// em que um run mais longo que o TTL veria a posse EXPIRAR — liveness classificá-lo-ia

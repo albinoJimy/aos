@@ -120,7 +120,11 @@ func (s *NodeService) driveSagaCompensation(rs *runState, titular string) {
 		return
 	}
 
-	ctx := context.Background()
+	// AOS-299: contexto FRESCO (o do run já terminou), mas com o token do lease anexado — a
+	// compensação escreve no step-ledger, e essas escritas são fenceadas. Sem isto a saga
+	// recusaria cada reversão com ErrStaleFencingToken, que seria trocar um efeito por reverter
+	// por um efeito NÃO revertido.
+	ctx := durable.ContextWithFencingToken(context.Background(), rs.lease.Token)
 
 	// SUBSTRATO em falta ⇒ compensação DESLIGADA, DECLARADA (não silenciosa). Sem o step-ledger
 	// durável (AOS_DURABLE_EXECUTION) não há idempotência de compensação; sem registo composto não

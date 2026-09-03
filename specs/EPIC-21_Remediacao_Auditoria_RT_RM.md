@@ -58,7 +58,7 @@ oficializar a afirmação falsa.
 | AOS-296 | `engine/` é uma porta sem consumidor, e sustenta os únicos `[x]` do EPIC-02 | P2 | **removido** |
 | AOS-297 | `WithLeaseHeartbeat` aceita um intervalo superior ao TTL sem validar | P3 | **implementado** `db215f5` |
 | AOS-298 | Uma divergência de replay por eviction sairia inatribuível | P2 | **fechado — porta removida** |
-| AOS-299 | A AC «escritas no Event Store carregam o fencing token» está por cumprir | P2 | por iniciar |
+| AOS-299 | A AC «escritas no Event Store carregam o fencing token» está por cumprir | P2 | **implementado** (AC2 emendada) |
 
 E os cinco residuais de §0.4, que a remediação produziu:
 
@@ -830,7 +830,52 @@ o registo diz que se sabe, não que está feito.
 
 ### Estado
 
-**POR INICIAR.** P2. Subsistema sensível; escopo próprio.
+**IMPLEMENTADO**; AC1, AC3 e AC4 fechadas, **AC2 emendada** — ver abaixo. P2.
+
+**DECISÃO DO DONO: fencear as duas escritas, com o adaptador em `durable`.** A alternativa —
+compor o `worker.NewWorker` no nó, que é o que faria o guard-test desactivar-se — foi medida e
+recusada: o `Worker` consome um `RunPlan` de passos **pré-enumerados** e o nó corre um loop
+agêntico dirigido por objectivo. Seriam dois modelos de trabalho incompatíveis, com heartbeat
+duplicado. Mudança de arquitectura, não wiring.
+
+**AC1 — âmbito decidido:** fenceiam-se `StepLedger.Apply` e `EventStoreCheckpointer.Checkpoint`
+via `durable.FencedStore`, um `EventStore` que apresenta ao `FencedAppender` o token que
+`durable.ContextWithFencingToken` anexa. O token viaja no contexto pela mesma razão que o titular
+do crypto-shredding: o ledger do nó é composto **uma vez** e partilhado por todos os runs,
+enquanto o token é **por-run**. Fica **de fora**, com razão escrita: tudo o que o `worker.Worker`
+escreveria, porque não está composto.
+
+**A REGRA NÃO É «trouxe token?» — É «há detentor a superar?».** A AC pede «escritas com token
+inferior ao corrente são rejeitadas». Uma recusa cega de toda a escrita sem token partiria a
+superfície de embedding (um `Bootstrap` com execução durável e sem serviço não tem lease manager
+nenhum) sem fechar defeito algum — não há concorrente. Os quatro casos: sem detentor e sem token
+⇒ escreve; **com detentor e sem token ⇒ recusa**; com detentor e token inferior ⇒ recusa; token
+corrente ⇒ escreve. Medido: com esta regra, **zero testes do repositório precisaram de edição**.
+
+**AC2 — EMENDADA, e é a metade que a decisão não cumpre à letra.** A AC pedia que o guard-test de
+AOS-222 passasse a fazer `t.Skip` por si próprio. **Não passa, e não deve.** A sua condição de
+skip é TEXTUAL — a presença de `NewFencedAppender` ou `worker.NewWorker` num `.go` não-teste de
+`cmd/aos` —, e o que ele vigia é o nó não afirmar que «o fencing barra escritas» enquanto não
+compõe o caminho fenceado por inteiro. Isso continua verdadeiro: o `Worker` continua por compor.
+Por isso o adaptador vive em **`durable`** e não no nó: escrevê-lo em `cmd/aos` desarmaria o
+guarda **em silêncio**, e desarmá-lo seria mentira. O guarda continua activo e a passar.
+
+**AC3 — `EPIC-02:428` fica por marcar, e o âmbito é o desta decisão:** as escritas do ledger e do
+checkpointer carregam token; as do worker não existem no nó.
+
+**AC4 — a janela TOCTOU fica RE-DECLARADA como limite aceite**, com a precisão que o próprio
+ticket já corrigia: `fencing_test.go:298-300` fixa o caso-fronteira token-**igual**, e o
+estritamente inferior é rejeitado em `:308-311`. O `FencedStore` não a altera — herda-a do
+`FencedAppender`.
+
+**UMA CORRIDA DE DADOS, MINHA, APANHADA PELO `-race`.** A primeira versão da linha que anexa o
+token reatribuía `ctx` **depois** de a goroutine do heartbeat ter fechado sobre a variável. Cinco
+testes ficaram vermelhos com «race detected». Passou para o topo do `hostRun`, antes de a
+goroutine arrancar, com a razão escrita no local.
+
+**E O GATE `apex` APANHOU UM RESÍDUO DE AOS-298:** a sua lista de testes obrigatórios exigia o
+`TestCompactionTriggerAdapter_ObserveGating`, removido com a porta de sinal. Eu não tinha corrido
+o `apex` naquele ticket. A entrada saiu, com a razão escrita ao lado.
 
 ---
 

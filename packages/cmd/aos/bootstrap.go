@@ -691,6 +691,10 @@ type Node struct {
 	Verifier *identity.Verifier
 	// SteerAuth é o autenticador ed25519 do canal de controlo (só pubkeys).
 	SteerAuth *integration.Ed25519Authenticator
+	// fencingAuth é a autoridade de token das escritas fenceadas do ledger/checkpointer
+	// (AOS-299). Não-exportada: só o [NewNodeService] lhe liga o LeaseManager, e mais
+	// ninguém tem razão para lhe tocar. nil fora da execução durável.
+	fencingAuth *fencingAuthority
 	// Revocations é o registo de revogação de NHI que o [Verifier] consulta (AOS-288).
 	// Exposto no nó — e não só passado ao verifier — porque o plano de CONTROLO precisa
 	// dele: sem uma via alcançável para escrever aqui, ligar a consulta seria compor um
@@ -1259,10 +1263,26 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// reversões duplicadas", pelo que sem ledger durável não haveria substrato para o
 		// coordinator. nil ⇒ compensação desligada (o caminho de falha declara-o).
 		compensations *saga.CompensationRegistry
+		// fencing é a autoridade de token das escritas fenceadas (AOS-299), ligada ao
+		// LeaseManager pelo NewNodeService. nil fora da execução durável — sem ledger nem
+		// checkpointer não há escrita a fencear.
+		fencing *fencingAuthority
 	)
 	if cfg.DurableExecution {
 		var err error
-		checkpointer, err = durable.NewCheckpointer(es)
+		// AOS-299: as duas escritas do caminho de run — checkpoint e step-ledger — passam a
+		// escrever por um Event Store FENCEADO em vez do store cru. A AC de `EPIC-02:428`
+		// exigia-o e só o `leaseRecord` e o `transitionRecord` o cumpriam.
+		//
+		// A autoridade é de LIGAÇÃO TARDIA (`NewNodeService` liga-lhe o LeaseManager) e recusa
+		// TODA a escrita enquanto não estiver ligada — ver [fencingAuthority]. O token viaja no
+		// contexto, anexado por quem detém o lease.
+		fencing = &fencingAuthority{}
+		fencedES, ferr := durable.NewFencedStore(es, fencing)
+		if ferr != nil {
+			return nil, fmt.Errorf("aos: event store fenceado (AOS-299): %w", ferr)
+		}
+		checkpointer, err = durable.NewCheckpointer(fencedES)
 		if err != nil {
 			return nil, fmt.Errorf("aos: checkpointer durável (AOS-180): %w", err)
 		}
@@ -1288,7 +1308,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// RECUSADO antes de qualquer efeito em vez de vazar. Não há degradação a temer no
 		// nó: o loop já recusa um run sem principal ([agentruntime.ErrNoPrincipal]), logo o
 		// titular é sempre resolvível no caminho de execução.
-		ledger, err = durable.NewStepLedger(es,
+		ledger, err = durable.NewStepLedger(fencedES,
 			durable.WithContentSealer(contentCipher), durable.WithRequireTitular())
 		if err != nil {
 			return nil, fmt.Errorf("aos: step-ledger durável (AOS-180): %w", err)
@@ -2431,6 +2451,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Checkpointer:  checkpointer, // nil quando a execução durável está desligada
 		Capturer:      capturer,     // (os três são compostos/omitidos EM CONJUNTO)
 		Ledger:        ledger,
+		fencingAuth:   fencing,       // AOS-299: autoridade das escritas fenceadas (nil sem execução durável)
 		Compensations: compensations, // AOS-254: registo de compensações (nil sem execução durável)
 
 		SovereignReadRegions:    readRegions,
