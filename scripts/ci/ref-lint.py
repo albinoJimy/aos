@@ -3,9 +3,9 @@
 ref-lint.py — Gate 2b: validação de referências cruzadas do corpus documental.
 
 Verifica:
-1. Todos os AOS-NNN citados em specs/, docs/adr/ e tecnica/ (excepto a própria RTM)
+1. Todos os AOS-NNN citados em specs/, docs/adr/ e tecnica/ (a RTM incluída, AOS-313)
        existem no backlog (specs/EPIC-*.md).
-2. Todos os ADR-001..ADR-019 canónicos têm pelo menos um ticket implementador
+2. Todos os ADR-001..ADR-023 canónicos têm pelo menos um ticket implementador
        no backlog.
 3. Todos os ADR-NNN citados em specs/ existem no catálogo de ADRs
        (docs/adr/README.md e specs/00_System_Spec.md §11).
@@ -92,7 +92,7 @@ SPECS_DIR = REPO_ROOT / "specs"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"
 TECNICA_DIR = REPO_ROOT / "tecnica"
 
-ADR_RANGE = [f"ADR-{i:03d}" for i in range(1, 20)]
+ADR_RANGE = [f"ADR-{i:03d}" for i in range(1, 24)]
 
 # --- Verificação 4: título↔ticket (AOS-198) ----------------------------------
 
@@ -159,6 +159,17 @@ def titles_agree(cited: str, reference_tokens: set) -> bool:
     return False
 
 
+# Marcador opcional, escrito no bloco de um ticket: declara que os códigos
+# ADR-NNN que ele cita são MENÇÃO — o ticket FALA sobre eles — e não
+# implementação. Sem isto, um ticket sobre a própria rastreabilidade, que tem
+# de nomear os ADRs de que fala, entra na matriz §4 como implementador deles: a
+# matriz passaria a afirmar precisamente o que este epic existe para impedir.
+# Primeiro utilizador: AOS-313 (que discute ADR-003, ADR-014 e ADR-020…023 sem
+# realizar nenhum). `ref-lint.py` honra o mesmo marcador, para que os dois
+# leitores do corpus nunca discordem sobre o que um ticket implementa.
+RE_ADRS_MENCIONADOS = re.compile(r"<!--\s*rtm:\s*adrs-mencionados\s*-->")
+
+
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -175,7 +186,11 @@ def extract_backlog() -> dict:
             start = m.end()
             next_h = re.search(r"\n#{2,3} (AOS-\d{3})\s*[-–—]", text[start:])
             block = text[start : start + next_h.start()] if next_h else text[start:]
-            adrs = set(re.findall(r"ADR-\d{3}", block))
+            adrs = (
+                set()
+                if RE_ADRS_MENCIONADOS.search(block)
+                else set(re.findall(r"ADR-\d{3}", block))
+            )
             entry = tickets.setdefault(aos, {"adrs": set(), "file": epic_file, "titles": []})
             entry["adrs"] = adrs
             entry["file"] = epic_file
@@ -316,11 +331,17 @@ def main() -> int:
     backlog_set = set(backlog.keys())
     adr_catalog = extract_adr_catalog()
 
-    # Garantir que o catálogo inclui os 19 ADRs canónicos, mesmo que ainda não
+    # Garantir que o catálogo inclui os ADRs canónicos, mesmo que ainda não
     # materializados individualmente.
     adr_catalog |= set(ADR_RANGE)
 
-    skip = {REPO_ROOT / "tecnica" / "16_Rastreabilidade_RTM.md"}
+    # A RTM esteve aqui em `skip` desde sempre, com a justificação implícita de
+    # que cita todos os AOS-NNN e ADR-NNN do corpus e verificá-la seria redundante.
+    # Não era: significava que uma referência PARTIDA na RTM era a única do corpus
+    # que ninguém lia — e a §7 derivou precisamente aí (`analises/10` §5, AOS-313).
+    # Verificar a RTM custa um ficheiro a mais e fecha a segunda metade da lacuna;
+    # a primeira é a §7 passar a ser gerada.
+    skip = set()
     citations = extract_citations([SPECS_DIR, DOCS_ADR_DIR, TECNICA_DIR], skip)
 
     broken_aos = defaultdict(list)

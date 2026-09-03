@@ -23,6 +23,10 @@
 #   N) divergência de contrato de porta bloqueia o gate 4 «Integração» (AOS-198);
 #   O) literal/concatenação de tipo de evento bloqueia o gate event-catalog (AOS-198);
 #   P) título citado de OUTRO ticket é recusado pelo ref-lint (AOS-198, residual STR-01).
+#   R) linha da §6 da RTM que atribui um ticket a um epic que não o contém
+#      bloqueia o gate rtm (meta-achado de `analises/10` §5).
+#   S) citação inexistente na §7 da RTM bloqueia o gate rtm, e a RTM deixa de
+#      estar fora do ref-lint (AOS-313).
 #
 # Os subtestes N4/N5, O3/O4 e P2 existem porque a primeira versão destes três
 # gates passava os seus próprios self-testes sendo, ainda assim, contornável: o
@@ -54,6 +58,12 @@ LAYER_TMP=""
 # toolchain Go a ignore mesmo se algo correr em paralelo. Removida pelo trap.
 EVENT_PROBE="$REPO_ROOT/packages/_selftest_eventcat"
 REFLINT_TMP=""
+# §R muta o gerador da RTM NA ÁRVORE REAL (não há como o correr fora dela: ele
+# resolve REPO_ROOT a partir do próprio caminho). Backup byte-a-byte + restauro
+# no trap, como em §B com a assinatura da política.
+RTM_GEN="$REPO_ROOT/scripts/ci/rtm-regenerate.py"
+RTM_GEN_BAK="$(mktemp)"
+cp "$RTM_GEN" "$RTM_GEN_BAK"
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -61,6 +71,7 @@ cleanup() {
   rm -rf "$LAYER_TMP"
   rm -rf "$EVENT_PROBE"
   rm -rf "$REFLINT_TMP"
+  if [ -f "$RTM_GEN_BAK" ]; then cp "$RTM_GEN_BAK" "$RTM_GEN"; rm -f "$RTM_GEN_BAK"; fi
 }
 trap cleanup EXIT INT TERM
 
@@ -693,6 +704,129 @@ if bash "$CI_DIR/deploy-gate-lint.sh" >/dev/null 2>&1; then
   pass "Q4: controlo — o gate de entrega continua verde contra a arvore REAL (distingue, nao rejeita tudo)"
 else
   bad "Q4: o gate de entrega ficou vermelho contra a arvore real — POSSIVEL RASTO no repo"
+fi
+
+
+# ============================================================================
+# R) o gate rtm bloqueia uma §6 que atribui um ticket ao epic errado
+# ============================================================================
+# O defeito real: `rtm-regenerate.py` escrevia «o último epic do backlog» onde a
+# linha afirma o epic de um ticket CONCRETO. A linha do STRIDE dizia EPIC-21, e
+# passou a dizer EPIC-22 ao ser regenerada — e AOS-194 sempre viveu na EPIC-18.
+# Nada comparava o que a máquina escrevia com a fonte: é o meta-achado de
+# `analises/10` §5 agravado por o autor ser automático. Aqui prova-se que a
+# asserção `validate_section6` RECUSA a atribuição falsa, em vez de a afirmar
+# por comentário.
+log_gate "self-test R · o gate rtm bloqueia atribuição ticket→epic falsa na §6"
+
+# Vermelho PELO motivo certo: `--check` também falha por simples divergência de
+# texto, e isso provaria outra coisa. Exige-se a mensagem da asserção.
+# `set -o pipefail` está activo: encadear directamente em `grep` devolveria o
+# exit!=0 do gerador e a prova diria sempre «bloqueou». A saída é capturada
+# primeiro e só depois inspeccionada.
+rtm_bloqueou_pela_asercao() {
+  local out rc
+  out="$(python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q 'atribui tickets a epics'
+}
+
+# R1 — o par explícito `EPIC-NN/AOS-194` apontado ao epic errado.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/stride_epic = epic_of\(tickets, "AOS-194"\)/stride_epic = "EPIC-01"/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao; then
+  pass "R1: o gate bloqueou a §6 que atribuía AOS-194 a um epic que não o contém"
+else
+  bad "R1: o gate não bloqueou (ou falhou por outro motivo) com AOS-194 atribuído à EPIC-01"
+fi
+
+# R2 — a REGRESSÃO literal: voltar a usar «o último epic» para a gama de remediação.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/rem_epics = epics_covering\(tickets, rem_low, stats\["max_aos"\]\)/rem_epics = [last_epic]/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao; then
+  pass "R2: o gate bloqueou o regresso de last_epic como epic de tickets concretos"
+else
+  bad "R2: o gate passou com a gama AOS-190→ atribuída só ao último epic — a classe de defeito volta com a próxima epic"
+fi
+
+# R3 — CONTROLO POSITIVO (o molde do P3/Q4): restaurada a árvore, o gate volta a
+# verde. Sem isto, um validador que rejeitasse TUDO passaria R1/R2 e estaríamos a
+# medir «diz sempre que não» em vez de «distingue».
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+if python3 "$RTM_GEN" --check >/dev/null 2>&1; then
+  pass "R3: controlo — o gate rtm continua verde contra a árvore REAL (sem rasto)"
+else
+  bad "R3: o gate rtm ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
+fi
+
+
+# ============================================================================
+# S) o gate rtm bloqueia uma §7 que cita o que não existe
+# ============================================================================
+# O defeito real: a §7 fechava com «20/20 ADRs e 12/12 NFRs» enquanto as §§4 e 5,
+# geradas, tinham 19 e 10 linhas e declaravam 19/19 e 10/10 — no mesmo ficheiro, a
+# setenta linhas. Era a unica seccao da RTM fora da regeneracao E fora do ref-lint:
+# ninguem a lia. Agora e gerada, e `validate_section7` confronta com o corpus tudo o
+# que ela cite. Aqui prova-se que RECUSA uma citacao inventada.
+log_gate "self-test S · o gate rtm bloqueia uma citação inexistente na §7"
+
+# O padrão tem de ser ASCII PURO. O Python escreve stderr na codificação da
+# consola (cp1252 em Windows), e um 'não' vindo deste ficheiro UTF-8 nunca casa.
+rtm_bloqueou_pela_asercao7() {
+  local out rc
+  out="$(python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q 'cita entidades que'
+}
+
+# S1 — um ticket que nao existe, citado por uma lacuna.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/GAP04_STEER = \[/GAP04_STEER = ["AOS-999", /' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao7; then
+  pass "S1: o gate bloqueou a §7 que citava um ticket inexistente"
+else
+  bad "S1: o gate não bloqueou (ou falhou por outro motivo) com AOS-999 citado na §7"
+fi
+
+# S2 — um NFR fora de NFR_SPECS. E o molde exacto do defeito historico: a §7
+# afirmava 12/12 NFRs quando NFR_SPECS tem dez, e NFR-11/NFR-12 nao existem para o
+# gerador. Se alguem voltar a nomea-los na §7 sem os por na fonte, fica vermelho.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/"evidencia": "§3, §5",/"evidencia": "§3, §5 (NFR-11)",/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao7; then
+  pass "S2: o gate bloqueou a §7 que nomeava NFR-11, ausente de NFR_SPECS"
+else
+  bad "S2: o gate passou com NFR-11 na §7 — o defeito histórico de 12/12 podia voltar"
+fi
+
+# S3 — CONTROLO POSITIVO: restaurada a arvore, o gate volta a verde.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+if python3 "$RTM_GEN" --check >/dev/null 2>&1; then
+  pass "S3: controlo — o gate rtm continua verde contra a árvore REAL (sem rasto)"
+else
+  bad "S3: o gate rtm ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
+fi
+
+# S4 — a RTM deixou de estar fora do ref-lint. Uma referencia partida DENTRO da RTM
+# tem de avermelhar o gate; antes de AOS-313 era a unica do corpus que ninguem lia.
+RTM_TMP="$(mktemp -d)"
+mkdir -p "$RTM_TMP/docs"
+cp -r "$REPO_ROOT/specs"    "$RTM_TMP/specs"
+cp -r "$REPO_ROOT/tecnica"  "$RTM_TMP/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$RTM_TMP/docs/adr"
+perl -0pi -e 's/AOS-001 – AOS-/AOS-998 – AOS-/' "$RTM_TMP/tecnica/16_Rastreabilidade_RTM.md"
+if AOS_REFLINT_ROOT="$RTM_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  bad "S4: o ref-lint passou com AOS-998 citado na RTM — a RTM continua fora do gate"
+else
+  pass "S4: o ref-lint bloqueou uma referência partida DENTRO da RTM (fim do skip)"
+fi
+rm -rf "$RTM_TMP"
+
+# S5 — controlo positivo do §S4, no molde do P3.
+if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  pass "S5: controlo — o ref-lint continua verde contra a árvore REAL (sem rasto)"
+else
+  bad "S5: o ref-lint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
 fi
 
 
