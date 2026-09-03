@@ -105,7 +105,8 @@ What `up` composes (each is otherwise off, and the node says so loudly at boot):
 
 | Env var | Driver value | Without it |
 |---|---|---|
-| `AOS_OPERATORS` | `op:jimy=<pubkey of generated seed>` | steer/pause all refused (`ErrUnknownEmitter`) |
+| `AOS_OPERATORS` | `op:jimy=<pubkey>,op:maria=<pubkey>` (two generated seeds) | steer/pause all refused (`ErrUnknownEmitter`) |
+| `AOS_AUTONOMY_SETTERS` | `op:jimy,op:maria` | `POST /autonomy` refuses every change (403) — AOS-305; L4/L5 need both signatures (`--co-emitter`) |
 | `AOS_APPROVERS_FILE` | 2 generated approvers | `POST /runs/{id}/approve` → 501 |
 | `AOS_POLICY_BUNDLE_DIR` + `AOS_POLICY_TRUST_ANCHOR` | the committed signed bundle | PDP unloaded → **default-deny every tool call** |
 | `AOS_AUTONOMY_LEVELS` + `AOS_AUTONOMY_DEFAULT` | `agt-1:fs=L4,agt-1:http=L2` / `L1` | no `escalate` verdict is ever emitted; the human-approval bridge is unreachable |

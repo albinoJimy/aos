@@ -6,6 +6,94 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Fixed — EPIC-22 (AOS-305..311) Os sete defeitos ACTIVOS do plano de controlo
+- `feat(AOS-305)` (P0) — **uma assinatura deixa de remover o gate humano.** `POST /autonomy` autorizava-se com a assinatura de UM operador qualquer de `AOS_OPERATORS`: a auditoria mediu `L0 → L5` num salto, para uma classe com que o operador não tinha relação, e o `escalate` a desaparecer (`denied_by` passou de `policy` para `dispatch`). Passa a exigir a capability **`autonomy:set`** (`AOS_AUTONOMY_SETTERS`, subconjunto validado de `AOS_OPERATORS`) e, para toda a transição **PARA L4/L5** — o limiar em que `danger` deixa de esperar por um humano —, **duas assinaturas de emissores distintos** sobre o mesmo payload canónico (`aos-issuer autonomy-sign --co-emitter/--co-key-file`). O selo nomeia os dois.
+  - **Porquê o destino e não a distância.** `autonomyDualControlRequired` olha só para o nível de chegada: um par nunca registado a nascer em L5 remove tanta supervisão como um L0 promovido. Descer continua a exigir uma assinatura — tornar a redução de privilégio mais cara do que a concessão seria o incentivo errado.
+  - **A âncora criptográfica de «duas pessoas» já existia**: o arranque aborta com pubkey partilhada entre emitterIDs, pelo que dois ids são duas chaves.
+- `fix(AOS-306)` (P0) — **uma selagem falhada deixa de aplicar o nível e de mentir.** `LevelRegistry.SetLevel` passa a **selar ANTES de aplicar** (o idioma audit-before-effect do Reference Monitor): sem changelog selado, a alteração não entra em vigor. O handler distingue os casos e responde **503** («nivel NAO aplicado») em vez do antigo **400 «nivel recusado»** sobre um nível que tinha sido aplicado. `writeMu` serializa escritores durante a selagem; as leituras continuam a nunca esperar por I/O.
+  - Caducou `TestSetLevelSealFailureSurfaced`, que fixava a semântica antiga, e tornou redundante o rollback de promoção do `Controller` — ambos actualizados, com a razão escrita no sítio.
+- `feat(AOS-307)` (P1) — **o nível posto por API sobrevive ao reinício.** O arranque **reidrata** o registo a partir da partição `autonomy` do WORM antes de aplicar `AOS_AUTONOMY_LEVELS`. Precedência por **actor do último selo**: `config:node` cede ao ambiente (a mesma fonte a actualizar-se, e um valor igual não re-sela), qualquer outro **prevalece** — uma decisão humana assinada não é revertida por um ficheiro, e os pares preservados são **declarados no banner** com os dois níveis.
+  - **Limite novo, declarado no código e no banner:** o WORM passa a ser autoritativo sobre os níveis, pelo que sem `AOS_WORM_ANCHOR` composta a cadeia só é verificada contra si própria e quem tenha escrita no ficheiro pode elevar um nível por essa via.
+- `fix(AOS-308)` (P2) — **`/runs/{id}/challenge` passa a autenticar o que o comentário já dizia autenticar.** A rota estava classificada `planoControlo` e o handler não verificava identidade nenhuma: cinco vectores da auditoria devolveram 200, com escrita durável cujo `producer` era uma constante do nó e o `run_id` vazio. O pedido passa a ser **assinado pelo próprio aprovador** (payload canónico sobre run+request_id+approver, nonce de uso único, frescura), com `aos-issuer challenge-sign` a produzi-lo.
+- `fix(AOS-309)` (P1) — **toda a negação do `/approve` fica registada com a razão.** Os catorze ramos de recusa do gate devolviam `denied(...)` sem tocar em audit nenhum e o handler respondia 403 uniforme — o comentário dizia «o audit tem o erro dedicado» e nenhuma via o tinha. A resposta HTTP continua uniforme; a razão passa ao log do operador, correlável pelo `request_id`. Era esta ausência que impediu a própria auditoria de distinguir «challenge inválido» de «cerimónia malformada» em seis tentativas.
+- `feat(AOS-310)` (P2) — **o nó passa a emitir `policy.changed`.** `PDP.Reload` não tem chamador nem rota: trocar de política é reiniciar, e esse caminho passava por `Open`, que não selava nada. O arranque compara a `(versão, content_hash)` em vigor com o último selo da partição `policy` e sela a transição com actor `config:node` — no molde de AOS-248 para a autonomia, incluindo o fail-closed. Arranque idempotente não re-sela. `PDP.ContentHash()` é novo, só-leitura.
+- `fix(AOS-311)` (P1) — **o «timeout fail-closed» do STRIDE deixa de ser condicional ao sink.** `audit.FileStore.Append` não consultava o `ctx` em ponto nenhum: um prazo esgotado a meio da cadeia produzia `permit` e tentava o efeito sob contexto morto. Passa a verificar `ctx.Err()` antes do lock e antes de `persist` (e `MemStore` à entrada, para que um teste não passe pela razão errada). `tecnica/17` §4.3-D e §4.15-D corrigidas para dizer o que passa a ser verdade.
+
+#### Revisão adversarial e de segurança sobre este epic — doze achados, três deles graves e meus
+
+O changeset passou por duas revisões independentes. Nenhum dos três achados graves teria sido
+apanhado pelos critérios de aceitação dos tickets, e todos estão fechados abaixo.
+
+- `fix(AOS-311)` (**CRÍTICO**, achado em revisão) — **o `ctx` novo apagava o selo WORM de toda a
+  negação por timeout do canal HITL.** `hitl.Channel` sela a decisão terminal com o contexto do
+  chamador e, no caminho de timeout, esse contexto está morto por construção: a negação fail-closed
+  continuava a acontecer e **deixava de ser escrita**, sem que o erro subisse a lado nenhum. Um
+  prazo esgotado depois de uma aprovação assinada perdia a obrigação `hitl_signature` — a base do
+  não-repúdio. Medido por A/B com `-overlay`, trocando só os dois ficheiros alterados.
+  - **A correcção separa duas propriedades que estavam confundidas:** *fail-closed do efeito* (um
+    `Append` que decide se a acção acontece continua a herdar o `ctx`) e *durabilidade da prova* (um
+    selo que regista um facto **consumado** usa `context.WithoutCancel` com prazo próprio — o idioma
+    que já existia em `integration/budget.go`). Foi feita a triagem de **todos** os `Append(ctx)`
+    sobre `audit.Store` do repositório, classificados um a um; corrigidos dez sítios em sete
+    pacotes. Cada teste novo traz o **controlo** que prova que o AOS-311 não foi desligado.
+  - `tecnica/17` §4.15-D afirmava fail-closed ponta-a-ponta — verdade sobre o efeito, **falsa sobre
+    o trilho**, que é o que a linha promete. Corrigida.
+- `fix(AOS-307)` (**ALTO**, achado em revisão de segurança, com prova de conceito) — **o ticket
+  tornou o WORM entrada de PRIVILÉGIO.** O `EntryHash` é um SHA-256 **sem chave** e a verificação
+  ancorada só cobre até ao último checkpoint: quem escreve no ficheiro apendia um
+  `autonomy.level_changed` com um actor inventado, reiniciava, e o par servia L5 — **sem uma única
+  assinatura**, contornando o dual-control que o AOS-305 acabara de instalar. Fechado com **provas
+  assinadas dentro do selo**, reverificadas no arranque contra `AOS_OPERATORS` e
+  `AOS_AUTONOMY_SETTERS`, com a regra das duas assinaturas para L4/L5.
+- `fix(AOS-305/307)` (**ALTO**) — **dois banners a afirmar o que o código não fazia**, no trabalho
+  cuja razão de existir é fechar essa classe. O de AOS-305 dizia sem reservas que L4/L5 exigem duas
+  assinaturas, e o nó de referência imprimia-o no mesmo arranque em que aplicava L4 a partir de
+  `AOS_AUTONOMY_LEVELS` **sem assinatura nenhuma** — a cerimónia governa a **rota**, e a linha passou
+  a distinguir as duas vias. O de AOS-307 apontava a âncora do WORM como remédio de um vector que
+  ela **não cobre**.
+- `fix(AOS-307)` — **fail-closed no NÍVEL, não no ARRANQUE, e foi o nó real que o ensinou.** A
+  primeira versão abortava o arranque perante um registo não verificável. O smoke do repositório
+  falhou sobre o **próprio estado anterior** (`o no nao ficou pronto em 20s`), e o mesmo mecanismo
+  dava a quem escreve no WORM um modo de **tijolo permanente** por um registo malformado: trocava-se
+  elevação de privilégio por negação de serviço, contra o mesmo adversário, e a única saída era
+  editar o ficheiro que não se deve poder editar. Um registo que não se confirma é agora **saltado**
+  — nunca aplicado; o par fica no nível do ambiente — e **declarado no banner** com o `audit_seq`, o
+  actor e o motivo, distinguindo migração de registo forjado. Verificado no nó: com um registo
+  legado apendido à mão, o nó arranca, salta-o nomeando `seq=4`, e o smoke fica **verde**.
+- `fix(AOS-307)` — **a precedência custou duas tentativas, e a primeira era pior do que o defeito.**
+  A regra final é «o ambiente ganha quando **mudou** desde o que aplicou da última vez», comparando
+  com o último selo `config:node` do par. A primeira dava a vitória ao ambiente sempre que ele
+  declarasse um nível **inferior** («baixar é a direcção segura») — e isso destruía o ticket, porque
+  o uso normal é o ambiente declarar um piso e o operador subir acima dele. Três testes apanharam-no.
+- `fix(AOS-307)` — **pares fora do ambiente deixavam de ser silenciosos.** O ciclo iterava as
+  entradas declaradas e nunca visitava um par presente no WORM e ausente do ficheiro: ficava em vigor
+  sem entrar na contagem do banner nem em nenhuma lista de divergência, contra o CA que exige que a
+  divergência «nunca seja silenciosa».
+- `fix(AOS-306)` — **a correcção estava na promoção e faltava na demoção**, 47 linhas abaixo:
+  `OnAnomaly` devolvia `changed=true` com uma `LevelChange` vazia quando o sink falhava, e emitia um
+  span de transição `L0→L0` de agente vazio. É a assinatura exacta do defeito que o ticket fecha, no
+  ramo vizinho.
+- `fix(AOS-309)` — **o primeiro teste era tautológico**, e foi a revisão que o mostrou: comparava
+  linhas de log inteiras, que já diferem pelo `request_id`, e passaria com todas as razões vazias.
+  Cobria três casos na via onde o gate devolve a **mesma** razão para catorze causas, deixando por
+  exercer as quatro classes que a AC nomeia. Reescrito sobre a via de duplo controlo, com as pernas
+  em colisão **assinadas** com os valores em colisão — mutá-las depois de assinadas só produzia
+  «assinatura inválida» e nunca chegava ao invariante.
+- `fix(AOS-309)` — **higiene de log**: `ErrSameSession` e `ErrSameCredential` interpolavam o
+  identificador da sessão viva e o credential-id do aprovador. O log passa a dizer a **classe** e a
+  declarar a redacção.
+- `docs` — **um achado de revisão CAIU por medição**: «a âncora do WORM não está composta em
+  deployment nenhum» procurava uma variável (`WORM_ANCHOR`) que não existe. As reais são três, o
+  compose de produção passa-as todas e o `deploy.sh` tem guardas de pré-voo que recusam ligar a
+  âncora sem os ficheiros de checkpoint e de piso. O que sobrevive — a âncora é **opcional**, e o
+  AOS-307 aumentou o custo de a deixar desligada — está agora escrito no README.
+- `fix(scripts/ci)` — **o commit anterior apagou o EPIC-21 da matriz de rastreabilidade.**
+  `rtm-regenerate.py` usava a **contagem** de epics como se fosse o **identificador** de um epic
+  concreto, pelo que acrescentar o EPIC-22 foi substituição e não adição, e o AOS-194 passou a ser
+  atribuído ao epic errado. O gerador passa a derivar o epic do ticket, com uma **guarda fail-closed**
+  que recusa gerar uma linha que afirme um par epic↔ticket que o corpus não confirma — provada
+  partindo-a de propósito. Mais dois sítios da mesma família corrigidos.
+
 ### Added — EPIC-08 sobre AOS-100 Os spans do Event Store replicado, sob contrato semconv
 - `feat(AOS-100)` (P1/EPIC-08) — a última linha do DoD que estava por fazer: o adaptador emitia o gancho de auditoria (`Observer`) mas nenhum span.
   - **Uma porta NOVA, e não o `Observer` repropôsto.** O `Observer` declara-se, no seu próprio doc, como um gancho que «não puxa o SDK OTel (isso é EPIC-08)» — e, decisivamente, é chamado **depois** da operação e **sem contexto**, pelo que um span nascido dele seria **órfão**. A porta `Rastreador`/`Rastro` recebe o `ctx`, e por isso o span fica **por baixo do span do passo que o causou** (AOS-077).

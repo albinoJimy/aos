@@ -156,6 +156,18 @@ func (s *FileStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, e
 	if err := s.autorizadoAEscrever(ctx, rec.Partition); err != nil {
 		return AuditRecord{}, err
 	}
+	// AOS-311 — CONTEXTO MORTO NÃO SELA. A ordem é posse → ctx → lock → selo → ctx →
+	// persist, e a ordem não é acidental: a posse consulta-se PRIMEIRO porque é ela que
+	// pode ir à rede e consumir o prazo, e o ctx verifica-se logo a seguir, ainda fora do
+	// s.mu, para que um prazo esgotado na porta de posse não entre sequer na secção
+	// crítica. Não há corrida com autorizadoAEscrever: os dois passos são sequenciais na
+	// mesma goroutine e nenhum deles muta estado do store — uma posse afirmativa seguida
+	// de um ctx morto resolve em recusa sem efeito, tal como uma posse negada. O erro
+	// devolvido é o próprio ctx.Err() (não ErrParticaoAlheia), para o chamador distinguir
+	// «prazo esgotado» de «partição alheia».
+	if err := ctx.Err(); err != nil {
+		return AuditRecord{}, err
+	}
 	s.mu.Lock()
 	part := s.parts[rec.Partition]
 	var prev []byte
@@ -171,6 +183,15 @@ func (s *FileStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, e
 	stampSchema(&rec)
 	rec.EntryHash = ComputeEntryHash(prev, rec)
 	sealed := cloneRecord(rec)
+
+	// AOS-311 — segunda verificação, imediatamente antes do efeito durável. Entre a
+	// primeira e esta só houve hashing em memória, mas é ESTE o último ponto sem efeito:
+	// um prazo que morra aqui não escreve um byte, não publica na cadeia in-memory e não
+	// consome o audit_seq — a próxima tentativa reusa a mesma posição.
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return AuditRecord{}, err
+	}
 
 	// Persiste ANTES de publicar o registo em memória: se o fsync falhar, o registo
 	// NÃO entra na cadeia in-memory (fail-closed) e o audit_seq não é consumido — a

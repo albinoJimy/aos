@@ -231,8 +231,18 @@ func (g *IngestionGateway) IngestObjective(ctx context.Context, subject, runID, 
 	// (4) AUDIT (porta platform/audit): sela o HASH do payload JÁ TRATADO na hash-chain
 	// WORM — nunca o cru (doc.go §Integridade). A partição é DEDICADA (não colide com a
 	// cadeia de mediação do run, cuja partição é o próprio RunID).
+	//
+	// O CTX DO CHAMADOR NÃO CANCELA ESTE SELO (achado de revisão adversarial sobre
+	// AOS-311). O passo (3) JÁ escreveu na memória e no Event Store quando se chega aqui:
+	// este Append é a PROVA de uma ingestão consumada, não a decisão de a deixar
+	// acontecer. Se o ctx do pedido morrer entre a escrita e o selo, o objectivo redigido
+	// fica persistido e a hash-chain WORM fica sem o hash que o atesta — exactamente a
+	// divergência que este selo existe para impedir. O erro continua a subir ao chamador:
+	// o que muda é que já não é o cancelamento a produzi-lo.
 	sum := sha256.Sum256([]byte(redacted))
-	sealed, err := g.worm.Append(ctx, audit.AuditRecord{
+	selCtx, cancelSelo := context.WithTimeout(context.WithoutCancel(ctx), ingestionSealTimeout)
+	defer cancelSelo()
+	sealed, err := g.worm.Append(selCtx, audit.AuditRecord{
 		Partition:  "ingestion:" + runID,
 		Timestamp:  g.now(),
 		Decision:   audit.DecisionAllow,
@@ -260,6 +270,11 @@ func (g *IngestionGateway) IngestObjective(ctx context.Context, subject, runID, 
 		AuditSeq: sealed.AuditSeq,
 	}, nil
 }
+
+// ingestionSealTimeout é o prazo PRÓPRIO do selo pós-escrita da ingestão. Existe porque
+// o selo deixou de herdar o cancelamento do pedido: sem prazo nenhum, um WORM pendurado
+// prenderia a ingestão para sempre.
+const ingestionSealTimeout = 5 * time.Second
 
 // boolText devolve o texto estável de um bool para o parâmetro da obrigação de audit.
 func boolText(b bool) string {

@@ -384,9 +384,23 @@ func (v *Verifier) seal(ctx context.Context, msg Message, reason string, authent
 			}},
 		}
 	}
-	_, err := v.sealer.Append(ctx, rec)
+	// O CTX DO CHAMADOR NÃO CANCELA ESTE SELO (achado de revisão adversarial sobre
+	// AOS-311). Este selo só existe no caminho de REJEIÇÃO ([Verifier.reject]): quando se
+	// chega aqui a mensagem JÁ foi recusada e nenhum efeito depende desta escrita — é a
+	// PROVA de uma decisão consumada. Desde que o AOS-311 pôs o `audit.Store.Append` a
+	// respeitar o ctx, uma rejeição decidida com o contexto do consumidor já morto ficava
+	// sem rasto na cadeia de quarentena, que é precisamente onde a forense de mensagens
+	// forjadas vive. O erro continua a subir (o `reject` junta-o ao `ErrSealFailed`): o
+	// que muda é que já não é o cancelamento a produzi-lo.
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rejectSealTimeout)
+	defer cancel()
+	_, err := v.sealer.Append(selCtx, rec)
 	return err
 }
+
+// rejectSealTimeout é o prazo PRÓPRIO do selo de rejeição, que deixou de herdar o
+// cancelamento do chamador: sem prazo nenhum, um WORM pendurado prenderia a verificação.
+const rejectSealTimeout = 5 * time.Second
 
 // contains indica se s está em set.
 func contains(set []string, s string) bool {

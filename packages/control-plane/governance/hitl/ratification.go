@@ -124,6 +124,13 @@ const (
 	// profundidade anti-replay: limita a janela em que uma ratificação assinada pode
 	// promover. Fail-closed. Só se aplica quando a frescura está configurada.
 	ReasonRatificationStale = "ratification_stale"
+	// ReasonRatificationContextDead — a ratificação é válida em tudo o resto mas o
+	// contexto do chamador morreu (cancelamento ou prazo) antes de a promoção ser
+	// admitida: fail-closed, não se promove sobre um pedido que já não existe. O motivo é
+	// PRÓPRIO e não se confunde com [ReasonRatificationStale] — aquele fala da idade da
+	// assinatura, este do prazo de quem pediu. A negação é selada na mesma (a decisão
+	// terminal é sempre escrita; ver [RatificationGate.seal]).
+	ReasonRatificationContextDead = "ratification_context_dead"
 	// ReasonRatificationReplayed — a ratificação é autêntica e fresca mas o seu nonce
 	// JÁ foi consumido no [RatificationNonceStore] configurado ([WithRatifyNonceStore]):
 	// é uma REUTILIZAÇÃO de uma ratificação já usada para promover. Defesa-em-
@@ -497,6 +504,13 @@ func (g *RatificationGate) Ratify(ctx context.Context, artifact SelfModArtifact,
 // atribuível ao humano REAL e carrega a assinatura de não-repúdio). Uma decisão
 // não-selável força admit=false (audit-before-effect).
 func (g *RatificationGate) finish(ctx context.Context, span Span, artifact SelfModArtifact, ratID string, signed SignedApproval, admit bool, reason string, verified bool) (bool, error) {
+	// FAIL-CLOSED DA PROMOÇÃO, explícito e independente do sink — mesma separação de
+	// [Channel.finish]. Uma ratificação só admite a promoção com o ctx do chamador vivo;
+	// um ctx morto nega, e a NEGAÇÃO fica selada (ver [RatificationGate.seal]).
+	if admit && ctx.Err() != nil {
+		admit = false
+		reason = ReasonRatificationContextDead
+	}
 	sealed := g.seal(ctx, artifact, ratID, signed, admit, reason, verified)
 	if !sealed {
 		admit = false
@@ -511,6 +525,12 @@ func (g *RatificationGate) finish(ctx context.Context, span Span, artifact SelfM
 
 // seal grava a decisão de ratificação na cadeia de audit WORM tamper-evident. Devolve
 // false se a selagem falhar (o chamador força admit=false — audit-before-effect).
+//
+// O CTX DO CHAMADOR NÃO CANCELA ESTE SELO — mesma separação de [Channel.seal]. Só se
+// chega aqui por [RatificationGate.finish], com a decisão de ratificação já TOMADA; o
+// fail-closed da promoção é imposto lá, por guarda explícita de `ctx.Err()`. Sem este
+// desacoplamento, um bloqueio decidido sob ctx morto seria bloqueado E não registado, e o
+// artefacto ficaria sem rasto de porque não foi promovido.
 //
 // ATRIBUIÇÃO (molde do [Channel]): uma decisão VERIFICADA (assinada por ratificador
 // autorizado) é atribuível ao humano REAL — Principal=ratificador — e carrega a
@@ -588,7 +608,9 @@ func (g *RatificationGate) seal(ctx context.Context, artifact SelfModArtifact, r
 	}
 	rec.Obligations = obs
 
-	_, err := g.sealer.Append(ctx, rec)
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalSealTimeout)
+	defer cancel()
+	_, err := g.sealer.Append(selCtx, rec)
 	return err == nil
 }
 
