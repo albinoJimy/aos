@@ -507,7 +507,8 @@ func (c *SteerChannel) Rebuild(ctx context.Context, runID string) error {
 		c.apply(rc, rec)
 	}
 
-	// INSTALAÇÃO CONDICIONAL (AOS-293). A leitura acima corre FORA de `c.mu` — de propósito,
+	// A INSTALAÇÃO SÓ AVANÇA SE NÃO REGREDIR (AOS-293). A leitura acima corre FORA de `c.mu` — de
+	// propósito,
 	// porque é I/O e prendê-lo durante I/O é o defeito que AOS-291 removeu do disjuntor. Mas
 	// isso abre uma janela: um sinal aceite entre o `Read` e esta instalação ficaria de fora
 	// da projecção substituída, com o evento durável no log e a memória atrasada. Pior, o
