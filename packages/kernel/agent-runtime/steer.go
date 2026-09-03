@@ -20,7 +20,13 @@ type SteerSource interface {
 	// PendingCorrection devolve uma correcção humana out-of-band pendente (e true), ou
 	// (nil, false). O loop injecta-a no tail do turno SEGUINTE como dado de CONTROLO
 	// TRUSTED (taint=trusted, ver [tailFromCorrection]) — nunca como conteúdo untrusted.
-	PendingCorrection(runID string) (correction []byte, ok bool)
+	//
+	// O `ctx` existe porque a ENTREGA pode ter de ser registada DURAVELMENTE (AOS-292): uma
+	// implementação sobre o canal de controlo marca aqui a correcção como consumida, e sem
+	// isso um restart repunha-a e o loop injectava-a segunda vez — mudando o prompt de um
+	// turno já capturado e fazendo o replay divergir. Uma implementação puramente em memória
+	// ignora-o.
+	PendingCorrection(ctx context.Context, runID string) (correction []byte, ok bool)
 }
 
 // WithSteerSource liga um [SteerSource] ao loop: a partir daqui, o loop consulta o

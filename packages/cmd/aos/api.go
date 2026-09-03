@@ -2328,6 +2328,12 @@ func isLoopbackAddr(addr string) bool {
 // aprovação) — quem retoma re-autentica-se.
 type resumeRequest struct {
 	Credential string `json:"credential"`
+	// Emitter é o operador ASSINADO que levanta uma pausa (AOS-292). OPCIONAL no corpo e
+	// OBRIGATÓRIO no efeito: um run `waiting_on_human` retoma-se só com a credencial (o aval
+	// já foi dado pelo four-eyes), mas um run PAUSED exige-o, porque a pausa foi imposta por
+	// um operador e é `SteerChannel.Resume` — autenticado — quem a levanta. Sem isto, quem
+	// detivesse a credencial do run desfazia a pausa de um operador sem assinar nada.
+	Emitter emitterWire `json:"emitter"`
 }
 
 // handleResume retoma um run SUSPENSO à espera de aval humano. É plano de CONTROLO: passa
@@ -2354,7 +2360,20 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "credencial de retoma em falta (a original nao e persistida — re-autentique)")
 		return
 	}
-	err := h.svc.Resume(r.Context(), runID, req.Credential)
+	// O emissor é OPCIONAL aqui e decidido lá dentro: só um run PAUSED o exige, e é o serviço
+	// que sabe em que estado o run está. Um corpo sem emissor produz o zero-value, que
+	// [withResumeEmitter] ignora — e a retoma de um `waiting_on_human` segue como sempre.
+	// Um emissor MALFORMADO é 400 aqui, e não um 403 confuso mais à frente.
+	ctx := r.Context()
+	if req.Emitter.ID != "" {
+		em, derr := req.Emitter.decode()
+		if derr != nil {
+			writeError(w, http.StatusBadRequest, "emitter invalido")
+			return
+		}
+		ctx = withResumeEmitter(ctx, em)
+	}
+	err := h.svc.Resume(ctx, runID, req.Credential)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusAccepted, map[string]any{"run_id": runID, "status": "resumed"})
@@ -2372,6 +2391,16 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "retoma indisponivel (four-eyes nao composto)")
 	case errors.Is(err, ErrNoResumeRecord):
 		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
+	case errors.Is(err, ErrResumeNeedsEmitter):
+		// 403, e NOMEANDO o que falta (AOS-292). Não é 404 uniforme porque não há nada a
+		// esconder — quem pede já provou conhecer o run com uma credencial válida — e não é
+		// 400 porque o corpo está bem formado: o que falta é AUTORIDADE. Um 404 aqui
+		// mandaria o operador procurar um run que existe.
+		writeError(w, http.StatusForbidden, "este run esta PAUSADO por um operador: a retoma exige o campo `emitter` assinado (produza-o com `aos-issuer` e um operador de AOS_OPERATORS) — a credencial do run nao levanta uma pausa de operador")
+	case errors.Is(err, control.ErrUnauthenticated):
+		// A assinatura veio e NÃO validou. 403 uniforme, como o resto do canal de controlo:
+		// não se distingue emissor desconhecido de assinatura errada de nonce reutilizado.
+		writeError(w, http.StatusForbidden, "emissor nao autorizado")
 	default:
 		// Um 500 SEM diagnóstico é indepurável: a resposta ao cliente mantém-se opaca
 		// (não revela interno), mas o operador tem de conseguir ver a causa no log.

@@ -691,6 +691,16 @@ type Node struct {
 	Verifier *identity.Verifier
 	// SteerAuth é o autenticador ed25519 do canal de controlo (só pubkeys).
 	SteerAuth *integration.Ed25519Authenticator
+	// fencingAuth é a autoridade de token das escritas fenceadas do ledger/checkpointer
+	// (AOS-299). Não-exportada: só o [NewNodeService] lhe liga o LeaseManager, e mais
+	// ninguém tem razão para lhe tocar. nil fora da execução durável.
+	fencingAuth *fencingAuthority
+	// Revocations é o registo de revogação de NHI que o [Verifier] consulta (AOS-288).
+	// Exposto no nó — e não só passado ao verifier — porque o plano de CONTROLO precisa
+	// dele: sem uma via alcançável para escrever aqui, ligar a consulta seria compor um
+	// mecanismo que ninguém consegue accionar. nil ⇒ revogação não composta, e o banner
+	// não pode anunciá-la.
+	Revocations *identity.Revocations
 	// Autonomy é a cablagem do oráculo de níveis (AOS-087/AOS-248). Exposta no nó — e não só
 	// na Config — porque o plano de CONTROLO precisa dela: sem isto, mudar um nível continuaria
 	// a exigir editar o `.env` e recriar o processo. nil ⇒ oráculo não composto.
@@ -1253,10 +1263,26 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// reversões duplicadas", pelo que sem ledger durável não haveria substrato para o
 		// coordinator. nil ⇒ compensação desligada (o caminho de falha declara-o).
 		compensations *saga.CompensationRegistry
+		// fencing é a autoridade de token das escritas fenceadas (AOS-299), ligada ao
+		// LeaseManager pelo NewNodeService. nil fora da execução durável — sem ledger nem
+		// checkpointer não há escrita a fencear.
+		fencing *fencingAuthority
 	)
 	if cfg.DurableExecution {
 		var err error
-		checkpointer, err = durable.NewCheckpointer(es)
+		// AOS-299: as duas escritas do caminho de run — checkpoint e step-ledger — passam a
+		// escrever por um Event Store FENCEADO em vez do store cru. A AC de `EPIC-02:428`
+		// exigia-o e só o `leaseRecord` e o `transitionRecord` o cumpriam.
+		//
+		// A autoridade é de LIGAÇÃO TARDIA (`NewNodeService` liga-lhe o LeaseManager) e recusa
+		// TODA a escrita enquanto não estiver ligada — ver [fencingAuthority]. O token viaja no
+		// contexto, anexado por quem detém o lease.
+		fencing = &fencingAuthority{}
+		fencedES, ferr := durable.NewFencedStore(es, fencing)
+		if ferr != nil {
+			return nil, fmt.Errorf("aos: event store fenceado (AOS-299): %w", ferr)
+		}
+		checkpointer, err = durable.NewCheckpointer(fencedES)
 		if err != nil {
 			return nil, fmt.Errorf("aos: checkpointer durável (AOS-180): %w", err)
 		}
@@ -1282,7 +1308,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// RECUSADO antes de qualquer efeito em vez de vazar. Não há degradação a temer no
 		// nó: o loop já recusa um run sem principal ([agentruntime.ErrNoPrincipal]), logo o
 		// titular é sempre resolvível no caminho de execução.
-		ledger, err = durable.NewStepLedger(es,
+		ledger, err = durable.NewStepLedger(fencedES,
 			durable.WithContentSealer(contentCipher), durable.WithRequireTitular())
 		if err != nil {
 			return nil, fmt.Errorf("aos: step-ledger durável (AOS-180): %w", err)
@@ -1363,6 +1389,30 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.VerifierClock != nil {
 		verifierOpts = append(verifierOpts, identity.WithVerifierClock(cfg.VerifierClock))
 	}
+
+	// REVOGAÇÃO DE NHI, LIGADA (AOS-288). O passo de revogação do `Verify` vive dentro de
+	// `if v.revocations != nil`, e esse guarda era SEMPRE falso no nó: `WithRevocations` não
+	// tinha um único chamador de produção. Media-se um token com o `jti` revogado a ser
+	// aceite com `err=<nil>` e um `Principal` completo — enquanto o banner do nó anunciava
+	// «EdDSA + janela + revogacao + raiz humana». O mecanismo não estava partido; estava por
+	// ligar, e é aqui que se liga.
+	//
+	// COMPÕE-SE UMA VEZ E COBRE OS DOIS RAMOS. `verifierOpts` é consumido tanto pelo ramo
+	// endurecido (que lhe antepõe o trust anchor) como pelo de referência (via
+	// [integration.NewVerifierFromAuthority], que faz append por cima do anchor da
+	// autoridade). Acrescentar aqui evita a assimetria que seria ligar num e esquecer o
+	// outro — e essa assimetria seria invisível, porque os dois ramos passam nos mesmos
+	// testes.
+	//
+	// O REBUILD NÃO É OPCIONAL. A projecção é um mapa em memória; sem o repovoar do stream
+	// durável, um restart ressuscita todos os tokens revogados que ainda não expiraram, em
+	// silêncio. Falha do rebuild ABORTA o arranque: um nó que não sabe o que foi revogado
+	// não pode anunciar que verifica revogação.
+	revocations := identity.NewRevocations(es)
+	if err := revocations.Rebuild(ctx); err != nil {
+		return nil, fmt.Errorf("aos: reconstruir o registo de revogacao de NHI: %w", err)
+	}
+	verifierOpts = append(verifierOpts, identity.WithRevocations(revocations))
 	var authority *integration.IssuerAuthority
 	var verifier *identity.Verifier
 	var err error
@@ -1986,7 +2036,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	dsarFlow := dsar.NewFlow(
 		wormEventSealer{store: worm},
 		dsarShredder,
-		[]dsar.ShreddableKeyStore{dsar.AuditStore("audit", dsarShredder)},
+		// O STEP-LEDGER É UM STORE DE APAGAMENTO (AOS-290). A lista tinha um só elemento, e
+		// o que faltava não era um mecanismo — era esta linha. O ledger é composto uma vez e
+		// partilhado por todos os runs, e o seu mapa guarda o resultado de cada passo EM
+		// CLARO: destruída a KEK, o WAL ficava indecifrável e `Applied` continuava a devolver
+		// o payload. Sem o ledger aqui, o Art. 17 alcançava o disco e parava na memória.
+		//
+		// `ledger` é nil quando a execução durável está desligada — e aí não há projecção que
+		// apagar. Passa-se na mesma, e o que torna isso seguro NÃO é a guarda `lg == nil` do
+		// adaptador: um `*durable.StepLedger` nil metido numa interface produz uma interface
+		// NÃO-nil, pelo que essa guarda não dispara. Quem salva é a guarda de RECEPTOR nil em
+		// [durable.StepLedger.ForgetSubject], que devolve 0. As duas existem porque protegem
+		// casos diferentes, e confundi-las é a armadilha clássica do nil tipado.
+		[]dsar.ShreddableKeyStore{
+			dsar.AuditStore("audit", dsarShredder),
+			dsar.StepLedgerStore("step-ledger", ledger),
+		},
 		dsar.WithPartition("governance.dsar"),
 		dsar.WithShredConfirmer(confirmadorDeShredDe(dsarVault)),
 	)
@@ -2205,7 +2270,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range autonomyPostureBanner(cfg.Autonomy) {
 		log("%s", line)
 	}
-	for _, line := range modelPostureBanner(cfg.Model) {
+	// O predicado é HOJE sempre verdadeiro — a composição da revogação é incondicional desde
+	// AOS-288, e um `Rebuild` falhado aborta antes de chegar aqui. Passa-se na mesma, e não é
+	// cerimónia: enquanto a frase for DERIVADA, desligar a composição desliga a alegação no
+	// mesmo commit. Foi a literal fixa que deixou o banner a anunciar revogação durante todo o
+	// tempo em que ela não corria.
+	for _, line := range modelPostureBanner(cfg.Model, revocations != nil) {
 		log("%s", line)
 	}
 	// AOS-256/AOS-257: o argumento DERIVA do que foi REALMENTE composto — `runBudget` é o
@@ -2369,6 +2439,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
+		Revocations:      revocations,
 		Autonomy:         cfg.Autonomy,
 		EventStore:       es,
 		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
@@ -2380,6 +2451,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Checkpointer:  checkpointer, // nil quando a execução durável está desligada
 		Capturer:      capturer,     // (os três são compostos/omitidos EM CONJUNTO)
 		Ledger:        ledger,
+		fencingAuth:   fencing,       // AOS-299: autoridade das escritas fenceadas (nil sem execução durável)
 		Compensations: compensations, // AOS-254: registo de compensações (nil sem execução durável)
 
 		SovereignReadRegions:    readRegions,

@@ -73,10 +73,21 @@ func newReplayDispatcher(captures map[int]capturePayload) *replayDispatcher {
 	return &replayDispatcher{byTurn: byTurn}
 }
 
-// Dispatch devolve o resultado REGISTADO da idx-ésima tool call do turno. Se não
-// houver registo (índice fora de alcance), devolve um resultado untrusted vazio —
-// nunca executa nada ao vivo. O motor garante idx < len(ToolCalls) porque itera
-// sobre as tool calls da própria resposta registada.
+// Dispatch devolve o resultado REGISTADO da idx-ésima tool call do turno. Nunca executa nada
+// ao vivo.
+//
+// # O INVARIANTE, CORRIGIDO (AOS-289)
+//
+// Este comentário declarava «o motor garante idx < len(ToolCalls) porque itera sobre as tool
+// calls da própria resposta registada». Era verdade e era IRRELEVANTE: a guarda abaixo testa
+// `len(results)`, que são os TOOL RESULTS — outro número. Quando a captura era truncada (turno
+// escalado), os índices sem registo caíam no fallback e o motor dobrava no tail um segmento
+// untrusted vazio que o run original nunca produziu, com `Fidelity=1` a afirmá-lo.
+//
+// O invariante que agora VALE é o que [capturaCompleta] impõe no gate de admissão:
+// `len(ToolCalls) <= len(ToolResults)` em cada turno, verificado antes de reproduzir seja o que
+// for. O fallback fica como defesa em profundidade — inalcançável por [ReplayEngine.Replay],
+// e fail-safe para qualquer chamador futuro que construa um dispatcher sem passar pelo gate.
 func (d *replayDispatcher) Dispatch(turn, idx int) (agentruntime.Tainted, error, *agentruntime.ToolDenial) {
 	results := d.byTurn[turn]
 	if idx < 0 || idx >= len(results) {

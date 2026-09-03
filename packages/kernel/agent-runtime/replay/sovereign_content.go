@@ -182,6 +182,17 @@ func (e *ReplayEngine) Reconstruct(ctx context.Context, runID string) ([]Reconst
 	out := make([]ReconstructedTurn, 0, len(order))
 	for _, turn := range order {
 		capt := caps[turn]
+		// GATE DE ADMISSÃO TAMBÉM AQUI (AOS-289). O `Reconstruct` é o caminho da RETOMA
+		// (`cmd/aos/resume.go`) e do read-path soberano, e NÃO passa por [admit] — que vive só
+		// no [ReplayEngine.Replay]. Sem esta linha, a correcção de AOS-289 fechava o replay de
+		// DR e o teste de contrato, e deixava aberto exactamente o caso de uso que o defeito
+		// descreve: a escalada, cuja razão de ser é ser retomada.
+		//
+		// A verificação vem DEPOIS de mode 3 e do envelope selado estarem resolvidos (acima),
+		// senão mediria uma captura ainda por re-hidratar e recusaria todos os runs cifrados.
+		if err := capturaCompleta(capt); err != nil {
+			return nil, err
+		}
 		rt := ReconstructedTurn{
 			Turn:               turn,
 			StepID:             stepByTurn[turn],

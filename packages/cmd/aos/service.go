@@ -54,6 +54,13 @@ var (
 	// já começou: o nó PARA de aceitar novos runs (drena os em curso). Fail-closed.
 	ErrServiceShuttingDown = errors.New("aos: no em shutdown — nao aceita novos runs")
 
+	// ErrLeaseHeartbeatNotBelowTTL — [WithLeaseHeartbeat] recebeu um intervalo >= ao TTL do
+	// lease (AOS-297). Não é uma afinação apertada: com o heartbeat a chegar depois de o
+	// lease expirar, a posse cai em TODOS os runs, sempre, ao fim de um TTL. Recusa-se na
+	// construção porque o par é conhecido lá e porque um nó que arranca assim parece são —
+	// o sintoma só aparece um TTL mais tarde, longe da causa.
+	ErrLeaseHeartbeatNotBelowTTL = errors.New("aos: intervalo de heartbeat do lease >= TTL do lease — a posse expiraria antes da primeira renovacao em todos os runs (use um intervalo estritamente inferior; o default e TTL/3)")
+
 	// ErrRunAlreadyInProgress — submeteu-se um RunID JÁ hospedado (em curso) por esta
 	// réplica. O registo por RunID recusa a duplicação (não se hospeda o mesmo run duas
 	// vezes).
@@ -312,8 +319,14 @@ func WithLeaseTTL(ttl time.Duration) NodeServiceOption {
 }
 
 // WithLeaseHeartbeat define o período de renovação (heartbeat) da posse do lease durante
-// um run. Default: TTL/3. Um valor <= 0 é ignorado (mantém o default). Deve ser
-// confortavelmente inferior ao TTL para a posse nunca expirar a meio de um run vivo.
+// um run. Default: TTL/3. Um valor <= 0 é ignorado (mantém o default).
+//
+// Tem de ser ESTRITAMENTE INFERIOR ao TTL, e isso é IMPOSTO — não sugerido. Um intervalo
+// >= TTL produz perda de posse determinística em TODOS os runs, ao fim de um TTL, e antes
+// de AOS-297 o nó arrancava sem aviso: a frase «deve ser confortavelmente inferior ao TTL»
+// estava aqui e nada a verificava. A recusa vive em [NewNodeService] e não neste closure,
+// porque as opções são aplicadas por ordem e o TTL pode ainda não ter sido definido quando
+// esta correr — validar aqui recusaria um par legítimo só por causa da ordem das opções.
 func WithLeaseHeartbeat(interval time.Duration) NodeServiceOption {
 	return func(c *nodeServiceConfig) {
 		if interval > 0 {
@@ -372,6 +385,16 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 	// Período de heartbeat: explícito, ou derivado de TTL/3 (renova ~3x por TTL, dando
 	// margem folgada para a posse nunca expirar a meio de um run vivo).
+	//
+	// CABLAGEM FAIL-CLOSED (AOS-297). Um intervalo explícito >= TTL não é uma afinação
+	// agressiva: é perda de posse GARANTIDA em todos os runs, ao fim de um TTL, porque a
+	// primeira renovação chega sempre depois de o lease já ter expirado. Recusa-se aqui —
+	// depois de TODAS as opções aplicadas, que é o único ponto onde os dois valores são
+	// ambos conhecidos — no mesmo molde de [breaker.ErrProgressSourceInert]: uma cablagem
+	// que não pode funcionar não arranca em silêncio.
+	if cfg.hbInterval > 0 && cfg.hbInterval >= cfg.ttl {
+		return nil, fmt.Errorf("%w: heartbeat=%s, ttl=%s", ErrLeaseHeartbeatNotBelowTTL, cfg.hbInterval, cfg.ttl)
+	}
 	hbInterval := cfg.hbInterval
 	if hbInterval <= 0 {
 		hbInterval = cfg.ttl / 3
@@ -429,6 +452,17 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	assigner, err := worker.NewAssigner(leases)
 	if err != nil {
 		return nil, fmt.Errorf("aos: assigner (posse por lease) do loop de servico: %w", err)
+	}
+	// AOS-299: liga a autoridade de token às escritas fenceadas do ledger/checkpointer.
+	//
+	// A RECUSA É DE COMPOSIÇÃO, e é o que impede o fencing de ficar inerte em silêncio: se há
+	// ledger durável mas não há autoridade, o nó hospedaria runs a escrever sem fencing sem que
+	// nada o denunciasse. Recusa-se aqui, no arranque, em vez de o descobrir em produção.
+	if node.Ledger != nil && node.fencingAuth == nil {
+		return nil, ErrFencingAuthorityMissing
+	}
+	if node.fencingAuth != nil {
+		node.fencingAuth.ligar(leases)
 	}
 
 	s := &NodeService{
@@ -612,6 +646,14 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	if plan := replayPlanFrom(ctx); plan != nil {
 		runCtx = withReplayPlan(runCtx, plan)
 	}
+	// O EMISSOR DA RETOMA (AOS-292) é outro desses valores, e pela mesma razão: o
+	// `SteerChannel.Resume` que levanta a pausa corre em `hostRun`, sob o runCtx, e exige o
+	// emissor ASSINADO que só existe no corpo do pedido. Perdê-lo aqui faria a retoma de um
+	// run pausado recusar sempre — e recusar é o lado seguro, mas seria uma recusa por
+	// acidente de plumbing, não por decisão. Re-anexa-se só este valor, como o plano.
+	if em, ok := resumeEmitterFrom(ctx); ok {
+		runCtx = withResumeEmitter(runCtx, em)
+	}
 	// IDENTIDADE POR-RUN DO MODELO (AOS-278, CUTOVER DURO). O token NHI do RUN
 	// (goal.Credential) — o MESMO que cada tool call mediada verifica — anexa-se ao runCtx
 	// PRÓPRIO do run para o caminho do modelo o apresentar ao estágio authn REAL do GW.
@@ -693,6 +735,16 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	defer s.wg.Done()
 	defer s.finish(rs)
 
+	// AOS-299: o token do lease entra no CONTEXTO do run. É daqui que o Event Store fenceado o
+	// lê em cada escrita do step-ledger e do checkpointer — o ledger é composto UMA vez e
+	// partilhado por todos os runs, pelo que o token não pode viver nele. Mesmo idioma de
+	// [durable.ContextWithTitular], e pela mesma razão.
+	//
+	// AQUI, E NÃO MAIS ABAIXO: a goroutine do heartbeat (logo a seguir) fecha sobre a VARIÁVEL
+	// `ctx`, não sobre o seu valor. Reatribuí-la depois de a goroutine arrancar é uma corrida de
+	// dados — foi assim que a primeira versão desta linha ficou, e foi o `-race` que a apanhou.
+	ctx = durable.ContextWithFencingToken(ctx, rs.lease.Token)
+
 	// Renovador de posse por-run: mantém o lease vivo enquanto o run corre (fecha a janela
 	// em que um run mais longo que o TTL veria a posse EXPIRAR — liveness classificá-lo-ia
 	// zombie e outra réplica reclamaria o lease, arrancando uma 2ª execução concorrente do
@@ -730,6 +782,60 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		rs.err = fmt.Errorf("aos: rebuild do ledger durável do run %q: %w", rs.runID, err)
 		s.mu.Unlock()
 		return
+	}
+	// AOS-293: e a projecção do CANAL DE CONTROLO, pela mesma razão e no mesmo instante.
+	//
+	// O log de controlo é durável — `control.pause`, `control.steer`, `control.resume` e
+	// `control.correction_consumed` são todos escritos — mas `SteerChannel.Rebuild` não tinha
+	// um único chamador de produção. Depois de um reinício, `c.runs` está vazio e o
+	// `control/doc.go` prometia o contrário: «um crash em paused → um worker novo relê o log e
+	// recupera a correcção INTACTA».
+	//
+	// POR HOSPEDAGEM, E NÃO NO ARRANQUE, apesar de a AC do ticket dizer «no arranque». Três
+	// razões, todas verificadas: (a) a varredura de arranque SALTA deliberadamente os runs
+	// `paused` (crash_resume.go trata só `state.Running`), pelo que um rebuild no arranque não
+	// tocaria no caso que interessa; (b) o padrão do repositório é este — o `RebuildLedger`
+	// acima, a `state.Machine` no `Open` abaixo, e o `RunToolSets.Rebuild`, que foi fechado
+	// exactamente assim depois de ter estado sem chamador; (c) um rebuild global no arranque
+	// exigiria reler todos os streams por inteiro DUAS vezes, e não cobriria os runs
+	// hospedados depois.
+	//
+	// TEM DE SER ANTES do `resumeIfWaiting` (abaixo): desde AOS-292, retomar uma pausa passa
+	// por `SteerChannel.Resume`, que RECUSA quando não há pausa pendente na projecção. Com a
+	// projecção vazia após restart, um run pausado deixava de se conseguir retomar de todo —
+	// e isso é uma regressão que AOS-292 introduziu e que este ticket fecha.
+	//
+	// FAIL-CLOSED como os vizinhos: um log de controlo corrupto não deixa o run correr com uma
+	// projecção que não representa o que foi decidido.
+	//
+	// CUSTO, declarado porque não é óbvio: o `Rebuild` relê o stream INTEIRO do run e filtra os
+	// quatro tipos `control.*` em memória — o store não filtra por tipo. Com o `RebuildLedger`
+	// logo acima a fazer a sua própria leitura completa, são DUAS passagens sobre todos os
+	// eventos do run a cada hospedagem, e o custo cresce com a idade do run. É aceitável porque
+	// uma hospedagem é rara (arranque de run ou retoma), mas quem investigar uma retoma lenta
+	// num run antigo tem de encontrar isto escrito, e não a descobri-lo com um profiler.
+	if s.node.Steer != nil {
+		if err := s.node.Steer.Rebuild(ctx, rs.runID); err != nil {
+			s.mu.Lock()
+			rs.err = fmt.Errorf("aos: rebuild da projeccao do canal de controlo do run %q (AOS-293): %w", rs.runID, err)
+			s.mu.Unlock()
+			return
+		}
+	}
+	// AOS-290: e à SAÍDA da hospedagem, larga-se o que se acabou de repor. O mapa do ledger é
+	// PARTILHADO por todos os runs do nó e nunca era podado — crescia linearmente com
+	// Σ(runs × passos), sem patamar, num processo de vida longa.
+	//
+	// O `defer` fica AQUI, colado ao rebuild, e não junto aos de `breakers`/`progress`: aquele
+	// bloco corre só com `stateGates` composto, e `stateGates` e `Ledger` são compostos
+	// INDEPENDENTEMENTE — a poda teria deixado de correr precisamente numa composição
+	// degradada, que é onde ninguém iria procurá-la. Aqui é simétrica com a reposição, que é
+	// também o que a torna segura: o que se larga é relido do Event Store se o run voltar.
+	//
+	// O que NÃO volta é o de um titular apagado — o `Rebuild` salta o que já não decifra. Essa
+	// assimetria não é um defeito: é o Art. 17 a funcionar.
+	if s.node.Ledger != nil {
+		defer s.node.Ledger.ForgetRun(rs.runID)
 	}
 
 	// AOS-218: ABRE a máquina de estados durável do run (AOS-017) e regista o
@@ -786,7 +892,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			// voltar a corrê-lo — repõe-se `running`. Sem isto, uma segunda escalada (o caso
 			// normal: o agente pede outra acção de risco no turno seguinte) tentaria
 			// waiting_on_human→waiting_on_human e o run morreria como FALHADO.
-			if err := gate.resumeIfWaiting(ctx); err != nil {
+			if err := gate.resumeIfWaiting(ctx, func(c context.Context) error {
+				return s.retomarPausaPeloCanal(c, rs.runID, gate)
+			}); err != nil {
 				s.mu.Lock()
 				rs.err = fmt.Errorf("aos: repor o run %q em execucao na retoma (AOS-021): %w", rs.runID, err)
 				s.mu.Unlock()

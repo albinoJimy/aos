@@ -226,6 +226,26 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // silencio, porque o no anunciaria substrato replicado sobre um stream sem replicas.
 var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem de ser um inteiro positivo (3 ou 5; 1 e so dev)")
 
+// ErrProductionNeedsDurableSubstrate — sob AOS_MODE=production o Event Store TEM de ser durável
+// (AOS_EVENTSTORE_PATH ou AOS_EVENTSTORE_NATS). Eixo AOS-300.
+//
+// A REVOGAÇÃO DE NHI é a razão, e é a que distingue esta guarda das outras duas de durabilidade.
+// [ErrDurableExecutionNeedsDurableSubstrate] cobre quem PEDE execução durável, e
+// [ErrProductionNeedsDurableApproval] cobre quem configura four-eyes; ambas são condicionais a
+// uma opção. A revogação não é: desde AOS-288 o registo é composto no verifier de identidade
+// SEMPRE, e a projecção é repovoada no arranque a partir do stream `identity.nhi.revoked`. Sobre
+// um Event Store in-memory esse stream morre com o processo, pelo que um token revogado volta a
+// ser ACEITE ao primeiro restart — em silêncio, com um Principal completo e utilizável, enquanto
+// o banner anuncia «revogacao». É a mesma classe de defeito que AOS-288 fechou, por outra porta.
+//
+// Decisão do dono: EXIGIR, não degradar — a mesma que [ErrProductionNeedsDurableApproval]
+// registou para o four-eyes.
+//
+// FICA DEPOIS das outras colunas de postura (identidade, soberania, KEK, four-eyes) de propósito:
+// um nó de produção mal configurado deve ouvir primeiro o que é mais fundamental, e mudar a ordem
+// trocaria o diagnóstico de quem já depende dela.
+var ErrProductionNeedsDurableSubstrate = errors.New("aos: AOS_MODE=production exige um Event Store DURAVEL — defina AOS_EVENTSTORE_NATS (ex.: aos-es-0:4222) ou AOS_EVENTSTORE_PATH (ex.: /var/lib/aos/events.wal). Sobre o store in-memory de referencia o stream identity.nhi.revoked morre com o processo: um NHI revogado volta a ser ACEITE ao primeiro restart, em silencio, enquanto o banner anuncia revogacao")
+
 var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
 
 // ErrProductionNeedsModelCredential — sob AOS_MODE=production COM o model gateway LIGADO
@@ -758,6 +778,13 @@ func nodeConfigFromEnv() (Config, error) {
 	// aprovação humana quando na prática só há negações.
 	if production && len(cfg.Approvers) > 0 && !durableExecution {
 		return Config{}, ErrProductionNeedsDurableApproval
+	}
+
+	// FAIL-CLOSED de produção (AOS-300) — a REVOGAÇÃO DE NHI tem de sobreviver a um restart. Ver
+	// [ErrProductionNeedsDurableSubstrate] para o porquê de esta ser INCONDICIONAL onde as outras
+	// duas guardas de durabilidade são condicionais a uma opção, e para o porquê de vir por último.
+	if production && eventStorePath == "" && eventStoreNATS == "" {
+		return Config{}, ErrProductionNeedsDurableSubstrate
 	}
 
 	// ATTESTATION DE DISPOSITIVO WebAuthn (AOS-177) por ambiente: AOS_ATTESTATION_VERIFIER_URL liga

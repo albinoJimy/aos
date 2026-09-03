@@ -44,7 +44,7 @@ func TestLoopSteer_AdaptsSteerChannel(t *testing.T) {
 	if p, err := nilAdapter.GracefulPause(ctx, runID); p || err != nil {
 		t.Fatalf("nil adapter GracefulPause=(%v,%v), quero (false,nil)", p, err)
 	}
-	if c, ok := nilAdapter.PendingCorrection(runID); c != nil || ok {
+	if c, ok := nilAdapter.PendingCorrection(ctx, runID); c != nil || ok {
 		t.Fatalf("nil adapter PendingCorrection=(%v,%v), quero (nil,false)", c, ok)
 	}
 
@@ -109,10 +109,10 @@ func TestLoopSteer_CorrectionAppliedOncePerRun(t *testing.T) {
 	if err := ch.Steer(ctx, runID, corrA, signed(t, a, runID, control.SignalSteer, corrA)); err != nil {
 		t.Fatalf("Steer A: %v", err)
 	}
-	if got, ok := adapter.PendingCorrection(runID); !ok || !bytes.Equal(got, corrA) {
+	if got, ok := adapter.PendingCorrection(ctx, runID); !ok || !bytes.Equal(got, corrA) {
 		t.Fatalf("1ª consulta: (%q,%v), quero (%q,true)", got, ok, corrA)
 	}
-	if got, ok := adapter.PendingCorrection(runID); ok || got != nil {
+	if got, ok := adapter.PendingCorrection(ctx, runID); ok || got != nil {
 		t.Fatalf("2ª consulta da MESMA correcção devia ser (nil,false) — semântica uma-vez; deu (%q,%v)", got, ok)
 	}
 
@@ -121,10 +121,10 @@ func TestLoopSteer_CorrectionAppliedOncePerRun(t *testing.T) {
 	if err := ch.Steer(ctx, runID, corrB, signed(t, a, runID, control.SignalSteer, corrB)); err != nil {
 		t.Fatalf("Steer B: %v", err)
 	}
-	if got, ok := adapter.PendingCorrection(runID); !ok || !bytes.Equal(got, corrB) {
+	if got, ok := adapter.PendingCorrection(ctx, runID); !ok || !bytes.Equal(got, corrB) {
 		t.Fatalf("nova correcção B devia aplicar-se: (%q,%v), quero (%q,true)", got, ok, corrB)
 	}
-	if _, ok := adapter.PendingCorrection(runID); ok {
+	if _, ok := adapter.PendingCorrection(ctx, runID); ok {
 		t.Fatal("B não devia repetir na consulta seguinte")
 	}
 
@@ -141,14 +141,14 @@ func TestLoopSteer_CorrectionAppliedOncePerRun(t *testing.T) {
 		t.Fatalf("Resume: %v", err)
 	}
 	// Canal sem correcção pendente ⇒ (nil,false) e o marcador do adaptador é limpo.
-	if got, ok := adapter.PendingCorrection(runID); ok || got != nil {
+	if got, ok := adapter.PendingCorrection(ctx, runID); ok || got != nil {
 		t.Fatalf("após resume o canal está limpo: (%q,%v), quero (nil,false)", got, ok)
 	}
 	// Re-steer "A" (mesmo conteúdo do passo 1) aplica-se OUTRA VEZ — o reset funcionou.
 	if err := ch.Steer(ctx, runID, corrA, signed(t, a, runID, control.SignalSteer, corrA)); err != nil {
 		t.Fatalf("Steer A (2): %v", err)
 	}
-	if got, ok := adapter.PendingCorrection(runID); !ok || !bytes.Equal(got, corrA) {
+	if got, ok := adapter.PendingCorrection(ctx, runID); !ok || !bytes.Equal(got, corrA) {
 		t.Fatalf("após reset, re-steer A devia aplicar-se: (%q,%v), quero (%q,true)", got, ok, corrA)
 	}
 }

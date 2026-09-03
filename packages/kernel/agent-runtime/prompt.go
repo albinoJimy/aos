@@ -383,7 +383,13 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // Por LINHA do conteúdo: uma linha que comece por '<' ou por '\' recebe '\' à frente.
 //
 //	<correction>    ->  \<correction>
-//	\<correction>   ->  \<correction>
+//	\<correction>   ->  \\<correction>
+//
+// A segunda linha é a que importa, e é fácil de ler mal: a entrada tem UMA barra e a saída tem
+// DUAS. Uma tabela que mapeasse as duas entradas para a mesma saída estaria a exibir exactamente
+// a não-injectividade que o parágrafo seguinte diz ter sido eliminada — foi o que aqui esteve
+// (AOS-294). A tabela deixou de poder divergir em silêncio: tabela_de_neutralizacao_test.go
+// fixa-a linha a linha, e fixa também a injectividade que ela ilustra.
 //
 // Escapar também o '\' é o que torna a transformação INJECTIVA: sem isso, `\<correction>` no
 // conteúdo produziria o mesmo output que `<correction>` escapado, e a forja voltava por outra

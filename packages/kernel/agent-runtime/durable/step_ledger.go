@@ -179,9 +179,18 @@ type StepLedger struct {
 	// composta, um Apply sem titular resolvível é RECUSADO ([ErrNoTitular]).
 	requireTitular bool
 
-	mu       sync.Mutex
-	records  map[string]ledgerRecord
-	inflight map[string]*inflightCall
+	mu      sync.Mutex
+	records map[string]ledgerRecord
+	// porTitular é o índice reverso titular → chaves, e existe porque o registo EM MEMÓRIA
+	// NÃO guarda o titular: `clearRec` nunca o preenche e `toClear` limpa-o explicitamente.
+	// Sem este índice, um apagamento por titular (AOS-093/AOS-290) não teria por onde pegar
+	// no mapa — teria de reler o Event Store para descobrir de quem é cada chave, e é
+	// precisamente o Event Store que já ficou indecifrável quando a KEK foi destruída.
+	//
+	// Guarda IDENTIFICADORES pseudónimos de titular (ADR-011), nunca dado pessoal, e encolhe
+	// com o mapa: [StepLedger.ForgetSubject] e [StepLedger.ForgetRun] podam-no.
+	porTitular map[string]map[string]struct{}
+	inflight   map[string]*inflightCall
 }
 
 // inflightCall coordena Applies concorrentes da MESMA key DENTRO do processo
@@ -310,10 +319,11 @@ func NewStepLedger(store EventStore, opts ...LedgerOption) (*StepLedger, error) 
 		return nil, ErrNilStore
 	}
 	l := &StepLedger{
-		store:    store,
-		obs:      NopObserver{},
-		records:  make(map[string]ledgerRecord),
-		inflight: make(map[string]*inflightCall),
+		store:      store,
+		obs:        NopObserver{},
+		records:    make(map[string]ledgerRecord),
+		porTitular: make(map[string]map[string]struct{}),
+		inflight:   make(map[string]*inflightCall),
 	}
 	for _, o := range opts {
 		o(l)
@@ -493,17 +503,26 @@ func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash,
 		if cerr != nil {
 			return Result{}, false, ledgerRecord{}, cerr
 		}
-		l.mu.Lock()
-		l.records[key] = clearCanonical
-		l.mu.Unlock()
+		// O titular vem do registo CANÓNICO — o que o vencedor persistiu —, lido ANTES de
+		// `toClear` o limpar. Tirá-lo de `clearCanonical` daria sempre vazio, e o passo
+		// ficaria fora do alcance do apagamento sem nada o denunciar.
+		l.memorizar(key, canonical.Subject, clearCanonical)
 		l.obs.Deduplicated(keyHash)
 		return clearCanonical.result(), false, clearCanonical, nil
 	}
 
 	// Committed: registo novo. Guarda o CLARO em memória (o WAL tem o cifrado).
-	l.mu.Lock()
-	l.records[key] = clearRec
-	l.mu.Unlock()
+	//
+	// O CLARO EM MEMÓRIA PASSA A TER DONO REGISTADO (AOS-290). Esta linha era o retentor que
+	// punha o crypto-shredding de AOS-093 a meio: destruída a KEK do titular, o blob do WAL
+	// ficava indecifrável — o disco estava apagado — e `Applied` continuava a devolver o
+	// payload em claro deste mapa. Um dump de heap isolou-o: o marcador desaparecia ao largar
+	// o ledger, não ao shred.
+	//
+	// O `subject` viaja para [StepLedger.memorizar] em vez de ficar no registo, porque o
+	// registo em memória NÃO o guarda — `toClear` limpa-o de propósito, e `clearRec` nunca o
+	// teve. Sem o índice, um apagamento por titular não teria por onde pegar.
+	l.memorizar(key, subject, clearRec)
 	l.obs.Applied(keyHash)
 	return res, true, clearRec, nil
 }
@@ -533,6 +552,114 @@ func (l *StepLedger) toClear(ctx context.Context, rec ledgerRecord) (ledgerRecor
 
 // Applied indica se a chave já tem resultado registado no ledger (in-memory).
 // Útil para checkpoint/replay (AOS-015/016) inspeccionarem o estado sem efeito.
+// ForgetSubject remove da projecção em memória TODAS as entradas de um titular e devolve
+// quantas removeu. É a metade em MEMÓRIA do crypto-shredding de AOS-093 (AOS-290).
+//
+// # PORQUE ISTO PRECISOU DE EXISTIR
+//
+// O apagamento por titular destruía a KEK e tornava o blob do WAL indecifrável, mas o mapa
+// deste ledger guarda o CLARO — e o ledger é composto UMA vez e partilhado por todos os runs
+// do nó. Media-se: destruída a KEK, `OpenContent` sobre o WAL falhava e `Applied(key)`
+// devolvia o payload em claro na mesma. O apagamento era real no disco e ficção em memória.
+//
+// # PORQUE REMOVER A ENTRADA É CORRECTO AQUI, E NÃO SERIA NUMA PODA POR TTL
+//
+// O ledger é o registo de IDEMPOTÊNCIA: `Apply` sobre uma chave já aplicada devolve o
+// resultado memorizado sem re-executar o efeito, e o ADR-015 fixa «0 efeitos observáveis
+// duplicados». Remover uma entrada de um run VIVO faria o efeito externo correr segunda vez.
+//
+// Aqui não há esse risco, e a razão não é conveniência: o titular está a ser apagado por
+// direito. [StepLedger.Rebuild] já SALTA os registos cujo titular foi shredded (a decifragem
+// falha e o passo não re-hidrata), pelo que a entrada não voltaria nem que se quisesse. O
+// estado depois desta chamada é o mesmo que um restart produziria — que é a definição de
+// coerente.
+//
+// Idempotente e sem erro: apagar um titular sem entradas devolve 0, como a porta
+// [dsar.ShreddableKeyStore] exige.
+func (l *StepLedger) ForgetSubject(subject string) int {
+	if l == nil || subject == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	chaves := l.porTitular[subject]
+	if len(chaves) == 0 {
+		return 0
+	}
+	for k := range chaves {
+		delete(l.records, k)
+	}
+	removidos := len(chaves)
+	delete(l.porTitular, subject)
+	return removidos
+}
+
+// ForgetRun remove da projecção em memória as entradas de um run e devolve quantas removeu. É
+// o eixo de MEMÓRIA de AOS-290 — o mapa crescia linearmente com Σ(runs × passos), sem patamar,
+// e não havia via pública para o podar.
+//
+// # PORQUE A PODA É POR RUN E NÃO POR TTL NEM POR TECTO
+//
+// A AC do ticket oferecia as três como equivalentes. Não são. O ledger responde à pergunta
+// «este passo já correu?», e uma entrada que desaparece sem poder ser reposta faz o efeito
+// externo correr outra vez — exactamente o que o ADR-015 proíbe e o que
+// `TestApplyIdempotentReexecution` guarda ao exigir que a re-execução devolva o payload
+// memorizado. Um TTL ou um tecto LRU escolhem vítimas por idade ou por pressão, sem saber se
+// a entrada é reponível: trocam um problema de memória por duplicação de efeitos.
+//
+// # O QUE TORNA A PODA POR RUN SEGURA
+//
+// O mapa é uma CACHE do log, não a fonte. O nó chama `RebuildLedger` no início de CADA
+// hospedagem de run (`cmd/aos/service.go`, em `hostRun`, antes de correr), incluindo nas
+// retomas — logo o que aqui se larga é relido do Event Store à hospedagem seguinte. A poda é
+// simétrica com a reconstrução, e é por isso que não perde nada durável.
+//
+// A excepção é deliberada e desejada: um run cujo titular foi crypto-shredded NÃO re-hidrata,
+// porque [StepLedger.Rebuild] salta os registos que já não decifram. Nesse caso o esquecimento
+// é permanente, que é o ponto do Art. 17.
+//
+// Quem chamar isto num contexto SEM essa reconstrução à entrada reintroduz o defeito que a
+// secção anterior descreve.
+//
+// ALCANCE SOBRE SUBSTRATO NÃO-DURÁVEL — eixo **AOS-302**. A simetria acima assenta no Event
+// Store sobreviver ao processo. Sobre o substrato de referência in-memory a reposição continua a
+// valer DENTRO do processo, mas um restart leva tudo: um run retomado depois disso não encontra
+// as entradas, e a garantia volta a ser a que este ledger sempre declarou — at-least-once com
+// dedup no commit do Event Store e idempotência downstream —, não a memória.
+func (l *StepLedger) ForgetRun(runID string) int {
+	if l == nil || runID == "" {
+		return 0
+	}
+	// O prefixo é INEQUÍVOCO porque [IdempotencyKey] recusa um runID que contenha
+	// `keyDelimiter` ([ErrDelimiterInInput]): nenhum outro run pode produzir uma chave que
+	// comece por este. Usa-se a constante e não um literal para que a garantia continue
+	// ligada à função que a impõe.
+	prefixo := runID + keyDelimiter
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	removidos := 0
+	for k := range l.records {
+		if strings.HasPrefix(k, prefixo) {
+			delete(l.records, k)
+			removidos++
+		}
+	}
+	// O índice por titular tem de encolher com o mapa. Se ficasse a apontar chaves já
+	// removidas, um `ForgetSubject` posterior contaria entradas que não existem — e o
+	// próprio índice passaria a ser a fuga que esta função existe para fechar.
+	for titular, chaves := range l.porTitular {
+		for k := range chaves {
+			if strings.HasPrefix(k, prefixo) {
+				delete(chaves, k)
+			}
+		}
+		if len(chaves) == 0 {
+			delete(l.porTitular, titular)
+		}
+	}
+	return removidos
+}
+
 func (l *StepLedger) Applied(key string) (Result, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -579,9 +706,40 @@ func (l *StepLedger) Rebuild(ctx context.Context, runID string) error {
 			}
 			continue
 		}
-		l.records[clear.Key] = clear
+		// `rec` (o persistido) tem o titular; `clear` já não. O índice alimenta-se do
+		// primeiro — sem isto, tudo o que fosse re-hidratado por um restart voltava a
+		// ficar fora do alcance do apagamento (AOS-290).
+		l.memorizarLocked(clear.Key, rec.Subject, clear)
 	}
 	return nil
+}
+
+// memorizar grava o registo em claro e indexa-o pelo titular. É o ÚNICO caminho de escrita do
+// mapa, de propósito: a indexação por titular esquecida num dos ramos seria invisível — o
+// ledger continuaria a responder a `Applied` e só o apagamento é que falharia, em silêncio, e
+// só para os passos daquele ramo.
+func (l *StepLedger) memorizar(key, subject string, rec ledgerRecord) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.memorizarLocked(key, subject, rec)
+}
+
+// memorizarLocked assume o lock detido (o [StepLedger.Rebuild] já o tem para o varrimento
+// inteiro; tomá-lo por registo seria trocar uma reconstrução atómica por N secções críticas).
+func (l *StepLedger) memorizarLocked(key, subject string, rec ledgerRecord) {
+	l.records[key] = rec
+	// Sem titular não há o que indexar. Acontece legitimamente: sem cifrador composto, ou
+	// com payload vazio, o registo não é selado e não tem dono. Esses passos não carregam
+	// conteúdo por-titular, pelo que também não há nada a apagar por titular.
+	if subject == "" {
+		return
+	}
+	chaves := l.porTitular[subject]
+	if chaves == nil {
+		chaves = make(map[string]struct{}, 8)
+		l.porTitular[subject] = chaves
+	}
+	chaves[key] = struct{}{}
 }
 
 func decodeRecord(raw json.RawMessage) (ledgerRecord, error) {

@@ -180,8 +180,8 @@ func TestResume_TransitionFailureAfterAuditIsFailClosed(t *testing.T) {
 	if m.Current() != state.Paused {
 		t.Fatalf("máquina = %s, quer paused (lado seguro)", m.Current())
 	}
-	// O control.resume é durável: um canal fresco reconstrói projecção resumida (sem
-	// pausa/correcção pendentes) — coerente com o log.
+	// O control.resume é durável: um canal fresco reconstrói a projecção coerente com o LOG.
+	// O invariante testado é esse — projecção == Rebuild —, e não um valor em concreto.
 	fresh := newChannel(t, st, a)
 	if err := fresh.Rebuild(ctx, runID); err != nil {
 		t.Fatal(err)
@@ -189,8 +189,17 @@ func TestResume_TransitionFailureAfterAuditIsFailClosed(t *testing.T) {
 	if fresh.PendingPause(runID) {
 		t.Fatal("Rebuild: pausa ainda pendente apesar do control.resume durável")
 	}
-	if _, ok := fresh.PendingCorrection(runID); ok {
-		t.Fatal("Rebuild: correcção ainda pendente apesar do control.resume durável")
+	// A CORRECÇÃO FICA PENDENTE, e desde AOS-292 é isso o correcto. O `Resume` deixou de a
+	// consumir — quem a consome é a ENTREGA ao loop
+	// ([SteerChannel.ConsumeCorrection]/`control.correction_consumed`), e aqui não houve
+	// entrega nenhuma: a transição falhou e o run nem sequer voltou a correr.
+	//
+	// Antes, o resume consumia-a, e uma retoma falhada ficava com a máquina em paused e a
+	// correcção do operador PERDIDA — a reconciliação futura de que o comentário do Resume
+	// fala retomaria o run sem a correcção que alguém escreveu. Manter pendente é o lado
+	// seguro nos dois eixos, não só no da máquina.
+	if _, ok := fresh.PendingCorrection(runID); !ok {
+		t.Fatal("Rebuild: a correcção devia continuar PENDENTE — a retoma nao a consome (AOS-292), e esta nem transitou")
 	}
 }
 
@@ -363,6 +372,11 @@ func TestConcurrent_ResumeExactlyOneWins(t *testing.T) {
 	if m.Current() != state.Running {
 		t.Fatalf("estado final = %s, quer running", m.Current())
 	}
+	// A ENTREGA consome a correcção (AOS-292): o resume levanta só a pausa. Fecha-se o ciclo
+	// aqui para que a asserção de consistência abaixo continue a ser sobre um ciclo COMPLETO.
+	if _, err := ch.ConsumeCorrection(ctx, runID); err != nil {
+		t.Fatalf("ConsumeCorrection: %v", err)
+	}
 	// Consistência final: um canal fresco reconstrói a mesma projecção (ciclo consumido).
 	fresh := newChannel(t, st, a)
 	if err := fresh.Rebuild(ctx, runID); err != nil {
@@ -438,5 +452,65 @@ func TestConcurrent_SignalsAndReads(t *testing.T) {
 	}
 	if ch.PendingPause(runID) != fresh.PendingPause(runID) {
 		t.Fatal("pausa pendente in-memory diverge da reconstruída")
+	}
+}
+
+// leituraTruncada devolve o stream SEM o último evento — simula a janela em que o `Rebuild`
+// lê, e um sinal é aceite antes de a projecção ser instalada.
+type leituraTruncada struct {
+	*eventstore.Store
+	truncar bool
+}
+
+func (s *leituraTruncada) Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error) {
+	evs, err := s.Store.Read(ctx, streamID, fromSeq)
+	if err != nil || !s.truncar || len(evs) == 0 {
+		return evs, err
+	}
+	return evs[:len(evs)-1], nil
+}
+
+// TestAOS293_RebuildNaoRegridiUmaProjeccaoMaisAVANCADA fixa a guarda que AOS-293 acrescentou.
+//
+// O `Rebuild` lê o stream FORA do lock — de propósito, porque prender um mutex durante I/O é o
+// defeito que AOS-291 removeu do disjuntor. Isso abre uma janela: um sinal aceite entre a
+// leitura e a instalação ficaria de fora da projecção substituída, com o evento durável no log
+// e a memória atrasada.
+//
+// A janela existia antes e era inalcançável — `Rebuild` não tinha chamador de produção. AOS-293
+// passou a chamá-lo em cada hospedagem e tornou-a real, por isso a guarda entra com ele.
+func TestAOS293_RebuildNaoRegridiUmaProjeccaoMaisAVANCADA(t *testing.T) {
+	ctx := context.Background()
+	const runID = "run-rebuild-corrida"
+	a := authWith(t)
+	st := newStore(t)
+	truncado := &leituraTruncada{Store: st}
+	ch, err := control.NewChannel(truncado, a)
+	if err != nil {
+		t.Fatalf("NewChannel: %v", err)
+	}
+
+	// Dois sinais reais: a projecção em memória fica com nControls == 2.
+	if err := ch.Pause(ctx, runID, signed(t, a, runID, control.SignalPause, nil)); err != nil {
+		t.Fatal(err)
+	}
+	corr := []byte("correccao a preservar")
+	if err := ch.Steer(ctx, runID, corr, signed(t, a, runID, control.SignalSteer, corr)); err != nil {
+		t.Fatal(err)
+	}
+
+	// O Rebuild vê o stream SEM o último evento — exactamente o que uma corrida produz.
+	truncado.truncar = true
+	if err := ch.Rebuild(ctx, runID); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	// A projecção NÃO pode ter regredido: o steer continua lá.
+	got, ok := ch.PendingCorrection(runID)
+	if !ok || string(got) != string(corr) {
+		t.Fatalf("o Rebuild instalou uma projeccao ATRASADA e perdeu o sinal concorrente; PendingCorrection=(%q,%v)", got, ok)
+	}
+	if !ch.PendingPause(runID) {
+		t.Fatal("a pausa tambem se perdeu")
 	}
 }

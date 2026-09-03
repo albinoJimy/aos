@@ -199,7 +199,26 @@ func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 // o `HTTPClient` injectado DELEGA a validação de egress (seam de dev), o `Audit` do gateway é um
 // [audit.NewMemStore] PRÓPRIO (não o WORM do nó) e [modelgateway] `translateResponse` não
 // preenche `CostMicroUSD` — o custo por-turno que chega ao span `chat` é zero.
-func modelPostureBanner(m agentruntime.ModelClient) []string {
+// revogacaoNoBanner devolve o fragmento da cadeia de verificação do token NHI, DERIVADO do
+// estado realmente composto (AOS-288).
+//
+// Existia aqui uma string literal fixa a anunciar «EdDSA + janela + revogacao + raiz humana», e
+// a revogação era a única das quatro que o nó NÃO fazia: o passo vive sob `if v.revocations !=
+// nil` e nenhum caminho de produção passava `WithRevocations`. Media-se um token revogado a ser
+// aceite com `err=<nil>` enquanto esta linha dizia o contrário.
+//
+// O parâmetro existe para que a frase deixe de poder divergir do sistema. Se alguém desligar a
+// composição, o banner deixa de a anunciar por construção — e [TestAOS288_BannerNaoAnunciaRevogacaoSemComposicao]
+// avermelha se a frase voltar a ser incondicional. É o molde de `budgetPostureBanner(composed)`
+// e `exhaustionPromptPostureBanner(armed, …)` já usados neste ficheiro.
+func revogacaoNoBanner(revogacaoComposta bool) string {
+	if revogacaoComposta {
+		return "EdDSA + janela + revogacao + raiz humana ADR-003"
+	}
+	return "EdDSA + janela + raiz humana ADR-003; SEM revogacao — o registo nao esta composto, logo um token revogado vale ate expirar"
+}
+
+func modelPostureBanner(m agentruntime.ModelClient, revogacaoComposta bool) []string {
 	switch m.(type) {
 	case nil:
 		return []string{
@@ -207,7 +226,7 @@ func modelPostureBanner(m agentruntime.ModelClient) []string {
 		}
 	case *modelgateway.ModelClientAdapter:
 		return []string{
-			"modelo (EPIC-06): MODEL GATEWAY REAL composto (modelgateway.NewProduction) — IDENTIDADE REAL do GW LIGADA (AOS-278, CUTOVER DURO): o estagio authn REAL substituiu o antigo stub allow-all; cada turno EXIGE o token NHI do RUN (Goal.Credential) verificado (EdDSA + janela + revogacao + raiz humana ADR-003) pelo MESMO verifier das tool calls, e o principal e RESOLVIDO do token, NUNCA forjado — sem credencial no ctx o pedido e NEGADO ATRIBUIVELMENTE; o token TEM de selar model:invoke no escopo. allowlist regional ASSINADA, keypool, routing de failover, metering/pricing e endurecimento SSRF do gateway. RESIDUAIS DECLARADOS deste wiring: (1) o egress e DELEGADO no http.Client injectado (seam de dev) — o SSRF fail-closed de AOS-223 so volta a valer com BaseURL https + AllowedEgressHosts e SEM HTTPClient; (2) o audit de governacao do gateway (activacao da allowlist + decisoes) e um MemStore PROPRIO do gateway, NAO o WORM do no — nao entra na hash-chain que o no verifica. O RESIDUAL (3) FECHOU (AOS-259): o adaptador RT->GW JA propaga o custo — translateResponse preenche CostMicroUSD a partir de port.Usage.CostMicroUSD, que o metering do gateway escreve na resposta normalizada, e dai o numero flui para o span chat, para o acumulado do run e para o campo cost_micro_usd do evento DURAVEL turn.recorded. Se o custo e ZERO ou DERIVADO depende de a tabela de precos cobrir o par (modelo, regiao) deste no — o que a linha de postura do canal de custo declara explicitamente",
+			"modelo (EPIC-06): MODEL GATEWAY REAL composto (modelgateway.NewProduction) — IDENTIDADE REAL do GW LIGADA (AOS-278, CUTOVER DURO): o estagio authn REAL substituiu o antigo stub allow-all; cada turno EXIGE o token NHI do RUN (Goal.Credential) verificado (" + revogacaoNoBanner(revogacaoComposta) + ") pelo MESMO verifier das tool calls, e o principal e RESOLVIDO do token, NUNCA forjado — sem credencial no ctx o pedido e NEGADO ATRIBUIVELMENTE; o token TEM de selar model:invoke no escopo. allowlist regional ASSINADA, keypool, routing de failover, metering/pricing e endurecimento SSRF do gateway. RESIDUAIS DECLARADOS deste wiring: (1) o egress e DELEGADO no http.Client injectado (seam de dev) — o SSRF fail-closed de AOS-223 so volta a valer com BaseURL https + AllowedEgressHosts e SEM HTTPClient; (2) o audit de governacao do gateway (activacao da allowlist + decisoes) e um MemStore PROPRIO do gateway, NAO o WORM do no — nao entra na hash-chain que o no verifica. O RESIDUAL (3) FECHOU (AOS-259): o adaptador RT->GW JA propaga o custo — translateResponse preenche CostMicroUSD a partir de port.Usage.CostMicroUSD, que o metering do gateway escreve na resposta normalizada, e dai o numero flui para o span chat, para o acumulado do run e para o campo cost_micro_usd do evento DURAVEL turn.recorded. Se o custo e ZERO ou DERIVADO depende de a tabela de precos cobrir o par (modelo, regiao) deste no — o que a linha de postura do canal de custo declara explicitamente",
 		}
 	default:
 		return []string{

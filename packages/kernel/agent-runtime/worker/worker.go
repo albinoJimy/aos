@@ -115,6 +115,30 @@ func WithWorkerID(id string) WorkerOption {
 
 // WithHeartbeatInterval define o intervalo entre heartbeats do lease (default 1s).
 // Deve ser bem inferior ao TTL do lease do [durable.LeaseManager].
+//
+// # PORQUE AQUI NÃO HÁ RECUSA FAIL-CLOSED, ao contrário de aos.WithLeaseHeartbeat (AOS-297)
+//
+// A AC de AOS-297 pedia a mesma validação aqui «ou razão escrita para não a ter». É esta, e
+// começa por uma honestidade: HOJE nenhuma das duas opções tem chamador de produção — nem esta
+// nem `aos.WithLeaseHeartbeat`, como o próprio EPIC-21 regista. O que separa os dois casos é o
+// CUSTO, não a cobertura.
+//
+// Do lado do nó a guarda custou ZERO: nada a chamava, nada partiu. Aqui custa cinco fixtures em
+// três módulos — worker/, platform/dr e qa/dr-e2e —, todas a passar `time.Hour` sobre um TTL de
+// 30s com relógio MANUAL. Nesse contexto o valor não é um intervalo de renovação: é a forma
+// idiomática de dizer «o heartbeat real não dispara durante este teste». Recusá-lo obrigaria as
+// cinco a escrever um número arbitrariamente abaixo do TTL que significa exactamente o mesmo e
+// lê-se pior — pagar essa troca para proteger um caminho que ninguém percorre é mau negócio.
+//
+// Há uma segunda diferença, mais fraca mas real: `NewNodeService` ESTÁ no caminho de produção,
+// pelo que um futuro chamador de `WithLeaseHeartbeat` chega lá de imediato; [NewWorker] não é
+// composto em lado nenhum, pelo que um futuro chamador desta opção continuaria fora de produção
+// até alguém compor o worker.
+//
+// Se um dia [NewWorker] ganhar um chamador de produção, esta decisão caduca: o TTL vive no
+// [durable.LeaseManager] que este construtor já recebe — falta-lhe só um acessor —, e a guarda
+// passa a valer o que custa. Não se acrescentou o acessor agora: material exportado sem
+// consumidor é o defeito que AOS-296 persegue no mesmo epic.
 func WithHeartbeatInterval(d time.Duration) WorkerOption {
 	return func(w *Worker) {
 		if d > 0 {

@@ -33,8 +33,8 @@ import (
 // fim-de-turno — para a invariante AC4 provar que o loop consome o steer.
 type demoPausingSteer struct{}
 
-func (demoPausingSteer) GracefulPause(context.Context, string) (bool, error) { return true, nil }
-func (demoPausingSteer) PendingCorrection(string) ([]byte, bool)             { return nil, false }
+func (demoPausingSteer) GracefulPause(context.Context, string) (bool, error)      { return true, nil }
+func (demoPausingSteer) PendingCorrection(context.Context, string) ([]byte, bool) { return nil, false }
 
 // invariantKind classifica uma invariante do ápice. kindUnset é o valor-zero: uma
 // invariante não classificada é um DEFEITO (vacuous pass), nunca um "chega".

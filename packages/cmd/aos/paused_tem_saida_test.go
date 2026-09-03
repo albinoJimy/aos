@@ -100,7 +100,14 @@ func TestARetomaDeUmaPausaPOEOrunEmRunning(t *testing.T) {
 	if g == nil {
 		t.Fatal("gate do run desapareceu")
 	}
-	if err := g.resumeIfWaiting(ctx); err != nil {
+	// A retoma da PAUSA é agora INJECTADA (AOS-292): o gate não a decide, porque levantar uma
+	// pausa exige o canal de controlo e um emissor assinado, e este gate não conhece nenhum
+	// dos dois. O que este teste continua a provar é o desfecho na MÁQUINA — que era o seu
+	// objecto —, pelo que se injecta a transição directa. Que a via do NÓ passe mesmo pelo
+	// canal é o que `TestAOS292_*` prova, e a recusa sem via é o teste a seguir.
+	if err := g.resumeIfWaiting(ctx, func(c context.Context) error {
+		return g.Resume(c, "retoma injectada pelo teste")
+	}); err != nil {
 		t.Fatalf("resumeIfWaiting sobre um run pausado: %v", err)
 	}
 	if got := g.m.Current(); got != state.Running {

@@ -413,55 +413,49 @@ trajectória divergente ou efeito duplicado. Ligado a `run.sh` (`ALL_GATES`),
 Cobertura do harness ≥ 80 % com `-race` limpo; fidelidade 100 % / zero duplicados
 nas golden.
 
-### 4.4. Porta de execução durável agnóstica ao backend (AOS-022)
+### 4.4. Porta de execução durável agnóstica ao backend (AOS-022) — REMOVIDA (AOS-296)
 
-A decisão de substrato de durable execution está **ratificada em ADR-015**:
-**consolidar o contrato próprio** (AOS-014/015/016/021) e expor uma **porta estável
-que mantém o RT agnóstico ao backend** (Princípio 8 / anti lock-in). Um engine
-externo (Temporal/Restate/DBOS) fica como **backend plugável** opcional, nunca um
-rewrite. A fase *feature* está implementada no subpacote
-`packages/kernel/agent-runtime/engine` (`engine_adapter.go`).
+A decisão de substrato de durable execution continua **ratificada em ADR-015**:
+**consolidar o contrato próprio** (AOS-014/015/016/021), com um engine externo
+(Temporal/Restate/DBOS) como **backend plugável** opcional e nunca um rewrite. Essa
+decisão **não muda**.
 
-**A porta `Engine`.** É a interface que o RT usa **sem saber qual backend está por
-baixo**. Expõe as operações do contrato de durable execution de forma independente
-do substrato: `Dispatch(ctx, activity)` (efeito idempotente + mediado + registado —
-delega no `activity.Dispatcher`, AOS-021), `Checkpoint(ctx, cp)` / `Resume(ctx,
-run_id)` (cursor intra-iteração — delega em AOS-015), `Replay(ctx, run_id, opts)`
-(replay determinístico — delega em AOS-016) e `Mode()`. As assinaturas seguem
-**exactamente** as APIs de AOS-014/015/016/021 — a porta é uma composição, não uma
-API nova.
+O que mudou foi a *fase feature*. Existiu em `packages/kernel/agent-runtime/engine` uma
+porta `Engine` de cinco métodos (`Dispatch`, `Checkpoint`, `Resume`, `Replay`, `Mode`) e
+um adaptador de referência `OwnContractEngine` que a satisfazia compondo as peças já
+Done sobre o mesmo Event Store. **Foi removida em AOS-296**, e a razão está medida:
 
-**Adaptador de referência `OwnContractEngine`.** Implementa `Engine` **compondo** as
-peças já Done sobre o **mesmo Event Store replicado** (ADR-007, fonte de verdade
-única): `Dispatch → *activity.Dispatcher`, `Checkpoint → *durable.EventStoreCheckpointer`,
-`Resume → *durable.Resumer`, `Replay → *replay.ReplayEngine`. **Não reimplementa
-nenhuma garantia.** É precisamente o assentar de todas as peças num só log que
-distingue o contrato próprio dos engines externos, que trariam um **segundo** log de
-durabilidade (event history / journal / Postgres) e a consequente reconciliação de
-duas fontes de verdade (ADR-015 §2). A opção `WithLedger` liga o **crash/failover**:
-um worker novo reconstrói o ledger (`Rebuild`) do log e injecta-o no engine.
+- **zero consumidores.** Fora do próprio pacote, e em toda a árvore, os únicos
+  importadores eram os seus dois ficheiros de teste. O `loop.go` nunca importou `engine`;
+  a produção sempre cablou `activity.Dispatcher`, `durable.EventStoreCheckpointer`,
+  `durable.Resumer` e `replay.Engine` **individualmente**;
+- **consumi-la tornaria falsa a própria afirmação que ela existia para provar.** A porta
+  declarava `Dispatch(ctx, activity.Activity) (activity.Result, error)`; o loop programa
+  contra `ActivityDispatcher.Dispatch(ctx, referencemonitor.Call) (referencemonitor.Decision, error)`.
+  Ligá-la exigiria mudar a assinatura de uma interface **pública do kernel** — exactamente
+  o «sem alterações à API do RT» que o critério de AOS-022 afirmava;
+- **e não servia dois dos três consumidores de replay do nó,** que chamam `Reconstruct` —
+  método que a porta não expunha. Alargá-la contradiria a sua própria promessa de que «as
+  assinaturas seguem exactamente as APIs de AOS-014/015/016/021».
 
-**Mapeamento de um backend externo (documentado, não implementado).** A
-reversibilidade do ADR-015 é concreta — um engine externo satisfaria a **mesma**
-porta sem tocar no RT: `Dispatch`→activity idempotente (Temporal) / handler com
-idempotency key (Restate) / `@step` transaccional (DBOS); `Checkpoint`→event history
-/ journal / estado do workflow; `Resume`→replay/recovery do workflow;
-`Replay`→replayer do SDK. Em todos, o adaptador subordinaria o seu log ao ES.
+**O que se perdeu, declarado:** o teste de contrato (581 linhas) continha a **única prova
+executável de backend-swap do repositório** — o mesmo driver contra dois backends com
+asserções idênticas. Crash+retoma e divergência de replay continuam cobertos noutros
+pacotes (`durable/step_ledger_test.go`, `cmd/aos/aos253_crash_resume_test.go`,
+`replay/engine_test.go`, `harness/`, `platform/dr/negative_test.go`); a substituibilidade
+do backend **não**. Os critérios de AOS-022 no `specs/EPIC-02` foram reavaliados em
+conformidade.
 
-**Prova de isolamento por contrato (Princípio 8).** O teste de contrato corre o
-**cenário de referência** (run multi-passo com **crash e retoma**) sobre a porta e
-prova: (a) o adaptador de referência passa a suíte de **idempotência** (AOS-014, 0
-efeitos observáveis duplicados — verificado com **worker novo** que reconstrói o
-ledger do log) e de **replay** (AOS-016, fidelidade 100 %, zero efeitos externos, e
-divergência localizada ao mutar o `Spec`); (b) **trocar o backend** (adaptador de
-referência ↔ um **stub/fake** `Engine`) **não altera o uso do RT** — o *mesmo* driver
-de RT, escrito só contra a interface `Engine`, compila e corre com asserções
-idênticas sobre ambos. Cobertura do adaptador ≥ 80 % com `-race` limpo.
+**O que a remoção NÃO desfaz:** a reversibilidade do ADR-015 continua a ser uma
+propriedade do desenho — as peças de durabilidade assentam todas num só log, e é isso que
+distingue o contrato próprio de um engine externo, que traria um **segundo** log e a
+reconciliação de duas fontes de verdade (ADR-015 §2). O que deixou de existir é a
+*demonstração em código* dessa reversibilidade, não a decisão.
 
 **Fronteiras (abertas, herdadas do ADR-015).** *Enforcement* de fencing por-escrita
-(AOS-018, item aberto); adopção do `Dispatcher`/`Engine` **pelo loop** (wiring
-diferido, como em AOS-021); HA de produção sobre o ES replicado real
-(NATS/JetStream), a validar em staging.
+(AOS-018/AOS-299); adopção do `Dispatcher` **pelo loop** no caminho por omissão (wiring
+diferido, DEF-801/DEF-805); HA de produção sobre o ES replicado real (NATS/JetStream), a
+validar em staging.
 
 ### 4.5. Wiring no composition-root do nó (AOS-180)
 
@@ -719,4 +713,4 @@ a máquina de estados (AOS-017) dá as transições duráveis.
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
-| 1.1 | Julho 2026 | AOS-022 (fase feature): porta `Engine` agnóstica ao backend + adaptador de referência `OwnContractEngine` (§4.4), sob ADR-015 ratificado | Equipa AOS |
+| 1.1 | Julho 2026 | AOS-022 (fase feature): porta `Engine` agnóstica ao backend + adaptador de referência `OwnContractEngine` (§4.4), sob ADR-015 ratificado. **A porta foi REMOVIDA em AOS-296** por não ter consumidor — ver §4.4; a entrada fica porque regista o que a versão 1.1 entregou | Equipa AOS |

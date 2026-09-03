@@ -165,7 +165,32 @@ type transitionRecord struct {
 // Segura para uso concorrente (um mutex serializa as transições, garantindo também
 // step_ids "state-N" monotónicos e sem colisão).
 type Machine struct {
-	mu       sync.Mutex
+	// mu SERIALIZA as mutações: [Machine.Transition], [Machine.CheckDeadlines] e
+	// [Machine.Rebuild] detêm-no do princípio ao fim. É ele que torna a validação
+	// (IsValidTransition contra o estado corrente) ATÓMICA face à escrita — a
+	// propriedade de que AOS-291 passou a depender ao largar o lock do disjuntor,
+	// e que este desdobramento NÃO pode enfraquecer.
+	//
+	// NÃO protege leituras. Ver estadoMu.
+	mu sync.Mutex
+	// estadoMu protege APENAS `current`, `enteredAt` e `nStates` — e nunca é detido
+	// durante I/O (AOS-301).
+	//
+	// PORQUÊ DOIS LOCKS. Até AOS-301 havia um só, e `Transition` detinha-o durante a
+	// consulta à [FencingAuthority] (rede), o Append (rede/disco), o `span.End()`
+	// (Exporter.Export, síncrono) e o callback do [TransitionObserver] (código de
+	// terceiros). Como `Current()` e `EnteredAt()` tomavam o MESMO mutex, um Append
+	// lento prendia quem só queria LER o estado — e é isso que AOS-291 mediu e
+	// declarou por fechar: o `Abort`/`EscalateToHuman` do disjuntor lêem `Current()`,
+	// e o `Snapshot` com wall-clock lê `EnteredAt()`. O instante em que se quer
+	// abortar era o instante em que a leitura ficava trancada.
+	//
+	// O QUE UM LEITOR PODE OBSERVAR e é correcto: durante a janela de I/O de uma
+	// transição, o estado ainda é o ANTERIOR. Já era assim — o código só avança o
+	// estado in-memory DEPOIS do commit durável (passo 4 de doTransition) — pelo que
+	// o desdobramento não introduz visibilidade nova: troca «o leitor espera pelo
+	// resultado» por «o leitor vê o estado que ainda está em vigor».
+	estadoMu sync.RWMutex
 	store    EventStore
 	runID    string
 	producer eventstore.Producer
@@ -264,10 +289,29 @@ func NewMachine(store EventStore, runID string, opts ...Option) (*Machine, error
 // RunID devolve o identificador do run (stream_id no Event Store).
 func (m *Machine) RunID() string { return m.runID }
 
+// instalarEstado publica os três campos mutáveis sob estadoMu. Chama-se sempre com `mu`
+// já detido (é uma mutação), e a secção é curta por construção: nunca há I/O aqui.
+func (m *Machine) instalarEstado(current State, enteredAt time.Time, nStates uint64) {
+	m.estadoMu.Lock()
+	defer m.estadoMu.Unlock()
+	m.current = current
+	m.enteredAt = enteredAt
+	m.nStates = nStates
+}
+
+// lerEstado devolve um instantâneo COERENTE dos três campos. Ler cada um por sua vez
+// deixaria uma janela em que o `current` é o novo e o `enteredAt` o antigo — e é sobre
+// esse par que [Machine.CheckDeadlines] decide um kill fail-closed.
+func (m *Machine) lerEstado() (State, time.Time, uint64) {
+	m.estadoMu.RLock()
+	defer m.estadoMu.RUnlock()
+	return m.current, m.enteredAt, m.nStates
+}
+
 // Current devolve o estado corrente da máquina.
 func (m *Machine) Current() State {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.estadoMu.RLock()
+	defer m.estadoMu.RUnlock()
 	return m.current
 }
 
@@ -283,8 +327,8 @@ func (m *Machine) Current() State {
 // mas o par não é robusto a saltos de relógio. Se essa robustez for requisito, é
 // necessário preservar a leitura monotónica (fora do âmbito de AOS-019).
 func (m *Machine) EnteredAt() time.Time {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.estadoMu.RLock()
+	defer m.estadoMu.RUnlock()
 	return m.enteredAt
 }
 
@@ -333,9 +377,7 @@ func (m *Machine) Rebuild(ctx context.Context) (State, error) {
 	events, err := m.store.Read(ctx, m.runID, 1)
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
-			m.current = Ready
-			m.enteredAt = m.clock.Now()
-			m.nStates = 0
+			m.instalarEstado(Ready, m.clock.Now(), 0)
 			return Ready, nil
 		}
 		return "", err
@@ -379,26 +421,26 @@ func (m *Machine) Rebuild(ctx context.Context) (State, error) {
 
 	if last == nil {
 		// Stream existe mas sem transições de estado (p.ex. só turn.recorded).
-		m.current = Ready
-		m.enteredAt = m.clock.Now()
-		m.nStates = 0
+		m.instalarEstado(Ready, m.clock.Now(), 0)
 		return Ready, nil
 	}
 
-	m.current = last.To
 	// nStates é o piso para o próximo step_id (state-{nStates+1}). Usa o maior N dos
 	// step_ids quando disponível; recai na contagem posicional para logs legados sem
 	// o prefixo "state-".
-	m.nStates = count
-	if maxN > m.nStates {
-		m.nStates = maxN
+	nStates := count
+	if maxN > nStates {
+		nStates = maxN
 	}
-	if t, perr := time.Parse(time.RFC3339Nano, last.At); perr == nil {
-		m.enteredAt = t
-	} else {
-		m.enteredAt = m.clock.Now()
+	enteredAt, perr := time.Parse(time.RFC3339Nano, last.At)
+	if perr != nil {
+		enteredAt = m.clock.Now()
 	}
-	return m.current, nil
+	// UMA instalação, no fim: a leitura do stream acima é I/O e corre FORA de estadoMu.
+	// Instalar campo a campo durante a reconstrução exporia estados intermédios a quem
+	// lê — e a máquina só deve mudar de estado de uma vez.
+	m.instalarEstado(last.To, enteredAt, nStates)
+	return last.To, nil
 }
 
 // Transition tenta transitar para to com os metadados de event. Valida (from → to)
@@ -418,7 +460,9 @@ func (m *Machine) Transition(ctx context.Context, to State, event TransitionEven
 // doTransition assume o lock detido. Contém a lógica de validação → fencing →
 // persistência → avanço, partilhada por [Transition] e [CheckDeadlines].
 func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEvent) error {
-	from := m.current
+	// Instantâneo sob estadoMu. `mu` está detido pelo chamador, pelo que estes valores
+	// não podem mudar debaixo dos pés: nenhuma outra mutação corre em paralelo.
+	from, _, nStates := m.lerEstado()
 
 	// 1) Validação contra a TABELA declarativa. Par inválido ⇒ rejeita sem efeitos.
 	if !IsValidTransition(from, to) {
@@ -472,7 +516,7 @@ func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEv
 		m.obs.Rejected(from, to, err)
 		return err
 	}
-	stepID := fmt.Sprintf("%s%d", transitionStepPrefix, m.nStates+1)
+	stepID := fmt.Sprintf("%s%d", transitionStepPrefix, nStates+1)
 	res, err := m.store.Append(ctx, m.runID, eventstore.EventInput{
 		Type:     EventTypeTransition,
 		Payload:  payload,
@@ -508,10 +552,10 @@ func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEv
 	}
 
 	// 4) Só APÓS o commit durável (ou o duplicado idêntico reconciliado) é que o
-	// estado in-memory avança.
-	m.current = to
-	m.enteredAt = now
-	m.nStates++
+	// estado in-memory avança. É a ÚNICA secção de estadoMu deste caminho, e não faz
+	// I/O: todo o I/O — autoridade de fencing, Append — já aconteceu acima, com `mu`
+	// detido mas estadoMu livre (AOS-301).
+	m.instalarEstado(to, now, nStates+1)
 
 	m.emitSpan(ctx, from, to, rec)
 	m.obs.Transitioned(from, to, event.Reason)
@@ -552,23 +596,27 @@ func (m *Machine) CheckDeadlines(ctx context.Context) (State, bool, error) {
 	defer m.mu.Unlock()
 
 	now := m.clock.Now()
-	switch m.current {
+	// Instantâneo COERENTE do par (estado, instante de entrada): é sobre ele que se
+	// decide um kill fail-closed, e lê-los em dois momentos deixaria uma janela em que
+	// o estado é o novo e o instante o antigo.
+	current, enteredAt, _ := m.lerEstado()
+	switch current {
 	case WaitingOnHuman:
-		if m.humanTTL > 0 && !now.Before(m.enteredAt.Add(m.humanTTL)) {
+		if m.humanTTL > 0 && !now.Before(enteredAt.Add(m.humanTTL)) {
 			if err := m.doTransition(ctx, Killed, TransitionEvent{Reason: ReasonHumanTimeout}); err != nil {
-				return m.current, false, err
+				return current, false, err
 			}
 			return Killed, true, nil
 		}
 	case Running:
-		if m.wallClock > 0 && !now.Before(m.enteredAt.Add(m.wallClock)) {
+		if m.wallClock > 0 && !now.Before(enteredAt.Add(m.wallClock)) {
 			if err := m.doTransition(ctx, TimedOut, TransitionEvent{Reason: ReasonWallClockTimeout}); err != nil {
-				return m.current, false, err
+				return current, false, err
 			}
 			return TimedOut, true, nil
 		}
 	}
-	return m.current, false, nil
+	return current, false, nil
 }
 
 // ---------------------------------------------------------------------------

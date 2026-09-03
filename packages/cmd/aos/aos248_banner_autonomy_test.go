@@ -202,7 +202,7 @@ func TestAOS248_BannerContaParesDistintos(t *testing.T) {
 func TestAOS248_BannerModeloTresEstados(t *testing.T) {
 	t.Parallel()
 
-	referencia := strings.Join(modelPostureBanner(nil), "\n")
+	referencia := strings.Join(modelPostureBanner(nil, true), "\n")
 	if !strings.Contains(referencia, "MODELO DE REFERENCIA") {
 		t.Fatalf("Config.Model nil ⇒ referenceModel, e o banner tem de o dizer:\n%s", referencia)
 	}
@@ -213,7 +213,7 @@ func TestAOS248_BannerModeloTresEstados(t *testing.T) {
 		t.Errorf("o modelo de referencia NAO pode ser anunciado como gateway:\n%s", referencia)
 	}
 
-	injectado := strings.Join(modelPostureBanner(aos248ModeloInjectado{}), "\n")
+	injectado := strings.Join(modelPostureBanner(aos248ModeloInjectado{}, true), "\n")
 	if !strings.Contains(injectado, "INJECTADO") {
 		t.Fatalf("um ModelClient que nao e o gateway nem a referencia tem de ser declarado como injectado:\n%s", injectado)
 	}

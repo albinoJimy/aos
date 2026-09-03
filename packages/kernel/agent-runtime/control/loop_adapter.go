@@ -66,7 +66,7 @@ func (a *LoopSteer) GracefulPause(ctx context.Context, runID string) (bool, erro
 // [LoopSteer]): uma correcção DISTINTA é devolvida uma única vez por run; a mesma correcção
 // já injectada não se repete turno-a-turno; quando o canal deixa de ter correcção pendente
 // (resume/nunca-steerado), o marcador é limpo para que um steer futuro volte a aplicar-se.
-func (a *LoopSteer) PendingCorrection(runID string) ([]byte, bool) {
+func (a *LoopSteer) PendingCorrection(ctx context.Context, runID string) ([]byte, bool) {
 	if a == nil || a.ch == nil {
 		return nil, false
 	}
@@ -88,6 +88,20 @@ func (a *LoopSteer) PendingCorrection(runID string) ([]byte, bool) {
 	stored := make([]byte, len(corr))
 	copy(stored, corr)
 	a.applied[runID] = stored
+
+	// A ENTREGA CONSOME-A, DURAVELMENTE (AOS-292). O marcador `applied` acima é in-process e
+	// volátil: sozinho, de-duplica no mesmo processo e não sobrevive a um restart. Sem o
+	// registo durável, um nó reiniciado reconstruía a correcção como pendente e injectava-a
+	// segunda vez — num turno cujo prompt já foi capturado, fazendo o replay divergir por
+	// `prompt_hash`. São duas de-duplicações a níveis diferentes, e ambas fazem falta.
+	//
+	// Um erro NÃO impede a entrega: a correcção já foi decidida e o loop vai injectá-la. O
+	// que se perde é a marca durável, e o pior caso é uma re-injecção depois de um restart —
+	// que o `applied` absorve enquanto o processo viver. Perder a correcção seria pior.
+	if _, err := a.ch.ConsumeCorrection(ctx, runID); err != nil {
+		// Sem log próprio aqui — o adaptador não tem logger e o canal já selou o que pôde.
+		_ = err
+	}
 	return corr, true
 }
 

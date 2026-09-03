@@ -23,7 +23,7 @@ type onceCorrection struct {
 
 func (s *onceCorrection) GracefulPause(context.Context, string) (bool, error) { return false, nil }
 
-func (s *onceCorrection) PendingCorrection(string) ([]byte, bool) {
+func (s *onceCorrection) PendingCorrection(context.Context, string) ([]byte, bool) {
 	if !s.given && s.corr != nil {
 		s.given = true
 		return s.corr, true

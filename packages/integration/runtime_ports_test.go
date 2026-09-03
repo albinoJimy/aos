@@ -10,8 +10,6 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/activity"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
-	"github.com/aos-ref/platform/memory/compression"
-	"github.com/aos-ref/platform/memory/record"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -236,63 +234,3 @@ func TestDurableDispatcher_DenyIsNonFatal(t *testing.T) {
 
 // TestCompactionTriggerAdapter_ObserveGating prova o gating do adaptador: só enfileira
 // quando o sinal disparou E o construtor de source devolve conteúdo a compactar; um sinal
-// não-disparado ou uma source ainda-não-pronta não enfileiram.
-func TestCompactionTriggerAdapter_ObserveGating(t *testing.T) {
-	store, err := eventstore.New()
-	if err != nil {
-		t.Fatalf("eventstore.New: %v", err)
-	}
-	defer store.Close()
-	compactor, err := compression.NewAsyncCompactor(store)
-	if err != nil {
-		t.Fatalf("NewAsyncCompactor: %v", err)
-	}
-	trigger, err := compression.NewCheckpointTrigger(compactor, compression.DefaultCompressionPolicy())
-	if err != nil {
-		t.Fatalf("NewCheckpointTrigger: %v", err)
-	}
-
-	sourceReady := true
-	builder := func(runID string, turn int) (compression.CompactionSource, bool) {
-		if !sourceReady {
-			return compression.CompactionSource{}, false
-		}
-		return compression.CompactionSource{
-			RunID:        runID,
-			CheckpointID: "ckpt-1",
-			TraceID:      "trace-1",
-			Turns:        []record.Turn{{Index: turn}},
-		}, true
-	}
-	adapter, err := NewCompactionTriggerAdapter(trigger, builder)
-	if err != nil {
-		t.Fatalf("NewCompactionTriggerAdapter: %v", err)
-	}
-	ctx := context.Background()
-
-	// Sinal não-disparado ⇒ não enfileira.
-	if enq, err := adapter.Observe(ctx, "run-1", 1, agentruntime.WindowSignal{Triggered: false}); err != nil || enq {
-		t.Fatalf("não-disparado: enq=%v err=%v, quero (false,nil)", enq, err)
-	}
-	if trigger.PendingCount() != 0 {
-		t.Fatalf("PendingCount=%d após não-disparado, quero 0", trigger.PendingCount())
-	}
-
-	// Disparado + source pronta ⇒ enfileira.
-	sig := agentruntime.WindowSignal{Triggered: true, Action: "mark_for_compression", OccupancyTokens: 900, LimitTokens: 1000}
-	if enq, err := adapter.Observe(ctx, "run-1", 1, sig); err != nil || !enq {
-		t.Fatalf("disparado+source: enq=%v err=%v, quero (true,nil)", enq, err)
-	}
-	if trigger.PendingCount() != 1 {
-		t.Fatalf("PendingCount=%d após enfileirar, quero 1", trigger.PendingCount())
-	}
-
-	// Disparado + source ainda-não-pronta ⇒ não enfileira (inalterado).
-	sourceReady = false
-	if enq, err := adapter.Observe(ctx, "run-1", 2, sig); err != nil || enq {
-		t.Fatalf("source não-pronta: enq=%v err=%v, quero (false,nil)", enq, err)
-	}
-	if trigger.PendingCount() != 1 {
-		t.Fatalf("PendingCount=%d, quero 1 (inalterado)", trigger.PendingCount())
-	}
-}

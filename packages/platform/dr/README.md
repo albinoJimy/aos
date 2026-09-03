@@ -1,9 +1,8 @@
 # platform/dr — DR por replay determinístico (AOS-102)
 
 Plano de **Disaster Recovery** do AOS por **replay determinístico** com **RPO/RTO
-definidos** e validados por **game day**. O módulo **compõe** as peças já Done — um
-nível acima de `engine.NewOwnContractEngine` — **sem reimplementar** restauro, replay,
-resume, verificação, idempotência ou soberania.
+definidos** e validados por **game day**. O módulo **compõe** as peças já Done — **sem
+reimplementar** restauro, replay, resume, verificação, idempotência ou soberania.
 
 - **Restaura o log** (via AOS-101) até ao último evento íntegro;
 - **verifica** o backup (manifesto hash-chain) e o **audit WORM** (hash-chain) antes de

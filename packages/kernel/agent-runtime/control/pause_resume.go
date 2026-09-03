@@ -198,3 +198,46 @@ func (c *SteerChannel) Resume(ctx context.Context, runID string, emitter Emitter
 	c.emitSpan(ctx, runID, SignalResume, emitter.ID)
 	return corr, nil
 }
+
+// ConsumeCorrection marca duravelmente que a correcção pendente do run foi ENTREGUE ao loop
+// e deixa de estar pendente (AOS-292). Devolve `false` — sem erro — quando não havia nada a
+// consumir, que é o caso comum em todos os turnos de um run nunca steerado.
+//
+// # PORQUE ISTO EXISTE E PORQUE É DURÁVEL
+//
+// Até AOS-292 a correcção era limpa pelo [SteerChannel.Resume]. Isso impedia a retoma de
+// passar pelo canal sem perder a correcção, porque o loop só a lê DEPOIS de a pausa levantar
+// — a retoma consumia-a antes de haver quem a injectasse.
+//
+// A limpeza mudou para aqui, para o instante da ENTREGA. Tem de ser durável pela mesma razão
+// que os outros sinais: a projecção in-memory iguala sempre o que o `Rebuild` reconstrói do
+// log. Se a consumação fosse só em memória, um restart repunha `hasCorrection` e o loop
+// injectava a mesma correcção uma segunda vez — mudando o prompt de um turno que já foi
+// capturado, e fazendo o replay divergir por `prompt_hash`.
+//
+// NÃO É AUTENTICADO, ao contrário de pause/steer/resume, e a assimetria é deliberada: não é
+// um sinal de operador a entrar no sistema, é o nó a registar o que fez com um sinal que já
+// foi autenticado. O emissor gravado é o do STEER original — o registo tem de dizer de quem
+// era a correcção consumida, não quem a consumiu.
+//
+// AUDIT-FIRST, como o resto do canal: se o append falhar, a projecção não muda e a correcção
+// continua pendente. O pior caso é uma segunda injecção, que o de-dup em processo do
+// [LoopSteer] já absorve — nunca uma correcção perdida sem rasto.
+func (c *SteerChannel) ConsumeCorrection(ctx context.Context, runID string) (bool, error) {
+	if runID == "" {
+		return false, ErrEmptyRunID
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rc := c.runState(runID)
+	if !rc.hasCorrection {
+		return false, nil
+	}
+
+	rec := c.newRecord(SignalCorrectionConsumed, Emitter{ID: rc.correctionBy}, nil)
+	if err := c.appendControl(ctx, runID, rc, rec); err != nil {
+		return false, err
+	}
+	c.apply(rc, rec)
+	return true, nil
+}

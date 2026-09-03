@@ -22,7 +22,7 @@ func (s *fakeSteer) GracefulPause(context.Context, string) (bool, error) {
 	return s.pauseOnCall > 0 && s.calls >= s.pauseOnCall, nil
 }
 
-func (s *fakeSteer) PendingCorrection(string) ([]byte, bool) {
+func (s *fakeSteer) PendingCorrection(context.Context, string) ([]byte, bool) {
 	if s.correction != nil && !s.corrGiven {
 		s.corrGiven = true
 		return s.correction, true

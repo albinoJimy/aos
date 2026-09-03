@@ -36,6 +36,42 @@ const (
 	// alvo concreto vai no PAYLOAD — é o que faz uma assinatura capturada não servir para
 	// outro par nem para outro nível.
 	SignalAutonomy SignalKind = "autonomy"
+
+	// SignalRevoke é a REVOGAÇÃO de um token NHI pelo seu `jti` (AOS-288). Como o
+	// [SignalAutonomy], não pertence a um run — o `runID` do tuplo assinado é o âmbito fixo
+	// "nhi.revoke" e o `jti` alvo vai no PAYLOAD, para que uma assinatura capturada não
+	// sirva para revogar outro token.
+	//
+	// NÃO atravessa o [SteerChannel]: a revogação é um facto de IDENTIDADE, não de controlo
+	// de um run, e vive no registo consultado por `identity.Verifier.Verify`. O que traz
+	// deste pacote é só o vocabulário do tuplo assinado, que é o que o
+	// `integration.Ed25519Authenticator` exige e o que impede reutilizar a assinatura de um
+	// pause como se fosse de uma revogação.
+	SignalRevoke SignalKind = "nhi.revoke"
+
+	// SignalCorrectionConsumed marca que a correcção pendente foi ENTREGUE ao loop e já não
+	// está pendente (AOS-292).
+	//
+	// # PORQUE A CONSUMAÇÃO SE SEPAROU DA RETOMA
+	//
+	// Até AOS-292, [SteerChannel.Resume] limpava as duas coisas de uma vez: a pausa E a
+	// correcção. Isso tornava a retoma pelo canal INCOMPATÍVEL com a entrega ao loop, e o
+	// defeito só se via encadeando os dois factos: o loop lê a correcção DEPOIS de a pausa
+	// levantar (`loop.go`, GracefulPause antes de PendingCorrection), pelo que uma retoma
+	// que consumisse a correcção deixava o loop sem nada para injectar. A correcção do
+	// operador era aceite, selada — e nunca chegava ao prompt.
+	//
+	// Separar dá a cada facto o seu evento: `control.resume` diz «a pausa levantou»,
+	// `control.correction_consumed` diz «a correcção foi entregue». Os dois são duráveis
+	// porque a projecção TEM de igualar o que o `Rebuild` reconstrói; sem o segundo, um
+	// restart repunha uma correcção já injectada e o turno seguinte divergiria no
+	// `prompt_hash`.
+	//
+	// NÃO é assinado nem autenticado, ao contrário de pause/steer/resume, e a razão é que
+	// não é um SINAL DE OPERADOR: é o nó a registar o que fez com um sinal que já foi
+	// autenticado quando entrou. O emissor gravado é o do steer original, para o registo
+	// dizer de quem era a correcção que se consumiu.
+	SignalCorrectionConsumed SignalKind = "correction_consumed"
 )
 
 // Tipos canónicos dos eventos append-only do canal de controlo no Event Store. Cada
@@ -56,8 +92,11 @@ const (
 	EventTypeControlPause = "control.pause"
 	// EventTypeControlSteer — correcção injectada (gravada para NÃO-REPÚDIO).
 	EventTypeControlSteer = "control.steer"
-	// EventTypeControlResume — sinal resume aceite (paused→running com a correcção).
+	// EventTypeControlResume — sinal resume aceite (paused→running).
 	EventTypeControlResume = "control.resume"
+	// EventTypeControlCorrectionConsumed — a correcção pendente foi ENTREGUE ao loop e
+	// deixa de estar pendente (AOS-292). Ver [SignalCorrectionConsumed].
+	EventTypeControlCorrectionConsumed = "control.correction_consumed"
 )
 
 // controlStepPrefix namespaceia o step_id dos eventos de controlo no envelope do
@@ -373,7 +412,12 @@ func (c *SteerChannel) apply(rc *runControl, rec controlRecord) {
 		rc.correctionBy = rec.EmitterID
 		rc.hasCorrection = true
 	case SignalResume:
+		// SÓ a pausa (AOS-292). A correcção fica PENDENTE para o loop a injectar no turno
+		// seguinte — é ele que a entrega, e é a entrega que a consome
+		// ([SignalCorrectionConsumed]). Limpar as duas aqui era o defeito: o loop só lê a
+		// correcção depois de a pausa levantar, e nessa altura já não havia nada.
 		rc.pauseRequested = false
+	case SignalCorrectionConsumed:
 		rc.correction = nil
 		rc.correctionBy = ""
 		rc.hasCorrection = false
@@ -389,6 +433,8 @@ func eventTypeFor(kind SignalKind) string {
 		return EventTypeControlSteer
 	case SignalResume:
 		return EventTypeControlResume
+	case SignalCorrectionConsumed:
+		return EventTypeControlCorrectionConsumed
 	default:
 		return "control." + string(kind)
 	}
@@ -461,9 +507,29 @@ func (c *SteerChannel) Rebuild(ctx context.Context, runID string) error {
 		c.apply(rc, rec)
 	}
 
+	// A INSTALAÇÃO SÓ AVANÇA SE NÃO REGREDIR (AOS-293). A leitura acima corre FORA de `c.mu` — de
+	// propósito,
+	// porque é I/O e prendê-lo durante I/O é o defeito que AOS-291 removeu do disjuntor. Mas
+	// isso abre uma janela: um sinal aceite entre o `Read` e esta instalação ficaria de fora
+	// da projecção substituída, com o evento durável no log e a memória atrasada. Pior, o
+	// `nControls` ficaria abaixo do real e o `appendControl` seguinte reutilizaria um `ctrl-N`
+	// já usado — o ES devolveria StatusDuplicate e a reconciliação daria
+	// [ErrControlLogDivergence], derrubando um sinal legítimo.
+	//
+	// A janela existia antes, e era inalcançável: `Rebuild` não tinha chamador de produção.
+	// AOS-293 passou a chamá-lo em cada hospedagem, e com isso tornou-a real.
+	//
+	// Fecha-se comparando, sob o lock, o que se leu com o que a memória entretanto viu. Se a
+	// memória está À FRENTE do que o `Read` alcançou, NÃO se substitui: a projecção corrente
+	// já dobra tudo o que estaria no log mais o sinal novo, e mantê-la é estritamente melhor
+	// do que instalar uma versão que perdeu um sinal. Devolve-se nil — reconstruir sobre uma
+	// projecção que já está em dia é um no-op legítimo, não um erro.
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if actual, existe := c.runs[runID]; existe && actual.nControls > rc.nControls {
+		return nil
+	}
 	c.runs[runID] = rc
-	c.mu.Unlock()
 	return nil
 }
 
@@ -488,12 +554,24 @@ const (
 	AttrControlEmitter = "aos.control.emitter"
 )
 
+// isControlEvent e isKnownKind são allowlists FECHADAS de propósito: um kind desconhecido
+// aborta o Rebuild com [ErrCorruptControlLog] em vez de ser ignorado, para que um log
+// adulterado não produza uma projecção silenciosamente incompleta.
+//
+// COMPATIBILIDADE COM BINÁRIOS ANTERIORES (AOS-292): um nó antigo a reler um log que já tenha
+// `control.correction_consumed` não o reconhece em `isControlEvent` e SALTA-O — não aborta,
+// porque o filtro de tipo precede o de kind. O efeito é ele reconstruir a correcção como
+// PENDENTE e o loop injectá-la outra vez. Degradação aceitável e na direcção segura (uma
+// correcção a mais, nunca uma a menos), mas é a razão para não voltar a inverter a ordem
+// destes dois filtros.
 func isControlEvent(t string) bool {
-	return t == EventTypeControlPause || t == EventTypeControlSteer || t == EventTypeControlResume
+	return t == EventTypeControlPause || t == EventTypeControlSteer ||
+		t == EventTypeControlResume || t == EventTypeControlCorrectionConsumed
 }
 
 func isKnownKind(k SignalKind) bool {
-	return k == SignalPause || k == SignalSteer || k == SignalResume
+	return k == SignalPause || k == SignalSteer || k == SignalResume ||
+		k == SignalCorrectionConsumed
 }
 
 // parseControlStepID extrai o N de um step_id "ctrl-N". Devolve (0, false) para
