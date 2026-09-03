@@ -1,0 +1,118 @@
+# CODEOWNERS — quem o GitHub chama para rever cada superfície.
+#
+# PORQUE EXISTE. O corpus deste repositório atribui donos por PAPEL — «Arquitecto de
+# Plataforma», «Responsável de Segurança» — em 101 linhas do REGISTO-Deferimentos.md, nos
+# decisores dos ADRs e na custódia da chave de release. Nenhum desses papéis estava ligado a um
+# utilizador do GitHub, pelo que um pedido de revisão parava sempre na mesma pergunta: «a quem?».
+# Este ficheiro é essa ligação.
+#
+# ESTADO DE HOJE, DECLARADO: o repositório tem UM colaborador (@albinoJimy), que é também o único
+# autor em todo o histórico. Todas as regras abaixo resolvem para ele — não porque os papéis se
+# tenham fundido, mas porque não há mais ninguém a quem atribuir. As secções ficam SEPARADAS por
+# papel de propósito: quando houver mais gente, cada uma muda numa linha, e a estrutura de
+# responsabilidade já está escrita.
+#
+# NOTA SOBRE O GITHUB: um handle sem acesso de escrita ao repositório é ignorado em silêncio — a
+# regra parece existir e não convoca ninguém. Ao acrescentar um dono, confirme primeiro que é
+# colaborador; caso contrário este ficheiro passa a mentir, que é a classe de defeito que o
+# EPIC-21 passou dezassete tickets a fechar.
+#
+# COMO LER: a ÚLTIMA regra que casa é a que vale. Por isso o fallback vem primeiro e as
+# superfícies mais específicas vêm depois.
+
+# ---------------------------------------------------------------------------
+# Fallback — tudo o que não for reclamado abaixo
+# ---------------------------------------------------------------------------
+*                                           @albinoJimy
+
+# ---------------------------------------------------------------------------
+# AUTORIDADE DE RATIFICAÇÃO — dono do produto
+#
+# A Carta e os ADRs são decisões congeladas: a Carta só muda por emenda, e um ADR em vigor não se
+# contradiz sem ADR de supersessão. O registo de deferimentos não decide nada — regista o que já
+# está deferido —, e por isso mexer nele é um acto de governação, não de código.
+# ---------------------------------------------------------------------------
+/specs/00_AOS_Carta.md                      @albinoJimy
+/docs/adr/                                  @albinoJimy
+/docs/governance/                           @albinoJimy
+
+# ---------------------------------------------------------------------------
+# RESPONSÁVEL DE SEGURANÇA
+#
+# As superfícies onde uma alteração muda quem pode fazer o quê, ou o que fica provado depois de
+# ter sido feito. Ancoradas no que o registo de deferimentos já lhe atribui (39 linhas) e nas
+# fronteiras que o AGENTS.md §3 declara.
+# ---------------------------------------------------------------------------
+
+# O Reference Monitor é o ÚNICO caminho para uma tool call (AGENTS.md §3). Uma alteração aqui é
+# uma alteração à fronteira de autorização inteira.
+/packages/kernel/reference-monitor/         @albinoJimy
+
+# Identidade NHI, cadeias de delegação e revogação — o eixo de AOS-288/AOS-300.
+/packages/platform/identity/                @albinoJimy
+
+# Auditoria WORM: a hash-chain tamper-evidente, o legal hold e a expiração por crypto-shredding.
+/packages/platform/audit/                   @albinoJimy
+
+# PDP e bundles de política assinados: quem decide, e sob que política assinada.
+/packages/control-plane/pdp/                @albinoJimy
+/packages/control-plane/policies/           @albinoJimy
+
+# Sandbox e redacção: isolamento de execução e o que nunca deve alcançar o log.
+/packages/substrate/sandbox/                @albinoJimy
+/packages/substrate/redaction/              @albinoJimy
+
+# O composition-root SEGURO. No registo de deferimentos este prefixo é atribuído 8 vezes ao
+# Responsável de Segurança e ZERO vezes ao Arquitecto — é onde o enforcement se compõe, e uma
+# peça esquecida aqui é um mecanismo que existe e não corre.
+/packages/integration/                      @albinoJimy
+
+# Documentos de segurança e conformidade.
+/tecnica/14_Matriz_Conformidade.md          @albinoJimy
+/tecnica/17_Analise_STRIDE.md               @albinoJimy
+
+# Custódia da chave de release e postura de entrega.
+/deploy/node/CUSTODIA-CHAVE-RELEASE.md      @albinoJimy
+
+# ---------------------------------------------------------------------------
+# ARQUITECTO DE PLATAFORMA
+#
+# O plano de execução, o substrato durável e a postura de arranque do nó. É o papel com mais
+# atribuições no registo (59 linhas), e o que responde por decisões de forma — não de permissão.
+# ---------------------------------------------------------------------------
+
+# Agent Runtime: loop, execução durável, replay, canal de controlo, máquina de estados.
+/packages/kernel/agent-runtime/             @albinoJimy
+
+# Plano de controlo: orquestrador, escalonador, orçamento, ciclo de vida do run.
+/packages/control-plane/                    @albinoJimy
+
+# Substrato: Event Store, bus, observabilidade.
+/packages/substrate/                        @albinoJimy
+
+# Plataforma: gateway de modelos, memória, DR, backup, broker, registo.
+/packages/platform/                         @albinoJimy
+
+# O NÓ. Wiring, banners de postura de arranque e a superfície de variáveis de ambiente. É o
+# prefixo mais atribuído do registo inteiro (19 linhas), e a razão é a que o EPIC-21 confirmou:
+# se mudar o que um subsistema exige para compor, o banner que o declara passa a mentir.
+/packages/cmd/aos/                          @albinoJimy
+
+# Gates de CI. Guardam INVENTÁRIOS — marcadores de deferimento, listas de testes obrigatórios, a
+# RTM — e são atravessados por qualquer alteração ao repositório. Relaxar um gate tem de ser tão
+# visível como relaxar o código que ele guarda.
+/scripts/ci/                                @albinoJimy
+
+# Infraestrutura e entrega.
+/infra/                                     @albinoJimy
+/deploy/                                    @albinoJimy
+
+# ---------------------------------------------------------------------------
+# AMBOS — as três linhas que o registo atribui a «Arquitecto + Responsável de Segurança»
+#
+# São as superfícies onde uma decisão de forma É uma decisão de permissão: o arranque do nó
+# recusa-se a existir sem identidade endurecida, soberania de leitura, TLS, custódia de KEK,
+# aprovação durável e Event Store durável (AOS-300). Nenhum dos dois papéis decide isto sozinho.
+# ---------------------------------------------------------------------------
+/packages/cmd/aos/main.go                   @albinoJimy
+/packages/cmd/aos/bootstrap.go              @albinoJimy
