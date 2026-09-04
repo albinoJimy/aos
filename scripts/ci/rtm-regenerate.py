@@ -18,6 +18,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+# `scripts/ci` no path ANTES de importar o modulo irmao: correr este ficheiro
+# como script ja la punha a sua directoria, mas o §P1 do selftest carrega-o por
+# caminho (`importlib.spec_from_file_location`) a partir de um processo cujo
+# `sys.path[0]` e outro, e ai o import falhava com `ModuleNotFoundError`.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import adr_register  # noqa: E402  (depende do sys.path acima)
+
 # Raiz do corpus. Sobreponível por ambiente APENAS para o self-test (§R/§S)
 # poder injectar falhas numa CÓPIA em vez de mutar a árvore real — o job de CI
 # não define a variável. Mesmo molde de `AOS_REFLINT_ROOT` em `ref-lint.py:90`.
@@ -28,11 +36,23 @@ RTM_PATH = REPO_ROOT / "tecnica" / "16_Rastreabilidade_RTM.md"
 SPECS_DIR = REPO_ROOT / "specs"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"
 
-# --- ADRs canónicos (AOS-186; gama alargada a ADR-023 por AOS-314) ---
+# --- ADRs canónicos, DERIVADOS do registo (AOS-317) --------------------------
 # O canon GATED é este, e é o mesmo em `ref-lint.py`: os dois leitores do corpus
 # não podem discordar sobre o que exigem. Alargá-lo obriga cada ADR novo a ter
 # ticket implementador — consequência aceite ao decidir GAP-07.
-ADR_RANGE = [f"ADR-{i:03d}" for i in range(1, 24)]
+#
+# AOS-314 alargou-o de `range(1, 20)` para `range(1, 24)` e fechou o sintoma; o
+# AOS-317 fecha a causa. Um literal novo é um literal: no dia do ADR-024 o canon
+# volta a ficar curto, nos MESMOS dois ficheiros, e nada o diz — foi assim que o
+# 019 sobreviveu quatro ADRs. A gama passa a DERIVAR da tabela de
+# `docs/adr/README.md`, o registo que se declara canónico e o único que regista
+# o estado de cada decisão. Ver `adr_register.py` para a fonte e o fail-closed.
+try:
+    ADR_REGISTER = adr_register.read_register(REPO_ROOT)
+except adr_register.RegisterError as _exc:
+    sys.stderr.write("ERRO: %s\n" % _exc)
+    sys.exit(1)
+ADR_RANGE = [a.code for a in ADR_REGISTER]
 
 # --- NFRs (ordem e ADRs de origem conforme System Spec §7 / _BRIEF §4) ---
 NFR_SPECS = [
@@ -308,13 +328,17 @@ def build_adr_matrix(tickets: dict, adr_titles: dict) -> list:
         for adr in info["adrs"]:
             adr_to_tickets[adr].append(aos)
     rows = []
-    for adr in ADR_RANGE:
-        tickets_for = sorted(set(adr_to_tickets.get(adr, [])))
+    for entry in ADR_REGISTER:
+        tickets_for = sorted(set(adr_to_tickets.get(entry.code, [])))
         # Doc técnico: inferido a partir do range de tickets
         docs = infer_docs_for_tickets(tickets_for, tickets)
         rows.append({
-            "adr": adr,
-            "title": adr_titles.get(adr, "*título não encontrado*"),
+            "adr": entry.code,
+            "title": adr_titles.get(entry.code, "*título não encontrado*"),
+            # O ESTADO vem do registo (AOS-317). Sem ele a matriz punha um
+            # *Proposto* e um *Ratificado* na mesma coluna, com a mesma
+            # autoridade aparente — e dois dos vinte e três estão Propostos.
+            "state": entry.state,
             "count": len(tickets_for),
             "tickets": tickets_for,
             "docs": docs,
@@ -490,8 +514,14 @@ def validate_section6(section: str, tickets: dict) -> None:
 # Afirmações numéricas escritas no RTM, nas três notações que o documento usa:
 #   `RF-01`–`RF-13`  (§1.2)   RF-01 … RF-13  (§2)   RF-01..RF-13  (mermaid §6)
 # Os acentos graves são removidos antes de correr o padrão.
+# A QUARTA notacao — o separador « a » por extenso, que a §1.5 usa — entrou com
+# AOS-317. A ausencia era buraco com consequencia medida: «ADR-001..014» era
+# recusado e «ADR-001 a ADR-014» passava incolume a afirmar o mesmo. Um padrao
+# que so ve tres das quatro notacoes do proprio documento ENSINA a usar a quarta.
 _RANGE_CLAIM_RE = re.compile(
-    r"\b(RF|NFR|ADR)-0*1\s*(?:\.\.|…|–|—|-)\s*(?:(?:RF|NFR|ADR)-)?(\d{2,3})\b"
+    r"\b(RF|NFR|ADR)-0*1"
+    r"(?:\s*(?:\.\.|…|–|—|-)\s*|\s+a\s+)"
+    r"(?:(?:RF|NFR|ADR)-)?(\d{2,3})\b"
 )
 # Contagens: «**Total: 13 requisitos funcionais**» (§2/§3) e «os 13 requisitos
 # funcionais» (§1.2). A segunda forma foi acrescentada depois de a prova da
@@ -644,12 +674,14 @@ def generate_section4(rows: list) -> str:
         "",
         f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
         "",
-        "| ADR | Decisão | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",
-        "|---|---|---|---|---|",
+        "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).",
+        "",
+        "| ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",
+        "|---|---|---|---|---|---|",
     ]
     for r in rows:
         tickets_str = ", ".join(r["tickets"]) if r["tickets"] else "—"
-        lines.append(f"| **{r['adr']}** | {r['title']} | {r['count']} | {tickets_str} | {r['docs']} |")
+        lines.append(f"| **{r['adr']}** | {r['title']} | {r['state']} | {r['count']} | {tickets_str} | {r['docs']} |")
 
     # Linha de cobertura
     uncovered = [r["adr"] for r in rows if r["count"] == 0]

@@ -5,7 +5,8 @@ ref-lint.py — Gate 2b: validação de referências cruzadas do corpus document
 Verifica:
 1. Todos os AOS-NNN citados em specs/, docs/adr/ e tecnica/ (a RTM incluída, AOS-313)
        existem no backlog (specs/EPIC-*.md).
-2. Todos os ADR-001..ADR-023 canónicos têm pelo menos um ticket implementador
+2. Todos os ADRs do registo canónico (`docs/adr/README.md`, via
+       `adr_register.py` — AOS-317) têm pelo menos um ticket implementador
        no backlog.
 3. Todos os ADR-NNN citados em specs/ existem no catálogo de ADRs
        (docs/adr/README.md e specs/00_System_Spec.md §11).
@@ -84,6 +85,13 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
+# Ver a nota gemea em `rtm-regenerate.py`: o modulo irmao tem de resolver
+# mesmo quando este ficheiro e carregado por caminho (§P1 do selftest), e
+# nao corrido como script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import adr_register  # noqa: E402  (depende do sys.path acima)
+
 # Raiz do corpus. Sobreponível por env APENAS para o self-test (§P2) poder provar
 # ponta-a-ponta, sobre uma CÓPIA do corpus, que uma troca de título fica vermelha
 # — sem tocar em `specs/`. O job de CI não define a variável.
@@ -92,7 +100,15 @@ SPECS_DIR = REPO_ROOT / "specs"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"
 TECNICA_DIR = REPO_ROOT / "tecnica"
 
-ADR_RANGE = [f"ADR-{i:03d}" for i in range(1, 24)]
+# --- ADRs canónicos, DERIVADOS do registo (AOS-317) --------------------------
+# Era um literal, aqui e no `rtm-regenerate.py` — a mesma constante em dois
+# sítios, que AOS-314 corrigiu nos dois ao mesmo tempo e que voltaria a ficar
+# curta no dia do ADR-024, sem nada o dizer. Fonte única em `adr_register.py`.
+try:
+    ADR_RANGE = adr_register.adr_codes(REPO_ROOT)
+except adr_register.RegisterError as _exc:
+    print("ERRO: %s" % _exc)
+    sys.exit(1)
 
 # --- Verificação 4: título↔ticket (AOS-198) ----------------------------------
 

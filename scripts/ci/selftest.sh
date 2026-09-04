@@ -828,6 +828,15 @@ RTM_GEN="$RTM_SANDBOX/gen.py"
 RTM_GEN_BAK="$RTM_SANDBOX/gen.py.bak"
 cp "$CI_DIR/rtm-regenerate.py" "$RTM_GEN"
 cp "$RTM_GEN" "$RTM_GEN_BAK"
+# O gerador importa `adr_register` da sua PROPRIA directoria (AOS-317). Copiado
+# para a sandbox: sem isto o gerador copiado morre em ModuleNotFoundError, e §R/§S
+# ficavam vermelhos por falta de modulo em vez de pela asercao que provam.
+cp "$CI_DIR/adr_register.py" "$RTM_SANDBOX/adr_register.py"
+# Registo da sandbox: e a FONTE do canon, e §T muta-o. Caminho proprio para nao
+# haver duvida sobre qual copia esta a ser lida.
+RTM_SANDBOX_REG="$RTM_SANDBOX/root/docs/adr/README.md"
+RTM_SANDBOX_REG_BAK="$RTM_SANDBOX/registo.bak"
+cp "$RTM_SANDBOX_REG" "$RTM_SANDBOX_REG_BAK"
 
 # Vermelho PELO motivo certo: `--check` também falha por simples divergência de
 # texto, e isso provaria outra coisa. Exige-se a mensagem da asserção.
@@ -1083,6 +1092,74 @@ else
 fi
 
 rm -rf "$T_TMP"
+
+
+
+# ============================================================================
+# V) o canon de ADRs DERIVA do registo, e falha fechado quando ele mente
+# ============================================================================
+# O defeito real: `ADR_RANGE` era um literal escrito a mao em DOIS gates. AOS-314
+# corrigiu o numero; AOS-317 corrigiu o mecanismo. Estes subtestes provam o que um
+# literal nunca poderia dar — que o canon SEGUE a fonte, e que uma fonte corrompida
+# avermelha em vez de produzir uma lista curta em silencio.
+# Tudo sobre a sandbox de §R/§S (AOS-316): a arvore real nao e tocada.
+log_gate "self-test V · o canon de ADRs deriva do registo e falha fechado"
+
+rtm_bloqueou_com() {
+  # $1 = excerto da mensagem exigida. Captura primeiro (pipefail), inspecciona depois.
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q "$1"
+}
+
+# V1 — CONTIGUIDADE: um codigo desaparece do registo. Sem esta guarda a derivacao
+# devolveria apenas uma lista mais curta — que e o modo de falha silencioso do
+# literal, so que agora automatico.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+perl -ni -e 'print unless /^\| ADR-011 \|/' "$RTM_SANDBOX_REG"
+if rtm_bloqueou_com 'descont'; then
+  pass "V1: o gate bloqueou um registo com um código em falta (canon não-contíguo)"
+else
+  bad "V1: o gate aceitou um registo descontínuo — a derivação encolhe em silêncio"
+fi
+
+# V2 — VOCABULARIO FECHADO do estado. Um estado novo tem de passar por quem le o
+# modulo; escrita livre numa celula nao pode propagar-se para a coluna Estado da §4.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+perl -pi -e 's/\*\*Proposto\*\*/**Talvez**/' "$RTM_SANDBOX_REG"
+if rtm_bloqueou_com 'estado desconhecido'; then
+  pass "V2: o gate bloqueou um estado fora do vocabulário fechado do registo"
+else
+  bad "V2: o gate aceitou um estado inventado — a §4 exibi-lo-ia como se fosse canónico"
+fi
+
+# V3 — a QUARTA notacao de intervalo: o separador « a » por extenso. O padrao via
+# tres das quatro notacoes do documento, pelo que a mesma afirmacao falsa passava ou
+# nao consoante quem a escrevia usasse dois pontos ou a preposicao.
+#
+# A mutacao vai ao GLOSSARIO e nao a §1.5 — que e a ocorrencia natural desta notacao
+# — porque a §1.5 e REGENERADA: `update_section1` reescreve a frase antes de a guarda
+# correr, e o vermelho que sai e o da divergencia de texto, nao o da asercao. Uma
+# prova sobre prosa gerada mede o gerador; esta tem de medir o padrao.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+perl -pi -e 's/canon que os gates lêem é \*\*ADR-001…\d{3}\*\*/canon que os gates lêem é **ADR-001 a ADR-014**/' "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md"
+if rtm_bloqueou_com 'batem certo com a sua fonte'; then
+  pass "V3: o gate bloqueou o intervalo falso na notação « a » por extenso"
+else
+  bad "V3: o gate passou com «ADR-001 a ADR-014» no glossário — a quarta notação é cega"
+fi
+
+# V4 — CONTROLO POSITIVO (o molde do P3/Q4/R3): restaurada a sandbox, verde. Sem
+# isto, uma derivacao que rejeitasse TUDO passaria V1..V3.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+cp "$REPO_ROOT/tecnica/16_Rastreabilidade_RTM.md" "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md"
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+if AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check >/dev/null 2>&1; then
+  pass "V4: controlo — restaurada a sandbox, o gate rtm volta a verde (distingue, não rejeita tudo)"
+else
+  bad "V4: o gate ficou vermelho com a sandbox restaurada — V1..V3 não provariam nada"
+fi
 
 
 # ============================================================================
