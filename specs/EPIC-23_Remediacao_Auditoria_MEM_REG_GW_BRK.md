@@ -576,9 +576,23 @@ idempotente e re-verificável), mas nada a dispara (`retention_sweeper.go:315` s
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2, âmbito reduzido. Achado N-02 da §8.2 da `analises/11`, cortado a meio por
-uma declaração que já existia e por uma durabilidade que a auditoria não tinha visto.
+**IMPLEMENTADO.** P2, âmbito reduzido — e a redução é o resultado mais útil deste ticket.
 
+`docs/runbooks/RB-06.md` cobre o modo de falha inteiro: o sinal, as três causas que o
+`dsar.go` já nomeia (política Transit sem `deletion_allowed`, replicação, token sem autoridade), a
+remediação sem reinício (repetir o `erase` para o mesmo titular limpa a pendência), a verificação, e
+o limite conhecido da substituição permanente de réplica, com remissão para o AOS-284.
+
+A **expressão de alerta** fica lá escrita, com `for: 5m` justificado — e com a armadilha nomeada:
+não escrever `absent()` sobre estas séries, porque elas não existem em nenhum deployment com a
+custódia de referência e isso é correcto (AOS-322). O `otel-collector.yaml` ganha o ponteiro para o
+runbook ao lado da declaração que já dizia que alertar exige infra por tomar.
+
+**Não se criou ficheiro de regras**, e é deliberado: não há Prometheus no compose, e um artefacto que
+nada carrega mas parece protecção é o defeito que a `analises/11` documenta. **Não se armou
+re-tentativa automática**, e a ausência fica declarada com o porquê: uma destruição que falha por
+política não passa a funcionar por ser repetida, e um ciclo de re-tentativa mascararia a causa
+enquanto o nó fica unready de qualquer forma — que já é o sinal mais forte que o sistema tem.
 ---
 
 *Epic derivado de `analises/11_Auditoria_MEM_REG_GW_BRK_Adversarial.md`. Cada âncora foi
