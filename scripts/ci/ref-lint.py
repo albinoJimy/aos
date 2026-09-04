@@ -6,7 +6,7 @@ Verifica:
 1. Todos os AOS-NNN citados em specs/, docs/adr/ e tecnica/ (a RTM incluída, AOS-313)
        existem no backlog (specs/EPIC-*.md).
 2. Todos os ADRs do registo canónico (`docs/adr/README.md`, via
-       `adr_register.py` — AOS-317) têm pelo menos um ticket implementador
+       `adr_register.py` — AOS-319) têm pelo menos um ticket implementador
        no backlog.
 3. Todos os ADR-NNN citados em specs/ existem no catálogo de ADRs
        (docs/adr/README.md e specs/00_System_Spec.md §11).
@@ -100,7 +100,7 @@ SPECS_DIR = REPO_ROOT / "specs"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"
 TECNICA_DIR = REPO_ROOT / "tecnica"
 
-# --- ADRs canónicos, DERIVADOS do registo (AOS-317) --------------------------
+# --- ADRs canónicos, DERIVADOS do registo (AOS-319) --------------------------
 # Era um literal, aqui e no `rtm-regenerate.py` — a mesma constante em dois
 # sítios, que AOS-314 corrigiu nos dois ao mesmo tempo e que voltaria a ficar
 # curta no dia do ADR-024, sem nada o dizer. Fonte única em `adr_register.py`.

@@ -34,7 +34,7 @@ de números — que é a única operação que decide algo global — toma um lo
 um lock que falha fechado em vez de esperar para sempre.
 
 Uso:
-    python3 scripts/ci/sessoes.py registar --tickets AOS-317,AOS-318 \\
+    python3 scripts/ci/sessoes.py registar --tickets AOS-318,AOS-319 \\
                                            --ficheiros scripts/ci/rtm-regenerate.py
     python3 scripts/ci/sessoes.py ver
     python3 scripts/ci/sessoes.py reservar 2

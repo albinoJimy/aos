@@ -30,7 +30,7 @@ ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
 | Governação da autonomia (`/autonomy`) | AOS-305, AOS-306, AOS-307 |
 | Cerimónia de quatro-olhos (`/challenge`, `/approve`) | AOS-308, AOS-309 |
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
-| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317 |
+| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-319 |
 | Integridade das ferramentas de gate | AOS-316 |
 | Semântica da extracção (por abrir) | AOS-318 |
 
@@ -74,8 +74,8 @@ ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
 | AOS-314 | O canon de ADRs que os gates lêem parava em ADR-019, quatro aquém do catálogo | P2 | **ENTREGUE** |
 | AOS-315 | A coluna de documentos técnicos da §4 resolvia-se pela amplitude do conjunto, não por ticket | P2 | **ENTREGUE** |
 | AOS-316 | O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro | P2 | **ENTREGUE** |
-| AOS-317 | O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia | P2 | **ENTREGUE** |
 | AOS-318 | Um ticket não pode mencionar um ADR sem alegar que o implementa | P2 | ABERTO |
+| AOS-319 | O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia | P2 | **ENTREGUE** |
 
 ---
 
@@ -735,7 +735,52 @@ correr sobre um `git worktree` descartável, e isso é decisão de âmbito das f
 
 ---
 
-## AOS-317 — O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia
+## AOS-318 — Um ticket não pode mencionar um ADR sem alegar que o implementa
+
+### Contexto
+
+A §4 da RTM é construída por correspondência textual: `extract_all_tickets()` recolhe
+**todos** os códigos `ADR-NNN` que aparecem no bloco de um ticket, e cada um vira uma
+entrada na coluna «tickets que o implementam». Não há forma de citar uma decisão para a
+discutir, para delimitar âmbito, ou para explicar um defeito — a citação *é* a alegação.
+
+Descoberto ao escrever o AOS-319, e por ele: o bloco mencionava duas decisões em prosa
+(«o catálogo pára no n.º 14», «códigos contíguos a partir do n.º 1») e inscreveu-se como
+implementador de ambas, na matriz que o próprio ticket existe para arrumar. Está contornado
+com notação («ADR n.º NN»), o que resolve um caso e não a classe.
+
+**Medido antes de aberto**, para que não se confunda armadilha com dívida: 357 pares
+(ticket, ADR) na §4; uma heurística sobre marcadores de delimitação, negação e remissão
+sinaliza **2** candidatos, e a leitura dos dois desmente a heurística — AOS-043 («executa
+como *activity* durável fora do turno, coerente com…») e AOS-282 («um run é possuído por
+exactamente uma réplica — a invariante do…») realizam de facto as decisões que citam.
+**Zero atribuições falsas no corpus de hoje.**
+
+O defeito é **prospectivo**: não corrompe a matriz actual, corrompe a próxima que precise
+de discutir uma decisão sem a implementar. E já mordeu uma vez — na única ocasião em que o
+corpus precisou disso.
+
+### Critérios de Aceitação
+
+- [ ] Existe forma de **mencionar** um ADR num bloco de ticket sem entrar na coluna de
+      implementadores, e a §4 documenta-a onde o leitor da matriz a encontre
+- [ ] O `rtm-regenerate.py` distingue as duas coisas na extracção, e o `ref-lint` não conta
+      uma menção como cobertura de ADR (senão a invariante «≥ 1 ticket implementador» passa
+      a ser satisfeita por quem só fala da decisão)
+- [ ] A escolha do mecanismo fica registada com o custo de migração à frente: um marcador
+      inline, semântica por secção do bloco, ou um campo explícito a substituir a extracção
+      textual — as duas últimas deslocam pares existentes, e os 357 de hoje são a linha de
+      base de não-regressão
+- [ ] Os blocos de AOS-319 e AOS-318 largam a notação «ADR n.º NN» e voltam aos códigos
+      canónicos — é o teste de aceitação mais honesto que estes dois blocos podem ter
+
+### Estado
+
+**ABERTO.** P2. Latente: sem dívida acumulada, com armadilha activa para quem escrever a
+seguir.
+
+---
+## AOS-319 — O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia
 
 > **Nota de notação.** Neste bloco os ADRs são referidos por «ADR n.º NN». O extractor da §4
 > lê **qualquer** `ADR-NNN` dentro do bloco de um ticket como «este ticket implementa aquela
@@ -804,49 +849,5 @@ número errado de amanhã. AOS-314 não estava errado; estava incompleto, e o qu
 era um número maior.
 
 ---
-
-## AOS-318 — Um ticket não pode mencionar um ADR sem alegar que o implementa
-
-### Contexto
-
-A §4 da RTM é construída por correspondência textual: `extract_all_tickets()` recolhe
-**todos** os códigos `ADR-NNN` que aparecem no bloco de um ticket, e cada um vira uma
-entrada na coluna «tickets que o implementam». Não há forma de citar uma decisão para a
-discutir, para delimitar âmbito, ou para explicar um defeito — a citação *é* a alegação.
-
-Descoberto ao escrever o AOS-317, e por ele: o bloco mencionava duas decisões em prosa
-(«o catálogo pára no n.º 14», «códigos contíguos a partir do n.º 1») e inscreveu-se como
-implementador de ambas, na matriz que o próprio ticket existe para arrumar. Está contornado
-com notação («ADR n.º NN»), o que resolve um caso e não a classe.
-
-**Medido antes de aberto**, para que não se confunda armadilha com dívida: 357 pares
-(ticket, ADR) na §4; uma heurística sobre marcadores de delimitação, negação e remissão
-sinaliza **2** candidatos, e a leitura dos dois desmente a heurística — AOS-043 («executa
-como *activity* durável fora do turno, coerente com…») e AOS-282 («um run é possuído por
-exactamente uma réplica — a invariante do…») realizam de facto as decisões que citam.
-**Zero atribuições falsas no corpus de hoje.**
-
-O defeito é **prospectivo**: não corrompe a matriz actual, corrompe a próxima que precise
-de discutir uma decisão sem a implementar. E já mordeu uma vez — na única ocasião em que o
-corpus precisou disso.
-
-### Critérios de Aceitação
-
-- [ ] Existe forma de **mencionar** um ADR num bloco de ticket sem entrar na coluna de
-      implementadores, e a §4 documenta-a onde o leitor da matriz a encontre
-- [ ] O `rtm-regenerate.py` distingue as duas coisas na extracção, e o `ref-lint` não conta
-      uma menção como cobertura de ADR (senão a invariante «≥ 1 ticket implementador» passa
-      a ser satisfeita por quem só fala da decisão)
-- [ ] A escolha do mecanismo fica registada com o custo de migração à frente: um marcador
-      inline, semântica por secção do bloco, ou um campo explícito a substituir a extracção
-      textual — as duas últimas deslocam pares existentes, e os 357 de hoje são a linha de
-      base de não-regressão
-- [ ] Os blocos de AOS-317 e AOS-318 largam a notação «ADR n.º NN» e voltam aos códigos
-      canónicos — é o teste de aceitação mais honesto que estes dois blocos podem ter
-
-### Estado
-
-**ABERTO.** P2. Latente: sem dívida acumulada, com armadilha activa para quem escrever a
-seguir.
 
 ---

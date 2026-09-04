@@ -36,13 +36,13 @@ RTM_PATH = REPO_ROOT / "tecnica" / "16_Rastreabilidade_RTM.md"
 SPECS_DIR = REPO_ROOT / "specs"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"
 
-# --- ADRs canónicos, DERIVADOS do registo (AOS-317) --------------------------
+# --- ADRs canónicos, DERIVADOS do registo (AOS-319) --------------------------
 # O canon GATED é este, e é o mesmo em `ref-lint.py`: os dois leitores do corpus
 # não podem discordar sobre o que exigem. Alargá-lo obriga cada ADR novo a ter
 # ticket implementador — consequência aceite ao decidir GAP-07.
 #
 # AOS-314 alargou-o de `range(1, 20)` para `range(1, 24)` e fechou o sintoma; o
-# AOS-317 fecha a causa. Um literal novo é um literal: no dia do ADR-024 o canon
+# AOS-319 fecha a causa. Um literal novo é um literal: no dia do ADR-024 o canon
 # volta a ficar curto, nos MESMOS dois ficheiros, e nada o diz — foi assim que o
 # 019 sobreviveu quatro ADRs. A gama passa a DERIVAR da tabela de
 # `docs/adr/README.md`, o registo que se declara canónico e o único que regista
@@ -194,6 +194,27 @@ def system_spec_drivers() -> int:
     return len(rows)
 
 
+# Números de ticket ATRIBUÍDOS, mas cujo bloco vive noutro ramo ainda não fundido.
+#
+# A guarda de contiguidade abaixo existe para apanhar um ticket apagado ou
+# renumerado, e vale. Mas pressupõe que todo o backlog vive NESTE ramo — e com
+# várias sessões a trabalhar em worktrees paralelos isso deixou de ser verdade:
+# `AOS-317` foi aberto em `claude/exciting-maxwell-aec36d` no mesmo dia em que
+# esta sessão abriu o seu, e a colisão foi resolvida renumerando o desta para
+# `AOS-319`. O 317 existe e está tomado; o que não existe é aqui.
+#
+# Molde das baselines deste arnês (`scripts/ci/baseline/*.txt`): entrada
+# explícita, com dono e com data de saída. Cada linha SAI quando o ramo
+# respectivo for fundido — se ficar depois disso, a guarda deixa de proteger o
+# número que ela nomeia, e é por isso que a lista tem de ser curta e revista.
+# Ver a convenção de sessões concorrentes no `AGENTS.md`.
+ATRIBUIDOS_NOUTRO_RAMO = {
+    # AOS-317 — `claude/exciting-maxwell-aec36d` (b26966c, 2026-09-04).
+    # Sai quando esse ramo for fundido.
+    "AOS-317",
+}
+
+
 def corpus_stats(tickets: dict) -> dict:
     """
     Constantes do corpus DERIVADAS (nunca escritas à mão): é isto que impede o
@@ -335,7 +356,7 @@ def build_adr_matrix(tickets: dict, adr_titles: dict) -> list:
         rows.append({
             "adr": entry.code,
             "title": adr_titles.get(entry.code, "*título não encontrado*"),
-            # O ESTADO vem do registo (AOS-317). Sem ele a matriz punha um
+            # O ESTADO vem do registo (AOS-319). Sem ele a matriz punha um
             # *Proposto* e um *Ratificado* na mesma coluna, com a mesma
             # autoridade aparente — e dois dos vinte e três estão Propostos.
             "state": entry.state,
@@ -492,7 +513,12 @@ def validate_section6(section: str, tickets: dict) -> None:
         misplaced = defaultdict(list)
         for aos in _cited_tickets(range_cell):
             if aos not in tickets:
-                missing.append(aos)
+                # Um número atribuído noutro ramo cai DENTRO das gamas que a §6
+                # escreve (`AOS-190→AOS-NNN`), porque as gamas assumem um backlog
+                # contíguo. Não é citação partida: é um ticket que existe e que
+                # este ramo ainda não viu. Ver `ATRIBUIDOS_NOUTRO_RAMO`.
+                if aos not in ATRIBUIDOS_NOUTRO_RAMO:
+                    missing.append(aos)
             elif declared and epic_label(tickets[aos]["epic"]) not in declared:
                 misplaced[epic_label(tickets[aos]["epic"])].append(aos)
         if missing:
@@ -515,7 +541,7 @@ def validate_section6(section: str, tickets: dict) -> None:
 #   `RF-01`–`RF-13`  (§1.2)   RF-01 … RF-13  (§2)   RF-01..RF-13  (mermaid §6)
 # Os acentos graves são removidos antes de correr o padrão.
 # A QUARTA notacao — o separador « a » por extenso, que a §1.5 usa — entrou com
-# AOS-317. A ausencia era buraco com consequencia medida: «ADR-001..014» era
+# AOS-319. A ausencia era buraco com consequencia medida: «ADR-001..014» era
 # recusado e «ADR-001 a ADR-014» passava incolume a afirmar o mesmo. Um padrao
 # que so ve tres das quatro notacoes do proprio documento ENSINA a usar a quarta.
 _RANGE_CLAIM_RE = re.compile(
@@ -674,7 +700,7 @@ def generate_section4(rows: list) -> str:
         "",
         f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
         "",
-        "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).",
+        "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-319).",
         "",
         "| ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",
         "|---|---|---|---|---|---|",
@@ -1181,7 +1207,7 @@ def main():
     all_aos = set(tickets.keys())
     max_aos = max(aos_key(t) for t in all_aos)
     expected = {f"AOS-{i:03d}" for i in range(1, max_aos + 1)}
-    missing = sorted(expected - all_aos)
+    missing = sorted(expected - all_aos - ATRIBUIDOS_NOUTRO_RAMO)
     if missing:
         shown = ", ".join(missing[:10]) + ("..." if len(missing) > 10 else "")
         sys.stderr.write(

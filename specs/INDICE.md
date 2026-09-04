@@ -51,7 +51,7 @@ e fechar de forma independente.
 | **EPIC-21 Remediação dos defeitos da auditoria adversarial RT/RM** *(proposta)* | Epic | Os doze DEFEITOS (não as dívidas) apurados na auditoria adversarial do Plano de Execução; os quatro limites aceites foram para DEF-904..907. **Fechado** (AOS-288..304 — os doze mais cinco residuais que a remediação produziu), com UMA lacuna de evidência declarada: o teste ao vivo da AC2 de AOS-292 exige cluster. Encerramento em [`docs/reports/EPIC-21-encerramento-2026-09-03.md`](../docs/reports/EPIC-21-encerramento-2026-09-03.md) | [EPIC-21_Remediacao_Auditoria_RT_RM.md](EPIC-21_Remediacao_Auditoria_RT_RM.md) | ~380 |
 | **EPIC-22 Remediação dos defeitos activos da auditoria adversarial ORQ/SCH/PDP** *(proposta)* | Epic | Os sete defeitos **activos** (alcançáveis no binário `aos` entregue) apurados em `analises/10`: autorização desproporcionada e não-durável de `/autonomy`, ausência de selagem de negação em `/challenge`/`/approve`, e lacunas de rastreabilidade da troca de política no PDP. Os 14 sobreviventes latentes (ORQ/SCH fora do grafo de build por ADR-018/023) não entram — ver §0 | [EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md](EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md) | ~330 |
 
-**Total: 24 ficheiros referenciados, ~13.200+ linhas. Backlog ratificado/aceite: EPIC-01..17 (AOS-001..189). Propostas por ratificar: EPIC-18 (AOS-190..225), EPIC-19 (AOS-230..244), EPIC-20 (AOS-245..278), EPIC-21 (AOS-288..304) e EPIC-22 (AOS-305..318).**
+**Total: 24 ficheiros referenciados, ~13.200+ linhas. Backlog ratificado/aceite: EPIC-01..17 (AOS-001..189). Propostas por ratificar: EPIC-18 (AOS-190..225), EPIC-19 (AOS-230..244), EPIC-20 (AOS-245..278), EPIC-21 (AOS-288..304) e EPIC-22 (AOS-305..319).**
 
 ---
 

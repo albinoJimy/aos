@@ -269,7 +269,7 @@ Um Agentic OS não nasce ideal; evolui por níveis onde cada um **desbloqueia** 
 
 > **Esta tabela é referência de enunciado, não o inventário.** Quantos ADRs existem, e em que
 > estado está cada um, lê-se no registo canónico [`docs/adr/README.md`](../docs/adr/README.md) —
-> é dele que os gates `rtm` e `ref-lint` derivam a lista (AOS-317). Esta secção tinha parado em
+> é dele que os gates `rtm` e `ref-lint` derivam a lista (AOS-319). Esta secção tinha parado em
 > ADR-019 enquanto o registo ia em ADR-023, e era essa divergência que tornava perigoso usá-la
 > como inventário: dava o número errado sem o dizer. As quatro entradas finais foram
 > acrescentadas para completar o enunciado; **duas delas (ADR-021 e ADR-022) estão *Propostas*** e
@@ -355,4 +355,4 @@ Um Agentic OS não nasce ideal; evolui por níveis onde cada um **desbloqueia** 
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | Julho 2026 | ADR-015 ratificado (contrato próprio de durable execution + porta `Engine` agnóstica ao backend); stack e ADRs em vigor actualizados (AOS-022 fase feature) | Equipa AOS |
-| 1.2 | 2026-09-04 | §11 completada com ADR-020..023, que existiam no registo desde as EPIC-19/20/21 e nunca chegaram aqui; nota a declarar que esta tabela é referência de enunciado e que o inventário vive em `docs/adr/README.md` (AOS-317). | Equipa AOS |
+| 1.2 | 2026-09-04 | §11 completada com ADR-020..023, que existiam no registo desde as EPIC-19/20/21 e nunca chegaram aqui; nota a declarar que esta tabela é referência de enunciado e que o inventário vive em `docs/adr/README.md` (AOS-319). | Equipa AOS |
