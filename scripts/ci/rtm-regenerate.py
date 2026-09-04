@@ -208,6 +208,11 @@ def system_spec_drivers() -> int:
 # respectivo for fundido — se ficar depois disso, a guarda deixa de proteger o
 # número que ela nomeia, e é por isso que a lista tem de ser curta e revista.
 # Ver a convenção de sessões concorrentes no `AGENTS.md`.
+#
+# A decisão de o que fazer se o ramo for ABANDONADO em vez de fundido — o número
+# fica queimado, ou reatribui-se — está deferida com critério escrito em
+# **DEF-908** (`docs/governance/REGISTO-Deferimentos.md`), para ser tomada no
+# merge por quem o fizer, e não adivinhada agora por quem abriu a entrada.
 ATRIBUIDOS_NOUTRO_RAMO = {
     # AOS-317 — `claude/exciting-maxwell-aec36d` (b26966c, 2026-09-04).
     # Sai quando esse ramo for fundido.
