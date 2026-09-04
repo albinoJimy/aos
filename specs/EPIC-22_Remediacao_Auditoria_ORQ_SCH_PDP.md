@@ -23,15 +23,16 @@ instala hoje.
 
 Este epic cobre só os que são **activos**: alcançáveis pela superfície HTTP do nó `aos` tal como
 é entregue, com o mecanismo de autorização, selagem ou observabilidade que devia cobri-los
-ausente ou a mentir sobre o que faz. Treze tickets, cinco eixos:
+ausente ou a mentir sobre o que faz. Quinze tickets, cinco eixos:
 
 | Eixo | Tickets |
 |---|---|
 | Governação da autonomia (`/autonomy`) | AOS-305, AOS-306, AOS-307 |
 | Cerimónia de quatro-olhos (`/challenge`, `/approve`) | AOS-308, AOS-309 |
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
-| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317 |
+| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319 |
 | Integridade das ferramentas de gate | AOS-316 |
+| Semântica da extracção (por abrir) | AOS-318 |
 
 > **AOS-312 não vem da §3.** Os sete primeiros são achados activos do documento-fonte; o oitavo
 > vem da **§5** (o meta-achado sobre asserções que nenhum gate lê) e nasceu do acto de remediar
@@ -43,9 +44,12 @@ ausente ou a mentir sobre o que faz. Treze tickets, cinco eixos:
 > AOS-313 registou como GAP-07 em vez de tomar, e **AOS-315** corrige o defeito que essa
 > decisão descobriu ao acrescentar quatro linhas à §4. **AOS-316** vem do mesmo sítio por
 > outra via: foi a ferramenta que prova os gates que corrompeu, ela própria, o trabalho de
-> AOS-314 — e nenhum gate deu por isso. **AOS-317** fecha a terceira metade do mesmo
-> meta-achado: nem a guarda de AOS-312 nem a de AOS-313 lêem NÚMEROS, e foi o próprio
-> AOS-314 a deixar um («ADR-001…019» sobre uma tabela de vinte e três linhas).
+> AOS-314 — e nenhum gate deu por isso. **AOS-317** é a crítica ao AOS-314: o canon
+> foi fechado com um literal novo (`range(1, 24)`) em vez de derivar do registo, e
+> **AOS-318** fecha o marcador de ADRs mencionados que AOS-313 introduziu sem ticket.
+> **AOS-319** fecha a última metade: nem a guarda de AOS-312 nem a de AOS-313 lêem
+> NÚMEROS, e foi o próprio AOS-314 a deixar um («ADR-001…019» sobre uma tabela de
+> vinte e três linhas).
 
 ### 0.1 Ordem sugerida
 
@@ -58,75 +62,28 @@ ausente ou a mentir sobre o que faz. Treze tickets, cinco eixos:
 | **P2** | AOS-313 | Cobertura afirmada contra as matrizes geradas do próprio ficheiro; sem efeito no binário |
 | **P2** | AOS-314, AOS-315 | Âmbito do canon de ADRs e coluna de documentos da §4; sem efeito no binário |
 | **P2** | AOS-316 | A suite que prova os gates corrompe trabalho em curso quando concorrente; sem efeito no binário |
-| **P2** | AOS-317 | Contagens e extremos de intervalo gerados sem derivação; sem efeito no binário |
+| **P2** | AOS-317, AOS-318 | Canon fechado com literal em vez de derivado; ADR mencionado a contar como implementado |
+| **P2** | AOS-319 | Contagens e extremos de intervalo gerados sem derivação; sem efeito no binário |
 
 ### 0.2 Tabela-resumo
 
 | Ticket | Defeito | P | Estado |
 |---|---|---|---|
-| AOS-305 | `/autonomy` autoriza-se com a assinatura de um só operador, sem papel, tecto nem four-eyes | P0 | **implementado** (1 AC cumprida na substância, não na forma citada) |
-| AOS-306 | Uma selagem falhada aplica o nível de autonomia e a API responde que o recusou | P0 | **implementado** (+ residual da demoção, achado em revisão) |
-| AOS-307 | O nível aplicado por `/autonomy` não sobrevive a um reinício do nó | **P0** | **implementado** — o ticket criou um vector novo e a remediação teve de o fechar |
-| AOS-308 | `POST /runs/{id}/challenge` não autentica nada, e o comentário do handler diz que autentica | P2 | **implementado** (1 residual declarado) |
-| AOS-309 | `FourEyesGate.Authorize` não sela nem regista nenhuma negação | P1 | **implementado** — o primeiro teste era tautológico e foi reescrito |
-| AOS-310 | `PDP.Reload` nunca corre em produção; o nó não emite `policy.changed` | P2 | **implementado** (1 residual: S-02 partilha raiz com S-01) |
-| AOS-311 | `audit.FileStore.Append` não consulta `ctx`; o fail-closed por timeout é condicional ao sink | P1 | **implementado** — partiu o canal HITL e a correcção foi transversal |
+| AOS-305 | `/autonomy` autoriza-se com a assinatura de um só operador, sem papel, tecto nem four-eyes | P0 | ABERTO |
+| AOS-306 | Uma selagem falhada aplica o nível de autonomia e a API responde que o recusou | P0 | ABERTO |
+| AOS-307 | O nível aplicado por `/autonomy` não sobrevive a um reinício do nó | P1 | ABERTO |
+| AOS-308 | `POST /runs/{id}/challenge` não autentica nada, e o comentário do handler diz que autentica | P2 | ABERTO |
+| AOS-309 | `FourEyesGate.Authorize` não sela nem regista nenhuma negação | P1 | ABERTO |
+| AOS-310 | `PDP.Reload` nunca corre em produção; o nó não emite `policy.changed` | P2 | ABERTO |
+| AOS-311 | `audit.FileStore.Append` não consulta `ctx`; o fail-closed por timeout é condicional ao sink | P1 | ABERTO |
 | AOS-312 | A §6 da RTM afirmava o epic de um ticket sem o derivar, e nada confrontava o gerador com a fonte | P2 | **ENTREGUE** |
 | AOS-313 | A §7 da RTM afirmava cobertura que as suas próprias secções geradas contradiziam | P2 | **ENTREGUE** |
 | AOS-314 | O canon de ADRs que os gates lêem parava em ADR-019, quatro aquém do catálogo | P2 | **ENTREGUE** |
 | AOS-315 | A coluna de documentos técnicos da §4 resolvia-se pela amplitude do conjunto, não por ticket | P2 | **ENTREGUE** |
 | AOS-316 | O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro | P2 | **ENTREGUE** |
-| AOS-317 | A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam | P2 | **ENTREGUE** |
-
-### 0.3 O que a remediação produziu, e é o resultado mais útil deste epic
-
-Duas revisões independentes — uma de segurança, uma adversarial — correram sobre o changeset e
-produziram **doze achados**. Três eram meus e graves, e nenhum deles teria sido apanhado pelos
-critérios de aceitação:
-
-| Achado | O que era | Como apareceu |
-|---|---|---|
-| **CRÍTICO** — AOS-311 apagou o selo WORM de toda a negação por timeout do canal HITL | O `ctx` novo no `Append` é certo para o caminho que **decide**, e mata os selos que registam um facto **consumado** | A/B com `-overlay` trocando só os dois ficheiros alterados |
-| **ALTO** — AOS-307 tornou o WORM entrada de **privilégio** | `EntryHash` é SHA-256 sem chave; quem escreve no ficheiro elevava um par a L5 sem uma assinatura, contornando o AOS-305 | prova de conceito executada |
-| **ALTO** — dois banners a afirmar o que o código não fazia | O de AOS-305 dizia que L4/L5 exigem duas assinaturas, no mesmo arranque em que o nó aplicava L4 por ambiente sem nenhuma; o de AOS-307 apontava a âncora do WORM como remédio de um vector que ela não cobre | leitura do banner contra o código |
-
-**Três padrões que valem mais do que os achados:**
-
-1. **Corri os módulos que julguei ter tocado.** O AOS-311 mudou uma primitiva de escrita partilhada
-   por vinte e quatro módulos; testei o dela e os do meu ticket. A triagem que faltava — classificar
-   cada `Append(ctx)` do repositório em «prova consumada» ou «decisão» — só foi feita depois, e é
-   ela que devia ter precedido a alteração.
-2. **Escrevi um banner que mentia, no trabalho cuja razão de existir é fechar banners que mentem.**
-   Tinha antecipado o risco do WORM e declarado que a âncora o fechava. Não fecha: a verificação
-   ancorada cobre até ao último checkpoint e o ataque é um append depois dele.
-3. **Um teste meu era tautológico** (AOS-309): comparava linhas de log que já diferiam pelo
-   `request_id`. Passaria com todas as razões vazias, e cobria a via onde o gate devolve a mesma
-   razão para catorze causas.
-
-E uma correcção que **o nó real ensinou e nenhuma revisão tinha apanhado**: a primeira versão do
-AOS-307 abortava o arranque perante um registo não verificável. O smoke falhou sobre o **próprio
-estado anterior do repositório** — e o mesmo mecanismo dava a quem escreve no WORM um modo de
-tijolo permanente. Fail-closed no **nível**, não no **arranque**.
-
-### 0.4 Os cinco eixos que ficaram em aberto — e o que foi feito a cada um
-
-Quatro fecharam com código. O quinto **não é fechável aqui**, e a medição que o mostra vale mais
-do que uma tentativa.
-
-| Eixo | Estado |
-|---|---|
-| **S-02** — supressão do `policy.changed` por quem escreve no WORM | **FECHADO.** A decisão de selar era derivada da própria partição: pré-plantar um registo com a versão e o hash do bundle a instalar fazia o nó concluir «idempotente» e a troca real nunca ficava registada — com o banner a declarar a idempotência. O nó passa a **escrever sempre** o que está a servir, distinguindo `policy.changed` (transição) de `policy.active` (confirmação). Não fecha a metade que depende da âncora — um adversário pode acrescentar ruído — mas fecha a que interessa: **a afirmação do próprio nó não pode ser suprimida por quem escreve antes dele.** Teste: `TestAOS310_SupressaoPorPrePlantacaoNaoFunciona` |
-| **S-06 / R-07** — custo de arranque e de `GET /autonomy` linear no histórico | **FECHADO.** Índice `par → última alteração` mantido no único sítio que escreve o histórico (`restore`), com `LastChange` O(1) e `Pairs()` novo para a rota, que deixou de iterar a cópia defensiva de `History()`. `dedupPares` removida por ficar órfã. Testes: `TestAOS307Indice_NuncaDivergeDoHistorico` compara o índice com uma varredura do histórico como oráculo, para que um caminho de escrita novo que o esqueça avermelhe; `TestAOS307Indice_CustoNaoCresceComOHistorico` prova por `AllocsPerRun` que o custo não segue o trilho |
-| **AOS-309** — as negações iam para o log, não para o WORM | **FECHADO.** `sealControlDenial` sela a recusa de cerimónia na cadeia de acções de controlo, com `DecisionDeny` e a **classe** (nunca o valor). **Não contradiz `TestA3_SinalRecusado_NaoSela`**, e a distinção importa: aquele teste protege o trilho de um sinal com **alvo errado**, que qualquer um pode inundar em rajada; uma cerimónia só chega ao gate **depois** de o nó reconhecer a preview de uma escalada que ele próprio produziu, pelo que o volume é limitado pelas suas pendências. Teste: `TestAOS309_ARecusaFicaNaHashChain`, com o controlo de que o sucesso continua a selar como `allow` |
-| `registry/tofu`, `sandbox/network` — sítios por classificar | **FECHADOS por triagem.** `tofu.auditAttempt` é prova de facto consumado (a recusa já aconteceu, o erro é descartado) e foi desacoplado do cancelamento. Os dois filtros do `sandbox/network` (`EgressFilter` e `DNSFilter`) **são decisão** — surfaçam o erro de selagem e a decisão permanece deny — e ficaram **intactos de propósito**: corrigir uma porta genérica converteria um `Append` de decisão em não-cancelável, que é o erro simétrico e mais perigoso. Teste: `aos311_selo_recusa_test.go`, com o controlo de que o store continua a recusar sob contexto morto |
-| **R-05** — a âncora do WORM continua **opcional** | **NÃO FECHÁVEL AQUI, e já é dívida declarada com eixo.** Medido: impor a âncora sob `AOS_MODE=production` — o molde dos outros oito guardas — atinge **22 sítios em mais de dez ficheiros de teste** que forçam produção; é a mesma explosão que levou o guarda de AOS-300 a ser escrito e revertido. Mais decisivo: **DEF-268** já cobre este eixo e diz porquê — a produção da âncora está entregue (`aos-issuer worm-seal`), o que fica deferido é a **cadência**, e «a cobertura NUNCA é completa por desenho (as partições nascem por run), pelo que selar mais vezes encolhe a janela não-ancorada sem a fechar». Impor a âncora seria decidir uma cadência que o registo atribui ao Responsável de Segurança. O que se fez foi documentar a ligação nova: o AOS-307 aumentou o custo de a deixar desligada, e isso está no README |
-
-**O que continua verdadeiramente por fechar**, e agora com o eixo certo: a janela entre o último
-checkpoint e o head da cadeia. Não é código deste epic — é **DEF-268**, cadência de selagem, dono
-Responsável de Segurança. Enquanto essa janela existir, um adversário com escrita no ficheiro do
-WORM pode acrescentar registos que a re-verificação aceita; o que este epic fez foi tirar-lhe o
-que isso lhe dava: **elevação de autonomia** (fechada por assinaturas no selo, AOS-307) e
-**supressão do changelog de política** (fechada por escrever sempre, S-02).
+| AOS-317 | O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia | P2 | **ENTREGUE** |
+| AOS-318 | Um ticket não pode mencionar um ADR sem alegar que o implementa | P2 | ABERTO |
+| AOS-319 | A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam | P2 | **ENTREGUE** |
 
 ---
 
@@ -181,19 +138,7 @@ em `governance.control`. O defeito é de controlo preventivo, não de rasto.
 
 ### Estado
 
-**IMPLEMENTADO.** P0. Capability `autonomy:set` (`AOS_AUTONOMY_SETTERS`, validada contra
-`AOS_OPERATORS` no `Bootstrap`), segunda assinatura obrigatória para L4/L5 sobre o MESMO payload
-canónico, `aos-issuer autonomy-sign --co-emitter/--co-key-file`, e o selo a nomear os dois.
-Testes: `aos305_autonomy_dual_control_test.go` (nove, incl. a reprodução da medição da auditoria).
-
-**Uma AC ficou por cumprir na forma que pedia, e está corrigida no banner em vez de fingida:** a
-cerimónia governa a ROTA. O provisionamento por `AOS_AUTONOMY_LEVELS` continua a aplicar qualquer
-nível, incluindo L4/L5, **sem assinatura** — a fronteira de confiança aí é quem edita o deployment
-e reinicia. A revisão adversarial (R-02) apanhou o banner a afirmá-lo sem reservas, no mesmo
-arranque em que o nó de referência aplicava L4 por ambiente; a linha passou a distinguir as duas
-vias. A AC dizia «no molde da cerimónia de `/approve` (`fourEyesMessage`, sessão e credencial
-distintas)» e o que existe é um segundo `Authenticate` sobre o mesmo payload: pubkeys distintas
-sim, `fourEyesMessage` não. **Cumprido na substância, não na forma citada** (R-09).
+**ABERTO.** P0.
 
 ---
 
@@ -236,18 +181,7 @@ permitida»).
 
 ### Estado
 
-**IMPLEMENTADO.** P0. `LevelRegistry.SetLevel` passou a **selar antes de aplicar** — uma
-selagem falhada não muta o registo nem o histórico — com `ErrSealFailed` e um segundo mutex de
-escrita para que as leituras nunca esperem pelo WORM. O handler distingue a indisponibilidade
-(`503`, e diz que o nível NÃO foi aplicado) do que o registo recusa (`400`).
-
-Testes: `aos306_307_test.go`, `aos306_307_autonomy_node_test.go`. O teste que fixava a semântica
-antiga (`TestSetLevelSealFailureSurfaced`) foi actualizado com a razão escrita no comentário.
-
-**Residual fechado depois, por revisão adversarial (R-04):** a correcção tinha sido aplicada à
-promoção do `Controller` e não à demoção, 47 linhas abaixo — `OnAnomaly` devolvia `changed=true`
-com uma `LevelChange` vazia e emitia um span de transição `L0→L0` de agente vazio. Corrigido, com
-`aos306_demote_test.go` e o controlo que impede a regressão inversa.
+**ABERTO.** P0.
 
 ---
 
@@ -290,38 +224,7 @@ vigor até ser revertida deliberadamente».
 
 ### Estado
 
-**IMPLEMENTADO.** P0 (subiu de P1: uma revisão de segurança mostrou que este ticket, tal como
-desenhado, criava um vector novo). `LevelRegistry.Rehydrate` relê a partição `autonomy` no
-arranque, antes de aplicar o ambiente.
-
-**A PRECEDÊNCIA CUSTOU DUAS TENTATIVAS, e a primeira era pior do que o defeito.** A regra final é
-«o ambiente ganha quando **mudou** desde o que aplicou da última vez» — comparando com o último
-selo `config:node` do par, não com a decisão do operador. A primeira versão dava a vitória ao
-ambiente sempre que ele declarasse um nível **inferior** («baixar é a direcção segura»): parece
-razoável e destruía o ticket, porque o uso normal é o ambiente declarar um piso e o operador subir
-acima dele. Três testes apanharam-no.
-
-**Dois achados de revisão, ambos fechados:**
-- **O WORM passou a ser entrada de privilégio** (achado de segurança S-01, com prova de conceito):
-  o `EntryHash` é um SHA-256 sem chave e a verificação ancorada não cobre o que é apendido depois
-  do último checkpoint, pelo que quem escreve no ficheiro elevava um par a L5 sem uma única
-  assinatura — contornando o AOS-305. Fechado com **provas assinadas dentro do selo**,
-  reverificadas contra `AOS_OPERATORS` e `AOS_AUTONOMY_SETTERS`, com a regra das duas assinaturas
-  para L4/L5.
-- **Pares fora do ambiente ficavam silenciosos** (R-03): o ciclo iterava `specs` e nunca visitava
-  um par presente no WORM e ausente do ficheiro. São agora enumerados e nomeados no banner.
-
-**FAIL-CLOSED NO NÍVEL, NÃO NO ARRANQUE — e foi o nó real que o ensinou.** A primeira versão
-abortava o arranque perante um registo que não verificasse. O smoke do repositório falhou sobre o
-seu **próprio** estado anterior (`o no nao ficou pronto em 20s`), e o mesmo mecanismo dava a quem
-escreve no WORM um modo de **tijolo permanente** por um registo malformado (R-06): trocava-se
-elevação de privilégio por negação de serviço, contra o mesmo adversário. Um registo que não se
-confirma é agora **saltado** — nunca aplicado, o par fica no nível do ambiente — e **declarado no
-banner** com o `audit_seq`, o actor e o motivo. Só a indisponibilidade do substrato aborta.
-
-Testes: `aos307_rehydrate_auth_test.go` (incl. a prova de conceito do revisor e o caso de
-migração), `aos307_precedencia_test.go`, `aos307_proof_test.go`. Verificado no nó real: com um
-registo legado apendido à mão, o nó arranca, salta-o nomeando `seq=4` e o smoke fica verde.
+**ABERTO.** P1.
 
 ---
 
@@ -361,18 +264,7 @@ uma barreira que não existe.
 
 ### Estado
 
-**IMPLEMENTADO.** P2. O pedido de challenge passou a ser assinado pelo **aprovador nomeado**
-(`ChallengeRequestScope`, `CanonicalChallengePayload(run, request_id, approver)`, nonce durável de
-uso único), com `emitter.ID == approver` imposto, e `aos-issuer challenge-sign` a produzir o corpo.
-O autenticador é composto no mesmo bloco do emissor — indivisíveis, como AOS-266 já exigia.
-
-Testes: `aos308_challenge_auth_test.go` reproduz os cinco vectores da auditoria (sem assinatura,
-aprovador inventado, run inexistente, rajada de vinte, replay) mais o cruzamento de run.
-
-**Residual declarado:** o evento durável continua a nomear o `Producer` constante do nó
-(`nhi:foureyes-challenge-issuer`) com `run_id` vazio; a atribuição passou a vir do campo
-`approver`, agora **verificado**. A queixa literal da auditoria («o producer é uma constante do
-nó») não foi tocada.
+**ABERTO.** P2.
 
 ---
 
@@ -409,27 +301,7 @@ exactamente a mesma ausência de diagnóstico.
 
 ### Estado
 
-**IMPLEMENTADO.** P1. Toda a negação do `/approve` fica no log do operador com o `request_id`, a
-razão do gate e o sentinela dedicado. A resposta HTTP continua uniforme. As duas vias (broker e
-gate directo) passaram a usar os **mesmos campos**, para que quem investiga não tenha de saber qual
-está composta.
-
-**O primeiro teste era TAUTOLÓGICO e foi a revisão adversarial que o mostrou:** comparava as linhas
-de log inteiras, que já diferem pelo `request_id`, e passaria com todas as razões vazias. Pior,
-cobria três casos na via `authorizeSingle`, onde o gate devolve a **mesma** razão para as catorze
-causas de `verifyLeg` — deixando por exercer as quatro classes que esta AC nomeia, todas em
-`authorizeDual`. Reescrito: extrai o segmento `razao=…erro=…` (sem o `request_id`) e exige que
-distinga contagem de pernas, auto-aprovação, mesma sessão e mesma credencial. As pernas em colisão
-passaram a ser **assinadas** com os valores em colisão — mutá-las depois de assinadas só produzia
-«assinatura inválida» e nunca chegava ao invariante.
-
-**Higiene acrescentada (S-05):** `ErrSameSession` e `ErrSameCredential` interpolam o identificador
-da sessão viva e o credential-id do aprovador. O log passa a dizer a **classe** e a declarar a
-redacção.
-
-**Residual:** o registo é o log do serviço, não o WORM. A AC admitia-o («no mínimo, um log
-correlável»); selar negações exigiria requalificar `TestA3_SinalRecusado_NaoSela`, que fixa a
-propriedade oposta de propósito.
+**ABERTO.** P1.
 
 ---
 
@@ -469,19 +341,7 @@ mesmo composition-root existe e funciona: AOS-248 selou os níveis de autonomia 
 
 ### Estado
 
-**IMPLEMENTADO.** P2. O arranque compara a `(versão, content_hash)` em vigor com o último
-`policy.changed` da partição `policy` e sela a transição quando difere, com actor `config:node` —
-o molde de AOS-248, no mesmo composition-root. Igual ⇒ nada (arranques idempotentes não incham a
-cadeia). Falha ao selar ⇒ `ErrPolicyProvisioning` e o nó não arranca. `PDP.ContentHash()` foi
-exposto para isso.
-
-Testes: `aos310_policy_changelog_test.go` (primeiro selo, idempotência, transição com versão
-anterior, quatro ramos de fail-closed, e a composição real pelo `Bootstrap`).
-
-**Residual:** `PDP.Reload` continua sem chamador e sem rota — o que se fechou foi o caminho **real**
-de troca de política (reiniciar), não o hot-reload. E a supressão do changelog por quem escreve no
-WORM (achado S-02) **não** está fechada: partilha a raiz com S-01 e o eixo é a ancoragem da cadeia
-até ao head.
+**ABERTO.** P2.
 
 ---
 
@@ -523,34 +383,7 @@ verificação de `ctx` é transversal a toda a governação selada no WORM, não
 
 ### Estado
 
-**IMPLEMENTADO.** P1. `audit.FileStore.Append` verifica `ctx.Err()` antes de tomar o lock e
-antes de persistir; `MemStore.Append` ganhou a mesma verificação para que nenhum teste passe pela
-razão errada. `tecnica/17` foi emendada.
-
-**E ISTO PARTIU UM CONSUMIDOR QUE EU NÃO TESTEI — o achado mais grave desta remediação.** A revisão
-adversarial mediu, por A/B com `-overlay`, que `TestConfirm_IrreversibleTimeoutFailClosed` do canal
-HITL passou a falhar: `hitl.Channel` sela a decisão terminal com o contexto do chamador e, no
-caminho de **timeout**, esse contexto está morto por construção. A negação fail-closed continuava a
-acontecer e **deixava de ser escrita**, sem que o erro subisse a lado nenhum. Um prazo esgotado
-depois de uma aprovação assinada perdia a obrigação `hitl_signature`, que é a base do não-repúdio.
-A minha validação não o apanhou porque corri os módulos que julguei ter tocado.
-
-A correcção separa **fail-closed do efeito** de **durabilidade da prova**: os selos que registam um
-facto **consumado** passam a usar `context.WithoutCancel` com prazo próprio (o idioma que já existia
-em `integration/budget.go`); os `Append` que **decidem** se o efeito acontece continuam a herdar o
-contexto. Feita a triagem de todos os `Append(ctx)` sobre `audit.Store` do repositório,
-classificados um a um. Corrigidos: `hitl/channel.go`, `hitl/ratification.go`,
-`reference-monitor/monitor.go` (`fail`), `audit/expiration.go`, `integration/ingestion.go`,
-`messaging/verify.go`, e em `cmd/aos` `control_seal.go`, `saga_compensation.go`,
-`retention_sweeper.go`, `legalhold.go`.
-
-Testes: `aos311_ctx_test.go`, `aos311_selo_terminal_test.go`, `aos311_registo_pos_decisao_test.go`,
-`aos311_selo_nao_cancelavel_test.go` — cada um com o **controlo** que prova que o AOS-311 não foi
-desligado para os fazer passar.
-
-**Residual declarado:** `Monitor.evaluate` continua a não auditar um deny por contexto já morto à
-entrada (registá-lo daria uma entrada por cada tool call de um run abortado — é escolha de
-política); e `registry/tofu` e `sandbox/network` têm sítios da mesma família por classificar.
+**ABERTO.** P1.
 
 ---
 
@@ -910,9 +743,124 @@ correr sobre um `git worktree` descartável, e isso é decisão de âmbito das f
 
 ---
 
+## AOS-317 — O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia
+
+> **Nota de notação.** Neste bloco os ADRs são referidos por «ADR n.º NN». O extractor da §4
+> lê **qualquer** `ADR-NNN` dentro do bloco de um ticket como «este ticket implementa aquela
+> decisão», e este não implementa nenhuma — fala delas. Escrito com os códigos, inscrevia-se
+> nas linhas do n.º 1 e do n.º 14 da matriz que veio arrumar. É o AOS-318.
+
+### Contexto
+
+AOS-314 fechou o canon curto alargando `ADR_RANGE` de `range(1, 20)` para `range(1, 24)`,
+nos dois ficheiros onde a constante vive — `scripts/ci/rtm-regenerate.py:35` e
+`scripts/ci/ref-lint.py:95`. O número passou a estar certo. **O mecanismo não.**
+
+O que produziu o defeito não foi o valor `20`: foi um literal escrito à mão, duplicado em
+dois leitores do corpus, que ninguém compara com a fonte que o devia fixar. Isso continua
+inteiro depois de AOS-314. No dia em que entrar o n.º 24 no registo, o canon volta a ficar
+curto, **nos mesmos dois sítios**, e nada o dirá — o `ref-lint` deixa outra vez de exigir
+ticket implementador ao ADR novo, e fica verde por não olhar. Foi exactamente assim que o
+n.º 19 sobreviveu a quatro decisões.
+
+O corpus tem três listas de ADRs e elas divergem por natureza, não por descuido:
+`_BRIEF` §3 fixa o enunciado do núcleo fundacional; `specs/00` §11 é referência de
+enunciado; e `docs/adr/README.md` declara-se **registo canónico**, é a única completa e a
+única que regista o **estado** de cada decisão. Só a terceira pode ser fonte de «que ADRs
+existem» — e era a única que nenhum gate lia.
+
+### Critérios de Aceitação
+
+- [x] `ADR_RANGE` deixa de ser literal nos dois gates: `scripts/ci/adr_register.py` deriva
+      o registo de `docs/adr/README.md` e é importado por `rtm-regenerate.py` **e** por
+      `ref-lint.py` — uma fonte, não duas cópias que envelhecem juntas
+- [x] A derivação falha **fechada** em três eixos: tabela ausente ou com cabeçalho mudado,
+      códigos não contíguos a partir do primeiro (o README promete que «códigos nunca são
+      reutilizados»), e estado fora do vocabulário fechado que o próprio README enumera
+- [x] O import resolve mesmo quando o gate é carregado **por caminho** e não corrido como
+      script — é como o §P1 do `selftest.sh` o carrega, e sem isso o subteste ficava
+      vermelho a dizer que «o predicado não discrimina», que é outra coisa
+- [x] A §4 mostra o **Estado** de cada decisão, em coluna própria vinda do registo: duas
+      das vinte e três estão *Propostas*, e sem a coluna liam-se com a mesma autoridade de
+      uma ratificada
+- [x] A guarda `assert_numeric_claims` reconhece as **quatro** notações de intervalo que o
+      documento usa, incluindo o separador « a » por extenso — que a §1.5 usa e que o padrão
+      não via. Buraco com consequência: a forma com dois pontos era recusada e a mesma
+      afirmação escrita com « a » no meio passava incólume. Um padrão incompleto não é só cego, **ensina** a
+      usar a forma que não vê
+- [x] `specs/00` §11 e `_BRIEF` §3 declaram o que são: a primeira é completada e passa a
+      dizer que não é o inventário; a segunda assume-se como núcleo fundacional e remete —
+      **deliberadamente não** copiada para vinte e três entradas, que seria a terceira cópia
+      a envelhecer em silêncio
+- [x] Um self-test injecta a falha em cada eixo novo e exige vermelho *pela mensagem da
+      guarda*, sobre a **cópia** do corpus que AOS-316 tornou possível
+
+### Estado
+
+**ENTREGUE** (2026-09-04). P2.
+
+`scripts/ci/adr_register.py` (novo — a derivação), `scripts/ci/rtm-regenerate.py` (fonte +
+coluna Estado + quarta notação), `scripts/ci/ref-lint.py` (fonte), `scripts/ci/selftest.sh`,
+`tecnica/16_Rastreabilidade_RTM.md` (§§1,4 regeneradas), `specs/00_System_Spec.md` (§11),
+`_BRIEF.md` (§3). Gates: `rtm.sh`, `ref-lint.sh` e `selftest.sh` verdes.
+
+**O que fica escrito, por ser mais geral do que o ticket.** Corrigir o valor de uma
+constante escrita à mão não corrige nada — devolve o gate ao estado em que estava antes de
+apodrecer, com o mesmo relógio a andar. A pergunta a fazer a cada literal num gate é «quem
+compara isto com a fonte?», e quando a resposta é «ninguém», o número certo de hoje é só o
+número errado de amanhã. AOS-314 não estava errado; estava incompleto, e o que faltava não
+era um número maior.
+
 ---
 
-## AOS-317 — A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam
+## AOS-318 — Um ticket não pode mencionar um ADR sem alegar que o implementa
+
+### Contexto
+
+A §4 da RTM é construída por correspondência textual: `extract_all_tickets()` recolhe
+**todos** os códigos `ADR-NNN` que aparecem no bloco de um ticket, e cada um vira uma
+entrada na coluna «tickets que o implementam». Não há forma de citar uma decisão para a
+discutir, para delimitar âmbito, ou para explicar um defeito — a citação *é* a alegação.
+
+Descoberto ao escrever o AOS-317, e por ele: o bloco mencionava duas decisões em prosa
+(«o catálogo pára no n.º 14», «códigos contíguos a partir do n.º 1») e inscreveu-se como
+implementador de ambas, na matriz que o próprio ticket existe para arrumar. Está contornado
+com notação («ADR n.º NN»), o que resolve um caso e não a classe.
+
+**Medido antes de aberto**, para que não se confunda armadilha com dívida: 357 pares
+(ticket, ADR) na §4; uma heurística sobre marcadores de delimitação, negação e remissão
+sinaliza **2** candidatos, e a leitura dos dois desmente a heurística — AOS-043 («executa
+como *activity* durável fora do turno, coerente com…») e AOS-282 («um run é possuído por
+exactamente uma réplica — a invariante do…») realizam de facto as decisões que citam.
+**Zero atribuições falsas no corpus de hoje.**
+
+O defeito é **prospectivo**: não corrompe a matriz actual, corrompe a próxima que precise
+de discutir uma decisão sem a implementar. E já mordeu uma vez — na única ocasião em que o
+corpus precisou disso.
+
+### Critérios de Aceitação
+
+- [ ] Existe forma de **mencionar** um ADR num bloco de ticket sem entrar na coluna de
+      implementadores, e a §4 documenta-a onde o leitor da matriz a encontre
+- [ ] O `rtm-regenerate.py` distingue as duas coisas na extracção, e o `ref-lint` não conta
+      uma menção como cobertura de ADR (senão a invariante «≥ 1 ticket implementador» passa
+      a ser satisfeita por quem só fala da decisão)
+- [ ] A escolha do mecanismo fica registada com o custo de migração à frente: um marcador
+      inline, semântica por secção do bloco, ou um campo explícito a substituir a extracção
+      textual — as duas últimas deslocam pares existentes, e os 357 de hoje são a linha de
+      base de não-regressão
+- [ ] Os blocos de AOS-317 e AOS-318 largam a notação «ADR n.º NN» e voltam aos códigos
+      canónicos — é o teste de aceitação mais honesto que estes dois blocos podem ter
+
+### Estado
+
+**ABERTO.** P2. Latente: sem dívida acumulada, com armadilha activa para quem escrever a
+seguir.
+
+---
+
+---
+## AOS-319 — A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam
 
 <!-- rtm: adrs-mencionados -->
 

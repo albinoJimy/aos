@@ -262,6 +262,46 @@ Provam de forma determinista, e sem rasto no repo quando correm sozinhas, que:
 - a suite recusa correr concorrente consigo própria e recusa arrancar sobre
   resíduo de um run anterior.
 
+### Sessões concorrentes (`scripts/ci/sessoes.py`)
+
+> **Antes de abrir tickets ou editar `scripts/ci/`, regista-te e lê as outras.**
+> Este repositório é trabalhado em vários *worktrees* ao mesmo tempo, em ramos
+> que ainda não se fundiram — e ramos que não se fundiram **não se vêem**.
+
+O que isso já custou, medido e não suposto: duas sessões fecharam o mesmo defeito
+do canon de ADRs por caminhos diferentes no mesmo dia; `AOS-313`, `AOS-314` e
+`AOS-317` nomeiam tickets **diferentes** em ramos diferentes; e uma base foi
+reescrita debaixo de um ramo que já assentava nela, descoberto só ao abrir o PR,
+com o trabalho todo feito.
+
+```bash
+python3 scripts/ci/sessoes.py registar --tarefa "o que estás a fazer"         --tickets AOS-319,AOS-320 --ficheiros scripts/ci/rtm-regenerate.py
+python3 scripts/ci/sessoes.py ver          # outras sessões + colisões (exit 1 se houver)
+python3 scripts/ci/sessoes.py reservar 2   # próximos AOS-NNN livres, sob lock
+python3 scripts/ci/sessoes.py sair         # ao terminar
+```
+
+`ver` sinaliza três colisões: **ticket** reivindicado por mais de uma sessão,
+**ficheiro** tocado por mais de uma, e **base divergente** (dois HEAD em que
+nenhum é ancestral do outro — o caso que só se descobre no PR).
+
+**Numera sempre com `reservar`,** nunca a olho: ele parte do maior `AOS-NNN` em
+`specs/EPIC-*.md` — a mesma fonte que o `rtm-regenerate.py` usa — e soma o que as
+outras sessões já reivindicaram, sob lock.
+
+**Onde vive o estado, e porquê não é versionado.** Em
+`$(git rev-parse --git-common-dir)/aos-sessoes/`, que os *worktrees* partilham
+fisicamente: escrito num, lido em todos, sem merge e sem rede. Pô-lo em `specs/`
+ou `docs/` seria a resposta errada pela razão exacta que produziu o problema —
+cada ramo veria a sua cópia, e as sessões só se leriam depois do merge, que é
+quando a colisão já custou o trabalho. A **ferramenta** é versionada porque é
+código que se revê; o **estado** não, porque é observação do agora.
+
+**Não é um gate de CI, e não deve ser adicionado ao `run.sh`.** O *runner* tem um
+só *worktree*: ali `ver` não teria nada com que colidir e passaria sempre —
+fail-open silencioso, que é pior do que verificação nenhuma. É ferramenta local,
+para quem trabalha em paralelo.
+
 ## 7. Segurança e governação
 
 ### Princípios não-negociáveis

@@ -262,6 +262,19 @@ Um Agentic OS não nasce ideal; evolui por níveis onde cada um **desbloqueia** 
 | ADR-017 | Supply-chain do nó `aos` | Binário zero-dep (só stdlib + cedar-go), imagem distroless/non-root/read-only, SBOM + proveniência. Ver [`docs/adr/ADR-017-supply-chain-node.md`](../docs/adr/ADR-017-supply-chain-node.md) |
 | ADR-018 | Fronteira nó↔ORQ/SCH | O loop do serviço do nó `aos` é a fonte única de verdade do ciclo de vida na v1 single-host. Ver [`docs/adr/ADR-018-fronteira-no-orq-sch.md`](../docs/adr/ADR-018-fronteira-no-orq-sch.md) |
 | ADR-019 | Excepções intencionais às fronteiras canónicas de camada | Inversões conhecidas (kernel↔platform, control-plane→platform/substrate) formalizadas com baseline do gate `layer-lint`. Ver [`docs/adr/ADR-019-fronteiras-camada-excecoes.md`](../docs/adr/ADR-019-fronteiras-camada-excecoes.md) |
+| ADR-020 | Planeador como agente governado | O planeamento corre como um agente do runtime — NHI `agent:planner`, reserva admitida **antes** da decomposição, mediação RM, *taint*, replay — e não como caminho especial que chama o modelo fora da cadeia de governação. **Aceite.** Ver [`docs/adr/ADR-020-planeador-agente-governado.md`](../docs/adr/ADR-020-planeador-agente-governado.md) |
+| ADR-021 | Roteamento por scoring ponderado determinístico no Model Gateway | *task-fit* + perfis de pesos versionados, sem exploração online. **Proposto — ainda não em vigor.** Ver [`docs/adr/ADR-021-scoring-deterministico-gw.md`](../docs/adr/ADR-021-scoring-deterministico-gw.md) |
+| ADR-022 | Extensões declarativas ao grafo de plano | Arestas condicionais, papel verificador e *payload* tipado por aresta; sem ciclos e sem *blackboard*. **Proposto — ainda não em vigor.** Ver [`docs/adr/ADR-022-grafo-plano-extensoes.md`](../docs/adr/ADR-022-grafo-plano-extensoes.md) |
+| ADR-023 | Escritor único do ciclo de vida por-run | A autoridade é o **lease**, não o componente: o SCH deriva do log e o ORQ escreve só sob posse e sobre grafo re-hidratado. Estende o ADR-018 ao distribuído. **Ratificado e assinado (AOS-281).** Ver [`docs/adr/ADR-023-escritor-unico-ciclo-vida-por-run.md`](../docs/adr/ADR-023-escritor-unico-ciclo-vida-por-run.md) |
+
+> **Esta tabela é referência de enunciado, não o inventário.** Quantos ADRs existem, e em que
+> estado está cada um, lê-se no registo canónico [`docs/adr/README.md`](../docs/adr/README.md) —
+> é dele que os gates `rtm` e `ref-lint` derivam a lista (AOS-317). Esta secção tinha parado em
+> ADR-019 enquanto o registo ia em ADR-023, e era essa divergência que tornava perigoso usá-la
+> como inventário: dava o número errado sem o dizer. As quatro entradas finais foram
+> acrescentadas para completar o enunciado; **duas delas (ADR-021 e ADR-022) estão *Propostas*** e
+> não estão «em vigor» no sentido do título desta secção — a distinção vive no registo, e a
+> matriz §4 de `tecnica/16_Rastreabilidade_RTM.md` mostra-a em coluna própria.
 
 ---
 
@@ -342,3 +355,4 @@ Um Agentic OS não nasce ideal; evolui por níveis onde cada um **desbloqueia** 
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | Julho 2026 | ADR-015 ratificado (contrato próprio de durable execution + porta `Engine` agnóstica ao backend); stack e ADRs em vigor actualizados (AOS-022 fase feature) | Equipa AOS |
+| 1.2 | 2026-09-04 | §11 completada com ADR-020..023, que existiam no registo desde as EPIC-19/20/21 e nunca chegaram aqui; nota a declarar que esta tabela é referência de enunciado e que o inventário vive em `docs/adr/README.md` (AOS-317). | Equipa AOS |

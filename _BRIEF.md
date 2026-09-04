@@ -61,9 +61,25 @@ Governação e Observabilidade **envolvem** tudo; entre elas e o substrato está
 
 ---
 
-## 3. Decisões de Arquitectura (ADRs canónicos)
+## 3. Decisões de Arquitectura — núcleo fundacional (ADR-001 a ADR-014)
 
 Referenciar por código. Cada documento técnico relevante deve citar os ADRs que o afectam.
+
+> **Âmbito desta tabela, e onde está o inventário.** Estas catorze são o núcleo que enquadrou a
+> v1, com o **enunciado** de cada uma — é isso que aqui se fixa, e é por isso que a tabela não
+> muda: reescrever um enunciado histórico seria um defeito, não uma actualização (uma decisão que
+> muda exige ADR novo, ou um ADR de supersessão explícito).
+>
+> **Quantos ADRs existem, e em que estado está cada um, NÃO se lê aqui.** Lê-se no registo
+> canónico [`docs/adr/README.md`](docs/adr/README.md), que é de onde os gates `rtm` e `ref-lint`
+> derivam a lista (AOS-317). Do ADR-015 em diante as decisões existem só lá e em ficheiro
+> próprio, **deliberadamente não repetidas nesta secção**: uma terceira cópia da lista seria uma
+> terceira coisa a envelhecer em silêncio, que foi exactamente o defeito que AOS-317 fechou — a
+> §4 da RTM cobria dezanove ADRs por literal escrito à mão, contra um registo de vinte e três, e
+> o glossário mandava o leitor a esta secção para uma lista que ela nunca teve.
+>
+> Quem escreve documentos: para **citar a letra** de uma destas catorze, esta tabela serve; para
+> saber **que ADRs há** ou se um está em vigor, o registo.
 
 | ADR | Decisão | Racional resumido |
 |---|---|---|
