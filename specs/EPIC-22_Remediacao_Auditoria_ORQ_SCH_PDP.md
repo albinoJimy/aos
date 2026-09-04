@@ -23,14 +23,14 @@ instala hoje.
 
 Este epic cobre só os que são **activos**: alcançáveis pela superfície HTTP do nó `aos` tal como
 é entregue, com o mecanismo de autorização, selagem ou observabilidade que devia cobri-los
-ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
+ausente ou a mentir sobre o que faz. Treze tickets, cinco eixos:
 
 | Eixo | Tickets |
 |---|---|
 | Governação da autonomia (`/autonomy`) | AOS-305, AOS-306, AOS-307 |
 | Cerimónia de quatro-olhos (`/challenge`, `/approve`) | AOS-308, AOS-309 |
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
-| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315 |
+| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317 |
 | Integridade das ferramentas de gate | AOS-316 |
 
 > **AOS-312 não vem da §3.** Os sete primeiros são achados activos do documento-fonte; o oitavo
@@ -43,7 +43,9 @@ ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
 > AOS-313 registou como GAP-07 em vez de tomar, e **AOS-315** corrige o defeito que essa
 > decisão descobriu ao acrescentar quatro linhas à §4. **AOS-316** vem do mesmo sítio por
 > outra via: foi a ferramenta que prova os gates que corrompeu, ela própria, o trabalho de
-> AOS-314 — e nenhum gate deu por isso.
+> AOS-314 — e nenhum gate deu por isso. **AOS-317** fecha a terceira metade do mesmo
+> meta-achado: nem a guarda de AOS-312 nem a de AOS-313 lêem NÚMEROS, e foi o próprio
+> AOS-314 a deixar um («ADR-001…019» sobre uma tabela de vinte e três linhas).
 
 ### 0.1 Ordem sugerida
 
@@ -56,6 +58,7 @@ ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
 | **P2** | AOS-313 | Cobertura afirmada contra as matrizes geradas do próprio ficheiro; sem efeito no binário |
 | **P2** | AOS-314, AOS-315 | Âmbito do canon de ADRs e coluna de documentos da §4; sem efeito no binário |
 | **P2** | AOS-316 | A suite que prova os gates corrompe trabalho em curso quando concorrente; sem efeito no binário |
+| **P2** | AOS-317 | Contagens e extremos de intervalo gerados sem derivação; sem efeito no binário |
 
 ### 0.2 Tabela-resumo
 
@@ -73,6 +76,7 @@ ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
 | AOS-314 | O canon de ADRs que os gates lêem parava em ADR-019, quatro aquém do catálogo | P2 | **ENTREGUE** |
 | AOS-315 | A coluna de documentos técnicos da §4 resolvia-se pela amplitude do conjunto, não por ticket | P2 | **ENTREGUE** |
 | AOS-316 | O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro | P2 | **ENTREGUE** |
+| AOS-317 | A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam | P2 | **ENTREGUE** |
 
 ---
 
@@ -729,5 +733,88 @@ baixo dele continua a poder restaurar uma versão velha por cima de uma edição
 `AOS_RTM_ROOT` retira o gerador desse risco, mas a assinatura de política e os módulos sintéticos
 continuam expostos. A mitigação é a linha nova em `AGENTS.md`; fechá-la a sério exigiria a suite
 correr sobre um `git worktree` descartável, e isso é decisão de âmbito das ferramentas de CI.
+
+---
+
+---
+
+## AOS-317 — A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam
+
+<!-- rtm: adrs-mencionados -->
+
+### Contexto
+
+`rtm-regenerate.py` escrevia à mão o extremo do intervalo dos requisitos funcionais em duas linhas
+**geradas** — «as **11 capacidades funcionais**» na §1.2 e `RF["RF-01..RF-11"]` no mermaid da §6 —
+enquanto a §2 do mesmo ficheiro cataloga **RF-01 … RF-13** desde que a EPIC-19 acrescentou o
+planeador e os meta-runs. Corrigir o markdown não servia de nada: a regeneração seguinte repunha o
+11. O mesmo do lado dos NFR — `NFR-{n_nfrs}` era a **contagem** de `NFR_SPECS` (10) a passar-se por
+**identidade**, com a §3 já em NFR-12 — e outra vez na §7, que herdava `len(NFR_SPECS)` como
+denominador *e* como extremo.
+
+É a metade do meta-achado de `analises/10` §5 que nem `validate_section6` (AOS-312) nem
+`validate_section7` (AOS-313) cobrem: uma lê pares epic↔ticket, a outra lê citações, e **nenhuma lê
+números**. O exemplar mais incómodo é auto-infligido: **AOS-314** alargou `ADR_RANGE` a ADR-023 e
+deixou o cabeçalho da §4 a dizer «ADR-001…019», sobre uma tabela de vinte e três linhas — o mesmo
+defeito a nascer da própria correcção que o combatia, e a passar pelos gates que essa correcção
+tinha acabado de instalar.
+
+Qual é a **fonte autoritativa** era a pergunta por responder, e a resposta não é a óbvia: para os
+`RF-NN`/`NFR-NN` é o próprio RTM (§2 e §3), não `specs/00_System_Spec.md`. RF-12/RF-13 e
+NFR-11/NFR-12 entraram pela EPIC-19 e **não têm contrapartida** na System Spec. As 11 capacidades de
+`specs/00` §4 e os 10 *drivers* de §7 são outra coisa — a origem dos catálogos, não o seu tamanho —
+e confundir esse número com o extremo do intervalo era exactamente o defeito.
+
+### Critérios de Aceitação
+
+- [x] `requirement_catalogue()` lê os identificadores das tabelas §2/§3 do próprio RTM e **exige
+      contiguidade** `PREFIX-01`..`PREFIX-NN`: sem ela, contagem e extremo deixam de coincidir e
+      tudo o que se segue assume que coincidem
+- [x] As capacidades de `specs/00` §4 e os *drivers* de §7 passam a ser **contados dos ficheiros**, e
+      a §1.2 nomeia-os pelo que são
+- [x] O cabeçalho da §4 deriva o extremo de `ADR_RANGE`, fechando os «ADR-001…019» herdados de
+      AOS-314
+- [x] A §5 ganha as linhas de NFR-11 e NFR-12 e passa a dizer 12/12. Faltava-lhes a **linha**, não a
+      prova: AOS-242 fixa o SLI de fracção de planeamento ≤ 5% e AOS-232 deriva o risco das tools
+      pinadas — como `analises/10` §3 já registava
+- [x] `assert_numeric_claims()` recusa qualquer contagem, extremo de intervalo ou denominador de
+      cobertura que não bata com a fonte, em `--check` **e** na regeneração
+- [x] A guarda pára no controlo de versões, de propósito: a entrada 1.2 diz «20/20 ADRs, 12/12 NFRs»
+      e está certa **enquanto história**, anotada com a regeneração que a desfez. Alinhá-la com os
+      números de hoje seria falsificar o registo
+- [x] Anti-recorrência em `selftest.sh` §U1–U5, no molde de §R/§S: o regresso literal de
+      `RF-01..RF-11`, a contagem de RF na §1.2, o denominador da §7 e a contagem de capacidades
+      divorciada de `specs/00` §4, cada um a avermelhar o gate **pelo motivo certo**, com controlo
+      positivo contra a árvore real
+
+### Estado
+
+**ENTREGUE** (2026-09-04). P2.
+
+`scripts/ci/rtm-regenerate.py`, `scripts/ci/selftest.sh`, `tecnica/16_Rastreabilidade_RTM.md`.
+
+**Duas coisas que este ticket descobriu sobre os próprios self-testes**, e que valem mais do que a
+correcção que as revelou:
+
+1. **§U4 apanhou um ponto cego da guarda nova.** O padrão exigia «*as* N capacidades» e a frase
+   gerada diz «*das* N capacidades» — a asserção não cobria a linha que dizia cobrir. Uma guarda
+   escrita e nunca falsificada é uma guarda por verificar.
+2. **§S2 media o vazio, e ninguém dava por isso.** Injectava NFR-11 como «NFR ausente de
+   `NFR_SPECS`»; NFR-11 **passou a existir** ao longo deste trabalho, pelo que a sonda deixou de
+   injectar coisa nenhuma e continuava verde — verde por ausência de falha, não por bloqueio.
+   Reapontada para NFR-13. É o modo de falha que `analises/10` §5 descreve para achados velhos, a
+   acontecer dentro da própria suite anti-regressão: **um teste que envelhece mal é pior do que um
+   teste ausente**, porque conta como prova.
+
+**Ressalva — o que fica fora.** `assert_numeric_claims` cobre a RTM, e só a RTM. A §5 de
+`analises/10` mediu 61 asserções numéricas em prosa no corpus, com 34 a não baterem, e diz que 21
+dos falhanços vivem nos dois `INDICE.md`. Isso mantém-se, verificado hoje contra 316 tickets em 22
+epics: `specs/INDICE.md:16` enumera «duas epics em proposta (EPIC-18 e EPIC-19)» quando são cinco
+(EPIC-18…22), `:224` afirma «20 epics … backlog AOS-001..275», e `tecnica/INDICE.md:160` afirma «118
+tickets AOS-NNN organizados em 11 epics». *Em abono da verdade*, os «189 tickets atómicos
+ratificados» de `:16` são um subconjunto **declarado** e continuam defensáveis — o que envelheceu
+foi a enumeração das propostas e os totais, não aquele número. Nenhum destes ficheiros é gerado nem
+lido por gate nenhum, pelo que fechá-los exige decidir primeiro se passam a ser gerados ou se saem
+do corpus — decisão própria, fora deste ticket.
 
 ---
