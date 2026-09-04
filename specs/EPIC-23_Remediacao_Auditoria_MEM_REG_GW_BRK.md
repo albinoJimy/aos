@@ -164,8 +164,31 @@ ausência de declaração é o defeito, mais do que o campo em falta.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P0. Alcançável no nó: o adaptador OpenAI-compatível e `NewProduction` estão
-compostos em `packages/cmd/aos/modelgatewaywiring.go`.
+**IMPLEMENTADO.** P0. A distinção vive no tipo (`port.Usage.Ausente` + `Definido()`, com polaridade
+deliberada: o zero do campo é «definido», e só o desserializador do wire e o agregador de streaming
+marcam ausência). Fail-closed no caminho síncrono via `modelgateway.ErrUsageAusente`; indefinido —
+não agregado, não emitido, span anotado — no streaming, onde o conteúdo já foi entregue. `Embeddings`
+passa a escrever `resp.Usage.CostMicroUSD`. Sete testes, incluindo três de controlo e um de limite
+declarado; prova de mutação executada.
+
+**RESIDUAL NOMEADO — o AC4 vale enquanto houver recorder composto.** `translateResponse`
+(`packages/platform/model-gateway/runtime_adapter.go:163-169`) copia só os três campos numéricos
+para `agentruntime.ModelResponse`, que não tem campo para «indefinido» — a marca **não atravessa a
+fronteira GW→RT**. Num deployment em que a tabela de preços não cubra o par configurado,
+`parseModelPricingFromEnv` devolve recorder nil, `recordCost` retorna cedo em `if g.cost == nil`, e
+o `turn.recorded` volta a receber `cost_micro_usd: 0` para uma chamada não medida. Fechar isto exige
+um campo novo em `agentruntime.ModelResponse` — outro módulo, fora do `FILES_IN_SCOPE` deste ticket.
+Mitigação em vigor: `ErrBurndownNoUsage` (`packages/cmd/aos/burndown_ledger.go:53`) recusa um
+burn-down cuja dimensão decisiva somou zero, o que apanha o caso ao fim de N turnos em vez de ao
+primeiro. **Fica por abrir como ticket próprio.**
+
+**DECISÃO DE REVISÃO REGISTADA.** A revisão adversarial levantou que o fail-closed síncrono descarta
+uma resposta já paga e convida a dupla cobrança num retry, e propôs a alternativa que este ticket
+também admitia («marcar indefinido» também no síncrono). **A objecção foi retirada, e o fail-closed
+mantém-se.** Deixar a chamada passar como indefinida põe o run exactamente no estado que o
+`ErrBurndownNoUsage` foi criado para denunciar — «N eventos `turn.recorded` com `input_tokens=0` …
+o run queimava o tecto inteiro» — e o burn-down só o apanharia N turnos depois, contra um turno do
+fail-closed. A perda é de uma chamada, não do tecto inteiro.
 
 ---
 
