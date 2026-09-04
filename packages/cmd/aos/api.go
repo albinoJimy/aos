@@ -1134,7 +1134,15 @@ func (h *apiHandler) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 // readinessProber é uma dependência crítica que sabe dizer se está operacional. O DSARVault do
 // Vault implementa-o (sonda seal-status); o vault in-memory de referência NÃO — nesse caso o
-// /readyz não sonda a custódia (a KEK em memória está sempre disponível).
+// /readyz não sonda a custódia.
+//
+// AOS-322 — A SEGUNDA METADE DO RACIOCÍNIO, que esta nota não dizia. Não é só que a KEK em
+// memória está sempre DISPONÍVEL: é que a sua DESTRUIÇÃO não pode falhar. `InMemoryKeyVault.Delete`
+// é um `delete()` num mapa sob mutex, pelo que nunca existe uma destruição por confirmar — e é por
+// isso que a ausência de `readinessProber` (e de `shredPendingReporter`, e do confirmador do fluxo
+// DSAR) é coerente e correcta, e não uma lacuna. Sem esta metade, a leitura natural da nota é que
+// o alarme de crypto-shred está mudo neste modo; está antes SEM NADA QUE REPORTAR. O banner de
+// arranque declara qual dos dois casos está em vigor.
 type readinessProber interface {
 	ready(context.Context) error
 }

@@ -2448,6 +2448,25 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular de REFERENCIA in-memory — DEMO-GRADE: as KEK vivem em MEMORIA do processo, NAO-duraveis (perdem-se no restart); injecte Config.DSARVault (key-service/software-KMS de custodia externa) para producao; o KMS/HSM real e infra-org por tras da mesma porta")
 	}
+	// CONFIRMAÇÃO DO CRYPTO-SHRED (AOS-322). A porta [dsar.ShredConfirmer] é OPCIONAL
+	// por desenho: nem toda a custódia sabe responder «esta chave deixou de existir».
+	// O `InMemoryKeyVault` não a implementa e está CERTO ao não a implementar — o seu
+	// `Delete` é um `delete()` num mapa e não tem como falhar, pelo que não há
+	// pendência possível para reportar. O Vault Transit implementa-a (relê a chave e
+	// exige 404).
+	//
+	// PORQUE ISTO PRECISA DE SER DITO EM VOZ ALTA. As duas leituras de um `/readyz`
+	// verde são muito diferentes — «não há destruições por confirmar» e «esta custódia
+	// não sabe responder à pergunta» — e sem esta linha o operador não as distingue. E
+	// a opcionalidade é fail-open para a TERCEIRA custódia: um KMS de terceiros que
+	// possa falhar a destruir e não implemente a porta faria a cadeia selar
+	// `dsar.key_destroyed` sobre uma irrecuperabilidade que ninguém verificou — o
+	// defeito exacto que a porta foi criada para fechar, reaberto pela via da omissão.
+	if confirmadorDeShredDe(dsarVault) != nil {
+		log("confirmacao de crypto-shred (AOS-322): ARMADA — a custodia composta sabe responder se a destruicao da KEK esta CONFIRMADA, e o fluxo DSAR pergunta-lhe ANTES de a cadeia afirmar o apagamento. Uma destruicao nao confirmada sela dsar.shred_unconfirmed, poe o /readyz VERMELHO e emite aos_dsar_vault_shred_unconfirmed>0")
+	} else {
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA — a custodia composta nao implementa a porta de confirmacao, pelo que o fluxo DSAR sela dsar.key_destroyed SEM perguntar. Com o vault de REFERENCIA isto e CORRECTO (o Delete e um apagamento em memoria que nao pode falhar) e nao ha pendencia possivel: um /readyz verde neste modo significa 'nada a confirmar', NAO 'confirmado'. Uma custodia de terceiros que POSSA falhar a destruir e nao implemente a porta faria a cadeia afirmar uma irrecuperabilidade nao verificada — ver DEF-813")
+	}
 	// LEGAL HOLD + EXPIRAÇÃO (AOS-213, CON-02/DEF-903). O banner declara a superfície de
 	// administração REALMENTE composta e o MODO de expiração (sob demanda por rota) — sem
 	// capacidade-fantasma. A granularidade (por-titular) e o eixo residual são declarados.

@@ -258,9 +258,28 @@ visível:
 
 ### Estado
 
-**POR IMPLEMENTAR.** ~~P1~~ **P2** — reclassificado com o enunciado. Deixa de ser «defeito
-alcançável hoje» e passa a **endurecimento com guard-rail**: fecha a via de omissão antes de existir
-uma terceira custódia, e torna a postura legível a quem opera.
+**IMPLEMENTADO.** ~~P1~~ **P2** — reclassificado com o enunciado, que foi falsificado antes de se
+escrever uma linha de código.
+
+O banner de arranque declara agora se a confirmação de destruição está **ARMADA** ou **NÃO ARMADA**,
+derivando de `confirmadorDeShredDe(dsarVault) != nil`. A linha do caso não-armado diz explicitamente
+que, com o vault de referência, isso é **correcto** e que um `/readyz` verde significa «nada a
+confirmar», não «confirmado» — que era precisamente a leitura que faltava.
+
+O comentário de `api.go` ganha a segunda metade do raciocínio: não é só que a KEK em memória está
+sempre *disponível*, é que a sua *destruição não pode falhar*. Sem essa metade, a leitura natural da
+nota era que o alarme estava mudo; está antes sem nada que reportar.
+
+`aos322_confirmacao_shred_test.go` fixa o raciocínio, não o sintoma: assere as três ausências
+(confirmador, `readinessProber`, `shredPendingReporter`) **e a premissa que as justifica** — que o
+`Delete` do vault de referência apaga mesmo e é idempotente. Se essa premissa deixar de valer, as
+ausências passam a ser um buraco, e é este teste que o denuncia. Um segundo teste prova o corolário
+onde o operador o lê: `/readyz` a 200 com a custódia de referência.
+
+`DEF-813` regista a forma do risco que sobra — a opcionalidade da porta não distingue «esta custódia
+não precisa de confirmar» de «esta custódia devia confirmar e não confirma» — com gatilho nomeado: a
+composição de uma terceira custódia. A nota `N-DEF-813` explica porque não se cria ticket hoje: não
+há defeito, há uma forma de risco que nenhuma composição real corre.
 
 ---
 
