@@ -2,6 +2,7 @@ package supplychaintests
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	memdomain "github.com/aos-ref/platform/memory/domain"
 	"github.com/aos-ref/platform/memory/provenance"
 	"github.com/aos-ref/platform/registry"
+	"github.com/aos-ref/platform/registry/digest"
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
@@ -258,6 +260,10 @@ func TestSuiteReportEmitted(t *testing.T) {
 		{"floating_resolution_rejected", probeFloatingRejected()},
 		{"out_of_catalog_default_deny", probeOutOfCatalogDenied()},
 		{"unfaithful_replay_prevented", probeReplayFaithful()},
+		// AOS-320 — vector 8: substituição de endpoint/manifesto de um mcp_server com
+		// (id, version) inalterados. Entra no relatório (e portanto no veredicto
+		// agregado do gate) pela mesma via dos sete originais.
+		{"mcp_server_rug_pull_blocked", probeMCPServerRugPullBlocked()},
 		// Detecção (meta): com o controlo desligado, o rug-pull PASSA (não-vazio).
 		{"detection_nonvacuous", probeRugPullAdmittedWhenTrustBroken()},
 	}
@@ -462,6 +468,129 @@ func signedEntryPure(id string, v domain.Version, c domain.Contract, signer *sig
 	dig := sha256Digester.Digest(domain.KindTool, c)
 	return domain.Entry{
 		ID: id, Version: v, Kind: domain.KindTool, Digest: dig, Signature: signer.Sign(id, v, dig),
+		Contract:   c,
+		Provenance: domain.Provenance{Origin: "mcp://" + id, Publisher: signer.KeyID(), Trust: domain.TrustPinned},
+		Status:     domain.StatusActive,
+	}
+}
+
+// meta 8 — RUG-PULL sobre mcp_server com o controlo de AOS-320 CONTORNADO: o
+// contrato do servidor volta à forma PRÉ-AOS-320 (só a classe de egress, sem
+// ManifestDigest). O endpoint é substituído por trás do MESMO (id, version) e a
+// revalidação PERMITE a chamada — o digest congelado e o recalculado coincidem
+// porque nada do que mudou entra no digest. Prova que o bloqueio do vector 8 vem do
+// digest do manifesto e não de outra propriedade da fixture.
+func TestMetaDetects_MCPServerRugPull(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	legit := newSigner(t, keyLegit, seedLegit)
+	trust := newTrust(t, legit)
+
+	const id = "mcp.fs"
+	v := ver(1, 0, 0)
+
+	// CONTROLO DESLIGADO: contrato sem ManifestDigest (a forma que AOS-320 corrige).
+	cLegado := contractLegadoMCPServer(domain.EgressInternal)
+	entryLegit := signedEntry(id, v, domain.KindMCPServer, cLegado, legit)
+
+	frozen, err := toolset.FreezeToolSet(ctx, fakeCatalog{entries: []domain.Entry{entryLegit}}, "run-320-meta", nil, toolset.WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("FreezeToolSet: %v", err)
+	}
+	rev, err := revalidation.New(trust, audit.NewMemStore(),
+		revalidation.WithDigester(sha256Digester),
+		revalidation.WithClock(fixedClock()),
+	)
+	if err != nil {
+		t.Fatalf("revalidation.New: %v", err)
+	}
+
+	// A substituição: SÓ a proveniência (endpoint/binário) muda — que é tudo o que
+	// existia fora do digest antes de AOS-320.
+	substituido := signedEntry(id, v, domain.KindMCPServer, cLegado, legit)
+	substituido.Provenance.Origin = "transport=stdio;endpoint=/tmp/fs-do-atacante"
+
+	if substituido.Digest != entryLegit.Digest {
+		t.Fatalf("com o controlo desligado os digests deviam COINCIDIR: %q vs %q", substituido.Digest, entryLegit.Digest)
+	}
+	dec, err := rev.Revalidate(ctx, revalidation.Request{
+		RunID: "run-320-meta", StepID: "step-1", ToolID: id,
+		Current: substituido, Frozen: frozen,
+		Policy: revalidation.Policy{MaxEgress: domain.EgressInternal},
+	})
+	if err != nil {
+		t.Fatalf("Revalidate: %v", err)
+	}
+	if !dec.Allowed {
+		t.Fatalf("com o contrato PRÉ-AOS-320 a substituição devia PASSAR (é o defeito); bloqueio = {stage:%s reason:%s}", dec.Stage, dec.Reason)
+	}
+}
+
+// probeMCPServerRugPullBlocked é o predicado PURO do vector 8, consumido pelo
+// relatório agregado (e, por essa via, pelo gate scripts/ci/supplychain.sh).
+func probeMCPServerRugPullBlocked() bool {
+	ctx := context.Background()
+	legit, err := signing.NewSigner(keyLegit, keyFromSeed(seedLegit))
+	if err != nil {
+		return false
+	}
+	ts, err := signing.NewTrustStore(audit.NewMemStore(), signing.WithTrustClock(fixedClock()))
+	if err != nil {
+		return false
+	}
+	if aerr := ts.Add(ctx, legit.KeyID(), legit.PublicKey()); aerr != nil {
+		return false
+	}
+
+	const id = "mcp.fs"
+	v := ver(1, 0, 0)
+	ancorado := func(endpoint string) domain.Contract {
+		doc, merr := json.Marshal(map[string]string{"endpoint": endpoint, "manifest": "tools=[read_file]"})
+		if merr != nil {
+			return domain.Contract{}
+		}
+		dig, derr := digest.DigestJSON(doc)
+		if derr != nil {
+			return domain.Contract{}
+		}
+		return domain.Contract{Egress: domain.EgressInternal, ManifestDigest: dig}
+	}
+
+	entryLegit := signedEntryKind(id, v, domain.KindMCPServer, ancorado("/opt/mcp/fs-legitimo"), legit)
+	trocado := signedEntryKind(id, v, domain.KindMCPServer, ancorado("/tmp/fs-do-atacante"), legit)
+	if entryLegit.Digest == trocado.Digest {
+		return false // o digest não discrimina — o defeito de AOS-320 persiste
+	}
+
+	frozen, err := toolset.FreezeToolSet(ctx, fakeCatalog{entries: []domain.Entry{entryLegit}}, "run-320-probe", nil, toolset.WithClock(fixedClock()))
+	if err != nil {
+		return false
+	}
+	rev, err := revalidation.New(ts, audit.NewMemStore(),
+		revalidation.WithDigester(sha256Digester),
+		revalidation.WithClock(fixedClock()),
+	)
+	if err != nil {
+		return false
+	}
+	dec, err := rev.Revalidate(ctx, revalidation.Request{
+		RunID: "run-320-probe", StepID: "step-1", ToolID: id,
+		Current: trocado, Frozen: frozen,
+		Policy: revalidation.Policy{MaxEgress: domain.EgressInternal},
+	})
+	if err != nil {
+		return false
+	}
+	return !dec.Allowed && dec.Reason == revalidation.ReasonDigestMismatch
+}
+
+// signedEntryKind é a variante de [signedEntryPure] com o kind explícito (os probes
+// pré-existentes assumem domain.KindTool).
+func signedEntryKind(id string, v domain.Version, kind domain.ArtifactKind, c domain.Contract, signer *signing.Signer) domain.Entry {
+	dig := sha256Digester.Digest(kind, c)
+	return domain.Entry{
+		ID: id, Version: v, Kind: kind, Digest: dig, Signature: signer.Sign(id, v, dig),
 		Contract:   c,
 		Provenance: domain.Provenance{Origin: "mcp://" + id, Publisher: signer.KeyID(), Trust: domain.TrustPinned},
 		Status:     domain.StatusActive,

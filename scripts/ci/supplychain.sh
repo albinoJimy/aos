@@ -49,6 +49,7 @@ REQUIRED=(
   TestVector5_FloatingResolution_Rejected
   TestVector6_OutOfCatalog_DefaultDeny
   TestVector7_FaithfulReplay_ViaManifest
+  TestVector8_MCPServerRugPull_Blocked
   TestMetaDetects_RugPull
   TestMetaDetects_SchemaDrift
   TestMetaDetects_RugPullMidRun
@@ -56,6 +57,7 @@ REQUIRED=(
   TestMetaDetects_FloatingResolution
   TestMetaDetects_OutOfCatalog
   TestMetaDetects_UnfaithfulReplay
+  TestMetaDetects_MCPServerRugPull
   TestSuiteReportEmitted
 )
 # Regex ancorado (^Test…$) por nome, unido por '|': casa EXACTAMENTE os obrigatórios e

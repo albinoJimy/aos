@@ -149,6 +149,36 @@ func contractWith(marker string, egress domain.EgressClass, scopes ...string) do
 	}
 }
 
+// mcpServerContract constrói o contrato de uma entrada kind=mcp_server no molde de
+// AOS-320: a classe de egress MAIS o digest do manifesto de capacidades ANCORADO na
+// referência local (transporte/endpoint), que é o que mcp.Host.stage passa a gravar.
+//
+// O valor é um digest OPACO — a sua composição exacta (superfície anunciada + âncora
+// não-forjável) é provada em registry/mcp/manifesto_test.go. Aqui interessa a
+// propriedade que o REG consome: manifestos ou endpoints diferentes produzem
+// ManifestDigest diferentes, logo entradas com digests diferentes.
+//
+// contractLegadoMCPServer (abaixo) é a forma PRÉ-AOS-320 — só a classe de egress —,
+// usada como CONTROLO para mostrar que ela colidia.
+func mcpServerContract(t *testing.T, endpoint, manifesto string, egress domain.EgressClass) domain.Contract {
+	t.Helper()
+	doc, err := json.Marshal(map[string]string{"endpoint": endpoint, "manifest": manifesto})
+	if err != nil {
+		t.Fatalf("marshal da forma ancorada: %v", err)
+	}
+	dig, err := digest.DigestJSON(doc)
+	if err != nil {
+		t.Fatalf("DigestJSON da forma ancorada: %v", err)
+	}
+	return domain.Contract{Egress: egress, ManifestDigest: dig}
+}
+
+// contractLegadoMCPServer é o contrato que o REG gravava para um mcp_server ANTES de
+// AOS-320: SÓ a classe de egress. Existe para o controlo negativo dos vectores.
+func contractLegadoMCPServer(egress domain.EgressClass) domain.Contract {
+	return domain.Contract{Egress: egress}
+}
+
 // signedEntry constrói uma domain.Entry COERENTE: digest = SHA-256 real do
 // (kind, contract) via AOS-047, e assinatura do signer sobre (id, version, digest)
 // via AOS-048. É o artefacto "íntegro" contra o qual o congelado casa.

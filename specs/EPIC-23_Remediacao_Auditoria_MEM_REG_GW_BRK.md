@@ -117,9 +117,36 @@ vectores 1 e 3 da suite adversarial AOS-054 usam `domain.KindTool`.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P0. Latente enquanto `mcp.NewHost` não tiver chamador (ver AOS-326), mas o
-defeito está materializado no código e a correcção não depende do wiring.
+**IMPLEMENTADO.** P0. Latente enquanto `mcp.NewHost` não tiver chamador (ver AOS-326), mas o defeito
+estava materializado no código e a correcção não dependia do wiring.
 
+`Contract.ManifestDigest` é escrito **por último e só quando não-vazio** nas duas gerações de
+hashing, o que preserva byte-a-byte os digests de `tool`/`skill` — fixado por
+`TestGoldenDigests_ToolSkill_NaoRegridem`, que congela oito valores medidos antes da alteração. Sem
+essa prova não se saberia se o pin de tudo o resto tinha sido partido.
+
+**O que entra no digest do manifesto:** tools (nome, descrição, schema sanitizado), resources,
+versão de protocolo, a marca de descoberta incompleta, e uma tag de versão da forma canónica —
+tudo ancorado ao par (transporte, endpoint) da ligação, que é **local e não-forjável pelo servidor**.
+A descrição entra porque é o *payload* do tool-poisoning: ignorá-la deixaria reescrever a instrução
+inteira por trás de um pin inalterado. **`ServerInfo` fica de fora**, e a exclusão está fixada por
+teste: é auto-declarado, trivialmente copiável numa substituição, e sem limite de churn. Nomes de
+tool ou URIs duplicados tornam a forma ambígua e são recusados fail-closed.
+
+**Vector 8** (`TestVector8_MCPServerRugPull_Blocked`) substitui endpoint e manifesto com
+`(id, version)` inalterados e **re-assina com a chave legítima** — a revalidação bloqueia. O
+meta-teste prova que com o contrato pré-AOS-320 a mesma substituição **passa**. Ambos entraram na
+lista `REQUIRED` de `supplychain.sh`, que era o fecho que faltava: sem isso não estavam sob a
+protecção anti-vacuidade do gate.
+
+Gate `supplychain` verde, com `"mcp_server_rug_pull_blocked":true` no relatório agregado.
+`tecnica/05` §3/§4 e o texto do manifesto passam a dizer o que o digest cobre — **e o que não
+cobre**: os bytes do executável não entram, e a defesa desse eixo é a do artefacto (ADR-017/SBOM),
+não a do catálogo.
+
+**Residual declarado:** `semver.ClassifyContract` não considera `ManifestDigest`, pelo que uma
+mudança de manifesto não é classificada como bump — deixado intacto por mudar a semântica de
+AOS-052.
 ---
 
 ## AOS-321 — Uma resposta 200 sem `usage` é indistinguível de uma chamada de custo nulo
@@ -367,9 +394,37 @@ imposto e testado transforma uma dívida latente numa vulnerabilidade viva no me
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2 por alcance (latente — `broker.New` não tem chamador de produção), **alta
-no dia do wiring**. É o defeito de desenho mais sério da auditoria.
+**IMPLEMENTADO.** P2 por alcance (latente — `broker.New` não tem chamador de produção), **alta no
+dia do wiring**.
 
+Via escolhida: o `ScopeGate` ganha consciência de provedor, com defesa server-side gémea no
+`dispatch` **antes de a chave do Vault existir**. A autoridade efectiva é o tecto da classe ∩ os
+grants `prov:` do token — que só **estreitam**, nunca ampliam, o mesmo princípio da fonte externa de
+autoridade do `ScopeGate` do RM. As outras duas vias foram recusadas com razão escrita: a obrigação
+no molde da `ObligationRegion` é **estruturalmente impossível** sem alterar o contrato C1 (`Call`/
+`Resource` têm `Region` mas não têm campo de provedor — foi isso que permitiu fechar o eixo região
+no kernel e impede fechá-lo aí); e derivar a capability do provedor obrigaria a re-assinar o bundle
+de capabilities e reverteria a decisão de AOS-264.
+
+`TestAOS324_CrossProvider_NegadoEAtribuivel` aprovisiona material de **ambos** os provedores — a
+negação não é vácua por ausência de material — e assere `Effect=deny`, `Code=E_DENIED_BY_HOOK`,
+`DeniedBy=broker-scope`, evento `denied` selado, nenhum `credential.exchange.issued`, e
+`!errors.Is(err, ErrNoMaterial)`. O inverso tem teste próprio. Verificação de não-vacuidade: com
+`authorizeProvider` neutralizado, quatro testes ficam vermelhos.
+
+**Estado por omissão — `unset`, e a razão de não ser deny-all.** Sem `WithClassProviders` a
+comparação por conjunto não corre. Foi uma restrição minha ao contrato do implementador («não pode
+transformar-se num deny-all silencioso»), e é a escolha certa por uma razão que a implementação
+tornou visível: a postura é **selada no campo `provider_policy` de cada troca**, pelo que uma
+composição não-imposta fica auditável e greppável em vez de invisível. O que a postura **não**
+relaxa: provedor vazio é negado fail-closed nas duas posturas.
+
+O `DEF-218` passa a nomear isto como **pré-condição do wiring**: declarar a política e assertar
+`enforced`. `tecnica/07` documenta o modelo dos três eixos e qual mecanismo impõe cada um.
+
+**Residual declarado:** sob `unset` o defeito persiste materialmente — fica registado e fechável por
+configuração, não fechado. E a convenção `prov:` na autoridade é **nova**: nenhum emissor a produz
+hoje, pelo que na prática vale só o tecto da classe até o `platform/identity` a emitir.
 ---
 
 ## AOS-325 — Cinco declarações de estado que já não são verdade
