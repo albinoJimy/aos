@@ -242,12 +242,25 @@ O pipeline é **fail-closed**: qualquer gate vermelho bloqueia merge. A CI (`.gi
 
 ### Auto-testes dos gates (`ci-selftest`)
 
-Provam de forma determinista e sem rasto no repo que:
+> **Esta suite muta a árvore de trabalho.** Injecta cada falha nos ficheiros reais
+> — a assinatura do bundle PDP e dois módulos sintéticos em `packages/` — e
+> restaura-os no `trap`. **Não a corras concorrente contigo a editar, nem duas de
+> uma vez:** dois runs sobrepostos têm backups de instantes diferentes e o restauro
+> de um escreve por cima do trabalho do outro (AOS-316). Desde AOS-316 há exclusão
+> mútua (recusa com **exit 3**) e guarda de resíduo de um run morto sem `trap`
+> (**exit 4**); o que ela não pode impedir é que edites ficheiros por baixo dela
+> enquanto corre.
+
+Provam de forma determinista, e sem rasto no repo quando correm sozinhas, que:
 
 - módulo mau (gofmt sujo + teste que falha) bloqueia `lint`/`test`;
 - assinatura do bundle PDP adulterada bloqueia `policy-test`;
 - CVE afetante fora da baseline bloqueia `sca`;
 - golden trajectory adulterada bloqueia o harness de replay.
+- atribuição ticket→epic falsa na §6 da RTM e citação inexistente na §7 bloqueiam
+  `rtm`, e uma referência partida dentro da própria RTM bloqueia `ref-lint`;
+- a suite recusa correr concorrente consigo própria e recusa arrancar sobre
+  resíduo de um run anterior.
 
 ## 7. Segurança e governação
 

@@ -18,7 +18,12 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Raiz do corpus. Sobreponível por ambiente APENAS para o self-test (§R/§S)
+# poder injectar falhas numa CÓPIA em vez de mutar a árvore real — o job de CI
+# não define a variável. Mesmo molde de `AOS_REFLINT_ROOT` em `ref-lint.py:90`.
+# Antes de AOS-316 não existia, e era por isso que §R e §S tinham de mutar este
+# próprio ficheiro no sítio: dois runs sobrepostos corrompiam-se um ao outro.
+REPO_ROOT = Path(os.environ.get("AOS_RTM_ROOT") or Path(__file__).resolve().parents[2])
 RTM_PATH = REPO_ROOT / "tecnica" / "16_Rastreabilidade_RTM.md"
 SPECS_DIR = REPO_ROOT / "specs"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"

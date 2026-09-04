@@ -27,6 +27,13 @@
 #      bloqueia o gate rtm (meta-achado de `analises/10` §5).
 #   S) citação inexistente na §7 da RTM bloqueia o gate rtm, e a RTM deixa de
 #      estar fora do ref-lint (AOS-313).
+#   T) a suite recusa correr concorrente consigo própria, e recusa arrancar
+#      sobre resíduo de um run morto sem trap (AOS-316).
+#
+# ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
+# restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
+# desde AOS-316 há exclusão mútua (exit 3) e guarda de resíduo (exit 4), mas o
+# que ela não pode impedir é que edite ficheiros por baixo dela enquanto corre.
 #
 # Os subtestes N4/N5, O3/O4 e P2 existem porque a primeira versão destes três
 # gates passava os seus próprios self-testes sendo, ainda assim, contornável: o
@@ -48,6 +55,91 @@ fails=0
 pass() { printf '%sSELFTEST OK%s   %s\n' "$C_GRN" "$C_RST" "$*"; }
 bad()  { printf '%sSELFTEST FAIL%s %s\n' "$C_RED" "$C_RST" "$*" >&2; fails=1; }
 
+# ============================================================================
+# Exclusão mútua e guarda de árvore limpa (AOS-316)
+# ============================================================================
+# Esta suite injecta cada falha NA ÁRVORE REAL e restaura-a a seguir. Dois runs
+# sobrepostos partilham esses ficheiros com backups tirados em instantes
+# DIFERENTES, e o restauro de um escreve por cima do trabalho do outro. Foi assim
+# que um commit saiu com a mensagem de uma mudança e o conteúdo de outra, sem
+# nenhum gate dar por isso.
+#
+# `flock` não existe no Git Bash de Windows; `mkdir` é a primitiva atómica
+# portável. O lock vive no *gitdir* — nunca aparece em `git status`, e é por
+# worktree, que é o âmbito certo: as mutações são da árvore de trabalho.
+#
+# Códigos de saída próprios, para que quem chama distinga a RECUSA do vermelho
+# de um gate:
+#   3 — outro run em curso;
+#   4 — a árvore já tinha mutações desta suite à entrada.
+_gitdir() { git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || printf '%s' "$REPO_ROOT"; }
+LOCK_DIR="${AOS_SELFTEST_LOCK:-$(_gitdir)/aos-selftest.lock}"
+LOCK_ADQUIRIDO=0
+LOCK_ORFAO=""
+
+adquirir_lock() {
+  local dono
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s' "$$" > "$LOCK_DIR/pid"; LOCK_ADQUIRIDO=1; return 0
+  fi
+  dono="$(cat "$LOCK_DIR/pid" 2>/dev/null || printf '')"
+  if [ -n "$dono" ] && kill -0 "$dono" 2>/dev/null; then
+    printf '%sERRO%s outro selftest.sh está a correr (PID %s).\n' "$C_RED" "$C_RST" "$dono" >&2
+    printf '  A suite muta ficheiros da árvore de trabalho e restaura-os; dois runs\n' >&2
+    printf '  sobrepostos corrompem-se um ao outro (AOS-316). Espere que termine.\n' >&2
+    printf '  Lock: %s\n' "$LOCK_DIR" >&2
+    return 1
+  fi
+  # Lock órfão: o dono já não existe. O `trap` cobre EXIT INT TERM e NÃO KILL,
+  # pelo que esse run pode ter deixado a árvore mutada — toma-se o lock (senão a
+  # suite ficava inarrancável para sempre) e a guarda a seguir é que decide.
+  LOCK_ORFAO="${dono:-desconhecido}"
+  rm -rf "$LOCK_DIR"
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s' "$$" > "$LOCK_DIR/pid"; LOCK_ADQUIRIDO=1; return 0
+  fi
+  printf '%sERRO%s não foi possível tomar o lock %s\n' "$C_RED" "$C_RST" "$LOCK_DIR" >&2
+  return 1
+}
+
+libertar_lock() { [ "$LOCK_ADQUIRIDO" = 1 ] && rm -rf "$LOCK_DIR"; LOCK_ADQUIRIDO=0; }
+
+# `packages/_selftest_bad/` está em `.gitignore` (`:56`), pelo que `git status` NÃO
+# o vê: para os módulos sintéticos a prova de resíduo é EXISTIREM. Para o ficheiro
+# rastreado que §B muta, pergunta-se ao git.
+verificar_superficie_limpa() {
+  local sujos=() d
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- "packages/control-plane/pdp/policies/aos_authz.sig" 2>/dev/null)" ]; then
+    sujos+=("packages/control-plane/pdp/policies/aos_authz.sig (modificado)")
+  fi
+  for d in packages/_selftest_bad packages/_selftest_eventcat; do
+    [ -e "$REPO_ROOT/$d" ] && sujos+=("$d (resíduo de um run anterior)")
+  done
+  [ "${#sujos[@]}" -eq 0 ] && return 0
+  printf '%sERRO%s a árvore já tem mutações desta suite à entrada:\n' "$C_RED" "$C_RST" >&2
+  for d in "${sujos[@]}"; do printf '  - %s\n' "$d" >&2; done
+  printf '  Um run anterior terminou sem correr o trap (AOS-316). Sem isto, o backup\n' >&2
+  printf '  de arranque seria tirado de uma árvore já corrompida e a suite propagava-a.\n' >&2
+  printf '  Restaure antes de repetir:\n' >&2
+  printf '    git checkout -- packages/control-plane/pdp/policies/aos_authz.sig\n' >&2
+  printf '    rm -rf packages/_selftest_bad packages/_selftest_eventcat\n' >&2
+  return 1
+}
+
+adquirir_lock || exit 3
+if ! verificar_superficie_limpa; then libertar_lock; exit 4; fi
+if [ -n "$LOCK_ORFAO" ]; then
+  printf '%sAVISO%s tomei um lock órfão (PID %s, já morto); a árvore estava limpa.\n' "$C_YEL" "$C_RST" "$LOCK_ORFAO"
+fi
+
+# Seam de teste (§T): provar a exclusão sem pagar a suite inteira. O job de CI não
+# define a variável — mesmo molde de `AOS_REFLINT_ROOT` em `ref-lint.py:90`.
+if [ -n "${AOS_SELFTEST_LOCK_PROBE:-}" ]; then
+  printf 'LOCK OK (pid %s)\n' "$$"
+  libertar_lock
+  exit 0
+fi
+
 BAD_MOD="$REPO_ROOT/packages/_selftest_bad"
 SIG="$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.sig"
 SIG_BAK="$(mktemp)"
@@ -58,12 +150,16 @@ LAYER_TMP=""
 # toolchain Go a ignore mesmo se algo correr em paralelo. Removida pelo trap.
 EVENT_PROBE="$REPO_ROOT/packages/_selftest_eventcat"
 REFLINT_TMP=""
-# §R muta o gerador da RTM NA ÁRVORE REAL (não há como o correr fora dela: ele
-# resolve REPO_ROOT a partir do próprio caminho). Backup byte-a-byte + restauro
-# no trap, como em §B com a assinatura da política.
-RTM_GEN="$REPO_ROOT/scripts/ci/rtm-regenerate.py"
-RTM_GEN_BAK="$(mktemp)"
-cp "$RTM_GEN" "$RTM_GEN_BAK"
+# §R e §S mutam o gerador da RTM numa CÓPIA, desde AOS-316: o gerador aceita
+# `AOS_RTM_ROOT`, pelo que a árvore real deixou de fazer parte da superfície
+# mutada — R3/S3 apenas a LÊEM. A sandbox é criada em §R e apagada pelo trap.
+RTM_SANDBOX=""
+RTM_GEN=""
+RTM_GEN_BAK=""
+# Impressão digital do gerador à ENTRADA. §T5 compara com ela para provar que a
+# suite não lhe tocou. Comparar com o git seria outra coisa — daria vermelho a
+# quem tivesse o ficheiro por commitar, que é o caso normal de quem o edita.
+RTM_GEN_SHA_INICIO="$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")"
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -71,7 +167,8 @@ cleanup() {
   rm -rf "$LAYER_TMP"
   rm -rf "$EVENT_PROBE"
   rm -rf "$REFLINT_TMP"
-  if [ -f "$RTM_GEN_BAK" ]; then cp "$RTM_GEN_BAK" "$RTM_GEN"; rm -f "$RTM_GEN_BAK"; fi
+  rm -rf "$RTM_SANDBOX"
+  libertar_lock
 }
 trap cleanup EXIT INT TERM
 
@@ -719,6 +816,19 @@ fi
 # por comentário.
 log_gate "self-test R · o gate rtm bloqueia atribuição ticket→epic falsa na §6"
 
+# Sandbox de §R/§S: corpus copiado + cópia do gerador. Nada aqui toca na árvore
+# real; o gerador é apontado à cópia por `AOS_RTM_ROOT` (AOS-316).
+RTM_SANDBOX="$(mktemp -d)"
+mkdir -p "$RTM_SANDBOX/root/docs"
+cp -r "$REPO_ROOT/specs"    "$RTM_SANDBOX/root/specs"
+cp -r "$REPO_ROOT/tecnica"  "$RTM_SANDBOX/root/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$RTM_SANDBOX/root/docs/adr"
+cp    "$REPO_ROOT/_BRIEF.md" "$RTM_SANDBOX/root/_BRIEF.md"
+RTM_GEN="$RTM_SANDBOX/gen.py"
+RTM_GEN_BAK="$RTM_SANDBOX/gen.py.bak"
+cp "$CI_DIR/rtm-regenerate.py" "$RTM_GEN"
+cp "$RTM_GEN" "$RTM_GEN_BAK"
+
 # Vermelho PELO motivo certo: `--check` também falha por simples divergência de
 # texto, e isso provaria outra coisa. Exige-se a mensagem da asserção.
 # `set -o pipefail` está activo: encadear directamente em `grep` devolveria o
@@ -726,7 +836,7 @@ log_gate "self-test R · o gate rtm bloqueia atribuição ticket→epic falsa na
 # primeiro e só depois inspeccionada.
 rtm_bloqueou_pela_asercao() {
   local out rc
-  out="$(python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || return 1
   printf '%s' "$out" | grep -q 'atribui tickets a epics'
 }
@@ -752,8 +862,7 @@ fi
 # R3 — CONTROLO POSITIVO (o molde do P3/Q4): restaurada a árvore, o gate volta a
 # verde. Sem isto, um validador que rejeitasse TUDO passaria R1/R2 e estaríamos a
 # medir «diz sempre que não» em vez de «distingue».
-cp "$RTM_GEN_BAK" "$RTM_GEN"
-if python3 "$RTM_GEN" --check >/dev/null 2>&1; then
+if python3 "$CI_DIR/rtm-regenerate.py" --check >/dev/null 2>&1; then
   pass "R3: controlo — o gate rtm continua verde contra a árvore REAL (sem rasto)"
 else
   bad "R3: o gate rtm ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
@@ -774,7 +883,7 @@ log_gate "self-test S · o gate rtm bloqueia uma citação inexistente na §7"
 # consola (cp1252 em Windows), e um 'não' vindo deste ficheiro UTF-8 nunca casa.
 rtm_bloqueou_pela_asercao7() {
   local out rc
-  out="$(python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || return 1
   printf '%s' "$out" | grep -q 'cita entidades que'
 }
@@ -800,8 +909,7 @@ else
 fi
 
 # S3 — CONTROLO POSITIVO: restaurada a arvore, o gate volta a verde.
-cp "$RTM_GEN_BAK" "$RTM_GEN"
-if python3 "$RTM_GEN" --check >/dev/null 2>&1; then
+if python3 "$CI_DIR/rtm-regenerate.py" --check >/dev/null 2>&1; then
   pass "S3: controlo — o gate rtm continua verde contra a árvore REAL (sem rasto)"
 else
   bad "S3: o gate rtm ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
@@ -828,6 +936,82 @@ if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
 else
   bad "S5: o ref-lint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
 fi
+
+
+# ============================================================================
+# T) a suite recusa correr concorrente consigo própria (AOS-316)
+# ============================================================================
+# O defeito real: três runs sobrepostos, cada um com o seu backup tirado num
+# instante diferente. Um deles tinha o backup de `rtm-regenerate.py` de um commit
+# anterior e, ao chegar a §R, repô-lo por cima de edições em curso — saiu um
+# commit cuja mensagem descrevia uma mudança e cujo conteúdo revertia outra, e
+# nenhum gate deu por isso. Aqui prova-se que a exclusão RECUSA, que um lock
+# órfão não deixa a suite inarrancável, e que §R/§S deixaram de tocar no original.
+log_gate "self-test T · exclusão mútua e guarda de árvore limpa"
+# ATENÇÃO ao errexit: `lib.sh:13` faz `set -euo pipefail`, pelo que uma captura
+# simples — `x="$(cmd)"; rc=$?` — de um comando que sai != 0 MATA a suite com o
+# código dele, e nunca chega ao `rc`. Aqui isso dava um run que morria em §T com
+# exit 3 e sem uma única linha de diagnóstico. Daí o `|| t_rc=$?`, que torna a
+# atribuição um comando composto e desarma o errexit.
+T_TMP="$(mktemp -d)"
+
+# T1 — lock de um processo VIVO (este). A segunda invocação tem de recusar, com
+# código próprio e mensagem que nomeie a concorrência — nunca «POSSÍVEL RASTO no
+# repo», que mandava investigar o sítio errado.
+mkdir -p "$T_TMP/vivo"; printf '%s' "$$" > "$T_TMP/vivo/pid"
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/vivo" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+if [ "$t_rc" -eq 3 ] && printf '%s' "$t_out" | grep -q 'outro selftest.sh'; then
+  pass "T1: recusou arrancar com outro run vivo a deter o lock (exit 3)"
+else
+  bad "T1: esperava exit 3 e mensagem de concorrência; veio exit $t_rc"
+fi
+
+# T2 — lock ÓRFÃO. O `trap` não cobre KILL; um lock eterno tornaria a suite
+# inarrancável, o que trocaria um defeito por outro. O PID usado é o de um
+# processo que JÁ TERMINOU, não um número inventado que pudesse estar vivo.
+( : ) & t_morto=$!; wait "$t_morto" 2>/dev/null || true
+mkdir -p "$T_TMP/orfao"; printf '%s' "$t_morto" > "$T_TMP/orfao/pid"
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/orfao" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+if [ "$t_rc" -eq 0 ] && printf '%s' "$t_out" | grep -q 'LOCK OK'; then
+  pass "T2: tomou o lock órfão de um processo morto (não fica inarrancável)"
+else
+  bad "T2: esperava tomar o lock órfão; veio exit $t_rc"
+fi
+
+# T3 — a guarda de árvore limpa. Resíduo de um run morto sem trap tem de FAZER
+# RECUSAR: sem isto o backup de arranque sairia de uma árvore já corrompida.
+mkdir -p "$REPO_ROOT/packages/_selftest_bad"
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/guarda" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+rm -rf "$REPO_ROOT/packages/_selftest_bad"
+if [ "$t_rc" -eq 4 ] && printf '%s' "$t_out" | grep -q '_selftest_bad'; then
+  pass "T3: recusou arrancar com resíduo de um run anterior, nomeando-o (exit 4)"
+else
+  bad "T3: esperava exit 4 por resíduo; veio exit $t_rc"
+fi
+
+# T4 — CONTROLO POSITIVO (molde de §P3/§Q4/§R3): sem lock e sem resíduo, arranca.
+# Sem esta linha, uma guarda que recusasse SEMPRE passaria T1..T3.
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/livre" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+if [ "$t_rc" -eq 0 ]; then
+  pass "T4: controlo — sem lock nem resíduo a suite arranca (distingue, não recusa tudo)"
+else
+  bad "T4: a suite recusou arrancar com a árvore limpa e sem lock (exit $t_rc)"
+fi
+
+# T5 — a superfície encolheu: §R e §S correram ACIMA e o gerador da RTM não pode
+# ter ficado modificado. É a prova de que passaram a mutar uma cópia via
+# `AOS_RTM_ROOT`, e o teste que fica de guarda caso alguém reverta isso.
+if [ "$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")" = "$RTM_GEN_SHA_INICIO" ]; then
+  pass "T5: §R e §S correram sem tocar em scripts/ci/rtm-regenerate.py (mutação em cópia)"
+else
+  bad "T5: o gerador da RTM mudou durante o run — §R/§S voltaram a mutar a árvore real"
+fi
+
+rm -rf "$T_TMP"
 
 
 # ============================================================================

@@ -72,7 +72,7 @@ ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
 | AOS-313 | A §7 da RTM afirmava cobertura que as suas próprias secções geradas contradiziam | P2 | **ENTREGUE** |
 | AOS-314 | O canon de ADRs que os gates lêem parava em ADR-019, quatro aquém do catálogo | P2 | **ENTREGUE** |
 | AOS-315 | A coluna de documentos técnicos da §4 resolvia-se pela amplitude do conjunto, não por ticket | P2 | **ENTREGUE** |
-| AOS-316 | O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro | P2 | ABERTO |
+| AOS-316 | O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro | P2 | **ENTREGUE** |
 
 ---
 
@@ -683,29 +683,51 @@ foi onde mordeu.
 
 ### Critérios de Aceitação
 
-- [ ] Um segundo `selftest.sh` iniciado enquanto outro corre **não** muta nada: ou espera pelo
+- [x] Um segundo `selftest.sh` iniciado enquanto outro corre **não** muta nada: ou espera pelo
       *lock*, ou sai != 0 com mensagem própria que nomeie a concorrência — nunca uma mensagem de
       «POSSÍVEL RASTO no repo», que manda investigar o sítio errado
-- [ ] O *lock* é libertado por `trap` E sobrevive a um run morto sem `trap`: um *lock* órfão de um
+- [x] O *lock* é libertado por `trap` E sobrevive a um run morto sem `trap`: um *lock* órfão de um
       processo que já não existe não bloqueia a suite para sempre (PID no ficheiro de *lock*, ou
       `flock`, que o liberta ao fechar o descritor)
-- [ ] Um run que encontre a superfície mutada no arranque — `git status --porcelain` sujo nos
+- [x] Um run que encontre a superfície mutada no arranque — `git status --porcelain` sujo nos
       caminhos que ele próprio muta — recusa arrancar e diz quais, em vez de tirar backup de uma
       árvore já corrompida e propagar a corrupção
-- [ ] `rtm-regenerate.py` aceita sobreposição da raiz por variável de ambiente, no molde de
+- [x] `rtm-regenerate.py` aceita sobreposição da raiz por variável de ambiente, no molde de
       `AOS_REFLINT_ROOT` (`ref-lint.py:90`), e §R e §S passam a mutar uma **cópia**. Reduz a
       superfície mutada na árvore real à assinatura de política (§B) e aos dois módulos sintéticos
-- [ ] Prova de que a exclusão funciona: dois runs lançados em paralelo, o segundo tem de recusar ou
+- [x] Prova de que a exclusão funciona: dois runs lançados em paralelo, o segundo tem de recusar ou
       esperar, e a árvore fica limpa no fim — falsificável, no molde dos self-testes existentes
-- [ ] `AGENTS.md` (ou o README de `scripts/ci/`) declara que a suite muta a árvore de trabalho e não
+- [x] `AGENTS.md` (ou o README de `scripts/ci/`) declara que a suite muta a árvore de trabalho e não
       deve correr concorrente com edições — hoje isso não está escrito em lado nenhum
 
 ### Estado
 
-**ABERTO.** P2.
+**ENTREGUE** (2026-09-04). P2.
 
-Sem efeito no binário entregue: é higiene de ferramentas de CI. Fica em P2 e não acima porque na CI
+`scripts/ci/selftest.sh` (lock por `mkdir` no *gitdir*, guarda de superfície, §T1–T5),
+`scripts/ci/rtm-regenerate.py` (`AOS_RTM_ROOT`), `AGENTS.md`.
+
+Sem efeito no binário entregue: é higiene de ferramentas de CI. Ficou em P2 e não acima porque na CI
 o modo de falha não existe (um job, um run). O custo real já foi pago uma vez, em trabalho refeito e
 num commit que teve de ser desfeito.
+
+**A superfície mutada encolheu**, que era o ponto: `scripts/ci/rtm-regenerate.py` saiu dela. §R e §S
+passam a injectar as falhas numa cópia do gerador apontada a uma cópia do corpus por `AOS_RTM_ROOT`;
+da árvore real só lêem, nos controlos positivos R3/S3. Resta a assinatura de política (§B) e os dois
+módulos sintéticos (§A, §O) — os três protegidos pelo *lock* e pela guarda. §T5 fica de sentinela: se
+alguém devolver §R/§S à árvore real, `git status` sobre o gerador deixa de vir vazio e o self-test
+fica vermelho.
+
+**Duas escolhas que merecem nota.** O *lock* é `mkdir` e não `flock` porque **não há `flock` no Git
+Bash de Windows** (verificado); `mkdir` é a primitiva atómica portável. E vive no *gitdir*, não na
+árvore: nunca aparece em `git status` e é por worktree, que é o âmbito certo — as mutações são da
+árvore de trabalho, e worktrees diferentes não se estorvam.
+
+**Ressalva.** Isto fecha a concorrência entre runs da suite, não a concorrência entre a suite e um
+humano (ou agente) a editar. Um run que arranca sobre a árvore limpa e vê os ficheiros mudarem por
+baixo dele continua a poder restaurar uma versão velha por cima de uma edição posterior — o
+`AOS_RTM_ROOT` retira o gerador desse risco, mas a assinatura de política e os módulos sintéticos
+continuam expostos. A mitigação é a linha nova em `AGENTS.md`; fechá-la a sério exigiria a suite
+correr sobre um `git worktree` descartável, e isso é decisão de âmbito das ferramentas de CI.
 
 ---
