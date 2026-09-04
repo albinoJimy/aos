@@ -23,7 +23,7 @@ instala hoje.
 
 Este epic cobre só os que são **activos**: alcançáveis pela superfície HTTP do nó `aos` tal como
 é entregue, com o mecanismo de autorização, selagem ou observabilidade que devia cobri-los
-ausente ou a mentir sobre o que faz. Onze tickets, quatro eixos:
+ausente ou a mentir sobre o que faz. Doze tickets, cinco eixos:
 
 | Eixo | Tickets |
 |---|---|
@@ -31,6 +31,7 @@ ausente ou a mentir sobre o que faz. Onze tickets, quatro eixos:
 | Cerimónia de quatro-olhos (`/challenge`, `/approve`) | AOS-308, AOS-309 |
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
 | Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315 |
+| Integridade das ferramentas de gate | AOS-316 |
 
 > **AOS-312 não vem da §3.** Os sete primeiros são achados activos do documento-fonte; o oitavo
 > vem da **§5** (o meta-achado sobre asserções que nenhum gate lê) e nasceu do acto de remediar
@@ -40,7 +41,9 @@ ausente ou a mentir sobre o que faz. Onze tickets, quatro eixos:
 > origem: nasceu da ressalva que AOS-312 deixou por endereçar — a §7 da RTM, que a §5
 > nomeia como «o exemplar mais limpo» do meta-achado. **AOS-314** fecha a decisão que
 > AOS-313 registou como GAP-07 em vez de tomar, e **AOS-315** corrige o defeito que essa
-> decisão descobriu ao acrescentar quatro linhas à §4.
+> decisão descobriu ao acrescentar quatro linhas à §4. **AOS-316** vem do mesmo sítio por
+> outra via: foi a ferramenta que prova os gates que corrompeu, ela própria, o trabalho de
+> AOS-314 — e nenhum gate deu por isso.
 
 ### 0.1 Ordem sugerida
 
@@ -52,6 +55,7 @@ ausente ou a mentir sobre o que faz. Onze tickets, quatro eixos:
 | **P2** | AOS-312 | Atribuição ticket↔epic falsa e auto-renovável na RTM; sem efeito no binário |
 | **P2** | AOS-313 | Cobertura afirmada contra as matrizes geradas do próprio ficheiro; sem efeito no binário |
 | **P2** | AOS-314, AOS-315 | Âmbito do canon de ADRs e coluna de documentos da §4; sem efeito no binário |
+| **P2** | AOS-316 | A suite que prova os gates corrompe trabalho em curso quando concorrente; sem efeito no binário |
 
 ### 0.2 Tabela-resumo
 
@@ -68,6 +72,7 @@ ausente ou a mentir sobre o que faz. Onze tickets, quatro eixos:
 | AOS-313 | A §7 da RTM afirmava cobertura que as suas próprias secções geradas contradiziam | P2 | **ENTREGUE** |
 | AOS-314 | O canon de ADRs que os gates lêem parava em ADR-019, quatro aquém do catálogo | P2 | **ENTREGUE** |
 | AOS-315 | A coluna de documentos técnicos da §4 resolvia-se pela amplitude do conjunto, não por ticket | P2 | **ENTREGUE** |
+| AOS-316 | O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro | P2 | ABERTO |
 
 ---
 
@@ -630,5 +635,77 @@ ser por gama de tickets (`DOC_RANGES`), escrito à mão, e uma gama mal atribuí
 uma coluna errada sem que nada o detecte — a asserção nova só garante que o documento nomeado
 **existe**, não que desenvolve a decisão. Fechar isso exigiria as citações de ADR a viverem nos
 próprios `tecnica/*.md`, e é decisão de âmbito do corpus.
+
+---
+
+---
+
+## AOS-316 — O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro
+
+<!-- rtm: adrs-mencionados -->
+
+### Contexto
+
+`scripts/ci/selftest.sh` prova que os gates bloqueiam falhas injectando cada falha **na árvore
+real** e restaurando-a a seguir. O restauro é por processo: cada run tira o seu backup no arranque
+(`SIG_BAK`, `RTM_GEN_BAK`, `:53` e `:65`) e repõe-no no `trap cleanup EXIT INT TERM` (`:76`).
+Não há exclusão mútua. Dois runs sobrepostos partilham os mesmos ficheiros e backups diferentes,
+tirados em instantes diferentes — e o restauro de um escreve por cima do trabalho do outro.
+
+**Medido, não hipotético.** Durante AOS-314/315 corriam três `selftest.sh` em fundo, sobrepostos. Um
+deles tinha tirado o backup de `scripts/ci/rtm-regenerate.py` num commit anterior; ao chegar a §R fez
+`cp "$RTM_GEN_BAK" "$RTM_GEN"` (`:735`) e repôs essa versão por cima das edições em curso. O
+resultado foi um commit cuja mensagem descrevia o alargamento do canon de ADRs e cujo conteúdo
+**revertia** a resolução por ticket da §4 — um commit que dizia uma coisa e continha outra, que foi
+preciso desfazer com `git reset --hard` e refazer. O defeito não foi detectado por nenhum gate: foi
+detectado por comparar a árvore com a da branch anterior.
+
+**Segundo modo de falha, do mesmo sítio:** o `trap` cobre `EXIT INT TERM`, não `KILL`. Um run
+terminado à força deixa rasto — verificado: `rtm-regenerate.py` ficou modificado, com 130 linhas
+removidas, e a árvore só voltou ao lugar com `git checkout --`. Um run seguinte tomaria esse ficheiro
+como «árvore real» e tiraria dele o seu backup, propagando a corrupção em vez de a denunciar.
+
+**Terceiro:** os controlos positivos (§P3, §Q4, §R3, §S3 — «o gate continua verde contra a árvore
+REAL») ficam vermelhos quando outro run tem uma mutação em voo. Estão a dizer a verdade, e é essa a
+função deles; mas o diagnóstico que produzem — «POSSÍVEL RASTO no repo» — aponta para o repositório
+quando a causa é a concorrência, o que manda quem investiga para o sítio errado.
+
+Superfície mutada na árvore real, hoje: `packages/control-plane/pdp/policies/aos_authz.sig` (§B),
+`scripts/ci/rtm-regenerate.py` (§R, §S), `packages/_selftest_bad` (§A) e `packages/_selftest_eventcat`
+(§O). Os §§P, Q e S4 já trabalham sobre **cópias** em `mktemp -d` — o molde certo já existe no
+ficheiro, só não é universal. §R e §S1–S3 mutam o original porque `rtm-regenerate.py` resolve a raiz
+do repositório a partir do próprio caminho e não aceita sobreposição, ao contrário de `ref-lint.py`,
+que tem `AOS_REFLINT_ROOT` (`scripts/ci/ref-lint.py:90`) precisamente para isto.
+
+*Atenuante:* na CI o gate corre uma vez por job, pelo que a sobreposição não acontece lá. Morde no
+uso local e agêntico — onde correr a suite em fundo enquanto se continua a editar é o caso normal, e
+foi onde mordeu.
+
+### Critérios de Aceitação
+
+- [ ] Um segundo `selftest.sh` iniciado enquanto outro corre **não** muta nada: ou espera pelo
+      *lock*, ou sai != 0 com mensagem própria que nomeie a concorrência — nunca uma mensagem de
+      «POSSÍVEL RASTO no repo», que manda investigar o sítio errado
+- [ ] O *lock* é libertado por `trap` E sobrevive a um run morto sem `trap`: um *lock* órfão de um
+      processo que já não existe não bloqueia a suite para sempre (PID no ficheiro de *lock*, ou
+      `flock`, que o liberta ao fechar o descritor)
+- [ ] Um run que encontre a superfície mutada no arranque — `git status --porcelain` sujo nos
+      caminhos que ele próprio muta — recusa arrancar e diz quais, em vez de tirar backup de uma
+      árvore já corrompida e propagar a corrupção
+- [ ] `rtm-regenerate.py` aceita sobreposição da raiz por variável de ambiente, no molde de
+      `AOS_REFLINT_ROOT` (`ref-lint.py:90`), e §R e §S passam a mutar uma **cópia**. Reduz a
+      superfície mutada na árvore real à assinatura de política (§B) e aos dois módulos sintéticos
+- [ ] Prova de que a exclusão funciona: dois runs lançados em paralelo, o segundo tem de recusar ou
+      esperar, e a árvore fica limpa no fim — falsificável, no molde dos self-testes existentes
+- [ ] `AGENTS.md` (ou o README de `scripts/ci/`) declara que a suite muta a árvore de trabalho e não
+      deve correr concorrente com edições — hoje isso não está escrito em lado nenhum
+
+### Estado
+
+**ABERTO.** P2.
+
+Sem efeito no binário entregue: é higiene de ferramentas de CI. Fica em P2 e não acima porque na CI
+o modo de falha não existe (um job, um run). O custo real já foi pago uma vez, em trabalho refeito e
+num commit que teve de ser desfeito.
 
 ---
