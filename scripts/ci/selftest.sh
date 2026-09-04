@@ -821,15 +821,20 @@ fi
 # injectava passou a existir (AOS-317), e foi o que aconteceria ao §R agora que a
 # validação da §6 mudou de `epics_covering` para `epics_between`. Daqui em diante
 # toda a injecção tem de provar que mudou alguma coisa.
-injectar() {  # injectar '<expressao perl>' '<rotulo>'
-  local antes depois
-  antes="$(git -C "$REPO_ROOT" hash-object "$RTM_GEN")"
-  perl -0pi -e "$1" "$RTM_GEN"
-  depois="$(git -C "$REPO_ROOT" hash-object "$RTM_GEN")"
+injectar_em() {  # injectar_em '<ficheiro>' '<flags perl>' '<expressao>' '<rotulo>'
+  local alvo="$1" flags="$2" expr="$3" rot="$4" antes depois
+  antes="$(git -C "$REPO_ROOT" hash-object "$alvo")"
+  perl "$flags" -e "$expr" "$alvo"
+  depois="$(git -C "$REPO_ROOT" hash-object "$alvo")"
   if [ "$antes" = "$depois" ]; then
-    bad "$2: a injeccao nao alterou o gerador — a sonda esta a medir o vazio"
+    bad "$rot: a injeccao nao alterou $(basename "$alvo") — a sonda esta a medir o vazio"
   fi
   return 0  # nunca mata a suite: o `bad` ja registou, e o teste a seguir tambem falha
+}
+
+# Atalho para o caso mais comum: mutar o GERADOR na sandbox, com `-0pi`.
+injectar() {  # injectar '<expressao perl>' '<rotulo>'
+  injectar_em "$RTM_GEN" -0pi "$1" "$2"
 }
 
 log_gate "self-test R · o gate rtm bloqueia atribuição ticket→epic falsa na §6"
@@ -956,7 +961,7 @@ mkdir -p "$RTM_TMP/docs"
 cp -r "$REPO_ROOT/specs"    "$RTM_TMP/specs"
 cp -r "$REPO_ROOT/tecnica"  "$RTM_TMP/tecnica"
 cp -r "$REPO_ROOT/docs/adr" "$RTM_TMP/docs/adr"
-perl -0pi -e 's/AOS-001 – AOS-/AOS-998 – AOS-/' "$RTM_TMP/tecnica/16_Rastreabilidade_RTM.md"
+injectar_em "$RTM_TMP/tecnica/16_Rastreabilidade_RTM.md" -0pi 's/AOS-001 – AOS-/AOS-998 – AOS-/' 'S4'
 if AOS_REFLINT_ROOT="$RTM_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
   bad "S4: o ref-lint passou com AOS-998 citado na RTM — a RTM continua fora do gate"
 else
@@ -1139,7 +1144,7 @@ rtm_bloqueou_com() {
 # devolveria apenas uma lista mais curta — que e o modo de falha silencioso do
 # literal, so que agora automatico.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-perl -ni -e 'print unless /^\| ADR-011 \|/' "$RTM_SANDBOX_REG"
+injectar_em "$RTM_SANDBOX_REG" -ni 'print unless /^\| ADR-011 \|/' 'V1'
 if rtm_bloqueou_com 'descont'; then
   pass "V1: o gate bloqueou um registo com um código em falta (canon não-contíguo)"
 else
@@ -1149,7 +1154,7 @@ fi
 # V2 — VOCABULARIO FECHADO do estado. Um estado novo tem de passar por quem le o
 # modulo; escrita livre numa celula nao pode propagar-se para a coluna Estado da §4.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-perl -pi -e 's/\*\*Proposto\*\*/**Talvez**/' "$RTM_SANDBOX_REG"
+injectar_em "$RTM_SANDBOX_REG" -pi 's/\*\*Proposto\*\*/**Talvez**/' 'V2'
 if rtm_bloqueou_com 'estado desconhecido'; then
   pass "V2: o gate bloqueou um estado fora do vocabulário fechado do registo"
 else
@@ -1165,7 +1170,7 @@ fi
 # correr, e o vermelho que sai e o da divergencia de texto, nao o da asercao. Uma
 # prova sobre prosa gerada mede o gerador; esta tem de medir o padrao.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-perl -pi -e 's/canon que os gates lêem é \*\*ADR-001…\d{3}\*\*/canon que os gates lêem é **ADR-001 a ADR-014**/' "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md"
+injectar_em "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md" -pi 's/canon que os gates lêem é \*\*ADR-001…\d{3}\*\*/canon que os gates lêem é **ADR-001 a ADR-014**/' 'V3'
 if rtm_bloqueou_com 'batem certo com a sua fonte'; then
   pass "V3: o gate bloqueou o intervalo falso na notação « a » por extenso"
 else
