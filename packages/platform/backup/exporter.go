@@ -233,6 +233,12 @@ func (e *Exporter) Export(ctx context.Context) (ExportResult, error) {
 	e.lastExportAt = now
 	e.started = true
 
+	// 7) PERSISTE o estado, para que um processo NOVO continue este backup em vez de
+	//    recomeçar do génesis e colidir no primeiro segmento que já lá está. Ver retoma.go.
+	if err := e.persistirEstado(index); err != nil {
+		return ExportResult{}, err
+	}
+
 	return ExportResult{
 		Created:     true,
 		Cycle:       index,
