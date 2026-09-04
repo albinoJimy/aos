@@ -462,7 +462,14 @@ dec, _ := rt.Route(ctx, scheduler.WorkRequest{ID: "job", EstimatedTokens: 50,
   **round-robin de referência** no mesmo workload (`TestRoute_BeatsRoundRobin_HeterogeneousLoad`). A
   superioridade é **estrutural, não uma ordem hand-picked**: `TestRoute_BeatsRoundRobin_AcrossPermutations`
   reapresenta o **mesmo multiset** por ~33 ordens (neutra, asc, desc e 30 permutações com semente fixa) e
-  afirma **menor max-load e variância MÉDIOS** sobre todas, vencendo individualmente em ≥90%.
+  afirma **menor max-load e variância MÉDIOS** sobre todas, vencendo individualmente em **≥75%** — que é
+  o limiar que o teste impõe (`wins*4 < n*3`, `routing_test.go:452`); a execução dá **81,8%** (27/33).
+  <!-- Dizia «≥90%»: um número que nem o teste impunha nem a execução produzia. Reportado em
+  `docs/reports/desafio-A5-escalonador.md` a 2026-08-08 com âncora e medição, e ainda assim
+  intacto — a garantia HONESTA é a dos MÉDIOS sobre todas as ordens; a taxa de vitórias
+  individuais é reforço, e escrevê-la acima do que o teste impõe é a mesma classe de defeito que
+  este corpus persegue nos banners. Achado E-05 de `analises/10`. -->
+
   `TestRoute_NotRoundRobin_SameLeastLoadedTwice` prova que não há rotação cega.
 - **Token-aware em duas camadas.** (1) headroom **LOCAL** por destino (`CapacityTokens − TokensInFlight`):
   um destino sem margem para o custo estimado é **PRETERIDO** (`TestRoute_TokenAware_SkipsNoHeadroom`);

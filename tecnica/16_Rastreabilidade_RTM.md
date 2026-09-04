@@ -193,7 +193,7 @@ Sinalizadas a partir dos dados reais das §§4–5. Cada lacuna deve gerar ticke
 | GAP-05 | **Ausência de coluna de estado** — a RTM regista cobertura de *especificação*, não de *implementação concluída* (nenhum ticket tem estado Done/WIP no corpus) | §4–5 | Ligar a RTM ao *tracker* (estado por ticket) na próxima revisão |
 | GAP-06 | **NFR-09 (DSAR) verificado indirectamente** — provado por AOS-091/092 + AOS-113, sem teste e2e de DSAR sobre log encadeado | §5 | Criar teste e2e de crypto-shredding preservando integridade hash-chain |
 
-Nenhum ADR e nenhum NFR está **sem** cobertura mínima: 20/20 ADRs e 12/12 NFRs têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação**, não de ausência total.
+Nenhum ADR e nenhum NFR está **sem** cobertura mínima: 19/19 ADRs e 10/10 NFRs têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação**, não de ausência total.
 
 ---
 
@@ -238,4 +238,4 @@ A RTM serve sobretudo as dimensões **Governação** (prova auditável de que ca
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-08-02 | Entradas RTM do planeador (`tecnica/18` v1.0 ratificado, EPIC-19): +RF-12/RF-13, +NFR-11/NFR-12, verificação §5, *back-link* §6, e tickets AOS-230..244 tecidos nas linhas ADR-005/008/010/012/013/014/018 do §4. | Equipa AOS |
-| 1.2 | 2026-08-02 | +ADR-020 (planeador como agente governado) no §4 (AOS-234/235/237) e em RF-12; cobertura 20/20 ADRs, 12/12 NFRs. | Equipa AOS |
+| 1.2 | 2026-08-02 | +ADR-020 (planeador como agente governado) em RF-12. **Correcção (2026-09-04):** esta linha afirmava tê-lo acrescentado ao **§4** e uma cobertura de **20/20 ADRs, 12/12 NFRs** — nenhuma das duas era verdade. O §4 é gerado a partir de `ADR_RANGE` (ADR-001..019) e o §5 de `NFR_SPECS` (10 entradas), pelo que a matriz nunca conteve o ADR-020 nem os NFR-11/12; a §7 repetia os números inventados a setenta linhas das secções que os desmentiam. A §7 passou a ser derivada dos mesmos números que geram o §4 e o §5 (achado E-01 de `analises/10`). | Equipa AOS |

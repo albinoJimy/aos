@@ -350,6 +350,25 @@ def update_section1(rtm_text: str, stats: dict) -> str:
         ),
         rtm_text,
     )
+    # §7 — A COBERTURA AFIRMADA TEM DE SER A COBERTURA GERADA (achado E-01 de `analises/10`).
+    #
+    # A §7 é prosa e estava FORA de tudo: nem regenerada aqui, nem lintada (`ref-lint.py` tem a
+    # RTM na lista de `skip`). Afirmava «20/20 ADRs e 12/12 NFRs» a setenta linhas de secções
+    # GERADAS que diziam 19/19 e 10/10 — e o changelog do próprio ficheiro descrevia alterações
+    # («+ADR-020 no §4») que o ficheiro não contém. Um documento cuja função é rastreabilidade a
+    # contradizer-se a si próprio, com o gate verde por cima.
+    #
+    # Passa a derivar dos MESMOS números que geram a §4 e a §5. Se um dia divergirem, divergem
+    # juntos e por uma só causa — que é o que se pode verificar.
+    rtm_text = re.sub(
+        r"Nenhum ADR e nenhum NFR está \*\*sem\*\* cobertura mínima: \d+/\d+ ADRs e \d+/\d+ NFRs têm pelo menos um ticket associado\.",
+        (
+            f"Nenhum ADR e nenhum NFR está **sem** cobertura mínima: "
+            f"{stats['n_adrs']}/{stats['n_adrs']} ADRs e {stats['n_nfrs']}/{stats['n_nfrs']} NFRs "
+            f"têm pelo menos um ticket associado."
+        ),
+        rtm_text,
+    )
     return rtm_text
 
 

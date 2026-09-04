@@ -180,11 +180,17 @@ func (c *ProductionClassifier) Classify(ex *pipeline.Exchange) Task {
 		Class:      class,
 		Profile:    c.profileFor(class),
 		Candidates: c.candidates(ex, model),
-		// EstimatedTokens fica a ZERO: o [pipeline.Exchange] não transporta o prompt
-		// (a fachada do GW só o passa ao adaptador), pelo que não há aqui por onde
-		// estimar tokens sem inventar. A reserva de admissão degrada, então, para o
+		// DEFERIDO (DEF-280-TOKENS) — EstimatedTokens fica a ZERO: o [pipeline.Exchange] não
+		// transporta o prompt (a fachada do GW só o passa ao adaptador), pelo que não há aqui
+		// por onde estimar tokens sem inventar. A reserva de admissão degrada, então, para o
 		// custo MÍNIMO (1 pedido) — coordena na dimensão de pedidos, não na de tokens.
-		// Residual declarado com eixo no registo de deferimentos.
+		//
+		// O MARCADOR ESTAVA EM FALTA e a dívida não: o gate `deferrals` casava os IDs do registo
+		// com `DEF-\d{3}` seguido de barra, pelo que a linha `DEF-280-TOKENS` era descartada em
+		// silêncio e ninguém confrontava o registo com o código. Alargada a regex (achado E-03
+		// de `analises/10`), o gate passou a acusar esta entrada como apodrecida — e a resposta
+		// certa é repor o marcador, porque a dívida continua exactamente aqui, e não remover a
+		// linha, que seria apagar do registo uma dívida que existe.
 		EstimatedTokens: 0,
 	}
 }
