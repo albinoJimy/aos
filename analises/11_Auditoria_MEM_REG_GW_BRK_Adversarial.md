@@ -373,13 +373,30 @@ que o operador edita.
 
 Dois achados novos, um deles **alcançável hoje e independente de réplicas**.
 
-**N-01 — o `/readyz` nunca fica vermelho por *shred* pendente com o vault de referência.**
-A pendência não chega ao `/readyz` directamente: chega pelo `readinessProber` da custódia
-(`api.go:1109` → `vaultkeyvault.go:471-492` → `shredFault()`). O vault in-memory de referência
-(DEF-302) **não implementa `readinessProber`**. Logo, num deployment que não tenha ligado o Vault
-Transit — o default fora de `AOS_MODE=production` — uma destruição de chave por confirmar **nunca**
-põe o nó unready, nem sequer com uma só réplica. O alarme existe, e a única custódia que o dispara é
-a que produção exige. **Classe (b). Alcançável hoje.**
+**N-01 — ~~o `/readyz` nunca fica vermelho por *shred* pendente com o vault de referência~~
+FALSIFICADO a 2026-09-04, na discovery da EPIC-23.**
+
+Os factos que sustentavam este achado são todos verdadeiros: o `audit.InMemoryKeyVault` tem
+exactamente três métodos (`keyvault.go:54,70,81`) e não implementa `readinessProber`, e o `/readyz`
+só sonda a custódia por asserção de tipo (`api.go:1109,1138`). **A conclusão que se tirou deles não
+é.**
+
+O que faltou seguir foi como *nasce* uma pendência. `dsar/flow.go:275-284` só sela
+`EventShredUnconfirmed` se `f.confirmer != nil`, e `confirmadorDeShredDe`
+(`cmd/aos/shred_confirmador.go:23-29`) devolve `nil` para uma custódia que não implemente a porta.
+Com o vault de referência não há confirmador, logo não há evento, logo **não há pendência a
+reportar** — e isso está certo, porque `InMemoryKeyVault.Delete` (`keyvault.go:80-86`) é um
+`delete()` num mapa sob mutex e não tem como falhar. A porta `dsar.ShredConfirmer`
+(`confirmador.go:21-34`) declara-o: «um vault em memória destrói e sabe-o».
+
+As três ausências — confirmador, `readinessProber`, métrica — são **coerentes entre si e
+correctas**. O `/readyz` não fica vermelho porque não há nada pendente.
+
+**O que resta**, e é de outra natureza: a opcionalidade da `ShredConfirmer` é fail-open para
+qualquer custódia que não a implemente, e nada torna essa escolha obrigatória nem visível no
+arranque. Inofensivo hoje (só existem duas custódias, e a distinção é consciente); é uma via de
+omissão aberta para a terceira. **Classe (c), endurecimento.** Reformulado como AOS-322 na EPIC-23,
+reclassificado de P1 para P2.
 
 **N-02 — a métrica da pendência não tem regra de alerta.**
 `aos_dsar_vault_shred_unconfirmed` é um gauge **por processo**, e nenhuma regra em `deploy/` ou

@@ -45,8 +45,8 @@ proteja, e o ticket que fecha essa assimetria (AOS-326) é ele próprio parte da
 | Prioridade | Tickets | Racional |
 |---|---|---|
 | **P0** | AOS-320, AOS-321 | Um esvazia um pilar declarado de supply-chain; o outro é fail-open do burn-down no binário entregue |
-| **P1** | AOS-322, AOS-323, AOS-326 | Um alarme de RGPD que não sabe ficar vermelho, um canal de segredos sem TLS obrigatório, e a raiz de governação que explica os dois |
-| **P2** | AOS-324, AOS-325, AOS-327 | Pré-requisito do wiring do broker; reconciliação documental; regra de alerta |
+| **P1** | AOS-323, AOS-326 | Um canal de segredos sem TLS obrigatório, e a raiz de governação da assimetria do §0 |
+| **P2** | AOS-322, AOS-324, AOS-325, AOS-327 | Guard-rail da confirmação de custódia; pré-requisito do wiring do broker; reconciliação documental; regra de alerta |
 
 ### 0.2 Tabela-resumo
 
@@ -54,7 +54,7 @@ proteja, e o ticket que fecha essa assimetria (AOS-326) é ele próprio parte da
 |---|---|---|---|---|
 | AOS-320 | O digest de um `mcp_server` é uma constante da classe de egress — três valores para todo o universo | P0 | latente | **por implementar** |
 | AOS-321 | Uma resposta 200 sem `usage` é indistinguível de uma chamada de custo nulo | P0 | **nó** | **por implementar** |
-| AOS-322 | O `/readyz` nunca fica vermelho por *crypto-shred* pendente com a custódia de referência | P1 | **nó** | **por implementar** |
+| AOS-322 | A postura de confirmação do *crypto-shred* não é declarada, e nada obriga uma custódia nova a escolher | P2 | endurecimento | **por implementar** (enunciado original falsificado — ver ticket) |
 | AOS-323 | O canal do broker para o Vault aceita `http://` e o token nunca é renovado | P1 | **nó** | **por implementar** |
 | AOS-324 | A troca de credenciais não impõe nem exercita o eixo *Provider* | P2 | latente | **por implementar** |
 | AOS-325 | Cinco declarações de estado que já não são verdade, e uma contradição interna | P2 | **nó** | **por implementar** |
@@ -169,49 +169,75 @@ compostos em `packages/cmd/aos/modelgatewaywiring.go`.
 
 ---
 
-## AOS-322 — O `/readyz` nunca fica vermelho por *crypto-shred* pendente com a custódia de referência
+## AOS-322 — A postura de confirmação do *crypto-shred* não é declarada, e nada obriga uma custódia nova a escolher
 
-### Contexto
+> **ENUNCIADO ORIGINAL FALSIFICADO — 2026-09-04, na discovery da execução.** Este ticket dizia:
+> «o `/readyz` nunca fica vermelho por *crypto-shred* pendente com a custódia de referência», e
+> tratava-o como defeito alcançável hoje. **Não é.** A verificação está abaixo e o ticket foi
+> reescrito para o que resta, que é menor e de outra natureza. O registo fica porque um ticket
+> que muda de premissa sem o dizer é a doença que a `analises/11` §5 documenta.
 
-Quando uma destruição de KEK falha, o fluxo DSAR sela `dsar.shred_unconfirmed` na cadeia e o nó
-**deve** ficar *unready* até uma destruição confirmada — é o que `dsar.go:245` diz ao operador em
-texto: «o `/readyz` fica VERMELHO ate uma destruicao confirmada e o conteudo pode continuar
-recuperavel».
+### Porque o enunciado original caiu
 
-Só que a pendência não chega ao `/readyz` directamente. Chega pela custódia: `api.go:1109` faz uma
-asserção de tipo para `readinessProber` (`api.go:1138`), e só o `vaultKeyVault` a satisfaz — o seu
-`ready()` termina em `shredFault()` (`vaultkeyvault.go:471-492`), que erra sse `len(shredPend) > 0`.
+Os factos citados eram todos verdadeiros — e a conclusão que se tirou deles não.
 
-`audit.InMemoryKeyVault` tem exactamente três métodos — `EnsureKey`, `Key`, `Delete`
-(`packages/platform/audit/keyvault.go:54,70,81`). **Não implementa `readinessProber`.** Logo, num
-nó que não tenha ligado o Vault Transit — o default fora de `AOS_MODE=production`, e o único modo
-que `ErrProductionNeedsDurableKEK` não cobre — uma destruição por confirmar **nunca** põe o nó
-*unready*, nem sequer com uma só réplica.
+`audit.InMemoryKeyVault` de facto não implementa `readinessProber` nem `shredPendingReporter`
+(`packages/platform/audit/keyvault.go:54,70,81` — tem exactamente três métodos). E o `/readyz` de
+facto só sonda a custódia por asserção de tipo (`packages/cmd/aos/api.go:1109,1138`).
 
-O mesmo vale para a métrica: `api.go:1187` só emite `aos_dsar_vault_shred_unconfirmed` se
-`shredPendingOf(h.node.DSARVault)` devolver `ok`. Com a custódia de referência a série **não
-existe** — não é que fique a zero (ver AOS-327).
+O que faltou seguir é **como nasce uma pendência**. `packages/control-plane/governance/dsar/flow.go:275-284`
+só sela `EventShredUnconfirmed` se `f.confirmer != nil`, e o confirmador vem de
+`confirmadorDeShredDe(dsarVault)` (`packages/cmd/aos/shred_confirmador.go:23-29`), que devolve
+`nil` quando a custódia não implementa a porta interna `shredConfirmer`. Com o vault de referência,
+portanto: **não há confirmador, não há evento `shred_unconfirmed`, e não há pendência que reportar.**
 
-O alarme existe e está bem construído. A única custódia que o dispara é a que produção exige, e é
-precisamente nos ambientes que não são produção que uma destruição falhada passa despercebida.
+E isso está certo, porque `audit.InMemoryKeyVault.Delete` (`keyvault.go:80-86`) é um `delete()` num
+mapa sob mutex — **não tem como falhar**. A porta `dsar.ShredConfirmer`
+(`packages/control-plane/governance/dsar/confirmador.go:21-34`) diz-o em texto: «um vault em memória
+destrói e sabe-o; o Vault Transit relê a chave e exige 404; um KMS de terceiros pode não expor a
+pergunta».
+
+As três ausências — confirmador, `readinessProber`, métrica — são **coerentes entre si e
+correctas**: uma custódia que não pode falhar a destruir não tem pendência para declarar. O
+`/readyz` não fica vermelho porque não há nada pendente, não porque o alarme esteja partido.
+
+### O que resta, e é de outra natureza
+
+A opcionalidade da `ShredConfirmer` é **fail-open para qualquer custódia que não a implemente**.
+Hoje isso é inofensivo porque só existem duas custódias e a distinção é consciente: a de referência
+não pode falhar, a do Vault implementa a porta. Mas nada torna essa escolha obrigatória nem
+visível:
+
+1. **Nenhum guard-rail.** Uma custódia futura — o «KMS de terceiros» que a própria porta antecipa —
+   que possa falhar a destruir e não implemente `shredConfirmer` faz a cadeia selar
+   `dsar.key_destroyed` sobre uma irrecuperabilidade que ninguém verificou. É exactamente o defeito
+   que a porta foi criada para fechar (`confirmador.go:15-19`), reaberto pela via da omissão.
+2. **Nenhuma declaração de arranque.** O nó não diz, no banner de postura, qual custódia está
+   composta nem se a confirmação está armada. Um operador não consegue distinguir «não há pendências»
+   de «esta custódia não sabe responder» — e as duas leituras do `/readyz` verde são muito
+   diferentes.
 
 ### Critérios de Aceitação
 
-- [ ] Uma destruição por confirmar é observável no `/readyz` **independentemente da implementação de
-      custódia composta** — por o `InMemoryKeyVault` passar a reportar pendência, por a pendência
-      subir para um nível que não dependa da asserção de tipo, ou por o nó recusar compor uma
-      custódia sem `readinessProber` (a escolha faz parte do ticket e fica justificada por escrito)
-- [ ] Um teste que force uma destruição falhada com a custódia de **referência** e prove que o
-      `/readyz` fica vermelho
-- [ ] A afirmação de `dsar.go:245` passa a ser verdadeira para toda a custódia composta, ou é
-      qualificada para nomear a que a sustenta
-- [ ] A escolha não introduz um caminho em que o `/readyz` fique vermelho por uma pendência que já
-      foi confirmada (o inverso de AOS-327)
+- [ ] O banner de postura declara, no arranque, **qual** custódia de KEK está composta e **se a
+      confirmação de destruição está armada** — no molde das linhas que já declaram o credential
+      broker (`posture_banner.go`), e sem imprimir valor nenhum
+- [ ] Uma custódia que não implemente `shredConfirmer` é uma escolha **registada**, não um silêncio:
+      ou o composition-root recusa compor uma custódia não-confirmadora sob `AOS_MODE=production`,
+      ou a ausência fica declarada no banner com o seu porquê (a escolha faz parte do ticket e é
+      justificada por escrito)
+- [ ] Um teste que prove que, com a custódia de referência, o `/readyz` fica **verde** e a razão é
+      «não há pendência possível» — fixando por teste o comportamento que este ticket concluiu ser
+      correcto, para que uma alteração futura não o mude por acidente
+- [ ] O comentário de `api.go:1135-1137` («o vault in-memory de referência NÃO [implementa] — nesse
+      caso o /readyz não sonda a custódia, a KEK em memória está sempre disponível») ganha a segunda
+      metade do raciocínio: não é só que está disponível, é que a sua destruição não pode falhar
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Achado N-01 da §8.2 da `analises/11` — nasceu numa refutação e nunca tinha
-sido enunciado. Alcançável hoje, num nó único.
+**POR IMPLEMENTAR.** ~~P1~~ **P2** — reclassificado com o enunciado. Deixa de ser «defeito
+alcançável hoje» e passa a **endurecimento com guard-rail**: fecha a via de omissão antes de existir
+uma terceira custódia, e torna a postura legível a quem opera.
 
 ---
 
@@ -323,9 +349,20 @@ Cinco estão erradas hoje:
    substância continua certa; o ticket apontado já fechou. O bloqueador real é o `DEF-218`.
 3. **`packages/platform/registry/mcp/protocol.go:147`** — «`Digest` RESERVADO (AOS-047). Vazio em
    AOS-046». O AOS-047 entregou. (Fechado por AOS-320.)
-4. **`packages/platform/model-gateway/pipeline/stages.go:68-71` e `tecnica/06:325`** — ambos
-   afirmam, como facto, a composição `RunPrefix.Turn → Guard.Admit`. Nem a composição existe em
-   lado nenhum, nem o método `RunPrefix.Turn` existe: `cache/freeze` expõe `Assemble(turn, tail)`.
+4. **`packages/platform/model-gateway/pipeline/stages.go:70` e `tecnica/06:325`** — ambos dizem que
+   «o runtime/assembler compõe `freeze.RunPrefix.Turn` → `layout.Guard.Admit` por turno». **A
+   composição não existe**: `packages/platform/model-gateway/cache/freeze` não tem um único
+   importador não-teste fora de si próprio, e `layout.Guard.Admit` não tem chamador de produção. O
+   `tecnica/06:325` é, no resto, cuidadoso — explica que o estágio do GW é pass-through por desenho
+   e que o CA é cumprido pelo chamador da montagem; o que está errado é atribuir ao runtime uma
+   composição que ele não faz.
+
+   > **CORRECÇÃO — 2026-09-04.** A versão anterior deste item acrescentava «nem o método
+   > `RunPrefix.Turn` existe». **É falso**: existe em
+   > `packages/platform/model-gateway/cache/freeze/freeze.go:117`. A afirmação veio de uma refutação
+   > da `analises/11` e foi transcrita sem ser verificada — o defeito que o princípio «não confiar
+   > cegamente noutro agente» existe para apanhar. O que resta do item é a composição ausente, que
+   > se confirma.
 5. **`packages/platform/memory/doc.go:54-55` contra
    `packages/platform/memory/compression/async_compactor.go:312-314`** — um diz que
    `record.Persist` grava «SEMPRE a trajectória completa no backend»; o outro diz que sem tracer
@@ -418,36 +455,50 @@ legíveis: sem ele, «latente» continua a significar coisas diferentes em epics
 
 `api.go:1188` expõe `aos_dsar_vault_shred_unconfirmed` — «Destruicoes de KEK (crypto-shred) por
 CONFIRMAR na custodia; >0 mantem o no unready e o conteudo pode continuar recuperavel». É a métrica
-certa, com a descrição certa.
+certa, com a descrição certa, e nenhuma regra de alerta a referencia.
 
-**Nenhuma regra de alerta em `deploy/` ou `docs/` a referencia.** E o gauge é por processo: quando o
-processo morre, a série desaparece. Sem `absent()` ou `for`, o desaparecimento é indistinguível de
-«resolvido» — e é precisamente o cenário que interessa, porque uma destruição por confirmar mantém o
-nó *unready*, o que torna a substituição do processo provável.
+> **ÂMBITO REDUZIDO — 2026-09-04, na discovery da execução.** Duas verificações cortaram este
+> ticket a meio, e ambas apontam para menos trabalho, não mais.
 
-Agrava-se com o AOS-322: a métrica só é emitida se `shredPendingOf(h.node.DSARVault)` devolver `ok`
-(`api.go:1187`), o que exige a custódia Vault. Com a custódia de referência a série **não existe** —
-não fica a zero. Uma regra ingénua sobre `> 0` nunca dispararia nem com o nó a arder.
+**(a) A ausência de regras de alerta é uma lacuna DECLARADA de todo o deployment, não desta
+métrica.** `deploy/server/otel-collector.yaml:56-58` di-lo em texto: «O QUE ISTO NÃO DÁ, e é metade
+da verdade: não há retenção histórica nem regras de alerta. Isto torna as séries LEGÍVEIS e
+RASPÁVEIS; alertar sobre elas exige um Prometheus (ou equivalente) apontado aqui, **que é uma
+decisão de infra por tomar**». Não há Prometheus no `docker-compose.prod.yml` — só um colector OTLP
+que serve `:9464`. **Escrever um ficheiro de regras que nada carrega seria produzir exactamente o
+artefacto inerte que a `analises/11` critica** — um gate verde sobre código que não corre.
 
-A operação de remediação já existe e é barata: o `Delete` do `vaultKeyVault` relê a chave e exige
-404 (`vaultkeyvault.go:600-608`), logo a destruição é idempotente e re-verificável. **O que falta é
-o gatilho, não a operação** — nenhum job re-tenta a partir de sinal partilhado
-(`retention_sweeper.go:315` só reporta a contagem).
+**(b) A pendência SOBREVIVE ao restart.** `bootstrap.go:2094` chama `restoreShredPending(ctx, worm,
+"governance.dsar", dsarVault)`, que a reconstrói da cadeia DSAR — logo um processo que morra e volte
+**re-levanta o alarme e a série reaparece**. O cenário «a série desaparece e ninguém dá por isso»
+fica limitado à substituição PERMANENTE por uma réplica com outro WORM, que é o caso de cluster já
+coberto pelo AOS-284 (v1.1) e analisado na §8 da `analises/11`.
+
+O que resta é real e é pequeno: as expressões de alerta não estão escritas em lado nenhum, e o
+operador que montar um Prometheus tem de as inventar. E o gatilho de re-tentativa não existe — a
+operação existe e é barata (`vaultkeyvault.go:600-608`: o `Delete` relê a chave e exige 404, logo é
+idempotente e re-verificável), mas nada a dispara (`retention_sweeper.go:315` só reporta a contagem).
 
 ### Critérios de Aceitação
 
-- [ ] Existe regra de alerta sobre `aos_dsar_vault_shred_unconfirmed` que dispara em `> 0`
-      **e** em `absent()`, com `for` que não a torne ruidosa num restart normal
-- [ ] A regra distingue «a série não existe porque a custódia não a emite» de «a série não existe
-      porque o processo morreu» — ou o AOS-322 remove a primeira possibilidade e isso fica citado
+- [ ] As expressões de alerta recomendadas para `aos_dsar_vault_shred_unconfirmed` ficam
+      **documentadas** junto da declaração de `otel-collector.yaml:56-58` que diz que alertar exige
+      infra por tomar — não como ficheiro de regras que nada carrega
+- [ ] A documentação diz explicitamente que a ausência da série com a custódia de referência é
+      **correcta** (ver AOS-322), para que ninguém escreva uma regra `absent()` que dispare em todos
+      os deployments de referência
+- [ ] A documentação regista que a pendência é reconstruída da cadeia no arranque
+      (`bootstrap.go:2094`), e que o único cenário de perda silenciosa é a substituição permanente
+      com outro WORM — com remissão para o AOS-284
 - [ ] Uma destruição por confirmar é re-tentada automaticamente, ou a ausência de re-tentativa fica
       declarada com o seu porquê
-- [ ] O runbook de operação nomeia as causas típicas que `dsar.go:245` já lista (política Transit
-      sem `deletion_allowed`, replicação, token sem autoridade) e o que fazer com cada uma
+- [ ] O runbook nomeia as causas típicas que `dsar.go:245` já lista (política Transit sem
+      `deletion_allowed`, replicação, token sem autoridade) e o que fazer com cada uma
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Achado N-02 da §8.2 da `analises/11`.
+**POR IMPLEMENTAR.** P2, âmbito reduzido. Achado N-02 da §8.2 da `analises/11`, cortado a meio por
+uma declaração que já existia e por uma durabilidade que a auditoria não tinha visto.
 
 ---
 
