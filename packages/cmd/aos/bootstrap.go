@@ -54,6 +54,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	oidc "github.com/aos-ref/integration/oidc"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/breaker"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
@@ -853,6 +854,13 @@ type Node struct {
 	// ver service.go hostRun). NIL quando não há limiares configurados (disjuntor não composto).
 	breakers *runBreakers
 
+	// anomalias encaminha os TRIPS do disjuntor para a demoção automática de autonomia
+	// (AOS-090 / DEF-908). O loop de serviço arranca-lhe o consumidor ([autonomiaAnomalias.correr])
+	// contra o mesmo `sweepStop` dos varredores. NIL quando a autonomia não está composta (sem
+	// AOS_AUTONOMY_LEVELS não há níveis) ou quando não há WORM — nesses casos o disjuntor
+	// continua a parar runs, apenas não desce nível nenhum.
+	anomalias *autonomiaAnomalias
+
 	// progress é o observador de burn-down por-run (AOS-261/AOS-262). O loop de serviço
 	// LIBERTA o estado de cada run (superfície, latch do aviso e cursor da fonte) no mesmo
 	// ponto em que liberta o disjuntor ([runProgress.forget], ver service.go hostRun). NIL
@@ -1256,11 +1264,31 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// verificação ancorada corre só até ao último checkpoint. O validador injectado aqui —
 	// [autonomyRehydrateValidator] — confronta cada registo de OPERADOR com uma raiz de
 	// confiança FORA do store (as pubkeys de AOS_OPERATORS e o direito `autonomy:set`), e o que
-	// não verificar ABORTA o arranque. É a única razão pela qual `cfg.Operators` e
-	// `autonomySetters` são precisos nesta linha.
+	// não verificar é SALTADO — nunca aplicado — e declarado no banner com o AuditSeq. Não
+	// aborta: abortar dava a quem escreve o ficheiro um modo de tijolo permanente, e o smoke
+	// falhou sobre o estado anterior do próprio repositório quando abortava. É a única razão
+	// pela qual `cfg.Operators` e `autonomySetters` são precisos nesta linha.
 	if err := cfg.Autonomy.provision(ctx, worm,
 		autonomy.WithRehydrateValidator(autonomyRehydrateValidator(cfg.Operators, autonomySetters))); err != nil {
 		return nil, err
+	}
+
+	// (2b-ter) CONTROLADOR DE AUTONOMIA (AOS-090 / DEF-908) — a metade de SEGURANÇA, ligada.
+	// AQUI, depois de `provision`, porque o controlador tem de ver o registo JÁ REIDRATADO:
+	// construí-lo antes dava-lhe uma fotografia vazia e a primeira demoção partiria do piso.
+	// A promoção fica desarmada por desenho (`src == nil`) — ver `autonomy_anomalia.go`.
+	autonomiaCtrl, acerr := cfg.Autonomy.controlador()
+	if acerr != nil {
+		return nil, fmt.Errorf("aos: compor o controlador de autonomia (AOS-090): %w", acerr)
+	}
+	anomalias := novasAnomaliasDeAutonomia(autonomiaCtrl, worm, nil)
+	// A CONVERSÃO É DELIBERADA E TEM DE FICAR AQUI. `anomalias` é um ponteiro; atribuí-lo
+	// directamente a uma interface daria, quando nil, uma interface NÃO-NIL com valor nil —
+	// e o `if b.alertas != nil` do resolve passaria a ser sempre verdadeiro. O nó ficaria a
+	// declarar demoção ligada com um sink que não existe.
+	var sinkAnomalias breaker.AlertSink
+	if anomalias != nil {
+		sinkAnomalias = anomalias
 	}
 
 	// (2b-bis) CHANGELOG DE POLÍTICA (AOS-310) — a transposição de (2b) para o PDP. Com bundle
@@ -1811,7 +1839,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// O provider foi resolvido em (6c) — as máquinas de estado precisavam do wall-clock (AOS-252).
 	// AOS-246: a cablagem incompatível (limiar de velocidade ligado sem VelocitySource)
 	// aborta o ARRANQUE aqui — antes valia um disjuntor ausente em silêncio.
-	breakers, berr := newRunBreakers(stateGates, breakerProvider)
+	breakers, berr := newRunBreakers(stateGates, breakerProvider, sinkAnomalias)
 	if berr != nil {
 		return nil, berr
 	}
@@ -2339,6 +2367,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// justificação de cada afirmação está amarrada ao código que a suporta.
 	// AOS-305: quem pode mudar a autonomia, e com que cerimónia. Só quando o oráculo está
 	// composto — sem ele POST /autonomy responde 501 e a autoridade é discutível.
+	for _, line := range autonomiaAnomaliasBanner(anomalias != nil) {
+		log("%s", line)
+	}
 	if cfg.Autonomy != nil {
 		for _, line := range autonomySettersBanner(autonomySetters) {
 			log("%s", line)
@@ -2547,6 +2578,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		stateGates:              stateGates,    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
+		anomalias:               anomalias,     // AOS-090/DEF-908: TRIP -> democao automatica
 		progress:                progress,      // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
 
 		ownsEventStore: ownsES,

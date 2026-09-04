@@ -91,7 +91,7 @@ func TestAOS246_RegistoComposeBreakerReal(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	breakers, err := newRunBreakers(gates, prov)
+	breakers, err := newRunBreakers(gates, prov, nil)
 	if err != nil {
 		t.Fatalf("com os defaults o registo tem de compor-se: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestAOS246_RegistoRecusaVelocidadeSemFonte(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = es.Close() })
 
-	breakers, err := newRunBreakers(newRunStateGates(es, nil, 0), prov)
+	breakers, err := newRunBreakers(newRunStateGates(es, nil, 0), prov, nil)
 	if !errors.Is(err, ErrBreakerVelocitySourceUnwired) {
 		t.Fatalf("devia recusar com ErrBreakerVelocitySourceUnwired; err=%v", err)
 	}

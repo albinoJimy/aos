@@ -277,6 +277,24 @@ func (w *autonomyWiring) oracle() autonomy.Oracle {
 	return w.registry
 }
 
+// controlador constrói o [autonomy.Controller] de AOS-090 sobre ESTE registo (DEF-908).
+// Receptor nil ⇒ (nil, nil): sem oráculo ligado não há níveis para despromover.
+//
+// `src` É NIL DE PROPÓSITO — ver o cabeçalho de `autonomy_anomalia.go`. A promoção pede uma
+// taxa de erro sustentada que o nó não consegue medir (o selo de mediação é escrito ANTES do
+// despacho, pelo que o erro de execução da tool nunca chega ao WORM). O controlador trata
+// `src == nil` como «nunca promove»; a demoção por anomalia funciona na mesma, e é ela a
+// metade de SEGURANÇA que DEF-908 nomeia.
+//
+// A config é a de omissão da policy-as-code (limiares de AOS-088): demoção de DOIS níveis com
+// piso L1, que é exactamente a escada normativa de `tecnica/09` §7 (L5→L3, L4→L2, L3→L1).
+func (w *autonomyWiring) controlador() (*autonomy.Controller, error) {
+	if w == nil {
+		return nil, nil
+	}
+	return autonomy.NewController(w.registry, nil, autonomy.DefaultAutonomyControlConfig())
+}
+
 // provision é a fase 2: liga o sink ao WORM composto, REIDRATA o registo a partir do que o WORM
 // já tem (AOS-307) e só então aplica os níveis declarados. Receptor nil ⇒ no-op (oráculo não
 // ligado, comportamento inalterado). worm nil ⇒ recusa: sem store não há selo, e um nível

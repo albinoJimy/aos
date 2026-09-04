@@ -542,6 +542,14 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	if backupSchedulerArmed(node) {
 		go s.exportarBackups(s.sweepStop)
 	}
+	// AOS-090 / DEF-908 — CONSUMIDOR DAS ANOMALIAS. O [breaker.AlertSink] enfileira e devolve
+	// (contrato não-bloqueante de AOS-291); é esta goroutine que faz o trabalho real: ler a
+	// partição do run no WORM, derivar os pares (agente, domínio) e selar a demoção. Sem ela o
+	// sink encheria e passaria a descartar trips — que é pior do que não ligar nada, porque o
+	// banner declararia a protecção.
+	if node.anomalias != nil {
+		go node.anomalias.correr(s.sweepStop)
+	}
 	s.log("%s", backupSchedulerBanner(node))
 	return s, nil
 }

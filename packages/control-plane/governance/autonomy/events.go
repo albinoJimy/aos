@@ -268,6 +268,17 @@ func (r *LevelRegistry) Rehydrate(ctx context.Context, store audit.Store, partit
 	// erro — isso não é um registo mau, é não haver com que arrancar.
 	report := RehydrateReport{Records: len(recs), LastActorByPair: make(map[Pair]string)}
 	changes := make([]LevelChange, 0, len(recs))
+	// NIVEL ACUMULADO PELO REPLAY, por par. E o oraculo do invariante do controlador: a
+	// unica leitura de "nivel actual" que existe DURANTE a releitura, porque `r.levels` so
+	// e escrito no fim (ver o laco de `restore` abaixo, sob `writeMu`). Pares sem registo
+	// valem o piso, exactamente como [LevelRegistry.LevelFor] os trata.
+	nivelAte := make(map[Pair]Level, len(recs))
+	nivelDe := func(p Pair) Level {
+		if l, ok := nivelAte[p]; ok {
+			return l
+		}
+		return r.defaultLevel
+	}
 	for _, rec := range recs {
 		for _, ob := range rec.Obligations {
 			if ob.Type != LevelChangedEventType {
@@ -278,12 +289,27 @@ func (r *LevelRegistry) Rehydrate(ctx context.Context, store audit.Store, partit
 				report.Rejeitados = append(report.Rejeitados, rejeicaoDe(rec.AuditSeq, ob, err))
 				continue
 			}
+			par := Pair{ch.Agent, ch.Domain}
+			// INVARIANTE DO CONTROLADOR, imposto AQUI e nao no validador do no.
+			//
+			// A repartição é o argumento: «este actor so desce» e propriedade da constante
+			// que ESTE pacote define e do metodo que ESTE pacote implementa, nao uma
+			// politica que a raiz de composicao escolha. Se o no pudesse decidi-la, um no
+			// mal-composto reabria o vector de elevacao que ela fecha. Ver
+			// [ErrControladorNaoDesce] para a analise do adversario.
+			if ch.Actor == ControllerActor && ch.New >= nivelDe(par) {
+				err := fmt.Errorf("%w: par %s:%s pedia %s com o replay em %s",
+					ErrControladorNaoDesce, ch.Agent, ch.Domain, ch.New, nivelDe(par))
+				report.Rejeitados = append(report.Rejeitados, rejeicaoDe(rec.AuditSeq, ob, err))
+				continue
+			}
 			if cfg.validate != nil {
 				if err := cfg.validate(ch); err != nil {
 					report.Rejeitados = append(report.Rejeitados, rejeicaoDe(rec.AuditSeq, ob, err))
 					continue
 				}
 			}
+			nivelAte[par] = ch.New
 			changes = append(changes, ch)
 		}
 	}

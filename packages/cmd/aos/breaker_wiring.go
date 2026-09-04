@@ -59,6 +59,12 @@ type runBreakers struct {
 	// Limitado em memória pelo mesmo [forget] que poda os breakers (o run sai do registo de
 	// em-curso e leva a sua entrada).
 	reported map[string]struct{}
+
+	// alertas é o [breaker.AlertSink] a que cada breaker construído aqui é ligado. nil ⇒
+	// nenhum sink (o default [breaker.NopAlertSink] do pacote). É por esta porta — e só por
+	// ela — que um TRIP sai do disjuntor e chega à demoção automática de autonomia (AOS-090
+	// / DEF-908): até DEF-908 o trip materializava-se na state.Machine e MORRIA ali.
+	alertas breaker.AlertSink
 }
 
 // newRunBreakers constrói o registo. provider nil ⇒ (nil, nil) (disjuntor não composto: um
@@ -71,7 +77,7 @@ type runBreakers struct {
 // operador pediu (provider) e o conjunto de fontes que o nó vai efectivamente cablar
 // (só WithProgressSource, no resolve abaixo). Confrontá-las aqui é o que transforma uma
 // configuração impossível em falha de arranque em vez de um disjuntor ausente.
-func newRunBreakers(gates *runStateGates, provider breaker.ThresholdProvider) (*runBreakers, error) {
+func newRunBreakers(gates *runStateGates, provider breaker.ThresholdProvider, alertas breaker.AlertSink) (*runBreakers, error) {
 	if gates == nil || provider == nil {
 		return nil, nil
 	}
@@ -83,6 +89,7 @@ func newRunBreakers(gates *runStateGates, provider breaker.ThresholdProvider) (*
 	return &runBreakers{
 		gates:    gates,
 		provider: provider,
+		alertas:  alertas,
 		// Janela e limiar do detector de repetição: 3 ocorrências do MESMO hash numa
 		// janela de 8 acções recentes contam como ausência de progresso. Alinhado com o
 		// default de iterações estéreis (o run patológico observado repetia a mesma call
@@ -112,9 +119,14 @@ func (b *runBreakers) resolve(runID string) *breaker.Breaker {
 	}
 	// O sinal de no-progress precisa da fonte ARMADA antes da 1.ª observação; o registo
 	// cria o detector por-run a pedido.
-	br, err := breaker.NewBreaker(gate.m, b.provider, breakerClass,
-		breaker.WithProgressSource(b.progress.Source(runID)),
-	)
+	opts := []breaker.Option{breaker.WithProgressSource(b.progress.Source(runID))}
+	// Só liga o sink quando existe MESMO. Passar um sink nil-tipado daria uma interface
+	// não-nil com valor nil — o disjuntor chamaria `Alert` num receptor nil a cada trip, e a
+	// diferença entre «sem demoção ligada» e «demoção ligada e inerte» deixaria de se ver.
+	if b.alertas != nil {
+		opts = append(opts, breaker.WithAlertSink(b.alertas))
+	}
+	br, err := breaker.NewBreaker(gate.m, b.provider, breakerClass, opts...)
 	if err != nil {
 		// Construção recusada. Depois do gate de arranque ([newRunBreakers]) esta via é
 		// INESPERADA — a configuração impossível já não chega aqui. Continua a não se

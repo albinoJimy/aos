@@ -290,7 +290,7 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 		// DEPOIS fica FORA do intervalo verificado. A âncora nunca fechou este vector. O que
 		// o fecha é a verificação por ASSINATURA de cada registo reidratado, e é isso — e só
 		// isso — que esta linha passa a afirmar.
-		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d alteracao(oes) de nivel RELIDA(S) do WORM no arranque — um nivel posto por POST /autonomy SOBREVIVE ao reinicio; para cada par, o ultimo selo de OPERADOR prevalece sobre AOS_AUTONOMY_LEVELS e um selo de provisionamento (actor %q) cede ao ambiente. O WORM e AUTORITATIVO sobre os niveis no arranque, e por isso o que se reidrata e VERIFICADO FORA DELE: cada registo de OPERADOR tem de trazer a(s) assinatura(s) ed25519 do pedido que o originou, que sao reverificadas contra as pubkeys de AOS_OPERATORS (e o direito autonomy:set), com DUAS assinaturas distintas para L4/L5 — a mesma regra da rota; um registo que NAO verifique ABORTA o arranque, nomeando o AuditSeq. E deliberado que isto nao dependa da ancora: o EntryHash e um SHA-256 SEM CHAVE (re-encadear e aritmetica publica) e a verificacao ancorada so cobre ate ao ultimo checkpoint, pelo que um registo apendido DEPOIS ficaria fora do intervalo verificado", w.rehydrated, autonomyProvisionActor))
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d alteracao(oes) de nivel RELIDA(S) do WORM no arranque — um nivel posto por POST /autonomy SOBREVIVE ao reinicio; para cada par, o ultimo selo de OPERADOR prevalece sobre AOS_AUTONOMY_LEVELS e um selo de provisionamento (actor %q) cede ao ambiente. O WORM e AUTORITATIVO sobre os niveis no arranque, e por isso o que se reidrata e VERIFICADO FORA DELE: cada registo de OPERADOR tem de trazer a(s) assinatura(s) ed25519 do pedido que o originou, que sao reverificadas contra as pubkeys de AOS_OPERATORS (e o direito autonomy:set), com DUAS assinaturas distintas para L4/L5 — a mesma regra da rota; um registo que NAO verifique e SALTADO (NUNCA aplicado: o par fica no nivel do ambiente) e DECLARADO abaixo com o AuditSeq — o arranque PROSSEGUE, porque abortar dava a quem escreve o ficheiro um modo de tijolo permanente. As democoes automaticas por anomalia (actor %q) nao trazem assinatura e nao precisam: o pacote so as aplica se DESCEREM face ao nivel ja reidratado do par, pelo que um registo forjado com esse actor so consegue BAIXAR. E deliberado que isto nao dependa da ancora: o EntryHash e um SHA-256 SEM CHAVE (re-encadear e aritmetica publica) e a verificacao ancorada so cobre ate ao ultimo checkpoint, pelo que um registo apendido DEPOIS ficaria fora do intervalo verificado", w.rehydrated, autonomyProvisionActor, autonomy.ControllerActor))
 	}
 	if len(w.preservedOverEnv) > 0 {
 		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) com nivel de OPERADOR PRESERVADO sobre o que AOS_AUTONOMY_LEVELS declara agora [%s] — o ficheiro NAO mudou desde o ultimo provisionamento, pelo que a decisao assinada e a mais recente e prevalece; para a substituir, EDITE o ficheiro (qualquer direccao) e reinicie, ou assine outra alteracao (POST /autonomy)", len(w.preservedOverEnv), strings.Join(w.preservedOverEnv, ", ")))
@@ -473,5 +473,36 @@ func exhaustionPromptPostureBanner(armed bool, ttl time.Duration) []string {
 	}
 	return []string{
 		"prompt de exaustao de orcamento (AOS-263): NAO ARMADO — falta a este no pelo menos uma das pecas sem as quais a pergunta seria uma armadilha: o registo duravel de pendentes e o registo de retoma (four-eyes, AOS_APPROVERS_FILE — sem eles nao ha a quem perguntar nem como re-hospedar o run) ou a ROTA DE DECISAO composta (pelo menos um operador pinado em AOS_OPERATORS e WORM — sem eles ninguem poderia responder, nem a resposta poderia ser selada). O comportamento ao cruzar o limiar e o de AOS-262, palavra por palavra: avisa UMA VEZ no log (e no span com OTLP) e o run CONTINUA ate ao tecto, ao MaxTurns, ao disjuntor ou ao steer do operador. Para o armar, componha AS DUAS metades: o four-eyes (AOS_APPROVERS_FILE) e os operadores do canal de controlo (AOS_OPERATORS). Eixo: AOS-263 / EPIC-20",
+	}
+}
+
+// autonomiaAnomaliasBanner declara a postura da DEMOÇÃO AUTOMÁTICA por anomalia (AOS-090 /
+// DEF-908). Duas linhas no máximo, e nenhuma delas afirma mais do que o nó faz.
+//
+// A regra que este banner tem de respeitar, e que já foi violada duas vezes neste subsistema:
+// a afirmação segue o que está COMPOSTO, nunca o que está implementado. `armado` é o
+// encaminhador REAL (nil quando a autonomia ou o WORM não estão compostos), não a existência
+// do [autonomy.Controller] — que existe desde AOS-090 e não fazia nada.
+func autonomiaAnomaliasBanner(armado bool) []string {
+	if !armado {
+		return []string{
+			"autonomia / democao automatica (AOS-090): NAO COMPOSTA — o disjuntor continua a PARAR runs, " +
+				"mas nenhum nivel desce. Exige AOS_AUTONOMY_LEVELS (sem niveis nao ha o que despromover) " +
+				"e WORM composto (uma democao sem selo era o defeito de AOS-306)",
+		}
+	}
+	return []string{
+		"autonomia / democao automatica (AOS-090): ARMADA para o TRIP do disjuntor. Um trip multi-sinal " +
+			"desce DOIS niveis (piso L1) todos os pares (agente,dominio) que o run mediou — a escada de " +
+			"tecnica/09 §7: L5->L3, L4->L2, L3->L1 — e o selo SOBREVIVE ao reinicio (o pacote so reaplica " +
+			"registos deste actor se DESCEREM face ao ja reidratado, pelo que dispensam assinatura sem " +
+			"abrir elevacao). Escalada e abort MANUAIS nao despromovem: quem escala nao pode perder " +
+			"autonomia por escalar",
+		"autonomia / democao automatica (AOS-090): os outros DOIS sinais que autonomy.AnomalyKind nomeia " +
+			"NAO estao ligados, e nao e omissao. Override-rate: o hitl.Channel que o calcula nao esta " +
+			"composto no no, logo a metrica nunca produz valor. Drift: o alerta de revalidacao traz " +
+			"ToolID/Version/Digest e NENHUM agente — derivou o ARTEFACTO, nao o agente. PROMOCAO " +
+			"automatica DESARMADA: exige taxa de erro sustentada, e o selo de mediacao e escrito ANTES " +
+			"do despacho, pelo que o erro de execucao da tool nunca chega ao WORM",
 	}
 }

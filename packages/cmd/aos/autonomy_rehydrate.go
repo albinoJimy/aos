@@ -102,17 +102,39 @@ var ErrAutonomyRehydrateUnverified = errors.New("aos: alteracao de nivel de auto
 // `config:node`). É a leitura honesta do fail-closed: um nó sem pubkeys de operador não
 // tem como confirmar decisão nenhuma, e servir um nível que não confirma é o defeito.
 //
-// UM ACTOR QUE AINDA NÃO EXISTE NO WORM DESTE NÓ, e que fica declarado para não ser uma
-// surpresa: [autonomy.ControllerActor] ("autonomy-controller"), das democões automáticas
-// por anomalia. Hoje o [autonomy.Controller] NÃO tem chamador em cmd/aos, pelo que nenhum
-// registo desses chega a esta partição. Quando tiver, cai na regra (2) e ABORTA o arranque
-// — de propósito: aceitá-lo sem prova daria um terceiro actor forjável, e um forjador
-// escolhe `new_level` (o controlador só desce; um registo forjado não é obrigado a
-// descer). Fechá-lo exige dar ao controlador uma prova própria — uma assinatura do nó
-// sobre a transição, com a chave do nó — e isso é trabalho a fazer com o controlador, não
-// a antecipar aqui.
+// O TERCEIRO ACTOR: [autonomy.ControllerActor] ("autonomy-controller"), das democões
+// automáticas por anomalia (AOS-090). Desde DEF-908 o [autonomy.Controller] TEM chamador
+// em cmd/aos, pelo que estes registos chegam mesmo a esta partição — e são aceites aqui
+// SEM prova, pela regra (0).
+//
+// NÃO É UMA ESCOTILHA, E A RAZÃO É QUE A DEFESA MUDOU DE SÍTIO. Uma democão automática não
+// tem operador, não tem cerimónia e não tem assinatura: exigir-lhe uma prova seria rejeitar
+// TODA a democão legítima no reinício seguinte — a correcção de DEF-908 acontecia em
+// runtime e evaporava-se no boot, que é o defeito que ela existe para fechar.
+//
+// O que contém o actor forjável não é uma assinatura: é a DIRECÇÃO. O pacote impõe que um
+// registo de [autonomy.ControllerActor] só se aplique se DESCER face ao nível que o replay
+// já reconstruiu para o par — ver [autonomy.ErrControladorNaoDesce]. Um forjador com
+// escrita no ficheiro do WORM continua a poder apender um registo bem-formado com este
+// actor, mas só consegue BAIXAR, nunca elevar; e a comparação é contra o estado do replay,
+// não contra o `old_level` que o próprio registo declara, pelo que um «L5 -> L3» sobre um
+// par que vale L1 é recusado como a elevação que seria.
+//
+// PORQUE NÃO UMA ASSINATURA DO NÓ. Foi a primeira ideia, e mede-se mal: no modo de
+// referência a chave do nó vive num ficheiro no MESMO disco do WORM ([LoadOrCreateIssuerKey]
+// declara-o), pelo que contra o adversário que escreve o ficheiro a assinatura não é
+// fronteira nenhuma. O invariante não depende de custódia de chave — depende só da direcção,
+// e vale nos dois modos.
+//
+// RESIDUAL, declarado: quem escreve o WORM ganha uma alavanca para PRENDER um par no piso.
+// É a troca deliberada, e o adversário que a exerce já tem piores opções.
 func autonomyRehydrateValidator(operators map[string]ed25519.PublicKey, setters map[string]bool) func(autonomy.LevelChange) error {
 	return func(ch autonomy.LevelChange) error {
+		// (0) Democão automática por anomalia: sem assinatura, e sem privilégio a ganhar
+		// porque o pacote já garante que este actor só DESCE. Ver o bloco acima.
+		if ch.Actor == autonomy.ControllerActor {
+			return nil
+		}
 		// (1) Provisionamento por configuração: sem assinatura, e sem privilégio a ganhar.
 		if ch.Actor == autonomyProvisionActor {
 			return nil
