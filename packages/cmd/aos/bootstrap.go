@@ -539,10 +539,13 @@ type Config struct {
 	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
 	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
 	// material). PREPARADO por AOS-264 a partir do ambiente, mas a TROCA MEDIADA ainda
-	// NÃO está ligada ao gateway nesta entrega: é CONSUMIDO em AOS-265 (a porta de
-	// aquisição in-process). nil ⇒ não configurado. O banner declara o modo e que a
+	// NÃO está ligada ao gateway. nil ⇒ não configurado. O banner declara o modo e que a
 	// troca está pendente — nunca "broker ligado" (seria a promessa a mais que AOS-248
 	// proíbe). Ver broker_vault_env.go.
+	//
+	// CORRECÇÃO (AOS-325): apontava o consumo para AOS-265, que JÁ ATERROU (a porta
+	// `broker.AcquireInProcess` existe e é testada) sem ligar a troca. O bloqueador real
+	// é o DEF-218.
 	BrokerVault broker.VaultClient
 	// BrokerVaultAddr / BrokerVaultKVMount são material PÚBLICO (uma URL, um nome de
 	// mount) que o banner usa para declarar o modo do broker Vault. Vazios ⇒ dormente.
@@ -2382,13 +2385,25 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	// AOS-264: o Vault de credenciais downstream do broker, PREPARADO por
 	// AOS_BROKER_VAULT_* (separado do KEK, D7). Declara "configurado, troca pendente"
-	// ou "dormente" — nunca "broker ligado" (a troca só medeia algo em AOS-265). O
+	// ou "dormente" — nunca "broker ligado" (a troca não medeia nada: a porta de
+	// AOS-265 existe, o que falta é a composição, bloqueada em DEF-218). O
 	// argumento deriva do ESTADO composto: `cfg.BrokerVault != nil` ⇒ preparado.
 	var brokerVaultSet *brokerVaultSettings
 	if cfg.BrokerVault != nil {
 		brokerVaultSet = &brokerVaultSettings{Addr: cfg.BrokerVaultAddr, KVMount: cfg.BrokerVaultKVMount}
 	}
 	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
+		log("%s", line)
+	}
+	// SERVIÇOS DE PLATAFORMA (AOS-326). MEM e REG eram os dois únicos serviços do
+	// `_BRIEF` §2 sobre os quais o arranque não dizia nada — e são aqueles em que a
+	// distância entre a biblioteca (testada, com gate próprio) e o nó composto é maior.
+	// O argumento deriva do ESTADO, como o do credential broker: `cfg.Catalog`/
+	// `cfg.Revalidator` a nil significam o catálogo vazio e o revalidador de referência.
+	for _, line := range plataformaPostureBanner(posturaDosServicosDePlataforma{
+		CatalogoInjectado:    cfg.Catalog != nil,
+		RevalidadorInjectado: cfg.Revalidator != nil,
+	}) {
 		log("%s", line)
 	}
 	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA

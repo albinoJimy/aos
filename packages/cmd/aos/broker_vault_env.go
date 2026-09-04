@@ -11,8 +11,14 @@ package main
 //
 // ÂMBITO DESTA ENTREGA (AOS-264 é PREPARAÇÃO): esta função PREPARA o cliente Vault
 // REAL (KV v2) e valida a config fail-closed, mas NÃO liga a troca mediada ao
-// gateway — isso é AOS-265 (a porta de aquisição in-process). O banner declara-o com
-// honestidade: "configurado, troca PENDENTE", nunca "broker ligado".
+// gateway. O banner declara-o com honestidade: "configurado, troca PENDENTE", nunca
+// "broker ligado".
+//
+// CORRECÇÃO (AOS-325): esta nota apontava a pendência para AOS-265. O AOS-265 JÁ
+// ATERROU — a porta de aquisição in-process existe em `platform/broker/inprocess.go`,
+// com testes — e NÃO ligou a troca. O bloqueador real é o DEF-218 (bundle PDP assinado
+// + identidade de infra com a capability da troca). Apontar um ticket já fechado é pior
+// do que não apontar nenhum: o operador conclui que a pendência tem dono e data.
 
 import (
 	"errors"
@@ -43,7 +49,8 @@ type brokerVaultSettings struct {
 // privado nunca por env, no padrão de AOS_DSAR_VAULT_TOKEN_PATH) e constrói o
 // cliente por detrás da porta [broker.VaultClient] — provando que compõe ao arranque
 // (fail-closed). O cliente é ENCAMINHADO para [Config.BrokerVault]; a troca mediada
-// consome-o em AOS-265.
+// consumi-lo-á quando existir — hoje NENHUM `Fetch` é emitido, e o cliente alimenta
+// apenas a linha de postura. Bloqueador: DEF-218 (AOS-265 já aterrou sem o fechar).
 //
 // Envs:
 //   - AOS_BROKER_VAULT_ADDR       — URL do Vault (público). Vazio ⇒ dormente.
@@ -91,16 +98,16 @@ func parseBrokerVaultFromEnv() (broker.VaultClient, *brokerVaultSettings, error)
 // das restantes linhas de postura.
 //
 // A regra da linha 19 de posture_banner.go aplicada aqui: quando CONFIGURADO, a
-// linha diz "configurado" E "troca PENDENTE (AOS-265)" — porque anunciar "broker
+// linha diz "configurado" E "troca PENDENTE" — porque anunciar "broker
 // LIGADO" sobre um Vault preparado mas cuja troca ainda não medeia nada seria a
 // promessa a mais que treina o operador a confiar numa protecção inexistente.
 func brokerVaultPostureBanner(s *brokerVaultSettings) []string {
 	if s == nil {
 		return []string{
-			"broker vault / credenciais downstream (AOS-070/AOS-264): DORMENTE — AOS_BROKER_VAULT_ADDR nao esta definida, logo NAO ha custodia externa de credenciais downstream para a troca mediada. Defina AOS_BROKER_VAULT_ADDR + AOS_BROKER_VAULT_TOKEN_PATH (cliente/token SEPARADOS do AOS_DSAR_VAULT_*, decisao D7) para PREPARAR o cliente Vault REAL (KV v2). Eixo: AOS-264/AOS-265",
+			"broker vault / credenciais downstream (AOS-070/AOS-264): DORMENTE — AOS_BROKER_VAULT_ADDR nao esta definida, logo NAO ha custodia externa de credenciais downstream para a troca mediada. Defina AOS_BROKER_VAULT_ADDR + AOS_BROKER_VAULT_TOKEN_PATH (cliente/token SEPARADOS do AOS_DSAR_VAULT_*, decisao D7) para PREPARAR o cliente Vault REAL (KV v2). Eixo: AOS-264; bloqueador da troca: DEF-218",
 		}
 	}
 	return []string{
-		fmt.Sprintf("broker vault / credenciais downstream (AOS-070/AOS-264): CONFIGURADO (KV v2 @ %s, mount %q), troca PENDENTE — cliente Vault REAL preparado (stdlib, zero-dep), token de FICHEIRO montado, SEPARADO do Vault da KEK (D7). ATENCAO: a TROCA MEDIADA continua PENDENTE, ainda NAO esta ligada ao gateway nesta entrega — o cliente esta PREPARADO e sera CONSUMIDO por AOS-265 (porta de aquisicao in-process, D8). Ate la NENHUMA credencial downstream e trocada nem injectada. DECISAO REGISTADA: motor KV v2 (segredo estatico) — a lease do broker corta a INJECCAO in-process no TTL/revogacao, mas so DYNAMIC SECRETS dariam corte da credencial NO provedor (deferido, D8-B). Eixo: AOS-265", s.Addr, s.KVMount),
+		fmt.Sprintf("broker vault / credenciais downstream (AOS-070/AOS-264): CONFIGURADO (KV v2 @ %s, mount %q), troca PENDENTE — cliente Vault REAL preparado (stdlib, zero-dep), token de FICHEIRO montado, SEPARADO do Vault da KEK (D7). ATENCAO: a TROCA MEDIADA continua PENDENTE, ainda NAO esta ligada ao gateway nesta entrega — o cliente esta PREPARADO e NENHUM Fetch e emitido — alimenta apenas esta linha. A porta de aquisicao in-process (AOS-265, D8) JA EXISTE em platform/broker; o que falta e a COMPOSICAO da troca, cujo bloqueador e o DEF-218 (bundle PDP assinado + identidade de infra com a capability da troca). Ate la NENHUMA credencial downstream e trocada nem injectada. DECISAO REGISTADA: motor KV v2 (segredo estatico) — a lease do broker corta a INJECCAO in-process no TTL/revogacao, mas so DYNAMIC SECRETS dariam corte da credencial NO provedor (deferido, D8-B/DEF-216). Eixo: DEF-218", s.Addr, s.KVMount),
 	}
 }

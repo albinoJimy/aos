@@ -414,9 +414,27 @@ EPIC-10 todos carregam — e é o ficheiro que o operador edita.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Barato, e é o que sustenta a confiança em todas as outras declarações — a
-`analises/11` só conseguiu descartar sete falsos positivos porque as declarações que leu eram
-verdadeiras.
+**IMPLEMENTADO (parcial — um item pertence ao AOS-320).** P2.
+
+Corrigidos: **(1)** `posture_banner.go` deixa de dizer que o nó não importa `platform/broker`, e
+explica a diferença entre importar e compor; **(2)** `bootstrap.go` e `broker_vault_env.go` — as
+menções que apontavam a pendência da troca para AOS-265 passam a nomear o `DEF-218`, dizendo que o
+AOS-265 já aterrou sem a fechar; **(4)** `pipeline/stages.go` e `tecnica/06:325` deixam de afirmar
+como facto a composição `freeze.RunPrefix.Turn → layout.Guard.Admit`, que não existe, e nomeiam quem
+cumpre de facto o CA (o `PromptAssembler` do runtime); **(5)** `memory/doc.go` deixa de dizer que
+`record.Persist` grava «SEMPRE a trajectória completa», que o próprio compactador contradiz em dois
+sítios; **(6)** `credentials/source.go` reconcilia as duas posturas opostas, com
+`TestSource_AllowedVazia_NaoConstrangeEEstaDeclarado` a fixar o comportamento da lista vazia — que
+nenhum teste fixava; **(7)** `docker-compose.prod.yml` ganha a ressalva do WORM que os outros quatro
+artefactos já carregavam.
+
+**Item (3) — `mcp/protocol.go` «RESERVADO (AOS-047)» — pertence ao AOS-320**, cujo critério de
+aceitação o inclui: corrigir o comentário sem ligar o digest seria trocar uma declaração falsa por
+outra.
+
+**AC4 fica por fechar:** não foi criado mecanismo que faça uma declaração citar o ticket que a
+desbloqueia. As sete correcções são pontuais; o que evitaria a próxima ronda é estrutural e fica por
+desenhar.
 
 ---
 
@@ -467,8 +485,27 @@ Este ticket **não decide** se se compõe ou não. Decide que a posição fica e
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. É o ticket que fecha a assimetria do §0 e a condição que torna os outros
-legíveis: sem ele, «latente» continua a significar coisas diferentes em epics diferentes.
+**IMPLEMENTADO.** P1.
+
+`plataformaPostureBanner` declara no arranque o que o nó compõe de MEM e de REG — e o que não compõe
+—, derivando do ESTADO (`cfg.Catalog`/`cfg.Revalidator` a nil) e não da intenção da config, na
+disciplina que o banner do credential broker já impunha. Uma terceira linha diz explicitamente que,
+ao contrário do ORQ/SCH, **não existe ADR** que os declare deliberadamente não-compostos, pelo que o
+estado é *inacabado* e não *adiado*.
+
+`DEF-811` (MEM) e `DEF-812` (REG) entram no registo, família **8xx — wiring diferido**, com dono
+(Arquitecto de Plataforma), eixo `POR ATRIBUIR` e gatilho escrito: *compor, ou emitir ADR no molde
+do ADR-023*. As notas `N-DEF-811`/`N-DEF-812` descrevem o ticket que falta — e dizem porque ele é
+uma **decisão do dono da forma do produto** (Carta §2) e não código, que é a razão de o eixo não
+poder ser um ticket inventado. A `N-DEF-812` regista ainda uma dependência: o AOS-320 deve fechar
+antes de se compor o host MCP, senão liga-se um pino que não distingue servidores.
+
+Gate `deferrals` verde para este eixo — a contagem de `posture_banner.go|DEFERIDO` passou de 2 para
+4 e é verificada por máquina.
+
+**O que este ticket NÃO faz, por desenho:** não emite o ADR. Essa é uma decisão sobre a forma do
+produto que a Carta §2 reserva ao dono. Registar a postura era o que faltava; decidi-la não é do
+executor.
 
 ---
 

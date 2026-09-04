@@ -106,7 +106,15 @@ func budgetPostureBanner(composed bool) []string {
 }
 
 // credentialBrokerPostureBanner declara a AUSÊNCIA do Credential Broker (AOS-070, ADR-006).
-// Também incondicional: `platform/broker` não é importado pelo nó. O que o nó faz em vez disso
+//
+// CORRECÇÃO (AOS-325): esta linha dizia «`platform/broker` não é importado pelo nó». Deixou de
+// ser verdade com AOS-264 — `bootstrap.go` e `broker_vault_env.go` importam-no, e o nó constrói
+// `broker.NewVaultKVv2`. O que se mantém verdadeiro, e é o que o banner emitido diz, é que o nó
+// não COMPÕE o broker: `broker.New` não tem chamador de produção, e o cliente Vault construído
+// alimenta apenas a linha de postura. Importar não é compor, e a distinção é a diferença entre
+// «o eixo está preparado» e «a troca medeia alguma coisa».
+//
+// O que o nó faz em vez disso
 // — ler segredos de FICHEIROS MONTADOS no arranque e retê-los em memória do processo enquanto
 // viver — é legítimo e é o padrão documentado, mas NÃO é o invariante do ADR-006 e não deve ser
 // confundido com ele: sem broker não há troca token→credencial server-side, não há TTL curto,
@@ -152,6 +160,49 @@ type materialPrivadoDoNo struct {
 	OTLPClientKey bool
 	// OTLPBearer: o bearer do colector está carregado.
 	OTLPBearer bool
+}
+
+// posturaDosServicosDePlataforma é o estado composto de MEM e REG que o banner declara.
+// Deriva do que o composition-root construiu, nunca da intenção da config — a mesma
+// disciplina que [materialPrivadoDoNo] impôs ao banner do credential broker.
+type posturaDosServicosDePlataforma struct {
+	// CatalogoInjectado: o REG veio por [Config.Catalog]. Falso ⇒ `emptyCatalog{}`.
+	CatalogoInjectado bool
+	// RevalidadorInjectado: o revalidador veio por [Config.Revalidator]. Falso ⇒ o de
+	// REFERÊNCIA, com trust store VAZIO.
+	RevalidadorInjectado bool
+}
+
+// plataformaPostureBanner declara, no arranque, o que o nó compõe de MEM e de REG —
+// e sobretudo o que NÃO compõe (AOS-326).
+//
+// PORQUE ESTA LINHA PASSA A EXISTIR. O nó já declarava a postura do credential broker,
+// da autonomia, do orçamento e do modelo. De MEM e REG não dizia nada — e são os dois
+// serviços de plataforma cuja distância entre a biblioteca e o nó composto é maior. Um
+// operador que leia o arranque via «Memory Service» e «Registry» no `_BRIEF` §2 e não
+// tem como saber que o primeiro só faz uma escrita e que o segundo arranca vazio.
+//
+// A ASSIMETRIA QUE ISTO FECHA. O plano de controlo (ORQ/SCH) está fora do grafo de build
+// por DECISÃO ratificada — ADR-018 §4 e ADR-023, com guard-test em
+// `boundary_orq_sch_test.go`. Para os serviços de plataforma não existe decisão
+// equivalente: nenhum ADR os declara deliberadamente não-compostos. Enquanto essa decisão
+// não for tomada, «não composto» aqui significa INACABADO, não adiado — e é isso que
+// estas linhas dizem, em vez de deixarem o silêncio sugerir a leitura mais favorável.
+func plataformaPostureBanner(p posturaDosServicosDePlataforma) []string {
+	reg := "catalogo VAZIO (emptyCatalog) e revalidador de REFERENCIA com trust store VAZIO"
+	switch {
+	case p.CatalogoInjectado && p.RevalidadorInjectado:
+		reg = "catalogo e revalidador INJECTADOS por config"
+	case p.CatalogoInjectado:
+		reg = "catalogo INJECTADO por config; revalidador de REFERENCIA com trust store VAZIO"
+	case p.RevalidadorInjectado:
+		reg = "catalogo VAZIO (emptyCatalog); revalidador INJECTADO por config"
+	}
+	return []string{
+		"memoria (MEM/EPIC-04, AOS-326): o Memory Service esta composto sobre o MESMO Event Store do no, mas o unico caminho de producao que o usa e uma ESCRITA episodica na ingestao. Nenhum caminho de producao invoca recall/query/compactacao/curadoria, e Goal.MemoryContext nao e preenchido por ninguem. As classes episodica, semantica e procedural existem como BIBLIOTECA testada e nao como comportamento deste no. DEFERIDO — eixo em DEF-811",
+		"registry (REG/EPIC-05, AOS-326): " + reg + ". O catalogo event-sourced, o host MCP e o TOFU NAO sao construidos por este binario; o que corre e o congelamento por run e a revalidacao por chamada, ligados na cadeia do Reference Monitor. Um tool set vazio e default-deny: nenhuma tool executa. DEFERIDO — eixo em DEF-812",
+		"=> NOTA sobre as duas linhas acima: ao contrario do ORQ/SCH — que o ADR-018/ADR-023 mantem fora do grafo de build por decisao ratificada, com guard-test — NAO existe ADR que declare MEM ou REG deliberadamente nao-compostos. Enquanto essa decisao nao existir, o estado e INACABADO e nao adiado. Eixo: DEF-811/DEF-812",
+	}
 }
 
 func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {

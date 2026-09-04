@@ -237,6 +237,8 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-807 | DIFERIDO | packages/kernel/agent-runtime/model.go | `AuthorizationTaint` é uma string convencionada em vez de uma autorização estruturalmente infalsificável mintada no runtime | AOS-069 | Responsável de Segurança | Idem DEF-806 | ABERTO |
 | DEF-808 | DIFERIDO | packages/kernel/reference-monitor/taint_gate.go | Sem `DefaultHooksWithTaint` e um `PrivilegedAuthorizer` real ligados no ápice, a metade do ADR-005 fica inactiva; o conjunto `Privileged` composto hoje é vazio | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-604 (conjunto `Privileged` real no ápice) | MITIGADO |
 | DEF-809 | DIFERIDO | packages/kernel/reference-monitor/scope_gate.go | Wiring de produção do par escopo+taint no ápice, «a par de AOS-021/037/043» — as portas RT/RM foram entregues por AOS-157; falta o autorizador privilegiado real | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-808 | MITIGADO |
+| DEF-811 | DEFERIDO | packages/cmd/aos/posture_banner.go | **MEM nao esta composto como servico — so como uma escrita.** O no constroi `memory.NewService` sobre o mesmo Event Store (`bootstrap.go`), mas o unico caminho de producao que o usa e a escrita episodica da ingestao (`packages/integration/ingestion.go`). Nenhum caminho de producao invoca recall/query/compactacao/curadoria, `Goal.MemoryContext` nao e preenchido por ninguem (declarado em `packages/kernel/agent-runtime/loop.go`), e `memory/episodic`, `semantic`, `procedural`, `compression` e `migrations` tem ZERO importadores externos nao-teste. As tres classes do `_BRIEF` §2 existem como biblioteca testada, com gate proprio (`scripts/ci/memory.sh`), e nao como comportamento do no. Ao contrario do ORQ/SCH, NAO ha ADR que o declare deliberado — ver N-DEF-811 | POR ATRIBUIR | Arquitecto de Plataforma | Decisao do dono sobre a forma: compor o MEM no no, ou emitir ADR que o declare fora do grafo de build no molde do ADR-023 | ABERTO |
+| DEF-812 | DEFERIDO | packages/cmd/aos/posture_banner.go | **REG: catalogo, host MCP e TOFU nao sao construidos pelo no.** `bootstrap.go` compoe `emptyCatalog{}` e o `referenceRevalidator()` com trust store VAZIO. `registry.New` tem um unico chamador nao-teste (`promotion/pipeline.go`), que por sua vez nao tem chamador nenhum; `mcp.NewHost` e `tofu.NewMonitor` tem zero. O que CORRE e o congelamento por run (`toolset`) e a revalidacao por chamada, ligados na cadeia do Reference Monitor (`packages/integration/secured.go`) — o catalogo vazio e default-deny, pelo que nenhuma tool executa. Ao contrario do ORQ/SCH, NAO ha ADR que o declare deliberado — ver N-DEF-812 | POR ATRIBUIR | Arquitecto de Plataforma | Decisao do dono sobre a forma: compor o REG no no, ou emitir ADR que o declare fora do grafo de build no molde do ADR-023 | ABERTO |
 | DEF-901 | NUNCA-EM-PRODUCAO | packages/substrate/otel-genai/idgen.go | `SequentialIDGenerator` produz ids deterministas para testes de topologia de árvore | AOS-076 | Arquitecto de Plataforma | Uso do gerador determinista fora de testes | FECHADO-RESIDUAL |
 | DEF-902 | NUNCA-EM-PRODUCAO | packages/testkit/env/vault.go | Vault efémero por `Env` do testkit | AOS-109 | Arquitecto de Plataforma | Importação do testkit por código de produção | FECHADO-RESIDUAL |
 | DEF-903 | DEFERIDO | packages/cmd/aos/bootstrap.go | **CON-02 — superfície de administração de legal hold e expiração.** ENTREGUE por AOS-213 (o marcador DEFERIDA em bootstrap.go passa a CONTRASTE histórico): o `audit.LegalHold` (`Node.DSARHolds`) ganha rotas `POST /dsar/hold`//`/dsar/release` e o `audit.ExpirationJob` (AOS-092) é composto no nó (`Node.ExpirationJob`, conduzido por `POST /dsar/expire`) — deixa de ter 0 chamadores de produção. A expiração materializa por crypto-shred da KEK POR-TITULAR (AOS-093, apagamento real, provado ao nível do nó: `OpenContent`→`ErrDecrypt`+hash-chain valida) e respeita o legal hold. Decisão do dono Opção C (2026-07-29, `DOSSIE-CON-02-legal-hold.md`) cumprida (o gatilho — apagamento real — deu-se com AOS-093). RESIDUAL nomeado (eixo AOS-093/envelope): a granularidade é POR-TITULAR (a KEK embrulha todas as DEKs do titular), não por-registo | AOS-213, AOS-093 | Dono do produto | FECHADO por AOS-213; residual de granularidade por-titular vs por-registo exigiria custódia de chave por-registo ou tombstones no ES (re-arquitectura do envelope AOS-093), não previsto | FECHADO-RESIDUAL |
@@ -284,7 +286,7 @@ cada execução.)*
 | packages/cmd/aos/model_pricing_env.go | DEFERIDO | 1 |
 | packages/cmd/aos/modelgatewaywiring.go | DEFERIDO | 1 |
 | packages/cmd/aos/otlpexporter.go | DIFERIDO | 2 |
-| packages/cmd/aos/posture_banner.go | DEFERIDO | 2 |
+| packages/cmd/aos/posture_banner.go | DEFERIDO | 4 |
 | packages/cmd/aos/promotion.go | DEFERIDO | 1 |
 | packages/cmd/aos/promotion_api.go | DEFERIDO | 1 |
 | packages/cmd/aos/saga_compensation.go | DEFERIDO | 1 |
@@ -727,6 +729,43 @@ EPIC-06.
 devolve zero — o eixo do custo por efeito real nunca teve `AOS-NNN` próprio. AOS-211 entrega o
 EIXO 1 (operation.name sob contrato) e **nomeia** este EIXO 2 em vez de o deixar mudo, que é
 precisamente a deriva que o ticket veio terminar.
+
+### N-DEF-811 — cobre DEF-811
+
+> **O ticket que falta é uma DECISÃO, não código.** O eixo fica `POR ATRIBUIR` porque compor o
+> MEM no nó e declará-lo fora do grafo de build são resoluções opostas, e a escolha é do dono da
+> forma do produto (Carta §2), não de quem regista. O que este registo fixa é o **estado**: a
+> biblioteca existe, é testada, tem gate próprio, e o nó usa uma escrita.
+>
+> **Porque isto não é o caso do ORQ/SCH.** Ali, «não composto» é doutrina: o ADR-018 §4 e o
+> ADR-023 declaram-no, o `EPIC-10`/AOS-281 escreve-o em palavras («não é wiring esquecido: é o
+> ADR-018 a impedi-lo por desenho»), e `packages/cmd/aos/boundary_orq_sch_test.go` impõe-no por
+> guard-test. Para o MEM não existe nada equivalente — procurado em todo o `docs/adr/`. Enquanto
+> a decisão não for tomada, «não composto» significa **inacabado**, e é essa a diferença que
+> DEF-811 existe para não deixar apagar.
+>
+> **Ticket necessário:** um que ou (a) ligue o read-path da memória ao loop do agente com o
+> `Goal.MemoryContext` preenchido e a barreira de taint do ADR-005 a mediar, ou (b) emita um ADR
+> no molde do ADR-023 que declare o MEM fora do grafo de build da v1, com guard-test. Origem:
+> `analises/11` §2 e §6 (item 6); AOS-326 registou a postura, não a resolveu.
+
+### N-DEF-812 — cobre DEF-812
+
+> **Idem DEF-811, no eixo do REG, e com um agravante próprio.** O `posture_banner.go` não dizia
+> nada sobre o REG até AOS-326 — ao contrário do credential broker, cuja ausência é declarada em
+> cada arranque desde AOS-070. Um operador lia «Skill/Tool Registry» no `_BRIEF` §2 e não tinha
+> como saber que o nó arranca com catálogo vazio e trust store vazio.
+>
+> **O que corre é real e não deve ser confundido com o que falta:** o congelamento por run e a
+> revalidação por chamada estão compostos na cadeia do Reference Monitor, e o catálogo vazio é
+> default-deny — o nó não executa tools, não as executa mal. O que não existe é o catálogo
+> event-sourced, o host MCP e o TOFU.
+>
+> **Ticket necessário:** um que ou (a) componha `registry.Registry` + `mcp.Host` + `tofu.Monitor`
+> no nó, com trust anchors reais por config, ou (b) emita o ADR que os declare fora do grafo de
+> build da v1. Nota de dependência: o AOS-320 (digest de `mcp_server`) deve estar fechado antes
+> de (a) — ligar o host MCP com o digest constante da classe de egress poria em produção um pino
+> que não distingue servidores. Origem: `analises/11` §3.1 e §6 (item 6).
 
 ### A-DEF-301 — ARBITRAGEM do eixo da cifra do substrato (DEF-301, DEF-303…DEF-307)
 
