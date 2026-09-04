@@ -3,6 +3,7 @@ package autonomy
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -199,7 +200,10 @@ func (failingSink) SealLevelChange(context.Context, LevelChange) error {
 }
 
 // TestSetLevelSealFailureSurfaced prova que uma selagem falhada NÃO é engolida — é
-// devolvida — mas a alteração fica APLICADA (molde policy.changed: sem reversão).
+// devolvida, embrulhada em [ErrSealFailed] — e que a alteração NÃO é aplicada (AOS-306,
+// audit-before-effect). Até AOS-306 este teste fixava a semântica inversa («erro sobe E
+// a mudança fica aplicada», molde policy.changed); essa decisão caducou porque o único
+// consumidor de produção respondia «recusado» com o nível já em vigor.
 func TestSetLevelSealFailureSurfaced(t *testing.T) {
 	r := NewLevelRegistry(WithSink(failingSink{}))
 	ctx := context.Background()
@@ -207,12 +211,18 @@ func TestSetLevelSealFailureSurfaced(t *testing.T) {
 	if err == nil {
 		t.Fatal("selagem falhada devia devolver erro")
 	}
-	if ch.New != L5 {
-		t.Error("a change devia estar preenchida mesmo com selagem falhada")
+	if !errors.Is(err, ErrSealFailed) {
+		t.Errorf("err = %v; quer errors.Is(ErrSealFailed)", err)
 	}
-	// A alteração ficou aplicada no registo (não revertida).
-	if got := r.LevelFor("a", "http"); got != L5 {
-		t.Errorf("nível após selagem falhada = %s; quer L5 (aplicado, sem reversão)", got)
+	if !reflect.DeepEqual(ch, LevelChange{}) {
+		t.Errorf("change devia ser vazia numa selagem falhada; obteve %+v", ch)
+	}
+	// A alteração NÃO ficou aplicada: o par continua fail-closed.
+	if got := r.LevelFor("a", "http"); got != L0 {
+		t.Errorf("nível após selagem falhada = %s; quer L0 (não aplicado)", got)
+	}
+	if len(r.History()) != 0 {
+		t.Error("histórico não devia crescer numa selagem falhada")
 	}
 }
 

@@ -278,6 +278,27 @@ func (c *Channel) Confirm(ctx context.Context, req risk.ConfirmationRequest) (ri
 // caso em que o selo é atribuível ao aprovador REAL e carrega a assinatura de
 // não-repúdio). timedOut marca o subconjunto negado por deadline.
 func (c *Channel) finish(ctx context.Context, span Span, pres Presentation, appr SignedApproval, approved bool, reason string, verified, timedOut bool) (risk.ConfirmationResponse, error) {
+	// FAIL-CLOSED DO EFEITO — verificado AQUI, no caminho da DECISÃO, e não no sink de
+	// auditoria. Uma aprovação assinada só autoriza o efeito com o prazo do gate ainda
+	// vivo: se o ctx morreu entre a verificação da assinatura (Confirm) e este ponto, a
+	// acção deixa de estar autorizada a correr — a ausência de aprovação DENTRO do prazo
+	// nega, que é a propriedade AC3.
+	//
+	// Isto ESTAVA a ser garantido por acidente: com o AOS-311, o Append recusava sob ctx
+	// morto e o `!sealed` abaixo forçava o deny. Depender do sink para isto misturava duas
+	// coisas distintas — o prazo do EFEITO e a durabilidade da PROVA — e custava a segunda
+	// (ver [Channel.seal]). Aqui a condição é explícita e independente do store: o gate
+	// continua fail-closed por prazo mesmo com um sink que ignore o ctx.
+	//
+	// `verified` NÃO é rebaixado: a decisão FOI assinada e verificada, e o selo tem de
+	// continuar a carregar a obrigação `hitl_signature` — sem ela perde-se o não-repúdio
+	// de quem aprovou uma acção que o prazo depois negou.
+	if approved && ctx.Err() != nil {
+		approved = false
+		reason = ReasonTimeout
+		timedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
+	}
+
 	// Métricas: toda a passagem por Confirm (gray/danger) contou como um PROMPT — o
 	// denominador do override-rate, incluindo timeouts (molde [risk.Gate]).
 	c.metrics.Prompted.Add(1)
@@ -291,7 +312,9 @@ func (c *Channel) finish(ctx context.Context, span Span, pres Presentation, appr
 	}
 
 	// Sela a decisão (audit-before-return). Uma decisão não-selável NUNCA vira
-	// aceitação: se a selagem falhar, força-se o deny (fail-closed).
+	// aceitação: se a selagem falhar POR NÃO SER DURÁVEL (disco cheio, erro de E/S,
+	// partição alheia), força-se o deny — fail-closed que continua a valer. O que já não
+	// conta como "não-selável" é o cancelamento do chamador: ver [Channel.seal].
 	sealed := c.seal(ctx, pres, appr, approved, reason, verified, timedOut)
 	if !sealed {
 		approved = false
@@ -318,6 +341,26 @@ func (c *Channel) finish(ctx context.Context, span Span, pres Presentation, appr
 
 // seal grava a decisão HITL na cadeia de audit WORM tamper-evident. Devolve false se
 // a selagem falhar (o chamador força o deny — audit-before-effect).
+//
+// O CTX DO CHAMADOR NÃO CANCELA ESTE SELO (achado de revisão adversarial sobre AOS-311).
+// Todo o caminho que chega aqui passa por [Channel.finish], e [Channel.finish] só é
+// chamado com uma decisão TERMINAL já tomada — aprovada, recusada, negada por timeout,
+// por autoridade ou por 4-eyes. Não existe neste ficheiro um Append que PARTICIPE na
+// decisão: quem decide são as guardas de `ctx.Err()` em [Channel.Confirm] (:216, :223) e
+// a guarda de prazo no topo de [Channel.finish]. Este Append regista um facto CONSUMADO.
+//
+// Porque isto importa. O caminho de TIMEOUT chega aqui com o ctx morto POR CONSTRUÇÃO —
+// é o prazo esgotado que produz a decisão. Desde que o AOS-311 pôs o `audit.Store.Append`
+// a respeitar o ctx, esse Append passou a falhar sempre nesse caminho e o erro morre no
+// `err == nil` abaixo: a negação fail-closed continuava a acontecer, mas deixava de ser
+// ESCRITA. Um auditor que pergunte «porque é que esta acção foi negada» não encontrava
+// registo nenhum, e uma aprovação assinada apanhada pelo prazo perdia a obrigação
+// `hitl_signature` — a base do não-repúdio. Perda de rasto silenciosa.
+//
+// `WithoutCancel` preserva os valores do ctx (correlação/tracing) e larga só o
+// cancelamento; o prazo próprio cobre o caso de o store estar pendurado. É o idioma já
+// usado em `packages/integration/budget.go` e em `packages/substrate/sandbox/lifecycle.go`
+// para exactamente esta situação.
 //
 // ATRIBUIÇÃO (molde messaging): uma decisão VERIFICADA (assinada por aprovador
 // autorizado) é atribuível ao aprovador REAL — Principal=aprovador, na partição do
@@ -389,9 +432,17 @@ func (c *Channel) seal(ctx context.Context, pres Presentation, appr SignedApprov
 	}
 	rec.Obligations = obs
 
-	_, err := c.sealer.Append(ctx, rec)
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalSealTimeout)
+	defer cancel()
+	_, err := c.sealer.Append(selCtx, rec)
 	return err == nil
 }
+
+// terminalSealTimeout é o prazo PRÓPRIO dos selos de decisão terminal deste pacote
+// ([Channel.seal] e [RatificationGate.seal]). Existe porque esses selos deixaram de
+// herdar o cancelamento do chamador: sem prazo nenhum, um store pendurado prenderia o
+// gate para sempre. Generoso face a um fsync local e curto face a uma sessão humana.
+const terminalSealTimeout = 5 * time.Second
 
 // partitionUnauth é a partição de audit de QUARENTENA das decisões cuja origem NÃO
 // está autenticada (timeout, aprovador desconhecido/sem autoridade, assinatura

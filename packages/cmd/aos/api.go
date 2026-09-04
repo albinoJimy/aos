@@ -1507,6 +1507,31 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 // Plano de CONTROLO TRUSTED — /steer, /pause, /approve (AUTENTICADO, non-signing)
 // ---------------------------------------------------------------------------
 
+// razaoSegura devolve a razão de uma recusa do four-eyes SEM os valores que a produziram.
+//
+// O log de AOS-309 existe para dizer ao operador QUAL invariante falhou. Dois erros do gate
+// interpolam o VALOR que colidiu — `ErrSameSession` traz o identificador da sessão viva e
+// `ErrSameCredential` o credential-id WebAuthn do aprovador (`packages/integration/foureyes.go`,
+// ramos de `authorizeDual`). Escrevê-los no log do serviço quebraria a disciplina que o resto
+// deste eixo declara e cumpre («nunca a assinatura nem o nonce», control_seal.go): a distinção
+// prometida ao operador é a CLASSE que falhou, não o valor que a produziu.
+//
+// Os restantes sentinelas não transportam material sensível (nomes de aprovador já constam do
+// roster, contagens e prazos são inócuos), pelo que passam intactos — redigir tudo apagaria o
+// diagnóstico que AOS-309 veio dar.
+func razaoSegura(err error) string {
+	switch {
+	case err == nil:
+		return "<nil>"
+	case errors.Is(err, integration.ErrSameSession):
+		return integration.ErrSameSession.Error() + " (valor redigido)"
+	case errors.Is(err, integration.ErrSameCredential):
+		return integration.ErrSameCredential.Error() + " (valor redigido)"
+	default:
+		return err.Error()
+	}
+}
+
 // emitterWire é a representação de wire do control.Emitter: a IDENTIDADE + a ASSINATURA que
 // o operador produziu FORA deste processo. A API só a transporta (non-signing).
 type emitterWire struct {
@@ -1648,8 +1673,11 @@ type approvalLegWire struct {
 // (AOS-266). O scope é derivado de request_id (o mesmo âmbito anti-replay que o /approve usa),
 // e o challenge é atribuído ao aprovador nomeado — só ele o poderá usar numa perna válida.
 type challengeRequest struct {
-	RequestID string `json:"request_id"`
-	Approver  string `json:"approver"`
+	// Emitter é a assinatura do APROVADOR nomeado sobre (run, request_id, approver) — AOS-308.
+	// O id do emissor TEM de ser o próprio Approver: quem pede o challenge é quem o vai usar.
+	Emitter   emitterWire `json:"emitter"`
+	RequestID string      `json:"request_id"`
+	Approver  string      `json:"approver"`
 }
 
 // handleChallenge EMITE um challenge server-side para (request_id, approver) e regista-o
@@ -1664,7 +1692,13 @@ type challengeRequest struct {
 //
 // O challenge NÃO é segredo (viaja em claro no clientDataJSON da attestation); é devolvido em
 // base64 (para o wire do /approve) e em hex (para a flag --challenge do aos-issuer), sem obrigar
-// a reescrever o cliente. Autenticado pela MESMA admission do plano de controlo que o /approve.
+// a reescrever o cliente.
+//
+// AUTENTICAÇÃO (AOS-308): além da admissão e do mTLS da classe `planoControlo`, o PEDIDO é
+// assinado pelo APROVADOR nomeado — chave pinada no roster, nonce de uso único, frescura — e o
+// emissor tem de ser o próprio aprovador. O corpo canónico é produzido por
+// `aos-issuer challenge-sign`. Até AOS-308 esta frase dizia «autenticado pela mesma admission que
+// o /approve» e a rota não verificava identidade nenhuma.
 func (h *apiHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	if h.node.ChallengeIssuer == nil {
 		writeError(w, http.StatusNotImplemented, "emissao de challenges desligada (frescura por-cerimonia dormente; defina AOS_CHALLENGE_ISSUANCE=1)")
@@ -1679,6 +1713,34 @@ func (h *apiHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	approver := strings.TrimSpace(req.Approver)
 	if requestID == "" || approver == "" {
 		writeError(w, http.StatusBadRequest, "request_id e approver obrigatorios")
+		return
+	}
+	// AUTENTICAÇÃO DO PEDIDO (AOS-308). A classe `planoControlo` promete «a assinatura ed25519 do
+	// corpo a decidir dentro do handler» e esta rota não a impunha: qualquer cliente que
+	// alcançasse a porta escrevia challenges duráveis no Event Store, sem atribuição, para
+	// qualquer aprovador (medido em `analises/10` §3.1 — cinco vectores, todos 200). Agora o
+	// pedido é assinado pelo APROVADOR NOMEADO, com a chave pinada no roster, nonce de uso único
+	// e frescura — e o emissor tem de SER o aprovador, senão um detentor de uma chave inundava o
+	// registo em nome dos outros. 403 uniforme, como no resto do canal.
+	if h.node.ChallengeAuth == nil {
+		writeError(w, http.StatusNotImplemented, "emissao de challenges sem autenticador de aprovadores composto")
+		return
+	}
+	emitter, err := req.Emitter.decode()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "emitter invalido")
+		return
+	}
+	if emitter.ID != approver {
+		h.logf("four-eyes (AOS-308): pedido de challenge RECUSADO — o emissor %q pediu um challenge para o aprovador %q; so o proprio aprovador pede o seu", emitter.ID, approver)
+		writeError(w, http.StatusForbidden, "aprovador nao autorizado")
+		return
+	}
+	payload := integration.CanonicalChallengePayload(r.PathValue("id"), requestID, approver)
+	if err := h.node.ChallengeAuth.Authenticate(r.Context(), integration.ChallengeRequestScope,
+		control.SignalChallenge, payload, emitter); err != nil {
+		h.logf("four-eyes (AOS-308): pedido de challenge RECUSADO request_id=%q aprovador=%q: %v", requestID, approver, err)
+		writeError(w, http.StatusForbidden, "aprovador nao autorizado")
 		return
 	}
 	// O scope EXPORTADO amarra a emissão ao MESMO namespace que a verificação (checkIssued)
@@ -1841,8 +1903,18 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(gerr, integration.ErrGrantIDReused) {
 				h.svc.log("four-eyes (achado 1.11): cerimonia RECUSADA — o request_id %q ja tem na cadeia um grant com conteudo DIFERENTE. Sem esta recusa, os aprovadores desta cerimonia receberiam 200 e a prova registada nomearia OUTRO par: %v", feReq.RequestID, gerr)
 			}
-			// Fail-closed e resposta UNIFORME: não se revela qual invariante falhou (o audit
-			// tem o erro dedicado).
+			// AOS-309: TODA a negação fica no log do operador, correlável pelo request_id e pelo
+			// run, com o erro dedicado do gate. A resposta continua UNIFORME (não se revela ao
+			// chamador qual invariante falhou); o que muda é que a auditoria — e o operador com uma
+			// cerimónia legítima a falhar — deixam de ter um 403 igual a todos os outros como única
+			// pista. Antes, o comentário dizia «o audit tem o erro dedicado» e nenhuma via o tinha.
+			// MESMOS CAMPOS que o ramo do gate directo (AOS-309). As duas vias recusam pela mesma
+			// razão e o operador não tem de saber qual delas está composta para ler o log: um
+			// formato por caminho obrigaria quem investiga a conhecer o wiring. O broker não
+			// produz uma `Reason` legível — devolve o sentinela —, pelo que `razao` fica vazia e
+			// a classe viaja em `erro`.
+			h.logf("four-eyes (AOS-309): cerimonia RECUSADA request_id=%q run=%q via=broker razao=%q erro=%v", feReq.RequestID, r.PathValue("id"), "", razaoSegura(gerr))
+			h.sealControlDenial(r.Context(), feReq.RequestID, r.PathValue("id"), razaoSegura(gerr))
 			writeError(w, http.StatusForbidden, "aprovacao recusada")
 			return
 		}
@@ -1867,8 +1939,19 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 
 	decision, err := h.node.FourEyes.Authorize(r.Context(), feReq, legs...)
 	if err != nil || !decision.Authorized {
-		// Fail-closed: qualquer negação ⇒ 403, sem revelar QUAL invariante falhou (o audit
-		// tem o erro dedicado; a resposta HTTP é uniforme).
+		// Fail-closed: qualquer negação ⇒ 403, sem revelar QUAL invariante falhou — a resposta
+		// HTTP é uniforme. AOS-309: a razão fica no LOG do operador (o gate devolve o sentinela
+		// dedicado em `err` e a razão legível em `decision.Reason`), correlável pelo request_id.
+		// Sem isto, a própria auditoria não conseguiu distinguir «challenge inválido» de
+		// «cerimónia malformada» em seis tentativas (`analises/10` §3.1).
+		h.logf("four-eyes (AOS-309): cerimonia RECUSADA request_id=%q run=%q via=gate razao=%q erro=%v", feReq.RequestID, r.PathValue("id"), decision.Reason, razaoSegura(err))
+		// A classe selada é a `Reason` do gate — que já é a categoria, sem valores — com o
+		// sentinela como remendo quando o gate não produziu razão (o caminho do broker).
+		classe := decision.Reason
+		if classe == "" {
+			classe = razaoSegura(err)
+		}
+		h.sealControlDenial(r.Context(), feReq.RequestID, r.PathValue("id"), classe)
 		writeError(w, http.StatusForbidden, "aprovacao recusada")
 		return
 	}

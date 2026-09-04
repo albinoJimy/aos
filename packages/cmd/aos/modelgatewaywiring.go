@@ -214,6 +214,11 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
+	// DEFERIDO (DEF-280-NO) — o NÓ DE REFERÊNCIA não declara escada de tiers. A cadeia
+	// `failover` → refino só se arma quando o deployment preenche `RoutingConfig.Tiers`, e este
+	// wiring não preenche `Routing` de todo: o binário do nó roteia SÓ pelo failover. O refino
+	// existe, está composto e provado no módulo do GW — o que falta é a declaração por
+	// deployment, que é decisão de quem opera, não do nó.
 	gw, err := modelgateway.NewProduction(context.Background(), modelgateway.ProductionConfig{
 		Provider:      "openai",
 		BaseURL:       base,

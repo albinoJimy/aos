@@ -156,6 +156,8 @@ services:
       # para L0 ⇒ escalate. Definir isto faz TODO o agente não listado passar a exigir aprovação
       # humana — é fail-closed e correcto, e é uma mudança de comportamento real.
       AOS_AUTONOMY_LEVELS: "${AOS_AUTONOMY_LEVELS:-}"
+      # AOS-305: emitterIDs de AOS_OPERATORS com autonomy:set (vazio ⇒ POST /autonomy recusa tudo).
+      AOS_AUTONOMY_SETTERS: "${AOS_AUTONOMY_SETTERS:-}"
 
       # PISO dos pares SEM nível registado. Vazio ⇒ L0 (o mais supervisionado), exactamente
       # como sem esta variável. Existe para o piso ser uma DECLARAÇÃO e não uma herança: hoje

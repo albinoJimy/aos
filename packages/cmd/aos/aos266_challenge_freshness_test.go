@@ -12,6 +12,7 @@ import (
 	"time"
 
 	integration "github.com/aos-ref/integration"
+	"github.com/aos-ref/kernel/agent-runtime/control"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 )
 
@@ -38,12 +39,11 @@ func aos266FreshnessConfig(t *testing.T, approverID string, pub ed25519.PublicKe
 
 // issueChallenge pede ao endpoint POST /runs/{id}/challenge um challenge fresco para
 // (request_id, approver) e devolve-o em bytes. Falha o teste se o endpoint não emitir.
-func issueChallenge(t *testing.T, h http.Handler, requestID, approver string) []byte {
+//
+// O pedido é ASSINADO pelo aprovador (AOS-308): desde então a rota recusa pedidos anónimos.
+func issueChallenge(t *testing.T, h http.Handler, requestID, approver string, priv ed25519.PrivateKey) []byte {
 	t.Helper()
-	rec := postJSON(h, "POST", "/runs/run-x/challenge", map[string]any{
-		"request_id": requestID,
-		"approver":   approver,
-	})
+	rec := postJSON(h, "POST", "/runs/run-x/challenge", challengeBody(t, priv, "run-x", requestID, approver))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /challenge devia emitir (200), veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -58,6 +58,22 @@ func issueChallenge(t *testing.T, h http.Handler, requestID, approver string) []
 		t.Fatalf("challenge emitido nao e base64 utilizavel")
 	}
 	return ch
+}
+
+// challengeBody constrói o corpo assinado de POST /runs/{run}/challenge (AOS-308): o aprovador
+// assina (run, request_id, approver) com a sua chave pinada; o emissor É o aprovador.
+func challengeBody(t *testing.T, priv ed25519.PrivateKey, runID, requestID, approver string) map[string]any {
+	t.Helper()
+	em, err := integration.SignEmitter(approver, priv, integration.ChallengeRequestScope, control.SignalChallenge,
+		integration.CanonicalChallengePayload(runID, requestID, approver), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]any{
+		"emitter":    emissorDeWire(em),
+		"request_id": requestID,
+		"approver":   approver,
+	}
 }
 
 // approveBody constrói o corpo de /approve para uma perna reversível assinada.
@@ -131,7 +147,7 @@ func TestAOS266FreshnessIssueThenConsume(t *testing.T) {
 		DualControlRequired: false,
 	}
 	// EMITE o challenge server-side e assina a perna com ele.
-	challenge := issueChallenge(t, h, req.RequestID, approverID)
+	challenge := issueChallenge(t, h, req.RequestID, approverID, priv)
 	leg := integration.SignFourEyesLeg(priv, req, approverID, "sess-1", "cred-1", challenge, nil)
 
 	body := approveBody(req, leg)
@@ -210,7 +226,7 @@ func TestAOS266ChallengeTTLHonoured(t *testing.T) {
 		RiskClass:           risk.ClassSafe,
 		DualControlRequired: false,
 	}
-	challenge := issueChallenge(t, h, req.RequestID, approverID)
+	challenge := issueChallenge(t, h, req.RequestID, approverID, priv)
 	leg := integration.SignFourEyesLeg(priv, req, approverID, "sess-1", "cred-1", challenge, nil)
 	// Dentro do TTL (o relógio real avança segundos, não um minuto) ⇒ autoriza.
 	semearPendente(t, node, "run-x", capReversivelDeTeste, []byte("efeito exibido ao humano"))

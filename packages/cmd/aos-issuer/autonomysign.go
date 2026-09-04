@@ -31,11 +31,22 @@ func runAutonomySign(args []string, out io.Writer) error {
 	domain := fs.String("domain", "", "dominio (ex.: fs, http) — o primeiro segmento da capability")
 	level := fs.String("level", "", "nivel L0..L5")
 	reason := fs.String("reason", "", "motivo da mudanca — OBRIGATORIO, e fica SELADO na hash-chain")
+	// SEGUNDA ASSINATURA (AOS-305): mudar PARA L4/L5 exige dois operadores DISTINTOS com
+	// autonomy:set. Os dois assinam o MESMO payload, cada um com o seu nonce; o no recusa
+	// (403) uma unica assinatura para esse limiar. Ambas as flags, ou nenhuma.
+	coEmitterID := fs.String("co-emitter", "", "id do SEGUNDO operador (obrigatorio para --level L4/L5)")
+	coKeyFile := fs.String("co-key-file", "", "ficheiro com a seed ed25519 do segundo operador")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*emitterID) == "" || strings.TrimSpace(*keyFile) == "" {
 		return errors.New("autonomy-sign exige --emitter e --key-file")
+	}
+	if (strings.TrimSpace(*coEmitterID) == "") != (strings.TrimSpace(*coKeyFile) == "") {
+		return errors.New("autonomy-sign: --co-emitter e --co-key-file vao juntos (ambos ou nenhum)")
+	}
+	if strings.TrimSpace(*coEmitterID) != "" && strings.TrimSpace(*coEmitterID) == strings.TrimSpace(*emitterID) {
+		return errors.New("autonomy-sign: --co-emitter tem de ser um operador DISTINTO de --emitter (duas pessoas, nao duas assinaturas da mesma)")
 	}
 	if strings.TrimSpace(*agent) == "" || strings.TrimSpace(*domain) == "" || strings.TrimSpace(*level) == "" {
 		return errors.New("autonomy-sign exige --agent, --domain e --level")
@@ -66,21 +77,44 @@ func runAutonomySign(args []string, out io.Writer) error {
 		return err
 	}
 
-	corpo, err := json.Marshal(map[string]any{
-		"emitter": map[string]any{
-			"id":        em.ID,
-			"signature": base64.StdEncoding.EncodeToString(em.Signature),
-			"nonce":     base64.StdEncoding.EncodeToString(em.Nonce),
-			"issued_at": em.IssuedAt.Format(time.RFC3339Nano),
-		},
-		"agent":  strings.TrimSpace(*agent),
-		"domain": strings.TrimSpace(*domain),
-		"level":  nivel,
-		"reason": strings.TrimSpace(*reason),
-	})
+	body := map[string]any{
+		"emitter": emitterJSON(em),
+		"agent":   strings.TrimSpace(*agent),
+		"domain":  strings.TrimSpace(*domain),
+		"level":   nivel,
+		"reason":  strings.TrimSpace(*reason),
+	}
+	if strings.TrimSpace(*coEmitterID) != "" {
+		coPriv, err := loadApproverKey(*coKeyFile)
+		if err != nil {
+			return fmt.Errorf("co-key-file: %w", err)
+		}
+		co, err := integration.SignEmitter(strings.TrimSpace(*coEmitterID), coPriv,
+			integration.AutonomyScope, control.SignalAutonomy, payload, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		body["co_emitter"] = emitterJSON(co)
+	} else if nivel == "L4" || nivel == "L5" {
+		// Aviso e não erro: o no e quem decide o limiar (e pode mudar). Mas quem assina sozinho
+		// para L4/L5 vai receber 403, e e melhor sabe-lo antes de enviar do que depois.
+		fmt.Fprintln(out, "# aviso: mudar para L4/L5 exige uma segunda assinatura (--co-emitter/--co-key-file); sem ela o no recusa (AOS-305)")
+	}
+	corpo, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Fprintln(out, string(corpo))
 	return err
+}
+
+// emitterJSON e a face de wire de um emissor assinado (o mesmo formato que o no descodifica em
+// emitterWire). Partilhada pelas duas pernas para que nao divirjam.
+func emitterJSON(em control.Emitter) map[string]any {
+	return map[string]any{
+		"id":        em.ID,
+		"signature": base64.StdEncoding.EncodeToString(em.Signature),
+		"nonce":     base64.StdEncoding.EncodeToString(em.Nonce),
+		"issued_at": em.IssuedAt.Format(time.RFC3339Nano),
+	}
 }

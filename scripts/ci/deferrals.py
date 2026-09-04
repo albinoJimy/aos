@@ -173,7 +173,21 @@ RE_EPIC = re.compile(r"EPIC-\d{2}(?:/\d{2})*")
 RE_DEFER_WORD = re.compile(
     r"\bD[EI]FERID[OA]S?\b|\bd[ei]ferid[oa]s?\b|\bd[ei]feriment[oa]s?\b"
     r"|\bd[íi]vida\b|\bdivida\b")
-RE_ROW = re.compile(r"^\|\s*(DEF-\d{3})\s*\|")
+# O SUFIXO FAZ PARTE DO IDENTIFICADOR (achado E-03 de `analises/10`).
+#
+# A forma anterior era `^\|\s*(DEF-\d{3})\s*\|`, que exigia a barra IMEDIATAMENTE a seguir aos
+# três dígitos — e por isso descartava, EM SILÊNCIO, as cinco linhas `DEF-280-PORTAS`,
+# `-TOKENS`, `-NO`, `-REGIAO` e `-ADR021`. O registo tinha 103 linhas e o gate parseava 98: as
+# descartadas não eram validadas em colunas, não tinham o eixo conferido contra o backlog, e nem
+# sequer entravam no apuramento de estados. O dano era nulo por acaso (nenhuma delas ancora um
+# marcador no código), mas o padrão `DEF-NNN-SUFIXO` já está estabelecido com cinco exemplares:
+# a próxima entrada sufixada entrava sem eixo verificado e sem ninguém dar por isso — que é
+# exactamente «operacionalmente indistinguível de não ter eixo nenhum», o defeito que o §1 do
+# registo existe para impedir.
+#
+# A linha que NÃO casa nunca chega à verificação de colunas (o `continue` precede-a), pelo que
+# alargar a regex é o que a torna visível; um ID malformado passa agora a falhar em voz alta.
+RE_ROW = re.compile(r"^\|\s*(DEF-\d{3}(?:-[A-Z0-9]+)?)\s*\|")
 # Bloco das contagens declaradas (§3.1). Delimitado por comentários HTML para a
 # leitura por máquina ser inequívoca e não colidir com as tabelas de prosa.
 RE_COUNT_ROW = re.compile(r"^\|\s*([^|]+?)\s*\|\s*([A-Z-]+)\s*\|\s*(\d+)\s*\|\s*$")
@@ -185,8 +199,10 @@ COUNT_END = "<!-- CONTAGENS:FIM -->"
 # âncoras é UM ticket em falta, não oito, e escrever a mesma nota oito vezes
 # convidava-as a divergir. Pôr a lista no cabeçalho (e não na prosa) mantém a
 # leitura por máquina inequívoca e a por humano óbvia.
-RE_NOTE = re.compile(r"^#{2,4}\s+N-DEF-\d{3}\b")
-RE_DEF_ID = re.compile(r"DEF-\d{3}")
+# Mesmo alargamento que [RE_ROW]: uma nota `N-DEF-280-PORTAS` tinha o mesmo ponto cego, e uma
+# linha `POR ATRIBUIR` com id sufixado ficaria sem nota E sem o erro que a exige.
+RE_NOTE = re.compile(r"^#{2,4}\s+N-DEF-\d{3}(?:-[A-Z0-9]+)?\b")
+RE_DEF_ID = re.compile(r"DEF-\d{3}(?:-[A-Z0-9]+)?")
 
 
 def norm(cell: str) -> str:

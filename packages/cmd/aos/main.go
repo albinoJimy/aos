@@ -518,6 +518,12 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// AUTORIDADE SOBRE A AUTONOMIA (AOS-305): quais destes operadores detêm `autonomy:set`. A
+	// pertença a AOS_OPERATORS é verificada no Bootstrap, onde as duas listas se encontram.
+	autonomySetters, err := parseAutonomySetters(os.Getenv("AOS_AUTONOMY_SETTERS"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	// FOUR-EYES / DUAL-CONTROL (AOS-162) — APROVADORES por FICHEIRO MONTADO
 	// (AOS_APPROVERS_FILE, AOS-193). Ver [parseApproversFile] para a JUSTIFICAÇÃO de ser um
@@ -649,6 +655,9 @@ func nodeConfigFromEnv() (Config, error) {
 		// bind-guardrail RECUSA um bind não-loopback (um canal inoperável não é um canal
 		// autenticado).
 		Operators: operators,
+		// AUTORIDADE SOBRE A AUTONOMIA (AOS-305): os emitterIDs de AOS_OPERATORS que podem mudar
+		// niveis (AOS_AUTONOMY_SETTERS). Vazio ⇒ POST /autonomy recusa tudo, declarado no banner.
+		AutonomySetters: autonomySetters,
 		// FOUR-EYES (AOS-162/AOS-193): aprovadores lidos do ficheiro montado AOS_APPROVERS_FILE
 		// (já validados fail-closed acima). Vazio ⇒ o gate NÃO é composto e POST
 		// /runs/{id}/approve devolve 501 (endpoint declaradamente desligado, não uma falha).

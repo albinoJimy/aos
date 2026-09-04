@@ -20,12 +20,17 @@ import (
 // concorrente; o hot-reload troca atomicamente o motor sob um RWMutex sem mutar
 // decisões já emitidas.
 type PDP struct {
-	mu       sync.RWMutex
-	engine   *cedarEngine      // nil ⇒ política indisponível (fail-closed)
-	curFP    bundleFingerprint // impressão digital do bundle em vigor (para o diff)
-	anchor   ed25519.PublicKey // trust anchor para hot-reload
-	dir      string            // directório do bundle (para Reload)
-	onReload func(PolicyChangeEvent) error
+	mu     sync.RWMutex
+	engine *cedarEngine      // nil ⇒ política indisponível (fail-closed)
+	curFP  bundleFingerprint // impressão digital do bundle em vigor (para o diff)
+	// contentHash é o sha256 canónico ASSINADO do bundle em vigor ([Manifest].ContentHash) —
+	// a segunda metade da referência rastreável (versão, hash) que o changelog `policy.changed`
+	// sela. Exposto por [PDP.ContentHash] para que o composition-root possa selar a troca de
+	// política no ARRANQUE (AOS-310), que é o único caminho real de troca no nó entregue.
+	contentHash string
+	anchor      ed25519.PublicKey // trust anchor para hot-reload
+	dir         string            // directório do bundle (para Reload)
+	onReload    func(PolicyChangeEvent) error
 	// sealMu serializa a SELAGEM do changelog `policy.changed` na ordem exacta em
 	// que as versões são aplicadas (ver [PDP.Reload]). É distinto do RWMutex do
 	// motor para não bloquear Decide() durante o Append (I/O) do audit.
@@ -175,6 +180,7 @@ func Open(dir string, opts ...Option) (*PDP, error) {
 	}
 	p.engine = eng
 	p.curFP = fp
+	p.contentHash = rb.Manifest.ContentHash
 	return p, nil
 }
 
@@ -194,6 +200,18 @@ func NewUnloaded() *PDP { return &PDP{} }
 // univocamente ao conteúdo exacto assinado (ambos selados no changelog
 // `policy.changed`). O pipeline de assinatura mapeia SemVer↔commit fora de banda.
 func (p *PDP) ActiveVersion() string { return p.Version() }
+
+// ContentHash devolve o sha256 canónico ASSINADO do bundle em vigor ("" se não carregado) — o
+// par (Version, ContentHash) é a referência rastreável da política (ver [PDP.ActiveVersion]).
+// Só-leitura; existe para o composition-root selar `policy.changed` no arranque (AOS-310).
+func (p *PDP) ContentHash() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.engine == nil {
+		return ""
+	}
+	return p.contentHash
+}
 
 // Version devolve a policy_version actualmente em vigor ("" se não carregado).
 func (p *PDP) Version() string {
@@ -373,6 +391,7 @@ func (p *PDP) Reload(ctx context.Context, req ReloadRequest) (err error) {
 	oldFP := p.curFP
 	p.engine = eng
 	p.curFP = newFP
+	p.contentHash = rb.Manifest.ContentHash
 	cb := p.onReload
 	// ORDENAÇÃO DO CHANGELOG (accountability). Adquire o mutex de selagem AINDA sob
 	// o Lock de escrita do motor: como o Lock serializa as transições, a ordem por

@@ -49,6 +49,14 @@ const (
 	// pause como se fosse de uma revogação.
 	SignalRevoke SignalKind = "nhi.revoke"
 
+	// SignalChallenge é o PEDIDO DE CHALLENGE de uma cerimónia four-eyes (AOS-308), assinado
+	// pelo APROVADOR que o vai usar. Como [SignalRevoke], não atravessa o [SteerChannel] nem
+	// pertence a um run como sinal de controlo: o `runID` do tuplo assinado é o âmbito fixo
+	// "foureyes.challenge" e o alvo (run, request_id, aprovador) vai no PAYLOAD. Está aqui só
+	// pelo vocabulário do tuplo — é o `kind` que impede reutilizar a assinatura de um steer
+	// como pedido de challenge, e vice-versa.
+	SignalChallenge SignalKind = "foureyes.challenge"
+
 	// SignalCorrectionConsumed marca que a correcção pendente foi ENTREGUE ao loop e já não
 	// está pendente (AOS-292).
 	//
