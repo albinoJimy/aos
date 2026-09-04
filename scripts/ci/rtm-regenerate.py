@@ -46,6 +46,12 @@ NFR_SPECS = [
     ("NFR-08", "Isolamento de segredos", "Agente nunca vê segredo downstream", {"ADR-006"}),
     ("NFR-09", "Conformidade regulatória", "GDPR/EU AI Act por desenho", {"ADR-011", "ADR-013"}),
     ("NFR-10", "Segurança de auto-evolução", "0 auto-modificações não avaliadas em prod", {"ADR-012"}),
+    # NFR-11 e NFR-12 entraram no catálogo §3 pela EPIC-19 e nunca chegaram a esta
+    # lista, pelo que a §5 gerava 10 linhas e afirmava «10/10» ao lado de um
+    # catálogo de 12. Faltava-lhes a linha, não a prova: AOS-242 fixa o SLI de
+    # fracção de planeamento ≤ 5% e AOS-232 deriva o risco das tools pinadas.
+    ("NFR-11", "Custo de planeamento", "≤ 5% do orçamento da árvore", {"ADR-008"}),
+    ("NFR-12", "Integridade do risco do plano", "0 nós irreversíveis auto-aprovados por rótulo *self-declared*", {"ADR-013", "ADR-005"}),
 ]
 
 # Mapeamento NFR -> tickets de verificação preferidos (justificados no corpus).
@@ -62,6 +68,8 @@ NFR_MANUAL_TICKETS = {
     "NFR-08": {"AOS-117"},
     "NFR-09": {"AOS-113", "AOS-091", "AOS-092"},
     "NFR-10": {"AOS-114", "AOS-115"},
+    "NFR-11": {"AOS-242"},
+    "NFR-12": {"AOS-232"},
 }
 
 
@@ -85,6 +93,85 @@ def _write(path: Path, text: str) -> None:
     # Windows e reescreve o ficheiro inteiro, contrariando o `.gitattributes`
     # (`* text=auto eol=lf`) e sujando a árvore de trabalho a cada regeneração.
     path.write_text(text, encoding="utf-8", newline="\n")
+
+
+# Cabeçalhos dos catálogos de requisitos DENTRO do RTM. São a fonte dos
+# identificadores `RF-NN`/`NFR-NN` — ver `requirement_catalogue`.
+RF_HEADING = "## 2. Catálogo de Requisitos Funcionais (RF)"
+NFR_HEADING = "## 3. Catálogo de Requisitos Não-Funcionais (NFR)"
+
+
+def _section_body(text: str, heading: str, where: str) -> str:
+    """Corpo de uma secção de topo, do cabeçalho até ao próximo `## ` ou ao fim."""
+    m = re.search(
+        rf"^{re.escape(heading)}$(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL
+    )
+    if not m:
+        sys.stderr.write(f"ERRO: não encontrou «{heading}» em {where}\n")
+        sys.exit(1)
+    return m.group(1)
+
+
+def requirement_catalogue(rtm_text: str, heading: str, prefix: str) -> list:
+    """
+    Identificadores de uma família de requisitos, lidos das linhas da tabela do
+    catálogo respectivo.
+
+    QUAL É A FONTE AUTORITATIVA. Para os `RF-NN` e `NFR-NN` é o próprio RTM
+    (§2 e §3), não `specs/00_System_Spec.md`. É o que a §1.1 declara — a RTM é
+    o artefacto que estabelece o catálogo com identificadores estáveis — e é o
+    que os factos impõem: RF-12/RF-13 e NFR-11/NFR-12 entraram pela EPIC-19 e
+    não têm contrapartida em `specs/00` §4 nem §7. A System Spec continua
+    autoritativa para *quantas capacidades top-level ela lista*, e para nada
+    mais: confundir esse número com o extremo do intervalo de RF era o defeito
+    que esta derivação fecha.
+
+    Falha fechado se o catálogo não for contíguo `PREFIX-01`..`PREFIX-NN`: sem
+    contiguidade, a contagem e o extremo do intervalo deixam de coincidir, e
+    tudo o que se segue assume que coincidem.
+    """
+    body = _section_body(rtm_text, heading, "o RTM")
+    ids = re.findall(rf"^\|\s*\*\*({prefix}-\d{{2}})\*\*\s*\|", body, re.MULTILINE)
+    nums = [int(i.split("-")[1]) for i in ids]
+    if not nums:
+        sys.stderr.write(
+            f"ERRO: o catálogo «{heading}» não tem nenhuma linha {prefix}-NN\n"
+        )
+        sys.exit(1)
+    if nums != list(range(1, len(nums) + 1)):
+        sys.stderr.write(
+            f"ERRO: catálogo {prefix} descontínuo ou desordenado em «{heading}»: "
+            f"{', '.join(ids)}\n"
+        )
+        sys.exit(1)
+    return ids
+
+
+def system_spec_capabilities() -> int:
+    """Itens numerados de `specs/00_System_Spec.md` §4 — a ORIGEM de RF-01..RF-11."""
+    body = _section_body(
+        _read(SPECS_DIR / "00_System_Spec.md"),
+        "## 4. Capacidades funcionais top-level",
+        "specs/00_System_Spec.md",
+    )
+    return len(re.findall(r"^\d+\. \*\*", body, re.MULTILINE))
+
+
+def system_spec_drivers() -> int:
+    """Linhas da tabela de `specs/00_System_Spec.md` §7 — a ORIGEM de NFR-01..NFR-10."""
+    body = _section_body(
+        _read(SPECS_DIR / "00_System_Spec.md"),
+        "## 7. Drivers não-funcionais",
+        "specs/00_System_Spec.md",
+    )
+    rows = [
+        ln
+        for ln in body.splitlines()
+        if ln.startswith("| ")
+        and not ln.startswith("|---")
+        and not ln.startswith("| Driver ")
+    ]
+    return len(rows)
 
 
 def corpus_stats(tickets: dict) -> dict:
@@ -400,6 +487,105 @@ def validate_section6(section: str, tickets: dict) -> None:
         sys.exit(1)
 
 
+# Afirmações numéricas escritas no RTM, nas três notações que o documento usa:
+#   `RF-01`–`RF-13`  (§1.2)   RF-01 … RF-13  (§2)   RF-01..RF-13  (mermaid §6)
+# Os acentos graves são removidos antes de correr o padrão.
+_RANGE_CLAIM_RE = re.compile(
+    r"\b(RF|NFR|ADR)-0*1\s*(?:\.\.|…|–|—|-)\s*(?:(?:RF|NFR|ADR)-)?(\d{2,3})\b"
+)
+# Contagens: «**Total: 13 requisitos funcionais**» (§2/§3) e «os 13 requisitos
+# funcionais» (§1.2). A segunda forma foi acrescentada depois de a prova da
+# guarda mostrar que um 11 literal na §1.2 passava incólume — o extremo do
+# intervalo estava certo e mais nada era lido.
+_TOTAL_CLAIM_RE = re.compile(
+    r"(?:\*\*Total:|\bos)\s+(\d+)\s+requisitos\s+(não-)?funcionais"
+)
+# «as 11 capacidades funcionais (`specs/00` §4)» é uma afirmação sobre a System
+# Spec, não sobre o catálogo §2 — foi confundi-las que produziu o defeito. Fica
+# guardada contra a SUA fonte, para que a confusão não regresse por reescrita.
+# Sem exigir artigo antes do número: a §1.2 diz «das 11 capacidades», e um `\bas`
+# não casa dentro de «das». Foi §U4 a apanhá-lo — a guarda tinha um ponto cego
+# exactamente na frase que a motivou.
+_CAP_CLAIM_RE = re.compile(r"(\d+)\s+capacidades\s+funcionais")
+_COVERAGE_CLAIM_RE = re.compile(r"(\d+)/(\d+)\s*(ADRs|NFRs)\b")
+
+
+def assert_numeric_claims(rtm_text: str, rf_ids: list, nfr_ids: list) -> None:
+    """
+    Guarda fail-closed para as CONTAGENS e os EXTREMOS DE INTERVALO do RTM.
+
+    Irmã de `validate_section6` e `validate_section7`, para a metade do mesmo
+    meta-achado (`analises/10` §5) que nenhuma das duas cobre: ali validam-se
+    pares epic↔ticket e citações inventadas, aqui validam-se NÚMEROS. Um número
+    escrito numa linha gerada — «11 capacidades», «RF-01..RF-11», «10/10 NFRs»,
+    «Para cada ADR-001…019» com vinte e três linhas na tabela — não tinha quem o
+    comparasse com a fonte, e apodrecia em silêncio enquanto os catálogos
+    cresciam. AOS-314 alargou `ADR_RANGE` a 023 e o cabeçalho da §4 ficou nos
+    019: é o mesmo defeito a nascer da própria correcção que o combatia.
+
+    Compara com a fonte derivada:
+      - `RF-01..NN`  → último RF do catálogo §2;
+      - `NFR-01..NN` → último NFR do catálogo §3;
+      - `ADR-001..N` → último ADR de `ADR_RANGE`;
+      - `N requisitos (não-)funcionais` → tamanho do catálogo §2/§3;
+      - `N capacidades funcionais` → itens de `specs/00` §4, que é outra coisa;
+      - `A/B ADRs|NFRs` → B é o tamanho da família, e A ≤ B.
+
+    Corre sobre o corpo TODO do documento — desde AOS-313 até a §7 é gerada, e o
+    glossário é lido por quem audita tanto como as matrizes. Pára no **controlo
+    de versões**, e só aí: aquela tabela regista o que cada revisão AFIRMOU na
+    data, não o que o documento afirma hoje. A entrada 1.2 diz «cobertura 20/20
+    ADRs, 12/12 NFRs» e está correcta enquanto história — vem anotada com a
+    regeneração que a desfez (AOS-313). Alinhá-la com os números de hoje seria
+    falsificar o registo, que é o contrário do que uma RTM existe para fazer.
+    """
+    probe = rtm_text.partition("\n### Controlo de versões")[0].replace("`", "")
+    expected = {"RF": len(rf_ids), "NFR": len(nfr_ids), "ADR": len(ADR_RANGE)}
+    errors = []
+
+    for m in _RANGE_CLAIM_RE.finditer(probe):
+        family, claimed = m.group(1), int(m.group(2))
+        if claimed != expected[family]:
+            errors.append(
+                f"«{m.group(0)}» termina em {claimed}, mas o catálogo de "
+                f"{family} vai até {expected[family]}."
+            )
+
+    for m in _TOTAL_CLAIM_RE.finditer(probe):
+        claimed = int(m.group(1))
+        family = "NFR" if m.group(2) else "RF"
+        if claimed != expected[family]:
+            errors.append(
+                f"«{m.group(0).strip()}…» conta {claimed}, mas o catálogo de {family} "
+                f"tem {expected[family]} entradas."
+            )
+
+    for m in _CAP_CLAIM_RE.finditer(probe):
+        claimed, real = int(m.group(1)), system_spec_capabilities()
+        if claimed != real:
+            errors.append(
+                f"«{m.group(0)}» conta {claimed}, mas `specs/00` §4 enumera {real}."
+            )
+
+    for m in _COVERAGE_CLAIM_RE.finditer(probe):
+        num, den, family = int(m.group(1)), int(m.group(2)), m.group(3)[:-1]
+        if den != expected[family]:
+            errors.append(
+                f"«{m.group(0)}» tem denominador {den}, mas há "
+                f"{expected[family]} {family}s."
+            )
+        if num > den:
+            errors.append(f"«{m.group(0)}» afirma cobrir mais do que existe.")
+
+    if errors:
+        sys.stderr.write(
+            "ERRO: o RTM afirma números que não batem certo com a sua fonte:\n"
+        )
+        for e in errors:
+            sys.stderr.write(f"  - {e}\n")
+        sys.exit(1)
+
+
 def infer_docs_for_tickets(tickets_for: list, tickets: dict) -> str:
     """
     Documentos técnicos que desenvolvem uma decisão, resolvidos TICKET A TICKET.
@@ -456,7 +642,7 @@ def generate_section4(rows: list) -> str:
     lines = [
         "## 4. Matriz ADR × ticket",
         "",
-        "Para cada ADR-001…019, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
+        f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
         "",
         "| ADR | Decisão | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",
         "|---|---|---|---|---|",
@@ -486,7 +672,7 @@ def generate_section4(rows: list) -> str:
     return "\n".join(lines)
 
 
-def generate_section5(tickets: dict) -> str:
+def generate_section5(tickets: dict, nfr_ids: list) -> str:
     lines = [
         "## 5. Matriz NFR × ticket de verificação",
         "",
@@ -506,6 +692,8 @@ def generate_section5(tickets: dict) -> str:
         "NFR-08": "Tentativa de exfiltração de credencial downstream falha",
         "NFR-09": "DSAR satisfeito por crypto-shredding sem quebrar o log encadeado",
         "NFR-10": "Eval-gate barra promoção sem *golden-set* aprovado",
+        "NFR-11": "*Burn-down* da reserva de planeamento; exceder a fracção demove a autonomia",
+        "NFR-12": "Risco derivado das tools pinadas; o rótulo do LLM só eleva, nunca reduz",
     }
     for nfr, name, target, adrs in NFR_SPECS:
         verif = sorted(NFR_MANUAL_TICKETS.get(nfr, set()))
@@ -515,29 +703,52 @@ def generate_section5(tickets: dict) -> str:
             sys.stderr.write(f"AVISO: {nfr} referencia tickets inexistentes: {missing}\n")
         verif_str = ", ".join(verif) if verif else "—"
         lines.append(f"| **{nfr}** | {target} | {verif_str} | {proofs[nfr]} |")
+    # A linha de cobertura dizia «10/10» à mão. O denominador é o catálogo §3,
+    # que tem 12 NFRs desde a EPIC-19; o numerador são os NFRs com pelo menos um
+    # ticket de verificação. Escrever 10/10 apagava a lacuna em vez de a mostrar,
+    # que é precisamente o oposto do que uma RTM serve para fazer.
+    verified = [nfr for nfr, _, _, _ in NFR_SPECS if NFR_MANUAL_TICKETS.get(nfr)]
+    unverified = [nfr for nfr in nfr_ids if nfr not in verified]
+    coverage = f"**Cobertura: {len(verified)}/{len(nfr_ids)} NFRs têm ≥ 1 ticket de verificação.**"
+    if unverified:
+        coverage += (
+            f" Sem ticket de verificação nesta matriz: {', '.join(unverified)}"
+            " — lacuna real, não arredondamento."
+        )
     lines.append("")
-    lines.append("**Cobertura: 10/10 NFRs têm ≥ 1 ticket de verificação.**")
+    lines.append(coverage)
     lines.append("")
     return "\n".join(lines)
 
 
-def update_section1(rtm_text: str, stats: dict) -> str:
+def update_section1(rtm_text: str, stats: dict, rf_ids: list, nfr_ids: list) -> str:
     """
     Actualiza §1.2 (âmbito) e §1.5 (ADRs aplicáveis). Todos os números vêm de
-    `stats` (derivados do corpus) — nenhum é literal, senão o gate ficaria
-    fail-open: o backlog crescia e o texto continuava a afirmar o valor antigo.
+    `stats` (derivados do corpus) ou dos catálogos §2/§3 — nenhum é literal,
+    senão o gate ficaria fail-open: o backlog crescia e o texto continuava a
+    afirmar o valor antigo.
     """
-    # §1.2
+    # §1.2. A frase dizia «as 11 capacidades funcionais (`specs/00` §4)» com o 11
+    # escrito à mão, e contradizia a §2 do mesmo ficheiro, que cataloga RF-01..RF-13.
+    # Passa a afirmar o catálogo (a fonte dos identificadores) e a nomear à parte a
+    # origem em `specs/00`, que é outro número e outra coisa. O padrão é frouxo de
+    # propósito — apanha a frase antiga e a nova, para a regeneração continuar
+    # idempotente depois desta migração.
     rtm_text = re.sub(
-        r"A rastreabilidade cobre os \d+ ADRs canónicos \([^)]*\), as \d+ capacidades funcionais \(`specs/00` §4\), os \d+ \*drivers\* não-funcionais \(`specs/00` §7\) e os \*\*\d+ tickets\*\* `AOS-\d+`–`AOS-\d+` distribuídos por \d+ epics\.",
-        (
-            # A fonte citada é `docs/adr/README.md`: é o único catálogo que tem
-            # a gama toda. `_BRIEF` §3 era citado aqui e lista catorze (GAP-08).
+        r"A rastreabilidade cobre .*?(?= Os dados das matrizes)",
+        lambda _: (
+            # A fonte citada para os ADRs é `docs/adr/README.md`: é o único
+            # catálogo que tem a gama toda (AOS-314; `_BRIEF` §3 lista catorze).
             f"A rastreabilidade cobre os {stats['n_adrs']} ADRs canónicos (`docs/adr/README.md`), "
-            f"as 11 capacidades funcionais (`specs/00` §4), os {stats['n_nfrs']} *drivers* "
-            f"não-funcionais (`specs/00` §7) e os **{stats['n_tickets']} tickets** "
+            f"os {len(rf_ids)} requisitos funcionais `RF-01`–`{rf_ids[-1]}` (§2), "
+            f"os {len(nfr_ids)} requisitos não-funcionais `NFR-01`–`{nfr_ids[-1]}` (§3) "
+            f"e os **{stats['n_tickets']} tickets** "
             f"`AOS-{stats['min_aos']:03d}`–`AOS-{stats['max_aos']:03d}` distribuídos por "
-            f"{stats['n_epics']} epics."
+            f"{stats['n_epics']} epics. Os catálogos §2 e §3 partem das "
+            f"{system_spec_capabilities()} capacidades funcionais de `specs/00` §4 e dos "
+            f"{system_spec_drivers()} *drivers* de `specs/00` §7 e estendem-nos com os "
+            f"requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são "
+            f"estáveis e vivem aqui, não na System Spec."
         ),
         rtm_text,
     )
@@ -553,7 +764,7 @@ def update_section1(rtm_text: str, stats: dict) -> str:
     return rtm_text
 
 
-def generate_section6(tickets: dict, stats: dict) -> str:
+def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -> str:
     """Gera a tabela de rasto descendente documento técnico → epic → tickets."""
     first = f"AOS-{stats['min_aos']:03d}"
     last = f"AOS-{stats['max_aos']:03d}"
@@ -608,8 +819,11 @@ def generate_section6(tickets: dict, stats: dict) -> str:
         "",
         "```mermaid",
         "flowchart LR",
-        f'    RF["RF-01..RF-11 (capacidades)"] --> ADR["ADR-001..{ADR_RANGE[-1].split("-")[1]} (decisoes)"]',
-        f'    NFR["NFR-01..NFR-{stats["n_nfrs"]:02d} (drivers)"] --> ADR',
+        # Extremos derivados dos catálogos §2/§3, nunca da contagem de entradas de
+        # uma constante deste ficheiro: `NFR-{n_nfrs}` era a contagem de NFR_SPECS
+        # (10) a passar-se por identidade, e a §3 já ia em NFR-12.
+        f'    RF["RF-01..{rf_ids[-1]} (capacidades)"] --> ADR["ADR-001..{ADR_RANGE[-1].split("-")[1]} (decisoes)"]',
+        f'    NFR["NFR-01..{nfr_ids[-1]} (drivers)"] --> ADR',
         f'    ADR --> EPIC["EPIC-01..{last_epic} (entregas)"]',
         f'    EPIC --> TICK["{first}..{last} (tickets)"]',
         '    DOC["tecnica/00..17 (docs)"] --> EPIC',
@@ -763,7 +977,7 @@ def _factos_catalogos() -> dict:
     }
 
 
-def generate_section7(rows: list, tickets: dict, stats: dict) -> str:
+def generate_section7(rows: list, tickets: dict, stats: dict, nfr_ids: list) -> str:
     """
     Gera a §7 a partir dos MESMOS dados que produzem §§4–5.
 
@@ -823,7 +1037,9 @@ def generate_section7(rows: list, tickets: dict, stats: dict) -> str:
     lines.append(
         f"Nenhum ADR do canon gated e nenhum NFR está **sem** cobertura mínima: "
         f"{n_adrs_cobertos}/{len(rows)} ADRs (ADR-001…{ADR_RANGE[-1].split('-')[1]}) e "
-        f"{n_nfrs_cobertos}/{len(NFR_SPECS)} NFRs (NFR-01…NFR-{len(NFR_SPECS):02d}) têm pelo "
+        # Denominador e extremo saem do catálogo §3, não de `len(NFR_SPECS)`: a
+        # contagem das linhas desta matriz não é a identidade do último NFR.
+        f"{n_nfrs_cobertos}/{len(nfr_ids)} NFRs (NFR-01…{nfr_ids[-1]}) têm pelo "
         f"menos um ticket associado. As lacunas acima são de **profundidade e verificação** — "
         f"excepto GAP-08, que é de **coerência entre catálogos**."
     )
@@ -871,13 +1087,17 @@ def validate_section7(section: str, tickets: dict, catalogo: dict) -> None:
 def regenerate_rtm(tickets: dict, adr_titles: dict) -> str:
     rtm_text = _read(RTM_PATH)
     stats = corpus_stats(tickets)
+    # Catálogos de requisitos lidos do RTM ANTES de qualquer substituição: são a
+    # fonte dos identificadores RF/NFR e o gerador não os reescreve.
+    rf_ids = requirement_catalogue(rtm_text, RF_HEADING, "RF")
+    nfr_ids = requirement_catalogue(rtm_text, NFR_HEADING, "NFR")
 
     # Actualiza §1
-    rtm_text = update_section1(rtm_text, stats)
+    rtm_text = update_section1(rtm_text, stats, rf_ids, nfr_ids)
 
     # Substitui §4–§5
     sec4 = generate_section4(build_adr_matrix(tickets, adr_titles))
-    sec5 = generate_section5(tickets)
+    sec5 = generate_section5(tickets, nfr_ids)
     new_middle = sec4 + sec5
     pattern = re.compile(r"(## 4\. Matriz ADR × ticket.*?)(?=\n## 6\. )", re.DOTALL)
     m = pattern.search(rtm_text)
@@ -887,7 +1107,7 @@ def regenerate_rtm(tickets: dict, adr_titles: dict) -> str:
     rtm_text = rtm_text[:m.start()] + new_middle + rtm_text[m.end():]
 
     # Substitui §6
-    sec6 = generate_section6(tickets, stats)
+    sec6 = generate_section6(tickets, stats, rf_ids, nfr_ids)
     pattern6 = re.compile(r"## 6\. Rasto descendente: documento técnico → epic → tickets.*?\n---", re.DOTALL)
     m6 = pattern6.search(rtm_text)
     if not m6:
@@ -898,13 +1118,17 @@ def regenerate_rtm(tickets: dict, adr_titles: dict) -> str:
     # Substitui §7. Era a única secção da RTM fora da regeneração E fora do
     # ref-lint (`analises/10` §5); a frase de cobertura afirmava 20/20 ADRs e
     # 12/12 NFRs contra as 19 e 10 linhas geradas no mesmo ficheiro.
-    sec7 = generate_section7(build_adr_matrix(tickets, adr_titles), tickets, stats)
+    sec7 = generate_section7(build_adr_matrix(tickets, adr_titles), tickets, stats, nfr_ids)
     pattern7 = re.compile(r"## 7\. Lacunas de cobertura.*?\n---", re.DOTALL)
     m7 = pattern7.search(rtm_text)
     if not m7:
         sys.stderr.write("ERRO: não encontrou secção §7 no RTM\n")
         sys.exit(1)
     rtm_text = rtm_text[:m7.start()] + sec7 + "\n---" + rtm_text[m7.end():]
+
+    # Última porta antes de escrever ou comparar: nenhum número afirmado no
+    # ficheiro pode divergir da fonte que o gerador acabou de derivar.
+    assert_numeric_claims(rtm_text, rf_ids, nfr_ids)
     return rtm_text
 
 

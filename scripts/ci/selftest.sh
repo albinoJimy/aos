@@ -898,14 +898,17 @@ else
 fi
 
 # S2 — um NFR fora de NFR_SPECS. E o molde exacto do defeito historico: a §7
-# afirmava 12/12 NFRs quando NFR_SPECS tem dez, e NFR-11/NFR-12 nao existem para o
-# gerador. Se alguem voltar a nomea-los na §7 sem os por na fonte, fica vermelho.
+# afirmava 12/12 NFRs quando NFR_SPECS tinha dez linhas. O NFR injectado era o
+# NFR-11 -- deixou de servir: NFR-11 e NFR-12 entraram em NFR_SPECS com os seus
+# tickets de verificacao (AOS-242, AOS-232), pelo que nomea-los na §7 passou a
+# ser VERDADE e o teste media o vazio. Passa a injectar NFR-13, que nao existe
+# em catalogo nenhum -- a asercao e a mesma, a sonda e que voltou a ser falsa.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/"evidencia": "§3, §5",/"evidencia": "§3, §5 (NFR-11)",/' "$RTM_GEN"
+perl -0pi -e 's/"evidencia": "§3, §5",/"evidencia": "§3, §5 (NFR-13)",/' "$RTM_GEN"
 if rtm_bloqueou_pela_asercao7; then
-  pass "S2: o gate bloqueou a §7 que nomeava NFR-11, ausente de NFR_SPECS"
+  pass "S2: o gate bloqueou a §7 que nomeava NFR-13, ausente de NFR_SPECS"
 else
-  bad "S2: o gate passou com NFR-11 na §7 — o defeito histórico de 12/12 podia voltar"
+  bad "S2: o gate passou com NFR-13 na §7 — o defeito histórico de 12/12 podia voltar"
 fi
 
 # S3 — CONTROLO POSITIVO: restaurada a arvore, o gate volta a verde.
@@ -929,6 +932,74 @@ else
   pass "S4: o ref-lint bloqueou uma referência partida DENTRO da RTM (fim do skip)"
 fi
 rm -rf "$RTM_TMP"
+
+
+# ============================================================================
+# U) o gate rtm bloqueia uma CONTAGEM ou um EXTREMO DE INTERVALO que mente
+# ============================================================================
+# O defeito real: a §1.2 dizia «as 11 capacidades funcionais» e o mermaid da §6
+# dizia `RF-01..RF-11`, ambos escritos a mao, enquanto a §2 do mesmo ficheiro
+# cataloga RF-01..RF-13 desde a EPIC-19. O mesmo valia para os NFR — `NFR-10`
+# era a CONTAGEM de NFR_SPECS a passar-se por identidade, com a §3 ja em NFR-12 —
+# e para o cabecalho da §4, que ficou nos ADR-001…019 quando AOS-314 alargou a
+# tabela a 023. Nenhum destes numeros tinha quem o confrontasse com a fonte:
+# validate_section6 le pares epic↔ticket e validate_section7 le citacoes, mas
+# nenhuma das duas le numeros. `assert_numeric_claims` fecha essa metade.
+log_gate "self-test U · o gate rtm bloqueia um numero que nao bate com a fonte"
+
+# ASCII PURO, pela mesma razao de §S: 'numeros' leva acento e a consola do
+# Windows escreve stderr em cp1252.
+rtm_bloqueou_pela_asercao_numerica() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q 'o RTM afirma'
+}
+
+# U1 — a REGRESSAO literal do defeito relatado: o extremo do intervalo de RF no
+# diagrama volta a ser escrito a mao.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/RF-01\.\.\{rf_ids\[-1\]\}/RF-01..RF-11/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U1: o gate bloqueou o regresso de RF-01..RF-11 no mermaid da §6"
+else
+  bad "U1: o gate passou com RF-01..RF-11 e a §2 em RF-13 — o defeito relatado volta"
+fi
+
+# U2 — a mesma classe na outra ponta: a CONTAGEM de RF na §1.2, escrita a mao.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/os \{len\(rf_ids\)\} requisitos funcionais/os 11 requisitos funcionais/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U2: o gate bloqueou a §1.2 que contava 11 requisitos funcionais contra 13 no catalogo"
+else
+  bad "U2: o gate passou com a contagem de RF errada na §1.2"
+fi
+
+# U3 — um DENOMINADOR de cobertura a contar-se a si proprio em vez do catalogo.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/\{len\(nfr_ids\)\} NFRs \(NFR-01/10 NFRs (NFR-01/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U3: o gate bloqueou a §7 que afirmava 10 NFRs com o catalogo §3 em 12"
+else
+  bad "U3: o gate passou com o denominador de cobertura da §7 errado"
+fi
+
+# U4 — as capacidades de `specs/00` §4 sao OUTRA coisa que o catalogo §2, e ficam
+# guardadas contra a SUA fonte. Foi confundir as duas que produziu o defeito.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/\{system_spec_capabilities\(\)\} capacidades/99 capacidades/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U4: o gate bloqueou a §1.2 que contava 99 capacidades contra as de specs/00 §4"
+else
+  bad "U4: o gate passou com a contagem de capacidades divorciada de specs/00 §4"
+fi
+
+# U5 — CONTROLO POSITIVO (molde de P3/Q4/R3/S3): restaurada a arvore, verde.
+if python3 "$CI_DIR/rtm-regenerate.py" --check >/dev/null 2>&1; then
+  pass "U5: controlo — o gate rtm continua verde contra a arvore REAL (sem rasto)"
+else
+  bad "U5: o gate rtm ficou vermelho contra a arvore real — POSSIVEL RASTO no repo"
+fi
 
 # S5 — controlo positivo do §S4, no molde do P3.
 if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
@@ -1006,9 +1077,9 @@ fi
 # ter ficado modificado. É a prova de que passaram a mutar uma cópia via
 # `AOS_RTM_ROOT`, e o teste que fica de guarda caso alguém reverta isso.
 if [ "$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")" = "$RTM_GEN_SHA_INICIO" ]; then
-  pass "T5: §R e §S correram sem tocar em scripts/ci/rtm-regenerate.py (mutação em cópia)"
+  pass "T5: §R, §S e §U correram sem tocar em scripts/ci/rtm-regenerate.py (mutação em cópia)"
 else
-  bad "T5: o gerador da RTM mudou durante o run — §R/§S voltaram a mutar a árvore real"
+  bad "T5: o gerador da RTM mudou durante o run — §R/§S/§U voltaram a mutar a árvore real"
 fi
 
 rm -rf "$T_TMP"

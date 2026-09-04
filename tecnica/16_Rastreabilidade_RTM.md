@@ -27,7 +27,7 @@ Este documento é a **Matriz de Rastreabilidade de Requisitos** (*Requirements T
 
 ### 1.2 Âmbito
 
-A rastreabilidade cobre os 23 ADRs canónicos (`docs/adr/README.md`), as 11 capacidades funcionais (`specs/00` §4), os 10 *drivers* não-funcionais (`specs/00` §7) e os **316 tickets** `AOS-001`–`AOS-316` distribuídos por 22 epics. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
+A rastreabilidade cobre os 23 ADRs canónicos (`docs/adr/README.md`), os 13 requisitos funcionais `RF-01`–`RF-13` (§2), os 12 requisitos não-funcionais `NFR-01`–`NFR-12` (§3) e os **316 tickets** `AOS-001`–`AOS-316` distribuídos por 22 epics. Os catálogos §2 e §3 partem das 11 capacidades funcionais de `specs/00` §4 e dos 10 *drivers* de `specs/00` §7 e estendem-nos com os requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são estáveis e vivem aqui, não na System Spec. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
 
 ### 1.3 Audiência
 
@@ -96,7 +96,7 @@ Derivados dos *drivers* canónicos (`_BRIEF` §4 / `specs/00` §7) e dos KPIs/SL
 
 ## 4. Matriz ADR × ticket
 
-Para cada ADR-001…019, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
+Para cada ADR-001…023, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
 
 | ADR | Decisão | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |
 |---|---|---|---|---|
@@ -145,8 +145,10 @@ Para cada NFR, o(s) ticket(s) que o **testam/verificam** com o limiar respectivo
 | **NFR-08** | Agente nunca vê segredo downstream | AOS-117 | Tentativa de exfiltração de credencial downstream falha |
 | **NFR-09** | GDPR/EU AI Act por desenho | AOS-091, AOS-092, AOS-113 | DSAR satisfeito por crypto-shredding sem quebrar o log encadeado |
 | **NFR-10** | 0 auto-modificações não avaliadas em prod | AOS-114, AOS-115 | Eval-gate barra promoção sem *golden-set* aprovado |
+| **NFR-11** | ≤ 5% do orçamento da árvore | AOS-242 | *Burn-down* da reserva de planeamento; exceder a fracção demove a autonomia |
+| **NFR-12** | 0 nós irreversíveis auto-aprovados por rótulo *self-declared* | AOS-232 | Risco derivado das tools pinadas; o rótulo do LLM só eleva, nunca reduz |
 
-**Cobertura: 10/10 NFRs têm ≥ 1 ticket de verificação.**
+**Cobertura: 12/12 NFRs têm ≥ 1 ticket de verificação.**
 
 ## 6. Rasto descendente: documento técnico → epic → tickets
 
@@ -175,8 +177,8 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 
 ```mermaid
 flowchart LR
-    RF["RF-01..RF-11 (capacidades)"] --> ADR["ADR-001..023 (decisoes)"]
-    NFR["NFR-01..NFR-10 (drivers)"] --> ADR
+    RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..023 (decisoes)"]
+    NFR["NFR-01..NFR-12 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-22 (entregas)"]
     EPIC --> TICK["AOS-001..AOS-316 (tickets)"]
     DOC["tecnica/00..17 (docs)"] --> EPIC
@@ -198,7 +200,7 @@ Sinalizadas a partir dos dados reais das §§4–5, e **geradas com elas**: os n
 | GAP-06 | **NFR-09 (DSAR) verificado indirectamente** — provado por AOS-091, AOS-092, AOS-113; o *crypto-shredding* tem ticket próprio (AOS-093) e um defeito conhecido de alcance (AOS-290), mas nenhum teste e2e exercita um DSAR sobre o log encadeado | §5 | Criar teste e2e de *crypto-shredding* preservando integridade da hash-chain |
 | GAP-08 | **Os catálogos de enunciado estão atrás do catálogo de documentos** — `docs/adr/README.md` enuncia 23 ADRs e é a fonte do canon que os gates lêem (AOS-314), mas `_BRIEF` §3 enuncia 14 (faltam ADR-015, ADR-016, ADR-017, ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023) e `specs/00` §11 enuncia 19 (faltam ADR-020, ADR-021, ADR-022, ADR-023). O próprio README declara os dois «a referência de enunciado para todos os ADRs», pelo que a divergência é, pela sua própria regra, um defeito e não uma actualização | `_BRIEF` §3, `specs/00` §11, `docs/adr/README.md` | Completar os dois catálogos de enunciado com os ADRs em falta, ou emendar o README para deixar de os declarar referência de enunciado |
 
-Nenhum ADR do canon gated e nenhum NFR está **sem** cobertura mínima: 23/23 ADRs (ADR-001…023) e 10/10 NFRs (NFR-01…NFR-10) têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação** — excepto GAP-08, que é de **coerência entre catálogos**.
+Nenhum ADR do canon gated e nenhum NFR está **sem** cobertura mínima: 23/23 ADRs (ADR-001…023) e 12/12 NFRs (NFR-01…NFR-12) têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação** — excepto GAP-08, que é de **coerência entre catálogos**.
 
 **Lacunas fechadas pelo corpus** (registadas com a evidência que as fechou):
 
