@@ -52,12 +52,15 @@ cmd_build() {
 # ou UTF-16 e o binário recusa com "nao e hex" / ErrSeedUTF16 — por isso escrevem-se em bash.
 cmd_keys() {
   mkdir -p "$HOME_DIR"
-  local n op p1 p2
-  for n in operador ap1 ap2; do
+  local n op op2 p1 p2
+  # DOIS operadores (AOS-305): mudar a autonomia PARA L4/L5 exige duas assinaturas de emissores
+  # distintos com autonomy:set. O smoke promove agt-1:fs a L5, logo precisa dos dois.
+  for n in operador operador2 ap1 ap2; do
     [ -s "$HOME_DIR/$n.seed" ] && continue
     head -c 32 /dev/urandom | xxd -p | tr -d '\n' > "$HOME_DIR/$n.seed"
   done
   op="$(hexdeseed "$HOME_DIR/operador.seed")" || fail "derivar pubkey do operador (corre build primeiro)"
+  op2="$(hexdeseed "$HOME_DIR/operador2.seed")"
   p1="$(hexdeseed "$HOME_DIR/ap1.seed")"
   p2="$(hexdeseed "$HOME_DIR/ap2.seed")"
   cat > "$HOME_DIR/approvers.json" <<EOF
@@ -66,8 +69,8 @@ cmd_keys() {
  {"principal":"human:bruno","pubkey":"$p2","authority":["approve:safe","approve:gray","approve:danger"]}
 ]}
 EOF
-  printf 'op:jimy=%s\n' "$op" > "$HOME_DIR/operators.env"
-  ok "seeds + approvers.json em $HOME_DIR (operador op:jimy=$op)"
+  printf 'op:jimy=%s,op:maria=%s\n' "$op" "$op2" > "$HOME_DIR/operators.env"
+  ok "seeds + approvers.json em $HOME_DIR (operadores op:jimy=$op op:maria=$op2)"
 }
 
 # trust anchor da política: o repo guarda a pubkey em BASE64 (trust_anchor.pub) e o nó
@@ -77,7 +80,10 @@ anchor_hex() { tr -d '\r\n' < "$POLICY_DIR/trust_anchor.pub" | base64 -d | xxd -
 # --- up / down -------------------------------------------------------------------------------
 cmd_up() {
   [ -x "$BIN_DIR/aos" ] || [ -x "$BIN_DIR/aos.exe" ] || cmd_build
-  [ -s "$HOME_DIR/approvers.json" ] || cmd_keys
+  # Regenera tambem quando o roster de operadores mudou de forma (AOS-305 passou a exigir DOIS
+  # operadores): um operators.env em cache com um so id faz o no abortar com ErrBadAutonomySetters,
+  # e o sintoma — "o no nao ficou pronto" — nao aponta para o ficheiro velho.
+  { [ -s "$HOME_DIR/approvers.json" ] && grep -q 'op:maria' "$HOME_DIR/operators.env" 2>/dev/null; } || cmd_keys
   cmd_down >/dev/null 2>&1
   mkdir -p "$STATE_DIR"
   local anchor i
@@ -86,6 +92,7 @@ cmd_up() {
 
   AOS_API_ADDR="127.0.0.1:$PORT" \
   AOS_OPERATORS="$(cat "$HOME_DIR/operators.env")" \
+  AOS_AUTONOMY_SETTERS="op:jimy,op:maria" \
   AOS_APPROVERS_FILE="$HOME_DIR/approvers.json" \
   AOS_DURABLE_EXECUTION=1 \
   AOS_EVENTSTORE_PATH="$STATE_DIR/es.wal" \
@@ -167,10 +174,12 @@ cmd_trajectory() {
 
 # --- autonomia (assinada + selada) -----------------------------------------------------------
 # O corpo e produzido FORA do no pelo aos-issuer: a chave privada nunca entra no processo.
+# L4/L5 levam a SEGUNDA assinatura (op:maria) — AOS-305: remover a supervisao e de duas pessoas.
 cmd_autonomy_set() {
-  local body
+  local body co=()
+  case "$3" in L4|L5|l4|l5) co=(--co-emitter op:maria --co-key-file "$HOME_DIR/operador2.seed") ;; esac
   body="$("$BIN_DIR/aos-issuer" autonomy-sign --emitter op:jimy --key-file "$HOME_DIR/operador.seed" \
-            --agent "$1" --domain "$2" --level "$3" --reason "${4:-driver}")" || fail "autonomy-sign"
+            --agent "$1" --domain "$2" --level "$3" --reason "${4:-driver}" "${co[@]}")" || fail "autonomy-sign"
   api POST /autonomy "$body"
   echo
 }
@@ -298,7 +307,7 @@ case "${1:-help}" in
 driver.sh — arranca e conduz o no `aos`
 
   build                       compila aos, aos-issuer, aos-demo, aos-attestation, aos-orq
-  keys                        gera seeds (operador + 2 aprovadores) e approvers.json
+  keys                        gera seeds (2 operadores + 2 aprovadores) e approvers.json
   up                          levanta o no COMPOSTO (PDP assinado + four-eyes + autonomia + WAL/WORM)
   down                        para o no
   status                      healthz / readyz / metricas-chave

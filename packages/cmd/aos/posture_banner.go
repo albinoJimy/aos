@@ -274,11 +274,53 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 	//    envelhece no instante seguinte. Um banner que afirma o presente e descreve o passado é
 	//    pior do que um que não afirma nada — e esta é, por confissão do próprio ficheiro, uma
 	//    superfície com histórico de mentir.
-	return []string{
+	linhas := []string{
 		fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO LIGADO — %d par(es) alvo:dominio provisionado(s) NO ARRANQUE de AOS_AUTONOMY_LEVELS, cada um SELADO na hash-chain WORM como autonomy.level_changed (particao %q, motivo %q, actor %q): uma mudanca de autonomia deixa de poder acontecer sem rasto. O alvo pode ser uma INSTANCIA (agt-1:fs) ou uma CLASSE (class:agent-worker:fs), com resolucao em CASCATA: instancia -> classe -> piso -> L0. Par sem instancia NEM classe registadas ⇒ %s (piso%s). E a composicao nivel x classe de risco que rebaixa um permit para ESCALATE — e portanto e esta ligacao que torna o bridge de aprovacao humana (AOS-021) ALCANCAVEL. ATENCAO: esta linha e o ESTADO NO ARRANQUE; POST /autonomy muda niveis em runtime (assinado e selado) e GET /autonomy e a FONTE DE VERDADE do que vigora agora",
 			len(w.sealedPairs), autonomy.DefaultAutonomyPartition, autonomyProvisionReason, autonomyProvisionActor,
 			w.piso.String(), pisoOrigem(w.piso)),
 	}
+	// AOS-307: o que o WORM trouxe de volta, e onde prevaleceu sobre o ambiente. A segunda
+	// metade é a que importa ao operador que editou AOS_AUTONOMY_LEVELS e não vê o valor novo:
+	// não é um bug, é uma decisão assinada de outra pessoa a ser respeitada — e diz-se qual.
+	if w.rehydrated > 0 {
+		// A AFIRMAÇÃO QUE ESTAVA AQUI ERA FALSA e é o que esta correcção fecha. Dizia que o
+		// vector do WORM forjado se fechava com AOS_WORM_ANCHOR e mandava «ver a linha de
+		// ancora acima» — mas a verificação ancorada corre até ao ÚLTIMO CHECKPOINT
+		// (VerifyFromCheckpointAtHead com to == cp.AuditSeq), pelo que um registo APENDIDO
+		// DEPOIS fica FORA do intervalo verificado. A âncora nunca fechou este vector. O que
+		// o fecha é a verificação por ASSINATURA de cada registo reidratado, e é isso — e só
+		// isso — que esta linha passa a afirmar.
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d alteracao(oes) de nivel RELIDA(S) do WORM no arranque — um nivel posto por POST /autonomy SOBREVIVE ao reinicio; para cada par, o ultimo selo de OPERADOR prevalece sobre AOS_AUTONOMY_LEVELS e um selo de provisionamento (actor %q) cede ao ambiente. O WORM e AUTORITATIVO sobre os niveis no arranque, e por isso o que se reidrata e VERIFICADO FORA DELE: cada registo de OPERADOR tem de trazer a(s) assinatura(s) ed25519 do pedido que o originou, que sao reverificadas contra as pubkeys de AOS_OPERATORS (e o direito autonomy:set), com DUAS assinaturas distintas para L4/L5 — a mesma regra da rota; um registo que NAO verifique ABORTA o arranque, nomeando o AuditSeq. E deliberado que isto nao dependa da ancora: o EntryHash e um SHA-256 SEM CHAVE (re-encadear e aritmetica publica) e a verificacao ancorada so cobre ate ao ultimo checkpoint, pelo que um registo apendido DEPOIS ficaria fora do intervalo verificado", w.rehydrated, autonomyProvisionActor))
+	}
+	if len(w.preservedOverEnv) > 0 {
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) com nivel de OPERADOR PRESERVADO sobre o que AOS_AUTONOMY_LEVELS declara agora [%s] — o ficheiro NAO mudou desde o ultimo provisionamento, pelo que a decisao assinada e a mais recente e prevalece; para a substituir, EDITE o ficheiro (qualquer direccao) e reinicie, ou assine outra alteracao (POST /autonomy)", len(w.preservedOverEnv), strings.Join(w.preservedOverEnv, ", ")))
+	}
+	// AMBIENTE EDITADO — a alavanca de resposta a incidente que não depende de chaves de operador.
+	if len(w.ambienteEditado) > 0 {
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) em que AOS_AUTONOMY_LEVELS MUDOU desde o ultimo provisionamento e por isso GANHOU a uma decisao de operador [%s] — editar o ficheiro e reiniciar e um acto deliberado com a mesma autoridade que provisiona, e vale em QUALQUER direccao; a mudanca foi ela propria selada como config:node", len(w.ambienteEditado), strings.Join(w.ambienteEditado, ", ")))
+	}
+	// PARES QUE VIGORAM FORA DO AMBIENTE — a divergência mais silenciosa das três, porque nem
+	// sequer há uma linha de configuração contra a qual comparar (achado R-03).
+	// REGISTOS SALTADOS — a linha mais alarmante desta família, e a que não pode faltar. Cada
+	// registo que a rehidratação não confirmou fica aqui com o seq: o operador tem de saber
+	// (a) que o nível NÃO foi aplicado e vigora o do ambiente, (b) as duas causas possíveis e
+	// o que fazer em cada uma, e (c) que o arranque prosseguiu DE PROPÓSITO, para não dar um
+	// modo de tijolo a quem escreve no WORM.
+	if len(w.rejeitados) > 0 {
+		itens := make([]string, 0, len(w.rejeitados))
+		for _, r := range w.rejeitados {
+			nivel := r.Level.String()
+			if _, ok := autonomy.ParseLevel(r.LevelRaw); !ok {
+				nivel = fmt.Sprintf("%q(ilegivel)", r.LevelRaw)
+			}
+			itens = append(itens, fmt.Sprintf("seq=%d %s:%s->%s actor=%q motivo=%q", r.AuditSeq, r.Pair.Agent, r.Pair.Domain, nivel, r.Actor, r.Motivo))
+		}
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): ATENCAO — %d registo(s) da particao %q SALTADO(S) por NAO se conseguir confirmar [%s]. NENHUM foi aplicado: esses pares vigoram no nivel de AOS_AUTONOMY_LEVELS (ou no piso). Duas causas possiveis: (1) MIGRACAO — o registo e anterior ao mecanismo de provas assinadas (AOS-305/307); reassine a alteracao por POST /autonomy e ela passa a reidratar; (2) REGISTO FORJADO por quem tem escrita no ficheiro do WORM — investigue o seq com `aos audit-trail --run %s`. O arranque prosseguiu DE PROPOSITO: abortar por um registo daria um modo de tijolo permanente ao mesmo adversario que a verificacao contem", len(w.rejeitados), autonomy.DefaultAutonomyPartition, strings.Join(itens, "; "), autonomy.DefaultAutonomyPartition))
+	}
+	if len(w.foraDoAmbiente) > 0 {
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) EM VIGOR POR DECISAO DE OPERADOR e AUSENTE(S) de AOS_AUTONOMY_LEVELS [%s] — nao constam do ficheiro e por isso nao aparecem na contagem de provisionamento acima; para os baixar, declare-os no ambiente com o nivel pretendido (a de-escalada ganha) ou assine outra alteracao", len(w.foraDoAmbiente), strings.Join(w.foraDoAmbiente, ", ")))
+	}
+	return linhas
 }
 
 // pisoOrigem distingue o piso HERDADO do DECLARADO. A diferença não é cosmética: "L0 por

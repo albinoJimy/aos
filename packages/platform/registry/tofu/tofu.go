@@ -18,6 +18,11 @@ import (
 // decisões de admissão (registry.admission) e das mudanças de trust store.
 const DefaultPartition = "registry.tofu"
 
+// tofuSealTimeout é o prazo PRÓPRIO do selo de uma tentativa RECUSADA — o registo de um facto
+// que já aconteceu, e que por isso não herda o cancelamento de quem o provocou (ver
+// [Monitor.auditAttempt]). Sem prazo nenhum, um store pendurado prenderia o chamador.
+const tofuSealTimeout = 5 * time.Second
+
 // Atributos de span das transições TOFU (públicos por natureza — identidade,
 // versão, digest e estado NÃO são segredos; nenhum valor de credencial entra num
 // span). Reutilizam a porta Tracer zero-dep do Agent Runtime (AOS-013).
@@ -433,7 +438,19 @@ func (m *Monitor) auditAttempt(ctx context.Context, identity string, ref referen
 		RunID:         m.partition,
 		StepID:        identity + ":denied:" + code,
 	}
-	_, _ = m.audit.Append(ctx, rec)
+	// PROVA DE FACTO CONSUMADO, e por isso desacoplada do cancelamento (AOS-311).
+	//
+	// Quando se chega aqui a recusa JÁ ACONTECEU — `auditAttempt` é chamado com a causa da
+	// transição já apurada — e o erro do `Append` é deliberadamente descartado, porque uma
+	// falha de registo não pode converter uma recusa em aceitação. Desde que o
+	// `audit.FileStore` respeita o `ctx`, isso tornou este selo cancelável por quem provoca a
+	// recusa: bastava o contexto do pedido morrer e a tentativa recusada não deixava rasto.
+	// `WithoutCancel` com prazo próprio é o mesmo idioma de `cmd/aos/control_seal.go` e de
+	// `hitl/channel.go`. O caminho que DECIDE (`Monitor.record`, que devolve `ErrAuditFailed` e
+	// bloqueia) continua a herdar o `ctx`, como deve.
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tofuSealTimeout)
+	defer cancel()
+	_, _ = m.audit.Append(selCtx, rec)
 }
 
 // capForCause deriva a capability de audit de uma TENTATIVA recusada a partir da sua

@@ -393,7 +393,26 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 	latency := m.now().Sub(start)
 	// Registo best-effort: em deny/escalate o efeito já está bloqueado, pelo que
 	// uma falha de auditoria não altera a decisão (contrasta com o permit path).
-	seq, _ := m.sink.RecordMediation(ctx, MediationRecord{
+	//
+	// MAS O CTX DO CHAMADOR NÃO PODE CANCELAR ESTE REGISTO (achado de revisão adversarial
+	// sobre AOS-311). Este sítio é a metade PÓS-DECISÃO do RM: a negação/escalada JÁ está
+	// tomada e o efeito JÁ está bloqueado — o que se escreve aqui é a PROVA de um facto
+	// consumado, não a decisão. O audit-before-effect do permit (:348-354, que degrada
+	// para deny se o sink falhar) fica INTACTO e continua a herdar o ctx: aí o Append
+	// decide se o efeito acontece, e um prazo esgotado TEM de resolver em deny.
+	//
+	// Sem a separação, um `Mediate` chamado com o ctx do run já cancelado — aborto,
+	// shutdown, cliente desligado — bloqueava a acção e não deixava rasto do bloqueio,
+	// desde que o AOS-311 pôs o `audit.Store.Append` a respeitar o ctx (o sink de
+	// referência do nó é o `audit.RMAdapter`). O `_` do erro tornava a perda silenciosa.
+	// Um deny sem registo é indistinguível de uma chamada que nunca aconteceu.
+	//
+	// `WithoutCancel` preserva os valores do ctx (correlação/tracing) e larga só o
+	// cancelamento; o prazo próprio evita que um sink pendurado prenda o RM. Idioma já
+	// usado em `packages/integration/budget.go` e `packages/substrate/sandbox/lifecycle.go`.
+	regCtx, cancelReg := context.WithTimeout(context.WithoutCancel(ctx), failRecordTimeout)
+	defer cancelReg()
+	seq, _ := m.sink.RecordMediation(regCtx, MediationRecord{
 		RequestID: call.RequestID,
 		RunID:     call.RunID, StepID: call.StepID, ParentStepID: call.ParentStepID,
 		Effect: eff, Code: code, DeniedBy: deniedBy, Reason: reason,
@@ -417,6 +436,12 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		MediationSeq: seq,
 	}
 }
+
+// failRecordTimeout é o prazo PRÓPRIO do registo pós-decisão de [Monitor.fail]. Existe
+// porque esse registo deixou de herdar o cancelamento do chamador: sem prazo nenhum, um
+// sink pendurado prenderia a mediação para sempre. Curto — o caminho de negação é o mais
+// quente do RM e não pode ficar refém do trilho.
+const failRecordTimeout = 2 * time.Second
 
 // mint emite um Permit não-forjável ligado ao fingerprint do call. Só este
 // método (invocado dentro de Mediate) consegue construir um permitToken válido.

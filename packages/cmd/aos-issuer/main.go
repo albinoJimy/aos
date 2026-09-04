@@ -49,7 +49,10 @@ uso:
   aos-issuer approve-sign --request-id <id> --preview <b64> --approver <id> --session <s> --credential <c> --key-file <ficheiro>
   aos-issuer ratify-sign  --artifact-id <id> --version <semver> --content-hash <b64> --ratifier <id> --key-file <ficheiro> [--canary-passed] [--eval-*]
   aos-issuer delegation-nonce --agent <id> --class <c> --caps <c1,c2> [--ttl 15m]
-  aos-issuer autonomy-sign --emitter <id> --key-file <ficheiro> --agent <id> --domain <d> --level <L0..L5> [--reason <texto>]
+  aos-issuer autonomy-sign --emitter <id> --key-file <ficheiro> --agent <id> --domain <d> --level <L0..L5> --reason <texto> [--co-emitter <id> --co-key-file <ficheiro>]
+                          → imprime o corpo JSON de POST /autonomy; L4/L5 exigem a segunda assinatura (AOS-305)
+  aos-issuer challenge-sign --approver <id> --key-file <ficheiro> --run <id> --request-id <id>
+                          → imprime o corpo JSON de POST /runs/{run}/challenge (AOS-308: o aprovador pede o seu challenge)
   aos-issuer revoke-sign   --emitter <id> --key-file <ficheiro> --jti <jti> --reason <texto>
                           → imprime o corpo JSON de POST /nhi/revoke (AOS-288)
   aos-issuer worm-seal --worm <ficheiro> --key-file <ficheiro> [--partition <p>] [--anterior <ficheiro>] [--heads]
@@ -79,6 +82,8 @@ func run(args []string, out io.Writer) error {
 		return cmdDelegationNonce(args[1:], out)
 	case "autonomy-sign":
 		return runAutonomySign(args[1:], out)
+	case "challenge-sign":
+		return runChallengeSign(args[1:], out)
 	case "revoke-sign":
 		return runRevokeSign(args[1:], out)
 	case "worm-seal":

@@ -277,16 +277,11 @@ func (c *Controller) Evaluate(ctx context.Context, agent, domain string) (LevelC
 
 	ch, err := c.reg.SetLevel(ctx, agent, domain, next, reason, ControllerActor)
 	if err != nil {
-		// Fail-closed: a promoção não pode vigorar sem registo selado. REVERTE a
-		// concessão em memória para o nível anterior — a reversão fixa-se em memória
-		// mesmo que a sua própria selagem falhe ([LevelRegistry.SetLevel] muta antes de
-		// selar), pelo que o PDP nunca lê autonomia elevada sem audit. Devolve o erro
-		// de selagem original e changed=false (a promoção não se manteve).
-		rollbackReason := fmt.Sprintf(
-			"reversao de promocao nao-selada %s->%s (selagem falhou): %v (policy v%s)",
-			cur.String(), next.String(), err, cfg.version,
-		)
-		_, _ = c.reg.SetLevel(ctx, agent, domain, cur, rollbackReason, ControllerActor)
+		// Fail-closed: a promoção não pode vigorar sem registo selado. Desde AOS-306
+		// [LevelRegistry.SetLevel] sela ANTES de aplicar, pelo que uma selagem falhada
+		// já deixa o nível anterior em vigor — não há concessão a reverter (e um
+		// SetLevel de reversão selaria um evento espúrio se o WORM entretanto voltasse).
+		// Devolve o erro de selagem e changed=false (a promoção não se deu).
 		return LevelChange{}, false, err
 	}
 	c.emitTransition(ctx, ch, directionPromotion, "", cfg.version)
@@ -328,6 +323,15 @@ func (c *Controller) OnAnomaly(ctx context.Context, agent, domain string, kind A
 	)
 
 	ch, err := c.reg.SetLevel(ctx, agent, domain, target, reason, ControllerActor)
+	if err != nil {
+		// Fail-closed, e a metade que faltava a AOS-306. Desde que [LevelRegistry.SetLevel] sela
+		// ANTES de aplicar, uma selagem falhada devolve `LevelChange{}` e NADA muda — pelo que
+		// devolver `changed=true` diria que a demoção aconteceu quando não aconteceu, e
+		// `emitTransition` emitiria um span de uma transição L0→L0 com agente vazio. É a
+		// assinatura exacta do defeito que AOS-306 fechou na promoção («o sistema diz que fez, e
+		// não fez»), no ramo vizinho. A promoção já o trata em [Controller.Evaluate].
+		return LevelChange{}, false, err
+	}
 	c.emitTransition(ctx, ch, directionDemotion, kind, cfg.version)
 	return ch, true, err
 }

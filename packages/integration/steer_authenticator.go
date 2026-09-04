@@ -228,6 +228,52 @@ func (a *Ed25519Authenticator) Authenticate(ctx context.Context, runID string, k
 	return nil
 }
 
+// VerifyEmitterSignature verifica SÓ A ASSINATURA de um [control.Emitter] sobre
+// (runID ‖ kind ‖ payload ‖ nonce ‖ issued_at) — o MESMO tuplo canónico de
+// [Ed25519Authenticator.Authenticate], produzido pela mesma [signedMessage], para que as
+// duas fronteiras nunca possam divergir.
+//
+// O QUE NÃO FAZ, e é o ponto: não consome nonce e não avalia frescura.
+//
+// PORQUÊ VERIFY-ONLY. Existe para REVERIFICAR, à posteriori, uma assinatura já selada num
+// registo de audit — o caso concreto é a rehidratação dos níveis de autonomia no arranque
+// (AOS-307), em que o nó relê alterações que ele próprio, ou outro nó, já executou. Nesse
+// contexto:
+//
+//   - CONSUMIR o nonce estaria errado ao ponto de ser um auto-DoS: o nonce foi consumido
+//     quando o pedido foi servido, pelo que reconsumi-lo devolveria «replay» e o nó
+//     recusaria arrancar com os seus PRÓPRIOS registos legítimos. Pior, com um nonce-store
+//     durável, o primeiro arranque envenenaria a cadeia para todos os seguintes.
+//   - A FRESCURA não faz sentido a reler o passado: um `issued_at` de há três meses é
+//     exactamente o que se espera de uma decisão tomada há três meses. Exigir uma janela
+//     seria exigir que a história fosse recente.
+//
+// O que a assinatura continua a provar é o que se precisa aqui: que aquele emissor, com
+// aquela chave privada, pediu AQUELA alteração exacta (o payload canónico amarra o par, o
+// nível e o motivo). A protecção anti-replay do CANAL — que impede reapresentar um pedido
+// como se fosse novo — é da fronteira de admissão, não desta.
+//
+// Fail-closed: pubkey de tamanho errado, nonce/carimbo em falta ou assinatura que não
+// verifica ⇒ erro não-nil. Não toca em estado nenhum.
+func VerifyEmitterSignature(runID string, kind control.SignalKind, payload []byte, pub ed25519.PublicKey, em control.Emitter) error {
+	if len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: %q sem pubkey ed25519 valida", ErrUnknownEmitter, em.ID)
+	}
+	// Nonce e issued_at NÃO são validados quanto a frescura nem a uso-único, mas TÊM de
+	// estar presentes: fazem parte do tuplo assinado, e sem eles a mensagem reconstruída
+	// não é a que foi assinada.
+	if len(em.Nonce) == 0 {
+		return ErrMissingNonce
+	}
+	if em.IssuedAt.IsZero() {
+		return ErrMissingIssuedAt
+	}
+	if !ed25519.Verify(pub, signedMessage(runID, kind, payload, em.Nonce, em.IssuedAt), em.Signature) {
+		return fmt.Errorf("%w: emissor %q, kind %q", ErrBadSignature, em.ID, kind)
+	}
+	return nil
+}
+
 // nonceScope namespaceia o nonce por (run_id, emissor): o mesmo nonce só é de uso-único
 // dentro deste par. Separador de domínio para que fronteiras distintas não colidam.
 func nonceScope(runID, emitterID string) string {
@@ -340,6 +386,31 @@ func CanonicalRevokePayload(jti, reason string) []byte {
 	out = appendLenPrefixed(out, []byte("aos.nhi.revoke/v1"))
 	out = appendLenPrefixed(out, []byte(jti))
 	out = appendLenPrefixed(out, []byte(reason))
+	return out
+}
+
+// ChallengeRequestScope é o `runID` do tuplo assinado de um PEDIDO DE CHALLENGE do four-eyes
+// (AOS-308). Distinto de [AutonomyScope] e [RevokeScope] pela mesma razão: âmbitos partilhados
+// deixariam duas assinaturas diferir só pelo payload.
+//
+// NÃO confundir com [ChallengeScope], que é o namespace do NONCE-STORE onde o challenge emitido
+// é depois consumido pela perna de aprovação — este é o âmbito da ASSINATURA de quem o pede.
+const ChallengeRequestScope = "foureyes.challenge"
+
+// CanonicalChallengePayload é o payload assinado por um APROVADOR a pedir um challenge para
+// (run, request_id, ele próprio).
+//
+// O aprovador entra no payload e é confrontado com o emissor da assinatura: quem pede um
+// challenge para "human:ana" tem de ser "human:ana". Sem isso, qualquer detentor de UMA chave de
+// aprovador podia inundar o registo de emissão com challenges atribuídos a OUTROS aprovadores —
+// que era, no essencial, o que uma rota sem assinatura permitia a qualquer cliente. O run e o
+// request_id entram para que uma assinatura capturada não sirva para outra cerimónia.
+func CanonicalChallengePayload(runID, requestID, approver string) []byte {
+	out := make([]byte, 0, 32+len(runID)+len(requestID)+len(approver))
+	out = appendLenPrefixed(out, []byte("aos.foureyes.challenge/v1"))
+	out = appendLenPrefixed(out, []byte(runID))
+	out = appendLenPrefixed(out, []byte(requestID))
+	out = appendLenPrefixed(out, []byte(approver))
 	return out
 }
 

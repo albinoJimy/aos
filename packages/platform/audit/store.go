@@ -38,7 +38,13 @@ func NewMemStore() *MemStore {
 }
 
 // Append implementa [Store.Append]: sela o registo na cadeia da partição.
-func (s *MemStore) Append(_ context.Context, rec AuditRecord) (AuditRecord, error) {
+func (s *MemStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, error) {
+	// AOS-311 — simetria com [FileStore.Append]: um contexto morto não sela. Verificado à
+	// entrada para que um teste sobre MemStore não passe pela razão errada (um sink que
+	// ignora o ctx faria o fail-closed por prazo parecer verdadeiro sem o ser).
+	if err := ctx.Err(); err != nil {
+		return AuditRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

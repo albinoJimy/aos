@@ -369,8 +369,31 @@ func (j *ExpirationJob) marcarPorReconciliar(ctx context.Context, rec ExpirableR
 	if j.audit == nil {
 		return
 	}
-	_, _ = j.audit.Append(ctx, buildRetentionSinkOutcome(rec, false, j.config.Version(), at, j.partition))
+	selCtx, cancel := ctxDeSeloPosDesfecho(ctx)
+	defer cancel()
+	_, _ = j.audit.Append(selCtx, buildRetentionSinkOutcome(rec, false, j.config.Version(), at, j.partition))
 }
+
+// ctxDeSeloPosDesfecho devolve o contexto dos selos que registam um DESFECHO JÁ
+// OCORRIDO do sink de destruição (achado de revisão adversarial sobre AOS-311).
+//
+// Separa «fail-closed do efeito» de «durabilidade da prova». O selo `retention.expired`
+// (:333) é audit-BEFORE-effect — decide se a destruição avança — e continua a herdar o
+// ctx da varredura, porque um prazo esgotado tem de impedir a destruição. Os dois selos
+// de DESFECHO (o desmentido de uma destruição falhada e a confirmação de uma
+// reconciliação) registam o que o sink JÁ fez ou já não conseguiu fazer: cancelá-los
+// deixaria a cadeia a afirmar que a KEK morreu quando não morreu, que é precisamente a
+// mentira que o achado 1.7 fechou. Uma varredura cancelada a meio — shutdown, prazo do
+// job — não pode reabrir essa mentira.
+//
+// `WithoutCancel` preserva os valores do ctx e larga só o cancelamento; o prazo próprio
+// evita que um store pendurado prenda a varredura.
+func ctxDeSeloPosDesfecho(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), seloPosDesfechoTimeout)
+}
+
+// seloPosDesfechoTimeout é o prazo próprio dos selos de desfecho do sink de retenção.
+const seloPosDesfechoTimeout = 5 * time.Second
 
 // confirmarReconciliacao sela o desfecho POSITIVO de uma reconciliação e limpa a pendência.
 func (j *ExpirationJob) confirmarReconciliacao(ctx context.Context, rec ExpirableRecord, at time.Time) {
@@ -380,7 +403,9 @@ func (j *ExpirationJob) confirmarReconciliacao(ctx context.Context, rec Expirabl
 	if j.audit == nil {
 		return
 	}
-	_, _ = j.audit.Append(ctx, buildRetentionSinkOutcome(rec, true, j.config.Version(), at, j.partition))
+	selCtx, cancel := ctxDeSeloPosDesfecho(ctx)
+	defer cancel()
+	_, _ = j.audit.Append(selCtx, buildRetentionSinkOutcome(rec, true, j.config.Version(), at, j.partition))
 }
 
 // held indica se o registo está sob legal hold — por-titular OU por qualquer

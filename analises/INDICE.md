@@ -56,4 +56,16 @@ O plano de remediação priorizado (P0/P1/P2) está na §6 do [relatório consol
 
 ---
 
+## Auditorias adversariais ao código
+
+Método comum: lentes independentes → refutação com o ónus da prova invertido (*na dúvida, o achado
+cai*) → medição executada. Âmbitos disjuntos e complementares.
+
+| Documento | Âmbito | Data |
+|---|---|---|
+| **[09_Auditoria_RT_RM_Adversarial.md](09_Auditoria_RT_RM_Adversarial.md)** | **RT** (`kernel/agent-runtime`) e **RM** (`kernel/reference-monitor`) | 2026-09-02 |
+| **[10_Auditoria_ORQ_SCH_PDP_Adversarial.md](10_Auditoria_ORQ_SCH_PDP_Adversarial.md)** | **Plano de controlo**: ORQ, SCH e PDP — o âmbito que a 09 §7 declarou por cobrir | 2026-09-03 |
+
+---
+
 *Auditoria gerada por painel multi-agente sobre o conjunto documental AOS v1.0. Ver [Índice Técnico](../tecnica/INDICE.md) e [Índice do Backlog](../specs/INDICE.md).*

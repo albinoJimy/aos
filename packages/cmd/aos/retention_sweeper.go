@@ -293,7 +293,14 @@ func (s *NodeService) sweepRetentionOnce(ctx context.Context) bool {
 	report, runErr := s.node.ExpirationJob.Run(ctx)
 
 	// (3) DESFECHO (o "o quê"): contagens, nunca titulares.
-	if err := s.sealRetentionSweep(ctx, retentionSweepCompletedEvent, sweepID, time.Now().UTC(), &report); err != nil {
+	// SELO DE DESFECHO — prova de um facto CONSUMADO, e por isso desacoplado do cancelamento
+	// (mesma disciplina de [apiHandler.sealControlAction]; ver a triagem de AOS-311). O selo de
+	// ATRIBUIÇÃO acima é o oposto — decide se a passagem corre — e continua a herdar o `ctx`.
+	// Sem esta distinção, um shutdown a meio da passagem apagaria o resumo de destruições que já
+	// aconteceram, que é precisamente o registo que mais falta faz.
+	selCtx, cancelSelo := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
+	defer cancelSelo()
+	if err := s.sealRetentionSweep(selCtx, retentionSweepCompletedEvent, sweepID, time.Now().UTC(), &report); err != nil {
 		// Nada fica por auditar: CADA destruição foi selada pelo job ANTES de acontecer. O que se
 		// perde é o resumo da passagem — registado aqui de forma ruidosa.
 		s.log("scheduler de retencao (AOS-267): selo de DESFECHO recusado pelo WORM (as destruicoes desta passagem ficaram seladas uma a uma pelo job; falta o resumo): %v", err)
