@@ -1914,6 +1914,7 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 			// produz uma `Reason` legível — devolve o sentinela —, pelo que `razao` fica vazia e
 			// a classe viaja em `erro`.
 			h.logf("four-eyes (AOS-309): cerimonia RECUSADA request_id=%q run=%q via=broker razao=%q erro=%v", feReq.RequestID, r.PathValue("id"), "", razaoSegura(gerr))
+			h.sealControlDenial(r.Context(), feReq.RequestID, r.PathValue("id"), razaoSegura(gerr))
 			writeError(w, http.StatusForbidden, "aprovacao recusada")
 			return
 		}
@@ -1944,6 +1945,13 @@ func (h *apiHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 		// Sem isto, a própria auditoria não conseguiu distinguir «challenge inválido» de
 		// «cerimónia malformada» em seis tentativas (`analises/10` §3.1).
 		h.logf("four-eyes (AOS-309): cerimonia RECUSADA request_id=%q run=%q via=gate razao=%q erro=%v", feReq.RequestID, r.PathValue("id"), decision.Reason, razaoSegura(err))
+		// A classe selada é a `Reason` do gate — que já é a categoria, sem valores — com o
+		// sentinela como remendo quando o gate não produziu razão (o caminho do broker).
+		classe := decision.Reason
+		if classe == "" {
+			classe = razaoSegura(err)
+		}
+		h.sealControlDenial(r.Context(), feReq.RequestID, r.PathValue("id"), classe)
 		writeError(w, http.StatusForbidden, "aprovacao recusada")
 		return
 	}

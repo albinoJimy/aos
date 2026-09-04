@@ -94,6 +94,51 @@ apanhado pelos critérios de aceitação dos tickets, e todos estão fechados ab
   que recusa gerar uma linha que afirme um par epic↔ticket que o corpus não confirma — provada
   partindo-a de propósito. Mais dois sítios da mesma família corrigidos.
 
+#### Os cinco eixos que a remediação deixou em aberto — quatro fechados, um medido como não-fechável
+
+- `fix(AOS-310)` — **a supressão do `policy.changed` deixa de ser possível (S-02).** A decisão de
+  selar era derivada da PRÓPRIA partição: pré-plantar um registo com a versão e o hash do bundle
+  que se vai instalar fazia o nó concluir «idempotente» e **a troca real nunca ficava registada**,
+  com o banner a declarar a idempotência — pior do que o silêncio. O nó passa a **escrever sempre**
+  o que está a servir, distinguindo `policy.changed` (transição) de `policy.active` (confirmação de
+  que este arranque serviu esta política). Não fecha a metade que depende da âncora — quem escreve
+  no ficheiro pode acrescentar ruído — mas fecha a que interessa: a afirmação do próprio nó não
+  pode ser suprimida por quem escreve antes dele. Custo: um registo por arranque numa partição
+  própria.
+- `perf(AOS-307)` — **o custo que a reidratação introduziu (S-06/R-07).** Antes, o histórico de
+  níveis era reposto a zero em cada arranque; desde que é reidratado do WORM, contém todas as
+  alterações da vida do nó — e `LastChange` (uma vez por par no provisionamento) e o `GET
+  /autonomy` (que iterava a **cópia defensiva** de `History()`) varriam-no por inteiro. Índice
+  `par → última alteração` mantido no ÚNICO sítio que escreve o histórico, com `Pairs()` novo para
+  a rota; `dedupPares` removida por ficar órfã. A resposta de wire não muda.
+  - O invariante é fixado por teste: o índice é comparado com uma **varredura do histórico como
+    oráculo**, para que um caminho de escrita novo que o esqueça avermelhe em vez de divergir em
+    silêncio. E o custo é provado por `AllocsPerRun`, não afirmado.
+- `fix(AOS-309)` — **a recusa de uma cerimónia passa a ficar na hash-chain.** A AC admitia «no
+  mínimo, um log correlável», e era isso que existia — o log do serviço, que é volátil. A prova
+  durável de que dois humanos tentaram autorizar uma acção irreversível e foram recusados não
+  existia. `sealControlDenial` sela-a com `DecisionDeny` e a **classe** (nunca o valor).
+  - **Não contradiz `TestA3_SinalRecusado_NaoSela`, e a distinção é o argumento:** aquele teste
+    protege o trilho de um sinal com **alvo errado**, que qualquer um emite em rajada e cujo selo
+    seria um vector de inchaço. Uma cerimónia só chega ao gate **depois** de o nó reconhecer a
+    preview de uma escalada que ele próprio produziu — o volume é limitado pelas suas pendências.
+- `fix(AOS-311)` — **os dois sítios que a triagem deixara por classificar.** `tofu.auditAttempt` é
+  prova de facto consumado (a recusa já aconteceu e o erro é descartado) e foi desacoplado do
+  cancelamento. Os dois filtros de `sandbox/network` **são decisão** — surfaçam o erro de selagem e
+  a decisão permanece deny — e ficaram **intactos de propósito**: corrigir uma porta genérica
+  converteria um `Append` de decisão em não-cancelável, que é o erro simétrico e mais perigoso.
+- `docs` — **a âncora do WORM (R-05) não é fechável aqui, e a medição vale mais do que a
+  tentativa.** Impor a âncora sob `AOS_MODE=production`, no molde dos outros oito guardas, atinge
+  **22 sítios em mais de dez ficheiros de teste** — a mesma explosão que levou o guarda de AOS-300 a
+  ser escrito e revertido. E **DEF-268** já cobre o eixo: a produção da âncora está entregue
+  (`aos-issuer worm-seal`), o que fica deferido é a **cadência**, e o próprio registo diz que «a
+  cobertura NUNCA é completa por desenho, pelo que selar mais vezes encolhe a janela não-ancorada
+  sem a fechar». Impor a âncora seria decidir uma cadência que o registo atribui ao Responsável de
+  Segurança.
+  - O que continua por fechar, com o eixo certo: **a janela entre o último checkpoint e o head**.
+    O que este epic fez foi tirar-lhe o que ela dava — elevação de autonomia (fechada por
+    assinaturas no selo) e supressão do changelog de política (fechada por escrever sempre).
+
 ### Added — EPIC-08 sobre AOS-100 Os spans do Event Store replicado, sob contrato semconv
 - `feat(AOS-100)` (P1/EPIC-08) — a última linha do DoD que estava por fazer: o adaptador emitia o gancho de auditoria (`Observer`) mas nenhum span.
   - **Uma porta NOVA, e não o `Observer` repropôsto.** O `Observer` declara-se, no seu próprio doc, como um gancho que «não puxa o SDK OTel (isso é EPIC-08)» — e, decisivamente, é chamado **depois** da operação e **sem contexto**, pelo que um span nascido dele seria **órfão**. A porta `Rastreador`/`Rastro` recebe o `ctx`, e por isso o span fica **por baixo do span do passo que o causou** (AOS-077).

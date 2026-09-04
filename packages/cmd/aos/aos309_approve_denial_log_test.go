@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
+	audit "github.com/aos-ref/platform/audit"
 )
 
 // AOS-309 — toda a negação do `/approve` fica no log do operador, com a razão dedicada. A
@@ -212,4 +214,83 @@ func TestAOS309_ValoresDeSessaoECredencialNaoEntramNoLog(t *testing.T) {
 		t.Errorf("a redaccao nao esta declarada na linha — quem lê tem de saber que o valor foi omitido:\n%s", saida)
 	}
 
+}
+
+// TestAOS309_ARecusaFicaNaHashChain — o residual do ticket, fechado.
+//
+// A AC admitia «no mínimo, um log correlável», e era isso que existia: o log do serviço, que é
+// volátil. A prova durável de que dois humanos tentaram autorizar uma acção irreversível e foram
+// recusados não existia em lado nenhum.
+//
+// Isto NÃO contradiz `TestA3_SinalRecusado_NaoSela`: aquele protege o trilho de um sinal com
+// alvo errado, que qualquer um pode inundar. Uma cerimónia só chega ao gate depois de o nó
+// reconhecer a preview que ele PRÓPRIO escalou — o volume é limitado pelas suas pendências.
+func TestAOS309_ARecusaFicaNaHashChain(t *testing.T) {
+	node, _, alice, bob, privA, privB := noComDoisAprovadores(t)
+
+	var log bytes.Buffer
+	svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute), WithServiceLog(&log))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewAPIHandler(svc, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := []byte("apagar o bucket de producao (AOS-309 selo)")
+	semearPendente(t, node, "run-309s", capIrreversivelDeTeste, preview)
+
+	// Auto-aprovação: mesmo principal nas duas pernas.
+	corpo := cerimoniaDual(t, "req-309-selo", preview, []pernaSpec{
+		{alice, privA, "sess-a", "cred-a"},
+		{alice, privA, "sess-b", "cred-b"},
+	})
+	if rec := postJSON(h, "POST", "/runs/run-309s/approve", corpo); rec.Code != http.StatusForbidden {
+		t.Fatalf("auto-aprovacao devia dar 403, veio %d", rec.Code)
+	}
+
+	head, err := node.WORM.Head(context.Background(), controlSealPartition)
+	if err != nil || head == 0 {
+		t.Fatalf("a recusa devia estar selada (head=%d, err=%v)", head, err)
+	}
+	recs, err := node.WORM.Read(context.Background(), controlSealPartition, head, head)
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("ler o selo: %v (%d)", err, len(recs))
+	}
+	selo := recs[0]
+	if selo.Decision != audit.DecisionDeny {
+		t.Errorf("o selo de uma recusa tem de ser deny, veio %v", selo.Decision)
+	}
+	if len(selo.Obligations) == 0 || selo.Obligations[0].Type != controlDenialObl {
+		t.Fatalf("o selo nao transporta a obrigacao de recusa: %+v", selo.Obligations)
+	}
+	if selo.Obligations[0].Params["request_id"] != "req-309-selo" {
+		t.Errorf("o selo tem de correlacionar pelo request_id: %+v", selo.Obligations[0].Params)
+	}
+	classe := selo.Obligations[0].Fields[0]
+	if !strings.Contains(strings.ToLower(classe), "principal") {
+		t.Errorf("o selo tem de nomear a CLASSE da recusa: %q", classe)
+	}
+	// E nunca o VALOR: a mesma disciplina do log.
+	if strings.Contains(classe, "sess-a") || strings.Contains(classe, "cred-a") {
+		t.Errorf("o selo transporta um identificador em vez da classe: %q", classe)
+	}
+
+	// CONTROLO — uma cerimónia BEM SUCEDIDA continua a selar como allow, e não como deny.
+	// Run PRÓPRIO: `semearPendente` regista uma pendência por run, e reutilizar o run da recusa
+	// deixaria a segunda preview sem escalada correspondente.
+	preview2 := []byte("apagar o bucket de producao (AOS-309 sucesso)")
+	semearPendente(t, node, "run-309ok", capIrreversivelDeTeste, preview2)
+	ok := cerimoniaDual(t, "req-309-ok", preview2, []pernaSpec{
+		{alice, privA, "sess-a", "cred-a"},
+		{bob, privB, "sess-b", "cred-b"},
+	})
+	if rec := postJSON(h, "POST", "/runs/run-309ok/approve", ok); rec.Code != http.StatusOK {
+		t.Fatalf("a cerimonia valida devia autorizar: %d %s", rec.Code, rec.Body.String())
+	}
+	h2, _ := node.WORM.Head(context.Background(), controlSealPartition)
+	r2, _ := node.WORM.Read(context.Background(), controlSealPartition, h2, h2)
+	if len(r2) != 1 || r2[0].Decision != audit.DecisionAllow {
+		t.Errorf("o sucesso tem de continuar a selar como allow: %+v", r2)
+	}
 }

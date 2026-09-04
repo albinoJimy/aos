@@ -81,15 +81,25 @@ AOS-307 abortava o arranque perante um registo não verificável. O smoke falhou
 estado anterior do repositório** — e o mesmo mecanismo dava a quem escreve no WORM um modo de
 tijolo permanente. Fail-closed no **nível**, não no **arranque**.
 
-### 0.4 O que fica por fechar
+### 0.4 Os cinco eixos que ficaram em aberto — e o que foi feito a cada um
+
+Quatro fecharam com código. O quinto **não é fechável aqui**, e a medição que o mostra vale mais
+do que uma tentativa.
 
 | Eixo | Estado |
 |---|---|
-| **S-02** — supressão do `policy.changed` por quem escreve no WORM | Aberto. Partilha a raiz com S-01: a cadeia não tem raiz de confiança fora do ficheiro e a verificação ancorada não cobre o tail. O eixo é ancorar até ao head, ou guardar o «último selado» fora do store, ao lado de `ExpectedHeads` |
-| **S-06 / R-07** — custo de arranque e de `GET /autonomy` linear no histórico | Aberto. A rehidratação materializa todo o histórico; `LastChange` e o GET varrem-no. O eixo é um mapa `par → última alteração` |
-| **R-05** — a âncora do WORM continua **opcional** | Documentado, não imposto. O achado original («nenhum deployment a compõe») **cai**: o compose de produção passa as três variáveis e o `deploy.sh` tem guardas de pré-voo. O que sobra é que o AOS-307 aumentou o custo de a deixar desligada, e isso está agora escrito no README |
-| **AOS-309** — as negações vão para o log, não para o WORM | Aceite pela AC. Selá-las exigiria requalificar `TestA3_SinalRecusado_NaoSela`, que fixa a propriedade oposta de propósito |
-| `registry/tofu`, `sandbox/network` | Sítios da mesma família de AOS-311 por classificar |
+| **S-02** — supressão do `policy.changed` por quem escreve no WORM | **FECHADO.** A decisão de selar era derivada da própria partição: pré-plantar um registo com a versão e o hash do bundle a instalar fazia o nó concluir «idempotente» e a troca real nunca ficava registada — com o banner a declarar a idempotência. O nó passa a **escrever sempre** o que está a servir, distinguindo `policy.changed` (transição) de `policy.active` (confirmação). Não fecha a metade que depende da âncora — um adversário pode acrescentar ruído — mas fecha a que interessa: **a afirmação do próprio nó não pode ser suprimida por quem escreve antes dele.** Teste: `TestAOS310_SupressaoPorPrePlantacaoNaoFunciona` |
+| **S-06 / R-07** — custo de arranque e de `GET /autonomy` linear no histórico | **FECHADO.** Índice `par → última alteração` mantido no único sítio que escreve o histórico (`restore`), com `LastChange` O(1) e `Pairs()` novo para a rota, que deixou de iterar a cópia defensiva de `History()`. `dedupPares` removida por ficar órfã. Testes: `TestAOS307Indice_NuncaDivergeDoHistorico` compara o índice com uma varredura do histórico como oráculo, para que um caminho de escrita novo que o esqueça avermelhe; `TestAOS307Indice_CustoNaoCresceComOHistorico` prova por `AllocsPerRun` que o custo não segue o trilho |
+| **AOS-309** — as negações iam para o log, não para o WORM | **FECHADO.** `sealControlDenial` sela a recusa de cerimónia na cadeia de acções de controlo, com `DecisionDeny` e a **classe** (nunca o valor). **Não contradiz `TestA3_SinalRecusado_NaoSela`**, e a distinção importa: aquele teste protege o trilho de um sinal com **alvo errado**, que qualquer um pode inundar em rajada; uma cerimónia só chega ao gate **depois** de o nó reconhecer a preview de uma escalada que ele próprio produziu, pelo que o volume é limitado pelas suas pendências. Teste: `TestAOS309_ARecusaFicaNaHashChain`, com o controlo de que o sucesso continua a selar como `allow` |
+| `registry/tofu`, `sandbox/network` — sítios por classificar | **FECHADOS por triagem.** `tofu.auditAttempt` é prova de facto consumado (a recusa já aconteceu, o erro é descartado) e foi desacoplado do cancelamento. Os dois filtros do `sandbox/network` (`EgressFilter` e `DNSFilter`) **são decisão** — surfaçam o erro de selagem e a decisão permanece deny — e ficaram **intactos de propósito**: corrigir uma porta genérica converteria um `Append` de decisão em não-cancelável, que é o erro simétrico e mais perigoso. Teste: `aos311_selo_recusa_test.go`, com o controlo de que o store continua a recusar sob contexto morto |
+| **R-05** — a âncora do WORM continua **opcional** | **NÃO FECHÁVEL AQUI, e já é dívida declarada com eixo.** Medido: impor a âncora sob `AOS_MODE=production` — o molde dos outros oito guardas — atinge **22 sítios em mais de dez ficheiros de teste** que forçam produção; é a mesma explosão que levou o guarda de AOS-300 a ser escrito e revertido. Mais decisivo: **DEF-268** já cobre este eixo e diz porquê — a produção da âncora está entregue (`aos-issuer worm-seal`), o que fica deferido é a **cadência**, e «a cobertura NUNCA é completa por desenho (as partições nascem por run), pelo que selar mais vezes encolhe a janela não-ancorada sem a fechar». Impor a âncora seria decidir uma cadência que o registo atribui ao Responsável de Segurança. O que se fez foi documentar a ligação nova: o AOS-307 aumentou o custo de a deixar desligada, e isso está no README |
+
+**O que continua verdadeiramente por fechar**, e agora com o eixo certo: a janela entre o último
+checkpoint e o head da cadeia. Não é código deste epic — é **DEF-268**, cadência de selagem, dono
+Responsável de Segurança. Enquanto essa janela existir, um adversário com escrita no ficheiro do
+WORM pode acrescentar registos que a re-verificação aceita; o que este epic fez foi tirar-lhe o
+que isso lhe dava: **elevação de autonomia** (fechada por assinaturas no selo, AOS-307) e
+**supressão do changelog de política** (fechada por escrever sempre, S-02).
 
 ---
 

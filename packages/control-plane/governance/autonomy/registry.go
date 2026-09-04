@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -108,8 +109,21 @@ type LevelRegistry struct {
 	writeMu sync.Mutex
 	levels  map[pairKey]Level
 	history []LevelChange
-	now     func() time.Time
-	sink    Sink
+	// last é a ÚLTIMA alteração aplicada POR PAR — o índice que torna [LevelRegistry.LastChange]
+	// e [LevelRegistry.Pairs] O(1) e O(pares) em vez de O(histórico).
+	//
+	// PORQUE PASSOU A FAZER FALTA: antes de AOS-307 o histórico era reposto a zero em cada
+	// arranque e tinha tantas entradas quantos os pares declarados. Desde que o arranque reidrata
+	// a partição `autonomy` inteira, ele passou a conter TODAS as alterações da vida do WORM — e
+	// `LastChange` (chamado uma vez por par declarado no provisionamento) e o `GET /autonomy`
+	// varriam-no por inteiro. Um nó de vida longa com promoções frequentes pagava isso em cada
+	// arranque e em cada leitura do plano de controlo.
+	//
+	// O invariante — o índice nunca diverge do histórico — é barato de manter porque há UM só
+	// sítio que os escreve, [LevelRegistry.restore], e é fixado por teste.
+	last map[pairKey]LevelChange
+	now  func() time.Time
+	sink Sink
 	// defaultLevel e o PISO dos pares SEM registo. Valor-zero = L0 (fail-closed), pelo que um
 	// registo construido sem [WithDefaultLevel] se comporta exactamente como antes.
 	defaultLevel Level
@@ -153,6 +167,7 @@ func WithClock(f func() time.Time) RegistryOption {
 func NewLevelRegistry(opts ...RegistryOption) *LevelRegistry {
 	r := &LevelRegistry{
 		levels: make(map[pairKey]Level),
+		last:   make(map[pairKey]LevelChange),
 		now:    func() time.Time { return time.Now().UTC() },
 	}
 	for _, o := range opts {
@@ -270,24 +285,55 @@ func (r *LevelRegistry) SetLevelWithProof(ctx context.Context, agent, domain str
 func (r *LevelRegistry) restore(ch LevelChange) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.levels[pairKey{ch.Agent, ch.Domain}] = ch.New
+	k := pairKey{ch.Agent, ch.Domain}
+	r.levels[k] = ch.New
 	r.history = append(r.history, ch)
+	// O ÚNICO sítio que escreve o histórico é também o único que escreve o índice — é o que
+	// impede os dois de divergirem. Um caminho de escrita novo que não passe por aqui parte o
+	// invariante, e há um teste que o apanha.
+	r.last[k] = ch
 }
 
 // LastChange devolve a ÚLTIMA alteração aplicada ao par (agente, domínio) e um bool a
 // indicar se houve alguma. Serve ao arranque do nó (AOS-307) para decidir precedência
 // entre o nível reidratado do WORM e o declarado no ambiente — p.ex. «se o último actor
 // do par foi a configuração, o ambiente pode sobrepor-se; senão, o WORM prevalece».
-// O(n) sobre o histórico, em memória, sem I/O.
+// O(1) sobre o índice `last`, em memória, sem I/O.
 func (r *LevelRegistry) LastChange(agent, domain string) (LevelChange, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for i := len(r.history) - 1; i >= 0; i-- {
-		if r.history[i].Agent == agent && r.history[i].Domain == domain {
-			return r.history[i], true
-		}
+	ch, ok := r.last[pairKey{agent, domain}]
+	return ch, ok
+}
+
+// Pairs devolve a ÚLTIMA alteração de CADA par com nível registado, ordenada por (agente,
+// domínio) — o ESTADO corrente, distinto do TRILHO que [LevelRegistry.History] devolve.
+//
+// Existe para que quem só quer saber «o que vigora agora» não pague o histórico inteiro: o
+// `GET /autonomy` reconstruía os pares iterando `History()` — uma cópia defensiva de todas as
+// alterações já seladas na vida do WORM — e deduplicando a seguir. Com a reidratação de AOS-307
+// isso passou a ser linear no trilho por cada leitura de uma rota do plano de controlo.
+//
+// Devolve `LevelChange` e não só o nível porque o chamador precisa do `Actor` e do `Reason`
+// tanto quanto do valor — é o que distingue «este nível veio de uma decisão assinada» de «veio
+// da configuração», e é a mesma informação que a precedência do arranque usa.
+//
+// Ordenada de propósito: a resposta do `GET` é ordenada, e ordenar aqui garante que dois
+// chamadores nunca vêem ordens diferentes do mesmo estado.
+func (r *LevelRegistry) Pairs() []LevelChange {
+	r.mu.RLock()
+	out := make([]LevelChange, 0, len(r.last))
+	for _, ch := range r.last {
+		out = append(out, ch)
 	}
-	return LevelChange{}, false
+	r.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Agent != out[j].Agent {
+			return out[i].Agent < out[j].Agent
+		}
+		return out[i].Domain < out[j].Domain
+	})
+	return out
 }
 
 // History devolve uma CÓPIA do histórico completo de alterações, por ordem de

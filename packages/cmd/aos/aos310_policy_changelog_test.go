@@ -60,16 +60,68 @@ func TestAOS310_PrimeiroArranqueSelaATransicaoEOSegundoNao(t *testing.T) {
 		t.Errorf("PolicyVersion=%q Timestamp=%v, quero %q/%v", recs[0].PolicyVersion, recs[0].Timestamp, p.Version(), agora)
 	}
 
-	// Segundo arranque, mesma política: nada selado.
+	// Segundo arranque, mesma política: sela uma CONFIRMAÇÃO, não uma transição.
+	//
+	// Selar sempre é o que fecha S-02: se o nó decidisse «não escrever» a partir do que lê da
+	// própria partição, quem tem escrita no ficheiro pré-plantava um registo com esta versão e
+	// este hash e a troca REAL seguinte nunca seria registada.
 	st2, err := provisionPolicyChangelog(context.Background(), worm, p, agora.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st2.sealed || st2.previous != p.Version() {
-		t.Fatalf("arranque idempotente: sealed=%v previous=%q", st2.sealed, st2.previous)
+	if !st2.sealed || st2.transicao || st2.previous != p.Version() {
+		t.Fatalf("arranque idempotente: sealed=%v transicao=%v previous=%q; quero selado, sem transicao", st2.sealed, st2.transicao, st2.previous)
 	}
-	if head, _ := worm.Head(context.Background(), pdp.DefaultPolicyPartition); head != 1 {
-		t.Fatalf("head=%d, quero 1 — o arranque idempotente re-selou", head)
+	if head, _ := worm.Head(context.Background(), pdp.DefaultPolicyPartition); head != 2 {
+		t.Fatalf("head=%d, quero 2 — o arranque tem de registar SEMPRE o que serviu", head)
+	}
+	confirm, _ := worm.Read(context.Background(), pdp.DefaultPolicyPartition, 2, 2)
+	if len(confirm) != 1 || confirm[0].Obligations[0].Type != policyActiveEventType {
+		t.Fatalf("a confirmacao devia ser um %s: %+v", policyActiveEventType, confirm)
+	}
+	if confirm[0].Obligations[0].Params["new_version"] != p.Version() {
+		t.Errorf("a confirmacao tem de nomear a politica servida: %+v", confirm[0].Obligations[0].Params)
+	}
+}
+
+// TestAOS310_SupressaoPorPrePlantacaoNaoFunciona — o achado S-02, fechado.
+//
+// Quem escreve no ficheiro do WORM pré-planta um `policy.changed` com a versão e o hash do bundle
+// que vai instalar. Antes: o nó lia «igual ao último selo», concluía «idempotente» e a troca real
+// não ficava registada, com o banner a declarar a idempotência. Agora: o nó escreve na mesma, e a
+// afirmação dele sobre o que está a servir não pode ser suprimida por quem escreve antes.
+func TestAOS310_SupressaoPorPrePlantacaoNaoFunciona(t *testing.T) {
+	p := abrirBundleDeReferencia(t)
+	worm := audit.NewMemStore()
+
+	// O ATACANTE pré-planta uma transição para a política que o nó vai carregar.
+	forjado := pdp.PolicyChangeEvent{
+		OldVersion: "0.0.1", NewVersion: p.Version(), ContentHash: p.ContentHash(),
+		Author: "quem-tem-escrita-no-ficheiro", Reason: "pre-plantado", At: time.Unix(1, 0).UTC(),
+	}
+	if _, err := worm.Append(context.Background(), pdp.BuildPolicyChangedRecord(forjado, "")); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := provisionPolicyChangelog(context.Background(), worm, p, time.Unix(2, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.sealed {
+		t.Fatal("o no TEM de registar o que serviu — se nao registar, a pre-plantacao suprimiu-o")
+	}
+	head, _ := worm.Head(context.Background(), pdp.DefaultPolicyPartition)
+	if head != 2 {
+		t.Fatalf("head=%d, quero 2 (o forjado + o do no)", head)
+	}
+	nosso, _ := worm.Read(context.Background(), pdp.DefaultPolicyPartition, 2, 2)
+	if len(nosso) != 1 || nosso[0].Obligations[0].Params["author"] != policyProvisionActor {
+		t.Fatalf("o registo do no tem de existir e ser dele: %+v", nosso)
+	}
+	// E o banner nao chama «transicao» ao que nao mudou face ao ultimo selo.
+	linha := strings.Join(policyChangelogBanner(p, st), "\n")
+	if !strings.Contains(linha, "CONFIRMACAO SELADA") || !strings.Contains(linha, "S-02") {
+		t.Errorf("o banner tem de declarar a confirmacao e a razao de selar sempre:\n%s", linha)
 	}
 }
 

@@ -38,6 +38,13 @@ import (
 const (
 	policyProvisionActor  = "config:node"
 	policyProvisionReason = "carregamento no arranque (AOS_POLICY_BUNDLE_DIR)"
+	// policyConfirmReason é o motivo do registo de CONFIRMAÇÃO — o arranque que serviu a MESMA
+	// política do último selo. Distinto do de transição para que os dois se leiam sem ambiguidade.
+	policyConfirmReason = "confirmacao no arranque: politica inalterada face ao ultimo selo"
+	// policyActiveEventType é o rótulo do registo de confirmação. Vive AQUI, e não no pacote
+	// `pdp`, porque é um facto do ARRANQUE DO NÓ (que política este processo serviu) e não uma
+	// alteração de política — que é o que o `pdp` modela e sela em [pdp.PolicyChangedEventType].
+	policyActiveEventType = "policy.active"
 )
 
 // policyChangelogMaxSeq é o teto da leitura da partição — o mesmo de `aos audit-trail`.
@@ -50,8 +57,14 @@ var ErrPolicyProvisioning = errors.New("aos: changelog de politica (AOS-310) fal
 
 // policyChangelogState é o que o arranque decidiu sobre o changelog, para o banner.
 type policyChangelogState struct {
-	// sealed é verdadeiro se ESTE arranque selou uma transição (versão/hash diferentes do último selo).
+	// sealed é verdadeiro se ESTE arranque escreveu na partição — o que, desde o fecho de S-02,
+	// é SEMPRE que há política carregada. Continua a existir porque distingue «não havia bundle»
+	// (nada a registar) de «registou-se».
 	sealed bool
+	// transicao distingue as duas formas do que foi selado: `policy.changed` (a versão ou o hash
+	// mudaram face ao último selo) de `policy.active` (a confirmação de que este arranque serviu
+	// a mesma política). É o que o banner usa para não chamar «mudança» a um reinício.
+	transicao bool
 	// previous é a versão anterior encontrada no WORM ("" se a partição estava vazia).
 	previous string
 }
@@ -89,9 +102,33 @@ func provisionPolicyChangelog(ctx context.Context, worm audit.Store, p *pdp.PDP,
 		}
 	}
 	st.previous = lastVersion
-	if lastVersion == p.Version() && lastHash == p.ContentHash() {
-		return st, nil // mesma política que o último selo: arranque idempotente, nada a selar.
-	}
+	st.transicao = lastVersion != p.Version() || lastHash != p.ContentHash()
+
+	// O NÓ SELA SEMPRE O QUE ESTÁ EM VIGOR, e é isso que fecha a supressão (achado S-02).
+	//
+	// A primeira versão decidia SELAR ou NÃO SELAR a partir do que lia da própria partição: se a
+	// (versão, hash) coincidisse com o último `policy.changed`, considerava o arranque idempotente
+	// e não escrevia nada. Isso dava a quem tem escrita no ficheiro do WORM um botão de
+	// SILENCIAMENTO: pré-plantar um registo com a versão e o hash do bundle que vai instalar faz o
+	// nó concluir «igual ao último selo» e a troca real nunca é registada — com o banner a
+	// declarar «idempotente», que é pior do que o silêncio.
+	//
+	// A partição `policy` continua sem raiz de confiança fora do ficheiro (o `EntryHash` é um
+	// SHA-256 sem chave e a verificação ancorada não cobre o que é apendido depois do último
+	// checkpoint — o eixo é DEF-268, a custódia da chave de selagem, que este repositório não
+	// tem). O que se pode fechar sem essa chave é a metade que interessa: **o registo do nó não
+	// pode ser suprimido por quem escreve antes dele**. Escrevendo SEMPRE, o pior que um adversário
+	// consegue é acrescentar ruído — nunca apagar a afirmação do próprio nó sobre o que está a
+	// servir.
+	//
+	// O tipo de evento distingue as duas coisas, para que «mudou» não passe a significar «arrancou»:
+	//   - TRANSIÇÃO (versão ou hash diferentes do último selo) ⇒ `policy.changed`, como antes;
+	//   - CONFIRMAÇÃO (iguais) ⇒ `policy.active`, o registo de que ESTE arranque serviu ESTA
+	//     política. Um auditor obtém uma linha contínua de qual política esteve em vigor a cada
+	//     arranque, e a ausência de uma confirmação passa a ser ela própria um sinal.
+	//
+	// Custo: um registo por arranque numa partição própria. Arranques são raros e a partição é
+	// gapless e verificável de forma independente; a alternativa — não escrever — é o buraco.
 	ev := pdp.PolicyChangeEvent{
 		OldVersion:  lastVersion,
 		NewVersion:  p.Version(),
@@ -100,8 +137,18 @@ func provisionPolicyChangelog(ctx context.Context, worm audit.Store, p *pdp.PDP,
 		Reason:      policyProvisionReason,
 		At:          now.UTC(),
 	}
-	if _, err := worm.Append(ctx, pdp.BuildPolicyChangedRecord(ev, "")); err != nil {
-		return st, fmt.Errorf("%w: selar %s->%s: %v", ErrPolicyProvisioning, lastVersion, p.Version(), err)
+	rec := pdp.BuildPolicyChangedRecord(ev, "")
+	if !st.transicao {
+		ev.Reason = policyConfirmReason
+		rec = pdp.BuildPolicyChangedRecord(ev, "")
+		// A obrigação e o recurso passam a nomear a CONFIRMAÇÃO. Reutiliza-se o construtor do
+		// `pdp` — em vez de montar um registo à mão aqui — para que a forma dos dois eventos não
+		// possa divergir: um auditor lê-os com o mesmo parser e o campo que os separa é o tipo.
+		rec.Obligations[0].Type = policyActiveEventType
+		rec.Resource.Type = policyActiveEventType
+	}
+	if _, err := worm.Append(ctx, rec); err != nil {
+		return st, fmt.Errorf("%w: selar %s (%s->%s): %v", ErrPolicyProvisioning, rec.Obligations[0].Type, lastVersion, p.Version(), err)
 	}
 	st.sealed = true
 	return st, nil
@@ -113,12 +160,12 @@ func policyChangelogBanner(p *pdp.PDP, st policyChangelogState) []string {
 	if p == nil || p.Version() == "" {
 		return nil // o PDP não-carregado já tem a sua linha.
 	}
-	if st.sealed {
+	if st.transicao {
 		de := st.previous
 		if de == "" {
 			de = "(nenhuma — primeiro selo desta particao)"
 		}
 		return []string{fmt.Sprintf("changelog de politica (AOS-310): TRANSICAO SELADA no arranque na particao %q — policy.changed %s -> %s (content_hash %s, actor %q): a troca de bundle por reinicio deixa de ser rasto so em log volatil; `aos audit-trail --run %s` le o historico", pdp.DefaultPolicyPartition, de, p.Version(), p.ContentHash(), policyProvisionActor, pdp.DefaultPolicyPartition)}
 	}
-	return []string{fmt.Sprintf("changelog de politica (AOS-310): politica em vigor %s (content_hash %s) coincide com o ULTIMO policy.changed selado na particao %q — nada selado neste arranque (idempotente)", p.Version(), p.ContentHash(), pdp.DefaultPolicyPartition)}
+	return []string{fmt.Sprintf("changelog de politica (AOS-310): CONFIRMACAO SELADA no arranque na particao %q — %s %s (content_hash %s): a politica coincide com o ultimo selo, e o no regista-o na mesma. Selar SEMPRE e o que impede que quem escreve no ficheiro do WORM pre-plante um registo com esta versao e este hash para fazer o no concluir «idempotente» e NAO registar uma troca real (S-02)", pdp.DefaultPolicyPartition, policyActiveEventType, p.Version(), p.ContentHash())}
 }

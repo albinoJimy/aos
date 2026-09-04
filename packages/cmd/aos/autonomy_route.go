@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
@@ -250,21 +249,17 @@ func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "oraculo de autonomia nao composto")
 		return
 	}
+	// O ESTADO, não o TRILHO. Esta rota reconstruía os pares iterando `History()` — uma cópia
+	// defensiva de TODAS as alterações — e deduplicando a seguir. Enquanto o histórico era reposto
+	// a zero em cada arranque isso era barato; desde que AOS-307 o reidrata do WORM, passou a ser
+	// linear em todas as alterações da vida do nó, por cada leitura. `Pairs()` devolve a última
+	// alteração de cada par, já ordenada, a partir do índice — e a resposta de wire é a mesma.
 	pares := make([]autonomyPairWire, 0, 8)
-	for _, m := range h.node.Autonomy.registry.History() {
-		// O histórico é append-only; o estado é o ÚLTIMO valor de cada par. Reconstrói-se em vez
-		// de se manter um espelho, para não haver duas fontes que possam divergir.
-		if nivel, ok := h.node.Autonomy.registry.Get(m.Agent, m.Domain); ok {
-			pares = append(pares, autonomyPairWire{Agent: m.Agent, Domain: m.Domain, Level: nivel.String()})
+	for _, ch := range h.node.Autonomy.registry.Pairs() {
+		if nivel, ok := h.node.Autonomy.registry.Get(ch.Agent, ch.Domain); ok {
+			pares = append(pares, autonomyPairWire{Agent: ch.Agent, Domain: ch.Domain, Level: nivel.String()})
 		}
 	}
-	sort.Slice(pares, func(i, j int) bool {
-		if pares[i].Agent != pares[j].Agent {
-			return pares[i].Agent < pares[j].Agent
-		}
-		return pares[i].Domain < pares[j].Domain
-	})
-	pares = dedupPares(pares)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pairs": pares,
 		// Declarado de propósito: um par AUSENTE desta lista não é "sem política" — resolve para o
@@ -272,21 +267,6 @@ func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
 		// decisão, e agora é uma decisão que alguém pode ter DECLARADO (AOS_AUTONOMY_DEFAULT).
 		"unregistered_resolves_to": h.node.Autonomy.piso.String(),
 	})
-}
-
-// dedupPares fica com a última ocorrência de cada par (a lista vem do histórico).
-func dedupPares(in []autonomyPairWire) []autonomyPairWire {
-	out := in[:0]
-	var ant autonomyPairWire
-	for i, p := range in {
-		if i > 0 && p.Agent == ant.Agent && p.Domain == ant.Domain {
-			out[len(out)-1] = p
-			continue
-		}
-		out = append(out, p)
-		ant = p
-	}
-	return out
 }
 
 // parseAutonomyLevelWire traduz "L0".."L5". Fail-closed: qualquer outra coisa é recusada em vez de

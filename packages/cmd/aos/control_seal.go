@@ -90,6 +90,44 @@ func (h *apiHandler) sealControlAction(ctx context.Context, kind, runID, emitter
 	}
 }
 
+// controlDenialObl transporta a CLASSE da recusa de uma cerimónia — nunca o valor que a
+// produziu (ver `razaoSegura` em api.go: dois sentinelas do gate interpolam o identificador da
+// sessão viva e o credential-id do aprovador).
+const controlDenialObl = "four_eyes.denial"
+
+// sealControlDenial sela uma cerimónia de aprovação RECUSADA na mesma cadeia das acções de
+// controlo (AOS-309).
+//
+// PORQUE ISTO NÃO CONTRADIZ [TestA3_SinalRecusado_NaoSela], que fixa a propriedade oposta.
+// Aquele teste protege o trilho de um vector de INCHAÇO: um sinal com alvo errado é recusado
+// antes de tocar em estado nenhum, qualquer um o pode emitir em rajada, e selá-lo daria a quem
+// inunda o canal uma forma de encher a cadeia. É a decisão certa para esse caminho.
+//
+// A recusa de uma cerimónia de `/approve` que chega ao gate é outra coisa: só lá chega DEPOIS
+// de `exigenciaDeDuploControlo` confirmar que a preview corresponde a uma escalada que o
+// PRÓPRIO NÓ produziu. O volume é limitado pelas escaladas pendentes do nó, não pelo que um
+// atacante inventa — e o que se perde por não selar é a única prova durável de que dois
+// humanos tentaram autorizar uma acção irreversível e foram recusados. O log do serviço é
+// volátil; esta cadeia não é.
+//
+// Sela a CLASSE, nunca a razão crua — a mesma disciplina do log de AOS-309.
+func (h *apiHandler) sealControlDenial(ctx context.Context, requestID, runID, classe string) {
+	if h.node == nil || h.node.WORM == nil {
+		return
+	}
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
+	defer cancel()
+	rec := controlSealRecord("approve", runID, "", h.cfg.now(),
+		audit.Obligation{Type: controlDenialObl, Fields: []string{classe}, Params: map[string]string{"request_id": requestID}})
+	// O veredicto é sobre a CERIMÓNIA (foi recusada), ao contrário do selo de sucesso, que
+	// regista uma acção de governação exercida.
+	rec.Decision = audit.DecisionDeny
+	rec.Reason = "control_approve_denied"
+	if _, err := h.node.WORM.Append(selCtx, rec); err != nil {
+		h.logf("SELO DE RECUSA EM FALTA: a cerimonia %q sobre run=%q foi RECUSADA mas a recusa NAO ficou na hash-chain: %v", requestID, runID, err)
+	}
+}
+
 // approversObligation constrói a obrigação que nomeia quem aprovou. Vazia ⇒ nil, para não selar
 // uma lista vazia que se leria como "aprovado por ninguém".
 func approversObligation(approvers []string) []audit.Obligation {
