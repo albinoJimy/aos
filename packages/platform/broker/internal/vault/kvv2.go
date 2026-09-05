@@ -64,6 +64,46 @@ var ErrKVConfig = errors.New("vault: config do cliente KV v2 invalida (addr e to
 // NUNCA entra na mensagem de erro.
 var ErrKVFetch = errors.New("vault: falha a ler segredo no Vault KV v2")
 
+// redactURL devolve a forma PUBLICÁVEL de um endereço: esquema, host e porta, e mais nada.
+//
+// AOS-337 — PORQUE EXISTE UMA CÓPIA AQUI. O nó já tem `integration.RedactURL`, e este pacote
+// NÃO PODE importá-lo: `packages/integration` é o composition-root e a fronteira do ADR-019
+// corre no sentido contrário (`control-plane → kernel → platform/substrate`). A duplicação é
+// DELIBERADA e é a mesma decisão que o cabeçalho deste ficheiro já regista para o transporte —
+// «copiado, não partilhado» —, aqui por direcção de camada em vez de por `package main`.
+//
+// Descarta user-info, caminho, query e fragmento — tudo o que possa carregar segredo — e
+// devolve `(inválido)` para o que não se souber analisar, NUNCA o valor original: um endereço
+// que o parser recusou não se sabe redigir, e é precisamente aí que uma credencial mal escapada
+// tem mais probabilidade de estar.
+func redactURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "(inválido)"
+	}
+	// Composto a partir dos DOIS campos que se querem preservar, em vez de concatenado à mão:
+	// um endereço sem esquema continua re-analisável como a mesma coisa que entrou.
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+}
+
+// erroRedigido devolve um erro de TRANSPORTE com o endereço redigido.
+//
+// O `net/http` já redige a SENHA nos `*url.Error` que constrói (`http://admin:***@host/…`), mas
+// deixa o UTILIZADOR intacto — e numa URL de Vault é ele que identifica o principal. Estes erros
+// sobem ao `/readyz` e ao banner de prontidão do nó, pelo que a postura tem de ser a mesma nos
+// dois sítios (AOS-337, no molde de `erroVaultRedigido` em `cmd/aos/vaultkeyvault.go`).
+//
+// Preserva o `Op` e a CAUSA — que é o que diagnostica: DNS, recusa de ligação, TLS — e troca só
+// o endereço. Um erro que não seja `*url.Error` passa tal-qual: não se inventa redacção sobre
+// uma forma que não se conhece.
+func erroRedigido(addr string, err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s %s: %w", ue.Op, redactURL(addr), ue.Err)
+	}
+	return err
+}
+
 // defaultKVMount / defaultKVField são os defaults do motor KV v2 do Vault.
 const (
 	defaultKVMount = "secret" // mount canónico do KV v2 num Vault dev/single-node
@@ -196,13 +236,17 @@ func (c *KVv2) Fetch(ctx context.Context, key Key) (Secret, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return Secret{}, fmt.Errorf("%w: montar pedido: %v", ErrKVFetch, err)
+		// NÃO se ecoa o erro: é um `*url.Error` que traz o endereço COMO FOI ESCRITO,
+		// sem a redacção que o `http.Client` aplica aos SEUS erros. Era aqui e no ramo
+		// equivalente de [KVv2.Ready] que uma senha embutida ia INTEIRA para a mensagem
+		// (AOS-337).
+		return Secret{}, fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redactURL(c.addr))
 	}
 	req.Header.Set("X-Vault-Token", c.token) // nunca logado
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return Secret{}, fmt.Errorf("%w: transporte: %v", ErrKVFetch, err)
+		return Secret{}, fmt.Errorf("%w: transporte: %v", ErrKVFetch, erroRedigido(c.addr, err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -234,11 +278,13 @@ func (c *KVv2) Fetch(ctx context.Context, key Key) (Secret, error) {
 func (c *KVv2) Ready(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.addr+"/v1/sys/seal-status", nil)
 	if err != nil {
-		return err
+		// Devolvia o `*url.Error` CRU — sem redacção E sem sentinela, pelo que o /readyz
+		// recebia o endereço inteiro num erro que nem era atribuível (AOS-337).
+		return fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redactURL(c.addr))
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: vault inalcancavel: %v", ErrKVFetch, err)
+		return fmt.Errorf("%w: vault inalcancavel: %v", ErrKVFetch, erroRedigido(c.addr, err))
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))

@@ -96,7 +96,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
-| O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** |
+| O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
 | A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — condicional |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
@@ -1247,18 +1247,53 @@ que **podem** importar `integration`, foram fechados no próprio AOS-333.
 
 ### Critérios de Aceitação
 
-- [ ] Nenhum caminho de erro de `kvv2.go` ecoa `user-info` — nem a senha, nem o utilizador
-- [ ] O ramo de `NewRequest` falhado deixa de devolver o `*url.Error` cru
-- [ ] O erro continua a nomear **onde** o nó falhou a falar (esquema, host e porta), senão troca-se
+- [x] Nenhum caminho de erro de `kvv2.go` ecoa `user-info` — nem a senha, nem o utilizador
+- [x] O ramo de `NewRequest` falhado deixa de devolver o `*url.Error` cru
+- [x] O erro continua a nomear **onde** o nó falhou a falar (esquema, host e porta), senão troca-se
       uma fuga por um `/readyz` que não diagnostica nada
-- [ ] O redactor vive no módulo do broker, sem importar `integration` — e `layer-lint.sh` prova-o
-- [ ] Um teste com `user:pass@` composto **programaticamente** (a via que continua aberta) que
+- [x] O redactor vive no módulo do broker, sem importar `integration` — e `layer-lint.sh` prova-o
+- [x] Um teste com `user:pass@` composto **programaticamente** (a via que continua aberta) que
       exija a ausência das duas coisas nas mensagens de `Fetch` e de `Ready`
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2 — o eixo é fuga de segredo, mas a via do operador está fechada e sobra a
-programática. Sobe a P1 no dia em que alguém compuser `KVv2Config.Addr` a partir de entrada externa.
+**IMPLEMENTADO.** P2 — o eixo era fuga de segredo, com a via do operador já fechada e a
+programática aberta.
+
+**ERAM QUATRO RAMOS, NÃO TRÊS.** Este ticket contava `:207`, `:236` e `:241` e falhou o
+`NewRequest` do `Fetch`, que tem exactamente o mesmo defeito do de `Ready`. São **dois** ramos de
+`NewRequest`, que ecoavam o endereço **cru** — a senha inteira, e com ela o **path do segredo**
+(`/v1/secret/data/p/eu/cap_http.get`), que diz ao leitor do log qual a credencial em causa — e
+**dois** ramos de `Do`, em que o `net/http` redige a senha e deixa o utilizador. Medido na prova
+de mutação, não deduzido.
+
+**O redactor é uma cópia deliberada, e está dito onde tem de estar.** `redactURL` e `erroRedigido`
+vivem no pacote `vault` porque `packages/integration` é o composition-root e a fronteira do
+`ADR-019` corre no sentido contrário. É a mesma decisão que o cabeçalho do ficheiro já registava
+para o transporte — «copiado, não partilhado» —, aqui por direcção de camada em vez de por
+`package main`. Provado: zero importações de `integration` no broker, directas **e** transitivas
+(`go list -deps`), e `layer-lint.sh` verde.
+
+`erroRedigido` preserva o `Op` e a **causa** — DNS, recusa de ligação, TLS, que é o que
+diagnostica — e troca só o endereço; um erro que não seja `*url.Error` passa tal-qual, porque não
+se inventa redacção sobre uma forma que não se conhece.
+
+**O ramo de `Ready` ganhou também atribuibilidade.** Devolvia `err` **sem sentinela nenhuma**: o
+`/readyz` recebia o endereço inteiro num erro que nem era atribuível ao Vault. Passa a envolver
+`ErrKVFetch`, e o teste exige-o.
+
+Cinco funções de teste, com **dois controlos**: a mensagem continua a nomear host e porta (sem
+isso, um redactor que apagasse tudo passaria os testes de ausência por vacuidade e trocaria uma
+fuga por um `/readyz` inútil), e `erroRedigido` preserva a causa. Prova de mutação nos **quatro**
+ramos — cada um avermelha o seu teste com a asserção certa, e o output mostra a fuga real:
+`parse "https://admin:s3nh4-…@vault.interno:82 00/v1/secret/data/…"` no ramo cru, `admin:***@` no
+de transporte. Revertidas e confirmadas limpas.
+
+**LIMITE DECLARADO.** O `Fetch` continua a compor `endpoint` a partir de `c.addr` sem o validar —
+`NewKVv2` só verifica `addr != ""`. Não se acrescenta aqui um critério de transporte próprio: o do
+nó já existe (`integration.CheckSecureTransportURL`) e duplicá-lo neste módulo daria dois critérios
+a divergir. O que este ticket garante é que, **haja o que houver no endereço**, ele não sai nos
+erros.
 
 ---
 
