@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -36,6 +35,7 @@ import (
 
 	"github.com/aos-ref/integration"
 	audit "github.com/aos-ref/platform/audit"
+	"github.com/aos-ref/substrate/redaction"
 )
 
 // ErrVaultKEK — falha ao provisionar/embrulhar contra o Vault (WrapDEK/EnsureKey). Fail-closed: a
@@ -265,20 +265,12 @@ var errPedidoVaultInvalido = errors.New("aos: endereco do Vault nao produz um pe
 
 // erroVaultRedigido devolve um erro de transporte com o endereco REDIGIDO.
 //
-// O `http.Client` ja redige a SENHA nos seus `*url.Error` (`http://admin:***@host/...`), mas
-// deixa o UTILIZADOR intacto — e numa URL de Vault e ele que identifica o principal, que e o
-// argumento pelo qual o banner deste ticket tambem o deita fora. Estes erros vao para o
-// `/readyz` e para o banner de prontidao, pelo que a postura tem de ser a mesma nos dois sitios.
-//
-// Preserva o `Op` e a causa (e o que diagnostica: DNS, recusa de ligacao, TLS) e troca so o
-// endereco pela forma publicavel. Um erro que nao seja `*url.Error` passa tal-qual: nao se
-// inventa redaccao sobre uma forma que nao se conhece.
+// O corpo desceu a `substrate/redaction` (AOS-337): o cliente Vault do BROKER precisa da mesma
+// redaccao e nao pode importar `integration` nem este pacote (ADR-019), pelo que a alternativa
+// era uma terceira copia — e as duas primeiras ja tinham divergido na sentinela de invalido.
+// O nome mantem-se porque e o que os chamadores deste ficheiro usam.
 func erroVaultRedigido(addr string, err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return fmt.Errorf("%s %s: %w", ue.Op, integration.RedactURL(addr), ue.Err)
-	}
-	return err
+	return redaction.TransportError(addr, err)
 }
 
 // lookupSelf é a PROVA de que o nosso token ainda serve: /v1/auth/token/lookup-self é AUTENTICADO

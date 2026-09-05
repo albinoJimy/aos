@@ -3,64 +3,122 @@ package vault
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/aos-ref/substrate/redaction"
 )
 
-// AOS-337 — OS ERROS DO CLIENTE VAULT DO BROKER DEIXAM DE ECOAR CREDENCIAIS.
+// AOS-337 — O CLIENTE VAULT DO BROKER NÃO DEIXA CREDENCIAIS SAÍREM NOS ERROS.
 //
-// Achado na revisão adversarial do AOS-333, que fechou a fuga no helper de validação e no banner
-// do nó e parou aí. Os caminhos que FALAM COM A REDE continuavam a ecoar o endereço, por dois
-// ramos de naturezas diferentes — e o ticket contava três sítios quando são QUATRO, porque o
-// ramo de `NewRequest` do `Fetch` tem o mesmo defeito do de `Ready`:
+// Achado na revisão adversarial do AOS-333, que fechou a fuga no helper de validação do nó e no
+// banner e parou aí. Havia QUATRO ramos a ecoar o endereço — o ticket contava três e falhou o
+// `NewRequest` do `Fetch`, que tem o mesmo defeito do de `Ready`:
 //
 //   - `NewRequest` devolve um `*url.Error` com o endereço COMO FOI ESCRITO, sem redacção
-//     nenhuma. É o pior dos dois: a SENHA vai INTEIRA;
-//   - `Do` devolve um `*url.Error` em que o `net/http` já redige a senha e deixa o UTILIZADOR,
-//     que numa URL de Vault é quem identifica o principal.
+//     nenhuma: a senha ia inteira, e com ela o PATH DO SEGREDO, que diz a quem lê o log qual a
+//     credencial em causa;
+//   - `Do` devolve um `*url.Error` em que o `net/http` redige a senha e deixa o UTILIZADOR, que
+//     num endereço de Vault é quem identifica o principal.
 //
-// Os dois sobem ao `/readyz` e ao banner de prontidão do nó, que é onde um segredo seria mais
-// lido.
-//
-// ALCANCE. A via do AMBIENTE está fechada desde o AOS-333: `AOS_BROKER_VAULT_ADDR` passa por
-// `integration.CheckSecureTransportURL`, que recusa user-info. Fica aberta a via PROGRAMÁTICA —
-// `NewKVv2` só verifica `addr != ""` —, e é essa que estes testes exercem. Um controlo que só
-// existe no parser do ambiente deixa de existir no dia em que alguém compuser `KVv2Config` por
-// outra via.
+// DUAS CAMADAS, E A ORDEM IMPORTA. O controlo PRIMÁRIO é [NewKVv2]: um endereço com credenciais
+// não constrói cliente nenhum, o que fecha os quatro ramos de uma vez no ponto de entrada. A
+// redacção nos caminhos de erro é DEFESA EM PROFUNDIDADE — cobre um estado que o construtor já
+// não deixa acontecer, e continua a valer para o path do segredo, que não é user-info e sairia
+// por ali na mesma.
 
 const aos337Senha = "s3nh4-do-broker-que-nao-pode-vazar"
 
-// exigeSemCredenciais é o critério comum aos quatro ramos: nem a senha, nem o utilizador.
+// exigeSemCredenciais é o critério comum: nem a senha, nem o utilizador.
 func exigeSemCredenciais(t *testing.T, msg string) {
 	t.Helper()
 	if strings.Contains(msg, aos337Senha) {
-		t.Errorf("a mensagem contem a SENHA do Vault — vai para o /readyz e para o banner: %s", msg)
+		t.Errorf("a mensagem contem a SENHA do Vault: %s", msg)
 	}
 	if strings.Contains(msg, "admin") {
-		t.Errorf("a mensagem contem o utilizador, que numa URL de Vault identifica o principal: %s", msg)
+		t.Errorf("a mensagem contem o utilizador, que num endereco de Vault identifica o principal: %s", msg)
 	}
 }
 
-func clienteAOS337(t *testing.T, addr string) *KVv2 {
-	t.Helper()
-	c, err := NewKVv2(KVv2Config{Addr: addr, Token: "token-de-teste"})
-	if err != nil {
-		t.Fatalf("NewKVv2(%q): %v", addr, err)
+// ---------------------------------------------------------------------------------------------
+// CAMADA 1 — o construtor recusa. É a forma FORTE da garantia: torna impossível construir o
+// objecto sobre o qual os testes de fuga fariam sentido.
+// ---------------------------------------------------------------------------------------------
+
+func TestAOS337_ConstrutorRecusaCredenciaisNoEndereco(t *testing.T) {
+	t.Parallel()
+	casos := []string{
+		"https://admin:" + aos337Senha + "@vault.interno:8200",
+		"https://admin@vault.interno:8200",
+		"http://admin:" + aos337Senha + "@127.0.0.1:8200",
 	}
-	return c
+	for _, addr := range casos {
+		c, err := NewKVv2(KVv2Config{Addr: addr, Token: "tok"})
+		if err == nil {
+			t.Fatalf("NewKVv2(%q) devia recusar credenciais embutidas", addr)
+		}
+		if c != nil {
+			t.Error("um construtor que recusa nao pode devolver cliente")
+		}
+		if !errors.Is(err, ErrKVConfig) {
+			t.Errorf("o erro tem de ser ATRIBUIVEL: %v", err)
+		}
+		exigeSemCredenciais(t, err.Error())
+	}
 }
 
-// TestAOS337_ParseFalhadoNaoEcoaOEnderecoCru cobre o ramo PIOR. Uma porta inválida faz o
-// `url.Parse` do `NewRequest` recusar, e era aí que o valor inteiro — senha incluída — ia para a
-// mensagem, porque o `net/http` só redige nos erros que ELE constrói.
+// TestAOS337_ConstrutorAceitaOsEnderecosLegitimos é o CONTROLO do construtor. Sem ele, uma
+// recusa universal passaria o teste acima — e recusar tudo abortaria o arranque de todos os
+// deployments correctos, que é um defeito pior do que o que se fecha.
+func TestAOS337_ConstrutorAceitaOsEnderecosLegitimos(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{
+		"https://vault.interno:8200",
+		"http://127.0.0.1:8200",
+		"https://vault.interno:8200/",
+		"http://localhost:8200",
+	} {
+		if _, err := NewKVv2(KVv2Config{Addr: addr, Token: "tok"}); err != nil {
+			t.Errorf("endereco legitimo recusado: %q -> %v", addr, err)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// CAMADA 2 — defesa em profundidade nos caminhos de erro.
+//
+// Constrói-se a struct DIRECTAMENTE, sem passar pelo construtor. É deliberado, e é a única forma
+// de exercer estes ramos agora que o construtor recusa: um controlo que só existe no construtor
+// deixa de existir no dia em que alguém compuser um KVv2 por outra via — e é exactamente essa a
+// história deste ticket. O AOS-333 pôs o critério no parser do ambiente, e a fuga sobreviveu num
+// caminho que não passava por lá.
+// ---------------------------------------------------------------------------------------------
+
+func clienteCru(addr string) *KVv2 {
+	return &KVv2{
+		addr:  strings.TrimRight(addr, "/"),
+		mount: defaultKVMount,
+		field: defaultKVField,
+		token: "tok",
+		hc:    &http.Client{Timeout: 2 * time.Second},
+	}
+}
+
+var chaveDeTeste = Key{Provider: "p", Region: "eu", Capability: "cap:http.get"}
+
+// TestAOS337_ParseFalhadoNaoEcoaOEnderecoCru cobre o ramo PIOR: o `*url.Error` do `NewRequest`
+// trazia o endereço INTEIRO, sem a redacção que o `http.Client` aplica aos SEUS erros.
 func TestAOS337_ParseFalhadoNaoEcoaOEnderecoCru(t *testing.T) {
 	t.Parallel()
-	// A porta com espaço é o que o `url.Parse` recusa («invalid port»).
-	c := clienteAOS337(t, "https://admin:"+aos337Senha+"@vault.interno:82 00")
+	// Porta com espaço: o que o `url.Parse` recusa (invalid port).
+	c := clienteCru("https://admin:" + aos337Senha + "@vault.interno:82 00")
 	ctx := context.Background()
 
 	t.Run("Fetch", func(t *testing.T) {
-		_, err := c.Fetch(ctx, Key{Provider: "p", Region: "eu", Capability: "cap:http.get"})
+		_, err := c.Fetch(ctx, chaveDeTeste)
 		if err == nil {
 			t.Fatal("um endereco que nao produz pedido devia dar erro")
 		}
@@ -68,6 +126,11 @@ func TestAOS337_ParseFalhadoNaoEcoaOEnderecoCru(t *testing.T) {
 			t.Errorf("o erro tem de ser ATRIBUIVEL: %v", err)
 		}
 		exigeSemCredenciais(t, err.Error())
+		// O PATH DO SEGREDO também não pode sair: diz QUAL a credencial em causa, mesmo sem
+		// revelar o valor. Era o que saía junto com a senha neste ramo.
+		if strings.Contains(err.Error(), "cap_http.get") || strings.Contains(err.Error(), "/data/") {
+			t.Errorf("a mensagem revela o path do segredo: %v", err)
+		}
 	})
 
 	t.Run("Ready", func(t *testing.T) {
@@ -75,8 +138,7 @@ func TestAOS337_ParseFalhadoNaoEcoaOEnderecoCru(t *testing.T) {
 		if err == nil {
 			t.Fatal("um endereco que nao produz pedido devia dar erro")
 		}
-		// Este ramo devolvia o `*url.Error` cru, SEM sentinela nenhuma: o /readyz recebia um
-		// erro que nem era atribuivel ao Vault.
+		// Este ramo devolvia err CRU, sem sentinela nenhuma.
 		if !errors.Is(err, ErrKVFetch) {
 			t.Errorf("o erro tem de ser ATRIBUIVEL: %v", err)
 		}
@@ -87,18 +149,18 @@ func TestAOS337_ParseFalhadoNaoEcoaOEnderecoCru(t *testing.T) {
 // TestAOS337_ErroDeTransporteNaoEcoaOUtilizador cobre o ramo em que o endereço É analisável: o
 // pedido sai, o transporte falha, e o `*url.Error` do `net/http` traz `admin:***@`.
 //
-// O CONTROLO vive aqui e não no teste acima: com um endereço analisável há uma forma publicável
-// para dar, e a mensagem TEM de a dar. Sem isto, um redactor que apagasse tudo passaria
-// `exigeSemCredenciais` por vacuidade — e um `/readyz` que não diz onde o nó falhou a falar
-// troca uma fuga por um diagnóstico inútil.
+// O CONTROLO de «continua a nomear o host» vive aqui e não no teste acima, e é deliberado: no
+// ramo de parse falhado o endereço, por definição, não se analisa, pelo que não há forma
+// publicável para dar e a mensagem é a constante `(inválida)`. Exigir host e porta lá seria
+// exigir o impossível — mas aqui é exigível, e sem isto um redactor que apagasse tudo passaria
+// os testes de ausência por vacuidade.
 func TestAOS337_ErroDeTransporteNaoEcoaOUtilizador(t *testing.T) {
 	t.Parallel()
-	// Porta 1 em loopback: analisável, e a ligação é recusada de imediato.
-	c := clienteAOS337(t, "http://admin:"+aos337Senha+"@127.0.0.1:1")
+	c := clienteCru("http://admin:" + aos337Senha + "@127.0.0.1:1")
 	ctx := context.Background()
 
 	t.Run("Fetch", func(t *testing.T) {
-		_, err := c.Fetch(ctx, Key{Provider: "p", Region: "eu", Capability: "cap:http.get"})
+		_, err := c.Fetch(ctx, chaveDeTeste)
 		if err == nil {
 			t.Fatal("um vault inalcancavel devia dar erro")
 		}
@@ -120,26 +182,118 @@ func TestAOS337_ErroDeTransporteNaoEcoaOUtilizador(t *testing.T) {
 	})
 }
 
-// TestAOS337_RedactURL fixa o que o redactor pode devolver. É a cópia deliberada de
-// `integration.RedactURL` — este módulo não pode importar o composition-root (ADR-019) — e a
-// cópia só serve se se comportar igual, pelo que os casos são os mesmos.
+// TestAOS337_ACausaSobreviveARedaccao é o segundo CONTROLO, e a versão anterior dele era um
+// `t.Logf` — o revisor apagou a causa por completo e a suite passou. Um controlo que não falha
+// não é um controlo.
+//
+// A asserção NÃO pode ser sobre o texto do sistema operativo (connection refused / recusou), que
+// varia por SO e por locale — foi essa a razão pela qual era um log. A forma portável é comparar
+// com o erro CRU: o redigido tem de conter tudo o que o cru trazia depois do endereço.
+func TestAOS337_ACausaSobreviveARedaccao(t *testing.T) {
+	t.Parallel()
+	const alvo = "http://admin:" + aos337Senha + "@127.0.0.1:1/v1/sys/seal-status"
+
+	hc := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, alvo, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	_, errCru := hc.Do(req)
+	if errCru == nil {
+		t.Fatal("premissa do teste partida: a porta 1 devia recusar a ligacao")
+	}
+	var ue *url.Error
+	if !errors.As(errCru, &ue) {
+		t.Fatalf("premissa do teste partida: o erro cru devia ser *url.Error, e %T", errCru)
+	}
+
+	redigido := redaction.TransportError(alvo, errCru)
+	exigeSemCredenciais(t, redigido.Error())
+	if causa := ue.Err.Error(); !strings.Contains(redigido.Error(), causa) {
+		t.Errorf("a CAUSA perdeu-se na redaccao — o diagnostico deixaria de distinguir DNS de recusa de ligacao de TLS.\n  redigido: %v\n  causa que faltava: %s", redigido, causa)
+	}
+	if !strings.Contains(redigido.Error(), ue.Op) {
+		t.Errorf("o Op perdeu-se na redaccao: %v", redigido)
+	}
+}
+
+// TestAOS337_UrlErrorAninhadoNaoEscapa fecha o achado F6 da revisão: `errors.As` apanha o
+// `*url.Error` de FORA, e reimprimir o Err tal-qual deixava sair inteiro um `*url.Error`
+// INTERIOR — que é o que um transporte injectado produz ao falhar contra um proxy.
+//
+// A via é o seam público `KVv2Config.HTTPClient`; hoje o nó passa nil, pelo que não é alcançável
+// em produção. É por isso que é teste e não incidente — e é por isso que existe.
+func TestAOS337_UrlErrorAninhadoNaoEscapa(t *testing.T) {
+	t.Parallel()
+	const senhaDoProxy = "senha-do-proxy-de-terceiros"
+	interior := &url.Error{
+		Op:  "parse",
+		URL: "http://proxy-admin:" + senhaDoProxy + "@proxy.interno:3128",
+		Err: errors.New("invalid port"),
+	}
+	exterior := &url.Error{
+		Op:  "Get",
+		URL: "http://admin:***@vault.interno:8200/v1/secret/data/prod",
+		Err: interior,
+	}
+
+	got := redaction.TransportError("http://vault.interno:8200", exterior).Error()
+	if strings.Contains(got, senhaDoProxy) {
+		t.Errorf("a senha do PROXY saiu inteira depois da redaccao: %s", got)
+	}
+	if strings.Contains(got, "proxy-admin") {
+		t.Errorf("o utilizador do proxy sobreviveu a redaccao: %s", got)
+	}
+	// CONTROLO: descer nos aninhados nao pode apagar a informacao de CONTRA QUEM se falhou.
+	if !strings.Contains(got, "proxy.interno:3128") {
+		t.Errorf("a redaccao apagou o endereco do proxy — perde-se que a falha foi contra ELE e nao contra o Vault: %s", got)
+	}
+	if !strings.Contains(got, "invalid port") {
+		t.Errorf("a causa interior perdeu-se: %s", got)
+	}
+}
+
+// TestAOS337_MountInvalidoNaoAcusaOEndereco fecha o achado F5. `c.mount` vem de
+// `AOS_BROKER_VAULT_KV_MOUNT` e NÃO era escapado, ao contrário dos segmentos do path. Um mount
+// com um escape inválido fazia o `NewRequest` falhar — e a mensagem nova acusaria um endereço
+// PERFEITO, mandando o operador depurar a variável errada.
+func TestAOS337_MountInvalidoNaoAcusaOEndereco(t *testing.T) {
+	t.Parallel()
+	c, err := NewKVv2(KVv2Config{Addr: "https://vault.interno:8200", Token: "tok", Mount: "sec%zzret"})
+	if err != nil {
+		t.Fatalf("NewKVv2: %v", err)
+	}
+	// Com o mount escapado, o pedido CONSTRÓI-SE — o mount passa a ser um segmento literal, e
+	// o que falha é a ligação, não o parse. É a falha certa a acusar a coisa certa.
+	_, ferr := c.Fetch(context.Background(), chaveDeTeste)
+	if ferr == nil {
+		t.Fatal("um vault inexistente devia dar erro")
+	}
+	if strings.Contains(ferr.Error(), "nao produz um pedido HTTP valido") {
+		t.Errorf("um mount mal escrito continua a ser acusado ao ENDERECO, que esta perfeito: %v", ferr)
+	}
+}
+
+// TestAOS337_RedactURL fixa o que o redactor partilhado pode devolver. Vive aqui, e não só em
+// `substrate/redaction`, porque é ESTE pacote que perde se ele alargar.
 func TestAOS337_RedactURL(t *testing.T) {
 	t.Parallel()
 	casos := []struct{ nome, entrada, quer string }{
-		{"credenciais são deitadas fora", "https://admin:" + aos337Senha + "@vault.interno:8200", "https://vault.interno:8200"},
-		{"caminho é deitado fora", "https://vault.interno:8200/v1/secret/data/prod", "https://vault.interno:8200"},
-		{"query é deitada fora", "https://vault.interno:8200?token=" + aos337Senha, "https://vault.interno:8200"},
+		{"credenciais deitadas fora", "https://admin:" + aos337Senha + "@vault.interno:8200", "https://vault.interno:8200"},
+		{"caminho deitado fora", "https://vault.interno:8200/v1/secret/data/prod", "https://vault.interno:8200"},
+		{"query deitada fora", "https://vault.interno:8200?token=" + aos337Senha, "https://vault.interno:8200"},
 		{"forma limpa fica igual", "https://vault.interno:8200", "https://vault.interno:8200"},
 		{"loopback fica igual", "http://127.0.0.1:8200", "http://127.0.0.1:8200"},
-		{"sem esquema mantém-se re-analisável", "//admin:" + aos337Senha + "@vault.interno:8200", "//vault.interno:8200"},
-		{"inválido não devolve o valor", "://" + aos337Senha, "(inválido)"},
+		{"sem esquema continua re-analisavel", "//admin:" + aos337Senha + "@vault.interno:8200", "//vault.interno:8200"},
+		{"host verdadeiro e nao o que parece", "https://vault:8200@evil.example:9000", "https://evil.example:9000"},
+		{"invalida nao devolve o valor", "://" + aos337Senha, "(inválida)"},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
 			t.Parallel()
-			got := redactURL(c.entrada)
+			got := redaction.URL(c.entrada)
 			if got != c.quer {
-				t.Errorf("redactURL(%q) = %q, quer %q", c.entrada, got, c.quer)
+				t.Errorf("redaction.URL(%q) = %q, quer %q", c.entrada, got, c.quer)
 			}
 			if strings.Contains(got, aos337Senha) {
 				t.Errorf("a forma redigida contem o segredo: %q", got)
@@ -148,26 +302,12 @@ func TestAOS337_RedactURL(t *testing.T) {
 	}
 }
 
-// TestAOS337_ErroRedigidoPreservaACausa é o segundo CONTROLO. Redigir não pode custar o
-// diagnóstico: o `Op` e a causa são o que distingue «DNS não resolve» de «ligação recusada» de
-// «TLS inválido», e um erro que não seja `*url.Error` tem de passar tal-qual.
-func TestAOS337_ErroRedigidoPreservaACausa(t *testing.T) {
+// TestAOS337_ErroQueNaoEDeURLPassaTalQual: não se inventa redacção sobre uma forma que não se
+// conhece.
+func TestAOS337_ErroQueNaoEDeURLPassaTalQual(t *testing.T) {
 	t.Parallel()
 	outro := errors.New("erro que nao e de URL")
-	if got := erroRedigido("https://admin:pw@vault:8200", outro); !errors.Is(got, outro) {
+	if got := redaction.TransportError("https://admin:pw@vault:8200", outro); !errors.Is(got, outro) {
 		t.Errorf("um erro que nao e *url.Error tem de passar tal-qual: %v", got)
-	}
-
-	c := clienteAOS337(t, "http://admin:"+aos337Senha+"@127.0.0.1:1")
-	_, err := c.Fetch(context.Background(), Key{Provider: "p", Region: "eu", Capability: "cap:http.get"})
-	if err == nil {
-		t.Fatal("um vault inalcancavel devia dar erro")
-	}
-	// A causa concreta do transporte tem de sobreviver à redacção.
-	if !strings.Contains(err.Error(), "Get ") {
-		t.Errorf("o Op perdeu-se na redaccao: %v", err)
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "refused") && !strings.Contains(strings.ToLower(err.Error()), "recus") {
-		t.Logf("nota: a causa do sistema nao menciona recusa (pode variar por SO): %v", err)
 	}
 }

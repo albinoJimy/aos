@@ -51,6 +51,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aos-ref/substrate/redaction"
 )
 
 // ErrKVConfig — o cliente KV v2 foi pedido com configuração inválida (addr/token
@@ -63,46 +65,6 @@ var ErrKVConfig = errors.New("vault: config do cliente KV v2 invalida (addr e to
 // nem substitui por outra credencial; uma leitura falhada não emite handle. O valor
 // NUNCA entra na mensagem de erro.
 var ErrKVFetch = errors.New("vault: falha a ler segredo no Vault KV v2")
-
-// redactURL devolve a forma PUBLICÁVEL de um endereço: esquema, host e porta, e mais nada.
-//
-// AOS-337 — PORQUE EXISTE UMA CÓPIA AQUI. O nó já tem `integration.RedactURL`, e este pacote
-// NÃO PODE importá-lo: `packages/integration` é o composition-root e a fronteira do ADR-019
-// corre no sentido contrário (`control-plane → kernel → platform/substrate`). A duplicação é
-// DELIBERADA e é a mesma decisão que o cabeçalho deste ficheiro já regista para o transporte —
-// «copiado, não partilhado» —, aqui por direcção de camada em vez de por `package main`.
-//
-// Descarta user-info, caminho, query e fragmento — tudo o que possa carregar segredo — e
-// devolve `(inválido)` para o que não se souber analisar, NUNCA o valor original: um endereço
-// que o parser recusou não se sabe redigir, e é precisamente aí que uma credencial mal escapada
-// tem mais probabilidade de estar.
-func redactURL(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" {
-		return "(inválido)"
-	}
-	// Composto a partir dos DOIS campos que se querem preservar, em vez de concatenado à mão:
-	// um endereço sem esquema continua re-analisável como a mesma coisa que entrou.
-	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
-}
-
-// erroRedigido devolve um erro de TRANSPORTE com o endereço redigido.
-//
-// O `net/http` já redige a SENHA nos `*url.Error` que constrói (`http://admin:***@host/…`), mas
-// deixa o UTILIZADOR intacto — e numa URL de Vault é ele que identifica o principal. Estes erros
-// sobem ao `/readyz` e ao banner de prontidão do nó, pelo que a postura tem de ser a mesma nos
-// dois sítios (AOS-337, no molde de `erroVaultRedigido` em `cmd/aos/vaultkeyvault.go`).
-//
-// Preserva o `Op` e a CAUSA — que é o que diagnostica: DNS, recusa de ligação, TLS — e troca só
-// o endereço. Um erro que não seja `*url.Error` passa tal-qual: não se inventa redacção sobre
-// uma forma que não se conhece.
-func erroRedigido(addr string, err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return fmt.Errorf("%s %s: %w", ue.Op, redactURL(addr), ue.Err)
-	}
-	return err
-}
 
 // defaultKVMount / defaultKVField são os defaults do motor KV v2 do Vault.
 const (
@@ -152,6 +114,19 @@ func NewKVv2(cfg KVv2Config) (*KVv2, error) {
 	token := strings.TrimSpace(cfg.Token)
 	if addr == "" || token == "" {
 		return nil, ErrKVConfig
+	}
+	// FAIL-CLOSED NO PONTO DE ENTRADA (AOS-337). Um endereço com credenciais embutidas
+	// não constrói cliente nenhum — fecha os quatro caminhos de erro DE UMA VEZ, em vez
+	// de os remendar um a um à saída, e torna impossível escrever o teste de fuga que
+	// existia. É a forma forte da garantia.
+	//
+	// NÃO É UM CRITÉRIO DE TRANSPORTE, e por isso não duplica o do nó
+	// (`integration.CheckSecureTransportURL`): não decide `http` vs `https` nem loopback,
+	// não tem política de esquema nenhuma. É só a recusa da forma que carrega segredo.
+	if u, err := url.Parse(addr); err == nil && u.User != nil {
+		// O utilizador NÃO é ecoado: num endereço de Vault ele identifica o principal, e a
+		// senha vem colada a ele.
+		return nil, fmt.Errorf("%w: o endereco traz credenciais (user-info); o token vai em X-Vault-Token", ErrKVConfig)
 	}
 	mount := strings.Trim(strings.TrimSpace(cfg.Mount), "/")
 	if mount == "" {
@@ -232,7 +207,16 @@ func (c *KVv2) Fetch(ctx context.Context, key Key) (Secret, error) {
 	for _, seg := range strings.Split(path, "/") {
 		escaped = append(escaped, url.PathEscape(seg))
 	}
-	endpoint := c.addr + "/v1/" + c.mount + "/data/" + strings.Join(escaped, "/")
+	// O MOUNT TAMBÉM É ESCAPADO, e não era: vem de `AOS_BROKER_VAULT_KV_MOUNT` e só passava
+	// por TrimSpace/Trim("/"). Um mount com um escape inválido (`sec%zzret`) fazia o
+	// `NewRequest` falhar, e a mensagem — que agora nomeia o endereço — acusaria um endereço
+	// PERFEITO, mandando o operador depurar a variável errada. Segmento a segmento, como o
+	// path, porque um mount pode ser aninhado (`kv/equipa`).
+	mountEscaped := make([]string, 0)
+	for _, seg := range strings.Split(c.mount, "/") {
+		mountEscaped = append(mountEscaped, url.PathEscape(seg))
+	}
+	endpoint := c.addr + "/v1/" + strings.Join(mountEscaped, "/") + "/data/" + strings.Join(escaped, "/")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -240,13 +224,13 @@ func (c *KVv2) Fetch(ctx context.Context, key Key) (Secret, error) {
 		// sem a redacção que o `http.Client` aplica aos SEUS erros. Era aqui e no ramo
 		// equivalente de [KVv2.Ready] que uma senha embutida ia INTEIRA para a mensagem
 		// (AOS-337).
-		return Secret{}, fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redactURL(c.addr))
+		return Secret{}, fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redaction.URL(c.addr))
 	}
 	req.Header.Set("X-Vault-Token", c.token) // nunca logado
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return Secret{}, fmt.Errorf("%w: transporte: %v", ErrKVFetch, erroRedigido(c.addr, err))
+		return Secret{}, fmt.Errorf("%w: transporte: %v", ErrKVFetch, redaction.TransportError(c.addr, err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -278,13 +262,22 @@ func (c *KVv2) Fetch(ctx context.Context, key Key) (Secret, error) {
 func (c *KVv2) Ready(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.addr+"/v1/sys/seal-status", nil)
 	if err != nil {
-		// Devolvia o `*url.Error` CRU — sem redacção E sem sentinela, pelo que o /readyz
-		// recebia o endereço inteiro num erro que nem era atribuível (AOS-337).
-		return fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redactURL(c.addr))
+		// Devolvia o `*url.Error` CRU — sem redacção E sem sentinela: o endereço inteiro
+		// num erro que nem era atribuível ao Vault (AOS-337).
+		//
+		// ALCANCE HONESTO: [KVv2.Ready] NÃO tem chamador de produção, e nem podia ter — a
+		// porta [Client] declara só `Fetch`. A primeira versão desta correcção afirmava
+		// que estes erros «sobem ao /readyz e ao banner de prontidão do nó», e isso é
+		// FALSO: o /readyz do nó sonda o Vault da KEK, não este. A correcção é PREVENTIVA
+		// e vale — o dia em que `Ready` for exposto, ninguém terá de reabrir isto —, mas a
+		// razão escrita tem de ser a verdadeira. Foi um doc-comment a comprar confiança que
+		// não sustentava que abriu o AOS-333; repeti-lo aqui seria o mesmo defeito, no
+		// ticket que ele gerou.
+		return fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redaction.URL(c.addr))
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: vault inalcancavel: %v", ErrKVFetch, erroRedigido(c.addr, err))
+		return fmt.Errorf("%w: vault inalcancavel: %v", ErrKVFetch, redaction.TransportError(c.addr, err))
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
