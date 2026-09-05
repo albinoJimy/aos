@@ -148,15 +148,38 @@ func checkRemoteAttestationURL(raw string) error {
 // se notaria com o token já na rede em claro.
 //
 // Devolve nil, ou um erro DESCRITIVO e SEM sentinela — cada chamador envolve-o na SUA sentinela
-// nomeada, que é o que o operador vê no aborto do arranque. A mensagem nunca inclui credenciais
-// (a URL de entrada é material público; user-info numa URL não é suportado por nenhum chamador).
+// nomeada, que é o que o operador vê no aborto do arranque.
+//
+// USER-INFO É RECUSADO, e a versão anterior deste comentário afirmava que não era preciso:
+// «a mensagem nunca inclui credenciais (user-info numa URL não é suportado por nenhum chamador)».
+// Era falso nas duas metades (AOS-333). Nada rejeitava `https://user:pass@vault:8200`, e o ramo
+// de parse falhado devolvia `fmt.Errorf("%q", raw)` — que o `%v` do wrap de cada chamador ecoava
+// inteiro, credenciais incluídas, para o log de arranque.
+//
+// Uma senha de Vault num log recolhido, agregado e retido é o mesmo segredo em claro que o
+// ADR-006 proíbe; muda só quem o lê — aqui não é o agente, é quem quer que leia o colector. E é
+// forma legítima de passar credenciais a um Vault, pelo que não bastava contar com ninguém a
+// usá-la: um critério que depende de o operador não fazer a coisa documentada não é critério.
+//
+// A MENSAGEM DE ERRO NUNCA ECOA A URL. Onde o valor ajudaria o diagnóstico usa-se
+// [RedactURL], que preserva esquema, host e porta e deita fora o resto — e no ramo de parse
+// falhado não se ecoa nada, porque uma URL que o parser recusou não se sabe redigir.
 func CheckSecureTransportURL(raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		return errors.New("vazia")
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("%q", raw)
+		// NÃO se ecoa `raw`: uma URL que o parser recusou não se sabe redigir com
+		// segurança, e é precisamente numa URL malformada que uma credencial mal
+		// escapada tem mais probabilidade de estar.
+		return errors.New("malformada (valor omitido)")
+	}
+	if u.User != nil {
+		// Fail-closed ANTES do esquema: uma URL com credenciais é recusada mesmo
+		// quando o transporte estaria correcto. O nome de utilizador NÃO é ecoado —
+		// numa URL de Vault ele identifica o principal, e a senha vem colada a ele.
+		return errors.New("traz credenciais no URL (user-info); passe-as pelo ficheiro de token")
 	}
 	switch u.Scheme {
 	case "https":
@@ -173,6 +196,28 @@ func CheckSecureTransportURL(raw string) error {
 	default:
 		return fmt.Errorf("esquema %q", u.Scheme)
 	}
+}
+
+// RedactURL devolve a forma PUBLICÁVEL de uma URL: esquema, host e porta, e mais nada.
+//
+// Existe porque um banner de postura tem de dizer ONDE o nó fala sem dizer COM QUE
+// credencial (AOS-333). O `brokerVaultPostureBanner` imprimia `AOS_BROKER_VAULT_ADDR`
+// cru, pelo que uma senha embutida ia em texto claro para o log de arranque.
+//
+// Descarta user-info, caminho, query e fragmento — tudo o que possa carregar segredo —
+// e devolve `(inválida)` para o que não se souber analisar, nunca o valor original. É
+// deliberadamente mais estreita do que o necessário: preservar o caminho ajudaria o
+// diagnóstico, mas um caminho de Vault já carregou tokens em incidentes reais noutros
+// sistemas, e um redactor que hesita não serve para o sítio onde é preciso.
+func RedactURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "(inválida)"
+	}
+	if u.Scheme == "" {
+		return u.Host
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // VerifyDeviceAttestation satisfaz [DeviceAttestationVerifier]. Delega a verificação

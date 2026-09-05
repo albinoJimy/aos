@@ -92,7 +92,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) |
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
-| `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — P1, **alcançável hoje** |
+| `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — P1 |
@@ -966,17 +966,43 @@ Medido na revisão adversarial da EPIC-23. **Alcançável hoje**: basta um opera
 
 ### Critérios de Aceitação
 
-- [ ] `CheckSecureTransportURL` recusa fail-closed um URL com `userinfo`, com erro atribuível que
+- [x] `CheckSecureTransportURL` recusa fail-closed um URL com `userinfo`, com erro atribuível que
       **não** ecoa o URL
-- [ ] O banner imprime o endereço **redigido** (esquema, host e porta; nunca `userinfo`), ou recusa
+- [x] O banner imprime o endereço **redigido** (esquema, host e porta; nunca `userinfo`), ou recusa
       compor — a escolha é justificada
-- [ ] Nenhum caminho de erro do helper ecoa o URL cru
-- [ ] Um teste com um URL com `user:pass@` que prove as três coisas, incluindo a ausência da senha
+- [x] Nenhum caminho de erro do helper ecoa o URL cru
+- [x] Um teste com um URL com `user:pass@` que prove as três coisas, incluindo a ausência da senha
       na mensagem de erro e no banner
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1 — é o único destes seis alcançável hoje, e o eixo é fuga de segredo.
+**IMPLEMENTADO.** P1 — era o único destes seis alcançável hoje, e o eixo era fuga de segredo.
+
+`CheckSecureTransportURL` recusa `user-info` **antes** de olhar para o esquema: uma URL com
+credenciais é negada mesmo quando o transporte estaria correcto, e a recusa vale para os **três**
+chamadores de uma vez — a attestation remota, a custódia da KEK e o Vault do broker. Um critério,
+três eixos, que é a razão de o helper ter sido exportado.
+
+Nenhum caminho de erro ecoa a URL. O ramo de *parse* falhado devolvia `fmt.Errorf("%q", raw)` e era
+o pior dos dois: uma URL que o parser recusa é precisamente onde uma credencial mal escapada tem
+mais probabilidade de estar. Passa a omitir o valor — uma URL que não se sabe analisar não se sabe
+redigir.
+
+`integration.RedactURL` dá ao banner a forma publicável: esquema, host e porta, e mais nada. É
+deliberadamente mais estreita do que o necessário — preservar o caminho ajudaria o diagnóstico, mas
+um caminho de Vault já carregou tokens em incidentes reais, e um redactor que hesita não serve para
+o sítio onde é preciso.
+
+**O doc-comment do helper afirmava que isto estava fechado:** «a mensagem nunca inclui credenciais
+(user-info numa URL não é suportado por nenhum chamador)». Era falso nas duas metades. Mais uma
+declaração a comprar confiança que não sustentava — o eixo do `DEF-814`.
+
+Seis funções de teste em dois módulos, com **controlos**: as URLs legítimas continuam a passar (sem
+isso, um helper que recusasse tudo passaria os testes de recusa) e o banner continua a nomear host e
+porta (redigir tudo trocaria uma fuga por um banner inútil). O teste do banner é **defesa em
+profundidade** e testa deliberadamente um estado que o parser já não deixa acontecer: se alguém
+relaxar o critério de transporte, a redacção continua lá. Prova de mutação executada — trocando
+`if u.User != nil` por `if false`, as duas suites ficam vermelhas; revertida e confirmada limpa.
 
 ---
 
