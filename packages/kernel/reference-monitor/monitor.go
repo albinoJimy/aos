@@ -332,21 +332,24 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	//    fail-closed. É genérico sobre o tipo [Obligation] (o RM não importa o PDP).
 	//    Corre ANTES do audit-before-effect para que uma violação seja registada como
 	//    deny (via fail), e ANTES do dispatch para que nenhum efeito viole a obrigação.
-	if reason, ok := enforceObligations(&call, obligations); !ok {
-		// AS OBRIGAÇÕES EXISTEM AQUI, e é isso que torna este `nil` diferente dos outros. Todos
-		// os sítios de recusa o passam — o parâmetro é explícito para que cada um DECIDA, ver o
-		// doc-comment de [Monitor.fail] —, mas este é o único onde a decisão descarta informação
-		// que a cadeia REALMENTE coletou: a obrigação que motivou a recusa. Fica só no `reason`,
-		// que a nomeia em texto livre.
+	if reason, causa, ok := enforceObligations(&call, obligations); !ok {
+		// SELA-SE A OBRIGAÇÃO QUE RECUSOU — só essa (AOS-341). Este é o único sítio de recusa
+		// onde as obrigações EXISTEM: foram coletadas da cadeia e uma delas é a causa. Selá-la
+		// não reabre a assimetria do ramo `HookDeny`, e a diferença é exactamente esta: ali
+		// descartam-se obrigações da BASE, que nada aplicaram a um efeito que não aconteceu;
+		// aqui sela-se a que NEGOU, que é um facto sobre a decisão e não sobre o efeito.
 		//
-		// DEFEITO MEDIDO E COM TICKET: AOS-341. Uma call com obrigação `region` cujo recurso não
-		// tem região resolvida é negada aqui, e `compliance.projectSovereignty` não a projecta de
-		// todo — `sovereigntyRegion` prefere a obrigação e, sem ela, cai num `Resource.Region`
-		// que neste caso está vazio. A negação POR soberania some da secção das acções que a
-		// soberania governou (continua a contar em `PDP.Denies`). Não corrigir à socapa: a via
-		// provável é selar a obrigação CAUSADORA, e isso quer-se com decisão escrita — o descarte
-		// no ramo `HookDeny` é deliberado e não se reabre por simetria com este.
-		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, nil, start, policyVersion), nil
+		// O QUE ISTO FECHA. Sem o selo, `compliance.projectSovereignty` perdia a negação: uma
+		// call com obrigação `region` cujo recurso não tem região resolvida saía com
+		// `Obligations: []` e `Resource.Region: ""`, e `sovereigntyRegion` devolvia
+		// `governed=false` — a negação POR soberania desaparecia da secção das acções que a
+		// soberania governou (continuava a contar em `PDP.Denies`, e só aí). Com o selo, a
+		// região EXIGIDA é recuperável do registo sem ler o `reason`, e é ela — não a região do
+		// recurso recusado — que passa a governar a projecção.
+		//
+		// Deliberadamente NÃO se passa `obligations` (a lista acumulada): selar as que foram
+		// cumpridas até aqui afirmaria que se aplicaram a um efeito que nunca existiu.
+		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, []Obligation{causa}, start, policyVersion), nil
 	}
 
 	// 3) Auditoria ANTES do efeito (audit-before-effect). Se falhar, fail-closed.

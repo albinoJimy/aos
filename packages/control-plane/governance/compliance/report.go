@@ -93,7 +93,18 @@ type DSAREvent struct {
 // uma acção governada pela fronteira regional do board (obrigação `region`) ou cujo
 // recurso-alvo carrega uma região. Só metadados de governação, sem PII.
 type SovereigntyEvent struct {
-	// Region é a região autorizada/alvo (ex.: "eu").
+	// Region é a região EXIGIDA pela fronteira que governou a acção (ex.: "eu").
+	//
+	// SIGNIFICADO ÚNICO, e a precedência faz parte dele (AOS-341). Quando o registo traz
+	// a obrigação `region`, é a região dela — a exigida — e não a do recurso. Numa
+	// negação cross-border as duas DIVERGEM, e é a exigida que fica: um evento arquivado
+	// sob a região recusada punha, na mesma coluna, umas linhas a dizer «autorizada aqui»
+	// e outras «recusada por não ser aqui».
+	//
+	// FALLBACK, e é um caso mais fraco de propósito: sem obrigação `region` no registo
+	// não houve fronteira declarada, e o que resta é o `Resource.Region` — a jurisdicção
+	// que a acção tocou. Entra na mesma projecção porque é o único facto regional
+	// disponível, não porque signifique o mesmo.
 	Region string
 	// Decision é o veredicto da acção governada pela soberania.
 	Decision audit.Decision
@@ -408,6 +419,14 @@ func projectSovereignty(recs []audit.AuditRecord) []SovereigntyEvent {
 // sovereigntyRegion devolve a região de soberania de um registo e se ele é governado
 // por soberania: a obrigação `region` (Params["region"]) é a fonte preferida; na sua
 // ausência, uma Resource.Region não-vazia. Devolve ("", false) se nenhuma se aplica.
+//
+// A PREFERÊNCIA PELA OBRIGAÇÃO ESTAVA MORTA NO CAMINHO DE NEGAÇÃO até AOS-341, e não por
+// culpa daqui: o Reference Monitor descartava as obrigações em TODOS os ramos de recusa,
+// pelo que um registo `deny` nunca chegava com uma para preferir. O ramo de baixo — o
+// `Resource.Region` — era o único que corria, e quando o recurso também não tinha região
+// resolvida o resultado era `governed=false`: uma negação POR soberania desaparecia desta
+// projecção. O RM passou a selar a obrigação CAUSADORA nesse ramo; esta função não mudou,
+// mas o primeiro `if` deixou de ser inalcançável para negações.
 func sovereigntyRegion(rec audit.AuditRecord) (string, bool) {
 	if ob, ok := obligationOf(rec, obRegion); ok {
 		if r := ob.Params[paramRegion]; r != "" {
