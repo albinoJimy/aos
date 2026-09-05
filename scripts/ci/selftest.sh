@@ -824,6 +824,31 @@ else
   bad "W2: nao foi possivel injectar o veneno na copia do corpus"
 fi
 
+# W2-ter — O VENENO EM DUAS LINHAS. E a forma que escapava a primeira versao do gate, medida logo
+# a seguir ao merge: um comentario Go longo parte-se naturalmente, o `gofmt` nao o impede, e com o
+# ticket na segunda linha o marcador ficava fora da varredura. Fuga SILENCIOSA — quem a escreve
+# julga estar coberto e nao esta.
+if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
+import importlib.util, os, sys
+os.environ["AOS_ESTADO_CITADO_ROOT"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+fechados = sorted(t for t, e in ec.estados_dos_tickets().items() if e in ec.FECHADO)
+if not fechados:
+    print("W2-ter: o corpus nao declara nenhum ticket fechado", file=sys.stderr); sys.exit(2)
+with open(os.path.join(sys.argv[2], "packages", "veneno", "veneno.go"), "w", encoding="utf-8") as fh:
+    fh.write("package veneno\n\n// A troca so medeia algo quando o wiring ligar.\n// BLOQUEADOR:\n// %s\n" % fechados[0])
+RPY
+then
+  if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    bad "W2-ter: o gate passou com o marcador em DUAS LINHAS — a fuga silenciosa continua aberta"
+  else
+    pass "W2-ter: o gate bloqueou o marcador partido em duas linhas de comentario"
+  fi
+else
+  bad "W2-ter: nao foi possivel injectar o veneno multi-linha"
+fi
+
 # W2-bis — o mesmo veneno com um ticket ABERTO tem de ficar VERDE. Sem isto, um gate que
 # avermelhasse com QUALQUER marcador passaria o R2 e negaria toda a declaracao legitima.
 if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
