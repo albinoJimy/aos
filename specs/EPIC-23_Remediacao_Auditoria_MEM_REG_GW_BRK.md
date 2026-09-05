@@ -97,6 +97,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
 | O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** |
+| A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — condicional |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
 +128% de CPU no *parse* (44,4 µs/op contra 101,1 µs/op num corpo de ~11 KB, medido por benchmark).
@@ -1026,6 +1027,10 @@ sítios que não se fecham caso a caso —, mas passa a ser declarada como quebr
 os **dois** remédios, as três entradas de `deploy/node/README.md` dizem-no, e o `CHANGELOG` marca-a.
 Foi a suposição por trás desta correcção que se revelou falsa: que ninguém usava `user-info`.
 
+A lacuna que a quebra deixa — o nó não tem hoje forma de falar Basic com um verificador de
+attestation — fica registada no **AOS-338**, e deliberadamente **condicional**: só se implementa se
+alguém nomear um deployment que a usava.
+
 **F2 — a defesa em profundidade parou no banner.** Os caminhos que **falam com a rede** continuavam
 a ecoar o endereço, por dois ramos de naturezas diferentes. O `NewRequest` devolve um `*url.Error`
 com a URL **como foi escrita** — era o único sítio do nó onde a **senha ia inteira** para o
@@ -1254,3 +1259,62 @@ que **podem** importar `integration`, foram fechados no próprio AOS-333.
 
 **POR IMPLEMENTAR.** P2 — o eixo é fuga de segredo, mas a via do operador está fechada e sobra a
 programática. Sobe a P1 no dia em que alguém compuser `KVv2Config.Addr` a partir de entrada externa.
+
+---
+
+## AOS-338 — O AOS-333 removeu a basic-auth do verificador de attestation e não pôs nada no lugar
+
+### Contexto
+
+O **AOS-333** passou a recusar `user-info` em `CheckSecureTransportURL`, e isso fechou uma via de
+autenticação que **funcionava**: o `net/http` converte `req.URL.User` em `Authorization: Basic`,
+pelo que `AOS_ATTESTATION_VERIFIER_URL=https://svc:pw@attest.interno/verify` autenticava contra um
+verificador atrás de um reverse-proxy com basic-auth. Medido na revisão adversarial do AOS-333, não
+suposto.
+
+A recusa está certa e mantém-se — uma credencial num URL de ambiente aparece na tabela de
+processos, no `inspect` do contentor e em qualquer erro que ecoe o endereço, e nenhum desses sítios
+se fecha caso a caso. **O que não está certo é o buraco que ficou.**
+
+`RemoteAttestationConfig` só tem `AuthToken`, enviado como `Authorization: Bearer`
+(`packages/integration/remote_attestation.go:75-77`, `:247-251`), alimentado por
+`AOS_ATTESTATION_VERIFIER_TOKEN_PATH` (`packages/cmd/aos/main.go:809-814`). Um operador cuja
+autoridade de attestation fala Basic **não tem hoje caminho no nó**: ou muda o proxy para Bearer,
+ou termina a autenticação antes dele. Para os dois Vaults isto não é problema — autenticam por
+`X-Vault-Token` e ignoram o Basic —, pelo que o eixo é só o terceiro chamador.
+
+**ESTE TICKET É CONDICIONAL, e é assim que deve ficar registado.** Nenhum deployment que use esta
+via foi nomeado; a necessidade é inferida de a via ter existido e de a documentação nunca a ter
+desaconselhado. **Não implementar sem um caso real**: acrescentar um segundo esquema de
+autenticação a uma superfície de segurança é permanentemente mais caro do que não o ter, e o
+remédio já documentado — Bearer por ficheiro montado, ou terminação no proxy — serve a maioria dos
+deployments. Se ninguém o pedir, o destino honesto deste ticket é **fechar sem código**, com a
+razão escrita.
+
+### Critérios de Aceitação
+
+- [ ] A credencial entra por **FICHEIRO MONTADO**, nunca por variável de ambiente — é a mesma
+      regra que motivou a recusa do URL, e viola-la aqui reabriria a fuga por outra porta
+- [ ] Formato do ficheiro declarado e validado fail-closed (uma linha `utilizador:senha`, no molde
+      do `-u` do `curl`); ficheiro ilegível, vazio ou sem `:` **ABORTA** o arranque
+- [ ] **Mutuamente exclusivo com o Bearer.** Os dois definidos ⇒ **ABORTA** com erro atribuível.
+      Dois `Authorization` é um defeito; escolher um em silêncio é pior, porque o operador fica a
+      crer que a outra credencial está a ser usada
+- [ ] Nenhum caminho ecoa a credencial — nem o utilizador: o banner de postura, as mensagens de
+      erro do adaptador e o `/readyz` seguem o critério que o AOS-333 fixou
+- [ ] O banner **declara qual dos esquemas está composto**, derivado do estado e não da intenção
+      de configuração — um nó que diz «attestation LIGADA» sem dizer como se autentica esconde
+      metade da postura
+- [ ] O critério de transporte **não relaxa**: Basic continua sujeito a `https`, ou `http` só em
+      loopback. Basic sobre claro é a credencial em claro, e é o mesmo eixo do AOS-249
+- [ ] Um teste que prove o header construído, a exclusão mútua a abortar, e a ausência da senha e
+      do utilizador em erro e banner
+- [ ] `deploy/node/README.md` ganha a entrada, e a nota de migração do AOS-333 passa a apontar
+      para cá em vez de dizer só «termine a autenticação no proxy»
+
+### Estado
+
+**POR IMPLEMENTAR — CONDICIONAL.** P3. Só sobe se alguém nomear um deployment que usava a
+basic-auth embutida no URL. Enquanto ninguém o fizer, a migração documentada no AOS-333 é a
+resposta, e este ticket existe para que a lacuna esteja **registada** em vez de descoberta por um
+operador cujo arranque abortou.
