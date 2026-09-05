@@ -213,11 +213,16 @@ def system_spec_drivers() -> int:
 # fica queimado, ou reatribui-se — está deferida com critério escrito em
 # **DEF-908** (`docs/governance/REGISTO-Deferimentos.md`), para ser tomada no
 # merge por quem o fizer, e não adivinhada agora por quem abriu a entrada.
-ATRIBUIDOS_NOUTRO_RAMO = {
+# LISTA, convertida em conjunto — e não um literal `{...}`. Medido: esvaziar um
+# literal de conjunto deixa `{}`, que em Python é um **dict**, e o gate morria em
+# `TypeError: unsupported operand type(s) for -: 'set' and 'dict'` em vez de
+# falhar pela razão certa. A última pessoa a tirar uma entrada daqui é
+# exactamente quem não devia tropeçar numa armadilha de sintaxe.
+ATRIBUIDOS_NOUTRO_RAMO = frozenset([
     # AOS-317 — `claude/exciting-maxwell-aec36d` (b26966c, 2026-09-04).
-    # Sai quando esse ramo for fundido.
+    # Sai quando esse ramo for fundido. Ver DEF-908 para o caso do abandono.
     "AOS-317",
-}
+])
 
 
 def corpus_stats(tickets: dict) -> dict:
