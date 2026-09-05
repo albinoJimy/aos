@@ -25,7 +25,9 @@ package main
 // [ErrBurndownNoLedger] ou o erro do store; e turnos gravados com a dimensão que DECIDE
 // (tokens) a zero devolvem [ErrBurndownNoUsage]. Um burn-down de 0% por falta de dados é
 // pior do que não existir: parece protecção. O guarda está na GRANDEZA e não só na contagem
-// de turnos, porque é a grandeza que alimenta `consumedFraction`.
+// de turnos, porque é a grandeza que alimenta `consumedFraction`. E desde AOS-336 está por
+// TURNO e não sobre o agregado: basta UM turno não medido para a soma deixar de ser o
+// consumo do run — um agregado a zero só apanhava o run inteiramente cego, nunca o misto.
 
 import (
 	"context"
@@ -50,7 +52,7 @@ import (
 // Isso é um defeito de composição, e é exactamente o que se quer ver denunciado.
 var ErrBurndownNoLedger = errors.New("aos: sem ledger de turnos para o run (nenhum evento turn.recorded) — o burn-down NAO tem fonte; 0% seria uma leitura falsa")
 
-// ErrBurndownNoUsage — HÁ turnos gravados, mas a dimensão que DECIDE (tokens) somou ZERO.
+// ErrBurndownNoUsage — HÁ turnos gravados e PELO MENOS UM não foi MEDIDO.
 //
 // É o mesmo defeito de [ErrBurndownNoLedger] um nível abaixo, e foi o que sobrou quando o
 // guarda se pôs na CONTAGEM DE TURNOS em vez de na GRANDEZA: N eventos `turn.recorded` com
@@ -58,6 +60,15 @@ var ErrBurndownNoLedger = errors.New("aos: sem ledger de turnos para o run (nenh
 // `err == nil`, `consumedFraction` devolvia 0, e o run queimava o tecto inteiro sem que o
 // aviso disparasse uma única vez — com o banner a prometer «FAIL-CLOSED: sem fonte a leitura
 // devolve ERRO e o run aborta, nunca 0%».
+//
+// O GUARDA É POR TURNO E NÃO SOBRE O AGREGADO (AOS-336). A primeira versão testava
+// `turns > 0 && turnTokens == 0` sobre um cursor CUMULATIVO POR RUN, e a revisão adversarial
+// mediu o que isso deixava passar: um único turno com usage desarmava-o PARA SEMPRE, e todos
+// os turnos não medidos seguintes contavam zero em silêncio. Não apanhava «ao fim de N
+// turnos» — só apanhava o run INTEIRAMENTE a zero, que é o caso menos realista dos dois. Um
+// provider intermitente, ou um par (modelo, região) sem preço a meio de um run, produz
+// exactamente o run MISTO: uma leitura que parece boa e está em baixo, que é pior do que
+// nenhuma. Basta UM turno não medido para a soma deixar de ser o consumo do run.
 //
 // NÃO É HIPOTÉTICO: o `translateResponse` do model gateway só preenche `Usage` a partir do
 // `resp.Usage.PromptTokens/CompletionTokens` que o provider ecoar. Um provider que não ecoe
@@ -92,6 +103,11 @@ type turnLedgerPayload struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
 	CostMicroUSD int64 `json:"cost_micro_usd"`
+	// UsageAusente é a marca que o produtor grava quando o turno NÃO foi medido
+	// (AOS-336): o gateway projecta-a de `port.Usage` para `agentruntime.Usage`, e o
+	// [agentruntime.TurnRecorder] escreve-a no evento. É a via AUTORITATIVA — diz o que o
+	// produtor SABE, em vez de o consumidor inferir.
+	UsageAusente bool `json:"usage_ausente"`
 }
 
 // turnLedgerBurndown é a [progresssurface.BurndownSource] sobre o Event Store do nó.
@@ -126,10 +142,15 @@ type turnLedgerCursor struct {
 	//   - `turns == 0` denuncia «o recorder escreve noutro store». Um run que ainda só fez
 	//     tool calls tem turns=0 LEGITIMAMENTE — e o seu consumo NÃO pode ser descartado,
 	//     senão o AOS-287 não fecha nada;
-	//   - `turnTokens == 0` denuncia «o provider não ecoou usage». Se olhasse para o total,
-	//     os tokens das tool calls mascarariam esse silêncio e o detector morria.
-	toolCalls  int
-	turnTokens int64
+	//   - `turnsSemUsage > 0` denuncia «o provider não ecoou usage NALGUM turno». Se olhasse
+	//     para o total, os tokens das tool calls mascarariam esse silêncio e o detector
+	//     morria — e é por isso que continua a contar TURNOS DE MODELO, um a um.
+	toolCalls int
+
+	// turnsSemUsage é quantos turnos de modelo chegaram NÃO MEDIDOS (AOS-336). É uma
+	// contagem por turno e não um agregado precisamente porque o agregado era o defeito:
+	// um único turno medido zerava a suspeita sobre todos os outros.
+	turnsSemUsage int
 }
 
 // newTurnLedgerBurndown constrói a fonte. store nil ⇒ (nil, nil): sem Event Store não há
@@ -208,9 +229,20 @@ func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (p
 			return progresssurface.RunConsumption{}, fmt.Errorf("aos: payload de turn.recorded ilegivel no run %q (seq %d): %w", runID, ev.Seq, err)
 		}
 		cur.consumed.Tokens += p.InputTokens + p.OutputTokens
-		cur.turnTokens += p.InputTokens + p.OutputTokens
 		cur.consumed.CostMicroUSD += p.CostMicroUSD
 		cur.turns++
+		// DUAS VIAS PARA A MESMA CONCLUSÃO, e a segunda não depende do produtor.
+		//
+		// A marca é a via autoritativa: diz o que o gateway SABE sobre a resposta do
+		// provedor. O critério `InputTokens <= 0` é a via defensiva, e é a que mantém este
+		// guarda de pé para eventos gravados por código que ainda não escrevia a marca e
+		// para qualquer produtor futuro que a esqueça. Não existe turno de modelo sem
+		// entrada — há sempre system+user —, pelo que zero tokens de entrada é ausência de
+		// leitura e nunca uma medição. É o mesmo critério de [port.Usage.Definido] no
+		// gateway e de `cache_sli.CallRate` na telemetria: sem denominador não há leitura.
+		if p.UsageAusente || p.InputTokens <= 0 {
+			cur.turnsSemUsage++
+		}
 		if p.Turn > cur.lastTurn {
 			cur.lastTurn = p.Turn
 		}
@@ -224,13 +256,16 @@ func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (p
 		// que o recorder escreve noutro store. Denunciar, nunca devolver 0%.
 		return progresssurface.RunConsumption{}, fmt.Errorf("%w: run %q (stream existe, zero eventos %s)", ErrBurndownNoLedger, runID, agentruntime.EventTypeTurnRecorded)
 	}
-	if cur.turns > 0 && cur.turnTokens == 0 {
-		// HÁ turnos e a GRANDEZA QUE DECIDE somou zero. O guarda de cima (contagem de
-		// turnos) não apanha este caso, e é o caso que sobrevive num nó onde tudo o resto
-		// está bem composto: o recorder grava no store certo, o cursor avança, e mesmo
-		// assim a fracção é 0 para sempre porque o provider do modelo não ecoou usage.
+	if cur.turnsSemUsage > 0 {
+		// HÁ turnos e pelo menos um NÃO FOI MEDIDO. O guarda de cima (contagem de turnos)
+		// não apanha este caso, e é o caso que sobrevive num nó onde tudo o resto está bem
+		// composto: o recorder grava no store certo, o cursor avança, e mesmo assim a soma
+		// não é o consumo do run porque o provider do modelo não ecoou usage nalgum turno.
+		//
+		// BASTA UM. A versão anterior perguntava se o AGREGADO era zero, e um único turno
+		// medido desarmava-a para sempre — deixando passar o run MISTO, que é o realista.
 		// Ver [ErrBurndownNoUsage].
-		return progresssurface.RunConsumption{}, fmt.Errorf("%w: run %q (%d turno(s) somado(s), 0 tokens de turno)", ErrBurndownNoUsage, runID, cur.turns)
+		return progresssurface.RunConsumption{}, fmt.Errorf("%w: run %q (%d de %d turno(s) sem usage medido)", ErrBurndownNoUsage, runID, cur.turnsSemUsage, cur.turns)
 	}
 	return progresssurface.RunConsumption{
 		Consumed: cur.consumed,
