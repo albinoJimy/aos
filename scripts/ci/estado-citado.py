@@ -77,9 +77,18 @@ SPECS = os.path.join(ROOT, "specs")
 ALVOS = [os.path.join(ROOT, "packages"), os.path.join(ROOT, "tecnica"), os.path.join(ROOT, "docs", "adr")]
 EXCLUIR_DIRS = {".git", "vendor", "testdata", "node_modules", ".claude"}
 
-# O MARCADOR. Maiúsculas e dois-pontos, no molde de `Eixo:` dos banners de postura e dos
-# marcadores do `deferrals`. Aceita um ou mais tickets na mesma declaração.
-RE_MARCADOR = re.compile(r"BLOQUEADOR:\s*((?:AOS-\d{3})(?:\s*[,/e]\s*AOS-\d{3})*)")
+# O MARCADOR, no molde de `Eixo:` dos banners de postura e dos marcadores do `deferrals`.
+#
+# INSENSÍVEL À CAIXA E COM PLURAL, e a varredura é sobre LINHAS LÓGICAS, não físicas. A primeira
+# versão exigia maiúsculas e o ticket na MESMA linha física, e mediu-se logo a seguir ao merge que
+# isso deixava escapar a forma mais natural de todas: um comentário Go partido em duas linhas —
+#
+#     // BLOQUEADOR:
+#     // AOS-265
+#
+# — que o `gofmt` não impede e que qualquer autor produz ao escrever um comentário longo. Era uma
+# fuga SILENCIOSA, que é o pior tipo: quem a escreve julga estar coberto pelo gate e não está.
+RE_MARCADOR = re.compile(r"BLOQUEADOR(?:ES)?\s*:\s*((?:AOS-\d{3})(?:\s*[,/e]\s*AOS-\d{3})*)", re.IGNORECASE)
 RE_TICKET = re.compile(r"AOS-\d{3}")
 
 RE_HDR = re.compile(r"^#{2,3} (AOS-\d{3})\s*[-–—]", re.M)
@@ -130,6 +139,34 @@ def rel(p):
     return os.path.relpath(p, ROOT).replace(os.sep, "/")
 
 
+def linhas_logicas(linhas):
+    """Junta linhas de CONTINUAÇÃO numa só, e devolve (nº da primeira linha, texto unido).
+
+    Um comentário Go de duas linhas é UMA declaração, e a primeira versão deste gate lia-o como
+    duas — deixando escapar o marcador quando o ticket ficava na segunda. Continuação é uma linha
+    cujo conteúdo aparado começa por `//` (Go) ou uma linha não-vazia a seguir a outra não-vazia
+    (Markdown, onde um parágrafo é a unidade).
+
+    O prefixo `//` é removido ao juntar, para que `BLOQUEADOR:` e o ticket fiquem separados por
+    espaço e não por `// `.
+    """
+    bloco, inicio = [], 0
+    for n, bruta in enumerate(linhas, 1):
+        t = bruta.strip()
+        comentario = t.startswith("//")
+        conteudo = t[2:].strip() if comentario else t
+        if not conteudo:
+            if bloco:
+                yield inicio, " ".join(bloco)
+                bloco = []
+            continue
+        if not bloco:
+            inicio = n
+        bloco.append(conteudo)
+    if bloco:
+        yield inicio, " ".join(bloco)
+
+
 def main():
     estados = estados_dos_tickets()
     if not estados:
@@ -145,7 +182,7 @@ def main():
                 linhas = fh.read().split("\n")
         except (OSError, UnicodeDecodeError):
             continue
-        for n, linha in enumerate(linhas, 1):
+        for n, linha in linhas_logicas(linhas):
             for m in RE_MARCADOR.finditer(linha):
                 for ticket in RE_TICKET.findall(m.group(1)):
                     marcadas += 1

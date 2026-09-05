@@ -953,6 +953,29 @@ que a EPIC-23 corrigiu, exigindo **vermelho**; **W2-bis** injecta o mesmo marcad
 **aberto** e exige **verde**, sem o qual um gate que negasse tudo passaria o W2; **W3** confirma
 que a árvore real ficou sem rasto.
 
+### Uma fuga silenciosa, medida logo a seguir ao merge
+
+A primeira versão exigia `BLOQUEADOR:` em maiúsculas e o ticket na **mesma linha física**. Isso
+deixava escapar a forma mais natural de todas — um comentário Go partido em duas linhas:
+
+```go
+// BLOQUEADOR:
+// AOS-265
+```
+
+O `gofmt` não o impede, e qualquer autor a produz ao escrever um comentário longo. Era uma fuga
+**silenciosa**, que é o pior tipo: quem a escreve julga estar coberto pelo gate e não está.
+
+A varredura passou a ser sobre **linhas lógicas** — comentários consecutivos juntos numa
+declaração só, com o `//` removido —, e o marcador aceita plural e qualquer caixa. Medido depois
+da correcção: as sete formas de escrita apanham, e as duas que **não** devem apanhar continuam a
+não apanhar — o ticket antes do marcador, e a forma **já corrigida** `BLOQUEADOR: DEF-218
+(AOS-265 já aterrou)`, onde o `AOS-` não segue imediatamente o marcador.
+
+**Foi encontrada por medição própria, não por revisão.** Os dois revisores adversariais lançados
+sobre este gate morreram por estagnação sem devolver nada; o que restou foi ir atacar
+deliberadamente o que eu tinha escrito, que é a mesma disciplina, feita à mão.
+
 ### O AC4 NÃO É SATISFAZÍVEL, e fica escrito assim
 
 Ele pede que «as oito declarações que a EPIC-23 corrigiu passem a estar cobertas (verificação
