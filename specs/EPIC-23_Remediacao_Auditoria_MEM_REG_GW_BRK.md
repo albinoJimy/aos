@@ -52,14 +52,14 @@ proteja, e o ticket que fecha essa assimetria (AOS-326) é ele próprio parte da
 
 | Ticket | Defeito | P | Alcance | Estado |
 |---|---|---|---|---|
-| AOS-320 | O digest de um `mcp_server` é uma constante da classe de egress — três valores para todo o universo | P0 | latente | **por implementar** |
-| AOS-321 | Uma resposta 200 sem `usage` é indistinguível de uma chamada de custo nulo | P0 | **nó** | **por implementar** |
-| AOS-322 | A postura de confirmação do *crypto-shred* não é declarada, e nada obriga uma custódia nova a escolher | P2 | endurecimento | **por implementar** (enunciado original falsificado — ver ticket) |
-| AOS-323 | O canal do broker para o Vault aceita `http://` e o token nunca é renovado | P1 | **nó** | **por implementar** |
-| AOS-324 | A troca de credenciais não impõe nem exercita o eixo *Provider* | P2 | latente | **por implementar** |
-| AOS-325 | Cinco declarações de estado que já não são verdade, e uma contradição interna | P2 | **nó** | **por implementar** |
-| AOS-326 | A não-composição de MEM e REG não está registada em ADR nem em `DEF-NNN` | P1 | — | **por implementar** |
-| AOS-327 | A pendência de *shred* não tem regra de alerta, e a série desaparece com o processo | P2 | **nó** | **por implementar** |
+| AOS-320 | O digest de um `mcp_server` é uma constante da classe de egress — três valores para todo o universo | P0 | latente | **implementado** |
+| AOS-321 | Uma resposta 200 sem `usage` é indistinguível de uma chamada de custo nulo | P0 | **nó** | **implementado** (residual: a marca não cruza a fronteira GW→RT) |
+| AOS-322 | A postura de confirmação do *crypto-shred* não é declarada, e nada obriga uma custódia nova a escolher | P2 | endurecimento | **implementado** (enunciado original FALSIFICADO — ver ticket) |
+| AOS-323 | O canal do broker para o Vault aceita `http://` e o token nunca é renovado | P1 | **nó** | **implementado (parcial)** — metade do enunciado era falsa; 1 AC deferido |
+| AOS-324 | A troca de credenciais não impõe nem exercita o eixo *Provider* | P2 | latente | **implementado** (imposição por configuração; postura selada) |
+| AOS-325 | Cinco declarações de estado que já não são verdade, e uma contradição interna | P2 | **nó** | **implementado (parcial)** — 6 de 7; um item é do AOS-320 |
+| AOS-326 | A não-composição de MEM e REG não está registada em ADR nem em `DEF-NNN` | P1 | — | **implementado** (DEF-811/812; o ADR fica ao dono) |
+| AOS-327 | A pendência de *shred* não tem regra de alerta, e a série desaparece com o processo | P2 | **nó** | **implementado** (RB-06; âmbito cortado a meio) |
 
 ---
 
