@@ -1408,8 +1408,7 @@ teste de controlo exige que os três estados produzam linhas **distinguíveis**,
 que dissesse sempre o mesmo passaria cada caso isolado.
 
 **FAIL-CLOSED DO FORMATO**, no molde do `-u` do curl: sem `:` recusa, sem utilizador antes do `:`
-recusa, e caracteres de controlo recusam — um `
-` numa credencial lida de ficheiro é
+recusa, e caracteres de controlo recusam — um `\r\n` numa credencial lida de ficheiro é
 **injecção de cabeçalho**, e o `net/http` recusá-lo-ia no envio, mas isso seria uma falha
 por-verificação num gate que já negou a aprovação. A senha **pode** conter `:`; só o primeiro
 separa, e há um caso para isso — sem ele, uma implementação que partisse por todos os `:`
