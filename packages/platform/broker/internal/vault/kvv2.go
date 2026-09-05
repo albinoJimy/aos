@@ -289,3 +289,18 @@ func (c *KVv2) Ready(ctx context.Context) error {
 	}
 	return nil
 }
+
+// SegmentoEstavel reporta se um segmento SOBREVIVE INTACTO à normalização do path.
+//
+// AOS-330 — PORQUE ISTO É EXPORTADO. A política do broker decidia sobre o valor CRU e o Vault
+// resolvia sobre o valor NORMALIZADO, e a normalização não é injectiva: `acme:eu`, `acme/eu` e
+// `acme_eu` dobram todos em `acme_eu`. Com os dois namespaces separados, autorizar um provedor
+// não é autorizar a chave que ele alcança — se a política aprova `acme:eu` e o Vault tem
+// material aprovisionado em `acme_eu`, serve-se o material de um provedor que a política nunca
+// aprovou.
+//
+// A saída não é a política aprender a normalizar por si (duas cópias da regra divergem — foi o
+// que o AOS-337 mediu noutro eixo): é a normalização ficar num sítio só, e quem decide
+// perguntar-lhe. O `DEF-815` exige exactamente isto — «a normalização do path tem de ser a MESMA
+// em que a política decide».
+func SegmentoEstavel(s string) bool { return s == sanitizeSegment(s) }

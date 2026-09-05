@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/aos-ref/platform/broker/internal/vault"
 )
 
 // EIXO PROVIDER DA TROCA (AOS-324) — O TERCEIRO EIXO DA AUTORIZAÇÃO.
@@ -191,6 +193,33 @@ func providerPosture(classProviders map[string][]string) ProviderPosture {
 // nada declara não alcança provedor nenhum).
 func authorizeProvider(classProviders map[string][]string, class string, authority []string, provider string) error {
 	if provider == "" {
+		return ErrProviderUndetermined
+	}
+	// AOS-330 — O EIXO TEM DE SOBREVIVER AO PATH, e a decisão é tomada no MESMO namespace em
+	// que a chave vive.
+	//
+	// A normalização do path não é injectiva: `acme:eu`, `acme/eu` e `acme_eu` dobram todos em
+	// `acme_eu`. Com a política a decidir sobre o valor CRU e o Vault a resolver sobre o
+	// NORMALIZADO, autorizar um provedor não era autorizar a chave que ele alcança — e um
+	// provedor aprovado alcançava material aprovisionado para outro.
+	//
+	// A ESCOLHA É A SEGUNDA VIA DO TICKET — recusar o que a normalização altere — e não
+	// «decidir sobre o normalizado». Um provedor cujo nome não sobrevive ao path não é um
+	// provedor identificável: `" "`, `"	"` e `"*"` normalizam todos para `_`, e aceitá-los
+	// seria autorizar um eixo em branco com três roupas diferentes. Decidir sobre o
+	// normalizado tornaria a colisão INVISÍVEL em vez de impossível: a política passaria a
+	// tratar `acme:eu` e `acme_eu` como o mesmo provedor, silenciosamente.
+	//
+	// ISTO É `ErrProviderUndetermined`, NÃO `ErrProviderOutOfScope`: o eixo não é um provedor
+	// que está fora da autoridade, é um valor que não identifica provedor nenhum. Sob
+	// `enforced`, `" "` era antes atribuído a «fora de escopo» — atribuição errada do mesmo
+	// defeito.
+	//
+	// SÓ O EIXO PROVIDER. A `Capability` contém SEMPRE `:` (`cap:http.post` → `cap_http.post`),
+	// pelo que a mesma regra aplicada a ela negaria todas as trocas do sistema; e a `Region`
+	// tem vocabulário fechado que sobrevive. O ticket nomeia o provedor, e é onde o eixo
+	// morde: um nome de provedor vem de configuração de deployment, não de vocabulário fixo.
+	if !vault.SegmentoEstavel(provider) {
 		return ErrProviderUndetermined
 	}
 	if providerPosture(classProviders) == ProviderPostureUnset {

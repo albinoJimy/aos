@@ -89,7 +89,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 
 | Achado | Ticket |
 |---|---|
-| O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) |
+| O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) — **implementado** |
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
@@ -859,7 +859,7 @@ A política de provedores do broker (AOS-324) compara strings **cruas** por igua
 KV v2 (`packages/platform/broker/internal/vault/kvv2.go`) resolve o path com `TrimSpace` e dobra
 tudo o que esteja fora de `[A-Za-z0-9._-]` para `_`.
 
-Medido por revisão adversarial: `" "`, `"	"` e `"*"` produzem **todos** o path `_/eu/…` —
+Medido por revisão adversarial: `" "`, `"\t"` e `"*"` produzem **todos** o path `_/eu/…` —
 indistinguível de um eixo em branco — e `"acme:eu"` colide com `"acme_eu"`. Sob a postura por
 omissão, valores como `" "` e `"stripe/x"` passam o guarda de «provedor indeterminado» e chegam ao
 `Fetch`, o que falsifica a afirmação de que o Vault nunca é consultado com um eixo em branco. Sob
@@ -874,22 +874,65 @@ depois.**
 
 ### Critérios de Aceitação
 
-- [ ] Ou a política decide sobre o valor **normalizado** — o mesmo que forma o path —, ou recusa
+- [x] Ou a política decide sobre o valor **normalizado** — o mesmo que forma o path —, ou recusa
       fail-closed qualquer valor que a normalização altere. A segunda via é a mais defensável (um
       provedor cujo nome não sobreviva ao path não devia ser aceitável de todo) e a escolha é
       justificada por escrito
-- [ ] Um teste que prove que dois valores distintos que dobrem no mesmo path **não** são ambos
+- [x] Um teste que prove que dois valores distintos que dobrem no mesmo path **não** são ambos
       aceites, e outro que prove que um valor que a normalização altere é recusado de forma
       atribuível
-- [ ] O guarda de «provedor indeterminado» passa a apanhar `" "`, `"	"` e `"*"` — hoje não apanha
-- [ ] `DEF-218` nomeia este ticket como pré-condição, a par do AOS-324
-- [ ] `DEF-815` passa de `POR ATRIBUIR` para este ticket
+- [x] O guarda de «provedor indeterminado» passa a apanhar `" "`, `"\t"` e `"*"` — hoje não apanha
+- [x] `DEF-218` nomeia este ticket como pré-condição, a par do AOS-324
+- [x] `DEF-815` passa de `POR ATRIBUIR` para este ticket
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2 por alcance (latente), **pré-condição do wiring do broker**. Eixo do
+**IMPLEMENTADO.** P2 por alcance (latente), **pré-condição do wiring do broker**. Eixo do
 `DEF-815`.
 
+**A ESCOLHA FOI A SEGUNDA VIA**, e a razão está escrita no `authorizeProvider`: recusa-se o que a
+normalização altere, em vez de decidir sobre o valor normalizado. Decidir sobre o normalizado
+tornaria a colisão **invisível** em vez de impossível — a política passaria a tratar `acme:eu` e
+`acme_eu` como o mesmo provedor, em silêncio. Um provedor cujo nome não sobrevive ao path não é
+um provedor identificável.
+
+**O PREDICADO VIVE ONDE A NORMALIZAÇÃO VIVE.** `vault.SegmentoEstavel` é exportado do pacote que
+forma o path, e a política pergunta-lhe. A alternativa — a política aprender a normalizar por si —
+são duas cópias da mesma regra a divergir, que foi exactamente o que o AOS-337 mediu noutro eixo
+(`(inválido)` contra `(inválida)` no dia em que a segunda cópia nasceu). O `DEF-815` exige-o à
+letra: «a normalização do path tem de ser a MESMA em que a política decide».
+
+**A RECUSA É `ErrProviderUndetermined`, NÃO `ErrProviderOutOfScope`.** O eixo não é um provedor
+que está fora da autoridade; é um valor que não identifica provedor nenhum. Sob `enforced`, `" "`
+era antes atribuído a «fora de escopo» — atribuição errada do mesmo defeito, e o teste fixa a
+distinção.
+
+**O `"*"` NÃO ERA SÓ NÃO-APANHADO — ERA AUTORIZADO.** Sob `enforced`, com o tecto da classe a
+declarar `ProviderAny`, um pedido com `Provider="*"` passava a comparação por conjunto e produzia
+o path `_/…`. O AC3 nomeia-o a par de `" "` e `"\t"`, mas os três não eram o mesmo defeito.
+
+**SÓ O EIXO PROVIDER, e a razão é dura.** O `sanitizeSegment` corre nos **três** segmentos, e a
+`Capability` contém **sempre** `:` (`cap:http.post` → `cap_http.post`): a mesma regra aplicada a
+ela **negaria todas as trocas do sistema**. A `Region` tem vocabulário fechado que sobrevive. O
+ticket nomeia o provedor, e é onde o eixo morde — um nome de provedor vem de configuração de
+deployment, não de vocabulário fixo. *(O AC estava escrito como se a regra fosse universal; não
+é, e não pode ser.)*
+
+Cinco funções de teste, com **dois controlos**: os provedores legítimos continuam a passar (sem
+isso, um `return ErrProviderUndetermined` incondicional passaria tudo o resto e negaria todas as
+trocas), e a recusa por **autoridade** continua distinta da recusa por **namespace**. Quatro
+provas de mutação — desligar a ancoragem, trocar a sentinela, o predicado a aceitar tudo, o
+predicado a recusar tudo — todas vermelhas e revertidas limpas.
+
+**OS DOIS ACs DE REGISTO JÁ ESTAVAM SATISFEITOS** por trabalho anterior, e verifiquei-os em vez de
+os reclamar: o `DEF-218` já nomeia este ticket como pré-condição a par do AOS-324
+(`REGISTO-Deferimentos.md:186`), e o `DEF-815` já lhe está atribuído (`:244`), não `POR ATRIBUIR`.
+
+**LIMITE DECLARADO.** Isto continua latente: o broker não está composto (`broker.New` não tem
+chamador de produção) e a postura é `unset` em todo o repositório. O defeito era latente **duas
+vezes** — sem wiring, e sem cobertura de teste que o pudesse expor, porque toda a suite usa o
+`MemoryVault`, que chaveia pelo `Key.id()` **cru** e não dobra. Os testes deste ticket são os
+primeiros a exercitar o eixo.
 ---
 
 ## AOS-331 — O provedor autorizado não é amarrado ao recurso de destino
