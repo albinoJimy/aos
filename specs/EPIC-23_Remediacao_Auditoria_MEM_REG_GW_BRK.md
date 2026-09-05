@@ -92,6 +92,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) |
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
+| Uma troca negada pela guarda de composição do `dispatch` fica no WORM como PERMITIDA — achado na discovery do AOS-332 | **AOS-339** — **implementado** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
@@ -930,6 +931,12 @@ e é isso que a torna auditável em vez de silenciosa. Mas duas lacunas ficaram:
 
 1. **Só o caminho de sucesso sela.** As negações passam pelo `MediationRecord` do Reference Monitor,
    que não tem o campo — uma troca negada não regista sob que postura foi decidida.
+   **PARCIALMENTE FECHADO PELO AOS-339, e só numa metade.** A discovery deste ticket encontrou um
+   defeito maior no mesmo eixo: uma negação da **guarda de composição do `dispatch`** não só não
+   selava a postura como não selava negação nenhuma — ficava no WORM o `permit` que a cadeia tinha
+   selado antes. O AOS-339 fecha esse caminho com evento próprio, `provider_policy` incluído. O
+   que **fica para aqui** é o caminho do **gate**: uma negação tomada pelo `ScopeGate` na mediação
+   continua a passar pelo `MediationRecord`, que continua sem o campo.
 2. **O banner de arranque não diz uma palavra sobre o eixo.** Um nó em `unset` que ainda não emitiu
    nenhuma troca é indistinguível de um em `enforced`, e o banner existe precisamente para declarar
    posturas: já declara o credential broker, o Vault do broker, a custódia da KEK, a confirmação do
@@ -1502,3 +1509,134 @@ de todo** — o gap já existia para o Bearer — pelo que o esquema novo não �
 ponta-a-ponta contra o binário do repositório, só contra `httptest`. E o molde de leitura de
 credencial dos **dois Vaults** ecoa o caminho na mensagem de erro, que é o mesmo defeito latente
 que este ticket fechou do seu lado; fica nomeado em vez de arrastado.
+
+---
+
+## AOS-339 — Uma troca negada pela guarda de composição fica no WORM como PERMITIDA
+
+### Contexto
+
+Medido na **discovery do AOS-332**, fora do âmbito desse ticket e por isso não corrigido lá.
+
+`packages/platform/broker/exchange.go` tem, no `dispatch`, duas verificações defensivas
+server-side: a do eixo **capability** (AOS-057) e a do eixo **provider** (AOS-324). São **guardas
+de composição** — existem para o caso de o `ScopeGate` não estar composto na cadeia do Reference
+Monitor, e correm no último ponto antes de a chave do Vault ser montada a partir do pedido.
+
+Correm, portanto, **dentro** da `referencemonitor.ToolFunc`, ou seja **depois** de a cadeia de
+mediação ter permitido. E a cadeia, por **audit-before-effect**, já selou nessa altura o seu
+`MediationRecord` com `Effect: EffectPermit` (`monitor.go:340-347`). O erro da guarda sai por
+`Decision.ToolErr` (`exchange.go:242`), que **não corrige o registo já selado**; e o
+`recordExchange`, que seria o outro evento, nunca chega a correr.
+
+**Medido**, na pilha sem `ScopeGate` que o `TestAOS324_DefesaServerSide_SemGate` monta: uma troca
+negada no eixo provider deixava no Event Store **um único evento** —
+
+```
+tool.call.mediated   decision=permit   code=<nil>   denied_by=<nil>   reason=<nil>
+```
+
+— e mais nada. Nenhum evento de negação, nenhum eixo, nenhuma postura. Um auditor que percorra o
+WORM lê **permitida** sobre uma troca que foi recusada.
+
+**Porque é que nenhum teste apanhava isto.** O `TestAOS324_DefesaServerSide_SemGate`
+(`aos324_provider_axis_test.go:168`) assevera que não existe `credential.exchange.issued` — o que
+prova que nenhum handle foi emitido, e **não** prova que a troca ficou registada como negada. Era
+uma pergunta sobre uma ausência, e a ausência era verdadeira.
+
+O eixo **capability** tinha exactamente o mesmo buraco, pela mesma razão e no mesmo bloco de
+guardas (`ErrOutOfScope`, coberto pelo teste do `exchange_test.go:257` com a mesma cegueira). Não
+é alargamento de âmbito fechá-lo aqui: é o mesmo defeito, na mesma função, à distância de duas
+linhas.
+
+### A decisão, e o que foi rejeitado
+
+Havia duas vias plausíveis:
+
+**(a) O broker sela o seu próprio evento de negação** — no molde do `recordExchange`, que já tem
+`b.es`. **ESCOLHIDA.**
+
+**(b) Mover a guarda para ANTES do `rm.Mediate`** — o que a torna uma pré-condição em vez de uma
+segunda opinião. **REJEITADA**, por três razões:
+
+1. **Muda a semântica da defesa, que é precisamente o que ela existe para ser.** A guarda é
+   *belt-and-suspenders* face a uma cadeia mal composta. Movida para antes da mediação, deixa de
+   correr no ponto onde a chave do Vault é montada — o único ponto onde é verdade que nada chega
+   ao Vault sem o eixo ter sido olhado. O comentário longo em `dispatch` fixa esta propriedade e
+   deixaria de ser verdade.
+2. **Trocaria um registo errado por registo nenhum.** Negada antes da mediação, a troca não
+   produzia `MediationRecord` de espécie alguma — nem permit, nem deny. O WORM passava de «diz a
+   coisa errada» para «não diz nada», o que num log append-only é pior: a tentativa desaparece.
+3. **Não resolve o caso geral.** Qualquer negação futura que nasça dentro de uma `ToolFunc` tem o
+   mesmo problema. A via (a) é o molde reutilizável; a (b) é um remendo neste sítio.
+
+**A via (a) não «corrige» o registo de permit, e não é suposto corrigir.** O registo do RM diz o
+que aconteceu — a **cadeia** permitiu — e é verdadeiro. O que faltava era o **segundo facto**. Um
+WORM não se reescreve: acrescenta-se. `credential.exchange.denied` é esse acrescento, e é do
+**broker** porque é o broker que conhece o eixo, o código estável e a postura.
+
+**Não é fail-closed, ao contrário do `recordExchange`, e isso é deliberado.** Lá o registo corre
+antes do efeito e ainda o pode impedir. Aqui não há efeito para impedir: a negação já está tomada
+e o Vault nem foi tocado. Bloquear em nome da auditoria não tornaria a troca mais negada — só
+trocaria um erro **atribuível** (`ErrProviderOutOfScope`) por um erro de sink, apagando a
+atribuição. É a disciplina pós-decisão do `Monitor.fail`. **Diverge dele num ponto:** onde o RM
+faz `seq, _ :=`, aqui a falha de registo é **juntada** ao erro devolvido (`errors.Join`) — o
+`errors.Is` do sentinela continua a casar e quem chama vê que a negação não ficou selada, em vez
+de o descobrir pela ausência.
+
+### Critérios de Aceitação
+
+- [x] Um teste que leia o Event Store e prove que o `MediationRecord` selado neste caminho é de
+      facto `EffectPermit` — a premissa de que o evento compensatório depende
+- [x] A negação da guarda de composição sela um evento próprio (`credential.exchange.denied`),
+      **atribuível**: eixo, código estável, razão e a camada que negou (`broker-dispatch`, por
+      contraste com o `broker-scope` do gate)
+- [x] O evento sela a **postura** (`provider_policy`), como o AOS-324 fez no caminho da troca
+      emitida — nas duas posturas, não só em `enforced`
+- [x] `TestAOS324_DefesaServerSide_SemGate` passa a olhar para o registo de mediação, senão o
+      defeito volta
+- [x] O eixo **capability** fica fechado com o mesmo mecanismo
+- [x] Negações repetidas no mesmo passo não colapsam por idempotência (`step_id` próprio)
+- [x] O cancelamento do chamador não apaga o rasto (`context.WithoutCancel`)
+- [x] Nenhum segredo no payload — provado por scan do valor-sentinela
+- [x] Prova de mutação
+
+### Estado
+
+**IMPLEMENTADO.** P1 — não é uma fuga de segredo (nenhum handle foi emitido, o Vault não foi
+tocado, a troca **foi** recusada), é uma **falha de auditoria**: o controlo funcionou e o registo
+diz o contrário. Num sistema cuja tese é que a prova vive no WORM, um permit sobre uma troca
+negada corrói exactamente a superfície que sustenta as outras garantias.
+
+**PROVA DE MUTAÇÃO — dez mutantes, dez vermelhos, zero sobreviventes.** Guarda do eixo provider de
+volta ao `return nil, err` (o defeito original, apanhado por seis testes, incluindo o
+`TestAOS324_DefesaServerSide_SemGate` estendido); guarda do eixo capability idem; postura deixa de
+ser selada; `step_id` da negação passa a ser o do pedido (colapso por idempotência); o registo
+herda o cancelamento do chamador; a falha de sink volta a ser silenciosa; a atribuição nomeia o
+gate em vez da guarda; o código estável deixa de distinguir o eixo provider; o eixo capability é
+selado com o rótulo do provider; a negação deixa de dizer quem/para quê.
+
+**Um mutante inicial não provou nada e está registado como tal:** a primeira versão do mutante do
+`step_id` não compilava (`n` declarado e não usado), e o arnês contou-o como «sobreviveu». Foi
+refeito para compilar. Um mutante que não compila não é evidência de nada, e o arnês passou a
+distinguir os dois casos.
+
+### O que este ticket NÃO fecha
+
+**O caminho do gate continua sem postura.** Uma negação tomada pelo `ScopeGate` na mediação passa
+pelo `MediationRecord`, que não tem campo para `provider_policy`. É o ponto 1 dos critérios do
+**AOS-332**, e continua aberto — este ticket fecha o caminho da **guarda de composição**, que o
+AOS-332 não cobre porque nem sequer produz um `MediationRecord` próprio. Os dois são
+complementares e nenhum torna o outro dispensável.
+
+**`ErrNoMaterial` e as outras falhas do `dispatch` continuam a sair só por `ToolErr`, e devem.**
+Ausência de material, falta de entropia para o handle e falha do `recordExchange` são falhas de
+**execução da tool**, não decisões de política — e a semântica «a cadeia permitiu, a tool falhou»
+descreve-as correctamente. Selar um evento de negação para elas confundiria política com avaria,
+que é a distinção que o AOS-324 existe para manter.
+
+**Os totais agregados de `tecnica/13` §3.3 já estavam caducados antes desta mudança.** A tabela
+(a) soma **96** e o cabeçalho declara **91**; o gate `event-catalog` conta **117** constantes. Este
+ticket actualiza a linha `credential.*` de 1 para 2 — a única que a sua mudança torna falsa — e
+**não** recontou o resto: reconciliar 91/96/98/117 é o eixo do **AOS-325**/`DEF-814` e exige uma
+contagem que não foi feita aqui. Fica nomeado em vez de arrastado.

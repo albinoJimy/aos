@@ -194,10 +194,44 @@ func TestAOS324_DefesaServerSide_SemGate(t *testing.T) {
 	if h != "" {
 		t.Fatalf("handle emitido apesar da defesa server-side: %q", h)
 	}
+
+	// O QUE ESTE TESTE NÃO OLHAVA, E POR ISSO DEIXOU PASSAR UM DEFEITO (AOS-339).
+	// Ausência de `credential.exchange.issued` prova que nenhum handle foi selado —
+	// mas NÃO prova que a troca ficou registada como negada. A cadeia de mediação
+	// corre ANTES do dispatch e sela o seu registo por audit-before-effect: quando a
+	// guarda de composição nega, esse registo JÁ está no WORM com `decision=permit`.
+	// Sem as asserções abaixo, o WORM ficava a dizer PERMITIDA sobre uma troca negada.
+	var mediatedPermit, denied bool
 	for _, e := range readStream(t, es, "run-1") {
-		if e.Type == exchangeEventType {
+		switch e.Type {
+		case exchangeEventType:
 			t.Fatal("troca registada apesar de negada no eixo provider")
+		case referencemonitor.EventTypeMediated:
+			var pay struct {
+				Decision string `json:"decision"`
+			}
+			if err := json.Unmarshal(e.Payload, &pay); err != nil {
+				t.Fatalf("payload de mediacao ilegivel: %v", err)
+			}
+			if pay.Decision == string(referencemonitor.EffectPermit) {
+				mediatedPermit = true
+			}
+		case exchangeDeniedEventType:
+			denied = true
 		}
+	}
+
+	// O registo de permit da CADEIA é um FACTO MEDIDO, não um desejo: sem o
+	// [ScopeGate] composto, a cadeia não tinha por que negar, e permitiu. Assertá-lo
+	// fixa a premissa de que o evento compensatório depende — se alguém mover a
+	// guarda para ANTES de `rm.Mediate`, este teste falha e obriga a decidir em vez
+	// de mudar a semântica da defesa server-side por acidente.
+	if !mediatedPermit {
+		t.Error("premissa do AOS-339 mudou: a cadeia sem gate deixou de selar um permit")
+	}
+	// E é ISTO que fecha o defeito: a negação da guarda de composição tem evento próprio.
+	if !denied {
+		t.Fatal("negacao server-side nao selada: o WORM fica so com o permit da cadeia")
 	}
 }
 

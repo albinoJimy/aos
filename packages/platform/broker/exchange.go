@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,29 @@ const DefaultExchangeToolID = "broker.credential.exchange"
 
 // exchangeEventType é o tipo do evento de troca selado no Event Store (sem valor).
 const exchangeEventType = "credential.exchange.issued"
+
+// exchangeDeniedEventType é o tipo do evento de NEGAÇÃO SERVER-SIDE da troca
+// (AOS-339). Sela uma negação decidida pelas guardas de composição de
+// [Broker.dispatch] — DEPOIS de a cadeia de mediação ter permitido e já ter selado
+// o seu [referencemonitor.MediationRecord] de permit. Ver [Broker.recordDenial].
+const exchangeDeniedEventType = "credential.exchange.denied"
+
+// dispatchGuardName atribui a negação às guardas de composição de
+// [Broker.dispatch], por contraste com "broker-scope" (o [ScopeGate] na mediação).
+// Quem lê o Event Store distingue QUAL das duas camadas negou.
+const dispatchGuardName = "broker-dispatch"
+
+// denyRecordTimeout é o prazo PRÓPRIO do registo pós-decisão de
+// [Broker.recordDenial], que corre com o cancelamento do chamador largado. Espelha
+// o `failRecordTimeout` do Reference Monitor pela mesma razão: sem prazo próprio,
+// um sink pendurado prendia o dispatch indefinidamente.
+const denyRecordTimeout = 2 * time.Second
+
+// Eixos de negação server-side, selados no campo `axis` do evento. Greppáveis.
+const (
+	axisCapability = "capability"
+	axisProvider   = "provider"
+)
 
 // taintTrusted marca a troca como acção do plano de controlo (não conteúdo
 // untrusted). O gate de taint do RM recusa que untrusted autorize privilégio.
@@ -94,6 +118,11 @@ type Broker struct {
 	classProviders map[string][]string // AOS-324; nil ⇒ ProviderPostureUnset
 
 	seq atomic.Uint64 // contador determinista de ids de lease
+	// denySeq é o contador das negações server-side. É SEPARADO de `seq` de
+	// propósito: a idempotency_key do Event Store é f(run_id, step_id), pelo que
+	// cada negação precisa de um step_id próprio — e gastar números de lease numa
+	// negação tornaria os leaseIDs não-contíguos sem ganho nenhum.
+	denySeq atomic.Uint64
 }
 
 // Option configura o [Broker].
@@ -257,11 +286,13 @@ func (b *Broker) dispatch(ctx context.Context, input []byte) ([]byte, error) {
 
 	// Verificação DEFENSIVA de escopo server-side (belt-and-suspenders face ao
 	// ScopeGate na mediação): só se troca por credenciais consistentes com a
-	// autoridade efectiva utilizador ∩ classe (AOS-057). Fail-closed.
+	// autoridade efectiva utilizador ∩ classe (AOS-057). Fail-closed, e SELADA — o
+	// eixo capability tinha exactamente o mesmo buraco de audit do eixo provider,
+	// pela mesma razão e no mesmo bloco (AOS-339).
 	if b.classScopes != nil {
 		classScope := b.classScopes[in.AgentClass]
 		if !permitsCapability(in.UserAuthority, classScope, in.Capability) {
-			return nil, ErrOutOfScope
+			return nil, b.recordDenial(ctx, in, axisCapability, ErrOutOfScope)
 		}
 	}
 
@@ -287,8 +318,14 @@ func (b *Broker) dispatch(ctx context.Context, input []byte) ([]byte, error) {
 	// é o gate sobre o principal verificado — não isto. Fechar a divergência exigiria que a
 	// [referencemonitor.ToolFunc] recebesse o principal mediado em vez de bytes opacos;
 	// enquanto não receber, esta linha não deve ser lida como redundância de segurança.
+	//
+	// A NEGAÇÃO QUE NASCE AQUI TEM DE SER SELADA (AOS-339). Chegar a este ponto significa
+	// que a cadeia de mediação JÁ permitiu e JÁ selou um `MediationRecord` de permit; o
+	// erro devolvido sai por `Decision.ToolErr` e não corrige esse registo. Daí o
+	// [Broker.recordDenial] no `return`: sem ele, uma troca negada no eixo provider ficava
+	// no WORM como PERMITIDA, sem evento de negação e sem a postura sob a qual foi decidida.
 	if err := authorizeProvider(b.classProviders, in.AgentClass, in.UserAuthority, in.Provider); err != nil {
-		return nil, err
+		return nil, b.recordDenial(ctx, in, axisProvider, err)
 	}
 
 	key := vault.Key{Provider: in.Provider, Region: in.Region, Capability: in.Capability}
@@ -377,4 +414,126 @@ func (b *Broker) recordExchange(ctx context.Context, l *Lease) error {
 		},
 	})
 	return err
+}
+
+// deniedPayload é o payload NÃO-SECRETO do evento de NEGAÇÃO server-side. Espelha
+// o [exchangePayload] no que é comum (quem/para quê/postura) e substitui o que só
+// uma troca EMITIDA tem (lease-id, handle, TTL) pela atribuição da negação: o eixo,
+// o código estável, a razão e a guarda que negou. NÃO contém o valor — não há
+// valor: a negação corre ANTES de a chave do Vault sequer ser montada.
+type deniedPayload struct {
+	PrincipalNHI string `json:"principal_nhi"`
+	AgentClass   string `json:"agent_class,omitempty"`
+	Resource     string `json:"resource,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Region       string `json:"region,omitempty"`
+	Capability   string `json:"capability,omitempty"`
+	// Axis é o eixo da autorização em que a troca caiu ("capability"/"provider").
+	Axis string `json:"axis"`
+	// Code é o código ESTÁVEL da negação, para consulta sem casar texto livre.
+	Code string `json:"code"`
+	// Reason é a mensagem do sentinela atribuível (ver [denialCode]).
+	Reason string `json:"reason"`
+	// DeniedBy atribui a negação à camada que a tomou ([dispatchGuardName]).
+	DeniedBy string `json:"denied_by"`
+	// DeniedAt é o instante da negação, no relógio injectado do broker.
+	DeniedAt string `json:"denied_at"`
+	// ProviderPolicy sela a POSTURA do eixo provider em vigor NESTA decisão, no
+	// mesmo molde do evento de troca emitida (AOS-324): sem ela, quem lê a negação
+	// não sabe SOB QUE REGIME ela foi tomada — e uma negação lida fora do seu
+	// regime não é auditável.
+	ProviderPolicy string `json:"provider_policy"`
+}
+
+// denialCode mapeia o sentinela da negação para um código ESTÁVEL e greppável.
+// O texto da mensagem pode mudar; o código é contrato de auditoria.
+func denialCode(err error) string {
+	switch {
+	case errors.Is(err, ErrProviderUndetermined):
+		return "provider_undetermined"
+	case errors.Is(err, ErrProviderOutOfScope):
+		return "provider_out_of_scope"
+	case errors.Is(err, ErrOutOfScope):
+		return "capability_out_of_scope"
+	default:
+		// Inalcançável pelos dois sítios de chamada actuais; existe para que um
+		// eixo futuro não sele uma negação com o código de outro.
+		return "denied"
+	}
+}
+
+// recordDenial sela no Event Store a negação decidida por uma guarda de composição
+// de [Broker.dispatch] e devolve o erro a propagar. Chamar SEMPRE no `return` da
+// guarda: `return nil, b.recordDenial(ctx, in, eixo, err)`.
+//
+// # PORQUE ISTO TEM DE EXISTIR (AOS-339)
+//
+// As guardas de dispatch correm DEPOIS da cadeia de mediação, e a cadeia já selou o
+// seu [referencemonitor.MediationRecord] — com `Effect: EffectPermit`, por
+// audit-before-effect (`monitor.go`, passo 3). Uma negação nascida aqui sai por
+// `Decision.ToolErr`, que NÃO muda esse registo: o WORM ficava com um `permit` e
+// nada mais. Uma troca negada no eixo provider aparecia no audit como PERMITIDA.
+//
+// O registo de permit NÃO é uma mentira do RM — ele diz o que aconteceu: a CADEIA
+// permitiu. O que faltava era o segundo facto. O WORM não se reescreve: acrescenta-se.
+// Este evento é esse acrescento, e por isso é do BROKER (que tem `b.es` e conhece o
+// eixo, o código e a postura) e não do RM.
+//
+// # PORQUE NÃO FAIL-CLOSED
+//
+// [Broker.recordExchange] é fail-closed — lá o registo corre ANTES do efeito e ainda
+// pode impedi-lo. Aqui não há efeito para impedir: a negação JÁ está tomada e o
+// Vault ainda nem foi tocado. Bloquear em nome da auditoria não tornaria a troca
+// mais negada do que já está — só trocaria um erro ATRIBUÍVEL
+// ([ErrProviderOutOfScope]) por um erro de sink, apagando a atribuição. É a mesma
+// disciplina pós-decisão de `Monitor.fail`.
+//
+// Mas não é SILENCIOSO, e é aqui que diverge do `seq, _ :=` do RM: uma falha de
+// registo é JUNTADA ao erro devolvido. `errors.Is(err, ErrProviderOutOfScope)`
+// continua verdadeiro (contrato de [DeniedError] e dos testes do eixo intacto) e
+// quem chama vê que a negação não ficou selada, em vez de o descobrir pela ausência.
+//
+// O ctx do CHAMADOR não pode cancelar este registo, pela mesma razão que o não pode
+// no `Monitor.fail` (achado adversarial sobre AOS-311): o que se escreve é a prova
+// de um facto consumado. [context.WithoutCancel] preserva correlação/tracing e larga
+// só o cancelamento; o prazo próprio evita que um sink pendurado prenda o dispatch.
+func (b *Broker) recordDenial(ctx context.Context, in exchangeInput, axis string, cause error) error {
+	payload, err := json.Marshal(deniedPayload{
+		PrincipalNHI:   in.PrincipalNHI,
+		AgentClass:     in.AgentClass,
+		Resource:       in.ResourceValue,
+		Provider:       in.Provider,
+		Region:         in.Region,
+		Capability:     in.Capability,
+		Axis:           axis,
+		Code:           denialCode(cause),
+		Reason:         cause.Error(),
+		DeniedBy:       dispatchGuardName,
+		DeniedAt:       b.clock().UTC().Format(time.RFC3339Nano),
+		ProviderPolicy: string(b.ProviderPosture()),
+	})
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+
+	regCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), denyRecordTimeout)
+	defer cancel()
+
+	// step_id próprio por negação: a idempotency_key do store é f(run_id, step_id),
+	// e o step_id do PEDIDO já é o da mediação. Sem isto, duas tentativas negadas no
+	// mesmo passo colapsariam num só evento e a segunda ficaria invisível.
+	n := b.denySeq.Add(1)
+	if _, err := b.es.Append(regCtx, in.RunID, eventstore.EventInput{
+		Type:    exchangeDeniedEventType,
+		Payload: payload,
+		RunID:   in.RunID,
+		StepID:  "exchange-denied:" + strconv.FormatUint(n, 10),
+		Producer: eventstore.Producer{
+			NHIID: in.PrincipalNHI,
+			Scope: in.UserAuthority,
+		},
+	}); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }

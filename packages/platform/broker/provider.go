@@ -52,6 +52,9 @@ import (
 //   - CADA troca sela a postura no Event Store, no campo `provider_policy` do
 //     evento `credential.exchange.issued` — uma troca não-imposta fica auditável e
 //     greppável, e o wiring (DEF-218) pode assertar `"enforced"` como pré-condição;
+//     uma troca NEGADA pela guarda de composição do dispatch sela-a no campo
+//     homónimo de `credential.exchange.denied` (AOS-339), para que a negação seja
+//     legível SOB O REGIME em que foi tomada;
 //   - o que a postura NÃO relaxa: um pedido SEM provedor
 //     (`Downstream.Provider` vazio) é NEGADO fail-closed nas DUAS posturas
 //     ([ErrProviderUndetermined]) — sem provedor não há chave legítima, e o Vault
