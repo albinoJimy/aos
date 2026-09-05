@@ -539,6 +539,14 @@ type posturaDaPoliticaDoBroker struct {
 	// Provider e Recurso só têm significado quando Composto é verdadeiro.
 	Provider broker.ProviderPosture
 	Recurso  broker.ResourceBindingPosture
+	// FormaProvider é o CONTEÚDO da política do eixo provider, que a postura não olha
+	// (AOS-342). Sem ela, `enforced` na linha do banner é ambíguo entre uma política que
+	// impõe e um curinga que não impõe nada — e a segunda leitura é a que o DEF-218
+	// assertaria como pré-condição satisfeita.
+	FormaProvider broker.ProviderPolicyShape
+	// ClassesComCuringa nomeia as classes que o curinga deixa sem restrição. Nomeá-las é
+	// o que separa «há um buraco» de «o buraco é aqui».
+	ClassesComCuringa []string
 }
 
 // brokerPolicyPostureBanner declara, no arranque, a postura dos DOIS eixos de política do
@@ -564,16 +572,31 @@ func brokerPolicyPostureBanner(p posturaDaPoliticaDoBroker) []string {
 		}
 	}
 	return []string{
-		"politica do broker / eixo provider (AOS-324/AOS-330): " + string(p.Provider) + " — " + descricaoDaPosturaProvider(p.Provider),
+		"politica do broker / eixo provider (AOS-324/AOS-330/AOS-342): " + string(p.Provider) + "/" + string(p.FormaProvider) + " — " + descricaoDaPosturaProvider(p),
 		"politica do broker / eixo recurso<->provedor (AOS-331): " + string(p.Recurso) + " — " + descricaoDaPosturaRecurso(p.Recurso),
 	}
 }
 
-func descricaoDaPosturaProvider(p broker.ProviderPosture) string {
-	if p == broker.ProviderPostureEnforced {
-		return "politica DECLARADA: o provedor pedido tem de constar da autoridade efectiva da classe, e um valor que a normalizacao do path do Vault altere e RECUSADO (AOS-330)"
+// descricaoDaPosturaProvider descreve o eixo provider a partir da postura E DA FORMA.
+//
+// A POSTURA SOZINHA NAO CHEGA (AOS-342): `enforced` e funcao da NULIDADE do mapa de
+// politica, nao do seu conteudo. Uma politica com curinga e `enforced` e nao impoe nada;
+// um mapa vazio e `enforced` e nega tudo. Descrever as tres com a mesma frase — «o
+// provedor pedido tem de constar da autoridade efectiva da classe» — e falso no primeiro
+// caso e vacuo no segundo, e e sobre essa frase que o operador decide se a pre-condicao
+// do DEF-218 esta satisfeita.
+func descricaoDaPosturaProvider(p posturaDaPoliticaDoBroker) string {
+	if p.Provider != broker.ProviderPostureEnforced {
+		return "politica NAO declarada: o eixo nao e imposto por conjunto. Um provedor indeterminado continua a ser recusado, mas qualquer provedor identificavel passa"
 	}
-	return "politica NAO declarada: o eixo nao e imposto por conjunto. Um provedor indeterminado continua a ser recusado, mas qualquer provedor identificavel passa"
+	switch p.FormaProvider {
+	case broker.ProviderPolicyShapeWildcard:
+		return "politica DECLARADA MAS ABERTA POR CURINGA: as classes " + strings.Join(p.ClassesComCuringa, ", ") + " tem tecto \"*\" (broker.ProviderAny), logo para elas o eixo NAO impoe nada por conjunto — um principal dessas classes sem grants prov: no token alcanca QUALQUER provedor presente no Vault. ISTO NAO SATISFAZ a pre-condicao do DEF-218 apesar de a postura dizer `enforced`: substitua o curinga por conjuntos concretos"
+	case broker.ProviderPolicyShapeEmpty:
+		return "politica DECLARADA E VAZIA (deny-all): nao ha classe nenhuma no mapa, logo toda a classe tem tecto vazio e NENHUMA troca passa o eixo. O broker fica composto e nao troca nada — e quase de certeza um mapa vazio por acidente, nao uma decisao"
+	default:
+		return "politica DECLARADA com conjuntos CONCRETOS por classe: o provedor pedido tem de constar da autoridade efectiva da classe, e um valor que a normalizacao do path do Vault altere e RECUSADO (AOS-330). E a unica forma que satisfaz a pre-condicao do DEF-218"
+	}
 }
 
 func descricaoDaPosturaRecurso(p broker.ResourceBindingPosture) string {
