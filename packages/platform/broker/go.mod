@@ -5,9 +5,11 @@ go 1.24
 require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/substrate/eventstore v0.0.0
-	github.com/aos-ref/substrate/otel-genai v0.0.0
+	github.com/aos-ref/substrate/redaction v0.0.0
 	github.com/aos-ref/substrate/sandbox v0.0.0
 )
+
+require github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
 
 // Integração por path local: ZERO dependências externas, build offline (padrão
 // de infra do repo). O broker (BRK, AOS-070/ADR-006) COMPÕE — não reimplementa —
@@ -28,3 +30,5 @@ replace github.com/aos-ref/substrate/sandbox => ../../substrate/sandbox
 replace github.com/aos-ref/platform/audit => ../audit
 
 replace github.com/aos-ref/substrate/otel-genai => ../../substrate/otel-genai
+
+replace github.com/aos-ref/substrate/redaction => ../../substrate/redaction

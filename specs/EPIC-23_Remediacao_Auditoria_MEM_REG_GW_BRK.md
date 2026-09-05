@@ -96,7 +96,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
-| O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** |
+| O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
 | A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — condicional |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
@@ -1229,8 +1229,12 @@ um endereço com credenciais embutidas aparece por extenso.
   principal» — e é precisamente ele que sobrevive aqui. O equivalente em `cmd/aos` já foi fechado
   com `erroVaultRedigido`, que é o molde a replicar (preserva `Op` e causa, troca só o endereço).
 
-Os dois caminhos alimentam o `/readyz` e o banner de prontidão, que é onde um segredo seria mais
-lido.
+~~Os dois caminhos alimentam o `/readyz` e o banner de prontidão, que é onde um segredo seria mais
+lido.~~ **ERRADO, e medido na revisão da implementação:** `KVv2.Ready` não tem chamador de
+produção e nem podia ter — a porta `vault.Client` declara só `Fetch`; o `/readyz` do nó sonda o
+Vault da **KEK**, e o banner do broker imprime `RedactURL(s.Addr)` e nunca um erro. O eixo é real
+mas o alcance é **preventivo**, e a frase acima fica riscada em vez de apagada porque foi ela que
+justificou a prioridade deste ticket.
 
 **ALCANCE, medido e limitado.** A via do **ambiente** está fechada: `AOS_BROKER_VAULT_ADDR` passa
 por `integration.CheckSecureTransportURL`, que recusa `user-info` desde o AOS-333. Fica aberta a via
@@ -1247,18 +1251,83 @@ que **podem** importar `integration`, foram fechados no próprio AOS-333.
 
 ### Critérios de Aceitação
 
-- [ ] Nenhum caminho de erro de `kvv2.go` ecoa `user-info` — nem a senha, nem o utilizador
-- [ ] O ramo de `NewRequest` falhado deixa de devolver o `*url.Error` cru
-- [ ] O erro continua a nomear **onde** o nó falhou a falar (esquema, host e porta), senão troca-se
+- [x] Nenhum caminho de erro de `kvv2.go` ecoa `user-info` — nem a senha, nem o utilizador
+- [x] O ramo de `NewRequest` falhado deixa de devolver o `*url.Error` cru
+- [x] O erro continua a nomear **onde** o nó falhou a falar (esquema, host e porta), senão troca-se
       uma fuga por um `/readyz` que não diagnostica nada
-- [ ] O redactor vive no módulo do broker, sem importar `integration` — e `layer-lint.sh` prova-o
-- [ ] Um teste com `user:pass@` composto **programaticamente** (a via que continua aberta) que
+- [x] O redactor vive no módulo do broker, sem importar `integration` — e `layer-lint.sh` prova-o
+- [x] Um teste com `user:pass@` composto **programaticamente** (a via que continua aberta) que
       exija a ausência das duas coisas nas mensagens de `Fetch` e de `Ready`
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2 — o eixo é fuga de segredo, mas a via do operador está fechada e sobra a
-programática. Sobe a P1 no dia em que alguém compuser `KVv2Config.Addr` a partir de entrada externa.
+**IMPLEMENTADO.** P2 — o eixo era fuga de segredo, com a via do operador já fechada pelo AOS-333
+e a programática aberta.
+
+**ERAM QUATRO RAMOS, NÃO TRÊS.** Este ticket contava `:207`, `:236` e `:241` e falhou o
+`NewRequest` do `Fetch`, que tem exactamente o mesmo defeito do de `Ready`. São **dois** ramos de
+`NewRequest`, que ecoavam o endereço **cru** — a senha inteira, e com ela o **path do segredo**
+(`/v1/secret/data/p/eu/cap_http.get`), que diz a quem lê o log qual a credencial em causa — e
+**dois** de `Do`, em que o `net/http` redige a senha e deixa o utilizador. Medido na prova de
+mutação, não deduzido.
+
+**DUAS CAMADAS, E A ORDEM IMPORTA.** O controlo primário é `NewKVv2`, que recusa `user-info`
+**fail-closed**: fecha os quatro ramos de uma vez no ponto de entrada, em vez de os remendar um a
+um à saída, e torna impossível escrever o teste de fuga que existia — que é a forma forte da
+garantia. **Não é um critério de transporte** e por isso não duplica o do nó: não decide `http` vs
+`https` nem loopback, não tem política de esquema nenhuma. A redacção fica como defesa em
+profundidade, e continua a valer para o **path do segredo**, que não é user-info e sairia por ali
+na mesma.
+
+**O REDACTOR DESCEU A `substrate/redaction`, E NÃO DEVIA TER SIDO COPIADO.** A primeira versão
+desta correcção duplicou-o no pacote `vault` alegando que o `ADR-019` obrigava. **Não obrigava**:
+`platform → substrate` é canónico (`LAYER_ALLOWED[platform]="platform substrate"`),
+`substrate/redaction` é módulo **folha** com zero dependências, e o próprio `ADR-019` §117
+nomeia-o como o sítio da redacção. A fronteira nunca exigiu a cópia — exigia que o código
+partilhado **descesse**. E as duas cópias já tinham divergido no dia em que a segunda nasceu:
+`(inválido)` contra `(inválida)`, o bastante para um `grep` sobre logs agregados perder metade dos
+casos. `integration.RedactURL` e `cmd/aos.erroVaultRedigido` passam a delegar; ficam **zero**
+cópias, e a incoerência interna do ticket — recusar duplicar o validador por risco de divergência
+e aceitar duplicar o redactor — desaparece.
+
+**`TransportError` desce pelos `*url.Error` aninhados.** `errors.As` apanha o de fora, e
+reimprimir o `Err` tal-qual deixava sair **inteiro** um `*url.Error` interior — a credencial de um
+proxy de terceiros, pela via do seam público `HTTPClient`. Cada nível é redigido com o **seu**
+endereço, para não se perder contra quem se falhou.
+
+**O `mount` passa a ser escapado**, e não era. Vinha de `AOS_BROKER_VAULT_KV_MOUNT` com só
+`TrimSpace`, ao contrário dos segmentos do path: um escape inválido fazia o `NewRequest` falhar, e
+a mensagem nova acusaria um endereço **perfeito**, mandando o operador depurar a variável errada.
+
+### Duas declarações minhas eram falsas, e a revisão adversarial apanhou-as
+
+**O «segundo controlo» era vacuoso.** Escrevi que «a causa sobrevive à redacção» e amarrei-o com um
+`t.Logf` — o revisor apagou a causa por completo e a suite passou. A razão pela qual era um log é
+real (o texto do SO varia por sistema e por locale), mas a saída não é desistir da asserção: é
+compará-la com o **erro cru**, que é portável. Um controlo que não falha não é um controlo.
+
+**A justificação de alcance era falsa.** Escrevi, no código, no commit e no `CHANGELOG`, que estes
+erros «sobem ao `/readyz` e ao banner de prontidão». Não sobem: `KVv2.Ready` **não tem chamador de
+produção** e nem podia ter, porque a porta `vault.Client` declara só `Fetch`; o `/readyz` do nó
+sonda o Vault da **KEK**, e o banner do broker imprime `RedactURL(s.Addr)` e nunca um erro. A
+correcção é **preventiva** — vale, porque o dia em que `Ready` for exposto ninguém terá de reabrir
+isto —, mas a razão escrita tem de ser a verdadeira. Foi um doc-comment a comprar confiança que
+não sustentava que abriu o AOS-333; repeti-lo no ticket que ele gerou seria o mesmo defeito.
+
+**O `Ready` ganhou também atribuibilidade**: devolvia `err` sem sentinela nenhuma.
+
+Nove funções de teste, com **três controlos**: os endereços legítimos continuam a construir
+cliente, a mensagem de transporte continua a nomear host e porta, e a causa sobrevive. Prova de
+mutação em oito peças — os quatro ramos de erro, o fail-closed do construtor, o desaparecimento da
+causa (a mutação com que o revisor demonstrou a vacuidade), a descida nos aninhados e o escape do
+mount. Todas revertidas e confirmadas limpas.
+
+**LIMITES DECLARADOS.** A causa de um erro de transporte pode conter uma URL em **texto**, não
+estruturada — o `net/http` produz `failed to parse Location header "…"` a partir de um cabeçalho
+que o **servidor** controla. Não é redigível estruturalmente e não é omitida, porque omitir a causa
+custaria o diagnóstico que a função existe para preservar; é conteúdo do interlocutor, não segredo
+do nó. E o `layer-lint.sh` não cobre imports de **teste** (`go list` sem `TestImports`), pelo que a
+prova da fronteira é o `go list -deps` de produção, que dá zero.
 
 ---
 

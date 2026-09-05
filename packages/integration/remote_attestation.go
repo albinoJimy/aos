@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aos-ref/substrate/redaction"
 )
 
 // ADAPTADOR REMOTO DA PORTA DE ATTESTATION (remediação AOS-177 — "enforcement dormente").
@@ -228,17 +230,12 @@ func CheckSecureTransportURL(raw string) error {
 // deliberadamente mais estreita do que o necessário: preservar o caminho ajudaria o
 // diagnóstico, mas um caminho de Vault já carregou tokens em incidentes reais noutros
 // sistemas, e um redactor que hesita não serve para o sítio onde é preciso.
-func RedactURL(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" {
-		return "(inválida)"
-	}
-	// Compõe a partir dos DOIS campos que se querem preservar, em vez de concatenar à
-	// mão: uma entrada sem esquema (`//vault:8200`) devolvia `vault:8200`, uma forma que
-	// o doc-comment acima não promete e que num banner se lê como um host solto. Aqui o
-	// resultado é sempre re-analisável como a mesma coisa que entrou.
-	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
-}
+//
+// A IMPLEMENTAÇÃO DESCEU A `substrate/redaction` (AOS-337). Este nome mantém-se porque é o que
+// os chamadores do composition-root usam, mas o corpo é partilhado com o cliente Vault do
+// broker, que não pode importar este módulo (ADR-019). Houve três cópias durante um commit e a
+// terceira divergiu no dia em que nasceu — dois redactores que discordam são piores do que um.
+func RedactURL(raw string) string { return redaction.URL(raw) }
 
 // VerifyDeviceAttestation satisfaz [DeviceAttestationVerifier]. Delega a verificação
 // criptográfica no componente externo e devolve o identificador OPACO de dispositivo.
