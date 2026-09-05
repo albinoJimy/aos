@@ -348,9 +348,36 @@ Nota de âmbito: a `DEF-216` cobre *dynamic secrets*; não cobre TLS nem renova�
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. A validação de esquema é o único item desta auditoria corrigível numa
-linha e independente do wiring; o resto do ticket é contrato.
+**IMPLEMENTADO (parcial, com um AC deferido e a razão escrita).** P1.
 
+> **METADE DO ENUNCIADO ERA FALSA — apurado na implementação.** Este ticket dizia que nenhum dos
+> dois Vaults validava o esquema do endereço. **O Vault da KEK já validava**, desde AOS-249:
+> `parseVaultDSARFromEnv` chama `integration.CheckSecureTransportURL` e recusa com
+> `ErrInsecureVaultDSARAddr` (https exigido, http só em loopback). A auditoria procurou a validação
+> em `vaultkeyvault.go` e ela vive no parser — daí a leitura errada.
+>
+> O defeito real era a **assimetria**: o Vault do BROKER, endereçado pela mesma família de
+> variáveis, a transportar o mesmo tipo de material, no mesmo binário, não validava nada. O mesmo
+> processo recusava num sítio o que aceitava no outro.
+
+`parseBrokerVaultFromEnv` passa a chamar **o mesmo helper**, com sentinela própria
+(`ErrInsecureBrokerVaultAddr`). Usar o mesmo helper é deliberado: um segundo critério, ainda que
+equivalente hoje, divergiria à primeira alteração — que é exactamente como esta assimetria nasceu.
+
+Três testes, e o terceiro é o que interessa: `TestAOS323_MesmoCriterioNosDoisVaults` amarra a
+propriedade que o ticket existe para garantir — o mesmo endereço tem o mesmo veredicto nos dois
+eixos. Um teste por eixo provaria cada guarda em separado e deixaria a assimetria sem cobertura.
+O controlo fixa que o loopback em http continua aceite nos dois, que é o padrão de dev documentado.
+
+A **política de renovação do token** fica declarada no banner: lido uma vez do ficheiro montado e
+**nunca renovado**, ao contrário do Vault da KEK que sonda e renova (AOS-249) — sem efeito enquanto
+nenhum `Fetch` é emitido, e a fechar no dia do wiring.
+
+**AC deferido, com razão:** não se acrescentou superfície de saúde à porta `vault.Client` nem sonda
+no `/readyz`. O `Node` não transporta o cliente do broker — só o `bootstrap` o vê, para escolher a
+linha de banner — e sondar a saúde de um cliente que **não emite pedido nenhum** seria pôr o
+`/readyz` a depender de algo de que o nó não depende. O `kvv2` já tem `Ready()`; o que falta é o
+consumidor, e o consumidor é o wiring. Fica amarrado ao `DEF-218`, junto com a renovação do token.
 ---
 
 ## AOS-324 — A troca de credenciais não impõe nem exercita o eixo *Provider*

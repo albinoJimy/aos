@@ -26,6 +26,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/aos-ref/integration"
 	broker "github.com/aos-ref/platform/broker"
 )
 
@@ -34,6 +35,19 @@ import (
 // FICHEIRO montado, ou o ficheiro é ilegível/vazio. Fail-closed de CONFIG, no molde
 // de [ErrBadVaultDSAR]: distingue "não configurado" (addr vazio ⇒ dormente) de
 // "configurado mas inválido" (aborta, em vez de degradar em silêncio).
+// ErrInsecureBrokerVaultAddr — AOS_BROKER_VAULT_ADDR com transporte inseguro (AOS-323).
+//
+// A ASSIMETRIA QUE ISTO FECHA. O Vault da KEK já recusava texto-claro desde AOS-249 —
+// [ErrInsecureVaultDSARAddr], via [integration.CheckSecureTransportURL], que exige https e só
+// admite http em LOOPBACK. O Vault do broker, endereçado pela mesma família de variáveis e a
+// transportar o mesmo tipo de material, não validava nada: o mesmo binário recusava num sítio o
+// que aceitava no outro. Usa-se o MESMO helper de propósito — um segundo critério, ainda que
+// equivalente hoje, divergiria à primeira alteração.
+//
+// O `X-Vault-Token` viaja em cada pedido; sobre http não-loopback viaja em claro, e quem o
+// apanhar colhe as credenciais downstream que o broker custodia.
+var ErrInsecureBrokerVaultAddr = errors.New("aos: AOS_BROKER_VAULT_ADDR com transporte INSEGURO — o token do Vault e as credenciais downstream atravessariam a rede em claro; exige https (http SO em loopback), o mesmo criterio de AOS_DSAR_VAULT_ADDR no mesmo binario")
+
 var ErrBadBrokerVault = errors.New("aos: Vault do credential broker mal configurado — AOS_BROKER_VAULT_ADDR exige AOS_BROKER_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
 // brokerVaultSettings é o material PÚBLICO do broker Vault que o banner declara (uma
@@ -61,6 +75,11 @@ func parseBrokerVaultFromEnv() (broker.VaultClient, *brokerVaultSettings, error)
 	addr := strings.TrimSpace(os.Getenv("AOS_BROKER_VAULT_ADDR"))
 	if addr == "" {
 		return nil, nil, nil // não configurado ⇒ broker Vault DORMENTE (comportamento actual).
+	}
+	// TRANSPORTE (AOS-323): mesmo critério do Vault da KEK, mesmo helper. Antes de ler o token —
+	// não faz sentido validar credenciais para um endereço que não se vai aceitar.
+	if err := integration.CheckSecureTransportURL(addr); err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrInsecureBrokerVaultAddr, err)
 	}
 	tokenPath := strings.TrimSpace(os.Getenv("AOS_BROKER_VAULT_TOKEN_PATH"))
 	if tokenPath == "" {
@@ -108,6 +127,6 @@ func brokerVaultPostureBanner(s *brokerVaultSettings) []string {
 		}
 	}
 	return []string{
-		fmt.Sprintf("broker vault / credenciais downstream (AOS-070/AOS-264): CONFIGURADO (KV v2 @ %s, mount %q), troca PENDENTE — cliente Vault REAL preparado (stdlib, zero-dep), token de FICHEIRO montado, SEPARADO do Vault da KEK (D7). ATENCAO: a TROCA MEDIADA continua PENDENTE, ainda NAO esta ligada ao gateway nesta entrega — o cliente esta PREPARADO e NENHUM Fetch e emitido — alimenta apenas esta linha. A porta de aquisicao in-process (AOS-265, D8) JA EXISTE em platform/broker; o que falta e a COMPOSICAO da troca, cujo bloqueador e o DEF-218 (bundle PDP assinado + identidade de infra com a capability da troca). Ate la NENHUMA credencial downstream e trocada nem injectada. DECISAO REGISTADA: motor KV v2 (segredo estatico) — a lease do broker corta a INJECCAO in-process no TTL/revogacao, mas so DYNAMIC SECRETS dariam corte da credencial NO provedor (deferido, D8-B/DEF-216). Eixo: DEF-218", s.Addr, s.KVMount),
+		fmt.Sprintf("broker vault / credenciais downstream (AOS-070/AOS-264): CONFIGURADO (KV v2 @ %s, mount %q), troca PENDENTE — cliente Vault REAL preparado (stdlib, zero-dep), token de FICHEIRO montado, SEPARADO do Vault da KEK (D7). ATENCAO: a TROCA MEDIADA continua PENDENTE, ainda NAO esta ligada ao gateway nesta entrega — o cliente esta PREPARADO e NENHUM Fetch e emitido — alimenta apenas esta linha. A porta de aquisicao in-process (AOS-265, D8) JA EXISTE em platform/broker; o que falta e a COMPOSICAO da troca, cujo bloqueador e o DEF-218 (bundle PDP assinado + identidade de infra com a capability da troca). Ate la NENHUMA credencial downstream e trocada nem injectada. DECISAO REGISTADA: motor KV v2 (segredo estatico) — a lease do broker corta a INJECCAO in-process no TTL/revogacao, mas so DYNAMIC SECRETS dariam corte da credencial NO provedor (deferido, D8-B/DEF-216). TRANSPORTE: https exigido, http SO em loopback — mesmo criterio e mesmo helper do AOS_DSAR_VAULT_ADDR (AOS-323). TOKEN: lido UMA VEZ do ficheiro montado no arranque e NUNCA RENOVADO — ao contrario do Vault da KEK, que sonda e renova (AOS-249). Enquanto nenhum Fetch e emitido isto nao tem efeito; no dia do wiring (DEF-218) o token tem de passar a ser renovado ou a ter validade maior que a vida do processo. Eixo: DEF-218", s.Addr, s.KVMount),
 	}
 }
