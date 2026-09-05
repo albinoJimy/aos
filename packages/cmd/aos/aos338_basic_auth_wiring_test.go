@@ -30,17 +30,23 @@ func aos338Ficheiro(t *testing.T, conteudo string) string {
 }
 
 func TestAOS338_BasicVemDeFicheiroMontado(t *testing.T) {
-	p := aos338Ficheiro(t, "  "+aos338Utilizador+":"+aos338Senha+"\n")
-	t.Setenv("AOS_ATTESTATION_VERIFIER_BASIC_PATH", p)
+	// Limpa o irmão para não herdar da máquina (molde de `aos177_attestation_wiring_test.go`):
+	// com os dois definidos o construtor abortaria, e o teste falharia por uma razão que não é
+	// a sua (AOS-338, achado B5).
+	t.Setenv("AOS_ATTESTATION_VERIFIER_TOKEN_PATH", "")
+	const comEspacos = " " + aos338Utilizador + ":" + aos338Senha + " "
+	t.Setenv("AOS_ATTESTATION_VERIFIER_BASIC_PATH", aos338Ficheiro(t, comEspacos+"\n"))
 
 	cfg, err := nodeConfigFromEnv()
 	if err != nil {
 		t.Fatalf("nodeConfigFromEnv: %v", err)
 	}
-	// APARA, como todos os ficheiros de credencial do repo: um `\n` final é normal num ficheiro
-	// montado e não pode virar parte da senha.
-	if quer := aos338Utilizador + ":" + aos338Senha; cfg.AttestationVerifierBasic != quer {
-		t.Fatalf("AttestationVerifierBasic = %q, quer %q", cfg.AttestationVerifierBasic, quer)
+	// APARA O TERMINADOR DE LINHA, E SÓ ELE. Os espaços das pontas SOBREVIVEM: o `-u` do curl
+	// preserva um espaço final numa senha, e apará-lo corromperia uma credencial legítima sem
+	// nada no arranque a explicá-lo (AOS-338, achado M4 da revisão). O terminador de linha é
+	// do ficheiro; o resto é da credencial.
+	if cfg.AttestationVerifierBasic != comEspacos {
+		t.Fatalf("AttestationVerifierBasic = %q, quer %q", cfg.AttestationVerifierBasic, comEspacos)
 	}
 }
 
@@ -92,8 +98,12 @@ func TestAOS338_NenhumaCredencialNaoAborta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sem credenciais o no tem de arrancar: %v", err)
 	}
+	// NÃO SE IMPRIME O VALOR nem no ramo de falha — é a disciplina do resto deste ficheiro, e
+	// um teste que a quebra ensina a quebrá-la (AOS-338, achado B4). Diz-se QUAL dos dois está
+	// preenchido, que é o que diagnostica, e o teste cobria os dois mas só imprimia um.
 	if cfg.AttestationVerifierBasic != "" || cfg.AttestationVerifierToken != "" {
-		t.Errorf("nao devia haver credencial nenhuma: %+v", cfg.AttestationVerifierBasic)
+		t.Errorf("nao devia haver credencial nenhuma: basic-preenchido=%v bearer-preenchido=%v",
+			cfg.AttestationVerifierBasic != "", cfg.AttestationVerifierToken != "")
 	}
 }
 

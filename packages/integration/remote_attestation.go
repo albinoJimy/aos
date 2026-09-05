@@ -197,15 +197,23 @@ func NewRemoteDeviceAttestationVerifier(cfg RemoteAttestationConfig) (*RemoteDev
 // componente é uma composição legítima (é o que acontece quando ele está atrás de mTLS ou numa
 // rede fechada), e transformá-la em erro partiria os deployments que existem hoje.
 func resolveAttestationAuth(bearer, basic string) (header, scheme string, err error) {
-	bearer = strings.TrimSpace(bearer)
-	basic = strings.TrimSpace(basic)
-
+	// NÃO SE APARA AQUI (AOS-338, achado M2 da revisão). A versão anterior fazia `TrimSpace`
+	// nos dois valores ANTES de testar o conflito, pelo que um `AuthToken` só com espaços
+	// desaparecia e o conflito não disparava: com os dois definidos, escolhia-se um em
+	// silêncio — exactamente o que o critério de aceitação proíbe. A normalização pertence a
+	// quem LÊ o ficheiro; aqui os valores valem como vieram.
 	switch {
 	case bearer != "" && basic != "":
 		return "", "", fmt.Errorf("%w: os dois esquemas estao definidos (bearer e basic) e so um cabecalho Authorization e enviado; defina UM", ErrRemoteAttestationAuth)
 	case bearer != "":
-		if err := recusaControlos(bearer); err != nil {
+		if err := validaCredencial(bearer); err != nil {
 			return "", "", err
+		}
+		// Um token que já traga o esquema colado produziria `Bearer Bearer <tok>`. É um erro
+		// de montagem — o ficheiro leva o token, não o cabeçalho — e recusa-se em vez de se
+		// normalizar: normalizar esconderia a confusão e o operador nunca a corrigiria.
+		if temPrefixoDeEsquema(bearer) {
+			return "", "", fmt.Errorf("%w: o token ja traz o esquema colado; o ficheiro leva SO o token", ErrRemoteAttestationAuth)
 		}
 		return "Bearer " + bearer, AuthSchemeBearer, nil
 	case basic == "":
@@ -221,24 +229,53 @@ func resolveAttestationAuth(bearer, basic string) (header, scheme string, err er
 	if i == 0 {
 		return "", "", fmt.Errorf("%w: o par basic nao tem utilizador antes do ':'", ErrRemoteAttestationAuth)
 	}
-	if err := recusaControlos(basic); err != nil {
+	if err := validaCredencial(basic); err != nil {
 		return "", "", err
 	}
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(basic)), AuthSchemeBasic, nil
 }
 
-// recusaControlos fecha INJECÇÃO DE CABEÇALHO. Uma credencial lida de ficheiro pode trazer um
-// \r\n no meio — por erro de transcrição ou de propósito —, e um valor desses num
-// `Authorization` acrescenta cabeçalhos que ninguém escreveu.
+// maxCredencialAttestation é o tecto de uma credencial. Não há token nem par utilizador:senha
+// legítimo perto disto; o que há acima é um ficheiro errado montado no sítio certo, e um
+// cabeçalho `Authorization` de megabytes é recusado por qualquer servidor — o nó arrancaria
+// verde a negar todas as pernas (AOS-338, achado B2).
+const maxCredencialAttestation = 4096
+
+// validaCredencial recusa uma credencial que não pode ir num cabeçalho HTTP.
 //
-// O `net/http` recusa-o no envio, mas isso seria uma falha por-verificação num gate que já
-// negou a aprovação: fail-closed no ARRANQUE é a postura certa, porque um verificador que não
-// se sabe autenticar não deve existir. A mensagem não ecoa o valor.
-func recusaControlos(v string) error {
-	if strings.ContainsAny(v, "\r\n\x00") {
-		return fmt.Errorf("%w: a credencial tem caracteres de controlo (valor omitido)", ErrRemoteAttestationAuth)
+// O CRITÉRIO É O DO `net/http`, e a versão anterior desta função não era (achado M1 da revisão
+// adversarial). Recusava so `\r`, `\n` e `NUL`, quando o `net/http` recusa TODO o controlo
+// excepto `\t` — `\v`, `\f`, `ESC` e `DEL` incluídos. Um token com um deles construía o
+// verificador, o banner declarava «autentica com Authorization: Bearer», e depois CADA
+// verificação falhava no envio: boot verde, `/readyz` verde, e todas as pernas de aprovação
+// negadas. Fail-late num gate é o pior sítio para o ser.
+//
+// ONDE ISTO MORDE DE FACTO É O BEARER, e a versão anterior tinha a guarda invertida: no ramo
+// basic o `base64` já neutraliza qualquer byte — a saída é sempre alfanumérica — pelo que ali
+// isto não previne injecção nenhuma; serve só para recusar cedo um ficheiro de credencial
+// malformado. No bearer o valor vai CRU, e é aqui que a recusa vale.
+//
+// LIMITE DECLARADO: bytes ≥ 0x80 passam, porque o `net/http` aceita-os. Um separador de linha
+// Unicode (`U+2028`) atravessa e é enviado; não é injecção de cabeçalho — não há CR nem LF — e
+// recusá-lo partiria credenciais UTF-8 legítimas.
+func validaCredencial(v string) error {
+	if len(v) > maxCredencialAttestation {
+		return fmt.Errorf("%w: credencial acima do tecto de %d bytes (valor omitido)", ErrRemoteAttestationAuth, maxCredencialAttestation)
+	}
+	for i := 0; i < len(v); i++ {
+		// Parênteses explícitos: sem eles a precedência lê-se mal, e isto é uma condição de
+		// segurança que alguém vai reler.
+		if c := v[i]; (c < 0x20 && c != '\t') || c == 0x7f {
+			return fmt.Errorf("%w: a credencial tem um caractere de controlo que nao pode ir num cabecalho HTTP (valor omitido)", ErrRemoteAttestationAuth)
+		}
 	}
 	return nil
+}
+
+// temPrefixoDeEsquema detecta um token a que já colaram `Bearer `/`Basic `.
+func temPrefixoDeEsquema(v string) bool {
+	l := strings.ToLower(v)
+	return strings.HasPrefix(l, "bearer ") || strings.HasPrefix(l, "basic ")
 }
 
 // checkRemoteAttestationURL exige https, ou http APENAS para loopback (o mesmo critério de

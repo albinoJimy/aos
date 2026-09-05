@@ -2265,7 +2265,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			case integration.AuthSchemeBasic:
 				autent = "autentica com Authorization: Basic, do ficheiro montado em AOS_ATTESTATION_VERIFIER_BASIC_PATH (par utilizador:senha)"
 			}
-			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA"+" AUTENTICACAO: %s. Nenhum VALOR de credencial e impresso.", autent)
+			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA."+" AUTENTICACAO: %s. Nenhum VALOR de credencial e impresso.", autent)
 		} else {
 			log("  attestation de dispositivo (AOS-177): DORMENTE — sem AOS_ATTESTATION_VERIFIER_URL o 4-eyes e SO estrutural (nao prova modelo nem posse do dispositivo); defina a URL do verificador externo para a ligar")
 		}

@@ -69,6 +69,141 @@ func TestAOS338_BasicProduzOCabecalhoCerto(t *testing.T) {
 	}
 }
 
+// TestAOS338_OAlfabetoBase64EOPadrao fecha um buraco de GATE, não de código (achado A2 da
+// revisão adversarial). O código estava certo; a prova é que não estava.
+//
+// A minha prova de mutação removia o `base64` por inteiro — o mutante grosseiro, apanhado pelo
+// `Contains(got, senha)`. O realista é trocar `StdEncoding` por `URLEncoding`, e esse SOBREVIVIA:
+// medido, o par-fixture codifica IDENTICAMENTE nos dois alfabetos, porque nenhum dos seus bytes
+// mapeia para `+` ou `/`. Um `Basic` em base64url é recusado por servidores que sigam o RFC 7617.
+//
+// Os pares abaixo são escolhidos para DISTINGUIR os alfabetos, e o valor esperado é escrito à
+// mão: um teste que recalcule com a mesma função que testa não prova nada.
+func TestAOS338_OAlfabetoBase64EOPadrao(t *testing.T) {
+	t.Parallel()
+	casos := []struct{ par, quer string }{
+		{"u:a?b>c", "Basic dTphP2I+Yw=="}, // base64url daria `dTphP2I-Yw==`
+		{"u:~~~?", "Basic dTp+fn4/"},      // base64url daria `dTp-fn4_`
+	}
+	for _, c := range casos {
+		recebido := make(chan string, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			recebido <- r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{"device_id":"ZGV2LTE="}`))
+		}))
+		v, err := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
+			URL:       srv.URL,
+			BasicAuth: c.par,
+		})
+		if err != nil {
+			srv.Close()
+			t.Fatalf("construir com %q: %v", c.par, err)
+		}
+		if _, err := v.VerifyDeviceAttestation(context.Background(), []byte("ao"), []byte("cd"), []byte("ch")); err != nil {
+			srv.Close()
+			t.Fatalf("verificar com %q: %v", c.par, err)
+		}
+		got := <-recebido
+		srv.Close()
+		if got != c.quer {
+			t.Errorf("cabecalho de %q = %q, quer %q (alfabeto base64 PADRAO, nao url-safe)", c.par, got, c.quer)
+		}
+	}
+}
+
+// TestAOS338_ControlosNoBearerSaoRecusados fecha o outro buraco de gate do A2, e um defeito real
+// de código (achado M1).
+//
+// A guarda estava invertida: o ramo BASIC — onde o `base64` já neutraliza qualquer byte — tinha
+// cobertura, e o ramo BEARER — onde o valor vai CRU e é a única via de injecção — não tinha
+// nenhuma. E o critério era `\r\n\x00`, mais estreito do que o do `net/http`, que recusa TODO o
+// controlo excepto `\t`.
+//
+// O que isso produzia: boot verde, banner a declarar «autentica com Authorization: Bearer», e
+// CADA verificação a falhar no envio — todas as pernas de aprovação negadas. Fail-late num gate.
+func TestAOS338_ControlosNoBearerSaoRecusados(t *testing.T) {
+	t.Parallel()
+	for _, tok := range []string{"a\rb", "a\nb", "a\x00b", "a\vb", "a\fb", "a\x1bb", "a\x7fb"} {
+		_, err := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
+			URL:       "https://attest.interno/verify",
+			AuthToken: tok,
+		})
+		if err == nil {
+			t.Errorf("token com controlo %q devia abortar no ARRANQUE, nao falhar em cada verificacao", tok)
+			continue
+		}
+		if !errors.Is(err, integration.ErrRemoteAttestationAuth) {
+			t.Errorf("o erro tem de ser ATRIBUIVEL para %q: %v", tok, err)
+		}
+	}
+	// CONTROLO: o `\t` é aceite pelo `net/http` num valor de cabeçalho, e recusá-lo seria
+	// endurecer para lá do critério — o que partiria credenciais legítimas.
+	if _, err := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
+		URL:       "https://attest.interno/verify",
+		AuthToken: "a\tb",
+	}); err != nil {
+		t.Errorf("o TAB e aceite num cabecalho HTTP; recusa-lo endurece para la do criterio: %v", err)
+	}
+}
+
+// TestAOS338_TokenComEsquemaColadoERecusado — um ficheiro que leve `Bearer <tok>` em vez de
+// `<tok>` produziria `Authorization: Bearer Bearer <tok>`. Recusa-se em vez de se normalizar:
+// normalizar esconderia o erro de montagem e o operador nunca o corrigiria (achado B3).
+func TestAOS338_TokenComEsquemaColadoERecusado(t *testing.T) {
+	t.Parallel()
+	for _, tok := range []string{"Bearer tok", "bearer tok", "Basic dTpw"} {
+		_, err := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
+			URL:       "https://attest.interno/verify",
+			AuthToken: tok,
+		})
+		if !errors.Is(err, integration.ErrRemoteAttestationAuth) {
+			t.Errorf("token %q ja traz o esquema colado e devia ser recusado: %v", tok, err)
+		}
+	}
+}
+
+// TestAOS338_CredencialAcimaDoTectoERecusada (achado B2): um `Authorization` de megabytes é
+// recusado por qualquer servidor, e o nó arrancaria verde a negar todas as pernas.
+func TestAOS338_CredencialAcimaDoTectoERecusada(t *testing.T) {
+	t.Parallel()
+	gigante := "u:" + strings.Repeat("x", 8192)
+	_, err := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
+		URL:       "https://attest.interno/verify",
+		BasicAuth: gigante,
+	})
+	if !errors.Is(err, integration.ErrRemoteAttestationAuth) {
+		t.Errorf("uma credencial gigante devia ser recusada no arranque: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "xxxx") {
+		t.Errorf("a mensagem ecoa a credencial: %v", err)
+	}
+}
+
+// TestAOS338_EspacosNaoDesarmamAExclusaoMutua fecha o achado M2. O `TrimSpace` corria ANTES do
+// teste de conflito, pelo que um dos lados só com espaços desaparecia e o outro era escolhido em
+// SILÊNCIO — com os dois definidos, que é o que o critério de aceitação proíbe.
+func TestAOS338_EspacosNaoDesarmamAExclusaoMutua(t *testing.T) {
+	t.Parallel()
+	casos := []struct{ nome, bearer, basic string }{
+		{"bearer so com espacos", "   ", "u:p"},
+		{"basic so com tabs", "tok", "\t\t"},
+		{"ambos reais", "tok", "u:p"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			t.Parallel()
+			_, err := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
+				URL:       "https://attest.interno/verify",
+				AuthToken: c.bearer,
+				BasicAuth: c.basic,
+			})
+			if !errors.Is(err, integration.ErrRemoteAttestationAuth) {
+				t.Errorf("dois esquemas DEFINIDOS tem de abortar, mesmo que um seja so espacos: %v", err)
+			}
+		})
+	}
+}
+
 // TestAOS338_BearerContinuaAFuncionar é o CONTROLO de não-regressão: o esquema que já existia
 // não pode ter-se partido ao acrescentar o segundo. Sem ele, uma implementação que só soubesse
 // Basic passaria o teste acima.

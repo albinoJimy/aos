@@ -1383,8 +1383,12 @@ razão escrita.
 
 ### Estado
 
-**IMPLEMENTADO.** Era P3 e condicional; a condição declarada — «só sobe se alguém o pedir» —
-foi cumprida por decisão do dono do repositório. O custo que o ticket registava mantém-se e é o
+**IMPLEMENTADO.** Era P3 e condicional, e a condição escrita **não foi cumprida como estava
+escrita**: dizia «só sobe se alguém **nomear** um deployment que usava a basic-auth embutida no
+URL», e nenhum deployment foi nomeado. O que houve foi uma instrução directa do dono do
+repositório para implementar — que supera a condição, mas não é a condição. Fica dito assim
+porque a alternativa era dressar uma decisão de prioridade como se fosse a evidência que o
+ticket pedia, e este epic inteiro é sobre não fazer isso. O custo que o ticket registava mantém-se e é o
 que molda o desenho: passa a haver **dois** esquemas de autenticação nesta superfície, e a
 exclusão mútua fail-closed entre eles é o que impede que isso vire ambiguidade sobre qual
 credencial está realmente em uso.
@@ -1431,11 +1435,67 @@ variável chamada `..._PATH` convida —, então «o caminho» É a credencial, 
 nomear a **variável** e a **classe** da falha (inexistente / sem permissão / ilegível), nunca o
 valor. É o critério do «malformada (valor omitido)» do AOS-333.
 
-Onze funções de teste em dois módulos, com **quatro controlos**: o Bearer não se partiu ao
-acrescentar o segundo esquema, falar sem autenticação continua a ser composição legítima, o
-loopback continua aceite com Basic, e os três estados do banner são distinguíveis. Cinco provas
-de mutação — exclusão mútua, base64, recusa de controlos, aborto em vazio, e o banner a derivar
-do estado — todas vermelhas com a asserção certa e revertidas limpas.
+### A revisão adversarial encontrou onze defeitos, e três eram declarações minhas falsas
+
+**A minha prova de mutação não provava o que eu disse.** Declarei cinco provas vermelhas; o
+revisor mediu que **três sobreviviam** aos mutantes REALISTAS, e só morriam aos grosseiros que eu
+tinha usado. `StdEncoding` → `URLEncoding` passava porque o meu par-fixture codifica
+**identicamente** nos dois alfabetos — nenhum dos seus bytes mapeia para `+` ou `/`. Remover a
+guarda do ramo **bearer** passava porque o meu teste de controlos só cobria o basic. E derivar o
+esquema da `Config` em vez do verificador passava, porque hoje o esquema é função total da
+config. Os dois primeiros têm agora gate; o terceiro está declarado abaixo como não-gatável.
+
+**A guarda estava do lado errado, e isso era um defeito real.** No ramo basic o `base64` já
+neutraliza qualquer byte, pelo que ali a recusa não previne injecção nenhuma. No ramo **bearer**,
+onde o valor vai cru, o meu critério era `CR`/`LF`/`NUL` — mais estreito do que o do `net/http`,
+que recusa todo o controlo excepto `TAB`. Medido: um token com `\v`, `\f`, `ESC` ou `DEL`
+construía o verificador, o banner declarava «autentica com Authorization: Bearer», e **cada**
+verificação falhava no envio: boot verde, `/readyz` verde, e **todas as pernas de aprovação
+negadas**. Fail-late num gate é o pior sítio para o ser.
+
+**O AC do README estava marcado `[x]` e era falso.** Actualizei a linha da variável nova e a do
+token, e a **nota de migração** vive na linha do `AOS_ATTESTATION_VERIFIER_URL` — que continuava a
+dizer «o nó não tem hoje caminho». Um operador cujo boot aborta lê essa linha e migra para o
+proxy, que é o desfecho que este ticket existe para evitar.
+
+**A exclusão mútua tinha dois contornos.** O `TrimSpace` corria **antes** do teste de conflito,
+pelo que um lado só com espaços desaparecia e o outro era escolhido em silêncio — com os dois
+definidos, que é o que o critério proíbe. E a invariante só corre com URL e approvers presentes:
+montar os dois ficheiros sem URL arranca verde e ignora as duas credenciais. O primeiro está
+fechado (a normalização saiu do resolvedor); o segundo é consequência de a invariante viver no
+construtor, e fica declarado.
+
+**Uma armadilha de migração que eu não vi.** O `user-info` de um URL é **percent-decoded** pelo
+`net/http` antes de virar `Basic`: `us%40er:p%3Aw` enviava o par real `us@er:p:w`. Uma senha com
+`@` ou `:` obriga a percent-encoding no URL — ou seja, é exactamente o deployment que este ticket
+serve — e copiar o literal para o ficheiro dá **outra credencial**, sem nada no arranque a
+explicá-lo. Está agora no README.
+
+**«Molde do `-u` do curl» não era verdade.** Eu aparava tudo; o `curl` preserva um espaço final
+numa senha. Passa a aparar **só o terminador de linha** — que é do ficheiro — e o bearer mantém o
+`TrimSpace` que o AOS-177 já fixava, porque um token opaco não tem espaço com significado.
+
+Mais um tecto de tamanho na leitura (apontar a variável a `/dev/urandom` pendurava o arranque), a
+recusa de um token com o esquema já colado, um separador em falta no banner, e um teste meu que
+imprimia a credencial no ramo de falha.
+
+Dezasseis funções de teste em dois módulos, com **cinco controlos**: o Bearer não se partiu, falar
+sem autenticação continua legítimo, o loopback continua aceite com Basic, o `TAB` continua aceite
+(recusá-lo endureceria para lá do critério do `net/http`), e os três estados do banner são
+distinguíveis. Prova de mutação refeita com os mutantes **realistas** — alfabeto base64, guarda do
+bearer removida, critério estreitado, `TrimSpace` de volta ao resolvedor, `TrimSpace` de volta à
+leitura — todas vermelhas e revertidas limpas.
+
+**LIMITES DECLARADOS.** O componente de referência `cmd/aos-attestation` **não lê `Authorization`
+de todo** — o gap já existia para o Bearer — pelo que o esquema novo não é exercitável
+ponta-a-ponta contra o binário do repositório, só contra `httptest`. O molde de leitura de
+credencial dos **dois Vaults** ecoa o caminho na mensagem de erro, que é o mesmo defeito que este
+ticket fechou do seu lado. Bytes ≥ 0x80 atravessam (o `net/http` aceita-os), pelo que um `U+2028`
+numa credencial é enviado — não é injecção, não há CR nem LF, e recusá-lo partiria credenciais
+UTF-8 legítimas. E **a propriedade «o banner deriva do estado e não da intenção» não tem gate**:
+hoje o esquema é função total da config, pelo que nenhum teste consegue distinguir as duas
+implementações pelo comportamento. O `AuthScheme()` mantém-se porque é a forma certa para o dia em
+que divirjam — mas isso é um argumento de desenho, não uma prova, e é assim que fica escrito.
 
 **LIMITES DECLARADOS.** O componente de referência `cmd/aos-attestation` **não lê `Authorization`
 de todo** — o gap já existia para o Bearer — pelo que o esquema novo não é exercitável

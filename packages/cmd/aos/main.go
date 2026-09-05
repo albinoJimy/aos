@@ -812,7 +812,11 @@ func nodeConfigFromEnv() (Config, error) {
 		if rerr != nil {
 			return Config{}, rerr
 		}
-		cfg.AttestationVerifierToken = v
+		// O BEARER APARA TUDO, e o basic não. Não é inconsistência: um token é opaco e não
+		// tem espaço com significado nas pontas — o contrato está fixado desde AOS-177 por
+		// `TestAttestationVerifierTokenFromFile` —, enquanto uma senha de basic pode
+		// legitimamente acabar em espaço, e o `-u` do curl preserva-o (AOS-338, achado M4).
+		cfg.AttestationVerifierToken = strings.TrimSpace(v)
 	}
 	// BASIC-AUTH POR FICHEIRO MONTADO (AOS-338). O AOS-333 fechou a via que existia — a
 	// basic-auth embutida no URL, que o `net/http` converte em `Authorization: Basic` — e
@@ -1595,24 +1599,46 @@ var ErrBadAttestationCredential = errors.New("aos: credencial do verificador de 
 // apara, e ABORTA em vazio. Devolve só o valor — o chamador nunca vê o erro cru do sistema de
 // ficheiros com o conteúdo.
 func lerCredencialMontada(caminho, envVar string) (string, error) {
-	raw, err := os.ReadFile(caminho)
+	// LÊ COM TECTO, e não `os.ReadFile` seguido de verificação: apontar a variável a
+	// `/dev/urandom` faria o `ReadFile` nunca terminar, e o arranque ficava pendurado sem
+	// mensagem nenhuma. O limite tem de estar na leitura (AOS-338, achado B2).
+	f, err := os.Open(caminho)
+	if err == nil {
+		defer func() { _ = f.Close() }()
+	}
+	var raw []byte
+	if err == nil {
+		raw, err = io.ReadAll(io.LimitReader(f, maxCredencialMontada+1))
+	}
 	if err != nil {
 		// NEM O CAMINHO NEM O ERRO CRU SÃO ECOADOS, e a razão apareceu num teste desta
 		// mudança: se o operador puser a CREDENCIAL na variável em vez do caminho — o erro
-		// exacto que esta variável convida —, então «o caminho» É a credencial, e ecoá-lo
-		// põe-na no log de arranque. O erro do `os.ReadFile` também a traz.
-		//
-		// O que o operador precisa é do NOME DA VARIÁVEL e da CLASSE da falha; o valor que
-		// lá pôs, esse já ele sabe. É o mesmo critério do «malformada (valor omitido)» do
+		// exacto que uma variável chamada `..._PATH` convida —, então «o caminho» É a
+		// credencial, e ecoá-lo põe-na no log de arranque. O erro do `os.ReadFile` também a
+		// traz. O que o operador precisa é do NOME DA VARIÁVEL e da CLASSE da falha; o valor
+		// que lá pôs, esse já ele sabe. É o critério do «malformada (valor omitido)» do
 		// [integration.CheckSecureTransportURL].
 		return "", fmt.Errorf("%w: %s: %s", ErrBadAttestationCredential, envVar, classeDeFalhaDeLeitura(err))
 	}
-	v := strings.TrimSpace(string(raw))
-	if v == "" {
+	// > e não >=: leu-se um byte a mais de propósito, para distinguir «cabe» de «truncado».
+	if len(raw) > maxCredencialMontada {
+		return "", fmt.Errorf("%w: %s: o ficheiro montado tem mais de %d bytes — nao e uma credencial", ErrBadAttestationCredential, envVar, maxCredencialMontada)
+	}
+	// APARA-SE O TERMINADOR DE LINHA, E SÓ ELE (AOS-338, achado M4 da revisão). A versão
+	// anterior fazia `TrimSpace`, e isso CORROMPE uma credencial legítima: o `-u` do curl
+	// preserva um espaço final numa senha, e o `TrimSpace` comia-o — a autenticação falhava,
+	// todas as pernas eram negadas, e nada no arranque o explicava. O `PATH_SEPARATOR` de um
+	// ficheiro é dele, o resto é da credencial.
+	v := strings.TrimRight(string(raw), "\r\n")
+	if strings.TrimSpace(v) == "" {
 		return "", fmt.Errorf("%w: %s: o ficheiro montado esta VAZIO", ErrBadAttestationCredential, envVar)
 	}
 	return v, nil
 }
+
+// maxCredencialMontada é o tecto do ficheiro de credencial. Sem ele, apontar a variável a um
+// ficheiro grande — ou a `/dev/urandom` — faz o arranque ler sem fim (AOS-338, achado B2).
+const maxCredencialMontada = 8192
 
 // classeDeFalhaDeLeitura traduz o erro do sistema de ficheiros numa CLASSE nomeável, sem ecoar
 // o caminho — que pode ser, ele próprio, a credencial mal colocada.
