@@ -91,7 +91,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 |---|---|
 | O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) |
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
-| A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
+| A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** — **implementado** |
 | Uma troca negada pela guarda de composição do `dispatch` fica no WORM como PERMITIDA — achado na discovery do AOS-332 | **AOS-339** — **implementado** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
@@ -935,8 +935,9 @@ e é isso que a torna auditável em vez de silenciosa. Mas duas lacunas ficaram:
    defeito maior no mesmo eixo: uma negação da **guarda de composição do `dispatch`** não só não
    selava a postura como não selava negação nenhuma — ficava no WORM o `permit` que a cadeia tinha
    selado antes. O AOS-339 fecha esse caminho com evento próprio, `provider_policy` incluído. O
-   que **fica para aqui** é o caminho do **gate**: uma negação tomada pelo `ScopeGate` na mediação
-   continua a passar pelo `MediationRecord`, que continua sem o campo.
+   que **ficou para aqui** foi o caminho do **gate**: uma negação tomada pelo `ScopeGate` na
+   mediação passa pelo `MediationRecord`, que continua sem o campo — **fechado agora pela
+   `Reason`**, com a mesma chave `provider_policy=` e com o porquê do canal escrito abaixo.
 2. **O banner de arranque não diz uma palavra sobre o eixo.** Um nó em `unset` que ainda não emitiu
    nenhuma troca é indistinguível de um em `enforced`, e o banner existe precisamente para declarar
    posturas: já declara o credential broker, o Vault do broker, a custódia da KEK, a confirmação do
@@ -947,15 +948,136 @@ O AOS-324 fechou o eixo por configuração. Este fecha a sua **observabilidade**
 
 ### Critérios de Aceitação
 
-- [ ] O banner declara, no arranque, a postura do eixo provider — derivada do ESTADO composto, na
+- [x] O banner declara, no arranque, a postura do eixo provider — derivada do ESTADO composto, na
       disciplina de `plataformaPostureBanner` e `credentialBrokerPostureBanner`
-- [ ] Uma troca NEGADA regista a postura sob a qual foi decidida
-- [ ] Um teste que prove que as duas posturas produzem linhas distintas, e que a negação as sela
+- [x] Uma troca NEGADA regista a postura sob a qual foi decidida
+- [x] Um teste que prove que as duas posturas produzem linhas distintas, e que a negação as sela
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Sem isto, o `enforced` que o `DEF-218` exige assertar só é observável
+**IMPLEMENTADO.** P2. Sem isto, o `enforced` que o `DEF-218` exige assertar só é observável
 depois da primeira troca bem-sucedida — tarde de mais para uma pré-condição de wiring.
+
+### O banner tem CINCO estados, e a POSTURA só distingue dois
+
+`provedorPostureBanner` recebe o **`*broker.Broker` composto**, não um `bool` nem uma
+`ProviderPosture` solta. A escolha do argumento é a parte que importa: com um bool era possível
+escrever `ENFORCED` no banner sem que ninguém tivesse imposto nada, que é exactamente a promessa a
+mais que a regra deste ficheiro proíbe e o defeito que o **AOS-322** mediu no banner do
+*crypto-shred*.
+
+**A primeira implementação tinha três estados e estava errada — achado da revisão adversarial.**
+`Broker.ProviderPosture()` é função da **nulidade** do mapa de política: qualquer mapa não-nil dá
+`enforced`, e o **conteúdo nunca é olhado**. Medido: `{"payments": {"*"}}` é `enforced` e
+`EffectiveProviders` devolve o curinga, pelo que a comparação por conjunto **não impõe nada**; um
+mapa declarado e vazio é `enforced` e **nega tudo**. Um banner que dissesse só `ENFORCED` nos dois
+casos declararia fechado o eixo que o AOS-324 abriu — e o `DEF-218`, cuja pré-condição é assertar
+`enforced`, **passaria sobre exactamente esse estado**. Uma asserção verde pela razão errada, na
+asserção que este ticket existe para tornar possível.
+
+Daí `Broker.ProviderPolicyShape()`, e cinco estados:
+
+1. **NÃO COMPOSTO** — o de hoje. `broker.New` não tem chamador de produção; não há troca mediada em
+   que o eixo possa ser imposto. **Dizer `unset` aqui seria pior do que o silêncio**: `unset`
+   descreve um broker *a operar* sem política, e aqui não há broker nenhum.
+2. **UNSET** — broker composto, nenhuma política. Só o provedor em branco é negado.
+3. **ENFORCED MAS ABERTO POR CURINGA** — política declarada, alguma classe com `*`. A linha
+   **nomeia as classes** afectadas e diz explicitamente que **não satisfaz a pré-condição do
+   DEF-218**.
+4. **ENFORCED MAS VAZIO (DENY-ALL)** — política declarada sem classe nenhuma. `enforced` e inútil;
+   quase de certeza um mapa vazio por acidente.
+5. **ENFORCED** — conjuntos concretos por classe. É o **único** estado sobre o qual «o provedor
+   pedido TEM de pertencer à autoridade efectiva» é verdade para todas as classes.
+
+**O call-site passa `nil` literal, e não um campo de `Config`.** A primeira implementação
+acrescentou um `Config.Broker` como *seam* para o dia do DEF-218; a revisão adversarial mostrou que
+era pior do que o problema que resolvia. O campo não tinha produtor, nada validava que o Event
+Store desse broker fosse o WORM do nó, que o seu `ScopeGate` estivesse na cadeia, ou que o seu
+`toolID` estivesse registado no RM — e o banner prometia que a postura «fica selada» em eventos que
+o auditor do nó nunca leria. Pior: com o campo povoado, o mesmo banner imprimia `AUSENTE — este no
+NAO compoe o platform/broker` e, duas linhas abaixo, `ENFORCED — o credential broker esta composto`.
+**É o defeito F14 exacto que `posture_banner.go` existe para impedir**, reintroduzido pela correcção.
+
+O acoplamento entre as duas linhas passou a ser **imposto**, não esperado:
+`TestBoundary_BrokerNaoEComposto` varre por AST o código de produção do composition-root e falha no
+dia em que `broker.New` ganhar chamador, com uma mensagem que nomeia as duas linhas a actualizar.
+Fecha os **dois** sentidos da falha — o banner a dizer «não composto» sobre um nó que compõe, e as
+duas linhas a divergirem entre si.
+
+### A postura na negação do gate vai na `Reason`, que é texto livre — e porquê
+
+Uma negação do `ScopeGate` **não produz evento do broker**: termina na cadeia de mediação, e o que
+fica selado é o `tool.call.denied` do Reference Monitor. Um hook controla desse registo exactamente
+`Decision`, `Reason` e `PolicyVersion` — mais o `DeniedBy`, que é o RM a escrever o `Name()` do
+hook. Não há campo livre em `HookResult`, em `MediationRecord` nem no `mediationPayload`.
+
+As **três** alternativas foram medidas e rejeitadas:
+
+- **`HookResult.Obligations` não sobrevive a um deny.** `Monitor.fail` recebe as obrigações por
+  parâmetro explícito e o ramo `HookDeny` passa **`nil` literal** — só o ramo de escalate propaga
+  `res.Obligations`. E mesmo que sobrevivesse, o conjunto de tipos é FECHADO e fail-closed no
+  permit: a postura teria de viajar sob `ObligationAudit`, que significa outra coisa. *(A assimetria
+  em si é defeito separado, fora deste âmbito, e está registada como tal — o doc-comment do próprio
+  `fail` argumenta que registar obrigações numa recusa é deliberado, e o ramo de deny contradi-lo.)*
+- **`HookResult.PolicyVersion` é tipado, estável e selado** — e é por isso que a tentação existe.
+  Mas o RM guarda o **último** valor não-vazio da cadeia, e este gate corre **depois** do hook de
+  política: escrever nele **apagaria a versão de política do PDP** no evento. Trocar-se-ia um campo
+  em falta por um campo corrompido, e o segundo é pior. *(A primeira versão deste ticket nomeava
+  `PolicyVersion` como um dos três canais e depois media só dois — a revisão apanhou a omissão.)*
+- **Acrescentar um campo ao `mediationPayload`** poria uma preocupação do BROKER no contrato C1 do
+  Reference Monitor, que é genérico sobre tools, e tocaria na cadeia de hash e nos consumidores de
+  WORM.
+
+**O nome é comum aos três caminhos; a FORMA não é, e dizer que era foi um erro desta
+implementação.** Os eventos do AOS-324 e do AOS-339 serializam um campo JSON e saem como
+`"provider_policy":"enforced"`; a razão do gate é texto e sai como `provider_policy=enforced`. Um
+`grep provider_policy=` — **com** o sinal de igual, como a primeira versão deste ticket, do
+`CHANGELOG` e do comentário afirmavam — encontra **apenas o caminho do gate**. É o prefixo **sem**
+o `=` que é comum aos três.
+
+**O limite fica declarado:** isto é texto livre, e o AOS-339 argumentou — com razão — que um código
+estável vale mais do que uma mensagem. A diferença é a propriedade do payload: lá o evento é do
+broker e o campo é tipado; aqui o evento é do RM e o broker não tem onde declarar um campo. A chave
+é fixa numa constante para que a forma não derive, e a prova lê o payload **selado**, não a mensagem
+em memória.
+
+**Só o eixo provider é carimbado — e isso não contradiz o AOS-339.** A assimetria é dos
+**contentores**. No `credential.exchange.denied` a postura é um campo tipado ao lado de um campo
+`axis`: lê-se `axis=capability` E `provider_policy=enforced`, e percebe-se que o segundo é o
+*regime* do broker, não a causa da decisão. Na `Reason` a postura vai **dentro da frase que explica
+a recusa**, e anexá-la a uma negação de capability leria como se o regime do eixo provider a tivesse
+causado. Campo ao lado do eixo: metadado, seguro em qualquer eixo. Sufixo na explicação: só onde o
+regime decidiu.
+
+### Prova de mutação — catorze mutantes, catorze vermelhos, zero sobreviventes
+
+Cada uma das três negações do gate deixa de nomear a postura; a postura selada passa a ser
+constante; a postura substitui o sentinela em vez de o acrescentar; o eixo capability passa também a
+ser carimbado; o banner anuncia `UNSET` sem broker composto; o banner declara `ENFORCED` sem olhar
+para a postura; o curinga e o mapa vazio passam a ser anunciados como `ENFORCED` simples; a linha do
+curinga deixa de nomear as classes; a classificação da forma deixa de detectar o curinga e o mapa
+vazio; `ProviderPosture` volta a entrar em panic num broker nil; o arranque deixa de imprimir a
+linha.
+
+**Dois mutantes exigiram correcção ao trabalho, e é isso que a prova serve para fazer:**
+
+- Remover a postura **apenas** do ramo do **envelope de troca ilegível** — o terceiro sítio de
+  negação do gate — passava a suite inteira: os dois casos do teste iam pelos outros dois ramos. O
+  ramo é **inalcançável por uma troca real** (o envelope é serializado pelo próprio
+  `Broker.Exchange`), pelo que o teste que o cobre é ao nível do **hook** e não do payload selado —
+  evidência mais fraca, dita no teste em vez de disfarçada.
+- O mutante que remove a guarda de nil de `ProviderPosture` **não compilava** na primeira versão (a
+  função ficava sem corpo), e o arnês contou-o como «sobreviveu». Refeito para compilar: um mutante
+  que não compila não é evidência de nada, e o arnês distingue os dois casos.
+
+### O controlo do teste era ele próprio vácuo, e foi refeito
+
+A primeira versão do `TestAOS332_NegacaoDoGate_SelaAPosturaEAsDuasSaoDistintas` comparava as duas
+razões **inteiras** e apresentava isso como prova de que as posturas se distinguem. Não podia
+falhar: os dois casos usam sentinelas diferentes (`ErrProviderOutOfScope` vs
+`ErrProviderUndetermined`), pelo que as razões são sempre distintas — **mesmo com `razaoComPostura`
+removido por completo**. Media a distinção entre dois sentinelas. Compara-se agora só o **token da
+postura** extraído de cada razão selada.
 
 ---
 

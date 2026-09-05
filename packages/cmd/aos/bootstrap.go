@@ -2416,6 +2416,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
 		log("%s", line)
 	}
+	// EIXO PROVIDER DA TROCA (AOS-324/AOS-332). Fica AQUI, entre o Vault do broker e os
+	// serviços de plataforma, porque é a terceira linha do mesmo bloco: o operador lê
+	// "que credenciais" (broker), "de onde" (Vault) e "para que provedores" (isto) de
+	// seguida.
+	//
+	// PASSA-SE `nil` LITERAL, e não um campo de [Config], porque o argumento tem de ser o
+	// broker que ESTE composition-root compõe — e ele não compõe nenhum. Um campo
+	// injectável deixaria o banner declarar a postura de um broker que o nó não usa (com
+	// outro Event Store, outro RM, o gate fora da cadeia), que é a promessa a mais que a
+	// regra de posture_banner.go proíbe. É a mesma disciplina da linha "AUSENTE" do
+	// credential broker, e as duas TÊM de mudar juntas: o `TestBoundary_BrokerNaoEComposto`
+	// falha no dia em que `broker.New` ganhar chamador de produção, e a sua mensagem diz
+	// exactamente quais são.
+	for _, line := range provedorPostureBanner(nil) {
+		log("%s", line)
+	}
 	// SERVIÇOS DE PLATAFORMA (AOS-326). MEM e REG eram os dois únicos serviços do
 	// `_BRIEF` §2 sobre os quais o arranque não dizia nada — e são aqueles em que a
 	// distância entre a biblioteca (testada, com gate próprio) e o nó composto é maior.

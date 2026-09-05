@@ -221,7 +221,37 @@ func (b *Broker) ScopeGate() ScopeGate {
 // ([ProviderPostureEnforced] se [WithClassProviders] foi declarado,
 // [ProviderPostureUnset] caso contrário). É o valor selado em cada troca no campo
 // `provider_policy` do evento, e o que o wiring (DEF-218) deve assertar.
-func (b *Broker) ProviderPosture() ProviderPosture { return providerPosture(b.classProviders) }
+//
+// NIL-SAFE de propósito: o wiring do DEF-218 tem de poder interrogar a postura ANTES
+// de ligar a troca, e um broker por construir é precisamente o estado em que essa
+// pergunta é mais provável. Um panic aí trocaria uma pré-condição por uma paragem.
+func (b *Broker) ProviderPosture() ProviderPosture {
+	if b == nil {
+		return ProviderPostureUnset
+	}
+	return providerPosture(b.classProviders)
+}
+
+// ProviderPolicyShape devolve a FORMA da política de provedores deste broker — o
+// conteúdo que a [Broker.ProviderPosture] não olha. Ver [ProviderPolicyShape]: uma
+// política `enforced` pode ser um curinga que não restringe nada, ou um mapa vazio
+// que nega tudo, e quem DECLARA a postura ao operador precisa de os distinguir.
+// Nil-safe, pela mesma razão de [Broker.ProviderPosture].
+func (b *Broker) ProviderPolicyShape() ProviderPolicyShape {
+	if b == nil {
+		return ProviderPolicyShapeNone
+	}
+	return providerPolicyShape(b.classProviders)
+}
+
+// ProviderClassesComCuringa devolve as classes de agente cujo tecto de provedores é
+// [ProviderAny] — aquelas que uma política `enforced` NÃO restringe. Ordenadas.
+func (b *Broker) ProviderClassesComCuringa() []string {
+	if b == nil {
+		return nil
+	}
+	return classesComCuringa(b.classProviders)
+}
 
 // Exchange troca o token scoped por uma credencial downstream, MEDIADA pelo
 // Reference Monitor. Devolve um [Handle] OPACO (nunca o segredo). Uma decisão que

@@ -30,6 +30,7 @@ import (
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	broker "github.com/aos-ref/platform/broker"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
 
@@ -202,6 +203,86 @@ func plataformaPostureBanner(p posturaDosServicosDePlataforma) []string {
 		"memoria (MEM/EPIC-04, AOS-326): o Memory Service esta composto sobre o MESMO Event Store do no, mas o unico caminho de producao que o usa e uma ESCRITA episodica na ingestao. Nenhum caminho de producao invoca recall/query/compactacao/curadoria, e Goal.MemoryContext nao e preenchido por ninguem. Das QUATRO classes do _BRIEF §2, a episodica existe neste no APENAS como escrita (write-only: escreve-se, nunca se le); a semantica, a procedural e a de trabalho existem so como BIBLIOTECA testada, sem chamador de producao. DEFERIDO — eixo em DEF-811",
 		"registry (REG/EPIC-05, AOS-326): " + reg + ". O pacote registry ESTA no grafo de build (via toolset/freeze), mas o catalogo event-sourced NAO e construido, e o host MCP e o TOFU nem sequer entram no grafo; o que corre e o congelamento por run e a revalidacao por chamada, ligados na cadeia do Reference Monitor. Um tool set vazio e default-deny: nenhuma tool executa. DEFERIDO — eixo em DEF-812",
 		"=> NOTA sobre as duas linhas acima: ao contrario do ORQ/SCH — que o ADR-018/ADR-023 mantem fora do grafo de build por decisao ratificada, com guard-test — NAO existe ADR que declare MEM ou REG deliberadamente nao-compostos. Enquanto essa decisao nao existir, o estado e INACABADO e nao adiado. Eixo: DEF-811/DEF-812",
+	}
+}
+
+// provedorPostureBanner declara, no arranque, a postura do EIXO PROVIDER da troca de
+// credenciais (AOS-324) — o terceiro eixo da autorização da troca, a par de capability
+// e região.
+//
+// PORQUE ESTA LINHA PASSA A EXISTIR (AOS-332). O AOS-324 fechou o eixo por
+// CONFIGURAÇÃO e tornou a postura auditável selando-a em cada troca. Mas um nó que
+// ainda não emitiu troca nenhuma era indistinguível nas duas posturas — e a postura por
+// omissão é precisamente a que NÃO impõe o eixo por conjunto. O `DEF-218` exige assertar
+// `enforced` como PRÉ-CONDIÇÃO do wiring; sem esta linha, essa asserção só era possível
+// DEPOIS da primeira troca bem-sucedida, que é tarde de mais para uma pré-condição.
+//
+// O ARGUMENTO É O BROKER COMPOSTO, e a distinção que isso força é o ponto. Um `bool` ou
+// uma [broker.ProviderPosture] soltos deixariam declarar uma postura sem broker por
+// baixo — a promessa a mais que a regra deste ficheiro proíbe, e o defeito exacto que o
+// AOS-322 mediu no banner do crypto-shred. Com `*broker.Broker`, a postura só pode vir
+// de [broker.Broker.ProviderPosture]: não há como escrever "enforced" sem que alguém o
+// tenha realmente imposto.
+//
+// CINCO ESTADOS, e a POSTURA só distingue dois deles — foi um achado de revisão
+// adversarial sobre este ticket. [broker.Broker.ProviderPosture] é função da NULIDADE do
+// mapa de política: qualquer mapa não-nil dá `enforced`, e o CONTEÚDO nunca é olhado.
+// Medido: `{"payments": {"*"}}` é `enforced` e não impõe NADA por conjunto; um mapa
+// declarado e vazio é `enforced` e nega TUDO. Um banner que dissesse só "ENFORCED" nos
+// dois casos declararia fechado o eixo que o AOS-324 abriu — e o `DEF-218` assertaria a
+// pré-condição sobre exactamente esse estado, passando pela razão errada. Daí a
+// [broker.Broker.ProviderPolicyShape]:
+//
+//   - nil ⇒ NÃO COMPOSTO. Não há eixo a impor porque não há troca: `broker.New` não tem
+//     chamador de produção. Dizer "unset" aqui seria pior do que o silêncio — sugeriria
+//     um broker a operar sem política, quando não há broker nenhum;
+//   - [broker.ProviderPostureUnset] ⇒ o eixo NÃO é imposto por conjunto; só o provedor
+//     em branco é negado. É o estado que o DEF-218 tem de recusar;
+//   - `enforced` + curinga ⇒ ENFORCED MAS ABERTO POR CURINGA, com as classes nomeadas;
+//   - `enforced` + mapa vazio ⇒ ENFORCED MAS VAZIO (DENY-ALL);
+//   - `enforced` + conjuntos concretos ⇒ ENFORCED. É o ÚNICO estado sobre o qual «o
+//     provedor pedido TEM de pertencer à autoridade efectiva» é verdade para todas as
+//     classes, e o único que satisfaz a pré-condição do DEF-218.
+//
+// PORQUE O CALL-SITE PASSA `nil` LITERAL, e não um campo de [Config]: o argumento tem de
+// ser o broker que ESTE composition-root compõe, e ele não compõe nenhum. Um campo
+// injectável deixaria o banner declarar a postura de um broker que o nó não usa — outro
+// Event Store, outro Reference Monitor, o gate fora da cadeia — e prometer que a postura
+// «fica selada» em eventos que o auditor do nó nunca lê.
+//
+// ESTA LINHA E A DO CREDENTIAL BROKER TÊM DE MUDAR JUNTAS. A linha "AUSENTE — este no
+// NAO compoe o platform/broker" de [credentialBrokerPostureBanner] afirma o mesmo facto
+// por outras palavras; no dia em que o broker for composto, uma sem a outra produz duas
+// linhas do MESMO banner a contradizerem-se — que é o defeito F14 que este ficheiro
+// existe para impedir. `TestBoundary_BrokerNaoEComposto` falha nesse dia e nomeia as duas.
+func provedorPostureBanner(b *broker.Broker) []string {
+	if b == nil {
+		return []string{
+			"eixo provider da troca (AOS-324/AOS-332, EPIC-07): NAO COMPOSTO — este no nao constroi um credential broker (broker.New nao tem chamador de producao), logo NAO existe troca mediada em que o eixo provider possa ser imposto. A postura NAO e `unset`: `unset` descreveria um broker a operar SEM politica de provedores, e aqui nao ha broker. Quando o DEF-218 ligar a troca, o wiring TEM de declarar broker.WithClassProviders e esta linha tem de passar a dizer ENFORCED antes de qualquer credencial ser trocada. Eixo: DEF-218",
+		}
+	}
+	if b.ProviderPosture() == broker.ProviderPostureEnforced {
+		const selagem = " A postura fica selada no campo provider_policy dos eventos da troca emitida e da negacao server-side, e nomeada na razao do tool.call.denied quando quem nega e o gate (nao ha campo para ela no registo de mediacao do Reference Monitor)."
+		switch b.ProviderPolicyShape() {
+		case broker.ProviderPolicyShapeWildcard:
+			// O curinga é `enforced` no nome e ABERTO no efeito. Anunciar "ENFORCED"
+			// sem mais seria declarar fechado o eixo que o AOS-324 abriu — e o
+			// DEF-218 assertaria a pré-condição sobre exactamente esse estado.
+			return []string{
+				"eixo provider da troca (AOS-324/AOS-332, EPIC-07): ENFORCED MAS ABERTO POR CURINGA — a politica esta declarada, mas as classes " + strings.Join(b.ProviderClassesComCuringa(), ", ") + " tem tecto \"*\" (broker.ProviderAny), logo para elas o eixo NAO impoe nada por conjunto: um principal dessas classes sem grants prov: no token alcanca QUALQUER provedor presente no Vault. So o provedor em branco e negado. ISTO NAO SATISFAZ a pre-condicao do DEF-218: substitua o curinga por conjuntos concretos." + selagem + " Eixo: DEF-218",
+			}
+		case broker.ProviderPolicyShapeEmpty:
+			return []string{
+				"eixo provider da troca (AOS-324/AOS-332, EPIC-07): ENFORCED MAS VAZIO (DENY-ALL) — a politica esta declarada e NAO tem classe nenhuma, logo toda a classe tem tecto vazio e NENHUMA troca passa o eixo provider. O broker esta composto e nao troca nada: e quase de certeza um mapa vazio por acidente, nao uma decisao." + selagem + " Eixo: DEF-218",
+			}
+		default:
+			return []string{
+				"eixo provider da troca (AOS-324/AOS-332, EPIC-07): ENFORCED — o credential broker esta composto e a politica de provedores declara conjuntos CONCRETOS por classe (broker.WithClassProviders): o provedor pedido TEM de pertencer a autoridade efectiva do principal (tecto da classe interseccao grants prov: do token, que so estreitam), ou a troca e NEGADA de forma atribuivel." + selagem + " Eixo: EPIC-07",
+			}
+		}
+	}
+	return []string{
+		"eixo provider da troca (AOS-324/AOS-332, EPIC-07): UNSET — o credential broker esta composto mas NENHUMA politica de provedores foi declarada, logo o eixo NAO e imposto por conjunto: um principal autorizado a trocar alcanca QUALQUER provedor presente no Vault (confusao de deputado). So o provedor em branco e negado, fail-closed nas duas posturas. Declare broker.WithClassProviders no composition-root para passar a ENFORCED — e o DEF-218 exige-o como PRE-CONDICAO do wiring. Eixo: DEF-218",
 	}
 }
 

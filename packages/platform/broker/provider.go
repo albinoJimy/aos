@@ -172,6 +172,68 @@ func containsProvider(list []string, p string) bool {
 	return false
 }
 
+// ProviderPolicyShape descreve o CONTEÚDO da política de provedores — o que a
+// [ProviderPosture] NÃO olha.
+//
+// PORQUE ISTO EXISTE (achado da revisão adversarial do AOS-332). A postura é função
+// da NULIDADE do mapa: qualquer mapa não-nil produz [ProviderPostureEnforced]. Isso
+// basta para decidir se a comparação por conjunto CORRE, mas NÃO basta para declarar
+// ao operador que o eixo está fechado — e o `DEF-218` exige assertar `enforced` como
+// pré-condição de wiring. Medido: uma política `{"payments": {"*"}}` devolve
+// `enforced`, e [EffectiveProviders] devolve o curinga, pelo que a comparação deixa
+// passar QUALQUER provedor. A pré-condição do DEF-218 ficaria verde sobre exactamente
+// o defeito que o AOS-324 fechou.
+//
+// Um banner que diga «ENFORCED — o provedor pedido TEM de pertencer à autoridade
+// efectiva» sobre essa política MENTE. É a forma que o distingue.
+type ProviderPolicyShape string
+
+const (
+	// ProviderPolicyShapeNone — nenhuma política declarada ([ProviderPostureUnset]).
+	ProviderPolicyShapeNone ProviderPolicyShape = "none"
+	// ProviderPolicyShapeEmpty — política DECLARADA e sem classe nenhuma: toda a
+	// classe tem tecto vazio, logo NENHUMA troca passa o eixo (deny-all). É
+	// `enforced` e é inútil; declará-lo evita que um mapa vazio por acidente passe
+	// por política válida.
+	ProviderPolicyShapeEmpty ProviderPolicyShape = "empty"
+	// ProviderPolicyShapeWildcard — alguma classe tem [ProviderAny]: para essa
+	// classe o eixo NÃO impõe por conjunto. É `enforced` no nome e aberto no efeito.
+	ProviderPolicyShapeWildcard ProviderPolicyShape = "wildcard"
+	// ProviderPolicyShapeByClass — todas as classes declaram conjuntos CONCRETOS. É
+	// a única forma sobre a qual «o provedor TEM de pertencer à autoridade
+	// efectiva» é verdade para todas as classes.
+	ProviderPolicyShapeByClass ProviderPolicyShape = "by-class"
+)
+
+// providerPolicyShape classifica o CONTEÚDO de um mapa de política.
+func providerPolicyShape(m map[string][]string) ProviderPolicyShape {
+	if m == nil {
+		return ProviderPolicyShapeNone
+	}
+	if len(m) == 0 {
+		return ProviderPolicyShapeEmpty
+	}
+	for _, provs := range m {
+		if containsProvider(provs, ProviderAny) {
+			return ProviderPolicyShapeWildcard
+		}
+	}
+	return ProviderPolicyShapeByClass
+}
+
+// classesComCuringa devolve, ordenadas, as classes cujo tecto é [ProviderAny] — as
+// que uma política `enforced` NÃO restringe. Vazio quando não há nenhuma.
+func classesComCuringa(m map[string][]string) []string {
+	var out []string
+	for class, provs := range m {
+		if containsProvider(provs, ProviderAny) {
+			out = append(out, class)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // providerPosture devolve a postura declarada para um mapa de política (nil ⇒
 // [ProviderPostureUnset]).
 func providerPosture(classProviders map[string][]string) ProviderPosture {

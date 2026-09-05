@@ -144,7 +144,7 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		if g.ProviderPosture() == ProviderPostureEnforced {
 			return referencemonitor.HookResult{
 				Decision: referencemonitor.HookDeny,
-				Reason:   ErrProviderUndetermined.Error(),
+				Reason:   g.razaoComPostura(ErrProviderUndetermined),
 			}, nil
 		}
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
@@ -152,8 +152,71 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	if err := authorizeProvider(g.classProviders, call.Principal.AgentClass, call.Principal.Authority, provider); err != nil {
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   err.Error(),
+			Reason:   g.razaoComPostura(err),
 		}, nil
 	}
 	return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
+}
+
+// providerPolicyReasonKey é a chave que nomeia a POSTURA do eixo provider dentro da
+// razão de uma negação do gate. O NOME é o mesmo do campo `provider_policy` que o
+// AOS-324 sela no evento da troca emitida e que o AOS-339 sela no da negação
+// server-side, para que `grep provider_policy` sobre o WORM encontre os três
+// caminhos.
+//
+// A FORMA, essa, NÃO é a mesma, e dizer que era foi um erro desta implementação
+// apanhado em revisão: os outros dois são campos JSON e saem como
+// `"provider_policy":"enforced"`; este é texto e sai como `provider_policy=enforced`.
+// Um `grep provider_policy=` — com o sinal de igual — encontra APENAS este. É o
+// prefixo SEM o `=` que é comum aos três.
+const providerPolicyReasonKey = "provider_policy="
+
+// razaoComPostura anexa a POSTURA em vigor à razão de uma negação do EIXO PROVIDER
+// (AOS-332).
+//
+// # PORQUE SÓ O EIXO PROVIDER, QUANDO O EVENTO DO AOS-339 CARIMBA OS DOIS
+//
+// A assimetria é deliberada e vem da diferença entre os dois CONTENTORES. No
+// `credential.exchange.denied` (AOS-339) a postura é um campo TIPADO ao lado de um
+// campo `axis`: quem lê vê `axis=capability` E `provider_policy=enforced` e percebe
+// que o segundo é o REGIME do broker, não a causa da decisão. Aqui a postura vai
+// dentro da frase que EXPLICA a recusa — anexá-la a uma negação de capability leria
+// como se o regime do eixo provider a tivesse causado, que é falso.
+//
+// Campo tipado ao lado do eixo: metadado de configuração, seguro em qualquer eixo.
+// Sufixo na explicação: só onde o regime decidiu.
+//
+// # PORQUE É NA RAZÃO, QUE É TEXTO LIVRE
+//
+// Uma negação do gate não produz evento do broker: termina na cadeia de mediação, e
+// o que fica selado é o `tool.call.denied` do Reference Monitor. Um hook controla
+// desse registo exactamente TRÊS coisas — `Decision`, `Reason` e `PolicyVersion` —
+// e o `DeniedBy`, que é o RM a escrever o `Name()` do hook. Não há campo livre em
+// [referencemonitor.HookResult], em `MediationRecord` nem no payload de mediação.
+//
+// As TRÊS alternativas foram medidas e rejeitadas:
+//
+//   - `HookResult.Obligations` NÃO SOBREVIVE a um deny: `Monitor.fail` recebe as
+//     obrigações por parâmetro explícito e o ramo `HookDeny` passa `nil` literal
+//     (só o ramo de escalate propaga `res.Obligations`). E mesmo que sobrevivesse,
+//     o conjunto de tipos aceites é FECHADO e fail-closed no permit — a postura
+//     teria de viajar sob `ObligationAudit`, que significa outra coisa. Duas
+//     torções para transportar um campo.
+//   - `HookResult.PolicyVersion` É tipado, estável e selado — e é por isso que a
+//     tentação existe. Mas o RM guarda o ÚLTIMO valor não-vazio da cadeia
+//     (`monitor.go`, antes do switch de decisão), e este gate corre DEPOIS do hook
+//     de política: escrever nele APAGARIA a versão de política do PDP no evento.
+//     Trocar-se-ia um campo em falta por um campo corrompido, e o segundo é pior.
+//   - Acrescentar um campo ao `mediationPayload` do kernel poria uma preocupação do
+//     BROKER no contrato C1 do Reference Monitor, que é genérico sobre tools.
+//
+// # O LIMITE, DECLARADO
+//
+// Isto é texto livre, e o AOS-339 argumentou — com razão — que um código estável
+// vale mais do que uma mensagem. A diferença é a propriedade do payload: lá o
+// evento é do broker e o campo é tipado; aqui o evento é do RM e o broker não tem
+// onde declarar um campo. A chave é fixa numa constante para que a forma não
+// derive, e a prova é um teste que lê o payload selado — não a mensagem em memória.
+func (g ScopeGate) razaoComPostura(err error) string {
+	return err.Error() + "; " + providerPolicyReasonKey + string(g.ProviderPosture())
 }
