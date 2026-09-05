@@ -253,6 +253,7 @@ services:
 
       # Custódia DSAR/Vault: mount do Transit e piso de TTL do token.
       AOS_DSAR_VAULT_TRANSIT_MOUNT: "${AOS_DSAR_VAULT_TRANSIT_MOUNT:-}"
+      AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: "${AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL:-}"
       AOS_DSAR_VAULT_TOKEN_MIN_TTL: "${AOS_DSAR_VAULT_TOKEN_MIN_TTL:-}"
 
       # Cadências e limites do loop de serviço.

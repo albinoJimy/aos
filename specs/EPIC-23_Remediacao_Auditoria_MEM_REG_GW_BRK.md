@@ -796,20 +796,49 @@ terceiro diz «NÃO É CORRECTO» —, mas declarar não é impor.
 
 ### Critérios de Aceitação
 
-- [ ] Uma custódia composta sob `AOS_MODE=production` que **não** implemente a porta de confirmação
+- [x] Uma custódia composta sob `AOS_MODE=production` que **não** implemente a porta de confirmação
       é recusada no arranque, ou é aceite mediante uma declaração explícita de que não precisa
       (a escolha faz parte do ticket e é justificada por escrito)
-- [ ] O vault de referência continua a compor **sem** declaração extra — a guarda não pode transformar
+- [x] O vault de referência continua a compor **sem** declaração extra — a guarda não pode transformar
       o modo de desenvolvimento numa configuração cerimoniosa
-- [ ] Um teste que prove a recusa (ou a exigência de declaração) com uma custódia falsa que não
+- [x] Um teste que prove a recusa (ou a exigência de declaração) com uma custódia falsa que não
       implemente a porta, e um controlo que prove que as duas custódias reais continuam a compor
-- [ ] `DEF-813` passa de `POR ATRIBUIR` para este ticket
+- [x] `DEF-813` passa de `POR ATRIBUIR` para este ticket
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Eixo do `DEF-813`. Origem: validação adversarial da EPIC-23, não a
-`analises/11`.
+**IMPLEMENTADO.** P2. Eixo do `DEF-813`.
 
+**A ESCOLHA FOI RECUSAR, NÃO AVISAR — e a razão é que o banner já avisava.** O AOS-322 pôs no
+arranque a linha «NAO ARMADA, e NAO E CORRECTO» para exactamente este caso. Declarar não é impor,
+e o ticket di-lo à letra: «nada obriga essa escolha a ser consciente».
+
+**O ESCAPE É UMA DECLARAÇÃO, NÃO UM SILÊNCIO.** `AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1` afirma
+que a custódia destrói incondicionalmente — que o seu `Delete` não pode falhar. Quem o define
+assume-o por escrito, no molde de `AOS_TLS_EXTERNAL_TERMINATION`. **Parser estrito**, o mesmo
+desse opt-out: um valor mal escrito **aborta** em vez de degradar para «não declarado» — uma
+declaração desta natureza não pode nascer de um erro de transcrição.
+
+**SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA.** O vault de referência não é injectado — o nó
+constrói-o quando `AOS_DSAR_VAULT_ADDR` está vazio — pelo que a guarda não lhe toca. É o AC
+escrito à letra: transformar o modo de desenvolvimento numa configuração cerimoniosa é o custo
+que o ticket proíbe, e um teste cobre as duas posturas.
+
+**A VERIFICAÇÃO CORRE NO `Bootstrap`, NÃO EM `nodeConfigFromEnv`**, porque a custódia pode ser
+injectada **programaticamente** por `Config.DSARVault`, sem passar pelo ambiente — e é
+precisamente essa a via que o `DEF-813` nomeia como risco. Por isso o modo de produção passou a
+ser um **campo** de `Config` em vez de uma leitura de ambiente a meio da composição: as guardas
+de produção têm de ser exercitáveis sem mexer no ambiente do processo, que é a mesma razão pela
+qual o `hardened` deriva de `cfg.IssuerPubKey`.
+
+Seis funções de teste com **três controlos**: o vault de referência compõe nas duas posturas, uma
+custódia que **sabe** confirmar passa sem escape (senão uma guarda que recusasse toda a custódia
+injectada passaria o teste principal e partiria o caminho correcto), e fora de produção a guarda
+não corre. Três provas de mutação — a guarda desligada, a guarda a ignorar a declaração, e a
+guarda a apanhar também o vault de referência — todas vermelhas.
+
+**O AC do `DEF-813` já estava satisfeito** por trabalho anterior (`REGISTO-Deferimentos.md:242`
+atribui-o a este ticket, e há nota `N-DEF-813` no §6); verifiquei-o em vez de o reclamar.
 ---
 
 ## AOS-329 — Nada obriga uma declaração de estado a citar um ticket ainda aberto
