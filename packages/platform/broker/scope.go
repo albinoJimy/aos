@@ -159,7 +159,7 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		if g.ProviderPosture() == ProviderPostureEnforced {
 			return referencemonitor.HookResult{
 				Decision: referencemonitor.HookDeny,
-				Reason:   ErrProviderUndetermined.Error(),
+				Reason:   g.razaoComPostura(ErrProviderUndetermined),
 			}, nil
 		}
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
@@ -167,7 +167,7 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	if err := authorizeProvider(g.classProviders, call.Principal.AgentClass, call.Principal.Authority, provider); err != nil {
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   err.Error(),
+			Reason:   g.razaoComPostura(err),
 		}, nil
 	}
 	// EIXO RECURSO↔PROVEDOR (AOS-331). O provedor estar autorizado não diz para ONDE a
@@ -177,8 +177,29 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	if err := authorizeResource(g.providerHosts, provider, call.Resource.Type, call.Resource.Value); err != nil {
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   err.Error(),
+			Reason:   g.razaoComPostura(err),
 		}, nil
 	}
 	return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
+}
+
+// razaoComPostura acrescenta à razão da negação a POSTURA sob a qual ela foi decidida (AOS-332).
+//
+// PORQUÊ NO `Reason` E NÃO NUM CAMPO NOVO DO `MediationRecord`. O precedente próximo é o
+// `PolicyVersion`, que o RM propaga também na negação — mas esse é GENÉRICO: qualquer hook de
+// política o preenche, e o contrato C1 do RM é do kernel. Uma postura do broker é uma
+// preocupação de PLATAFORMA, e enfiá-la no contrato do kernel para conveniência de um hook seria
+// a fuga de camada que o `layer-lint` existe para impedir. O `Reason` é o campo que já regista
+// PORQUÊ a decisão foi tomada, e «sob que postura» é parte do porquê.
+//
+// O QUE ISTO RESOLVE. Uma negação dizia «provedor fora de escopo» e mais nada. Duas negações com
+// a mesma razão podiam vir de posturas opostas — uma com política declarada, outra com o eixo
+// sem imposição a negar por outra via — e no WORM eram indistinguíveis. Quem audita precisa de
+// saber contra que regra a decisão correu, não só qual foi.
+//
+// FORMA GREPPÁVEL e estável: `<razão> [provider_policy=… resource_binding=…]`. A razão original
+// fica intacta no prefixo, pelo que quem já asserta por substring continua a funcionar.
+func (g ScopeGate) razaoComPostura(err error) string {
+	return err.Error() + " [provider_policy=" + string(g.ProviderPosture()) +
+		" resource_binding=" + string(g.ResourceBindingPosture()) + "]"
 }

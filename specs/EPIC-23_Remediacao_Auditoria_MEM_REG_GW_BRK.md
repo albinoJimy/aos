@@ -91,7 +91,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 |---|---|
 | O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) — **implementado** |
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** — **implementado** |
-| A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
+| A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** — **implementado** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
@@ -1026,16 +1026,56 @@ O AOS-324 fechou o eixo por configuração. Este fecha a sua **observabilidade**
 
 ### Critérios de Aceitação
 
-- [ ] O banner declara, no arranque, a postura do eixo provider — derivada do ESTADO composto, na
+- [x] O banner declara, no arranque, a postura do eixo provider — derivada do ESTADO composto, na
       disciplina de `plataformaPostureBanner` e `credentialBrokerPostureBanner`
-- [ ] Uma troca NEGADA regista a postura sob a qual foi decidida
-- [ ] Um teste que prove que as duas posturas produzem linhas distintas, e que a negação as sela
+- [x] Uma troca NEGADA regista a postura sob a qual foi decidida
+- [x] Um teste que prove que as duas posturas produzem linhas distintas, e que a negação as sela
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Sem isto, o `enforced` que o `DEF-218` exige assertar só é observável
-depois da primeira troca bem-sucedida — tarde de mais para uma pré-condição de wiring.
+**IMPLEMENTADO.** P2.
 
+**O QUE ISTO QUEBRA É UMA CIRCULARIDADE.** O `DEF-218` exige assertar que o campo
+`provider_policy` selado diz `enforced` — mas isso só é verificável a partir de um
+`credential.exchange.issued`, ou seja **depois da primeira troca bem-sucedida**. Um nó em `unset`
+que ainda não trocou nada era indistinguível de um em `enforced`. A postura passa a ser observável
+no **arranque**, antes de qualquer troca.
+
+**O BANNER DECLARA NÃO-APLICABILIDADE, NÃO `unset`.** O nó não constrói `*broker.Broker` —
+`broker.New` não tem chamador de produção. Declarar `unset` derivado de um `nil` que nunca chega a
+ser política seria a afirmação que o cabeçalho do `posture_banner.go` proíbe: «uma linha que diga
+*ligado* sobre algo que não está composto é **pior** do que o silêncio que substitui». `unset` é
+uma política não-declarada num broker que **existe**; aqui o broker não existe, e usar a mesma
+palavra faria o operador ler uma postura onde não há nenhuma. O ramo não-composto nomeia, em vez
+disso, os **dois** eixos que o wiring terá de declarar — que é informação verdadeira e útil.
+
+**SÃO DOIS EIXOS, NÃO UM.** O ticket foi escrito antes do AOS-331; quando ele aterrou, passou a
+haver a política de provedores **e** a allowlist de recurso↔provedor. O banner declara as duas, e
+a função pura já aceita o estado composto — no dia em que o wiring ligar, mudam os argumentos, não
+a forma.
+
+**A POSTURA VAI NO `Reason` DA NEGAÇÃO, E NÃO NUM CAMPO NOVO DO `MediationRecord`.** O precedente
+próximo é o `PolicyVersion`, que o RM propaga também na negação — mas esse é **genérico**:
+qualquer hook de política o preenche, e o contrato C1 é do **kernel**. Uma postura do broker é
+preocupação de **plataforma**, e enfiá-la no contrato do kernel por conveniência de um hook seria
+a fuga de camada que o `layer-lint` existe para impedir. A forma é greppável e estável —
+`<razão> [provider_policy=… resource_binding=…]` — com a razão original intacta no prefixo, pelo
+que quem já asserta por substring continua a funcionar.
+
+Seis funções de teste em dois módulos. O teste da selagem lê a razão que ficou **no Event Store**,
+não a que o erro devolveu — o AC é sobre o registo durável, e um teste que olhasse só para o erro
+em memória provaria outra coisa. Com **três controlos**: as duas posturas produzem linhas
+distintas (senão registá-las não distinguiria nada), as quatro combinações do ramo composto são
+distintas entre si e do não-composto, e a linha **sai no arranque real** — uma função de banner
+que não é chamada declara-se a si própria. Quatro provas de mutação, todas vermelhas.
+
+**DEFEITO ENCONTRADO E NÃO FECHADO AQUI, registado como tarefa própria.** A guarda de composição
+do `dispatch` (`exchange.go:290`, a defesa server-side do AOS-324) nega **depois** de a cadeia do
+RM ter passado — e o `monitor.go` já selou um `MediationRecord` com `EffectPermit` por
+audit-before-effect. Uma troca negada por essa via fica no WORM registada como **permitida**, sem
+evento de negação e sem postura. O `TestAOS324_DefesaServerSide_SemGate` assevera que não há
+`credential.exchange.issued`, mas **não olha para o registo de mediação** — por isso o defeito
+passa despercebido. Fechá-lo muda a semântica da defesa server-side e não cabe neste ticket.
 ---
 
 ## AOS-333 — O endereço do Vault aceita credenciais embutidas, e o banner imprime-o cru

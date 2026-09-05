@@ -2416,6 +2416,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
 		log("%s", line)
 	}
+	// POLÍTICA DO BROKER (AOS-332): os DOIS eixos — provider (AOS-324/AOS-330) e
+	// recurso↔provedor (AOS-331). O `DEF-218` exige assertar que a postura selada diz
+	// `enforced`, mas isso só é verificável DEPOIS da primeira troca bem-sucedida; um nó em
+	// `unset` que ainda não trocou nada era indistinguível de um em `enforced`. Esta linha
+	// quebra a circularidade: a postura passa a ser observável no ARRANQUE.
+	//
+	// O ESTADO DERIVA DO QUE EXISTE, e o que existe é nada: o nó não constrói `*broker.Broker`
+	// (`broker.New` não tem chamador de produção), pelo que `Composto` é falso e a linha
+	// declara NÃO-APLICABILIDADE em vez de inventar um `unset`. No dia em que o wiring ligar,
+	// é aqui que os dois campos passam a vir do broker composto — e o banner deixa de precisar
+	// de mudar de forma.
+	for _, line := range brokerPolicyPostureBanner(posturaDaPoliticaDoBroker{}) {
+		log("%s", line)
+	}
 	// SERVIÇOS DE PLATAFORMA (AOS-326). MEM e REG eram os dois únicos serviços do
 	// `_BRIEF` §2 sobre os quais o arranque não dizia nada — e são aqueles em que a
 	// distância entre a biblioteca (testada, com gate próprio) e o nó composto é maior.
