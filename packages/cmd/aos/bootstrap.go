@@ -317,6 +317,10 @@ type Config struct {
 	// AttestationVerifierToken é o bearer opcional apresentado ao componente de autoridade
 	// (material NÃO-secreto entra por env; o token vem de ficheiro montado, como o do Vault).
 	AttestationVerifierToken string
+	// AttestationVerifierBasic é o par `utilizador:senha` do verificador de attestation, lido
+	// de FICHEIRO MONTADO (AOS_ATTESTATION_VERIFIER_BASIC_PATH, AOS-338). Mutuamente exclusivo
+	// com AttestationVerifierToken — o construtor do adaptador aborta com os dois definidos.
+	AttestationVerifierBasic string
 
 	// ChallengeIssuance liga a FRESCURA POR-CERIMÓNIA do 4-eyes (AOS-266, achado F10): o modo
 	// issue-then-consume da porta [integration.ChallengeIssuance]. Com ela, o nó EMITE o
@@ -1563,6 +1567,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// APROVADORES — quem pede um challenge é quem o vai usar, e assina o pedido com a sua chave.
 	var challengeAuth *integration.Ed25519Authenticator
 	var attestationComposed, enrollmentComposed, freshnessComposed bool
+	// attestationScheme é o esquema de autenticação REALMENTE composto ("bearer", "basic" ou
+	// vazio), lido do verificador construído e não da config (AOS-338). É o que o banner
+	// declara: um nó que diz «attestation LIGADA» sem dizer como se autentica esconde metade
+	// da postura.
+	var attestationScheme string
 	if len(cfg.Approvers) > 0 {
 		registry := hitl.NewMemApproverRegistry()
 		for _, a := range cfg.Approvers {
@@ -1578,12 +1587,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			av, aerr := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
 				URL:       cfg.AttestationVerifierURL,
 				AuthToken: cfg.AttestationVerifierToken,
+				BasicAuth: cfg.AttestationVerifierBasic,
 			})
 			if aerr != nil {
 				return nil, fmt.Errorf("aos: verificador de attestation remoto (AOS-177): %w", aerr)
 			}
 			feOpts = append(feOpts, integration.WithDeviceAttestation(av))
 			attestationComposed = true
+			attestationScheme = av.AuthScheme()
 		}
 
 		// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266) — opcional. Com dispositivos em config, o
@@ -2244,7 +2255,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// ATTESTATION DE DISPOSITIVO (AOS-177/AOS-266). O banner declara o estado REALMENTE
 		// composto (LIGADA/DORMENTE), nunca a intenção — SEGUE o wiring acima.
 		if attestationComposed {
-			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA")
+			// AOS-338 — o banner declara COMO o nó se autentica perante o componente, derivado do
+			// verificador CONSTRUÍDO. Sem isto, «LIGADA» não distingue um nó que autentica de um
+			// que fala anónimo, e a segunda postura é materialmente diferente.
+			autent := "SEM AUTENTICACAO (o componente tem de se proteger por outra via: mTLS, rede fechada, ou um proxy que autentique)"
+			switch attestationScheme {
+			case integration.AuthSchemeBearer:
+				autent = "autentica com Authorization: Bearer, do ficheiro montado em AOS_ATTESTATION_VERIFIER_TOKEN_PATH"
+			case integration.AuthSchemeBasic:
+				autent = "autentica com Authorization: Basic, do ficheiro montado em AOS_ATTESTATION_VERIFIER_BASIC_PATH (par utilizador:senha)"
+			}
+			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA."+" AUTENTICACAO: %s. Nenhum VALOR de credencial e impresso.", autent)
 		} else {
 			log("  attestation de dispositivo (AOS-177): DORMENTE — sem AOS_ATTESTATION_VERIFIER_URL o 4-eyes e SO estrutural (nao prova modelo nem posse do dispositivo); defina a URL do verificador externo para a ligar")
 		}

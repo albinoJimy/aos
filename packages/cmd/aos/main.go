@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
@@ -807,11 +808,32 @@ func nodeConfigFromEnv() (Config, error) {
 	// O token opcional vem de FICHEIRO montado (material privado nunca por variável de ambiente).
 	cfg.AttestationVerifierURL = strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_URL"))
 	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_TOKEN_PATH")); p != "" {
-		tb, rerr := os.ReadFile(p)
+		v, rerr := lerCredencialMontada(p, "AOS_ATTESTATION_VERIFIER_TOKEN_PATH")
 		if rerr != nil {
-			return Config{}, fmt.Errorf("aos: AOS_ATTESTATION_VERIFIER_TOKEN_PATH: %w", rerr)
+			return Config{}, rerr
 		}
-		cfg.AttestationVerifierToken = strings.TrimSpace(string(tb))
+		// O BEARER APARA TUDO, e o basic não. Não é inconsistência: um token é opaco e não
+		// tem espaço com significado nas pontas — o contrato está fixado desde AOS-177 por
+		// `TestAttestationVerifierTokenFromFile` —, enquanto uma senha de basic pode
+		// legitimamente acabar em espaço, e o `-u` do curl preserva-o (AOS-338, achado M4).
+		cfg.AttestationVerifierToken = strings.TrimSpace(v)
+	}
+	// BASIC-AUTH POR FICHEIRO MONTADO (AOS-338). O AOS-333 fechou a via que existia — a
+	// basic-auth embutida no URL, que o `net/http` converte em `Authorization: Basic` — e
+	// deixou sem caminho quem tem o verificador atrás de um reverse-proxy que só fala Basic.
+	// Este é o caminho que a substitui, pela mesma regra que motivou a recusa: FICHEIRO
+	// MONTADO, nunca variável de ambiente (ADR-006).
+	//
+	// A EXCLUSÃO MÚTUA com o Bearer NÃO é decidida aqui: vive no construtor do adaptador
+	// ([integration.ErrRemoteAttestationAuth]), que é o tipo que emitiria os dois cabeçalhos.
+	// Pô-la aqui dispararia ANTES de a URL sequer ser validada, e daria ao operador queixas
+	// numa ordem que não corresponde ao que está errado.
+	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_BASIC_PATH")); p != "" {
+		v, rerr := lerCredencialMontada(p, "AOS_ATTESTATION_VERIFIER_BASIC_PATH")
+		if rerr != nil {
+			return Config{}, rerr
+		}
+		cfg.AttestationVerifierBasic = v
 	}
 
 	// FRESCURA POR-CERIMÓNIA DO 4-EYES (AOS-266, achado F10): AOS_CHALLENGE_ISSUANCE=1 liga o modo
@@ -1557,6 +1579,80 @@ func parseRetentionFromEnv() (audit.RetentionConfig, error) {
 // (AOS_DSAR_VAULT_ADDR presente) mas mal configurada: sem AOS_DSAR_VAULT_TOKEN_PATH, ou o ficheiro
 // do token ilegível/vazio. Fail-closed: um endereço de Vault sem credencial NÃO degrada para o
 // vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
+// ErrBadAttestationCredential — o ficheiro de credencial do verificador de attestation remoto
+// (AOS_ATTESTATION_VERIFIER_TOKEN_PATH ou AOS_ATTESTATION_VERIFIER_BASIC_PATH) é ilegível ou
+// está VAZIO.
+//
+// O CAMINHO DA ATTESTATION ERA O OUTLIER (AOS-338). Os dois Vaults abortam num ficheiro de
+// credencial vazio (ver [ErrBadVaultDSAR] e `ErrBadBrokerVault`); este lia-o, aparava, e seguia
+// com a credencial a vazio — ou seja, com o verificador a falar SEM autenticação nenhuma, e sem
+// nada no arranque a dizê-lo. Um operador que monta um ficheiro está a declarar que quer
+// autenticação; um ficheiro em branco é um erro de montagem, não uma escolha.
+//
+// Fecha-o também porque o banner passa a declarar QUAL o esquema composto: um ficheiro vazio
+// tornaria essa declaração dependente de um estado que ninguém pediu.
+//
+// Ecoa o CAMINHO e o nome da variável, NUNCA o conteúdo.
+var ErrBadAttestationCredential = errors.New("aos: credencial do verificador de attestation ilegivel ou vazia (ficheiro montado; material privado NUNCA por variavel de ambiente)")
+
+// lerCredencialMontada lê uma credencial de FICHEIRO MONTADO no molde dos dois Vaults: lê,
+// apara, e ABORTA em vazio. Devolve só o valor — o chamador nunca vê o erro cru do sistema de
+// ficheiros com o conteúdo.
+func lerCredencialMontada(caminho, envVar string) (string, error) {
+	// LÊ COM TECTO, e não `os.ReadFile` seguido de verificação: apontar a variável a
+	// `/dev/urandom` faria o `ReadFile` nunca terminar, e o arranque ficava pendurado sem
+	// mensagem nenhuma. O limite tem de estar na leitura (AOS-338, achado B2).
+	f, err := os.Open(caminho)
+	if err == nil {
+		defer func() { _ = f.Close() }()
+	}
+	var raw []byte
+	if err == nil {
+		raw, err = io.ReadAll(io.LimitReader(f, maxCredencialMontada+1))
+	}
+	if err != nil {
+		// NEM O CAMINHO NEM O ERRO CRU SÃO ECOADOS, e a razão apareceu num teste desta
+		// mudança: se o operador puser a CREDENCIAL na variável em vez do caminho — o erro
+		// exacto que uma variável chamada `..._PATH` convida —, então «o caminho» É a
+		// credencial, e ecoá-lo põe-na no log de arranque. O erro do `os.ReadFile` também a
+		// traz. O que o operador precisa é do NOME DA VARIÁVEL e da CLASSE da falha; o valor
+		// que lá pôs, esse já ele sabe. É o critério do «malformada (valor omitido)» do
+		// [integration.CheckSecureTransportURL].
+		return "", fmt.Errorf("%w: %s: %s", ErrBadAttestationCredential, envVar, classeDeFalhaDeLeitura(err))
+	}
+	// > e não >=: leu-se um byte a mais de propósito, para distinguir «cabe» de «truncado».
+	if len(raw) > maxCredencialMontada {
+		return "", fmt.Errorf("%w: %s: o ficheiro montado tem mais de %d bytes — nao e uma credencial", ErrBadAttestationCredential, envVar, maxCredencialMontada)
+	}
+	// APARA-SE O TERMINADOR DE LINHA, E SÓ ELE (AOS-338, achado M4 da revisão). A versão
+	// anterior fazia `TrimSpace`, e isso CORROMPE uma credencial legítima: o `-u` do curl
+	// preserva um espaço final numa senha, e o `TrimSpace` comia-o — a autenticação falhava,
+	// todas as pernas eram negadas, e nada no arranque o explicava. O `PATH_SEPARATOR` de um
+	// ficheiro é dele, o resto é da credencial.
+	v := strings.TrimRight(string(raw), "\r\n")
+	if strings.TrimSpace(v) == "" {
+		return "", fmt.Errorf("%w: %s: o ficheiro montado esta VAZIO", ErrBadAttestationCredential, envVar)
+	}
+	return v, nil
+}
+
+// maxCredencialMontada é o tecto do ficheiro de credencial. Sem ele, apontar a variável a um
+// ficheiro grande — ou a `/dev/urandom` — faz o arranque ler sem fim (AOS-338, achado B2).
+const maxCredencialMontada = 8192
+
+// classeDeFalhaDeLeitura traduz o erro do sistema de ficheiros numa CLASSE nomeável, sem ecoar
+// o caminho — que pode ser, ele próprio, a credencial mal colocada.
+func classeDeFalhaDeLeitura(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "o ficheiro montado nao existe (verifique o caminho e o volume montado)"
+	case errors.Is(err, fs.ErrPermission):
+		return "sem permissao para ler o ficheiro montado"
+	default:
+		return "ficheiro montado ilegivel"
+	}
+}
+
 var ErrBadVaultDSAR = errors.New("aos: custódia DSAR no Vault mal configurada — AOS_DSAR_VAULT_ADDR exige AOS_DSAR_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
 // ErrInsecureVaultDSARAddr — AOS_DSAR_VAULT_ADDR com transporte inseguro (AOS-249, achado F6).
