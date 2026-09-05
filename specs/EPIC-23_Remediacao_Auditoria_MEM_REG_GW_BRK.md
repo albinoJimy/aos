@@ -84,7 +84,24 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | A9 | Dois passos do RB-06 mandavam o operador na direcção errada: a causa 1 era a causa 3 disfarçada, e um Vault selado levanta **os dois** sinais, não um | Decl | **CORRIGIDO** |
 | A10 | A alegação de que o guard AOS-285 tranca «os dois WAL» é falsa na configuração que a nota anota: com NATS, só o WORM é trancado | Decl | **CORRIGIDO** no compose e no RB-06 |
 
-**Registados, não corrigidos** (eixo nomeado, sem código nesta ronda): o *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path — **DEF-815**; o provedor autorizado não é amarrado ao `ResourceValue`; a postura do eixo provider não aparece no banner de arranque; `CheckSecureTransportURL` aceita credenciais embutidas no URL e o banner imprime o endereço cru; não existe invariante que exija `ManifestDigest` não-vazio para `kind=mcp_server`; `semver.ClassifyContract` devolve sempre `ChangeNone` para `mcp_server`; o `ErrBurndownNoUsage` só dispara se **todos** os turnos forem zero, pelo que não apanha um run misto; e a sonda de segunda passagem custa +128% de CPU no parse, medido.
+**Registados, e agora TODOS com ticket.** A primeira versão deste parágrafo listava oito achados
+«sem código nesta ronda». Sete viraram ticket; o oitavo foi julgado e não é defeito:
+
+| Achado | Ticket |
+|---|---|
+| O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) |
+| O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
+| A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
+| `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — P1, **alcançável hoje** |
+| Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
+| `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
+| O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — P1 |
+
+**O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
++128% de CPU no *parse* (44,4 µs/op contra 101,1 µs/op num corpo de ~11 KB, medido por benchmark).
+É um custo real, mas é o preço declarado de uma alternativa pior — uma cópia da struct de resposta
+com o campo em ponteiro apodreceria em silêncio à primeira alteração de campo. É *trade-off*
+justificado, não dívida; abrir ticket para o registar seria transformar uma decisão em pendência.
 
 **O que a validação confirmou:** os goldens de regressão são genuinamente pré-mudança (um revisor reimplementou a canonicalização anterior e recomputou os oito valores); não existe colisão na canonicalização, atacada a sério; `AcquireInProcess` e `Inject` não permitem que um handle de um provedor resolva material de outro; e as quatro mutações do eixo provider avermelham pelo motivo certo.
 
@@ -865,3 +882,195 @@ depois.**
 
 **POR IMPLEMENTAR.** P2 por alcance (latente), **pré-condição do wiring do broker**. Eixo do
 `DEF-815`.
+
+---
+
+## AOS-331 — O provedor autorizado não é amarrado ao recurso de destino
+
+### Contexto
+
+O AOS-324 fez a troca de credenciais decidir **que material sai**. Não decide **para onde vai**:
+nada em `packages/platform/broker/exchange.go` compara `in.Provider` com `in.ResourceValue`.
+
+Um pedido com `Provider=stripe` — autorizado — e `ResourceValue=https://evil.example/…` obtém o
+segredo do Stripe, e o `EgressStub` da cadeia de referência é neutro. A credencial certa sai para o
+destino errado, que é a segunda metade da confusão de deputado que o AOS-324 fechou pela primeira.
+
+Medido na revisão adversarial da EPIC-23. Latente: o broker não está composto (`DEF-218`).
+
+### Critérios de Aceitação
+
+- [ ] A autorização da troca relaciona `Downstream.Provider` com `Downstream.ResourceValue` — por
+      allowlist de host por provedor, por obrigação de egress do PDP, ou por o `EgressGate` real
+      passar a correr nesta cadeia. A escolha é justificada por escrito
+- [ ] Um teste em que o provedor é autorizado e o recurso não, e a negação é atribuível e
+      distinguível de `ErrProviderOutOfScope`
+- [ ] O estado por omissão fica declarado, como o do eixo provider — e não é um deny-all silencioso
+- [ ] `DEF-218` nomeia este ticket como pré-condição, a par de AOS-324 e AOS-330
+
+### Estado
+
+**POR IMPLEMENTAR.** P2 por alcance (latente), **pré-condição do wiring do broker**.
+
+---
+
+## AOS-332 — A postura do eixo provider não aparece no banner de arranque
+
+### Contexto
+
+O AOS-324 sela a postura (`unset`/`enforced`) no campo `provider_policy` de **cada troca emitida**,
+e é isso que a torna auditável em vez de silenciosa. Mas duas lacunas ficaram:
+
+1. **Só o caminho de sucesso sela.** As negações passam pelo `MediationRecord` do Reference Monitor,
+   que não tem o campo — uma troca negada não regista sob que postura foi decidida.
+2. **O banner de arranque não diz uma palavra sobre o eixo.** Um nó em `unset` que ainda não emitiu
+   nenhuma troca é indistinguível de um em `enforced`, e o banner existe precisamente para declarar
+   posturas: já declara o credential broker, o Vault do broker, a custódia da KEK, a confirmação do
+   *crypto-shred*, e — desde AOS-326 — o MEM e o REG.
+
+O AOS-324 fechou o eixo por configuração. Este fecha a sua **observabilidade**, sem a qual o
+`DEF-218` não tem como assertar `enforced` antes de ligar.
+
+### Critérios de Aceitação
+
+- [ ] O banner declara, no arranque, a postura do eixo provider — derivada do ESTADO composto, na
+      disciplina de `plataformaPostureBanner` e `credentialBrokerPostureBanner`
+- [ ] Uma troca NEGADA regista a postura sob a qual foi decidida
+- [ ] Um teste que prove que as duas posturas produzem linhas distintas, e que a negação as sela
+
+### Estado
+
+**POR IMPLEMENTAR.** P2. Sem isto, o `enforced` que o `DEF-218` exige assertar só é observável
+depois da primeira troca bem-sucedida — tarde de mais para uma pré-condição de wiring.
+
+---
+
+## AOS-333 — O endereço do Vault aceita credenciais embutidas, e o banner imprime-o cru
+
+### Contexto
+
+`integration.CheckSecureTransportURL` — o helper que o AOS-323 passou a aplicar aos dois Vaults —
+valida o **esquema**, não a **forma**: `https://user:pass@vault:8200` passa. E
+`brokerVaultPostureBanner` imprime `s.Addr` **cru** via `log()`.
+
+O resultado é uma via de fuga de segredo por um caminho que o repositório fecha em todos os outros:
+a senha do Vault aparece em texto claro no log de arranque, que é recolhido, agregado e retido. O
+`ADR-006` proíbe segredo em log; aqui não é o agente que o vê, é o operador e quem quer que leia o
+colector.
+
+Menor, do mesmo eixo: o ramo de *parse* falhado do helper devolve o URL na mensagem, e o wrap
+ecoa-o inteiro — incluindo as credenciais.
+
+Medido na revisão adversarial da EPIC-23. **Alcançável hoje**: basta um operador pôr credenciais no
+`AOS_BROKER_VAULT_ADDR` ou no `AOS_DSAR_VAULT_ADDR`, que é uma forma legítima de as passar ao Vault.
+
+### Critérios de Aceitação
+
+- [ ] `CheckSecureTransportURL` recusa fail-closed um URL com `userinfo`, com erro atribuível que
+      **não** ecoa o URL
+- [ ] O banner imprime o endereço **redigido** (esquema, host e porta; nunca `userinfo`), ou recusa
+      compor — a escolha é justificada
+- [ ] Nenhum caminho de erro do helper ecoa o URL cru
+- [ ] Um teste com um URL com `user:pass@` que prove as três coisas, incluindo a ausência da senha
+      na mensagem de erro e no banner
+
+### Estado
+
+**POR IMPLEMENTAR.** P1 — é o único destes seis alcançável hoje, e o eixo é fuga de segredo.
+
+---
+
+## AOS-334 — Nada exige que uma entrada `mcp_server` traga `ManifestDigest`
+
+### Contexto
+
+O AOS-320 fez o `Host.stage` gravar o digest do manifesto no contrato de um `mcp_server`. Mas nem
+`registry.validateContractSchemas`, nem `validateContract`, nem `Entry.Validate` verificam o campo
+por `kind`: uma entrada `mcp_server` publicada com `Contract{Egress: internal}` é **aceite**, e volta
+a ter o digest-constante-da-classe que o AOS-320 existe para eliminar.
+
+Agrava-se com o próprio teste de regressão: `digest/golden_regressao_test.go` congela esse valor como
+golden suportado — legitimamente, porque prova a não-regressão de `tool`/`skill`, mas o efeito é que
+a forma vazia fica fixada como válida.
+
+Hoje só o `Host.stage` publica `mcp_server`, pelo que a exploração exige outro caminho de publicação.
+**A propriedade central do AOS-320 está garantida por convenção, não por gate.**
+
+### Critérios de Aceitação
+
+- [ ] Publicar um `mcp_server` sem `ManifestDigest` é recusado fail-closed, com erro atribuível
+- [ ] Um teste que prove a recusa, e um controlo que prove que `tool`/`skill` **sem** o campo
+      continuam a publicar (o campo é específico do kind)
+- [ ] O golden de regressão distingue «forma legada suportada para tool/skill» de «forma vazia
+      aceitável para mcp_server» — a segunda deixa de ser fixada como válida
+
+### Estado
+
+**POR IMPLEMENTAR.** P2. Fecha por gate o que o AOS-320 fechou por convenção.
+
+---
+
+## AOS-335 — `ClassifyContract` é cego ao manifesto: uma troca total de superfície promove como PATCH
+
+### Contexto
+
+`semver.ClassifyContract` classifica a mudança de contrato a partir de schemas e scopes. Um
+`mcp_server` não tem nem uns nem outros — o seu contrato é `{Egress, ManifestDigest}` —, pelo que a
+classificação devolve **sempre** `ChangeNone`, e `ValidateBump` aceita `1.0.0 → 1.0.1`.
+
+Consequência concreta: um servidor MCP que ganhe uma tool `exec` re-pina confiança como **patch**. Não
+fura o eval-gate (esse depende de `selfAuthored`), mas fura o **sinal de MAJOR** — e o
+`tofu.Monitor.Reapprove` exige apenas versão estritamente superior.
+
+Declarado como residual no AOS-320 «por mudar a semântica de AOS-052». A revisão adversarial mostrou
+que não é neutro: **degrada** a classificação, não a deixa indefinida.
+
+### Critérios de Aceitação
+
+- [ ] `ClassifyContract` considera `ManifestDigest`: uma mudança do manifesto é classificada como
+      MAJOR (ou como a classe que a equipa decidir, justificada contra o ADR-012)
+- [ ] Um teste que prove que dois `mcp_server` com manifestos diferentes não são um bump PATCH
+      válido
+- [ ] O impacto na semântica de AOS-052 fica escrito — que artefactos passam a exigir MAJOR e porquê
+
+### Estado
+
+**POR IMPLEMENTAR.** P2. Residual nomeado no AOS-320, promovido a ticket porque a revisão mostrou que
+não é uma omissão neutra.
+
+---
+
+## AOS-336 — O custo indefinido não atravessa a fronteira GW→RT, e o guarda a jusante é fraco
+
+### Contexto
+
+Dois defeitos do mesmo eixo, e nenhum se fecha sem o outro.
+
+**A marca não atravessa.** `translateResponse` (`model-gateway/runtime_adapter.go`) copia três campos
+numéricos para `agentruntime.ModelResponse`, que não tem campo para «indefinido». Num deployment cuja
+tabela de preços não cubra o par configurado, o recorder é nil, `recordCost` retorna cedo, e o
+`turn.recorded` recebe `cost_micro_usd: 0` para uma chamada **não medida** — o zero silencioso que o
+AOS-321 fechou dentro do gateway, reaparecido um passo a jusante.
+
+**E o guarda que devia apanhá-lo é mais fraco do que o AOS-321 declarou.** `ErrBurndownNoUsage`
+(`cmd/aos/burndown_ledger.go`) testa `cur.turns > 0 && cur.turnTokens == 0` sobre um cursor
+**cumulativo por run**: um único turno com usage desarma-o **para sempre**, e todos os turnos não
+medidos seguintes contam 0 em silêncio. Não apanha «ao fim de N turnos» — só apanha se **todos** os
+turnos forem zero.
+
+O AOS-321 declarou o primeiro como residual e nomeou o segundo como mitigação. A revisão adversarial
+mediu que a mitigação não mitiga o caso misto, que é o realista.
+
+### Critérios de Aceitação
+
+- [ ] `agentruntime.ModelResponse` transporta a distinção «custo indefinido» vs «custo zero medido»,
+      e o `turn.recorded` regista-a
+- [ ] `ErrBurndownNoUsage` apanha um run MISTO — turnos medidos e não medidos —, não só o run
+      inteiramente a zero
+- [ ] Um teste de run misto que prove que o burn-down não conta os turnos não medidos como zero
+- [ ] O AC4 do AOS-321 deixa de valer só «enquanto houver recorder composto»
+
+### Estado
+
+**POR IMPLEMENTAR.** P1. É o único destes que reabre um zero silencioso no caminho que o nó corre
+hoje — o resto do eixo de custo está fechado dentro do gateway.
