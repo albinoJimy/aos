@@ -1010,6 +1010,47 @@ profundidade** e testa deliberadamente um estado que o parser já não deixa aco
 relaxar o critério de transporte, a redacção continua lá. Prova de mutação executada — trocando
 `if u.User != nil` por `if false`, as duas suites ficam vermelhas; revertida e confirmada limpa.
 
+### A revisão adversarial encontrou cinco defeitos nesta correcção, e quatro estão fechados aqui
+
+Um revisor independente, sem acesso ao raciocínio de quem implementou, mediu por leitura, por
+execução e por três mutações próprias. **Nenhum dos cinco teria sido apanhado pelos critérios de
+aceitação deste ticket.**
+
+**F1 — a recusa é uma QUEBRA REAL, e a mensagem prescrevia o remédio errado.** O `net/http`
+converte `req.URL.User` em `Authorization: Basic`, pelo que um verificador de attestation atrás de
+um proxy com basic-auth **funcionava** assim — e a primeira mensagem mandava «passe-as pelo
+ficheiro de token», que dá `Bearer`. Seguir a instrução não repunha esse deployment. A recusa
+**mantém-se** — o eixo é o segredo e não o transporte, e uma credencial num URL de ambiente
+aparece na tabela de processos, no `inspect` do contentor e em qualquer erro que ecoe o endereço,
+sítios que não se fecham caso a caso —, mas passa a ser declarada como quebra: a mensagem nomeia
+os **dois** remédios, as três entradas de `deploy/node/README.md` dizem-no, e o `CHANGELOG` marca-a.
+Foi a suposição por trás desta correcção que se revelou falsa: que ninguém usava `user-info`.
+
+**F2 — a defesa em profundidade parou no banner.** Os caminhos que **falam com a rede** continuavam
+a ecoar o endereço, por dois ramos de naturezas diferentes. O `NewRequest` devolve um `*url.Error`
+com a URL **como foi escrita** — era o único sítio do nó onde a **senha ia inteira** para o
+`/readyz`; e o `Do` devolve um `*url.Error` em que o `net/http` redige a senha e deixa o
+**utilizador**, que é precisamente quem este ticket argumenta ser sensível. Ambos fechados em
+`cmd/aos/vaultkeyvault.go` (`erroVaultRedigido` preserva o `Op` e a causa e troca só o endereço).
+O equivalente em `platform/broker/internal/vault/kvv2.go` **não** — esse módulo não pode importar
+`integration` sem violar o `ADR-019` e precisa de redactor próprio: é o **AOS-337**, aberto e não
+arrastado para aqui.
+
+**F5 — as duas funções discordavam sobre o que é uma URL.** `CheckSecureTransportURL` só aparava
+espaços no teste de vazio; `RedactURL` aparava antes do `Parse`. `"https://vault:8200 "` — um
+espaço a mais num `.env` — abortava o arranque com «malformada (valor omitido)», e como esse ramo
+por desenho não pode ecoar o valor, o operador não tinha como ver que o problema era um espaço.
+
+**F4 — um ramo sem cobertura.** O caso sem esquema devolvia `vault:8200`, uma forma que o
+doc-comment não promete. Passa a compor-se a partir dos dois campos preservados, e tem caso.
+
+**F3 — documentação.** README e `CHANGELOG` não acompanhavam uma mudança fail-closed em três
+variáveis documentadas. Fechado.
+
+Mais quatro funções de teste e uma prova de mutação por cada correcção: o ramo de parse a devolver
+o erro cru mostra a senha inteira, o de transporte mostra o utilizador, e remover o `TrimSpace`
+recusa URLs legítimos. As três revertidas e confirmadas limpas.
+
 ---
 
 ## AOS-334 — Nada exige que uma entrada `mcp_server` traga `ManifestDigest`
@@ -1142,7 +1183,15 @@ turnos medidos.
 que era a descrição fiel do guarda antigo e do seu buraco. Passa a declarar que basta **um** turno
 não medido, e nomeia o run misto.
 
-Dez funções de teste em três módulos, com controlos em cada um: o usage medido continua definido,
+**A AUDITORIA DE COMPLETUDE apanhou o AC4 a meio.** Os testes provavam a projecção isolada e o
+consumo isolado — as duas pontas —, e não a TRAVESSIA na composição que produz o defeito.
+`TestAOS336_SemRecorderAMarcaChegaAoRuntime` compõe um gateway **sem contabilidade de custo**, que
+é o que um nó tem quando a tabela de preços não cobre o par configurado, e exige que a marca chegue
+a `agentruntime.ModelResponse` — com o controlo de que a resposta continua a ser servida, senão
+ter-se-ia trocado um zero silencioso por um caminho de modelo partido. Sem ele o AC4 continuaria a
+valer «enquanto houver recorder composto», que é a frase que este ticket foi aberto para apagar.
+
+Onze funções de teste em três módulos, com controlos em cada um: o usage medido continua definido,
 o turno medido grava os mesmos bytes, e um run inteiramente medido continua a passar. Prova de
 mutação executada nas três peças — desligar a projecção, o registo ou o guarda avermelha os testes
 do módulo respectivo, e a mutação do guarda avermelha também `AOS-261` e `AOS-287`.
@@ -1172,7 +1221,8 @@ um endereço com credenciais embutidas aparece por extenso.
 - `:207` e `:241` — o `%v` do wrap sobre o erro do `Do` traz a forma redigida pelo `net/http`
   (`http://admin:***@host/…`): a senha desaparece, **o utilizador não**. O AOS-333 argumenta
   explicitamente que o utilizador também é sensível — «numa URL de Vault ele identifica o
-  principal» — e é precisamente ele que sobrevive aqui.
+  principal» — e é precisamente ele que sobrevive aqui. O equivalente em `cmd/aos` já foi fechado
+  com `erroVaultRedigido`, que é o molde a replicar (preserva `Op` e causa, troca só o endereço).
 
 Os dois caminhos alimentam o `/readyz` e o banner de prontidão, que é onde um segredo seria mais
 lido.

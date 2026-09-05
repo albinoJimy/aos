@@ -168,7 +168,13 @@ func CheckSecureTransportURL(raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		return errors.New("vazia")
 	}
-	u, err := url.Parse(raw)
+	// TrimSpace ANTES do Parse, e não só no teste de vazio: uma variável de ambiente com
+	// um espaço à direita (`.env`, compose, Helm) é uma URL perfeitamente válida com um
+	// erro de transcrição, e sem isto abortava o arranque com «malformada (valor omitido)»
+	// — uma mensagem que, por não poder ecoar o valor, não deixava ver que o problema era
+	// um espaço. [RedactURL] já apara; as duas funções têm de concordar sobre o que é uma
+	// URL, senão a mesma entrada é inválida numa e publicável na outra.
+	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
 		// NÃO se ecoa `raw`: uma URL que o parser recusou não se sabe redigir com
 		// segurança, e é precisamente numa URL malformada que uma credencial mal
@@ -179,7 +185,20 @@ func CheckSecureTransportURL(raw string) error {
 		// Fail-closed ANTES do esquema: uma URL com credenciais é recusada mesmo
 		// quando o transporte estaria correcto. O nome de utilizador NÃO é ecoado —
 		// numa URL de Vault ele identifica o principal, e a senha vem colada a ele.
-		return errors.New("traz credenciais no URL (user-info); passe-as pelo ficheiro de token")
+		//
+		// ISTO É UMA QUEBRA DELIBERADA, e não a remoção de uma forma que ninguém usava.
+		// O `net/http` converte `req.URL.User` em `Authorization: Basic`, pelo que um
+		// verificador de attestation atrás de um proxy com basic-auth funcionava assim —
+		// medido na revisão adversarial deste ticket. A recusa mantém-se porque o eixo é
+		// o segredo, não o transporte: uma credencial num URL de ambiente aparece na
+		// tabela de processos, no `inspect` do contentor e em qualquer mensagem de erro
+		// que ecoe o endereço, e nenhum desses sítios se fecha caso a caso.
+		//
+		// A MENSAGEM NOMEIA OS DOIS REMÉDIOS porque eles não são o mesmo: o ficheiro de
+		// token dá `Bearer` (Vault e attestation), e para quem precisava de `Basic` a via
+		// é terminar a autenticação no proxy. Prescrever só o token seria mandar o
+		// operador por um caminho que não repõe o deployment dele.
+		return errors.New("traz credenciais no URL (user-info); use o ficheiro de token (Authorization: Bearer) ou termine a autenticacao no proxy — a basic-auth embutida no URL deixou de ser aceite (AOS-333)")
 	}
 	switch u.Scheme {
 	case "https":
@@ -214,10 +233,11 @@ func RedactURL(raw string) string {
 	if err != nil || u.Host == "" {
 		return "(inválida)"
 	}
-	if u.Scheme == "" {
-		return u.Host
-	}
-	return u.Scheme + "://" + u.Host
+	// Compõe a partir dos DOIS campos que se querem preservar, em vez de concatenar à
+	// mão: uma entrada sem esquema (`//vault:8200`) devolvia `vault:8200`, uma forma que
+	// o doc-comment acima não promete e que num banner se lê como um host solto. Aqui o
+	// resultado é sempre re-analisável como a mesma coisa que entrou.
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }
 
 // VerifyDeviceAttestation satisfaz [DeviceAttestationVerifier]. Delega a verificação

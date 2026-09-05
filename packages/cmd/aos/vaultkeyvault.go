@@ -27,12 +27,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/aos-ref/integration"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -183,7 +185,13 @@ func (v *vaultKeyVault) doCtx(ctx context.Context, method, path string, body any
 	}
 	req, err := http.NewRequestWithContext(ctx, method, v.addr+path, rdr)
 	if err != nil {
-		return nil, 0, err
+		// O erro do `NewRequest` é um `*url.Error` que traz a URL CRUA — e, ao contrário
+		// do erro de transporte, sem a redacção da senha que o `http.Client` aplica. Um
+		// endereço com credenciais embutidas ia inteiro para aqui, e daqui para o
+		// `/readyz` e para o banner de prontidão (AOS-333). O ambiente já não deixa
+		// compor um endereço destes; este ramo é a defesa em profundidade para quem
+		// compuser `Config` por outra via.
+		return nil, 0, fmt.Errorf("pedido invalido para o vault %s: %w", integration.RedactURL(v.addr), errPedidoVaultInvalido)
 	}
 	req.Header.Set("X-Vault-Token", v.currentToken()) // nunca logado
 	if body != nil {
@@ -191,7 +199,7 @@ func (v *vaultKeyVault) doCtx(ctx context.Context, method, path string, body any
 	}
 	resp, err := v.hc.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, erroVaultRedigido(v.addr, err)
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -246,6 +254,32 @@ func (v *vaultKeyVault) reloadTokenFile() (bool, error) {
 //
 // Um 403 aqui NÃO é evidência de token morto. É evidência de que ESTE canal está fechado.
 var errLookupNegado = errors.New("aos: lookup-self negado pela politica do token")
+
+// errPedidoVaultInvalido — o endereco do Vault nao produz um pedido HTTP valido.
+//
+// Existe para que o caminho de erro NAO devolva o `*url.Error` do `NewRequest`, que traz a
+// URL CRUA (AOS-333). O `http.Client` redige a senha nos SEUS erros de transporte; o
+// `NewRequest` nao redige nada, pelo que era o unico sitio do no onde um endereco com
+// credenciais embutidas ia INTEIRO para o `/readyz` e para o banner de prontidao.
+var errPedidoVaultInvalido = errors.New("aos: endereco do Vault nao produz um pedido HTTP valido")
+
+// erroVaultRedigido devolve um erro de transporte com o endereco REDIGIDO.
+//
+// O `http.Client` ja redige a SENHA nos seus `*url.Error` (`http://admin:***@host/...`), mas
+// deixa o UTILIZADOR intacto — e numa URL de Vault e ele que identifica o principal, que e o
+// argumento pelo qual o banner deste ticket tambem o deita fora. Estes erros vao para o
+// `/readyz` e para o banner de prontidao, pelo que a postura tem de ser a mesma nos dois sitios.
+//
+// Preserva o `Op` e a causa (e o que diagnostica: DNS, recusa de ligacao, TLS) e troca so o
+// endereco pela forma publicavel. Um erro que nao seja `*url.Error` passa tal-qual: nao se
+// inventa redaccao sobre uma forma que nao se conhece.
+func erroVaultRedigido(addr string, err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s %s: %w", ue.Op, integration.RedactURL(addr), ue.Err)
+	}
+	return err
+}
 
 // lookupSelf é a PROVA de que o nosso token ainda serve: /v1/auth/token/lookup-self é AUTENTICADO
 // e é o único endpoint do Vault que responde à pergunta certa — não "o Vault está vivo?" (que o
@@ -471,11 +505,13 @@ func (v *vaultKeyVault) shredConfirmed(subjectID string) error {
 func (v *vaultKeyVault) ready(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.addr+"/v1/sys/seal-status", nil)
 	if err != nil {
-		return err
+		// Mesmo motivo do `do`: este caminho alimenta o `/readyz`, que é onde um segredo
+		// no endereço seria mais visto (AOS-333).
+		return fmt.Errorf("pedido invalido para o vault %s: %w", integration.RedactURL(v.addr), errPedidoVaultInvalido)
 	}
 	resp, err := v.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("vault inalcancavel: %w", err)
+		return fmt.Errorf("vault inalcancavel: %w", erroVaultRedigido(v.addr, err))
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))

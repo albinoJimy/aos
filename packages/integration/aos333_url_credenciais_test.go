@@ -99,6 +99,10 @@ func TestAOS333_RedactURL(t *testing.T) {
 		{"forma limpa fica igual", "https://vault.interno:8200", "https://vault.interno:8200"},
 		{"loopback fica igual", "http://127.0.0.1:8200", "http://127.0.0.1:8200"},
 		{"inválida não devolve o valor", "://" + senha, "(inválida)"},
+		// F4 da revisão adversarial: o ramo SEM esquema não tinha caso nenhum, e devolvia
+		// `vault:8200` — uma forma que o doc-comment não promete e que num banner se lê
+		// como um host solto em vez de um endereço.
+		{"sem esquema mantém-se re-analisável", "//admin:" + senha + "@vault.interno:8200", "//vault.interno:8200"},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -111,5 +115,56 @@ func TestAOS333_RedactURL(t *testing.T) {
 				t.Errorf("a forma redigida contém o segredo: %q", got)
 			}
 		})
+	}
+}
+
+// TestAOS333_EspacosNaoTornamOURLMalformado fecha o F5 da revisão adversarial.
+//
+// `CheckSecureTransportURL` só fazia `TrimSpace` no teste de vazio, e `RedactURL` fazia-o antes do
+// `Parse`. A mesma entrada era, portanto, «malformada» numa e publicável na outra — e como o ramo
+// de parse falhado não pode ecoar o valor, o operador via o arranque abortar com «malformada
+// (valor omitido)» sem nada que lhe dissesse que o problema era um espaço num `.env`.
+func TestAOS333_EspacosNaoTornamOURLMalformado(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		"https://vault.interno:8200 ",
+		" https://vault.interno:8200",
+		"\thttps://vault.interno:8200\n",
+	} {
+		if err := integration.CheckSecureTransportURL(raw); err != nil {
+			t.Errorf("URL legítimo com espaços recusado: %q -> %v", raw, err)
+		}
+	}
+	// CONTROLO: aparar espaços NÃO pode aparar o critério. Um URL com credenciais e um
+	// espaço continua a ser recusado, e a recusa continua a não ecoar a senha.
+	const senha = "s3nh4-com-espacos"
+	err := integration.CheckSecureTransportURL(" https://admin:" + senha + "@vault.interno:8200 ")
+	if err == nil {
+		t.Fatal("aparar espaços nao pode fazer passar um URL com credenciais")
+	}
+	if strings.Contains(err.Error(), senha) || strings.Contains(err.Error(), "admin") {
+		t.Errorf("a recusa vaza: %v", err)
+	}
+}
+
+// TestAOS333_MensagemNomeiaOsDoisRemedios fecha o F1 da revisão adversarial.
+//
+// A recusa de user-info É uma quebra: o `net/http` converte `req.URL.User` em
+// `Authorization: Basic`, pelo que um verificador de attestation atrás de um proxy com basic-auth
+// funcionava assim. A primeira mensagem mandava «passe-as pelo ficheiro de token» — que dá
+// `Bearer`, não `Basic`. Seguir a instrução não repunha esse deployment.
+//
+// Um operador cujo arranque aborta só tem esta linha. Ela tem de nomear os DOIS caminhos.
+func TestAOS333_MensagemNomeiaOsDoisRemedios(t *testing.T) {
+	t.Parallel()
+	err := integration.CheckSecureTransportURL("https://admin:pw@vault.interno:8200")
+	if err == nil {
+		t.Fatal("devia recusar")
+	}
+	msg := err.Error()
+	for _, quer := range []string{"ficheiro de token", "Bearer", "proxy"} {
+		if !strings.Contains(msg, quer) {
+			t.Errorf("a mensagem devia nomear %q — sem isso o operador nao tem por onde migrar: %v", quer, err)
+		}
 	}
 }
