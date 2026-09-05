@@ -524,3 +524,148 @@ func mustParse(t *testing.T, s string) domain.Version {
 	}
 	return v
 }
+
+// ===========================================================================
+// VECTOR 8 — RUG-PULL SOBRE kind=mcp_server: substituição do endpoint/manifesto
+// por trás de um par (id, version) INALTERADO → BLOQUEADO. Orquestra AOS-320
+// (digest do manifesto no contrato) + AOS-050 (congelamento) + AOS-051
+// (revalidação por chamada) + AOS-042 (quarentena) + AOS-011 (audit WORM).
+//
+// Porque existe: os vectores 1 e 3 usam domain.KindTool. Antes de AOS-320 NENHUM
+// teste do repositório asseria o digest de uma entrada mcp_server — e o contrato de
+// um servidor MCP era só a classe de egress, pelo que existiam TRÊS digests
+// possíveis para todo o universo de servidores. Substituir o binário ou o endpoint
+// por trás de mcp.fs@1.0.0 preservava digest E assinatura válidos. O controlo
+// negativo no fim deste teste reproduz exactamente essa colisão.
+// ===========================================================================
+
+func TestVector8_MCPServerRugPull_Blocked(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	legit := newSigner(t, keyLegit, seedLegit)
+	trust := newTrust(t, legit)
+
+	const id = "mcp.fs"
+	const manifesto = "tools=[read_file];resources=[file:///readme]"
+	v := ver(1, 0, 0) // o par (id, version) fica INALTERADO em todo o vector.
+
+	// (a) Baseline íntegro: o servidor legítimo, no endpoint legítimo.
+	cLegit := mcpServerContract(t, "/opt/mcp/fs-legitimo", manifesto, domain.EgressInternal)
+	entryLegit := signedEntry(id, v, domain.KindMCPServer, cLegit, legit)
+
+	frozen, err := toolset.FreezeToolSet(ctx, fakeCatalog{entries: []domain.Entry{entryLegit}}, "run-320", nil, toolset.WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("FreezeToolSet: %v", err)
+	}
+
+	revStore := audit.NewMemStore()
+	quar := &recordingQuarantine{}
+	alert := &recordingAlerter{}
+	rev, err := revalidation.New(trust, revStore,
+		revalidation.WithDigester(sha256Digester),
+		revalidation.WithQuarantiner(quar),
+		revalidation.WithAlerter(alert),
+		revalidation.WithClock(fixedClock()),
+	)
+	if err != nil {
+		t.Fatalf("revalidation.New: %v", err)
+	}
+	policy := revalidation.Policy{MaxEgress: domain.EgressInternal}
+
+	ok, err := rev.Revalidate(ctx, revalidation.Request{
+		RunID: "run-320", StepID: "step-1", ToolID: id,
+		Current: entryLegit, Frozen: frozen, Policy: policy,
+	})
+	if err != nil {
+		t.Fatalf("Revalidate íntegro: %v", err)
+	}
+	if !ok.Allowed {
+		t.Fatalf("o servidor legítimo devia ser permitido, got stage=%s reason=%s", ok.Stage, ok.Reason)
+	}
+
+	// (b) RUG-PULL — ENDPOINT SUBSTITUÍDO: o mesmo mcp.fs@1.0.0, a mesma classe de
+	// egress, o MESMO manifesto anunciado — mas o binário por trás dele passou a ser
+	// outro. Re-assinado com a chave LEGÍTIMA, para provar que nem uma assinatura
+	// válida salva a substituição: o digest recalculado já diverge do congelado.
+	cEndpointTrocado := mcpServerContract(t, "/tmp/fs-do-atacante", manifesto, domain.EgressInternal)
+	endpointTrocado := signedEntry(id, v, domain.KindMCPServer, cEndpointTrocado, legit)
+
+	if endpointTrocado.ID != entryLegit.ID || endpointTrocado.Version != entryLegit.Version {
+		t.Fatal("fixture inválida: (id, version) tem de ficar INALTERADO")
+	}
+	if endpointTrocado.Contract.Egress != entryLegit.Contract.Egress {
+		t.Fatal("fixture inválida: a classe de egress tem de ficar INALTERADA")
+	}
+	if endpointTrocado.Digest == entryLegit.Digest {
+		t.Fatalf("substituir o endpoint NÃO mudou o digest (%q) — é o defeito de AOS-320", entryLegit.Digest)
+	}
+
+	dec, err := rev.Revalidate(ctx, revalidation.Request{
+		RunID: "run-320", StepID: "step-2", ToolID: id,
+		Current: endpointTrocado, Frozen: frozen, Policy: policy,
+	})
+	if err != nil {
+		t.Fatalf("Revalidate endpoint substituído: %v", err)
+	}
+	if dec.Allowed {
+		t.Fatal("rug-pull de endpoint sobre mcp_server PERMITIDO — devia ser bloqueado")
+	}
+	if dec.Reason != revalidation.ReasonDigestMismatch || dec.Stage != revalidation.StageDigest {
+		t.Fatalf("bloqueio = {stage:%s reason:%s}, quer {digest, digest_mismatch}", dec.Stage, dec.Reason)
+	}
+	if _, hasPermit := dec.Permit(); hasPermit {
+		t.Fatal("um bloqueio NÃO pode emitir permit")
+	}
+
+	// (c) RUG-PULL — MANIFESTO SUBSTITUÍDO: o mesmo endpoint, mas o servidor passou a
+	// anunciar uma superfície de capacidade diferente (ganhou uma tool de execução).
+	cManifestoTrocado := mcpServerContract(t, "/opt/mcp/fs-legitimo", manifesto+";exec", domain.EgressInternal)
+	manifestoTrocado := signedEntry(id, v, domain.KindMCPServer, cManifestoTrocado, legit)
+	if manifestoTrocado.Digest == entryLegit.Digest {
+		t.Fatal("substituir o manifesto NÃO mudou o digest — é o defeito de AOS-320")
+	}
+	decM, err := rev.Revalidate(ctx, revalidation.Request{
+		RunID: "run-320", StepID: "step-3", ToolID: id,
+		Current: manifestoTrocado, Frozen: frozen, Policy: policy,
+	})
+	if err != nil {
+		t.Fatalf("Revalidate manifesto substituído: %v", err)
+	}
+	if decM.Allowed || decM.Reason != revalidation.ReasonDigestMismatch {
+		t.Fatalf("rug-pull de manifesto: decisão = {allowed:%v reason:%s}, quer bloqueio por digest_mismatch", decM.Allowed, decM.Reason)
+	}
+
+	// QUARENTENA + ALERTA (AOS-042/051): os artefactos divergentes foram isolados.
+	if quar.count() != 2 {
+		t.Fatalf("quarentena registou %d artefactos, quer 2 (endpoint + manifesto)", quar.count())
+	}
+	art, _ := quar.last()
+	if art.ID != id || art.Digest != frozenDigest(t, frozen, id) {
+		t.Fatalf("quarentena isolou %+v, quer id=%s digest=%s (congelado)", art, id, frozenDigest(t, frozen, id))
+	}
+	if alert.count() == 0 {
+		t.Fatal("o rug-pull sobre mcp_server devia emitir alerta")
+	}
+
+	// (d) CONTROLO NEGATIVO — a forma PRÉ-AOS-320 colidia. Com o contrato reduzido à
+	// classe de egress (o que o REG gravava antes), as MESMAS três variantes têm
+	// EXACTAMENTE o mesmo digest: o rug-pull passaria sem deixar rasto. É a prova de
+	// que o bloqueio acima vem de AOS-320 e não de outra propriedade da fixture.
+	legado := sha256Digester.Digest(domain.KindMCPServer, contractLegadoMCPServer(domain.EgressInternal))
+	if sha256Digester.Digest(domain.KindMCPServer, contractLegadoMCPServer(domain.EgressInternal)) != legado {
+		t.Fatal("controlo inválido")
+	}
+	if entryLegit.Digest == legado || endpointTrocado.Digest == legado {
+		t.Fatal("controlo inválido: as entradas de AOS-320 não podem coincidir com a forma legada")
+	}
+
+	// AUDIT WORM (nativo AOS-051 na partição registry.revalidation).
+	recs := verifyWORM(t, revStore, revalidation.DefaultPartition)
+	deny := findDeny(t, recs, id)
+	if deny.Resource.Value != frozenDigest(t, frozen, id) {
+		t.Fatalf("registo de revalidação selou digest %q, quer o congelado %q", deny.Resource.Value, frozenDigest(t, frozen, id))
+	}
+	attestBlock(t, revStore, "mcp_server_rug_pull", id, "digest_mismatch")
+	verifyWORM(t, revStore, scLedgerPartition)
+}

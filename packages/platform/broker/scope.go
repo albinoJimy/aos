@@ -47,28 +47,77 @@ func permitsCapability(userAuthority, classScope []string, capability string) bo
 	return false
 }
 
-// ScopeGate é um [referencemonitor.Hook] que impõe a consistência de escopo
-// (utilizador ∩ classe) da troca de credenciais NA fronteira do Reference Monitor.
-// Só actua sobre o toolID da troca do broker (para não interferir com outras
-// tools na mesma cadeia); para esse toolID, NEGA fail-closed se a capability
-// pedida não pertencer à autoridade efectiva do principal. Assim, "só se troca por
-// credenciais consistentes com o escopo" é uma propriedade IMPOSTA pela mediação e
-// registada como negação no Event Store.
+// ScopeGate é um [referencemonitor.Hook] que impõe a consistência de escopo da
+// troca de credenciais NA fronteira do Reference Monitor, em DOIS eixos da chave do
+// Vault:
+//
+//   - CAPABILITY (AOS-057): utilizador ∩ classe — nega se a capability pedida não
+//     pertencer à autoridade efectiva do principal;
+//   - PROVIDER (AOS-324): nega se o provedor pedido não pertencer à autoridade
+//     efectiva de provedor (tecto da classe ∩ grants do token). Ver [provider.go]
+//     para a política, a postura por omissão e os seus limites DECLARADOS.
+//
+// O terceiro eixo — REGION — é imposto a montante pelo Reference Monitor
+// (`ObligationRegion`), que compara `call.Resource.Region`; o broker alinha esse
+// campo com o `Downstream.Region` da chave e não o duplica aqui.
+//
+// Só actua sobre o toolID da troca do broker (para não interferir com outras tools
+// na mesma cadeia). Assim, "só se troca por credenciais consistentes com o escopo"
+// é uma propriedade IMPOSTA pela mediação e registada como negação no Event Store.
 type ScopeGate struct {
-	toolID      string
-	classScopes map[string][]string // AgentClass → escopo-máximo da classe
+	toolID         string
+	classScopes    map[string][]string // AgentClass → escopo-máximo da classe
+	classProviders map[string][]string // AgentClass → provedores; nil ⇒ ProviderPostureUnset
+}
+
+// ScopeGateOption configura eixos ADICIONAIS do [ScopeGate] sem quebrar os
+// chamadores existentes de [NewScopeGate].
+type ScopeGateOption func(*ScopeGate)
+
+// WithGateClassProviders declara a política do eixo PROVIDER do gate: o mapa
+// AgentClass → provedores autorizados (AOS-324). Declará-la coloca o gate em
+// [ProviderPostureEnforced]; a sua ausência é [ProviderPostureUnset] — estado
+// DECLARADO (ver [ScopeGate.ProviderPosture] e o doc de provider.go), não um
+// deny-all silencioso. Um mapa nil explícito mantém a postura unset.
+func WithGateClassProviders(classProviders map[string][]string) ScopeGateOption {
+	return func(g *ScopeGate) { g.classProviders = copyProviderPolicy(classProviders) }
+}
+
+// copyProviderPolicy copia a política de provedores (nil preserva-se como nil — é
+// a distinção entre "não declarada" e "declarada vazia").
+func copyProviderPolicy(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string][]string, len(m))
+	for k, v := range m {
+		cp[k] = append([]string(nil), v...)
+	}
+	return cp
 }
 
 // NewScopeGate constrói o gate para o toolID de troca e o mapa de escopos por
 // classe (AOS-057). Um mapa nil trata todas as classes como escopo vazio (nega
-// tudo — fail-closed).
-func NewScopeGate(toolID string, classScopes map[string][]string) ScopeGate {
+// tudo — fail-closed) no eixo capability.
+//
+// O eixo PROVIDER (AOS-324) declara-se por [WithGateClassProviders]; sem essa opção
+// o gate fica em [ProviderPostureUnset] e só nega, nesse eixo, um pedido SEM
+// provedor. [Broker.ScopeGate] propaga automaticamente a política registada em
+// [WithClassProviders], pelo que o composition root só tem de a declarar UMA vez.
+func NewScopeGate(toolID string, classScopes map[string][]string, opts ...ScopeGateOption) ScopeGate {
 	cp := make(map[string][]string, len(classScopes))
 	for k, v := range classScopes {
 		cp[k] = append([]string(nil), v...)
 	}
-	return ScopeGate{toolID: toolID, classScopes: cp}
+	g := ScopeGate{toolID: toolID, classScopes: cp}
+	for _, o := range opts {
+		o(&g)
+	}
+	return g
 }
+
+// ProviderPosture devolve a postura DECLARADA do eixo provider deste gate.
+func (g ScopeGate) ProviderPosture() ProviderPosture { return providerPosture(g.classProviders) }
 
 // Name identifica o hook (usado em DeniedBy e nos spies do RM).
 func (g ScopeGate) Name() string { return "broker-scope" }
@@ -79,11 +128,32 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
 	}
 	classScope := g.classScopes[call.Principal.AgentClass]
-	if permitsCapability(call.Principal.Authority, classScope, call.Capability) {
+	if !permitsCapability(call.Principal.Authority, classScope, call.Capability) {
+		return referencemonitor.HookResult{
+			Decision: referencemonitor.HookDeny,
+			Reason:   ErrOutOfScope.Error(),
+		}, nil
+	}
+	// EIXO PROVIDER (AOS-324). O provedor vem do envelope NÃO-SECRETO da troca
+	// (`Call.Input`), porque o contrato C1 do RM não tem campo de provedor.
+	provider, ok := providerFromCallInput(call.Input)
+	if !ok {
+		// Sem envelope legível não há provedor a avaliar. Sob política DECLARADA
+		// isso é informação insuficiente ⇒ NEGA (fail-closed); em
+		// [ProviderPostureUnset] o eixo não é imposto e o gate não se opõe.
+		if g.ProviderPosture() == ProviderPostureEnforced {
+			return referencemonitor.HookResult{
+				Decision: referencemonitor.HookDeny,
+				Reason:   ErrProviderUndetermined.Error(),
+			}, nil
+		}
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
 	}
-	return referencemonitor.HookResult{
-		Decision: referencemonitor.HookDeny,
-		Reason:   ErrOutOfScope.Error(),
-	}, nil
+	if err := authorizeProvider(g.classProviders, call.Principal.AgentClass, call.Principal.Authority, provider); err != nil {
+		return referencemonitor.HookResult{
+			Decision: referencemonitor.HookDeny,
+			Reason:   err.Error(),
+		}, nil
+	}
+	return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
 }

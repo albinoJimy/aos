@@ -539,10 +539,13 @@ type Config struct {
 	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
 	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
 	// material). PREPARADO por AOS-264 a partir do ambiente, mas a TROCA MEDIADA ainda
-	// NÃO está ligada ao gateway nesta entrega: é CONSUMIDO em AOS-265 (a porta de
-	// aquisição in-process). nil ⇒ não configurado. O banner declara o modo e que a
+	// NÃO está ligada ao gateway. nil ⇒ não configurado. O banner declara o modo e que a
 	// troca está pendente — nunca "broker ligado" (seria a promessa a mais que AOS-248
 	// proíbe). Ver broker_vault_env.go.
+	//
+	// CORRECÇÃO (AOS-325): apontava o consumo para AOS-265, que JÁ ATERROU (a porta
+	// `broker.AcquireInProcess` existe e é testada) sem ligar a troca. O bloqueador real
+	// é o DEF-218.
 	BrokerVault broker.VaultClient
 	// BrokerVaultAddr / BrokerVaultKVMount são material PÚBLICO (uma URL, um nome de
 	// mount) que o banner usa para declarar o modo do broker Vault. Vazios ⇒ dormente.
@@ -2382,13 +2385,25 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	// AOS-264: o Vault de credenciais downstream do broker, PREPARADO por
 	// AOS_BROKER_VAULT_* (separado do KEK, D7). Declara "configurado, troca pendente"
-	// ou "dormente" — nunca "broker ligado" (a troca só medeia algo em AOS-265). O
+	// ou "dormente" — nunca "broker ligado" (a troca não medeia nada: a porta de
+	// AOS-265 existe, o que falta é a composição, bloqueada em DEF-218). O
 	// argumento deriva do ESTADO composto: `cfg.BrokerVault != nil` ⇒ preparado.
 	var brokerVaultSet *brokerVaultSettings
 	if cfg.BrokerVault != nil {
 		brokerVaultSet = &brokerVaultSettings{Addr: cfg.BrokerVaultAddr, KVMount: cfg.BrokerVaultKVMount}
 	}
 	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
+		log("%s", line)
+	}
+	// SERVIÇOS DE PLATAFORMA (AOS-326). MEM e REG eram os dois únicos serviços do
+	// `_BRIEF` §2 sobre os quais o arranque não dizia nada — e são aqueles em que a
+	// distância entre a biblioteca (testada, com gate próprio) e o nó composto é maior.
+	// O argumento deriva do ESTADO, como o do credential broker: `cfg.Catalog`/
+	// `cfg.Revalidator` a nil significam o catálogo vazio e o revalidador de referência.
+	for _, line := range plataformaPostureBanner(posturaDosServicosDePlataforma{
+		CatalogoInjectado:    cfg.Catalog != nil,
+		RevalidadorInjectado: cfg.Revalidator != nil,
+	}) {
 		log("%s", line)
 	}
 	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA
@@ -2432,6 +2447,35 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular INJECTADO por config (custodia EXTERNA pela porta audit.KeyVault) — as KEK vivem FORA do processo; a durabilidade/rotacao e do custodiante (o no nao a atesta); /dsar/erase e a expiracao destroem a KEK NESSE vault")
 	} else {
 		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular de REFERENCIA in-memory — DEMO-GRADE: as KEK vivem em MEMORIA do processo, NAO-duraveis (perdem-se no restart); injecte Config.DSARVault (key-service/software-KMS de custodia externa) para producao; o KMS/HSM real e infra-org por tras da mesma porta")
+	}
+	// CONFIRMAÇÃO DO CRYPTO-SHRED (AOS-322). A porta [dsar.ShredConfirmer] é OPCIONAL
+	// por desenho: nem toda a custódia sabe responder «esta chave deixou de existir».
+	// O `InMemoryKeyVault` não a implementa e está CERTO ao não a implementar — o seu
+	// `Delete` é um `delete()` num mapa e não tem como falhar, pelo que não há
+	// pendência possível para reportar. O Vault Transit implementa-a (relê a chave e
+	// exige 404).
+	//
+	// PORQUE ISTO PRECISA DE SER DITO EM VOZ ALTA. As duas leituras de um `/readyz`
+	// verde são muito diferentes — «não há destruições por confirmar» e «esta custódia
+	// não sabe responder à pergunta» — e sem esta linha o operador não as distingue. E
+	// a opcionalidade é fail-open para a TERCEIRA custódia: um KMS de terceiros que
+	// possa falhar a destruir e não implemente a porta faria a cadeia selar
+	// `dsar.key_destroyed` sobre uma irrecuperabilidade que ninguém verificou — o
+	// defeito exacto que a porta foi criada para fechar, reaberto pela via da omissão.
+	//
+	// O DISCRIMINANTE É `dsarVaultInjected`, E A PRIMEIRA VERSÃO DESTA LINHA NÃO O USAVA.
+	// A revisão adversarial apanhou-o: o ramo não-armado dizia «com o vault de REFERENCIA
+	// isto é CORRECTO», mas dispara para QUALQUER custódia sem a porta — incluindo uma de
+	// terceiros injectada por [Config.DSARVault]. Nesse caso o nó afirmava que a ausência de
+	// confirmação era correcta PORQUE o vault é o de referência, quando não é. Era o cenário
+	// que o DEF-813 nomeia como risco, e o banner comprava-lhe confiança em vez de o expor.
+	switch {
+	case confirmadorDeShredDe(dsarVault) != nil:
+		log("confirmacao de crypto-shred (AOS-322): ARMADA — a custodia composta sabe responder se a destruicao da KEK esta CONFIRMADA, e o fluxo DSAR pergunta-lhe ANTES de a cadeia afirmar o apagamento. Uma destruicao nao confirmada sela dsar.shred_unconfirmed, poe o /readyz VERMELHO e emite aos_dsar_vault_shred_unconfirmed>0")
+	case !dsarVaultInjected:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e CORRECTO — a custodia composta e o vault de REFERENCIA in-memory, que nao implementa a porta de confirmacao porque nao precisa: o seu Delete e um apagamento em memoria que NAO PODE FALHAR, logo nao ha pendencia possivel. Um /readyz verde neste modo significa 'nada a confirmar', NAO 'confirmado'. Ver DEF-813")
+	default:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e NAO E CORRECTO — foi INJECTADA uma custodia externa por Config.DSARVault que NAO implementa a porta de confirmacao. O fluxo DSAR sela dsar.key_destroyed SEM perguntar, pelo que a cadeia passa a afirmar uma irrecuperabilidade que NINGUEM verificou. Ao contrario do vault de referencia, esta custodia PODE falhar a destruir (rede, politica, autoridade) e o nó nao tem como o saber. Implemente a porta na custodia ou aceite que o apagamento do Art. 17 nao esta provado. Eixo: DEF-813")
 	}
 	// LEGAL HOLD + EXPIRAÇÃO (AOS-213, CON-02/DEF-903). O banner declara a superfície de
 	// administração REALMENTE composta e o MODO de expiração (sob demanda por rota) — sem

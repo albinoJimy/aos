@@ -183,7 +183,7 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-215 | DEFERIDO | packages/platform/broker/inprocess.go | `Handle()` expõe o handle opaco só para CORRELAÇÃO; é o que se entregaria ao orquestrador no caminho remoto | AOS-265; idem D8-B | Arquitecto de Plataforma | Idem DEF-214 | ABERTO |
 | DEF-216 | DEFERIDO | packages/platform/broker/internal/vault/kvv2.go | KV v2 (D7): o corte downstream REAL no provedor — que só dynamic secrets dão — é o desenho-alvo de quando a injecção remota ligar. A v1 corta por lease TTL+revogável | AOS-264; D8-B | Responsável de Segurança | Idem DEF-214 | ABERTO |
 | DEF-217 | DEFERIDO | packages/cmd/aos/model_audit_env.go | O audit de governação do GW usa uma cadeia WORM DEDICADA. PARTILHAR o WORM único do nó exigiria construir o gateway DENTRO do Bootstrap (re-ordenação da composição do modelo); o ganho de AOS-265 é a DURABILIDADE, que este store entrega | AOS-265 | Arquitecto de Plataforma | Re-ordenação da composição do modelo no Bootstrap | ABERTO |
-| DEF-218 | DEFERIDO | packages/cmd/aos/broker_vault_env.go | O cliente Vault do broker está CONFIGURADO mas a troca fica PENDENTE: ligar ao vivo exige bundle PDP assinado + identidade infra com `cap:http.post`, senão o default-deny NEGA a troca e nenhum turno de modelo executa (o próprio risco do desafio A3) | AOS-264/AOS-265; eixo D4/AOS-156 | Responsável de Segurança | Autoridade de identidade real provisionada (D4) | ABERTO |
+| DEF-218 | DEFERIDO | packages/cmd/aos/broker_vault_env.go | O cliente Vault do broker está CONFIGURADO mas a troca fica PENDENTE: ligar ao vivo exige bundle PDP assinado + identidade infra com `cap:http.post`, senão o default-deny NEGA a troca e nenhum turno de modelo executa (o próprio risco do desafio A3). **PRÉ-CONDIÇÕES ACRESCENTADAS (AOS-324 e AOS-330):** o AOS-330 fecha a divergência entre o namespace em que a política decide e o namespace do path do Vault, sem a qual «autorizado» e «o que o Vault serve» não são a mesma coisa. **(AOS-324):** o wiring TEM de declarar a política de provedores (`broker.WithClassProviders`) e assertar que o campo `provider_policy` selado em cada `credential.exchange.issued` diz `enforced`. Sem isso o eixo *Provider* fica sem imposição por conjunto — um principal autorizado a trocar para um provedor obtém material de qualquer outro presente no Vault — e ligar o broker nesse estado é reabrir a confusão de deputado que o AOS-324 fechou por configuração | AOS-264/AOS-265; eixo D4/AOS-156 | Responsável de Segurança | Autoridade de identidade real provisionada (D4) | ABERTO |
 | DEF-219 | DEFERIDO | packages/cmd/aos/promotion_api.go | Quarentena do artefacto promovido: a rota `POST /promote` ratifica e sela, mas a quarentena/rollback do artefacto em si é do controlador de promoção, não da rota | AOS-275; AOS-096 | Arquitecto de Plataforma | Pipeline de promoção com artefactos reais | ABERTO |
 | DEF-220 | DEFERIDO | packages/cmd/aos/exhaustion_decision.go | **`extend` (levantar o tecto de orçamento) SAI de AOS-263 por decisão do dono (iii), 2026-08-12.** O prompt de exaustão apresenta só decisões com executor (`continue`/`abort`); `extend` não tem nenhum e não pode ter sem quebrar uma decisão de desenho: `budget.Budget` não expõe mutador de tecto e `packages/control-plane/budget/events.go` declara que os LIMITES são «configuração declarativa FORA do log de eventos — por design não reconstruíveis por `Rebuild`». Levantar o tecto em runtime exige evento próprio de orçamento, reconstrução no `Rebuild` e ADR que reabra essa decisão — trabalho de `budget`, não do prompt. Enquanto não existir, a via para um run que precisa de mais orçamento é `abort` + re-submissão com tecto maior, ou `continue` (que NÃO levanta o tecto: deixa o run correr até ele) | POR ATRIBUIR — origem AOS-263 (EPIC-20); ticket de `budget` descrito na nota §6 N-DEF-220 | Arquitecto de Plataforma | Existir necessidade operacional de levantar tecto SEM re-submeter o run (hoje a re-submissão cobre-a) | ABERTO |
 | DEF-268 | DEFERIDO | packages/cmd/aos/bootstrap.go | **PRODUÇÃO DA ÂNCORA — ENTREGUE em 2026-08-20; fica deferida só a CADÊNCIA.** O nó CONSUMIA uma âncora assinada e nada no repositório a PRODUZIA: ninguém instanciava o `audit.Signer` fora de testes, pelo que as três envs nunca podiam ser preenchidas — a verificação ancorada era uma parede descrita como opção (o inventário dizia «ancoraria 1 em 108»; ancorava **zero**). Entregue `aos-issuer worm-seal`: sela OUT-OF-PROCESS, com a chave privada na máquina do operador (molde AOS-156), contra a cópia que o backup traz off-host, e recusa selar sobre um WORM que RECUOU face à selagem anterior (`--anterior`) — sem essa guarda, uma cópia truncada produzia uma âncora válida para uma cadeia truncada, porque uma cadeia truncada re-encadeia como íntegra. A ancoragem passou também a cobrir MUITAS partições (`Checkpoints`/`ExpectedHeads` por partição) e o banner declara a COBERTURA (`N de M`). O QUE FICA DEFERIDO: a cadência — quem corre a selagem, e com que frequência. Não é código: a cobertura NUNCA é completa por desenho (as partições nascem por run), pelo que selar mais vezes encolhe a janela não-ancorada sem a fechar; escolher essa frequência é decisão operacional | AOS-268; custódia de chave AOS-156 (D4) | Responsável de Segurança | Definir e automatizar a CADÊNCIA de selagem (o mecanismo está entregue; falta a periodicidade e onde corre) | ABERTO |
@@ -237,6 +237,11 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-807 | DIFERIDO | packages/kernel/agent-runtime/model.go | `AuthorizationTaint` é uma string convencionada em vez de uma autorização estruturalmente infalsificável mintada no runtime | AOS-069 | Responsável de Segurança | Idem DEF-806 | ABERTO |
 | DEF-808 | DIFERIDO | packages/kernel/reference-monitor/taint_gate.go | Sem `DefaultHooksWithTaint` e um `PrivilegedAuthorizer` real ligados no ápice, a metade do ADR-005 fica inactiva; o conjunto `Privileged` composto hoje é vazio | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-604 (conjunto `Privileged` real no ápice) | MITIGADO |
 | DEF-809 | DIFERIDO | packages/kernel/reference-monitor/scope_gate.go | Wiring de produção do par escopo+taint no ápice, «a par de AOS-021/037/043» — as portas RT/RM foram entregues por AOS-157; falta o autorizador privilegiado real | AOS-157, AOS-183 | Responsável de Segurança | Idem DEF-808 | MITIGADO |
+| DEF-811 | DEFERIDO | packages/cmd/aos/posture_banner.go | **MEM nao esta composto como servico — so como uma escrita.** O no constroi `memory.NewService` sobre o mesmo Event Store (`bootstrap.go`), mas o unico caminho de producao que o usa e a escrita episodica da ingestao (`packages/integration/ingestion.go`). Nenhum caminho de producao invoca recall/query/compactacao/curadoria, `Goal.MemoryContext` nao e preenchido por ninguem (declarado em `packages/kernel/agent-runtime/loop.go`), e `memory/episodic`, `semantic`, `procedural`, `compression` e `migrations` tem ZERO importadores externos nao-teste. As tres classes do `_BRIEF` §2 existem como biblioteca testada, com gate proprio (`scripts/ci/memory.sh`), e nao como comportamento do no. Ao contrario do ORQ/SCH, NAO ha ADR que o declare deliberado — ver N-DEF-811 | POR ATRIBUIR | Arquitecto de Plataforma | Decisao do dono sobre a forma: compor o MEM no no, ou emitir ADR que o declare fora do grafo de build no molde do ADR-023 | ABERTO |
+| DEF-812 | DEFERIDO | packages/cmd/aos/posture_banner.go | **REG: catalogo, host MCP e TOFU nao sao construidos pelo no.** `bootstrap.go` compoe `emptyCatalog{}` e o `referenceRevalidator()` com trust store VAZIO. `registry.New` tem um unico chamador nao-teste (`promotion/pipeline.go`), que por sua vez nao tem chamador nenhum; `mcp.NewHost` e `tofu.NewMonitor` tem zero. O que CORRE e o congelamento por run (`toolset`) e a revalidacao por chamada, ligados na cadeia do Reference Monitor (`packages/integration/secured.go`) — o catalogo vazio e default-deny, pelo que nenhuma tool executa. Ao contrario do ORQ/SCH, NAO ha ADR que o declare deliberado — ver N-DEF-812 | POR ATRIBUIR | Arquitecto de Plataforma | Decisao do dono sobre a forma: compor o REG no no, ou emitir ADR que o declare fora do grafo de build no molde do ADR-023 | ABERTO |
+| DEF-813 | DOCUMENTAL | analises/11_Auditoria_MEM_REG_GW_BRK_Adversarial.md | **A confirmacao do crypto-shred e OPCIONAL, e a omissao e fail-open para uma custodia futura.** `dsar.ShredConfirmer` so e consultada se `WithShredConfirmer` receber algo nao-nil, e `confirmadorDeShredDe` devolve nil para uma custodia que nao implemente a porta interna. Hoje isso e CORRECTO e esta testado (AOS-322): as duas custodias existentes fazem a escolha certa — o `InMemoryKeyVault` nao a implementa porque o seu `Delete` nao pode falhar, o `vaultKeyVault` implementa-a. O risco e a TERCEIRA: um KMS de terceiros que POSSA falhar a destruir e nao implemente a porta faz a cadeia selar `dsar.key_destroyed` sobre uma irrecuperabilidade que ninguem verificou — o defeito que a porta foi criada para fechar, reaberto pela via da omissao. Nada obriga essa escolha a ser consciente. O banner de arranque passou a declarar qual dos dois casos esta em vigor (AOS-322) | AOS-328 | Responsavel de Seguranca | Composicao de uma custodia de KEK que nao seja o vault de referencia nem o Vault Transit — ai a escolha deixa de ser teorica e tem de ser imposta, nao declarada | ABERTO |
+| DEF-814 | DOCUMENTAL | specs/EPIC-23_Remediacao_Auditoria_MEM_REG_GW_BRK.md | **Nada faz uma declaracao de estado citar o ticket que a desbloqueia.** O AOS-325 corrigiu SETE declaracoes caducadas — «o no nao importa platform/broker» (falsa desde AOS-264), a pendencia da troca apontada a um AOS-265 ja fechado, o `RESERVADO (AOS-047)` do digest do manifesto, uma composicao `freeze -> layout.Guard.Admit` que nao existe, o «grava SEMPRE a trajectoria completa» do MEM, duas posturas opostas no mesmo ficheiro de credenciais, e a falta da ressalva do WORM no compose. As sete sao correccoes PONTUAIS: nada impede a oitava. O padrao e sempre o mesmo — uma declaracao nomeia o ticket que a fecharia, o ticket fecha, e a declaracao fica. O que evitaria a proxima ronda e estrutural: um gate que, ao ver `AOS-NNN` numa linha de postura, verifique o ESTADO desse ticket e falhe quando ele estiver fechado. E o irmao do gate `deferrals`, que ja impoe que todo o marcador tenha eixo verificavel — falta impor que o eixo esteja ABERTO | AOS-329 | Arquitecto de Plataforma | Uma terceira ronda de correccoes de declaracoes caducadas — ou, antes disso, a decisao de estender o gate `deferrals` a verificacao de estado do ticket citado | ABERTO |
+| DEF-815 | DOCUMENTAL | analises/11_Auditoria_MEM_REG_GW_BRK_Adversarial.md | **O namespace da politica do broker nao e o namespace da chave do Vault.** A politica de provedores (AOS-324) compara strings CRUAS por igualdade; o cliente KV v2 resolve o path com `TrimSpace` e dobra tudo o que esteja fora de `[A-Za-z0-9._-]` para `_`. MEDIDO por revisao adversarial: `" "`, `"	"` e `"*"` produzem todos o path `_/eu/…` — indistinguivel de um eixo em branco — e `"acme:eu"` colide com `"acme_eu"`. Sob a postura por omissao, valores como `" "` e `"stripe/x"` passam o guarda de «provedor indeterminado» e chegam ao Fetch, o que falsifica a afirmacao de que o Vault nunca e consultado com um eixo em branco. Sob `enforced`, um nome autorizado que dobre sobre um proibido da material do proibido. Inofensivo hoje porque o broker nao esta composto (DEF-218) e a postura e `unset` em todo o repositorio | AOS-330 | Responsavel de Seguranca | O wiring do broker (DEF-218) — a normalizacao do path tem de ser a MESMA em que a politica decide, ou a politica tem de recusar valores que a normalizacao dobre | ABERTO |
 | DEF-901 | NUNCA-EM-PRODUCAO | packages/substrate/otel-genai/idgen.go | `SequentialIDGenerator` produz ids deterministas para testes de topologia de árvore | AOS-076 | Arquitecto de Plataforma | Uso do gerador determinista fora de testes | FECHADO-RESIDUAL |
 | DEF-902 | NUNCA-EM-PRODUCAO | packages/testkit/env/vault.go | Vault efémero por `Env` do testkit | AOS-109 | Arquitecto de Plataforma | Importação do testkit por código de produção | FECHADO-RESIDUAL |
 | DEF-903 | DEFERIDO | packages/cmd/aos/bootstrap.go | **CON-02 — superfície de administração de legal hold e expiração.** ENTREGUE por AOS-213 (o marcador DEFERIDA em bootstrap.go passa a CONTRASTE histórico): o `audit.LegalHold` (`Node.DSARHolds`) ganha rotas `POST /dsar/hold`//`/dsar/release` e o `audit.ExpirationJob` (AOS-092) é composto no nó (`Node.ExpirationJob`, conduzido por `POST /dsar/expire`) — deixa de ter 0 chamadores de produção. A expiração materializa por crypto-shred da KEK POR-TITULAR (AOS-093, apagamento real, provado ao nível do nó: `OpenContent`→`ErrDecrypt`+hash-chain valida) e respeita o legal hold. Decisão do dono Opção C (2026-07-29, `DOSSIE-CON-02-legal-hold.md`) cumprida (o gatilho — apagamento real — deu-se com AOS-093). RESIDUAL nomeado (eixo AOS-093/envelope): a granularidade é POR-TITULAR (a KEK embrulha todas as DEKs do titular), não por-registo | AOS-213, AOS-093 | Dono do produto | FECHADO por AOS-213; residual de granularidade por-titular vs por-registo exigiria custódia de chave por-registo ou tombstones no ES (re-arquitectura do envelope AOS-093), não previsto | FECHADO-RESIDUAL |
@@ -284,7 +289,7 @@ cada execução.)*
 | packages/cmd/aos/model_pricing_env.go | DEFERIDO | 1 |
 | packages/cmd/aos/modelgatewaywiring.go | DEFERIDO | 1 |
 | packages/cmd/aos/otlpexporter.go | DIFERIDO | 2 |
-| packages/cmd/aos/posture_banner.go | DEFERIDO | 2 |
+| packages/cmd/aos/posture_banner.go | DEFERIDO | 4 |
 | packages/cmd/aos/promotion.go | DEFERIDO | 1 |
 | packages/cmd/aos/promotion_api.go | DEFERIDO | 1 |
 | packages/cmd/aos/saga_compensation.go | DEFERIDO | 1 |
@@ -727,6 +732,86 @@ EPIC-06.
 devolve zero — o eixo do custo por efeito real nunca teve `AOS-NNN` próprio. AOS-211 entrega o
 EIXO 1 (operation.name sob contrato) e **nomeia** este EIXO 2 em vez de o deixar mudo, que é
 precisamente a deriva que o ticket veio terminar.
+
+### N-DEF-811 — cobre DEF-811
+
+> **O ticket que falta é uma DECISÃO, não código.** O eixo fica `POR ATRIBUIR` porque compor o
+> MEM no nó e declará-lo fora do grafo de build são resoluções opostas, e a escolha é do dono da
+> forma do produto (Carta §2), não de quem regista. O que este registo fixa é o **estado**: a
+> biblioteca existe, é testada, tem gate próprio, e o nó usa uma escrita.
+>
+> **Porque isto não é o caso do ORQ/SCH.** Ali, «não composto» é doutrina: o ADR-018 §4 e o
+> ADR-023 declaram-no, o `EPIC-10`/AOS-281 escreve-o em palavras («não é wiring esquecido: é o
+> ADR-018 a impedi-lo por desenho»), e `packages/cmd/aos/boundary_orq_sch_test.go` impõe-no por
+> guard-test. Para o MEM não existe nada equivalente — procurado em todo o `docs/adr/`. Enquanto
+> a decisão não for tomada, «não composto» significa **inacabado**, e é essa a diferença que
+> DEF-811 existe para não deixar apagar.
+>
+> **Ticket necessário:** um que ou (a) ligue o read-path da memória ao loop do agente com o
+> `Goal.MemoryContext` preenchido e a barreira de taint do ADR-005 a mediar, ou (b) emita um ADR
+> no molde do ADR-023 que declare o MEM fora do grafo de build da v1, com guard-test. Origem:
+> `analises/11` §2 e §6 (item 6); AOS-326 registou a postura, não a resolveu.
+
+### N-DEF-812 — cobre DEF-812
+
+> **Idem DEF-811, no eixo do REG, e com um agravante próprio.** O `posture_banner.go` não dizia
+> nada sobre o REG até AOS-326 — ao contrário do credential broker, cuja ausência é declarada em
+> cada arranque desde AOS-070. Um operador lia «Skill/Tool Registry» no `_BRIEF` §2 e não tinha
+> como saber que o nó arranca com catálogo vazio e trust store vazio.
+>
+> **O que corre é real e não deve ser confundido com o que falta:** o congelamento por run e a
+> revalidação por chamada estão compostos na cadeia do Reference Monitor, e o catálogo vazio é
+> default-deny — o nó não executa tools, não as executa mal. O que não existe é o catálogo
+> event-sourced, o host MCP e o TOFU.
+>
+> **Ticket necessário:** um que ou (a) componha `registry.Registry` + `mcp.Host` + `tofu.Monitor`
+> no nó, com trust anchors reais por config, ou (b) emita o ADR que os declare fora do grafo de
+> build da v1. Nota de dependência: o AOS-320 (digest de `mcp_server`) deve estar fechado antes
+> de (a) — ligar o host MCP com o digest constante da classe de egress poria em produção um pino
+> que não distingue servidores. Origem: `analises/11` §3.1 e §6 (item 6).
+
+### N-DEF-813 — cobre DEF-813 — **TICKET CRIADO: AOS-328** (`specs/EPIC-23`)
+
+> **Não há ticket porque não há, hoje, defeito.** As duas custódias que existem fazem a escolha
+> certa, e o AOS-322 fixou-a por teste (`aos322_confirmacao_shred_test.go` assere as três ausências
+> E a premissa que as justifica — que o `Delete` do vault de referência é infalível). O que fica
+> registado é a FORMA do risco: a porta é opcional, e a opcionalidade não distingue «esta custódia
+> não precisa de confirmar» de «esta custódia devia confirmar e não confirma».
+>
+> **Ticket necessário, quando o gatilho ocorrer:** um que torne a escolha imposta em vez de
+> declarada — por exemplo, exigindo que uma custódia composta sob `AOS_MODE=production` implemente
+> a porta, ou que declare explicitamente por que não precisa. Enquanto só existirem as duas
+> custódias actuais, criar esse ticket seria trabalho sobre um risco que nenhuma composição real
+> corre. Origem: `analises/11` §8.2 (N-01, cujo enunciado original foi falsificado — ver AOS-322).
+
+### N-DEF-814 — cobre DEF-814 — **TICKET CRIADO: AOS-329** (`specs/EPIC-23`)
+
+> **O ticket que falta é um gate, e é o irmão do `deferrals`.** Este registo já impõe que todo o
+> marcador de dívida no código tenha um eixo verificável. O que não impõe é que esse eixo esteja
+> **aberto**: uma linha que diz «pendente até AOS-265» continua a passar depois de o AOS-265 fechar,
+> e foi assim que a `analises/11` §5 encontrou seis declarações caducadas de uma vez.
+>
+> **Ticket necessário:** estender `scripts/ci/deferrals.py` para, em cada linha de postura ou
+> comentário que cite `AOS-NNN` como bloqueador, cruzar com o estado do ticket no `specs/EPIC-*.md`
+> e falhar quando o ticket citado estiver marcado implementado. O custo é uma leitura que o
+> `ref-lint` já faz (resolve tickets contra as epics); o que falta é ligá-la ao eixo das
+> declarações. Origem: `analises/11` §5 e AOS-325 AC4, declarado por fechar no próprio ticket.
+
+### N-DEF-815 — cobre DEF-815 — **TICKET CRIADO: AOS-330** (`specs/EPIC-23`)
+
+> **O ticket que falta é a reconciliação de dois namespaces que hoje ninguém compara.** A política
+> de provedores decide sobre a string tal como vem no pedido; o cliente KV v2 decide o path depois de
+> a normalizar. Enquanto os dois forem diferentes, «autorizado» e «o que o Vault serve» não são a
+> mesma coisa — e a divergência é silenciosa nos dois sentidos: um valor que a política considera
+> indeterminado pode produzir um path válido, e dois valores que a política distingue podem dobrar
+> no mesmo segredo.
+>
+> **Ticket necessário, no wiring (DEF-218):** ou a política passa a decidir sobre o valor
+> NORMALIZADO — o mesmo que forma o path —, ou recusa fail-closed qualquer valor que a normalização
+> altere. A segunda via é a mais defensável: um provedor cujo nome não sobreviva ao path não devia
+> ser aceitável de todo, e recusá-lo é uma linha. Não se corrigiu nesta ronda porque o broker não
+> está composto e a postura é `unset` em todo o repositório, pelo que não há caminho de execução que
+> o alcance. Origem: revisão adversarial de AOS-324, medida contra `internal/vault/kvv2.go`.
 
 ### A-DEF-301 — ARBITRAGEM do eixo da cifra do substrato (DEF-301, DEF-303…DEF-307)
 

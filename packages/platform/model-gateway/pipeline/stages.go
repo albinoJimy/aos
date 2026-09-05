@@ -66,9 +66,18 @@ func (IdentityRouting) Process(_ context.Context, ex *Exchange) error {
 // estágios, mantém-se pass-through POR DESENHO, não à espera de substituição.
 //
 // A guarda de layout cache-estável de AOS-060 (cache/layout, cache/freeze,
-// cache/compaction) é composta e consumida na HOT PATH DA MONTAGEM — o
-// runtime/assembler compõe freeze.RunPrefix.Turn -> layout.Guard.Admit por turno,
-// validando byte-a-byte ANTES de a montagem seguir para o GW. O [Exchange] da
+// cache/compaction) FOI DESENHADA para ser composta na HOT PATH DA MONTAGEM —
+// freeze.RunPrefix.Turn -> layout.Guard.Admit por turno, validando byte-a-byte ANTES
+// de a montagem seguir para o GW.
+//
+// CORRECÇÃO (AOS-325): esta nota afirmava essa composição como FACTO, e ela não
+// existe. Medido: `cache/freeze` não tem um único importador não-teste fora de si
+// próprio, e `layout.Guard.Admit` não tem chamador de produção nenhum. O que cumpre
+// de facto o CA de AOS-060 é o PromptAssembler do agent-runtime, que produz um
+// prefixo byte-estável por construção e expõe o seu PrefixHash — a estabilidade vem
+// de lá, não desta guarda. Os três subpacotes de cache existem, estão testados, e não
+// são compostos por ninguém. O que se mantém verdadeiro é a segunda metade: o
+// [Exchange] da
 // pipeline transporta identidade/modelo/região/custo, NÃO a PromptView/runID/turno,
 // pelo que a validação byte-a-byte não é (nem precisa de ser) alcançável por este
 // estágio. Por isso NÃO existe um WithCacheLayoutStage no Gateway (à imagem de

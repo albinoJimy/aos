@@ -41,6 +41,9 @@ bash .claude/skills/run-aos/driver.sh build
 Compiles all five binaries into `$(driver.sh home)/bin` (default `/tmp/aos-driver/bin`).
 Each `packages/cmd/*` is its own Go module — there is no workspace-wide `go build ./...`.
 
+You rarely need this by hand: `up` and `smoke` rebuild on their own whenever `packages/`
+moved ahead of the binaries — see [Binary freshness](#binary-freshness).
+
 To check every module compiles (50 modules, ~2 min):
 
 ```bash
@@ -68,7 +71,9 @@ That is the one command to run first. It brings up a fully composed node, then a
 Real output from this session:
 
 ```
+[driver] binarios frescos (aos com 1m; nada mais recente em packages/)
 [driver] OK no pronto em http://127.0.0.1:18080
+[driver] pre-voo: binarios correspondem ao codigo (aos com 1m)
 [driver] 1/9 submeter run smoke-2145
 [driver] 2/9 observar ate completar
 [driver] OK run smoke-2145: status=completed terminated=true paused=false panicked=false turns=1 final=no `aos`: modelo de referencia (Model Gateway real = EPIC-06)
@@ -76,6 +81,43 @@ Real output from this session:
 ...
 [driver] OK SMOKE VERDE (run=smoke-2145)
 ```
+
+### Binary freshness
+
+**A green `smoke` can no longer be running over stale code.** `up` — and therefore
+`smoke` — rebuilds whenever anything under `packages/` is newer than the binaries in
+`$(driver.sh home)/bin`, and when it does reuse them it prints their age.
+
+It used to build only when the binary was *missing*, so from the second run onward
+`smoke` launched the previous run's binary and reported 9/9 green without exercising a
+single changed line. Measured 2026-09-05 while validating EPIC-23: green smoke, a
+seven-hour-old binary (from before the whole epic), and none of the new boot banners in
+`serve.log`; with a forced `build`, the same smoke went 9/9 **and** the banners appeared.
+
+That is worst exactly where `smoke` is the only evidence that counts — wiring, boot
+banners, HTTP surface (see `agentic-engineering` §7). Those are the changes the unit
+suites do not catch, so a stale binary leaves the suite green *and* the smoke green over
+old code, with nothing to tell you apart.
+
+```bash
+bash .claude/skills/run-aos/driver.sh freshness           # mtime per binary; exit 1 if any lags packages/
+bash .claude/skills/run-aos/driver.sh freshness-selftest   # anti-regression assertion (see below)
+```
+
+`freshness-selftest` ages the binary to 2000-01-01 (it touches nothing in the repo), runs
+the freshness path and asserts a rebuild happened. Restore the old build-if-missing logic
+and it fails with `ensure_build REUTILIZOU o binario obsoleto`. `smoke` carries the same
+assertion as a pre-flight step before its nine numbered steps, so a stale-binary green is
+a hard failure rather than a silent one.
+
+The scan spans **all** of `packages/`, not just `packages/cmd/**`: every `cmd/*` module
+`replace`s the libraries to local paths, so a change in `substrate/` or `control-plane/`
+lands in the binaries too. It skips `*_test.go` and `testdata` (they do not link in),
+costs ~3 s, and a full relink of the five binaries costs ~25 s.
+
+`AOS_DRIVER_ALWAYS_BUILD=1` forces the rebuild. `AOS_DRIVER_NO_BUILD=1` skips the check
+with a loud warning — and makes `smoke` refuse to report green, which is the point: if
+you opted out of the check, the green would not be proof.
 
 ### Interactive driving
 
@@ -114,7 +156,8 @@ What `up` composes (each is otherwise off, and the node says so loudly at boot):
 | `AOS_WORM_PATH` | `state/worm.log` | audit is a volatile MemStore |
 
 Overrides: `AOS_DRIVER_PORT`, `AOS_DRIVER_HOME`, `AOS_DRIVER_READER`, `AOS_DRIVER_BOARD`,
-`AOS_DRIVER_AUTONOMY`.
+`AOS_DRIVER_AUTONOMY`, plus `AOS_DRIVER_ALWAYS_BUILD` / `AOS_DRIVER_NO_BUILD`
+([Binary freshness](#binary-freshness)).
 
 ### Other binaries
 

@@ -20,6 +20,15 @@
 //     consistentes com a autoridade efectiva = autoridade do utilizador ∩ escopo
 //     da classe do agente. Um pedido fora do escopo é NEGADO fail-closed (ver
 //     [ScopeGate]).
+//   - EIXO PROVIDER (AOS-324). A chave do material é {Provider, Region, Capability}
+//     e vem do PEDIDO. O eixo capability é imposto pelo [ScopeGate] (acima); o eixo
+//     region pelo Reference Monitor (`ObligationRegion`, sobre `Resource.Region`);
+//     o eixo PROVIDER é imposto pelo mesmo [ScopeGate] e pela defesa server-side de
+//     dispatch, comparando o provedor pedido com a autoridade efectiva de provedor
+//     (tecto da classe ∩ grants do token). A política declara-se em
+//     [WithClassProviders]; a sua ausência é a postura DECLARADA
+//     [ProviderPostureUnset], selada em cada troca no campo `provider_policy` do
+//     evento. Ver provider.go para a política, o estado por omissão e os limites.
 //   - TTL CURTO + REVOGÁVEL. A credencial downstream tem TTL curto (relógio
 //     injectável) e é revogável por id de lease; expira automaticamente. Uma lease
 //     expirada/revogada não é injectável (a injecção falha, sem entregar o valor).

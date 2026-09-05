@@ -56,6 +56,20 @@ exporters:
   # O QUE ISTO NÃO DÁ, e é metade da verdade: não há retenção histórica nem regras de alerta.
   # Isto torna as séries LEGÍVEIS e RASPÁVEIS; alertar sobre elas exige um Prometheus (ou
   # equivalente) apontado aqui, que é uma decisão de infra por tomar.
+  #
+  # AS REGRAS RECOMENDADAS EXISTEM, ESCRITAS, PARA QUEM TOMAR ESSA DECISÃO (AOS-327). Não
+  # ficam aqui como ficheiro de regras porque nada as carregaria — um artefacto inerte que
+  # parece protecção é pior do que a sua ausência declarada. Vivem no runbook do modo de
+  # falha que cobrem, que é onde quem monta o alerta vai ler o que fazer quando ele
+  # disparar: `docs/runbooks/RB-06.md` §«Regra de alerta recomendada» (crypto-shred por
+  # confirmar — apagamento do Art. 17 não satisfeito).
+  #
+  # UMA ARMADILHA NOMEADA, porque é fácil cair nela: NÃO escrever regras `absent()` sobre
+  # as séries do DSAR. `aos_dsar_vault_shred_unconfirmed` e `aos_dsar_vault_ready` só são
+  # emitidas por uma custódia de KEK que saiba responder (o Vault Transit). Com o vault de
+  # referência in-memory as séries não existem, e isso é CORRECTO — o seu apagamento não
+  # pode falhar, logo não há pendência possível (ver AOS-322 e DEF-813). Uma regra `absent()`
+  # dispararia em todos os deployments de referência.
   prometheus:
     endpoint: "0.0.0.0:9464"
     # Sem sufixo de unidade nem `_total` acrescentado: os nomes que o nó emite são os que este

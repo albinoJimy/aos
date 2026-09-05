@@ -102,23 +102,57 @@ func (r EmbeddingsRequest) Normalize() (EmbeddingsRequest, error) {
 	return r, nil
 }
 
+// wireUsageProbe é a struct-wire INTERNA que decide a presença do objecto `usage`
+// (AOS-321). O ponteiro é o mecanismo: `usage` ausente (ou `null`) deixa o campo a
+// nil; `"usage": {}` produz um ponteiro para um [Usage] a zeros. É a única forma no
+// wire de separar «o provedor não disse nada» de «o provedor disse zero».
+//
+// PORQUE UMA SEGUNDA PASSAGEM e não uma cópia da struct de resposta com o campo em
+// ponteiro: uma cópia teria de repetir todos os campos de [ChatResponse] e de
+// [EmbeddingsResponse] e ficaria a apodrecer em silêncio à primeira vez que um deles
+// mudasse. A sonda só conhece o campo que lhe interessa e não pode divergir do resto.
+type wireUsageProbe struct {
+	Usage *Usage `json:"usage"`
+}
+
+// usageAusente reporta se o corpo JSON dado NÃO traz objecto `usage`. Um corpo que o
+// primeiro Unmarshal já aceitou não volta a falhar aqui; se falhasse, a resposta
+// prudente seria «ausente» (fail-closed), que é o que o erro devolve.
+func usageAusente(data []byte) bool {
+	var probe wireUsageProbe
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return true
+	}
+	return probe.Usage == nil
+}
+
 // UnmarshalChatResponse desserializa o wire JSON de uma resposta de chat para a
 // forma normalizada. Aceita a forma OpenAI; campos ausentes ficam nos zeros.
+//
+// EXCEPÇÃO DELIBERADA A ESSA REGRA: o objecto `usage` (AOS-321). Um 200 de um
+// provedor que o OMITA deixava aqui um [Usage] zerado indistinguível de uma chamada
+// de custo nulo, e esse zero descia até ao agregado por run/árvore e ao evento
+// durável `turn.recorded` — fail-open do burn-down que o ADR-008 exige. A ausência
+// passa a ficar marcada em [Usage.Ausente]: é neste ponto do wire que a distinção
+// existe de facto, e é aqui que ela tem de ser capturada.
 func UnmarshalChatResponse(data []byte) (ChatResponse, error) {
 	var resp ChatResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return ChatResponse{}, err
 	}
+	resp.Usage.Ausente = usageAusente(data)
 	return resp, nil
 }
 
 // UnmarshalEmbeddingsResponse desserializa o wire JSON de uma resposta de
-// embeddings para a forma normalizada.
+// embeddings para a forma normalizada. Marca [Usage.Ausente] pela mesma razão e
+// pelo mesmo mecanismo de [UnmarshalChatResponse] (AOS-321).
 func UnmarshalEmbeddingsResponse(data []byte) (EmbeddingsResponse, error) {
 	var resp EmbeddingsResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return EmbeddingsResponse{}, err
 	}
+	resp.Usage.Ausente = usageAusente(data)
 	return resp, nil
 }
 
@@ -166,9 +200,13 @@ func CollectStream(s ChatStream) (ChatResponse, error) {
 	var (
 		text   string
 		finish string
-		usage  Usage
-		byIdx  = map[int]*ToolCall{}
-		order  []int
+		// AOS-321: um stream que NUNCA traga um chunk com `usage` é o mesmo defeito do
+		// caminho síncrono por outra porta — a reconstrução devolveria um [Usage] a
+		// zeros indistinguível de custo nulo. Parte-se de INDEFINIDO e só um delta com
+		// usage o define. Ver [Usage.Ausente].
+		usage = Usage{Ausente: true}
+		byIdx = map[int]*ToolCall{}
+		order []int
 	)
 	for {
 		d, err := s.Recv()

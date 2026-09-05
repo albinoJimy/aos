@@ -83,14 +83,15 @@ type exchangeInput struct {
 // Broker troca tokens scoped por credenciais downstream, mediado pelo Reference
 // Monitor e apoiado num Vault. Construir com [New]. Concorrente-seguro.
 type Broker struct {
-	rm          *referencemonitor.Monitor
-	vault       vault.Client
-	es          eventstore.EventStore
-	store       *leaseStore
-	clock       func() time.Time
-	ttl         time.Duration
-	toolID      string
-	classScopes map[string][]string
+	rm             *referencemonitor.Monitor
+	vault          vault.Client
+	es             eventstore.EventStore
+	store          *leaseStore
+	clock          func() time.Time
+	ttl            time.Duration
+	toolID         string
+	classScopes    map[string][]string
+	classProviders map[string][]string // AOS-324; nil ⇒ ProviderPostureUnset
 
 	seq atomic.Uint64 // contador determinista de ids de lease
 }
@@ -117,6 +118,20 @@ func WithClassScopes(m map[string][]string) Option {
 		}
 		b.classScopes = cp
 	}
+}
+
+// WithClassProviders declara a política do eixo PROVIDER (AOS-324): o mapa
+// AgentClass → provedores autorizados, consultado tanto pelo [ScopeGate] que
+// [Broker.ScopeGate] produz como pela verificação defensiva server-side de dispatch.
+//
+// Declará-la é o INTERRUPTOR da imposição: o broker passa a
+// [ProviderPostureEnforced] e um pedido para um provedor fora da autoridade
+// efectiva é NEGADO ([ErrProviderOutOfScope]). Sem esta opção o broker fica em
+// [ProviderPostureUnset] — estado DECLARADO, devolvido por [Broker.ProviderPosture]
+// e SELADO em cada troca (`provider_policy` no evento). É pré-condição do wiring
+// (DEF-218) que o nó a declare. Use [ProviderAny] para uma classe sem restrição.
+func WithClassProviders(m map[string][]string) Option {
+	return func(b *Broker) { b.classProviders = copyProviderPolicy(m) }
 }
 
 // New constrói o Broker e REGISTA a troca como ToolFunc no Reference Monitor: a
@@ -162,11 +177,22 @@ func New(rm *referencemonitor.Monitor, vlt vault.Client, es eventstore.EventStor
 // ToolID devolve o id sob o qual a troca está registada no RM.
 func (b *Broker) ToolID() string { return b.toolID }
 
-// ScopeGate devolve o hook de escopo (utilizador ∩ classe) a inserir na cadeia do
-// Reference Monitor para NEGAR trocas fora do escopo já na mediação.
+// ScopeGate devolve o hook de escopo a inserir na cadeia do Reference Monitor para
+// NEGAR trocas fora do escopo já na mediação, nos DOIS eixos que o broker impõe:
+// capability (utilizador ∩ classe, AOS-057) e provider (AOS-324). Propaga a
+// política registada em [WithClassProviders] — é a via RECOMENDADA de composição,
+// porque garante que o gate e a guarda de composição do dispatch partilham a MESMA
+// política. A AUTORIDADE do eixo é este gate, que decide sobre o principal já
+// verificado pelo hook de identidade — ver a nota em [Broker.dispatch].
 func (b *Broker) ScopeGate() ScopeGate {
-	return NewScopeGate(b.toolID, b.classScopes)
+	return NewScopeGate(b.toolID, b.classScopes, WithGateClassProviders(b.classProviders))
 }
+
+// ProviderPosture devolve a postura DECLARADA do eixo provider deste broker
+// ([ProviderPostureEnforced] se [WithClassProviders] foi declarado,
+// [ProviderPostureUnset] caso contrário). É o valor selado em cada troca no campo
+// `provider_policy` do evento, e o que o wiring (DEF-218) deve assertar.
+func (b *Broker) ProviderPosture() ProviderPosture { return providerPosture(b.classProviders) }
 
 // Exchange troca o token scoped por uma credencial downstream, MEDIADA pelo
 // Reference Monitor. Devolve um [Handle] OPACO (nunca o segredo). Uma decisão que
@@ -210,7 +236,7 @@ func (b *Broker) Exchange(ctx context.Context, req ExchangeRequest) (Handle, err
 		return "", err // cancelamento de contexto
 	}
 	if dec.Effect != referencemonitor.EffectPermit {
-		return "", &DeniedError{Effect: string(dec.Effect), Code: dec.Code, Reason: dec.Reason}
+		return "", &DeniedError{Effect: string(dec.Effect), Code: dec.Code, Reason: dec.Reason, DeniedBy: dec.DeniedBy}
 	}
 	if dec.ToolErr != nil {
 		return "", dec.ToolErr // ex.: material ausente no vault, escopo inconsistente
@@ -239,6 +265,32 @@ func (b *Broker) dispatch(ctx context.Context, input []byte) ([]byte, error) {
 		}
 	}
 
+	// Verificação DEFENSIVA do eixo PROVIDER server-side (AOS-324), no mesmo molde:
+	// a chave do Vault é montada a partir do PEDIDO, pelo que o provedor tem de ser
+	// autorizado ANTES de a chave existir. Corre SEMPRE — sob
+	// [ProviderPostureUnset] só nega o provedor vazio; sob
+	// [ProviderPostureEnforced] impõe a autoridade efectiva de provedor. A negação é
+	// ATRIBUÍVEL ([ErrProviderOutOfScope]/[ErrProviderUndetermined]) e NUNCA se
+	// confunde com [ErrNoMaterial].
+	//
+	// ISTO NÃO É UMA SEGUNDA OPINIÃO, e a primeira versão deste comentário chamava-lhe
+	// «defesa gémea» — o que a validação adversarial mostrou ser falso. `in` foi
+	// serializado em [Broker.Exchange] ANTES de `rm.Mediate`, pelo que `in.AgentClass` e
+	// `in.UserAuthority` são o que o CHAMADOR declarou, e nunca são reescritos. O gate
+	// decide sobre `call.Principal`, que o hook de identidade SUBSTITUI por inteiro pelos
+	// valores do token verificado. São fontes DIFERENTES: numa cadeia sem hook de
+	// identidade real, esta verificação decide sobre dados de quem pede.
+	//
+	// O QUE ELA É, e vale por isso: uma guarda de COMPOSIÇÃO. Impede que um broker montado
+	// sem o [Broker.ScopeGate] na cadeia chegue ao Vault sem que o eixo provider tenha sido
+	// olhado, e nega fail-closed o provedor vazio em qualquer postura. A AUTORIDADE do eixo
+	// é o gate sobre o principal verificado — não isto. Fechar a divergência exigiria que a
+	// [referencemonitor.ToolFunc] recebesse o principal mediado em vez de bytes opacos;
+	// enquanto não receber, esta linha não deve ser lida como redundância de segurança.
+	if err := authorizeProvider(b.classProviders, in.AgentClass, in.UserAuthority, in.Provider); err != nil {
+		return nil, err
+	}
+
 	key := vault.Key{Provider: in.Provider, Region: in.Region, Capability: in.Capability}
 	secret, err := b.vault.Fetch(ctx, key)
 	if err != nil {
@@ -262,6 +314,7 @@ func (b *Broker) dispatch(ctx context.Context, input []byte) ([]byte, error) {
 		RunID:        in.RunID,
 		PrincipalNHI: in.PrincipalNHI,
 		Resource:     in.ResourceValue,
+		Provider:     in.Provider,
 		Region:       in.Region,
 		Capability:   in.Capability,
 		IssuedAt:     now,
@@ -284,22 +337,31 @@ type exchangePayload struct {
 	Handle       string `json:"handle"`
 	PrincipalNHI string `json:"principal_nhi"`
 	Resource     string `json:"resource"`
+	Provider     string `json:"provider,omitempty"`
 	Region       string `json:"region,omitempty"`
 	Capability   string `json:"capability"`
 	IssuedAt     string `json:"issued_at"`
 	ExpiresAt    string `json:"expires_at"`
+	// ProviderPolicy sela a POSTURA do eixo provider em vigor NESTA troca
+	// ("enforced"/"unset", ver [ProviderPosture]). É o que torna o estado por
+	// omissão LEGÍVEL no audit em vez de silencioso: uma troca emitida sem política
+	// de provedores declarada fica marcada como tal, greppável no Event Store
+	// (AOS-324).
+	ProviderPolicy string `json:"provider_policy"`
 }
 
 func (b *Broker) recordExchange(ctx context.Context, l *Lease) error {
 	payload, err := json.Marshal(exchangePayload{
-		LeaseID:      l.ID,
-		Handle:       string(l.Handle),
-		PrincipalNHI: l.PrincipalNHI,
-		Resource:     l.Resource,
-		Region:       l.Region,
-		Capability:   l.Capability,
-		IssuedAt:     l.IssuedAt.UTC().Format(time.RFC3339Nano),
-		ExpiresAt:    l.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		LeaseID:        l.ID,
+		Handle:         string(l.Handle),
+		PrincipalNHI:   l.PrincipalNHI,
+		Resource:       l.Resource,
+		Provider:       l.Provider,
+		Region:         l.Region,
+		Capability:     l.Capability,
+		IssuedAt:       l.IssuedAt.UTC().Format(time.RFC3339Nano),
+		ExpiresAt:      l.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		ProviderPolicy: string(b.ProviderPosture()),
 	})
 	if err != nil {
 		return err

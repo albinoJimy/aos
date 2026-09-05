@@ -26,6 +26,16 @@ var (
 	// pedida não pertence à autoridade efectiva utilizador ∩ classe). Fail-closed.
 	ErrOutOfScope = errors.New("broker: pedido fora do escopo do token (utilizador ∩ classe)")
 
+	// ErrProviderOutOfScope — o PROVEDOR pedido não pertence à autoridade efectiva
+	// de provedor do principal (tecto da classe ∩ grants do token, AOS-324).
+	// Fail-closed e ATRIBUÍVEL: é POLÍTICA, não ausência de material — nunca
+	// confundir com [ErrNoMaterial] (errors.Is distingue-os).
+	ErrProviderOutOfScope = errors.New("broker: provedor fora da autoridade do principal (eixo provider)")
+	// ErrProviderUndetermined — o pedido não determina um provedor (campo vazio, ou
+	// envelope de troca ilegível sob política declarada). Sem provedor não há chave
+	// legítima no Vault: NEGA fail-closed nas duas posturas ([ProviderPosture]).
+	ErrProviderUndetermined = errors.New("broker: provedor indeterminado no pedido de troca")
+
 	// ErrUnknownHandle — o handle apresentado à injecção é desconhecido (não
 	// corresponde a nenhuma lease emitida). Fail-closed, sem expor o valor.
 	ErrUnknownHandle = errors.New("broker: handle desconhecido")
@@ -41,8 +51,17 @@ type DeniedError struct {
 	Effect string
 	Code   string
 	Reason string
+	// DeniedBy é o NOME do hook que negou/escalou (ex.: "broker-scope"), propagado
+	// de `Decision.DeniedBy`. Torna a negação ATRIBUÍVEL a um ponto de decisão
+	// concreto — quem lê sabe QUEM negou, não só que foi negado (AOS-324). Vazio
+	// quando a decisão não nomeia um hook.
+	DeniedBy string
 }
 
 func (e *DeniedError) Error() string {
-	return "broker: troca negada pela mediacao (" + e.Effect + "/" + e.Code + "): " + e.Reason
+	s := "broker: troca negada pela mediacao (" + e.Effect + "/" + e.Code
+	if e.DeniedBy != "" {
+		s += " por " + e.DeniedBy
+	}
+	return s + "): " + e.Reason
 }
