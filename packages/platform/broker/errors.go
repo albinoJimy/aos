@@ -36,6 +36,19 @@ var (
 	// legítima no Vault: NEGA fail-closed nas duas posturas ([ProviderPosture]).
 	ErrProviderUndetermined = errors.New("broker: provedor indeterminado no pedido de troca")
 
+	// ErrResourceOutOfScope — o provedor está autorizado, mas o RECURSO de destino não lhe
+	// pertence: o host pedido não consta da allowlist desse provedor (AOS-331).
+	//
+	// É DISTINTO de [ErrProviderOutOfScope] de propósito. «Este provedor não é teu» e «este
+	// destino não é deste provedor» são diagnósticos diferentes e levam o operador a sítios
+	// diferentes — a primeira é a política de classe, a segunda é a allowlist de hosts.
+	ErrResourceOutOfScope = errors.New("broker: recurso de destino fora do escopo do provedor autorizado")
+
+	// ErrResourceUndetermined — sob política declarada, o recurso não permite decidir: valor
+	// que não se analisa, ou tipo que não é de rede. Informação insuficiente é recusa, a mesma
+	// postura do envelope ilegível no eixo provider (AOS-331).
+	ErrResourceUndetermined = errors.New("broker: recurso de destino indeterminado (nao analisavel ou tipo nao suportado)")
+
 	// ErrUnknownHandle — o handle apresentado à injecção é desconhecido (não
 	// corresponde a nenhuma lease emitida). Fail-closed, sem expor o valor.
 	ErrUnknownHandle = errors.New("broker: handle desconhecido")

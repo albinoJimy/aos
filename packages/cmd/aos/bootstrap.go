@@ -539,6 +539,16 @@ type Config struct {
 	// é INFRA-ORG por trás desta porta; um HSM key-never-leaves exige a porta de envelope (residual
 	// nomeado com eixo em DEF-302). nil ⇒ referência in-memory demo-grade.
 	DSARVault audit.KeyVault
+	// ProductionMode espelha `AOS_MODE=production` (AOS-328). Existe como CAMPO e não como
+	// leitura de ambiente dentro do `Bootstrap` porque as guardas de produção têm de ser
+	// exercitáveis sem mexer no ambiente do processo — a mesma razão pela qual `hardened`
+	// deriva de `cfg.IssuerPubKey` e não de um `os.Getenv` a meio da composição.
+	ProductionMode bool
+	// ShredDestroyUnconditional é a DECLARAÇÃO EXPLÍCITA de que a custódia composta destrói
+	// incondicionalmente e por isso não precisa de confirmar (AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL,
+	// AOS-328). É o escape da guarda de produção, no molde de AOS_TLS_EXTERNAL_TERMINATION:
+	// aceita-se o estado, mas só depois de alguém o ter DECLARADO.
+	ShredDestroyUnconditional bool
 	// BrokerVault é o cliente Vault REAL (KV v2) da custódia de CREDENCIAIS DOWNSTREAM
 	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
 	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
@@ -1298,6 +1308,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// ela realmente vive. FAIL-CLOSED: um vault injectado que falha propaga o erro pela cadeia de
 	// cifra/shred; NUNCA há fallback silencioso para o in-memory.
 	dsarVaultInjected := cfg.DSARVault != nil
+	// AOS-328 — SOB PRODUÇÃO, UMA CUSTÓDIA INJECTADA TEM DE SABER CONFIRMAR A DESTRUIÇÃO.
+	//
+	// Sem confirmador o fluxo DSAR sela `dsar.key_destroyed` SEM PERGUNTAR. O AOS-322 pôs isso
+	// no banner («NAO ARMADA, e NAO E CORRECTO») — e declarar não é impor. O risco nomeado no
+	// `DEF-813` é a TERCEIRA custódia: um KMS que POSSA falhar a destruir e não implemente a
+	// porta reabre, pela via da omissão, o defeito que a porta foi criada para fechar.
+	//
+	// SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA. O vault de referência compõe sem declaração
+	// nenhuma — transformar o modo de desenvolvimento numa configuração cerimoniosa é o custo
+	// que o ticket proíbe. A verificação corre AQUI e não em `nodeConfigFromEnv` porque a
+	// custódia pode ser injectada programaticamente, sem passar pelo ambiente.
+	if cfg.ProductionMode && dsarVaultInjected && !cfg.ShredDestroyUnconditional {
+		if confirmadorDeShredDe(cfg.DSARVault) == nil {
+			return nil, ErrProductionNeedsShredConfirmation
+		}
+	}
 	var dsarVault audit.KeyVault
 	if dsarVaultInjected {
 		dsarVault = cfg.DSARVault
@@ -2414,6 +2440,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		brokerVaultSet = &brokerVaultSettings{Addr: cfg.BrokerVaultAddr, KVMount: cfg.BrokerVaultKVMount}
 	}
 	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
+		log("%s", line)
+	}
+	// POLÍTICA DO BROKER (AOS-332): os DOIS eixos — provider (AOS-324/AOS-330) e
+	// recurso↔provedor (AOS-331). O `DEF-218` exige assertar que a postura selada diz
+	// `enforced`, mas isso só é verificável DEPOIS da primeira troca bem-sucedida; um nó em
+	// `unset` que ainda não trocou nada era indistinguível de um em `enforced`. Esta linha
+	// quebra a circularidade: a postura passa a ser observável no ARRANQUE.
+	//
+	// O ESTADO DERIVA DO QUE EXISTE, e o que existe é nada: o nó não constrói `*broker.Broker`
+	// (`broker.New` não tem chamador de produção), pelo que `Composto` é falso e a linha
+	// declara NÃO-APLICABILIDADE em vez de inventar um `unset`. No dia em que o wiring ligar,
+	// é aqui que os dois campos passam a vir do broker composto — e o banner deixa de precisar
+	// de mudar de forma.
+	for _, line := range brokerPolicyPostureBanner(posturaDaPoliticaDoBroker{}) {
 		log("%s", line)
 	}
 	// SERVIÇOS DE PLATAFORMA (AOS-326). MEM e REG eram os dois únicos serviços do

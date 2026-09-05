@@ -31,6 +31,8 @@ import (
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+
+	"github.com/aos-ref/platform/broker"
 )
 
 // BudgetScopeDeclaration é o ALCANCE da v1 do orçamento — a FRASE, não uma paráfrase dela.
@@ -525,4 +527,58 @@ func exhaustionPromptPostureBanner(armed bool, ttl time.Duration) []string {
 	return []string{
 		"prompt de exaustao de orcamento (AOS-263): NAO ARMADO — falta a este no pelo menos uma das pecas sem as quais a pergunta seria uma armadilha: o registo duravel de pendentes e o registo de retoma (four-eyes, AOS_APPROVERS_FILE — sem eles nao ha a quem perguntar nem como re-hospedar o run) ou a ROTA DE DECISAO composta (pelo menos um operador pinado em AOS_OPERATORS e WORM — sem eles ninguem poderia responder, nem a resposta poderia ser selada). O comportamento ao cruzar o limiar e o de AOS-262, palavra por palavra: avisa UMA VEZ no log (e no span com OTLP) e o run CONTINUA ate ao tecto, ao MaxTurns, ao disjuntor ou ao steer do operador. Para o armar, componha AS DUAS metades: o four-eyes (AOS_APPROVERS_FILE) e os operadores do canal de controlo (AOS_OPERATORS). Eixo: AOS-263 / EPIC-20",
 	}
+}
+
+// posturaDaPoliticaDoBroker é o estado composto dos dois eixos de política do broker que o
+// banner declara (AOS-332). Deriva do que o composition-root construiu, nunca da intenção da
+// config — a mesma disciplina de [posturaDosServicosDePlataforma].
+type posturaDaPoliticaDoBroker struct {
+	// Composto: o nó construiu um `*broker.Broker`. HOJE É SEMPRE FALSO, e é essa a
+	// informação — ver o doc de [brokerPolicyPostureBanner].
+	Composto bool
+	// Provider e Recurso só têm significado quando Composto é verdadeiro.
+	Provider broker.ProviderPosture
+	Recurso  broker.ResourceBindingPosture
+}
+
+// brokerPolicyPostureBanner declara, no arranque, a postura dos DOIS eixos de política do
+// broker: o eixo *provider* (AOS-324/AOS-330) e o eixo *recurso↔provedor* (AOS-331).
+//
+// PORQUE ESTA LINHA PASSA A EXISTIR. O `DEF-218` exige que o wiring do broker declare a política
+// de provedores e ASSERTE que o campo `provider_policy` selado diz `enforced` — mas isso só é
+// verificável a partir de um `credential.exchange.issued`, ou seja DEPOIS da primeira troca
+// bem-sucedida. Um nó em `unset` que ainda não trocou nada era indistinguível de um em
+// `enforced`. Esta linha quebra a circularidade: a postura passa a ser observável no ARRANQUE,
+// antes de qualquer troca.
+//
+// O RAMO NÃO-COMPOSTO É O QUE HOJE CORRE, E DIZ ISSO. `broker.New` não tem chamador de produção
+// — o nó prepara o cliente Vault e mais nada. Declarar `unset` derivado de um `nil` que nunca
+// chega a ser política seria a afirmação de estado que o cabeçalho deste ficheiro proíbe: uma
+// linha que fala de uma postura sobre algo que não está composto é pior do que o silêncio que
+// substitui. Por isso o ramo não-composto declara a NÃO-APLICABILIDADE e nomeia o que o wiring
+// terá de declarar — que é informação útil e verdadeira, ao contrário de um `unset` inventado.
+func brokerPolicyPostureBanner(p posturaDaPoliticaDoBroker) []string {
+	if !p.Composto {
+		return []string{
+			"politica do broker (AOS-324/AOS-330/AOS-331): NAO-APLICAVEL — o no NAO compoe o platform/broker (broker.New nao tem chamador de producao), logo NAO HA postura de politica a declarar. Nao se le isto como `unset`: `unset` e uma politica nao-declarada num broker que existe; aqui o broker nao existe. QUANDO O WIRING LIGAR (DEF-218), tera de declarar DOIS eixos: broker.WithClassProviders (quem troca para que provedor) e broker.WithGateProviderHosts (para que destino a credencial desse provedor pode ser apresentada), e assertar que a negacao sela ambos. Eixo: DEF-218",
+		}
+	}
+	return []string{
+		"politica do broker / eixo provider (AOS-324/AOS-330): " + string(p.Provider) + " — " + descricaoDaPosturaProvider(p.Provider),
+		"politica do broker / eixo recurso<->provedor (AOS-331): " + string(p.Recurso) + " — " + descricaoDaPosturaRecurso(p.Recurso),
+	}
+}
+
+func descricaoDaPosturaProvider(p broker.ProviderPosture) string {
+	if p == broker.ProviderPostureEnforced {
+		return "politica DECLARADA: o provedor pedido tem de constar da autoridade efectiva da classe, e um valor que a normalizacao do path do Vault altere e RECUSADO (AOS-330)"
+	}
+	return "politica NAO declarada: o eixo nao e imposto por conjunto. Um provedor indeterminado continua a ser recusado, mas qualquer provedor identificavel passa"
+}
+
+func descricaoDaPosturaRecurso(p broker.ResourceBindingPosture) string {
+	if p == broker.ResourceBindingEnforced {
+		return "allowlist DECLARADA: o host do recurso tem de constar da lista do provedor pedido, e um recurso que nao permita decidir e RECUSADO"
+	}
+	return "allowlist NAO declarada: o eixo nao e imposto. Um provedor autorizado alcanca qualquer destino — e o que o AOS-331 fecha quando ligado"
 }
