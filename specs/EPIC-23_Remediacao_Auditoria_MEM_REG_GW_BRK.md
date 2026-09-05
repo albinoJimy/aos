@@ -97,7 +97,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
 | O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
-| A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — condicional |
+| A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — **implementado** |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
 +128% de CPU no *parse* (44,4 µs/op contra 101,1 µs/op num corpo de ~11 KB, medido por benchmark).
@@ -1362,28 +1362,83 @@ razão escrita.
 
 ### Critérios de Aceitação
 
-- [ ] A credencial entra por **FICHEIRO MONTADO**, nunca por variável de ambiente — é a mesma
+- [x] A credencial entra por **FICHEIRO MONTADO**, nunca por variável de ambiente — é a mesma
       regra que motivou a recusa do URL, e viola-la aqui reabriria a fuga por outra porta
-- [ ] Formato do ficheiro declarado e validado fail-closed (uma linha `utilizador:senha`, no molde
+- [x] Formato do ficheiro declarado e validado fail-closed (uma linha `utilizador:senha`, no molde
       do `-u` do `curl`); ficheiro ilegível, vazio ou sem `:` **ABORTA** o arranque
-- [ ] **Mutuamente exclusivo com o Bearer.** Os dois definidos ⇒ **ABORTA** com erro atribuível.
+- [x] **Mutuamente exclusivo com o Bearer.** Os dois definidos ⇒ **ABORTA** com erro atribuível.
       Dois `Authorization` é um defeito; escolher um em silêncio é pior, porque o operador fica a
       crer que a outra credencial está a ser usada
-- [ ] Nenhum caminho ecoa a credencial — nem o utilizador: o banner de postura, as mensagens de
+- [x] Nenhum caminho ecoa a credencial — nem o utilizador: o banner de postura, as mensagens de
       erro do adaptador e o `/readyz` seguem o critério que o AOS-333 fixou
-- [ ] O banner **declara qual dos esquemas está composto**, derivado do estado e não da intenção
+- [x] O banner **declara qual dos esquemas está composto**, derivado do estado e não da intenção
       de configuração — um nó que diz «attestation LIGADA» sem dizer como se autentica esconde
       metade da postura
-- [ ] O critério de transporte **não relaxa**: Basic continua sujeito a `https`, ou `http` só em
+- [x] O critério de transporte **não relaxa**: Basic continua sujeito a `https`, ou `http` só em
       loopback. Basic sobre claro é a credencial em claro, e é o mesmo eixo do AOS-249
-- [ ] Um teste que prove o header construído, a exclusão mútua a abortar, e a ausência da senha e
+- [x] Um teste que prove o header construído, a exclusão mútua a abortar, e a ausência da senha e
       do utilizador em erro e banner
-- [ ] `deploy/node/README.md` ganha a entrada, e a nota de migração do AOS-333 passa a apontar
+- [x] `deploy/node/README.md` ganha a entrada, e a nota de migração do AOS-333 passa a apontar
       para cá em vez de dizer só «termine a autenticação no proxy»
 
 ### Estado
 
-**POR IMPLEMENTAR — CONDICIONAL.** P3. Só sobe se alguém nomear um deployment que usava a
-basic-auth embutida no URL. Enquanto ninguém o fizer, a migração documentada no AOS-333 é a
-resposta, e este ticket existe para que a lacuna esteja **registada** em vez de descoberta por um
-operador cujo arranque abortou.
+**IMPLEMENTADO.** Era P3 e condicional; a condição declarada — «só sobe se alguém o pedir» —
+foi cumprida por decisão do dono do repositório. O custo que o ticket registava mantém-se e é o
+que molda o desenho: passa a haver **dois** esquemas de autenticação nesta superfície, e a
+exclusão mútua fail-closed entre eles é o que impede que isso vire ambiguidade sobre qual
+credencial está realmente em uso.
+
+**A INVARIANTE VIVE NO TIPO QUE A VIOLARIA.** A exclusão mútua está no construtor do adaptador
+(`integration.ErrRemoteAttestationAuth`) e não no wiring do nó, porque é o adaptador que emitiria
+os dois cabeçalhos. Pô-la em `nodeConfigFromEnv` dispararia **antes** de a URL ser sequer
+validada, e daria ao operador uma queixa sobre a credencial quando o que está errado é o
+endereço. A ordem passa a ser a dos dois Vaults: transporte primeiro, credencial depois — e há um
+teste que a fixa, com os dois erros presentes ao mesmo tempo.
+
+**GUARDA-SE O CABEÇALHO, NÃO A CREDENCIAL.** O campo `token` deu lugar a `authHeader`, o valor já
+formado. Há exactamente **um** sítio onde uma credencial de attestation é formatada — o
+construtor — e o caminho de pedido não volta a tocar-lhe; um esquema novo não acrescenta um `if`
+ao envio.
+
+**O BANNER DECLARA O ESQUEMA, DERIVADO DO ESTADO.** `AuthScheme()` lê o verificador
+**construído**, não a configuração pedida. Antes disto, um nó que autentica e um nó que fala
+anónimo com o componente produziam a mesma linha — e são posturas materialmente diferentes. O
+teste de controlo exige que os três estados produzam linhas **distinguíveis**, porque um banner
+que dissesse sempre o mesmo passaria cada caso isolado.
+
+**FAIL-CLOSED DO FORMATO**, no molde do `-u` do curl: sem `:` recusa, sem utilizador antes do `:`
+recusa, e caracteres de controlo recusam — um `\r\n` numa credencial lida de ficheiro é
+**injecção de cabeçalho**, e o `net/http` recusá-lo-ia no envio, mas isso seria uma falha
+por-verificação num gate que já negou a aprovação. A senha **pode** conter `:`; só o primeiro
+separa, e há um caso para isso — sem ele, uma implementação que partisse por todos os `:`
+passaria os testes de recusa e rejeitaria senhas geradas legítimas.
+
+### Duas coisas que este ticket fechou e não estavam nos seus critérios
+
+**O caminho da attestation era o outlier, e agora aborta em ficheiro vazio.** Os dois Vaults
+abortam num ficheiro de credencial vazio; este lia-o, aparava e seguia com a credencial a vazio —
+ou seja, com o nó a falar **sem autenticação nenhuma**, e sem nada no arranque a dizê-lo. Foi
+fechado porque era tecnicamente necessário: o critério do banner exige declarar o esquema
+composto, e um ficheiro vazio tornaria essa declaração dependente de um estado que ninguém pediu.
+**É uma QUEBRA** — um deployment com ficheiro de token vazio arranca hoje e passa a abortar — e
+está declarada em `deploy/node/README.md` e no `CHANGELOG`.
+
+**O erro de leitura deixou de ecoar o caminho, e isso apareceu num teste meu.** Escrevi
+`TestAOS338_ACredencialNaoEntraPorVariavelDeAmbiente` e ele ficou vermelho contra o meu próprio
+código: se o operador puser a credencial **na variável** em vez do caminho — o erro que uma
+variável chamada `..._PATH` convida —, então «o caminho» É a credencial, e eu ecoava-o. Passa a
+nomear a **variável** e a **classe** da falha (inexistente / sem permissão / ilegível), nunca o
+valor. É o critério do «malformada (valor omitido)» do AOS-333.
+
+Onze funções de teste em dois módulos, com **quatro controlos**: o Bearer não se partiu ao
+acrescentar o segundo esquema, falar sem autenticação continua a ser composição legítima, o
+loopback continua aceite com Basic, e os três estados do banner são distinguíveis. Cinco provas
+de mutação — exclusão mútua, base64, recusa de controlos, aborto em vazio, e o banner a derivar
+do estado — todas vermelhas com a asserção certa e revertidas limpas.
+
+**LIMITES DECLARADOS.** O componente de referência `cmd/aos-attestation` **não lê `Authorization`
+de todo** — o gap já existia para o Bearer — pelo que o esquema novo não é exercitável
+ponta-a-ponta contra o binário do repositório, só contra `httptest`. E o molde de leitura de
+credencial dos **dois Vaults** ecoa o caminho na mensagem de erro, que é o mesmo defeito latente
+que este ticket fechou do seu lado; fica nomeado em vez de arrastado.

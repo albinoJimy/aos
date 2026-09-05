@@ -50,6 +50,17 @@ var (
 	// ErrRemoteAttestationStatus — o componente respondeu com status != 200 (inclui a recusa
 	// legítima da attestation, que o gate converte em ErrDeviceAttestationRejected).
 	ErrRemoteAttestationStatus = errors.New("integration: attestation remota: resposta não-OK do componente de autoridade")
+	// ErrRemoteAttestationAuth — a configuração de AUTENTICAÇÃO do verificador é inválida
+	// (AOS-338): dois esquemas definidos ao mesmo tempo, ou um par basic malformado.
+	//
+	// DOIS ESQUEMAS ABORTAM, e não se escolhe um em silêncio. Um pedido HTTP tem UM cabeçalho
+	// `Authorization`: com os dois definidos, um deles seria descartado — e o operador ficaria
+	// a crer que a credencial descartada estava em uso. Um segredo que se julga activo e não
+	// está é pior do que nenhum, porque ninguém o vai rodar nem revogar.
+	//
+	// A MENSAGEM NUNCA INCLUI A CREDENCIAL, nem o utilizador: numa basic-auth o utilizador
+	// identifica o principal e a senha vem colada a ele, que é o critério do AOS-333.
+	ErrRemoteAttestationAuth = errors.New("integration: attestation remota: autenticação inválida (esquemas em conflito, ou par basic malformado)")
 	// ErrRemoteAttestationBody — resposta ilegível, acima do tecto, ou sem um device_id
 	// utilizável.
 	ErrRemoteAttestationBody = errors.New("integration: attestation remota: resposta malformada (fail-closed)")
@@ -77,6 +88,20 @@ type RemoteAttestationConfig struct {
 	// AuthToken, quando não-vazio, é enviado como `Authorization: Bearer <token>`. NUNCA é
 	// registado em erros (os erros deste ficheiro não incluem cabeçalhos nem corpo do pedido).
 	AuthToken string
+	// BasicAuth, quando não-vazio, é o par `utilizador:senha` enviado como
+	// `Authorization: Basic <base64>` — o molde do `-u` do curl (AOS-338).
+	//
+	// PORQUE EXISTE. O AOS-333 passou a recusar credenciais embutidas no URL, e isso fechou
+	// uma via que FUNCIONAVA: o `net/http` converte `req.URL.User` em `Authorization: Basic`,
+	// pelo que um verificador atrás de um reverse-proxy com basic-auth autenticava assim. A
+	// recusa mantém-se — uma credencial num URL de ambiente aparece na tabela de processos, no
+	// `inspect` do contentor e em qualquer erro que ecoe o endereço —, e este campo é o
+	// caminho que a substitui: a credencial entra por FICHEIRO MONTADO, nunca por variável de
+	// ambiente, que é a regra do ADR-006 e a mesma que motivou a recusa do URL.
+	//
+	// MUTUAMENTE EXCLUSIVO com [RemoteAttestationConfig.AuthToken]. Ver
+	// [ErrRemoteAttestationAuth]: dois esquemas definidos ABORTAM a construção.
+	BasicAuth string
 	// Client permite injectar um *http.Client (testes, mTLS, proxies da organização). nil ⇒
 	// cliente próprio com o Timeout acima.
 	Client *http.Client
@@ -86,10 +111,38 @@ type RemoteAttestationConfig struct {
 // componente de autoridade externo. Seguro para uso concorrente (o *http.Client é-o e o resto
 // é imutável).
 type RemoteDeviceAttestationVerifier struct {
-	url     string
-	token   string
-	client  *http.Client
-	timeout time.Duration
+	url string
+	// authHeader é o VALOR JÁ FORMADO do cabeçalho `Authorization`, ou vazio para «sem
+	// autenticação». Guardar o cabeçalho em vez da credencial crua é deliberado (AOS-338): há
+	// exactamente UM sítio onde a credencial é formatada — o construtor —, e o caminho de
+	// pedido não volta a tocar-lhe. Um esquema novo não acrescenta um `if` ao envio.
+	authHeader string
+	// authScheme é o NOME do esquema composto ("bearer", "basic") ou vazio. Existe para o
+	// banner de postura poder declarar COMO o nó se autentica, derivado do estado construído e
+	// não da intenção de configuração — ver [RemoteDeviceAttestationVerifier.AuthScheme].
+	authScheme string
+	client     *http.Client
+	timeout    time.Duration
+}
+
+// Esquemas de autenticação que o adaptador sabe compor. Nomes minúsculos e estáveis: entram no
+// banner de arranque, que é lido por operadores e por testes.
+const (
+	AuthSchemeBearer = "bearer"
+	AuthSchemeBasic  = "basic"
+)
+
+// AuthScheme devolve o esquema de autenticação COMPOSTO ("bearer", "basic") ou vazio quando o
+// verificador fala com o componente sem autenticação nenhuma.
+//
+// É a fonte do banner de postura, e devolve o que foi CONSTRUÍDO — não o que a configuração
+// pediu. Um nó que declara «attestation LIGADA» sem dizer como se autentica esconde metade da
+// postura, e um banner que lesse a intenção mentiria no dia em que a intenção não se realizasse.
+func (r *RemoteDeviceAttestationVerifier) AuthScheme() string {
+	if r == nil {
+		return ""
+	}
+	return r.authScheme
 }
 
 // remoteAttestationRequest/remoteAttestationResponse são o wire (base64 std, como o resto da
@@ -117,16 +170,75 @@ func NewRemoteDeviceAttestationVerifier(cfg RemoteAttestationConfig) (*RemoteDev
 	if timeout <= 0 {
 		timeout = defaultRemoteAttestationTimeout
 	}
+	// A AUTENTICAÇÃO É RESOLVIDA DEPOIS DO TRANSPORTE, e a ordem é deliberada: é a mesma dos
+	// dois Vaults (`broker_vault_env.go`, `main.go`), que validam o endereço ANTES de tocarem
+	// na credencial. Um endereço inaceitável não deve produzir uma queixa sobre a credencial.
+	header, scheme, err := resolveAttestationAuth(cfg.AuthToken, cfg.BasicAuth)
+	if err != nil {
+		return nil, err
+	}
 	client := cfg.Client
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
 	return &RemoteDeviceAttestationVerifier{
-		url:     cfg.URL,
-		token:   cfg.AuthToken,
-		client:  client,
-		timeout: timeout,
+		url:        cfg.URL,
+		authHeader: header,
+		authScheme: scheme,
+		client:     client,
+		timeout:    timeout,
 	}, nil
+}
+
+// resolveAttestationAuth traduz a configuração de autenticação no VALOR do cabeçalho e no nome
+// do esquema, ou recusa. É o único sítio onde uma credencial de attestation é formatada.
+//
+// Devolve ("", "", nil) quando nenhum esquema está configurado — falar sem autenticação com o
+// componente é uma composição legítima (é o que acontece quando ele está atrás de mTLS ou numa
+// rede fechada), e transformá-la em erro partiria os deployments que existem hoje.
+func resolveAttestationAuth(bearer, basic string) (header, scheme string, err error) {
+	bearer = strings.TrimSpace(bearer)
+	basic = strings.TrimSpace(basic)
+
+	switch {
+	case bearer != "" && basic != "":
+		return "", "", fmt.Errorf("%w: os dois esquemas estao definidos (bearer e basic) e so um cabecalho Authorization e enviado; defina UM", ErrRemoteAttestationAuth)
+	case bearer != "":
+		if err := recusaControlos(bearer); err != nil {
+			return "", "", err
+		}
+		return "Bearer " + bearer, AuthSchemeBearer, nil
+	case basic == "":
+		return "", "", nil
+	}
+
+	// Molde do `-u` do curl: `utilizador:senha`. A senha PODE conter `:` — só o primeiro
+	// separa —, o que importa para senhas geradas.
+	i := strings.Index(basic, ":")
+	if i < 0 {
+		return "", "", fmt.Errorf("%w: o par basic nao tem separador ':' (formato: utilizador:senha)", ErrRemoteAttestationAuth)
+	}
+	if i == 0 {
+		return "", "", fmt.Errorf("%w: o par basic nao tem utilizador antes do ':'", ErrRemoteAttestationAuth)
+	}
+	if err := recusaControlos(basic); err != nil {
+		return "", "", err
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(basic)), AuthSchemeBasic, nil
+}
+
+// recusaControlos fecha INJECÇÃO DE CABEÇALHO. Uma credencial lida de ficheiro pode trazer um
+// \r\n no meio — por erro de transcrição ou de propósito —, e um valor desses num
+// `Authorization` acrescenta cabeçalhos que ninguém escreveu.
+//
+// O `net/http` recusa-o no envio, mas isso seria uma falha por-verificação num gate que já
+// negou a aprovação: fail-closed no ARRANQUE é a postura certa, porque um verificador que não
+// se sabe autenticar não deve existir. A mensagem não ecoa o valor.
+func recusaControlos(v string) error {
+	if strings.ContainsAny(v, "\r\n\x00") {
+		return fmt.Errorf("%w: a credencial tem caracteres de controlo (valor omitido)", ErrRemoteAttestationAuth)
+	}
+	return nil
 }
 
 // checkRemoteAttestationURL exige https, ou http APENAS para loopback (o mesmo critério de
@@ -196,11 +308,14 @@ func CheckSecureTransportURL(raw string) error {
 		// tabela de processos, no `inspect` do contentor e em qualquer mensagem de erro
 		// que ecoe o endereço, e nenhum desses sítios se fecha caso a caso.
 		//
-		// A MENSAGEM NOMEIA OS DOIS REMÉDIOS porque eles não são o mesmo: o ficheiro de
-		// token dá `Bearer` (Vault e attestation), e para quem precisava de `Basic` a via
-		// é terminar a autenticação no proxy. Prescrever só o token seria mandar o
-		// operador por um caminho que não repõe o deployment dele.
-		return errors.New("traz credenciais no URL (user-info); use o ficheiro de token (Authorization: Bearer) ou termine a autenticacao no proxy — a basic-auth embutida no URL deixou de ser aceite (AOS-333)")
+		// A MENSAGEM NOMEIA OS REMÉDIOS, e eles não são o mesmo para os três chamadores. O
+		// ficheiro de token dá `Bearer` e serve os três. O `Basic` que esta recusa tirou tem
+		// desde o AOS-338 um caminho próprio — `AOS_ATTESTATION_VERIFIER_BASIC_PATH` —, mas
+		// SÓ no verificador de attestation: os dois Vaults autenticam por `X-Vault-Token` e
+		// nunca usaram basic-auth, pelo que nenhum deployment de Vault perde nada aqui. Fica
+		// nomeado na mesma porque é uma mensagem partilhada e o operador tem de poder ver
+		// qual dos caminhos é o seu.
+		return errors.New("traz credenciais no URL (user-info); passe-as por FICHEIRO MONTADO — token (Authorization: Bearer) em qualquer dos chamadores, ou par utilizador:senha (Authorization: Basic) no verificador de attestation (AOS_ATTESTATION_VERIFIER_BASIC_PATH, AOS-338); em alternativa termine a autenticacao no proxy. A basic-auth embutida no URL deixou de ser aceite (AOS-333)")
 	}
 	switch u.Scheme {
 	case "https":
@@ -261,8 +376,8 @@ func (r *RemoteDeviceAttestationVerifier) VerifyDeviceAttestation(ctx context.Co
 		return nil, fmt.Errorf("%w: %v", ErrRemoteAttestationUnavailable, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if r.token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+r.token)
+	if r.authHeader != "" {
+		httpReq.Header.Set("Authorization", r.authHeader)
 	}
 
 	resp, err := r.client.Do(httpReq)
