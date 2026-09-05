@@ -23,6 +23,17 @@
 #   N) divergência de contrato de porta bloqueia o gate 4 «Integração» (AOS-198);
 #   O) literal/concatenação de tipo de evento bloqueia o gate event-catalog (AOS-198);
 #   P) título citado de OUTRO ticket é recusado pelo ref-lint (AOS-198, residual STR-01).
+#   R) linha da §6 da RTM que atribui um ticket a um epic que não o contém
+#      bloqueia o gate rtm (meta-achado de `analises/10` §5).
+#   S) citação inexistente na §7 da RTM bloqueia o gate rtm, e a RTM deixa de
+#      estar fora do ref-lint (AOS-313).
+#   T) a suite recusa correr concorrente consigo própria, e recusa arrancar
+#      sobre resíduo de um run morto sem trap (AOS-316).
+#
+# ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
+# restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
+# desde AOS-316 há exclusão mútua (exit 3) e guarda de resíduo (exit 4), mas o
+# que ela não pode impedir é que edite ficheiros por baixo dela enquanto corre.
 #
 # Os subtestes N4/N5, O3/O4 e P2 existem porque a primeira versão destes três
 # gates passava os seus próprios self-testes sendo, ainda assim, contornável: o
@@ -44,6 +55,91 @@ fails=0
 pass() { printf '%sSELFTEST OK%s   %s\n' "$C_GRN" "$C_RST" "$*"; }
 bad()  { printf '%sSELFTEST FAIL%s %s\n' "$C_RED" "$C_RST" "$*" >&2; fails=1; }
 
+# ============================================================================
+# Exclusão mútua e guarda de árvore limpa (AOS-316)
+# ============================================================================
+# Esta suite injecta cada falha NA ÁRVORE REAL e restaura-a a seguir. Dois runs
+# sobrepostos partilham esses ficheiros com backups tirados em instantes
+# DIFERENTES, e o restauro de um escreve por cima do trabalho do outro. Foi assim
+# que um commit saiu com a mensagem de uma mudança e o conteúdo de outra, sem
+# nenhum gate dar por isso.
+#
+# `flock` não existe no Git Bash de Windows; `mkdir` é a primitiva atómica
+# portável. O lock vive no *gitdir* — nunca aparece em `git status`, e é por
+# worktree, que é o âmbito certo: as mutações são da árvore de trabalho.
+#
+# Códigos de saída próprios, para que quem chama distinga a RECUSA do vermelho
+# de um gate:
+#   3 — outro run em curso;
+#   4 — a árvore já tinha mutações desta suite à entrada.
+_gitdir() { git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || printf '%s' "$REPO_ROOT"; }
+LOCK_DIR="${AOS_SELFTEST_LOCK:-$(_gitdir)/aos-selftest.lock}"
+LOCK_ADQUIRIDO=0
+LOCK_ORFAO=""
+
+adquirir_lock() {
+  local dono
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s' "$$" > "$LOCK_DIR/pid"; LOCK_ADQUIRIDO=1; return 0
+  fi
+  dono="$(cat "$LOCK_DIR/pid" 2>/dev/null || printf '')"
+  if [ -n "$dono" ] && kill -0 "$dono" 2>/dev/null; then
+    printf '%sERRO%s outro selftest.sh está a correr (PID %s).\n' "$C_RED" "$C_RST" "$dono" >&2
+    printf '  A suite muta ficheiros da árvore de trabalho e restaura-os; dois runs\n' >&2
+    printf '  sobrepostos corrompem-se um ao outro (AOS-316). Espere que termine.\n' >&2
+    printf '  Lock: %s\n' "$LOCK_DIR" >&2
+    return 1
+  fi
+  # Lock órfão: o dono já não existe. O `trap` cobre EXIT INT TERM e NÃO KILL,
+  # pelo que esse run pode ter deixado a árvore mutada — toma-se o lock (senão a
+  # suite ficava inarrancável para sempre) e a guarda a seguir é que decide.
+  LOCK_ORFAO="${dono:-desconhecido}"
+  rm -rf "$LOCK_DIR"
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s' "$$" > "$LOCK_DIR/pid"; LOCK_ADQUIRIDO=1; return 0
+  fi
+  printf '%sERRO%s não foi possível tomar o lock %s\n' "$C_RED" "$C_RST" "$LOCK_DIR" >&2
+  return 1
+}
+
+libertar_lock() { [ "$LOCK_ADQUIRIDO" = 1 ] && rm -rf "$LOCK_DIR"; LOCK_ADQUIRIDO=0; }
+
+# `packages/_selftest_bad/` está em `.gitignore` (`:56`), pelo que `git status` NÃO
+# o vê: para os módulos sintéticos a prova de resíduo é EXISTIREM. Para o ficheiro
+# rastreado que §B muta, pergunta-se ao git.
+verificar_superficie_limpa() {
+  local sujos=() d
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- "packages/control-plane/pdp/policies/aos_authz.sig" 2>/dev/null)" ]; then
+    sujos+=("packages/control-plane/pdp/policies/aos_authz.sig (modificado)")
+  fi
+  for d in packages/_selftest_bad packages/_selftest_eventcat; do
+    [ -e "$REPO_ROOT/$d" ] && sujos+=("$d (resíduo de um run anterior)")
+  done
+  [ "${#sujos[@]}" -eq 0 ] && return 0
+  printf '%sERRO%s a árvore já tem mutações desta suite à entrada:\n' "$C_RED" "$C_RST" >&2
+  for d in "${sujos[@]}"; do printf '  - %s\n' "$d" >&2; done
+  printf '  Um run anterior terminou sem correr o trap (AOS-316). Sem isto, o backup\n' >&2
+  printf '  de arranque seria tirado de uma árvore já corrompida e a suite propagava-a.\n' >&2
+  printf '  Restaure antes de repetir:\n' >&2
+  printf '    git checkout -- packages/control-plane/pdp/policies/aos_authz.sig\n' >&2
+  printf '    rm -rf packages/_selftest_bad packages/_selftest_eventcat\n' >&2
+  return 1
+}
+
+adquirir_lock || exit 3
+if ! verificar_superficie_limpa; then libertar_lock; exit 4; fi
+if [ -n "$LOCK_ORFAO" ]; then
+  printf '%sAVISO%s tomei um lock órfão (PID %s, já morto); a árvore estava limpa.\n' "$C_YEL" "$C_RST" "$LOCK_ORFAO"
+fi
+
+# Seam de teste (§T): provar a exclusão sem pagar a suite inteira. O job de CI não
+# define a variável — mesmo molde de `AOS_REFLINT_ROOT` em `ref-lint.py:90`.
+if [ -n "${AOS_SELFTEST_LOCK_PROBE:-}" ]; then
+  printf 'LOCK OK (pid %s)\n' "$$"
+  libertar_lock
+  exit 0
+fi
+
 BAD_MOD="$REPO_ROOT/packages/_selftest_bad"
 SIG="$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.sig"
 SIG_BAK="$(mktemp)"
@@ -54,6 +150,16 @@ LAYER_TMP=""
 # toolchain Go a ignore mesmo se algo correr em paralelo. Removida pelo trap.
 EVENT_PROBE="$REPO_ROOT/packages/_selftest_eventcat"
 REFLINT_TMP=""
+# §R e §S mutam o gerador da RTM numa CÓPIA, desde AOS-316: o gerador aceita
+# `AOS_RTM_ROOT`, pelo que a árvore real deixou de fazer parte da superfície
+# mutada — R3/S3 apenas a LÊEM. A sandbox é criada em §R e apagada pelo trap.
+RTM_SANDBOX=""
+RTM_GEN=""
+RTM_GEN_BAK=""
+# Impressão digital do gerador à ENTRADA. §T5 compara com ela para provar que a
+# suite não lhe tocou. Comparar com o git seria outra coisa — daria vermelho a
+# quem tivesse o ficheiro por commitar, que é o caso normal de quem o edita.
+RTM_GEN_SHA_INICIO="$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")"
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -61,6 +167,8 @@ cleanup() {
   rm -rf "$LAYER_TMP"
   rm -rf "$EVENT_PROBE"
   rm -rf "$REFLINT_TMP"
+  rm -rf "$RTM_SANDBOX"
+  libertar_lock
 }
 trap cleanup EXIT INT TERM
 
@@ -693,6 +801,364 @@ if bash "$CI_DIR/deploy-gate-lint.sh" >/dev/null 2>&1; then
   pass "Q4: controlo — o gate de entrega continua verde contra a arvore REAL (distingue, nao rejeita tudo)"
 else
   bad "Q4: o gate de entrega ficou vermelho contra a arvore real — POSSIVEL RASTO no repo"
+fi
+
+
+# ============================================================================
+# R) o gate rtm bloqueia uma §6 que atribui um ticket ao epic errado
+# ============================================================================
+# O defeito real: `rtm-regenerate.py` escrevia «o último epic do backlog» onde a
+# linha afirma o epic de um ticket CONCRETO. A linha do STRIDE dizia EPIC-21, e
+# passou a dizer EPIC-22 ao ser regenerada — e AOS-194 sempre viveu na EPIC-18.
+# Nada comparava o que a máquina escrevia com a fonte: é o meta-achado de
+# `analises/10` §5 agravado por o autor ser automático. Aqui prova-se que a
+# asserção `validate_section6` RECUSA a atribuição falsa, em vez de a afirmar
+# por comentário.
+log_gate "self-test R · o gate rtm bloqueia atribuição ticket→epic falsa na §6"
+
+# Sandbox de §R/§S: corpus copiado + cópia do gerador. Nada aqui toca na árvore
+# real; o gerador é apontado à cópia por `AOS_RTM_ROOT` (AOS-316).
+RTM_SANDBOX="$(mktemp -d)"
+mkdir -p "$RTM_SANDBOX/root/docs"
+cp -r "$REPO_ROOT/specs"    "$RTM_SANDBOX/root/specs"
+cp -r "$REPO_ROOT/tecnica"  "$RTM_SANDBOX/root/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$RTM_SANDBOX/root/docs/adr"
+cp    "$REPO_ROOT/_BRIEF.md" "$RTM_SANDBOX/root/_BRIEF.md"
+RTM_GEN="$RTM_SANDBOX/gen.py"
+RTM_GEN_BAK="$RTM_SANDBOX/gen.py.bak"
+cp "$CI_DIR/rtm-regenerate.py" "$RTM_GEN"
+cp "$RTM_GEN" "$RTM_GEN_BAK"
+# O gerador importa `adr_register` da sua PROPRIA directoria (AOS-317). Copiado
+# para a sandbox: sem isto o gerador copiado morre em ModuleNotFoundError, e §R/§S
+# ficavam vermelhos por falta de modulo em vez de pela asercao que provam.
+cp "$CI_DIR/adr_register.py" "$RTM_SANDBOX/adr_register.py"
+# Registo da sandbox: e a FONTE do canon, e §T muta-o. Caminho proprio para nao
+# haver duvida sobre qual copia esta a ser lida.
+RTM_SANDBOX_REG="$RTM_SANDBOX/root/docs/adr/README.md"
+RTM_SANDBOX_REG_BAK="$RTM_SANDBOX/registo.bak"
+cp "$RTM_SANDBOX_REG" "$RTM_SANDBOX_REG_BAK"
+
+# Vermelho PELO motivo certo: `--check` também falha por simples divergência de
+# texto, e isso provaria outra coisa. Exige-se a mensagem da asserção.
+# `set -o pipefail` está activo: encadear directamente em `grep` devolveria o
+# exit!=0 do gerador e a prova diria sempre «bloqueou». A saída é capturada
+# primeiro e só depois inspeccionada.
+rtm_bloqueou_pela_asercao() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q 'atribui tickets a epics'
+}
+
+# R1 — o par explícito `EPIC-NN/AOS-194` apontado ao epic errado.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/stride_epic = epic_of\(tickets, "AOS-194"\)/stride_epic = "EPIC-01"/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao; then
+  pass "R1: o gate bloqueou a §6 que atribuía AOS-194 a um epic que não o contém"
+else
+  bad "R1: o gate não bloqueou (ou falhou por outro motivo) com AOS-194 atribuído à EPIC-01"
+fi
+
+# R2 — a REGRESSÃO literal: voltar a usar «o último epic» para a gama de remediação.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/rem_epics = epics_covering\(tickets, rem_low, stats\["max_aos"\]\)/rem_epics = [last_epic]/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao; then
+  pass "R2: o gate bloqueou o regresso de last_epic como epic de tickets concretos"
+else
+  bad "R2: o gate passou com a gama AOS-190→ atribuída só ao último epic — a classe de defeito volta com a próxima epic"
+fi
+
+# R3 — CONTROLO POSITIVO (o molde do P3/Q4): restaurada a árvore, o gate volta a
+# verde. Sem isto, um validador que rejeitasse TUDO passaria R1/R2 e estaríamos a
+# medir «diz sempre que não» em vez de «distingue».
+if python3 "$CI_DIR/rtm-regenerate.py" --check >/dev/null 2>&1; then
+  pass "R3: controlo — o gate rtm continua verde contra a árvore REAL (sem rasto)"
+else
+  bad "R3: o gate rtm ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
+fi
+
+
+# ============================================================================
+# S) o gate rtm bloqueia uma §7 que cita o que não existe
+# ============================================================================
+# O defeito real: a §7 fechava com «20/20 ADRs e 12/12 NFRs» enquanto as §§4 e 5,
+# geradas, tinham 19 e 10 linhas e declaravam 19/19 e 10/10 — no mesmo ficheiro, a
+# setenta linhas. Era a unica seccao da RTM fora da regeneracao E fora do ref-lint:
+# ninguem a lia. Agora e gerada, e `validate_section7` confronta com o corpus tudo o
+# que ela cite. Aqui prova-se que RECUSA uma citacao inventada.
+log_gate "self-test S · o gate rtm bloqueia uma citação inexistente na §7"
+
+# O padrão tem de ser ASCII PURO. O Python escreve stderr na codificação da
+# consola (cp1252 em Windows), e um 'não' vindo deste ficheiro UTF-8 nunca casa.
+rtm_bloqueou_pela_asercao7() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q 'cita entidades que'
+}
+
+# S1 — um ticket que nao existe, citado por uma lacuna.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/GAP04_STEER = \[/GAP04_STEER = ["AOS-999", /' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao7; then
+  pass "S1: o gate bloqueou a §7 que citava um ticket inexistente"
+else
+  bad "S1: o gate não bloqueou (ou falhou por outro motivo) com AOS-999 citado na §7"
+fi
+
+# S2 — um NFR fora de NFR_SPECS. E o molde exacto do defeito historico: a §7
+# afirmava 12/12 NFRs quando NFR_SPECS tinha dez linhas. O NFR injectado era o
+# NFR-11 -- deixou de servir: NFR-11 e NFR-12 entraram em NFR_SPECS com os seus
+# tickets de verificacao (AOS-242, AOS-232), pelo que nomea-los na §7 passou a
+# ser VERDADE e o teste media o vazio. Passa a injectar NFR-13, que nao existe
+# em catalogo nenhum -- a asercao e a mesma, a sonda e que voltou a ser falsa.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/"evidencia": "§3, §5",/"evidencia": "§3, §5 (NFR-13)",/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao7; then
+  pass "S2: o gate bloqueou a §7 que nomeava NFR-13, ausente de NFR_SPECS"
+else
+  bad "S2: o gate passou com NFR-13 na §7 — o defeito histórico de 12/12 podia voltar"
+fi
+
+# S3 — CONTROLO POSITIVO: restaurada a arvore, o gate volta a verde.
+if python3 "$CI_DIR/rtm-regenerate.py" --check >/dev/null 2>&1; then
+  pass "S3: controlo — o gate rtm continua verde contra a árvore REAL (sem rasto)"
+else
+  bad "S3: o gate rtm ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
+fi
+
+# S4 — a RTM deixou de estar fora do ref-lint. Uma referencia partida DENTRO da RTM
+# tem de avermelhar o gate; antes de AOS-313 era a unica do corpus que ninguem lia.
+RTM_TMP="$(mktemp -d)"
+mkdir -p "$RTM_TMP/docs"
+cp -r "$REPO_ROOT/specs"    "$RTM_TMP/specs"
+cp -r "$REPO_ROOT/tecnica"  "$RTM_TMP/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$RTM_TMP/docs/adr"
+perl -0pi -e 's/AOS-001 – AOS-/AOS-998 – AOS-/' "$RTM_TMP/tecnica/16_Rastreabilidade_RTM.md"
+if AOS_REFLINT_ROOT="$RTM_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  bad "S4: o ref-lint passou com AOS-998 citado na RTM — a RTM continua fora do gate"
+else
+  pass "S4: o ref-lint bloqueou uma referência partida DENTRO da RTM (fim do skip)"
+fi
+rm -rf "$RTM_TMP"
+
+
+# ============================================================================
+# U) o gate rtm bloqueia uma CONTAGEM ou um EXTREMO DE INTERVALO que mente
+# ============================================================================
+# O defeito real: a §1.2 dizia «as 11 capacidades funcionais» e o mermaid da §6
+# dizia `RF-01..RF-11`, ambos escritos a mao, enquanto a §2 do mesmo ficheiro
+# cataloga RF-01..RF-13 desde a EPIC-19. O mesmo valia para os NFR — `NFR-10`
+# era a CONTAGEM de NFR_SPECS a passar-se por identidade, com a §3 ja em NFR-12 —
+# e para o cabecalho da §4, que ficou nos ADR-001…019 quando AOS-314 alargou a
+# tabela a 023. Nenhum destes numeros tinha quem o confrontasse com a fonte:
+# validate_section6 le pares epic↔ticket e validate_section7 le citacoes, mas
+# nenhuma das duas le numeros. `assert_numeric_claims` fecha essa metade.
+log_gate "self-test U · o gate rtm bloqueia um numero que nao bate com a fonte"
+
+# ASCII PURO, pela mesma razao de §S: 'numeros' leva acento e a consola do
+# Windows escreve stderr em cp1252.
+rtm_bloqueou_pela_asercao_numerica() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q 'o RTM afirma'
+}
+
+# U1 — a REGRESSAO literal do defeito relatado: o extremo do intervalo de RF no
+# diagrama volta a ser escrito a mao.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/RF-01\.\.\{rf_ids\[-1\]\}/RF-01..RF-11/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U1: o gate bloqueou o regresso de RF-01..RF-11 no mermaid da §6"
+else
+  bad "U1: o gate passou com RF-01..RF-11 e a §2 em RF-13 — o defeito relatado volta"
+fi
+
+# U2 — a mesma classe na outra ponta: a CONTAGEM de RF na §1.2, escrita a mao.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/os \{len\(rf_ids\)\} requisitos funcionais/os 11 requisitos funcionais/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U2: o gate bloqueou a §1.2 que contava 11 requisitos funcionais contra 13 no catalogo"
+else
+  bad "U2: o gate passou com a contagem de RF errada na §1.2"
+fi
+
+# U3 — um DENOMINADOR de cobertura a contar-se a si proprio em vez do catalogo.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/\{len\(nfr_ids\)\} NFRs \(NFR-01/10 NFRs (NFR-01/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U3: o gate bloqueou a §7 que afirmava 10 NFRs com o catalogo §3 em 12"
+else
+  bad "U3: o gate passou com o denominador de cobertura da §7 errado"
+fi
+
+# U4 — as capacidades de `specs/00` §4 sao OUTRA coisa que o catalogo §2, e ficam
+# guardadas contra a SUA fonte. Foi confundir as duas que produziu o defeito.
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+perl -0pi -e 's/\{system_spec_capabilities\(\)\} capacidades/99 capacidades/' "$RTM_GEN"
+if rtm_bloqueou_pela_asercao_numerica; then
+  pass "U4: o gate bloqueou a §1.2 que contava 99 capacidades contra as de specs/00 §4"
+else
+  bad "U4: o gate passou com a contagem de capacidades divorciada de specs/00 §4"
+fi
+
+# U5 — CONTROLO POSITIVO (molde de P3/Q4/R3/S3): restaurada a arvore, verde.
+if python3 "$CI_DIR/rtm-regenerate.py" --check >/dev/null 2>&1; then
+  pass "U5: controlo — o gate rtm continua verde contra a arvore REAL (sem rasto)"
+else
+  bad "U5: o gate rtm ficou vermelho contra a arvore real — POSSIVEL RASTO no repo"
+fi
+
+# S5 — controlo positivo do §S4, no molde do P3.
+if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  pass "S5: controlo — o ref-lint continua verde contra a árvore REAL (sem rasto)"
+else
+  bad "S5: o ref-lint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
+fi
+
+
+# ============================================================================
+# T) a suite recusa correr concorrente consigo própria (AOS-316)
+# ============================================================================
+# O defeito real: três runs sobrepostos, cada um com o seu backup tirado num
+# instante diferente. Um deles tinha o backup de `rtm-regenerate.py` de um commit
+# anterior e, ao chegar a §R, repô-lo por cima de edições em curso — saiu um
+# commit cuja mensagem descrevia uma mudança e cujo conteúdo revertia outra, e
+# nenhum gate deu por isso. Aqui prova-se que a exclusão RECUSA, que um lock
+# órfão não deixa a suite inarrancável, e que §R/§S deixaram de tocar no original.
+log_gate "self-test T · exclusão mútua e guarda de árvore limpa"
+# ATENÇÃO ao errexit: `lib.sh:13` faz `set -euo pipefail`, pelo que uma captura
+# simples — `x="$(cmd)"; rc=$?` — de um comando que sai != 0 MATA a suite com o
+# código dele, e nunca chega ao `rc`. Aqui isso dava um run que morria em §T com
+# exit 3 e sem uma única linha de diagnóstico. Daí o `|| t_rc=$?`, que torna a
+# atribuição um comando composto e desarma o errexit.
+T_TMP="$(mktemp -d)"
+
+# T1 — lock de um processo VIVO (este). A segunda invocação tem de recusar, com
+# código próprio e mensagem que nomeie a concorrência — nunca «POSSÍVEL RASTO no
+# repo», que mandava investigar o sítio errado.
+mkdir -p "$T_TMP/vivo"; printf '%s' "$$" > "$T_TMP/vivo/pid"
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/vivo" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+if [ "$t_rc" -eq 3 ] && printf '%s' "$t_out" | grep -q 'outro selftest.sh'; then
+  pass "T1: recusou arrancar com outro run vivo a deter o lock (exit 3)"
+else
+  bad "T1: esperava exit 3 e mensagem de concorrência; veio exit $t_rc"
+fi
+
+# T2 — lock ÓRFÃO. O `trap` não cobre KILL; um lock eterno tornaria a suite
+# inarrancável, o que trocaria um defeito por outro. O PID usado é o de um
+# processo que JÁ TERMINOU, não um número inventado que pudesse estar vivo.
+( : ) & t_morto=$!; wait "$t_morto" 2>/dev/null || true
+mkdir -p "$T_TMP/orfao"; printf '%s' "$t_morto" > "$T_TMP/orfao/pid"
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/orfao" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+if [ "$t_rc" -eq 0 ] && printf '%s' "$t_out" | grep -q 'LOCK OK'; then
+  pass "T2: tomou o lock órfão de um processo morto (não fica inarrancável)"
+else
+  bad "T2: esperava tomar o lock órfão; veio exit $t_rc"
+fi
+
+# T3 — a guarda de árvore limpa. Resíduo de um run morto sem trap tem de FAZER
+# RECUSAR: sem isto o backup de arranque sairia de uma árvore já corrompida.
+mkdir -p "$REPO_ROOT/packages/_selftest_bad"
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/guarda" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+rm -rf "$REPO_ROOT/packages/_selftest_bad"
+if [ "$t_rc" -eq 4 ] && printf '%s' "$t_out" | grep -q '_selftest_bad'; then
+  pass "T3: recusou arrancar com resíduo de um run anterior, nomeando-o (exit 4)"
+else
+  bad "T3: esperava exit 4 por resíduo; veio exit $t_rc"
+fi
+
+# T4 — CONTROLO POSITIVO (molde de §P3/§Q4/§R3): sem lock e sem resíduo, arranca.
+# Sem esta linha, uma guarda que recusasse SEMPRE passaria T1..T3.
+t_rc=0
+t_out="$(AOS_SELFTEST_LOCK="$T_TMP/livre" AOS_SELFTEST_LOCK_PROBE=1 bash "$CI_DIR/selftest.sh" 2>&1)" || t_rc=$?
+if [ "$t_rc" -eq 0 ]; then
+  pass "T4: controlo — sem lock nem resíduo a suite arranca (distingue, não recusa tudo)"
+else
+  bad "T4: a suite recusou arrancar com a árvore limpa e sem lock (exit $t_rc)"
+fi
+
+# T5 — a superfície encolheu: §R e §S correram ACIMA e o gerador da RTM não pode
+# ter ficado modificado. É a prova de que passaram a mutar uma cópia via
+# `AOS_RTM_ROOT`, e o teste que fica de guarda caso alguém reverta isso.
+if [ "$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")" = "$RTM_GEN_SHA_INICIO" ]; then
+  pass "T5: §R, §S e §U correram sem tocar em scripts/ci/rtm-regenerate.py (mutação em cópia)"
+else
+  bad "T5: o gerador da RTM mudou durante o run — §R/§S/§U voltaram a mutar a árvore real"
+fi
+
+rm -rf "$T_TMP"
+
+
+
+# ============================================================================
+# V) o canon de ADRs DERIVA do registo, e falha fechado quando ele mente
+# ============================================================================
+# O defeito real: `ADR_RANGE` era um literal escrito a mao em DOIS gates. AOS-314
+# corrigiu o numero; AOS-317 corrigiu o mecanismo. Estes subtestes provam o que um
+# literal nunca poderia dar — que o canon SEGUE a fonte, e que uma fonte corrompida
+# avermelha em vez de produzir uma lista curta em silencio.
+# Tudo sobre a sandbox de §R/§S (AOS-316): a arvore real nao e tocada.
+log_gate "self-test V · o canon de ADRs deriva do registo e falha fechado"
+
+rtm_bloqueou_com() {
+  # $1 = excerto da mensagem exigida. Captura primeiro (pipefail), inspecciona depois.
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q "$1"
+}
+
+# V1 — CONTIGUIDADE: um codigo desaparece do registo. Sem esta guarda a derivacao
+# devolveria apenas uma lista mais curta — que e o modo de falha silencioso do
+# literal, so que agora automatico.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+perl -ni -e 'print unless /^\| ADR-011 \|/' "$RTM_SANDBOX_REG"
+if rtm_bloqueou_com 'descont'; then
+  pass "V1: o gate bloqueou um registo com um código em falta (canon não-contíguo)"
+else
+  bad "V1: o gate aceitou um registo descontínuo — a derivação encolhe em silêncio"
+fi
+
+# V2 — VOCABULARIO FECHADO do estado. Um estado novo tem de passar por quem le o
+# modulo; escrita livre numa celula nao pode propagar-se para a coluna Estado da §4.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+perl -pi -e 's/\*\*Proposto\*\*/**Talvez**/' "$RTM_SANDBOX_REG"
+if rtm_bloqueou_com 'estado desconhecido'; then
+  pass "V2: o gate bloqueou um estado fora do vocabulário fechado do registo"
+else
+  bad "V2: o gate aceitou um estado inventado — a §4 exibi-lo-ia como se fosse canónico"
+fi
+
+# V3 — a QUARTA notacao de intervalo: o separador « a » por extenso. O padrao via
+# tres das quatro notacoes do documento, pelo que a mesma afirmacao falsa passava ou
+# nao consoante quem a escrevia usasse dois pontos ou a preposicao.
+#
+# A mutacao vai ao GLOSSARIO e nao a §1.5 — que e a ocorrencia natural desta notacao
+# — porque a §1.5 e REGENERADA: `update_section1` reescreve a frase antes de a guarda
+# correr, e o vermelho que sai e o da divergencia de texto, nao o da asercao. Uma
+# prova sobre prosa gerada mede o gerador; esta tem de medir o padrao.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+perl -pi -e 's/canon que os gates lêem é \*\*ADR-001…\d{3}\*\*/canon que os gates lêem é **ADR-001 a ADR-014**/' "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md"
+if rtm_bloqueou_com 'batem certo com a sua fonte'; then
+  pass "V3: o gate bloqueou o intervalo falso na notação « a » por extenso"
+else
+  bad "V3: o gate passou com «ADR-001 a ADR-014» no glossário — a quarta notação é cega"
+fi
+
+# V4 — CONTROLO POSITIVO (o molde do P3/Q4/R3): restaurada a sandbox, verde. Sem
+# isto, uma derivacao que rejeitasse TUDO passaria V1..V3.
+cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
+cp "$REPO_ROOT/tecnica/16_Rastreabilidade_RTM.md" "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md"
+cp "$RTM_GEN_BAK" "$RTM_GEN"
+if AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check >/dev/null 2>&1; then
+  pass "V4: controlo — restaurada a sandbox, o gate rtm volta a verde (distingue, não rejeita tudo)"
+else
+  bad "V4: o gate ficou vermelho com a sandbox restaurada — V1..V3 não provariam nada"
 fi
 
 

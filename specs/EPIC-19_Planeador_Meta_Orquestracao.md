@@ -182,7 +182,7 @@ Classificar um `Goal` como meta-nível vs. tarefa simples, deterministicamente, 
 
 ### Contexto
 `tecnica/18` §3.2: o planeador é um agente que corre no kernel, invocado pelo ORQ (autoridade = ORQ, ADR-018).
-
+ Realiza **ADR-020** (planeador como agente governado), que nomeia este ticket em `docs/adr/ADR-020-planeador-agente-governado.md` §5 e §6.
 ### Objectivo
 Correr a decomposição como agente com NHI própria, orçamento e observabilidade.
 
@@ -210,7 +210,7 @@ Correr a decomposição como agente com NHI própria, orçamento e observabilida
 
 ### Contexto
 `tecnica/18` §6.1: sequência de eventos append-only que reconstrói o ciclo por replay.
-
+ Realiza **ADR-020** (planeador como agente governado), que nomeia este ticket em `docs/adr/ADR-020-planeador-agente-governado.md` §6.
 ### Objectivo
 Emitir e persistir os eventos do domínio `aos.planner.v1` e reconstruí-los por replay.
 
@@ -237,7 +237,7 @@ Emitir e persistir os eventos do domínio `aos.planner.v1` e reconstruí-los por
 
 ### Contexto
 `tecnica/18` §4.3: com o planeador real, o gate deixa de ser UX e torna-se **a** fronteira de segurança (até L3).
-
+ Realiza **ADR-020** (planeador como agente governado), que nomeia este ticket em `docs/adr/ADR-020-planeador-agente-governado.md` §6.
 ### Objectivo
 Renderizar o organigrama completo, triado por risco, com edição cidadã de primeira classe.
 
@@ -265,7 +265,7 @@ Renderizar o organigrama completo, triado por risco, com edição cidadã de pri
 
 ### Contexto
 `tecnica/18` §6.1/§4.1: a materialização lê o documento **aprovado**, não a saída crua do modelo.
-
+ Realiza **ADR-020** (planeador como agente governado), que nomeia este ticket em `docs/adr/ADR-020-planeador-agente-governado.md` §6.
 ### Objectivo
 Converter o plano aprovado em eventos do DAG e spawns delegados.
 
@@ -468,7 +468,7 @@ Persistir o plano aprovado e gerir a evolução/deprecação de `plan_version`.
 
 ### Contexto
 `tecnica/18` §7.1/§9: a superfície nova é o **plano enquanto vector**.
-
+ Realiza **ADR-020** (planeador como agente governado), que nomeia este ticket em `docs/adr/ADR-020-planeador-agente-governado.md` §6.
 ### Objectivo
 Provar em teste que os vectores adversariais estão fechados.
 
