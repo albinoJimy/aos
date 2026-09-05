@@ -98,6 +98,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
 | O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
 | A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — **implementado** |
+| Um hook não tem canal legível por máquina para anexar informação à sua negação — achado a investigar o contorno em texto livre do AOS-332 | **AOS-340** |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
 +128% de CPU no *parse* (44,4 µs/op contra 101,1 µs/op num corpo de ~11 KB, medido por benchmark).
@@ -1883,3 +1884,60 @@ de todo** — o gap já existia para o Bearer — pelo que o esquema novo não �
 ponta-a-ponta contra o binário do repositório, só contra `httptest`. E o molde de leitura de
 credencial dos **dois Vaults** ecoa o caminho na mensagem de erro, que é o mesmo defeito latente
 que este ticket fechou do seu lado; fica nomeado em vez de arrastado.
+
+---
+
+## AOS-340 — Um hook não tem canal legível por máquina para anexar informação à sua própria negação
+
+### Contexto
+
+Na cadeia de mediação do RM, um hook que NEGA tem exactamente dois canais que sobrevivem ao
+`MediationRecord`: o `Reason`, texto livre, e o `PolicyVersion` — que é do hook de política e não
+serve de canal genérico. As `Obligations` do `HookResult` são deitadas fora no ramo de deny, e isso
+é **deliberado**: está fixado por `TestNegacaoNaoSelaObrigacoes`, tem gémea no ramo de deny de
+`pdp.paraRM`, e a justificação está agora escrita no sítio (`monitor.go`, ramo `HookDeny`). **Este
+ticket não a reabre.**
+
+O que reabre é a lacuna que ela deixa. E as obrigações nunca poderiam tapá-la: `Obligation` no RM
+é vocabulário **fechado de imposição** — `enforceObligations` nega *fail-closed* qualquer `Type`
+que não saiba cumprir. Um hook que anexasse uma obrigação só para documentar a sua negação estaria
+a construir um valor que, num permit, **nega a call**. O canal não existe porque o tipo não é esse.
+
+Medido no AOS-332: ao precisar de selar a postura do eixo provider numa negação, não havia onde, e
+a postura foi para um sufixo greppável do `Reason` — `<razão> [provider_policy=… resource_binding=…]`.
+Funciona e a razão original fica intacta no prefixo, mas é *parsing* de texto livre a fazer de
+contrato, e o próximo hook com a mesma necessidade inventará o seu próprio formato.
+
+O modelo de audit **já faz o oposto noutros sítios**, o que mostra que a necessidade é real e não
+exótica: `messaging.Verifier.seal` sela `DecisionDeny` com uma obrigação `reject_reason` (e
+`claimed_origin` no caminho não-autenticado), `hitl.Channel.seal` sela sempre `hitl_decision`, e
+`compliance.projectHITL` **depende** dessa obrigação para contar as negações. A diferença é que
+esses produtores escrevem no `audit.Store` directamente; quem passa pela cadeia do RM não tem
+equivalente.
+
+**Não é buraco de segurança e não há pressa.** `enforceObligations` só corre no caminho de permit,
+pelo que nada disto muda o que o nó deixa acontecer — só o que ele regista.
+
+### Critérios de Aceitação
+
+- [ ] Um hook pode anexar metadados tipados (chave/valor) à SUA decisão de negação, e o RM sela-os
+      no `MediationRecord` e no payload de `tool.call.denied`
+- [ ] O canal é **genérico** e neutro em camadas, na disciplina do `PolicyVersion`: nenhum campo
+      específico de plataforma entra no contrato C1 do kernel, e o `layer-lint` mantém-se verde
+- [ ] O canal é **distinto** de `Obligations` e não passa por `enforceObligations`: um metadado com
+      chave desconhecida **não** pode negar um permit
+- [ ] A assimetria das obrigações mantém-se: `TestNegacaoNaoSelaObrigacoes` e
+      `TestNegacaoNaoLevaObrigacoes` passam **sem alteração**
+- [ ] O `Reason` continua a levar a razão em texto livre, com o prefixo intacto — quem asserta por
+      substring não parte
+- [ ] O sufixo do AOS-332 migra para o canal novo, ou fica escrita a decisão de o não migrar
+- [ ] `tecnica/12` e `tecnica/13` reflectem o campo novo; acrescentar um campo opcional ao payload
+      é **MINOR** em `port_version` (`tecnica/12` §4)
+- [ ] Testes com prova de mutação: remover o selo do canal deixa o teste **vermelho**
+
+### Estado
+
+**POR IMPLEMENTAR.** P3 — e o P3 é deliberado. O AOS-332 entregou um contorno que funciona e é
+greppável, pelo que não há observabilidade perdida hoje; o que este ticket compra é a forma, antes
+de o segundo hook inventar o segundo formato. Encontrado a investigar o `nil` do ramo `HookDeny`,
+que se confirmou ser decisão e não omissão — a lacuna é o custo dessa decisão, não o defeito dela.
