@@ -2,6 +2,7 @@ package digest
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/aos-ref/platform/registry/domain"
@@ -35,20 +36,31 @@ type casoGolden struct {
 	contrato    domain.Contract
 	sha256      string
 	placeholder string
+	// publicavel distingue «forma que o REG ainda ACEITA publicar» de «forma HISTÓRICA do
+	// event-log, que tem de continuar a resolver mas já não pode nascer» (AOS-334).
+	//
+	// A distinção não existia, e a ausência dela é que era o defeito: um golden que congela um
+	// valor sem dizer o que ele representa lê-se como «esta forma é válida». O digest do
+	// `mcp_server` sem manifesto TEM de continuar estável — as entradas já no log resolvem por
+	// ele — e ao mesmo tempo essa forma deixou de ser publicável. As duas coisas são
+	// verdadeiras, e o campo é o que as separa.
+	publicavel bool
 }
 
 func casosGolden() []casoGolden {
 	return []casoGolden{
 		{
 			nome:        "tool_minimo",
+			publicavel:  true,
 			kind:        domain.KindTool,
 			contrato:    domain.Contract{Egress: domain.EgressNone},
 			sha256:      "sha256:598d8a70b117520fccd43f9abe0dbeef4f7c533b15718a19c631854599fcd7b4",
 			placeholder: "placeholder-fnv1a:6c29a28cb3b881f9",
 		},
 		{
-			nome: "tool_completo",
-			kind: domain.KindTool,
+			nome:       "tool_completo",
+			publicavel: true,
+			kind:       domain.KindTool,
 			contrato: domain.Contract{
 				InputSchema:      json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
 				OutputSchema:     json.RawMessage(`{"type":"string"}`),
@@ -59,8 +71,9 @@ func casosGolden() []casoGolden {
 			placeholder: "placeholder-fnv1a:cfc8c5613627bb20",
 		},
 		{
-			nome: "skill_completo",
-			kind: domain.KindSkill,
+			nome:       "skill_completo",
+			publicavel: true,
+			kind:       domain.KindSkill,
 			contrato: domain.Contract{
 				InputSchema:      json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
 				OutputSchema:     json.RawMessage(`{"type":"object"}`),
@@ -71,10 +84,27 @@ func casosGolden() []casoGolden {
 			placeholder: "placeholder-fnv1a:bcabb6c2c0331bba",
 		},
 		{
-			// Um mcp_server SEM ManifestDigest — a forma que o REG publicava antes de
-			// AOS-320. Tem de continuar a hashear para o MESMO valor, ou as entradas
-			// mcp_server já no log deixariam de resolver (ErrDigestMismatch).
+			// A FORMA PUBLICÁVEL de um mcp_server: COM manifesto. Não existia caso golden
+			// nenhum para ela — o AOS-320 introduziu a forma e não lhe congelou o digest —,
+			// e sem isto o campo `publicavel` abaixo não carregava bit nenhum que o `kind`
+			// já não carregasse: a asserção que o usava era uma tautologia sobre a fixture.
+			nome:        "mcp_server_com_manifesto",
+			publicavel:  true,
+			kind:        domain.KindMCPServer,
+			contrato:    domain.Contract{Egress: domain.EgressInternal, ManifestDigest: "sha256:" + strings.Repeat("ab", 32)},
+			sha256:      "",
+			placeholder: "",
+		},
+		{
+			// FORMA HISTÓRICA, NÃO PUBLICÁVEL. É o que o REG publicava antes de AOS-320.
+			// Tem de continuar a hashear para o MESMO valor — senão as entradas mcp_server
+			// já no log deixavam de resolver (ErrDigestMismatch) —, e desde AOS-334 já não
+			// pode ser publicada: `TestAOS334_MCPServerSemManifestoERecusado` recusa-a.
+			//
+			// O log é append-only; reescrever a leitura do histórico seria pior do que a
+			// lacuna. O que se fecha é a publicação NOVA.
 			nome:        "mcp_server_sem_manifesto",
+			publicavel:  false,
 			kind:        domain.KindMCPServer,
 			contrato:    domain.Contract{Egress: domain.EgressInternal},
 			sha256:      "sha256:3924dad94409833c99f7d2fbb3f47f44a8d995f88e57cc3551b0f08d9f1e4074",
@@ -91,8 +121,15 @@ func TestGoldenDigests_ToolSkill_NaoRegridem(t *testing.T) {
 		c := c
 		t.Run(c.nome, func(t *testing.T) {
 			t.Parallel()
+			// A guarda continua, mas ESPECÍFICA do que ela protege: os valores congelados
+			// abaixo são das entradas SEM manifesto. O caso COM manifesto entrou na tabela
+			// para dar bit ao campo `publicavel`, e não tem valor congelado — é coberto pelo
+			// TestGolden_FormaPublicavelDiscrimina.
+			if c.sha256 == "" {
+				return
+			}
 			if c.contrato.ManifestDigest != "" {
-				t.Fatalf("fixture invalida: %s tem ManifestDigest — o golden e' das entradas SEM manifesto", c.nome)
+				t.Fatalf("fixture invalida: %s tem ManifestDigest e valor congelado — o golden e' das entradas SEM manifesto", c.nome)
 			}
 			if got := (SHA256Digester{}).Digest(c.kind, c.contrato); got != c.sha256 {
 				t.Fatalf("REGRESSAO do digest SHA-256 de %s:\n got  %s\n want %s\n(o digest das entradas ja' publicadas mudou — o pin de todo o catalogo quebra)", c.nome, got, c.sha256)
@@ -184,5 +221,69 @@ func TestContractClone_PreservaManifestDigest(t *testing.T) {
 	d := SHA256Digester{}
 	if d.Digest(e.Kind, e.Contract) != d.Digest(e.Clone().Kind, e.Clone().Contract) {
 		t.Fatal("o digest do clone divergiu do original")
+	}
+}
+
+// TestGolden_FormaHistoricaNaoEPublicavel torna o campo `publicavel` LOAD-BEARING.
+//
+// Sem esta asserção o campo seria decoração: uma anotação que ninguém lê descreve a intenção de
+// quem a escreveu, não o estado do sistema — que é exactamente o defeito que o AOS-329 persegue
+// noutro eixo.
+//
+// A regra fixada aqui é a do AOS-334: um `mcp_server` sem `ManifestDigest` não é publicável. Se
+// alguém acrescentar um caso golden dessa forma marcado como publicável, isto avermelha.
+//
+// LIMITE DECLARADO: isto fixa a COERÊNCIA DA FIXTURE, não o comportamento. A prova de que o
+// `Publish` recusa de facto é `TestAOS334_MCPServerSemManifestoERecusado`, no pacote `registry` —
+// aqui não é alcançável sem inverter a dependência (o `registry` importa o `digest`).
+func TestGolden_FormaHistoricaNaoEPublicavel(t *testing.T) {
+	t.Parallel()
+	var historicas int
+	for _, c := range casosGolden() {
+		semManifesto := c.kind == domain.KindMCPServer && c.contrato.ManifestDigest == ""
+		if semManifesto {
+			historicas++
+		}
+		if c.publicavel == semManifesto {
+			t.Errorf("%s: publicavel=%v mas mcp_server-sem-manifesto=%v — a fixture contradiz a regra do AOS-334", c.nome, c.publicavel, semManifesto)
+		}
+	}
+	// NÃO-VACUOSIDADE: se o caso histórico desaparecer da tabela, o teste acima passa a não
+	// asserir nada. O golden existe precisamente para essa forma continuar a resolver.
+	if historicas != 1 {
+		t.Errorf("casos historicos = %d, quer 1 — o golden do mcp_server pre-AOS-320 tem de continuar na tabela", historicas)
+	}
+}
+
+// TestGolden_FormaPublicavelDiscrimina fecha o que a asserção anterior NÃO provava.
+//
+// O `TestGolden_FormaHistoricaNaoEPublicavel` reduzia-se, sobre a tabela admissível, a
+// `publicavel == (kind != mcp_server)` — uma tautologia sobre booleanos postos à mão, porque a
+// guarda da fixture só deixava entrar casos sem manifesto. Medido em revisão adversarial:
+// remover a validação de produção deixava-o verde.
+//
+// O que é preciso provar é o que o campo `ManifestDigest` existe para fazer: DISCRIMINAR. Dois
+// `mcp_server` com manifestos diferentes têm de ter digests de contrato diferentes, e um
+// `mcp_server` com manifesto tem de diferir da forma histórica sem ele — senão o campo não
+// ancora nada e o AOS-320 não fechou o que diz ter fechado.
+func TestGolden_FormaPublicavelDiscrimina(t *testing.T) {
+	t.Parallel()
+	base := domain.Contract{Egress: domain.EgressInternal}
+	comA := domain.Contract{Egress: domain.EgressInternal, ManifestDigest: "sha256:" + strings.Repeat("ab", 32)}
+	comB := domain.Contract{Egress: domain.EgressInternal, ManifestDigest: "sha256:" + strings.Repeat("cd", 32)}
+
+	d := SHA256Digester{}
+	dSem, dA, dB := d.Digest(domain.KindMCPServer, base), d.Digest(domain.KindMCPServer, comA), d.Digest(domain.KindMCPServer, comB)
+
+	if dA == dB {
+		t.Errorf("dois manifestos DIFERENTES produzem o mesmo digest de contrato (%s) — o campo nao discrimina", dA)
+	}
+	if dA == dSem {
+		t.Errorf("com e sem manifesto produzem o mesmo digest (%s) — o campo nao entra no hash", dA)
+	}
+	// CONTROLO: o mesmo manifesto tem de produzir o mesmo digest, senão a discriminação acima
+	// seria só não-determinismo.
+	if got := d.Digest(domain.KindMCPServer, comA); got != dA {
+		t.Errorf("o digest nao e determinista: %s != %s", got, dA)
 	}
 }

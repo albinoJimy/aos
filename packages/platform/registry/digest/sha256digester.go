@@ -3,6 +3,7 @@ package digest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 
 	"github.com/aos-ref/platform/registry/domain"
 )
@@ -62,4 +63,31 @@ func Compare(expected, computed string) error {
 		return &MismatchError{Expected: expected, Computed: computed}
 	}
 	return nil
+}
+
+// BemFormado reporta se `d` tem a FORMA de um digest deste pacote: o prefixo canónico seguido de
+// 64 dígitos hexadecimais minúsculos.
+//
+// Existe porque a verificação de PRESENÇA não chega onde o valor vem de fora (AOS-334): um campo
+// de digest preenchido com uma constante qualquer passa um teste de não-vazio e volta a produzir
+// o digest-constante-da-classe que o AOS-320 existe para eliminar.
+//
+// NÃO É PROVENIÊNCIA, e a distinção importa: isto diz que o valor TEM A FORMA de um SHA-256, não
+// que foi derivado do conteúdo que diz representar. Quem publica pode fornecer o sha256
+// bem-formado de outra coisa. Fechar esse eixo exige assinatura sobre o material observado.
+func BemFormado(d string) bool {
+	if !strings.HasPrefix(d, Prefix) {
+		return false
+	}
+	hexa := d[len(Prefix):]
+	if len(hexa) != 2*sha256.Size {
+		return false
+	}
+	for i := 0; i < len(hexa); i++ {
+		c := hexa[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
