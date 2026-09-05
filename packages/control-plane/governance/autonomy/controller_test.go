@@ -456,16 +456,17 @@ func TestAnomalyWinsOverRacingPromotion(t *testing.T) {
 }
 
 // TestPromotionRollsBackOnSealFailure — AC4/fail-closed: se a selagem no audit falhar,
-// a promoção NÃO se mantém em vigor — a concessão é revertida em memória para o nível
-// anterior (o PDP nunca lê autonomia elevada sem registo selado) e o erro é devolvido.
-// Reutiliza a failingSink de registry_test.go (falha sempre a selagem).
+// a promoção NÃO entra em vigor — o nível anterior mantém-se (o PDP nunca lê autonomia
+// elevada sem registo selado) e o erro é devolvido. Desde AOS-306 é o próprio
+// [LevelRegistry.SetLevel] que sela antes de aplicar; o setup estabelece L2 sem sink e
+// só depois liga a failingSink de registry_test.go (falha sempre a selagem).
 func TestPromotionRollsBackOnSealFailure(t *testing.T) {
 	cfg := DefaultAutonomyControlConfig()
-	reg := NewLevelRegistry(WithSink(failingSink{}))
-	// Estabelece L2 (a selagem de setup falha, mas o nível em memória fica L2).
-	if _, err := reg.SetLevel(context.Background(), "agent-1", "http", L2, "setup", "test"); err == nil {
-		t.Fatal("setup: esperava erro de selagem da failingSink")
+	reg := NewLevelRegistry()
+	if _, err := reg.SetLevel(context.Background(), "agent-1", "http", L2, "setup", "test"); err != nil {
+		t.Fatalf("setup: %v", err)
 	}
+	reg.sink = failingSink{}
 
 	ctl, err := NewController(reg, fakeReliability{Reliability{ErrorRate: 0, OverrideRate: 0, WindowOK: true}}, cfg)
 	if err != nil {

@@ -32,6 +32,7 @@ POLICY_DIR="$REPO_ROOT/packages/control-plane/pdp/policies"
 say()  { printf '\033[36m[driver]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[driver] FALHOU:\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m[driver] OK\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[driver] AVISO:\033[0m %s\n' "$*" >&2; }
 
 # hexdeseed — imprime a pubkey ed25519 (hex) de um ficheiro de seed.
 hexdeseed() { "$BIN_DIR/aos" operator-pubkey --key "$1"; }
@@ -47,17 +48,130 @@ cmd_build() {
   ok "binarios em $BIN_DIR"
 }
 
+# --- frescura dos binarios ---------------------------------------------------------------------
+# O cmd_build escreve SEMPRE "$BIN_DIR/<nome>" (sem .exe), por isso e esse o unico caminho que
+# conta: um aos.exe deixado por um `go build -o aos.exe .` a mao nao e o binario que o driver
+# corre, e tolera-lo como "binario presente" era metade do buraco que se fecha aqui.
+BINARIES="aos aos-issuer aos-demo aos-attestation aos-orq"
+
+# newer_source <ref> — primeiro ficheiro de packages/ mais recente que <ref> (vazio = nenhum).
+# Todos os modulos cmd/* usam `replace` para caminhos locais, logo uma mudanca em QUALQUER
+# subarvore de packages/ entra nos binarios — a varredura nao pode limitar-se a packages/cmd.
+# Exclui *_test.go e testdata: nao entram no binario, e forcar um relink de ~25s por um teste
+# editado so ensinaria a gente a passar AOS_DRIVER_NO_BUILD=1, que e o buraco de volta.
+newer_source() {
+  find "$REPO_ROOT/packages" \
+    \( -name vendor -o -name testdata -o -name node_modules \) -prune -o \
+    \( \( -name '*.go' ! -name '*_test.go' \) -o -name go.mod -o -name go.sum \) \
+    -newer "$1" -print -quit 2>/dev/null
+}
+
+# stale_reason — porque e que os binarios NAO servem de prova do codigo actual (vazio = servem).
+# Compara com o binario MAIS ANTIGO: basta um dos cinco estar atrasado para o conjunto nao valer.
+stale_reason() {
+  local m oldest="" src
+  for m in $BINARIES; do
+    if [ ! -x "$BIN_DIR/$m" ]; then printf 'binario em falta: %s' "$m"; return 0; fi
+    if [ -z "$oldest" ] || [ "$BIN_DIR/$m" -ot "$oldest" ]; then oldest="$BIN_DIR/$m"; fi
+  done
+  src="$(newer_source "$oldest")"
+  [ -n "$src" ] && printf 'fonte mais recente que os binarios: %s' "${src#"$REPO_ROOT"/}"
+  return 0
+}
+
+# bin_age — idade do `aos` em forma legivel. E o numero que denuncia um verde sobre codigo velho.
+bin_age() {
+  local mt now s
+  mt="$(stat -c %Y "$BIN_DIR/aos" 2>/dev/null)" || { printf 'desconhecida'; return 0; }
+  now="$(date +%s)"; s=$(( now - mt ))
+  if   [ "$s" -lt 60 ];   then printf '%ds' "$s"
+  elif [ "$s" -lt 3600 ]; then printf '%dm' "$(( s / 60 ))"
+  else                         printf '%dh%02dm' "$(( s / 3600 ))" "$(( s % 3600 / 60 ))"; fi
+}
+
+# ensure_build — garante que os binarios em $BIN_DIR correspondem ao codigo em packages/.
+#
+# Ate aqui o `up` fazia `[ -x "$BIN_DIR/aos" ] || cmd_build`: construia so quando o binario NAO
+# existia. Da segunda corrida em diante, `smoke` levantava o binario da corrida anterior e dava
+# 9/9 VERDE sem exercitar uma linha do codigo alterado. MEDIDO a 2026-09-05 na validacao da
+# EPIC-23: smoke verde, binario com sete horas (de antes do epic inteiro) e nenhum dos banners
+# de postura novos (AOS-322, AOS-326) no serve.log; com `build` forcado, o mesmo smoke deu 9/9
+# E os tres banners apareceram. E grave porque a skill agentic-engineering §7 nomeia o smoke
+# como a unica evidencia que conta para mudancas no wiring, nos banners de arranque e na
+# superficie HTTP — exactamente as que os testes unitarios nao apanham, e por isso exactamente
+# aquelas em que um binario obsoleto passa despercebido com tudo verde por cima de codigo velho.
+#
+# A varredura de frescura custa ~3s e o relink dos cinco binarios ~25s, por isso so se
+# reconstroi quando ha fonte mais recente — mas nunca se reutiliza em SILENCIO.
+ensure_build() {
+  if [ "${AOS_DRIVER_NO_BUILD:-0}" = "1" ]; then
+    warn "AOS_DRIVER_NO_BUILD=1 — binarios NAO verificados (idade do aos: $(bin_age))."
+    warn "um verde a partir daqui NAO e prova sobre o codigo actual."
+    return 0
+  fi
+  local why
+  why="$(stale_reason)"
+  if [ -n "$why" ] || [ "${AOS_DRIVER_ALWAYS_BUILD:-0}" = "1" ]; then
+    say "a reconstruir — ${why:-AOS_DRIVER_ALWAYS_BUILD=1}"
+    cmd_build
+    # Pos-condicao: se ficou fonte mais recente, ou o build nao escreveu o que devia, ou ha um
+    # ficheiro com mtime no futuro. Em qualquer dos casos o verde seguinte nao valeria nada.
+    why="$(stale_reason)"
+    [ -z "$why" ] && return 0
+    fail "binarios ainda obsoletos apos o build ($why) — o build nao escreveu, ou ha fonte com mtime no futuro"
+  fi
+  say "binarios frescos (aos com $(bin_age); nada mais recente em packages/)"
+}
+
+cmd_freshness() {
+  local m why
+  for m in $BINARIES; do
+    if [ -x "$BIN_DIR/$m" ]; then
+      printf '  %-16s %s\n' "$m" "$(stat -c %y "$BIN_DIR/$m" 2>/dev/null || echo 'mtime desconhecido')"
+    else
+      printf '  %-16s AUSENTE\n' "$m"
+    fi
+  done
+  why="$(stale_reason)"
+  [ -n "$why" ] && fail "OBSOLETOS: $why"
+  ok "frescos (aos com $(bin_age))"
+}
+
+# cmd_freshness_selftest — a assercao que impede a regressao de voltar em silencio.
+# Envelhece o PROPRIO binario (mtime a 2000-01-01) em vez de tocar no repo, corre ensure_build e
+# exige que ele tenha reconstruido. Com o antigo `[ -x "$BIN_DIR/aos" ] || cmd_build` este teste
+# falha no penultimo passo — que e precisamente o ponto.
+cmd_freshness_selftest() {
+  [ "${AOS_DRIVER_NO_BUILD:-0}" = "1" ] && fail "AOS_DRIVER_NO_BUILD=1 desliga exactamente o que este auto-teste verifica"
+  [ -x "$BIN_DIR/aos" ] || cmd_build
+  local before after
+  touch -d '2000-01-01 00:00:00' "$BIN_DIR/aos" || fail "nao consegui envelhecer $BIN_DIR/aos"
+  before="$(stat -c %Y "$BIN_DIR/aos" 2>/dev/null)"
+  # Sem um stat GNU nao ha comparacao de mtime e este auto-teste daria um verde vazio.
+  case "$before" in ''|*[!0-9]*) fail "stat -c %Y indisponivel — este driver assume coreutils/findutils GNU (Git Bash, Linux)" ;; esac
+  [ -n "$(stale_reason)" ] || fail "stale_reason nao viu um binario datado de 2000-01-01 — a deteccao esta partida"
+  say "binario envelhecido para 2000-01-01; ensure_build tem de reconstruir"
+  ensure_build
+  after="$(stat -c %Y "$BIN_DIR/aos")"
+  [ "$after" -gt "$before" ] || fail "ensure_build REUTILIZOU o binario obsoleto (mtime inalterado) — a regressao voltou"
+  [ -z "$(stale_reason)" ] || fail "apos ensure_build os binarios continuam obsoletos"
+  ok "frescura garantida: um binario obsoleto forca reconstrucao"
+}
+
 # --- chaves ----------------------------------------------------------------------------------
 # As seeds são 32 bytes em HEX, texto simples UTF-8 SEM BOM. O ">" do PowerShell escreve BOM
 # ou UTF-16 e o binário recusa com "nao e hex" / ErrSeedUTF16 — por isso escrevem-se em bash.
 cmd_keys() {
   mkdir -p "$HOME_DIR"
-  local n op p1 p2
-  for n in operador ap1 ap2; do
+  local n op op2 p1 p2
+  # DOIS operadores (AOS-305): mudar a autonomia PARA L4/L5 exige duas assinaturas de emissores
+  # distintos com autonomy:set. O smoke promove agt-1:fs a L5, logo precisa dos dois.
+  for n in operador operador2 ap1 ap2; do
     [ -s "$HOME_DIR/$n.seed" ] && continue
     head -c 32 /dev/urandom | xxd -p | tr -d '\n' > "$HOME_DIR/$n.seed"
   done
   op="$(hexdeseed "$HOME_DIR/operador.seed")" || fail "derivar pubkey do operador (corre build primeiro)"
+  op2="$(hexdeseed "$HOME_DIR/operador2.seed")"
   p1="$(hexdeseed "$HOME_DIR/ap1.seed")"
   p2="$(hexdeseed "$HOME_DIR/ap2.seed")"
   cat > "$HOME_DIR/approvers.json" <<EOF
@@ -66,8 +180,8 @@ cmd_keys() {
  {"principal":"human:bruno","pubkey":"$p2","authority":["approve:safe","approve:gray","approve:danger"]}
 ]}
 EOF
-  printf 'op:jimy=%s\n' "$op" > "$HOME_DIR/operators.env"
-  ok "seeds + approvers.json em $HOME_DIR (operador op:jimy=$op)"
+  printf 'op:jimy=%s,op:maria=%s\n' "$op" "$op2" > "$HOME_DIR/operators.env"
+  ok "seeds + approvers.json em $HOME_DIR (operadores op:jimy=$op op:maria=$op2)"
 }
 
 # trust anchor da política: o repo guarda a pubkey em BASE64 (trust_anchor.pub) e o nó
@@ -76,8 +190,11 @@ anchor_hex() { tr -d '\r\n' < "$POLICY_DIR/trust_anchor.pub" | base64 -d | xxd -
 
 # --- up / down -------------------------------------------------------------------------------
 cmd_up() {
-  [ -x "$BIN_DIR/aos" ] || [ -x "$BIN_DIR/aos.exe" ] || cmd_build
-  [ -s "$HOME_DIR/approvers.json" ] || cmd_keys
+  ensure_build
+  # Regenera tambem quando o roster de operadores mudou de forma (AOS-305 passou a exigir DOIS
+  # operadores): um operators.env em cache com um so id faz o no abortar com ErrBadAutonomySetters,
+  # e o sintoma — "o no nao ficou pronto" — nao aponta para o ficheiro velho.
+  { [ -s "$HOME_DIR/approvers.json" ] && grep -q 'op:maria' "$HOME_DIR/operators.env" 2>/dev/null; } || cmd_keys
   cmd_down >/dev/null 2>&1
   mkdir -p "$STATE_DIR"
   local anchor i
@@ -86,6 +203,7 @@ cmd_up() {
 
   AOS_API_ADDR="127.0.0.1:$PORT" \
   AOS_OPERATORS="$(cat "$HOME_DIR/operators.env")" \
+  AOS_AUTONOMY_SETTERS="op:jimy,op:maria" \
   AOS_APPROVERS_FILE="$HOME_DIR/approvers.json" \
   AOS_DURABLE_EXECUTION=1 \
   AOS_EVENTSTORE_PATH="$STATE_DIR/es.wal" \
@@ -167,10 +285,12 @@ cmd_trajectory() {
 
 # --- autonomia (assinada + selada) -----------------------------------------------------------
 # O corpo e produzido FORA do no pelo aos-issuer: a chave privada nunca entra no processo.
+# L4/L5 levam a SEGUNDA assinatura (op:maria) — AOS-305: remover a supervisao e de duas pessoas.
 cmd_autonomy_set() {
-  local body
+  local body co=()
+  case "$3" in L4|L5|l4|l5) co=(--co-emitter op:maria --co-key-file "$HOME_DIR/operador2.seed") ;; esac
   body="$("$BIN_DIR/aos-issuer" autonomy-sign --emitter op:jimy --key-file "$HOME_DIR/operador.seed" \
-            --agent "$1" --domain "$2" --level "$3" --reason "${4:-driver}")" || fail "autonomy-sign"
+            --agent "$1" --domain "$2" --level "$3" --reason "${4:-driver}" "${co[@]}")" || fail "autonomy-sign"
   api POST /autonomy "$body"
   echo
 }
@@ -203,8 +323,15 @@ cmd_test() {
 tem() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
 cmd_smoke() {
-  local rid="smoke-$$" r
+  local rid="smoke-$$" r why
   cmd_up || exit 1
+
+  # Pre-voo: cmd_up so pode devolver controlo com binarios que correspondem ao codigo. Se esta
+  # assercao falhar, alguem voltou a por o driver a reutilizar binarios e os nove passos abaixo
+  # estariam a exercitar codigo velho — um verde que nao prova nada.
+  why="$(stale_reason)"
+  [ -z "$why" ] || fail "pre-voo: o no subiu com binarios obsoletos ($why) — se puseste AOS_DRIVER_NO_BUILD=1, tira-o: um verde assim nao e prova"
+  say "pre-voo: binarios correspondem ao codigo (aos com $(bin_age))"
 
   say "1/9 submeter run $rid"
   r="$(cmd_run "$rid" "auditar o pipeline")"
@@ -269,7 +396,9 @@ cmd_smoke() {
 
 # --- despacho --------------------------------------------------------------------------------
 case "${1:-help}" in
-  build)        cmd_build ;;
+  build)              cmd_build ;;
+  freshness)          cmd_freshness ;;
+  freshness-selftest) cmd_freshness_selftest ;;
   keys)         cmd_keys ;;
   up)           cmd_up ;;
   down)         cmd_down ;;
@@ -298,7 +427,9 @@ case "${1:-help}" in
 driver.sh — arranca e conduz o no `aos`
 
   build                       compila aos, aos-issuer, aos-demo, aos-attestation, aos-orq
-  keys                        gera seeds (operador + 2 aprovadores) e approvers.json
+  freshness                   mtime dos binarios; sai 1 se algum ficou atras de packages/
+  freshness-selftest          prova que um binario obsoleto forca reconstrucao (anti-regressao)
+  keys                        gera seeds (2 operadores + 2 aprovadores) e approvers.json
   up                          levanta o no COMPOSTO (PDP assinado + four-eyes + autonomia + WAL/WORM)
   down                        para o no
   status                      healthz / readyz / metricas-chave
@@ -324,6 +455,11 @@ driver.sh — arranca e conduz o no `aos`
   test [modulo] [pkgs]        go test -race (default: packages/cmd/aos ./...)
   smoke                       ponta-a-ponta com assercoes (up -> 9 passos -> down)
   home                        directorio de trabalho do driver
+
+`up` (e portanto `smoke`) reconstroi sempre que ha fonte em packages/ mais recente que os
+binarios, e nunca reutiliza um binario sem dizer a idade dele — um verde nao corre em silencio
+sobre codigo velho. AOS_DRIVER_ALWAYS_BUILD=1 forca o build; AOS_DRIVER_NO_BUILD=1 salta a
+verificacao com aviso (e faz o `smoke` recusar-se a dar verde).
 EOF
     ;;
 esac

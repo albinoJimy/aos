@@ -106,7 +106,15 @@ func budgetPostureBanner(composed bool) []string {
 }
 
 // credentialBrokerPostureBanner declara a AUSÊNCIA do Credential Broker (AOS-070, ADR-006).
-// Também incondicional: `platform/broker` não é importado pelo nó. O que o nó faz em vez disso
+//
+// CORRECÇÃO (AOS-325): esta linha dizia «`platform/broker` não é importado pelo nó». Deixou de
+// ser verdade com AOS-264 — `bootstrap.go` e `broker_vault_env.go` importam-no, e o nó constrói
+// `broker.NewVaultKVv2`. O que se mantém verdadeiro, e é o que o banner emitido diz, é que o nó
+// não COMPÕE o broker: `broker.New` não tem chamador de produção, e o cliente Vault construído
+// alimenta apenas a linha de postura. Importar não é compor, e a distinção é a diferença entre
+// «o eixo está preparado» e «a troca medeia alguma coisa».
+//
+// O que o nó faz em vez disso
 // — ler segredos de FICHEIROS MONTADOS no arranque e retê-los em memória do processo enquanto
 // viver — é legítimo e é o padrão documentado, mas NÃO é o invariante do ADR-006 e não deve ser
 // confundido com ele: sem broker não há troca token→credencial server-side, não há TTL curto,
@@ -152,6 +160,49 @@ type materialPrivadoDoNo struct {
 	OTLPClientKey bool
 	// OTLPBearer: o bearer do colector está carregado.
 	OTLPBearer bool
+}
+
+// posturaDosServicosDePlataforma é o estado composto de MEM e REG que o banner declara.
+// Deriva do que o composition-root construiu, nunca da intenção da config — a mesma
+// disciplina que [materialPrivadoDoNo] impôs ao banner do credential broker.
+type posturaDosServicosDePlataforma struct {
+	// CatalogoInjectado: o REG veio por [Config.Catalog]. Falso ⇒ `emptyCatalog{}`.
+	CatalogoInjectado bool
+	// RevalidadorInjectado: o revalidador veio por [Config.Revalidator]. Falso ⇒ o de
+	// REFERÊNCIA, com trust store VAZIO.
+	RevalidadorInjectado bool
+}
+
+// plataformaPostureBanner declara, no arranque, o que o nó compõe de MEM e de REG —
+// e sobretudo o que NÃO compõe (AOS-326).
+//
+// PORQUE ESTA LINHA PASSA A EXISTIR. O nó já declarava a postura do credential broker,
+// da autonomia, do orçamento e do modelo. De MEM e REG não dizia nada — e são os dois
+// serviços de plataforma cuja distância entre a biblioteca e o nó composto é maior. Um
+// operador que leia o arranque via «Memory Service» e «Registry» no `_BRIEF` §2 e não
+// tem como saber que o primeiro só faz uma escrita e que o segundo arranca vazio.
+//
+// A ASSIMETRIA QUE ISTO FECHA. O plano de controlo (ORQ/SCH) está fora do grafo de build
+// por DECISÃO ratificada — ADR-018 §4 e ADR-023, com guard-test em
+// `boundary_orq_sch_test.go`. Para os serviços de plataforma não existe decisão
+// equivalente: nenhum ADR os declara deliberadamente não-compostos. Enquanto essa decisão
+// não for tomada, «não composto» aqui significa INACABADO, não adiado — e é isso que
+// estas linhas dizem, em vez de deixarem o silêncio sugerir a leitura mais favorável.
+func plataformaPostureBanner(p posturaDosServicosDePlataforma) []string {
+	reg := "catalogo VAZIO (emptyCatalog) e revalidador de REFERENCIA com trust store VAZIO"
+	switch {
+	case p.CatalogoInjectado && p.RevalidadorInjectado:
+		reg = "catalogo e revalidador INJECTADOS por config"
+	case p.CatalogoInjectado:
+		reg = "catalogo INJECTADO por config; revalidador de REFERENCIA com trust store VAZIO"
+	case p.RevalidadorInjectado:
+		reg = "catalogo VAZIO (emptyCatalog); revalidador INJECTADO por config"
+	}
+	return []string{
+		"memoria (MEM/EPIC-04, AOS-326): o Memory Service esta composto sobre o MESMO Event Store do no, mas o unico caminho de producao que o usa e uma ESCRITA episodica na ingestao. Nenhum caminho de producao invoca recall/query/compactacao/curadoria, e Goal.MemoryContext nao e preenchido por ninguem. Das QUATRO classes do _BRIEF §2, a episodica existe neste no APENAS como escrita (write-only: escreve-se, nunca se le); a semantica, a procedural e a de trabalho existem so como BIBLIOTECA testada, sem chamador de producao. DEFERIDO — eixo em DEF-811",
+		"registry (REG/EPIC-05, AOS-326): " + reg + ". O pacote registry ESTA no grafo de build (via toolset/freeze), mas o catalogo event-sourced NAO e construido, e o host MCP e o TOFU nem sequer entram no grafo; o que corre e o congelamento por run e a revalidacao por chamada, ligados na cadeia do Reference Monitor. Um tool set vazio e default-deny: nenhuma tool executa. DEFERIDO — eixo em DEF-812",
+		"=> NOTA sobre as duas linhas acima: ao contrario do ORQ/SCH — que o ADR-018/ADR-023 mantem fora do grafo de build por decisao ratificada, com guard-test — NAO existe ADR que declare MEM ou REG deliberadamente nao-compostos. Enquanto essa decisao nao existir, o estado e INACABADO e nao adiado. Eixo: DEF-811/DEF-812",
+	}
 }
 
 func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
@@ -274,11 +325,53 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 	//    envelhece no instante seguinte. Um banner que afirma o presente e descreve o passado é
 	//    pior do que um que não afirma nada — e esta é, por confissão do próprio ficheiro, uma
 	//    superfície com histórico de mentir.
-	return []string{
+	linhas := []string{
 		fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO LIGADO — %d par(es) alvo:dominio provisionado(s) NO ARRANQUE de AOS_AUTONOMY_LEVELS, cada um SELADO na hash-chain WORM como autonomy.level_changed (particao %q, motivo %q, actor %q): uma mudanca de autonomia deixa de poder acontecer sem rasto. O alvo pode ser uma INSTANCIA (agt-1:fs) ou uma CLASSE (class:agent-worker:fs), com resolucao em CASCATA: instancia -> classe -> piso -> L0. Par sem instancia NEM classe registadas ⇒ %s (piso%s). E a composicao nivel x classe de risco que rebaixa um permit para ESCALATE — e portanto e esta ligacao que torna o bridge de aprovacao humana (AOS-021) ALCANCAVEL. ATENCAO: esta linha e o ESTADO NO ARRANQUE; POST /autonomy muda niveis em runtime (assinado e selado) e GET /autonomy e a FONTE DE VERDADE do que vigora agora",
 			len(w.sealedPairs), autonomy.DefaultAutonomyPartition, autonomyProvisionReason, autonomyProvisionActor,
 			w.piso.String(), pisoOrigem(w.piso)),
 	}
+	// AOS-307: o que o WORM trouxe de volta, e onde prevaleceu sobre o ambiente. A segunda
+	// metade é a que importa ao operador que editou AOS_AUTONOMY_LEVELS e não vê o valor novo:
+	// não é um bug, é uma decisão assinada de outra pessoa a ser respeitada — e diz-se qual.
+	if w.rehydrated > 0 {
+		// A AFIRMAÇÃO QUE ESTAVA AQUI ERA FALSA e é o que esta correcção fecha. Dizia que o
+		// vector do WORM forjado se fechava com AOS_WORM_ANCHOR e mandava «ver a linha de
+		// ancora acima» — mas a verificação ancorada corre até ao ÚLTIMO CHECKPOINT
+		// (VerifyFromCheckpointAtHead com to == cp.AuditSeq), pelo que um registo APENDIDO
+		// DEPOIS fica FORA do intervalo verificado. A âncora nunca fechou este vector. O que
+		// o fecha é a verificação por ASSINATURA de cada registo reidratado, e é isso — e só
+		// isso — que esta linha passa a afirmar.
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d alteracao(oes) de nivel RELIDA(S) do WORM no arranque — um nivel posto por POST /autonomy SOBREVIVE ao reinicio; para cada par, o ultimo selo de OPERADOR prevalece sobre AOS_AUTONOMY_LEVELS e um selo de provisionamento (actor %q) cede ao ambiente. O WORM e AUTORITATIVO sobre os niveis no arranque, e por isso o que se reidrata e VERIFICADO FORA DELE: cada registo de OPERADOR tem de trazer a(s) assinatura(s) ed25519 do pedido que o originou, que sao reverificadas contra as pubkeys de AOS_OPERATORS (e o direito autonomy:set), com DUAS assinaturas distintas para L4/L5 — a mesma regra da rota; um registo que NAO verifique ABORTA o arranque, nomeando o AuditSeq. E deliberado que isto nao dependa da ancora: o EntryHash e um SHA-256 SEM CHAVE (re-encadear e aritmetica publica) e a verificacao ancorada so cobre ate ao ultimo checkpoint, pelo que um registo apendido DEPOIS ficaria fora do intervalo verificado", w.rehydrated, autonomyProvisionActor))
+	}
+	if len(w.preservedOverEnv) > 0 {
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) com nivel de OPERADOR PRESERVADO sobre o que AOS_AUTONOMY_LEVELS declara agora [%s] — o ficheiro NAO mudou desde o ultimo provisionamento, pelo que a decisao assinada e a mais recente e prevalece; para a substituir, EDITE o ficheiro (qualquer direccao) e reinicie, ou assine outra alteracao (POST /autonomy)", len(w.preservedOverEnv), strings.Join(w.preservedOverEnv, ", ")))
+	}
+	// AMBIENTE EDITADO — a alavanca de resposta a incidente que não depende de chaves de operador.
+	if len(w.ambienteEditado) > 0 {
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) em que AOS_AUTONOMY_LEVELS MUDOU desde o ultimo provisionamento e por isso GANHOU a uma decisao de operador [%s] — editar o ficheiro e reiniciar e um acto deliberado com a mesma autoridade que provisiona, e vale em QUALQUER direccao; a mudanca foi ela propria selada como config:node", len(w.ambienteEditado), strings.Join(w.ambienteEditado, ", ")))
+	}
+	// PARES QUE VIGORAM FORA DO AMBIENTE — a divergência mais silenciosa das três, porque nem
+	// sequer há uma linha de configuração contra a qual comparar (achado R-03).
+	// REGISTOS SALTADOS — a linha mais alarmante desta família, e a que não pode faltar. Cada
+	// registo que a rehidratação não confirmou fica aqui com o seq: o operador tem de saber
+	// (a) que o nível NÃO foi aplicado e vigora o do ambiente, (b) as duas causas possíveis e
+	// o que fazer em cada uma, e (c) que o arranque prosseguiu DE PROPÓSITO, para não dar um
+	// modo de tijolo a quem escreve no WORM.
+	if len(w.rejeitados) > 0 {
+		itens := make([]string, 0, len(w.rejeitados))
+		for _, r := range w.rejeitados {
+			nivel := r.Level.String()
+			if _, ok := autonomy.ParseLevel(r.LevelRaw); !ok {
+				nivel = fmt.Sprintf("%q(ilegivel)", r.LevelRaw)
+			}
+			itens = append(itens, fmt.Sprintf("seq=%d %s:%s->%s actor=%q motivo=%q", r.AuditSeq, r.Pair.Agent, r.Pair.Domain, nivel, r.Actor, r.Motivo))
+		}
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): ATENCAO — %d registo(s) da particao %q SALTADO(S) por NAO se conseguir confirmar [%s]. NENHUM foi aplicado: esses pares vigoram no nivel de AOS_AUTONOMY_LEVELS (ou no piso). Duas causas possiveis: (1) MIGRACAO — o registo e anterior ao mecanismo de provas assinadas (AOS-305/307); reassine a alteracao por POST /autonomy e ela passa a reidratar; (2) REGISTO FORJADO por quem tem escrita no ficheiro do WORM — investigue o seq com `aos audit-trail --run %s`. O arranque prosseguiu DE PROPOSITO: abortar por um registo daria um modo de tijolo permanente ao mesmo adversario que a verificacao contem", len(w.rejeitados), autonomy.DefaultAutonomyPartition, strings.Join(itens, "; "), autonomy.DefaultAutonomyPartition))
+	}
+	if len(w.foraDoAmbiente) > 0 {
+		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) EM VIGOR POR DECISAO DE OPERADOR e AUSENTE(S) de AOS_AUTONOMY_LEVELS [%s] — nao constam do ficheiro e por isso nao aparecem na contagem de provisionamento acima; para os baixar, declare-os no ambiente com o nivel pretendido (a de-escalada ganha) ou assine outra alteracao", len(w.foraDoAmbiente), strings.Join(w.foraDoAmbiente, ", ")))
+	}
+	return linhas
 }
 
 // pisoOrigem distingue o piso HERDADO do DECLARADO. A diferença não é cosmética: "L0 por

@@ -47,12 +47,27 @@ type Contract struct {
 	CredentialScopes []string `json:"credential_scopes,omitempty"`
 	// Egress é a classe de egress declarada.
 	Egress EgressClass `json:"egress"`
+	// ManifestDigest é o digest do MANIFESTO DE CAPACIDADES do artefacto, para os
+	// tipos cuja superfície de capacidade NÃO cabe nos schemas de I/O — hoje só
+	// kind=mcp_server (AOS-320), cujo contrato não tem schemas próprios (os schemas
+	// das tools descobertas vivem em entradas kind=tool separadas) e cuja identidade
+	// real é o par (âncora local de transporte/endpoint, superfície anunciada).
+	// Sem este campo o digest de um mcp_server seria uma constante da classe de
+	// egress — três valores para todo o universo de servidores MCP.
+	//
+	// É um digest JÁ CALCULADO (string opaca com prefixo de algoritmo), não o
+	// manifesto: o REG pina a impressão digital, nunca o conteúdo untrusted.
+	//
+	// VAZIO nos artefactos sem manifesto (tool/skill) — e, quando vazio, NÃO entra
+	// na canonicalização ([Canonicalize] e digest.canonicalContract), o que preserva
+	// byte-a-byte os digests de todas as entradas anteriores a AOS-320.
+	ManifestDigest string `json:"manifest_digest,omitempty"`
 }
 
 // clone devolve uma cópia profunda do contrato para que o estado do catálogo nunca
 // partilhe slices/bytes mutáveis com o chamador (imutabilidade das entradas).
 func (c Contract) clone() Contract {
-	cp := Contract{Egress: c.Egress}
+	cp := Contract{Egress: c.Egress, ManifestDigest: c.ManifestDigest}
 	if c.InputSchema != nil {
 		cp.InputSchema = make(json.RawMessage, len(c.InputSchema))
 		copy(cp.InputSchema, c.InputSchema)

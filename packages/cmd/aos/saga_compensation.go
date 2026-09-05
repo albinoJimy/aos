@@ -221,7 +221,13 @@ func (s *NodeService) sealSagaRecord(ctx context.Context, runID, titular string,
 			Params: map[string]string{"detail": detail},
 		}},
 	}
-	if _, err := s.node.WORM.Append(ctx, rec); err != nil {
+	// AOS-311: a compensação JÁ CORREU quando se chega aqui, e o erro é engolido num log — a
+	// definição de selo pós-efeito. Desacoplado do cancelamento pela mesma razão que
+	// [apiHandler.sealControlAction]: o contexto que morre é frequentemente o do run que a saga
+	// está a compensar, e sem isto a compensação de um run abortado nunca ficaria registada.
+	selCtx, cancelSelo := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
+	defer cancelSelo()
+	if _, err := s.node.WORM.Append(selCtx, rec); err != nil {
 		s.log("saga (AOS-254): selo WORM da compensacao do run %q FALHOU (%s): %v", runID, reason, err)
 	}
 }

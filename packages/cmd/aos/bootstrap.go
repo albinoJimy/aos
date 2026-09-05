@@ -46,6 +46,7 @@ import (
 	"strings"
 	"time"
 
+	autonomy "github.com/aos-ref/control-plane/governance/autonomy"
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	hitl "github.com/aos-ref/control-plane/governance/hitl"
 	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
@@ -294,6 +295,10 @@ type Config struct {
 	// processo do operador. Vazio ⇒ default-deny (nenhum sinal autentica até haver
 	// operador registado).
 	Operators map[string]ed25519.PublicKey
+	// AutonomySetters são os emitterIDs de [Operators] que detêm a capability `autonomy:set`
+	// (AOS-305) — os únicos que podem mudar níveis por POST /autonomy. Cada id TEM de constar
+	// de Operators (validado fail-closed no [Bootstrap]); vazio ⇒ nenhum operador muda níveis.
+	AutonomySetters []string
 	// SteerTTL é a janela de frescura dos sinais de controlo. <=0 ⇒ default 5min.
 	SteerTTL time.Duration
 	// SteerSkew tolera carimbos ligeiramente no futuro (relógios adiantados). Default 0.
@@ -534,10 +539,13 @@ type Config struct {
 	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
 	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
 	// material). PREPARADO por AOS-264 a partir do ambiente, mas a TROCA MEDIADA ainda
-	// NÃO está ligada ao gateway nesta entrega: é CONSUMIDO em AOS-265 (a porta de
-	// aquisição in-process). nil ⇒ não configurado. O banner declara o modo e que a
+	// NÃO está ligada ao gateway. nil ⇒ não configurado. O banner declara o modo e que a
 	// troca está pendente — nunca "broker ligado" (seria a promessa a mais que AOS-248
 	// proíbe). Ver broker_vault_env.go.
+	//
+	// CORRECÇÃO (AOS-325): apontava o consumo para AOS-265, que JÁ ATERROU (a porta
+	// `broker.AcquireInProcess` existe e é testada) sem ligar a troca. O bloqueador real
+	// é o DEF-218.
 	BrokerVault broker.VaultClient
 	// BrokerVaultAddr / BrokerVaultKVMount são material PÚBLICO (uma URL, um nome de
 	// mount) que o banner usa para declarar o modo do broker Vault. Vazios ⇒ dormente.
@@ -676,6 +684,10 @@ type Node struct {
 	// valor é o que torna emissão↔composição INDIVISÍVEIS: nunca se compõe a porta (que sem
 	// emissão negaria toda a perna) sem o endpoint que a alimenta.
 	ChallengeIssuer *hitl.EventStoreChallengeIssuer
+	// ChallengeAuth autentica os PEDIDOS de challenge com a assinatura do APROVADOR nomeado
+	// (AOS-308) — pubkeys do roster de aprovadores, nonce durável de uso único, frescura. É
+	// composto no mesmo bloco que [ChallengeIssuer] e é nil sempre que ele o for.
+	ChallengeAuth *integration.Ed25519Authenticator
 	// Promotion é o promotion controller (AOS-159/AOS-206): a via SANCIONADA
 	// [hitl.NewProductionRatificationGate] (freshness + nonce-store durável FORÇADOS) que
 	// interpõe a ratificação humana assinada entre o canary e a produção de um artefacto de
@@ -691,6 +703,10 @@ type Node struct {
 	Verifier *identity.Verifier
 	// SteerAuth é o autenticador ed25519 do canal de controlo (só pubkeys).
 	SteerAuth *integration.Ed25519Authenticator
+	// AutonomySetters é o conjunto dos emitterIDs com `autonomy:set` (AOS-305), já validados
+	// contra [Config.Operators]. É o que o handler de POST /autonomy consulta ANTES de
+	// autenticar: assinar bem não chega, é preciso deter o direito.
+	AutonomySetters map[string]bool
 	// fencingAuth é a autoridade de token das escritas fenceadas do ledger/checkpointer
 	// (AOS-299). Não-exportada: só o [NewNodeService] lhe liga o LeaseManager, e mais
 	// ninguém tem razão para lhe tocar. nil fora da execução durável.
@@ -957,6 +973,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 		seenOpKey[fp] = id
 	}
+	// (1a-bis) AUTORIDADE SOBRE A AUTONOMIA (AOS-305). Cada emitterID com `autonomy:set` TEM de
+	// ter pubkey em Operators — um direito atribuído a quem nunca autentica é uma capacidade
+	// anunciada e não cumprida (a mesma classe de defeito da guarda acima). Validado aqui, e não
+	// no parser, porque é aqui que as duas listas se encontram e porque Config é alcançável
+	// in-process sem passar pelo parser.
+	autonomySetters := make(map[string]bool, len(cfg.AutonomySetters))
+	for _, id := range cfg.AutonomySetters {
+		if id == "" {
+			return nil, fmt.Errorf("%w: emitterID vazio", ErrBadAutonomySetters)
+		}
+		if _, ok := cfg.Operators[id]; !ok {
+			return nil, fmt.Errorf("%w: emitterID %q nao consta de AOS_OPERATORS", ErrBadAutonomySetters, id)
+		}
+		if autonomySetters[id] {
+			return nil, fmt.Errorf("%w: emitterID %q duplicado", ErrBadAutonomySetters, id)
+		}
+		autonomySetters[id] = true
+	}
 	seenPrincipal := make(map[string]struct{}, len(cfg.Approvers))
 	seenApKey := make(map[string]string, len(cfg.Approvers))
 	for i, a := range cfg.Approvers {
@@ -1219,8 +1253,27 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// registava os níveis ali mesmo — a autonomia com que o nó ia correr mudava sem ficar
 	// registada em lado nenhum. Fail-closed: uma selagem recusada ABORTA o arranque
 	// ([ErrAutonomyProvisioning]); a guarda de limpeza acima fecha os stores que o nó abriu.
-	if err := cfg.Autonomy.provision(ctx, worm); err != nil {
+	//
+	// A REHIDRATAÇÃO É VERIFICADA (achado de revisão sobre AOS-307). O que se relê do WORM não
+	// se auto-autoriza: o `audit.VerifyStore` acima re-encadeia o store contra si próprio, e a
+	// verificação ancorada corre só até ao último checkpoint. O validador injectado aqui —
+	// [autonomyRehydrateValidator] — confronta cada registo de OPERADOR com uma raiz de
+	// confiança FORA do store (as pubkeys de AOS_OPERATORS e o direito `autonomy:set`), e o que
+	// não verificar ABORTA o arranque. É a única razão pela qual `cfg.Operators` e
+	// `autonomySetters` são precisos nesta linha.
+	if err := cfg.Autonomy.provision(ctx, worm,
+		autonomy.WithRehydrateValidator(autonomyRehydrateValidator(cfg.Operators, autonomySetters))); err != nil {
 		return nil, err
+	}
+
+	// (2b-bis) CHANGELOG DE POLÍTICA (AOS-310) — a transposição de (2b) para o PDP. Com bundle
+	// carregado, a (versão, content_hash) em vigor é confrontada com o último `policy.changed`
+	// da partição `policy`; se diferir, a transição é SELADA com actor config:node. É o único
+	// caminho real de troca de política no nó (Reload não tem chamador nem rota), e era o único
+	// sem rasto na hash-chain. Fail-closed como (2b): selagem recusada ⇒ o arranque aborta.
+	policyChangelog, perr := provisionPolicyChangelog(ctx, worm, cfg.PDP, time.Now())
+	if perr != nil {
+		return nil, perr
 	}
 
 	// (2c-pre) CIFRA POR-TITULAR DO CONTEÚDO DOS RUNS (AOS-093). O vault de chaves de
@@ -1506,6 +1559,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// seria pior que o silêncio.
 	var foureyes *integration.FourEyesGate
 	var challengeIssuer *hitl.EventStoreChallengeIssuer
+	// challengeAuth autentica os PEDIDOS de challenge (AOS-308): as pubkeys são as dos
+	// APROVADORES — quem pede um challenge é quem o vai usar, e assina o pedido com a sua chave.
+	var challengeAuth *integration.Ed25519Authenticator
 	var attestationComposed, enrollmentComposed, freshnessComposed bool
 	if len(cfg.Approvers) > 0 {
 		registry := hitl.NewMemApproverRegistry()
@@ -1557,6 +1613,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			}
 			feOpts = append(feOpts, integration.WithChallengeIssuance(challengeIssuer))
 			freshnessComposed = true
+			// AOS-308: a EMISSÃO passa a exigir a assinatura do aprovador nomeado. O autenticador
+			// é o mesmo tipo do canal de controlo (nonce durável de uso único + frescura), com as
+			// pubkeys do roster de APROVADORES em vez das dos operadores — o nonce-store é
+			// partilhado, mas o âmbito ([integration.ChallengeRequestScope]) separa os espaços.
+			// Composto no MESMO bloco que o emissor, pela mesma razão de indivisibilidade: não há
+			// como ter a rota a emitir sem ter com que a autenticar.
+			challengeAuth, err = integration.NewEd25519Authenticator(hitl.NewEventStoreNonceStore(es), ttl, edOpts...)
+			if err != nil {
+				return nil, fmt.Errorf("aos: autenticador dos pedidos de challenge (AOS-308): %w", err)
+			}
+			for _, a := range cfg.Approvers {
+				challengeAuth.Register(a.Principal, a.PubKey)
+			}
 		}
 
 		foureyes, err = integration.NewFourEyesGate(registry, hitl.NewEventStoreNonceStore(es), feOpts...)
@@ -2261,12 +2330,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("mediacao de politica (AOS-220): PDP NAO-CARREGADO (NewUnloaded) — DEFAULT-DENY EXPLICITO de TODA a tool call mediada; defina AOS_POLICY_BUNDLE_DIR + AOS_POLICY_TRUST_ANCHOR (pubkey ed25519 out-of-band) para carregar um bundle assinado")
 	}
+	// AOS-310: o que o arranque fez com o changelog `policy.changed` (nada, se não há bundle).
+	for _, line := range policyChangelogBanner(cfg.PDP, policyChangelog) {
+		log("%s", line)
+	}
 	// AS QUATRO SUPERFÍCIES QUE O BANNER CALAVA (AOS-248, achado F14). Ficam JUNTAS e logo a
 	// seguir à mediação de política porque é com ela que o operador as compõe mentalmente: o PDP
 	// diz o que é permitido, a autonomia diz o que ainda assim EXIGE um humano, o modelo diz quem
 	// propõe as acções, e o orçamento/broker dizem o que NÃO as limita nem lhes guarda os
 	// segredos. Cada linha segue o estado REALMENTE composto — ver posture_banner.go, onde a
 	// justificação de cada afirmação está amarrada ao código que a suporta.
+	// AOS-305: quem pode mudar a autonomia, e com que cerimónia. Só quando o oráculo está
+	// composto — sem ele POST /autonomy responde 501 e a autoridade é discutível.
+	if cfg.Autonomy != nil {
+		for _, line := range autonomySettersBanner(autonomySetters) {
+			log("%s", line)
+		}
+	}
 	for _, line := range autonomyPostureBanner(cfg.Autonomy) {
 		log("%s", line)
 	}
@@ -2305,13 +2385,25 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	// AOS-264: o Vault de credenciais downstream do broker, PREPARADO por
 	// AOS_BROKER_VAULT_* (separado do KEK, D7). Declara "configurado, troca pendente"
-	// ou "dormente" — nunca "broker ligado" (a troca só medeia algo em AOS-265). O
+	// ou "dormente" — nunca "broker ligado" (a troca não medeia nada: a porta de
+	// AOS-265 existe, o que falta é a composição, bloqueada em DEF-218). O
 	// argumento deriva do ESTADO composto: `cfg.BrokerVault != nil` ⇒ preparado.
 	var brokerVaultSet *brokerVaultSettings
 	if cfg.BrokerVault != nil {
 		brokerVaultSet = &brokerVaultSettings{Addr: cfg.BrokerVaultAddr, KVMount: cfg.BrokerVaultKVMount}
 	}
 	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
+		log("%s", line)
+	}
+	// SERVIÇOS DE PLATAFORMA (AOS-326). MEM e REG eram os dois únicos serviços do
+	// `_BRIEF` §2 sobre os quais o arranque não dizia nada — e são aqueles em que a
+	// distância entre a biblioteca (testada, com gate próprio) e o nó composto é maior.
+	// O argumento deriva do ESTADO, como o do credential broker: `cfg.Catalog`/
+	// `cfg.Revalidator` a nil significam o catálogo vazio e o revalidador de referência.
+	for _, line := range plataformaPostureBanner(posturaDosServicosDePlataforma{
+		CatalogoInjectado:    cfg.Catalog != nil,
+		RevalidadorInjectado: cfg.Revalidator != nil,
+	}) {
 		log("%s", line)
 	}
 	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA
@@ -2355,6 +2447,35 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular INJECTADO por config (custodia EXTERNA pela porta audit.KeyVault) — as KEK vivem FORA do processo; a durabilidade/rotacao e do custodiante (o no nao a atesta); /dsar/erase e a expiracao destroem a KEK NESSE vault")
 	} else {
 		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular de REFERENCIA in-memory — DEMO-GRADE: as KEK vivem em MEMORIA do processo, NAO-duraveis (perdem-se no restart); injecte Config.DSARVault (key-service/software-KMS de custodia externa) para producao; o KMS/HSM real e infra-org por tras da mesma porta")
+	}
+	// CONFIRMAÇÃO DO CRYPTO-SHRED (AOS-322). A porta [dsar.ShredConfirmer] é OPCIONAL
+	// por desenho: nem toda a custódia sabe responder «esta chave deixou de existir».
+	// O `InMemoryKeyVault` não a implementa e está CERTO ao não a implementar — o seu
+	// `Delete` é um `delete()` num mapa e não tem como falhar, pelo que não há
+	// pendência possível para reportar. O Vault Transit implementa-a (relê a chave e
+	// exige 404).
+	//
+	// PORQUE ISTO PRECISA DE SER DITO EM VOZ ALTA. As duas leituras de um `/readyz`
+	// verde são muito diferentes — «não há destruições por confirmar» e «esta custódia
+	// não sabe responder à pergunta» — e sem esta linha o operador não as distingue. E
+	// a opcionalidade é fail-open para a TERCEIRA custódia: um KMS de terceiros que
+	// possa falhar a destruir e não implemente a porta faria a cadeia selar
+	// `dsar.key_destroyed` sobre uma irrecuperabilidade que ninguém verificou — o
+	// defeito exacto que a porta foi criada para fechar, reaberto pela via da omissão.
+	//
+	// O DISCRIMINANTE É `dsarVaultInjected`, E A PRIMEIRA VERSÃO DESTA LINHA NÃO O USAVA.
+	// A revisão adversarial apanhou-o: o ramo não-armado dizia «com o vault de REFERENCIA
+	// isto é CORRECTO», mas dispara para QUALQUER custódia sem a porta — incluindo uma de
+	// terceiros injectada por [Config.DSARVault]. Nesse caso o nó afirmava que a ausência de
+	// confirmação era correcta PORQUE o vault é o de referência, quando não é. Era o cenário
+	// que o DEF-813 nomeia como risco, e o banner comprava-lhe confiança em vez de o expor.
+	switch {
+	case confirmadorDeShredDe(dsarVault) != nil:
+		log("confirmacao de crypto-shred (AOS-322): ARMADA — a custodia composta sabe responder se a destruicao da KEK esta CONFIRMADA, e o fluxo DSAR pergunta-lhe ANTES de a cadeia afirmar o apagamento. Uma destruicao nao confirmada sela dsar.shred_unconfirmed, poe o /readyz VERMELHO e emite aos_dsar_vault_shred_unconfirmed>0")
+	case !dsarVaultInjected:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e CORRECTO — a custodia composta e o vault de REFERENCIA in-memory, que nao implementa a porta de confirmacao porque nao precisa: o seu Delete e um apagamento em memoria que NAO PODE FALHAR, logo nao ha pendencia possivel. Um /readyz verde neste modo significa 'nada a confirmar', NAO 'confirmado'. Ver DEF-813")
+	default:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e NAO E CORRECTO — foi INJECTADA uma custodia externa por Config.DSARVault que NAO implementa a porta de confirmacao. O fluxo DSAR sela dsar.key_destroyed SEM perguntar, pelo que a cadeia passa a afirmar uma irrecuperabilidade que NINGUEM verificou. Ao contrario do vault de referencia, esta custodia PODE falhar a destruir (rede, politica, autoridade) e o nó nao tem como o saber. Implemente a porta na custodia ou aceite que o apagamento do Art. 17 nao esta provado. Eixo: DEF-813")
 	}
 	// LEGAL HOLD + EXPIRAÇÃO (AOS-213, CON-02/DEF-903). O banner declara a superfície de
 	// administração REALMENTE composta e o MODO de expiração (sob demanda por rota) — sem
@@ -2435,10 +2556,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		PendingApprovals: pendingApprovals,
 		ResumeRecords:    resumeRecords,
 		ChallengeIssuer:  challengeIssuer, // nil quando a frescura por-cerimónia (AOS-266) está DORMENTE
+		ChallengeAuth:    challengeAuth,   // AOS-308: nil sempre que ChallengeIssuer o for (mesmo bloco)
 		Promotion:        promotion,       // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
 		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
+		AutonomySetters:  autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
 		Revocations:      revocations,
 		Autonomy:         cfg.Autonomy,
 		EventStore:       es,

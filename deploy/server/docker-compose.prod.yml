@@ -90,8 +90,23 @@ services:
       # sobreviver a um deploy (o volume é nomeado e não é tocado pela troca de digest).
       AOS_DURABLE_EXECUTION: "1"
       # AOS-100 — Event Store REPLICADO. Vazio (o default) mantem o WAL local acima;
-      # preenchido, PRECEDE-O e o substrato passa a arbitrar entre processos, tornando
-      # N replicas do no a configuracao pretendida.
+      # preenchido, PRECEDE-O e o substrato passa a arbitrar entre processos.
+      #
+      # RESSALVA QUE FALTAVA AQUI, E SO AQUI (AOS-325). O Event Store replica; o WORM
+      # NAO. `bootstrap.go` so sabe abrir `audit.OpenFileStore(AOS_WORM_PATH)`, um
+      # ficheiro LOCAL, e dois escritores FORKAM a hash-chain — medido em AOS-284, com
+      # a consequencia dura de o no NAO ARRANCAR e classificar a cadeia como
+      # fork, com TamperFork/ErrChainForked a distinguir um ramo bem formado de
+      # adulteracao (AOS-284 AC3, entregue). O guard de arranque (AOS-285) tranca o WORM
+      # por flock, pelo que duas replicas sobre o mesmo volume nao arrancam ambas: e
+      # fail-closed, nao silencioso. ATENCAO: com AOS_EVENTSTORE_NATS preenchido o guard
+      # do Event Store DESLIGA-SE de proposito (o substrato replicado arbitra entre
+      # processos) e so o WORM continua trancado — quem separar os WORM por replica
+      # mantendo o volume perde a proteccao sem que nada o diga. Ligar AOS_EVENTSTORE_NATS NAO torna, por si so, N replicas uma
+      # configuracao suportada — falta a atribuicao deterministica replica->particao,
+      # que e o AC por fechar de AOS-284 (v1.1). Este ficheiro era o UNICO artefacto do
+      # repositorio a convidar as N replicas sem nomear esse preco; `bootstrap.go`,
+      # `wal_posse.go`, o teste do AOS-100 e o EPIC-10 sempre o carregaram.
       # SOBERANIA (AC5): esta fechado. A fronteira regional e IMPLEMENTADA — o stream e
       # criado com `placement` restrita a servidores que anunciem `region:<valor>` — e
       # sobretudo VERIFICADA: a colocacao e LIDA DE VOLTA da configuracao armazenada, e
@@ -156,6 +171,8 @@ services:
       # para L0 ⇒ escalate. Definir isto faz TODO o agente não listado passar a exigir aprovação
       # humana — é fail-closed e correcto, e é uma mudança de comportamento real.
       AOS_AUTONOMY_LEVELS: "${AOS_AUTONOMY_LEVELS:-}"
+      # AOS-305: emitterIDs de AOS_OPERATORS com autonomy:set (vazio ⇒ POST /autonomy recusa tudo).
+      AOS_AUTONOMY_SETTERS: "${AOS_AUTONOMY_SETTERS:-}"
 
       # PISO dos pares SEM nível registado. Vazio ⇒ L0 (o mais supervisionado), exactamente
       # como sem esta variável. Existe para o piso ser uma DECLARAÇÃO e não uma herança: hoje

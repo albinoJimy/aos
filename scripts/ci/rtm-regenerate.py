@@ -211,7 +211,7 @@ def system_spec_drivers() -> int:
 #
 # A decisão de o que fazer se o ramo for ABANDONADO em vez de fundido — o número
 # fica queimado, ou reatribui-se — está deferida com critério escrito em
-# **DEF-908** (`docs/governance/REGISTO-Deferimentos.md`), para ser tomada no
+# **DEF-912** (`docs/governance/REGISTO-Deferimentos.md`), para ser tomada no
 # merge por quem o fizer, e não adivinhada agora por quem abriu a entrada.
 # LISTA, convertida em conjunto — e não um literal `{...}`. Medido: esvaziar um
 # literal de conjunto deixa `{}`, que em Python é um **dict**, e o gate morria em
@@ -220,7 +220,7 @@ def system_spec_drivers() -> int:
 # exactamente quem não devia tropeçar numa armadilha de sintaxe.
 ATRIBUIDOS_NOUTRO_RAMO = frozenset([
     # AOS-317 — `claude/exciting-maxwell-aec36d` (b26966c, 2026-09-04).
-    # Sai quando esse ramo for fundido. Ver DEF-908 para o caso do abandono.
+    # Sai quando esse ramo for fundido. Ver DEF-912 para o caso do abandono.
     "AOS-317",
 ])
 

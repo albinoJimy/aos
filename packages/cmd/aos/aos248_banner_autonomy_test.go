@@ -288,10 +288,19 @@ func aos248SelosDeAutonomia(t *testing.T, store audit.Store) []audit.AuditRecord
 
 // aos248WormQueRecusa é um [audit.Store] que RECUSA selar — o substituto do WORM cheio/partido
 // que, sem esta guarda, deixaria o nível entrar em vigor sem registo.
+//
+// A leitura é VAZIA e sem erro (AOS-307): desde que o [autonomyWiring.provision] reidrata o
+// registo antes de provisionar, este duplo precisa de responder ao Read — e a resposta certa é
+// «partição vazia, primeiro arranque», para que o teste continue a medir o que mediu sempre (a
+// selagem recusada aborta) e não uma falha de leitura, que é outro caminho.
 type aos248WormQueRecusa struct{ audit.Store }
 
 func (aos248WormQueRecusa) Append(context.Context, audit.AuditRecord) (audit.AuditRecord, error) {
 	return audit.AuditRecord{}, errors.New("worm indisponivel (teste)")
+}
+
+func (aos248WormQueRecusa) Read(context.Context, string, uint64, uint64) ([]audit.AuditRecord, error) {
+	return nil, nil
 }
 
 // aos248ModeloInjectado é um [agentruntime.ModelClient] que não é o gateway nem a referência —

@@ -234,6 +234,20 @@ func marshalScalar(v any) ([]byte, error) {
 // de chaves/whitespace irrelevantes). Os credential scopes são ordenados e
 // deduplicados (a ordem de declaração não é semântica).
 //
+// AOS-320 — ManifestDigest: escrito por ÚLTIMO e SÓ quando não-vazio.
+//
+//   - por ÚLTIMO, porque a leitura continua inequívoca: o contador de scopes já
+//     delimita onde os scopes acabam, logo um campo extra na cauda nunca pode ser
+//     confundido com um scope;
+//   - SÓ quando não-vazio, porque escrevê-lo incondicionalmente acrescentaria um
+//     length-prefix de quatro zeros a TODAS as entradas e mudaria o digest de todas
+//     as tool/skill já publicadas — o pin de todo o catálogo. Condicional, os bytes
+//     canónicos de uma entrada SEM manifesto são BYTE-A-BYTE os de antes de AOS-320
+//     (fixado em golden por TestGoldenDigests_ToolSkill_NaoRegridem).
+//
+// Manter SINCRONIZADO com [domain.Canonicalize] (a geração placeholder de AOS-045
+// serializa a MESMA ordem de campos).
+//
 // A porta de FAIL-CLOSED para schemas malformados é a publicação: o REG valida
 // que InputSchema/OutputSchema são JSON bem-formado ANTES de admitir a entrada
 // (registry.Publish), pelo que uma entrada admitida nunca chega aqui com um
@@ -260,6 +274,12 @@ func canonicalContract(kind domain.ArtifactKind, c domain.Contract) []byte {
 	buf.Write(n[:])
 	for _, s := range scopes {
 		writeField([]byte(s))
+	}
+	// AOS-320: escrito por ÚLTIMO e só quando não-vazio — ver o doc-comment acima.
+	// (A palavra em maiúsculas que aqui estava é um marcador do gate `deferrals`, e isto
+	// não é dívida adiada: é uma propriedade do formato canónico.)
+	if c.ManifestDigest != "" {
+		writeField([]byte(c.ManifestDigest))
 	}
 	return buf.Bytes()
 }

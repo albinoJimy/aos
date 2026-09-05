@@ -40,6 +40,11 @@ const (
 	// controlGrantObl transporta o id do grant emitido, para amarrar o selo à evidência que
 	// destrava a acção na retoma.
 	controlGrantObl = "four_eyes.grant"
+	// controlSealTimeout é o prazo PRÓPRIO do selo pós-efeito. Existe porque o selo deixou de
+	// herdar o cancelamento do pedido (ver [apiHandler.sealControlAction]): sem prazo nenhum, um
+	// store pendurado prenderia o handler para sempre. Generoso face a um fsync local e curto
+	// face a uma sessão HTTP.
+	controlSealTimeout = 5 * time.Second
 )
 
 // sealControlAction sela uma acção de controlo JÁ AUTENTICADA E JÁ APLICADA na hash-chain
@@ -63,10 +68,63 @@ func (h *apiHandler) sealControlAction(ctx context.Context, kind, runID, emitter
 	if h.node == nil || h.node.WORM == nil {
 		return // sem substrato tamper-evidente composto: nada a selar (modo de referência).
 	}
+	// O CONTEXTO DO PEDIDO NÃO PODE CANCELAR ESTE SELO (achado de revisão de segurança sobre
+	// AOS-311). Desde que o `audit.FileStore.Append` respeita o `ctx` — o que é a correcção certa
+	// para o caminho audit-BEFORE-effect do Reference Monitor, onde um prazo esgotado tem de dar
+	// deny — este selo, que corre DEPOIS do efeito, passou a ser cancelável por quem o provoca:
+	// um operador que emita `pause` assinado e corte a ligação TCP a seguir aplica a pausa e faz
+	// o `Append` falhar, ficando o trilho `governance.control` sem quem exerceu a acção. É um
+	// primitivo de supressão de auditoria, e a janela é pequena mas repetível.
+	//
+	// `WithoutCancel` preserva os valores do contexto (trace, deadline de shutdown do processo
+	// não; o prazo próprio abaixo cobre o caso de o store estar pendurado) e larga o
+	// cancelamento. É o idioma já usado em `packages/integration/budget.go` e em
+	// `packages/substrate/sandbox/lifecycle.go` para exactamente esta situação: um efeito que já
+	// aconteceu tem de ser registado mesmo que quem o pediu já se tenha ido embora.
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
+	defer cancel()
 	rec := controlSealRecord(kind, runID, emitterID, h.cfg.now(), obrigacoes...)
-	if _, err := h.node.WORM.Append(ctx, rec); err != nil {
+	if _, err := h.node.WORM.Append(selCtx, rec); err != nil {
 		// Nunca a assinatura nem o nonce: só o caminho e a classe de falha.
 		h.svc.log("SELO DE CONTROLO EM FALTA: a accao %q sobre run=%q por %q FOI APLICADA mas NAO ficou na hash-chain: %v", kind, runID, emitterID, err)
+	}
+}
+
+// controlDenialObl transporta a CLASSE da recusa de uma cerimónia — nunca o valor que a
+// produziu (ver `razaoSegura` em api.go: dois sentinelas do gate interpolam o identificador da
+// sessão viva e o credential-id do aprovador).
+const controlDenialObl = "four_eyes.denial"
+
+// sealControlDenial sela uma cerimónia de aprovação RECUSADA na mesma cadeia das acções de
+// controlo (AOS-309).
+//
+// PORQUE ISTO NÃO CONTRADIZ [TestA3_SinalRecusado_NaoSela], que fixa a propriedade oposta.
+// Aquele teste protege o trilho de um vector de INCHAÇO: um sinal com alvo errado é recusado
+// antes de tocar em estado nenhum, qualquer um o pode emitir em rajada, e selá-lo daria a quem
+// inunda o canal uma forma de encher a cadeia. É a decisão certa para esse caminho.
+//
+// A recusa de uma cerimónia de `/approve` que chega ao gate é outra coisa: só lá chega DEPOIS
+// de `exigenciaDeDuploControlo` confirmar que a preview corresponde a uma escalada que o
+// PRÓPRIO NÓ produziu. O volume é limitado pelas escaladas pendentes do nó, não pelo que um
+// atacante inventa — e o que se perde por não selar é a única prova durável de que dois
+// humanos tentaram autorizar uma acção irreversível e foram recusados. O log do serviço é
+// volátil; esta cadeia não é.
+//
+// Sela a CLASSE, nunca a razão crua — a mesma disciplina do log de AOS-309.
+func (h *apiHandler) sealControlDenial(ctx context.Context, requestID, runID, classe string) {
+	if h.node == nil || h.node.WORM == nil {
+		return
+	}
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
+	defer cancel()
+	rec := controlSealRecord("approve", runID, "", h.cfg.now(),
+		audit.Obligation{Type: controlDenialObl, Fields: []string{classe}, Params: map[string]string{"request_id": requestID}})
+	// O veredicto é sobre a CERIMÓNIA (foi recusada), ao contrário do selo de sucesso, que
+	// regista uma acção de governação exercida.
+	rec.Decision = audit.DecisionDeny
+	rec.Reason = "control_approve_denied"
+	if _, err := h.node.WORM.Append(selCtx, rec); err != nil {
+		h.logf("SELO DE RECUSA EM FALTA: a cerimonia %q sobre run=%q foi RECUSADA mas a recusa NAO ficou na hash-chain: %v", requestID, runID, err)
 	}
 }
 
@@ -124,8 +182,14 @@ func (s *NodeService) selarRetomaPeloCanal(ctx context.Context, runID, emitterID
 	if s.node == nil || s.node.WORM == nil {
 		return // sem substrato tamper-evidente composto: nada a selar (modo de referência).
 	}
+	// Mesmo desacoplamento do cancelamento que [apiHandler.sealControlAction] (achado de revisão
+	// de segurança sobre AOS-311): o efeito já aconteceu e o contexto do run pode morrer — por
+	// término, aborto ou shutdown — entre a retoma e o selo. Um selo pós-efeito nunca pode ser
+	// cancelado pelo que ele existe para registar.
+	selCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
+	defer cancel()
 	rec := controlSealRecord("resume", runID, emitterID, time.Now())
-	if _, err := s.node.WORM.Append(ctx, rec); err != nil {
+	if _, err := s.node.WORM.Append(selCtx, rec); err != nil {
 		// Nunca a assinatura nem o nonce: só a classe de falha.
 		s.log("SELO DE CONTROLO EM FALTA: a retoma do run %q por %q FOI APLICADA mas NAO ficou na hash-chain: %v", runID, emitterID, err)
 	}

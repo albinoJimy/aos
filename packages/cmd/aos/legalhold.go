@@ -311,7 +311,12 @@ func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 	// SELA-SE MESMO COM ERRO, e é a mesma postura do varredor («o desfecho é selado a seguir de
 	// qualquer forma»): uma passagem que falhou a meio é precisamente aquela cujo resumo mais
 	// falta faz.
-	if serr := h.svc.selarPassagemDeRetencao(r.Context(), retentionSweepCompletedEvent, expiracaoID,
+	// AOS-311: o desfecho é prova de um facto CONSUMADO (as destruições já aconteceram), pelo que
+	// o selo não pode ser cancelado por quem pediu a expiração e desligou a seguir. O selo de
+	// ATRIBUIÇÃO acima é decisão e continua a herdar o contexto do pedido.
+	selCtx, cancelSelo := context.WithTimeout(context.WithoutCancel(r.Context()), controlSealTimeout)
+	defer cancelSelo()
+	if serr := h.svc.selarPassagemDeRetencao(selCtx, retentionSweepCompletedEvent, expiracaoID,
 		time.Now().UTC(), &report, retentionTriggerRota, leitor.principal); serr != nil {
 		// NÃO é fail-closed, e a razão é a do varredor: cada destruição já foi selada pelo job
 		// ANTES de acontecer. O que se perde é o RESUMO — registado aqui de forma ruidosa em vez

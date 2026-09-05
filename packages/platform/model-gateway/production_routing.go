@@ -150,10 +150,11 @@ type RoutingConfig struct {
 	// construído das mesmas contas de infra ([keypool.Registry.Headroom]) — a fonte
 	// real, sem contabilidade paralela.
 	Load router.LoadProvider
-	// Budget é a porta de ORÇAMENTO da degradação graciosa (~80% ⇒ oferece descer
-	// para um tier mais barato AINDA capaz). Nil ⇒ sem oferta de degradação. O
-	// burn-down real vive no control-plane (EPIC-03): é o composition root que liga
-	// esta porta, porque o módulo do GW não importa control-plane no caminho quente.
+	// DEFERIDO (DEF-280-PORTAS) — Budget é a porta de ORÇAMENTO da degradação graciosa
+	// (~80% ⇒ oferece descer para um tier mais barato AINDA capaz). Nil ⇒ sem oferta de
+	// degradação. O burn-down real vive no control-plane (EPIC-03): é o composition root que
+	// liga esta porta, porque o módulo do GW não importa control-plane no caminho quente — e
+	// nenhum o liga hoje, pelo que a seam existe sem fonte.
 	Budget degradation.BudgetProvider
 	// Admission coordena com o admission control GLOBAL (ADR-008): sem headroom, a
 	// chamada é ADIADA em vez de saturar o tecto partilhado. Nil ⇒ sem coordenação
@@ -442,9 +443,9 @@ func unpricedLadderPairs(
 	return out
 }
 
-// modelSwapRecorder é o TERCEIRO elo do slot de roteamento: sela no audit WORM a
-// decisão de governação do par EFECTIVO quando — e só quando — o refino trocou o
-// modelo despachado.
+// DEFERIDO (DEF-280-REGIAO) — modelSwapRecorder é o TERCEIRO elo do slot de roteamento: sela
+// no audit WORM a decisão de governação do par EFECTIVO quando — e só quando — o refino trocou o
+// MODELO despachado. Uma mudança só de REGIÃO, com o mesmo modelo, não produz este selo.
 //
 // # Porque é preciso (e porque não basta o DecisionSink)
 //

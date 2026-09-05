@@ -409,7 +409,18 @@ gate_threshold COVERAGE_MIN "$KERNEL_COVERAGE_MIN" "$FLOOR_COVERAGE_MIN" 100 "%"
 # 40% com os 24 gates verdes.
 #
 # É onde vivem a execução durável, o disjuntor, a saga, o replay e a máquina de estados.
-COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/kernel/agent-runtime" "packages/testkit" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface" "packages/control-plane/governance/authoring-surface" "packages/control-plane/governance/trajectory-surface")
+#
+# O MESMO ARGUMENTO, APLICADO AO PLANO DE CONTROLO (achado E-08 de `analises/10`). O
+# `orchestrator`, o `scheduler` e o `pdp` estavam na mesma situação exacta do `agent-runtime`:
+# descobertos, medidos, e nunca comparados com o limiar. Estavam a 90,0%, 91,9% e 90,8% quando
+# isto foi escrito — e é esse o ponto, palavra por palavra: esse verde saía igual com o gate
+# desligado, e qualquer um deles podia cair para 40% com os gates todos verdes.
+#
+# O `pdp` é a única cadeia CA→código→teste→gate completa do plano de controlo, e é quem decide
+# se uma tool call acontece. O `orchestrator` e o `scheduler` não estão compostos no nó
+# (ADR-018/023) — mas é precisamente o código que ninguém corre que apodrece sem ninguém ver, e
+# o dia em que forem compostos não é o dia de descobrir que a cobertura caiu.
+COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/kernel/agent-runtime" "packages/testkit" "packages/control-plane/orchestrator" "packages/control-plane/scheduler" "packages/control-plane/pdp" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface" "packages/control-plane/governance/authoring-surface" "packages/control-plane/governance/trajectory-surface")
 # Directório do testkit (conversor de cobertura cov2lcov, Go stdlib puro).
 TESTKIT_DIR="$REPO_ROOT/packages/testkit"
 # Artefacto de cobertura MÁQUINA-LEGÍVEL emitido pelo gate 3 (LCOV). Ignorado pelo

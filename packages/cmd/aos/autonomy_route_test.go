@@ -287,7 +287,9 @@ func noParaTeste(t *testing.T) (*apiHandler, ed25519.PrivateKey, audit.Store) {
 		node: &Node{
 			Autonomy:  &autonomyWiring{registry: reg, sink: sink},
 			SteerAuth: auth,
-			WORM:      worm,
+			// AOS-305: assinar não chega — o emissor tem de deter autonomy:set.
+			AutonomySetters: map[string]bool{"human:op": true},
+			WORM:            worm,
 		},
 		cfg: apiConfig{maxBodyBytes: 1 << 20, now: time.Now},
 	}
@@ -318,8 +320,10 @@ func pedidoDeAutonomia(t *testing.T, priv ed25519.PrivateKey, id, agente, domini
 func TestSeloNomeiaQuemAssinouENaoOQueOCorpoDiz(t *testing.T) {
 	h, priv, worm := noParaTeste(t)
 
+	// L3 e não L4: desde AOS-305 mudar PARA L4/L5 exige duas assinaturas, e o que este teste
+	// mede é a ATRIBUIÇÃO do actor, não o limiar — que tem o seu próprio teste.
 	w := httptest.NewRecorder()
-	h.handleAutonomySet(w, pedidoDeAutonomia(t, priv, "human:op", "agt-1", "fs", "L4", "leitura de rotina corre sozinha"))
+	h.handleAutonomySet(w, pedidoDeAutonomia(t, priv, "human:op", "agt-1", "fs", "L3", "leitura de rotina corre sozinha"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST devia aplicar: %d %s", w.Code, w.Body.String())
 	}
@@ -352,8 +356,8 @@ func TestSeloNomeiaQuemAssinouENaoOQueOCorpoDiz(t *testing.T) {
 	if params["actor"] != "human:op" {
 		t.Errorf("o actor do selo e %q, tinha de ser o emissor verificado", params["actor"])
 	}
-	if params["new_level"] != "L4" {
-		t.Errorf("o selo diz new_level=%q, o POST aplicou L4", params["new_level"])
+	if params["new_level"] != "L3" {
+		t.Errorf("o selo diz new_level=%q, o POST aplicou L3", params["new_level"])
 	}
 
 	// (2) O selo de ACÇÃO DE CONTROLO nomeia o mesmo emissor.
@@ -487,9 +491,9 @@ func TestLeiturasDeAutonomiaExigemCredencial(t *testing.T) {
 	h, priv, worm := noParaTeste(t)
 	comLeitura(h, worm, regioesFixas{"board:prod": "eu"})
 
-	// Um par registado, para o GET ter o que devolver.
+	// Um par registado, para o GET ter o que devolver (L3: uma assinatura chega — AOS-305).
 	w := httptest.NewRecorder()
-	h.handleAutonomySet(w, pedidoDeAutonomia(t, priv, "human:op", "agt-9", "fs", "L4", "rotina"))
+	h.handleAutonomySet(w, pedidoDeAutonomia(t, priv, "human:op", "agt-9", "fs", "L3", "rotina"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("preparacao falhou: %d %s", w.Code, w.Body.String())
 	}

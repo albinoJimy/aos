@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
@@ -33,12 +33,18 @@ import (
 // ------------------------------------------------------------------------------------------
 
 // autonomyRequest é a face de wire de uma mudança de nível.
+//
+// CoEmitter é a SEGUNDA assinatura (AOS-305), obrigatória para toda a mudança PARA L4 ou L5 —
+// o limiar em que a acção `danger` deixa de esperar por um humano. Cobre o MESMO payload
+// canónico que Emitter, com nonce e issued_at próprios; tem de vir de um emissor DISTINTO e
+// com `autonomy:set`. Nas restantes transições é ignorado se vier.
 type autonomyRequest struct {
-	Emitter emitterWire `json:"emitter"`
-	Agent   string      `json:"agent"`
-	Domain  string      `json:"domain"`
-	Level   string      `json:"level"`  // "L0".."L5"
-	Reason  string      `json:"reason"` // OBRIGATÓRIO — ver handleAutonomySet
+	Emitter   emitterWire  `json:"emitter"`
+	CoEmitter *emitterWire `json:"co_emitter,omitempty"`
+	Agent     string       `json:"agent"`
+	Domain    string       `json:"domain"`
+	Level     string       `json:"level"`  // "L0".."L5"
+	Reason    string       `json:"reason"` // OBRIGATÓRIO — ver handleAutonomySet
 }
 
 // autonomyPairWire é um par (agente, domínio) e o seu nível, para o GET.
@@ -104,6 +110,15 @@ func (h *apiHandler) handleAutonomySet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "emitter invalido")
 		return
 	}
+	// AUTORIDADE (AOS-305): assinar bem não chega — o emissor tem de DETER `autonomy:set`.
+	// Verificado ANTES de autenticar para que um operador sem o direito não gaste um nonce a
+	// descobri-lo. 403 UNIFORME, pela mesma razão do resto do canal: a mensagem não pode ser um
+	// oráculo de quem está na lista. O motivo real fica no log do operador.
+	if !h.node.AutonomySetters[emitter.ID] {
+		h.logf("autonomia (AOS-305): mudanca RECUSADA — o emissor %q assina mas NAO detem %s (AOS_AUTONOMY_SETTERS)", emitter.ID, autonomySetCapability)
+		writeError(w, http.StatusForbidden, "emissor nao autorizado")
+		return
+	}
 	// Autenticação: assinatura ed25519 do emissor REGISTADO, sobre este payload exacto, com
 	// nonce de uso único durável. Falha ⇒ 403 UNIFORME — não se distingue "emissor desconhecido"
 	// de "assinatura errada" de "nonce reutilizado", pelo mesmo motivo que o read-path devolve
@@ -115,16 +130,71 @@ func (h *apiHandler) handleAutonomySet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// DUAS PESSOAS PARA REMOVER A SUPERVISÃO (AOS-305). Mudar PARA L4/L5 exige uma segunda
+	// assinatura, de um emissor DISTINTO e também com `autonomy:set`, sobre o MESMO payload.
+	// A distinção de pubkeys entre emitterIDs é garantida no arranque ([Bootstrap] aborta com
+	// pubkey partilhada), pelo que dois ids são duas chaves. O nonce do primeiro emissor já
+	// foi consumido acima: uma segunda perna inválida deixa a primeira assinatura gasta — é a
+	// direcção segura (o operador re-assina; um replay do primeiro nunca serve).
+	// PROVA A SELAR (achado de revisão sobre AOS-307). O `actor` continua a ser o que era —
+	// o emissor verificado, nunca o corpo — e a prova é ADICIONAL: as assinaturas exactas
+	// que acabaram de ser aceites vão para dentro do evento `autonomy.level_changed`, e é
+	// por elas que o ARRANQUE volta a confirmar esta decisão quando a reidratar do WORM. Sem
+	// isto, o `actor` selado era uma string que quem escrevesse no ficheiro do WORM podia
+	// escrever também.
+	actor := emitter.ID
+	provas := []autonomy.LevelChangeProof{autonomyProofFromEmitter(emitter)}
+	if autonomyDualControlRequired(nivel) {
+		if req.CoEmitter == nil {
+			// Aqui a mensagem NÃO é uniforme de propósito: a exigência é POSTURA declarada no
+			// banner, não segredo, e o operador que assinou sozinho precisa de saber o que falta.
+			writeError(w, http.StatusForbidden, "mudar para L4/L5 exige duas assinaturas de operadores distintos com autonomy:set (co_emitter em falta)")
+			return
+		}
+		co, err := req.CoEmitter.decode()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "co_emitter invalido")
+			return
+		}
+		if co.ID == emitter.ID || !h.node.AutonomySetters[co.ID] {
+			h.logf("autonomia (AOS-305): mudanca RECUSADA — co_emitter %q e o mesmo emissor ou NAO detem %s", co.ID, autonomySetCapability)
+			writeError(w, http.StatusForbidden, "emissor nao autorizado")
+			return
+		}
+		if err := h.node.SteerAuth.Authenticate(r.Context(), integration.AutonomyScope,
+			control.SignalAutonomy, payload, co); err != nil {
+			writeError(w, http.StatusForbidden, "emissor nao autorizado")
+			return
+		}
+		// Os DOIS ficam no selo, no molde do /approve (que sela os aprovadores separados por
+		// vírgula): a pergunta a que o registo tem de responder é "QUEM baixou a supervisão", e
+		// a resposta são duas pessoas.
+		actor = emitter.ID + "," + co.ID
+		// As DUAS provas, pela mesma razão: o que a rehidratação tem de poder reverificar é
+		// que foram duas pessoas — e isso não se lê de uma string com uma vírgula.
+		provas = append(provas, autonomyProofFromEmitter(co))
+	}
+
 	anterior, existia := h.node.Autonomy.registry.Get(agent, domain)
-	// O SetLevel sela `autonomy.level_changed` na hash-chain com motivo e actor.
-	if _, err := h.node.Autonomy.registry.SetLevel(r.Context(), agent, domain, nivel, reason, emitter.ID); err != nil {
+	// O SetLevel SELA `autonomy.level_changed` na hash-chain ANTES de aplicar (AOS-306): uma
+	// mudança sem changelog selado nunca entra em vigor. Os erros distinguem-se porque a
+	// resposta tem de dizer a verdade — «recusado» para o que o registo recusou, e a
+	// INDISPONIBILIDADE, com 5xx, para o que não se conseguiu selar. Antes, a selagem falhada
+	// aplicava o nível e respondia 400 «nivel recusado»: o operador ficava a acreditar no
+	// oposto do que o nó tinha feito (medido em `analises/10` §3.1).
+	if _, err := h.node.Autonomy.registry.SetLevelWithProof(r.Context(), agent, domain, nivel, reason, actor, provas); err != nil {
+		if errors.Is(err, autonomy.ErrSealFailed) {
+			h.logf("autonomia (AOS-306): selagem no WORM INDISPONIVEL — a mudanca %s:%s->%s por %q NAO foi aplicada: %v", agent, domain, nivel, actor, err)
+			writeError(w, http.StatusServiceUnavailable, "selagem no WORM indisponivel — nivel NAO aplicado")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "nivel recusado")
 		return
 	}
 	// SELO DE CONTROLO (A3): a mesma partição onde o pause/steer/approve ficam. O selo de
 	// autonomia já existe na partição própria; este liga a mudança ao trilho de ACÇÕES DE
 	// CONTROLO, onde se pergunta "que operações de governação houve, e de quem".
-	h.sealControlAction(r.Context(), "autonomy", agent+"/"+domain, emitter.ID)
+	h.sealControlAction(r.Context(), "autonomy", agent+"/"+domain, actor)
 
 	de := "(nao registado)"
 	if existia {
@@ -136,8 +206,18 @@ func (h *apiHandler) handleAutonomySet(w http.ResponseWriter, r *http.Request) {
 		"domain": domain,
 		"from":   de,
 		"to":     nivel.String(),
-		"actor":  emitter.ID,
+		"actor":  actor,
 	})
+}
+
+// logf escreve no log do serviço quando há serviço. O handler é construído sem [NodeService]
+// em testes unitários da rota; um log condicional evita que um caminho de erro derreferencie
+// nil onde o de sucesso não o faria.
+func (h *apiHandler) logf(format string, args ...any) {
+	if h == nil || h.svc == nil {
+		return
+	}
+	h.svc.log(format, args...)
 }
 
 // handleAutonomyGet devolve os pares em vigor AGORA.
@@ -169,21 +249,17 @@ func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "oraculo de autonomia nao composto")
 		return
 	}
+	// O ESTADO, não o TRILHO. Esta rota reconstruía os pares iterando `History()` — uma cópia
+	// defensiva de TODAS as alterações — e deduplicando a seguir. Enquanto o histórico era reposto
+	// a zero em cada arranque isso era barato; desde que AOS-307 o reidrata do WORM, passou a ser
+	// linear em todas as alterações da vida do nó, por cada leitura. `Pairs()` devolve a última
+	// alteração de cada par, já ordenada, a partir do índice — e a resposta de wire é a mesma.
 	pares := make([]autonomyPairWire, 0, 8)
-	for _, m := range h.node.Autonomy.registry.History() {
-		// O histórico é append-only; o estado é o ÚLTIMO valor de cada par. Reconstrói-se em vez
-		// de se manter um espelho, para não haver duas fontes que possam divergir.
-		if nivel, ok := h.node.Autonomy.registry.Get(m.Agent, m.Domain); ok {
-			pares = append(pares, autonomyPairWire{Agent: m.Agent, Domain: m.Domain, Level: nivel.String()})
+	for _, ch := range h.node.Autonomy.registry.Pairs() {
+		if nivel, ok := h.node.Autonomy.registry.Get(ch.Agent, ch.Domain); ok {
+			pares = append(pares, autonomyPairWire{Agent: ch.Agent, Domain: ch.Domain, Level: nivel.String()})
 		}
 	}
-	sort.Slice(pares, func(i, j int) bool {
-		if pares[i].Agent != pares[j].Agent {
-			return pares[i].Agent < pares[j].Agent
-		}
-		return pares[i].Domain < pares[j].Domain
-	})
-	pares = dedupPares(pares)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pairs": pares,
 		// Declarado de propósito: um par AUSENTE desta lista não é "sem política" — resolve para o
@@ -191,21 +267,6 @@ func (h *apiHandler) handleAutonomyGet(w http.ResponseWriter, r *http.Request) {
 		// decisão, e agora é uma decisão que alguém pode ter DECLARADO (AOS_AUTONOMY_DEFAULT).
 		"unregistered_resolves_to": h.node.Autonomy.piso.String(),
 	})
-}
-
-// dedupPares fica com a última ocorrência de cada par (a lista vem do histórico).
-func dedupPares(in []autonomyPairWire) []autonomyPairWire {
-	out := in[:0]
-	var ant autonomyPairWire
-	for i, p := range in {
-		if i > 0 && p.Agent == ant.Agent && p.Domain == ant.Domain {
-			out[len(out)-1] = p
-			continue
-		}
-		out = append(out, p)
-		ant = p
-	}
-	return out
 }
 
 // parseAutonomyLevelWire traduz "L0".."L5". Fail-closed: qualquer outra coisa é recusada em vez de
