@@ -27,8 +27,10 @@
 //     dispatch, comparando o provedor pedido com a autoridade efectiva de provedor
 //     (tecto da classe ∩ grants do token). A política declara-se em
 //     [WithClassProviders]; a sua ausência é a postura DECLARADA
-//     [ProviderPostureUnset], selada em cada troca no campo `provider_policy` do
-//     evento. Ver provider.go para a política, o estado por omissão e os limites.
+//     [ProviderPostureUnset], selada no campo `provider_policy` tanto da troca
+//     emitida (`credential.exchange.issued`) como da negação server-side
+//     (`credential.exchange.denied`, AOS-339). Ver provider.go para a política, o
+//     estado por omissão e os limites.
 //   - TTL CURTO + REVOGÁVEL. A credencial downstream tem TTL curto (relógio
 //     injectável) e é revogável por id de lease; expira automaticamente. Uma lease
 //     expirada/revogada não é injectável (a injecção falha, sem entregar o valor).

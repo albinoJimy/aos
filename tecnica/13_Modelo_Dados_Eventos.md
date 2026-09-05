@@ -168,7 +168,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `backpressure.*` | 5 | `packages/control-plane/scheduler/{queue,policy}.go` |
 | `budget.*` | 7 | `packages/control-plane/budget/events.go` (ciclo reserva/commit) e `packages/control-plane/scheduler/breaker.go` (circuit breaker) |
 | `control.*` | 3 | `packages/kernel/agent-runtime/control/steer_channel.go` |
-| `credential.*` | 1 | `packages/platform/broker/exchange.go` |
+| `credential.*` | 2 | `packages/platform/broker/exchange.go` (`issued` da troca emitida; `denied` da negação server-side, AOS-339) |
 | `deadlock.*` | 2 | `packages/control-plane/orchestrator/contract/dag_events.go` |
 | `degradation.*` | 5 | `packages/control-plane/scheduler/degradation.go` |
 | `foureyes.*` | 1 | `packages/control-plane/governance/hitl/challenge_issuer.go` |
