@@ -2462,10 +2462,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// possa falhar a destruir e não implemente a porta faria a cadeia selar
 	// `dsar.key_destroyed` sobre uma irrecuperabilidade que ninguém verificou — o
 	// defeito exacto que a porta foi criada para fechar, reaberto pela via da omissão.
-	if confirmadorDeShredDe(dsarVault) != nil {
+	//
+	// O DISCRIMINANTE É `dsarVaultInjected`, E A PRIMEIRA VERSÃO DESTA LINHA NÃO O USAVA.
+	// A revisão adversarial apanhou-o: o ramo não-armado dizia «com o vault de REFERENCIA
+	// isto é CORRECTO», mas dispara para QUALQUER custódia sem a porta — incluindo uma de
+	// terceiros injectada por [Config.DSARVault]. Nesse caso o nó afirmava que a ausência de
+	// confirmação era correcta PORQUE o vault é o de referência, quando não é. Era o cenário
+	// que o DEF-813 nomeia como risco, e o banner comprava-lhe confiança em vez de o expor.
+	switch {
+	case confirmadorDeShredDe(dsarVault) != nil:
 		log("confirmacao de crypto-shred (AOS-322): ARMADA — a custodia composta sabe responder se a destruicao da KEK esta CONFIRMADA, e o fluxo DSAR pergunta-lhe ANTES de a cadeia afirmar o apagamento. Uma destruicao nao confirmada sela dsar.shred_unconfirmed, poe o /readyz VERMELHO e emite aos_dsar_vault_shred_unconfirmed>0")
-	} else {
-		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA — a custodia composta nao implementa a porta de confirmacao, pelo que o fluxo DSAR sela dsar.key_destroyed SEM perguntar. Com o vault de REFERENCIA isto e CORRECTO (o Delete e um apagamento em memoria que nao pode falhar) e nao ha pendencia possivel: um /readyz verde neste modo significa 'nada a confirmar', NAO 'confirmado'. Uma custodia de terceiros que POSSA falhar a destruir e nao implemente a porta faria a cadeia afirmar uma irrecuperabilidade nao verificada — ver DEF-813")
+	case !dsarVaultInjected:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e CORRECTO — a custodia composta e o vault de REFERENCIA in-memory, que nao implementa a porta de confirmacao porque nao precisa: o seu Delete e um apagamento em memoria que NAO PODE FALHAR, logo nao ha pendencia possivel. Um /readyz verde neste modo significa 'nada a confirmar', NAO 'confirmado'. Ver DEF-813")
+	default:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e NAO E CORRECTO — foi INJECTADA uma custodia externa por Config.DSARVault que NAO implementa a porta de confirmacao. O fluxo DSAR sela dsar.key_destroyed SEM perguntar, pelo que a cadeia passa a afirmar uma irrecuperabilidade que NINGUEM verificou. Ao contrario do vault de referencia, esta custodia PODE falhar a destruir (rede, politica, autoridade) e o nó nao tem como o saber. Implemente a porta na custodia ou aceite que o apagamento do Art. 17 nao esta provado. Eixo: DEF-813")
 	}
 	// LEGAL HOLD + EXPIRAÇÃO (AOS-213, CON-02/DEF-903). O banner declara a superfície de
 	// administração REALMENTE composta e o MODO de expiração (sob demanda por rota) — sem

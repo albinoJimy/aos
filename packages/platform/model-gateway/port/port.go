@@ -163,7 +163,30 @@ type Usage struct {
 // que trata um denominador ausente como SLI indefinido e nunca como 0%: uma amostra
 // indefinida é OMITIDA da agregação, não contada como zero (que envenenaria o sinal).
 // A contabilidade de custo passa a ter a mesma disciplina.
-func (u Usage) Definido() bool { return !u.Ausente }
+func (u Usage) Definido() bool {
+	if u.Ausente {
+		return false
+	}
+	// DUAS FORMAS DE AUSÊNCIA, e a segunda escapou à primeira versão de AOS-321.
+	//
+	// A revisão adversarial mediu-o na composição de produção: `{"usage":{}}` e
+	// `{"usage":{"total_tokens":1500}}` traziam o OBJECTO — logo `Ausente` era falso —
+	// mas nenhum contador que o [github.com/aos-ref/platform/model-gateway/metering/cost]
+	// saiba ler, porque o cálculo é sobre prompt/completion/cache e não sobre
+	// `total_tokens`. O custo saía 0 e era AGREGADO por run e por árvore. São exactamente
+	// as formas que proxies OpenAI-compatible e variantes com content-filter produzem, pelo
+	// que o dano que o ticket declarava fechado continuava aberto para elas.
+	//
+	// UM 200 COM ZERO PROMPT TOKENS NÃO É UMA MEDIÇÃO. Não existe chamada de chat ou de
+	// embeddings sem entrada: há sempre system+user, há sempre input. Zero prompt tokens é
+	// «ausência de dados disfarçada de leitura» — a expressão é do próprio
+	// [ErrBurndownNoUsage] do nó, sobre o mesmo defeito uma camada acima.
+	//
+	// É o MESMO critério de `cache_sli.CallRate`, que trata `PromptTokens <= 0` como SLI
+	// indefinido e nunca como 0%: sem denominador não há leitura. A contabilidade de custo
+	// passa a partilhá-lo em vez de o imitar por metade.
+	return u.PromptTokens > 0
+}
 
 // ChatRequest é o pedido de chat/completions NORMALIZADO. Os campos de controlo
 // de plataforma (Principal, Region, Board) NÃO fazem parte do wire enviado ao

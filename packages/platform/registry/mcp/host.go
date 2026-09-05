@@ -307,7 +307,7 @@ func (h *Host) stage(ctx context.Context, conn ConnectionInfo, manifest Capabili
 	// (Kind, Contract) na resolução, na enumeração de activas, na consulta de digest,
 	// na admissibilidade e na revalidação por chamada: qualquer outra via daria
 	// ErrDigestMismatch em todos esses caminhos.
-	manifestDigest, derr := digestAncorado(manifest.Digest, conn.Endpoint, kind)
+	manifestDigest, derr := DigestAncorado(manifest.Digest, conn.Endpoint, kind)
 	if derr != nil {
 		return nil, fmt.Errorf("stage servidor %q: %w", conn.ServerID, derr)
 	}
@@ -329,6 +329,20 @@ func (h *Host) stage(ctx context.Context, conn ConnectionInfo, manifest Capabili
 	// linguagem natural ("description"/"title"), o vector clássico de tool-poisoning
 	// escondido nos sub-campos do schema, são removidos ANTES de entrar no control-plane.
 	// A cópia INTEGRAL do schema permanece na quarentena de taint (data-plane, AOS-042).
+	//
+	// A TOOL LEVA A MESMA ÂNCORA DO SERVIDOR, e sem isso o resto de AOS-320 não protege
+	// o caminho quente. A revalidação por chamada (AOS-051) chaveia por `call.ToolID`, e
+	// o ToolID de uma tool MCP é `serverID+"/"+nome` — ou seja, ESTA entrada, não a do
+	// servidor. Com o contrato limitado a (schema sanitizado, egress), um servidor que
+	// mudasse de endpoint deixava todas as suas tools BYTE-A-BYTE idênticas: o digest do
+	// `mcp_server` movia-se, e a revalidação — que nunca o consulta — permitia a chamada.
+	// Amarrando a âncora a cada tool, mover o servidor move o digest de tudo o que ele
+	// serve, e a divergência aparece no gate que corre a cada tool call.
+	//
+	// A âncora é a MESMA do servidor de propósito: uma tool não é um artefacto autónomo,
+	// é uma capacidade que só existe no contexto do servidor, do transporte e do endpoint
+	// que a anunciaram. Duas tools com o mesmo nome e schema vindas de servidores
+	// diferentes têm de ter digests diferentes — e passam a ter.
 	for _, tool := range manifest.Tools {
 		entry, terr := h.reg.Publish(ctx, registry.PublishRequest{
 			ID:        conn.ServerID + "/" + tool.Name,
@@ -337,8 +351,9 @@ func (h *Host) stage(ctx context.Context, conn ConnectionInfo, manifest Capabili
 			Origin:    conn.Origin,
 			Publisher: conn.Publisher,
 			Contract: domain.Contract{
-				InputSchema: sanitizeSchema(tool.InputSchema),
-				Egress:      egress,
+				InputSchema:    sanitizeSchema(tool.InputSchema),
+				Egress:         egress,
+				ManifestDigest: manifestDigest,
 			},
 		})
 		if terr != nil {

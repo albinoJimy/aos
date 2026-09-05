@@ -14,7 +14,7 @@ import (
 // anterior (o mesmo papel que o prefixo "sha256:" faz para o algoritmo).
 const esquemaManifesto = "aos.mcp.manifesto/v1"
 
-// esquemaAncora identifica a versão da forma canónica da ÂNCORA (ver [digestAncorado]).
+// esquemaAncora identifica a versão da forma canónica da ÂNCORA (ver [DigestAncorado]).
 const esquemaAncora = "aos.mcp.ancora/v1"
 
 // formaCanonicaTool é a projecção CANÓNICA de uma tool anunciada. Todos os campos
@@ -67,7 +67,7 @@ type formaCanonicaManifesto struct {
 	// ele copia trivialmente numa substituição — logo não autentica nada — mas sem
 	// limite de churn (build ids, timestamps), o que tornaria o pin frágil a
 	// re-rotulagens que não mudam capacidade nenhuma. A identidade entra no digest
-	// pela via NÃO-FORJÁVEL: a âncora local de transporte/endpoint ([digestAncorado])
+	// pela via NÃO-FORJÁVEL: a âncora local de transporte/endpoint ([DigestAncorado])
 	// somada ao par (id, version) pinado no REG.
 }
 
@@ -150,7 +150,13 @@ func digestManifesto(m CapabilityManifest) (string, error) {
 //
 // Um endpoint vazio é um valor legítimo (o operador pode não o declarar) e produz um
 // digest estável e distinto de qualquer endpoint declarado — nunca um erro silencioso.
-func digestAncorado(digestDoManifesto, endpoint string, kind TransportKind) (string, error) {
+// EXPORTADA DE PROPÓSITO (revisão adversarial de AOS-320): a suite de supply-chain
+// reconstruía uma forma ancorada PRÓPRIA — um `map[string]string{"endpoint","manifest"}`
+// que não tinha relação nenhuma com esta. O vector ficava a provar «duas strings opacas
+// diferentes dão digests diferentes», que o teste de golden já provava, e teria continuado
+// VERDE se esta função deixasse cair o transporte e o endpoint. Um vector que não toca no
+// código sob teste é pior do que nenhum: entra no gate e compra confiança que não sustenta.
+func DigestAncorado(digestDoManifesto, endpoint string, kind TransportKind) (string, error) {
 	doc, err := json.Marshal(formaCanonicaAncora{
 		Esquema:        esquemaAncora,
 		Endpoint:       endpoint,

@@ -128,30 +128,38 @@ func TestUsageAusenteNaoProduzCustoZeroSilencioso(t *testing.T) {
 	}
 }
 
-// TestUsageComZerosExplicitosContinuaAContabilizar é a OUTRA METADE da distinção, e sem ele a
-// correcção seria indistinguível de «recusa tudo o que soma zero». Um provedor que REPORTE
-// `usage` e diga zero afirmou um facto medido: conta, agrega, e vale 0 micro-USD.
-func TestUsageComZerosExplicitosContinuaAContabilizar(t *testing.T) {
+// TestUsageComZerosNaoCredivelNaoEContabilizado corrige um teste que FIXAVA O DEFEITO.
+//
+// A primeira versão chamava-se `TestUsageComZerosExplicitosContinuaAContabilizar` e afirmava
+// que um `usage` reportado a zeros «afirmou um facto medido: conta, agrega, e vale 0
+// micro-USD». A revisão adversarial mostrou que era falso, e mediu-o na composição de
+// produção: `{"usage":{}}` e `{"usage":{"total_tokens":1500}}` passavam com custo 0 AGREGADO
+// por run e por árvore — exactamente as formas que proxies OpenAI-compatible produzem, e
+// exactamente o dano que AOS-321 dizia fechar.
+//
+// O erro do teste era tomar a presença do OBJECTO por medição. Um 200 com zero prompt tokens
+// não é uma medição: não existe chamada de chat sem entrada. É a mesma disciplina do
+// `cache_sli`, que trata um denominador ausente como indefinido e nunca como 0%.
+//
+// Fica aqui, com o nome trocado, em vez de ser apagado: um teste que fixou o comportamento
+// errado é informação sobre como o defeito sobreviveu à primeira ronda.
+func TestUsageComZerosNaoCredivelNaoEContabilizado(t *testing.T) {
 	t.Parallel()
 	rec := cost.NewRecorder(cost.NewCalculator(costTable(t)))
 	gw := newGateway(t, &adaptadorDeWire{corpoChat: corpoUsageZeros}, modelgateway.WithCost(rec))
 
-	resp, err := gw.Chat(context.Background(), port.ChatRequest{
+	_, err := gw.Chat(context.Background(), port.ChatRequest{
 		Model: "m", Board: "board-eu", RunID: "run-zeros", TreeID: "tree-zeros",
 		Messages: []port.Message{{Role: port.RoleUser, Content: "oi"}},
 	})
-	if err != nil {
-		t.Fatalf("um `usage` reportado a zeros e um facto medido, tem de passar: %v", err)
+	if !errors.Is(err, modelgateway.ErrUsageAusente) {
+		t.Fatalf("um `usage` presente mas sem contadores credíveis nao e uma medicao: erro = %v, queria ErrUsageAusente", err)
 	}
-	if resp.Usage.CostMicroUSD != 0 {
-		t.Errorf("CostMicroUSD = %d, quer 0", resp.Usage.CostMicroUSD)
+	if _, ok := rec.CostForRun(cost.RunKey{RunID: "run-zeros", Tenant: "board-eu"}); ok {
+		t.Error("a amostra nao-credivel foi AGREGADA — e o zero silencioso que AOS-321 existe para fechar")
 	}
-	amt, ok := rec.CostForRun(cost.RunKey{RunID: "run-zeros", Tenant: "board-eu"})
-	if !ok {
-		t.Fatal("a amostra de zeros EXPLICITOS nao foi agregada — a correccao passou a recusar factos medidos")
-	}
-	if amt.CostMicroUSD != 0 {
-		t.Errorf("agregado = %d micro-USD, quer 0", amt.CostMicroUSD)
+	if _, ok := rec.CostForTree(cost.TreeKey{TreeID: "tree-zeros", Tenant: "board-eu"}); ok {
+		t.Error("a amostra nao-credivel foi agregada na ARVORE")
 	}
 }
 
@@ -272,5 +280,68 @@ func TestCollectStreamComChunkDeUsageContinuaDefinido(t *testing.T) {
 	}
 	if resp.Usage.PromptTokens != 1000 || resp.Usage.CompletionTokens != 500 {
 		t.Errorf("tokens perdidos na reconstrucao: %+v", resp.Usage)
+	}
+}
+
+// corpoUsageParcial é a terceira forma que a revisão adversarial mediu: o objecto `usage`
+// existe e traz um contador, mas NÃO os que o cálculo de custo lê. O `Calculator` deriva de
+// prompt/completion/cache; `total_tokens` é informativo. Um provedor que reporte só o total
+// produzia, antes desta correcção, custo 0 agregado COM 1500 tokens declarados no wire.
+const corpoUsageParcial = `{"id":"cmpl-4","object":"chat.completion","model":"m",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+		"usage":{"total_tokens":1500}}`
+
+// TestUsageParcialNaoEContabilizado cobre a forma que escapou à primeira ronda de AOS-321.
+//
+// A distinção «objecto presente vs ausente» não bastava: um `usage` que traga apenas
+// `total_tokens` é indistinguível, para o cálculo, de um `usage` vazio — e ambos passavam.
+// É a forma que proxies OpenAI-compatible produzem com mais frequência, porque `total_tokens`
+// é o único campo que quase todos preenchem.
+func TestUsageParcialNaoEContabilizado(t *testing.T) {
+	t.Parallel()
+	rec := cost.NewRecorder(cost.NewCalculator(costTable(t)))
+	gw := newGateway(t, &adaptadorDeWire{corpoChat: corpoUsageParcial}, modelgateway.WithCost(rec))
+
+	_, err := gw.Chat(context.Background(), port.ChatRequest{
+		Model: "m", Board: "board-eu", RunID: "run-parcial", TreeID: "tree-parcial",
+		Messages: []port.Message{{Role: port.RoleUser, Content: "oi"}},
+	})
+	if !errors.Is(err, modelgateway.ErrUsageAusente) {
+		t.Fatalf("`usage` com so total_tokens nao e uma medicao para o calculo: erro = %v, queria ErrUsageAusente", err)
+	}
+	if _, ok := rec.CostForRun(cost.RunKey{RunID: "run-parcial", Tenant: "board-eu"}); ok {
+		t.Error("a amostra parcial foi AGREGADA com custo 0 — 1500 tokens declarados a sair gratis")
+	}
+}
+
+// TestSpanOmiteContadoresQuandoIndefinido fixa a segunda correcção da revisão adversarial de
+// AOS-321, que estava no código e na prosa mas NÃO tinha teste: uma mutação que repusesse a
+// emissão de `gen_ai.usage.*` a zero, a par do marcador, deixava o módulo inteiro verde.
+//
+// Porque importa: um consumidor de OTel GenAI que some `gen_ai.usage.input_tokens` sem
+// conhecer o atributo proprietário `aos.usage.undefined` lê uma medição de zero tokens onde
+// não houve medição — o mesmo zero silencioso, mudado do plano de contabilidade para o de
+// telemetria. O semconv trata um atributo ausente como desconhecido, que é o facto.
+func TestSpanOmiteContadoresQuandoIndefinido(t *testing.T) {
+	t.Parallel()
+	tr := &agentruntime.RecordingTracer{}
+	gw := newGateway(t, &adaptadorDeWire{corpoChat: corpoSemUsage}, modelgateway.WithTracer(tr))
+
+	_, _ = gw.Chat(context.Background(), port.ChatRequest{
+		Model: "m", Board: "board-eu", RunID: "run-span", TreeID: "tree-span",
+		Messages: []port.Message{{Role: port.RoleUser, Content: "oi"}},
+	})
+
+	spans := tr.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("spans = %d, queria 1", len(spans))
+	}
+	if spans[0].Attributes["aos.usage.undefined"] != true {
+		t.Error("o span devia marcar aos.usage.undefined")
+	}
+	for _, k := range []string{agentruntime.AttrInputTokens, agentruntime.AttrOutputTokens} {
+		if _, presente := spans[0].Attributes[k]; presente {
+			t.Errorf("o span NAO devia emitir %q quando o usage e indefinido — um zero ali le-se como medicao", k)
+		}
 	}
 }

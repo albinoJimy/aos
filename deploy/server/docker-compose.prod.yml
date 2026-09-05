@@ -96,9 +96,13 @@ services:
       # NAO. `bootstrap.go` so sabe abrir `audit.OpenFileStore(AOS_WORM_PATH)`, um
       # ficheiro LOCAL, e dois escritores FORKAM a hash-chain — medido em AOS-284, com
       # a consequencia dura de o no NAO ARRANCAR e classificar a cadeia como
-      # adulteracao. O guard de arranque (AOS-285) tranca os DOIS WAL por flock, pelo
-      # que duas replicas sobre o mesmo volume nao arrancam ambas: e fail-closed, nao
-      # silencioso. Ligar AOS_EVENTSTORE_NATS NAO torna, por si so, N replicas uma
+      # fork, com TamperFork/ErrChainForked a distinguir um ramo bem formado de
+      # adulteracao (AOS-284 AC3, entregue). O guard de arranque (AOS-285) tranca o WORM
+      # por flock, pelo que duas replicas sobre o mesmo volume nao arrancam ambas: e
+      # fail-closed, nao silencioso. ATENCAO: com AOS_EVENTSTORE_NATS preenchido o guard
+      # do Event Store DESLIGA-SE de proposito (o substrato replicado arbitra entre
+      # processos) e so o WORM continua trancado — quem separar os WORM por replica
+      # mantendo o volume perde a proteccao sem que nada o diga. Ligar AOS_EVENTSTORE_NATS NAO torna, por si so, N replicas uma
       # configuracao suportada — falta a atribuicao deterministica replica->particao,
       # que e o AC por fechar de AOS-284 (v1.1). Este ficheiro era o UNICO artefacto do
       # repositorio a convidar as N replicas sem nomear esse preco; `bootstrap.go`,

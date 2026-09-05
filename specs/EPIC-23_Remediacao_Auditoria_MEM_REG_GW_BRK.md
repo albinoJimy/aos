@@ -61,6 +61,32 @@ proteja, e o ticket que fecha essa assimetria (AOS-326) é ele próprio parte da
 | AOS-326 | A não-composição de MEM e REG não está registada em ADR nem em `DEF-NNN` | P1 | — | **implementado** (DEF-811/812 + qualificação dos §2 do EPIC-04/05; o ADR fica ao dono) |
 | AOS-327 | A pendência de *shred* não tem regra de alerta, e a série desaparece com o processo | P2 | **nó** | **implementado** (RB-06; âmbito cortado a meio) |
 
+
+### 0.3 Validação adversarial — o que ela encontrou depois de os oito estarem «implementados»
+
+Cinco revisores independentes, sobre eixos disjuntos, com o diff e os critérios mas **sem** o
+raciocínio de quem implementou. As mensagens de commit foram-lhes dadas como **alegações a
+verificar**, não como verdade. O resultado é o argumento mais forte a favor desta fase: **este epic
+reproduziu, em três sítios, o defeito que veio corrigir.**
+
+| # | Achado | Eixo | Estado |
+|---|---|---|---|
+| A1 | **O digest endurecido não protege o caminho quente.** A revalidação por chamada chaveia por `call.ToolID` = a entrada `kind=tool`, cujo contrato não levava âncora. Um servidor que mudasse de endpoint deixava todas as suas tools byte-a-byte idênticas | REG | **CORRIGIDO** — a tool leva a âncora do servidor; `TestAncoraChegaAsEntradasTool`, com mutação a provar não-vacuidade |
+| A2 | **O Vector 8 não tocava no código sob teste.** A fixture inventava a sua forma ancorada e `supplychaintests` nem importava `registry/mcp`; teria ficado verde se a âncora deixasse cair transporte e endpoint | REG | **CORRIGIDO** — usa `mcp.DigestAncorado`; mutação da âncora põe o vector VERMELHO |
+| A3 | **`{"usage":{}}` e `usage` só com `total_tokens` continuavam a sair grátis.** O critério era a presença do OBJECTO, não dos contadores que o cálculo lê | GW | **CORRIGIDO** — `Definido()` exige `PromptTokens > 0`, o critério do `cache_sli`; dois testes novos |
+| A4 | **Um teste de controlo fixava o defeito.** `TestUsageComZerosExplicitosContinuaAContabilizar` afirmava que zeros explícitos «são um facto medido» | GW | **CORRIGIDO** — reescrito e renomeado, mantido como registo de como o defeito sobreviveu |
+| A5 | **A omissão de `gen_ai.usage.*` não tinha teste.** A mutação que a revertia deixava o módulo verde | GW | **CORRIGIDO** — `TestSpanOmiteContadoresQuandoIndefinido` |
+| A6 | **A defesa server-side do broker decide sobre dados do pedido.** Lê classe e autoridade do envelope serializado ANTES da mediação; o gate lê de `call.Principal`, que o RM reescreve. Fontes diferentes | BRK | **PARCIAL** — ver AOS-324 |
+| A7 | **O banner de crypto-shred mentia para uma custódia injectada.** Dizia «com o vault de REFERENCIA isto é CORRECTO» num ramo que dispara para qualquer custódia sem a porta | Decl | **CORRIGIDO** — três ramos, com o terceiro a dizer «NÃO É CORRECTO» |
+| A8 | Quatro declarações novas imprecisas ou falsas: a abertura do `tecnica/06` afirmava o que o resto negava; o banner do MEM contradizia a própria frase e omitia a 4.ª classe; o do REG dizia que o `registry` não está no grafo de build (está); e escapara um **quarto** sítio da alegação do AOS-265 | Decl | **CORRIGIDO** |
+| A9 | Dois passos do RB-06 mandavam o operador na direcção errada: a causa 1 era a causa 3 disfarçada, e um Vault selado levanta **os dois** sinais, não um | Decl | **CORRIGIDO** |
+| A10 | A alegação de que o guard AOS-285 tranca «os dois WAL» é falsa na configuração que a nota anota: com NATS, só o WORM é trancado | Decl | **CORRIGIDO** no compose e no RB-06 |
+
+**Registados, não corrigidos** (eixo nomeado, sem código nesta ronda): o *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path — **DEF-815**; o provedor autorizado não é amarrado ao `ResourceValue`; a postura do eixo provider não aparece no banner de arranque; `CheckSecureTransportURL` aceita credenciais embutidas no URL e o banner imprime o endereço cru; não existe invariante que exija `ManifestDigest` não-vazio para `kind=mcp_server`; `semver.ClassifyContract` devolve sempre `ChangeNone` para `mcp_server`; o `ErrBurndownNoUsage` só dispara se **todos** os turnos forem zero, pelo que não apanha um run misto; e a sonda de segunda passagem custa +128% de CPU no parse, medido.
+
+**O que a validação confirmou:** os goldens de regressão são genuinamente pré-mudança (um revisor reimplementou a canonicalização anterior e recomputou os oito valores); não existe colisão na canonicalização, atacada a sério; `AcquireInProcess` e `Inject` não permitem que um handle de um provedor resolva material de outro; e as quatro mutações do eixo provider avermelham pelo motivo certo.
+
+
 ---
 
 ## AOS-320 — O digest de um `mcp_server` é uma constante da classe de egress
@@ -421,8 +447,25 @@ imposto e testado transforma uma dívida latente numa vulnerabilidade viva no me
 
 ### Estado
 
-**IMPLEMENTADO.** P2 por alcance (latente — `broker.New` não tem chamador de produção), **alta no
-dia do wiring**.
+**IMPLEMENTADO COM RESIDUAL DE SEGURANÇA — reaberto em parte pela validação adversarial.** P2 por
+alcance (latente — `broker.New` não tem chamador de produção), **alta no dia do wiring**.
+
+> **O QUE A VALIDAÇÃO ENCONTROU (A6).** A «defesa server-side gémea» no `dispatch` lê `AgentClass`
+> e `UserAuthority` do **envelope JSON serializado ANTES da mediação** — nunca reescrito. O gate
+> lê-os de `call.Principal`, que o hook de identidade **substitui por inteiro** pelos valores do
+> token verificado (`identity/rmadapter.go`). São fontes diferentes: a defesa não é uma segunda
+> opinião, é a primeira opinião de quem pede.
+>
+> **Alcance, medido:** numa cadeia de produção (`NewProductionSecure`, hook de identidade real) o
+> GATE decide sobre a classe do TOKEN e está correcto. No harness de referência (`DefaultHooks`,
+> `IdentityStub`) a classe vem do pedido, e um revisor **reproduziu** a passagem: mudando só
+> `Principal.AgentClass` de uma classe com tecto `{stripe}` para outra com `ProviderAny`, a troca
+> devolve handle. A confusão de deputado não foi fechada nesse harness — foi deslocada do campo
+> `provider` para o campo `class`.
+>
+> **Porque não se corrige aqui:** a `referencemonitor.ToolFunc` recebe apenas bytes, pelo que o
+> `dispatch` não tem acesso ao principal mediado. Fechá-lo exige mudar o contrato do RM — outro
+> módulo, outro ticket. O que se fez foi **deixar de o chamar defesa independente**.
 
 Via escolhida: o `ScopeGate` ganha consciência de provedor, com defesa server-side gémea no
 `dispatch` **antes de a chave do Vault existir**. A autoridade efectiva é o tecto da classe ∩ os

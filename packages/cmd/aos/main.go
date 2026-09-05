@@ -756,8 +756,13 @@ func nodeConfigFromEnv() (Config, error) {
 	// ambiente — SEPARADA da custódia da KEK (D7: cliente/token AOS_BROKER_VAULT_*
 	// próprios). Vazio ⇒ dormente (inalterado); presente ⇒ PREPARA o cliente Vault
 	// REAL (KV v2) e valida fail-closed (ErrBadBrokerVault). Fica em [Config.BrokerVault]
-	// para AOS-265 CONSUMIR (a troca mediada in-process); AOS-264 só o prepara e
-	// declara o modo no banner — a troca NÃO está ligada nesta entrega.
+	// AOS-264 só o PREPARA e declara o modo no banner — a troca NÃO está ligada.
+	//
+	// CORRECÇÃO (AOS-325, 2.ª ronda): esta nota apontava o consumo para AOS-265, e era o
+	// QUARTO sítio da mesma afirmação — os outros três foram corrigidos e este escapou à
+	// varredura. O AOS-265 já aterrou (`platform/broker/inprocess.go`, com testes) e não
+	// ligou a troca; o bloqueador é o DEF-218. Que um dos quatro tenha escapado é o
+	// argumento do DEF-814: correcções pontuais não impedem a ronda seguinte.
 	brokerVault, brokerVaultSet, err := parseBrokerVaultFromEnv()
 	if err != nil {
 		return Config{}, err

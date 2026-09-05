@@ -277,11 +277,11 @@ func TestEntradaMCPServer_EndpointSubstituido_DigestMuda(t *testing.T) {
 func TestDigestAncorado_DiscriminaTransporte(t *testing.T) {
 	t.Parallel()
 	const dm = "sha256:0000"
-	stdio, err := digestAncorado(dm, "https://mcp.example", TransportSTDIO)
+	stdio, err := DigestAncorado(dm, "https://mcp.example", TransportSTDIO)
 	if err != nil {
 		t.Fatalf("digestAncorado: %v", err)
 	}
-	sse, err := digestAncorado(dm, "https://mcp.example", TransportSSE)
+	sse, err := DigestAncorado(dm, "https://mcp.example", TransportSSE)
 	if err != nil {
 		t.Fatalf("digestAncorado: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestDigestAncorado_DiscriminaTransporte(t *testing.T) {
 		t.Fatal("o transporte faz parte da ancora de identidade; o digest devia divergir")
 	}
 	// Endpoint vazio é legítimo e estável (nunca um erro silencioso).
-	vazio, err := digestAncorado(dm, "", TransportSTDIO)
+	vazio, err := DigestAncorado(dm, "", TransportSTDIO)
 	if err != nil {
 		t.Fatalf("digestAncorado (endpoint vazio): %v", err)
 	}

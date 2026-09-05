@@ -181,7 +181,9 @@ func (b *Broker) ToolID() string { return b.toolID }
 // NEGAR trocas fora do escopo já na mediação, nos DOIS eixos que o broker impõe:
 // capability (utilizador ∩ classe, AOS-057) e provider (AOS-324). Propaga a
 // política registada em [WithClassProviders] — é a via RECOMENDADA de composição,
-// porque garante que o gate e a defesa server-side partilham a MESMA política.
+// porque garante que o gate e a guarda de composição do dispatch partilham a MESMA
+// política. A AUTORIDADE do eixo é este gate, que decide sobre o principal já
+// verificado pelo hook de identidade — ver a nota em [Broker.dispatch].
 func (b *Broker) ScopeGate() ScopeGate {
 	return NewScopeGate(b.toolID, b.classScopes, WithGateClassProviders(b.classProviders))
 }
@@ -270,6 +272,21 @@ func (b *Broker) dispatch(ctx context.Context, input []byte) ([]byte, error) {
 	// [ProviderPostureEnforced] impõe a autoridade efectiva de provedor. A negação é
 	// ATRIBUÍVEL ([ErrProviderOutOfScope]/[ErrProviderUndetermined]) e NUNCA se
 	// confunde com [ErrNoMaterial].
+	//
+	// ISTO NÃO É UMA SEGUNDA OPINIÃO, e a primeira versão deste comentário chamava-lhe
+	// «defesa gémea» — o que a validação adversarial mostrou ser falso. `in` foi
+	// serializado em [Broker.Exchange] ANTES de `rm.Mediate`, pelo que `in.AgentClass` e
+	// `in.UserAuthority` são o que o CHAMADOR declarou, e nunca são reescritos. O gate
+	// decide sobre `call.Principal`, que o hook de identidade SUBSTITUI por inteiro pelos
+	// valores do token verificado. São fontes DIFERENTES: numa cadeia sem hook de
+	// identidade real, esta verificação decide sobre dados de quem pede.
+	//
+	// O QUE ELA É, e vale por isso: uma guarda de COMPOSIÇÃO. Impede que um broker montado
+	// sem o [Broker.ScopeGate] na cadeia chegue ao Vault sem que o eixo provider tenha sido
+	// olhado, e nega fail-closed o provedor vazio em qualquer postura. A AUTORIDADE do eixo
+	// é o gate sobre o principal verificado — não isto. Fechar a divergência exigiria que a
+	// [referencemonitor.ToolFunc] recebesse o principal mediado em vez de bytes opacos;
+	// enquanto não receber, esta linha não deve ser lida como redundância de segurança.
 	if err := authorizeProvider(b.classProviders, in.AgentClass, in.UserAuthority, in.Provider); err != nil {
 		return nil, err
 	}
