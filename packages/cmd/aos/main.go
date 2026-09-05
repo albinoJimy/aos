@@ -837,7 +837,11 @@ func nodeConfigFromEnv() (Config, error) {
 	// que a custódia destrói incondicionalmente não pode nascer de um valor mal escrito.
 	destroiIncond, derr := parseTLSExternalTermination(os.Getenv("AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL"))
 	if derr != nil {
-		return Config{}, fmt.Errorf("%w: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: %v", ErrProductionNeedsShredConfirmation, derr)
+		// O ERRO É DE CONFIG, NÃO DE PRODUÇÃO. A primeira versão embrulhava-o em
+		// `ErrProductionNeedsShredConfirmation` — e como o parse corre SEMPRE, um valor mal
+		// escrito num nó de desenvolvimento abortava com um sentinela de produção. Atribuição
+		// errada, apanhada em revisão.
+		return Config{}, fmt.Errorf("%w: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: %v", ErrBadTLSExternalTermination, derr)
 	}
 	cfg.ShredDestroyUnconditional = destroiIncond
 

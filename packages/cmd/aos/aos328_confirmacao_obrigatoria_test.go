@@ -127,3 +127,47 @@ func TestAOS328_ADeclaracaoNaoAceitaLixo(t *testing.T) {
 		}
 	}
 }
+
+// custodiaExternaComPortaExportada é o que uma custódia de OUTRO MÓDULO consegue de facto
+// implementar: a porta EXPORTADA `dsar.ShredConfirmer`.
+//
+// A primeira versão do adaptador só procurava a porta INTERNA, cujo método é não-exportado — e a
+// revisão adversarial mediu a consequência: nenhum tipo fora deste `package main` a podia
+// satisfazer, pelo que TODA a custódia externa era recusada em produção. O remédio que o banner
+// prescreve — «implemente a porta na custódia» — era impossível de seguir. É a mesma classe do F1
+// do AOS-333: uma mensagem a mandar o operador por um caminho que não existe.
+type custodiaExternaComPortaExportada struct{ audit.KeyVault }
+
+func (custodiaExternaComPortaExportada) ShredConfirmed(string) error { return nil }
+
+func TestAOS328_UmaCustodiaExternaConsegueSatisfazerAPorta(t *testing.T) {
+	cfg := tnBaseConfig()
+	cfg.ProductionMode = true
+	cfg.DSARVault = custodiaExternaComPortaExportada{audit.NewInMemoryKeyVault(nil)}
+
+	node, err := Bootstrap(context.Background(), cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("uma custodia que implementa a porta EXPORTADA tem de compor sem declaracao: %v", err)
+	}
+	_ = node.Close()
+
+	// E o adaptador tem de a reconhecer — senão o banner do AOS-322 diria «NAO ARMADA» sobre
+	// uma custódia que sabe responder.
+	if confirmadorDeShredDe(cfg.DSARVault) == nil {
+		t.Error("o adaptador nao reconheceu a porta exportada")
+	}
+}
+
+// TestAOS328_OLixoNaEnvNaoEErroDeProducao — o parse corre SEMPRE, também fora de produção, pelo
+// que um valor mal escrito num nó de desenvolvimento não pode abortar com um sentinela de
+// produção. Atribuição errada, apanhada em revisão.
+func TestAOS328_OLixoNaEnvNaoEErroDeProducao(t *testing.T) {
+	t.Setenv("AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL", "talvez")
+	_, err := nodeConfigFromEnv()
+	if err == nil {
+		t.Fatal("um valor nao reconhecido tinha de abortar")
+	}
+	if errors.Is(err, ErrProductionNeedsShredConfirmation) {
+		t.Error("um erro de CONFIG nao pode ser atribuido ao eixo de PRODUCAO — manda o operador ao sitio errado")
+	}
+}

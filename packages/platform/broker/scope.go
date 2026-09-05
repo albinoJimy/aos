@@ -144,9 +144,12 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	}
 	classScope := g.classScopes[call.Principal.AgentClass]
 	if !permitsCapability(call.Principal.Authority, classScope, call.Capability) {
+		// A postura vai TAMBÉM nesta negação (AOS-332). A primeira versão selava-a só nos
+		// ramos provider e recurso, e a revisão apanhou-o: uma negação de capability ficava
+		// no WORM sem dizer sob que política corria, que é o mesmo buraco com outro nome.
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   ErrOutOfScope.Error(),
+			Reason:   g.razaoComPostura(ErrOutOfScope),
 		}, nil
 	}
 	// EIXO PROVIDER (AOS-324). O provedor vem do envelope NÃO-SECRETO da troca
@@ -160,6 +163,20 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 			return referencemonitor.HookResult{
 				Decision: referencemonitor.HookDeny,
 				Reason:   g.razaoComPostura(ErrProviderUndetermined),
+			}, nil
+		}
+		// E O EIXO DO RECURSO TAMBÉM SE OPÕE (AOS-331, achado da revisão adversarial). Sem
+		// esta segunda perna, declarar SÓ a allowlist de recurso era contornável por um
+		// envelope ausente: o gate devolvia Allow aqui, ANTES de `authorizeResource` correr, e
+		// uma troca para host alheio passava.
+		//
+		// O envelope ilegível não diz o provedor, logo não há como decidir se o recurso lhe
+		// pertence — e sob política declarada informação insuficiente é recusa, que é a mesma
+		// postura que o eixo provider já tomava três linhas acima.
+		if g.ResourceBindingPosture() == ResourceBindingEnforced {
+			return referencemonitor.HookResult{
+				Decision: referencemonitor.HookDeny,
+				Reason:   g.razaoComPostura(ErrResourceUndetermined),
 			}, nil
 		}
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil

@@ -122,23 +122,30 @@ func TestAOS330_OsProvedoresLegitimosContinuamAPassar(t *testing.T) {
 	}
 }
 
-// TestAOS330_OQueAPoliticaAceitaEOQueOPathUsa fecha o eixo: para todo o valor que a política
-// aceita, o segmento do path é o PRÓPRIO valor. É a propriedade que faltava, e é ela que torna
-// «autorizar um provedor» equivalente a «autorizar a chave que ele alcança».
+// TestAOS330_OQueAPoliticaAceitaEOQueOPathUsa liga a decisão ao path REAL.
+//
+// A primeira versão deste teste era TAUTOLÓGICA, e a revisão adversarial apanhou-o: assertava
+// `vault.SegmentoEstavel(v)` para todo o `v` que `authorizeProvider` aceitou — e a aceitação é
+// DEFINIDA por esse mesmo predicado. Nunca tocava no construtor do path, pelo que não provava a
+// propriedade que o doc-comment reclama. Era um detector de mutação disfarçado de verificação.
+//
+// A propriedade verdadeira é: para todo o valor que a política aceita, o segmento que o path usa
+// é o PRÓPRIO valor. Isso só se prova chamando quem forma o path.
 func TestAOS330_OQueAPoliticaAceitaEOQueOPathUsa(t *testing.T) {
 	t.Parallel()
-	candidatos := []string{"stripe", "acme_eu", "acme:eu", " ", "*", "acme.eu", "s3", "a/b", ""}
+	candidatos := []string{"stripe", "acme_eu", "acme.eu", "acme:eu", " ", "*", ".", "..", "s3", "a/b", ""}
 	var aceites int
 	for _, v := range candidatos {
 		if err := authorizeProvider(nil, "agente", nil, v); err != nil {
 			continue
 		}
 		aceites++
-		if !vault.SegmentoEstavel(v) {
-			t.Errorf("a politica aceitou %q, que a normalizacao do path ALTERA — os dois namespaces voltaram a divergir", v)
+		// O CONSTRUTOR DO PATH, não o predicado: é ele que decide o que o Vault vê.
+		if seg := vault.SegmentoDePath(v); seg != v {
+			t.Errorf("a politica aceitou %q, mas o path usa %q — os dois namespaces divergem", v, seg)
 		}
 	}
-	// NÃO-VACUOSIDADE: se nada fosse aceite, o `for` acima não asseria coisa nenhuma.
+	// NÃO-VACUOSIDADE: se nada fosse aceite, o `for` acima não asseria nada.
 	if aceites == 0 {
 		t.Fatal("nenhum candidato foi aceite — o teste nao esta a provar nada")
 	}

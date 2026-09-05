@@ -91,7 +91,9 @@ type Broker struct {
 	ttl            time.Duration
 	toolID         string
 	classScopes    map[string][]string
-	classProviders map[string][]string // AOS-324; nil ⇒ ProviderPostureUnset
+	classProviders map[string][]string
+	// providerHosts é a allowlist de host por provedor (AOS-331). nil ⇒ ResourceBindingUnset.
+	providerHosts map[string][]string // AOS-324; nil ⇒ ProviderPostureUnset
 
 	seq atomic.Uint64 // contador determinista de ids de lease
 }
@@ -132,6 +134,25 @@ func WithClassScopes(m map[string][]string) Option {
 // (DEF-218) que o nó a declare. Use [ProviderAny] para uma classe sem restrição.
 func WithClassProviders(m map[string][]string) Option {
 	return func(b *Broker) { b.classProviders = copyProviderPolicy(m) }
+}
+
+// WithProviderHosts declara a allowlist de HOSTS por provedor (AOS-331) no BROKER, para que a
+// via de composição recomendada — [Broker.ScopeHook] — a propague ao gate. Sem ela o eixo do
+// recurso fica em [ResourceBindingUnset]: estado declarado, mas sem imposição.
+//
+// Existe porque a primeira versão do AOS-331 só pôs a opção no `ScopeGate`, e a revisão
+// adversarial mediu que a composição recomendada nunca lá chegava.
+func WithProviderHosts(m map[string][]string) Option {
+	return func(b *Broker) { b.providerHosts = copyProviderHosts(m) }
+}
+
+// ResourceBindingPosture reporta a postura do eixo recurso↔provedor deste broker, no molde de
+// [Broker.ProviderPosture]. É o que o banner de arranque interroga (AOS-332).
+func (b *Broker) ResourceBindingPosture() ResourceBindingPosture {
+	if b == nil {
+		return ResourceBindingUnset
+	}
+	return resourceBindingPosture(b.providerHosts)
 }
 
 // New constrói o Broker e REGISTA a troca como ToolFunc no Reference Monitor: a
@@ -185,7 +206,14 @@ func (b *Broker) ToolID() string { return b.toolID }
 // política. A AUTORIDADE do eixo é este gate, que decide sobre o principal já
 // verificado pelo hook de identidade — ver a nota em [Broker.dispatch].
 func (b *Broker) ScopeGate() ScopeGate {
-	return NewScopeGate(b.toolID, b.classScopes, WithGateClassProviders(b.classProviders))
+	// PROPAGA OS DOIS EIXOS. A primeira versão do AOS-331 só propagava a política de
+	// provedores, e a revisão adversarial mediu a consequência: `WithGateProviderHosts` ficava
+	// sem chamador na via de composição RECOMENDADA, pelo que o eixo do recurso nunca saía de
+	// `unset` por este caminho. Uma opção que a composição não propaga é uma opção que não
+	// existe.
+	return NewScopeGate(b.toolID, b.classScopes,
+		WithGateClassProviders(b.classProviders),
+		WithGateProviderHosts(b.providerHosts))
 }
 
 // ProviderPosture devolve a postura DECLARADA do eixo provider deste broker

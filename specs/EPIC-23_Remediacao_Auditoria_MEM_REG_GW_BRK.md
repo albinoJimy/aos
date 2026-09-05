@@ -837,6 +837,22 @@ injectada passaria o teste principal e partiria o caminho correcto), e fora de p
 não corre. Três provas de mutação — a guarda desligada, a guarda a ignorar a declaração, e a
 guarda a apanhar também o vault de referência — todas vermelhas.
 
+### A porta que este ticket exige era inimplementável de fora
+
+A revisão adversarial mediu o que eu não vi: `shredConfirmer` tem método **não-exportado**, pelo
+que só um tipo declarado neste `package main` o pode satisfazer. **Uma custódia de terceiros
+noutro módulo — literalmente o cenário que o `DEF-813` descreve — nunca conseguia implementá-lo**,
+e portanto era sempre recusada em produção. O remédio que o banner prescreve — «implemente a porta
+na custódia» — era impossível de seguir. É a mesma classe do **F1 do AOS-333**: uma mensagem a
+mandar o operador por um caminho que não existe.
+
+O adaptador passa a aceitar `dsar.ShredConfirmer`, que é **exportada** e é a porta que o fluxo
+consulta de facto. A porta interna continua a servir a custódia in-package.
+
+**E o erro de parse estava atribuído ao eixo errado.** O parse corre **sempre**, também fora de
+produção, e vinha embrulhado em `ErrProductionNeedsShredConfirmation` — um valor mal escrito num
+nó de desenvolvimento abortava com um sentinela de produção, mandando o operador ao sítio errado.
+
 **O AC do `DEF-813` já estava satisfeito** por trabalho anterior (`REGISTO-Deferimentos.md:242`
 atribui-o a este ticket, e há nota `N-DEF-813` no §6); verifiquei-o em vez de o reclamar.
 ---
@@ -957,6 +973,28 @@ predicado a recusar tudo — todas vermelhas e revertidas limpas.
 os reclamar: o `DEF-218` já nomeia este ticket como pré-condição a par do AOS-324
 (`REGISTO-Deferimentos.md:186`), e o `DEF-815` já lhe está atribuído (`:244`), não `POR ATRIBUIR`.
 
+### A revisão adversarial encontrou uma TRAVESSIA DE CAMINHO que este guarda não apanhava
+
+**O `.` e o `..` sobreviviam intactos.** O `.` é caractere legítimo dentro de um nome (`acme.eu`),
+por isso estava na lista permitida — e `sanitizeSegment("..")` devolvia `".."`. Um
+`Provider=".."` produzia `p/../eu/cap_x`, que a normalização RFC 3986 (aplicada pelo Vault e por
+qualquer proxy na rota) reduz a `eu/cap_x`, **escapando o prefixo configurado**. Medido em
+execução.
+
+**E o AC1 era literalmente falso como eu o escrevi.** Afirmei que «a `Region` tem vocabulário
+fechado que sobrevive» — nada o impõe; ela vem crua de `req.Downstream.Region`. Dois provedores
+**distintos** com `Region=".."` resolviam para o **mesmo** path, o que é exactamente o que o AC
+proíbe.
+
+A correcção vive no **construtor do path**, não no guarda da política: cobre os **três** segmentos
+de uma vez, em vez de só aquele onde o defeito foi visto primeiro. Um segmento que muda a
+**árvore** em vez de a indexar não é um segmento.
+
+**E um teste meu era tautológico.** O `TestAOS330_OQueAPoliticaAceitaEOQueOPathUsa` assertava
+`SegmentoEstavel(v)` para todo o `v` que `authorizeProvider` aceitou — e a aceitação é **definida
+por esse predicado**. Nunca tocava no construtor do path. Era um detector de mutação disfarçado de
+verificação de propriedade; passa a chamar `vault.SegmentoDePath`, que é quem forma o path.
+
 **LIMITE DECLARADO.** Isto continua latente: o broker não está composto (`broker.New` não tem
 chamador de produção) e a postura é `unset` em todo o repositório. O defeito era latente **duas
 vezes** — sem wiring, e sem cobertura de teste que o pudesse expor, porque toda a suite usa o
@@ -1030,6 +1068,19 @@ a virar a do provedor — todas vermelhas.
 
 `DEF-218` passa a nomear este ticket como pré-condição, a par do AOS-324 e do AOS-330.
 
+### A revisão adversarial encontrou um BYPASS e uma opção sem chamador
+
+**O envelope ilegível contornava o eixo.** Quando o `Call.Input` não se lia e a postura do
+**provedor** era `unset`, o gate devolvia `Allow` **antes** de `authorizeResource` correr.
+Consequência medida: declarar **só** a allowlist de recurso era contornável — bastava um envelope
+ausente para uma troca a host alheio passar. Sob política declarada, informação insuficiente é
+recusa; era a postura que o eixo provider já tomava três linhas acima e que faltava a este.
+
+**E a opção não chegava à composição recomendada.** `WithGateProviderHosts` existia no
+`ScopeGate`, mas o `Broker.ScopeGate()` — a via que a documentação recomenda — não a propagava, e
+não havia `Option` do `Broker` que a declarasse. O eixo ficaria **permanentemente** em `unset` por
+esse caminho. Uma opção que a composição não propaga é uma opção que não existe.
+
 **LIMITE DECLARADO.** Continua latente: o broker não está composto e a postura é `unset` em todo
 o repositório. E a allowlist é por **host**, não por caminho — `https://api.stripe.com/qualquer`
 passa se `api.stripe.com` estiver na lista. É deliberado: o caminho de um recurso downstream muda
@@ -1097,6 +1148,11 @@ em memória provaria outra coisa. Com **três controlos**: as duas posturas prod
 distintas (senão registá-las não distinguiria nada), as quatro combinações do ramo composto são
 distintas entre si e do não-composto, e a linha **sai no arranque real** — uma função de banner
 que não é chamada declara-se a si própria. Quatro provas de mutação, todas vermelhas.
+
+**A NEGAÇÃO DE CAPABILITY NÃO SELAVA A POSTURA**, e a revisão apanhou-o: a primeira versão
+cobria os ramos *provider* e *recurso* e deixava de fora o primeiro dos três. Uma negação de
+capability ficava no WORM sem dizer sob que política corria — o mesmo buraco com outro nome.
+Fechado.
 
 **DEFEITO ENCONTRADO E NÃO FECHADO AQUI, registado como tarefa própria.** A guarda de composição
 do `dispatch` (`exchange.go:290`, a defesa server-side do AOS-324) nega **depois** de a cadeia do

@@ -242,3 +242,84 @@ func TestAOS331_PelaCadeia_RecursoDoProprioProvedorPassa(t *testing.T) {
 		t.Error("a troca legitima nao foi selada")
 	}
 }
+
+// TestAOS331_EnvelopeIlegivelNaoContornaOEixoDoRecurso fecha um BYPASS encontrado em revisão
+// adversarial.
+//
+// Quando o envelope não se lia e a postura do PROVEDOR era `unset`, o gate devolvia Allow ANTES
+// de `authorizeResource` correr. Consequência medida: declarar SÓ a allowlist de recurso era
+// contornável — bastava um `Call.Input` ausente ou ilegível para uma troca a host alheio passar.
+//
+// O envelope ilegível não diz o provedor, logo não há como decidir se o recurso lhe pertence. Sob
+// política declarada, informação insuficiente é recusa — a mesma postura que o eixo provider já
+// tomava três linhas acima, e que faltava a este.
+func TestAOS331_EnvelopeIlegivelNaoContornaOEixoDoRecurso(t *testing.T) {
+	t.Parallel()
+	// SÓ o eixo do recurso declarado; o do provedor fica em `unset` de propósito, que é a
+	// combinação exacta em que o bypass existia.
+	gate := NewScopeGate(DefaultExchangeToolID, defaultClassScopes(),
+		WithGateProviderHosts(map[string][]string{provider: {hostDoProvedor}}))
+
+	for _, nome := range []string{"envelope ausente", "envelope ilegivel"} {
+		t.Run(nome, func(t *testing.T) {
+			call := &referencemonitor.Call{
+				ToolID:     DefaultExchangeToolID,
+				Capability: provInScopeCap,
+				Principal:  referencemonitor.Principal{AgentClass: agentClass, Authority: []string{provInScopeCap}},
+				Resource:   referencemonitor.Resource{Type: "url", Value: "https://" + hostAlheio + "/x"},
+			}
+			if nome == "envelope ilegivel" {
+				call.Input = []byte("nao e json")
+			}
+			res, err := gate.Evaluate(context.Background(), call)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if res.Decision != referencemonitor.HookDeny {
+				t.Fatalf("decisao = %v, quer HookDeny — um envelope ilegivel nao pode contornar o eixo do recurso", res.Decision)
+			}
+			if !strings.Contains(res.Reason, ErrResourceUndetermined.Error()) {
+				t.Errorf("razao = %q, quer nomear ErrResourceUndetermined", res.Reason)
+			}
+		})
+	}
+
+	// CONTROLO: com o eixo do recurso em `unset`, o mesmo envelope ilegível continua a PASSAR —
+	// senão a correcção teria transformado um eixo não-declarado num deny-all.
+	semEixo := NewScopeGate(DefaultExchangeToolID, defaultClassScopes())
+	res, err := semEixo.Evaluate(context.Background(), &referencemonitor.Call{
+		ToolID:     DefaultExchangeToolID,
+		Capability: provInScopeCap,
+		Principal:  referencemonitor.Principal{AgentClass: agentClass, Authority: []string{provInScopeCap}},
+	})
+	if err != nil || res.Decision != referencemonitor.HookAllow {
+		t.Errorf("sem eixo declarado o envelope ilegivel tem de passar: decisao=%v err=%v", res.Decision, err)
+	}
+}
+
+// TestAOS331_AComposicaoRecomendadaPropagaOEixo fecha o outro achado: `WithGateProviderHosts`
+// existia mas `Broker.ScopeHook()` — a via de composição que a documentação recomenda — não a
+// propagava. Uma opção que a composição não propaga é uma opção que não existe: o eixo ficaria
+// permanentemente em `unset` por esse caminho.
+func TestAOS331_AComposicaoRecomendadaPropagaOEixo(t *testing.T) {
+	t.Parallel()
+	es, err := eventstore.New()
+	if err != nil {
+		t.Fatalf("eventstore.New: %v", err)
+	}
+	defer func() { _ = es.Close() }()
+
+	rm := referencemonitor.New(referencemonitor.WithEventSink(referencemonitor.NewEventStoreSink(es)))
+	b, err := New(rm, NewMemoryVault(), es,
+		WithClassScopes(defaultClassScopes()),
+		WithProviderHosts(map[string][]string{provider: {hostDoProvedor}}))
+	if err != nil {
+		t.Fatalf("broker.New: %v", err)
+	}
+	if got := b.ResourceBindingPosture(); got != ResourceBindingEnforced {
+		t.Errorf("Broker.ResourceBindingPosture() = %q, quer %q", got, ResourceBindingEnforced)
+	}
+	if got := b.ScopeGate().ResourceBindingPosture(); got != ResourceBindingEnforced {
+		t.Errorf("o gate composto por ScopeHook() nao herdou o eixo: %q", got)
+	}
+}

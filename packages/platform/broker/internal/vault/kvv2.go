@@ -171,6 +171,19 @@ func sanitizeSegment(s string) string {
 	if s == "" {
 		return "_"
 	}
+	// `.` e `..` SÃO ELEMENTOS ESTRUTURAIS DO PATH, não identificadores, e a lista permitida
+	// abaixo deixava-os passar intactos porque o `.` é um caractere legítimo dentro de um nome
+	// (`acme.eu`). Medido em revisão adversarial: `Provider=".."` produzia `p/../eu/cap_x`, que a
+	// normalização RFC 3986 — aplicada pelo Vault e por qualquer proxy no caminho — reduz a
+	// `eu/cap_x`, ESCAPANDO o prefixo configurado. Um segmento que muda a ÁRVORE em vez de a
+	// indexar não é um segmento.
+	//
+	// Fecha-se aqui, no construtor do path, e não no guarda da política: assim cobre os TRÊS
+	// segmentos de uma vez — o `Provider`, a `Region` e a `Capability` — em vez de só aquele em
+	// que o defeito foi visto primeiro.
+	if s == "." || s == ".." {
+		return "_"
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -304,3 +317,11 @@ func (c *KVv2) Ready(ctx context.Context) error {
 // perguntar-lhe. O `DEF-815` exige exactamente isto — «a normalização do path tem de ser a MESMA
 // em que a política decide».
 func SegmentoEstavel(s string) bool { return s == sanitizeSegment(s) }
+
+// SegmentoDePath devolve o segmento que o path do Vault USA para um dado valor.
+//
+// Existe para que a política possa ser testada contra o CONSTRUTOR DO PATH e não contra o
+// predicado que ela própria usa para decidir (AOS-330). Sem isto, um teste que verifique a
+// coerência entre os dois namespaces compara o predicado consigo mesmo — foi o que uma revisão
+// adversarial apanhou, e é a mesma armadilha do «teste que passa pela razão errada».
+func SegmentoDePath(s string) string { return sanitizeSegment(s) }
