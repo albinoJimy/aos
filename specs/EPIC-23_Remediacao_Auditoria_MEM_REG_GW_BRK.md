@@ -831,24 +831,111 @@ declarações.
 
 ### Critérios de Aceitação
 
-- [ ] Uma linha de postura ou comentário que cite `AOS-NNN` como **bloqueador** é cruzada com o
+- [x] Uma linha de postura ou comentário que cite `AOS-NNN` como **bloqueador** é cruzada com o
       estado desse ticket no `specs/EPIC-*.md`, e o gate **falha** quando o ticket citado está
       implementado
-- [ ] A verificação distingue «cita como bloqueador» de «cita como origem/referência» — uma nota que
+- [x] A verificação distingue «cita como bloqueador» de «cita como origem/referência» — uma nota que
       diga «entregue por AOS-047» não pode disparar. O mecanismo de distinção fica declarado (marcador
       próprio, posição na frase, ou lista explícita), e é testado nos dois sentidos
-- [ ] Prova negativa: o gate consegue ficar **vermelho** — um teste-veneno com uma citação a um
+- [x] Prova negativa: o gate consegue ficar **vermelho** — um teste-veneno com uma citação a um
       ticket fechado fá-lo falhar
-- [ ] As oito declarações que a EPIC-23 corrigiu passam a estar cobertas por este gate (verificação
+- [ ] **NÃO SATISFAZÍVEL — ver o Estado.** As oito declarações que a EPIC-23 corrigiu passam a estar cobertas por este gate (verificação
       retroactiva: se o gate existisse, teria apanhado cada uma)
-- [ ] `DEF-814` passa de `POR ATRIBUIR` para este ticket
+- [x] `DEF-814` passa de `POR ATRIBUIR` para este ticket
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Eixo do `DEF-814`. É o **irmão do `deferrals`** e o único destes três que
-ataca a causa-raiz em vez de uma instância: sem ele, a próxima auditoria volta a encontrar
-declarações caducadas e alguém volta a corrigi-las uma a uma.
+**IMPLEMENTADO, COM UM CRITÉRIO DECLARADO NÃO-SATISFAZÍVEL.** P2. Eixo do `DEF-814`. É o irmão do
+`deferrals`: aquele exige que todo o marcador de dívida tenha eixo **verificável**; este exige que
+o eixo esteja **aberto**.
 
+### A medição decidiu o desenho, e refutou a primeira ideia
+
+Antes de escrever código mediu-se o alcance das três vias possíveis, sobre a árvore de
+2026-09-05:
+
+| | |
+|---|---|
+| Citações `AOS-NNN` em `packages/` | **7 103** |
+| Vermelhos de um gate **ingénuo** (qualquer citação a ticket fechado) | **1 818** em 366 ficheiros |
+| Citações com vocabulário de **bloqueio** (12 expressões) | **97** |
+| — dessas, a apontar para ticket **fechado** | **46** |
+| — dessas, a apontar para ticket **aberto** | **0** |
+
+Os 1 818 são a definição do gate que se desliga, e o corpus já registou essa lição duas vezes por
+escrito (`ref-lint.py`: «16% de falsos positivos numa versão SABIDAMENTE correcta faria um gate
+que ninguém aguenta»).
+
+**Mas o vocabulário fechado também não serve, e isso foi a surpresa.** A leitura um-a-um dos 46
+mostra que a esmagadora maioria são falsos positivos por ambiguidade do português:
+
+- «a prova que **faltava** a AOS-262» — *faltava* é sobre uma prova, não um bloqueio
+- «**Até** AOS-308 esta frase dizia…» — nota **histórica**, o oposto de um bloqueio
+- «ler **pendentes** de exaustão (AOS-263)» — *pendentes* é substantivo do domínio
+- «**aguarda** decisão humana (AOS-263)» — mensagem de erro; o ticket é a **origem**
+- «**Bloqueador**: DEF-218 (AOS-265 já aterrou)» — a forma **já corrigida**
+
+São ~90% de falsos positivos: pior do que os 16% que o repositório já rejeitou. E o dado que
+fecha a questão: **zero** citações de bloqueio apontam para um ticket aberto — não há sinal a
+preservar.
+
+**Conclusão: a relação «isto espera por aquilo» não está no texto. Tem de ser DECLARADA.** É o
+mesmo raciocínio do `<!-- rtm: adrs-mencionados -->` do `ref-lint`, que existe porque «isto é
+menção, não implementação» também não se infere.
+
+### O que ficou construído
+
+O marcador é `BLOQUEADOR: AOS-NNN`, maiúsculas e dois-pontos, no molde do `Eixo:` dos banners de
+postura. O gate cruza-o com o `### Estado` do ticket e falha quando ele está **fechado** —
+`IMPLEMENTADO`, `FECHADO`, `ENTREGUE`, `FEITO` — ou **`REMOVIDO`**, que falha por uma razão
+diferente e com mensagem própria: espera-se por algo que nunca vem.
+
+`POR`, `ABERTO` e `PARCIAL` **não** fecham. Um bloqueio sobre um ticket parcialmente entregue pode
+continuar verdadeiro, e negá-lo obrigaria a julgar **qual** parte — que este gate não sabe fazer.
+Um lexema novo é tratado como aberto: inventar que uma palavra desconhecida significa «fechado»
+avermelharia o gate por uma mudança de redacção.
+
+### O gate nasce sem sujeitos, e isso está medido
+
+Não há hoje **nenhuma** declaração marcada, porque não há nenhuma declaração que bloqueie num
+ticket aberto (as 0 da tabela). É um guarda de convenção **para a frente**, e a sua não-vacuidade
+não vem do corpus — vem do **teste-veneno**, que é precisamente o que o AC3 exige.
+
+O `selftest.sh` §W tem os três níveis do molde do `ref-lint`: **W1** testa o predicado de estado
+nos dois sentidos; **W2** copia o corpus, prova primeiro que a cópia intacta fica **verde**
+(senão o vermelho não provaria nada) e depois injecta a forma exacta das declarações de AOS-265
+que a EPIC-23 corrigiu, exigindo **vermelho**; **W2-bis** injecta o mesmo marcador com um ticket
+**aberto** e exige **verde**, sem o qual um gate que negasse tudo passaria o W2; **W3** confirma
+que a árvore real ficou sem rasto.
+
+### O AC4 NÃO É SATISFAZÍVEL, e fica escrito assim
+
+Ele pede que «as oito declarações que a EPIC-23 corrigiu passem a estar cobertas (verificação
+retroactiva: se o gate existisse, teria apanhado cada uma)». **É falso por duas razões
+independentes:**
+
+1. **Com marcador opt-in é falso por construção.** Essas declarações nunca tiveram marcador — e já
+   não existem, foram corrigidas.
+2. **Mesmo com heurística seria falso.** Só **cinco** das oito são desta classe, e quatro delas
+   são a *mesma frase* replicada em quatro ficheiros. As outras três são de outra natureza: um
+   facto falso **sem citação de ticket nenhuma** («o nó não importa `platform/broker`»), uma
+   composição descrita que não existe, e uma contradição entre dois ficheiros. Nenhum gate deste
+   tipo as apanha.
+
+Marcá-lo como cumprido seria exactamente o defeito que este ticket persegue — uma declaração a
+comprar confiança que não sustenta. Foi o erro que cometi no AOS-338 e que a revisão apanhou.
+
+### Alcance declarado
+
+O `§O QUE ESTE GATE NÃO VERIFICA` do `estado-citado.py` enumera-o, no molde do `deferrals`:
+declarações **sem** marcador passam; declarações **sem citação de ticket** passam; os **224
+tickets** de EPIC-01..18 não têm `### Estado` e são **~74% das citações** — estão contados como
+**abstenções e impressos em cada execução**, para que a cegueira seja declarada e não escondida;
+`deploy/` fica fora, porque o âmbito é o do `deferrals` e dois gates a divergir sobre «o que é o
+código» seria pior.
+
+`DEF-814` já estava atribuído a este ticket por trabalho anterior
+(`REGISTO-Deferimentos.md:243`); verifiquei-o em vez de o reclamar.
 ---
 
 ## AOS-330 — O namespace da política do broker não é o namespace da chave do Vault

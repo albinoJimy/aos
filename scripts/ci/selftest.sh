@@ -150,6 +150,7 @@ LAYER_TMP=""
 # toolchain Go a ignore mesmo se algo correr em paralelo. Removida pelo trap.
 EVENT_PROBE="$REPO_ROOT/packages/_selftest_eventcat"
 REFLINT_TMP=""
+EC_TMP=""
 # §R e §S mutam o gerador da RTM numa CÓPIA, desde AOS-316: o gerador aceita
 # `AOS_RTM_ROOT`, pelo que a árvore real deixou de fazer parte da superfície
 # mutada — R3/S3 apenas a LÊEM. A sandbox é criada em §R e apagada pelo trap.
@@ -167,6 +168,7 @@ cleanup() {
   rm -rf "$LAYER_TMP"
   rm -rf "$EVENT_PROBE"
   rm -rf "$REFLINT_TMP"
+  rm -rf "$EC_TMP"
   rm -rf "$RTM_SANDBOX"
   libertar_lock
 }
@@ -753,6 +755,107 @@ if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
 else
   bad "P3: o ref-lint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
 fi
+# ============================================================================
+# W) o gate ESTADO-CITADO consegue ficar VERMELHO (AOS-329)
+# ============================================================================
+# O gate e OPT-IN: so verifica declaracoes marcadas com `BLOQUEADOR: AOS-NNN`. Isso torna a prova
+# negativa OBRIGATORIA e nao opcional — mediu-se que a arvore NAO tem hoje nenhuma declaracao
+# marcada (zero citacoes de bloqueio apontam para ticket aberto), pelo que o verde do gate contra
+# a arvore real nao prova nada por si so. E exactamente a situacao que o §P2 do ref-lint existe
+# para nao repetir: um gate que nunca teve input capaz de o avermelhar nao e um gate.
+log_gate "self-test W1 · o predicado de estado distingue fechado de aberto, nos DOIS sentidos"
+if python3 - "$CI_DIR" <<'RPY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+erros = []
+for lex in ["IMPLEMENTADO", "FECHADO", "ENTREGUE", "FEITO"]:
+    if lex not in ec.FECHADO:
+        erros.append("%s devia contar como FECHADO" % lex)
+for lex in ["POR", "ABERTO", "PARCIAL"]:
+    if lex in ec.FECHADO or lex in ec.CANCELADO:
+        erros.append("%s NAO pode contar como fechado — um bloqueio sobre ele pode ser verdadeiro" % lex)
+if "REMOVIDO" not in ec.CANCELADO:
+    erros.append("REMOVIDO devia ser CANCELADO (espera por algo que nunca vem)")
+if erros:
+    print("; ".join(erros), file=sys.stderr); sys.exit(1)
+RPY
+then
+  pass "W1: o predicado fecha nos quatro lexemas de entrega e NAO fecha em POR/ABERTO/PARCIAL"
+else
+  bad "W1: o predicado de estado nao distingue fechado de aberto"
+fi
+
+log_gate "self-test W2 · um BLOQUEADOR a citar ticket FECHADO avermelha o gate (teste-veneno)"
+EC_TMP="$(mktemp -d)"
+mkdir -p "$EC_TMP/packages/veneno"
+cp -r "$REPO_ROOT/specs" "$EC_TMP/specs"
+
+# Controlo positivo PRIMEIRO: a copia sem veneno tem de ficar VERDE, senao o vermelho de baixo
+# provaria so que a copia esta partida.
+if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+  pass "W2: controlo — a copia sem veneno fica verde"
+else
+  bad "W2: controlo falhou — a copia ja esta vermelha (o subteste nao provaria nada)"
+fi
+
+# O VENENO: pega no PRIMEIRO ticket que o corpus declara IMPLEMENTADO e escreve uma declaracao
+# que o nomeia como bloqueador. E a forma exacta das quatro declaracoes de AOS-265 que a EPIC-23
+# corrigiu — «a troca so medeia algo em AOS-265» — agora com marcador.
+if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
+import importlib.util, os, sys
+os.environ["AOS_ESTADO_CITADO_ROOT"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+fechados = sorted(t for t, e in ec.estados_dos_tickets().items() if e in ec.FECHADO)
+if not fechados:
+    print("W2: o corpus nao declara nenhum ticket fechado — nao ha veneno possivel", file=sys.stderr); sys.exit(2)
+alvo = fechados[0]
+with open(os.path.join(sys.argv[2], "packages", "veneno", "veneno.go"), "w", encoding="utf-8") as fh:
+    fh.write("package veneno\n\n// A troca so medeia algo em %s. BLOQUEADOR: %s\n" % (alvo, alvo))
+RPY
+then
+  if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    bad "W2: o gate passou com um BLOQUEADOR a citar um ticket FECHADO — nao consegue ficar vermelho"
+  else
+    pass "W2: o gate bloqueou (exit!=0) a declaracao caducada injectada na copia"
+  fi
+else
+  bad "W2: nao foi possivel injectar o veneno na copia do corpus"
+fi
+
+# W2-bis — o mesmo veneno com um ticket ABERTO tem de ficar VERDE. Sem isto, um gate que
+# avermelhasse com QUALQUER marcador passaria o R2 e negaria toda a declaracao legitima.
+if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
+import importlib.util, os, sys
+os.environ["AOS_ESTADO_CITADO_ROOT"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+abertos = sorted(t for t, e in ec.estados_dos_tickets().items() if e in ec.ABERTO)
+if not abertos:
+    print("W2-bis: o corpus nao declara nenhum ticket aberto", file=sys.stderr); sys.exit(2)
+with open(os.path.join(sys.argv[2], "packages", "veneno", "veneno.go"), "w", encoding="utf-8") as fh:
+    fh.write("package veneno\n\n// Pendente do wiring. BLOQUEADOR: %s\n" % abertos[0])
+RPY
+then
+  if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    pass "W2-bis: um BLOQUEADOR a citar ticket ABERTO continua VERDE (o gate nao nega tudo)"
+  else
+    bad "W2-bis: o gate avermelhou com um bloqueio LEGITIMO — negaria toda a declaracao valida"
+  fi
+else
+  bad "W2-bis: nao foi possivel injectar o controlo na copia"
+fi
+rm -rf "$EC_TMP"
+EC_TMP=""
+
+# W3 — a arvore real nao foi tocada pelo §W2.
+if python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+  pass "W3: controlo — o estado-citado continua verde contra a arvore REAL (sem rasto)"
+else
+  bad "W3: o estado-citado ficou vermelho contra a arvore real — POSSIVEL RASTO no repo"
+fi
+
 # ============================================================================
 # Q) o gate de ENTREGA bloqueia um smoke apontado a liveness (2026-08-23)
 # ============================================================================

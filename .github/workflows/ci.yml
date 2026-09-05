@@ -14,7 +14,7 @@
 # é a FONTE DE VERDADE e tem de coincidir, entrada a entrada e na mesma ordem, com o
 # `needs:` do job `gates` e com a lista de CONTRIBUTING.md §"Required checks" — o
 # self-test §M compara as três e fica vermelho se divergirem.
-# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
+# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
 # Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 24 acima
 # e é fail-closed por construção (`if: always()` + avaliação de `needs.*.result`),
 # pelo que fica `failure` — e não `skipped` — quando qualquer um deles não fica verde.
@@ -103,6 +103,18 @@ jobs:
           python-version: "3.12"
       - name: Gate deferrals (marcador com entrada no registo · eixo com ticket EXISTENTE)
         run: bash scripts/ci/deferrals.sh
+
+  # Gate 2b-bis — estado do ticket citado como BLOQUEADOR (AOS-329, eixo DEF-814). Irmão do
+  # `deferrals`: aquele exige eixo VERIFICÁVEL, este exige que o eixo esteja ABERTO. Stdlib pura.
+  estado-citado:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gate estado-citado (BLOQUEADOR nao pode citar ticket ja fechado)
+        run: bash scripts/ci/estado-citado.sh
 
   # Gate 2c — sincronia da RTM com o corpus (AOS-186). scripts/ci/rtm.sh corre
   # rtm-regenerate.py --check (stdlib pura). Também só precisa de Python.
@@ -372,7 +384,7 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     if: always()
-    needs: [secrets, build, lint, ref-lint, deferrals, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
+    needs: [secrets, build, lint, ref-lint, deferrals, estado-citado, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
     steps:
       - name: Todos os gates verdes (fail-closed)
         env:
