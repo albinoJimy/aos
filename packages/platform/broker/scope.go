@@ -68,6 +68,7 @@ type ScopeGate struct {
 	toolID         string
 	classScopes    map[string][]string // AgentClass → escopo-máximo da classe
 	classProviders map[string][]string // AgentClass → provedores; nil ⇒ ProviderPostureUnset
+	providerHosts  map[string][]string // Provider → hosts; nil ⇒ ResourceBindingUnset (AOS-331)
 }
 
 // ScopeGateOption configura eixos ADICIONAIS do [ScopeGate] sem quebrar os
@@ -81,6 +82,20 @@ type ScopeGateOption func(*ScopeGate)
 // deny-all silencioso. Um mapa nil explícito mantém a postura unset.
 func WithGateClassProviders(classProviders map[string][]string) ScopeGateOption {
 	return func(g *ScopeGate) { g.classProviders = copyProviderPolicy(classProviders) }
+}
+
+// WithGateProviderHosts declara a allowlist de HOSTS por provedor (AOS-331): amarra o provedor
+// autorizado ao RECURSO de destino. Declará-la coloca o gate em [ResourceBindingEnforced]; a sua
+// ausência é [ResourceBindingUnset] — estado DECLARADO, não um deny-all silencioso. Um mapa nil
+// explícito mantém a postura unset.
+func WithGateProviderHosts(providerHosts map[string][]string) ScopeGateOption {
+	return func(g *ScopeGate) { g.providerHosts = copyProviderHosts(providerHosts) }
+}
+
+// ResourceBindingPosture reporta a postura do eixo recurso↔provedor deste gate. Existe para o
+// banner de arranque a poder declarar (AOS-332) e para os testes a poderem assertar.
+func (g ScopeGate) ResourceBindingPosture() ResourceBindingPosture {
+	return resourceBindingPosture(g.providerHosts)
 }
 
 // copyProviderPolicy copia a política de provedores (nil preserva-se como nil — é
@@ -150,6 +165,16 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
 	}
 	if err := authorizeProvider(g.classProviders, call.Principal.AgentClass, call.Principal.Authority, provider); err != nil {
+		return referencemonitor.HookResult{
+			Decision: referencemonitor.HookDeny,
+			Reason:   err.Error(),
+		}, nil
+	}
+	// EIXO RECURSO↔PROVEDOR (AOS-331). O provedor estar autorizado não diz para ONDE a
+	// credencial dele vai ser apresentada. Lê-se do `Call.Resource` — o contrato C1 — e não do
+	// envelope, porque é esse o valor que a mediação SELA: decidir sobre um e selar o outro
+	// seria repetir a divergência de namespaces que o AOS-330 fechou no eixo do Vault.
+	if err := authorizeResource(g.providerHosts, provider, call.Resource.Type, call.Resource.Value); err != nil {
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
 			Reason:   err.Error(),

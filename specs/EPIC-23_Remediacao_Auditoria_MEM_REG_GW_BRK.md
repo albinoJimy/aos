@@ -90,7 +90,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | Achado | Ticket |
 |---|---|
 | O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) — **implementado** |
-| O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
+| O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** — **implementado** |
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
@@ -950,18 +950,61 @@ Medido na revisão adversarial da EPIC-23. Latente: o broker não está composto
 
 ### Critérios de Aceitação
 
-- [ ] A autorização da troca relaciona `Downstream.Provider` com `Downstream.ResourceValue` — por
+- [x] A autorização da troca relaciona `Downstream.Provider` com `Downstream.ResourceValue` — por
       allowlist de host por provedor, por obrigação de egress do PDP, ou por o `EgressGate` real
       passar a correr nesta cadeia. A escolha é justificada por escrito
-- [ ] Um teste em que o provedor é autorizado e o recurso não, e a negação é atribuível e
+- [x] Um teste em que o provedor é autorizado e o recurso não, e a negação é atribuível e
       distinguível de `ErrProviderOutOfScope`
-- [ ] O estado por omissão fica declarado, como o do eixo provider — e não é um deny-all silencioso
-- [ ] `DEF-218` nomeia este ticket como pré-condição, a par de AOS-324 e AOS-330
+- [x] O estado por omissão fica declarado, como o do eixo provider — e não é um deny-all silencioso
+- [x] `DEF-218` nomeia este ticket como pré-condição, a par de AOS-324 e AOS-330
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2 por alcance (latente), **pré-condição do wiring do broker**.
+**IMPLEMENTADO.** P2 por alcance (latente), **pré-condição do wiring do broker**.
 
+**A VIA É ALLOWLIST DE HOST POR PROVEDOR**, e as outras duas que o AC oferecia não fecham o eixo:
+
+- **O `EgressGate` real não amarra provedor a recurso.** O `network.EgressHook` deriva o destino
+  do `Resource` e compara-o com uma allowlist de **deployment** — não sabe o que é um provedor.
+  `Provider=stripe` com destino `evil.example` **passa** se `evil.example` estiver na allowlist, e
+  é negado com `DeniedBy="egress"`, indistinguível de qualquer outro egress fora da lista.
+  Resolve o egress, não a confusão de deputado.
+- **Uma obrigação de egress do PDP** exigiria o bundle de política assinado — que é precisamente
+  o bloqueador declarado do `DEF-218`. Seria circular: este ticket é pré-condição do wiring, não
+  consequência dele.
+
+**A DECISÃO LÊ O `Call.Resource`, NÃO O ENVELOPE.** É esse o valor que a mediação **sela**;
+decidir sobre um e selar o outro repetiria a divergência de namespaces que o AOS-330 acabou de
+fechar no eixo do Vault.
+
+**DUAS SENTINELAS, E A DISTINÇÃO É O AC.** `ErrResourceOutOfScope` («este destino não é deste
+provedor») é distinta de `ErrProviderOutOfScope` («este provedor não é teu»): levam o operador a
+sítios diferentes — a primeira é a allowlist de hosts, a segunda é a política de classe. E
+`ErrResourceUndetermined` cobre o que não permite decidir — valor que não se analisa, ou tipo que
+não é de rede —, porque sob política declarada informação insuficiente é recusa, a mesma postura
+do envelope ilegível no eixo provider.
+
+**O ESTADO POR OMISSÃO É `unset`, DECLARADO E INTERROGÁVEL.** O AC proíbe um deny-all silencioso,
+e a razão é dura: um default que negasse tudo partiria todos os deployments que não configuram a
+coisa nova, e um eixo que ninguém consegue ligar não é segurança — é uma avaria. A postura é
+legível por `ScopeGate.ResourceBindingPosture()`, que é o que a distingue de um silêncio e o que
+o AOS-332 vai imprimir. Um mapa **vazio não-nil** é uma declaração — «nenhum provedor alcança
+recurso nenhum» — e é escolha legítima de quem quer o eixo fechado; é a mesma distinção do eixo
+provider.
+
+Sete funções de teste, **duas delas ponta-a-ponta pela cadeia de mediação** — porque as outras
+cinco exercitam a função de autorização e isso é «a regra está escrita», não «a regra corre». Com
+**três controlos**: o host do próprio provedor passa, sob `unset` nada nega, e a negação por
+autoridade continua distinta da de recurso. Quatro provas de mutação — o gate a não correr a
+verificação, a postura por omissão a virar `enforced`, o indeterminado a ser aceite, e a sentinela
+a virar a do provedor — todas vermelhas.
+
+`DEF-218` passa a nomear este ticket como pré-condição, a par do AOS-324 e do AOS-330.
+
+**LIMITE DECLARADO.** Continua latente: o broker não está composto e a postura é `unset` em todo
+o repositório. E a allowlist é por **host**, não por caminho — `https://api.stripe.com/qualquer`
+passa se `api.stripe.com` estiver na lista. É deliberado: o caminho de um recurso downstream muda
+com a API do provedor, e uma allowlist por caminho seria configuração que caduca sozinha.
 ---
 
 ## AOS-332 — A postura do eixo provider não aparece no banner de arranque
