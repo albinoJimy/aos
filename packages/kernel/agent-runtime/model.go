@@ -20,6 +20,39 @@ type ModelConfig struct {
 type Usage struct {
 	InputTokens  int64
 	OutputTokens int64
+
+	// Ausente marca que o turno NÃO FOI MEDIDO — o provedor respondeu e não reportou
+	// usage em que se possa confiar. É a distinção entre «o provedor disse zero» e «o
+	// provedor não disse nada», e sem ela um turno não medido desce indistinguível de
+	// um turno gratuito (AOS-336).
+	//
+	// PORQUE PRECISA DE ATRAVESSAR ESTA FRONTEIRA. O gateway já a tinha em
+	// `port.Usage.Ausente` (AOS-321), mas o tradutor RT↔GW copiava só os números: num
+	// deployment sem contabilidade de custo composta o gateway serve a resposta na
+	// mesma (é o limite declarado do AOS-321) e o `turn.recorded` recebia
+	// `input_tokens: 0, cost_micro_usd: 0` para uma chamada não medida — o zero
+	// silencioso fechado dentro do gateway, reaparecido um passo a jusante. É este
+	// campo que o leva até ao evento durável que o burn-down do nó lê.
+	//
+	// POLARIDADE DELIBERADA, igual à de `port.Usage.Ausente`: o valor-zero é
+	// «definido». Um [Usage] construído em código afirma o que escreve; só quem
+	// TRADUZ material recebido — o adaptador do gateway — marca a ausência. A marca é
+	// ADITIVA e não reinterpreta nenhum consumidor existente.
+	Ausente bool
+}
+
+// Definido reporta se este usage é uma MEDIÇÃO em que se possa confiar.
+//
+// Espelha [github.com/aos-ref/platform/model-gateway/port.Usage.Definido] do outro lado
+// da fronteira, e pelas mesmas duas razões: a marca explícita cobre o `usage` ausente, e
+// `InputTokens > 0` cobre a ausência DISFARÇADA — um `usage` presente mas sem contadores
+// legíveis. Não existe chamada de modelo sem entrada: há sempre system+user. Zero tokens
+// de entrada é ausência de dados disfarçada de leitura, nunca uma medição.
+func (u Usage) Definido() bool {
+	if u.Ausente {
+		return false
+	}
+	return u.InputTokens > 0
 }
 
 // ToolInvocation é uma tool call PRETENDIDA pelo modelo. É apenas uma INTENÇÃO:

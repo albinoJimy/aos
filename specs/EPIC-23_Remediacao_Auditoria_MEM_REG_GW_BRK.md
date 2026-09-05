@@ -95,7 +95,8 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
-| O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — P1 |
+| O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
+| O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
 +128% de CPU no *parse* (44,4 µs/op contra 101,1 µs/op num corpo de ~11 KB, medido por benchmark).
@@ -243,7 +244,12 @@ não agregado, não emitido, span anotado — no streaming, onde o conteúdo já
 passa a escrever `resp.Usage.CostMicroUSD`. Sete testes, incluindo três de controlo e um de limite
 declarado; prova de mutação executada.
 
-**RESIDUAL NOMEADO — o AC4 vale enquanto houver recorder composto.** `translateResponse`
+**RESIDUAL FECHADO PELO AOS-336 — o AC4 deixou de ser condicional.** O parágrafo abaixo descreve
+o estado à data deste ticket; a marca passou entretanto a atravessar a fronteira GW→RT
+(`agentruntime.Usage.Ausente`), o `turn.recorded` regista-a, e o `ErrBurndownNoUsage` passou a
+apanhar o run misto a partir do primeiro turno não medido em vez de exigir o run inteiramente cego.
+
+~~**RESIDUAL NOMEADO — o AC4 vale enquanto houver recorder composto.**~~ `translateResponse`
 (`packages/platform/model-gateway/runtime_adapter.go:163-169`) copia só os três campos numéricos
 para `agentruntime.ModelResponse`, que não tem campo para «indefinido» — a marca **não atravessa a
 fronteira GW→RT**. Num deployment em que a tabela de preços não cubra o par configurado,
@@ -1089,14 +1095,112 @@ mediu que a mitigação não mitiga o caso misto, que é o realista.
 
 ### Critérios de Aceitação
 
-- [ ] `agentruntime.ModelResponse` transporta a distinção «custo indefinido» vs «custo zero medido»,
+- [x] `agentruntime.ModelResponse` transporta a distinção «custo indefinido» vs «custo zero medido»,
       e o `turn.recorded` regista-a
-- [ ] `ErrBurndownNoUsage` apanha um run MISTO — turnos medidos e não medidos —, não só o run
+- [x] `ErrBurndownNoUsage` apanha um run MISTO — turnos medidos e não medidos —, não só o run
       inteiramente a zero
-- [ ] Um teste de run misto que prove que o burn-down não conta os turnos não medidos como zero
-- [ ] O AC4 do AOS-321 deixa de valer só «enquanto houver recorder composto»
+- [x] Um teste de run misto que prove que o burn-down não conta os turnos não medidos como zero
+- [x] O AC4 do AOS-321 deixa de valer só «enquanto houver recorder composto»
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. É o único destes que reabre um zero silencioso no caminho que o nó corre
-hoje — o resto do eixo de custo está fechado dentro do gateway.
+**IMPLEMENTADO.** P1 — era o único destes que reabria um zero silencioso no caminho que o nó corre
+hoje.
+
+**A marca atravessa, e o canal fica com um só critério.** `agentruntime.Usage` ganha `Ausente` e
+`Definido()`, no molde exacto de `port.Usage` do outro lado da fronteira; `translateResponse`
+projecta `!resp.Usage.Definido()` — e **não** `.Ausente` —, porque são duas formas de ausência: o
+`usage` em falta e o `usage` presente sem contadores legíveis (`{}`, `{"total_tokens":1500}`), que
+é a segunda forma que escapou à primeira versão do AOS-321. Projectar a marca crua deixaria a
+segunda atravessar disfarçada de medição.
+
+**O evento durável regista-a**, que é o passo sem o qual nada disto sobrevive à fronteira que o lê:
+`turn.recorded` ganha `usage_ausente`. `omitempty` é deliberado e não cosmética — um turno medido
+grava exactamente os bytes que gravava antes, pelo que nenhum golden de replay se move e a mudança
+é aditiva. Há um teste de controlo só para isso.
+
+**O guarda passa a ser por turno.** `ErrBurndownNoUsage` perguntava `turns > 0 && turnTokens == 0`
+sobre um cursor **cumulativo por run**: um único turno com usage desarmava-o para sempre. Passa a
+contar `turnsSemUsage` e a denunciar a partir do primeiro. **Duas vias para a mesma conclusão**: a
+marca do produtor, que é autoritativa, e `input_tokens <= 0`, que é defensiva e mantém o guarda de
+pé para eventos gravados por código que não escreve a marca. A via defensiva é o mesmo critério de
+`port.Usage.Definido` e de `cache_sli.CallRate` — sem denominador não há leitura.
+
+**O AC4 do AOS-321 deixa de ser condicional.** Valia «enquanto houver recorder composto», porque
+sem contabilidade de custo o gateway serve a resposta e a marca não chegava ao nó. Chega. O
+resultado é que a postura deixa de depender de o operador ter montado uma tabela de preços.
+
+**Um teste que existia FIXAVA o defeito.** O bloco de não-vacuosidade de
+`TestAOS261_TurnosSemTokens_ErroExplicitoNuncaZero` gravava um quarto turno medido no mesmo run e
+exigia que a leitura passasse a valer — declarando como comportamento pretendido exactamente o que
+a revisão adversarial mediu como defeito: um turno medido reabilitava três cegos, e 15 tokens em 4
+turnos eram apresentados como o consumo do run. Foi reescrito para provar o que um controlo de
+não-vacuosidade tem de provar — que a guarda **distingue**, não que se cala — num run com todos os
+turnos medidos.
+
+**O banner deixa de mentir.** Prometia fail-closed «quando o ledger existe mas somou ZERO tokens»,
+que era a descrição fiel do guarda antigo e do seu buraco. Passa a declarar que basta **um** turno
+não medido, e nomeia o run misto.
+
+Dez funções de teste em três módulos, com controlos em cada um: o usage medido continua definido,
+o turno medido grava os mesmos bytes, e um run inteiramente medido continua a passar. Prova de
+mutação executada nas três peças — desligar a projecção, o registo ou o guarda avermelha os testes
+do módulo respectivo, e a mutação do guarda avermelha também `AOS-261` e `AOS-287`.
+
+**LIMITES DECLARADOS.** `TurnSettlement` e `Result.TotalCostMicroUSD` continuam a somar zero por um
+turno não medido — a marca chega-lhes (`TurnSettlement.Usage` é o mesmo tipo) mas nenhum a lê. O
+dano é limitado a um turno, porque o burn-down aborta o run na fronteira seguinte; fechá-lo é outro
+eixo, e fica nomeado em vez de arrastado. O caminho de **streaming** não passa por aqui: o
+adaptador RT→GW só usa `Chat`, e `translateResponse` é o único funil.
+
+---
+
+## AOS-337 — O cliente Vault do broker ecoa o endereço nos erros, e um dos ramos ecoa-o cru
+
+### Contexto
+
+Medido na **revisão adversarial do AOS-333**, que fechou esta fuga no helper de validação e no
+banner e parou aí. Os caminhos que **falam com a rede** continuam a ecoar o endereço, e é neles que
+um endereço com credenciais embutidas aparece por extenso.
+
+`packages/platform/broker/internal/vault/kvv2.go`:
+
+- `:236` — `Ready` devolve `err` **cru** do `http.NewRequestWithContext`. Esse erro é um
+  `*url.Error` que traz a URL **como foi escrita**, sem a redacção de senha que o `http.Client`
+  aplica aos **seus** erros de transporte. Medido: `parse "http://admin:s3cr3t@vault:82 00/x":
+  invalid port` — a senha **inteira**.
+- `:207` e `:241` — o `%v` do wrap sobre o erro do `Do` traz a forma redigida pelo `net/http`
+  (`http://admin:***@host/…`): a senha desaparece, **o utilizador não**. O AOS-333 argumenta
+  explicitamente que o utilizador também é sensível — «numa URL de Vault ele identifica o
+  principal» — e é precisamente ele que sobrevive aqui.
+
+Os dois caminhos alimentam o `/readyz` e o banner de prontidão, que é onde um segredo seria mais
+lido.
+
+**ALCANCE, medido e limitado.** A via do **ambiente** está fechada: `AOS_BROKER_VAULT_ADDR` passa
+por `integration.CheckSecureTransportURL`, que recusa `user-info` desde o AOS-333. Fica aberta a via
+programática — `NewKVv2` só verifica `addr != ""` (`kvv2.go:112-114`) — que é exactamente a via que
+o teste de banner do AOS-333 invoca como justificação da sua própria defesa em profundidade. Ou
+seja: o banner ganhou segunda camada e os clientes de rede não.
+
+**PORQUE NÃO FOI FEITO NO AOS-333.** `packages/platform/broker` **não pode** importar
+`packages/integration` — é o composition-root, e a fronteira do `ADR-019` corre no sentido
+contrário. Reutilizar `integration.RedactURL` está fora de questão; o pacote precisa do seu próprio
+redactor, ou de não ecoar de todo. É trabalho de desenho num módulo diferente, e por isso é ticket
+e não alargamento silencioso de âmbito. Os dois ramos equivalentes em `cmd/aos/vaultkeyvault.go`,
+que **podem** importar `integration`, foram fechados no próprio AOS-333.
+
+### Critérios de Aceitação
+
+- [ ] Nenhum caminho de erro de `kvv2.go` ecoa `user-info` — nem a senha, nem o utilizador
+- [ ] O ramo de `NewRequest` falhado deixa de devolver o `*url.Error` cru
+- [ ] O erro continua a nomear **onde** o nó falhou a falar (esquema, host e porta), senão troca-se
+      uma fuga por um `/readyz` que não diagnostica nada
+- [ ] O redactor vive no módulo do broker, sem importar `integration` — e `layer-lint.sh` prova-o
+- [ ] Um teste com `user:pass@` composto **programaticamente** (a via que continua aberta) que
+      exija a ausência das duas coisas nas mensagens de `Fetch` e de `Ready`
+
+### Estado
+
+**POR IMPLEMENTAR.** P2 — o eixo é fuga de segredo, mas a via do operador está fechada e sobra a
+programática. Sobe a P1 no dia em que alguém compuser `KVv2Config.Addr` a partir de entrada externa.
