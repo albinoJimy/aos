@@ -129,7 +129,7 @@ func budgetPostureBanner(composed bool) []string {
 // Duas famílias, com riscos distintos, por isso declaradas em separado:
 //
 //   - CREDENCIAIS DOWNSTREAM (bearers/tokens que o nó APRESENTA a terceiros): AOS_MODEL_API_KEY_PATH,
-//     AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH;
+//     AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_BASIC_PATH;
 //   - CHAVES PRIVADAS do próprio nó: AOS_ISSUER_KEY_PATH (`main.go` — a chave ed25519 de ASSINATURA
 //     da autoridade co-localizada, o segredo de maior valor que o nó detém: quem a tem cunha
 //     tokens), AOS_TLS_KEY_PATH (`main.go` — chave do ingresso) e AOS_OTLP_CLIENT_KEY_PATH
@@ -228,7 +228,7 @@ func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 		notaColector = " Bearer do colector CARREGADO."
 	}
 	return []string{
-		"credential broker (AOS-070/EPIC-07, ADR-006): AUSENTE — este no NAO compoe o platform/broker. As credenciais downstream entram por FICHEIRO MONTADO (AOS_MODEL_API_KEY_PATH, AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH), sao lidas UMA VEZ no arranque e ficam em MEMORIA do processo enquanto o no viver: sem troca token-scoped server-side, sem TTL curto, sem revogacao por lease e sem injeccao no ponto de execucao. O invariante do ADR-006 (\"o agente apresenta identidade, NUNCA segredo\") NAO e imposto por este no — e responsabilidade de quem monta os ficheiros. Nenhum VALOR e impresso, aqui ou em qualquer linha. Eixo: EPIC-07",
+		"credential broker (AOS-070/EPIC-07, ADR-006): AUSENTE — este no NAO compoe o platform/broker. As credenciais downstream entram por FICHEIRO MONTADO (AOS_MODEL_API_KEY_PATH, AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_BASIC_PATH), sao lidas UMA VEZ no arranque e ficam em MEMORIA do processo enquanto o no viver: sem troca token-scoped server-side, sem TTL curto, sem revogacao por lease e sem injeccao no ponto de execucao. O invariante do ADR-006 (\"o agente apresenta identidade, NUNCA segredo\") NAO e imposto por este no — e responsabilidade de quem monta os ficheiros. Nenhum VALOR e impresso, aqui ou em qualquer linha. Eixo: EPIC-07",
 		"credential broker (AOS-070): " + posse + "." + notaColector + " " + issuer,
 		"=> ALCANCE desta declaracao: cobre o que ESTE composition-root carrega. A chave do ingresso TLS (AOS_TLS_KEY_PATH) e composta pela camada de API e declarada por ela — nao se afirma aqui posse que nao se observa. As credenciais downstream nomeadas acima entram pelo MESMO padrao (ficheiro montado, lido no arranque, retido em memoria) e sao o que ha a rodar e a proteger junto com o que esta linha nomeia",
 	}

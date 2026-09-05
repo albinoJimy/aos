@@ -154,7 +154,16 @@ func TestAOS333_EspacosNaoTornamOURLMalformado(t *testing.T) {
 // funcionava assim. A primeira mensagem mandava «passe-as pelo ficheiro de token» — que dá
 // `Bearer`, não `Basic`. Seguir a instrução não repunha esse deployment.
 //
-// Um operador cujo arranque aborta só tem esta linha. Ela tem de nomear os DOIS caminhos.
+// Um operador cujo arranque aborta só tem esta linha. Ela tem de nomear os caminhos que existem.
+//
+// ACTUALIZADO EM AOS-338. Quando este teste foi escrito havia dois remédios: o ficheiro de token
+// (Bearer) e terminar a autenticação no proxy. Passou a haver três — o AOS-338 deu à basic-auth
+// um caminho próprio por ficheiro montado, `AOS_ATTESTATION_VERIFIER_BASIC_PATH` —, e uma
+// mensagem que continuasse a oferecer só dois mandaria pelo proxy quem já não precisa de lá ir.
+//
+// A mensagem é PARTILHADA pelos três chamadores, e o Basic só se aplica a um: os dois Vaults
+// autenticam por `X-Vault-Token` e nunca usaram basic-auth. Por isso a mensagem NOMEIA o
+// chamador a que o caminho novo pertence, em vez de o oferecer a todos.
 func TestAOS333_MensagemNomeiaOsDoisRemedios(t *testing.T) {
 	t.Parallel()
 	err := integration.CheckSecureTransportURL("https://admin:pw@vault.interno:8200")
@@ -162,7 +171,7 @@ func TestAOS333_MensagemNomeiaOsDoisRemedios(t *testing.T) {
 		t.Fatal("devia recusar")
 	}
 	msg := err.Error()
-	for _, quer := range []string{"ficheiro de token", "Bearer", "proxy"} {
+	for _, quer := range []string{"FICHEIRO MONTADO", "Bearer", "Basic", "AOS_ATTESTATION_VERIFIER_BASIC_PATH", "attestation", "proxy"} {
 		if !strings.Contains(msg, quer) {
 			t.Errorf("a mensagem devia nomear %q — sem isso o operador nao tem por onde migrar: %v", quer, err)
 		}

@@ -183,6 +183,7 @@ services:
       # Attestation de dispositivo (AOS-177/AOS-266) — sem isto o four-eyes é SÓ estrutural.
       AOS_ATTESTATION_VERIFIER_URL: "${AOS_ATTESTATION_VERIFIER_URL:-}"
       AOS_ATTESTATION_VERIFIER_TOKEN_PATH: "${AOS_ATTESTATION_VERIFIER_TOKEN_PATH:-}"
+      AOS_ATTESTATION_VERIFIER_BASIC_PATH: "${AOS_ATTESTATION_VERIFIER_BASIC_PATH:-}"
       AOS_DEVICE_ENROLLMENT_FILE: "${AOS_DEVICE_ENROLLMENT_FILE:-}"
 
       # Broker de credenciais downstream (AOS-070/AOS-264) — hoje entram por ficheiro montado.
