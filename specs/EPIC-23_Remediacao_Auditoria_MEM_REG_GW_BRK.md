@@ -93,8 +93,8 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
-| Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
-| `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
+| Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** — **implementado** |
+| `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** — **implementado** |
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
 | O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
 | A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — **implementado** |
@@ -1076,15 +1076,48 @@ Hoje só o `Host.stage` publica `mcp_server`, pelo que a exploração exige outr
 
 ### Critérios de Aceitação
 
-- [ ] Publicar um `mcp_server` sem `ManifestDigest` é recusado fail-closed, com erro atribuível
-- [ ] Um teste que prove a recusa, e um controlo que prove que `tool`/`skill` **sem** o campo
+- [x] Publicar um `mcp_server` sem `ManifestDigest` é recusado fail-closed, com erro atribuível
+- [x] Um teste que prove a recusa, e um controlo que prove que `tool`/`skill` **sem** o campo
       continuam a publicar (o campo é específico do kind)
-- [ ] O golden de regressão distingue «forma legada suportada para tool/skill» de «forma vazia
+- [x] O golden de regressão distingue «forma legada suportada para tool/skill» de «forma vazia
       aceitável para mcp_server» — a segunda deixa de ser fixada como válida
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Fecha por gate o que o AOS-320 fechou por convenção.
+**IMPLEMENTADO.** P2. Fecha por gate o que o AOS-320 fechou por convenção.
+
+`validateContractPorKind` corre no `Publish` **antes do hashing** — não se hasheia uma entrada
+que vai ser recusada, que é a disciplina do `validateContractSchemas` — e a regra é **«exige»,
+nunca «só este pode ter»**: as entradas `kind=tool` derivadas de um servidor MCP transportam a
+âncora de propósito, e a formulação exclusiva partiria essa ligação.
+
+**A REVISÃO ADVERSARIAL MEDIU DUAS LACUNAS, E AS DUAS ERAM MINHAS.**
+
+**(1) Uma entrada legada chegava a `active`.** Fechei o `Publish` e declarei que as históricas
+«continuam a resolver, de propósito» — misturando duas coisas. **Ler** uma entrada do log é
+legítimo: é append-only, e reescrever a leitura do passado seria pior do que a lacuna.
+**Promovê-la a `active`** é uma decisão NOVA, tomada hoje, sujeita às regras de hoje — e `active`
+é o estado que resolve e é usado. O `SetStatus` passou a reavaliar a regra na transição para
+`active`.
+
+**(2) O gate era de PRESENÇA, não de forma.** `ManifestDigest: "x"` passava, e dois servidores
+sem nada em comum voltavam a partilhar o digest de contrato — o digest-constante-da-classe que o
+AOS-320 existe para eliminar, reaberto por uma constante à escolha de quem publica. Acrescentado
+`digest.BemFormado`.
+
+**LIMITE DECLARADO — FORMA NÃO É PROVENIÊNCIA.** Verifica-se que o valor tem forma de SHA-256,
+não que foi derivado do manifesto que o servidor apresentou. Quem publica pode fornecer o hash
+bem-formado de outra coisa. Fechar esse eixo exige assinatura sobre o manifesto observado, que é
+trabalho da cadeia de supply-chain — fica nomeado em vez de sugerido pelo silêncio.
+
+**O golden era tautológico, e a revisão mostrou-o.** O campo `publicavel` que eu tinha
+acrescentado não carregava bit nenhum que o `kind` já não carregasse — uma guarda pré-existente
+proibia qualquer caso com manifesto, pelo que a asserção se reduzia a
+`publicavel == (kind != mcp_server)` sobre booleanos postos à mão, e remover a produção
+deixava-a verde. Entrou o caso golden da **forma publicável** (que não existia: o AOS-320
+introduziu a forma e não lhe congelou nada) e o `TestGolden_FormaPublicavelDiscrimina`, que prova
+o que o campo existe para fazer — dois manifestos diferentes dão digests diferentes, e com/sem
+manifesto diferem.
 
 ---
 
@@ -1105,17 +1138,44 @@ que não é neutro: **degrada** a classificação, não a deixa indefinida.
 
 ### Critérios de Aceitação
 
-- [ ] `ClassifyContract` considera `ManifestDigest`: uma mudança do manifesto é classificada como
+- [x] `ClassifyContract` considera `ManifestDigest`: uma mudança do manifesto é classificada como
       MAJOR (ou como a classe que a equipa decidir, justificada contra o ADR-012)
-- [ ] Um teste que prove que dois `mcp_server` com manifestos diferentes não são um bump PATCH
+- [x] Um teste que prove que dois `mcp_server` com manifestos diferentes não são um bump PATCH
       válido
-- [ ] O impacto na semântica de AOS-052 fica escrito — que artefactos passam a exigir MAJOR e porquê
+- [x] O impacto na semântica de AOS-052 fica escrito — que artefactos passam a exigir MAJOR e porquê
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Residual nomeado no AOS-320, promovido a ticket porque a revisão mostrou que
-não é uma omissão neutra.
+**IMPLEMENTADO.** P2. Residual nomeado no AOS-320 e promovido a ticket porque a omissão não
+deixava a classificação indefinida — **degradava-a** para «compatível», que é uma afirmação
+positiva e falsa.
 
+`ClassifyContract` passa a devolver MAJOR para qualquer delta de `ManifestDigest`, com a razão
+`manifest_digest_changed`.
+
+**PORQUÊ MAJOR, CONTRA O ADR-012.** O digest é uma **âncora opaca**: o `mcp.DigestAncorado` funde
+esquema, endpoint e transporte num só SHA-256, e o resultado não é decomponível a jusante — dali
+não se distingue «mudou de porta» de «ganhou uma tool `exec`». Perante duas leituras e nenhuma
+forma de as separar, classifica-se pela pior. E é a leitura certa para o que o campo significa: o
+digest é o que afirma que o servidor por trás deste contrato é o mesmo que foi aprovado.
+
+**CUSTO DECLARADO.** Uma mudança puramente operacional de endpoint exige bump MAJOR. Separar os
+dois eixos exige decompor a âncora — o `mcp.Host` tem `manifest.Digest` e `conn.Endpoint`
+separados e podia levá-los como dois campos de contrato — e é trabalho no `DigestAncorado`, não
+no classificador. Fica nomeado em vez de resolvido por uma heurística que adivinhasse qual dos
+dois mudou.
+
+**O AC3 NÃO ESTAVA CUMPRIDO, E A REVISÃO APANHOU-O.** O impacto que escrevi na `tecnica/05` §7.1
+dizia «só os `mcp_server` se movem — os restantes têm o campo vazio dos dois lados». É **falso**:
+o `mcp.Host` grava a **mesma** âncora em cada entrada `kind=tool` que o servidor expõe
+(`host.go:356`), pelo que mover o endpoint de um servidor com N tools exige MAJOR nas N. Essa é a
+maior parte do custo real — precisamente o que o AC mandava declarar — e eu tinha-a omitido. O
+texto foi corrigido, e o caso ganhou o teste que não existia em pacote nenhum
+(`TestAOS335_ToolComAncoraMudadaTambemEMajor`).
+
+**LIMITE DECLARADO.** O `tofu.Monitor.Reapprove` continua a exigir só versão estritamente
+superior e não consome `ClassifyContract`: a ligação MAJOR ⇒ re-aprovação TOFU permanece
+semântica, não mecânica. Está fora do eixo do AOS-052.
 ---
 
 ## AOS-336 — O custo indefinido não atravessa a fronteira GW→RT, e o guarda a jusante é fraco

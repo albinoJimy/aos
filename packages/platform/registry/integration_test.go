@@ -6,16 +6,24 @@ import (
 	"testing"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/platform/registry/digest"
 	"github.com/aos-ref/platform/registry/domain"
 )
 
 // mcpReq e skillReq cobrem os OUTROS dois tipos de artefacto (alem de tool), para
 // provar que os tres tipos sao representaveis e distinguiveis no catalogo.
+// O `ManifestDigest` é OBRIGATÓRIO desde AOS-334, e tem de ter FORMA de SHA-256 — daí o
+// `DigestBytes` sobre o id em vez de uma string qualquer.
+//
+// NOTA DE ALCANCE: este helper é usado por UM teste, que conta kinds distintos e não compara
+// digests. Derivar do id evita que dois servidores partilhem contrato, mas nada aqui EXERCITA
+// essa propriedade — a prova de que o campo discrimina vive em
+// `TestManifestDigest_DiscriminaEntradasMCPServer`.
 func mcpReq(id string, v domain.Version) PublishRequest {
 	return PublishRequest{
 		ID: id, Version: v, Kind: domain.KindMCPServer,
 		Origin: "mcp://host.example", Publisher: "pub:mcp",
-		Contract: domain.Contract{Egress: domain.EgressInternal},
+		Contract: domain.Contract{Egress: domain.EgressInternal, ManifestDigest: digest.DigestBytes([]byte("manifesto-de-" + id))},
 	}
 }
 
