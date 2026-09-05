@@ -61,6 +61,8 @@ proteja, e o ticket que fecha essa assimetria (AOS-326) é ele próprio parte da
 | AOS-326 | A não-composição de MEM e REG não está registada em ADR nem em `DEF-NNN` | P1 | — | **implementado** (DEF-811/812 + qualificação dos §2 do EPIC-04/05; o ADR fica ao dono) |
 | AOS-327 | A pendência de *shred* não tem regra de alerta, e a série desaparece com o processo | P2 | **nó** | **implementado** (RB-06; âmbito cortado a meio) |
 
+**Mais três, que não vêm da auditoria mas da validação DELA** (§0.3), separados de propósito: **AOS-328** (guard-rail da confirmação de crypto-shred, `DEF-813`), **AOS-329** (o gate que verifica o ESTADO do ticket citado numa declaração, `DEF-814` — o único dos três que ataca a causa-raiz) e **AOS-330** (o namespace da política do broker vs o do path do Vault, `DEF-815`).
+
 
 ### 0.3 Validação adversarial — o que ela encontrou depois de os oito estarem «implementados»
 
@@ -733,3 +735,133 @@ enquanto o nó fica unready de qualquer forma — que já é o sinal mais forte 
 
 *Epic derivado de `analises/11_Auditoria_MEM_REG_GW_BRK_Adversarial.md`. Cada âncora foi
 reconfirmada contra o código antes da escrita. Ver `specs/INDICE.md`.*
+
+---
+
+# Follow-ups da validação adversarial — AOS-328..330
+
+Os oito tickets acima remediam a `analises/11`. **Estes três não vêm da auditoria: vêm da
+validação adversarial DESSA remediação** (§0.3), e é por isso que ficam separados — misturá-los
+faria parecer que a auditoria original os tinha encontrado, e ela não os encontrou.
+
+Cada um fecha um `DEF-NNN` cuja nota do §6 do registo dizia «o ticket que falta é X». O registo de
+deferimentos não cria tickets por desenho; criá-los é este acto, e os eixos passam de
+`POR ATRIBUIR` para os números abaixo.
+
+---
+
+## AOS-328 — A confirmação do crypto-shred é opcional, e a omissão é fail-open para a custódia seguinte
+
+### Contexto
+
+`dsar.ShredConfirmer` é consultada apenas se `WithShredConfirmer` receber algo não-nil, e
+`confirmadorDeShredDe` (`packages/cmd/aos/shred_confirmador.go`) devolve `nil` para uma custódia que
+não implemente a porta interna. Sem confirmador, o fluxo sela `dsar.key_destroyed` **sem perguntar**.
+
+Hoje isso é correcto e está fixado por teste (AOS-322): as duas custódias existentes fazem a escolha
+certa — o `InMemoryKeyVault` não implementa a porta porque o seu `Delete` é um `delete()` num mapa e
+não pode falhar; o Vault Transit implementa-a. O risco é a **terceira**: um KMS de terceiros que
+*possa* falhar a destruir e não implemente a porta faz a cadeia afirmar uma irrecuperabilidade que
+ninguém verificou — o defeito exacto que a porta foi criada para fechar, reaberto pela via da
+omissão. **Nada obriga essa escolha a ser consciente.**
+
+A revisão adversarial do AOS-322 mostrou ainda que o banner era pior do que a omissão: dizia «com o
+vault de REFERENCIA isto é CORRECTO» num ramo que dispara para *qualquer* custódia sem a porta,
+incluindo uma injectada por `Config.DSARVault`. Isso já foi corrigido — o banner tem três ramos e o
+terceiro diz «NÃO É CORRECTO» —, mas declarar não é impor.
+
+### Critérios de Aceitação
+
+- [ ] Uma custódia composta sob `AOS_MODE=production` que **não** implemente a porta de confirmação
+      é recusada no arranque, ou é aceite mediante uma declaração explícita de que não precisa
+      (a escolha faz parte do ticket e é justificada por escrito)
+- [ ] O vault de referência continua a compor **sem** declaração extra — a guarda não pode transformar
+      o modo de desenvolvimento numa configuração cerimoniosa
+- [ ] Um teste que prove a recusa (ou a exigência de declaração) com uma custódia falsa que não
+      implemente a porta, e um controlo que prove que as duas custódias reais continuam a compor
+- [ ] `DEF-813` passa de `POR ATRIBUIR` para este ticket
+
+### Estado
+
+**POR IMPLEMENTAR.** P2. Eixo do `DEF-813`. Origem: validação adversarial da EPIC-23, não a
+`analises/11`.
+
+---
+
+## AOS-329 — Nada obriga uma declaração de estado a citar um ticket ainda aberto
+
+### Contexto
+
+O gate `deferrals` impõe que todo o marcador de dívida no código tenha **eixo verificável**. O que
+não impõe é que esse eixo esteja **aberto**: uma linha que diz «pendente até AOS-265» continua a
+passar depois de o AOS-265 fechar.
+
+Foi assim que a `analises/11` §5 encontrou **seis** declarações caducadas de uma vez, e o AOS-325
+corrigiu sete — e mesmo assim **escapou uma oitava** (`packages/cmd/aos/main.go`), encontrada só na
+validação adversarial. Sete correcções pontuais não impediram a oitava, e não impedirão a nona: o
+padrão é sempre o mesmo — uma declaração nomeia o ticket que a fecharia, o ticket fecha, e a
+declaração fica a comprar confiança que já não sustenta.
+
+O `ref-lint` já resolve tickets contra as epics; o que falta é ligar essa leitura ao eixo das
+declarações.
+
+### Critérios de Aceitação
+
+- [ ] Uma linha de postura ou comentário que cite `AOS-NNN` como **bloqueador** é cruzada com o
+      estado desse ticket no `specs/EPIC-*.md`, e o gate **falha** quando o ticket citado está
+      implementado
+- [ ] A verificação distingue «cita como bloqueador» de «cita como origem/referência» — uma nota que
+      diga «entregue por AOS-047» não pode disparar. O mecanismo de distinção fica declarado (marcador
+      próprio, posição na frase, ou lista explícita), e é testado nos dois sentidos
+- [ ] Prova negativa: o gate consegue ficar **vermelho** — um teste-veneno com uma citação a um
+      ticket fechado fá-lo falhar
+- [ ] As oito declarações que a EPIC-23 corrigiu passam a estar cobertas por este gate (verificação
+      retroactiva: se o gate existisse, teria apanhado cada uma)
+- [ ] `DEF-814` passa de `POR ATRIBUIR` para este ticket
+
+### Estado
+
+**POR IMPLEMENTAR.** P2. Eixo do `DEF-814`. É o **irmão do `deferrals`** e o único destes três que
+ataca a causa-raiz em vez de uma instância: sem ele, a próxima auditoria volta a encontrar
+declarações caducadas e alguém volta a corrigi-las uma a uma.
+
+---
+
+## AOS-330 — O namespace da política do broker não é o namespace da chave do Vault
+
+### Contexto
+
+A política de provedores do broker (AOS-324) compara strings **cruas** por igualdade. O cliente
+KV v2 (`packages/platform/broker/internal/vault/kvv2.go`) resolve o path com `TrimSpace` e dobra
+tudo o que esteja fora de `[A-Za-z0-9._-]` para `_`.
+
+Medido por revisão adversarial: `" "`, `"	"` e `"*"` produzem **todos** o path `_/eu/…` —
+indistinguível de um eixo em branco — e `"acme:eu"` colide com `"acme_eu"`. Sob a postura por
+omissão, valores como `" "` e `"stripe/x"` passam o guarda de «provedor indeterminado» e chegam ao
+`Fetch`, o que falsifica a afirmação de que o Vault nunca é consultado com um eixo em branco. Sob
+`enforced`, um nome autorizado que dobre sobre um proibido dá material do proibido.
+
+Enquanto os dois namespaces forem diferentes, «autorizado» e «o que o Vault serve» não são a mesma
+coisa — e a divergência é silenciosa nos dois sentidos.
+
+Inofensivo hoje: o broker não está composto (`DEF-218`) e a postura é `unset` em todo o repositório,
+pelo que não há caminho de execução que o alcance. **É por isso que se fecha antes do wiring, e não
+depois.**
+
+### Critérios de Aceitação
+
+- [ ] Ou a política decide sobre o valor **normalizado** — o mesmo que forma o path —, ou recusa
+      fail-closed qualquer valor que a normalização altere. A segunda via é a mais defensável (um
+      provedor cujo nome não sobreviva ao path não devia ser aceitável de todo) e a escolha é
+      justificada por escrito
+- [ ] Um teste que prove que dois valores distintos que dobrem no mesmo path **não** são ambos
+      aceites, e outro que prove que um valor que a normalização altere é recusado de forma
+      atribuível
+- [ ] O guarda de «provedor indeterminado» passa a apanhar `" "`, `"	"` e `"*"` — hoje não apanha
+- [ ] `DEF-218` nomeia este ticket como pré-condição, a par do AOS-324
+- [ ] `DEF-815` passa de `POR ATRIBUIR` para este ticket
+
+### Estado
+
+**POR IMPLEMENTAR.** P2 por alcance (latente), **pré-condição do wiring do broker**. Eixo do
+`DEF-815`.
