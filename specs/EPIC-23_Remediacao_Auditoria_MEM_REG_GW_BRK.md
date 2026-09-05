@@ -56,9 +56,9 @@ proteja, e o ticket que fecha essa assimetria (AOS-326) é ele próprio parte da
 | AOS-321 | Uma resposta 200 sem `usage` é indistinguível de uma chamada de custo nulo | P0 | **nó** | **implementado** (residual: a marca não cruza a fronteira GW→RT) |
 | AOS-322 | A postura de confirmação do *crypto-shred* não é declarada, e nada obriga uma custódia nova a escolher | P2 | endurecimento | **implementado** (enunciado original FALSIFICADO — ver ticket) |
 | AOS-323 | O canal do broker para o Vault aceita `http://` e o token nunca é renovado | P1 | **nó** | **implementado (parcial)** — metade do enunciado era falsa; 1 AC deferido |
-| AOS-324 | A troca de credenciais não impõe nem exercita o eixo *Provider* | P2 | latente | **implementado** (imposição por configuração; postura selada) |
-| AOS-325 | Cinco declarações de estado que já não são verdade, e uma contradição interna | P2 | **nó** | **implementado (parcial)** — 6 de 7; um item é do AOS-320 |
-| AOS-326 | A não-composição de MEM e REG não está registada em ADR nem em `DEF-NNN` | P1 | — | **implementado** (DEF-811/812; o ADR fica ao dono) |
+| AOS-324 | A troca de credenciais não impõe nem exercita o eixo *Provider* | P2 | latente | **implementado** — imposição por CONFIGURAÇÃO; sob `unset` o defeito persiste, fechável por config |
+| AOS-325 | Cinco declarações de estado que já não são verdade, e uma contradição interna | P2 | **nó** | **implementado (parcial)** — 7 declarações corrigidas (uma é do AOS-320); AC4 (mecanismo anti-recaída) por fechar em DEF-814 |
+| AOS-326 | A não-composição de MEM e REG não está registada em ADR nem em `DEF-NNN` | P1 | — | **implementado** (DEF-811/812 + qualificação dos §2 do EPIC-04/05; o ADR fica ao dono) |
 | AOS-327 | A pendência de *shred* não tem regra de alerta, e a série desaparece com o processo | P2 | **nó** | **implementado** (RB-06; âmbito cortado a meio) |
 
 ---
@@ -447,7 +447,10 @@ composição não-imposta fica auditável e greppável em vez de invisível. O q
 relaxa: provedor vazio é negado fail-closed nas duas posturas.
 
 O `DEF-218` passa a nomear isto como **pré-condição do wiring**: declarar a política e assertar
-`enforced`. `tecnica/07` documenta o modelo dos três eixos e qual mecanismo impõe cada um.
+`enforced`. `tecnica/07` documenta o modelo dos três eixos e qual mecanismo impõe cada um, e a
+linha **E** (elevação de privilégio) da tabela STRIDE do BRK em `tecnica/17` — que dava a confusão
+de deputado por mitigada pelo «escopo» — passa a dizer que «escopo» eram três eixos e só um estava
+imposto, com o estado a mudar de «entregue» para «entregue por configuração».
 
 **Residual declarado:** sob `unset` o defeito persiste materialmente — fica registado e fechável por
 configuração, não fechado. E a convenção `prov:` na autoridade é **nova**: nenhum emissor a produz
@@ -533,8 +536,9 @@ artefactos já carregavam.
 aceitação o inclui: corrigir o comentário sem ligar o digest seria trocar uma declaração falsa por
 outra.
 
-**AC4 fica por fechar:** não foi criado mecanismo que faça uma declaração citar o ticket que a
-desbloqueia. As sete correcções são pontuais; o que evitaria a próxima ronda é estrutural e fica por
+**AC4 fica por fechar, agora com eixo:** não foi criado mecanismo que faça uma declaração citar o
+ticket que a desbloqueia — registado em **DEF-814**, com a nota `N-DEF-814` a descrever o gate que
+o fecharia (o irmão do `deferrals`: verificar o ESTADO do ticket citado, não só a sua existência). As sete correcções são pontuais; o que evitaria a próxima ronda é estrutural e fica por
 desenhar.
 
 ---
@@ -603,6 +607,13 @@ antes de se compor o host MCP, senão liga-se um pino que não distingue servido
 
 Gate `deferrals` verde para este eixo — a contagem de `posture_banner.go|DEFERIDO` passou de 2 para
 4 e é verificada por máquina.
+
+Os §2 do **`specs/EPIC-04`** e do **`specs/EPIC-05`** ganham a qualificação que o AC5 pedia: os
+critérios de saída são propriedades do SISTEMA, hoje satisfeitas ao nível da BIBLIOTECA, e a nota
+nomeia quais são falsos lidos como propriedades do nó — no EPIC-05, o primeiro («o REG está
+operacional como catálogo append-only e versionado»), o segundo (transportes MCP integrados) e o
+quinto (TOFU activo). Sem isso, dois epics continuariam a prometer uma composição que não existe,
+que é precisamente o que este ticket veio impedir.
 
 **O que este ticket NÃO faz, por desenho:** não emite o ADR. Essa é uma decisão sobre a forma do
 produto que a Carta §2 reserva ao dono. Registar a postura era o que faltava; decidi-la não é do
