@@ -446,6 +446,11 @@ type exchangePayload struct {
 	// impõe e um curinga que não impõe nada — e é `provider_policy` que o `DEF-218`
 	// manda assertar. É este campo que torna essa asserção honesta.
 	ProviderPolicyShape string `json:"provider_policy_shape"`
+	// ResourceBinding sela a postura do eixo RECURSO↔PROVEDOR (AOS-331) em vigor
+	// nesta troca. Faltava (AOS-344): o evento selava dois terços da postura do
+	// broker e a leitura do que faltava era «não declarado», que é indistinguível
+	// de «não imposto» — a confusão que o AOS-324 existe para não deixar acontecer.
+	ResourceBinding string `json:"resource_binding"`
 }
 
 func (b *Broker) recordExchange(ctx context.Context, l *Lease) error {
@@ -461,6 +466,7 @@ func (b *Broker) recordExchange(ctx context.Context, l *Lease) error {
 		ExpiresAt:           l.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		ProviderPolicy:      string(b.ProviderPosture()),
 		ProviderPolicyShape: string(b.ProviderPolicyShape()),
+		ResourceBinding:     string(b.ResourceBindingPosture()),
 	})
 	if err != nil {
 		return err
@@ -505,6 +511,23 @@ type deniedPayload struct {
 	// não sabe SOB QUE REGIME ela foi tomada — e uma negação lida fora do seu
 	// regime não é auditável.
 	ProviderPolicy string `json:"provider_policy"`
+	// ProviderPolicyShape e ResourceBinding completam a postura selada (AOS-344).
+	//
+	// PORQUE FALTAVAM, e porque é defeito. O AOS-342 fixou que «a forma viaja com a
+	// postura em todo o lado onde a postura viaja» — e este evento é um desses
+	// lados, e não a levava. O AOS-331 acrescentou o eixo recurso↔provedor, que a
+	// razão da negação do gate sela e este evento não selava. Resultado: uma negação
+	// da guarda de composição ficava no WORM com UM TERÇO da postura, e quem a lesse
+	// não sabia se `provider_policy=enforced` significava imposto ou um curinga que
+	// não impõe nada — que é exactamente o que o AOS-342 mediu e fechou noutro sítio.
+	//
+	// São METADADO DE CONFIGURAÇÃO, não a causa da decisão: viajam ao lado do campo
+	// `axis`, que é quem diz o que decidiu. É a mesma razão pela qual o
+	// `ProviderPolicy` já era selado em qualquer eixo — e o contraste com a `Reason`
+	// do gate, onde a postura vai DENTRO da frase que explica a recusa e por isso só
+	// é anexada ao eixo que realmente decidiu.
+	ProviderPolicyShape string `json:"provider_policy_shape"`
+	ResourceBinding     string `json:"resource_binding"`
 }
 
 // denialCode mapeia o sentinela da negação para um código ESTÁVEL e greppável.
@@ -561,18 +584,20 @@ func denialCode(err error) string {
 // só o cancelamento; o prazo próprio evita que um sink pendurado prenda o dispatch.
 func (b *Broker) recordDenial(ctx context.Context, in exchangeInput, axis string, cause error) error {
 	payload, err := json.Marshal(deniedPayload{
-		PrincipalNHI:   in.PrincipalNHI,
-		AgentClass:     in.AgentClass,
-		Resource:       in.ResourceValue,
-		Provider:       in.Provider,
-		Region:         in.Region,
-		Capability:     in.Capability,
-		Axis:           axis,
-		Code:           denialCode(cause),
-		Reason:         cause.Error(),
-		DeniedBy:       dispatchGuardName,
-		DeniedAt:       b.clock().UTC().Format(time.RFC3339Nano),
-		ProviderPolicy: string(b.ProviderPosture()),
+		PrincipalNHI:        in.PrincipalNHI,
+		AgentClass:          in.AgentClass,
+		Resource:            in.ResourceValue,
+		Provider:            in.Provider,
+		Region:              in.Region,
+		Capability:          in.Capability,
+		Axis:                axis,
+		Code:                denialCode(cause),
+		Reason:              cause.Error(),
+		DeniedBy:            dispatchGuardName,
+		DeniedAt:            b.clock().UTC().Format(time.RFC3339Nano),
+		ProviderPolicy:      string(b.ProviderPosture()),
+		ProviderPolicyShape: string(b.ProviderPolicyShape()),
+		ResourceBinding:     string(b.ResourceBindingPosture()),
 	})
 	if err != nil {
 		return errors.Join(cause, err)

@@ -94,6 +94,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** — **implementado** |
 | Uma troca negada pela guarda de composição do `dispatch` fica no WORM como PERMITIDA — achado na discovery do AOS-332 | **AOS-339** — **implementado** |
 | `enforced` não significa imposto: a postura não olha o conteúdo da política (curinga/vazio) — achado na revisão do AOS-332 | **AOS-342** — **implementado** |
+| A postura selada nos dois eventos do broker era parcial — limite declarado no AOS-339, confirmado ao fechar o AOS-342 | **AOS-344** — **implementado** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** — **implementado** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** — **implementado** |
@@ -2258,3 +2259,63 @@ broker real de onde derivar.
 **A `ResourceBindingPosture` do AOS-331 tem o mesmo eixo por examinar.** Uma allowlist de hosts
 declarada e vazia, ou com um curinga se o vier a ter, cai no mesmo buraco: `enforced` no nome. Não
 foi medida aqui e **não se afirma** que esteja certa ou errada — fica nomeada em vez de arrastada.
+
+---
+
+## AOS-344 — A postura selada era parcial, nos dois eventos do broker
+
+### Contexto
+
+Achado declarado como limite no fim do **AOS-339** e confirmado ao fechar o **AOS-342**: os dois
+eventos que o próprio broker sela não levavam a postura completa.
+
+| Evento | `provider_policy` | `provider_policy_shape` | `resource_binding` |
+|---|---|---|---|
+| `credential.exchange.issued` | ✔ (AOS-324) | ✔ (AOS-342) | **em falta** |
+| `credential.exchange.denied` | ✔ (AOS-339) | **em falta** | **em falta** |
+
+**Não é arrumação, e a razão é o AOS-342.** Esse ticket mediu que `provider_policy=enforced` é
+**ambíguo** — uma política com curinga diz `enforced` e não impõe nada por conjunto — e fixou a
+regra: *«a forma viaja com a postura em todo o lado onde a postura viaja»*. O evento de negação é um
+desses lados e não a levava, pelo que quem lesse uma negação no WORM não saberia sob qual dos dois
+regimes ela foi tomada. E sem `resource_binding` (AOS-331) não saberia se o **destino** da
+credencial estava sequer a ser imposto.
+
+A razão da negação do **gate** já selava os três eixos desde o AOS-341/AOS-342. Era o caminho do
+broker — o `dispatch` — que ficava com um terço.
+
+### Critérios de Aceitação
+
+- [x] `credential.exchange.denied` sela `provider_policy_shape` e `resource_binding`
+- [x] `credential.exchange.issued` sela `resource_binding`
+- [x] Os campos são selados **também no estado por omissão** — `unset`/`none` é uma declaração, e a
+      sua ausência voltaria a ser indistinguível de um campo esquecido
+- [x] Prova de mutação
+
+### Estado
+
+**IMPLEMENTADO.** P3 — não muda decisão nenhuma; muda o que fica legível sobre decisões já tomadas.
+Latente como o resto do eixo, porque o broker não está composto (`DEF-218`).
+
+**SÃO METADADO DE CONFIGURAÇÃO, NÃO A CAUSA DA DECISÃO.** Viajam ao lado do campo `axis`, que é
+quem diz o que decidiu — a mesma razão pela qual `provider_policy` já era selado em qualquer eixo
+desde o AOS-339. É o contraste deliberado com a `Reason` do gate, onde a postura vai **dentro da
+frase** que explica a recusa e por isso só acompanha o eixo que realmente decidiu (AOS-332).
+
+**PROVA DE MUTAÇÃO — cinco mutantes, cinco vermelhos, zero sobreviventes.** A negação deixa de selar
+a forma; a negação deixa de selar o eixo do recurso; a troca emitida deixa de selar o eixo do
+recurso; a negação sela a postura do *provider* no campo do *recurso* (troca de eixos); a forma
+selada passa a ser constante.
+
+**O mutante da TROCA DE EIXOS apanhou uma lacuna real do teste, e é o que este ticket tem de mais
+útil.** Na primeira versão os dois eixos estavam ambos em `enforced`, pelo que trocar os campos era
+**invisível** — o teste teria dado por bom um evento que reportasse a postura errada em cada campo.
+O caso da negação passou a usar posturas **diferentes** nos dois eixos (`provider` imposto, recurso
+por omissão), que é o único arranjo em que a troca é detectável.
+
+### O que este ticket NÃO fecha
+
+**A `ResourceBindingPosture` continua sem eixo de FORMA.** O `AOS-342` mostrou que `enforced` não
+significa imposto no eixo *provider* — uma allowlist de hosts declarada e vazia tem exactamente o
+mesmo problema, e um curinga tê-lo-ia se o eixo o vier a admitir. Este ticket sela a postura que
+existe; **não** afirma que ela é suficiente. Fica nomeado, como já ficava no AOS-342.
