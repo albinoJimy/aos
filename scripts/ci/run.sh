@@ -30,7 +30,12 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$CI_DIR/lib.sh"
 
-ALL_GATES=(secrets build lint ref-lint deferrals estado-citado rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx sast sca policy-test)
+# `dormencia` entra na lista e `isolation-live` NÃO, e a assimetria é deliberada. O primeiro
+# corre em qualquer runner (só compila suites e conta testes saltados) e é o que impede a
+# dormência de virar apodrecimento — um gate que nunca corre não impede nada, que foi o
+# achado da revisão adversarial de AOS-358. O segundo precisa de Linux com docker
+# privilegiado, salta ruidosamente onde não o há, e invoca-se por `make ci-isolation-live`.
+ALL_GATES=(secrets build lint ref-lint deferrals estado-citado rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx dormencia sast sca policy-test)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 

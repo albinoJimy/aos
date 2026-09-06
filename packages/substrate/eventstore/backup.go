@@ -204,7 +204,14 @@ func (s *Store) SnapshotStream(ctx context.Context, streamID string, throughSeq 
 // bandeira nova, que poderia divergir do estado real.
 //
 // A persistência precede a aplicação em memória, como em [Store.Append], e é feita em
-// LOTE ([wal.appendLote]): um restauro que devolve erro não deixa meio lote durável.
+// LOTE ([wal.appendLote]): um restauro que devolve erro repõe o ficheiro ao tamanho que
+// tinha antes do primeiro registo do lote.
+//
+// COM UMA EXCEPÇÃO, e está declarada em [wal.appendLote]: se o WAL ENVENENAR a meio do
+// lote, a reposição não é possível — o mecanismo que a faria é o mesmo que acabou de
+// falhar — e um PREFIXO do lote fica durável. O que contém o dano nesse caso é o
+// envenenamento em si: o WAL recusa tudo em voz alta e [Store.Healthy] passa a false, pelo
+// que o nó sai de serviço em vez de servir um restauro parcial.
 //
 // Porque sobreviveu: TODOS os testes de restauro do store de referência constroem o
 // destino com `mustNew(t)` — `New()` in-memory, NUNCA `Open(path)`. Um restauro para um

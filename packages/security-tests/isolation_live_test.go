@@ -175,6 +175,13 @@ func TestIsolationLive_GVisorExecutaNoSandboxReal(t *testing.T) {
 // caminho que EXISTE na imagem do componente mas não dentro do sandbox é inalcançável, tanto
 // por travessia relativa como em forma absoluta. É a invariante «a raiz semeada é o único
 // conteúdo alcançável» medida contra o executor real, e não contra o jail in-process.
+//
+// LIMITE, apurado pela revisão adversarial e declarado em vez de presumido: isto mede a CADEIA
+// COMPOSTA, não o gVisor. O guest do componente faz ele próprio `filepath.Clean` + verificação
+// de prefixo e recusa ANTES de qualquer syscall que o sandbox pudesse interceptar — substituir
+// o `runsc` por um `exec` cru mantinha este teste verde. Quem prova execução DENTRO do sandbox
+// é [TestIsolationLive_GVisorExecutaNoSandboxReal]: o conteúdo devolvido só existe no bundle
+// OCI montado para o runsc. Está no `not_proved` do relatório.
 func TestIsolationLive_GVisorFronteiraRecusaForaDaRaizSemeada(t *testing.T) {
 	ml := liveLauncher(t, httpGuestExecutor{url: componentURL(t)})
 
@@ -229,6 +236,19 @@ func TestMetaDetectsLive_FugaAlcancavelSemSandbox(t *testing.T) {
 // Firecracker.
 func TestIsolationLive_Report(t *testing.T) {
 	url := componentURL(t)
+
+	// AOS-358, revisão adversarial — O RELATÓRIO TEM DE MEDIR, NÃO DE DECLARAR.
+	//
+	// A versão anterior punha `Pass: true` como literal e `Executor` como constante. Medido
+	// pelo revisor: com `AOS_SANDBOX_GVISOR_URL=http://127.0.0.1:9/exec` (porta MORTA) este
+	// teste passava e emitia `"executor":"real…","pass":true` — e os dois `grep` do gate
+	// ficavam satisfeitos SEM nenhuma execução real ter acontecido. Um relatório que asserta
+	// valores que ele próprio fabrica é o defeito que este epic fecha, aplicado ao artefacto
+	// que o declara fechado.
+	//
+	// Agora o veredicto é DERIVADO: faz-se a chamada positiva contra o executor e só se
+	// declara `pass` se ela tiver mesmo trazido conteúdo que só existe na raiz semeada.
+	pass, porque := verificaExecutorReal(t, url)
 	// Struct e não map: o `encoding/json` ordena as chaves de um map alfabeticamente, e o
 	// gate ancora o veredicto agregado ao FIM da linha. Com um map, `pass` deixaria de ser o
 	// último campo e a âncora do gate passaria a casar por acidente.
@@ -239,6 +259,7 @@ func TestIsolationLive_Report(t *testing.T) {
 		BoundaryNot     string   `json:"boundary_not"`
 		Executor        string   `json:"executor"`
 		ComponentURLSet bool     `json:"component_url_set"`
+		Verificacao     string   `json:"verificacao"`
 		Scenarios       []string `json:"scenarios"`
 		NotProved       []string `json:"not_proved"`
 		ContractGate    string   `json:"contract_gate"`
@@ -250,18 +271,51 @@ func TestIsolationLive_Report(t *testing.T) {
 		BoundaryNot:     "firecracker/KVM (virtualizacao de hardware) — exige /dev/kvm, procedimento manual",
 		Executor:        "real (componente HTTP externo)",
 		ComponentURLSet: url != "",
+		Verificacao:     porque,
 		Scenarios:       []string{"seed_read_positivo", "fora_da_raiz_recusado", "meta_fuga_sem_sandbox"},
 		NotProved: []string{
 			"nao_persistencia_do_overlay (o guest do componente so expoe o verbo `read`)",
 			"seccomp_allowlist",
 			"ausencia_de_socket_do_host",
+			"atribuicao_da_recusa_de_P2_ao_gvisor (o guest valida o path ele proprio, antes de " +
+				"qualquer syscall interceptavel — substituir runsc por exec cru mantem P2 verde)",
 		},
 		ContractGate: "security.sh (AOS-075) — contrato sobre FakeDriver, NAO a fronteira",
-		Pass:         true,
+		Pass:         pass,
+	}
+	if !pass {
+		t.Fatalf("relatorio NAO pode declarar pass: %s", porque)
 	}
 	b, err := json.Marshal(rep)
 	if err != nil {
 		t.Fatalf("marshal do relatório: %v", err)
 	}
 	t.Logf("AOS_ISOLATION_LIVE_REPORT %s", b)
+}
+
+// verificaExecutorReal conduz UMA chamada positiva contra o executor e devolve se ela
+// provou execução real, mais a razão em texto (que entra no relatório).
+//
+// «Provou» é: o sandbox devolveu conteúdo que SÓ existe na raiz semeada desta chamada. Um
+// componente ausente, uma porta morta, ou um executor que devolva vazio não passam — que é
+// exactamente o que a versão declarativa deste relatório deixava passar.
+func verificaExecutorReal(t *testing.T, url string) (bool, string) {
+	t.Helper()
+	if url == "" {
+		return false, "AOS_SANDBOX_GVISOR_URL ausente — nada foi executado"
+	}
+	ml := liveLauncher(t, httpGuestExecutor{url: url})
+	res, err := ml.Execute(context.Background(), isoAuthz(), sandbox.ExecRequest{
+		RunID: "run-gv-report", StepID: "s1",
+		Call: sandbox.ToolCall{ToolID: "doc_read", Command: "read", Path: "notes"},
+	})
+	switch {
+	case err != nil:
+		return false, "a chamada ao executor real FALHOU: " + err.Error()
+	case res.ExitCode != 0:
+		return false, "o executor real devolveu exit != 0"
+	case !strings.Contains(string(res.Stdout), seedMarker):
+		return false, "o executor real nao devolveu o conteudo da raiz semeada — nao se pode afirmar execucao real"
+	}
+	return true, "chamada positiva contra o executor real devolveu o conteudo da raiz semeada"
 }

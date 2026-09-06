@@ -139,11 +139,20 @@ var (
 	// sancionada estrita recusa-o.
 	ErrIdentityStub = &MonitorError{Code: "E_IDENTITY_STUB", msg: "produção-segura: cadeia final contém o IdentityStub neutro (identidade forjável — hook de identidade real AOS-005 ausente)"}
 
-	// ErrEgressStub — a cadeia FINAL contém o [EgressStub] neutro, i.e. o slot de egress
-	// está ocupado por um hook que PERMITE sempre: o default-deny de rede (AOS-067) está
-	// inerte. Recusado. É a metade de SUBSTITUIÇÃO do eixo do egress; a metade de OMISSÃO
-	// (slot vazio, nenhum hook de egress na cadeia) é [ErrEgressHookMissing] — as duas
-	// juntas é que dão o "exige o hook de egress real" que esta via promete (AOS-355).
+	// ErrEgressStub — a cadeia FINAL contém o [EgressStub] neutro (por valor ou por
+	// ponteiro), i.e. o slot de egress está ocupado por um hook que PERMITE sempre: o
+	// default-deny de rede (AOS-067) está inerte. Recusado. É a metade de SUBSTITUIÇÃO do
+	// eixo do egress; a metade de OMISSÃO (slot vazio, nenhum hook de egress na cadeia) é
+	// [ErrEgressHookMissing].
+	//
+	// O QUE AS DUAS JUNTAS IMPÕEM, dito sem sobra: que o slot "egress" esteja OCUPADO por
+	// algo que não é o stub conhecido deste pacote. NÃO impõem que esse algo negue seja o
+	// que for — é presença estrutural, não eficácia, pela mesma razão que
+	// [hasWiredTaintGate] o é. Um hook de terceiros que se chame "egress" e permita tudo
+	// satisfaz esta via, e nenhuma verificação feita AQUI o poderia apanhar: a fronteira
+	// de camadas proíbe o kernel de importar o hook real, que vive no substrato. Quem
+	// afere eficácia é o guard-test de comportamento do ápice (a negação atribuível a
+	// "egress"), não a construção.
 	ErrEgressStub = &MonitorError{Code: "E_EGRESS_STUB", msg: "produção-segura: cadeia final contém o EgressStub neutro (egress default-deny inactivo — hook de egress real AOS-067 ausente)"}
 
 	// ErrEgressHookMissing — a cadeia FINAL não contém hook nenhum a ocupar o slot de
@@ -186,10 +195,10 @@ func NewProductionSecure(privileged PrivilegedAuthorizer, opts ...Option) (*Moni
 	if err != nil {
 		return nil, err
 	}
-	if m.containsHook(func(h Hook) bool { _, ok := h.(IdentityStub); return ok }) {
+	if m.containsHook(eIdentityStub) {
 		return nil, ErrIdentityStub
 	}
-	if m.containsHook(func(h Hook) bool { _, ok := h.(EgressStub); return ok }) {
+	if m.containsHook(eEgressStub) {
 		return nil, ErrEgressStub
 	}
 	// PRESENÇA, não só ausência-do-stub (AOS-355). A guarda acima só via a mutação por
@@ -275,12 +284,52 @@ const egressHookSlot = "egress"
 // construção.
 func (m *Monitor) hasActiveEgressHook() bool {
 	for _, h := range m.hooks {
-		if _, stub := h.(EgressStub); stub {
+		if eEgressStub(h) {
 			continue
 		}
 		if h != nil && h.Name() == egressHookSlot {
 			return true
 		}
+	}
+	return false
+}
+
+// ehStub reporta se `h` é o stub neutro T — POR VALOR OU POR PONTEIRO.
+//
+// # O BURACO QUE FECHA, reproduzido
+//
+// As guardas testavam `h.(EgressStub)`, uma assertion de VALOR. Os stubs deste pacote têm
+// receivers-valor, pelo que `*EgressStub` satisfaz [Hook] na mesma, FALHA essa assertion, e
+// o seu `Name()` devolve na mesma "egress" — passando também o predicado de presença.
+// Medido:
+//
+//	sem egress (omissão)      recusado  E_EGRESS_HOOK_MISSING
+//	EgressStub{}  (valor)     recusado  E_EGRESS_STUB
+//	&EgressStub{} (ponteiro)  ACEITE    <-- o buraco
+//
+// Uma edição de UM CARACTERE em `integration/secured.go` — `EgressStub{}` para
+// `&EgressStub{}` — produzia um ápice que arranca a declarar postura de produção com o
+// default-deny de rede (AOS-067) inerte. É a mesma classe de defeito que AOS-355 veio
+// fechar, uma camada abaixo: a guarda testava uma forma do stub em vez do stub.
+//
+// Aplicado também ao [IdentityStub], que tinha o buraco idêntico e por construção idêntica.
+//
+// São duas funções e não uma genérica porque Go não deixa assertar `h.(*T)` sobre um
+// parâmetro de tipo — e a alternativa (reflexão) trocaria três linhas legíveis por uma
+// indirecção que ninguém quer ler numa guarda de segurança.
+func eEgressStub(h Hook) bool {
+	switch h.(type) {
+	case EgressStub, *EgressStub:
+		return true
+	}
+	return false
+}
+
+// eIdentityStub — ver [eEgressStub]. Mesmo buraco, mesma forma.
+func eIdentityStub(h Hook) bool {
+	switch h.(type) {
+	case IdentityStub, *IdentityStub:
+		return true
 	}
 	return false
 }

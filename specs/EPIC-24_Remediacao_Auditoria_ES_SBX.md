@@ -112,6 +112,47 @@ foi dado por satisfeito sem evidência nomeada.
   explicativa que use a palavra em maiúsculas é contada como dívida nova. Não é defeito do
   gate; é uma convenção que o texto tem de respeitar.
 
+### 0.8 O que a revisão adversarial mudou (2026-09-06)
+
+A execução foi revista por um agente independente, que viu os requisitos e o diff e nunca o
+raciocínio de quem implementou. Produziu catorze achados; **seis eram defeitos a sério na
+própria remediação**, e estão corrigidos. Fica registado porque o saldo é o ponto: um epic de
+remediação que não se deixa rever repete o defeito que fecha.
+
+| Achado | O que estava errado | Correcção |
+|---|---|---|
+| Arranque | `crash_resume` matava o arranque numa falha de enumeração, contradizendo três comentários — crash-loop por indisponibilidade transitória do substrato | degrada e grita; o contrato de `ResumeInterruptedRuns` volta a ser verdade |
+| Egress | `&EgressStub{}` (ponteiro) passava as DUAS guardas de AOS-355: os stubs têm receivers-valor e a assertion era de valor. Uma edição de UM caractere reabria o buraco | as guardas vêem valor e ponteiro; idêntico para o `IdentityStub`, que tinha o mesmo |
+| JetStream | um `$JS.ACK` de forma inesperada derrubava **todas** as leituras, não só as multi-lote — pior do que o defeito de AOS-345 | malformado passa a cair no mesmo lado que ausente: «não sei», e só derruba quem precisa de avançar |
+| WAL | um `os.Stat` falhado envenenava o WAL para sempre — a assimetria que AOS-348 fecha, reintroduzida | recusa este append e mais nada; um retry recupera |
+| Relatório | o gate `isolation-live` declarava `pass:true` e `executor:real` como literais: com uma porta MORTA emitia-os na mesma | o veredicto é derivado de uma chamada positiva que tem de trazer conteúdo da raiz semeada |
+| Pipeline | nem `dormencia` nem `isolation-live` estavam ligados a pipeline nenhum — um alvo que ninguém invoca não é gate | `dormencia` entra em `ALL_GATES`; `isolation-live` fica opcional por exigir docker privilegiado, e a assimetria está justificada no script |
+
+Mais quatro achados de **declaração sobre-afirmada**, todos corrigidos no texto: o doc de
+`ErrEgressStub` prometia mais do que a guarda impõe; `governance_restore` dizia «o arranque
+recusa» quando quem decide é o composition-root (que desarma o varredor de retenção — o
+fail-closed está lá, noutro sítio); o doc de `IngestStream` contradizia o residual declarado
+40 linhas abaixo; e o residual do seccomp estava declarado só para o Firecracker, faltando o
+gVisor — que é o driver **em uso**.
+
+Três achados eram **cobertura a zero** em caminhos de recuperação, agora com teste: o
+varrimento multi-janela da ressincronização, a guarda de `desfazer`, e o `Stat` falhado.
+
+**Um achado corrigiu-me sobre método**, e é o que vale a pena reter: declarei que a presença
+do `$JS.ACK` numa entrega push não tinha sido medida, quando
+`docs/reports/medicao-jetstream-arbitragem-2026-08-31.md` §A7 a **mediu** contra cluster real.
+A evidência existia no repositório e não foi consultada. O que continua por medir é a FORMA do
+subject de resposta contra a versão de servidor em uso — e é para isso que o ramo de
+malformação passou a ser tolerante em vez de fatal.
+
+**Um residual novo, declarado e não fechado:** o cenário P2 do gate de isolamento mede a
+cadeia composta, não o gVisor — o guest valida o caminho ele próprio, antes de qualquer
+syscall interceptável, pelo que trocar o `runsc` por um `exec` cru manteria P2 verde. Está no
+campo `not_proved` do relatório e no cabeçalho do gate. Quem prova execução dentro do sandbox
+é P1.
+
+---
+
 **Limites de evidência que se mantêm** (§0.6 continua a valer): nada foi corrido contra um
 cluster NATS real, contra Firecracker ou contra gVisor reais. AOS-345 acrescenta a esses um
 limite próprio — a suposição de que uma entrega push com `ack_policy: none` traz `$JS.ACK`

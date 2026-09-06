@@ -526,7 +526,7 @@ func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Durat
 	}
 
 	evs, err := lerEmLotes(subject, total, janelaDeLeitura,
-		func(inicio, quantos uint64) ([]eventstore.Event, uint64, error) {
+		func(inicio, quantos uint64) (loteLido, error) {
 			return s.lerLote(ctx, subject, inicio, quantos, prazo)
 		})
 	if err != nil {
@@ -572,7 +572,18 @@ func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Durat
 // A separação em função própria não é estética: é o que permite exercitar a aritmética da
 // janela e o critério de avanço SEM cluster, com um log falso onde o seq do subject é
 // deliberadamente maior do que o do lote. Ver janela_test.go.
-func lerEmLotes(subject string, total, janela uint64, lote func(inicio, quantos uint64) ([]eventstore.Event, uint64, error)) ([]eventstore.Event, error) {
+// loteLido é o que um lote devolve a [lerEmLotes]. `ultimoSeq == 0` significa DESCONHECIDO
+// — não «princípio do log» —, e nesse caso `porqueDesconhecido` diz porquê. A distinção
+// existe porque a esmagadora maioria das leituras nunca precisa do seq físico (o log cabe
+// numa janela), e derrubá-las por causa de um valor que não vão usar seria trocar um
+// defeito raro por um comum. Ver o laço de entrega de [Store.lerLote].
+type loteLido struct {
+	eventos            []eventstore.Event
+	ultimoSeq          uint64
+	porqueDesconhecido error
+}
+
+func lerEmLotes(subject string, total, janela uint64, lote func(inicio, quantos uint64) (loteLido, error)) ([]eventstore.Event, error) {
 	evs := make([]eventstore.Event, 0, total)
 	var inicio uint64 // 0 = desde o princípio do stream
 	for uint64(len(evs)) < total {
@@ -583,10 +594,11 @@ func lerEmLotes(subject string, total, janela uint64, lote func(inicio, quantos 
 		if quantos > janela {
 			quantos = janela
 		}
-		trazidos, ultimoDoLote, err := lote(inicio, quantos)
+		lido, err := lote(inicio, quantos)
 		if err != nil {
 			return nil, err
 		}
+		trazidos, ultimoDoLote := lido.eventos, lido.ultimoSeq
 		if len(trazidos) == 0 {
 			return nil, fmt.Errorf(
 				"jetstream: lote vazio a meio da leitura de %q (%d de %d eventos lidos) — o log não pode ser servido truncado",
@@ -609,8 +621,8 @@ func lerEmLotes(subject string, total, janela uint64, lote func(inicio, quantos 
 		if ultimoDoLote == 0 {
 			return nil, fmt.Errorf(
 				"jetstream: a leitura de %q não conseguiu o seq físico do lote e faltam eventos (%d de %d) — "+
-					"a janela não avança às cegas, e um log servido truncado seria pior do que este erro",
-				subject, len(evs), total)
+					"a janela não avança às cegas, e um log servido truncado seria pior do que este erro. Causa: %w",
+				subject, len(evs), total, lido.porqueDesconhecido)
 		}
 		// Um lote que não faz a janela avançar é um laço infinito à espera de acontecer.
 		// Só pode vir de um seq físico mal derivado, e a resposta é falhar em vez de
@@ -628,17 +640,17 @@ func lerEmLotes(subject string, total, janela uint64, lote func(inicio, quantos 
 // lerLote traz até `quantos` eventos do subject a partir do seq físico `inicio`, por
 // entrega push num consumidor efémero. Devolve também o seq FÍSICO da última mensagem
 // que trouxe — o valor por onde [lerEmLotes] avança a janela.
-func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uint64, prazo time.Duration) ([]eventstore.Event, uint64, error) {
+func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uint64, prazo time.Duration) (loteLido, error) {
 	entrega, err := natsjs.NewInbox()
 	if err != nil {
-		return nil, 0, err
+		return loteLido{}, err
 	}
 	// A fila comporta o lote INTEIRO mais folga: ver [janelaDeLeitura].
 	// A fila é dimensionada pela JANELA (constante), não por `quantos`: o tecto é o
 	// mesmo e não há conversão de um valor vindo do servidor.
 	ch, cancelar, err := s.cn.SubscribeSubjectBuffered(entrega, janelaDeLeitura+16)
 	if err != nil {
-		return nil, 0, err
+		return loteLido{}, err
 	}
 	defer cancelar()
 
@@ -657,23 +669,24 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uin
 		cfg.DeliverPolicy, cfg.OptStartSeq = "by_start_sequence", inicio
 	}
 	if err := s.cn.CreateEphemeralConsumer(s.stream, cfg, prazo); err != nil {
-		return nil, 0, err
+		return loteLido{}, err
 	}
 
 	evs := make([]eventstore.Event, 0, janelaDeLeitura)
 	var ultimoJS uint64
 	var semSeqFisico bool
+	var motivoSemSeq error
 	temporizador := time.NewTimer(prazo)
 	defer temporizador.Stop()
 	for uint64(len(evs)) < quantos {
 		select {
 		case m, ok := <-ch:
 			if !ok {
-				return nil, 0, fmt.Errorf("jetstream: a subscrição do lote de %q fechou com %d de %d eventos", subject, len(evs), quantos)
+				return loteLido{}, fmt.Errorf("jetstream: a subscrição do lote de %q fechou com %d de %d eventos", subject, len(evs), quantos)
 			}
 			var ev eventstore.Event
 			if err := json.Unmarshal(m.Data, &ev); err != nil {
-				return nil, 0, fmt.Errorf("jetstream: envelope ilegível na leitura de %q: %w", subject, err)
+				return loteLido{}, fmt.Errorf("jetstream: envelope ilegível na leitura de %q: %w", subject, err)
 			}
 			// O seq FÍSICO desta mensagem vem do subject de resposta que o servidor lhe
 			// põe (`$JS.ACK…`). É a única fonte que fala da MENSAGEM entregue: o
@@ -694,21 +707,36 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uin
 			// esmagadora maioria delas nunca usa. Marca-se «não sei» com 0 e deixa-se
 			// [lerEmLotes] decidir: se o log cabe nesta janela, o seq nunca é preciso;
 			// se não cabe, aí sim a leitura falha, e falha a dizer exactamente isto.
-			if m.Reply == "" {
-				semSeqFisico = true
-			} else {
-				seq, err := seqDoStreamNaResposta(m.Reply)
-				if err != nil {
-					return nil, 0, fmt.Errorf("jetstream: leitura de %q: %w", subject, err)
+			// AUSENTE e MALFORMADO caem no MESMO lado, e a revisão adversarial de
+			// AOS-345 mostrou porquê. A versão anterior derrubava o lote na primeira
+			// mensagem cujo `$JS.ACK` não tivesse 9 ou 12 tokens — dentro do laço de
+			// entrega, por mensagem, incondicionalmente. O argumento de proporcionalidade
+			// que justifica tolerar a AUSÊNCIA aplica-se palavra por palavra à
+			// MALFORMAÇÃO: nos dois casos o que se tem é «não sei qual é o seq físico»,
+			// e nos dois casos a esmagadora maioria das leituras nunca precisa dele.
+			//
+			// Com a versão anterior, uma forma de reply inesperada — uma versão de
+			// servidor com um token a mais, um leafnode ou gateway que reescreva o
+			// subject — tornava ILEGÍVEL um stream de três eventos que hoje lê
+			// perfeitamente. E como `hidratar` precede as escritas, ficava também
+			// INESCREVÍVEL. Estritamente pior do que o defeito que AOS-345 fecha, que só
+			// se manifestava acima de [janelaDeLeitura] eventos.
+			//
+			// A causa não se perde: viaja até [lerEmLotes], que só falha quando precisa
+			// mesmo de avançar — e aí nomeia-a.
+			if seq, err := seqDoStreamNaResposta(m.Reply); err != nil {
+				if !semSeqFisico {
+					semSeqFisico, motivoSemSeq = true, err
 				}
+			} else {
 				ultimoJS = seq
 			}
 			evs = append(evs, ev)
 		case <-temporizador.C:
-			return nil, 0, fmt.Errorf("jetstream: leitura de %q parou em %d de %d eventos ao fim de %s — um log servido truncado seria pior do que este erro",
+			return loteLido{}, fmt.Errorf("jetstream: leitura de %q parou em %d de %d eventos ao fim de %s — um log servido truncado seria pior do que este erro",
 				subject, len(evs), quantos, prazo)
 		case <-ctx.Done():
-			return nil, 0, ctx.Err()
+			return loteLido{}, ctx.Err()
 		}
 	}
 	// `ultimoJS` é o seq físico da ÚLTIMA MENSAGEM DESTE LOTE, colhido do `$JS.ACK…` de
@@ -726,9 +754,9 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uin
 	// 0 é «não sei»: se ALGUMA mensagem do lote veio sem subject de resposta, o fim do
 	// lote não é conhecido e não se finge que é.
 	if semSeqFisico {
-		return evs, 0, nil
+		return loteLido{eventos: evs, porqueDesconhecido: motivoSemSeq}, nil
 	}
-	return evs, ultimoJS, nil
+	return loteLido{eventos: evs, ultimoSeq: ultimoJS}, nil
 }
 
 // seqDoStreamNaResposta extrai o `stream_seq` do subject de resposta que o JetStream põe

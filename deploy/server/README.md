@@ -116,6 +116,16 @@ equivalentes:
 | `firecracker` | microVM com KVM (ADR-004) | ❌ **Impossível**: sem `/dev/kvm`, 0 CPUs com `vmx`/`svm`. O host é ele próprio um convidado sem virtualização aninhada |
 | `gvisor` | Interposição de syscalls em user-space (`systrap`) | ✅ **Em uso** — não precisa de KVM |
 
+> **Residual do seccomp, neste driver (AOS-351).** O perfil `sbx-seccomp/v1` que o nó carrega
+> (`substrate/sandbox/seccomp`) **não é imposto** por este caminho. O `GVisorDriver` recebe-o em
+> `Spec.Seccomp` e ignora-o, e o wire host→guest (`POST /exec`) transporta apenas a tool call —
+> nenhum byte do perfil chega ao sandbox. O que contém o guest aqui é a **interposição de
+> syscalls do `runsc`** (mais o `--network=none` e o rootfs efémero), não esta allowlist. Por
+> isso o manifesto selado no WORM traz `seccomp_enforced_by: "none"` para este driver: o
+> `seccomp_profile_hash` é uma **declaração de configuração**, não uma atestação de imposição.
+> Só o driver de referência (`fake`) sela `"driver"`. Vale o mesmo para o `firecracker` — ver
+> [`deploy/node/dev-hardened/firecracker/README.md`](../node/dev-hardened/firecracker/README.md).
+
 O `fake` não é um stub vazio: tem isolamento real. Mas a fronteira é o processo do nó, e é por
 isso que o repositório o proíbe em produção.
 

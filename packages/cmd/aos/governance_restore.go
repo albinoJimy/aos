@@ -145,20 +145,24 @@ func restoreSubjectIndex(ctx context.Context, es EventStorePort, index *audit.In
 	// exactamente este índice em `held`: podia crypto-shred material sob hold. Era o único
 	// dos quatro consumidores a degradar FAIL-OPEN.
 	//
-	// Um índice de legal hold que não se conseguiu reconstruir NÃO é um índice vazio. O
-	// arranque recusa, e recusa a dizer porquê.
+	// Um índice de legal hold que não se conseguiu reconstruir NÃO é um índice vazio, e a
+	// diferença tem de sair por erro.
 	//
-	// CONSEQUÊNCIA OPERACIONAL DECLARADA: com `AOS_EVENTSTORE_NATS`, um cluster
-	// momentaneamente inalcançável ao ARRANQUE passa a impedir o nó de subir, onde antes
-	// ele subia com um índice errado. É a troca deliberada — um nó que não arranca é um
-	// problema visível e reversível; um legal hold silenciosamente reduzido não é
-	// nenhuma das duas coisas. Quem operar isto retenta o arranque; quem operasse o
-	// anterior não tinha como saber que precisava.
+	// ONDE O FAIL-CLOSED SE MATERIALIZA, e não é aqui: o chamador ([Bootstrap], §7c) põe
+	// `holdsRestored = false` e NÃO arma o varredor AUTOMÁTICO de retenção (AOS-267) — a
+	// expiração passa a exigir um `POST /dsar/expire` deliberado. O nó ARRANCA. É a escolha
+	// certa e vale a pena dizer porquê: o que o AC pede é que um legal hold não seja
+	// silenciosamente reduzido, e desarmar o crypto-shred automático consegue-o sem matar
+	// o arranque. Sobre `AOS_EVENTSTORE_NATS`, recusar o arranque por um cluster
+	// momentaneamente inalcançável dava um crash-loop — o mesmo defeito que a revisão
+	// adversarial apanhou no `crash_resume`.
+	//
+	// Esta função, portanto, SINALIZA; quem decide a postura é o composition-root.
 	streams, err := es.Streams()
 	if err != nil {
 		return 0, fmt.Errorf("indice titular->particao: NAO foi possivel enumerar os streams do Event Store (%w) — "+
 			"um indice vazio faria um legal hold POR-PARTICAO deixar de cobrir as outras particoes do titular, "+
-			"e o ExpirationJob poderia crypto-shred material sob hold; o arranque recusa em vez de degradar", err)
+			"e o ExpirationJob poderia crypto-shred material sob hold; o varredor automatico de retencao NAO arma", err)
 	}
 	n := 0
 	for _, stream := range streams {

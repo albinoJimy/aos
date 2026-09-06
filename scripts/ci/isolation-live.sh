@@ -8,8 +8,10 @@
 # chamada e corre o guest num sandbox gVisor), e mede, na FRONTEIRA e não no contrato:
 #   P1 EXECUÇÃO REAL      — a tool call chega mesmo ao sandbox: devolve conteúdo que SÓ existe
 #                           na raiz semeada read-only, e o resultado é untrusted POR TIPO;
-#   P2 FRONTEIRA FECHADA  — um caminho que EXISTE na imagem do componente e NÃO existe dentro do
-#                           sandbox é inalcançável, por travessia relativa e em forma absoluta;
+#   P2 CAMINHO FECHADO    — um caminho que EXISTE na imagem do componente e NÃO existe dentro do
+#                           sandbox é inalcançável, por travessia relativa e em forma absoluta.
+#                           LEIA-SE COM A RESSALVA DE N4: isto mede a cadeia INTEIRA, e a recusa
+#                           NÃO é atribuível ao gVisor em particular;
 #   P3 DETECÇÃO NÃO-VÁCUA — o MESMO shape de executor, SEM sandbox, ALCANÇA o caminho. Sem esta
 #                           contraprova, «recusado» seria indistinguível de «nunca existiu».
 #
@@ -28,6 +30,14 @@
 #      overlay (o guest do componente só expõe o verbo `read`, não há como escrever), a
 #      allowlist seccomp e a ausência de socket do host. Ficam nomeados no campo `not_proved`
 #      do relatório AOS_ISOLATION_LIVE_REPORT, para que a lacuna esteja no log e não na memória.
+#   N4 P2 NÃO ISOLA A VARIÁVEL «gVisor», e isto foi apurado pela revisão adversarial de AOS-358.
+#      O guest do componente faz ele próprio `filepath.Clean` + verificação de prefixo contra a
+#      raiz semeada (deploy/server/gvisor/guest/main.go) e recusa o caminho ANTES de qualquer
+#      syscall que o sandbox pudesse interceptar. Substituir o `runsc` por um `exec` cru mantém
+#      P2 VERDE. O que P2 prova é «a cadeia composta recusa», que é útil e não é nada; o que NÃO
+#      prova é «foi o gVisor que recusou». Separar as duas exigiria um vector que contorne o
+#      guarda do guest — desenho novo, não remediação. Quem prova execução DENTRO do sandbox é
+#      P1: o conteúdo devolvido só existe no bundle OCI montado para o runsc.
 #
 # ─── PORQUE É OPCIONAL, E PORQUE NÃO É INERTE ────────────────────────────────────────────────
 # O componente precisa de docker com `--privileged` (o runsc cria namespaces e monta o bundle) e

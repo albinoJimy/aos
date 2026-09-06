@@ -112,3 +112,54 @@ func TestAOS354_ORunNaoMorreAPrimeiraFronteira(t *testing.T) {
 			"postura promete por escrito (AOS-354)")
 	}
 }
+
+// TestAOS345_ReplyMalformadoNaoDerrubaQuemNaoPrecisaDeAvancar é o teste que a revisão
+// adversarial obrigou a escrever. A primeira versão da correcção de AOS-345 derrubava o
+// lote na PRIMEIRA mensagem cujo `$JS.ACK` não tivesse 9 ou 12 tokens — dentro do laço de
+// entrega, por mensagem, incondicionalmente.
+//
+// O argumento de proporcionalidade que justificava tolerar um reply AUSENTE aplica-se
+// palavra por palavra a um MALFORMADO: nos dois casos o que se tem é «não sei qual é o seq
+// físico». Com a versão anterior, uma forma de reply inesperada — uma versão de servidor
+// com um token a mais, um leafnode que reescreva o subject — tornava ILEGÍVEL um stream de
+// três eventos, e (porque `hidratar` precede as escritas) também INESCREVÍVEL. Estritamente
+// pior do que o defeito que AOS-345 fecha, que só aparecia acima de 2048 eventos.
+func TestAOS345_ReplyMalformadoNaoDerrubaQuemNaoPrecisaDeAvancar(t *testing.T) {
+	malformado := func(total uint64) func(inicio, quantos uint64) (loteLido, error) {
+		var entregues uint64
+		return func(_, quantos uint64) (loteLido, error) {
+			n := total - entregues
+			if n > quantos {
+				n = quantos
+			}
+			entregues += n
+			// O que `seqDoStreamNaResposta` devolve para um reply de forma inesperada.
+			_, causa := seqDoStreamNaResposta("$JS.ACK.stream.consumidor.1.2.3.4.5.EXTRA")
+			if causa == nil {
+				t.Fatal("controlo inválido: o reply da sonda devia ser rejeitado pelo parser")
+			}
+			return loteLido{eventos: make([]eventstore.Event, n), porqueDesconhecido: causa}, nil
+		}
+	}
+
+	t.Run("cabe na janela: lê na mesma", func(t *testing.T) {
+		evs, err := lerEmLotes("aos.es.teste.run-x", 3, janelaDeLeitura, malformado(3))
+		if err != nil {
+			t.Fatalf("um stream de 3 eventos foi derrubado por um $JS.ACK que não usa: %v — "+
+				"isto é pior do que o defeito que AOS-345 fecha", err)
+		}
+		if len(evs) != 3 {
+			t.Fatalf("leu %d eventos, quero 3", len(evs))
+		}
+	})
+
+	t.Run("não cabe: falha, e a causa vai no erro", func(t *testing.T) {
+		_, err := lerEmLotes("aos.es.teste.run-x", janelaDeLeitura+1, janelaDeLeitura, malformado(janelaDeLeitura+1))
+		if err == nil {
+			t.Fatal("a janela avançou às cegas com um seq físico ilegível")
+		}
+		if !errors.Is(err, natsjs.ErrProtocol) {
+			t.Fatalf("erro = %v — a causa (violação de protocolo) tem de viajar até ao operador", err)
+		}
+	})
+}

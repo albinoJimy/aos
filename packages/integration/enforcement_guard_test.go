@@ -326,29 +326,53 @@ func TestSelftestApexEnforcementBypassReddensGate(t *testing.T) {
 				referencemonitor.NewScopeGate(fx.authority),
 			}, mut.egress...) // <-- egress default-deny CONTORNADO
 
-			// Via SANCIONADA com a cadeia mutada. Com a guarda intacta isto RECUSA — e a
-			// recusa faz o veneno ficar vermelho aqui mesmo, que é o resultado correcto.
+			// (A) VIA SANCIONADA. Com a guarda intacta isto RECUSA, e a recusa já faz o
+			// veneno ficar vermelho — que é o resultado correcto do self-test.
 			rm, err := referencemonitor.NewProductionSecure(fx.privileged,
 				referencemonitor.WithHooks(hooks...),
 				referencemonitor.WithEventSink(audit.NewMediationSink(worm)),
 			)
-			if err != nil {
-				t.Fatalf("NewProductionSecure recusou a cadeia com egress contornado (%v): sem Monitor não há mediação — o gate do ápice fica VERMELHO, como o self-test exige", err)
+			if err == nil {
+				// Só se chega aqui se a guarda tiver REGREDIDO. Segue-se para a metade
+				// COMPORTAMENTAL, que é a que prova que o egress está mesmo inactivo.
+				if rerr := rm.Register("tool", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); rerr != nil {
+					t.Fatalf("Register: %v", rerr)
+				}
+				dec, merr := rm.Mediate(ctx, enfCall("d", fx.tokHTTP, enfCapHTTP, taint.StringTrusted, referencemonitor.Resource{Type: "url", Value: enfEvilURL}))
+				if merr != nil {
+					t.Fatalf("Mediate: %v", merr)
+				}
+				if dec.DeniedBy != "egress" {
+					t.Fatalf("egress a %q NÃO foi negado por egress (efeito=%q DeniedBy=%q, esperado no self-test): o default-deny AOS-067 estaria inactivo", enfEvilURL, dec.Effect, dec.DeniedBy)
+				}
+				t.Fatalf("a guarda de %s REGREDIU (NewProductionSecure aceitou a cadeia) mas a mediação negou por egress — estado incoerente", mut.nome)
 			}
-			// Só se chega aqui se a guarda tiver REGREDIDO. Tool registada para que, sem o
-			// corte de egress, a acção alcance efectivamente o permit.
-			if err := rm.Register("tool", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
-				t.Fatalf("Register: %v", err)
+
+			// (B) METADE COMPORTAMENTAL, SEMPRE ALCANÇADA — e é a correcção que a revisão
+			// adversarial obrigou a fazer. Na versão anterior o `t.Fatalf` de (A) matava o
+			// subteste, e tudo o que vinha a seguir era CÓDIGO MORTO: o veneno provava só
+			// «NewProductionSecure devolveu erro», ficando insensível a qualquer regressão
+			// do enforcement em MEDIAÇÃO. Um teste-veneno que só cobre metade do que o seu
+			// nome promete é o defeito que este epic fecha, aplicado a si próprio.
+			//
+			// Aqui a MESMA cadeia mutada é composta pela via CRUA, que não tem guarda, e
+			// mede-se o que ela faz: com o egress contornado, o egress a evil.example é
+			// ADMITIDO. A asserção (falsa) de que foi negado FALHA de propósito.
+			cru := referencemonitor.New(
+				referencemonitor.WithHooks(hooks...),
+				referencemonitor.WithEventSink(audit.NewMediationSink(audit.NewMemStore())),
+			)
+			if rerr := cru.Register("tool", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); rerr != nil {
+				t.Fatalf("Register: %v", rerr)
 			}
-			dec, err := rm.Mediate(ctx, enfCall("d", fx.tokHTTP, enfCapHTTP, taint.StringTrusted, referencemonitor.Resource{Type: "url", Value: enfEvilURL}))
-			if err != nil {
-				t.Fatalf("Mediate: %v", err)
+			dec, merr := cru.Mediate(ctx, enfCall("d", fx.tokHTTP, enfCapHTTP, taint.StringTrusted, referencemonitor.Resource{Type: "url", Value: enfEvilURL}))
+			if merr != nil {
+				t.Fatalf("Mediate: %v", merr)
 			}
-			// Asserção do self-test: assevera (FALSAMENTE) que o egress a evil.example foi
-			// BLOQUEADO. Sem hook de egress real foi ADMITIDO (DeniedBy != "egress") — esta
-			// asserção FALHA de propósito, tornando o gate VERMELHO.
 			if dec.DeniedBy != "egress" {
-				t.Fatalf("egress a %q NÃO foi negado por egress (efeito=%q DeniedBy=%q, esperado no self-test): o default-deny AOS-067 estaria inactivo", enfEvilURL, dec.Effect, dec.DeniedBy)
+				t.Fatalf("egress a %q NAO foi negado por egress (efeito=%q DeniedBy=%q, esperado no self-test): "+
+					"com %s o default-deny AOS-067 esta inactivo — e a guarda sancionada recusou-o (%v), que e o comportamento certo",
+					enfEvilURL, dec.Effect, dec.DeniedBy, mut.nome, err)
 			}
 		})
 	}

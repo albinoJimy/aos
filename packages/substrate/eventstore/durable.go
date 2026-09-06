@@ -303,9 +303,20 @@ func (w *wal) appendBloqueado(ev Event) error {
 	// `conformance` existe para desarmar; e avermelharia
 	// TestDefeito_DoisEscritoresTornamOWALInabrivel, o sensor que mede essa ausência.
 	// Medido ao escrever isto: com `real != antes` o sensor ficou vermelho.
+	// A FALHA DA MEDIÇÃO NÃO ENVENENA, e a assimetria seria o defeito que AOS-348 fecha,
+	// reintroduzido por esta guarda. Um `Stat` pode falhar transitoriamente — `ESTALE` num
+	// volume em rede, ou um script de rotação a renomear o ficheiro por um instante — e
+	// envenenar por isso tornaria uma avaria de um syscall isolado indistinguível de um
+	// disco morto: o WAL recusaria TUDO para sempre, [Store.Healthy] iria a false e o nó
+	// sairia de serviço até reinício. O que o AC de AOS-349 pede como terminal é o
+	// `w.tamanho` À FRENTE do ficheiro, não «não consegui medir».
+	//
+	// Recusa-se ESTE append e mais nada: o registo não chegou a ser escrito, logo a
+	// invariante «erro devolvido ⇒ nada ficou durável» vale trivialmente, e um retry pode
+	// recuperar — como no caminho do `Flush`/`Sync`.
 	if real, err := w.tamanhoReal(); err != nil {
-		return w.recusar(fmt.Errorf("eventstore/wal: nao foi possivel medir o ficheiro antes do append (%w) — "+
-			"sem essa medida nao se pode garantir que um erro nao deixa nada duravel; o WAL nao aceita mais escritas", err))
+		return fmt.Errorf("eventstore/wal: nao foi possivel medir o ficheiro antes do append (%w) — "+
+			"este append e recusado sem nada ter sido escrito; se a falha for transitoria um retry recupera", err)
 	} else if real < antes {
 		return w.recusar(fmt.Errorf("eventstore/wal: %w: memoria=%d bytes, ficheiro=%d bytes — "+
 			"o WAL nao aceita mais escritas. Pare o no, reconcilie com a copia de seguranca e verifique "+

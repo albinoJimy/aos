@@ -79,7 +79,7 @@ func (l *logFalso) seqFisico(i uint64) uint64 { return i * l.passo }
 
 // ler entrega até `quantos` mensagens a partir do seq físico `inicio`, como um consumidor
 // push com `by_start_sequence` faria.
-func (l *logFalso) ler(inicio, quantos uint64) ([]eventstore.Event, uint64, error) {
+func (l *logFalso) ler(inicio, quantos uint64) (loteLido, error) {
 	// Índice da primeira mensagem nossa com seq físico >= inicio.
 	primeiro := uint64(1)
 	if inicio > 0 {
@@ -98,7 +98,7 @@ func (l *logFalso) ler(inicio, quantos uint64) ([]eventstore.Event, uint64, erro
 		// Para lá do fim do log: o servidor não tem nada para empurrar. É o que a
 		// regra antiga provocava no segundo lote.
 		l.lotes = append(l.lotes, obs)
-		return nil, 0, nil
+		return loteLido{}, nil
 	}
 
 	evs := make([]eventstore.Event, 0, ultimo-primeiro+1)
@@ -118,7 +118,7 @@ func (l *logFalso) ler(inicio, quantos uint64) ([]eventstore.Event, uint64, erro
 	}
 	obs.entregues, obs.ultimoSeq = uint64(len(evs)), avanco
 	l.lotes = append(l.lotes, obs)
-	return evs, avanco, nil
+	return loteLido{eventos: evs, ultimoSeq: avanco}, nil
 }
 
 func TestJanela_LerEmLotes_DevolveTodosEOsLotesSaoOsEsperados(t *testing.T) {
@@ -216,14 +216,14 @@ func TestJanela_AvancoPeloFimDoLogMorreNoSegundoLote(t *testing.T) {
 // espera é indistinguível de um que passa.
 func TestJanela_LoteQueNaoAvancaERecusado(t *testing.T) {
 	chamadas := 0
-	_, err := lerEmLotes("aos.es.teste.run-janela", 10, 4, func(inicio, quantos uint64) ([]eventstore.Event, uint64, error) {
+	_, err := lerEmLotes("aos.es.teste.run-janela", 10, 4, func(inicio, quantos uint64) (loteLido, error) {
 		chamadas++
 		if chamadas > 8 {
 			t.Fatalf("lerEmLotes girou %d vezes — a guarda contra o laço infinito não está a morder", chamadas)
 		}
 		evs := make([]eventstore.Event, quantos)
 		// Devolve sempre o mesmo seq: a janela nunca sai do sítio.
-		return evs, 3, nil
+		return loteLido{eventos: evs, ultimoSeq: 3}, nil
 	})
 	if err == nil {
 		t.Fatalf("um lote que não avança a janela foi aceite — é um laço infinito à espera de acontecer")
@@ -243,17 +243,23 @@ func TestJanela_LoteQueNaoAvancaERecusado(t *testing.T) {
 // por um valor que nunca vai usar. Trocar um defeito que aparece acima de 2048 eventos por
 // outro que aparece em TODAS as leituras seria uma regressão maior do que a que se corrige.
 func TestJanela_SemSeqFisicoSoDerrubaQuemPrecisaDeAvancar(t *testing.T) {
-	// `seq 0` é o «não sei» de [Store.lerLote] quando a entrega vem sem subject de
-	// resposta.
-	semSeq := func(total uint64) func(inicio, quantos uint64) ([]eventstore.Event, uint64, error) {
+	// `ultimoSeq 0` é o «não sei» de [Store.lerLote] — quando a entrega vem sem subject de
+	// resposta, OU com um `$JS.ACK` que este cliente não sabe interpretar. Os dois casos
+	// caem aqui de propósito: em ambos o que se tem é a mesma ignorância, e derrubar por
+	// causa dela uma leitura que nunca usaria o valor seria trocar um defeito raro por um
+	// comum (revisão adversarial de AOS-345).
+	semSeq := func(total uint64) func(inicio, quantos uint64) (loteLido, error) {
 		var entregues uint64
-		return func(inicio, quantos uint64) ([]eventstore.Event, uint64, error) {
+		return func(inicio, quantos uint64) (loteLido, error) {
 			n := total - entregues
 			if n > quantos {
 				n = quantos
 			}
 			entregues += n
-			return make([]eventstore.Event, n), 0, nil
+			return loteLido{
+				eventos:            make([]eventstore.Event, n),
+				porqueDesconhecido: errors.New("sonda: entrega sem subject de resposta"),
+			}, nil
 		}
 	}
 
@@ -449,7 +455,7 @@ func TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel(t *testing.T) {
 	}
 	var lotes int
 	contados, err := lerEmLotes(subject, total, janelaDeLeitura,
-		func(inicio, quantos uint64) ([]eventstore.Event, uint64, error) {
+		func(inicio, quantos uint64) (loteLido, error) {
 			lotes++
 			return leitor.lerLote(ctx, subject, inicio, quantos, 30*time.Second)
 		})
