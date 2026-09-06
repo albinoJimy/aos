@@ -265,6 +265,13 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 //
 // A causa NÃO se perde: o erro devolvido embrulha os dois, pelo que `errors.Is` responde
 // `true` ao canónico E ao específico, e a mensagem que o operador lê nomeia a desligação.
+//
+// RESIDUAL DECLARADO: traduz-se o que embrulha [natsjs.ErrDesligado] e mais nada. Um
+// TIMEOUT de request durante a janela de reconexão — o socket ainda de pé, o servidor a
+// não responder — não traz esse sentinela e continua a cair no ramo de «cegueira» de
+// `burndownTransitorio`. Fechá-lo exigiria decidir que um timeout é transitório, o que é
+// verdade quase sempre e falso exactamente quando importa (um servidor que aceita a
+// ligação e nunca responde). Fica por decidir, não por esquecer.
 func indisponibilidadeTransitoria(err error) error {
 	if err == nil || !errors.Is(err, natsjs.ErrDesligado) {
 		return err
@@ -1106,6 +1113,18 @@ var _ eventstore.EventStore = (*Store)(nil)
 // A prontidão passa a ser as duas coisas que têm de valer: o store não foi fechado pelo
 // dono, E há socket vivo agora. É um instantâneo — entre este `true` e a escrita seguinte
 // a ligação pode cair —, e é o que uma sonda de prontidão pode honestamente afirmar.
+//
+// # NOTA OPERACIONAL — ISTO OSCILA DURANTE UMA RECONEXÃO
+//
+// O recuo da reconexão do cliente vai até 5 s ([natsjs.Conn.reconectar]), pelo que num
+// upgrade rolante do cluster NATS TODOS os nós vão a 503 ao mesmo tempo por até esse
+// tempo. É a resposta correcta — durante esse intervalo o nó não escreve nada —, mas quem
+// configura sondas tem de o saber: com os valores por omissão do Kubernetes (period 10 s,
+// failureThreshold 3) não há dano; com sondas agressivas o serviço inteiro sai do
+// balanceador. NÃO existe o modo de falha pior (503 permanente num nó saudável): `ligada`
+// é reposto a `true` na ligação bem-sucedida, e esta sonda usa exactamente a mesma
+// condição que produz [natsjs.ErrDesligado] no caminho de escrita — a sonda e o
+// enforcement concordam por construção.
 func (s *Store) Healthy() bool {
 	if s.estaFechado() {
 		return false
