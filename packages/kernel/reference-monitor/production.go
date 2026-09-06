@@ -139,9 +139,22 @@ var (
 	// sancionada estrita recusa-o.
 	ErrIdentityStub = &MonitorError{Code: "E_IDENTITY_STUB", msg: "produção-segura: cadeia final contém o IdentityStub neutro (identidade forjável — hook de identidade real AOS-005 ausente)"}
 
-	// ErrEgressStub — a cadeia FINAL contém o [EgressStub] neutro: sem hook de egress
-	// real o default-deny de rede (AOS-067) não corre. Recusado.
+	// ErrEgressStub — a cadeia FINAL contém o [EgressStub] neutro, i.e. o slot de egress
+	// está ocupado por um hook que PERMITE sempre: o default-deny de rede (AOS-067) está
+	// inerte. Recusado. É a metade de SUBSTITUIÇÃO do eixo do egress; a metade de OMISSÃO
+	// (slot vazio, nenhum hook de egress na cadeia) é [ErrEgressHookMissing] — as duas
+	// juntas é que dão o "exige o hook de egress real" que esta via promete (AOS-355).
 	ErrEgressStub = &MonitorError{Code: "E_EGRESS_STUB", msg: "produção-segura: cadeia final contém o EgressStub neutro (egress default-deny inactivo — hook de egress real AOS-067 ausente)"}
+
+	// ErrEgressHookMissing — a cadeia FINAL não contém hook nenhum a ocupar o slot de
+	// egress (nem sequer o stub). Manifesta-se quando um override [WithHooks] substitui
+	// a cadeia base por inteiro e OMITE o egress — o caso que [ErrEgressStub] nunca
+	// apanhava, porque testava a PRESENÇA DO STUB em vez da PRESENÇA DO HOOK (AOS-355).
+	// Sem hook de egress a mediação não consulta allowlist nenhuma e toda a exfiltração
+	// via tool "benigna" passa; recusado fail-closed. Sentinela PRÓPRIA e não reutilização
+	// de [ErrEgressStub]: a causa é oposta (slot vazio vs. slot ocupado por um no-op) e a
+	// correcção do chamador também — acrescentar o hook vs. substituir o stub.
+	ErrEgressHookMissing = &MonitorError{Code: "E_EGRESS_HOOK_MISSING", msg: "produção-segura: cadeia final sem hook de egress (slot \"egress\" ausente — default-deny de rede AOS-067 não corre)"}
 
 	// ErrScopeGateMissing — a cadeia FINAL não contém um [ScopeGate] com uma
 	// [authz.AuthoritySource] não-nil: sem tecto de autoridade o escopo user∩classe
@@ -159,6 +172,7 @@ var (
 //
 //   - contiver o [IdentityStub] neutro ⇒ [ErrIdentityStub];
 //   - contiver o [EgressStub] neutro ⇒ [ErrEgressStub];
+//   - não contiver hook nenhum no slot de egress ⇒ [ErrEgressHookMissing];
 //   - não contiver um [ScopeGate] com [authz.AuthoritySource] não-nil ⇒
 //     [ErrScopeGateMissing].
 //
@@ -177,6 +191,12 @@ func NewProductionSecure(privileged PrivilegedAuthorizer, opts ...Option) (*Moni
 	}
 	if m.containsHook(func(h Hook) bool { _, ok := h.(EgressStub); return ok }) {
 		return nil, ErrEgressStub
+	}
+	// PRESENÇA, não só ausência-do-stub (AOS-355). A guarda acima só via a mutação por
+	// SUBSTITUIÇÃO; esta vê a OMISSÃO. Corre DEPOIS para que uma cadeia com o stub
+	// continue a diagnosticar-se como [ErrEgressStub] (causa mais específica).
+	if !m.hasActiveEgressHook() {
+		return nil, ErrEgressHookMissing
 	}
 	if !m.hasActiveScopeGate() {
 		return nil, ErrScopeGateMissing
@@ -222,6 +242,43 @@ func (m *Monitor) containsHook(pred func(Hook) bool) bool {
 func (m *Monitor) hasActiveScopeGate() bool {
 	for _, h := range m.hooks {
 		if g, ok := h.(ScopeGate); ok && g.authority != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// egressHookSlot é o nome canónico do slot de egress na cadeia de mediação (identity →
+// policy → taint → scope → budget → egress → audit). É o que [EgressStub.Name] devolve e
+// o que o hook REAL de AOS-067 (network.EgressHook) devolve — a costura pela qual um hook
+// se declara competente pelo eixo do egress.
+const egressHookSlot = "egress"
+
+// hasActiveEgressHook reporta se a cadeia contém um hook a OCUPAR o slot de egress que
+// não é o [EgressStub] neutro — i.e. o default-deny de rede (AOS-067) está estruturalmente
+// PRESENTE, não removido por um override [WithHooks]. É a mesma lógica "gate activo, não
+// só nome" de [hasActiveScopeGate], aplicada ao único eixo em que a guarda de
+// [NewProductionSecure] testava a AUSÊNCIA DO STUB em vez da PRESENÇA DO HOOK (AOS-355):
+// uma cadeia passada por [WithHooks] SEM egress nenhum satisfazia a via estrita.
+//
+// PORQUE CASA PELO NOME e não pelo tipo, ao contrário de [hasActiveScopeGate] e de
+// [hasWiredTaintGate]: o [ScopeGate] e o [TaintGate] vivem NESTE package e o predicado
+// pode inspeccionar-lhes os campos; o hook de egress real vive no substrato
+// (substrate/sandbox/network) e a fronteira canónica de camadas — control-plane → kernel →
+// platform/substrate — proíbe o kernel de o importar. O nome do slot é, por isso, o único
+// sinal estrutural disponível aqui.
+//
+// LIMITE, declarado em vez de presumido: isto é PRESENÇA, não EFICÁCIA. Um hook que ocupe o
+// slot "egress" e permita tudo passa este predicado, tal como um [TaintGate] wired mas com
+// conjunto privileged vazio passa [hasWiredTaintGate]. A eficácia do egress é aferida pelo
+// guard-test de comportamento do ápice (a negação atribuível a "egress"), não pela
+// construção.
+func (m *Monitor) hasActiveEgressHook() bool {
+	for _, h := range m.hooks {
+		if _, stub := h.(EgressStub); stub {
+			continue
+		}
+		if h != nil && h.Name() == egressHookSlot {
 			return true
 		}
 	}

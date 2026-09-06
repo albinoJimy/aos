@@ -112,7 +112,7 @@ equivalentes:
 
 | Driver | Fronteira | Neste servidor |
 |---|---|---|
-| `fake` (default) | Jail **in-process**: overlay read-only, seccomp default-deny, escape bloqueado | Funciona — mas o próprio pacote marca-o **"NUNCA usar em produção"** |
+| `fake` (default **fora** de produção) | Jail **in-process**: overlay read-only, seccomp default-deny, escape bloqueado | Funciona — mas o próprio pacote marca-o **"NUNCA usar em produção"**, e desde **AOS-344** o nó recusa-o sob `AOS_MODE=production` (ver a tabela de portas abaixo) |
 | `firecracker` | microVM com KVM (ADR-004) | ❌ **Impossível**: sem `/dev/kvm`, 0 CPUs com `vmx`/`svm`. O host é ele próprio um convidado sem virtualização aninhada |
 | `gvisor` | Interposição de syscalls em user-space (`systrap`) | ✅ **Em uso** — não precisa de KVM |
 
@@ -568,10 +568,11 @@ journalctl -u aos-tls-sync.service -n 20
 
 ## `AOS_MODE=production` — ligado
 
-O nó corre em modo produção. Não foi um interruptor: são **três** portas fail-closed, e o
-arranque aborta em qualquer uma. Foram enumeradas empiricamente — arrancando a imagem num
-contentor descartável e acrescentando um requisito de cada vez até passar — e não por leitura do
-código, que é como a terceira tinha passado despercebida.
+O nó corre em modo produção. Não foi um interruptor: são **sete** portas fail-closed, e o
+arranque aborta em qualquer uma. As seis primeiras foram enumeradas empiricamente — arrancando a
+imagem num contentor descartável e acrescentando um requisito de cada vez até passar — e não por
+leitura do código, que é como a terceira tinha passado despercebida. **A sétima só podia vir da
+leitura do código**, e a nota depois da tabela explica porquê.
 
 | Porta | Exige | Servida por |
 |---|---|---|
@@ -581,11 +582,24 @@ código, que é como a terceira tinha passado despercebida.
 | **Credencial forte** | `AOS_SOVEREIGN_OIDC_ISSUER` + `_AUDIENCE` | **Keycloak** (`idp`, `idp-db`) |
 | **Custódia da KEK** | `AOS_DSAR_VAULT_ADDR` + `_TOKEN_PATH` | **Vault** (`vault`, `vault-unseal`) |
 | **Credencial do modelo** | `AOS_MODEL_API_KEY_PATH` | master key do LiteLLM |
+| **Driver de sandbox** (condicional) | `AOS_SANDBOX_DRIVER=gvisor` (+`AOS_SANDBOX_GVISOR_URL`) ou `=firecracker` (+`AOS_SANDBOX_FIRECRACKER_URL`) | **componente `gvisor`** (`gvisor/`) |
 
 As duas últimas não constavam da versão anterior deste documento. A da KEK nunca tinha sido
 nomeada; a do modelo **nasceu** quando o gateway foi ligado — antes disso `AOS_MODEL_ENDPOINT`
 estava vazia e a porta não existia. Um documento sobre pré-requisitos envelhece com a
 configuração, e este envelheceu em menos de um dia.
+
+**A sétima nasceu de uma auditoria, não de um arranque falhado** (AOS-344, 2026-09-06, commit
+`2ca2d5c`) — e é por isso que valia a pena escrevê-la aqui. Enumerar portas *empiricamente* só
+encontra as que **negam**: esta não negava. `AOS_SANDBOX_DRIVER` vazia elegia o driver
+`fake` em silêncio, e o `fake` é o único dos três que falha **aberto** — `firecracker` e `gvisor`
+sem executor devolvem `ErrDriverUnavailable` e a chamada morre no caminho de recusa, enquanto o
+`fake` sucede e o resultado, que nenhuma fronteira ao nível do kernel produziu, é selado na
+hash-chain WORM como se fosse um efeito real. É **condicional**: só exigida quando o catálogo de
+`AOS_MODEL_TOOLS` traz pelo menos uma tool com bloco `sandbox` — que é o caso do catálogo
+entregue em [`model-tools/tools.json`](model-tools/tools.json). Este servidor já a satisfazia
+(`AOS_SANDBOX_DRIVER=gvisor`, secção «Sandbox» acima); o que faltava era a porta existir para
+quem copiasse o compose sem essa linha.
 
 ### O que o corte para produção mudou
 

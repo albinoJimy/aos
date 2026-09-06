@@ -131,6 +131,13 @@ type Store struct {
 	// gravado e fsync'd antes de Append devolver committed (ver durable.go / Open).
 	wal *wal
 
+	// soLeitura marca um store aberto por [OpenReadOnly] (AOS-347): replay feito, WAL
+	// NÃO anexado para append, ficheiro NUNCA truncado. Qualquer escrita devolve
+	// [ErrReadOnly]. Não é o mesmo que `wal == nil` — esse é o store in-memory, que
+	// aceita escritas e só não as persiste. A distinção é o que impede um abridor de
+	// INSPECÇÃO de ganhar uma cabeça de escrita concorrente com a do nó.
+	soLeitura bool
+
 	now func() time.Time // injectável para testes; por omissão time.Now
 }
 
@@ -320,6 +327,12 @@ func (s *Store) Append(ctx context.Context, streamID string, in EventInput, opts
 
 	if s.closed.Load() {
 		return AppendResult{}, ErrClosed
+	}
+	// AOS-347: um store de inspecção não escreve. A recusa é aqui, antes de qualquer
+	// stripe, para que nem sequer chegue a atribuir um seq — era a atribuição de um seq
+	// por uma segunda cabeça que produzia a colisão que o ticket fecha.
+	if s.soLeitura {
+		return AppendResult{}, ErrReadOnly
 	}
 
 	// Serialização POR-STREAM: o stripe do stream é detido durante todo o append

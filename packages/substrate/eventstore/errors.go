@@ -67,4 +67,9 @@ var (
 	//
 	// Ver [WithWALTruncateOnCorruption] para a via de recuperação DELIBERADA.
 	ErrWALCorruptedMidLog = &StoreError{Code: "E_WAL_CORRUPTED_MID_LOG", msg: "registo corrompido no MEIO do WAL, com registos integros a seguir"}
+
+	// ErrReadOnly — o store foi aberto por [OpenReadOnly] e recusa qualquer escrita.
+	// Não é uma avaria: é a postura de um abridor de INSPECÇÃO, que existe para poder
+	// olhar para um WAL sem lhe poder tocar. Ver AOS-347.
+	ErrReadOnly = &StoreError{Code: "E_READ_ONLY", msg: "event store aberto so para leitura — nao aceita escritas"}
 )

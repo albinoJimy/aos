@@ -77,6 +77,40 @@ func TestNewProductionSecureRejectsEgressStub(t *testing.T) {
 	}
 }
 
+// TestNewProductionSecureRejectsMissingEgress: identidade real e ScopeGate activo mas a
+// cadeia OMITE o slot de egress por inteiro (nem hook real nem stub) ⇒ o default-deny de
+// rede (AOS-067) não corre; recusado com [ErrEgressHookMissing]. Simétrico de
+// [TestNewProductionSecureRejectsMissingScopeGate] e distinto de
+// [TestNewProductionSecureRejectsEgressStub]: aqui a mutação é por OMISSÃO, não por
+// substituição. Falha-antes (AOS-355): sem o predicado de presença esta cadeia CONSTRUÍA.
+func TestNewProductionSecureRejectsMissingEgress(t *testing.T) {
+	priv := referencemonitor.NewStaticPrivilegedSet(capPrivileged)
+	// Cadeia real SEM nenhum hook no slot de egress.
+	chain := []referencemonitor.Hook{
+		fakeIdentityHook{},
+		referencemonitor.PolicyStub{},
+		referencemonitor.NewTaintGate(priv),
+		referencemonitor.NewScopeGate(authz.NewStaticAuthoritySource()),
+		referencemonitor.BudgetStub{},
+		referencemonitor.AuditStub{},
+	}
+	m, err := referencemonitor.NewProductionSecure(priv,
+		referencemonitor.WithEventSink(&spySink{}),
+		referencemonitor.WithHooks(chain...),
+	)
+	if !errors.Is(err, referencemonitor.ErrEgressHookMissing) {
+		t.Fatalf("erro=%v want ErrEgressHookMissing (cadeia sem slot de egress)", err)
+	}
+	// Discriminação das duas metades do eixo: a omissão NÃO se reporta como a
+	// substituição pelo stub (causas opostas, correcções opostas do chamador).
+	if errors.Is(err, referencemonitor.ErrEgressStub) {
+		t.Errorf("omissão do egress reportada como ErrEgressStub — os dois sentinelas têm de discriminar")
+	}
+	if m != nil {
+		t.Errorf("Monitor devia ser nil sem hook de egress na cadeia")
+	}
+}
+
 // TestNewProductionSecureRejectsMissingScopeGate: identidade e egress reais mas sem
 // ScopeGate activo ⇒ o tecto de autoridade user∩classe (AOS-071) não é imposto; recusado.
 func TestNewProductionSecureRejectsMissingScopeGate(t *testing.T) {

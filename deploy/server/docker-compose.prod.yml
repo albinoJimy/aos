@@ -351,9 +351,18 @@ services:
       AOS_MODEL_TOOLS_REGISTER: "${AOS_MODEL_TOOLS_REGISTER:-}"
 
       # --- SANDBOX (AOS-005/AOS-064) --------------------------------------------------------
-      # `fake` é o DEFAULT e é um jail in-process REAL (overlay read-only, seccomp default-deny,
-      # escape bloqueado) — mas o próprio pacote marca-o "NUNCA usar em produção", e com razão:
-      # a fronteira é o processo do nó, não o kernel.
+      # `fake` é o default do nó FORA de produção e é um jail in-process REAL (overlay
+      # read-only, seccomp default-deny, escape bloqueado) — mas o próprio pacote marca-o
+      # "NUNCA usar em produção", e com razão: a fronteira é o processo do nó, não o kernel.
+      #
+      # AOS-344: sob AOS_MODE=production (que é o caso deste ficheiro, ver AOS_MODE acima) o nó
+      # RECUSA arrancar com o `fake` — por omissão OU por escolha explícita — sempre que o
+      # catálogo de AOS_MODEL_TOOLS traga uma tool com bloco `sandbox`, que é o caso de
+      # ./model-tools/tools.json montado mais abaixo. Até esse ticket o default DESTE ficheiro
+      # era a string vazia, que o nó traduzia em `fake` sem que ninguém o tivesse decidido: o
+      # único dos três drivers que falha ABERTO, a selar na hash-chain WORM um resultado que
+      # nenhuma fronteira ao nível do kernel produziu. O default passa a ser `gvisor` — a mesma
+      # escolha que este servidor já fazia por variável de operador.
       #
       # `firecracker` exige /dev/kvm. Num host que seja ele próprio um convidado sem
       # virtualização aninhada esse caminho está FECHADO — e é o caso deste servidor.
@@ -361,7 +370,7 @@ services:
       # `gvisor` interpõe syscalls em user-space (systrap) e NÃO precisa de KVM. Exige a URL
       # abaixo: sem ela o driver fica o skeleton e o exec devolve ErrDriverUnavailable — o gap
       # honesto, nunca uma execução fora do sandbox.
-      AOS_SANDBOX_DRIVER: "${AOS_SANDBOX_DRIVER:-}"
+      AOS_SANDBOX_DRIVER: "${AOS_SANDBOX_DRIVER:-gvisor}"
       AOS_SANDBOX_GVISOR_URL: "${AOS_SANDBOX_GVISOR_URL:-}"
       AOS_SANDBOX_FIRECRACKER_URL: "${AOS_SANDBOX_FIRECRACKER_URL:-}"
     volumes:

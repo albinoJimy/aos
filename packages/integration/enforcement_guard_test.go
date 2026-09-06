@@ -278,46 +278,78 @@ func TestApexEnforcement_FiveDenials(t *testing.T) {
 
 // TestSelftestApexEnforcementBypassReddensGate é o TESTE-VENENO do enforcement do ápice
 // (scripts/ci/selftest.sh, secção K). Só corre com AOS_APEX_SELFTEST=1. Reproduz o cenário (d)
-// — egress a um destino fora da allowlist — mas com o controlo de egress CONTORNADO: substitui
-// o [network.EgressHook] real pelo [referencemonitor.EgressStub] neutro (o default-deny AOS-067
-// desligado). Como [NewProductionSecure] RECUSARIA o stub (ErrEgressStub), usa deliberadamente
-// [referencemonitor.New] cru — simulando um ápice MAL-WIRED sem a costura sancionada. Depois
-// assere FALSAMENTE que a acção foi negada por "egress"; como o stub a ADMITE, a asserção FALHA
-// de propósito, PROVANDO que um egress desbloqueado torna o gate apex/selftest VERMELHO
-// (fail-closed). Fora do self-test é ignorado (não polui a suite verde). Determinista, offline,
-// sem rasto no repo.
+// — egress a um destino fora da allowlist — com o controlo de egress CONTORNADO pelas DUAS
+// mutações que o desligam (AOS-355):
+//
+//   - SUBSTITUIÇÃO: o [network.EgressHook] real trocado pelo [referencemonitor.EgressStub]
+//     neutro (slot ocupado por um hook que permite sempre);
+//   - OMISSÃO: o slot de egress ausente da cadeia por inteiro — a mutação que a guarda
+//     antiga (que testava a PRESENÇA DO STUB) deixava passar.
+//
+// Ambas passam agora pela costura SANCIONADA, [referencemonitor.NewProductionSecure], e não
+// pela via crua [referencemonitor.New]: é a via estrita que tem de as recusar, e é sobre ela
+// que o veneno tem de incidir — um poison contra `New` cru nunca poderia detectar uma
+// regressão na guarda.
+//
+// O veneno fica VERMELHO nos DOIS estados do mundo, que é o que o self-test exige:
+//
+//   - com a guarda intacta, [NewProductionSecure] RECUSA a cadeia mutada e não há Monitor
+//     nenhum com que mediar — o t.Fatalf da construção falha o teste;
+//   - com a guarda regredida, a construção passa, a mediação ADMITE o egress a
+//     evil.example e a asserção (falsa) de que foi negado por "egress" falha o teste.
+//
+// Fora do self-test é ignorado (não polui a suite verde). Determinista, offline, sem rasto
+// no repo.
 func TestSelftestApexEnforcementBypassReddensGate(t *testing.T) {
 	if os.Getenv("AOS_APEX_SELFTEST") != "1" {
 		t.Skip("teste-veneno do self-test (correr com AOS_APEX_SELFTEST=1 via scripts/ci/selftest.sh)")
 	}
 	ctx := context.Background()
 	fx := newEnfFixture(t)
-	worm := audit.NewMemStore()
 
-	// CONTROLO DESLIGADO: EgressStub no lugar do hook de egress real. Via CRUA (New), porque a
-	// via estrita rejeitaria o stub — é exactamente esse buraco que o poison expõe.
-	rm := referencemonitor.New(
-		referencemonitor.WithHooks(
-			identity.NewIdentityCheck(fx.verifier),
-			referencemonitor.NewTaintGate(fx.privileged),
-			referencemonitor.NewScopeGate(fx.authority),
-			referencemonitor.EgressStub{}, // <-- egress default-deny CONTORNADO
-		),
-		referencemonitor.WithEventSink(audit.NewMediationSink(worm)),
-	)
-	// Tool registada para que, sem o corte de egress, a acção alcance efectivamente o permit.
-	if err := rm.Register("tool", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
-		t.Fatalf("Register: %v", err)
+	// As duas mutações que desligam o default-deny AOS-067. A cadeia base é a do guard-test
+	// (identity → taint → scope → egress); o que varia é só o slot de egress.
+	mutacoes := []struct {
+		nome   string
+		egress []referencemonitor.Hook // o que ocupa (ou não) o slot de egress
+	}{
+		{"substituicao_pelo_stub", []referencemonitor.Hook{referencemonitor.EgressStub{}}},
+		{"omissao_do_slot", nil},
 	}
 
-	dec, err := rm.Mediate(ctx, enfCall("d", fx.tokHTTP, enfCapHTTP, taint.StringTrusted, referencemonitor.Resource{Type: "url", Value: enfEvilURL}))
-	if err != nil {
-		t.Fatalf("Mediate: %v", err)
-	}
-	// Asserção do self-test: assevera (FALSAMENTE) que o egress a evil.example foi BLOQUEADO. Com
-	// o EgressStub, foi ADMITIDO (DeniedBy != "egress") — esta asserção FALHA de propósito,
-	// tornando o gate VERMELHO como o self-test exige.
-	if dec.DeniedBy != "egress" {
-		t.Fatalf("egress a %q NÃO foi negado por egress (efeito=%q DeniedBy=%q, esperado no self-test): o default-deny AOS-067 estaria inactivo", enfEvilURL, dec.Effect, dec.DeniedBy)
+	for _, mut := range mutacoes {
+		t.Run(mut.nome, func(t *testing.T) {
+			worm := audit.NewMemStore()
+			hooks := append([]referencemonitor.Hook{
+				identity.NewIdentityCheck(fx.verifier),
+				referencemonitor.NewTaintGate(fx.privileged),
+				referencemonitor.NewScopeGate(fx.authority),
+			}, mut.egress...) // <-- egress default-deny CONTORNADO
+
+			// Via SANCIONADA com a cadeia mutada. Com a guarda intacta isto RECUSA — e a
+			// recusa faz o veneno ficar vermelho aqui mesmo, que é o resultado correcto.
+			rm, err := referencemonitor.NewProductionSecure(fx.privileged,
+				referencemonitor.WithHooks(hooks...),
+				referencemonitor.WithEventSink(audit.NewMediationSink(worm)),
+			)
+			if err != nil {
+				t.Fatalf("NewProductionSecure recusou a cadeia com egress contornado (%v): sem Monitor não há mediação — o gate do ápice fica VERMELHO, como o self-test exige", err)
+			}
+			// Só se chega aqui se a guarda tiver REGREDIDO. Tool registada para que, sem o
+			// corte de egress, a acção alcance efectivamente o permit.
+			if err := rm.Register("tool", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			dec, err := rm.Mediate(ctx, enfCall("d", fx.tokHTTP, enfCapHTTP, taint.StringTrusted, referencemonitor.Resource{Type: "url", Value: enfEvilURL}))
+			if err != nil {
+				t.Fatalf("Mediate: %v", err)
+			}
+			// Asserção do self-test: assevera (FALSAMENTE) que o egress a evil.example foi
+			// BLOQUEADO. Sem hook de egress real foi ADMITIDO (DeniedBy != "egress") — esta
+			// asserção FALHA de propósito, tornando o gate VERMELHO.
+			if dec.DeniedBy != "egress" {
+				t.Fatalf("egress a %q NÃO foi negado por egress (efeito=%q DeniedBy=%q, esperado no self-test): o default-deny AOS-067 estaria inactivo", enfEvilURL, dec.Effect, dec.DeniedBy)
+			}
+		})
 	}
 }

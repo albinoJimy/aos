@@ -58,9 +58,20 @@
 //
 // Este ambiente não tem rede real nem iptables/nftables. O egress_filter é aqui um
 // MODELO verificável: DECIDE (allow/deny) por (principal/classe, IP/porta/host)
-// contra a allowlist e IMPÕE a decisão fail-closed; os drivers reais
-// (firecracker/gvisor) traduziriam a mesma allowlist para o filtro de rede do kernel
-// (iptables/nftables/eBPF) na montagem da microVM. A filtragem DNS controlada (AOS-068,
+// contra a allowlist e IMPÕE a decisão fail-closed.
+//
+// Os drivers reais NÃO traduzem esta allowlist para um filtro de rede do kernel: o
+// desenho que a implementação escolheu é a REMOÇÃO da rede, não a sua filtragem
+// (AOS-356). O orchestrator do Firecracker arranca a microVM sem `network-interfaces`
+// na config de boot (deploy/node/dev-hardened/firecracker/orchestrator/main.go) e o
+// componente gVisor corre o runsc com `--network=none` sobre um netns vazio
+// (deploy/server/gvisor/component/main.go) — deny por AUSÊNCIA de interface, que é
+// mais forte do que uma allowlist e não depende de a traduzir bem. A allowlist
+// continua a valer na mediação do RM (o [EgressHook]), a montante do sandbox; um
+// deployment que venha a precisar de egress na sandbox terá de dar-lhe uma interface
+// e só então a tradução para iptables/nftables/eBPF passa a ser a peça em falta.
+//
+// A filtragem DNS controlada (AOS-068,
 // [DNSFilter]) vive já neste package e COMPÕE a mesma allowlist ao nível do nome: além
 // de IP/porta/host, um nome só resolve se for host exacto da allowlist e os IPs forem
 // coerentes (anti-rebinding), com deteção de exfiltração por entropia/volume.

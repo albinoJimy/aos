@@ -181,6 +181,9 @@ func (s *Store) IngestStream(ctx context.Context, streamID string, events []Even
 	if s.closed.Load() {
 		return ErrClosed
 	}
+	if s.soLeitura {
+		return ErrReadOnly // AOS-347 — um store de inspecção não ingere.
+	}
 	if len(events) == 0 {
 		return nil
 	}

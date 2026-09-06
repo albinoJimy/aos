@@ -51,6 +51,13 @@ import (
 // O comprimento permite saber quantos bytes ler; se o ficheiro acabar antes de um
 // registo completo (header, payload ou checksum truncados), o registo é descartado.
 // O checksum apanha corrupção silenciosa dentro de um registo de comprimento válido.
+//
+// O CABEÇALHO DE COMPRIMENTO NÃO É COBERTO PELO CHECKSUM, e isso é deliberado depois de
+// AOS-346: cobri-lo não fecharia nada — para verificar o CRC é preciso localizar o
+// trailer, e localizá-lo exige confiar no `len` que se quereria verificar. Quem torna um
+// `len` corrompido detectável é [contaOrfaos], que RESSINCRONIZA o enquadramento em vez
+// de confiar na posição do leitor. O formato mantém-se, e um WAL escrito por qualquer
+// versão anterior continua legível sem migração.
 
 // maxRecordBytes limita o tamanho de um registo lido do WAL. Um comprimento acima
 // deste (provável lixo de um header corrompido) é tratado como fim-de-log íntegro:
@@ -270,6 +277,9 @@ func (w *wal) close() error {
 // orfaos é o nº de registos ÍNTEGROS encontrados DEPOIS do ponto onde o replay parou.
 // Zero ⇒ cauda rasgada (o caso do crash), e truncar é a recuperação correcta. Maior
 // que zero ⇒ corrupção a MEIO do log, e truncar apagaria dados bons — ver [Open].
+// AOS-346: a contagem é feita por RESSINCRONIZAÇÃO do enquadramento, e é feita SEMPRE —
+// já não depende de o leitor ter ficado numa fronteira, que era a suposição que um `len`
+// corrompido invalidava sem que nada o denunciasse.
 func replayWAL(path string) (_ []Event, validEnd int64, orfaos int, _ error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -280,74 +290,118 @@ func replayWAL(path string) (_ []Event, validEnd int64, orfaos int, _ error) {
 	}
 	defer f.Close()
 
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	fim := fi.Size()
+
 	r := bufio.NewReader(f)
 	var out []Event
-	// enquadramentoIntacto: o registo que fez parar foi lido POR INTEIRO (len+payload+crc),
-	// pelo que o leitor ficou posicionado na fronteira do registo SEGUINTE e dá para
-	// procurar o que vem depois. Quando o próprio enquadramento se perdeu (header/payload/
-	// checksum truncados, comprimento absurdo), não há fronteira seguinte que se possa
-	// achar — e, por construção, estamos no fim do que é interpretável.
-	enquadramentoIntacto := false
 	for {
-		payload, ok, enquadrado := leRegisto(r)
+		payload, ok := leRegisto(r)
 		if !ok {
-			enquadramentoIntacto = enquadrado
 			break
 		}
 		var ev Event
 		if err := json.Unmarshal(payload, &ev); err != nil {
-			// Payload não desserializa: os bytes são os que foram escritos (o crc bate),
-			// logo o enquadramento está bom e o registo seguinte é alcançável.
-			enquadramentoIntacto = true
 			break
 		}
 		out = append(out, ev)
 		validEnd += int64(4 + len(payload) + 4)
 	}
-	if enquadramentoIntacto {
-		orfaos = contaRegistosIntegros(r)
-	}
+	// validEnd é agora o offset onde COMEÇA o registo que fez parar o replay. Contar o
+	// que existe depois dele é a única pergunta cuja resposta muda o remédio, e é feita
+	// por RESSINCRONIZAÇÃO — não pela posição em que o leitor ficou. Ver [contaOrfaos].
+	orfaos = contaOrfaos(f, validEnd, fim)
 	return out, validEnd, orfaos, nil
 }
 
-// leRegisto lê UM registo framed do WAL.
+// leRegisto lê UM registo framed do WAL a partir da posição corrente do leitor.
 //
-//	ok=true                      — registo íntegro; payload devolvido.
-//	ok=false, enquadrado=false   — fim-de-log limpo, ou enquadramento perdido (write
-//	                               rasgado): não há fronteira seguinte a partir daqui.
-//	ok=false, enquadrado=true    — checksum inválido, mas o frame foi consumido por
-//	                               inteiro: o leitor está na fronteira do registo seguinte.
-func leRegisto(r *bufio.Reader) (payload []byte, ok bool, enquadrado bool) {
+//	ok=true    — registo íntegro; payload devolvido.
+//	ok=false   — fim-de-log limpo, registo incompleto (write rasgado), comprimento
+//	             absurdo, ou checksum inválido.
+//
+// AOS-346: já NÃO distingue «enquadramento intacto» de «enquadramento perdido». Essa
+// distinção era usada para decidir se valia a pena procurar registos a seguir, e era
+// enganadora: um `len` corrompido consome um número errado de bytes SEM que o leitor o
+// saiba, pelo que «o frame foi consumido por inteiro» não implica «o leitor está numa
+// fronteira». Quem procura o que vem depois é [contaOrfaos], por ressincronização, e
+// procura sempre.
+func leRegisto(r *bufio.Reader) (payload []byte, ok bool) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		// EOF limpo (fim do log) OU header truncado (crash a meio).
-		return nil, false, false
+		return nil, false
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
 	if n == 0 || n > maxRecordBytes {
-		return nil, false, false // comprimento absurdo ⇒ header corrompido/lixo.
+		return nil, false // comprimento absurdo ⇒ header corrompido/lixo.
 	}
 	payload = make([]byte, n)
 	if _, err := io.ReadFull(r, payload); err != nil {
-		return nil, false, false // payload truncado ⇒ registo incompleto.
+		return nil, false // payload truncado ⇒ registo incompleto.
 	}
 	var tr [4]byte
 	if _, err := io.ReadFull(r, tr[:]); err != nil {
-		return nil, false, false // checksum truncado ⇒ registo incompleto.
+		return nil, false // checksum truncado ⇒ registo incompleto.
 	}
 	if binary.BigEndian.Uint32(tr[:]) != crc32.Checksum(payload, crcTable) {
-		return nil, false, true // corrupção DENTRO de um frame bem-formado.
+		return nil, false // corrupção DENTRO de um frame bem-formado.
 	}
-	return payload, true, true
+	return payload, true
 }
 
-// contaRegistosIntegros conta os registos que ainda desserializam a partir da posição
-// corrente do leitor. É o que distingue «cauda rasgada» (zero) de «corrupção a meio»
-// (mais que zero) — a única pergunta cuja resposta muda o remédio.
-func contaRegistosIntegros(r *bufio.Reader) int {
+// janelaDeRessincronizacao é o buffer de varrimento byte-a-byte da ressincronização.
+// NÃO limita o tamanho de um registo: o payload de um candidato é lido do ficheiro por
+// [os.File.ReadAt], fora da janela.
+const janelaDeRessincronizacao = 64 << 10
+
+// contaOrfaos conta os registos ÍNTEGROS que existem DEPOIS do ponto de quebra. É o que
+// distingue «cauda rasgada» (zero) de «corrupção a meio» (mais que zero) — a única
+// pergunta cuja resposta muda o remédio.
+//
+// # AOS-346 — PORQUE NÃO SE PODE CONTINUAR DE ONDE O LEITOR FICOU
+//
+// A versão anterior contava a partir da posição corrente do leitor sequencial, e essa
+// posição SÓ é uma fronteira de registo quando o comprimento lido estava certo. Um byte
+// trocado no CABEÇALHO de comprimento leva o leitor a consumir um número errado de
+// bytes: o CRC falha (bem), mas a contagem seguinte arranca DESALINHADA, não reconhece
+// nada, devolve zero — e o [Open] conclui «cauda rasgada» e trunca. Medido a 2026-09-06,
+// com 5 eventos (1480 bytes) e UM byte trocado no `len` do 2.º registo:
+//
+//	len maior  (@299 0x20->0xFF)  Open err=nil, leu 1 de 5, ficheiro 1480 -> 296
+//	len menor  (@299 0x20->0x0A)  Open err=nil,             ficheiro 1480 -> 296
+//	len +256   (@298 0x01->0x02)  Open err=nil,             ficheiro 1480 -> 296
+//	controlo: payload (@306)      E_WAL_CORRUPTED_MID_LOG, orfaos=3, ficheiro INTACTO
+//
+// Quatro bytes em cada 296 (≈1,4% do ficheiro) eram zona cega: bit rot, um sector
+// rasgado ou um write parcial de página aterram lá sem precisar de atacante.
+//
+// # PORQUE A RESSINCRONIZAÇÃO, E NÃO UM CRC SOBRE O CABEÇALHO
+//
+// Estender o `crc32` ao cabeçalho — a formulação directa do defeito — NÃO o fecha: para
+// verificar o CRC é preciso localizar o trailer, e localizá-lo exige confiar no `len`
+// que se quer verificar. Um `len` corrompido continua a fazer ler o número errado de
+// bytes, e continua a desalinhar tudo o que venha a seguir. O que fecha o defeito é
+// deixar de confiar na posição do leitor: procurar a fronteira do registo seguinte
+// varrendo o ficheiro. Vantagem lateral, e não é pequena: o FORMATO NÃO MUDA — um WAL
+// escrito por qualquer versão anterior continua legível, sem migração.
+//
+// Fica um residual DECLARADO: um `len` corrompido no ÚLTIMO registo, inflado para além
+// dos bytes que restam, é indistinguível de um write rasgado sem um checksum do
+// cabeçalho verificável de forma independente (o que seria mudança de formato). Cai no
+// mesmo lado que [TestDurable_CorrupcaoNoULTIMORegistoEhCauda] já fixa: trunca.
+func contaOrfaos(f *os.File, quebra, fim int64) int {
+	inicio, ok := ressincroniza(f, quebra+1, fim)
+	if !ok {
+		return 0
+	}
+	r := bufio.NewReader(io.NewSectionReader(f, inicio, fim-inicio))
 	n := 0
 	for {
-		payload, ok, _ := leRegisto(r)
+		payload, ok := leRegisto(r)
 		if !ok {
 			return n
 		}
@@ -357,6 +411,67 @@ func contaRegistosIntegros(r *bufio.Reader) int {
 		}
 		n++
 	}
+}
+
+// ressincroniza procura o primeiro offset em [depois, fim) onde começa um registo
+// COMPLETO, com CRC válido e payload que desserializa num [Event]. É o varrimento que
+// repõe a fronteira quando o enquadramento se perdeu.
+//
+// O limite do varrimento é `maxRecordBytes+8` bytes a partir de `depois`, e o limite é
+// DEMONSTRADO, não arbitrado: o registo corrompido não pode ocupar legitimamente mais do
+// que isso, logo o registo íntegro seguinte — se existir — começa dentro dessa janela.
+//
+// Falso positivo exige que quatro bytes arbitrários formem um comprimento plausível, que
+// os `len` bytes seguintes tenham um crc32 que bata com os quatro a seguir, e que o
+// resultado desserialize num Event. É desprezável, e erra para o lado fail-closed.
+func ressincroniza(f *os.File, depois, fim int64) (int64, bool) {
+	if depois < 0 {
+		depois = 0
+	}
+	limite := depois + int64(maxRecordBytes) + 8
+	if limite > fim {
+		limite = fim
+	}
+	buf := make([]byte, janelaDeRessincronizacao)
+	var rec []byte
+	for base := depois; base < limite; {
+		n, err := f.ReadAt(buf, base)
+		if n < 4 {
+			return 0, false
+		}
+		for i := 0; i+4 <= n; i++ {
+			off := base + int64(i)
+			if off >= limite {
+				return 0, false
+			}
+			tam := int64(binary.BigEndian.Uint32(buf[i : i+4]))
+			if tam == 0 || tam > maxRecordBytes || off+4+tam+4 > fim {
+				continue
+			}
+			if int64(cap(rec)) < tam+4 {
+				rec = make([]byte, tam+4)
+			}
+			cand := rec[:tam+4]
+			if _, rerr := f.ReadAt(cand, off+4); rerr != nil {
+				continue
+			}
+			if binary.BigEndian.Uint32(cand[tam:]) != crc32.Checksum(cand[:tam], crcTable) {
+				continue
+			}
+			var ev Event
+			if json.Unmarshal(cand[:tam], &ev) != nil {
+				continue
+			}
+			return off, true
+		}
+		if err != nil {
+			return 0, false // fim do ficheiro alcançado sem encontrar fronteira
+		}
+		// Sobreposição de 3 bytes: um cabeçalho a cavalo da fronteira da janela tem de
+		// ser visto na janela seguinte.
+		base += int64(n) - 3
+	}
+	return 0, false
 }
 
 // Open cria OU reabre um Event Store DURÁVEL respaldado pelo WAL em path. No
@@ -373,6 +488,38 @@ func contaRegistosIntegros(r *bufio.Reader) int {
 // (fidelidade byte-a-byte do envelope). Um path inexistente cria um store durável
 // novo (WAL vazio). Chame Close para libertar o Store e fechar o WAL.
 func Open(path string, opts ...Option) (*Store, error) {
+	return abrir(path, false, opts...)
+}
+
+// OpenReadOnly reabre um Event Store durável para INSPECÇÃO: faz o replay do WAL e
+// devolve um [Store] que serve [Store.Read] normalmente, mas que NÃO anexa o WAL para
+// append e NÃO toca no ficheiro. Qualquer escrita devolve [ErrReadOnly].
+//
+// # AOS-347 — PORQUE ISTO TINHA DE EXISTIR
+//
+// `aos wal-inspect`, `aos wal-summary` e `aos wal-count` chamavam [Open]. Os comentários
+// diziam «com o contentor principal PARADO», o que é uma CONVENÇÃO DOCUMENTADA e não uma
+// restrição imposta — e [Open] não pede posse nenhuma (a tranca de [LockWAL] é sobre o
+// ficheiro irmão, deliberadamente, para não bloquear quem lê). Com o escritor vivo, um
+// segundo [Open] tinha sucesso, reconstruía a SUA cabeça em memória, e:
+//
+//   - se escrevesse, atribuía seqs em colisão com os do escritor. Medido: seqs
+//     [1 2 3 4 4 5 5] no ficheiro, e o arranque seguinte a recusar com
+//     `E_RESTORE_ORDER: lote de restauro nao e gapless` — o nó não voltava a arrancar;
+//   - mesmo sem escrever, TRUNCAVA: [Open] repõe a cauda parcial, e composto com o
+//     defeito de enquadramento de AOS-346 um comando de LEITURA levou um WAL de 1480
+//     para 592 bytes, apagando três eventos confirmados.
+//
+// Um abridor que não pode escrever nem truncar não tem por onde causar nenhuma das
+// duas coisas. A convenção documentada passa a propriedade do tipo.
+//
+// A leitura continua a NÃO precisar de posse, que é a garantia que [LockWAL] promete a
+// quem investiga um incidente com o nó a correr.
+func OpenReadOnly(path string, opts ...Option) (*Store, error) {
+	return abrir(path, true, opts...)
+}
+
+func abrir(path string, soLeitura bool, opts ...Option) (*Store, error) {
 	events, validEnd, orfaos, err := replayWAL(path)
 	if err != nil {
 		return nil, fmt.Errorf("eventstore: replay do WAL %q: %w", path, err)
@@ -399,21 +546,33 @@ func Open(path string, opts ...Option) (*Store, error) {
 	// registo íntegro, trunca-o a validEnd ANTES de reabrir em append — assim os
 	// eventos novos ficam contíguos e replayáveis (bytes parciais no meio tornariam
 	// registos posteriores inalcançáveis). Idempotente quando não há tail parcial.
-	if fi, statErr := os.Stat(path); statErr == nil && fi.Size() > validEnd {
-		if err := os.Truncate(path, validEnd); err != nil {
-			return nil, fmt.Errorf("eventstore: truncar tail parcial do WAL %q: %w", path, err)
+	//
+	// AOS-347: só o abridor de ESCRITA o faz. Um abridor de inspecção não tem cauda
+	// para preparar — não vai escrever nada — e o único efeito que a truncatura teria
+	// aí seria destruir aquilo que o operador foi lá ver.
+	if !soLeitura {
+		if fi, statErr := os.Stat(path); statErr == nil && fi.Size() > validEnd {
+			if err := os.Truncate(path, validEnd); err != nil {
+				return nil, fmt.Errorf("eventstore: truncar tail parcial do WAL %q: %w", path, err)
+			}
+			// Torna durável a nova dimensão do ficheiro (metadados do directório) após a
+			// truncatura do tail parcial, pela mesma razão POSIX (best-effort).
+			fsyncDir(filepath.Dir(path))
 		}
-		// Torna durável a nova dimensão do ficheiro (metadados do directório) após a
-		// truncatura do tail parcial, pela mesma razão POSIX (best-effort).
-		fsyncDir(filepath.Dir(path))
 	}
 	s, err := New(opts...)
 	if err != nil {
 		return nil, err
 	}
+	// O restauro corre ANTES de a postura de leitura ser selada: [restoreInto] usa
+	// [Store.IngestStream], que um store já marcado só-leitura recusaria.
 	if err := restoreInto(s, events); err != nil {
 		_ = s.Close()
 		return nil, err
+	}
+	if soLeitura {
+		s.soLeitura = true
+		return s, nil
 	}
 	w, err := openWALAppend(path)
 	if err != nil {
