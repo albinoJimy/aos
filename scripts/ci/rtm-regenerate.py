@@ -222,9 +222,6 @@ ATRIBUIDOS_NOUTRO_RAMO = frozenset([
     # AOS-317 — `claude/exciting-maxwell-aec36d` (b26966c, 2026-09-04).
     # Sai quando esse ramo for fundido. Ver DEF-912 para o caso do abandono.
     "AOS-317",
-    # AOS-339 — `feature/AOS-339-negacao-server-side-selada` (f8d461e, 2026-09-05).
-    # Sai quando esse ramo for fundido.
-    "AOS-339",
 ])
 
 
