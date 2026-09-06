@@ -99,7 +99,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
 | O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
 | A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — **implementado** |
-| Um hook não tem canal legível por máquina para anexar informação à sua negação — achado a investigar o contorno em texto livre do AOS-332 | **AOS-340** |
+| Um hook não tem canal legível por máquina para anexar informação à sua negação — achado a investigar o contorno em texto livre do AOS-332 | **AOS-340** — **implementado** |
 | Uma negação causada por uma obrigação de região não é projectada como evento de soberania — achado a investigar o `nil` do ramo `HookDeny` do RM | **AOS-341** — **implementado** |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
@@ -2060,27 +2060,61 @@ pelo que nada disto muda o que o nó deixa acontecer — só o que ele regista.
 
 ### Critérios de Aceitação
 
-- [ ] Um hook pode anexar metadados tipados (chave/valor) à SUA decisão de negação, e o RM sela-os
+- [x] Um hook pode anexar metadados tipados (chave/valor) à SUA decisão de negação, e o RM sela-os
       no `MediationRecord` e no payload de `tool.call.denied`
-- [ ] O canal é **genérico** e neutro em camadas, na disciplina do `PolicyVersion`: nenhum campo
+- [x] O canal é **genérico** e neutro em camadas, na disciplina do `PolicyVersion`: nenhum campo
       específico de plataforma entra no contrato C1 do kernel, e o `layer-lint` mantém-se verde
-- [ ] O canal é **distinto** de `Obligations` e não passa por `enforceObligations`: um metadado com
+- [x] O canal é **distinto** de `Obligations` e não passa por `enforceObligations`: um metadado com
       chave desconhecida **não** pode negar um permit
-- [ ] A assimetria das obrigações mantém-se: `TestNegacaoNaoSelaObrigacoes` e
+- [x] A assimetria das obrigações mantém-se: `TestNegacaoNaoSelaObrigacoes` e
       `TestNegacaoNaoLevaObrigacoes` passam **sem alteração**
-- [ ] O `Reason` continua a levar a razão em texto livre, com o prefixo intacto — quem asserta por
+- [x] O `Reason` continua a levar a razão em texto livre, com o prefixo intacto — quem asserta por
       substring não parte
-- [ ] O sufixo do AOS-332 migra para o canal novo, ou fica escrita a decisão de o não migrar
-- [ ] `tecnica/12` e `tecnica/13` reflectem o campo novo; acrescentar um campo opcional ao payload
+- [x] O sufixo do AOS-332 migra para o canal novo
+- [x] `tecnica/12` e `tecnica/13` reflectem o campo novo; acrescentar um campo opcional ao payload
       é **MINOR** em `port_version` (`tecnica/12` §4)
-- [ ] Testes com prova de mutação: remover o selo do canal deixa o teste **vermelho**
+- [x] Testes com prova de mutação: remover o selo do canal deixa o teste **vermelho**
 
 ### Estado
 
-**POR IMPLEMENTAR.** P3 — e o P3 é deliberado. O AOS-332 entregou um contorno que funciona e é
-greppável, pelo que não há observabilidade perdida hoje; o que este ticket compra é a forma, antes
-de o segundo hook inventar o segundo formato. Encontrado a investigar o `nil` do ramo `HookDeny`,
-que se confirmou ser decisão e não omissão — a lacuna é o custo dessa decisão, não o defeito dela.
+**IMPLEMENTADO.** P3.
+
+`HookResult.Metadata` é um `map[string]string` que o RM transporta até ao `MediationRecord` e ao
+payload do evento. **O RM não interpreta**: o significado das chaves é do hook que as escreve, que
+é o que mantém o contrato C1 livre de preocupações de plataforma — a objecção de camada que levou
+o AOS-332 ao sufixo em texto livre.
+
+A REGRA É «O RESULTADO DO HOOK QUE TERMINOU A MEDIAÇÃO», e cobre `deny` e `escalate` sem
+excepções por explicar. Um erro de hook **não** leva metadados, e isso é decisão escrita no sítio:
+um erro não é uma decisão, e o `HookResult` que vem com erro é o valor-zero ou está a meio. Os
+sítios de recusa que não nascem de um `HookResult` — cadeia vazia, tool não registada, obrigação
+não cumprida, sink em baixo — não têm de onde o tirar.
+
+O QUE O SEPARA DAS OBRIGAÇÕES, e é a razão de não se ter reusado `Obligation`:
+`enforceObligations` nega *fail-closed* qualquer `Type` que não saiba cumprir, pelo que uma
+obrigação anexada só para DOCUMENTAR uma decisão negaria a call num permit. Há um teste dedicado
+a isso — `TestAOS340_ChaveDesconhecidaNaoNegaUmPermit` —, com a chave mais inventada possível e a
+call a ter de passar.
+
+MIGRAÇÃO DO AOS-332 FEITA, não adiada. Os cinco ramos de negação do `broker.ScopeGate` deixam o
+`Reason` ser só a razão e passam as duas posturas em `metadata`; as chaves são constantes
+(`metaProviderPolicy`, `metaResourceBinding`) porque são o contrato desta negação com quem lê o
+trilho. Os três testes do AOS-332 passam a desserializar o payload em vez de procurar substrings —
+que é exactamente o que o canal existe para tornar desnecessário — e ganharam um controlo novo: o
+sufixo em texto livre **não** pode sobreviver à migração.
+
+CONTRASTE COM O AOS-341, que vale a pena reter. Ali a mutação no RM deixava o teste da segunda
+camada verde, porque o `compliance` lê registos construídos à mão. Aqui não: remover o selo no
+ramo de deny avermelha o teste do RM **e** os três do broker, porque estes atravessam o RM real e
+o Event Store real. Duas camadas não valem todas o mesmo — depende de a segunda tocar mesmo na
+primeira.
+
+**LIMITE DECLARADO.** O canal vive no Event Store, não no WORM: o `audit.AuditRecord` é encadeado
+por hash e a sua `canonicalContent` tem ordem e largura fixas, pelo que acrescentar-lhe um campo
+muda os bytes canónicos de TODOS os registos e invalida as cadeias já escritas. É migração de
+`SchemaVersion`, não um campo a mais. O `audit.RMAdapter` leva um comentário no sítio a dizer isto,
+para que a não-selagem lá não seja lida como esquecimento — que foi precisamente o defeito que
+originou este ticket.
 
 ---
 

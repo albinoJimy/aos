@@ -281,7 +281,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	//    é [DefaultHooks]; [WithHooks] com cadeia vazia é misconfiguração).
 	if len(m.hooks) == 0 {
 		return m.fail(ctx, call, EffectDeny, CodeEmptyHookChain, "config",
-			"cadeia de hooks vazia (fail-closed)", nil, start, ""), nil
+			"cadeia de hooks vazia (fail-closed)", nil, nil, start, ""), nil
 	}
 
 	// 1) Cadeia de hooks pela ordem fornecida (ver [WithHooks]; a ordem canónica
@@ -300,7 +300,10 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		}
 		switch {
 		case err != nil:
-			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), nil, start, policyVersion), nil
+			// Metadata nil, e é decisão: um ERRO não é uma decisão do hook. O `res` que
+			// vem com erro é o valor-zero ou um resultado a meio, e selar metadados de um
+			// hook que rebentou seria dar-lhes uma autoridade que não têm.
+			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), nil, nil, start, policyVersion), nil
 		case res.Decision == HookDeny:
 			reason := res.Reason
 			if reason == "" {
@@ -334,13 +337,13 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 			// resolveu-o com um sufixo greppável no `Reason`. Mudar isto é mudar os três sítios
 			// acima E a semântica do tipo — por decisão escrita, não por simetria aparente com
 			// o ramo de baixo.
-			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, nil, start, policyVersion), nil
+			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, nil, res.Metadata, start, policyVersion), nil
 		case res.Decision == HookEscalate:
 			reason := res.Reason
 			if reason == "" {
 				reason = fmt.Sprintf("escalado por %q", h.Name())
 			}
-			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, res.Obligations, start, policyVersion), nil
+			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, res.Obligations, res.Metadata, start, policyVersion), nil
 		}
 		obligations = append(obligations, res.Obligations...)
 	}
@@ -350,7 +353,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	_, registered := m.tools[call.ToolID]
 	m.mu.RUnlock()
 	if !registered {
-		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", nil, start, policyVersion), nil
+		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", nil, nil, start, policyVersion), nil
 	}
 
 	// 2.5) ENFORCEMENT DE OBRIGAÇÕES ANTES DO EFEITO (AOS-087, AC4). O PEP não só
@@ -377,7 +380,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		//
 		// Deliberadamente NÃO se passa `obligations` (a lista acumulada): selar as que foram
 		// cumpridas até aqui afirmaria que se aplicaram a um efeito que nunca existiu.
-		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, []Obligation{causa}, start, policyVersion), nil
+		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, []Obligation{causa}, nil, start, policyVersion), nil
 	}
 
 	// 3) Auditoria ANTES do efeito (audit-before-effect). Se falhar, fail-closed.
@@ -393,7 +396,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	if err != nil {
 		// Uma acção não-auditável não é permitida (ADR-002/010).
 		d := m.fail(ctx, call, EffectDeny, CodeAuditUnavailable, "audit-sink",
-			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), nil, start, policyVersion)
+			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), nil, nil, start, policyVersion)
 		return d, nil
 	}
 
@@ -438,7 +441,18 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 // ESCALADA passa obrigações; os outros seis passam `nil`, e passam-no por decisão. A justificação
 // está escrita no ramo `HookDeny` de [Monitor.evaluate], que é onde a escolha é visível e onde
 // muda se algum dia mudar — não a deduzas deste parágrafo.
-func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, obligations []Obligation, start time.Time, policyVersion string) Decision {
+//
+// `metadata` (AOS-340) é o SEGUNDO parâmetro com a mesma disciplina, e é uma coisa DIFERENTE das
+// obrigações: leva-o o resultado do hook que TERMINOU a mediação com uma decisão — deny e
+// escalate. Um erro de hook não é uma decisão e não o leva; os sítios que não nascem de um
+// [HookResult] (cadeia vazia, tool não registada, obrigação não cumprida, sink em baixo) também
+// não têm de onde o tirar. Registo, nunca enforcement: não passa por `enforceObligations`.
+//
+// NOTA PARA QUEM VIER A SEGUIR: a lista de parâmetros está no limite do razoável. O próximo campo
+// que precise da mesma disciplina não deve ser o décimo-primeiro parâmetro — agrupa-se então o que
+// cada sítio DECIDE selar num tipo próprio, preservando a propriedade que interessa (não haver
+// valor por omissão).
+func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, obligations []Obligation, metadata map[string]string, start time.Time, policyVersion string) Decision {
 	latency := m.now().Sub(start)
 	// Registo best-effort: em deny/escalate o efeito já está bloqueado, pelo que
 	// uma falha de auditoria não altera a decisão (contrasta com o permit path).
@@ -470,6 +484,7 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		Principal: call.Principal, Latency: latency,
 		PolicyVersion: policyVersion,
 		Obligations:   obligations,
+		Metadata:      metadata,
 	})
 	if eff == EffectEscalate {
 		m.metrics.Escalations.Add(1)

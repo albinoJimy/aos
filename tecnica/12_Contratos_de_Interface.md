@@ -130,11 +130,19 @@ A tabela seguinte é **lida por `scripts/ci/integration.py`** (gate 4 — Integr
 }
 ```
 
+**Metadados de decisão (`metadata`).** Além das `obligations`, um hook pode devolver um mapa
+`metadata` de pares chave/valor que o RM SELA no evento quando é o resultado desse hook que
+TERMINA a mediação — `deny` e `escalate`. É registo, nunca *enforcement*: não passa pelo
+cumprimento de obrigações e uma chave desconhecida não nega nada. O RM transporta e não
+interpreta — na disciplina do `policy_version` —, pelo que o significado das chaves é do hook
+que as escreve. Existe para que uma negação possa levar informação estruturada sem que
+preocupações de camadas acima entrem neste contrato (AOS-340).
+
 **Semântica de erro.** `deny` com `reason` para negação de política (esperado, não é erro de transporte); `escalate` sinaliza gate humano (ADR-013). Erros de porta: `E_POLICY_UNAVAILABLE` (bundle não carregado — falha fechado, tratado como deny), `E_SIGNATURE_INVALID` (bundle não assinado/adulterado — deny), `E_MALFORMED_REQUEST` (schema inválido). Todos resolvem-se pelo lado seguro: ausência de `permit` explícito é negação.
 
 **Idempotência.** A avaliação é **pura e sem efeitos** — a mesma `(request, policy_version)` produz sempre a mesma decisão, pelo que é seguro repetir. O RM inclui `request_id` para correlação, não para deduplicação de efeitos (não há efeitos a deduplicar).
 
-**Versionamento SemVer.** Acrescentar um campo opcional a `context` ou um novo tipo de obligation reconhecível-e-ignorável é *MINOR*. Tornar um campo obrigatório, remover um campo ou alterar a semântica de `decision` é *MAJOR*. O PDP anuncia `port_version` e deve suportar as *MINOR* anteriores da mesma *MAJOR*.
+**Versionamento SemVer.** Acrescentar um campo opcional a `context`, um novo tipo de obligation reconhecível-e-ignorável, ou uma chave nova em `metadata` é *MINOR*. Tornar um campo obrigatório, remover um campo ou alterar a semântica de `decision` é *MAJOR*. O PDP anuncia `port_version` e deve suportar as *MINOR* anteriores da mesma *MAJOR*.
 
 ---
 
