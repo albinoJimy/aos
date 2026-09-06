@@ -4,7 +4,7 @@
 # do repositório, e não a "o que estava em main naquele minuto".
 #
 # ─── A cadeia, e porque é esta a ordem ────────────────────────────────────────────────────────
-#   1. gates      — INVOCA .github/workflows/ci.yml (os 24 gates fail-closed). Não há segunda
+#   1. gates      — INVOCA .github/workflows/ci.yml (os 25 gates fail-closed). Não há segunda
 #                   definição relaxada dos gates para releases: é a mesma, por `workflow_call`.
 #   2. publish    — package.sh constrói a imagem endurecida (mesma fonte de verdade local que
 #                   `make ci-package`), sbom.sh gera SBOM+proveniência, sign.sh assina em DSSE,
