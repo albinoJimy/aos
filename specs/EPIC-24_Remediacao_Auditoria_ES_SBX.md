@@ -136,7 +136,16 @@ fail-closed está lá, noutro sítio); o doc de `IngestStream` contradizia o res
 gVisor — que é o driver **em uso**.
 
 Três achados eram **cobertura a zero** em caminhos de recuperação, agora com teste: o
-varrimento multi-janela da ressincronização, a guarda de `desfazer`, e o `Stat` falhado.
+varrimento multi-janela da ressincronização (um evento de 200 KiB antes da quebra), a guarda
+de `desfazer` (alcançada pela sua janela de corrida real) e o `Stat` falhado.
+
+E três eram **instrumentos que não mediam o que o nome diz** — a classe que este epic fecha,
+apontada ao próprio epic. O teste de `/readyz` de AOS-350 sobrepunha `Healthy()` para
+devolver o booleano que ele próprio definia, pelo que teria passado no código
+pré-correcção; ganhou um gémeo com um WAL REAL que encolhe por baixo do nó. O teste de
+AOS-354 replicava a lista fechada de `burndownTransitorio` em vez de exercitar a função;
+ganhou um par em `cmd/aos` que a exercita. E a sonda do mutex usava o contexto do teste como
+prazo, pelo que teria PENDURADO em vez de falhar.
 
 **Um achado corrigiu-me sobre método**, e é o que vale a pena reter: declarei que a presença
 do `$JS.ACK` numa entrega push não tinha sido medida, quando
@@ -1042,6 +1051,10 @@ fidelidade demonstrada, e o contrato não é a fronteira».
       · `scripts/ci/isolation-live.sh` + `make ci-isolation-live`. O caminho de SALTO foi corrido e é
         ruidoso (compila a suite `-tags gvlive`, exige cada cenário por nome, corre o contrafactual).
         O caminho REAL exige Linux + docker privilegiado e **NÃO FOI CORRIDO** neste ambiente.
+      · Depois da revisão adversarial: o veredicto do relatório deixou de ser um literal — com uma
+        porta MORTA o gate emitia `pass:true` e os seus próprios `grep` ficavam satisfeitos.
+      · **Residual declarado:** o cenário P2 mede a cadeia composta e NÃO isola o gVisor — o guest
+        valida o caminho ele próprio, antes de qualquer syscall interceptável. Está no `not_proved`.
 - [x] O gate declara o que prova e o que **não** prova, distinguindo fronteira de contrato
 - [x] A dormência das suites que exigem `AOS_NATS_URL` e `-tags fclive` deixa de ser silenciosa: ou
       um relatório de cobertura as nomeia, ou existe uma linha no registo que a declare
