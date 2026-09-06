@@ -249,7 +249,35 @@ func (b *Broker) ScopeGate() ScopeGate {
 // ([ProviderPostureEnforced] se [WithClassProviders] foi declarado,
 // [ProviderPostureUnset] caso contrário). É o valor selado em cada troca no campo
 // `provider_policy` do evento, e o que o wiring (DEF-218) deve assertar.
-func (b *Broker) ProviderPosture() ProviderPosture { return providerPosture(b.classProviders) }
+//
+// NIL-SAFE, como [Broker.ProviderPolicyShape]: o wiring do DEF-218 interroga estes dois
+// acessores ANTES de ligar a troca, e um broker por construir é o estado em que essa
+// pergunta é mais provável. Um panic aí trocaria uma pré-condição por uma paragem.
+func (b *Broker) ProviderPosture() ProviderPosture {
+	if b == nil {
+		return ProviderPostureUnset
+	}
+	return providerPosture(b.classProviders)
+}
+
+// ProviderPolicyShape devolve a FORMA da política de provedores deste broker — o
+// conteúdo que a [Broker.ProviderPosture] não olha (AOS-342). É o que distingue uma
+// política `enforced` que IMPÕE de uma que só o parece: ver [ProviderPolicyShape].
+func (b *Broker) ProviderPolicyShape() ProviderPolicyShape {
+	if b == nil {
+		return ProviderPolicyShapeNone
+	}
+	return providerPolicyShape(b.classProviders)
+}
+
+// ProviderClassesComCuringa devolve as classes de agente cujo tecto de provedores é
+// [ProviderAny] — aquelas que uma política `enforced` NÃO restringe. Ordenadas.
+func (b *Broker) ProviderClassesComCuringa() []string {
+	if b == nil {
+		return nil
+	}
+	return classesComCuringa(b.classProviders)
+}
 
 // Exchange troca o token scoped por uma credencial downstream, MEDIADA pelo
 // Reference Monitor. Devolve um [Handle] OPACO (nunca o segredo). Uma decisão que
@@ -413,20 +441,26 @@ type exchangePayload struct {
 	// de provedores declarada fica marcada como tal, greppável no Event Store
 	// (AOS-324).
 	ProviderPolicy string `json:"provider_policy"`
+	// ProviderPolicyShape sela a FORMA da política em vigor NESTA troca (AOS-342).
+	// Sem ela, `provider_policy=enforced` no WORM é ambíguo entre uma política que
+	// impõe e um curinga que não impõe nada — e é `provider_policy` que o `DEF-218`
+	// manda assertar. É este campo que torna essa asserção honesta.
+	ProviderPolicyShape string `json:"provider_policy_shape"`
 }
 
 func (b *Broker) recordExchange(ctx context.Context, l *Lease) error {
 	payload, err := json.Marshal(exchangePayload{
-		LeaseID:        l.ID,
-		Handle:         string(l.Handle),
-		PrincipalNHI:   l.PrincipalNHI,
-		Resource:       l.Resource,
-		Provider:       l.Provider,
-		Region:         l.Region,
-		Capability:     l.Capability,
-		IssuedAt:       l.IssuedAt.UTC().Format(time.RFC3339Nano),
-		ExpiresAt:      l.ExpiresAt.UTC().Format(time.RFC3339Nano),
-		ProviderPolicy: string(b.ProviderPosture()),
+		LeaseID:             l.ID,
+		Handle:              string(l.Handle),
+		PrincipalNHI:        l.PrincipalNHI,
+		Resource:            l.Resource,
+		Provider:            l.Provider,
+		Region:              l.Region,
+		Capability:          l.Capability,
+		IssuedAt:            l.IssuedAt.UTC().Format(time.RFC3339Nano),
+		ExpiresAt:           l.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		ProviderPolicy:      string(b.ProviderPosture()),
+		ProviderPolicyShape: string(b.ProviderPolicyShape()),
 	})
 	if err != nil {
 		return err

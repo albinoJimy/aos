@@ -93,6 +93,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** — **implementado** |
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** — **implementado** |
 | Uma troca negada pela guarda de composição do `dispatch` fica no WORM como PERMITIDA — achado na discovery do AOS-332 | **AOS-339** — **implementado** |
+| `enforced` não significa imposto: a postura não olha o conteúdo da política (curinga/vazio) — achado na revisão do AOS-332 | **AOS-342** — **implementado** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** — **implementado** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** — **implementado** |
@@ -2171,3 +2172,89 @@ projectado (a obrigação está lá, `governed=true`) mas com `Region` vazia. N�
 `allowed` não tem emissor de produção — só um caso de teste do RM —, e duplicar a precedência do
 kernel no plano de controlo era a correcção errada para um caso latente. Fica nomeado em vez de
 arrastado.
+
+---
+
+## AOS-342 — `enforced` não significa imposto: a postura não olha para o conteúdo da política
+
+### Contexto
+
+Medido na **revisão adversarial do AOS-332**, sobre a implementação desse ticket. Não é um defeito
+do AOS-332 — é um defeito do **AOS-324** que só se torna visível quando alguém começa a **declarar**
+a postura ao operador.
+
+`Broker.ProviderPosture()` é função da **nulidade** do mapa de política: qualquer mapa não-nil
+devolve `enforced`, e o **conteúdo nunca é olhado**. Três políticas materialmente opostas são todas
+`enforced`:
+
+| Política | Postura | Efeito real |
+|---|---|---|
+| `{"payments": {"*"}}` | `enforced` | **não impõe nada** — `EffectiveProviders` devolve o curinga e qualquer provedor passa |
+| `{}` | `enforced` | **nega tudo** — toda a classe tem tecto vazio |
+| `{"payments": {"stripe"}}` | `enforced` | impõe |
+
+Para o que fica **selado**, essa semântica está certa e o AOS-332 fixou-a de propósito: um mapa
+vazio é uma declaração («ninguém alcança nada») e tem de se distinguir de «não declarei».
+
+**Para uma PRÉ-CONDIÇÃO não chega, e é aí que morde.** O `DEF-218` manda assertar que
+`provider_policy` diz `enforced` antes de ligar a troca. Sob `{"payments": {"*"}}` essa asserção
+fica **verde** e o eixo está **aberto** — um principal da classe sem grants `prov:` alcança
+qualquer provedor presente no Vault. É exactamente a confusão de deputado que o AOS-324 fechou, com
+a pré-condição a declará-la fechada. Uma asserção a passar pela razão errada, na asserção de que o
+wiring depende.
+
+E o banner do AOS-332 descrevia as três com a mesma frase — «o provedor pedido tem de constar da
+autoridade efectiva da classe» —, **falsa** na primeira e **vácua** na segunda. É sobre essa frase
+que o operador decide se a pré-condição está satisfeita.
+
+### Critérios de Aceitação
+
+- [x] A FORMA da política é interrogável (`Broker.ProviderPolicyShape`) e distingue os quatro
+      casos: sem política, declarada e vazia, com curinga, conjuntos concretos
+- [x] A forma viaja com a postura em TODO O LADO onde a postura viaja: no evento da troca emitida
+      (`provider_policy_shape`), na razão da negação do gate, e no banner de arranque
+- [x] O banner descreve as três formas de `enforced` de maneira DISTINTA, nomeia as classes que o
+      curinga deixa sem restrição, e diz explicitamente qual é a única que satisfaz o `DEF-218`
+- [x] Um teste que MEÇA que o curinga é `enforced` e deixa passar uma troca cross-provider — sem
+      isso, os estados novos seriam texto sobre um caso que ninguém mediu
+- [x] Os acessores que o `DEF-218` interroga são nil-safe: um broker por construir é o estado em
+      que essa pergunta é mais provável
+- [x] `DEF-218` passa a exigir o PAR `(postura, forma)` e não só a postura
+- [x] A declaração «`broker.New` não tem chamador de produção», que o banner imprime ao operador,
+      passa a ter guarda
+- [x] Prova de mutação
+
+### Estado
+
+**IMPLEMENTADO.** P2 por alcance (latente — o broker não está composto), **pré-condição do wiring
+do broker**, a par de AOS-324 e AOS-330.
+
+**A ESCOLHA: acrescentar a forma, não mudar a postura.** Redefinir `ProviderPosture` para olhar o
+conteúdo — devolver `unset` para um curinga, por exemplo — seria mais simples e está **errado**: o
+AOS-332 sela a postura no WORM, e um mapa vazio *é* uma declaração que tem de se distinguir de
+«não declarei». Mudar a semântica do campo selado partiria essa distinção e reescreveria o
+significado de eventos já emitidos. A forma é um eixo **novo** e ortogonal, e é assim que viaja.
+
+**PORQUE A FORMA TAMBÉM VAI AO EVENTO, e não só ao banner.** O `DEF-218` não assere sobre o banner
+— assere sobre o campo `provider_policy` de um `credential.exchange.issued`. Corrigir só o banner
+deixaria a asserção que o deferimento nomeia igualmente enganável, e este ticket teria fechado a
+aparência do defeito e não o defeito.
+
+**PROVA DE MUTAÇÃO — onze mutantes, onze vermelhos, zero sobreviventes.** A forma deixa de detectar
+o curinga, o mapa vazio e a ausência de política; as classes com curinga deixam de ser nomeadas; a
+troca emitida e a negação do gate deixam de selar a forma; `ProviderPolicyShape` volta a entrar em
+panic num broker nil; o banner volta a descrever o curinga e o mapa vazio como imposição; a linha do
+curinga deixa de nomear as classes; a rubrica deixa de nomear a forma a par da postura.
+
+### O que este ticket NÃO fecha
+
+**O `posturaDaPoliticaDoBroker` continua a ser uma struct de valores, não o broker composto.** Um
+chamador pode construí-la à mão com `Composto: true` e uma postura que nenhum broker impõe. Hoje é
+inofensivo — o único call-site passa o valor-zero, e o `TestBoundary_BrokerNaoEComposto` falha no
+dia em que isso deixar de ser verdade. Trocar a struct pelo `*broker.Broker` tornaria o estado
+não-forjável por construção; fica **por fazer** e é decisão do dia do wiring, quando houver um
+broker real de onde derivar.
+
+**A `ResourceBindingPosture` do AOS-331 tem o mesmo eixo por examinar.** Uma allowlist de hosts
+declarada e vazia, ou com um curinga se o vier a ter, cai no mesmo buraco: `enforced` no nome. Não
+foi medida aqui e **não se afirma** que esteja certa ou errada — fica nomeada em vez de arrastada.

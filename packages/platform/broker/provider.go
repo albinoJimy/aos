@@ -174,6 +174,71 @@ func containsProvider(list []string, p string) bool {
 	return false
 }
 
+// ProviderPolicyShape descreve o CONTEÚDO da política de provedores — o que a
+// [ProviderPosture] NÃO olha.
+//
+// PORQUE ISTO EXISTE (AOS-342). A postura é função da NULIDADE do mapa: qualquer mapa
+// não-nil produz [ProviderPostureEnforced]. Isso basta para decidir se a comparação por
+// conjunto CORRE, e é a semântica certa para o que fica SELADO — um mapa vazio é uma
+// declaração («ninguém alcança nada») e tem de se distinguir de «não declarei».
+//
+// Mas NÃO basta para uma PRÉ-CONDIÇÃO. O `DEF-218` exige assertar que a postura diz
+// `enforced` antes de ligar a troca, e `enforced` NÃO SIGNIFICA IMPOSTO: uma política
+// `{"payments": {"*"}}` devolve `enforced`, e [EffectiveProviders] devolve o curinga,
+// pelo que a comparação por conjunto deixa passar QUALQUER provedor. A pré-condição
+// ficaria verde sobre exactamente o defeito que o AOS-324 fechou — uma asserção a passar
+// pela razão errada, na asserção de que o wiring depende.
+//
+// A forma viaja com a postura em todo o lado onde a postura viaja: no banner de arranque,
+// no evento da troca emitida e na razão da negação do gate.
+type ProviderPolicyShape string
+
+const (
+	// ProviderPolicyShapeNone — nenhuma política declarada ([ProviderPostureUnset]).
+	ProviderPolicyShapeNone ProviderPolicyShape = "none"
+	// ProviderPolicyShapeEmpty — política DECLARADA e sem classe nenhuma: toda a classe
+	// tem tecto vazio, logo NENHUMA troca passa o eixo (deny-all). É `enforced` e é
+	// quase de certeza um mapa vazio por acidente, não uma decisão.
+	ProviderPolicyShapeEmpty ProviderPolicyShape = "empty"
+	// ProviderPolicyShapeWildcard — alguma classe tem [ProviderAny]: para essa classe o
+	// eixo NÃO impõe por conjunto. É `enforced` no nome e ABERTO no efeito.
+	ProviderPolicyShapeWildcard ProviderPolicyShape = "wildcard"
+	// ProviderPolicyShapeByClass — todas as classes declaram conjuntos CONCRETOS. É a
+	// ÚNICA forma sobre a qual «o provedor pedido tem de constar da autoridade efectiva
+	// da classe» é verdade para todas as classes, e a única que satisfaz o DEF-218.
+	ProviderPolicyShapeByClass ProviderPolicyShape = "by-class"
+)
+
+// providerPolicyShape classifica o CONTEÚDO de um mapa de política.
+func providerPolicyShape(m map[string][]string) ProviderPolicyShape {
+	if m == nil {
+		return ProviderPolicyShapeNone
+	}
+	if len(m) == 0 {
+		return ProviderPolicyShapeEmpty
+	}
+	for _, provs := range m {
+		if containsProvider(provs, ProviderAny) {
+			return ProviderPolicyShapeWildcard
+		}
+	}
+	return ProviderPolicyShapeByClass
+}
+
+// classesComCuringa devolve, ordenadas, as classes cujo tecto é [ProviderAny] — as que
+// uma política `enforced` NÃO restringe. Nomeá-las é o que separa «há um buraco» de
+// «o buraco é aqui». Vazio quando não há nenhuma.
+func classesComCuringa(m map[string][]string) []string {
+	var out []string
+	for class, provs := range m {
+		if containsProvider(provs, ProviderAny) {
+			out = append(out, class)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // providerPosture devolve a postura declarada para um mapa de política (nil ⇒
 // [ProviderPostureUnset]).
 func providerPosture(classProviders map[string][]string) ProviderPosture {

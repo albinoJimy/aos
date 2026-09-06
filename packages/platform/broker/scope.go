@@ -218,5 +218,6 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 // fica intacta no prefixo, pelo que quem já asserta por substring continua a funcionar.
 func (g ScopeGate) razaoComPostura(err error) string {
 	return err.Error() + " [provider_policy=" + string(g.ProviderPosture()) +
+		" provider_policy_shape=" + string(providerPolicyShape(g.classProviders)) +
 		" resource_binding=" + string(g.ResourceBindingPosture()) + "]"
 }
