@@ -4,9 +4,9 @@
 |---|---|
 | Produto | AOS — Agentic OS de Referência |
 | Documento | Epic — Remediação dos defeitos apurados na auditoria adversarial do Substrato |
-| Versão | 1.0 |
+| Versão | 1.1 |
 | Data | 2026-09-06 |
-| Classificação | Documento de Referência — **Proposta** |
+| Classificação | Documento de Referência — **Executado** (todos os 15 tickets implementados; ver §0.7) |
 | Documento-fonte | `analises/12_Auditoria_ES_SBX_Adversarial.md` (§2, §3, §5, §6) |
 | Documentos relacionados | `docs/governance/REGISTO-Deferimentos.md`, `tecnica/07`, `tecnica/14`, `tecnica/17`, `specs/EPIC-07`, `EPIC-10`, ADR-004, ADR-007, ADR-017, `docs/reports/medicao-jetstream-arbitragem-2026-08-31.md` |
 | Âmbito | `packages/substrate/eventstore` (incl. `jetstream/`), `packages/substrate/sandbox`, `packages/kernel/reference-monitor`, `packages/cmd/aos`, `tecnica/`, `deploy/`, `scripts/ci/` |
@@ -73,6 +73,51 @@ auditoria fecha. Fica registado que a omissão foi da §6, não da análise.
 | AOS-356 | Quatro declarações de estado que deixaram de ser verdade — duas delas **subdeclarando** a postura | P2 | documental | Leitura verificada |
 | AOS-357 | Instrumentos de teste que não podem falhar, e um argumento escrito que está errado hoje e seria perigoso amanhã | P2 | arnês | Leitura verificada |
 | AOS-358 | Não existe gate que exercite isolamento real, apesar de o componente gVisor não precisar de KVM | P2 | CI | Leitura verificada |
+
+### 0.7 Estado da execução (2026-09-06)
+
+Os quinze tickets estão **implementados**. Sessenta e dois dos sessenta e seis critérios de
+aceitação estão `[x]`; quatro estão `[~]`, e cada um diz porquê no próprio critério. Nenhum
+foi dado por satisfeito sem evidência nomeada.
+
+**Os quatro `[~]`, e a razão de cada um:**
+
+| Critério | Porquê |
+|---|---|
+| AOS-345 AC2 · AC3 | Exigem cluster NATS, que este ambiente não tem. O teste existe e SALTA; a aritmética da janela é coberta por testes que CORREM, com controlo positivo |
+| AOS-352 AC5 | **Não aplicável** — `Streams()` não está declarada em `tecnica/12` |
+| AOS-358 AC1 | O gate existe e o caminho de SALTO foi corrido; o caminho REAL exige Linux com docker privilegiado |
+
+**Três desvios ao que o epic prescrevia, todos com razão medida:**
+
+1. **AOS-346** foi fechado pela segunda cláusula do seu AC1, não pela primeira. Estender o
+   `crc32` ao cabeçalho não fecha o defeito: para verificar o CRC é preciso localizar o
+   trailer, e localizá-lo exige confiar no `len` que se quereria verificar.
+2. **AOS-347** — o lado ESCRITOR já estava arbitrado por `tomarPosseDoWAL` (AOS-285). A
+   colisão de `seq` entre dois nós não era alcançável; a via do INSPECTOR era, e é essa que
+   fecha. A tranca NÃO foi dobrada dentro de `Open`, porque isso avermelharia o sensor de
+   `conformance` que mede a ausência de arbitragem — e faria o substrato parecer que ganhou
+   uma garantia que não tem.
+3. **AOS-349** — verificar em `desfazer` não chega. Em `O_APPEND` o registo já aterrou no fim
+   real do ficheiro antes de o `desfazer` correr, e por aterrar numa fronteira de registo
+   antigo ficava bem-formado e ressuscitava no replay. A verificação corre antes da primeira
+   escrita, e só o ENCOLHIMENTO é recusado — recusar um ficheiro maior seria arbitrar entre
+   escritores, que é DEF-282 e está fora deste epic.
+
+**Dois achados que a execução produziu e o epic não previa:**
+
+- **`eventstore.BackupSource` declara a mesma `Streams()`**, pelo que AOS-352 arrastou
+  `platform/backup/exporter.go` — um consumidor a mais do que os quatro que a §0.4 nomeia.
+- **`scripts/ci/deferrals.py` conta ocorrências de `STUB` em maiúsculas**, e prosa
+  explicativa que use a palavra em maiúsculas é contada como dívida nova. Não é defeito do
+  gate; é uma convenção que o texto tem de respeitar.
+
+**Limites de evidência que se mantêm** (§0.6 continua a valer): nada foi corrido contra um
+cluster NATS real, contra Firecracker ou contra gVisor reais. AOS-345 acrescenta a esses um
+limite próprio — a suposição de que uma entrega push com `ack_policy: none` traz `$JS.ACK`
+não foi medida, e o desenho contém o raio de explosão caso esteja errada.
+
+---
 
 ### 0.4 Paralelismo — o que pode e o que não pode correr junto
 
@@ -184,22 +229,27 @@ cumprimento** — e nunca se o gatilho de saída que a própria entrada declara 
 
 ### Critérios de Aceitação
 
-- [ ] `AOS_SANDBOX_DRIVER` ausente deixa de eleger o `fake`: ou o arranque recusa, ou
+- [x] `AOS_SANDBOX_DRIVER` ausente deixa de eleger o `fake`: ou o arranque recusa, ou
       `buildSandboxDriver` devolve `ErrDriverUnavailable`, alinhando o default com o
       comportamento fail-closed dos outros dois drivers
-- [ ] Um teste que construa o nó sem `AOS_SANDBOX_DRIVER` e prove a recusa, com controlo negativo
+- [x] Um teste que construa o nó sem `AOS_SANDBOX_DRIVER` e prove a recusa, com controlo negativo
       que prove que o valor explícito `fake` continua a funcionar em desenvolvimento
-- [ ] `deploy/server/README.md:576-583` ganha a linha do driver de sandbox na tabela de portas de
+- [x] `deploy/server/README.md:576-583` ganha a linha do driver de sandbox na tabela de portas de
       produção
-- [ ] `tecnica/17` §5.2-f deixa de afirmar que o catálogo de tools está vazio, e as quatro linhas
+- [x] `tecnica/17` §5.2-f deixa de afirmar que o catálogo de tools está vazio, e as quatro linhas
       §4.6-S/T/D/E são reavaliadas contra o estado real
-- [ ] `DEF-701`/`DEF-702` são reavaliadas: o gatilho de saída que declaram («catálogo de tools
+- [x] `DEF-701`/`DEF-702` são reavaliadas: o gatilho de saída que declaram («catálogo de tools
       não-vazio a executar código não-confiável») já ocorreu nos deployments sancionados
 
 ### Estado
 
-**POR IMPLEMENTAR.** P0. Alcance: **nó**. É o achado central de `analises/12` e não veio de nenhuma
-lente — nasceu de um refutador a verificar o mitigante que as lentes tinham assumido verdadeiro.
+**IMPLEMENTADO** (2026-09-06). `AOS_SANDBOX_DRIVER` ausente — ou explicitamente `fake` — deixa de
+eleger o driver de referência sob `AOS_MODE=production` COM tools de sandbox ligadas:
+`ErrProductionNeedsSandboxDriver`, no molde das nove guardas `ErrProductionNeeds*` já existentes.
+`registerSandboxLaunchers` passa a receber a postura por parâmetro — até aqui não recebia nada da
+`Config` e não tinha por onde saber em que modo corria. O default do compose de produção passa a
+`gvisor`. Fora de produção nada muda. Guarda provada não-vacuosa por mutação: com a recusa
+desligada, três testes avermelham.
 
 ---
 
@@ -239,19 +289,29 @@ A correcção está ao alcance da mão: `natsjs.Msg` tem campo `Reply` (`natsjs/
 
 ### Critérios de Aceitação
 
-- [ ] O avanço da janela deriva do seq físico da **última mensagem do lote**, não do subject
-- [ ] Um teste com > `janelaDeLeitura` eventos num só `stream_id` que prove que `Read` devolve todos
+- [x] O avanço da janela deriva do seq físico da **última mensagem do lote**, não do subject
+- [~] Um teste com > `janelaDeLeitura` eventos num só `stream_id` que prove que `Read` devolve todos
       — e que o número de lotes é o esperado
-- [ ] Um teste que prove que o stream continua **escrevível** depois desse volume (o caminho
+      · `TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel` existe e **SALTA** sem `AOS_NATS_URL`.
+        Cobertura equivalente que CORRE: `TestJanela_LerEmLotes_DevolveTodosEOsLotesSaoOsEsperados`
+        (5000 eventos, 3 lotes, `quantos` = [2048, 2048, 904]) sobre um log falso onde o seq do
+        subject é deliberadamente maior do que o do lote, mais o controlo positivo
+        `TestJanela_AvancoPeloFimDoLogMorreNoSegundoLote`. **NÃO VERIFICADO contra cluster real.**
+- [~] Um teste que prove que o stream continua **escrevível** depois desse volume (o caminho
       `hidratar` → `Append`)
-- [ ] O comentário de `store.go:560-561` passa a descrever o que o código faz
-- [ ] `AOS_NATS_URL` documentado como pré-requisito do teste, no molde de `conformidade_test.go:21`
+      · passo (3) do mesmo teste, com handle novo (cache fria). Exige cluster. **NÃO VERIFICADO.**
+- [x] O comentário de `store.go:560-561` passa a descrever o que o código faz
+- [x] `AOS_NATS_URL` documentado como pré-requisito do teste, no molde de `conformidade_test.go:21`
 
 ### Estado
 
-**POR IMPLEMENTAR.** P0. Alcance: **nó** sob `AOS_EVENTSTORE_NATS`, que é a configuração recomendada
-por `deploy/node/README.md:406`. Derivado de leitura verificada; **não foi executado contra um
-cluster real** — ver §Limites.
+**IMPLEMENTADO** (2026-09-06), com limite de evidência. O avanço deriva do seq físico do `$JS.ACK…`
+de cada entrega; o laço de lotes saiu para `lerEmLotes`, o que permite exercitá-lo SEM cluster.
+
+**A suposição central — que uma entrega push com `ack_policy: none` traz `$JS.ACK` — NÃO foi medida
+contra cluster.** O raio de explosão está contido por desenho: um `$JS.ACK` malformado falha logo
+(violação de protocolo), mas um `Reply` AUSENTE marca «não sei» e só derruba a leitura que precisa
+mesmo de avançar — um log que cabe numa janela nunca usa o valor.
 
 ---
 
@@ -291,19 +351,26 @@ payload** — exercita o único caminho onde a detecção funciona.
 
 ### Critérios de Aceitação
 
-- [ ] O CRC passa a cobrir o cabeçalho de comprimento, ou o enquadramento ganha outra verificação
+- [x] O CRC passa a cobrir o cabeçalho de comprimento, ou o enquadramento ganha outra verificação
       que torne um `len` corrompido detectável
-- [ ] Um teste que corrompa o **cabeçalho** de um registo a meio e exija `ErrWALCorruptedMidLog` com
+      · pela **segunda cláusula**, e a primeira foi rejeitada com razão medida: estender o `crc32`
+        ao cabeçalho NÃO fecha nada — para verificar o CRC é preciso localizar o trailer, e
+        localizá-lo exige confiar no `len` que se quer verificar. Quem fecha é `contaOrfaos`, que
+        RESSINCRONIZA o enquadramento em vez de confiar na posição do leitor.
+- [x] Um teste que corrompa o **cabeçalho** de um registo a meio e exija `ErrWALCorruptedMidLog` com
       o ficheiro intacto, nas três variantes medidas (`len` maior, menor, e maior-mas-cabe)
-- [ ] O controlo positivo existente (corrupção de payload) continua verde, provando que a guarda não
+- [x] O controlo positivo existente (corrupção de payload) continua verde, provando que a guarda não
       se tornou indiscriminada
-- [ ] Compatibilidade de formato declarada: um WAL escrito pela versão anterior ou é legível, ou a
+- [x] Compatibilidade de formato declarada: um WAL escrito pela versão anterior ou é legível, ou a
       migração está descrita e testada
+      · **é legível, e sem migração**: o enquadramento é byte-a-byte o mesmo. Só mudou o algoritmo
+        que decide se há registos íntegros depois de uma quebra.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P0. Alcance: **nó** com WAL em disco — que `AOS_MODE=production` torna
-obrigatório (`main.go:272`). **Confirmado por execução** na refutação experimental de `analises/12`.
+**IMPLEMENTADO** (2026-09-06). Fechado pela ressincronização do enquadramento, e não pelo CRC sobre
+o cabeçalho — ver o AC1. Teste provado VERMELHO antes da correcção, nas três variantes: `Open
+err=nil`, ficheiro 1544 → 309 bytes, três eventos confirmados apagados. O formato não mudou.
 
 ---
 
@@ -345,18 +412,29 @@ falha (`:203`) nomeia.
 
 ### Critérios de Aceitação
 
-- [ ] Abrir um WAL sob posse activa é recusado, ou os subcomandos de inspecção passam a pedir posse
+- [x] Abrir um WAL sob posse activa é recusado, ou os subcomandos de inspecção passam a pedir posse
       partilhada — a convenção documentada passa a ser restrição imposta
-- [ ] Um teste com o escritor **vivo** que prove que o segundo abridor não obtém uma cabeça
+- [x] Um teste com o escritor **vivo** que prove que o segundo abridor não obtém uma cabeça
       concorrente; `wallock_test.go:177-212` é corrigido para medir o cenário que o seu nome promete
-- [ ] Um teste que prove que a leitura legítima (nó parado) continua a funcionar sem posse
-- [ ] O caminho de inspecção deixa de poder truncar: ou abre em leitura apenas, ou a truncatura de
+- [x] Um teste que prove que a leitura legítima (nó parado) continua a funcionar sem posse
+- [x] O caminho de inspecção deixa de poder truncar: ou abre em leitura apenas, ou a truncatura de
       reposição exige posse
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: **nó** com WAL. Alcançável por operador, não por atacante.
-**Confirmado por execução.** Sequencial com AOS-346/343/344 — mesmo ficheiro.
+**IMPLEMENTADO** (2026-09-06). Novo `eventstore.OpenReadOnly`: replay sem anexar o WAL para append e
+sem tocar no ficheiro; `wal-count` e `wal-summary` passam a usá-lo. `wallock_test.go` mantém agora o
+escritor VIVO — media «um leitor abre um WAL PARADO», que não é o cenário que o seu nome promete.
+
+**CORRECÇÃO AO CONTEXTO DO TICKET:** o lado ESCRITOR já estava arbitrado. `bootstrap.go` chama
+`tomarPosseDoWAL` (AOS-285) antes de `eventstore.Open`, e `aos-orq` faz o mesmo — a colisão de `seq`
+entre dois `aos serve` não era alcançável no nó composto. O que era alcançável era a via do
+INSPECTOR, e é essa que fecha.
+
+Deliberadamente NÃO se dobrou a tranca dentro de `Open`: o pacote `conformance` mede a ausência de
+arbitragem entre escritores com N `Open` concorrentes (o sensor do AOS-100), e dobrá-la faria o
+substrato parecer que ganhou uma garantia que não tem — a armadilha que esse pacote existe para
+desarmar.
 
 ---
 
@@ -397,19 +475,22 @@ o gémeo do `Flush` (`:238-268`) verifica o ficheiro e **nunca retenta**, pelo q
 
 ### Critérios de Aceitação
 
-- [ ] `desfazer` repõe o `bufio.Writer` (`Reset`) ou marca `envenenado`, de modo que um erro
+- [x] `desfazer` repõe o `bufio.Writer` (`Reset`) ou marca `envenenado`, de modo que um erro
       terminal deixe de se anunciar como retentável
-- [ ] A costura `ficheiroWAL` passa a cobrir o caminho de escrita, ou o teste passa a substituir
+- [x] A costura `ficheiroWAL` passa a cobrir o caminho de escrita, ou o teste passa a substituir
       também o writer — o `Write` de `ficheiroFalhado` deixa de ser código morto
-- [ ] Um teste no molde de `TestWAL_FsyncFalhado_RetryNaoDuplicaSeq` que **retente** depois de um
+- [x] Um teste no molde de `TestWAL_FsyncFalhado_RetryNaoDuplicaSeq` que **retente** depois de um
       `Flush` falhado com a falha removida, e exija sucesso ou erro terminal explícito
-- [ ] O contraste entre os dois caminhos (`Flush` e `Sync`) fica fixado por teste, para que a
+- [x] O contraste entre os dois caminhos (`Flush` e `Sync`) fica fixado por teste, para que a
       assimetria não regresse
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: **nó** com WAL; latente até haver falha de I/O. **Confirmado por
-execução.** Precede AOS-349, que precisa da costura reparada para ser demonstrável.
+**IMPLEMENTADO** (2026-09-06). `desfazer` repõe o `bufio.Writer` (`Reset`), e os três `Write` passam
+também por lá. Nova costura `wal.trocarFicheiro`, que troca descritor E writer de uma vez — antes
+trocava-se só `s.wal.f` e o `Write` da sonda era código morto (`writes=0`). Mutação verificada: com
+o `Reset` removido, o retry com a falha REMOVIDA devolve a mesma mensagem ENOSPC, reproduzindo o
+defeito medido.
 
 ---
 
@@ -442,17 +523,24 @@ existe para a repor**.
 
 ### Critérios de Aceitação
 
-- [ ] `desfazer` deixa de poder estender o ficheiro: a reposição verifica o tamanho real antes de
+- [x] `desfazer` deixa de poder estender o ficheiro: a reposição verifica o tamanho real antes de
       truncar, e um `w.tamanho` à frente do ficheiro é condição de erro terminal (`envenenado`), não
       de truncatura
-- [ ] Um teste que reproduza a dessincronização e prove que o append falhado **não** fica durável
-- [ ] Um teste que prove que a reposição normal (ficheiro coerente) continua a funcionar
-- [ ] O caso de `w.tamanho` dessincronizado é distinguível no erro devolvido ao operador
+- [x] Um teste que reproduza a dessincronização e prove que o append falhado **não** fica durável
+- [x] Um teste que prove que a reposição normal (ficheiro coerente) continua a funcionar
+- [x] O caso de `w.tamanho` dessincronizado é distinguível no erro devolvido ao operador
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: **nó** com WAL. **Confirmado por execução.** Depende de AOS-348
-(costura de teste) e é agravado por AOS-346 + AOS-347, que criam a condição de entrada.
+**IMPLEMENTADO** (2026-09-06), com uma correcção ao remédio que o próprio teste obrigou a fazer.
+Verificar em `desfazer` NÃO chega: o WAL é aberto em `O_APPEND`, pelo que o registo já aterrou no
+fim REAL do ficheiro antes de o `desfazer` correr — e, por aterrar numa fronteira de registo antigo,
+ficava bem-formado e ressuscitava no replay. A verificação corre ANTES da primeira escrita.
+
+Só o ENCOLHIMENTO é recusado, e a restrição é deliberada: um ficheiro MAIOR do que a memória é o
+outro escritor (DEF-282), e recusá-lo faria o substrato parecer que arbitra entre processos. Medido
+ao escrever isto — com `real != antes` o sensor `TestDefeito_DoisEscritoresTornamOWALInabrivel`
+ficou VERMELHO.
 
 ---
 
@@ -488,17 +576,23 @@ substrato morto atravessa a prontidão, o gauge e o SLI sem acender nada.
 
 ### Critérios de Aceitação
 
-- [ ] `Healthy()` do store de referência reflecte o estado do WAL (envenenado, ou writer morto)
-- [ ] `Healthy()` do backend JetStream reflecte o estado da ligação
-- [ ] Um teste por backend que ponha o substrato em estado de recusa e exija `Healthy() == false`
-- [ ] Um teste que prove que `/readyz` deixa de responder 200 nesse estado, e que o gauge
+- [x] `Healthy()` do store de referência reflecte o estado do WAL (envenenado, ou writer morto)
+- [x] `Healthy()` do backend JetStream reflecte o estado da ligação
+- [x] Um teste por backend que ponha o substrato em estado de recusa e exija `Healthy() == false`
+- [x] Um teste que prove que `/readyz` deixa de responder 200 nesse estado, e que o gauge
       `aos_eventstore_healthy` vai a 0
-- [ ] O comentário de `slo_evaluator.go:468` é actualizado: o eixo do WAL deixa de estar aberto
+- [x] O comentário de `slo_evaluator.go:468` é actualizado: o eixo do WAL deixa de estar aberto
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: **nó**, nos dois backends. **Confirmado por execução** no backend
-de referência; o backend JetStream é leitura verificada.
+**IMPLEMENTADO** (2026-09-06) nos dois backends. O estado do WAL é publicado num átomo
+(`wal.recusaEscritas`) e não lido por `w.mu` — o mutex é detido durante o `fsync`, e o `/readyz` não
+pode ficar refém da latência do disco; há teste que prova que `Healthy()` responde com o mutex do
+WAL detido. O backend JetStream passa a exigir socket vivo (`natsjs.Conn.Ligada`).
+
+A asserção «um store aberto devia estar Healthy» de `jetstream/logica_test.go` foi INVERTIDA:
+aquele store é construído sem cliente nenhum, e dizê-lo saudável era a crença que este ticket
+remove.
 
 ---
 
@@ -542,20 +636,22 @@ atestação condicional, fizeram-no para o rootfs, e não o fizeram para o secco
 
 ### Critérios de Aceitação
 
-- [ ] `driver.go:73-78` e `lifecycle.go:153-156` passam a dizer o que `doc.go:99-101` já diz
+- [x] `driver.go:73-78` e `lifecycle.go:153-156` passam a dizer o que `doc.go:99-101` já diz
       correctamente — quem impõe o perfil, e em que drivers
-- [ ] O evento de ciclo de vida deixa de atestar um perfil não aplicado: ou `SeccompProfileHash` é
+- [x] O evento de ciclo de vida deixa de atestar um perfil não aplicado: ou `SeccompProfileHash` é
       omitido quando `inst.Kind != DriverFake`, ou o evento ganha um campo que diga **quem** impôs —
       a mesma forma que `events.go:53-55` já usa para o `RootFSBaseDigest`
-- [ ] Um teste que construa um `Launcher` com o driver Firecracker e prove que o evento selado não
+- [x] Um teste que construa um `Launcher` com o driver Firecracker e prove que o evento selado não
       afirma imposição que não houve
-- [ ] O residual fica declarado onde o repositório declara residuais deste eixo — o perfil só é
+- [x] O residual fica declarado onde o repositório declara residuais deste eixo — o perfil só é
       imposto no `FakeDriver`, e o caminho real depende de o guest o aplicar
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: **nó** na stack `dev-hardened`, que liga o executor remoto.
-Correcção documental + de evento; **não exige** montar o substrato nem tocar em infra.
+**IMPLEMENTADO** (2026-09-06) pela opção (b) — o evento ganha `SeccompEnforcedBy`, na mesma forma
+que `events.go` já usava para o `RootFSBaseDigest`. A qualificação viaja COLADA ao hash: onde há
+hash há sempre um `seccomp_enforced_by` explícito, nunca um hash nu. Teste por driver
+(firecracker/gvisor ⇒ `none`, fake ⇒ `driver`).
 
 ---
 
@@ -590,18 +686,22 @@ erro. A porta foi pensada, e este eixo escapou.
 
 ### Critérios de Aceitação
 
-- [ ] `Streams()` passa a poder devolver erro na porta e nas duas implementações
-- [ ] `governance_restore.go` distingue «não há streams» de «não foi possível perguntar», e trata o
+- [x] `Streams()` passa a poder devolver erro na porta e nas duas implementações
+- [x] `governance_restore.go` distingue «não há streams» de «não foi possível perguntar», e trata o
       segundo como fail-closed — um legal hold não pode ser silenciosamente reduzido
-- [ ] Os outros três consumidores tratam o erro de forma explícita e declarada
-- [ ] Um teste que injecte falha na enumeração e prove que o restauro de governação **não** conclui
+- [x] Os outros três consumidores tratam o erro de forma explícita e declarada
+- [x] Um teste que injecte falha na enumeração e prove que o restauro de governação **não** conclui
       com um índice vazio
-- [ ] `tecnica/12_Contratos_de_Interface.md` reflecte a assinatura nova, se lá estiver declarada
+- [~] `tecnica/12_Contratos_de_Interface.md` reflecte a assinatura nova, se lá estiver declarada
+      · **NÃO APLICÁVEL**: a assinatura não está lá declarada (grep por `EventStorePort` e por
+        `Streams` nesse ficheiro não devolve nada).
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: **nó** sob `AOS_EVENTSTORE_NATS`. **Ticket de maior raio de alcance
-do epic — não pode partilhar vaga com nenhum outro** (§0.4).
+**IMPLEMENTADO** (2026-09-06). Raio MAIOR do que o epic previa: `eventstore.BackupSource` declara a
+mesma assinatura, pelo que `platform/backup/exporter.go` entrou também — e aí a direcção certa é
+fail-closed, porque um export sobre uma enumeração falhada seria um backup incompleto devolvido como
+sucesso.
 
 ---
 
@@ -635,17 +735,18 @@ não persiste.
 
 ### Critérios de Aceitação
 
-- [ ] `IngestStream` persiste no WAL quando o store tem um, **sem** duplicar no caminho de replay de
+- [x] `IngestStream` persiste no WAL quando o store tem um, **sem** duplicar no caminho de replay de
       arranque (a distinção `s.wal == nil` durante `restoreInto` fica explícita e testada)
-- [ ] Um teste `Open(path)` → `IngestStream` → `Close` → reabrir → `Read` que prove que os eventos
+- [x] Um teste `Open(path)` → `IngestStream` → `Close` → reabrir → `Read` que prove que os eventos
       restaurados sobrevivem ao reinício
-- [ ] Um teste que prove que o replay de arranque continua a não duplicar
-- [ ] O comentário de `backup.go` declara qual dos dois caminhos persiste e porquê
+- [x] Um teste que prove que o replay de arranque continua a não duplicar
+- [x] O comentário de `backup.go` declara qual dos dois caminhos persiste e porquê
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: **latente** — nenhum caminho composto o alcança hoje. Sobe a P1 no
-dia em que `BackupDestination` for injectado.
+**IMPLEMENTADO** (2026-09-06). A persistência é em LOTE (`wal.appendLote`, com reposição ao nível do
+lote): um restauro que devolve erro não deixa meio lote durável. Mutação verificada: com a escrita
+desligada, o restauro evapora no reinício (`E_STREAM_NOT_FOUND`).
 
 ---
 
@@ -677,19 +778,25 @@ declarada que o substrato que o AOS-100 tornou preferencial não pode cumprir.
 
 ### Critérios de Aceitação
 
-- [ ] O backend JetStream emite `ErrNoQuorum` quando a condição é a que o sentinela nomeia, ou
+- [x] O backend JetStream emite `ErrNoQuorum` quando a condição é a que o sentinela nomeia, ou
       `burndownTransitorio` passa a reconhecer `natsjs.ErrDesligado` — uma das duas, com a escolha
       justificada
-- [ ] Um teste que prove que uma indisponibilidade transitória do substrato replicado **não** mata o
+- [x] Um teste que prove que uma indisponibilidade transitória do substrato replicado **não** mata o
       run à primeira fronteira
-- [ ] `trajectory.go` devolve 503 e não 500 nessa condição
-- [ ] A promessa de `posture_banner.go:426` passa a ser verdadeira nos dois substratos, ou é
+- [x] `trajectory.go` devolve 503 e não 500 nessa condição
+- [x] A promessa de `posture_banner.go:426` passa a ser verdadeira nos dois substratos, ou é
       qualificada para dizer em qual vigora
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: **nó** sob `AOS_EVENTSTORE_NATS`. Degradação de disponibilidade,
-**fail-closed** — o run aborta, não continua cego —, pelo que não há perda de integridade.
+**IMPLEMENTADO** (2026-09-06) pela primeira opção — o backend replicado traduz `natsjs.ErrDesligado`
+para `eventstore.ErrNoQuorum`, EMBRULHANDO a causa. A escolha é o ponto: o sentinela é o CONTRATO da
+porta, e um contrato que só uma implementação consegue produzir é um detalhe da implementação de
+referência a vazar para o plano de controlo. Alargar a lista de `burndownTransitorio` deixava o
+próximo consumidor a ter de conhecer os sentinelas de cada backend.
+
+**NÃO VERIFICADO contra cluster real** — os testes medem a tradução, que é uma função pura da cadeia
+de erros.
 
 ---
 
@@ -727,17 +834,20 @@ Nada em `tecnica/17` cobre isto: a §5.4 lista o egress como **entregue**, e nen
 
 ### Critérios de Aceitação
 
-- [ ] Existe um predicado de presença para o hook de egress, no molde de `hasActiveScopeGate`
-- [ ] `NewProductionSecure` recusa uma cadeia sem hook de egress
-- [ ] Um guard-test `RejectsMissingEgress`, simétrico do `RejectsMissingScopeGate`
-- [ ] O teste-veneno ganha a mutação por **omissão** (não só por substituição pelo stub), e passa a
+- [x] Existe um predicado de presença para o hook de egress, no molde de `hasActiveScopeGate`
+- [x] `NewProductionSecure` recusa uma cadeia sem hook de egress
+- [x] Um guard-test `RejectsMissingEgress`, simétrico do `RejectsMissingScopeGate`
+- [x] O teste-veneno ganha a mutação por **omissão** (não só por substituição pelo stub), e passa a
       exercitar `NewProductionSecure` em vez da via crua
-- [ ] O doc de `ErrEgressStub` passa a descrever o que a guarda impõe de facto
+- [x] O doc de `ErrEgressStub` passa a descrever o que a guarda impõe de facto
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: **latente** — alcançável por uma edição de uma linha em
-`secured.go`. É o único defeito do eixo do egress que sobreviveu à refutação.
+**IMPLEMENTADO** (2026-09-06). `ErrEgressHookMissing` (sentinela próprio, distinto de
+`ErrEgressStub`: a causa é oposta — slot vazio vs. slot ocupado por um no-op — e a correcção do
+chamador também) mais `hasActiveEgressHook`. O predicado casa pelo NOME do slot e não pelo tipo,
+porque o hook real vive no substrato e a fronteira de camadas proíbe o kernel de o importar; o
+limite (presença ≠ eficácia) fica declarado. Guarda provada não-vacuosa por mutação.
 
 ---
 
@@ -784,21 +894,21 @@ removem a rede por inteiro** (`orchestrator/main.go:113-125` sem `network-interf
 
 ### Critérios de Aceitação
 
-- [ ] As cinco declarações passam a descrever o estado real, com a nota de data e commit que
+- [x] As cinco declarações passam a descrever o estado real, com a nota de data e commit que
       `tecnica/14` §5.2 já usa como método
-- [ ] `tecnica/14:162` usa a classificação correcta da sua própria legenda, e a «Consequência
+- [x] `tecnica/14:162` usa a classificação correcta da sua própria legenda, e a «Consequência
       declarada» é reescrita — reconhecendo que agrava
-- [ ] `DEF-701` é corrigida ou fechada, conforme o que o código sustenta hoje
-- [ ] O texto de `deploy/node/README.md:147` deixa de descrever o estado antigo — as duas variáveis
+- [x] `DEF-701` é corrigida ou fechada, conforme o que o código sustenta hoje
+- [x] O texto de `deploy/node/README.md:147` deixa de descrever o estado antigo — as duas variáveis
       de URL **já** constam da mesma tabela (`:149`, `:150`), e é só a linha do driver que as ignora
-- [ ] Fica registado que o desenho escolhido é **remoção** de rede e não filtragem, para que o
+- [x] Fica registado que o desenho escolhido é **remoção** de rede e não filtragem, para que o
       condicional de `network/doc.go:61-63` não volte a ser lido como plano em vigor
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: documental. Pré-requisito de leitura de AOS-344 — a §5.2-f é o
-mesmo parágrafo nos dois tickets, mas por razões distintas: aqui é o que ela diz sobre os drivers,
-lá é o mitigante que ela invoca.
+**IMPLEMENTADO** (2026-09-06). As cinco declarações corrigidas. `DEF-701` passou de ABERTO a
+MITIGADO com a redacção reescrita — a anterior era FALSA e SOBRESTIMAVA o risco (é a classe que
+`DEF-814` nomeia), e o gatilho de saída que declarava já tinha ocorrido.
 
 ---
 
@@ -838,18 +948,19 @@ lida de volta. Mas essa razão não está em lado nenhum, e sem ela a assimetria
 
 ### Critérios de Aceitação
 
-- [ ] `perda_test.go:207` passa a `t.Errorf`, ou equivalente que falhe quando há cluster e falta o
+- [x] `perda_test.go:207` passa a `t.Errorf`, ou equivalente que falhe quando há cluster e falta o
       comando de morte
-- [ ] O comentário de `durable_corrupcao_a_meio_test.go:27` passa a dar o argumento temporal
-- [ ] `jetstream/store.go:170-182` ganha o comentário que explica porque só a colocação é lida de
+- [x] O comentário de `durable_corrupcao_a_meio_test.go:27` passa a dar o argumento temporal
+- [x] `jetstream/store.go:170-182` ganha o comentário que explica porque só a colocação é lida de
       volta
-- [ ] Fica registado que a recusa do servidor a um `STREAM.CREATE` divergente
+- [x] Fica registado que a recusa do servidor a um `STREAM.CREATE` divergente
       (`natsjs/jetstream.go:124-129`) é **afirmação de documentação não medida** — nenhuma das oito
       adendas do relatório de medição a mediu
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: arnês e comentários. Nenhum altera comportamento de produção.
+**IMPLEMENTADO** (2026-09-06). (a) `t.Logf` → `t.Errorf`; (b) o argumento passa a ser temporal;
+(c) a razão da assimetria fica escrita; (d) registado como `DEF-816`.
 
 ---
 
@@ -885,17 +996,23 @@ fidelidade demonstrada, e o contrato não é a fronteira».
 
 ### Critérios de Aceitação
 
-- [ ] Existe um gate — ou um alvo opcional documentado — que levante o componente gVisor e corra pelo
+- [~] Existe um gate — ou um alvo opcional documentado — que levante o componente gVisor e corra pelo
       menos um cenário de isolamento contra o executor real
-- [ ] O gate declara o que prova e o que **não** prova, distinguindo fronteira de contrato
-- [ ] A dormência das suites que exigem `AOS_NATS_URL` e `-tags fclive` deixa de ser silenciosa: ou
+      · `scripts/ci/isolation-live.sh` + `make ci-isolation-live`. O caminho de SALTO foi corrido e é
+        ruidoso (compila a suite `-tags gvlive`, exige cada cenário por nome, corre o contrafactual).
+        O caminho REAL exige Linux + docker privilegiado e **NÃO FOI CORRIDO** neste ambiente.
+- [x] O gate declara o que prova e o que **não** prova, distinguindo fronteira de contrato
+- [x] A dormência das suites que exigem `AOS_NATS_URL` e `-tags fclive` deixa de ser silenciosa: ou
       um relatório de cobertura as nomeia, ou existe uma linha no registo que a declare
-- [ ] O procedimento manual continua documentado para o Firecracker, onde a exigência de KVM é
+- [x] O procedimento manual continua documentado para o Firecracker, onde a exigência de KVM é
       legítima
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: CI. É o ticket que fecha a lacuna de **evidência** que a §7.2 de
-`analises/12` declara.
+**IMPLEMENTADO** (2026-09-06), com o caminho real por correr neste ambiente. Dois artefactos:
+`scripts/ci/isolation-live.sh` (gate opcional, salta RUIDOSAMENTE e corre na mesma o contrafactual)
+e `scripts/ci/dormencia.sh` (nomeia as 45 suites que exigem `AOS_NATS_URL` e EXIGE que as suites
+atrás de build tag COMPILEM). O segundo foi provado a avermelhar: com um símbolo inexistente na
+suite `gvlive`, «packages/security-tests NÃO compila com -tags gvlive».
 
 ---
