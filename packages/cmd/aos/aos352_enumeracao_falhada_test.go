@@ -25,10 +25,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	audit "github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/substrate/eventstore"
+	"github.com/aos-ref/substrate/eventstore/natsjs"
 )
 
 // errEnumeracao é a falha injectada: o substrato não conseguiu responder à pergunta.
@@ -133,5 +135,40 @@ func TestAOS352_StoreDeReferenciaDistingueFechadoDeVazio(t *testing.T) {
 	got, err := s.Streams()
 	if !errors.Is(err, eventstore.ErrClosed) {
 		t.Fatalf("Streams() de um store FECHADO = (%v, %v), quero ErrClosed", got, err)
+	}
+}
+
+// TestAOS354_BurndownTransitorioReconheceOSubstratoReplicado fecha a lacuna que a revisão
+// adversarial nomeou: o teste de AOS-354 vive em `jetstream` e REPLICA localmente a lista
+// fechada de `burndownTransitorio` em vez de a importar — se a lista real mudasse, não
+// avermelhava. Aqui exercita-se a FUNÇÃO REAL, deste pacote, com o erro que o backend
+// replicado produz.
+//
+// É a composição que dá o AC2 de AOS-354: a tradução acontece no backend (medida lá) e o
+// consumidor reconhece-a (medido aqui).
+func TestAOS354_BurndownTransitorioReconheceOSubstratoReplicado(t *testing.T) {
+	cru := natsjs.ErrDesligado
+	if burndownTransitorio(cru) {
+		t.Fatal("controlo inválido: o erro cru do substrato replicado já era transitório " +
+			"antes da tradução — este teste não mediria nada")
+	}
+
+	// A FORMA que o backend replicado emite: o sentinela canónico a embrulhar a causa. Que
+	// é ESTA a forma emitida é provado do outro lado, por
+	// `jetstream.TestAOS354_DesligadoPassaAResponderAoSentinelaCanonico`; aqui prova-se que
+	// o consumidor REAL a reconhece. Nenhum dos dois testes sozinho dá o AC — a divisão é
+	// deliberada, porque `indisponibilidadeTransitoria` é privada ao backend e exportá-la
+	// só para um teste tornaria pública uma peça que não é contrato.
+	traduzido := fmt.Errorf("%w: %w", eventstore.ErrNoQuorum, cru)
+	if !burndownTransitorio(traduzido) {
+		t.Fatalf("burndownTransitorio(%v) = false — uma indisponibilidade TRANSITÓRIA do "+
+			"substrato replicado lê-se como CEGUEIRA e mata o run à PRIMEIRA fronteira, "+
+			"contra o que posture_banner.go promete por escrito (AOS-354)", traduzido)
+	}
+
+	// E o contraste que dá sentido ao anterior: ausência de DADOS não é indisponibilidade.
+	if burndownTransitorio(eventstore.ErrStreamNotFound) {
+		t.Error("ErrStreamNotFound tratado como transitório — é ausência de dados, e não " +
+			"se resolve esperando")
 	}
 }

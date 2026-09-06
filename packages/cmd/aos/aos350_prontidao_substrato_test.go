@@ -23,6 +23,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -106,4 +108,67 @@ func extraiGauge(metrics string) string {
 		return "(o gauge aos_eventstore_healthy NÃO aparece no /metrics)"
 	}
 	return strings.Join(out, "\n")
+}
+
+// TestAOS350_ReadyzSegueUmWALREALQueRecusaEscritas é a metade que o teste acima não mede, e
+// a revisão adversarial teve razão em o exigir: `storeQueRecusa` sobrepõe `Healthy()` para
+// devolver o booleano que o próprio teste define, pelo que teria passado no código
+// PRÉ-correcção. Prova a cablagem, não o ticket.
+//
+// Aqui o substrato é REAL: um Event Store durável sobre um WAL em disco, que se ENCOLHE por
+// baixo do nó. O append seguinte detecta a dessincronização (AOS-349), o WAL passa a recusar
+// escritas, e é isso — e não um booleano de teste — que tem de fazer o `/readyz` cair.
+func TestAOS350_ReadyzSegueUmWALREALQueRecusaEscritas(t *testing.T) {
+	ctx := context.Background()
+	wal := filepath.Join(t.TempDir(), "events.wal")
+	es, err := eventstore.Open(wal)
+	if err != nil {
+		t.Fatalf("eventstore.Open: %v", err)
+	}
+	// O store é INJECTADO, logo o nó não é dono dele e o `node.Close()` não o fecha. Sem
+	// este defer o ficheiro fica aberto e a limpeza do TempDir falha em Windows.
+	defer func() { _ = es.Close() }()
+	cfg := tnBaseConfig()
+	cfg.EventStore = es
+	node, err := Bootstrap(ctx, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	defer func() { _ = node.Close() }()
+	svc, h := newAPI(t, node)
+	defer func() { _ = svc.Shutdown(ctx) }()
+
+	// Uma escrita real, para o WAL ter conteúdo e o nó estar genuinamente pronto.
+	if _, err := es.Append(ctx, "run-350", eventstore.EventInput{
+		Type: "probe", Payload: []byte(`{}`), RunID: "run-350", StepID: "s1",
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if code, _ := getProbe(h, "/readyz"); code != http.StatusOK {
+		t.Fatalf("/readyz com o substrato saudável = %d, quero 200", code)
+	}
+
+	// O FICHEIRO ENCOLHE POR BAIXO — é o que um inspector fazia antes de AOS-347, e o que
+	// um operador ou um script de rotação ainda podem fazer.
+	if err := os.Truncate(wal, 0); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if _, err := es.Append(ctx, "run-350", eventstore.EventInput{
+		Type: "probe", Payload: []byte(`{}`), RunID: "run-350", StepID: "s2",
+	}); err == nil {
+		t.Fatal("o append sobre um WAL encolhido devia ser recusado (AOS-349)")
+	}
+
+	// O SUBSTRATO ESTÁ MORTO. Era aqui que o /readyz ficava 200 verde e o orquestrador
+	// continuava a encaminhar tráfego.
+	code, _ := getProbe(h, "/readyz")
+	if code == http.StatusOK {
+		t.Fatal("/readyz respondeu 200 com um WAL REAL a recusar todas as escritas (AOS-350)")
+	}
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz = %d, quero 503", code)
+	}
+	if m := corpoDe(t, h, "/metrics"); !strings.Contains(m, "aos_eventstore_healthy 0") {
+		t.Fatalf("gauge não foi a 0 com o WAL real morto: %s", extraiGauge(m))
+	}
 }

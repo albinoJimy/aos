@@ -21,6 +21,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestAOS350_HealthyFicaFalsoComOWALARecusarEscritas é o teste que nasceu VERDE ao
@@ -109,16 +110,19 @@ func TestAOS350_HealthyNaoTomaOMutexDoWAL(t *testing.T) {
 	appendEv(t, s, "run-A", "s1", "t", `{"n":1}`)
 
 	s.wal.mu.Lock()
+	defer s.wal.mu.Unlock()
 	pronto := make(chan bool, 1)
 	go func() { pronto <- s.Healthy() }()
+	// Prazo PRÓPRIO e curto. A versão anterior usava `t.Context().Done()`, que só expira
+	// com o teste inteiro: se `Healthy()` bloqueasse, isto PENDURAVA até ao timeout global
+	// do `go test` em vez de falhar — um sensor que se despenha em vez de acusar não é um
+	// sensor. Apontado pela revisão adversarial.
 	select {
 	case ok := <-pronto:
-		s.wal.mu.Unlock()
 		if !ok {
 			t.Fatal("Healthy() = false com o WAL apenas OCUPADO")
 		}
-	case <-t.Context().Done():
-		s.wal.mu.Unlock()
+	case <-time.After(2 * time.Second):
 		t.Fatal("Healthy() BLOQUEOU no mutex do WAL — o /readyz ficaria refém da latência do fsync")
 	}
 }
