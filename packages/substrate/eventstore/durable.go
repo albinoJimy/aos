@@ -97,6 +97,10 @@ type wal struct {
 	// vai por caminho ([os.Truncate]), que abre o seu próprio descritor. Manter o
 	// O_APPEND é o que garante que a escrita seguinte aterra no novo fim do ficheiro.
 	truncar func(int64) error
+	// tamanhoReal lê o tamanho ACTUAL do ficheiro em disco. Vive ao lado de `truncar` e
+	// pela mesma razão — vai por caminho, não pelo descritor O_APPEND — e existe porque
+	// [wal.desfazer] tem de saber se o ficheiro ainda tem o tamanho que julga (AOS-349).
+	tamanhoReal func() (int64, error)
 	// envenenado != nil ⇒ o WAL ficou num estado que não se conseguiu repor e NÃO pode
 	// aceitar mais escritas. Ver [wal.desfazer].
 	envenenado error
@@ -128,6 +132,13 @@ func openWALAppend(path string) (*wal, error) {
 		w:       bufio.NewWriter(f),
 		tamanho: fi.Size(),
 		truncar: func(n int64) error { return os.Truncate(path, n) },
+		tamanhoReal: func() (int64, error) {
+			fi, err := os.Stat(path)
+			if err != nil {
+				return 0, err
+			}
+			return fi.Size(), nil
+		},
 	}, nil
 }
 
@@ -169,14 +180,55 @@ func (w *wal) append(ev Event) error {
 		return w.envenenado
 	}
 	antes := w.tamanho
+	// AOS-349 — A DESSINCRONIZAÇÃO VERIFICA-SE ANTES DE ESCREVER, NÃO DEPOIS.
+	//
+	// `w.tamanho` é o tamanho que ESTA goroutine julga que o ficheiro tem. O comentário do
+	// campo justificava não fazer `Stat` por append com «o valor é exacto — só esta
+	// goroutine escreve». Deixou de ser verdade: o ficheiro pode encolher POR BAIXO (outro
+	// processo a truncar; AOS-346 composto com AOS-347 levou um WAL de 1480 para 592 bytes
+	// por um comando de LEITURA), e a partir daí `w.tamanho` mente.
+	//
+	// Verificar só em [wal.desfazer] não chega, e a diferença foi medida ao escrever este
+	// teste: o WAL é aberto em O_APPEND, logo o registo aterra no FIM REAL do ficheiro
+	// ANTES de o `desfazer` sequer correr. Recusar nessa altura impede a extensão com
+	// zeros mas já não desescreve o registo — que, por aterrar exactamente na fronteira
+	// onde um registo antigo começava, fica bem-formado e RESSUSCITA no replay seguinte.
+	// A única barreira que impede um append falhado de ficar durável é a que corre ANTES
+	// da primeira escrita.
+	//
+	// O custo é um `Stat` por append, contra um `fsync` no mesmo caminho: ruído.
+	//
+	// SÓ O ENCOLHIMENTO, e a restrição é deliberada. Um ficheiro MAIOR do que a memória é o
+	// outro escritor a acrescentar — DEF-282, que este epic não reabre. Recusá-lo aqui
+	// faria o substrato PARECER que arbitra entre processos sem lhe dar a garantia que
+	// falta (o `expected_seq` atómico), que é exactamente a armadilha que o pacote
+	// `conformance` existe para desarmar; e avermelharia
+	// TestDefeito_DoisEscritoresTornamOWALInabrivel, o sensor que mede essa ausência.
+	// Medido ao escrever isto: com `real != antes` o sensor ficou vermelho.
+	if real, err := w.tamanhoReal(); err != nil {
+		w.envenenado = fmt.Errorf("eventstore/wal: nao foi possivel medir o ficheiro antes do append (%w) — "+
+			"sem essa medida nao se pode garantir que um erro nao deixa nada duravel; o WAL nao aceita mais escritas", err)
+		return w.envenenado
+	} else if real < antes {
+		w.envenenado = fmt.Errorf("eventstore/wal: %w: memoria=%d bytes, ficheiro=%d bytes — "+
+			"o WAL nao aceita mais escritas. Pare o no, reconcilie com a copia de seguranca e verifique "+
+			"quem mais escreve neste ficheiro", ErrWALDesincronizado, antes, real)
+		return w.envenenado
+	}
+	// AOS-348: os Write também vão por [wal.desfazer]. Não é simetria decorativa. O
+	// `bufio.Writer` descarrega sozinho quando o buffer enche, pelo que um `Write` pode
+	// já ter posto bytes no ficheiro; e um `Write` que falhe deixa o writer com um erro
+	// PEGAJOSO que envenena todos os seguintes. Sair por `return err` — como se fazia —
+	// não repunha o ficheiro NEM o writer, e o append seguinte morria aqui mesmo, sem
+	// passar por lado nenhum que soubesse dizer que aquilo já não era transitório.
 	if _, err := w.w.Write(hdr[:]); err != nil {
-		return err
+		return w.desfazer(antes, err)
 	}
 	if _, err := w.w.Write(payload); err != nil {
-		return err
+		return w.desfazer(antes, err)
 	}
 	if _, err := w.w.Write(tr[:]); err != nil {
-		return err
+		return w.desfazer(antes, err)
 	}
 	// A PARTIR DAQUI OS BYTES PODEM JÁ ESTAR NO FICHEIRO, e é isso que o revert do
 	// chamador assume que não acontece. Qualquer falha destas duas chamadas passa por
@@ -228,6 +280,40 @@ func (w *wal) append(ev Event) error {
 // um Store que recusa escritas em voz alta é um problema visível; um que continua a
 // aceitar acaba com um seq duplicado no ficheiro e um nó que não volta a arrancar.
 func (w *wal) desfazer(antes int64, causa error) error {
+	// AOS-349 — NÃO SE REPÕE UM FICHEIRO ESTENDENDO-O.
+	//
+	// [os.Truncate] para um tamanho MAIOR do que o ficheiro não trunca: ESTENDE, com
+	// zeros. Se o WAL tiver encolhido por baixo — o que AOS-346 composto com AOS-347
+	// tornava alcançável, um comando de INSPECÇÃO a truncar o log de 1480 para 592 bytes
+	// —, `w.tamanho` fica à frente do ficheiro real e a «reposição» faz o contrário do que
+	// promete. Executado:
+	//
+	//	ficheiro real=592 ; A.wal.tamanho (em memória)=1480 ; DESSINCRONIZADO
+	//	append com fsync falhado -> desfazer chama os.Truncate(path, 1480) sobre 888 bytes
+	//	tamanho após desfazer = 1480 (o ficheiro CRESCEU)
+	//	bytes nulos no ficheiro = 606 de 1480
+	//	replay final: seq=1, seq=2, seq=6      (3, 4 e 5 desaparecidos)
+	//	**o append FALHADO (s9) ficou DURÁVEL**
+	//
+	// A invariante central — «erro devolvido ⇒ nada ficou durável» — era violada PELO
+	// PRÓPRIO CÓDIGO QUE EXISTE PARA A REPOR.
+	//
+	// Um ficheiro mais curto do que a memória não é reponível por este mecanismo, e
+	// fingir que é seria pior do que parar: é condição TERMINAL, com sentinela próprio
+	// ([ErrWALDesincronizado]) para que o operador saiba que o problema não é o disco
+	// cheio — é que alguém mexeu no ficheiro por baixo do nó.
+	if real, err := w.tamanhoReal(); err != nil {
+		w.envenenado = fmt.Errorf("eventstore/wal: %w; nao foi possivel medir o ficheiro para a reposicao (%v) — "+
+			"o WAL pode conter um registo NAO confirmado e nao aceita mais escritas", causa, err)
+		return w.envenenado
+	} else if real < antes {
+		w.envenenado = fmt.Errorf("eventstore/wal: %w; %w: memoria=%d bytes, ficheiro=%d bytes — "+
+			"truncar para %d ESTENDERIA o ficheiro com zeros e tornaria DURAVEL um append que falhou; "+
+			"o WAL nao aceita mais escritas. Pare o no, reconcilie com a copia de seguranca e verifique "+
+			"quem mais escreve neste ficheiro",
+			causa, ErrWALDesincronizado, antes, real, antes)
+		return w.envenenado
+	}
 	if err := w.truncar(antes); err != nil {
 		w.envenenado = fmt.Errorf("eventstore/wal: %w; a truncatura de reposicao para %d bytes FALHOU (%v) — "+
 			"o WAL pode conter um registo NAO confirmado e nao aceita mais escritas", causa, antes, err)
@@ -242,8 +328,52 @@ func (w *wal) desfazer(antes int64, causa error) error {
 	// risco condicional por uma indisponibilidade certa — e as escritas seguintes
 	// reescrevem essa região de qualquer forma.
 	_ = w.f.Sync()
-	// Reposto: o ficheiro voltou ao estado anterior a este registo.
+	// AOS-348 — REPOR TAMBÉM O WRITER, não só o ficheiro.
+	//
+	// O `bufio.Writer` guarda o primeiro erro que encontra e devolve-o em TODAS as
+	// operações seguintes, para sempre. Sem este `Reset`, um `Flush` falhado matava o WAL
+	// de forma definitiva enquanto o anunciava como transitório: o append seguinte morria
+	// já no `w.w.Write`, com a mensagem do erro ORIGINAL, sem passar por aqui e sem marcar
+	// `envenenado`. O `Store.Append` embrulhava-o em «persistir evento committed» e o
+	// chamador lia «ENOSPC», concluía «disco cheio, volto a tentar» — e nunca mais escrevia
+	// nada. Medido lado a lado com o caminho gémeo:
+	//
+	//	[Flush]  2.º append falha = "persistir evento committed: sonda: write falhou (ENOSPC)"
+	//	         RETRY com a falha REMOVIDA = mesma mensagem ENOSPC   ****  MORREU
+	//	[fsync]  falha = "sonda: fsync falhou (EIO)"
+	//	         RETRY = <nil>                                        ****  RECUPERA
+	//
+	// Mesma falha transitória, mesmo retry, desfechos opostos. O `Reset` fecha a
+	// assimetria: descarta o que ficou no buffer (o registo que não foi confirmado a
+	// ninguém — é isso mesmo que se quer deitar fora), limpa o erro pegajoso e volta a
+	// apontar ao ficheiro, que o `truncar` acima acabou de repor. Se a avaria for
+	// persistente, o append seguinte falha OUTRA VEZ e volta a passar por aqui — que é o
+	// comportamento honesto; o que não pode é morrer calado a fingir-se retentável.
+	w.w.Reset(w.f)
+	// Reposto: o ficheiro e o writer voltaram ao estado anterior a este registo.
 	return causa
+}
+
+// trocarFicheiro substitui o descritor do WAL e RECONSTRÓI o `bufio.Writer` sobre ele.
+//
+// # AOS-348 — PORQUE A COSTURA TINHA DE CRESCER
+//
+// [ficheiroWAL] existe para tornar exercitável o ramo «Flush passa, Sync falha». Mas o
+// `bufio.Writer` é construído em [openWALAppend] sobre o `*os.File` ORIGINAL, pelo que
+// trocar só `s.wal.f` — como os testes faziam — intercepta `Sync` e `Close` e NÃO o
+// caminho de ESCRITA. Medido: `writes=0`. O `Write` da sonda era código morto, e foi por
+// isso que o defeito do erro pegajoso do `Flush` viveu tanto tempo sem ser visto.
+//
+// Trocar as duas coisas à mão, no teste, é o que um teste já fazia — e é precisamente o
+// tipo de detalhe que o teste seguinte esquece. Aqui a troca é atómica e é uma só chamada.
+//
+// Só faz sentido com o buffer VAZIO (a seguir a um append bem-sucedido, que fez Flush):
+// substituir o writer descarta o que lá estivesse. Uso restrito a testes deste pacote.
+func (w *wal) trocarFicheiro(f ficheiroWAL) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.f = f
+	w.w = bufio.NewWriter(f)
 }
 
 // close descarrega e fecha o ficheiro do WAL (idempotente).

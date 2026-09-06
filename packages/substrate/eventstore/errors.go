@@ -72,4 +72,12 @@ var (
 	// Não é uma avaria: é a postura de um abridor de INSPECÇÃO, que existe para poder
 	// olhar para um WAL sem lhe poder tocar. Ver AOS-347.
 	ErrReadOnly = &StoreError{Code: "E_READ_ONLY", msg: "event store aberto so para leitura — nao aceita escritas"}
+
+	// ErrWALDesincronizado — o tamanho que o WAL julga ter em memória está À FRENTE do
+	// ficheiro real: o ficheiro ENCOLHEU por baixo do escritor (outro processo truncou-o,
+	// ou o substrato repô-lo). É condição TERMINAL e não de reposição: truncar para um
+	// tamanho MAIOR do que o ficheiro ESTENDE-O com zeros em vez de o repor, e um append
+	// que tinha FALHADO passaria a durável no meio de um buraco de bytes nulos. Ver
+	// AOS-349 e [wal.desfazer].
+	ErrWALDesincronizado = &StoreError{Code: "E_WAL_DESSINCRONIZADO", msg: "o tamanho do WAL em memoria esta a frente do ficheiro real — o ficheiro encolheu por baixo do escritor"}
 )

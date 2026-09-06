@@ -33,10 +33,12 @@ var (
 // cmdWALCount abre o Event Store durável (WAL) em --path por REPLAY e imprime, numa única
 // linha, o NÚMERO de eventos committed do stream --run — opcionalmente filtrado aos TURNOS
 // DURÁVEIS (--turns ⇒ só eventos "turn.recorded"). É um diagnóstico READ-ONLY: só reconstrói o
-// store a partir do WAL e conta; NÃO submete trabalho nem grava eventos novos (o único write
-// possível é a truncatura crash-safe idempotente de um tail parcial, o MESMO que o nó faz no
-// arranque). Destina-se a correr num contentor EFÉMERO da MESMA imagem, com o contentor
-// principal PARADO (sem escritor concorrente do WAL).
+// store a partir do WAL e conta; NÃO submete trabalho, NÃO grava eventos novos e NÃO toca no
+// ficheiro — [eventstore.OpenReadOnly] não anexa o WAL para append nem repõe a cauda parcial
+// (AOS-347). Destina-se a correr num contentor EFÉMERO da MESMA imagem; ao contrário do que
+// esta linha dizia antes, JÁ NÃO EXIGE o contentor principal parado, porque um abridor que não
+// escreve não tem por onde colidir no seq nem por onde encolher o log. O volume pode estar
+// montado `:ro`.
 //
 // Semântica de saída (fácil de capturar num `$(...)` de shell): imprime só o inteiro. Um stream
 // inexistente conta 0 (um run que nunca gravou trabalho committed é 0 turnos — não é erro).
@@ -56,7 +58,14 @@ func cmdWALCount(args []string, w io.Writer) error {
 		return ErrWALRunRequired
 	}
 
-	es, err := eventstore.Open(*path)
+	// AOS-347 — INSPECÇÃO ABRE SÓ PARA LEITURA. O `wal-count` corre com o nó a
+	// funcionar (é o que um operador usa a meio de um incidente), e [eventstore.Open]
+	// anexava o WAL para APPEND: ganhava uma segunda cabeça de escrita, que colide no
+	// seq com a do nó (medido: seqs [1 2 3 4 4 5 5] e o arranque seguinte a recusar com
+	// E_RESTORE_ORDER), e podia TRUNCAR o ficheiro ao repor a cauda parcial. O comentário
+	// dizia «com o contentor principal PARADO» — uma convenção documentada, não uma
+	// restrição imposta. [eventstore.OpenReadOnly] torna-a propriedade do tipo.
+	es, err := eventstore.OpenReadOnly(*path)
 	if err != nil {
 		return fmt.Errorf("aos: abrir Event Store duravel %q (replay do WAL): %w", *path, err)
 	}

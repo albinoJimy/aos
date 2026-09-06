@@ -46,8 +46,9 @@ var ErrWALSummaryPathRequired = errors.New("aos: --path obrigatorio (ficheiro WA
 
 // cmdWALSummary imprime o HISTOGRAMA DE TIPOS de um WAL do Event Store, mais o número de streams.
 //
-// READ-ONLY, no mesmo molde do [cmdWALCount]: abre por replay e conta. Corre num contentor
-// EFÉMERO da mesma imagem, com o contentor principal parado — não há escritor concorrente do WAL.
+// READ-ONLY, no mesmo molde do [cmdWALCount]: abre por replay e conta, por
+// [eventstore.OpenReadOnly] — sem anexar o WAL para append e sem tocar no ficheiro (AOS-347).
+// Corre num contentor EFÉMERO da mesma imagem, e já não exige o contentor principal parado.
 //
 // A saída é estável e fácil de comparar entre dois momentos:
 //
@@ -66,7 +67,14 @@ func cmdWALSummary(args []string, w io.Writer) error {
 		return ErrWALSummaryPathRequired
 	}
 
-	es, err := eventstore.Open(*path)
+	// AOS-347 — INSPECÇÃO ABRE SÓ PARA LEITURA. O `wal-summary` corre com o nó a
+	// funcionar (é o que um operador usa a meio de um incidente), e [eventstore.Open]
+	// anexava o WAL para APPEND: ganhava uma segunda cabeça de escrita, que colide no
+	// seq com a do nó (medido: seqs [1 2 3 4 4 5 5] e o arranque seguinte a recusar com
+	// E_RESTORE_ORDER), e podia TRUNCAR o ficheiro ao repor a cauda parcial. O comentário
+	// dizia «com o contentor principal PARADO» — uma convenção documentada, não uma
+	// restrição imposta. [eventstore.OpenReadOnly] torna-a propriedade do tipo.
+	es, err := eventstore.OpenReadOnly(*path)
 	if err != nil {
 		return fmt.Errorf("aos: abrir Event Store duravel %q (replay do WAL): %w", *path, err)
 	}
