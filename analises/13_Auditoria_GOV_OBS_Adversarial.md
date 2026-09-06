@@ -54,7 +54,7 @@ mecanismo está partido», e «a caixa não está marcada» com «o trabalho nã
 
 ### 1.2 Erros desta auditoria, declarados
 
-Cinco, porque escondê-los invalidaria o método.
+Seis, porque escondê-los invalidaria o método.
 
 1. **O HEAD e o ramo mudaram a meio da auditoria e eu não o detectei a tempo.** Fixei o estado auditado em
    `6613e47` / `feature/AOS-128-ux-dx-tests` e escrevi-o como se fosse estável; outra sessão levou o
@@ -81,7 +81,13 @@ Cinco, porque escondê-los invalidaria o método.
    por importar o Event Store por outras razões — logo teria passado sobre C-01. A sobredeclaração de
    cobertura em `tecnica/13:231` mantém-se; a ligação causal que eu lhe acrescentei não. Fica como aviso
    contra a tentação de fechar uma narrativa: o achado *quase* encaixava, e foi por isso que passou.
-5. **Uma medição ficou por fazer e não é substituível por leitura.** O comportamento do `/readyz` com o
+5. **Não apliquei à minha própria manchete a regra que impus aos oito refutadores.** A inércia do
+   TaintGate está declarada em quatro entradas do registo, e a DEF-604 nomeia `AOS-181, AOS-183`
+   juntos. Pela minha própria regra, isso seria deferimento declarado. A verificação salvou o achado
+   e melhorou-o (§2.3), mas não me salva a mim: o viés de quem acusa é mais forte sobre o achado de
+   que mais gosta, e o meu método não tinha nada que o apanhasse — foi a redacção dos tickets, feita
+   por outra pessoa, que o apanhou.
+6. **Uma medição ficou por fazer e não é substituível por leitura.** O comportamento do `/readyz` com o
    WORM montado só-de-leitura *a meio de um run* não foi medido: em Windows um handle já aberto mantém
    acesso de escrita, e forçá-lo exigiria alterar código do repositório. Está declarado como NÃO DECIDIDA,
    não inferido.
@@ -132,7 +138,7 @@ racional escrito é explícito: carregar a política antes de ligar a barreira d
 O que está entregue é a segunda metade, e não a primeira. Verificado de primeira mão:
 
 - `packages/cmd/aos` **nunca** preenche `Privileged` — zero ocorrências fora de testes.
-- `packages/integration/secured.go:302-303` cai no fallback `NewStaticPrivilegedSet()`, cujo próprio
+- `packages/integration/secured.go:301-303` cai no fallback `NewStaticPrivilegedSet()`, cujo próprio
   comentário diz «classificador real (vazio)».
 - `secured.go:394` compõe `NewProductionSecure`, que **aceita** o conjunto vazio. O construtor que o
   recusaria — `NewProductionHardenedTaint`, com `ErrTaintGateInert` («conjunto privileged vazio ⇒ nenhuma
@@ -180,6 +186,36 @@ rede — e a rede está inerte sem que nada o diga. `allow_fs_read` é exactamen
 estrutural, que por desenho vale para todas as regras, foi substituída em silêncio por uma disciplina de
 escrita de política que ninguém verifica.
 
+### 2.3 A correcção que a redacção dos tickets me obrigou a fazer — e que melhora o achado
+
+Impus aos oito refutadores a regra de que uma hipótese já presente no `REGISTO-Deferimentos.md` é
+**deferimento declarado, não defeito novo**. Não a apliquei à minha própria manchete, e ela falha o
+teste: a inércia do TaintGate é o eixo de saída de **quatro** entradas — `DEF-604:222`,
+`DEF-606:224`, `DEF-808:238`, `DEF-809:239` — e a DEF-604 nomeia **`AOS-181, AOS-183` juntos**,
+descrevendo em texto o estado que o §2.1 apresentava como descoberta: «o PDP não carrega bundle e o
+conjunto `Privileged` é vazio».
+
+Cai, portanto, a alegação implícita de que isto era desconhecido. O que a verificação encontrou em
+vez dela é mais grave, e passa a ser a manchete:
+
+> **A mitigação que essas entradas invocam para se darem por contidas não existe.**
+
+A DEF-606 está classificada **MITIGADO** com este argumento textual: o ápice arranca com um gate
+«wired-mas-inerte, **declarando a postura via `Monitor.HasActiveTaintGate`** (sem alegar
+endurecimento que não tem)». Medido: `HasActiveTaintGate`
+(`kernel/reference-monitor/production.go:123`) tem **zero chamadores** fora do ficheiro que o
+define, e o `posture_banner.go` não tem função de postura para o Reference Monitor. A declaração
+honesta que sustenta o estado MITIGADO **nunca acontece**.
+
+O achado sobrevive com fronteira nítida — quatro pernas, todas verificadas:
+
+| | |
+|---|---|
+| (a) | A DEF-606 afirma uma mitigação sem chamadores; o estado MITIGADO não se sustenta |
+| (b) | O gatilho de saída das quatro entradas («conjunto `Privileged` real no ápice») **não tem superfície de configuração** — o operador não o pode satisfazer nem que queira |
+| (c) | A metade AOS-181 foi entregue (AOS-220) sem a metade AOS-183, contra a ordem da `EPIC-18` §5 — e é a DEF-604 que as nomeia juntas, pelo que a violação da ordem estava registada e ninguém reparou |
+| (d) | Medido: `allow_fs_read` não tem a cláusula de taint, e uma tool call untrusted passou todos os hooks |
+
 **Severidade: alta. Alcançável hoje, e medida.** O que separa `cap:fs.read` de um efeito real não é a
 barreira de taint — é a ausência de um executor de sandbox provisionado.
 
@@ -211,7 +247,7 @@ detém o nó (quem escreve no directório do bundle escreve também o ficheiro q
 `AOS_POLICY_TRUST_ANCHOR` — troca o anchor em vez de fazer downgrade). Além disso o downgrade é sempre
 selado no WORM (AOS-310). A acusação de que o Model Gateway tem política própria não assinada é
 **falsa**: a allowlist é ed25519-assinada com trust anchor pinado por fingerprint em código
-(`allowlist.go:24-40,153-200`) e o nó compõe-a.
+(`model-gateway/policy/allowlist/allowlist.go:81,110,159`) e o nó compõe-a.
 
 **Deferimentos confirmados:** soberania por board desligada = DEF-909; `policydiff` inerte = residual
 declarado de AOS-310; `agent_class` forjável sob `IdentityStub` = DEF-602.
@@ -225,7 +261,7 @@ que o é.
 
 | # | Achado | Sev. | Alc. |
 |---|---|---|---|
-| G-04 | **O plano de governação não tem autorização por capability.** `readGov.authorize` exige apenas ID-token OIDC válido, `sub` não-vazio e uma claim `board` que resolva para uma região (`cmd/aos/sovereignty.go:164-212`, `read_credential.go:63-80`). Um token emitido para **ler** runs autoriza também `POST /dsar/erase` (crypto-shred irreversível), `/dsar/expire` e `/dsar/release`. Não há capability a extrair porque `oidc.Claims` **não tem campo de escopo** (`integration/oidc/oidc.go:151-164`), e um só par issuer/audience serve leitor e operador DSAR. Contraste que fecha o argumento: `/autonomy` — reversível — exige capability `autonomy:set`, pubkey e assinatura; o apagamento irreversível não exige nenhuma | **A** | **hoje** |
+| G-04 | **O plano de governação não tem autorização por capability.** `readGov.authorize` exige apenas ID-token OIDC válido, `sub` não-vazio e uma claim `board` que resolva para uma região (`cmd/aos/sovereignty.go:164-212`, `read_credential.go:62-82`). Um token emitido para **ler** runs autoriza também `POST /dsar/erase` (crypto-shred irreversível), `/dsar/expire` e `/dsar/release`. Não há capability a extrair porque `oidc.Claims` **não tem campo de escopo** (`integration/oidc/oidc.go:151-164`), e um só par issuer/audience serve leitor e operador DSAR. Contraste que fecha o argumento: `/autonomy` — reversível — exige capability `autonomy:set`, pubkey e assinatura; o apagamento irreversível não exige nenhuma | **A** | **hoje** |
 | G-05 | `/dsar/release` e `/dsar/expire` não fazem **nenhuma** verificação de região, contornando a barreira de residência de AOS-182/DEF-202 num caminho de destruição | M | hoje |
 | G-06 | No emissor de produção a `ClassPolicy` é fabricada da **mesma** flag `--caps` que alimenta a `UserAuthority` — `intersect(s,s) == s`, logo não há tecto de classe (`cmd/aos-issuer/main.go:197,207-208,218`). Mitigação real e parcial: com `--assertion` o nonce OIDC é o digest de `(agent,class,caps,ttl)` | B/M | hoje (exige autoridade de emissão) |
 | G-07 | A revogação é só por `jti`: revogar um pai não revoga filhos, e `verifyParent` não consulta a revogação (`identity/issuer_child.go:126-155`) | B | inalcançável (`IssueChild` não composto no nó) |
@@ -262,7 +298,7 @@ O que sobra, verificado ao longo de dezassete saltos de `loop.go:470` até ao di
 | # | Achado | Sev. | Alc. |
 |---|---|---|---|
 | G-08 | **O dual-control de L4/L5 é detectivo, não preventivo.** `autonomy_levels.go:369-372` implementa «ambiente DIFERENTE do último provisionamento ⇒ o ambiente GANHA, **em qualquer direcção**». O comentário justifica-o com a alavanca de resposta a incidente e o exemplo que dá é sempre *descer* (linha 375) — mas a regra também deixa **subir**: pôr `agt:dom=L5` em `AOS_AUTONOMY_LEVELS` e reiniciar aplica L5 **sem assinatura nenhuma**, quando a mesma mudança por `POST /autonomy` exige duas assinaturas distintas de detentores de `autonomy:set` (AOS-305). A mudança **é** selada no WORM como `config:node`, logo fica rastreável — o que cai é a prevenção, não a detecção. Nenhum documento a declara assim | M | hoje |
-| G-09 | **O selo WORM perde `agent_class` e `risk_class`** (`audit/record.go:32-35,65-73`). Por isso `POST /autonomy/simular:126` passa `""` como classe e **responde sobre uma política diferente da que vigora** em qualquer deployment governado por regras `class:` — uma superfície de simulação que mente ao operador | M | hoje |
+| G-09 | **O selo WORM não guarda a classe de agente** (`audit/record.go:32-35,64-73`). Por isso `POST /autonomy/simular:126` passa `""` onde `pdp/autonomy.go:58` lê `in.Principal.AgentClass`, e **responde sobre uma política diferente da que vigora** em qualquer deployment governado por regras `class:` — uma simulação que mente ao operador. *Correcção a uma versão anterior deste relatório, que acusava também a perda da `risk_class`: essa metade está mitigada de propósito — `autonomy_simular.go:124` chama `reclassificar` (`:196-224`), que reconstrói um `rm.Call` dos factos selados e corre o classificador real, precisamente para não divergir.* | M | hoje |
 | G-10 | O oráculo de autonomia não tem guarda `AOS_MODE=production`, ao contrário do TLS, da identidade e da sandbox. A perna «inerte em silêncio» da acusação é **falsa**: `posture_banner.go:312` imprime literalmente a armadilha («*sozinha, AOS_AUTONOMY_LEVELS e IGNORADA em silencio, ate malformada*») | B | hoje |
 | G-11 | O `PendingApproval` que chega ao humano (`loop.go:485-492`) não leva o nível de autonomia nem o modo de oversight — o aprovador decide sem saber sob que regime está a aprovar. Relevante para o Art. 14 | B | hoje |
 
@@ -284,7 +320,7 @@ caminho real do nó **é** durável (Event Store + ordem deliberada em `escalati
 
 | # | Achado | Sev. | Alc. |
 |---|---|---|---|
-| O-01 | **O OTLP sai sem atributos de recurso.** Não há `service.name` — zero ocorrências em todo o repositório — e `MarshalOTLP(spans, scope)` não tem sequer parâmetro por onde injectar recurso (`otlp.go:82-89`). Tudo chega ao backend como `unknown_service`. As configs de colector entregues não compensam. Verificado lendo os dois ficheiros de serialização por inteiro | **A** | hoje |
+| O-01 | **O OTLP sai sem atributos de recurso.** Não há `service.name` — zero ocorrências em todo o repositório — e `MarshalOTLP(spans, scope)` (`otlp.go:74`) não tem sequer parâmetro por onde injectar recurso. Tudo chega ao backend como `unknown_service`. **Precisão acrescentada na redacção dos tickets:** o struct de wire JÁ TEM o campo (`otlp.go:23-30`, `otlpResource.Resource`) — não falta representação, falta quem a preencha, o que reduz o custo da correcção sem reduzir o achado. As configs de colector entregues não compensam. Verificado lendo os dois ficheiros de serialização por inteiro | **A** | hoje |
 | O-02 | `SpanKind` fixo em `INTERNAL`, e é **pior** do que o acusado: `SpanData` **não tem campo `Kind`** — a porta não tem o conceito. A chamada ao modelo, que a convenção trata como CLIENT, sai como INTERNAL | **A** | hoje |
 | O-03 | `error.type` recebe a mensagem **crua** da tool (`monitor.go:253`). O argumento decisivo é interno ao ficheiro: `monitor.go:226` hasheia o Input com o comentário «o Input jamais é gravado no span», e a linha 253 escreve o erro cru da tool **na mesma função**. A correcção já existe escrita um pacote ao lado (`spanErrorType`, `worker.go:433-450`). Cardinalidade: baixa (cardinalidade alta é o desenho declarado). **Fuga de dados: média-alta** | M/A | hoje |
 | O-04 | A instrumentação do PDP existe e está **morta**: `pdp.WithTracer` tem call-sites só em `pdp/aos088_test.go`. O nó nunca o passa, logo `NoopTracer`. Ficam mortos o span `policy.reload` e o span do overlay de autonomia — que é literalmente o critério «exposição do nível corrente na observabilidade» | M | hoje |
@@ -337,10 +373,17 @@ não-aprovado executado — **cai**.
 O que sobra é dano de **fidelidade e prova**, não de efeito: trajectória fabricada (resposta nova colada a
 resultado antigo), possível terminação antecipada se a resposta ao vivo trouxer `Final=true`, e — sem
 mitigação nenhuma — o read-path soberano `GET /runs/{id}/reconstruct` a devolver **200 com uma trajectória
-curta e silenciosa**, que é a rota que um auditor externo usa. A correcção mínima é de três linhas:
-`Reconstruct` já lê `turn.recorded`; bastaria recusar no laço qualquer turno sem entrada em `caps` — a
-mesma decisão que a EPIC-21 já tomou («RECUSAR NOS DOIS CAMINHOS»), aplicada à **presença** e não só à
-**completude**.
+curta e silenciosa**, que é a rota que um auditor externo usa.
+
+**Correcção de uma prescrição errada desta auditoria.** A primeira versão deste parágrafo dizia que
+bastaria «recusar no laço qualquer turno sem entrada em `caps`». Isso é um **no-op**: o laço de
+`replay/sovereign_content.go:183` itera `order`, que é construído *a partir de* `caps` (`:168-170`),
+pelo que a condição nunca pode ser verdadeira. A recusa correcta compara dois conjuntos — os turnos
+conhecidos por `turn.recorded` (o `stepByTurn`, povoado em `:140-145`) contra as capturas presentes
+em `caps` — e recusa os que estão no primeiro e faltam no segundo. É a mesma decisão que a EPIC-21 já
+tomou («RECUSAR NOS DOIS CAMINHOS»), aplicada à **presença** e não só à **completude**. Uma
+prescrição errada num relatório de auditoria é pior do que nenhuma: manda escrever um teste que passa
+sem corrigir nada.
 
 **O que caiu.** «`resume-from-step` não verifica os turnos anteriores»: o próprio `engine.go:78-87` declara
 a janela e o harness corre o replay **completo** antes dos resumes. «O Event Store não é tamper-evident»:
@@ -351,8 +394,8 @@ call-sites»: deliberado e declarado, e o mitigante `tomarPosseDoWAL` **está** 
 ### 3.6 OBS — audit WORM
 
 **Em que sentido é WORM.** É um ficheiro normal — `O_CREATE|O_WRONLY|O_APPEND`, 0600
-(`audit/filestore.go:76`) — sem object-lock, HSM ou FS append-only. A garantia é **detecção** por SHA-256
-sem chave, não prevenção; o próprio `errors.go:100-105,117-119` di-lo. Isto **não é um defeito**: as
+(`audit/filestore.go:75`) — sem object-lock, HSM ou FS append-only. A garantia é **detecção** por SHA-256
+sem chave, não prevenção; o próprio `errors.go:102-107` di-lo. Isto **não é um defeito**: as
 fontes exigem *tamper-evident* (`tecnica/17` §5.1), não prevenção física, e object-lock/HSM não aparecem
 em nenhum DEF nem no catálogo de mitigações incompletas.
 
@@ -360,7 +403,7 @@ O defeito está do lado da detecção, e foi medido.
 
 | # | Achado | Sev. | Alc. |
 |---|---|---|---|
-| O-11 | **O `OpenFileStore` apaga registos válidos, fisicamente e em silêncio.** Medido numa cópia isolada: corrompidos 4 bytes do trailer de CRC do registo do meio (idx 2 de 6), `OpenFileStore` devolve **`err=nil`**, o ficheiro passa de **3528 para 1176 bytes** — quatro registos apagados do disco — `head` cai de 6 para 2, `VerifyStore` fica **verde**, e o `Append` seguinte devolve `audit_seq=3`, **reemitindo sequências já atribuídas**. Três descobertas que nenhuma leitura tinha visto: (a) o dano **cruza partições** — três partições caem juntas, porque a fronteira do dano é a posição no ficheiro, não a partição; (b) a verificação de adulteração de AOS-221 é **estruturalmente inalcançável** para este vector, porque `os.Truncate` corre **antes** de `verifyReplayedChain` — mediu-se uma mutação clássica de payload a sair verde com quatro registos apagados; (c) `FileStoreOption` tem uma única opção no pacote, logo o silêncio é propriedade da assinatura, não omissão de call-site. **Desenho ou defeito?** É a mesma linha a servir os dois casos e ela não os distingue: a recuperação de escrita truncada por crash funciona correctamente e é legítima, mas nos casos medidos o ficheiro está fisicamente **completo** e os registos seguintes estão inteiros e encadeados — e `Open` apaga-os na mesma. A heurística «pára no primeiro CRC mau» só é válida para uma cauda rasgada, porque uma cauda rasgada só pode estar no fim. Alcançável em `bootstrap.go:1144`. A âncora assinada apanha-o (medido), mas é opt-in por três variáveis que o banner declara ausentes | **A** | **hoje** |
+| O-11 | **O `OpenFileStore` apaga registos válidos, fisicamente e em silêncio.** Medido numa cópia isolada: corrompidos 4 bytes do trailer de CRC do registo do meio (idx 2 de 6), `OpenFileStore` devolve **`err=nil`**, o ficheiro passa de **3528 para 1176 bytes** — quatro registos apagados do disco — `head` cai de 6 para 2, `VerifyStore` fica **verde**, e o `Append` seguinte devolve `audit_seq=3`, **reemitindo sequências já atribuídas**. Três descobertas que nenhuma leitura tinha visto: (a) o dano **cruza partições** — três partições caem juntas, porque a fronteira do dano é a posição no ficheiro, não a partição; (b) a verificação de adulteração de AOS-221 é **estruturalmente inalcançável** para este vector, porque `os.Truncate` corre **antes** de `verifyReplayedChain` — mediu-se uma mutação clássica de payload a sair verde com quatro registos apagados; (c) `FileStoreOption` tem uma única opção no pacote, logo o silêncio é propriedade da assinatura, não omissão de call-site. **Desenho ou defeito?** É a mesma linha a servir os dois casos e ela não os distingue: a recuperação de escrita truncada por crash funciona correctamente e é legítima, mas nos casos medidos o ficheiro está fisicamente **completo** e os registos seguintes estão inteiros e encadeados — e `Open` apaga-os na mesma. A heurística «pára no primeiro CRC mau» só é válida para uma cauda rasgada, porque uma cauda rasgada só pode estar no fim. Alcançável em `bootstrap.go:1144`. A âncora assinada apanha-o (medido), mas é opt-in por três variáveis que o banner declara ausentes. **Porque sobreviveu:** existe teste para o caso complementar e não para este — `aos221_worm_tamper_test.go:45-46` **recalcula o CRC** depois de mutar o payload, de propósito, para que o registo chegue a `verifyReplayedChain`; ou seja, cobre-se o caso em que a truncagem NÃO dispara e não o caso em que dispara | **A** | **hoje** |
 | O-12 | **A configuração de produção que arranca é a insegura.** Medido no binário real: produção + Event Store durável + WORM vazio **arranca**, com o banner a declarar `worm=in-memory de referencia (nao-duravel)`; produção + `AOS_WORM_PATH` definido **recusa arrancar** (`ErrProductionNeedsDurableKEK`). Sem Vault externo, a única configuração de produção que arranca é a do WORM volátil. O incentivo está invertido, e `AOS_MODE=production` recusa um Event Store in-memory mas não tem guarda equivalente para o WORM | **A** | **hoje** |
 | O-13 | Um `deny` cujo `RecordMediation` falha continua a negar e **incrementa** o contador — mas perde o registo durável, e `Mediate` devolve `err=nil` (`monitor.go:478`, `seq, _ :=`). Achado novo da medição: com PERMIT e sink partido faz duas tentativas e grava zero. Um WORM em baixo nega 100% das tool calls sem deixar rasto nenhum, e de fora é indistinguível de um nó ocioso. `/metrics` expõe 17 séries, **nenhuma de mediação** | M | hoje |
 | O-14 | Lacunas de cobertura do trilho, na alínea que sobrevive: o registry/supply-chain audita para um `MemStore` descartável (`bootstrap.go:2803`, `modelcatalog.go:148`) — trust store e revalidações são seladas numa cadeia que ninguém lê, ninguém verifica, e que morre no shutdown. É a lacuna mais enganadora, porque o código *parece* auditado | M | hoje |
@@ -381,9 +424,9 @@ assinatura genuinamente fora do nó.
 |---|---|---|---|
 | C-01 | O `TeeSink` não é composto e `SecuredConfig` **não tem porta nenhuma** para um Event Store de mediação. `rmadapter.go:103` descarta o `Metadata` de AOS-340 justificando que «o canal está no Event Store» — onde não está. Canal inalcançável nos dois armazéns. Sobrevive por razão diferente da acusada: a severidade não vem de quem lê `tool.call.*` a jusante (ninguém lê), vem da justificação falsa que fecha a discussão | M | hoje |
 | C-02 | `tecnica/13:231` afirma que o gate `event-catalog` verifica que um nome catalogado em (a) é apendado ao Event Store; o `event-catalog.py` declara essa verificação como «implementada, medida contra a árvore, e **retirada por imprecisão**». **Sobredeclaração de cobertura de gate.** O documento afirma uma verificação que o script diz em voz alta não fazer — e fá-lo na secção que serve de inventário de cobertura. Não confundir com C-01: a verificação retirada era por-pacote e teria passado sobre `platform/audit`; o buraco de C-01 é de caminho de chamada e nenhum gate o cobre | M | hoje |
-| C-03 | `tecnica/14` §5.2 (o inventário de lacunas) afirma que «nenhuma variável de ambiente carrega um bundle» e que «o nó corre sempre `pdp.NewUnloaded()`»; o §4 da **mesma matriz** e o código dizem o contrário (`main.go:746,749`, `bootstrap.go:2379`). Há uma segunda instância em `tecnica/14:113`, que contradiz a ressalva onze linhas abaixo. Direcção do erro: **subdeclaração** — declara menos capacidade do que existe. Menos grave do que o inverso, mas está na secção que o §7 da própria matriz vende como a mitigação do risco «componente confundido com nó» | B/M | hoje |
-| C-04 | **DEF-405 está caduca**: continua a afirmar que o binário não expõe rota de promoção, quando `promotion_api.go:221,242` implementa `POST /promote` chamando o método exacto que a entrada diz ser inalcançável, e o ficheiro-âncora (`bootstrap.go:2337`) diz «a submissao de ratificacoes DEIXOU de ser deferida». Falsa desde 2026-08-11, com ≥12 commits ao registo desde então — incluindo um intitulado «seis declarações caducadas deixam de mentir» | M | hoje |
-| C-05 | O gate `estado-citado` é vacuoso e é um *required check*: output real `0 declaracao(oes) verificada(s); 1 abstencao`, exit 0. O gate `integration` sai verde com **10 de 16** códigos de porta ausentes, todos com `owner=AOS-196` — um ticket de higiene documental já fechado que nunca teve esse âmbito | M | hoje |
+| C-03 | `tecnica/14` §5.2 (o inventário de lacunas) afirma que «nenhuma variável de ambiente carrega um bundle» e que «o nó corre sempre `pdp.NewUnloaded()`»; o §4 da **mesma matriz** e o código dizem o contrário (`main.go:746,749`, `bootstrap.go:2379`). Há uma segunda instância em `tecnica/14:113`, que contradiz a ressalva nove linhas abaixo. Direcção do erro: **subdeclaração** — declara menos capacidade do que existe. Menos grave do que o inverso, mas está na secção que o §7 da própria matriz vende como a mitigação do risco «componente confundido com nó» | B/M | hoje |
+| C-04 | **DEF-405 está caduca**: continua a afirmar que o binário não expõe rota de promoção, quando `promotion_api.go:221,242` implementa `POST /promote` chamando o método exacto que a entrada diz ser inalcançável, e o ficheiro-âncora (`bootstrap.go:2337`) diz «a submissao de ratificacoes DEIXOU de ser deferida». Falsa desde 2026-08-11, com 32 commits ao registo desde então — incluindo um intitulado «seis declarações caducadas deixam de mentir». **Ressalva:** o que caducou é a CARACTERIZAÇÃO, não necessariamente o estado aberto — o gatilho de saída nomeia AOS-096, que continua a montante do nó. **E não é caso único:** a `DEF-812` descreve como «o que CORRE» exactamente a peça cuja cadeia de auditoria evapora no shutdown (O-14), e a `DEF-606` invoca uma mitigação sem chamadores (§2.3). Três entradas em uso que não descrevem o estado real | M | hoje |
+| C-05 | O gate `estado-citado` é vacuoso e é um *required check*: output real `0 declaracao(oes) verificada(s); 1 abstencao`, exit 0. O gate `integration` sai verde com **10 de 16** códigos de porta ausentes, todos com `owner=AOS-196` — um ticket de higiene documental já fechado que nunca teve esse âmbito. **O cruzamento que fecha o argumento:** o `estado-citado` existe para apanhar «declaração cita ticket já fechado» — que é a descrição EXACTA dessas dez entradas — e não as vê porque `scripts/ci/baseline/` está fora do seu âmbito de varredura. Um gate de coerência que não varre o sítio onde a incoerência está declarada. Provado por mutação que ambos os mecanismos funcionam (baseline vazia ⇒ o `integration` sai 1 e nomeia as dez; corpus sintético ⇒ o `estado-citado` sai 1), logo o defeito é de âmbito, não de implementação | M | hoje |
 | C-06 | A EPIC-17 (Estatuto PROPOSTA) declara aberto (AOS-181 a 0/5, AOS-182 a 1/4) o mesmo trabalho que a EPIC-18 declara entregue — e está entregue, verificado no binário (`bootstrap.go:2379`, `main.go:98`, `api.go:599 sealResidency`) | B/M | hoje |
 | C-07 | O contador do tripwire da Carta §6.6 corre e dá `reaberturas=1`, exit 0 — **não disparado**. Mas três secções do mesmo ficheiro descrevem ainda «código 3» e «4 FIXAs tocadas ⇒ TERIA DISPARADO»; e a definição de «reaberta» que separa 1 de 4 foi fixada a 2026-07-29 **sem a linha datada no §7 da Carta** que o próprio documento exige | M | hoje |
 | C-08 | **O nó desarma sempre o cliente endurecido da única perna de egress paga.** O contrato do gateway é explícito: `model-gateway/production.go:108` — «HTTPClient é opcional. Se nil, o gateway constrói um cliente **ENDURECIDO**» — e `:118` — a allowlist de egress é «**Ignorada quando um HTTPClient é injectado**». O nó injecta um **incondicionalmente** em `cmd/aos/modelgatewaywiring.go:225`, anotado «seam de dev: delega validação de egress», **e não existe ramo não-dev**: a validação de `BaseURL` (https + allowlist) e o SSRF de AOS-223 ficam fora do caminho em qualquer configuração, `AOS_MODE=production` incluída. A classe de risco está declarada (AOS-184); que o nó *desarme activamente* um endurecimento já entregue, e o declare como *seam* de desenvolvimento num binário de produção, não está | **A** | **hoje** |
@@ -530,6 +573,15 @@ mas porque não há texto com autoridade que diga o que estaria certo. E os seis
 que ficaram de pé dividem-se em dois grupos exactos: três estão **dentro** de código que corre todos os
 dias e nenhuma lente vertical os viu (O-11, O-12, C-08), e três são **costuras** entre subsistemas que cada
 lente dava por garantidas (§2.1, G-04, O-01/O-02).
+
+**Uma ressalva que enfraquece o próprio saldo, e que só apareceu na redacção dos tickets.** As treze
+hipóteses classificadas «deferimento declarado» foram-no contra o `REGISTO-Deferimentos.md`. Três
+entradas em uso desse registo **não descrevem o estado real**: `DEF-405` está caduca (C-04),
+`DEF-812` descreve como «o que CORRE» a cadeia que evapora no shutdown (O-14), e `DEF-606` invoca uma
+mitigação que não tem chamadores (§2.3). Um registo que é a autoridade para classificar dívida, e que
+erra em três das entradas que esta auditoria consultou, torna a classificação «declarado» mais fraca
+do que este relatório a tratou. Não recontei o saldo — não tenho base para o fazer sem reauditar as
+treze —, mas quem o ler deve saber que o denominador não é sólido.
 
 O resultado mais transferível deste relatório não é nenhum dos trinta. É a razão pela qual eles
 sobreviveram: **este repositório verifica com um rigor invulgar tudo o que declara, e quase não exercita o
