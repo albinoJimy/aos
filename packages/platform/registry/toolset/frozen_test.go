@@ -9,6 +9,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/registry"
+	"github.com/aos-ref/platform/registry/digest"
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -51,10 +52,15 @@ func newRegistry(t *testing.T) *registry.Registry {
 func publishActive(t *testing.T, reg *registry.Registry, id string, v domain.Version, kind domain.ArtifactKind) {
 	t.Helper()
 	ctx := context.Background()
+	contrato := domain.Contract{Egress: domain.EgressInternal}
+	// AOS-334: `mcp_server` exige manifesto. Só esse kind — as tools genéricas continuam sem.
+	if kind == domain.KindMCPServer {
+		contrato.ManifestDigest = digest.DigestBytes([]byte("manifesto-de-" + id))
+	}
 	req := registry.PublishRequest{
 		ID: id, Version: v, Kind: kind,
 		Origin: "mcp://" + id, Publisher: "pub:test",
-		Contract: domain.Contract{Egress: domain.EgressInternal},
+		Contract: contrato,
 	}
 	if _, err := reg.Publish(ctx, req); err != nil {
 		t.Fatalf("Publish(%s@%s): %v", id, v, err)

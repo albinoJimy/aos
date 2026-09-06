@@ -306,6 +306,34 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 			if reason == "" {
 				reason = fmt.Sprintf("negado por %q", h.Name())
 			}
+			// O `nil` AQUI É A DECISÃO, NÃO A METADE QUE FICOU POR FAZER. A escalada logo
+			// abaixo propaga `res.Obligations` e a negação não: a assimetria nasceu com o
+			// próprio parâmetro (#87), está fixada por `TestNegacaoNaoSelaObrigacoes`
+			// (escalada_selada_test.go) e tem gémea no ramo de deny de `paraRM`
+			// (control-plane/pdp/rmadapter.go), coberta por `TestNegacaoNaoLevaObrigacoes`.
+			//
+			// A RAZÃO ESCRITA EM #87 — selar `redact` ou `ttl` numa negação sugeriria que algo
+			// foi APLICADO a um efeito que nunca existiu — vale para este caminho, mas NÃO é
+			// invariante do modelo de audit, e convém sabê-lo antes de a ir confirmar:
+			// `messaging.Verifier.seal` e `hitl.Channel.seal` selam registos `DecisionDeny` COM
+			// obrigações, precisamente para carregarem o porquê estruturado, e
+			// `compliance.projectHITL` depende disso para contar as negações. Não há
+			// contradição — esses escrevem no `audit.Store` directamente, sem passar por esta
+			// cadeia — mas a regra é DESTE caminho, não do campo.
+			//
+			// O QUE FECHA A QUESTÃO AQUI É O TIPO. [Obligation] no RM não é um saco de
+			// metadados: é vocabulário FECHADO de imposição, e `enforceObligations` nega
+			// fail-closed qualquer `Type` que não saiba cumprir. Um hook que anexasse uma
+			// obrigação só para documentar a sua negação estaria a construir um valor que, num
+			// permit, NEGA a call. O canal não existe porque o tipo não é esse.
+			//
+			// CUSTO CONHECIDO, para quem chegar aqui com esse problema: um hook não tem por
+			// esta via canal estruturado para anexar informação à SUA negação — só o `Reason`,
+			// em texto livre (o `PolicyVersion` viaja mesmo na negação, mas é do hook de
+			// política). O AOS-332 (EPIC-23) bateu nisto ao selar a postura do eixo provider e
+			// resolveu-o com um sufixo greppável no `Reason`. Mudar isto é mudar os três sítios
+			// acima E a semântica do tipo — por decisão escrita, não por simetria aparente com
+			// o ramo de baixo.
 			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, nil, start, policyVersion), nil
 		case res.Decision == HookEscalate:
 			reason := res.Reason
@@ -405,6 +433,11 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 // Registar não é impor: no caminho de recusa esta função devolve ANTES de `enforceObligations`,
 // que só corre no permit. Acrescentar obrigações ao REGISTO não pode, por construção, mudar o que
 // o nó deixa acontecer.
+//
+// E OBRIGAR A ESCOLHER NÃO É OBRIGAR A PREENCHER. Dos sete sítios que chamam esta função só a
+// ESCALADA passa obrigações; os outros seis passam `nil`, e passam-no por decisão. A justificação
+// está escrita no ramo `HookDeny` de [Monitor.evaluate], que é onde a escolha é visível e onde
+// muda se algum dia mudar — não a deduzas deste parágrafo.
 func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, obligations []Obligation, start time.Time, policyVersion string) Decision {
 	latency := m.now().Sub(start)
 	// Registo best-effort: em deny/escalate o efeito já está bloqueado, pelo que

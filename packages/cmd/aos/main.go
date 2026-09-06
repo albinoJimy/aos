@@ -216,6 +216,30 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // indecifrável (over-erasure silenciosa) e o legal hold deixa de preservar o que a lei manda reter.
 // Ao contrário das outras colunas de produção, a KEK-em-memória só AVISAVA; agora RECUSA. O modo
 // de referência (sem AOS_MODE=production) mantém a KEK-em-memória demo-grade.
+// ErrProductionNeedsShredConfirmation — sob AOS_MODE=production, uma custódia de KEK INJECTADA
+// por [Config.DSARVault] que NÃO implemente a porta de confirmação de crypto-shred é RECUSADA no
+// arranque (AOS-328).
+//
+// O QUE ISTO FECHA. Sem confirmador, o fluxo DSAR sela `dsar.key_destroyed` SEM PERGUNTAR — a
+// cadeia afirma uma irrecuperabilidade que ninguém verificou. Hoje isso é correcto para as duas
+// custódias que existem: o `InMemoryKeyVault` não implementa a porta porque o seu `Delete` é um
+// `delete()` num mapa e não pode falhar; o Vault Transit implementa-a. O risco é a TERCEIRA — um
+// KMS de terceiros que POSSA falhar a destruir e não implemente a porta reabre, pela via da
+// omissão, o defeito exacto que a porta foi criada para fechar.
+//
+// A ESCOLHA FOI RECUSAR, NÃO AVISAR, e a razão é que o banner já avisava. O AOS-322 pôs no
+// arranque a linha «NAO ARMADA, e NAO E CORRECTO» para este caso — e declarar não é impor. O
+// ticket que gerou esta guarda diz-o à letra: «nada obriga essa escolha a ser consciente».
+//
+// O ESCAPE É UMA DECLARAÇÃO, não um silêncio: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1 afirma que
+// a custódia destrói incondicionalmente. Quem o define assume-o por escrito, no molde de
+// AOS_TLS_EXTERNAL_TERMINATION. Sem essa declaração o arranque recusa.
+//
+// SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA: o vault de referência continua a compor sem
+// declaração nenhuma, porque transformar o modo de desenvolvimento numa configuração cerimoniosa
+// é o custo que este ticket proíbe explicitamente.
+var ErrProductionNeedsShredConfirmation = errors.New("aos: AOS_MODE=production com custodia de KEK INJECTADA (Config.DSARVault) exige que ela implemente a porta de confirmacao de crypto-shred — sem ela o fluxo DSAR sela key_destroyed SEM VERIFICAR, afirmando uma irrecuperabilidade que ninguem confirmou. Se a custodia destroi INCONDICIONALMENTE (o Delete nao pode falhar), DECLARE-O com AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1")
+
 // ErrProductionNeedsDurableApproval — sob AOS_MODE=production com aprovadores four-eyes
 // configurados (AOS_APPROVERS_FILE), a EXECUÇÃO DURÁVEL é obrigatória. O bridge
 // negação→aprovação→reexecução (AOS-021) depende dela em dois pontos: reproduzir o turno
@@ -806,6 +830,21 @@ func nodeConfigFromEnv() (Config, error) {
 	// o verificador REMOTO ao FourEyesGate (o CBOR corre no componente de autoridade externo; o
 	// binário do nó fica zero-dep). Com ele, cada perna de aprovação exige attestationObject válido.
 	// O token opcional vem de FICHEIRO montado (material privado nunca por variável de ambiente).
+	// AOS-328 — o modo de produção passa a ser um CAMPO, para que as guardas que dependem dele
+	// sejam exercitáveis sem mexer no ambiente do processo.
+	cfg.ProductionMode = production
+	// MESMO PARSER ESTRITO do opt-out de TLS: lixo NÃO é «não declarado». Uma declaração de
+	// que a custódia destrói incondicionalmente não pode nascer de um valor mal escrito.
+	destroiIncond, derr := parseTLSExternalTermination(os.Getenv("AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL"))
+	if derr != nil {
+		// O ERRO É DE CONFIG, NÃO DE PRODUÇÃO. A primeira versão embrulhava-o em
+		// `ErrProductionNeedsShredConfirmation` — e como o parse corre SEMPRE, um valor mal
+		// escrito num nó de desenvolvimento abortava com um sentinela de produção. Atribuição
+		// errada, apanhada em revisão.
+		return Config{}, fmt.Errorf("%w: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: %v", ErrBadTLSExternalTermination, derr)
+	}
+	cfg.ShredDestroyUnconditional = destroiIncond
+
 	cfg.AttestationVerifierURL = strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_URL"))
 	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_TOKEN_PATH")); p != "" {
 		v, rerr := lerCredencialMontada(p, "AOS_ATTESTATION_VERIFIER_TOKEN_PATH")

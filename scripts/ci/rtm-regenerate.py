@@ -225,12 +225,6 @@ ATRIBUIDOS_NOUTRO_RAMO = frozenset([
     # AOS-339 — `feature/AOS-339-negacao-server-side-selada` (f8d461e, 2026-09-05).
     # Sai quando esse ramo for fundido.
     "AOS-339",
-    # AOS-340 — `feature/AOS-340-canal-metadados-hook` (94996e8, 2026-09-05).
-    # Ramo IRMÃO deste, aberto pela mesma sessão e deliberadamente independente: o
-    # AOS-341 não depende do AOS-340 para nada, e mantê-los separados custa esta
-    # entrada. Sai quando o 340 for fundido — e, pela ordem dos números, isso é ANTES
-    # deste ramo, pelo que a linha deve morrer no rebase e não sobreviver ao merge.
-    "AOS-340",
 ])
 
 

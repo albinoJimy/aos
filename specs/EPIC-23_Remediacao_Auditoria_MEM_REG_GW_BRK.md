@@ -89,15 +89,16 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 
 | Achado | Ticket |
 |---|---|
-| O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) |
-| O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** |
-| A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** |
+| O *path folding* do Vault KV v2 faz `" "`, `"*"` e `"a/b"` colidirem no mesmo path | **AOS-330** (`DEF-815`) — **implementado** |
+| O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** — **implementado** |
+| A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** — **implementado** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
-| Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** |
-| `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** |
+| Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** — **implementado** |
+| `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** — **implementado** |
 | O custo indefinido não atravessa a fronteira GW→RT, e o `ErrBurndownNoUsage` não apanha um run misto | **AOS-336** — **implementado** |
 | O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
 | A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — **implementado** |
+| Um hook não tem canal legível por máquina para anexar informação à sua negação — achado a investigar o contorno em texto livre do AOS-332 | **AOS-340** |
 | Uma negação causada por uma obrigação de região não é projectada como evento de soberania — achado a investigar o `nil` do ramo `HookDeny` do RM | **AOS-341** — **implementado** |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
@@ -797,20 +798,65 @@ terceiro diz «NÃO É CORRECTO» —, mas declarar não é impor.
 
 ### Critérios de Aceitação
 
-- [ ] Uma custódia composta sob `AOS_MODE=production` que **não** implemente a porta de confirmação
+- [x] Uma custódia composta sob `AOS_MODE=production` que **não** implemente a porta de confirmação
       é recusada no arranque, ou é aceite mediante uma declaração explícita de que não precisa
       (a escolha faz parte do ticket e é justificada por escrito)
-- [ ] O vault de referência continua a compor **sem** declaração extra — a guarda não pode transformar
+- [x] O vault de referência continua a compor **sem** declaração extra — a guarda não pode transformar
       o modo de desenvolvimento numa configuração cerimoniosa
-- [ ] Um teste que prove a recusa (ou a exigência de declaração) com uma custódia falsa que não
+- [x] Um teste que prove a recusa (ou a exigência de declaração) com uma custódia falsa que não
       implemente a porta, e um controlo que prove que as duas custódias reais continuam a compor
-- [ ] `DEF-813` passa de `POR ATRIBUIR` para este ticket
+- [x] `DEF-813` passa de `POR ATRIBUIR` para este ticket
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Eixo do `DEF-813`. Origem: validação adversarial da EPIC-23, não a
-`analises/11`.
+**IMPLEMENTADO.** P2. Eixo do `DEF-813`.
 
+**A ESCOLHA FOI RECUSAR, NÃO AVISAR — e a razão é que o banner já avisava.** O AOS-322 pôs no
+arranque a linha «NAO ARMADA, e NAO E CORRECTO» para exactamente este caso. Declarar não é impor,
+e o ticket di-lo à letra: «nada obriga essa escolha a ser consciente».
+
+**O ESCAPE É UMA DECLARAÇÃO, NÃO UM SILÊNCIO.** `AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1` afirma
+que a custódia destrói incondicionalmente — que o seu `Delete` não pode falhar. Quem o define
+assume-o por escrito, no molde de `AOS_TLS_EXTERNAL_TERMINATION`. **Parser estrito**, o mesmo
+desse opt-out: um valor mal escrito **aborta** em vez de degradar para «não declarado» — uma
+declaração desta natureza não pode nascer de um erro de transcrição.
+
+**SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA.** O vault de referência não é injectado — o nó
+constrói-o quando `AOS_DSAR_VAULT_ADDR` está vazio — pelo que a guarda não lhe toca. É o AC
+escrito à letra: transformar o modo de desenvolvimento numa configuração cerimoniosa é o custo
+que o ticket proíbe, e um teste cobre as duas posturas.
+
+**A VERIFICAÇÃO CORRE NO `Bootstrap`, NÃO EM `nodeConfigFromEnv`**, porque a custódia pode ser
+injectada **programaticamente** por `Config.DSARVault`, sem passar pelo ambiente — e é
+precisamente essa a via que o `DEF-813` nomeia como risco. Por isso o modo de produção passou a
+ser um **campo** de `Config` em vez de uma leitura de ambiente a meio da composição: as guardas
+de produção têm de ser exercitáveis sem mexer no ambiente do processo, que é a mesma razão pela
+qual o `hardened` deriva de `cfg.IssuerPubKey`.
+
+Seis funções de teste com **três controlos**: o vault de referência compõe nas duas posturas, uma
+custódia que **sabe** confirmar passa sem escape (senão uma guarda que recusasse toda a custódia
+injectada passaria o teste principal e partiria o caminho correcto), e fora de produção a guarda
+não corre. Três provas de mutação — a guarda desligada, a guarda a ignorar a declaração, e a
+guarda a apanhar também o vault de referência — todas vermelhas.
+
+### A porta que este ticket exige era inimplementável de fora
+
+A revisão adversarial mediu o que eu não vi: `shredConfirmer` tem método **não-exportado**, pelo
+que só um tipo declarado neste `package main` o pode satisfazer. **Uma custódia de terceiros
+noutro módulo — literalmente o cenário que o `DEF-813` descreve — nunca conseguia implementá-lo**,
+e portanto era sempre recusada em produção. O remédio que o banner prescreve — «implemente a porta
+na custódia» — era impossível de seguir. É a mesma classe do **F1 do AOS-333**: uma mensagem a
+mandar o operador por um caminho que não existe.
+
+O adaptador passa a aceitar `dsar.ShredConfirmer`, que é **exportada** e é a porta que o fluxo
+consulta de facto. A porta interna continua a servir a custódia in-package.
+
+**E o erro de parse estava atribuído ao eixo errado.** O parse corre **sempre**, também fora de
+produção, e vinha embrulhado em `ErrProductionNeedsShredConfirmation` — um valor mal escrito num
+nó de desenvolvimento abortava com um sentinela de produção, mandando o operador ao sítio errado.
+
+**O AC do `DEF-813` já estava satisfeito** por trabalho anterior (`REGISTO-Deferimentos.md:242`
+atribui-o a este ticket, e há nota `N-DEF-813` no §6); verifiquei-o em vez de o reclamar.
 ---
 
 ## AOS-329 — Nada obriga uma declaração de estado a citar um ticket ainda aberto
@@ -832,24 +878,134 @@ declarações.
 
 ### Critérios de Aceitação
 
-- [ ] Uma linha de postura ou comentário que cite `AOS-NNN` como **bloqueador** é cruzada com o
+- [x] Uma linha de postura ou comentário que cite `AOS-NNN` como **bloqueador** é cruzada com o
       estado desse ticket no `specs/EPIC-*.md`, e o gate **falha** quando o ticket citado está
       implementado
-- [ ] A verificação distingue «cita como bloqueador» de «cita como origem/referência» — uma nota que
+- [x] A verificação distingue «cita como bloqueador» de «cita como origem/referência» — uma nota que
       diga «entregue por AOS-047» não pode disparar. O mecanismo de distinção fica declarado (marcador
       próprio, posição na frase, ou lista explícita), e é testado nos dois sentidos
-- [ ] Prova negativa: o gate consegue ficar **vermelho** — um teste-veneno com uma citação a um
+- [x] Prova negativa: o gate consegue ficar **vermelho** — um teste-veneno com uma citação a um
       ticket fechado fá-lo falhar
-- [ ] As oito declarações que a EPIC-23 corrigiu passam a estar cobertas por este gate (verificação
+- [ ] **NÃO SATISFAZÍVEL — ver o Estado.** As oito declarações que a EPIC-23 corrigiu passam a estar cobertas por este gate (verificação
       retroactiva: se o gate existisse, teria apanhado cada uma)
-- [ ] `DEF-814` passa de `POR ATRIBUIR` para este ticket
+- [x] `DEF-814` passa de `POR ATRIBUIR` para este ticket
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Eixo do `DEF-814`. É o **irmão do `deferrals`** e o único destes três que
-ataca a causa-raiz em vez de uma instância: sem ele, a próxima auditoria volta a encontrar
-declarações caducadas e alguém volta a corrigi-las uma a uma.
+**IMPLEMENTADO, COM UM CRITÉRIO DECLARADO NÃO-SATISFAZÍVEL.** P2. Eixo do `DEF-814`. É o irmão do
+`deferrals`: aquele exige que todo o marcador de dívida tenha eixo **verificável**; este exige que
+o eixo esteja **aberto**.
 
+### A medição decidiu o desenho, e refutou a primeira ideia
+
+Antes de escrever código mediu-se o alcance das três vias possíveis, sobre a árvore de
+2026-09-05:
+
+| | |
+|---|---|
+| Citações `AOS-NNN` em `packages/` | **7 103** |
+| Vermelhos de um gate **ingénuo** (qualquer citação a ticket fechado) | **1 818** em 366 ficheiros |
+| Citações com vocabulário de **bloqueio** (12 expressões) | **97** |
+| — dessas, a apontar para ticket **fechado** | **46** |
+| — dessas, a apontar para ticket **aberto** | **0** |
+
+Os 1 818 são a definição do gate que se desliga, e o corpus já registou essa lição duas vezes por
+escrito (`ref-lint.py`: «16% de falsos positivos numa versão SABIDAMENTE correcta faria um gate
+que ninguém aguenta»).
+
+**Mas o vocabulário fechado também não serve, e isso foi a surpresa.** A leitura um-a-um dos 46
+mostra que a esmagadora maioria são falsos positivos por ambiguidade do português:
+
+- «a prova que **faltava** a AOS-262» — *faltava* é sobre uma prova, não um bloqueio
+- «**Até** AOS-308 esta frase dizia…» — nota **histórica**, o oposto de um bloqueio
+- «ler **pendentes** de exaustão (AOS-263)» — *pendentes* é substantivo do domínio
+- «**aguarda** decisão humana (AOS-263)» — mensagem de erro; o ticket é a **origem**
+- «**Bloqueador**: DEF-218 (AOS-265 já aterrou)» — a forma **já corrigida**
+
+São ~90% de falsos positivos: pior do que os 16% que o repositório já rejeitou. E o dado que
+fecha a questão: **zero** citações de bloqueio apontam para um ticket aberto — não há sinal a
+preservar.
+
+**Conclusão: a relação «isto espera por aquilo» não está no texto. Tem de ser DECLARADA.** É o
+mesmo raciocínio do `<!-- rtm: adrs-mencionados -->` do `ref-lint`, que existe porque «isto é
+menção, não implementação» também não se infere.
+
+### O que ficou construído
+
+O marcador é `BLOQUEADOR: AOS-NNN`, maiúsculas e dois-pontos, no molde do `Eixo:` dos banners de
+postura. O gate cruza-o com o `### Estado` do ticket e falha quando ele está **fechado** —
+`IMPLEMENTADO`, `FECHADO`, `ENTREGUE`, `FEITO` — ou **`REMOVIDO`**, que falha por uma razão
+diferente e com mensagem própria: espera-se por algo que nunca vem.
+
+`POR`, `ABERTO` e `PARCIAL` **não** fecham. Um bloqueio sobre um ticket parcialmente entregue pode
+continuar verdadeiro, e negá-lo obrigaria a julgar **qual** parte — que este gate não sabe fazer.
+Um lexema novo é tratado como aberto: inventar que uma palavra desconhecida significa «fechado»
+avermelharia o gate por uma mudança de redacção.
+
+### O gate nasce sem sujeitos, e isso está medido
+
+Não há hoje **nenhuma** declaração marcada, porque não há nenhuma declaração que bloqueie num
+ticket aberto (as 0 da tabela). É um guarda de convenção **para a frente**, e a sua não-vacuidade
+não vem do corpus — vem do **teste-veneno**, que é precisamente o que o AC3 exige.
+
+O `selftest.sh` §W tem os três níveis do molde do `ref-lint`: **W1** testa o predicado de estado
+nos dois sentidos; **W2** copia o corpus, prova primeiro que a cópia intacta fica **verde**
+(senão o vermelho não provaria nada) e depois injecta a forma exacta das declarações de AOS-265
+que a EPIC-23 corrigiu, exigindo **vermelho**; **W2-bis** injecta o mesmo marcador com um ticket
+**aberto** e exige **verde**, sem o qual um gate que negasse tudo passaria o W2; **W3** confirma
+que a árvore real ficou sem rasto.
+
+### Uma fuga silenciosa, medida logo a seguir ao merge
+
+A primeira versão exigia `BLOQUEADOR:` em maiúsculas e o ticket na **mesma linha física**. Isso
+deixava escapar a forma mais natural de todas — um comentário Go partido em duas linhas:
+
+```go
+// BLOQUEADOR:
+// AOS-265
+```
+
+O `gofmt` não o impede, e qualquer autor a produz ao escrever um comentário longo. Era uma fuga
+**silenciosa**, que é o pior tipo: quem a escreve julga estar coberto pelo gate e não está.
+
+A varredura passou a ser sobre **linhas lógicas** — comentários consecutivos juntos numa
+declaração só, com o `//` removido —, e o marcador aceita plural e qualquer caixa. Medido depois
+da correcção: as sete formas de escrita apanham, e as duas que **não** devem apanhar continuam a
+não apanhar — o ticket antes do marcador, e a forma **já corrigida** `BLOQUEADOR: DEF-218
+(AOS-265 já aterrou)`, onde o `AOS-` não segue imediatamente o marcador.
+
+**Foi encontrada por medição própria, não por revisão.** Os dois revisores adversariais lançados
+sobre este gate morreram por estagnação sem devolver nada; o que restou foi ir atacar
+deliberadamente o que eu tinha escrito, que é a mesma disciplina, feita à mão.
+
+### O AC4 NÃO É SATISFAZÍVEL, e fica escrito assim
+
+Ele pede que «as oito declarações que a EPIC-23 corrigiu passem a estar cobertas (verificação
+retroactiva: se o gate existisse, teria apanhado cada uma)». **É falso por duas razões
+independentes:**
+
+1. **Com marcador opt-in é falso por construção.** Essas declarações nunca tiveram marcador — e já
+   não existem, foram corrigidas.
+2. **Mesmo com heurística seria falso.** Só **cinco** das oito são desta classe, e quatro delas
+   são a *mesma frase* replicada em quatro ficheiros. As outras três são de outra natureza: um
+   facto falso **sem citação de ticket nenhuma** («o nó não importa `platform/broker`»), uma
+   composição descrita que não existe, e uma contradição entre dois ficheiros. Nenhum gate deste
+   tipo as apanha.
+
+Marcá-lo como cumprido seria exactamente o defeito que este ticket persegue — uma declaração a
+comprar confiança que não sustenta. Foi o erro que cometi no AOS-338 e que a revisão apanhou.
+
+### Alcance declarado
+
+O `§O QUE ESTE GATE NÃO VERIFICA` do `estado-citado.py` enumera-o, no molde do `deferrals`:
+declarações **sem** marcador passam; declarações **sem citação de ticket** passam; os **224
+tickets** de EPIC-01..18 não têm `### Estado` e são **~74% das citações** — estão contados como
+**abstenções e impressos em cada execução**, para que a cegueira seja declarada e não escondida;
+`deploy/` fica fora, porque o âmbito é o do `deferrals` e dois gates a divergir sobre «o que é o
+código» seria pior.
+
+`DEF-814` já estava atribuído a este ticket por trabalho anterior
+(`REGISTO-Deferimentos.md:243`); verifiquei-o em vez de o reclamar.
 ---
 
 ## AOS-330 — O namespace da política do broker não é o namespace da chave do Vault
@@ -860,7 +1016,7 @@ A política de provedores do broker (AOS-324) compara strings **cruas** por igua
 KV v2 (`packages/platform/broker/internal/vault/kvv2.go`) resolve o path com `TrimSpace` e dobra
 tudo o que esteja fora de `[A-Za-z0-9._-]` para `_`.
 
-Medido por revisão adversarial: `" "`, `"	"` e `"*"` produzem **todos** o path `_/eu/…` —
+Medido por revisão adversarial: `" "`, `"\t"` e `"*"` produzem **todos** o path `_/eu/…` —
 indistinguível de um eixo em branco — e `"acme:eu"` colide com `"acme_eu"`. Sob a postura por
 omissão, valores como `" "` e `"stripe/x"` passam o guarda de «provedor indeterminado» e chegam ao
 `Fetch`, o que falsifica a afirmação de que o Vault nunca é consultado com um eixo em branco. Sob
@@ -875,22 +1031,87 @@ depois.**
 
 ### Critérios de Aceitação
 
-- [ ] Ou a política decide sobre o valor **normalizado** — o mesmo que forma o path —, ou recusa
+- [x] Ou a política decide sobre o valor **normalizado** — o mesmo que forma o path —, ou recusa
       fail-closed qualquer valor que a normalização altere. A segunda via é a mais defensável (um
       provedor cujo nome não sobreviva ao path não devia ser aceitável de todo) e a escolha é
       justificada por escrito
-- [ ] Um teste que prove que dois valores distintos que dobrem no mesmo path **não** são ambos
+- [x] Um teste que prove que dois valores distintos que dobrem no mesmo path **não** são ambos
       aceites, e outro que prove que um valor que a normalização altere é recusado de forma
       atribuível
-- [ ] O guarda de «provedor indeterminado» passa a apanhar `" "`, `"	"` e `"*"` — hoje não apanha
-- [ ] `DEF-218` nomeia este ticket como pré-condição, a par do AOS-324
-- [ ] `DEF-815` passa de `POR ATRIBUIR` para este ticket
+- [x] O guarda de «provedor indeterminado» passa a apanhar `" "`, `"\t"` e `"*"` — hoje não apanha
+- [x] `DEF-218` nomeia este ticket como pré-condição, a par do AOS-324
+- [x] `DEF-815` passa de `POR ATRIBUIR` para este ticket
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2 por alcance (latente), **pré-condição do wiring do broker**. Eixo do
+**IMPLEMENTADO.** P2 por alcance (latente), **pré-condição do wiring do broker**. Eixo do
 `DEF-815`.
 
+**A ESCOLHA FOI A SEGUNDA VIA**, e a razão está escrita no `authorizeProvider`: recusa-se o que a
+normalização altere, em vez de decidir sobre o valor normalizado. Decidir sobre o normalizado
+tornaria a colisão **invisível** em vez de impossível — a política passaria a tratar `acme:eu` e
+`acme_eu` como o mesmo provedor, em silêncio. Um provedor cujo nome não sobrevive ao path não é
+um provedor identificável.
+
+**O PREDICADO VIVE ONDE A NORMALIZAÇÃO VIVE.** `vault.SegmentoEstavel` é exportado do pacote que
+forma o path, e a política pergunta-lhe. A alternativa — a política aprender a normalizar por si —
+são duas cópias da mesma regra a divergir, que foi exactamente o que o AOS-337 mediu noutro eixo
+(`(inválido)` contra `(inválida)` no dia em que a segunda cópia nasceu). O `DEF-815` exige-o à
+letra: «a normalização do path tem de ser a MESMA em que a política decide».
+
+**A RECUSA É `ErrProviderUndetermined`, NÃO `ErrProviderOutOfScope`.** O eixo não é um provedor
+que está fora da autoridade; é um valor que não identifica provedor nenhum. Sob `enforced`, `" "`
+era antes atribuído a «fora de escopo» — atribuição errada do mesmo defeito, e o teste fixa a
+distinção.
+
+**O `"*"` NÃO ERA SÓ NÃO-APANHADO — ERA AUTORIZADO.** Sob `enforced`, com o tecto da classe a
+declarar `ProviderAny`, um pedido com `Provider="*"` passava a comparação por conjunto e produzia
+o path `_/…`. O AC3 nomeia-o a par de `" "` e `"\t"`, mas os três não eram o mesmo defeito.
+
+**SÓ O EIXO PROVIDER, e a razão é dura.** O `sanitizeSegment` corre nos **três** segmentos, e a
+`Capability` contém **sempre** `:` (`cap:http.post` → `cap_http.post`): a mesma regra aplicada a
+ela **negaria todas as trocas do sistema**. A `Region` tem vocabulário fechado que sobrevive. O
+ticket nomeia o provedor, e é onde o eixo morde — um nome de provedor vem de configuração de
+deployment, não de vocabulário fixo. *(O AC estava escrito como se a regra fosse universal; não
+é, e não pode ser.)*
+
+Cinco funções de teste, com **dois controlos**: os provedores legítimos continuam a passar (sem
+isso, um `return ErrProviderUndetermined` incondicional passaria tudo o resto e negaria todas as
+trocas), e a recusa por **autoridade** continua distinta da recusa por **namespace**. Quatro
+provas de mutação — desligar a ancoragem, trocar a sentinela, o predicado a aceitar tudo, o
+predicado a recusar tudo — todas vermelhas e revertidas limpas.
+
+**OS DOIS ACs DE REGISTO JÁ ESTAVAM SATISFEITOS** por trabalho anterior, e verifiquei-os em vez de
+os reclamar: o `DEF-218` já nomeia este ticket como pré-condição a par do AOS-324
+(`REGISTO-Deferimentos.md:186`), e o `DEF-815` já lhe está atribuído (`:244`), não `POR ATRIBUIR`.
+
+### A revisão adversarial encontrou uma TRAVESSIA DE CAMINHO que este guarda não apanhava
+
+**O `.` e o `..` sobreviviam intactos.** O `.` é caractere legítimo dentro de um nome (`acme.eu`),
+por isso estava na lista permitida — e `sanitizeSegment("..")` devolvia `".."`. Um
+`Provider=".."` produzia `p/../eu/cap_x`, que a normalização RFC 3986 (aplicada pelo Vault e por
+qualquer proxy na rota) reduz a `eu/cap_x`, **escapando o prefixo configurado**. Medido em
+execução.
+
+**E o AC1 era literalmente falso como eu o escrevi.** Afirmei que «a `Region` tem vocabulário
+fechado que sobrevive» — nada o impõe; ela vem crua de `req.Downstream.Region`. Dois provedores
+**distintos** com `Region=".."` resolviam para o **mesmo** path, o que é exactamente o que o AC
+proíbe.
+
+A correcção vive no **construtor do path**, não no guarda da política: cobre os **três** segmentos
+de uma vez, em vez de só aquele onde o defeito foi visto primeiro. Um segmento que muda a
+**árvore** em vez de a indexar não é um segmento.
+
+**E um teste meu era tautológico.** O `TestAOS330_OQueAPoliticaAceitaEOQueOPathUsa` assertava
+`SegmentoEstavel(v)` para todo o `v` que `authorizeProvider` aceitou — e a aceitação é **definida
+por esse predicado**. Nunca tocava no construtor do path. Era um detector de mutação disfarçado de
+verificação de propriedade; passa a chamar `vault.SegmentoDePath`, que é quem forma o path.
+
+**LIMITE DECLARADO.** Isto continua latente: o broker não está composto (`broker.New` não tem
+chamador de produção) e a postura é `unset` em todo o repositório. O defeito era latente **duas
+vezes** — sem wiring, e sem cobertura de teste que o pudesse expor, porque toda a suite usa o
+`MemoryVault`, que chaveia pelo `Key.id()` **cru** e não dobra. Os testes deste ticket são os
+primeiros a exercitar o eixo.
 ---
 
 ## AOS-331 — O provedor autorizado não é amarrado ao recurso de destino
@@ -908,18 +1129,74 @@ Medido na revisão adversarial da EPIC-23. Latente: o broker não está composto
 
 ### Critérios de Aceitação
 
-- [ ] A autorização da troca relaciona `Downstream.Provider` com `Downstream.ResourceValue` — por
+- [x] A autorização da troca relaciona `Downstream.Provider` com `Downstream.ResourceValue` — por
       allowlist de host por provedor, por obrigação de egress do PDP, ou por o `EgressGate` real
       passar a correr nesta cadeia. A escolha é justificada por escrito
-- [ ] Um teste em que o provedor é autorizado e o recurso não, e a negação é atribuível e
+- [x] Um teste em que o provedor é autorizado e o recurso não, e a negação é atribuível e
       distinguível de `ErrProviderOutOfScope`
-- [ ] O estado por omissão fica declarado, como o do eixo provider — e não é um deny-all silencioso
-- [ ] `DEF-218` nomeia este ticket como pré-condição, a par de AOS-324 e AOS-330
+- [x] O estado por omissão fica declarado, como o do eixo provider — e não é um deny-all silencioso
+- [x] `DEF-218` nomeia este ticket como pré-condição, a par de AOS-324 e AOS-330
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2 por alcance (latente), **pré-condição do wiring do broker**.
+**IMPLEMENTADO.** P2 por alcance (latente), **pré-condição do wiring do broker**.
 
+**A VIA É ALLOWLIST DE HOST POR PROVEDOR**, e as outras duas que o AC oferecia não fecham o eixo:
+
+- **O `EgressGate` real não amarra provedor a recurso.** O `network.EgressHook` deriva o destino
+  do `Resource` e compara-o com uma allowlist de **deployment** — não sabe o que é um provedor.
+  `Provider=stripe` com destino `evil.example` **passa** se `evil.example` estiver na allowlist, e
+  é negado com `DeniedBy="egress"`, indistinguível de qualquer outro egress fora da lista.
+  Resolve o egress, não a confusão de deputado.
+- **Uma obrigação de egress do PDP** exigiria o bundle de política assinado — que é precisamente
+  o bloqueador declarado do `DEF-218`. Seria circular: este ticket é pré-condição do wiring, não
+  consequência dele.
+
+**A DECISÃO LÊ O `Call.Resource`, NÃO O ENVELOPE.** É esse o valor que a mediação **sela**;
+decidir sobre um e selar o outro repetiria a divergência de namespaces que o AOS-330 acabou de
+fechar no eixo do Vault.
+
+**DUAS SENTINELAS, E A DISTINÇÃO É O AC.** `ErrResourceOutOfScope` («este destino não é deste
+provedor») é distinta de `ErrProviderOutOfScope` («este provedor não é teu»): levam o operador a
+sítios diferentes — a primeira é a allowlist de hosts, a segunda é a política de classe. E
+`ErrResourceUndetermined` cobre o que não permite decidir — valor que não se analisa, ou tipo que
+não é de rede —, porque sob política declarada informação insuficiente é recusa, a mesma postura
+do envelope ilegível no eixo provider.
+
+**O ESTADO POR OMISSÃO É `unset`, DECLARADO E INTERROGÁVEL.** O AC proíbe um deny-all silencioso,
+e a razão é dura: um default que negasse tudo partiria todos os deployments que não configuram a
+coisa nova, e um eixo que ninguém consegue ligar não é segurança — é uma avaria. A postura é
+legível por `ScopeGate.ResourceBindingPosture()`, que é o que a distingue de um silêncio e o que
+o AOS-332 vai imprimir. Um mapa **vazio não-nil** é uma declaração — «nenhum provedor alcança
+recurso nenhum» — e é escolha legítima de quem quer o eixo fechado; é a mesma distinção do eixo
+provider.
+
+Sete funções de teste, **duas delas ponta-a-ponta pela cadeia de mediação** — porque as outras
+cinco exercitam a função de autorização e isso é «a regra está escrita», não «a regra corre». Com
+**três controlos**: o host do próprio provedor passa, sob `unset` nada nega, e a negação por
+autoridade continua distinta da de recurso. Quatro provas de mutação — o gate a não correr a
+verificação, a postura por omissão a virar `enforced`, o indeterminado a ser aceite, e a sentinela
+a virar a do provedor — todas vermelhas.
+
+`DEF-218` passa a nomear este ticket como pré-condição, a par do AOS-324 e do AOS-330.
+
+### A revisão adversarial encontrou um BYPASS e uma opção sem chamador
+
+**O envelope ilegível contornava o eixo.** Quando o `Call.Input` não se lia e a postura do
+**provedor** era `unset`, o gate devolvia `Allow` **antes** de `authorizeResource` correr.
+Consequência medida: declarar **só** a allowlist de recurso era contornável — bastava um envelope
+ausente para uma troca a host alheio passar. Sob política declarada, informação insuficiente é
+recusa; era a postura que o eixo provider já tomava três linhas acima e que faltava a este.
+
+**E a opção não chegava à composição recomendada.** `WithGateProviderHosts` existia no
+`ScopeGate`, mas o `Broker.ScopeGate()` — a via que a documentação recomenda — não a propagava, e
+não havia `Option` do `Broker` que a declarasse. O eixo ficaria **permanentemente** em `unset` por
+esse caminho. Uma opção que a composição não propaga é uma opção que não existe.
+
+**LIMITE DECLARADO.** Continua latente: o broker não está composto e a postura é `unset` em todo
+o repositório. E a allowlist é por **host**, não por caminho — `https://api.stripe.com/qualquer`
+passa se `api.stripe.com` estiver na lista. É deliberado: o caminho de um recurso downstream muda
+com a API do provedor, e uma allowlist por caminho seria configuração que caduca sozinha.
 ---
 
 ## AOS-332 — A postura do eixo provider não aparece no banner de arranque
@@ -941,16 +1218,61 @@ O AOS-324 fechou o eixo por configuração. Este fecha a sua **observabilidade**
 
 ### Critérios de Aceitação
 
-- [ ] O banner declara, no arranque, a postura do eixo provider — derivada do ESTADO composto, na
+- [x] O banner declara, no arranque, a postura do eixo provider — derivada do ESTADO composto, na
       disciplina de `plataformaPostureBanner` e `credentialBrokerPostureBanner`
-- [ ] Uma troca NEGADA regista a postura sob a qual foi decidida
-- [ ] Um teste que prove que as duas posturas produzem linhas distintas, e que a negação as sela
+- [x] Uma troca NEGADA regista a postura sob a qual foi decidida
+- [x] Um teste que prove que as duas posturas produzem linhas distintas, e que a negação as sela
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Sem isto, o `enforced` que o `DEF-218` exige assertar só é observável
-depois da primeira troca bem-sucedida — tarde de mais para uma pré-condição de wiring.
+**IMPLEMENTADO.** P2.
 
+**O QUE ISTO QUEBRA É UMA CIRCULARIDADE.** O `DEF-218` exige assertar que o campo
+`provider_policy` selado diz `enforced` — mas isso só é verificável a partir de um
+`credential.exchange.issued`, ou seja **depois da primeira troca bem-sucedida**. Um nó em `unset`
+que ainda não trocou nada era indistinguível de um em `enforced`. A postura passa a ser observável
+no **arranque**, antes de qualquer troca.
+
+**O BANNER DECLARA NÃO-APLICABILIDADE, NÃO `unset`.** O nó não constrói `*broker.Broker` —
+`broker.New` não tem chamador de produção. Declarar `unset` derivado de um `nil` que nunca chega a
+ser política seria a afirmação que o cabeçalho do `posture_banner.go` proíbe: «uma linha que diga
+*ligado* sobre algo que não está composto é **pior** do que o silêncio que substitui». `unset` é
+uma política não-declarada num broker que **existe**; aqui o broker não existe, e usar a mesma
+palavra faria o operador ler uma postura onde não há nenhuma. O ramo não-composto nomeia, em vez
+disso, os **dois** eixos que o wiring terá de declarar — que é informação verdadeira e útil.
+
+**SÃO DOIS EIXOS, NÃO UM.** O ticket foi escrito antes do AOS-331; quando ele aterrou, passou a
+haver a política de provedores **e** a allowlist de recurso↔provedor. O banner declara as duas, e
+a função pura já aceita o estado composto — no dia em que o wiring ligar, mudam os argumentos, não
+a forma.
+
+**A POSTURA VAI NO `Reason` DA NEGAÇÃO, E NÃO NUM CAMPO NOVO DO `MediationRecord`.** O precedente
+próximo é o `PolicyVersion`, que o RM propaga também na negação — mas esse é **genérico**:
+qualquer hook de política o preenche, e o contrato C1 é do **kernel**. Uma postura do broker é
+preocupação de **plataforma**, e enfiá-la no contrato do kernel por conveniência de um hook seria
+a fuga de camada que o `layer-lint` existe para impedir. A forma é greppável e estável —
+`<razão> [provider_policy=… resource_binding=…]` — com a razão original intacta no prefixo, pelo
+que quem já asserta por substring continua a funcionar.
+
+Seis funções de teste em dois módulos. O teste da selagem lê a razão que ficou **no Event Store**,
+não a que o erro devolveu — o AC é sobre o registo durável, e um teste que olhasse só para o erro
+em memória provaria outra coisa. Com **três controlos**: as duas posturas produzem linhas
+distintas (senão registá-las não distinguiria nada), as quatro combinações do ramo composto são
+distintas entre si e do não-composto, e a linha **sai no arranque real** — uma função de banner
+que não é chamada declara-se a si própria. Quatro provas de mutação, todas vermelhas.
+
+**A NEGAÇÃO DE CAPABILITY NÃO SELAVA A POSTURA**, e a revisão apanhou-o: a primeira versão
+cobria os ramos *provider* e *recurso* e deixava de fora o primeiro dos três. Uma negação de
+capability ficava no WORM sem dizer sob que política corria — o mesmo buraco com outro nome.
+Fechado.
+
+**DEFEITO ENCONTRADO E NÃO FECHADO AQUI, registado como tarefa própria.** A guarda de composição
+do `dispatch` (`exchange.go:290`, a defesa server-side do AOS-324) nega **depois** de a cadeia do
+RM ter passado — e o `monitor.go` já selou um `MediationRecord` com `EffectPermit` por
+audit-before-effect. Uma troca negada por essa via fica no WORM registada como **permitida**, sem
+evento de negação e sem postura. O `TestAOS324_DefesaServerSide_SemGate` assevera que não há
+`credential.exchange.issued`, mas **não olha para o registo de mediação** — por isso o defeito
+passa despercebido. Fechá-lo muda a semântica da defesa server-side e não cabe neste ticket.
 ---
 
 ## AOS-333 — O endereço do Vault aceita credenciais embutidas, e o banner imprime-o cru
@@ -1077,15 +1399,48 @@ Hoje só o `Host.stage` publica `mcp_server`, pelo que a exploração exige outr
 
 ### Critérios de Aceitação
 
-- [ ] Publicar um `mcp_server` sem `ManifestDigest` é recusado fail-closed, com erro atribuível
-- [ ] Um teste que prove a recusa, e um controlo que prove que `tool`/`skill` **sem** o campo
+- [x] Publicar um `mcp_server` sem `ManifestDigest` é recusado fail-closed, com erro atribuível
+- [x] Um teste que prove a recusa, e um controlo que prove que `tool`/`skill` **sem** o campo
       continuam a publicar (o campo é específico do kind)
-- [ ] O golden de regressão distingue «forma legada suportada para tool/skill» de «forma vazia
+- [x] O golden de regressão distingue «forma legada suportada para tool/skill» de «forma vazia
       aceitável para mcp_server» — a segunda deixa de ser fixada como válida
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Fecha por gate o que o AOS-320 fechou por convenção.
+**IMPLEMENTADO.** P2. Fecha por gate o que o AOS-320 fechou por convenção.
+
+`validateContractPorKind` corre no `Publish` **antes do hashing** — não se hasheia uma entrada
+que vai ser recusada, que é a disciplina do `validateContractSchemas` — e a regra é **«exige»,
+nunca «só este pode ter»**: as entradas `kind=tool` derivadas de um servidor MCP transportam a
+âncora de propósito, e a formulação exclusiva partiria essa ligação.
+
+**A REVISÃO ADVERSARIAL MEDIU DUAS LACUNAS, E AS DUAS ERAM MINHAS.**
+
+**(1) Uma entrada legada chegava a `active`.** Fechei o `Publish` e declarei que as históricas
+«continuam a resolver, de propósito» — misturando duas coisas. **Ler** uma entrada do log é
+legítimo: é append-only, e reescrever a leitura do passado seria pior do que a lacuna.
+**Promovê-la a `active`** é uma decisão NOVA, tomada hoje, sujeita às regras de hoje — e `active`
+é o estado que resolve e é usado. O `SetStatus` passou a reavaliar a regra na transição para
+`active`.
+
+**(2) O gate era de PRESENÇA, não de forma.** `ManifestDigest: "x"` passava, e dois servidores
+sem nada em comum voltavam a partilhar o digest de contrato — o digest-constante-da-classe que o
+AOS-320 existe para eliminar, reaberto por uma constante à escolha de quem publica. Acrescentado
+`digest.BemFormado`.
+
+**LIMITE DECLARADO — FORMA NÃO É PROVENIÊNCIA.** Verifica-se que o valor tem forma de SHA-256,
+não que foi derivado do manifesto que o servidor apresentou. Quem publica pode fornecer o hash
+bem-formado de outra coisa. Fechar esse eixo exige assinatura sobre o manifesto observado, que é
+trabalho da cadeia de supply-chain — fica nomeado em vez de sugerido pelo silêncio.
+
+**O golden era tautológico, e a revisão mostrou-o.** O campo `publicavel` que eu tinha
+acrescentado não carregava bit nenhum que o `kind` já não carregasse — uma guarda pré-existente
+proibia qualquer caso com manifesto, pelo que a asserção se reduzia a
+`publicavel == (kind != mcp_server)` sobre booleanos postos à mão, e remover a produção
+deixava-a verde. Entrou o caso golden da **forma publicável** (que não existia: o AOS-320
+introduziu a forma e não lhe congelou nada) e o `TestGolden_FormaPublicavelDiscrimina`, que prova
+o que o campo existe para fazer — dois manifestos diferentes dão digests diferentes, e com/sem
+manifesto diferem.
 
 ---
 
@@ -1106,17 +1461,44 @@ que não é neutro: **degrada** a classificação, não a deixa indefinida.
 
 ### Critérios de Aceitação
 
-- [ ] `ClassifyContract` considera `ManifestDigest`: uma mudança do manifesto é classificada como
+- [x] `ClassifyContract` considera `ManifestDigest`: uma mudança do manifesto é classificada como
       MAJOR (ou como a classe que a equipa decidir, justificada contra o ADR-012)
-- [ ] Um teste que prove que dois `mcp_server` com manifestos diferentes não são um bump PATCH
+- [x] Um teste que prove que dois `mcp_server` com manifestos diferentes não são um bump PATCH
       válido
-- [ ] O impacto na semântica de AOS-052 fica escrito — que artefactos passam a exigir MAJOR e porquê
+- [x] O impacto na semântica de AOS-052 fica escrito — que artefactos passam a exigir MAJOR e porquê
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Residual nomeado no AOS-320, promovido a ticket porque a revisão mostrou que
-não é uma omissão neutra.
+**IMPLEMENTADO.** P2. Residual nomeado no AOS-320 e promovido a ticket porque a omissão não
+deixava a classificação indefinida — **degradava-a** para «compatível», que é uma afirmação
+positiva e falsa.
 
+`ClassifyContract` passa a devolver MAJOR para qualquer delta de `ManifestDigest`, com a razão
+`manifest_digest_changed`.
+
+**PORQUÊ MAJOR, CONTRA O ADR-012.** O digest é uma **âncora opaca**: o `mcp.DigestAncorado` funde
+esquema, endpoint e transporte num só SHA-256, e o resultado não é decomponível a jusante — dali
+não se distingue «mudou de porta» de «ganhou uma tool `exec`». Perante duas leituras e nenhuma
+forma de as separar, classifica-se pela pior. E é a leitura certa para o que o campo significa: o
+digest é o que afirma que o servidor por trás deste contrato é o mesmo que foi aprovado.
+
+**CUSTO DECLARADO.** Uma mudança puramente operacional de endpoint exige bump MAJOR. Separar os
+dois eixos exige decompor a âncora — o `mcp.Host` tem `manifest.Digest` e `conn.Endpoint`
+separados e podia levá-los como dois campos de contrato — e é trabalho no `DigestAncorado`, não
+no classificador. Fica nomeado em vez de resolvido por uma heurística que adivinhasse qual dos
+dois mudou.
+
+**O AC3 NÃO ESTAVA CUMPRIDO, E A REVISÃO APANHOU-O.** O impacto que escrevi na `tecnica/05` §7.1
+dizia «só os `mcp_server` se movem — os restantes têm o campo vazio dos dois lados». É **falso**:
+o `mcp.Host` grava a **mesma** âncora em cada entrada `kind=tool` que o servidor expõe
+(`host.go:356`), pelo que mover o endpoint de um servidor com N tools exige MAJOR nas N. Essa é a
+maior parte do custo real — precisamente o que o AC mandava declarar — e eu tinha-a omitido. O
+texto foi corrigido, e o caso ganhou o teste que não existia em pacote nenhum
+(`TestAOS335_ToolComAncoraMudadaTambemEMajor`).
+
+**LIMITE DECLARADO.** O `tofu.Monitor.Reapprove` continua a exigir só versão estritamente
+superior e não consome `ClassifyContract`: a ligação MAJOR ⇒ re-aprovação TOFU permanece
+semântica, não mecânica. Está fora do eixo do AOS-052.
 ---
 
 ## AOS-336 — O custo indefinido não atravessa a fronteira GW→RT, e o guarda a jusante é fraco
@@ -1503,6 +1885,63 @@ de todo** — o gap já existia para o Bearer — pelo que o esquema novo não �
 ponta-a-ponta contra o binário do repositório, só contra `httptest`. E o molde de leitura de
 credencial dos **dois Vaults** ecoa o caminho na mensagem de erro, que é o mesmo defeito latente
 que este ticket fechou do seu lado; fica nomeado em vez de arrastado.
+
+---
+
+## AOS-340 — Um hook não tem canal legível por máquina para anexar informação à sua própria negação
+
+### Contexto
+
+Na cadeia de mediação do RM, um hook que NEGA tem exactamente dois canais que sobrevivem ao
+`MediationRecord`: o `Reason`, texto livre, e o `PolicyVersion` — que é do hook de política e não
+serve de canal genérico. As `Obligations` do `HookResult` são deitadas fora no ramo de deny, e isso
+é **deliberado**: está fixado por `TestNegacaoNaoSelaObrigacoes`, tem gémea no ramo de deny de
+`pdp.paraRM`, e a justificação está agora escrita no sítio (`monitor.go`, ramo `HookDeny`). **Este
+ticket não a reabre.**
+
+O que reabre é a lacuna que ela deixa. E as obrigações nunca poderiam tapá-la: `Obligation` no RM
+é vocabulário **fechado de imposição** — `enforceObligations` nega *fail-closed* qualquer `Type`
+que não saiba cumprir. Um hook que anexasse uma obrigação só para documentar a sua negação estaria
+a construir um valor que, num permit, **nega a call**. O canal não existe porque o tipo não é esse.
+
+Medido no AOS-332: ao precisar de selar a postura do eixo provider numa negação, não havia onde, e
+a postura foi para um sufixo greppável do `Reason` — `<razão> [provider_policy=… resource_binding=…]`.
+Funciona e a razão original fica intacta no prefixo, mas é *parsing* de texto livre a fazer de
+contrato, e o próximo hook com a mesma necessidade inventará o seu próprio formato.
+
+O modelo de audit **já faz o oposto noutros sítios**, o que mostra que a necessidade é real e não
+exótica: `messaging.Verifier.seal` sela `DecisionDeny` com uma obrigação `reject_reason` (e
+`claimed_origin` no caminho não-autenticado), `hitl.Channel.seal` sela sempre `hitl_decision`, e
+`compliance.projectHITL` **depende** dessa obrigação para contar as negações. A diferença é que
+esses produtores escrevem no `audit.Store` directamente; quem passa pela cadeia do RM não tem
+equivalente.
+
+**Não é buraco de segurança e não há pressa.** `enforceObligations` só corre no caminho de permit,
+pelo que nada disto muda o que o nó deixa acontecer — só o que ele regista.
+
+### Critérios de Aceitação
+
+- [ ] Um hook pode anexar metadados tipados (chave/valor) à SUA decisão de negação, e o RM sela-os
+      no `MediationRecord` e no payload de `tool.call.denied`
+- [ ] O canal é **genérico** e neutro em camadas, na disciplina do `PolicyVersion`: nenhum campo
+      específico de plataforma entra no contrato C1 do kernel, e o `layer-lint` mantém-se verde
+- [ ] O canal é **distinto** de `Obligations` e não passa por `enforceObligations`: um metadado com
+      chave desconhecida **não** pode negar um permit
+- [ ] A assimetria das obrigações mantém-se: `TestNegacaoNaoSelaObrigacoes` e
+      `TestNegacaoNaoLevaObrigacoes` passam **sem alteração**
+- [ ] O `Reason` continua a levar a razão em texto livre, com o prefixo intacto — quem asserta por
+      substring não parte
+- [ ] O sufixo do AOS-332 migra para o canal novo, ou fica escrita a decisão de o não migrar
+- [ ] `tecnica/12` e `tecnica/13` reflectem o campo novo; acrescentar um campo opcional ao payload
+      é **MINOR** em `port_version` (`tecnica/12` §4)
+- [ ] Testes com prova de mutação: remover o selo do canal deixa o teste **vermelho**
+
+### Estado
+
+**POR IMPLEMENTAR.** P3 — e o P3 é deliberado. O AOS-332 entregou um contorno que funciona e é
+greppável, pelo que não há observabilidade perdida hoje; o que este ticket compra é a forma, antes
+de o segundo hook inventar o segundo formato. Encontrado a investigar o `nil` do ramo `HookDeny`,
+que se confirmou ser decisão e não omissão — a lacuna é o custo dessa decisão, não o defeito dela.
 
 ---
 

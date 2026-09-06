@@ -118,6 +118,37 @@ func ClassifyContract(old, new domain.Contract, semanticsBroken bool) (domain.Ch
 	ok, or2 := classifySchema(roleOutput, old.OutputSchema, new.OutputSchema)
 	bump(ok, or2)
 
+	// Manifesto do servidor MCP: qualquer delta é MAJOR (AOS-335).
+	//
+	// PORQUÊ MAJOR, E NÃO UMA CLASSE MAIS FINA. O `ManifestDigest` é uma ÂNCORA OPACA — o
+	// `mcp.DigestAncorado` funde a superfície declarada do servidor com o endpoint onde ele
+	// atende, e o resultado não é decomponível a jusante. Daqui não se consegue distinguir «o
+	// servidor mudou de porta» de «o servidor ganhou uma tool `exec`». Perante duas leituras
+	// possíveis e nenhuma forma de as separar, a classificação tem de ser a da pior.
+	//
+	// E é a leitura certa para o que o campo significa: o digest do manifesto é o que diz que
+	// o servidor por trás deste contrato é o MESMO que foi aprovado. Mudou ⇒ não é. Chamar
+	// PATCH a uma troca de identidade seria o fail-open que o AOS-320 fechou no digest,
+	// reaberto na classificação — que é literalmente o defeito que este ticket corrige: a
+	// omissão não deixava a classificação indefinida, DEGRADAVA-A para «compatível».
+	//
+	// CUSTO DECLARADO, contra o ADR-012: uma mudança PURAMENTE OPERACIONAL de endpoint, sem
+	// alteração nenhuma de superfície, passa a exigir bump MAJOR. É caro e é deliberado —
+	// separar os dois eixos exige decompor a âncora, que é trabalho no `mcp.DigestAncorado` e
+	// não aqui. Fica nomeado em vez de resolvido por uma heurística que adivinhasse qual dos
+	// dois mudou.
+	//
+	// SÓ DISPARA COM DELTA REAL: as tools e skills genéricas têm o campo vazio dos dois lados,
+	// pelo que `old == new` e nada acontece.
+	//
+	// QUEM SE MOVE, ALÉM DOS `mcp_server`: as entradas `kind=tool` DERIVADAS de um servidor
+	// MCP transportam a mesma âncora (`mcp.Host` grava-a em cada tool que expõe), pelo que
+	// mover o endpoint de um servidor com N tools exige MAJOR nas N. É a maior parte do custo
+	// real desta regra, e a primeira redacção deste comentário omitia-a.
+	if old.ManifestDigest != new.ManifestDigest {
+		bump(domain.ChangeMajor, "manifest_digest_changed")
+	}
+
 	// Semântica declarada quebrada: MAJOR mesmo sem mudança estrutural.
 	if semanticsBroken {
 		bump(domain.ChangeMajor, "semantics_broken")

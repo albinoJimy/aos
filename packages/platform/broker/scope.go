@@ -68,6 +68,7 @@ type ScopeGate struct {
 	toolID         string
 	classScopes    map[string][]string // AgentClass → escopo-máximo da classe
 	classProviders map[string][]string // AgentClass → provedores; nil ⇒ ProviderPostureUnset
+	providerHosts  map[string][]string // Provider → hosts; nil ⇒ ResourceBindingUnset (AOS-331)
 }
 
 // ScopeGateOption configura eixos ADICIONAIS do [ScopeGate] sem quebrar os
@@ -81,6 +82,20 @@ type ScopeGateOption func(*ScopeGate)
 // deny-all silencioso. Um mapa nil explícito mantém a postura unset.
 func WithGateClassProviders(classProviders map[string][]string) ScopeGateOption {
 	return func(g *ScopeGate) { g.classProviders = copyProviderPolicy(classProviders) }
+}
+
+// WithGateProviderHosts declara a allowlist de HOSTS por provedor (AOS-331): amarra o provedor
+// autorizado ao RECURSO de destino. Declará-la coloca o gate em [ResourceBindingEnforced]; a sua
+// ausência é [ResourceBindingUnset] — estado DECLARADO, não um deny-all silencioso. Um mapa nil
+// explícito mantém a postura unset.
+func WithGateProviderHosts(providerHosts map[string][]string) ScopeGateOption {
+	return func(g *ScopeGate) { g.providerHosts = copyProviderHosts(providerHosts) }
+}
+
+// ResourceBindingPosture reporta a postura do eixo recurso↔provedor deste gate. Existe para o
+// banner de arranque a poder declarar (AOS-332) e para os testes a poderem assertar.
+func (g ScopeGate) ResourceBindingPosture() ResourceBindingPosture {
+	return resourceBindingPosture(g.providerHosts)
 }
 
 // copyProviderPolicy copia a política de provedores (nil preserva-se como nil — é
@@ -129,9 +144,12 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	}
 	classScope := g.classScopes[call.Principal.AgentClass]
 	if !permitsCapability(call.Principal.Authority, classScope, call.Capability) {
+		// A postura vai TAMBÉM nesta negação (AOS-332). A primeira versão selava-a só nos
+		// ramos provider e recurso, e a revisão apanhou-o: uma negação de capability ficava
+		// no WORM sem dizer sob que política corria, que é o mesmo buraco com outro nome.
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   ErrOutOfScope.Error(),
+			Reason:   g.razaoComPostura(ErrOutOfScope),
 		}, nil
 	}
 	// EIXO PROVIDER (AOS-324). O provedor vem do envelope NÃO-SECRETO da troca
@@ -144,7 +162,21 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		if g.ProviderPosture() == ProviderPostureEnforced {
 			return referencemonitor.HookResult{
 				Decision: referencemonitor.HookDeny,
-				Reason:   ErrProviderUndetermined.Error(),
+				Reason:   g.razaoComPostura(ErrProviderUndetermined),
+			}, nil
+		}
+		// E O EIXO DO RECURSO TAMBÉM SE OPÕE (AOS-331, achado da revisão adversarial). Sem
+		// esta segunda perna, declarar SÓ a allowlist de recurso era contornável por um
+		// envelope ausente: o gate devolvia Allow aqui, ANTES de `authorizeResource` correr, e
+		// uma troca para host alheio passava.
+		//
+		// O envelope ilegível não diz o provedor, logo não há como decidir se o recurso lhe
+		// pertence — e sob política declarada informação insuficiente é recusa, que é a mesma
+		// postura que o eixo provider já tomava três linhas acima.
+		if g.ResourceBindingPosture() == ResourceBindingEnforced {
+			return referencemonitor.HookResult{
+				Decision: referencemonitor.HookDeny,
+				Reason:   g.razaoComPostura(ErrResourceUndetermined),
 			}, nil
 		}
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
@@ -152,8 +184,39 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	if err := authorizeProvider(g.classProviders, call.Principal.AgentClass, call.Principal.Authority, provider); err != nil {
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   err.Error(),
+			Reason:   g.razaoComPostura(err),
+		}, nil
+	}
+	// EIXO RECURSO↔PROVEDOR (AOS-331). O provedor estar autorizado não diz para ONDE a
+	// credencial dele vai ser apresentada. Lê-se do `Call.Resource` — o contrato C1 — e não do
+	// envelope, porque é esse o valor que a mediação SELA: decidir sobre um e selar o outro
+	// seria repetir a divergência de namespaces que o AOS-330 fechou no eixo do Vault.
+	if err := authorizeResource(g.providerHosts, provider, call.Resource.Type, call.Resource.Value); err != nil {
+		return referencemonitor.HookResult{
+			Decision: referencemonitor.HookDeny,
+			Reason:   g.razaoComPostura(err),
 		}, nil
 	}
 	return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
+}
+
+// razaoComPostura acrescenta à razão da negação a POSTURA sob a qual ela foi decidida (AOS-332).
+//
+// PORQUÊ NO `Reason` E NÃO NUM CAMPO NOVO DO `MediationRecord`. O precedente próximo é o
+// `PolicyVersion`, que o RM propaga também na negação — mas esse é GENÉRICO: qualquer hook de
+// política o preenche, e o contrato C1 do RM é do kernel. Uma postura do broker é uma
+// preocupação de PLATAFORMA, e enfiá-la no contrato do kernel para conveniência de um hook seria
+// a fuga de camada que o `layer-lint` existe para impedir. O `Reason` é o campo que já regista
+// PORQUÊ a decisão foi tomada, e «sob que postura» é parte do porquê.
+//
+// O QUE ISTO RESOLVE. Uma negação dizia «provedor fora de escopo» e mais nada. Duas negações com
+// a mesma razão podiam vir de posturas opostas — uma com política declarada, outra com o eixo
+// sem imposição a negar por outra via — e no WORM eram indistinguíveis. Quem audita precisa de
+// saber contra que regra a decisão correu, não só qual foi.
+//
+// FORMA GREPPÁVEL e estável: `<razão> [provider_policy=… resource_binding=…]`. A razão original
+// fica intacta no prefixo, pelo que quem já asserta por substring continua a funcionar.
+func (g ScopeGate) razaoComPostura(err error) string {
+	return err.Error() + " [provider_policy=" + string(g.ProviderPosture()) +
+		" resource_binding=" + string(g.ResourceBindingPosture()) + "]"
 }
