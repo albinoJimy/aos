@@ -73,10 +73,17 @@ const redactedMarker = "[REDACTED]"
 //   - ttl: propagada na Decision ao consumidor (nada a transformar aqui);
 //   - QUALQUER outro tipo: desconhecido/não-satisfazível ⇒ deny fail-closed.
 //
-// Devolve (reason, ok=false) se alguma obrigação for violada ou não-satisfazível;
+// Devolve (reason, causa, ok=false) se alguma obrigação for violada ou não-satisfazível;
 // nesse caso o chamador nega fail-closed e NÃO despacha. Muta call.Input quando a
 // redação se aplica (o fingerprint do permit não depende do Input — ver call.go).
-func enforceObligations(call *Call, obligations []Obligation) (string, bool) {
+//
+// A CAUSA é devolvida para poder ser SELADA no registo da negação (AOS-341). A recusa
+// pára na primeira obrigação que falha, pelo que a causa é sempre uma e exactamente uma:
+// não é «as obrigações da call», é «a obrigação que recusou». A distinção é o que torna
+// selá-la compatível com a assimetria do ramo `HookDeny` — ali descartam-se obrigações da
+// base que nada aplicaram; aqui sela-se a que negou. Em ok=true a causa é o valor-zero e
+// não tem significado.
+func enforceObligations(call *Call, obligations []Obligation) (string, Obligation, bool) {
 	for _, ob := range obligations {
 		switch ob.Type {
 		case ObligationAudit:
@@ -85,22 +92,22 @@ func enforceObligations(call *Call, obligations []Obligation) (string, bool) {
 			// Propagada na Decision.Obligations ao consumidor (viaja com a decisão).
 		case ObligationRegion:
 			if reason, ok := enforceRegion(call, ob); !ok {
-				return reason, false
+				return reason, ob, false
 			}
 		case ObligationRedactPII:
 			if reason, ok := enforceRedactPII(call, ob); !ok {
-				return reason, false
+				return reason, ob, false
 			}
 		case ObligationAutonomy:
 			if reason, ok := enforceAutonomy(call, ob); !ok {
-				return reason, false
+				return reason, ob, false
 			}
 		default:
 			// Fail-closed: uma obrigação que o PEP não sabe cumprir não liberta o efeito.
-			return fmt.Sprintf("obrigacao %q desconhecida/nao-satisfazivel: efeito negado (fail-closed)", ob.Type), false
+			return fmt.Sprintf("obrigacao %q desconhecida/nao-satisfazivel: efeito negado (fail-closed)", ob.Type), ob, false
 		}
 	}
-	return "", true
+	return "", Obligation{}, true
 }
 
 // enforceAutonomy impõe o oversight de autonomia no PEP (AOS-087, AC4). Um modo que

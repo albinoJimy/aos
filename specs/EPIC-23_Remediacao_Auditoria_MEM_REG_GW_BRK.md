@@ -100,6 +100,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O cliente Vault do broker ecoa o endereço nos erros (um ramo cru) — achado na revisão do AOS-333 | **AOS-337** — **implementado** |
 | A quebra do AOS-333 deixa o verificador de attestation sem caminho para basic-auth | **AOS-338** — **implementado** |
 | Um hook não tem canal legível por máquina para anexar informação à sua negação — achado a investigar o contorno em texto livre do AOS-332 | **AOS-340** |
+| Uma negação causada por uma obrigação de região não é projectada como evento de soberania — achado a investigar o `nil` do ramo `HookDeny` do RM | **AOS-341** — **implementado** |
 
 **O oitavo NÃO tem ticket, e a decisão fica escrita:** a sonda de segunda passagem do AOS-321 custa
 +128% de CPU no *parse* (44,4 µs/op contra 101,1 µs/op num corpo de ~11 KB, medido por benchmark).
@@ -2080,3 +2081,93 @@ pelo que nada disto muda o que o nó deixa acontecer — só o que ele regista.
 greppável, pelo que não há observabilidade perdida hoje; o que este ticket compra é a forma, antes
 de o segundo hook inventar o segundo formato. Encontrado a investigar o `nil` do ramo `HookDeny`,
 que se confirmou ser decisão e não omissão — a lacuna é o custo dessa decisão, não o defeito dela.
+
+---
+
+## AOS-341 — Uma negação POR obrigação de região não é um evento de soberania no relatório
+
+### Contexto
+
+`Monitor.evaluate` nega *fail-closed* quando `enforceObligations` não consegue cumprir uma
+obrigação, e passa `nil` ao `Monitor.fail` — como todos os ramos de recusa. Nos outros isso é
+inócuo; **neste não**, e é o único sítio onde o argumento que sustenta esse `nil` («numa negação
+não existe obrigação») é factualmente falso: aqui as obrigações foram coletadas da cadeia e **uma
+delas é a causa da recusa**. A obrigação `region` que negou a call não é selada em lado nenhum —
+fica só nomeada no `Reason`, em texto livre.
+
+A consequência é mensurável e está a jusante, no `compliance.projectSovereignty`, que projecta os
+«eventos de soberania por região» do AOS-094. `sovereigntyRegion` prefere a obrigação `region` e,
+sem ela, cai no `Resource.Region`. Medido com as duas formas que o RM sela neste caminho:
+
+| Caso | O que o RM sela | O que o relatório faz |
+|---|---|---|
+| Recurso **sem região resolvida** + obrigação `region: eu` | `obligations=[]`, `Resource.Region=""` | `governed=false` — **o evento não é projectado de todo** |
+| Cross-border: recurso em `us`, obrigação `region: eu` | `obligations=[]`, `Resource.Region="us"` | projectado com `Region: "us"` |
+
+**O primeiro caso é o defeito.** Uma call recusada PELA fronteira de soberania desaparece da secção
+que existe para as mostrar. Não desaparece do relatório todo — continua a contar em `PDP.Denies` —
+mas some da única secção que responde «que acções a soberania governou», e some precisamente no
+caminho *fail-closed*, que é o que se activa quando a região não se consegue resolver.
+
+**O segundo caso é uma ambiguidade de contrato, não um defeito provado, e fica assim registado.**
+`SovereigntyEvent.Region` está documentado como «a região autorizada/**alvo**» — as duas, e num
+permit coincidem. Só divergem numa negação cross-border, e aí a negação aparece arquivada sob a
+região **recusada** (`us`), não sob a exigida (`eu`), ao lado de eventos onde o mesmo campo
+significa a autorizada. O ticket obriga a escolher; não presume qual.
+
+Alcance: qualquer política que anexe uma obrigação `region` a uma call cujo `Resource.Region` não
+esteja preenchido. Não é buraco de segurança — o efeito **é** negado, e correctamente. O que falha
+é o registo dessa negação.
+
+### Critérios de Aceitação
+
+- [x] Uma negação `E_OBLIGATION_UNSATISFIED` causada por uma obrigação de região é projectada como
+      evento de soberania, **incluindo** quando o recurso não tem região resolvida
+- [x] A região exigida pela obrigação é recuperável do registo selado sem *parsing* do `Reason`
+- [x] `SovereigntyEvent.Region` passa a ter significado ÚNICO e declarado (autorizada **ou** alvo),
+      e o doc-comment deixa de dizer as duas coisas; se o veredicto for que a forma actual está
+      certa, fica escrito no sítio em vez de ficar por decidir
+- [x] A assimetria do ramo `HookDeny` não é reaberta de lado nenhum: `TestNegacaoNaoSelaObrigacoes`
+      e `TestNegacaoNaoLevaObrigacoes` passam **sem alteração**, e esse ramo continua a passar
+      `nil`
+- [x] Nada muda no que o nó deixa acontecer: `enforceObligations` continua a correr só no permit, e
+      um teste de controlo prova que a call continua negada
+- [x] Prova em DUAS camadas, no pacote onde cada uma vive — o registo no `reference-monitor`, a
+      projecção no `compliance` — porque corrigir só uma deixa a outra verde a apontar para o vazio
+- [x] Prova de mutação — **com o critério corrigido**; ver o Estado
+
+### Estado
+
+**IMPLEMENTADO.** P2.
+
+`enforceObligations` passa a devolver a **causa** além da razão, e o ramo
+`CodeObligationUnsatisfied` sela essa obrigação — só essa. A distinção é o que torna isto
+compatível com a assimetria do ramo `HookDeny`: ali descartam-se obrigações da BASE, que nada
+aplicaram a um efeito que não aconteceu; aqui sela-se a que NEGOU, que é um facto sobre a decisão
+e não sobre o efeito. Passar a lista acumulada teria sido a correcção preguiçosa, e há um teste de
+controlo (`TestAOS341_SelaSoACausadoraNaoAsCumpridas`) só para a impedir.
+
+O `compliance` **não mudou de lógica**: a preferência pela obrigação já lá estava. O que mudou foi
+deixar de ser inalcançável no caminho de negação — o RM descartava as obrigações em todos os ramos
+de recusa, pelo que um registo `deny` nunca chegava com uma para preferir. Mudou o doc-comment, que
+é onde o AC3 vivia: `SovereigntyEvent.Region` é a região **exigida**, com o `Resource.Region`
+declarado como fallback mais fraco e nomeado como tal.
+
+**O CRITÉRIO DE MUTAÇÃO ESTAVA ERRADO, e o próprio defeito mostra porquê.** Escrevia-se «reverter o
+selo deixa o teste do `compliance` vermelho». Não deixa, e foi medido: com a mutação do RM viva
+(descartar a causa), os quatro testes do `compliance` ficam **verdes** — leem `AuditRecord`
+construídos à mão, e nenhum módulo importa o `compliance` (é folha), pelo que um teste
+ponta-a-ponta exigiria criar uma aresta de módulo que a produção não tem. Honrado como devia ter
+sido escrito, **uma mutação por camada**: descartar a causa no RM avermelha três testes do
+`reference-monitor`; anular a preferência pela obrigação em `sovereigntyRegion` avermelha dois do
+`compliance`, e deixa verdes os dois controlos — o do fallback e o negativo —, que é o que prova
+que a projecção não passou a aceitar tudo. A reversão *ingénua* do selo nem sequer compila, porque
+`causa` fica por usar: é o inverso exacto do que o #87 registou sobre parâmetros por usar não
+avermelharem nada.
+
+**LIMITE DECLARADO.** `enforceRegion` aceita a região em `Params["region"]` **ou** em
+`Params["allowed"]`; `sovereigntyRegion` só lê a primeira. Com `allowed`, o evento passa a ser
+projectado (a obrigação está lá, `governed=true`) mas com `Region` vazia. Não foi fechado porque
+`allowed` não tem emissor de produção — só um caso de teste do RM —, e duplicar a precedência do
+kernel no plano de controlo era a correcção errada para um caso latente. Fica nomeado em vez de
+arrastado.

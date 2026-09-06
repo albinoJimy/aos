@@ -271,7 +271,7 @@ func TestEnforceObligations_Unit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			c := tc.call
-			_, ok := enforceObligations(&c, tc.obs)
+			_, _, ok := enforceObligations(&c, tc.obs)
 			if ok != tc.ok {
 				t.Fatalf("ok=%v, esperava %v", ok, tc.ok)
 			}

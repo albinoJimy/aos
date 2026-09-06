@@ -8,7 +8,7 @@ import "testing"
 func TestEnforceAutonomy_ModoQueExigeHumanoSemProva(t *testing.T) {
 	for _, mode := range []string{"suggest", "confirm", "batch"} {
 		call := Call{}
-		reason, ok := enforceObligations(&call, []Obligation{
+		reason, _, ok := enforceObligations(&call, []Obligation{
 			{Type: ObligationAutonomy, Params: map[string]string{
 				paramOversight: mode, ParamAutonomyRequiresHuman: "true"}},
 		})
@@ -25,7 +25,7 @@ func TestEnforceAutonomy_ModoQueExigeHumanoSemProva(t *testing.T) {
 // escreve), o oversight está cumprido e o efeito segue.
 func TestEnforceAutonomy_ComProvaLiberta(t *testing.T) {
 	call := Call{humanApproved: &ApprovalProof{Approvers: []string{"human:alice", "human:bob"}, DualControl: true}}
-	if reason, ok := enforceObligations(&call, []Obligation{
+	if reason, _, ok := enforceObligations(&call, []Obligation{
 		{Type: ObligationAutonomy, Params: map[string]string{
 			paramOversight: "confirm", ParamAutonomyRequiresHuman: "true"}},
 	}); !ok {
@@ -40,7 +40,7 @@ func TestEnforceAutonomy_ModosQueCorremNaoExigemNada(t *testing.T) {
 	// segunda tabela divergiu da taxonomia, negando acções que correm.
 	for _, mode := range []string{"run", "post_hoc_sample"} {
 		call := Call{}
-		if reason, ok := enforceObligations(&call, []Obligation{
+		if reason, _, ok := enforceObligations(&call, []Obligation{
 			{Type: ObligationAutonomy, Params: map[string]string{
 				paramOversight: mode, ParamAutonomyRequiresHuman: "false"}},
 		}); !ok {
@@ -53,7 +53,7 @@ func TestEnforceAutonomy_ModosQueCorremNaoExigemNada(t *testing.T) {
 // NÃO foi afrouxado ao acrescentar o caso novo.
 func TestEnforceAutonomy_ObligationDesconhecidaContinuaANegar(t *testing.T) {
 	call := Call{humanApproved: &ApprovalProof{Approvers: []string{"human:alice"}}}
-	if _, ok := enforceObligations(&call, []Obligation{{Type: "obrigacao_inventada"}}); ok {
+	if _, _, ok := enforceObligations(&call, []Obligation{{Type: "obrigacao_inventada"}}); ok {
 		t.Fatal("uma obligation que o PEP nao sabe cumprir tem de continuar a NEGAR")
 	}
 }
@@ -67,7 +67,7 @@ func TestEnforceAutonomy_SemVeredictoEhFailClosed(t *testing.T) {
 		{paramOversight: "confirm", ParamAutonomyRequiresHuman: "talvez"}, // veredicto ilegível
 	} {
 		call := Call{humanApproved: &ApprovalProof{Approvers: []string{"human:alice"}}}
-		if _, ok := enforceObligations(&call, []Obligation{{Type: ObligationAutonomy, Params: params}}); ok {
+		if _, _, ok := enforceObligations(&call, []Obligation{{Type: ObligationAutonomy, Params: params}}); ok {
 			t.Fatalf("sem veredicto utilizavel o PEP tem de NEGAR; params=%v", params)
 		}
 	}
