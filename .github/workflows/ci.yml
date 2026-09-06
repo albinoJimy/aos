@@ -22,8 +22,22 @@ name: ci
 
 on:
   pull_request:
+  # O RAMO DE INTEGRAÇÃO TAMBÉM CORRE OS GATES, e não só os PRs que lhe apontam.
+  #
+  # `main` NÃO EXISTE neste repositório: o ramo por omissão é
+  # `feature/AOS-128-ux-dx-tests`, e é para lá que todos os PRs fundem. A entrada `main`
+  # nunca disparou uma única vez — era configuração morta a dar a impressão de cobertura.
+  #
+  # O que isso deixava aberto: a prova de CI vinha SÓ do `pull_request`, que corre sobre o
+  # *merge ref* (base + PR) no momento em que o PR é avaliado. Se a base mexer entre essa
+  # corrida e o merge — e mexeu, várias vezes num só dia, com quatro worktrees activos — o
+  # que ficou na base nunca foi verificado tal como ficou. Um PR fundido a verde podia
+  # produzir uma base vermelha, e não havia nada a dizê-lo.
+  #
+  # `main` fica na lista: é para onde o ramo de integração vai quando existir, e tirá-la
+  # trocaria um buraco por outro no dia em que for criado.
   push:
-    branches: [main]
+    branches: [main, feature/AOS-128-ux-dx-tests]
   # Invocável por outro workflow (release.yml). Os MESMOS 24 gates, sem duplicação: a entrega
   # para o servidor não pode passar por uma cópia relaxada da CI — passa por ESTA, ou não passa.
   workflow_call:
