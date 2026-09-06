@@ -66,6 +66,7 @@ cai*) → medição executada. Âmbitos disjuntos e complementares.
 | **[09_Auditoria_RT_RM_Adversarial.md](09_Auditoria_RT_RM_Adversarial.md)** | **RT** (`kernel/agent-runtime`) e **RM** (`kernel/reference-monitor`) | 2026-09-02 |
 | **[10_Auditoria_ORQ_SCH_PDP_Adversarial.md](10_Auditoria_ORQ_SCH_PDP_Adversarial.md)** | **Plano de controlo**: ORQ, SCH e PDP — o âmbito que a 09 §7 declarou por cobrir | 2026-09-03 |
 | **[11_Auditoria_MEM_REG_GW_BRK_Adversarial.md](11_Auditoria_MEM_REG_GW_BRK_Adversarial.md)** | **Serviços de plataforma**: MEM, REG, GW e BRK — o âmbito que a 10 §7 deixou por cobrir. 32 hipóteses, 16 sobreviventes; o digest constante do `mcp_server` e a lacuna de governação que a 10 não tinha | 2026-09-04 |
+| **[12_Auditoria_ES_SBX_Adversarial.md](12_Auditoria_ES_SBX_Adversarial.md)** | **Substrato**: ES (Event Store, incl. JetStream/NATS) e SBX (sandbox, isolamento e egress) — o âmbito que a 11 §7.2 deixou por medir. 42 hipóteses, 12 sobreviventes, mais 2 achados nascidos na refutação; inclui validação **experimental** do WAL | 2026-09-06 |
 
 ---
 
