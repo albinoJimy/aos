@@ -492,15 +492,40 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]Ev
 }
 
 // Healthy é uma sonda de PRONTIDÃO barata e SEM efeitos colaterais: devolve true
-// enquanto o store está operacional e false depois de [Store.Close] (o mesmo estado
-// que faz Append/Read devolverem [ErrClosed]). É uma leitura atómica do flag `closed`
-// — não adquire stripes nem s.mu, não aloca, não toca em réplicas nem no WAL — pelo
-// que é segura para ser chamada com a frequência de um probe de orquestrador (/readyz)
-// sem contender com o caminho de escrita/leitura. Deliberadamente NÃO reflecte a
-// degradação de quórum: a prontidão que o nó expõe é "o substrato aceita I/O" (NÃO
-// ErrClosed), não uma medida de saúde do cluster (essa é observabilidade, não a
-// condição de drain).
-func (s *Store) Healthy() bool { return !s.closed.Load() }
+// enquanto o store ACEITA ESCRITAS e false depois de [Store.Close] (o mesmo estado que
+// faz Append/Read devolverem [ErrClosed]) ou quando o WAL deixou de as aceitar.
+//
+// São duas leituras atómicas — não adquire stripes, nem s.mu, nem o mutex do WAL, não
+// aloca e não toca em réplicas — pelo que continua segura para ser chamada com a
+// frequência de um probe de orquestrador (/readyz) sem contender com o caminho de
+// escrita. O átomo do WAL ([wal.recusaEscritas]) existe exactamente para isso: ler o
+// estado por `w.mu` tornaria o /readyz refém do `fsync`.
+//
+// # AOS-350 — PORQUE O `closed` SOZINHO NÃO CHEGAVA
+//
+// `closed` era o ÚNICO input, e medido:
+//
+//	Healthy() com o WAL morto pelo Flush pegajoso                = true
+//	Healthy() com wal.envenenado=true e o append a dizer
+//	            "nao aceita mais escritas"                       = true
+//
+// Os consumidores são três e são reais: `/readyz` (ficava 200 VERDE), o gauge
+// `aos_eventstore_healthy` (ficava 1) e o SLI `controlPlaneAvailable`. O resultado era
+// um nó com o Event Store morto a recusar todas as escritas, o orquestrador de
+// contentores a continuar a encaminhar tráfego, e `control_plane_availability_low` a
+// não disparar. O comentário desse SLI descrevia este modo de falha por palavras suas —
+// tinha tapado o eixo do WORM e deixado o do WAL aberto.
+//
+// Deliberadamente NÃO reflecte a degradação de quórum: a prontidão que o nó expõe é «o
+// substrato aceita I/O», não uma medida de saúde do cluster (essa é observabilidade,
+// não a condição de drain). Um WAL que recusa escritas não é degradação de quórum — é
+// o substrato a estar morto, que é precisamente a condição de drain.
+func (s *Store) Healthy() bool {
+	if s.closed.Load() {
+		return false
+	}
+	return s.wal.aceitaEscritas()
+}
 
 // Close termina o store e liberta todas as subscrições (sem fugas).
 func (s *Store) Close() error {

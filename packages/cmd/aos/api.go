@@ -1174,7 +1174,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_draining", "O servico esta em drain (1) para shutdown gracioso.", "gauge", b01(draining), "")
 
 	esHealthy := h.node.EventStore != nil && h.node.EventStore.Healthy()
-	g("aos_eventstore_healthy", "Event Store operacional (1) ou fechado/ausente (0).", "gauge", b01(esHealthy), "")
+	g("aos_eventstore_healthy", "Event Store operacional (1) ou a recusar escritas/fechado/ausente (0).", "gauge", b01(esHealthy), "")
 
 	// Custódia da KEK (Vault): dependência crítica cujo estado selado/inalcançável partia a via
 	// GDPR em silêncio (revisão #2). Só exposta quando configurada (custódia durável).

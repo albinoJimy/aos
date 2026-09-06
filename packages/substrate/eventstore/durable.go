@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
 // AOS-170 — SUBSTRATO DURÁVEL do Event Store. Uma camada de persistência em disco
@@ -105,6 +106,32 @@ type wal struct {
 	// aceitar mais escritas. Ver [wal.desfazer].
 	envenenado error
 	closed     bool
+
+	// recusaEscritas espelha `envenenado != nil || closed` num átomo, para que
+	// [Store.Healthy] possa consultá-lo sem tomar `w.mu` (AOS-350). A duplicação é
+	// deliberada: a sonda de prontidão é chamada com a frequência de um probe de
+	// orquestrador e o mutex é detido durante o `fsync` do caminho de escrita — ler o
+	// estado por lá tornaria o /readyz refém da latência do disco. Escrito SEMPRE sob
+	// `w.mu`, por [wal.recusar]; lido sem lock.
+	recusaEscritas atomic.Bool
+}
+
+// recusar sela o estado terminal do WAL: guarda a causa e publica-a no átomo que a
+// sonda de prontidão lê. Exige `w.mu` detido. Devolve a causa, para poder ser usado
+// directamente num `return`.
+func (w *wal) recusar(causa error) error {
+	w.envenenado = causa
+	w.recusaEscritas.Store(true)
+	return causa
+}
+
+// aceitaEscritas é a leitura SEM LOCK do estado do WAL, para [Store.Healthy]. Um `wal`
+// nil (store in-memory) não recusa nada.
+func (w *wal) aceitaEscritas() bool {
+	if w == nil {
+		return true
+	}
+	return !w.recusaEscritas.Load()
 }
 
 // openWALAppend abre (criando se necessário) o ficheiro do WAL em modo append para
@@ -159,6 +186,61 @@ func fsyncDir(dir string) {
 // append escreve um registo framed do evento e faz fsync. Só regressa após o dado
 // estar durável no disco (flush do buffer + File.Sync).
 func (w *wal) append(ev Event) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.prontoParaEscrever(); err != nil {
+		return err
+	}
+	return w.appendBloqueado(ev)
+}
+
+// appendLote persiste um lote INTEIRO sob uma só posse do mutex, com reposição ao
+// nível do LOTE: se qualquer registo falhar, o ficheiro volta ao tamanho que tinha
+// antes do primeiro. É o que [Store.IngestStream] precisa (AOS-353) — um restauro que
+// devolve erro não pode deixar meio lote durável, pela mesma razão que um [Append] que
+// devolve erro não pode deixar um registo.
+func (w *wal) appendLote(evs []Event) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.prontoParaEscrever(); err != nil {
+		return err
+	}
+	antesLote := w.tamanho
+	for i := range evs {
+		err := w.appendBloqueado(evs[i])
+		if err == nil {
+			continue
+		}
+		// O registo que falhou já se repôs a si próprio; falta desfazer os que
+		// PASSARAM antes dele. Se o WAL ficou envenenado, não há reposição a tentar.
+		if w.envenenado != nil {
+			return err
+		}
+		if terr := w.truncar(antesLote); terr != nil {
+			return w.recusar(fmt.Errorf("eventstore/wal: %w; a reposicao do LOTE para %d bytes FALHOU (%v) — "+
+				"o WAL pode conter parte de um restauro NAO confirmado e nao aceita mais escritas", err, antesLote, terr))
+		}
+		_ = w.f.Sync()
+		w.w.Reset(w.f)
+		w.tamanho = antesLote
+		return err
+	}
+	return nil
+}
+
+// prontoParaEscrever é a porta comum de [wal.append] e [wal.appendLote]. Exige o mutex.
+func (w *wal) prontoParaEscrever() error {
+	if w.closed {
+		return ErrClosed
+	}
+	if w.envenenado != nil {
+		return w.envenenado
+	}
+	return nil
+}
+
+// appendBloqueado escreve UM registo. Exige `w.mu` já detido pelo chamador.
+func (w *wal) appendBloqueado(ev Event) error {
 	payload, err := json.Marshal(ev)
 	if err != nil {
 		return fmt.Errorf("eventstore/wal: marshal: %w", err)
@@ -171,14 +253,6 @@ func (w *wal) append(ev Event) error {
 	var tr [4]byte
 	binary.BigEndian.PutUint32(tr[:], crc32.Checksum(payload, crcTable))
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
-		return ErrClosed
-	}
-	if w.envenenado != nil {
-		return w.envenenado
-	}
 	antes := w.tamanho
 	// AOS-349 — A DESSINCRONIZAÇÃO VERIFICA-SE ANTES DE ESCREVER, NÃO DEPOIS.
 	//
@@ -206,14 +280,12 @@ func (w *wal) append(ev Event) error {
 	// TestDefeito_DoisEscritoresTornamOWALInabrivel, o sensor que mede essa ausência.
 	// Medido ao escrever isto: com `real != antes` o sensor ficou vermelho.
 	if real, err := w.tamanhoReal(); err != nil {
-		w.envenenado = fmt.Errorf("eventstore/wal: nao foi possivel medir o ficheiro antes do append (%w) — "+
-			"sem essa medida nao se pode garantir que um erro nao deixa nada duravel; o WAL nao aceita mais escritas", err)
-		return w.envenenado
+		return w.recusar(fmt.Errorf("eventstore/wal: nao foi possivel medir o ficheiro antes do append (%w) — "+
+			"sem essa medida nao se pode garantir que um erro nao deixa nada duravel; o WAL nao aceita mais escritas", err))
 	} else if real < antes {
-		w.envenenado = fmt.Errorf("eventstore/wal: %w: memoria=%d bytes, ficheiro=%d bytes — "+
+		return w.recusar(fmt.Errorf("eventstore/wal: %w: memoria=%d bytes, ficheiro=%d bytes — "+
 			"o WAL nao aceita mais escritas. Pare o no, reconcilie com a copia de seguranca e verifique "+
-			"quem mais escreve neste ficheiro", ErrWALDesincronizado, antes, real)
-		return w.envenenado
+			"quem mais escreve neste ficheiro", ErrWALDesincronizado, antes, real))
 	}
 	// AOS-348: os Write também vão por [wal.desfazer]. Não é simetria decorativa. O
 	// `bufio.Writer` descarrega sozinho quando o buffer enche, pelo que um `Write` pode
@@ -303,21 +375,18 @@ func (w *wal) desfazer(antes int64, causa error) error {
 	// ([ErrWALDesincronizado]) para que o operador saiba que o problema não é o disco
 	// cheio — é que alguém mexeu no ficheiro por baixo do nó.
 	if real, err := w.tamanhoReal(); err != nil {
-		w.envenenado = fmt.Errorf("eventstore/wal: %w; nao foi possivel medir o ficheiro para a reposicao (%v) — "+
-			"o WAL pode conter um registo NAO confirmado e nao aceita mais escritas", causa, err)
-		return w.envenenado
+		return w.recusar(fmt.Errorf("eventstore/wal: %w; nao foi possivel medir o ficheiro para a reposicao (%v) — "+
+			"o WAL pode conter um registo NAO confirmado e nao aceita mais escritas", causa, err))
 	} else if real < antes {
-		w.envenenado = fmt.Errorf("eventstore/wal: %w; %w: memoria=%d bytes, ficheiro=%d bytes — "+
+		return w.recusar(fmt.Errorf("eventstore/wal: %w; %w: memoria=%d bytes, ficheiro=%d bytes — "+
 			"truncar para %d ESTENDERIA o ficheiro com zeros e tornaria DURAVEL um append que falhou; "+
 			"o WAL nao aceita mais escritas. Pare o no, reconcilie com a copia de seguranca e verifique "+
 			"quem mais escreve neste ficheiro",
-			causa, ErrWALDesincronizado, antes, real, antes)
-		return w.envenenado
+			causa, ErrWALDesincronizado, antes, real, antes))
 	}
 	if err := w.truncar(antes); err != nil {
-		w.envenenado = fmt.Errorf("eventstore/wal: %w; a truncatura de reposicao para %d bytes FALHOU (%v) — "+
-			"o WAL pode conter um registo NAO confirmado e nao aceita mais escritas", causa, antes, err)
-		return w.envenenado
+		return w.recusar(fmt.Errorf("eventstore/wal: %w; a truncatura de reposicao para %d bytes FALHOU (%v) — "+
+			"o WAL pode conter um registo NAO confirmado e nao aceita mais escritas", causa, antes, err))
 	}
 	// O fsync da truncatura é BEST-EFFORT, e a assimetria face ao caso de cima é
 	// deliberada. Se a truncatura FALHOU, o registo órfão está lá e a invariante está
@@ -384,6 +453,7 @@ func (w *wal) close() error {
 		return nil
 	}
 	w.closed = true
+	w.recusaEscritas.Store(true)
 	ferr := w.w.Flush()
 	serr := w.f.Sync()
 	cerr := w.f.Close()
