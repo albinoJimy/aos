@@ -74,6 +74,12 @@ auditoria fecha. Fica registado que a omissão foi da §6, não da análise.
 | AOS-357 | Instrumentos de teste que não podem falhar, e um argumento escrito que está errado hoje e seria perigoso amanhã | P2 | arnês | Leitura verificada |
 | AOS-358 | Não existe gate que exercite isolamento real, apesar de o componente gVisor não precisar de KVM | P2 | CI | Leitura verificada |
 
+**Mais quatro, que não vêm da auditoria mas da validação DELA** (§0.7), separados de propósito:
+**AOS-359** (o `aos-orq inspect` que a varredura do AOS-347 esqueceu — o único com consequência
+medida), **AOS-360** (as três correcções que a mutação reverte sem a CI dar por isso),
+**AOS-361** (as cinco declarações novas que não se sustentam, uma delas marcada `[x]`) e
+**AOS-362** (riscos de inversão e residuais latentes abertos pela própria remediação).
+
 ### 0.7 Estado da execução (2026-09-06)
 
 Os quinze tickets estão **implementados**. Sessenta e dois dos sessenta e seis critérios de
@@ -231,6 +237,78 @@ Por desenho, e cada exclusão com razão nomeada:
   fora da árvore do repositório.
 - **Não foi medido** se o servidor NATS recusa um `STREAM.CREATE` divergente — a premissa que AOS-357
   manda registar.
+
+### 0.7 Validação adversarial — o que ela encontrou depois de os quinze estarem «implementados»
+
+Quatro passagens independentes, sobre eixos disjuntos, com os critérios de aceitação e o diff mas
+**sem** o raciocínio de quem implementou. As secções `### Estado` e as mensagens de commit foram-lhes
+dadas como **alegações a verificar**, não como verdade. Uma das quatro foi **experimental**: copiou o
+módulo para fora da árvore e re-executou os cinco cenários que a auditoria tinha medido.
+
+Cerca de cinquenta critérios verificados um a um. **Treze tickets cumprem; dois não.** E o resultado
+mais informativo não é a contagem — é que **três correcções podem ser revertidas sem a CI dar por isso**.
+
+#### O que não cumpre
+
+| # | Achado | Ticket | Estado |
+|---|---|---|---|
+| V1 | **`aos-orq inspect` continua a abrir o WAL para escrita.** A varredura das vias de leitura do AOS-347 migrou as três do `aos` para `OpenReadOnly` e esqueceu `packages/cmd/aos-orq/substrato.go:88`. Medido na composição com o residual declarado do AOS-346: um comando de **leitura** apagou um evento confirmado (924 → 616 bytes) e envenenou o WAL de um escritor vivo | **AOS-359** | por abrir |
+| V2 | **Um critério do AOS-356 está marcado `[x]` sobre um ficheiro que o epic nunca tocou.** `deploy/node/README.md` não aparece no `git log` do merge; a linha `:147` continua a dizer «Ausente ⇒ `fake`» e «exigem KVM/`runsc` no host», contradizendo `:149`/`:150` da mesma tabela | **AOS-361** | por abrir |
+
+#### As três mutações que a CI não apanha
+
+Cada uma repõe integralmente o defeito que o seu ticket diz ter fechado, e a suite fica verde:
+
+| Mutação | Ticket | Resultado |
+|---|---|---|
+| Repor a regra antiga dentro de `lerLote` | AOS-345 | `ok` |
+| `natsjs.Conn.Ligada()` → `return true` | AOS-350 | 4/4 pacotes `ok` |
+| Remover a tradução nos quatro pontos de saída | AOS-354 | `ok` |
+
+O código está certo nos três casos; o que falta é o sensor. A causa estrutural das duas primeiras
+é a mesma e não estava registada: `jetstream.Store.cn` é um `*natsjs.Conn` **concreto**
+(`packages/substrate/eventstore/jetstream/store.go:34`), não uma interface — sem isso, `lerLote` e o
+ramo «ligação viva que caiu» de `Ligada()` são infalsificáveis in-process. Fica em **AOS-360**.
+
+O epic apresentava a extracção do laço para `lerEmLotes` como mitigação do salto sem cluster. É
+cobertura da **aritmética**, não da **correcção**.
+
+#### O que a validação confirmou
+
+Não é tudo dívida, e vale nomear o que resistiu:
+
+- **AOS-346** — varrimento das **24 mutações possíveis** do cabeçalho de comprimento: zero zonas
+  cegas, contra **21 em 24** na linha de base pré-epic. Compatibilidade cross-version medida (um WAL
+  escrito pelo código antigo abre intacto) e custo de arranque medido até 40 000 eventos / 12,9 MB,
+  sem regressão.
+- **AOS-349** — um mutante confirma a alegação de que a guarda tinha de ficar **antes** da primeira
+  escrita: com a verificação só no `desfazer`, o ficheiro volta a crescer 616 → 924 e o append
+  falhado fica durável.
+- **AOS-351** — a qualificação `SeccompEnforcedBy` viaja **colada ao hash por construção** no sink
+  (`packages/substrate/sandbox/events.go:207-209`), não por disciplina do chamador; um driver novo é
+  `none` até se declarar o contrário.
+- **AOS-352** — o raio de alcance foi **maior** do que o ticket previa e está declarado; o legal hold
+  passou a desarmar o varredor de crypto-shred em vez de degradar em silêncio.
+- **AOS-355** — o teste-veneno avermelha nas **duas** mutações, com sentinelas **distintos**
+  (`E_EGRESS_STUB` e `E_EGRESS_HOOK_MISSING`), o que prova também a discriminação face à guarda antiga.
+- **AOS-357** — verificado por execução: com `AOS_NATS_URL` definido e sem `AOS_KILL_CMD`, o teste
+  **falha** em vez de avisar em silêncio.
+- **AOS-358** — o `isolation-live` **não** salta em silêncio: exige os quatro cenários por nome, corre
+  o contrafactual sob `require_tests`, e com um executor apontado a uma porta morta fica **vermelho**.
+  O `dormencia` é *required check* e declara o próprio limite: «compilar não é correr».
+- **`tecnica/14`** — a correcção da linha «Ausente do grafo» escreve, por palavras suas, que
+  **agrava** o quadro em vez de o aliviar, e declara duas células que a re-medição contradiz e ficam
+  pendentes sem ticket. É o oposto de declarar vitória.
+
+#### Residuais menores, agrupados em AOS-362
+
+Riscos de inversão e declarações imprecisas que nenhuma das quatro passagens considerou graves, mas
+que ninguém tinha registado: a tabela `seccompEnforcementFor` sem nada que a confronte com o
+comportamento real dos drivers (se um driver passar a impor o perfil sem tocar na tabela, o WORM
+passa a **sub**declarar — o defeito original ao contrário); `OpenReadOnly` a deixar `s.wal == nil`,
+pelo que `Healthy()` devolve `true` num store que recusa todas as escritas; o cenário P2 do
+`isolation-live` a ficar verde quando o executor está inalcançável; e duas afirmações desta spec com
+números ou excepções erradas.
 
 ---
 
@@ -1070,3 +1148,205 @@ atrás de build tag COMPILEM). O segundo foi provado a avermelhar: com um símbo
 suite `gvlive`, «packages/security-tests NÃO compila com -tags gvlive».
 
 ---
+
+---
+
+## AOS-359 — `aos-orq inspect` abre o WAL para escrita: um comando de leitura apaga um evento confirmado
+
+### Contexto
+
+O AOS-347 fechou o caminho pelo qual um comando de inspecção podia destruir o WAL de um nó vivo —
+mas fechou-o **por migração**, não por imposição. `eventstore.Open` continua a abrir em
+`O_WRONLY|O_APPEND` e continua a poder truncar; o que mudou foi que as três vias de leitura do `aos`
+passaram para `OpenReadOnly` (`packages/cmd/aos/wal_inspect.go:68`,
+`packages/cmd/aos/wal_summary.go:77`, e o `wal-count`).
+
+**A varredura ficou incompleta.** `packages/cmd/aos-orq/substrato.go:88` continua a chamar
+`eventstore.Open`, e é a via de `aos-orq inspect` (`packages/cmd/aos-orq/main.go:280`). O comentário
+do próprio ficheiro (`:81-91`) enuncia a premissa que deixou de ser segura: «abre o Event Store sem
+pedir posse. Ler nunca a pede».
+
+A consequência foi **medida na composição** com o residual que o AOS-346 declara (um `len`
+corrompido no **último** registo continua a ser tratado como cauda):
+
+```
+escritor A VIVO ; Healthy()=true ; ficheiro=924
+bit rot no `len` do ÚLTIMO registo
+depois do Open do «leitor»: ficheiro 924 -> 616      <- um evento confirmado APAGADO
+append do escritor A = E_WAL_DESSINCRONIZADO ... o WAL nao aceita mais escritas
+Healthy() do escritor A = false
+```
+
+Um comando de **leitura** apaga um evento confirmado e tira o nó de serviço. Antes do AOS-349 seria
+perda silenciosa; depois dele é indisponibilidade dura — o que é melhor, e continua a ser a via que
+o AOS-347 existia para fechar.
+
+Nota de âmbito: o defeito ao nível do **pacote** (dois `Open` concorrentes colidem em `seq`) continua
+intacto, e deliberadamente — `packages/substrate/eventstore/conformance/referencia_test.go:120`
+entrega um teste verde que o afirma. Este ticket não o reabre; fecha a via composta que ficou.
+
+### Critérios de Aceitação
+
+- [ ] `abrirParaLeitura` (`packages/cmd/aos-orq/substrato.go:88`) passa a `eventstore.OpenReadOnly`,
+      no molde das três vias do `aos`
+- [ ] Um teste que prove que `aos-orq inspect` sobre um WAL com um escritor vivo **não** encolhe o
+      ficheiro nem envenena o escritor
+- [ ] Uma varredura declarada de **todos** os chamadores de `eventstore.Open` fora do caminho de
+      escrita — o defeito deste ticket é a varredura incompleta, não a linha
+- [ ] O comentário de `substrato.go:81-91` deixa de enunciar a premissa que caducou
+
+### Estado
+
+**POR IMPLEMENTAR.** P0. Alcance: **nó**, alcançável por operador. Encontrado pela validação
+adversarial do EPIC-24 (§0.7, V1), por medição na composição — não por leitura.
+
+---
+
+## AOS-360 — Três correcções do EPIC-24 não têm sensor: a mutação reverte-as e a CI fica verde
+
+### Contexto
+
+A validação adversarial do EPIC-24 (§0.7) executou uma mutação por cada correcção que não podia ser
+exercitada sem cluster. Em três casos, repor integralmente o defeito deixou a suite **verde**:
+
+| Mutação | Ticket | Resultado |
+|---|---|---|
+| Repor a regra antiga dentro de `lerLote` | AOS-345 | `ok` |
+| `natsjs.Conn.Ligada()` → `return true` | AOS-350 | 4/4 pacotes `ok` |
+| Remover a tradução nos quatro pontos de saída (`Append`, `Read`, `Subscribe`, `Streams`) | AOS-354 | `ok` |
+
+**O código está certo nos três casos.** O que falta é a prova de que lá está — e a distinção
+importa, porque uma correcção sem sensor é indistinguível de uma correcção que alguém reverta por
+acidente no refactor seguinte.
+
+**A causa estrutural das duas primeiras é a mesma, e não está registada em lado nenhum:**
+`jetstream.Store.cn` é um `*natsjs.Conn` **concreto**
+(`packages/substrate/eventstore/jetstream/store.go:34`), não uma interface. Sem uma costura ali,
+`lerLote` é infalsificável in-process, e o ramo «ligação viva que caiu» de `Ligada()` também. O único
+teste que cobre os acessores do JetStream (`jetstream/logica_test.go:246`) constrói um `Store` **sem
+cliente**, pelo que só exercita a guarda `cn == nil`.
+
+Para o AOS-354 a peça em falta é mais barata: ninguém alimenta `ObserveProgress` com a forma
+traduzida (`fmt.Errorf("%w: %w", ErrNoQuorum, ErrDesligado)`). Bastaria uma linha em
+`storeInstavel.Read` (`packages/cmd/aos/aos262_progress_warning_test.go:313-319`) para fechar o AC2
+sem cluster.
+
+O que o EPIC-24 apresentava como mitigação — a extracção do laço para `lerEmLotes`, que permite
+exercitá-lo sem cluster — é cobertura da **aritmética** da paginação, não da **correcção** do avanço.
+
+### Critérios de Aceitação
+
+- [ ] Existe uma costura que torne `lerLote` e o ramo «ligação caiu» de `Ligada()` falsificáveis
+      in-process — uma interface mínima sobre o que o `Store` usa do `Conn`, ou equivalente
+- [ ] Cada uma das três mutações da tabela acima **avermelha** a suite; a prova de mutação fica
+      registada, no molde do que o EPIC-23 §0.3 fez
+- [ ] `ObserveProgress` é exercitado com a forma **traduzida** do erro, não com `ErrNoQuorum` cru
+- [ ] `streamSetupErrorStatus` (`packages/cmd/aos/trajectory.go:379`) ganha teste — hoje não é
+      referido por nenhum `_test.go`, e o AC3 do AOS-354 foi dado por cumprido só pelo código
+- [ ] A razão pela qual estes caminhos exigiam cluster fica escrita onde um leitor a procure
+
+### Estado
+
+**POR IMPLEMENTAR.** P1. Alcance: arnês. Não altera comportamento de produção — altera o que a CI
+consegue defender.
+
+---
+
+## AOS-361 — Declarações do EPIC-24 que não se sustentam, uma delas marcada cumprida
+
+### Contexto
+
+O EPIC-24 tem um ticket (AOS-356) cujo objecto **são** declarações de estado que deixaram de ser
+verdade. A validação adversarial encontrou cinco novas, produzidas pela própria remediação — e a
+primeira é da mesma classe que o AOS-356 vinha corrigir.
+
+**(a) Um critério marcado `[x]` sobre um ficheiro que o epic nunca tocou.**
+`specs/EPIC-24_Remediacao_Auditoria_ES_SBX.md:951-952` afirma que «o texto de
+`deploy/node/README.md:147` deixa de descrever o estado antigo». O ficheiro **não aparece** no
+`git log` do merge. A linha continua a dizer «Ausente ⇒ `fake`» — sem uma palavra sobre a recusa de
+produção que o AOS-344 introduziu — e a afirmar que `firecracker`/`gvisor` «exigem **KVM**/`runsc` no
+host», o que **contradiz `:149` e `:150` da mesma tabela** («o nó fica zero-dep: o `runsc` corre no
+componente, não no nó»). O texto do próprio critério identificava o problema com precisão.
+
+**(b) `packages/substrate/sandbox/driver.go:25,28`** continua a chamar Firecracker e gVisor
+«Skeleton documentado neste ambiente» — a mesma declaração que o AOS-356 corrigiu em `tecnica/17` por
+ser falsa, sobrevivente num ficheiro que este epic **editou** (39 linhas).
+
+**(c) `specs/EPIC-24:797`** afirma que «um restauro que devolve erro **não deixa meio lote durável**».
+É falso na excepção que o próprio código declara: com o WAL envenenado, «um PREFIXO do lote pode
+ficar durável» (`packages/substrate/eventstore/durable.go:212-221`,
+`packages/substrate/eventstore/backup.go:210-214`). O código é honesto; a spec não repete a excepção
+nem a lista nos residuais.
+
+**(d) `specs/EPIC-24:1068`** diz que o gate `dormencia` «nomeia as **45 suites** que exigem
+`AOS_NATS_URL`». Medido: o gate nomeia **8 ficheiros** e conta **~46 testes**. Errado no número e na
+unidade — testes não são suites.
+
+**(e) `packages/security-tests/isolation_live_test.go:276-282`** — o campo `not_proved` do relatório
+enumera quatro coisas que o gate não prova, e omite a quinta: o cenário P2 fica **verde** quando o
+executor gVisor está inalcançável, porque a sua condição fail-closed (`:199-204`) trata um erro de
+transporte como fronteira imposta.
+
+### Critérios de Aceitação
+
+- [ ] `deploy/node/README.md:147` passa a descrever a postura real, incluindo a recusa de produção do
+      AOS-344, e deixa de contradizer `:149`/`:150`
+- [ ] O critério de `specs/EPIC-24:951-952` deixa de estar marcado `[x]` enquanto não for verdade
+- [ ] As cinco declarações são corrigidas, com a nota de data e commit que `tecnica/14` §5.2 usa como
+      método
+- [ ] `driver.go:25,28` deixa de chamar «skeleton» aos drivers que têm executor remoto
+- [ ] O `not_proved` do `isolation-live` nomeia o comportamento de P2 com executor inalcançável
+
+### Estado
+
+**POR IMPLEMENTAR.** P1. Alcance: documental, mas a alínea (a) é um critério dado por cumprido sem o
+ser — é a classe que o `DEF-814` nomeia, cometida dentro da remediação que a nomeia.
+
+---
+
+## AOS-362 — Riscos de inversão e residuais latentes abertos pela própria remediação
+
+### Contexto
+
+Quatro residuais que nenhuma das quatro passagens de validação considerou graves, e que ninguém
+tinha registado. Ficam juntos por serem todos da mesma família: consequências laterais de correcções
+que estão certas.
+
+**(a) Nada confronta `seccompEnforcementFor` com o comportamento real dos drivers.** O AOS-351 fez o
+evento declarar **quem** impõe o perfil, derivando-o de uma tabela
+(`packages/substrate/sandbox/driver.go:44-49`) que diz `fake ⇒ driver`, resto `⇒ none`. Nenhum teste
+prova que `driver_firecracker.go`/`driver_gvisor.go` de facto **ignoram** `spec.Seccomp`. **Risco de
+inversão:** se alguém fizer um driver impor o perfil sem tocar na tabela, o teste continua verde a
+exigir `none` e o WORM passa a **sub**declarar — o defeito original ao contrário, e nada o apanha.
+
+**(b) `OpenReadOnly` deixa `s.wal == nil`,** pelo que `Store.Healthy()` devolve `true` num store que
+recusa **todas** as escritas com `ErrReadOnly`. É o mesmo modo de falha que o AOS-350 fechou, numa
+porta nova aberta pelo AOS-347. Latente: nenhum caminho composto liga hoje um store só-leitura ao
+`/readyz`.
+
+**(c) Span com hash de seccomp não qualificado quando `Create` falha.**
+`packages/substrate/sandbox/lifecycle.go:197-198` põe o hash e a versão no span, mas
+`AttrSeccompEnforcedBy` só é posto em `:240`, **depois** de `l.driver.Create`. Se o `Create` falhar
+(`:227-230`), o span termina com hash nu — precisamente a leitura que o AOS-351 existe para impedir.
+Alcance baixo: nenhum evento é selado nesse caminho.
+
+**(d) A assimetria fail-open do `fake` fora de produção.** O AOS-344 negou-lhe a porta de produção,
+mas não corrigiu a propriedade: `packages/cmd/aos/sandboxwiring.go:175-177` continua a elegê-lo por
+omissão fora de `AOS_MODE=production`, e um nó de desenvolvimento continua a selar no WORM
+resultados fabricados **sem qualificação nenhuma no evento** — ao contrário do que o AOS-351 fez para
+o seccomp. O epic declara-o («Fora de produção nada muda»); o que não existe é o eixo que o feche.
+
+### Critérios de Aceitação
+
+- [ ] A tabela `seccompEnforcementFor` ganha um confronto com a realidade — um teste que falhe se um
+      driver passar a ler `spec.Seccomp` sem a tabela ser actualizada
+- [ ] `Healthy()` de um store aberto em só-leitura reflecte que ele recusa escritas, ou o caso fica
+      declarado onde o AOS-350 declarou os outros
+- [ ] `AttrSeccompEnforcedBy` é posto no span antes de qualquer saída que possa terminar com hash nu
+- [ ] O evento de ciclo de vida do driver `fake` leva qualificação equivalente à do seccomp, ou a
+      assimetria ganha eixo próprio
+
+### Estado
+
+**POR IMPLEMENTAR.** P2. Alcance: latente nos quatro casos. Nenhum é alcançável no deployment
+sancionado hoje; todos se tornam alcançáveis com uma mudança de composição plausível.
