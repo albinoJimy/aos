@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -51,18 +52,43 @@ func stackComPosturas(t *testing.T, classProviders, providerHosts map[string][]s
 	return &stack{broker: b, rm: rm, es: es, vault: vlt, guest: NewMemoryGuest(), clock: clock}
 }
 
-// razaoDaNegacaoSelada lê do Event Store a razão que ficou SELADA — não a que o erro devolveu.
-// A distinção importa: o AC é sobre o que fica no registo durável, e um teste que só olhasse para
-// o erro em memória provaria outra coisa.
-func razaoDaNegacaoSelada(t *testing.T, s *stack, runID string) string {
+// negacaoSelada lê do Event Store o que ficou SELADO — não o que o erro devolveu. A distinção
+// importa: o AC é sobre o registo durável, e um teste que só olhasse para o erro em memória
+// provaria outra coisa.
+//
+// negacaoSeladaPayload é a parte do payload de `tool.call.denied` que estes testes leem. Desde o
+// AOS-340 a postura viaja em `metadata`, um campo ESTRUTURADO, e não num sufixo do `reason`: o
+// teste passa a desserializar em vez de procurar substrings, que é precisamente o que o canal
+// novo existe para tornar desnecessário.
+type negacaoSeladaPayload struct {
+	Reason   string            `json:"reason"`
+	Metadata map[string]string `json:"metadata"`
+}
+
+func negacaoSelada(t *testing.T, s *stack, runID string) negacaoSeladaPayload {
 	t.Helper()
 	for _, e := range readStream(t, s.es, runID) {
 		if e.Type == referencemonitor.EventTypeDenied {
-			return string(e.Payload)
+			var p negacaoSeladaPayload
+			if err := json.Unmarshal(e.Payload, &p); err != nil {
+				t.Fatalf("payload da negacao ilegivel: %v", err)
+			}
+			return p
 		}
 	}
 	t.Fatalf("nenhuma negacao selada no run %q", runID)
-	return ""
+	return negacaoSeladaPayload{}
+}
+
+// posturaSelada devolve o valor de uma chave de postura, ou falha nomeando o que veio.
+func posturaSelada(t *testing.T, s *stack, runID, chave string) string {
+	t.Helper()
+	p := negacaoSelada(t, s, runID)
+	v, ok := p.Metadata[chave]
+	if !ok {
+		t.Fatalf("a negacao selada nao traz a chave %q em metadata: %+v", chave, p.Metadata)
+	}
+	return v
 }
 
 func TestAOS332_ANegacaoSelaAPostura(t *testing.T) {
@@ -77,15 +103,23 @@ func TestAOS332_ANegacaoSelaAPostura(t *testing.T) {
 	if err == nil {
 		t.Fatal("a troca tinha de ser negada")
 	}
-	selada := razaoDaNegacaoSelada(t, s, "run-332")
-	for _, quer := range []string{"provider_policy=enforced", "resource_binding=enforced"} {
-		if !strings.Contains(selada, quer) {
-			t.Errorf("a negacao selada nao regista %q:\n%s", quer, selada)
+	selada := negacaoSelada(t, s, "run-332")
+	for chave, quer := range map[string]string{
+		metaProviderPolicy:  string(ProviderPostureEnforced),
+		metaResourceBinding: string(ResourceBindingEnforced),
+	} {
+		if got := selada.Metadata[chave]; got != quer {
+			t.Errorf("metadata[%q] = %q, esperado %q (payload: %+v)", chave, got, quer, selada)
 		}
 	}
-	// A razão ORIGINAL tem de sobreviver intacta: o sufixo acrescenta, não substitui.
-	if !strings.Contains(selada, ErrProviderOutOfScope.Error()) {
-		t.Errorf("a razao original perdeu-se:\n%s", selada)
+	// A razao ORIGINAL sobrevive INTACTA — e agora sozinha: desde o AOS-340 a postura viaja
+	// em `metadata`, pelo que o `reason` volta a ser so a razao. Quem asserta pela razao
+	// continua a funcionar; quem quer a postura deixa de a extrair de uma string.
+	if !strings.Contains(selada.Reason, ErrProviderOutOfScope.Error()) {
+		t.Errorf("a razao original perdeu-se: %q", selada.Reason)
+	}
+	if strings.Contains(selada.Reason, "provider_policy=") {
+		t.Errorf("o sufixo em texto livre sobreviveu a migracao do AOS-340: %q", selada.Reason)
 	}
 }
 
@@ -108,14 +142,14 @@ func TestAOS332_AsDuasPosturasProduzemLinhasDistintas(t *testing.T) {
 	if _, err := semPolitica.broker.Exchange(context.Background(), req("run-sem")); err == nil {
 		t.Fatal("um eixo em branco tinha de ser negado tambem sem politica")
 	}
-	com := razaoDaNegacaoSelada(t, comPolitica, "run-com")
-	sem := razaoDaNegacaoSelada(t, semPolitica, "run-sem")
+	com := posturaSelada(t, comPolitica, "run-com", metaProviderPolicy)
+	sem := posturaSelada(t, semPolitica, "run-sem", metaProviderPolicy)
 
 	if com == sem {
-		t.Fatal("as duas posturas selam a MESMA linha — registar a postura nao distingue nada")
+		t.Fatal("as duas posturas selam o MESMO valor — registar a postura nao distingue nada")
 	}
-	if !strings.Contains(com, "provider_policy=enforced") || !strings.Contains(sem, "provider_policy=unset") {
-		t.Errorf("as posturas nao foram seladas correctamente:\n com: %s\n sem: %s", com, sem)
+	if com != string(ProviderPostureEnforced) || sem != string(ProviderPostureUnset) {
+		t.Errorf("as posturas nao foram seladas correctamente: com=%q sem=%q", com, sem)
 	}
 }
 
@@ -128,8 +162,7 @@ func TestAOS332_APosturaEDoESTADONaoDaIntencao(t *testing.T) {
 	if _, err := s.broker.Exchange(context.Background(), requestForProvider("run-vazio", provider, provInScopeCap)); err == nil {
 		t.Fatal("com politica vazia declarada, nenhuma troca passa")
 	}
-	selada := razaoDaNegacaoSelada(t, s, "run-vazio")
-	if !strings.Contains(selada, "provider_policy=enforced") {
-		t.Errorf("um mapa vazio NAO-nil e uma DECLARACAO e tem de selar enforced:\n%s", selada)
+	if got := posturaSelada(t, s, "run-vazio", metaProviderPolicy); got != string(ProviderPostureEnforced) {
+		t.Errorf("um mapa vazio NAO-nil e uma DECLARACAO e tem de selar enforced, veio %q", got)
 	}
 }

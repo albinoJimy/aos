@@ -303,6 +303,14 @@ CREATE TABLE audit_log (
 );
 ```
 
+> **`metadata` no evento de mediação (AOS-340).** O payload de `tool.call.denied` /
+> `tool.call.escalated` leva um campo OPCIONAL `metadata` — pares chave/valor do hook que
+> terminou a mediação, para uma negação poder registar informação estruturada em vez de a
+> enfiar no `reason` em texto livre. É `omitempty`: quem nada acrescenta produz o mesmo payload
+> de antes. **Não** entra no `audit_log` acima: o `AuditRecord` é encadeado por hash e a sua
+> serialização canónica tem ordem e largura fixas, pelo que acrescentar-lhe um campo é uma
+> migração de versão de schema — deliberadamente fora do âmbito que abriu o canal.
+
 O `entry_hash` é calculado sobre a serialização canónica da entrada **concatenada com o `prev_hash`**; a `signature` sela periodicamente segmentos da cadeia. Assim, qualquer alteração retroactiva de uma entrada intermédia quebra todos os `entry_hash` subsequentes e invalida o selo — *tamper-evidence* verificável sem confiança no operador do storage (ADR-010).
 
 ```mermaid

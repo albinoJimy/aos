@@ -149,7 +149,8 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		// no WORM sem dizer sob que política corria, que é o mesmo buraco com outro nome.
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   g.razaoComPostura(ErrOutOfScope),
+			Reason:   ErrOutOfScope.Error(),
+			Metadata: g.posturas(),
 		}, nil
 	}
 	// EIXO PROVIDER (AOS-324). O provedor vem do envelope NÃO-SECRETO da troca
@@ -162,7 +163,8 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		if g.ProviderPosture() == ProviderPostureEnforced {
 			return referencemonitor.HookResult{
 				Decision: referencemonitor.HookDeny,
-				Reason:   g.razaoComPostura(ErrProviderUndetermined),
+				Reason:   ErrProviderUndetermined.Error(),
+				Metadata: g.posturas(),
 			}, nil
 		}
 		// E O EIXO DO RECURSO TAMBÉM SE OPÕE (AOS-331, achado da revisão adversarial). Sem
@@ -176,7 +178,8 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 		if g.ResourceBindingPosture() == ResourceBindingEnforced {
 			return referencemonitor.HookResult{
 				Decision: referencemonitor.HookDeny,
-				Reason:   g.razaoComPostura(ErrResourceUndetermined),
+				Reason:   ErrResourceUndetermined.Error(),
+				Metadata: g.posturas(),
 			}, nil
 		}
 		return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
@@ -184,7 +187,8 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	if err := authorizeProvider(g.classProviders, call.Principal.AgentClass, call.Principal.Authority, provider); err != nil {
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   g.razaoComPostura(err),
+			Reason:   err.Error(),
+			Metadata: g.posturas(),
 		}, nil
 	}
 	// EIXO RECURSO↔PROVEDOR (AOS-331). O provedor estar autorizado não diz para ONDE a
@@ -194,30 +198,43 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 	if err := authorizeResource(g.providerHosts, provider, call.Resource.Type, call.Resource.Value); err != nil {
 		return referencemonitor.HookResult{
 			Decision: referencemonitor.HookDeny,
-			Reason:   g.razaoComPostura(err),
+			Reason:   err.Error(),
+			Metadata: g.posturas(),
 		}, nil
 	}
 	return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
 }
 
-// razaoComPostura acrescenta à razão da negação a POSTURA sob a qual ela foi decidida (AOS-332).
-//
-// PORQUÊ NO `Reason` E NÃO NUM CAMPO NOVO DO `MediationRecord`. O precedente próximo é o
-// `PolicyVersion`, que o RM propaga também na negação — mas esse é GENÉRICO: qualquer hook de
-// política o preenche, e o contrato C1 do RM é do kernel. Uma postura do broker é uma
-// preocupação de PLATAFORMA, e enfiá-la no contrato do kernel para conveniência de um hook seria
-// a fuga de camada que o `layer-lint` existe para impedir. O `Reason` é o campo que já regista
-// PORQUÊ a decisão foi tomada, e «sob que postura» é parte do porquê.
+// Chaves dos metadados de postura selados em cada negação deste gate. São o CONTRATO desta
+// negação com quem lê o trilho: estáveis, e por isso constantes e não literais espalhados.
+const (
+	metaProviderPolicy  = "provider_policy"
+	metaResourceBinding = "resource_binding"
+	// metaProviderPolicyShape e o eixo da FORMA da politica (AOS-342).
+	metaProviderPolicyShape = "provider_policy_shape"
+)
+
+// posturas devolve a POSTURA sob a qual esta negação foi decidida (AOS-332), no canal de
+// metadados de hook do RM (AOS-340).
 //
 // O QUE ISTO RESOLVE. Uma negação dizia «provedor fora de escopo» e mais nada. Duas negações com
 // a mesma razão podiam vir de posturas opostas — uma com política declarada, outra com o eixo
-// sem imposição a negar por outra via — e no WORM eram indistinguíveis. Quem audita precisa de
+// sem imposição a negar por outra via — e no trilho eram indistinguíveis. Quem audita precisa de
 // saber contra que regra a decisão correu, não só qual foi.
 //
-// FORMA GREPPÁVEL e estável: `<razão> [provider_policy=… resource_binding=…]`. A razão original
-// fica intacta no prefixo, pelo que quem já asserta por substring continua a funcionar.
-func (g ScopeGate) razaoComPostura(err error) string {
-	return err.Error() + " [provider_policy=" + string(g.ProviderPosture()) +
-		" provider_policy_shape=" + string(providerPolicyShape(g.classProviders)) +
-		" resource_binding=" + string(g.ResourceBindingPosture()) + "]"
+// ANTES ISTO IA NUM SUFIXO DO `Reason`, e a razão para tal era boa: não havia canal estruturado
+// numa negação, e enfiar um campo `provider_policy` no contrato C1 do kernel para conveniência
+// de um hook de PLATAFORMA seria a fuga de camada que o `layer-lint` existe para impedir. O
+// AOS-340 abriu o canal GENÉRICO — o RM transporta pares chave/valor e não os interpreta, na
+// disciplina do `PolicyVersion` —, pelo que a objecção de camada desapareceu e o *parsing* de
+// texto livre deixou de ser preciso.
+//
+// O `Reason` volta a ser SÓ a razão original, sem sufixo. Quem lê o payload continua a encontrar
+// as duas posturas, agora em `metadata` e sem as ter de extrair de uma string.
+func (g ScopeGate) posturas() map[string]string {
+	return map[string]string{
+		metaProviderPolicy:      string(g.ProviderPosture()),
+		metaProviderPolicyShape: string(providerPolicyShape(g.classProviders)),
+		metaResourceBinding:     string(g.ResourceBindingPosture()),
+	}
 }

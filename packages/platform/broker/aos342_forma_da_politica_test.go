@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 )
 
 // AOS-342 — `enforced` NÃO SIGNIFICA IMPOSTO.
@@ -155,21 +153,15 @@ func TestAOS342_ANegacaoDoGateSelaAForma(t *testing.T) {
 	if _, err := s.broker.Exchange(context.Background(), requestForProvider("run-neg", providerOther, provInScopeCap)); err == nil {
 		t.Fatal("a troca tinha de ser negada")
 	}
-	var razao string
-	for _, e := range readStream(t, s.es, "run-neg") {
-		if e.Type == referencemonitor.EventTypeDenied {
-			razao = string(e.Payload)
-		}
-	}
-	if razao == "" {
-		t.Fatal("nenhuma negacao selada")
-	}
-	for _, quer := range []string{
-		"provider_policy=" + string(ProviderPostureEnforced),
-		"provider_policy_shape=" + string(ProviderPolicyShapeByClass),
+	// Desde o AOS-340 a postura viaja em `metadata`, estruturada, e não num sufixo do
+	// `reason`: o teste desserializa em vez de procurar substrings.
+	selada := negacaoSelada(t, s, "run-neg")
+	for chave, quer := range map[string]string{
+		metaProviderPolicy:      string(ProviderPostureEnforced),
+		metaProviderPolicyShape: string(ProviderPolicyShapeByClass),
 	} {
-		if !strings.Contains(razao, quer) {
-			t.Errorf("a negacao selada nao regista %q:\n%s", quer, razao)
+		if got := selada.Metadata[chave]; got != quer {
+			t.Errorf("metadata[%q] = %q, esperado %q (payload: %+v)", chave, got, quer, selada)
 		}
 	}
 }
