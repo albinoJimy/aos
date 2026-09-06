@@ -824,29 +824,82 @@ else
   bad "W2: nao foi possivel injectar o veneno na copia do corpus"
 fi
 
-# W2-ter — O VENENO EM DUAS LINHAS. E a forma que escapava a primeira versao do gate, medida logo
-# a seguir ao merge: um comentario Go longo parte-se naturalmente, o `gofmt` nao o impede, e com o
-# ticket na segunda linha o marcador ficava fora da varredura. Fuga SILENCIOSA — quem a escreve
-# julga estar coberto e nao esta.
+# W2-ter — A MATRIZ DE FORMAS, NOS DOIS SENTIDOS. O W2 acima prova que o gate consegue ficar
+# vermelho NUMA forma; nao prova que veja as outras, nem — o que importa tanto ou mais — que se
+# CALE onde deve. Uma revisao adversarial mediu que a versao anterior falhava nos dois sentidos ao
+# mesmo tempo: fugia em oito formas correntes (marcador com uma palavra pelo meio, com `**`, entre
+# parentesis, com um `//` em branco a separar paragrafos, fora de `.go`/`.md`) e avermelhava tres
+# frases que diziam o CONTRARIO — «a ausencia nunca foi bloqueador: AOS-NNN ja cobriu o caso».
+#
+# As duas metades desta tabela existem por isso, e a de BAIXO e a mais importante: um falso
+# positivo que acusa uma frase de afirmar o oposto do que ela afirma e o que faz alguem desligar o
+# gate — e desligado nao protege nada. Um veneno so prova que o gate dispara; e preciso provar
+# tambem onde ele NAO dispara.
+#
+# As linhas dos ficheiros sao montadas com `chr(10)`, sem barras invertidas: a sequencia `\n`
+# escrita a mao neste ficheiro atravessa heredoc e interpolacao e chega ao disco ja convertida em
+# quebra de linha real, partindo o literal Python. Ja aconteceu; nao volta a acontecer.
 if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
-import importlib.util, os, sys
-os.environ["AOS_ESTADO_CITADO_ROOT"] = sys.argv[2]
-spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+import importlib.util, io, os, shutil, subprocess, sys
+
+CI, RAIZ = sys.argv[1], sys.argv[2]
+os.environ["AOS_ESTADO_CITADO_ROOT"] = RAIZ
+spec = importlib.util.spec_from_file_location("ec", CI + "/estado-citado.py")
 ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
-fechados = sorted(t for t, e in ec.estados_dos_tickets().items() if e in ec.FECHADO)
-if not fechados:
-    print("W2-ter: o corpus nao declara nenhum ticket fechado", file=sys.stderr); sys.exit(2)
-with open(os.path.join(sys.argv[2], "packages", "veneno", "veneno.go"), "w", encoding="utf-8") as fh:
-    fh.write("package veneno\n\n// A troca so medeia algo quando o wiring ligar.\n// BLOQUEADOR:\n// %s\n" % fechados[0])
+estados = ec.estados_dos_tickets()
+fechados = sorted(t for t, e in estados.items() if e in ec.FECHADO)
+abertos = sorted(t for t, e in estados.items() if e in ec.ABERTO)
+if not fechados or not abertos:
+    print("W2-ter: o corpus precisa de um ticket fechado E de um aberto", file=sys.stderr)
+    sys.exit(2)
+F, A = fechados[0], abertos[0]
+NL = chr(10)
+
+VERMELHO, VERDE = True, False
+CASOS = [
+    # (nome, ficheiro, linhas do ficheiro, tem de avermelhar?)
+    ("palavra pelo meio",      "v.go",  ["package v", "", "// BLOQUEADOR: aguarda " + F], VERMELHO),
+    ("adorno markdown",        "v.go",  ["package v", "", "// **BLOQUEADOR:** " + F], VERMELHO),
+    ("entre parentesis",       "v.go",  ["package v", "", "// BLOQUEADOR: (" + F + ")"], VERMELHO),
+    ("paragrafo com // vazio", "v.go",  ["package v", "", "// BLOQUEADOR:", "//", "// " + F], VERMELHO),
+    ("duas linhas",            "v.go",  ["package v", "", "// BLOQUEADOR:", "// " + F], VERMELHO),
+    ("comentario apos codigo", "v.go",  ["package v", "", "var _ = 1 // BLOQUEADOR: " + F], VERMELHO),
+    ("lista em markdown",      "v.md",  ["- **BLOQUEADOR:** " + F], VERMELHO),
+    ("fora de .go e .md",      "v.yml", ["# BLOQUEADOR: " + F, "chave: valor"], VERMELHO),
+    # A METADE QUE IMPORTA: onde o gate TEM de se calar.
+    ("inversao de sentido",    "v.go",  ["package v", "", "// A ausencia nunca foi bloqueador:",
+                                         "// " + F + " ja cobriu o caso."], VERDE),
+    ("inversao em markdown",   "v.md",  ["Nao existe bloqueador:", F + " aterrou em Agosto."], VERDE),
+    ("eixo que nao e ticket",  "v.go",  ["package v", "",
+                                         "// so a linha de postura. Bloqueador: DEF-218 (" + F + " ja aterrou)."], VERDE),
+    ("marcador enterrado",     "v.go",  ["package v", "", "// o que falta aqui e BLOQUEADOR: " + F], VERDE),
+    ("bloqueio LEGITIMO",      "v.go",  ["package v", "", "// BLOQUEADOR: " + A], VERDE),
+]
+
+alvo = os.path.join(RAIZ, "packages", "veneno")
+falhas = []
+for nome, ficheiro, linhas, esperado in CASOS:
+    shutil.rmtree(alvo, ignore_errors=True)
+    os.makedirs(alvo)
+    with io.open(os.path.join(alvo, ficheiro), "w", encoding="utf-8") as fh:
+        fh.write(NL.join(linhas) + NL)
+    rc = subprocess.run([sys.executable, CI + "/estado-citado.py"],
+                        env=dict(os.environ, AOS_ESTADO_CITADO_ROOT=RAIZ),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    obtido = rc != 0
+    if obtido != esperado:
+        falhas.append("%s: esperado %s, obtido %s" % (
+            nome, "VERMELHO" if esperado else "verde", "VERMELHO" if obtido else "verde"))
+shutil.rmtree(alvo, ignore_errors=True)
+os.makedirs(alvo)
+if falhas:
+    print("W2-ter: " + " | ".join(falhas), file=sys.stderr)
+    sys.exit(1)
 RPY
 then
-  if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
-    bad "W2-ter: o gate passou com o marcador em DUAS LINHAS — a fuga silenciosa continua aberta"
-  else
-    pass "W2-ter: o gate bloqueou o marcador partido em duas linhas de comentario"
-  fi
+  pass "W2-ter: as 8 formas de fuga avermelham e as 5 formas legitimas continuam verdes"
 else
-  bad "W2-ter: nao foi possivel injectar o veneno multi-linha"
+  bad "W2-ter: o gate falhou a matriz de formas — ou tem uma fuga, ou acusa quem nao devia"
 fi
 
 # W2-bis — o mesmo veneno com um ticket ABERTO tem de ficar VERDE. Sem isto, um gate que

@@ -980,6 +980,86 @@ não apanhar — o ticket antes do marcador, e a forma **já corrigida** `BLOQUE
 sobre este gate morreram por estagnação sem devolver nada; o que restou foi ir atacar
 deliberadamente o que eu tinha escrito, que é a mesma disciplina, feita à mão.
 
+### A revisão que chegou depois: o gate falhava nos DOIS sentidos ao mesmo tempo
+
+A revisão adversarial acabou por devolver, e mediu que a correcção acima tinha fechado **um caso**,
+não uma classe. As treze conclusões foram verificadas uma a uma contra a árvore fundida antes de
+serem aceites; as que estavam marcadas como confirmadas reproduziram-se todas.
+
+**Fugia**, porque a expressão exigia o ticket colado aos dois-pontos:
+
+| forma | antes | agora |
+|---|---|---|
+| `// BLOQUEADOR: AOS-NNN` | vermelho | vermelho |
+| `// BLOQUEADOR:` + `// AOS-NNN` | vermelho | vermelho |
+| `// BLOQUEADOR:` + `//` + `// AOS-NNN` | **verde** | vermelho |
+| `// BLOQUEADOR: aguarda AOS-NNN` | **verde** | vermelho |
+| `**BLOQUEADOR:** AOS-NNN` | **verde** | vermelho |
+| `// BLOQUEADOR: (AOS-NNN)` · `[AOS-NNN]` · `#AOS-NNN` | **verde** | vermelho |
+
+A pior é a terceira: um `//` em branco a separar parágrafos é a forma **mais comum** de comentário
+Go longo, e o texto que a correcção anterior deixou no ficheiro vendia essa classe como resolvida.
+
+**E avermelhava texto que dizia o contrário.** `re.IGNORECASE` sobre linhas unidas apanha:
+
+```go
+// A ausência nunca foi bloqueador:
+// AOS-NNN já cobriu o caso.
+```
+
+→ `FAIL: AOS-NNN está IMPLEMENTADO`. O gate acusava de bloqueio caduco uma frase cuja leitura
+humana é «isto **não** está bloqueado». Este é o achado mais grave dos treze — não por ser o mais
+subtil, mas porque um falso positivo destes é o que faz alguém desligar o gate, e desligado não
+protege nada.
+
+Havia ainda uma **acusação falsa contra um bloqueio verdadeiro**: um cabeçalho `## AOS-NNN: título`
+(dois-pontos em vez de travessão) era invisível ao padrão, o bloco do ticket anterior engolia-o com
+o `### Estado` lá dentro, e um ticket **aberto** era reportado como IMPLEMENTADO.
+
+### As três perguntas, separadas
+
+As duas falhas têm a mesma origem: uma expressão a responder a três perguntas distintas. Agora são
+três passos com critérios próprios — **onde está o marcador**, **ele abre uma declaração?**, **qual
+é o eixo**. O segundo é o que distingue `BLOQUEADOR: AOS-NNN` de «nunca foi bloqueador: AOS-NNN»,
+sem precisar de perceber português: o marcador só conta quando, na sua linha física, o que o
+precede é estrutura (`//`, `-`, `*`, `|`, `>`, numeração) ou o fim de uma frase anterior.
+
+O terceiro existe por causa da forma **já corrigida** que vive em `broker_vault_env.go:67` —
+«Bloqueador: DEF-218 (AOS-265 já aterrou sem o fechar)». O eixo é o **primeiro** identificador a
+seguir aos dois-pontos; sendo `DEF-`, o gate abstém-se, em vez de saltar à frente até encontrar um
+`AOS-` qualquer e avermelhar a frase que diz que esse ticket **já fechou**. Antes isto ficava verde
+por acidente, pela adjacência estrita; agora fica verde por regra.
+
+### O que passou a ser dito em voz alta
+
+- `**Implementado**` em caixa de título dava o lexema `I`, era tratado como aberto e **não imprimia
+  nada**. O estado passa a ser normalizado, e um lexema fora do vocabulário é **abstenção
+  impressa** — continua a não avermelhar, porque inventar que uma palavra desconhecida significa
+  «fechado» avermelharia o gate por uma mudança de redacção.
+- O `file:line` apontava para o início do bloco lógico: um marcador na linha 28 de um comentário de
+  30 aparecia como `:1`. Passa a apontar para a linha física do marcador.
+- As abstenções passam de um eixo para **quatro** — sem estado, lexema desconhecido, eixo que não é
+  ticket, marcador sem eixo. A única ocorrência real do marcador em âmbito passa a aparecer em cada
+  execução, onde antes o gate era mudo sobre ela.
+
+### O que continua por fechar, e fica escrito
+
+- **O gate continua vacuoso.** Zero declarações verificadas na árvore; a única ocorrência do
+  marcador em âmbito tem eixo `DEF-`. A não-vacuidade vem do teste-veneno do `selftest.sh` §W, não
+  do corpus, e um gate verde com cobertura zero parece uma prova e não é.
+- **Alargar as extensões não cobriu nada hoje.** Medido: `packages/` + `tecnica/` + `docs/adr/` têm
+  1 705 ficheiros antes e **os mesmos 1 705** depois — só lá existem `.go` e `.md`. O
+  `docker-compose.prod.yml` que continha uma das oito continua fora de âmbito, em `deploy/`. É um
+  buraco fechado para a frente, não cobertura ganha agora.
+- **Um marcador enterrado no meio de uma frase deixa de ser apanhado.** É uma **troca**, não um
+  descuido: é o mesmo critério que impede o falso positivo por inversão de sentido, e não há forma
+  de ter um sem perder o outro. A convenção passa a ser que o marcador **abre** a declaração.
+
+O `selftest.sh` §W troca o veneno único por uma **matriz nos dois sentidos**: oito formas de fuga
+que têm de avermelhar e cinco formas legítimas que têm de continuar verdes. Três mutantes
+realistas — a âncora removida, o bloco a fechar no `//` vazio, o eixo a saltar para o primeiro
+`AOS-` — foram **todos mortos** pela matriz.
+
 ### O AC4 NÃO É SATISFAZÍVEL, e fica escrito assim
 
 Ele pede que «as oito declarações que a EPIC-23 corrigiu passem a estar cobertas (verificação
