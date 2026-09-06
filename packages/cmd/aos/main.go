@@ -286,6 +286,33 @@ var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com
 // runtime. A decisão é de CONFIG, logo vive na fronteira que lê o ambiente ([parseModelFromEnv]).
 var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com o model gateway ligado (AOS_MODEL_ENDPOINT) exige AOS_MODEL_API_KEY_PATH — sem ele o no apresentaria ao upstream um bearer de DEV embebido no binario (identico em todos os nos, legivel por quem tenha o artefacto, nao revogavel) em vez da credencial da organizacao; material privado por FICHEIRO montado, NUNCA por variavel de ambiente")
 
+// ErrProductionNeedsSandboxDriver — sob AOS_MODE=production COM tools de sandbox ligadas
+// (AOS_MODEL_TOOLS com bloco `sandbox`), o driver de execução NÃO pode ser o de referência
+// in-process (AOS-344). É condicional a uma opção do operador, no molde de
+// [ErrProductionNeedsDurableApproval] e de [ErrProductionNeedsModelCredential]: sem tool
+// nenhuma com executor não há sandbox a montar, e um nó de produção que não despacha código
+// não fica cerimonioso por isto.
+//
+// O QUE ISTO FECHA, E PORQUE NÃO É «ESCAPE DE SANDBOX». O driver de referência não corre
+// processos — é um VFS in-process que impõe as invariantes de isolamento fail-closed. O defeito
+// é outro, e é de POSTURA: dos três drivers, é o único que falha ABERTO. `firecracker` e
+// `gvisor` sem executor provisionado devolvem `ErrDriverUnavailable` e a chamada morre no
+// caminho de recusa; o de referência sucede em silêncio, e o resultado — que nenhuma fronteira
+// ao nível do kernel produziu — é selado na hash-chain WORM como se fosse um efeito real. O
+// alinhamento é fazê-lo falhar fechado onde os outros dois já falham.
+//
+// RECUSA TAMBÉM A ESCOLHA EXPLÍCITA, e é deliberado. A auditoria nomeou a omissão
+// (`AOS_SANDBOX_DRIVER` vazio por omissão no compose de produção), mas uma guarda que só
+// apanhasse a omissão ficava a uma variável de distância de ser contornada, e o valor explícito
+// não acrescenta fronteira nenhuma — só torna a mesma postura deliberada. Onde há uma decisão
+// legítima a declarar (terminação TLS a montante, custódia que destrói incondicionalmente) esta
+// casa dá um escape declarado; aqui não há: nenhum deployment sancionado corre o driver de
+// referência em produção (`dev-hardened` fixa `firecracker`, o servidor usa `gvisor`).
+//
+// FORA DE PRODUÇÃO NADA MUDA: o default continua a ser o driver de referência e o valor
+// explícito `fake` continua a compor — é o que o smoke e as demos usam.
+var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois devolvem ErrDriverUnavailable e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
+
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
 
 // ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é

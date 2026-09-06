@@ -26,7 +26,6 @@ package eventstore
 // [ficheiroWAL] — sem ela, este teste não é escrevível.
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -41,11 +40,18 @@ import (
 type ficheiroFalhado struct {
 	real       ficheiroWAL
 	syncs      int
+	writes     int
 	falharApós int
 }
 
-func (f *ficheiroFalhado) Write(p []byte) (int, error) { return f.real.Write(p) }
-func (f *ficheiroFalhado) Close() error                { return f.real.Close() }
+// writes conta as escritas que REALMENTE passaram pela sonda. Existe para o teste poder
+// PROVAR que a costura cobre o caminho de escrita — antes de AOS-348 este contador
+// ficava a zero e ninguém reparava.
+func (f *ficheiroFalhado) Write(p []byte) (int, error) {
+	f.writes++
+	return f.real.Write(p)
+}
+func (f *ficheiroFalhado) Close() error { return f.real.Close() }
 
 func (f *ficheiroFalhado) Sync() error {
 	f.syncs++
@@ -64,7 +70,11 @@ func abreComFsyncFalhado(t *testing.T, path string, apos int, falharTruncate boo
 		t.Fatalf("Open(%q): %v", path, err)
 	}
 	ff := &ficheiroFalhado{real: s.wal.f, falharApós: apos}
-	s.wal.f = ff
+	// AOS-348: [wal.trocarFicheiro] troca o descritor E reconstrói o `bufio.Writer` sobre
+	// ele. Antes trocava-se só `s.wal.f`, e o writer continuava agarrado ao *os.File
+	// original — o `Write` da sonda nunca era chamado (medido: writes=0). O ramo do
+	// `Flush` ficou por cobrir precisamente por isso.
+	s.wal.trocarFicheiro(ff)
 	if falharTruncate {
 		// A truncatura vai por [os.Truncate] (ver o comentário de wal.truncar); para a
 		// fazer falhar substitui-se a função, nao um metodo do descritor.
@@ -251,8 +261,7 @@ func TestWAL_FlushFalhadoDepoisDeEscreverTudo_NaoDeixaRegistoNoFicheiro(t *testi
 	// escritas a passar ao lado da sonda (e o teste a passar por engano). O buffer esta
 	// vazio aqui: o append anterior fez Flush.
 	sonda := &escritorQueEscreveTudoEFalha{real: s.wal.f, falharA: 1}
-	s.wal.f = sonda
-	s.wal.w = bufio.NewWriter(sonda)
+	s.wal.trocarFicheiro(sonda)
 	if _, err := s.Append(ctx, "run-A", EventInput{Type: "t", Payload: []byte(`{"n":2}`), RunID: "run-A", StepID: "s2"}); err == nil {
 		t.Fatal("esperava erro do Flush")
 	}

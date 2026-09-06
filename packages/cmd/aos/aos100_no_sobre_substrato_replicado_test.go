@@ -99,7 +99,11 @@ func TestAOS100_NoArrancaSobreOEventStoreReplicado(t *testing.T) {
 	if len(evs) != 1 || evs[0].Type != "aos100.no.escreveu" {
 		t.Fatalf("Read devolveu %d evento(s): %+v", len(evs), evs)
 	}
-	if got := node.EventStore.Streams(); len(got) != 1 || got[0] != run {
+	got, serr := node.EventStore.Streams()
+	if serr != nil {
+		t.Fatalf("Streams(): %v", serr)
+	}
+	if len(got) != 1 || got[0] != run {
 		t.Fatalf("Streams() = %v, quer [%s]", got, run)
 	}
 }

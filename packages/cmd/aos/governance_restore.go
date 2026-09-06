@@ -136,8 +136,36 @@ func restoreSubjectIndex(ctx context.Context, es EventStorePort, index *audit.In
 	if es == nil || index == nil {
 		return 0, nil
 	}
+	// AOS-352 — FAIL-CLOSED, e é aqui que a direcção mais importa.
+	//
+	// `Streams()` não podia devolver erro, e o backend replicado devolvia `nil` numa falha
+	// transitória de rede — indistinguível de «não há streams». Este laço concluía «zero
+	// streams», o índice titular→partição voltava VAZIO, e um legal hold POR-PARTIÇÃO
+	// deixava de cobrir as outras partições do titular. O `audit.ExpirationJob` consulta
+	// exactamente este índice em `held`: podia crypto-shred material sob hold. Era o único
+	// dos quatro consumidores a degradar FAIL-OPEN.
+	//
+	// Um índice de legal hold que não se conseguiu reconstruir NÃO é um índice vazio, e a
+	// diferença tem de sair por erro.
+	//
+	// ONDE O FAIL-CLOSED SE MATERIALIZA, e não é aqui: o chamador ([Bootstrap], §7c) põe
+	// `holdsRestored = false` e NÃO arma o varredor AUTOMÁTICO de retenção (AOS-267) — a
+	// expiração passa a exigir um `POST /dsar/expire` deliberado. O nó ARRANCA. É a escolha
+	// certa e vale a pena dizer porquê: o que o AC pede é que um legal hold não seja
+	// silenciosamente reduzido, e desarmar o crypto-shred automático consegue-o sem matar
+	// o arranque. Sobre `AOS_EVENTSTORE_NATS`, recusar o arranque por um cluster
+	// momentaneamente inalcançável dava um crash-loop — o mesmo defeito que a revisão
+	// adversarial apanhou no `crash_resume`.
+	//
+	// Esta função, portanto, SINALIZA; quem decide a postura é o composition-root.
+	streams, err := es.Streams()
+	if err != nil {
+		return 0, fmt.Errorf("indice titular->particao: NAO foi possivel enumerar os streams do Event Store (%w) — "+
+			"um indice vazio faria um legal hold POR-PARTICAO deixar de cobrir as outras particoes do titular, "+
+			"e o ExpirationJob poderia crypto-shred material sob hold; o varredor automatico de retencao NAO arma", err)
+	}
 	n := 0
-	for _, stream := range es.Streams() {
+	for _, stream := range streams {
 		events, err := es.Read(ctx, stream, 1)
 		if err != nil {
 			return n, fmt.Errorf("indice titular->particao: leitura do stream: %w", err)

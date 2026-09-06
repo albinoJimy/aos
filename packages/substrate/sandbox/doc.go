@@ -147,7 +147,9 @@
 //
 // Entregue: isolamento de processo/FS/kernel por execução e a mediação (AOS-064); o
 // pool com snapshot/restore + cold-start SLI (AOS-065); a raiz read-only + overlay
-// efémero + seccomp default-deny imposto no caminho de execução (AOS-066); a rede
+// efémero + seccomp default-deny — imposto no caminho de execução APENAS pelo
+// [FakeDriver]; nos drivers reais o perfil não chega ao guest e o manifesto sela
+// `seccomp_enforced_by: "none"` (AOS-066/AOS-351, ver [Spec.Seccomp]) —; a rede
 // default-deny + egress allowlist (AOS-067, pacote [network]); e o dimensionamento do
 // pool derivado do headroom + SLIs de ocupação/reciclagem para produção (AOS-103). NÃO
 // implementa o broker real de credenciais (AOS-070) nem liga a fonte real de headroom

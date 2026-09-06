@@ -25,7 +25,10 @@ func TestBackup_StreamsSortedAndComplete(t *testing.T) {
 	seedStream(t, s, "run-a", 3)
 	seedStream(t, s, "run-b", 1)
 
-	got := s.Streams()
+	got, err := s.Streams()
+	if err != nil {
+		t.Fatalf("Streams(): %v", err)
+	}
 	want := []string{"run-a", "run-b", "run-c"}
 	if len(got) != len(want) {
 		t.Fatalf("Streams()=%v, quero %v", got, want)
@@ -106,7 +109,11 @@ func TestRestore_RoundTripPreservesEnvelope(t *testing.T) {
 		events []Event
 	}
 	var dump []exported
-	for _, st := range src.Streams() {
+	streams, serr := src.Streams()
+	if serr != nil {
+		t.Fatalf("Streams(): %v", serr)
+	}
+	for _, st := range streams {
 		evs, err := src.SnapshotStream(ctx, st, 0)
 		if err != nil {
 			t.Fatalf("snapshot %s: %v", st, err)

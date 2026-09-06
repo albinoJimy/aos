@@ -77,6 +77,92 @@ func TestNewProductionSecureRejectsEgressStub(t *testing.T) {
 	}
 }
 
+// TestNewProductionSecureRejectsMissingEgress: identidade real e ScopeGate activo mas a
+// cadeia OMITE o slot de egress por inteiro (nem hook real nem stub) ⇒ o default-deny de
+// rede (AOS-067) não corre; recusado com [ErrEgressHookMissing]. Simétrico de
+// [TestNewProductionSecureRejectsMissingScopeGate] e distinto de
+// [TestNewProductionSecureRejectsEgressStub]: aqui a mutação é por OMISSÃO, não por
+// substituição. Falha-antes (AOS-355): sem o predicado de presença esta cadeia CONSTRUÍA.
+func TestNewProductionSecureRejectsMissingEgress(t *testing.T) {
+	priv := referencemonitor.NewStaticPrivilegedSet(capPrivileged)
+	// Cadeia real SEM nenhum hook no slot de egress.
+	chain := []referencemonitor.Hook{
+		fakeIdentityHook{},
+		referencemonitor.PolicyStub{},
+		referencemonitor.NewTaintGate(priv),
+		referencemonitor.NewScopeGate(authz.NewStaticAuthoritySource()),
+		referencemonitor.BudgetStub{},
+		referencemonitor.AuditStub{},
+	}
+	m, err := referencemonitor.NewProductionSecure(priv,
+		referencemonitor.WithEventSink(&spySink{}),
+		referencemonitor.WithHooks(chain...),
+	)
+	if !errors.Is(err, referencemonitor.ErrEgressHookMissing) {
+		t.Fatalf("erro=%v want ErrEgressHookMissing (cadeia sem slot de egress)", err)
+	}
+	// Discriminação das duas metades do eixo: a omissão NÃO se reporta como a
+	// substituição pelo stub (causas opostas, correcções opostas do chamador).
+	if errors.Is(err, referencemonitor.ErrEgressStub) {
+		t.Errorf("omissão do egress reportada como ErrEgressStub — os dois sentinelas têm de discriminar")
+	}
+	if m != nil {
+		t.Errorf("Monitor devia ser nil sem hook de egress na cadeia")
+	}
+}
+
+// TestNewProductionSecureRejectsStubsPorPONTEIRO fecha o buraco que a revisão adversarial
+// de AOS-355 encontrou e REPRODUZIU: as guardas testavam `h.(EgressStub)`, uma assertion de
+// VALOR, e os stubs deste pacote têm receivers-valor — pelo que `*EgressStub` satisfaz
+// [referencemonitor.Hook] na mesma, falha a assertion, e o seu `Name()` devolve "egress",
+// passando também o predicado de presença. Medido antes da correcção:
+//
+//	sem egress (omissão)      recusado  E_EGRESS_HOOK_MISSING
+//	EgressStub{}  (valor)     recusado  E_EGRESS_STUB
+//	&EgressStub{} (ponteiro)  ACEITE    <-- o buraco
+//
+// Uma edição de UM CARACTERE em `integration/secured.go` produzia um ápice que arranca a
+// declarar postura de produção com o default-deny de rede (AOS-067) inerte — que é
+// exactamente a regressão que estas guardas existem para tornar impossível.
+func TestNewProductionSecureRejectsStubsPorPONTEIRO(t *testing.T) {
+	priv := referencemonitor.NewStaticPrivilegedSet(capPrivileged)
+	base := func(egress referencemonitor.Hook, id referencemonitor.Hook) []referencemonitor.Hook {
+		return []referencemonitor.Hook{
+			id,
+			referencemonitor.PolicyStub{},
+			referencemonitor.NewTaintGate(priv),
+			referencemonitor.NewScopeGate(authz.NewStaticAuthoritySource()),
+			referencemonitor.BudgetStub{},
+			egress,
+			referencemonitor.AuditStub{},
+		}
+	}
+	casos := []struct {
+		nome  string
+		hooks []referencemonitor.Hook
+		quero error
+	}{
+		{"egress stub por PONTEIRO", base(&referencemonitor.EgressStub{}, fakeIdentityHook{}), referencemonitor.ErrEgressStub},
+		{"identity stub por PONTEIRO", base(fakeEgressHook{}, &referencemonitor.IdentityStub{}), referencemonitor.ErrIdentityStub},
+		{"controlo: egress stub por VALOR continua recusado", base(referencemonitor.EgressStub{}, fakeIdentityHook{}), referencemonitor.ErrEgressStub},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			m, err := referencemonitor.NewProductionSecure(priv,
+				referencemonitor.WithEventSink(&spySink{}),
+				referencemonitor.WithHooks(c.hooks...),
+			)
+			if !errors.Is(err, c.quero) {
+				t.Fatalf("erro=%v want %v — um stub por PONTEIRO satisfaz Hook e escapa a uma "+
+					"assertion de valor; a guarda tem de ver as duas formas", err, c.quero)
+			}
+			if m != nil {
+				t.Error("Monitor devia ser nil")
+			}
+		})
+	}
+}
+
 // TestNewProductionSecureRejectsMissingScopeGate: identidade e egress reais mas sem
 // ScopeGate activo ⇒ o tecto de autoridade user∩classe (AOS-071) não é imposto; recusado.
 func TestNewProductionSecureRejectsMissingScopeGate(t *testing.T) {

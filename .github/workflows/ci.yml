@@ -14,8 +14,8 @@
 # é a FONTE DE VERDADE e tem de coincidir, entrada a entrada e na mesma ordem, com o
 # `needs:` do job `gates` e com a lista de CONTRIBUTING.md §"Required checks" — o
 # self-test §M compara as três e fica vermelho se divergirem.
-# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · sast · sca · policy-test · selftest
-# Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 24 acima
+# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · selftest
+# Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 25 acima
 # e é fail-closed por construção (`if: always()` + avaliação de `needs.*.result`),
 # pelo que fica `failure` — e não `skipped` — quando qualquer um deles não fica verde.
 name: ci
@@ -38,7 +38,7 @@ on:
   # trocaria um buraco por outro no dia em que for criado.
   push:
     branches: [main, feature/AOS-128-ux-dx-tests]
-  # Invocável por outro workflow (release.yml). Os MESMOS 24 gates, sem duplicação: a entrega
+  # Invocável por outro workflow (release.yml). Os MESMOS 25 gates, sem duplicação: a entrega
   # para o servidor não pode passar por uma cópia relaxada da CI — passa por ESTA, ou não passa.
   workflow_call:
 
@@ -335,6 +335,22 @@ jobs:
       - name: Gate ux-dx (usabilidade · anti-fadiga override-rate · paridade · acessibilidade)
         run: bash scripts/ci/ux-dx.sh
 
+  # Gate de DORMÊNCIA (AOS-358). Nomeia as suites que só correm com substrato externo
+  # (AOS_NATS_URL) ou atrás de build tag (-tags fclive/gvlive) e EXIGE que estas COMPILEM.
+  # Fail-closed sobre APODRECIMENTO, não sobre dormência: a dormência é a condição
+  # declarada; o que não pode é ser silenciosa. Sem este job, apagar `isolation_live_test.go`
+  # ou quebrar a compilação de `-tags fclive` não avermelhava nenhum PR.
+  dormencia:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache-dependency-path: "packages/**/go.sum"
+      - name: Gate dormencia (suites dormentes nomeadas · suites atras de build tag COMPILAM)
+        run: bash scripts/ci/dormencia.sh
+
   sast:
     runs-on: ubuntu-latest
     steps:
@@ -398,7 +414,7 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     if: always()
-    needs: [secrets, build, lint, ref-lint, deferrals, estado-citado, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, sast, sca, policy-test, selftest]
+    needs: [secrets, build, lint, ref-lint, deferrals, estado-citado, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, dormencia, sast, sca, policy-test, selftest]
     steps:
       - name: Todos os gates verdes (fail-closed)
         env:

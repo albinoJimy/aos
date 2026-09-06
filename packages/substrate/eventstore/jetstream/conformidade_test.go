@@ -262,7 +262,10 @@ func TestContrato_StreamsERespondidoPeloServidor(t *testing.T) {
 		}
 	}
 
-	got := leitor.Streams()
+	got, err := leitor.Streams()
+	if err != nil {
+		t.Fatalf("Streams() do OUTRO handle: %v", err)
+	}
 	if len(got) != 2 || got[0] != "run-x" || got[1] != "run-y" {
 		t.Fatalf("Streams() do OUTRO handle = %v, quer [run-x run-y] — a listagem não está a vir do servidor", got)
 	}

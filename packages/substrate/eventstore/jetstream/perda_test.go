@@ -199,11 +199,24 @@ func marcaDe(t *testing.T, ev eventstore.Event) string {
 // TestAC4_ComandoDeFalhaEObrigatorio garante que o teste acima não passa por ser saltado
 // sem ninguém reparar: se `AOS_NATS_URL` está definido mas `AOS_KILL_CMD` não, quem corre
 // a suite fica a saber que a propriedade NÃO foi medida.
+//
+// # Porque isto FALHA em vez de avisar
+//
+// Até 2026-09-06 a segunda saída era um `t.Logf`, e o guarda não guardava nada: `go test`
+// não imprime o `t.Logf` de um teste que PASSA sem `-v`, e `scripts/ci/test.sh:20` corre
+// sem `-v`. No único cenário que este teste existe para apanhar — cluster presente,
+// comando de morte esquecido — o aviso era INVISÍVEL. Um instrumento que nunca falha e
+// nunca se ouve não é um instrumento; é a aparência de um.
+//
+// O `t.Errorf` só dispara com `AOS_NATS_URL` definido, isto é, nunca na CI actual, que
+// não tem cluster e salta este ficheiro inteiro. Quem tem cluster e quer medir o AC4 é
+// precisamente quem precisa de saber que não o mediu.
 func TestAC4_ComandoDeFalhaEObrigatorio(t *testing.T) {
 	if os.Getenv(envServidor) == "" {
 		t.Skip("sem cluster")
 	}
 	if os.Getenv(envKill) == "" {
-		t.Logf("AVISO: há cluster mas %s não está definido — o AC4 (zero perda sob falha de nó) NÃO foi medido nesta execução", envKill)
+		t.Errorf("há cluster (%s definido) mas %s não está — o AC4 (zero perda sob falha de nó) NÃO foi medido nesta execução, "+
+			"e uma suite verde sem ele afirmaria uma propriedade que ninguém verificou", envServidor, envKill)
 	}
 }

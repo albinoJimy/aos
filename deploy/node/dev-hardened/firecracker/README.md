@@ -63,7 +63,18 @@ Isto é substrato **real** (microVM genuína, isolamento por hardware), mas o *p
 demo-grade. Para produção, por eixo:
 
 - **jailer**: envolver o firecracker no `jailer` (chroot + cgroups + user ns + seccomp do VMM). Hoje
-  o orchestrator corre o firecracker directamente num container privilegiado.
+  o orchestrator corre o firecracker directamente num container privilegiado. Nota: o *seccomp do
+  VMM* é o filtro do **processo firecracker no host** — não tem relação com a allowlist de syscalls
+  **do guest** do ponto seguinte.
+- **allowlist de syscalls do guest (AOS-066/AOS-351)**: o perfil `sbx-seccomp/v1` que o nó carrega
+  (`substrate/sandbox/seccomp`) **NÃO é imposto** neste caminho. O `FirecrackerDriver` recebe-o em
+  `Spec.Seccomp` e ignora-o, e o wire host→guest (`POST /exec`) transporta apenas a tool call
+  (`tool_id`/`command`/`args`/`path`/`write`) — nenhum byte do perfil chega à microVM. O que contém
+  o guest aqui é a **fronteira de virtualização** (kernel próprio, sem rede, rootfs read-only), não
+  esta allowlist. Por isso o manifesto do WORM sela `seccomp_enforced_by: "none"` para este driver:
+  o `seccomp_profile_hash` é uma **declaração de configuração**, não uma atestação de imposição (só
+  o `fake` sela `"driver"`). Produção precisa de propagar o perfil no wire e de o aplicar no
+  guest-agent antes do `exec` — e só então o driver pode passar a declarar imposição.
 - **overlay por-call (AOS-066)**: o rootfs é read-only partilhado (correcto para tools de leitura);
   tools de ESCRITA precisam de um overlay efémero por execução descartado no destroy.
 - **rede default-deny explícita (AOS-067)**: hoje a microVM não tem rede (deny por ausência); tools

@@ -12,9 +12,10 @@ package main
 // com acesso ao volume, exactamente como o wal-count. Por isso não vai à API nem exige
 // credenciais — quem tem o ficheiro já tem o conteúdo.
 //
-// O volume tem de estar montado GRAVÁVEL, como no wal-count: o store abre o WAL para
-// append e o único write possível é a truncatura crash-safe idempotente de um tail
-// parcial — a mesma que o nó faz no arranque. Um mount `:ro` falha a abrir.
+// O volume tem de estar montado GRAVÁVEL: [audit.OpenFileStore] abre o ficheiro WORM para
+// append e um mount `:ro` falha a abrir. A analogia com o `wal-count` DEIXOU DE VALER nesta
+// linha — desde AOS-347 esse subcomando usa [eventstore.OpenReadOnly] e tolera `:ro`. Aqui a
+// exigência permanece, e é do store de auditoria, não uma convenção herdada.
 
 import (
 	"context"

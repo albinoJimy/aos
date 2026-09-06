@@ -357,8 +357,17 @@ func (p *runProgress) ObserveProgress(ctx context.Context, runID string, turn in
 // A lista é FECHADA e curta de propósito: só entram aqui erros cuja causa é sabidamente
 // temporária e cuja repetição é sabidamente denunciada pela contagem de consecutivas.
 //
-//   - [eventstore.ErrNoQuorum] — o store não tem líder (perda/troca de líder, Kill/Revive de
-//     resync). Volta sozinho quando uma réplica suficientemente actualizada regressa;
+//   - [eventstore.ErrNoQuorum] — o SUBSTRATO não está disponível neste momento. No store de
+//     referência é a perda/troca de líder (Kill/Revive de resync); no backend replicado é o
+//     cliente sem socket a reconectar, traduzido para este sentinela na fronteira do backend
+//     (AOS-354). Volta sozinho, e é por isso que se adia em vez de se abortar.
+//
+//     ATÉ AOS-354 esta lista era CEGA ao substrato replicado: `ErrNoQuorum` só era produzido
+//     pelo store de referência, e um `natsjs.ErrDesligado` caía no ramo de CEGUEIRA e matava
+//     o run à PRIMEIRA fronteira. A correcção NÃO foi alargar esta lista — foi fazer o
+//     backend produzir o sentinela canónico, para que o próximo consumidor não tenha de
+//     conhecer os sentinelas de cada implementação;
+//
 //   - [context.Canceled]/[context.DeadlineExceeded] — o contexto do PRÓPRIO run está a cair.
 //     O run termina pelo caminho dele; carimbar-lhe por cima um erro de burn-down só
 //     trocaria a causa da terminação por outra que não é a verdadeira.
