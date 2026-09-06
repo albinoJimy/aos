@@ -212,7 +212,18 @@ func (w *wal) appendLote(evs []Event) error {
 			continue
 		}
 		// O registo que falhou já se repôs a si próprio; falta desfazer os que
-		// PASSARAM antes dele. Se o WAL ficou envenenado, não há reposição a tentar.
+		// PASSARAM antes dele.
+		//
+		// RESIDUAL DECLARADO: se o WAL ENVENENOU (a reposição do registo falhado não foi
+		// possível), não há reposição de lote a tentar — o mecanismo que a faria é o mesmo
+		// que acabou de falhar. Um PREFIXO do lote pode ficar durável, e é gapless, pelo
+		// que um [Open] seguinte aceita-o: o restauro reaparece PARCIAL. Não se esconde e
+		// não se finge o contrário; o que garante que ninguém constrói por cima disso é o
+		// envenenamento em si — a partir daqui o WAL recusa tudo em voz alta e
+		// [Store.Healthy] passa a false (AOS-350), pelo que o nó sai de serviço em vez de
+		// continuar a servir um log meio-restaurado. Fechá-lo a sério exigiria uma
+		// segunda via de reposição independente da primeira, que é desenho novo e não
+		// remediação.
 		if w.envenenado != nil {
 			return err
 		}

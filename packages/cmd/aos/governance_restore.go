@@ -147,6 +147,13 @@ func restoreSubjectIndex(ctx context.Context, es EventStorePort, index *audit.In
 	//
 	// Um índice de legal hold que não se conseguiu reconstruir NÃO é um índice vazio. O
 	// arranque recusa, e recusa a dizer porquê.
+	//
+	// CONSEQUÊNCIA OPERACIONAL DECLARADA: com `AOS_EVENTSTORE_NATS`, um cluster
+	// momentaneamente inalcançável ao ARRANQUE passa a impedir o nó de subir, onde antes
+	// ele subia com um índice errado. É a troca deliberada — um nó que não arranca é um
+	// problema visível e reversível; um legal hold silenciosamente reduzido não é
+	// nenhuma das duas coisas. Quem operar isto retenta o arranque; quem operasse o
+	// anterior não tinha como saber que precisava.
 	streams, err := es.Streams()
 	if err != nil {
 		return 0, fmt.Errorf("indice titular->particao: NAO foi possivel enumerar os streams do Event Store (%w) — "+
