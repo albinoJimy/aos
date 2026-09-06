@@ -270,7 +270,20 @@ func (w *wal) appendBloqueado(ev Event) error {
 	// A única barreira que impede um append falhado de ficar durável é a que corre ANTES
 	// da primeira escrita.
 	//
-	// O custo é um `Stat` por append, contra um `fsync` no mesmo caminho: ruído.
+	// CUSTO, MEDIDO e não presumido (2026-09-06, Windows, disco local). O comentário do
+	// campo `tamanho` justificava não fazer `Stat` por append com «o append é caminho
+	// quente e o valor é exacto — só esta goroutine escreve». A segunda metade deixou de
+	// ser verdade (é este defeito); a primeira mede-se:
+	//
+	//	Stat isolado                      ~30 us/op
+	//	append completo (com fsync)   670 us .. 3,5 ms/op, 5x de variancia entre corridas
+	//	append com o Stat substituido
+	//	  por uma leitura em memoria    626 us .. 956 us/op
+	//
+	// O `Stat` é ≲5% do append e NÃO é separável da variância do `fsync` — as duas séries
+	// sobrepõem-se. Fica dito o que se mediu e o que não se conseguiu distinguir; num
+	// substrato de rede, onde o `Stat` é uma ida ao servidor, esta conta muda e a medição
+	// tem de ser refeita.
 	//
 	// SÓ O ENCOLHIMENTO, e a restrição é deliberada. Um ficheiro MAIOR do que a memória é o
 	// outro escritor a acrescentar — DEF-282, que este epic não reabre. Recusá-lo aqui
