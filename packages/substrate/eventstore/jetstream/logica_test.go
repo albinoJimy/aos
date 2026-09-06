@@ -254,7 +254,13 @@ func TestAcessores_RefletemAConfiguracao(t *testing.T) {
 	if s.Healthy() {
 		t.Error("um store fechado NÃO pode dizer-se Healthy — é o que serve /readyz")
 	}
-	if s.Streams() != nil {
+	// AOS-352: um store fechado devolve ERRO, não uma lista vazia. A distinção é o
+	// ticket inteiro — «não consegui perguntar» deixou de se ler como «não há nada».
+	fechados, err := s.Streams()
+	if fechados != nil {
 		t.Error("um store fechado não pode listar streams")
+	}
+	if !errors.Is(err, eventstore.ErrClosed) {
+		t.Errorf("Streams() de um store fechado = %v, quero ErrClosed", err)
 	}
 }

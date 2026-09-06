@@ -80,7 +80,12 @@ func cmdWALSummary(args []string, w io.Writer) error {
 	}
 	defer func() { _ = es.Close() }()
 
-	streams := es.Streams()
+	// AOS-352: um sumário construído sobre uma enumeração falhada seria um sumário
+	// INCOMPLETO com a cara de um completo — e é lido por quem investiga um incidente.
+	streams, err := es.Streams()
+	if err != nil {
+		return fmt.Errorf("aos: enumerar streams do WAL %q: %w", *path, err)
+	}
 	porTipo := map[string]int{}
 	ctx := context.Background()
 	for _, s := range streams {

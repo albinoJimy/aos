@@ -25,8 +25,14 @@ import (
 // soberania (Region/SovereigntyBoard) para o exportador a fazer valer (ADR-011).
 type BackupSource interface {
 	// Streams devolve os ids de todos os streams com eventos committed, ordenados
-	// (determinista).
-	Streams() []string
+	// (determinista), ou o erro que impediu de os enumerar.
+	//
+	// AOS-352: o canal de erro existe porque num substrato PARTILHADO esta pergunta é
+	// feita ao SERVIDOR, e uma falha de rede é indistinguível de «não há streams» se a
+	// resposta for só um slice. Quem varre o log inteiro a partir daqui tem de poder
+	// distinguir as duas — um varredor que conclui «zero» sobre uma pergunta que não
+	// chegou a ser feita degrada em silêncio, e nem sempre na direcção segura.
+	Streams() ([]string, error)
 	// StreamHead devolve o último seq committed do stream (0 se inexistente).
 	StreamHead(ctx context.Context, streamID string) (uint64, error)
 	// SnapshotStream devolve clones dos eventos committed do stream com
@@ -86,12 +92,18 @@ var (
 // Streams devolve os ids de todos os streams com eventos committed no líder,
 // ordenados lexicograficamente (determinista — imagem estável de Replicas()).
 // Detém s.mu.RLock (membership) e r.mu.RLock (estrutura do mapa de streams).
-func (s *Store) Streams() []string {
+func (s *Store) Streams() ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.closed.Load() {
+		return nil, ErrClosed
+	}
 	l := s.leader()
 	if l == nil {
-		return nil
+		// AOS-352: sem líder NÃO é «não há streams» — é o substrato indisponível. Devolver
+		// um slice vazio aqui era o que fazia um varredor de arranque concluir «zero» e
+		// seguir em frente; agora diz-se, e quem varre decide.
+		return nil, ErrNoQuorum
 	}
 	l.mu.RLock()
 	out := make([]string, 0, len(l.streams))
@@ -100,7 +112,7 @@ func (s *Store) Streams() []string {
 	}
 	l.mu.RUnlock()
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // StreamHead devolve o último seq committed do stream. Detém o stripe do stream

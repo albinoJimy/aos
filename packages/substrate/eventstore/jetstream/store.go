@@ -1091,13 +1091,18 @@ func (s *Store) Healthy() bool {
 // existem são os que QUALQUER escritor criou, não os que este processo viu. Por isso é
 // respondida pelo servidor — e é essa diferença que a torna correcta entre processos,
 // ao contrário de um índice em memória.
-func (s *Store) Streams() []string {
+func (s *Store) Streams() ([]string, error) {
 	if s.estaFechado() {
-		return nil
+		return nil, eventstore.ErrClosed
 	}
 	subjects, err := s.cn.SubjectsWithMessages(s.stream, s.prefixo+".>", s.prazo)
 	if err != nil {
-		return nil
+		// AOS-352: era `return nil` — sem log, sem sinal. Uma falha transitória de rede
+		// ficava INDISTINGUÍVEL de «não há streams», e quatro varredores de arranque
+		// consumiam essa resposta em direcções diferentes: o índice titular→partição do
+		// LEGAL HOLD voltava vazio (fail-OPEN, e o ExpirationJob podia crypto-shred
+		// material sob hold), zero runs órfãos eram retomados, e nada expirava.
+		return nil, indisponibilidadeTransitoria(err)
 	}
 	out := make([]string, 0, len(subjects))
 	for subject, n := range subjects {
@@ -1107,7 +1112,7 @@ func (s *Store) Streams() []string {
 		out = append(out, strings.TrimPrefix(subject, s.prefixo+"."))
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // prefixoDe deriva o prefixo de subjects do NOME DO STREAM.

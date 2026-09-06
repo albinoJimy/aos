@@ -90,7 +90,21 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 		return 0, 0, fmt.Errorf("aos: compor o Resumer de crash-resume (AOS-253): %w", rerr)
 	}
 
-	streams := s.node.EventStore.Streams()
+	// AOS-352 — DEGRADAÇÃO DECLARADA, e a escolha é diferente da de `governance_restore`
+	// de propósito. Aqui o dano de falhar o arranque é maior do que o de não retomar: um
+	// run órfão fica órfão até ao arranque seguinte, e o operador vê-o; um nó que não sobe
+	// não retoma nada nem serve nada. Mas «zero streams» não pode continuar a ser a forma
+	// como isto se sabe — antes, uma falha de enumeração produzia «0 retomados» com a
+	// mesma cara de um arranque limpo, e a única diferença estava num erro que ninguém
+	// devolvia. Passa a ser dito em voz alta, e devolvido como erro do varredor.
+	streams, serr := s.node.EventStore.Streams()
+	if serr != nil {
+		s.log("crash-resume: NAO foi possivel enumerar os streams do Event Store (%v) — "+
+			"NENHUM run orfao foi procurado nesta passagem. Isto NAO e 'nao havia orfaos': "+
+			"e 'nao se chegou a perguntar'. Os runs orfaos continuam orfaos ate o substrato "+
+			"responder e o no reiniciar", serr)
+		return 0, 0, fmt.Errorf("aos: crash-resume: enumerar streams do Event Store: %w", serr)
+	}
 	var heldElsewhere, failed int
 	for _, id := range streams {
 		runID := id

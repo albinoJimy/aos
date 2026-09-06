@@ -380,7 +380,11 @@ func verificarLogDeControlo(t *testing.T, walPath, runID string) {
 	defer es.Close()
 
 	visto := map[string]int{}
-	for _, s := range es.Streams() {
+	streams, serr := es.Streams()
+	if serr != nil {
+		t.Fatalf("Streams(): %v", serr)
+	}
+	for _, s := range streams {
 		if !strings.Contains(s, runID) {
 			continue
 		}
