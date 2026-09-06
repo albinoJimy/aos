@@ -210,6 +210,8 @@ func (g ScopeGate) Evaluate(_ context.Context, call *referencemonitor.Call) (ref
 const (
 	metaProviderPolicy  = "provider_policy"
 	metaResourceBinding = "resource_binding"
+	// metaProviderPolicyShape e o eixo da FORMA da politica (AOS-342).
+	metaProviderPolicyShape = "provider_policy_shape"
 )
 
 // posturas devolve a POSTURA sob a qual esta negação foi decidida (AOS-332), no canal de
@@ -231,7 +233,8 @@ const (
 // as duas posturas, agora em `metadata` e sem as ter de extrair de uma string.
 func (g ScopeGate) posturas() map[string]string {
 	return map[string]string{
-		metaProviderPolicy:  string(g.ProviderPosture()),
-		metaResourceBinding: string(g.ResourceBindingPosture()),
+		metaProviderPolicy:      string(g.ProviderPosture()),
+		metaProviderPolicyShape: string(providerPolicyShape(g.classProviders)),
+		metaResourceBinding:     string(g.ResourceBindingPosture()),
 	}
 }

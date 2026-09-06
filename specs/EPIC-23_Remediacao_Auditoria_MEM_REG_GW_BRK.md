@@ -93,6 +93,7 @@ reproduziu, em três sítios, o defeito que veio corrigir.**
 | O provedor autorizado não é amarrado ao `ResourceValue` | **AOS-331** — **implementado** |
 | A postura do eixo provider não aparece no banner, e a negação não a sela | **AOS-332** — **implementado** |
 | Uma troca negada pela guarda de composição do `dispatch` fica no WORM como PERMITIDA — achado na discovery do AOS-332 | **AOS-339** — **implementado** |
+| `enforced` não significa imposto: a postura não olha o conteúdo da política (curinga/vazio) — achado na revisão do AOS-332 | **AOS-342** — **implementado** |
 | `CheckSecureTransportURL` aceita credenciais embutidas e o banner imprime o endereço cru | **AOS-333** — **implementado** |
 | Nada exige `ManifestDigest` não-vazio para `kind=mcp_server` | **AOS-334** — **implementado** |
 | `ClassifyContract` devolve sempre `ChangeNone` para `mcp_server` | **AOS-335** — **implementado** |
@@ -978,6 +979,86 @@ não apanhar — o ticket antes do marcador, e a forma **já corrigida** `BLOQUE
 **Foi encontrada por medição própria, não por revisão.** Os dois revisores adversariais lançados
 sobre este gate morreram por estagnação sem devolver nada; o que restou foi ir atacar
 deliberadamente o que eu tinha escrito, que é a mesma disciplina, feita à mão.
+
+### A revisão que chegou depois: o gate falhava nos DOIS sentidos ao mesmo tempo
+
+A revisão adversarial acabou por devolver, e mediu que a correcção acima tinha fechado **um caso**,
+não uma classe. As treze conclusões foram verificadas uma a uma contra a árvore fundida antes de
+serem aceites; as que estavam marcadas como confirmadas reproduziram-se todas.
+
+**Fugia**, porque a expressão exigia o ticket colado aos dois-pontos:
+
+| forma | antes | agora |
+|---|---|---|
+| `// BLOQUEADOR: AOS-NNN` | vermelho | vermelho |
+| `// BLOQUEADOR:` + `// AOS-NNN` | vermelho | vermelho |
+| `// BLOQUEADOR:` + `//` + `// AOS-NNN` | **verde** | vermelho |
+| `// BLOQUEADOR: aguarda AOS-NNN` | **verde** | vermelho |
+| `**BLOQUEADOR:** AOS-NNN` | **verde** | vermelho |
+| `// BLOQUEADOR: (AOS-NNN)` · `[AOS-NNN]` · `#AOS-NNN` | **verde** | vermelho |
+
+A pior é a terceira: um `//` em branco a separar parágrafos é a forma **mais comum** de comentário
+Go longo, e o texto que a correcção anterior deixou no ficheiro vendia essa classe como resolvida.
+
+**E avermelhava texto que dizia o contrário.** `re.IGNORECASE` sobre linhas unidas apanha:
+
+```go
+// A ausência nunca foi bloqueador:
+// AOS-NNN já cobriu o caso.
+```
+
+→ `FAIL: AOS-NNN está IMPLEMENTADO`. O gate acusava de bloqueio caduco uma frase cuja leitura
+humana é «isto **não** está bloqueado». Este é o achado mais grave dos treze — não por ser o mais
+subtil, mas porque um falso positivo destes é o que faz alguém desligar o gate, e desligado não
+protege nada.
+
+Havia ainda uma **acusação falsa contra um bloqueio verdadeiro**: um cabeçalho `## AOS-NNN: título`
+(dois-pontos em vez de travessão) era invisível ao padrão, o bloco do ticket anterior engolia-o com
+o `### Estado` lá dentro, e um ticket **aberto** era reportado como IMPLEMENTADO.
+
+### As três perguntas, separadas
+
+As duas falhas têm a mesma origem: uma expressão a responder a três perguntas distintas. Agora são
+três passos com critérios próprios — **onde está o marcador**, **ele abre uma declaração?**, **qual
+é o eixo**. O segundo é o que distingue `BLOQUEADOR: AOS-NNN` de «nunca foi bloqueador: AOS-NNN»,
+sem precisar de perceber português: o marcador só conta quando, na sua linha física, o que o
+precede é estrutura (`//`, `-`, `*`, `|`, `>`, numeração) ou o fim de uma frase anterior.
+
+O terceiro existe por causa da forma **já corrigida** que vive em `broker_vault_env.go:67` —
+«Bloqueador: DEF-218 (AOS-265 já aterrou sem o fechar)». O eixo é o **primeiro** identificador a
+seguir aos dois-pontos; sendo `DEF-`, o gate abstém-se, em vez de saltar à frente até encontrar um
+`AOS-` qualquer e avermelhar a frase que diz que esse ticket **já fechou**. Antes isto ficava verde
+por acidente, pela adjacência estrita; agora fica verde por regra.
+
+### O que passou a ser dito em voz alta
+
+- `**Implementado**` em caixa de título dava o lexema `I`, era tratado como aberto e **não imprimia
+  nada**. O estado passa a ser normalizado, e um lexema fora do vocabulário é **abstenção
+  impressa** — continua a não avermelhar, porque inventar que uma palavra desconhecida significa
+  «fechado» avermelharia o gate por uma mudança de redacção.
+- O `file:line` apontava para o início do bloco lógico: um marcador na linha 28 de um comentário de
+  30 aparecia como `:1`. Passa a apontar para a linha física do marcador.
+- As abstenções passam de um eixo para **quatro** — sem estado, lexema desconhecido, eixo que não é
+  ticket, marcador sem eixo. A única ocorrência real do marcador em âmbito passa a aparecer em cada
+  execução, onde antes o gate era mudo sobre ela.
+
+### O que continua por fechar, e fica escrito
+
+- **O gate continua vacuoso.** Zero declarações verificadas na árvore; a única ocorrência do
+  marcador em âmbito tem eixo `DEF-`. A não-vacuidade vem do teste-veneno do `selftest.sh` §W, não
+  do corpus, e um gate verde com cobertura zero parece uma prova e não é.
+- **Alargar as extensões não cobriu nada hoje.** Medido: `packages/` + `tecnica/` + `docs/adr/` têm
+  1 705 ficheiros antes e **os mesmos 1 705** depois — só lá existem `.go` e `.md`. O
+  `docker-compose.prod.yml` que continha uma das oito continua fora de âmbito, em `deploy/`. É um
+  buraco fechado para a frente, não cobertura ganha agora.
+- **Um marcador enterrado no meio de uma frase deixa de ser apanhado.** É uma **troca**, não um
+  descuido: é o mesmo critério que impede o falso positivo por inversão de sentido, e não há forma
+  de ter um sem perder o outro. A convenção passa a ser que o marcador **abre** a declaração.
+
+O `selftest.sh` §W troca o veneno único por uma **matriz nos dois sentidos**: oito formas de fuga
+que têm de avermelhar e cinco formas legítimas que têm de continuar verdes. Três mutantes
+realistas — a âncora removida, o bloco a fechar no `//` vazio, o eixo a saltar para o primeiro
+`AOS-` — foram **todos mortos** pela matriz.
 
 ### O AC4 NÃO É SATISFAZÍVEL, e fica escrito assim
 
@@ -2205,3 +2286,89 @@ projectado (a obrigação está lá, `governed=true`) mas com `Region` vazia. N�
 `allowed` não tem emissor de produção — só um caso de teste do RM —, e duplicar a precedência do
 kernel no plano de controlo era a correcção errada para um caso latente. Fica nomeado em vez de
 arrastado.
+
+---
+
+## AOS-342 — `enforced` não significa imposto: a postura não olha para o conteúdo da política
+
+### Contexto
+
+Medido na **revisão adversarial do AOS-332**, sobre a implementação desse ticket. Não é um defeito
+do AOS-332 — é um defeito do **AOS-324** que só se torna visível quando alguém começa a **declarar**
+a postura ao operador.
+
+`Broker.ProviderPosture()` é função da **nulidade** do mapa de política: qualquer mapa não-nil
+devolve `enforced`, e o **conteúdo nunca é olhado**. Três políticas materialmente opostas são todas
+`enforced`:
+
+| Política | Postura | Efeito real |
+|---|---|---|
+| `{"payments": {"*"}}` | `enforced` | **não impõe nada** — `EffectiveProviders` devolve o curinga e qualquer provedor passa |
+| `{}` | `enforced` | **nega tudo** — toda a classe tem tecto vazio |
+| `{"payments": {"stripe"}}` | `enforced` | impõe |
+
+Para o que fica **selado**, essa semântica está certa e o AOS-332 fixou-a de propósito: um mapa
+vazio é uma declaração («ninguém alcança nada») e tem de se distinguir de «não declarei».
+
+**Para uma PRÉ-CONDIÇÃO não chega, e é aí que morde.** O `DEF-218` manda assertar que
+`provider_policy` diz `enforced` antes de ligar a troca. Sob `{"payments": {"*"}}` essa asserção
+fica **verde** e o eixo está **aberto** — um principal da classe sem grants `prov:` alcança
+qualquer provedor presente no Vault. É exactamente a confusão de deputado que o AOS-324 fechou, com
+a pré-condição a declará-la fechada. Uma asserção a passar pela razão errada, na asserção de que o
+wiring depende.
+
+E o banner do AOS-332 descrevia as três com a mesma frase — «o provedor pedido tem de constar da
+autoridade efectiva da classe» —, **falsa** na primeira e **vácua** na segunda. É sobre essa frase
+que o operador decide se a pré-condição está satisfeita.
+
+### Critérios de Aceitação
+
+- [x] A FORMA da política é interrogável (`Broker.ProviderPolicyShape`) e distingue os quatro
+      casos: sem política, declarada e vazia, com curinga, conjuntos concretos
+- [x] A forma viaja com a postura em TODO O LADO onde a postura viaja: no evento da troca emitida
+      (`provider_policy_shape`), na razão da negação do gate, e no banner de arranque
+- [x] O banner descreve as três formas de `enforced` de maneira DISTINTA, nomeia as classes que o
+      curinga deixa sem restrição, e diz explicitamente qual é a única que satisfaz o `DEF-218`
+- [x] Um teste que MEÇA que o curinga é `enforced` e deixa passar uma troca cross-provider — sem
+      isso, os estados novos seriam texto sobre um caso que ninguém mediu
+- [x] Os acessores que o `DEF-218` interroga são nil-safe: um broker por construir é o estado em
+      que essa pergunta é mais provável
+- [x] `DEF-218` passa a exigir o PAR `(postura, forma)` e não só a postura
+- [x] A declaração «`broker.New` não tem chamador de produção», que o banner imprime ao operador,
+      passa a ter guarda
+- [x] Prova de mutação
+
+### Estado
+
+**IMPLEMENTADO.** P2 por alcance (latente — o broker não está composto), **pré-condição do wiring
+do broker**, a par de AOS-324 e AOS-330.
+
+**A ESCOLHA: acrescentar a forma, não mudar a postura.** Redefinir `ProviderPosture` para olhar o
+conteúdo — devolver `unset` para um curinga, por exemplo — seria mais simples e está **errado**: o
+AOS-332 sela a postura no WORM, e um mapa vazio *é* uma declaração que tem de se distinguir de
+«não declarei». Mudar a semântica do campo selado partiria essa distinção e reescreveria o
+significado de eventos já emitidos. A forma é um eixo **novo** e ortogonal, e é assim que viaja.
+
+**PORQUE A FORMA TAMBÉM VAI AO EVENTO, e não só ao banner.** O `DEF-218` não assere sobre o banner
+— assere sobre o campo `provider_policy` de um `credential.exchange.issued`. Corrigir só o banner
+deixaria a asserção que o deferimento nomeia igualmente enganável, e este ticket teria fechado a
+aparência do defeito e não o defeito.
+
+**PROVA DE MUTAÇÃO — onze mutantes, onze vermelhos, zero sobreviventes.** A forma deixa de detectar
+o curinga, o mapa vazio e a ausência de política; as classes com curinga deixam de ser nomeadas; a
+troca emitida e a negação do gate deixam de selar a forma; `ProviderPolicyShape` volta a entrar em
+panic num broker nil; o banner volta a descrever o curinga e o mapa vazio como imposição; a linha do
+curinga deixa de nomear as classes; a rubrica deixa de nomear a forma a par da postura.
+
+### O que este ticket NÃO fecha
+
+**O `posturaDaPoliticaDoBroker` continua a ser uma struct de valores, não o broker composto.** Um
+chamador pode construí-la à mão com `Composto: true` e uma postura que nenhum broker impõe. Hoje é
+inofensivo — o único call-site passa o valor-zero, e o `TestBoundary_BrokerNaoEComposto` falha no
+dia em que isso deixar de ser verdade. Trocar a struct pelo `*broker.Broker` tornaria o estado
+não-forjável por construção; fica **por fazer** e é decisão do dia do wiring, quando houver um
+broker real de onde derivar.
+
+**A `ResourceBindingPosture` do AOS-331 tem o mesmo eixo por examinar.** Uma allowlist de hosts
+declarada e vazia, ou com um curinga se o vier a ter, cai no mesmo buraco: `enforced` no nome. Não
+foi medida aqui e **não se afirma** que esteja certa ou errada — fica nomeada em vez de arrastada.
