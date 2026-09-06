@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-package ci-sbom ci-selftest ci-all ci-cache-prime \
+        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-isolation-live ci-dormencia ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-package ci-sbom ci-selftest ci-all ci-cache-prime \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -109,6 +109,12 @@ ci-cache-prime: ## Prime determinista do módulo-cache (go.sum pinados) para bui
 
 ci-security: ## Gate: 4 cenários adversariais de segurança (prompt injection/exfiltração/segredos/isolamento) (suite AOS-075, fail-closed)
 	$(CI)/security.sh
+
+ci-isolation-live: ## Gate OPCIONAL: isolamento contra o executor gVisor REAL (fronteira, não contrato) — AOS-358; salta RUIDOSAMENTE sem o componente
+	$(CI)/isolation-live.sh
+
+ci-dormencia: ## Gate: nomeia as suites dormentes (AOS_NATS_URL, -tags fclive/gvlive) e exige que COMPILEM — AOS-358, fail-closed sobre apodrecimento
+	$(CI)/dormencia.sh
 
 ci-evalgate: ## Gate 9: eval harness + golden-sets curados / admission control comportamental (AOS-114, fail-closed)
 	$(CI)/evalgate.sh

@@ -149,7 +149,7 @@ var (
 	// ErrEgressHookMissing — a cadeia FINAL não contém hook nenhum a ocupar o slot de
 	// egress (nem sequer o stub). Manifesta-se quando um override [WithHooks] substitui
 	// a cadeia base por inteiro e OMITE o egress — o caso que [ErrEgressStub] nunca
-	// apanhava, porque testava a PRESENÇA DO STUB em vez da PRESENÇA DO HOOK (AOS-355).
+	// apanhava, porque testava a presença do `EgressStub` em vez da PRESENÇA DO HOOK (AOS-355).
 	// Sem hook de egress a mediação não consulta allowlist nenhuma e toda a exfiltração
 	// via tool "benigna" passa; recusado fail-closed. Sentinela PRÓPRIA e não reutilização
 	// de [ErrEgressStub]: a causa é oposta (slot vazio vs. slot ocupado por um no-op) e a
@@ -258,7 +258,7 @@ const egressHookSlot = "egress"
 // não é o [EgressStub] neutro — i.e. o default-deny de rede (AOS-067) está estruturalmente
 // PRESENTE, não removido por um override [WithHooks]. É a mesma lógica "gate activo, não
 // só nome" de [hasActiveScopeGate], aplicada ao único eixo em que a guarda de
-// [NewProductionSecure] testava a AUSÊNCIA DO STUB em vez da PRESENÇA DO HOOK (AOS-355):
+// [NewProductionSecure] testava a ausência do `EgressStub` em vez da PRESENÇA DO HOOK (AOS-355):
 // uma cadeia passada por [WithHooks] SEM egress nenhum satisfazia a via estrita.
 //
 // PORQUE CASA PELO NOME e não pelo tipo, ao contrário de [hasActiveScopeGate] e de
