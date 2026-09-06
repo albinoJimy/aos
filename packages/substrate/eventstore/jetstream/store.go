@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -170,6 +171,26 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 	// ARMAZENADA, não contra a que pedimos. Ver soberania.go para os três modos de
 	// falha que isto cobre — o pior deles é ligar-se a um stream pré-existente SEM
 	// colocação e julgar-se soberano.
+	//
+	// # Porque SÓ a colocação é lida de volta, e não NumReplicas/DenyDelete/DenyPurge
+	//
+	// [natsjs.StreamConfigLida] traz os quatro campos, e só `Placement` é verificado
+	// aqui. A assimetria é DELIBERADA, e a razão é o tipo de prova que cada propriedade
+	// admite.
+	//
+	// O append-only (`deny_delete`/`deny_purge`) tem prova COMPORTAMENTAL: um apagar e
+	// um purgar contra o stream real são RECUSADOS pelo servidor, e a recusa é medida
+	// pelos códigos `10057` e `10110` (EPIC-10:190). Uma configuração que dissesse
+	// «append-only» e não o fosse seria apanhada por essa medição — logo, lê-la de volta
+	// no arranque não acrescentaria garantia nenhuma; acrescentaria um round-trip e a
+	// ILUSÃO de que a leitura é que garante a imutabilidade. O mesmo vale para
+	// `num_replicas`: uma réplica a menos aparece na escrita, não na configuração.
+	//
+	// A soberania não tem esse recurso. A colocação só se manifesta em ONDE os bytes
+	// ficam, e nenhuma operação do cliente a exercita: um stream sem `placement` aceita
+	// escritas exactamente como um com ele. A prova é DECLARATIVA — a configuração
+	// armazenada é a única testemunha — e é por isso que só esta precisa de ser lida de
+	// volta. Não é esquecimento: é a única das quatro que ninguém mais pode verificar.
 	if cfg.fronteira {
 		lida, err := cn.ConfigDoStream(cfg.stream, cfg.prazo)
 		if err != nil {
@@ -214,7 +235,49 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 // apenas «escreve no fim»: a recusa é ruído da nossa cache, re-hidrata-se e tenta-se de
 // novo. Devolver-lhe um conflito que ele não pediu seria transformar a concorrência
 // entre streams num erro do chamador.
-func (s *Store) Append(ctx context.Context, streamID string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+// indisponibilidadeTransitoria traduz o sentinela do substrato replicado para o sentinela
+// CANÓNICO de indisponibilidade momentânea do Event Store, preservando a causa na cadeia.
+//
+// # AOS-354 — A TOLERÂNCIA QUE O BANNER PROMETE NUNCA ERA ARMADA
+//
+// [eventstore.ErrNoQuorum] era produzido APENAS pelo store de referência. Em `jetstream/` e
+// `natsjs/` havia ZERO ocorrências: o erro canónico de indisponibilidade transitória deste
+// substrato é [natsjs.ErrDesligado]. Dois consumidores ramificam no sentinela, e a
+// consequência era desigual:
+//
+//   - `cmd/aos/trajectory.go` — a perda era cosmética: HTTP 500 em vez de 503;
+//   - `cmd/aos/progress_wiring.go` — não era. `burndownTransitorio` é a lista FECHADA que
+//     decide se uma leitura falhada do burn-down é indisponibilidade momentânea ou CEGUEIRA.
+//     Sobre JetStream, um `ErrDesligado` caía em «cegueira» e MATAVA O RUN À PRIMEIRA, em vez
+//     de tolerar N fronteiras consecutivas — que é o que `posture_banner.go` promete por
+//     escrito. Sobre o substrato que AOS-100 tornou preferencial, essa promessa não tinha
+//     como ser cumprida.
+//
+// # PORQUÊ TRADUZIR AQUI, E NÃO ALARGAR A LISTA DO CONSUMIDOR
+//
+// A alternativa era `burndownTransitorio` passar a reconhecer também [natsjs.ErrDesligado].
+// Funcionaria, e repetia o defeito: o sentinela é o CONTRATO da porta [EventStorePort], e um
+// contrato que só uma das implementações consegue produzir não é contrato — é um detalhe da
+// implementação de referência a vazar para o plano de controlo. Cada consumidor futuro teria
+// de saber a lista de sentinelas de cada backend, e o primeiro que se esquecesse de um
+// reintroduzia este mesmo bug. Traduzir na fronteira do backend fecha-o de uma vez, e para
+// todos os consumidores.
+//
+// A causa NÃO se perde: o erro devolvido embrulha os dois, pelo que `errors.Is` responde
+// `true` ao canónico E ao específico, e a mensagem que o operador lê nomeia a desligação.
+func indisponibilidadeTransitoria(err error) error {
+	if err == nil || !errors.Is(err, natsjs.ErrDesligado) {
+		return err
+	}
+	if errors.Is(err, eventstore.ErrNoQuorum) {
+		return err // já traduzido por uma camada de baixo; não voltar a embrulhar
+	}
+	return fmt.Errorf("%w: %w", eventstore.ErrNoQuorum, err)
+}
+
+func (s *Store) Append(ctx context.Context, streamID string, in eventstore.EventInput, opts ...eventstore.AppendOption) (_ eventstore.AppendResult, err error) {
+	// AOS-354: a tradução cobre TODOS os caminhos de saída, e é por isso que é um defer.
+	defer func() { err = indisponibilidadeTransitoria(err) }()
 	// O span abre com o `ctx` do CHAMADOR, e é isso que o põe por baixo do span do passo
 	// que causou a escrita em vez de o deixar órfão (EPIC-08 / AOS-077).
 	s.marcarUsado()
@@ -369,7 +432,8 @@ func (s *Store) escritaAplicada(ctx context.Context, st *estado, subject, eventI
 //
 // Lê SEMPRE do servidor, nunca de uma cache local: é a diferença entre um Event Store
 // partilhado e N cópias in-process, e é o defeito que o DEF-282 mediu.
-func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error) {
+func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) (_ []eventstore.Event, err error) {
+	defer func() { err = indisponibilidadeTransitoria(err) }()
 	s.marcarUsado()
 	ctx, span := s.rastro.Iniciar(ctx, eventstore.OperacaoRead)
 	defer span.Fim()
@@ -461,27 +525,12 @@ func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Durat
 		return nil, 0, dedup, 0, nil
 	}
 
-	evs := make([]eventstore.Event, 0, total)
-	var inicio uint64 // 0 = desde o princípio do stream
-	for uint64(len(evs)) < total {
-		// A janela fica toda em uint64: converter a contagem do servidor para int
-		// seria uma conversão que o compilador não pode provar segura (G115), e a
-		// resposta certa a isso é não a fazer — não silenciá-la.
-		quantos := total - uint64(len(evs))
-		if quantos > janelaDeLeitura {
-			quantos = janelaDeLeitura
-		}
-		lote, ultimoJS, err := s.lerLote(ctx, subject, inicio, quantos, prazo)
-		if err != nil {
-			return nil, 0, nil, 0, err
-		}
-		if len(lote) == 0 {
-			return nil, 0, nil, 0, fmt.Errorf(
-				"jetstream: lote vazio a meio da leitura de %q (%d de %d eventos lidos) — o log não pode ser servido truncado",
-				subject, len(evs), total)
-		}
-		evs = append(evs, lote...)
-		inicio = ultimoJS + 1
+	evs, err := lerEmLotes(subject, total, janelaDeLeitura,
+		func(inicio, quantos uint64) ([]eventstore.Event, uint64, error) {
+			return s.lerLote(ctx, subject, inicio, quantos, prazo)
+		})
+	if err != nil {
+		return nil, 0, nil, 0, err
 	}
 
 	var aosSeq uint64
@@ -501,8 +550,84 @@ func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Durat
 	return evs, jsUltimo, dedup, aosSeq, nil
 }
 
+// lerEmLotes percorre os `total` eventos de um subject em lotes de até `janela` e
+// devolve-os por ordem.
+//
+// `lote(inicio, quantos)` traz até `quantos` eventos a partir do seq FÍSICO `inicio` e
+// devolve, além deles, o seq físico do ÚLTIMO que trouxe — que é por onde a janela avança.
+//
+// # O defeito que isto fecha
+//
+// A versão anterior avançava a janela com `UltimoSeqDoSubject`, que é o seq da última
+// mensagem do SUBJECT INTEIRO e não do lote. Enquanto o log coube numa janela os dois
+// valores coincidiram e a diferença foi invisível. Acima de [janelaDeLeitura] eventos num
+// só stream_id, o segundo lote arrancava DEPOIS do fim do log, não recebia nada, e a
+// leitura morria no prazo — e como `hidratar` precede as escritas, o stream ficava
+// ilegível E inescrevível.
+//
+// A via de alcance não era a carga, era o RELÓGIO: o laço de retenção renova a posse de
+// 40 em 40 s e cada renovação é um evento no stream do laço, o que põe 2048 eventos lá
+// ao fim de ~22,7 h de uptime — num nó completamente ocioso.
+//
+// A separação em função própria não é estética: é o que permite exercitar a aritmética da
+// janela e o critério de avanço SEM cluster, com um log falso onde o seq do subject é
+// deliberadamente maior do que o do lote. Ver janela_test.go.
+func lerEmLotes(subject string, total, janela uint64, lote func(inicio, quantos uint64) ([]eventstore.Event, uint64, error)) ([]eventstore.Event, error) {
+	evs := make([]eventstore.Event, 0, total)
+	var inicio uint64 // 0 = desde o princípio do stream
+	for uint64(len(evs)) < total {
+		// A janela fica toda em uint64: converter a contagem do servidor para int
+		// seria uma conversão que o compilador não pode provar segura (G115), e a
+		// resposta certa a isso é não a fazer — não silenciá-la.
+		quantos := total - uint64(len(evs))
+		if quantos > janela {
+			quantos = janela
+		}
+		trazidos, ultimoDoLote, err := lote(inicio, quantos)
+		if err != nil {
+			return nil, err
+		}
+		if len(trazidos) == 0 {
+			return nil, fmt.Errorf(
+				"jetstream: lote vazio a meio da leitura de %q (%d de %d eventos lidos) — o log não pode ser servido truncado",
+				subject, len(evs), total)
+		}
+		evs = append(evs, trazidos...)
+		if uint64(len(evs)) >= total {
+			break
+		}
+
+		// Daqui para baixo é o caminho de QUEM AINDA TEM DE AVANÇAR, e só ele. A ordem
+		// não é cosmética: um log que cabe numa janela nunca chega aqui, e é por isso
+		// que uma falha em derivar o seq físico não o pode derrubar.
+		//
+		// `ultimoDoLote == 0` é «não sei onde este lote acabou» — [Store.lerLote]
+		// devolve-o quando a entrega não trouxe o `$JS.ACK…` de onde o seq físico sai.
+		// Adivinhar aqui seria escolher entre reler o mesmo prefixo para sempre (0) ou
+		// saltar o resto do log (o fim do subject, que é exactamente o defeito que esta
+		// função fecha). Não se adivinha: diz-se.
+		if ultimoDoLote == 0 {
+			return nil, fmt.Errorf(
+				"jetstream: a leitura de %q não conseguiu o seq físico do lote e faltam eventos (%d de %d) — "+
+					"a janela não avança às cegas, e um log servido truncado seria pior do que este erro",
+				subject, len(evs), total)
+		}
+		// Um lote que não faz a janela avançar é um laço infinito à espera de acontecer.
+		// Só pode vir de um seq físico mal derivado, e a resposta é falhar em vez de
+		// girar para sempre a reler o mesmo prefixo.
+		if ultimoDoLote < inicio {
+			return nil, fmt.Errorf(
+				"jetstream: o lote de %q devolveu o seq físico %d, que não avança a janela iniciada em %d",
+				subject, ultimoDoLote, inicio)
+		}
+		inicio = ultimoDoLote + 1
+	}
+	return evs, nil
+}
+
 // lerLote traz até `quantos` eventos do subject a partir do seq físico `inicio`, por
-// entrega push num consumidor efémero.
+// entrega push num consumidor efémero. Devolve também o seq FÍSICO da última mensagem
+// que trouxe — o valor por onde [lerEmLotes] avança a janela.
 func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uint64, prazo time.Duration) ([]eventstore.Event, uint64, error) {
 	entrega, err := natsjs.NewInbox()
 	if err != nil {
@@ -537,6 +662,7 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uin
 
 	evs := make([]eventstore.Event, 0, janelaDeLeitura)
 	var ultimoJS uint64
+	var semSeqFisico bool
 	temporizador := time.NewTimer(prazo)
 	defer temporizador.Stop()
 	for uint64(len(evs)) < quantos {
@@ -549,6 +675,34 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uin
 			if err := json.Unmarshal(m.Data, &ev); err != nil {
 				return nil, 0, fmt.Errorf("jetstream: envelope ilegível na leitura de %q: %w", subject, err)
 			}
+			// O seq FÍSICO desta mensagem vem do subject de resposta que o servidor lhe
+			// põe (`$JS.ACK…`). É a única fonte que fala da MENSAGEM entregue: o
+			// `Event.Seq` é o seq do AOS (gapless por stream, alheio ao log físico) e o
+			// último seq do subject é do LOG, não do lote.
+			//
+			// # Porque a AUSÊNCIA de resposta não derruba o lote, e a MALFORMAÇÃO sim
+			//
+			// São duas coisas diferentes. Um `$JS.ACK…` que não se consegue ler é uma
+			// violação de protocolo — o servidor disse algo que este cliente não
+			// entende — e fica fail-closed no sítio, como todo o resto deste pacote.
+			//
+			// Um subject de resposta AUSENTE é outra hipótese: um servidor ou uma
+			// política de entrega que simplesmente não o põe. Não é impossível, e não
+			// foi medido contra um cluster (ver AOS-345). Derrubar o lote aqui trocaria
+			// um defeito que só aparece acima de [janelaDeLeitura] eventos por outro que
+			// apareceria em TODAS as leituras — pior, e por causa de um valor que a
+			// esmagadora maioria delas nunca usa. Marca-se «não sei» com 0 e deixa-se
+			// [lerEmLotes] decidir: se o log cabe nesta janela, o seq nunca é preciso;
+			// se não cabe, aí sim a leitura falha, e falha a dizer exactamente isto.
+			if m.Reply == "" {
+				semSeqFisico = true
+			} else {
+				seq, err := seqDoStreamNaResposta(m.Reply)
+				if err != nil {
+					return nil, 0, fmt.Errorf("jetstream: leitura de %q: %w", subject, err)
+				}
+				ultimoJS = seq
+			}
 			evs = append(evs, ev)
 		case <-temporizador.C:
 			return nil, 0, fmt.Errorf("jetstream: leitura de %q parou em %d de %d eventos ao fim de %s — um log servido truncado seria pior do que este erro",
@@ -557,13 +711,65 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uin
 			return nil, 0, ctx.Err()
 		}
 	}
-	// O seq físico do último é pedido ao servidor por [Store.lerSubject]; aqui basta
-	// avançar a janela, e o avanço é feito pelo seq do ÚLTIMO evento lido.
-	ultimoJS, err = s.cn.UltimoSeqDoSubject(s.stream, subject, prazo)
-	if err != nil {
-		return nil, 0, err
+	// `ultimoJS` é o seq físico da ÚLTIMA MENSAGEM DESTE LOTE, colhido do `$JS.ACK…` de
+	// cada entrega no laço acima — não o do subject.
+	//
+	// A distinção é a correcção inteira: a entrega push é por ordem de log, logo a
+	// última mensagem do lote traz o maior seq do lote, e `ultimoJS+1` é exactamente
+	// onde o lote seguinte tem de arrancar. Pedir `UltimoSeqDoSubject` aqui devolveria o
+	// fim do LOG, e o lote seguinte arrancaria para lá dele.
+	//
+	// O token de CAS continua a ser pedido ao servidor, uma vez só, por
+	// [Store.lerSubject] — e é outra coisa: é a afirmação sobre a qual a próxima ESCRITA
+	// assenta, e essa não pode ser derivada de uma leitura.
+	//
+	// 0 é «não sei»: se ALGUMA mensagem do lote veio sem subject de resposta, o fim do
+	// lote não é conhecido e não se finge que é.
+	if semSeqFisico {
+		return evs, 0, nil
 	}
 	return evs, ultimoJS, nil
+}
+
+// seqDoStreamNaResposta extrai o `stream_seq` do subject de resposta que o JetStream põe
+// em cada mensagem entregue.
+//
+// O formato tem duas versões em uso, e ambas têm de ser aceites: a antiga com 9 tokens
+// (`$JS.ACK.<stream>.<consumidor>.<entregas>.<stream_seq>.<consumidor_seq>.<ts>.<pendentes>`)
+// e a de domínio com 12 (`$JS.ACK.<domínio>.<hash-de-conta>.<stream>.…<aleatório>`).
+// Distinguem-se pela contagem de tokens, que é como o cliente oficial também as separa.
+//
+// Falha fail-closed: uma resposta que não seja um `$JS.ACK` reconhecível não dá 0 nem um
+// palpite. Zero seria «princípio do log», e devolvê-lo faria a janela recomeçar do início
+// para sempre; um palpite serviria um log truncado em silêncio, que este ficheiro declara
+// desde a primeira linha ser o pior desfecho possível.
+func seqDoStreamNaResposta(reply string) (uint64, error) {
+	if reply == "" {
+		return 0, fmt.Errorf("%w: mensagem entregue sem subject de resposta — sem ele não há seq físico por onde avançar a janela",
+			natsjs.ErrProtocol)
+	}
+	t := strings.Split(reply, ".")
+	var bruto string
+	switch len(t) {
+	case 9: // sem domínio
+		bruto = t[5]
+	case 12: // com domínio e hash de conta
+		bruto = t[7]
+	default:
+		return 0, fmt.Errorf("%w: subject de resposta %q tem %d tokens — não é um $JS.ACK de 9 nem de 12",
+			natsjs.ErrProtocol, reply, len(t))
+	}
+	if t[0] != "$JS" || t[1] != "ACK" {
+		return 0, fmt.Errorf("%w: subject de resposta %q não começa por $JS.ACK", natsjs.ErrProtocol, reply)
+	}
+	seq, err := strconv.ParseUint(bruto, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: stream_seq %q ilegível em %q: %v", natsjs.ErrProtocol, bruto, reply, err)
+	}
+	if seq == 0 {
+		return 0, fmt.Errorf("%w: stream_seq 0 em %q — o log do JetStream começa em 1", natsjs.ErrProtocol, reply)
+	}
+	return seq, nil
 }
 
 func (s *Store) hidratar(ctx context.Context, st *estado, subject string, prazo time.Duration) error {
@@ -635,7 +841,8 @@ func (sub *subscricao) Unsubscribe() {
 // A semântica é a do modelo de referência (fanout do que é escrito depois da
 // subscrição), materializada por um consumidor EFÉMERO com deliver_policy "new". Ver os
 // limites no doc do pacote: sem acks, sem flow control, sem heartbeats.
-func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h eventstore.Handler) (eventstore.Subscription, error) {
+func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h eventstore.Handler) (_ eventstore.Subscription, err error) {
+	defer func() { err = indisponibilidadeTransitoria(err) }()
 	s.marcarUsado()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -857,7 +1064,26 @@ var _ eventstore.EventStore = (*Store)(nil)
 // NÃO sonda o cluster: um `Healthy` que faz I/O transforma um health-check num gerador
 // de tráfego e pode ele próprio falhar por timeout. A saúde do cluster observa-se pelas
 // operações reais, que devolvem erro nomeado quando ele não responde.
-func (s *Store) Healthy() bool { return !s.estaFechado() }
+// Healthy é a sonda de PRONTIDÃO do backend replicado.
+//
+// # AOS-350 — OS DOIS BACKENDS PARTILHAVAM O MESMO MODO DE FALHA
+//
+// Era `return !s.estaFechado()` — gémeo exacto do `!s.closed.Load()` do store de
+// referência, e com o mesmo defeito: `estaFechado` só muda em [Store.Close]. Um cliente
+// desligado a reconectar indefinidamente — que devolve [natsjs.ErrDesligado] a TODAS as
+// escritas, sem elas sequer saírem — mantinha isto a `true`, e com ele o `/readyz` a 200,
+// o gauge `aos_eventstore_healthy` a 1 e o SLI `controlPlaneAvailable` a 1.0. O
+// orquestrador de contentores continuava a encaminhar tráfego para um nó que não escreve.
+//
+// A prontidão passa a ser as duas coisas que têm de valer: o store não foi fechado pelo
+// dono, E há socket vivo agora. É um instantâneo — entre este `true` e a escrita seguinte
+// a ligação pode cair —, e é o que uma sonda de prontidão pode honestamente afirmar.
+func (s *Store) Healthy() bool {
+	if s.estaFechado() {
+		return false
+	}
+	return s.cn.Ligada()
+}
 
 // Streams devolve os stream_ids do AOS com pelo menos um evento.
 //

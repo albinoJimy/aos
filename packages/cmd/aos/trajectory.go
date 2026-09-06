@@ -368,8 +368,14 @@ func writeSSEEvent(w io.Writer, ev eventstore.Event) error {
 }
 
 // streamSetupErrorStatus mapeia os erros de setup do stream (Subscribe/Read, ANTES de
-// qualquer header SSE) a um status HTTP. Store fechado ou sem quórum ⇒ 503 (indisponível,
-// possivelmente transitório); o resto ⇒ 500. A mensagem no corpo é uniforme (não-enumerável).
+// qualquer header SSE) a um status HTTP. Store fechado ou substrato indisponível ⇒ 503
+// (possivelmente transitório); o resto ⇒ 500. A mensagem no corpo é uniforme (não-enumerável).
+//
+// AOS-354: o 503 passou a cobrir também o substrato REPLICADO. Antes, um cliente JetStream
+// sem ligação devolvia `natsjs.ErrDesligado`, que não é nenhum destes dois sentinelas e caía
+// no 500 — um erro do SERVIDOR anunciado onde havia uma indisponibilidade retentável do
+// substrato. Não se corrigiu aqui: o backend passou a traduzir para [eventstore.ErrNoQuorum],
+// e este mapa herda-o sem mudar de forma.
 func streamSetupErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, eventstore.ErrClosed), errors.Is(err, eventstore.ErrNoQuorum):

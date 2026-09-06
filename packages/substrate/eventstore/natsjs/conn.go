@@ -613,6 +613,26 @@ func (cn *Conn) reconectar() {
 	}
 }
 
+// Ligada reporta se há SOCKET VIVO neste momento — a mesma condição que faz uma
+// operação devolver [ErrDesligado] sem sequer sair. É a sonda de prontidão do substrato
+// replicado (AOS-350): sem ela, quem compõe este cliente só sabe distinguir «fechado pelo
+// dono» de «tudo bem», e um cliente a reconectar indefinidamente lê-se como saudável.
+//
+// É um INSTANTÂNEO, não uma garantia: entre este `true` e a operação seguinte a ligação
+// pode cair. Serve para uma sonda de prontidão dizer a verdade sobre AGORA, não para
+// substituir o tratamento de erro no caminho de escrita — que continua a ser o único
+// sítio onde a indisponibilidade é decidida.
+func (cn *Conn) Ligada() bool {
+	// Receptor nil é «não há cliente nenhum», que não é ligação viva. Fail-closed, e
+	// alcançável: um [Store] construído sem cliente (só em testes) chega aqui.
+	if cn == nil {
+		return false
+	}
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	return !cn.closed && cn.ligada
+}
+
 func (cn *Conn) closeErr() error {
 	cn.mu.Lock()
 	defer cn.mu.Unlock()

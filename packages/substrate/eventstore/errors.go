@@ -25,9 +25,30 @@ var (
 	// ErrStreamNotFound — read de um stream sem eventos committed.
 	ErrStreamNotFound = &StoreError{Code: "E_STREAM_NOT_FOUND", msg: "stream inexistente"}
 
-	// ErrNoQuorum — réplicas vivas insuficientes para atingir quórum; a escrita é
-	// rejeitada e não deixa rasto (fail-closed).
-	ErrNoQuorum = &StoreError{Code: "E_NO_QUORUM", msg: "replicas vivas insuficientes para quorum"}
+	// ErrNoQuorum — o substrato NÃO ESTÁ DISPONÍVEL NESTE MOMENTO; a escrita é rejeitada
+	// e não deixa rasto (fail-closed).
+	//
+	// # É O SENTINELA CANÓNICO DA PORTA, NÃO UM DETALHE DO STORE DE REFERÊNCIA (AOS-354)
+	//
+	// O nome vem do primeiro produtor — o store de referência, onde a condição é
+	// literalmente «réplicas vivas insuficientes para quórum». O PAPEL que ele desempenha
+	// para quem consome é outro, e é mais largo: «indisponibilidade MOMENTÂNEA do
+	// substrato, que volta sozinha, e sobre a qual se retenta na fronteira seguinte». É
+	// nesse papel que `cmd/aos/progress_wiring.go` o põe na lista fechada de
+	// `burndownTransitorio`, e que `cmd/aos/trajectory.go` o mapeia a HTTP 503.
+	//
+	// Por isso TODAS as implementações da porta o produzem. O backend replicado traduz
+	// [natsjs.ErrDesligado] para aqui (`jetstream.indisponibilidadeTransitoria`),
+	// EMBRULHANDO a causa: `errors.Is` responde `true` aos dois, e a mensagem que o
+	// operador lê nomeia a desligação. Antes de AOS-354 não o fazia, e o resultado era que
+	// a tolerância a N fronteiras consecutivas que `posture_banner.go` promete NUNCA era
+	// armada sobre o substrato que AOS-100 tornou preferencial — um `ErrDesligado` caía em
+	// «cegueira» e matava o run à primeira.
+	//
+	// Uma implementação NOVA da porta tem a mesma obrigação: o que for a sua
+	// indisponibilidade transitória sai por aqui, ou os consumidores tratam-na como
+	// cegueira permanente.
+	ErrNoQuorum = &StoreError{Code: "E_NO_QUORUM", msg: "substrato indisponivel neste momento (sem quorum, ou sem ligacao ao substrato replicado)"}
 
 	// ErrClosed — o store (ou subscrição) já foi fechado.
 	ErrClosed = &StoreError{Code: "E_CLOSED", msg: "event store fechado"}
