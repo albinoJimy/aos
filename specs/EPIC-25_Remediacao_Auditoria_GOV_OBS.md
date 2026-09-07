@@ -285,7 +285,24 @@ Cita `main.go:746,1288`; `:746` está certo, mas `:1288` cai no comentário — 
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-07, PR #242, commit `87f441b`), com **um critério deferido e declarado**.
+`AOS_PRIVILEGED_CAPS` (lista de capabilities) povoa `Config.Privileged` (`cmd/aos`), e
+`NewSecuredRuntime` passa a ESCOLHER o construtor: conjunto eficaz não-vazio ⇒ via ENDURECIDA
+(`NewProductionHardenedTaint`); vazio ⇒ `NewProductionSecure`, arranca inerte como antes. Um banner
+de postura do Reference Monitor consulta `HasActiveTaintGate()` — o único chamador não-teste do
+predicado que AOS-219 exportou. **Retro-compatível por decisão do dono**: a variável ausente OU
+definida-mas-vazia (o idioma `${VAR:-}` e o helper de teste que põe cada `AOS_*` a `""`) deixa o nó
+inerte; só uma lista com ≥1 capability liga a barreira. Provado por `-race` em `cmd/aos` e
+`integration`, `layer-lint`, os dois gates de documentação de env vars, e o smoke `run-aos` 9/9.
+
+**DEFERIDO** (critério do gate «toda regra `permit` traz cláusula de taint» + correcção de
+`allow_fs_read` no bundle Cedar): exige re-assinar o bundle, o que rodaria o *trust anchor* sem a
+chave de assinatura do projecto. Fica para quem a tem; até lá, o banner INERTE nomeia o buraco
+(`allow_fs_read` deixa passar `cap:fs.read` untrusted, e ligar `AOS_PRIVILEGED_CAPS` com
+`cap:fs.read` fecha-o de forma estrutural). Registado no banner e no README, não escondido.
+
+*Nota (2026-09-07): este bloco `### Estado` tinha ficado por actualizar quando o PR #242 fez merge —
+o mecanismo foi entregue, só a spec não o registou. Corrigido à parte do AOS-365.*
 
 ---
 
