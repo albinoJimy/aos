@@ -54,7 +54,7 @@ mecanismo está partido», e «a caixa não está marcada» com «o trabalho nã
 
 ### 1.2 Erros desta auditoria, declarados
 
-Seis, porque escondê-los invalidaria o método.
+Sete, porque escondê-los invalidaria o método.
 
 1. **O HEAD e o ramo mudaram a meio da auditoria e eu não o detectei a tempo.** Fixei o estado auditado em
    `6613e47` / `feature/AOS-128-ux-dx-tests` e escrevi-o como se fosse estável; outra sessão levou o
@@ -87,7 +87,13 @@ Seis, porque escondê-los invalidaria o método.
    e melhorou-o (§2.3), mas não me salva a mim: o viés de quem acusa é mais forte sobre o achado de
    que mais gosta, e o meu método não tinha nada que o apanhasse — foi a redacção dos tickets, feita
    por outra pessoa, que o apanhou.
-6. **Uma medição ficou por fazer e não é substituível por leitura.** O comportamento do `/readyz` com o
+6. **Atribuí um `deny` à causa errada, e a atribuição estava na manchete.** O §2.2 dizia que o
+   `denied_by=dispatch` da tool call untrusted vinha da ausência de um executor de sandbox. Vinha do
+   **registo da tool** (`E_TOOL_NOT_REGISTERED`): com bloco `sandbox` no manifesto e sem executor
+   nenhum, o Reference Monitor já permite (§2.4). Duas condições confundidas numa só frase, e a
+   frase servia de conclusão. Só caiu porque a medição do último salto montou três células em vez
+   das duas que eu tinha pedido — pedir o controlo negativo certo não me ocorreu.
+7. **Uma medição ficou por fazer e não é substituível por leitura.** O comportamento do `/readyz` com o
    WORM montado só-de-leitura *a meio de um run* não foi medido: em Windows um handle já aberto mantém
    acesso de escrita, e forçá-lo exigiria alterar código do repositório. Está declarado como NÃO DECIDIDA,
    não inferido.
@@ -216,8 +222,52 @@ O achado sobrevive com fronteira nítida — quatro pernas, todas verificadas:
 | (c) | A metade AOS-181 foi entregue (AOS-220) sem a metade AOS-183, contra a ordem da `EPIC-18` §5 — e é a DEF-604 que as nomeia juntas, pelo que a violação da ordem estava registada e ninguém reparou |
 | (d) | Medido: `allow_fs_read` não tem a cláusula de taint, e uma tool call untrusted passou todos os hooks |
 
-**Severidade: alta. Alcançável hoje, e medida.** O que separa `cap:fs.read` de um efeito real não é a
-barreira de taint — é a ausência de um executor de sandbox provisionado.
+**Severidade: alta. Alcançável hoje, e medida.**
+
+### 2.4 O último salto, medido — e a atribuição do §2.2 estava errada
+
+O §6.2 declarava por medir o que separava aquela tool call de um efeito real, e dizia que medi-lo
+exigiria o `AOS-103`. **Não exigiu.** Provisionou-se um executor **conformante e descartável** — um
+gravador que fala o contrato de fio de `cmd/aos/gvisorexecutor.go:44-62` e não executa nada — e a
+call chegou lá:
+
+```json
+{"run_id":"gv-e3-fsread-step-000001-tool-1-1","step_id":"",
+ "call":{"tool_id":"ler_ficheiro","command":"read","path":"/etc/hosts"}}
+```
+
+O selo WORM da mesma decisão guarda o taint **dentro** da hash-chain, ao lado do `allow` que a
+permitiu — evidência mais forte do que a do §2.2, onde o taint era inferido do contexto devolvido ao
+modelo:
+
+```json
+"Decision":"allow","Capability":"cap:fs.read","PolicyVersion":"1.0.0",
+"Resource":{"Type":"file","Value":"file:///etc/hosts","Region":"eu"},
+"Context":{"Taint":"untrusted","Reversibility":"reversible"}
+```
+
+E o `stdout` do executor voltou ao contexto do modelo como `<tool_result taint=untrusted>`. Ciclo
+fechado.
+
+**A correcção, que é contra este relatório.** O §2.2 atribuía o `denied_by=dispatch` à ausência de
+executor. É falso, e três células medidas separam as duas condições que ele confundia:
+
+| Bloco `sandbox` no manifesto | `AOS_SANDBOX_GVISOR_URL` | Veredicto do Reference Monitor | Chegou ao executor |
+|---|---|---|---|
+| não | presente | deny `denied_by=dispatch` (`E_TOOL_NOT_REGISTERED`) | não |
+| **sim** | **ausente** | **allow** | não — morre depois, no `Create` do driver |
+| sim | presente | **allow** | **sim** |
+
+O `deny` do §2.2 vinha do **registo da tool**, não do executor. Com bloco `sandbox` e sem executor
+nenhum, o Reference Monitor **já permite**. A cadeia de governação nunca foi a barreira — nem
+sequer parcialmente —, e o que faltava era configuração de operador: dois valores num ficheiro e uma
+variável de ambiente. **O achado central fecha e agrava-se um grau.**
+
+**O que esta medição NÃO prova, e é preciso dizê-lo.** O alvo não é gVisor: é um gravador sem
+`runsc` que não toca no sistema de ficheiros do host. Nada a jusante do POST foi medido — isolamento,
+interposição de syscalls, fuga. A medição vale para «o nó despacha até à fronteira do executor» e
+para mais nada. Confundir as duas coisas seria cometer, aqui, o erro que este relatório acusa o
+sistema de cometer.
 
 **Nota lateral com valor próprio:** a cadeia fail-closed até chegar ao PDP é densa e honesta — exigiu quatro
 correcções sucessivas (NHI, `model:invoke`, allowlist regional, path `/v1`), cada uma com erro atribuível e
@@ -430,6 +480,8 @@ assinatura genuinamente fora do nó.
 | C-06 | A EPIC-17 (Estatuto PROPOSTA) declara aberto (AOS-181 a 0/5, AOS-182 a 1/4) o mesmo trabalho que a EPIC-18 declara entregue — e está entregue, verificado no binário (`bootstrap.go:2379`, `main.go:98`, `api.go:599 sealResidency`) | B/M | hoje |
 | C-07 | O contador do tripwire da Carta §6.6 corre e dá `reaberturas=1`, exit 0 — **não disparado**. Mas três secções do mesmo ficheiro descrevem ainda «código 3» e «4 FIXAs tocadas ⇒ TERIA DISPARADO»; e a definição de «reaberta» que separa 1 de 4 foi fixada a 2026-07-29 **sem a linha datada no §7 da Carta** que o próprio documento exige | M | hoje |
 | C-08 | **O nó desarma sempre o cliente endurecido da única perna de egress paga.** O contrato do gateway é explícito: `model-gateway/production.go:108` — «HTTPClient é opcional. Se nil, o gateway constrói um cliente **ENDURECIDO**» — e `:118` — a allowlist de egress é «**Ignorada quando um HTTPClient é injectado**». O nó injecta um **incondicionalmente** em `cmd/aos/modelgatewaywiring.go:225`, anotado «seam de dev: delega validação de egress», **e não existe ramo não-dev**: a validação de `BaseURL` (https + allowlist) e o SSRF de AOS-223 ficam fora do caminho em qualquer configuração, `AOS_MODE=production` incluída. A classe de risco está declarada (AOS-184); que o nó *desarme activamente* um endurecimento já entregue, e o declare como *seam* de desenvolvimento num binário de produção, não está | **A** | **hoje** |
+| C-09 | **O contrato de fio do executor perde a atribuição run/step.** `cmd/aos/gvisorexecutor.go:53-54` declara os campos `run_id` e `step_id`; a linha 72 preenche `RunID` com o **ID da instância** e **nunca preenche `StepID`**. O `firecrackerexecutor.go:44-45,60` tem o mesmo par. E o ID composto em `substrate/sandbox/driver_gvisor.go:62` é `"gv-"+RunID+"-"+StepID+"-"+seq`, com `-` como delimitador — que aparece dentro das duas partes: de `gv-e3-fsread-step-000001-tool-1-1` não se recupera o par sem ambiguidade. O componente externo, que é quem executa, recebe dois campos cujos nomes não correspondem ao conteúdo — e é o único sítio onde a atribuição por passo faria falta numa investigação | M | hoje (medido) |
+| C-10 | **`ErrDriverUnavailable` manda o operador procurar a coisa errada.** O texto é «sem KVM/host support» (`substrate/sandbox/errors.go:10`, devolvido em `driver_gvisor.go:60`), quando o cabeçalho do próprio `cmd/aos/gvisorexecutor.go:14-17` declara em maiúsculas que o gVisor **não precisa de KVM** — é a razão de o driver existir num host sem virtualização aninhada. Quem provisiona vai procurar `/dev/kvm` quando lhe falta uma variável de ambiente | B | hoje (medido) |
 
 **O que caiu, e é importante que tenha caído.** «Span e audit não partilham chave de correlação»:
 **refutada** na forma forte — `otel-genai/semconv.go:44-47` define `aos.run_id` e `aos.step_id`, e
@@ -524,6 +576,9 @@ Priorizada por *alcançável hoje × severidade*. Não abre tickets — nomeia o
 - Nó real levantado e conduzido: `driver.sh smoke` 9/9, e **30 corridas** inspeccionadas no WORM e no WAL.
 - H49, H51, H52, H59 e H60 foram **executadas** em cópias isoladas fora da árvore; `git status --short` em
   `C:\Jimy\AOS` ficou sem alterações dos refutadores.
+- **§2.4 — o último salto foi medido** com um executor conformante descartável, em três células
+  (com bloco `sandbox` e executor; com bloco e sem executor; sem bloco e com executor), o que
+  corrigiu a atribuição do `deny` do §2.2. `git status` no repositório ficou sem alterações.
 - **§2.2 — o nó foi levantado com um bundle de política real carregado**, nas duas configurações (com e sem
   bundle), com os banners capturados por inteiro e **três decisões de mediação reais** obtidas e seladas no
   WORM. Enumeradas as 102 variáveis `AOS_*` que o binário lê. O bundle usado foi sempre uma cópia fora da
@@ -546,8 +601,12 @@ Priorizada por *alcançável hoje × severidade*. Não abre tickets — nomeia o
   derivadas do serializador lido por inteiro, não de captura de wire.
 - **Nada foi corrido contra um provider de modelo real.** As três decisões de mediação de §2.2 usaram um
   gateway OpenAI-compatible construído fora da árvore. O caminho é o do nó; o interlocutor não é.
-- **Não foi provisionado um executor de sandbox.** É o que separou `cap:fs.read` de um efeito real; medir
-  esse último salto exige `AOS-103` e fica por fazer.
+- **Nada a jusante do POST ao executor foi medido** — isolamento, `runsc`, interposição de syscalls.
+  O alvo do §2.4 é um gravador conformante, não gVisor. Medir o isolamento real continua a exigir um
+  host Linux com o componente `deploy/server/gvisor/` provisionado.
+- **Não foi exercida uma tool `cap:http.post` com bloco `sandbox`.** É a célula que mostraria se a
+  fronteira continua *governada* depois de alcançável, e não só alcançável. Nem a postura
+  `AOS_MODE=production`, que muda a eleição do driver.
 - **`ux-dx.sh`, `package.sh` e `evalgate.sh` não foram corridos** (docker / `-race` multi-módulo); nesses,
   leu-se o script e o workflow.
 - Fora de âmbito por desenho: `platform/memory`, `platform/registry`, `platform/broker`,
