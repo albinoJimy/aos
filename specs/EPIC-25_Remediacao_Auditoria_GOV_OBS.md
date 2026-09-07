@@ -52,7 +52,12 @@ fora do plano de remediação**, e vários menores ficaram sem menção.
 | O registry e a supply-chain auditam para um armazém descartável | §3.6, O-14 | Agrupado na linha genérica «lacunas de cobertura do trilho», que a §5 não desdobrou |
 | Dois gates bloqueantes que passam por razões erradas | §3.7, C-05 | A §5 nomeou os gates no P2 como «veracidade documental», que é a categoria errada — não é o documento que mente, é o gate que não verifica |
 
-Entram como **AOS-381** e **AOS-382**. O segundo é o mais incómodo dos dois: um *required check* cujo
+Entram como **AOS-381** e **AOS-382**.
+
+**Adenda (medição posterior).** A medição do último salto (`analises/13` §2.4), feita depois deste
+epic ser escrito, produziu mais dois defeitos confirmados no contrato com o executor de sandbox.
+Entram como **AOS-383** e **AOS-384**. Ambos foram encontrados a instrumentar o caminho, não a
+lê-lo — é o terceiro sítio nesta execução em que exercitar produziu o que a leitura não deu. O segundo é o mais incómodo dos dois: um *required check* cujo
 output real é `0 declaracao(oes) verificada(s)` está a comprar confiança que não produz.
 
 Um plano de remediação que deixa cair achados confirmados repete, em miniatura, o defeito que a
@@ -64,7 +69,7 @@ auditoria fecha. A omissão foi da §5, não da análise.
 |---|---|---|
 | **P0** | AOS-363, AOS-364, AOS-365, AOS-366, AOS-367 | Uma barreira estrutural de segurança inerte sem forma de a ligar, e cujo estado o nó não declara; um trilho de auditoria que apaga registos válidos em silêncio; a única configuração de produção que arranca ser a insegura; a perna de egress paga com o endurecimento activamente desarmado; e um token de leitura que autoriza apagamento irreversível |
 | **P1** | AOS-368, AOS-369, AOS-370, AOS-371, AOS-372, AOS-373 | A evidência existe mas não serve para investigar: traces não atribuíveis, mediação sem contadores, fuga de payload para o backend, instrumentação morta, e duas ferramentas de leitura que podem destruir aquilo que leem |
-| **P2** | AOS-374, AOS-375, AOS-376, AOS-377, AOS-378, AOS-379, AOS-381, AOS-382 | Declarações de cobertura que não se sustentam, o caminho de mediação não exercitado por teste de sistema nenhum, endurecimento de guardas, e gates que passam por razões erradas |
+| **P2** | AOS-374, AOS-375, AOS-376, AOS-377, AOS-378, AOS-379, AOS-381, AOS-382, AOS-383, AOS-384 | Declarações de cobertura que não se sustentam, o caminho de mediação não exercitado por teste de sistema nenhum, endurecimento de guardas, e gates que passam por razões erradas |
 | **Decisão** | AOS-380 | Não é engenharia: é decidir se a escada L0–L5 passa a ter base normativa ou se se aceita por escrito que a conformidade contra ela não é mensurável |
 
 ### 0.3 Tabela-resumo
@@ -91,6 +96,8 @@ auditoria fecha. A omissão foi da §5, não da análise.
 | AOS-380 | A escada L0–L5 não tem base normativa e a conformidade contra ela não é mensurável | Decisão | governação | Leitura verificada |
 | AOS-381 | Registry e supply-chain selam para um armazém volátil que ninguém lê | P2 | **nó** | Leitura verificada |
 | AOS-382 | Dois gates bloqueantes passam por razões erradas: um verifica zero declarações, o outro perdoa 10 de 16 | P2 | CI | **Executado** (com mutação) |
+| AOS-383 | O contrato de fio do executor declara `run_id` e `step_id` e não transporta nenhum dos dois | P2 | **nó** (com sandbox) | **Executado** |
+| AOS-384 | `ErrDriverUnavailable` manda procurar `/dev/kvm` a quem só lhe falta uma variável | P2 | **nó** (com sandbox) | **Executado** |
 
 ### 0.4 Paralelismo — o que pode e o que não pode correr junto
 
@@ -140,9 +147,12 @@ de origem herdam-se três limites que condicionam os critérios de aceitação:
 - **Nenhuma medição correu contra um provider de modelo real.** As três decisões de mediação que
   sustentam AOS-363 usaram um gateway OpenAI-compatible construído fora da árvore. O caminho é o do
   nó; o interlocutor não é.
-- **Não foi provisionado um executor de sandbox.** Foi só isso que separou a tool call `cap:fs.read`
-  com taint não-confiável de um efeito real. Fechar AOS-363 sem esse provisionamento deixa o último
-  salto por medir, e o critério correspondente diz-o.
+- **O último salto FOI medido depois de este epic ser escrito** (`analises/13` §2.4), com um executor
+  conformante descartável: a tool call `cap:fs.read` com taint não-confiável **chega ao executor**, e
+  o selo WORM guarda o taint ao lado do `allow`. A medição corrigiu a atribuição: o `denied_by=dispatch`
+  do §2.2 vinha do **registo da tool** (`E_TOOL_NOT_REGISTERED`), não do executor — com bloco `sandbox`
+  no manifesto e sem executor nenhum, o Reference Monitor já permite. **Fica por medir** tudo a jusante
+  do POST (isolamento real, `runsc`), que exige um host Linux com `deploy/server/gvisor/` provisionado.
 - **A retoma HTTP ponta-a-ponta de AOS-372 não foi medida** — exige um Model Gateway real sob a
   build-tag `aoslive`. A assimetria foi medida ao nível dos pacotes.
 
@@ -212,8 +222,9 @@ decisões de mediação reais com `taint=untrusted`:
 
 Com o TaintGate inerte, a única aplicação de taint que resta é uma cláusula opcional dentro do texto
 da política. A defesa estrutural, que por desenho vale para todas as regras, foi substituída por uma
-disciplina de escrita de política que nada verifica. O que separou `cap:fs.read` de um efeito real
-não foi a barreira: foi a ausência de um executor de sandbox provisionado.
+disciplina de escrita de política que nada verifica. E a cadeia de governação **não é** a barreira:
+medido em `analises/13` §2.4, com bloco `sandbox` no manifesto o Reference Monitor permite a call
+untrusted mesmo sem executor nenhum, e com executor ela chega lá.
 
 **Duas ressalvas que reduzem o alcance sem eliminar o defeito.** O catálogo de tools tem default
 vazio, pelo que a mediação só acontece quando o deployment o preenche; e a política committada cobre
@@ -1353,8 +1364,9 @@ está inerte sem que nada o diga.
 `principal.authority.contains("cap:fs.read")`; a regra vizinha `allow_http_post` (`:24-34`) traz
 `context.taint != "untrusted"`. Medido ao vivo: `cap:http.post` com `taint=untrusted` sai
 `denied_by=policy`; `cap:fs.read` com `taint=untrusted` sai `denied_by=dispatch` — **todos os hooks
-permitiram**, PDP e TaintGate incluídos, e o que separou aquilo de um efeito real foi a ausência de um
-executor de sandbox provisionado, não a barreira de taint.
+permitiram**, PDP e TaintGate incluídos. Medido depois (`analises/13` §2.4): esse `deny` vinha do
+**registo da tool**, não do executor; com bloco `sandbox` no manifesto o Reference Monitor permite, e
+com executor provisionado a call **chega lá**.
 
 Nenhum gate vê isto. `scripts/ci/policy-test.sh` exige oito testes por nome (`:27-29`) e nenhum
 inspecciona o **texto** da política.
@@ -2114,3 +2126,83 @@ sessão, via as variáveis de ambiente que os próprios gates expõem para self-
 | `integration`: 10 de 16 ausentes, todos `owner=AOS-196`, verde (`C-05`) | Confirmada na íntegra; exit 0 medido |
 | «AOS-196, ticket de higiene documental já fechado» (`C-05`) | Confirmada em substância (cinco critérios `[x]`, commit `d33c0ff`), com a ressalva de que `EPIC-18` não tem secções `### Estado`, pelo que a máquina resolve o estado para indeterminado |
 
+
+## AOS-383 — O contrato de fio do executor de sandbox declara `run_id` e `step_id` e não transporta nenhum dos dois
+
+### Contexto
+
+O nó delega a execução de uma tool call sandboxed num componente host-side externo, por HTTP. O
+contrato de fio está declarado em `packages/cmd/aos/gvisorexecutor.go:44-56` e tem dois campos de
+atribuição: `run_id` e `step_id`. Nenhum é preenchido com o que o nome diz.
+
+`gvisorexecutor.go:72` preenche `RunID: inst.ID` — o identificador da **instância de sandbox**, não
+do run — e **nunca preenche `StepID`**, que viaja sempre vazio. O `firecrackerexecutor.go:44-45,60`
+repete o par exactamente.
+
+O identificador da instância é construído em `packages/substrate/sandbox/driver_gvisor.go:62` como
+`"gv-" + RunID + "-" + StepID + "-" + seq`. O delimitador é `-`, e `-` aparece **dentro** das duas
+partes: um `RunID` `e3-fsread` com `StepID` `step-000001-tool-1` produz
+`gv-e3-fsread-step-000001-tool-1-1`, de onde o par original não se recupera sem ambiguidade. O
+componente que executa recebe, portanto, um campo mal-nomeado e outro vazio.
+
+**Porque importa, e não é cosmético.** O componente externo é o único ponto do sistema onde a
+execução acontece de facto, e é o primeiro sítio a que um investigador de incidente vai. Medido em
+`analises/13` §2.4: o pedido chega ao executor com `"step_id":""`. Correlacionar o que o componente
+executou com a decisão que o autorizou depende de desfazer à mão um identificador ambíguo.
+
+**Porque sobreviveu.** Os campos existem e o JSON valida; nenhum teste asserta o *conteúdo* deles, e
+o componente de referência não os usa. Um contrato cujos campos ninguém lê não falha — envelhece.
+
+### Critérios de Aceitação
+
+- [ ] `run_id` transporta o identificador do run e `step_id` o identificador do passo, ambos como
+      valores próprios, em `gvisorexecutor.go` e `firecrackerexecutor.go`
+- [ ] Um teste que asserta o **conteúdo** dos dois campos no corpo enviado, e não só a sua presença
+- [ ] Controlo negativo: com os campos preenchidos à moda antiga (`inst.ID` em `run_id`, `step_id`
+      vazio), o teste novo avermelha
+- [ ] A ambiguidade do identificador de instância é fechada ou declarada: ou o delimitador deixa de
+      poder ocorrer nas partes, ou `driver_gvisor.go:62` documenta que o ID não é decomponível e
+      nomeia o que o substitui na correlação
+
+### Estado
+
+**POR IMPLEMENTAR.**
+
+---
+
+## AOS-384 — `ErrDriverUnavailable` manda procurar `/dev/kvm` a quem só lhe falta uma variável de ambiente
+
+### Contexto
+
+`packages/substrate/sandbox/errors.go:10` define `ErrDriverUnavailable` com o texto «sem KVM/host
+support», e `driver_gvisor.go:60` devolve-o quando o driver gVisor não tem executor injectado.
+
+O cabeçalho de `packages/cmd/aos/gvisorexecutor.go:14-17` declara, em maiúsculas, o contrário: o
+gVisor **não exige `/dev/kvm`** — interpõe syscalls em user-space, e é por isso a única fronteira ao
+nível do kernel disponível num host que seja ele próprio um convidado sem virtualização aninhada. É
+a razão de o driver existir.
+
+A condição real que produz o erro é a ausência de `AOS_SANDBOX_GVISOR_URL`. O operador que a leia vai
+diagnosticar o host — procurar `/dev/kvm`, verificar virtualização aninhada, mudar de máquina — quando
+lhe falta uma linha de configuração que o `deploy/server/README.md:149` documenta.
+
+**Porque importa.** É o erro que separa um nó com sandbox provisionada de um nó sem ela, e o
+`ErrProductionNeedsSandboxDriver` (`cmd/aos/main.go:314`) trata essa fronteira como crítica de
+segurança. Uma mensagem que aponta para a causa errada nesse ponto custa tempo exactamente quando
+alguém está a tentar fechar a fronteira.
+
+**Porque sobreviveu.** O texto foi escrito para o Firecracker, onde é verdadeiro, e o driver gVisor
+reutilizou o mesmo erro. Nenhum teste asserta mensagens de erro por conteúdo.
+
+### Critérios de Aceitação
+
+- [ ] O erro devolvido pelo driver gVisor sem executor nomeia a variável em falta
+      (`AOS_SANDBOX_GVISOR_URL`) e não menciona KVM
+- [ ] O erro do driver Firecracker continua a nomear KVM, que é verdadeiro para ele — os dois casos
+      deixam de partilhar um texto que só serve um
+- [ ] Um teste que asserta o conteúdo de cada uma das duas mensagens, com controlo negativo que
+      avermelha se voltarem a ser o mesmo texto
+
+### Estado
+
+**POR IMPLEMENTAR.**
