@@ -151,11 +151,11 @@ de origem herdam-se três limites que condicionam os critérios de aceitação:
   conformante descartável: a tool call `cap:fs.read` com taint não-confiável **chega ao executor**, e
   o selo WORM guarda o taint ao lado do `allow`. A medição corrigiu a atribuição: o `denied_by=dispatch`
   do §2.2 vinha do **registo da tool** (`E_TOOL_NOT_REGISTERED`), não do executor — com bloco `sandbox`
-  no manifesto e sem executor nenhum, o Reference Monitor já permite. **Fica por medir** tudo a jusante
-  do POST (isolamento real, `runsc`). O componente **já está provisionado e saudável** desde
-  2026-08-15 (`aos-gvisor-1`, `runsc release-20260810.0`, verificado por inspecção); o que falta é um
-  host **descartável** onde correr os casos de contenção, porque o único onde ele corre é o
-  deployment vivo.
+  no manifesto e sem executor nenhum, o Reference Monitor já permite. **E o isolamento a jusante do
+  POST foi medido** (`analises/13` §2.5): componente gVisor real num Docker descartável, guest de
+  diagnóstico, `/proc/version` a confirmar o `runsc` — todos os casos de contenção contidos, nenhuma
+  fuga. Fica por correr só o bloco de esgotamento de recursos e o gVisor sobre virtualização real.
+  Nenhum dos dois é código do nó, e nenhum condiciona os tickets deste epic.
 - **A retoma HTTP ponta-a-ponta de AOS-372 não foi medida** — exige um Model Gateway real sob a
   build-tag `aoslive`. A assimetria foi medida ao nível dos pacotes.
 
