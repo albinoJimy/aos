@@ -85,7 +85,7 @@ func abreComFsyncFalhado(t *testing.T, path string, apos int, falharTruncate boo
 
 func registosNoFicheiro(t *testing.T, path string) []Event {
 	t.Helper()
-	evs, _, _, err := replayWAL(path)
+	evs, _, _, _, err := replayWAL(path)
 	if err != nil {
 		t.Fatalf("replayWAL(%q): %v", path, err)
 	}

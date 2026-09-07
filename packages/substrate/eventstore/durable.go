@@ -515,19 +515,21 @@ func (w *wal) close() error {
 // AOS-346: a contagem é feita por RESSINCRONIZAÇÃO do enquadramento, e é feita SEMPRE —
 // já não depende de o leitor ter ficado numa fronteira, que era a suposição que um `len`
 // corrompido invalidava sem que nada o denunciasse.
-func replayWAL(path string) (_ []Event, validEnd int64, orfaos int, _ error) {
+// AOS-385: conclusivo==false quando a ressincronização esgotou o orçamento de trabalho
+// ([ressincOrcamentoBytes]) sem decidir — [abrir] trata-o como DANO (recusa), não cauda.
+func replayWAL(path string) (_ []Event, validEnd int64, orfaos int, conclusivo bool, _ error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, 0, 0, nil
+			return nil, 0, 0, true, nil
 		}
-		return nil, 0, 0, err
+		return nil, 0, 0, false, err
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, false, err
 	}
 	fim := fi.Size()
 
@@ -548,8 +550,8 @@ func replayWAL(path string) (_ []Event, validEnd int64, orfaos int, _ error) {
 	// validEnd é agora o offset onde COMEÇA o registo que fez parar o replay. Contar o
 	// que existe depois dele é a única pergunta cuja resposta muda o remédio, e é feita
 	// por RESSINCRONIZAÇÃO — não pela posição em que o leitor ficou. Ver [contaOrfaos].
-	orfaos = contaOrfaos(f, validEnd, fim)
-	return out, validEnd, orfaos, nil
+	orfaos, conclusivo = contaOrfaos(f, validEnd, fim)
+	return out, validEnd, orfaos, conclusivo, nil
 }
 
 // leRegisto lê UM registo framed do WAL a partir da posição corrente do leitor.
@@ -593,9 +595,31 @@ func leRegisto(r *bufio.Reader) (payload []byte, ok bool) {
 // [os.File.ReadAt], fora da janela.
 const janelaDeRessincronizacao = 64 << 10
 
+// ressincOrcamentoBytes limita o trabalho (bytes lidos+CRC) que a ressincronização pode
+// gastar a procurar a fronteira do registo seguinte (AOS-385). Sem este tecto o varrimento
+// byte-a-byte é O(n²) sobre a janela de [maxRecordBytes] (64 MiB): cada offset plausível
+// custa uma leitura e um crc32 de `tam` bytes, e um adversário com escrita no WAL fabrica
+// PADDING após uma quebra de comprimento onde quase todos os offsets são candidatos de
+// `tam` grande — prendendo o arranque do Event Store minutos-a-horas em vez de o fazer
+// recusar depressa (o mesmo DoS que AOS-364 fechou no WORM de auditoria irmão; medido lá
+// na versão gémea: WAL de 1 MiB → ~10 s, 2 MiB → não termina em 300 s).
+//
+// O tecto é FAIL-CLOSED: esgotá-lo sem decidir se há frames íntegros a seguir devolve
+// «inconclusivo», que [abrir] trata como DANO (recusa) — NUNCA como cauda rasgada
+// (truncar). É seguro porque uma cauda rasgada legítima tem janela pequena (a quebra está
+// no fim do ficheiro, os bytes a seguir não chegam para um registo) e nunca atinge o
+// tecto; só o dano interior real ou o abuso o atingem, e aí recusar é o remédio correcto.
+// 256 MiB ⇒ arranque limitado a fracção de segundo mesmo no pior caso.
+const ressincOrcamentoBytes = 256 << 20
+
 // contaOrfaos conta os registos ÍNTEGROS que existem DEPOIS do ponto de quebra. É o que
 // distingue «cauda rasgada» (zero) de «corrupção a meio» (mais que zero) — a única
 // pergunta cuja resposta muda o remédio.
+//
+// Devolve (contagem, conclusivo). conclusivo==false ⇒ a ressincronização esgotou o
+// orçamento [ressincOrcamentoBytes] antes de decidir se há frames íntegros a seguir; o
+// chamador ([abrir]) trata isso como DANO (recusa fail-closed), nunca como cauda rasgada.
+// Ver AOS-385 (porte do orçamento a partir do WORM de auditoria irmão, AOS-364).
 //
 // # AOS-346 — PORQUE NÃO SE PODE CONTINUAR DE ONDE O LEITOR FICOU
 //
@@ -628,21 +652,24 @@ const janelaDeRessincronizacao = 64 << 10
 // dos bytes que restam, é indistinguível de um write rasgado sem um checksum do
 // cabeçalho verificável de forma independente (o que seria mudança de formato). Cai no
 // mesmo lado que [TestDurable_CorrupcaoNoULTIMORegistoEhCauda] já fixa: trunca.
-func contaOrfaos(f *os.File, quebra, fim int64) int {
-	inicio, ok := ressincroniza(f, quebra+1, fim)
+func contaOrfaos(f *os.File, quebra, fim int64) (orfaos int, conclusivo bool) {
+	inicio, ok, esgotou := ressincroniza(f, quebra+1, fim)
+	if esgotou {
+		return 0, false // inconclusivo ⇒ o chamador recusa (fail-closed)
+	}
 	if !ok {
-		return 0
+		return 0, true // varreu toda a janela sem achar fronteira ⇒ nada íntegro a seguir (cauda)
 	}
 	r := bufio.NewReader(io.NewSectionReader(f, inicio, fim-inicio))
 	n := 0
 	for {
 		payload, ok := leRegisto(r)
 		if !ok {
-			return n
+			return n, true
 		}
 		var ev Event
 		if err := json.Unmarshal(payload, &ev); err != nil {
-			return n
+			return n, true
 		}
 		n++
 	}
@@ -659,7 +686,13 @@ func contaOrfaos(f *os.File, quebra, fim int64) int {
 // Falso positivo exige que quatro bytes arbitrários formem um comprimento plausível, que
 // os `len` bytes seguintes tenham um crc32 que bata com os quatro a seguir, e que o
 // resultado desserialize num Event. É desprezável, e erra para o lado fail-closed.
-func ressincroniza(f *os.File, depois, fim int64) (int64, bool) {
+//
+// Devolve (offset, encontrado, esgotou). encontrado==true ⇒ há uma fronteira válida em
+// offset. encontrado==false && esgotou==false ⇒ varreu toda a janela e não há fronteira
+// (nada íntegro a seguir). esgotou==true ⇒ o orçamento [ressincOrcamentoBytes] acabou
+// antes de decidir ⇒ o chamador trata como DANO (fail-closed), nunca como cauda. Ver
+// AOS-385.
+func ressincroniza(f *os.File, depois, fim int64) (offset int64, encontrado bool, esgotou bool) {
 	if depois < 0 {
 		depois = 0
 	}
@@ -669,19 +702,27 @@ func ressincroniza(f *os.File, depois, fim int64) (int64, bool) {
 	}
 	buf := make([]byte, janelaDeRessincronizacao)
 	var rec []byte
+	var gasto int64 // bytes lidos+CRC gastos a testar candidatos; tecto FAIL-CLOSED (AOS-385)
 	for base := depois; base < limite; {
 		n, err := f.ReadAt(buf, base)
 		if n < 4 {
-			return 0, false
+			return 0, false, false
 		}
 		for i := 0; i+4 <= n; i++ {
 			off := base + int64(i)
 			if off >= limite {
-				return 0, false
+				return 0, false, false
 			}
 			tam := int64(binary.BigEndian.Uint32(buf[i : i+4]))
 			if tam == 0 || tam > maxRecordBytes || off+4+tam+4 > fim {
 				continue
+			}
+			// Cada candidato plausível custa uma leitura + um CRC de `tam` bytes. Sobre
+			// padding adversarial há muitos candidatos de `tam` grande; o orçamento impede
+			// o O(n²) de prender o arranque (AOS-385). Contabiliza-se ANTES do trabalho pesado.
+			gasto += tam
+			if gasto > ressincOrcamentoBytes {
+				return 0, false, true // esgotado ⇒ inconclusivo ⇒ fail-closed
 			}
 			if int64(cap(rec)) < tam+4 {
 				rec = make([]byte, tam+4)
@@ -697,16 +738,16 @@ func ressincroniza(f *os.File, depois, fim int64) (int64, bool) {
 			if json.Unmarshal(cand[:tam], &ev) != nil {
 				continue
 			}
-			return off, true
+			return off, true, false
 		}
 		if err != nil {
-			return 0, false // fim do ficheiro alcançado sem encontrar fronteira
+			return 0, false, false // fim do ficheiro alcançado sem encontrar fronteira
 		}
 		// Sobreposição de 3 bytes: um cabeçalho a cavalo da fronteira da janela tem de
 		// ser visto na janela seguinte.
 		base += int64(n) - 3
 	}
-	return 0, false
+	return 0, false, false
 }
 
 // Open cria OU reabre um Event Store DURÁVEL respaldado pelo WAL em path. No
@@ -755,7 +796,7 @@ func OpenReadOnly(path string, opts ...Option) (*Store, error) {
 }
 
 func abrir(path string, soLeitura bool, opts ...Option) (*Store, error) {
-	events, validEnd, orfaos, err := replayWAL(path)
+	events, validEnd, orfaos, conclusivo, err := replayWAL(path)
 	if err != nil {
 		return nil, fmt.Errorf("eventstore: replay do WAL %q: %w", path, err)
 	}
@@ -770,7 +811,23 @@ func abrir(path string, soLeitura bool, opts ...Option) (*Store, error) {
 	//
 	// Fail-closed: com registos íntegros a seguir ao ponto de quebra, o Open RECUSA.
 	// Um nó que não arranca é um problema visível; um log que encolheu em silêncio não é.
-	if orfaos > 0 && !walTruncaCorrompido(opts) {
+	//
+	// AOS-385: a ressincronização INCONCLUSIVA (orçamento esgotado) cai do MESMO lado —
+	// dano, não cauda. Sem isto, um adversário com escrita no WAL fabricava padding após
+	// uma quebra de comprimento e (a) prendia o arranque com o varrimento O(n²), agora
+	// travado pelo orçamento, e (b) se o varrimento não achasse fronteira, o Open concluía
+	// «cauda rasgada» e truncava. Esgotar o orçamento é NÃO SABER se há dano — e não saber
+	// resolve-se recusando, nunca apagando.
+	danoOuInconclusivo := orfaos > 0 || !conclusivo
+	if danoOuInconclusivo && !walTruncaCorrompido(opts) {
+		if !conclusivo {
+			return nil, fmt.Errorf(
+				"eventstore: WAL %q: %w — quebra ao byte %d, ressincronizacao INCONCLUSIVA "+
+					"(orcamento de %d bytes esgotado a procurar a fronteira seguinte) — recusado por "+
+					"seguranca, truncar aqui poderia apagar registos integros. Restaure de uma copia de "+
+					"seguranca, ou — se decidir DELIBERADAMENTE perder o troco — reabra com WithWALTruncateOnCorruption()",
+				path, ErrWALCorruptedMidLog, validEnd, int64(ressincOrcamentoBytes))
+		}
 		return nil, fmt.Errorf(
 			"eventstore: WAL %q: %w — quebra ao byte %d, com %d registo(s) integro(s) depois dela; "+
 				"truncar aqui apagaria esses registos. Restaure de uma copia de seguranca, ou "+
