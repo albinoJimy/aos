@@ -7,11 +7,15 @@ package main
 // (go:embed, trust anchor pinado), keypool, routing de failover, metering/pricing e o endurecimento
 // SSRF — tudo o que um cliente à parte não teria.
 //
-// EGRESS EM DEV: injecta-se um [http.Client] simples, o que faz o gateway DELEGAR a validação de
-// BaseURL nesse transporte (o mesmo seam que os testes de integração usam para apontar a um
-// httptest). Assim o nó fala com o OmniRoute em http na rede interna sem o bloqueio https+allowlist
-// do caminho de egress real. Em produção remove-se o HTTPClient e usa-se BaseURL https +
-// AllowedEgressHosts (o SSRF fail-closed de AOS-223 volta a valer).
+// EGRESS (AOS-366). FORA de produção injecta-se um [http.Client] simples, o que faz o gateway
+// DELEGAR a validação de BaseURL nesse transporte (o mesmo seam que os testes de integração usam
+// para apontar a um httptest em http na rede interna, sem o bloqueio https+allowlist do egress
+// real). SOB AOS_MODE=production o HTTPClient fica NIL e preenche-se AllowedEgressHosts: o gateway
+// constrói o cliente ENDURECIDO e o SSRF fail-closed de AOS-223 (https + allowlist com a porta na
+// chave + re-validação de CADA salto de redirect) volta a valer na única perna de egress paga do
+// nó. A allowlist vem de AOS_MODEL_EGRESS_HOSTS (CSV) ou, na sua ausência, do host de
+// AOS_MODEL_ENDPOINT — ver [egressAllowlistFromEnv]. A postura chega por PARÂMETRO (`production`),
+// não por leitura de ambiente aqui: a decisão de modo é UMA só, tomada em [nodeConfigFromEnv].
 //
 // ZERO-DEP preservado: o model-gateway já está no grafo do nó (replace local) e não traz nenhuma
 // dependência EXTERNA além do que o nó já tem.
@@ -175,7 +179,7 @@ func (nodeModelAuthority) ClassAuthority(context.Context, string) ([]string, err
 // (model, region) deste nó, e é o que faz o canal de custo transportar um número derivado
 // em vez de zero. nil ⇒ sem contabilidade (zero DECLARADO no banner, nunca um preço
 // inventado) — ver model_pricing_env.go.
-func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder) (agentruntime.ModelClient, error) {
+func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string) (agentruntime.ModelClient, error) {
 	// CUTOVER DURO: sem seam de identidade não há gateway. O estágio authn REAL substitui o
 	// antigo stub (nodeModelAuthn) que forjava o principal e devolvia allow incondicional.
 	if verifier == nil {
@@ -219,10 +223,9 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 	// wiring não preenche `Routing` de todo: o binário do nó roteia SÓ pelo failover. O refino
 	// existe, está composto e provado no módulo do GW — o que falta é a declaração por
 	// deployment, que é decisão de quem opera, não do nó.
-	gw, err := modelgateway.NewProduction(context.Background(), modelgateway.ProductionConfig{
+	gwCfg := modelgateway.ProductionConfig{
 		Provider:      "openai",
 		BaseURL:       base,
-		HTTPClient:    &http.Client{Timeout: 60 * time.Second}, // seam de dev: delega validação de egress
 		DefaultRegion: region,
 		Audit:         govAudit, // audit de governação do GW (activação da allowlist + decisões) — durável via AOS_MODEL_AUDIT_PATH (AOS-265)
 		Credentials:   staticModelCredential{secret: secret},
@@ -254,9 +257,23 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 		// projecta-o no turno (span + evento durável que o burn-down lê). nil ⇒ o canal
 		// existe e transporta zero — ausência de preço para este par, declarada no banner.
 		Cost: costRec,
-	})
+	}
+	// EGRESS (AOS-366) — deixar o HTTPClient nil é o que ARMA o caminho endurecido do gateway:
+	// `newProviderAdapter` só corre `validateEgressURL` (https + allowlist) e constrói o transporte
+	// com timeout de 30 s, limite de redirects e re-validação de cada salto quando `client == nil`
+	// (production.go). Sob produção passa-se a allowlist e não o cliente; fora dela injecta-se o
+	// `http.Client` simples — o seam que os testes de integração/httptest usam —, inalterado.
+	if production {
+		gwCfg.AllowedEgressHosts = egressHosts
+	} else {
+		gwCfg.HTTPClient = &http.Client{Timeout: 60 * time.Second} // seam de dev: delega validação de egress
+	}
+	gw, err := modelgateway.NewProduction(context.Background(), gwCfg)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrBadModelConfig, err)
+		// Duplo %w (AOS-366): a recusa de egress endurecido (ErrInsecureBaseURL / ErrHostNotAllowed
+		// de validateEgressURL) tem de PROPAGAR a sua identidade até quem compõe a config, para que
+		// o gate de arranque a possa distinguir com errors.Is — e não só ErrBadModelConfig.
+		return nil, fmt.Errorf("%w: %w", ErrBadModelConfig, err)
 	}
 	// IDENTIDADE POR-RUN (AOS-278, CUTOVER DURO). WithPrincipalFromContext SOURCE o token
 	// NHI do RUN do ctx por-chamada (Goal.Credential, anexado ao runCtx em service.go) —

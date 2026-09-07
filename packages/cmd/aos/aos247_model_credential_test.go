@@ -124,7 +124,12 @@ func TestAOS247_ProducaoSemCredencialAborta(t *testing.T) {
 // TestAOS247_ProducaoComCredencialArranca é a metade que impede a remediação de degenerar em
 // "recusar sempre": com a credencial montada, a produção compõe o gateway normalmente.
 func TestAOS247_ProducaoComCredencialArranca(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	// AOS-366: em produção o egress passou a exigir https (o caminho endurecido de AOS-223), pelo
+	// que este teste usa NewTLSServer em vez de NewServer. A composição só VALIDA o BaseURL (https +
+	// allowlist) — não dispara request —, logo basta o URL https e a allowlist derivada do próprio
+	// host; não é preciso confiar no cert self-signed. O que este teste continua a provar é a
+	// metade positiva de AOS-247: com a credencial montada, a produção compõe o gateway.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	defer srv.Close()
 	dir := aos247ProdEnvBase(t, srv.URL)
 	caminho, _ := aos247EscreverCredencial(t, dir)
