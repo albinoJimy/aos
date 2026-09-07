@@ -54,9 +54,12 @@ func TestRunProductionWithTrustAnchorSucceeds(t *testing.T) {
 	t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp-soberania.example")
 	t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
 	// AOS-300: a produção exige Event Store DURÁVEL, incondicionalmente — sem ele a revogação
-	// de NHI não sobrevive a um restart. É a última coluna de postura que este arranque tem de
-	// satisfazer para chegar ao que o teste mede: o banner de identidade.
+	// de NHI não sobrevive a um restart.
 	t.Setenv("AOS_EVENTSTORE_PATH", filepath.Join(t.TempDir(), "events.wal"))
+	// AOS-365: e o TRILHO WORM durável, que arrasta a KEK durável e a postura de destruição. São
+	// as colunas de durabilidade que este arranque tem de satisfazer para chegar ao que o teste
+	// mede: o banner de identidade.
+	fixarSubstratoDuravelDeProducao(t)
 
 	if err := run(&sb); err != nil {
 		t.Fatalf("production com trust anchor valido devia arrancar, veio: %v", err)

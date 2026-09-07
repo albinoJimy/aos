@@ -59,16 +59,14 @@ func aos247ProdEnvBase(t *testing.T, endpoint string) string {
 	t.Setenv("AOS_SOVEREIGN_OIDC_JWKS_URI", "")
 	t.Setenv("AOS_SOVEREIGN_OIDC_MAX_AGE", "")
 	t.Setenv("AOS_SOVEREIGN_OIDC_REQUIRE_JTI", "")
-	// SEM substrato durável ⇒ ErrProductionNeedsDurableKEK não entra em jogo. O Event Store
-	// DURÁVEL é a excepção, e é obrigatória desde AOS-300: a produção exige-o
-	// INCONDICIONALMENTE (a revogação de NHI tem de sobreviver a um restart). Não reacende o
-	// guarda da KEK, que só olha para `durableExecution` e `WORMPath` — ambos continuam vazios,
-	// pelo que este ficheiro continua a medir o que sempre mediu.
-	t.Setenv("AOS_WORM_PATH", "")
+	// Event Store DURÁVEL, obrigatório desde AOS-300 (a revogação de NHI tem de sobreviver a um
+	// restart). Desde AOS-365 o WORM durável é IGUALMENTE obrigatório em produção, e arrasta a KEK
+	// durável (AOS-215) e a postura de destruição (AOS-328): fixarSubstratoDuravelDeProducao
+	// fecha essa cascata para que este ficheiro continue a medir a coluna da CREDENCIAL DO MODELO,
+	// e não a primeira coluna de durabilidade que ficaria por definir.
 	t.Setenv("AOS_EVENTSTORE_PATH", filepath.Join(dir, "events.wal"))
 	t.Setenv("AOS_DURABLE_EXECUTION", "")
-	t.Setenv("AOS_DSAR_VAULT_ADDR", "")
-	t.Setenv("AOS_DSAR_VAULT_TOKEN_PATH", "")
+	fixarSubstratoDuravelDeProducao(t)
 	// MODEL GATEWAY LIGADO, credencial AUSENTE — o estado sob teste.
 	t.Setenv("AOS_MODEL_ENDPOINT", endpoint)
 	t.Setenv("AOS_MODEL_NAME", "gpt-4o") // está na allowlist ASSINADA embebida (regra board-eu).

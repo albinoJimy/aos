@@ -461,7 +461,26 @@ fixadas aqui como contrato — `main.go:316`, `:834`, `:853`, `bootstrap.go:1154
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-07). Uma guarda `ErrProductionNeedsDurableWORM` — exportada e comparável
+com `errors.Is`, no molde INCONDICIONAL de `ErrProductionNeedsDurableSubstrate` — passa a recusar o
+arranque quando `AOS_MODE=production` e `AOS_WORM_PATH` está ausente (`nodeConfigFromEnv`,
+`packages/cmd/aos/main.go`). Fica DEPOIS da guarda do substrato (para não roubar o diagnóstico quando
+faltam os dois) e DEPOIS da da KEK (pô-la antes tornaria o ramo `cfg.WORMPath != ""` da KEK
+sempre-verdadeiro em produção e mudar-lhe-ia o significado). A mensagem nomeia **as duas** variáveis
+(`AOS_WORM_PATH` e `AOS_DSAR_VAULT_ADDR`), porque um WORM durável arrasta uma KEK durável (AOS-215) —
+e só essas duas: o Vault que `AOS_DSAR_VAULT_ADDR` compõe (`*vaultKeyVault`) já implementa a porta de
+confirmação de shred, pelo que a guarda AOS-328 passa por si e o operador que segue a mensagem
+arranca. Testes: recusa (`nodeConfigFromEnv`), controlo negativo em dois sentidos (fora de produção
+arranca com o MemStore — provado pelo banner `worm=in-memory de referencia`; produção + WORM + vault
+compõe sem colidir com a KEK), ordem fixada nos dois lados (substrato-antes e KEK-antes do WORM),
+mensagem-nomeia-as-duas, e não-vacuidade por mutação (guarda desligada ⇒ recusa avermelha, controlo
+verde). As seis fixtures de produção que o novo eixo passou a apanhar ganharam WORM+KEK duráveis
+(`fixarSubstratoDuravelDeProducao`), o mesmo alargamento que AOS-300 fez com o Event Store. Provado
+por `-race` em `cmd/aos`, `layer-lint`, e o smoke `run-aos` 9/9 (passo 8: WAL+WORM coerentes).
+Revisto por revisão adversarial independente, que apanhou uma premissa falsa da primeira versão (o
+vault de referência de teste ATÉ implementa a porta de confirmação, logo o
+`AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL` era redundante e enganador) — corrigida no helper e no README
+antes do commit. Nenhum critério deferido.
 
 ---
 

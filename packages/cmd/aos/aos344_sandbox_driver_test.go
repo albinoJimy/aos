@@ -54,8 +54,6 @@ func aos344ProducaoQuaseCompleta(t *testing.T) {
 	t.Setenv("AOS_BOARD_REGIONS", "board:demo=eu")
 	t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp-soberania.example")
 	t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
-	// SEM WORM nem execução durável ⇒ a guarda da KEK não entra em jogo e não mascara esta.
-	t.Setenv("AOS_WORM_PATH", "")
 	t.Setenv("AOS_DURABLE_EXECUTION", "")
 	t.Setenv("AOS_APPROVERS_FILE", "")
 	t.Setenv("AOS_MODEL_ENDPOINT", "")
@@ -63,6 +61,9 @@ func aos344ProducaoQuaseCompleta(t *testing.T) {
 	t.Setenv("AOS_EVENTSTORE_NATS", "")
 	// AOS-300: a produção exige Event Store durável, incondicionalmente.
 	t.Setenv("AOS_EVENTSTORE_PATH", filepath.Join(t.TempDir(), "events.wal"))
+	// AOS-365: o WORM volátil deixou de arrancar em produção; esta cascata (WORM+KEK+shred)
+	// fecha-se para que este ficheiro continue a medir a coluna do DRIVER DE SANDBOX.
+	fixarSubstratoDuravelDeProducao(t)
 }
 
 // TestAOS344_ProducaoSemDriverDeSandboxRecusa é a AC1 pelo caminho que a auditoria mediu: o nó
