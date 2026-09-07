@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -1853,6 +1855,39 @@ func parseVaultDSARFromEnv() (audit.KeyVault, error) {
 // obtém-no ou o nó recusa arrancar.
 var ErrBadModelConfig = errors.New("aos: config do model gateway invalida — AOS_MODEL_ENDPOINT exige AOS_MODEL_NAME (id do modelo a pedir ao gateway); AOS_MODEL_API_KEY_PATH, se definido, tem de ser um ficheiro legivel (material privado NUNCA por variavel de ambiente)")
 
+// egressAllowlistFromEnv devolve a allowlist de egress do gateway de modelo para o caminho
+// ENDURECIDO de produção (AOS-366). DECISÃO REGISTADA sobre a fonte (a AC pedia-a por escrito):
+// `AOS_MODEL_EGRESS_HOSTS` (CSV de `host` ou `host:porta`) quando definida — a via explícita, para
+// o deployment que precise de restringir ou alargar a allowlist —; na sua AUSÊNCIA, deriva-se do
+// host de `AOS_MODEL_ENDPOINT`, que é o destino legítimo JÁ configurado. Derivar por omissão evita
+// uma segunda variável a manter em sincronia com o endpoint (definir uma e esquecer a outra seria
+// uma recusa em produção), e é seguro por defeito: a allowlist fica exactamente no host para onde o
+// nó foi mandado falar. Fail-closed: em produção um endpoint sem host parseável recusa — o gateway
+// não se compõe sem saber para onde pode falar. O esquema (https) e o match host↔BaseURL são
+// validados a jusante por `validateEgressURL` no próprio gateway, num sítio só (production.go).
+func egressAllowlistFromEnv(endpoint string) ([]string, error) {
+	// splitCSV já apara espaços e descarta vazios: um valor só de vírgulas/espaços (","/" , ")
+	// COLAPSA para lista vazia, e aí cai-se no fallback do endpoint em vez de recusar com uma
+	// allowlist vazia — o comportamento documentado («vazio ⇒ deriva do host do endpoint»).
+	if hosts := splitCSV(os.Getenv("AOS_MODEL_EGRESS_HOSTS")); len(hosts) > 0 {
+		return hosts, nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return nil, fmt.Errorf("%w: AOS_MODEL_ENDPOINT (%q) sem host para a allowlist de egress endurecida de producao; defina AOS_MODEL_EGRESS_HOSTS", ErrBadModelConfig, endpoint)
+	}
+	// Derivar pelos MESMOS acessores que `validateEgressURL` compara (u.Hostname()+u.Port()), não
+	// por u.Host: para um literal IPv6 sem porta, u.Host mantém os `[...]` e a entrada da allowlist
+	// deixaria de casar o `Hostname()` (sem brackets) que a validação usa — o nó recusava arrancar.
+	// net.JoinHostPort re-adiciona os brackets ao par com porta, que `newHostAllowlist` volta a
+	// remover simetricamente via net.SplitHostPort.
+	host := u.Hostname()
+	if p := u.Port(); p != "" {
+		host = net.JoinHostPort(host, p)
+	}
+	return []string{host}, nil
+}
+
 // parseModelFromEnv liga [Config.Model] a um gateway OpenAI-compatível (OmniRoute/OpenRouter/…) a
 // partir do ambiente — a via que preenche a porta [agentruntime.ModelClient] em vez do
 // referenceModel. Vazio ⇒ nil (referenceModel, inalterado). Presente ⇒ exige AOS_MODEL_NAME; a API
@@ -1935,7 +1970,17 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
 	// o MESMO que verifica as tool calls. NÃO há stub allow-all no caminho.
 	modelVerifier := &lateBoundModelVerifier{}
-	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec)
+	// EGRESS (AOS-366) — sob produção computa-se a allowlist ANTES de compor o gateway, para que o
+	// caminho endurecido (HTTPClient nil) tenha para onde validar. Fora de produção fica nil e o
+	// wiring injecta o seam de dev. É aqui, na fronteira que lê o ambiente, que a decisão vive.
+	var egressHosts []string
+	if production {
+		egressHosts, err = egressAllowlistFromEnv(endpoint)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts)
 	if err != nil {
 		return nil, nil, err
 	}

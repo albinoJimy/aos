@@ -578,11 +578,11 @@ journalctl -u aos-tls-sync.service -n 20
 
 ## `AOS_MODE=production` — ligado
 
-O nó corre em modo produção. Não foi um interruptor: são **oito** portas fail-closed, e o
+O nó corre em modo produção. Não foi um interruptor: são **nove** portas fail-closed, e o
 arranque aborta em qualquer uma. As seis primeiras foram enumeradas empiricamente — arrancando a
 imagem num contentor descartável e acrescentando um requisito de cada vez até passar — e não por
-leitura do código, que é como a terceira tinha passado despercebida. **A sétima e a oitava só
-podiam vir da leitura do código** — nenhuma delas negava, arrancavam —, e as notas depois da
+leitura do código, que é como a terceira tinha passado despercebida. **A sétima, a oitava e a nona
+só podiam vir da leitura do código** — nenhuma delas negava, arrancavam —, e as notas depois da
 tabela explicam porquê.
 
 | Porta | Exige | Servida por |
@@ -595,6 +595,7 @@ tabela explicam porquê.
 | **Credencial do modelo** | `AOS_MODEL_API_KEY_PATH` | master key do LiteLLM |
 | **Driver de sandbox** (condicional) | `AOS_SANDBOX_DRIVER=gvisor` (+`AOS_SANDBOX_GVISOR_URL`) ou `=firecracker` (+`AOS_SANDBOX_FIRECRACKER_URL`) | **componente `gvisor`** (`gvisor/`) |
 | **Trilho WORM durável** | `AOS_WORM_PATH` (e, por arrasto da KEK, `AOS_DSAR_VAULT_ADDR`) | **montagem gravável** (`/var/lib/aos`, `worm.wal`) |
+| **Egress endurecido do modelo** (condicional) | `AOS_MODEL_ENDPOINT` em `https` + allowlist: `AOS_MODEL_EGRESS_HOSTS` ou, por omissão, o host do próprio endpoint | LiteLLM / gateway externo em https |
 
 As duas últimas não constavam da versão anterior deste documento. A da KEK nunca tinha sido
 nomeada; a do modelo **nasceu** quando o gateway foi ligado — antes disso `AOS_MODEL_ENDPOINT`
@@ -630,6 +631,21 @@ KEK, pelo que a porta da confirmação de shred (AOS-328) passa por si — **nã
 `AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL`, que existe para o caso oposto (uma custódia que destrói às
 cegas) e suprimiria o aviso AOS-322. Este servidor já montava um caminho de WORM; a porta é para
 quem não o fizer.
+
+**A nona nasceu do mesmo refutador** (AOS-366) e é a mais subtil das três: o nó não só saltava o
+endurecimento de egress — *desarmava-o activamente*. O gateway de modelo traz um caminho SSRF
+fail-closed (AOS-223): com `HTTPClient` nil, valida o `BaseURL` (https + allowlist, com a porta na
+chave) e constrói um transporte com timeout de 30 s, limite de redirects e re-validação de **cada**
+salto. O nó injectava-lhe um `http.Client` banal em **todas** as configurações — o que faz o gateway
+*delegar* a validação nesse transporte, i.e. não validar nada — e um comentário chamava-lhe «seam de
+dev» dentro do binário de produção. Um `AOS_MODEL_ENDPOINT` em `http://` ou apontado a um host
+arbitrário era aceite sem uma palavra. Duas leituras confirmavam-se sem tocar no código: o gateway
+estava correcto e o nó tinha «só um http.Client com timeout». Agora, sob produção, o nó deixa o
+`HTTPClient` nil e preenche a allowlist a partir de `AOS_MODEL_EGRESS_HOSTS` (CSV de `host` ou
+`host:porta`) ou, por omissão, do host do próprio `AOS_MODEL_ENDPOINT` — o destino já configurado,
+sem uma segunda variável a manter em sincronia. É **condicional**: só existe quando o gateway está
+ligado (`AOS_MODEL_ENDPOINT` presente). Fora de produção o seam de dev mantém-se — é o que aponta o
+nó ao LiteLLM interno em `http`.
 
 ### O que o corte para produção mudou
 

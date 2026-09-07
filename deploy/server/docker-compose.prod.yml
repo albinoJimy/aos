@@ -341,6 +341,10 @@ services:
       AOS_MODEL_NAME: "${AOS_MODEL_NAME:-}"
       AOS_MODEL_REGION: "${AOS_MODEL_REGION:-eu}"
       AOS_MODEL_BOARD: "${AOS_MODEL_BOARD:-board-eu}"
+      # EGRESS ENDURECIDO (AOS-366): sob produção o nó arma o cliente SSRF fail-closed do gateway
+      # (https + allowlist). Vazio ⇒ a allowlist deriva do host de AOS_MODEL_ENDPOINT (o destino
+      # já configurado); defina esta CSV de `host`/`host:porta` só para restringir/alargar.
+      AOS_MODEL_EGRESS_HOSTS: "${AOS_MODEL_EGRESS_HOSTS:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
