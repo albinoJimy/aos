@@ -578,12 +578,12 @@ journalctl -u aos-tls-sync.service -n 20
 
 ## `AOS_MODE=production` — ligado
 
-O nó corre em modo produção. Não foi um interruptor: são **nove** portas fail-closed, e o
+O nó corre em modo produção. Não foi um interruptor: são **dez** portas fail-closed, e o
 arranque aborta em qualquer uma. As seis primeiras foram enumeradas empiricamente — arrancando a
 imagem num contentor descartável e acrescentando um requisito de cada vez até passar — e não por
-leitura do código, que é como a terceira tinha passado despercebida. **A sétima, a oitava e a nona
-só podiam vir da leitura do código** — nenhuma delas negava, arrancavam —, e as notas depois da
-tabela explicam porquê.
+leitura do código, que é como a terceira tinha passado despercebida. **A sétima, a oitava, a nona e
+a décima só podiam vir da leitura do código** — nenhuma delas negava, arrancavam —, e as notas
+depois da tabela explicam porquê.
 
 | Porta | Exige | Servida por |
 |---|---|---|
@@ -596,6 +596,7 @@ tabela explicam porquê.
 | **Driver de sandbox** (condicional) | `AOS_SANDBOX_DRIVER=gvisor` (+`AOS_SANDBOX_GVISOR_URL`) ou `=firecracker` (+`AOS_SANDBOX_FIRECRACKER_URL`) | **componente `gvisor`** (`gvisor/`) |
 | **Trilho WORM durável** | `AOS_WORM_PATH` (e, por arrasto da KEK, `AOS_DSAR_VAULT_ADDR`) | **montagem gravável** (`/var/lib/aos`, `worm.wal`) |
 | **Egress endurecido do modelo** (condicional) | `AOS_MODEL_ENDPOINT` em `https` + allowlist: `AOS_MODEL_EGRESS_HOSTS` ou, por omissão, o host do próprio endpoint | LiteLLM / gateway externo em https |
+| **Autoridade da destruição DSAR** | `AOS_DSAR_ERASERS` (emitterIDs de `AOS_OPERATORS` com `dsar:erase`) | operadores DSAR com chave ed25519 (privada fora do nó) |
 
 As duas últimas não constavam da versão anterior deste documento. A da KEK nunca tinha sido
 nomeada; a do modelo **nasceu** quando o gateway foi ligado — antes disso `AOS_MODEL_ENDPOINT`
@@ -646,6 +647,22 @@ estava correcto e o nó tinha «só um http.Client com timeout». Agora, sob pro
 sem uma segunda variável a manter em sincronia. É **condicional**: só existe quando o gateway está
 ligado (`AOS_MODEL_ENDPOINT` presente). Fora de produção o seam de dev mantém-se — é o que aponta o
 nó ao LiteLLM interno em `http`.
+
+**A décima nasceu de outra auditoria** (AOS-367) e é da mesma família da sétima e da oitava: não
+negava — arrancava. As quatro rotas de destruição de dados (`/dsar/erase`, `/dsar/hold`,
+`/dsar/release`, `/dsar/expire`) autenticavam-se com o **mesmo** ID-token OIDC de LEITURA que serve
+`GET /runs/{id}`: um só par issuer/audience serve o leitor de runs e o operador que destrói, pelo que
+quem tinha credencial para LER runs da sua região tinha, com a mesma credencial, autoridade para os
+DESTRUIR — e o crypto-shred é a única operação do nó que nenhum *restore drill* desfaz. A distinção
+que faltava era **identificação vs autorização**: a OIDC identifica bem, mas não separa quem lê de
+quem destrói. `AOS_DSAR_ERASERS` fecha-a — a lista dos emitterIDs de `AOS_OPERATORS` que assinam com
+`dsar:erase` — e as quatro rotas passam a exigir, além da identificação OIDC, uma assinatura ed25519
+sobre o payload canónico (com a acção amarrada, no molde do `POST /autonomy`); o `/dsar/release`
+ganha a **barreira de região** que o `/dsar/erase` já tinha, e o `/dsar/expire` — um varrimento
+global sem alvo único — exige **duas** assinaturas de erasers distintos. É **incondicional** em
+produção; fora de produção a lista vazia deixa a prova desligada (retro-compatível com dev e testes
+por headers). O varredor **automático** de retenção fica intacto: a exigência é sobre quem *ordena*
+uma expiração por rota, não sobre o tick agendado.
 
 ### O que o corte para produção mudou
 
