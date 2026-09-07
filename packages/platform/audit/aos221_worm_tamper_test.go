@@ -72,10 +72,16 @@ func TestWORM_LoadRejectsTamperedChain_CRCValid(t *testing.T) {
 	tamperFirstFrameContent(t, path)
 
 	// (1) A camada de CRC/framing ACEITA o WAL adulterado — falha-antes provada: sem o
-	// re-encadeamento, o load passava com CRC intacto.
-	recs, validEnd, err := replayAuditWAL(path)
+	// re-encadeamento, o load passava com CRC intacto. (Este é o vector COMPLEMENTAR ao de
+	// AOS-364: aqui o payload foi adulterado e o CRC RECALCULADO, logo o framing fecha e o
+	// stop é walStopClean — o dano está no CONTEÚDO, não no framing físico, e é o
+	// verifyReplayedChain que o apanha em (2).)
+	recs, validEnd, stop, _, err := replayAuditWAL(path)
 	if err != nil {
 		t.Fatalf("replayAuditWAL nao devia falhar com CRC recalculado: %v", err)
+	}
+	if stop.kind != walStopClean {
+		t.Fatalf("CRC recalculado mantem o framing integro: stop devia ser walStopClean, veio kind=%d detail=%q", stop.kind, stop.detail)
 	}
 	if len(recs) != 2 {
 		t.Fatalf("CRC/framing devia aceitar ambos os registos adulterados: len=%d", len(recs))

@@ -29,11 +29,22 @@ import (
 //
 //	uint32(len) BE || json(AuditRecord selado) len bytes || uint32(crc32 IEEE) BE
 //
-// CRASH-SAFETY: um registo final truncado (crash a meio de um write) ou com checksum
-// inválido é detectado e ignorado no replay (pára no último registo íntegro). Como a
-// cadeia é um prefixo, uma cadeia truncada continua a ser uma cadeia VÁLIDA até ao
-// último registo íntegro — Verify(from, Head()) fecha. No Open, um tail parcial é
-// truncado do ficheiro antes de reabrir em append (writes novos ficam contíguos).
+// CRASH-SAFETY vs DANO (AOS-364): a reabertura distingue dois casos que a heurística antiga
+// confundia, e que têm consequências opostas.
+//   - CAUDA RASGADA — o ÚLTIMO registo está INCOMPLETO (crash a meio de um write: faltam-lhe
+//     bytes, o short read esgota o ficheiro). A cadeia é um prefixo, logo continua VÁLIDA até
+//     ao último registo íntegro; o tail parcial é truncado antes de reabrir em append, e
+//     Verify(from, Head()) fecha. É recuperação de crash legítima.
+//   - DANO — corrupção que deixa registos íntegros DEPOIS do ponto de quebra. A reabertura
+//     RECUSA com [DanoInteriorError], SEM tocar no ficheiro — truncar aqui apagaria em silêncio
+//     esses registos e reemitiria audit_seq já atribuídos, destruindo a detecção que é a única
+//     garantia deste armazém. O que distingue dano de cauda NÃO é a posição do leitor (um
+//     comprimento corrompido desalinha-o e falha de forma indistinguível de um crash), mas a
+//     RESSINCRONIZAÇÃO: há frames íntegros para lá da quebra? (ver contaOrfaos, portado de
+//     AOS-346). Um frame FISICAMENTE COMPLETO com CRC/JSON inválido recusa mesmo sem ressincronizar
+//     — um registo persistido corrompido nunca é artefacto de crash. A adulteração de CONTEÚDO com
+//     CRC recalculado (framing intacto) continua a ser apanhada mais adiante por
+//     verifyReplayedChain (AOS-221); esta verificação cobre o vector COMPLEMENTAR, o do framing físico.
 
 const auditMaxRecordBytes = 64 << 20
 
@@ -62,11 +73,42 @@ type FileStore struct {
 // partição na ordem de escrita, e reabre o ficheiro em append (truncando um tail
 // parcial). Um path inexistente cria um WORM durável novo. Chame Close para fechar.
 func OpenFileStore(path string, opts ...FileStoreOption) (*FileStore, error) {
-	recs, validEnd, err := replayAuditWAL(path)
+	recs, validEnd, stop, orfaos, err := replayAuditWAL(path)
 	if err != nil {
 		return nil, fmt.Errorf("audit: replay do WAL %q: %w", path, err)
 	}
-	if fi, statErr := os.Stat(path); statErr == nil && fi.Size() > validEnd {
+	// AOS-364 — DISTINGUIR CAUDA RASGADA DE DANO INTERIOR, ANTES de qualquer escrita. A
+	// heurística antiga «trunca tudo o que vier depois do último frame íntegro» amputava
+	// registos VÁLIDOS quando o dano era interior — e fazia-o de forma disparável tanto pelo CRC
+	// como pelo COMPRIMENTO (que desalinha o leitor e parece uma cauda rasgada). A decisão certa
+	// não é o tipo de falha na posição do leitor, mas «há frames íntegros DEPOIS da quebra?»:
+	//   - walStopComplete (frame fisicamente completo, CRC/JSON inválido) ⇒ RECUSA sempre: um
+	//     registo persistido corrompido é bit-rot/adulteração, nunca artefacto de crash.
+	//   - walStopIncomplete (short read ou comprimento lixo) ⇒ AMBÍGUO, decide-se por orfaos:
+	//       orfaos > 0 (há registos íntegros para lá da quebra) ⇒ RECUSA (dano interior);
+	//       orfaos == 0 (nada íntegro a seguir) ⇒ trunca o tail parcial (crash-safety legítima).
+	//   - walStopClean ⇒ nada a fazer.
+	// A RECUSA corre ANTES de qualquer os.Truncate/OpenFile(O_WRONLY)/fsync — nenhum byte é
+	// tocado, nenhum Append reemite audit_seq.
+	incompletoEDano := stop.kind == walStopIncomplete && (!stop.conclusive || orfaos > 0)
+	switch {
+	case stop.kind == walStopComplete || incompletoEDano:
+		detail := stop.detail
+		switch {
+		case stop.kind == walStopIncomplete && !stop.conclusive:
+			detail = fmt.Sprintf("%s, ressincronizacao inconclusiva (orcamento esgotado) — recusado por seguranca", detail)
+		case stop.kind == walStopIncomplete:
+			detail = fmt.Sprintf("%s, com %d registo(s) integro(s) depois da quebra", detail, orfaos)
+		}
+		return nil, &DanoInteriorError{
+			Path:      path,
+			Offset:    stop.offset,
+			Partition: stop.partition,
+			AuditSeq:  stop.auditSeq,
+			HasSeq:    stop.hasSeq,
+			Detail:    detail,
+		}
+	case stop.kind == walStopIncomplete: // conclusivo e orfaos == 0 ⇒ cauda rasgada
 		if err := os.Truncate(path, validEnd); err != nil {
 			return nil, fmt.Errorf("audit: truncar tail parcial do WAL %q: %w", path, err)
 		}
@@ -313,45 +355,260 @@ func fsyncDir(dir string) {
 
 // replayAuditWAL lê os registos íntegros do WAL e o offset do fim do último íntegro.
 // Crash-safe: pára no primeiro registo truncado/corrompido, sem erro.
-func replayAuditWAL(path string) ([]AuditRecord, int64, error) {
+// walStopKind classifica PORQUE o replay parou. A distinção que AOS-364 exige — cauda rasgada
+// (truncável) vs dano (recusa) — NÃO se decide pelo tipo de falha na posição corrente do leitor:
+// um comprimento corrompido leva o leitor a consumir o número errado de bytes e a falhar de forma
+// indistinguível de um crash. É por isso que a decisão final consulta a RESSINCRONIZAÇÃO
+// (contaOrfaos): «há frames íntegros DEPOIS da quebra?». Esta classificação só distingue o caso
+// que NÃO precisa de ressincronizar — um frame FISICAMENTE COMPLETO cujo CRC/JSON falha — dos
+// que precisam. É o mesmo discriminador que o Event Store irmão adoptou em AOS-346.
+type walStopKind int
+
+const (
+	// walStopClean — EOF numa fronteira de frame: o WAL acaba num registo íntegro (fim normal).
+	walStopClean walStopKind = iota
+	// walStopComplete — frame FISICAMENTE COMPLETO (header+payload+trailer todos lidos) cujo CRC
+	// ou JSON não valida. NUNCA é artefacto de crash: `persist` escreve os três num só Flush, logo
+	// um crash deixa um PREFIXO (short read), nunca um trailer completo errado. É bit-rot ou
+	// adulteração de um registo já persistido ⇒ RECUSA sempre, sem consultar a ressincronização.
+	// (Divergência DELIBERADA do Event Store irmão, que trunca este caso quando é o último registo:
+	// a CA1 de AOS-364 só permite truncar quando o dano «esgota os bytes restantes» — um frame
+	// completo não os esgota —, e um registo de auditoria persistido não se apaga em silêncio.)
+	walStopComplete
+	// walStopIncomplete — o frame na quebra está FISICAMENTE INCOMPLETO (short read) OU o seu
+	// comprimento é lixo (n==0 ou n>max, extensão desconhecida). Ambíguo entre cauda rasgada e dano
+	// interior; a decisão consulta a ressincronização (orfaos>0 ⇒ dano, ==0 ⇒ cauda).
+	walStopIncomplete
+)
+
+// walStop reporta o motivo e a localização da paragem do replay. offset é o início do frame
+// problemático (== validEnd). partition/auditSeq são best-effort: preenchem-se quando o payload
+// ainda desserializa (o caso em que só o trailer de CRC de 4 bytes foi corrompido, medido em O-11).
+type walStop struct {
+	kind      walStopKind
+	offset    int64
+	partition string
+	auditSeq  uint64
+	hasSeq    bool
+	detail    string
+	// conclusive é false quando a ressincronização esgotou o orçamento sem decidir se há registos
+	// íntegros a seguir. O chamador trata inconclusivo como DANO (fail-closed) — nunca como cauda.
+	conclusive bool
+}
+
+// replayAuditWAL lê o WAL frame a frame, devolve os registos íntegros lidos, o offset até onde a
+// cadeia é válida (validEnd), a classificação da paragem, e — quando a paragem é ambígua
+// (walStopIncomplete) — o número de registos ÍNTEGROS que existem DEPOIS da quebra (orfaos), obtido
+// por RESSINCRONIZAÇÃO do enquadramento. É orfaos, e não a posição do leitor, que distingue uma
+// cauda rasgada (orfaos==0) de dano interior (orfaos>0). Ver AOS-364 / AOS-346.
+func replayAuditWAL(path string) (_ []AuditRecord, validEnd int64, _ walStop, orfaos int, _ error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, 0, nil
+			return nil, 0, walStop{kind: walStopClean}, 0, nil
 		}
-		return nil, 0, err
+		return nil, 0, walStop{}, 0, err
 	}
 	defer f.Close()
 
 	r := bufio.NewReader(f)
 	var out []AuditRecord
-	var validEnd int64
+	var stop walStop
 	for {
 		var hdr [4]byte
-		if _, err := io.ReadFull(r, hdr[:]); err != nil {
-			break // EOF limpo ou header truncado.
+		if _, rerr := io.ReadFull(r, hdr[:]); rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				stop = walStop{kind: walStopClean, offset: validEnd} // fim limpo numa fronteira
+			} else {
+				stop = walStop{kind: walStopIncomplete, offset: validEnd, detail: "header parcial"}
+			}
+			break
 		}
 		n := binary.BigEndian.Uint32(hdr[:])
 		if n == 0 || n > auditMaxRecordBytes {
+			// Comprimento lixo: a extensão do frame é desconhecida ⇒ ambíguo, decide-se por orfaos.
+			stop = walStop{kind: walStopIncomplete, offset: validEnd, detail: "comprimento malformado"}
 			break
 		}
 		payload := make([]byte, n)
-		if _, err := io.ReadFull(r, payload); err != nil {
+		if _, rerr := io.ReadFull(r, payload); rerr != nil {
+			stop = walStop{kind: walStopIncomplete, offset: validEnd, detail: "payload incompleto"}
 			break
 		}
 		var tr [4]byte
-		if _, err := io.ReadFull(r, tr[:]); err != nil {
+		if _, rerr := io.ReadFull(r, tr[:]); rerr != nil {
+			stop = walStop{kind: walStopIncomplete, offset: validEnd, detail: "trailer incompleto"}
 			break
 		}
 		if binary.BigEndian.Uint32(tr[:]) != crc32.Checksum(payload, auditCRCTable) {
+			// Frame COMPLETO com CRC errado ⇒ dano, sem consultar orfaos. Best-effort: quando só o
+			// trailer foi corrompido, o payload ainda desserializa e dá partição/audit_seq (O-11).
+			s := walStop{kind: walStopComplete, offset: validEnd, detail: "CRC nao fecha"}
+			var rec AuditRecord
+			if json.Unmarshal(payload, &rec) == nil {
+				s.partition, s.auditSeq, s.hasSeq = rec.Partition, rec.AuditSeq, true
+			}
+			stop = s
 			break
 		}
 		var rec AuditRecord
-		if err := json.Unmarshal(payload, &rec); err != nil {
+		if jerr := json.Unmarshal(payload, &rec); jerr != nil {
+			stop = walStop{kind: walStopComplete, offset: validEnd, detail: "JSON invalido apesar de CRC valido"}
 			break
 		}
 		out = append(out, rec)
 		validEnd += int64(4 + int(n) + 4)
 	}
-	return out, validEnd, nil
+	// Só a paragem ambígua precisa de saber o que há para lá da quebra.
+	if stop.kind == walStopIncomplete {
+		fim := fileSizeOrZero(f)
+		orfaos, stop.conclusive = contaOrfaos(f, validEnd, fim)
+	} else {
+		stop.conclusive = true
+	}
+	return out, validEnd, stop, orfaos, nil
+}
+
+func fileSizeOrZero(f *os.File) int64 {
+	if fi, err := f.Stat(); err == nil {
+		return fi.Size()
+	}
+	return 0
+}
+
+// janelaDeRessincronizacao é o buffer de varrimento byte-a-byte da ressincronização.
+const janelaDeRessincronizacao = 64 << 10
+
+// ressincOrcamentoBytes limita o trabalho (bytes lidos+CRC) que a ressincronização pode gastar a
+// procurar a fronteira do registo seguinte. Sem este tecto o varrimento byte-a-byte é O(n²) sobre
+// uma janela de 64MB, e um adversário com escrita no WAL (o modelo de ameaça deste armazém)
+// fabrica padding após uma quebra de comprimento para prender o arranque minutos-a-horas em vez de
+// o fazer recusar depressa (achado F1 da revisão adversarial v2, medido: 1MB→10s, 2MB→>300s). O
+// tecto é FAIL-CLOSED: esgotá-lo sem concluir devolve «inconclusivo», que o [OpenFileStore] trata
+// como DANO (recusa) — nunca como cauda (truncar). É seguro porque uma cauda rasgada legítima tem
+// janela pequena (a quebra está no fim) e nunca o atinge; só o dano interior real ou o abuso o
+// atingem, e aí recusar é o remédio correcto. 256MB ⇒ arranque limitado a fracção de segundo.
+const ressincOrcamentoBytes = 256 << 20
+
+// contaOrfaos conta os registos ÍNTEGROS que existem DEPOIS do ponto de quebra (AOS-364, portado
+// de AOS-346). É o que distingue «cauda rasgada» (zero) de «dano interior» (>0) — a única pergunta
+// cuja resposta muda o remédio. Não se pode continuar da posição do leitor: um comprimento
+// corrompido desalinha tudo o que venha a seguir, pelo que se RESSINCRONIZA o enquadramento
+// varrendo o ficheiro à procura da próxima fronteira de registo válida.
+//
+// Devolve (contagem, conclusivo). conclusivo==false ⇒ o orçamento de ressincronização esgotou-se
+// antes de decidir; o chamador trata isso como DANO (fail-closed), não como cauda rasgada.
+func contaOrfaos(f *os.File, quebra, fim int64) (int, bool) {
+	inicio, ok, esgotou := ressincroniza(f, quebra+1, fim)
+	if esgotou {
+		return 0, false // inconclusivo ⇒ o chamador recusa (fail-closed)
+	}
+	if !ok {
+		return 0, true // varreu toda a janela sem achar fronteira ⇒ nada íntegro a seguir (cauda)
+	}
+	r := bufio.NewReader(io.NewSectionReader(f, inicio, fim-inicio))
+	n := 0
+	for {
+		payload, ok := leRegistoValido(r)
+		if !ok {
+			return n, true
+		}
+		var rec AuditRecord
+		if json.Unmarshal(payload, &rec) != nil {
+			return n, true
+		}
+		n++
+	}
+}
+
+// leRegistoValido lê UM frame bem-formado (comprimento válido, payload completo, CRC a fechar) e
+// devolve o payload. Não desserializa — isso é do chamador.
+func leRegistoValido(r *bufio.Reader) (payload []byte, ok bool) {
+	var hdr [4]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, false
+	}
+	n := binary.BigEndian.Uint32(hdr[:])
+	if n == 0 || n > auditMaxRecordBytes {
+		return nil, false
+	}
+	payload = make([]byte, n)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, false
+	}
+	var tr [4]byte
+	if _, err := io.ReadFull(r, tr[:]); err != nil {
+		return nil, false
+	}
+	if binary.BigEndian.Uint32(tr[:]) != crc32.Checksum(payload, auditCRCTable) {
+		return nil, false
+	}
+	return payload, true
+}
+
+// ressincroniza procura o primeiro offset em [depois, fim) onde começa um registo COMPLETO, com
+// CRC válido e payload que desserializa num AuditRecord. É o varrimento que repõe a fronteira
+// quando o enquadramento se perdeu. O limite do varrimento é auditMaxRecordBytes+8 a partir de
+// `depois` — DEMONSTRADO, não arbitrado: o registo corrompido não pode ocupar legitimamente mais do
+// que isso, logo o registo íntegro seguinte, se existir, começa dentro dessa janela. Um falso
+// positivo exigiria quatro bytes arbitrários a formar um comprimento plausível, os bytes seguintes
+// a ter um crc32 que bate, e o resultado a desserializar num AuditRecord — desprezável, e erra para
+// o lado fail-closed (recusar).
+// ressincroniza devolve (offset, encontrado, esgotou). encontrado==true ⇒ há uma fronteira válida
+// em offset. encontrado==false && esgotou==false ⇒ varreu toda a janela e não há fronteira (nada
+// íntegro a seguir). esgotou==true ⇒ o orçamento [ressincOrcamentoBytes] acabou antes de decidir ⇒
+// o chamador trata como DANO (fail-closed), nunca como cauda.
+func ressincroniza(f *os.File, depois, fim int64) (offset int64, encontrado bool, esgotou bool) {
+	if depois < 0 {
+		depois = 0
+	}
+	limite := depois + int64(auditMaxRecordBytes) + 8
+	if limite > fim {
+		limite = fim
+	}
+	buf := make([]byte, janelaDeRessincronizacao)
+	var rec []byte
+	var gasto int64 // bytes lidos+CRC gastos a testar candidatos; tecto FAIL-CLOSED (F1)
+	for base := depois; base < limite; {
+		nlido, err := f.ReadAt(buf, base)
+		if nlido < 4 {
+			return 0, false, false
+		}
+		for i := 0; i+4 <= nlido; i++ {
+			off := base + int64(i)
+			if off >= limite {
+				return 0, false, false
+			}
+			tam := int64(binary.BigEndian.Uint32(buf[i : i+4]))
+			if tam == 0 || tam > auditMaxRecordBytes || off+4+tam+4 > fim {
+				continue
+			}
+			// Cada candidato plausível custa uma leitura + um CRC de `tam` bytes. Sobre lixo há
+			// muitos candidatos com `tam` grande; o orçamento impede o O(n²) de prender o arranque.
+			gasto += tam
+			if gasto > ressincOrcamentoBytes {
+				return 0, false, true // esgotado ⇒ inconclusivo ⇒ fail-closed
+			}
+			if int64(cap(rec)) < tam+4 {
+				rec = make([]byte, tam+4)
+			}
+			cand := rec[:tam+4]
+			if _, rerr := f.ReadAt(cand, off+4); rerr != nil {
+				continue
+			}
+			if binary.BigEndian.Uint32(cand[tam:]) != crc32.Checksum(cand[:tam], auditCRCTable) {
+				continue
+			}
+			var rc AuditRecord
+			if json.Unmarshal(cand[:tam], &rc) != nil {
+				continue
+			}
+			return off, true, false
+		}
+		if err != nil {
+			return 0, false, false // fim do ficheiro sem encontrar fronteira
+		}
+		base += int64(nlido) - 3 // sobreposição de 3: um header a cavalo da janela é visto na seguinte
+	}
+	return 0, false, false
 }

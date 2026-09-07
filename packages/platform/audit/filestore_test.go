@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -134,6 +135,12 @@ func TestWORM_CrashTruncatedTail(t *testing.T) {
 // mas o restart não a mascara). Aqui corrompemos o checksum do ÚLTIMO registo: o
 // replay pára antes dele, reduzindo o head — o registo adulterado nunca entra na
 // cadeia servida (fail-safe: nunca serve um registo corrompido como íntegro).
+// TestWORM_CorruptRecordDropped — REESCRITO por AOS-364. Antes, corromper o CRC do ÚLTIMO
+// registo (fisicamente completo) fazia o Open descartá-lo em SILÊNCIO (head=1). Isso codificava
+// o defeito como golden: um registo completo com CRC mau não é uma cauda rasgada de crash — é
+// bit-rot ou adulteração —, e apagá-lo em silêncio destrói a detecção. A regra estrita de
+// AOS-364 recusa a reabertura com DanoInteriorError, sem tocar no ficheiro. (O caso de crash
+// legítimo — bytes em FALTA no fim — continua a truncar; ver TestWORM_CrashTruncatedTail.)
 func TestWORM_CorruptRecordDropped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "worm.wal")
 	ctx := context.Background()
@@ -149,16 +156,19 @@ func TestWORM_CorruptRecordDropped(t *testing.T) {
 	full, _ := os.ReadFile(path)
 	corrupt := make([]byte, len(full))
 	copy(corrupt, full)
-	corrupt[len(corrupt)-1] ^= 0xFF // corrompe o checksum do 2º registo
+	corrupt[len(corrupt)-1] ^= 0xFF // corrompe o checksum do 2º (último) registo, framing INTACTO
 	_ = os.WriteFile(path, corrupt, 0o600)
+	sizeAntes := int64(len(corrupt))
 
-	s2 := openWORM(t, path)
-	defer s2.Close()
-	if h, _ := s2.Head(ctx, "p"); h != 1 {
-		t.Fatalf("head = %d, quero 1 (registo corrompido descartado)", h)
+	_, err := OpenFileStore(path)
+	if err == nil {
+		t.Fatal("um registo COMPLETO com CRC corrompido devia RECUSAR o Open (dano, não cauda rasgada)")
 	}
-	if err := Verify(ctx, s2, "p", 1, 1); err != nil {
-		t.Fatalf("Verify do prefixo íntegro: %v", err)
+	if !errors.Is(err, ErrWORMDanoInterior) {
+		t.Fatalf("erro devia desembrulhar para ErrWORMDanoInterior, veio: %v", err)
+	}
+	if fi, _ := os.Stat(path); fi != nil && fi.Size() != sizeAntes {
+		t.Fatalf("o ficheiro NÃO pode ser alterado num dano recusado: size antes=%d depois=%d", sizeAntes, fi.Size())
 	}
 }
 

@@ -376,7 +376,21 @@ batem certo.*
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-07). `OpenFileStore` deixou de decidir pela posição do leitor e passa a
+distinguir cauda rasgada de dano por **ressincronização** (`contaOrfaos`/`ressincroniza`, portado do
+Event Store irmão AOS-346): há registos íntegros para lá da quebra? >0 ⇒ recusa com
+`DanoInteriorError`/`ErrWORMDanoInterior` (nomeia partição/audit_seq/offset), sem tocar no ficheiro;
+==0 ⇒ trunca a cauda parcial (crash-safety preservada). Um frame fisicamente completo com CRC/JSON
+inválido recusa sempre. A **revisão adversarial** (duas passagens independentes) apanhou que a v1,
+que classificava pela posição, reabria o O-11 pelo vector do **comprimento inflado** (corromper os 4
+bytes de comprimento ⇒ short read ⇒ truncava em silêncio) e criava um falso positivo com zeros na
+cauda; a v2 apanhou um **DoS de ressincronização** O(n²) no arranque — os três estão fechados
+(comprimento e zeros pela ressincronização, DoS por um orçamento fail-closed `ressincOrcamentoBytes`).
+Provado por `-race` em `platform/audit`, consumidores (`cmd/aos`, `cmd/aos-issuer`) verdes, e o smoke
+`run-aos` 9/9. Deferido, declarado: uma escotilha de escape auditada (achado F3) fica como decisão de
+dono — para um WORM, um override que trunque um trilho recusado é o silent-drop que este ticket
+proíbe; a recuperação é o checkpoint assinado de AOS-268 ou o restauro, que o próprio erro aponta. O
+mesmo DoS no Event Store irmão (herdado, não reaberto aqui) foi marcado para porte em tarefa própria.
 
 ---
 

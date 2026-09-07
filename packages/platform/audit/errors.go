@@ -157,3 +157,49 @@ func (e *VerifyError) Is(target error) bool {
 func tamper(t TamperType, partition string, seq uint64, detail string) *VerifyError {
 	return &VerifyError{Type: t, Partition: partition, Seq: seq, Detail: detail}
 }
+
+// ErrWORMDanoInterior é o sentinela-raiz do DANO FÍSICO detectado na reabertura do WAL
+// (AOS-364): um registo FISICAMENTE COMPLETO — todos os bytes que o seu comprimento
+// declara estão presentes, seguido de mais bytes — cujo CRC ou JSON não valida. Ao
+// contrário de uma CAUDA RASGADA (crash a meio de um write, que deixa um registo
+// INCOMPLETO no fim e é legitimamente truncável), este dano NÃO é um artefacto de crash:
+// um crash trunca, deixando um short read; um frame completo com CRC errado só nasce de
+// bit-rot ou de adulteração. Por isso a reabertura RECUSA em vez de amputar em silêncio os
+// registos íntegros que se lhe seguem — a amputação silenciosa era o defeito que destruía a
+// ÚNICA garantia deste armazém, a detecção.
+var ErrWORMDanoInterior = errors.New("audit: dano interior no WAL (registo completo mas invalido) — reabertura recusada, nao truncada")
+
+// DanoInteriorError localiza o dano físico: o OFFSET do frame no ficheiro (a fronteira do
+// dano, que pode cruzar partições porque o WAL é um log linear único) e, quando o payload
+// ainda desserializa — o caso típico, em que só o trailer de CRC de 4 bytes foi corrompido
+// —, a PARTIÇÃO e o AUDIT_SEQ do registo danificado. Desembrulha para [ErrWORMDanoInterior].
+//
+// NÃO desembrulha para [ErrTampered] de propósito: o dano pode ser bit-rot inocente, e a
+// acção certa é a mesma que para adulteração — recusar e mandar um humano olhar —, mas
+// afirmar «adulteração» seria mais do que a detecção física prova.
+type DanoInteriorError struct {
+	// Path é o caminho do WAL.
+	Path string
+	// Offset é a posição no ficheiro onde o frame danificado começa (== validEnd do replay).
+	Offset int64
+	// Partition é a partição do registo danificado, "" quando o payload não desserializa.
+	Partition string
+	// AuditSeq é o audit_seq do registo danificado, 0 quando desconhecido.
+	AuditSeq uint64
+	// HasSeq distingue "AuditSeq desconhecido" de "audit_seq == 0" (que não existe: começa em 1).
+	HasSeq bool
+	// Detail nomeia o sintoma: "CRC nao fecha" | "JSON invalido apesar de CRC valido" | "comprimento malformado".
+	Detail string
+}
+
+func (e *DanoInteriorError) Error() string {
+	loc := fmt.Sprintf("offset=%d", e.Offset)
+	if e.HasSeq {
+		loc = fmt.Sprintf("particao %q audit_seq=%d offset=%d", e.Partition, e.AuditSeq, e.Offset)
+	}
+	return fmt.Sprintf("audit: DANO INTERIOR no WAL %q (%s): %s — registo FISICAMENTE COMPLETO com validacao falhada, NAO e cauda rasgada de crash; a reabertura RECUSA em vez de truncar os registos integros seguintes (causa: bit-rot ou adulteracao). Para prova de integridade contra um adversario, arme o checkpoint assinado de AOS-268 (AOS_WORM_*)",
+		e.Path, loc, e.Detail)
+}
+
+// Unwrap liga o DanoInteriorError ao sentinela-raiz [ErrWORMDanoInterior].
+func (e *DanoInteriorError) Unwrap() error { return ErrWORMDanoInterior }
