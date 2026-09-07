@@ -1129,6 +1129,17 @@ func (h *apiHandler) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unready"})
 		return
 	}
+	// DEPENDÊNCIA CRÍTICA: o REGISTO DE MEDIAÇÃO do Reference Monitor a ACEITAR ESCRITAS (AOS-369).
+	// Quando o sink do RM (o WORM) recusa gravar a prova pós-decisão de um deny/escalate, cada tool
+	// call é negada MAS o rasto perde-se — um nó nesse estado nega 100% das tool calls sem deixar
+	// prova, indistinguível de um nó ocioso. É a ÚLTIMA gravação que decide, não «alguma vez
+	// falhou»: uma gravação bem-sucedida posterior recupera a prontidão, auto-curativo (mesma
+	// semântica de last-outcome que a cláusula WORM acima). O valor-zero é «saudável» ⇒ um nó que
+	// nunca mediou nada não é afectado.
+	if h.node != nil && h.node.Runtime != nil && !h.node.Runtime.Metrics().RecordingHealthy() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unready"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
@@ -1213,7 +1224,12 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// predicado com prazos diferentes, pelo que num nó sob carga o `/readyz` pode dar 503 por
 	// prazo enquanto o SLI ainda mede disponível. Está nomeado em vez de calado.
 	wormRecusa := h.svc != nil && h.svc.seloWORM.aRecusarEscritas()
-	g("aos_ready", "O no reporta-se pronto no /readyz (1) ou nao (0). Cobre as QUATRO condicoes: drain, Event Store, custodia da KEK e WORM a aceitar escritas.", "gauge", b01(!draining && esHealthy && vaultReady && !wormRecusa), "")
+	// AOS-369: a QUINTA condição — o registo de mediação do RM a aceitar escritas. Entrou no
+	// /readyz e esta linha ACOMPANHA-A, senão repetir-se-ia o achado F (o /readyz a 503 com o
+	// aos_ready a 1: o painel verde sobre um nó que não deixa prova das negações). Mesmo idioma
+	// last-outcome; valor-zero (nunca mediou) ⇒ saudável.
+	mediationHealthy := h.node == nil || h.node.Runtime == nil || h.node.Runtime.Metrics().RecordingHealthy()
+	g("aos_ready", "O no reporta-se pronto no /readyz (1) ou nao (0). Cobre as CINCO condicoes: drain, Event Store, custodia da KEK, WORM a aceitar escritas e registo de mediacao do Reference Monitor a aceitar escritas.", "gauge", b01(!draining && esHealthy && vaultReady && !wormRecusa && mediationHealthy), "")
 
 	// AOS-274 — SLOs/ALERTAS avaliados em runtime. É a superfície de EXPOSIÇÃO do produtor
 	// (slo_evaluator.go): o que aqui aparece foi calculado sobre dados REAIS do nó (spans
@@ -1383,6 +1399,28 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			g("aos_worm_seal_last_failure_age_seconds", "Segundos desde a ultima selagem RECUSADA. Cruzada com aos_worm_seal_failures_total distingue «falhou e recuperou» de «esta a falhar agora».",
 				"gauge", time.Since(time.Unix(u, 0)).Seconds(), "")
 		}
+	}
+
+	// MEDIAÇÃO NO REFERENCE MONITOR (AOS-369) — os contadores do PEP mandatório do nó nunca
+	// chegavam ao /metrics: permits/denials/escalations moviam-se no RM e ninguém os via de fora.
+	// E, pior, a falha em GRAVAR duravelmente uma mediação pós-decisão (o registo da PROVA de um
+	// deny/escalate) era descartada em silêncio — um WORM em baixo negava 100% das tool calls sem
+	// deixar rasto, indistinguível de um nó parado. Lêem-se do RM composto pelo Runtime; a série
+	// emite sempre (o Runtime está sempre composto no nó), mas guarda-se o nil-check porque alguns
+	// apiHandler de teste são parciais.
+	if h.node != nil && h.node.Runtime != nil {
+		permits, denials, escalations := h.node.Runtime.Metrics().Snapshot()
+		g("aos_mediation_permits_total", "Tool calls PERMITIDAS pela cadeia de mediacao do Reference Monitor desde o arranque. POR PROCESSO — um restart repoe.",
+			"counter", float64(permits), "")
+		g("aos_mediation_denials_total", "Tool calls NEGADAS pela cadeia de mediacao (default-deny, hook deny, obrigacao nao cumprida, auditoria indisponivel) desde o arranque. POR PROCESSO — um restart repoe.",
+			"counter", float64(denials), "")
+		g("aos_mediation_escalations_total", "Tool calls ESCALADAS para decisao humana (HITL) pela cadeia de mediacao desde o arranque. POR PROCESSO — um restart repoe.",
+			"counter", float64(escalations), "")
+		// A PROVA PERDIDA. Cada incremento e um registo de mediacao pos-decisao que NAO chegou a ser
+		// gravado duravelmente: o deny/escalate ACONTECEU a mesma (o efeito ficou bloqueado), o que
+		// se perdeu foi o RASTO. Distingue um WORM em baixo (a negar tudo sem prova) de um no ocioso.
+		g("aos_mediation_record_failures_total", "Registos de mediacao pos-decisao que FALHARAM a gravacao duravel desde o arranque. A PROVA do deny/escalate perdeu-se; a negacao aconteceu a mesma (o efeito ficou bloqueado). POR PROCESSO — um restart repoe.",
+			"counter", float64(h.node.Runtime.Metrics().RecordFailures()), "")
 	}
 
 	// RUNS À ESPERA DE UM HUMANO — a única paragem do nó que é DELIBERADA, e a única que não

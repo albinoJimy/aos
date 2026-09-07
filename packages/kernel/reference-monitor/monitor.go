@@ -47,12 +47,41 @@ type Metrics struct {
 	Permits     atomic.Uint64
 	Denials     atomic.Uint64
 	Escalations atomic.Uint64
+
+	// recordFailures conta os registos de mediação PÓS-DECISÃO ([Monitor.fail]) que
+	// não chegaram a ser gravados duravelmente — a PROVA de um deny/escalate que se
+	// perdeu (AOS-369). A decisão em si já foi tomada e o efeito já foi bloqueado; o
+	// que se perde é o rasto. Cumulativo por vida do processo (mirroring falhas de
+	// saudeDeSelagem). Exposto por [Metrics.RecordFailures].
+	recordFailures atomic.Uint64
+
+	// recordingFailing é o ÚLTIMO desfecho observado do registo de mediação, guardado
+	// como ESTADO e não inferido de relógios — mesmo idioma que saudeDeSelagem.recusando
+	// (AOS-369). O valor-zero (false) significa «saudável», pelo que um nó que nunca
+	// registou nada é tratado como pronto (mirroring do valor-zero-pronto de saudeDeSelagem).
+	// Alimenta [Metrics.RecordingHealthy], que o /readyz lê como dependência crítica.
+	recordingFailing atomic.Bool
 }
 
 // Snapshot devolve uma leitura consistente-o-suficiente dos contadores.
+//
+// A assinatura de 3 valores é DELIBERADAMENTE preservada (AOS-369): está desestruturada
+// em ~20 call-sites de teste, e um 4.º retorno parti-los-ia todos. Os contadores novos de
+// AOS-369 têm acessores próprios ([Metrics.RecordFailures], [Metrics.RecordingHealthy]).
 func (m *Metrics) Snapshot() (permits, denials, escalations uint64) {
 	return m.Permits.Load(), m.Denials.Load(), m.Escalations.Load()
 }
+
+// RecordFailures devolve o total de registos de mediação pós-decisão que falharam a
+// gravação durável desde o arranque (AOS-369). Cada incremento é a PROVA de um deny/
+// escalate que se perdeu — a decisão aconteceu à mesma; o que faltou foi o rasto.
+func (m *Metrics) RecordFailures() uint64 { return m.recordFailures.Load() }
+
+// RecordingHealthy diz se o ÚLTIMO registo de mediação observado teve sucesso (AOS-369).
+// Last-outcome, NÃO «alguma vez falhou»: um registo bem-sucedido posterior recupera a
+// saúde, auto-curativo, à imagem de saudeDeSelagem.aRecusarEscritas. O valor-zero
+// (recordingFailing=false) ⇒ saudável, pelo que um nó que nunca registou é pronto.
+func (m *Metrics) RecordingHealthy() bool { return !m.recordingFailing.Load() }
 
 // Monitor é o Reference Monitor: o PEP mandatório do AOS. Construir com [New].
 type Monitor struct {
@@ -394,11 +423,18 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	}
 	seq, err := m.sink.RecordMediation(ctx, rec)
 	if err != nil {
-		// Uma acção não-auditável não é permitida (ADR-002/010).
+		// Uma acção não-auditável não é permitida (ADR-002/010). A falha NÃO se conta aqui
+		// para NÃO DUPLICAR (AOS-369): a decisão degrada para deny e o fail() logo abaixo
+		// re-tenta o registo pós-decisão em :478, e é ESSE sítio que incrementa
+		// recordFailures se voltar a falhar. Contar aqui E lá contaria a mesma avaria duas
+		// vezes. No sucesso, porém, marca-se a saúde: este é um registo de mediação
+		// bem-sucedido como qualquer outro, e o último-desfecho tem de reflecti-lo.
 		d := m.fail(ctx, call, EffectDeny, CodeAuditUnavailable, "audit-sink",
 			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), nil, nil, start, policyVersion)
 		return d, nil
 	}
+	// Registo de mediação durável bem-sucedido ⇒ o último-desfecho está saudável (AOS-369).
+	m.metrics.recordingFailing.Store(false)
 
 	// 4) Permit: mintar o Permit não-forjável e despachar via dispatcher interno. O
 	//    despacho devolve TAMBÉM o custo medido do efeito (AOS-212): 0 para uma tool
@@ -475,7 +511,7 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 	// usado em `packages/integration/budget.go` e `packages/substrate/sandbox/lifecycle.go`.
 	regCtx, cancelReg := context.WithTimeout(context.WithoutCancel(ctx), failRecordTimeout)
 	defer cancelReg()
-	seq, _ := m.sink.RecordMediation(regCtx, MediationRecord{
+	seq, err := m.sink.RecordMediation(regCtx, MediationRecord{
 		RequestID: call.RequestID,
 		RunID:     call.RunID, StepID: call.StepID, ParentStepID: call.ParentStepID,
 		Effect: eff, Code: code, DeniedBy: deniedBy, Reason: reason,
@@ -486,6 +522,18 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		Obligations:   obligations,
 		Metadata:      metadata,
 	})
+	// O ERRO DEIXA DE SER DESCARTADO (AOS-369). A decisão (deny/escalate) já está tomada e o
+	// efeito já está bloqueado — este registo é a PROVA de um facto consumado e a sua falha NÃO
+	// altera a decisão (contrasta com o audit-before-effect do permit, que degrada para deny).
+	// Mas uma prova perdida em silêncio tornava um deny indistinguível de uma chamada que nunca
+	// aconteceu: um WORM em baixo negava 100% das tool calls sem deixar rasto nenhum. Conta-se a
+	// perda e marca-se o último-desfecho, que o /readyz lê como dependência crítica.
+	if err != nil {
+		m.metrics.recordFailures.Add(1)
+		m.metrics.recordingFailing.Store(true)
+	} else {
+		m.metrics.recordingFailing.Store(false)
+	}
 	if eff == EffectEscalate {
 		m.metrics.Escalations.Add(1)
 	} else {

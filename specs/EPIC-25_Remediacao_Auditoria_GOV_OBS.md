@@ -892,7 +892,31 @@ caminho onde o contador faltaria.
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-07). O `Metrics` do Reference Monitor ganha `recordFailures` (contador) e
+`recordingFailing` (último-desfecho, valor-zero = saudável), com acessores próprios
+(`RecordFailures()`, `RecordingHealthy()`) — o `Snapshot()` de 3 valores fica intacto (≈20 chamadores
+de teste). O `seq, _ :=` de `monitor.go:478` passa a `seq, err :=`: uma falha de registo pós-decisão
+conta e marca `recordingFailing`; a decisão (deny/escalate) e o `WithoutCancel`+timeout ficam
+inalterados. Sem dupla contagem: o site do permit (`:395`) só limpa o último-desfecho em sucesso; a
+contagem vive no `fail()`. `GET /metrics` expõe `aos_mediation_{permits,denials,escalations}_total` +
+`aos_mediation_record_failures_total` (HELP diz que a PROVA se perdeu, o deny aconteceu). `/readyz`
+devolve 503 quando `!RecordingHealthy()` (último-desfecho, auto-recupera na selagem seguinte), e o
+`aos_ready` reflecte o mesmo predicado (agora cinco condições). `selo_worm_saude.go:45-47` reescrito:
+a saúde de selagem cobre as três rotas de governação; a falha de registo de mediação é um eixo
+SEPARADO. A fronteira de camadas é respeitada (o RM não importa cmd/aos; o fluxo é cmd/aos → lê → RM).
+
+Provado por `-race` em `kernel/reference-monitor` (inclui `archlint`) e `cmd/aos`, guardas
+não-vacuosas por mutação (cláusula do /readyz removida ⇒ o 503 avermelha; `:478` a descartar de novo
+⇒ a contagem avermelha), e o smoke `run-aos`. Teste ponta-a-ponta conduz uma tool call **realmente
+mediada** (via `Runtime.Run`, não uma selagem de governação HTTP) com sink de auditoria partido
+(`wormSoLeitura`): FASE saudável ⇒ permits sobe, record-failures 0, /readyz 200; FASE em baixo ⇒
+record-failures sobe, /readyz 503; FASE recuperada ⇒ /readyz volta a 200 sem o contador recuar.
+**Revisão adversarial independente** (foco no cenário «stuck-ready»): runtime SHIP-READY — sem
+double-count, sem stuck-ready, último-desfecho equivalente ao `saudeDeSelagem`, decisão inalterada,
+camada limpa. Apanhou dois eixos de mediação **não cobertos pelos testes-espelho** do achado F
+(`TestEspelhos_ReadyzEAosReadyConcordam` e o HELP) — **fechados** antes da integração (emparelhamento
+/readyz↔aos_ready afirmado no e2e das três fases; termo "mediacao" amarrado ao HELP, teste renomeado
+para `...NomeiaAsCinco`). Nenhum critério deferido.
 
 ---
 
