@@ -141,9 +141,11 @@ func TestEspelhos_SLIDeDisponibilidadeCobreOWORM(t *testing.T) {
 	}
 }
 
-// A HONESTIDADE DO HELP. A serie afirma cobrir as quatro condicoes; se alguem lhe tirar uma,
-// o texto continua a prometer. Amarra-se o texto ao que a linha calcula.
-func TestEspelhos_HelpDoAosReadyNomeiaAsQuatro(t *testing.T) {
+// A HONESTIDADE DO HELP. A serie afirma cobrir as cinco condicoes; se alguem lhe tirar uma,
+// o texto continua a prometer. Amarra-se o texto ao que a linha calcula. A quinta condicao
+// (registo de mediacao do Reference Monitor, AOS-369) fica AQUI amarrada de proposito: sem ela,
+// alguem podia tirar o eixo de mediacao do HELP — ou do predicado — sem o teste dar por isso.
+func TestEspelhos_HelpDoAosReadyNomeiaAsCinco(t *testing.T) {
 	node, _ := newAPINode(t, &countingModel{}, false)
 	defer func() { _ = node.Close() }()
 	_, h := newAPI(t, node)
@@ -162,7 +164,7 @@ func TestEspelhos_HelpDoAosReadyNomeiaAsQuatro(t *testing.T) {
 	if linha == "" {
 		t.Fatal("aos_ready sem linha de HELP")
 	}
-	for _, termo := range []string{"drain", "Event Store", "custodia da KEK", "WORM"} {
+	for _, termo := range []string{"drain", "Event Store", "custodia da KEK", "WORM", "mediacao"} {
 		if !strings.Contains(linha, termo) {
 			t.Fatalf("o HELP de aos_ready nao nomeia %q — %q", termo, linha)
 		}
