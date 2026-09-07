@@ -60,6 +60,9 @@ func TestRunProductionWithTrustAnchorSucceeds(t *testing.T) {
 	// as colunas de durabilidade que este arranque tem de satisfazer para chegar ao que o teste
 	// mede: o banner de identidade.
 	fixarSubstratoDuravelDeProducao(t)
+	// AOS-367: e a autoridade da destruição DSAR (AOS_DSAR_ERASERS ⊆ AOS_OPERATORS), a última
+	// coluna de durabilidade/autoridade que a produção passou a exigir.
+	fixarAutoridadeDSARDeProducao(t)
 
 	if err := run(&sb); err != nil {
 		t.Fatalf("production com trust anchor valido devia arrancar, veio: %v", err)

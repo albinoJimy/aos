@@ -32,6 +32,8 @@ import (
 	"net/http"
 	"time"
 
+	integration "github.com/aos-ref/integration"
+	control "github.com/aos-ref/kernel/agent-runtime/control"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -63,6 +65,22 @@ type holdRequestWire struct {
 	RequestID string `json:"request_id"`
 	SubjectID string `json:"subject_id,omitempty"`
 	Partition string `json:"partition,omitempty"`
+	// Emitter é a PROVA DE AUTORIDADE (AOS-367): a assinatura ed25519 do operador com `dsar:erase`
+	// sobre o payload canónico (acção "hold"/"release"‖alvo‖request_id). Só EXIGIDA quando
+	// AOS_DSAR_ERASERS está composto; ignorada (zero) na via legada por leitura.
+	Emitter emitterWire `json:"emitter"`
+}
+
+// expireRequestWire transporta as DUAS assinaturas do dual-control da expiração em massa (AOS-367).
+// O corpo é opcional na via legada (AOS_DSAR_ERASERS vazio ⇒ nada se decodifica); quando a prova
+// está composta, ambos os campos são obrigatórios.
+type expireRequestWire struct {
+	RequestID string `json:"request_id,omitempty"`
+	// Emitter é a PRIMEIRA assinatura de um eraser sobre o payload ("expire"‖""‖request_id).
+	Emitter emitterWire `json:"emitter"`
+	// CoEmitter é a SEGUNDA assinatura, de um eraser DISTINTO, sobre o MESMO payload — a expiração
+	// em massa não tem alvo único, pelo que a barreira de região é substituída por dual-control.
+	CoEmitter *emitterWire `json:"co_emitter,omitempty"`
 }
 
 // holdResponse é o desfecho SEM PII de uma acção de legal hold: o alvo (pseudónimo/opaco), o
@@ -141,6 +159,43 @@ func (h *apiHandler) handleLegalHold(w http.ResponseWriter, r *http.Request, pla
 	if req.Partition != "" && !validPseudonym(req.Partition) {
 		writeError(w, http.StatusBadRequest, "partition invalida (esperado identificador opaco)")
 		return
+	}
+	// (4c) PROVA DE AUTORIDADE (AOS-367). Opt-in por composição de AOS_DSAR_ERASERS. A acção
+	// ("hold"/"release") entra no payload assinado — uma assinatura de hold não se reapresenta como
+	// release. O alvo é o titular (ou, sem titular, a partição). VEM DEPOIS de `authorize` e ANTES
+	// do efeito (a barreira de destruição e a selagem).
+	acao := "hold"
+	if !place {
+		acao = "release"
+	}
+	alvo := req.SubjectID
+	if alvo == "" {
+		alvo = req.Partition
+	}
+	if _, ok := h.exigeAutoridadeDSAR(w, r, req.Emitter, acao, alvo, req.RequestID); !ok {
+		return
+	}
+	// (4d) BARREIRA DE REGIÃO no /dsar/release (AOS-367), no molde de [readGovernance.podeApagarTitular]
+	// que o /dsar/erase já aplica (ver dsar.go). Um chamador de outra região NÃO pode levantar a
+	// preservação de um alvo cuja residência a fronteira devia proteger — levantar o hold é remover o
+	// que trava o varredor automático (agnóstico de região) de o destruir. Só o RELEASE (place=false):
+	// um hold nunca é menos seguro por atravessar regiões. Cobre AMBOS os alvos — o titular (quantifica
+	// sobre os seus runs) E a partição só-de-partição (residência da própria partição) —, porque a
+	// partição é um alvo tão legítimo como o titular e deixá-la de fora era um desvio cross-region.
+	// Cross-region ⇒ 403 e o hold MANTÉM-SE (não se chega a chamar ReleaseSubject/ReleasePartition).
+	if !place {
+		switch {
+		case req.SubjectID != "":
+			if !h.readGov.podeApagarTitular(r.Context(), reader, req.SubjectID, h.node.DSARIndex) {
+				writeError(w, http.StatusForbidden, "nao autorizado")
+				return
+			}
+		case req.Partition != "":
+			if !h.readGov.podeLibertarParticao(r.Context(), reader, req.Partition) {
+				writeError(w, http.StatusForbidden, "nao autorizado")
+				return
+			}
+		}
 	}
 	// (5) SELA primeiro (facto auditável, sem PII); só depois aplica (fail-closed). Se o WORM não
 	// selar, a acção NÃO acontece: para o hold, não se afirma uma preservação não-auditada; para o
@@ -274,6 +329,57 @@ func (h *apiHandler) handleExpire(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeError(w, http.StatusForbidden, "nao autorizado")
 		return
+	}
+	// PROVA DE AUTORIDADE + DUAL-CONTROL (AOS-367). Opt-in por composição de AOS_DSAR_ERASERS, e
+	// VIVE SÓ AQUI, no handler HTTP: o varredor AUTOMÁTICO (retention_sweeper.go, sweepRetentionOnce)
+	// fica INTACTO — a exigência é sobre quem ORDENA uma expiração em massa por rota, não sobre o
+	// tick agendado. Colocada ANTES do `expireInFlight` para que um pedido sem prova não tome sequer
+	// o guard de serialização.
+	//
+	// A expiração é um varrimento GLOBAL por TTL, sem alvo único — a `podeApagarTitular` (que
+	// quantifica sobre a residência de UM titular) não se aplica. A barreira de região que o AC
+	// permite toma aqui a forma de DUAL-CONTROL: DUAS assinaturas de erasers DISTINTOS, no molde do
+	// /autonomy para L4/L5. Uma expiração em massa é a acção com o maior alcance de destruição do nó,
+	// e é a que menos deve poder ser ordenada por uma pessoa só.
+	if len(h.node.DSARErasers) > 0 {
+		if h.node.SteerAuth == nil {
+			writeError(w, http.StatusNotImplemented, "canal de controlo sem autenticador")
+			return
+		}
+		var req expireRequestWire
+		if status, ok := h.decodeJSON(w, r, &req); !ok {
+			writeError(w, status, "corpo invalido")
+			return
+		}
+		// PRIMEIRA assinatura pelo helper partilhado (capability + autenticação sobre o payload).
+		em, ok := h.exigeAutoridadeDSAR(w, r, req.Emitter, "expire", "", req.RequestID)
+		if !ok {
+			return
+		}
+		// SEGUNDA assinatura, de um eraser DISTINTO, sobre o MESMO payload. A distinção de pubkeys
+		// entre emitterIDs é garantida no arranque ([parseOperators]/[Bootstrap] abortam com pubkey
+		// partilhada), pelo que dois ids são duas chaves. Aqui a mensagem NÃO é uniforme de propósito:
+		// a exigência é postura declarada, e o operador que assinou sozinho precisa de saber o que
+		// falta (molde do /autonomy).
+		if req.CoEmitter == nil {
+			writeError(w, http.StatusForbidden, "expiracao em massa exige duas assinaturas de erasers distintos (co_emitter em falta)")
+			return
+		}
+		co, err := req.CoEmitter.decode()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "co_emitter invalido")
+			return
+		}
+		if co.ID == em.ID || !h.node.DSARErasers[co.ID] {
+			h.logf("DSAR (AOS-367): expiracao em massa RECUSADA — co_emitter %q e o mesmo emissor ou NAO detem %s", co.ID, dsarEraseCapability)
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
+		if err := h.node.SteerAuth.Authenticate(r.Context(), integration.DSARScope, control.SignalDSAR,
+			integration.CanonicalDSARPayload("expire", "", req.RequestID), co); err != nil {
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
 	}
 	// Só UMA passagem de cada vez (ver nota de SERIALIZAÇÃO acima). CAS não-bloqueante: se já
 	// houver uma passagem activa, recusa 409 em vez de correr uma segunda concorrente.

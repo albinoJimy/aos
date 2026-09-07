@@ -299,6 +299,13 @@ type Config struct {
 	// (AOS-305) — os únicos que podem mudar níveis por POST /autonomy. Cada id TEM de constar
 	// de Operators (validado fail-closed no [Bootstrap]); vazio ⇒ nenhum operador muda níveis.
 	AutonomySetters []string
+	// DSARErasers são os emitterIDs de [Operators] que detêm a capability `dsar:erase` (AOS-367) —
+	// os únicos autorizados a ASSINAR as acções de destruição DSAR (/dsar/erase, /dsar/hold,
+	// /dsar/release, /dsar/expire). Cada id TEM de constar de Operators (validado fail-closed no
+	// [Bootstrap]); vazio ⇒ a prova de autoridade fica desligada e as rotas mantêm a autenticação
+	// por leitura (retro-compatível). Em produção a lista é obrigatória (main.go,
+	// ErrProductionNeedsDSARErasers).
+	DSARErasers []string
 	// SteerTTL é a janela de frescura dos sinais de controlo. <=0 ⇒ default 5min.
 	SteerTTL time.Duration
 	// SteerSkew tolera carimbos ligeiramente no futuro (relógios adiantados). Default 0.
@@ -737,6 +744,11 @@ type Node struct {
 	// contra [Config.Operators]. É o que o handler de POST /autonomy consulta ANTES de
 	// autenticar: assinar bem não chega, é preciso deter o direito.
 	AutonomySetters map[string]bool
+	// DSARErasers é o conjunto dos emitterIDs com `dsar:erase` (AOS-367), já validados contra
+	// [Config.Operators]. É o que os handlers das quatro rotas DSAR consultam ANTES do efeito para
+	// exigir a prova de autoridade. Vazio (não composto) ⇒ prova DESLIGADA (as rotas mantêm a
+	// autenticação por leitura, retro-compatível); não-vazio ⇒ prova EXIGIDA.
+	DSARErasers map[string]bool
 	// fencingAuth é a autoridade de token das escritas fenceadas do ledger/checkpointer
 	// (AOS-299). Não-exportada: só o [NewNodeService] lhe liga o LeaseManager, e mais
 	// ninguém tem razão para lhe tocar. nil fora da execução durável.
@@ -1020,6 +1032,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			return nil, fmt.Errorf("%w: emitterID %q duplicado", ErrBadAutonomySetters, id)
 		}
 		autonomySetters[id] = true
+	}
+	// (1a-ter) AUTORIDADE SOBRE A DESTRUIÇÃO DE DADOS (AOS-367). Cada emitterID com `dsar:erase`
+	// TEM de ter pubkey em Operators — o mesmo raciocínio da guarda de AOS_AUTONOMY_SETTERS: um
+	// direito de destruir atribuído a quem nunca autentica é uma autoridade anunciada e não
+	// cumprida. O [SteerAuth] composto abaixo já regista TODOS os operadores, pelo que um eraser
+	// ⊆ Operators tem sempre pubkey registada para autenticar a assinatura DSAR.
+	dsarErasers := make(map[string]bool, len(cfg.DSARErasers))
+	for _, id := range cfg.DSARErasers {
+		if id == "" {
+			return nil, fmt.Errorf("%w: emitterID vazio", ErrBadDSARErasers)
+		}
+		if _, ok := cfg.Operators[id]; !ok {
+			return nil, fmt.Errorf("%w: emitterID %q nao consta de AOS_OPERATORS", ErrBadDSARErasers, id)
+		}
+		if dsarErasers[id] {
+			return nil, fmt.Errorf("%w: emitterID %q duplicado", ErrBadDSARErasers, id)
+		}
+		dsarErasers[id] = true
 	}
 	seenPrincipal := make(map[string]struct{}, len(cfg.Approvers))
 	seenApKey := make(map[string]string, len(cfg.Approvers))
@@ -2650,6 +2680,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
 		AutonomySetters:  autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
+		DSARErasers:      dsarErasers,     // AOS-367: quem detém dsar:erase (⊆ Operators, validado acima)
 		Revocations:      revocations,
 		Autonomy:         cfg.Autonomy,
 		EventStore:       es,

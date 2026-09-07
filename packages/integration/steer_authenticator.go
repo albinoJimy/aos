@@ -389,6 +389,32 @@ func CanonicalRevokePayload(jti, reason string) []byte {
 	return out
 }
 
+// DSARScope é o `runID` do tuplo assinado das acções de destruição do plano de governação de
+// dados (AOS-367): erase, hold, release, expire. Não há run — o âmbito é fixo, e o alvo concreto
+// (acção, titular, request_id) vive no PAYLOAD. É um valor DISTINTO de [AutonomyScope] e
+// [RevokeScope] de propósito: âmbitos partilhados deixariam duas assinaturas diferir só pelo
+// payload, e o `kind` deixaria de ser a segunda amarra.
+const DSARScope = "governance.dsar"
+
+// CanonicalDSARPayload é o payload assinado de uma acção DSAR de destruição (AOS-367).
+//
+// Length-prefixed pela MESMA razão que [signedMessage]: com um separador simples, os três campos
+// podiam deslizar a fronteira entre si e produzir o mesmo tuplo de bytes para uma acção
+// logicamente diferente — a mesma assinatura válida para outro alvo.
+//
+// A ACÇÃO entra no payload como PRIMEIRO campo variável e não é decorativa: é o que impede
+// reapresentar uma assinatura legítima de "hold" (reversível) como se fosse de "erase" (o
+// crypto-shred irreversível). O titular e o request_id entram para que uma assinatura capturada
+// não sirva para destruir outro titular nem para outra cerimónia.
+func CanonicalDSARPayload(action, subject, requestID string) []byte {
+	out := make([]byte, 0, 32+len(action)+len(subject)+len(requestID))
+	out = appendLenPrefixed(out, []byte("aos.governance.dsar/v1"))
+	out = appendLenPrefixed(out, []byte(action))
+	out = appendLenPrefixed(out, []byte(subject))
+	out = appendLenPrefixed(out, []byte(requestID))
+	return out
+}
+
 // ChallengeRequestScope é o `runID` do tuplo assinado de um PEDIDO DE CHALLENGE do four-eyes
 // (AOS-308). Distinto de [AutonomyScope] e [RevokeScope] pela mesma razão: âmbitos partilhados
 // deixariam duas assinaturas diferir só pelo payload.

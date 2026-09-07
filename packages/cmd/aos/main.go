@@ -344,6 +344,20 @@ var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com subs
 // e os testes usam.
 var ErrProductionNeedsDurableWORM = errors.New("aos: AOS_MODE=production exige um trilho de auditoria WORM DURAVEL — defina AOS_WORM_PATH (ex.: /var/lib/aos/worm.wal). Sobre o WORM in-memory de referencia a hash-chain tamper-evident morre com o processo: um restart apaga a PROVA (selo de residencia, changelog de politica AOS-310, selos de legal hold e de expiracao, atribuicao de quem destruiu o que) sem apagar o EFEITO. Como um WORM duravel exige custodia de KEK igualmente duravel, defina TAMBEM AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH) — senao a guarda ErrProductionNeedsDurableKEK recusa em seguida; nomeadas as duas para nao trocar um erro por outro. Simetrica a ErrProductionNeedsDurableSubstrate: o trilho tem de ser tao duravel quanto os efeitos que sela")
 
+// ErrProductionNeedsDSARErasers — sob AOS_MODE=production o conjunto de operadores autorizados a
+// assinar a destruição DSAR (AOS_DSAR_ERASERS) NÃO pode ficar vazio (AOS-367). É INCONDICIONAL, no
+// molde de [ErrProductionNeedsDurableWORM] e [ErrProductionNeedsDurableSubstrate], e não condicional
+// a uma opção.
+//
+// O RACIONAL. As quatro rotas de `planoGovernacao` (`/dsar/erase`, `/dsar/hold`, `/dsar/release`,
+// `/dsar/expire`) conduzem o crypto-shred IRREVERSÍVEL da KEK por-titular — a única operação do nó
+// que nenhum restore drill desfaz. Fora de produção a prova de autoridade é opt-in por composição
+// (lista vazia ⇒ desligada, retro-compatível com dev e testes por headers); mas a produção NÃO pode
+// deixá-las autorizadas por um simples token de LEITURA, porque um só par issuer/audience serve o
+// leitor e o operador DSAR. Exigir a lista não-vazia obriga o deployment a DECLARAR quem pode
+// destruir — a separação de deveres que o token de leitura sozinho não dá.
+var ErrProductionNeedsDSARErasers = errors.New("aos: AOS_MODE=production exige AOS_DSAR_ERASERS nao-vazio — as quatro rotas DSAR (/dsar/erase, /dsar/hold, /dsar/release, /dsar/expire) conduzem crypto-shred IRREVERSIVEL, e um so par issuer/audience serve o leitor de runs e o operador que destroi; a producao nao pode deixar a destruicao autorizada por um token de LEITURA. Defina AOS_DSAR_ERASERS com os emitterIDs de AOS_OPERATORS (que assinam com dsar:erase, chave privada fora do no) autorizados a assinar a destruicao. Fora de producao a lista vazia deixa a prova desligada (retro-compativel)")
+
 // ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é
 // um booleano reconhecido. Fail-closed de CONFIG (AOS-209), no padrão de ErrBadDurableExecution:
 // lixo NÃO é tratado como false. Um operador que escreve "AOS_TLS_EXTERNAL_TERMINATION=sim"
@@ -605,6 +619,13 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// AUTORIDADE SOBRE A DESTRUIÇÃO DE DADOS (AOS-367): quais destes operadores detêm
+	// `dsar:erase` — a prova exigida às quatro rotas de destruição DSAR. Como AOS_AUTONOMY_SETTERS:
+	// a pertença a AOS_OPERATORS é verificada no Bootstrap, onde as duas listas se encontram.
+	dsarErasers, err := parseDSARErasers(os.Getenv("AOS_DSAR_ERASERS"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	// FOUR-EYES / DUAL-CONTROL (AOS-162) — APROVADORES por FICHEIRO MONTADO
 	// (AOS_APPROVERS_FILE, AOS-193). Ver [parseApproversFile] para a JUSTIFICAÇÃO de ser um
@@ -739,6 +760,10 @@ func nodeConfigFromEnv() (Config, error) {
 		// AUTORIDADE SOBRE A AUTONOMIA (AOS-305): os emitterIDs de AOS_OPERATORS que podem mudar
 		// niveis (AOS_AUTONOMY_SETTERS). Vazio ⇒ POST /autonomy recusa tudo, declarado no banner.
 		AutonomySetters: autonomySetters,
+		// AUTORIDADE SOBRE A DESTRUIÇÃO DE DADOS (AOS-367): os emitterIDs de AOS_OPERATORS que podem
+		// assinar as acções DSAR de destruição (AOS_DSAR_ERASERS). Vazio ⇒ prova DESLIGADA (as rotas
+		// mantêm a autenticação por leitura); em produção a guarda abaixo exige-a não-vazia.
+		DSARErasers: dsarErasers,
 		// FOUR-EYES (AOS-162/AOS-193): aprovadores lidos do ficheiro montado AOS_APPROVERS_FILE
 		// (já validados fail-closed acima). Vazio ⇒ o gate NÃO é composto e POST
 		// /runs/{id}/approve devolve 501 (endpoint declaradamente desligado, não uma falha).
@@ -911,6 +936,16 @@ func nodeConfigFromEnv() (Config, error) {
 	// produção o MemStore de referência continua a compor (bootstrap.go, inalterado).
 	if production && cfg.WORMPath == "" {
 		return Config{}, ErrProductionNeedsDurableWORM
+	}
+
+	// FAIL-CLOSED de produção (AOS-367) — a DESTRUIÇÃO DSAR tem de declarar QUEM a pode ordenar.
+	// INCONDICIONAL como as duas guardas de durabilidade acima: a autoridade sobre uma operação
+	// irreversível não pode nascer de um token de LEITURA. Fecha o bloco de durabilidade/autoridade
+	// de propósito, DEPOIS do WORM: as guardas anteriores garantem o substrato onde a atribuição da
+	// destruição é selada; esta garante que a destruição tem autoridade distinta da leitura. Fora de
+	// produção AOS_DSAR_ERASERS vazio deixa a prova desligada (bootstrap.go, retro-compatível).
+	if production && len(cfg.DSARErasers) == 0 {
+		return Config{}, ErrProductionNeedsDSARErasers
 	}
 
 	// ATTESTATION DE DISPOSITIVO WebAuthn (AOS-177) por ambiente: AOS_ATTESTATION_VERIFIER_URL liga

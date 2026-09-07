@@ -83,6 +83,10 @@ func aos247ProdEnvBase(t *testing.T, endpoint string) string {
 	t.Setenv("AOS_OPERATORS", "")
 	t.Setenv("AOS_APPROVERS_FILE", "")
 	t.Setenv("AOS_HUMAN_OIDC_ISSUER", "")
+	// AOS-367: a produção exige AOS_DSAR_ERASERS não-vazio. Compõe-se aqui (a par de AOS_OPERATORS)
+	// DEPOIS do reset acima, para que este ficheiro continue a medir a coluna da CREDENCIAL DO MODELO
+	// e não a autoridade DSAR — a mesma razão da cascata de durabilidade acima.
+	fixarAutoridadeDSARDeProducao(t)
 	return dir
 }
 

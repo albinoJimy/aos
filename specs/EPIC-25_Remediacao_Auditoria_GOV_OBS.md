@@ -673,7 +673,36 @@ certo.*
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-07). As quatro rotas do `planoGovernacao` passam a exigir **prova de
+autoridade distinta do id-token de leitura**: a cerimónia ed25519 que o `/autonomy` já usa
+(assinatura do corpo sobre payload canónico `CanonicalDSARPayload(acção‖alvo‖request_id)` com nonce
+durável de uso único), autorizada por um capability-set **dedicado** `AOS_DSAR_ERASERS` (⊆
+`AOS_OPERATORS`, capability `dsar:erase`) — separação de deveres entre quem lê, quem muda autonomia e
+quem destrói PII. **Racional da escolha** (a AC pedia-o escrito): a via da capability num claim OIDC
+exigia alterar o contrato partilhado `oidc.Claims` (sem campo de scope), depender do IdP emitir o
+claim, e não produzia prova *distinta* do token de leitura (não há segundo verificador); a cerimónia
+ed25519 é o idioma já estabelecido do nó para operações de autoridade irreversíveis (`/autonomy`,
+`/nhi/revoke`), é durável, dual-control-capaz, e a chave privada nunca entra no nó.
+
+**Retro-compatível** (não quebra o cluster): a prova é *opt-in por composição* (conjunto vazio ⇒
+comportamento legado, como o TaintGate de AOS-363); **em produção o arranque exige-a**
+(`ErrProductionNeedsDurableWORM`-style `ErrProductionNeedsDSARErasers`, incondicional no bloco de
+durabilidade). A `acção` entra no payload assinado ⇒ uma assinatura de "hold" não se reapresenta como
+"erase"; `DSARScope`/`SignalDSAR` distintos ⇒ nenhuma assinatura de `/autonomy` ou `/nhi/revoke`
+verifica aqui. **Região**: `/dsar/release` confronta a residência do alvo — titular (via
+`podeApagarTitular`) **e** partição-só (via `podeLibertarParticao`) — cross-region ⇒ 403 e o hold
+mantém-se. `/dsar/expire` (varrimento global de TTL, sem alvo único) exige **dual-control** — duas
+assinaturas de erasers distintos, no molde de L4/L5 — que é a "prova adicional para varrer fora da
+região" que a AC permite; o varredor automático (`retention_sweeper.go`) fica intacto.
+`planos.go:113-122` reconciliado (distingue identificação de autorização). Docs: `AOS_DSAR_ERASERS`
+em `deploy/node/README.md`, `docker-compose.prod.yml`, e a décima porta em `deploy/server/README.md`.
+
+Provado por `-race` em `cmd/aos` (+ `integration`, `kernel/agent-runtime/control`), guardas
+não-vacuosas por mutação (autoridade desligada ⇒ os 403 avermelham; região do release desligada ⇒
+o cross-region avermelha, tanto por titular como por partição), e o smoke `run-aos`. **Revisão
+adversarial de segurança independente**: sem bypass, sem replay, sem fail-open; apanhou um residual
+(o release só-de-partição saltava a barreira de região) — **fechado** com `podeLibertarParticao` e
+teste dedicado antes da integração, não aceite como residual. Nenhum critério deferido.
 
 
 Tickets AOS-368 a AOS-373, redigidos a partir de `analises/13_Auditoria_GOV_OBS_Adversarial.md`

@@ -87,3 +87,25 @@ func (g *readGovernance) podeApagarTitular(ctx context.Context, id readerIdentit
 	}
 	return true
 }
+
+// podeLibertarParticao é a mesma regra de residência de [podeApagarTitular], mas para o alvo de um
+// release SÓ-DE-PARTIÇÃO (`/dsar/release` com `partition` e sem `subject_id`). Sem esta perna, um
+// chamador de outra região levantava o hold de UMA partição de outra soberania e o varredor
+// automático de TTL — que é agnóstico de região por desenho — destruía o conteúdo já sem
+// preservação. A partição É um alvo, e a AC exige confrontar a região do chamador com a residência
+// do alvo; um release cross-region de partição é o mesmo defeito que [podeApagarTitular] fecha para
+// o titular. Fail-closed na mesma disciplina: sem gate composto ⇒ legado; erro a resolver ⇒ nega;
+// partição SEM residência selada ⇒ permite (retro-compat, como a perna `!selada` do titular).
+func (g *readGovernance) podeLibertarParticao(ctx context.Context, id readerIdentity, particao string) bool {
+	if g == nil {
+		return true // gate soberano não composto ⇒ comportamento legado (via por headers)
+	}
+	region, selada, err := g.runResidency(ctx, particao)
+	if err != nil {
+		return false
+	}
+	if !selada {
+		return true
+	}
+	return regionsCoincide(id.region, region)
+}

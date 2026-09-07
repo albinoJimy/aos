@@ -64,6 +64,10 @@ func aos344ProducaoQuaseCompleta(t *testing.T) {
 	// AOS-365: o WORM volátil deixou de arrancar em produção; esta cascata (WORM+KEK+shred)
 	// fecha-se para que este ficheiro continue a medir a coluna do DRIVER DE SANDBOX.
 	fixarSubstratoDuravelDeProducao(t)
+	// AOS-367: a produção passou a exigir AOS_DSAR_ERASERS não-vazio (a destruição DSAR não pode
+	// ficar autorizada por um token de leitura). Fecha-se aqui, ⊆ AOS_OPERATORS, para que o arranque
+	// chegue à coluna do driver de sandbox.
+	fixarAutoridadeDSARDeProducao(t)
 }
 
 // TestAOS344_ProducaoSemDriverDeSandboxRecusa é a AC1 pelo caminho que a auditoria mediu: o nó

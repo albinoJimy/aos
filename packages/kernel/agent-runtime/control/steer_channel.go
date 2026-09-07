@@ -49,6 +49,20 @@ const (
 	// pause como se fosse de uma revogação.
 	SignalRevoke SignalKind = "nhi.revoke"
 
+	// SignalDSAR é uma acção IRREVERSÍVEL do plano de governação de dados (AOS-367): o
+	// crypto-shred de um titular (`erase`), a colocação/levantamento de um legal hold
+	// (`hold`/`release`) ou a expiração em massa por TTL (`expire`). Como o [SignalRevoke],
+	// NÃO atravessa o [SteerChannel] nem pertence a um run — o `runID` do tuplo assinado é o
+	// âmbito fixo "governance.dsar" e o alvo (acção, titular, request_id) vai no PAYLOAD.
+	//
+	// A ACÇÃO entra no payload de propósito: uma assinatura produzida para `hold` não pode ser
+	// reapresentada como `erase`. Está aqui só pelo vocabulário do tuplo — é o `kind` que impede
+	// reutilizar a assinatura de uma revogação ou de uma mudança de autonomia como acção DSAR, e
+	// vice-versa. A destruição que autoriza é a única operação do nó que nenhum restore desfaz,
+	// pelo que era a que menos podia ficar autorizada por um mero token de leitura (o defeito que
+	// AOS-367 fecha).
+	SignalDSAR SignalKind = "governance.dsar"
+
 	// SignalChallenge é o PEDIDO DE CHALLENGE de uma cerimónia four-eyes (AOS-308), assinado
 	// pelo APROVADOR que o vai usar. Como [SignalRevoke], não atravessa o [SteerChannel] nem
 	// pertence a um run como sinal de controlo: o `runID` do tuplo assinado é o âmbito fixo
