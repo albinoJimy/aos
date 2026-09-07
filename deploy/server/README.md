@@ -578,11 +578,12 @@ journalctl -u aos-tls-sync.service -n 20
 
 ## `AOS_MODE=production` — ligado
 
-O nó corre em modo produção. Não foi um interruptor: são **sete** portas fail-closed, e o
+O nó corre em modo produção. Não foi um interruptor: são **oito** portas fail-closed, e o
 arranque aborta em qualquer uma. As seis primeiras foram enumeradas empiricamente — arrancando a
 imagem num contentor descartável e acrescentando um requisito de cada vez até passar — e não por
-leitura do código, que é como a terceira tinha passado despercebida. **A sétima só podia vir da
-leitura do código**, e a nota depois da tabela explica porquê.
+leitura do código, que é como a terceira tinha passado despercebida. **A sétima e a oitava só
+podiam vir da leitura do código** — nenhuma delas negava, arrancavam —, e as notas depois da
+tabela explicam porquê.
 
 | Porta | Exige | Servida por |
 |---|---|---|
@@ -593,6 +594,7 @@ leitura do código**, e a nota depois da tabela explica porquê.
 | **Custódia da KEK** | `AOS_DSAR_VAULT_ADDR` + `_TOKEN_PATH` | **Vault** (`vault`, `vault-unseal`) |
 | **Credencial do modelo** | `AOS_MODEL_API_KEY_PATH` | master key do LiteLLM |
 | **Driver de sandbox** (condicional) | `AOS_SANDBOX_DRIVER=gvisor` (+`AOS_SANDBOX_GVISOR_URL`) ou `=firecracker` (+`AOS_SANDBOX_FIRECRACKER_URL`) | **componente `gvisor`** (`gvisor/`) |
+| **Trilho WORM durável** | `AOS_WORM_PATH` (e, por arrasto da KEK, `AOS_DSAR_VAULT_ADDR`) | **montagem gravável** (`/var/lib/aos`, `worm.wal`) |
 
 As duas últimas não constavam da versão anterior deste documento. A da KEK nunca tinha sido
 nomeada; a do modelo **nasceu** quando o gateway foi ligado — antes disso `AOS_MODEL_ENDPOINT`
@@ -610,6 +612,24 @@ hash-chain WORM como se fosse um efeito real. É **condicional**: só exigida qu
 entregue em [`model-tools/tools.json`](model-tools/tools.json). Este servidor já a satisfazia
 (`AOS_SANDBOX_DRIVER=gvisor`, secção «Sandbox» acima); o que faltava era a porta existir para
 quem copiasse o compose sem essa linha.
+
+**A oitava também nasceu de uma auditoria** (AOS-365, achado O-12) e é do mesmo feitio da sétima:
+não negava — arrancava. Sem `AOS_WORM_PATH` o nó caía no WORM `in-memory de referencia
+(nao-duravel)` **sem consultar o modo**, e o banner declarava-o com honestidade — o que
+*desarmava* a suspeita em vez de a levantar: quem lê «nao-duravel» vê uma declaração correcta e não
+pergunta se produção devia tê-la aceite. A honestidade do banner substituiu a guarda. O conteúdo
+não se perdia (o Event Store é durável pela porta da soberania, a KEK pela sua); o que morria com o
+processo era a **hash-chain tamper-evident** — a prova de quem selou o quê: selo de residência,
+changelog de política, legal hold, expiração, atribuição de quem destruiu o quê. Um restart apagava
+a **prova**, não o **efeito**. É **incondicional**, como a do Event Store — o WORM sela sempre — e
+*arrasta* a porta da KEK que já existia: um WORM durável exige KEK durável (a porta da custódia,
+acima). Por isso a mensagem de erro nomeia `AOS_WORM_PATH` **e** `AOS_DSAR_VAULT_ADDR` de uma vez —
+para o operador não fazer a coisa certa a meio e trocar um erro por outro. **São essas duas
+variáveis, e só elas:** o Vault que `AOS_DSAR_VAULT_ADDR` compõe já sabe confirmar a destruição da
+KEK, pelo que a porta da confirmação de shred (AOS-328) passa por si — **não** é preciso declarar
+`AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL`, que existe para o caso oposto (uma custódia que destrói às
+cegas) e suprimiria o aviso AOS-322. Este servidor já montava um caminho de WORM; a porta é para
+quem não o fizer.
 
 ### O que o corte para produção mudou
 

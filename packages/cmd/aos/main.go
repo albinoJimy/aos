@@ -269,7 +269,10 @@ var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem
 //
 // FICA DEPOIS das outras colunas de postura (identidade, soberania, KEK, four-eyes) de propósito:
 // um nó de produção mal configurado deve ouvir primeiro o que é mais fundamental, e mudar a ordem
-// trocaria o diagnóstico de quem já depende dela.
+// trocaria o diagnóstico de quem já depende dela. Desde AOS-365 é a PRIMEIRA das duas guardas de
+// durabilidade incondicionais; a do WORM ([ErrProductionNeedsDurableWORM]) fecha o bloco logo a
+// seguir — mantê-la ANTES do WORM preserva TestAOS300_ProducaoSemEventStoreDuravelRecusa, que exige
+// ouvir «falta o Event Store» quando faltam os dois.
 var ErrProductionNeedsDurableSubstrate = errors.New("aos: AOS_MODE=production exige um Event Store DURAVEL — defina AOS_EVENTSTORE_NATS (ex.: aos-es-0:4222) ou AOS_EVENTSTORE_PATH (ex.: /var/lib/aos/events.wal). Sobre o store in-memory de referencia o stream identity.nhi.revoked morre com o processo: um NHI revogado volta a ser ACEITE ao primeiro restart, em silencio, enquanto o banner anuncia revogacao")
 
 var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
@@ -315,6 +318,29 @@ var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com
 var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois devolvem ErrDriverUnavailable e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
 
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
+
+// ErrProductionNeedsDurableWORM — sob AOS_MODE=production o trilho de auditoria WORM NÃO pode ser o
+// MemStore in-memory de referência (AOS-365, achado O-12). É INCONDICIONAL, no molde de
+// [ErrProductionNeedsDurableSubstrate] e não no de KEK/four-eyes: o WORM sela SEMPRE — o selo de
+// residência, o changelog de política de AOS-310, os selos de legal hold e de expiração, e a
+// atribuição de quem destruiu o quê — pelo que não há opção que o torne dispensável.
+//
+// O DANO É A PROVA, NÃO O EFEITO. O conteúdo não se perde: o Event Store é durável por
+// [ErrProductionNeedsDurableSubstrate] e a KEK por [ErrProductionNeedsDurableKEK]. O que morre com o
+// processo é a hash-chain tamper-evident a que tecnica/17 §5.1 atribui a detecção. Um restart apaga
+// a prova de quem fez o quê, não o que foi feito — e o banner honesto («in-memory de referencia
+// (nao-duravel)») desarmava a suspeita em vez de a levantar, que é porque este buraco sobreviveu às
+// dez guardas irmãs escritas uma a uma.
+//
+// NOMEIA AS DUAS VARIÁVEIS de propósito (AOS-365 CA-5): definir só AOS_WORM_PATH satisfaz esta
+// guarda mas dispara logo a seguinte ([ErrProductionNeedsDurableKEK], porque um WORM durável exige
+// KEK durável). Um operador que ouvisse uma variável de cada vez trocava um erro por outro; a
+// mensagem diz-lhe as duas ao mesmo tempo. A via NATS do Event Store NÃO satisfaz esta guarda: o
+// WORM é sempre um ficheiro local (ver a nota do guard de substrato), só AOS_WORM_PATH conta.
+//
+// FORA DE PRODUÇÃO NADA MUDA: o MemStore de referência continua a compor — é o que o smoke, as demos
+// e os testes usam.
+var ErrProductionNeedsDurableWORM = errors.New("aos: AOS_MODE=production exige um trilho de auditoria WORM DURAVEL — defina AOS_WORM_PATH (ex.: /var/lib/aos/worm.wal). Sobre o WORM in-memory de referencia a hash-chain tamper-evident morre com o processo: um restart apaga a PROVA (selo de residencia, changelog de politica AOS-310, selos de legal hold e de expiracao, atribuicao de quem destruiu o que) sem apagar o EFEITO. Como um WORM duravel exige custodia de KEK igualmente duravel, defina TAMBEM AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH) — senao a guarda ErrProductionNeedsDurableKEK recusa em seguida; nomeadas as duas para nao trocar um erro por outro. Simetrica a ErrProductionNeedsDurableSubstrate: o trilho tem de ser tao duravel quanto os efeitos que sela")
 
 // ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é
 // um booleano reconhecido. Fail-closed de CONFIG (AOS-209), no padrão de ErrBadDurableExecution:
@@ -867,10 +893,22 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 
 	// FAIL-CLOSED de produção (AOS-300) — a REVOGAÇÃO DE NHI tem de sobreviver a um restart. Ver
-	// [ErrProductionNeedsDurableSubstrate] para o porquê de esta ser INCONDICIONAL onde as outras
-	// duas guardas de durabilidade são condicionais a uma opção, e para o porquê de vir por último.
+	// [ErrProductionNeedsDurableSubstrate] para o porquê de esta ser INCONDICIONAL onde as guardas
+	// da KEK e do four-eyes são condicionais a uma opção. É a primeira das DUAS guardas de
+	// durabilidade incondicionais que fecham o bloco; a do WORM (AOS-365) segue-se logo abaixo.
 	if production && eventStorePath == "" && eventStoreNATS == "" {
 		return Config{}, ErrProductionNeedsDurableSubstrate
+	}
+
+	// FAIL-CLOSED de produção (AOS-365) — o TRILHO WORM tem de sobreviver a um restart, tal como o
+	// substrato. INCONDICIONAL como [ErrProductionNeedsDurableSubstrate] (o WORM sela SEMPRE), não
+	// condicional a uma opção como a KEK e o four-eyes. Fecha o bloco DEPOIS da KEK de propósito:
+	// pô-la antes tornaria o ramo `cfg.WORMPath != ""` da guarda da KEK sempre-verdadeiro em
+	// produção e mascararia o seu diagnóstico; pô-la antes do substrato roubaria o erro à guarda de
+	// substrato quando ambos faltam (TestAOS300_ProducaoSemEventStoreDuravelRecusa). Fora de
+	// produção o MemStore de referência continua a compor (bootstrap.go, inalterado).
+	if production && cfg.WORMPath == "" {
+		return Config{}, ErrProductionNeedsDurableWORM
 	}
 
 	// ATTESTATION DE DISPOSITIVO WebAuthn (AOS-177) por ambiente: AOS_ATTESTATION_VERIFIER_URL liga
