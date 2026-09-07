@@ -20,6 +20,11 @@ receivers:
             - targets: ["aos:8080"]
 
 processors:
+  # AOS-368: NÃO há processor `resource` a injectar `service.name` aqui — e é deliberado.
+  # A identidade do recurso (service.name) vem do PRODUTOR: o adaptador OTLP do nó povoa
+  # `resourceSpans[].resource.attributes` com `service.name` (default "aos", configurável
+  # por AOS_OTLP_SERVICE_NAME). A correcção está na FONTE, pelo que o colector não reescreve
+  # o recurso à passagem.
   batch: {}
 
 exporters:

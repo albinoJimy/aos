@@ -331,6 +331,9 @@ services:
       AOS_TLS_EXTERNAL_TERMINATION: "1"
 
       AOS_OTLP_ENDPOINT: "http://otel:4318"
+      # service.name do recurso OTLP (AOS-368): a IDENTIDADE do produtor no backend de traces.
+      # Vazio ⇒ default determinista "aos" — o documento nunca sai como unknown_service.
+      AOS_OTLP_SERVICE_NAME: "${AOS_OTLP_SERVICE_NAME:-aos}"
 
       # --- MODEL GATEWAY (EPIC-06) ---------------------------------------------------------
       # VAZIO ⇒ modelo de REFERÊNCIA: cada turno devolve texto fixo, sem tool calls, e o

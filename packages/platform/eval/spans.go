@@ -82,7 +82,10 @@ func spanIDAt(n uint64) [8]byte {
 // (mantém os ids únicos e deterministas entre casos). Devolve os spans do caso.
 func encodeBehavior(traceID [16]byte, caseID string, b Behavior, next *uint64) []otelgenai.SpanData {
 	root := otelgenai.SpanData{
-		Name:         otelgenai.OpInvokeAgent,
+		Name: otelgenai.OpInvokeAgent,
+		// Espécie derivada da operação (AOS-368), coerente com o SpanTracer: invoke_agent é
+		// INTERNAL (valor-zero). Aditivo — o trace-diffing não lê Kind, só ids/output/usage.
+		Kind:         otelgenai.KindForOperation(otelgenai.OpInvokeAgent),
 		SpanContext:  otelgenai.SpanContext{TraceID: traceID, SpanID: spanIDAt(*next)},
 		ParentSpanID: [8]byte{},
 		Attributes: []otelgenai.KeyValue{
@@ -102,7 +105,9 @@ func encodeBehavior(traceID [16]byte, caseID string, b Behavior, next *uint64) [
 	// comportamento AOS-114 fica byte-a-byte inalterado — o scoring nunca lê chats).
 	if b.hasUsage() {
 		spans = append(spans, otelgenai.SpanData{
-			Name:         otelgenai.OpChat,
+			Name: otelgenai.OpChat,
+			// A chamada ao modelo é CLIENT (AOS-368), mesmo no span sintético do harness.
+			Kind:         otelgenai.KindForOperation(otelgenai.OpChat),
 			SpanContext:  otelgenai.SpanContext{TraceID: traceID, SpanID: spanIDAt(*next)},
 			ParentSpanID: rootSpanID,
 			Attributes: []otelgenai.KeyValue{
@@ -118,6 +123,7 @@ func encodeBehavior(traceID [16]byte, caseID string, b Behavior, next *uint64) [
 	for _, action := range b.Actions {
 		spans = append(spans, otelgenai.SpanData{
 			Name:         otelgenai.OpExecuteTool,
+			Kind:         otelgenai.KindForOperation(otelgenai.OpExecuteTool), // INTERNAL (valor-zero)
 			SpanContext:  otelgenai.SpanContext{TraceID: traceID, SpanID: spanIDAt(*next)},
 			ParentSpanID: rootSpanID,
 			Attributes: []otelgenai.KeyValue{

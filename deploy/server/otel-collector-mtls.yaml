@@ -48,6 +48,11 @@ receivers:
             - targets: ["aos:8080"]
 
 processors:
+  # AOS-368: NÃO há processor `resource` a injectar `service.name` aqui — e é deliberado.
+  # A identidade do recurso (service.name) é emitida pelo PRODUTOR: o adaptador OTLP do nó
+  # povoa `resourceSpans[].resource.attributes` com `service.name` (default "aos",
+  # configurável por AOS_OTLP_SERVICE_NAME). Como a correcção está na FONTE, o colector não
+  # precisa de reescrever nada à passagem; ligar um `resource` aqui só mascararia o produtor.
   batch: {}
   # Tecto de memória: um pico de traces não pode derrubar o collector e, com ele, a
   # observabilidade do nó no momento em que ela é mais precisa.

@@ -751,6 +751,10 @@ func nodeConfigFromEnv() (Config, error) {
 		OTLPClientCertPath:  strings.TrimSpace(os.Getenv("AOS_OTLP_CLIENT_CERT_PATH")),
 		OTLPClientKeyPath:   strings.TrimSpace(os.Getenv("AOS_OTLP_CLIENT_KEY_PATH")),
 		OTLPBearerTokenPath: strings.TrimSpace(os.Getenv("AOS_OTLP_BEARER_TOKEN_PATH")),
+		// service.name do recurso OTLP (AOS-368): a IDENTIDADE do produtor no backend de
+		// traces. Vazio ⇒ o exporter aplica o default determinista "aos" — o documento nunca
+		// sai como `unknown_service`. Só tem efeito com AOS_OTLP_ENDPOINT definido.
+		OTLPServiceName: strings.TrimSpace(os.Getenv("AOS_OTLP_SERVICE_NAME")),
 		// CANAL DE CONTROLO (AOS-160/AOS-193): pubkeys dos operadores lidas de AOS_OPERATORS
 		// (já validadas fail-closed acima). Vazio ⇒ default-deny do canal de controlo (o steer
 		// anónimo é recusado — a inércia do D4 não protege pause/steer) E, desde AOS-193, o

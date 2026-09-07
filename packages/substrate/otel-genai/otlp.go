@@ -24,6 +24,8 @@ type otlpResource struct {
 	ScopeSpans []otlpScopeSpans `json:"scopeSpans"`
 }
 
+// otlpResourceBody carrega os atributos de RECURSO (ex.: service.name). Deixou de
+// ficar sempre no valor-zero (AOS-368): [MarshalOTLP] povoa-o a partir das opções.
 type otlpResourceBody struct {
 	Attributes []otlpKeyValue `json:"attributes,omitempty"`
 }
@@ -68,12 +70,49 @@ type otlpAnyValue struct {
 	BoolValue   *bool    `json:"boolValue,omitempty"`
 }
 
+// ServiceNameAttr é a chave semconv do atributo de recurso que dá IDENTIDADE ao
+// produtor no backend OTel. Sem ela, um trace chega atribuído a `unknown_service`
+// (AOS-368). Vive aqui, na serialização, porque é aqui que o recurso é montado.
+const ServiceNameAttr = "service.name"
+
+// MarshalOption configura [MarshalOTLP]. É VARIÁDICA e retro-compatível: sem
+// opções, o documento sai como antes (recurso vazio) — os chamadores existentes não
+// mudam de forma.
+type MarshalOption func(*marshalConfig)
+
+type marshalConfig struct {
+	resource []otlpKeyValue
+}
+
+// WithServiceName injecta o atributo de recurso [ServiceNameAttr] (service.name) no
+// documento OTLP — a identidade que o backend usa para atribuir o trace. Vazio ⇒ não
+// injecta (mantém o comportamento anterior, recurso vazio). Repetir a opção com o
+// mesmo valor acumula atributos, mas o exporter passa-a uma só vez.
+func WithServiceName(name string) MarshalOption {
+	return func(c *marshalConfig) {
+		if name == "" {
+			return
+		}
+		v := name
+		c.resource = append(c.resource, otlpKeyValue{
+			Key:   ServiceNameAttr,
+			Value: otlpAnyValue{StringValue: &v},
+		})
+	}
+}
+
 // MarshalOTLP serializa spans no documento OTLP/JSON de traces, com um único
-// ResourceSpans (recurso vazio) e um ScopeSpans do scope dado. Os ids saem em
-// HEX. Determinista para a mesma entrada.
-func MarshalOTLP(spans []SpanData, scope string) ([]byte, error) {
+// ResourceSpans e um ScopeSpans do scope dado. Os atributos de RECURSO (ex.:
+// service.name via [WithServiceName]) povoam `resourceSpans[0].resource.attributes`;
+// sem opções o recurso fica vazio (retro-compatível). Os ids saem em HEX.
+// Determinista para a mesma entrada.
+func MarshalOTLP(spans []SpanData, scope string, opts ...MarshalOption) ([]byte, error) {
 	if scope == "" {
 		scope = ScopeName
+	}
+	var cfg marshalConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 	out := make([]otlpSpan, 0, len(spans))
 	for _, s := range spans {
@@ -81,6 +120,7 @@ func MarshalOTLP(spans []SpanData, scope string) ([]byte, error) {
 	}
 	doc := otlpResourceSpans{
 		ResourceSpans: []otlpResource{{
+			Resource: otlpResourceBody{Attributes: cfg.resource},
 			ScopeSpans: []otlpScopeSpans{{
 				Scope: otlpScope{Name: scope},
 				Spans: out,
@@ -88,6 +128,19 @@ func MarshalOTLP(spans []SpanData, scope string) ([]byte, error) {
 		}},
 	}
 	return json.Marshal(doc)
+}
+
+// otlpSpanKind mapeia a [SpanKind] interna para o inteiro do wire OTLP/JSON. Só
+// INTERNAL (1) e CLIENT (3) são necessários hoje; SERVER=2, PRODUCER=4 e CONSUMER=5
+// existem na spec OTLP mas nenhum produtor os declara. Uma espécie desconhecida cai
+// no valor-zero seguro (INTERNAL→1), preservando a compatibilidade dos produtores.
+func otlpSpanKind(k SpanKind) int {
+	switch k {
+	case SpanKindClient:
+		return 3 // SPAN_KIND_CLIENT
+	default:
+		return 1 // SPAN_KIND_INTERNAL
+	}
 }
 
 // toOTLPSpan converte uma [SpanData] no span OTLP correspondente.
@@ -105,7 +158,7 @@ func toOTLPSpan(s SpanData) otlpSpan {
 		SpanID:            s.SpanContext.SpanIDHex(),
 		ParentSpanID:      parent,
 		Name:              s.Name,
-		Kind:              1, // SPAN_KIND_INTERNAL
+		Kind:              otlpSpanKind(s.Kind), // AOS-368: espécie declarada (INTERNAL→1, CLIENT→3), já não fixa
 		StartTimeUnixNano: strconv.FormatInt(s.StartUnixNano, 10),
 		EndTimeUnixNano:   strconv.FormatInt(s.EndUnixNano, 10),
 		Attributes:        attrs,
