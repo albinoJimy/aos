@@ -389,12 +389,31 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	// MESMO WORM (partição por RunID). É o "audit" da cadeia — não um hook.
 	eventSink := audit.NewMediationSink(cfg.WORM)
 
-	// RM via a via ESTRITA: recusa fail-closed IdentityStub/EgressStub e exige
-	// ScopeGate+TaintGate activos e audit durável. Nunca [referencemonitor.New] cru.
-	rm, err := referencemonitor.NewProductionSecure(privileged,
+	// RM via a via ESTRITA (recusa fail-closed IdentityStub/EgressStub, exige
+	// ScopeGate+TaintGate activos e audit durável) OU a via ENDURECIDA que, além disso,
+	// recusa um TaintGate inerte. AOS-363: a barreira control/data-plane deixa de ser
+	// inerte por OPÇÃO do operador (AOS_PRIVILEGED_CAPS), sem regredir os deployments
+	// actuais.
+	//
+	//   - conjunto EFICAZ (não-vazio, ou um classificador custom opaco que não se pode
+	//     provar inerte) ⇒ [NewProductionHardenedTaint]: se por engano ficar inerte,
+	//     o nó recusa arrancar ([ErrTaintGateInert]) em vez de mediar sem barreira.
+	//   - conjunto VAZIO — o default quando AOS_PRIVILEGED_CAPS não é definida ⇒
+	//     [NewProductionSecure]: arranca com o gate PRESENTE-MAS-INERTE, exactamente como
+	//     antes desta mudança. É a perna retro-compatível; nenhum nó existente regride.
+	//
+	// A escolha delega no MESMO predicado de eficácia ([EffectivePrivilegedAuthorizer])
+	// que o construtor endurecido usa internamente — não há segunda definição de "eficaz".
+	rmOpts := []referencemonitor.Option{
 		referencemonitor.WithHooks(hooks...),
 		referencemonitor.WithEventSink(eventSink),
-	)
+	}
+	var rm *referencemonitor.Monitor
+	if e, ok := privileged.(referencemonitor.EffectivePrivilegedAuthorizer); !ok || e.HasPrivileged() {
+		rm, err = referencemonitor.NewProductionHardenedTaint(privileged, rmOpts...)
+	} else {
+		rm, err = referencemonitor.NewProductionSecure(privileged, rmOpts...)
+	}
 	if err != nil {
 		return nil, err
 	}

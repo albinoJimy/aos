@@ -23,6 +23,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	oidc "github.com/aos-ref/integration/oidc"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	rm "github.com/aos-ref/kernel/reference-monitor"
 	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 )
@@ -752,6 +753,25 @@ func nodeConfigFromEnv() (Config, error) {
 	// ligado, mas VAZIO: os níveis só são aplicados — e SELADOS — em [Bootstrap], que é quem tem
 	// o WORM. Ver [autonomyWiring]. nil ⇒ oráculo não ligado e nenhum `escalate` é emitido.
 	cfg.Autonomy = autonomyCabling
+
+	// SUPERFÍCIE DA BARREIRA CONTROL/DATA-PLANE EFICAZ (AOS-363). AOS_PRIVILEGED_CAPS é a
+	// lista de capabilities PRIVILEGIADAS que torna o TaintGate eficaz — sem ela, o campo
+	// [Config.Privileged] era inalcançável pelo binário e o nó caía sempre no conjunto vazio
+	// (TaintGate presente-mas-inerte, o achado central de analises/13 §2.1). Dois estados:
+	//   - VAZIA OU AUSENTE ⇒ nil: TaintGate inerte, RETRO-COMPATÍVEL. É o estado de todo
+	//     deployment que não liga o taint — INCLUINDO a variável DEFINIDA-MAS-VAZIA, que é
+	//     como o idioma da casa "desconfigura" uma variável (o helper de teste põe cada
+	//     AOS_* a "" para isolar, e um docker-compose com `${AOS_PRIVILEGED_CAPS:-}` faz o
+	//     mesmo). Tratar "" como erro quebraria esses deployments — o oposto do requisito de
+	//     retro-compatibilidade. Opt-in por desenho: quem não dá capabilities, fica inerte.
+	//   - COM ≥1 capability ⇒ conjunto não-vazio: o ápice adopta a via ENDURECIDA
+	//     ([integration.NewSecuredRuntime]). A recusa DURA de um conjunto forçado a endurecer
+	//     e inerte ([referencemonitor.ErrTaintGateInert]) vive no CONTRATO DO CONSTRUTOR e é
+	//     provada no kernel (production_efficacy_test.go), não nesta env var — a decisão de
+	//     dono fixou retro-compatibilidade acima da recusa por engano de configuração.
+	if caps := splitCSV(os.Getenv("AOS_PRIVILEGED_CAPS")); len(caps) > 0 {
+		cfg.Privileged = rm.NewStaticPrivilegedSet(caps...)
+	}
 
 	// SUPERFÍCIE DE CARREGAMENTO DA VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072). Preenche
 	// [Config.WORMAnchor] a partir do ambiente — sem isto o campo era INALCANÇÁVEL pelo binário e o

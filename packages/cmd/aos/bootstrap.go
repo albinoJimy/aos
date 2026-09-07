@@ -439,6 +439,22 @@ type Config struct {
 	// AOS-226/227), não no nó.
 	HumanDirectory integration.HumanDirectory
 
+	// --- Barreira control/data-plane efectiva (AOS-363) ------------------------
+	// Privileged é o classificador de capabilities PRIVILEGIADAS que torna o TaintGate
+	// EFICAZ: uma tool call cuja autorização foi promovida sobre dados NÃO-CONFIÁVEIS
+	// (taint=untrusted) é barrada quando a capability é privilegiada. nil ⇒ conjunto vazio
+	// ⇒ TaintGate PRESENTE-MAS-INERTE (o comportamento de todos os deployments até AOS-363,
+	// preservado: a barreira estrutural fica desligada e a única aplicação de taint que resta é
+	// a cláusula `context.taint != "untrusted"` que uma regra Cedar TRAGA — e nem todas trazem:
+	// `allow_fs_read` do bundle de referência ainda não a tem, AOS-363 critério 6, por fechar).
+	//
+	// SUPERFÍCIE DE CONFIGURAÇÃO (AOS-363): escrita a partir de AOS_PRIVILEGED_CAPS em
+	// [nodeConfigFromEnv] — sem isso o campo era INALCANÇÁVEL pelo binário e o nó caía sempre
+	// no conjunto vazio (o achado central de analises/13 §2.1). Não-vazia ⇒ o ápice adopta a
+	// via ENDURECIDA (recusa arrancar se o gate ficar inerte); ausente ⇒ via estrita inerte,
+	// retro-compatível. É OPT-IN por desenho: nenhum nó existente regride.
+	Privileged referencemonitor.PrivilegedAuthorizer
+
 	// --- Substrato DURÁVEL (AOS-170) -------------------------------------------
 	// DurableExecution activa o checkpointer, capturer e step-ledger duráveis
 	// (AOS-180) sobre o Event Store. Quando false, o runtime usa os defaults no-op
@@ -1983,6 +1999,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Verifier:       verifier,     // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
 		Authority:      cfg.Authority,
 		PDP:            cfg.PDP,
+		Privileged:     cfg.Privileged, // AOS-363: nil ⇒ TaintGate inerte (retro-compat); não-vazio ⇒ via endurecida
 		ToolSetStore:   toolSetStore,
 		Checkpointer:   checkpointer,
 		Capturer:       capturer,
@@ -2414,6 +2431,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// nil ⇒ o ponto de injecção ficou com o stub neutro. O guard-test de AOS-255
 	// (aos255_budget_scope_test.go) sela que este argumento nunca volta a ser um literal.
 	for _, line := range budgetPostureBanner(runBudget != nil) {
+		log("%s", line)
+	}
+	// AOS-363: a postura da barreira control/data-plane sai do PREDICADO REAL do RM composto
+	// (Monitor.HasActiveTaintGate), nunca da intenção de config — a mesma disciplina de AOS-203.
+	// É o único chamador não-teste de HasActiveTaintGate: sem ele, o predicado de eficácia que
+	// AOS-219 exportou ficava exportado-mas-não-consultado (o residual que EPIC-18 §5 registava).
+	for _, line := range taintGatePostureBanner(sec.Monitor().HasActiveTaintGate()) {
 		log("%s", line)
 	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
