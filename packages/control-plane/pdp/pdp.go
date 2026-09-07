@@ -135,6 +135,19 @@ func WithTracer(t otelgenai.Tracer) Option {
 	}
 }
 
+// SetTracer injecta o tracer DEPOIS de Open — necessário porque o composition-root abre o
+// PDP (nodeConfigFromEnv) antes de o tracer partilhado do nó existir (composto em Bootstrap).
+// nil é no-op (mantém o NoopTracer implícito). Toma o lock de escrita: embora a injecção
+// ocorra antes de o nó servir, a higiene de concorrência iguala a de Reload.
+func (p *PDP) SetTracer(t otelgenai.Tracer) {
+	if t == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tracer = t
+}
+
 // Open carrega, verifica e compila o bundle do directório dado, devolvendo um
 // PDP pronto. Passos (todos fail-closed):
 //  1. obtém o trust anchor — de [WithTrustAnchor] se fornecido (recomendado),

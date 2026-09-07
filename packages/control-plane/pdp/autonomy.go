@@ -62,7 +62,12 @@ func (p *PDP) applyAutonomy(ctx context.Context, in Input, base Decision) Decisi
 
 	// Exposição do nível corrente na observabilidade (AC4/DoD). ExposeLevel trata um
 	// tracer nil como Noop; anota-se a composição nível × classe no mesmo span.
-	_, span := autonomy.ExposeLevel(ctx, p.tracer, agent, domain, level)
+	// Lê-se o tracer sob RLock (como [PDP.Reload]): [PDP.SetTracer] pode injectá-lo em
+	// concorrência com uma decisão, e o campo p.tracer não pode ser lido sem o lock.
+	p.mu.RLock()
+	tracer := p.tracer
+	p.mu.RUnlock()
+	_, span := autonomy.ExposeLevel(ctx, tracer, agent, domain, level)
 	autonomy.AnnotateOversight(span, class, mode)
 	span.SetAttribute(attrAutonomyEffectBase, string(base.Effect))
 

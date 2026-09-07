@@ -1080,7 +1080,26 @@ opção que só os testes ligam.
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-08). O nó passa o tracer partilhado ao PDP. Como o composition-root abre o
+PDP (`nodeConfigFromEnv → loadPolicyBundleFromEnv → pdp.Open`) **antes** de o tracer partilhado
+existir (composto em `Bootstrap`), não se usa a `Option` `WithTracer` (que só `Open` aceita) mas um
+novo `pdp.SetTracer` chamado em `bootstrap.go` logo após o tracer nascer, no MESMO ponteiro `cfg.PDP`
+que a cadeia de decisão do RM usa (`secured.go`) — é o MESMO `otelgenai.Tracer` que o RM/Runtime
+recebem, gated a `tracingEnabled` (o caminho NoopTracer fica byte-idêntico). A decisão `SetTracer`
+vs `WithTracer` fica documentada no código. Endurecimento de concorrência: `applyAutonomy` passa a
+ler `p.tracer` sob `RLock` (como `Reload`), fechando a janela entre a injecção e uma decisão
+concorrente — sem deadlock (`Decide` liberta o RLock antes de chamar `applyAutonomy`).
+
+Provado por `-race` em `control-plane/pdp` e `cmd/aos` (sem data race), e o smoke `run-aos`. Testes:
+um nó REAL (Bootstrap) com um único `RecordingExporter` recolhe o span `aos.policy.reload` (via um
+`Reload` no ponteiro injectado) **e** o `execute_tool`/`aos.decision` do RM — um só exportador recolhe
+PDP e RM (AC2); e — depois de fechar a lacuna que a revisão adversarial apontou — uma **decisão
+escalada** (L4×danger) no mesmo ponteiro emite `aos.autonomy.level` com nível e oversight no recorder
+do nó, provando o AC4 **end-to-end via Bootstrap** e não só por transitividade. Controlo negativo: um
+nó com `pdp.NewUnloaded()` (tracer nil) decide deny fail-closed sem panic e sem emitir esses spans.
+Não-vácuo por mutação (retirar `cfg.PDP.SetTracer(tracer)` avermelha as asserções de span).
+**Revisão adversarial independente**: SHIP-READY — mesmo tracer que o RM, mesmo ponteiro na cadeia de
+decisão, sem deadlock, NoopTracer inalterado. Nenhum critério deferido.
 
 ---
 
