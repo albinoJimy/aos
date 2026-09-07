@@ -2,6 +2,7 @@ package referencemonitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -279,7 +280,7 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 		// Uma tool PERMITIDA pode falhar em runtime: error.type distingue um output
 		// vazio legítimo de um output de tool falhada.
 		if dec.ToolErr != nil {
-			span.SetAttribute(otelgenai.AttrErrorType, dec.ToolErr.Error())
+			span.SetAttribute(otelgenai.AttrErrorType, spanErrorType(dec.ToolErr))
 		}
 		span.End()
 	}()
@@ -288,6 +289,28 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 	// da cadeia de hooks nascem filhos do execute_tool, mantendo a propagação de trace.
 	dec, err = m.evaluate(spanCtx, call)
 	return dec, err
+}
+
+// spanErrorType mapeia o erro de uma tool despachada para um código de conjunto FECHADO,
+// em vez do err.Error() cru — a mensagem de uma tool a jusante pode ecoar input ou
+// credenciais (ex. "invalid token sk-..."), e este atributo de span SAI do processo para
+// um colector. É o mesmo princípio do worker.spanErrorType; não se reutiliza essa por ser
+// de agent-runtime, que importa este pacote (um import de volta seria um ciclo de módulo).
+//
+// O detalhe completo do erro NÃO se perde: continua a fluir cru ao chamador via
+// [Decision.ToolErr] e ao tail materializado para o modelo — só este atributo de span,
+// que é exportado, é reduzido ao código estável.
+func spanErrorType(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "tool_error"
+	}
 }
 
 // evaluate corre a cadeia de mediação (hooks → default-deny → audit-before-effect →
