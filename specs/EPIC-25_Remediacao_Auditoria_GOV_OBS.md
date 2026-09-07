@@ -991,7 +991,24 @@ nunca medeia uma tool call, nunca produz.
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-08). `monitor.go` deixa de escrever `dec.ToolErr.Error()` em `error.type`
+e passa por um `spanErrorType(err)` PRÓPRIO do Reference Monitor, que colapsa para o conjunto fechado
+`""`/`context_canceled`/`deadline_exceeded`/`tool_error`. **Não se reutiliza o `spanErrorType` do
+worker** por `agent-runtime` já importar `reference-monitor` (um import de volta seria ciclo de
+módulo) — a decisão fica no comentário. O guard `if dec.ToolErr != nil` mantém-se (uma tool com
+êxito não escreve `error.type`), e o erro CRU continua a chegar ao chamador (`Decision.ToolErr`) e ao
+tail do modelo — só o atributo de span, que sai do processo para o colector, deixa de o carregar.
+
+Provado por `-race` em `reference-monitor` e `agent-runtime`; teste canário (`sk-CANARIO-1234` no erro
+da tool) prova que `error.type` fica `tool_error` e que o marcador **não aparece em atributo nenhum de
+span nenhum**, não-vácuo por mutação (reverter para o erro cru avermelha). O único teste existente que
+afirmava a mensagem crua (`agent-runtime/loop_test.go`) foi actualizado para o código fechado, deixando
+intacta a asserção adjacente do tail (canal diferente). **Revisão adversarial de segurança
+independente**: SHIP-READY — traçou todos os caminhos de span (atributos, nome, status) e o vector do
+model-tail e confirmou que **nenhum** outro caminho exportado carrega o erro cru ou o input (o status
+do span não tem Description populada; o prompt do tail é capturado por hash). Smoke saltado com
+justificação: a mudança não toca arranque/HTTP e o smoke, por desenho, nunca medeia uma tool call.
+Nenhum critério deferido.
 
 ---
 
