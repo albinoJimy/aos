@@ -96,6 +96,29 @@ const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo 
 //
 // A linha existe para que "o nó não me avisou" deixe de ser verdade: um agente autónomo sem
 // tecto de gasto é uma decisão, e uma decisão tem de estar escrita onde o operador a lê.
+// taintGatePostureBanner declara a postura da BARREIRA CONTROL/DATA-PLANE (o TaintGate do
+// Reference Monitor, ADR-005/AOS-069). O argumento é o PREDICADO REAL do RM composto —
+// [referencemonitor.Monitor.HasActiveTaintGate] —, nunca a intenção de config: uma linha que
+// afirmasse "activo" a partir de AOS_PRIVILEGED_CAPS sem consultar o gate composto poderia
+// mentir (a mesma disciplina de AOS-203 que rege as outras posturas deste ficheiro).
+//
+// active==false é o estado retro-compatível de todo deployment que não define
+// AOS_PRIVILEGED_CAPS — e a linha nomeia essa inércia sem a disfarçar. Com o gate inerte, a
+// única aplicação de taint que resta é a cláusula `context.taint != "untrusted"` que uma regra
+// Cedar traga — e o banner NÃO afirma que todas a trazem: no bundle de referência a regra
+// `allow_fs_read` ainda não a tem (AOS-363 critério 6, por fechar), pelo que o banner nomeia o
+// buraco em vez de o esconder. É o achado central de analises/13 §2.1 tornado visível no arranque.
+func taintGatePostureBanner(active bool) []string {
+	if active {
+		return []string{
+			"taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao foi promovida sobre dados NAO-CONFIAVEIS (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar",
+		}
+	}
+	return []string{
+		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); e OPT-IN de proposito",
+	}
+}
+
 func budgetPostureBanner(composed bool) []string {
 	if composed {
 		return []string{

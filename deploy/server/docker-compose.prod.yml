@@ -85,6 +85,12 @@ services:
       # Sem estas duas o nó fica em default-deny explícito e nenhuma tool call passa.
       AOS_POLICY_BUNDLE_DIR: "/etc/aos/policies"
       AOS_POLICY_TRUST_ANCHOR: "${AOS_POLICY_TRUST_ANCHOR:?}"
+      # AOS-363: barreira control/data-plane EFICAZ. Vazio ⇒ TaintGate inerte, retro-compat
+      # (o estado deste deployment até se definir capabilities privilegiadas). Lista não-vazia
+      # (ex. "cap:fs.read,cap:fs.write,cap:net.connect") ⇒ o ápice endurece e barra promoções
+      # tainted. Inclui cap:fs.read: a regra allow_fs_read do bundle ainda não tem cláusula de
+      # taint (AOS-363 crit. 6, por fechar), logo é o TaintGate que a cobre quando ligado.
+      AOS_PRIVILEGED_CAPS: "${AOS_PRIVILEGED_CAPS:-}"
 
       # Substrato + execução DURÁVEIS no volume gravável. É o que faz o estado
       # sobreviver a um deploy (o volume é nomeado e não é tocado pela troca de digest).
