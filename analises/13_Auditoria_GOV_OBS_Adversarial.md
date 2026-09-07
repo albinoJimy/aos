@@ -270,10 +270,53 @@ sequer parcialmente —, e o que faltava era configuração de operador: dois va
 variável de ambiente. **O achado central fecha e agrava-se um grau.**
 
 **O que esta medição NÃO prova, e é preciso dizê-lo.** O alvo não é gVisor: é um gravador sem
-`runsc` que não toca no sistema de ficheiros do host. Nada a jusante do POST foi medido — isolamento,
-interposição de syscalls, fuga. A medição vale para «o nó despacha até à fronteira do executor» e
-para mais nada. Confundir as duas coisas seria cometer, aqui, o erro que este relatório acusa o
-sistema de cometer.
+`runsc` que não toca no sistema de ficheiros do host. A medição do §2.4 vale para «o nó despacha até
+à fronteira do executor» e para mais nada. O que vem depois dessa fronteira é o §2.5.
+
+### 2.5 O isolamento, medido — e desta vez a favor do sistema
+
+O §2.4 parou na fronteira do executor porque o alvo era um gravador. Aqui provisionou-se o
+**componente gVisor real** — `deploy/server/gvisor/`, `runsc` da versão publicada, contentor
+privilegiado — num Docker descartável, e mediu-se o que a auditoria nunca tinha medido: se a
+fronteira que o componente afirma ter, tem.
+
+**O controlo que decide tudo veio primeiro.** Uma tentativa de fuga enviada como tool call normal
+morre na verificação de caminho do guest (`guest/main.go:71-84`) e nunca chega ao `runsc` — registá-la
+como «contido» provaria que o guest tem um `if`, o defeito que este relatório persegue. Por isso a
+medição correu com um **guest de diagnóstico** que exerce as syscalls directamente, e o primeiro caso
+foi provar que o sandbox é mesmo o `runsc`: `/proc/version` devolveu **`Linux version
+4.19.0-gvisor`**. Não é o driver `fake`, não é o host nu.
+
+Com isso estabelecido, **todos os casos de contenção passaram, e nenhum escapou** (errno entre
+parênteses):
+
+| Camada | Caso | Resultado |
+|---|---|---|
+| L3 | `read_abs /etc/passwd` de dentro do processo | **ENOENT** — o caminho absoluto não alcança o host |
+| L3 | symlink na seed a apontar para `/etc/passwd` | `readlink` mostra o alvo; a leitura resolve na VFS do sandbox → **ENOENT** |
+| L3 | `/proc/1/cmdline` e `listdir /proc` | pid 1 é `/guest`; procfs do próprio gVisor (`sentry-meminfo`), não o do host |
+| L2 | `write /seed/x` | **EROFS** |
+| L2 | escrita fora da seed | `/` → **EACCES**; `/tmp` → tmpfs efémero do sandbox, apagado no fim |
+| L2 | `connect` a `8.8.8.8:53`, `1.1.1.1:443` | **ENETUNREACH** — namespace de rede vazio |
+| L2 | uid / CapEff / dispositivos | uid **65532**; CapEff **`0000…0`**; `/dev/kvm` e `/dev/mem` **ausentes** |
+
+**E o controlo negativo do próprio plano passou:** removida a opção `ro` da montagem na configuração
+OCI, o `write /seed/x` deixou de dar EROFS e **escreveu** — prova de que o caso mede a montagem, e não
+um `if`. Um plano cujos casos não falham quando a defesa é removida não está a medir defesa nenhuma;
+este falha.
+
+**Limites honestos, porque correr aninhado tem custo.** No Docker Desktop foi preciso
+`--cgroupns=host` (conflito de cgroup v2 aninhado, sem efeito na fronteira de namespaces/VFS/syscalls)
+e, com o contentor já sem rede, o bloco de rede mede o namespace **interno** do `runsc` — vazio dentro
+de vazio. O `NoNewPrivileges` não foi observável (o procfs sintético do gVisor não emite o campo); a
+configuração declara-o, e `CapEff=0` mais `nosuid`/`noexec` cobrem a superfície prática. E isto **não
+é gVisor num host de virtualização real** — é gVisor sobre o kernel do WSL2. O plano em
+`docs/reports/plano-medicao-isolamento-gvisor.md` fica com o bloco de esgotamento de recursos por
+correr, por decisão.
+
+Esta é a única medição de toda a auditoria cujo resultado é **a favor** do sistema, e regista-se com o
+mesmo peso que um defeito: a fronteira que o `deploy/server/gvisor/` afirma ter, tem-na — sob os
+limites acima.
 
 **Nota lateral com valor próprio:** a cadeia fail-closed até chegar ao PDP é densa e honesta — exigiu quatro
 correcções sucessivas (NHI, `model:invoke`, allowlist regional, path `/v1`), cada uma com erro atribuível e
@@ -610,15 +653,12 @@ Priorizada por *alcançável hoje × severidade*. Não abre tickets — nomeia o
 - **Nada a jusante do POST ao executor foi medido** — isolamento, `runsc`, interposição de syscalls.
   O alvo do §2.4 é um gravador conformante, não gVisor. **Correcção a uma versão anterior desta
   linha:** dizia que medir o isolamento «exige um host Linux com o componente
-  `deploy/server/gvisor/` provisionado», dando a entender que estava por provisionar. **Está
-  provisionado e a correr desde 2026-08-15** — verificado por inspecção do host: contentor
-  `aos-gvisor-1`, `privileged`, `healthy`, zero reinícios, com `runsc release-20260810.0` real. O
-  que falta não é provisionamento; é um host **descartável**. O único onde o componente corre é o
-  deployment vivo (Vault, Keycloak, o nó a servir, cluster NATS de quatro nós, carga média 11,4), e
-  lá os casos que provariam a camada 3 exigiriam substituir o guest de um componente em serviço,
-  enquanto o bloco de esgotamento de recursos arriscaria os serviços a correr. A medição está
-  desenhada (`docs/reports/plano-medicao-isolamento-gvisor.md`) e espera uma VM descartável — o
-  `docker-compose.prod.yml` constrói o serviço `gvisor` de forma autónoma, sem o resto do compose.
+  `deploy/server/gvisor/` provisionado», dando a entender que estava por provisionar. Estava
+  provisionado desde 2026-08-15, e **o isolamento foi entretanto medido** (§2.5): num Docker
+  descartável, com o componente real e um guest de diagnóstico, todos os casos de contenção passaram
+  e nenhum escapou, com o `/proc/version` a confirmar que o sandbox é o `runsc`. Fica por medir só o
+  bloco de esgotamento de recursos e o gVisor sobre virtualização real — os limites estão nomeados em
+  §2.5 e no plano `docs/reports/plano-medicao-isolamento-gvisor.md`.
 - **Não foi exercida uma tool `cap:http.post` com bloco `sandbox`.** É a célula que mostraria se a
   fronteira continua *governada* depois de alcançável, e não só alcançável. Nem a postura
   `AOS_MODE=production`, que muda a eleição do driver.

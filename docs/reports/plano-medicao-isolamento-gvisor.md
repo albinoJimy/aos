@@ -6,7 +6,7 @@
 | Data | 2026-09-07 |
 | Origem | `analises/13` §6.2 — «nada a jusante do POST ao executor foi medido»; e §2.4, que mediu o despacho **até** à fronteira e declarou tudo o que vem depois por medir |
 | Alvo | `deploy/server/gvisor/` (componente + guest + seed), serviço `gvisor` de `deploy/server/docker-compose.prod.yml:449-466` |
-| Estado | **Por executar** — o componente **já está provisionado** (`aos-gvisor-1`, `runsc release-20260810.0`, saudável desde 2026-08-15); falta um host **descartável**, porque o único onde corre é o deployment vivo |
+| Estado | **Primeira execução feita (2026-09-07, §9)** — blocos A/B/C/E contidos num Docker descartável; falta o bloco D e o gVisor sobre virtualização real |
 
 ---
 
@@ -172,3 +172,27 @@ forma mais cara de errar deste plano inteiro.
   terceiros, e nunca com egress real como objectivo.
 - **Travão.** Se A3, A4 ou C5 falharem — ou seja, se houver fuga real — **parar o plano** e tratar
   como incidente: a conclusão já está tirada e continuar a bater no mesmo sítio só acrescenta risco.
+
+---
+
+## 9. Resultado da primeira execução (2026-09-07)
+
+Executado num Docker descartável local (Docker Desktop sobre WSL2), com o componente construído do
+`Dockerfile` deste repositório e um **guest de diagnóstico** (verbos que exercem as syscalls
+directamente, para chegar à camada 3 em vez de morrer na verificação de caminho do guest de produção).
+Detalhe completo em `analises/13` §2.5.
+
+- **N3 — o sandbox é mesmo o runsc:** `/proc/version` = `Linux version 4.19.0-gvisor`. Não é o driver
+  `fake` nem o host nu.
+- **Blocos A, B, C, E: todos contidos, nenhuma fuga.** `read_abs /etc/passwd` → ENOENT; symlink para
+  fora da seed → ENOENT; `/proc/1/cmdline` → pid 1 é `/guest`, procfs do gVisor; `write /seed/x` →
+  EROFS; rede → ENETUNREACH; uid 65532; CapEff a zero; `/dev/kvm` e `/dev/mem` ausentes.
+- **N4 — mutação:** removida a opção `ro` da montagem OCI, o `write /seed/x` passou a escrever. Prova
+  que o caso mede a montagem e não um `if`.
+
+**Desvios forçados por correr aninhado, registados:** `--cgroupns=host` (conflito de cgroup v2, sem
+efeito na fronteira); o bloco de rede mede o netns interno do runsc; `NoNewPrivileges` não observável
+pelo procfs sintético do gVisor (declarado na config; CapEff=0 + nosuid/noexec cobrem a superfície).
+
+**Por correr:** o bloco D (esgotamento de recursos, excluído por decisão) e gVisor sobre
+virtualização de hardware real (aqui correu sobre o kernel do WSL2).
