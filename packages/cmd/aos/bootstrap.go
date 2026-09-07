@@ -1500,6 +1500,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if tracingEnabled {
 		sloTap = newSLOSpanTap(defaultSLOTapCapacity)
 		tracer = otelgenai.NewTracer(sloTeeExporter{primary: exporter, tap: sloTap}, cfg.TracerOptions...)
+		if cfg.PDP != nil {
+			// AOS-371: o PDP partilha o MESMO tracer do RM/Runtime; abriu antes deste existir
+			// (nodeConfigFromEnv → loadPolicyBundleFromEnv → pdp.Open), pelo que WithTracer não
+			// o alcança — injecta-se aqui, depois do tracer real (não o NoopTracer) estar composto.
+			// Sem esta linha os spans aos.policy.reload e aos.autonomy.level nunca são emitidos no
+			// binário entregue. Gated a tracingEnabled: o caminho NoopTracer fica byte-idêntico.
+			cfg.PDP.SetTracer(tracer)
+		}
 	}
 	// EPIC-08 sobre AOS-100 — o Event Store REPLICADO passa a emitir spans.
 	//
