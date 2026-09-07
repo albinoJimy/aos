@@ -54,7 +54,7 @@ mecanismo está partido», e «a caixa não está marcada» com «o trabalho nã
 
 ### 1.2 Erros desta auditoria, declarados
 
-Sete, porque escondê-los invalidaria o método.
+Oito, porque escondê-los invalidaria o método.
 
 1. **O HEAD e o ramo mudaram a meio da auditoria e eu não o detectei a tempo.** Fixei o estado auditado em
    `6613e47` / `feature/AOS-128-ux-dx-tests` e escrevi-o como se fosse estável; outra sessão levou o
@@ -93,7 +93,13 @@ Sete, porque escondê-los invalidaria o método.
    nenhum, o Reference Monitor já permite (§2.4). Duas condições confundidas numa só frase, e a
    frase servia de conclusão. Só caiu porque a medição do último salto montou três células em vez
    das duas que eu tinha pedido — pedir o controlo negativo certo não me ocorreu.
-7. **Uma medição ficou por fazer e não é substituível por leitura.** O comportamento do `/readyz` com o
+7. **Declarei por provisionar um componente que estava a correr há três semanas.** O §6.2 dizia que
+   medir o isolamento exigia «um host Linux com `deploy/server/gvisor/` provisionado». O componente
+   está provisionado, saudável e com `runsc` real desde 2026-08-15 — bastou inspeccionar o host para
+   o ver. É a mesma classe de defeito que este relatório imputa a três entradas do registo de
+   deferimentos (§2.3, C-04): uma afirmação de estado que ninguém reverificou. Escrevi-a sobre a
+   infraestrutura sem lhe ter perguntado nada, que é a versão mais barata de a errar.
+8. **Uma medição ficou por fazer e não é substituível por leitura.** O comportamento do `/readyz` com o
    WORM montado só-de-leitura *a meio de um run* não foi medido: em Windows um handle já aberto mantém
    acesso de escrita, e forçá-lo exigiria alterar código do repositório. Está declarado como NÃO DECIDIDA,
    não inferido.
@@ -602,8 +608,17 @@ Priorizada por *alcançável hoje × severidade*. Não abre tickets — nomeia o
 - **Nada foi corrido contra um provider de modelo real.** As três decisões de mediação de §2.2 usaram um
   gateway OpenAI-compatible construído fora da árvore. O caminho é o do nó; o interlocutor não é.
 - **Nada a jusante do POST ao executor foi medido** — isolamento, `runsc`, interposição de syscalls.
-  O alvo do §2.4 é um gravador conformante, não gVisor. Medir o isolamento real continua a exigir um
-  host Linux com o componente `deploy/server/gvisor/` provisionado.
+  O alvo do §2.4 é um gravador conformante, não gVisor. **Correcção a uma versão anterior desta
+  linha:** dizia que medir o isolamento «exige um host Linux com o componente
+  `deploy/server/gvisor/` provisionado», dando a entender que estava por provisionar. **Está
+  provisionado e a correr desde 2026-08-15** — verificado por inspecção do host: contentor
+  `aos-gvisor-1`, `privileged`, `healthy`, zero reinícios, com `runsc release-20260810.0` real. O
+  que falta não é provisionamento; é um host **descartável**. O único onde o componente corre é o
+  deployment vivo (Vault, Keycloak, o nó a servir, cluster NATS de quatro nós, carga média 11,4), e
+  lá os casos que provariam a camada 3 exigiriam substituir o guest de um componente em serviço,
+  enquanto o bloco de esgotamento de recursos arriscaria os serviços a correr. A medição está
+  desenhada (`docs/reports/plano-medicao-isolamento-gvisor.md`) e espera uma VM descartável — o
+  `docker-compose.prod.yml` constrói o serviço `gvisor` de forma autónoma, sem o resto do compose.
 - **Não foi exercida uma tool `cap:http.post` com bloco `sandbox`.** É a célula que mostraria se a
   fronteira continua *governada* depois de alcançável, e não só alcançável. Nem a postura
   `AOS_MODE=production`, que muda a eleição do driver.
