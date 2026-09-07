@@ -141,6 +141,11 @@ const (
 	OpInvokeAgent = "invoke_agent"
 	// OpChat — span de uma chamada ao modelo (turno).
 	OpChat = "chat"
+	// OpEmbeddings — span de uma chamada de embeddings ao modelo. Como o `chat`, é uma
+	// chamada de SAÍDA a um serviço remoto (CLIENT na semconv GenAI). O model-gateway
+	// abre o span com este mesmo valor (ver gateway.go opEmbeddings); mantê-los iguais é
+	// o que faz [KindForOperation] classificá-lo como CLIENT.
+	OpEmbeddings = "embeddings"
 	// OpExecuteTool — span de uma tool call despachada via Reference Monitor.
 	OpExecuteTool = "execute_tool"
 	// OpEvaluation — span gen_ai.evaluation.result: a avaliação de uma trajectória

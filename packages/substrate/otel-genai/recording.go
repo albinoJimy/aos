@@ -106,7 +106,11 @@ func (s *recordingSpan) End() {
 // timestamps ficam a zero — o RecordingTracer não modela relógio.
 func (rs *RecordedSpan) ToSpanData() SpanData {
 	return SpanData{
-		Name:         rs.Operation,
+		Name: rs.Operation,
+		// Espécie derivada da operação (AOS-368), em simetria com [SpanTracer.StartSpan],
+		// para que a projecção OTLP de um span gravado tenha a mesma espécie que teria se
+		// exportado directamente.
+		Kind:         KindForOperation(rs.Operation),
 		SpanContext:  rs.SpanContext,
 		ParentSpanID: rs.ParentSpanID,
 		Attributes:   sortedAttributes(rs.Attributes),

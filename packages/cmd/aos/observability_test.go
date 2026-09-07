@@ -40,6 +40,15 @@ import (
 
 type otlpDoc struct {
 	ResourceSpans []struct {
+		// AOS-368: os atributos de RECURSO (service.name) que o nó passou a emitir.
+		Resource struct {
+			Attributes []struct {
+				Key   string `json:"key"`
+				Value struct {
+					StringValue *string `json:"stringValue"`
+				} `json:"value"`
+			} `json:"attributes"`
+		} `json:"resource"`
 		ScopeSpans []struct {
 			Scope struct {
 				Name string `json:"name"`
@@ -54,6 +63,7 @@ type otlpSpanWire struct {
 	SpanID       string `json:"spanId"`
 	ParentSpanID string `json:"parentSpanId"`
 	Name         string `json:"name"`
+	Kind         int    `json:"kind"` // AOS-368: espécie do span (INTERNAL=1, CLIENT=3)
 	Attributes   []struct {
 		Key   string `json:"key"`
 		Value struct {

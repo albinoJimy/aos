@@ -793,7 +793,25 @@ serialização, e por isso passa em todo o lado onde só se verifica que seriali
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-07), dentro da decisão zero-dep (DEF-004 — sem SDK OTel). `MarshalOTLP`
+ganha opções variádicas (`WithServiceName`) e povoa `resourceSpans[0].resource.attributes`; o literal
+`Kind: 1` desaparece de `otlp.go` (mapeamento `otlpSpanKind`: INTERNAL→1, CLIENT→3). `SpanData` ganha
+`Kind SpanKind` com **valor-zero = INTERNAL** (aditivo, todos os produtores são keyed ⇒ retro-compat),
+e `StartSpan` define-o por `KindForOperation(operação)`: as chamadas de saída ao modelo — **`chat` e
+`embeddings`** — são CLIENT, o resto INTERNAL. O exportador ganha `WithOTLPServiceName` e um default
+determinista **`"aos"`** (nunca serializa `unknown_service`); `service.name` é configurável por
+`AOS_OTLP_SERVICE_NAME`. Os três `otel-collector.yaml` (server, server-mtls, dev-hardened) ganham um
+comentário que declara que a identidade do recurso vem do PRODUTOR, não de um processor `resource`.
+
+Provado por `-race` em `otel-genai` e `cmd/aos`, guardas não-vacuosas por mutação (recurso removido ⇒
+a asserção de `service.name` avermelha; mapa de kind partido ⇒ o caso INTERNAL avermelha), e o smoke
+`run-aos`. Teste ponta-a-ponta contra um colector falso em processo (`aos368_test.go`) captura o
+corpo POSTado e afirma `service.name` + o kind CLIENT do span do modelo. **Revisão adversarial
+independente** (foco proporcional — telemetria): sem regressão, default `"aos"` inbypassável,
+zero-dep preservado; apanhou que os **embeddings** saíam INTERNAL (mesma classe de defeito, operação
+irmã) e uma inconsistência num terceiro colector-YAML — **ambos fechados** (embeddings → CLIENT com
+`TestKindForOperation`; comentário no `otel-collector-mtls.yaml`) antes da integração. Nenhum critério
+deferido.
 
 ---
 

@@ -676,6 +676,11 @@ type Config struct {
 	OTLPClientCertPath  string
 	OTLPClientKeyPath   string
 	OTLPBearerTokenPath string
+	// OTLPServiceName é o service.name do RECURSO OTLP que o nó emite (AOS-368) — a
+	// IDENTIDADE do produtor que o backend usa para atribuir o trace. Vazio ⇒ o exporter
+	// aplica o default determinista "aos" ([defaultOTLPServiceName]), pelo que o documento
+	// NUNCA sai como `unknown_service`. Só se aplica quando o nó ABRE o exporter.
+	OTLPServiceName string
 
 	// --- Relógios injectáveis (testes determinísticos) -------------------------
 	IssuerClock   func() time.Time
@@ -1463,6 +1468,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// exporter. Os caminhos vêm da Config (env em main.go); vazios ⇒ sem autenticação de
 		// cliente (comportamento actual). Fail-closed de CONFIG dentro de NewOTLPHTTPExporter.
 		otlpOpts := []OTLPOption{WithOTLPLogger(log)}
+		// IDENTIDADE do recurso OTLP (AOS-368): service.name. Vazio ⇒ o exporter mantém o
+		// default determinista "aos" — o nó nunca exporta um documento sem identidade.
+		if cfg.OTLPServiceName != "" {
+			otlpOpts = append(otlpOpts, WithOTLPServiceName(cfg.OTLPServiceName))
+		}
 		if cfg.OTLPClientCertPath != "" || cfg.OTLPClientKeyPath != "" {
 			otlpOpts = append(otlpOpts, WithOTLPClientCertFiles(cfg.OTLPClientCertPath, cfg.OTLPClientKeyPath))
 		}
