@@ -336,10 +336,14 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 		}
 	}
 	if len(w.sealedPairs) == 0 {
-		return []string{
-			fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO CONSTRUIDO MAS NAO PROVISIONADO — ha %d entrada(s) declarada(s) em AOS_AUTONOMY_LEVELS mas NENHUM nivel foi aplicado nem selado (autonomyWiring.provision ainda nao correu): o registo responde L0 a TODO o par, o fail-closed do oraculo, pelo que TUDO escala e nenhum run avanca sem aval humano. No arranque normal esta linha NAO deve aparecer — se aparece, a ordem do composition-root inverteu-se (o provisionamento tem de correr DEPOIS do WORM e ANTES do banner)",
+		// NENHUM par foi selado NESTE arranque. Ou o provisionamento ainda não correu (reordenação
+		// do boot), ou TODAS as entradas foram recusadas pelo gate de prova de subida (AOS-377) — e
+		// esse caso não pode ficar mudo, pelo que a linha de recusa é acrescentada aqui também.
+		linhas := []string{
+			fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO CONSTRUIDO MAS NAO PROVISIONADO — ha %d entrada(s) declarada(s) em AOS_AUTONOMY_LEVELS mas NENHUM nivel foi aplicado nem selado (autonomyWiring.provision ainda nao correu, ou TODAS as entradas foram recusadas): o registo responde ao nivel reidratado ou ao piso (L0 se nao houver nenhum), o fail-closed do oraculo. No arranque normal esta linha NAO deve aparecer — se aparece, a ordem do composition-root inverteu-se (o provisionamento tem de correr DEPOIS do WORM e ANTES do banner), ou as subidas a L4/L5 declaradas nao trouxeram prova (ver a linha de RECUSA)",
 				len(w.specs)),
 		}
+		return autonomyLinhasDeRecusaPorProva(w, linhas)
 	}
 	// DUAS AFIRMAÇÕES QUE DEIXARAM DE SER VERDADE, e foi este trabalho que as quebrou:
 	//
@@ -396,7 +400,19 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 	if len(w.foraDoAmbiente) > 0 {
 		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) EM VIGOR POR DECISAO DE OPERADOR e AUSENTE(S) de AOS_AUTONOMY_LEVELS [%s] — nao constam do ficheiro e por isso nao aparecem na contagem de provisionamento acima; para os baixar, declare-os no ambiente com o nivel pretendido (a de-escalada ganha) ou assine outra alteracao", len(w.foraDoAmbiente), strings.Join(w.foraDoAmbiente, ", ")))
 	}
-	return linhas
+	return autonomyLinhasDeRecusaPorProva(w, linhas)
+}
+
+// autonomyLinhasDeRecusaPorProva acrescenta a linha das SUBIDAS a L4/L5 pelo ficheiro RECUSADAS por
+// falta de prova (AOS-377). O par NÃO subiu — fica no nível anterior (reidratado ou piso) — e a
+// recusa é declarada no molde de `rejeitados`: o operador tem de saber que a postura NÃO é a que o
+// ficheiro pede, e o que falta para a obter. Extraída porque a linha tem de sair em ambos os ramos
+// do banner (com e sem pares selados neste arranque).
+func autonomyLinhasDeRecusaPorProva(w *autonomyWiring, linhas []string) []string {
+	if len(w.recusadosPorProva) == 0 {
+		return linhas
+	}
+	return append(linhas, fmt.Sprintf("autonomia / provisionamento (AOS-377): ATENCAO — %d subida(s) a L4/L5 declarada(s) em AOS_AUTONOMY_LEVELS RECUSADA(S) por falta de prova assinada valida [%s]. Subir a L4/L5 pelo ficheiro exige, em AOS_AUTONOMY_PROOFS, DUAS provas de emissores DISTINTOS de AOS_AUTONOMY_SETTERS sobre o payload canonico (motivo %q) — a mesma cerimonia da rota POST /autonomy. O par NAO subiu: vigora no nivel anterior (reidratado ou piso). Para o subir, gere as provas com `aos-issuer autonomy-sign` e passe-as em AOS_AUTONOMY_PROOFS, ou suba pela rota assinada. BAIXAR e SUBIR ate L3 pelo ficheiro nunca exigem prova", len(w.recusadosPorProva), strings.Join(w.recusadosPorProva, ", "), autonomyProvisionReason))
 }
 
 // pisoOrigem distingue o piso HERDADO do DECLARADO. A diferença não é cosmética: "L0 por
