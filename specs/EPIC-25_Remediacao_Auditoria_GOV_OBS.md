@@ -1551,9 +1551,29 @@ que o documento diz não bastar.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: documental nas três alíneas; nenhuma altera comportamento do nó. A
-alínea (c) tem uma metade que não é documental — a definição que decide se o tripwire dispara foi
-fixada fora da via que a Carta declara única, e isso é decisão do dono, não redacção.
+**IMPLEMENTADO** (2026-09-08). Reconciliação documental (nenhum `.go` alterado; a Carta **não** é
+tocada). **(a)** `tecnica/14` §5.2 (linha «Carregamento de bundle») e a célula do Art. 25 deixam de
+negar a via de carregamento e de marcar «falha (c)» — passam a dizer o mesmo que o Art. 5 (`:111`) e
+a ressalva de `:122` (o binário EXPÕE `AOS_POLICY_BUNDLE_DIR`+`AOS_POLICY_TRUST_ANCHOR`, AOS-220; só a
+*emissão* de obligations sem bundle é inerte), com nota de re-medição datada (2026-09-08, commit da
+árvore, AOS-375) que nomeia `main.go`/`bootstrap.go` como evidência. **(b)** `EPIC-17_v3` ganha duas
+notas de reconciliação datadas (AOS-181 satisfeito por AOS-220; AOS-182 pela residência selada na
+criação, `api.go:599`→`sovereignty.go:351`), remetendo para `EPIC-18_v4:1227-1228` — sem marcar caixas
+sem âncora (precedente AOS-361(a)). **(c)** `REGISTO-Decisoes-Reabertas` §5.4/§7/§8 passam a descrever
+o estado corrente (contador: `eventos=11, reaberturas=1, recusas=0, indecidiveis=0`, tripwire **não**
+disparado, exit `0` — o N-011 pôs REG-005/006/010 a `NAO`); o output antigo fica sob rótulo
+«HISTÓRICO 2026-07-26 — caducou em 2026-07-29»; `:600` corrigido para «emendas 1.0 a 1.4».
+
+**Decisão do dono (alínea c, metade não-documental):** a definição de «reaberta» foi fixada a
+2026-07-29 dentro do N-011, e a Carta §177 exige que mudanças passem por emenda §7 datada — que não
+existe. **Não se emenda a Carta** (é do dono). Em vez disso, o registo ganha uma linha (§8) que
+**declara em voz alta** que a definição vigora sem essa emenda e que o §8 ponto 1 do próprio ficheiro
+(«sem emenda, é proposta, não obrigação») se lhe aplica — a via que o próprio AC autoriza. O débito de
+forma fica registado, não escondido nem usurpado.
+
+Verificado por grep (AC1/AC2/AC8 = 0), pela contagem directa do contador (11 eventos, 1 reabertura, 0
+recusas) e pelos gates `estado-citado`, `ref-lint` e `deferrals` (verdes localmente). Os cinco
+cenários da prova negativa mantêm os exit `1,1,1,2,2`. Nenhum critério deferido.
 
 ---
 

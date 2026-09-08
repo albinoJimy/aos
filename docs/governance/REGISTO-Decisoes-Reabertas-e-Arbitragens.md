@@ -5,7 +5,7 @@
 | Documento | **Registo único** dos eventos que o tripwire da Carta §6.6 conta e das arbitragens do §6.5 |
 | Autoridade | **Subordinado** à `specs/00_AOS_Carta.md`. Este ficheiro **não decide nada** — regista o que já foi decidido e torna-o contável. |
 | Origem | AOS-200 (EPIC-18), achado **DEF-07** |
-| Última actualização | 2026-07-26 |
+| Última actualização | 2026-09-08 (AOS-375 — reconciliação do §5.4/§7/§8 com o output corrente do contador; ver §5.4) |
 
 ---
 
@@ -437,9 +437,47 @@ isso a 2.ª perna lê a Natureza e não depende de a coluna Conta estar livre.
 
 `PENDENTE` não conta na leitura estrita; conta no **limite superior** do §5.1.
 
-### 5.4 Estado do contador em 2026-07-26 — **os dois números**
+### 5.4 Estado do contador — corrente (2026-09-08) e histórico (2026-07-26)
+
+**Estado corrente — verificado a 2026-09-08 (commit `167d0a4`), correndo o bloco do §5.1 a partir
+da raiz do repositório:**
 
 ```
+eventos=11  reaberturas=1  recusas=0  indecidiveis-1a-perna=0
+limite superior (leitura ampla: tocar uma FIXA e' reabri-la -- pendencia 8.4)
+  nenhuma janela de 30 dias com >=2 FIXAs tocadas
+tripwire: NAO disparado em nenhuma das duas leituras
+$ echo $?
+0
+```
+
+**Leitura corrente:**
+
+1. **1 reabertura na leitura estrita, e zero indecidíveis.** Só o REG-008 satisfaz o teste (a) do
+   §2.1 (a linha do ADR-017 no §4.1 foi reescrita pela emenda 1.3). As três linhas que estavam
+   `PENDENTE` — REG-005, REG-006, REG-010 — foram **fechadas por N-011** (2026-07-29): o dono fixou
+   «reaberta» no sentido **estrito** e elas passaram a `NAO` (tocaram FIXAS sem lhes alterar o
+   texto). Por isso `indecidiveis-1a-perna=0` e a leitura ampla deixou de ter qualquer janela com
+   ≥2 FIXAs tocadas.
+2. **A 2.ª perna está a 0 e já não é «inavaliável».** As quatro invocações do §6.4 sobre FIXAS
+   (REG-005/006/008/010) foram **arbitradas pelos dois papéis do §6.5** a 2026-07-29 (N-011) e
+   legitimadas como **dívida-escondida** — nenhuma recusada como re-litígio. Não há
+   `emenda-sobre-FIXA` por arbitrar, pelo que o `AVISO` do §5.1 já não é emitido.
+3. **O tripwire NÃO dispara em nenhuma das duas leituras, e o exit é `0`.** O mecanismo de
+   congelamento aguenta — não é revisto na raiz (§6). Isto **não** apaga o §8: o que faz o contador
+   sair `0` é uma arbitragem (N-011) e uma definição de «reaberta» que vivem **fora** da Carta, pela
+   via que o §8 ponto 1 e o novo §8 ponto 6 declaram insuficiente (ver a nota de forma da alínea (c)
+   do AOS-375).
+
+**Histórico — 2026-07-26 (antes de N-011), preservado como registo e NÃO como estado corrente:**
+
+Antes de N-011 fechar REG-005/006/010, o mesmo comando dava `indecidiveis-1a-perna=3` e a leitura
+ampla teria disparado retroactivamente na janela 2026-07-22..2026-08-20, com exit `3`. Este bloco
+**caducou** a 2026-07-29 e mostra-se apenas para que a passagem de código `3` para `0` fique
+legível e datável:
+
+```
+# HISTÓRICO 2026-07-26 — caducou em 2026-07-29 (N-011); NÃO é o estado de hoje
 eventos=11  reaberturas=1  recusas=0  indecidiveis-1a-perna=3 [REG-005, REG-006, REG-010]
 limite superior (leitura ampla: tocar uma FIXA e' reabri-la -- pendencia 8.4)
   janela 2026-07-22..2026-08-20  FIXAs tocadas=4  [REG-005, REG-006, REG-010, REG-008]  -> TERIA DISPARADO pela 1.a perna
@@ -449,37 +487,33 @@ $ echo $?
 3
 ```
 
-**Leitura honesta — e o que fica dito sem atenuação:**
-
-1. **Limite inferior (estrito) = 1 reabertura.** Só o REG-008 satisfaz o teste (a) do §2.1: a
-   linha do ADR-017 no §4.1 foi literalmente reescrita pela emenda 1.3. Falta **uma** para o
-   tripwire disparar pela 1.ª perna.
-2. **Limite superior (amplo) = 4 FIXAS tocadas na janela 2026-07-22..2026-08-20.** Sob a leitura
-   literal da 1.ª perna — *tocar uma FIXA por emenda é reabri-la* — **o tripwire já teria
-   disparado retroactivamente**, nessa janela, com REG-005, REG-006, REG-010 e REG-008, e **sem
-   depender de árbitro nenhum**, porque a 1.ª perna não o menciona. Qual das duas leituras vale é
-   **pendência do dono (§8.4)**; até lá o SLI reporta as duas e sai com código `3`.
-3. **A 2.ª perna é hoje estruturalmente inavaliável.** Quatro invocações do §6.4 sobre decisões
-   FIXAS foram feitas e **nenhuma foi arbitrada** pelos dois papéis do §6.5 — que o §8.2 declara
-   **não constituídos**. Não pode haver «recusas do árbitro» quando não há árbitro.
-4. **«Não disparou» não é «o congelamento funcionou».** Três emendas em dois dias, quatro toques
-   em decisões FIXAS, zero arbitragens, e a emenda que cria o mecanismo é a mesma que produz três
-   dos quatro toques. O contador está agora **calculável e capaz de dar mau resultado** — e já dá
-   um resultado incómodo.
+A leitura de então — «três emendas em dois dias, quatro toques em FIXAS, zero arbitragens, e a
+emenda que cria o mecanismo é a mesma que produz três dos quatro toques» — continua a valer como
+**diagnóstico histórico** do momento; o que mudou foi o desfecho (N-011 arbitrou as quatro e o dono
+fixou a definição), não a densidade que o registo apanhou.
 
 ### 5.5 Prova negativa — o contador tem de conseguir dar mau resultado
 
 Um contador que nunca dispara não é um SLI; um parser que lê `0` sobre um registo malformado é
-pior do que não existir. Cinco cenários executados em 2026-07-26 **sobre cópias** em directório
-temporário (`git status` confirmou o ficheiro versionado intacto em todos):
+pior do que não existir. Cinco cenários **sobre cópias** em directório temporário (`git status`
+confirmou o ficheiro versionado intacto em todos).
+
+**Reconciliação dos alvos de mutação (2026-09-08, AOS-375).** A versão original destes cenários
+(2026-07-26) mutava as **três linhas `PENDENTE`** REG-005/006/010. N-011 (2026-07-29) fechou-as
+para `NAO`, pelo que já **não existe** nenhuma linha `PENDENTE` no §3 — mutar «`| PENDENTE |`»
+deixou de tocar qualquer evento e o cenário não provaria nada. Os cenários passam a mutar o `NAO`
+dessas **mesmas três linhas** (as três FIXAS tocadas na janela 2026-07-22..2026-08-20), que é o
+que hoje força os desfechos «re-litígio» e «leitura ampla». O poder de disparo é idêntico; muda só
+a célula de origem, de `PENDENTE` para `NAO`. Re-corridos a 2026-09-08, os códigos mantêm-se
+`1, 1, 1, 2, 2`.
 
 | # | Mutação sobre a cópia | Resultado | Código |
 |---|---|---|---|
-| A | as 3 linhas `PENDENTE` → `RECUSA` (o desfecho «re-litígio» do §7) | `TRIPWIRE DISPARADO janela 2026-07-22..2026-08-20 perna=RECUSA n=3` | `1` |
-| B | as 3 linhas `PENDENTE` → `REABERTURA` (o desfecho «leitura ampla» do §7) | `TRIPWIRE DISPARADO janela 2026-07-22..2026-08-20 perna=REABERTURA n=4` | `1` |
-| C | `PENDENTE` → `**REABERTURA**` (negrito, como as células vizinhas) | normalizado e **contado**, não ignorado: `n=4` | `1` |
+| A | REG-005/006/010 `NAO` → `RECUSA` (o desfecho «re-litígio», se o árbitro tivesse recusado) | `TRIPWIRE DISPARADO janela 2026-07-22..2026-08-20 perna=RECUSA n=3` | `1` |
+| B | REG-005/006/010 `NAO` → `REABERTURA` (o desfecho «leitura ampla» da definição) | `TRIPWIRE DISPARADO janela 2026-07-22..2026-08-20 perna=REABERTURA n=4` | `1` |
+| C | REG-005/006/010 `NAO` → `**REABERTURA**` (negrito, como as células vizinhas) | normalizado e **contado**, não ignorado: `n=4` | `1` |
 | D | uma linha `REG-` reduzida a 7 colunas | `ERRO DE FORMATO: linhas '\| REG-'=11 parseadas=10` + `colunas=7 (esperado 8)` — a linha **não** desaparece em silêncio | `2` |
-| E | `Conta` = `TALVEZ` (fora do vocabulário) | `ERRO DE FORMATO ... REG-005: Conta fora do vocabulario: 'TALVEZ'` | `2` |
+| E | `Conta` de REG-005 = `TALVEZ` (fora do vocabulário) | `ERRO DE FORMATO ... REG-005: Conta fora do vocabulario: 'TALVEZ'` | `2` |
 
 Os cenários **A** e **B** demonstram que **as duas pernas estão vivas** — a 2.ª pela via do
 árbitro, a 1.ª sem ele. Os cenários **C**, **D** e **E** demonstram que o parser **não
@@ -491,10 +525,11 @@ Comandos usados (as cópias vivem **fora** do repositório; corre-se depois o bl
 
 ```bash
 D=$(mktemp -d); R=docs/governance/REGISTO-Decisoes-Reabertas-e-Arbitragens.md
-sed 's/| PENDENTE |/| RECUSA |/'          "$R" > "$D/A.md"   # cenario A
-sed 's/| PENDENTE |/| REABERTURA |/'      "$R" > "$D/B.md"   # cenario B
-sed 's/| PENDENTE |/| **REABERTURA** |/'  "$R" > "$D/C.md"   # cenario C
-sed 's/| PENDENTE | commit/| TALVEZ | commit/'                "$R" > "$D/E.md"   # cenario E
+# A/B/C: mutar o NAO das TRES FIXAS tocadas na janela (REG-005/006/010), fechadas por N-011
+sed -e '/^| REG-005 /s/ NAO / RECUSA /' -e '/^| REG-006 /s/ NAO / RECUSA /' -e '/^| REG-010 /s/ NAO / RECUSA /'                   "$R" > "$D/A.md"   # cenario A
+sed -e '/^| REG-005 /s/ NAO / REABERTURA /' -e '/^| REG-006 /s/ NAO / REABERTURA /' -e '/^| REG-010 /s/ NAO / REABERTURA /'       "$R" > "$D/B.md"   # cenario B
+sed -e '/^| REG-005 /s/ NAO / **REABERTURA** /' -e '/^| REG-006 /s/ NAO / **REABERTURA** /' -e '/^| REG-010 /s/ NAO / **REABERTURA** /' "$R" > "$D/C.md"   # cenario C
+sed -e '/^| REG-005 /s/ NAO / TALVEZ /'                                                                                            "$R" > "$D/E.md"   # cenario E
 # cenario D (retirar uma celula a uma linha REG-) -- sed nao serve por causa dos acentos:
 python3 -c 'import sys,pathlib
 o=[]
@@ -537,10 +572,20 @@ A Carta §6.6 é explícita e não admite meio-termo:
 
 ---
 
-## 7. Conversão dos indecidíveis e dos por-arbitrar (o que fica em aberto)
+## 7. Conversão dos indecidíveis e dos por-arbitrar (RESOLVIDA por N-011, 2026-07-29)
 
-Duas coisas distintas estão em aberto e têm donos distintos. **Actualizam-se as linhas
-existentes**, não se criam novas (§2.2 ponto 4), e recalcula-se com o §5.1.
+> **Reconciliação (2026-09-08, AOS-375): as DUAS pendências desta secção foram FECHADAS por N-011
+> (2026-07-29).** A definição de «reaberta» (via A) foi fixada pelo dono no sentido **estrito**, pelo
+> que REG-005/006/010 resolvem `NAO` (não `REABERTURA`); e os veredictos do §6.4 (via B) foram dados
+> pelos dois papéis do §6.5, todos **dívida-escondida**, nenhum re-litígio. Consequência no contador:
+> leitura estrita e ampla **não disparam**, `indecidiveis-1a-perna=0`, exit `0` (ver §5.4). As tabelas
+> A/B abaixo ficam como **registo do espaço de decisão que existia ANTES de N-011** — já não descrevem
+> escolhas em aberto. *Ressalva de forma:* a definição de «reaberta» foi fixada DENTRO de N-011
+> (governação), não por emenda datada do §7 da Carta — ver §8 ponto 6.
+
+Duas coisas estavam em aberto e tinham donos distintos (**resolvidas em 2026-07-29 — ver a nota
+acima**). O procedimento era: **actualizar as linhas existentes**, não criar novas (§2.2 ponto 4), e
+recalcular com o §5.1 — foi o que N-011 fez a REG-005/006/008/010.
 
 **(A) A definição de «reaberta» — decide o DONO por emenda (§8.4). Afecta a 1.ª perna:**
 
@@ -556,12 +601,14 @@ existentes**, não se criam novas (§2.2 ponto 4), e recalcula-se com o §5.1.
 | **Dívida escondida** (facto novo verificável) | `divida-escondida` | inalterada | 2.ª perna fica em 0 |
 | **Re-litígio** (sem facto novo) | `re-litigio` | `RECUSA` (ou mantém `REABERTURA` se a 1.ª já conta) | ≥ 2 recusas ⇒ **dispara pela 2.ª perna** |
 
-**O cenário que tem de ficar dito:** REG-005, REG-006 e REG-010 têm a **mesma data**
+**O cenário que ficou dito, e como se resolveu:** REG-005, REG-006 e REG-010 têm a **mesma data**
 (2026-07-22) e REG-008 cai a 2026-07-23 — **todos dentro da mesma janela de 30 dias**
-(2026-07-22..2026-08-20). Basta **uma** de duas coisas para o §6.6 disparar retroactivamente:
+(2026-07-22..2026-08-20). Bastaria **uma** de duas coisas para o §6.6 disparar retroactivamente:
 o dono fechar a definição no sentido amplo (via A), **ou** o árbitro recusar duas das quatro
-(via B). Registar isto agora é o objectivo do artefacto: o contador só vale se puder dar mau
-resultado — e hoje já sai com código `3`.
+(via B). **Nenhuma das duas ocorreu:** N-011 (2026-07-29) fechou a via A no sentido **estrito** e a
+via B com quatro veredictos de **dívida-escondida**. Registar isto foi o objectivo do artefacto: o
+contador só vale se puder dar mau resultado — e à data de 2026-07-26 saía com código `3`; depois de
+N-011 sai com código `0` (ver §5.4). Que possa **continuar** a dar mau resultado prova-o a §5.5.
 
 ---
 
@@ -575,29 +622,50 @@ Carta ou o registo de decisões exige emenda datada do dono (§7).
    `docs/governance/REGISTO-Decisoes-Reabertas-e-Arbitragens.md` e tornar a linha nova
    obrigatória em cada emenda. **Enquanto essa emenda não existir, o §2.2 deste ficheiro é
    proposta, não obrigação**, e nada garante que a próxima emenda seja registada.
-2. **O árbitro do §6.5 não está constituído.** «Arquitecto de Plataforma» e «Responsável de
-   Segurança» são papéis sem titular nomeado no corpus. As emendas 1.2 e 1.3 estão ambas
-   aprovadas com «Segurança/Arquitectura **pendente**». Enquanto durar, a 2.ª perna do tripwire
-   é inavaliável — o que torna a 1.ª perna a **única** que pode disparar hoje.
+2. **O árbitro do §6.5 pronunciou-se a 2026-07-29 (N-011) — a 2.ª perna deixou de ser inavaliável.**
+   Os dois papéis (Arquitecto de Plataforma + Responsável de Segurança) arbitraram
+   REG-005/006/008/010 como dívida-escondida, e as emendas 1.2 e 1.3 passaram de
+   «Segurança/Arquitectura pendente» a **assinado (2026-07-29 — arbitragem §6.5)** no §7 da Carta
+   (`specs/00_AOS_Carta.md:170` e `:172`). A 2.ª perna está hoje avaliada e a **0 recusas**.
+   *Residual honesto que se mantém:* o corpus continua a **não nomear titular** para cada um dos dois
+   papéis — a pronúncia N-011 identifica-os pela função, não por pessoa. Se o dono exigir titular
+   nominal registado, é matéria de emenda, não deste registo.
 3. **O §4.1 está incompleto face aos ADRs existentes.** O registo «único» de decisões lista até
    ao ADR-017, mas existem `docs/adr/ADR-018-fronteira-no-orq-sch.md` (2026-07-23) e
    `docs/adr/ADR-019-fronteiras-camada-excecoes.md` (2026-07-25), ambos **Aceites** e nenhum
    inscrito no §4.1. Um registo único que não regista tudo deixa de ser único.
-4. **O §6.6 não define «reaberta» — e é a pendência mais cara.** É ela que separa
-   `reaberturas=1` de `reaberturas=4` e, com isso, «não disparou» de «disparou
-   retroactivamente». O teste objectivo do §2.1 deste ficheiro é a **proposta** de definição
-   (caso (a) estrito, caso (b) amplo); só o dono a pode fixar por emenda. Até lá o §5.1 reporta
-   os dois números e sai com código `3` — «não sei» deixa de ser igual a «não», mas continua
-   por decidir.
+4. **O §6.6 não definia «reaberta» — o dono fixou-a a 2026-07-29 (N-011), no sentido ESTRITO.** É a
+   definição que separa `reaberturas=1` de `reaberturas=4` e, com ela, «não disparou» de «disparou
+   retroactivamente». O teste objectivo do §2.1 deste ficheiro (caso (a) estrito, caso (b) amplo) era
+   a **proposta**; o dono fixou o **estrito** (só alterar a linha da FIXA no §4 conta), pelo que
+   REG-005/006/010 resolvem `NAO`, `indecidiveis-1a-perna=0`, e o §5.1 sai com código **`0`** (já não
+   `3`). **A pendência mudou de natureza, não desapareceu:** a definição foi fixada DENTRO de N-011,
+   um documento de governação, e **não** pela emenda datada do §7 da Carta que o
+   `specs/00_AOS_Carta.md:177` exige — ver o **ponto 6** abaixo, que é o defeito de forma que dá peso
+   a isto.
 5. **O §6.6 não diz o que acontece ao contador depois da revisão na raiz.** Se a Carta for
    revista, o contador reinicia? As propostas P1/P2 do §6 estão por decidir.
+6. **A definição de «reaberta» vigora HOJE SEM a emenda ao §7 da Carta que o
+   `specs/00_AOS_Carta.md:177` exige — declarado em voz alta (AOS-375, 2026-09-08).** O
+   `specs/00_AOS_Carta.md:177` diz «as decisões só mudam pelo §6 (emenda datada acima)», e a tabela do
+   §7 da Carta (`:167-172`) **não tem nenhuma linha de 2026-07-29**: salta de 1.3 (2026-07-23) para
+   1.4 (2026-08-31). A assinatura de 2026-07-29 aparece, sim, no campo de aprovação das emendas 1.2/1.3
+   (§6.5, `:170`/`:172`) e na §6.5 da Carta como acto de arbitragem — mas **não** como linha de emenda
+   própria na tabela do §7, e é a tabela do §7 que o `:177` torna a única via de mudança normativa. Ou
+   seja: a definição estrita de «reaberta» que hoje faz o contador sair `0` foi fixada pela mesma via
+   que o **§8 ponto 1 deste ficheiro** declara insuficiente — «sem emenda, o §2.2 deste ficheiro é
+   proposta, não obrigação». **O ponto 1 aplica-se a ela:** enquanto o dono não a inscrever numa
+   emenda datada do §7, é definição **operante mas não normada por emenda**, e nada garante que a
+   próxima leitura do contador a respeite. **Não se emenda a Carta aqui** — só o dono o faz (§7);
+   declara-se a lacuna, não se fecha. `grep -n "2026-07-29" specs/00_AOS_Carta.md` devolve a assinatura
+   do §6.5, **não** uma linha na tabela do §7: é exactamente essa a ausência que este ponto nomeia.
 
 ---
 
 ## 9. Referências
 
 - `specs/00_AOS_Carta.md` — §4 (registo de decisões), §5 (DoD da v1), §6.4/§6.5/§6.6 (regra de
-  congelamento, árbitro, tripwire), §7 (emendas 1.0 a 1.3).
+  congelamento, árbitro, tripwire), §7 (emendas 1.0 a 1.4).
 - `specs/EPIC-18_Remediacao_Auditoria_Multiagente_v4.md` — AOS-200, achado DEF-07.
 - `specs/EPIC-17_Remediacao_Auditoria_Multiagente_v3.md` — AOS-178 (gate `layer-lint`),
   AOS-179 (inversões canónicas).
