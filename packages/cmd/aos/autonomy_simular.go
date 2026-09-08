@@ -37,6 +37,14 @@ type simularRequest struct {
 	Max int `json:"max"`
 }
 
+// classeNaoSeladaNoWORM é a CLASSE de agente com que a simulação resolve o nível: vazia, DE
+// PROPÓSITO. O `audit.AuditRecord` selado NÃO transporta a classe do agente (nem pode, sem uma
+// migração de SchemaVersion da hash-chain), pelo que a simulação não tem a classe que a produção
+// (`pdp.applyAutonomy`) usa em `LevelForAgentOrClass(agent, in.Principal.AgentClass, domain)`. A
+// constante nomeia essa ausência em vez de a esconder num literal `""` no meio da chamada: o vazio
+// SALTA o degrau `class:` da cascata e cai directamente para instância → piso.
+const classeNaoSeladaNoWORM = ""
+
 type simularEfeito struct {
 	Run        string `json:"run"`
 	Step       string `json:"step"`
@@ -46,6 +54,12 @@ type simularEfeito struct {
 	RiskClass  string `json:"risk_class"`
 	Level      string `json:"level"`
 	Effect     string `json:"effect"` // "corre" | "escala"
+	// ClasseModelada declara, por EFEITO, se a classe de agente entrou na resolução do nível. É
+	// SEMPRE false: o selo WORM não carrega a classe (ver [classeNaoSeladaNoWORM]), pelo que cada
+	// efeito é resolvido só por instância + piso. O campo existe para a resposta não MENTIR por
+	// omissão — um consumidor que veja `class:` nas regras propostas e um nível resolvido saberia,
+	// sem ele, presumir que a classe foi considerada.
+	ClasseModelada bool `json:"classe_modelada"`
 }
 
 // handleAutonomySimular avalia a configuração proposta contra o histórico selado.
@@ -123,7 +137,11 @@ func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Reques
 	for _, rec := range registos {
 		classe := reclassificar(rec)
 		dominio := autonomy.DomainOf(rec.Capability, rec.Resource.Value)
-		nivel := hipotese.LevelForAgentOrClass(rec.Principal.NHIID, "", dominio)
+		// A classe do agente NÃO está no selo WORM ([classeNaoSeladaNoWORM]): resolve-se por
+		// instância + piso, saltando o degrau `class:` da cascata. É declarado no efeito
+		// (`classe_modelada:false`) e, se as regras propostas tiverem regras de classe, também no
+		// topo da resposta — a simulação não finge modelar o que não tem.
+		nivel := hipotese.LevelForAgentOrClass(rec.Principal.NHIID, classeNaoSeladaNoWORM, dominio)
 		modo := autonomy.Oversight(nivel, classe)
 		efeito := "corre"
 		if modo.RequiresHumanGate() {
@@ -136,10 +154,11 @@ func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Reques
 			Run: rec.RunID, Step: rec.StepID, Agent: rec.Principal.NHIID,
 			Capability: rec.Capability, Domain: dominio,
 			RiskClass: classe.String(), Level: nivel.String(), Effect: efeito,
+			ClasseModelada: false,
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resposta := map[string]any{
 		"avaliados":  len(efeitos),
 		"correriam":  correm,
 		"escalariam": escalam,
@@ -149,7 +168,32 @@ func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Reques
 		// depois de a autonomia a deixar correr. "corre" aqui significa "a autonomia não a
 		// escala", nunca "vai ser executada".
 		"nota": "avalia SO o overlay de autonomia; escopo, taint, orcamento e egress decidem depois e podem negar",
-	})
+	}
+
+	// LIMITAÇÃO DE CLASSE (AOS-377). Se a configuração proposta tiver QUALQUER regra `class:`, a
+	// simulação é KNOWN-INCOMPLETE: os selos WORM não carregam a classe do agente
+	// ([classeNaoSeladaNoWORM]), pelo que uma regra de classe que em produção casaria com estes
+	// registos NÃO é modelada aqui — os resultados reflectem só a resolução por instância + piso. É
+	// declarado no TOPO, e não só por efeito, porque é uma limitação da simulação INTEIRA, não de um
+	// registo: sem esta linha, um operador que propusesse `class:agent-worker:fs=L4` veria "escalariam
+	// 0" e concluiria que a regra não muda nada, quando o que acontece é que ela nem foi avaliada.
+	if propostoTemRegraDeClasse(proposto) {
+		resposta["limitacao"] = "regras `class:` propostas NAO sao modeladas: os selos WORM nao carregam a classe do agente (seria uma migracao de SchemaVersion da hash-chain), pelo que a resolucao aqui usa so instancia + piso. Cada efeito declara-o em classe_modelada:false. Em producao, pdp.applyAutonomy resolve pela classe REAL (Principal.AgentClass), pelo que uma regra de classe pode mudar o resultado de forma que esta simulacao NAO preve."
+	}
+
+	writeJSON(w, http.StatusOK, resposta)
+}
+
+// propostoTemRegraDeClasse diz se alguma regra proposta tem alvo de CLASSE (prefixo
+// [autonomy.ClassPrefix]). É o gatilho da declaração de limitação: uma regra de classe é
+// exactamente a que a simulação não consegue modelar sobre selos que não carregam a classe.
+func propostoTemRegraDeClasse(specs []autonomyLevelSpec) bool {
+	for _, s := range specs {
+		if strings.HasPrefix(s.agent, autonomy.ClassPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // lerMediacoes recolhe os selos de TOOL CALL mais recentes do WORM.

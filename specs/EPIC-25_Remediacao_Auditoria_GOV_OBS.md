@@ -1789,10 +1789,53 @@ correcção barata é a rota deixar de mentir; a cara é a migração.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: nó, alcançável por operador nas duas alíneas. A (a) não abre um
-caminho novo — o operador que edita `AOS_AUTONOMY_LEVELS` já tem o deployment; o que cai é a simetria
-entre as duas vias para o mesmo estado, e o facto de nenhum documento a declarar. A (b) é uma superfície
-de simulação que mente ao operador, que é pior do que não simular.
+**IMPLEMENTADO** (2026-09-08). P2. Nó. Decisões do dono: **(a)** exigir prova assinada no ficheiro
+(não recusa fail-closed); **(b)** a rota deixa de mentir (via barata, sem migração de `SchemaVersion`);
+e, sobre um achado da revisão adversarial, **recusar fail-closed um piso `>= L4`**.
+
+**Metade (a) — subida a L4/L5 por `AOS_AUTONOMY_LEVELS` exige a mesma prova de dual-control que
+`POST /autonomy`.** Nova env var `AOS_AUTONOMY_PROOFS` (JSON, `"agente:dominio=Ln" -> [provas]`, os
+mesmos campos de wire que a rota sela). Na `provision` (`packages/cmd/aos/autonomy_levels.go:510-538`),
+uma SUBIDA que atravesse o limiar — `autonomyDualControlRequired(s.level)` **E** `s.level > anteriorNivel`
+(`anteriorNivel = registry.LevelFor`, o reidratado ou o piso para par novo) — exige duas provas de
+emissores DISTINTOS, **reutilizando** `autonomyProofVerifies` (o mesmo verificador da rehidratação:
+direito `autonomy:set`, pubkey de `AOS_OPERATORS`, assinatura ed25519 sobre
+`CanonicalAutonomyPayload(agente, domínio, nível, "provisionamento por AOS_AUTONOMY_LEVELS")`). Sem prova
+válida a subida é **RECUSADA AO NÍVEL** (não aborta o boot; molde de `rejeitados` — o par fica no nível
+anterior e a recusa é declarada em `recusadosPorProva` + banner). O selo mantém actor **`config:node`**
+(AC4), agora com as provas. **AC2/retro-compat:** descidas e destinos `< L4` passam sem assinatura; o
+gate senta-se **depois** dos ramos de salto idempotente (`:490-507`), pelo que um deployment inalterado
+com L5 já selado reinicia sem pedir prova (não quebra o cluster). **AC5:** a linha de `ambienteEditado`
+nomeia a direcção (`direcaoDaMudanca`). Os DOIS banners contraditórios de `autonomy_setters.go` (:105
+sem-setters e :120 com-setters) foram **reconciliados**: o ficheiro baixa qualquer nível e sobe até L3
+livre; subir a L4/L5 exige `AOS_AUTONOMY_PROOFS`. O gate é armado no composition-root
+(`bootstrap.go:1335`, `armarGateDeProva(cfg.Operators, autonomySetters)`), onde vive a raiz de confiança.
+
+**Metade (b) — `POST /autonomy/simular` deixa de fingir que modela a classe do agente.** O literal
+`LevelForAgentOrClass(rec.Principal.NHIID, "", dominio)` desapareceu (AC6): passa por
+`classeNaoSeladaNoWORM` (constante nomeada). Cada efeito declara `classe_modelada:false` (AC7 — o selo
+WORM não carrega a classe e não pode sem migração de `SchemaVersion`), e quando a config proposta tem
+regras `class:` a resposta ganha um campo `limitacao` de topo que nomeia a lacuna (AC8 — sem ele, um
+operador que propusesse `class:...=L4` veria «escalariam 0» e concluiria que a regra não muda nada,
+quando o que houve foi não ter sido avaliada). `reclassificar` (classe de RISCO) fica intocado — essa
+metade já é derivada correctamente. **Não** se tocou em `AuditRecord`/`SchemaVersion`.
+
+**Achado da revisão adversarial (SHIP com um SHOULD-change), fechado no mesmo PR.** Fechar a subida
+por-par sem fechar o **piso** (`AOS_AUTONOMY_DEFAULT`) deixava a escalada MAIS larga — o piso vale para
+todos os pares sem registo, e como os `agent_id` são por-run é quase toda a frota — na cerimónia MAIS
+baixa (uma env var em branco, sem prova nem selo). `parseAutonomyDefault`
+(`packages/cmd/aos/autonomy_levels.go:660`) passa a **abortar** um piso `>= L4` com
+`ErrAutonomyDefaultDanger`; L0..L3 e ausente continuam a passar. Zero configs do repositório usam
+piso `>= L4`, logo sem quebra.
+
+Verificado: `packages/cmd/aos` `go test -race` verde (incl. `TestAOS377*`: subida sem prova recusada /
+com duas provas aplicada e selada `config:node` / descida livre / uma-só-prova insuficiente / prova sem
+`autonomy:set` não conta / retro-compat de L5 já selado / controlo negativo com o gate desarmado /
+`ErrAutonomyDefaultDanger`); `control-plane/governance/autonomy` e `pdp` verdes; `build`, `lint`,
+`layer-lint` verdes; `env_surface`/`manifesto_env` cobrem `AOS_AUTONOMY_PROOFS`. Smoke `run-aos` verde
+nos 10 passos — o passo 6 confirma que o `POST /autonomy` L4→L5 assinado continua a aplicar-se, e o
+passo 9 a mediação. Nenhum critério deferido. A migração de `SchemaVersion` (selar `agent_class`) fica
+por fazer e **fora** de âmbito, por decisão do dono.
 
 ---
 

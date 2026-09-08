@@ -140,15 +140,23 @@ func TestAOS307_ParForaDoAmbienteNaoFicaSilencioso(t *testing.T) {
 	}
 }
 
-// TestAOS305_BannerQualificaOProvisionamento — o banner não pode afirmar sem reservas que L4/L5
-// exigem duas assinaturas, porque o provisionamento por ambiente aplica-os sem nenhuma.
+// TestAOS305_BannerQualificaOProvisionamento — o banner distingue as duas fronteiras (rota vs
+// ficheiro), mas desde AOS-377 já não são assimétricas quanto a L4/L5: a SUBIDA a L4/L5 pelo
+// ficheiro exige a MESMA prova assinada que a rota. O banner tem de dizer isto — e NÃO pode voltar
+// a afirmar que o provisionamento aplica L4/L5 «sem assinatura», que era a contradição que este
+// ticket fechou.
 func TestAOS305_BannerQualificaOProvisionamento(t *testing.T) {
 	linha := strings.Join(autonomySettersBanner(map[string]bool{"op:a": true, "op:b": true}), "\n")
 	if !strings.Contains(linha, "POR POST /autonomy") {
 		t.Errorf("o banner nao qualifica a cerimonia como sendo da ROTA:\n%s", linha)
 	}
-	if !strings.Contains(linha, "SEM assinatura") || !strings.Contains(linha, "AOS_AUTONOMY_LEVELS") {
-		t.Errorf("o banner nao declara que o provisionamento por ambiente aplica L4/L5 sem assinatura:\n%s", linha)
+	if !strings.Contains(linha, "AOS_AUTONOMY_PROOFS") || !strings.Contains(linha, "AOS_AUTONOMY_LEVELS") {
+		t.Errorf("o banner tem de declarar que subir a L4/L5 pelo ficheiro exige prova (AOS_AUTONOMY_PROOFS):\n%s", linha)
+	}
+	// A regressão a impedir: o banner voltar a dizer que L4/L5 por ficheiro é aplicado sem
+	// assinatura. AOS-377 reconciliou as duas linhas — o ambiente já não é a porta das traseiras.
+	if strings.Contains(linha, "L4/L5, e aplicado SEM assinatura") {
+		t.Errorf("o banner NAO pode voltar a afirmar que L4/L5 por ficheiro e aplicado sem assinatura (AOS-377):\n%s", linha)
 	}
 	// E o ramo vazio declara a de-escalada como via que sobra.
 	vazio := strings.Join(autonomySettersBanner(nil), "\n")

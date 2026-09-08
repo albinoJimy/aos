@@ -1326,6 +1326,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// confiança FORA do store (as pubkeys de AOS_OPERATORS e o direito `autonomy:set`), e o que
 	// não verificar ABORTA o arranque. É a única razão pela qual `cfg.Operators` e
 	// `autonomySetters` são precisos nesta linha.
+	// GATE DE PROVA DE SUBIDA POR FICHEIRO (AOS-377). AQUI, e não na fronteira de config, pela
+	// mesma razão que o validador de rehidratação: verificar uma prova exige as pubkeys de
+	// AOS_OPERATORS e o direito `autonomy:set`, a raiz de confiança FORA do WORM que só o
+	// composition-root tem. Armado, uma SUBIDA a L4/L5 declarada em AOS_AUTONOMY_LEVELS passa a
+	// exigir as duas assinaturas de AOS_AUTONOMY_PROOFS — a mesma cerimónia da rota; sem elas a
+	// subida é recusada ao nível (o par fica no anterior) e declarada no banner, nunca aplicada.
+	cfg.Autonomy.armarGateDeProva(cfg.Operators, autonomySetters)
 	if err := cfg.Autonomy.provision(ctx, worm,
 		autonomy.WithRehydrateValidator(autonomyRehydrateValidator(cfg.Operators, autonomySetters))); err != nil {
 		return nil, err

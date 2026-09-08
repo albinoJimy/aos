@@ -20,6 +20,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -28,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
+	"github.com/aos-ref/integration"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -127,6 +130,71 @@ func parseAutonomyLevel(s string) (autonomy.Level, error) {
 	default:
 		return autonomy.L0, fmt.Errorf("nivel %q desconhecido (use L0..L5)", s)
 	}
+}
+
+// ErrBadAutonomyProofs — AOS_AUTONOMY_PROOFS está definido mas é inválido. Fail-closed no molde de
+// [ErrBadAutonomySetters]: quem transporta as provas que AUTORIZAM uma subida a L4/L5 pelo ficheiro
+// obtém-nas bem-formadas ou o nó recusa arrancar. Uma prova mal escrita ignorada em silêncio faria
+// o par cair no nível anterior sem que ninguém percebesse porquê — pior do que abortar.
+var ErrBadAutonomyProofs = errors.New("aos: AOS_AUTONOMY_PROOFS mal configurado — objecto JSON { \"agente:dominio=Ln\": [ {\"emitter_id\":..,\"signature_b64\":..,\"nonce_b64\":..,\"issued_at\":..}, .. ] } com as assinaturas que AUTORIZAM cada SUBIDA a L4/L5 por AOS_AUTONOMY_LEVELS; a chave e o par exactamente como em AOS_AUTONOMY_LEVELS com o nivel de DESTINO (ex.: `agt-1:fs=L5` ou `class:agent-worker:fs=L4`), e cada subida a L4/L5 exige DUAS provas de emissores DISTINTOS de AOS_AUTONOMY_SETTERS, sobre o payload canonico (agente, dominio, nivel, motivo=`" + autonomyProvisionReason + "`)")
+
+// autonomyProofKey é a chave com que uma prova de subida é procurada em AOS_AUTONOMY_PROOFS:
+// `agente:dominio=Ln`, exactamente a entrada de AOS_AUTONOMY_LEVELS que a produz. O `agent` já
+// traz o prefixo `class:` quando o alvo é uma classe, pelo que a chave de uma regra de classe é
+// `class:<classe>:<dominio>=Ln` — a mesma forma que o operador escreve no ficheiro.
+func autonomyProofKey(s autonomyLevelSpec) string {
+	return s.agent + ":" + s.domain + "=" + s.level.String()
+}
+
+// parseAutonomyProofs lê AOS_AUTONOMY_PROOFS. Vazio ⇒ (nil, nil): sem provas declaradas, e uma
+// subida a L4/L5 pelo ficheiro que precise delas é recusada ao nível (fica no nível anterior).
+//
+// O valor de cada chave descodifica DIRECTAMENTE para [autonomy.LevelChangeProof] porque os campos
+// de wire (`emitter_id`/`signature_b64`/`nonce_b64`/`issued_at`) são os mesmos que a rota sela e
+// que a rehidratação reverifica — não há uma segunda forma a manter em sincronia. Fail-closed: JSON
+// ilegível, chave sem `=Ln`, nível fora de L0..L5, par sem `agente:dominio`, lista vazia ou prova
+// sem `emitter_id` ABORTAM (ErrBadAutonomyProofs).
+func parseAutonomyProofs(entrada string) (map[string][]autonomy.LevelChangeProof, error) {
+	raw := strings.TrimSpace(entrada)
+	if raw == "" {
+		return nil, nil
+	}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var m map[string][]autonomy.LevelChangeProof
+	if err := dec.Decode(&m); err != nil {
+		return nil, fmt.Errorf("%w: JSON ilegivel: %v", ErrBadAutonomyProofs, err)
+	}
+	if len(m) == 0 {
+		return nil, fmt.Errorf("%w: objecto vazio", ErrBadAutonomyProofs)
+	}
+	out := make(map[string][]autonomy.LevelChangeProof, len(m))
+	for chave, provas := range m {
+		par, nivel, ok := strings.Cut(chave, "=")
+		if !ok {
+			return nil, fmt.Errorf("%w: chave %q sem `=Ln`", ErrBadAutonomyProofs, chave)
+		}
+		lvl, err := parseAutonomyLevel(strings.TrimSpace(nivel))
+		if err != nil {
+			return nil, fmt.Errorf("%w: chave %q: %v", ErrBadAutonomyProofs, chave, err)
+		}
+		if strings.TrimSpace(par) == "" || !strings.Contains(par, ":") {
+			return nil, fmt.Errorf("%w: chave %q sem `agente:dominio`", ErrBadAutonomyProofs, chave)
+		}
+		if len(provas) == 0 {
+			return nil, fmt.Errorf("%w: chave %q sem provas", ErrBadAutonomyProofs, chave)
+		}
+		for i, p := range provas {
+			if strings.TrimSpace(p.EmitterID) == "" {
+				return nil, fmt.Errorf("%w: chave %q prova #%d sem emitter_id", ErrBadAutonomyProofs, chave, i+1)
+			}
+		}
+		// Chave NORMALIZADA para casar byte a byte com [autonomyProofKey]: par sem espaços de
+		// contorno e nível em maiúsculas canónicas ("L5"). Assim `agt-1:fs = l5` no ficheiro
+		// continua a encontrar a prova.
+		out[strings.TrimSpace(par)+"="+lvl.String()] = provas
+	}
+	return out, nil
 }
 
 // autonomyProvisionReason / autonomyProvisionActor são o MOTIVO e a ATRIBUIÇÃO com que o
@@ -248,6 +316,20 @@ type autonomyWiring struct {
 	// anomalia a gritar no banner: migração (registo anterior ao mecanismo de provas) ou
 	// registo forjado por quem tem escrita no ficheiro.
 	rejeitados []autonomy.RehydrateRejection
+	// recusadosPorProva são os pares que AOS_AUTONOMY_LEVELS mandava SUBIR a L4/L5 mas para os
+	// quais AOS_AUTONOMY_PROOFS não trouxe as duas provas assinadas exigidas (AOS-377). A subida
+	// é RECUSADA AO NÍVEL — o par fica no nível anterior (reidratado ou piso) e a recusa é
+	// declarada aqui e no banner. Fail-closed sem modo de tijolo: o boot prossegue, no mesmo
+	// molde de `rejeitados`. Formato "agente:dominio=Ln(...)".
+	recusadosPorProva []string
+	// GATE DE PROVA DE SUBIDA (AOS-377). Só é ARMADO no composition-root ([Bootstrap], que tem as
+	// pubkeys de operador), via [autonomyWiring.armarGateDeProva]. Sem armar (testes de módulo) o
+	// gate é INACTIVO e o comportamento é o anterior — a mesma disciplina do validador de
+	// rehidratação, que também só existe quando o [Bootstrap] o injecta.
+	provaGateArmado bool
+	operadores      map[string]ed25519.PublicKey           // emitterID→pubkey de AOS_OPERATORS
+	setters         map[string]bool                        // quem detém autonomy:set (AOS_AUTONOMY_SETTERS)
+	provasPorPar    map[string][]autonomy.LevelChangeProof // AOS_AUTONOMY_PROOFS, por [autonomyProofKey]
 }
 
 // buildAutonomyOracle constrói o registo de níveis a partir das entradas declaradas, com o
@@ -266,6 +348,25 @@ func buildAutonomyOracle(specs []autonomyLevelSpec, piso autonomy.Level) *autono
 		specs:       specs,
 		sealedPairs: make(map[string]struct{}),
 	}
+}
+
+// armarGateDeProva ARMA o gate de prova de subida (AOS-377) com a raiz de confiança que vive FORA
+// do WORM — as pubkeys de AOS_OPERATORS e o direito `autonomy:set` — que o [Bootstrap] tem e a
+// fronteira de config não. Chamado UMA vez, antes de [autonomyWiring.provision]. As provas
+// (`provasPorPar`) já foram carregadas de AOS_AUTONOMY_PROOFS na fronteira de config; aqui só se
+// liga a autoridade que as verifica. Receptor nil ⇒ no-op (oráculo não ligado).
+//
+// PORQUÊ ARMAR EM VEZ DE ESTAR SEMPRE ACTIVO: é a mesma leitura honesta do fail-closed que o
+// validador de rehidratação faz. Um provision de teste de módulo não tem pubkeys de operador para
+// verificar prova nenhuma; exigir prova aí seria medir a ausência de cablagem, não a política. Em
+// produção o [Bootstrap] arma-o SEMPRE, pelo que a subida por ficheiro é sempre gated.
+func (w *autonomyWiring) armarGateDeProva(operadores map[string]ed25519.PublicKey, setters map[string]bool) {
+	if w == nil {
+		return
+	}
+	w.provaGateArmado = true
+	w.operadores = operadores
+	w.setters = setters
 }
 
 // oracle devolve o [autonomy.Oracle] a ligar ao PDP ([pdp.WithAutonomyOracle]). Receptor nil ⇒
@@ -350,6 +451,17 @@ func (w *autonomyWiring) provision(ctx context.Context, worm audit.Store, opts .
 
 	for _, s := range w.specs {
 		k := s.agent + ":" + s.domain
+		// anteriorNivel é o nível CORRENTE do par: o reidratado, ou o piso para um par novo. É a
+		// referência de DIRECÇÃO da mudança (AC5) e do gate de prova de subida (AOS-377). Lido AQUI,
+		// antes de qualquer SetLevel deste ciclo, para que duas entradas do mesmo par vejam a ordem
+		// correcta.
+		anteriorNivel := w.registry.LevelFor(s.agent, s.domain)
+
+		// linhaAmbienteEditado, quando não-vazia, é a declaração a acrescentar SE a mudança for
+		// APLICADA. Não se acrescenta já porque o gate de prova de subida abaixo ainda pode
+		// RECUSÁ-LA — e uma subida recusada não é uma edição de ambiente que venceu, é uma que não
+		// entrou.
+		linhaAmbienteEditado := ""
 		if last, ok := w.registry.LastChange(s.agent, s.domain); ok {
 			if last.Actor != autonomyProvisionActor {
 				// O AMBIENTE GANHA QUANDO **MUDOU**, não quando é mais baixo (achados R-03/S-03,
@@ -381,20 +493,57 @@ func (w *autonomyWiring) provision(ctx context.Context, worm audit.Store, opts .
 					w.sealedPairs[k] = struct{}{}
 					continue
 				}
-				w.ambienteEditado = append(w.ambienteEditado,
-					fmt.Sprintf("%s=%s(era %s por decisao de %q)", k, s.level, last.New, last.Actor))
-				// Cai para o SetLevel abaixo: a mudança é aplicada E selada como `config:node`,
-				// ficando ela própria no trilho.
+				// AC5: a linha nomeia a DIRECÇÃO (subida/descida), não só o par e o valor — quem lê o
+				// banner tem de saber se a edição do ficheiro AFROUXOU ou APERTOU a supervisão.
+				linhaAmbienteEditado = fmt.Sprintf("%s=%s(%s, era %s por decisao de %q)",
+					k, s.level, direcaoDaMudanca(anteriorNivel, s.level), last.New, last.Actor)
+				// Cai para o SetLevel abaixo (ou para o gate de prova, se for uma subida a L4/L5).
 			} else if last.New == s.level {
-				// Provisionamento anterior com o MESMO valor: nada a selar de novo.
+				// Provisionamento anterior com o MESMO valor: nada a selar de novo. É por AQUI que
+				// um deployment INALTERADO com L5 já selado passa sem prova — o gate de subida está
+				// depois deste ramo, e uma reaplicação idempotente nunca lhe chega (retro-compat).
 				w.sealedPairs[k] = struct{}{}
 				continue
 			}
 		}
+
+		// GATE DE PROVA DE SUBIDA (AOS-377). Uma SUBIDA por AOS_AUTONOMY_LEVELS que atravesse o
+		// limiar do gate humano — destino >= L4 E ACIMA do nível corrente do par — exige a MESMA
+		// prova de duas assinaturas distintas que a rota POST /autonomy impõe, transportada por
+		// AOS_AUTONOMY_PROOFS e verificada contra AOS_OPERATORS/AOS_AUTONOMY_SETTERS. Sem prova
+		// válida a subida é RECUSADA AO NÍVEL (não aborta o boot, no molde de `rejeitados`): o par
+		// fica no nível anterior e a recusa é declarada. DESCIDAS e destinos < L4 continuam a passar
+		// sem assinatura (AC2 — a de-escalada é a alavanca de incidente que não depende de chaves).
+		//
+		// Senta-se DEPOIS dos ramos de salto acima, pelo que um deployment inalterado (env == último
+		// provisionamento, ou mesmo valor já selado) nunca é gated — é o requisito de retro-compat.
+		if w.provaGateArmado && autonomyDualControlRequired(s.level) && s.level > anteriorNivel {
+			provas := w.provasPorPar[autonomyProofKey(s)]
+			if err := w.subidaTemProvaValida(s, provas); err != nil {
+				w.recusadosPorProva = append(w.recusadosPorProva,
+					fmt.Sprintf("%s=%s(subida %s->%s RECUSADA: %v; par fica em %s)", k, s.level, anteriorNivel, s.level, err, anteriorNivel))
+				continue
+			}
+			// SELA COM as provas: o actor STAYS `config:node` (AC4), mas o evento passa a
+			// transportar as assinaturas que o autorizaram — reverificáveis no próximo arranque.
+			if _, err := w.registry.SetLevelWithProof(ctx, s.agent, s.domain, s.level,
+				autonomyProvisionReason, autonomyProvisionActor, provas); err != nil {
+				return fmt.Errorf("%w: %s:%s=%s: %v", ErrAutonomyProvisioning, s.agent, s.domain, s.level, err)
+			}
+			if linhaAmbienteEditado != "" {
+				w.ambienteEditado = append(w.ambienteEditado, linhaAmbienteEditado)
+			}
+			w.sealedPairs[k] = struct{}{}
+			continue
+		}
+
 		// PARES DO WORM QUE O AMBIENTE NÃO DECLARA são tratados a seguir ao ciclo — ver
 		// [autonomyWiring.registarParesForaDoAmbiente].
 		// SetLevel SELA e só depois aplica (AOS-306). A selagem falhada devolve erro e não
 		// muda nada, pelo que a propagamos: o arranque aborta.
+		if linhaAmbienteEditado != "" {
+			w.ambienteEditado = append(w.ambienteEditado, linhaAmbienteEditado)
+		}
 		if _, err := w.registry.SetLevel(ctx, s.agent, s.domain, s.level,
 			autonomyProvisionReason, autonomyProvisionActor); err != nil {
 			return fmt.Errorf("%w: %s:%s=%s: %v", ErrAutonomyProvisioning, s.agent, s.domain, s.level, err)
@@ -441,8 +590,68 @@ func (w *autonomyWiring) registarParesForaDoAmbiente(rep autonomy.RehydrateRepor
 	sort.Strings(w.foraDoAmbiente)
 }
 
+// direcaoDaMudanca nomeia o sentido de uma transição de nível para o banner e o log (AC5). Uma
+// linha que diz só «par=Ln» esconde o que ao operador mais importa: se a edição do ficheiro
+// AFROUXOU (subida) ou APERTOU (descida) a supervisão daquele par.
+func direcaoDaMudanca(de, para autonomy.Level) string {
+	switch {
+	case para > de:
+		return "subida"
+	case para < de:
+		return "descida"
+	default:
+		return "sem alteracao de nivel"
+	}
+}
+
+// subidaTemProvaValida decide se as `provas` declaradas em AOS_AUTONOMY_PROOFS autorizam a SUBIDA
+// que `s` pede. REUSA [autonomyProofVerifies] — a mesma verificação (direito autonomy:set, pubkey
+// de AOS_OPERATORS, assinatura ed25519 sobre o payload canónico) que a rehidratação faz — sobre o
+// payload canónico da alteração de provisionamento ([integration.CanonicalAutonomyPayload] com o
+// motivo `autonomyProvisionReason`). Exige DUAS provas de emissores DISTINTOS para L4/L5
+// ([autonomyDualControlRequired]), num CONJUNTO de emitterIDs e não num contador: duas assinaturas
+// do mesmo emissor não são dual-control, tal como na rota e na rehidratação.
+func (w *autonomyWiring) subidaTemProvaValida(s autonomyLevelSpec, provas []autonomy.LevelChangeProof) error {
+	exigidas := 1
+	if autonomyDualControlRequired(s.level) {
+		exigidas = 2
+	}
+	payload := integration.CanonicalAutonomyPayload(s.agent, s.domain, s.level.String(), autonomyProvisionReason)
+	verificados := make(map[string]struct{}, len(provas))
+	motivos := make([]string, 0, len(provas))
+	for _, p := range provas {
+		if err := autonomyProofVerifies(p, payload, w.operadores, w.setters); err != nil {
+			motivos = append(motivos, fmt.Sprintf("%s: %v", p.EmitterID, err))
+			continue
+		}
+		verificados[p.EmitterID] = struct{}{}
+	}
+	if len(verificados) >= exigidas {
+		return nil
+	}
+	sort.Strings(motivos)
+	detalhe := "nenhuma prova em AOS_AUTONOMY_PROOFS para o par"
+	if len(motivos) > 0 {
+		detalhe = strings.Join(motivos, "; ")
+	}
+	return fmt.Errorf("%d prova(s) valida(s) de emissores distintos, exigidas %d [%s]", len(verificados), exigidas, detalhe)
+}
+
 // ErrBadAutonomyDefault — AOS_AUTONOMY_DEFAULT presente mas fora de L0..L5.
 var ErrBadAutonomyDefault = errors.New("aos: AOS_AUTONOMY_DEFAULT invalida (esperado L0..L5, ou ausente para o piso L0)")
+
+// ErrAutonomyDefaultDanger — AOS_AUTONOMY_DEFAULT pede um piso >= L4 (o limiar em que o gate
+// humano deixa de esperar por danger). Fail-closed no arranque (AOS-377).
+//
+// PORQUE UM PISO L4/L5 É PIOR do que uma subida por-par: o piso vale para TODOS os pares sem
+// registo, e como os `agent_id` são cunhados por run quase toda a frota é "sem registo" — um piso
+// L4/L5 remove a supervisão humana da frota inteira. Deixá-lo passar sem assinatura, no mesmo
+// arranque em que uma SUBIDA de UM par a L4/L5 por AOS_AUTONOMY_LEVELS passou a exigir duas provas
+// (AOS_AUTONOMY_PROOFS), seria fechar a porta estreita e deixar aberta a larga. A escalada de
+// autonomia mais consequente que existe não pode ter a cerimónia MAIS baixa. Quem quer autonomia
+// danger declara os pares concretos em AOS_AUTONOMY_LEVELS e assina-os — não a impõe num piso em
+// branco. O gate do piso é INCONDICIONAL: um nó sem operadores não teria sequer como autorizar.
+var ErrAutonomyDefaultDanger = errors.New("aos: AOS_AUTONOMY_DEFAULT >= L4 recusado — um piso L4/L5 remove a supervisao humana de TODOS os pares sem registo (e os agent_id sao por-run, logo quase toda a frota), sem assinatura nenhuma; e a mesma remocao de supervisao que a SUBIDA por AOS_AUTONOMY_LEVELS passou a exigir provar com AOS_AUTONOMY_PROOFS (AOS-377). Para autonomia danger, declare os pares concretos em AOS_AUTONOMY_LEVELS com as provas assinadas, em vez de um piso em branco. O piso aceita L0..L3")
 
 // parseAutonomyDefault interpreta o PISO dos pares sem nível registado.
 //
@@ -450,6 +659,9 @@ var ErrBadAutonomyDefault = errors.New("aos: AOS_AUTONOMY_DEFAULT invalida (espe
 // FORA do vocabulário ABORTA o arranque em vez de cair no valor-zero — que é L0 e passaria por
 // "aceite" enquanto ignorava em silêncio o que o operador escreveu. Um typo que produz a postura
 // mais restritiva é o pior tipo de typo: ninguém o vai procurar, porque nada parece errado.
+//
+// Um piso >= L4 ABORTA (AOS-377): ver [ErrAutonomyDefaultDanger]. É a mesma cerimónia que a subida
+// por-par passou a exigir, aplicada à escalada fleet-wide que seria pior deixar passar de graça.
 func parseAutonomyDefault() (autonomy.Level, error) {
 	raw := strings.TrimSpace(os.Getenv("AOS_AUTONOMY_DEFAULT"))
 	if raw == "" {
@@ -458,6 +670,9 @@ func parseAutonomyDefault() (autonomy.Level, error) {
 	lvl, err := parseAutonomyLevel(raw)
 	if err != nil {
 		return autonomy.L0, fmt.Errorf("%w: %q", ErrBadAutonomyDefault, raw)
+	}
+	if autonomyDualControlRequired(lvl) {
+		return autonomy.L0, fmt.Errorf("%w: %q", ErrAutonomyDefaultDanger, raw)
 	}
 	return lvl, nil
 }

@@ -179,6 +179,12 @@ services:
       AOS_AUTONOMY_LEVELS: "${AOS_AUTONOMY_LEVELS:-}"
       # AOS-305: emitterIDs de AOS_OPERATORS com autonomy:set (vazio ⇒ POST /autonomy recusa tudo).
       AOS_AUTONOMY_SETTERS: "${AOS_AUTONOMY_SETTERS:-}"
+      # AOS-377: provas assinadas que AUTORIZAM cada SUBIDA a L4/L5 por AOS_AUTONOMY_LEVELS. JSON
+      # { "agente:dominio=Ln": [ {emitter_id, signature_b64, nonce_b64, issued_at}, ... ] }; subir a
+      # L4/L5 pelo ficheiro exige DUAS provas de emissores DISTINTOS de AOS_AUTONOMY_SETTERS (a mesma
+      # cerimonia da rota). Vazio ⇒ uma subida a L4/L5 pelo ficheiro e RECUSADA ao nivel (fica no
+      # anterior) e declarada no banner. BAIXAR e SUBIR ate L3 nunca exigem prova.
+      AOS_AUTONOMY_PROOFS: "${AOS_AUTONOMY_PROOFS:-}"
       # AOS-367: emitterIDs de AOS_OPERATORS com dsar:erase — os autorizados a ASSINAR a destruicao
       # DSAR (/dsar/erase, /dsar/hold, /dsar/release, /dsar/expire). Vazio ⇒ prova desligada (as
       # rotas ficam por leitura); sob AOS_MODE=production a lista NAO pode ser vazia

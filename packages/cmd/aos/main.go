@@ -1436,12 +1436,25 @@ func loadPolicyBundleFromEnv() (*pdp.PDP, *autonomyWiring, error) {
 	if perr != nil {
 		return nil, nil, perr
 	}
+	// PROVAS DE SUBIDA (AOS-377). AOS_AUTONOMY_PROOFS transporta as assinaturas que AUTORIZAM cada
+	// SUBIDA a L4/L5 por AOS_AUTONOMY_LEVELS — o caminho por ficheiro passa a exigir a mesma
+	// cerimónia de duas assinaturas que POST /autonomy, em vez de aplicar QUALQUER nível sem
+	// assinatura. Vazio ⇒ nil: uma subida a L4/L5 que precise de prova é recusada ao nível. A raiz
+	// de confiança que as verifica (pubkeys de AOS_OPERATORS, direito autonomy:set) só existe no
+	// [Bootstrap], que ARMA o gate; aqui só se descodifica e valida a FORMA. Malformado ⇒ ABORTA.
+	proofs, prErr := parseAutonomyProofs(os.Getenv("AOS_AUTONOMY_PROOFS"))
+	if prErr != nil {
+		return nil, nil, prErr
+	}
 	// FASE 1 da cablagem (AOS-248): o registo nasce com o [autonomy.Sink] ligado mas VAZIO. Os
 	// níveis são aplicados na FASE 2 ([autonomyWiring.provision], em Bootstrap), depois de o WORM
 	// existir — só assim cada SetLevel de provisionamento fica SELADO com motivo e actor. Registar
 	// aqui, como se fazia, deixava a mudança de nível sem rasto em lado nenhum.
 	cabling := buildAutonomyOracle(specs, piso)
 	if cabling != nil {
+		// As provas ficam na cablagem já na fase 1; o gate que as consome só é ARMADO no
+		// [Bootstrap] (ver [autonomyWiring.armarGateDeProva]), que tem as pubkeys de operador.
+		cabling.provasPorPar = proofs
 		opts = append(opts, pdp.WithAutonomyOracle(cabling.oracle()))
 	}
 	p, err := pdp.Open(dir, opts...)
