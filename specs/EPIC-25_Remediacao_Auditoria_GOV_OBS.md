@@ -1307,7 +1307,33 @@ não, este ticket tem de acrescentar a sua própria.
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-08). `OpenFileStore` foi refactorizado num corpo partilhado
+`abrirFileStore(path, soLeitura, opts...)` (molde exacto do `eventstore.abrir`); `OpenFileStore` é o
+caminho de escrita, e um novo `OpenFileStoreReadOnly` (`soLeitura=true`) abre para INSPECÇÃO. A
+distinção cauda-rasgada/dano-interior e a **recusa fail-closed do dano (AOS-364) correm SEMPRE**,
+mesmo em leitura — um WORM corrompido nunca se serve como íntegro; só a **truncatura** da cauda
+parcial e a reabertura em `O_WRONLY|O_APPEND` ficam atrás de `if !soLeitura`. Em leitura os handles
+`f`/`w` ficam nil e `Read`/`Head`/`At` servem de `parts` em memória; `Append` recusa com
+`ErrAuditReadOnly` e `Close` tolera os nil. `audit_trail.go` passa a `OpenFileStoreReadOnly` e o
+cabeçalho foi reescrito (deixa de exigir volume gravável / declarar que `:ro` falha). A ferramenta
+forense já não pode encurtar a prova que foi ler.
+
+**AC5 (posse):** a leitura não arma posse nem lock, no molde de `eventstore.OpenReadOnly` — um replay
+read-only de um ficheiro append-only de escritor único lê um prefixo consistente e um registo em voo
+é servido como o prefixo íntegro, não truncado. Um `OpenFileStoreReadOnly` **não escreve, trunca nem
+fsync sob nenhum input** (verificado linha a linha pela revisão). Provado por `-race` em
+`platform/audit` e `cmd/aos`, e o smoke `run-aos`: cauda rasgada lida em read-only ⇒ tamanho
+IDÊNTICO antes/depois + prefixo íntegro servido (controlo negativo: o caminho de escrita continua a
+truncar o mesmo ficheiro); dano interior ⇒ recusa fail-closed em leitura; `Append` ⇒
+`ErrAuditReadOnly`; teste do subcomando `cmdAuditTrail` prova que a leitura não altera o tamanho.
+Não-vácuo por mutação (desligar o gate ⇒ a leitura volta a truncar, avermelha).
+
+**Revisão adversarial de segurança independente**: SHIP-READY no essencial (a leitura não pode
+escrever/encurtar a prova). Apanhou um limite mal-declarado — sobre um nó VIVO, um registo GRANDE
+(>~4 KB) em voo pode causar uma recusa `DanoInteriorError` **espúria** (fail-closed, erro atribuível,
+nunca prova destruída, cumprindo o AC5) — **corrigido no comentário** para não sobre-afirmar a
+segurança contra escritor concorrente. Fechar a recusa espúria exigiria alterar o replay partilhado
+com a escrita, desproporcional a um caso raro e já fail-closed. Nenhum critério deferido.
 
 ## AOS-374 — Duas declarações de cobertura que não se sustentam: uma entrada do registo caduca e um gate que declara o que o script diz em voz alta não fazer
 

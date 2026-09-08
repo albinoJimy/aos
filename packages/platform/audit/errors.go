@@ -63,6 +63,12 @@ var (
 	// [PartitionLister], pelo que não pode enumerar as partições a re-encadear. Fail-closed
 	// (AOS-221): não se declara verificado o que não se pôde percorrer.
 	ErrPartitionsUnavailable = errors.New("audit: store nao expoe as particoes (PartitionLister) para verificacao integral")
+	// ErrAuditReadOnly — tentativa de escrita ([FileStore.Append]) num WORM aberto por
+	// [OpenFileStoreReadOnly] (AOS-373). Um abridor de inspecção não anexa o ficheiro para
+	// append nem toca nele; a recusa acontece ANTES de qualquer selagem/persistência, pelo
+	// mesmo motivo que [eventstore.ErrReadOnly]: uma segunda cabeça de escrita colidiria no
+	// audit_seq com o escritor vivo. Use errors.Is para ramificar.
+	ErrAuditReadOnly = errors.New("audit: WORM aberto so para leitura (inspeccao) — escrita recusada")
 )
 
 // TamperType classifica a natureza da adulteração detectada.

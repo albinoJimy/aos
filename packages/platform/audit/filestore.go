@@ -66,6 +66,12 @@ type FileStore struct {
 	f       *os.File
 	w       *bufio.Writer
 	closed  bool
+
+	// soLeitura marca um store de INSPECÇÃO (AOS-373): aberto por [OpenFileStoreReadOnly],
+	// NÃO anexa o ficheiro para append (f/w ficam nil) e NÃO trunca a cauda parcial. Read/
+	// Head/At servem de s.parts sob RLock (não tocam em f/w); Append recusa com
+	// [ErrAuditReadOnly] e Close tolera os handles nil.
+	soLeitura bool
 }
 
 // OpenFileStore cria OU reabre um WORM durável respaldado pelo WAL em path. No
@@ -73,6 +79,54 @@ type FileStore struct {
 // partição na ordem de escrita, e reabre o ficheiro em append (truncando um tail
 // parcial). Um path inexistente cria um WORM durável novo. Chame Close para fechar.
 func OpenFileStore(path string, opts ...FileStoreOption) (*FileStore, error) {
+	return abrirFileStore(path, false, opts...)
+}
+
+// OpenFileStoreReadOnly reabre um WORM durável para INSPECÇÃO FORENSE (AOS-373): faz o
+// replay do WAL e devolve um [FileStore] que serve [FileStore.Read]/Head/At normalmente,
+// mas que NÃO anexa o ficheiro para append e NÃO trunca a cauda parcial. Qualquer escrita
+// ([FileStore.Append]) devolve [ErrAuditReadOnly].
+//
+// # AOS-373 — PORQUE ISTO TINHA DE EXISTIR
+//
+// `aos audit-trail` abria por [OpenFileStore], que sobre uma cauda rasgada TRUNCA o
+// ficheiro a validEnd antes de o reabrir em O_WRONLY|O_APPEND. Correr a ferramenta de
+// LEITURA sobre a prova forense ENCURTAVA-A fisicamente — apagava o registo parcial em
+// voo, que é exactamente o artefacto que uma investigação foi ver — e falhava a abrir num
+// mount `:ro`. Um abridor que não escreve nem trunca não tem por onde causar nenhuma das
+// duas coisas. É o gémeo exacto de [eventstore.OpenReadOnly] (AOS-347).
+//
+// FAIL-CLOSED MANTIDO: o DANO INTERIOR ([DanoInteriorError]) continua a RECUSAR a
+// reabertura mesmo em leitura — um WORM corrompido nunca se serve como íntegro. Só a
+// TRUNCATURA da cauda rasgada é que a leitura suprime (não a recusa do dano).
+//
+// A leitura NÃO precisa de posse nem de lock (AC5), no molde de [eventstore.OpenReadOnly]: um
+// replay read-only de um ficheiro append-only de escritor único lê um prefixo CONSISTENTE
+// [0, validEnd); um appender concorrente só ESTENDE para lá de validEnd, e um registo em voo é
+// um short read (walStopIncomplete) servido como o prefixo íntegro — NÃO truncado.
+//
+// LIMITE HONESTO desta garantia (revisão adversarial de AOS-373): sobre um nó VIVO, se um único
+// registo GRANDE (> ~4 KB, acima do buffer que `persist` esvazia num só Flush) estiver a ser
+// escrito no instante do replay, a escrita pode ficar visível a meio de um frame e um frame
+// íntegro seguinte pode já lá estar — o classificador de órfãos vê isso como DANO INTERIOR e
+// RECUSA ([DanoInteriorError]). Isso é uma recusa ESPÚRIA de um WORM saudável, mas é FAIL-CLOSED:
+// erro atribuível (nomeia partição/offset), nunca prova destruída nem servida em silêncio — o que
+// o AC5 exige. Não arma posse porque a alternativa (recusar) já é o comportamento seguro nesse
+// caso, e o uso previsto é sobre um nó PARADO (registos de auditoria são tipicamente sub-KB, pelo
+// que a janela nem sequer abre). Fechar a recusa espúria exigiria fixar o tamanho do ficheiro no
+// arranque do replay — uma alteração ao caminho PARTILHADO com a escrita, desproporcional a um caso
+// raro e já fail-closed.
+func OpenFileStoreReadOnly(path string, opts ...FileStoreOption) (*FileStore, error) {
+	return abrirFileStore(path, true, opts...)
+}
+
+// abrirFileStore é o corpo partilhado de [OpenFileStore] (soLeitura=false) e
+// [OpenFileStoreReadOnly] (soLeitura=true). A distinção entre cauda rasgada e DANO INTERIOR
+// e a RECUSA fail-closed do dano correm SEMPRE (mesmo em leitura). Só a TRUNCATURA da cauda
+// parcial e a reabertura em append é que ficam atrás de `if !soLeitura` — um abridor de
+// inspecção não tem cauda para preparar e o único efeito que a truncatura teria aí seria
+// destruir a prova que o operador foi ler (AOS-373).
+func abrirFileStore(path string, soLeitura bool, opts ...FileStoreOption) (*FileStore, error) {
 	recs, validEnd, stop, orfaos, err := replayAuditWAL(path)
 	if err != nil {
 		return nil, fmt.Errorf("audit: replay do WAL %q: %w", path, err)
@@ -109,23 +163,40 @@ func OpenFileStore(path string, opts ...FileStoreOption) (*FileStore, error) {
 			Detail:    detail,
 		}
 	case stop.kind == walStopIncomplete: // conclusivo e orfaos == 0 ⇒ cauda rasgada
-		if err := os.Truncate(path, validEnd); err != nil {
-			return nil, fmt.Errorf("audit: truncar tail parcial do WAL %q: %w", path, err)
+		// AOS-373: só o abridor de ESCRITA trunca a cauda parcial. Um abridor de inspecção
+		// não tem cauda para preparar (não vai escrever nada) e o único efeito que a
+		// truncatura teria aí seria ENCURTAR a prova forense — apagar o registo em voo, que
+		// é precisamente o que a investigação foi ver. A RECUSA do dano interior (case acima)
+		// corre SEMPRE, também em leitura: um WORM corrompido nunca se serve como íntegro.
+		if !soLeitura {
+			if err := os.Truncate(path, validEnd); err != nil {
+				return nil, fmt.Errorf("audit: truncar tail parcial do WAL %q: %w", path, err)
+			}
+			fsyncDir(filepath.Dir(path))
 		}
+	}
+	// AOS-373: a reabertura em append (e o fsync do directório que a torna durável) só
+	// acontece no caminho de escrita. Em leitura f/w ficam nil — Read/Head/At servem de
+	// s.parts sem lhes tocar, e Append/Close tratam do nil.
+	var f *os.File
+	if !soLeitura {
+		var oerr error
+		f, oerr = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if oerr != nil {
+			return nil, fmt.Errorf("audit: abrir WAL %q para append: %w", path, oerr)
+		}
+		// DURABILIDADE: em POSIX a entrada de directório de um ficheiro recém-criado só é
+		// durável após fsync do directório pai; sem isto um crash logo após criar o WAL
+		// poderia perder a entrada de directório apesar do File.Sync por registo. Best-effort.
 		fsyncDir(filepath.Dir(path))
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("audit: abrir WAL %q para append: %w", path, err)
-	}
-	// DURABILIDADE: em POSIX a entrada de directório de um ficheiro recém-criado só é
-	// durável após fsync do directório pai; sem isto um crash logo após criar o WAL
-	// poderia perder a entrada de directório apesar do File.Sync por registo. Best-effort.
-	fsyncDir(filepath.Dir(path))
 	s := &FileStore{
-		parts: make(map[string][]AuditRecord),
-		f:     f,
-		w:     bufio.NewWriter(f),
+		parts:     make(map[string][]AuditRecord),
+		soLeitura: soLeitura,
+	}
+	if !soLeitura {
+		s.f = f
+		s.w = bufio.NewWriter(f)
 	}
 	// Opções aplicadas ANTES do replay: uma porta de posse armada aqui já vale para
 	// qualquer escrita que o chamador faça a seguir.
@@ -148,7 +219,9 @@ func OpenFileStore(path string, opts ...FileStoreOption) (*FileStore, error) {
 	// Um WORM intacto abre exactamente como antes (a verificação passa em silêncio).
 	for _, part := range sortedPartitions(s.parts) {
 		if err := verifyReplayedChain(part, s.parts[part]); err != nil {
-			_ = f.Close()
+			if f != nil { // nil no abridor de inspecção (AOS-373)
+				_ = f.Close()
+			}
 			// O INVÓLUCRO TAMBÉM TEM DE DIZER A VERDADE. Classificar a causa lá dentro e
 			// embrulhá-la em «hash-chain adulterada» não corrigiria a leitura de ninguém:
 			// é esta a primeira linha que o operador vê quando o nó se recusa a arrancar.
@@ -191,6 +264,13 @@ func (s *FileStore) Partitions() []string {
 // A prova está em filestore_concurrency_test.go (-race). O wmu de [persist] é uma segunda
 // linha defensiva para o ficheiro; o dono da ORDENAÇÃO da cadeia é este s.mu.
 func (s *FileStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, error) {
+	// AOS-373 — INSPECÇÃO NÃO ESCREVE. A recusa é aqui, ANTES de tocar em s.f/persist ou de
+	// atribuir um audit_seq — era a atribuição de um seq por uma segunda cabeça que produzia a
+	// colisão que o gémeo eventstore (ErrReadOnly) fecha. Um store de leitura tem f/w nil; sem
+	// esta guarda o persist adiante faria nil-deref em s.w.Write.
+	if s.soLeitura {
+		return AuditRecord{}, ErrAuditReadOnly
+	}
 	// POSSE ANTES DE TUDO (AC1/AC3 do AOS-284). Fora do s.mu de propósito: a porta pode ir
 	// à rede, e serializar todas as escritas atrás de uma chamada remota trocaria um
 	// defeito de correcção por um de desempenho. A recusa acontece ANTES de haver efeito:
@@ -328,6 +408,11 @@ func (s *FileStore) Close() error {
 		return nil
 	}
 	s.closed = true
+	// AOS-373: um store de inspecção não anexou o ficheiro (f/w nil) — nada há para
+	// descarregar/sincronizar/fechar, e chamar s.w.Flush()/s.f.Sync() faria nil-deref.
+	if s.soLeitura || s.f == nil {
+		return nil
+	}
 	ferr := s.w.Flush()
 	serr := s.f.Sync()
 	cerr := s.f.Close()
