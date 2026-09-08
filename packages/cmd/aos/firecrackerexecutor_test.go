@@ -23,8 +23,12 @@ func TestRemoteFirecrackerExecutor_Sucesso(t *testing.T) {
 		if in.Call.Command != "read" || in.Call.Path != "notes" {
 			t.Errorf("call inesperada: %+v", in.Call)
 		}
-		if in.RunID != "fc-run-1" {
-			t.Errorf("run id não propagado: %q", in.RunID)
+		// AOS-383: run_id/step_id transportam a identidade REAL, não o inst.ID composto.
+		if in.RunID != "run-1" {
+			t.Errorf("run_id = %q, quero \"run-1\" (nao o inst.ID composto)", in.RunID)
+		}
+		if in.StepID != "step-2" {
+			t.Errorf("step_id = %q, quero \"step-2\" (antes viajava vazio)", in.StepID)
 		}
 		_ = json.NewEncoder(w).Encode(fcResult{Stdout: content, ExitCode: 0})
 	}))
@@ -32,7 +36,7 @@ func TestRemoteFirecrackerExecutor_Sucesso(t *testing.T) {
 
 	e := &remoteFirecrackerExecutor{url: srv.URL, client: srv.Client()}
 	out, arts, code, err := e.RunInGuest(context.Background(),
-		sandbox.Instance{ID: "fc-run-1"},
+		sandbox.Instance{ID: "fc-run-1-step-2-1", RunID: "run-1", StepID: "step-2"},
 		sandbox.ToolCall{ToolID: "doc_read", Command: "read", Path: "notes"})
 	if err != nil {
 		t.Fatalf("RunInGuest: %v", err)

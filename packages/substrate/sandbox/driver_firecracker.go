@@ -75,9 +75,12 @@ func (d *FirecrackerDriver) Create(_ context.Context, cap capability, spec Spec)
 	if d.exec == nil {
 		return Instance{}, ErrDriverUnavailable
 	}
+	// ID único mas NÃO decomponível; RunID/StepID abaixo são os autoritativos (AOS-383).
 	id := "fc-" + spec.RunID + "-" + spec.StepID + "-" + strconv.FormatUint(d.seq.Add(1), 10)
 	return Instance{
 		ID:            id,
+		RunID:         spec.RunID,
+		StepID:        spec.StepID,
 		Kind:          DriverFirecracker,
 		NoHostSocket:  true,
 		NoSharedNetNS: true,

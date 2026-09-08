@@ -2644,7 +2644,27 @@ o componente de referência não os usa. Um contrato cujos campos ninguém lê n
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-09). O `RunInGuest` do executor não tinha acesso ao `run_id`/`step_id`
+reais: a `sandbox.Instance` só carregava o `ID` composto (`"gv-"+RunID+"-"+StepID+"-"+seq`, não
+decomponível porque o `-` ocorre dentro das partes). A `Instance` ganha os campos **`RunID`/`StepID`**
+(`driver.go`), populados no `Create` de ambos os drivers a partir do `Spec` (que já os tinha). Os
+executores (`gvisorexecutor.go`, `firecrackerexecutor.go`) passam a enviar `RunID: inst.RunID` e
+`StepID: inst.StepID` — antes enviavam `RunID: inst.ID` (o ID composto) e nunca preenchiam `StepID`
+(viajava vazio).
+
+**AC4 (ambiguidade) — declarada:** `driver.go` (doc de `Instance.ID`) e o `Create` de ambos os drivers
+documentam que o ID **não é decomponível** e que os campos `RunID`/`StepID` são os **autoritativos** para
+correlação — o ID fica handle opaco único. O delimitador não muda (não partir IDs já emitidos); a
+correlação deixa de depender de o desfazer.
+
+Teste de **conteúdo** (AC2) em `gvisorexecutor_test.go` e `firecrackerexecutor_test.go`: o corpo enviado
+leva `run_id`/`step_id` reais. **Controlo negativo (AC3):** `TestAOS383_ExecutorTransportaRunEStepReais`
+usa um `inst.ID` composto distinto do `RunID` e assere `run_id == RunID`, `run_id != inst.ID` e `step_id`
+não-vazio — o comportamento antigo (`run_id = inst.ID`, `step_id` vazio) avermelharia. Os dois testes
+`_Sucesso` pré-existentes, que codificavam `run_id == inst.ID`, foram corrigidos para a verdade nova.
+
+Verificado: `substrate/sandbox` e `cmd/aos` `go test -race` verdes; `build`, `layer-lint` verdes. A
+mudança na `Instance` é aditiva (campos novos). Nenhum critério deferido.
 
 ---
 

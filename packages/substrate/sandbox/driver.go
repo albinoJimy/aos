@@ -116,8 +116,19 @@ type Spec struct {
 // observável (para testes/audit) de que as invariantes foram impostas. O estado
 // privado do driver vive em [Instance.handle] (nunca um handle do host).
 type Instance struct {
-	// ID é o identificador efémero da microVM (único por execução).
+	// ID é o identificador efémero da microVM (único por execução). É construído
+	// como "<prefixo>-<RunID>-<StepID>-<seq>" e NÃO É DECOMPONÍVEL: o delimitador `-`
+	// ocorre dentro de RunID e de StepID, pelo que o par original não se recupera do
+	// ID sem ambiguidade (AOS-383). Para CORRELAÇÃO usam-se os campos [Instance.RunID]
+	// e [Instance.StepID], que carregam os valores autoritativos — o ID serve só de
+	// handle opaco único.
 	ID string
+	// RunID/StepID são a identidade de execução desta instância, copiada do [Spec]
+	// no Create. São os valores AUTORITATIVOS para correlacionar o que o componente
+	// executou com a decisão que o autorizou (AOS-383) — o contrato de fio host→guest
+	// transporta-os como campos próprios, em vez de derivá-los do [Instance.ID] ambíguo.
+	RunID  string
+	StepID string
 	// Kind é o driver que a criou.
 	Kind DriverKind
 	// NoHostSocket/NoSharedNetNS/NoSharedPIDNS são as invariantes impostas (ADR-004).
