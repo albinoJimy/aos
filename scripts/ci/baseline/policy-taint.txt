@@ -1,0 +1,16 @@
+# Baseline do gate `policy-taint` (AOS-376).
+#
+# Cada linha é um `permit` da política assinada que NÃO exige, HOJE, a cláusula
+# `context.taint != "untrusted"` no seu `when {}`. Não foi «encontrada e varrida»:
+# está reportada, com permit-id e a razão pela qual a correcção não cabe aqui.
+#
+# Regras desta baseline (iguais às de baseline/event-catalog.txt):
+#   1. Toda a entrada TEM de trazer `owner=` — o gate falha se faltar.
+#   2. Toda a entrada diz o que o código faz e por que razão a correcção não cabe.
+#   3. A baseline só ENCOLHE: uma entrada cuja excepção desapareça (o permit passa
+#      a cumprir, ou é removido) fica OBSOLETA e o gate FALHA até ser removida.
+#
+# Chave: <permit-id> (o `@id("...")` da política). Formato: chave  # owner=...; justificação
+
+
+allow_fs_read  # owner=AOS-363; permit sem context.taint!="untrusted" — re-assinar rotaciona o trust anchor (chave privada fora do repo); o TaintGate com AOS_PRIVILEGED_CAPS cobre-o estruturalmente quando armado
