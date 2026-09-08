@@ -12,10 +12,15 @@ package main
 // com acesso ao volume, exactamente como o wal-count. Por isso não vai à API nem exige
 // credenciais — quem tem o ficheiro já tem o conteúdo.
 //
-// O volume tem de estar montado GRAVÁVEL: [audit.OpenFileStore] abre o ficheiro WORM para
-// append e um mount `:ro` falha a abrir. A analogia com o `wal-count` DEIXOU DE VALER nesta
-// linha — desde AOS-347 esse subcomando usa [eventstore.OpenReadOnly] e tolera `:ro`. Aqui a
-// exigência permanece, e é do store de auditoria, não uma convenção herdada.
+// READ-ONLY DE VERDADE (AOS-373): abre por [audit.OpenFileStoreReadOnly] — NÃO anexa o
+// ficheiro para append e NÃO trunca a cauda parcial. Ler a trilha deixou de ENCURTAR a
+// prova: [audit.OpenFileStore] truncava uma cauda rasgada a validEnd antes de reabrir em
+// append, pelo que correr esta ferramenta de LEITURA sobre a prova forense apagava o
+// registo em voo — o próprio artefacto que uma investigação vai ver — e falhava a abrir num
+// mount `:ro`. Agora o volume pode estar montado `:ro` e não é preciso ter o nó parado nem
+// um escritor vivo: um abridor que não escreve não colide no audit_seq nem encolhe o log. O
+// DANO INTERIOR continua a fechar a porta (fail-closed): um WORM corrompido recusa a
+// reabertura mesmo em leitura, nunca se serve como íntegro.
 
 import (
 	"context"
@@ -55,7 +60,7 @@ func cmdAuditTrail(args []string, w io.Writer) error {
 		return ErrAuditPartitionRequired
 	}
 
-	store, err := audit.OpenFileStore(*path)
+	store, err := audit.OpenFileStoreReadOnly(*path)
 	if err != nil {
 		return fmt.Errorf("aos: abrir WORM %q: %w", *path, err)
 	}
