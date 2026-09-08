@@ -55,8 +55,10 @@
 // bloqueio de escape por symlink/metacaracteres) e é o usado nos testes.
 // [FirecrackerDriver] e [GVisorDriver] são skeletons que DOCUMENTAM a integração
 // real (sem socket do host, sem namespace de rede/PID partilhado, rootfs/jail
-// dedicado) e satisfazem o contrato via um [GuestExecutor] injectável; sem KVM/host
-// support (este ambiente) devolvem [ErrDriverUnavailable].
+// dedicado) e satisfazem o contrato via um [GuestExecutor] injectável; sem executor
+// o Firecracker devolve [ErrDriverUnavailable] (falta KVM/host support) e o gVisor
+// devolve [ErrGVisorExecutorUnset] (NÃO exige KVM — falta provisionar o executor,
+// AOS-384).
 //
 // # Pool de microVMs com snapshot/restore (AOS-065)
 //
