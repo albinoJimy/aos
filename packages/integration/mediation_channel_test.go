@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/memory/provenance"
 	domain "github.com/aos-ref/platform/registry/domain"
+	"github.com/aos-ref/platform/registry/signing"
 	toolset "github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -51,7 +53,7 @@ func (s *mediationErrStore) Close() error { return nil }
 // aos379PermitConfig devolve uma [SecuredConfig] permitente (a call cap:fs.read PASSA a cadeia
 // real) SEM a porta MediationEvents preenchida — cada teste decide o que lhe injecta —, mais a
 // credencial e o goal do run. O modelo emite a tool call `doc_read` no turno 1 e conclui no 2.
-func aos379PermitConfig(t *testing.T) (SecuredConfig, string, agentruntime.Goal, func()) {
+func aos379PermitConfig(t *testing.T) (SecuredConfig, *signing.Signer, string, agentruntime.Goal, func()) {
 	t.Helper()
 	ctx := context.Background()
 	const (
@@ -127,7 +129,7 @@ func aos379PermitConfig(t *testing.T) (SecuredConfig, string, agentruntime.Goal,
 		Catalog:       catalog,
 		Revalidator:   rv,
 		Policy:        StaticPolicy{MaxEgress: domain.EgressExternal},
-		WORM:          audit.NewMemStore(),
+		WORM:          auditStore, // AOS-381: WORM único = o store do trust store/revalidação
 		Verifier:      verifier,
 		Authority:     authority,
 		PDP:           policyDP,
@@ -145,7 +147,7 @@ func aos379PermitConfig(t *testing.T) (SecuredConfig, string, agentruntime.Goal,
 		System:     "assistente de leitura de documentos",
 		Objective:  "le o documento notes",
 	}
-	return cfg, tok.Compact, goal, func() { _ = trajStore.Close() }
+	return cfg, signer, tok.Compact, goal, func() { _ = trajStore.Close() }
 }
 
 // TestAOS379_MediationChannel_CountsEvents é o AC6: pela via de PRODUÇÃO (NewSecuredRuntime com a
@@ -154,7 +156,7 @@ func aos379PermitConfig(t *testing.T) (SecuredConfig, string, agentruntime.Goal,
 // mediação e a contagem seria ZERO; com a porta preenchida é o nº de mediações.
 func TestAOS379_MediationChannel_CountsEvents(t *testing.T) {
 	ctx := context.Background()
-	cfg, _, goal, cleanup := aos379PermitConfig(t)
+	cfg, _, _, goal, cleanup := aos379PermitConfig(t)
 	defer cleanup()
 
 	medEvents, err := eventstore.New()
@@ -205,7 +207,7 @@ func TestAOS379_MediationChannel_CountsEvents(t *testing.T) {
 // tool NUNCA executa. É a semântica fail-closed do TeeSink provada na composição de produção.
 func TestAOS379_MediationChannel_FailClosed(t *testing.T) {
 	ctx := context.Background()
-	cfg, _, goal, cleanup := aos379PermitConfig(t)
+	cfg, _, _, goal, cleanup := aos379PermitConfig(t)
 	defer cleanup()
 
 	badStore := &mediationErrStore{}
@@ -236,11 +238,22 @@ func TestAOS379_MediationChannel_FailClosed(t *testing.T) {
 	}
 }
 
-// wormErrStore é um [audit.Store] cujo Append falha SEMPRE (embute um MemStore para os restantes
-// métodos). Serve o teste de regressão do achado adversarial: WORM em baixo, Event Store de pé.
+// wormErrStore é um [audit.Store] cujo Append de MEDIAÇÃO falha (embute um MemStore para os
+// restantes métodos e para as selagens de supply-chain). Serve o teste de regressão do achado
+// adversarial: WORM em baixo no caminho de mediação, Event Store de pé.
+//
+// AOS-381 — WORM ÚNICO: o trust store e a revalidação por chamada passaram a selar NESTE MESMO
+// store (partições registry.*). Se o Append falhasse SEMPRE, a própria revalidação negaria (audit
+// falhado) ANTES de a decisão chegar ao EventSink de mediação — e o teste deixaria de exercitar a
+// ORDEM do tee. Por isso só as escritas de MEDIAÇÃO (partição = RunID, não-registry) falham: as
+// selagens registry.* passam, a revalidação PERMITE, e o fail-closed é provado exactamente onde o
+// achado vive — no sink primário do tee.
 type wormErrStore struct{ *audit.MemStore }
 
-func (wormErrStore) Append(context.Context, audit.AuditRecord) (audit.AuditRecord, error) {
+func (w wormErrStore) Append(ctx context.Context, rec audit.AuditRecord) (audit.AuditRecord, error) {
+	if strings.HasPrefix(rec.Partition, "registry.") {
+		return w.MemStore.Append(ctx, rec)
+	}
 	return audit.AuditRecord{}, errors.New("WORM indisponivel (fail-closed)")
 }
 
@@ -253,11 +266,20 @@ func (wormErrStore) Append(context.Context, audit.AuditRecord) (audit.AuditRecor
 // tool.call.mediated para a call negada.
 func TestAOS379_MediationChannel_WormDownNaoDeixaMediatedFalso(t *testing.T) {
 	ctx := context.Background()
-	cfg, _, goal, cleanup := aos379PermitConfig(t)
+	cfg, signer, _, goal, cleanup := aos379PermitConfig(t)
 	defer cleanup()
 
-	cfg.WORM = wormErrStore{audit.NewMemStore()} // WORM em baixo (sink primário do tee)
-	medEvents, err := eventstore.New()           // Event Store de pé (sink secundário)
+	// AOS-381: WORM único ⇒ o revalidador tem de selar no MESMO store que cfg.WORM. O
+	// wormErrStore falha SÓ as escritas de mediação (partição = RunID) e deixa passar as
+	// registry.* — logo o trust store e a revalidação selam bem (a call é PERMITIDA) e o WORM
+	// só cai no sink primário do tee de mediação, que é onde o achado vive. Re-selamos o
+	// revalidador (e o trust store) neste MESMO wormErrStore para o ápice aceitar a composição.
+	badWorm := wormErrStore{audit.NewMemStore()} // WORM em baixo no caminho de mediação
+	cfg.WORM = badWorm
+	cfg.Revalidator = newRevalidator(t, newTrust(t, ctx, badWorm, signer), badWorm,
+		NewProvenanceQuarantiner(provenance.NewPartition(nil), WithQuarantineClock(fixedClock())),
+		NewRecordingAlerter())
+	medEvents, err := eventstore.New() // Event Store de pé (sink secundário)
 	if err != nil {
 		t.Fatalf("eventstore.New: %v", err)
 	}
@@ -303,7 +325,7 @@ func TestAOS379_MediationChannel_WormDownNaoDeixaMediatedFalso(t *testing.T) {
 // a porta é ADITIVA e retro-compatível.
 func TestAOS379_MediationChannel_NilControl(t *testing.T) {
 	ctx := context.Background()
-	cfg, _, goal, cleanup := aos379PermitConfig(t)
+	cfg, _, _, goal, cleanup := aos379PermitConfig(t)
 	defer cleanup()
 	// cfg.MediationEvents deixado NIL de propósito — o estado de todo o caminho pré-AOS-379.
 

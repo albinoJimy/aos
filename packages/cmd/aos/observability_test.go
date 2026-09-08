@@ -760,6 +760,10 @@ func obsPermitNodeWith(t *testing.T, endpoint string, model agentruntime.ModelCl
 	cfg.Model = model
 	cfg.Catalog = catalogStub{entries: []domain.Entry{entry}}
 	cfg.Revalidator = revalidator
+	// AOS-381: o WORM do nó = o store onde o revalidador injectado sela. Com observabilidade,
+	// o WORM é decorado (auditTracingStore); o ápice compara o store BASE (desembrulhado), pelo
+	// que a igualdade continua a valer.
+	cfg.WORM = auditStore
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{
 		durClass: {TTL: 15 * time.Minute, Scope: []string{durCap}},
 	}

@@ -80,7 +80,8 @@ func aos369PermitNodeComWorm(t *testing.T, w *wormSoLeitura, model agentruntime.
 	// a tool, autoridade user∩classe, classe de identidade.
 	signer := durSigner(t)
 	entry := counterEntry(t, signer)
-	auditStore := audit.NewMemStore()
+	// AOS-381: o trust store e a revalidação selam no MESMO WORM do nó (`w`, injectado acima).
+	auditStore := w
 	trust, err := signing.NewTrustStore(auditStore)
 	if err != nil {
 		t.Fatalf("trust store: %v", err)

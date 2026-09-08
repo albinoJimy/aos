@@ -105,7 +105,7 @@ func TestScopeTokenOnly_SemDirectorioExterno_ToolExecuta(t *testing.T) {
 		Catalog:     catalog,
 		Revalidator: rv,
 		Policy:      StaticPolicy{MaxEgress: domain.EgressExternal},
-		WORM:        audit.NewMemStore(),
+		WORM:        auditStore, // AOS-381: WORM único = o store do trust store/revalidação
 		Verifier:    verifier,
 		PDP:         policyDP,
 		// Authority: DELIBERADAMENTE OMITIDA (nil ⇒ fonte estática vazia).
@@ -236,7 +236,7 @@ func TestScopeTokenOnly_CapForaDoTokenNegada(t *testing.T) {
 		Catalog:     catalog,
 		Revalidator: rv,
 		Policy:      StaticPolicy{MaxEgress: domain.EgressExternal},
-		WORM:        audit.NewMemStore(),
+		WORM:        auditStore, // AOS-381: WORM único = o store do trust store/revalidação
 		Verifier:    verifier,
 		PDP:         policyDP,
 		// Authority: omitida, como no teste positivo.

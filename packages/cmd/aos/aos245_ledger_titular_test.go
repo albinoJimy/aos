@@ -24,8 +24,6 @@ import (
 	"github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/domain"
-	"github.com/aos-ref/platform/registry/revalidation"
-	"github.com/aos-ref/platform/registry/signing"
 )
 
 // AOS-245 — O OUTPUT DA TOOL EM CLARO NO WAL (protecção de dados).
@@ -121,19 +119,9 @@ func newAOS245Node(t *testing.T, model agentruntime.ModelClient) (node *Node, es
 	signer := durSigner(t)
 	entry := counterEntry(t, signer)
 
-	auditStore := audit.NewMemStore()
-	trust, err := signing.NewTrustStore(auditStore)
-	if err != nil {
-		t.Fatalf("trust store: %v", err)
-	}
-	if err := trust.Add(ctx, signer.KeyID(), signer.PublicKey()); err != nil {
-		t.Fatalf("trust add: %v", err)
-	}
-	revalidator, err := revalidation.New(trust, auditStore)
-	if err != nil {
-		t.Fatalf("revalidator: %v", err)
-	}
-
+	// AOS-381: entrega-se o REGISTO ASSINADO e o Bootstrap constrói o revalidador SELADO no WORM
+	// DURÁVEL do nó (AOS_WORM_PATH), em vez de injectar um revalidador sobre um MemStore volátil.
+	var err error
 	esPath = filepath.Join(dir, "events.wal")
 	cfg := tnBaseConfig()
 	cfg.DurableExecution = true
@@ -142,7 +130,7 @@ func newAOS245Node(t *testing.T, model agentruntime.ModelClient) (node *Node, es
 	cfg.IssuerKeyPath = filepath.Join(dir, "issuer.seed")
 	cfg.Model = model
 	cfg.Catalog = catalogStub{entries: []domain.Entry{entry}}
-	cfg.Revalidator = revalidator
+	cfg.SignedToolRegistry = nodeSignedRegistrySpec(signer, nil, entry)
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{
 		durClass: {TTL: 15 * time.Minute, Scope: []string{durCap}},
 	}

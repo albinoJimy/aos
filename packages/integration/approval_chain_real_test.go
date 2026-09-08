@@ -128,8 +128,9 @@ func newACRChainComOpcoes(t *testing.T, worm audit.Store, comGate bool) *acrChai
 	}
 
 	// --- REVALIDAÇÃO REAL: catálogo assinado + trust store ---
+	// AOS-381: o trust store e a revalidação selam no MESMO `worm` que vai para cfg.WORM.
 	signer := testSigner(t)
-	auditStore := audit.NewMemStore()
+	auditStore := worm
 	trust := newTrust(t, ctx, auditStore, signer)
 	entry := signedEntry(t, signer, "doc_read", "1.0.0", domain.Contract{Egress: domain.EgressNone})
 	catalog := &fakeCatalog{entries: []domain.Entry{entry}}

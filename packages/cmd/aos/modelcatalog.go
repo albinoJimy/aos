@@ -28,10 +28,8 @@ import (
 	"time"
 
 	integration "github.com/aos-ref/integration"
-	"github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/platform/registry/digest"
 	"github.com/aos-ref/platform/registry/domain"
-	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
 	"github.com/aos-ref/platform/registry/toolset"
 )
@@ -78,31 +76,58 @@ func egressRank(e domain.EgressClass) int {
 	}
 }
 
-// buildSignedToolRegistryFromEnv compõe, quando AOS_MODEL_TOOLS_REGISTER está ligado, o catálogo
-// ASSINADO + o Revalidator (com a pubkey do assinante no trust store) + a Policy de revalidação a
-// partir dos specs de AOS_MODEL_TOOLS. Devolve (nil,nil,nil,nil) quando o registo está desligado ou
-// não há tools — o nó fica com o catálogo/revalidador de referência (comportamento inalterado).
-func buildSignedToolRegistryFromEnv() (toolset.Catalog, *revalidation.Revalidator, integration.PolicyProvider, error) {
+// SignedToolRegistrySpec são os DADOS de um registo assinado de tools de AOS_MODEL_TOOLS,
+// prontos para o [Bootstrap] compor o revalidador SELADO no WORM único do nó (AOS-381).
+//
+// PORQUÊ DADOS E NÃO UM *revalidation.Revalidator JÁ CONSTRUÍDO. Até AOS-381, a via
+// opt-in construía aqui o revalidador sobre um [audit.NewMemStore] volátil, ANTES de o
+// Bootstrap compor o WORM durável do nó — logo a revalidação selava num store que
+// nenhum leitor lia e que não sobrevivia ao restart. A construção move-se para dentro do
+// Bootstrap (onde o `wormForChain` já existe), e esta struct carrega o que ele precisa: o
+// catálogo assinado, a pubkey do publicador a confiar, e a policy de supply-chain. A
+// chave PRIVADA efémera nunca sai desta função (assina as entries e morre); só a pública
+// viaja, para entrar no trust store selado no WORM do nó.
+type SignedToolRegistrySpec struct {
+	// Catalog é o catálogo assinado (a MESMA fonte do freeze e do resolve da definição
+	// actual). Vem já com as entries assinadas pela chave efémera.
+	Catalog toolset.Catalog
+	// Policy é a fronteira de scope/egress da revalidação (não a de autorização — essa é
+	// o PDP/Cedar). Admite os scopes declarados pelas tools e o egress máximo entre elas.
+	Policy integration.PolicyProvider
+	// PublisherKeyID e PublisherKey são a identidade PÚBLICA do assinante a adicionar ao
+	// trust store que o Bootstrap constrói sobre o WORM do nó. Nunca a metade privada.
+	PublisherKeyID string
+	PublisherKey   ed25519.PublicKey
+}
+
+// parseSignedToolRegistryFromEnv compõe, quando AOS_MODEL_TOOLS_REGISTER está ligado, os
+// DADOS do registo assinado (catálogo assinado + pubkey do publicador + policy) a partir
+// dos specs de AOS_MODEL_TOOLS. Devolve (nil,nil) quando o registo está desligado ou não
+// há tools — o nó fica com o catálogo/revalidador de referência (comportamento
+// inalterado). NÃO constrói o revalidador nem toca em nenhum audit store: isso é do
+// Bootstrap, que sela no WORM único do nó (AOS-381). Fail-closed: config incoerente
+// ABORTA ([ErrBadModelToolsRegister]).
+func parseSignedToolRegistryFromEnv() (*SignedToolRegistrySpec, error) {
 	if !parseModelToolsRegister(os.Getenv("AOS_MODEL_TOOLS_REGISTER")) {
-		return nil, nil, nil, nil
+		return nil, nil
 	}
 	specs, err := readModelToolSpecs()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if len(specs) == 0 {
 		// Registo pedido mas sem tools para registar ⇒ fail-closed (config incoerente).
-		return nil, nil, nil, fmt.Errorf("%w: AOS_MODEL_TOOLS vazio/ausente", ErrBadModelToolsRegister)
+		return nil, fmt.Errorf("%w: AOS_MODEL_TOOLS vazio/ausente", ErrBadModelToolsRegister)
 	}
 
-	// Assinante dev EFÉMERO: a chave privada nunca sai do processo; a pública entra no trust store.
+	// Assinante dev EFÉMERO: a chave privada nunca sai do processo; a pública viaja na spec.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("%w: gerar chave: %v", ErrBadModelToolsRegister, err)
+		return nil, fmt.Errorf("%w: gerar chave: %v", ErrBadModelToolsRegister, err)
 	}
 	signer, err := signing.NewSigner(modelToolRegistryKeyID, priv)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("%w: signer: %v", ErrBadModelToolsRegister, err)
+		return nil, fmt.Errorf("%w: signer: %v", ErrBadModelToolsRegister, err)
 	}
 
 	entries := make([]domain.Entry, 0, len(specs))
@@ -113,7 +138,7 @@ func buildSignedToolRegistryFromEnv() (toolset.Catalog, *revalidation.Revalidato
 	for _, s := range specs {
 		egress, eerr := parseEgressClass(s.Egress)
 		if eerr != nil {
-			return nil, nil, nil, eerr
+			return nil, eerr
 		}
 		contract := domain.Contract{
 			InputSchema:      s.Parameters,
@@ -145,19 +170,6 @@ func buildSignedToolRegistryFromEnv() (toolset.Catalog, *revalidation.Revalidato
 		}
 	}
 
-	auditStore := audit.NewMemStore()
-	trust, err := signing.NewTrustStore(auditStore)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("%w: trust store: %v", ErrBadModelToolsRegister, err)
-	}
-	if err := trust.Add(context.Background(), signer.KeyID(), signer.PublicKey()); err != nil {
-		return nil, nil, nil, fmt.Errorf("%w: trust add: %v", ErrBadModelToolsRegister, err)
-	}
-	revalidator, err := revalidation.New(trust, auditStore)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("%w: revalidator: %v", ErrBadModelToolsRegister, err)
-	}
-
 	allowedScopes := make([]string, 0, len(scopeSet))
 	for sc := range scopeSet {
 		allowedScopes = append(allowedScopes, sc)
@@ -166,7 +178,12 @@ func buildSignedToolRegistryFromEnv() (toolset.Catalog, *revalidation.Revalidato
 	// NÃO é a fronteira de autorização (essa é o PDP/Cedar sobre a Capability) — só o gate de
 	// supply-chain (o contrato não pode pedir mais scope/egress do que o run permite).
 	policy := integration.StaticPolicy{AllowedScopes: allowedScopes, MaxEgress: maxEgress}
-	return modelToolCatalog{entries: entries}, revalidator, policy, nil
+	return &SignedToolRegistrySpec{
+		Catalog:        modelToolCatalog{entries: entries},
+		Policy:         policy,
+		PublisherKeyID: signer.KeyID(),
+		PublisherKey:   signer.PublicKey(),
+	}, nil
 }
 
 // parseModelToolsRegister interpreta o booleano de AOS_MODEL_TOOLS_REGISTER (mesma gramática dos

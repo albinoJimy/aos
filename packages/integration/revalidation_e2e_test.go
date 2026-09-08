@@ -314,8 +314,9 @@ func TestSecuredRuntime_RealChain_FreezeAndFailClosed(t *testing.T) {
 	}
 	defer trajStore.Close()
 
-	// WORM ÚNICO: partilhado pelo EventSink de mediação do RM e pelo sink de egress.
-	worm := audit.NewMemStore()
+	// WORM ÚNICO (AOS-381): o MESMO store onde o trust store e a revalidação selam alimenta
+	// também o EventSink de mediação do RM e o sink de egress — o ápice recusa se divergirem.
+	worm := auditStore
 
 	model := &scriptedModel{responses: toolThenFinal("echo", []byte("ola"))}
 	sec, err := NewSecuredRuntime(SecuredConfig{
@@ -405,8 +406,9 @@ func TestSecuredRuntime_RealHookChain_SingleWORM(t *testing.T) {
 	}
 	defer trajStore.Close()
 
-	// UM ÚNICO WORM para o RM E o egress.
-	worm := audit.NewMemStore()
+	// UM ÚNICO WORM para o RM, o egress E a supply-chain (AOS-381): o MESMO store do trust
+	// store e da revalidação.
+	worm := auditStore
 
 	// (a) Construção via NewProductionSecure com a cadeia real: sucesso ⇒ a via
 	// estrita ACEITOU a cadeia (sem IdentityStub/EgressStub, com ScopeGate activo).

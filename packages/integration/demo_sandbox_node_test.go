@@ -96,7 +96,8 @@ func TestDemo_SandboxNodeEndToEnd(t *testing.T) {
 		t.Fatalf("eventstore.New: %v", err)
 	}
 	defer trajStore.Close()
-	worm := audit.NewMemStore()
+	// WORM ÚNICO (AOS-381): o MESMO store do trust store/revalidação alimenta o RM e o egress.
+	worm := auditStore
 
 	// EffectRewriter: os args do modelo → ExecRequest (Command FIXO "read"; Path<-doc_id). É o
 	// MESMO shape que o nó compõe em sandboxwiring.go (newSandboxEffectRewriter) — aqui inline

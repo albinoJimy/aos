@@ -2354,7 +2354,50 @@ depois de o WORM do nó existir (`bootstrap.go:1212`), pelo que a via mais simpl
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-08). Design **WORM único** (decisão do dono). Não se tocou na política
+assinada nem em `AuditRecord`/`canonicalContent`.
+
+**As duas vias selam agora no WORM durável do nó.** A Via 1 (`referenceRevalidator`, por omissão)
+passa a **receber** o store por parâmetro (`referenceRevalidator(worm)`) e sela no `wormForChain` — o
+mesmo store decorado que vai para `SecuredConfig.WORM`. A Via 2 (opt-in `AOS_MODEL_TOOLS_REGISTER`),
+que corria em `main.go` **antes** de o WORM existir, foi **movida para dentro do `Bootstrap`**:
+`buildSignedToolRegistryFromEnv` deixou de construir o revalidador e passou a
+`parseSignedToolRegistryFromEnv` devolvendo `Config.SignedToolRegistry *SignedToolRegistrySpec`
+(dados: catálogo assinado, pubkey do publicador, policy — validação de env preservada), e o Bootstrap
+constrói o revalidador do registo assinado **selado no `wormForChain`** depois de este existir. As duas
+construções deixam de fabricar `audit.NewMemStore()` (AC1).
+
+**`revalidation.New` ganha `WithAudit` (aditivo, 8ª opção) e o getter `AuditStore()`** (AC5).
+`NewSecuredRuntime` recusa fail-closed (`ErrRevalidatorNotSealedToWORM`) um revalidador cujo destino de
+audit não seja o `cfg.WORM` — comparado pelo **store base desembrulhado** (`wormBaseStore`), porque com
+observabilidade ligada o `cfg.WORM` é o decorador de tracing (AOS-173) e a igualdade crua falharia. Um
+MemStore distinto do `cfg.WORM` é sempre recusado; o `AuditRecord` e a política ficam intactos.
+
+**Achados da revisão adversarial (SHIP com SHOULDs) fechados no mesmo PR.** O `wormBaseStore`
+confiava numa invariante tácita do `Unwrap` e podia pendurar num ciclo: (1) o desembrulho passou a ser
+**limitado** (fail-safe: profundidade/ciclo excedido ⇒ base que não iguala ⇒ recusa), com teste de
+terminação em ciclo; (2) a invariante de segurança («`Unwrap` devolve o store onde o `Append` sela») está
+**documentada** como contrato; (3) o erro deixou de afirmar «durável» — impõe **mesmidade** com o
+`cfg.WORM` (a durabilidade é ortogonal, garantida por `AOS_WORM_PATH` e declarada no banner). O `WithAudit`
+ganhou teste dedicado (sobrepõe o posicional; `WithAudit(nil)` é no-op).
+
+**Banner, gate e registo.** `plataformaPostureBanner` declara nos ramos se as selagens de trust
+store/revalidação são DURÁVEIS ou VOLÁTEIS (molde de `modelAuditPostureBanner`). `scripts/ci/supplychain.sh`
+ganha um passo que corre `TestAOS381_*` sobre o **nó composto** e prova que a partição
+`registry.revalidation` **sobrevive ao processo** (reabre o `FileStore` em disco read-only) — falha se
+revertido para in-memory. `DEF-812`/`N-DEF-812` deixam de descrever a revalidação por chamada como «que
+CORRE» sem ressalva: nomeiam que sela no WORM único (AOS-381); `deferrals` verde. `CHANGELOG.md` (linhas
+AOS-051/AOS-054) ganha ressalva + entrada AOS-381.
+
+**Não-vacuidade (AC4):** revertendo a selagem para `audit.NewMemStore()` nas duas construções,
+**388 casos de teste** avermelham em `packages/cmd/aos` (praticamente todo o teste que compõe um nó, por
+o revalidador de referência deixar de apontar o `cfg.WORM` e o fail-closed do ápice disparar).
+
+Verificado: `platform/registry`, `integration`, `cmd/aos` `go test -race` verdes; `build`, `lint`,
+`layer-lint`, `deferrals`, `supplychain.sh` verdes; smoke `run-aos` verde nos 10 passos. **Prova por
+comando (AC2):** após um run com WORM durável, `aos audit-trail --path <worm> --run registry.revalidation`
+devolve `seq=1 allow`; `--run registry.truststore` idem — o primeiro leitor não-teste-da-biblioteca desta
+cadeia. Nenhum critério deferido.
 
 ---
 

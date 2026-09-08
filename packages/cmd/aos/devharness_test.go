@@ -102,6 +102,7 @@ func devNode(t *testing.T, model agentruntime.ModelClient) (*Node, string) {
 		Model:       model,
 		Catalog:     catalogStub{entries: []domain.Entry{entry}},
 		Revalidator: revalidator,
+		WORM:        auditStore, // AOS-381: o WORM do nó = o store onde o revalidador injectado sela
 		Policy:      integration.StaticPolicy{MaxEgress: domain.EgressInternal},
 		Authority: authz.NewStaticAuthoritySource().
 			Set("human:"+aos220Human, durCap).

@@ -37,7 +37,51 @@ var (
 	// segurança de egress (via [network.NewWORMSecuritySink]); sem ele a auditoria
 	// não seria durável e o fail-closed de audit do RM nunca dispararia.
 	ErrNoWORM = errors.New("integration: WORM audit store nil")
+	// ErrRevalidatorNotSealedToWORM — o revalidador por chamada (AOS-051) sela num
+	// [audit.Store] DIFERENTE do WORM único do nó (cfg.WORM). É a lacuna que AOS-381
+	// fecha: enquanto o sistema de tipos exigia audit mas não DURABILIDADE, um
+	// revalidador construído sobre um [audit.NewMemStore] volátil parecia auditado e não
+	// era — as suas decisões (e as mudanças do trust store) selavam-se num store que
+	// NENHUM leitor lia e que não sobrevivia ao restart. O ápice EXIGE agora que a
+	// revalidação sele no MESMO store que cfg.WORM (comparação por base desembrulhado, ver
+	// [wormBaseStore]) — o que alimenta o EventSink de mediação e o sink de egress. A
+	// DURABILIDADE é ortogonal e garantida à parte (o WORM do nó é durável sse
+	// `AOS_WORM_PATH` está definido; um nó dev unifica tudo num MemStore e o banner
+	// declara-o VOLÁTIL): este gate impõe MESMIDADE, não durabilidade. Fail-closed: um
+	// revalidador selado NOUTRO store recusa o arranque, em vez de mediar com um trilho de
+	// supply-chain que se evapora sem que nada o diga.
+	ErrRevalidatorNotSealedToWORM = errors.New("integration: revalidator audit store != cfg.WORM (a revalidação por chamada tem de selar no MESMO store que cfg.WORM — AOS-381)")
 )
+
+// wormBaseStore desembrulha decoradores de [audit.Store] que só DELEGAM (ex.: o
+// auditTracingStore de observabilidade do nó, AOS-173) até ao store durável de base. É o que
+// o fail-closed de WORM único (AOS-381) compara: dois handles que, por baixo da telemetria,
+// selam na MESMA hash-chain são o MESMO WORM. Um store sem Unwrap é o seu próprio base.
+//
+// INVARIANTE DE SEGURANÇA que o desembrulho ASSUME e que qualquer decorador de um WORM tem de
+// respeitar: `Unwrap()` devolve o store onde o `Append` SELA. O gate compara o base via Unwrap,
+// mas só o `Append` persiste — um decorador que implemente `Unwrap` por conveniência e cujo
+// `Append` divirja (selar noutro store, ou em dois) contornaria este fail-closed. Hoje só o
+// `auditTracingStore` implementa Unwrap e delega o Append honestamente; um decorador novo de
+// `audit.Store` que não respeite a invariante REABRE a lacuna que AOS-381 fecha.
+//
+// O desembrulho é LIMITADO (fail-safe): uma cadeia de Unwrap mal-composta (ciclo A→B→A, ou
+// profundidade patológica) não pode PENDURAR o arranque — ao exceder o limite devolve-se o store
+// corrente como base. Se ele não igualar o base de cfg.WORM, o gate RECUSA (a direcção segura).
+func wormBaseStore(s audit.Store) audit.Store {
+	for i := 0; i < 16; i++ {
+		u, ok := s.(interface{ Unwrap() audit.Store })
+		if !ok {
+			return s
+		}
+		inner := u.Unwrap()
+		if inner == nil || inner == s {
+			return s
+		}
+		s = inner
+	}
+	return s // profundidade/ciclo excedido: base fail-safe (não iguala ⇒ recusa)
+}
 
 // SecuredConfig configura o [SecuredRuntime].
 type SecuredConfig struct {
@@ -297,6 +341,15 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		return nil, ErrNoPolicy
 	case cfg.WORM == nil:
 		return nil, ErrNoWORM
+	// AOS-381 — WORM ÚNICO estendido à supply-chain: a revalidação tem de selar no MESMO
+	// store durável que cfg.WORM. Chega aqui com Revalidator e WORM já não-nil (casos
+	// acima). Compara-se o store BASE (via [wormBaseStore]): o composition-root pode decorar
+	// o WORM com telemetria (um wrapper que só DELEGA — ver o auditTracingStore do nó), e o
+	// revalidador pode selar no store cru ou no decorado; em qualquer caso a durabilidade é a
+	// do MESMO store subjacente. Desembrulhar antes de comparar mantém o gate estrito quanto à
+	// durabilidade (recusa um store volátil desligado) sem o tornar refém da camada de traços.
+	case wormBaseStore(cfg.Revalidator.AuditStore()) != wormBaseStore(cfg.WORM):
+		return nil, ErrRevalidatorNotSealedToWORM
 	}
 
 	// Defaults demo-grade (fail-closed): cada um é um hook REAL, nunca um stub. Os
