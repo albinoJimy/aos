@@ -59,9 +59,13 @@ func (d *GVisorDriver) Create(_ context.Context, cap capability, spec Spec) (Ins
 	if d.exec == nil {
 		return Instance{}, ErrGVisorExecutorUnset
 	}
+	// O ID é único mas NÃO decomponível (o `-` ocorre dentro de RunID/StepID); os
+	// campos RunID/StepID abaixo é que são autoritativos para correlação (AOS-383).
 	id := "gv-" + spec.RunID + "-" + spec.StepID + "-" + strconv.FormatUint(d.seq.Add(1), 10)
 	return Instance{
 		ID:            id,
+		RunID:         spec.RunID,
+		StepID:        spec.StepID,
 		Kind:          DriverGVisor,
 		NoHostSocket:  true,
 		NoSharedNetNS: true,

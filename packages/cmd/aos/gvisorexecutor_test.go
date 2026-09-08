@@ -24,8 +24,13 @@ func TestRemoteGVisorExecutor_Sucesso(t *testing.T) {
 		if in.Call.Command != "read" || in.Call.Path != "notes" {
 			t.Errorf("call inesperada: %+v", in.Call)
 		}
-		if in.RunID != "gv-run-1" {
-			t.Errorf("run id não propagado: %q", in.RunID)
+		// AOS-383: run_id/step_id transportam a identidade de execução REAL — não o
+		// inst.ID composto ("gv-...") nem um step_id vazio.
+		if in.RunID != "run-1" {
+			t.Errorf("run_id = %q, quero o RunID real \"run-1\" (nao o inst.ID composto)", in.RunID)
+		}
+		if in.StepID != "step-2" {
+			t.Errorf("step_id = %q, quero o StepID real \"step-2\" (antes viajava vazio)", in.StepID)
 		}
 		_ = json.NewEncoder(w).Encode(gvResult{Stdout: content, ExitCode: 0})
 	}))
@@ -33,13 +38,44 @@ func TestRemoteGVisorExecutor_Sucesso(t *testing.T) {
 
 	e := &remoteGVisorExecutor{url: srv.URL, client: srv.Client()}
 	out, arts, code, err := e.RunInGuest(context.Background(),
-		sandbox.Instance{ID: "gv-run-1"},
+		sandbox.Instance{ID: "gv-run-1-step-2-1", RunID: "run-1", StepID: "step-2"},
 		sandbox.ToolCall{ToolID: "doc_read", Command: "read", Path: "notes"})
 	if err != nil {
 		t.Fatalf("RunInGuest: %v", err)
 	}
 	if code != 0 || string(out) != string(content) || arts != nil {
 		t.Fatalf("resultado inesperado: code=%d out=%q arts=%v", code, out, arts)
+	}
+}
+
+// TestAOS383_ExecutorTransportaRunEStepReais é o controlo negativo do AOS-383: o corpo enviado ao
+// componente tem de levar o run_id e o step_id REAIS (os campos próprios da Instance), NUNCA o
+// inst.ID composto/ambíguo no run_id nem um step_id vazio — o comportamento antigo. Com o ID
+// composto distinto de RunID (o `-` ocorre dentro das partes), asserir `in.RunID == RunID` e
+// `in.RunID != inst.ID` prova que a correlação deixou de depender de desfazer um ID ambíguo.
+func TestAOS383_ExecutorTransportaRunEStepReais(t *testing.T) {
+	const instID = "gv-e3-fsread-step-000001-tool-1-1" // composto e ambíguo (o `-` está nas partes)
+	var got gvExecInput
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_ = json.NewEncoder(w).Encode(gvResult{ExitCode: 0})
+	}))
+	defer srv.Close()
+
+	e := &remoteGVisorExecutor{url: srv.URL, client: srv.Client()}
+	if _, _, _, err := e.RunInGuest(context.Background(),
+		sandbox.Instance{ID: instID, RunID: "e3-fsread", StepID: "step-000001-tool-1"},
+		sandbox.ToolCall{ToolID: "doc_read", Command: "read", Path: "notes"}); err != nil {
+		t.Fatalf("RunInGuest: %v", err)
+	}
+	if got.RunID != "e3-fsread" {
+		t.Errorf("run_id = %q, quero \"e3-fsread\"", got.RunID)
+	}
+	if got.RunID == instID {
+		t.Error("run_id ainda transporta o inst.ID composto (comportamento antigo) — deve ser o RunID real")
+	}
+	if got.StepID != "step-000001-tool-1" {
+		t.Errorf("step_id = %q, quero \"step-000001-tool-1\" (antes viajava vazio)", got.StepID)
 	}
 }
 
