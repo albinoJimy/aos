@@ -100,8 +100,12 @@ func (a *MediationSink) RecordMediation(ctx context.Context, rec referencemonito
 		// LARGURA de cada campo, e acrescentar um lá muda os bytes canónicos de TODOS os
 		// registos, incluindo os já escritos — as cadeias existentes deixariam de verificar.
 		// Isso é uma migração de `SchemaVersion`, não um campo a mais, e não cabe no ticket
-		// que abriu o canal. O canal está no Event Store (`tool.call.denied`), que é onde o
-		// AOS-332 lê. Se o WORM vier a precisar dele, é ticket próprio e leva o domínio novo.
+		// que abriu o canal. O canal tool.call.* existe como PORTA
+		// ([integration.SecuredConfig.MediationEvents], AOS-379) e é o Event Store — onde o
+		// AOS-332 lê — que a materializa QUANDO o nó a compõe (via [TeeSink], este WORM a par
+		// dele); um nó que a deixe nil só tem este WORM e aí o canal NÃO está no Event Store.
+		// Seja como for, é o Event Store — não este WORM — que leva `tool.call.denied`: se o
+		// WORM vier a precisar do campo, é ticket próprio e leva o domínio novo.
 		Principal: Principal{
 			NHIID:           rec.Principal.NHIID,
 			DelegationChain: mapChain(rec.Principal.DelegationChain),
