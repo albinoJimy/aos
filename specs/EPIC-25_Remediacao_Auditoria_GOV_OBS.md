@@ -1663,10 +1663,47 @@ alínea é a mitigação proporcional **enquanto AOS-363 não existir**, não um
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: arnês e CI. Não altera comportamento de produção — altera o que a CI
-e o smoke conseguem dizer. É o ticket que torna falsificável o verde do driver: enquanto o smoke não
-mediar, nenhum dos seus nove passos diz alguma coisa sobre o caminho que o sistema existe para
-proteger. Depende de **AOS-363**.
+**IMPLEMENTADO** (2026-09-08). P2. Alcance: arnês e CI; nenhum `.go` de produção alterado e a política
+assinada **não** é tocada (re-assiná-la rotaria o trust anchor, cuja chave privada vive fora do repo).
+
+**Metade (a) — o smoke passa a exercitar a mediação (decisão do dono: «passo que corre o teste de
+sistema»).** O binário `aos` não consegue emitir uma tool call ao vivo: o `referenceModel` de produção
+nunca emite e o único modelo que emite é o test-only `toolEmittingModel`, sem gateway mock que o injecte
+por HTTP. Logo o caminho de mediação **alcançável a partir do smoke** é o system-test do nó completo. O
+`driver.sh` ganha o passo `9/10` (`.claude/skills/run-aos/driver.sh:376-395`) que corre
+`go test -run '^TestAOS169_Mediation_NoBypass_FullNodeAPI$'` (`packages/cmd/aos/acceptance_mediation_test.go:293`,
+compõe um nó via Bootstrap com o RM real + bundle assinado e prova **permit + deny + no-bypass**). **AC2**
+(duas direcções) e **AC3** (recusa dar verde se nada for mediado) ficam por construção do teste subjacente:
+a call atravessa o Reference Monitor e o teste falha se a mediação não selar. **AC3/AC4** (fail-closed,
+não-vacuoso): o passo captura para `$r` no molde da função `tem` (`:323`, nunca `cmd | grep -q`), chama
+`fail` se o `go test` falhar, e — porque `go test -run <nome-inexistente>` sai `0` — exige a linha
+`--- PASS: TestAOS169_Mediation_NoBypass_FullNodeAPI`, pelo que remover/renomear o teste avermelha o passo
+em vez de o saltar em silêncio (a lição de AOS-358). Métricas renumeradas para `10/10`.
+
+**Metade (b) — gate novo `policy-taint` sobre o texto da política (AC5-AC9).** `scripts/ci/policy-taint.py`
++ `.sh` exigem que **todo** o `permit` de `aos_authz.cedar` carregue `context.taint != "untrusted"` como
+**conjunct AND de topo do bloco `when {}`**, ou seja nomeado numa baseline com dono por entrada que só
+encolhe (o molde de `event-catalog.py`). **AC8:** `allow_fs_read` fica conforme via
+`scripts/ci/baseline/policy-taint.txt` (`owner=AOS-363`, com a razão — re-assinar rotaria o anchor). **AC6:**
+ligado aos três sítios — `ALL_GATES` (`scripts/ci/run.sh`), job em `.github/workflows/ci.yml` (+ comentário
+REQUIRED-CHECKS e `needs:` do agregador `gates`), e `CONTRIBUTING.md` — e é fail-closed sobre um bundle que
+não parseie. **AC9:** o gate imprime o próprio limite (defesa-em-profundidade enquanto AOS-363 estiver
+inerte-por-omissão; a barreira estrutural continua a ser o TaintGate com `privileged` não-vazio).
+
+**Anti-recorrência (revisão adversarial).** A revisão independente devolveu «NOT SHIP-READY» com dois
+defeitos de parser: **MUST-1** — um `permit` **anónimo** (sem `@id`) era invisível ao gate; **MUST-2** —
+a verificação por substring dava verde à cláusula quando ela vivia em `unless {}` (inverte o sentido),
+estava negada, ou disjunta com `||` (não é conjunct de topo). Ambos fechados: `parse_permits` itera todos
+os `permit\s*\(` e trata o anónimo como violação; `_when_body`/`_top_level_and_conjuncts`/`permit_cumpre_taint`
+exigem a cláusula como conjunct AND de topo do `when`, ignorando `unless`/negação/disjunção. Travados em CI
+pelo self-test §X: **X1** (baseline vazia ⇒ vermelho), **X2** (cláusula retirada de `allow_http_post` numa
+cópia ⇒ vermelho), **X3** (controlo positivo: árvore real ⇒ verde), **X4** (permit anónimo ⇒ vermelho),
+**X5** (cláusula em `unless` ⇒ vermelho), **X6** (cláusula disjunta ⇒ vermelho) — as mutações vivem em
+`.cedar`-fixtures temporárias; a árvore real não é tocada.
+
+Verificado: `policy-taint.sh` contra a árvore real exit `0`; as três fixtures adversariais (anónimo/`unless`/
+disjunção) exit `1`; `py_compile` limpo; `bash -n selftest.sh` OK. Nenhum critério deferido. AOS-363 continua
+a ser a mitigação estrutural; este ticket não fecha o eixo de taint — torna-o falsificável.
 
 ---
 

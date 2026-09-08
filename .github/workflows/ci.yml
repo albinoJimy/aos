@@ -14,7 +14,7 @@
 # é a FONTE DE VERDADE e tem de coincidir, entrada a entrada e na mesma ordem, com o
 # `needs:` do job `gates` e com a lista de CONTRIBUTING.md §"Required checks" — o
 # self-test §M compara as três e fica vermelho se divergirem.
-# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · selftest
+# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · policy-taint · selftest
 # Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 25 acima
 # e é fail-closed por construção (`if: always()` + avaliação de `needs.*.result`),
 # pelo que fica `failure` — e não `skipped` — quando qualquer um deles não fica verde.
@@ -184,6 +184,21 @@ jobs:
           python-version: "3.12"
       - name: Gate event-catalog (constantes · prefixos · zero literais em EventInput.Type)
         run: bash scripts/ci/event-catalog.sh
+
+  # Cada `permit` da política assinada (aos_authz.cedar) exige
+  # `context.taint != "untrusted"` no seu `when {}`, ou está numa baseline com
+  # dono. Defesa-em-profundidade para o caso INERTE-POR-OMISSÃO do TaintGate
+  # (AOS-363): enquanto AOS_PRIVILEGED_CAPS está vazio, o único enforcement de
+  # taint é a cláusula Cedar por-permit. Python stdlib puro. (AOS-376)
+  policy-taint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gate policy-taint (cada permit exige context.taint != untrusted)
+        run: bash scripts/ci/policy-taint.sh
 
   test:
     runs-on: ubuntu-latest
@@ -414,7 +429,7 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     if: always()
-    needs: [secrets, build, lint, ref-lint, deferrals, estado-citado, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, dormencia, sast, sca, policy-test, selftest]
+    needs: [secrets, build, lint, ref-lint, deferrals, estado-citado, rtm, layer-lint, test, integration, event-catalog, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, dormencia, sast, sca, policy-test, policy-taint, selftest]
     steps:
       - name: Todos os gates verdes (fail-closed)
         env:

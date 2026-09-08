@@ -1344,6 +1344,95 @@ fi
 
 
 # ============================================================================
+# X) permit sem a cláusula de taint bloqueia o gate policy-taint (AOS-376)
+# ============================================================================
+# O gate exige que cada `permit` da política assinada carregue
+# `context.taint != "untrusted"`. A prova NÃO pode viver só do corpus real: hoje
+# a árvore tem um permit compliant (allow_http_post) e um baselinado
+# (allow_fs_read), pelo que o verde contra a árvore não prova que o gate DISPARA.
+# É a mesma lição do §O/§P2 — um gate que nunca teve input capaz de o avermelhar
+# não é um gate. Estas três direcções cobrem-no, e a árvore real NÃO é tocada:
+# a mutação vive numa .cedar-fixture temporária apontada por AOS_POLICY_TAINT_POLICY.
+log_gate "self-test X · permit sem context.taint != untrusted bloqueia o gate policy-taint (AOS-376)"
+PT_EMPTY="$(mktemp)"
+: > "$PT_EMPTY"
+PT_FIX="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+
+# X1 — permit sem a cláusula sobre baseline VAZIA ⇒ vermelho. Corre contra a
+# política REAL: com a baseline vazia, allow_fs_read (que não tem a cláusula)
+# passa a ser uma violação não tolerada.
+if AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X1: policy-taint passou com baseline VAZIA — o permit sem a cláusula de taint não é detectado"
+else
+  pass "X1: policy-taint bloqueou (exit!=0) com baseline vazia — detecta o permit sem a cláusula"
+fi
+
+# X2 — remover a cláusula de allow_http_post (o permit HOJE compliant) numa CÓPIA
+# temporária, com a baseline REAL ⇒ vermelho. É a prova de que a regressão que
+# retira a cláusula ao único permit que a tem faz o gate ficar vermelho. A .cedar
+# committada NÃO é mutada — a cópia vive em $PT_FIX.
+if ensure_python && python3 - "$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.cedar" "$PT_FIX" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+# Retira a cláusula de taint de allow_http_post (e o && que a antecede).
+old = '    resource.region == "eu" &&\n    context.taint != "untrusted"'
+new = '    resource.region == "eu"'
+assert old in text, "padrao de allow_http_post nao encontrado — self-test invalido"
+open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PY
+then
+  if AOS_POLICY_TAINT_POLICY="$PT_FIX" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+    bad "X2: policy-taint passou com a cláusula de taint RETIRADA de allow_http_post — a regressão não é detectada"
+  else
+    pass "X2: policy-taint bloqueou (exit!=0) allow_http_post sem a cláusula de taint (na cópia)"
+  fi
+else
+  bad "X2: não foi possível gerar a .cedar-fixture com a cláusula retirada"
+fi
+
+# X3 — CONTROLO POSITIVO (o molde do P3/Q4/R3/V4): baseline REAL + política REAL ⇒
+# verde. Sem isto, um gate «sempre vermelho» passaria X1/X2 sem distinguir nada.
+if bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  pass "X3: controlo — com a baseline REAL, o policy-taint fica verde (allow_http_post cumpre, allow_fs_read baselinado; sem rasto)"
+else
+  bad "X3: o policy-taint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo ou baseline dessincronizada"
+fi
+
+# X4/X5/X6 — ROBUSTEZ DO PARSER (revisão adversarial de AOS-376). O gate tem de
+# recusar um permit que NÃO garante a barreira, mesmo quando a substring aparece:
+#   X4 — permit SEM @id (anónimo, não-rastreável) e sem a cláusula;
+#   X5 — a cláusula dentro de unless {} (INVERTE: permite quando taint É untrusted);
+#   X6 — a cláusula DISJUNTA com || (não é conjunct AND de topo).
+# Sem estes, um parser por-substring dava green a qualquer um dos três. Fixtures
+# temporárias; a árvore real não é tocada.
+PT_ANON="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+PT_UNLESS="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+PT_DISJ="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+printf '%s\n' 'permit ( principal, action, resource )' 'when { principal.authority.contains("x") };' > "$PT_ANON"
+printf '%s\n' '@id("evil")' 'permit ( principal, action, resource )' 'when { principal.authority.contains("x") }' 'unless { context.taint != "untrusted" };' > "$PT_UNLESS"
+printf '%s\n' '@id("evil")' 'permit ( principal, action, resource )' 'when { context.taint != "untrusted" || principal.authority.contains("x") };' > "$PT_DISJ"
+
+if AOS_POLICY_TAINT_POLICY="$PT_ANON" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X4: policy-taint passou um permit SEM @id e sem a cláusula — permit anónimo escapa ao gate"
+else
+  pass "X4: policy-taint bloqueou um permit anónimo (sem @id) sem a cláusula de taint"
+fi
+if AOS_POLICY_TAINT_POLICY="$PT_UNLESS" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X5: policy-taint passou a cláusula colocada em unless — a inversão semântica escapa"
+else
+  pass "X5: policy-taint bloqueou a cláusula em unless (inverte o sentido, admite untrusted)"
+fi
+if AOS_POLICY_TAINT_POLICY="$PT_DISJ" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X6: policy-taint passou a cláusula DISJUNTA (||) — não é conjunct AND de topo"
+else
+  pass "X6: policy-taint bloqueou a cláusula disjunta (não garante a barreira)"
+fi
+rm -f "$PT_ANON" "$PT_UNLESS" "$PT_DISJ"
+rm -f "$PT_EMPTY" "$PT_FIX"
+
+
+# ============================================================================
 printf '\n%s============ RESUMO DOS SELF-TESTS ============%s\n' "$C_BLD" "$C_RST"
 if [ "$fails" -eq 0 ]; then
   printf '%s  TODOS OS SELF-TESTS OK — falhas são bloqueadas pelos gates%s\n' "$C_GRN$C_BLD" "$C_RST"

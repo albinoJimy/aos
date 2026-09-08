@@ -15,6 +15,7 @@
 #   dr-e2e(teste de fogo DR/replay: node loss → failover → resume-from-step AOS-118)
 #   ux-dx(usabilidade dos gates + anti-fadiga/override-rate + paridade AOS-128)
 #   4) sast  5) sca  6) policy-test
+#   policy-taint(cada permit da política assinada exige context.taint != untrusted, AOS-376)
 #
 # Fail-closed: corre TODOS os gates para dar visibilidade completa, mas termina
 # com exit != 0 se QUALQUER um falhar. SEM '|| true' / 'set +e' / 'continue-on-error'
@@ -35,7 +36,7 @@ source "$CI_DIR/lib.sh"
 # dormência de virar apodrecimento — um gate que nunca corre não impede nada, que foi o
 # achado da revisão adversarial de AOS-358. O segundo precisa de Linux com docker
 # privilegiado, salta ruidosamente onde não o há, e invoca-se por `make ci-isolation-live`.
-ALL_GATES=(secrets build lint ref-lint deferrals estado-citado rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx dormencia sast sca policy-test)
+ALL_GATES=(secrets build lint ref-lint deferrals estado-citado rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx dormencia sast sca policy-test policy-taint)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 

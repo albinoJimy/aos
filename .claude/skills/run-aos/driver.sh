@@ -333,11 +333,11 @@ cmd_smoke() {
   [ -z "$why" ] || fail "pre-voo: o no subiu com binarios obsoletos ($why) — se puseste AOS_DRIVER_NO_BUILD=1, tira-o: um verde assim nao e prova"
   say "pre-voo: binarios correspondem ao codigo (aos com $(bin_age))"
 
-  say "1/9 submeter run $rid"
+  say "1/10 submeter run $rid"
   r="$(cmd_run "$rid" "auditar o pipeline")"
   tem 'status=accepted' "$r" || fail "submit: $r"
 
-  say "2/9 observar ate completar"
+  say "2/10 observar ate completar"
   local out="" i
   for i in $(seq 1 20); do
     out="$(cmd_observe "$rid")"
@@ -349,7 +349,7 @@ cmd_smoke() {
     *) fail "run nao completou: $out" ;;
   esac
 
-  say "3/9 read-path soberano NEGA sem credencial (leitura 404, escrita 403)"
+  say "3/10 read-path soberano NEGA sem credencial (leitura 404, escrita 403)"
   local code
   # A leitura nega com 404 "not found" — ANTI-ENUMERACAO: um 403 revelaria que o run existe.
   code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$ADDR/runs/$rid")"
@@ -360,33 +360,53 @@ cmd_smoke() {
   [ "$code" = "403" ] || fail "POST sem headers: esperado 403, veio $code"
   ok "404 na leitura, 403 na escrita"
 
-  say "4/9 canal de controlo assinado (pause + steer)"
+  say "4/10 canal de controlo assinado (pause + steer)"
   r="$(cmd_pause "$rid")";                tem 'pause enviado' "$r" || fail "pause: $r"
   r="$(cmd_steer "$rid" "muda de rumo")"; tem 'steer enviado' "$r" || fail "steer: $r"
   ok "pause + steer aceites"
 
-  say "5/9 canal de controlo RECUSA emissor nao pinado"
+  say "5/10 canal de controlo RECUSA emissor nao pinado"
   if "$BIN_DIR/aos" pause --addr "$ADDR" --run-id "$rid" --emitter op:intruso \
        --key "$HOME_DIR/ap1.seed" >/dev/null 2>&1; then
     fail "um emissor nao pinado foi aceite"
   fi
   ok "emissor nao pinado recusado"
 
-  say "6/9 autonomia assinada (POST /autonomy) e leitura"
+  say "6/10 autonomia assinada (POST /autonomy) e leitura"
   r="$(cmd_autonomy_set agt-1 fs L5 smoke)"; tem '"status":"applied"' "$r" || fail "autonomy set: $r"
   r="$(cmd_autonomy_get)";                   tem '"level":"L5"' "$r"       || fail "autonomy get: $r"
   ok "agt-1:fs L4 -> L5 aplicado e selado"
 
-  say "7/9 SSE da trajectoria"
+  say "7/10 SSE da trajectoria"
   r="$(cmd_trajectory "$rid" 4 6)"; tem 'run.state.transition' "$r" || fail "SSE sem eventos"
   ok "trajectoria a emitir"
 
-  say "8/9 substrato duravel (WAL) e atribuicao selada (WORM)"
+  say "8/10 substrato duravel (WAL) e atribuicao selada (WORM)"
   r="$(cmd_wal)";                     tem 'turn.recorded' "$r" || fail "WAL sem turn.recorded: $r"
   r="$(cmd_worm governance.control)"; tem 'control:pause' "$r"  || fail "WORM sem selo de pause: $r"
   ok "WAL e WORM coerentes"
 
-  say "9/9 metricas Prometheus"
+  say "9/10 mediacao do RM exercitada pelo system-test de aceitacao (AOS-376)"
+  # PORQUE um go test e nao uma tool call ao vivo: o binario `aos` NAO consegue emitir uma
+  # tool call. O referenceModel de producao nunca emite; o unico modelo que emite e o
+  # test-only `toolEmittingModel`, e nao existe gateway mock que o injecte por HTTP. Logo o
+  # caminho de mediacao ALCANCAVEL a partir daqui e o system-test do no completo
+  # (TestAOS169_Mediation_NoBypass_FullNodeAPI): compoe um no via Bootstrap com o RM real +
+  # bundle assinado e prova permit + deny + no-bypass. Produzir um registo WORM de mediacao
+  # AO VIVO exigiria um harness de gateway mock que nao existe — fica registado como o limite
+  # honesto deste passo. NAO-VACUOSO (AC4): o proprio teste exige que a call ATRAVESSE o
+  # Reference Monitor (o contador de mediacoes move-se) e prova permit E deny por construcao;
+  # uma mediacao que nao selasse nada avermelharia o teste subjacente. FAIL-CLOSED (AC3): se
+  # o teste falhar OU estiver ausente/renomeado, o passo chama `fail` e o smoke fica vermelho.
+  r="$( ( cd "$REPO_ROOT/packages/cmd/aos" && go test -v -run '^TestAOS169_Mediation_NoBypass_FullNodeAPI$' -count=1 . ) 2>&1 )" \
+    || fail "system-test de mediacao falhou: $r"
+  # `go test -run <nome-inexistente>` sai 0 ("no tests to run"): exigir a linha `--- PASS:`
+  # do teste concreto avermelha o passo se ele for removido/renomeado (fail-closed contra ausencia).
+  tem '--- PASS: TestAOS169_Mediation_NoBypass_FullNodeAPI' "$r" \
+    || fail "system-test de mediacao ausente ou nao passou (sem '--- PASS' do teste): $r"
+  ok "mediacao provada pelo system-test (permit+deny+no-bypass; call atravessou o RM)"
+
+  say "10/10 metricas Prometheus"
   r="$(curl -s -m 5 "$ADDR/metrics")"; tem 'aos_ready 1' "$r" || fail "metricas"
   ok "aos_ready 1"
 
