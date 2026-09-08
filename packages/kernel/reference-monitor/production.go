@@ -165,6 +165,32 @@ var (
 	// correcção do chamador também — acrescentar o hook vs. substituir o stub.
 	ErrEgressHookMissing = &MonitorError{Code: "E_EGRESS_HOOK_MISSING", msg: "produção-segura: cadeia final sem hook de egress (slot \"egress\" ausente — default-deny de rede AOS-067 não corre)"}
 
+	// ErrPolicyStub — a cadeia FINAL contém o [PolicyStub] neutro (por valor ou por
+	// ponteiro), i.e. o slot de política está ocupado por um hook que PERMITE SEMPRE:
+	// a política default-deny do PDP (AOS-004, contrato C1) está inerte e toda a acção
+	// autoriza sem passar por policy-as-code. Recusado. É o GÉMEO EXACTO de [ErrEgressStub]
+	// — a metade de SUBSTITUIÇÃO do eixo da política; a metade de OMISSÃO (slot vazio,
+	// nenhum hook de política na cadeia) é [ErrPolicyHookMissing].
+	//
+	// COMO NO EGRESS, isto é presença estrutural e não eficácia: impõe que o slot "policy"
+	// esteja OCUPADO por algo que não seja o stub permit-always conhecido deste pacote. O
+	// par fail-CLOSED [PolicyCheck] com PDP nil ([pdp.NewPolicyCheck](nil)/[PDP.NewUnloaded])
+	// NÃO é o stub — nega, não permite — e satisfaz a via legitimamente; só o [PolicyStub]
+	// permit-always é rejeitado. Quem afere eficácia é o guard-test de comportamento do ápice
+	// (a negação atribuível a "policy"), não a construção — a fronteira de camadas proíbe o
+	// kernel de importar o PDP real, que vive no control-plane.
+	ErrPolicyStub = &MonitorError{Code: "E_POLICY_STUB", msg: "produção-segura: cadeia final contém o PolicyStub neutro (política default-allow — PDP default-deny AOS-004 ausente)"}
+
+	// ErrPolicyHookMissing — a cadeia FINAL não contém hook nenhum a ocupar o slot de
+	// política (nem sequer o stub). Manifesta-se quando um override [WithHooks] substitui
+	// a cadeia base por inteiro e OMITE a política — o caso que [ErrPolicyStub] nunca
+	// apanharia, porque testa a presença do `PolicyStub` em vez da PRESENÇA DO HOOK. Sem
+	// hook de política a mediação não consulta policy-as-code nenhuma e toda a acção passa;
+	// recusado fail-closed. Sentinela PRÓPRIA e não reutilização de [ErrPolicyStub]: a causa
+	// é oposta (slot vazio vs. slot ocupado por um no-op) e a correcção do chamador também —
+	// acrescentar o hook vs. substituir o stub. Simétrico de [ErrEgressHookMissing].
+	ErrPolicyHookMissing = &MonitorError{Code: "E_POLICY_HOOK_MISSING", msg: "produção-segura: cadeia final sem hook de política (slot \"policy\" ausente — PDP default-deny AOS-004 não corre)"}
+
 	// ErrScopeGateMissing — a cadeia FINAL não contém um [ScopeGate] com uma
 	// [authz.AuthoritySource] não-nil: sem tecto de autoridade o escopo user∩classe
 	// (AOS-071) não é imposto. Recusado.
@@ -180,6 +206,8 @@ var (
 // tipado, se a cadeia FINAL (após aplicar as [Option]s):
 //
 //   - contiver o [IdentityStub] neutro ⇒ [ErrIdentityStub];
+//   - contiver o [PolicyStub] neutro (permit-always) ⇒ [ErrPolicyStub];
+//   - não contiver hook nenhum no slot de política ⇒ [ErrPolicyHookMissing];
 //   - contiver o [EgressStub] neutro ⇒ [ErrEgressStub];
 //   - não contiver hook nenhum no slot de egress ⇒ [ErrEgressHookMissing];
 //   - não contiver um [ScopeGate] com [authz.AuthoritySource] não-nil ⇒
@@ -197,6 +225,17 @@ func NewProductionSecure(privileged PrivilegedAuthorizer, opts ...Option) (*Moni
 	}
 	if m.containsHook(eIdentityStub) {
 		return nil, ErrIdentityStub
+	}
+	// Eixo da política, GÉMEO EXACTO do eixo do egress abaixo e pela mesma ordem
+	// (substituição-pelo-stub antes de omissão-do-slot): uma cadeia com o PolicyStub
+	// continua a diagnosticar-se como [ErrPolicyStub] (causa mais específica) e só a
+	// OMISSÃO cai em [ErrPolicyHookMissing]. Corre ANTES do egress porque "policy"
+	// precede "egress" na ordem canónica de mediação.
+	if m.containsHook(ePolicyStub) {
+		return nil, ErrPolicyStub
+	}
+	if !m.hasActivePolicyHook() {
+		return nil, ErrPolicyHookMissing
 	}
 	if m.containsHook(eEgressStub) {
 		return nil, ErrEgressStub
@@ -262,6 +301,37 @@ func (m *Monitor) hasActiveScopeGate() bool {
 // o que o hook REAL de AOS-067 (network.EgressHook) devolve — a costura pela qual um hook
 // se declara competente pelo eixo do egress.
 const egressHookSlot = "egress"
+
+// policyHookSlot é o nome canónico do slot de política na cadeia de mediação (identity →
+// policy → taint → scope → budget → egress → audit). É o que [PolicyStub.Name] devolve e
+// o que o hook REAL do PDP (pdp.PolicyCheck, AOS-004) devolve — a costura pela qual um
+// hook se declara competente pelo eixo da política.
+const policyHookSlot = "policy"
+
+// hasActivePolicyHook reporta se a cadeia contém um hook a OCUPAR o slot de política que
+// não é o [PolicyStub] neutro — i.e. a política default-deny do PDP (AOS-004) está
+// estruturalmente PRESENTE, não removida por um override [WithHooks]. É o GÉMEO EXACTO de
+// [hasActiveEgressHook] e, tal como ele, casa PELO NOME e não pelo tipo: o hook de política
+// real (pdp.PolicyCheck) vive no control-plane e a fronteira canónica de camadas —
+// control-plane → kernel → platform/substrate — proíbe o kernel de o importar. O nome do
+// slot é, por isso, o único sinal estrutural disponível aqui.
+//
+// LIMITE, declarado em vez de presumido: isto é PRESENÇA, não EFICÁCIA. Um hook que ocupe o
+// slot "policy" e permita tudo passa este predicado (o guard-test de comportamento do ápice
+// afere eficácia). Repare-se, porém, que o par fail-CLOSED [pdp.NewPolicyCheck](nil)/
+// [pdp.NewUnloaded] — que NEGA por omissão — é um hook real, satisfaz este predicado
+// legitimamente e NÃO é o stub permit-always que [ePolicyStub] apanha.
+func (m *Monitor) hasActivePolicyHook() bool {
+	for _, h := range m.hooks {
+		if ePolicyStub(h) {
+			continue
+		}
+		if h != nil && h.Name() == policyHookSlot {
+			return true
+		}
+	}
+	return false
+}
 
 // hasActiveEgressHook reporta se a cadeia contém um hook a OCUPAR o slot de egress que
 // não é o [EgressStub] neutro — i.e. o default-deny de rede (AOS-067) está estruturalmente
@@ -329,6 +399,18 @@ func eEgressStub(h Hook) bool {
 func eIdentityStub(h Hook) bool {
 	switch h.(type) {
 	case IdentityStub, *IdentityStub:
+		return true
+	}
+	return false
+}
+
+// ePolicyStub — ver [eEgressStub]. Mesmo buraco, mesma forma: casa o [PolicyStub]
+// permit-always POR VALOR E POR PONTEIRO (o `*PolicyStub` satisfaz [Hook] na mesma,
+// falha uma assertion de valor, e o seu Name() devolve "policy" à mesma). Só apanha o
+// stub deste pacote — nunca o [pdp.PolicyCheck] real (fail-closed com PDP nil incluído).
+func ePolicyStub(h Hook) bool {
+	switch h.(type) {
+	case PolicyStub, *PolicyStub:
 		return true
 	}
 	return false

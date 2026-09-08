@@ -174,6 +174,20 @@ func enfEgressHook(t *testing.T, worm audit.Store) *network.EgressHook {
 	return hook
 }
 
+// enfPolicyHook é um hook de política REAL permissivo que ocupa o slot "policy" nos
+// guard-tests do RM de produção. Desde o eixo da política de AOS-378, [NewProductionSecure]
+// exige um hook não-stub no slot "policy" (a par do que já exigia no egress). Estes
+// guard-tests provam negações atribuíveis a identity/taint/scope/egress — NÃO a policy —
+// pelo que o slot é ocupado por um hook permissivo, análogo ao egress REAL já usado aqui. O
+// PDP real (pdp.NewPolicyCheck) traria allowlist + regras Cedar e uma classe de negação
+// alheia a estes testes; um hook local permissivo mantém-nos focados no eixo que testam.
+type enfPolicyHook struct{}
+
+func (enfPolicyHook) Name() string { return "policy" }
+func (enfPolicyHook) Evaluate(context.Context, *referencemonitor.Call) (referencemonitor.HookResult, error) {
+	return referencemonitor.HookResult{Decision: referencemonitor.HookAllow}, nil
+}
+
 // enfCall constrói um [referencemonitor.Call] base do run do guard-test.
 func enfCall(step, credential, capability, taintLabel string, res referencemonitor.Resource) referencemonitor.Call {
 	return referencemonitor.Call{
@@ -202,6 +216,7 @@ func TestApexEnforcement_FiveDenials(t *testing.T) {
 	rm, err := referencemonitor.NewProductionSecure(fx.privileged,
 		referencemonitor.WithHooks(
 			identity.NewIdentityCheck(fx.verifier),       // identity (AOS-005) — resolve Principal
+			enfPolicyHook{},                              // policy (AOS-004) — permissivo (slot exigido por AOS-378)
 			referencemonitor.NewTaintGate(fx.privileged), // taint (AOS-069)
 			referencemonitor.NewScopeGate(fx.authority),  // scope (AOS-071)
 			enfEgressHook(t, worm),                       // egress (AOS-067)
@@ -322,6 +337,7 @@ func TestSelftestApexEnforcementBypassReddensGate(t *testing.T) {
 			worm := audit.NewMemStore()
 			hooks := append([]referencemonitor.Hook{
 				identity.NewIdentityCheck(fx.verifier),
+				enfPolicyHook{}, // policy permissivo — o slot exigido por AOS-378 não é o que este veneno mutila
 				referencemonitor.NewTaintGate(fx.privileged),
 				referencemonitor.NewScopeGate(fx.authority),
 			}, mut.egress...) // <-- egress default-deny CONTORNADO

@@ -253,6 +253,37 @@ func (p *PDP) RuleIDs() []string {
 	return p.engine.ruleIDs()
 }
 
+// SmokeDecideRules corre uma DECISÃO DE FUMO por CADA regra Cedar em vigor (enumeradas por
+// [PDP.RuleIDs]), fazendo a avaliação ALCANÇAR o motor Cedar — o caminho de decisão — e
+// devolvendo erro na PRIMEIRA regra que refira um atributo FORA do mapa fixo de
+// entidades/contexto que o motor monta ([cedarEngine.evaluate]). É a lacuna que AOS-378 fecha
+// entre COMPILAR e AVALIAR: [SignBundle]/policy-sign hoje só compilam e verificam a assinatura;
+// uma regra que refira, p.ex., `context.reversibility` ou `resource.type` COMPILA e ASSINA, mas
+// em runtime dá diag.Errors ⇒ ErrMalformedRequest ⇒ deny de tudo — um bundle assinado que nega,
+// com a ferramenta a dizer-se verde. Correr esta sonda ANTES de declarar verde apanha-o.
+//
+// NÃO passa por [PDP.Decide] DE PROPÓSITO: Decide corre o gate default-deny da ALLOWLIST ANTES
+// do Cedar, e um input cuja capability não conste da allowlist da classe é negado pela allowlist
+// e NUNCA alcança o motor — o erro de atributo nunca surgiria (falso-negativo). A sonda avalia
+// ao NÍVEL DO MOTOR (via i do AOS-378), exercitando o mapa de atributos sem depender da
+// allowlist; ver [cedarEngine.smokeProbeRule] para como cada regra é alcançada. Só-leitura:
+// não muta o motor nem nenhuma decisão emitida. ctx é aceite por simetria com [PDP.Decide]
+// (a sonda é pura e não o usa).
+func (p *PDP) SmokeDecideRules(_ context.Context) error {
+	p.mu.RLock()
+	eng := p.engine
+	p.mu.RUnlock()
+	if eng == nil {
+		return ErrPolicyUnavailable
+	}
+	for _, id := range p.RuleIDs() {
+		if err := eng.smokeProbeRule(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Decide avalia um pedido de decisão e devolve o veredicto (contrato C1). É
 // DETERMINISTA: a mesma (Input, policy_version, nível de autonomia) produz sempre
 // a mesma Decision. Nunca devolve ausência de resposta — em qualquer erro de porta

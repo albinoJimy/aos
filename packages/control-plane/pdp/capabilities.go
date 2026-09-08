@@ -140,12 +140,16 @@ func parseAllowlist(files map[string][]byte) (*Allowlist, error) {
 //   - capability explicitamente listada na classe ⇒ allow;
 //   - caso contrário ⇒ deny (a ausência de concessão é recusa).
 func (a *Allowlist) permits(agentClass, capability string) (bool, string) {
+	// `camada=allowlist` NOMEIA a camada desta negação (AOS-378): a allowlist de
+	// capabilities corre ANTES do motor Cedar e produz o MESMO substring "default-deny".
+	// O token estável distingue-a da recusa do Cedar (`camada=cedar`), impedindo que um
+	// deny da allowlist conte como cobertura de uma regra Cedar.
 	if a == nil {
-		return false, fmt.Sprintf("capability %q negada: allowlist indisponivel (default-deny)", capability)
+		return false, fmt.Sprintf("capability %q negada: allowlist indisponivel (default-deny; camada=allowlist)", capability)
 	}
 	if agentClass == "" {
 		return false, fmt.Sprintf(
-			"capability %q negada: principal sem agent_class, nao consta de nenhuma allowlist (default-deny)",
+			"capability %q negada: principal sem agent_class, nao consta de nenhuma allowlist (default-deny; camada=allowlist)",
 			capability)
 	}
 	if _, ok := a.wildcard[agentClass]; ok {
@@ -157,7 +161,7 @@ func (a *Allowlist) permits(agentClass, capability string) (bool, string) {
 		}
 	}
 	return false, fmt.Sprintf(
-		"capability %q nao consta da allowlist da classe %q (default-deny)",
+		"capability %q nao consta da allowlist da classe %q (default-deny; camada=allowlist)",
 		capability, agentClass)
 }
 
