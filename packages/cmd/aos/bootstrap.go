@@ -415,6 +415,14 @@ type Config struct {
 	Catalog             toolset.Catalog
 	Revalidator         *revalidation.Revalidator
 	Policy              integration.PolicyProvider
+	// SignedToolRegistry são os DADOS do registo assinado de tools de AOS_MODEL_TOOLS
+	// (AOS-381): catálogo assinado + pubkey do publicador + policy de supply-chain. Quando
+	// != nil e cfg.Revalidator == nil, o Bootstrap CONSTRÓI o revalidador (e o trust store)
+	// SELADO no WORM único do nó (`wormForChain`) — a via opt-in deixou de o construir sobre
+	// um MemStore volátil. Precedência: cfg.Revalidator injectado ganha; senão esta spec;
+	// senão o revalidador de REFERÊNCIA. nil ⇒ registo assinado desligado. Ver
+	// parseSignedToolRegistryFromEnv.
+	SignedToolRegistry *SignedToolRegistrySpec
 	// Authority é a fonte de autoridade user∩classe para o ScopeGate (AOS-071).
 	// nil ⇒ fonte vazia fail-closed (scope negado para toda a tool call); em testes
 	// e wiring de referência pode usar [authz.NewStaticAuthoritySource].
@@ -1823,20 +1831,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// modelo nos turnos já vividos, e a acção aprovada podia deixar de ser a acção
 	// reproduzida. Aplicá-lo na composição do nó torna a garantia independente da origem.
 	model = newResumeAwareModelClient(model)
+	// Catálogo/policy: injectados por config ganham; senão, se o registo assinado de tools
+	// (AOS_MODEL_TOOLS_REGISTER) foi parseado, vêm da spec; senão, o de referência (catálogo
+	// vazio default-deny, policy permissiva). O REVALIDADOR resolve-se MAIS ABAIXO, depois de
+	// `wormForChain` existir — porque as três vias (injectado / registo assinado / referência)
+	// têm de selar no MESMO WORM único do nó (AOS-381).
 	catalog := cfg.Catalog
+	if catalog == nil && cfg.SignedToolRegistry != nil {
+		catalog = cfg.SignedToolRegistry.Catalog
+	}
 	if catalog == nil {
 		catalog = emptyCatalog{}
 	}
 	policy := cfg.Policy
+	if policy == nil && cfg.SignedToolRegistry != nil {
+		policy = cfg.SignedToolRegistry.Policy
+	}
 	if policy == nil {
 		policy = integration.StaticPolicy{MaxEgress: domain.EgressExternal}
-	}
-	revalidator := cfg.Revalidator
-	if revalidator == nil {
-		revalidator, err = referenceRevalidator()
-		if err != nil {
-			return nil, fmt.Errorf("aos: revalidador de referência: %w", err)
-		}
 	}
 
 	// (6b) OBSERVABILIDADE ligada à CADEIA (AOS-173). Só quando a observabilidade está
@@ -1880,6 +1892,32 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		freezeOpts = append(freezeOpts, toolset.WithTracer(tracer))
 		runtimeOpts = append(runtimeOpts, agentruntime.WithTracer(tracer))
 		chainTracer = tracer // a MESMA variável das três vias acima (invariante de SecuredConfig.Tracer)
+	}
+
+	// (6b') REVALIDADOR SELADO NO WORM ÚNICO (AOS-381). A selagem da revalidação por chamada
+	// (e das mudanças do trust store) TEM de apontar o MESMO `wormForChain` que vai para
+	// SecuredConfig.WORM — senão o fail-closed do ápice (integration.ErrRevalidatorNotSealedToWORM)
+	// recusa o arranque. Por isso a decisão vive AQUI, DEPOIS de `wormForChain` estar decorado
+	// (a igualdade é por PONTEIRO: com observabilidade ligada, o decorador newAuditTracingStore é
+	// o store real, e é a ele que se sela). Precedência:
+	//   1. cfg.Revalidator injectado ⇒ usa-o tal-e-qual (sujeito ao fail-closed do ápice — quem
+	//      injecta tem de o ter selado a cfg.WORM);
+	//   2. registo assinado (AOS_MODEL_TOOLS_REGISTER) ⇒ constrói o revalidador do catálogo
+	//      assinado, com a pubkey do publicador no trust store, TUDO selado em wormForChain;
+	//   3. nada ⇒ revalidador de REFERÊNCIA (trust store vazio) selado em wormForChain.
+	revalidator := cfg.Revalidator
+	if revalidator == nil {
+		if cfg.SignedToolRegistry != nil {
+			revalidator, err = signedToolRegistryRevalidator(ctx, cfg.SignedToolRegistry, wormForChain)
+			if err != nil {
+				return nil, fmt.Errorf("aos: revalidador do registo assinado: %w", err)
+			}
+		} else {
+			revalidator, err = referenceRevalidator(wormForChain)
+			if err != nil {
+				return nil, fmt.Errorf("aos: revalidador de referência: %w", err)
+			}
+		}
 	}
 
 	// (6c) STEER LIGADO AO LOOP (AOS-218, ACHADO-2). Compõe o adaptador que faltava:
@@ -2560,9 +2598,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// distância entre a biblioteca (testada, com gate próprio) e o nó composto é maior.
 	// O argumento deriva do ESTADO, como o do credential broker: `cfg.Catalog`/
 	// `cfg.Revalidator` a nil significam o catálogo vazio e o revalidador de referência.
+	// AOS-381: o catálogo/revalidador NÃO-referência pode vir por config OU pelo registo
+	// assinado de tools (que já não passa por cfg.Revalidator). A durabilidade das selagens
+	// deriva do ESTADO do WORM composto: durável sse é um FileStore em disco (cfg.WORMPath != "").
 	for _, line := range plataformaPostureBanner(posturaDosServicosDePlataforma{
-		CatalogoInjectado:    cfg.Catalog != nil,
-		RevalidadorInjectado: cfg.Revalidator != nil,
+		CatalogoInjectado:    cfg.Catalog != nil || cfg.SignedToolRegistry != nil,
+		RevalidadorInjectado: cfg.Revalidator != nil || cfg.SignedToolRegistry != nil,
+		SelagemRegDuravel:    cfg.WORMPath != "",
 	}) {
 		log("%s", line)
 	}
@@ -2893,14 +2935,36 @@ type emptyCatalog struct{}
 func (emptyCatalog) ActiveEntries(context.Context) ([]domain.Entry, error) { return nil, nil }
 
 // referenceRevalidator constrói o revalidador de REFERÊNCIA (AOS-051) com um trust
-// store vazio sobre um audit in-memory. É fail-closed por construção: sem publicadores
-// confiados, qualquer artefacto que precisasse de revalidação de assinatura seria
-// bloqueado — coerente com o default-deny do nó de referência.
-func referenceRevalidator() (*revalidation.Revalidator, error) {
-	auditStore := audit.NewMemStore()
-	trust, err := signing.NewTrustStore(auditStore)
+// store vazio, SELADO no WORM único do nó (`worm`). É fail-closed por construção: sem
+// publicadores confiados, qualquer artefacto que precisasse de revalidação de assinatura
+// seria bloqueado — coerente com o default-deny do nó de referência.
+//
+// AOS-381: recebe o `worm` (tipicamente `wormForChain`) em vez de abrir um
+// [audit.NewMemStore] volátil próprio. O trust store e a revalidação selam-se no MESMO
+// store durável tamper-evident que alimenta o resto da cadeia — sem isto, a via por
+// omissão selava num store que nenhum leitor lia e que não sobrevivia ao restart.
+func referenceRevalidator(worm audit.Store) (*revalidation.Revalidator, error) {
+	trust, err := signing.NewTrustStore(worm)
 	if err != nil {
 		return nil, err
 	}
-	return revalidation.New(trust, auditStore)
+	return revalidation.New(trust, worm)
+}
+
+// signedToolRegistryRevalidator constrói o revalidador da via OPT-IN
+// (AOS_MODEL_TOOLS_REGISTER) a partir dos DADOS parseados do registo assinado, SELADO no
+// WORM único do nó (`worm`). É a construção que AOS-381 move de [parseSignedToolRegistryFromEnv]
+// para o Bootstrap: o trust store recebe a pubkey do publicador e é selado em `worm`, e a
+// revalidação sela no MESMO `worm` — logo o `Add` do publicador e cada decisão de
+// revalidação por chamada tornam-se DURÁVEIS e legíveis (fail-closed do ápice satisfeito
+// por igualdade de ponteiro).
+func signedToolRegistryRevalidator(ctx context.Context, spec *SignedToolRegistrySpec, worm audit.Store) (*revalidation.Revalidator, error) {
+	trust, err := signing.NewTrustStore(worm)
+	if err != nil {
+		return nil, fmt.Errorf("trust store: %w", err)
+	}
+	if err := trust.Add(ctx, spec.PublisherKeyID, spec.PublisherKey); err != nil {
+		return nil, fmt.Errorf("trust add: %w", err)
+	}
+	return revalidation.New(trust, worm)
 }

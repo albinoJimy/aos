@@ -1055,16 +1055,20 @@ func nodeConfigFromEnv() (Config, error) {
 	// REGISTRY ASSINADO DE TOOLS (AOS_MODEL_TOOLS_REGISTER): regista as tools de AOS_MODEL_TOOLS
 	// como catálogo ASSINADO+congelável para a REVALIDAÇÃO do RM as admitir — a decisão passa então
 	// ao PDP/Cedar (o gate seguinte), que nega uma capability privilegiada originada pelo modelo
-	// (taint=untrusted). Desligado ⇒ (nil,…): o nó mantém o catálogo/revalidador de referência
+	// (taint=untrusted). Desligado ⇒ nil: o nó mantém o catálogo/revalidador de referência
 	// (default-deny na revalidação). Ver modelcatalog.go. Fail-closed: config incoerente ABORTA.
-	cat, reval, pol, rerr := buildSignedToolRegistryFromEnv()
+	//
+	// AOS-381: guardamos os DADOS do registo (spec), NÃO um revalidador já construído. O
+	// Bootstrap constrói o revalidador SELADO no WORM único do nó (que só existe lá) — antes,
+	// construí-lo aqui sobre um MemStore volátil fazia a revalidação selar num store que ninguém
+	// lia e que não sobrevivia ao restart. Ver parseSignedToolRegistryFromEnv e o call site do
+	// Bootstrap.
+	spec, rerr := parseSignedToolRegistryFromEnv()
 	if rerr != nil {
 		return Config{}, rerr
 	}
-	if cat != nil {
-		cfg.Catalog = cat
-		cfg.Revalidator = reval
-		cfg.Policy = pol
+	if spec != nil {
+		cfg.SignedToolRegistry = spec
 	}
 
 	return cfg, nil

@@ -217,11 +217,17 @@ type materialPrivadoDoNo struct {
 // Deriva do que o composition-root construiu, nunca da intenção da config — a mesma
 // disciplina que [materialPrivadoDoNo] impôs ao banner do credential broker.
 type posturaDosServicosDePlataforma struct {
-	// CatalogoInjectado: o REG veio por [Config.Catalog]. Falso ⇒ `emptyCatalog{}`.
+	// CatalogoInjectado: o REG tem um catálogo NÃO-VAZIO composto (injectado por
+	// [Config.Catalog] ou pelo registo assinado de AOS_MODEL_TOOLS). Falso ⇒ `emptyCatalog{}`.
 	CatalogoInjectado bool
-	// RevalidadorInjectado: o revalidador veio por [Config.Revalidator]. Falso ⇒ o de
-	// REFERÊNCIA, com trust store VAZIO.
+	// RevalidadorInjectado: o revalidador é NÃO-REFERÊNCIA (injectado por [Config.Revalidator]
+	// ou construído do registo assinado). Falso ⇒ o de REFERÊNCIA, com trust store VAZIO.
 	RevalidadorInjectado bool
+	// SelagemRegDuravel: as selagens do trust store (add/revoke) e da revalidação por chamada
+	// são DURÁVEIS — i.e., o WORM único do nó em que ambas selam (AOS-381) é um FileStore em
+	// disco (cfg.WORMPath != ""), não um MemStore in-memory. Deriva do ESTADO real do WORM
+	// composto, não da intenção da config. Falso ⇒ selagens VOLÁTEIS (não sobrevivem ao restart).
+	SelagemRegDuravel bool
 }
 
 // plataformaPostureBanner declara, no arranque, o que o nó compõe de MEM e de REG —
@@ -243,15 +249,26 @@ func plataformaPostureBanner(p posturaDosServicosDePlataforma) []string {
 	reg := "catalogo VAZIO (emptyCatalog) e revalidador de REFERENCIA com trust store VAZIO"
 	switch {
 	case p.CatalogoInjectado && p.RevalidadorInjectado:
-		reg = "catalogo e revalidador INJECTADOS por config"
+		reg = "catalogo e revalidador COMPOSTOS (config ou registo assinado)"
 	case p.CatalogoInjectado:
-		reg = "catalogo INJECTADO por config; revalidador de REFERENCIA com trust store VAZIO"
+		reg = "catalogo COMPOSTO; revalidador de REFERENCIA com trust store VAZIO"
 	case p.RevalidadorInjectado:
-		reg = "catalogo VAZIO (emptyCatalog); revalidador INJECTADO por config"
+		reg = "catalogo VAZIO (emptyCatalog); revalidador COMPOSTO"
+	}
+	// AOS-381: as selagens do trust store e da revalidacao por chamada selam no WORM UNICO do
+	// no — DURAVEL sse esse WORM e um FileStore em disco. Declara-se o estado REAL para o
+	// operador nao confundir "auditado" (o sistema de tipos exige-o) com "auditado de forma
+	// DURAVEL" (que exige AOS_WORM_PATH). Sem durabilidade, o trilho de supply-chain evapora-se
+	// ao restart, mesmo com o gate a correr.
+	selagem := "as selagens do trust store (add/revoke) e da revalidacao por chamada selam no WORM UNICO do no; DURABILIDADE: "
+	if p.SelagemRegDuravel {
+		selagem += "DURAVEL (FileStore WORM em disco, AOS_WORM_PATH definido) — sobrevivem ao restart e sao legiveis via `aos audit-trail` (particoes registry.truststore/registry.revalidation)"
+	} else {
+		selagem += "VOLATIL (WORM in-memory, AOS_WORM_PATH ausente) — NAO sobrevivem ao restart. Defina AOS_WORM_PATH para as tornar duraveis"
 	}
 	return []string{
 		"memoria (MEM/EPIC-04, AOS-326): o Memory Service esta composto sobre o MESMO Event Store do no, mas o unico caminho de producao que o usa e uma ESCRITA episodica na ingestao. Nenhum caminho de producao invoca recall/query/compactacao/curadoria, e Goal.MemoryContext nao e preenchido por ninguem. Das QUATRO classes do _BRIEF §2, a episodica existe neste no APENAS como escrita (write-only: escreve-se, nunca se le); a semantica, a procedural e a de trabalho existem so como BIBLIOTECA testada, sem chamador de producao. DEFERIDO — eixo em DEF-811",
-		"registry (REG/EPIC-05, AOS-326): " + reg + ". O pacote registry ESTA no grafo de build (via toolset/freeze), mas o catalogo event-sourced NAO e construido, e o host MCP e o TOFU nem sequer entram no grafo; o que corre e o congelamento por run e a revalidacao por chamada, ligados na cadeia do Reference Monitor. Um tool set vazio e default-deny: nenhuma tool executa. DEFERIDO — eixo em DEF-812",
+		"registry (REG/EPIC-05, AOS-326): " + reg + ". " + selagem + ". O pacote registry ESTA no grafo de build (via toolset/freeze), mas o catalogo event-sourced NAO e construido, e o host MCP e o TOFU nem sequer entram no grafo; o que corre e o congelamento por run e a revalidacao por chamada, ligados na cadeia do Reference Monitor, agora selados no WORM duravel do no (AOS-381). Um tool set vazio e default-deny: nenhuma tool executa. DEFERIDO — eixo em DEF-812",
 		"=> NOTA sobre as duas linhas acima: ao contrario do ORQ/SCH — que o ADR-018/ADR-023 mantem fora do grafo de build por decisao ratificada, com guard-test — NAO existe ADR que declare MEM ou REG deliberadamente nao-compostos. Enquanto essa decisao nao existir, o estado e INACABADO e nao adiado. Eixo: DEF-811/DEF-812",
 	}
 }

@@ -179,7 +179,7 @@ func newBudgetHarnessWith(t *testing.T, runID string, maxTokens int64, extra []a
 		Catalog:        catalog,
 		Revalidator:    rv,
 		Policy:         StaticPolicy{MaxEgress: domain.EgressExternal},
-		WORM:           audit.NewMemStore(),
+		WORM:           auditStore, // AOS-381: WORM único = o store do trust store/revalidação
 		Verifier:       verifier,
 		Authority:      authority,
 		PDP:            policyDP,

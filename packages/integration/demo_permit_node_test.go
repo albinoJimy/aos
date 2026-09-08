@@ -88,7 +88,8 @@ func TestDemo_PermitNodeEndToEnd(t *testing.T) {
 		t.Fatalf("eventstore.New: %v", err)
 	}
 	defer trajStore.Close()
-	worm := audit.NewMemStore()
+	// WORM ÚNICO (AOS-381): o MESMO store do trust store/revalidação alimenta o RM e o egress.
+	worm := auditStore
 
 	// --- MODELO-STUB: turno 1 chama doc_read com input; turno 2 conclui (após receber o output) ---
 	input := []byte(`{"doc_id":"notes"}`)

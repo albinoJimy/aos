@@ -103,6 +103,14 @@ func (s *auditTracingStore) Append(ctx context.Context, rec audit.AuditRecord) (
 	return sealed, nil
 }
 
+// Unwrap devolve o [audit.Store] subjacente. Existe para o fail-closed de WORM único do
+// ápice (AOS-381, integration.NewSecuredRuntime) poder comparar o store base: sob
+// observabilidade, o WORM do nó é ESTE decorador, e o revalidador injectado/de referência
+// sela no MESMO valor OU no store cru — em qualquer caso a durabilidade é a do `inner`.
+// Desembrulhar antes de comparar torna o gate imune à camada de telemetria (que só delega),
+// sem a relaxar (compara na mesma o store durável real).
+func (s *auditTracingStore) Unwrap() audit.Store { return s.inner }
+
 // Read delega no store subjacente (sem telemetria — leitura não é um selo).
 func (s *auditTracingStore) Read(ctx context.Context, partition string, from, to uint64) ([]audit.AuditRecord, error) {
 	return s.inner.Read(ctx, partition, from, to)

@@ -19,13 +19,15 @@ func aos363BaseConfig(t *testing.T) (SecuredConfig, func()) {
 	if err != nil {
 		t.Fatalf("eventstore.New: %v", err)
 	}
+	// AOS-381: WORM único — a revalidação sela no MESMO store que cfg.WORM.
+	worm := audit.NewMemStore()
 	cfg := SecuredConfig{
 		Model:       &scriptedModel{},
 		Recorder:    agentruntime.NewTurnRecorder(store),
 		Catalog:     &fakeCatalog{},
-		Revalidator: newRevalidator(t, newTrust(t, context.Background(), audit.NewMemStore(), testSigner(t)), audit.NewMemStore(), NoopQuarantinerForTest{}, NoopAlerterForTest{}),
+		Revalidator: newRevalidator(t, newTrust(t, context.Background(), worm, testSigner(t)), worm, NoopQuarantinerForTest{}, NoopAlerterForTest{}),
 		Policy:      StaticPolicy{},
-		WORM:        audit.NewMemStore(),
+		WORM:        worm,
 	}
 	return cfg, func() { store.Close() }
 }

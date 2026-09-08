@@ -27,6 +27,32 @@ func TestNew_FailClosed(t *testing.T) {
 	}
 }
 
+// TestWithAudit_SobrepoePosicionalEExpoePorAuditStore prova que [WithAudit] (AOS-381) sobrepõe o
+// store posicional e que [Revalidator.AuditStore] devolve o store efectivo — o getter que o ápice
+// usa para o fail-closed de WORM único. Sem isto, WithAudit seria superfície exportada não
+// exercitada num package de segurança.
+func TestWithAudit_SobrepoePosicionalEExpoePorAuditStore(t *testing.T) {
+	t.Parallel()
+	posicional := audit.NewMemStore()
+	sobreposto := audit.NewMemStore()
+	trust := newTrust(t)
+	rv, err := New(trust, posicional, WithAudit(sobreposto))
+	if err != nil {
+		t.Fatalf("New com WithAudit: %v", err)
+	}
+	if got := rv.AuditStore(); got != sobreposto {
+		t.Fatalf("AuditStore() = %p, quer o store de WithAudit %p (o posicional %p devia ter sido sobreposto)", got, sobreposto, posicional)
+	}
+	// WithAudit(nil) é no-op: mantém o posicional (não abre um buraco fail-open).
+	rv2, err := New(trust, posicional, WithAudit(nil))
+	if err != nil {
+		t.Fatalf("New com WithAudit(nil): %v", err)
+	}
+	if got := rv2.AuditStore(); got != posicional {
+		t.Fatalf("WithAudit(nil) devia manter o posicional, veio %p", got)
+	}
+}
+
 // --- Caminho feliz: os seis passos passam -----------------------------------
 
 func TestRevalidate_Permit(t *testing.T) {

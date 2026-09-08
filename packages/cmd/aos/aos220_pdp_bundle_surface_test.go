@@ -123,6 +123,7 @@ func aos220PermitNode(t *testing.T, withBundleEnv bool) (*Node, string) {
 	cfg.Model = &twoTurnToolModel{}
 	cfg.Catalog = catalogStub{entries: []domain.Entry{entry}}
 	cfg.Revalidator = revalidator
+	cfg.WORM = auditStore // AOS-381: o WORM do nó = o store onde o revalidador injectado sela
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{
 		durClass: {TTL: 15 * time.Minute, Scope: []string{durCap}},
 	}

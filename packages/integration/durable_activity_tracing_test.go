@@ -74,8 +74,8 @@ func durableTracingRun(t *testing.T, tracer agentruntime.Tracer, wireChainTracer
 		Catalog:       &fakeCatalog{entries: []domain.Entry{entry}},
 		Revalidator:   rv,
 		Policy:        StaticPolicy{MaxEgress: domain.EgressExternal},
-		WORM:          audit.NewMemStore(),
-		Ledger:        ledger, // ⇒ dispatcher DURÁVEL (o alvo do ticket)
+		WORM:          auditStore, // AOS-381: WORM único = o store do trust store/revalidação
+		Ledger:        ledger,     // ⇒ dispatcher DURÁVEL (o alvo do ticket)
 		FreezeOptions: []toolset.Option{toolset.WithClock(fixedClock())},
 		// Via JÁ EXISTENTE: o RT partilha o tracer com o RM (execute_tool). Está sempre
 		// ligada — é o que torna o teste "sem Tracer" NÃO-VACUOSO: o tracer chega ao

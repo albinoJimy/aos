@@ -205,6 +205,21 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
+// WithAudit SUBSTITUI o audit store onde as decisões de revalidação se selam. É
+// aditiva e redundante com o parâmetro POSICIONAL de [New] (que se mantém por
+// compatibilidade): existe para o composition-root poder SELAR no MESMO WORM durável
+// do nó DEPOIS de este ser conhecido, sem ter de reconstruir o trust store nem
+// reordenar a composição. Um valor nil é ignorado — o store posicional continua a
+// valer, pelo que a pré-condição fail-closed de [New] (audit não-nil) nunca é relaxada
+// por esta via. Ver [Revalidator.AuditStore] para o ápice comparar por ponteiro.
+func WithAudit(a audit.Store) Option {
+	return func(r *Revalidator) {
+		if a != nil {
+			r.audit = a
+		}
+	}
+}
+
 // New constrói um revalidador sobre um trust store (AOS-048) e um audit store
 // (AOS-011). Fail-closed: trust nil ou audit nil devolvem erro — sem chaves de
 // confiança nenhuma assinatura é revalidável, e sem audit nenhuma decisão é selável.
@@ -232,6 +247,14 @@ func New(trust TrustStore, auditStore audit.Store, opts ...Option) (*Revalidator
 	}
 	return r, nil
 }
+
+// AuditStore devolve o [audit.Store] onde este revalidador SELA as suas decisões. É
+// exposto para o composition-root PROVAR, por igualdade de ponteiro, que a selagem da
+// revalidação aponta o MESMO WORM durável que alimenta o resto da cadeia — o
+// fail-closed do ápice ([integration.NewSecuredRuntime]) recusa arrancar quando não
+// aponta (AOS-381). Nunca é nil: [New] recusa um audit store nil e [WithAudit] ignora
+// um nil, pelo que o campo mantém-se sempre preenchido.
+func (r *Revalidator) AuditStore() audit.Store { return r.audit }
 
 // Revalidate executa a sequência FAIL-CLOSED de revalidação de UMA tool call
 // (LOOKUP → digest → assinatura → scope/egress → EXEC → AUDIT) e devolve a
