@@ -1408,9 +1408,25 @@ narrativa que não fecha.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: documental nos dois casos, nenhum altera comportamento. A gravidade
-está na direcção do erro: as duas declarações **sobredeclaram cobertura**, e são precisamente a classe
-de defeito que os gates de coerência existem para apanhar e que nenhum apanha.
+**IMPLEMENTADO** (2026-09-08). Correcção puramente documental (não altera comportamento). **(a)**
+`DEF-405` deixa de afirmar que o binário não expõe I/O de submissão: descreve a rota externa
+`POST /promote` (`promotion_api.go` `handlePromote`, desde `caa08ea`/2026-08-11) e separa o que
+caducou (a caracterização) do que continua verdade — o gatilho de saída AOS-096 (pipeline
+promoção/canary a montante, fora do nó, como `bootstrap.go:2340` declara); o estado fica **ABERTO**,
+reavaliado contra o gatilho e não contra a rota. **(b)** `tecnica/13:231` passa de «três verificações
+automatizadas» a **duas**, nomeando a terceira (a separação (a)/(b) por importação de
+`substrate/eventstore`) como implementada e **RETIRADA por imprecisão** (granularidade por-pacote),
+com remissão para `scripts/ci/event-catalog.py:41-51`; `§8.1` (`:482`) deixa de a listar como
+entregue por AOS-198. A **ressalva** fica escrita por extenso: a verificação retirada operava
+por-pacote e teria **passado** sobre `platform/audit`, pelo que nunca teria apanhado o buraco de
+caminho-de-chamada do AOS-379. **AC6:** nota de coerência com data (2026-09-08) e commits (base
+`f366f08`, script `7d16c4e`) no molde de `tecnica/14 §5.2`, provando que o documento e o docstring do
+gate declaram agora a mesma retirada.
+
+Verificado por grep (AC1: `DEF-405` sem «não expõe I/O», com `POST /promote`; AC3: a linha nomeia a
+retirada e remete para o script) e pelos gates `deferrals` e `event-catalog` (verdes localmente).
+Nenhum critério deferido. Revisão adversarial dispensada com justificação: é reconciliação
+documental verificável por grep + gates, sem código nem superfície de segurança.
 
 ---
 
