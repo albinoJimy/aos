@@ -1928,10 +1928,57 @@ assinado que nega tudo, com a ferramenta de assinatura a declarar-se verde.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: (a) latente — o par neutro não chega à produção porque
-`secured.go:381` o fixa; (b) e (c) alcançáveis hoje. A (b) é a mais incómoda das três: está dentro de um
-gate bloqueante, e um gate que conta a camada errada como cobertura mede a sua própria disciplina, não
-a propriedade que diz medir.
+**IMPLEMENTADO** (2026-09-08). P2. As três alíneas fechadas; não se tocou na política assinada
+(`aos_authz.cedar`/`.sig`) nem na struct `pdp.Decision`.
+
+**Alínea (a) — guarda gémea no slot `policy` de `NewProductionSecure`.** Réplica exacta do par do
+egress (AOS-355): `ePolicyStub` (rejeita o `PolicyStub{}` permit-always, por valor **e** ponteiro,
+`ErrPolicyStub`/E_POLICY_STUB) e `hasActivePolicyHook` (rejeita a OMISSÃO do slot,
+`ErrPolicyHookMissing`/E_POLICY_HOOK_MISSING), com `policyHookSlot = "policy"`, a correr ANTES do egress
+na ordem canónica (`packages/kernel/reference-monitor/production.go`). O par fail-closed
+`NewUnloaded`/`NewPolicyCheck(nil)` (deny) NÃO é o stub e é aceite; a cadeia real
+(`secured.go:381`, `pdp.NewPolicyCheck`, `Name()=="policy"`) compõe sem erro. As fixtures do guard-test
+do kernel e os dois guard-tests de apex da integração (`enforcement_guard_test.go`) que **omitiam** o
+slot passaram a ocupá-lo com um hook permissivo real — não mascaram nada (um `HookAllow` não converte um
+deny a jusante), apenas satisfazem o slot agora exigido. Limite (declarado, igual ao molde egress): a
+guarda é por-tipo, logo um hook permit-always que não seja `PolicyStub` passaria — é a mesma semântica
+que o AOS-355 fixou para o egress.
+
+**Alínea (b) — o assert de cobertura de deny deixa de aceitar substring das duas camadas.** A `pdp.Decision`
+não tem campo distintivo (só Effect/Reason/PolicyVersion/Obligations) e o `DeniedBy` do RM nomeia o hook
+(`"policy"`), igual para as duas camadas do PDP — pelo que a via é **nomear a camada** (AC4, opção
+sancionada), sem mudar o contrato: as mensagens de deny ganham token estável `camada=cedar`
+(`engine_cedar.go`) e `camada=allowlist` (`capabilities.go`), mantendo `default-deny`. O caso deny de
+`TestPolicyRuleCoverage` passa a exigir `camada=cedar` (mesmo rigor do allow, que casa o `@id`), e o
+teste-veneno `TestPolicyRuleCoverage_AllowlistDenyNaoContaComoCedar` prova que um deny da allowlist
+(`camada=allowlist`) deixa de contar como cobertura da regra Cedar. `TestPolicyRuleCoverage` mantém o
+nome (o gate `policy-test.sh` exige-o).
+
+**Alínea (c) — `policy-sign` passa a AVALIAR antes de declarar «verificacao OK».** `PDP.SmokeDecideRules`
+enumera as regras por `RuleIDs()` e, por regra, corre `smokeProbeRule` ANTES do sucesso; `policy-sign`
+chama-o depois de `Open` e só imprime «verificacao OK» a jusante (sai !=0 se falhar). O núcleo da
+garantia é **análise estática** (`attrRefsForaDoMapa`): um scanner de caracteres sobre a forma canónica
+(`pol.MarshalCedar()`) que confronta cada acesso `principal/resource/context.<attr>` com o mapa fixo do
+motor (só `principal.authority`, `resource.region`, `context.taint`, `context.sensitivity`), distinguindo
+o método de Set legítimo (`.contains` sobre `principal.authority`) de acesso encadeado ou método de set
+sobre String. Uma regra que refira um atributo fora do mapa compila e assina, mas em runtime dá
+`ErrMalformedRequest` (deny-all da capability): é o defeito que isto fecha.
+
+**Três MUST-change da revisão adversarial (o eixo (c)), fechados e regressão-testados.** A 1ª sonda era
+dinâmica e tinha falsos negativos medidos: (i) `action in [...]` não casava a acção e a regra não era
+avaliada; (ii) o atributo mau atrás de um `&&` sobre valor não-semeado curto-circuitava. A substituição
+por análise estática apanhou ainda (iii) a forma de índice `context["chave-nao-mapeada"]` e o acesso
+encadeado `context.taint.foo`, e (iv) o método de Set sobre atributo String (`context.taint.contains(...)`
+— só `principal.authority` é Set; sobre String erra em runtime). Todos os vectores estão como
+casos-veneno em `cmd/policy-sign/main_test.go`. Quatro passagens adversariais independentes; a última deu
+SHIP após medir estática↔runtime contra o que `MarshalCedar` emite. Fora do âmbito (declarado): erros de
+operador/tipo sobre acessos bem-formados (ex.: `resource.region > 5`) — não são referências a atributo
+fora do mapa; o scanner não é um type-checker Cedar completo.
+
+Verificado: `packages/control-plane/pdp` `go test -race` verde (13 casos-veneno + controlo negativo com o
+`aos_authz.cedar` real); `packages/kernel/reference-monitor` e `packages/integration` verdes; `build`,
+`lint`, `layer-lint` (kernel continua sem importar pdp) verdes; `policy-test.sh` verde com os 8+3 testes
+exigidos por nome. Nenhum critério deferido.
 
 ---
 
