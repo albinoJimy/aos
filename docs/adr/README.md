@@ -64,7 +64,7 @@ na mesma ronda da EPIC-13 v1.0).
 | ADR-011 | Policy-as-code + GDPR por desenho (soberania por board) | **Ratificado** | [`ADR-011-policy-as-code-gdpr.md`](ADR-011-policy-as-code-gdpr.md) |
 | ADR-012 | SemVer + eval-gate para auto-modificação | **Ratificado** | [`ADR-012-semver-eval-gate.md`](ADR-012-semver-eval-gate.md) |
 | ADR-013 | Gates de risco SA-ROC + controlo bidireccional | **Ratificado** | [`ADR-013-gates-risco-sa-roc.md`](ADR-013-gates-risco-sa-roc.md) |
-| ADR-014 | Taxonomia de autonomia L0–L5 | Catálogo, por materializar | catálogo em `specs/00_System_Spec.md` §11 |
+| ADR-014 | Taxonomia de autonomia L0–L5 | **Aceite (2026-09-08, AOS-380)** | [`ADR-014-taxonomia-autonomia-l0-l5.md`](ADR-014-taxonomia-autonomia-l0-l5.md) |
 | ADR-015 | Durable execution: contrato próprio vs. engine externo | **Ratificado (AOS-022)** | [`ADR-015-durable-execution.md`](ADR-015-durable-execution.md) |
 | ADR-016 | Fronteira de confiança da camada de UI | **Ratificado (novo)** | [`ADR-016-fronteira-confianca-ui.md`](ADR-016-fronteira-confianca-ui.md) |
 | ADR-017 | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | **Ratificado** | [`ADR-017-supply-chain-node.md`](ADR-017-supply-chain-node.md) |

@@ -2175,11 +2175,30 @@ citar sem escolher não é.
 
 ### Estado
 
-**POR DECIDIR.** P2. Não tem alcance de execução porque não tem execução. É a única entrada deste bloco
-cujo desfecho não depende de código: as duas vias são legítimas e o dono escolhe. O que não é legítimo é
-o estado actual — a matriz de conformidade a citar como controlo do Art. 9 um mecanismo cuja metade de
-segurança está registada como não-composta e cuja semântica nunca foi ratificada por nenhum documento
-com autoridade.
+**DECIDIDO — Via A (materializar), 2026-09-08.** O dono escolheu materializar o ADR-014 (não a emenda à
+Carta), e reconciliar `tecnica/14` nomeando `DEF-908` e declarando a metade não-composta. Sem edição da
+Carta (owner-only) — a decisão fica registada pela via dos ADR, que é o mecanismo próprio para uma
+decisão de arquitectura, e não pela §7 da Carta.
+
+**Via A executada.** `docs/adr/ADR-014-taxonomia-autonomia-l0-l5.md` existe (formato MADR do ADR-013),
+fiel à letra do catálogo (`specs/00_System_Spec.md:259`) e à semântica de `tecnica/09` §7: fixa os seis
+níveis em **texto normativo** (não rótulos de diagrama), declara o que é exigível (o overlay de oversight
+`nível × classe` imposto no PDP; o registo durável por par reidratado do WORM; a cerimónia de dual-control
+para L4/L5, AOS-305/AOS-377) e o que **não** é (a automação de promoção/demoção — o `autonomy.Controller`
+— está DEFINIDA mas não composta, `DEF-908`: um par promovido a L5 fica a L5 até intervenção humana).
+`docs/adr/README.md:67` deixa de dizer «Catálogo, por materializar» e liga ao ficheiro; `tecnica/09` §7
+ganha uma nota que remete para o ADR como fonte normativa (os rótulos do mermaid passam a ilustrativos).
+
+**Reconciliação de `tecnica/14:86` (Art. 9).** A célula deixa de citar a «demoção automática em anomalia»
+como controlo em vigor: nomeia `DEF-908`, declara que o `autonomy.Controller` tem zero chamadores e que a
+demoção automática **não está composta**, e marca `DEF-908` como **pré-condição** por cumprir desta perna
+do controlo. Os gates SA-ROC e o circuit breaker (as pernas compostas) continuam. Estado da linha:
+**Parcial** — agora justificado, não sobre-reivindicado. `DEF-908` permanece aberto (a sua composição é
+trabalho de engenharia próprio, fora deste ticket de decisão).
+
+Verificado por grep (`ADR-014` casa em `docs/adr/README.md` a apontar para o ficheiro, que existe; a
+célula do Art. 9 nomeia `DEF-908`) e pelos gates de documentação. Nenhum critério deferido; nenhum código
+alterado (é um ticket de decisão registada).
 
 
 Ambos estão confirmados na §3 do relatório (`O-14` em §3.6, `C-05` em §3.7) e **nenhum dos dois

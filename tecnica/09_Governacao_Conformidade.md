@@ -164,6 +164,8 @@ flowchart TD
 
 A promoção nunca é concedida por opinião: exige uma métrica de fiabilidade sustentada (por exemplo, taxa de erro < 2% ao longo de 30 dias, com override-rate baixo). A demoção, em contraste, é **automática e imediata** ao detectar anomalia — um pico de override-rate, uma acção insegura, ou deriva medida rebaixam o agente para um nível mais supervisionado sem esperar por revisão humana. O nível é sempre uma propriedade do par (agente, domínio): um agente pode operar a L4 num domínio de baixo risco e a L1 noutro sensível.
 
+> **Fonte normativa (AOS-380):** a semântica por nível, o que é exigível e o que está deferido são fixados em [`docs/adr/ADR-014-taxonomia-autonomia-l0-l5.md`](../docs/adr/ADR-014-taxonomia-autonomia-l0-l5.md) — os rótulos do diagrama acima são ilustrativos, o ADR é a autoridade. Em particular, o ADR declara que a **demoção automática em anomalia** (a metade de segurança) está DEFINIDA mas **não composta** no nó (`DEF-908`): o que vigora hoje é o overlay de oversight `nível × classe` no PDP e a cerimónia de dual-control para L4/L5 (AOS-305/AOS-377); a promoção e a demoção automáticas dependem de compor o `autonomy.Controller`.
+
 ---
 
 ## 8. Supervisão humana efectiva e responsabilização
