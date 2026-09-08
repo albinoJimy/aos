@@ -170,6 +170,11 @@ func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 //     por DSAR e o replay não o ressuscita (o direito ao apagamento vale contra o replay);
 //   - replay.ErrPayloadAccessDenied (gate do opener negou) ⇒ 403 — nunca o claro;
 //   - replay.ErrNoTrajectory (sem capturas) ⇒ 404 uniforme;
+//   - replay.ErrIncompleteCapture (a trajectória EXISTE mas está incompleta — um turno com
+//     turn.recorded sem replay.captured (AOS-372), ou a captura truncada da escalada (AOS-289))
+//     ⇒ 422 Unprocessable Entity: distinto do 404 «não há nada» — há trajectória, mas o motor
+//     recusa-se fail-closed a servir uma reconstrução curta/fabricada, e o corpo uniforme não
+//     vaza conteúdo. Fecha também o read-path da truncagem de AOS-289 (era o default 500);
 //   - o resto ⇒ 500 sem detalhe.
 func reconstructErrorStatus(err error) int {
 	switch {
@@ -179,6 +184,8 @@ func reconstructErrorStatus(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, replay.ErrNoTrajectory):
 		return http.StatusNotFound
+	case errors.Is(err, replay.ErrIncompleteCapture):
+		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError
 	}

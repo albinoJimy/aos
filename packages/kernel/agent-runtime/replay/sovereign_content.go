@@ -121,7 +121,26 @@ type ReconstructedTurn struct {
 //
 // NUNCA chama um modelo ao vivo, NUNCA despacha uma tool, NUNCA escreve no Event Store — o motor só
 // detém um [EventReader].
+// Reconstruct é o modo STRICT (AOS-372): recusa QUALQUER turno com turn.recorded sem
+// replay.captured — um buraco do meio OU o turno em curso de um crash a meio da dispatch. É o modo
+// do read-path soberano (`GET /runs/{id}/reconstruct`): uma trajectória incompleta não se serve a
+// um auditor, ainda que a incompletude seja só o último turno de um run crashado.
 func (e *ReplayEngine) Reconstruct(ctx context.Context, runID string) ([]ReconstructedTurn, error) {
+	return e.reconstruct(ctx, runID, false)
+}
+
+// ReconstructResumable tolera um turn.recorded TRAILING sem captura — o turno em curso quando o
+// processo crashou a meio da dispatch (recordTurn precede captureTurn, com a dispatch de tools no
+// meio) — devolvendo o prefixo capturado para o crash-resume o reproduzir e correr o turno
+// interrompido AO VIVO (already-applied deduplica os efeitos já aplicados). Continua a recusar um
+// buraco MID-trajectory (corrupção genuína). É o modo da retoma: sem esta tolerância o crash-resume
+// recusaria o run e deixá-lo-ia órfão em `running` para sempre — uma regressão pior do que a
+// truncatura silenciosa que AOS-372 fecha.
+func (e *ReplayEngine) ReconstructResumable(ctx context.Context, runID string) ([]ReconstructedTurn, error) {
+	return e.reconstruct(ctx, runID, true)
+}
+
+func (e *ReplayEngine) reconstruct(ctx context.Context, runID string, tolerarTrailing bool) ([]ReconstructedTurn, error) {
 	if runID == "" {
 		return nil, ErrEmptyRunID
 	}
@@ -177,6 +196,35 @@ func (e *ReplayEngine) Reconstruct(ctx context.Context, runID string) ([]Reconst
 	}
 	if len(caps) == 0 {
 		return nil, ErrNoTrajectory
+	}
+	// AOS-372: um turno com turn.recorded mas SEM replay.captured — E com uma captura de número
+	// MAIOR — é um buraco MID-trajectory: um turno do meio desapareceu (order é construído de
+	// caps, :169), Reconstruct devolvia menos turnos com err=nil e o read-path soberano respondia
+	// 200 com uma trajectória curta. Recusa-se fail-closed, no molde de admit() (que já recusa o
+	// mesmo em Replay).
+	//
+	// Um turn.recorded TRAILING sem captura (turno > maior turno capturado) NÃO é necessariamente
+	// este defeito: o turn.recorded é gravado ANTES da captura (loop.go recordTurn precede
+	// captureTurn, com a dispatch de tools no meio), pelo que um crash a meio do ÚLTIMO turno deixa
+	// esse turno registado e não capturado. No modo RESUMABLE (crash-resume) tolera-se — reconstrói
+	// o prefixo capturado e corre o turno interrompido ao vivo; recusá-lo deixaria o run órfão em
+	// `running`. No modo STRICT (read-path soberano) recusa-se na mesma — uma trajectória incompleta
+	// não se serve a um auditor. Um buraco MID-trajectory (turno <= maxCap: há captura DEPOIS dele)
+	// é SEMPRE inadmissível nos dois modos. No-op quando não há turn.recorded (capturas antigas):
+	// caps ⊆ stepByTurn (o fallback de :172 povoa stepByTurn por cada captura), logo concordam.
+	maxCap := -1
+	for turn := range caps {
+		if turn > maxCap {
+			maxCap = turn
+		}
+	}
+	for turn := range stepByTurn {
+		if _, ok := caps[turn]; ok {
+			continue
+		}
+		if turn <= maxCap || !tolerarTrailing {
+			return nil, ErrIncompleteCapture
+		}
 	}
 	sort.Ints(order)
 	out := make([]ReconstructedTurn, 0, len(order))

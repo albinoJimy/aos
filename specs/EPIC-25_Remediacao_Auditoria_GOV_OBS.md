@@ -1195,7 +1195,38 @@ retoma, nem contagem contra o manifesto, nem uso do cursor durável, nem gate no
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-08). `Reconstruct` passa a comparar o conjunto `stepByTurn` (os
+`turn.recorded`) com `caps` (os `replay.captured`) e recusa fail-closed a divergência com
+`ErrIncompleteCapture` — a informação já estava lida, faltava a comparação. O read-path soberano
+`GET /runs/{id}/reconstruct` já retornava antes do `writeJSON(200)` em qualquer erro; acrescentou-se
+o mapeamento `ErrIncompleteCapture → 422` (trajectória existe mas incompleta, distinta do
+`ErrNoTrajectory → 404`), com corpo uniforme que nunca vaza conteúdo decifrado. `resume.go`
+propagava já o erro e recusa.
+
+**Desvio deliberado do AC, ratificado pelo dono (conflito de fontes destapado pela revisão
+adversarial):** os AC assumiam recusar QUALQUER `turn.recorded` sem captura com um único
+`Reconstruct` partilhado. A revisão provou que a emissão NÃO é atómica — `recordTurn` grava
+`turn.recorded` ANTES da dispatch de tools (`loop.go`), `captureTurn` grava `replay.captured` DEPOIS
+— pelo que um crash a meio do ÚLTIMO turno deixa um `turn.recorded` TRAILING sem captura, que é
+LEGÍTIMO e é precisamente o que o **crash-resume** (`crash_resume.go` via `replayPlanFor`, um 3.º
+caminho de facto que o ticket não considerou) existe para recuperar. Recusá-lo cegamente deixaria
+runs crashados ÓRFÃOS em `running` para sempre — uma regressão pior do que o defeito, e viola «não
+quebres o cluster». Solução ratificada: **separar os consumidores**. `Reconstruct` (STRICT) recusa
+qualquer incompletude — mid-trajectory OU trailing — e serve o read-path (o read-path não filtra por
+estado, logo um run crashado chega lá; 422 fecha o defeito por completo). Um novo
+`ReconstructResumable` recusa só o buraco MID-trajectory (corrupção genuína, com captura depois) e
+TOLERA o trailing, devolvendo o prefixo capturado para o crash-resume o reproduzir e correr o turno
+interrompido ao vivo (already-applied deduplica os efeitos). `replayPlanFor` passa a usar o
+`ReconstructResumable`. **AC6 reinterpretado:** o grep `engine.Reconstruct(` devolve agora só o
+read-path; o crash-resume usa `engine.ReconstructResumable(`. Não há um terceiro caminho SEM gate —
+os dois métodos têm gate, com posturas deliberadamente distintas —, que é o espírito do AC6.
+
+Provado por `-race` em `replay` e `cmd/aos`, e o smoke `run-aos`. Testes: mid-trajectory recusado nos
+dois modos (`dropTurn:2` de 3); trailing recusado no strict e tolerado no resumable (`dropTurn:3`, o
+par que fixa a fronteira = maior turno capturado); read-path 422 sobre trajectória incompleta com
+corpo que não vaza o conteúdo decifrado; captura legada sem `turn.recorded` continua a reconstruir
+(no-op). Não-vácuo por mutação. Revisão adversarial de segurança independente que apanhou a regressão
+de crash-resume — fechada por este re-desenho antes da integração. Nenhum critério deferido.
 
 ---
 
