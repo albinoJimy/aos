@@ -30,7 +30,7 @@ type GVisorDriver struct {
 type GVisorOption func(*GVisorDriver)
 
 // WithGVisorExecutor injecta o executor de guest (a integração real / um mock
-// determinista de teste). Sem ele, Create devolve [ErrDriverUnavailable].
+// determinista de teste). Sem ele, Create devolve [ErrGVisorExecutorUnset].
 func WithGVisorExecutor(e GuestExecutor) GVisorOption {
 	return func(d *GVisorDriver) { d.exec = e }
 }
@@ -57,7 +57,7 @@ func (d *GVisorDriver) Create(_ context.Context, cap capability, spec Spec) (Ins
 		return Instance{}, err
 	}
 	if d.exec == nil {
-		return Instance{}, ErrDriverUnavailable
+		return Instance{}, ErrGVisorExecutorUnset
 	}
 	id := "gv-" + spec.RunID + "-" + spec.StepID + "-" + strconv.FormatUint(d.seq.Add(1), 10)
 	return Instance{
@@ -83,7 +83,7 @@ func (d *GVisorDriver) Exec(ctx context.Context, cap capability, inst Instance, 
 		return ExecResult{}, ErrUnsanctionedCapability
 	}
 	if d.exec == nil {
-		return ExecResult{}, ErrDriverUnavailable
+		return ExecResult{}, ErrGVisorExecutorUnset
 	}
 	stdout, arts, exit, err := d.exec.RunInGuest(ctx, inst, req.Call)
 	if err != nil {

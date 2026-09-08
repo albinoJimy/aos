@@ -2683,4 +2683,17 @@ reutilizou o mesmo erro. Nenhum teste asserta mensagens de erro por conteúdo.
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-08). O driver gVisor deixou de partilhar `ErrDriverUnavailable` com o
+Firecracker: ganha o seu próprio `ErrGVisorExecutorUnset` (`packages/substrate/sandbox/errors.go`),
+devolvido em `driver_gvisor.go` no Create e no Exec sem executor. A mensagem **não menciona KVM** (AC1
+— para que uma busca por «kvm» nem sequer a traga) e nomeia a causa real: falta provisionar o executor
+host-side, via `AOS_SANDBOX_GVISOR_URL`. O `ErrDriverUnavailable` fica **Firecracker-específico** (mantém
+«sem KVM/host support», verdadeiro para ele; usado também pelo `FakeDriver` de referência). `doc.go`
+actualizado. O texto do erro é uma string de diagnóstico — não um import — pelo que nomear a env var não
+acopla a camada substrate (o `layer-lint` continua limpo).
+
+Teste (`driver_test.go`, `TestDriver_SkeletonsUnavailableWithoutExecutor`): assere o **conteúdo** —
+Firecracker `errors.Is` `ErrDriverUnavailable` e nomeia KVM; gVisor `errors.Is` `ErrGVisorExecutorUnset`,
+**não** menciona KVM, e nomeia `AOS_SANDBOX_GVISOR_URL`. **Controlo negativo (AC3):** falha se os dois
+textos voltarem a ser iguais. `substrate/sandbox`, `cmd/aos` (testes de gVisor/Firecracker/sandbox) `go
+test -race` verdes; `build`, `layer-lint` verdes. Nenhum critério deferido.
