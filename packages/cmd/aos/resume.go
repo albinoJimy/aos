@@ -309,7 +309,12 @@ func (s *NodeService) replayPlanFor(ctx context.Context, runID, subject string) 
 	if err != nil {
 		return nil, err
 	}
-	turns, err := engine.Reconstruct(ctx, runID)
+	// ReconstructResumable (AOS-372), não Reconstruct: a retoma tolera um turn.recorded TRAILING
+	// sem captura — o turno em curso quando o processo crashou a meio da dispatch —, reconstrói o
+	// prefixo capturado e corre o interrompido ao vivo. O modo STRICT (Reconstruct) é do read-path
+	// soberano, que recusa qualquer incompletude; aqui recusá-la deixaria o run crashado órfão em
+	// `running`. Um buraco MID-trajectory (corrupção) continua a ser recusado nos dois modos.
+	turns, err := engine.ReconstructResumable(ctx, runID)
 	if err != nil {
 		if errors.Is(err, replay.ErrNoTrajectory) {
 			// Sem capturas não há o que reproduzir. Deixar seguir reinterrogaria o modelo
