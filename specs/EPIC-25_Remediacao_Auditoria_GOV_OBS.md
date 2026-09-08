@@ -2052,10 +2052,46 @@ mediação não existem em armazém nenhum.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: nó, alcançável hoje. Nenhum consumidor composto se parte com isto — o
-dano é de veracidade e de rasto: os metadados do hook que terminou a mediação não existem em armazém
-nenhum, e o comentário que explica porquê remata com uma afirmação falsa, escrita precisamente para que
-ninguém volte a verificar.
+**IMPLEMENTADO** (2026-09-08). P2. Nó. Aditivo e retro-compatível; não se tocou em
+`AuditRecord`/`canonicalContent` nem na política assinada.
+
+`SecuredConfig` ganha o campo opcional `MediationEvents eventstore.EventStore`
+(`packages/integration/secured.go`, nil por omissão ⇒ comportamento pré-AOS-379, só o WORM). Quando
+preenchido, `NewSecuredRuntime` compõe `audit.NewTeeSink` sobre `audit.NewMediationSink(cfg.WORM)` e
+`referencemonitor.NewEventStoreSink(cfg.MediationEvents)` e passa-o ao RM via `WithEventSink` — o canal
+`tool.call.mediated/denied/escalated` deixa de ser inalcançável como Event Store (o `NewEventStoreSink`
+passa a ter um chamador de produção). `cmd/aos` preenche a porta com o `es` do nó (`EventStorePort`
+embute `eventstore.EventStore`, sem aresta nova) e o `posture_banner.go` ganha
+`mediationChannelPostureBanner` (três estados honestos derivados do estado composto: durável /
+in-memory de referência / não-composto), declarando a nova implicação **fail-closed** — um Event Store
+em baixo passa a NEGAR tool calls no caminho de permit, não só a perder rasto.
+
+**Ordem do tee — WORM PRIMÁRIO, Event Store a seguir — por achado da revisão adversarial.** A ordem
+inversa (ES à cabeça) deixaria, numa queda do WORM com o ES de pé, um `tool.call.mediated` já commitado
+no ES seguido de degradação para deny, mas o `denied` re-emitido por `Monitor.fail` colidiria com a
+mesma chave de idempotência `(run_id, step_id)` e seria **deduplicado** — o ES ficaria a afirmar uma
+autorização+execução que nunca ocorreu, e é o ES que o AOS-332 lê. Com o WORM à cabeça: o tee pára no
+primeiro erro, pelo que uma queda do WORM nunca chega a tocar o ES (sem `mediated` falso), e um
+`mediated` no ES implica que o tee inteiro passou (call mesmo autorizada e despachada); uma queda do ES
+deixa o WORM (autoritativo, append-only, sem dedup) a registar `mediated`+`denied` reconciliáveis — o
+ES tem só uma lacuna durante a sua indisponibilidade, nunca uma mentira. O fail-closed mantém-se: a
+falha de QUALQUER sink no permit propaga e degrada para deny.
+
+`rmadapter.go:103` deixa de afirmar falsamente «O canal está no Event Store»; passa a descrever o canal
+como PORTA (`SecuredConfig.MediationEvents`) que o Event Store materializa **quando o nó a compõe**,
+nomeando AOS-379. O argumento da migração `SchemaVersion` (`:99-102`) fica **intacto** — continua a ser
+a razão de o campo não ser selado no WORM.
+
+Risco residual **aceite e declarado**: a nova acoplagem de disponibilidade (um blip do Event Store nega
+tool calls cluster-wide) é intencional (exigida pelo AC3, fail-closed) e está no banner — é um segundo
+ponto de falha de igual criticidade à do WORM, não uma regressão silenciosa.
+
+Verificado: `packages/integration` `go test -race` verde (incl. `TestAOS379_*`: contagem pela via de
+produção / fail-closed não-vacuoso / controlo negativo nil / regressão WORM-em-baixo-sem-mediated-falso);
+`packages/cmd/aos` e `packages/platform/audit` verdes; `build`, `lint`, `layer-lint` verdes. Cobertura:
+integration 84.9%, platform/audit 90.7%, cmd/aos 85.7% (nenhum destes em `COVERAGE_GATED_MODULES`, mas
+todos ≥80%). Nenhum critério deferido. A migração `SchemaVersion` (selar os metadados no WORM) continua
+**fora** de âmbito, por ser a decisão que o comentário preservado documenta.
 
 ---
 

@@ -119,6 +119,32 @@ func taintGatePostureBanner(active bool) []string {
 	}
 }
 
+// mediationChannelPostureBanner declara a postura do CANAL DE EVENTOS DE MEDIAÇÃO do Reference
+// Monitor (tool.call.mediated/denied/escalated, AOS-379). Os argumentos são o ESTADO REALMENTE
+// composto — `composed` = a porta [integration.SecuredConfig.MediationEvents] foi preenchida com o
+// Event Store do nó; `durable` = esse store é durável (NATS/file) e não a referência in-memory —,
+// nunca a intenção da config (a mesma disciplina de AOS-203 que rege as outras posturas deste
+// ficheiro). É a linha que fecha o achado central de AOS-379: até aqui o canal era INALCANÇÁVEL
+// como Event Store (o único destino era a cadeia tamper-evident do WORM) e um comentário afirmava
+// FALSAMENTE que "o canal está no Event Store". Regra deste ficheiro (nunca dizer "ligado" sobre
+// algo não composto): só a perna `composed && durable` afirma o canal durável e a sua NOVA
+// implicação fail-closed; a referência in-memory declara-se como tal; não-composto diz NAO COMPOSTO.
+func mediationChannelPostureBanner(composed, durable bool) []string {
+	if !composed {
+		return []string{
+			"canal de eventos de mediacao (AOS-379): NAO COMPOSTO — a porta MediationEvents ficou nil, logo o canal tool.call.mediated/denied/escalated NAO e materializado no Event Store: o unico destino de cada mediacao e a cadeia tamper-evident do WORM (audit.NewMediationSink), e o AOS-332 nao teria de onde reconstruir \"quem autorizou o que\". E o estado anterior a AOS-379. Eixo: AOS-379 / EPIC-25",
+		}
+	}
+	if durable {
+		return []string{
+			"canal de eventos de mediacao (AOS-379): COMPOSTO e DURAVEL — a porta MediationEvents recebeu o Event Store DURAVEL do no (NATS/file), logo cada tool.call.mediated/denied/escalated e materializada NELE (referencemonitor.NewEventStoreSink, sink PRIMARIO do TeeSink com o seq duravel canonico a cabeca) EM PARALELO com a cadeia tamper-evident do WORM (a seguir). O AOS-332 passa a ter de onde ler o canal. IMPLICACAO NOVA (fail-closed): auditar-antes-do-efeito passa a EXIGIR o Event Store, nao so o WORM — uma falha a gravar o evento de mediacao no caminho de PERMIT propaga (o TeeSink para no 1o sink que falha) e o RM degrada a decisao para DENY: um Event Store em baixo passa a NEGAR tool calls, nao so a perder rasto. Eixo: AOS-379 / EPIC-25",
+		}
+	}
+	return []string{
+		"canal de eventos de mediacao (AOS-379): COMPOSTO mas NAO DURAVEL — a porta MediationEvents recebeu o Event Store de REFERENCIA in-memory (eventstore.New, sem AOS_EVENTSTORE_PATH nem AOS_EVENTSTORE_NATS): o canal tool.call.* E materializado no Event Store e o AOS-332 le-o DENTRO desta incarnacao, mas NAO SOBREVIVE a um reinicio do no. Vale a MESMA implicacao fail-closed (uma falha a gravar o evento no caminho de PERMIT degrada para DENY), so que sobre um substrato volatil. Defina AOS_EVENTSTORE_PATH (ou AOS_EVENTSTORE_NATS) para tornar o canal DURAVEL. Eixo: AOS-379 / EPIC-25",
+	}
+}
+
 func budgetPostureBanner(composed bool) []string {
 	if composed {
 		return []string{

@@ -16,6 +16,7 @@ import (
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/toolset"
+	"github.com/aos-ref/substrate/eventstore"
 	network "github.com/aos-ref/substrate/sandbox/network"
 )
 
@@ -64,6 +65,23 @@ type SecuredConfig struct {
 	// default-deny. OPCIONAL: nil ⇒ registo in-memory (sem crash-safety).
 	// *[eventstore.Store] satisfá-lo.
 	ToolSetStore ToolSetStore
+
+	// MediationEvents é o Event Store DURÁVEL do canal de eventos de mediação do RM
+	// (AOS-379): quando != nil, os registos tool.call.mediated/denied/escalated passam a
+	// ser materializados no Event Store (via [referencemonitor.NewEventStoreSink]) EM
+	// PARALELO com a cadeia tamper-evident do WORM — o TeeSink faz o fan-out (ver
+	// [NewSecuredRuntime]). É o Event Store que o AOS-332 lê para reconstruir "quem
+	// autorizou o quê". OPCIONAL e ADITIVO: nil ⇒ SÓ o WORM (via [audit.NewMediationSink]),
+	// exactamente o comportamento anterior a AOS-379 — o canal fica INALCANÇÁVEL como
+	// Event Store, o único destino é a hash-chain de audit. NÃO confundir com
+	// [SecuredConfig.ToolSetStore] (snapshots AOS-155, superfície Append+Read distinta).
+	// FAIL-CLOSED quando composto: uma falha a materializar o evento no caminho de PERMIT
+	// degrada a decisão para Deny (o WORM é o sink PRIMÁRIO do TeeSink e o Event Store o
+	// secundário — ver [NewSecuredRuntime] para a razão da ordem) —
+	// auditar-antes-do-efeito passa a EXIGIR o Event Store, não só o WORM. O tipo do store
+	// (NATS/file duráveis vs [eventstore.New] de referência in-memory) fixa se essa
+	// exigência é durável; o composition-root declara-o no banner de postura.
+	MediationEvents eventstore.EventStore
 
 	// --- Execução durável (AOS-180) ---------------------------------------------
 	// Quando TODOS os colaboradores abaixo são fornecidos, o runtime corre com
@@ -387,7 +405,33 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 
 	// EventSink durável = adaptador sancionado MediationRecord→AuditRecord sobre o
 	// MESMO WORM (partição por RunID). É o "audit" da cadeia — não um hook.
-	eventSink := audit.NewMediationSink(cfg.WORM)
+	//
+	// AOS-379: quando cfg.MediationEvents está composto, o canal tool.call.* deixa de ser
+	// INALCANÇÁVEL como Event Store — o [audit.TeeSink] faz o fan-out da MESMA mediação
+	// para a cadeia tamper-evident do WORM E para o Event Store durável. Fail-closed: uma
+	// falha em QUALQUER sink no caminho de permit propaga e o RM degrada para Deny. nil ⇒
+	// SÓ o WORM, exactamente como antes de AOS-379 (aditivo e retro-compatível).
+	//
+	// ORDEM: WORM PRIMÁRIO (índice 0), Event Store a seguir. É deliberado e corrige um achado
+	// da revisão adversarial: o TeeSink escreve por ordem e PÁRA no primeiro erro
+	// ([audit.NewTeeSink]). Com o Event Store à cabeça, uma queda do WORM (com o ES de pé)
+	// deixaria no ES um `tool.call.mediated` JÁ COMMITADO e depois degradaria para deny — mas o
+	// `tool.call.denied` re-emitido por [Monitor.fail] colidiria com a MESMA chave de
+	// idempotência (run_id, step_id) do `mediated` e seria DEDUPLICADO, deixando o ES a afirmar
+	// uma autorização+execução que nunca aconteceu (e é o ES que o AOS-332 lê). Com o WORM à
+	// cabeça: se o WORM cai, o tee pára ANTES de tocar o ES ⇒ o ES nunca ganha um `mediated`
+	// falso; e um `mediated` NO ES passa a implicar que o tee INTEIRO teve sucesso ⇒ a call foi
+	// mesmo autorizada e despachada. Se em vez disso cai o ES, o WORM (autoritativo, append-only,
+	// sem dedup) regista `mediated`+`denied` reconciliáveis e nunca fica cego; o ES apenas tem
+	// uma LACUNA durante a sua própria indisponibilidade — nunca uma mentira. O seq devolvido é o
+	// do WORM (primário); nenhum consumidor de produção usa o seq de mediação.
+	var eventSink referencemonitor.EventSink = audit.NewMediationSink(cfg.WORM)
+	if cfg.MediationEvents != nil {
+		eventSink = audit.NewTeeSink(
+			audit.NewMediationSink(cfg.WORM),                        // primário: cadeia tamper-evident (nunca cega; preserva o denied)
+			referencemonitor.NewEventStoreSink(cfg.MediationEvents), // a seguir: só ganha `mediated` se o tee inteiro passou
+		)
+	}
 
 	// RM via a via ESTRITA (recusa fail-closed IdentityStub/EgressStub, exige
 	// ScopeGate+TaintGate activos e audit durável) OU a via ENDURECIDA que, além disso,

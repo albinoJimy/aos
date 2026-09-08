@@ -2051,14 +2051,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Revalidator:    revalidator,
 		Policy:         policy,
 		WORM:           wormForChain, // decorado com observabilidade quando ligada (AOS-173)
-		Verifier:       verifier,     // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
-		Authority:      cfg.Authority,
-		PDP:            cfg.PDP,
-		Privileged:     cfg.Privileged, // AOS-363: nil ⇒ TaintGate inerte (retro-compat); não-vazio ⇒ via endurecida
-		ToolSetStore:   toolSetStore,
-		Checkpointer:   checkpointer,
-		Capturer:       capturer,
-		Ledger:         ledger,
+		// AOS-379: o MESMO Event Store do nó (`es`) materializa o canal tool.call.* — antes
+		// INALCANÇÁVEL como Event Store (só o WORM o via). O TeeSink faz o fan-out (WORM
+		// PRIMÁRIO, Event Store a seguir — a ordem garante que o ES nunca fica com um `mediated`
+		// falso; ver NewSecuredRuntime), e passa a valer o fail-closed do canal: uma falha a gravar
+		// o evento no caminho de permit NEGA a tool call. Durável conforme o `es` (NATS/file
+		// duráveis; eventstore.New de referência NÃO). Postura declarada no banner
+		// (mediationChannelPostureBanner).
+		MediationEvents: es,
+		Verifier:        verifier, // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
+		Authority:       cfg.Authority,
+		PDP:             cfg.PDP,
+		Privileged:      cfg.Privileged, // AOS-363: nil ⇒ TaintGate inerte (retro-compat); não-vazio ⇒ via endurecida
+		ToolSetStore:    toolSetStore,
+		Checkpointer:    checkpointer,
+		Capturer:        capturer,
+		Ledger:          ledger,
 		// AOS-254: liga o registo de compensações ao dispatcher durável (WithCompensationRegistry
 		// na composição de produção). nil quando a execução durável está desligada.
 		CompensationRegistry: compensations,
@@ -2493,6 +2501,15 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// É o único chamador não-teste de HasActiveTaintGate: sem ele, o predicado de eficácia que
 	// AOS-219 exportou ficava exportado-mas-não-consultado (o residual que EPIC-18 §5 registava).
 	for _, line := range taintGatePostureBanner(sec.Monitor().HasActiveTaintGate()) {
+		log("%s", line)
+	}
+	// AOS-379: postura do CANAL DE EVENTOS DE MEDIAÇÃO. O argumento deriva do que foi REALMENTE
+	// composto — `es != nil` (a porta MediationEvents foi preenchida com este mesmo store) e a sua
+	// durabilidade (in-memory de referência só quando NEM path NEM NATS foram dados) —, nunca da
+	// intenção da config. É a linha que declara honestamente que o canal tool.call.* deixou de ser
+	// inalcançável como Event Store, e a sua nova implicação fail-closed.
+	esMediationDurable := cfg.EventStore != nil || cfg.EventStorePath != "" || cfg.EventStoreNATS != ""
+	for _, line := range mediationChannelPostureBanner(es != nil, esMediationDurable) {
 		log("%s", line)
 	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
