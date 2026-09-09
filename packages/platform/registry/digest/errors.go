@@ -7,11 +7,19 @@ import "errors"
 // conteúdo malformado como se fosse canónico.
 var ErrInvalidJSON = errors.New("E_DIGEST_INVALID_JSON: conteudo nao e JSON valido")
 
+// CodeDigestMismatch é o código de porta ESTÁVEL do mismatch de digest — o nome
+// REAL que o contrato C5 (tecnica/12 §8) e a tecnica/05 §5 citam. Foi extraído
+// para constante para ser uma literal autónoma, sem alterar o texto do erro: o
+// [ErrDigestMismatch] concatena-a com o mesmo sufixo, pelo que a mensagem selada
+// no rasto WORM continua byte-a-byte idêntica. Contraste com os pilares vizinhos
+// (`signing`, `tofu`, `registry`), que já expõem o código num campo `Code`.
+const CodeDigestMismatch = "E_DIGEST_MISMATCH"
+
 // ErrDigestMismatch — o digest calculado sobre o conteúdo NÃO coincide com o
 // digest esperado no REG. É o sinal de conteúdo adulterado (rug-pull / schema
 // drift) que BLOQUEIA a admissão do artefacto no run (fail-closed, tecnica/05
 // §5). É comparável com errors.Is, inclusive quando embrulhado por [MismatchError].
-var ErrDigestMismatch = errors.New("E_DIGEST_MISMATCH: digest calculado difere do esperado (conteudo adulterado)")
+var ErrDigestMismatch = errors.New(CodeDigestMismatch + ": digest calculado difere do esperado (conteudo adulterado)")
 
 // MismatchError carrega os digests esperado e calculado para diagnóstico
 // auditável (ambos são públicos — NÃO são segredos). Satisfaz errors.Is para

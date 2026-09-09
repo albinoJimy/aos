@@ -61,6 +61,7 @@ Uso:
 Saída fail-closed: exit != 0 quando há divergências não-baselinadas.
 """
 
+import importlib.util
 import os
 import re
 import sys
@@ -87,6 +88,25 @@ RE_ERR_CODE = re.compile(r"`(E_[A-Z0-9_]+)`")
 # Início do parágrafo que fixa os códigos de porta de um contrato. O parágrafo
 # INTEIRO é lido a partir daqui (até à linha em branco seguinte).
 RE_ERR_PARAGRAPH = re.compile(r"^\*\*Semântica de erro\.\*\*")
+# O ticket AOS-NNN que o `owner=` de uma entrada de baseline nomeia. É o PRIMEIRO
+# ticket depois de `owner=` e antes do `;` — `owner=AOS-187/EPIC-01` extrai AOS-187.
+# Uma dívida de contrato NÃO pode ter por dono um `owner=` que seja só uma substring
+# livre: tem de nomear um ticket resolvível contra `specs/EPIC-*.md`.
+RE_OWNER_TICKET = re.compile(r"owner=[^;]*?(AOS-\d{3})")
+
+
+def load_ticket_states():
+    """(estados, lexemas_de_fecho) via `estado-citado.py` — o MESMO corpus de tickets.
+
+    Reutiliza `estados_dos_tickets()` (AOS-NNN -> lexema do `### Estado`, ou None quando
+    indeterminável) e os conjuntos FECHADO/CANCELADO, para que a noção de «ticket fechado»
+    seja UMA só em todo o arnês. Importado por caminho porque o ficheiro tem hífen.
+    """
+    path = Path(__file__).resolve().parent / "estado-citado.py"
+    spec = importlib.util.spec_from_file_location("estado_citado", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.estados_dos_tickets(), (mod.FECHADO | mod.CANCELADO)
 
 
 def read_lines(path: Path) -> list:
@@ -278,6 +298,35 @@ def main() -> int:
             print(f"  - {BASELINE.name}:{n}: {key}")
         exit_code = 1
 
+    # VALIDAÇÃO DE DONO (não é mais uma substring). Uma dívida de contrato tolerada
+    # aqui tem de ter por dono um ticket AOS-NNN que EXISTE e está ABERTO: o `owner=`
+    # que aponta para um ticket inexistente, indeterminado ou JÁ FECHADO compra uma
+    # confiança que não sustenta — um ticket fechado não vai reconciliar dívida
+    # nenhuma. Resolve-se contra o mesmo corpus de `estado-citado.py`. Fail-closed.
+    ticket_states, closing_lexemes = load_ticket_states()
+    bad_owner = []  # (linha, chave, motivo)
+    for key, meta in baseline.items():
+        comment = meta["comment"]
+        if "owner=" not in comment:
+            continue  # já contado em bl["ownerless"]
+        m = RE_OWNER_TICKET.search(comment)
+        if not m:
+            bad_owner.append((meta["line"], key, "`owner=` não nomeia um ticket AOS-NNN resolvível"))
+            continue
+        ticket = m.group(1)
+        state = ticket_states.get(ticket, "__INEXISTENTE__")
+        if state == "__INEXISTENTE__":
+            bad_owner.append((meta["line"], key, f"o dono {ticket} não existe no backlog (specs/EPIC-*.md)"))
+        elif state is None:
+            bad_owner.append((meta["line"], key, f"o dono {ticket} tem estado indeterminado (sem `### Estado`)"))
+        elif state in closing_lexemes:
+            bad_owner.append((meta["line"], key, f"o dono {ticket} está FECHADO ({state}) — reconcilie a dívida, não a mantenha por um ticket fechado"))
+    if bad_owner:
+        print(f"ERRO: {len(bad_owner)} entrada(s) de baseline com `owner=` inválido (ticket inexistente/indeterminado/fechado):")
+        for n, key, motivo in bad_owner:
+            print(f"  - {BASELINE.name}:{n}: {key} — {motivo}")
+        exit_code = 1
+
     if not contracts:
         print(f"ERRO: nenhum contrato C* encontrado em {DOC_REL} (parser ou documento partido).")
         return 1
@@ -413,6 +462,21 @@ def main() -> int:
         print(
             "\n  Corrija o código (declarar o código de porta) OU corrija o contrato em "
             f"{DOC_REL} OU acrescente entrada com dono à baseline {BASELINE.name}."
+        )
+        exit_code = 1
+
+    # GUARDA ANTI «VERDE POR NÃO OLHAR». Um gate que documenta códigos de porta mas
+    # não confirma NENHUM presente na árvore não está a distinguir «verde por árvore
+    # limpa» de «verde por não olhar» — o mesmo defeito que a baseline «só encolhe»
+    # fecha do outro lado. Com pelo menos C1/C2 fiéis, `verified` é sempre >= 1 num
+    # corpus coerente; `verified == 0` sobre um documento que TEM códigos é sinal de
+    # que a verificação não olhou para árvore nenhuma (mapeamento em falta, pacotes
+    # inexistentes, ou tudo tolerado pela baseline). Fail-closed. É o molde de
+    # `require_tests` (lib.sh): uma passagem que não correu nada não é verde.
+    if documented and verified == 0:
+        print(
+            "ERRO: 0 código(s) de porta verificado(s) presente(s) na árvore — verde por NÃO OLHAR, "
+            f"não por árvore limpa ({len(documented)} documentado(s), nenhum confirmado no código)."
         )
         exit_code = 1
 

@@ -983,11 +983,20 @@ AOS-196 correu em paralelo com outros pipelines e o seu âmbito de escrita foi d
   `ALL_GATES`), mas deixa um gate de merge fora do catálogo de standards que o cabeçalho de
   `scripts/ci/run.sh` cita como fonte da ordem canónica. **Coordenar com o pipeline paralelo
   que já tem `CONTRIBUTING.md` modificado**, para a edição não se perder no merge.
-- **P-5 — reconciliação dos códigos de erro de porta C3/C4/C5.** As 10 entradas de
-  `scripts/ci/baseline/contract-codes.txt` criadas por AOS-198 trazem `owner=AOS-196`.
-  AOS-196 é o **registo** de deferimentos, não o executor da reconciliação: renomear códigos
-  em `packages/platform/{broker,model-gateway,registry}` está fora do seu âmbito de escrita.
-  A dívida fica onde AOS-198 a pôs — visível, com dono, e a encolher só por remoção.
+- **P-5 — reconciliação dos códigos de erro de porta C3/C4/C5. ✅ FEITO** (2026-09-09, por AOS-382):
+  as 10 entradas de `scripts/ci/baseline/contract-codes.txt` — criadas por AOS-198 com eixo em
+  AOS-196, que é o **registo** de deferimentos e não o executor da reconciliação — foram
+  **reconciliadas** e removidas; a baseline ficou vazia. Como se fez, por categoria: **C5** alinhou
+  `tecnica/12` §8 aos nomes **reais** do código (`E_DIGEST_MISMATCH`, `E_SIG_INVALID`,
+  `E_TOFU_SCHEMA_DRIFT`, `E_REG_UNPINNED_RESOLUTION` + `E_TOFU_UNPINNED_VERSION`), coerentes com
+  `tecnica/05` e **sem renomear** código de produção (continuidade do rasto WORM); **C3** (broker) e
+  **C4** (gateway) ganharam em `port_codes.go` as constantes de código de porta com os nomes
+  documentados e uma tradução opt-in (`PortErrorCode`, via `errors.Is`) dos sentinelas para esses
+  códigos, de forma aditiva (a recusa continua a devolver o sentinela; o código estável é para quem
+  consome a porta); e a condição de **rate-limit** saiu da porta C4 por ser do
+  scheduler (control-plane). O gate 4 fica verde por **reconciliação, não por perdão**, e volta a
+  bloquear qualquer divergência nova. O `integration.py` passou também a validar que o `owner=` de
+  cada entrada de baseline nomeia um ticket existente e **aberto** (um dono já fechado avermelha).
 - **P-6 — transcrever a arbitragem A-DEF-301 para o registo irmão.**
   `docs/governance/REGISTO-Decisoes-Reabertas-e-Arbitragens.md` é o ficheiro que AOS-200 criou
   para as decisões reabertas e arbitradas, e está fora do âmbito de escrita de AOS-196. A

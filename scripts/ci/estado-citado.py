@@ -134,6 +134,22 @@ SPECS = os.path.join(ROOT, "specs")
 ALVOS = [os.path.join(ROOT, "packages"), os.path.join(ROOT, "tecnica"), os.path.join(ROOT, "docs", "adr")]
 EXCLUIR_DIRS = {".git", "vendor", "testdata", "node_modules", ".claude"}
 
+# As baselines dos gates (scripts/ci/baseline/*.txt) são a segunda fonte de declarações, e a que
+# torna este gate NÃO-VÁZIO hoje (ver AC de AOS-382). Cada `owner=AOS-NNN` numa baseline é uma
+# declaração de dívida com eixo verificável — a adesão FUNDADORA, real e já no repo, por oposição
+# a um `BLOQUEADOR:` em prosa que ninguém escreveu ainda. O directório é RELATIVO AO SCRIPT (não ao
+# ROOT sobreponível): o self-test corre sobre cópias da árvore com AOS_ESTADO_CITADO_ROOT, e essas
+# cópias não trazem as baselines — queremos que continuem a cruzar contra as baselines REAIS. Um
+# seam PRÓPRIO (AOS_ESTADO_CITADO_BASELINE_DIR) existe só para o teste-veneno da não-vacuidade
+# poder apontar a uma baseline com owner inexistente sem tocar nas reais.
+BASELINE_DIR = os.path.abspath(os.environ.get("AOS_ESTADO_CITADO_BASELINE_DIR") or
+                               os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline"))
+
+# PISO de declarações verificadas (molde de FLOOR_*/enforce_threshold_floor de lib.sh): um gate
+# opt-in que sai verde com ZERO declarações é um gate desligado (verde-vázio ≡ desligado). Exige-se
+# pelo menos UMA adesão real cruzada contra a árvore. É um ratchet: só aperta.
+PISO_DECLARACOES = 1
+
 # O prefixo de comentário POR EXTENSÃO. A varredura era só `.go` e `.md` — o marcador deixava de
 # valer por causa da linguagem do ficheiro, o que não é uma propriedade de uma convenção de texto.
 # Medido: dentro deste âmbito isto cobre hoje MAIS ZERO ficheiros (ver §4); é um buraco fechado
@@ -155,6 +171,10 @@ RE_IDENT = re.compile(r"\b([A-Z]{2,4})-(\d{2,4})\b")
 RE_TICKET = re.compile(r"AOS-\d{3}")
 # A lista contígua de tickets que se segue ao primeiro, para `BLOQUEADOR: AOS-262, AOS-263`.
 RE_LISTA = re.compile(r"AOS-\d{3}(?:\s*(?:,|/|\be\b)\s*AOS-\d{3})*")
+# O ticket AOS-NNN que o `owner=` de uma linha de baseline nomeia (o PRIMEIRO depois de `owner=` e
+# antes do `;`): `owner=AOS-187/EPIC-01` extrai AOS-187. Linhas de documentação da baseline usam
+# `owner=...` ou `owner=AOS-NNN` (literal, sem dígitos) e por isso NÃO casam — só declarações reais.
+RE_BASELINE_OWNER = re.compile(r"owner=[^;]*?(AOS-\d{3})")
 
 # Quanto texto depois dos dois-pontos conta como eixo. Curto de propósito: o eixo é o que o
 # marcador aponta, não tudo o que vem a seguir no parágrafo.
@@ -210,6 +230,51 @@ def estados_dos_tickets():
             e = RE_ESTADO.search(texto[m.end():fim])
             out[m.group(1)] = e.group(1).strip().upper() if e else None
     return out
+
+
+def declaracoes_de_baseline(estados):
+    """Cruza TODO o `owner=AOS-NNN` das baselines de scripts/ci/baseline com o estado do ticket.
+
+    Devolve (verificadas, indeterminados, inexistentes):
+      - verificadas — owners que resolvem a um ESTADO CONHECIDO (ABERTO∪FECHADO) no backlog. São
+        as adesões que EXERCITAM a leitura de estado: se a resolução de estado se partir (passar a
+        devolver None para tudo), esta contagem cai e o PISO avermelha. É a não-vacuidade do
+        eixo-estado — a razão de o piso contar ESTES e não a mera existência.
+      - indeterminados — [(ficheiro, nº, ticket)] cujo owner EXISTE mas cujo epic não tem `### Estado`
+        (estado None). NÃO conta para o piso (não prova a leitura de estado) e NÃO falha (o ticket
+        existe; a falta de secção de estado é do epic, não do gate).
+      - inexistentes — [(ficheiro, nº, ticket)] cujo owner NÃO existe (typo / ticket que nunca
+        existiu). Avermelha: um owner inventado é a não-vacuidade a falhar.
+
+    NÃO se exige «aberto» aqui, ao contrário do `integration.py` sobre contract-codes: uma dívida
+    permanente reconhecida pode ter dono já fechado (ex.: `policy-taint.txt owner=AOS-363`,
+    legítimo). A pergunta é «o owner resolve a um estado conhecido?», não «está aberto?».
+    """
+    verificadas = 0
+    indeterminados = []
+    inexistentes = []
+    if not os.path.isdir(BASELINE_DIR):
+        return verificadas, indeterminados, inexistentes
+    for nome in sorted(os.listdir(BASELINE_DIR)):
+        if not nome.endswith(".txt"):
+            continue
+        try:
+            with open(os.path.join(BASELINE_DIR, nome), encoding="utf-8") as fh:
+                linhas = fh.read().split("\n")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for n, linha in enumerate(linhas, 1):
+            m = RE_BASELINE_OWNER.search(linha)
+            if not m:
+                continue
+            ticket = m.group(1)
+            if ticket not in estados:
+                inexistentes.append((nome, n, ticket))
+            elif estados[ticket] is None:   # existe mas o epic não declara `### Estado`
+                indeterminados.append((nome, n, ticket))
+            else:                            # estado CONHECIDO (ABERTO∪FECHADO): exercita a leitura
+                verificadas += 1
+    return verificadas, indeterminados, inexistentes
 
 
 def ficheiros_alvo():
@@ -368,12 +433,29 @@ def main():
         rc = 1
         falha("FAIL estado-citado: BLOQUEADOR nomeia um ticket que NAO EXISTE no backlog:", desconhecidos, False)
 
+    # DECLARAÇÕES FUNDADORAS: os owners AOS-NNN das baselines cruzados com o estado do ticket. É o
+    # que torna este gate NÃO-VÁZIO (AC de AOS-382): sem elas, `marcadas==0` saía verde e o gate
+    # estava desligado. Um owner INEXISTENTE avermelha (não-vacuidade); o PISO garante que há pelo
+    # menos uma adesão real cruzada contra a árvore.
+    verificadas, owners_indeterminados, owners_inexistentes = declaracoes_de_baseline(estados)
+    if owners_inexistentes:
+        rc = 1
+        print("FAIL estado-citado: `owner=` de baseline nomeia um ticket que NAO EXISTE no backlog:", file=sys.stderr)
+        for f, n, t in owners_inexistentes:
+            print("       scripts/ci/baseline/%s:%d — owner %s inexistente (typo ou ticket que nunca existiu)" % (f, n, t), file=sys.stderr)
+    if verificadas < PISO_DECLARACOES:
+        rc = 1
+        print("FAIL estado-citado: %d owner(s) de baseline com ESTADO CONHECIDO < piso %d — sem uma adesao cujo estado se resolva, o eixo-estado nao e exercitado (verde-vazio)"
+              % (verificadas, PISO_DECLARACOES), file=sys.stderr)
+
     # A CEGUEIRA É IMPRESSA, sempre, e agora em QUATRO eixos e não num. Um gate que se cala sobre o
     # que não sabe verificar sugere uma cobertura que não tem — é o molde das «abstenções» do
     # `ref-lint`. Cada linha destas é um sítio onde o gate VIU um marcador e NÃO o julgou.
     abstencoes = len(sem_estado) + len(lexema_novo) + len(eixo_nao_ticket) + len(sem_eixo)
     print("estado-citado: %d declaracao(oes) com BLOQUEADOR verificada(s); %d abstencao(oes)"
           % (marcadas, abstencoes))
+    print("estado-citado: %d owner(s) de baseline resolvido(s) a um ESTADO CONHECIDO no backlog (piso %d); %d owner(s) de estado indeterminado (nao contam)"
+          % (verificadas, PISO_DECLARACOES, len(owners_indeterminados)))
     for f, n, t, _ in sem_estado:
         print("   ABSTENCAO %s:%d — %s sem `### Estado` no corpus (EPIC-01..18 nao o tem)" % (f, n, t))
     for f, n, t, _, est in lexema_novo:
