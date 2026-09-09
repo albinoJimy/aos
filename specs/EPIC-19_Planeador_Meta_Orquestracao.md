@@ -61,6 +61,9 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 | AOS-243 | Determinismo & migração de `plan_version` | feature | M | P1 | AOS-235, AOS-016 |
 | AOS-244 | Suite de segurança adversarial do plano | test | L | P0 | AOS-231, AOS-232, AOS-236, AOS-238 |
 | AOS-388 | Decomposer LLM de produção: goal → PlanDocument multi-nó, ponta-a-ponta no aos-orq | feature | L | P1 | AOS-234, AOS-241, AOS-237, AOS-026, AOS-281 |
+| AOS-389 | Guard fail-closed: recusar planos com arestas condicionais até o avaliador estar composto | feature | S | P0 | AOS-237, AOS-388 |
+| AOS-390 | Compor o despacho governado do Planeador (`plandispatch.Dispatcher` sob Tenure) | feature | L | P0 | AOS-281, AOS-237, AOS-238, AOS-389 |
+| AOS-391 | T2-B: compor o `decompose.Model` real via Model Gateway | feature | L | P1 | AOS-388, AOS-390, AOS-278 |
 
 ---
 
@@ -558,6 +561,125 @@ Implementa AOS-388 (EPIC-19): Decomposer LLM de produção + wiring multi-nó no
 
 ---
 
+## AOS-389 — Guard fail-closed: recusar planos com arestas condicionais até o avaliador estar composto
+
+<!-- rtm: adrs-mencionados -->
+<!-- O ADR-022 citado neste bloco é MENÇÃO — a invariante §2.1 (`branch_not_taken`) que o
+     ticket protege — não implementação. A avaliação real vive em AOS-390; este é o guard de
+     transição que troca a violação fail-open por recusa declarada. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Habilitador / correcção |
+| Milestone | v1.1 (correcção fail-open no caminho de produção) |
+| Tipo | feature (correcção) |
+| Prioridade | P0 |
+| Estimativa | S |
+| Dependências | AOS-237 (materialização), AOS-388 (T2-A — o caminho `--goal` que este guard protege) |
+| Bloqueia | AOS-391 (o T2-B não deve alargar o buraco fail-open) |
+| Superado por | AOS-390 (que substitui a recusa por avaliação real) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/planmaterialize/materialize.go`, `packages/cmd/aos-orq/planner_wiring.go`, `packages/cmd/aos-orq/main.go`, ADR-022 §2.1, `analises/10_Auditoria_ORQ_SCH_PDP_Adversarial.md` |
+
+### Contexto
+Medido em 2026-09-10, com teste na composição real: `Materialize` **ignora `conditional_on` em silêncio** e dá efeito a todos os nós eagerly. Via `--goal (+fixture)` um nó condicional-papel é **spawnado como sub-agente real** (NHI cunhada, orçamento reservado, `subagent.spawned`) sem a condição ser avaliada; via `--plan-doc` uma folha condicional materializa. Não existe guarda fail-closed específica de condicionais entre a entrada e o efeito: o schema aceita `conditional_on`, o `planvalidate.Validate` admite planos condicionais bem-formados, e o `--plan-doc` nem chama o validador. O único componente que avalia condições e poda `branch_not_taken` — o `plandispatch.Dispatcher` — **não tem chamador de produção** (ver AOS-390). O efeito é uma **violação fail-OPEN do ADR-022 §2.1**: um ramo que devia ser podado é executado — ao contrário de toda a disciplina do sistema, que recusa quando não consegue decidir.
+
+### Objectivo
+Enquanto o avaliador de ramos não estiver composto (AOS-390), o caminho de produção deve **recusar fail-closed** qualquer plano que contenha `conditional_on`, em vez de o executar em silêncio — trocando uma violação fail-open por uma recusa declarada e observável.
+
+### Critérios de Aceitação
+- [ ] `Materialize` (ou a fronteira de admissão a montante) recusa, com erro tipado (p.ex. `ErrConditionalNaoComposto`), qualquer `PlanDocument`/`Plan` cujo grafo contenha ≥1 aresta `conditional_on`; **nenhum** nó é materializado nem spawnado.
+- [ ] A recusa vale nas **duas** superfícies: `--goal` (com e sem `--decompose-fixture`) e `--plan-doc --snapshot`. Um teste por cada.
+- [ ] Não-regressão: um plano **sem** condicionais continua a materializar e a spawnar exactamente como hoje (caso negativo).
+- [ ] Teste de composição real que reproduz o cenário medido (`A` produtor, `B conditional_on A {verdict=fail}`): antes, `B` era spawnado; depois, o plano é recusado e nem `A` nem `B` têm efeito.
+- [ ] O erro nomeia o eixo que o fecha (AOS-390) e é declarado no banner/postura como fronteira conhecida, não como falha.
+- [ ] Guard-test de fonte: um teste falha se algum caminho de materialização voltar a dar efeito a um nó com `conditional_on` sem avaliação (sela contra a regressão do fail-open).
+
+---
+
+## AOS-390 — Compor o despacho governado do Planeador (`plandispatch.Dispatcher` sob Tenure)
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-022/ADR-023 citados neste bloco são MENÇÃO — invariantes que o ticket respeita
+     (poda `branch_not_taken`; SCH derivador, escritor único por run) — não implementação. O
+     ticket compõe/wira o Dispatcher que já existe; é o eixo que corrige DEF-272/273/274/275. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | 3 — Composição no nó |
+| Milestone | v1.1 (distribuído) |
+| Tipo | feature |
+| Prioridade | P0 |
+| Estimativa | L |
+| Dependências | AOS-281 (composição ORQ/SCH↔nó sob lease), AOS-237 (materialização), AOS-238 (porta do scheduler), AOS-389 (guard que este supersede) |
+| Bloqueia | AOS-392 (prova multi-processo), AOS-391 (T2-B ponta-a-ponta) |
+| Fecha | DEF-274/DEF-275 (residual do wiring; eixo corrigido de AOS-238 para este ticket); a row de deferimento nova do despacho fail-open |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/plandispatch/{dispatch.go,ports.go,branches.go,condition.go}`, `packages/control-plane/runlifecycle/{readers.go,emitters.go}`, `runlifecycle.Tenure`, ADR-022, ADR-023, DEF-272/273/274/275 |
+
+### Contexto
+Medido: `plandispatch.NewDispatcher` só aparece em `_test.go`; o `DispatchSink` não tem implementação de produção (só o duplo `sinkRegistador`); o `aos-orq` não importa `plandispatch`. O pipeline T2-A (`planner_wiring.go`) termina em `Materialize` + spawn-all eager, **sem** gating de elegibilidade — logo o `depends_on` e as arestas condicionais de um plano aprovado não são respeitados em runtime. As portas de leitura que o Dispatcher consome (`LifecycleView`/`ResultView`/`PayloadView`/`BranchJournal`) **já estão implementadas** por `runlifecycle` (DEF-272/273 fechados por AOS-281). O que falta é o **chamador** e o **sink**. Esta é a etapa que DEF-272/273/274 nomeavam como eixo `AOS-238` — mas AOS-238 está **fechado** e o seu guard-test `TestBoundary_ProductionImportsAreAllowlisted` proíbe o import do módulo de ciclo-de-vida; paga-se com **ticket novo** (precedente: AOS-281).
+
+### Objectivo
+Compor o `plandispatch.Dispatcher` de produção dentro do `aos-orq serve`, sob `runlifecycle.Tenure` (lease + fencing), como **escalonador re-invocável por passagem** que: lê o estado do ciclo de vida, decide elegibilidade (`NodePending` + `depends_on` cumpridos), **avalia arestas condicionais e poda `branch_not_taken`**, consulta o card oracle, aplica headroom de concorrência com diferimento, e entrega os nós **elegíveis** a um `DispatchSink` de produção — **in-process**, que delega o efeito ao `Delegator.Spawn`/`GraphBuilder` que já existem. Substitui a recusa do AOS-389 por avaliação real. O SCH continua **derivador** (não escreve ciclo de vida — invariante ADR-023).
+
+> **Nota de fronteira (anti-scope-creep).** O sink é **in-process**: no modelo per-run do ADR-023 o processo dono corre o laço de despacho para os seus runs, e o efeito delega no `Delegator` local. **Não** é preciso um work-queue sobre JetStream para distribuir os NÓS de um run entre processos — isso seria distribuição intra-run, que o modelo per-run torna desnecessária, e fica **fora** da v1.1.
+
+### Critérios de Aceitação
+- [ ] `aos-orq serve` compõe um `plandispatch.Dispatcher` de produção sob `Tenure`; `NewDispatcher` passa a ter chamador fora de `_test.go` (um guard-test "aos-orq importa plandispatch em produção" fica verde).
+- [ ] Existe uma implementação de produção de `DispatchSink` que delega o efeito ao `Delegator.Spawn` (papéis) e ao `GraphBuilder`/`LeafAdmitter` (folhas) — o mesmo efeito governado (RM + reserva CAS + NHI) que hoje corre eager, mas **só para nós elegíveis**.
+- [ ] **Elegibilidade por estado**: só nós `NodePending` são despachados; um nó materializado/terminal não é re-despachado (idempotência por `(run_id, step_id)`).
+- [ ] **Gating por `depends_on`**: um nó com dependência não concluída **não** é despachado (teste: `B depends_on A`, `A` pendente ⇒ `B` não spawna).
+- [ ] **Arestas condicionais + poda `branch_not_taken`** (ADR-022 §2.1): `B conditional_on A {verdict=fail}` — se `A` passa, `B` é decidido `branch_not_taken` e **não** tem efeito; se `A` falha, `B` é despachado. Prova pela composição real, caso positivo **e** negativo. **Isto fecha a violação medida no AOS-389.**
+- [ ] **Headroom de concorrência**: com headroom esgotado, os nós elegíveis excedentes ficam `OutcomeDeferredHeadroom` e são retomados numa passagem seguinte quando a concorrência liberta — sem os perder e sem fail-open.
+- [ ] **Card oracle**: um nó cujo card exige aprovação humana (`danger`) fica `waiting`, não é spawnado sem o gate (AOS-236).
+- [ ] **Semântica re-invocável**: o Dispatcher é função por passagem, sem laço próprio; o escalonador do `serve` re-invoca-o quando `ResultView`/`LifecycleView` mudam ou headroom liberta. **Não escreve ciclo de vida** (teste: o stream do run não cresce por escrita do dispatcher numa passagem só de leitura).
+- [ ] **Sob Tenure**: um dispatcher cuja posse foi superada é recusado por fencing (`ErrStaleFencingToken`) sem tocar no log — herda a disciplina de AOS-281.
+- [ ] **AOS-389 é superado**: o guard fail-closed de condicionais é substituído pela avaliação real; o guard-test de não-regressão de AOS-389 passa a assertar avaliação em vez de recusa.
+- [ ] **Registo**: a row de deferimento do gap de despacho passa a `FECHADO-RESIDUAL`/removida; DEF-274 e DEF-275 têm o Eixo corrigido para este ticket. RTM regenerada.
+
+---
+
+## AOS-391 — T2-B: compor o `decompose.Model` real via Model Gateway
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-005/019/020 citados neste bloco são MENÇÃO — constraints que o ticket respeita
+     (documento untrusted; camadas; fidelidade do token NHI) — não implementação. A realização
+     do wiring vivo do Model Gateway vive no código do aos-orq; fecha DEF-803. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Habilitador do goal→DAG real |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-388 (T2-A), AOS-390 (para que goals reais com condicionais sejam avaliados, não recusados), AOS-278 (cutover de identidade NHI) |
+| Bloqueia | AOS-392 (prova ponta-a-ponta com goal real) |
+| Fecha | DEF-803 (o marcador `STUB` sai do código) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/planner_wiring.go` (`fixtureModel`, `modeloDeDecomposicao`), `packages/control-plane/orchestrator/decompose/decompose.go`, `packages/platform/model-gateway/`, ADR-019 §2.5, ADR-020, ADR-005 |
+
+### Contexto
+Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nomeia o "Model Gateway" (`TestAOS388_GoalFailClosed`); o único `decompose.Model` é o `fixtureModel` (marcado **NÃO-PRODUÇÃO**); o `aos-orq` não importa `platform/model-gateway`. **DEF-803** continua `STUB`/`ABERTO`, ticketado como AOS-388. Ligar exige token NHI com `model:invoke` verificado e uma decisão **ADR-020** sobre a fidelidade do token (token do run vs. `agent:planner`).
+
+### Objectivo
+Compor um `decompose.Model` de produção que invoca o Model Gateway para produzir o `PlanDocument` a partir do `goal`, sob a identidade e o orçamento corretos, substituindo o `fixtureModel` no caminho `--goal`. Fecha DEF-803 e o critério de saída do goal→DAG real.
+
+### Critérios de Aceitação
+- [ ] `--goal` **sem** `--decompose-fixture` produz um `PlanDocument` via Model Gateway (deixa de recusar); `--decompose-fixture` continua disponível para testes offline.
+- [ ] A invocação corre sob NHI com autoridade `model:invoke` **verificada** (não um token sem escopo); a decisão ADR-020 sobre qual identidade usar está documentada e implementada.
+- [ ] A reserva de planeamento é admitida antes da decomposição (AOS-234) e o custo do turno flui para o burn-down (AOS-259).
+- [ ] O `PlanDocument` produzido passa pelo validador puro (AOS-231); se o modelo emitir arestas condicionais, elas são **avaliadas** por AOS-390 (nem recusadas por AOS-389, nem executadas fail-open).
+- [ ] Fail-closed preservado: falha do Gateway, token sem `model:invoke`, ou plano inválido ⇒ o run não avança com plano fantasma (erro declarado, nada spawnado).
+- [ ] **DEF-803 passa a FECHADO** (o marcador `STUB` sai do código); RTM regenerada.
+- [ ] O golden-set/eval-gate do planeador (AOS-241) continua verde com o modelo real atrás de doubles no gate offline.
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -595,3 +717,4 @@ Implementa AOS-388 (EPIC-19): Decomposer LLM de produção + wiring multi-nó no
 |---|---|---|---|
 | 1.0 | 2026-08-02 | Emissão inicial: decomposição do `tecnica/18` v1.0 (Ratificado) em 15 tickets AOS-230..244. | Equipa AOS |
 | 1.1 | 2026-09-09 | +AOS-388 (Decomposer LLM de produção + wiring multi-nó no aos-orq): gradua a decomposição LLM offline (doubles) para viva, fechando DEF-803 e a dependência de Model Gateway nomeada em §2/§6. | Equipa AOS |
+| 1.2 | 2026-09-10 | +AOS-389/390/391 (despacho governado do Planeador para v1.1 distribuído): guard fail-closed de condicionais (389), composição do `plandispatch.Dispatcher` sob Tenure com avaliação de elegibilidade/condicionais/headroom (390), e T2-B do Model Gateway (391). Origem: análise adversarial que mediu a violação fail-open do ADR-022 §2.1 no spawn-eager. | Equipa AOS |
