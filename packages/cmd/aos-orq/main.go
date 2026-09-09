@@ -157,7 +157,9 @@ func cmdServe(args []string) error {
 	release := fs.Bool("release", false, "ANUNCIAR que larga a posse no fim (handoff sem esperar TTL)")
 	worker := fs.String("worker", "orq", "rótulo do worker (observabilidade — nunca decide liveness)")
 	planDoc := fs.String("plan-doc", "", "ficheiro JSON do PlanDocument APROVADO a materializar")
-	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc: é dele que sai o oráculo de efeito)")
+	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc/--goal: é dele que sai o oráculo de efeito e o validador AOS-231)")
+	goal := fs.String("goal", "", "objectivo a decompor num DAG multi-nó pelo Planner governado (F2E-02, AOS-388; exige --snapshot; exclui --nodes/--plan-doc)")
+	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM até o Model Gateway ser composto (T2-B)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -221,6 +223,31 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("re-hidratação do grafo: %w", err)
 	}
 	fmt.Printf("grafo re-hidratado: nos=%d\n", g.DAG().Len())
+
+	// (4-goal) PIPELINE goal→DAG (F2E-02, AOS-388): com --goal, é o Planner GOVERNADO que
+	// produz os nós — mediação RM, reserva CAS, NHI agent:planner e validação AOS-231
+	// reais — e o Delegator real materializa (fim do recusaSpawn). Mutuamente exclusivo
+	// com o caminho manual --nodes/--plan-doc, que fica como override; a exclusividade
+	// torna o laço e a materialização abaixo no-ops quando --goal é usado.
+	if *goal != "" {
+		if len(separar(*nodes)) > 0 || *planDoc != "" {
+			return errors.New("--goal é a fonte dos nós (Planner governado) e não se combina com --nodes/--plan-doc")
+		}
+		if *snapshot == "" {
+			return errors.New("--goal exige --snapshot: o validador (AOS-231) e o oráculo de efeito derivam do snapshot pinado")
+		}
+		snap, err := carregarSnapshot(*snapshot)
+		if err != nil {
+			return err
+		}
+		model, err := modeloDeDecomposicao(*decomposeFixture)
+		if err != nil {
+			return err
+		}
+		if err := decomporEMaterializar(ctx, ten, rec, snap, *goal, model, *worker); err != nil {
+			return err
+		}
+	}
 
 	// (4) ESCRITA SOB FENCING. Cada AddNode passa pelo FencedAppender.
 	for _, id := range separar(*nodes) {
