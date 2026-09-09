@@ -9,6 +9,7 @@ import (
 	"github.com/aos-ref/control-plane/orchestrator/decompose"
 	"github.com/aos-ref/control-plane/orchestrator/plan"
 	"github.com/aos-ref/control-plane/orchestrator/planner"
+	"github.com/aos-ref/control-plane/orchestrator/plannerprompt"
 )
 
 // fakeModel é o "LLM" injectado nos testes: determinístico, sem I/O vivo. Regista o
@@ -255,4 +256,77 @@ func TestNew_ModelNilFailClosed(t *testing.T) {
 // asserção de compile-time vive na fonte; aqui prova-se com uma instância real).
 func TestSatisfazPortaDoPlaneador(t *testing.T) {
 	var _ planner.Decomposer = novo(t, &fakeModel{reply: forjadoJSON(t)})
+}
+
+// TestWithPrompt_VersaoZeroMantemDefault fecha o achado #1: um prompt de versão ZERO é
+// ignorado (mantém o default 1.1.0, sempre válido); um prompt VÁLIDO de versão própria
+// é usado e carimba a sua versão.
+func TestWithPrompt_VersaoZeroMantemDefault(t *testing.T) {
+	// Versão zero ⇒ ignorado ⇒ default Current (1.1.0), NÃO "0.0.0".
+	fm := &fakeModel{reply: forjadoJSON(t)}
+	d := novo(t, fm, decompose.WithPrompt(plannerprompt.Prompt{Template: "IGNORADO-SEM-VERSAO"}))
+	doc, err := d.Decompose(context.Background(), stdInput())
+	if err != nil {
+		t.Fatalf("Decompose: %v", err)
+	}
+	if doc.PlannerMeta.PromptVersion != "1.1.0" {
+		t.Errorf("prompt de versao zero devia ser ignorado; esperava 1.1.0, obtive %q", doc.PlannerMeta.PromptVersion)
+	}
+	if fm.gotSystem == "IGNORADO-SEM-VERSAO" {
+		t.Error("o template sem versao NAO devia ter sido usado como system")
+	}
+
+	// Prompt válido de versão própria ⇒ usado ⇒ carimba a sua versão.
+	fm2 := &fakeModel{reply: forjadoJSON(t)}
+	valido := plannerprompt.Prompt{Template: "PROMPT-CUSTOM", Version: plannerprompt.PromptVersion{Major: 2}}
+	d2 := novo(t, fm2, decompose.WithPrompt(valido))
+	doc2, err := d2.Decompose(context.Background(), stdInput())
+	if err != nil {
+		t.Fatalf("Decompose (custom): %v", err)
+	}
+	if doc2.PlannerMeta.PromptVersion != "2.0.0" {
+		t.Errorf("prompt valido devia ser usado; esperava 2.0.0, obtive %q", doc2.PlannerMeta.PromptVersion)
+	}
+	if fm2.gotSystem != "PROMPT-CUSTOM" {
+		t.Errorf("system esperado PROMPT-CUSTOM, obtive %q", fm2.gotSystem)
+	}
+}
+
+// TestDecompose_CapHashEspacosFailClosed fecha o achado #2: um capabilities_hash
+// só-espaços é aparado e tratado como vazio — sem chamar o modelo.
+func TestDecompose_CapHashEspacosFailClosed(t *testing.T) {
+	fm := &fakeModel{reply: forjadoJSON(t)}
+	d := novo(t, fm)
+	in := stdInput()
+	in.Context.CapabilitiesHash = "   \t "
+	_, err := d.Decompose(context.Background(), in)
+	if !errors.Is(err, decompose.ErrNoCapabilitiesHash) {
+		t.Fatalf("esperava ErrNoCapabilitiesHash para hash so-espacos, obtive %v", err)
+	}
+	if fm.calls != 0 {
+		t.Errorf("o modelo NAO devia ser chamado; obtive %d chamadas", fm.calls)
+	}
+}
+
+// TestDecompose_JSONEmbrulhado fecha o achado #3: extractJSON isola o objecto quer numa
+// cerca de UMA linha, quer envolto em prosa antes/depois.
+func TestDecompose_JSONEmbrulhado(t *testing.T) {
+	obj := forjadoJSON(t)
+	casos := []struct{ nome, reply string }{
+		{"cerca numa linha", "```json" + obj + "```"},
+		{"prosa a envolver", "Eis o plano pedido: " + obj + " (fim)"},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			fm := &fakeModel{reply: c.reply}
+			d := novo(t, fm, decompose.WithModelID(modeloTeste))
+			doc, err := d.Decompose(context.Background(), stdInput())
+			if err != nil {
+				t.Fatalf("Decompose(%s): %v", c.nome, err)
+			}
+			if len(doc.Nodes) != 2 {
+				t.Fatalf("%s: esperava 2 nos, obtive %d", c.nome, len(doc.Nodes))
+			}
+		})
+	}
 }

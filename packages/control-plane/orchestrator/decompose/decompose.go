@@ -70,10 +70,13 @@ type LLMDecomposer struct {
 type Option func(*LLMDecomposer)
 
 // WithPrompt substitui o prompt de decomposição (default: [plannerprompt.Current]). Um
-// prompt de template vazio é ignorado (mantém-se o default).
+// prompt SEM FORMA é ignorado (mantém-se o default, que é sempre válido): exige-se
+// template não-vazio E versão carimbada (não o sentinela {0,0,0}). Um prompt de versão
+// zero carimbaria `planner_meta.prompt_version = "0.0.0"` — o sentinela «não carimbado»
+// — furando a proveniência a jusante. Espelha o `Prompt.valid()` (unexported).
 func WithPrompt(p plannerprompt.Prompt) Option {
 	return func(d *LLMDecomposer) {
-		if p.Template != "" {
+		if p.Template != "" && !p.Version.IsZero() {
 			d.prompt = p
 		}
 	}
@@ -127,11 +130,12 @@ func (d *LLMDecomposer) Decompose(ctx context.Context, in planner.DecomposeInput
 	if goal == "" {
 		return plan.PlanDocument{}, ErrEmptyGoal
 	}
-	if in.Context.CapabilitiesHash == "" {
+	capHash := strings.TrimSpace(in.Context.CapabilitiesHash)
+	if capHash == "" {
 		return plan.PlanDocument{}, ErrNoCapabilitiesHash
 	}
 
-	text, err := d.model.Complete(ctx, d.prompt.Template, d.renderUser(goal, in))
+	text, err := d.model.Complete(ctx, d.prompt.Template, d.renderUser(goal, capHash))
 	if err != nil {
 		return plan.PlanDocument{}, fmt.Errorf("decompose: chamada ao modelo: %w", err)
 	}
@@ -154,7 +158,7 @@ func (d *LLMDecomposer) Decompose(ctx context.Context, in planner.DecomposeInput
 	doc.PlannerMeta = plan.PlannerMeta{
 		Model:            d.modelID,
 		PromptVersion:    d.prompt.MetaPromptVersion(),
-		CapabilitiesHash: in.Context.CapabilitiesHash,
+		CapabilitiesHash: capHash,
 	}
 	return doc, nil
 }
@@ -164,7 +168,7 @@ func (d *LLMDecomposer) Decompose(ctx context.Context, in planner.DecomposeInput
 // (a mensagem `system`) descreve o contrato de schema; o conteúdo VARIÁVEL vive aqui,
 // nunca por edição do template — é isso que preserva a cache-estabilidade do prompt
 // (ADR-009: o [plannerprompt.Prompt.Fingerprint] tem de ser invariante).
-func (d *LLMDecomposer) renderUser(goal string, in planner.DecomposeInput) string {
+func (d *LLMDecomposer) renderUser(goal, capHash string) string {
 	var b strings.Builder
 	b.WriteString("OBJECTIVO (untrusted):\n")
 	b.WriteString(goal)
@@ -177,47 +181,25 @@ func (d *LLMDecomposer) renderUser(goal string, in planner.DecomposeInput) strin
 	b.WriteString("Carimba planner_meta com EXACTAMENTE:\n")
 	fmt.Fprintf(&b, "- model: %s\n", d.modelID)
 	fmt.Fprintf(&b, "- prompt_version: %s\n", d.prompt.MetaPromptVersion())
-	fmt.Fprintf(&b, "- capabilities_hash: %s\n", in.Context.CapabilitiesHash)
+	fmt.Fprintf(&b, "- capabilities_hash: %s\n", capHash)
 	return b.String()
 }
 
-// extractJSON isola o corpo JSON de uma resposta do modelo. O prompt exige «nenhuma
-// prosa fora do JSON» (regra 5), mas defensivamente removem-se cercas de código
-// markdown (```json … ``` ou ``` … ```) e espaços — o caso comum de um modelo que
-// embrulha o objecto. NÃO tenta reparar JSON: se sobrar prosa, [plan.Decode] recusa
-// fail-closed e o Planner re-tenta. Puro.
+// extractJSON isola o objecto JSON de uma resposta do modelo: o intervalo do PRIMEIRO
+// '{' ao ÚLTIMO '}'. É robusto ao caso comum de um modelo que embrulha o objecto em
+// cercas markdown (```json … ```), num rótulo de linguagem, ou em prosa antes/depois —
+// tudo o que esteja fora das chavetas de topo é ignorado, incluindo uma cerca numa só
+// linha (que a extracção por cercas partia). Como um [plan.PlanDocument] é sempre um
+// objecto JSON de topo, este intervalo É o documento; lixo lá dentro, ou a ausência de
+// chavetas, é recusado fail-closed por [plan.Decode] (ou devolve "" aqui). NÃO tenta
+// reparar JSON. Puro.
 func extractJSON(text string) string {
-	s := strings.TrimSpace(text)
-	if !strings.HasPrefix(s, "```") {
-		return s
+	start := strings.IndexByte(text, '{')
+	end := strings.LastIndexByte(text, '}')
+	if start < 0 || end < start {
+		return ""
 	}
-	s = strings.TrimPrefix(s, "```")
-	// Remover um possível rótulo de linguagem (ex.: "json") na primeira linha da cerca.
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		if first := strings.TrimSpace(s[:i]); first == "" || isWord(first) {
-			s = s[i+1:]
-		}
-	}
-	// Cortar a cerca de fecho, se existir.
-	if i := strings.LastIndex(s, "```"); i >= 0 {
-		s = s[:i]
-	}
-	return strings.TrimSpace(s)
-}
-
-// isWord indica se s é uma só palavra alfanumérica (um rótulo de linguagem como
-// "json"), para distinguir a linha de rótulo de uma linha que já seja JSON. Puro.
-func isWord(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
-			return false
-		}
-	}
-	return true
+	return text[start : end+1]
 }
 
 // Asserção em compile-time: o Decomposer satisfaz a porta do planeador.
