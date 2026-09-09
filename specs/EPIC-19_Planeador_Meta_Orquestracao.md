@@ -60,6 +60,7 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 | AOS-242 | Autonomia L0–L5 do planeador + SLIs de planeamento | feature | M | P1 | AOS-236, AOS-014, AOS-124 |
 | AOS-243 | Determinismo & migração de `plan_version` | feature | M | P1 | AOS-235, AOS-016 |
 | AOS-244 | Suite de segurança adversarial do plano | test | L | P0 | AOS-231, AOS-232, AOS-236, AOS-238 |
+| AOS-388 | Decomposer LLM de produção: goal → PlanDocument multi-nó, ponta-a-ponta no aos-orq | feature | L | P1 | AOS-234, AOS-241, AOS-237, AOS-026, AOS-281 |
 
 ---
 
@@ -496,6 +497,62 @@ Provar em teste que os vectores adversariais estão fechados.
 
 ---
 
+## AOS-388 — Decomposer LLM de produção: goal → PlanDocument multi-nó, ponta-a-ponta no aos-orq
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | 3 — Escala e controlo (graduação da decomposição offline para viva) |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-234 (planeador governado), AOS-241 (prompt+golden-sets), AOS-237 (materialização), AOS-026 (Delegator), AOS-281 (composição do aos-orq sob lease) |
+| Bloqueia | — |
+| Fecha | DEF-803 (decomposição goal→DAG é stub de nó único); resíduo de decomposição real atribuído a AOS-025 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `tecnica/18` §3.3/§3.6, ADR-005 (untrusted), ADR-018/ADR-023 (fronteira nó↔ORQ), ADR-019 §2.5 (camadas), `packages/control-plane/orchestrator/planvalidate/budget.go` (precedente da porta `Pricer`) |
+
+### Contexto
+Esta epic (§1) entregou o planeador como agente governado, mas com a decomposição LLM validada por **doubles offline** — a §2 e o §6 nomeiam explicitamente o *wiring* vivo do Model Gateway como dependência **fora** de âmbito (EPIC-06/integração). Este ticket fecha essa dependência nomeada. Em concreto: `planner.Planner.Decompose` (mediação RM, reserva CAS, NHI `agent:planner`, N tentativas, gate de forma) está completo, mas delega a decomposição à porta `planner.Decomposer`, para a qual só existem *fakes* de teste. O `orchestrator.Submit` continua um stub de 1 nó (`contract.NewMinimalGraph`), e o binário `aos-orq` (que re-hidrata o `GraphBuilder` sob lease — AOS-281 — e materializa planos) recebe os nós por flags `--nodes`/`--plan-doc` e **recusa** o spawn (`recusaSpawn`). Falta a única peça viva: um `Decomposer` de produção que chame o modelo real e devolva um `plan.PlanDocument` multi-nó.
+
+### Objectivo
+Entregar o `Decomposer` de produção e compô-lo com o planeador e o pipeline existente dentro do `aos-orq`, ligando `Delegator.Spawn`, de modo a que um único `aos-orq serve --goal` produza, valide, aprove e materialize um DAG **realmente multi-nó** a partir de um objectivo.
+
+### Critérios de Aceitação
+- [ ] `decompose.LLMDecomposer` satisfaz `planner.Decomposer`: monta `system = plannerprompt.Current.Template` e `user = goal (untrusted) + snapshot`; parseia a resposta com `plan.Decode` **fail-closed** (reutiliza o parser sancionado, não reimplementa); carimba `planner_meta{model, prompt_version, capabilities_hash}`. O documento é tratado como **untrusted** (ADR-005) — nunca executado, nunca marcado trusted.
+- [ ] **Camadas (decisão por precedente, não nova):** o Decomposer vive em `control-plane/orchestrator/decompose` e depende apenas de control-plane+kernel, através de uma **porta de modelo local injectada** — o **mesmo padrão** da porta `Pricer` de `planvalidate/budget.go`, que declarou evitar puxar `platform/model-gateway` para não abrir exceção nova ao layer-lint. O concreto do gateway compõe-se no `aos-orq` (binário exempto por ADR-018). `layer-lint` verde **sem** nova entrada de baseline nem emenda ao ADR-019 §2.5.
+- [ ] `aos-orq serve --goal "…"` corre ponta-a-ponta: `Decompose` → `planvalidate.Validate` (sobre o snapshot pinado cujo hash é o carimbado em `planner_meta.capabilities_hash`) → `PlanGate.Approve` → `planmaterialize.Materialize`, com nós-folha no DAG (AOS-025) **e** papéis-que-expandem via `Delegator.Spawn` (AOS-026). `recusaSpawn` deixa de ser o caminho por omissão; `--nodes`/`--plan-doc` ficam só como override manual.
+- [ ] **Determinismo de teste:** o modelo é injectado; um *fake* determinístico cobre o CI, sem chamada viva. O retry fica do `Planner` (N tentativas + reserva escalada) — **não** é duplicado no Decomposer.
+- [ ] **Produção fail-closed:** o `aos-orq` exige credencial de modelo em produção (espelha `ErrProductionNeedsModelCredential` do nó); sem ela, o caminho vivo não arranca.
+- [ ] O guard `boundary_orq_sch_test.go` (grafo de build de `cmd/aos`) permanece verde — nada disto entra no nó `aos`.
+
+### Detalhes Técnicos
+- **Novo pacote:** `packages/control-plane/orchestrator/decompose/` (mesmo módulo que `planner`/`plan`/`plannerprompt`). Imports: `orchestrator/{planner,plan,plannerprompt}` + a porta de modelo local. Sem `require`/`replace` novo para o gateway.
+- **Fluxo do `Decompose`:** montar mensagens → chamar o modelo pela porta → extrair o JSON → `plan.Decode` (fail-closed) → devolver `PlanDocument` untrusted. Erro de transporte ou documento malformado ⇒ erro (conta como tentativa; o `Planner` re-tenta).
+- **Wiring no `aos-orq`:** adaptador porta-de-modelo → `modelgateway.NewModelClient` (reutilizar, não reescrever o cliente); `planner.NewPlanner(reserver, mediator, issuer, decompose.New(model))`; substituir `recusaSpawn` por `planmaterialize.NewDelegatorSpawner(delegator, …)` com um `orchestrator.Delegator` real.
+- **Tasks:** **T1** Decomposer isolado + teste em ilha → **T2** wiring do planeador no `aos-orq` → **T3** `Delegator.Spawn` real → **T4** arranque/config (`--goal`, credencial, snapshot). T3 e T4 são paralelos após T2 (ambos editam `main.go` — coordenar merges).
+
+### Testes Requeridos
+- Unit em ilha (`decompose`): goal→multi-nó válido; malformado→erro fail-closed; carimbo de `planner_meta`; JSON com prosa à volta; `-race`.
+- Wiring `aos-orq`: e2e goal→materializado com *fake* de modelo; o teste de dois-processos (lease) continua verde.
+- Reutilizar a suite adversarial AOS-244 (plano hostil / downgrade de risco) sobre o caminho vivo.
+
+### Definition of Done
+- Pacote novo testado, zero-dep externa; `layer-lint`/`deferrals`/event-catalog verdes; DEF-803 fechado no `docs/governance/REGISTO-Deferimentos.md`; RTM (`tecnica/16`) regenerada; revisão por 2 revisores (artefacto P0-adjacente).
+
+### Handoff para Claude Code
+```text
+Implementa AOS-388 (EPIC-19): Decomposer LLM de produção + wiring multi-nó no aos-orq.
+- Novo pacote control-plane/orchestrator/decompose: LLMDecomposer satisfaz planner.Decomposer.
+- Porta de modelo LOCAL injectada (padrão Pricer de planvalidate/budget.go); NÃO importar platform/model-gateway.
+- Reutiliza plan.Decode (parsing) e plannerprompt.Current (system prompt); output untrusted (ADR-005).
+- Wiring no aos-orq: adaptador → modelgateway.NewModelClient; Planner.Decompose alimentado; Delegator.Spawn real (fim do recusaSpawn).
+- Retry fica do Planner; teste em ilha com modelo fake determinístico; produção exige credencial fail-closed.
+- NÃO tocar em cmd/aos (guard boundary_orq_sch_test.go tem de ficar verde). Regenera a RTM. Abre PR com o template §7 dos Standards.
+```
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -532,3 +589,4 @@ Provar em teste que os vectores adversariais estão fechados.
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | 2026-08-02 | Emissão inicial: decomposição do `tecnica/18` v1.0 (Ratificado) em 15 tickets AOS-230..244. | Equipa AOS |
+| 1.1 | 2026-09-09 | +AOS-388 (Decomposer LLM de produção + wiring multi-nó no aos-orq): gradua a decomposição LLM offline (doubles) para viva, fechando DEF-803 e a dependência de Model Gateway nomeada em §2/§6. | Equipa AOS |
