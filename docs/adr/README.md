@@ -71,8 +71,8 @@ na mesma ronda da EPIC-13 v1.0).
 | ADR-018 | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | **Aceite** | [`ADR-018-fronteira-no-orq-sch.md`](ADR-018-fronteira-no-orq-sch.md) |
 | ADR-019 | Excepções intencionais às fronteiras canónicas de camada (v1 single-host) | **Aceite** | [`ADR-019-fronteiras-camada-excecoes.md`](ADR-019-fronteiras-camada-excecoes.md) |
 | ADR-020 | Planeador como agente governado (o planeamento é um agente do runtime, não um caminho especial) | **Aceite** | [`ADR-020-planeador-agente-governado.md`](ADR-020-planeador-agente-governado.md) |
-| ADR-021 | Roteamento por scoring ponderado determinístico no Model Gateway (task-fit + perfis de pesos versionados, sem exploração online) | **Proposto** | [`ADR-021-scoring-deterministico-gw.md`](ADR-021-scoring-deterministico-gw.md) |
-| ADR-022 | Extensões declarativas ao grafo de plano: arestas condicionais, papel verificador e payload tipado por aresta — sem ciclos, sem blackboard | **Proposto** | [`ADR-022-grafo-plano-extensoes.md`](ADR-022-grafo-plano-extensoes.md) |
+| ADR-021 | Roteamento por scoring ponderado determinístico no Model Gateway (task-fit + perfis de pesos versionados, sem exploração online) | **Aceite** | [`ADR-021-scoring-deterministico-gw.md`](ADR-021-scoring-deterministico-gw.md) |
+| ADR-022 | Extensões declarativas ao grafo de plano: arestas condicionais, papel verificador e payload tipado por aresta — sem ciclos, sem blackboard | **Aceite** | [`ADR-022-grafo-plano-extensoes.md`](ADR-022-grafo-plano-extensoes.md) |
 | ADR-023 | Escritor único do ciclo de vida por-run: a autoridade é o LEASE, não o componente (o SCH deriva do log; o ORQ escreve só sob posse e sobre grafo re-hidratado) — extende o ADR-018 ao distribuído | **Ratificado (2026-08-30) e ASSINADO (2026-08-31, AOS-281)** | [`ADR-023-escritor-unico-ciclo-vida-por-run.md`](ADR-023-escritor-unico-ciclo-vida-por-run.md) |
 
 > Nota: os ficheiros ligados na coluna «Ficheiro» para **006/011/012/013/016** são
@@ -111,7 +111,7 @@ na mesma ronda da EPIC-13 v1.0).
 - **Numeração:** ADRs novos numeram-se **após o maior código atribuído** (hoje ADR-022:
   ADR-017 — supply-chain do nó; ADR-018 — fronteira nó↔ORQ/SCH; ADR-019 — excepções
   às fronteiras de camada; ADR-020 — planeador como agente governado; ADR-021 —
-  scoring determinístico no GW, **proposto**; ADR-022 — extensões ao grafo de plano,
-  **proposto**). Códigos nunca são reutilizados; um ADR retirado passa a
+  scoring determinístico no GW, **aceite** (ratificado 2026-08-13); ADR-022 — extensões ao grafo de plano,
+  **aceite** (ratificado 2026-08-13)). Códigos nunca são reutilizados; um ADR retirado passa a
   *Substituído por*, não desaparece.
 - Todo o documento técnico relevante deve **citar os ADRs que o afectam**.

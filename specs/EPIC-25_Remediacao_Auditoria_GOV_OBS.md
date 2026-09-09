@@ -2771,3 +2771,85 @@ Firecracker `errors.Is` `ErrDriverUnavailable` e nomeia KVM; gVisor `errors.Is` 
 **não** menciona KVM, e nomeia `AOS_SANDBOX_GVISOR_URL`. **Controlo negativo (AC3):** falha se os dois
 textos voltarem a ser iguais. `substrate/sandbox`, `cmd/aos` (testes de gVisor/Firecracker/sandbox) `go
 test -race` verdes; `build`, `layer-lint` verdes. Nenhum critério deferido.
+
+---
+
+## Adenda pós-encerramento — follow-ups de auditoria posterior (fora do âmbito de `analises/13`)
+
+Estes dois tickets **não pertencem aos trinta achados de `analises/13`** que a §0 enquadra. Entram
+aqui por serem os follow-ups contíguos (`AOS-385`, `AOS-386`) produzidos **depois** do encerramento
+desta epic: `AOS-385` foi apurado e corrigido a instrumentar o Event Store durável (irmão do
+`AOS-364`), e `AOS-386` reconcilia o *drift* documental/config que a **auditoria global de qualidade
+e completude** (2026-09-09) apurou. Ficam registados na epic mais recente por serem da mesma
+linhagem de remediação; a colocação é relocável por decisão do dono do backlog. A §0 desta epic
+mantém-se inalterada de propósito — o seu âmbito continua a ser os trinta achados. Os dois
+tickets são definidos pelos cabeçalhos `## AOS-NNN —` abaixo (a forma que o `ref-lint` e a RTM
+consomem); não se acrescenta uma tabela-resumo com códigos `ADR-NNN` na prosa da adenda, para
+que o parser da RTM (que delimita um bloco de ticket até ao próximo cabeçalho `## AOS-NNN`) não
+atribua ao AOS-384 acima um ADR que não é dele.
+
+## AOS-385 — O Event Store durável trava o DoS de ressincronização herdado do WORM
+
+### Contexto
+
+O Event Store durável (`packages/substrate/eventstore/durable.go`) tinha o MESMO DoS de arranque que
+o `AOS-364` fechou no WORM de auditoria irmão. Quando o enquadramento do WAL se perde (`AOS-346`),
+`contaOrfaos` varre o ficheiro byte-a-byte à procura da próxima fronteira de registo válida; sem
+orçamento, o varrimento é O(n²) sobre a janela de `maxRecordBytes` (64 MiB). Um adversário com
+escrita no WAL — o modelo de ameaça deste substrato — fabrica *padding* após uma quebra de
+comprimento e prende o `Open` (medido na versão gémea do audit: WAL de 2 MiB não termina em 300 s).
+
+Este ticket é o **âncora de rastreabilidade retroactiva** de trabalho **já entregue e mergeado**
+(commit `fix(AOS-385)`, PR #244): as sete citações a `AOS-385` em `durable.go` e o teste
+`durable_orcamento_ressinc_test.go` existiam no código sem contrapartida no backlog, invisíveis à
+RTM e ao `ref-lint`. Fecha o achado **COMP-1** da auditoria global.
+
+### Critérios de Aceitação
+
+- [x] `ressincroniza` contabiliza bytes lidos+CRC ANTES do trabalho pesado de cada candidato e
+      devolve `esgotou` ao ultrapassar o tecto (`ressincOrcamentoBytes = 256 MiB`)
+- [x] `abrir` RECUSA (`ErrWALCorruptedMidLog`) quando `orfaos > 0 || !conclusivo`; uma cauda rasgada
+      legítima (orfaos == 0 e conclusivo) continua a truncar sob `WithWALTruncateOnCorruption`
+- [x] Dois testes novos (molde `TestAOS364_Orcamento`): WAL de 2 MiB com comprimento inflado +
+      *padding* adversarial recusa em ~0,06 s em vez de prender
+- [x] O ticket existe no backlog e a RTM regenera a incluí-lo (fecha o *drift* de rastreabilidade)
+
+### Estado
+
+**IMPLEMENTADO.**
+
+## AOS-386 — Reconciliação pós-auditoria: honestidade do §6 do taint, estado dos ADR-021/022 e piso de cobertura do trilho WORM
+
+<!-- rtm: adrs-mencionados -->
+
+### Contexto
+
+Ticket-guarda-chuva da **faxina de housekeeping** que reconcilia três *drifts* apurados pela
+auditoria global (2026-09-09), nenhum deles dívida escondida ou defeito de runtime — todos fissuras
+que caíram nos interstícios que os gates não cruzam. Aplicados num único PR, sem abrir epic nova (a
+recomendação anti-espiral da própria auditoria):
+
+- **SEC-A1** — `tecnica/07` §6 apresentava a separação de planos e o `TaintGate` como activos em
+  presente, quando o loop base ainda acrescenta conteúdo untrusted *inline* (DEF-806) e o gate está
+  inerte por omissão. Acrescentado um caveat «Postura de composição hoje» que reconcilia o §6 com a
+  honestidade das §§4–5 e do `tecnica/17`. Composição/mecanismo: `AOS-069`/`AOS-363`.
+- **COMP-2** — `docs/adr/README.md` dava `ADR-021`/`ADR-022` como *Proposto* quando os ficheiros ADR
+  e a `EPIC-20` §0 os declaram *Aceite* (ratificados 2026-08-13). Corrigido o estado; RTM regenerada.
+  Registo/canon: `AOS-319`.
+- **GATE-1** — o gate de cobertura «generalizado» (`AOS-109`) gateava `orchestrator`/`scheduler`
+  (fora do build) mas não `platform/audit` (trilho WORM, ~90,7%). `platform/audit` entra em
+  `COVERAGE_GATED_MODULES`; a exclusão de `substrate/eventstore` (agregado ~63,1% por adaptadores
+  NATS live-only) fica documentada em `lib.sh` com o `dormencia` a vigiar o apodrecimento.
+
+### Critérios de Aceitação
+
+- [x] Caveat de composição no `tecnica/07` §6 (SEC-A1), no mesmo registo das §§4–5
+- [x] `ADR-021`/`ADR-022` como *Aceite* no registo canónico e na prosa de numeração (COMP-2)
+- [x] `platform/audit` sob o piso de cobertura; exclusão de `eventstore` documentada e justificada (GATE-1)
+- [x] RTM regenerada; `rtm`, `ref-lint`, `estado-citado` e `deferrals` verdes
+- [ ] *(fora de âmbito, assinalado)* prosa «hoje ADR-022» de `docs/adr/README.md` desactualizada face
+      ao `ADR-023` já ratificado — *drift* adjacente deixado para follow-up para não alargar o escopo
+
+### Estado
+
+**IMPLEMENTADO.**
