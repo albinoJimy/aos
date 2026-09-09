@@ -509,21 +509,43 @@ fi
 #
 # Ao contrário do §L, estes subtestes correm contra o CORPUS REAL, e cada um
 # ataca uma via distinta de falso-verde:
-#   N1 baseline VAZIA        — as divergências C3/C4/C5 são mesmo detectadas;
+#   N1 divergência SINTÉTICA — um código documentado e ausente avermelha (não é no-op);
 #   N2 baseline OBSOLETA     — a dívida fechada tem de ser removida;
 #   N3 baseline SEM `owner=` — a regra de honestidade é executável;
 #   N4 parágrafo RENOMEADO   — o gate não se desliga editando o documento;
-#   N5 baseline ÓRFÃ         — uma entrada nunca visitada não se torna permanente.
+#   N5 baseline ÓRFÃ         — uma entrada nunca visitada não se torna permanente;
+#   N6 owner FECHADO         — a dívida não pode ter por dono um ticket já fechado (AOS-382).
 # N4 e N5 são as duas vias pelas quais o gate ficava VERDE sobre menos contratos
 # do que dizia verificar (medido pela auditoria de AOS-198).
+#
+# NOTA (AOS-382): antes da reconciliação, uma baseline VAZIA já avermelhava por si
+# só, porque as dez divergências C3/C4/C5 estavam por reconciliar. Reconciliadas, a
+# baseline vazia é agora LEGITIMAMENTE verde (todos os códigos documentados estão
+# presentes) — por isso o N1 injecta uma divergência SINTÉTICA para provar que o
+# gate continua a detectar divergência, e não virou um no-op.
 # ============================================================================
 log_gate "self-test N · divergência de contrato bloqueia o gate 4 (AOS-198)"
 N_EMPTY="$(mktemp)"
 : > "$N_EMPTY"
-if AOS_CONTRACT_BASELINE="$N_EMPTY" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
-  bad "N1: gate 4 passou com baseline VAZIA — as divergências C3/C4/C5 não estão a ser detectadas"
+# N1: com baseline VAZIA, um código de porta documentado e AUSENTE do código
+# avermelha. Injecta-se `E_FAKE_ABSENT_XYZ` no parágrafo do PRIMEIRO contrato (C1,
+# mapeado a pdp), onde não existe — divergência não-baselinada ⇒ vermelho.
+N_DOC1="$(mktemp)"
+ensure_python || exit 1
+python3 - "$REPO_ROOT/tecnica/12_Contratos_de_Interface.md" "$N_DOC1" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+marker = "**Semântica de erro.**"
+i = text.find(marker)
+assert i != -1, "marcador «Semântica de erro» não encontrado — self-test inválido"
+j = i + len(marker)
+open(dst, "w", encoding="utf-8").write(text[:j] + " `E_FAKE_ABSENT_XYZ` (divergencia sintetica);" + text[j:])
+PY
+if AOS_CONTRACTS_DOC="$N_DOC1" AOS_CONTRACT_BASELINE="$N_EMPTY" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N1: gate 4 passou com um código documentado AUSENTE e baseline vazia — não detecta divergência (virou no-op)"
 else
-  pass "N1: gate 4 bloqueou (exit!=0) com baseline vazia — detecta as divergências reais de contrato"
+  pass "N1: gate 4 bloqueou (exit!=0) uma divergência sintética com baseline vazia — continua a detectar divergência real"
 fi
 # N2: entrada de baseline para um código que EXISTE (C1) tem de falhar como obsoleta.
 N_STALE="$(mktemp)"
@@ -579,7 +601,50 @@ if AOS_CONTRACT_BASELINE="$N_ORPHAN" bash "$CI_DIR/integration.sh" >/dev/null 2>
 else
   pass "N5: gate 4 bloqueou (exit!=0) uma entrada de baseline órfã"
 fi
-rm -f "$N_EMPTY" "$N_STALE" "$N_NOOWNER" "$N_DOC" "$N_ORPHAN"
+
+# N6: o `owner=` deixou de ser uma substring — tem de nomear um ticket AOS-NNN que
+# EXISTE e está ABERTO. Uma entrada com um código realmente ausente (divergência
+# sintética, logo baselinável) mas com owner=<ticket JÁ FECHADO> avermelha: uma
+# dívida de contrato não se mantém por um ticket que já fechou sem a reconciliar.
+# Controlo (owner ABERTO, verde) vs veneno (owner FECHADO, vermelho) isola a
+# validação de dono do resto do gate. (AOS-382)
+N_DOC6="$(mktemp)"
+python3 - "$REPO_ROOT/tecnica/12_Contratos_de_Interface.md" "$N_DOC6" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+marker = "**Semântica de erro.**"
+i = text.rfind(marker)  # último parágrafo = contrato C5 (registry)
+assert i != -1, "marcador «Semântica de erro» não encontrado — self-test inválido"
+j = i + len(marker)
+open(dst, "w", encoding="utf-8").write(text[:j] + " `E_FAKE_OWNER_XYZ` (divergencia sintetica);" + text[j:])
+PY
+# Escolhe dinamicamente, do corpus real, um ticket ABERTO e um FECHADO.
+read -r N6_ABERTO N6_FECHADO < <(python3 - "$CI_DIR" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+est = ec.estados_dos_tickets()
+ab = sorted(t for t, e in est.items() if e in ec.ABERTO)
+fe = sorted(t for t, e in est.items() if e in ec.FECHADO)
+print(ab[0] if ab else "NONE", fe[0] if fe else "NONE")
+PY
+)
+N_OK6="$(mktemp)"; N_BAD6="$(mktemp)"
+printf 'C5|E_FAKE_OWNER_XYZ|packages/platform/registry # owner=%s; divergencia sintetica com dono ABERTO\n' "$N6_ABERTO" > "$N_OK6"
+printf 'C5|E_FAKE_OWNER_XYZ|packages/platform/registry # owner=%s; divergencia sintetica com dono FECHADO\n' "$N6_FECHADO" > "$N_BAD6"
+if [ "$N6_ABERTO" != "NONE" ] && AOS_CONTRACTS_DOC="$N_DOC6" AOS_CONTRACT_BASELINE="$N_OK6" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  pass "N6: controlo — entrada de baseline com owner ABERTO ($N6_ABERTO) fica verde"
+else
+  bad "N6: controlo falhou — a entrada com owner aberto já está vermelha (o veneno não provaria nada)"
+fi
+if [ "$N6_FECHADO" != "NONE" ] && AOS_CONTRACTS_DOC="$N_DOC6" AOS_CONTRACT_BASELINE="$N_BAD6" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N6: gate 4 aceitou uma entrada de baseline cujo owner ($N6_FECHADO) já está FECHADO"
+else
+  pass "N6: gate 4 bloqueou (exit!=0) uma entrada de baseline com owner já fechado ($N6_FECHADO)"
+fi
+
+rm -f "$N_EMPTY" "$N_STALE" "$N_NOOWNER" "$N_DOC" "$N_ORPHAN" "$N_DOC1" "$N_DOC6" "$N_OK6" "$N_BAD6"
 
 # ============================================================================
 # O) Literal/concatenação de tipo de evento bloqueia o gate event-catalog (AOS-198)
@@ -760,9 +825,15 @@ fi
 # ============================================================================
 # O gate e OPT-IN: so verifica declaracoes marcadas com `BLOQUEADOR: AOS-NNN`. Isso torna a prova
 # negativa OBRIGATORIA e nao opcional — mediu-se que a arvore NAO tem hoje nenhuma declaracao
-# marcada (zero citacoes de bloqueio apontam para ticket aberto), pelo que o verde do gate contra
-# a arvore real nao prova nada por si so. E exactamente a situacao que o §P2 do ref-lint existe
-# para nao repetir: um gate que nunca teve input capaz de o avermelhar nao e um gate.
+# marcada (zero citacoes de bloqueio apontam para ticket aberto), pelo que o verde da PARTE dos
+# marcadores contra a arvore real nao prova nada por si so. E exactamente a situacao que o §P2 do
+# ref-lint existe para nao repetir: um gate que nunca teve input capaz de o avermelhar nao e um gate.
+#
+# AOS-382 fechou essa vacuidade por um segundo eixo: o gate cruza agora TODO o `owner=AOS-NNN` das
+# baselines de scripts/ci/baseline contra o estado do ticket e EXIGE `verificadas >= piso` (piso=1).
+# Essas sao as adesoes FUNDADORAS, reais e ja no repo — o verde deixou de poder ser verde-vazio. O
+# §W2 continua a provar que a parte dos marcadores dispara; o §W4 (novo) prova a nao-vacuidade e que
+# um owner de baseline INEXISTENTE avermelha.
 log_gate "self-test W1 · o predicado de estado distingue fechado de aberto, nos DOIS sentidos"
 if python3 - "$CI_DIR" <<'RPY'
 import importlib.util, sys
@@ -927,12 +998,69 @@ fi
 rm -rf "$EC_TMP"
 EC_TMP=""
 
-# W3 — a arvore real nao foi tocada pelo §W2.
+# W3 — a arvore real nao foi tocada pelo §W2, E o verde ja NAO e vazio (AOS-382): exige
+# `verificadas >= piso` a partir dos owners das baselines reais. Verde aqui = sem rasto de
+# marcador caduco E com adesoes fundadoras cruzadas contra a arvore (nao um opt-in a zero).
 if python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
-  pass "W3: controlo — o estado-citado continua verde contra a arvore REAL (sem rasto)"
+  pass "W3: controlo — o estado-citado continua verde contra a arvore REAL (sem rasto; verificadas >= piso)"
 else
-  bad "W3: o estado-citado ficou vermelho contra a arvore real — POSSIVEL RASTO no repo"
+  bad "W3: o estado-citado ficou vermelho contra a arvore real — POSSIVEL RASTO ou declaracoes verificadas < piso"
 fi
+
+# W4 — NAO-VACUIDADE (AOS-382). O gate deixou de sair verde com marcadas==0: cruza os
+# owners AOS-NNN das baselines contra o estado do ticket e exige verificadas >= piso. Um
+# owner INEXISTENTE avermelha. Prova-se com um seam PROPRIO da baseline
+# (AOS_ESTADO_CITADO_BASELINE_DIR), sem tocar nas baselines reais nem na arvore.
+EC_BL="$(mktemp -d)"
+if python3 - "$CI_DIR" "$EC_BL" <<'RPY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+estados = ec.estados_dos_tickets()
+# O controlo precisa de um owner de ESTADO CONHECIDO (nao-None): o piso conta esses, nao a mera
+# existencia (AOS-382, fix do MUST-1 da revisao). Um indeterminado NAO satisfaria o piso.
+conhecidos = sorted(t for t, s in estados.items() if s is not None)
+indeterminados = sorted(t for t, s in estados.items() if s is None)
+if not conhecidos:
+    print("W4: corpus sem tickets de estado conhecido", file=sys.stderr); sys.exit(2)
+with open(os.path.join(sys.argv[2], "ok.txt"), "w", encoding="utf-8") as fh:
+    fh.write("chave|x # owner=%s; declaracao fundadora de controlo (estado conhecido)\n" % conhecidos[0])
+# Escreve tambem, se houver, um indeterminado para a variante W5.
+with open(os.path.join(sys.argv[2], "_indeterminado.name"), "w", encoding="utf-8") as fh:
+    fh.write(indeterminados[0] if indeterminados else "")
+RPY
+then
+  if AOS_ESTADO_CITADO_BASELINE_DIR="$EC_BL" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    pass "W4: controlo — baseline com owner de ESTADO CONHECIDO fica verde (verificadas >= piso)"
+  else
+    bad "W4: controlo falhou — baseline com owner de estado conhecido avermelhou (o veneno nao provaria nada)"
+  fi
+else
+  bad "W4: nao foi possivel montar a baseline de controlo"
+fi
+# O VENENO: owner INEXISTENTE (AOS-999) tem de avermelhar.
+printf 'chave|x # owner=AOS-999; owner inventado, ticket que nunca existiu\n' > "$EC_BL/veneno.txt"
+if AOS_ESTADO_CITADO_BASELINE_DIR="$EC_BL" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+  bad "W4: o gate passou com um owner de baseline INEXISTENTE (AOS-999) — nao verifica a nao-vacuidade"
+else
+  pass "W4: o gate bloqueou (exit!=0) um owner de baseline inexistente (AOS-999)"
+fi
+# W5 — o eixo-ESTADO e exercitado, nao so a existencia (AOS-382, MUST-1): uma baseline SO com
+# owners de estado INDETERMINADO nao satisfaz o piso (nao prova a leitura de estado) e avermelha.
+EC_INDET="$(cat "$EC_BL/_indeterminado.name" 2>/dev/null || echo "")"
+rm -f "$EC_BL/ok.txt" "$EC_BL/veneno.txt"
+if [ -n "$EC_INDET" ]; then
+  printf 'chave|x # owner=%s; owner existente mas de estado indeterminado (epic sem ### Estado)\n' "$EC_INDET" > "$EC_BL/indet.txt"
+  if AOS_ESTADO_CITADO_BASELINE_DIR="$EC_BL" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    bad "W5: o gate passou com SO owners de estado indeterminado — o piso nao exercita a leitura de estado (verde-vazio disfarcado)"
+  else
+    pass "W5: o gate bloqueou (exit!=0) uma baseline so com owners de estado indeterminado (piso exige estado conhecido)"
+  fi
+else
+  pass "W5: corpus sem tickets de estado indeterminado — variante nao aplicavel"
+fi
+rm -rf "$EC_BL"
+EC_BL=""
 
 # ============================================================================
 # Q) o gate de ENTREGA bloqueia um smoke apontado a liveness (2026-08-23)

@@ -445,7 +445,7 @@ Integração», declarado bloqueante de merge em `specs/01:83` e nomeado em `tec
 - [x] **VIA ESCOLHIDA — ENTREGUE** `7d16c4e`: `scripts/ci/run.sh` inclui um gate que falha se um tipo Go de porta divergir do contrato declarado em
       `tecnica/12` (mínimo verificável: presença dos códigos de erro `E_*` documentados), **ou**
 - [—] *(VIA NÃO ESCOLHIDA — o CA é disjuntivo; criar o gate foi preferido porque retirar a declaração converteria um achado num deferimento permanente)* a declaração é **retirada** de `specs/01:83` e `tecnica/12:351` e a deriva C3/C4/C5 fica registada como
-      deferimento com eixo (AOS-196).
+      deferimento com eixo (AOS-196). *(Nota histórica — AOS-382: esta menção a AOS-196 como eixo pertence ao registo da via NÃO escolhida. A deriva C3/C4/C5 foi entretanto **reconciliada** por AOS-382 — os 10 códigos alinhados/expostos e as entradas de baseline removidas —, não deferida. Não reabre este CA.)*
 - [x] Qualquer que seja a via, o resultado é falsificável: não pode ficar um gate declarado e inexistente.
       *(ENTREGUE `7d16c4e`. O que o gate NÃO faz está declarado em TRÊS sítios (cabeçalho do script, `specs/01` linha 4, `tecnica/12` §11); corrigidas as duas afirmações que sobre-prometiam. Baselines com regras mais apertadas que as de scanner: dono obrigatório, só encolhem, entrada obsoleta **falha**.)*
 

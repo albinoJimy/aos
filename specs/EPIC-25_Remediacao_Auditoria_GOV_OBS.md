@@ -2585,7 +2585,54 @@ a um ticket cujo estado o corpus não sabe dizer.
 
 ### Estado
 
-**POR IMPLEMENTAR.**
+**IMPLEMENTADO** (2026-09-09). Decisão do dono no bloco (b): **reconciliar agora** (não criar ticket).
+
+**Bloco (b) — as 10 divergências reconciliadas, não perdoadas; baseline esvaziada.** Por categoria,
+pela via de menor risco: **C5 (4)** — alinhou `tecnica/12` §8 aos nomes **reais** do código
+(`E_DIGEST_MISMATCH`, `E_SIG_INVALID`, `E_TOFU_SCHEMA_DRIFT`, `E_REG_UNPINNED_RESOLUTION` +
+`E_TOFU_UNPINNED_VERSION`), coerentes com `tecnica/05`, **sem renomear** código (o `Error()` de
+`ErrDigestMismatch` fica byte-a-byte idêntico via a const `CodeDigestMismatch` concatenada —
+continuidade do rasto WORM); **C3 (3, broker)** e **C4 (2, gateway)** — novos `port_codes.go` com as
+constantes de código de porta **e** uma tradução opt-in (`PortErrorCode`, `errors.Is`/`errors.As`) dos
+sentinelas para esses códigos, aditiva (a recusa continua a devolver o sentinela; o código estável é
+para quem consome a porta — com teste de mesa a fixar mapeamentos e precedência); **C4
+`E_RATE_LIMITED` (1)** — saiu da porta do gateway no contrato (é do admission control do scheduler,
+ADR-008). `contract-codes.txt` ficou vazia; `grep -c "owner=AOS-196"` → **0**; só-encolhe preservado.
+`integration.py` deixa de aceitar `owner=` como substring: resolve o `AOS-NNN` contra o estado do
+ticket e **falha se inexistente, indeterminado ou fechado** (teste-veneno §N6: aberto→verde,
+fechado→vermelho). P-5 do `REGISTO-Deferimentos` fechada; a menção a AOS-196 no critério `[—]` de
+AOS-198 anotada como histórica (AOS-198 não reaberto).
+
+**Bloco (a) — estado-citado deixa de ser opt-in-sem-adesões, sem verde-vazio disfarçado.** Verificação
+irmã que cruza `owner=AOS-NNN` de **todas** as baselines de `scripts/ci/baseline/` com o estado do
+ticket, com um **piso** (molde de `FLOOR_*`). Sobre um achado da revisão adversarial (MUST-1): o piso
+conta só owners que resolvem a um **estado CONHECIDO** (não a mera existência) — assim EXERCITA a
+leitura de estado (se ela se partir, a contagem cai e o piso avermelha), e o log passa a dizer
+exactamente isso, não «contra o estado» sobre uma verificação de existência. Um owner **inexistente**
+avermelha (§W4); uma baseline **só** de owners indeterminados **não** satisfaz o piso (§W5, a
+anti-regressão do MUST-1). Hoje: 1 owner de estado conhecido (AOS-363), 33 indeterminados que não
+contam. NÃO se exige «aberto» aqui (uma dívida permanente pode ter dono fechado, ex.: `policy-taint`
+`owner=AOS-363`) — a exigência de «aberto» é só do `integration.py` sobre contract-codes.
+
+**Bloco (c) — contar o que se verifica na árvore real.** `estado-citado` imprime e faz cumprir
+`verificadas ≥ piso`; `integration` imprime a contagem de códigos presentes e falha em
+`documented && verified==0` («verde por não olhar»). `selftest.sh` §W3 deixa de tratar o verde como
+controlo sem qualificar (o verde já exige `verificadas ≥ piso`).
+
+Revisão adversarial: **SHIP com ressalvas**; nenhum caminho deixa passar código mau (validação de dono,
+guarda anti-vazio e bloqueio de divergência medidos). Os dois achados fechados aqui: **MUST-1** (o
+verde-vazio disfarçado do bloco (a) — piso agora sobre estado conhecido + rótulo honesto + §W5);
+**SHOULD-1** (`PortErrorCode` era código morto e o doc exagerava «expõe um Code» — ganhou teste de mesa
+e a linguagem passou a «tradução opt-in» em `tecnica/12` e no REGISTO). Ressalvas aceites, registadas:
+**SHOULD-2** — o piso do `estado-citado` acopla-se ao conteúdo de baselines de outros gates (hoje
+`policy-taint owner=AOS-363` segura-o); é fail-safe (se todas esvaziarem, avermelha), mas é um
+acoplamento a vigiar. **NIT-2** — `E_RATE_LIMITED` saiu da porta C4 e ainda não está documentado do
+lado do scheduler.
+
+Verificado: `integration.sh` (16/16 presentes, 0 dívida, 0 `owner=AOS-196`), `estado-citado.sh` (1
+owner de estado conhecido ≥ piso), `selftest.sh` (todas, incl. N1/N6/W3/W4/W5), `deferrals.sh`,
+`ref-lint.sh`, `build`, `lint` verdes; `go test -race` em broker/model-gateway verde. Nenhum código de
+erro de produção renomeado; `AuditRecord`/política assinada intactos. Nenhum critério deferido.
 
 ---
 
