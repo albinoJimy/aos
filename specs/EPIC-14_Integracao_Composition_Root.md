@@ -1078,6 +1078,94 @@ dispositivo fica STUB gated em AOS-152 + condicional a D4 (sem IdP real). Coeren
 
 ---
 
+## Adenda pós-emissão — AOS-387 (follow-up de tooling, fora do âmbito de PR-0)
+
+Ticket acrescentado após a emissão v1.0 desta epic, do achado **OE-2** da auditoria global de
+qualidade (2026-09-09). Não faz parte dos 19 tickets AOS-144–162 de PR-0; entra aqui por a teia de
+`replace` inter-módulo ser o substrato de wiring que esta epic governa. Colocação relocável por
+decisão do dono do backlog.
+
+## AOS-387 — Unificar os 49 módulos num workspace `go.work` (reduzir a teia de `replace` manual)
+
+<!-- rtm: adrs-mencionados -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-14 (adenda pós-emissão) · Fase 0 — tooling |
+| Tipo | `chore` |
+| Prioridade | **P2** (conveniência de manutenção; não corrige defeito) |
+| Estimativa | **M** (migração mecânica pequena; o grosso é validação de gates) |
+| Dependências | — |
+| Responsável sugerido | DevOps/SRE + Arquitecto de Plataforma |
+
+### Contexto
+
+O monorepo liga **49 módulos Go** por **126 directivas `replace` path-local** escritas à mão (só
+`packages/integration/go.mod` tem 41); não existe `go.work`. Adicionar/mover um módulo obriga a
+editar N `go.mod`, não há um `go build ./...` que atravesse tudo (o `build.sh` itera módulo a
+módulo), e é fonte perene de PRs de *wiring*. Um `go.work` na raiz, com uma directiva `use` por
+módulo, dá a resolução inter-módulo local sem depender das `replace`.
+
+**Fronteira a preservar (não é defeito):** `go.work` muda a *resolução de dependências*, **não o
+grafo de imports**. Não compromete a fronteira nó↔ORQ/SCH (o loop de serviço como fonte única do
+ciclo de vida, e o escritor único por-run) — os imports continuam a vir dos `require` de cada
+módulo, impostos pelo `layer-lint` por *parse* de imports, não por `use`.
+
+**O que NÃO promete:** não unifica versões de dependências externas (cada `go.mod` mantém o seu
+`require`); e não elimina necessariamente as `replace` committadas, que servem o consumo standalone
+de cada módulo e a reprodutibilidade offline. Padrão-alvo: `go.work` **coexiste** com as `replace`,
+salvo decisão explícita registada.
+
+### Objectivo
+
+Introduzir um `go.work` que cubra os 49 módulos, preservando byte-a-byte o comportamento de todos os
+gates e do nó, e decidir/registar a política de coexistência com as `replace` e de commit do próprio
+`go.work`.
+
+### Critérios de Aceitação
+
+- [ ] Existe um `go.work` na raiz cujo conjunto `use` é exactamente o output de
+      `find packages -name go.mod -printf '%h\n'` (verificável por script; módulo novo sem `use` avermelha)
+- [ ] Decisão registada em `tecnica/11` (ou ADR curto): (a) `replace` committadas mantêm-se — ou
+      removem-se, com racional; (b) `go.work`/`go.work.sum` committados ou `.gitignore`d, com racional
+- [ ] `build`, `lint`, `layer-lint`, `test` (`-race` + pisos de cobertura), `dormencia`,
+      `integration`, `apex` e `selftest` ficam verdes no estado em que a CI os corre (com `GOWORK`
+      ligado ou `off`, documentado)
+- [ ] As fronteiras nó↔ORQ/SCH continuam impostas: testes de fronteira (`TestBoundary_NodeDoesNotImport…`)
+      e `layer-lint` provam que o grafo de imports não mudou
+- [ ] Regra zero-dep/offline mantém-se: `cache-prime`/build offline reproduz sem rede
+- [ ] `bash .claude/skills/run-aos/driver.sh smoke` passa
+- [ ] Controlo positivo: integrar um módulo novo passa a exigir só `go work use ./…` e zero edições de
+      `replace` noutros `go.mod`
+
+### Definition of Done
+
+- [ ] AC satisfeitos, um a um, com evidência nomeada
+- [ ] Decisão de coexistência (`replace`) e de commit (`go.work`) registada e fundamentada
+- [ ] Suite completa de gates verde + smoke; grafo de imports provado inalterado
+- [ ] `tecnica/11` actualizado; RTM regenerada se algum estado/ADR mudar; sem `.go` tocado
+
+### Handoff para Claude Code
+
+```text
+Implementa o AOS-387 (chore). NAO alteres ficheiros .go.
+1. Gera go.work na raiz com `use` para cada go.mod sob packages/ (script, nao a mao).
+2. Decide e regista em tecnica/11: manter as replace committadas (recomendado) e
+   commitar ou gitignore o go.work/go.work.sum — com racional.
+3. Corre a suite completa (build, lint, layer-lint, test -race+cobertura, dormencia,
+   integration, apex, selftest) e o smoke do run-aos. Todos verdes.
+4. Prova que o grafo de imports NAO mudou (layer-lint + testes de fronteira) e que o
+   build offline (cache-prime) se mantem reprodutivel.
+5. Demonstra o controlo positivo: integrar um modulo novo passa a ser so `go work use`.
+Escopo fechado ao tooling de build; defeito fora disso abre ticket novo.
+```
+
+### Estado
+
+**POR IMPLEMENTAR.**
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1093,6 +1181,7 @@ dispositivo fica STUB gated em AOS-152 + condicional a D4 (sem IdP real). Coeren
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial (GO-CONDICIONAL). Materializa PR-0 (dívida de backend) a partir do painel adversarial `wsuca4fcl` sobre a base de código real. Reformula a dívida: cadeia linear (tip AOS-128, 41 módulos), sem merge; resgate dos seams uncommitted (AOS-144, feito); reconciliação dos 2 `integration`; enforcement de produção (kernel `Call.Credential`, `NewProductionSecure`, cadeia real de hooks, espinha de token condicional a D4). 19 tickets AOS-144–162. Estimativas de PR-0.a condicionais ao build-spike AOS-145. | Equipa AOS |
+| 1.1 | Setembro 2026 | Adenda pós-emissão: +1 ticket de tooling (AOS-387 — workspace go.work) do achado OE-2 da auditoria global. Fora do âmbito de PR-0 (os 19 tickets AOS-144–162 mantêm-se). | Equipa AOS |
 
 ---
 
