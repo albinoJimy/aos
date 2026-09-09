@@ -579,9 +579,16 @@ condição.*
 
 ### Estado
 
-**POR IMPLEMENTAR.**
-
----
+**IMPLEMENTADO** (merged #247, 2026-09-07; bloco de Estado reconciliado a 2026-09-09 — a correcção de
+código aterrou em #247 mas este bloco ficou por actualizar, e a auditoria de completude do EPIC-25
+apanhou-o). Sob `AOS_MODE=production`, `newGatewayModelClient` (`packages/cmd/aos/modelgatewaywiring.go`)
+deixa o `HTTPClient` a **nil** e preenche `AllowedEgressHosts` (derivado do host de `AOS_MODEL_ENDPOINT`,
+via `egressAllowlistFromEnv`) — é isso que ARMA o caminho endurecido do gateway (`newProviderAdapter`
+corre `validateEgressURL`: exige `https` + host na allowlist, e usa o transporte endurecido de
+`production.go`, timeout de 30 s). Fora de produção mantém-se o `http.Client` injectado (o seam de
+httptest continua a funcionar — controlo negativo). O comentário de cabeçalho
+(`modelgatewaywiring.go:10-17`) descreve agora o ramo real, e a postura chega por parâmetro
+(`production`). Verificado nesta auditoria: o PR #247 está MERGED e o código acima está na árvore.
 
 ## AOS-367 — Um token OIDC emitido para ler runs autoriza o crypto-shred irreversível, e duas das três rotas de destruição não verificam região
 
