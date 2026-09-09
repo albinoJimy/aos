@@ -499,6 +499,11 @@ Provar em teste que os vectores adversariais estão fechados.
 
 ## AOS-388 — Decomposer LLM de produção: goal → PlanDocument multi-nó, ponta-a-ponta no aos-orq
 
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco (ADR-005/018/019/023) são MENÇÃO — constraints que o
+     ticket respeita — não implementação. A realização vive nos tickets AOS-234/237/026 e no
+     código; este é o ticket de composição/wiring. Mesmo molde de AOS-313. -->
+
 | Campo | Valor |
 |---|---|
 | Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
