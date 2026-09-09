@@ -1435,8 +1435,12 @@ fi
 
 # V2 — VOCABULARIO FECHADO do estado. Um estado novo tem de passar por quem le o
 # modulo; escrita livre numa celula nao pode propagar-se para a coluna Estado da §4.
+# Muta-se **Aceite** (nao **Proposto**): um estado PERMANENTE que o registo sempre tem,
+# ao contrario de Proposto, que desaparece a medida que os ADRs sao ratificados — e
+# desapareceu de facto em AOS-386 (ADR-021/022 -> Aceite), tornando a mutacao antiga um
+# no-op que fazia o V2 falhar por nao ter nada que corromper.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-perl -pi -e 's/\*\*Proposto\*\*/**Talvez**/' "$RTM_SANDBOX_REG"
+perl -pi -e 's/\*\*Aceite\*\*/**Talvez**/' "$RTM_SANDBOX_REG"
 if rtm_bloqueou_com 'estado desconhecido'; then
   pass "V2: o gate bloqueou um estado fora do vocabulário fechado do registo"
 else

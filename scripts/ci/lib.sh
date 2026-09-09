@@ -420,7 +420,22 @@ gate_threshold COVERAGE_MIN "$KERNEL_COVERAGE_MIN" "$FLOOR_COVERAGE_MIN" 100 "%"
 # se uma tool call acontece. O `orchestrator` e o `scheduler` não estão compostos no nó
 # (ADR-018/023) — mas é precisamente o código que ninguém corre que apodrece sem ninguém ver, e
 # o dia em que forem compostos não é o dia de descobrir que a cobertura caiu.
-COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/kernel/agent-runtime" "packages/testkit" "packages/control-plane/orchestrator" "packages/control-plane/scheduler" "packages/control-plane/pdp" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface" "packages/control-plane/governance/authoring-surface" "packages/control-plane/governance/trajectory-surface")
+#
+# O MESMO ARGUMENTO, APLICADO AO TRILHO WORM DE AUDITORIA (achado GATE-1 da auditoria global,
+# 2026-09-09; AOS-386). O `platform/audit` — o trilho hash-chain tamper-evident que sela toda a
+# mediação — estava na mesma situação: descoberto, medido (~90,7%), e nunca comparado com o
+# limiar. É código de segurança nuclear cuja regressão de cobertura sairia invisível. Entra agora.
+#
+# PORQUE É QUE O `substrate/eventstore` NÃO ENTRA (exclusão deliberada, não esquecimento). O
+# núcleo do Event Store está a ~92,2% e a conformance a ~81,8%, mas o TOTAL AGREGADO do módulo
+# (o número que `go tool cover -func` produz sobre `go test ./...`, que é o que este gate
+# compara) é ~63,1% — arrastado pelos adaptadores NATS/JetStream `jetstream/` (~24,8%) e
+# `natsjs/` (~55,4%), que só se exercitam contra um cluster real (suites dormentes sob
+# `AOS_NATS_URL`, inventariadas pelo gate `dormencia`). Gatear o módulo inteiro avermelharia a CI
+# por falta de infra, não por falta de teste — trocaria um gate honesto por um bloqueador de
+# ambiente. A cobertura do núcleo é vigiada pelas suites que correm; o apodrecimento dos
+# adaptadores é vigiado pelo `dormencia` (exige que COMPILEM). Reavaliar quando o CI tiver NATS.
+COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/kernel/agent-runtime" "packages/testkit" "packages/control-plane/orchestrator" "packages/control-plane/scheduler" "packages/control-plane/pdp" "packages/platform/audit" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface" "packages/control-plane/governance/authoring-surface" "packages/control-plane/governance/trajectory-surface")
 # Directório do testkit (conversor de cobertura cov2lcov, Go stdlib puro).
 TESTKIT_DIR="$REPO_ROOT/packages/testkit"
 # Artefacto de cobertura MÁQUINA-LEGÍVEL emitido pelo gate 3 (LCOV). Ignorado pelo
