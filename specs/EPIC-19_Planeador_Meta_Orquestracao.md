@@ -669,12 +669,12 @@ Compor o `plandispatch.Dispatcher` de produção dentro do `aos-orq serve`, sob 
 | Estimativa | L |
 | Dependências | AOS-388 (T2-A), AOS-390 (para que goals reais com condicionais sejam avaliados, não recusados), AOS-278 (cutover de identidade NHI) |
 | Bloqueia | AOS-392 (prova ponta-a-ponta com goal real) |
-| Fecha | DEF-803 (o marcador `STUB` sai do código) |
+| Fecha | — (DEF-803 já **FECHADO-RESIDUAL** via AOS-388/AOS-393; este ticket não o re-fecha) |
 | Responsável sugerido | Arquitecto de Plataforma |
 | Documentos de referência | `packages/cmd/aos-orq/planner_wiring.go` (`fixtureModel`, `modeloDeDecomposicao`), `packages/control-plane/orchestrator/decompose/decompose.go`, `packages/platform/model-gateway/`, ADR-019 §2.5, ADR-020, ADR-005 |
 
 ### Contexto
-Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nomeia o "Model Gateway" (`TestAOS388_GoalFailClosed`); o único `decompose.Model` é o `fixtureModel` (marcado **NÃO-PRODUÇÃO**); o `aos-orq` não importa `platform/model-gateway`. **DEF-803** continua `STUB`/`ABERTO`, ticketado como AOS-388. Ligar exige token NHI com `model:invoke` verificado e uma decisão **ADR-020** sobre a fidelidade do token (token do run vs. `agent:planner`).
+Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nomeia o "Model Gateway" (`TestAOS388_GoalFailClosed`); o único `decompose.Model` é o `fixtureModel` (marcado **NÃO-PRODUÇÃO**); o `aos-orq` não importa `platform/model-gateway`. **DEF-803** já está **FECHADO-RESIDUAL** (a decomposição multi-nó produtiva aterrou com AOS-388/AOS-393); o `STUB` de `orchestrator.Submit` fica como contraste, não como dívida. AOS-391 é **ortogonal**: entrega o **LLM vivo** (hoje só o `fixtureModel` corre), não re-fecha o DEF-803. Ligar exige token NHI com `model:invoke` verificado e uma decisão **ADR-020** sobre a fidelidade do token (token do run vs. `agent:planner`).
 
 ### Objectivo
 Compor um `decompose.Model` de produção que invoca o Model Gateway para produzir o `PlanDocument` a partir do `goal`, sob a identidade e o orçamento corretos, substituindo o `fixtureModel` no caminho `--goal`. Fecha DEF-803 e o critério de saída do goal→DAG real.
@@ -685,7 +685,6 @@ Compor um `decompose.Model` de produção que invoca o Model Gateway para produz
 - [ ] A reserva de planeamento é admitida antes da decomposição (AOS-234) e o custo do turno flui para o burn-down (AOS-259).
 - [ ] O `PlanDocument` produzido passa pelo validador puro (AOS-231); se o modelo emitir arestas condicionais, elas são **avaliadas** por AOS-390 (nem recusadas por AOS-389, nem executadas fail-open).
 - [ ] Fail-closed preservado: falha do Gateway, token sem `model:invoke`, ou plano inválido ⇒ o run não avança com plano fantasma (erro declarado, nada spawnado).
-- [ ] **DEF-803 passa a FECHADO** (o marcador `STUB` sai do código); RTM regenerada.
 - [ ] O golden-set/eval-gate do planeador (AOS-241) continua verde com o modelo real atrás de doubles no gate offline.
 
 ---
