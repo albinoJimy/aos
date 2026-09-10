@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	budget "github.com/aos-ref/control-plane/budget"
 	"github.com/aos-ref/control-plane/orchestrator/plan"
@@ -342,6 +343,14 @@ func (p *Planner) Decompose(ctx context.Context, req DecomposeRequest) (*PlanRes
 	if req.RunID == "" || req.ParentBudgetNode == "" || req.PlannerBudgetNode == "" ||
 		req.ParentToken == "" || req.Child.AgentID == "" {
 		return nil, ErrInvalidRequest
+	}
+	// Um goal ou capabilities_hash vazios são falhas PERMANENTES do Decomposer
+	// (ErrEmptyGoal/ErrNoCapabilitiesHash, AOS-388): rejeitá-los AQUI, antes de
+	// qualquer efeito de orçamento/mediação, faz o pedido malformado falhar UMA vez
+	// e cedo — em vez de esgotar as N tentativas re-invocando a mesma falha
+	// determinística (desperdício de tentativas, reserva e spans).
+	if strings.TrimSpace(req.Context.Goal) == "" || strings.TrimSpace(req.Context.CapabilitiesHash) == "" {
+		return nil, fmt.Errorf("%w: goal e capabilities_hash do contexto de planeamento são obrigatórios", ErrInvalidRequest)
 	}
 	planID := req.PlanID
 	if planID == "" {
