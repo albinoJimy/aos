@@ -44,6 +44,8 @@ defeituosa. **MAS** o AC 3 tem um defeito real e não-declarado (§2.1), distint
 
 ### 2.1 [ALTO — CONFIRMADO] O ramo "papéis-que-expandem via Delegator.Spawn" é estruturalmente não-funcional: o RM do wiring não regista `agent.spawn`
 
+> **RESOLVIDO por AOS-393 (2026-09-10).** O sintoma confirmou-se, mas a causa raiz foi **corrigida por execução do binário** para `depth_mismatch` (a `RoleSpawn` não declarava profundidade), sendo o `agent.spawn` não-registado um segundo defeito latente. O fix exigiu **quatro** elementos (profundidade + `agent.spawn` + classe `worker` + autoridade sobre tools). Ver a §Estado de AOS-388 e a §Resolução de AOS-393 em `specs/EPIC-19`.
+
 - **Onde:** `packages/cmd/aos-orq/planner_wiring.go:129-132` (o `mon` só regista `agent.plan`) e
   `:184` (`orchestrator.NewDelegator(bud, mon, iss)` sem opções).
 - **Cadeia confirmada:**
