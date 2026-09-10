@@ -64,7 +64,7 @@ func NewDelegatorSpawner(d *orchestrator.Delegator, onHandle func(*orchestrator.
 }
 
 func (s delegatorSpawner) Spawn(ctx context.Context, req RoleSpawn) error {
-	h, err := s.d.Spawn(ctx, orchestrator.SpawnRequest{
+	sr := orchestrator.SpawnRequest{
 		RunID:            req.RunID,
 		ParentBudgetNode: req.ParentBudgetNode,
 		ChildBudgetNode:  req.ChildBudgetNode,
@@ -72,7 +72,17 @@ func (s delegatorSpawner) Spawn(ctx context.Context, req RoleSpawn) error {
 		ParentToken:      req.ParentToken,
 		Child:            req.Child,
 		ChildTaskID:      req.NodeID,
-	})
+	}
+	// AOS-393: DECLARAR a profundidade autoritativa do token do pai. Sem isto, Depth=0
+	// e o gate anti-subdeclaração do Delegator recusa fail-closed (ErrDepthMismatch:
+	// declarada 0 < autoritativa) — todo o spawn de papel abortava a materialização.
+	// A guarda MANTÉM-SE: o Delegator recomputa a autoritativa e continua a recusar
+	// quem declarar MENOS; o materializador é um chamador de composição que declara o
+	// valor correcto, não um que o subdeclara para contornar o limite.
+	if depth, ok := orchestrator.ChainDepth(req.ParentToken); ok {
+		sr.Depth = depth
+	}
+	h, err := s.d.Spawn(ctx, sr)
 	if err != nil {
 		return err
 	}

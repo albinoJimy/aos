@@ -589,6 +589,16 @@ func parentChainDepth(compact string) (int, bool) {
 	return len(c.DelegationChain), true
 }
 
+// ChainDepth devolve a profundidade autoritativa da cadeia de delegação embutida no
+// token compacto — o MESMO cálculo do gate de spawn ([parentChainDepth]). Existe para
+// que um chamador de COMPOSIÇÃO (ex.: o adaptador do materializador, AOS-393) DECLARE
+// a profundidade correcta em [SpawnRequest.Depth] e não seja recusado por
+// subdeclaração ([ErrDepthMismatch]). NÃO enfraquece a guarda: [Delegator.Spawn]
+// recomputa a autoritativa de forma independente e continua a recusar quem declarar
+// MENOS — este atalho só evita que um chamador legítimo, que NÃO inspecciona o token,
+// caia no piso 0.
+func ChainDepth(compact string) (int, bool) { return parentChainDepth(compact) }
+
 // Finish consolida o consumo do sub-agente ao fim (sucesso OU falha), de forma
 // IDEMPOTENTE (ADR-001):
 //
