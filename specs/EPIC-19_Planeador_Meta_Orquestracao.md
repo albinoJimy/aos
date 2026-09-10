@@ -687,6 +687,19 @@ Compor um `decompose.Model` de produção que invoca o Model Gateway para produz
 - [ ] Fail-closed preservado: falha do Gateway, token sem `model:invoke`, ou plano inválido ⇒ o run não avança com plano fantasma (erro declarado, nada spawnado).
 - [ ] O golden-set/eval-gate do planeador (AOS-241) continua verde com o modelo real atrás de doubles no gate offline.
 
+### Pré-requisitos e bloqueios de ambiente (discovery 2026-09-10)
+Discovery read-only registada para não perder o trabalho. **Dois bloqueios independentes impedem o fecho de AOS-391 num ambiente offline:**
+
+- **BLOQUEIO 1 — dependência AOS-390 não-landed.** O AC "arestas condicionais são avaliadas por AOS-390" não é satisfazível: `plandispatch.Dispatcher` não tem chamador de produção (`plandispatch/dispatch.go` é a biblioteca; `grep plandispatch.(New|Dispatcher)` fora de `_test.go` = 0), e o `--goal` do `aos-orq` faz spawn **eager** de todos os nós (`planner_wiring.go`, sem gating de elegibilidade). Com AOS-389 (guard) e sem AOS-390, um plano real com arestas condicionais é **recusado**, não avaliado. **AOS-390 tem de aterrar primeiro.**
+- **BLOQUEIO 2 — o LLM vivo é inverificável offline.** O AC de cabeçalho exige uma chamada de modelo viva (`--goal` sem `--decompose-fixture`), que precisa de rede + endpoint OpenAI-compatível; este ambiente é `GOPROXY=off`, sem rede. A cablagem + um *fake* são testáveis; o caminho vivo só num ambiente com rede/endpoint.
+
+**Pré-requisitos técnicos apurados (evidência, para quem implementar):**
+- **Build offline da cablagem: FAZÍVEL** — o fecho transitivo de `platform/model-gateway` é `aos-ref` path-local + stdlib, **zero deps externas** (nenhum `go.sum` na cadeia). Adicionar ao `aos-orq/go.mod` 6 pares `require v0.0.0`+`replace` path-local (`model-gateway`, `scheduler`, `audit`, `registry`, `memory`, `eval`). *(Análise estática dos go.mod; não build-testado.)*
+- **Adaptador de forma necessário:** a porta `decompose.Model.Complete(ctx, system, user) (string, error)` (`decompose/decompose.go:40`) **não casa** com `ModelClientAdapter.Call(PromptView)→ModelResponse` (colapsa system/user numa só mensagem). Via fiel: falar direto com `port.Gateway.Chat` passando `[]port.Message{{RoleSystem, system}, {RoleUser, user}}` e devolver `resp.Choices[0].Message.Content`.
+- **Identidade (ADR-020):** a chamada tem de correr sob a NHI `agent:planner`, mediada pelo RM. Hoje o token `agent:planner` no `aos-orq` **não sela `model:invoke`** (`planner_wiring.go` — classes só selam `cap:plan`+tool caps); há que selá-lo e replicar no `aos-orq` o estágio authn do cutover **AOS-278** (landed em `cmd/aos`, ausente no `aos-orq`).
+- **Construção do gateway:** `modelgateway.NewProduction(ctx, ProductionConfig)` → `NewModelClient(gw, model, WithPrincipalFromContext(...))`, espelhando `cmd/aos/modelgatewaywiring.go:newGatewayModelClient` (credencial `AOS_MODEL_API_KEY_PATH`, endpoint `AOS_MODEL_ENDPOINT`, egress SSRF `AOS_MODEL_EGRESS_HOSTS`, audit WORM, custo AOS-259). O token do run/planeador viaja pelo ctx (equivalente a `modelCredentialFromContext`), não fixado na construção.
+- **Ponto de injeção:** `modeloDeDecomposicao(fixturePath)` em `planner_wiring.go` — manter o `fixtureModel` como override de teste e adicionar o ramo de produção (gateway) quando não há fixture e há credencial.
+
 ---
 
 ## AOS-393 — Fix fail-closed: o ramo papéis-que-expandem via `Delegator.Spawn` é recusado no `--goal` (depth_mismatch; `agent.spawn` latente)
