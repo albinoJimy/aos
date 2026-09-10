@@ -33,12 +33,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	budget "github.com/aos-ref/control-plane/budget"
 	orchestrator "github.com/aos-ref/control-plane/orchestrator"
 	decompose "github.com/aos-ref/control-plane/orchestrator/decompose"
+	plan "github.com/aos-ref/control-plane/orchestrator/plan"
 	planmaterialize "github.com/aos-ref/control-plane/orchestrator/planmaterialize"
 	planner "github.com/aos-ref/control-plane/orchestrator/planner"
 	planvalidate "github.com/aos-ref/control-plane/orchestrator/planvalidate"
@@ -55,6 +57,10 @@ const (
 	classeCoordenador = "coordinator"
 	// classePlaneador é a classe da NHI agent:planner (o sub-agente que decompõe).
 	classePlaneador = "planner"
+	// classeWorker é a classe das NHIs filhas que os papéis-que-expandem cunham
+	// (Materializer.childClass default). Sem a configurar no emissor, o spawn de um
+	// papel falha com E_UNKNOWN_CLASS (AOS-393).
+	classeWorker = "worker"
 	// tokenTTL é o tempo de vida dos tokens efémeros deste processo. Curto: o run vive
 	// numa só execução sob lease.
 	tokenTTL = 30 * time.Minute
@@ -106,9 +112,17 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 	if err != nil {
 		return fmt.Errorf("chave do emissor: %w", err)
 	}
+	// AOS-393: a autoridade sobre TOOLS que a cadeia de delegação do run tem de carregar
+	// para materializar papéis que as usam — a UNIÃO das capabilities coarse do snapshot
+	// pinado (tecto). O clamp por-nó do Materializer (authorityForNode) restringe depois
+	// cada filho às SUAS tools; sem estas caps no token do run e na classe do filho, o
+	// IssueChild do spawn recusa (Authority ⊄ folha-do-pai ∩ Scope-da-classe). A classe do
+	// planeador NÃO as inclui — o planeador decompõe, não invoca tools.
+	toolCaps := toolCapabilities(snap)
 	classes := map[string]identity.ClassPolicy{
-		classeCoordenador: {TTL: tokenTTL, Scope: []string{capPlan}},
+		classeCoordenador: {TTL: tokenTTL, Scope: append([]string{capPlan}, toolCaps...)},
 		classePlaneador:   {TTL: tokenTTL, Scope: []string{capPlan}},
+		classeWorker:      {TTL: tokenTTL, Scope: append([]string{capPlan}, toolCaps...)},
 	}
 	iss, err := identity.NewIssuer("iss:aos-orq", priv, classes)
 	if err != nil {
@@ -118,7 +132,7 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 		UserID:        "human:" + worker,
 		AgentID:       "agt-" + runID,
 		AgentClass:    classeCoordenador,
-		UserAuthority: []string{capPlan},
+		UserAuthority: append([]string{capPlan}, toolCaps...),
 	})
 	if err != nil {
 		return fmt.Errorf("token NHI do run: %w", err)
@@ -129,6 +143,13 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 	mon := rm.New()
 	if err := mon.Register("agent.plan", func(context.Context, []byte) ([]byte, error) { return nil, nil }); err != nil {
 		return fmt.Errorf("registo da tool do planeador: %w", err)
+	}
+	// AOS-393: o Delegator medeia o spawn de papéis-que-expandem com a tool `agent.spawn`
+	// (default do `NewDelegator`). Sem a registar, o RM nega-o por default-deny e a
+	// materialização de um papel aborta. Registá-la mantém a mediação OBRIGATÓRIA (o RM
+	// corre a cadeia neutra + este handler antes de permitir) — não a contorna.
+	if err := mon.Register("agent.spawn", func(context.Context, []byte) ([]byte, error) { return nil, nil }); err != nil {
+		return fmt.Errorf("registo da tool de spawn: %w", err)
 	}
 
 	// (3) ORÇAMENTO PARTILHADO por Planner + Delegator + admissão da materialização (uma
@@ -220,6 +241,27 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 		fmt.Printf("  no=%s kind=%s tools=%s\n", n.NodeID, n.Kind, strings.Join(n.Tools, "|"))
 	}
 	return nil
+}
+
+// toolCapabilities deriva as capabilities coarse das tools do snapshot pinado, pelo
+// MESMO mapeamento que o Materializer usa para clampar a autoridade dos nós
+// ([planmaterialize.DefaultCapabilityMapper] → "cap:tool:"+Name), deduplicadas e
+// ordenadas (determinístico). É a UNIÃO/tecto que a cadeia de delegação do run carrega;
+// cada filho é clampado às suas próprias tools a jusante. Usar o mapper canónico (e não
+// um literal) impede a divergência silenciosa se a convenção coarse mudar.
+func toolCapabilities(snap planvalidate.Snapshot) []string {
+	seen := make(map[string]struct{}, len(snap.Tools))
+	caps := make([]string, 0, len(snap.Tools))
+	for _, t := range snap.Tools {
+		c := planmaterialize.DefaultCapabilityMapper(plan.ToolRef{Name: t.Name})
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		caps = append(caps, c)
+	}
+	sort.Strings(caps)
+	return caps
 }
 
 // renderCapabilities serializa o catálogo pinado do snapshot como texto para a mensagem
