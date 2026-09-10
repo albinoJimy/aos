@@ -220,7 +220,7 @@ func TestDecompose_NoBudget_FailClosed_DecomposerNeverCalled(t *testing.T) {
 	_, err = p.Decompose(context.Background(), planner.DecomposeRequest{
 		RunID: runID, ParentBudgetNode: parentNode, PlannerBudgetNode: plannerNode,
 		ParentToken: runToken(t, iss).Compact, Child: plannerChildReq(),
-		Context: planner.PlanningContext{Goal: "g", ContextUnits: 4},
+		Context: planner.PlanningContext{Goal: "g", ContextUnits: 4, CapabilitiesHash: "sha256:cap"},
 	})
 
 	if err == nil {
@@ -252,7 +252,7 @@ func TestDecompose_MediationDenied_FailClosed(t *testing.T) {
 	_, err = p.Decompose(context.Background(), planner.DecomposeRequest{
 		RunID: runID, ParentBudgetNode: parentNode, PlannerBudgetNode: plannerNode,
 		ParentToken: runToken(t, iss).Compact, Child: plannerChildReq(),
-		Context: planner.PlanningContext{Goal: "g", ContextUnits: 4},
+		Context: planner.PlanningContext{Goal: "g", ContextUnits: 4, CapabilitiesHash: "sha256:cap"},
 	})
 	if err == nil {
 		t.Fatal("esperado erro fail-closed com mediação negada, got nil")
@@ -443,7 +443,7 @@ func TestDecompose_NAttempts_EmitOneSpanEach(t *testing.T) {
 		RunID: runID, ParentBudgetNode: parentNode, PlannerBudgetNode: plannerNode,
 		ParentToken: runToken(t, iss).Compact, Child: plannerChildReq(),
 		ParentTraceParent: runTP,
-		Context:           planner.PlanningContext{Goal: "g", ContextUnits: 2},
+		Context:           planner.PlanningContext{Goal: "g", ContextUnits: 2, CapabilitiesHash: "sha256:cap"},
 	})
 	if err != nil {
 		t.Fatalf("Decompose: %v", err)
@@ -558,7 +558,7 @@ func baseReq(t *testing.T, iss *identity.Issuer) planner.DecomposeRequest {
 	return planner.DecomposeRequest{
 		RunID: runID, ParentBudgetNode: parentNode, PlannerBudgetNode: plannerNode,
 		ParentToken: runToken(t, iss).Compact, Child: plannerChildReq(),
-		Context: planner.PlanningContext{Goal: "g", ContextUnits: 4},
+		Context: planner.PlanningContext{Goal: "g", ContextUnits: 4, CapabilitiesHash: "sha256:cap"},
 	}
 }
 
@@ -751,6 +751,14 @@ func TestDecompose_InvalidRequest(t *testing.T) {
 		"plannerNode vazio":   mut(func(r *planner.DecomposeRequest) { r.PlannerBudgetNode = "" }),
 		"parentToken vazio":   mut(func(r *planner.DecomposeRequest) { r.ParentToken = "" }),
 		"child agentID vazio": mut(func(r *planner.DecomposeRequest) { r.Child.AgentID = "" }),
+		// Goal/CapabilitiesHash vazios (ou só espaços) são falhas PERMANENTES do
+		// Decomposer (ErrEmptyGoal/ErrNoCapabilitiesHash, AOS-388): têm de falhar
+		// UMA vez e cedo, ANTES de orçamento/mediação, em vez de esgotar as N
+		// tentativas re-invocando a mesma falha determinística.
+		"goal vazio":              mut(func(r *planner.DecomposeRequest) { r.Context.Goal = "" }),
+		"goal só espaços":         mut(func(r *planner.DecomposeRequest) { r.Context.Goal = "   \t\n" }),
+		"capabilitiesHash vazio":  mut(func(r *planner.DecomposeRequest) { r.Context.CapabilitiesHash = "" }),
+		"capabilitiesHash espaço": mut(func(r *planner.DecomposeRequest) { r.Context.CapabilitiesHash = "  \t " }),
 	}
 	for name, req := range cases {
 		req := req
@@ -782,7 +790,7 @@ func TestDecompose_InvalidRequest(t *testing.T) {
 			t.Fatalf("NewPlanner: %v", err)
 		}
 		req := baseReq(t, iss)
-		req.Context = planner.PlanningContext{Goal: "g", ContextUnits: 0}
+		req.Context = planner.PlanningContext{Goal: "g", ContextUnits: 0, CapabilitiesHash: "sha256:cap"}
 		_, err = p.Decompose(context.Background(), req)
 		if !errors.Is(err, planner.ErrInvalidRequest) {
 			t.Fatalf("esperado ErrInvalidRequest para reserva não-positiva, got %v", err)
