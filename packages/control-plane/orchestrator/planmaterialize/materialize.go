@@ -40,6 +40,15 @@ var (
 	ErrNodeNotAdmitted = errors.New("planmaterialize: nó não admitido pela admissão global (fail-closed)")
 	// ErrInvalidSpawnKind — o classificador devolveu um kind fora de {leaf, role}.
 	ErrInvalidSpawnKind = errors.New("planmaterialize: spawn kind inválido (esperado leaf|role)")
+	// ErrConditionalNaoComposto — o documento contém arestas `conditional_on` (ADR-022
+	// §2.1, AOS-270) mas o avaliador de ramos (plandispatch.Dispatcher, que avalia a
+	// condição e poda `branch_not_taken`) NÃO está composto no caminho de produção. A
+	// materialização projecta a organização à cabeça e NÃO lê `conditional_on`; dar efeito
+	// a um nó condicional aqui executaria um ramo que devia ser podado — a violação
+	// fail-OPEN de §2.1 medida em 2026-09-10. Fail-closed DELIBERADO (AOS-389): recusa-se o
+	// plano INTEIRO antes de qualquer admissão/efeito, em vez de o executar em silêncio.
+	// Eixo que o REMOVE por avaliação real: AOS-390 (compor o Dispatcher sob Tenure).
+	ErrConditionalNaoComposto = errors.New("planmaterialize: plano com arestas conditional_on recusado — avaliador de ramos não composto (fail-closed até AOS-390)")
 )
 
 // CapabilityMapper reconcilia a granularidade das ferramentas PINADAS no REG
@@ -353,6 +362,20 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 			return empty, fmt.Errorf("%w: node_id duplicado %q", ErrInvalidRequest, n.NodeID)
 		}
 		seen[n.NodeID] = struct{}{}
+	}
+
+	// GUARD FAIL-CLOSED DE CONDICIONAIS (AOS-389, ADR-022 §2.1). O avaliador de ramos
+	// (plandispatch.Dispatcher: avalia `conditional_on` e poda `branch_not_taken`) NÃO está
+	// composto no caminho de produção — este materializador projecta a organização à cabeça
+	// e não lê `conditional_on`. Dar efeito a um nó condicional aqui executaria um ramo que
+	// devia ser podado (a violação fail-OPEN de §2.1, medida). Enquanto AOS-390 não compõe o
+	// avaliador, recusa-se o plano INTEIRO ANTES de qualquer admissão/efeito. Este guard é
+	// SUPERADO por AOS-390 (a recusa dá lugar à avaliação real); o teste que o sela
+	// (TestAOS389_*) inverte-se então para assertar avaliação em vez de recusa.
+	for _, n := range order {
+		if len(n.ConditionalOn) > 0 {
+			return empty, fmt.Errorf("%w: nó %q declara %d aresta(s) condicional(is)", ErrConditionalNaoComposto, n.NodeID, len(n.ConditionalOn))
+		}
 	}
 
 	// Classificação + clamp de autoridade, uma vez por nó.
