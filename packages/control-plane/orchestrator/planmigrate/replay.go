@@ -127,13 +127,40 @@ func (m *Migrator) Materialize(ctx context.Context, planID string, doc plan.Plan
 		for _, t := range n.Tools {
 			tools = append(tools, t.Name)
 		}
-		nodes = append(nodes, pe.MaterializedNode{NodeID: n.NodeID, Kind: pe.SpawnLeaf, Tools: tools})
+		nodes = append(nodes, pe.MaterializedNode{NodeID: n.NodeID, Kind: classifyKind(n, doc), Tools: tools})
 	}
 	payload := pe.MaterializedPayload{PlanID: planID, PlanHash: hash, Nodes: nodes}
 	if _, err := m.rec.RecordMaterialized(ctx, payload); err != nil {
 		return pe.MaterializedPayload{}, err
 	}
 	return payload, nil
+}
+
+// classifyKind reproduz a POLÍTICA de folha-vs-papel do materializador de produção
+// (planmaterialize.DefaultClassifier + o forço verificador→folha de ADR-022 §2.2): um nó
+// é PAPEL-QUE-EXPANDE sse algum outro o declara em depends_on; um verificador é SEMPRE
+// folha. Antes classificava-se tudo SpawnLeaf — o que (a) não reproduzia byte-a-byte, no
+// replay, um plano com papéis (ADR-010) e (b) faria o despacho governado tratar um papel
+// como folha (AOS-390). É replicado (não importado) para manter planmigrate desacoplado.
+//
+// DIVERGÊNCIA RESIDUAL DECLARADA (AOS-390): esta via ainda projecta `Tools` como os NOMES
+// crus das tools (`t.Name`), enquanto o materializador de produção projecta a autoridade
+// COARSE CLAMPADA (`cap:tool:`+Name, com as tools de efeito retiradas ao verificador pelo
+// oráculo de efeito). Logo o `plan.materialized` desta via NÃO é ainda byte-idêntico ao
+// de produção. planmigrate NÃO tem chamador de produção; reconciliar `Tools` (mapper +
+// clamp + oráculo) é trabalho de quem ligar esta via ao despacho — ver o registo.
+func classifyKind(n plan.Node, doc plan.PlanDocument) pe.SpawnKind {
+	if n.IsVerifier() {
+		return pe.SpawnLeaf
+	}
+	for _, other := range doc.Nodes {
+		for _, dep := range other.DependsOn {
+			if dep == n.NodeID {
+				return pe.SpawnRole
+			}
+		}
+	}
+	return pe.SpawnLeaf
 }
 
 // Replay é o resultado de uma reprodução determinística: o manifesto pinado, a
