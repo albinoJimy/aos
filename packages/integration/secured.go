@@ -505,6 +505,14 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		referencemonitor.WithHooks(hooks...),
 		referencemonitor.WithEventSink(eventSink),
 	}
+	// AOS-090/ADR-025: o DESFECHO pós-efeito (ok/erro de execução) vai SÓ para o Event Store —
+	// não para o WORM (não é prova de responsabilização, é telemetria de fiabilidade) — e é
+	// FAIL-OPEN (um erro não degrada a decisão, ao contrário do EventSink no permit). Só existe
+	// quando o canal de mediação está composto: sem Event Store não há onde o registar nem quem
+	// o leia. É o que torna a promoção de autonomia medível sem tocar no audit-before-effect.
+	if cfg.MediationEvents != nil {
+		rmOpts = append(rmOpts, referencemonitor.WithOutcomeSink(referencemonitor.NewEventStoreOutcomeSink(cfg.MediationEvents)))
+	}
 	var rm *referencemonitor.Monitor
 	if e, ok := privileged.(referencemonitor.EffectivePrivilegedAuthorizer); !ok || e.HasPrivileged() {
 		rm, err = referencemonitor.NewProductionHardenedTaint(privileged, rmOpts...)
