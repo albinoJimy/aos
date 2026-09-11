@@ -543,6 +543,14 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		go s.exportarBackups(s.sweepStop)
 	}
 	s.log("%s", backupSchedulerBanner(node))
+	// AOS-090/DEF-908 — DEMOÇÃO AUTOMÁTICA POR ANOMALIA no loop de serviço. Partilha o MESMO
+	// sweepStop: o Shutdown pára-a com o mesmo close, e o encaminhador DRENA os trips já
+	// enfileirados antes de sair (ver autonomiaAnomalias.correr). Só arranca quando o
+	// controlador está composto (oráculo de autonomia ligado).
+	if node.anomaliaAutonomia != nil {
+		go node.anomaliaAutonomia.correr(s.sweepStop)
+		s.log("democao automatica por anomalia (AOS-090/DEF-908): LIGADA — cada TRIP do disjuntor multi-sinal demove a CLASSE dos pares (classe,dominio) que o run tocou, para um nivel mais supervisionado, sem gate humano (ADR-014). A promocao continua manual (a fiabilidade nao e mensuravel sem registo de desfecho pos-efeito).")
+	}
 	return s, nil
 }
 
