@@ -65,6 +65,12 @@ func TestAOS388_GoalPipelineGovernadoPontoAPonto(t *testing.T) {
 	if !strings.Contains(r.stdout, "materializado:") || !strings.Contains(r.stdout, "nos=2") {
 		t.Fatalf("o plano nao materializou os 2 nos:\n%s", r.stdout)
 	}
+	// T4 (AOS-390, ADR-024): o despacho governado corre a jusante da admissão e despacha
+	// os 2 nós elegíveis (folhas sem deps). O efeito nasce no DESPACHO, não na
+	// materialização — que agora só admite.
+	if !strings.Contains(r.stdout, "despachado:") || !strings.Contains(r.stdout, "nos_despachados=2") {
+		t.Fatalf("o despacho governado nao despachou os 2 nos elegiveis:\n%s", r.stdout)
+	}
 
 	// Um terceiro processo, só de leitura, vê os 2 nós no grafo durável — a coordenação
 	// passou pelo log, não por memória.

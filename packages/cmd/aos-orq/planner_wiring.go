@@ -37,6 +37,7 @@ import (
 	"time"
 
 	budget "github.com/aos-ref/control-plane/budget"
+	orchestrator "github.com/aos-ref/control-plane/orchestrator"
 	decompose "github.com/aos-ref/control-plane/orchestrator/decompose"
 	planmaterialize "github.com/aos-ref/control-plane/orchestrator/planmaterialize"
 	planner "github.com/aos-ref/control-plane/orchestrator/planner"
@@ -54,6 +55,9 @@ const (
 	classeCoordenador = "coordinator"
 	// classePlaneador é a classe da NHI agent:planner (o sub-agente que decompõe).
 	classePlaneador = "planner"
+	// classeWorker é a classe das NHIs filhas dos papéis-que-expandem, cunhadas no
+	// DESPACHO governado (AOS-390, ADR-024).
+	classeWorker = "worker"
 	// tokenTTL é o tempo de vida dos tokens efémeros deste processo. Curto: o run vive
 	// numa só execução sob lease.
 	tokenTTL = 30 * time.Minute
@@ -97,7 +101,7 @@ func carregarFixtureModel(path string) (fixtureModel, error) {
 // o backbone (identidade real + RM mínimo + orçamento partilhado), decompõe o objectivo
 // pelo PLANEADOR GOVERNADO, valida a estrutura (AOS-231) e materializa com o DELEGATOR
 // REAL. Fail-closed em cada passo. O gate humano fica de fora (DEF-274).
-func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, worker string) error {
+func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, worker string) error {
 	runID := ten.RunID()
 
 	// (1) BACKBONE DE IDENTIDADE REAL — emissor efémero + raiz humana + token do run.
@@ -108,6 +112,11 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 	classes := map[string]identity.ClassPolicy{
 		classeCoordenador: {TTL: tokenTTL, Scope: []string{capPlan}},
 		classePlaneador:   {TTL: tokenTTL, Scope: []string{capPlan}},
+		// classeWorker é a classe das NHIs filhas dos papéis-que-expandem, cunhadas pelo
+		// Delegator no DESPACHO (AOS-390, ADR-024). Sem ela registada, o spawn de um papel
+		// falharia no issuer — a razão pela qual o spawn na materialização (agora removido)
+		// nunca chegou a ser exercido com um papel real.
+		classeWorker: {TTL: tokenTTL, Scope: []string{capPlan}},
 	}
 	iss, err := identity.NewIssuer("iss:aos-orq", priv, classes)
 	if err != nil {
@@ -181,9 +190,8 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 	// (7) MATERIALIZAÇÃO ADMISSÃO-PURA (AOS-390, ADR-024). A materialização admite os nós
 	// no DAG — folhas com a sua tool call, papéis-que-expandem como nós PENDENTES sem tool
 	// — e NÃO produz efeito. O spawn de papéis (Delegator.Spawn, AOS-026) e o arranque de
-	// folhas são do despacho governado (plandispatch.Dispatcher/DispatchSink), disparados
-	// por elegibilidade. A composição desse laço de despacho no `serve` é o passo aditivo
-	// seguinte deste ticket; até lá, `--goal` admite o plano sem despachar.
+	// folhas são do despacho governado (plandispatch.Dispatcher/DispatchSink), composto e
+	// corrido em (8), disparados por elegibilidade.
 	adm, err := runlifecycle.NewBudgetAdmission(bud, runID)
 	if err != nil {
 		return err
@@ -212,6 +220,19 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 	fmt.Printf("materializado: plano=%s nos=%d oraculo=snapshot(%s)\n", payload.PlanID, len(payload.Nodes), snap.Hash)
 	for _, n := range payload.Nodes {
 		fmt.Printf("  no=%s kind=%s tools=%s\n", n.NodeID, n.Kind, strings.Join(n.Tools, "|"))
+	}
+
+	// (8) DESPACHO GOVERNADO (AOS-390, ADR-024). O efeito por-nó nasce AQUI, não na
+	// materialização: o plandispatch.Dispatcher decide a elegibilidade (gate + estado +
+	// depends_on + condicionais com poda branch_not_taken + cartão + headroom) e entrega os
+	// nós elegíveis ao DispatchSink — papel→Delegator.Spawn, folha→arranque. Sob a MESMA
+	// posse; o SCH continua derivador (não escreve ciclo de vida por outra via).
+	del, err := orchestrator.NewDelegator(bud, mon, iss)
+	if err != nil {
+		return fmt.Errorf("delegator: %w", err)
+	}
+	if err := composeEDespachar(ctx, ten, store, rec, del, bud, runTok.Compact, res.Doc, payload, worker); err != nil {
+		return fmt.Errorf("despacho governado: %w", err)
 	}
 	return nil
 }

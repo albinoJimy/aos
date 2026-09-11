@@ -244,7 +244,7 @@ func cmdServe(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := decomporEMaterializar(ctx, ten, rec, snap, *goal, model, *worker); err != nil {
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, *worker); err != nil {
 			return err
 		}
 	}
