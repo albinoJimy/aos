@@ -45,3 +45,9 @@ func (a graphLeafAdmitter) AdmitLeaf(ctx context.Context, node LeafNode) error {
 // *orchestrator.Delegator — deixaram de existir: o spawn de papéis já não acontece na
 // materialização. O `DispatchSink` do despacho governado (composto no composition root
 // aos-orq) usa o *orchestrator.Delegator directamente, disparado por elegibilidade.
+//
+// As correcções habilitadoras do AOS-393 são PRESERVADAS no sink (ADR-024): declarar a
+// profundidade autoritativa do token do pai (`orchestrator.ChainDepth` → SpawnRequest.Depth,
+// senão o gate anti-subdeclaração do Delegator recusa com ErrDepthMismatch) e a autoridade
+// com escopo de tools no token do run/classe worker. Muda o MOMENTO do spawn, não a sua
+// disciplina de identidade/profundidade.

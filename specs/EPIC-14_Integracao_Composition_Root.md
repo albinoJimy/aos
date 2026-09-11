@@ -1100,8 +1100,9 @@ decisão do dono do backlog.
 
 ### Contexto
 
-O monorepo liga **49 módulos Go** por **126 directivas `replace` path-local** escritas à mão (só
-`packages/integration/go.mod` tem 41); não existe `go.work`. Adicionar/mover um módulo obriga a
+O monorepo liga **53 módulos Go** (49 em `packages/` + 3 em `deploy/` + `scripts/ci/attest`) por
+**397 directivas `replace` path-local** escritas à mão (só `packages/integration/go.mod` tem 41;
+contagens medidas em 2026-09-09 — a estimativa original do achado OE-2 dizia 126); não existe `go.work`. Adicionar/mover um módulo obriga a
 editar N `go.mod`, não há um `go build ./...` que atravesse tudo (o `build.sh` itera módulo a
 módulo), e é fonte perene de PRs de *wiring*. Um `go.work` na raiz, com uma directiva `use` por
 módulo, dá a resolução inter-módulo local sem depender das `replace`.
@@ -1159,6 +1160,34 @@ Implementa o AOS-387 (chore). NAO alteres ficheiros .go.
 5. Demonstra o controlo positivo: integrar um modulo novo passa a ser so `go work use`.
 Escopo fechado ao tooling de build; defeito fora disso abre ticket novo.
 ```
+
+### Pré-requisitos e bloqueios de ambiente (medidos numa tentativa em 2026-09-09, revertida)
+
+Uma primeira tentativa de implementação foi feita e **revertida** por bloqueio de ambiente, não
+por defeito de desenho. Quem retomar tem de garantir estes pré-requisitos, senão a migração não
+compila nem valida:
+
+- **Precisa de um ambiente COM rede.** Os gates correm offline (`GOPROXY=off`, cache-primed por
+  `scripts/ci/cache-prime.sh`), e o posto de trabalho onde isto se tentou não resolve o proxy Go
+  (`go work sync` falha com `lookup proxy.golang.org: no such host`). Gerar o `go.work.sum` e
+  reconciliar o grafo exigem rede.
+- **`go.work.sum` tem de ser committado.** Como a CI é offline, o workspace só resolve as
+  dependências externas se o `go.work.sum` estiver no repositório — e ele só se gera com rede
+  (`go mod download`/build online, uma vez).
+- **O modo workspace força `-mod=readonly`** (proíbe `-mod=mod`): o grafo de módulos tem de estar
+  consistente ANTES. Remover as 397 `replace` expõe inconsistências require↔import que o
+  mundo-replace mascarava — medido: `cd packages/control-plane/pdp && go build ./...` erra a
+  resolver `budget` **mesmo sem o importar** (efeito de carregamento do grafo do workspace).
+  Reconciliar exige `go work sync` (rede) ou `go mod tidy` por módulo — ambos indisponíveis em
+  workspace-offline.
+- **O `use` cobre 53 módulos** (49 `packages/` + 3 `deploy/` + `scripts/ci/attest`) e **exclui** o
+  git worktree em `.claude/worktrees/`. A directiva `go` do `go.work` tem de ser `1.25` (a
+  toolchain fixada dos gates é `GOTOOLCHAIN=go1.25.13`; um `go` local mais recente injecta uma
+  versão errada no `go work init`).
+
+Sequência recomendada (ambiente com rede): gerar `go.work` (os 53 `use`) → `go work sync` +
+`go mod tidy` por módulo até o grafo fechar → gerar e committar `go.work.sum` → remover as 397
+`replace` → validar a suite completa OFFLINE (`GOPROXY=off`) + smoke → revisão adversarial.
 
 ### Estado
 

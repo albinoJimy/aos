@@ -64,6 +64,7 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 | AOS-389 | Guard fail-closed: recusar planos com arestas condicionais até o avaliador estar composto | feature | S | P0 | AOS-237, AOS-388 |
 | AOS-390 | Compor o despacho governado do Planeador (`plandispatch.Dispatcher` sob Tenure) | feature | L | P0 | AOS-281, AOS-237, AOS-238, AOS-389 |
 | AOS-391 | T2-B: compor o `decompose.Model` real via Model Gateway | feature | L | P1 | AOS-388, AOS-390, AOS-278 |
+| AOS-393 | Fix fail-closed: o ramo papéis-que-expandem via `Delegator.Spawn` é recusado no `--goal` (depth_mismatch; `agent.spawn` latente) | feature (correcção) | S | P1 | AOS-388, AOS-026, AOS-237 |
 
 ---
 
@@ -527,12 +528,21 @@ Esta epic (§1) entregou o planeador como agente governado, mas com a decomposi�
 Entregar o `Decomposer` de produção e compô-lo com o planeador e o pipeline existente dentro do `aos-orq`, ligando `Delegator.Spawn`, de modo a que um único `aos-orq serve --goal` produza, valide, aprove e materialize um DAG **realmente multi-nó** a partir de um objectivo.
 
 ### Critérios de Aceitação
-- [ ] `decompose.LLMDecomposer` satisfaz `planner.Decomposer`: monta `system = plannerprompt.Current.Template` e `user = goal (untrusted) + snapshot`; parseia a resposta com `plan.Decode` **fail-closed** (reutiliza o parser sancionado, não reimplementa); carimba `planner_meta{model, prompt_version, capabilities_hash}`. O documento é tratado como **untrusted** (ADR-005) — nunca executado, nunca marcado trusted.
-- [ ] **Camadas (decisão por precedente, não nova):** o Decomposer vive em `control-plane/orchestrator/decompose` e depende apenas de control-plane+kernel, através de uma **porta de modelo local injectada** — o **mesmo padrão** da porta `Pricer` de `planvalidate/budget.go`, que declarou evitar puxar `platform/model-gateway` para não abrir exceção nova ao layer-lint. O concreto do gateway compõe-se no `aos-orq` (binário exempto por ADR-018). `layer-lint` verde **sem** nova entrada de baseline nem emenda ao ADR-019 §2.5.
-- [ ] `aos-orq serve --goal "…"` corre ponta-a-ponta: `Decompose` → `planvalidate.Validate` (sobre o snapshot pinado cujo hash é o carimbado em `planner_meta.capabilities_hash`) → `PlanGate.Approve` → `planmaterialize.Materialize`, com nós-folha no DAG (AOS-025) **e** papéis-que-expandem via `Delegator.Spawn` (AOS-026). `recusaSpawn` deixa de ser o caminho por omissão; `--nodes`/`--plan-doc` ficam só como override manual.
-- [ ] **Determinismo de teste:** o modelo é injectado; um *fake* determinístico cobre o CI, sem chamada viva. O retry fica do `Planner` (N tentativas + reserva escalada) — **não** é duplicado no Decomposer.
-- [ ] **Produção fail-closed:** o `aos-orq` exige credencial de modelo em produção (espelha `ErrProductionNeedsModelCredential` do nó); sem ela, o caminho vivo não arranca.
-- [ ] O guard `boundary_orq_sch_test.go` (grafo de build de `cmd/aos`) permanece verde — nada disto entra no nó `aos`.
+- [x] `decompose.LLMDecomposer` satisfaz `planner.Decomposer`: monta `system = plannerprompt.Current.Template` e `user = goal (untrusted) + snapshot`; parseia a resposta com `plan.Decode` **fail-closed** (reutiliza o parser sancionado, não reimplementa); carimba `planner_meta{model, prompt_version, capabilities_hash}`. O documento é tratado como **untrusted** (ADR-005) — nunca executado, nunca marcado trusted.
+- [x] **Camadas (decisão por precedente, não nova):** o Decomposer vive em `control-plane/orchestrator/decompose` e depende apenas de control-plane+kernel, através de uma **porta de modelo local injectada** — o **mesmo padrão** da porta `Pricer` de `planvalidate/budget.go`, que declarou evitar puxar `platform/model-gateway` para não abrir exceção nova ao layer-lint. O concreto do gateway compõe-se no `aos-orq` (binário exempto por ADR-018). `layer-lint` verde **sem** nova entrada de baseline nem emenda ao ADR-019 §2.5.
+- [ ] `aos-orq serve --goal "…"` corre ponta-a-ponta: `Decompose` → `planvalidate.Validate` (sobre o snapshot pinado cujo hash é o carimbado em `planner_meta.capabilities_hash`) → `PlanGate.Approve` → `planmaterialize.Materialize`, com nós-folha no DAG (AOS-025) **e** papéis-que-expandem via `Delegator.Spawn` (AOS-026). `recusaSpawn` deixa de ser o caminho por omissão; `--nodes`/`--plan-doc` ficam só como override manual. **PARCIAL — ver Estado.**
+- [x] **Determinismo de teste:** o modelo é injectado; um *fake* determinístico cobre o CI, sem chamada viva. O retry fica do `Planner` (N tentativas + reserva escalada) — **não** é duplicado no Decomposer.
+- [ ] **Produção fail-closed:** o `aos-orq` exige credencial de modelo em produção (espelha `ErrProductionNeedsModelCredential` do nó); sem ela, o caminho vivo não arranca. **DEFERIDO a AOS-391 (T2-B) — ver Estado.**
+- [x] O guard `boundary_orq_sch_test.go` (grafo de build de `cmd/aos`) permanece verde — nada disto entra no nó `aos`.
+
+### Estado (actualizado 2026-09-10, após AOS-393 aterrar)
+O núcleo do ticket está **entregue**; o que resta está **deferido e ticketado** (não é dívida por diagnosticar):
+
+- **Cumpridos:** AC 1 (Decomposer untrusted + `plan.Decode` + proveniência carimbada), AC 2 (camadas / porta local, `layer-lint` verde), AC 4 (determinismo / *fake* + retry no Planner), AC 6 (guard `boundary_orq_sch_test.go` verde).
+- **AC 3 — eixo *papéis-que-expandem*: CUMPRIDO por AOS-393.** O `--goal` corre `Decompose → planvalidate.Validate → planmaterialize.Materialize` com o **Delegator real**, materializando nós-folha **e** papéis-que-expandem (`spawn: no=…`); `recusaSpawn` deixou de ser o caminho por omissão. Provado por execução + `TestAOS393_GoalExpansaoSpawnaPapel`.
+- **AC 3 — eixo `PlanGate.Approve`: DEFERIDO.** O gate humano (AOS-236) não está no pipeline `--goal`; o wiring `PlanDocument→gate` é o **DEF-274** (eixo AOS-238), fora do âmbito por decisão do dono.
+- **AC 5 — modelo real + credencial de produção: DEFERIDO a AOS-391 (T2-B).** Hoje o `--goal` sem `--decompose-fixture` recusa fail-closed (não há LLM vivo neste binário); o mecanismo que espelha `ErrProductionNeedsModelCredential` chega com o Model Gateway composto.
+- **Fronteira de deploy:** nada disto entra no nó deployado `cmd/aos` (AC 6 / ADR-018); o `aos-orq` não está no compose de produção. Ver `docs/reports/auditoria-revisao-AOS-388.md`.
 
 ### Detalhes Técnicos
 - **Novo pacote:** `packages/control-plane/orchestrator/decompose/` (mesmo módulo que `planner`/`plan`/`plannerprompt`). Imports: `orchestrator/{planner,plan,plannerprompt}` + a porta de modelo local. Sem `require`/`replace` novo para o gateway.
@@ -664,12 +674,12 @@ Alternativas rejeitadas: **(B)** o Dispatcher gateia ANTES da materialização �
 | Estimativa | L |
 | Dependências | AOS-388 (T2-A), AOS-390 (para que goals reais com condicionais sejam avaliados, não recusados), AOS-278 (cutover de identidade NHI) |
 | Bloqueia | AOS-392 (prova ponta-a-ponta com goal real) |
-| Fecha | DEF-803 (o marcador `STUB` sai do código) |
+| Fecha | — (DEF-803 já **FECHADO-RESIDUAL** via AOS-388/AOS-393; este ticket não o re-fecha) |
 | Responsável sugerido | Arquitecto de Plataforma |
 | Documentos de referência | `packages/cmd/aos-orq/planner_wiring.go` (`fixtureModel`, `modeloDeDecomposicao`), `packages/control-plane/orchestrator/decompose/decompose.go`, `packages/platform/model-gateway/`, ADR-019 §2.5, ADR-020, ADR-005 |
 
 ### Contexto
-Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nomeia o "Model Gateway" (`TestAOS388_GoalFailClosed`); o único `decompose.Model` é o `fixtureModel` (marcado **NÃO-PRODUÇÃO**); o `aos-orq` não importa `platform/model-gateway`. **DEF-803** continua `STUB`/`ABERTO`, ticketado como AOS-388. Ligar exige token NHI com `model:invoke` verificado e uma decisão **ADR-020** sobre a fidelidade do token (token do run vs. `agent:planner`).
+Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nomeia o "Model Gateway" (`TestAOS388_GoalFailClosed`); o único `decompose.Model` é o `fixtureModel` (marcado **NÃO-PRODUÇÃO**); o `aos-orq` não importa `platform/model-gateway`. **DEF-803** já está **FECHADO-RESIDUAL** (a decomposição multi-nó produtiva aterrou com AOS-388/AOS-393); o `STUB` de `orchestrator.Submit` fica como contraste, não como dívida. AOS-391 é **ortogonal**: entrega o **LLM vivo** (hoje só o `fixtureModel` corre), não re-fecha o DEF-803. Ligar exige token NHI com `model:invoke` verificado e uma decisão **ADR-020** sobre a fidelidade do token (token do run vs. `agent:planner`).
 
 ### Objectivo
 Compor um `decompose.Model` de produção que invoca o Model Gateway para produzir o `PlanDocument` a partir do `goal`, sob a identidade e o orçamento corretos, substituindo o `fixtureModel` no caminho `--goal`. Fecha DEF-803 e o critério de saída do goal→DAG real.
@@ -680,8 +690,93 @@ Compor um `decompose.Model` de produção que invoca o Model Gateway para produz
 - [ ] A reserva de planeamento é admitida antes da decomposição (AOS-234) e o custo do turno flui para o burn-down (AOS-259).
 - [ ] O `PlanDocument` produzido passa pelo validador puro (AOS-231); se o modelo emitir arestas condicionais, elas são **avaliadas** por AOS-390 (nem recusadas por AOS-389, nem executadas fail-open).
 - [ ] Fail-closed preservado: falha do Gateway, token sem `model:invoke`, ou plano inválido ⇒ o run não avança com plano fantasma (erro declarado, nada spawnado).
-- [ ] **DEF-803 passa a FECHADO** (o marcador `STUB` sai do código); RTM regenerada.
 - [ ] O golden-set/eval-gate do planeador (AOS-241) continua verde com o modelo real atrás de doubles no gate offline.
+
+### Pré-requisitos e bloqueios de ambiente (discovery 2026-09-10)
+Discovery read-only registada para não perder o trabalho. **Dois bloqueios independentes impedem o fecho de AOS-391 num ambiente offline:**
+
+- **BLOQUEIO 1 — dependência AOS-390 não-landed.** O AC "arestas condicionais são avaliadas por AOS-390" não é satisfazível: `plandispatch.Dispatcher` não tem chamador de produção (`plandispatch/dispatch.go` é a biblioteca; `grep plandispatch.(New|Dispatcher)` fora de `_test.go` = 0), e o `--goal` do `aos-orq` faz spawn **eager** de todos os nós (`planner_wiring.go`, sem gating de elegibilidade). Com AOS-389 (guard) e sem AOS-390, um plano real com arestas condicionais é **recusado**, não avaliado. **AOS-390 tem de aterrar primeiro.**
+- **BLOQUEIO 2 — o LLM vivo é inverificável offline.** O AC de cabeçalho exige uma chamada de modelo viva (`--goal` sem `--decompose-fixture`), que precisa de rede + endpoint OpenAI-compatível; este ambiente é `GOPROXY=off`, sem rede. A cablagem + um *fake* são testáveis; o caminho vivo só num ambiente com rede/endpoint.
+
+**Pré-requisitos técnicos apurados (evidência, para quem implementar):**
+- **Build offline da cablagem: FAZÍVEL** — o fecho transitivo de `platform/model-gateway` é `aos-ref` path-local + stdlib, **zero deps externas** (nenhum `go.sum` na cadeia). Adicionar ao `aos-orq/go.mod` 6 pares `require v0.0.0`+`replace` path-local (`model-gateway`, `scheduler`, `audit`, `registry`, `memory`, `eval`). *(Análise estática dos go.mod; não build-testado.)*
+- **Adaptador de forma necessário:** a porta `decompose.Model.Complete(ctx, system, user) (string, error)` (`decompose/decompose.go:40`) **não casa** com `ModelClientAdapter.Call(PromptView)→ModelResponse` (colapsa system/user numa só mensagem). Via fiel: falar direto com `port.Gateway.Chat` passando `[]port.Message{{RoleSystem, system}, {RoleUser, user}}` e devolver `resp.Choices[0].Message.Content`.
+- **Identidade (ADR-020):** a chamada tem de correr sob a NHI `agent:planner`, mediada pelo RM. Hoje o token `agent:planner` no `aos-orq` **não sela `model:invoke`** (`planner_wiring.go` — classes só selam `cap:plan`+tool caps); há que selá-lo e replicar no `aos-orq` o estágio authn do cutover **AOS-278** (landed em `cmd/aos`, ausente no `aos-orq`).
+- **Construção do gateway:** `modelgateway.NewProduction(ctx, ProductionConfig)` → `NewModelClient(gw, model, WithPrincipalFromContext(...))`, espelhando `cmd/aos/modelgatewaywiring.go:newGatewayModelClient` (credencial `AOS_MODEL_API_KEY_PATH`, endpoint `AOS_MODEL_ENDPOINT`, egress SSRF `AOS_MODEL_EGRESS_HOSTS`, audit WORM, custo AOS-259). O token do run/planeador viaja pelo ctx (equivalente a `modelCredentialFromContext`), não fixado na construção.
+- **Ponto de injeção:** `modeloDeDecomposicao(fixturePath)` em `planner_wiring.go` — manter o `fixtureModel` como override de teste e adicionar o ramo de produção (gateway) quando não há fixture e há credencial.
+
+---
+
+## AOS-393 — Fix fail-closed: o ramo papéis-que-expandem via `Delegator.Spawn` é recusado no `--goal` (depth_mismatch; `agent.spawn` latente)
+
+<!-- rtm: adrs-mencionados -->
+<!-- O ADR-018 (fronteira nó↔ORQ) citado é MENÇÃO — a disciplina que este fix respeita — não
+     implementação. A materialização é do ticket AOS-237 e a delegação com orçamento do ticket
+     AOS-026; este é o fix de integração do seam entre ambas, exposto pelo wiring de AOS-388
+     (T2-A). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Habilitador / correcção |
+| Milestone | v1.1 (correcção fail-closed no caminho de produção) |
+| Tipo | feature (correcção) |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-388 (T2-A — o wiring `--goal` que expôs o defeito), AOS-026 (Delegator), AOS-237 (materialização / `RoleSpawn`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/planmaterialize/materialize.go` (`RoleSpawn`, caso `SpawnRole`), `packages/control-plane/orchestrator/delegation.go` (`ErrDepthMismatch`, `parentChainDepth`, `spawnToolID`), `packages/cmd/aos-orq/planner_wiring.go` (RM mínimo + `NewDelegator`), `docs/reports/auditoria-revisao-AOS-388.md` (§2.1) |
+
+### Contexto
+Medido em 2026-09-10 por **execução real** do binário `aos-orq` (não por leitura): um `--goal (+fixture)` cujo `PlanDocument` tenha um nó com dependentes — um papel-que-expande (`SpawnRole` por `DefaultClassifier`) — **aborta a materialização fail-closed** e nenhum plano com expansão materializa. Comando e saída reproduzidos:
+
+```
+aos-orq serve --goal "…" --snapshot snap.json --decompose-fixture plano-expansao.json --worker p1
+  → decomposto: objectivo -> plano de 2 nos (tentativas=1, planner_nhi=agent:planner)
+  → aos-orq: materialização: planmaterialize: spawn do papel "recolha":
+    orchestrator: spawn recusado — profundidade declarada abaixo da autoritativa
+    (fail-closed): declarada=0 autoritativa=1
+```
+
+**Causa raiz (proven):** `planmaterialize.RoleSpawn` (materialize.go:174-185) **não tem campo de profundidade**; o adaptador `NewDelegatorSpawner` passa portanto `Depth=0` ao `Delegator.Spawn`, enquanto a profundidade **autoritativa** derivada da cadeia do token do run (`parentChainDepth`) é 1. Como `req.Depth (0) < autoritativa (1)`, o Delegator recusa com `ErrDepthMismatch` (delegation.go:415-423) — a guarda anti-subdeclaração de `max_depth` dispara contra o próprio wiring. Todos os testes anteriores usavam um `fakeSpawner` (nunca o Delegator real), pelo que o seam nunca foi exercitado; o wiring de AOS-388 é a **primeira composição real** e expõe-o.
+
+**Defeito latente (não alcançado em runtime, static-only):** mesmo corrigida a profundidade, o RM mínimo do wiring (`planner_wiring.go:130`) só regista `agent.plan`; o `Delegator` medeia o spawn com `agent.spawn` (default `spawnToolID`), que o RM nega por default-deny (`agent.spawn` não registado). Provável segunda recusa, hoje **mascarada** pela primeira.
+
+**Conflito a reconciliar (fonte):** o ticket AOS-389 afirma que, via `--goal (+fixture)`, "um nó condicional-papel **é spawnado** como sub-agente real". A execução acima mostra o oposto — o spawn de **qualquer** papel é recusado (depth) antes de qualquer avaliação de condição. A premissa fail-open de AOS-389 pode não ser alcançável pelo caminho `--goal` com o wiring actual; reconciliar o cenário medido de AOS-389 contra esta evidência.
+
+### Objectivo
+Tornar o caminho `--goal` do `aos-orq` capaz de materializar um plano **multi-nó com expansão** — nós-folha **E** papéis-que-expandem via `Delegator.Spawn` (AOS-026), como o AC 3 de AOS-388 exige — em vez de recusar fail-closed todo o spawn de papel.
+
+### Critérios de Aceitação
+- [x] A `RoleSpawn` (ou o adaptador `NewDelegatorSpawner`) propaga uma profundidade **coerente com a autoritativa** do token do run, de modo que o `Delegator.Spawn` não recuse por `ErrDepthMismatch`. A subdeclaração continua recusada (não enfraquecer a guarda anti-`max_depth`).
+- [x] O RM composto no `--goal` (`planner_wiring.go`) admite genuinamente o `agent.spawn` (registo ou `WithSpawnCapability`), de modo que a mediação do spawn não seja default-deny; a mediação continua **obrigatória** (não se contorna o RM).
+- [x] **Teste de composição real** (Delegator real, não `fakeSpawner`) que reproduz o cenário medido: um plano com `analise depends_on:[recolha]` materializa com `recolha` a **spawnar** (`subagent.spawned`, NHI cunhada, reserva) e `analise` como folha. Falha-antes: sem o fix, o teste apanha `ErrDepthMismatch`.
+- [x] Não-regressão: o e2e `TestAOS388_GoalPipelineGovernadoPontoAPonto` (duas folhas independentes) continua verde, E ganha um irmão que exercita o ramo `SpawnRole` (o gap de cobertura §2.2 da auditoria).
+- [x] O AC 3 de AOS-388 deixa de estar parcialmente-cumprido no eixo "papéis-que-expandem".
+
+### Resolução (2026-09-10)
+**FECHADO.** O fix exigiu **quatro** elementos, não dois — os dois diagnosticados eram necessários mas **não suficientes**, e os outros dois só apareceram por **execução do binário** (não por leitura):
+
+1. **Profundidade** — `planmaterialize/adapters.go`: o `delegatorSpawner` passa a declarar `SpawnRequest.Depth` a partir da cadeia do token do pai, via a nova `orchestrator.ChainDepth` (wrapper exportado de `parentChainDepth`). Sem isto, `Depth=0 < autoritativa=1` ⇒ `ErrDepthMismatch`. A guarda **mantém-se**: o Delegator recomputa a autoritativa e continua a recusar quem declarar menos.
+2. **`agent.spawn`** — `cmd/aos-orq/planner_wiring.go`: o RM mínimo passa a registar `agent.spawn` (mediação obrigatória, não contornada).
+3. **Classe `worker`** *(descoberto por execução)* — o emissor efémero configura a classe com que o Materializer cunha a NHI filha (`childClass` default `worker`); sem ela, `E_UNKNOWN_CLASS`.
+4. **Autoridade sobre tools** *(descoberto por execução)* — o token do run e as classes `coordinator`/`worker` passam a carregar a UNIÃO das capabilities coarse do snapshot pinado (`cap:tool:*`, via `toolCapabilities`/`DefaultCapabilityMapper`); sem isto, `IssueChild` recusa porque `Authority ⊄ folha-do-pai`. O clamp **por-nó** (`authorityForNode`) mantém cada filho restrito às suas próprias tools.
+
+**Evidência:** execução real do binário com fixture de expansão (`analise depends_on:[recolha]`) ⇒ `spawn: no=recolha` + `materializado: nos=2` (recolha=role, analise=leaf), exit 0. `TestAOS393_GoalExpansaoSpawnaPapel` (`-race`) e as suites de `orchestrator`/`planmaterialize`/`cmd/aos-orq` verdes; `layer-lint` e `lint` verdes.
+
+**Nota de segurança:** o elemento 4 alarga a autoridade do token do run ao catálogo pinado — aceitável neste caminho **NÃO-PRODUÇÃO** (fixture; T2-B pendente) e limitado pelo snapshot, com clamp por-nó preservado. Recomenda-se `security-review` antes de o caminho `--goal` ser promovido a produção.
+
+### Handoff para Claude Code
+```text
+Corrige o ramo papéis-que-expandem do --goal do aos-orq (AOS-393, EPIC-19).
+- Raiz: planmaterialize.RoleSpawn não carrega profundidade -> Delegator.Spawn recusa ErrDepthMismatch (declarada=0 < autoritativa=1).
+- Latente: o RM do planner_wiring.go só regista agent.plan; agent.spawn fica default-deny.
+- Propaga a profundidade autoritativa e admite agent.spawn no RM composto, SEM enfraquecer as guardas (anti-subdeclaração de depth + mediação obrigatória).
+- Teste de composição REAL (Delegator real, não fakeSpawner) com um nó de expansão; falha-antes = ErrDepthMismatch. Mantém o e2e das duas folhas verde.
+- Reconcilia a premissa de AOS-389 (papel "spawnado" via --goal) contra a evidência de execução deste ticket.
+- Não toques em cmd/aos (guard boundary_orq_sch_test.go verde). Regenera a RTM. PR com o template §7 dos Standards.
+```
 
 ---
 

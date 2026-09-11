@@ -152,7 +152,7 @@ type dispatchSink struct {
 // deve correr em silêncio.
 func (s *dispatchSink) Dispatch(ctx context.Context, node plandispatch.Node) error {
 	if s.kinds[node.NodeID] == plannerevents.SpawnRole {
-		if _, err := s.del.Spawn(ctx, orchestrator.SpawnRequest{
+		sr := orchestrator.SpawnRequest{
 			RunID:            s.runID,
 			ParentBudgetNode: s.runID, // orçamento achatado à raiz (como a materialização fazia)
 			ChildBudgetNode:  node.NodeID,
@@ -164,7 +164,15 @@ func (s *dispatchSink) Dispatch(ctx context.Context, node plandispatch.Node) err
 				Authority:  s.authority[node.NodeID], // clampada, lida de plan.materialized
 			},
 			ChildTaskID: node.NodeID,
-		}); err != nil {
+		}
+		// DECLARAR a profundidade autoritativa do token do pai (correcção habilitadora do
+		// AOS-393, preservada pelo ADR-024): sem isto Depth=0 e o gate anti-subdeclaração do
+		// Delegator recusa fail-closed (ErrDepthMismatch). O Delegator recomputa a
+		// autoritativa e continua a recusar quem declarar MENOS.
+		if depth, ok := orchestrator.ChainDepth(s.parentToken); ok {
+			sr.Depth = depth
+		}
+		if _, err := s.del.Spawn(ctx, sr); err != nil {
 			return fmt.Errorf("spawn do papel %q: %w", node.NodeID, err)
 		}
 		fmt.Printf("  despacho: papel %s spawnado\n", node.NodeID)

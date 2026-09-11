@@ -80,6 +80,59 @@ func TestAOS388_GoalPipelineGovernadoPontoAPonto(t *testing.T) {
 	}
 }
 
+// planoFixtureExpansao é um PlanDocument COM EXPANSÃO: `analise` depende de `recolha`,
+// pelo que `recolha` tem ≥1 dependente e o classificador fá-lo um PAPEL-QUE-EXPANDE
+// (SpawnRole → Delegator.Spawn), enquanto `analise` (sumidouro) é folha. É o caso que
+// AOS-393 repara: sem o fix, o Delegator recusava o spawn (ErrDepthMismatch: profundidade
+// declarada 0 < autoritativa 1) e a materialização abortava.
+const planoFixtureExpansao = `{
+  "plan_version": "1.0.0",
+  "objective": "recolher e analisar",
+  "budget_total": {"tokens": 100, "cost_micro_usd": 100},
+  "planner_meta": {"model":"x","prompt_version":"1.0.0","capabilities_hash":"sha256:snap-goal"},
+  "nodes": [
+    {"node_id":"recolha","role":"worker","objective":"recolher","depends_on":[],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":10,"cost_micro_usd":10}},
+    {"node_id":"analise","role":"worker","objective":"analisar","depends_on":["recolha"],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":10,"cost_micro_usd":10}}
+  ]
+}`
+
+// TestAOS393_GoalExpansaoSpawnaPapel: um plano COM expansão — o papel `recolha` é
+// SPAWNADO pelo Delegator REAL e `analise` é folha. Sob o ADR-024 (AOS-390), o spawn já
+// NÃO acontece na materialização: acontece no DESPACHO governado, quando `recolha` (papel
+// sem deps) fica elegível. As correcções de identidade do AOS-393 (Depth via ChainDepth,
+// toolCaps no token do run e na classe worker, agent.spawn no RM) são PRESERVADAS no sink,
+// pelo que o spawn tem sucesso. FALHA-ANTES (sem essas correcções): ErrDepthMismatch /
+// E_UNKNOWN_CLASS / Authority ⊄ pai — o spawn abortava.
+func TestAOS393_GoalExpansaoSpawnaPapel(t *testing.T) {
+	bin := construir(t)
+	dir := t.TempDir()
+	snapPath := filepath.Join(dir, "snap.json")
+	escrever(t, snapPath, snapshotDuasTools)
+	fixPath := filepath.Join(dir, "plano.json")
+	escrever(t, fixPath, planoFixtureExpansao)
+	wal := filepath.Join(dir, "es.wal")
+
+	r := correr(t, bin, "serve", "--wal", wal, "--run", "run-exp",
+		"--goal", "recolher e analisar dados", "--snapshot", snapPath,
+		"--decompose-fixture", fixPath, "--worker", "p1")
+	if r.code != exitOK {
+		t.Fatalf("serve --goal (expansao) saiu %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "materializado:") || !strings.Contains(r.stdout, "nos=2") {
+		t.Fatalf("o plano com expansao nao materializou os 2 nos:\n%s", r.stdout)
+	}
+	// O papel-que-expande foi SPAWNADO no DESPACHO (ADR-024): o DispatchSink imprime
+	// "despacho: papel <id> spawnado" quando o Delegator cunha a NHI filha. `recolha` (sem
+	// deps) fica elegível na primeira passagem; `analise` depende dele e aguarda.
+	if !strings.Contains(r.stdout, "despacho: papel recolha spawnado") {
+		t.Fatalf("o papel `recolha` nao foi spawnado pelo despacho governado:\n%s", r.stdout)
+	}
+}
+
 // TestAOS388_GoalFailClosed: as três recusas fail-closed do --goal.
 func TestAOS388_GoalFailClosed(t *testing.T) {
 	bin := construir(t)
