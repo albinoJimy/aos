@@ -28,26 +28,28 @@ func noEffect(t plan.ToolRef) bool { return t.Name != "read" }
 // por construção» passava a ser uma promessa do organigrama — mediada, na melhor das
 // hipóteses, pelo RM no caminho quente.
 func TestVerifierAuthorityHasNoEffectTools(t *testing.T) {
-	sp := &fakeSpawner{}
 	lf := &fakeLeaf{}
-	m, err := NewMaterializer(&fakeAdmission{}, lf, sp, &fakeRecorder{}, WithEffectOracle(noEffect))
+	rec := &fakeRecorder{}
+	m, err := NewMaterializer(&fakeAdmission{}, lf, rec, WithEffectOracle(noEffect))
 	if err != nil {
 		t.Fatalf("NewMaterializer: %v", err)
 	}
 
 	tools := []plan.ToolRef{tool("write"), tool("read"), tool("post")}
-	// AMBOS têm um dependente. O nó normal materializa-se por isso como PAPEL (Spawn);
-	// o verificador NÃO — um verificador é sempre FOLHA (ver
-	// [TestVerifierIsAlwaysLeaf]). A comparação isola na mesma a única variável que
-	// interessa aqui: a AUTORIDADE emitida com o mesmo conjunto de tools.
+	// AMBOS têm um dependente. O nó normal classifica-se por isso como PAPEL; o
+	// verificador NÃO — um verificador é sempre FOLHA (ver [TestVerifierIsAlwaysLeaf]).
+	// Pós ADR-024 ambos são admitidos no DAG; a comparação isola na mesma a única
+	// variável que interessa aqui: a AUTORIDADE emitida com o mesmo conjunto de tools.
 	verifier := plan.Node{NodeID: "review", Role: plan.RoleVerifier, Objective: "verifica", Tools: tools}
 	plain := plan.Node{NodeID: "author", Role: "writer", Objective: "escreve", Tools: tools}
 	sink := node("sink", nil, "review", "author")
 
-	if _, err := m.Materialize(context.Background(), baseReq(verifier, plain, sink)); err != nil {
+	payload, err := m.Materialize(context.Background(), baseReq(verifier, plain, sink))
+	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
 
+	// Autoridade do verificador (folha) — lida da admissão no DAG.
 	var reviewCaps []string
 	for _, c := range lf.calls {
 		if c.nodeID == "review" {
@@ -57,12 +59,11 @@ func TestVerifierAuthorityHasNoEffectTools(t *testing.T) {
 	if len(reviewCaps) != 1 || reviewCaps[0] != "cap:tool:read" {
 		t.Fatalf("autoridade do verificador = %v; queria exactamente [cap:tool:read] — as tools de efeito não podem ser EMITIDAS", reviewCaps)
 	}
-	got := map[string][]string{}
-	for _, c := range sp.calls {
-		got[c.nodeID] = c.authority
-	}
-	if len(got["author"]) != 3 {
-		t.Fatalf("autoridade do nó normal = %v; queria as 3 capabilities intactas (o clamp é do PAPEL, não global)", got["author"])
+	// Autoridade do nó normal (papel) — lida do payload plan.materialized (Nodes[].Tools),
+	// agora que não há spawn para a capturar.
+	author, ok := nodeInPayload(payload, "author")
+	if !ok || len(author.Tools) != 3 {
+		t.Fatalf("autoridade do nó normal = %v (ok=%v); queria as 3 capabilities intactas (o clamp é do PAPEL, não global)", author.Tools, ok)
 	}
 }
 
@@ -81,11 +82,10 @@ func TestVerifierAuthorityHasNoEffectTools(t *testing.T) {
 // O forço NÃO depende do classificador injectado: um verificador não delega, e isso não
 // é política de wiring.
 func TestVerifierIsAlwaysLeaf(t *testing.T) {
-	sp := &fakeSpawner{}
 	lf := &fakeLeaf{}
 	// Classificador ADVERSARIAL: declara TUDO papel-que-expande.
 	always := func(plan.Node, plan.PlanDocument) plannerevents.SpawnKind { return plannerevents.SpawnRole }
-	m, err := NewMaterializer(&fakeAdmission{}, lf, sp, &fakeRecorder{},
+	m, err := NewMaterializer(&fakeAdmission{}, lf, &fakeRecorder{},
 		WithEffectOracle(noEffect), WithClassifier(always))
 	if err != nil {
 		t.Fatalf("NewMaterializer: %v", err)
@@ -96,11 +96,17 @@ func TestVerifierIsAlwaysLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	for _, c := range sp.calls {
-		if c.nodeID == "review" {
-			t.Fatal("o VERIFICADOR foi materializado por Spawn: encabeça uma sub-árvore de delegação, que é o «spawn» que §2.2 exclui")
-		}
+	// Pós ADR-024 o «spawn» já não é uma chamada de porta; o que §2.2 exclui do verificador
+	// — encabeçar uma sub-árvore de delegação (SpawnRole) — lê-se do Kind no payload. Um
+	// verificador tem de ficar FOLHA apesar do classificador adversarial.
+	review, ok := nodeInPayload(payload, "review")
+	if !ok {
+		t.Fatal("o verificador não aparece no payload plan.materialized")
 	}
+	if review.Kind != plannerevents.SpawnLeaf {
+		t.Fatalf("plan.materialized[review].Kind = %q; queria leaf (o verificador não delega, é o «spawn» que §2.2 exclui)", review.Kind)
+	}
+	// E foi de facto admitido no DAG (não materializou por vacuidade).
 	var found bool
 	for _, c := range lf.calls {
 		if c.nodeID == "review" {
@@ -108,13 +114,7 @@ func TestVerifierIsAlwaysLeaf(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("o verificador não foi materializado como nó-folha")
-	}
-	// E o facto `plan.materialized` diz a verdade sobre o que correu.
-	for _, n := range payload.Nodes {
-		if n.NodeID == "review" && n.Kind != plannerevents.SpawnLeaf {
-			t.Fatalf("plan.materialized[review].Kind = %q; queria leaf", n.Kind)
-		}
+		t.Fatal("o verificador não foi admitido como nó-folha no DAG")
 	}
 }
 
@@ -128,7 +128,7 @@ func TestVerifierIsAlwaysLeaf(t *testing.T) {
 // «arranja» a autoridade para ela passar. Nenhuma das duas é aceitável.
 func TestVerifierLeafToolMatchesClampedAuthority(t *testing.T) {
 	lf := &fakeLeaf{}
-	m, err := NewMaterializer(&fakeAdmission{}, lf, &fakeSpawner{}, &fakeRecorder{}, WithEffectOracle(noEffect))
+	m, err := NewMaterializer(&fakeAdmission{}, lf, &fakeRecorder{}, WithEffectOracle(noEffect))
 	if err != nil {
 		t.Fatalf("NewMaterializer: %v", err)
 	}
@@ -158,20 +158,19 @@ func TestVerifierLeafToolMatchesClampedAuthority(t *testing.T) {
 // verificadores inúteis (nota-se) em vez de verificadores com autoridade total num
 // sistema onde ninguém olhou (não se notava).
 func TestDefaultEffectOracleIsFailClosed(t *testing.T) {
-	sp := &fakeSpawner{}
 	lf := &fakeLeaf{}
-	m, err := NewMaterializer(&fakeAdmission{}, lf, sp, &fakeRecorder{})
+	m, err := NewMaterializer(&fakeAdmission{}, lf, &fakeRecorder{})
 	if err != nil {
 		t.Fatalf("NewMaterializer: %v", err)
 	}
 	verifier := plan.Node{NodeID: "review", Role: plan.RoleVerifier, Objective: "verifica",
 		Tools: []plan.ToolRef{tool("read")}}
-	if _, err := m.Materialize(context.Background(), baseReq(verifier, node("sink", nil, "review"))); err != nil {
+	payload, err := m.Materialize(context.Background(), baseReq(verifier, node("sink", nil, "review")))
+	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	// Um verificador é sempre FOLHA, pelo que a autoridade emitida lê-se no
-	// [LeafAdmitter] — e tem de estar VAZIA sem oráculo ligado. Ler `sp.calls` (como
-	// este teste fazia) passaria por vacuidade: o verificador nem lá aparece.
+	// Um verificador é sempre FOLHA, pelo que a autoridade emitida lê-se na admissão no
+	// DAG ([LeafAdmitter]) — e tem de estar VAZIA sem oráculo ligado.
 	var seen bool
 	for _, c := range lf.calls {
 		if c.nodeID != "review" {
@@ -185,10 +184,9 @@ func TestDefaultEffectOracleIsFailClosed(t *testing.T) {
 	if !seen {
 		t.Fatal("o verificador não foi materializado — o teste passaria por vacuidade")
 	}
-	for _, c := range sp.calls {
-		if c.nodeID == "review" {
-			t.Fatal("o verificador não pode materializar-se como papel-que-expande")
-		}
+	// E o payload confirma que se materializou como FOLHA, não como papel-que-expande.
+	if n, ok := nodeInPayload(payload, "review"); !ok || n.Kind != plannerevents.SpawnLeaf {
+		t.Fatalf("plan.materialized[review].Kind = %q (ok=%v); o verificador não pode ser papel-que-expande", n.Kind, ok)
 	}
 }
 
@@ -198,7 +196,7 @@ func TestDefaultEffectOracleIsFailClosed(t *testing.T) {
 // NHI dizia outra.
 func TestMaterializedEventShowsClampedAuthority(t *testing.T) {
 	rec := &fakeRecorder{}
-	m, err := NewMaterializer(&fakeAdmission{}, &fakeLeaf{}, &fakeSpawner{}, rec, WithEffectOracle(noEffect))
+	m, err := NewMaterializer(&fakeAdmission{}, &fakeLeaf{}, rec, WithEffectOracle(noEffect))
 	if err != nil {
 		t.Fatalf("NewMaterializer: %v", err)
 	}

@@ -65,6 +65,12 @@ func TestAOS388_GoalPipelineGovernadoPontoAPonto(t *testing.T) {
 	if !strings.Contains(r.stdout, "materializado:") || !strings.Contains(r.stdout, "nos=2") {
 		t.Fatalf("o plano nao materializou os 2 nos:\n%s", r.stdout)
 	}
+	// T4 (AOS-390, ADR-024): o despacho governado corre a jusante da admissão e despacha
+	// os 2 nós elegíveis (folhas sem deps). O efeito nasce no DESPACHO, não na
+	// materialização — que agora só admite.
+	if !strings.Contains(r.stdout, "despachado:") || !strings.Contains(r.stdout, "nos_despachados=2") {
+		t.Fatalf("o despacho governado nao despachou os 2 nos elegiveis:\n%s", r.stdout)
+	}
 
 	// Um terceiro processo, só de leitura, vê os 2 nós no grafo durável — a coordenação
 	// passou pelo log, não por memória.
@@ -94,10 +100,13 @@ const planoFixtureExpansao = `{
   ]
 }`
 
-// TestAOS393_GoalExpansaoSpawnaPapel: um plano COM expansão materializa — o papel
-// `recolha` é SPAWNADO pelo Delegator REAL (não fakeSpawner) e `analise` é folha.
-// FALHA-ANTES (sem o fix de AOS-393): o spawn era recusado com ErrDepthMismatch e a
-// materialização abortava; este teste apanhava a recusa em stderr e um exit != 0.
+// TestAOS393_GoalExpansaoSpawnaPapel: um plano COM expansão — o papel `recolha` é
+// SPAWNADO pelo Delegator REAL e `analise` é folha. Sob o ADR-024 (AOS-390), o spawn já
+// NÃO acontece na materialização: acontece no DESPACHO governado, quando `recolha` (papel
+// sem deps) fica elegível. As correcções de identidade do AOS-393 (Depth via ChainDepth,
+// toolCaps no token do run e na classe worker, agent.spawn no RM) são PRESERVADAS no sink,
+// pelo que o spawn tem sucesso. FALHA-ANTES (sem essas correcções): ErrDepthMismatch /
+// E_UNKNOWN_CLASS / Authority ⊄ pai — o spawn abortava.
 func TestAOS393_GoalExpansaoSpawnaPapel(t *testing.T) {
 	bin := construir(t)
 	dir := t.TempDir()
@@ -116,9 +125,11 @@ func TestAOS393_GoalExpansaoSpawnaPapel(t *testing.T) {
 	if !strings.Contains(r.stdout, "materializado:") || !strings.Contains(r.stdout, "nos=2") {
 		t.Fatalf("o plano com expansao nao materializou os 2 nos:\n%s", r.stdout)
 	}
-	// O papel-que-expande foi mesmo SPAWNADO (o onHandle imprime "spawn: no=<id>").
-	if !strings.Contains(r.stdout, "spawn: no=recolha") {
-		t.Fatalf("o papel `recolha` nao foi spawnado pelo Delegator real:\n%s", r.stdout)
+	// O papel-que-expande foi SPAWNADO no DESPACHO (ADR-024): o DispatchSink imprime
+	// "despacho: papel <id> spawnado" quando o Delegator cunha a NHI filha. `recolha` (sem
+	// deps) fica elegível na primeira passagem; `analise` depende dele e aguarda.
+	if !strings.Contains(r.stdout, "despacho: papel recolha spawnado") {
+		t.Fatalf("o papel `recolha` nao foi spawnado pelo despacho governado:\n%s", r.stdout)
 	}
 }
 

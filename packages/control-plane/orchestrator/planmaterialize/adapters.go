@@ -3,7 +3,6 @@ package planmaterialize
 import (
 	"context"
 
-	budget "github.com/aos-ref/control-plane/budget"
 	"github.com/aos-ref/control-plane/orchestrator"
 	"github.com/aos-ref/control-plane/orchestrator/contract"
 )
@@ -41,53 +40,14 @@ func (a graphLeafAdmitter) AdmitLeaf(ctx context.Context, node LeafNode) error {
 	})
 }
 
-// delegatorSpawner liga [Spawner] a *orchestrator.Delegator: Spawn cria o sub-agente
-// com orçamento herdado e a NHI filha, cuja Authority JÁ vem clampada às tools do
-// papel (RoleSpawn.Child.Authority). O issuer_child intersecta ainda com o escopo da
-// classe e recusa escalada (defesa-em-profundidade).
+// O ADAPTADOR DE SPAWN SAIU DAQUI (AOS-390, ADR-024). `delegatorSpawner`/
+// `NewDelegatorSpawner` — que ligavam a porta `Spawner` (removida) a
+// *orchestrator.Delegator — deixaram de existir: o spawn de papéis já não acontece na
+// materialização. O `DispatchSink` do despacho governado (composto no composition root
+// aos-orq) usa o *orchestrator.Delegator directamente, disparado por elegibilidade.
 //
-// LIFECYCLE (fronteira honesta, §5). Delegator.Spawn reserva orçamento e devolve um
-// *SpawnHandle a CONSOLIDAR com Delegator.Finish no fim do sub-run — isso é do
-// ciclo-de-vida do run, não da materialização. O handle é entregue ao onHandle
-// fornecido pelo root (que o rastreia para o Finish); um onHandle nil descarta-o
-// (útil só em cenários sem consolidação).
-type delegatorSpawner struct {
-	d        *orchestrator.Delegator
-	onHandle func(*orchestrator.SpawnHandle)
-}
-
-// NewDelegatorSpawner adapta um *orchestrator.Delegator à porta [Spawner]. onHandle
-// recebe o *SpawnHandle de cada spawn para o root o consolidar (Finish); pode ser
-// nil.
-func NewDelegatorSpawner(d *orchestrator.Delegator, onHandle func(*orchestrator.SpawnHandle)) Spawner {
-	return delegatorSpawner{d: d, onHandle: onHandle}
-}
-
-func (s delegatorSpawner) Spawn(ctx context.Context, req RoleSpawn) error {
-	sr := orchestrator.SpawnRequest{
-		RunID:            req.RunID,
-		ParentBudgetNode: req.ParentBudgetNode,
-		ChildBudgetNode:  req.ChildBudgetNode,
-		InheritedBudget:  budget.Amount{Tokens: req.InheritedTokens, CostMicroUSD: req.InheritedCostMicroUSD},
-		ParentToken:      req.ParentToken,
-		Child:            req.Child,
-		ChildTaskID:      req.NodeID,
-	}
-	// AOS-393: DECLARAR a profundidade autoritativa do token do pai. Sem isto, Depth=0
-	// e o gate anti-subdeclaração do Delegator recusa fail-closed (ErrDepthMismatch:
-	// declarada 0 < autoritativa) — todo o spawn de papel abortava a materialização.
-	// A guarda MANTÉM-SE: o Delegator recomputa a autoritativa e continua a recusar
-	// quem declarar MENOS; o materializador é um chamador de composição que declara o
-	// valor correcto, não um que o subdeclara para contornar o limite.
-	if depth, ok := orchestrator.ChainDepth(req.ParentToken); ok {
-		sr.Depth = depth
-	}
-	h, err := s.d.Spawn(ctx, sr)
-	if err != nil {
-		return err
-	}
-	if s.onHandle != nil {
-		s.onHandle(h)
-	}
-	return nil
-}
+// As correcções habilitadoras do AOS-393 são PRESERVADAS no sink (ADR-024): declarar a
+// profundidade autoritativa do token do pai (`orchestrator.ChainDepth` → SpawnRequest.Depth,
+// senão o gate anti-subdeclaração do Delegator recusa com ErrDepthMismatch) e a autoridade
+// com escopo de tools no token do run/classe worker. Muda o MOMENTO do spawn, não a sua
+// disciplina de identidade/profundidade.

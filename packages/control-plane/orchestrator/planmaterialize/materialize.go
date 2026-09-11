@@ -11,7 +11,6 @@ import (
 
 	"github.com/aos-ref/control-plane/orchestrator/plan"
 	"github.com/aos-ref/control-plane/orchestrator/plannerevents"
-	identity "github.com/aos-ref/platform/identity"
 )
 
 // clampU64ToInt64 converte um uint64 UNTRUSTED (ex.: BudgetEstimate.Tokens/CostMicroUSD
@@ -167,30 +166,14 @@ type LeafAdmitter interface {
 	AdmitLeaf(ctx context.Context, node LeafNode) error
 }
 
-// RoleSpawn descreve o spawn de um PAPEL-QUE-EXPANDE como sub-agente delegado
-// (Delegator.Spawn, AOS-026). Child.Authority JÁ vem CLAMPADA às tools do papel
-// (ver [Materializer.authorityForNode]): é o vínculo tools[] → Authority[] da NHI
-// filha exigido pela tabela de `plan.materialized` (§6.1).
-type RoleSpawn struct {
-	RunID                 string
-	PlanID                string
-	NodeID                string
-	Role                  string
-	ParentToken           string
-	ParentBudgetNode      string
-	ChildBudgetNode       string
-	InheritedTokens       int64
-	InheritedCostMicroUSD int64
-	Child                 identity.ChildRequest
-}
-
-// Spawner é a PORTA de spawn de sub-agente delegado (AOS-026). Ligada pelo wiring a
-// *orchestrator.Delegator (ver adapters.go). O clamp da autoridade é do
-// materializador (Child.Authority); o issuer_child ainda a intersecta com o
-// escopo-da-classe e recusa escalada face à folha do pai (defesa-em-profundidade).
-type Spawner interface {
-	Spawn(ctx context.Context, req RoleSpawn) error
-}
+// O EFEITO DE SPAWN SAIU DA MATERIALIZAÇÃO (AOS-390, ADR-024). A porta `Spawner` e o
+// tipo `RoleSpawn` que aqui viviam foram removidos: um papel-que-expande já NÃO é
+// spawnado na materialização — é admitido no DAG como nó pendente (sem tool) e o
+// `Delegator.Spawn` passa a ser disparado pelo `DispatchSink` do despacho governado,
+// só quando o nó fica elegível. A autoridade CLAMPADA do papel (o vínculo tools[] →
+// Authority[]) continua a ser calculada aqui ([Materializer.authorityForNode]) e
+// REGISTADA em `plan.materialized.Nodes[].Tools` — é dali que o sink a reconstrói para
+// o spawn, sem uma segunda fonte de verdade.
 
 // MaterializeRecorder é a PORTA que apensa `plan.materialized` (constante
 // [plannerevents.EventMaterialized]). *plannerevents.Recorder satisfá-la via
@@ -220,14 +203,12 @@ type Request struct {
 // Materializer materializa um plano aprovado. Construir com [NewMaterializer]. É
 // imutável após a construção; a segurança concorrente é a das portas ligadas.
 type Materializer struct {
-	admission  Admission
-	leaf       LeafAdmitter
-	spawner    Spawner
-	recorder   MaterializeRecorder
-	mapper     CapabilityMapper
-	classify   SpawnClassifier
-	effect     EffectOracle
-	childClass string
+	admission Admission
+	leaf      LeafAdmitter
+	recorder  MaterializeRecorder
+	mapper    CapabilityMapper
+	classify  SpawnClassifier
+	effect    EffectOracle
 }
 
 // Option configura o Materializer.
@@ -265,32 +246,20 @@ func WithEffectOracle(o EffectOracle) Option {
 	}
 }
 
-// WithChildAgentClass define a classe NHI das identidades filhas dos papéis
-// (default "worker"). A classe governa TTL e escopo-máximo (issuer_child); é config
-// de wiring, não afecta o clamp da autoridade.
-func WithChildAgentClass(class string) Option {
-	return func(mt *Materializer) {
-		if class != "" {
-			mt.childClass = class
-		}
-	}
-}
-
-// NewMaterializer constrói um Materializer. admission, leaf, spawner e recorder são
-// OBRIGATÓRIOS — a sua ausência é fail-closed ([ErrDeps]).
-func NewMaterializer(admission Admission, leaf LeafAdmitter, spawner Spawner, recorder MaterializeRecorder, opts ...Option) (*Materializer, error) {
-	if admission == nil || leaf == nil || spawner == nil || recorder == nil {
+// NewMaterializer constrói um Materializer. admission, leaf e recorder são
+// OBRIGATÓRIOS — a sua ausência é fail-closed ([ErrDeps]). Já NÃO recebe `spawner`: o
+// spawn de papéis saiu da materialização para o despacho governado (AOS-390, ADR-024).
+func NewMaterializer(admission Admission, leaf LeafAdmitter, recorder MaterializeRecorder, opts ...Option) (*Materializer, error) {
+	if admission == nil || leaf == nil || recorder == nil {
 		return nil, ErrDeps
 	}
 	m := &Materializer{
-		admission:  admission,
-		leaf:       leaf,
-		spawner:    spawner,
-		recorder:   recorder,
-		mapper:     DefaultCapabilityMapper,
-		classify:   DefaultClassifier,
-		effect:     DefaultEffectOracle,
-		childClass: "worker",
+		admission: admission,
+		leaf:      leaf,
+		recorder:  recorder,
+		mapper:    DefaultCapabilityMapper,
+		classify:  DefaultClassifier,
+		effect:    DefaultEffectOracle,
 	}
 	for _, o := range opts {
 		o(m)
@@ -324,12 +293,15 @@ type plannedNode struct {
 //     tools;
 //  3. FASE 1 — admissão global de TODOS os nós (AOS-027/028). Uma negação aborta
 //     fail-closed ANTES de qualquer efeito (zero materialização parcial);
-//  4. FASE 2 — materializa: folha → [LeafAdmitter] (task.node.created); papel →
-//     [Spawner] (Delegator.Spawn) com a NHI filha limitada às tools do papel;
-//  5. apensa `plan.materialized` com o mapa node_id → materialização.
+//  4. FASE 2 — ADMITE cada nó no DAG como PENDENTE ([LeafAdmitter], task.node.created):
+//     a folha com a sua tool call, o papel-que-expande SEM tool (placeholder). NÃO
+//     produz efeito — o spawn do papel e o arranque da folha são do despacho governado
+//     (plandispatch.Dispatcher/DispatchSink), disparados por elegibilidade (ADR-024);
+//  5. apensa `plan.materialized` com o mapa node_id → materialização (kind + autoridade
+//     clampada), a fonte de verdade que o sink lê para spawnar.
 //
 // Devolve o payload apenso. Fail-closed em qualquer passo — um erro de porta aborta
-// e propaga (o consolidação de reservas já efectuadas é do ciclo-de-vida do run).
+// e propaga (a consolidação de reservas já efectuadas é do ciclo-de-vida do run).
 func (m *Materializer) Materialize(ctx context.Context, req Request) (plannerevents.MaterializedPayload, error) {
 	var empty plannerevents.MaterializedPayload
 	if err := ctx.Err(); err != nil {
@@ -354,6 +326,14 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 		}
 		seen[n.NodeID] = struct{}{}
 	}
+
+	// NOTA (AOS-390, ADR-024): a materialização é ADMISSÃO-PURA e NÃO lê `conditional_on`
+	// — e isso é seguro precisamente porque admitir um nó condicional no DAG não produz
+	// efeito nenhum (o guard fail-closed de AOS-389 deixou de ser necessário). O efeito
+	// por-nó é do despacho governado (plandispatch.Dispatcher), que avalia `conditional_on`
+	// e poda `branch_not_taken` antes de qualquer spawn/arranque; um Dispatcher composto
+	// sem as portas de ramos recusa o plano fail-closed (ErrConditionalUnsupported). Sem
+	// despachante nenhum, um nó condicional fica pendente para sempre — fail-closed também.
 
 	// Classificação + clamp de autoridade, uma vez por nó.
 	planned := make([]plannedNode, 0, len(order))
@@ -398,44 +378,32 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 		}
 	}
 
-	// FASE 2 — materialização determinística.
+	// FASE 2 — ADMISSÃO no DAG (AOS-390, ADR-024): SEM efeito. Todos os nós — folhas E
+	// papéis-que-expandem — são admitidos como nós PENDENTES no DAG (`task.node.created`).
+	// A folha leva a sua tool call concreta; o papel é admitido SEM tool (placeholder
+	// pendente). NodeSpec.ToolID/Capability são omitempty e um nó tool-less é um estado
+	// válido do DAG (AOS-025); o despachante vê-o NodePending e o `DispatchSink` produz o
+	// efeito — spawn do sub-agente (papel) ou arranque (folha) — só quando o nó fica
+	// ELEGÍVEL (gate + deps + condição + cartão + headroom). É a separação de ADR-024:
+	// materializar admite, despachar produz efeito.
+	//
+	// A autoridade CLAMPADA do nó ([authorityForNode]) viaja em
+	// `plan.materialized.Nodes[].Tools` — é dali (uma só fonte de verdade) que o sink a
+	// reconstrói para o spawn do papel, com o orçamento estimado do documento.
 	matNodes := make([]plannerevents.MaterializedNode, 0, len(planned))
 	for _, p := range planned {
-		switch p.kind {
-		case plannerevents.SpawnLeaf:
-			ln := LeafNode{
-				RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
-				Capabilities: p.caps,
-			}
+		ln := LeafNode{
+			RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
+			Capabilities: p.caps,
+		}
+		if p.kind == plannerevents.SpawnLeaf {
 			if t, ok := m.primaryTool(p.node); ok {
 				ln.ToolID = t.Name
 				ln.Capability = m.mapper(t)
 			}
-			if err := m.leaf.AdmitLeaf(ctx, ln); err != nil {
-				return empty, fmt.Errorf("planmaterialize: admitir nó-folha %q: %w", p.node.NodeID, err)
-			}
-		case plannerevents.SpawnRole:
-			// ORÇAMENTO ACHATADO (fronteira honesta, §5). Todo o spawn de papel pende
-			// do nó de orçamento RAIZ do run (req.RootBudgetNode), não do papel-pai
-			// topológico. A materialização projecta a organização à CABEÇA, num único
-			// passe; o aninhamento de orçamento papel-sob-papel e a consolidação por
-			// sub-run pertencem ao ciclo-de-vida/despacho (AOS-238), a jusante e fora
-			// de AOS-237. O clamp de AUTORIDADE (Child.Authority) é por-nó e não é
-			// afectado por isto.
-			rs := RoleSpawn{
-				RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
-				ParentToken: req.ParentToken, ParentBudgetNode: req.RootBudgetNode, ChildBudgetNode: p.node.NodeID,
-				InheritedTokens: clampU64ToInt64(p.node.BudgetEstimate.Tokens), InheritedCostMicroUSD: clampU64ToInt64(p.node.BudgetEstimate.CostMicroUSD),
-				Child: identity.ChildRequest{
-					AgentID:    req.RunID + "/" + p.node.NodeID,
-					AgentClass: m.childClass,
-					// Authority CLAMPADA às tools do papel — ver authorityForNode.
-					Authority: p.caps,
-				},
-			}
-			if err := m.spawner.Spawn(ctx, rs); err != nil {
-				return empty, fmt.Errorf("planmaterialize: spawn do papel %q: %w", p.node.NodeID, err)
-			}
+		}
+		if err := m.leaf.AdmitLeaf(ctx, ln); err != nil {
+			return empty, fmt.Errorf("planmaterialize: admitir nó %q (%s): %w", p.node.NodeID, p.kind, err)
 		}
 		matNodes = append(matNodes, plannerevents.MaterializedNode{NodeID: p.node.NodeID, Kind: p.kind, Tools: p.caps})
 	}

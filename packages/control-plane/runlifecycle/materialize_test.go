@@ -85,17 +85,6 @@ func docComVerificador() plan.PlanDocument {
 	}}
 }
 
-// spawnerNulo satisfaz a porta de spawn sem delegar nada: o documento de teste não
-// tem papéis-que-expandem, pelo que ela nunca é chamada. Declarado em vez de omitido
-// porque o materializador a exige — e um duplo que registasse chamadas daria a
-// impressão de que este teste as exercita, o que não faz.
-type spawnerNulo struct{ chamado bool }
-
-func (s *spawnerNulo) Spawn(context.Context, planmaterialize.RoleSpawn) error {
-	s.chamado = true
-	return nil
-}
-
 // materializa corre a composição sob posse e devolve o payload registado.
 func materializa(ctx context.Context, t *testing.T, snap planvalidate.Snapshot, opts ...planmaterialize.Option) plannerevents.MaterializedPayload {
 	t.Helper()
@@ -122,7 +111,7 @@ func materializa(ctx context.Context, t *testing.T, snap planvalidate.Snapshot, 
 		t.Fatalf("NewBudgetAdmission: %v", err)
 	}
 
-	m, err := ten.Materializer(ctx, snap, rec, adm, &spawnerNulo{}, opts...)
+	m, err := ten.Materializer(ctx, snap, rec, adm, opts...)
 	if err != nil {
 		t.Fatalf("Materializer: %v", err)
 	}
@@ -202,7 +191,6 @@ func TestDEF273_NaoVacuidade_OraculoPorOmissaoNeutralizaOVerificador(t *testing.
 	m, err := planmaterialize.NewMaterializer(
 		admissaoSempreOK{},
 		folhaIgnorada{},
-		&spawnerNulo{},
 		&gravadorEmMemoria{},
 		// SEM WithEffectOracle: fica o DefaultEffectOracle (tudo é efeito).
 	)
@@ -264,7 +252,7 @@ func TestDEF273_SemSnapshotRecusa(t *testing.T) {
 	b, _ := budget.New("t", budget.Amount{Tokens: 10})
 	adm, _ := runlifecycle.NewBudgetAdmission(b, "t")
 
-	_, err = ten.Materializer(ctx, planvalidate.Snapshot{}, rec, adm, &spawnerNulo{})
+	_, err = ten.Materializer(ctx, planvalidate.Snapshot{}, rec, adm)
 	if !errors.Is(err, runlifecycle.ErrSemSnapshot) {
 		t.Fatalf("materializador com snapshot vazio = %v, quer runlifecycle.ErrSemSnapshot", err)
 	}

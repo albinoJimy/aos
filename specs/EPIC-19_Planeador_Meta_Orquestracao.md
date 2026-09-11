@@ -610,10 +610,11 @@ Enquanto o avaliador de ramos não estiver composto (AOS-390), o caminho de prod
 
 ## AOS-390 — Compor o despacho governado do Planeador (`plandispatch.Dispatcher` sob Tenure)
 
-<!-- rtm: adrs-mencionados -->
-<!-- Os ADR-022/ADR-023 citados neste bloco são MENÇÃO — invariantes que o ticket respeita
-     (poda `branch_not_taken`; SCH derivador, escritor único por run) — não implementação. O
-     ticket compõe/wira o Dispatcher que já existe; é o eixo que corrige DEF-272/273/274/275. -->
+<!-- Este ticket IMPLEMENTA o ADR-024 (o seu próprio) e torna o ADR-022 §2.1 efectivo em
+     runtime (a poda `branch_not_taken` deixa de ser schema-só e passa a decisão do despacho
+     composto); opera sob o ADR-023 (SCH derivador, escritor único por run). Sem marcador
+     `rtm:adrs-mencionados`: as citações contam como implementação. Consome os readers de
+     DEF-272/273 (fechados por AOS-281); NÃO fecha DEF-274/275 (wiring do gate AOS-236). -->
 
 | Campo | Valor |
 |---|---|
@@ -625,15 +626,19 @@ Enquanto o avaliador de ramos não estiver composto (AOS-390), o caminho de prod
 | Estimativa | L |
 | Dependências | AOS-281 (composição ORQ/SCH↔nó sob lease), AOS-237 (materialização), AOS-238 (porta do scheduler), AOS-389 (guard que este supersede) |
 | Bloqueia | AOS-392 (prova multi-processo), AOS-391 (T2-B ponta-a-ponta) |
-| Fecha | DEF-274/DEF-275 (residual do wiring; eixo corrigido de AOS-238 para este ticket); a row de deferimento nova do despacho fail-open |
+| Fecha | O gap de despacho não-composto (fail-open de condicionais, medido; documentado em `analises/10`): o `plandispatch.Dispatcher` passa a ter chamador de produção. **NÃO** fecha DEF-274/DEF-275 — esses são o wiring `PlanDocument→planapproval.Plan` do GATE de aprovação (AOS-236), eixo distinto do despacho. Consome os readers de DEF-272/273 (fechados por AOS-281) |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `packages/control-plane/orchestrator/plandispatch/{dispatch.go,ports.go,branches.go,condition.go}`, `packages/control-plane/runlifecycle/{readers.go,emitters.go}`, `runlifecycle.Tenure`, ADR-022, ADR-023, DEF-272/273/274/275 |
+| Documentos de referência | **ADR-024** (a mudança de fronteira do AOS-237: a materialização admite, o despacho produz efeito), `packages/control-plane/orchestrator/plandispatch/{dispatch.go,ports.go,branches.go,condition.go}`, `packages/control-plane/runlifecycle/{readers.go,emitters.go}`, `runlifecycle.Tenure`, ADR-022, ADR-023, DEF-272/273/274/275. Decisão de desenho (Opção A) na secção «Objectivo». |
 
 ### Contexto
 Medido: `plandispatch.NewDispatcher` só aparece em `_test.go`; o `DispatchSink` não tem implementação de produção (só o duplo `sinkRegistador`); o `aos-orq` não importa `plandispatch`. O pipeline T2-A (`planner_wiring.go`) termina em `Materialize` + spawn-all eager, **sem** gating de elegibilidade — logo o `depends_on` e as arestas condicionais de um plano aprovado não são respeitados em runtime. As portas de leitura que o Dispatcher consome (`LifecycleView`/`ResultView`/`PayloadView`/`BranchJournal`) **já estão implementadas** por `runlifecycle` (DEF-272/273 fechados por AOS-281). O que falta é o **chamador** e o **sink**. Esta é a etapa que DEF-272/273/274 nomeavam como eixo `AOS-238` — mas AOS-238 está **fechado** e o seu guard-test `TestBoundary_ProductionImportsAreAllowlisted` proíbe o import do módulo de ciclo-de-vida; paga-se com **ticket novo** (precedente: AOS-281).
 
 ### Objectivo
 Compor o `plandispatch.Dispatcher` de produção dentro do `aos-orq serve`, sob `runlifecycle.Tenure` (lease + fencing), como **escalonador re-invocável por passagem** que: lê o estado do ciclo de vida, decide elegibilidade (`NodePending` + `depends_on` cumpridos), **avalia arestas condicionais e poda `branch_not_taken`**, consulta o card oracle, aplica headroom de concorrência com diferimento, e entrega os nós **elegíveis** a um `DispatchSink` de produção — **in-process**, que delega o efeito ao `Delegator.Spawn`/`GraphBuilder` que já existem. Substitui a recusa do AOS-389 por avaliação real. O SCH continua **derivador** (não escreve ciclo de vida — invariante ADR-023).
+
+**Decisão de desenho — Opção A (dono, 2026-09-11).** O discovery mostrou que o `Materializer` hoje **funde** admitir-no-DAG e produzir efeito (spawn de papel up-front) — compor o Dispatcher por cima daria **duplo-efeito**. Por isso o AOS-390 **separa** as duas coisas: a materialização passa a **admissão-pura** (apensa `plan.materialized` e admite todos os nós no DAG como pendentes, sem `Delegator.Spawn` nem arranque), e o efeito por-nó move-se INTEIRAMENTE para o `DispatchSink` do Dispatcher, disparado só quando o nó fica elegível. Papéis-que-expandem passam a ser representados no DAG como nós pendentes. Reconciliar também `planmigrate.Migrator.Materialize` (2ª porta de materialização, sem chamador de produção) ao mesmo modelo.
+
+Alternativas rejeitadas: **(B)** o Dispatcher gateia ANTES da materialização — contradiz `plandispatch.PlanFrom`, que projecta o conjunto despachável a partir do MATERIALIZADO (luta contra o desenho do Dispatcher); **(C)** dois caminhos (eager sem condicionais, diferido com condicionais) — dois mecanismos divergentes para o mesmo problema, o anti-padrão que o ADR-021/DEF-271 já custou. Esta decisão **extende** o AOS-237 (a materialização continua a existir e a apensar `plan.materialized`); move apenas o *momento* e o *gating* do efeito, e mantém-se DENTRO do ADR-023 (o Dispatcher não escreve ciclo de vida; o efeito é sob a posse do lease). O ADR formal (que regista esta mudança de fronteira do AOS-237) é cunhado no canon e ratificado pelo dono na **conclusão** deste ticket, junto com a integração RTM.
 
 > **Nota de fronteira (anti-scope-creep).** O sink é **in-process**: no modelo per-run do ADR-023 o processo dono corre o laço de despacho para os seus runs, e o efeito delega no `Delegator` local. **Não** é preciso um work-queue sobre JetStream para distribuir os NÓS de um run entre processos — isso seria distribuição intra-run, que o modelo per-run torna desnecessária, e fica **fora** da v1.1.
 
