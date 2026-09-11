@@ -344,6 +344,44 @@ oposta.
 
 ---
 
+## 3-quater. Posse das PARTIÇÕES da hash-chain de auditoria (AOS-284, ADR-023)
+
+A §3-bis trata da posse de um **run** e a §3-ter da posse de um **laço**. Esta trata da posse
+de uma **partição da hash-chain de auditoria**. A cadeia é sequencial por construção — cada
+registo sela o `PrevHash` do anterior —, e dois processos a escrever a **mesma** partição
+computariam `PrevHash` de vistas diferentes: a cadeia bifurca, o WORM fica inabrível e o nó
+recusa arrancar (medido em AOS-284). A exclusão de escrita por partição é a porta
+`audit.PosseDeParticao`, arbitrada pelo lease durável do ADR-023 — mesmo padrão da §3-bis.
+
+### Atribuição determinística réplica→partição
+
+A posse responde «detenho ESTA partição?». Faltava dizer QUEM deve deter cada uma — e isso
+era, até AOS-284, uma **convenção sem guarda**: responsabilidade opaca de quem implementava a
+porta, não reconstruível por um verificador. Fecha-o uma **função pura** em
+`packages/platform/audit/atribuicao.go`:
+
+- **`AtribuirParticao(particao, replicas)`** atribui cada partição a uma réplica por
+  **rendezvous hashing (HRW)** — o dono é a réplica de maior peso `SHA-256(dominio ‖
+  len(particao) ‖ particao ‖ replica)`. É determinística e **independente da ordem** da lista
+  de réplicas, pelo que um verificador que conheça o conjunto de réplicas reconstrói a posse
+  de qualquer partição sem consultar lease store nenhum. `MapaDeAtribuicao` reconstrói a posse
+  de todas as partições enumeradas por `FileStore.Partitions()`.
+- **HRW e não módulo** (`hash % N`) porque o módulo exige índice estável por réplica e
+  remapeia quase tudo quando o conjunto muda; o HRW só remapeia as partições da réplica que
+  **sai** — cada handoff de partição é um custo, e minimizá-los é a propriedade que se quer.
+- **`AtribuicaoDeterministica`** é uma `PosseDeParticao` cuja resposta **deriva** da função: a
+  atribuição deixa de ser convenção do implementador, e escritor e verificador chegam à mesma
+  decisão. Em produção encadeia-se com o lease durável — a atribuição diz o que **reclamar**,
+  o lease **arbitra** a reclamação em tempo real.
+
+> **FRONTEIRA, para não passar por mais do que é.** A atribuição diz quem *deve* deter; a
+> exclusão em tempo real contra uma partição de rede continua a ser o lease (ADR-023), com a
+> janela inerente a qualquer lease e a rede de segurança da detecção (`TamperFork`/
+> `ErrChainForked`). E a atribuição não *inventa* réplicas: sobre um conjunto vazio nenhuma
+> partição tem dono e ninguém escreve (fail-closed), em vez de atribuir a ninguém em silêncio.
+
+---
+
 ## 4. Opções de implantação
 
 O AOS é um blueprint neutro quanto ao provedor. A mesma topologia lógica materializa-se em três modelos, que diferem sobretudo no substrato do Event Store, no isolamento das microVMs e nas fronteiras de soberania.
