@@ -281,7 +281,7 @@ com o PDP. Não expandas escopo; abre PR com o template padrão.
 | Dependências | AOS-089, EPIC-08 (métricas, evals, circuit breaker multi-sinal) |
 | Bloqueia | — |
 | Responsável sugerido | Engenheiro de Governação |
-| Documentos de referência | `tecnica/09_Governacao_Conformidade.md` §7, ADR-014 |
+| Documentos de referência | `tecnica/09_Governacao_Conformidade.md` §7, ADR-014, **ADR-025** (registo de desfecho pós-efeito; promoção abaixo de L4 não-durável; demoção durável por classe) |
 
 ### Contexto
 
@@ -293,11 +293,13 @@ Implementar o controlador de autonomia que promove um par (agente, domínio) na 
 
 ### Critérios de Aceitação
 
-- [ ] A **promoção** só ocorre quando a métrica de fiabilidade sustentada é satisfeita (ex.: taxa de erro < 2% por 30 dias **e** override-rate abaixo do limiar); caso contrário o nível mantém-se.
-- [ ] A **demoção é automática e imediata** ao detectar anomalia (pico de override-rate, acção insegura sinalizada, deriva medida), sem gate humano.
-- [ ] Os limiares de promoção/demoção são **configuráveis por política** (policy-as-code, AOS-088).
-- [ ] Cada promoção/demoção é um evento auditável com a métrica e o motivo que a justificou.
-- [ ] Uma anomalia rebaixa para um nível **mais supervisionado** (ex.: L4→L2, L3→L1) de forma determinística.
+> **Composto no nó por ADR-025 (2026-09-12).** O `autonomy.Controller` passou a ter chamador (fecha `DEF-908`). As decisões de desenho estão em `docs/adr/ADR-025-*`. Marcações e residuais abaixo.
+
+- [x] A **promoção** só ocorre quando a métrica de fiabilidade sustentada é satisfeita (ex.: taxa de erro < 2% por 30 dias **e** override-rate abaixo do limiar); caso contrário o nível mantém-se. — *`fiabilidadeAgregada` (cmd/aos) agrega a taxa de erro dos desfechos pós-efeito (`tool.call.outcome`, novo no RM) e o override-rate por proxy de escalada; `WindowOK` exige observação a cobrir a janela. **Residuais (ADR-025):** promoção automática só ABAIXO de L4 (L4/L5 exigem dual-control); NÃO durável através de reinício (reverte à base assinada — a chave do nó partilha o disco do WORM); override-rate é proxy de escalada (o sinal preciso do hitl fica por compor); agregação sobre histórico (replay) é follow-up.*
+- [x] A **demoção é automática e imediata** ao detectar anomalia (pico de override-rate, acção insegura sinalizada, deriva medida), sem gate humano. — *`autonomiaAnomalias` encaminha o TRIP do disjuntor multi-sinal (AOS-080) para `Controller.OnAnomaly`, demovendo a CLASSE. Os outros dois sinais (override-rate spike, drift) ficam por ligar — declarado: o hitl não está composto e o alerta de drift não traz agente.*
+- [x] Os limiares de promoção/demoção são **configuráveis por política** (policy-as-code, AOS-088). — *`AutonomyControlConfig` (SemVer + ContentHash) via `AOS_AUTONOMY_CONTROL`; default = a política de referência do blueprint.*
+- [x] Cada promoção/demoção é um evento auditável com a métrica e o motivo que a justificou. — *`autonomy.level_changed` selado na hash-chain WORM + span `aos.autonomy.transition` (o controlador é construído DEPOIS do tracer).* 
+- [x] Uma anomalia rebaixa para um nível **mais supervisionado** (ex.: L4→L2, L3→L1) de forma determinística. — *`demote(cur, drop, floor)`; demoção por CLASSE fecha os dois críticos medidos (a demoção de instância elevava o efectivo e abria elevação por forja).*
 
 ### Detalhes Técnicos
 
@@ -314,11 +316,11 @@ Implementar o controlador de autonomia que promove um par (agente, domínio) na 
 
 ### Definition of Done
 
-- [ ] Critérios de Aceitação satisfeitos e demonstráveis.
-- [ ] Limiares expressos como policy-as-code com teste.
-- [ ] Spans/métricas OTel das transições de nível emitidos.
-- [ ] Sem segredos; scan limpo.
-- [ ] Documentação e ADR-014 referenciados.
+- [x] Critérios de Aceitação satisfeitos e demonstráveis (com os residuais do ADR-025 declarados acima).
+- [x] Limiares expressos como policy-as-code com teste. — *`AutonomyControlConfig` + `aos090_promocao_test.go`.*
+- [x] Spans/métricas OTel das transições de nível emitidos. — *`aos.autonomy.transition`; controlador construído depois do tracer.*
+- [x] Sem segredos; scan limpo. — *desfecho/decisão selam rótulos e números, nunca payload; gates SAST/SCA na baseline.*
+- [x] Documentação e ADR-014 referenciados. — *+ ADR-025 (ratificado 2026-09-12) e `tecnica/09` §7.*
 
 ### Handoff para Claude Code
 
