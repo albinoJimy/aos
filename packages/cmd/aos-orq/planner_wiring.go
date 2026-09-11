@@ -37,7 +37,6 @@ import (
 	"time"
 
 	budget "github.com/aos-ref/control-plane/budget"
-	orchestrator "github.com/aos-ref/control-plane/orchestrator"
 	decompose "github.com/aos-ref/control-plane/orchestrator/decompose"
 	planmaterialize "github.com/aos-ref/control-plane/orchestrator/planmaterialize"
 	planner "github.com/aos-ref/control-plane/orchestrator/planner"
@@ -179,22 +178,17 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, rec *r
 		return fmt.Errorf("plano rejeitado na validação estrutural (AOS-231): %s", v.Reason)
 	}
 
-	// (7) DELEGATOR REAL + MATERIALIZAÇÃO. Substitui o recusaSpawn: um papel-que-expande
-	// passa a criar sub-agentes (AOS-026), com os MESMOS colaboradores do Planner.
-	del, err := orchestrator.NewDelegator(bud, mon, iss)
-	if err != nil {
-		return fmt.Errorf("delegator: %w", err)
-	}
+	// (7) MATERIALIZAÇÃO ADMISSÃO-PURA (AOS-390, ADR-024). A materialização admite os nós
+	// no DAG — folhas com a sua tool call, papéis-que-expandem como nós PENDENTES sem tool
+	// — e NÃO produz efeito. O spawn de papéis (Delegator.Spawn, AOS-026) e o arranque de
+	// folhas são do despacho governado (plandispatch.Dispatcher/DispatchSink), disparados
+	// por elegibilidade. A composição desse laço de despacho no `serve` é o passo aditivo
+	// seguinte deste ticket; até lá, `--goal` admite o plano sem despachar.
 	adm, err := runlifecycle.NewBudgetAdmission(bud, runID)
 	if err != nil {
 		return err
 	}
-	spawner := planmaterialize.NewDelegatorSpawner(del, func(h *orchestrator.SpawnHandle) {
-		if h != nil {
-			fmt.Printf("  spawn: no=%s run=%s\n", h.ChildTaskID, h.RunID)
-		}
-	})
-	m, err := ten.Materializer(ctx, snap, rec, adm, spawner)
+	m, err := ten.Materializer(ctx, snap, rec, adm)
 	if err != nil {
 		return fmt.Errorf("materializador: %w", err)
 	}

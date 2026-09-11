@@ -35,14 +35,16 @@ const planoCondicional = `{
   ]
 }`
 
-// TestAOS389_PlanDocCondicionalRecusado prova, pela CADEIA REAL do binário (superfície
-// `--plan-doc`), que um plano APROVADO com `conditional_on` é RECUSADO fail-closed em vez
-// de materializar em silêncio. É a prova ponta-a-ponta do defeito medido em 2026-09-10,
-// na superfície de produção onde ele era alcançável.
+// TestAOS390_PlanDocCondicionalAdmitido prova, pela CADEIA REAL do binário (superfície
+// `--plan-doc`), a mudança de semântica do ADR-024: a materialização é ADMISSÃO-PURA,
+// pelo que um plano APROVADO com `conditional_on` é ADMITIDO (nós pendentes no DAG,
+// `plan.materialized` apenso) em vez de recusado. Admitir NÃO é executar — nenhum efeito
+// nasce da materialização; a avaliação da condição e a poda `branch_not_taken` são do
+// despacho governado, que esta via (`--plan-doc`, sem Delegator) não compõe.
 //
-// SUPERADO POR AOS-390: quando o avaliador de ramos estiver composto, este `--plan-doc`
-// passa a materializar o plano (com a condição avaliada), e este teste inverte-se.
-func TestAOS389_PlanDocCondicionalRecusado(t *testing.T) {
+// Inverte o antigo TestAOS389_PlanDocCondicionalRecusado: o guard interino que recusava
+// deixou de existir porque admitir um nó condicional no DAG não produz efeito nenhum.
+func TestAOS390_PlanDocCondicionalAdmitido(t *testing.T) {
 	bin := construir(t)
 	dir := t.TempDir()
 	wal := filepath.Join(dir, "es.wal")
@@ -54,11 +56,11 @@ func TestAOS389_PlanDocCondicionalRecusado(t *testing.T) {
 	r := correr(t, bin, "serve", "--wal", wal, "--run", "run-cond", "--plan", "plan-cond",
 		"--plan-doc", docPath, "--snapshot", snapPath, "--worker", "p1")
 
-	if r.code == exitOK {
-		t.Fatalf("--plan-doc condicional foi ACEITE quando devia recusar (fail-open)\nstdout:\n%s", r.stdout)
+	if r.code != exitOK {
+		t.Fatalf("--plan-doc condicional foi RECUSADO quando devia ADMITIR (admit-only, ADR-024)\nstdout:\n%s\nstderr:\n%s", r.stdout, r.stderr)
 	}
-	// A recusa nomeia o eixo que a fecha por avaliação real (AOS-390).
-	if !strings.Contains(r.stderr, "AOS-390") && !strings.Contains(r.stderr, "conditional_on") {
-		t.Fatalf("a recusa nao menciona conditional_on/AOS-390\nstderr:\n%s", r.stderr)
+	// Admitido: os dois nós (recolha, recuperacao) materializam.
+	if !strings.Contains(r.stdout, "materializado:") || !strings.Contains(r.stdout, "nos=2") {
+		t.Fatalf("a materialização não admitiu os 2 nós do plano condicional:\n%s", r.stdout)
 	}
 }

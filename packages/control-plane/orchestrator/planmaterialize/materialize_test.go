@@ -18,11 +18,23 @@ import (
 
 type fakeAdmission struct {
 	deny  map[string]string // node_id -> reason (ausente = admitido)
-	calls []string
+	calls []string          // ordem de admissão (node_ids)
+	// Captura dos inteiros do AdmitRequest, por nó — a materialização é hoje o ÚNICO
+	// ponto que consome clampU64ToInt64 (o RoleSpawn saiu; ver materialize_clamp_test.go).
+	tokens       map[string]int64
+	costMicroUSD map[string]int64
 }
 
 func (f *fakeAdmission) Admit(_ context.Context, req AdmitRequest) (AdmitVerdict, error) {
 	f.calls = append(f.calls, req.NodeID)
+	if f.tokens == nil {
+		f.tokens = map[string]int64{}
+	}
+	if f.costMicroUSD == nil {
+		f.costMicroUSD = map[string]int64{}
+	}
+	f.tokens[req.NodeID] = req.Tokens
+	f.costMicroUSD[req.NodeID] = req.CostMicroUSD
 	if reason, ok := f.deny[req.NodeID]; ok {
 		return AdmitVerdict{Admitted: false, Reason: reason}, nil
 	}
@@ -42,25 +54,6 @@ func (f *fakeLeaf) AdmitLeaf(_ context.Context, n LeafNode) error {
 	return nil
 }
 
-type spawnCall struct {
-	nodeID    string
-	authority []string
-	childID   string
-	parentBud string
-}
-
-type fakeSpawner struct{ calls []spawnCall }
-
-func (f *fakeSpawner) Spawn(_ context.Context, r RoleSpawn) error {
-	f.calls = append(f.calls, spawnCall{
-		nodeID:    r.NodeID,
-		authority: r.Child.Authority,
-		childID:   r.Child.AgentID,
-		parentBud: r.ParentBudgetNode,
-	})
-	return nil
-}
-
 type fakeRecorder struct {
 	payloads []plannerevents.MaterializedPayload
 }
@@ -75,7 +68,6 @@ type harness struct {
 	m   *Materializer
 	adm *fakeAdmission
 	lf  *fakeLeaf
-	sp  *fakeSpawner
 	rec *fakeRecorder
 }
 
@@ -83,13 +75,35 @@ func newHarness(t *testing.T, deny map[string]string, opts ...Option) harness {
 	t.Helper()
 	adm := &fakeAdmission{deny: deny}
 	lf := &fakeLeaf{}
-	sp := &fakeSpawner{}
 	rec := &fakeRecorder{}
-	m, err := NewMaterializer(adm, lf, sp, rec, opts...)
+	m, err := NewMaterializer(adm, lf, rec, opts...)
 	if err != nil {
 		t.Fatalf("NewMaterializer: %v", err)
 	}
-	return harness{m: m, adm: adm, lf: lf, sp: sp, rec: rec}
+	return harness{m: m, adm: adm, lf: lf, rec: rec}
+}
+
+// leafCallFor devolve a admissão no DAG de um nó (folha OU papel — pós ADR-024 ambos
+// passam por AdmitLeaf) e se ela existe.
+func leafCallFor(calls []leafCall, id string) (leafCall, bool) {
+	for _, c := range calls {
+		if c.nodeID == id {
+			return c, true
+		}
+	}
+	return leafCall{}, false
+}
+
+// nodeInPayload devolve o nó materializado (Kind + autoridade CLAMPADA em Tools) do
+// facto plan.materialized — a fonte de verdade da classificação folha-vs-papel e da
+// autoridade, agora que o spawn saiu da materialização.
+func nodeInPayload(p plannerevents.MaterializedPayload, id string) (plannerevents.MaterializedNode, bool) {
+	for _, n := range p.Nodes {
+		if n.NodeID == id {
+			return n, true
+		}
+	}
+	return plannerevents.MaterializedNode{}, false
 }
 
 // tool constrói uma ToolRef pinada (name+version+digest) — forma exigida pelo schema.
@@ -114,7 +128,9 @@ func baseReq(nodes ...plan.Node) Request {
 }
 
 // ---------------------------------------------------------------------------
-// 1) Papel-que-expande → Spawn (sub-árvore); folha → task.node.created (nó único).
+// 1) Papel-que-expande e folha são AMBOS admitidos no DAG (pós ADR-024): o papel
+//    SEM tool (placeholder pendente), a folha com a sua tool call. A distinção
+//    folha-vs-papel e a autoridade clampada lêem-se do payload plan.materialized.
 // ---------------------------------------------------------------------------
 
 func TestRoleExpandsLeafBecomesNode(t *testing.T) {
@@ -129,36 +145,26 @@ func TestRoleExpandsLeafBecomesNode(t *testing.T) {
 		t.Fatalf("Materialize: %v", err)
 	}
 
-	// Não-vacuidade: AMBOS os ramos foram exercidos.
-	if len(h.sp.calls) != 1 || len(h.lf.calls) != 1 {
-		t.Fatalf("esperava 1 spawn + 1 folha; got spawns=%v folhas=%v", h.sp.calls, h.lf.calls)
+	// Não-vacuidade: AMBOS os nós foram admitidos no DAG (não há mais chamada de spawn
+	// na materialização — o spawn do papel é do DispatchSink, noutro package).
+	if len(h.lf.calls) != 2 {
+		t.Fatalf("esperava 2 nós admitidos (arch, impl); got %+v", h.lf.calls)
 	}
-	// Papel: arch → Spawn com a estrutura certa.
-	if h.sp.calls[0].nodeID != "arch" {
-		t.Errorf("papel esperado 'arch', got %q", h.sp.calls[0].nodeID)
+	// Papel: arch admitido SEM tool (placeholder pendente).
+	archLeaf, ok := leafCallFor(h.lf.calls, "arch")
+	if !ok {
+		t.Fatalf("papel 'arch' não foi admitido no DAG: %+v", h.lf.calls)
 	}
-	if h.sp.calls[0].childID != "run-1/arch" || h.sp.calls[0].parentBud != "root" {
-		t.Errorf("estrutura do spawn errada: %+v", h.sp.calls[0])
+	if archLeaf.toolID != "" {
+		t.Errorf("papel 'arch' devia ser admitido SEM tool (placeholder), got toolID=%q", archLeaf.toolID)
 	}
-	if !reflect.DeepEqual(h.sp.calls[0].authority, []string{"cap:tool:toolA"}) {
-		t.Errorf("authority do papel = %v, esperado [cap:tool:toolA]", h.sp.calls[0].authority)
+	// Folha: impl admitida com a sua tool call concreta.
+	implLeaf, ok := leafCallFor(h.lf.calls, "impl")
+	if !ok || implLeaf.toolID != "toolB" {
+		t.Errorf("folha 'impl' errada: %+v (ok=%v)", implLeaf, ok)
 	}
-	// Folha: impl → task.node.created (nó único) com a sua tool call.
-	if h.lf.calls[0].nodeID != "impl" || h.lf.calls[0].toolID != "toolB" {
-		t.Errorf("folha errada: %+v", h.lf.calls[0])
-	}
-	// Cruzamento: arch NÃO virou folha; impl NÃO virou spawn.
-	for _, c := range h.lf.calls {
-		if c.nodeID == "arch" {
-			t.Errorf("arch (papel) não devia virar folha")
-		}
-	}
-	for _, c := range h.sp.calls {
-		if c.nodeID == "impl" {
-			t.Errorf("impl (folha) não devia virar spawn")
-		}
-	}
-	// plan.materialized reflecte os kinds, em ordem canónica [arch, impl].
+	// plan.materialized reflecte os kinds e a autoridade clampada, em ordem canónica
+	// [arch, impl]. É daqui (não de um spawn) que se lê papel-vs-folha e a autoridade.
 	if len(h.rec.payloads) != 1 {
 		t.Fatalf("esperava 1 plan.materialized, got %d", len(h.rec.payloads))
 	}
@@ -187,10 +193,12 @@ func TestChildAuthorityClampedToRoleTools(t *testing.T) {
 	if _, err := h.m.Materialize(context.Background(), req); err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	if len(h.sp.calls) != 1 {
-		t.Fatalf("esperava 1 spawn, got %d", len(h.sp.calls))
+	// A autoridade CLAMPADA do papel lê-se do payload (Nodes[].Tools), não de um spawn.
+	archNode, ok := nodeInPayload(h.rec.payloads[0], "arch")
+	if !ok {
+		t.Fatalf("nó 'arch' ausente do payload: %+v", h.rec.payloads[0].Nodes)
 	}
-	auth := h.sp.calls[0].authority
+	auth := archNode.Tools
 	// A tool do PRÓPRIO papel está presente.
 	if !contains(auth, "cap:tool:toolA") {
 		t.Errorf("authority deveria conter a tool do papel cap:tool:toolA; got %v", auth)
@@ -229,11 +237,8 @@ func TestDeterministicMaterialization(t *testing.T) {
 	if !reflect.DeepEqual(h1.adm.calls, h2.adm.calls) {
 		t.Errorf("ordem de admissão não determinística: %v vs %v", h1.adm.calls, h2.adm.calls)
 	}
-	if !reflect.DeepEqual(h1.sp.calls, h2.sp.calls) {
-		t.Errorf("spawns não determinísticos: %v vs %v", h1.sp.calls, h2.sp.calls)
-	}
 	if !reflect.DeepEqual(h1.lf.calls, h2.lf.calls) {
-		t.Errorf("folhas não determinísticas: %v vs %v", h1.lf.calls, h2.lf.calls)
+		t.Errorf("admissões no DAG não determinísticas: %v vs %v", h1.lf.calls, h2.lf.calls)
 	}
 	if !reflect.DeepEqual(p1, p2) {
 		t.Errorf("payloads plan.materialized divergem: %+v vs %+v", p1, p2)
@@ -249,9 +254,9 @@ func TestDeterministicMaterialization(t *testing.T) {
 	if _, err := h3.m.Materialize(context.Background(), shuffled); err != nil {
 		t.Fatalf("run3: %v", err)
 	}
-	if !reflect.DeepEqual(h1.sp.calls, h3.sp.calls) || !reflect.DeepEqual(h1.lf.calls, h3.lf.calls) {
-		t.Errorf("ordem do slice afectou a materialização (não canónica): sp %v vs %v ; lf %v vs %v",
-			h1.sp.calls, h3.sp.calls, h1.lf.calls, h3.lf.calls)
+	if !reflect.DeepEqual(h1.lf.calls, h3.lf.calls) {
+		t.Errorf("ordem do slice afectou a materialização (não canónica): lf %v vs %v",
+			h1.lf.calls, h3.lf.calls)
 	}
 }
 
@@ -271,10 +276,10 @@ func TestNodeNotAdmittedFailsClosed(t *testing.T) {
 	if !errors.Is(err, ErrNodeNotAdmitted) {
 		t.Fatalf("esperava ErrNodeNotAdmitted, got %v", err)
 	}
-	// ZERO efeitos: nem spawn, nem folha, nem plan.materialized.
-	if len(h.sp.calls) != 0 || len(h.lf.calls) != 0 || len(h.rec.payloads) != 0 {
-		t.Errorf("materialização parcial após negação: spawns=%v folhas=%v rec=%d",
-			h.sp.calls, h.lf.calls, len(h.rec.payloads))
+	// ZERO efeitos: nenhum nó admitido no DAG, nenhum plan.materialized apenso.
+	if len(h.lf.calls) != 0 || len(h.rec.payloads) != 0 {
+		t.Errorf("materialização parcial após negação: admissões=%v rec=%d",
+			h.lf.calls, len(h.rec.payloads))
 	}
 }
 
@@ -302,7 +307,7 @@ func TestEmitsPlanMaterializedConstant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRecorder: %v", err)
 	}
-	m, err := NewMaterializer(&fakeAdmission{}, &fakeLeaf{}, &fakeSpawner{}, realRec)
+	m, err := NewMaterializer(&fakeAdmission{}, &fakeLeaf{}, realRec)
 	if err != nil {
 		t.Fatalf("NewMaterializer: %v", err)
 	}
@@ -332,11 +337,14 @@ func TestEmitsPlanMaterializedConstant(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestConstructionAndRequestGuards(t *testing.T) {
-	if _, err := NewMaterializer(nil, &fakeLeaf{}, &fakeSpawner{}, &fakeRecorder{}); !errors.Is(err, ErrDeps) {
+	if _, err := NewMaterializer(nil, &fakeLeaf{}, &fakeRecorder{}); !errors.Is(err, ErrDeps) {
 		t.Errorf("admission nil deveria dar ErrDeps, got %v", err)
 	}
-	if _, err := NewMaterializer(&fakeAdmission{}, nil, &fakeSpawner{}, &fakeRecorder{}); !errors.Is(err, ErrDeps) {
+	if _, err := NewMaterializer(&fakeAdmission{}, nil, &fakeRecorder{}); !errors.Is(err, ErrDeps) {
 		t.Errorf("leaf nil deveria dar ErrDeps, got %v", err)
+	}
+	if _, err := NewMaterializer(&fakeAdmission{}, &fakeLeaf{}, nil); !errors.Is(err, ErrDeps) {
+		t.Errorf("recorder nil deveria dar ErrDeps, got %v", err)
 	}
 	h := newHarness(t, nil)
 	if _, err := h.m.Materialize(context.Background(), baseReq()); !errors.Is(err, ErrInvalidRequest) {
@@ -384,10 +392,15 @@ func TestLeafMultiToolPreservesAuthority(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 8) Orçamento achatado (fronteira §5): TODO spawn de papel pende do nó de orçamento
-//    RAIZ do run, mesmo um papel que depende de OUTRO papel (sem aninhamento).
-//    Falha-antes: se o materializador aninhasse o orçamento (ParentBudgetNode = papel-
-//    pai), o spawn de 'b' teria parentBud "a", não "root".
+// 8) Cadeia de papéis: 'a' e 'b' (que dependem um do outro) são AMBOS classificados
+//    papel-que-expande e admitidos no DAG SEM tool; 'c' é folha.
+//
+//    NOTA (AOS-390, ADR-024): a propriedade original — "orçamento achatado à raiz"
+//    (ParentBudgetNode == root, sem aninhamento) — era do RoleSpawn e SAIU da
+//    materialização. O orçamento dos spawns é hoje reconstruído pelo DispatchSink
+//    (noutro package) a partir do payload; não há sink a inventar aqui. O que a
+//    materialização ainda garante, e é o que se assevera, é a CLASSIFICAÇÃO topológica
+//    (papel-vs-folha) e a admissão sem-tool dos papéis.
 // ---------------------------------------------------------------------------
 
 func TestRoleBudgetIsFlatToRoot(t *testing.T) {
@@ -401,13 +414,19 @@ func TestRoleBudgetIsFlatToRoot(t *testing.T) {
 	if _, err := h.m.Materialize(context.Background(), req); err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	if len(h.sp.calls) != 2 {
-		t.Fatalf("esperava 2 spawns de papel (a,b), got %d: %v", len(h.sp.calls), h.sp.calls)
-	}
-	for _, c := range h.sp.calls {
-		if c.parentBud != "root" {
-			t.Errorf("spawn %q: parentBud = %q, esperado 'root' (orçamento achatado, sem aninhamento)", c.nodeID, c.parentBud)
+	// 'a' e 'b' são papéis no payload e foram admitidos no DAG SEM tool; 'c' é folha.
+	for _, id := range []string{"a", "b"} {
+		n, ok := nodeInPayload(h.rec.payloads[0], id)
+		if !ok || n.Kind != plannerevents.SpawnRole {
+			t.Errorf("%q devia ser papel no payload, got %+v (ok=%v)", id, n, ok)
 		}
+		lc, ok := leafCallFor(h.lf.calls, id)
+		if !ok || lc.toolID != "" {
+			t.Errorf("papel %q devia ser admitido SEM tool: %+v (ok=%v)", id, lc, ok)
+		}
+	}
+	if n, ok := nodeInPayload(h.rec.payloads[0], "c"); !ok || n.Kind != plannerevents.SpawnLeaf {
+		t.Errorf("'c' devia ser folha no payload, got %+v (ok=%v)", n, ok)
 	}
 }
 
