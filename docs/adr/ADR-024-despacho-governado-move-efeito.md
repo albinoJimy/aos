@@ -4,9 +4,9 @@
 |---|---|
 | **ADR** | 024 |
 | **Título** | A materialização passa a ADMITIR o plano no DAG sem produzir efeito; o efeito por-nó (spawn de papel, arranque de folha) move-se para o despacho governado (`plandispatch.Dispatcher`), que decide a elegibilidade passagem a passagem |
-| **Estado** | **Proposto** — aguarda ratificação por autoridade de dono (Carta §6) |
-| **Data** | 2026-09-11 (proposto) |
-| **Deciders** | Executor de AOS-390 (proposta) · Dono do produto (ratificação — pendente) |
+| **Estado** | **Aceite** — ratificado por autoridade de dono a 2026-09-11 (AOS-390) |
+| **Data** | 2026-09-11 (proposto e **ratificado** na mesma data) |
+| **Deciders** | Executor de AOS-390 (proposta) · **Dono do produto (ratificação, 2026-09-11)** |
 | **Contexto-fonte** | `specs/EPIC-19_Planeador_Meta_Orquestracao.md` §AOS-237/AOS-238/AOS-390; ADR-022 §2.1 (arestas condicionais, `branch_not_taken`); ADR-023 (escritor único por-run; o SCH deriva); ADR-018 (fronteira nó↔ORQ/SCH); `packages/control-plane/orchestrator/planmaterialize/materialize.go`; `packages/control-plane/orchestrator/plandispatch/dispatch.go`; `packages/cmd/aos-orq/dispatch_wiring.go` |
 | **ADRs relacionados** | **ADR-022** (torna a semântica condicional de §2.1 efectiva em runtime), **ADR-023** (opera DENTRO dele — o despacho não escreve ciclo de vida; o efeito é sob a posse do lease), **ADR-018** (nada muda no nó `aos`), ADR-020 (planeador como agente governado) |
 | **Supersede** | — (EXTENDE o AOS-237; não o descarta) |
@@ -44,4 +44,4 @@ Duas consequências medidas: (1) **duplo-efeito** — compor o Dispatcher sobre 
 
 ## 5. Estado e ratificação
 
-**Proposto.** A decisão da §2 fica sujeita a ratificação por autoridade de dono (Carta §6), tal como o ADR-023. Até lá, o AOS-390 implementa contra este ADR como proposta; a ratificação converte-o em autoridade congelada. Este ADR **não** reabre o AOS-237: extende-o (a materialização continua a existir e a apensar `plan.materialized`), movendo apenas o momento e o gating do efeito.
+**Aceite (ratificado a 2026-09-11, autoridade de dono).** A decisão da §2 é agora **autoridade congelada** e não se re-litiga sem emenda datada (Carta §6): o efeito de despacho vive no despacho governado, não na materialização. A ratificação **supera** a abordagem de spawn-na-materialização do AOS-393 (que fez o role-spawn funcional no `--goal`): as correcções habilitadoras do AOS-393 (registo `agent.spawn` no RM, classe `worker`, união de autoridade do pai, gate de profundidade) são PRESERVADAS e portadas para o `DispatchSink`; o que muda é o *momento* do efeito (no despacho, após avaliar elegibilidade e condicionais), não essas correcções. Este ADR **não** reabre o AOS-237: extende-o (a materialização continua a existir e a apensar `plan.materialized`), movendo apenas o momento e o gating do efeito.

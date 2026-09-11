@@ -125,12 +125,12 @@ A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a
 | **ADR-021** | Roteamento por scoring ponderado determinístico no Model Gateway (task-fit + perfis de pesos versionados, sem exploração online) | Aceite | 4 | AOS-269, AOS-278, AOS-280, AOS-390 | `tecnica/09`, `tecnica/11` |
 | **ADR-022** | Extensões declarativas ao grafo de plano: arestas condicionais, papel verificador e payload tipado por aresta — sem ciclos, sem blackboard | Aceite | 7 | AOS-270, AOS-271, AOS-272, AOS-273, AOS-278, AOS-279, AOS-390 | `tecnica/09`, `tecnica/11` |
 | **ADR-023** | Escritor único do ciclo de vida por-run: a autoridade é o LEASE, não o componente (o SCH deriva do log; o ORQ escreve só sob posse e sobre grafo re-hidratado) — extende o ADR-018 ao distribuído | Ratificado | 7 | AOS-100, AOS-281, AOS-282, AOS-283, AOS-284, AOS-326, AOS-390 | `tecnica/09`, `tecnica/10`, `tecnica/11` |
-| **ADR-024** | O efeito de despacho move-se da materialização para o despacho governado: a materialização admite o plano no DAG sem efeito; o `plandispatch.Dispatcher` decide a elegibilidade por passagem e produz o efeito (extende o AOS-237, dentro do ADR-023) | Proposto | 1 | AOS-390 | `tecnica/09`, `tecnica/11` |
+| **ADR-024** | O efeito de despacho move-se da materialização para o despacho governado: a materialização admite o plano no DAG sem efeito; o `plandispatch.Dispatcher` decide a elegibilidade por passagem e produz o efeito (extende o AOS-237, dentro do ADR-023; supera o spawn-na-materialização do AOS-393, preservando as suas correcções) | Ratificado | 1 | AOS-390 | `tecnica/09`, `tecnica/11` |
 
 **Cobertura: 24/24 ADRs têm ≥ 1 ticket implementador.**
 
 - **Sub-cobertura (≤3 tickets):** 
-  - **ADR-024** (O efeito de despacho move-se da materialização para o despacho governado: a materialização admite o plano no DAG sem efeito; o `plandispatch.Dispatcher` decide a elegibilidade por passagem e produz o efeito (extende o AOS-237, dentro do ADR-023)) — 1 ticket(s): AOS-390.
+  - **ADR-024** (O efeito de despacho move-se da materialização para o despacho governado: a materialização admite o plano no DAG sem efeito; o `plandispatch.Dispatcher` decide a elegibilidade por passagem e produz o efeito (extende o AOS-237, dentro do ADR-023; supera o spawn-na-materialização do AOS-393, preservando as suas correcções)) — 1 ticket(s): AOS-390.
 
 ## 5. Matriz NFR × ticket de verificação
 
