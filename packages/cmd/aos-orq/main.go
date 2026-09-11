@@ -244,7 +244,17 @@ func cmdServe(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, *worker); err != nil {
+		// AOS-391: sem fixture, a decomposição usa o Model Gateway (LLM vivo) lido do
+		// ambiente. Fail-closed: sem fixture E sem gateway não há modelo — o `--goal` recusa
+		// em vez de decompor com um modelo-fantasma.
+		gwCfg, err := gatewayConfigFromEnv()
+		if err != nil {
+			return err
+		}
+		if model == nil && gwCfg == nil {
+			return errors.New("--goal exige --decompose-fixture (pipeline offline) OU o Model Gateway (AOS_MODEL_ENDPOINT + AOS_MODEL_NAME); nenhum composto")
+		}
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker); err != nil {
 			return err
 		}
 	}

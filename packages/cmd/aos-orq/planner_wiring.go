@@ -30,7 +30,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -83,7 +82,10 @@ func (m fixtureModel) Complete(_ context.Context, _, _ string) (string, error) {
 // um modelo vazio seria a capacidade-fantasma que o banner de postura existe para evitar.
 func modeloDeDecomposicao(fixturePath string) (decompose.Model, error) {
 	if fixturePath == "" {
-		return nil, errors.New("--goal sem modelo: o Model Gateway ainda nao esta composto neste binario (T2-B); para exercitar o pipeline use --decompose-fixture com um PlanDocument")
+		// Sem fixture: a decomposição usará o Model Gateway (AOS-391), composto em
+		// decomporEMaterializar sob a NHI do run. Se também não houver gateway
+		// (AOS_MODEL_ENDPOINT ausente), o chamador recusa fail-closed. nil ⇒ "usar gateway".
+		return nil, nil
 	}
 	return carregarFixtureModel(fixturePath)
 }
@@ -105,7 +107,7 @@ func carregarFixtureModel(path string) (fixtureModel, error) {
 // o backbone (identidade real + RM mínimo + orçamento partilhado), decompõe o objectivo
 // pelo PLANEADOR GOVERNADO, valida a estrutura (AOS-231) e materializa com o DELEGATOR
 // REAL. Fail-closed em cada passo. O gate humano fica de fora (DEF-274).
-func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, worker string) error {
+func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string) error {
 	runID := ten.RunID()
 
 	// (1) BACKBONE DE IDENTIDADE REAL — emissor efémero + raiz humana + token do run.
@@ -120,8 +122,13 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	// IssueChild do spawn recusa (Authority ⊄ folha-do-pai ∩ Scope-da-classe). A classe do
 	// planeador NÃO as inclui — o planeador decompõe, não invoca tools.
 	toolCaps := toolCapabilities(snap)
+	// AOS-391: o token do run (coordenador) SELA `model:invoke` — é o Principal que o
+	// estágio authn REAL do Model Gateway verifica na decomposição por LLM (`--goal` sem
+	// fixture). capPlan + toolCaps + model:invoke. (Fidelidade ADR-020 residual: o ideal
+	// seria a NHI `agent:planner`, mas o planner não expõe o token filho ao decompositor.)
+	coordCaps := append(append([]string{capPlan}, toolCaps...), modelInvokeCapability)
 	classes := map[string]identity.ClassPolicy{
-		classeCoordenador: {TTL: tokenTTL, Scope: append([]string{capPlan}, toolCaps...)},
+		classeCoordenador: {TTL: tokenTTL, Scope: coordCaps},
 		classePlaneador:   {TTL: tokenTTL, Scope: []string{capPlan}},
 		// classeWorker carrega capPlan + toolCaps (correcção habilitadora do AOS-393): o
 		// spawn de um papel (agora disparado pelo DispatchSink, ADR-024) cunha uma NHI filha
@@ -138,7 +145,7 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 		UserID:        "human:" + worker,
 		AgentID:       "agt-" + runID,
 		AgentClass:    classeCoordenador,
-		UserAuthority: append([]string{capPlan}, toolCaps...),
+		UserAuthority: coordCaps,
 	})
 	if err != nil {
 		return fmt.Errorf("token NHI do run: %w", err)
@@ -164,6 +171,19 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	bud, err := budget.New(runID, budget.Amount{Tokens: materializeBudgetTokens, CostMicroUSD: materializeBudgetCost})
 	if err != nil {
 		return fmt.Errorf("orçamento da árvore: %w", err)
+	}
+
+	// (3-bis) MODEL GATEWAY (AOS-391) — quando NÃO há fixture, o `model` chega nil e a
+	// decomposição usa o LLM vivo via Model Gateway, sob a identidade do issuer efémero e o
+	// token do run (que sela `model:invoke`). O verifier trusta o issuer deste run. Sem
+	// gateway configurado, é fail-closed (a montante, em main).
+	if model == nil {
+		verifier := identity.NewVerifier(identity.WithTrustedIssuer("iss:aos-orq", iss.PublicKey()))
+		gwModel, mErr := construirModeloGateway(ctx, gwCfg, verifier, runTok.Compact)
+		if mErr != nil {
+			return fmt.Errorf("model gateway: %w", mErr)
+		}
+		model = gwModel
 	}
 
 	// (4) DECOMPOSER + PLANEADOR GOVERNADO.
