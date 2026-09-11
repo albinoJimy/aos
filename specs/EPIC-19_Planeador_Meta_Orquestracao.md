@@ -685,12 +685,14 @@ Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nome
 Compor um `decompose.Model` de produção que invoca o Model Gateway para produzir o `PlanDocument` a partir do `goal`, sob a identidade e o orçamento corretos, substituindo o `fixtureModel` no caminho `--goal`. Fecha DEF-803 e o critério de saída do goal→DAG real.
 
 ### Critérios de Aceitação
-- [ ] `--goal` **sem** `--decompose-fixture` produz um `PlanDocument` via Model Gateway (deixa de recusar); `--decompose-fixture` continua disponível para testes offline.
-- [ ] A invocação corre sob NHI com autoridade `model:invoke` **verificada** (não um token sem escopo); a decisão ADR-020 sobre qual identidade usar está documentada e implementada.
-- [ ] A reserva de planeamento é admitida antes da decomposição (AOS-234) e o custo do turno flui para o burn-down (AOS-259).
-- [ ] O `PlanDocument` produzido passa pelo validador puro (AOS-231); se o modelo emitir arestas condicionais, elas são **avaliadas** por AOS-390 (nem recusadas por AOS-389, nem executadas fail-open).
-- [ ] Fail-closed preservado: falha do Gateway, token sem `model:invoke`, ou plano inválido ⇒ o run não avança com plano fantasma (erro declarado, nada spawnado).
-- [ ] O golden-set/eval-gate do planeador (AOS-241) continua verde com o modelo real atrás de doubles no gate offline.
+- [x] `--goal` **sem** `--decompose-fixture` produz um `PlanDocument` via Model Gateway (deixa de recusar); `--decompose-fixture` continua disponível para testes offline. *(Cablagem entregue: `packages/cmd/aos-orq/model_gateway_wiring.go` — `gatewayDecomposeModel` fala directo com `port.Gateway.Chat` (system+user); composição via `modelgateway.NewProduction` em `decomporEMaterializar`. Build OFFLINE verde. O caminho VIVO é **env-gated** — `AOS_MODEL_ENDPOINT`+`AOS_MODEL_NAME`+credencial+rede — corre onde há endpoint, como os testes `--nats` cluster-gated.)*
+- [x] A invocação corre sob NHI com `model:invoke` **verificada**; a decisão ADR-020 está documentada e implementada. *(O token do run sela `model:invoke` (`planner_wiring.go`, `coordCaps`); o estágio authn REAL do gateway (`authn.New(verifier, autoridadeModelo, LoadPolicy())`) verifica-o fail-closed. Fidelidade ADR-020 RESIDUAL declarada: usa-se o token do RUN, não o `agent:planner`, porque o `planner.Planner` não expõe o token filho ao decompositor — follow-up no control-plane.)*
+- [~] A reserva de planeamento é admitida antes da decomposição (AOS-234) — SIM (via `planner.Planner`). O custo do turno para o burn-down (AOS-259) — `Cost: nil` (sem tabela de preços montada) ⇒ transporta ZERO declarado; montar o `cost.Recorder` (à imagem de `cmd/aos/model_pricing_env.go`) é follow-up.
+- [x] O `PlanDocument` passa pelo validador puro (AOS-231) e, se tiver condicionais, são **avaliadas** por AOS-390 (landed) — nem recusadas nem fail-open. *(O caminho `--goal` valida com `planvalidate.Validate` e despacha via o Dispatcher composto.)*
+- [x] Fail-closed preservado: falha do gateway / token sem `model:invoke` / resposta sem escolhas ⇒ erro, nada spawnado. *(Testado: `TestAOS391_GatewayDecomposeModel_SemEscolhasFailClosed`; deny do authn propaga; `main` recusa sem fixture nem gateway.)*
+- [~] Golden-set/eval-gate (AOS-241) com o modelo atrás de doubles: o adaptador é provado offline com `fakeGateway` (`TestAOS391_*`); a integração com o harness de eval-gate do planeador não foi tocada — follow-up.
+
+> **Realização (2026-09-11).** Bloqueio 1 (AOS-390 não-landed) CAÍDO — AOS-390 fundido, condicionais avaliadas. Bloqueio 2 (LLM vivo offline) tratado como os testes cluster-gated: **cablagem + fake offline entregues; o caminho vivo é env-gated**. `go.mod` do aos-orq ganhou `model-gateway` (+ scheduler/audit/registry/memory/eval) por `replace` path-local — build offline verde, zero deps externas. DEF-803 mantém-se FECHADO-RESIDUAL (este ticket não o re-fecha).
 
 ### Pré-requisitos e bloqueios de ambiente (discovery 2026-09-10)
 Discovery read-only registada para não perder o trabalho. **Dois bloqueios independentes impedem o fecho de AOS-391 num ambiente offline:**
