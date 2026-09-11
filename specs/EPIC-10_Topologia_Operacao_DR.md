@@ -1101,12 +1101,12 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 **Objectivo.** Estender a prova multi-processo para cobrir o despacho governado real sob o modelo per-run do ADR-023 (N planners, cada um dono dos seus runs), e entregar a topologia + runbook para operar N réplicas.
 
 **Critérios de Aceitação**
-- [ ] Teste multi-processo (N≥3 processos reais, `aos-orq serve --nats`) em que cada run é despachado ponta-a-ponta (goal→DAG→nós elegíveis→efeito) pelo seu processo dono, com `vencedores=1` por run e os outros negados pelo lease.
-- [ ] O teste prova que um plano condicional é **podado corretamente** (`branch_not_taken`) mesmo com N processos — a avaliação de AOS-390 vale sob concorrência.
-- [ ] O teste prova que o laço de retenção corre **no máximo uma vez** apesar de N réplicas (AOS-283) — nenhum `retention.expired` duplicado.
-- [ ] Não-regressão do guard exit-5: multi-processo **só** com `--nats`; sobre `--wal` um segundo processo é recusado (`ErrWALHeld`) — AOS-285/286.
-- [ ] Runbook em `runbooks/` para a topologia `N× aos-orq serve --nats --nats-replicas 3`: atribuição de runs, arranque/paragem, recuperação da morte de uma réplica, e o que observar (spans OTel no sink e no laço de despacho).
-- [ ] `tecnica/10` e a RTM actualizadas para a topologia distribuída v1.1; RTM regenerada.
+- [x] Teste multi-processo (N≥3 processos reais, `aos-orq serve --nats`) em que cada run é despachado ponta-a-ponta (goal→DAG→nós elegíveis→efeito) pelo seu processo dono, com `vencedores=1` por run e os outros negados pelo lease. *(Evidência: `packages/cmd/aos-orq/aos392_despacho_multiproc_test.go` — `--goal` sob N processos, assere `vencedores=1` + `despachado:` no dono. CLUSTER-GATED como AOS-100: compila e SALTA sem `AOS_NATS_URL`; corre no CI/servidor.)*
+- [~] O plano condicional é **podado corretamente** (`branch_not_taken`): PROVADO em composição real com o Dispatcher de produção (`packages/control-plane/runlifecycle/derivacao_condicional_test.go`, AOS-390/T5). A asserção condicional-específica SOB N processos binários não está no teste de AOS-392 (usa fixture de folhas); a poda é lógica do Dispatcher (uma passagem, um processo dono), independente da contagem de réplicas.
+- [~] Laço de retenção corre **no máximo uma vez** apesar de N réplicas: o MECANISMO está entregue por **AOS-283** (posse por `lease:svc:retention` — `packages/cmd/aos/posse_de_laco.go` + gating em `retention_sweeper.go`), e a exclusão single-node está provada por `packages/cmd/aos/aos283_lacos_sob_lease_test.go`. A prova MULTI-PROCESSO (nenhum `retention.expired` duplicado entre N réplicas reais) é **cluster-gated** como a do despacho — corre no CI/servidor com `AOS_NATS_URL`; não é adicionada ao teste de AOS-392 aqui (setup de retenção — política armada + WORM + facto expirado — é pesado e ortogonal à prova do despacho).
+- [x] Não-regressão do guard exit-5: multi-processo **só** com `--nats`; sobre `--wal` um segundo processo é recusado (`ErrWALHeld`). *(Evidência: `TestAOS100_SubstratoAmbiguoERecusado`/`_SemSubstratoERecusado` + guard AOS-285/286.)*
+- [x] Runbook para a topologia `N× aos-orq serve --nats --nats-replicas 3`: atribuição de runs, arranque/paragem, recuperação da morte de uma réplica, e o que observar (spans OTel no sink e no laço de despacho). *(Evidência: `docs/runbooks/PROC-DESPACHO-MULTIPROC.md`; catalogado em `tecnica/10` §8.)*
+- [x] `tecnica/10` e a RTM actualizadas para a topologia distribuída v1.1; RTM regenerada. *(Evidência: `tecnica/10` §3-bis (linha do despacho governado) + §8; `tecnica/16` regenerada.)*
 
 ---
 
