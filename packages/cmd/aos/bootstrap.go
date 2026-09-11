@@ -917,6 +917,11 @@ type Node struct {
 	// AOS_AUTONOMY_LEVELS) — sem níveis não há o que demover.
 	anomaliaAutonomia *autonomiaAnomalias
 
+	// fiabilidade é o agregador de fiabilidade (AOS-090/ADR-025, Fase D): subscreve os eventos
+	// do RM e alimenta a PROMOÇÃO automática (o Evaluate periódico). O loop de serviço arranca o
+	// seu correr no sweepStop. NIL quando o oráculo de autonomia não está composto.
+	fiabilidade *fiabilidadeAgregada
+
 	// progress é o observador de burn-down por-run (AOS-261/AOS-262). O loop de serviço
 	// LIBERTA o estado de cada run (superfície, latch do aviso e cursor da fonte) no mesmo
 	// ponto em que liberta o disjuntor ([runProgress.forget], ver service.go hostRun). NIL
@@ -1975,15 +1980,32 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// promoção, noutro eixo. O TRIP do disjuntor é o único sinal de anomalia que o nó produz
 	// honestamente hoje.
 	var anomaliaAutonomia *autonomiaAnomalias
+	var fiabilidade *fiabilidadeAgregada
 	if cfg.Autonomy != nil {
 		ctrlCfg, ccerr := autonomyControlConfigFromEnv()
 		if ccerr != nil {
 			return nil, fmt.Errorf("aos: config do controlador de autonomia (AOS-090, CA3): %w", ccerr)
 		}
-		ctrl, cerr := autonomy.NewController(cfg.Autonomy.registry, nil, ctrlCfg, autonomy.WithControllerTracer(tracer))
+		// Trava o tecto de promoção automática abaixo do dual-control (ADR-025 §3): o
+		// controlador nunca auto-promove para L4/L5 — isso continua a exigir a cerimónia assinada.
+		ctrlCfg, ccerr = capPromocaoAbaixoDeDualControl(ctrlCfg)
+		if ccerr != nil {
+			return nil, fmt.Errorf("aos: travar o tecto de promocao automatica (AOS-090, ADR-025): %w", ccerr)
+		}
+		// PROMOÇÃO (ADR-025 Fase D): a ReliabilitySource de produção agrega os desfechos
+		// pós-efeito (taxa de erro) e as escaladas (override, proxy) por (classe, domínio). É a
+		// fonte do controlador — com ela, o Evaluate periódico promove abaixo de L4; a promoção
+		// aplica-se em memória e NÃO sobrevive a reinício (o invariante de releitura reverte-a).
+		fiabilidade = novaFiabilidade(es, nil, ctrlCfg.Window(), autonomyEvalIntervalFromEnv())
+		var src autonomy.ReliabilitySource
+		if fiabilidade != nil {
+			src = fiabilidade // guarda contra o typed-nil: só liga uma fonte REAL
+		}
+		ctrl, cerr := autonomy.NewController(cfg.Autonomy.registry, src, ctrlCfg, autonomy.WithControllerTracer(tracer))
 		if cerr != nil {
 			return nil, fmt.Errorf("aos: compor o controlador de autonomia (AOS-090): %w", cerr)
 		}
+		fiabilidade.comControlador(ctrl) // nil-safe
 		anomaliaAutonomia = novasAnomaliasDeAutonomia(ctrl, es, nil)
 	}
 
@@ -2822,13 +2844,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
 		ExpirationJob:           expirationJob,
-		Retention:               cfg.Retention, // AOS-267: o loop de serviço decide o scheduler por ela
-		IssuerID:                cfg.IssuerID,  // AOS-267: nomeia o nó no selo em nome próprio
-		contentOpener:           contentCipher, // AOS-214: o MESMO cifrador que sela decifra o replay soberano
-		stateGates:              stateGates,    // AOS-218: fonte do StateGate durável por-run para o steer
-		breakers:                breakers,      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
+		Retention:               cfg.Retention,     // AOS-267: o loop de serviço decide o scheduler por ela
+		IssuerID:                cfg.IssuerID,      // AOS-267: nomeia o nó no selo em nome próprio
+		contentOpener:           contentCipher,     // AOS-214: o MESMO cifrador que sela decifra o replay soberano
+		stateGates:              stateGates,        // AOS-218: fonte do StateGate durável por-run para o steer
+		breakers:                breakers,          // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
 		anomaliaAutonomia:       anomaliaAutonomia, // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)
-		progress:                progress,      // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
+		fiabilidade:             fiabilidade,       // AOS-090/ADR-025: promoção automática por fiabilidade medida (arrancada no loop de serviço)
+		progress:                progress,          // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
 
 		ownsEventStore: ownsES,
 		posseWAL:       posse,
