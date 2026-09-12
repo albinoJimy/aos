@@ -36,13 +36,13 @@ RTM_PATH = REPO_ROOT / "tecnica" / "16_Rastreabilidade_RTM.md"
 SPECS_DIR = REPO_ROOT / "specs"
 DOCS_ADR_DIR = REPO_ROOT / "docs" / "adr"
 
-# --- ADRs canónicos, DERIVADOS do registo (AOS-319) --------------------------
+# --- ADRs canónicos, DERIVADOS do registo (AOS-317) --------------------------
 # O canon GATED é este, e é o mesmo em `ref-lint.py`: os dois leitores do corpus
 # não podem discordar sobre o que exigem. Alargá-lo obriga cada ADR novo a ter
 # ticket implementador — consequência aceite ao decidir GAP-07.
 #
 # AOS-314 alargou-o de `range(1, 20)` para `range(1, 24)` e fechou o sintoma; o
-# AOS-319 fecha a causa. Um literal novo é um literal: no dia do ADR-024 o canon
+# AOS-317 fecha a causa. Um literal novo é um literal: no dia do ADR-024 o canon
 # volta a ficar curto, nos MESMOS dois ficheiros, e nada o diz — foi assim que o
 # 019 sobreviveu quatro ADRs. A gama passa a DERIVAR da tabela de
 # `docs/adr/README.md`, o registo que se declara canónico e o único que regista
@@ -194,37 +194,6 @@ def system_spec_drivers() -> int:
     return len(rows)
 
 
-# Números de ticket ATRIBUÍDOS, mas cujo bloco vive noutro ramo ainda não fundido.
-#
-# A guarda de contiguidade abaixo existe para apanhar um ticket apagado ou
-# renumerado, e vale. Mas pressupõe que todo o backlog vive NESTE ramo — e com
-# várias sessões a trabalhar em worktrees paralelos isso deixou de ser verdade:
-# `AOS-317` foi aberto em `claude/exciting-maxwell-aec36d` no mesmo dia em que
-# esta sessão abriu o seu, e a colisão foi resolvida renumerando o desta para
-# `AOS-319`. O 317 existe e está tomado; o que não existe é aqui.
-#
-# Molde das baselines deste arnês (`scripts/ci/baseline/*.txt`): entrada
-# explícita, com dono e com data de saída. Cada linha SAI quando o ramo
-# respectivo for fundido — se ficar depois disso, a guarda deixa de proteger o
-# número que ela nomeia, e é por isso que a lista tem de ser curta e revista.
-# Ver a convenção de sessões concorrentes no `AGENTS.md`.
-#
-# A decisão de o que fazer se o ramo for ABANDONADO em vez de fundido — o número
-# fica queimado, ou reatribui-se — está deferida com critério escrito em
-# **DEF-912** (`docs/governance/REGISTO-Deferimentos.md`), para ser tomada no
-# merge por quem o fizer, e não adivinhada agora por quem abriu a entrada.
-# LISTA, convertida em conjunto — e não um literal `{...}`. Medido: esvaziar um
-# literal de conjunto deixa `{}`, que em Python é um **dict**, e o gate morria em
-# `TypeError: unsupported operand type(s) for -: 'set' and 'dict'` em vez de
-# falhar pela razão certa. A última pessoa a tirar uma entrada daqui é
-# exactamente quem não devia tropeçar numa armadilha de sintaxe.
-ATRIBUIDOS_NOUTRO_RAMO = frozenset([
-    # AOS-317 — `claude/exciting-maxwell-aec36d` (b26966c, 2026-09-04).
-    # Sai quando esse ramo for fundido. Ver DEF-912 para o caso do abandono.
-    "AOS-317",
-])
-
-
 def corpus_stats(tickets: dict) -> dict:
     """
     Constantes do corpus DERIVADAS (nunca escritas à mão): é isto que impede o
@@ -238,6 +207,11 @@ def corpus_stats(tickets: dict) -> dict:
         "min_aos": nums[0] if nums else 0,
         "max_aos": nums[-1] if nums else 0,
         "n_epics": len(list(SPECS_DIR.glob("EPIC-*.md"))),
+        # CONTAGEM e IDENTIFICADOR são coisas diferentes: `n_epics` conta, e
+        # `max_epic` identifica, lido do nome dos ficheiros. Trocá-los foi
+        # exactamente o defeito de AOS-312.
+        "min_epic": min(epic_ids_in_specs(), default=0),
+        "max_epic": max(epic_ids_in_specs(), default=0),
         "n_adrs": len(ADR_RANGE),
         "n_nfrs": len(NFR_SPECS),
     }
@@ -366,7 +340,7 @@ def build_adr_matrix(tickets: dict, adr_titles: dict) -> list:
         rows.append({
             "adr": entry.code,
             "title": adr_titles.get(entry.code, "*título não encontrado*"),
-            # O ESTADO vem do registo (AOS-319). Sem ele a matriz punha um
+            # O ESTADO vem do registo (AOS-317). Sem ele a matriz punha um
             # *Proposto* e um *Ratificado* na mesma coluna, com a mesma
             # autoridade aparente — e dois dos vinte e três estão Propostos.
             "state": entry.state,
@@ -419,141 +393,14 @@ def aos_key(aos: str) -> int:
     return int(aos.split("-")[1])
 
 
-def epic_label(epic_stem: str) -> str:
-    """`EPIC-18_Remediacao_Auditoria_Multiagente_v4` -> `EPIC-18`."""
-    return epic_stem.split("_")[0]
 
 
-def last_epic_label() -> str:
-    """
-    Maior número de epic REALMENTE presente em `specs/`. Não é a contagem de
-    ficheiros: se um dia faltar um número no meio, a contagem mente e este não.
-    Serve apenas para a gama `EPIC-01..N` do diagrama — nunca para atribuir um
-    ticket a um epic (ver `epic_of`).
-    """
-    nums = [int(epic_label(p.stem).split("-")[1]) for p in SPECS_DIR.glob("EPIC-*.md")]
-    return f"EPIC-{max(nums):02d}"
 
 
-def epic_of(tickets: dict, aos: str) -> str:
-    """
-    Epic que CONTÉM o ticket, lido do corpus.
-
-    É esta derivação que substitui o antigo `last_epic` na §6: o último epic do
-    backlog não é o epic de um ticket concreto, e usá-lo como tal escrevia uma
-    afirmação falsa NOVA a cada epic acrescentado — a linha do STRIDE dizia
-    «EPIC-21», passou a dizer «EPIC-22», e AOS-194 sempre viveu na EPIC-18.
-    """
-    if aos not in tickets:
-        sys.stderr.write(
-            f"ERRO: a §6 cita {aos}, que não existe em specs/EPIC-*.md\n"
-        )
-        sys.exit(1)
-    return epic_label(tickets[aos]["epic"])
 
 
-def epics_covering(tickets: dict, low: int, high: int, exclude=frozenset()) -> list:
-    """
-    Rótulos dos epics que contêm pelo menos um ticket na gama [low, high].
-
-    Uma gama aberta como AOS-190–AOS-311 atravessa vários epics de remediação e
-    ainda tickets acrescentados a epics antigos; nomear só um deles — fosse o
-    último ou o primeiro — é o mesmo defeito com outra roupagem. `exclude`
-    remove os rótulos que a linha já nomeia literalmente, para não os repetir.
-    """
-    labels = {
-        epic_label(info["epic"])
-        for aos, info in tickets.items()
-        if low <= aos_key(aos) <= high
-    }
-    return sorted(labels - set(exclude))
 
 
-# Gama de tickets numa célula da §6: "AOS-064–075", "AOS-001 – AOS-012".
-_RANGE_RE = re.compile(r"AOS-(\d{3})\s*[–—-]\s*(?:AOS-)?(\d{3})")
-
-
-def _cited_tickets(cell: str) -> list:
-    """
-    Tickets citados numa célula da §6, com as gamas expandidas. As continuações
-    abreviadas (`AOS-003, 004` e `AOS-072, 076–097`) herdam o prefixo: sem isso
-    metade das citações escapava à validação.
-    """
-    cell = re.sub(r"(?<![\w-])(\d{3})(?![\d\w])", lambda m: f"AOS-{m.group(1)}", cell)
-    nums = []
-    for m in _RANGE_RE.finditer(cell):
-        nums.extend(range(int(m.group(1)), int(m.group(2)) + 1))
-    for m in re.finditer(r"AOS-(\d{3})", _RANGE_RE.sub(" ", cell)):
-        nums.append(int(m.group(1)))
-    return [f"AOS-{n:03d}" for n in sorted(set(nums))]
-
-
-def validate_section6(section: str, tickets: dict) -> None:
-    """
-    Asserção anti-recorrência: nenhuma linha gerada pode nomear um epic que não
-    contenha os tickets que a própria linha cita.
-
-    É a peça que faltava. Quem escreve a §6 é uma máquina, e nada comparava o
-    que ela escreve com a fonte — exactamente o meta-achado de `analises/10` §5
-    («números escritos à mão derivam onde nenhum gate os lê»), agravado por o
-    autor ser automático. Falha fechado: sai != 0 e o gate `scripts/ci/rtm.sh`
-    fica vermelho antes de a afirmação falsa chegar ao ficheiro.
-    """
-    errors = []
-    for line in section.splitlines():
-        if not line.startswith("| `tecnica/"):
-            continue
-        cols = [c.strip() for c in line.strip("|").split("|")]
-        if len(cols) < 3:
-            continue
-        doc, epics_cell, range_cell = cols[0], cols[1], cols[2]
-
-        # Pares explícitos `EPIC-NN/AOS-NNN` (ex.: «análise em EPIC-18/AOS-194»).
-        for m in re.finditer(r"(EPIC-\d{2})/(AOS-\d{3})", epics_cell):
-            claimed, aos = m.group(1), m.group(2)
-            real = epic_label(tickets[aos]["epic"]) if aos in tickets else None
-            if real != claimed:
-                errors.append(
-                    f"{doc}: a linha diz {claimed}/{aos}, mas {aos} vive em "
-                    f"{real or '(inexistente)'}."
-                )
-
-        declared = set(re.findall(r"EPIC-\d{2}", epics_cell))
-        missing = []
-        misplaced = defaultdict(list)
-        for aos in _cited_tickets(range_cell):
-            if aos not in tickets:
-                # Um número atribuído noutro ramo cai DENTRO das gamas que a §6
-                # escreve (`AOS-190→AOS-NNN`), porque as gamas assumem um backlog
-                # contíguo. Não é citação partida: é um ticket que existe e que
-                # este ramo ainda não viu. Ver `ATRIBUIDOS_NOUTRO_RAMO`.
-                if aos not in ATRIBUIDOS_NOUTRO_RAMO:
-                    missing.append(aos)
-            elif declared and epic_label(tickets[aos]["epic"]) not in declared:
-                misplaced[epic_label(tickets[aos]["epic"])].append(aos)
-        if missing:
-            errors.append(f"{doc}: cita {', '.join(missing)}, que não existe(m) no corpus.")
-        for real, aos_list in sorted(misplaced.items()):
-            sample = ", ".join(aos_list[:4]) + ("…" if len(aos_list) > 4 else "")
-            errors.append(
-                f"{doc}: cita {len(aos_list)} ticket(s) de {real} ({sample}), "
-                f"mas a linha só nomeia {', '.join(sorted(declared))}."
-            )
-
-    if errors:
-        sys.stderr.write("ERRO: a §6 atribui tickets a epics que não os contêm:\n")
-        for e in errors:
-            sys.stderr.write(f"  - {e}\n")
-        sys.exit(1)
-
-
-# Afirmações numéricas escritas no RTM, nas três notações que o documento usa:
-#   `RF-01`–`RF-13`  (§1.2)   RF-01 … RF-13  (§2)   RF-01..RF-13  (mermaid §6)
-# Os acentos graves são removidos antes de correr o padrão.
-# A QUARTA notacao — o separador « a » por extenso, que a §1.5 usa — entrou com
-# AOS-319. A ausencia era buraco com consequencia medida: «ADR-001..014» era
-# recusado e «ADR-001 a ADR-014» passava incolume a afirmar o mesmo. Um padrao
-# que so ve tres das quatro notacoes do proprio documento ENSINA a usar a quarta.
 _RANGE_CLAIM_RE = re.compile(
     r"\b(RF|NFR|ADR)-0*1"
     r"(?:\s*(?:\.\.|…|–|—|-)\s*|\s+a\s+)"
@@ -580,7 +427,7 @@ def assert_numeric_claims(rtm_text: str, rf_ids: list, nfr_ids: list) -> None:
     """
     Guarda fail-closed para as CONTAGENS e os EXTREMOS DE INTERVALO do RTM.
 
-    Irmã de `validate_section6` e `validate_section7`, para a metade do mesmo
+    Irmã de `assert_epic_claims` e `validate_section7`, para a metade do mesmo
     meta-achado (`analises/10` §5) que nenhuma das duas cobre: ali validam-se
     pares epic↔ticket e citações inventadas, aqui validam-se NÚMEROS. Um número
     escrito numa linha gerada — «11 capacidades», «RF-01..RF-11», «10/10 NFRs»,
@@ -652,6 +499,89 @@ def assert_numeric_claims(rtm_text: str, rf_ids: list, nfr_ids: list) -> None:
         sys.exit(1)
 
 
+def epic_ids_in_specs() -> list:
+    """Números dos epics existentes em `specs/EPIC-NN_*.md`, lidos do nome do ficheiro."""
+    out = []
+    for p in SPECS_DIR.glob("EPIC-*.md"):
+        m = re.match(r"EPIC-(\d{2})(?:_|$)", p.stem)
+        if m:
+            out.append(int(m.group(1)))
+    return out
+
+def epic_index(tickets: dict) -> dict:
+    """{AOS-NNN: 'EPIC-NN'} — o epic que CONTÉM cada ticket, lido de specs/EPIC-*.md."""
+    return {aos: info["epic"].split("_")[0] for aos, info in tickets.items()}
+
+def epic_of(aos: str, index: dict) -> str:
+    """Epic que contém `aos`. Fail-closed: um ticket citado sem epic é deriva do corpus."""
+    if aos not in index:
+        sys.stderr.write(f"ERRO: AOS {aos} citado na §6 não existe em specs/EPIC-*.md\n")
+        sys.exit(1)
+    return index[aos]
+
+def tickets_between(lo: int, hi: int, tickets: dict) -> list:
+    """Tickets do corpus na gama fechada [lo, hi], por ordem."""
+    return sorted((t for t in tickets if lo <= aos_key(t) <= hi), key=aos_key)
+
+def epics_between(lo: int, hi: int, tickets: dict, index: dict) -> list:
+    """Epics que CONTÊM pelo menos um ticket na gama [lo, hi], por ordem de identificador."""
+    return sorted({index[t] for t in tickets_between(lo, hi, tickets)})
+
+def assert_epic_claims(rows: list, index: dict) -> None:
+    """
+    GUARDA anti-regressão. Fecha a classe «um label derivado de CONTAGEM a passar-se
+    por IDENTIDADE»: `EPIC-{n_epics:02d}` (o número de epics) usado como se fosse o
+    epic onde vive um ticket concreto. Foi assim que o EPIC-21 desapareceu da matriz
+    quando o EPIC-22 entrou — substituição em vez de adição, num documento cuja
+    função é precisamente não perder o rasto.
+
+    Cada linha gerada da §6 traz consigo as suas AFIRMAÇÕES (`claims`): pares
+    (epic, tickets) que a linha assume. Verifica-se três coisas, todas contra o
+    corpus e nenhuma contra o texto que a própria linha escreveu:
+
+      1. cada par declarado é verdadeiro — o epic contém mesmo aquele ticket;
+      2. cada `EPIC-NN` que aparece na linha está declarado — não se nomeia um epic
+         sem dizer que tickets o justificam;
+      3. cada `AOS-NNN` que aparece na linha é coberto por alguma declaração — não
+         se cita um ticket que nenhum dos epics nomeados contém (era o caso do
+         `AOS-194` atribuído ao «último epic»).
+
+    Qualquer violação é FATAL (exit 1) com a linha e o par em falta: um aviso em
+    stderr não avermelharia o gate, e o gate é o único leitor que confronta esta
+    tabela com a fonte.
+    """
+    errs = []
+    for line, claims in rows:
+        claimed = {}
+        for epic, tks in claims:
+            if not tks:
+                errs.append(f"  {line}\n    → declaração vazia para {epic} (nenhum ticket a justificá-lo)")
+            claimed.setdefault(epic, set()).update(tks)
+        # 1. as declarações têm de ser verdadeiras no corpus
+        for epic in sorted(claimed):
+            for t in sorted(claimed[epic], key=aos_key):
+                real = index.get(t)
+                if real != epic:
+                    errs.append(
+                        f"  {line}\n    → afirma {epic} para {t}, mas {t} vive em "
+                        f"{real or '<nenhum epic>'}"
+                    )
+        # 2. nenhum epic nomeado sem declaração
+        for tok in sorted(set(re.findall(r"EPIC-\d{2}", line))):
+            if tok not in claimed:
+                errs.append(f"  {line}\n    → nomeia {tok} sem declarar que ticket o justifica")
+        # 3. nenhum ticket citado fora das declarações
+        all_claimed = set().union(*claimed.values()) if claimed else set()
+        for t in sorted(set(re.findall(r"AOS-\d{3}", line)) - all_claimed, key=aos_key):
+            errs.append(f"  {line}\n    → cita {t}, que nenhum epic nomeado na linha contém")
+    if errs:
+        sys.stderr.write(
+            "ERRO: §6 do RTM afirma pares epic↔ticket que o corpus não confirma "
+            f"({len(errs)} violação(ões)):\n" + "\n".join(errs) + "\n"
+        )
+        sys.exit(1)
+
+
 def infer_docs_for_tickets(tickets_for: list, tickets: dict) -> str:
     """
     Documentos técnicos que desenvolvem uma decisão, resolvidos TICKET A TICKET.
@@ -710,7 +640,7 @@ def generate_section4(rows: list) -> str:
         "",
         f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
         "",
-        "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-319).",
+        "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).",
         "",
         "| ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",
         "|---|---|---|---|---|---|",
@@ -836,29 +766,103 @@ def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -
     """Gera a tabela de rasto descendente documento técnico → epic → tickets."""
     first = f"AOS-{stats['min_aos']:03d}"
     last = f"AOS-{stats['max_aos']:03d}"
-    last_epic = last_epic_label()
-    # Gama da EPIC-18 (remediação v4): derivada da última entrada de DOC_RANGES,
+    index = epic_index(tickets)
+    # INTERVALO (não identidade de conteúdo): «EPIC-01..EPIC-NN» no diagrama. O
+    # extremo vem do NOME do último ficheiro de epic, não da contagem — e exige-se
+    # que a numeração seja contígua, senão a notação de intervalo mentiria.
+    last_epic = f"EPIC-{stats['max_epic']:02d}"
+    if stats["max_epic"] != stats["n_epics"] or stats["min_epic"] != 1:
+        sys.stderr.write(
+            f"ERRO: numeração de epics não contígua (min={stats['min_epic']}, "
+            f"max={stats['max_epic']}, n={stats['n_epics']}); o intervalo "
+            f"«EPIC-01..{last_epic}» do diagrama deixaria de ser verdade.\n"
+        )
+        sys.exit(1)
+    # Gama de remediação: derivada da última entrada de DOC_RANGES (aberta à direita),
     # para que §4 (que usa DOC_RANGES) e §6 (esta tabela) nunca se contradigam.
-    epic18_low = DOC_RANGES[-1][0][0]
-    epic18_range = f"{epic18_low} – {last}"
-    # Os epics que REALMENTE contêm os tickets dessa gama, varridos do corpus. A
-    # gama é aberta à direita e atravessa vários epics — os de remediação e ainda
-    # tickets acrescentados a epics antigos (ex.: AOS-287 na EPIC-01). A versão
-    # anterior escrevia aqui `last_epic`, que era falso e ficava falso de forma
-    # NOVA a cada epic acrescentado.
-    rem_low = aos_key(epic18_low)
-    rem_epics = epics_covering(tickets, rem_low, stats["max_aos"])
-    # A união é ordenada por número de epic: a célula é lida por humanos e uma
-    # lista fora de ordem esconde omissões.
-    gov_epics = ", ".join(sorted({"EPIC-09", *rem_epics}))
-    conv_epics = ", ".join(
-        # `EPIC-05` entra pela auto-modificação, não pela gama de remediação.
-        e + " (auto-mod)" if e == "EPIC-05" else e
-        for e in sorted({"EPIC-05", "EPIC-11", *rem_epics})
-    )
-    # AOS-194 é o ticket que corrigiu a rastreabilidade do STRIDE: o epic dele
-    # lê-se do corpus, não se assume.
-    stride_epic = epic_of(tickets, "AOS-194")
+    rem_low = DOC_RANGES[-1][0][0]
+    rem_range = f"{rem_low} – {last}"
+    # Os epics desta gama são TODOS os que contêm tickets nela — não «o último».
+    # Nomear só um transformava cada epic novo numa substituição do anterior.
+    rem_epics = epics_between(aos_key(rem_low), stats["max_aos"], tickets, index)
+    rem_epics_str = ", ".join(rem_epics)
+    rem_claims = [
+        (e, [t for t in tickets_between(aos_key(rem_low), stats["max_aos"], tickets) if index[t] == e])
+        for e in rem_epics
+    ]
+    # A análise STRIDE é atribuída ao epic que CONTÉM o ticket, não a um número.
+    stride_ticket = "AOS-194"
+    stride_epic = epic_of(stride_ticket, index)
+
+    def rng(lo, hi):
+        return tickets_between(lo, hi, tickets)
+
+    # (linha, declarações) — ver assert_epic_claims. As linhas transversais («Todos»)
+    # não nomeiam epics; declaram-se os extremos, que são os tickets que citam.
+    table = [
+        (f"| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | {first} – {last} |",
+         [(epic_of(first, index), [first]), (epic_of(last, index), [last])]),
+        ("| `tecnica/01_Reference_Monitor_Plano_Controlo.md` | EPIC-01 | AOS-001 – AOS-012 |",
+         [("EPIC-01", rng(1, 12))]),
+        ("| `tecnica/02_Agent_Runtime_Execucao_Duravel.md` | EPIC-02 | AOS-013 – AOS-024 |",
+         [("EPIC-02", rng(13, 24))]),
+        ("| `tecnica/03_Orquestracao_Escalonamento.md` | EPIC-03 | AOS-025 – AOS-034 |",
+         [("EPIC-03", rng(25, 34))]),
+        ("| `tecnica/04_Memoria_Persistencia.md` | EPIC-04 | AOS-035 – AOS-044 |",
+         [("EPIC-04", rng(35, 44))]),
+        ("| `tecnica/05_Skill_Tool_Registry_Supply_Chain.md` | EPIC-05 | AOS-045 – AOS-054 |",
+         [("EPIC-05", rng(45, 54))]),
+        ("| `tecnica/06_Model_Gateway_Custos.md` | EPIC-06 | AOS-055 – AOS-063 |",
+         [("EPIC-06", rng(55, 63))]),
+        ("| `tecnica/07_Seguranca_Isolamento.md` | EPIC-07 | AOS-064 – AOS-075 |",
+         [("EPIC-07", rng(64, 75))]),
+        ("| `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |",
+         [("EPIC-08", rng(76, 86))]),
+        (f"| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, {rem_epics_str} | AOS-087 – AOS-097 (+ {rem_range}) |",
+         [("EPIC-09", rng(87, 97))] + rem_claims),
+        ("| `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |",
+         [("EPIC-10", rng(98, 108)), ("EPIC-11", ["AOS-118"])]),
+        (f"| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), {rem_epics_str} | AOS-109 – AOS-118 (+ AOS-045–054, + {rem_range}) |",
+         [("EPIC-11", rng(109, 118)), ("EPIC-05", rng(45, 54))] + rem_claims),
+        ("| `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |",
+         [("EPIC-01", rng(3, 4)), ("EPIC-05", rng(45, 54)), ("EPIC-06", rng(55, 63)),
+          ("EPIC-14", rng(144, 162))]),
+        ("| `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |",
+         [("EPIC-04", rng(35, 44)), ("EPIC-05", rng(45, 54)), ("EPIC-08", rng(76, 86))]),
+        # AOS-072 vive em EPIC-07 (isolamento), não em EPIC-08/09: a linha nomeava
+        # dois epics e citava um ticket que nenhum deles contém — a mesma classe.
+        ("| `tecnica/14_Matriz_Conformidade.md` | EPIC-07, EPIC-08, EPIC-09 | AOS-072, AOS-076–086, AOS-087–097 |",
+         [("EPIC-07", ["AOS-072"]), ("EPIC-08", rng(76, 86)), ("EPIC-09", rng(87, 97))]),
+        ("| `tecnica/15_Experiencia_HITL_UX.md` | EPIC-12 (+ EPIC-13 frontend) | AOS-119 – AOS-143 |",
+         [("EPIC-12", rng(119, 128)), ("EPIC-13", rng(129, 143))]),
+        (f"| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | {first} – {last} |",
+         [(epic_of(first, index), [first]), (epic_of(last, index), [last])]),
+        (f"| `tecnica/17_Analise_STRIDE.md` | EPIC-07, EPIC-15, EPIC-16 (análise em {stride_epic}/{stride_ticket}) | AOS-064–075, AOS-163–173, AOS-174–177 |",
+         [("EPIC-07", rng(64, 75)), ("EPIC-15", rng(163, 173)), ("EPIC-16", rng(174, 177)),
+          (stride_epic, [stride_ticket])]),
+    ]
+    mermaid = [
+        "```mermaid",
+        "flowchart LR",
+        f'    RF["RF-01..{rf_ids[-1]} (capacidades)"] --> ADR["ADR-001..{ADR_RANGE[-1].split("-")[1]} (decisoes)"]',
+        # Mesma classe do `last_epic`: o extremo do intervalo é o IDENTIFICADOR do
+        # último NFR (`NFR_SPECS[-1][0]`), não `n_nfrs` (a contagem). Coincidem hoje;
+        # deixariam de coincidir no dia em que um NFR fosse retirado do meio.
+        f'    NFR["NFR-01..{nfr_ids[-1]} (drivers)"] --> ADR',
+        # INTERVALO: extremos, não conteúdo. Declaram-se os extremos para que a
+        # guarda os verifique na mesma (EPIC-01 e o último existem e têm tickets).
+        (f'    ADR --> EPIC["EPIC-01..{last_epic} (entregas)"]',
+         [("EPIC-01", rng(1, 12)), (last_epic, [t for t in tickets if index[t] == last_epic])]),
+        f'    EPIC --> TICK["{first}..{last} (tickets)"]',
+        '    DOC["tecnica/00..17 (docs)"] --> EPIC',
+        ('    TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]',
+         [("EPIC-11", rng(109, 118))]),
+        "    NFR --> TEST",
+        "```",
+    ]
+    checked = list(table) + [x for x in mermaid if isinstance(x, tuple)]
+    assert_epic_claims(checked, index)
+
     lines = [
         "## 6. Rasto descendente: documento técnico → epic → tickets",
         "",
@@ -866,45 +870,12 @@ def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -
         "",
         "| Doc técnico | Epic(s) implementador(es) | Gama de tickets |",
         "|---|---|---|",
-        f"| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | {first} – {last} |",
-        "| `tecnica/01_Reference_Monitor_Plano_Controlo.md` | EPIC-01 | AOS-001 – AOS-012 |",
-        "| `tecnica/02_Agent_Runtime_Execucao_Duravel.md` | EPIC-02 | AOS-013 – AOS-024 |",
-        "| `tecnica/03_Orquestracao_Escalonamento.md` | EPIC-03 | AOS-025 – AOS-034 |",
-        "| `tecnica/04_Memoria_Persistencia.md` | EPIC-04 | AOS-035 – AOS-044 |",
-        "| `tecnica/05_Skill_Tool_Registry_Supply_Chain.md` | EPIC-05 | AOS-045 – AOS-054 |",
-        "| `tecnica/06_Model_Gateway_Custos.md` | EPIC-06 | AOS-055 – AOS-063 |",
-        "| `tecnica/07_Seguranca_Isolamento.md` | EPIC-07 | AOS-064 – AOS-075 |",
-        "| `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |",
-        f"| `tecnica/09_Governacao_Conformidade.md` | {gov_epics} | AOS-087 – AOS-097 (+ {epic18_range}) |",
-        "| `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |",
-        f"| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | {conv_epics} | AOS-109 – AOS-118 (+ AOS-045–054, + {epic18_range}) |",
-        "| `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |",
-        "| `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |",
-        "| `tecnica/14_Matriz_Conformidade.md` | EPIC-07, EPIC-08, EPIC-09 | AOS-072, 076–097 |",
-        "| `tecnica/15_Experiencia_HITL_UX.md` | EPIC-12 (+ EPIC-13 frontend) | AOS-119 – AOS-143 |",
-        f"| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | {first} – {last} |",
-        f"| `tecnica/17_Analise_STRIDE.md` | EPIC-07, EPIC-15, EPIC-16 (análise em {stride_epic}/AOS-194) | AOS-064–075, AOS-163–173, AOS-174–177 |",
-        "",
-        "```mermaid",
-        "flowchart LR",
-        # Extremos derivados dos catálogos §2/§3, nunca da contagem de entradas de
-        # uma constante deste ficheiro: `NFR-{n_nfrs}` era a contagem de NFR_SPECS
-        # (10) a passar-se por identidade, e a §3 já ia em NFR-12.
-        f'    RF["RF-01..{rf_ids[-1]} (capacidades)"] --> ADR["ADR-001..{ADR_RANGE[-1].split("-")[1]} (decisoes)"]',
-        f'    NFR["NFR-01..{nfr_ids[-1]} (drivers)"] --> ADR',
-        f'    ADR --> EPIC["EPIC-01..{last_epic} (entregas)"]',
-        f'    EPIC --> TICK["{first}..{last} (tickets)"]',
-        '    DOC["tecnica/00..17 (docs)"] --> EPIC',
-        '    TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]',
-        "    NFR --> TEST",
-        "```",
-        "",
     ]
-    section = "\n".join(lines)
-    validate_section6(section, tickets)
-    return section
-
-
+    lines += [line for line, _ in table]
+    lines.append("")
+    lines += [x[0] if isinstance(x, tuple) else x for x in mermaid]
+    lines.append("")
+    return "\n".join(lines)
 
 
 # --- §7: lacunas de cobertura -------------------------------------------------
@@ -913,7 +884,7 @@ def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -
 # juízo humano, e gerá-la seria inventá-la. Os NÚMEROS e as EXISTÊNCIAS não: são
 # interpolados a partir dos mesmos dados que produzem §§4–5 (`{...}` preenchido
 # por `factos`), e `validate_section7` confronta com o corpus tudo o que a secção
-# acabe por citar. É a disciplina de `validate_section6` aplicada à secção que a
+# acabe por citar. É a disciplina de `assert_epic_claims` aplicada à secção que a
 # auditoria (`analises/10` §5) apontou como «o exemplar mais limpo»: afirmava
 # 20/20 ADRs e 12/12 NFRs a setenta linhas de secções geradas, no mesmo ficheiro,
 # que diziam 19/19 e 10/10.
@@ -1217,7 +1188,7 @@ def main():
     all_aos = set(tickets.keys())
     max_aos = max(aos_key(t) for t in all_aos)
     expected = {f"AOS-{i:03d}" for i in range(1, max_aos + 1)}
-    missing = sorted(expected - all_aos - ATRIBUIDOS_NOUTRO_RAMO)
+    missing = sorted(expected - all_aos)
     if missing:
         shown = ", ".join(missing[:10]) + ("..." if len(missing) > 10 else "")
         sys.stderr.write(

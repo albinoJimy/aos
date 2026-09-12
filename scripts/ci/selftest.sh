@@ -1123,6 +1123,29 @@ fi
 # `analises/10` §5 agravado por o autor ser automático. Aqui prova-se que a
 # asserção `validate_section6` RECUSA a atribuição falsa, em vez de a afirmar
 # por comentário.
+
+# Uma injecção que deixa de casar não injecta NADA — e o gate, contra um gerador
+# intacto, fica verde. O self-test passa a medir o vazio e continua a contar como
+# prova. Não é hipótese: foi o que aconteceu ao §S2 quando o NFR-11 que ele
+# injectava passou a existir (AOS-317), e foi o que aconteceria ao §R agora que a
+# validação da §6 mudou de `epics_covering` para `epics_between`. Daqui em diante
+# toda a injecção tem de provar que mudou alguma coisa.
+injectar_em() {  # injectar_em '<ficheiro>' '<flags perl>' '<expressao>' '<rotulo>'
+  local alvo="$1" flags="$2" expr="$3" rot="$4" antes depois
+  antes="$(git -C "$REPO_ROOT" hash-object "$alvo")"
+  perl "$flags" -e "$expr" "$alvo"
+  depois="$(git -C "$REPO_ROOT" hash-object "$alvo")"
+  if [ "$antes" = "$depois" ]; then
+    bad "$rot: a injeccao nao alterou $(basename "$alvo") — a sonda esta a medir o vazio"
+  fi
+  return 0  # nunca mata a suite: o `bad` ja registou, e o teste a seguir tambem falha
+}
+
+# Atalho para o caso mais comum: mutar o GERADOR na sandbox, com `-0pi`.
+injectar() {  # injectar '<expressao perl>' '<rotulo>'
+  injectar_em "$RTM_GEN" -0pi "$1" "$2"
+}
+
 log_gate "self-test R · o gate rtm bloqueia atribuição ticket→epic falsa na §6"
 
 # Sandbox de §R/§S: corpus copiado + cópia do gerador. Nada aqui toca na árvore
@@ -1156,12 +1179,16 @@ rtm_bloqueou_pela_asercao() {
   local out rc
   out="$(AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check 2>&1)" && rc=0 || rc=$?
   [ "$rc" -ne 0 ] || return 1
-  printf '%s' "$out" | grep -q 'atribui tickets a epics'
+  # A mensagem é a de `assert_epic_claims`. Exigi-la — e nao so o exit!=0 —
+  # separa «o gate recusou pela razao certa» de «o gate recusou por outra
+  # coisa qualquer», que e o que um `--check` tambem faz por divergencia de
+  # texto. Padrao em ASCII de proposito: e comparado byte a byte.
+  printf '%s' "$out" | grep -q 'afirma pares epic'
 }
 
 # R1 — o par explícito `EPIC-NN/AOS-194` apontado ao epic errado.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/stride_epic = epic_of\(tickets, "AOS-194"\)/stride_epic = "EPIC-01"/' "$RTM_GEN"
+injectar 's/stride_epic = epic_of\(stride_ticket, index\)/stride_epic = "EPIC-01"/' 'R1'
 if rtm_bloqueou_pela_asercao; then
   pass "R1: o gate bloqueou a §6 que atribuía AOS-194 a um epic que não o contém"
 else
@@ -1170,7 +1197,7 @@ fi
 
 # R2 — a REGRESSÃO literal: voltar a usar «o último epic» para a gama de remediação.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/rem_epics = epics_covering\(tickets, rem_low, stats\["max_aos"\]\)/rem_epics = [last_epic]/' "$RTM_GEN"
+injectar 's/rem_epics = epics_between\(aos_key\(rem_low\), stats\["max_aos"\], tickets, index\)/rem_epics = [last_epic]/' 'R2'
 if rtm_bloqueou_pela_asercao; then
   pass "R2: o gate bloqueou o regresso de last_epic como epic de tickets concretos"
 else
@@ -1208,7 +1235,7 @@ rtm_bloqueou_pela_asercao7() {
 
 # S1 — um ticket que nao existe, citado por uma lacuna.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/GAP04_STEER = \[/GAP04_STEER = ["AOS-999", /' "$RTM_GEN"
+injectar 's/GAP04_STEER = \[/GAP04_STEER = ["AOS-999", /' 'S1'
 if rtm_bloqueou_pela_asercao7; then
   pass "S1: o gate bloqueou a §7 que citava um ticket inexistente"
 else
@@ -1222,7 +1249,7 @@ fi
 # ser VERDADE e o teste media o vazio. Passa a injectar NFR-13, que nao existe
 # em catalogo nenhum -- a asercao e a mesma, a sonda e que voltou a ser falsa.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/"evidencia": "§3, §5",/"evidencia": "§3, §5 (NFR-13)",/' "$RTM_GEN"
+injectar 's/"evidencia": "§3, §5",/"evidencia": "§3, §5 (NFR-13)",/' 'S2'
 if rtm_bloqueou_pela_asercao7; then
   pass "S2: o gate bloqueou a §7 que nomeava NFR-13, ausente de NFR_SPECS"
 else
@@ -1243,7 +1270,7 @@ mkdir -p "$RTM_TMP/docs"
 cp -r "$REPO_ROOT/specs"    "$RTM_TMP/specs"
 cp -r "$REPO_ROOT/tecnica"  "$RTM_TMP/tecnica"
 cp -r "$REPO_ROOT/docs/adr" "$RTM_TMP/docs/adr"
-perl -0pi -e 's/AOS-001 – AOS-/AOS-998 – AOS-/' "$RTM_TMP/tecnica/16_Rastreabilidade_RTM.md"
+injectar_em "$RTM_TMP/tecnica/16_Rastreabilidade_RTM.md" -0pi 's/AOS-001 – AOS-/AOS-998 – AOS-/' 'S4'
 if AOS_REFLINT_ROOT="$RTM_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
   bad "S4: o ref-lint passou com AOS-998 citado na RTM — a RTM continua fora do gate"
 else
@@ -1277,7 +1304,7 @@ rtm_bloqueou_pela_asercao_numerica() {
 # U1 — a REGRESSAO literal do defeito relatado: o extremo do intervalo de RF no
 # diagrama volta a ser escrito a mao.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/RF-01\.\.\{rf_ids\[-1\]\}/RF-01..RF-11/' "$RTM_GEN"
+injectar 's/RF-01\.\.\{rf_ids\[-1\]\}/RF-01..RF-11/' 'U1'
 if rtm_bloqueou_pela_asercao_numerica; then
   pass "U1: o gate bloqueou o regresso de RF-01..RF-11 no mermaid da §6"
 else
@@ -1286,7 +1313,7 @@ fi
 
 # U2 — a mesma classe na outra ponta: a CONTAGEM de RF na §1.2, escrita a mao.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/os \{len\(rf_ids\)\} requisitos funcionais/os 11 requisitos funcionais/' "$RTM_GEN"
+injectar 's/os \{len\(rf_ids\)\} requisitos funcionais/os 11 requisitos funcionais/' 'U2'
 if rtm_bloqueou_pela_asercao_numerica; then
   pass "U2: o gate bloqueou a §1.2 que contava 11 requisitos funcionais contra 13 no catalogo"
 else
@@ -1295,7 +1322,7 @@ fi
 
 # U3 — um DENOMINADOR de cobertura a contar-se a si proprio em vez do catalogo.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/\{len\(nfr_ids\)\} NFRs \(NFR-01/10 NFRs (NFR-01/' "$RTM_GEN"
+injectar 's/\{len\(nfr_ids\)\} NFRs \(NFR-01/10 NFRs (NFR-01/' 'U3'
 if rtm_bloqueou_pela_asercao_numerica; then
   pass "U3: o gate bloqueou a §7 que afirmava 10 NFRs com o catalogo §3 em 12"
 else
@@ -1305,7 +1332,7 @@ fi
 # U4 — as capacidades de `specs/00` §4 sao OUTRA coisa que o catalogo §2, e ficam
 # guardadas contra a SUA fonte. Foi confundir as duas que produziu o defeito.
 cp "$RTM_GEN_BAK" "$RTM_GEN"
-perl -0pi -e 's/\{system_spec_capabilities\(\)\} capacidades/99 capacidades/' "$RTM_GEN"
+injectar 's/\{system_spec_capabilities\(\)\} capacidades/99 capacidades/' 'U4'
 if rtm_bloqueou_pela_asercao_numerica; then
   pass "U4: o gate bloqueou a §1.2 que contava 99 capacidades contra as de specs/00 §4"
 else
@@ -1426,7 +1453,7 @@ rtm_bloqueou_com() {
 # devolveria apenas uma lista mais curta — que e o modo de falha silencioso do
 # literal, so que agora automatico.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-perl -ni -e 'print unless /^\| ADR-011 \|/' "$RTM_SANDBOX_REG"
+injectar_em "$RTM_SANDBOX_REG" -ni 'print unless /^\| ADR-011 \|/' 'V1'
 if rtm_bloqueou_com 'descont'; then
   pass "V1: o gate bloqueou um registo com um código em falta (canon não-contíguo)"
 else
@@ -1440,7 +1467,7 @@ fi
 # desapareceu de facto em AOS-386 (ADR-021/022 -> Aceite), tornando a mutacao antiga um
 # no-op que fazia o V2 falhar por nao ter nada que corromper.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-perl -pi -e 's/\*\*Aceite\*\*/**Talvez**/' "$RTM_SANDBOX_REG"
+injectar_em "$RTM_SANDBOX_REG" -pi 's/\*\*Aceite\*\*/**Talvez**/' 'V2'
 if rtm_bloqueou_com 'estado desconhecido'; then
   pass "V2: o gate bloqueou um estado fora do vocabulário fechado do registo"
 else
@@ -1456,7 +1483,7 @@ fi
 # correr, e o vermelho que sai e o da divergencia de texto, nao o da asercao. Uma
 # prova sobre prosa gerada mede o gerador; esta tem de medir o padrao.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-perl -pi -e 's/canon que os gates lêem é \*\*ADR-001…\d{3}\*\*/canon que os gates lêem é **ADR-001 a ADR-014**/' "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md"
+injectar_em "$RTM_SANDBOX/root/tecnica/16_Rastreabilidade_RTM.md" -pi 's/canon que os gates lêem é \*\*ADR-001…\d{3}\*\*/canon que os gates lêem é **ADR-001 a ADR-014**/' 'V3'
 if rtm_bloqueou_com 'batem certo com a sua fonte'; then
   pass "V3: o gate bloqueou o intervalo falso na notação « a » por extenso"
 else

@@ -55,7 +55,7 @@ e fechar de forma independente.
 | **EPIC-25 Remediação dos defeitos da auditoria adversarial GOV/OBS** *(proposta)* | Epic | Os trinta defeitos apurados em `analises/13` sobre Governação e Observabilidade, mais os dois que a §5 dessa auditoria omitiu (§0.1): o TaintGate inerte sem superfície que o ligue e com a mitigação do registo sem chamadores, o `OpenFileStore` que apaga registos válidos em silêncio, a única configuração de produção do WORM que arranca ser a volátil, o cliente endurecido do gateway desarmado incondicionalmente, um token de leitura que autoriza crypto-shred, e dois gates bloqueantes que passam por razões erradas. **Seis tickets confirmados por execução.** Não reabre o que o registo de deferimentos já declara com eixo e dono — ver §0 | [EPIC-25_Remediacao_Auditoria_GOV_OBS.md](EPIC-25_Remediacao_Auditoria_GOV_OBS.md) | ~2.100 |
 
 
-**Total: 27 ficheiros referenciados, ~14.500+ linhas. Backlog ratificado/aceite: EPIC-01..17 (AOS-001..189). Propostas por ratificar: EPIC-18 (AOS-190..225), EPIC-19 (AOS-230..244), EPIC-20 (AOS-245..278), EPIC-21 (AOS-288..304), EPIC-22 (AOS-305..311), EPIC-23 (AOS-320..338), EPIC-24 (AOS-344..362) e EPIC-25 (AOS-363..382).**
+**Total: 27 ficheiros referenciados, ~14.500+ linhas. Backlog ratificado/aceite: EPIC-01..17 (AOS-001..189). Propostas por ratificar: EPIC-18 (AOS-190..225), EPIC-19 (AOS-230..244), EPIC-20 (AOS-245..278), EPIC-21 (AOS-288..304), EPIC-22 (AOS-305..319), EPIC-23 (AOS-320..338), EPIC-24 (AOS-344..362) e EPIC-25 (AOS-363..382).**
 
 ---
 
