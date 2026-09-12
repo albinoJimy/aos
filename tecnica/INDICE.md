@@ -51,8 +51,9 @@ observabilidade e governação; DevOps/SRE; responsáveis de produto; e revisão
 | 16 | **Matriz de Rastreabilidade (RTM)** | Catálogo RF-/NFR- com IDs estáveis; matrizes ADR×ticket e NFR×ticket; back-link técnico→ticket | [16_Rastreabilidade_RTM.md](16_Rastreabilidade_RTM.md) | 234 |
 | 17 | **Análise STRIDE** | Decomposição por fronteira de confiança (9 elementos × 6 categorias) → controlo → ADR → ticket | [17_Analise_STRIDE.md](17_Analise_STRIDE.md) | 268 |
 | 18 | **Planeador de Objectivos e Meta-Orchestração** *(Ratificado, v1.0)* | PlanDocument untrusted, validação fail-closed, gate como fronteira, meta-runs e organizações efémeras; organizações persistentes marcadas *(proposta)* | [18_Planner_Meta_Orquestracao.md](18_Planner_Meta_Orquestracao.md) | 263 |
+| 19 | **Visão End-to-End: Arquitetura, Camadas e Processos** | Consolidação em cinco lentes: arquitectura, camadas lógicas (catálogo), camadas de negócio (11 capacidades), fluxos F2E-01…06 e processos P-01…07 com dívidas explícitas | [19_Visao_End_to_End.md](19_Visao_End_to_End.md) | — |
 
-**Total: 19 documentos, ~4.890 linhas, 60 diagramas Mermaid.**
+**Total: 20 documentos, ~5.100 linhas, 60 diagramas Mermaid.**
 
 > Os documentos 12–14 foram acrescentados na remediação **P0** da auditoria (resolvem COMP-01, COMP-02, COMP-03): contratos de interface + política Rego, modelo de dados/eventos, e matriz de conformidade. Os documentos 15–17 foram acrescentados na remediação **P1**: o documento de UX/DX (a 6ª dimensão de excelência), a Matriz de Rastreabilidade (IDs RF-/NFR- + ADR×ticket) e a Análise STRIDE. O documento 18 foi **ratificado** (v1.0, 2026-08-02, após revisão adversarial multi-perspectiva): especifica o planeador real (goal→DAG) e a meta-orchestração dentro da forma congelada da Carta, marcando explicitamente o que exigiria emenda.
 
@@ -172,6 +173,7 @@ homónimo (ex.: `tecnica/07` ↔ `specs/EPIC-07`).
 |--------|------|-----------|-------|
 | 1.0 | Julho 2026 | Emissão inicial do conjunto técnico (12 documentos) derivado da síntese "O Agentic OS ideal". | Equipa AOS |
 | 1.1 | Julho 2026 | Remediação P0 da auditoria: +3 documentos (12 Contratos de Interface, 13 Modelo de Dados e Eventos, 14 Matriz de Conformidade). Total: 15 documentos. | Equipa AOS |
+| 1.2 | Setembro 2026 | +1 documento (19 Visão End-to-End: Arquitetura, Camadas e Processos). Total: 20 documentos. | Equipa AOS |
 
 ---
 
