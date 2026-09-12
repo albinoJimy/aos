@@ -146,7 +146,16 @@ func (e *Exporter) Export(ctx context.Context) (ExportResult, error) {
 	now := e.now().UTC()
 
 	// 1) Recolhe os eventos novos por stream (incremental, gapless).
-	streams := e.src.Streams()
+	//
+	// AOS-352 — FAIL-CLOSED. Um export construido sobre uma enumeracao FALHADA seria um
+	// backup que parece completo e nao e: os streams que nao foram vistos ficariam de
+	// fora, o `lastExported` NAO avancaria para eles, mas o resultado seria devolvido como
+	// sucesso. Um backup incompleto que se declara completo e pior do que nenhum — e a
+	// resposta certa a uma falha de enumeracao e nao produzir export nenhum.
+	streams, err := e.src.Streams()
+	if err != nil {
+		return ExportResult{}, fmt.Errorf("backup: enumerar streams da fonte: %w", err)
+	}
 	newByStream := make(map[string][]eventstore.Event)
 	cumHeads := make(map[string]uint64)
 	var total uint64

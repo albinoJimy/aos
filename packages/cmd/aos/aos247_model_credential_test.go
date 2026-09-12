@@ -59,16 +59,14 @@ func aos247ProdEnvBase(t *testing.T, endpoint string) string {
 	t.Setenv("AOS_SOVEREIGN_OIDC_JWKS_URI", "")
 	t.Setenv("AOS_SOVEREIGN_OIDC_MAX_AGE", "")
 	t.Setenv("AOS_SOVEREIGN_OIDC_REQUIRE_JTI", "")
-	// SEM substrato durável ⇒ ErrProductionNeedsDurableKEK não entra em jogo. O Event Store
-	// DURÁVEL é a excepção, e é obrigatória desde AOS-300: a produção exige-o
-	// INCONDICIONALMENTE (a revogação de NHI tem de sobreviver a um restart). Não reacende o
-	// guarda da KEK, que só olha para `durableExecution` e `WORMPath` — ambos continuam vazios,
-	// pelo que este ficheiro continua a medir o que sempre mediu.
-	t.Setenv("AOS_WORM_PATH", "")
+	// Event Store DURÁVEL, obrigatório desde AOS-300 (a revogação de NHI tem de sobreviver a um
+	// restart). Desde AOS-365 o WORM durável é IGUALMENTE obrigatório em produção, e arrasta a KEK
+	// durável (AOS-215) e a postura de destruição (AOS-328): fixarSubstratoDuravelDeProducao
+	// fecha essa cascata para que este ficheiro continue a medir a coluna da CREDENCIAL DO MODELO,
+	// e não a primeira coluna de durabilidade que ficaria por definir.
 	t.Setenv("AOS_EVENTSTORE_PATH", filepath.Join(dir, "events.wal"))
 	t.Setenv("AOS_DURABLE_EXECUTION", "")
-	t.Setenv("AOS_DSAR_VAULT_ADDR", "")
-	t.Setenv("AOS_DSAR_VAULT_TOKEN_PATH", "")
+	fixarSubstratoDuravelDeProducao(t)
 	// MODEL GATEWAY LIGADO, credencial AUSENTE — o estado sob teste.
 	t.Setenv("AOS_MODEL_ENDPOINT", endpoint)
 	t.Setenv("AOS_MODEL_NAME", "gpt-4o") // está na allowlist ASSINADA embebida (regra board-eu).
@@ -85,6 +83,10 @@ func aos247ProdEnvBase(t *testing.T, endpoint string) string {
 	t.Setenv("AOS_OPERATORS", "")
 	t.Setenv("AOS_APPROVERS_FILE", "")
 	t.Setenv("AOS_HUMAN_OIDC_ISSUER", "")
+	// AOS-367: a produção exige AOS_DSAR_ERASERS não-vazio. Compõe-se aqui (a par de AOS_OPERATORS)
+	// DEPOIS do reset acima, para que este ficheiro continue a medir a coluna da CREDENCIAL DO MODELO
+	// e não a autoridade DSAR — a mesma razão da cascata de durabilidade acima.
+	fixarAutoridadeDSARDeProducao(t)
 	return dir
 }
 
@@ -126,7 +128,12 @@ func TestAOS247_ProducaoSemCredencialAborta(t *testing.T) {
 // TestAOS247_ProducaoComCredencialArranca é a metade que impede a remediação de degenerar em
 // "recusar sempre": com a credencial montada, a produção compõe o gateway normalmente.
 func TestAOS247_ProducaoComCredencialArranca(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	// AOS-366: em produção o egress passou a exigir https (o caminho endurecido de AOS-223), pelo
+	// que este teste usa NewTLSServer em vez de NewServer. A composição só VALIDA o BaseURL (https +
+	// allowlist) — não dispara request —, logo basta o URL https e a allowlist derivada do próprio
+	// host; não é preciso confiar no cert self-signed. O que este teste continua a provar é a
+	// metade positiva de AOS-247: com a credencial montada, a produção compõe o gateway.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	defer srv.Close()
 	dir := aos247ProdEnvBase(t, srv.URL)
 	caminho, _ := aos247EscreverCredencial(t, dir)

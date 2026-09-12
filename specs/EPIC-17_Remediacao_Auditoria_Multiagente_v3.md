@@ -137,6 +137,17 @@ que a activa, o banner declara o estado composto, e `deploy/node/README.md` docu
 
 **DoD:** `ci-policy` e `ci-apex` verdes; nenhum segredo no bundle ou trust anchor em log/span.
 
+> **Nota de reconciliação (2026-09-08, AOS-375).** Os **quatro primeiros** critérios de aceitação acima
+> estão **satisfeitos pelo binário via AOS-220** (entregue 2026-07-31), embora este documento os mantenha
+> por marcar: o nó aceita `AOS_POLICY_BUNDLE_DIR` + trust anchor OOB, chama `pdp.Open` com
+> `WithTrustAnchor`, mantém `pdp.NewUnloaded()` deny-all quando não configurado
+> (`packages/integration/secured.go:299`) e traz o teste de aceitação (`packages/cmd/aos/aos220_pdp_bundle_surface_test.go`).
+> Fontes de verdade do estado: a §5.2 de `tecnica/14_Matriz_Conformidade.md` («Superfície de carregamento
+> de bundle de política — ENTREGUE por AOS-220») e as linhas do Art. 5/Art. 25 da mesma matriz. **As caixas
+> ficam por marcar de propósito:** o precedente **AOS-361(a)** trata um `[x]` sem ficheiro tocado como a
+> mesma classe de defeito que se corrige aqui — esta nota é a **âncora datada**, não um check. O 5.º
+> critério (ADR-011/`AGENTS.md` §7 se a semântica de fallback mudar) não foi reavaliado nesta emissão.
+
 ---
 
 ### AOS-182 — Implementar read-path soberano fail-closed D6/D7 no nó
@@ -150,6 +161,17 @@ que a activa, o banner declara o estado composto, e `deploy/node/README.md` docu
 **Dependências:** AOS-160 (HITL assinatura), AOS-162 (attestation 4-eyes).
 
 **DoD:** `ci-security`, `ci-apex` verdes; spans/audits sem PII.
+
+> **Nota de reconciliação (2026-09-08, AOS-375).** O eixo da **residência por-run está entregue** —
+> **AOS-182 / DEF-202** (FECHADO-RESIDUAL no `REGISTO-Deferimentos`): a residência do run é **selada na
+> criação** (`POST /runs` → `readGovernance.sealResidency`, `packages/cmd/aos/api.go:599` →
+> `packages/cmd/aos/sovereignty.go:351`), como confirma
+> `specs/EPIC-18_Remediacao_Auditoria_Multiagente_v4.md:1227-1228` («O deferimento AOS-182 … foi entregue:
+> a residência do run é selada na criação»). O 1.º critério acima (`readGovernance.authorize` verifica a
+> região de residência contra a região do leitor) já estava marcado `[x]`; os restantes (selo D6 sensível,
+> testes de API, promoção do stub no ADR-016) **ficam por marcar de propósito** — precedente AOS-361(a),
+> esta nota é a âncora, não um check. A **EPIC-18 (AOS-214/AOS-182/DEF-202) é a fonte de verdade** do
+> estado deste eixo; este documento não flipa o seu estatuto de proposta (`:9`), apenas reconcilia o texto.
 
 ---
 

@@ -138,8 +138,16 @@ func TestPolicyRuleCoverage(t *testing.T) {
 			}
 			allowByRule[c.ruleID]++
 		case Deny:
-			if !contains(d.Reason, "default-deny") {
-				t.Errorf("caso deny %q: reason=%q devia indicar default-deny", c.name, d.Reason)
+			// RIGOR SIMÉTRICO AO ALLOW (AOS-378): tal como o allow exige que o Reason
+			// NOMEIE a regra (@id) — prova de que exercitou ESTA regra e não outra —, o
+			// deny exige o token da camada CEDAR (`camada=cedar`), prova de que a negação
+			// ALCANÇOU o motor e é atribuível à guarda da regra. O substring "default-deny"
+			// sozinho já não basta: é produzido TANTO pela allowlist (camada=allowlist, que
+			// corre antes) COMO pelo Cedar, e uma recusa da allowlist não cobre uma regra
+			// Cedar. Exigir `camada=cedar` fecha esse falso-positivo de cobertura.
+			if !contains(d.Reason, "camada=cedar") {
+				t.Errorf("caso deny %q: reason=%q não alcançou o motor Cedar (falta camada=cedar) — "+
+					"uma recusa da allowlist não cobre uma regra Cedar", c.name, d.Reason)
 			}
 			denyByRule[c.ruleID]++
 		}
@@ -155,6 +163,51 @@ func TestPolicyRuleCoverage(t *testing.T) {
 		if denyByRule[id] == 0 {
 			t.Errorf("REGRA SEM COBERTURA DENY: %q (AC1 exige ≥1 caso deny por regra)", id)
 		}
+	}
+}
+
+// TestPolicyRuleCoverage_AllowlistDenyNaoContaComoCedar é o TESTE-VENENO do rigor
+// acrescentado em AOS-378: uma negação cuja causa é a ALLOWLIST (classe que não lista a
+// capability) NÃO deve contar como cobertura de uma regra Cedar. Constrói exactamente esse
+// deny — agent-reader a pedir cap:http.post, negado pela allowlist ANTES de qualquer regra
+// Cedar — e prova que:
+//
+//   - o Reason traz `camada=allowlist` e NÃO `camada=cedar` (a negação nunca alcançou o motor);
+//   - o predicado EXACTO do caso deny de [TestPolicyRuleCoverage] (`contains(reason,
+//     "camada=cedar")`) é FALSO para este deny — logo, se alguém tentasse cobrir uma regra
+//     Cedar com um deny da allowlist, aquele assert avermelharia a suite.
+//
+// Falha-antes: com o assert antigo (`contains(reason, "default-deny")`) este mesmo deny
+// PASSARIA — a allowlist também emite "default-deny" —, contando uma recusa da allowlist
+// como cobertura de uma regra Cedar. É essa a lacuna que o token de camada fecha.
+func TestPolicyRuleCoverage_AllowlistDenyNaoContaComoCedar(t *testing.T) {
+	t.Parallel()
+	p := mustOpen(t)
+	ctx := context.Background()
+
+	// agent-reader NÃO lista cap:http.post: negado pela allowlist, mesmo com autoridade,
+	// região e taint que de outro modo uma regra Cedar permitiria.
+	in := httpPost()
+	in.Principal.AgentClass = "agent-reader"
+	d, err := p.Decide(ctx, in)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if d.Effect != Deny {
+		t.Fatalf("Effect=%q, esperava Deny (fora da allowlist da classe)", d.Effect)
+	}
+	if !contains(d.Reason, "camada=allowlist") {
+		t.Errorf("reason=%q devia nomear camada=allowlist (a negação é da allowlist)", d.Reason)
+	}
+	// O CERNE DO VENENO: um deny da allowlist NÃO satisfaz o predicado de cobertura Cedar.
+	if contains(d.Reason, "camada=cedar") {
+		t.Errorf("reason=%q não devia nomear camada=cedar — a negação da allowlist não alcança o motor", d.Reason)
+	}
+	// Espelha EXACTAMENTE o assert do caso deny de TestPolicyRuleCoverage: para este deny é
+	// falso, i.e. não contaria como cobertura da regra Cedar (avermelharia a suite se usado
+	// como caso de cobertura).
+	if contaComoCoberturaCedar := contains(d.Reason, "camada=cedar"); contaComoCoberturaCedar {
+		t.Errorf("um deny da allowlist não pode contar como cobertura de regra Cedar (reason=%q)", d.Reason)
 	}
 }
 

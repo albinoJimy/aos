@@ -387,13 +387,16 @@ func TestPermittedToolErrorSurfaced(t *testing.T) {
 	if len(res.ToolResults) != 1 || !res.ToolResults[0].IsUntrusted() {
 		t.Fatalf("resultado de tool falhada devia estar untrusted: %+v", res.ToolResults)
 	}
-	// O span execute_tool traz error.type com a mensagem da tool.
+	// O span execute_tool traz error.type de um conjunto FECHADO (AOS-370): o RM mapeia
+	// o erro cru da tool para um código estável em vez de o ecoar, porque o atributo de
+	// span sai do processo para um colector. Um erro de tool a jusante (não de contexto)
+	// mapeia para "tool_error"; o texto cru continua no tail materializado (ver abaixo).
 	tools := h.tracer.SpansByOperation(OpExecuteTool)
 	if len(tools) != 1 {
 		t.Fatalf("esperava 1 span execute_tool, obtive %d", len(tools))
 	}
 	et, ok := tools[0].Attributes[AttrErrorType].(string)
-	if !ok || !strings.Contains(et, "falha da tool downstream") {
+	if !ok || et != "tool_error" {
 		t.Fatalf("error.type em falta/errado no span execute_tool: %v", tools[0].Attributes[AttrErrorType])
 	}
 	// O tail do turno 2 materializa o marcador de erro para o modelo reagir.

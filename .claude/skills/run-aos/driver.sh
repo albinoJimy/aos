@@ -32,6 +32,7 @@ POLICY_DIR="$REPO_ROOT/packages/control-plane/pdp/policies"
 say()  { printf '\033[36m[driver]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[driver] FALHOU:\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m[driver] OK\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[driver] AVISO:\033[0m %s\n' "$*" >&2; }
 
 # hexdeseed — imprime a pubkey ed25519 (hex) de um ficheiro de seed.
 hexdeseed() { "$BIN_DIR/aos" operator-pubkey --key "$1"; }
@@ -45,6 +46,116 @@ cmd_build() {
     ( cd "$REPO_ROOT/packages/cmd/$m" && go build -o "$BIN_DIR/$m" . ) || fail "build de $m"
   done
   ok "binarios em $BIN_DIR"
+}
+
+# --- frescura dos binarios ---------------------------------------------------------------------
+# O cmd_build escreve SEMPRE "$BIN_DIR/<nome>" (sem .exe), por isso e esse o unico caminho que
+# conta: um aos.exe deixado por um `go build -o aos.exe .` a mao nao e o binario que o driver
+# corre, e tolera-lo como "binario presente" era metade do buraco que se fecha aqui.
+BINARIES="aos aos-issuer aos-demo aos-attestation aos-orq"
+
+# newer_source <ref> — primeiro ficheiro de packages/ mais recente que <ref> (vazio = nenhum).
+# Todos os modulos cmd/* usam `replace` para caminhos locais, logo uma mudanca em QUALQUER
+# subarvore de packages/ entra nos binarios — a varredura nao pode limitar-se a packages/cmd.
+# Exclui *_test.go e testdata: nao entram no binario, e forcar um relink de ~25s por um teste
+# editado so ensinaria a gente a passar AOS_DRIVER_NO_BUILD=1, que e o buraco de volta.
+newer_source() {
+  find "$REPO_ROOT/packages" \
+    \( -name vendor -o -name testdata -o -name node_modules \) -prune -o \
+    \( \( -name '*.go' ! -name '*_test.go' \) -o -name go.mod -o -name go.sum \) \
+    -newer "$1" -print -quit 2>/dev/null
+}
+
+# stale_reason — porque e que os binarios NAO servem de prova do codigo actual (vazio = servem).
+# Compara com o binario MAIS ANTIGO: basta um dos cinco estar atrasado para o conjunto nao valer.
+stale_reason() {
+  local m oldest="" src
+  for m in $BINARIES; do
+    if [ ! -x "$BIN_DIR/$m" ]; then printf 'binario em falta: %s' "$m"; return 0; fi
+    if [ -z "$oldest" ] || [ "$BIN_DIR/$m" -ot "$oldest" ]; then oldest="$BIN_DIR/$m"; fi
+  done
+  src="$(newer_source "$oldest")"
+  [ -n "$src" ] && printf 'fonte mais recente que os binarios: %s' "${src#"$REPO_ROOT"/}"
+  return 0
+}
+
+# bin_age — idade do `aos` em forma legivel. E o numero que denuncia um verde sobre codigo velho.
+bin_age() {
+  local mt now s
+  mt="$(stat -c %Y "$BIN_DIR/aos" 2>/dev/null)" || { printf 'desconhecida'; return 0; }
+  now="$(date +%s)"; s=$(( now - mt ))
+  if   [ "$s" -lt 60 ];   then printf '%ds' "$s"
+  elif [ "$s" -lt 3600 ]; then printf '%dm' "$(( s / 60 ))"
+  else                         printf '%dh%02dm' "$(( s / 3600 ))" "$(( s % 3600 / 60 ))"; fi
+}
+
+# ensure_build — garante que os binarios em $BIN_DIR correspondem ao codigo em packages/.
+#
+# Ate aqui o `up` fazia `[ -x "$BIN_DIR/aos" ] || cmd_build`: construia so quando o binario NAO
+# existia. Da segunda corrida em diante, `smoke` levantava o binario da corrida anterior e dava
+# 9/9 VERDE sem exercitar uma linha do codigo alterado. MEDIDO a 2026-09-05 na validacao da
+# EPIC-23: smoke verde, binario com sete horas (de antes do epic inteiro) e nenhum dos banners
+# de postura novos (AOS-322, AOS-326) no serve.log; com `build` forcado, o mesmo smoke deu 9/9
+# E os tres banners apareceram. E grave porque a skill agentic-engineering §7 nomeia o smoke
+# como a unica evidencia que conta para mudancas no wiring, nos banners de arranque e na
+# superficie HTTP — exactamente as que os testes unitarios nao apanham, e por isso exactamente
+# aquelas em que um binario obsoleto passa despercebido com tudo verde por cima de codigo velho.
+#
+# A varredura de frescura custa ~3s e o relink dos cinco binarios ~25s, por isso so se
+# reconstroi quando ha fonte mais recente — mas nunca se reutiliza em SILENCIO.
+ensure_build() {
+  if [ "${AOS_DRIVER_NO_BUILD:-0}" = "1" ]; then
+    warn "AOS_DRIVER_NO_BUILD=1 — binarios NAO verificados (idade do aos: $(bin_age))."
+    warn "um verde a partir daqui NAO e prova sobre o codigo actual."
+    return 0
+  fi
+  local why
+  why="$(stale_reason)"
+  if [ -n "$why" ] || [ "${AOS_DRIVER_ALWAYS_BUILD:-0}" = "1" ]; then
+    say "a reconstruir — ${why:-AOS_DRIVER_ALWAYS_BUILD=1}"
+    cmd_build
+    # Pos-condicao: se ficou fonte mais recente, ou o build nao escreveu o que devia, ou ha um
+    # ficheiro com mtime no futuro. Em qualquer dos casos o verde seguinte nao valeria nada.
+    why="$(stale_reason)"
+    [ -z "$why" ] && return 0
+    fail "binarios ainda obsoletos apos o build ($why) — o build nao escreveu, ou ha fonte com mtime no futuro"
+  fi
+  say "binarios frescos (aos com $(bin_age); nada mais recente em packages/)"
+}
+
+cmd_freshness() {
+  local m why
+  for m in $BINARIES; do
+    if [ -x "$BIN_DIR/$m" ]; then
+      printf '  %-16s %s\n' "$m" "$(stat -c %y "$BIN_DIR/$m" 2>/dev/null || echo 'mtime desconhecido')"
+    else
+      printf '  %-16s AUSENTE\n' "$m"
+    fi
+  done
+  why="$(stale_reason)"
+  [ -n "$why" ] && fail "OBSOLETOS: $why"
+  ok "frescos (aos com $(bin_age))"
+}
+
+# cmd_freshness_selftest — a assercao que impede a regressao de voltar em silencio.
+# Envelhece o PROPRIO binario (mtime a 2000-01-01) em vez de tocar no repo, corre ensure_build e
+# exige que ele tenha reconstruido. Com o antigo `[ -x "$BIN_DIR/aos" ] || cmd_build` este teste
+# falha no penultimo passo — que e precisamente o ponto.
+cmd_freshness_selftest() {
+  [ "${AOS_DRIVER_NO_BUILD:-0}" = "1" ] && fail "AOS_DRIVER_NO_BUILD=1 desliga exactamente o que este auto-teste verifica"
+  [ -x "$BIN_DIR/aos" ] || cmd_build
+  local before after
+  touch -d '2000-01-01 00:00:00' "$BIN_DIR/aos" || fail "nao consegui envelhecer $BIN_DIR/aos"
+  before="$(stat -c %Y "$BIN_DIR/aos" 2>/dev/null)"
+  # Sem um stat GNU nao ha comparacao de mtime e este auto-teste daria um verde vazio.
+  case "$before" in ''|*[!0-9]*) fail "stat -c %Y indisponivel — este driver assume coreutils/findutils GNU (Git Bash, Linux)" ;; esac
+  [ -n "$(stale_reason)" ] || fail "stale_reason nao viu um binario datado de 2000-01-01 — a deteccao esta partida"
+  say "binario envelhecido para 2000-01-01; ensure_build tem de reconstruir"
+  ensure_build
+  after="$(stat -c %Y "$BIN_DIR/aos")"
+  [ "$after" -gt "$before" ] || fail "ensure_build REUTILIZOU o binario obsoleto (mtime inalterado) — a regressao voltou"
+  [ -z "$(stale_reason)" ] || fail "apos ensure_build os binarios continuam obsoletos"
+  ok "frescura garantida: um binario obsoleto forca reconstrucao"
 }
 
 # --- chaves ----------------------------------------------------------------------------------
@@ -79,7 +190,7 @@ anchor_hex() { tr -d '\r\n' < "$POLICY_DIR/trust_anchor.pub" | base64 -d | xxd -
 
 # --- up / down -------------------------------------------------------------------------------
 cmd_up() {
-  [ -x "$BIN_DIR/aos" ] || [ -x "$BIN_DIR/aos.exe" ] || cmd_build
+  ensure_build
   # Regenera tambem quando o roster de operadores mudou de forma (AOS-305 passou a exigir DOIS
   # operadores): um operators.env em cache com um so id faz o no abortar com ErrBadAutonomySetters,
   # e o sintoma — "o no nao ficou pronto" — nao aponta para o ficheiro velho.
@@ -212,14 +323,21 @@ cmd_test() {
 tem() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
 cmd_smoke() {
-  local rid="smoke-$$" r
+  local rid="smoke-$$" r why
   cmd_up || exit 1
 
-  say "1/9 submeter run $rid"
+  # Pre-voo: cmd_up so pode devolver controlo com binarios que correspondem ao codigo. Se esta
+  # assercao falhar, alguem voltou a por o driver a reutilizar binarios e os nove passos abaixo
+  # estariam a exercitar codigo velho — um verde que nao prova nada.
+  why="$(stale_reason)"
+  [ -z "$why" ] || fail "pre-voo: o no subiu com binarios obsoletos ($why) — se puseste AOS_DRIVER_NO_BUILD=1, tira-o: um verde assim nao e prova"
+  say "pre-voo: binarios correspondem ao codigo (aos com $(bin_age))"
+
+  say "1/10 submeter run $rid"
   r="$(cmd_run "$rid" "auditar o pipeline")"
   tem 'status=accepted' "$r" || fail "submit: $r"
 
-  say "2/9 observar ate completar"
+  say "2/10 observar ate completar"
   local out="" i
   for i in $(seq 1 20); do
     out="$(cmd_observe "$rid")"
@@ -231,7 +349,7 @@ cmd_smoke() {
     *) fail "run nao completou: $out" ;;
   esac
 
-  say "3/9 read-path soberano NEGA sem credencial (leitura 404, escrita 403)"
+  say "3/10 read-path soberano NEGA sem credencial (leitura 404, escrita 403)"
   local code
   # A leitura nega com 404 "not found" — ANTI-ENUMERACAO: um 403 revelaria que o run existe.
   code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$ADDR/runs/$rid")"
@@ -242,33 +360,53 @@ cmd_smoke() {
   [ "$code" = "403" ] || fail "POST sem headers: esperado 403, veio $code"
   ok "404 na leitura, 403 na escrita"
 
-  say "4/9 canal de controlo assinado (pause + steer)"
+  say "4/10 canal de controlo assinado (pause + steer)"
   r="$(cmd_pause "$rid")";                tem 'pause enviado' "$r" || fail "pause: $r"
   r="$(cmd_steer "$rid" "muda de rumo")"; tem 'steer enviado' "$r" || fail "steer: $r"
   ok "pause + steer aceites"
 
-  say "5/9 canal de controlo RECUSA emissor nao pinado"
+  say "5/10 canal de controlo RECUSA emissor nao pinado"
   if "$BIN_DIR/aos" pause --addr "$ADDR" --run-id "$rid" --emitter op:intruso \
        --key "$HOME_DIR/ap1.seed" >/dev/null 2>&1; then
     fail "um emissor nao pinado foi aceite"
   fi
   ok "emissor nao pinado recusado"
 
-  say "6/9 autonomia assinada (POST /autonomy) e leitura"
+  say "6/10 autonomia assinada (POST /autonomy) e leitura"
   r="$(cmd_autonomy_set agt-1 fs L5 smoke)"; tem '"status":"applied"' "$r" || fail "autonomy set: $r"
   r="$(cmd_autonomy_get)";                   tem '"level":"L5"' "$r"       || fail "autonomy get: $r"
   ok "agt-1:fs L4 -> L5 aplicado e selado"
 
-  say "7/9 SSE da trajectoria"
+  say "7/10 SSE da trajectoria"
   r="$(cmd_trajectory "$rid" 4 6)"; tem 'run.state.transition' "$r" || fail "SSE sem eventos"
   ok "trajectoria a emitir"
 
-  say "8/9 substrato duravel (WAL) e atribuicao selada (WORM)"
+  say "8/10 substrato duravel (WAL) e atribuicao selada (WORM)"
   r="$(cmd_wal)";                     tem 'turn.recorded' "$r" || fail "WAL sem turn.recorded: $r"
   r="$(cmd_worm governance.control)"; tem 'control:pause' "$r"  || fail "WORM sem selo de pause: $r"
   ok "WAL e WORM coerentes"
 
-  say "9/9 metricas Prometheus"
+  say "9/10 mediacao do RM exercitada pelo system-test de aceitacao (AOS-376)"
+  # PORQUE um go test e nao uma tool call ao vivo: o binario `aos` NAO consegue emitir uma
+  # tool call. O referenceModel de producao nunca emite; o unico modelo que emite e o
+  # test-only `toolEmittingModel`, e nao existe gateway mock que o injecte por HTTP. Logo o
+  # caminho de mediacao ALCANCAVEL a partir daqui e o system-test do no completo
+  # (TestAOS169_Mediation_NoBypass_FullNodeAPI): compoe um no via Bootstrap com o RM real +
+  # bundle assinado e prova permit + deny + no-bypass. Produzir um registo WORM de mediacao
+  # AO VIVO exigiria um harness de gateway mock que nao existe — fica registado como o limite
+  # honesto deste passo. NAO-VACUOSO (AC4): o proprio teste exige que a call ATRAVESSE o
+  # Reference Monitor (o contador de mediacoes move-se) e prova permit E deny por construcao;
+  # uma mediacao que nao selasse nada avermelharia o teste subjacente. FAIL-CLOSED (AC3): se
+  # o teste falhar OU estiver ausente/renomeado, o passo chama `fail` e o smoke fica vermelho.
+  r="$( ( cd "$REPO_ROOT/packages/cmd/aos" && go test -v -run '^TestAOS169_Mediation_NoBypass_FullNodeAPI$' -count=1 . ) 2>&1 )" \
+    || fail "system-test de mediacao falhou: $r"
+  # `go test -run <nome-inexistente>` sai 0 ("no tests to run"): exigir a linha `--- PASS:`
+  # do teste concreto avermelha o passo se ele for removido/renomeado (fail-closed contra ausencia).
+  tem '--- PASS: TestAOS169_Mediation_NoBypass_FullNodeAPI' "$r" \
+    || fail "system-test de mediacao ausente ou nao passou (sem '--- PASS' do teste): $r"
+  ok "mediacao provada pelo system-test (permit+deny+no-bypass; call atravessou o RM)"
+
+  say "10/10 metricas Prometheus"
   r="$(curl -s -m 5 "$ADDR/metrics")"; tem 'aos_ready 1' "$r" || fail "metricas"
   ok "aos_ready 1"
 
@@ -278,7 +416,9 @@ cmd_smoke() {
 
 # --- despacho --------------------------------------------------------------------------------
 case "${1:-help}" in
-  build)        cmd_build ;;
+  build)              cmd_build ;;
+  freshness)          cmd_freshness ;;
+  freshness-selftest) cmd_freshness_selftest ;;
   keys)         cmd_keys ;;
   up)           cmd_up ;;
   down)         cmd_down ;;
@@ -307,6 +447,8 @@ case "${1:-help}" in
 driver.sh — arranca e conduz o no `aos`
 
   build                       compila aos, aos-issuer, aos-demo, aos-attestation, aos-orq
+  freshness                   mtime dos binarios; sai 1 se algum ficou atras de packages/
+  freshness-selftest          prova que um binario obsoleto forca reconstrucao (anti-regressao)
   keys                        gera seeds (2 operadores + 2 aprovadores) e approvers.json
   up                          levanta o no COMPOSTO (PDP assinado + four-eyes + autonomia + WAL/WORM)
   down                        para o no
@@ -333,6 +475,11 @@ driver.sh — arranca e conduz o no `aos`
   test [modulo] [pkgs]        go test -race (default: packages/cmd/aos ./...)
   smoke                       ponta-a-ponta com assercoes (up -> 9 passos -> down)
   home                        directorio de trabalho do driver
+
+`up` (e portanto `smoke`) reconstroi sempre que ha fonte em packages/ mais recente que os
+binarios, e nunca reutiliza um binario sem dizer a idade dele — um verde nao corre em silencio
+sobre codigo velho. AOS_DRIVER_ALWAYS_BUILD=1 forca o build; AOS_DRIVER_NO_BUILD=1 salta a
+verificacao com aviso (e faz o `smoke` recusar-se a dar verde).
 EOF
     ;;
 esac

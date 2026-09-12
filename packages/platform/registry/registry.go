@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -198,6 +199,17 @@ func (r *Registry) Publish(ctx context.Context, req PublishRequest) (domain.Entr
 	if err := validateContractSchemas(req.Contract); err != nil {
 		return domain.Entry{}, err
 	}
+	// AOS-334 (fail-closed): o contrato TEM de trazer o que o seu kind exige, e a verificação
+	// vive AQUI — antes do `r.digester.Digest` abaixo — pela mesma razão que a dos schemas:
+	// não se hasheia uma entrada que vai ser recusada.
+	//
+	// NÃO vive em [domain.Entry.Validate]: essa é a invariante da ENTRADA, e as entradas
+	// `mcp_server` já no event-log foram escritas antes desta regra. Pô-la lá tornaria-as
+	// inválidas ao serem relidas, e o que se quer fechar é a publicação NOVA, não a leitura do
+	// que já é histórico.
+	if err := validateContractPorKind(req.Kind, req.Contract); err != nil {
+		return domain.Entry{}, err
+	}
 	entry := domain.Entry{
 		ID:        req.ID,
 		Version:   req.Version,
@@ -284,6 +296,22 @@ func (r *Registry) SetStatus(ctx context.Context, id string, v domain.Version, t
 		from := cur.Status
 		if from == to {
 			return cur.Clone(), nil // idempotente: sem facto novo.
+		}
+		// AOS-334 — A PROMOÇÃO A `active` REAVALIA A REGRA DO KIND, e não só a publicação.
+		//
+		// A primeira versão desta correcção fechou o `Publish` e declarou que as entradas
+		// legadas «continuam a resolver, de propósito». A revisão adversarial mediu o que
+		// isso deixava passar: uma entrada `mcp_server` sem manifesto já no log é
+		// reconstruída em `staging` e chega a `active` por aqui, sem tocar na validação. E
+		// `active` é o estado que RESOLVE e é usado.
+		//
+		// LER uma entrada histórica é legítimo — o log é append-only e reescrever a leitura
+		// do passado seria pior do que a lacuna. PROMOVÊ-LA é uma decisão NOVA, tomada hoje,
+		// e sujeita às regras de hoje. A distinção que faltava era essa.
+		if to == domain.StatusActive {
+			if verr := validateContractPorKind(cur.Kind, cur.Contract); verr != nil {
+				return domain.Entry{}, verr
+			}
 		}
 		if !domain.CanTransition(from, to) {
 			return domain.Entry{}, fmt.Errorf("%w (%s->%s)", domain.ErrInvalidTransition, from, to)
@@ -428,6 +456,46 @@ func validateContractSchemas(c domain.Contract) error {
 	}
 	if _, err := digest.CanonicalJSON(c.OutputSchema); err != nil {
 		return fmt.Errorf("%w: output_schema: %w", ErrInvalidRequest, err)
+	}
+	return nil
+}
+
+// validateContractPorKind impõe o que cada kind exige do seu contrato.
+//
+// Hoje há uma regra só: `mcp_server` exige `ManifestDigest` (AOS-334). O contrato de um
+// servidor MCP é `{Egress, ManifestDigest}` — sem o digest sobra a classe de egress, que colide
+// entre servidores sem nada em comum, e era esse o digest-constante-da-classe que o AOS-320
+// existe para eliminar.
+//
+// A DIRECÇÃO DA REGRA IMPORTA: é «exige», não «só este pode ter». As entradas `kind=tool`
+// derivadas de um servidor MCP transportam a âncora de propósito, e uma formulação exclusiva
+// partiria o `TestAncoraChegaAsEntradasTool`.
+//
+// LIMITE DECLARADO — PRESENÇA E FORMA NÃO SÃO PROVENIÊNCIA. Isto verifica que o campo existe e
+// que tem a forma de um SHA-256; NÃO verifica que o valor foi derivado do manifesto que o
+// servidor de facto apresentou. Quem publica pode fornecer um sha256 bem-formado de qualquer
+// coisa. Fechar esse eixo exige assinatura sobre o manifesto observado, que é trabalho da cadeia
+// de supply-chain e não desta validação — fica nomeado em vez de sugerido pelo silêncio.
+//
+// LIMITE DECLARADO — LER NÃO É PROMOVER. Uma entrada `mcp_server` sem digest já no event-log
+// continua a folder-se na projecção e a RESOLVER: o log é append-only e reescrever a leitura do
+// histórico seria pior do que a lacuna. O que ela não pode é ser publicada de novo nem PROMOVIDA
+// a `active` — ver a guarda em [Registry.SetStatus].
+func validateContractPorKind(kind domain.ArtifactKind, c domain.Contract) error {
+	if kind != domain.KindMCPServer {
+		return nil
+	}
+	md := strings.TrimSpace(c.ManifestDigest)
+	if md == "" {
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, ErrManifestDigestRequired)
+	}
+	// A FORMA TAMBÉM É VERIFICADA, e a primeira versão só verificava a PRESENÇA. A revisão
+	// adversarial mediu o que isso deixava: `ManifestDigest: "x"` passava, e dois servidores
+	// sem nada em comum voltavam a partilhar o digest de contrato — o digest-constante-da-
+	// -classe que o AOS-320 existe para eliminar, reaberto por uma constante à escolha de quem
+	// publica.
+	if !digest.BemFormado(md) {
+		return fmt.Errorf("%w: %w: forma invalida (esperado sha256:<64 hex>)", ErrInvalidRequest, ErrManifestDigestRequired)
 	}
 	return nil
 }

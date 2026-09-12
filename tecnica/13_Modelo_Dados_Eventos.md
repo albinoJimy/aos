@@ -168,7 +168,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `backpressure.*` | 5 | `packages/control-plane/scheduler/{queue,policy}.go` |
 | `budget.*` | 7 | `packages/control-plane/budget/events.go` (ciclo reserva/commit) e `packages/control-plane/scheduler/breaker.go` (circuit breaker) |
 | `control.*` | 3 | `packages/kernel/agent-runtime/control/steer_channel.go` |
-| `credential.*` | 1 | `packages/platform/broker/exchange.go` |
+| `credential.*` | 2 | `packages/platform/broker/exchange.go` (`issued` da troca emitida; `denied` da negação server-side, AOS-339) |
 | `deadlock.*` | 2 | `packages/control-plane/orchestrator/contract/dag_events.go` |
 | `degradation.*` | 5 | `packages/control-plane/scheduler/degradation.go` |
 | `foureyes.*` | 1 | `packages/control-plane/governance/hitl/challenge_issuer.go` |
@@ -228,7 +228,9 @@ Get-ChildItem -Recurse -Path packages -Filter *.go |
   Select-String -Pattern '^\s*(const\s+)?[A-Za-z0-9_]*[Ee]vent[A-Za-z0-9_]*\s*(=|[A-Za-z]+\s*=)\s*"[a-z][a-z0-9_]*(\.[a-z0-9_]+)+"\s*$'
 ```
 
-Três verificações complementares, **hoje automatizadas** no gate `event-catalog` (`scripts/ci/event-catalog.py`, entregue por **AOS-198**, `7d16c4e`): que nenhum `eventstore.EventInput{Type: "…"}` usa uma literal **nem uma concatenação**; que o primeiro segmento de cada nome consta de uma das duas tabelas acima; e que um nome catalogado em (a) é mesmo apendado ao Event Store (o pacote importa `substrate/eventstore`).
+**Duas** verificações complementares, **hoje automatizadas** no gate `event-catalog` (`scripts/ci/event-catalog.py`, entregue por **AOS-198**, `7d16c4e`): que nenhum `eventstore.EventInput{Type: "…"}` usa uma literal **nem uma concatenação**; e que o primeiro segmento de cada nome consta de uma das duas tabelas acima. Uma terceira verificação candidata — que um nome catalogado em (a) é mesmo apendado ao Event Store, pela importação de `substrate/eventstore` — foi implementada, medida contra a árvore e **RETIRADA por imprecisão**: a granularidade disponível é o PACOTE, não o emissor (ver `scripts/ci/event-catalog.py:41-51`, secção «O QUE ESTE GATE NÃO VERIFICA»). **Ressalva que importa não voltar a ligar (AOS-379):** essa verificação retirada operava por-pacote e teria **passado** sobre `platform/audit` — um pacote grande que importa o store por outras razões que não estes rótulos —, que é precisamente onde vive o buraco do canal de mediação do AOS-379; esse buraco é de **caminho de chamada** e continua sem gate que o cubra, pelo que a verificação retirada nunca o teria apanhado.
+
+*(Coerência verificada a 2026-09-08, na árvore desta branch (base `f366f08`), contra `scripts/ci/event-catalog.py:41-51` — docstring do gate no commit `7d16c4e` (AOS-198): o documento e o script declaram agora a MESMA retirada da verificação por-importação, por granularidade de pacote. Molde de `tecnica/14` §5.2. AOS-374.)*
 
 O gate está ligado aos **três** sítios que o tornam bloqueante (`ALL_GATES` de `scripts/ci/run.sh`, job em `.github/workflows/ci.yml`, e `needs:` do agregador `gates`) e é *fail-closed*. As violações reais conhecidas ficam numa baseline **com dono por entrada**, que só encolhe e cuja entrada obsoleta faz o gate **falhar**. Os comandos manuais de §3.3 continuam válidos como verificação local rápida; deixaram de ser a única verificação. **O CA3 de AOS-201 fica assim satisfeito** — ver §8.1.
 
@@ -302,6 +304,14 @@ CREATE TABLE audit_log (
     PRIMARY KEY (audit_seq)
 );
 ```
+
+> **`metadata` no evento de mediação (AOS-340).** O payload de `tool.call.denied` /
+> `tool.call.escalated` leva um campo OPCIONAL `metadata` — pares chave/valor do hook que
+> terminou a mediação, para uma negação poder registar informação estruturada em vez de a
+> enfiar no `reason` em texto livre. É `omitempty`: quem nada acrescenta produz o mesmo payload
+> de antes. **Não** entra no `audit_log` acima: o `AuditRecord` é encadeado por hash e a sua
+> serialização canónica tem ordem e largura fixas, pelo que acrescentar-lhe um campo é uma
+> migração de versão de schema — deliberadamente fora do âmbito que abriu o canal.
 
 O `entry_hash` é calculado sobre a serialização canónica da entrada **concatenada com o `prev_hash`**; a `signature` sela periodicamente segmentos da cadeia. Assim, qualquer alteração retroactiva de uma entrada intermédia quebra todos os `entry_hash` subsequentes e invalida o selo — *tamper-evidence* verificável sem confiança no operador do storage (ADR-010).
 
@@ -471,7 +481,7 @@ Registadas aqui por serem alterações **fora** do âmbito desta revisão docume
 
 | Pendência | Onde | Porquê fica |
 |---|---|---|
-| ~~**Gate de CI do catálogo de tipos — CA3 de AOS-201.**~~ **FECHADO por AOS-198** (`7d16c4e`): o gate `event-catalog` existe, está ligado aos três sítios e é bloqueante. *(descrição original, mantida por rasto:)* Deve verificar: constante nomeada declarada junto do emissor; identificador contém `Event` e declaração numa linha (§3.3, «Regras»); prefixo conhecido; **zero literais e zero concatenações** em `EventInput.Type` (o padrão a rejeitar está em `control/steer_channel.go`, ramo `default` de `eventTypeFor`); e separação das famílias (a)/(b) pela importação de `substrate/eventstore` | `scripts/ci/event-catalog.py` + `.sh`, `run.sh`, `ci.yml` | **Já não é pendência.** À data desta revisão requeria alterar `scripts/**` e a CI, fora do âmbito documental; foi entregue por AOS-198. Os comandos de §3.3 mantêm-se como verificação local rápida. |
+| ~~**Gate de CI do catálogo de tipos — CA3 de AOS-201.**~~ **FECHADO por AOS-198** (`7d16c4e`): o gate `event-catalog` existe, está ligado aos três sítios e é bloqueante. *(descrição original, mantida por rasto:)* Deve verificar: constante nomeada declarada junto do emissor; identificador contém `Event` e declaração numa linha (§3.3, «Regras»); prefixo conhecido; **zero literais e zero concatenações** em `EventInput.Type` (o padrão a rejeitar está em `control/steer_channel.go`, ramo `default` de `eventTypeFor`). A separação das famílias (a)/(b) pela importação de `substrate/eventstore`, que a descrição original listava, foi implementada e **RETIRADA por imprecisão** (granularidade por-pacote, não por-emissor — ver `scripts/ci/event-catalog.py:41-51`): **NÃO** faz parte do que o gate hoje impõe | `scripts/ci/event-catalog.py` + `.sh`, `run.sh`, `ci.yml` | **Já não é pendência.** À data desta revisão requeria alterar `scripts/**` e a CI, fora do âmbito documental; foi entregue por AOS-198. Os comandos de §3.3 mantêm-se como verificação local rápida. |
 | Reconciliar o exemplo de `append` do contrato C2 (mostra `taint` dentro de `event`) | `tecnica/12` §5 e §11 | Documento de outro dono; declarado como divergência conhecida em §3.4. |
 | Corrigir os **sete** sítios que ainda citam os três nomes nunca emitidos (`tool.call.dispatched`, `tool.result.received`, `state.transition`) | `packages/substrate/eventstore/schemas/event-envelope-1.0.json` (descrição do campo `type`), `packages/substrate/eventstore/event.go` (comentário de `Type`), `packages/substrate/eventstore/README.md` (exemplo de `Append` **executável e copiável**, e tabela do envelope), `packages/substrate/bus/filter.go` (comentário), `packages/substrate/bus/README.md` (exemplos de `Publish` e de `Filter`) | Alteração de código. O caso mais grave é o exemplo do `README.md` do `eventstore`, que é copiável tal como está. |
 | Reconciliar `packages/substrate/eventstore/README.md` (nota «Fidelidade ao envelope canónico»), que ainda anuncia `prompt_hash`, `model{model_id,params,seed}`, `dependency_manifest_ref`, `taint` e `payload_ref` como «extensões previstas, a introduzir por *expand* compatível» | `packages/substrate/eventstore/README.md` | Alteração de código, e **contradiz directamente** a tese de §3.2/§3.4 (envelope fino por decisão; os metadados vivem no payload e no audit, não em campos por materializar). É hoje a fonte sobrevivente mais provável de uma reincidência da leitura que gerou este ticket, por estar no pacote que o implementador lê primeiro. |

@@ -172,6 +172,17 @@ func TestLockWAL_LargarDevolveEEIdempotente(t *testing.T) {
 // `aos wal-inspect` e `aos wal-summary` abrem o MESMO WAL com o nó a correr, e são o
 // que um operador usa a meio de um incidente. Uma tranca sobre o próprio WAL — em vez
 // do ficheiro irmão — parti-los-ia, e parti-los-ia no pior momento possível.
+//
+// AOS-347 — O QUE ESTE TESTE MEDIA ANTES, E PORQUE NÃO ERA O QUE O NOME PROMETIA.
+//
+// A versão anterior fechava o escritor (`escritor.Close()`) ANTES de abrir o leitor.
+// Media «um leitor abre um WAL PARADO», que é o caso fácil e não é o que a sua própria
+// mensagem de falha nomeia — o `wal-inspect` corre com o nó VIVO. O cenário por medir
+// era esse, e nele o segundo abridor ganhava uma cabeça de escrita concorrente: seqs
+// [1 2 3 4 4 5 5] no ficheiro e `E_RESTORE_ORDER` no arranque seguinte.
+//
+// Agora o escritor fica VIVO durante toda a leitura, e o leitor entra por
+// [eventstore.OpenReadOnly] — que é o que os subcomandos passaram a usar.
 // ---------------------------------------------------------------------------
 
 func TestLockWAL_NaoBloqueiaQuemLe(t *testing.T) {
@@ -188,19 +199,18 @@ func TestLockWAL_NaoBloqueiaQuemLe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open do detentor: %v", err)
 	}
+	// O ESCRITOR FICA VIVO: é este o cenário que o `wal-inspect` nomeia.
+	defer func() { _ = escritor.Close() }()
 	if _, err := escritor.Append(t.Context(), "run-1", eventstore.EventInput{
 		Type: "probe", Payload: []byte(`{}`), RunID: "run-1", StepID: "s1",
 	}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := escritor.Close(); err != nil {
-		t.Fatalf("Close do escritor: %v", err)
-	}
 
-	// COM a posse ainda tomada, um leitor abre o MESMO WAL e vê o facto.
-	leitor, err := eventstore.Open(wal)
+	// COM a posse tomada E o escritor vivo, um leitor abre o MESMO WAL e vê o facto.
+	leitor, err := eventstore.OpenReadOnly(wal)
 	if err != nil {
-		t.Fatalf("Open de LEITURA com a posse tomada = %v — a tranca está no ficheiro errado e parte o wal-inspect", err)
+		t.Fatalf("OpenReadOnly com a posse tomada e o escritor VIVO = %v — a tranca está no ficheiro errado e parte o wal-inspect", err)
 	}
 	defer func() { _ = leitor.Close() }()
 	evs, err := leitor.Read(t.Context(), "run-1", 1)
@@ -209,6 +219,23 @@ func TestLockWAL_NaoBloqueiaQuemLe(t *testing.T) {
 	}
 	if len(evs) != 1 {
 		t.Fatalf("eventos lidos = %d, quer 1", len(evs))
+	}
+	// E NÃO ganha uma cabeça concorrente: era a segunda atribuição de seq que colidia.
+	if _, err := leitor.Append(t.Context(), "run-1", eventstore.EventInput{
+		Type: "probe", Payload: []byte(`{}`), RunID: "run-1", StepID: "s2",
+	}); !errors.Is(err, eventstore.ErrReadOnly) {
+		t.Fatalf("Append do leitor = %v, quer ErrReadOnly", err)
+	}
+
+	// O escritor continua a ser o único a atribuir seq, e continua gapless.
+	res, err := escritor.Append(t.Context(), "run-1", eventstore.EventInput{
+		Type: "probe", Payload: []byte(`{}`), RunID: "run-1", StepID: "s3",
+	})
+	if err != nil {
+		t.Fatalf("Append do escritor depois da leitura: %v", err)
+	}
+	if res.Seq != 2 {
+		t.Fatalf("seq do escritor = %d, quer 2 — uma cabeça concorrente teria colidido", res.Seq)
 	}
 }
 

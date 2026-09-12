@@ -17,11 +17,9 @@ import (
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	"github.com/aos-ref/kernel/reference-monitor/risk"
-	"github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/digest"
 	domain "github.com/aos-ref/platform/registry/domain"
-	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
 )
 
@@ -95,19 +93,8 @@ func newACNHarness(t *testing.T) *acnHarness {
 	dir := t.TempDir()
 
 	signer := acnSigner(t)
-	auditStore := audit.NewMemStore()
-	trust, err := signing.NewTrustStore(auditStore)
-	if err != nil {
-		t.Fatalf("trust store: %v", err)
-	}
-	if err := trust.Add(ctx, signer.KeyID(), signer.PublicKey()); err != nil {
-		t.Fatalf("trust add: %v", err)
-	}
-	revalidator, err := revalidation.New(trust, auditStore)
-	if err != nil {
-		t.Fatalf("revalidator: %v", err)
-	}
-
+	// AOS-381: entrega-se o REGISTO ASSINADO e o Bootstrap constrói o revalidador SELADO no WORM
+	// DURÁVEL do nó (AOS_WORM_PATH), em vez de injectar um revalidador sobre um MemStore volátil.
 	levels := autonomy.NewLevelRegistry()
 	if _, err := levels.SetLevel(ctx, acnAgent, "fs", autonomy.L4, "teste de ciclo", "operador"); err != nil {
 		t.Fatalf("SetLevel: %v", err)
@@ -130,7 +117,7 @@ func newACNHarness(t *testing.T) *acnHarness {
 	cfg.Catalog = catalogStub{entries: []domain.Entry{
 		acnEntry(t, signer, "passo_um"), acnEntry(t, signer, "passo_dois"),
 	}}
-	cfg.Revalidator = revalidator
+	cfg.SignedToolRegistry = nodeSignedRegistrySpec(signer, nil)
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{
 		acnClass: {TTL: 15 * time.Minute, Scope: []string{acnCap}},
 	}

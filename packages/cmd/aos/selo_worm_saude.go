@@ -42,9 +42,17 @@ import (
 // O SINAL APARECE EXACTAMENTE QUANDO O DANO APARECE: se nenhuma destas rotas for exercida, nada é
 // recusado e não há nada a assinalar. Um nó parado não tem incidente.
 //
-// RESIDUAL DECLARADO: só se observam os `Append` DESTAS TRÊS VIAS. Os do fluxo DSAR e do varredor
-// de retenção têm tratamento próprio (o erro sobe ao chamador e é registado lá), e contá-los aqui
-// misturaria eixos com remédios diferentes.
+// COBERTURA DESTE EIXO, DEPOIS DE AOS-369: `saudeDeSelagem` observa os `Append` DESTAS TRÊS VIAS
+// DE GOVERNAÇÃO e nada mais. Os do fluxo DSAR e do varredor de retenção têm tratamento próprio (o
+// erro sobe ao chamador e é registado lá), e contá-los aqui misturaria eixos com remédios
+// diferentes.
+//
+// A falha em gravar uma MEDIAÇÃO do Reference Monitor NÃO cai aqui — tem eixo próprio. Um WORM em
+// baixo também parte o registo pós-decisão de um deny/escalate no RM, e essa perda é agora contada
+// e exposta separadamente (`aos_mediation_record_failures_total`) e alimenta o /readyz pelo
+// último-desfecho do RM (`referencemonitor.Metrics.RecordingHealthy`), não por este contador. São
+// o mesmo sintoma (disco cheio, mount `:ro`) em dois eixos com séries e sondas distintas; nenhum
+// declara cobrir o outro.
 // ---------------------------------------------------------------------------------------------
 
 // saudeDeSelagem guarda o que se sabe sobre as escritas ao WORM feitas pelas vias de governação.

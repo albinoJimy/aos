@@ -31,6 +31,11 @@ const (
 	AttrSeccompHash = "aos.sandbox.seccomp_profile_hash"
 	// AttrSeccompVersion — versão tamper-evident ("tag#digest12") do perfil seccomp.
 	AttrSeccompVersion = "aos.sandbox.seccomp_profile_version"
+	// AttrSeccompEnforcedBy — QUEM impõe o perfil a que os dois atributos acima se
+	// referem (AOS-351): "driver" quando o driver o lê e o aplica no Exec, "none"
+	// quando o perfil não chega ao runtime (o hash é então declaração de config).
+	// Acompanha SEMPRE o hash — um hash nu no span seria lido como imposição.
+	AttrSeccompEnforcedBy = "aos.sandbox.seccomp_enforced_by"
 	// AttrRootFSBaseDigest — digest do snapshot base read-only EFETIVAMENTE montado
 	// (AOS-066). Prova, no span, de que o rootfs foi montado (não só declarado). Não
 	// é segredo. Só presente quando o overlay read-only é montado (WithSnapshot).

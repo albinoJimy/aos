@@ -53,4 +53,11 @@ var (
 	// ErrInvalidConnection — a ConnectionInfo da descoberta é mal-formada (server id
 	// ou versão em falta).
 	ErrInvalidConnection = &Error{Code: "E_MCP_INVALID_CONNECTION", msg: "ConnectionInfo mal-formada"}
+
+	// ErrCapacidadeDuplicada — o manifesto anuncia duas tools com o MESMO nome (ou
+	// dois resources com o mesmo URI). Fail-closed (AOS-320): a repetição torna a
+	// forma canónica do manifesto ambígua e colide na chave do REG
+	// (id = serverID+"/"+nome), pelo que o handshake é recusado em vez de pinar um
+	// manifesto com duas leituras possíveis.
+	ErrCapacidadeDuplicada = &Error{Code: "E_MCP_CAPACIDADE_DUPLICADA", msg: "manifesto anuncia a mesma capacidade mais do que uma vez"}
 )

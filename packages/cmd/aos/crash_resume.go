@@ -90,7 +90,35 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 		return 0, 0, fmt.Errorf("aos: compor o Resumer de crash-resume (AOS-253): %w", rerr)
 	}
 
-	streams := s.node.EventStore.Streams()
+	// AOS-352 — DEGRADAÇÃO DECLARADA, e a escolha é diferente da de `governance_restore`
+	// de propósito. Aqui o dano de falhar o arranque é maior do que o de não retomar: um
+	// run órfão fica órfão até ao arranque seguinte, e o operador vê-o; um nó que não sobe
+	// não retoma nada nem serve nada. Mas «zero streams» não pode continuar a ser a forma
+	// como isto se sabe — antes, uma falha de enumeração produzia «0 retomados» com a
+	// mesma cara de um arranque limpo, e a única diferença estava num erro que ninguém
+	// devolvia. Passa a ser dito em voz alta, e devolvido como erro do varredor.
+	streams, serr := s.node.EventStore.Streams()
+	if serr != nil {
+		// AOS-352 — DEGRADAÇÃO DECLARADA, e NÃO um erro. A direcção é deliberadamente
+		// diferente da de `governance_restore`, e a razão é a assimetria do dano: um run
+		// órfão fica órfão até ao arranque seguinte e o operador vê-o no log; um nó que
+		// não sobe não retoma nada NEM SERVE NADA. Sobre `AOS_EVENTSTORE_NATS`, um socket
+		// que caia entre `jetstream.Abrir` e este varredor faria o processo sair — e o
+		// supervisor reinicia, o cluster continua lento, e sai outra vez: crash-loop por
+		// indisponibilidade TRANSITÓRIA do substrato.
+		//
+		// O que muda face ao defeito de AOS-352 é o SINAL, não o desfecho. Antes, uma
+		// enumeração falhada produzia «0 órfãos retomados» com a mesma cara de um arranque
+		// limpo, e a única diferença estava num erro que ninguém devolvia. Agora é dito em
+		// voz alta, e o contrato de [ResumeInterruptedRuns] — «só devolve erro numa falha
+		// de COMPOSIÇÃO do varredor» — mantém-se verdadeiro.
+		s.log("crash-resume: NAO foi possivel enumerar os streams do Event Store (%v) — "+
+			"NENHUM run orfao foi procurado nesta passagem. Isto NAO e 'nao havia orfaos': "+
+			"e 'nao se chegou a perguntar'. O arranque CONTINUA (um no que nao sobe nao "+
+			"retoma nada nem serve nada); os runs orfaos, se existirem, continuam orfaos "+
+			"ate o substrato responder e alguem reiniciar o no", serr)
+		return 0, 0, nil
+	}
 	var heldElsewhere, failed int
 	for _, id := range streams {
 		runID := id

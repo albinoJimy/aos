@@ -23,6 +23,7 @@ type Lease struct {
 	RunID        string    // correlação com a trajectória (não-secreto)
 	PrincipalNHI string    // quem (identidade não-humana)
 	Resource     string    // para quê (recurso downstream, não-secreto)
+	Provider     string    // provedor downstream (eixo provider da chave, AOS-324)
 	Region       string    // soberania de dados
 	Capability   string    // capability trocada
 	IssuedAt     time.Time // quando

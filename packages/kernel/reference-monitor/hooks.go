@@ -25,6 +25,30 @@ type HookResult struct {
 	// de mediação para que cada decisão de audit registe a política em vigor
 	// (contrato C1, tecnica/12 §4 — campo policy_version). Vazia nos stubs.
 	PolicyVersion string
+
+	// Metadata é o canal ESTRUTURADO da decisão DESTE hook (AOS-340): pares
+	// chave/valor que o RM sela no evento quando é este resultado que TERMINA a
+	// mediação — deny e escalate. Nil é o normal; um hook que nada tenha a
+	// acrescentar não preenche nada.
+	//
+	// PORQUE NÃO SÃO OBRIGAÇÕES. [Obligation] é vocabulário FECHADO de imposição:
+	// `enforceObligations` nega fail-closed qualquer `Type` que não saiba cumprir,
+	// pelo que um hook que anexasse uma obrigação só para DOCUMENTAR a sua decisão
+	// construiria um valor que, num permit, NEGA a call. Metadata não passa por lá e
+	// não pode negar nada — é registo, nunca enforcement. Uma chave desconhecida é
+	// só uma chave desconhecida.
+	//
+	// PORQUE É GENÉRICO. O AOS-332 precisava de selar a postura do broker numa
+	// negação, não havia canal, e a postura foi para um sufixo em texto livre do
+	// `Reason`. Um campo `provider_policy` no contrato C1 resolveria esse caso e
+	// nenhum outro — além de enfiar uma preocupação de PLATAFORMA no contrato do
+	// KERNEL, que é a fuga de camada que o `layer-lint` existe para impedir. A
+	// disciplina é a do `PolicyVersion`: o RM transporta, não interpreta. O
+	// significado das chaves é do hook que as escreve e de quem lê o trilho.
+	//
+	// O `Reason` continua a ser o canal em texto livre e não é substituído: este
+	// acrescenta uma leitura por MÁQUINA ao lado da leitura por pessoa.
+	Metadata map[string]string
 }
 
 // allow é um HookResult neutro reutilizável (sem obrigações).

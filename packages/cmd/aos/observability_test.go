@@ -40,6 +40,15 @@ import (
 
 type otlpDoc struct {
 	ResourceSpans []struct {
+		// AOS-368: os atributos de RECURSO (service.name) que o nó passou a emitir.
+		Resource struct {
+			Attributes []struct {
+				Key   string `json:"key"`
+				Value struct {
+					StringValue *string `json:"stringValue"`
+				} `json:"value"`
+			} `json:"attributes"`
+		} `json:"resource"`
 		ScopeSpans []struct {
 			Scope struct {
 				Name string `json:"name"`
@@ -54,6 +63,7 @@ type otlpSpanWire struct {
 	SpanID       string `json:"spanId"`
 	ParentSpanID string `json:"parentSpanId"`
 	Name         string `json:"name"`
+	Kind         int    `json:"kind"` // AOS-368: espécie do span (INTERNAL=1, CLIENT=3)
 	Attributes   []struct {
 		Key   string `json:"key"`
 		Value struct {
@@ -750,6 +760,10 @@ func obsPermitNodeWith(t *testing.T, endpoint string, model agentruntime.ModelCl
 	cfg.Model = model
 	cfg.Catalog = catalogStub{entries: []domain.Entry{entry}}
 	cfg.Revalidator = revalidator
+	// AOS-381: o WORM do nó = o store onde o revalidador injectado sela. Com observabilidade,
+	// o WORM é decorado (auditTracingStore); o ápice compara o store BASE (desembrulhado), pelo
+	// que a igualdade continua a valer.
+	cfg.WORM = auditStore
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{
 		durClass: {TTL: 15 * time.Minute, Scope: []string{durCap}},
 	}

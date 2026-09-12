@@ -110,17 +110,29 @@ type rota struct {
 // `admitControlMTLS` (verificação de cadeia). Rejeitar barato antes de gastar cripto é a postura
 // que o banner declara para o ingresso, e o invólucro preserva-a.
 //
-// DECISÃO EM ABERTO — o mTLS sobre o plano de GOVERNAÇÃO. Hoje `/dsar/erase`, `/dsar/hold`,
-// `/dsar/release` e `/dsar/expire` NÃO exigem certificado de cliente: autenticam-se pela asserção
-// OIDC verificada (`readGov.authorize`), que identifica o principal de forma pelo menos tão forte.
-// Falta-lhes a barreira de TRANSPORTE, e falta exactamente onde a acção é menos reversível — o
-// `/dsar/erase` é o crypto-shred, a única operação do nó que nenhum restore drill desfaz.
+// IDENTIFICAÇÃO ≠ AUTORIZAÇÃO (AOS-367). A asserção OIDC verificada por `readGov.authorize`
+// IDENTIFICA o principal e resolve a sua região — de forma pelo menos tão forte quanto um
+// certificado de cliente. O que ela NÃO faz é AUTORIZAR a destruição: um só par issuer/audience
+// serve o leitor de runs e o operador DSAR, pelo que, até AOS-367, quem tinha credencial para LER
+// runs da sua região tinha, com a mesma credencial, autoridade para os DESTRUIR. A metade em falta
+// era autorização, não identificação — e é essa que AOS-367 fecha.
 //
-// Promover a governação a mTLS é acrescentar `h.admitControlMTLS` ao ramo `planoGovernacao`
-// abaixo. NÃO se fez porque não é uma mudança de código: no dia em que o mTLS for ligado, um
-// operador DSAR com asserção válida passa a receber 403 até ter certificado de cliente, o que
-// compromete a organização a emitir PKI de cliente a esses operadores — a provisão que o DEF-012
-// defere explicitamente para fora do nó.
+// A BARREIRA DE AUTORIZAÇÃO, agora declarada. As quatro rotas exigem, além da identificação OIDC,
+// uma PROVA DE AUTORIDADE distinta: a assinatura ed25519 de um emissor com `dsar:erase`
+// (AOS_DSAR_ERASERS) sobre o payload canónico, com a acção amarrada (ver `exigeAutoridadeDSAR` em
+// dsar.go e a cerimónia do /autonomy). É opt-in por composição (retro-compatível; em produção a
+// guarda [ErrProductionNeedsDSARErasers] torna-a obrigatória). O `/dsar/release` ganha ainda a
+// barreira de REGIÃO de [readGovernance.podeApagarTitular] e o `/dsar/expire` exige DUAS assinaturas
+// de erasers distintos (dual-control, por ser um varrimento global sem alvo único). A verificação
+// vive NO CORPO dos handlers, tal como a assinatura do plano de controlo.
+//
+// DECISÃO EM ABERTO — o mTLS de TRANSPORTE sobre o plano de GOVERNAÇÃO continua a faltar, e é uma
+// coisa distinta das duas acima: não identifica melhor (a OIDC já o faz) nem autoriza (a prova de
+// autoridade já o faz), mas cifra e ata a sessão ao certificado. Promover a governação a mTLS é
+// acrescentar `h.admitControlMTLS` ao ramo `planoGovernacao` abaixo. NÃO se fez porque não é uma
+// mudança de código: no dia em que o mTLS for ligado, um operador DSAR com asserção válida passa a
+// receber 403 até ter certificado de cliente, o que compromete a organização a emitir PKI de
+// cliente a esses operadores — a provisão que o DEF-012 defere explicitamente para fora do nó.
 func (h *apiHandler) barreirasDe(p plano, next http.HandlerFunc) http.HandlerFunc {
 	switch p {
 	case planoGovernacao:

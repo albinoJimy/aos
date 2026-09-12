@@ -17,7 +17,16 @@ import (
 //   - campos escritos por ordem fixa, cada um precedido do seu comprimento (u32
 //     big-endian) para que fronteiras de campo nunca colidam por concatenação;
 //   - os CredentialScopes são ORDENADOS antes de serializar (a ordem de declaração
-//     não é semântica) e deduplicados de forma estável.
+//     não é semântica) e deduplicados de forma estável;
+//   - o ManifestDigest (AOS-320) é escrito por ÚLTIMO e SÓ quando não-vazio. Ser o
+//     último torna a leitura inequívoca (o contador de scopes já disse onde os
+//     scopes acabam) e ser condicional preserva BYTE-A-BYTE os bytes canónicos —
+//     e portanto o digest — de todas as entradas sem manifesto (tool/skill, e um
+//     mcp_server anterior a AOS-320). Escrevê-lo incondicionalmente acrescentaria
+//     o length-prefix a TODAS as entradas e quebraria o pin de todo o catálogo.
+//
+// ESTA FUNÇÃO E digest.canonicalContract TÊM DE SE MANTER SINCRONIZADAS: são duas
+// gerações de hashing (FNV-1a placeholder / SHA-256) sobre a MESMA ordem de campos.
 //
 // PONTO DE EXTENSÃO (AOS-047): a canonicalização criptográfica definitiva do
 // conteúdo binário/manifesto e o hashing SHA-256 são de AOS-047. Aqui a
@@ -44,6 +53,12 @@ func Canonicalize(kind ArtifactKind, c Contract) []byte {
 	buf = append(buf, n[:]...)
 	for _, s := range scopes {
 		writeField([]byte(s))
+	}
+	// AOS-320: escrito por ÚLTIMO e só quando não-vazio — ver o doc-comment acima.
+	// (A palavra em maiúsculas que aqui estava é um marcador do gate `deferrals`, e isto
+	// não é dívida adiada: é uma propriedade do formato canónico.)
+	if c.ManifestDigest != "" {
+		writeField([]byte(c.ManifestDigest))
 	}
 	return buf
 }

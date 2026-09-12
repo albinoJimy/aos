@@ -59,11 +59,14 @@ var ErrSemSnapshot = errors.New("runlifecycle: snapshot de capabilities vazio �
 //   - o MaterializeRecorder é o [PlanRecorder] desta posse, pelo que o
 //     `plan.materialized` é igualmente fenced.
 //
-// O que o chamador fornece, e porquê: `admission` e `spawner` são portas de OUTROS
-// domínios — admissão global (AOS-027/028) e delegação de sub-agentes (AOS-026). Não
-// são autoridade de ciclo de vida e o materializador declara-as como portas
-// precisamente porque o wiring delas varia com o deployment. Para a admissão sobre o
-// orçamento da árvore — o caso normal — há [NewBudgetAdmission] neste pacote.
+// O que o chamador fornece, e porquê: `admission` é a porta da admissão global
+// (AOS-027/028) — não é autoridade de ciclo de vida e o materializador declara-a como
+// porta precisamente porque o wiring dela varia com o deployment. Para a admissão sobre
+// o orçamento da árvore — o caso normal — há [NewBudgetAdmission] neste pacote.
+//
+// O SPAWN de papéis JÁ NÃO É FORNECIDO AQUI (AOS-390, ADR-024): a materialização passou
+// a admissão-pura (admite os nós no DAG, sem efeito), e a delegação de sub-agentes
+// (AOS-026) é do `DispatchSink` do despacho governado, composto no root aos-orq.
 //
 // `snapshot` é OBRIGATÓRIO e não-vazio ([ErrSemSnapshot]): um snapshot vazio faria o
 // oráculo devolver «efeito» para tudo (nada resolve), reproduzindo exactamente o
@@ -74,14 +77,13 @@ func (t *Tenure) Materializer(
 	snapshot planvalidate.Snapshot,
 	rec *PlanRecorder,
 	admission planmaterialize.Admission,
-	spawner planmaterialize.Spawner,
 	opts ...planmaterialize.Option,
 ) (*planmaterialize.Materializer, error) {
 	if rec == nil {
 		return nil, fmt.Errorf("%w: emissor do domínio do plano nil", ErrDeps)
 	}
-	if admission == nil || spawner == nil {
-		return nil, fmt.Errorf("%w: admissão/spawner nil", ErrDeps)
+	if admission == nil {
+		return nil, fmt.Errorf("%w: admissão nil", ErrDeps)
 	}
 	if len(snapshot.Tools) == 0 {
 		return nil, ErrSemSnapshot
@@ -100,7 +102,6 @@ func (t *Tenure) Materializer(
 	return planmaterialize.NewMaterializer(
 		admission,
 		planmaterialize.NewGraphLeafAdmitter(g),
-		spawner,
 		rec.recorder,
 		todas...,
 	)

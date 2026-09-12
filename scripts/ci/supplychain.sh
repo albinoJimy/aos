@@ -35,6 +35,17 @@ setup_env
 REG_MOD="packages/platform/registry"
 SUITE_PKG="./supplychaintests/..."
 
+# AOS-381 — a prova de DURABILIDADE da selagem de supply-chain vive no NÓ COMPOSTO, não no
+# módulo REG: o revalidador e o trust store selam no WORM único do nó, e a partição
+# registry.revalidation tem de SOBREVIVER ao processo (FileStore em disco reaberto read-only).
+# Este gate passa a tocar cmd/aos além do REG_MOD para exercitar essa prova end-to-end.
+NODE_MOD="packages/cmd/aos"
+NODE_REQUIRED=(
+  TestAOS381_SelagensDaSupplyChainSaoLidasNoNo
+  TestAOS381_RevalidacaoSobreviveAoProcesso
+)
+NODE_RE="^($(IFS='|'; echo "${NODE_REQUIRED[*]}"))\$"
+
 # Cobertura mínima do módulo do REG (não regride). Igual ao limiar do kernel/memória.
 # Sobreponível por ambiente APENAS PARA APERTAR: piso FLOOR_MODULE_COVERAGE_MIN (AOS-199).
 gate_threshold REGISTRY_COVERAGE_MIN 80 "$FLOOR_MODULE_COVERAGE_MIN" 100 "%" || exit 1
@@ -49,6 +60,7 @@ REQUIRED=(
   TestVector5_FloatingResolution_Rejected
   TestVector6_OutOfCatalog_DefaultDeny
   TestVector7_FaithfulReplay_ViaManifest
+  TestVector8_MCPServerRugPull_Blocked
   TestMetaDetects_RugPull
   TestMetaDetects_SchemaDrift
   TestMetaDetects_RugPullMidRun
@@ -56,6 +68,7 @@ REQUIRED=(
   TestMetaDetects_FloatingResolution
   TestMetaDetects_OutOfCatalog
   TestMetaDetects_UnfaithfulReplay
+  TestMetaDetects_MCPServerRugPull
   TestSuiteReportEmitted
 )
 # Regex ancorado (^Test…$) por nome, unido por '|': casa EXACTAMENTE os obrigatórios e
@@ -113,4 +126,11 @@ if ! printf '%s' "$report" | grep -Eq '"pass":true[[:space:]]*}[[:space:]]*$'; t
   exit 1
 fi
 
-log_ok "supplychain: verde (7 vectores bloqueados + audit WORM + meta-testes de detecção)"
+# (5) AOS-381 — DURABILIDADE NO NÓ COMPOSTO. require_tests garante que as provas de leitor e de
+# sobrevivência ao processo CORRERAM (não-vazio, fail-closed): a partição registry.revalidation
+# selada num WORM DURÁVEL em disco (t.TempDir) é relida após o nó encerrar. NÃO-VACUIDADE: se a
+# selagem regredir para in-memory, o FileStore reaberto lê zero e o teste avermelha.
+log_gate "supplychain · AOS-381 durabilidade da revalidação no nó composto (WORM único)"
+require_tests "$REPO_ROOT/$NODE_MOD" "./..." "$NODE_RE" "${NODE_REQUIRED[@]}" || exit 1
+
+log_ok "supplychain: verde (7 vectores bloqueados + audit WORM + meta-testes de detecção + durabilidade no nó AOS-381)"

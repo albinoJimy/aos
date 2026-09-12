@@ -39,6 +39,10 @@ type MediationRecord struct {
 	// PolicyVersion é a versão de política em vigor na decisão (preenchida pelo
 	// PDP via [HookResult.PolicyVersion]). Fica no evento de mediação (AOS-004).
 	PolicyVersion string
+	// Metadata são os metadados estruturados do hook que TERMINOU a mediação
+	// (AOS-340), vindos de [HookResult.Metadata]. Registo, nunca enforcement: não
+	// passam por `enforceObligations` e não podem negar nada.
+	Metadata map[string]string
 }
 
 // EventSink é a porta mínima de que o RM precisa para gravar cada mediação de
@@ -84,6 +88,10 @@ type mediationPayload struct {
 	LatencyNanos  int64        `json:"latency_ns"`
 	Principal     principalDTO `json:"principal"`
 	Obligations   []Obligation `json:"obligations,omitempty"`
+	// Metadata é o canal estruturado do hook que terminou a mediação (AOS-340).
+	// `omitempty` mantém o payload de quem nada acrescenta byte-a-byte igual ao de
+	// antes — acrescentar um campo OPCIONAL é MINOR no `port_version` (tecnica/12 §4).
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 type resourceDTO struct {
@@ -172,6 +180,7 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			DelegationChain: toHopDTOs(rec.Principal.DelegationChain),
 		},
 		Obligations: rec.Obligations,
+		Metadata:    rec.Metadata,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

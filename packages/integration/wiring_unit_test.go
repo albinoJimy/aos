@@ -62,20 +62,28 @@ func TestNewSecuredRuntime_FailClosed(t *testing.T) {
 	}
 	defer store.Close()
 
+	// AOS-381: WORM ÚNICO estendido à supply-chain — a revalidação tem de selar no MESMO
+	// store que cfg.WORM. O controlo POSITIVO usa o mesmo `worm` no trust store, na
+	// revalidação e em cfg.WORM.
+	worm := audit.NewMemStore()
 	base := SecuredConfig{
 		Model:       &scriptedModel{},
 		Recorder:    agentruntime.NewTurnRecorder(store),
 		Catalog:     &fakeCatalog{},
-		Revalidator: newRevalidator(t, newTrust(t, context.Background(), audit.NewMemStore(), testSigner(t)), audit.NewMemStore(), NoopQuarantinerForTest{}, NoopAlerterForTest{}),
+		Revalidator: newRevalidator(t, newTrust(t, context.Background(), worm, testSigner(t)), worm, NoopQuarantinerForTest{}, NoopAlerterForTest{}),
 		Policy:      StaticPolicy{},
-		// WORM é o único audit.Store partilhado (RM EventSink + egress). Os restantes
-		// colaboradores da cadeia real (Verifier/PDP/Privileged/Authority/EgressResolver)
-		// caem para defaults demo-grade fail-closed (hooks REAIS, nunca stubs).
-		WORM: audit.NewMemStore(),
+		// WORM é o único audit.Store partilhado (RM EventSink + egress + supply-chain). Os
+		// restantes colaboradores da cadeia real (Verifier/PDP/Privileged/Authority/
+		// EgressResolver) caem para defaults demo-grade fail-closed (hooks REAIS, nunca stubs).
+		WORM: worm,
 	}
 	if _, err := NewSecuredRuntime(base); err != nil {
 		t.Fatalf("config válida falhou: %v", err)
 	}
+
+	// Revalidador selado num store DIFERENTE de cfg.WORM — usado no caso negativo de AOS-381.
+	outroStore := audit.NewMemStore()
+	revalNoutroStore := newRevalidator(t, newTrust(t, context.Background(), outroStore, testSigner(t)), outroStore, NoopQuarantinerForTest{}, NoopAlerterForTest{})
 
 	tests := []struct {
 		name   string
@@ -88,6 +96,8 @@ func TestNewSecuredRuntime_FailClosed(t *testing.T) {
 		{"nil revalidator", func(c *SecuredConfig) { c.Revalidator = nil }, ErrNoRevalidator},
 		{"nil policy", func(c *SecuredConfig) { c.Policy = nil }, ErrNoPolicy},
 		{"nil worm", func(c *SecuredConfig) { c.WORM = nil }, ErrNoWORM},
+		// AOS-381 — caso NEGATIVO: revalidador selado noutro store ⇒ recusa fail-closed.
+		{"revalidador selado a outro store", func(c *SecuredConfig) { c.Revalidator = revalNoutroStore }, ErrRevalidatorNotSealedToWORM},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

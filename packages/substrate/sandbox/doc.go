@@ -55,8 +55,10 @@
 // bloqueio de escape por symlink/metacaracteres) e é o usado nos testes.
 // [FirecrackerDriver] e [GVisorDriver] são skeletons que DOCUMENTAM a integração
 // real (sem socket do host, sem namespace de rede/PID partilhado, rootfs/jail
-// dedicado) e satisfazem o contrato via um [GuestExecutor] injectável; sem KVM/host
-// support (este ambiente) devolvem [ErrDriverUnavailable].
+// dedicado) e satisfazem o contrato via um [GuestExecutor] injectável; sem executor
+// o Firecracker devolve [ErrDriverUnavailable] (falta KVM/host support) e o gVisor
+// devolve [ErrGVisorExecutorUnset] (NÃO exige KVM — falta provisionar o executor,
+// AOS-384).
 //
 // # Pool de microVMs com snapshot/restore (AOS-065)
 //
@@ -147,7 +149,9 @@
 //
 // Entregue: isolamento de processo/FS/kernel por execução e a mediação (AOS-064); o
 // pool com snapshot/restore + cold-start SLI (AOS-065); a raiz read-only + overlay
-// efémero + seccomp default-deny imposto no caminho de execução (AOS-066); a rede
+// efémero + seccomp default-deny — imposto no caminho de execução APENAS pelo
+// [FakeDriver]; nos drivers reais o perfil não chega ao guest e o manifesto sela
+// `seccomp_enforced_by: "none"` (AOS-066/AOS-351, ver [Spec.Seccomp]) —; a rede
 // default-deny + egress allowlist (AOS-067, pacote [network]); e o dimensionamento do
 // pool derivado do headroom + SLIs de ocupação/reciclagem para produção (AOS-103). NÃO
 // implementa o broker real de credenciais (AOS-070) nem liga a fonte real de headroom

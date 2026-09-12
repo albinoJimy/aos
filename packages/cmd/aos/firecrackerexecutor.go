@@ -57,8 +57,9 @@ type fcResult struct {
 // untrusted no [sandbox.ExecResult] a jusante (o resultado nunca é trusted por esta via).
 func (e *remoteFirecrackerExecutor) RunInGuest(ctx context.Context, inst sandbox.Instance, call sandbox.ToolCall) ([]byte, []sandbox.Artifact, int, error) {
 	body, err := json.Marshal(fcExecInput{
-		RunID: inst.ID,
-		Call:  fcToolCall{ToolID: call.ToolID, Command: call.Command, Args: call.Args, Path: call.Path, Write: call.Write},
+		RunID:  inst.RunID,  // AOS-383: o run_id REAL, não o inst.ID composto/ambíguo
+		StepID: inst.StepID, // AOS-383: o step_id, que antes viajava sempre vazio
+		Call:   fcToolCall{ToolID: call.ToolID, Command: call.Command, Args: call.Args, Path: call.Path, Write: call.Write},
 	})
 	if err != nil {
 		return nil, nil, 1, err

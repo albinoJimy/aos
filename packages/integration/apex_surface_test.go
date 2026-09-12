@@ -153,13 +153,15 @@ func TestApexSurface_SecuredRuntimeAccessors(t *testing.T) {
 	}
 	defer store.Close()
 
+	// AOS-381: WORM único — a revalidação sela no MESMO store que cfg.WORM.
+	worm := audit.NewMemStore()
 	sr, err := NewSecuredRuntime(SecuredConfig{
 		Model:       &scriptedModel{},
 		Recorder:    agentruntime.NewTurnRecorder(store),
 		Catalog:     &fakeCatalog{},
-		Revalidator: newRevalidator(t, newTrust(t, context.Background(), audit.NewMemStore(), testSigner(t)), audit.NewMemStore(), NoopQuarantinerForTest{}, NoopAlerterForTest{}),
+		Revalidator: newRevalidator(t, newTrust(t, context.Background(), worm, testSigner(t)), worm, NoopQuarantinerForTest{}, NoopAlerterForTest{}),
 		Policy:      StaticPolicy{},
-		WORM:        audit.NewMemStore(),
+		WORM:        worm,
 	})
 	if err != nil {
 		t.Fatalf("NewSecuredRuntime: %v", err)

@@ -91,9 +91,24 @@ func TestIntegration_ThreeTransports_ToolsList(t *testing.T) {
 			if len(manifest.Resources) != 1 {
 				t.Fatalf("resources/list devolveu %d, quer 1", len(manifest.Resources))
 			}
-			// O digest do manifesto é RESERVADO (AOS-047): deve ficar vazio.
-			if manifest.Digest != "" {
-				t.Fatalf("Digest devia ser reservado/vazio, veio %q", manifest.Digest)
+			// AOS-320: o digest do manifesto deixou de ser reservado. É calculado
+			// sobre a superfície ANUNCIADA, que é a mesma nos três transportes —
+			// logo o valor tem de coincidir entre eles. É a âncora local
+			// (transporte + endpoint), aplicada em stage, que os distingue na
+			// entrada mcp_server; ver digestAncorado.
+			if manifest.Digest == "" {
+				t.Fatal("Digest do manifesto vazio — AOS-320 deixou de o reservar")
+			}
+			esperado, derr := digestManifesto(CapabilityManifest{
+				ProtocolVersion: manifest.ProtocolVersion,
+				Tools:           manifest.Tools,
+				Resources:       manifest.Resources,
+			})
+			if derr != nil {
+				t.Fatalf("digestManifesto: %v", derr)
+			}
+			if manifest.Digest != esperado {
+				t.Fatalf("Digest = %q, quer %q (o mesmo manifesto em qualquer transporte)", manifest.Digest, esperado)
 			}
 		})
 	}

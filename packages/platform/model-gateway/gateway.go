@@ -45,6 +45,40 @@ import (
 // modelo observável no span (request.model != response.model).
 const attrResponseModel = "gen_ai.response.model"
 
+// attrUsageIndefinido marca no span que o provedor devolveu 200 SEM reportar o
+// objecto `usage` — o custo desta chamada é INDEFINIDO, não zero (AOS-321). É a
+// contrapartida observável do [cache_sli] omitir uma amostra sem denominador: a
+// chamada não desaparece do rasto, aparece marcada como não-contabilizável.
+const attrUsageIndefinido = "aos.usage.undefined"
+
+// ErrUsageAusente — o provedor devolveu 200 e NÃO reportou objecto `usage`.
+//
+// O DEFEITO QUE ISTO FECHA (AOS-321). `port.UnmarshalChatResponse` era um Unmarshal nu:
+// uma resposta 200 sem `usage` produzia um `port.Usage{}` zerado, sem erro. Esse zero
+// descia por [Gateway.recordCost], que não distinguia «zero tokens» de «contagem
+// ausente», e `costForTokens` devolve `0, nil` para `tokens == 0`. O custo zero acabava
+// escrito no span, no agregado por run E por árvore, e no evento durável `turn.recorded`
+// que o burn-down lê — um provedor que não reporte tokens saía GRÁTIS. É fail-open do
+// burn-down que o ADR-008 exige, e contradizia o comentário do próprio recordCost.
+//
+// PORQUE É ERRO NO CAMINHO SÍNCRONO. O custo de uma chamada é DERIVADO dos tokens: sem
+// tokens medidos não há custo derivável, e o único zero honesto seria «não sei». O nó
+// não tem como distinguir «o provedor não cobrou nada» de «o provedor não reportou», e
+// entre falsificar o burn-down e recusar a chamada, recusa-se — a mesma postura de
+// [ErrNoPrice], que já falha-fecha ANTES de somar qualquer token.
+//
+// PORQUE NÃO É ERRO NO STREAMING. Ali o stream JÁ foi entregue ao chamador quando o
+// metering corre (é essa a razão de o metering ser adiado), pelo que abortar não é uma
+// saída disponível. Segue-se o molde do cache_sli: a amostra é INDEFINIDA — não agregada,
+// não emitida, span anotado com [attrUsageIndefinido]. Nunca 0.
+//
+// LIMITE DECLARADO: um gateway SEM contabilidade de custo composta (sem recorder) serve
+// na mesma e não olha para isto. É a postura fail-open do CANAL fixada em AOS-259
+// (TestAOS259_SemContabilidade_CustoZeroNaoMataORun): a contabilidade de custo não pode
+// tornar-se ponto único de falha do caminho de modelo. Quem não contabiliza não tem como
+// contabilizar mal.
+var ErrUsageAusente = errors.New("model-gateway: o provedor respondeu 200 sem reportar usage — custo INDEFINIDO, nao zero (o burn-down nao pode contar uma chamada nao medida como gratis)")
+
 // opEmbeddings é o nome de operação OTel GenAI de uma chamada de embeddings. O
 // agent-runtime só define OpChat; o GW acrescenta esta constante para que o span
 // de embeddings seja ABERTO com a sua própria operação (e não sob "chat"), de
@@ -404,6 +438,11 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 	ms := &meteredStream{
 		inner:    inner,
 		finished: make(chan struct{}),
+		// AOS-321: o usage do stream parte de INDEFINIDO. Um fluxo que termine (ou seja
+		// abandonado) sem nunca trazer um chunk com `usage` não pode entregar ao metering
+		// um port.Usage{} zerado que o agregador leria como custo nulo — é o mesmo zero
+		// silencioso do caminho síncrono, por outra porta. Só um delta com usage o define.
+		usage: port.Usage{Ausente: true},
 		onEnd: func(usage port.Usage) {
 			ex.Usage = usage
 			// A atribuição já foi selada (fail-closed) ANTES de o stream abrir; aqui só
@@ -431,7 +470,14 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 			// RT→GW ([ModelClientAdapter.Call]) usa o caminho SÍNCRONO (Chat), onde o custo
 			// vai na resposta. Um consumidor de stream que queira o custo por chamada
 			// lê-o do span/recorder.
-			if err := g.recordCost(ctx, span, ex); err != nil {
+			//
+			// AOS-321: um stream que termine SEM chunk de usage é INDEFINIDO, não erro e
+			// não zero. [Gateway.recordCost] já o impediu de chegar ao agregador e já
+			// anotou [attrUsageIndefinido] no span; aqui o que falta é não o classificar
+			// como falha da chamada — o stream serviu conteúdo ao consumidor, o que
+			// faltou foi a medição. É exactamente o que o cache_sli faz a uma amostra sem
+			// denominador: omite-a do sinal sem transformar a chamada num erro.
+			if err := g.recordCost(ctx, span, ex); err != nil && !errors.Is(err, ErrUsageAusente) {
 				span.SetAttribute(agentruntime.AttrErrorType, errType(err))
 			}
 			span.End()
@@ -487,6 +533,13 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 		if err := g.recordCost(ctx, span, ex); err != nil {
 			return err
 		}
+		// AOS-321: o custo derivado entra na resposta NORMALIZADA de embeddings, como já
+		// entrava na de chat ([Gateway.Chat]). A assimetria anterior — o Chat escrevia
+		// resp.Usage.CostMicroUSD e o Embeddings não escrevia nada nem declarava porquê —
+		// devolvia ao chamador de embeddings um custo permanentemente 0 com o metering a
+		// funcionar. Aqui não há o obstáculo físico que o streaming tem (nada foi ainda
+		// entregue ao chamador), pelo que a assimetria não tinha justificação: fecha-se.
+		resp.Usage.CostMicroUSD = ex.Usage.CostMicroUSD
 		return nil
 	})
 	if runErr != nil {
@@ -625,6 +678,17 @@ func (g *Gateway) recordCost(ctx context.Context, span agentruntime.Span, ex *pi
 	if g.cost == nil {
 		return nil
 	}
+	// AOS-321: usage AUSENTE não é usage a zeros. Sem contadores medidos não há custo
+	// derivável, e o zero que a tabela de preços devolveria para zero tokens seria um
+	// zero FALSO no agregado por run/árvore e no `turn.recorded`. A amostra nunca chega
+	// ao agregador: não é agregada, não é emitida, fica marcada no span. Ver
+	// [ErrUsageAusente] para a razão de isto ser erro no síncrono e indefinido no stream.
+	if !ex.Usage.Definido() {
+		if span != nil {
+			span.SetAttribute(attrUsageIndefinido, true)
+		}
+		return &costError{err: ErrUsageAusente}
+	}
 	s := cost.SampleFromUsage(ex.RunID, ex.TreeID, ex.Board, ex.ResolvedRegion, ex.ResolvedModel, ex.Usage)
 	rd := g.cost.Observe(ctx, span, s)
 	if rd.Err != nil {
@@ -740,7 +804,24 @@ func (g *Gateway) regionOf(region string) string {
 }
 
 // setUsageAttrs emite os atributos gen_ai.usage.* no span. NUNCA emite segredos.
+//
+// AOS-321: um usage INDEFINIDO (provedor 200 sem `usage`) NÃO emite `gen_ai.usage.*`.
+// Emite só [attrUsageIndefinido], e mesmo quando não há contabilidade de custo composta.
+//
+// PORQUE SE OMITEM OS CONTADORES em vez de os emitir a zero com a marca ao lado: o
+// semconv GenAI é lido por consumidores que não conhecem os nossos atributos — painéis
+// de custo, consultas de agregação, alertas de saturação. Um `gen_ai.usage.input_tokens=0`
+// é indistinguível de uma medição legítima de zero tokens para quem não filtre por
+// `aos.usage.undefined`, e seria o MESMO zero silencioso que este ticket fecha, mudado do
+// plano de contabilidade para o de telemetria. A convenção do semconv trata um atributo
+// ausente como desconhecido — que é exactamente o facto. Quando o usage é indefinido os
+// contadores valem zero de qualquer forma (não há nada que medir), pelo que omiti-los não
+// perde informação nenhuma: perde uma leitura falsa.
 func setUsageAttrs(span agentruntime.Span, u port.Usage) {
+	if !u.Definido() {
+		span.SetAttribute(attrUsageIndefinido, true)
+		return
+	}
 	span.SetAttribute(agentruntime.AttrInputTokens, u.PromptTokens)
 	span.SetAttribute(agentruntime.AttrOutputTokens, u.CompletionTokens)
 }

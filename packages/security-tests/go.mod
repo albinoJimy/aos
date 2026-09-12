@@ -19,6 +19,7 @@ require (
 	github.com/aos-ref/control-plane/governance/sovereignty v0.0.0 // indirect
 	github.com/aos-ref/kernel/agent-runtime v0.0.0 // indirect
 	github.com/aos-ref/substrate/otel-genai v0.0.0 // indirect
+	github.com/aos-ref/substrate/redaction v0.0.0 // indirect
 	github.com/cedar-policy/cedar-go v1.8.0 // indirect
 	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 )
@@ -80,3 +81,5 @@ replace github.com/aos-ref/control-plane/governance/autonomy => ../control-plane
 replace github.com/aos-ref/control-plane/governance/sovereignty => ../control-plane/governance/sovereignty
 
 replace github.com/aos-ref/platform/identity => ../platform/identity
+
+replace github.com/aos-ref/substrate/redaction => ../substrate/redaction

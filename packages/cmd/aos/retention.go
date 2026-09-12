@@ -36,6 +36,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/aos-ref/kernel/agent-runtime/durable"
@@ -101,8 +102,19 @@ func (s eventStoreRecordSource) List(ctx context.Context) ([]audit.ExpirableReco
 	if s.es == nil {
 		return nil, nil
 	}
+	// AOS-352 — FAIL-CLOSED, e já era a direcção segura por acidente: com `Streams()` a
+	// devolver `nil` numa falha, a lista de expiráveis vinha vazia e NADA expirava. O
+	// acidente passa a decisão: um erro de enumeração devolve ERRO, e o job de expiração
+	// não corre sobre uma varredura que não se completou. Expirar de menos é recuperável;
+	// expirar material que não se chegou a ver não é.
+	streams, serr := s.es.Streams()
+	if serr != nil {
+		return nil, fmt.Errorf("retencao: NAO foi possivel enumerar os streams do Event Store (%w) — "+
+			"uma lista de expiraveis derivada de uma varredura incompleta faria o ExpirationJob "+
+			"decidir sobre o que nao viu; nada expira nesta passagem", serr)
+	}
 	var out []audit.ExpirableRecord
-	for _, stream := range s.es.Streams() {
+	for _, stream := range streams {
 		events, err := s.es.Read(ctx, stream, 1)
 		if err != nil {
 			return nil, err

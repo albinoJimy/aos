@@ -94,6 +94,18 @@ func (a *MediationSink) RecordMediation(ctx context.Context, rec referencemonito
 		},
 		// Obligations impostas à decisão, seladas na cadeia (schema §5).
 		Obligations: mapObligations(rec.Obligations),
+		// `rec.Metadata` (AOS-340) NÃO é selado aqui, e é decisão e não esquecimento —
+		// que é precisamente o que este comentário existe para evitar que se re-investigue.
+		// O [AuditRecord] entra numa hash-chain: `canonicalContent` fixa a ORDEM e a
+		// LARGURA de cada campo, e acrescentar um lá muda os bytes canónicos de TODOS os
+		// registos, incluindo os já escritos — as cadeias existentes deixariam de verificar.
+		// Isso é uma migração de `SchemaVersion`, não um campo a mais, e não cabe no ticket
+		// que abriu o canal. O canal tool.call.* existe como PORTA
+		// ([integration.SecuredConfig.MediationEvents], AOS-379) e é o Event Store — onde o
+		// AOS-332 lê — que a materializa QUANDO o nó a compõe (via [TeeSink], este WORM a par
+		// dele); um nó que a deixe nil só tem este WORM e aí o canal NÃO está no Event Store.
+		// Seja como for, é o Event Store — não este WORM — que leva `tool.call.denied`: se o
+		// WORM vier a precisar do campo, é ticket próprio e leva o domínio novo.
 		Principal: Principal{
 			NHIID:           rec.Principal.NHIID,
 			DelegationChain: mapChain(rec.Principal.DelegationChain),

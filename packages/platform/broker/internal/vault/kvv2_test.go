@@ -141,3 +141,43 @@ func TestKVv2_Ready(t *testing.T) {
 		t.Fatalf("Ready contra vault destravado devia passar: %v", err)
 	}
 }
+
+// TestAOS330_SegmentosEstruturaisNaoEscapamOPrefixo fecha uma TRAVESSIA DE CAMINHO que o guarda
+// do AOS-330 não apanhava — encontrada em revisão adversarial.
+//
+// O `.` é um caractere legítimo dentro de um nome (`acme.eu`), pelo que estava na lista
+// permitida — e por isso `.` e `..` sobreviviam INTACTOS ao `sanitizeSegment`. Um
+// `Provider=".."` produzia `p/../eu/cap_x`, que a normalização RFC 3986 (aplicada pelo Vault e
+// por qualquer proxy na rota) reduz a `eu/cap_x`, **escapando o prefixo configurado**.
+//
+// A correcção vive no CONSTRUTOR DO PATH e não no guarda da política, para cobrir os TRÊS
+// segmentos — o defeito foi visto no provedor, mas a `Region` e a `Capability` passam pelo mesmo
+// sanitizador e vinham crus do pedido.
+func TestAOS330_SegmentosEstruturaisNaoEscapamOPrefixo(t *testing.T) {
+	t.Parallel()
+	for _, mau := range []string{".", ".."} {
+		if got := sanitizeSegment(mau); got == mau {
+			t.Errorf("sanitizeSegment(%q) = %q — um segmento que muda a ARVORE em vez de a indexar nao e um segmento", mau, got)
+		}
+		if SegmentoEstavel(mau) {
+			t.Errorf("SegmentoEstavel(%q) = true — a politica aceitaria um segmento de travessia", mau)
+		}
+	}
+	// OS TRÊS SEGMENTOS, não só o provedor: o guarda da política cobre o provedor, e a Region e
+	// a Capability chegam cruas do pedido.
+	c := &KVv2{addr: "https://v:8200", mount: "kv", field: "value", token: "t", prefix: "p"}
+	for _, k := range []Key{
+		{Provider: "..", Region: "eu", Capability: "cap:x"},
+		{Provider: "acme", Region: "..", Capability: "cap:x"},
+		{Provider: "acme", Region: "eu", Capability: ".."},
+	} {
+		if p := c.secretPath(k); strings.Contains(p, "/../") || strings.HasSuffix(p, "/..") {
+			t.Errorf("secretPath(%+v) = %q — contem travessia", k, p)
+		}
+	}
+	// CONTROLO: um `.` DENTRO de um nome continua a passar intacto, senão a correcção partiria
+	// os provedores legitimos com ponto no nome.
+	if got := sanitizeSegment("acme.eu"); got != "acme.eu" {
+		t.Errorf("sanitizeSegment(\"acme.eu\") = %q, quer intacto", got)
+	}
+}

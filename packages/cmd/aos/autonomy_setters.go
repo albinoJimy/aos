@@ -102,7 +102,10 @@ func autonomyDualControlRequired(to autonomy.Level) bool {
 func autonomySettersBanner(setters map[string]bool) []string {
 	if len(setters) == 0 {
 		return []string{
-			"autoridade sobre a autonomia (AOS-305): NENHUM operador detem autonomy:set — POST /autonomy RECUSA toda a mudanca de nivel (403) ate AOS_AUTONOMY_SETTERS nomear emitterIDs de AOS_OPERATORS. Os niveis em vigor sao os de AOS_AUTONOMY_LEVELS e os reidratados do WORM (AOS-307), e mudam POR REINICIO: o ambiente pode sempre BAIXAR um nivel posto por operador (a de-escalada e a direccao segura), e so nao o pode SUBIR",
+			// SEM setters não há signatário possível, pelo que o gate de prova de subida (AOS-377)
+			// não pode ser satisfeito: o ambiente pode BAIXAR qualquer nível e SUBIR até L3, mas NÃO
+			// pode subir a L4/L5 de todo — não há quem assine a prova que essa subida exige.
+			"autoridade sobre a autonomia (AOS-305/AOS-377): NENHUM operador detem autonomy:set — POST /autonomy RECUSA toda a mudanca de nivel (403) ate AOS_AUTONOMY_SETTERS nomear emitterIDs de AOS_OPERATORS. Os niveis em vigor sao os de AOS_AUTONOMY_LEVELS e os reidratados do WORM (AOS-307), e mudam POR REINICIO: o ambiente pode sempre BAIXAR um nivel e SUBIR ate L3 livremente, mas SUBIR a L4/L5 pelo ficheiro exige prova assinada (AOS_AUTONOMY_PROOFS) e SEM setters nao ha signatario, pelo que a subida a L4/L5 e recusada ao nivel e declarada no banner",
 		}
 	}
 	ids := make([]string, 0, len(setters))
@@ -111,13 +114,11 @@ func autonomySettersBanner(setters map[string]bool) []string {
 	}
 	sort.Strings(ids)
 	return []string{
-		// A QUALIFICAÇÃO «POR POST /autonomy» NÃO É DECORATIVA (achado de revisão adversarial
-		// R-02). Sem ela, esta linha afirmava sem reservas que L4/L5 exigem duas assinaturas — e o
-		// nó de referência imprimia-a no MESMO arranque em que aplicava L4 a partir de
-		// AOS_AUTONOMY_LEVELS, sem assinatura nenhuma. A cerimónia governa a ROTA; o
-		// provisionamento por ambiente é outra fronteira de confiança (quem edita o deployment e
-		// reinicia), e o banner tem de dizer qual é qual em vez de deixar o operador supor.
-		fmt.Sprintf("autoridade sobre a autonomia (AOS-305): %d operador(es) com autonomy:set [%s]. POR POST /autonomy: mudar PARA L4 ou L5 (o limiar em que danger deixa de esperar por um humano) exige DUAS assinaturas de emissores DISTINTOS desta lista (co_emitter), as restantes transicoes exigem UMA, e um emissor de AOS_OPERATORS fora desta lista e recusado mesmo para L1. POR AOS_AUTONOMY_LEVELS (provisionamento no arranque): QUALQUER nivel, incluindo L4/L5, e aplicado SEM assinatura — a fronteira de confianca ai e quem edita o deployment e reinicia, nao esta lista",
+		// A QUALIFICAÇÃO «POR POST /autonomy» vs «POR AOS_AUTONOMY_LEVELS» distingue duas fronteiras
+		// de confiança, mas desde AOS-377 já NÃO são assimétricas quanto a L4/L5: a SUBIDA a L4/L5
+		// pelo ficheiro passou a exigir a MESMA prova de duas assinaturas que a rota. A linha diz as
+		// duas com precisão para o operador não supor que «editar o ficheiro» contorna o four-eyes.
+		fmt.Sprintf("autoridade sobre a autonomia (AOS-305/AOS-377): %d operador(es) com autonomy:set [%s]. POR POST /autonomy: mudar PARA L4 ou L5 (o limiar em que danger deixa de esperar por um humano) exige DUAS assinaturas de emissores DISTINTOS desta lista (co_emitter), as restantes transicoes exigem UMA, e um emissor de AOS_OPERATORS fora desta lista e recusado mesmo para L1. POR AOS_AUTONOMY_LEVELS (provisionamento no arranque): o ambiente BAIXA qualquer nivel livremente e SUBIR ate L3 dispensa assinatura, mas SUBIR a L4/L5 exige DUAS provas assinadas de emissores DISTINTOS desta lista, transportadas em AOS_AUTONOMY_PROOFS e verificadas contra AOS_OPERATORS/AOS_AUTONOMY_SETTERS — sem prova valida a subida e recusada ao nivel (o par fica no nivel anterior) e declarada no banner; um deployment INALTERADO com o nivel ja selado nao volta a pedir prova",
 			len(ids), strings.Join(ids, ",")),
 	}
 }

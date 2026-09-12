@@ -21,7 +21,6 @@ import (
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/digest"
 	"github.com/aos-ref/platform/registry/domain"
-	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/signing"
 )
 
@@ -77,6 +76,23 @@ func counterEntry(t *testing.T, signer *signing.Signer) domain.Entry {
 			Trust:     domain.TrustFirstSeen,
 		},
 		Status: domain.StatusActive,
+	}
+}
+
+// nodeSignedRegistrySpec devolve os DADOS de um registo assinado de tools para os testes de
+// nó (AOS-381): um catálogo com as entries dadas, cuja pubkey do publicador o Bootstrap
+// confia ao CONSTRUIR o revalidador SELADO no WORM único do nó. Substitui o antigo padrão
+// dos testes — injectar um *revalidation.Revalidator já construído sobre um MemStore volátil
+// (que o novo fail-closed do ápice recusa, por não selar no WORM do nó). Com a spec, a
+// revalidação passa a selar no MESMO WORM (MemStore OU FileStore de AOS_WORM_PATH), como em
+// produção. cfg.Policy do teste continua a ganhar; a Policy da spec fica para o caso de o
+// teste não a definir.
+func nodeSignedRegistrySpec(signer *signing.Signer, policy integration.PolicyProvider, entries ...domain.Entry) *SignedToolRegistrySpec {
+	return &SignedToolRegistrySpec{
+		Catalog:        catalogStub{entries: entries},
+		Policy:         policy,
+		PublisherKeyID: signer.KeyID(),
+		PublisherKey:   signer.PublicKey(),
 	}
 }
 
@@ -244,20 +260,11 @@ func TestNode_DurableExecution_NoDoubleExecAfterRestart(t *testing.T) {
 	signer := durSigner(t)
 	entry := counterEntry(t, signer)
 
-	// Revalidador com trust store que confia no publicador do teste.
-	auditStore := audit.NewMemStore()
-	trust, err := signing.NewTrustStore(auditStore)
-	if err != nil {
-		t.Fatalf("trust store: %v", err)
-	}
-	if err := trust.Add(ctx, signer.KeyID(), signer.PublicKey()); err != nil {
-		t.Fatalf("trust add: %v", err)
-	}
-	revalidator, err := revalidation.New(trust, auditStore)
-	if err != nil {
-		t.Fatalf("revalidator: %v", err)
-	}
-
+	// AOS-381: em vez de injectar um revalidador sobre um MemStore volátil, entrega-se o REGISTO
+	// ASSINADO (catálogo + pubkey do publicador) e o Bootstrap constrói o revalidador SELADO no
+	// WORM DURÁVEL do nó (AOS_WORM_PATH) — o único caminho coerente com o WORM único, já que o
+	// FileStore só existe dentro do Bootstrap. Ver nodeSignedRegistrySpec.
+	var err error
 	cfg := tnBaseConfig()
 	cfg.DurableExecution = true
 	cfg.EventStorePath = filepath.Join(dir, "events.wal")
@@ -276,7 +283,7 @@ func TestNode_DurableExecution_NoDoubleExecAfterRestart(t *testing.T) {
 	model1 := &restartToolModel{}
 	cfg.Model = model1
 	cfg.Catalog = catalogStub{entries: []domain.Entry{entry}}
-	cfg.Revalidator = revalidator
+	cfg.SignedToolRegistry = nodeSignedRegistrySpec(signer, nil, entry)
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{
 		durClass: {TTL: 15 * time.Minute, Scope: []string{durCap}},
 	}

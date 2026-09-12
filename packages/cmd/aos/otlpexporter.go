@@ -75,6 +75,10 @@ const (
 	defaultOTLPDrainTimeout  = 5 * time.Second
 	// otlpTracesPath é o caminho canónico OTLP/HTTP de traces (spec OTLP/HTTP).
 	otlpTracesPath = "/v1/traces"
+	// defaultOTLPServiceName é o service.name do recurso OTLP quando não configurado
+	// (AOS-368). É DETERMINISTA e não-vazio de propósito: o exporter nunca serializa sem
+	// identidade, pelo que o backend nunca vê o trace como `unknown_service`.
+	defaultOTLPServiceName = "aos"
 )
 
 // OTLPStats são os contadores (atómicos) do exporter — a prova de que as falhas são
@@ -95,6 +99,7 @@ type OTLPStats struct {
 type OTLPHTTPExporter struct {
 	endpoint     string // URL completo até /v1/traces
 	scope        string
+	serviceName  string // service.name do recurso OTLP (AOS-368); nunca vazio (default "aos")
 	client       *http.Client
 	logf         func(string, ...any)
 	maxBatch     int
@@ -226,6 +231,18 @@ func WithOTLPScope(scope string) OTLPOption {
 	}
 }
 
+// WithOTLPServiceName sobrepõe o service.name do RECURSO OTLP emitido pelo nó (AOS-368),
+// no mesmo molde de [WithOTLPScope]. É a IDENTIDADE do produtor que o backend usa para
+// atribuir o trace — sem ela tudo chega como `unknown_service`. Vazio ⇒ mantém o default
+// [defaultOTLPServiceName] ("aos"): o exporter nunca serializa sem identidade.
+func WithOTLPServiceName(name string) OTLPOption {
+	return func(e *OTLPHTTPExporter) {
+		if name != "" {
+			e.serviceName = name
+		}
+	}
+}
+
 // WithOTLPClientCertFiles compõe o mTLS de CLIENTE da perna OTLP (DEF-012, EIXO 2): o par
 // certificado+chave é lido dos ficheiros MONTADOS certPath/keyPath (material privado por ficheiro,
 // no padrão de AOS_TLS_KEY_PATH/AOS_ISSUER_KEY_PATH — NUNCA por variável de ambiente).
@@ -264,6 +281,7 @@ func NewOTLPHTTPExporter(endpoint string, opts ...OTLPOption) (*OTLPHTTPExporter
 	e := &OTLPHTTPExporter{
 		endpoint:     target,
 		scope:        otelgenai.ScopeName,
+		serviceName:  defaultOTLPServiceName,
 		client:       &http.Client{Timeout: defaultOTLPTimeout, Transport: hardenedOTLPTransport()},
 		logf:         func(string, ...any) {},
 		maxBatch:     defaultOTLPBatchSize,
@@ -446,7 +464,9 @@ func (e *OTLPHTTPExporter) loop() {
 // contabilizada/logada, nunca propagada.
 func (e *OTLPHTTPExporter) send(spans []otelgenai.SpanData) {
 	e.batches.Add(1)
-	body, err := otelgenai.MarshalOTLP(spans, e.scope)
+	// AOS-368: o recurso leva service.name (nunca vazio — default "aos"), pelo que o
+	// documento sai com identidade e o backend não o atribui a `unknown_service`.
+	body, err := otelgenai.MarshalOTLP(spans, e.scope, otelgenai.WithServiceName(e.serviceName))
 	if err != nil {
 		// Serialização falhou (não devia, é só encoding/json): contabiliza e desiste.
 		e.failed.Add(int64(len(spans)))

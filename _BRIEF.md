@@ -72,9 +72,9 @@ Referenciar por código. Cada documento técnico relevante deve citar os ADRs qu
 >
 > **Quantos ADRs existem, e em que estado está cada um, NÃO se lê aqui.** Lê-se no registo
 > canónico [`docs/adr/README.md`](docs/adr/README.md), que é de onde os gates `rtm` e `ref-lint`
-> derivam a lista (AOS-317). Do ADR-015 em diante as decisões existem só lá e em ficheiro
+> derivam a lista (AOS-319). Do ADR-015 em diante as decisões existem só lá e em ficheiro
 > próprio, **deliberadamente não repetidas nesta secção**: uma terceira cópia da lista seria uma
-> terceira coisa a envelhecer em silêncio, que foi exactamente o defeito que AOS-317 fechou — a
+> terceira coisa a envelhecer em silêncio, que foi exactamente o defeito que AOS-319 fechou — a
 > §4 da RTM cobria dezanove ADRs por literal escrito à mão, contra um registo de vinte e três, e
 > o glossário mandava o leitor a esta secção para uma lista que ela nunca teve.
 >

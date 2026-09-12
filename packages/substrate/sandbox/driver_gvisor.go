@@ -30,7 +30,7 @@ type GVisorDriver struct {
 type GVisorOption func(*GVisorDriver)
 
 // WithGVisorExecutor injecta o executor de guest (a integração real / um mock
-// determinista de teste). Sem ele, Create devolve [ErrDriverUnavailable].
+// determinista de teste). Sem ele, Create devolve [ErrGVisorExecutorUnset].
 func WithGVisorExecutor(e GuestExecutor) GVisorOption {
 	return func(d *GVisorDriver) { d.exec = e }
 }
@@ -57,11 +57,15 @@ func (d *GVisorDriver) Create(_ context.Context, cap capability, spec Spec) (Ins
 		return Instance{}, err
 	}
 	if d.exec == nil {
-		return Instance{}, ErrDriverUnavailable
+		return Instance{}, ErrGVisorExecutorUnset
 	}
+	// O ID é único mas NÃO decomponível (o `-` ocorre dentro de RunID/StepID); os
+	// campos RunID/StepID abaixo é que são autoritativos para correlação (AOS-383).
 	id := "gv-" + spec.RunID + "-" + spec.StepID + "-" + strconv.FormatUint(d.seq.Add(1), 10)
 	return Instance{
 		ID:            id,
+		RunID:         spec.RunID,
+		StepID:        spec.StepID,
 		Kind:          DriverGVisor,
 		NoHostSocket:  true,
 		NoSharedNetNS: true,
@@ -83,7 +87,7 @@ func (d *GVisorDriver) Exec(ctx context.Context, cap capability, inst Instance, 
 		return ExecResult{}, ErrUnsanctionedCapability
 	}
 	if d.exec == nil {
-		return ExecResult{}, ErrDriverUnavailable
+		return ExecResult{}, ErrGVisorExecutorUnset
 	}
 	stdout, arts, exit, err := d.exec.RunInGuest(ctx, inst, req.Call)
 	if err != nil {

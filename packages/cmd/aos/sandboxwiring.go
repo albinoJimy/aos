@@ -103,7 +103,12 @@ func newSandboxEffectRewriter(bindings map[string]sandbox.SandboxBinding) func(r
 // no MESMO Event Store do nó) e, por cada tool com binding, regista um [sandbox.MediatedLauncher]
 // no RM do nó. Deve correr DEPOIS de NewSecuredRuntime (precisa de sec.Monitor()). bindings
 // vazio ⇒ no-op. Fail-closed: qualquer falha de construção/registo aborta o arranque.
-func registerSandboxLaunchers(sec *integration.SecuredRuntime, es EventStorePort, bindings map[string]sandbox.SandboxBinding, semExecutor []string, log func(string, ...any)) error {
+//
+// `production` espelha `Config.ProductionMode` e chega por PARÂMETRO pela mesma razão que o
+// campo existe (AOS-328): a guarda tem de ser exercitável sem mexer no ambiente do processo. Até
+// AOS-344 esta função não recebia nada da `Config` — não tinha por onde saber em que postura
+// corria, e por isso elegia o driver de referência em produção sem que ninguém o decidisse.
+func registerSandboxLaunchers(sec *integration.SecuredRuntime, es EventStorePort, bindings map[string]sandbox.SandboxBinding, semExecutor []string, production bool, log func(string, ...any)) error {
 	// A DECLARACAO das orfas vem ANTES do return antecipado, e e deliberado: sem bindings
 	// nenhuns nao ha driver a montar, mas «NENHUMA tool tem executor» e precisamente o caso que
 	// mais precisa de ser dito — e a primeira versao desta correccao calava-se exactamente ai,
@@ -112,13 +117,14 @@ func registerSandboxLaunchers(sec *integration.SecuredRuntime, es EventStorePort
 	if len(bindings) == 0 {
 		return nil
 	}
-	// Driver: AOS_SANDBOX_DRIVER ∈ {fake,firecracker,gvisor}; default "fake" (jail funcional
-	// in-process — FS overlay read-only, seccomp default-deny, escape bloqueado). firecracker/
-	// gvisor exigem KVM/runsc no host: sem eles NewMediatedLauncher constrói na mesma, mas a
-	// execução devolve ErrDriverUnavailable (o caminho de produção fica WIRED, só falta o host).
-	kind := sandbox.DriverFake
-	if v := strings.TrimSpace(os.Getenv("AOS_SANDBOX_DRIVER")); v != "" {
-		kind = sandbox.DriverKind(v)
+	// Driver: AOS_SANDBOX_DRIVER ∈ {fake,firecracker,gvisor}; fora de produção o default é
+	// "fake" (jail funcional in-process — FS overlay read-only, seccomp default-deny, escape
+	// bloqueado). firecracker/gvisor exigem KVM/runsc no host: sem eles NewMediatedLauncher
+	// constrói na mesma, mas a execução devolve ErrDriverUnavailable (o caminho de produção
+	// fica WIRED, só falta o host).
+	kind, err := sandboxDriverKind(os.Getenv("AOS_SANDBOX_DRIVER"), production)
+	if err != nil {
+		return err
 	}
 	// firecracker + AOS_SANDBOX_FIRECRACKER_URL ⇒ injecta o executor remoto (microVM REAL via o
 	// componente externo); senão skeleton (ErrDriverUnavailable no exec). Ver firecrackerexecutor.go.
@@ -149,6 +155,32 @@ func registerSandboxLaunchers(sec *integration.SecuredRuntime, es EventStorePort
 	log("execucao de tools em sandbox (AOS-005/AOS-064): %d tool(s) %v ligadas ao driver %q via MediatedLauncher (no-bypass estrutural; args→ExecRequest pelo EffectRewriter)", len(names), names, kind)
 	// AS QUE FICAM DE FORA. Ver [toolsSemExecutor]: podem ser deliberadas, mas nao podem ser MUDAS.
 	return nil
+}
+
+// sandboxDriverKind decide o [sandbox.DriverKind] a partir do valor bruto de AOS_SANDBOX_DRIVER
+// e da postura do nó (AOS-344). É função à parte, e pura, porque a decisão é a peça que a
+// auditoria mediu: mantê-la dentro de [registerSandboxLaunchers] obrigaria cada teste dela a
+// montar um SecuredRuntime inteiro para observar uma escolha de três valores.
+//
+// FORA DE PRODUÇÃO: inalterado — vazio ⇒ [sandbox.DriverFake], qualquer outro valor passa
+// tal-qual a [buildSandboxDriver] (que valida o kind).
+//
+// EM PRODUÇÃO: o driver de referência deixa de ser eleito, por omissão OU por escolha explícita
+// ⇒ [ErrProductionNeedsSandboxDriver]. Ver lá o porquê de a recusa cobrir as duas vias e de não
+// haver escape declarado. Um kind desconhecido continua a ser problema de [buildSandboxDriver]:
+// esta função não é o validador do vocabulário, é a guarda de postura.
+func sandboxDriverKind(raw string, production bool) (sandbox.DriverKind, error) {
+	v := strings.TrimSpace(raw)
+	if !production {
+		if v == "" {
+			return sandbox.DriverFake, nil
+		}
+		return sandbox.DriverKind(v), nil
+	}
+	if v == "" || sandbox.DriverKind(v) == sandbox.DriverFake {
+		return "", ErrProductionNeedsSandboxDriver
+	}
+	return sandbox.DriverKind(v), nil
 }
 
 // sandboxSnapshotFromEnv semeia o RootFS BASE read-only (AOS-066) a partir de

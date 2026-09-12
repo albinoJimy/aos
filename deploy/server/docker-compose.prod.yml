@@ -85,13 +85,34 @@ services:
       # Sem estas duas o nó fica em default-deny explícito e nenhuma tool call passa.
       AOS_POLICY_BUNDLE_DIR: "/etc/aos/policies"
       AOS_POLICY_TRUST_ANCHOR: "${AOS_POLICY_TRUST_ANCHOR:?}"
+      # AOS-363: barreira control/data-plane EFICAZ. Vazio ⇒ TaintGate inerte, retro-compat
+      # (o estado deste deployment até se definir capabilities privilegiadas). Lista não-vazia
+      # (ex. "cap:fs.read,cap:fs.write,cap:net.connect") ⇒ o ápice endurece e barra promoções
+      # tainted. Inclui cap:fs.read: a regra allow_fs_read do bundle ainda não tem cláusula de
+      # taint (AOS-363 crit. 6, por fechar), logo é o TaintGate que a cobre quando ligado.
+      AOS_PRIVILEGED_CAPS: "${AOS_PRIVILEGED_CAPS:-}"
 
       # Substrato + execução DURÁVEIS no volume gravável. É o que faz o estado
       # sobreviver a um deploy (o volume é nomeado e não é tocado pela troca de digest).
       AOS_DURABLE_EXECUTION: "1"
       # AOS-100 — Event Store REPLICADO. Vazio (o default) mantem o WAL local acima;
-      # preenchido, PRECEDE-O e o substrato passa a arbitrar entre processos, tornando
-      # N replicas do no a configuracao pretendida.
+      # preenchido, PRECEDE-O e o substrato passa a arbitrar entre processos.
+      #
+      # RESSALVA QUE FALTAVA AQUI, E SO AQUI (AOS-325). O Event Store replica; o WORM
+      # NAO. `bootstrap.go` so sabe abrir `audit.OpenFileStore(AOS_WORM_PATH)`, um
+      # ficheiro LOCAL, e dois escritores FORKAM a hash-chain — medido em AOS-284, com
+      # a consequencia dura de o no NAO ARRANCAR e classificar a cadeia como
+      # fork, com TamperFork/ErrChainForked a distinguir um ramo bem formado de
+      # adulteracao (AOS-284 AC3, entregue). O guard de arranque (AOS-285) tranca o WORM
+      # por flock, pelo que duas replicas sobre o mesmo volume nao arrancam ambas: e
+      # fail-closed, nao silencioso. ATENCAO: com AOS_EVENTSTORE_NATS preenchido o guard
+      # do Event Store DESLIGA-SE de proposito (o substrato replicado arbitra entre
+      # processos) e so o WORM continua trancado — quem separar os WORM por replica
+      # mantendo o volume perde a proteccao sem que nada o diga. Ligar AOS_EVENTSTORE_NATS NAO torna, por si so, N replicas uma
+      # configuracao suportada — falta a atribuicao deterministica replica->particao,
+      # que e o AC por fechar de AOS-284 (v1.1). Este ficheiro era o UNICO artefacto do
+      # repositorio a convidar as N replicas sem nomear esse preco; `bootstrap.go`,
+      # `wal_posse.go`, o teste do AOS-100 e o EPIC-10 sempre o carregaram.
       # SOBERANIA (AC5): esta fechado. A fronteira regional e IMPLEMENTADA — o stream e
       # criado com `placement` restrita a servidores que anunciem `region:<valor>` — e
       # sobretudo VERIFICADA: a colocacao e LIDA DE VOLTA da configuracao armazenada, e
@@ -158,6 +179,18 @@ services:
       AOS_AUTONOMY_LEVELS: "${AOS_AUTONOMY_LEVELS:-}"
       # AOS-305: emitterIDs de AOS_OPERATORS com autonomy:set (vazio ⇒ POST /autonomy recusa tudo).
       AOS_AUTONOMY_SETTERS: "${AOS_AUTONOMY_SETTERS:-}"
+      # AOS-377: provas assinadas que AUTORIZAM cada SUBIDA a L4/L5 por AOS_AUTONOMY_LEVELS. JSON
+      # { "agente:dominio=Ln": [ {emitter_id, signature_b64, nonce_b64, issued_at}, ... ] }; subir a
+      # L4/L5 pelo ficheiro exige DUAS provas de emissores DISTINTOS de AOS_AUTONOMY_SETTERS (a mesma
+      # cerimonia da rota). Vazio ⇒ uma subida a L4/L5 pelo ficheiro e RECUSADA ao nivel (fica no
+      # anterior) e declarada no banner. BAIXAR e SUBIR ate L3 nunca exigem prova.
+      AOS_AUTONOMY_PROOFS: "${AOS_AUTONOMY_PROOFS:-}"
+      # AOS-367: emitterIDs de AOS_OPERATORS com dsar:erase — os autorizados a ASSINAR a destruicao
+      # DSAR (/dsar/erase, /dsar/hold, /dsar/release, /dsar/expire). Vazio ⇒ prova desligada (as
+      # rotas ficam por leitura); sob AOS_MODE=production a lista NAO pode ser vazia
+      # (ErrProductionNeedsDSARErasers): a destruicao irreversivel nao pode ficar autorizada por um
+      # token de LEITURA. /dsar/expire exige DUAS assinaturas de erasers distintos.
+      AOS_DSAR_ERASERS: "${AOS_DSAR_ERASERS:-}"
 
       # PISO dos pares SEM nível registado. Vazio ⇒ L0 (o mais supervisionado), exactamente
       # como sem esta variável. Existe para o piso ser uma DECLARAÇÃO e não uma herança: hoje
@@ -168,6 +201,7 @@ services:
       # Attestation de dispositivo (AOS-177/AOS-266) — sem isto o four-eyes é SÓ estrutural.
       AOS_ATTESTATION_VERIFIER_URL: "${AOS_ATTESTATION_VERIFIER_URL:-}"
       AOS_ATTESTATION_VERIFIER_TOKEN_PATH: "${AOS_ATTESTATION_VERIFIER_TOKEN_PATH:-}"
+      AOS_ATTESTATION_VERIFIER_BASIC_PATH: "${AOS_ATTESTATION_VERIFIER_BASIC_PATH:-}"
       AOS_DEVICE_ENROLLMENT_FILE: "${AOS_DEVICE_ENROLLMENT_FILE:-}"
 
       # Broker de credenciais downstream (AOS-070/AOS-264) — hoje entram por ficheiro montado.
@@ -237,6 +271,7 @@ services:
 
       # Custódia DSAR/Vault: mount do Transit e piso de TTL do token.
       AOS_DSAR_VAULT_TRANSIT_MOUNT: "${AOS_DSAR_VAULT_TRANSIT_MOUNT:-}"
+      AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: "${AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL:-}"
       AOS_DSAR_VAULT_TOKEN_MIN_TTL: "${AOS_DSAR_VAULT_TOKEN_MIN_TTL:-}"
 
       # Cadências e limites do loop de serviço.
@@ -302,6 +337,9 @@ services:
       AOS_TLS_EXTERNAL_TERMINATION: "1"
 
       AOS_OTLP_ENDPOINT: "http://otel:4318"
+      # service.name do recurso OTLP (AOS-368): a IDENTIDADE do produtor no backend de traces.
+      # Vazio ⇒ default determinista "aos" — o documento nunca sai como unknown_service.
+      AOS_OTLP_SERVICE_NAME: "${AOS_OTLP_SERVICE_NAME:-aos}"
 
       # --- MODEL GATEWAY (EPIC-06) ---------------------------------------------------------
       # VAZIO ⇒ modelo de REFERÊNCIA: cada turno devolve texto fixo, sem tool calls, e o
@@ -318,6 +356,10 @@ services:
       AOS_MODEL_NAME: "${AOS_MODEL_NAME:-}"
       AOS_MODEL_REGION: "${AOS_MODEL_REGION:-eu}"
       AOS_MODEL_BOARD: "${AOS_MODEL_BOARD:-board-eu}"
+      # EGRESS ENDURECIDO (AOS-366): sob produção o nó arma o cliente SSRF fail-closed do gateway
+      # (https + allowlist). Vazio ⇒ a allowlist deriva do host de AOS_MODEL_ENDPOINT (o destino
+      # já configurado); defina esta CSV de `host`/`host:porta` só para restringir/alargar.
+      AOS_MODEL_EGRESS_HOSTS: "${AOS_MODEL_EGRESS_HOSTS:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
@@ -334,9 +376,18 @@ services:
       AOS_MODEL_TOOLS_REGISTER: "${AOS_MODEL_TOOLS_REGISTER:-}"
 
       # --- SANDBOX (AOS-005/AOS-064) --------------------------------------------------------
-      # `fake` é o DEFAULT e é um jail in-process REAL (overlay read-only, seccomp default-deny,
-      # escape bloqueado) — mas o próprio pacote marca-o "NUNCA usar em produção", e com razão:
-      # a fronteira é o processo do nó, não o kernel.
+      # `fake` é o default do nó FORA de produção e é um jail in-process REAL (overlay
+      # read-only, seccomp default-deny, escape bloqueado) — mas o próprio pacote marca-o
+      # "NUNCA usar em produção", e com razão: a fronteira é o processo do nó, não o kernel.
+      #
+      # AOS-344: sob AOS_MODE=production (que é o caso deste ficheiro, ver AOS_MODE acima) o nó
+      # RECUSA arrancar com o `fake` — por omissão OU por escolha explícita — sempre que o
+      # catálogo de AOS_MODEL_TOOLS traga uma tool com bloco `sandbox`, que é o caso de
+      # ./model-tools/tools.json montado mais abaixo. Até esse ticket o default DESTE ficheiro
+      # era a string vazia, que o nó traduzia em `fake` sem que ninguém o tivesse decidido: o
+      # único dos três drivers que falha ABERTO, a selar na hash-chain WORM um resultado que
+      # nenhuma fronteira ao nível do kernel produziu. O default passa a ser `gvisor` — a mesma
+      # escolha que este servidor já fazia por variável de operador.
       #
       # `firecracker` exige /dev/kvm. Num host que seja ele próprio um convidado sem
       # virtualização aninhada esse caminho está FECHADO — e é o caso deste servidor.
@@ -344,7 +395,7 @@ services:
       # `gvisor` interpõe syscalls em user-space (systrap) e NÃO precisa de KVM. Exige a URL
       # abaixo: sem ela o driver fica o skeleton e o exec devolve ErrDriverUnavailable — o gap
       # honesto, nunca uma execução fora do sandbox.
-      AOS_SANDBOX_DRIVER: "${AOS_SANDBOX_DRIVER:-}"
+      AOS_SANDBOX_DRIVER: "${AOS_SANDBOX_DRIVER:-gvisor}"
       AOS_SANDBOX_GVISOR_URL: "${AOS_SANDBOX_GVISOR_URL:-}"
       AOS_SANDBOX_FIRECRACKER_URL: "${AOS_SANDBOX_FIRECRACKER_URL:-}"
     volumes:

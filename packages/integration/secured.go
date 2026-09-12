@@ -16,6 +16,7 @@ import (
 	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/platform/registry/revalidation"
 	"github.com/aos-ref/platform/registry/toolset"
+	"github.com/aos-ref/substrate/eventstore"
 	network "github.com/aos-ref/substrate/sandbox/network"
 )
 
@@ -36,7 +37,51 @@ var (
 	// segurança de egress (via [network.NewWORMSecuritySink]); sem ele a auditoria
 	// não seria durável e o fail-closed de audit do RM nunca dispararia.
 	ErrNoWORM = errors.New("integration: WORM audit store nil")
+	// ErrRevalidatorNotSealedToWORM — o revalidador por chamada (AOS-051) sela num
+	// [audit.Store] DIFERENTE do WORM único do nó (cfg.WORM). É a lacuna que AOS-381
+	// fecha: enquanto o sistema de tipos exigia audit mas não DURABILIDADE, um
+	// revalidador construído sobre um [audit.NewMemStore] volátil parecia auditado e não
+	// era — as suas decisões (e as mudanças do trust store) selavam-se num store que
+	// NENHUM leitor lia e que não sobrevivia ao restart. O ápice EXIGE agora que a
+	// revalidação sele no MESMO store que cfg.WORM (comparação por base desembrulhado, ver
+	// [wormBaseStore]) — o que alimenta o EventSink de mediação e o sink de egress. A
+	// DURABILIDADE é ortogonal e garantida à parte (o WORM do nó é durável sse
+	// `AOS_WORM_PATH` está definido; um nó dev unifica tudo num MemStore e o banner
+	// declara-o VOLÁTIL): este gate impõe MESMIDADE, não durabilidade. Fail-closed: um
+	// revalidador selado NOUTRO store recusa o arranque, em vez de mediar com um trilho de
+	// supply-chain que se evapora sem que nada o diga.
+	ErrRevalidatorNotSealedToWORM = errors.New("integration: revalidator audit store != cfg.WORM (a revalidação por chamada tem de selar no MESMO store que cfg.WORM — AOS-381)")
 )
+
+// wormBaseStore desembrulha decoradores de [audit.Store] que só DELEGAM (ex.: o
+// auditTracingStore de observabilidade do nó, AOS-173) até ao store durável de base. É o que
+// o fail-closed de WORM único (AOS-381) compara: dois handles que, por baixo da telemetria,
+// selam na MESMA hash-chain são o MESMO WORM. Um store sem Unwrap é o seu próprio base.
+//
+// INVARIANTE DE SEGURANÇA que o desembrulho ASSUME e que qualquer decorador de um WORM tem de
+// respeitar: `Unwrap()` devolve o store onde o `Append` SELA. O gate compara o base via Unwrap,
+// mas só o `Append` persiste — um decorador que implemente `Unwrap` por conveniência e cujo
+// `Append` divirja (selar noutro store, ou em dois) contornaria este fail-closed. Hoje só o
+// `auditTracingStore` implementa Unwrap e delega o Append honestamente; um decorador novo de
+// `audit.Store` que não respeite a invariante REABRE a lacuna que AOS-381 fecha.
+//
+// O desembrulho é LIMITADO (fail-safe): uma cadeia de Unwrap mal-composta (ciclo A→B→A, ou
+// profundidade patológica) não pode PENDURAR o arranque — ao exceder o limite devolve-se o store
+// corrente como base. Se ele não igualar o base de cfg.WORM, o gate RECUSA (a direcção segura).
+func wormBaseStore(s audit.Store) audit.Store {
+	for i := 0; i < 16; i++ {
+		u, ok := s.(interface{ Unwrap() audit.Store })
+		if !ok {
+			return s
+		}
+		inner := u.Unwrap()
+		if inner == nil || inner == s {
+			return s
+		}
+		s = inner
+	}
+	return s // profundidade/ciclo excedido: base fail-safe (não iguala ⇒ recusa)
+}
 
 // SecuredConfig configura o [SecuredRuntime].
 type SecuredConfig struct {
@@ -64,6 +109,23 @@ type SecuredConfig struct {
 	// default-deny. OPCIONAL: nil ⇒ registo in-memory (sem crash-safety).
 	// *[eventstore.Store] satisfá-lo.
 	ToolSetStore ToolSetStore
+
+	// MediationEvents é o Event Store DURÁVEL do canal de eventos de mediação do RM
+	// (AOS-379): quando != nil, os registos tool.call.mediated/denied/escalated passam a
+	// ser materializados no Event Store (via [referencemonitor.NewEventStoreSink]) EM
+	// PARALELO com a cadeia tamper-evident do WORM — o TeeSink faz o fan-out (ver
+	// [NewSecuredRuntime]). É o Event Store que o AOS-332 lê para reconstruir "quem
+	// autorizou o quê". OPCIONAL e ADITIVO: nil ⇒ SÓ o WORM (via [audit.NewMediationSink]),
+	// exactamente o comportamento anterior a AOS-379 — o canal fica INALCANÇÁVEL como
+	// Event Store, o único destino é a hash-chain de audit. NÃO confundir com
+	// [SecuredConfig.ToolSetStore] (snapshots AOS-155, superfície Append+Read distinta).
+	// FAIL-CLOSED quando composto: uma falha a materializar o evento no caminho de PERMIT
+	// degrada a decisão para Deny (o WORM é o sink PRIMÁRIO do TeeSink e o Event Store o
+	// secundário — ver [NewSecuredRuntime] para a razão da ordem) —
+	// auditar-antes-do-efeito passa a EXIGIR o Event Store, não só o WORM. O tipo do store
+	// (NATS/file duráveis vs [eventstore.New] de referência in-memory) fixa se essa
+	// exigência é durável; o composition-root declara-o no banner de postura.
+	MediationEvents eventstore.EventStore
 
 	// --- Execução durável (AOS-180) ---------------------------------------------
 	// Quando TODOS os colaboradores abaixo são fornecidos, o runtime corre com
@@ -279,6 +341,15 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		return nil, ErrNoPolicy
 	case cfg.WORM == nil:
 		return nil, ErrNoWORM
+	// AOS-381 — WORM ÚNICO estendido à supply-chain: a revalidação tem de selar no MESMO
+	// store durável que cfg.WORM. Chega aqui com Revalidator e WORM já não-nil (casos
+	// acima). Compara-se o store BASE (via [wormBaseStore]): o composition-root pode decorar
+	// o WORM com telemetria (um wrapper que só DELEGA — ver o auditTracingStore do nó), e o
+	// revalidador pode selar no store cru ou no decorado; em qualquer caso a durabilidade é a
+	// do MESMO store subjacente. Desembrulhar antes de comparar mantém o gate estrito quanto à
+	// durabilidade (recusa um store volátil desligado) sem o tornar refém da camada de traços.
+	case wormBaseStore(cfg.Revalidator.AuditStore()) != wormBaseStore(cfg.WORM):
+		return nil, ErrRevalidatorNotSealedToWORM
 	}
 
 	// Defaults demo-grade (fail-closed): cada um é um hook REAL, nunca um stub. Os
@@ -387,14 +458,59 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 
 	// EventSink durável = adaptador sancionado MediationRecord→AuditRecord sobre o
 	// MESMO WORM (partição por RunID). É o "audit" da cadeia — não um hook.
-	eventSink := audit.NewMediationSink(cfg.WORM)
+	//
+	// AOS-379: quando cfg.MediationEvents está composto, o canal tool.call.* deixa de ser
+	// INALCANÇÁVEL como Event Store — o [audit.TeeSink] faz o fan-out da MESMA mediação
+	// para a cadeia tamper-evident do WORM E para o Event Store durável. Fail-closed: uma
+	// falha em QUALQUER sink no caminho de permit propaga e o RM degrada para Deny. nil ⇒
+	// SÓ o WORM, exactamente como antes de AOS-379 (aditivo e retro-compatível).
+	//
+	// ORDEM: WORM PRIMÁRIO (índice 0), Event Store a seguir. É deliberado e corrige um achado
+	// da revisão adversarial: o TeeSink escreve por ordem e PÁRA no primeiro erro
+	// ([audit.NewTeeSink]). Com o Event Store à cabeça, uma queda do WORM (com o ES de pé)
+	// deixaria no ES um `tool.call.mediated` JÁ COMMITADO e depois degradaria para deny — mas o
+	// `tool.call.denied` re-emitido por [Monitor.fail] colidiria com a MESMA chave de
+	// idempotência (run_id, step_id) do `mediated` e seria DEDUPLICADO, deixando o ES a afirmar
+	// uma autorização+execução que nunca aconteceu (e é o ES que o AOS-332 lê). Com o WORM à
+	// cabeça: se o WORM cai, o tee pára ANTES de tocar o ES ⇒ o ES nunca ganha um `mediated`
+	// falso; e um `mediated` NO ES passa a implicar que o tee INTEIRO teve sucesso ⇒ a call foi
+	// mesmo autorizada e despachada. Se em vez disso cai o ES, o WORM (autoritativo, append-only,
+	// sem dedup) regista `mediated`+`denied` reconciliáveis e nunca fica cego; o ES apenas tem
+	// uma LACUNA durante a sua própria indisponibilidade — nunca uma mentira. O seq devolvido é o
+	// do WORM (primário); nenhum consumidor de produção usa o seq de mediação.
+	var eventSink referencemonitor.EventSink = audit.NewMediationSink(cfg.WORM)
+	if cfg.MediationEvents != nil {
+		eventSink = audit.NewTeeSink(
+			audit.NewMediationSink(cfg.WORM),                        // primário: cadeia tamper-evident (nunca cega; preserva o denied)
+			referencemonitor.NewEventStoreSink(cfg.MediationEvents), // a seguir: só ganha `mediated` se o tee inteiro passou
+		)
+	}
 
-	// RM via a via ESTRITA: recusa fail-closed IdentityStub/EgressStub e exige
-	// ScopeGate+TaintGate activos e audit durável. Nunca [referencemonitor.New] cru.
-	rm, err := referencemonitor.NewProductionSecure(privileged,
+	// RM via a via ESTRITA (recusa fail-closed IdentityStub/EgressStub, exige
+	// ScopeGate+TaintGate activos e audit durável) OU a via ENDURECIDA que, além disso,
+	// recusa um TaintGate inerte. AOS-363: a barreira control/data-plane deixa de ser
+	// inerte por OPÇÃO do operador (AOS_PRIVILEGED_CAPS), sem regredir os deployments
+	// actuais.
+	//
+	//   - conjunto EFICAZ (não-vazio, ou um classificador custom opaco que não se pode
+	//     provar inerte) ⇒ [NewProductionHardenedTaint]: se por engano ficar inerte,
+	//     o nó recusa arrancar ([ErrTaintGateInert]) em vez de mediar sem barreira.
+	//   - conjunto VAZIO — o default quando AOS_PRIVILEGED_CAPS não é definida ⇒
+	//     [NewProductionSecure]: arranca com o gate PRESENTE-MAS-INERTE, exactamente como
+	//     antes desta mudança. É a perna retro-compatível; nenhum nó existente regride.
+	//
+	// A escolha delega no MESMO predicado de eficácia ([EffectivePrivilegedAuthorizer])
+	// que o construtor endurecido usa internamente — não há segunda definição de "eficaz".
+	rmOpts := []referencemonitor.Option{
 		referencemonitor.WithHooks(hooks...),
 		referencemonitor.WithEventSink(eventSink),
-	)
+	}
+	var rm *referencemonitor.Monitor
+	if e, ok := privileged.(referencemonitor.EffectivePrivilegedAuthorizer); !ok || e.HasPrivileged() {
+		rm, err = referencemonitor.NewProductionHardenedTaint(privileged, rmOpts...)
+	} else {
+		rm, err = referencemonitor.NewProductionSecure(privileged, rmOpts...)
+	}
 	if err != nil {
 		return nil, err
 	}

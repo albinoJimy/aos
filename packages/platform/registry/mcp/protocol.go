@@ -130,8 +130,9 @@ type resourcesListResult struct {
 // (initialize + tools/list + resources/list). Alimenta o contract das entradas do
 // REG. TODO o seu conteúdo textual (descrições, schemas) é UNTRUSTED.
 //
-// O campo Digest é RESERVADO: o hash SHA-256 do manifesto canonicalizado é AOS-047.
-// Em AOS-046 fica vazio (o pinning por digest do manifesto não é deste ticket).
+// O campo Digest é PREENCHIDO pelo [Host.Handshake] (AOS-320): é o SHA-256 do
+// manifesto CANONICALIZADO, e é dele que deriva o Digest da entrada kind=mcp_server
+// — ver [digestManifesto] e [digestAncorado].
 type CapabilityManifest struct {
 	// ServerInfo é o que o servidor afirma sobre si (informativo).
 	ServerInfo ServerInfo
@@ -145,6 +146,11 @@ type CapabilityManifest struct {
 	// (Resources vazio, este campo false). Torna explícita a supressão que, de outro
 	// modo, seria um fail-open silencioso.
 	ResourcesUnavailable bool
-	// Digest RESERVADO (AOS-047). Vazio em AOS-046.
+	// Digest é o SHA-256 (prefixado, digest.Prefix) da forma canónica do manifesto,
+	// calculado por [digestManifesto] com digest.DigestJSON. É a impressão digital da
+	// superfície de capacidade anunciada: dois servidores que anunciem superfícies
+	// diferentes têm digests diferentes, e o mesmo manifesto reproduz sempre o mesmo
+	// valor. NÃO é derivado de conteúdo secreto — é público, como qualquer digest de
+	// supply-chain.
 	Digest string
 }

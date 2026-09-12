@@ -150,6 +150,7 @@ LAYER_TMP=""
 # toolchain Go a ignore mesmo se algo correr em paralelo. Removida pelo trap.
 EVENT_PROBE="$REPO_ROOT/packages/_selftest_eventcat"
 REFLINT_TMP=""
+EC_TMP=""
 # §R e §S mutam o gerador da RTM numa CÓPIA, desde AOS-316: o gerador aceita
 # `AOS_RTM_ROOT`, pelo que a árvore real deixou de fazer parte da superfície
 # mutada — R3/S3 apenas a LÊEM. A sandbox é criada em §R e apagada pelo trap.
@@ -167,6 +168,7 @@ cleanup() {
   rm -rf "$LAYER_TMP"
   rm -rf "$EVENT_PROBE"
   rm -rf "$REFLINT_TMP"
+  rm -rf "$EC_TMP"
   rm -rf "$RTM_SANDBOX"
   libertar_lock
 }
@@ -507,21 +509,43 @@ fi
 #
 # Ao contrário do §L, estes subtestes correm contra o CORPUS REAL, e cada um
 # ataca uma via distinta de falso-verde:
-#   N1 baseline VAZIA        — as divergências C3/C4/C5 são mesmo detectadas;
+#   N1 divergência SINTÉTICA — um código documentado e ausente avermelha (não é no-op);
 #   N2 baseline OBSOLETA     — a dívida fechada tem de ser removida;
 #   N3 baseline SEM `owner=` — a regra de honestidade é executável;
 #   N4 parágrafo RENOMEADO   — o gate não se desliga editando o documento;
-#   N5 baseline ÓRFÃ         — uma entrada nunca visitada não se torna permanente.
+#   N5 baseline ÓRFÃ         — uma entrada nunca visitada não se torna permanente;
+#   N6 owner FECHADO         — a dívida não pode ter por dono um ticket já fechado (AOS-382).
 # N4 e N5 são as duas vias pelas quais o gate ficava VERDE sobre menos contratos
 # do que dizia verificar (medido pela auditoria de AOS-198).
+#
+# NOTA (AOS-382): antes da reconciliação, uma baseline VAZIA já avermelhava por si
+# só, porque as dez divergências C3/C4/C5 estavam por reconciliar. Reconciliadas, a
+# baseline vazia é agora LEGITIMAMENTE verde (todos os códigos documentados estão
+# presentes) — por isso o N1 injecta uma divergência SINTÉTICA para provar que o
+# gate continua a detectar divergência, e não virou um no-op.
 # ============================================================================
 log_gate "self-test N · divergência de contrato bloqueia o gate 4 (AOS-198)"
 N_EMPTY="$(mktemp)"
 : > "$N_EMPTY"
-if AOS_CONTRACT_BASELINE="$N_EMPTY" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
-  bad "N1: gate 4 passou com baseline VAZIA — as divergências C3/C4/C5 não estão a ser detectadas"
+# N1: com baseline VAZIA, um código de porta documentado e AUSENTE do código
+# avermelha. Injecta-se `E_FAKE_ABSENT_XYZ` no parágrafo do PRIMEIRO contrato (C1,
+# mapeado a pdp), onde não existe — divergência não-baselinada ⇒ vermelho.
+N_DOC1="$(mktemp)"
+ensure_python || exit 1
+python3 - "$REPO_ROOT/tecnica/12_Contratos_de_Interface.md" "$N_DOC1" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+marker = "**Semântica de erro.**"
+i = text.find(marker)
+assert i != -1, "marcador «Semântica de erro» não encontrado — self-test inválido"
+j = i + len(marker)
+open(dst, "w", encoding="utf-8").write(text[:j] + " `E_FAKE_ABSENT_XYZ` (divergencia sintetica);" + text[j:])
+PY
+if AOS_CONTRACTS_DOC="$N_DOC1" AOS_CONTRACT_BASELINE="$N_EMPTY" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N1: gate 4 passou com um código documentado AUSENTE e baseline vazia — não detecta divergência (virou no-op)"
 else
-  pass "N1: gate 4 bloqueou (exit!=0) com baseline vazia — detecta as divergências reais de contrato"
+  pass "N1: gate 4 bloqueou (exit!=0) uma divergência sintética com baseline vazia — continua a detectar divergência real"
 fi
 # N2: entrada de baseline para um código que EXISTE (C1) tem de falhar como obsoleta.
 N_STALE="$(mktemp)"
@@ -577,7 +601,50 @@ if AOS_CONTRACT_BASELINE="$N_ORPHAN" bash "$CI_DIR/integration.sh" >/dev/null 2>
 else
   pass "N5: gate 4 bloqueou (exit!=0) uma entrada de baseline órfã"
 fi
-rm -f "$N_EMPTY" "$N_STALE" "$N_NOOWNER" "$N_DOC" "$N_ORPHAN"
+
+# N6: o `owner=` deixou de ser uma substring — tem de nomear um ticket AOS-NNN que
+# EXISTE e está ABERTO. Uma entrada com um código realmente ausente (divergência
+# sintética, logo baselinável) mas com owner=<ticket JÁ FECHADO> avermelha: uma
+# dívida de contrato não se mantém por um ticket que já fechou sem a reconciliar.
+# Controlo (owner ABERTO, verde) vs veneno (owner FECHADO, vermelho) isola a
+# validação de dono do resto do gate. (AOS-382)
+N_DOC6="$(mktemp)"
+python3 - "$REPO_ROOT/tecnica/12_Contratos_de_Interface.md" "$N_DOC6" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+marker = "**Semântica de erro.**"
+i = text.rfind(marker)  # último parágrafo = contrato C5 (registry)
+assert i != -1, "marcador «Semântica de erro» não encontrado — self-test inválido"
+j = i + len(marker)
+open(dst, "w", encoding="utf-8").write(text[:j] + " `E_FAKE_OWNER_XYZ` (divergencia sintetica);" + text[j:])
+PY
+# Escolhe dinamicamente, do corpus real, um ticket ABERTO e um FECHADO.
+read -r N6_ABERTO N6_FECHADO < <(python3 - "$CI_DIR" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+est = ec.estados_dos_tickets()
+ab = sorted(t for t, e in est.items() if e in ec.ABERTO)
+fe = sorted(t for t, e in est.items() if e in ec.FECHADO)
+print(ab[0] if ab else "NONE", fe[0] if fe else "NONE")
+PY
+)
+N_OK6="$(mktemp)"; N_BAD6="$(mktemp)"
+printf 'C5|E_FAKE_OWNER_XYZ|packages/platform/registry # owner=%s; divergencia sintetica com dono ABERTO\n' "$N6_ABERTO" > "$N_OK6"
+printf 'C5|E_FAKE_OWNER_XYZ|packages/platform/registry # owner=%s; divergencia sintetica com dono FECHADO\n' "$N6_FECHADO" > "$N_BAD6"
+if [ "$N6_ABERTO" != "NONE" ] && AOS_CONTRACTS_DOC="$N_DOC6" AOS_CONTRACT_BASELINE="$N_OK6" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  pass "N6: controlo — entrada de baseline com owner ABERTO ($N6_ABERTO) fica verde"
+else
+  bad "N6: controlo falhou — a entrada com owner aberto já está vermelha (o veneno não provaria nada)"
+fi
+if [ "$N6_FECHADO" != "NONE" ] && AOS_CONTRACTS_DOC="$N_DOC6" AOS_CONTRACT_BASELINE="$N_BAD6" bash "$CI_DIR/integration.sh" >/dev/null 2>&1; then
+  bad "N6: gate 4 aceitou uma entrada de baseline cujo owner ($N6_FECHADO) já está FECHADO"
+else
+  pass "N6: gate 4 bloqueou (exit!=0) uma entrada de baseline com owner já fechado ($N6_FECHADO)"
+fi
+
+rm -f "$N_EMPTY" "$N_STALE" "$N_NOOWNER" "$N_DOC" "$N_ORPHAN" "$N_DOC1" "$N_DOC6" "$N_OK6" "$N_BAD6"
 
 # ============================================================================
 # O) Literal/concatenação de tipo de evento bloqueia o gate event-catalog (AOS-198)
@@ -753,6 +820,248 @@ if python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
 else
   bad "P3: o ref-lint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo"
 fi
+# ============================================================================
+# W) o gate ESTADO-CITADO consegue ficar VERMELHO (AOS-329)
+# ============================================================================
+# O gate e OPT-IN: so verifica declaracoes marcadas com `BLOQUEADOR: AOS-NNN`. Isso torna a prova
+# negativa OBRIGATORIA e nao opcional — mediu-se que a arvore NAO tem hoje nenhuma declaracao
+# marcada (zero citacoes de bloqueio apontam para ticket aberto), pelo que o verde da PARTE dos
+# marcadores contra a arvore real nao prova nada por si so. E exactamente a situacao que o §P2 do
+# ref-lint existe para nao repetir: um gate que nunca teve input capaz de o avermelhar nao e um gate.
+#
+# AOS-382 fechou essa vacuidade por um segundo eixo: o gate cruza agora TODO o `owner=AOS-NNN` das
+# baselines de scripts/ci/baseline contra o estado do ticket e EXIGE `verificadas >= piso` (piso=1).
+# Essas sao as adesoes FUNDADORAS, reais e ja no repo — o verde deixou de poder ser verde-vazio. O
+# §W2 continua a provar que a parte dos marcadores dispara; o §W4 (novo) prova a nao-vacuidade e que
+# um owner de baseline INEXISTENTE avermelha.
+log_gate "self-test W1 · o predicado de estado distingue fechado de aberto, nos DOIS sentidos"
+if python3 - "$CI_DIR" <<'RPY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+erros = []
+for lex in ["IMPLEMENTADO", "FECHADO", "ENTREGUE", "FEITO"]:
+    if lex not in ec.FECHADO:
+        erros.append("%s devia contar como FECHADO" % lex)
+for lex in ["POR", "ABERTO", "PARCIAL"]:
+    if lex in ec.FECHADO or lex in ec.CANCELADO:
+        erros.append("%s NAO pode contar como fechado — um bloqueio sobre ele pode ser verdadeiro" % lex)
+if "REMOVIDO" not in ec.CANCELADO:
+    erros.append("REMOVIDO devia ser CANCELADO (espera por algo que nunca vem)")
+if erros:
+    print("; ".join(erros), file=sys.stderr); sys.exit(1)
+RPY
+then
+  pass "W1: o predicado fecha nos quatro lexemas de entrega e NAO fecha em POR/ABERTO/PARCIAL"
+else
+  bad "W1: o predicado de estado nao distingue fechado de aberto"
+fi
+
+log_gate "self-test W2 · um BLOQUEADOR a citar ticket FECHADO avermelha o gate (teste-veneno)"
+EC_TMP="$(mktemp -d)"
+mkdir -p "$EC_TMP/packages/veneno"
+cp -r "$REPO_ROOT/specs" "$EC_TMP/specs"
+
+# Controlo positivo PRIMEIRO: a copia sem veneno tem de ficar VERDE, senao o vermelho de baixo
+# provaria so que a copia esta partida.
+if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+  pass "W2: controlo — a copia sem veneno fica verde"
+else
+  bad "W2: controlo falhou — a copia ja esta vermelha (o subteste nao provaria nada)"
+fi
+
+# O VENENO: pega no PRIMEIRO ticket que o corpus declara IMPLEMENTADO e escreve uma declaracao
+# que o nomeia como bloqueador. E a forma exacta das quatro declaracoes de AOS-265 que a EPIC-23
+# corrigiu — «a troca so medeia algo em AOS-265» — agora com marcador.
+if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
+import importlib.util, os, sys
+os.environ["AOS_ESTADO_CITADO_ROOT"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+fechados = sorted(t for t, e in ec.estados_dos_tickets().items() if e in ec.FECHADO)
+if not fechados:
+    print("W2: o corpus nao declara nenhum ticket fechado — nao ha veneno possivel", file=sys.stderr); sys.exit(2)
+alvo = fechados[0]
+with open(os.path.join(sys.argv[2], "packages", "veneno", "veneno.go"), "w", encoding="utf-8") as fh:
+    fh.write("package veneno\n\n// A troca so medeia algo em %s. BLOQUEADOR: %s\n" % (alvo, alvo))
+RPY
+then
+  if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    bad "W2: o gate passou com um BLOQUEADOR a citar um ticket FECHADO — nao consegue ficar vermelho"
+  else
+    pass "W2: o gate bloqueou (exit!=0) a declaracao caducada injectada na copia"
+  fi
+else
+  bad "W2: nao foi possivel injectar o veneno na copia do corpus"
+fi
+
+# W2-ter — A MATRIZ DE FORMAS, NOS DOIS SENTIDOS. O W2 acima prova que o gate consegue ficar
+# vermelho NUMA forma; nao prova que veja as outras, nem — o que importa tanto ou mais — que se
+# CALE onde deve. Uma revisao adversarial mediu que a versao anterior falhava nos dois sentidos ao
+# mesmo tempo: fugia em oito formas correntes (marcador com uma palavra pelo meio, com `**`, entre
+# parentesis, com um `//` em branco a separar paragrafos, fora de `.go`/`.md`) e avermelhava tres
+# frases que diziam o CONTRARIO — «a ausencia nunca foi bloqueador: AOS-NNN ja cobriu o caso».
+#
+# As duas metades desta tabela existem por isso, e a de BAIXO e a mais importante: um falso
+# positivo que acusa uma frase de afirmar o oposto do que ela afirma e o que faz alguem desligar o
+# gate — e desligado nao protege nada. Um veneno so prova que o gate dispara; e preciso provar
+# tambem onde ele NAO dispara.
+#
+# As linhas dos ficheiros sao montadas com `chr(10)`, sem barras invertidas: a sequencia `\n`
+# escrita a mao neste ficheiro atravessa heredoc e interpolacao e chega ao disco ja convertida em
+# quebra de linha real, partindo o literal Python. Ja aconteceu; nao volta a acontecer.
+if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
+import importlib.util, io, os, shutil, subprocess, sys
+
+CI, RAIZ = sys.argv[1], sys.argv[2]
+os.environ["AOS_ESTADO_CITADO_ROOT"] = RAIZ
+spec = importlib.util.spec_from_file_location("ec", CI + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+estados = ec.estados_dos_tickets()
+fechados = sorted(t for t, e in estados.items() if e in ec.FECHADO)
+abertos = sorted(t for t, e in estados.items() if e in ec.ABERTO)
+if not fechados or not abertos:
+    print("W2-ter: o corpus precisa de um ticket fechado E de um aberto", file=sys.stderr)
+    sys.exit(2)
+F, A = fechados[0], abertos[0]
+NL = chr(10)
+
+VERMELHO, VERDE = True, False
+CASOS = [
+    # (nome, ficheiro, linhas do ficheiro, tem de avermelhar?)
+    ("palavra pelo meio",      "v.go",  ["package v", "", "// BLOQUEADOR: aguarda " + F], VERMELHO),
+    ("adorno markdown",        "v.go",  ["package v", "", "// **BLOQUEADOR:** " + F], VERMELHO),
+    ("entre parentesis",       "v.go",  ["package v", "", "// BLOQUEADOR: (" + F + ")"], VERMELHO),
+    ("paragrafo com // vazio", "v.go",  ["package v", "", "// BLOQUEADOR:", "//", "// " + F], VERMELHO),
+    ("duas linhas",            "v.go",  ["package v", "", "// BLOQUEADOR:", "// " + F], VERMELHO),
+    ("comentario apos codigo", "v.go",  ["package v", "", "var _ = 1 // BLOQUEADOR: " + F], VERMELHO),
+    ("lista em markdown",      "v.md",  ["- **BLOQUEADOR:** " + F], VERMELHO),
+    ("fora de .go e .md",      "v.yml", ["# BLOQUEADOR: " + F, "chave: valor"], VERMELHO),
+    # A METADE QUE IMPORTA: onde o gate TEM de se calar.
+    ("inversao de sentido",    "v.go",  ["package v", "", "// A ausencia nunca foi bloqueador:",
+                                         "// " + F + " ja cobriu o caso."], VERDE),
+    ("inversao em markdown",   "v.md",  ["Nao existe bloqueador:", F + " aterrou em Agosto."], VERDE),
+    ("eixo que nao e ticket",  "v.go",  ["package v", "",
+                                         "// so a linha de postura. Bloqueador: DEF-218 (" + F + " ja aterrou)."], VERDE),
+    ("marcador enterrado",     "v.go",  ["package v", "", "// o que falta aqui e BLOQUEADOR: " + F], VERDE),
+    ("bloqueio LEGITIMO",      "v.go",  ["package v", "", "// BLOQUEADOR: " + A], VERDE),
+]
+
+alvo = os.path.join(RAIZ, "packages", "veneno")
+falhas = []
+for nome, ficheiro, linhas, esperado in CASOS:
+    shutil.rmtree(alvo, ignore_errors=True)
+    os.makedirs(alvo)
+    with io.open(os.path.join(alvo, ficheiro), "w", encoding="utf-8") as fh:
+        fh.write(NL.join(linhas) + NL)
+    rc = subprocess.run([sys.executable, CI + "/estado-citado.py"],
+                        env=dict(os.environ, AOS_ESTADO_CITADO_ROOT=RAIZ),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    obtido = rc != 0
+    if obtido != esperado:
+        falhas.append("%s: esperado %s, obtido %s" % (
+            nome, "VERMELHO" if esperado else "verde", "VERMELHO" if obtido else "verde"))
+shutil.rmtree(alvo, ignore_errors=True)
+os.makedirs(alvo)
+if falhas:
+    print("W2-ter: " + " | ".join(falhas), file=sys.stderr)
+    sys.exit(1)
+RPY
+then
+  pass "W2-ter: as 8 formas de fuga avermelham e as 5 formas legitimas continuam verdes"
+else
+  bad "W2-ter: o gate falhou a matriz de formas — ou tem uma fuga, ou acusa quem nao devia"
+fi
+
+# W2-bis — o mesmo veneno com um ticket ABERTO tem de ficar VERDE. Sem isto, um gate que
+# avermelhasse com QUALQUER marcador passaria o R2 e negaria toda a declaracao legitima.
+if python3 - "$CI_DIR" "$EC_TMP" <<'RPY'
+import importlib.util, os, sys
+os.environ["AOS_ESTADO_CITADO_ROOT"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+abertos = sorted(t for t, e in ec.estados_dos_tickets().items() if e in ec.ABERTO)
+if not abertos:
+    print("W2-bis: o corpus nao declara nenhum ticket aberto", file=sys.stderr); sys.exit(2)
+with open(os.path.join(sys.argv[2], "packages", "veneno", "veneno.go"), "w", encoding="utf-8") as fh:
+    fh.write("package veneno\n\n// Pendente do wiring. BLOQUEADOR: %s\n" % abertos[0])
+RPY
+then
+  if AOS_ESTADO_CITADO_ROOT="$EC_TMP" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    pass "W2-bis: um BLOQUEADOR a citar ticket ABERTO continua VERDE (o gate nao nega tudo)"
+  else
+    bad "W2-bis: o gate avermelhou com um bloqueio LEGITIMO — negaria toda a declaracao valida"
+  fi
+else
+  bad "W2-bis: nao foi possivel injectar o controlo na copia"
+fi
+rm -rf "$EC_TMP"
+EC_TMP=""
+
+# W3 — a arvore real nao foi tocada pelo §W2, E o verde ja NAO e vazio (AOS-382): exige
+# `verificadas >= piso` a partir dos owners das baselines reais. Verde aqui = sem rasto de
+# marcador caduco E com adesoes fundadoras cruzadas contra a arvore (nao um opt-in a zero).
+if python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+  pass "W3: controlo — o estado-citado continua verde contra a arvore REAL (sem rasto; verificadas >= piso)"
+else
+  bad "W3: o estado-citado ficou vermelho contra a arvore real — POSSIVEL RASTO ou declaracoes verificadas < piso"
+fi
+
+# W4 — NAO-VACUIDADE (AOS-382). O gate deixou de sair verde com marcadas==0: cruza os
+# owners AOS-NNN das baselines contra o estado do ticket e exige verificadas >= piso. Um
+# owner INEXISTENTE avermelha. Prova-se com um seam PROPRIO da baseline
+# (AOS_ESTADO_CITADO_BASELINE_DIR), sem tocar nas baselines reais nem na arvore.
+EC_BL="$(mktemp -d)"
+if python3 - "$CI_DIR" "$EC_BL" <<'RPY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("ec", sys.argv[1] + "/estado-citado.py")
+ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
+estados = ec.estados_dos_tickets()
+# O controlo precisa de um owner de ESTADO CONHECIDO (nao-None): o piso conta esses, nao a mera
+# existencia (AOS-382, fix do MUST-1 da revisao). Um indeterminado NAO satisfaria o piso.
+conhecidos = sorted(t for t, s in estados.items() if s is not None)
+indeterminados = sorted(t for t, s in estados.items() if s is None)
+if not conhecidos:
+    print("W4: corpus sem tickets de estado conhecido", file=sys.stderr); sys.exit(2)
+with open(os.path.join(sys.argv[2], "ok.txt"), "w", encoding="utf-8") as fh:
+    fh.write("chave|x # owner=%s; declaracao fundadora de controlo (estado conhecido)\n" % conhecidos[0])
+# Escreve tambem, se houver, um indeterminado para a variante W5.
+with open(os.path.join(sys.argv[2], "_indeterminado.name"), "w", encoding="utf-8") as fh:
+    fh.write(indeterminados[0] if indeterminados else "")
+RPY
+then
+  if AOS_ESTADO_CITADO_BASELINE_DIR="$EC_BL" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    pass "W4: controlo — baseline com owner de ESTADO CONHECIDO fica verde (verificadas >= piso)"
+  else
+    bad "W4: controlo falhou — baseline com owner de estado conhecido avermelhou (o veneno nao provaria nada)"
+  fi
+else
+  bad "W4: nao foi possivel montar a baseline de controlo"
+fi
+# O VENENO: owner INEXISTENTE (AOS-999) tem de avermelhar.
+printf 'chave|x # owner=AOS-999; owner inventado, ticket que nunca existiu\n' > "$EC_BL/veneno.txt"
+if AOS_ESTADO_CITADO_BASELINE_DIR="$EC_BL" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+  bad "W4: o gate passou com um owner de baseline INEXISTENTE (AOS-999) — nao verifica a nao-vacuidade"
+else
+  pass "W4: o gate bloqueou (exit!=0) um owner de baseline inexistente (AOS-999)"
+fi
+# W5 — o eixo-ESTADO e exercitado, nao so a existencia (AOS-382, MUST-1): uma baseline SO com
+# owners de estado INDETERMINADO nao satisfaz o piso (nao prova a leitura de estado) e avermelha.
+EC_INDET="$(cat "$EC_BL/_indeterminado.name" 2>/dev/null || echo "")"
+rm -f "$EC_BL/ok.txt" "$EC_BL/veneno.txt"
+if [ -n "$EC_INDET" ]; then
+  printf 'chave|x # owner=%s; owner existente mas de estado indeterminado (epic sem ### Estado)\n' "$EC_INDET" > "$EC_BL/indet.txt"
+  if AOS_ESTADO_CITADO_BASELINE_DIR="$EC_BL" python3 "$CI_DIR/estado-citado.py" >/dev/null 2>&1; then
+    bad "W5: o gate passou com SO owners de estado indeterminado — o piso nao exercita a leitura de estado (verde-vazio disfarcado)"
+  else
+    pass "W5: o gate bloqueou (exit!=0) uma baseline so com owners de estado indeterminado (piso exige estado conhecido)"
+  fi
+else
+  pass "W5: corpus sem tickets de estado indeterminado — variante nao aplicavel"
+fi
+rm -rf "$EC_BL"
+EC_BL=""
+
 # ============================================================================
 # Q) o gate de ENTREGA bloqueia um smoke apontado a liveness (2026-08-23)
 # ============================================================================
@@ -1153,8 +1462,12 @@ fi
 
 # V2 — VOCABULARIO FECHADO do estado. Um estado novo tem de passar por quem le o
 # modulo; escrita livre numa celula nao pode propagar-se para a coluna Estado da §4.
+# Muta-se **Aceite** (nao **Proposto**): um estado PERMANENTE que o registo sempre tem,
+# ao contrario de Proposto, que desaparece a medida que os ADRs sao ratificados — e
+# desapareceu de facto em AOS-386 (ADR-021/022 -> Aceite), tornando a mutacao antiga um
+# no-op que fazia o V2 falhar por nao ter nada que corromper.
 cp "$RTM_SANDBOX_REG_BAK" "$RTM_SANDBOX_REG"
-injectar_em "$RTM_SANDBOX_REG" -pi 's/\*\*Proposto\*\*/**Talvez**/' 'V2'
+injectar_em "$RTM_SANDBOX_REG" -pi 's/\*\*Aceite\*\*/**Talvez**/' 'V2'
 if rtm_bloqueou_com 'estado desconhecido'; then
   pass "V2: o gate bloqueou um estado fora do vocabulário fechado do registo"
 else
@@ -1187,6 +1500,95 @@ if AOS_RTM_ROOT="$RTM_SANDBOX/root" python3 "$RTM_GEN" --check >/dev/null 2>&1; 
 else
   bad "V4: o gate ficou vermelho com a sandbox restaurada — V1..V3 não provariam nada"
 fi
+
+
+# ============================================================================
+# X) permit sem a cláusula de taint bloqueia o gate policy-taint (AOS-376)
+# ============================================================================
+# O gate exige que cada `permit` da política assinada carregue
+# `context.taint != "untrusted"`. A prova NÃO pode viver só do corpus real: hoje
+# a árvore tem um permit compliant (allow_http_post) e um baselinado
+# (allow_fs_read), pelo que o verde contra a árvore não prova que o gate DISPARA.
+# É a mesma lição do §O/§P2 — um gate que nunca teve input capaz de o avermelhar
+# não é um gate. Estas três direcções cobrem-no, e a árvore real NÃO é tocada:
+# a mutação vive numa .cedar-fixture temporária apontada por AOS_POLICY_TAINT_POLICY.
+log_gate "self-test X · permit sem context.taint != untrusted bloqueia o gate policy-taint (AOS-376)"
+PT_EMPTY="$(mktemp)"
+: > "$PT_EMPTY"
+PT_FIX="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+
+# X1 — permit sem a cláusula sobre baseline VAZIA ⇒ vermelho. Corre contra a
+# política REAL: com a baseline vazia, allow_fs_read (que não tem a cláusula)
+# passa a ser uma violação não tolerada.
+if AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X1: policy-taint passou com baseline VAZIA — o permit sem a cláusula de taint não é detectado"
+else
+  pass "X1: policy-taint bloqueou (exit!=0) com baseline vazia — detecta o permit sem a cláusula"
+fi
+
+# X2 — remover a cláusula de allow_http_post (o permit HOJE compliant) numa CÓPIA
+# temporária, com a baseline REAL ⇒ vermelho. É a prova de que a regressão que
+# retira a cláusula ao único permit que a tem faz o gate ficar vermelho. A .cedar
+# committada NÃO é mutada — a cópia vive em $PT_FIX.
+if ensure_python && python3 - "$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.cedar" "$PT_FIX" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+# Retira a cláusula de taint de allow_http_post (e o && que a antecede).
+old = '    resource.region == "eu" &&\n    context.taint != "untrusted"'
+new = '    resource.region == "eu"'
+assert old in text, "padrao de allow_http_post nao encontrado — self-test invalido"
+open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PY
+then
+  if AOS_POLICY_TAINT_POLICY="$PT_FIX" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+    bad "X2: policy-taint passou com a cláusula de taint RETIRADA de allow_http_post — a regressão não é detectada"
+  else
+    pass "X2: policy-taint bloqueou (exit!=0) allow_http_post sem a cláusula de taint (na cópia)"
+  fi
+else
+  bad "X2: não foi possível gerar a .cedar-fixture com a cláusula retirada"
+fi
+
+# X3 — CONTROLO POSITIVO (o molde do P3/Q4/R3/V4): baseline REAL + política REAL ⇒
+# verde. Sem isto, um gate «sempre vermelho» passaria X1/X2 sem distinguir nada.
+if bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  pass "X3: controlo — com a baseline REAL, o policy-taint fica verde (allow_http_post cumpre, allow_fs_read baselinado; sem rasto)"
+else
+  bad "X3: o policy-taint ficou vermelho contra a árvore real — POSSÍVEL RASTO no repo ou baseline dessincronizada"
+fi
+
+# X4/X5/X6 — ROBUSTEZ DO PARSER (revisão adversarial de AOS-376). O gate tem de
+# recusar um permit que NÃO garante a barreira, mesmo quando a substring aparece:
+#   X4 — permit SEM @id (anónimo, não-rastreável) e sem a cláusula;
+#   X5 — a cláusula dentro de unless {} (INVERTE: permite quando taint É untrusted);
+#   X6 — a cláusula DISJUNTA com || (não é conjunct AND de topo).
+# Sem estes, um parser por-substring dava green a qualquer um dos três. Fixtures
+# temporárias; a árvore real não é tocada.
+PT_ANON="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+PT_UNLESS="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+PT_DISJ="$(mktemp --suffix=.cedar 2>/dev/null || mktemp)"
+printf '%s\n' 'permit ( principal, action, resource )' 'when { principal.authority.contains("x") };' > "$PT_ANON"
+printf '%s\n' '@id("evil")' 'permit ( principal, action, resource )' 'when { principal.authority.contains("x") }' 'unless { context.taint != "untrusted" };' > "$PT_UNLESS"
+printf '%s\n' '@id("evil")' 'permit ( principal, action, resource )' 'when { context.taint != "untrusted" || principal.authority.contains("x") };' > "$PT_DISJ"
+
+if AOS_POLICY_TAINT_POLICY="$PT_ANON" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X4: policy-taint passou um permit SEM @id e sem a cláusula — permit anónimo escapa ao gate"
+else
+  pass "X4: policy-taint bloqueou um permit anónimo (sem @id) sem a cláusula de taint"
+fi
+if AOS_POLICY_TAINT_POLICY="$PT_UNLESS" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X5: policy-taint passou a cláusula colocada em unless — a inversão semântica escapa"
+else
+  pass "X5: policy-taint bloqueou a cláusula em unless (inverte o sentido, admite untrusted)"
+fi
+if AOS_POLICY_TAINT_POLICY="$PT_DISJ" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+  bad "X6: policy-taint passou a cláusula DISJUNTA (||) — não é conjunct AND de topo"
+else
+  pass "X6: policy-taint bloqueou a cláusula disjunta (não garante a barreira)"
+fi
+rm -f "$PT_ANON" "$PT_UNLESS" "$PT_DISJ"
+rm -f "$PT_EMPTY" "$PT_FIX"
 
 
 # ============================================================================

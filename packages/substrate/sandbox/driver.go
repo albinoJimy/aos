@@ -32,6 +32,22 @@ const (
 	DriverFake DriverKind = "fake"
 )
 
+// seccompEnforcementFor diz QUEM impõe, num dado driver, o perfil propagado em
+// [Spec.Seccomp] (AOS-351). É a única fonte desta verdade: o [Launcher] usa-a para
+// qualificar o hash em cada [LifecycleEvent], em vez de o selar como se fosse
+// sempre imposição.
+//
+// Hoje só o [DriverFake] lê o perfil e o aplica no [SandboxDriver.Exec]. Os
+// drivers reais recebem a [Spec] e ignoram-na (ver [Spec.Seccomp]), pelo que a
+// resposta honesta é [SeccompEnforcedByNone] — fail-closed: um driver novo é
+// «não impõe» até provar o contrário aqui.
+func seccompEnforcementFor(kind DriverKind) SeccompEnforcement {
+	if kind == DriverFake {
+		return SeccompEnforcedByDriver
+	}
+	return SeccompEnforcedByNone
+}
+
 // Isolation descreve — e o [Launcher] IMPÕE fail-closed — as propriedades de
 // isolamento ao nível do kernel da microVM (ADR-004). Em AOS-064 o foco é
 // processo/FS/kernel; rede é AOS-067, overlay/seccomp é AOS-066.
@@ -70,12 +86,23 @@ type Spec struct {
 	StepID    string
 	Kind      DriverKind
 	Isolation Isolation
-	// Seccomp é o perfil seccomp default-deny EFETIVAMENTE aplicado a esta execução
-	// (AOS-066). O [Launcher] propaga-o para o driver, que o IMPÕE no [Exec]
-	// (default-deny: uma syscall fora da allowlist devolve [ErrSeccompDenied]). Como
-	// é o MESMO objecto cujo [seccomp.Profile.Hash] é gravado no manifesto, o hash
-	// atesta o perfil REALMENTE aplicado — não uma declaração desligada do caminho de
-	// execução. Nil só nos testes que invocam o driver directamente (gate ignorado).
+	// Seccomp é o perfil seccomp default-deny (AOS-066) que o [Launcher] propaga ao
+	// driver. QUEM o impõe depende do driver — e o manifesto tem de o dizer (AOS-351):
+	//
+	//   - [FakeDriver]: IMPÕE-o no [SandboxDriver.Exec] (default-deny: uma syscall
+	//     fora da allowlist devolve [ErrSeccompDenied]). Só aqui o
+	//     [seccomp.Profile.Hash] gravado no manifesto atesta o perfil REALMENTE
+	//     aplicado, por ser o MESMO objecto que o Exec consulta.
+	//   - [FirecrackerDriver]/[GVisorDriver]: NÃO lêem este campo, e o
+	//     [GuestExecutor] nem sequer o transporta (o wire host→guest leva a
+	//     [ToolCall] e mais nada). Nenhum byte deste perfil chega ao guest: para
+	//     estes drivers o hash é uma DECLARAÇÃO de configuração, não uma atestação
+	//     de imposição. A allowlist de syscalls do guest, se existir, é a que a
+	//     imagem/o runtime aplicarem — não esta.
+	//
+	// O evento de ciclo de vida qualifica-o em [LifecycleEvent.SeccompEnforcedBy],
+	// derivado por [seccompEnforcementFor]. Nil só nos testes que invocam o driver
+	// directamente (gate ignorado).
 	Seccomp *seccomp.Profile
 	// RootFS é a montagem raiz-read-only + overlay efémero (AOS-066 sobre AOS-065)
 	// desta execução. Quando não-nil, o driver roteia as ESCRITAS para o overlay
@@ -89,8 +116,19 @@ type Spec struct {
 // observável (para testes/audit) de que as invariantes foram impostas. O estado
 // privado do driver vive em [Instance.handle] (nunca um handle do host).
 type Instance struct {
-	// ID é o identificador efémero da microVM (único por execução).
+	// ID é o identificador efémero da microVM (único por execução). É construído
+	// como "<prefixo>-<RunID>-<StepID>-<seq>" e NÃO É DECOMPONÍVEL: o delimitador `-`
+	// ocorre dentro de RunID e de StepID, pelo que o par original não se recupera do
+	// ID sem ambiguidade (AOS-383). Para CORRELAÇÃO usam-se os campos [Instance.RunID]
+	// e [Instance.StepID], que carregam os valores autoritativos — o ID serve só de
+	// handle opaco único.
 	ID string
+	// RunID/StepID são a identidade de execução desta instância, copiada do [Spec]
+	// no Create. São os valores AUTORITATIVOS para correlacionar o que o componente
+	// executou com a decisão que o autorizou (AOS-383) — o contrato de fio host→guest
+	// transporta-os como campos próprios, em vez de derivá-los do [Instance.ID] ambíguo.
+	RunID  string
+	StepID string
 	// Kind é o driver que a criou.
 	Kind DriverKind
 	// NoHostSocket/NoSharedNetNS/NoSharedPIDNS são as invariantes impostas (ADR-004).

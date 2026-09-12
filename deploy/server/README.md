@@ -112,9 +112,19 @@ equivalentes:
 
 | Driver | Fronteira | Neste servidor |
 |---|---|---|
-| `fake` (default) | Jail **in-process**: overlay read-only, seccomp default-deny, escape bloqueado | Funciona — mas o próprio pacote marca-o **"NUNCA usar em produção"** |
+| `fake` (default **fora** de produção) | Jail **in-process**: overlay read-only, seccomp default-deny, escape bloqueado | Funciona — mas o próprio pacote marca-o **"NUNCA usar em produção"**, e desde **AOS-344** o nó recusa-o sob `AOS_MODE=production` (ver a tabela de portas abaixo) |
 | `firecracker` | microVM com KVM (ADR-004) | ❌ **Impossível**: sem `/dev/kvm`, 0 CPUs com `vmx`/`svm`. O host é ele próprio um convidado sem virtualização aninhada |
 | `gvisor` | Interposição de syscalls em user-space (`systrap`) | ✅ **Em uso** — não precisa de KVM |
+
+> **Residual do seccomp, neste driver (AOS-351).** O perfil `sbx-seccomp/v1` que o nó carrega
+> (`substrate/sandbox/seccomp`) **não é imposto** por este caminho. O `GVisorDriver` recebe-o em
+> `Spec.Seccomp` e ignora-o, e o wire host→guest (`POST /exec`) transporta apenas a tool call —
+> nenhum byte do perfil chega ao sandbox. O que contém o guest aqui é a **interposição de
+> syscalls do `runsc`** (mais o `--network=none` e o rootfs efémero), não esta allowlist. Por
+> isso o manifesto selado no WORM traz `seccomp_enforced_by: "none"` para este driver: o
+> `seccomp_profile_hash` é uma **declaração de configuração**, não uma atestação de imposição.
+> Só o driver de referência (`fake`) sela `"driver"`. Vale o mesmo para o `firecracker` — ver
+> [`deploy/node/dev-hardened/firecracker/README.md`](../node/dev-hardened/firecracker/README.md).
 
 O `fake` não é um stub vazio: tem isolamento real. Mas a fronteira é o processo do nó, e é por
 isso que o repositório o proíbe em produção.
@@ -568,10 +578,12 @@ journalctl -u aos-tls-sync.service -n 20
 
 ## `AOS_MODE=production` — ligado
 
-O nó corre em modo produção. Não foi um interruptor: são **três** portas fail-closed, e o
-arranque aborta em qualquer uma. Foram enumeradas empiricamente — arrancando a imagem num
-contentor descartável e acrescentando um requisito de cada vez até passar — e não por leitura do
-código, que é como a terceira tinha passado despercebida.
+O nó corre em modo produção. Não foi um interruptor: são **dez** portas fail-closed, e o
+arranque aborta em qualquer uma. As seis primeiras foram enumeradas empiricamente — arrancando a
+imagem num contentor descartável e acrescentando um requisito de cada vez até passar — e não por
+leitura do código, que é como a terceira tinha passado despercebida. **A sétima, a oitava, a nona e
+a décima só podiam vir da leitura do código** — nenhuma delas negava, arrancavam —, e as notas
+depois da tabela explicam porquê.
 
 | Porta | Exige | Servida por |
 |---|---|---|
@@ -581,11 +593,76 @@ código, que é como a terceira tinha passado despercebida.
 | **Credencial forte** | `AOS_SOVEREIGN_OIDC_ISSUER` + `_AUDIENCE` | **Keycloak** (`idp`, `idp-db`) |
 | **Custódia da KEK** | `AOS_DSAR_VAULT_ADDR` + `_TOKEN_PATH` | **Vault** (`vault`, `vault-unseal`) |
 | **Credencial do modelo** | `AOS_MODEL_API_KEY_PATH` | master key do LiteLLM |
+| **Driver de sandbox** (condicional) | `AOS_SANDBOX_DRIVER=gvisor` (+`AOS_SANDBOX_GVISOR_URL`) ou `=firecracker` (+`AOS_SANDBOX_FIRECRACKER_URL`) | **componente `gvisor`** (`gvisor/`) |
+| **Trilho WORM durável** | `AOS_WORM_PATH` (e, por arrasto da KEK, `AOS_DSAR_VAULT_ADDR`) | **montagem gravável** (`/var/lib/aos`, `worm.wal`) |
+| **Egress endurecido do modelo** (condicional) | `AOS_MODEL_ENDPOINT` em `https` + allowlist: `AOS_MODEL_EGRESS_HOSTS` ou, por omissão, o host do próprio endpoint | LiteLLM / gateway externo em https |
+| **Autoridade da destruição DSAR** | `AOS_DSAR_ERASERS` (emitterIDs de `AOS_OPERATORS` com `dsar:erase`) | operadores DSAR com chave ed25519 (privada fora do nó) |
 
 As duas últimas não constavam da versão anterior deste documento. A da KEK nunca tinha sido
 nomeada; a do modelo **nasceu** quando o gateway foi ligado — antes disso `AOS_MODEL_ENDPOINT`
 estava vazia e a porta não existia. Um documento sobre pré-requisitos envelhece com a
 configuração, e este envelheceu em menos de um dia.
+
+**A sétima nasceu de uma auditoria, não de um arranque falhado** (AOS-344, 2026-09-06, commit
+`2ca2d5c`) — e é por isso que valia a pena escrevê-la aqui. Enumerar portas *empiricamente* só
+encontra as que **negam**: esta não negava. `AOS_SANDBOX_DRIVER` vazia elegia o driver
+`fake` em silêncio, e o `fake` é o único dos três que falha **aberto** — `firecracker` e `gvisor`
+sem executor devolvem `ErrDriverUnavailable` e a chamada morre no caminho de recusa, enquanto o
+`fake` sucede e o resultado, que nenhuma fronteira ao nível do kernel produziu, é selado na
+hash-chain WORM como se fosse um efeito real. É **condicional**: só exigida quando o catálogo de
+`AOS_MODEL_TOOLS` traz pelo menos uma tool com bloco `sandbox` — que é o caso do catálogo
+entregue em [`model-tools/tools.json`](model-tools/tools.json). Este servidor já a satisfazia
+(`AOS_SANDBOX_DRIVER=gvisor`, secção «Sandbox» acima); o que faltava era a porta existir para
+quem copiasse o compose sem essa linha.
+
+**A oitava também nasceu de uma auditoria** (AOS-365, achado O-12) e é do mesmo feitio da sétima:
+não negava — arrancava. Sem `AOS_WORM_PATH` o nó caía no WORM `in-memory de referencia
+(nao-duravel)` **sem consultar o modo**, e o banner declarava-o com honestidade — o que
+*desarmava* a suspeita em vez de a levantar: quem lê «nao-duravel» vê uma declaração correcta e não
+pergunta se produção devia tê-la aceite. A honestidade do banner substituiu a guarda. O conteúdo
+não se perdia (o Event Store é durável pela porta da soberania, a KEK pela sua); o que morria com o
+processo era a **hash-chain tamper-evident** — a prova de quem selou o quê: selo de residência,
+changelog de política, legal hold, expiração, atribuição de quem destruiu o quê. Um restart apagava
+a **prova**, não o **efeito**. É **incondicional**, como a do Event Store — o WORM sela sempre — e
+*arrasta* a porta da KEK que já existia: um WORM durável exige KEK durável (a porta da custódia,
+acima). Por isso a mensagem de erro nomeia `AOS_WORM_PATH` **e** `AOS_DSAR_VAULT_ADDR` de uma vez —
+para o operador não fazer a coisa certa a meio e trocar um erro por outro. **São essas duas
+variáveis, e só elas:** o Vault que `AOS_DSAR_VAULT_ADDR` compõe já sabe confirmar a destruição da
+KEK, pelo que a porta da confirmação de shred (AOS-328) passa por si — **não** é preciso declarar
+`AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL`, que existe para o caso oposto (uma custódia que destrói às
+cegas) e suprimiria o aviso AOS-322. Este servidor já montava um caminho de WORM; a porta é para
+quem não o fizer.
+
+**A nona nasceu do mesmo refutador** (AOS-366) e é a mais subtil das três: o nó não só saltava o
+endurecimento de egress — *desarmava-o activamente*. O gateway de modelo traz um caminho SSRF
+fail-closed (AOS-223): com `HTTPClient` nil, valida o `BaseURL` (https + allowlist, com a porta na
+chave) e constrói um transporte com timeout de 30 s, limite de redirects e re-validação de **cada**
+salto. O nó injectava-lhe um `http.Client` banal em **todas** as configurações — o que faz o gateway
+*delegar* a validação nesse transporte, i.e. não validar nada — e um comentário chamava-lhe «seam de
+dev» dentro do binário de produção. Um `AOS_MODEL_ENDPOINT` em `http://` ou apontado a um host
+arbitrário era aceite sem uma palavra. Duas leituras confirmavam-se sem tocar no código: o gateway
+estava correcto e o nó tinha «só um http.Client com timeout». Agora, sob produção, o nó deixa o
+`HTTPClient` nil e preenche a allowlist a partir de `AOS_MODEL_EGRESS_HOSTS` (CSV de `host` ou
+`host:porta`) ou, por omissão, do host do próprio `AOS_MODEL_ENDPOINT` — o destino já configurado,
+sem uma segunda variável a manter em sincronia. É **condicional**: só existe quando o gateway está
+ligado (`AOS_MODEL_ENDPOINT` presente). Fora de produção o seam de dev mantém-se — é o que aponta o
+nó ao LiteLLM interno em `http`.
+
+**A décima nasceu de outra auditoria** (AOS-367) e é da mesma família da sétima e da oitava: não
+negava — arrancava. As quatro rotas de destruição de dados (`/dsar/erase`, `/dsar/hold`,
+`/dsar/release`, `/dsar/expire`) autenticavam-se com o **mesmo** ID-token OIDC de LEITURA que serve
+`GET /runs/{id}`: um só par issuer/audience serve o leitor de runs e o operador que destrói, pelo que
+quem tinha credencial para LER runs da sua região tinha, com a mesma credencial, autoridade para os
+DESTRUIR — e o crypto-shred é a única operação do nó que nenhum *restore drill* desfaz. A distinção
+que faltava era **identificação vs autorização**: a OIDC identifica bem, mas não separa quem lê de
+quem destrói. `AOS_DSAR_ERASERS` fecha-a — a lista dos emitterIDs de `AOS_OPERATORS` que assinam com
+`dsar:erase` — e as quatro rotas passam a exigir, além da identificação OIDC, uma assinatura ed25519
+sobre o payload canónico (com a acção amarrada, no molde do `POST /autonomy`); o `/dsar/release`
+ganha a **barreira de região** que o `/dsar/erase` já tinha, e o `/dsar/expire` — um varrimento
+global sem alvo único — exige **duas** assinaturas de erasers distintos. É **incondicional** em
+produção; fora de produção a lista vazia deixa a prova desligada (retro-compatível com dev e testes
+por headers). O varredor **automático** de retenção fica intacto: a exigência é sobre quem *ordena*
+uma expiração por rota, não sobre o tick agendado.
 
 ### O que o corte para produção mudou
 

@@ -2,11 +2,11 @@
 """
 adr_register.py — O registo canónico de ADRs, DERIVADO de `docs/adr/README.md`.
 
-QUAL É A FONTE AUTORITATIVA, e porquê esta (AOS-317). Três sítios do corpus
+QUAL É A FONTE AUTORITATIVA, e porquê esta (AOS-319). Três sítios do corpus
 enumeram ADRs e os três divergem entre si:
 
   - `_BRIEF.md` §3 pára em ADR-014, hoje por ÂMBITO DECLARADO: fixa o enunciado
-    do núcleo fundacional e remete o inventário para o registo (AOS-317);
+    do núcleo fundacional e remete o inventário para o registo (AOS-319);
   - `specs/00_System_Spec.md` §11 esteve parada em ADR-019 e foi completada em
     2026-09-04, mas continua sem estado: e enunciado, nao inventario;
   - `docs/adr/README.md` vai em ADR-023, com o ESTADO de cada decisão.

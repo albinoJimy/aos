@@ -26,6 +26,22 @@ A maioria do trabalho pertence à **Fase 1 — Fronteira de segurança** (supply
 
 ## 2. Critérios de Saída do Epic
 
+> **QUALIFICAÇÃO DE COMPOSIÇÃO (AOS-326, 2026-09-05).** Como no EPIC-04, os critérios abaixo são
+> propriedades **do sistema** e hoje são satisfeitos ao nível da **biblioteca**. O que o nó `aos`
+> COMPÕE do REG é o congelamento de tool set por run e a **revalidação por chamada** na cadeia do
+> Reference Monitor — e esses correm. O que NÃO compõe é o **catálogo event-sourced**
+> (`bootstrap.go` usa `emptyCatalog{}`), o **host MCP** (`mcp.NewHost` sem chamador) e o **TOFU**
+> (`tofu.NewMonitor` sem chamador); o trust store do revalidador de referência nasce vazio.
+>
+> Em consequência, lidos como propriedades do nó, são **falsos hoje**: o primeiro critério («o REG
+> está operacional como catálogo append-only e versionado»), o segundo (os três transportes MCP
+> integrados) e o quinto (TOFU activo). Um tool set vazio é default-deny — o nó não executa tools,
+> não as executa mal.
+>
+> Não existe ADR que declare o REG deliberadamente fora do grafo de build. Eixo: **DEF-812**. O nó
+> declara-o no arranque.
+
+
 - [ ] O REG está operacional como catálogo **append-only e versionado** de skills, tools e servidores MCP, com os campos essenciais (`id`, `version`, `digest`, `signature`, `contract`, `provenance`, `status`).
 - [ ] Os três transportes MCP — **STDIO, SSE e Streamable HTTP** — estão integrados, cada um com o seu enquadramento de confiança e isolamento (STDIO em microVM; remotos sob egress allowlist + TLS).
 - [ ] Nenhum artefacto é resolvido por referência flutuante (`latest`/`main`); a resolução é **sempre por versão SemVer exacta + digest pinado**.

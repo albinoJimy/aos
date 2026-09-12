@@ -35,7 +35,7 @@ func secParaCablagem(t *testing.T, store ToolSetStore, catalog *fakeCatalog) *Se
 		Catalog:       catalog,
 		Revalidator:   rv,
 		Policy:        StaticPolicy{MaxEgress: domain.EgressExternal},
-		WORM:          audit.NewMemStore(),
+		WORM:          auditStore, // AOS-381: WORM único = o store do trust store/revalidação
 		ToolSetStore:  store,
 		FreezeOptions: []toolset.Option{toolset.WithClock(fixedClock())},
 	})

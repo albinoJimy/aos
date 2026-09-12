@@ -165,6 +165,14 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 		Usage: agentruntime.Usage{
 			InputTokens:  resp.Usage.PromptTokens,
 			OutputTokens: resp.Usage.CompletionTokens,
+			// AOS-336 — A MARCA ATRAVESSA. Até aqui copiavam-se só os três números, e
+			// `agentruntime.Usage` não tinha onde guardar «não medido»: num nó SEM
+			// contabilidade de custo composta o gateway serve a resposta na mesma (limite
+			// declarado do AOS-321) e o `turn.recorded` recebia zeros para uma chamada não
+			// medida. `!Definido()` e não `.Ausente` porque são DUAS formas de ausência: o
+			// `usage` em falta, e o `usage` presente sem contadores legíveis — é o critério
+			// do próprio [port.Usage.Definido], projectado sem o enfraquecer.
+			Ausente: !resp.Usage.Definido(),
 		},
 		CostMicroUSD: resp.Usage.CostMicroUSD,
 	}

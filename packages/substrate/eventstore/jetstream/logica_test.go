@@ -230,19 +230,37 @@ func (spanDeTesteRastreador) Iniciar(ctx context.Context, _ string) (context.Con
 	return ctx, &spanDeTeste{attrs: map[string]any{}}
 }
 
+// TestAcessores_RefletemAConfiguracao — os acessores, e a prontidão.
+//
+// AOS-350: a asserção «um store aberto devia estar Healthy» foi INVERTIDA, e a inversão é
+// o sensor. Este store é construído por literal, SEM cliente NATS. Antes, `Healthy()` era
+// `!s.estaFechado()` e um store sem ligação nenhuma dizia-se saudável — que é exactamente
+// a crença que o ticket remove: um cliente desligado devolve [natsjs.ErrDesligado] a todas
+// as escritas sem elas saírem, e a prontidão tem de o dizer.
+//
+// O ramo POSITIVO — ligação viva ⇒ Healthy — não é construível daqui: exige um socket, e
+// os campos de [natsjs.Conn] são privados ao seu pacote. Vive na suite com cluster
+// (`conformidade_test.go`, sob `AOS_NATS_URL`), e fica declarado que aqui NÃO é medido.
 func TestAcessores_RefletemAConfiguracao(t *testing.T) {
 	s := &Store{regiao: "eu-west", board: "b1", streams: map[string]*estado{}, subs: map[string]*subscricao{}}
 	if s.Region() != "eu-west" || s.SovereigntyBoard() != "b1" {
 		t.Errorf("acessores = (%q,%q)", s.Region(), s.SovereigntyBoard())
 	}
-	if !s.Healthy() {
-		t.Error("um store aberto devia estar Healthy")
+	if s.Healthy() {
+		t.Error("um store SEM LIGAÇÃO disse-se Healthy — é o defeito de AOS-350: " +
+			"o /readyz fica 200 verde sobre um substrato que recusa todas as escritas")
 	}
 	s.fechado = true
 	if s.Healthy() {
 		t.Error("um store fechado NÃO pode dizer-se Healthy — é o que serve /readyz")
 	}
-	if s.Streams() != nil {
+	// AOS-352: um store fechado devolve ERRO, não uma lista vazia. A distinção é o
+	// ticket inteiro — «não consegui perguntar» deixou de se ler como «não há nada».
+	fechados, err := s.Streams()
+	if fechados != nil {
 		t.Error("um store fechado não pode listar streams")
+	}
+	if !errors.Is(err, eventstore.ErrClosed) {
+		t.Errorf("Streams() de um store fechado = %v, quero ErrClosed", err)
 	}
 }

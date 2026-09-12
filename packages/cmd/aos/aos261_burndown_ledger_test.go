@@ -213,15 +213,26 @@ func TestAOS261_TurnosSemTokens_ErroExplicitoNuncaZero(t *testing.T) {
 		t.Errorf("o erro devia nomear os turnos somados (o sintoma que aponta ao provider, nao ao wiring do store): %v", err)
 	}
 
-	// NÃO-VACUOSIDADE: basta UM turno com tokens para a leitura passar a ser válida — a
-	// guarda não pode ser um "nega sempre" disfarçado.
-	gravaTurno(t, rec, run, "step-4", 4, 10, 5, 0)
-	ok, err := src.ConsumedByRun(context.Background(), run)
+	// NÃO-VACUOSIDADE: um run cujos turnos foram TODOS medidos passa — a guarda não pode
+	// ser um "nega sempre" disfarçado.
+	//
+	// ESTE CONTROLO MUDOU DE FORMA EM AOS-336, e a forma anterior era o defeito. Dizia:
+	// «basta UM turno com tokens para a leitura passar a ser válida», e gravava um quarto
+	// turno medido NESTE MESMO run para exigir que a leitura passasse a valer. Isto é,
+	// FIXAVA como comportamento pretendido exactamente o que a revisão adversarial mediu
+	// como defeito: um turno medido reabilitava três turnos cegos, e a soma devolvida —
+	// 15 tokens em 4 turnos — era apresentada como o consumo do run quando era o consumo
+	// de um turno. Um controlo de não-vacuosidade tem de provar que a guarda distingue,
+	// não que ela se cala.
+	const runMedido = "run-261-com-usage"
+	gravaTurno(t, rec, runMedido, "step-1", 1, 10, 5, 0)
+	gravaTurno(t, rec, runMedido, "step-2", 2, 20, 10, 0)
+	ok, err := src.ConsumedByRun(context.Background(), runMedido)
 	if err != nil {
-		t.Fatalf("com tokens no ledger a leitura tem de passar: %v", err)
+		t.Fatalf("com TODOS os turnos medidos a leitura tem de passar: %v", err)
 	}
-	if ok.Consumed.Tokens != 15 || ok.Turns != 4 {
-		t.Fatalf("a leitura valida tem de somar TODOS os turnos (incl. os de zero): %+v", ok)
+	if ok.Consumed.Tokens != 45 || ok.Turns != 2 {
+		t.Fatalf("a leitura valida tem de somar todos os turnos medidos: %+v", ok)
 	}
 }
 

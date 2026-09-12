@@ -26,6 +26,35 @@ const (
 	PhaseDestroyed LifecyclePhase = "destroyed"
 )
 
+// SeccompEnforcement identifica QUEM impõe o perfil seccomp de uma execução
+// (AOS-351). Existe porque o hash do perfil, sozinho, não distingue «imposto» de
+// «configurado»: o [Launcher] propaga o MESMO perfil a todos os drivers, mas só
+// alguns o aplicam (ver [Spec.Seccomp]). Selar o hash sem esta qualificação
+// inscreveria no WORM uma atestação que o caminho de execução não sustenta.
+type SeccompEnforcement string
+
+const (
+	// SeccompEnforcedByDriver — o driver recebe o perfil em [Spec.Seccomp] e IMPÕE-o
+	// no [SandboxDriver.Exec] (fail-closed, [ErrSeccompDenied]). O hash atesta então
+	// o perfil EFETIVAMENTE aplicado. Hoje: só o [FakeDriver].
+	SeccompEnforcedByDriver SeccompEnforcement = "driver"
+	// SeccompEnforcedByNone — o perfil NÃO chega ao runtime que corre o efeito. Nos
+	// drivers reais (firecracker/gvisor) o wire host→guest não o transporta, logo o
+	// hash do manifesto é uma DECLARAÇÃO de configuração: a allowlist realmente em
+	// vigor no guest, se existir, é a da imagem/runtime e não esta.
+	SeccompEnforcedByNone SeccompEnforcement = "none"
+)
+
+// seccompEnforcedByOrNone normaliza o campo antes de o selar: um valor ausente ou
+// desconhecido é lido como [SeccompEnforcedByNone] — fail-closed, a ausência de
+// declaração nunca vale por imposição.
+func seccompEnforcedByOrNone(e SeccompEnforcement) SeccompEnforcement {
+	if e == SeccompEnforcedByDriver {
+		return SeccompEnforcedByDriver
+	}
+	return SeccompEnforcedByNone
+}
+
 // LifecycleEvent é o registo de uma transição do ciclo de vida. NÃO contém
 // segredos: o credentials_handle é opaco e o segredo nunca entra aqui (ADR-006).
 type LifecycleEvent struct {
@@ -43,12 +72,21 @@ type LifecycleEvent struct {
 	// ImageVersion é a versão da imagem base read-only da microVM (AOS-066),
 	// gravada no manifesto por trajectória. Vazia se não configurada.
 	ImageVersion string
-	// SeccompProfileHash é o HASH (sha256) do perfil seccomp aplicado (AOS-066): o
-	// hash do manifesto da execução. NÃO é segredo (ADR-006).
+	// SeccompProfileHash é o HASH (sha256) do perfil seccomp CONFIGURADO para esta
+	// execução (AOS-066): o hash do manifesto. NÃO é segredo (ADR-006). Por si só
+	// NÃO prova imposição — quem a qualifica é [SeccompEnforcedBy].
 	SeccompProfileHash string
 	// SeccompProfileVersion é a versão tamper-evident ("tag#digest12") do perfil
-	// seccomp aplicado (AOS-066).
+	// seccomp configurado (AOS-066).
 	SeccompProfileVersion string
+	// SeccompEnforcedBy diz QUEM impõe a allowlist a que os dois campos acima se
+	// referem (AOS-351) — a mesma forma que [LifecycleEvent.RootFSBaseDigest] usa
+	// para distinguir imposição de declaração. [SeccompEnforcedByDriver] só quando
+	// o driver LÊ [Spec.Seccomp] e o aplica no [SandboxDriver.Exec] (hoje, o
+	// [FakeDriver]); [SeccompEnforcedByNone] quando o perfil não chega ao runtime —
+	// o hash é então só uma declaração de config. Vazio é lido como
+	// [SeccompEnforcedByNone] (fail-closed).
+	SeccompEnforcedBy SeccompEnforcement
 	// RootFSBaseDigest é o digest do snapshot base read-only EFETIVAMENTE montado
 	// (AOS-066). Prova, no manifesto, que o rootfs foi montado (não só declarado) e
 	// liga a execução à imagem base imutável exacta. Vazio quando não há snapshot
@@ -103,10 +141,13 @@ type lifecyclePayload struct {
 	Taint             string       `json:"taint"`
 	CredentialsHandle string       `json:"credentials_handle,omitempty"`
 	// Manifesto de segurança AOS-066 (rootfs read-only + overlay efémero + seccomp).
-	// O hash do perfil seccomp liga a trajectória à versão EXACTA do perfil em vigor.
+	// O hash do perfil seccomp liga a trajectória à versão EXACTA do perfil
+	// CONFIGURADO; seccomp_enforced_by diz se essa versão foi imposta ou só
+	// declarada (AOS-351) e acompanha SEMPRE o hash.
 	ImageVersion          string `json:"image_version,omitempty"`
 	SeccompProfileHash    string `json:"seccomp_profile_hash,omitempty"`
 	SeccompProfileVersion string `json:"seccomp_profile_version,omitempty"`
+	SeccompEnforcedBy     string `json:"seccomp_enforced_by,omitempty"`
 	// Prova do rootfs EFETIVAMENTE montado (AOS-066): só presentes quando o overlay
 	// read-only é montado (WithSnapshot), distinguindo imposição de mera declaração.
 	RootFSBaseDigest string `json:"rootfs_base_digest,omitempty"`
@@ -159,6 +200,12 @@ func (s *eventStoreSink) RecordLifecycle(ctx context.Context, ev LifecycleEvent)
 		SeccompProfileVersion: ev.SeccompProfileVersion,
 		RootFSBaseDigest:      ev.RootFSBaseDigest,
 		OverlayID:             ev.OverlayID,
+	}
+	// A qualificação viaja COLADA ao hash: onde há hash, há sempre um
+	// seccomp_enforced_by explícito (AOS-351) — nunca um hash nu, que um leitor
+	// tomaria por imposição. Sem hash não há nada a qualificar.
+	if payload.SeccompProfileHash != "" {
+		payload.SeccompEnforcedBy = string(seccompEnforcedByOrNone(ev.SeccompEnforcedBy))
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

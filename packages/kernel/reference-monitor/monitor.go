@@ -2,6 +2,7 @@ package referencemonitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -47,12 +48,41 @@ type Metrics struct {
 	Permits     atomic.Uint64
 	Denials     atomic.Uint64
 	Escalations atomic.Uint64
+
+	// recordFailures conta os registos de mediação PÓS-DECISÃO ([Monitor.fail]) que
+	// não chegaram a ser gravados duravelmente — a PROVA de um deny/escalate que se
+	// perdeu (AOS-369). A decisão em si já foi tomada e o efeito já foi bloqueado; o
+	// que se perde é o rasto. Cumulativo por vida do processo (mirroring falhas de
+	// saudeDeSelagem). Exposto por [Metrics.RecordFailures].
+	recordFailures atomic.Uint64
+
+	// recordingFailing é o ÚLTIMO desfecho observado do registo de mediação, guardado
+	// como ESTADO e não inferido de relógios — mesmo idioma que saudeDeSelagem.recusando
+	// (AOS-369). O valor-zero (false) significa «saudável», pelo que um nó que nunca
+	// registou nada é tratado como pronto (mirroring do valor-zero-pronto de saudeDeSelagem).
+	// Alimenta [Metrics.RecordingHealthy], que o /readyz lê como dependência crítica.
+	recordingFailing atomic.Bool
 }
 
 // Snapshot devolve uma leitura consistente-o-suficiente dos contadores.
+//
+// A assinatura de 3 valores é DELIBERADAMENTE preservada (AOS-369): está desestruturada
+// em ~20 call-sites de teste, e um 4.º retorno parti-los-ia todos. Os contadores novos de
+// AOS-369 têm acessores próprios ([Metrics.RecordFailures], [Metrics.RecordingHealthy]).
 func (m *Metrics) Snapshot() (permits, denials, escalations uint64) {
 	return m.Permits.Load(), m.Denials.Load(), m.Escalations.Load()
 }
+
+// RecordFailures devolve o total de registos de mediação pós-decisão que falharam a
+// gravação durável desde o arranque (AOS-369). Cada incremento é a PROVA de um deny/
+// escalate que se perdeu — a decisão aconteceu à mesma; o que faltou foi o rasto.
+func (m *Metrics) RecordFailures() uint64 { return m.recordFailures.Load() }
+
+// RecordingHealthy diz se o ÚLTIMO registo de mediação observado teve sucesso (AOS-369).
+// Last-outcome, NÃO «alguma vez falhou»: um registo bem-sucedido posterior recupera a
+// saúde, auto-curativo, à imagem de saudeDeSelagem.aRecusarEscritas. O valor-zero
+// (recordingFailing=false) ⇒ saudável, pelo que um nó que nunca registou é pronto.
+func (m *Metrics) RecordingHealthy() bool { return !m.recordingFailing.Load() }
 
 // Monitor é o Reference Monitor: o PEP mandatório do AOS. Construir com [New].
 type Monitor struct {
@@ -250,7 +280,7 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 		// Uma tool PERMITIDA pode falhar em runtime: error.type distingue um output
 		// vazio legítimo de um output de tool falhada.
 		if dec.ToolErr != nil {
-			span.SetAttribute(otelgenai.AttrErrorType, dec.ToolErr.Error())
+			span.SetAttribute(otelgenai.AttrErrorType, spanErrorType(dec.ToolErr))
 		}
 		span.End()
 	}()
@@ -259,6 +289,28 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 	// da cadeia de hooks nascem filhos do execute_tool, mantendo a propagação de trace.
 	dec, err = m.evaluate(spanCtx, call)
 	return dec, err
+}
+
+// spanErrorType mapeia o erro de uma tool despachada para um código de conjunto FECHADO,
+// em vez do err.Error() cru — a mensagem de uma tool a jusante pode ecoar input ou
+// credenciais (ex. "invalid token sk-..."), e este atributo de span SAI do processo para
+// um colector. É o mesmo princípio do worker.spanErrorType; não se reutiliza essa por ser
+// de agent-runtime, que importa este pacote (um import de volta seria um ciclo de módulo).
+//
+// O detalhe completo do erro NÃO se perde: continua a fluir cru ao chamador via
+// [Decision.ToolErr] e ao tail materializado para o modelo — só este atributo de span,
+// que é exportado, é reduzido ao código estável.
+func spanErrorType(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "tool_error"
+	}
 }
 
 // evaluate corre a cadeia de mediação (hooks → default-deny → audit-before-effect →
@@ -281,7 +333,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	//    é [DefaultHooks]; [WithHooks] com cadeia vazia é misconfiguração).
 	if len(m.hooks) == 0 {
 		return m.fail(ctx, call, EffectDeny, CodeEmptyHookChain, "config",
-			"cadeia de hooks vazia (fail-closed)", nil, start, ""), nil
+			"cadeia de hooks vazia (fail-closed)", nil, nil, start, ""), nil
 	}
 
 	// 1) Cadeia de hooks pela ordem fornecida (ver [WithHooks]; a ordem canónica
@@ -300,19 +352,50 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		}
 		switch {
 		case err != nil:
-			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), nil, start, policyVersion), nil
+			// Metadata nil, e é decisão: um ERRO não é uma decisão do hook. O `res` que
+			// vem com erro é o valor-zero ou um resultado a meio, e selar metadados de um
+			// hook que rebentou seria dar-lhes uma autoridade que não têm.
+			return m.fail(ctx, call, EffectDeny, CodeHookError, h.Name(), fmt.Sprintf("hook %q: %v", h.Name(), err), nil, nil, start, policyVersion), nil
 		case res.Decision == HookDeny:
 			reason := res.Reason
 			if reason == "" {
 				reason = fmt.Sprintf("negado por %q", h.Name())
 			}
-			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, nil, start, policyVersion), nil
+			// O `nil` AQUI É A DECISÃO, NÃO A METADE QUE FICOU POR FAZER. A escalada logo
+			// abaixo propaga `res.Obligations` e a negação não: a assimetria nasceu com o
+			// próprio parâmetro (#87), está fixada por `TestNegacaoNaoSelaObrigacoes`
+			// (escalada_selada_test.go) e tem gémea no ramo de deny de `paraRM`
+			// (control-plane/pdp/rmadapter.go), coberta por `TestNegacaoNaoLevaObrigacoes`.
+			//
+			// A RAZÃO ESCRITA EM #87 — selar `redact` ou `ttl` numa negação sugeriria que algo
+			// foi APLICADO a um efeito que nunca existiu — vale para este caminho, mas NÃO é
+			// invariante do modelo de audit, e convém sabê-lo antes de a ir confirmar:
+			// `messaging.Verifier.seal` e `hitl.Channel.seal` selam registos `DecisionDeny` COM
+			// obrigações, precisamente para carregarem o porquê estruturado, e
+			// `compliance.projectHITL` depende disso para contar as negações. Não há
+			// contradição — esses escrevem no `audit.Store` directamente, sem passar por esta
+			// cadeia — mas a regra é DESTE caminho, não do campo.
+			//
+			// O QUE FECHA A QUESTÃO AQUI É O TIPO. [Obligation] no RM não é um saco de
+			// metadados: é vocabulário FECHADO de imposição, e `enforceObligations` nega
+			// fail-closed qualquer `Type` que não saiba cumprir. Um hook que anexasse uma
+			// obrigação só para documentar a sua negação estaria a construir um valor que, num
+			// permit, NEGA a call. O canal não existe porque o tipo não é esse.
+			//
+			// CUSTO CONHECIDO, para quem chegar aqui com esse problema: um hook não tem por
+			// esta via canal estruturado para anexar informação à SUA negação — só o `Reason`,
+			// em texto livre (o `PolicyVersion` viaja mesmo na negação, mas é do hook de
+			// política). O AOS-332 (EPIC-23) bateu nisto ao selar a postura do eixo provider e
+			// resolveu-o com um sufixo greppável no `Reason`. Mudar isto é mudar os três sítios
+			// acima E a semântica do tipo — por decisão escrita, não por simetria aparente com
+			// o ramo de baixo.
+			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, nil, res.Metadata, start, policyVersion), nil
 		case res.Decision == HookEscalate:
 			reason := res.Reason
 			if reason == "" {
 				reason = fmt.Sprintf("escalado por %q", h.Name())
 			}
-			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, res.Obligations, start, policyVersion), nil
+			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, res.Obligations, res.Metadata, start, policyVersion), nil
 		}
 		obligations = append(obligations, res.Obligations...)
 	}
@@ -322,7 +405,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	_, registered := m.tools[call.ToolID]
 	m.mu.RUnlock()
 	if !registered {
-		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", nil, start, policyVersion), nil
+		return m.fail(ctx, call, EffectDeny, CodeToolNotRegistered, "dispatch", "tool nao registada (default-deny)", nil, nil, start, policyVersion), nil
 	}
 
 	// 2.5) ENFORCEMENT DE OBRIGAÇÕES ANTES DO EFEITO (AOS-087, AC4). O PEP não só
@@ -332,8 +415,24 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	//    fail-closed. É genérico sobre o tipo [Obligation] (o RM não importa o PDP).
 	//    Corre ANTES do audit-before-effect para que uma violação seja registada como
 	//    deny (via fail), e ANTES do dispatch para que nenhum efeito viole a obrigação.
-	if reason, ok := enforceObligations(&call, obligations); !ok {
-		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, nil, start, policyVersion), nil
+	if reason, causa, ok := enforceObligations(&call, obligations); !ok {
+		// SELA-SE A OBRIGAÇÃO QUE RECUSOU — só essa (AOS-341). Este é o único sítio de recusa
+		// onde as obrigações EXISTEM: foram coletadas da cadeia e uma delas é a causa. Selá-la
+		// não reabre a assimetria do ramo `HookDeny`, e a diferença é exactamente esta: ali
+		// descartam-se obrigações da BASE, que nada aplicaram a um efeito que não aconteceu;
+		// aqui sela-se a que NEGOU, que é um facto sobre a decisão e não sobre o efeito.
+		//
+		// O QUE ISTO FECHA. Sem o selo, `compliance.projectSovereignty` perdia a negação: uma
+		// call com obrigação `region` cujo recurso não tem região resolvida saía com
+		// `Obligations: []` e `Resource.Region: ""`, e `sovereigntyRegion` devolvia
+		// `governed=false` — a negação POR soberania desaparecia da secção das acções que a
+		// soberania governou (continuava a contar em `PDP.Denies`, e só aí). Com o selo, a
+		// região EXIGIDA é recuperável do registo sem ler o `reason`, e é ela — não a região do
+		// recurso recusado — que passa a governar a projecção.
+		//
+		// Deliberadamente NÃO se passa `obligations` (a lista acumulada): selar as que foram
+		// cumpridas até aqui afirmaria que se aplicaram a um efeito que nunca existiu.
+		return m.fail(ctx, call, EffectDeny, CodeObligationUnsatisfied, "obligation", reason, []Obligation{causa}, nil, start, policyVersion), nil
 	}
 
 	// 3) Auditoria ANTES do efeito (audit-before-effect). Se falhar, fail-closed.
@@ -347,11 +446,18 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	}
 	seq, err := m.sink.RecordMediation(ctx, rec)
 	if err != nil {
-		// Uma acção não-auditável não é permitida (ADR-002/010).
+		// Uma acção não-auditável não é permitida (ADR-002/010). A falha NÃO se conta aqui
+		// para NÃO DUPLICAR (AOS-369): a decisão degrada para deny e o fail() logo abaixo
+		// re-tenta o registo pós-decisão em :478, e é ESSE sítio que incrementa
+		// recordFailures se voltar a falhar. Contar aqui E lá contaria a mesma avaria duas
+		// vezes. No sucesso, porém, marca-se a saúde: este é um registo de mediação
+		// bem-sucedido como qualquer outro, e o último-desfecho tem de reflecti-lo.
 		d := m.fail(ctx, call, EffectDeny, CodeAuditUnavailable, "audit-sink",
-			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), nil, start, policyVersion)
+			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), nil, nil, start, policyVersion)
 		return d, nil
 	}
+	// Registo de mediação durável bem-sucedido ⇒ o último-desfecho está saudável (AOS-369).
+	m.metrics.recordingFailing.Store(false)
 
 	// 4) Permit: mintar o Permit não-forjável e despachar via dispatcher interno. O
 	//    despacho devolve TAMBÉM o custo medido do efeito (AOS-212): 0 para uma tool
@@ -389,7 +495,23 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 // Registar não é impor: no caminho de recusa esta função devolve ANTES de `enforceObligations`,
 // que só corre no permit. Acrescentar obrigações ao REGISTO não pode, por construção, mudar o que
 // o nó deixa acontecer.
-func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, obligations []Obligation, start time.Time, policyVersion string) Decision {
+//
+// E OBRIGAR A ESCOLHER NÃO É OBRIGAR A PREENCHER. Dos sete sítios que chamam esta função só a
+// ESCALADA passa obrigações; os outros seis passam `nil`, e passam-no por decisão. A justificação
+// está escrita no ramo `HookDeny` de [Monitor.evaluate], que é onde a escolha é visível e onde
+// muda se algum dia mudar — não a deduzas deste parágrafo.
+//
+// `metadata` (AOS-340) é o SEGUNDO parâmetro com a mesma disciplina, e é uma coisa DIFERENTE das
+// obrigações: leva-o o resultado do hook que TERMINOU a mediação com uma decisão — deny e
+// escalate. Um erro de hook não é uma decisão e não o leva; os sítios que não nascem de um
+// [HookResult] (cadeia vazia, tool não registada, obrigação não cumprida, sink em baixo) também
+// não têm de onde o tirar. Registo, nunca enforcement: não passa por `enforceObligations`.
+//
+// NOTA PARA QUEM VIER A SEGUIR: a lista de parâmetros está no limite do razoável. O próximo campo
+// que precise da mesma disciplina não deve ser o décimo-primeiro parâmetro — agrupa-se então o que
+// cada sítio DECIDE selar num tipo próprio, preservando a propriedade que interessa (não haver
+// valor por omissão).
+func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedBy, reason string, obligations []Obligation, metadata map[string]string, start time.Time, policyVersion string) Decision {
 	latency := m.now().Sub(start)
 	// Registo best-effort: em deny/escalate o efeito já está bloqueado, pelo que
 	// uma falha de auditoria não altera a decisão (contrasta com o permit path).
@@ -412,7 +534,7 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 	// usado em `packages/integration/budget.go` e `packages/substrate/sandbox/lifecycle.go`.
 	regCtx, cancelReg := context.WithTimeout(context.WithoutCancel(ctx), failRecordTimeout)
 	defer cancelReg()
-	seq, _ := m.sink.RecordMediation(regCtx, MediationRecord{
+	seq, err := m.sink.RecordMediation(regCtx, MediationRecord{
 		RequestID: call.RequestID,
 		RunID:     call.RunID, StepID: call.StepID, ParentStepID: call.ParentStepID,
 		Effect: eff, Code: code, DeniedBy: deniedBy, Reason: reason,
@@ -421,7 +543,20 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		Principal: call.Principal, Latency: latency,
 		PolicyVersion: policyVersion,
 		Obligations:   obligations,
+		Metadata:      metadata,
 	})
+	// O ERRO DEIXA DE SER DESCARTADO (AOS-369). A decisão (deny/escalate) já está tomada e o
+	// efeito já está bloqueado — este registo é a PROVA de um facto consumado e a sua falha NÃO
+	// altera a decisão (contrasta com o audit-before-effect do permit, que degrada para deny).
+	// Mas uma prova perdida em silêncio tornava um deny indistinguível de uma chamada que nunca
+	// aconteceu: um WORM em baixo negava 100% das tool calls sem deixar rasto nenhum. Conta-se a
+	// perda e marca-se o último-desfecho, que o /readyz lê como dependência crítica.
+	if err != nil {
+		m.metrics.recordFailures.Add(1)
+		m.metrics.recordingFailing.Store(true)
+	} else {
+		m.metrics.recordingFailing.Store(false)
+	}
 	if eff == EffectEscalate {
 		m.metrics.Escalations.Add(1)
 	} else {

@@ -24,8 +24,24 @@ package eventstore
 // registo SEGUINTE é alcançável. Basta procurar lá: se houver registos que ainda
 // desserializam, a quebra não está na cauda e truncar destrói dados bons.
 //
-// Um write rasgado perde o próprio enquadramento (header/payload/checksum truncados,
-// comprimento absurdo) e nada há a seguir que se possa achar — por construção, zero.
+// AOS-357(b) — O ARGUMENTO CERTO É TEMPORAL, NÃO ESTRUTURAL.
+//
+// Esta secção dizia que um write rasgado «perde o próprio enquadramento … por
+// construção, zero». É FALSO. O `append` faz `Flush` (write(2)) e só depois `Sync`;
+// entre os dois os bytes estão na page cache, e numa queda de MÁQUINA a escrita de volta
+// é por PÁGINA enquanto o dispositivo persiste por SECTOR. Um registo que atravesse
+// fronteiras de sector pode ficar com header e trailer persistidos e o miolo não — isto
+// é, um frame COMPLETO com CRC inválido, exactamente o que se dizia impossível.
+//
+// O argumento verdadeiro é temporal: um write rasgado só pode ser o ÚLTIMO registo,
+// porque cada `append` anterior fez `fsync` com sucesso antes de devolver `committed`
+// (durable.go, [wal.append]). Logo `orfaos > 0` prova que a quebra NÃO é de um crash —
+// há dados confirmados depois dela — e é essa a inferência que autoriza a recusa.
+//
+// A distinção não é cosmética: a versão estrutural tornar-se-ia perigosa no dia em que
+// alguém acrescentasse group-commit, hipótese que store.go antecipa explicitamente. Aí
+// vários registos partilhariam um só fsync e o «só o último» deixaria de valer — e quem
+// lesse o argumento estrutural não veria que a premissa tinha caído.
 
 import (
 	"context"

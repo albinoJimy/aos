@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -36,18 +37,46 @@ func TestDriver_SelectionByConfig(t *testing.T) {
 }
 
 // TestDriver_SkeletonsUnavailableWithoutExecutor prova que os skeletons são
-// fail-closed neste ambiente (sem KVM/host support) quando não têm executor.
+// fail-closed sem executor E que a mensagem diagnostica a causa CERTA por driver
+// (AOS-384): o Firecracker nomeia KVM (verdadeiro para ele); o gVisor NÃO menciona
+// KVM — nomeia a variável em falta (AOS_SANDBOX_GVISOR_URL), porque o gVisor
+// interpõe syscalls em user-space e não exige /dev/kvm. O controlo negativo é que os
+// dois erros deixaram de partilhar um texto que só serve o Firecracker.
 func TestDriver_SkeletonsUnavailableWithoutExecutor(t *testing.T) {
-	for _, d := range []SandboxDriver{NewFirecrackerDriver(), NewGVisorDriver()} {
-		launcher, err := NewLauncher(d)
-		if err != nil {
-			t.Fatalf("NewLauncher: %v", err)
-		}
-		_, err = launcher.run(context.Background(), ExecRequest{RunID: "r", StepID: "s", Call: ToolCall{Command: "x"}})
-		if !errors.Is(err, ErrDriverUnavailable) {
-			t.Fatalf("driver %q: err = %v, esperado ErrDriverUnavailable", d.Kind(), err)
-		}
+	fcErr := runSkeletonSemExecutor(t, NewFirecrackerDriver())
+	if !errors.Is(fcErr, ErrDriverUnavailable) {
+		t.Fatalf("firecracker: err = %v, esperado ErrDriverUnavailable", fcErr)
 	}
+	if !strings.Contains(strings.ToUpper(fcErr.Error()), "KVM") {
+		t.Fatalf("o erro do Firecracker devia nomear KVM (verdadeiro para ele): %q", fcErr)
+	}
+
+	gvErr := runSkeletonSemExecutor(t, NewGVisorDriver())
+	if !errors.Is(gvErr, ErrGVisorExecutorUnset) {
+		t.Fatalf("gvisor: err = %v, esperado ErrGVisorExecutorUnset", gvErr)
+	}
+	if strings.Contains(strings.ToUpper(gvErr.Error()), "KVM") {
+		t.Fatalf("o erro do gVisor NAO deve mencionar KVM (o gVisor nao exige /dev/kvm): %q", gvErr)
+	}
+	if !strings.Contains(gvErr.Error(), "AOS_SANDBOX_GVISOR_URL") {
+		t.Fatalf("o erro do gVisor devia nomear a variavel em falta AOS_SANDBOX_GVISOR_URL: %q", gvErr)
+	}
+
+	// Controlo negativo (AC3): os dois textos deixaram de ser o mesmo — um texto que
+	// só serve o Firecracker já não é reutilizado pelo gVisor.
+	if fcErr.Error() == gvErr.Error() {
+		t.Fatalf("firecracker e gvisor voltaram a partilhar o mesmo texto de erro: %q", fcErr)
+	}
+}
+
+func runSkeletonSemExecutor(t *testing.T, d SandboxDriver) error {
+	t.Helper()
+	launcher, err := NewLauncher(d)
+	if err != nil {
+		t.Fatalf("NewLauncher: %v", err)
+	}
+	_, err = launcher.run(context.Background(), ExecRequest{RunID: "r", StepID: "s", Call: ToolCall{Command: "x"}})
+	return err
 }
 
 // TestDriver_IdenticalContractAcrossKinds prova o critério: a selecção

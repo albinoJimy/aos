@@ -82,7 +82,7 @@ type sandboxMapping struct {
 
 // readModelToolSpecs lê + valida o ficheiro AOS_MODEL_TOOLS e devolve os specs crus. Vazio ⇒
 // (nil, nil): não configurado. Fonte única partilhada por loadModelToolsFromEnv (face do modelo) e
-// buildSignedToolRegistryFromEnv (catálogo assinado).
+// parseSignedToolRegistryFromEnv (catálogo assinado).
 func readModelToolSpecs() ([]modelToolSpec, error) {
 	path := strings.TrimSpace(os.Getenv("AOS_MODEL_TOOLS"))
 	if path == "" {

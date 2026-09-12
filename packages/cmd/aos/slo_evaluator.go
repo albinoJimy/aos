@@ -461,6 +461,14 @@ func (s *NodeService) SLOEvaluatorArmed() bool { return s.slo != nil }
 // ficava cego precisamente ao eixo mais recente do desenho fail-closed. Um nó que recusasse 100%
 // das escritas mantinha o SLI a 1.0 e o alerta calado.
 //
+// O EIXO DO WAL ESTAVA ABERTO, e era o mesmo modo de falha (AOS-350, 2026-09-06). Tapou-se o eixo
+// do WORM (`s.seloWORM.aRecusarEscritas()`) e deixou-se de fora o do EVENT STORE: `Healthy()` era
+// `!closed` nos DOIS backends, pelo que um WAL envenenado — que recusa 100% das escritas em voz
+// alta — mantinha esta sonda a `true`, o `/readyz` a 200 e o gauge `aos_eventstore_healthy` a 1.
+// A frase acima descrevia, por palavras suas, o defeito que ainda cá estava. Fechado no substrato,
+// e não aqui: `Store.Healthy()` passa a reflectir o estado do WAL, pelo que os TRÊS consumidores
+// desta condição — esta sonda, o `/readyz` e o gauge — o herdam de uma só vez.
+//
 // O PRAZO DA SONDA CONTINUA A DIVERGIR, e fica dito: aqui é [sloProbeTimeout] (5 s), no `/readyz`
 // são 2 s. Mesmo predicado, prazos diferentes — num nó sob carga o `/readyz` avermelha por prazo
 // antes de este SLI o acompanhar. É um eixo à parte deste achado.

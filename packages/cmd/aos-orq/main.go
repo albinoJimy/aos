@@ -157,7 +157,9 @@ func cmdServe(args []string) error {
 	release := fs.Bool("release", false, "ANUNCIAR que larga a posse no fim (handoff sem esperar TTL)")
 	worker := fs.String("worker", "orq", "rótulo do worker (observabilidade — nunca decide liveness)")
 	planDoc := fs.String("plan-doc", "", "ficheiro JSON do PlanDocument APROVADO a materializar")
-	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc: é dele que sai o oráculo de efeito)")
+	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc/--goal: é dele que sai o oráculo de efeito e o validador AOS-231)")
+	goal := fs.String("goal", "", "objectivo a decompor num DAG multi-nó pelo Planner governado (F2E-02, AOS-388; exige --snapshot; exclui --nodes/--plan-doc)")
+	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM até o Model Gateway ser composto (T2-B)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -221,6 +223,41 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("re-hidratação do grafo: %w", err)
 	}
 	fmt.Printf("grafo re-hidratado: nos=%d\n", g.DAG().Len())
+
+	// (4-goal) PIPELINE goal→DAG (F2E-02, AOS-388): com --goal, é o Planner GOVERNADO que
+	// produz os nós — mediação RM, reserva CAS, NHI agent:planner e validação AOS-231
+	// reais — e o Delegator real materializa (fim do recusaSpawn). Mutuamente exclusivo
+	// com o caminho manual --nodes/--plan-doc, que fica como override; a exclusividade
+	// torna o laço e a materialização abaixo no-ops quando --goal é usado.
+	if *goal != "" {
+		if len(separar(*nodes)) > 0 || *planDoc != "" {
+			return errors.New("--goal é a fonte dos nós (Planner governado) e não se combina com --nodes/--plan-doc")
+		}
+		if *snapshot == "" {
+			return errors.New("--goal exige --snapshot: o validador (AOS-231) e o oráculo de efeito derivam do snapshot pinado")
+		}
+		snap, err := carregarSnapshot(*snapshot)
+		if err != nil {
+			return err
+		}
+		model, err := modeloDeDecomposicao(*decomposeFixture)
+		if err != nil {
+			return err
+		}
+		// AOS-391: sem fixture, a decomposição usa o Model Gateway (LLM vivo) lido do
+		// ambiente. Fail-closed: sem fixture E sem gateway não há modelo — o `--goal` recusa
+		// em vez de decompor com um modelo-fantasma.
+		gwCfg, err := gatewayConfigFromEnv()
+		if err != nil {
+			return err
+		}
+		if model == nil && gwCfg == nil {
+			return errors.New("--goal exige --decompose-fixture (pipeline offline) OU o Model Gateway (AOS_MODEL_ENDPOINT + AOS_MODEL_NAME); nenhum composto")
+		}
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker); err != nil {
+			return err
+		}
+	}
 
 	// (4) ESCRITA SOB FENCING. Cada AddNode passa pelo FencedAppender.
 	for _, id := range separar(*nodes) {
@@ -357,7 +394,7 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, rec *runlifecyc
 		return err
 	}
 
-	m, err := ten.Materializer(ctx, snap, rec, adm, recusaSpawn{})
+	m, err := ten.Materializer(ctx, snap, rec, adm)
 	if err != nil {
 		return fmt.Errorf("materializador: %w", err)
 	}
@@ -388,15 +425,13 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, rec *runlifecyc
 	return nil
 }
 
-// recusaSpawn satisfaz a porta de spawn RECUSANDO. Este comando não compõe o
-// Delegator (AOS-026) nem o issuer de NHI filha, e um spawn silenciosamente ignorado
-// seria pior do que um recusado: o plano pareceria materializado com sub-agentes que
-// não existem. Um documento com papéis-que-expandem falha aqui, em voz alta.
-type recusaSpawn struct{}
-
-func (recusaSpawn) Spawn(_ context.Context, req planmaterialize.RoleSpawn) error {
-	return fmt.Errorf("spawn de papel %q (nó %q) recusado: este comando não compõe o Delegator (AOS-026) — materializa planos só de folhas", req.Role, req.NodeID)
-}
+// NOTA (AOS-390, ADR-024): a via `--plan-doc` é ADMISSÃO-PURA. A materialização já não
+// produz efeito (não spawna papéis nem arranca folhas); admite os nós no DAG como
+// pendentes e apensa `plan.materialized`. Um documento com papéis-que-expandem é
+// ADMITIDO (o papel entra como nó pendente sem tool), não recusado — mas este comando
+// não compõe o despacho governado, pelo que os nós ficam pendentes (nenhum sub-agente é
+// criado). O antigo `recusaSpawn` deixou de fazer sentido: não há spawn na
+// materialização que recusar.
 
 // Tectos do orçamento da árvore usados pela materialização deste comando. Um tecto
 // real vem do plano de controlo; aqui são generosos e declarados, para que a admissão

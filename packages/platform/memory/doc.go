@@ -52,8 +52,10 @@
 // separadas, em subpacotes próprios, que nunca partilham o caminho de descarte:
 //
 //   - record — a via de REGISTO: record.TrajectoryRecord (append-only) e
-//     record.Persist gravam SEMPRE a trajectória completa no backend (cada turno
-//     com o conteúdo cru e o manifesto por turno, mais a árvore de spans completa);
+//     record.Persist emitem a trajectória completa como ÁRVORE DE SPANS para o Tracer
+//     injectado — manifesto por turno e o COMPRIMENTO do cru como atributo, nunca o
+//     cru em si. A durabilidade do conteúdo cru é do sink a montante (EPIC-08), e com
+//     o Tracer por omissão (NoopTracer) o registo NÃO sai deste processo;
 //   - projection — a via de CONTEXTO: projection.ProjectContext produz o que o
 //     modelo vê (resumo higienizado, limitado em tokens, política SemVer,
 //     determinística).

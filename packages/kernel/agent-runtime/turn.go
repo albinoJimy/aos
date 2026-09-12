@@ -60,6 +60,15 @@ type turnPayload struct {
 	InputTokens  int64    `json:"input_tokens"`
 	OutputTokens int64    `json:"output_tokens"`
 	CostMicroUSD int64    `json:"cost_micro_usd"`
+	// UsageAusente marca que este turno NÃO FOI MEDIDO: os três campos acima não são
+	// uma leitura de zero, são a ausência de leitura (AOS-336). Quem soma o ledger tem
+	// de os distinguir — contar um turno não medido como gratuito é o zero silencioso
+	// que faz um run queimar o tecto com o burn-down a marcar 0%.
+	//
+	// `omitempty` é DELIBERADO e não cosmética: um turno medido grava exactamente os
+	// mesmos bytes que gravava antes desta mudança, pelo que nenhum golden de replay
+	// se move e o campo só aparece onde diz alguma coisa.
+	UsageAusente bool `json:"usage_ausente,omitempty"`
 	// ToolCallsRequested é o nº de tool calls que o modelo pediu neste turno
 	// (despachadas via RM, cada uma auditada no seu próprio evento de mediação).
 	ToolCallsRequested int `json:"tool_calls_requested"`
@@ -111,6 +120,7 @@ func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, erro
 		InputTokens:        rec.Usage.InputTokens,
 		OutputTokens:       rec.Usage.OutputTokens,
 		CostMicroUSD:       rec.CostMicroUSD,
+		UsageAusente:       !rec.Usage.Definido(),
 		ToolCallsRequested: rec.ToolCalls,
 		Final:              rec.Final,
 	}

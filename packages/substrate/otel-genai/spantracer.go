@@ -75,7 +75,12 @@ func (t *SpanTracer) StartSpan(ctx context.Context, operation string) (context.C
 		attrs:  make(map[string]any),
 	}
 	s.data = SpanData{
-		Name:          operation,
+		Name: operation,
+		// A ESPÉCIE deriva da operação (AOS-368): a chamada ao modelo (OpChat) sai como
+		// CLIENT; o resto fica INTERNAL. Todos os produtores de model-call passam por aqui
+		// (gateway.go, loop.go, planner.go via StartSpan(ctx, OpChat)), pelo que este único
+		// ponto cobre-os sem tocar em cada um.
+		Kind:          KindForOperation(operation),
 		SpanContext:   sc,
 		ParentSpanID:  parentSpanID,
 		StartUnixNano: t.clock().UnixNano(),

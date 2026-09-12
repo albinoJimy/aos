@@ -701,3 +701,40 @@ func TestReferenceBroker_FailClosed(t *testing.T) {
 		t.Fatalf("broker de referencia devia falhar ErrNotWired, obtido %v", err)
 	}
 }
+
+// TestSource_AllowedVazia_NaoConstrangeEEstaDeclarado FIXA por teste a postura da
+// [Config.Allowed] VAZIA (AOS-325).
+//
+// Não é um teste de defeito: é um teste de LIMITE DECLARADO. O doc-comment de [Config]
+// descrevia, dez linhas acima do campo, que um par fora de Allowed «falha fail-closed
+// atribuível», e no campo que uma lista vazia torna a origem permissiva — duas posturas
+// opostas no mesmo ficheiro, e nenhuma fixada por teste. Sem esta asserção, qualquer das
+// duas leituras podia ser «corrigida» para a outra sem que nada ficasse vermelho.
+//
+// O que se fixa: com Allowed vazia esta origem NÃO constrange o par, e a fronteira de
+// soberania é responsabilidade do estágio de allowlist ASSINADA a montante
+// (policy/allowlist, default-deny, composto por NewProduction em todo o tráfego real).
+// Quem PREENCHER Allowed obtém defesa em profundidade — provado por
+// [TestSource_FailClosed_RegiaoNaoConfigurada], que é o par simétrico deste.
+func TestSource_AllowedVazia_NaoConstrangeEEstaDeclarado(t *testing.T) {
+	t.Parallel()
+	clock := newClock(time.Unix(0, 0))
+	broker := NewFakeBroker(clock.now, time.Hour)
+	broker.SetSecret("openai", "us", "chave-us")
+	// Sem nenhum ProviderRegion: Allowed fica vazia.
+	src := newTestSource(clock.now, broker)
+
+	cred, err := src.Fetch(context.Background(), "openai", "us")
+	if err != nil {
+		t.Fatalf("com Allowed vazia a origem NAO constrange o par — obtido erro: %v", err)
+	}
+	if cred.KeyID() == "" {
+		t.Error("devia devolver credencial para um par que o broker suporta")
+	}
+	// E continua fail-closed no eixo que É seu: ausência de MATERIAL não se inventa.
+	if _, err := src.Fetch(context.Background(), "openai", "eu"); err == nil {
+		t.Fatal("par sem material devia falhar fail-closed mesmo com Allowed vazia")
+	} else if !errors.Is(err, ErrNoMaterial) {
+		t.Errorf("errors.Is(ErrNoMaterial) falhou: %v", err)
+	}
+}

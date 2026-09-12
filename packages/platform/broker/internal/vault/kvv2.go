@@ -51,6 +51,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aos-ref/substrate/redaction"
 )
 
 // ErrKVConfig — o cliente KV v2 foi pedido com configuração inválida (addr/token
@@ -113,6 +115,19 @@ func NewKVv2(cfg KVv2Config) (*KVv2, error) {
 	if addr == "" || token == "" {
 		return nil, ErrKVConfig
 	}
+	// FAIL-CLOSED NO PONTO DE ENTRADA (AOS-337). Um endereço com credenciais embutidas
+	// não constrói cliente nenhum — fecha os quatro caminhos de erro DE UMA VEZ, em vez
+	// de os remendar um a um à saída, e torna impossível escrever o teste de fuga que
+	// existia. É a forma forte da garantia.
+	//
+	// NÃO É UM CRITÉRIO DE TRANSPORTE, e por isso não duplica o do nó
+	// (`integration.CheckSecureTransportURL`): não decide `http` vs `https` nem loopback,
+	// não tem política de esquema nenhuma. É só a recusa da forma que carrega segredo.
+	if u, err := url.Parse(addr); err == nil && u.User != nil {
+		// O utilizador NÃO é ecoado: num endereço de Vault ele identifica o principal, e a
+		// senha vem colada a ele.
+		return nil, fmt.Errorf("%w: o endereco traz credenciais (user-info); o token vai em X-Vault-Token", ErrKVConfig)
+	}
 	mount := strings.Trim(strings.TrimSpace(cfg.Mount), "/")
 	if mount == "" {
 		mount = defaultKVMount
@@ -156,6 +171,19 @@ func sanitizeSegment(s string) string {
 	if s == "" {
 		return "_"
 	}
+	// `.` e `..` SÃO ELEMENTOS ESTRUTURAIS DO PATH, não identificadores, e a lista permitida
+	// abaixo deixava-os passar intactos porque o `.` é um caractere legítimo dentro de um nome
+	// (`acme.eu`). Medido em revisão adversarial: `Provider=".."` produzia `p/../eu/cap_x`, que a
+	// normalização RFC 3986 — aplicada pelo Vault e por qualquer proxy no caminho — reduz a
+	// `eu/cap_x`, ESCAPANDO o prefixo configurado. Um segmento que muda a ÁRVORE em vez de a
+	// indexar não é um segmento.
+	//
+	// Fecha-se aqui, no construtor do path, e não no guarda da política: assim cobre os TRÊS
+	// segmentos de uma vez — o `Provider`, a `Region` e a `Capability` — em vez de só aquele em
+	// que o defeito foi visto primeiro.
+	if s == "." || s == ".." {
+		return "_"
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -192,17 +220,30 @@ func (c *KVv2) Fetch(ctx context.Context, key Key) (Secret, error) {
 	for _, seg := range strings.Split(path, "/") {
 		escaped = append(escaped, url.PathEscape(seg))
 	}
-	endpoint := c.addr + "/v1/" + c.mount + "/data/" + strings.Join(escaped, "/")
+	// O MOUNT TAMBÉM É ESCAPADO, e não era: vem de `AOS_BROKER_VAULT_KV_MOUNT` e só passava
+	// por TrimSpace/Trim("/"). Um mount com um escape inválido (`sec%zzret`) fazia o
+	// `NewRequest` falhar, e a mensagem — que agora nomeia o endereço — acusaria um endereço
+	// PERFEITO, mandando o operador depurar a variável errada. Segmento a segmento, como o
+	// path, porque um mount pode ser aninhado (`kv/equipa`).
+	mountEscaped := make([]string, 0)
+	for _, seg := range strings.Split(c.mount, "/") {
+		mountEscaped = append(mountEscaped, url.PathEscape(seg))
+	}
+	endpoint := c.addr + "/v1/" + strings.Join(mountEscaped, "/") + "/data/" + strings.Join(escaped, "/")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return Secret{}, fmt.Errorf("%w: montar pedido: %v", ErrKVFetch, err)
+		// NÃO se ecoa o erro: é um `*url.Error` que traz o endereço COMO FOI ESCRITO,
+		// sem a redacção que o `http.Client` aplica aos SEUS erros. Era aqui e no ramo
+		// equivalente de [KVv2.Ready] que uma senha embutida ia INTEIRA para a mensagem
+		// (AOS-337).
+		return Secret{}, fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redaction.URL(c.addr))
 	}
 	req.Header.Set("X-Vault-Token", c.token) // nunca logado
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return Secret{}, fmt.Errorf("%w: transporte: %v", ErrKVFetch, err)
+		return Secret{}, fmt.Errorf("%w: transporte: %v", ErrKVFetch, redaction.TransportError(c.addr, err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -234,11 +275,22 @@ func (c *KVv2) Fetch(ctx context.Context, key Key) (Secret, error) {
 func (c *KVv2) Ready(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.addr+"/v1/sys/seal-status", nil)
 	if err != nil {
-		return err
+		// Devolvia o `*url.Error` CRU — sem redacção E sem sentinela: o endereço inteiro
+		// num erro que nem era atribuível ao Vault (AOS-337).
+		//
+		// ALCANCE HONESTO: [KVv2.Ready] NÃO tem chamador de produção, e nem podia ter — a
+		// porta [Client] declara só `Fetch`. A primeira versão desta correcção afirmava
+		// que estes erros «sobem ao /readyz e ao banner de prontidão do nó», e isso é
+		// FALSO: o /readyz do nó sonda o Vault da KEK, não este. A correcção é PREVENTIVA
+		// e vale — o dia em que `Ready` for exposto, ninguém terá de reabrir isto —, mas a
+		// razão escrita tem de ser a verdadeira. Foi um doc-comment a comprar confiança que
+		// não sustentava que abriu o AOS-333; repeti-lo aqui seria o mesmo defeito, no
+		// ticket que ele gerou.
+		return fmt.Errorf("%w: o endereco %s nao produz um pedido HTTP valido", ErrKVFetch, redaction.URL(c.addr))
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: vault inalcancavel: %v", ErrKVFetch, err)
+		return fmt.Errorf("%w: vault inalcancavel: %v", ErrKVFetch, redaction.TransportError(c.addr, err))
 	}
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
@@ -250,3 +302,26 @@ func (c *KVv2) Ready(ctx context.Context) error {
 	}
 	return nil
 }
+
+// SegmentoEstavel reporta se um segmento SOBREVIVE INTACTO à normalização do path.
+//
+// AOS-330 — PORQUE ISTO É EXPORTADO. A política do broker decidia sobre o valor CRU e o Vault
+// resolvia sobre o valor NORMALIZADO, e a normalização não é injectiva: `acme:eu`, `acme/eu` e
+// `acme_eu` dobram todos em `acme_eu`. Com os dois namespaces separados, autorizar um provedor
+// não é autorizar a chave que ele alcança — se a política aprova `acme:eu` e o Vault tem
+// material aprovisionado em `acme_eu`, serve-se o material de um provedor que a política nunca
+// aprovou.
+//
+// A saída não é a política aprender a normalizar por si (duas cópias da regra divergem — foi o
+// que o AOS-337 mediu noutro eixo): é a normalização ficar num sítio só, e quem decide
+// perguntar-lhe. O `DEF-815` exige exactamente isto — «a normalização do path tem de ser a MESMA
+// em que a política decide».
+func SegmentoEstavel(s string) bool { return s == sanitizeSegment(s) }
+
+// SegmentoDePath devolve o segmento que o path do Vault USA para um dado valor.
+//
+// Existe para que a política possa ser testada contra o CONSTRUTOR DO PATH e não contra o
+// predicado que ela própria usa para decidir (AOS-330). Sem isto, um teste que verifique a
+// coerência entre os dois namespaces compara o predicado consigo mesmo — foi o que uma revisão
+// adversarial apanhou, e é a mesma armadilha do «teste que passa pela razão errada».
+func SegmentoDePath(s string) string { return sanitizeSegment(s) }

@@ -50,7 +50,11 @@ func TestVerify_DetectsSegmentTamper(t *testing.T) {
 	if _, err := rst.RestoreTo(context.Background(), m, exp.Checkpoint(), 0, nil, out); !errors.Is(err, ErrSegmentTampered) {
 		t.Fatalf("restauro sobre backup adulterado devia abortar: %v", err)
 	}
-	if len(out.Streams()) != 0 {
+	restantes, serr := out.Streams()
+	if serr != nil {
+		t.Fatalf("Streams() do destino: %v", serr)
+	}
+	if len(restantes) != 0 {
 		t.Fatalf("restauro abortado não devia ter escrito eventos")
 	}
 }

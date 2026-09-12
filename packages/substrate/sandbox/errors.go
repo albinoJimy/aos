@@ -3,11 +3,23 @@ package sandbox
 import "errors"
 
 var (
-	// ErrDriverUnavailable — o driver real (Firecracker/gVisor) não está
-	// disponível neste ambiente (sem KVM/host support). Os skeletons devolvem-no
-	// no Create quando não têm um [GuestExecutor] injectado. Fail-closed: nunca
-	// executam um efeito fora de uma microVM real.
-	ErrDriverUnavailable = errors.New("sandbox: driver microVM nao disponivel neste ambiente (sem KVM/host support)")
+	// ErrDriverUnavailable — o driver Firecracker (microVM real) não está disponível
+	// neste ambiente por falta de KVM/host support. O skeleton Firecracker e o
+	// [FakeDriver] de referência devolvem-no no Create/Exec quando não têm um
+	// [GuestExecutor] injectado. Fail-closed: nunca executam um efeito fora de uma
+	// microVM real. O driver gVisor NÃO exige KVM e tem o seu próprio erro
+	// ([ErrGVisorExecutorUnset]) — os dois deixaram de partilhar um texto que só
+	// serve o Firecracker (AOS-384).
+	ErrDriverUnavailable = errors.New("sandbox: driver microVM Firecracker nao disponivel neste ambiente (sem KVM/host support)")
+
+	// ErrGVisorExecutorUnset — o driver gVisor não tem [GuestExecutor] injectado. AO
+	// CONTRÁRIO do Firecracker, o gVisor NÃO exige /dev/kvm — interpõe syscalls em
+	// user-space (runsc), e é por isso a fronteira ao nível do kernel disponível num
+	// host que seja ele próprio um convidado sem virtualização aninhada. A causa real
+	// NÃO é o host: é faltar provisionar o executor de guest host-side (no nó, via a
+	// variável AOS_SANDBOX_GVISOR_URL). Nomear KVM aqui mandava o operador diagnosticar
+	// a máquina quando lhe falta uma linha de configuração (AOS-384).
+	ErrGVisorExecutorUnset = errors.New("sandbox: driver gVisor sem executor de guest injectado — interpoe syscalls em user-space (runsc) e nao depende de suporte de virtualizacao do host; a causa e faltar provisionar o executor host-side (no no: defina AOS_SANDBOX_GVISOR_URL)")
 
 	// ErrUnknownDriver — [DriverKind] não reconhecido em [NewDriver].
 	ErrUnknownDriver = errors.New("sandbox: driver desconhecido")

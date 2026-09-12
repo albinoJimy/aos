@@ -24,6 +24,9 @@ const (
 	// erro do servidor" — a supressão do resources/list não passa despercebida na
 	// descoberta (deixa de ser um fail-open silencioso).
 	attrResListErr = "aos.registry.mcp.resources_list_error"
+	// attrManifestDigest expõe o digest do manifesto de capacidades (AOS-320) — um
+	// valor PÚBLICO (impressão digital), nunca conteúdo do servidor.
+	attrManifestDigest = "aos.registry.mcp.manifest_digest"
 )
 
 // Nomes de operação dos spans MCP.
@@ -114,8 +117,11 @@ type ConnectionInfo struct {
 	// Endpoint é uma referência NÃO-SECRETA e OPCIONAL do artefacto de origem: o
 	// comando do binário (STDIO) ou o URL do endpoint (remoto). Fica gravada na
 	// proveniência da entrada mcp_server para que a auditoria saiba que binário/endpoint
-	// originou o artefacto. NUNCA deve conter segredos (token/sessão). O digest do
-	// binário/manifesto é RESERVADO para AOS-047.
+	// originou o artefacto. NUNCA deve conter segredos (token/sessão).
+	//
+	// AOS-320: é também a ÂNCORA DE IDENTIDADE do digest da entrada mcp_server. Vem
+	// daqui — configuração local do operador —, logo NÃO é forjável pelo servidor, ao
+	// contrário de tudo o que o handshake devolve. Mudá-lo muda o digest da entrada.
 	Endpoint string
 }
 
@@ -185,16 +191,28 @@ func (h *Host) Handshake(ctx context.Context, t Transport) (CapabilityManifest, 
 	span.SetAttribute(attrServerID, initRes.ServerInfo.Name)
 	span.SetAttribute(attrToolCount, len(toolsRes.Tools))
 	span.SetAttribute(attrResCount, len(resList.Resources))
-	span.SetAttribute(attrDecision, "handshake_ok")
 
-	return CapabilityManifest{
+	manifest := CapabilityManifest{
 		ServerInfo:           initRes.ServerInfo,
 		ProtocolVersion:      initRes.ProtocolVersion,
 		Tools:                toolsRes.Tools,
 		Resources:            resList.Resources,
 		ResourcesUnavailable: resUnavailable,
-		// Digest RESERVADO (AOS-047): vazio.
-	}, nil
+	}
+	// AOS-320: o digest do manifesto deixa de ser reservado. É calculado aqui, sobre
+	// a forma canónica do que o servidor anunciou, e é o que a entrada mcp_server
+	// leva no contrato (ver stage). Fail-closed: um manifesto ambíguo (capacidade
+	// repetida) NÃO é pinado — o handshake falha em vez de escolher uma leitura.
+	dig, derr := digestManifesto(manifest)
+	if derr != nil {
+		span.SetAttribute(attrDecision, "manifest_digest_error")
+		return CapabilityManifest{}, derr
+	}
+	manifest.Digest = dig
+	span.SetAttribute(attrManifestDigest, dig)
+	span.SetAttribute(attrDecision, "handshake_ok")
+
+	return manifest, nil
 }
 
 // Discover faz o handshake, marca TODOS os schemas/descrições devolvidos como
@@ -278,16 +296,28 @@ func (h *Host) stage(ctx context.Context, conn ConnectionInfo, manifest Capabili
 	var staged []domain.Entry
 
 	// Entrada do servidor MCP (kind mcp_server). A proveniência (Origin) capta uma
-	// referência NÃO-SECRETA do artefacto de origem — transporte + endpoint/comando —
-	// para que "o binário registado no REG" seja rastreável ao nível de AOS-046 (o
-	// digest do binário/manifesto fica para AOS-047).
+	// referência NÃO-SECRETA do artefacto de origem — transporte + endpoint/comando.
+	//
+	// AOS-320: o CONTRATO leva o digest do manifesto ANCORADO nesse transporte/endpoint.
+	// Antes, o contrato de um mcp_server era só a classe de egress, e o digest da
+	// entrada era por isso uma constante da classe — três valores para todo o universo
+	// de servidores MCP, e substituir o binário/endpoint por trás de um (id, version)
+	// inalterado preservava digest E assinatura. O digest tem de viver DENTRO do
+	// Contract porque registry.verifyDigest RECOMPUTA o digest a partir de
+	// (Kind, Contract) na resolução, na enumeração de activas, na consulta de digest,
+	// na admissibilidade e na revalidação por chamada: qualquer outra via daria
+	// ErrDigestMismatch em todos esses caminhos.
+	manifestDigest, derr := DigestAncorado(manifest.Digest, conn.Endpoint, kind)
+	if derr != nil {
+		return nil, fmt.Errorf("stage servidor %q: %w", conn.ServerID, derr)
+	}
 	serverEntry, err := h.reg.Publish(ctx, registry.PublishRequest{
 		ID:        conn.ServerID,
 		Version:   conn.Version,
 		Kind:      domain.KindMCPServer,
 		Origin:    serverOrigin(conn, kind),
 		Publisher: conn.Publisher,
-		Contract:  domain.Contract{Egress: egress},
+		Contract:  domain.Contract{Egress: egress, ManifestDigest: manifestDigest},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("stage servidor %q: %w", conn.ServerID, err)
@@ -299,6 +329,20 @@ func (h *Host) stage(ctx context.Context, conn ConnectionInfo, manifest Capabili
 	// linguagem natural ("description"/"title"), o vector clássico de tool-poisoning
 	// escondido nos sub-campos do schema, são removidos ANTES de entrar no control-plane.
 	// A cópia INTEGRAL do schema permanece na quarentena de taint (data-plane, AOS-042).
+	//
+	// A TOOL LEVA A MESMA ÂNCORA DO SERVIDOR, e sem isso o resto de AOS-320 não protege
+	// o caminho quente. A revalidação por chamada (AOS-051) chaveia por `call.ToolID`, e
+	// o ToolID de uma tool MCP é `serverID+"/"+nome` — ou seja, ESTA entrada, não a do
+	// servidor. Com o contrato limitado a (schema sanitizado, egress), um servidor que
+	// mudasse de endpoint deixava todas as suas tools BYTE-A-BYTE idênticas: o digest do
+	// `mcp_server` movia-se, e a revalidação — que nunca o consulta — permitia a chamada.
+	// Amarrando a âncora a cada tool, mover o servidor move o digest de tudo o que ele
+	// serve, e a divergência aparece no gate que corre a cada tool call.
+	//
+	// A âncora é a MESMA do servidor de propósito: uma tool não é um artefacto autónomo,
+	// é uma capacidade que só existe no contexto do servidor, do transporte e do endpoint
+	// que a anunciaram. Duas tools com o mesmo nome e schema vindas de servidores
+	// diferentes têm de ter digests diferentes — e passam a ter.
 	for _, tool := range manifest.Tools {
 		entry, terr := h.reg.Publish(ctx, registry.PublishRequest{
 			ID:        conn.ServerID + "/" + tool.Name,
@@ -307,8 +351,9 @@ func (h *Host) stage(ctx context.Context, conn ConnectionInfo, manifest Capabili
 			Origin:    conn.Origin,
 			Publisher: conn.Publisher,
 			Contract: domain.Contract{
-				InputSchema: sanitizeSchema(tool.InputSchema),
-				Egress:      egress,
+				InputSchema:    sanitizeSchema(tool.InputSchema),
+				Egress:         egress,
+				ManifestDigest: manifestDigest,
 			},
 		})
 		if terr != nil {

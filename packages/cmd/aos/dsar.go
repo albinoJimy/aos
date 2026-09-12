@@ -28,7 +28,9 @@ import (
 	"net/http"
 
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
+	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	control "github.com/aos-ref/kernel/agent-runtime/control"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -97,6 +99,10 @@ func (s wormEventSealer) Ingest(ctx context.Context, raw audit.RawRecord) (audit
 type dsarRequestWire struct {
 	RequestID string `json:"request_id"`
 	SubjectID string `json:"subject_id"`
+	// Emitter é a PROVA DE AUTORIDADE (AOS-367): a assinatura ed25519 do operador com `dsar:erase`,
+	// produzida FORA do nó, sobre o payload canónico (acção‖titular‖request_id). Só é EXIGIDA quando
+	// AOS_DSAR_ERASERS está composto; ignorada (zero) na via legada por leitura.
+	Emitter emitterWire `json:"emitter"`
 }
 
 // maxSubjectIDLen limita o comprimento do subject_id pseudónimo aceite. Um pseudónimo opaco
@@ -199,6 +205,15 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// (4b-bis) PROVA DE AUTORIDADE (AOS-367): assinar como leitor NÃO chega para destruir. Se
+	// AOS_DSAR_ERASERS está composto, o pedido tem de trazer a assinatura ed25519 de um eraser sobre
+	// o payload canónico (acção "erase"‖titular‖request_id). Vazio ⇒ prova desligada (via legada por
+	// leitura). VEM DEPOIS de `authorize` (a região/board do chamador já é conhecida) e ANTES do
+	// efeito. 403 uniforme em qualquer falha.
+	if _, ok := h.exigeAutoridadeDSAR(w, r, req.Emitter, "erase", req.SubjectID, req.RequestID); !ok {
+		return
+	}
+
 	// (4c) AUTORIDADE SOBRE O TITULAR — a confrontação que faltava.
 	//
 	// Até 2026-08-21 esta rota resolvia a região de QUEM CHAMA e mais nada. Um chamador de outra
@@ -293,4 +308,53 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 		Blocked: false, StoresShredded: res.StoresShredded,
 		ReceivedSeq: res.ReceivedSeq, OutcomeSeq: res.OutcomeSeq,
 	})
+}
+
+// exigeAutoridadeDSAR verifica a PROVA DE AUTORIDADE (AOS-367) de uma acção DSAR de destruição,
+// partilhada pelas quatro rotas para não haver quatro cópias. Retro-compatível por COMPOSIÇÃO, no
+// molde do TaintGate de AOS-363:
+//
+//   - AOS_DSAR_ERASERS VAZIO (não composto) ⇒ devolve (zero, true): a prova está desligada e a rota
+//     mantém a autenticação por leitura que sempre teve (dev, testes por headers, nós sem soberania
+//     de destruição configurada). É o que preserva o cluster;
+//   - COMPOSTO ⇒ a prova é EXIGIDA: o pedido tem de trazer a assinatura ed25519 de um emissor com
+//     `dsar:erase` sobre o payload canónico (acção‖titular‖request_id). Em produção a guarda de
+//     arranque [ErrProductionNeedsDSARErasers] garante que está sempre composto.
+//
+// Três degraus fail-closed, cada um com 403 UNIFORME (a mensagem não pode ser um oráculo de quem
+// está na lista, pelo mesmo motivo do /autonomy e do read-path soberano; o motivo real vai ao log
+// do operador): (a) o emissor detém `dsar:erase`? (b) a assinatura valida sobre ESTE payload, com
+// nonce durável de uso único e frescura? A acção entra no payload, pelo que uma assinatura de "hold"
+// não se reapresenta como "erase". Devolve o [control.Emitter] verificado — o handler de expiração
+// reusa-o para o dual-control.
+func (h *apiHandler) exigeAutoridadeDSAR(w http.ResponseWriter, r *http.Request, em emitterWire, action, subject, requestID string) (control.Emitter, bool) {
+	// COMPOSIÇÃO decide: vazio ⇒ prova desligada (retro-compatível). Só uma lista com ≥1 eraser a
+	// liga — o idioma opt-in do TaintGate (AOS-363).
+	if len(h.node.DSARErasers) == 0 {
+		return control.Emitter{}, true
+	}
+	if h.node.SteerAuth == nil {
+		writeError(w, http.StatusNotImplemented, "canal de controlo sem autenticador")
+		return control.Emitter{}, false
+	}
+	emitter, err := em.decode()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "emitter invalido")
+		return control.Emitter{}, false
+	}
+	// (a) AUTORIDADE: assinar bem não chega — o emissor tem de DETER `dsar:erase`. Verificado ANTES
+	// de autenticar para não gastar um nonce a quem não tem o direito.
+	if !h.node.DSARErasers[emitter.ID] {
+		h.logf("DSAR (AOS-367): accao %q RECUSADA — o emissor %q assina mas NAO detem %s (AOS_DSAR_ERASERS)", action, emitter.ID, dsarEraseCapability)
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return control.Emitter{}, false
+	}
+	// (b) AUTENTICAÇÃO: assinatura ed25519 do emissor REGISTADO sobre este payload exacto, com nonce
+	// durável de uso único e frescura. Falha ⇒ 403 uniforme.
+	if err := h.node.SteerAuth.Authenticate(r.Context(), integration.DSARScope, control.SignalDSAR,
+		integration.CanonicalDSARPayload(action, subject, requestID), emitter); err != nil {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return control.Emitter{}, false
+	}
+	return emitter, true
 }

@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"context"
+	"fmt"
 	"sort"
 )
 
@@ -24,8 +25,14 @@ import (
 // soberania (Region/SovereigntyBoard) para o exportador a fazer valer (ADR-011).
 type BackupSource interface {
 	// Streams devolve os ids de todos os streams com eventos committed, ordenados
-	// (determinista).
-	Streams() []string
+	// (determinista), ou o erro que impediu de os enumerar.
+	//
+	// AOS-352: o canal de erro existe porque num substrato PARTILHADO esta pergunta é
+	// feita ao SERVIDOR, e uma falha de rede é indistinguível de «não há streams» se a
+	// resposta for só um slice. Quem varre o log inteiro a partir daqui tem de poder
+	// distinguir as duas — um varredor que conclui «zero» sobre uma pergunta que não
+	// chegou a ser feita degrada em silêncio, e nem sempre na direcção segura.
+	Streams() ([]string, error)
 	// StreamHead devolve o último seq committed do stream (0 se inexistente).
 	StreamHead(ctx context.Context, streamID string) (uint64, error)
 	// SnapshotStream devolve clones dos eventos committed do stream com
@@ -85,12 +92,18 @@ var (
 // Streams devolve os ids de todos os streams com eventos committed no líder,
 // ordenados lexicograficamente (determinista — imagem estável de Replicas()).
 // Detém s.mu.RLock (membership) e r.mu.RLock (estrutura do mapa de streams).
-func (s *Store) Streams() []string {
+func (s *Store) Streams() ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.closed.Load() {
+		return nil, ErrClosed
+	}
 	l := s.leader()
 	if l == nil {
-		return nil
+		// AOS-352: sem líder NÃO é «não há streams» — é o substrato indisponível. Devolver
+		// um slice vazio aqui era o que fazia um varredor de arranque concluir «zero» e
+		// seguir em frente; agora diz-se, e quem varre decide.
+		return nil, ErrNoQuorum
 	}
 	l.mu.RLock()
 	out := make([]string, 0, len(l.streams))
@@ -99,7 +112,7 @@ func (s *Store) Streams() []string {
 	}
 	l.mu.RUnlock()
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // StreamHead devolve o último seq committed do stream. Detém o stripe do stream
@@ -174,12 +187,44 @@ func (s *Store) SnapshotStream(ctx context.Context, streamID string, throughSeq 
 // Aplicado o lote, o envelope (EventID/Ts/Seq/IdempotencyKey) fica idêntico ao do
 // backup — nada é reatribuído. O índice de dedup por stream é reconstruído a
 // partir dos eventos reinseridos, tal como no caminho normal.
+//
+// # AOS-353 — QUAL DOS DOIS CAMINHOS PERSISTE, E PORQUÊ
+//
+// Esta porta tem DOIS usos, e só um deles pode escrever no WAL:
+//
+//   - REPLAY DE ARRANQUE (durable.go, `restoreInto`): corre ANTES de `s.wal` ser
+//     atribuído, precisamente para NÃO reescrever no ficheiro os eventos que se
+//     acabaram de ler dele. Aí `s.wal == nil` e não se persiste nada — correcto.
+//   - RESTAURO / PITR sobre um store JÁ ABERTO: aí `s.wal != nil`, e não persistir era
+//     o defeito. O lote era aplicado só às réplicas em MEMÓRIA (`r.store`) e o commit
+//     index subia; reiniciava-se o nó e o restauro tinha EVAPORADO. O contraste com o
+//     caminho normal era directo: [Store.Append] persiste ANTES de aplicar.
+//
+// A distinção é, portanto, exactamente `s.wal == nil`, e é ela que se testa — não uma
+// bandeira nova, que poderia divergir do estado real.
+//
+// A persistência precede a aplicação em memória, como em [Store.Append], e é feita em
+// LOTE ([wal.appendLote]): um restauro que devolve erro repõe o ficheiro ao tamanho que
+// tinha antes do primeiro registo do lote.
+//
+// COM UMA EXCEPÇÃO, e está declarada em [wal.appendLote]: se o WAL ENVENENAR a meio do
+// lote, a reposição não é possível — o mecanismo que a faria é o mesmo que acabou de
+// falhar — e um PREFIXO do lote fica durável. O que contém o dano nesse caso é o
+// envenenamento em si: o WAL recusa tudo em voz alta e [Store.Healthy] passa a false, pelo
+// que o nó sai de serviço em vez de servir um restauro parcial.
+//
+// Porque sobreviveu: TODOS os testes de restauro do store de referência constroem o
+// destino com `mustNew(t)` — `New()` in-memory, NUNCA `Open(path)`. Um restauro para um
+// store com WAL seguido de reinício não era exercitado em lado nenhum.
 func (s *Store) IngestStream(ctx context.Context, streamID string, events []Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if s.closed.Load() {
 		return ErrClosed
+	}
+	if s.soLeitura {
+		return ErrReadOnly // AOS-347 — um store de inspecção não ingere.
 	}
 	if len(events) == 0 {
 		return nil
@@ -208,6 +253,14 @@ func (s *Store) IngestStream(ctx context.Context, streamID string, events []Even
 		want := last + uint64(i) + 1
 		if ev.Seq != want {
 			return ErrRestoreOrder
+		}
+	}
+	// DURÁVEL ANTES DE APLICADO (AOS-353). Só quando este store TEM WAL — no replay de
+	// arranque `s.wal` ainda é nil e reescrever duplicaria o que se acabou de ler.
+	if s.wal != nil {
+		if err := s.wal.appendLote(events); err != nil {
+			s.obs.AppendRejected(streamID, err)
+			return fmt.Errorf("eventstore: persistir lote de restauro: %w", err)
 		}
 	}
 	for i := range events {

@@ -60,6 +60,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-284 | Disciplina de partição da hash-chain de auditoria sob múltiplos escritores *(v1.1)* | feature | M | P0 | AOS-100 |
 | AOS-285 | Guard de arranque: o nó recusa arrancar sobre um Event Store já detido | feature | S | P0 | — |
 | AOS-286 | Estender o guard de posse do WAL aos restantes escritores | feature | S | P1 | AOS-285 |
+| AOS-392 | Prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook *(v1.1)* | test | M | P0 | AOS-390, AOS-283, AOS-284, AOS-391, AOS-100 |
 
 ---
 
@@ -1075,6 +1076,40 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 
 ---
 
+## AOS-392 — Prova operacional multi-processo do despacho governado + topologia N-réplicas
+
+<!-- rtm: adrs-mencionados -->
+<!-- O ADR-023 citado neste bloco é MENÇÃO — o modelo per-run (escritor único por run) que a
+     prova exercita — não implementação. O despacho é composto em AOS-390; este ticket prova-o
+     sob N processos e entrega a topologia operacional. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | **v1.1 (distribuído)** |
+| Tipo | test + docs |
+| Prioridade | P0 |
+| Estimativa | M |
+| Dependências | AOS-390 (despacho composto), AOS-283 (exclusão do laço de retenção), AOS-284 (partição da hash-chain), AOS-391 (goal real), AOS-100 (Event Store replicado) |
+| Bloqueia | AOS-107 (escala horizontal em produção) |
+| Responsável sugerido | Arquitecto de Plataforma / SRE |
+| Documentos de referência | `packages/cmd/aos-orq/aos100_substrato_replicado_test.go`, ADR-023, `tecnica/10_Topologia_Implantacao_Operacao.md`, `runbooks/` |
+
+**Contexto.** A prova de 4 processos existente (`TestAOS100_NServeEmParaleloSobreOSubstratoReplicado`) cobre claim/handoff/re-hidratação (`vencedores=1, negados-pelo-lease=3`), mas **não** cobre despacho a atravessar a fronteira do processo — porque o despacho não estava composto. Com AOS-390 composto, o despacho governado passa a existir; falta prová-lo em N processos e escrever a topologia operacional que permite reivindicar "v1.1 distribuído".
+
+**Objectivo.** Estender a prova multi-processo para cobrir o despacho governado real sob o modelo per-run do ADR-023 (N planners, cada um dono dos seus runs), e entregar a topologia + runbook para operar N réplicas.
+
+**Critérios de Aceitação**
+- [x] Teste multi-processo (N≥3 processos reais, `aos-orq serve --nats`) em que cada run é despachado ponta-a-ponta (goal→DAG→nós elegíveis→efeito) pelo seu processo dono, com `vencedores=1` por run e os outros negados pelo lease. *(Evidência: `packages/cmd/aos-orq/aos392_despacho_multiproc_test.go` — `--goal` sob N processos, assere `vencedores=1` + `despachado:` no dono. CLUSTER-GATED como AOS-100: compila e SALTA sem `AOS_NATS_URL`; corre no CI/servidor.)*
+- [~] O plano condicional é **podado corretamente** (`branch_not_taken`): PROVADO em composição real com o Dispatcher de produção (`packages/control-plane/runlifecycle/derivacao_condicional_test.go`, AOS-390/T5). A asserção condicional-específica SOB N processos binários não está no teste de AOS-392 (usa fixture de folhas); a poda é lógica do Dispatcher (uma passagem, um processo dono), independente da contagem de réplicas.
+- [~] Laço de retenção corre **no máximo uma vez** apesar de N réplicas: o MECANISMO está entregue por **AOS-283** (posse por `lease:svc:retention` — `packages/cmd/aos/posse_de_laco.go` + gating em `retention_sweeper.go`), e a exclusão single-node está provada por `packages/cmd/aos/aos283_lacos_sob_lease_test.go`. A prova MULTI-PROCESSO (nenhum `retention.expired` duplicado entre N réplicas reais) é **cluster-gated** como a do despacho — corre no CI/servidor com `AOS_NATS_URL`; não é adicionada ao teste de AOS-392 aqui (setup de retenção — política armada + WORM + facto expirado — é pesado e ortogonal à prova do despacho).
+- [x] Não-regressão do guard exit-5: multi-processo **só** com `--nats`; sobre `--wal` um segundo processo é recusado (`ErrWALHeld`). *(Evidência: `TestAOS100_SubstratoAmbiguoERecusado`/`_SemSubstratoERecusado` + guard AOS-285/286.)*
+- [x] Runbook para a topologia `N× aos-orq serve --nats --nats-replicas 3`: atribuição de runs, arranque/paragem, recuperação da morte de uma réplica, e o que observar (spans OTel no sink e no laço de despacho). *(Evidência: `docs/runbooks/PROC-DESPACHO-MULTIPROC.md`; catalogado em `tecnica/10` §8.)*
+- [x] `tecnica/10` e a RTM actualizadas para a topologia distribuída v1.1; RTM regenerada. *(Evidência: `tecnica/10` §3-bis (linha do despacho governado) + §8; `tecnica/16` regenerada.)*
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1090,3 +1125,4 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-09-10 | +AOS-392 (prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook): capstone da v1.1 distribuída, estende a prova de 4 processos ao despacho a atravessar a fronteira do processo. | Equipa AOS |

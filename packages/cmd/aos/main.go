@@ -10,7 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -22,6 +25,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	oidc "github.com/aos-ref/integration/oidc"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	rm "github.com/aos-ref/kernel/reference-monitor"
 	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 )
@@ -215,6 +219,30 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // indecifrável (over-erasure silenciosa) e o legal hold deixa de preservar o que a lei manda reter.
 // Ao contrário das outras colunas de produção, a KEK-em-memória só AVISAVA; agora RECUSA. O modo
 // de referência (sem AOS_MODE=production) mantém a KEK-em-memória demo-grade.
+// ErrProductionNeedsShredConfirmation — sob AOS_MODE=production, uma custódia de KEK INJECTADA
+// por [Config.DSARVault] que NÃO implemente a porta de confirmação de crypto-shred é RECUSADA no
+// arranque (AOS-328).
+//
+// O QUE ISTO FECHA. Sem confirmador, o fluxo DSAR sela `dsar.key_destroyed` SEM PERGUNTAR — a
+// cadeia afirma uma irrecuperabilidade que ninguém verificou. Hoje isso é correcto para as duas
+// custódias que existem: o `InMemoryKeyVault` não implementa a porta porque o seu `Delete` é um
+// `delete()` num mapa e não pode falhar; o Vault Transit implementa-a. O risco é a TERCEIRA — um
+// KMS de terceiros que POSSA falhar a destruir e não implemente a porta reabre, pela via da
+// omissão, o defeito exacto que a porta foi criada para fechar.
+//
+// A ESCOLHA FOI RECUSAR, NÃO AVISAR, e a razão é que o banner já avisava. O AOS-322 pôs no
+// arranque a linha «NAO ARMADA, e NAO E CORRECTO» para este caso — e declarar não é impor. O
+// ticket que gerou esta guarda diz-o à letra: «nada obriga essa escolha a ser consciente».
+//
+// O ESCAPE É UMA DECLARAÇÃO, não um silêncio: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1 afirma que
+// a custódia destrói incondicionalmente. Quem o define assume-o por escrito, no molde de
+// AOS_TLS_EXTERNAL_TERMINATION. Sem essa declaração o arranque recusa.
+//
+// SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA: o vault de referência continua a compor sem
+// declaração nenhuma, porque transformar o modo de desenvolvimento numa configuração cerimoniosa
+// é o custo que este ticket proíbe explicitamente.
+var ErrProductionNeedsShredConfirmation = errors.New("aos: AOS_MODE=production com custodia de KEK INJECTADA (Config.DSARVault) exige que ela implemente a porta de confirmacao de crypto-shred — sem ela o fluxo DSAR sela key_destroyed SEM VERIFICAR, afirmando uma irrecuperabilidade que ninguem confirmou. Se a custodia destroi INCONDICIONALMENTE (o Delete nao pode falhar), DECLARE-O com AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1")
+
 // ErrProductionNeedsDurableApproval — sob AOS_MODE=production com aprovadores four-eyes
 // configurados (AOS_APPROVERS_FILE), a EXECUÇÃO DURÁVEL é obrigatória. O bridge
 // negação→aprovação→reexecução (AOS-021) depende dela em dois pontos: reproduzir o turno
@@ -243,7 +271,10 @@ var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem
 //
 // FICA DEPOIS das outras colunas de postura (identidade, soberania, KEK, four-eyes) de propósito:
 // um nó de produção mal configurado deve ouvir primeiro o que é mais fundamental, e mudar a ordem
-// trocaria o diagnóstico de quem já depende dela.
+// trocaria o diagnóstico de quem já depende dela. Desde AOS-365 é a PRIMEIRA das duas guardas de
+// durabilidade incondicionais; a do WORM ([ErrProductionNeedsDurableWORM]) fecha o bloco logo a
+// seguir — mantê-la ANTES do WORM preserva TestAOS300_ProducaoSemEventStoreDuravelRecusa, que exige
+// ouvir «falta o Event Store» quando faltam os dois.
 var ErrProductionNeedsDurableSubstrate = errors.New("aos: AOS_MODE=production exige um Event Store DURAVEL — defina AOS_EVENTSTORE_NATS (ex.: aos-es-0:4222) ou AOS_EVENTSTORE_PATH (ex.: /var/lib/aos/events.wal). Sobre o store in-memory de referencia o stream identity.nhi.revoked morre com o processo: um NHI revogado volta a ser ACEITE ao primeiro restart, em silencio, enquanto o banner anuncia revogacao")
 
 var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
@@ -261,7 +292,71 @@ var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com
 // runtime. A decisão é de CONFIG, logo vive na fronteira que lê o ambiente ([parseModelFromEnv]).
 var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com o model gateway ligado (AOS_MODEL_ENDPOINT) exige AOS_MODEL_API_KEY_PATH — sem ele o no apresentaria ao upstream um bearer de DEV embebido no binario (identico em todos os nos, legivel por quem tenha o artefacto, nao revogavel) em vez da credencial da organizacao; material privado por FICHEIRO montado, NUNCA por variavel de ambiente")
 
+// ErrProductionNeedsSandboxDriver — sob AOS_MODE=production COM tools de sandbox ligadas
+// (AOS_MODEL_TOOLS com bloco `sandbox`), o driver de execução NÃO pode ser o de referência
+// in-process (AOS-344). É condicional a uma opção do operador, no molde de
+// [ErrProductionNeedsDurableApproval] e de [ErrProductionNeedsModelCredential]: sem tool
+// nenhuma com executor não há sandbox a montar, e um nó de produção que não despacha código
+// não fica cerimonioso por isto.
+//
+// O QUE ISTO FECHA, E PORQUE NÃO É «ESCAPE DE SANDBOX». O driver de referência não corre
+// processos — é um VFS in-process que impõe as invariantes de isolamento fail-closed. O defeito
+// é outro, e é de POSTURA: dos três drivers, é o único que falha ABERTO. `firecracker` e
+// `gvisor` sem executor provisionado devolvem `ErrDriverUnavailable` e a chamada morre no
+// caminho de recusa; o de referência sucede em silêncio, e o resultado — que nenhuma fronteira
+// ao nível do kernel produziu — é selado na hash-chain WORM como se fosse um efeito real. O
+// alinhamento é fazê-lo falhar fechado onde os outros dois já falham.
+//
+// RECUSA TAMBÉM A ESCOLHA EXPLÍCITA, e é deliberado. A auditoria nomeou a omissão
+// (`AOS_SANDBOX_DRIVER` vazio por omissão no compose de produção), mas uma guarda que só
+// apanhasse a omissão ficava a uma variável de distância de ser contornada, e o valor explícito
+// não acrescenta fronteira nenhuma — só torna a mesma postura deliberada. Onde há uma decisão
+// legítima a declarar (terminação TLS a montante, custódia que destrói incondicionalmente) esta
+// casa dá um escape declarado; aqui não há: nenhum deployment sancionado corre o driver de
+// referência em produção (`dev-hardened` fixa `firecracker`, o servidor usa `gvisor`).
+//
+// FORA DE PRODUÇÃO NADA MUDA: o default continua a ser o driver de referência e o valor
+// explícito `fake` continua a compor — é o que o smoke e as demos usam.
+var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois devolvem ErrDriverUnavailable e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
+
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
+
+// ErrProductionNeedsDurableWORM — sob AOS_MODE=production o trilho de auditoria WORM NÃO pode ser o
+// MemStore in-memory de referência (AOS-365, achado O-12). É INCONDICIONAL, no molde de
+// [ErrProductionNeedsDurableSubstrate] e não no de KEK/four-eyes: o WORM sela SEMPRE — o selo de
+// residência, o changelog de política de AOS-310, os selos de legal hold e de expiração, e a
+// atribuição de quem destruiu o quê — pelo que não há opção que o torne dispensável.
+//
+// O DANO É A PROVA, NÃO O EFEITO. O conteúdo não se perde: o Event Store é durável por
+// [ErrProductionNeedsDurableSubstrate] e a KEK por [ErrProductionNeedsDurableKEK]. O que morre com o
+// processo é a hash-chain tamper-evident a que tecnica/17 §5.1 atribui a detecção. Um restart apaga
+// a prova de quem fez o quê, não o que foi feito — e o banner honesto («in-memory de referencia
+// (nao-duravel)») desarmava a suspeita em vez de a levantar, que é porque este buraco sobreviveu às
+// dez guardas irmãs escritas uma a uma.
+//
+// NOMEIA AS DUAS VARIÁVEIS de propósito (AOS-365 CA-5): definir só AOS_WORM_PATH satisfaz esta
+// guarda mas dispara logo a seguinte ([ErrProductionNeedsDurableKEK], porque um WORM durável exige
+// KEK durável). Um operador que ouvisse uma variável de cada vez trocava um erro por outro; a
+// mensagem diz-lhe as duas ao mesmo tempo. A via NATS do Event Store NÃO satisfaz esta guarda: o
+// WORM é sempre um ficheiro local (ver a nota do guard de substrato), só AOS_WORM_PATH conta.
+//
+// FORA DE PRODUÇÃO NADA MUDA: o MemStore de referência continua a compor — é o que o smoke, as demos
+// e os testes usam.
+var ErrProductionNeedsDurableWORM = errors.New("aos: AOS_MODE=production exige um trilho de auditoria WORM DURAVEL — defina AOS_WORM_PATH (ex.: /var/lib/aos/worm.wal). Sobre o WORM in-memory de referencia a hash-chain tamper-evident morre com o processo: um restart apaga a PROVA (selo de residencia, changelog de politica AOS-310, selos de legal hold e de expiracao, atribuicao de quem destruiu o que) sem apagar o EFEITO. Como um WORM duravel exige custodia de KEK igualmente duravel, defina TAMBEM AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH) — senao a guarda ErrProductionNeedsDurableKEK recusa em seguida; nomeadas as duas para nao trocar um erro por outro. Simetrica a ErrProductionNeedsDurableSubstrate: o trilho tem de ser tao duravel quanto os efeitos que sela")
+
+// ErrProductionNeedsDSARErasers — sob AOS_MODE=production o conjunto de operadores autorizados a
+// assinar a destruição DSAR (AOS_DSAR_ERASERS) NÃO pode ficar vazio (AOS-367). É INCONDICIONAL, no
+// molde de [ErrProductionNeedsDurableWORM] e [ErrProductionNeedsDurableSubstrate], e não condicional
+// a uma opção.
+//
+// O RACIONAL. As quatro rotas de `planoGovernacao` (`/dsar/erase`, `/dsar/hold`, `/dsar/release`,
+// `/dsar/expire`) conduzem o crypto-shred IRREVERSÍVEL da KEK por-titular — a única operação do nó
+// que nenhum restore drill desfaz. Fora de produção a prova de autoridade é opt-in por composição
+// (lista vazia ⇒ desligada, retro-compatível com dev e testes por headers); mas a produção NÃO pode
+// deixá-las autorizadas por um simples token de LEITURA, porque um só par issuer/audience serve o
+// leitor e o operador DSAR. Exigir a lista não-vazia obriga o deployment a DECLARAR quem pode
+// destruir — a separação de deveres que o token de leitura sozinho não dá.
+var ErrProductionNeedsDSARErasers = errors.New("aos: AOS_MODE=production exige AOS_DSAR_ERASERS nao-vazio — as quatro rotas DSAR (/dsar/erase, /dsar/hold, /dsar/release, /dsar/expire) conduzem crypto-shred IRREVERSIVEL, e um so par issuer/audience serve o leitor de runs e o operador que destroi; a producao nao pode deixar a destruicao autorizada por um token de LEITURA. Defina AOS_DSAR_ERASERS com os emitterIDs de AOS_OPERATORS (que assinam com dsar:erase, chave privada fora do no) autorizados a assinar a destruicao. Fora de producao a lista vazia deixa a prova desligada (retro-compativel)")
 
 // ErrBadTLSExternalTermination — AOS_TLS_EXTERNAL_TERMINATION presente com um valor que não é
 // um booleano reconhecido. Fail-closed de CONFIG (AOS-209), no padrão de ErrBadDurableExecution:
@@ -524,6 +619,13 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// AUTORIDADE SOBRE A DESTRUIÇÃO DE DADOS (AOS-367): quais destes operadores detêm
+	// `dsar:erase` — a prova exigida às quatro rotas de destruição DSAR. Como AOS_AUTONOMY_SETTERS:
+	// a pertença a AOS_OPERATORS é verificada no Bootstrap, onde as duas listas se encontram.
+	dsarErasers, err := parseDSARErasers(os.Getenv("AOS_DSAR_ERASERS"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	// FOUR-EYES / DUAL-CONTROL (AOS-162) — APROVADORES por FICHEIRO MONTADO
 	// (AOS_APPROVERS_FILE, AOS-193). Ver [parseApproversFile] para a JUSTIFICAÇÃO de ser um
@@ -649,6 +751,10 @@ func nodeConfigFromEnv() (Config, error) {
 		OTLPClientCertPath:  strings.TrimSpace(os.Getenv("AOS_OTLP_CLIENT_CERT_PATH")),
 		OTLPClientKeyPath:   strings.TrimSpace(os.Getenv("AOS_OTLP_CLIENT_KEY_PATH")),
 		OTLPBearerTokenPath: strings.TrimSpace(os.Getenv("AOS_OTLP_BEARER_TOKEN_PATH")),
+		// service.name do recurso OTLP (AOS-368): a IDENTIDADE do produtor no backend de
+		// traces. Vazio ⇒ o exporter aplica o default determinista "aos" — o documento nunca
+		// sai como `unknown_service`. Só tem efeito com AOS_OTLP_ENDPOINT definido.
+		OTLPServiceName: strings.TrimSpace(os.Getenv("AOS_OTLP_SERVICE_NAME")),
 		// CANAL DE CONTROLO (AOS-160/AOS-193): pubkeys dos operadores lidas de AOS_OPERATORS
 		// (já validadas fail-closed acima). Vazio ⇒ default-deny do canal de controlo (o steer
 		// anónimo é recusado — a inércia do D4 não protege pause/steer) E, desde AOS-193, o
@@ -658,6 +764,10 @@ func nodeConfigFromEnv() (Config, error) {
 		// AUTORIDADE SOBRE A AUTONOMIA (AOS-305): os emitterIDs de AOS_OPERATORS que podem mudar
 		// niveis (AOS_AUTONOMY_SETTERS). Vazio ⇒ POST /autonomy recusa tudo, declarado no banner.
 		AutonomySetters: autonomySetters,
+		// AUTORIDADE SOBRE A DESTRUIÇÃO DE DADOS (AOS-367): os emitterIDs de AOS_OPERATORS que podem
+		// assinar as acções DSAR de destruição (AOS_DSAR_ERASERS). Vazio ⇒ prova DESLIGADA (as rotas
+		// mantêm a autenticação por leitura); em produção a guarda abaixo exige-a não-vazia.
+		DSARErasers: dsarErasers,
 		// FOUR-EYES (AOS-162/AOS-193): aprovadores lidos do ficheiro montado AOS_APPROVERS_FILE
 		// (já validados fail-closed acima). Vazio ⇒ o gate NÃO é composto e POST
 		// /runs/{id}/approve devolve 501 (endpoint declaradamente desligado, não uma falha).
@@ -700,6 +810,25 @@ func nodeConfigFromEnv() (Config, error) {
 	// ligado, mas VAZIO: os níveis só são aplicados — e SELADOS — em [Bootstrap], que é quem tem
 	// o WORM. Ver [autonomyWiring]. nil ⇒ oráculo não ligado e nenhum `escalate` é emitido.
 	cfg.Autonomy = autonomyCabling
+
+	// SUPERFÍCIE DA BARREIRA CONTROL/DATA-PLANE EFICAZ (AOS-363). AOS_PRIVILEGED_CAPS é a
+	// lista de capabilities PRIVILEGIADAS que torna o TaintGate eficaz — sem ela, o campo
+	// [Config.Privileged] era inalcançável pelo binário e o nó caía sempre no conjunto vazio
+	// (TaintGate presente-mas-inerte, o achado central de analises/13 §2.1). Dois estados:
+	//   - VAZIA OU AUSENTE ⇒ nil: TaintGate inerte, RETRO-COMPATÍVEL. É o estado de todo
+	//     deployment que não liga o taint — INCLUINDO a variável DEFINIDA-MAS-VAZIA, que é
+	//     como o idioma da casa "desconfigura" uma variável (o helper de teste põe cada
+	//     AOS_* a "" para isolar, e um docker-compose com `${AOS_PRIVILEGED_CAPS:-}` faz o
+	//     mesmo). Tratar "" como erro quebraria esses deployments — o oposto do requisito de
+	//     retro-compatibilidade. Opt-in por desenho: quem não dá capabilities, fica inerte.
+	//   - COM ≥1 capability ⇒ conjunto não-vazio: o ápice adopta a via ENDURECIDA
+	//     ([integration.NewSecuredRuntime]). A recusa DURA de um conjunto forçado a endurecer
+	//     e inerte ([referencemonitor.ErrTaintGateInert]) vive no CONTRATO DO CONSTRUTOR e é
+	//     provada no kernel (production_efficacy_test.go), não nesta env var — a decisão de
+	//     dono fixou retro-compatibilidade acima da recusa por engano de configuração.
+	if caps := splitCSV(os.Getenv("AOS_PRIVILEGED_CAPS")); len(caps) > 0 {
+		cfg.Privileged = rm.NewStaticPrivilegedSet(caps...)
+	}
 
 	// SUPERFÍCIE DE CARREGAMENTO DA VERIFICAÇÃO ANCORADA DO WORM (AOS-268/AOS-072). Preenche
 	// [Config.WORMAnchor] a partir do ambiente — sem isto o campo era INALCANÇÁVEL pelo binário e o
@@ -756,8 +885,13 @@ func nodeConfigFromEnv() (Config, error) {
 	// ambiente — SEPARADA da custódia da KEK (D7: cliente/token AOS_BROKER_VAULT_*
 	// próprios). Vazio ⇒ dormente (inalterado); presente ⇒ PREPARA o cliente Vault
 	// REAL (KV v2) e valida fail-closed (ErrBadBrokerVault). Fica em [Config.BrokerVault]
-	// para AOS-265 CONSUMIR (a troca mediada in-process); AOS-264 só o prepara e
-	// declara o modo no banner — a troca NÃO está ligada nesta entrega.
+	// AOS-264 só o PREPARA e declara o modo no banner — a troca NÃO está ligada.
+	//
+	// CORRECÇÃO (AOS-325, 2.ª ronda): esta nota apontava o consumo para AOS-265, e era o
+	// QUARTO sítio da mesma afirmação — os outros três foram corrigidos e este escapou à
+	// varredura. O AOS-265 já aterrou (`platform/broker/inprocess.go`, com testes) e não
+	// ligou a troca; o bloqueador é o DEF-218. Que um dos quatro tenha escapado é o
+	// argumento do DEF-814: correcções pontuais não impedem a ronda seguinte.
 	brokerVault, brokerVaultSet, err := parseBrokerVaultFromEnv()
 	if err != nil {
 		return Config{}, err
@@ -790,23 +924,81 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 
 	// FAIL-CLOSED de produção (AOS-300) — a REVOGAÇÃO DE NHI tem de sobreviver a um restart. Ver
-	// [ErrProductionNeedsDurableSubstrate] para o porquê de esta ser INCONDICIONAL onde as outras
-	// duas guardas de durabilidade são condicionais a uma opção, e para o porquê de vir por último.
+	// [ErrProductionNeedsDurableSubstrate] para o porquê de esta ser INCONDICIONAL onde as guardas
+	// da KEK e do four-eyes são condicionais a uma opção. É a primeira das DUAS guardas de
+	// durabilidade incondicionais que fecham o bloco; a do WORM (AOS-365) segue-se logo abaixo.
 	if production && eventStorePath == "" && eventStoreNATS == "" {
 		return Config{}, ErrProductionNeedsDurableSubstrate
+	}
+
+	// FAIL-CLOSED de produção (AOS-365) — o TRILHO WORM tem de sobreviver a um restart, tal como o
+	// substrato. INCONDICIONAL como [ErrProductionNeedsDurableSubstrate] (o WORM sela SEMPRE), não
+	// condicional a uma opção como a KEK e o four-eyes. Fecha o bloco DEPOIS da KEK de propósito:
+	// pô-la antes tornaria o ramo `cfg.WORMPath != ""` da guarda da KEK sempre-verdadeiro em
+	// produção e mascararia o seu diagnóstico; pô-la antes do substrato roubaria o erro à guarda de
+	// substrato quando ambos faltam (TestAOS300_ProducaoSemEventStoreDuravelRecusa). Fora de
+	// produção o MemStore de referência continua a compor (bootstrap.go, inalterado).
+	if production && cfg.WORMPath == "" {
+		return Config{}, ErrProductionNeedsDurableWORM
+	}
+
+	// FAIL-CLOSED de produção (AOS-367) — a DESTRUIÇÃO DSAR tem de declarar QUEM a pode ordenar.
+	// INCONDICIONAL como as duas guardas de durabilidade acima: a autoridade sobre uma operação
+	// irreversível não pode nascer de um token de LEITURA. Fecha o bloco de durabilidade/autoridade
+	// de propósito, DEPOIS do WORM: as guardas anteriores garantem o substrato onde a atribuição da
+	// destruição é selada; esta garante que a destruição tem autoridade distinta da leitura. Fora de
+	// produção AOS_DSAR_ERASERS vazio deixa a prova desligada (bootstrap.go, retro-compatível).
+	if production && len(cfg.DSARErasers) == 0 {
+		return Config{}, ErrProductionNeedsDSARErasers
 	}
 
 	// ATTESTATION DE DISPOSITIVO WebAuthn (AOS-177) por ambiente: AOS_ATTESTATION_VERIFIER_URL liga
 	// o verificador REMOTO ao FourEyesGate (o CBOR corre no componente de autoridade externo; o
 	// binário do nó fica zero-dep). Com ele, cada perna de aprovação exige attestationObject válido.
 	// O token opcional vem de FICHEIRO montado (material privado nunca por variável de ambiente).
+	// AOS-328 — o modo de produção passa a ser um CAMPO, para que as guardas que dependem dele
+	// sejam exercitáveis sem mexer no ambiente do processo.
+	cfg.ProductionMode = production
+	// MESMO PARSER ESTRITO do opt-out de TLS: lixo NÃO é «não declarado». Uma declaração de
+	// que a custódia destrói incondicionalmente não pode nascer de um valor mal escrito.
+	destroiIncond, derr := parseTLSExternalTermination(os.Getenv("AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL"))
+	if derr != nil {
+		// O ERRO É DE CONFIG, NÃO DE PRODUÇÃO. A primeira versão embrulhava-o em
+		// `ErrProductionNeedsShredConfirmation` — e como o parse corre SEMPRE, um valor mal
+		// escrito num nó de desenvolvimento abortava com um sentinela de produção. Atribuição
+		// errada, apanhada em revisão.
+		return Config{}, fmt.Errorf("%w: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: %v", ErrBadTLSExternalTermination, derr)
+	}
+	cfg.ShredDestroyUnconditional = destroiIncond
+
 	cfg.AttestationVerifierURL = strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_URL"))
 	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_TOKEN_PATH")); p != "" {
-		tb, rerr := os.ReadFile(p)
+		v, rerr := lerCredencialMontada(p, "AOS_ATTESTATION_VERIFIER_TOKEN_PATH")
 		if rerr != nil {
-			return Config{}, fmt.Errorf("aos: AOS_ATTESTATION_VERIFIER_TOKEN_PATH: %w", rerr)
+			return Config{}, rerr
 		}
-		cfg.AttestationVerifierToken = strings.TrimSpace(string(tb))
+		// O BEARER APARA TUDO, e o basic não. Não é inconsistência: um token é opaco e não
+		// tem espaço com significado nas pontas — o contrato está fixado desde AOS-177 por
+		// `TestAttestationVerifierTokenFromFile` —, enquanto uma senha de basic pode
+		// legitimamente acabar em espaço, e o `-u` do curl preserva-o (AOS-338, achado M4).
+		cfg.AttestationVerifierToken = strings.TrimSpace(v)
+	}
+	// BASIC-AUTH POR FICHEIRO MONTADO (AOS-338). O AOS-333 fechou a via que existia — a
+	// basic-auth embutida no URL, que o `net/http` converte em `Authorization: Basic` — e
+	// deixou sem caminho quem tem o verificador atrás de um reverse-proxy que só fala Basic.
+	// Este é o caminho que a substitui, pela mesma regra que motivou a recusa: FICHEIRO
+	// MONTADO, nunca variável de ambiente (ADR-006).
+	//
+	// A EXCLUSÃO MÚTUA com o Bearer NÃO é decidida aqui: vive no construtor do adaptador
+	// ([integration.ErrRemoteAttestationAuth]), que é o tipo que emitiria os dois cabeçalhos.
+	// Pô-la aqui dispararia ANTES de a URL sequer ser validada, e daria ao operador queixas
+	// numa ordem que não corresponde ao que está errado.
+	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_BASIC_PATH")); p != "" {
+		v, rerr := lerCredencialMontada(p, "AOS_ATTESTATION_VERIFIER_BASIC_PATH")
+		if rerr != nil {
+			return Config{}, rerr
+		}
+		cfg.AttestationVerifierBasic = v
 	}
 
 	// FRESCURA POR-CERIMÓNIA DO 4-EYES (AOS-266, achado F10): AOS_CHALLENGE_ISSUANCE=1 liga o modo
@@ -863,16 +1055,20 @@ func nodeConfigFromEnv() (Config, error) {
 	// REGISTRY ASSINADO DE TOOLS (AOS_MODEL_TOOLS_REGISTER): regista as tools de AOS_MODEL_TOOLS
 	// como catálogo ASSINADO+congelável para a REVALIDAÇÃO do RM as admitir — a decisão passa então
 	// ao PDP/Cedar (o gate seguinte), que nega uma capability privilegiada originada pelo modelo
-	// (taint=untrusted). Desligado ⇒ (nil,…): o nó mantém o catálogo/revalidador de referência
+	// (taint=untrusted). Desligado ⇒ nil: o nó mantém o catálogo/revalidador de referência
 	// (default-deny na revalidação). Ver modelcatalog.go. Fail-closed: config incoerente ABORTA.
-	cat, reval, pol, rerr := buildSignedToolRegistryFromEnv()
+	//
+	// AOS-381: guardamos os DADOS do registo (spec), NÃO um revalidador já construído. O
+	// Bootstrap constrói o revalidador SELADO no WORM único do nó (que só existe lá) — antes,
+	// construí-lo aqui sobre um MemStore volátil fazia a revalidação selar num store que ninguém
+	// lia e que não sobrevivia ao restart. Ver parseSignedToolRegistryFromEnv e o call site do
+	// Bootstrap.
+	spec, rerr := parseSignedToolRegistryFromEnv()
 	if rerr != nil {
 		return Config{}, rerr
 	}
-	if cat != nil {
-		cfg.Catalog = cat
-		cfg.Revalidator = reval
-		cfg.Policy = pol
+	if spec != nil {
+		cfg.SignedToolRegistry = spec
 	}
 
 	return cfg, nil
@@ -1244,12 +1440,25 @@ func loadPolicyBundleFromEnv() (*pdp.PDP, *autonomyWiring, error) {
 	if perr != nil {
 		return nil, nil, perr
 	}
+	// PROVAS DE SUBIDA (AOS-377). AOS_AUTONOMY_PROOFS transporta as assinaturas que AUTORIZAM cada
+	// SUBIDA a L4/L5 por AOS_AUTONOMY_LEVELS — o caminho por ficheiro passa a exigir a mesma
+	// cerimónia de duas assinaturas que POST /autonomy, em vez de aplicar QUALQUER nível sem
+	// assinatura. Vazio ⇒ nil: uma subida a L4/L5 que precise de prova é recusada ao nível. A raiz
+	// de confiança que as verifica (pubkeys de AOS_OPERATORS, direito autonomy:set) só existe no
+	// [Bootstrap], que ARMA o gate; aqui só se descodifica e valida a FORMA. Malformado ⇒ ABORTA.
+	proofs, prErr := parseAutonomyProofs(os.Getenv("AOS_AUTONOMY_PROOFS"))
+	if prErr != nil {
+		return nil, nil, prErr
+	}
 	// FASE 1 da cablagem (AOS-248): o registo nasce com o [autonomy.Sink] ligado mas VAZIO. Os
 	// níveis são aplicados na FASE 2 ([autonomyWiring.provision], em Bootstrap), depois de o WORM
 	// existir — só assim cada SetLevel de provisionamento fica SELADO com motivo e actor. Registar
 	// aqui, como se fazia, deixava a mudança de nível sem rasto em lado nenhum.
 	cabling := buildAutonomyOracle(specs, piso)
 	if cabling != nil {
+		// As provas ficam na cablagem já na fase 1; o gate que as consome só é ARMADO no
+		// [Bootstrap] (ver [autonomyWiring.armarGateDeProva]), que tem as pubkeys de operador.
+		cabling.provasPorPar = proofs
 		opts = append(opts, pdp.WithAutonomyOracle(cabling.oracle()))
 	}
 	p, err := pdp.Open(dir, opts...)
@@ -1552,6 +1761,80 @@ func parseRetentionFromEnv() (audit.RetentionConfig, error) {
 // (AOS_DSAR_VAULT_ADDR presente) mas mal configurada: sem AOS_DSAR_VAULT_TOKEN_PATH, ou o ficheiro
 // do token ilegível/vazio. Fail-closed: um endereço de Vault sem credencial NÃO degrada para o
 // vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
+// ErrBadAttestationCredential — o ficheiro de credencial do verificador de attestation remoto
+// (AOS_ATTESTATION_VERIFIER_TOKEN_PATH ou AOS_ATTESTATION_VERIFIER_BASIC_PATH) é ilegível ou
+// está VAZIO.
+//
+// O CAMINHO DA ATTESTATION ERA O OUTLIER (AOS-338). Os dois Vaults abortam num ficheiro de
+// credencial vazio (ver [ErrBadVaultDSAR] e `ErrBadBrokerVault`); este lia-o, aparava, e seguia
+// com a credencial a vazio — ou seja, com o verificador a falar SEM autenticação nenhuma, e sem
+// nada no arranque a dizê-lo. Um operador que monta um ficheiro está a declarar que quer
+// autenticação; um ficheiro em branco é um erro de montagem, não uma escolha.
+//
+// Fecha-o também porque o banner passa a declarar QUAL o esquema composto: um ficheiro vazio
+// tornaria essa declaração dependente de um estado que ninguém pediu.
+//
+// Ecoa o CAMINHO e o nome da variável, NUNCA o conteúdo.
+var ErrBadAttestationCredential = errors.New("aos: credencial do verificador de attestation ilegivel ou vazia (ficheiro montado; material privado NUNCA por variavel de ambiente)")
+
+// lerCredencialMontada lê uma credencial de FICHEIRO MONTADO no molde dos dois Vaults: lê,
+// apara, e ABORTA em vazio. Devolve só o valor — o chamador nunca vê o erro cru do sistema de
+// ficheiros com o conteúdo.
+func lerCredencialMontada(caminho, envVar string) (string, error) {
+	// LÊ COM TECTO, e não `os.ReadFile` seguido de verificação: apontar a variável a
+	// `/dev/urandom` faria o `ReadFile` nunca terminar, e o arranque ficava pendurado sem
+	// mensagem nenhuma. O limite tem de estar na leitura (AOS-338, achado B2).
+	f, err := os.Open(caminho)
+	if err == nil {
+		defer func() { _ = f.Close() }()
+	}
+	var raw []byte
+	if err == nil {
+		raw, err = io.ReadAll(io.LimitReader(f, maxCredencialMontada+1))
+	}
+	if err != nil {
+		// NEM O CAMINHO NEM O ERRO CRU SÃO ECOADOS, e a razão apareceu num teste desta
+		// mudança: se o operador puser a CREDENCIAL na variável em vez do caminho — o erro
+		// exacto que uma variável chamada `..._PATH` convida —, então «o caminho» É a
+		// credencial, e ecoá-lo põe-na no log de arranque. O erro do `os.ReadFile` também a
+		// traz. O que o operador precisa é do NOME DA VARIÁVEL e da CLASSE da falha; o valor
+		// que lá pôs, esse já ele sabe. É o critério do «malformada (valor omitido)» do
+		// [integration.CheckSecureTransportURL].
+		return "", fmt.Errorf("%w: %s: %s", ErrBadAttestationCredential, envVar, classeDeFalhaDeLeitura(err))
+	}
+	// > e não >=: leu-se um byte a mais de propósito, para distinguir «cabe» de «truncado».
+	if len(raw) > maxCredencialMontada {
+		return "", fmt.Errorf("%w: %s: o ficheiro montado tem mais de %d bytes — nao e uma credencial", ErrBadAttestationCredential, envVar, maxCredencialMontada)
+	}
+	// APARA-SE O TERMINADOR DE LINHA, E SÓ ELE (AOS-338, achado M4 da revisão). A versão
+	// anterior fazia `TrimSpace`, e isso CORROMPE uma credencial legítima: o `-u` do curl
+	// preserva um espaço final numa senha, e o `TrimSpace` comia-o — a autenticação falhava,
+	// todas as pernas eram negadas, e nada no arranque o explicava. O `PATH_SEPARATOR` de um
+	// ficheiro é dele, o resto é da credencial.
+	v := strings.TrimRight(string(raw), "\r\n")
+	if strings.TrimSpace(v) == "" {
+		return "", fmt.Errorf("%w: %s: o ficheiro montado esta VAZIO", ErrBadAttestationCredential, envVar)
+	}
+	return v, nil
+}
+
+// maxCredencialMontada é o tecto do ficheiro de credencial. Sem ele, apontar a variável a um
+// ficheiro grande — ou a `/dev/urandom` — faz o arranque ler sem fim (AOS-338, achado B2).
+const maxCredencialMontada = 8192
+
+// classeDeFalhaDeLeitura traduz o erro do sistema de ficheiros numa CLASSE nomeável, sem ecoar
+// o caminho — que pode ser, ele próprio, a credencial mal colocada.
+func classeDeFalhaDeLeitura(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "o ficheiro montado nao existe (verifique o caminho e o volume montado)"
+	case errors.Is(err, fs.ErrPermission):
+		return "sem permissao para ler o ficheiro montado"
+	default:
+		return "ficheiro montado ilegivel"
+	}
+}
+
 var ErrBadVaultDSAR = errors.New("aos: custódia DSAR no Vault mal configurada — AOS_DSAR_VAULT_ADDR exige AOS_DSAR_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
 // ErrInsecureVaultDSARAddr — AOS_DSAR_VAULT_ADDR com transporte inseguro (AOS-249, achado F6).
@@ -1627,6 +1910,39 @@ func parseVaultDSARFromEnv() (audit.KeyVault, error) {
 // closed: um endpoint sem o modelo a pedir NÃO degrada para o referenceModel — quem liga um gateway
 // obtém-no ou o nó recusa arrancar.
 var ErrBadModelConfig = errors.New("aos: config do model gateway invalida — AOS_MODEL_ENDPOINT exige AOS_MODEL_NAME (id do modelo a pedir ao gateway); AOS_MODEL_API_KEY_PATH, se definido, tem de ser um ficheiro legivel (material privado NUNCA por variavel de ambiente)")
+
+// egressAllowlistFromEnv devolve a allowlist de egress do gateway de modelo para o caminho
+// ENDURECIDO de produção (AOS-366). DECISÃO REGISTADA sobre a fonte (a AC pedia-a por escrito):
+// `AOS_MODEL_EGRESS_HOSTS` (CSV de `host` ou `host:porta`) quando definida — a via explícita, para
+// o deployment que precise de restringir ou alargar a allowlist —; na sua AUSÊNCIA, deriva-se do
+// host de `AOS_MODEL_ENDPOINT`, que é o destino legítimo JÁ configurado. Derivar por omissão evita
+// uma segunda variável a manter em sincronia com o endpoint (definir uma e esquecer a outra seria
+// uma recusa em produção), e é seguro por defeito: a allowlist fica exactamente no host para onde o
+// nó foi mandado falar. Fail-closed: em produção um endpoint sem host parseável recusa — o gateway
+// não se compõe sem saber para onde pode falar. O esquema (https) e o match host↔BaseURL são
+// validados a jusante por `validateEgressURL` no próprio gateway, num sítio só (production.go).
+func egressAllowlistFromEnv(endpoint string) ([]string, error) {
+	// splitCSV já apara espaços e descarta vazios: um valor só de vírgulas/espaços (","/" , ")
+	// COLAPSA para lista vazia, e aí cai-se no fallback do endpoint em vez de recusar com uma
+	// allowlist vazia — o comportamento documentado («vazio ⇒ deriva do host do endpoint»).
+	if hosts := splitCSV(os.Getenv("AOS_MODEL_EGRESS_HOSTS")); len(hosts) > 0 {
+		return hosts, nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return nil, fmt.Errorf("%w: AOS_MODEL_ENDPOINT (%q) sem host para a allowlist de egress endurecida de producao; defina AOS_MODEL_EGRESS_HOSTS", ErrBadModelConfig, endpoint)
+	}
+	// Derivar pelos MESMOS acessores que `validateEgressURL` compara (u.Hostname()+u.Port()), não
+	// por u.Host: para um literal IPv6 sem porta, u.Host mantém os `[...]` e a entrada da allowlist
+	// deixaria de casar o `Hostname()` (sem brackets) que a validação usa — o nó recusava arrancar.
+	// net.JoinHostPort re-adiciona os brackets ao par com porta, que `newHostAllowlist` volta a
+	// remover simetricamente via net.SplitHostPort.
+	host := u.Hostname()
+	if p := u.Port(); p != "" {
+		host = net.JoinHostPort(host, p)
+	}
+	return []string{host}, nil
+}
 
 // parseModelFromEnv liga [Config.Model] a um gateway OpenAI-compatível (OmniRoute/OpenRouter/…) a
 // partir do ambiente — a via que preenche a porta [agentruntime.ModelClient] em vez do
@@ -1710,7 +2026,17 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
 	// o MESMO que verifica as tool calls. NÃO há stub allow-all no caminho.
 	modelVerifier := &lateBoundModelVerifier{}
-	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec)
+	// EGRESS (AOS-366) — sob produção computa-se a allowlist ANTES de compor o gateway, para que o
+	// caminho endurecido (HTTPClient nil) tenha para onde validar. Fora de produção fica nil e o
+	// wiring injecta o seam de dev. É aqui, na fronteira que lê o ambiente, que a decisão vive.
+	var egressHosts []string
+	if production {
+		egressHosts, err = egressAllowlistFromEnv(endpoint)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -299,6 +299,13 @@ type Config struct {
 	// (AOS-305) — os únicos que podem mudar níveis por POST /autonomy. Cada id TEM de constar
 	// de Operators (validado fail-closed no [Bootstrap]); vazio ⇒ nenhum operador muda níveis.
 	AutonomySetters []string
+	// DSARErasers são os emitterIDs de [Operators] que detêm a capability `dsar:erase` (AOS-367) —
+	// os únicos autorizados a ASSINAR as acções de destruição DSAR (/dsar/erase, /dsar/hold,
+	// /dsar/release, /dsar/expire). Cada id TEM de constar de Operators (validado fail-closed no
+	// [Bootstrap]); vazio ⇒ a prova de autoridade fica desligada e as rotas mantêm a autenticação
+	// por leitura (retro-compatível). Em produção a lista é obrigatória (main.go,
+	// ErrProductionNeedsDSARErasers).
+	DSARErasers []string
 	// SteerTTL é a janela de frescura dos sinais de controlo. <=0 ⇒ default 5min.
 	SteerTTL time.Duration
 	// SteerSkew tolera carimbos ligeiramente no futuro (relógios adiantados). Default 0.
@@ -317,6 +324,10 @@ type Config struct {
 	// AttestationVerifierToken é o bearer opcional apresentado ao componente de autoridade
 	// (material NÃO-secreto entra por env; o token vem de ficheiro montado, como o do Vault).
 	AttestationVerifierToken string
+	// AttestationVerifierBasic é o par `utilizador:senha` do verificador de attestation, lido
+	// de FICHEIRO MONTADO (AOS_ATTESTATION_VERIFIER_BASIC_PATH, AOS-338). Mutuamente exclusivo
+	// com AttestationVerifierToken — o construtor do adaptador aborta com os dois definidos.
+	AttestationVerifierBasic string
 
 	// ChallengeIssuance liga a FRESCURA POR-CERIMÓNIA do 4-eyes (AOS-266, achado F10): o modo
 	// issue-then-consume da porta [integration.ChallengeIssuance]. Com ela, o nó EMITE o
@@ -404,6 +415,14 @@ type Config struct {
 	Catalog             toolset.Catalog
 	Revalidator         *revalidation.Revalidator
 	Policy              integration.PolicyProvider
+	// SignedToolRegistry são os DADOS do registo assinado de tools de AOS_MODEL_TOOLS
+	// (AOS-381): catálogo assinado + pubkey do publicador + policy de supply-chain. Quando
+	// != nil e cfg.Revalidator == nil, o Bootstrap CONSTRÓI o revalidador (e o trust store)
+	// SELADO no WORM único do nó (`wormForChain`) — a via opt-in deixou de o construir sobre
+	// um MemStore volátil. Precedência: cfg.Revalidator injectado ganha; senão esta spec;
+	// senão o revalidador de REFERÊNCIA. nil ⇒ registo assinado desligado. Ver
+	// parseSignedToolRegistryFromEnv.
+	SignedToolRegistry *SignedToolRegistrySpec
 	// Authority é a fonte de autoridade user∩classe para o ScopeGate (AOS-071).
 	// nil ⇒ fonte vazia fail-closed (scope negado para toda a tool call); em testes
 	// e wiring de referência pode usar [authz.NewStaticAuthoritySource].
@@ -434,6 +453,22 @@ type Config struct {
 	// trust-anchor-only e o directório humano vive com o issuer EXTERNO (`cmd/aos-issuer`,
 	// AOS-226/227), não no nó.
 	HumanDirectory integration.HumanDirectory
+
+	// --- Barreira control/data-plane efectiva (AOS-363) ------------------------
+	// Privileged é o classificador de capabilities PRIVILEGIADAS que torna o TaintGate
+	// EFICAZ: uma tool call cuja autorização foi promovida sobre dados NÃO-CONFIÁVEIS
+	// (taint=untrusted) é barrada quando a capability é privilegiada. nil ⇒ conjunto vazio
+	// ⇒ TaintGate PRESENTE-MAS-INERTE (o comportamento de todos os deployments até AOS-363,
+	// preservado: a barreira estrutural fica desligada e a única aplicação de taint que resta é
+	// a cláusula `context.taint != "untrusted"` que uma regra Cedar TRAGA — e nem todas trazem:
+	// `allow_fs_read` do bundle de referência ainda não a tem, AOS-363 critério 6, por fechar).
+	//
+	// SUPERFÍCIE DE CONFIGURAÇÃO (AOS-363): escrita a partir de AOS_PRIVILEGED_CAPS em
+	// [nodeConfigFromEnv] — sem isso o campo era INALCANÇÁVEL pelo binário e o nó caía sempre
+	// no conjunto vazio (o achado central de analises/13 §2.1). Não-vazia ⇒ o ápice adopta a
+	// via ENDURECIDA (recusa arrancar se o gate ficar inerte); ausente ⇒ via estrita inerte,
+	// retro-compatível. É OPT-IN por desenho: nenhum nó existente regride.
+	Privileged referencemonitor.PrivilegedAuthorizer
 
 	// --- Substrato DURÁVEL (AOS-170) -------------------------------------------
 	// DurableExecution activa o checkpointer, capturer e step-ledger duráveis
@@ -535,14 +570,27 @@ type Config struct {
 	// é INFRA-ORG por trás desta porta; um HSM key-never-leaves exige a porta de envelope (residual
 	// nomeado com eixo em DEF-302). nil ⇒ referência in-memory demo-grade.
 	DSARVault audit.KeyVault
+	// ProductionMode espelha `AOS_MODE=production` (AOS-328). Existe como CAMPO e não como
+	// leitura de ambiente dentro do `Bootstrap` porque as guardas de produção têm de ser
+	// exercitáveis sem mexer no ambiente do processo — a mesma razão pela qual `hardened`
+	// deriva de `cfg.IssuerPubKey` e não de um `os.Getenv` a meio da composição.
+	ProductionMode bool
+	// ShredDestroyUnconditional é a DECLARAÇÃO EXPLÍCITA de que a custódia composta destrói
+	// incondicionalmente e por isso não precisa de confirmar (AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL,
+	// AOS-328). É o escape da guarda de produção, no molde de AOS_TLS_EXTERNAL_TERMINATION:
+	// aceita-se o estado, mas só depois de alguém o ter DECLARADO.
+	ShredDestroyUnconditional bool
 	// BrokerVault é o cliente Vault REAL (KV v2) da custódia de CREDENCIAIS DOWNSTREAM
 	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
 	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
 	// material). PREPARADO por AOS-264 a partir do ambiente, mas a TROCA MEDIADA ainda
-	// NÃO está ligada ao gateway nesta entrega: é CONSUMIDO em AOS-265 (a porta de
-	// aquisição in-process). nil ⇒ não configurado. O banner declara o modo e que a
+	// NÃO está ligada ao gateway. nil ⇒ não configurado. O banner declara o modo e que a
 	// troca está pendente — nunca "broker ligado" (seria a promessa a mais que AOS-248
 	// proíbe). Ver broker_vault_env.go.
+	//
+	// CORRECÇÃO (AOS-325): apontava o consumo para AOS-265, que JÁ ATERROU (a porta
+	// `broker.AcquireInProcess` existe e é testada) sem ligar a troca. O bloqueador real
+	// é o DEF-218.
 	BrokerVault broker.VaultClient
 	// BrokerVaultAddr / BrokerVaultKVMount são material PÚBLICO (uma URL, um nome de
 	// mount) que o banner usa para declarar o modo do broker Vault. Vazios ⇒ dormente.
@@ -636,6 +684,11 @@ type Config struct {
 	OTLPClientCertPath  string
 	OTLPClientKeyPath   string
 	OTLPBearerTokenPath string
+	// OTLPServiceName é o service.name do RECURSO OTLP que o nó emite (AOS-368) — a
+	// IDENTIDADE do produtor que o backend usa para atribuir o trace. Vazio ⇒ o exporter
+	// aplica o default determinista "aos" ([defaultOTLPServiceName]), pelo que o documento
+	// NUNCA sai como `unknown_service`. Só se aplica quando o nó ABRE o exporter.
+	OTLPServiceName string
 
 	// --- Relógios injectáveis (testes determinísticos) -------------------------
 	IssuerClock   func() time.Time
@@ -704,6 +757,11 @@ type Node struct {
 	// contra [Config.Operators]. É o que o handler de POST /autonomy consulta ANTES de
 	// autenticar: assinar bem não chega, é preciso deter o direito.
 	AutonomySetters map[string]bool
+	// DSARErasers é o conjunto dos emitterIDs com `dsar:erase` (AOS-367), já validados contra
+	// [Config.Operators]. É o que os handlers das quatro rotas DSAR consultam ANTES do efeito para
+	// exigir a prova de autoridade. Vazio (não composto) ⇒ prova DESLIGADA (as rotas mantêm a
+	// autenticação por leitura, retro-compatível); não-vazio ⇒ prova EXIGIDA.
+	DSARErasers map[string]bool
 	// fencingAuth é a autoridade de token das escritas fenceadas do ledger/checkpointer
 	// (AOS-299). Não-exportada: só o [NewNodeService] lhe liga o LeaseManager, e mais
 	// ninguém tem razão para lhe tocar. nil fora da execução durável.
@@ -988,6 +1046,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 		autonomySetters[id] = true
 	}
+	// (1a-ter) AUTORIDADE SOBRE A DESTRUIÇÃO DE DADOS (AOS-367). Cada emitterID com `dsar:erase`
+	// TEM de ter pubkey em Operators — o mesmo raciocínio da guarda de AOS_AUTONOMY_SETTERS: um
+	// direito de destruir atribuído a quem nunca autentica é uma autoridade anunciada e não
+	// cumprida. O [SteerAuth] composto abaixo já regista TODOS os operadores, pelo que um eraser
+	// ⊆ Operators tem sempre pubkey registada para autenticar a assinatura DSAR.
+	dsarErasers := make(map[string]bool, len(cfg.DSARErasers))
+	for _, id := range cfg.DSARErasers {
+		if id == "" {
+			return nil, fmt.Errorf("%w: emitterID vazio", ErrBadDSARErasers)
+		}
+		if _, ok := cfg.Operators[id]; !ok {
+			return nil, fmt.Errorf("%w: emitterID %q nao consta de AOS_OPERATORS", ErrBadDSARErasers, id)
+		}
+		if dsarErasers[id] {
+			return nil, fmt.Errorf("%w: emitterID %q duplicado", ErrBadDSARErasers, id)
+		}
+		dsarErasers[id] = true
+	}
 	seenPrincipal := make(map[string]struct{}, len(cfg.Approvers))
 	seenApKey := make(map[string]string, len(cfg.Approvers))
 	for i, a := range cfg.Approvers {
@@ -1258,6 +1334,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// confiança FORA do store (as pubkeys de AOS_OPERATORS e o direito `autonomy:set`), e o que
 	// não verificar ABORTA o arranque. É a única razão pela qual `cfg.Operators` e
 	// `autonomySetters` são precisos nesta linha.
+	// GATE DE PROVA DE SUBIDA POR FICHEIRO (AOS-377). AQUI, e não na fronteira de config, pela
+	// mesma razão que o validador de rehidratação: verificar uma prova exige as pubkeys de
+	// AOS_OPERATORS e o direito `autonomy:set`, a raiz de confiança FORA do WORM que só o
+	// composition-root tem. Armado, uma SUBIDA a L4/L5 declarada em AOS_AUTONOMY_LEVELS passa a
+	// exigir as duas assinaturas de AOS_AUTONOMY_PROOFS — a mesma cerimónia da rota; sem elas a
+	// subida é recusada ao nível (o par fica no anterior) e declarada no banner, nunca aplicada.
+	cfg.Autonomy.armarGateDeProva(cfg.Operators, autonomySetters)
 	if err := cfg.Autonomy.provision(ctx, worm,
 		autonomy.WithRehydrateValidator(autonomyRehydrateValidator(cfg.Operators, autonomySetters))); err != nil {
 		return nil, err
@@ -1291,6 +1374,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// ela realmente vive. FAIL-CLOSED: um vault injectado que falha propaga o erro pela cadeia de
 	// cifra/shred; NUNCA há fallback silencioso para o in-memory.
 	dsarVaultInjected := cfg.DSARVault != nil
+	// AOS-328 — SOB PRODUÇÃO, UMA CUSTÓDIA INJECTADA TEM DE SABER CONFIRMAR A DESTRUIÇÃO.
+	//
+	// Sem confirmador o fluxo DSAR sela `dsar.key_destroyed` SEM PERGUNTAR. O AOS-322 pôs isso
+	// no banner («NAO ARMADA, e NAO E CORRECTO») — e declarar não é impor. O risco nomeado no
+	// `DEF-813` é a TERCEIRA custódia: um KMS que POSSA falhar a destruir e não implemente a
+	// porta reabre, pela via da omissão, o defeito que a porta foi criada para fechar.
+	//
+	// SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA. O vault de referência compõe sem declaração
+	// nenhuma — transformar o modo de desenvolvimento numa configuração cerimoniosa é o custo
+	// que o ticket proíbe. A verificação corre AQUI e não em `nodeConfigFromEnv` porque a
+	// custódia pode ser injectada programaticamente, sem passar pelo ambiente.
+	if cfg.ProductionMode && dsarVaultInjected && !cfg.ShredDestroyUnconditional {
+		if confirmadorDeShredDe(cfg.DSARVault) == nil {
+			return nil, ErrProductionNeedsShredConfirmation
+		}
+	}
 	var dsarVault audit.KeyVault
 	if dsarVaultInjected {
 		dsarVault = cfg.DSARVault
@@ -1384,6 +1483,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// exporter. Os caminhos vêm da Config (env em main.go); vazios ⇒ sem autenticação de
 		// cliente (comportamento actual). Fail-closed de CONFIG dentro de NewOTLPHTTPExporter.
 		otlpOpts := []OTLPOption{WithOTLPLogger(log)}
+		// IDENTIDADE do recurso OTLP (AOS-368): service.name. Vazio ⇒ o exporter mantém o
+		// default determinista "aos" — o nó nunca exporta um documento sem identidade.
+		if cfg.OTLPServiceName != "" {
+			otlpOpts = append(otlpOpts, WithOTLPServiceName(cfg.OTLPServiceName))
+		}
 		if cfg.OTLPClientCertPath != "" || cfg.OTLPClientKeyPath != "" {
 			otlpOpts = append(otlpOpts, WithOTLPClientCertFiles(cfg.OTLPClientCertPath, cfg.OTLPClientKeyPath))
 		}
@@ -1411,6 +1515,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if tracingEnabled {
 		sloTap = newSLOSpanTap(defaultSLOTapCapacity)
 		tracer = otelgenai.NewTracer(sloTeeExporter{primary: exporter, tap: sloTap}, cfg.TracerOptions...)
+		if cfg.PDP != nil {
+			// AOS-371: o PDP partilha o MESMO tracer do RM/Runtime; abriu antes deste existir
+			// (nodeConfigFromEnv → loadPolicyBundleFromEnv → pdp.Open), pelo que WithTracer não
+			// o alcança — injecta-se aqui, depois do tracer real (não o NoopTracer) estar composto.
+			// Sem esta linha os spans aos.policy.reload e aos.autonomy.level nunca são emitidos no
+			// binário entregue. Gated a tracingEnabled: o caminho NoopTracer fica byte-idêntico.
+			cfg.PDP.SetTracer(tracer)
+		}
 	}
 	// EPIC-08 sobre AOS-100 — o Event Store REPLICADO passa a emitir spans.
 	//
@@ -1560,6 +1672,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// APROVADORES — quem pede um challenge é quem o vai usar, e assina o pedido com a sua chave.
 	var challengeAuth *integration.Ed25519Authenticator
 	var attestationComposed, enrollmentComposed, freshnessComposed bool
+	// attestationScheme é o esquema de autenticação REALMENTE composto ("bearer", "basic" ou
+	// vazio), lido do verificador construído e não da config (AOS-338). É o que o banner
+	// declara: um nó que diz «attestation LIGADA» sem dizer como se autentica esconde metade
+	// da postura.
+	var attestationScheme string
 	if len(cfg.Approvers) > 0 {
 		registry := hitl.NewMemApproverRegistry()
 		for _, a := range cfg.Approvers {
@@ -1575,12 +1692,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			av, aerr := integration.NewRemoteDeviceAttestationVerifier(integration.RemoteAttestationConfig{
 				URL:       cfg.AttestationVerifierURL,
 				AuthToken: cfg.AttestationVerifierToken,
+				BasicAuth: cfg.AttestationVerifierBasic,
 			})
 			if aerr != nil {
 				return nil, fmt.Errorf("aos: verificador de attestation remoto (AOS-177): %w", aerr)
 			}
 			feOpts = append(feOpts, integration.WithDeviceAttestation(av))
 			attestationComposed = true
+			attestationScheme = av.AuthScheme()
 		}
 
 		// ATRIBUIÇÃO DISPOSITIVO↔APROVADOR (AOS-266) — opcional. Com dispositivos em config, o
@@ -1712,20 +1831,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// modelo nos turnos já vividos, e a acção aprovada podia deixar de ser a acção
 	// reproduzida. Aplicá-lo na composição do nó torna a garantia independente da origem.
 	model = newResumeAwareModelClient(model)
+	// Catálogo/policy: injectados por config ganham; senão, se o registo assinado de tools
+	// (AOS_MODEL_TOOLS_REGISTER) foi parseado, vêm da spec; senão, o de referência (catálogo
+	// vazio default-deny, policy permissiva). O REVALIDADOR resolve-se MAIS ABAIXO, depois de
+	// `wormForChain` existir — porque as três vias (injectado / registo assinado / referência)
+	// têm de selar no MESMO WORM único do nó (AOS-381).
 	catalog := cfg.Catalog
+	if catalog == nil && cfg.SignedToolRegistry != nil {
+		catalog = cfg.SignedToolRegistry.Catalog
+	}
 	if catalog == nil {
 		catalog = emptyCatalog{}
 	}
 	policy := cfg.Policy
+	if policy == nil && cfg.SignedToolRegistry != nil {
+		policy = cfg.SignedToolRegistry.Policy
+	}
 	if policy == nil {
 		policy = integration.StaticPolicy{MaxEgress: domain.EgressExternal}
-	}
-	revalidator := cfg.Revalidator
-	if revalidator == nil {
-		revalidator, err = referenceRevalidator()
-		if err != nil {
-			return nil, fmt.Errorf("aos: revalidador de referência: %w", err)
-		}
 	}
 
 	// (6b) OBSERVABILIDADE ligada à CADEIA (AOS-173). Só quando a observabilidade está
@@ -1769,6 +1892,32 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		freezeOpts = append(freezeOpts, toolset.WithTracer(tracer))
 		runtimeOpts = append(runtimeOpts, agentruntime.WithTracer(tracer))
 		chainTracer = tracer // a MESMA variável das três vias acima (invariante de SecuredConfig.Tracer)
+	}
+
+	// (6b') REVALIDADOR SELADO NO WORM ÚNICO (AOS-381). A selagem da revalidação por chamada
+	// (e das mudanças do trust store) TEM de apontar o MESMO `wormForChain` que vai para
+	// SecuredConfig.WORM — senão o fail-closed do ápice (integration.ErrRevalidatorNotSealedToWORM)
+	// recusa o arranque. Por isso a decisão vive AQUI, DEPOIS de `wormForChain` estar decorado
+	// (a igualdade é por PONTEIRO: com observabilidade ligada, o decorador newAuditTracingStore é
+	// o store real, e é a ele que se sela). Precedência:
+	//   1. cfg.Revalidator injectado ⇒ usa-o tal-e-qual (sujeito ao fail-closed do ápice — quem
+	//      injecta tem de o ter selado a cfg.WORM);
+	//   2. registo assinado (AOS_MODEL_TOOLS_REGISTER) ⇒ constrói o revalidador do catálogo
+	//      assinado, com a pubkey do publicador no trust store, TUDO selado em wormForChain;
+	//   3. nada ⇒ revalidador de REFERÊNCIA (trust store vazio) selado em wormForChain.
+	revalidator := cfg.Revalidator
+	if revalidator == nil {
+		if cfg.SignedToolRegistry != nil {
+			revalidator, err = signedToolRegistryRevalidator(ctx, cfg.SignedToolRegistry, wormForChain)
+			if err != nil {
+				return nil, fmt.Errorf("aos: revalidador do registo assinado: %w", err)
+			}
+		} else {
+			revalidator, err = referenceRevalidator(wormForChain)
+			if err != nil {
+				return nil, fmt.Errorf("aos: revalidador de referência: %w", err)
+			}
+		}
 	}
 
 	// (6c) STEER LIGADO AO LOOP (AOS-218, ACHADO-2). Compõe o adaptador que faltava:
@@ -1940,13 +2089,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Revalidator:    revalidator,
 		Policy:         policy,
 		WORM:           wormForChain, // decorado com observabilidade quando ligada (AOS-173)
-		Verifier:       verifier,     // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
-		Authority:      cfg.Authority,
-		PDP:            cfg.PDP,
-		ToolSetStore:   toolSetStore,
-		Checkpointer:   checkpointer,
-		Capturer:       capturer,
-		Ledger:         ledger,
+		// AOS-379: o MESMO Event Store do nó (`es`) materializa o canal tool.call.* — antes
+		// INALCANÇÁVEL como Event Store (só o WORM o via). O TeeSink faz o fan-out (WORM
+		// PRIMÁRIO, Event Store a seguir — a ordem garante que o ES nunca fica com um `mediated`
+		// falso; ver NewSecuredRuntime), e passa a valer o fail-closed do canal: uma falha a gravar
+		// o evento no caminho de permit NEGA a tool call. Durável conforme o `es` (NATS/file
+		// duráveis; eventstore.New de referência NÃO). Postura declarada no banner
+		// (mediationChannelPostureBanner).
+		MediationEvents: es,
+		Verifier:        verifier, // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
+		Authority:       cfg.Authority,
+		PDP:             cfg.PDP,
+		Privileged:      cfg.Privileged, // AOS-363: nil ⇒ TaintGate inerte (retro-compat); não-vazio ⇒ via endurecida
+		ToolSetStore:    toolSetStore,
+		Checkpointer:    checkpointer,
+		Capturer:        capturer,
+		Ledger:          ledger,
 		// AOS-254: liga o registo de compensações ao dispatcher durável (WithCompensationRegistry
 		// na composição de produção). nil quando a execução durável está desligada.
 		CompensationRegistry: compensations,
@@ -1973,7 +2131,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// binding NO RM do nó (sec.Monitor()) — no-bypass estrutural. Só agora, porque precisa do RM
 	// já construído. Casado com o EffectRewriter acima, fecha o caminho args→ExecRequest→sandbox
 	// para o loop live. Vazio ⇒ no-op. Fail-closed: uma falha de registo aborta o arranque.
-	if err := registerSandboxLaunchers(sec, es, sandboxBindings, sandboxSemExecutor, log); err != nil {
+	// AOS-344: recebe `cfg.ProductionMode` porque a escolha do driver é uma decisão de POSTURA —
+	// em produção o driver de referência in-process deixa de ser eleito
+	// ([ErrProductionNeedsSandboxDriver]).
+	if err := registerSandboxLaunchers(sec, es, sandboxBindings, sandboxSemExecutor, cfg.ProductionMode, log); err != nil {
 		return nil, err
 	}
 
@@ -2241,7 +2402,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// ATTESTATION DE DISPOSITIVO (AOS-177/AOS-266). O banner declara o estado REALMENTE
 		// composto (LIGADA/DORMENTE), nunca a intenção — SEGUE o wiring acima.
 		if attestationComposed {
-			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA")
+			// AOS-338 — o banner declara COMO o nó se autentica perante o componente, derivado do
+			// verificador CONSTRUÍDO. Sem isto, «LIGADA» não distingue um nó que autentica de um
+			// que fala anónimo, e a segunda postura é materialmente diferente.
+			autent := "SEM AUTENTICACAO (o componente tem de se proteger por outra via: mTLS, rede fechada, ou um proxy que autentique)"
+			switch attestationScheme {
+			case integration.AuthSchemeBearer:
+				autent = "autentica com Authorization: Bearer, do ficheiro montado em AOS_ATTESTATION_VERIFIER_TOKEN_PATH"
+			case integration.AuthSchemeBasic:
+				autent = "autentica com Authorization: Basic, do ficheiro montado em AOS_ATTESTATION_VERIFIER_BASIC_PATH (par utilizador:senha)"
+			}
+			log("  attestation de dispositivo (AOS-177): LIGADA — cada perna EXIGE attestationObject+clientDataJSON WebAuthn, verificados pelo componente externo (AOS_ATTESTATION_VERIFIER_URL); attestation ausente/invalida => perna RECUSADA."+" AUTENTICACAO: %s. Nenhum VALOR de credencial e impresso.", autent)
 		} else {
 			log("  attestation de dispositivo (AOS-177): DORMENTE — sem AOS_ATTESTATION_VERIFIER_URL o 4-eyes e SO estrutural (nao prova modelo nem posse do dispositivo); defina a URL do verificador externo para a ligar")
 		}
@@ -2363,6 +2534,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range budgetPostureBanner(runBudget != nil) {
 		log("%s", line)
 	}
+	// AOS-363: a postura da barreira control/data-plane sai do PREDICADO REAL do RM composto
+	// (Monitor.HasActiveTaintGate), nunca da intenção de config — a mesma disciplina de AOS-203.
+	// É o único chamador não-teste de HasActiveTaintGate: sem ele, o predicado de eficácia que
+	// AOS-219 exportou ficava exportado-mas-não-consultado (o residual que EPIC-18 §5 registava).
+	for _, line := range taintGatePostureBanner(sec.Monitor().HasActiveTaintGate()) {
+		log("%s", line)
+	}
+	// AOS-379: postura do CANAL DE EVENTOS DE MEDIAÇÃO. O argumento deriva do que foi REALMENTE
+	// composto — `es != nil` (a porta MediationEvents foi preenchida com este mesmo store) e a sua
+	// durabilidade (in-memory de referência só quando NEM path NEM NATS foram dados) —, nunca da
+	// intenção da config. É a linha que declara honestamente que o canal tool.call.* deixou de ser
+	// inalcançável como Event Store, e a sua nova implicação fail-closed.
+	esMediationDurable := cfg.EventStore != nil || cfg.EventStorePath != "" || cfg.EventStoreNATS != ""
+	for _, line := range mediationChannelPostureBanner(es != nil, esMediationDurable) {
+		log("%s", line)
+	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
 	// (`progress`, o mesmo valor entregue a agentruntime.WithProgressObserver), nunca a
 	// intenção da config. Vem LOGO A SEGUIR ao orçamento porque é a leitura desse tecto.
@@ -2382,13 +2569,43 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	// AOS-264: o Vault de credenciais downstream do broker, PREPARADO por
 	// AOS_BROKER_VAULT_* (separado do KEK, D7). Declara "configurado, troca pendente"
-	// ou "dormente" — nunca "broker ligado" (a troca só medeia algo em AOS-265). O
+	// ou "dormente" — nunca "broker ligado" (a troca não medeia nada: a porta de
+	// AOS-265 existe, o que falta é a composição, bloqueada em DEF-218). O
 	// argumento deriva do ESTADO composto: `cfg.BrokerVault != nil` ⇒ preparado.
 	var brokerVaultSet *brokerVaultSettings
 	if cfg.BrokerVault != nil {
 		brokerVaultSet = &brokerVaultSettings{Addr: cfg.BrokerVaultAddr, KVMount: cfg.BrokerVaultKVMount}
 	}
 	for _, line := range brokerVaultPostureBanner(brokerVaultSet) {
+		log("%s", line)
+	}
+	// POLÍTICA DO BROKER (AOS-332): os DOIS eixos — provider (AOS-324/AOS-330) e
+	// recurso↔provedor (AOS-331). O `DEF-218` exige assertar que a postura selada diz
+	// `enforced`, mas isso só é verificável DEPOIS da primeira troca bem-sucedida; um nó em
+	// `unset` que ainda não trocou nada era indistinguível de um em `enforced`. Esta linha
+	// quebra a circularidade: a postura passa a ser observável no ARRANQUE.
+	//
+	// O ESTADO DERIVA DO QUE EXISTE, e o que existe é nada: o nó não constrói `*broker.Broker`
+	// (`broker.New` não tem chamador de produção), pelo que `Composto` é falso e a linha
+	// declara NÃO-APLICABILIDADE em vez de inventar um `unset`. No dia em que o wiring ligar,
+	// é aqui que os dois campos passam a vir do broker composto — e o banner deixa de precisar
+	// de mudar de forma.
+	for _, line := range brokerPolicyPostureBanner(posturaDaPoliticaDoBroker{}) {
+		log("%s", line)
+	}
+	// SERVIÇOS DE PLATAFORMA (AOS-326). MEM e REG eram os dois únicos serviços do
+	// `_BRIEF` §2 sobre os quais o arranque não dizia nada — e são aqueles em que a
+	// distância entre a biblioteca (testada, com gate próprio) e o nó composto é maior.
+	// O argumento deriva do ESTADO, como o do credential broker: `cfg.Catalog`/
+	// `cfg.Revalidator` a nil significam o catálogo vazio e o revalidador de referência.
+	// AOS-381: o catálogo/revalidador NÃO-referência pode vir por config OU pelo registo
+	// assinado de tools (que já não passa por cfg.Revalidator). A durabilidade das selagens
+	// deriva do ESTADO do WORM composto: durável sse é um FileStore em disco (cfg.WORMPath != "").
+	for _, line := range plataformaPostureBanner(posturaDosServicosDePlataforma{
+		CatalogoInjectado:    cfg.Catalog != nil || cfg.SignedToolRegistry != nil,
+		RevalidadorInjectado: cfg.Revalidator != nil || cfg.SignedToolRegistry != nil,
+		SelagemRegDuravel:    cfg.WORMPath != "",
+	}) {
 		log("%s", line)
 	}
 	// AUTORIDADE DE ESCOPO (AOS-071). O banner distingue a defesa-em-profundidade ACTIVA
@@ -2432,6 +2649,35 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular INJECTADO por config (custodia EXTERNA pela porta audit.KeyVault) — as KEK vivem FORA do processo; a durabilidade/rotacao e do custodiante (o no nao a atesta); /dsar/erase e a expiracao destroem a KEK NESSE vault")
 	} else {
 		log("custodia da KEK (AOS-215/DEF-302): vault de PII por-titular de REFERENCIA in-memory — DEMO-GRADE: as KEK vivem em MEMORIA do processo, NAO-duraveis (perdem-se no restart); injecte Config.DSARVault (key-service/software-KMS de custodia externa) para producao; o KMS/HSM real e infra-org por tras da mesma porta")
+	}
+	// CONFIRMAÇÃO DO CRYPTO-SHRED (AOS-322). A porta [dsar.ShredConfirmer] é OPCIONAL
+	// por desenho: nem toda a custódia sabe responder «esta chave deixou de existir».
+	// O `InMemoryKeyVault` não a implementa e está CERTO ao não a implementar — o seu
+	// `Delete` é um `delete()` num mapa e não tem como falhar, pelo que não há
+	// pendência possível para reportar. O Vault Transit implementa-a (relê a chave e
+	// exige 404).
+	//
+	// PORQUE ISTO PRECISA DE SER DITO EM VOZ ALTA. As duas leituras de um `/readyz`
+	// verde são muito diferentes — «não há destruições por confirmar» e «esta custódia
+	// não sabe responder à pergunta» — e sem esta linha o operador não as distingue. E
+	// a opcionalidade é fail-open para a TERCEIRA custódia: um KMS de terceiros que
+	// possa falhar a destruir e não implemente a porta faria a cadeia selar
+	// `dsar.key_destroyed` sobre uma irrecuperabilidade que ninguém verificou — o
+	// defeito exacto que a porta foi criada para fechar, reaberto pela via da omissão.
+	//
+	// O DISCRIMINANTE É `dsarVaultInjected`, E A PRIMEIRA VERSÃO DESTA LINHA NÃO O USAVA.
+	// A revisão adversarial apanhou-o: o ramo não-armado dizia «com o vault de REFERENCIA
+	// isto é CORRECTO», mas dispara para QUALQUER custódia sem a porta — incluindo uma de
+	// terceiros injectada por [Config.DSARVault]. Nesse caso o nó afirmava que a ausência de
+	// confirmação era correcta PORQUE o vault é o de referência, quando não é. Era o cenário
+	// que o DEF-813 nomeia como risco, e o banner comprava-lhe confiança em vez de o expor.
+	switch {
+	case confirmadorDeShredDe(dsarVault) != nil:
+		log("confirmacao de crypto-shred (AOS-322): ARMADA — a custodia composta sabe responder se a destruicao da KEK esta CONFIRMADA, e o fluxo DSAR pergunta-lhe ANTES de a cadeia afirmar o apagamento. Uma destruicao nao confirmada sela dsar.shred_unconfirmed, poe o /readyz VERMELHO e emite aos_dsar_vault_shred_unconfirmed>0")
+	case !dsarVaultInjected:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e CORRECTO — a custodia composta e o vault de REFERENCIA in-memory, que nao implementa a porta de confirmacao porque nao precisa: o seu Delete e um apagamento em memoria que NAO PODE FALHAR, logo nao ha pendencia possivel. Um /readyz verde neste modo significa 'nada a confirmar', NAO 'confirmado'. Ver DEF-813")
+	default:
+		log("confirmacao de crypto-shred (AOS-322): NAO ARMADA, e NAO E CORRECTO — foi INJECTADA uma custodia externa por Config.DSARVault que NAO implementa a porta de confirmacao. O fluxo DSAR sela dsar.key_destroyed SEM perguntar, pelo que a cadeia passa a afirmar uma irrecuperabilidade que NINGUEM verificou. Ao contrario do vault de referencia, esta custodia PODE falhar a destruir (rede, politica, autoridade) e o nó nao tem como o saber. Implemente a porta na custodia ou aceite que o apagamento do Art. 17 nao esta provado. Eixo: DEF-813")
 	}
 	// LEGAL HOLD + EXPIRAÇÃO (AOS-213, CON-02/DEF-903). O banner declara a superfície de
 	// administração REALMENTE composta e o MODO de expiração (sob demanda por rota) — sem
@@ -2518,6 +2764,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Verifier:         verifier,
 		SteerAuth:        steerAuth,
 		AutonomySetters:  autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
+		DSARErasers:      dsarErasers,     // AOS-367: quem detém dsar:erase (⊆ Operators, validado acima)
 		Revocations:      revocations,
 		Autonomy:         cfg.Autonomy,
 		EventStore:       es,
@@ -2688,14 +2935,36 @@ type emptyCatalog struct{}
 func (emptyCatalog) ActiveEntries(context.Context) ([]domain.Entry, error) { return nil, nil }
 
 // referenceRevalidator constrói o revalidador de REFERÊNCIA (AOS-051) com um trust
-// store vazio sobre um audit in-memory. É fail-closed por construção: sem publicadores
-// confiados, qualquer artefacto que precisasse de revalidação de assinatura seria
-// bloqueado — coerente com o default-deny do nó de referência.
-func referenceRevalidator() (*revalidation.Revalidator, error) {
-	auditStore := audit.NewMemStore()
-	trust, err := signing.NewTrustStore(auditStore)
+// store vazio, SELADO no WORM único do nó (`worm`). É fail-closed por construção: sem
+// publicadores confiados, qualquer artefacto que precisasse de revalidação de assinatura
+// seria bloqueado — coerente com o default-deny do nó de referência.
+//
+// AOS-381: recebe o `worm` (tipicamente `wormForChain`) em vez de abrir um
+// [audit.NewMemStore] volátil próprio. O trust store e a revalidação selam-se no MESMO
+// store durável tamper-evident que alimenta o resto da cadeia — sem isto, a via por
+// omissão selava num store que nenhum leitor lia e que não sobrevivia ao restart.
+func referenceRevalidator(worm audit.Store) (*revalidation.Revalidator, error) {
+	trust, err := signing.NewTrustStore(worm)
 	if err != nil {
 		return nil, err
 	}
-	return revalidation.New(trust, auditStore)
+	return revalidation.New(trust, worm)
+}
+
+// signedToolRegistryRevalidator constrói o revalidador da via OPT-IN
+// (AOS_MODEL_TOOLS_REGISTER) a partir dos DADOS parseados do registo assinado, SELADO no
+// WORM único do nó (`worm`). É a construção que AOS-381 move de [parseSignedToolRegistryFromEnv]
+// para o Bootstrap: o trust store recebe a pubkey do publicador e é selado em `worm`, e a
+// revalidação sela no MESMO `worm` — logo o `Add` do publicador e cada decisão de
+// revalidação por chamada tornam-se DURÁVEIS e legíveis (fail-closed do ápice satisfeito
+// por igualdade de ponteiro).
+func signedToolRegistryRevalidator(ctx context.Context, spec *SignedToolRegistrySpec, worm audit.Store) (*revalidation.Revalidator, error) {
+	trust, err := signing.NewTrustStore(worm)
+	if err != nil {
+		return nil, fmt.Errorf("trust store: %w", err)
+	}
+	if err := trust.Add(ctx, spec.PublisherKeyID, spec.PublisherKey); err != nil {
+		return nil, fmt.Errorf("trust add: %w", err)
+	}
+	return revalidation.New(trust, worm)
 }

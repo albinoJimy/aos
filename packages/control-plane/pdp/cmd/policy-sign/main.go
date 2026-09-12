@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -78,6 +79,14 @@ func sign(dir, version, keyPath string) (pdp.Manifest, string, error) {
 	p, err := pdp.Open(dir)
 	if err != nil {
 		return m, "", fmt.Errorf("verificacao pos-assinatura falhou: %w", err)
+	}
+	// AVALIAÇÃO DE FUMO (AOS-378) — ANTES de declarar verde. Open só VERIFICA a assinatura e
+	// COMPILA a policy set; NÃO avalia. Uma regra que refira um atributo fora do mapa fixo do
+	// motor compila e assina na mesma, mas em runtime dá diag.Errors ⇒ deny de tudo. Correr
+	// uma decisão de fumo por regra fecha esse buraco: se falhar, sign devolve erro, a
+	// ferramenta sai != 0 e o ramo que imprime "verificacao OK" NÃO é alcançado.
+	if err := p.SmokeDecideRules(context.Background()); err != nil {
+		return m, "", fmt.Errorf("avaliacao de fumo pos-assinatura falhou (regra assina mas nega em runtime): %w", err)
 	}
 	return m, p.Version(), nil
 }

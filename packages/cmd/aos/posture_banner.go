@@ -31,6 +31,8 @@ import (
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+
+	"github.com/aos-ref/platform/broker"
 )
 
 // BudgetScopeDeclaration é o ALCANCE da v1 do orçamento — a FRASE, não uma paráfrase dela.
@@ -94,6 +96,55 @@ const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo 
 //
 // A linha existe para que "o nó não me avisou" deixe de ser verdade: um agente autónomo sem
 // tecto de gasto é uma decisão, e uma decisão tem de estar escrita onde o operador a lê.
+// taintGatePostureBanner declara a postura da BARREIRA CONTROL/DATA-PLANE (o TaintGate do
+// Reference Monitor, ADR-005/AOS-069). O argumento é o PREDICADO REAL do RM composto —
+// [referencemonitor.Monitor.HasActiveTaintGate] —, nunca a intenção de config: uma linha que
+// afirmasse "activo" a partir de AOS_PRIVILEGED_CAPS sem consultar o gate composto poderia
+// mentir (a mesma disciplina de AOS-203 que rege as outras posturas deste ficheiro).
+//
+// active==false é o estado retro-compatível de todo deployment que não define
+// AOS_PRIVILEGED_CAPS — e a linha nomeia essa inércia sem a disfarçar. Com o gate inerte, a
+// única aplicação de taint que resta é a cláusula `context.taint != "untrusted"` que uma regra
+// Cedar traga — e o banner NÃO afirma que todas a trazem: no bundle de referência a regra
+// `allow_fs_read` ainda não a tem (AOS-363 critério 6, por fechar), pelo que o banner nomeia o
+// buraco em vez de o esconder. É o achado central de analises/13 §2.1 tornado visível no arranque.
+func taintGatePostureBanner(active bool) []string {
+	if active {
+		return []string{
+			"taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao foi promovida sobre dados NAO-CONFIAVEIS (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar",
+		}
+	}
+	return []string{
+		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); e OPT-IN de proposito",
+	}
+}
+
+// mediationChannelPostureBanner declara a postura do CANAL DE EVENTOS DE MEDIAÇÃO do Reference
+// Monitor (tool.call.mediated/denied/escalated, AOS-379). Os argumentos são o ESTADO REALMENTE
+// composto — `composed` = a porta [integration.SecuredConfig.MediationEvents] foi preenchida com o
+// Event Store do nó; `durable` = esse store é durável (NATS/file) e não a referência in-memory —,
+// nunca a intenção da config (a mesma disciplina de AOS-203 que rege as outras posturas deste
+// ficheiro). É a linha que fecha o achado central de AOS-379: até aqui o canal era INALCANÇÁVEL
+// como Event Store (o único destino era a cadeia tamper-evident do WORM) e um comentário afirmava
+// FALSAMENTE que "o canal está no Event Store". Regra deste ficheiro (nunca dizer "ligado" sobre
+// algo não composto): só a perna `composed && durable` afirma o canal durável e a sua NOVA
+// implicação fail-closed; a referência in-memory declara-se como tal; não-composto diz NAO COMPOSTO.
+func mediationChannelPostureBanner(composed, durable bool) []string {
+	if !composed {
+		return []string{
+			"canal de eventos de mediacao (AOS-379): NAO COMPOSTO — a porta MediationEvents ficou nil, logo o canal tool.call.mediated/denied/escalated NAO e materializado no Event Store: o unico destino de cada mediacao e a cadeia tamper-evident do WORM (audit.NewMediationSink), e o AOS-332 nao teria de onde reconstruir \"quem autorizou o que\". E o estado anterior a AOS-379. Eixo: AOS-379 / EPIC-25",
+		}
+	}
+	if durable {
+		return []string{
+			"canal de eventos de mediacao (AOS-379): COMPOSTO e DURAVEL — a porta MediationEvents recebeu o Event Store DURAVEL do no (NATS/file), logo cada tool.call.mediated/denied/escalated e materializada NELE (referencemonitor.NewEventStoreSink, sink PRIMARIO do TeeSink com o seq duravel canonico a cabeca) EM PARALELO com a cadeia tamper-evident do WORM (a seguir). O AOS-332 passa a ter de onde ler o canal. IMPLICACAO NOVA (fail-closed): auditar-antes-do-efeito passa a EXIGIR o Event Store, nao so o WORM — uma falha a gravar o evento de mediacao no caminho de PERMIT propaga (o TeeSink para no 1o sink que falha) e o RM degrada a decisao para DENY: um Event Store em baixo passa a NEGAR tool calls, nao so a perder rasto. Eixo: AOS-379 / EPIC-25",
+		}
+	}
+	return []string{
+		"canal de eventos de mediacao (AOS-379): COMPOSTO mas NAO DURAVEL — a porta MediationEvents recebeu o Event Store de REFERENCIA in-memory (eventstore.New, sem AOS_EVENTSTORE_PATH nem AOS_EVENTSTORE_NATS): o canal tool.call.* E materializado no Event Store e o AOS-332 le-o DENTRO desta incarnacao, mas NAO SOBREVIVE a um reinicio do no. Vale a MESMA implicacao fail-closed (uma falha a gravar o evento no caminho de PERMIT degrada para DENY), so que sobre um substrato volatil. Defina AOS_EVENTSTORE_PATH (ou AOS_EVENTSTORE_NATS) para tornar o canal DURAVEL. Eixo: AOS-379 / EPIC-25",
+	}
+}
+
 func budgetPostureBanner(composed bool) []string {
 	if composed {
 		return []string{
@@ -106,7 +157,15 @@ func budgetPostureBanner(composed bool) []string {
 }
 
 // credentialBrokerPostureBanner declara a AUSÊNCIA do Credential Broker (AOS-070, ADR-006).
-// Também incondicional: `platform/broker` não é importado pelo nó. O que o nó faz em vez disso
+//
+// CORRECÇÃO (AOS-325): esta linha dizia «`platform/broker` não é importado pelo nó». Deixou de
+// ser verdade com AOS-264 — `bootstrap.go` e `broker_vault_env.go` importam-no, e o nó constrói
+// `broker.NewVaultKVv2`. O que se mantém verdadeiro, e é o que o banner emitido diz, é que o nó
+// não COMPÕE o broker: `broker.New` não tem chamador de produção, e o cliente Vault construído
+// alimenta apenas a linha de postura. Importar não é compor, e a distinção é a diferença entre
+// «o eixo está preparado» e «a troca medeia alguma coisa».
+//
+// O que o nó faz em vez disso
 // — ler segredos de FICHEIROS MONTADOS no arranque e retê-los em memória do processo enquanto
 // viver — é legítimo e é o padrão documentado, mas NÃO é o invariante do ADR-006 e não deve ser
 // confundido com ele: sem broker não há troca token→credencial server-side, não há TTL curto,
@@ -121,7 +180,7 @@ func budgetPostureBanner(composed bool) []string {
 // Duas famílias, com riscos distintos, por isso declaradas em separado:
 //
 //   - CREDENCIAIS DOWNSTREAM (bearers/tokens que o nó APRESENTA a terceiros): AOS_MODEL_API_KEY_PATH,
-//     AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH;
+//     AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_BASIC_PATH;
 //   - CHAVES PRIVADAS do próprio nó: AOS_ISSUER_KEY_PATH (`main.go` — a chave ed25519 de ASSINATURA
 //     da autoridade co-localizada, o segredo de maior valor que o nó detém: quem a tem cunha
 //     tokens), AOS_TLS_KEY_PATH (`main.go` — chave do ingresso) e AOS_OTLP_CLIENT_KEY_PATH
@@ -154,6 +213,66 @@ type materialPrivadoDoNo struct {
 	OTLPBearer bool
 }
 
+// posturaDosServicosDePlataforma é o estado composto de MEM e REG que o banner declara.
+// Deriva do que o composition-root construiu, nunca da intenção da config — a mesma
+// disciplina que [materialPrivadoDoNo] impôs ao banner do credential broker.
+type posturaDosServicosDePlataforma struct {
+	// CatalogoInjectado: o REG tem um catálogo NÃO-VAZIO composto (injectado por
+	// [Config.Catalog] ou pelo registo assinado de AOS_MODEL_TOOLS). Falso ⇒ `emptyCatalog{}`.
+	CatalogoInjectado bool
+	// RevalidadorInjectado: o revalidador é NÃO-REFERÊNCIA (injectado por [Config.Revalidator]
+	// ou construído do registo assinado). Falso ⇒ o de REFERÊNCIA, com trust store VAZIO.
+	RevalidadorInjectado bool
+	// SelagemRegDuravel: as selagens do trust store (add/revoke) e da revalidação por chamada
+	// são DURÁVEIS — i.e., o WORM único do nó em que ambas selam (AOS-381) é um FileStore em
+	// disco (cfg.WORMPath != ""), não um MemStore in-memory. Deriva do ESTADO real do WORM
+	// composto, não da intenção da config. Falso ⇒ selagens VOLÁTEIS (não sobrevivem ao restart).
+	SelagemRegDuravel bool
+}
+
+// plataformaPostureBanner declara, no arranque, o que o nó compõe de MEM e de REG —
+// e sobretudo o que NÃO compõe (AOS-326).
+//
+// PORQUE ESTA LINHA PASSA A EXISTIR. O nó já declarava a postura do credential broker,
+// da autonomia, do orçamento e do modelo. De MEM e REG não dizia nada — e são os dois
+// serviços de plataforma cuja distância entre a biblioteca e o nó composto é maior. Um
+// operador que leia o arranque via «Memory Service» e «Registry» no `_BRIEF` §2 e não
+// tem como saber que o primeiro só faz uma escrita e que o segundo arranca vazio.
+//
+// A ASSIMETRIA QUE ISTO FECHA. O plano de controlo (ORQ/SCH) está fora do grafo de build
+// por DECISÃO ratificada — ADR-018 §4 e ADR-023, com guard-test em
+// `boundary_orq_sch_test.go`. Para os serviços de plataforma não existe decisão
+// equivalente: nenhum ADR os declara deliberadamente não-compostos. Enquanto essa decisão
+// não for tomada, «não composto» aqui significa INACABADO, não adiado — e é isso que
+// estas linhas dizem, em vez de deixarem o silêncio sugerir a leitura mais favorável.
+func plataformaPostureBanner(p posturaDosServicosDePlataforma) []string {
+	reg := "catalogo VAZIO (emptyCatalog) e revalidador de REFERENCIA com trust store VAZIO"
+	switch {
+	case p.CatalogoInjectado && p.RevalidadorInjectado:
+		reg = "catalogo e revalidador COMPOSTOS (config ou registo assinado)"
+	case p.CatalogoInjectado:
+		reg = "catalogo COMPOSTO; revalidador de REFERENCIA com trust store VAZIO"
+	case p.RevalidadorInjectado:
+		reg = "catalogo VAZIO (emptyCatalog); revalidador COMPOSTO"
+	}
+	// AOS-381: as selagens do trust store e da revalidacao por chamada selam no WORM UNICO do
+	// no — DURAVEL sse esse WORM e um FileStore em disco. Declara-se o estado REAL para o
+	// operador nao confundir "auditado" (o sistema de tipos exige-o) com "auditado de forma
+	// DURAVEL" (que exige AOS_WORM_PATH). Sem durabilidade, o trilho de supply-chain evapora-se
+	// ao restart, mesmo com o gate a correr.
+	selagem := "as selagens do trust store (add/revoke) e da revalidacao por chamada selam no WORM UNICO do no; DURABILIDADE: "
+	if p.SelagemRegDuravel {
+		selagem += "DURAVEL (FileStore WORM em disco, AOS_WORM_PATH definido) — sobrevivem ao restart e sao legiveis via `aos audit-trail` (particoes registry.truststore/registry.revalidation)"
+	} else {
+		selagem += "VOLATIL (WORM in-memory, AOS_WORM_PATH ausente) — NAO sobrevivem ao restart. Defina AOS_WORM_PATH para as tornar duraveis"
+	}
+	return []string{
+		"memoria (MEM/EPIC-04, AOS-326): o Memory Service esta composto sobre o MESMO Event Store do no, mas o unico caminho de producao que o usa e uma ESCRITA episodica na ingestao. Nenhum caminho de producao invoca recall/query/compactacao/curadoria, e Goal.MemoryContext nao e preenchido por ninguem. Das QUATRO classes do _BRIEF §2, a episodica existe neste no APENAS como escrita (write-only: escreve-se, nunca se le); a semantica, a procedural e a de trabalho existem so como BIBLIOTECA testada, sem chamador de producao. DEFERIDO — eixo em DEF-811",
+		"registry (REG/EPIC-05, AOS-326): " + reg + ". " + selagem + ". O pacote registry ESTA no grafo de build (via toolset/freeze), mas o catalogo event-sourced NAO e construido, e o host MCP e o TOFU nem sequer entram no grafo; o que corre e o congelamento por run e a revalidacao por chamada, ligados na cadeia do Reference Monitor, agora selados no WORM duravel do no (AOS-381). Um tool set vazio e default-deny: nenhuma tool executa. DEFERIDO — eixo em DEF-812",
+		"=> NOTA sobre as duas linhas acima: ao contrario do ORQ/SCH — que o ADR-018/ADR-023 mantem fora do grafo de build por decisao ratificada, com guard-test — NAO existe ADR que declare MEM ou REG deliberadamente nao-compostos. Enquanto essa decisao nao existir, o estado e INACABADO e nao adiado. Eixo: DEF-811/DEF-812",
+	}
+}
+
 func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 	detidas := []string{}
 	if m.IssuerKey {
@@ -177,7 +296,7 @@ func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 		notaColector = " Bearer do colector CARREGADO."
 	}
 	return []string{
-		"credential broker (AOS-070/EPIC-07, ADR-006): AUSENTE — este no NAO compoe o platform/broker. As credenciais downstream entram por FICHEIRO MONTADO (AOS_MODEL_API_KEY_PATH, AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH), sao lidas UMA VEZ no arranque e ficam em MEMORIA do processo enquanto o no viver: sem troca token-scoped server-side, sem TTL curto, sem revogacao por lease e sem injeccao no ponto de execucao. O invariante do ADR-006 (\"o agente apresenta identidade, NUNCA segredo\") NAO e imposto por este no — e responsabilidade de quem monta os ficheiros. Nenhum VALOR e impresso, aqui ou em qualquer linha. Eixo: EPIC-07",
+		"credential broker (AOS-070/EPIC-07, ADR-006): AUSENTE — este no NAO compoe o platform/broker. As credenciais downstream entram por FICHEIRO MONTADO (AOS_MODEL_API_KEY_PATH, AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_BASIC_PATH), sao lidas UMA VEZ no arranque e ficam em MEMORIA do processo enquanto o no viver: sem troca token-scoped server-side, sem TTL curto, sem revogacao por lease e sem injeccao no ponto de execucao. O invariante do ADR-006 (\"o agente apresenta identidade, NUNCA segredo\") NAO e imposto por este no — e responsabilidade de quem monta os ficheiros. Nenhum VALOR e impresso, aqui ou em qualquer linha. Eixo: EPIC-07",
 		"credential broker (AOS-070): " + posse + "." + notaColector + " " + issuer,
 		"=> ALCANCE desta declaracao: cobre o que ESTE composition-root carrega. A chave do ingresso TLS (AOS_TLS_KEY_PATH) e composta pela camada de API e declarada por ela — nao se afirma aqui posse que nao se observa. As credenciais downstream nomeadas acima entram pelo MESMO padrao (ficheiro montado, lido no arranque, retido em memoria) e sao o que ha a rodar e a proteger junto com o que esta linha nomeia",
 	}
@@ -260,10 +379,14 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 		}
 	}
 	if len(w.sealedPairs) == 0 {
-		return []string{
-			fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO CONSTRUIDO MAS NAO PROVISIONADO — ha %d entrada(s) declarada(s) em AOS_AUTONOMY_LEVELS mas NENHUM nivel foi aplicado nem selado (autonomyWiring.provision ainda nao correu): o registo responde L0 a TODO o par, o fail-closed do oraculo, pelo que TUDO escala e nenhum run avanca sem aval humano. No arranque normal esta linha NAO deve aparecer — se aparece, a ordem do composition-root inverteu-se (o provisionamento tem de correr DEPOIS do WORM e ANTES do banner)",
+		// NENHUM par foi selado NESTE arranque. Ou o provisionamento ainda não correu (reordenação
+		// do boot), ou TODAS as entradas foram recusadas pelo gate de prova de subida (AOS-377) — e
+		// esse caso não pode ficar mudo, pelo que a linha de recusa é acrescentada aqui também.
+		linhas := []string{
+			fmt.Sprintf("autonomia / escalate (AOS-087/AOS-248): ORACULO CONSTRUIDO MAS NAO PROVISIONADO — ha %d entrada(s) declarada(s) em AOS_AUTONOMY_LEVELS mas NENHUM nivel foi aplicado nem selado (autonomyWiring.provision ainda nao correu, ou TODAS as entradas foram recusadas): o registo responde ao nivel reidratado ou ao piso (L0 se nao houver nenhum), o fail-closed do oraculo. No arranque normal esta linha NAO deve aparecer — se aparece, a ordem do composition-root inverteu-se (o provisionamento tem de correr DEPOIS do WORM e ANTES do banner), ou as subidas a L4/L5 declaradas nao trouxeram prova (ver a linha de RECUSA)",
 				len(w.specs)),
 		}
+		return autonomyLinhasDeRecusaPorProva(w, linhas)
 	}
 	// DUAS AFIRMAÇÕES QUE DEIXARAM DE SER VERDADE, e foi este trabalho que as quebrou:
 	//
@@ -320,7 +443,19 @@ func autonomyPostureBanner(w *autonomyWiring) []string {
 	if len(w.foraDoAmbiente) > 0 {
 		linhas = append(linhas, fmt.Sprintf("autonomia / reidratacao (AOS-307): %d par(es) EM VIGOR POR DECISAO DE OPERADOR e AUSENTE(S) de AOS_AUTONOMY_LEVELS [%s] — nao constam do ficheiro e por isso nao aparecem na contagem de provisionamento acima; para os baixar, declare-os no ambiente com o nivel pretendido (a de-escalada ganha) ou assine outra alteracao", len(w.foraDoAmbiente), strings.Join(w.foraDoAmbiente, ", ")))
 	}
-	return linhas
+	return autonomyLinhasDeRecusaPorProva(w, linhas)
+}
+
+// autonomyLinhasDeRecusaPorProva acrescenta a linha das SUBIDAS a L4/L5 pelo ficheiro RECUSADAS por
+// falta de prova (AOS-377). O par NÃO subiu — fica no nível anterior (reidratado ou piso) — e a
+// recusa é declarada no molde de `rejeitados`: o operador tem de saber que a postura NÃO é a que o
+// ficheiro pede, e o que falta para a obter. Extraída porque a linha tem de sair em ambos os ramos
+// do banner (com e sem pares selados neste arranque).
+func autonomyLinhasDeRecusaPorProva(w *autonomyWiring, linhas []string) []string {
+	if len(w.recusadosPorProva) == 0 {
+		return linhas
+	}
+	return append(linhas, fmt.Sprintf("autonomia / provisionamento (AOS-377): ATENCAO — %d subida(s) a L4/L5 declarada(s) em AOS_AUTONOMY_LEVELS RECUSADA(S) por falta de prova assinada valida [%s]. Subir a L4/L5 pelo ficheiro exige, em AOS_AUTONOMY_PROOFS, DUAS provas de emissores DISTINTOS de AOS_AUTONOMY_SETTERS sobre o payload canonico (motivo %q) — a mesma cerimonia da rota POST /autonomy. O par NAO subiu: vigora no nivel anterior (reidratado ou piso). Para o subir, gere as provas com `aos-issuer autonomy-sign` e passe-as em AOS_AUTONOMY_PROOFS, ou suba pela rota assinada. BAIXAR e SUBIR ate L3 pelo ficheiro nunca exigem prova", len(w.recusadosPorProva), strings.Join(w.recusadosPorProva, ", "), autonomyProvisionReason))
 }
 
 // pisoOrigem distingue o piso HERDADO do DECLARADO. A diferença não é cosmética: "L0 por
@@ -370,7 +505,7 @@ func pisoOrigem(p autonomy.Level) string {
 func burndownPostureBanner(composed bool, threshold float64) []string {
 	if composed {
 		return []string{
-			fmt.Sprintf("burn-down / aviso de exaustao (AOS-261/AOS-262): COMPOSTO — o loop le, na fronteira de fim-de-turno, o consumo ACUMULADO do run no LEDGER DE TURNOS (eventos turn.recorded do event store, deduplicados por run_id:step_id: uma re-emissao NAO infla a contagem e a retoma NAO a zera, porque a chave e o run_id e nao o trace_id) e compara-o com o tecto por-run de AOS_BUDGET_MAX_TOKENS. Ao atingir %.2f da fraccao consumida avisa UMA VEZ POR RUN (latch por-incarnacao do processo; um restart re-avisa uma vez). ONDE SE VE O AVISO: uma linha [aos] AVISO DE BURN-DOWN NESTE LOG, que e o canal que existe sempre; o span aos.control.budget_warning SO tem destino com AOS_OTLP_ENDPOINT definida — sem ela o tracer do no e o NoopTracer e o span nao vai a lado nenhum. ALCANCE: conta os TURNOS DE MODELO e SO eles — o ledger nao pesa tool calls, pelo que a leitura e um LIMITE INFERIOR do consumo (o aviso dispara TARDE, nunca cedo por engano); a dimensao que decide por omissao e TOKENS (o tecto por-run e em tokens), e a de DOLARES ja e alimentada pelo canal de custo de AOS-259 — o campo cost_micro_usd de cada turn.recorded traz o custo DERIVADO pela tabela de precos quando ela cobre o par (modelo, regiao) do no (ver a linha de postura do canal de custo). A dimensao de DOLARES PASSA A TER TECTO PROPRIO quando AOS_BUDGET_MAX_COST_MICRO_USD esta definida: nesse caso o burn-down le as DUAS dimensoes e a fraccao e o MAXIMO entre elas, pelo que o aviso dispara pela que primeiro se aproximar do seu tecto — um run com um modelo caro e avisado pelos dolares muito antes de os tokens la chegarem, e a linha do aviso nomeia a grandeza. Sem essa env a dimensao $ e MEDIDA e legivel mas nao tem denominador, e nao contribui para a fraccao (dividir por um tecto que ninguem configurou daria um numero sem significado). O aviso, EM SI, NAO DECIDE NADA: nao pede escolha e NAO apresenta extend/summarize_stop/abort — quem apresenta opcoes e o PROMPT de AOS-263 (ver a linha seguinte), e mesmo esse so apresenta as que TEM executor: o abort passou a ter (decisao AUTENTICADA e selada, AOS-263 parte 3), extend e summarize_stop continuam a NAO ter (o budget.Budget nao tem mutador de tecto — decisao do dono; e o loop nao tem caminho de resumo). Quem para um run e o disjuntor (veredicto duravel) ou o operador; o que este aviso PODE accionar, quando o prompt de exaustao de AOS-263 esta ARMADO, e a SUSPENSAO do run em waiting_on_human a espera de decisao humana — suspender nao e parar: o run fica RETOMAVEL ate alguem decidir. FAIL-CLOSED: a leitura devolve ERRO e o run aborta — nunca 0%% — quando nao ha fonte, quando o ledger existe mas somou ZERO tokens (o provider nao ecoou usage, ErrBurndownNoUsage) ou quando o payload e ilegivel. Indisponibilidade TRANSITORIA do substrato (sem quorum, ctx do run a cair) NAO mata o run: a leitura adia-se para a fronteira seguinte e so passa a fatal ao fim de %d fronteiras consecutivas", threshold, maxLeiturasTransitoriasToleradas),
+			fmt.Sprintf("burn-down / aviso de exaustao (AOS-261/AOS-262): COMPOSTO — o loop le, na fronteira de fim-de-turno, o consumo ACUMULADO do run no LEDGER DE TURNOS (eventos turn.recorded do event store, deduplicados por run_id:step_id: uma re-emissao NAO infla a contagem e a retoma NAO a zera, porque a chave e o run_id e nao o trace_id) e compara-o com o tecto por-run de AOS_BUDGET_MAX_TOKENS. Ao atingir %.2f da fraccao consumida avisa UMA VEZ POR RUN (latch por-incarnacao do processo; um restart re-avisa uma vez). ONDE SE VE O AVISO: uma linha [aos] AVISO DE BURN-DOWN NESTE LOG, que e o canal que existe sempre; o span aos.control.budget_warning SO tem destino com AOS_OTLP_ENDPOINT definida — sem ela o tracer do no e o NoopTracer e o span nao vai a lado nenhum. ALCANCE: conta os TURNOS DE MODELO e SO eles — o ledger nao pesa tool calls, pelo que a leitura e um LIMITE INFERIOR do consumo (o aviso dispara TARDE, nunca cedo por engano); a dimensao que decide por omissao e TOKENS (o tecto por-run e em tokens), e a de DOLARES ja e alimentada pelo canal de custo de AOS-259 — o campo cost_micro_usd de cada turn.recorded traz o custo DERIVADO pela tabela de precos quando ela cobre o par (modelo, regiao) do no (ver a linha de postura do canal de custo). A dimensao de DOLARES PASSA A TER TECTO PROPRIO quando AOS_BUDGET_MAX_COST_MICRO_USD esta definida: nesse caso o burn-down le as DUAS dimensoes e a fraccao e o MAXIMO entre elas, pelo que o aviso dispara pela que primeiro se aproximar do seu tecto — um run com um modelo caro e avisado pelos dolares muito antes de os tokens la chegarem, e a linha do aviso nomeia a grandeza. Sem essa env a dimensao $ e MEDIDA e legivel mas nao tem denominador, e nao contribui para a fraccao (dividir por um tecto que ninguem configurou daria um numero sem significado). O aviso, EM SI, NAO DECIDE NADA: nao pede escolha e NAO apresenta extend/summarize_stop/abort — quem apresenta opcoes e o PROMPT de AOS-263 (ver a linha seguinte), e mesmo esse so apresenta as que TEM executor: o abort passou a ter (decisao AUTENTICADA e selada, AOS-263 parte 3), extend e summarize_stop continuam a NAO ter (o budget.Budget nao tem mutador de tecto — decisao do dono; e o loop nao tem caminho de resumo). Quem para um run e o disjuntor (veredicto duravel) ou o operador; o que este aviso PODE accionar, quando o prompt de exaustao de AOS-263 esta ARMADO, e a SUSPENSAO do run em waiting_on_human a espera de decisao humana — suspender nao e parar: o run fica RETOMAVEL ate alguem decidir. FAIL-CLOSED: a leitura devolve ERRO e o run aborta — nunca 0%% — quando nao ha fonte, quando ALGUM turno do ledger nao foi MEDIDO (o provider nao ecoou usage nesse turno, ErrBurndownNoUsage) ou quando o payload e ilegivel. BASTA UM TURNO NAO MEDIDO, e nao o run inteiro a zero: ate AOS-336 o guarda perguntava se o AGREGADO era zero, pelo que um unico turno com usage o desarmava PARA SEMPRE e um run MISTO — turnos medidos e nao medidos — passava com uma leitura que parece boa e esta em baixo. Indisponibilidade TRANSITORIA do substrato NAO mata o run: a leitura adia-se para a fronteira seguinte e so passa a fatal ao fim de %d fronteiras consecutivas. Isto vale nos DOIS substratos desde AOS-354, e ate la NAO valia no replicado: E_NO_QUORUM so era produzido pelo store de referencia, e sobre JetStream o erro real (natsjs.ErrDesligado, cliente sem socket a reconectar) caia na lista de CEGUEIRA e matava o run a PRIMEIRA fronteira — a tolerancia prometida nesta linha nunca era armada no substrato que AOS-100 tornou preferencial. O backend replicado passa a traduzir a sua indisponibilidade para o sentinela canonico, preservando a causa. As condicoes que a armam sao: sem quorum de replicas (store de referencia), sem ligacao ao substrato replicado (JetStream), e o ctx do proprio run a cair", threshold, maxLeiturasTransitoriasToleradas),
 		}
 	}
 	return []string{
@@ -474,4 +609,81 @@ func exhaustionPromptPostureBanner(armed bool, ttl time.Duration) []string {
 	return []string{
 		"prompt de exaustao de orcamento (AOS-263): NAO ARMADO — falta a este no pelo menos uma das pecas sem as quais a pergunta seria uma armadilha: o registo duravel de pendentes e o registo de retoma (four-eyes, AOS_APPROVERS_FILE — sem eles nao ha a quem perguntar nem como re-hospedar o run) ou a ROTA DE DECISAO composta (pelo menos um operador pinado em AOS_OPERATORS e WORM — sem eles ninguem poderia responder, nem a resposta poderia ser selada). O comportamento ao cruzar o limiar e o de AOS-262, palavra por palavra: avisa UMA VEZ no log (e no span com OTLP) e o run CONTINUA ate ao tecto, ao MaxTurns, ao disjuntor ou ao steer do operador. Para o armar, componha AS DUAS metades: o four-eyes (AOS_APPROVERS_FILE) e os operadores do canal de controlo (AOS_OPERATORS). Eixo: AOS-263 / EPIC-20",
 	}
+}
+
+// posturaDaPoliticaDoBroker é o estado composto dos dois eixos de política do broker que o
+// banner declara (AOS-332). Deriva do que o composition-root construiu, nunca da intenção da
+// config — a mesma disciplina de [posturaDosServicosDePlataforma].
+type posturaDaPoliticaDoBroker struct {
+	// Composto: o nó construiu um `*broker.Broker`. HOJE É SEMPRE FALSO, e é essa a
+	// informação — ver o doc de [brokerPolicyPostureBanner].
+	Composto bool
+	// Provider e Recurso só têm significado quando Composto é verdadeiro.
+	Provider broker.ProviderPosture
+	Recurso  broker.ResourceBindingPosture
+	// FormaProvider é o CONTEÚDO da política do eixo provider, que a postura não olha
+	// (AOS-342). Sem ela, `enforced` na linha do banner é ambíguo entre uma política que
+	// impõe e um curinga que não impõe nada — e a segunda leitura é a que o DEF-218
+	// assertaria como pré-condição satisfeita.
+	FormaProvider broker.ProviderPolicyShape
+	// ClassesComCuringa nomeia as classes que o curinga deixa sem restrição. Nomeá-las é
+	// o que separa «há um buraco» de «o buraco é aqui».
+	ClassesComCuringa []string
+}
+
+// brokerPolicyPostureBanner declara, no arranque, a postura dos DOIS eixos de política do
+// broker: o eixo *provider* (AOS-324/AOS-330) e o eixo *recurso↔provedor* (AOS-331).
+//
+// PORQUE ESTA LINHA PASSA A EXISTIR. O `DEF-218` exige que o wiring do broker declare a política
+// de provedores e ASSERTE que o campo `provider_policy` selado diz `enforced` — mas isso só é
+// verificável a partir de um `credential.exchange.issued`, ou seja DEPOIS da primeira troca
+// bem-sucedida. Um nó em `unset` que ainda não trocou nada era indistinguível de um em
+// `enforced`. Esta linha quebra a circularidade: a postura passa a ser observável no ARRANQUE,
+// antes de qualquer troca.
+//
+// O RAMO NÃO-COMPOSTO É O QUE HOJE CORRE, E DIZ ISSO. `broker.New` não tem chamador de produção
+// — o nó prepara o cliente Vault e mais nada. Declarar `unset` derivado de um `nil` que nunca
+// chega a ser política seria a afirmação de estado que o cabeçalho deste ficheiro proíbe: uma
+// linha que fala de uma postura sobre algo que não está composto é pior do que o silêncio que
+// substitui. Por isso o ramo não-composto declara a NÃO-APLICABILIDADE e nomeia o que o wiring
+// terá de declarar — que é informação útil e verdadeira, ao contrário de um `unset` inventado.
+func brokerPolicyPostureBanner(p posturaDaPoliticaDoBroker) []string {
+	if !p.Composto {
+		return []string{
+			"politica do broker (AOS-324/AOS-330/AOS-331): NAO-APLICAVEL — o no NAO compoe o platform/broker (broker.New nao tem chamador de producao), logo NAO HA postura de politica a declarar. Nao se le isto como `unset`: `unset` e uma politica nao-declarada num broker que existe; aqui o broker nao existe. QUANDO O WIRING LIGAR (DEF-218), tera de declarar DOIS eixos: broker.WithClassProviders (quem troca para que provedor) e broker.WithGateProviderHosts (para que destino a credencial desse provedor pode ser apresentada), e assertar que a negacao sela ambos. Eixo: DEF-218",
+		}
+	}
+	return []string{
+		"politica do broker / eixo provider (AOS-324/AOS-330/AOS-342): " + string(p.Provider) + "/" + string(p.FormaProvider) + " — " + descricaoDaPosturaProvider(p),
+		"politica do broker / eixo recurso<->provedor (AOS-331): " + string(p.Recurso) + " — " + descricaoDaPosturaRecurso(p.Recurso),
+	}
+}
+
+// descricaoDaPosturaProvider descreve o eixo provider a partir da postura E DA FORMA.
+//
+// A POSTURA SOZINHA NAO CHEGA (AOS-342): `enforced` e funcao da NULIDADE do mapa de
+// politica, nao do seu conteudo. Uma politica com curinga e `enforced` e nao impoe nada;
+// um mapa vazio e `enforced` e nega tudo. Descrever as tres com a mesma frase — «o
+// provedor pedido tem de constar da autoridade efectiva da classe» — e falso no primeiro
+// caso e vacuo no segundo, e e sobre essa frase que o operador decide se a pre-condicao
+// do DEF-218 esta satisfeita.
+func descricaoDaPosturaProvider(p posturaDaPoliticaDoBroker) string {
+	if p.Provider != broker.ProviderPostureEnforced {
+		return "politica NAO declarada: o eixo nao e imposto por conjunto. Um provedor indeterminado continua a ser recusado, mas qualquer provedor identificavel passa"
+	}
+	switch p.FormaProvider {
+	case broker.ProviderPolicyShapeWildcard:
+		return "politica DECLARADA MAS ABERTA POR CURINGA: as classes " + strings.Join(p.ClassesComCuringa, ", ") + " tem tecto \"*\" (broker.ProviderAny), logo para elas o eixo NAO impoe nada por conjunto — um principal dessas classes sem grants prov: no token alcanca QUALQUER provedor presente no Vault. ISTO NAO SATISFAZ a pre-condicao do DEF-218 apesar de a postura dizer `enforced`: substitua o curinga por conjuntos concretos"
+	case broker.ProviderPolicyShapeEmpty:
+		return "politica DECLARADA E VAZIA (deny-all): nao ha classe nenhuma no mapa, logo toda a classe tem tecto vazio e NENHUMA troca passa o eixo. O broker fica composto e nao troca nada — e quase de certeza um mapa vazio por acidente, nao uma decisao"
+	default:
+		return "politica DECLARADA com conjuntos CONCRETOS por classe: o provedor pedido tem de constar da autoridade efectiva da classe, e um valor que a normalizacao do path do Vault altere e RECUSADO (AOS-330). E a unica forma que satisfaz a pre-condicao do DEF-218"
+	}
+}
+
+func descricaoDaPosturaRecurso(p broker.ResourceBindingPosture) string {
+	if p == broker.ResourceBindingEnforced {
+		return "allowlist DECLARADA: o host do recurso tem de constar da lista do provedor pedido, e um recurso que nao permita decidir e RECUSADO"
+	}
+	return "allowlist NAO declarada: o eixo nao e imposto. Um provedor autorizado alcanca qualquer destino — e o que o AOS-331 fecha quando ligado"
 }

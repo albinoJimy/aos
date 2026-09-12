@@ -32,15 +32,31 @@ type EventStorePort interface {
 	// SLO; um `false` degrada a prontidão do nó em vez de o matar.
 	Healthy() bool
 
-	// Streams devolve os stream_ids com pelo menos um evento. É a base do varredor
-	// de órfãos no arranque (crash_resume), da retenção e do restauro do índice de
-	// partições do WORM.
+	// Streams devolve os stream_ids com pelo menos um evento, ou o erro que impediu de
+	// os enumerar. É a base do varredor de órfãos no arranque (crash_resume), da
+	// retenção e do restauro do índice de partições do WORM.
 	//
 	// NOTA para quem escrever uma implementação nova: num substrato PARTILHADO esta
 	// pergunta deixa de ter resposta local — os streams que existem são os que
 	// QUALQUER escritor criou, não os que este processo viu. Um índice em memória
 	// responde a pergunta errada.
-	Streams() []string
+	//
+	// # AOS-352 — PORQUE O CANAL DE ERRO NÃO ERA DISPENSÁVEL
+	//
+	// A assinatura era `Streams() []string`, e o defeito estava AQUI, na porta: o
+	// backend JetStream pergunta ao SERVIDOR e, em erro, devolvia `nil` — sem log e sem
+	// sinal. Uma falha transitória de rede ficava indistinguível de «não há streams».
+	//
+	// A nota acima já tinha pensado a semântica ENTRE PROCESSOS desta pergunta e nunca
+	// mencionou sinalização de erro. Foi assim que quatro varredores de arranque
+	// ficaram a degradar em direcções diferentes sobre a mesma resposta ambígua — e um
+	// deles, o índice titular→partição do LEGAL HOLD, degradava FAIL-OPEN: um hold que
+	// devia cobrir partições noutros streams deixava de cobrir, e o `ExpirationJob`
+	// podia crypto-shred material sob hold.
+	//
+	// Quem implementar isto: um erro é «não consegui perguntar». «Não há streams» é uma
+	// lista vazia com erro nil, e é uma resposta diferente.
+	Streams() ([]string, error)
 }
 
 // asserções de conformidade: as duas implementações do repo satisfazem a porta. Se uma

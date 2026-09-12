@@ -21,6 +21,19 @@ func (a confirmadorDeShred) ShredConfirmed(subjectID string) error {
 // referência destrói e não implementa a porta, e o fluxo mantém o comportamento anterior. Ver a
 // nota sobre opcionalidade em [dsar.ShredConfirmer].
 func confirmadorDeShredDe(v any) dsar.ShredConfirmer {
+	// A PORTA EXPORTADA PRIMEIRO, e a razão apareceu na revisão adversarial do AOS-328: o
+	// `shredConfirmer` tem método NÃO-EXPORTADO, pelo que só um tipo declarado neste `package
+	// main` o pode satisfazer. Uma custódia de terceiros noutro módulo — literalmente o cenário
+	// que o `DEF-813` descreve — nunca conseguia implementá-lo, e o remédio que o banner
+	// prescreve («implemente a porta na custódia») era impossível de seguir.
+	//
+	// `dsar.ShredConfirmer` é exportado e é a porta que o fluxo consulta de facto. Aceitá-la
+	// directamente é o que torna a prescrição verdadeira.
+	if c, ok := v.(dsar.ShredConfirmer); ok {
+		return c
+	}
+	// A porta INTERNA continua a servir a custódia in-package (`*vaultKeyVault`), que a
+	// implementa desde AOS-322 e cujo nome de método não vale a pena mudar.
 	c, ok := v.(shredConfirmer)
 	if !ok {
 		return nil

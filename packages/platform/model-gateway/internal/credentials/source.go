@@ -46,8 +46,22 @@ type ProviderRegion struct {
 }
 
 // Config configura a origem: a política de TTL/refresh do cache e o conjunto de
-// pares (provider, região) elegíveis (a config por provider/região). Um pedido
-// para um par fora de Allowed falha fail-closed atribuível.
+// pares (provider, região) elegíveis.
+//
+// DUAS POSTURAS, E A DIFERENÇA IMPORTA (clarificado em AOS-325). Com [Config.Allowed]
+// PREENCHIDA, um pedido para um par fora dela falha fail-closed atribuível
+// ([ErrRegionNotConfigured]). Com [Config.Allowed] VAZIA, esta origem NÃO constrange
+// nada — e isso é postura deliberada, não esquecimento: a fronteira de soberania REAL
+// é a allowlist regional ASSINADA default-deny do estágio a montante
+// (policy/allowlist), que corre em todo o tráfego de produção montado por
+// NewProduction, mais a guarda de failover. Esta origem é o ÚLTIMO elo da cadeia e
+// recebe um par JÁ resolvido por esses estágios.
+//
+// A versão anterior deste comentário dizia, dez linhas acima do campo, que um par fora
+// de Allowed «falha fail-closed atribuível» sem qualificar o caso da lista vazia — duas
+// posturas opostas descritas no mesmo ficheiro. Quem preencher Allowed impõe a
+// fronteira também aqui (defesa em profundidade); quem a deixar vazia depende
+// inteiramente do que está a montante. Fixado por teste (ver credentials_test.go).
 type Config struct {
 	// TTL é a vida curta da credencial no cache. Default: 10min.
 	TTL time.Duration

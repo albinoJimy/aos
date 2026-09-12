@@ -149,11 +149,15 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		return ExecResult{}, ErrReadOnlyRootRequired
 	}
 
-	// Manifesto de segurança AOS-066: hash + versão do perfil seccomp aplicado (e a
-	// versão da imagem base read-only). Entra no span e em cada evento do ciclo de
-	// vida — por trajectória, para replay/auditoria. NÃO é segredo (ADR-006). O
-	// perfil é o MESMO objecto propagado ao driver (spec.Seccomp) — o hash atesta o
-	// perfil EFETIVAMENTE imposto, não uma declaração desligada.
+	// Manifesto de segurança AOS-066: hash + versão do perfil seccomp CONFIGURADO (e
+	// a versão da imagem base read-only). Entra no span e em cada evento do ciclo de
+	// vida — por trajectória, para replay/auditoria. NÃO é segredo (ADR-006).
+	//
+	// O perfil é o MESMO objecto propagado ao driver (spec.Seccomp), mas isso não
+	// basta para o hash valer como atestação: só o [FakeDriver] o LÊ e o impõe no
+	// Exec; os drivers reais ignoram-no e o wire host→guest nem o transporta (ver
+	// [Spec.Seccomp]). Por isso o hash viaja SEMPRE acompanhado de quem o impôs
+	// (seccompEnforcedBy, derivado do driver que criou a instância) — AOS-351.
 	seccompHash := l.seccomp.Hash()
 	seccompVersion := l.seccomp.Version()
 
@@ -229,6 +233,11 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		inst.ID = l.fallbackID(req)
 	}
 	span.SetAttribute(AttrInstanceID, inst.ID)
+	// Quem impõe o perfil seccomp desta execução: derivado do driver que REALMENTE
+	// criou a instância (o mesmo inst.Kind que vai no campo Driver do evento), não
+	// do driver configurado. Acompanha o hash nos três eventos e no span (AOS-351).
+	seccompEnforcedBy := seccompEnforcementFor(inst.Kind)
+	span.SetAttribute(AttrSeccompEnforcedBy, string(seccompEnforcedBy))
 
 	// DESTROY GARANTIDO: registado já, corre no defer mesmo em erro/panic. Sem
 	// microVMs órfãs (ADR-004). O evento destroyed sela sempre.
@@ -244,6 +253,7 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 			ImageVersion:          string(imageVersion),
 			SeccompProfileHash:    seccompHash,
 			SeccompProfileVersion: seccompVersion,
+			SeccompEnforcedBy:     seccompEnforcedBy,
 			RootFSBaseDigest:      rootfsBaseDigest,
 			OverlayID:             overlayID,
 		})
@@ -258,6 +268,7 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		ImageVersion:          string(imageVersion),
 		SeccompProfileHash:    seccompHash,
 		SeccompProfileVersion: seccompVersion,
+		SeccompEnforcedBy:     seccompEnforcedBy,
 		RootFSBaseDigest:      rootfsBaseDigest,
 		OverlayID:             overlayID,
 	}); err != nil {
@@ -290,6 +301,7 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 		ImageVersion:          string(imageVersion),
 		SeccompProfileHash:    seccompHash,
 		SeccompProfileVersion: seccompVersion,
+		SeccompEnforcedBy:     seccompEnforcedBy,
 		RootFSBaseDigest:      rootfsBaseDigest,
 		OverlayID:             overlayID,
 	}); err != nil {

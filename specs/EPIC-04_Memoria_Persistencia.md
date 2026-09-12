@@ -26,6 +26,19 @@ Por fim, a memória tem de honrar o contrato de cache do Model Gateway: a compre
 
 ## 2. Critérios de Saída do Epic
 
+> **QUALIFICAÇÃO DE COMPOSIÇÃO (AOS-326, 2026-09-05).** Os critérios abaixo são propriedades **do
+> sistema**, e a sua leitura natural é «o nó faz isto». Hoje são satisfeitos ao nível da
+> **biblioteca**, com gate próprio (`scripts/ci/memory.sh`) e suite verde — mas o nó `aos` compõe do
+> MEM apenas o `Service` sobre o Event Store e usa-o para **uma escrita episódica** na ingestão.
+> Nenhum caminho de produção invoca recall, query, compactação ou curadoria, e `Goal.MemoryContext`
+> não é preenchido por ninguém; `memory/episodic`, `semantic`, `procedural`, `compression` e
+> `migrations` têm zero importadores externos não-teste.
+>
+> Isto NÃO é uma decisão registada, ao contrário do que sucede com o ORQ/SCH (ADR-018/ADR-023, com
+> guard-test): não existe ADR que declare o MEM deliberadamente fora do grafo de build. Enquanto
+> não existir, «não composto» significa **inacabado**. Eixo: **DEF-811**. O nó declara-o no arranque.
+
+
 - [ ] O Memory Service expõe as **quatro classes de memória** (episódica, semântica, procedural, de trabalho) com contratos de porta versionados (SemVer), substituíveis sem rearquitectura.
 - [ ] A separação **contexto ≠ registo** é imposta em código: existe uma *projecção* de injecção distinta do *registo* persistido, e nenhum caminho descarta do registo o que o audit trail exige.
 - [ ] Toda a escrita de memória derivada de conteúdo **untrusted** carrega proveniência e passa por quarentena; memória em quarentena é estruturalmente impedido de autorizar acções privilegiadas (ADR-005).

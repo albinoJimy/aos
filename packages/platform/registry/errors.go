@@ -48,6 +48,21 @@ var (
 	// inválidos) antes mesmo de tocar no catálogo.
 	ErrInvalidRequest = &RegistryError{Code: "E_REG_INVALID_REQUEST", msg: "pedido de publicacao invalido"}
 
+	// ErrManifestDigestRequired — publicou-se um `kind=mcp_server` sem `ManifestDigest`
+	// (AOS-334). É devolvido EMBRULHADO em [ErrInvalidRequest], pelo que quem só distingue
+	// «pedido inválido» continua a funcionar e quem quiser a causa exacta tem-na.
+	//
+	// PORQUE É FAIL-CLOSED. O contrato de um `mcp_server` é `{Egress, ManifestDigest}`: sem o
+	// digest, sobra a CLASSE DE EGRESS — um valor de baixíssima cardinalidade que colide entre
+	// servidores completamente diferentes. Foi esse o defeito que o AOS-320 fechou, e fechou-o
+	// por CONVENÇÃO: só o `mcp.Host.stage` publica `mcp_server`, e ele grava sempre o digest.
+	// Convenção não é gate — qualquer outro caminho de publicação reabria o buraco em silêncio.
+	//
+	// «`mcp_server` EXIGE», e nunca «só `mcp_server` PODE TER»: as entradas `kind=tool`
+	// derivadas de um servidor MCP transportam a âncora de propósito (a correcção A1 do
+	// AOS-320), e a formulação exclusiva partiria isso.
+	ErrManifestDigestRequired = &RegistryError{Code: "E_REG_MANIFEST_DIGEST_REQUIRED", msg: "kind=mcp_server exige manifest_digest nao-vazio"}
+
 	// ErrAdmissionDenied — o gate de verificação de admissão (staging→active) negou a
 	// promoção. É o ponto onde AOS-047/048/053 impõem hash+assinatura+eval-gate; um
 	// verificador que recuse mantém o artefacto fora de active (fail-closed).
