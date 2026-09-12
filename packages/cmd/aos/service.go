@@ -543,6 +543,21 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		go s.exportarBackups(s.sweepStop)
 	}
 	s.log("%s", backupSchedulerBanner(node))
+	// AOS-090/DEF-908 — DEMOÇÃO AUTOMÁTICA POR ANOMALIA no loop de serviço. Partilha o MESMO
+	// sweepStop: o Shutdown pára-a com o mesmo close, e o encaminhador DRENA os trips já
+	// enfileirados antes de sair (ver autonomiaAnomalias.correr). Só arranca quando o
+	// controlador está composto (oráculo de autonomia ligado).
+	if node.anomaliaAutonomia != nil {
+		go node.anomaliaAutonomia.correr(s.sweepStop)
+		s.log("democao automatica por anomalia (AOS-090/DEF-908): LIGADA — cada TRIP do disjuntor multi-sinal demove a CLASSE dos pares (classe,dominio) que o run tocou, para um nivel mais supervisionado, sem gate humano (ADR-014).")
+	}
+	// AOS-090/ADR-025 — PROMOÇÃO automática por fiabilidade medida no loop de serviço. Subscreve
+	// os desfechos pos-efeito (taxa de erro) e as escaladas (override, proxy) e corre o Evaluate
+	// periodico. Partilha o sweepStop: o Shutdown para-a e a subscrição e libertada pelo ctx.
+	if node.fiabilidade != nil {
+		go node.fiabilidade.correr(s.sweepStop)
+		s.log("promocao automatica por fiabilidade (AOS-090/ADR-025): LIGADA — o controlador promove uma CLASSE (abaixo de L4; L4/L5 exigem dual-control assinado) quando a taxa de erro e o override-rate ficam sob os limiares SUSTENTADOS na janela. Aplica em-memoria e NAO sobrevive a reinicio: no arranque o par volta a base assinada (a chave do no partilha o disco do WORM, logo uma elevacao duravel sem assinatura seria forjavel).")
+	}
 	return s, nil
 }
 

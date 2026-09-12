@@ -46,6 +46,12 @@ type runBreakers struct {
 	provider breaker.ThresholdProvider
 	progress *actiondedup.Registry
 
+	// alertSink recebe cada TRIP do disjuntor (AOS-090/DEF-908): o encaminhador da demoção
+	// automática por anomalia. nil ⇒ o breaker fica com [breaker.NopAlertSink] (o
+	// comportamento anterior a este ticket). Ligado pelo Bootstrap via [runBreakers.comAlertSink]
+	// depois de compor o controlador de autonomia.
+	alertSink breaker.AlertSink
+
 	mu       sync.Mutex
 	breakers map[string]*breaker.Breaker
 	// reported limita a denúncia de um erro de construção inesperado do resolve() a UMA POR
@@ -94,6 +100,17 @@ func newRunBreakers(gates *runStateGates, provider breaker.ThresholdProvider) (*
 	}, nil
 }
 
+// comAlertSink liga o [breaker.AlertSink] que recebe os trips — o encaminhador da demoção
+// automática por anomalia (AOS-090/DEF-908). Chamado pelo Bootstrap DEPOIS de compor o
+// controlador de autonomia e ANTES de o primeiro breaker ser resolvido. Receptor nil
+// (disjuntor não composto) ⇒ no-op: sem breakers não há trip a encaminhar.
+func (b *runBreakers) comAlertSink(s breaker.AlertSink) {
+	if b == nil {
+		return
+	}
+	b.alertSink = s
+}
+
 // resolve devolve (construindo à primeira vez) o breaker do run. Devolve nil se o run não
 // tiver máquina de estados aberta — sem ela não há transição durável a materializar, e um
 // disjuntor que não consegue parar o run não deve fingir que o faz.
@@ -112,9 +129,13 @@ func (b *runBreakers) resolve(runID string) *breaker.Breaker {
 	}
 	// O sinal de no-progress precisa da fonte ARMADA antes da 1.ª observação; o registo
 	// cria o detector por-run a pedido.
-	br, err := breaker.NewBreaker(gate.m, b.provider, breakerClass,
-		breaker.WithProgressSource(b.progress.Source(runID)),
-	)
+	opts := []breaker.Option{breaker.WithProgressSource(b.progress.Source(runID))}
+	// AOS-090/DEF-908: liga o encaminhador de demoção automática, quando composto. Sem ele o
+	// breaker mantém o [breaker.NopAlertSink] — um trip continua a parar o run, só não demove.
+	if b.alertSink != nil {
+		opts = append(opts, breaker.WithAlertSink(b.alertSink))
+	}
+	br, err := breaker.NewBreaker(gate.m, b.provider, breakerClass, opts...)
 	if err != nil {
 		// Construção recusada. Depois do gate de arranque ([newRunBreakers]) esta via é
 		// INESPERADA — a configuração impossível já não chega aqui. Continua a não se

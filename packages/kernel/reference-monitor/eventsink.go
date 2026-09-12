@@ -16,6 +16,10 @@ const (
 	EventTypeDenied = "tool.call.denied"
 	// EventTypeEscalated — tool call escalada a gate humano.
 	EventTypeEscalated = "tool.call.escalated"
+	// EventTypeOutcome — DESFECHO pós-efeito de uma tool call permitida (ADR-025): ok/erro de
+	// EXECUÇÃO, o que os selos de decisão (mediated/denied/escalated) não capturam. Alimenta a
+	// fiabilidade medida da promoção de autonomia (AOS-090).
+	EventTypeOutcome = "tool.call.outcome"
 )
 
 // MediationRecord é o registo de auditoria de uma mediação. O RM constrói-o
@@ -240,4 +244,54 @@ type discardSink struct{}
 
 func (discardSink) RecordMediation(context.Context, MediationRecord) (uint64, error) {
 	return 0, nil
+}
+
+// outcomePayload é o corpo JSON do evento tool.call.outcome (ADR-025). Sem segredos: só o
+// desfecho, a classe/domínio de onde a fiabilidade agrega, e metadados de correlação.
+type outcomePayload struct {
+	PortVersion  string      `json:"port_version"`
+	Outcome      string      `json:"outcome"`
+	ErrorKind    string      `json:"error_kind,omitempty"`
+	ToolID       string      `json:"tool_id,omitempty"`
+	Capability   string      `json:"capability,omitempty"`
+	Resource     resourceDTO `json:"resource,omitempty"`
+	AgentClass   string      `json:"agent_class,omitempty"`
+	LatencyNanos int64       `json:"latency_ns"`
+}
+
+// eventStoreOutcomeSink adapta o Event Store à porta [OutcomeSink]: grava o desfecho
+// pós-efeito no stream do run (stream_id == run_id), no tipo [EventTypeOutcome].
+type eventStoreOutcomeSink struct {
+	store appender
+}
+
+// NewEventStoreOutcomeSink constrói um [OutcomeSink] que grava os desfechos no Event Store
+// dado (ADR-025). Composto no nó a par do [NewEventStoreSink]; a promoção de autonomia
+// (AOS-090) lê estes eventos para medir fiabilidade.
+func NewEventStoreOutcomeSink(store eventstore.EventStore) OutcomeSink {
+	return &eventStoreOutcomeSink{store: store}
+}
+
+func (s *eventStoreOutcomeSink) RecordOutcome(ctx context.Context, rec OutcomeRecord) error {
+	payload := outcomePayload{
+		PortVersion:  PortVersion,
+		Outcome:      rec.Outcome,
+		ErrorKind:    rec.ErrorKind,
+		ToolID:       rec.ToolID,
+		Capability:   rec.Capability,
+		Resource:     resourceDTO{Type: rec.Resource.Type, Value: rec.Resource.Value, Region: rec.Resource.Region},
+		AgentClass:   rec.AgentClass,
+		LatencyNanos: rec.Latency.Nanoseconds(),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = s.store.Append(ctx, rec.RunID, eventstore.EventInput{
+		Type:    EventTypeOutcome,
+		Payload: raw,
+		RunID:   rec.RunID,
+		StepID:  rec.StepID,
+	})
+	return err
 }

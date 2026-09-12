@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aos-ref/platform/audit"
@@ -268,6 +269,10 @@ func (r *LevelRegistry) Rehydrate(ctx context.Context, store audit.Store, partit
 	// erro — isso não é um registo mau, é não haver com que arrancar.
 	report := RehydrateReport{Records: len(recs), LastActorByPair: make(map[Pair]string)}
 	changes := make([]LevelChange, 0, len(recs))
+	// reconstruido segue o nível já reposto por par À MEDIDA que o stream avança — é a base
+	// contra a qual o invariante de direcção do [ControllerActor] compara (ver
+	// controllerRehydrateOK). Um par ainda não visto vale o piso ([defaultLevel]).
+	reconstruido := make(map[Pair]Level)
 	for _, rec := range recs {
 		for _, ob := range rec.Obligations {
 			if ob.Type != LevelChangedEventType {
@@ -278,13 +283,30 @@ func (r *LevelRegistry) Rehydrate(ctx context.Context, store audit.Store, partit
 				report.Rejeitados = append(report.Rejeitados, rejeicaoDe(rec.AuditSeq, ob, err))
 				continue
 			}
-			if cfg.validate != nil {
+			chave := Pair{ch.Agent, ch.Domain}
+			nivelActual, visto := reconstruido[chave]
+			if !visto {
+				nivelActual = r.defaultLevel
+			}
+			// O [ControllerActor] (demoção automática) NÃO passa pelo validador injectado —
+			// não tem assinatura de operador para verificar, e não pode ter: a demoção é
+			// automática (ADR-014 §2). A sua durabilidade sem prova assenta em DOIS
+			// invariantes de DIRECÇÃO (classe + só-desce), não em custódia de chave, porque
+			// a chave do nó vive no mesmo disco do WORM e não é fronteira contra quem escreve
+			// o ficheiro. Qualquer outro actor mantém o caminho de prova assinada de AOS-307.
+			if ch.Actor == ControllerActor {
+				if err := controllerRehydrateOK(ch, nivelActual); err != nil {
+					report.Rejeitados = append(report.Rejeitados, rejeicaoDe(rec.AuditSeq, ob, err))
+					continue
+				}
+			} else if cfg.validate != nil {
 				if err := cfg.validate(ch); err != nil {
 					report.Rejeitados = append(report.Rejeitados, rejeicaoDe(rec.AuditSeq, ob, err))
 					continue
 				}
 			}
 			changes = append(changes, ch)
+			reconstruido[chave] = ch.New
 		}
 	}
 
@@ -296,6 +318,24 @@ func (r *LevelRegistry) Rehydrate(ctx context.Context, store audit.Store, partit
 		report.LastActorByPair[Pair{ch.Agent, ch.Domain}] = ch.Actor
 	}
 	return report, nil
+}
+
+// controllerRehydrateOK aplica os DOIS invariantes de direcção que tornam uma demoção
+// automática (actor [ControllerActor]) durável SEM assinatura — ver [ErrControllerExigeClasse]
+// e [ErrControllerDeveDescer] para o porquê de cada um. `nivelReconstruido` é o nível já
+// reposto para o par até este ponto do stream (o piso, se ainda não visto).
+//
+// Um registo do controlador que passe aqui é aceite sem prova de operador; um que falhe é
+// SALTADO (nunca aplicado) e declarado em [RehydrateReport.Rejeitados], como qualquer outro
+// registo não confirmável — nunca aborta o arranque.
+func controllerRehydrateOK(ch LevelChange, nivelReconstruido Level) error {
+	if !strings.HasPrefix(ch.Agent, ClassPrefix) {
+		return fmt.Errorf("%w: par %s:%s -> %s", ErrControllerExigeClasse, ch.Agent, ch.Domain, ch.New)
+	}
+	if ch.New >= nivelReconstruido {
+		return fmt.Errorf("%w: %s -> %s (reconstruido=%s)", ErrControllerDeveDescer, ch.Old, ch.New, nivelReconstruido)
+	}
+	return nil
 }
 
 // ParseLevel traduz "L0".."L5" (case-insensitive) num [Level]; (L0, false) para qualquer
