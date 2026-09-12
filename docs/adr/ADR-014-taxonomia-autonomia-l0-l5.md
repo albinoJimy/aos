@@ -49,6 +49,8 @@ A **automação** de §2 — o `autonomy.Controller`, que ligaria promoção-por
 
 Este ADR **materializa a semântica**; não fecha `DEF-908`. Compor o `Controller` (ligando `Evaluate` **e** `OnAnomaly` — ligar só o primeiro reproduz o «preso a L5») é trabalho de engenharia próprio, fora deste ADR.
 
+> **ACTUALIZAÇÃO (2026-09-12, AOS-090 / ADR-025):** o `Controller` FOI composto no nó e `DEF-908` está **FECHADO-RESIDUAL**. A demoção automática (a metade de segurança) vigora — o TRIP do disjuntor demove a CLASSE, sem gate humano; a promoção automática vigora **abaixo de L4** (L4/L5 continuam a exigir a cerimónia assinada de §3) e **não é durável através de reinício** (reverte à base assinada — a chave do nó partilha o disco do WORM, logo uma elevação durável sem assinatura seria forjável). O sinal de fiabilidade honesto vem de um registo de desfecho pós-efeito novo, sem enfraquecer o audit-before-effect. Ver `ADR-025-fiabilidade-medida-e-controlador-autonomia.md` para o desenho e os residuais.
+
 ## Consequências
 
 ### Positivas

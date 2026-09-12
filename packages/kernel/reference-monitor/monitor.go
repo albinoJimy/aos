@@ -88,6 +88,11 @@ func (m *Metrics) RecordingHealthy() bool { return !m.recordingFailing.Load() }
 type Monitor struct {
 	hooks []Hook
 	sink  EventSink
+	// outcome regista o DESFECHO da execução DEPOIS do efeito (ADR-025) — a fonte honesta de
+	// fiabilidade para a promoção de autonomia (AOS-090). nil ⇒ o RM não regista desfechos
+	// (comportamento anterior; zero overhead). FAIL-OPEN na medição: um erro aqui NÃO muda a
+	// decisão (o efeito já aconteceu), ao contrário do [sink] no permit.
+	outcome OutcomeSink
 
 	mu    sync.RWMutex
 	tools map[string]registeredTool
@@ -133,6 +138,13 @@ func WithEventSink(s EventSink) Option {
 // invoke_agent/chat do loop.
 func WithTracer(t otelgenai.Tracer) Option {
 	return func(m *Monitor) { m.tracer = t }
+}
+
+// WithOutcomeSink injecta o sink de DESFECHO pós-efeito (ADR-025, AOS-090): o registo do
+// resultado (ok/erro) de cada tool call DEPOIS de ela correr, para a promoção de autonomia
+// medir fiabilidade. nil ⇒ o RM não regista desfechos. Ver [NewEventStoreOutcomeSink].
+func WithOutcomeSink(s OutcomeSink) Option {
+	return func(m *Monitor) { m.outcome = s }
 }
 
 // SetTracer injecta o tracer após a construção — é o ponto de sutura que o Agent
@@ -465,6 +477,12 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	p := m.mint(call)
 	out, costMicroUSD, toolErr := m.dispatch(ctx, p, call)
 
+	// DESFECHO PÓS-EFEITO (ADR-025): registado DEPOIS de a tool correr, ao contrário do selo de
+	// decisão (:447, ANTES do efeito). É a fonte honesta de fiabilidade da promoção de autonomia
+	// (AOS-090) — o selo de decisão é cego ao erro de EXECUÇÃO. FAIL-OPEN: um erro a registar o
+	// desfecho NÃO muda a decisão (o efeito já aconteceu), só a promoção perde uma amostra.
+	m.recordOutcome(ctx, call, toolErr, start)
+
 	m.metrics.Permits.Add(1)
 	return Decision{
 		Effect:       EffectPermit,
@@ -477,6 +495,32 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		CostMicroUSD: costMicroUSD,
 		permit:       p,
 	}, nil
+}
+
+// recordOutcome regista o DESFECHO pós-efeito de uma tool call permitida (ADR-025), se um
+// [OutcomeSink] estiver composto. É a metade PÓS-EFEITO do permit, gémea da metade pós-decisão
+// de [Monitor.fail]: o efeito já aconteceu, pelo que o ctx do chamador NÃO pode cancelar o
+// registo (mesmo idioma `WithoutCancel` + prazo próprio), e um erro é FAIL-OPEN — engolido,
+// porque propagá-lo transformaria uma falha de MEDIÇÃO de fiabilidade numa falha de
+// enforcement, que é exactamente o que este registo não é. A promoção trata uma janela com
+// buracos como não-fiável (não promove), pelo que perder amostras é conservador, não perigoso.
+func (m *Monitor) recordOutcome(ctx context.Context, call Call, toolErr error, start time.Time) {
+	if m.outcome == nil {
+		return
+	}
+	res, kind := OutcomeOK, ""
+	if toolErr != nil {
+		res, kind = OutcomeError, "tool_error"
+	}
+	regCtx, cancelReg := context.WithTimeout(context.WithoutCancel(ctx), failRecordTimeout)
+	defer cancelReg()
+	_ = m.outcome.RecordOutcome(regCtx, OutcomeRecord{
+		RunID: call.RunID, StepID: call.StepID, ToolID: call.ToolID,
+		Capability: call.Capability, Resource: call.Resource,
+		AgentClass: call.Principal.AgentClass,
+		Outcome:    res, ErrorKind: kind,
+		Latency: m.now().Sub(start),
+	})
 }
 
 // fail constrói uma Decision de negação/escalonamento, grava o evento
