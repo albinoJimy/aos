@@ -12,9 +12,9 @@
 #   · VERIFICÁVEL  — a saída só é verde depois de o nó ficar `healthy` E de o edge responder
 #     em TLS. Um `up -d` que devolve 0 prova apenas que o docker aceitou o pedido.
 #
-# FAIL-CLOSED com REVERSÃO AUTOMÁTICA: se o nó não ficar saudável ou o smoke falhar, este
-# script repõe o digest anterior e sai != 0. Nunca deixa o servidor num estado que ninguém
-# escolheu.
+# FAIL-CLOSED com REVERSÃO AUTOMÁTICA: se o `compose up` falhar, se o nó não ficar saudável ou se
+# o smoke falhar, este script repõe o digest anterior e sai != 0. Nunca deixa o servidor num estado
+# que ninguém escolheu.
 #
 # Variáveis opcionais:
 #   GHCR_USER / GHCR_TOKEN   login efémero no registry (o token é revogado ao fim do job de CD)
@@ -143,9 +143,43 @@ ready_antes="$( curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
                 "https://127.0.0.1:${EDGE_PORT}/readyz" 2>/dev/null || echo 000 )"
 log "3b/6 prontidão ANTES da entrega: HTTP ${ready_antes}"
 
+# --- reverter() -----------------------------------------------------------------------------------
+# Repõe o digest anterior e SAI != 0 — nunca devolve. Definida AQUI, depois do passo 3, porque só a
+# partir dele existem o PREV_REF e o image.env.prev para onde voltar.
+#
+# UMA FUNÇÃO CHAMADA DE DOIS SÍTIOS, e a razão é o incidente de 2026-09-13. A reversão vivia só no
+# fim do script, e o passo 4 saía com `fail` quando o `compose up` falhava — ANTES de lá chegar. Mas
+# quando o `up` falha o stack JÁ FOI TOCADO: o image.env aponta ao digest novo e o contentor antigo
+# já foi substituído. Foi assim que a v0.1.11 deixou a produção em 502: o nó novo abortava no
+# arranque, o compose desistia com «dependency failed to start: ... is unhealthy», e o script saía
+# sem repor nada. A recuperação foi um rollback à mão — e com o digest explícito, porque uma
+# tentativa seguinte já tinha reescrito o image.env.prev com o próprio digest partido.
+#
+# O `motivo` entra nas mensagens, para o log dizer QUE falha disparou a reversão.
+reverter() {
+  local motivo="$1"
+  if [ "${NO_ROLLBACK:-0}" = "1" ]; then
+    fail "${motivo} e NO_ROLLBACK=1 — o stack fica como está, para inspecção."
+  fi
+  if [ -z "${PREV_REF}" ]; then
+    fail "${motivo} no PRIMEIRO deploy — não há digest anterior para onde reverter. Corrige a config (ver log acima) e repete."
+  fi
+  log "⏪ ${motivo} — a reverter para ${PREV_REF} ..."
+  cp "${IMAGE_ENV_PREV}" "${IMAGE_ENV}"
+  dc up -d --remove-orphans || fail "REVERSÃO FALHOU — servidor precisa de intervenção manual. Estado: docker compose -f ${COMPOSE_FILE} ps"
+  fail "deploy revertido para ${PREV_REF}. A versão nova NÃO está a servir."
+}
+
 # --- 4. Sobe ---------------------------------------------------------------------------------------
 log "4/6 docker compose up -d ..."
-dc up -d --remove-orphans || fail "compose up falhou"
+if ! dc up -d --remove-orphans; then
+  # O log do nó ANTES de reverter: é onde aparece o motivo do aborto (uma porta de produção por
+  # satisfazer, config inválida). Depois da reversão o contentor novo deixa de existir, e com ele o
+  # log — no incidente, o motivo só se leu por SSH à mão, e só por ter sido antes do rollback.
+  log "     compose up falhou. Últimas linhas do nó:"
+  dc logs --tail 40 aos 2>&1 | sed 's/^/       /' || true
+  reverter "compose up falhou"
+fi
 
 
 # --- 4b. CONFIG MONTADA MAIS NOVA QUE O PROCESSO ----------------------------------------------
@@ -314,15 +348,5 @@ if [ "${healthy}" -eq 1 ] && [ "${gate_ok}" -eq 1 ]; then
   exit 0
 fi
 
-# --- Reversão -------------------------------------------------------------------------------------
-if [ "${NO_ROLLBACK:-0}" = "1" ]; then
-  fail "deploy vermelho e NO_ROLLBACK=1 — o stack fica como está, para inspecção."
-fi
-if [ -z "${PREV_REF}" ]; then
-  fail "deploy vermelho no PRIMEIRO deploy — não há digest anterior para onde reverter. Corrige a config (ver log acima) e repete."
-fi
-
-log "⏪ deploy vermelho — a reverter para ${PREV_REF} ..."
-cp "${IMAGE_ENV_PREV}" "${IMAGE_ENV}"
-dc up -d --remove-orphans || fail "REVERSÃO FALHOU — servidor precisa de intervenção manual. Estado: docker compose -f ${COMPOSE_FILE} ps"
-fail "deploy revertido para ${PREV_REF}. A versão nova NÃO está a servir."
+# --- Reversão: nó não saudável, ou regressão de prontidão desta entrega ---------------------------
+reverter "deploy vermelho"
