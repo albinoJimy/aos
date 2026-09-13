@@ -194,6 +194,28 @@ def system_spec_drivers() -> int:
     return len(rows)
 
 
+# Números de ticket ATRIBUÍDOS, mas cujo bloco vive noutro ramo ainda não fundido.
+#
+# A guarda de contiguidade em `main()` apanha um ticket apagado ou renumerado, e vale. Mas
+# pressupõe que todo o backlog vive NESTE ramo — e com várias sessões em worktrees paralelos
+# isso deixou de ser verdade. Esta lista é a excepção explícita, no molde das baselines do
+# arnês (`scripts/ci/baseline/*.txt`): entrada com dono e data de saída, e SAI quando o ramo
+# respectivo for fundido. A decisão sobre um número de um ramo ABANDONADO está em **DEF-912**.
+#
+# MECANISMO RESTAURADO (2026-09-12): a reconciliação do EPIC-22 (#277) tomou o gerador do lado
+# do ramo (193 commits atrás), que precedia esta lista, e reverteu-a sem querer. Fica vazia:
+# a única entrada anterior (AOS-317, `claude/exciting-maxwell-aec36d`) foi fundida com o próprio
+# EPIC-22, pelo que o seu bloco já vive aqui e a guarda de contiguidade já não o marca em falta.
+#
+# LISTA convertida em conjunto — e NÃO um literal `{...}`. Medido: esvaziar um literal de
+# conjunto deixa `{}`, que em Python é um **dict**, e o gate morria em `TypeError` em vez de
+# falhar pela razão certa. Quem esvaziar a última entrada não deve tropeçar nessa armadilha.
+ATRIBUIDOS_NOUTRO_RAMO = frozenset([
+    # (vazio) — acrescentar aqui um `"AOS-NNN",  # <ramo> (<commit>, <data>)` quando um número
+    # for atribuído noutro ramo ainda por fundir. Ver DEF-912 para o caso do abandono.
+])
+
+
 def corpus_stats(tickets: dict) -> dict:
     """
     Constantes do corpus DERIVADAS (nunca escritas à mão): é isto que impede o
@@ -1188,7 +1210,7 @@ def main():
     all_aos = set(tickets.keys())
     max_aos = max(aos_key(t) for t in all_aos)
     expected = {f"AOS-{i:03d}" for i in range(1, max_aos + 1)}
-    missing = sorted(expected - all_aos)
+    missing = sorted(expected - all_aos - ATRIBUIDOS_NOUTRO_RAMO)
     if missing:
         shown = ", ".join(missing[:10]) + ("..." if len(missing) > 10 else "")
         sys.stderr.write(
