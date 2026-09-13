@@ -108,7 +108,8 @@ Próximos passos (servidor, como root ou aos):
   3. ACRESCENTAR ${OUT}/ca.crt ao ficheiro apontado por AOS_INTERNAL_CA_BUNDLE
      (acrescentar com >>, nunca substituir: o bundle leva as raízes públicas e a CA do idp/vault)
   4. no /opt/aos/.env:
-       LITELLM_TLS_ARGS=--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key
+       LITELLM_TLS_ARGS="--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key"
+       (com as aspas: o deploy.sh carrega o .env com bash, e sem elas morre ao lê-lo)
        AOS_MODEL_ENDPOINT=https://litellm:4000/v1
   NÃO copiar ca.key para lado nenhum.
 EOF
