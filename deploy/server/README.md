@@ -327,8 +327,15 @@ ssh aos@37.60.241.150 'bash /opt/aos/rollback.sh'
 ssh aos@37.60.241.150 'bash /opt/aos/rollback.sh ghcr.io/albinojimy/aos-node@sha256:...'
 ```
 
-O `deploy.sh` **já reverte sozinho** quando o nó não fica saudável ou o smoke falha. O
-`rollback.sh` é para a regressão descoberta horas depois, quando esse contexto já não existe.
+O `deploy.sh` **já reverte sozinho** quando o `compose up` falha, quando o nó não fica saudável ou
+quando o smoke falha. O `rollback.sh` é para a regressão descoberta horas depois, quando esse
+contexto já não existe.
+
+> ⚠️ **Depois de um deploy falhado, `rollback.sh` sem argumento pode apontar à imagem partida.**
+> Cada execução do `deploy.sh` copia o `image.env` corrente para o `image.env.prev` — incluindo a
+> que o `rollback.sh` corre por baixo. Uma tentativa falhada seguida de outra deixa o próprio
+> digest partido como "anterior". Foi o que aconteceu em 2026-09-13. Em caso de dúvida, passa o
+> digest bom **explicitamente**: `bash /opt/aos/rollback.sh ghcr.io/albinojimy/aos-node@sha256:…`.
 
 Um deploy **não** toca no volume `aos-data`: o Event Store e o trilho WORM sobrevivem à troca de
 imagem. É o que torna a reversão segura.
