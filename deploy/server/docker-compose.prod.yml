@@ -446,6 +446,28 @@ services:
     depends_on:
       otel:
         condition: service_started
+    # HEALTHCHECK SOBREPOSTO ao da imagem (Dockerfile: --start-period=10s), e a razão é o
+    # arranque, não a imagem. O probe sonda 127.0.0.1:8080/healthz, mas o servidor HTTP só
+    # começa a escutar DEPOIS de todo o trabalho de arranque do nó: re-encadeamento e
+    # verificação ancorada de TODAS as partições do WORM, reidratação das mudanças de autonomia
+    # (AOS-307) e a varredura de crash-resume dos streams. Esse tempo CRESCE com o WORM — num
+    # servidor com histórico já passa dos 100s — e os 10s de start-period da imagem marcavam o
+    # container `unhealthy` ANTES de o HTTP subir. Como o `edge` (e o deploy.sh) esperam por
+    # `service_healthy`, o `docker compose up` abortava com «aos-... is unhealthy» num nó que
+    # afinal arrancava bem segundos depois — e o deploy.sh falhava no passo 4 SEM chegar à
+    # reversão automática. (Incidente do deploy v0.1.11, 2026-09-13.)
+    #
+    # Durante o start_period o container fica `starting` (não `unhealthy`): o compose espera, e a
+    # PRIMEIRA sonda bem-sucedida promove-o a `healthy` de imediato — quando o arranque é rápido
+    # não há penalização nenhuma. O valor é uma margem folgada sobre o pior arranque observado,
+    # não uma medição: se o WORM crescer muito, é aqui que se sobe. Falha genuína de arranque
+    # continua a ser detectada (start_period + retries × interval) e o nó nunca serve sem HTTP.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/aos-healthprobe"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
 
   # --- edge de ingresso: termina TLS e é a ÚNICA porta publicada no host ----------------------
   edge:
