@@ -1557,9 +1557,19 @@ imprime os passos para o servidor: copiar `litellm.crt`/`litellm.key` para
 no `.env`:
 
 ```bash
-LITELLM_TLS_ARGS=--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key
+LITELLM_TLS_ARGS="--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key"
 AOS_MODEL_ENDPOINT=https://litellm:4000/v1
 ```
+
+> ⚠️ **As aspas em `LITELLM_TLS_ARGS` são obrigatórias.** O `deploy.sh` carrega o `.env` como script
+> bash (`set -a; . .env` sob `set -e`). Sem aspas, o bash atribui só `--ssl_certfile_path` e tenta
+> executar `/app/tls/litellm.crt` como comando: o deploy morre ao ler o `.env`. O compose aceita as
+> duas formas, por isso um `docker compose config` não o apanha — a primeira versão desta secção
+> trazia o exemplo sem aspas.
+>
+> Pela mesma razão, **não escrevas esta linha através de um `ssh '...'` a partir do PowerShell 5.1**:
+> ele retira as aspas duplas dos argumentos passados a executáveis nativos, e a linha chega ao
+> servidor sem elas. Edita o `.env` numa sessão SSH interactiva.
 
 Três decisões deste desenho, e porquê:
 

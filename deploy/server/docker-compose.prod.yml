@@ -545,7 +545,8 @@ services:
     # VAZIA (o default) ⇒ http, exactamente como antes. É o que protege o nó que já está a servir: o
     # deploy sincroniza este ficheiro ANTES da troca de imagem, e um TLS imposto partia o modelo de
     # um nó ainda configurado com http. Preenchida com
-    #   LITELLM_TLS_ARGS=--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key
+    #   LITELLM_TLS_ARGS="--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key"
+    # (aspas OBRIGATÓRIAS no .env: o deploy.sh carrega-o com bash, e sem elas morre ao lê-lo)
     # a LiteLLM serve TLS com a folha gerada por gen-litellm-tls.sh (SAN `litellm`), e o .env passa a
     # AOS_MODEL_ENDPOINT=https://litellm:4000/v1. O nó confia na CA pelo SSL_CERT_FILE do serviço
     # `aos` (AOS_INTERNAL_CA_BUNDLE), ao qual a CA da LiteLLM tem de ser acrescentada.
