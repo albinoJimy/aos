@@ -1512,3 +1512,57 @@ claro, porque enquanto corre tem o `.env`, os `secrets/` e as chaves TLS desembr
   vivo e não do *bundle*. O ensaio passaria sem provar nada, que é o oposto daquilo para que
   existe. Apontá-lo a um cluster de ensaio com
   `RESTORE_DRILL_EXTRA_ENV='AOS_EVENTSTORE_NATS=…'` continua a ser uso legítimo, e diz-se no log.
+
+---
+
+## Passar à v0.1.11 em produção: duas portas novas que o `.env` actual não satisfaz
+
+A primeira tentativa de entregar a `v0.1.11` (2026-09-13) derrubou o nó: o contentor novo abortava
+no arranque e reiniciava em ciclo, e a produção só voltou com `rollback.sh` e o **digest explícito**
+da `v0.1.10`. A causa não estava na imagem nem no healthcheck: a `v0.1.11` acrescenta portas
+fail-closed de produção que um `.env` preparado para a `v0.1.10` não tem.
+
+| Porta nova | O que o nó exige | Sintoma no log |
+|---|---|---|
+| Autoridade da destruição DSAR (AOS-367) | `AOS_DSAR_ERASERS` não-vazio, com emitterIDs de `AOS_OPERATORS` | `AOS_MODE=production exige AOS_DSAR_ERASERS nao-vazio` |
+| Egress endurecido do modelo (AOS-366) | `AOS_MODEL_ENDPOINT` em **https**, verificado no arranque, sem excepção para hosts internos | `ErrInsecureBaseURL` / `BaseURL de egress tem de ser https` |
+
+A segunda só aparece depois de a primeira estar resolvida: o nó aborta na primeira porta que falha.
+Por isso as duas resolvem-se **antes** de voltar a entregar, e não uma a cada tentativa.
+
+### `AOS_DSAR_ERASERS`
+
+Decisão do operador, não do repositório: é a lista de quem pode ordenar crypto-shred, que nenhum
+restauro desfaz. Ver `.env.example`. Com um só eraser, `/dsar/expire` por rota fica indisponível
+(exige duas assinaturas distintas); a expiração automática por TTL continua a correr.
+
+### O modelo em https, sem sair da rede interna
+
+A LiteLLM deste compose servia `http` na 4000. O TLS passa a ser **opt-in** por uma variável:
+
+```bash
+bash deploy/server/gen-litellm-tls.sh        # na máquina do operador
+```
+
+Gera, em `secrets-local/litellm-ca/`, uma **CA dedicada** e a folha `litellm` (SAN `DNS:litellm`), e
+imprime os passos para o servidor: copiar `litellm.crt`/`litellm.key` para
+`/opt/aos/tls-internal/litellm/`, **acrescentar** a `ca.crt` ao bundle de `AOS_INTERNAL_CA_BUNDLE`, e
+no `.env`:
+
+```bash
+LITELLM_TLS_ARGS=--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key
+AOS_MODEL_ENDPOINT=https://litellm:4000/v1
+```
+
+Três decisões deste desenho, e porquê:
+
+- **Opt-in, e não TLS imposto.** O `deploy.yml` sincroniza o compose **antes** de trocar a imagem. Um
+  TLS obrigatório deixaria sem modelo um nó ainda configurado com `http`. Com a variável vazia, nada
+  muda.
+- **CA dedicada, e não a CA interna.** A chave da CA que assinou `idp` e `vault` não está disponível.
+  Um bundle aceita várias CAs, portanto acrescenta-se esta e os certificados existentes continuam a
+  validar pela antiga. ⚠️ Sem essa chave, os certificados de `idp` e `vault` **não se renovam**: a
+  rotação para uma CA nova tem de ser planeada antes de expirarem.
+- **`nameConstraints` restrito a `DNS:litellm`.** O `SSL_CERT_FILE` é o trust store do **processo
+  inteiro** do nó. Sem restrição, quem obtivesse a chave desta CA podia personificar o `idp` ou o
+  `vault` perante o nó; com ela, só consegue personificar a LiteLLM.

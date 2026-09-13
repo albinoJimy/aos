@@ -535,7 +535,30 @@ services:
     pids_limit: 512
     security_opt:
       - no-new-privileges:true
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    # TLS OPCIONAL, ligado por UMA variável: LITELLM_TLS_ARGS.
+    #
+    # PORQUE EXISTE. Sob AOS_MODE=production o nó (desde a v0.1.11, AOS-366) arma o egress
+    # endurecido do gateway de modelo: AOS_MODEL_ENDPOINT tem de ser https, sem excepção para hosts
+    # internos, e a verificação corre NO ARRANQUE — com a LiteLLM em http o nó recusa arrancar
+    # (ErrInsecureBaseURL). O TLS aqui é o que torna essa porta satisfazível sem sair da rede interna.
+    #
+    # VAZIA (o default) ⇒ http, exactamente como antes. É o que protege o nó que já está a servir: o
+    # deploy sincroniza este ficheiro ANTES da troca de imagem, e um TLS imposto partia o modelo de
+    # um nó ainda configurado com http. Preenchida com
+    #   LITELLM_TLS_ARGS=--ssl_certfile_path /app/tls/litellm.crt --ssl_keyfile_path /app/tls/litellm.key
+    # a LiteLLM serve TLS com a folha gerada por gen-litellm-tls.sh (SAN `litellm`), e o .env passa a
+    # AOS_MODEL_ENDPOINT=https://litellm:4000/v1. O nó confia na CA pelo SSL_CERT_FILE do serviço
+    # `aos` (AOS_INTERNAL_CA_BUNDLE), ao qual a CA da LiteLLM tem de ser acrescentada.
+    #
+    # FORMA DE STRING, E NÃO LISTA, DE PROPÓSITO: o compose interpola e só DEPOIS parte em
+    # argumentos, pelo que a variável vazia não produz argumento nenhum (verificado com
+    # `docker compose config`: ausente, vazia e preenchida). Numa lista, `"${LITELLM_TLS_ARGS:-}"`
+    # seria um argumento vazio que o CLI recusa.
+    #
+    # UMA variável com os DOIS caminhos, e não duas: a LiteLLM só liga TLS quando recebe ambos, e com
+    # um só o servidor hypercorn cai em http SEM aviso — meia configuração seria um http a passar por
+    # https no .env, descoberto só quando o nó recusasse arrancar.
+    command: --config /app/config.yaml --port 4000 --host 0.0.0.0 ${LITELLM_TLS_ARGS:-}
     env_file:
       # `required: false` — o ficheiro das chaves é criado pelo operador e não está no git.
       # Sem ele o LiteLLM arranca na mesma; simplesmente não tem provider configurado.
@@ -543,6 +566,10 @@ services:
         required: false
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+      # DIRECTÓRIO e não ficheiros: montado sempre, vazio enquanto o TLS estiver desligado. Um
+      # bind de FICHEIRO inexistente faria o Docker criar um directório com esse nome e prenderia o
+      # inode (ver o historial do litellm/config.yaml neste ficheiro).
+      - ./tls-internal/litellm:/app/tls:ro
     expose:
       - "4000"
 
