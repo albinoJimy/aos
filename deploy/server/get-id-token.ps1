@@ -314,15 +314,21 @@ try {
         $b = $nhi.Split('.')[1].Replace('-','+').Replace('_','/')
         switch ($b.Length % 4) { 2 { $b += '==' } 3 { $b += '=' } }
         $p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)) | ConvertFrom-Json
-        $ligada = "$($p.auth_method)".StartsWith('oidc-bound:')
+        # A NHI NAO TRANSPORTA O METODO DE AUTENTICACAO. As claims do token sao user_id, agent_id,
+        # agent_class, scope, iss/iat/nbf/exp, jti e delegation_chain; o `auth_method` vive so no
+        # evento de emissao (identity.nhi.issued), nunca no token. Esta leitura procurava
+        # `$p.auth_method` e `$p.sub` no payload: davam SEMPRE vazio, e o aviso de "delegacao NAO
+        # ligada" disparava em TODAS as cunhagens - ligadas ou nao. Um alarme que toca sempre ensina
+        # a ignora-lo, que e pior do que nao o ter.
+        #
+        # A ligacao ja esta garantida antes de chegar aqui, e por duas vias: Obter-IdToken recusa um
+        # ID-token cujo nonce nao seja o digest desta delegacao, e o aos-issuer volta a exigi-lo no
+        # mint (sem --assertion-unbound, um nonce diferente faz o mint FALHAR em vez de cunhar).
         Write-Host "NHI CUNHADA" -ForegroundColor Green
-        Write-Host ("  agente      = {0}" -f $p.sub)
-        Write-Host ("  auth_method = {0}" -f $p.auth_method) -ForegroundColor $(if ($ligada) { 'Green' } else { 'Yellow' })
+        Write-Host ("  agente      = {0}" -f $p.agent_id)
+        Write-Host ("  classe      = {0}" -f $p.agent_class)
         if ($p.delegation_chain) { Write-Host ("  raiz        = {0}" -f $p.delegation_chain[0].sub) }
-        if (-not $ligada) {
-            Write-Host "  ATENCAO: a delegacao NAO ficou ligada - o registo diz 'esteve presente'," -ForegroundColor Yellow
-            Write-Host "  nao 'autorizou isto'." -ForegroundColor Yellow
-        }
+        Write-Host "  ligacao     = imposta no mint (nonce do ID-token = digest desta delegacao)" -ForegroundColor Green
 
         if (-not $Submeter) {
             Write-Host "`n  A credencial (campo credential do POST /runs):" -ForegroundColor DarkGray
