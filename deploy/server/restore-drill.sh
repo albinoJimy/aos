@@ -241,6 +241,22 @@ fi
 if [[ -n "${ES_FINAL}" ]]; then
   log "  ⚠️  Event Store replicado apontado a ${ES_FINAL} por RESTORE_DRILL_EXTRA_ENV — o 200 do passo 7 prova ESSE cluster, não o volume que veio no bundle"
 fi
+# ÂNCORA DO WORM. O env herdado traz AOS_WORM_TRUST_ANCHOR se a produção a tiver ligada, e com ela o
+# nó só arranca com os checkpoints e os pisos. Montam-se DO BUNDLE e nunca de /opt/aos: montados da
+# produção, o ensaio passaria mesmo com um backup que não os leva — e um host perdido não tem
+# /opt/aos para emprestar. Um bundle anterior a esta cópia não os tem, e isso diz-se aqui, em vez de
+# o nó morrer no arranque com um sintoma que se lê como "o backup está mau".
+ANCORA_HERDADA="$(sed -n 's/^AOS_WORM_TRUST_ANCHOR=//p' "${D}/env-aos")"
+MONTAR_ANCORA=()
+if [[ -n "${ANCORA_HERDADA}" ]]; then
+  [[ -s "${D}/cfg/ancoras/checkpoints.json" && -s "${D}/cfg/pisos/heads.json" ]] \
+    || fail "a produção corre com a âncora do WORM LIGADA, e este bundle NÃO traz ancoras/checkpoints.json e pisos/heads.json.
+  O nó restaurado abortaria no arranque. É um bundle produzido antes de o backup.sh passar a copiar a
+  âncora: produza um backup novo e ensaie esse. (Desligar a âncora no ensaio provaria menos do que o
+  sistema real exige — não se faz em silêncio.)"
+  MONTAR_ANCORA=(-v "${D}/cfg/ancoras:/etc/aos/ancoras:ro" -v "${D}/cfg/pisos:/etc/aos/pisos:ro")
+  log "  âncora do WORM ligada — checkpoints e pisos montados a partir do bundle"
+fi
 docker run -d --name "${PREFIX}-aos" --network "${NET}" --cpus 2 --env-file "${D}/env-aos" \
   -v "${D}/vol/aos:/var/lib/aos" \
   -v "${D}/cfg/model-tools/tools.json:/etc/aos/model-tools.json:ro" \
@@ -249,6 +265,7 @@ docker run -d --name "${PREFIX}-aos" --network "${NET}" --cpus 2 --env-file "${D
   -v "${D}/cfg/secrets/model-api.key:/etc/aos/model-api.key:ro" \
   -v "${D}/cfg/secrets/approvers.json:/etc/aos/approvers.json:ro" \
   -v "${D}/cfg/secrets/authority.json:/etc/aos/authority.json:ro" \
+  ${MONTAR_ANCORA[@]+"${MONTAR_ANCORA[@]}"} \
   -v "${D}/cfg/policies:/etc/aos/policies:ro" "${AOS_IMG}" >/dev/null
 sleep 28
 LOGAOS="$(docker logs "${PREFIX}-aos" 2>&1 || true)"

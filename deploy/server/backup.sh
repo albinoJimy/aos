@@ -190,12 +190,40 @@ fi
 # Inclui secrets/vault-init.json — sem a chave de unseal, um Vault restaurado fica selado para
 # sempre e o backup do event store não vale nada. Exclui os próprios backups (recursão) e os
 # .bak-* acumulados.
+#
+# E A ÂNCORA DO WORM (AOS-268/AOS-072). Com AOS_WORM_TRUST_ANCHOR ligada, o nó só arranca com
+# `ancoras/checkpoints.json` e `pisos/heads.json` presentes — é fail-closed por partição. Esses dois
+# ficheiros NÃO vêm do deploy nem do git (nomeiam partições `gov.read/<run-id>`): chegam pela selagem
+# diária, e as únicas cópias vivem neste disco. Faltavam aqui. Um host restaurado deste backup subia
+# com o env da âncora ligada e SEM os ficheiros, e o nó abortava no arranque: o backup verificava, e
+# não levantava o sistema. Por isso entram, e com âncora ligada a falta deles é recusa, não aviso.
 log "3/4 configuração e segredos"
+ANCORA_NO="$(env_do_no AOS_WORM_TRUST_ANCHOR)"
+ANCORA_ENV="$(env_do_ficheiro AOS_WORM_TRUST_ANCHOR)"
+if [[ -n "${ANCORA_NO}${ANCORA_ENV}" ]]; then
+  # O mesmo cuidado da guarda 2b: os caminhos verificados vêm do mapa do docker-compose.prod.yml
+  # (./ancoras → /etc/aos/ancoras, ./pisos → /etc/aos/pisos). Se o nó os ler de outro sítio, esta
+  # guarda verificaria com sucesso os ficheiros ERRADOS.
+  CK_NO="$(env_do_no AOS_WORM_CHECKPOINT_FILE)"
+  HD_NO="$(env_do_no AOS_WORM_EXPECTED_HEADS_FILE)"
+  if [[ -n "${CK_NO}" && "${CK_NO}" != "/etc/aos/ancoras/checkpoints.json" ]]; then
+    fail "o nó lê a âncora de AOS_WORM_CHECKPOINT_FILE=${CK_NO}, mas esta guarda copia ${AOS_DIR}/ancoras/checkpoints.json (mapa do docker-compose.prod.yml). O mapa deixou de valer — actualize a guarda"
+  fi
+  if [[ -n "${HD_NO}" && "${HD_NO}" != "/etc/aos/pisos/heads.json" ]]; then
+    fail "o nó lê os pisos de AOS_WORM_EXPECTED_HEADS_FILE=${HD_NO}, mas esta guarda copia ${AOS_DIR}/pisos/heads.json. O mapa deixou de valer — actualize a guarda"
+  fi
+  [[ -s "${AOS_DIR}/ancoras/checkpoints.json" && -s "${AOS_DIR}/pisos/heads.json" ]] \
+    || fail "a âncora do WORM está LIGADA mas ${AOS_DIR}/ancoras/checkpoints.json ou ${AOS_DIR}/pisos/heads.json falta (ou está vazio). Um host restaurado deste backup não arrancaria o nó — recusado, e NÃO se produziu artefacto"
+  ANCORA="ligada"
+else
+  ANCORA="desligada"
+fi
+CONFIG=(.env secrets policies keycloak vault litellm model-tools tls-internal docker-compose.prod.yml image.env)
+for d in ancoras pisos; do [[ -d "${AOS_DIR}/${d}" ]] && CONFIG+=("${d}"); done
 tar czf "${WORK}/config.tar.gz" -C "${AOS_DIR}" \
   --exclude=backups --exclude='*.bak-*' --exclude='.env.bak*' \
-  .env secrets policies keycloak vault litellm model-tools tls-internal \
-  docker-compose.prod.yml image.env 2>/dev/null || fail "tar da configuração falhou"
-log "  $(wc -c < "${WORK}/config.tar.gz") bytes"
+  "${CONFIG[@]}" 2>/dev/null || fail "tar da configuração falhou"
+log "  $(wc -c < "${WORK}/config.tar.gz") bytes; âncora do WORM ${ANCORA}"
 
 # --- 4. Selar num só artefacto CIFRADO --------------------------------------------------------
 log "4/4 cifrar"
@@ -212,6 +240,7 @@ fi
 { printf 'aos-backup\nstamp=%s\nhost=%s\nimage=%s\n' \
     "${STAMP}" "$(hostname)" "$(grep -oE 'sha256:[a-f0-9]{12}' "${AOS_DIR}/image.env" 2>/dev/null || echo '?')"
   printf '%s\n' "${MANIFEST_ES}"
+  printf 'worm-ancora=%s\n' "${ANCORA}"
 } > "${WORK}/MANIFEST"
 tar czf "${WORK}/bundle.tar.gz" -C "${WORK}" MANIFEST idp-db.sql volumes.tar.gz config.tar.gz
 OUT="${DEST}/aos-${STAMP}.tar.gz.enc"
