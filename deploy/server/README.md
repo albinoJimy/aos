@@ -1488,7 +1488,7 @@ bash /opt/aos/restore-drill.sh /tmp/bundle.tar.gz
 ```
 
 Levanta Vault, Postgres, Keycloak e nó numa rede isolada, faz uma leitura autenticada, e **só
-passa se os controlos também valerem**: token válido `200`, mesmo token outra vez `404`, sem
+passa se os controlos também valerem**: token válido `200`, mesmo token outra vez `401`, sem
 credencial `404`, header forjado `404`. Limpa tudo num `trap` — incluindo `shred` do material em
 claro, porque enquanto corre tem o `.env`, os `secrets/` e as chaves TLS desembrulhados em disco.
 
@@ -1519,6 +1519,13 @@ claro, porque enquanto corre tem o `.env`, os `secrets/` e as chaves TLS desembr
   vivo e não do *bundle*. O ensaio passaria sem provar nada, que é o oposto daquilo para que
   existe. Apontá-lo a um cluster de ensaio com
   `RESTORE_DRILL_EXTRA_ENV='AOS_EVENTSTORE_NATS=…'` continua a ser uso legítimo, e diz-se no log.
+- **A produção tem a âncora do WORM ligada e o bundle não a traz.** Com `AOS_WORM_TRUST_ANCHOR`
+  herdada, o nó só arranca com `ancoras/checkpoints.json` e `pisos/heads.json`. O ensaio monta-os
+  **do bundle**, nunca de `/opt/aos` — montados da produção, passaria com um backup que não os leva,
+  e um host perdido não tem `/opt/aos` para emprestar. Até 2026-09-14 o `backup.sh` **não os
+  copiava**: um host restaurado subia com a âncora ligada e sem os ficheiros, e o nó abortava no
+  arranque. Hoje copia-os, grava `worm-ancora=` no `MANIFEST`, e com a âncora ligada a falta deles é
+  recusa antes de produzir artefacto.
 
 ---
 
