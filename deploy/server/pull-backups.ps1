@@ -60,7 +60,12 @@ param(
 
 # BatchMode: a tarefa nunca pode ficar parada a pedir uma password. StrictHostKeyChecking fica no
 # default (ask, que em BatchMode e recusa): um servidor com outra chave de host nao recebe pedidos.
-$sshOpts = @('-i', $Chave, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20')
+# ServerAlive: o ConnectTimeout so cobre o ESTABELECER da ligacao. Uma sessao que pendura depois de
+# aberta (visto na primeira execucao agendada, 2026-09-14: um `recente` parado minutos numa ligacao
+# instavel) ficava ate ao ExecutionTimeLimit da tarefa, sem alerta nenhum. Assim morre em ~60s, o
+# script segue para o ramo de alerta, e a execucao seguinte tenta de novo.
+$sshOpts = @('-i', $Chave, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20',
+             '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4')
 if ($KnownHosts) { $sshOpts += @('-o', "UserKnownHostsFile=$KnownHosts") }
 
 $ErrorActionPreference = 'Stop'
@@ -119,7 +124,9 @@ if (-not (Test-Path $Chave))   { Alerta "chave SSH ausente em $Chave"; Termina 1
 # Lista remota COM data de modificacao. Falha de rede NAO e fatal para o agendamento: a execucao
 # seguinte tenta de novo — derrubar a tarefa por um servidor momentaneamente inalcancavel trocaria
 # uma copia em atraso por nenhuma copia.
-$remotos = Nativo { & ssh @sshOpts -p $Porta $Servidor 'listar' 2>$null }
+# -n: stdin de /dev/null. Numa tarefa agendada nao ha consola, e um ssh a espera de stdin nao tem
+# de quem o receber.
+$remotos = Nativo { & ssh -n @sshOpts -p $Porta $Servidor 'listar' 2>$null }
 if ($LASTEXITCODE -ne 0 -or -not $remotos) {
     Alerta "servidor inalcancavel ou sem backups nenhuns — a proxima execucao tenta de novo"
     Termina 2
@@ -128,7 +135,7 @@ if ($LASTEXITCODE -ne 0 -or -not $remotos) {
 # IDADE DO LADO REMOTO. E a verificacao que a versao anterior nao tinha, e a que apanha o caso
 # invisivel: o cron morreu, a recolha continua a correr sem erro, e o unico sintoma seria a data
 # do ficheiro mais recente — que ninguem estava a olhar.
-$epochRemoto = Nativo { & ssh @sshOpts -p $Porta $Servidor 'recente' 2>$null }
+$epochRemoto = Nativo { & ssh -n @sshOpts -p $Porta $Servidor 'recente' 2>$null }
 if ($LASTEXITCODE -eq 0 -and $epochRemoto) {
     $dataRemota  = [DateTimeOffset]::FromUnixTimeSeconds([int64]$epochRemoto).LocalDateTime
     $idadeRemota = [int]((Get-Date) - $dataRemota).TotalHours
