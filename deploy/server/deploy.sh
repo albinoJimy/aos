@@ -205,7 +205,8 @@ fi
 # O sinal que resta é sólido e conservador: se o ficheiro no host foi TOCADO depois de o processo
 # arrancar, o processo ou já não o lê (substituído) ou leu-o antes (escrito por cima e não
 # relido). Nos dois casos recriar realinha. O custo é um restart a mais quando o ficheiro foi
-# escrito por cima — barato, e do lado certo do erro.
+# escrito por cima — barato, e do lado certo do erro. Nos serviços SEM LEITOR esse restart a mais
+# acontecia em TODOS os deploys, e é isso que o registo do que cada contentor carregou (abaixo) fecha.
 # hash_no_contentor devolve o md5 do ficheiro TAL COMO O PROCESSO O VÊ, ou vazio.
 #
 # A VALIDAÇÃO DA FORMA NÃO É ZELO. Uma imagem distroless não tem shell nem `md5sum`, e o
@@ -223,9 +224,89 @@ hash_no_contentor() {
   esac
 }
 
+# --- O QUE CADA CONTENTOR CARREGOU ---------------------------------------------------------------
+# A data sozinha recriava SEMPRE os serviços sem leitor (distroless: o `otel`, o próprio nó) — e
+# não por deriva nenhuma. O `rsync -a` do CD reescreve TODOS os ficheiros que sincroniza: o checkout
+# do runner é novo, a data difere, e o rsync escreve um temporário e renomeia-o mesmo com o conteúdo
+# idêntico. O ficheiro fica sempre "mais novo que o processo", o contentor não tem `md5sum` para o
+# desmentir, e o `otel` era recriado em todos os deploys, incluindo num redeploy do mesmo digest.
+#
+# O que falta a um serviço sem leitor é saber O QUE o processo leu. Isso sabe-se do lado do host, no
+# único momento em que é certo: um contentor que arrancou DEPOIS da última alteração ao ficheiro viu
+# o conteúdo que lá está. Regista-se aí o md5, por contentor (o id muda a cada recriação, e o registo
+# com ele) e por destino. Num deploy seguinte, um ficheiro mais novo com o MESMO md5 que o registado
+# é o conteúdo que o processo já tem, só com um inode novo — nada a realinhar. Um md5 diferente é
+# deriva de conteúdo, dita como tal. Sem registo (o primeiro deploy com este passo, ou um contentor
+# que arrancou antes de o ficheiro mudar) fica a data, conservadora como sempre foi.
+#
+# A data é a de ALTERAÇÃO DO INODE (ctime, `%Z`), não a de modificação (`%Y`). O `rsync -a` e o
+# `touch -d` escrevem a mtime que quiserem: uma cópia com a mtime da origem pode ser mais antiga que
+# o processo e ter conteúdo novo. A ctime não se escreve à mão — um inode novo ou alterado tem a ctime
+# de agora. Para a suspeita é mais conservadora; para o registo é o que o torna seguro.
+#
+# O REGISTO É DE UM ARRANQUE, NÃO DE UM CONTENTOR. O id só muda quando o contentor é RECRIADO; um
+# REINÍCIO (crash, reboot, `restart: unless-stopped`, `docker compose restart`) mantém o id e volta a
+# montar o ficheiro pelo caminho — o processo relê o que lá está. Um registo por id sobreviveria a isso
+# e afirmaria um conteúdo que o processo já não tem: o host muda sem deploy (um deploy que falhou
+# depois do rsync e antes do passo 4), o contentor reinicia e lê o novo, um commit repõe o antigo — e o
+# antigo, igual ao registo, passaria por alinhado. Por isso cada linha guarda o `StartedAt` exacto, e
+# só vale enquanto for o do arranque actual.
+REGISTO_DIR="${APP_DIR}/.config-carregada"
+
+e_md5() { [[ "$1" =~ ^[0-9a-f]{32}$ ]]; }
+
+# md5 do ficheiro no host, ou vazio. A mesma regra do hash_no_contentor: só 32 hex é um hash.
+md5_no_host() {
+  local h
+  h="$( md5sum "$1" 2>/dev/null | cut -d' ' -f1 )" || true
+  if e_md5 "${h}"; then printf '%s' "${h}"; fi
+}
+
+# md5 que o contentor <cid> carregou em <destino> NO ARRANQUE <inicio>, ou vazio.
+registo_ler() {
+  local h
+  h="$( awk -F'\t' -v d="$2" -v i="$3" '$1 == d && $3 == i { h = $2 } END { print h }' "${REGISTO_DIR}/$1" 2>/dev/null )" || true
+  if e_md5 "${h}"; then printf '%s' "${h}"; fi
+}
+
+# Regista, por arranque de cada contentor, o md5 dos ficheiros que ele DE CERTEZA carregou. Corre
+# depois das recriações, para os contentores novos entrarem já com registo. Devolve != 0 quando não
+# consegue escrever — quem a chama avisa, e o pior que isso custa é o próximo deploy decidir pela data.
+registar_config_carregada() {
+  local svc cid inicio ini_epoch tmp f vivos=" "
+  mkdir -p "${REGISTO_DIR}" || return 1
+  for svc in $( dc ps --services 2>/dev/null ); do
+    cid="$( dc ps -q "${svc}" 2>/dev/null )" || continue
+    [[ "${cid}" =~ ^[0-9a-f]{12,64}$ ]] || continue
+    vivos="${vivos}${cid} "
+    inicio="$( docker inspect -f '{{.State.StartedAt}}' "${cid}" 2>/dev/null )" || continue
+    ini_epoch="$( date -d "${inicio}" +%s 2>/dev/null )" || continue
+    tmp="${REGISTO_DIR}/${cid}.tmp"
+    { docker inspect "${cid}" --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}|{{.Destination}}{{println}}{{end}}{{end}}' 2>/dev/null || true; } \
+    | while IFS='|' read -r src dst; do
+        [ -n "${src}" ] && [ -f "${src}" ] || continue
+        c_epoch="$( stat -c %Z "${src}" 2>/dev/null )" || continue
+        h="$( md5_no_host "${src}" )"
+        if [ -n "${h}" ] && [ "${c_epoch}" -lt "${ini_epoch}" ]; then
+          printf '%s\t%s\t%s\n' "${dst}" "${h}" "${inicio}"          # arrancou depois: vê este conteúdo
+        else
+          h="$( registo_ler "${cid}" "${dst}" "${inicio}" )"          # senão, só o que já se sabia DESTE arranque
+          [ -z "${h}" ] || printf '%s\t%s\t%s\n' "${dst}" "${h}" "${inicio}"
+        fi
+      done > "${tmp}"
+    [ -f "${tmp}" ] || return 1
+    mv -f "${tmp}" "${REGISTO_DIR}/${cid}" || return 1
+  done
+  # Registos (e temporários) de contentores que já não existem não servem a ninguém.
+  for f in "${REGISTO_DIR}"/*; do
+    [ -f "${f}" ] || continue
+    case "${vivos}" in *" $( basename "${f}" ) "*) ;; *) rm -f "${f}" ;; esac
+  done
+}
+
 log "4b/6 a verificar config montada mais nova que o processo ..."
-DET=/tmp/aos-deriva-detalhe.txt
-: > "${DET}"
+DET="$( mktemp )"
+IGUAIS="$( mktemp )"
 for svc in $( dc ps --services 2>/dev/null ); do
   cid="$( dc ps -q "${svc}" 2>/dev/null )"
   [ -n "${cid}" ] || continue
@@ -234,24 +315,39 @@ for svc in $( dc ps --services 2>/dev/null ); do
   docker inspect "${cid}" --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}|{{.Destination}}{{println}}{{end}}{{end}}' 2>/dev/null \
   | while IFS='|' read -r src dst; do
       [ -n "${src}" ] && [ -f "${src}" ] || continue
-      f_epoch="$( stat -c %Y "${src}" 2>/dev/null )" || continue
+      f_epoch="$( stat -c %Z "${src}" 2>/dev/null )" || continue
       [ "${f_epoch}" -gt "${ini_epoch}" ] || continue
 
       # O ficheiro é mais novo que o processo. Isso SUSPEITA de deriva; não a prova. Quando dá
       # para ler de dentro, o CONTEÚDO decide — e poupa um restart a quem só levou uma data nova
-      # do rsync. Reiniciar o `edge` por causa de um mtime é uma interrupção pública sem motivo.
+      # do rsync. Reiniciar o `edge` por causa de uma data é uma interrupção pública sem motivo.
+      hh="$( md5_no_host "${src}" )"
       hc="$( hash_no_contentor "${cid}" "${dst}" )"
       if [ -n "${hc}" ]; then
-        hh="$( md5sum "${src}" | cut -d' ' -f1 )"
-        [ "${hh}" = "${hc}" ] && continue          # mais novo, mas IGUAL ⇒ nada a fazer
+        if [ -n "${hh}" ] && [ "${hh}" = "${hc}" ]; then      # mais novo, mas IGUAL ⇒ nada a fazer
+          printf '%s\t%s\n' "${svc}" "$( basename "${src}" )" >> "${IGUAIS}"
+          continue
+        fi
         printf '%s\t%s\t%s\n' "${svc}" "$( basename "${src}" )" "conteudo" >> "${DET}"
+        continue
+      fi
+
+      # Sem leitor lá dentro (distroless). Decide o registo do que o processo carregou; sem registo
+      # fica a data, que é conservadora: no pior caso recria-se um serviço que já estava alinhado.
+      hr="$( registo_ler "${cid}" "${dst}" "${inicio}" )"
+      if [ -z "${hr}" ]; then
+        printf '%s\t%s\t%s\n' "${svc}" "$( basename "${src}" )" "data (sem leitor nem registo)" >> "${DET}"
+      elif [ -n "${hh}" ] && [ "${hh}" = "${hr}" ]; then
+        printf '%s\t%s\n' "${svc}" "$( basename "${src}" )" >> "${IGUAIS}"
       else
-        # Sem leitor lá dentro (distroless). Fica a data, que é conservadora: no pior caso
-        # recria-se um serviço que já estava alinhado.
-        printf '%s\t%s\t%s\n' "${svc}" "$( basename "${src}" )" "data (sem leitor)" >> "${DET}"
+        printf '%s\t%s\t%s\n' "${svc}" "$( basename "${src}" )" "conteudo (registo do arranque)" >> "${DET}"
       fi
     done
 done
+
+if [ -s "${IGUAIS}" ]; then
+  log "     data nova mas o MESMO conteúdo que o processo tem (nada a recriar): $( awk -F'\t' '{ printf "%s%s:%s", (NR > 1 ? " " : ""), $1, $2 }' "${IGUAIS}" )"
+fi
 
 if [ -s "${DET}" ]; then
   while IFS="$(printf '\t')" read -r s f m; do
@@ -274,7 +370,8 @@ if [ -s "${DET}" ]; then
 else
   log "     nenhuma config divergente"
 fi
-rm -f "${DET}"
+rm -f "${DET}" "${IGUAIS}"
+registar_config_carregada || log "     aviso: não foi possível registar a config carregada — o próximo deploy decide pela data"
 
 # --- 5. Espera pelo healthy do NÓ (não do edge: o edge só arranca depois) -------------------------
 log "5/6 a aguardar o nó healthy (tecto ${HEALTH_TIMEOUT}s) ..."
