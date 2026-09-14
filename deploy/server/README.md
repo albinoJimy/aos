@@ -643,7 +643,7 @@ quem não o fizer.
 **A nona nasceu do mesmo refutador** (AOS-366) e é a mais subtil das três: o nó não só saltava o
 endurecimento de egress — *desarmava-o activamente*. O gateway de modelo traz um caminho SSRF
 fail-closed (AOS-223): com `HTTPClient` nil, valida o `BaseURL` (https + allowlist, com a porta na
-chave) e constrói um transporte com timeout de 30 s, limite de redirects e re-validação de **cada**
+chave) e constrói um transporte com timeout (30 s por omissão; `AOS_MODEL_EGRESS_TIMEOUT` muda-o), limite de redirects e re-validação de **cada**
 salto. O nó injectava-lhe um `http.Client` banal em **todas** as configurações — o que faz o gateway
 *delegar* a validação nesse transporte, i.e. não validar nada — e um comentário chamava-lhe «seam de
 dev» dentro do binário de produção. Um `AOS_MODEL_ENDPOINT` em `http://` ou apontado a um host

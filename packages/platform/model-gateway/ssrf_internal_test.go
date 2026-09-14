@@ -141,7 +141,7 @@ func TestHardenedEgressClient_LegitHTTPS_Works(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}))
+	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}), 0)
 	if client.Timeout != egressTimeout {
 		t.Fatalf("cliente endurecido devia ter timeout %v; got %v", egressTimeout, client.Timeout)
 	}
@@ -169,7 +169,7 @@ func TestHardenedEgressClient_RedirectToInsecure_Refused(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}))
+	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}), 0)
 	trustServer(t, client, srv)
 
 	_, err := client.Get(srv.URL)
@@ -188,7 +188,7 @@ func TestHardenedEgressClient_RedirectToForeignHost_Refused(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}))
+	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}), 0)
 	trustServer(t, client, srv)
 
 	_, err := client.Get(srv.URL)
@@ -209,7 +209,7 @@ func TestHardenedEgressClient_RedirectToAllowlistedHostDangerousPort_Refused(t *
 	}))
 	defer srv.Close()
 
-	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}))
+	client := newHardenedEgressClient(newHostAllowlist([]string{"127.0.0.1"}), 0)
 	trustServer(t, client, srv)
 
 	_, err := client.Get(srv.URL)
@@ -234,7 +234,7 @@ func TestHardenedEgressClient_RedirectLimit(t *testing.T) {
 	defer srv.Close()
 
 	// srv.URL = "https://127.0.0.1:<porta efémera>"; a allowlist precisa do host:porta.
-	client := newHardenedEgressClient(newHostAllowlist([]string{strings.TrimPrefix(srv.URL, "https://")}))
+	client := newHardenedEgressClient(newHostAllowlist([]string{strings.TrimPrefix(srv.URL, "https://")}), 0)
 	trustServer(t, client, srv)
 
 	_, err := client.Get(srv.URL)

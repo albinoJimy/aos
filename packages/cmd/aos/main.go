@@ -1944,6 +1944,36 @@ func egressAllowlistFromEnv(endpoint string) ([]string, error) {
 	return []string{host}, nil
 }
 
+// Limites aceites para AOS_MODEL_EGRESS_TIMEOUT. O mínimo existe porque um valor absurdo (1ms, um
+// engano de unidade) cortaria TODAS as chamadas ao modelo e pareceria avaria do provider; o máximo
+// alinha com o tecto de wall-clock por omissão de um run (DefaultBreakerMaxWallClock): um pedido
+// que pudesse esperar mais do que o run inteiro nunca acabaria dentro dele.
+const (
+	minModelEgressTimeout = time.Second
+	maxModelEgressTimeout = 30 * time.Minute
+)
+
+// ErrBadModelEgressTimeout — AOS_MODEL_EGRESS_TIMEOUT definida mas não é uma duração Go dentro dos
+// limites. Fail-closed de CONFIG: o nó recusa arrancar em vez de ignorar o valor e seguir com o
+// default — um operador que pediu 120s e ficou com 30s não teria forma de o notar até um turno
+// longo falhar em produção.
+var ErrBadModelEgressTimeout = errors.New("aos: AOS_MODEL_EGRESS_TIMEOUT invalida — duracao Go entre 1s e 30m (ex.: 120s); e o tempo maximo de CADA pedido ao modelo. Deixe por definir para o default do caminho (30s sob producao)")
+
+// parseModelEgressTimeoutFromEnv lê AOS_MODEL_EGRESS_TIMEOUT: o tempo máximo de cada pedido HTTP
+// do gateway ao modelo. Vazio ⇒ 0, que quer dizer "o default do caminho": 30 s no transporte
+// endurecido de produção (AOS-366) e 60 s no seam de dev — exactamente o comportamento anterior.
+func parseModelEgressTimeoutFromEnv() (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv("AOS_MODEL_EGRESS_TIMEOUT"))
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < minModelEgressTimeout || d > maxModelEgressTimeout {
+		return 0, fmt.Errorf("%w: %q", ErrBadModelEgressTimeout, raw)
+	}
+	return d, nil
+}
+
 // parseModelFromEnv liga [Config.Model] a um gateway OpenAI-compatível (OmniRoute/OpenRouter/…) a
 // partir do ambiente — a via que preenche a porta [agentruntime.ModelClient] em vez do
 // referenceModel. Vazio ⇒ nil (referenceModel, inalterado). Presente ⇒ exige AOS_MODEL_NAME; a API
@@ -1967,6 +1997,13 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	model := strings.TrimSpace(os.Getenv("AOS_MODEL_NAME"))
 	if model == "" {
 		return nil, nil, ErrBadModelConfig
+	}
+	// TEMPO MÁXIMO DE CADA PEDIDO AO MODELO. Validado AQUI, antes de qualquer efeito da composição
+	// (abrir o WAL de audit do gateway, carregar preços): um valor fora dos limites aborta o arranque
+	// sem ter tocado em nada.
+	egressTimeout, terr := parseModelEgressTimeoutFromEnv()
+	if terr != nil {
+		return nil, nil, terr
 	}
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
@@ -2036,7 +2073,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 			return nil, nil, err
 		}
 	}
-	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts)
+	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout)
 	if err != nil {
 		return nil, nil, err
 	}

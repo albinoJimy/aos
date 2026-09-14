@@ -71,6 +71,11 @@ var (
 	// metadados de nuvem (169.254.169.254), loopback ou qualquer alvo interno — é
 	// recusado. Uma allowlist vazia nega tudo.
 	ErrHostNotAllowed = errors.New("modelgateway: host de egress fora da allowlist (fail-closed SSRF)")
+	// ErrBadEgressTimeout — [ProductionConfig.EgressTimeout] negativo. Fail-closed: um tecto
+	// negativo não tem leitura possível, e deixá-lo passar produziria um cliente SEM timeout
+	// nenhum (o net/http trata <= 0 como "sem limite") — exactamente o defeito (a) de AOS-223
+	// que o transporte endurecido existe para fechar.
+	ErrBadEgressTimeout = errors.New("modelgateway: EgressTimeout negativo (fail-closed)")
 )
 
 // CredentialProvider é o SEAM PÚBLICO de aquisição de credenciais de infra para o
@@ -118,6 +123,12 @@ type ProductionConfig struct {
 	// uma allowlist VAZIA nega tudo. Ignorada quando um HTTPClient é injectado (o
 	// transporte injectado é a fronteira de confiança nesse caso).
 	AllowedEgressHosts []string
+	// EgressTimeout é o tempo máximo de CADA pedido do cliente de egress REAL (HTTPClient nil):
+	// o `Timeout` do transporte endurecido. Zero ⇒ o default do pacote (egressTimeout, 30 s);
+	// negativo ⇒ [ErrBadEgressTimeout] na composição. Ignorado quando um HTTPClient é injectado
+	// (o timeout desse transporte é de quem o injecta). Não mexe em mais nada do endurecimento:
+	// TLS 1.2, allowlist e re-validação de cada redirect ficam iguais.
+	EgressTimeout time.Duration
 	// DefaultRegion é a região usada quando o pedido não a especifica.
 	DefaultRegion string
 	// Authn é o estágio de IDENTIDADE (AOS-057) que valida o token do principal e
@@ -254,7 +265,7 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	// de egress REAL (HTTPClient nil) o BaseURL é validado (https + allowlist) e um
 	// cliente endurecido/allowlist-aware é construído ANTES de servir tráfego (SSRF,
 	// AOS-223) — fail-closed: um BaseURL malicioso não produz gateway.
-	adapter, err := newProviderAdapter(cfg.Provider, cfg.BaseURL, cfg.HTTPClient, cfg.AllowedEgressHosts)
+	adapter, err := newProviderAdapter(cfg.Provider, cfg.BaseURL, cfg.HTTPClient, cfg.AllowedEgressHosts, cfg.EgressTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -337,18 +348,21 @@ func adaptHealth(h func(keyID, region string) bool) sovereignty.HealthFunc {
 // não-allowlisted) é recusado fail-closed ANTES de qualquer chamada. Quando um
 // client é injectado (httptest/integração), esse transporte de confiança governa e
 // a validação é delegada nele.
-func newProviderAdapter(provider, baseURL string, client *http.Client, allowedHosts []string) (adapters.Adapter, error) {
+func newProviderAdapter(provider, baseURL string, client *http.Client, allowedHosts []string, timeout time.Duration) (adapters.Adapter, error) {
 	switch provider {
 	case "openai", "anthropic", "google":
 		if baseURL == "" {
 			return nil, ErrNoBaseURL
 		}
 		if client == nil {
+			if timeout < 0 {
+				return nil, fmt.Errorf("%w: %v", ErrBadEgressTimeout, timeout)
+			}
 			allow := newHostAllowlist(allowedHosts)
 			if err := validateEgressURL(baseURL, allow); err != nil {
 				return nil, err
 			}
-			client = newHardenedEgressClient(allow)
+			client = newHardenedEgressClient(allow, timeout)
 		}
 		return adapters.NewOpenAIHTTPAdapter(provider, baseURL, client), nil
 	default:
@@ -359,6 +373,13 @@ func newProviderAdapter(provider, baseURL string, client *http.Client, allowedHo
 // egressTimeout e egressMaxRedirects endurecem o cliente HTTP de egress REAL do
 // gateway (defeito (a) de AOS-223): timeout explícito e limite de redirect, contra
 // o http.DefaultClient nu (sem timeout/TLS/limite).
+//
+// egressTimeout é o tecto POR OMISSÃO, usado quando [ProductionConfig.EgressTimeout] fica a
+// zero. Passou a ser configurável porque um tecto único não serve todos os providers: um modelo
+// de raciocínio a gerar centenas de tokens num turno com contexto de tool demora dezenas de
+// segundos, e com 30 s o turno era cortado a meio (`Client.Timeout exceeded while awaiting
+// headers`) — um provider lento mas são tratado como avariado. O default fica nos 30 s para que
+// nada mude para quem não configura.
 const (
 	egressTimeout      = 30 * time.Second
 	egressMaxRedirects = 5
@@ -445,10 +466,14 @@ func validateEgressURL(raw string, allow hostAllowlist) error {
 // limita o número de saltos e (ii) RE-VALIDA cada alvo de redirect contra a mesma
 // allowlist https (fecha o SSRF-via-redirect — um 3xx para http ou para um host
 // interno é recusado a meio do fluxo). Fecha os defeitos (a) e (b) de AOS-223 no
-// caminho de egress real.
-func newHardenedEgressClient(allow hostAllowlist) *http.Client {
+// caminho de egress real. `timeout` é o tecto de cada pedido; <= 0 ⇒ o default (egressTimeout) —
+// nunca "sem limite", que é o que o net/http faria com um zero.
+func newHardenedEgressClient(allow hostAllowlist, timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = egressTimeout
+	}
 	return &http.Client{
-		Timeout: egressTimeout,
+		Timeout: timeout,
 		Transport: &http.Transport{
 			Proxy:               http.ProxyFromEnvironment,
 			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
