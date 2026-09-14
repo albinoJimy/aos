@@ -179,7 +179,7 @@ func (nodeModelAuthority) ClassAuthority(context.Context, string) ([]string, err
 // (model, region) deste nó, e é o que faz o canal de custo transportar um número derivado
 // em vez de zero. nil ⇒ sem contabilidade (zero DECLARADO no banner, nunca um preço
 // inventado) — ver model_pricing_env.go.
-func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string) (agentruntime.ModelClient, error) {
+func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string, egressTimeout time.Duration) (agentruntime.ModelClient, error) {
 	// CUTOVER DURO: sem seam de identidade não há gateway. O estágio authn REAL substitui o
 	// antigo stub (nodeModelAuthn) que forjava o principal e devolvia allow incondicional.
 	if verifier == nil {
@@ -265,8 +265,16 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 	// `http.Client` simples — o seam que os testes de integração/httptest usam —, inalterado.
 	if production {
 		gwCfg.AllowedEgressHosts = egressHosts
+		gwCfg.EgressTimeout = egressTimeout // 0 ⇒ o default do gateway (30 s)
 	} else {
-		gwCfg.HTTPClient = &http.Client{Timeout: 60 * time.Second} // seam de dev: delega validação de egress
+		// TEMPO MÁXIMO DO SEAM DE DEV: 60 s, salvo AOS_MODEL_EGRESS_TIMEOUT. A variável vale nos dois
+		// caminhos para ser UM só conceito para o operador — o tempo máximo de cada pedido ao modelo —
+		// e não um que muda de significado com o modo.
+		devTimeout := 60 * time.Second
+		if egressTimeout > 0 {
+			devTimeout = egressTimeout
+		}
+		gwCfg.HTTPClient = &http.Client{Timeout: devTimeout} // seam de dev: delega validação de egress
 	}
 	gw, err := modelgateway.NewProduction(context.Background(), gwCfg)
 	if err != nil {

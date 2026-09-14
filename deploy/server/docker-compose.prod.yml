@@ -368,6 +368,12 @@ services:
       # (https + allowlist). Vazio ⇒ a allowlist deriva do host de AOS_MODEL_ENDPOINT (o destino
       # já configurado); defina esta CSV de `host`/`host:porta` só para restringir/alargar.
       AOS_MODEL_EGRESS_HOSTS: "${AOS_MODEL_EGRESS_HOSTS:-}"
+      # TEMPO MÁXIMO DE CADA PEDIDO AO MODELO. Vazio ⇒ o default do caminho (30s sob produção).
+      # Um modelo de raciocínio a gerar centenas de tokens num turno com contexto de tool passa
+      # facilmente os 30s, e o turno era cortado a meio com `Client.Timeout exceeded while awaiting
+      # headers` — um provider lento tratado como avariado. Duração Go entre 1s e 30m; fora disso o
+      # nó recusa arrancar (ErrBadModelEgressTimeout), em vez de seguir com o default em silêncio.
+      AOS_MODEL_EGRESS_TIMEOUT: "${AOS_MODEL_EGRESS_TIMEOUT:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"

@@ -34,6 +34,7 @@ func aos366ProdModelEnv(t *testing.T) {
 	t.Setenv("AOS_MODEL_EGRESS_HOSTS", "") // por omissão a allowlist deriva do host do endpoint
 	t.Setenv("AOS_MODEL_TOOLS", "")
 	t.Setenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR", "")
+	t.Setenv("AOS_MODEL_EGRESS_TIMEOUT", "") // o default do caminho: um valor exportado na shell não contamina estes testes
 }
 
 // TestAOS366_ProducaoHTTPRecusa (CA-2, metade do esquema): em produção um AOS_MODEL_ENDPOINT em
