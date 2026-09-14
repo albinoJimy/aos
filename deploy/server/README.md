@@ -808,9 +808,32 @@ schtasks /Create /TN "AOS-RecolherBackups" /SC DAILY /ST 04:30 /RL LIMITED /F /T
 schtasks /Query /TN "AOS-RecolherBackups" /FO LIST
 ```
 
-O `StartWhenAvailable` (recuperar uma execução perdida no arranque seguinte) não existe no
-`schtasks`; liga-se depois com
-`$t = Get-ScheduledTask AOS-RecolherBackups; $t.Settings.StartWhenAvailable = $true; Set-ScheduledTask -InputObject $t`.
+O `schtasks` não expõe três definições que esta tarefa precisa, e uma delas **impede-a de correr
+sem dizer nada**. Ajustam-se logo a seguir:
+
+```powershell
+$t = Get-ScheduledTask AOS-RecolherBackups
+$t.Settings.StartWhenAvailable         = $true    # recupera uma execução perdida (máquina desligada)
+$t.Settings.DisallowStartIfOnBatteries = $false   # ver abaixo
+$t.Settings.StopIfGoingOnBatteries     = $false
+$t.Settings.ExecutionTimeLimit         = 'PT2H'   # uma execução presa não bloqueia as seguintes (IgnoreNew)
+Set-ScheduledTask -InputObject $t
+```
+
+> **A bateria.** Por omissão o Agendador **não arranca tarefas a bateria** — e não falha: a tarefa
+> fica em `Queued`, sem `pull.log`, sem erro, sem nada no `ESTADO.txt`. Aconteceu no registo desta
+> tarefa (2026-09-14), num portátil fora da corrente. O `StartWhenAvailable` não resolve: cobre a
+> máquina **desligada**, não a máquina **sem corrente**. Um portátil que passe as 04:30 a bateria
+> ficaria dias sem recolha — exactamente o silêncio que o `pull-backups.ps1` existe para impedir.
+> A recolha são ~2 MB por dia; corre-la a bateria não custa nada.
+
+E confirmar que ficou, e que corre — não só que existe:
+
+```powershell
+Start-ScheduledTask AOS-RecolherBackups
+Get-ScheduledTaskInfo AOS-RecolherBackups   # LastTaskResult 0 no fim; 267009 = ainda a correr
+Get-Content "$env:USERPROFILE\aos-backups\ESTADO.txt"
+```
 
 Destino `%USERPROFILE%\aos-backups`, rotação local de 30 (independente das 14 do servidor, porque
 esta é a única que sobrevive à perda da máquina remota). `StartWhenAvailable` faz uma execução
