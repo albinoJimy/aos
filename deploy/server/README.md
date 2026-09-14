@@ -778,6 +778,40 @@ powershell -ExecutionPolicy Bypass -File deploy\server\pull-backups.ps1   # à m
 Get-ScheduledTaskInfo -TaskName AOS-RecolherBackups                       # última/próxima execução
 ```
 
+#### A chave da recolha só recolhe
+
+A tarefa corre sozinha, pelo que a chave **não tem passphrase** — e o `aos` está no grupo `docker`,
+onde uma shell é root no servidor. Uma chave assim, a dar shell, seria o host inteiro numa máquina
+de secretária. Por isso a recolha usa uma chave **dedicada** (`secrets-local/backup-pull/id_ed25519`,
+ACL só do dono) e o servidor força-lhe um comando, [`backup-pull-gate.sh`](backup-pull-gate.sh),
+que aceita exactamente três pedidos: `listar`, `recente` e `scp -f /opt/aos/backups/aos-<stamp>.tar.gz.enc`.
+Tudo o resto é recusado e registado no syslog (`aos-backup-pull`).
+
+> **O `scp` vai com `-O`, e não é pormenor.** O OpenSSH 9 fala **SFTP** por omissão, e por SFTP o
+> pedido não traz um caminho que se possa validar — a chave leria o `.env` e os `secrets/`. Com
+> `-O` (protocolo clássico) chega ao gate como `scp -f <caminho>`. O gate foi exercitado contra
+> um `sshd` real com o cliente do Windows: `listar`, `recente` e o `scp -O` de um backup passam;
+> shell, sessão sem comando, SFTP, `.env`, `..`, glob e forwarding (`-W`) são recusados.
+
+Instalar (uma vez; o gate chega ao servidor pelo deploy):
+
+```bash
+# no servidor, com a .pub copiada para /tmp/backup-pull.pub
+install -d -m 700 -o aos -g aos /home/aos/.ssh
+printf 'restrict,command="bash /opt/aos/backup-pull-gate.sh" %s\n' "$(cat /tmp/backup-pull.pub)" >> /home/aos/.ssh/authorized_keys
+chown aos:aos /home/aos/.ssh/authorized_keys && chmod 600 /home/aos/.ssh/authorized_keys
+```
+
+```powershell
+# na máquina do operador — e confirmar que ficou
+schtasks /Create /TN "AOS-RecolherBackups" /SC DAILY /ST 04:30 /RL LIMITED /F /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Jimy\AOS\deploy\server\pull-backups.ps1" /RU $env:USERNAME
+schtasks /Query /TN "AOS-RecolherBackups" /FO LIST
+```
+
+O `StartWhenAvailable` (recuperar uma execução perdida no arranque seguinte) não existe no
+`schtasks`; liga-se depois com
+`$t = Get-ScheduledTask AOS-RecolherBackups; $t.Settings.StartWhenAvailable = $true; Set-ScheduledTask -InputObject $t`.
+
 Destino `%USERPROFILE%\aos-backups`, rotação local de 30 (independente das 14 do servidor, porque
 esta é a única que sobrevive à perda da máquina remota). `StartWhenAvailable` faz uma execução
 perdida ser recuperada no arranque seguinte em vez de ser saltada.
