@@ -336,7 +336,7 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpChat)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.TreeID, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.StepID, req.TreeID, req.Model, g.regionOf(req.Region))
 
 	var resp port.ChatResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -400,7 +400,7 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpChat)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.TreeID, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.StepID, req.TreeID, req.Model, g.regionOf(req.Region))
 
 	var inner port.ChatStream
 	runErr := g.pipe.ExecutePreInvoke(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -508,7 +508,7 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 	span.SetAttribute(agentruntime.AttrOperationName, opEmbeddings)
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
-	ex := g.newExchange(pipeline.OpEmbeddings, req.Principal, req.Board, req.RunID, req.TreeID, req.Model, g.regionOf(req.Region))
+	ex := g.newExchange(pipeline.OpEmbeddings, req.Principal, req.Board, req.RunID, req.StepID, req.TreeID, req.Model, g.regionOf(req.Region))
 
 	var resp port.EmbeddingsResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -556,12 +556,13 @@ func (g *Gateway) Embeddings(ctx context.Context, req port.EmbeddingsRequest) (p
 // newExchange constrói o Exchange com o relógio injectado. RequestedProvider é
 // semeado com o provedor do adaptador configurado (o provedor "pedido" por
 // default); se o roteamento resolver outro provedor, o GW regista provider_swap.
-func (g *Gateway) newExchange(op pipeline.Op, principal, board, runID, treeID, model, region string) *pipeline.Exchange {
+func (g *Gateway) newExchange(op pipeline.Op, principal, board, runID, stepID, treeID, model, region string) *pipeline.Exchange {
 	ex := &pipeline.Exchange{
 		Op:                op,
 		Principal:         principal,
 		Board:             board,
 		RunID:             runID,
+		StepID:            stepID,
 		TreeID:            treeID,
 		RequestedModel:    model,
 		RequestedProvider: g.adapter.Provider(),
@@ -637,6 +638,7 @@ func (g *Gateway) attribute(ctx context.Context, span agentruntime.Span, ex *pip
 		Operation:       string(ex.Op),
 		PolicyVersion:   ex.PolicyVersion,
 		RunID:           ex.RunID,
+		StepID:          ex.StepID,
 		Timestamp:       g.clock(),
 	}
 	if err := g.attribution.Record(ctx, span, rec); err != nil {

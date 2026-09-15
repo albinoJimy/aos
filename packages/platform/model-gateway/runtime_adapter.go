@@ -75,7 +75,9 @@ func WithRegionBoard(region, board string) RuntimeAdapterOption {
 // WithRun correlaciona as chamadas deste adaptador com a TRAJECTÓRIA (run) do
 // agente: o runID entra em cada [port.ChatRequest] e torna-se o eixo de agregação
 // do SLI de cache-hit-rate (AOS-061, por run/tenant) e a ligação da atribuição à
-// trajectória (ADR-010). Um adaptador é tipicamente construído por run.
+// trajectória (ADR-010). Só serve a um adaptador construído POR RUN: o run que o
+// runtime anexa ao ctx de cada chamada ([agentruntime.ContextWithModelCall],
+// AOS-394) tem precedência, e é esse o caminho de um adaptador construído por nó.
 func WithRun(runID string) RuntimeAdapterOption {
 	return func(a *ModelClientAdapter) { a.runID = runID }
 }
@@ -102,6 +104,17 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 			principal = p
 		}
 	}
+	// CORRELAÇÃO POR-CHAMADA (AOS-394): o run e o passo do turno vêm do ctx que o runtime
+	// escreve antes de chamar o modelo. O par lê-se JUNTO: havendo anexo, é ele que vale
+	// INTEIRO; não havendo, fica o [WithRun] de construção (um adaptador por run) e o passo
+	// segue vazio. A precedência é sobre o PAR e não sobre cada campo de propósito — completar
+	// o run de uma fonte com o passo de outra selaria uma correlação que nunca existiu, que é
+	// precisamente o que este ticket proíbe. Sem nenhuma das duas fontes os campos seguem
+	// vazios e o selo mostra a ausência.
+	runID, stepID, ok := agentruntime.ModelCallFromContext(ctx)
+	if !ok {
+		runID, stepID = a.runID, ""
+	}
 	req := port.ChatRequest{
 		Model:     a.model,
 		Messages:  []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}},
@@ -109,7 +122,8 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 		Principal: principal,
 		Region:    a.region,
 		Board:     a.board,
-		RunID:     a.runID,
+		RunID:     runID,
+		StepID:    stepID,
 	}
 	resp, err := a.gw.Chat(ctx, req)
 	if err != nil {

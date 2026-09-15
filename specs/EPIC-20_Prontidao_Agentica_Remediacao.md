@@ -1097,6 +1097,7 @@ Preparar a troca mediada: capability nomeada (ou reutilização declarada de `ca
 
 ### Critérios de Aceitação
 - [ ] A capability da troca está no bundle assinado (ou a reutilização está declarada e testada); o pipeline do GW passa `WithRun`/`WithPrincipal` (dados já existem no call site).
+  - Nota (2026-09-15): a metade do **run** deste critério está fechada por **AOS-394** — o run e o passo do turno chegam ao gateway pelo ctx de cada chamada (`agentruntime.ContextWithModelCall`) e entram nos selos `modelgw-gov`, sem fixar o run na construção do adaptador; a metade do **principal** já vinha de AOS-278. O que falta neste critério é a capability da troca no bundle assinado, que é do broker.
 - [ ] Cliente Vault real (KV v2 vs dynamic secrets decidido e registado — só dynamic dá corte downstream) com `Secret` construído dentro do pacote.
 - [ ] `AOS_BROKER_VAULT_*` na tabela AOS-203; banner declara o modo.
 - [ ] Higiene pré-wiring: reaper de leases (molde `approval_sweeper.go`) e superfície para `Revoke`.

@@ -220,6 +220,25 @@ O ramo de allowlist do diagrama vive em `packages/platform/model-gateway/policy/
 
 - **Allowlist regional (`policy/allowlist`)** — a allowlist por *board* é *policy-as-code* embebida (`allowlist_policy.json`, `go:embed`), com um **digest canónico** (sha256) que a torna tamper-evident (`Policy.Version()` = `"versão#digest12"`) e uma **assinatura ed25519** (crypto/ed25519 *stdlib*) sobre esse digest, verificada no carregamento contra a chave **pública** de confiança embebida. O único carregador público verifica a assinatura: uma policy adulterada, não-assinada ou com `default != deny` **falha fail-closed** (`ErrSignatureInvalid`/`ErrPolicyMalformed`). A chave **privada** nunca entra no runtime (ADR-006); assina-se offline (`gen_signature.go`). `Evaluate(board, modelo, região)` é **default-deny**: um triplo não explicitamente permitido é recusado. O estágio `allowlist-regional` (o 2.º da pipeline, antes do roteamento) substitui o *pass-through* de AOS-055 e regista a decisão **por chamada** (span OTel + WORM), atribuível a **principal + board** — um *deny* nunca é anónimo.
 - **Guarda de soberania (`routing/sovereignty`)** — a prova é **estrutural**: `Guard.Failover` *particiona* os candidatos em intra-fronteira e cross-border **antes** de qualquer selecção; a escolha só percorre os sobreviventes intra-fronteira, pelo que um endpoint cross-border é **descartado** (`Decision.Dropped`), nunca ordenado ao fundo. Sem sobreviventes intra-fronteira, **rejeita** (`OutcomeReject`); se a rejeição se dever a só existir capacidade cross-border (`Decision.CrossBorderBlocked()`), o router (AOS-059) sela um *deny* explícito atribuível a principal + board. `Guard.Route` implementa o ramo saúde→failover→rejeição com saúde **injectável** (determinismo em teste). AOS-059 sobrepõe a sua escolha cost/load-aware **apenas** sobre os candidatos intra-fronteira que esta guarda autoriza — a decisão de soberania que o router consome. A fronteira legal de um `(board, modelo)` é derivável de `Policy.AllowedRegions`, mantendo a guarda coerente com a allowlist.
+- **Selo de governação por chamada (AOS-058, AOS-265, AOS-394)** — cada decisão fica num registo `audit.AuditRecord` na partição `modelgw-gov:<board>` do WORM de governação do GW (durável com `AOS_MODEL_AUDIT_PATH` no nó). São três os sítios que o escrevem: o estágio `allowlist-regional` (allow e deny), o deny de failover cross-border e a troca de modelo pelo refino. Cada registo leva:
+  - o principal (NHI do agente) e a cadeia de delegação;
+  - `model:invoke` como capability e `model.<modelo>` como tool;
+  - modelo e região;
+  - a versão da política;
+  - o board e a razão, nas obrigações;
+  - o `RunID` e o `StepID` da chamada.
+
+  **Correlação com o run e o passo.** O runtime anexa ao ctx de cada turno o run e o `step_id` (`agentruntime.ContextWithModelCall`), o mesmo `step_id` dos checkpoints, do span `chat` e do `turn.recorded`. O `ModelClientAdapter` lê-os por chamada e passa-os em `port.ChatRequest.RunID` e `StepID`, metadados de plataforma que nunca vão no wire; o `StepID` entrou no contrato da porta na versão 1.1.0. Daí seguem para o `pipeline.Exchange` e para o selo. O run do ctx tem precedência sobre `WithRun`, que só serve a um adaptador construído por run: o adaptador do nó é construído uma vez e não pode fixar o run.
+
+  **Chamada sem run no ctx** (fora do loop do agente). O selo é escrito na mesma com os campos vazios: a governação não depende da correlação, e a ausência fica visível em vez de preenchida.
+
+  A partição continua a ser a do board: a correlação não cria partições novas.
+
+  **Limites declarados da correlação.**
+  - O par é **afirmado pelo chamador**, não autenticado: o gateway copia para o selo o run e o passo que recebeu, sem os ligar ao token NHI verificado. Num processo comprometido, um chamador in-process pode selar uma correlação que aponta para outro run. O selo é *tamper-evident* (a cadeia denuncia a alteração de um registo escrito), não uma prova da origem do par. A superfície é in-process, e a submissão HTTP já deixa o cliente escolher o `run_id` do run.
+  - O par **não é chave única** de selo: o `step_id` deriva do número do turno, pelo que um turno que chegue duas vezes ao modelo (por exemplo, uma retoma que re-execute um turno cuja captura não ficou) sela duas chamadas com o mesmo par.
+  - O **evento de variância** (troca de modelo/provider/região) continua a ser emitido sem run nem passo, mesmo agora que o selo da troca os leva: quem junta os dois trilhos fá-lo pela partição e pela hora.
+  - O registo de **atribuição** (partição `modelgw:<raiz-humana>`) leva o passo desde AOS-394, mas não está composto no nó de referência.
 
 ---
 
