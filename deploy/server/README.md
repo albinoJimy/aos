@@ -1704,6 +1704,32 @@ provado é que a métrica **lê** o campo, não que o varredor o **escreve**.
    limiar é o dobro da cadência, pela mesma razão que o `pull-backups.ps1` usa 48 h — um dia
    falhado não alerta, dois sim.
 
+   **E corre, desde 2026-09-15 — no servidor, com aviso por push.** Até aí era uma regra escrita
+   que nada avaliava: o `otel` expõe a `:9464` e ninguém a lia. [`alerta-ancora.sh`](alerta-ancora.sh)
+   corre no cron do `aos` a cada 15 min, lê as duas séries de entrega pela rede interna (a mesma
+   alpine fixada do gate da selagem, sem pull e sem capabilities) e publica num tópico **ntfy**
+   privado. **No servidor e não na máquina do operador**, por uma razão só: a selagem corre nessa
+   máquina, e um alerta avaliado lá ficava cego exactamente quando a selagem morre por ela estar
+   desligada.
+
+   | dispara quando | aviso |
+   |---|---|
+   | idade `> 172800` ou `< 0`, `_unreadable 1`, séries ausentes, ou o `otel:9464` sem resposta | **2 leituras seguidas** (30 min) — a janela sustentada que o corolário abaixo pede |
+   | continua em falha | lembrete de 24 h em 24 h |
+   | volta a `ok` | aviso de recuperação |
+
+   Um aviso que não sai (ntfy em baixo, tópico inválido) **não conta**: tenta de novo na execução
+   seguinte, e fica no syslog (`journalctl -t aos-alerta-ancora`). Para o ntfy só vão o título, o
+   motivo (nomes de séries e horas) e o host. O tópico é o segredo — quem o souber lê e publica — e
+   vive em `/opt/aos/secrets/ntfy-topico` (600), dentro do backup cifrado.
+
+   ```bash
+   # instalar (uma vez; o script chega pelo deploy)
+   printf '%s' '<tópico>' > /opt/aos/secrets/ntfy-topico && chmod 600 /opt/aos/secrets/ntfy-topico
+   bash /opt/aos/alerta-ancora.sh --teste          # tem de chegar ao telemóvel; não mexe no estado
+   ( crontab -l; echo '*/15 * * * * /bin/bash /opt/aos/alerta-ancora.sh >/dev/null 2>&1' ) | crontab -
+   ```
+
    **O `< 0` não é defensivo, é o buraco por onde o alerta se cala.** O carimbo vem do relógio de
    **quem sela** (a máquina que corre a tarefa), comparado com o relógio do nó. Um relógio
    adiantado — fuso mal configurado, *skew*, ou quem tenha escrita no volume — dá idade
