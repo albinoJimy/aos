@@ -1117,11 +1117,12 @@ Nomeado, não escondido:
    > Quem comprometer a máquina do operador durante a janela diária leva as duas capacidades ao
    > mesmo tempo. Não é a mesma coisa que «a chave do selador corre sozinha».
    >
-   > **Mitigação que reduz isto a metade, e não está feita:** puxar `worm.wal` directamente do
-   > servidor por SSH (chave de deploy) em vez de o extrair do backup cifrado. A cópia continua
-   > off-host — que é a condição que interessa — e a tarefa diária deixa de precisar da
-   > `backup.key`. O custo é que o WORM viaja fora do envelope do backup, protegido só pelo
-   > transporte.
+   > **Mitigação que reduz isto a metade — feita:** o `worm.wal` vem directamente do servidor por
+   > SSH (`-PorSSH`) em vez de ser extraído do backup cifrado. A cópia continua off-host — que é a
+   > condição que interessa — e a tarefa diária deixa de precisar da `backup.key`. O custo é que o
+   > WORM viaja fora do envelope do backup, protegido só pelo transporte. E desde 2026-09-15 a
+   > chave SSH dessa tarefa **não é a de deploy**: é uma chave presa a um gate que só lê o WORM e
+   > entrega a âncora (ver «A chave da selagem só sela», abaixo).
 
    **O que o `selar-worm.ps1` já faz, e foi provado contra o WORM real de produção (120 partições,
    re-encadeadas sem erro):** decifra, extrai, sela **todas** as partições, escreve as duas metades
@@ -1148,26 +1149,133 @@ Nomeado, não escondido:
 
    | passo | o que faz | que chave usa |
    |---|---|---|
-   | traz | `worm.wal` **vivo** do servidor, como root dentro de um contentor, entregando logo a posse | deploy |
-   | verifica | re-encadeia o store **antes** de assinar, e exige **continuidade** com a âncora anterior | — |
+   | exige | checkpoints **em vigor** locais (`--anterior`); sem eles **recusa**, antes de tocar no servidor | — |
+   | traz | pedido `worm` ao gate: o `worm.wal` **vivo** em stdout, lido como o uid do nó, **sem cópia** no servidor | gate |
+   | verifica | re-encadeia o store **antes** de assinar, e exige **continuidade** com a âncora em vigor | — |
    | sela | um checkpoint **por partição**; pisos em ficheiro separado | selador |
-   | entrega | sobe os dois com nomes temporários e troca-os **lado a lado** | deploy |
-   | limpa | apaga a cópia no servidor **e** confirma que desapareceu | deploy |
+   | entrega | `scp -O` dos dois para nomes temporários, e o pedido `trocar` | gate |
+   | troca | o gate valida o **par** e renomeia-o lado a lado; devolve o sha256 do que instalou, conferido com o que se selou | — |
 
-   **A `backup.key` não entra.** Foi essa a razão de existir o `-PorSSH`: uma tarefa que corre
-   sozinha não deve alcançar a chave que decifra todas as cópias de produção.
+   **A `backup.key` não entra, e a chave de deploy também não.** O passo «limpa» da versão anterior
+   desapareceu com a cópia que limpava: o WORM passa em fluxo e não fica em disco no servidor.
+
+   **Continuidade obrigatória.** A chave do selador foi rodada a 2026-09-15 e a primeira selagem com
+   ela já foi feita; desde então o `selar-worm.ps1` **recusa** selar sem checkpoints em vigor. Uma
+   selagem sem anterior não compara nada — numa tarefa que corre sozinha, seria a porta por onde uma
+   truncatura passava a ser ancorada. A primeira selagem de uma rotação futura faz-se **à mão**.
+
+   **A entrega não reinicia o nó, nem precisa.** O nó só lê a âncora **no arranque**: o par entregue
+   hoje passa a valer no próximo restart, e até lá o nó fica com o que carregou — o que continua
+   seguro, porque o WORM é append-only e a âncora anterior continua a verificar. ⚠️ Mas a métrica de
+   idade conta desde a âncora **carregada**, não desde a entregue: ver «Como se sabe que a selagem
+   morreu».
 
    **Porque a entrega é atómica e não ordenada.** Não há ordem segura entre os dois ficheiros:
    entregar os checkpoints primeiro deixa as partições novas **com checkpoint e sem piso**
    (`ErrBadWormExpectedHead`); entregar os pisos primeiro deixa os checkpoints antigos **abaixo dos
    pisos novos** (`ErrCheckpointStale`). Ambas impedem o nó de arrancar. Por isso os dois sobem com
-   nomes temporários e são renomeados num só comando. A janela residual — o intervalo entre dois
-   `mv` — fica declarada: não é zero, e um arranque exactamente aí apanharia um par incoerente.
-   Recupera-se correndo o ciclo outra vez.
+   nomes temporários e é o `trocar` do gate que os renomeia, depois de validar o par. A janela
+   residual — o intervalo entre dois `mv` — fica declarada: não é zero, e um arranque exactamente aí
+   apanharia um par incoerente. Recupera-se correndo o ciclo outra vez.
 
    **Uma regra que só apareceu por correr os dois modos seguidos:** depois de selar do WORM vivo,
    selar de um backup **anterior** é um recuo, e a guarda recusa — com a mesma mensagem que
    significaria «alguém truncou o teu trilho». Escolha-se uma fonte e só se avance no tempo.
+
+   ### A chave da selagem só sela
+
+   A tarefa corre sozinha, pelo que a chave SSH **não tem passphrase**. A versão anterior usava a
+   `deploy_key` — shell no `aos`, que está no grupo `docker`: root no servidor numa máquina de
+   secretária. Perdeu-se, e não se refez assim. A selagem usa uma chave **dedicada**
+   (`secrets-local/worm-seal/id_ed25519`, ACL só do dono) presa a um comando forçado,
+   [`worm-seal-gate.sh`](worm-seal-gate.sh) — o desenho do `backup-pull-gate.sh` (§Backup) — que
+   aceita exactamente quatro pedidos:
+
+   | pedido | o que faz |
+   |---|---|
+   | `worm` | `docker run --rm --pull=never --log-driver none --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65532:65532 -v aos_aos-data:/aos:ro alpine:3.20 cat /aos/worm.wal` |
+   | `scp -t /opt/aos/ancoras/.checkpoints.novo` | recebe os checkpoints, com tecto de 16 MiB |
+   | `scp -t /opt/aos/pisos/.heads.novo` | recebe os pisos, com tecto de 16 MiB |
+   | `trocar` | valida o par e troca-o lado a lado; responde `TROCADO <sha256> <sha256>` |
+
+   Tudo o resto é recusado. Recusas, leituras (`worm lido`) e trocas (`trocado: … checkpoints=<sha256>
+   pisos=<sha256>`) vão ao syslog com a etiqueta `aos-worm-seal` — `journalctl -t aos-worm-seal`.
+
+   **O que o `trocar` valida**, com o `python3` do sistema (sem ele **recusa** — não salta):
+
+   - JSON sem BOM e sem chaves duplicadas;
+   - checkpoints: array não vazio, **exactamente** os cinco campos de `audit.Checkpoint`, `EntryHash`
+     de 32 bytes, `Signature` de 64, `Timestamp` RFC 3339, partições únicas;
+   - pisos: `{"partição": inteiro positivo}`;
+   - os dois são **da mesma selagem**: as mesmas partições, e o piso de cada uma igual ao seu `AuditSeq`;
+   - **nenhuma partição desaparece nem recua** face ao par em vigor.
+
+   A última é a que importa contra quem leve a chave: sem ela, podia repor uma âncora **anterior** —
+   legítima e assinada — para mascarar a truncatura do que veio depois. A consequência operacional:
+   num host restaurado de um backup mais antigo do que a âncora em vigor, a troca **recusa**, e
+   resolve-se à mão, por quem sabe porque é que o WORM recuou.
+
+   **O que o gate não verifica, e porque não faz mal:** as assinaturas. Verifica-as o nó, no arranque,
+   fail-closed. Quem levar a chave consegue **ler o WORM** e entregar um par bem formado e mal
+   assinado — o que deixa o nó **sem arrancar** no próximo restart, nunca a arrancar sobre uma âncora
+   falsa. Recupera-se com uma selagem legítima.
+
+   > **Ensaiado antes de chegar aqui (2026-09-15)** — `sshd` real em contentor (Python 3.8, o do
+   > Ubuntu 20.04), cliente OpenSSH do Windows 9.5, `docker` substituído por um que só aceita o argv
+   > exacto do gate, WORM de fixture e uma chave de selador de teste:
+   >
+   > - o ciclo `selar-worm.ps1 -PorSSH -Entregar` passa duas vezes seguidas, e depois pelo invólucro
+   >   com um WORM que cresceu (partição nova incluída), sempre com o sha256 instalado igual ao
+   >   selado; o par entregue verifica com `audit.VerifyFromCheckpointAtHead` — a função do arranque
+   >   do nó — contra o WORM servido, e **falha** contra o mesmo WORM truncado ou reescrito;
+   > - recusados **sem mexer no par em vigor**: shell, sessão sem comando, pty, `worm; id`,
+   >   `worm <arg>`, SFTP (ler e escrever), `scp -O` para ou de outro caminho (`.env`, o
+   >   `checkpoints.json` em vigor, `..`), `scp -p`/`-r` para os temporários, `scp -f` dos
+   >   temporários, `-W`, e `-L` (o túnel abre do lado do cliente e não passa um byte);
+   > - o `trocar` recusa o par **anterior** legítimo, um recuo coerente numa só partição, um par
+   >   cruzado, BOM, campo a mais, chave duplicada, `EntryHash` curto, piso sem checkpoint, array
+   >   vazio, só um dos dois, uma troca concorrente, e `python3` ausente; um upload de 17 MiB é
+   >   cortado nos 16 MiB e a troca seguinte recusa-o;
+   > - o par **real** de produção (234 partições) passa o validador; um par de teste por cima dele é
+   >   recusado como recuo;
+   > - a selagem recusa, **sem entregar nada**, um WORM truncado e um reescrito; sem checkpoints em
+   >   vigor recusa **antes de contactar** o servidor; servidor inalcançável sai ≠ 0; o invólucro
+   >   propaga o código e escreve-o no `ULTIMA.txt`;
+   > - as flags do `docker run` correram no Docker real: o fluxo sai byte a byte igual, e outro uid
+   >   leva `Permission denied` — é o `--user` que decide.
+   >
+   > **Não ensaiado, e falha em voz alta na primeira execução** (que por isso se corre à mão): a
+   > versão do `docker` do servidor (precisa de `--pull`), a posse real do `worm.wal` (o gate assume
+   > 600 do uid 65532, como o script anterior documentava) e o dono de `/opt/aos/ancoras` e
+   > `/opt/aos/pisos` (o `aos` tem de poder escrever lá).
+
+   #### Instalar — decisão do operador
+
+   Na máquina do operador, a chave (sem passphrase; o `secrets-local/` já tem ACE único do dono, e o
+   OpenSSH do Windows recusa uma chave legível por outros):
+
+   ```powershell
+   New-Item -ItemType Directory -Force C:\Jimy\AOS\deploy\server\secrets-local\worm-seal | Out-Null
+   ssh-keygen -t ed25519 -N '""' -C aos-worm-seal -f C:\Jimy\AOS\deploy\server\secrets-local\worm-seal\id_ed25519
+   ```
+
+   O gate chega ao servidor pelo deploy (`deploy.yml` sincroniza-o para `/opt/aos/`). No servidor, como
+   `aos`, com a `.pub` copiada para `/tmp/worm-seal.pub`:
+
+   ```bash
+   ls -l /opt/aos/worm-seal-gate.sh                   # chegou pelo deploy?
+   ls -ld /opt/aos/ancoras /opt/aos/pisos             # o aos tem de poder escrever nos dois
+   docker image inspect alpine:3.20 >/dev/null || docker pull alpine:3.20   # o gate não faz pull
+   command -v python3                                 # sem ele o trocar recusa
+   printf 'restrict,command="bash /opt/aos/worm-seal-gate.sh" %s\n' "$(cat /tmp/worm-seal.pub)" >> /home/aos/.ssh/authorized_keys
+   ```
+
+   A primeira execução é **à mão**, a olhar para ela (usa o `known_hosts` do utilizador, que a
+   recolha dos backups já preencheu para este servidor):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File C:\Jimy\AOS\deploy\server\selar-worm.ps1 -PorSSH -Entregar
+   ```
 
    ### A tarefa diária
 
@@ -1179,14 +1287,14 @@ Nomeado, não escondido:
    Em **PowerShell**:
 
    ```powershell
-   schtasks /Create /TN "AOS-SelarWORM" /SC DAILY /ST 03:30 /RL LIMITED /F /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm-diario.ps1" /RU $env:USERNAME
+   schtasks /Create /TN "AOS-SelarWORM" /SC DAILY /ST 03:30 /RL LIMITED /F /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Jimy\AOS\deploy\server\selar-worm-diario.ps1" /RU $env:USERNAME
    ```
 
    Em **cmd.exe**:
 
    ```
    schtasks /Create /TN "AOS-SelarWORM" /SC DAILY /ST 03:30 /RL LIMITED /F ^
-     /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Jimy\aos\deploy\server\selar-worm-diario.ps1" ^
+     /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Jimy\AOS\deploy\server\selar-worm-diario.ps1" ^
      /RU %USERNAME%
    ```
 
@@ -1195,12 +1303,32 @@ Nomeado, não escondido:
    O `-WindowStyle Hidden` é o que a `AOS-RecolherBackups` já usa — sem ele, a selagem abre uma
    janela às 03:30.
 
-   E CONFIRME QUE FICOU, porque uma tarefa presumida é pior do que nenhuma: ficam ambos os lados
-   à espera de uma cadência que não corre, e dias depois alguém conclui que a âncora está pronta
-   a ligar.
+   O `schtasks` **não expõe** as definições que decidem se a tarefa corre de facto — as mesmas da
+   `AOS-RecolherBackups` (§Backup), e pelas mesmas razões. Ajustam-se logo a seguir:
+
+   ```powershell
+   $t = Get-ScheduledTask AOS-SelarWORM
+   $t.Settings.StartWhenAvailable         = $true    # recupera uma execução perdida (máquina desligada)
+   $t.Settings.DisallowStartIfOnBatteries = $false   # a bateria deixa-a em Queued, sem erro nenhum
+   $t.Settings.StopIfGoingOnBatteries     = $false
+   $t.Settings.ExecutionTimeLimit         = 'PT1H'   # uma execução presa não bloqueia as seguintes
+   Set-ScheduledTask -InputObject $t
+   ```
+
+   O `ssh` da selagem leva `ConnectTimeout` e `ServerAliveInterval`: uma sessão que pendure depois
+   de aberta morre em ~60 s em vez de esperar pelo `ExecutionTimeLimit` (visto na recolha, 2026-09-14).
+   O `go run` do selador precisa do `go` no PATH do utilizador da tarefa; em alternativa, o invólucro
+   aceita `-IssuerExe` com um `aos-issuer.exe` compilado.
+
+   E CONFIRME QUE FICOU E QUE CORRE, porque uma tarefa presumida é pior do que nenhuma: ficam ambos
+   os lados à espera de uma cadência que não corre, e dias depois alguém conclui que a âncora está
+   fresca.
 
    ```powershell
    schtasks /Query /TN "AOS-SelarWORM" /FO LIST
+   Start-ScheduledTask AOS-SelarWORM
+   Get-ScheduledTaskInfo AOS-SelarWORM   # LastTaskResult 0 no fim; 267009 = ainda a correr
+   Get-Content "$env:USERPROFILE\aos-selagem-logs\ULTIMA.txt"
    ```
 
    **Aponta ao `selar-worm-diario.ps1` e não ao `selar-worm.ps1` directamente.** O invólucro
@@ -1302,11 +1430,21 @@ provado é que a métrica **lê** o campo, não que o varredor o **escreve**.
    |---|---|
    | `aos_worm_partitions` | partições que o WORM tem **agora** (lidas na altura da recolha, não no arranque) |
    | `aos_worm_partitions_anchored` | partições cobertas pela âncora que passou no arranque |
-   | `aos_worm_anchor_age_seconds` | segundos desde a **última** selagem |
+   | `aos_worm_anchor_age_seconds` | segundos desde a selagem que produziu a âncora **carregada no arranque** |
 
    **O alerta que interessa** é o terceiro: com cadência diária, `> 172800` (48 h) significa que a
    tarefa de selagem morreu. É o dobro da cadência, pela mesma razão que o `pull-backups.ps1` usa
    48 h — um dia falhado não alerta, dois sim.
+
+   > ⚠️ **Mas só num nó que reinicie.** A série conta desde a âncora que o nó **carregou no
+   > arranque** (`h.node.ancora`), e o nó só lê a âncora aí. A entrega diária **não** reinicia o nó
+   > (ver «O ciclo, como está montado hoje»): num nó que fique dias de pé, a série cresce 24 h por
+   > dia com a tarefa **saudável**, e o alerta das 48 h dispara 48 h depois do último arranque — um
+   > falso positivo que ensina a ignorá-lo. Enquanto o nó não reler a âncora (ou expuser a idade do
+   > par entregue), a pergunta «a selagem está viva?» responde-se fora do nó: o `ULTIMA.txt` na
+   > máquina do operador, ou, no servidor, `journalctl -t aos-worm-seal | grep trocado:` e o mtime de
+   > `/opt/aos/ancoras/checkpoints.json`. A série continua certa para outra pergunta: **há quanto
+   > tempo foi selada a âncora que este processo está a usar**.
 
    A razão do primeiro ser lido **na altura da recolha** e não no arranque: as partições nascem por
    run, e um valor medido no boot e servido como *gauge* pareceria vivo estando congelado. Faria o

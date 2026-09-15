@@ -1,16 +1,16 @@
 ﻿<#
 .SYNOPSIS
-  Sela o WORM de producao a partir da copia do backup, e produz as duas metades da ancora.
+  Sela o WORM de producao e entrega as duas metades da ancora ao servidor, com uma chave que so faz isso.
 
 .DESCRIPTION
   Fecha o ultimo passo que faltava a verificacao ancorada (README §8, ponto 8). O codigo estava
   pronto dos dois lados desde 2026-08-20 — `aos-issuer worm-seal` emite um checkpoint POR
   PARTICAO, e o no recebe-os em conjunto — e o que faltava era operacional: custodia da chave,
-  selagem contra a copia off-host, e uma cadencia.
+  selagem off-host, e uma cadencia.
 
-  PORQUE CONTRA O BACKUP E NAO CONTRA O SERVIDOR. `audit.Signer.Seal` precisa do STORE para ler
+  PORQUE A CHAVE PRIVADA NUNCA VAI AO SERVIDOR. `audit.Signer.Seal` precisa do STORE para ler
   o hash de entrada, e o store vive onde a chave NAO pode estar (molde AOS-156: a chave assina
-  FORA do no). A copia que o backup ja traz off-host e a unica que satisfaz as duas condicoes.
+  FORA do no). Por isso o WORM vem ate aqui — pelo gate (-PorSSH) ou dentro do backup.
 
   O QUE ESTE SCRIPT NAO PROVA, e convem que fique dito antes de alguem se convencer do contrario:
   a ancora prova que a cadeia NAO MUDOU DESDE A SELAGEM. Nao prova que era honesta ANTES dela. O
@@ -20,20 +20,39 @@
   que nenhuma selagem anterior cobre. «Ancorado ate ao ultimo selo; depois disso, so
   re-encadeamento.» Selar mais vezes ENCOLHE a janela; nao a fecha.
 
-.EXAMPLE
-  # ciclo completo: puxa o backup mais recente, sela, e roda os ficheiros
-  powershell -ExecutionPolicy Bypass -File deploy\server\selar-worm.ps1 -Puxar
+  A CHAVE SSH SO SELA. A tarefa diaria corre sozinha, pelo que a chave nao tem passphrase — e o
+  `aos` esta no grupo docker, onde uma shell e root no servidor. A versao anterior usava a
+  `deploy_key` (shell); perdeu-se, e refaze-la assim poria o host numa maquina de secretaria. A
+  chave e DEDICADA (secrets-local/worm-seal/) e o servidor forca-lhe um comando,
+  `worm-seal-gate.sh`, que so aceita: `worm`, `scp -t` para os dois nomes temporarios, e
+  `trocar`. Ver deploy/server/README.md §8, «A tarefa diaria».
+
+  CONTINUIDADE OBRIGATORIA. A chave do selador foi rodada a 2026-09-15 e a primeira selagem com
+  ela ja foi feita: a partir daqui, todas as selagens correm com `--anterior`. Sem checkpoints em
+  vigor este script RECUSA — uma selagem sem anterior nao compara nada, e numa tarefa que corre
+  sozinha seria a porta por onde uma truncatura passava a ser ancorada. Uma rotacao futura da
+  chave faz a primeira selagem A MAO, de proposito.
+
+  O NO SO LE A ANCORA NO ARRANQUE. Entregar nao obriga a reiniciar nada, e nada muda no no ate ao
+  proximo restart — incluindo a metrica `aos_worm_anchor_age_seconds`, que conta desde a selagem
+  que o no CARREGOU (ver README §8).
 
 .EXAMPLE
-  # selar contra o backup que ja esta em disco (sem tocar no servidor)
+  # o ciclo diario: WORM vivo pelo gate, sela com continuidade, entrega pelo gate
+  powershell -ExecutionPolicy Bypass -File deploy\server\selar-worm.ps1 -PorSSH -Entregar
+
+.EXAMPLE
+  # servidor inalcancavel ou sob suspeita: selar contra o backup que ja esta em disco
   powershell -ExecutionPolicy Bypass -File deploy\server\selar-worm.ps1
 #>
 [CmdletBinding()]
 param(
     [string]$Backups   = "$env:USERPROFILE\aos-backups",
-    [string]$Chave     = "C:\Jimy\aos\deploy\server\secrets-local\wormseal.key",
-    [string]$ChaveBkp  = "C:\Jimy\aos\deploy\server\secrets-local\backup-key\backup.key",
-    [string]$Issuer    = "C:\Jimy\aos\packages\cmd\aos-issuer",
+    [string]$Chave     = "C:\Jimy\AOS\deploy\server\secrets-local\wormseal.key",
+    [string]$ChaveBkp  = "C:\Jimy\AOS\deploy\server\secrets-local\backup-key\backup.key",
+    [string]$Issuer    = "C:\Jimy\AOS\packages\cmd\aos-issuer",
+    # Um `aos-issuer.exe` ja compilado, em vez de `go run` em -Issuer. Vazio = `go run`.
+    [string]$IssuerExe = "",
     # As duas metades vao para directorios SEPARADOS, e isso e do desenho: o piso de frescura
     # existe para recusar um checkpoint LEGITIMO mas ANTERIOR, reapresentado para mascarar a
     # truncatura do que veio depois. Se viajassem no mesmo ficheiro, quem trocasse o ficheiro
@@ -42,70 +61,108 @@ param(
     # HONESTIDADE SOBRE ESTA SEPARACAO: numa so maquina, quem chega a um directorio chega ao
     # outro. A separacao so vale a serio quando os dois sao sincronizados para sitios com
     # controlos DIFERENTES. Aqui prepara-se a forma; a substancia depende de para onde vao.
-    [string]$Ancoras   = "C:\Jimy\aos\deploy\server\secrets-local\ancoras",
-    [string]$Pisos     = "C:\Jimy\aos\deploy\server\secrets-local\pisos",
+    [string]$Ancoras   = "C:\Jimy\AOS\deploy\server\secrets-local\ancoras",
+    [string]$Pisos     = "C:\Jimy\AOS\deploy\server\secrets-local\pisos",
     [switch]$Puxar,
     # -PorSSH: traz o `worm.wal` VIVO do servidor em vez de o extrair do backup cifrado.
     #
     # PORQUE EXISTE, e a razao e de EXPOSICAO e nao de comodidade. A selagem diaria corre sozinha;
     # pelo caminho do backup teria de alcancar DUAS chaves privadas sem ninguem presente — a do
     # selador (forja ancoras) e a `backup.key`, que decifra TODAS as copias de producao, incluindo
-    # a base do IdP. Quem comprometesse esta maquina durante a janela diaria levava as duas. Por
-    # SSH, a tarefa precisa da chave de DEPLOY e da do selador; a `backup.key` fica de fora.
+    # a base do IdP. Por SSH, a tarefa precisa da chave do gate e da do selador; a `backup.key`
+    # fica de fora.
     #
     # O QUE SE PERDE, e fica dito: o WORM viaja FORA do envelope do backup, protegido so pelo
     # transporte. E o que se ganha e maior do que isso, porque a `backup.key` abre tudo o resto.
     #
-    # CONSISTENCIA DA COPIA VIVA: o no escreve no ficheiro enquanto se copia, logo apanha-se um
-    # PREFIXO — e um prefixo de hash-chain e uma cadeia valida truncada. O `backup.sh` ja tem
-    # exactamente a mesma propriedade e declara-a. NAO produz falsos alarmes de recuo: o WAL e
-    # append-only, portanto o prefixo de hoje CONTEM o de ontem, e um `head` nunca desce por causa
-    # de uma leitura rasgada. Se algum dia o WAL passar a ser compactado, isto deixa de valer — e
-    # ai o alarme de recuo estaria certo a disparar.
+    # CONSISTENCIA DA COPIA VIVA: o no escreve no ficheiro enquanto se le, logo apanha-se um
+    # PREFIXO — e um prefixo de hash-chain e uma cadeia valida truncada (o OpenFileStore descarta
+    # um registo rasgado no fim). NAO produz falsos alarmes de recuo: o WAL e append-only, portanto
+    # o prefixo de hoje CONTEM o de ontem. Se algum dia o WAL passar a ser compactado, isto deixa
+    # de valer — e ai o alarme de recuo estaria certo a disparar.
     #
-    # NAO SE MISTURAM AS DUAS FONTES PARA TRAS, e descobri-o a correr as duas seguidas: depois de
-    # selar do WORM VIVO, selar de um backup ANTERIOR e um RECUO — e o `exigirContinuidade`
-    # recusa, com a mesma mensagem que significaria «alguem truncou o teu trilho». Nao e defeito:
-    # e a guarda a fazer o que existe para fazer. A regra de operacao que daqui sai e simples —
-    # escolha uma fonte para a cadencia e so avance no tempo. O modo de backup fica para quando o
-    # servidor estiver inalcancavel ou sob suspeita, e nesse caso a ancora seguinte comeca de novo.
+    # NAO SE MISTURAM AS DUAS FONTES PARA TRAS: depois de selar do WORM VIVO, selar de um backup
+    # ANTERIOR e um RECUO — e o `exigirContinuidade` recusa, com a mesma mensagem que significaria
+    # «alguem truncou o teu trilho». Escolha-se uma fonte para a cadencia e so se avance no tempo.
     [switch]$PorSSH,
-    # -Entregar: leva os dois ficheiros ao servidor depois de selar. Ver o passo 7 para a razao
-    # pela qual sobem com nomes temporarios e sao trocados lado a lado.
+    # -Entregar: leva os dois ficheiros ao servidor depois de selar. Ver o passo 7.
     [switch]$Entregar,
     [string]$Servidor  = "aos@37.60.241.150",
-    [string]$ChaveSSH  = "C:\Jimy\aos\deploy\server\secrets-local\deploy_key",
-    [string]$KnownHosts = "C:\Jimy\aos\deploy\server\secrets-local\known_hosts.txt"
+    [int]$Porta        = 22,
+    [string]$ChaveSSH  = "C:\Jimy\AOS\deploy\server\secrets-local\worm-seal\id_ed25519",
+    # Vazio = o known_hosts do utilizador. So existe para o ensaio contra um sshd descartavel.
+    [string]$KnownHosts = ""
 )
 
 $ErrorActionPreference = 'Stop'
 $tmp = $null
-# Declarado AQUI e nao dentro do bloco try: o finally le-o, e uma falha antes da atribuicao
-# deixaria a limpeza a decidir sobre uma variavel que nunca existiu.
-$remoto = $false
-
 
 # Nativo — corre um executavel externo SEM que o stderr dele mate o script.
 #
-# MESMO PADRAO do `pull-backups.ps1` (procurei antes de escrever). Com
-# $ErrorActionPreference='Stop', qualquer linha que um executavel escreva em stderr vira erro
-# TERMINANTE em PowerShell 5.1 — mesmo quando o comando teve sucesso.
-#
-# CUSTOU-ME UM WORM DE PRODUCAO ESQUECIDO NUM SERVIDOR. O ssh emitiu um aviso sobre uma chave
-# inacessivel, o script morreu DEPOIS de a extraccao ja ter corrido, e a limpeza — que vive no
-# `finally` — morreu pela MESMA razao antes de apagar o que ficara la. A falha aconteceu num
-# teste de falha deliberado, que e o unico sitio onde queria que acontecesse.
-#
-# O sucesso passa a medir-se por $LASTEXITCODE, que e o que sempre devia ter sido.
+# MESMO PADRAO do `pull-backups.ps1`. Com $ErrorActionPreference='Stop', qualquer linha que um
+# executavel escreva em stderr vira erro TERMINANTE em PowerShell 5.1 — mesmo quando o comando
+# teve sucesso. O sucesso mede-se por $LASTEXITCODE.
 function Nativo([scriptblock]$bloco) {
     $anterior = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try { & $bloco } finally { $ErrorActionPreference = $anterior }
 }
+
+# ParaFicheiro — corre um executavel e escreve o STDOUT dele, byte a byte, num ficheiro.
+#
+# NAO `& exe > ficheiro`, nem capturar para uma variavel: o PowerShell 5.1 decide que o stdout de
+# um executavel nativo e TEXTO — descodifica-o na pagina de codigo da consola e re-escreve-o em
+# UTF-16. O `worm.wal` sairia corrompido; e o JSON do selador, capturado com `2>&1` como estava,
+# levava para dentro do ficheiro qualquer aviso que o `go` escrevesse em stderr. Aqui os dois
+# canais ficam separados: o stdout vai inteiro para o ficheiro, o stderr volta para o diagnostico.
+function ParaFicheiro([string]$exe, [string[]]$argumentos, [string]$destino, [string]$dir = "") {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = ($argumentos | ForEach-Object {
+        if ($_ -eq '' -or $_ -match '[\s"]') { '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' } else { $_ }
+    }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true   # e fecha-se ja: numa tarefa agendada nao ha stdin (= ssh -n)
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    if ($dir) { $psi.WorkingDirectory = $dir }
+    $p = [Diagnostics.Process]::Start($psi)
+    $p.StandardInput.Close()
+    # O stderr le-se em paralelo: se o processo encher o buffer do stderr enquanto se copia o
+    # stdout, os dois ficam a espera um do outro para sempre.
+    $erro = $p.StandardError.ReadToEndAsync()
+    $fs = [IO.File]::Open($destino, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $p.StandardOutput.BaseStream.CopyTo($fs) } finally { $fs.Close() }
+    $p.WaitForExit()
+    [pscustomobject]@{ Codigo = $p.ExitCode; Erro = $erro.Result.Trim() }
+}
+
 function Passo($t) { Write-Host "`n$t" -ForegroundColor Cyan }
 function Bom($t)   { Write-Host "  $t" -ForegroundColor Green }
 function Mau($t)   { Write-Host "  $t" -ForegroundColor Red }
 function Nota($t)  { Write-Host "  $t" -ForegroundColor DarkGray }
+
+function Executavel($nome) {
+    $c = Get-Command $nome -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $c) { throw "$nome nao esta no PATH" }
+    $c.Source
+}
+
+# O aos-issuer: o binario, se foi dado; senao `go run` no directorio do modulo.
+function Issuer([string[]]$sub, [string]$destino) {
+    if ($IssuerExe) { return ParaFicheiro $IssuerExe $sub $destino }
+    ParaFicheiro (Executavel 'go') (@('run', '.') + $sub) $destino $Issuer
+}
+
+function Sha256($f) { (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLowerInvariant() }
+
+# BatchMode: a tarefa nunca fica parada a pedir uma password. StrictHostKeyChecking fica no default
+# (ask, que em BatchMode e recusa): um servidor com outra chave de host nao recebe pedidos.
+# ServerAlive: o ConnectTimeout so cobre o ESTABELECER da ligacao; uma sessao que pendura depois de
+# aberta ficava ate ao ExecutionTimeLimit da tarefa (visto na AOS-RecolherBackups, 2026-09-14).
+$sshOpts = @('-i', $ChaveSSH, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20',
+             '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=4')
+if ($KnownHosts) { $sshOpts += @('-o', "UserKnownHostsFile=$KnownHosts") }
 
 try {
     foreach ($d in @($Ancoras, $Pisos)) {
@@ -113,10 +170,26 @@ try {
     }
     if (-not (Test-Path $Chave)) {
         Mau "A chave do selador NAO existe em $Chave"
-        Nota "Gere-a (o valor nunca passa por lado nenhum senao por si):"
-        Nota ("  openssl rand -hex 32 > " + $Chave)
         throw "chave do selador ausente"
     }
+    if (($PorSSH -or $Entregar) -and -not (Test-Path $ChaveSSH)) {
+        Mau "A chave SSH da selagem NAO existe em $ChaveSSH (ver README §8, «A tarefa diaria»)"
+        throw "chave SSH ausente"
+    }
+
+    # A CONTINUIDADE verifica-se ANTES de tocar no servidor: sem ela nao ha selagem, e nao vale a
+    # pena trazer o WORM de producao para depois recusar.
+    $anteriorFile = Join-Path $Ancoras 'checkpoints.json'
+    $pisosFile    = Join-Path $Pisos 'heads.json'
+    if (-not (Test-Path $anteriorFile)) {
+        Mau "Nao ha checkpoints em vigor em $anteriorFile"
+        Mau "A continuidade e OBRIGATORIA desde a rotacao da chave (2026-09-15): sem --anterior nao se sela."
+        Nota "Uma primeira selagem (rotacao nova) faz-se A MAO com aos-issuer worm-seal, e nao por esta tarefa."
+        throw "sem checkpoints em vigor — selagem sem continuidade recusada"
+    }
+
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aos-selo-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
     if ($Puxar -and -not $PorSSH) {
         Passo "1. A PUXAR o backup mais recente do servidor"
@@ -124,198 +197,132 @@ try {
     }
 
     if ($PorSSH) {
-        Passo "2. A TRAZER o worm.wal VIVO do servidor (sem tocar na backup.key)"
-        $sshArgs = @('-i', $ChaveSSH, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
-                     '-o', "UserKnownHostsFile=$KnownHosts")
-        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aos-selo-" + [Guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-        $remoto = $true
-
-        # O worm.wal e 600 e pertence ao uid 65532 (distroless): o utilizador de deploy NAO o le.
-        # A copia corre como root DENTRO do contentor e entrega logo a posse, para o ficheiro nunca
-        # ficar legivel a terceiros — este servidor NAO e dedicado (README §1).
-        # BASE64, e nao e adorno. Entre aqui e o `cp` ha QUATRO camadas de citacao — PowerShell,
-        # ssh, o shell remoto, o docker e o `sh -c` de dentro do contentor. O PowerShell 5.1 nao
-        # escapa aspas ao passar argumentos a um executavel nativo, e o comando chegava truncado:
-        # o `cp` do BusyBox respondia com a sua pagina de ajuda. Codificar o script inteiro reduz
-        # as quatro camadas a uma, e o que viaja passa a ser um blob sem aspas nenhumas.
-        $script = 'set -e' + "`n" +
-                  'mkdir -p ~/selo && chmod 700 ~/selo' + "`n" +
-                  'U=$(id -u); G=$(id -g)' + "`n" +
-                  'docker run --rm -v aos_aos-data:/aos:ro -v "$HOME/selo":/out alpine:3.20 \' + "`n" +
-                  '  sh -c "cp /aos/worm.wal /out/worm.wal && chown $U:$G /out/worm.wal && chmod 600 /out/worm.wal"' + "`n"
-        $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($script))
-        $extrair = 'echo ' + $b64 + ' | base64 -d | sh'
-        Nativo { & ssh @sshArgs $Servidor $extrair }
-        $codigo = $LASTEXITCODE
-        # 255 e o codigo do ssh para «nem houve ligacao». Distinguir isso de uma falha DEPOIS de
-        # ligar e o que impede a limpeza de gritar em cada falha de rede — um aviso que dispara
-        # sempre deixa de ser aviso, e este e o que diz que ficou um WORM de producao no servidor.
-        if ($codigo -eq 255) { $remoto = $false }
-        if ($codigo -ne 0) { throw "extraccao remota do worm.wal falhou ($codigo)" }
-
-        Nativo { & scp -q @sshArgs "${Servidor}:selo/worm.wal" (Join-Path $tmp 'worm.wal') }
-        if ($LASTEXITCODE -ne 0) { throw "scp do worm.wal falhou ($LASTEXITCODE)" }
+        Passo "2. A TRAZER o worm.wal VIVO pelo gate (sem tocar na backup.key)"
+        # Um so pedido, `worm`, e o gate faz o resto: le o volume como o uid do no, sem rede e sem
+        # escrever nada. NAO ha copia no servidor — a versao anterior deixava `~/selo/worm.wal` num
+        # home e precisava de uma limpeza verificada para o apagar.
         $worm = Join-Path $tmp 'worm.wal'
-        Bom ("worm.wal VIVO: {0:N0} bytes" -f (Get-Item $worm).Length)
+        $r = ParaFicheiro (Executavel 'ssh') (@('-n') + $sshOpts + @('-p', "$Porta", $Servidor, 'worm')) $worm
+        if ($r.Codigo -ne 0) {
+            if ($r.Erro) { Mau $r.Erro }
+            throw "leitura do worm.wal pelo gate falhou ($($r.Codigo))"
+        }
+        $bytes = (Get-Item $worm).Length
+        if ($bytes -eq 0) { throw "o gate devolveu um worm.wal VAZIO — nao se sela sobre nada" }
+        Bom ("worm.wal VIVO: {0:N0} bytes" -f $bytes)
         Nota "(o backup nao foi tocado, e a backup.key nao entrou nesta execucao)"
     } else {
-    Passo "2. A ESCOLHER a copia mais recente"
-    $enc = Get-ChildItem -Path $Backups -Filter '*.tar.gz.enc' -ErrorAction SilentlyContinue |
-           Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $enc) { throw "nenhum backup em $Backups (corra com -Puxar)" }
-    Bom ("{0}  ({1:N0} bytes, {2:yyyy-MM-dd HH:mm}Z)" -f $enc.Name, $enc.Length, $enc.LastWriteTimeUtc)
+        Passo "2. A ESCOLHER a copia mais recente"
+        $enc = Get-ChildItem -Path $Backups -Filter '*.tar.gz.enc' -ErrorAction SilentlyContinue |
+               Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $enc) { throw "nenhum backup em $Backups (corra com -Puxar)" }
+        Bom ("{0}  ({1:N0} bytes, {2:yyyy-MM-dd HH:mm}Z)" -f $enc.Name, $enc.Length, $enc.LastWriteTimeUtc)
 
-    Passo "3. A DECIFRAR e a extrair o WORM"
-    # Tudo o que sai daqui e dado de PRODUCAO — incluindo a base do IdP. Vive num temporario que
-    # o `finally` apaga, e nao no directorio de trabalho.
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aos-selo-" + [Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-    & openssl smime -decrypt -binary -inform DER -in $enc.FullName -inkey $ChaveBkp -out (Join-Path $tmp 'bundle.tar.gz')
-    if ($LASTEXITCODE -ne 0) { throw "openssl smime falhou ($LASTEXITCODE)" }
-    Push-Location $tmp
-    try {
-        & tar -xzf 'bundle.tar.gz'
-        if ($LASTEXITCODE -ne 0) { throw "tar do bundle falhou" }
-        & tar -xzf 'volumes.tar.gz' 'aos/worm.wal'
-        if ($LASTEXITCODE -ne 0) { throw "tar dos volumes falhou (aos/worm.wal ausente?)" }
-    } finally { Pop-Location }
-    $worm = Join-Path $tmp 'aos\worm.wal'
-    if (-not (Test-Path $worm)) { throw "worm.wal nao apareceu na extraccao" }
-    Bom ("worm.wal: {0:N0} bytes" -f (Get-Item $worm).Length)
+        Passo "3. A DECIFRAR e a extrair o WORM"
+        # Tudo o que sai daqui e dado de PRODUCAO — incluindo a base do IdP. Vive no temporario que
+        # o `finally` apaga.
+        Nativo { & openssl smime -decrypt -binary -inform DER -in $enc.FullName -inkey $ChaveBkp -out (Join-Path $tmp 'bundle.tar.gz') }
+        if ($LASTEXITCODE -ne 0) { throw "openssl smime falhou ($LASTEXITCODE)" }
+        Push-Location $tmp
+        try {
+            Nativo { & tar -xzf 'bundle.tar.gz' }
+            if ($LASTEXITCODE -ne 0) { throw "tar do bundle falhou" }
+            Nativo { & tar -xzf 'volumes.tar.gz' 'aos/worm.wal' }
+            if ($LASTEXITCODE -ne 0) { throw "tar dos volumes falhou (aos/worm.wal ausente?)" }
+        } finally { Pop-Location }
+        $worm = Join-Path $tmp 'aos\worm.wal'
+        if (-not (Test-Path $worm)) { throw "worm.wal nao apareceu na extraccao" }
+        Bom ("worm.wal: {0:N0} bytes" -f (Get-Item $worm).Length)
     }
 
-    Passo "4. A SELAR"
-    $anteriorFile = Join-Path $Ancoras 'checkpoints.json'
-    $temAnterior  = Test-Path $anteriorFile
-    if ($temAnterior) {
-        Nota "selagem anterior encontrada — a continuidade vai ser EXIGIDA"
-        Nota "(mesma VerifyFromCheckpoint que o no corre no arranque; divergencia RECUSA selar)"
-    } else {
-        Nota "PRIMEIRA selagem: nao ha contra o que comparar, e a guarda de continuidade e"
-        Nota "comparativa, nao absoluta. Esta ancora vale a partir de agora, nao para tras."
+    Passo "4. A SELAR, com continuidade face a ancora em vigor"
+    Nota "(mesma VerifyFromCheckpoint que o no corre no arranque; divergencia ou recuo RECUSAM selar)"
+    $cpNovo = Join-Path $tmp 'checkpoints.json'
+    $hdNovo = Join-Path $tmp 'heads.json'
+    $base = @('worm-seal', '--worm', $worm, '--key-file', $Chave, '--anterior', $anteriorFile)
+    $r = Issuer $base $cpNovo
+    if ($r.Codigo -ne 0) { Mau $r.Erro; throw "worm-seal (checkpoints) falhou" }
+    $r = Issuer ($base + '--heads') $hdNovo
+    if ($r.Codigo -ne 0) { Mau $r.Erro; throw "worm-seal (heads) falhou" }
+
+    # SEM BOM, e nao e detalhe de estilo: o no e o `--anterior` da selagem seguinte leem estes
+    # mesmos ficheiros. O selador escreve-os ele proprio (ParaFicheiro), pelo que isto e uma
+    # asserção e nao uma conversao — e o gate recusa um BOM na entrega.
+    foreach ($f in @($cpNovo, $hdNovo)) {
+        $b = [IO.File]::ReadAllBytes($f)
+        if ($b.Length -eq 0) { throw "o selador escreveu um ficheiro VAZIO: $f" }
+        if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { throw "BOM em $f" }
     }
 
-    $argsBase = @('run', '.', 'worm-seal', '--worm', $worm, '--key-file', $Chave)
-    if ($temAnterior) { $argsBase += @('--anterior', $anteriorFile) }
-
-    Push-Location $Issuer
-    try {
-        $cps = & go @argsBase 2>&1
-        if ($LASTEXITCODE -ne 0) { Mau ($cps -join "`n"); throw "worm-seal (checkpoints) falhou" }
-        $argsHeads = $argsBase + '--heads'
-        $heads = & go @argsHeads 2>&1
-        if ($LASTEXITCODE -ne 0) { Mau ($heads -join "`n"); throw "worm-seal (heads) falhou" }
-    } finally { Pop-Location }
-
-    Passo "5. A RODAR os ficheiros"
+    Passo "5. A RODAR os ficheiros locais"
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-    if ($temAnterior) {
-        # A anterior fica GUARDADA, e nao substituida. Se uma selagem futura recusar por
-        # divergencia, e este ficheiro que diz contra o que ela recusou.
-        Copy-Item $anteriorFile (Join-Path $Ancoras "checkpoints-$stamp.json") -Force
-    }
-    # SEM BOM, e nao e detalhe de estilo: o `Set-Content -Encoding utf8` do PowerShell 5.1 escreve
-    # BOM, e o `encoding/json` do Go recusa-o com «invalid character 'i'». Descobri-o a correr
-    # este script DUAS vezes: a segunda nao conseguiu ler o ficheiro que a primeira escreveu.
-    #
-    # O no le estes MESMOS ficheiros. Com BOM, o arranque abortaria em ErrBadWormCheckpoint — a
-    # postura certa (fail-closed), com um diagnostico que ninguem liga a codificacao.
-    $semBom = New-Object Text.UTF8Encoding $false
-    [IO.File]::WriteAllText($anteriorFile, ($cps -join "`n"), $semBom)
-    [IO.File]::WriteAllText((Join-Path $Pisos 'heads.json'), ($heads -join "`n"), $semBom)
+    # A anterior fica GUARDADA, e nao substituida. Se uma selagem futura recusar por divergencia, e
+    # este ficheiro que diz contra o que ela recusou. Os pisos guardam-se tambem: repor um par a
+    # mao exige as DUAS metades da mesma selagem.
+    Copy-Item $anteriorFile (Join-Path $Ancoras "checkpoints-$stamp.json") -Force
+    if (Test-Path $pisosFile) { Copy-Item $pisosFile (Join-Path $Pisos "heads-$stamp.json") -Force }
+    Move-Item -Force $cpNovo $anteriorFile
+    Move-Item -Force $hdNovo $pisosFile
 
     # `@(...)` a volta de um ConvertFrom-Json NAO conta os elementos em PS 5.1: o array chega ao
-    # pipeline como UM objecto, e a contagem dava 1. Dizia «1 particao ancorada» sobre um ficheiro
-    # com 120 — exactamente a falha «1 em 108» que o README descrevia, agora so na mensagem.
-    $n = (ConvertFrom-Json ($cps -join "`n")).Count
+    # pipeline como UM objecto, e a contagem dava 1.
+    $n = (ConvertFrom-Json ([IO.File]::ReadAllText($anteriorFile))).Count
     Bom ("{0} particao(oes) ancorada(s)" -f $n)
     Bom ("checkpoints -> " + $anteriorFile)
-    Bom ("pisos       -> " + (Join-Path $Pisos 'heads.json'))
+    Bom ("pisos       -> " + $pisosFile)
 
-    Passo "6. A ANCORA, e o que falta para o no a USAR"
-    # A PUBLICA sai daqui e nao do operador a descobri-la. A primeira versao deste script pedia
-    # «a PUBLICA do selador, em hex» e nao dizia onde a ir buscar — deixava por fazer o unico
-    # passo que o script podia fazer sozinho, e que nao envolve segredo nenhum: a pubkey e para
-    # ser PUBLICADA, e vai literalmente para uma variavel de ambiente no servidor.
-    Push-Location $Issuer
-    try { $pub = (& go run . pubkey --key-file $Chave 2>&1 | Select-Object -Last 1).ToString().Trim() }
-    finally { Pop-Location }
-    if ($pub -notmatch '^[0-9a-f]{64}$') { throw "pubkey do selador invalida: $pub" }
-
-    Nota "As tres em conjunto ou NENHUMA (algumas -> ErrWormAnchorIncomplete, aborta o arranque):"
-    Write-Host ("    AOS_WORM_TRUST_ANCHOR={0}" -f $pub) -ForegroundColor Green
-    Nota "    AOS_WORM_CHECKPOINT_FILE     = caminho MONTADO do checkpoints.json"
-    Nota "    AOS_WORM_EXPECTED_HEADS_FILE = caminho MONTADO do heads.json"
-    Nota ""
+    Passo "6. A ancora"
+    $pubFile = Join-Path $tmp 'pub.txt'
+    $r = Issuer @('pubkey', '--key-file', $Chave) $pubFile
+    $pub = (Get-Content $pubFile | Where-Object { $_ -match '^[0-9a-f]{64}$' } | Select-Object -Last 1)
+    if ($r.Codigo -ne 0 -or -not $pub) { throw "pubkey do selador invalida" }
+    Nota ("AOS_WORM_TRUST_ANCHOR={0}" -f $pub)
     Nota "E a cobertura NUNCA e total: as particoes nascem por run, logo o run seguinte cria uma"
     Nota "que esta ancora nao cobre. Ancorado ate ao ultimo selo; depois disso, so re-encadeamento."
 
     if ($Entregar) {
-        Passo "7. A ENTREGAR a ancora ao servidor"
-        # ATOMICIDADE, e nao ordenacao. Tentei primeiro decidir QUAL dos dois ficheiros entregar
-        # primeiro, e a resposta e que NENHUMA ordem e segura:
+        Passo "7. A ENTREGAR a ancora ao servidor (pelo gate)"
+        # ATOMICIDADE, e nao ordenacao. NENHUMA ordem entre os dois ficheiros e segura:
         #
         #   checkpoints primeiro -> as particoes novas ficam COM checkpoint e SEM piso, e o no
-        #                           recusa arrancar (ErrBadWormExpectedHead: «tem checkpoint mas
-        #                           NAO tem piso de frescura»);
+        #                           recusa arrancar (ErrBadWormExpectedHead);
         #   pisos primeiro       -> os checkpoints antigos ficam ABAIXO dos pisos novos, e o no
         #                           recusa arrancar (ErrCheckpointStale).
         #
-        # Logo os dois sobem com nomes temporarios e sao renomeados LADO A LADO, num so comando.
-        # A janela de inconsistencia deixa de ser os segundos do scp e passa a ser o intervalo
-        # entre dois `mv` — e fica declarada, porque nao e zero: um arranque do no exactamente
-        # nesse intervalo apanharia um par incoerente. Recupera-se correndo isto outra vez.
+        # Logo os dois sobem com nomes temporarios e o `trocar` do gate valida o PAR (esquema, que
+        # e da mesma selagem, e que nenhuma particao recua face ao que la esta) e renomeia-os LADO A
+        # LADO. A janela residual e o intervalo entre dois `mv`, e fica declarada: um arranque do no
+        # exactamente ai apanharia um par incoerente e nao arrancaria. Recupera-se trocando outra vez.
         #
-        # E NOTE-SE QUE O NO ESTAR FAIL-CLOSED E O QUE TORNA ISTO TOLERAVEL: o pior caso e um no
-        # que NAO ARRANCA ate o par voltar a ser coerente. Nunca um no que arranca com uma ancora
-        # que nao bate.
-        $sshE = @('-i', $ChaveSSH, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
-                  '-o', "UserKnownHostsFile=$KnownHosts")
-        $destino = '/opt/aos'
-
-        Nativo { & scp -q @sshE (Join-Path $Ancoras 'checkpoints.json') "${Servidor}:${destino}/ancoras/.checkpoints.novo" }
-        if ($LASTEXITCODE -ne 0) { throw "scp dos checkpoints falhou ($LASTEXITCODE)" }
-        Nativo { & scp -q @sshE (Join-Path $Pisos 'heads.json') "${Servidor}:${destino}/pisos/.heads.novo" }
-        if ($LASTEXITCODE -ne 0) { throw "scp dos pisos falhou ($LASTEXITCODE)" }
-
-        $trocar = 'set -e; cd /opt/aos; mv ancoras/.checkpoints.novo ancoras/checkpoints.json; mv pisos/.heads.novo pisos/heads.json; echo TROCADO'
-        $r = Nativo { & ssh @sshE $Servidor $trocar 2>&1 }
-        if ($LASTEXITCODE -ne 0 -or (($r -join ' ') -notmatch 'TROCADO')) {
-            throw "a troca no servidor falhou — o par pode estar incoerente. Corra isto outra vez"
+        # -O: protocolo classico. O gate so aceita `scp -t <um dos dois nomes temporarios>`; por
+        # SFTP (o default do OpenSSH 9) o pedido e recusado, de proposito.
+        foreach ($par in @(@($anteriorFile, '/opt/aos/ancoras/.checkpoints.novo'), @($pisosFile, '/opt/aos/pisos/.heads.novo'))) {
+            $saida = Nativo { & scp -O -q @sshOpts -P "$Porta" $par[0] "${Servidor}:$($par[1])" 2>&1 | ForEach-Object { "$_" } }
+            if ($LASTEXITCODE -ne 0) { $saida | ForEach-Object { Mau $_ }; throw "scp de $(Split-Path $par[0] -Leaf) falhou ($LASTEXITCODE)" }
         }
-        Bom "ancora entregue (checkpoints e pisos trocados lado a lado)"
-        Nota "o no so a LE no arranque; nada muda ate ao proximo restart"
+
+        $saida = Nativo { & ssh -n @sshOpts -p "$Porta" $Servidor 'trocar' 2>&1 | ForEach-Object { "$_" } }
+        $codigo = $LASTEXITCODE
+        $linha = $saida | Where-Object { $_ -match '^TROCADO [0-9a-f]{64} [0-9a-f]{64}$' } | Select-Object -Last 1
+        if ($codigo -ne 0 -or -not $linha) {
+            $saida | ForEach-Object { Mau $_ }
+            throw "a troca no servidor foi RECUSADA ou falhou ($codigo) — o par em vigor no servidor nao mudou, excepto se a falha foi entre os dois mv: nesse caso corra isto outra vez"
+        }
+        # O servidor diz o que INSTALOU, e compara-se com o que se selou. Um `TROCADO` sem esta
+        # comparacao seria o servidor a dizer que correu bem.
+        $campos = $linha.Split(' ')
+        if ($campos[1] -ne (Sha256 $anteriorFile) -or $campos[2] -ne (Sha256 $pisosFile)) {
+            throw "o servidor instalou um par DIFERENTE do que foi selado aqui (sha256 nao bate)"
+        }
+        Bom "ancora entregue: checkpoints e pisos validados e trocados lado a lado (sha256 conferido)"
+        Nota "o no so a LE no arranque: nao e preciso reinicia-lo, e nada muda nele ate ao proximo restart"
     }
 }
 finally {
-    if ($remoto) {
-        # A copia do lado do SERVIDOR vai-se embora SEMPRE — incluindo quando a selagem falha, que
-        # e precisamente quando alguem estaria distraido a ler o erro.
-        #
-        # `Nativo` + try/catch: NADA pode impedir esta limpeza de correr. Sem isto, o aviso do ssh
-        # em stderr matava o proprio `finally` e o worm.wal ficava num home do servidor — foi o que
-        # aconteceu no primeiro teste de falha.
-        #
-        # E VERIFICA-SE. Uma limpeza que falha em silencio e pior do que nao ter limpeza: deixa o
-        # WORM de producao fora do volume, com toda a gente convencida de que nao ficou.
-        try {
-            $r = Nativo { & ssh -i $ChaveSSH -o IdentitiesOnly=yes -o BatchMode=yes `
-                    -o "UserKnownHostsFile=$KnownHosts" $Servidor `
-                    'rm -f ~/selo/worm.wal; rmdir ~/selo 2>/dev/null; ls -d ~/selo 2>/dev/null || echo LIMPO' 2>&1 }
-            if (($r -join ' ') -match 'LIMPO') {
-                Nota "servidor limpo (worm.wal removido)"
-            } else {
-                Mau "NAO consegui confirmar a limpeza do ~/selo no servidor — o worm.wal pode ter"
-                Mau "ficado la. Corra: ssh $Servidor 'rm -rf ~/selo'"
-            }
-        } catch {
-            Mau "a limpeza do servidor FALHOU ($_) — corra: ssh $Servidor 'rm -rf ~/selo'"
-        }
-    }
     if ($tmp -and (Test-Path $tmp)) {
-        # Dados de PRODUCAO decifrados. Vao-se embora sempre — incluindo quando a selagem falha,
-        # que e precisamente quando alguem estaria distraido a ler o erro.
+        # O WORM de producao (e, no modo backup, os dados decifrados). Vao-se embora sempre —
+        # incluindo quando a selagem falha, que e precisamente quando alguem estaria distraido a ler
+        # o erro.
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     }
 }
