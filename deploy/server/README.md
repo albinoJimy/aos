@@ -1685,15 +1685,24 @@ provado é que a métrica **lê** o campo, não que o varredor o **escreve**.
    tarefa de selagem morreu. É o dobro da cadência, pela mesma razão que o `pull-backups.ps1` usa
    48 h — um dia falhado não alerta, dois sim.
 
-   > ⚠️ **Mas só num nó que reinicie.** A série conta desde a âncora que o nó **carregou no
-   > arranque** (`h.node.ancora`), e o nó só lê a âncora aí. A entrega diária **não** reinicia o nó
-   > (ver «O ciclo, como está montado hoje»): num nó que fique dias de pé, a série cresce 24 h por
-   > dia com a tarefa **saudável**, e o alerta das 48 h dispara 48 h depois do último arranque — um
-   > falso positivo que ensina a ignorá-lo. Enquanto o nó não reler a âncora (ou expuser a idade do
-   > par entregue), a pergunta «a selagem está viva?» responde-se fora do nó: o `ULTIMA.txt` na
-   > máquina do operador, ou, no servidor, `journalctl -t aos-worm-seal | grep trocado:` e o mtime de
-   > `/opt/aos/ancoras/checkpoints.json`. A série continua certa para outra pergunta: **há quanto
-   > tempo foi selada a âncora que este processo está a usar**.
+   > ⚠️ **Mas só num nó que reinicie, e por isso este alerta é hoje um falso positivo garantido.** A
+   > série conta desde a âncora que o nó **carregou no arranque** (`h.node.ancora`), e o nó só lê a
+   > âncora aí. A entrega diária **não** reinicia o nó (ver «O ciclo, como está montado hoje»): num
+   > nó que fique dias de pé, a série cresce 24 h por dia com a tarefa **saudável**, e dispara 48 h
+   > depois do último arranque. Um alerta que grita num nó saudável deixa de ser lido no dia em que
+   > gritar a sério.
+   >
+   > **Enquanto for assim**, a pergunta «a selagem está viva?» responde-se **fora do nó**: o
+   > `ULTIMA.txt` na máquina do operador, ou, no servidor, `journalctl -t aos-worm-seal | grep
+   > trocado:` e o mtime de `/opt/aos/ancoras/checkpoints.json`. A série continua certa para outra
+   > pergunta: **quanto do WORM está por re-encadear desde o selo que este processo verificou**.
+   >
+   > 🔜 **Corrigido no #295**, que emite `aos_worm_anchor_delivered_age_seconds` e
+   > `aos_worm_anchor_delivered_unreadable` — lidas **na altura da recolha**, a partir do par
+   > montado — e passa o alerta da selagem morta para a primeira (`> 172800` **ou** `< 0`, porque o
+   > carimbo vem do relógio de quem sela e um relógio adiantado daria idade negativa que nunca cruza
+   > o limiar). Quando esse PR aterrar, esta caixa e a tabela acima cedem lugar às dele: é aqui que
+   > os dois se sobrepõem.
 
    A razão do primeiro ser lido **na altura da recolha** e não no arranque: as partições nascem por
    run, e um valor medido no boot e servido como *gauge* pareceria vivo estando congelado. Faria o
