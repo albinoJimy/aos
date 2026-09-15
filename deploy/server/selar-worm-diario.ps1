@@ -23,9 +23,17 @@ param(
     # necessário para o directório crescer sem ninguém dar por isso.
     [int]$DiasDeLog    = 30,
     # Repassados ao script real, para que a tarefa possa apontar a outra máquina sem editar isto.
+    # Vazios = os defaults do selar-worm.ps1 (a chave SSH do gate em secrets-local/worm-seal/, o
+    # known_hosts do utilizador, a porta 22).
     [string]$Servidor  = "aos@37.60.241.150",
-    [string]$ChaveSSH  = "C:\Jimy\aos\deploy\server\secrets-local\deploy_key",
-    [string]$KnownHosts = "C:\Jimy\aos\deploy\server\secrets-local\known_hosts.txt",
+    [string]$ChaveSSH  = "",
+    [string]$KnownHosts = "",
+    [int]$Porta        = 0,
+    # Só para o ENSAIO contra um sshd descartável: chave do selador, âncoras e aos-issuer de teste.
+    [string]$Chave     = "",
+    [string]$Ancoras   = "",
+    [string]$Pisos     = "",
+    [string]$IssuerExe = "",
     # -Script existe para os TESTES do próprio invólucro: sem ele, a única forma de verificar que
     # o código de saída sobe intacto era correr uma selagem real contra produção.
     [string]$Script    = ""
@@ -42,10 +50,19 @@ $log = Join-Path $Logs "selagem-$carimbo.log"
 
 "==== selagem WORM — inicio $(Get-Date -Format 'o') ====" | Out-File -FilePath $log -Encoding utf8
 
+# Só se repassa o que tem valor. NÃO `-KnownHosts $KnownHosts` com a variável vazia: o PowerShell
+# 5.1 larga os argumentos vazios ao chamar um executável, e o `-KnownHosts` ficava sem valor —
+# o filho morria com «Missing an argument», antes de fazer o que quer que fosse.
+$repasse = @('-PorSSH', '-Entregar', '-Servidor', $Servidor)
+foreach ($p in @('ChaveSSH', 'KnownHosts', 'Chave', 'Ancoras', 'Pisos', 'IssuerExe')) {
+    $v = Get-Variable -Name $p -ValueOnly
+    if ($v) { $repasse += @("-$p", $v) }
+}
+if ($Porta -gt 0) { $repasse += @('-Porta', "$Porta") }
+
 # Processo FILHO e não dot-source: é a forma de ter um `$LASTEXITCODE` que significa mesmo o
 # desfecho do script, incluindo quando ele morre por excepção não apanhada.
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script `
-    -PorSSH -Entregar -Servidor $Servidor -ChaveSSH $ChaveSSH -KnownHosts $KnownHosts `
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script @repasse `
     *>&1 | ForEach-Object {
         # NÃO `Tee-Object`: o do PowerShell 5.1 escreve UTF-16 e não aceita `-Encoding`, pelo que
         # o log saía com o cabeçalho em UTF-8 e o corpo em UTF-16 — duas codificações no mesmo
