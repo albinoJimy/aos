@@ -885,8 +885,9 @@ ssh -i <chave-da-selagem> aos@37.60.241.150 worm > worm.wal
 
 ⚠️ **Suspenda a tarefa diária durante a rotação.** Antes de (g), a `AOS-SelarWORM` recusa selar —
 a chave não bate com o `selador.pub` em vigor. Depois de (g) ela passa a selar **e a entregar**, e o
-gate aceita, porque não verifica assinaturas: com a `AOS_WORM_TRUST_ANCHOR` ainda antiga no `.env`,
-o nó abortaria no arranque seguinte. `Disable-ScheduledTask AOS-SelarWORM` antes de começar,
+gate **recusa** a troca enquanto a `AOS_WORM_TRUST_ANCHOR` do `.env` for ainda a antiga — as
+assinaturas novas não verificam contra ela. Já não há nó a abortar, mas há uma execução falhada e um
+alerta por nada. `Disable-ScheduledTask AOS-SelarWORM` antes de começar,
 `Enable-ScheduledTask` depois de (f) e (g) estarem os dois feitos.
 
 **(e) Subir com nomes temporários.**
@@ -1402,9 +1403,9 @@ Nomeado, não escondido:
    `AOS_WORM_TRUST_ANCHOR`, e fica arquivada com o par a cada selagem.
 
    > ⚠️ **Suspenda a tarefa diária durante uma rotação.** Antes do passo (g) ela recusa (a chave não
-   > bate com o `selador.pub` em vigor); depois de (g) ela sela **e entrega**, e o gate aceita porque
-   > não verifica assinaturas — com a `AOS_WORM_TRUST_ANCHOR` ainda antiga, o nó abortaria no
-   > arranque seguinte. `Disable-ScheduledTask AOS-SelarWORM` antes de começar,
+   > bate com o `selador.pub` em vigor); depois de (g) ela sela **e entrega**, e o gate **recusa** a
+   > troca enquanto a `AOS_WORM_TRUST_ANCHOR` do `.env` for ainda a antiga — as assinaturas novas não
+   > verificam contra ela. Não parte o nó, mas dá uma execução falhada e um alerta por nada. `Disable-ScheduledTask AOS-SelarWORM` antes de começar,
    > `Enable-ScheduledTask` depois de (f) e (g).
 
    **A entrega não reinicia o nó, nem precisa.** O nó só **usa** a âncora a partir do arranque: o par
@@ -1445,24 +1446,40 @@ Nomeado, não escondido:
    Tudo o resto é recusado. Recusas, leituras (`worm lido`) e trocas (`trocado: … checkpoints=<sha256>
    pisos=<sha256>`) vão ao syslog com a etiqueta `aos-worm-seal` — `journalctl -t aos-worm-seal`.
 
-   **O que o `trocar` valida**, com o `python3` do sistema (sem ele **recusa** — não salta):
+   **O que o `trocar` valida**, com o `python3` do sistema e a biblioteca ed25519 do sistema
+   (`python3-nacl`, ou `cryptography`; sem elas **recusa** — não salta):
 
    - JSON sem BOM e sem chaves duplicadas;
    - checkpoints: array não vazio, **exactamente** os cinco campos de `audit.Checkpoint`, `EntryHash`
      de 32 bytes, `Signature` de 64, `Timestamp` RFC 3339, partições únicas;
+   - **a assinatura de cada checkpoint**, contra a `AOS_WORM_TRUST_ANCHOR` do `.env` — a mesma que o
+     nó usa no arranque — sobre a serialização canónica de `audit.canonicalCheckpoint`;
    - pisos: `{"partição": inteiro positivo}`;
    - os dois são **da mesma selagem**: as mesmas partições, e o piso de cada uma igual ao seu `AuditSeq`;
-   - **nenhuma partição desaparece nem recua** face ao par em vigor.
+   - **nenhuma partição desaparece nem recua** face ao par em vigor — verificado **depois** das
+     assinaturas.
 
-   A última é a que importa contra quem leve a chave: sem ela, podia repor uma âncora **anterior** —
-   legítima e assinada — para mascarar a truncatura do que veio depois. A consequência operacional:
-   num host restaurado de um backup mais antigo do que a âncora em vigor, a troca **recusa**, e
-   resolve-se à mão, por quem sabe porque é que o WORM recuou.
+   A não-regressão é a que importa contra quem leve a chave: sem ela, podia repor uma âncora
+   **anterior** — legítima e assinada — para mascarar a truncatura do que veio depois. A
+   consequência operacional: num host restaurado de um backup mais antigo do que a âncora em vigor, a
+   troca **recusa**, e resolve-se à mão, por quem sabe porque é que o WORM recuou.
 
-   **O que o gate não verifica, e porque não faz mal:** as assinaturas. Verifica-as o nó, no arranque,
-   fail-closed. Quem levar a chave consegue **ler o WORM** e entregar um par bem formado e mal
-   assinado — o que deixa o nó **sem arrancar** no próximo restart, nunca a arrancar sobre uma âncora
-   falsa. Recupera-se com uma selagem legítima.
+   **Porque é que a assinatura se verifica no gate, e não só no arranque.** A primeira versão deixava-a
+   para o nó e dizia que um par mal assinado «se recupera com uma selagem legítima». Uma revisão
+   adversarial (2026-09-15) mostrou que não: um par **bem formado** com `AuditSeq` enormes passava a
+   forma e a não-regressão, o nó abortava no restart seguinte, e a partir daí a não-regressão
+   **recusava todas as selagens legítimas**, que traziam números menores — só se recuperava com shell,
+   e o `mv` já tinha destruído o par anterior. Por isso a assinatura corre antes da não-regressão, e o
+   par anterior fica em `checkpoints.json.anterior` / `heads.json.anterior` (nomes que o nó não lê).
+
+   **E a troca instala o que validou.** Na primeira versão o `receber` não usava o lock e o `trocar`
+   validava os `.novo` no sítio: uma sessão `scp -t` parada podia escrever no mesmo inode depois da
+   validação. Agora o lock é o mesmo nos dois verbos (um `receber` em curso faz o `trocar` recusar) e o
+   `trocar` copia os `.novo` para ficheiros privados — inodes novos — e valida e instala essas cópias.
+
+   **O que continua a ser só do nó:** confirmar que o `EntryHash` assinado corresponde ao registo real
+   do WORM, o que exige o store composto. Quem levar esta chave consegue **ler o WORM**; entregar um par
+   que o nó recuse exige também a `wormseal.key`.
 
    > **Ensaiado antes de chegar aqui (2026-09-15)** — `sshd` real em contentor (Python 3.8, o do
    > Ubuntu 20.04), cliente OpenSSH do Windows 9.5, `docker` substituído por um que só aceita o argv
