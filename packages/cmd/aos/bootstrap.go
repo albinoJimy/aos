@@ -1343,7 +1343,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// verificação ancorada corre só até ao último checkpoint. O validador injectado aqui —
 	// [autonomyRehydrateValidator] — confronta cada registo de OPERADOR com uma raiz de
 	// confiança FORA do store (as pubkeys de AOS_OPERATORS e o direito `autonomy:set`), e o que
-	// não verificar ABORTA o arranque. É a única razão pela qual `cfg.Operators` e
+	// não verificar é SALTADO — nunca aplicado — e declarado no banner com o seq. Não aborta:
+	// abortar por um registo daria um modo de tijolo a quem escreve no ficheiro do WORM, e só a
+	// indisponibilidade do store é erro de arranque. É a única razão pela qual `cfg.Operators` e
 	// `autonomySetters` são precisos nesta linha.
 	// GATE DE PROVA DE SUBIDA POR FICHEIRO (AOS-377). AQUI, e não na fronteira de config, pela
 	// mesma razão que o validador de rehidratação: verificar uma prova exige as pubkeys de
