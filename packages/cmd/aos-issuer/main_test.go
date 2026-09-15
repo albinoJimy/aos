@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func TestIssuer_MintProducesVerifiableToken(t *testing.T) {
 
 	// (1) `pubkey` — o trust anchor que o nó receberia em AOS_ISSUER_PUBKEY.
 	var pubBuf bytes.Buffer
-	if err := run([]string{"pubkey", "--key-file", key}, &pubBuf); err != nil {
+	if err := run([]string{"pubkey", "--key-file", key}, &pubBuf, io.Discard); err != nil {
 		t.Fatalf("pubkey: %v", err)
 	}
 	pub, err := hex.DecodeString(strings.TrimSpace(pubBuf.String()))
@@ -47,7 +48,7 @@ func TestIssuer_MintProducesVerifiableToken(t *testing.T) {
 	if err := run([]string{
 		"mint", "--key-file", key, "--issuer", issuerID,
 		"--human", "human:alice", "--agent", "agt-1", "--class", "agent-worker", "--caps", "cap:fs.read",
-	}, &tokBuf); err != nil {
+	}, &tokBuf, io.Discard); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 	compact := strings.TrimSpace(tokBuf.String())
@@ -79,7 +80,7 @@ func TestIssuer_MintFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "issuer.key")
 	var out bytes.Buffer
-	if err := run([]string{"mint", "--key-file", key, "--agent", "a", "--class", "c"}, &out); err == nil {
+	if err := run([]string{"mint", "--key-file", key, "--agent", "a", "--class", "c"}, &out, io.Discard); err == nil {
 		t.Fatal("mint sem --human devia FALHAR fail-closed")
 	}
 	if out.Len() != 0 {

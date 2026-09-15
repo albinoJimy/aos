@@ -59,13 +59,16 @@ uso:
                           → imprime o corpo JSON de POST /promote (AOS-275)`
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "aos-issuer:", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string, out io.Writer) error {
+// run despacha o subcomando. `out` recebe SÓ o artefacto (corpo JSON, token, pubkey) — é o que
+// o operador captura com `$(aos-issuer ...)` e envia ao nó; avisos vão para `diag`, nunca para
+// `out`, senão contaminam o corpo e o nó responde 400 em vez da recusa que o aviso anunciava.
+func run(args []string, out, diag io.Writer) error {
 	if len(args) == 0 {
 		return errors.New(usage)
 	}
@@ -81,7 +84,7 @@ func run(args []string, out io.Writer) error {
 	case "delegation-nonce":
 		return cmdDelegationNonce(args[1:], out)
 	case "autonomy-sign":
-		return runAutonomySign(args[1:], out)
+		return runAutonomySign(args[1:], out, diag)
 	case "challenge-sign":
 		return runChallengeSign(args[1:], out)
 	case "revoke-sign":
