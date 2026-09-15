@@ -47,10 +47,20 @@ type leafCall struct {
 	caps   []string
 }
 
-type fakeLeaf struct{ calls []leafCall }
+type fakeLeaf struct {
+	calls []leafCall
+	// ops regista a ORDEM de todas as admissões no DAG — "node:<id>" e "edge:<from>-><to>".
+	ops []string
+}
 
 func (f *fakeLeaf) AdmitLeaf(_ context.Context, n LeafNode) error {
 	f.calls = append(f.calls, leafCall{nodeID: n.NodeID, toolID: n.ToolID, caps: n.Capabilities})
+	f.ops = append(f.ops, "node:"+n.NodeID)
+	return nil
+}
+
+func (f *fakeLeaf) AdmitEdge(_ context.Context, from, to string) error {
+	f.ops = append(f.ops, "edge:"+from+"->"+to)
 	return nil
 }
 
