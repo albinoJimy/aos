@@ -850,10 +850,17 @@ go run . worm-seal --worm worm.wal --key-file wormseal.key --heads > heads.json
 ⚠️ **Sem `--anterior`, e esta é a armadilha da rotação.** O `--anterior` é verificado contra a
 pubkey da chave **que sela agora**. Os checkpoints anteriores foram assinados pela chave antiga, não
 verificam contra a nova, e o selador recusa com `ErrWormSealDivergencia`: «o WORM DIVERGIU», a mesma
-mensagem que significaria uma história reescrita. O `selar-worm.ps1` passava o `--anterior` sozinho
-sempre que havia um `checkpoints.json` na sua pasta. Hoje tem o switch `-ChaveNova`, que não o
-passa e recusa `-Entregar`. A partir de agora o script também grava `selador.pub` ao lado dos
-checkpoints e recusa selar se a chave mudou sem `-ChaveNova`.
+mensagem que significaria uma história reescrita. O `selar-worm.ps1` passa o `--anterior` sozinho
+sempre que há um `checkpoints.json` na sua pasta — e é por isso que a primeira selagem de uma
+rotação **não se faz por ele**, mas à mão, com os comandos acima.
+
+E é assim que fica: a selagem diária **exige** continuidade e recusa selar sem checkpoints em vigor
+(#293). Uma selagem sem `--anterior` não compara nada e, numa tarefa que corre sozinha, seria a
+porta por onde uma truncatura passava a ser ancorada. O preço é este passo manual, uma vez por
+rotação, feito por quem sabe que rodou a chave.
+
+> O switch `-ChaveNova` do script — que omite o `--anterior` e recusa `-Entregar` — nasceu desta
+> rotação e está **ultrapassado** por essa decisão. Não o uses: sai quando o #293 aterrar.
 
 **(d) Auto-verificação local.** Sela outra vez, agora **com** `--anterior` apontado aos checkpoints
 acabados de gerar. Tem de sair com código 0.
@@ -862,11 +869,10 @@ acabados de gerar. Tem de sair com código 0.
 go run . worm-seal --worm worm.wal --key-file wormseal.key --anterior checkpoints.json > /dev/null
 ```
 
-Os passos (b) a (d) também se fazem com
-`selar-worm.ps1 -PorSSH -ChaveNova -ChaveSSH <chave-ssh>`, que escreve em
-`secrets-local/ancoras` e `secrets-local/pisos` e arquiva a selagem anterior. O transporte do
-`-PorSSH` é o `cp` + `scp` da selagem diária, não o `cat` de (b). **Este caminho foi acrescentado
-depois da rotação e ainda não correu contra produção**; a rotação de 2026-09-15 fez-se à mão.
+**O script não serve para os passos (b) a (d), e é deliberado.** O `selar-worm.ps1` é a *cadência*,
+não a *rotação*: corre sozinho todos os dias, e um modo que sele sem comparar com nada abriria na
+tarefa automática exactamente o buraco que a continuidade fecha. A rotação de 2026-09-15 fez-se à
+mão, e a próxima faz-se igual.
 
 **(e) Subir com nomes temporários.**
 
@@ -929,8 +935,10 @@ EOF
 
 **(g) Deixar a selagem diária a par.** A seed nova passa para `secrets-local/wormseal.key`, e os
 checkpoints e pisos novos para `secrets-local/ancoras/checkpoints.json` e
-`secrets-local/pisos/heads.json`. Pelo caminho `-ChaveNova` já lá estão. Sem isto, a tarefa
-`AOS-SelarWORM` seguinte passa o `--anterior` antigo e recusa selar.
+`secrets-local/pisos/heads.json` — é este o par que a selagem seguinte passa em `--anterior`. Sem
+isto, a tarefa `AOS-SelarWORM` seguinte recusa selar: ou compara com o `--anterior` da chave antiga
+e acusa divergência, ou não encontra checkpoints em vigor. As duas recusas estão certas — quem
+rodou a chave tem de deixar o par novo no sítio, e é o último passo da rotação.
 
 **O que fica por ensaiar.** Os backups anteriores à rotação levam checkpoints assinados pela chave
 antiga, porque o `backup.sh` copia `ancoras/` e `pisos/`. Pelo desenho, restaurar um desses backups
