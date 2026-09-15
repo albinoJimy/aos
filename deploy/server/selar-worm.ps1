@@ -27,11 +27,13 @@
   `worm-seal-gate.sh`, que so aceita: `worm`, `scp -t` para os dois nomes temporarios, e
   `trocar`. Ver deploy/server/README.md §8, «A tarefa diaria».
 
-  CONTINUIDADE OBRIGATORIA, EXCEPTO NUMA ROTACAO DE CHAVE. A partir da rotacao de 2026-09-15,
-  todas as selagens correm com `--anterior`: sem checkpoints em vigor este script RECUSA. Uma
-  selagem sem anterior nao compara nada, e numa tarefa que corre sozinha seria a porta por onde
-  uma truncatura passava a ser ancorada. A UNICA excepcao e a primeira selagem depois de RODAR a
-  chave do selador, que se pede explicitamente com -ChaveNova (e nunca com -Entregar).
+  CONTINUIDADE OBRIGATORIA, SEM EXCEPCAO. Todas as selagens correm com `--anterior`: sem
+  checkpoints em vigor este script RECUSA. Uma selagem sem anterior nao compara nada, e numa
+  tarefa que corre sozinha seria a porta por onde uma truncatura passava a ser ancorada.
+  ESTE SCRIPT E A CADENCIA, NAO A ROTACAO: a primeira selagem depois de rodar a chave do selador
+  faz-se A MAO, de proposito — passos (b) a (d) da seccao «Rotacao das chaves de autoridade» do
+  README — e o par novo fica em secrets-local (passo (g)) para esta tarefa o poder usar no
+  `--anterior` do dia seguinte.
 
   O NO SO LE A ANCORA NO ARRANQUE. Entregar nao obriga a reiniciar nada, e nada muda no no ate ao
   proximo restart — incluindo a metrica `aos_worm_anchor_age_seconds`, que conta desde a selagem
@@ -44,12 +46,6 @@
 .EXAMPLE
   # servidor inalcancavel ou sob suspeita: selar contra o backup que ja esta em disco
   powershell -ExecutionPolicy Bypass -File deploy\server\selar-worm.ps1
-
-.EXAMPLE
-  # PRIMEIRA selagem depois de RODAR a chave do selador. Sem -Entregar de proposito: a ancora nova
-  # so entra no servidor JUNTO com a troca de AOS_WORM_TRUST_ANCHOR (README, «Rotacao das chaves de
-  # autoridade»).
-  powershell -ExecutionPolicy Bypass -File deploy\server\selar-worm.ps1 -PorSSH -ChaveNova
 #>
 [CmdletBinding()]
 param(
@@ -93,21 +89,6 @@ param(
     [switch]$PorSSH,
     # -Entregar: leva os dois ficheiros ao servidor depois de selar. Ver o passo 7.
     [switch]$Entregar,
-    # -ChaveNova: a PRIMEIRA selagem depois de RODAR a chave do selador. NAO passa --anterior.
-    #
-    # PORQUE: o --anterior e verificado contra a pubkey da chave QUE SELA AGORA. Os checkpoints da
-    # selagem anterior foram assinados pela chave ANTIGA, pelo que nao verificam contra a nova e o
-    # selador recusa com ErrWormSealDivergencia — a mesma mensagem que significaria «a historia foi
-    # reescrita». Aprendido na rotacao de 2026-09-15.
-    #
-    # O QUE SE PERDE, e fica dito: nesta execucao a guarda de continuidade face a selagem anterior
-    # NAO corre. Esta ancora vale a partir de agora, como uma primeira selagem. Em troca, o script
-    # auto-verifica o que acabou de produzir (sela outra vez com --anterior apontado aos checkpoints
-    # novos) ANTES de os escrever.
-    #
-    # E RECUSA -Entregar: a ancora nova so e valida junto com a troca de AOS_WORM_TRUST_ANCHOR no
-    # .env. Entregar so os ficheiros deixava o no a abortar no proximo arranque.
-    [switch]$ChaveNova,
     [string]$Servidor  = "aos@37.60.241.150",
     [int]$Porta        = 22,
     [string]$ChaveSSH  = "C:\Jimy\AOS\deploy\server\secrets-local\worm-seal\id_ed25519",
@@ -195,13 +176,6 @@ try {
         Mau "A chave do selador NAO existe em $Chave"
         throw "chave do selador ausente"
     }
-    if ($ChaveNova -and $Entregar) {
-        Mau "-ChaveNova e -Entregar nao se combinam."
-        Nota "Os checkpoints de uma chave nova so valem JUNTO com a troca de AOS_WORM_TRUST_ANCHOR."
-        Nota "Entregar so os ficheiros deixava o no a abortar no proximo arranque. Sele sem"
-        Nota "-Entregar e siga os passos (e)/(f) da seccao «Rotacao das chaves de autoridade» do README."
-        throw "combinacao recusada: -ChaveNova com -Entregar"
-    }
     if ($PorSSH -or $Entregar) {
         # Antes de ligar, e nao depois: sem isto, uma chave em falta dava um aviso do ssh em stderr
         # e um codigo 255 que se le como «servidor inalcancavel».
@@ -237,26 +211,27 @@ try {
     # DIVERGIU» — lido como adulteracao, quando e so a chave. Ficheiro ausente (selagens anteriores
     # a esta guarda) => nao ha contra o que comparar, e segue-se em frente.
     $seladorFile  = Join-Path $Ancoras 'selador.pub'
-    $temAnterior  = Test-Path $anteriorFile
 
-    if (-not $temAnterior -and -not $ChaveNova) {
+    if (-not (Test-Path $anteriorFile)) {
         Mau "Nao ha checkpoints em vigor em $anteriorFile"
-        Mau "A continuidade e OBRIGATORIA desde a rotacao da chave (2026-09-15): sem --anterior nao se sela."
-        Nota "Se ACABOU de rodar a chave do selador, e isso que -ChaveNova existe para fazer (sem -Entregar)."
+        Mau "A continuidade e OBRIGATORIA: sem --anterior nao se sela."
+        Nota "Se ACABOU de rodar a chave do selador, a primeira selagem faz-se A MAO — passos (b) a (d)"
+        Nota "da seccao «Rotacao das chaves de autoridade» do README — e o par novo fica aqui no passo (g)."
         throw "sem checkpoints em vigor — selagem sem continuidade recusada"
     }
-    if ($temAnterior -and -not $ChaveNova -and (Test-Path $seladorFile)) {
+    if (Test-Path $seladorFile) {
         $pubAnterior = (Get-Content $seladorFile -Raw).Trim()
         if ($pubAnterior -ne $pub) {
             Mau "A chave do selador MUDOU desde a selagem anterior:"
             Mau "  anterior: $pubAnterior"
             Mau "  agora:    $pub"
-            Nota "Se a rodou de proposito, corra com -ChaveNova (e SEM -Entregar)."
-            Nota "Se nao a rodou, a chave em $Chave nao e a que devia ser: pare aqui."
+            Nota "Se a rodou de proposito: a rotacao faz-se A MAO (README, «Rotacao das chaves de"
+            Nota "autoridade»), e so depois do passo (g) — com o par novo em $Ancoras — e que esta"
+            Nota "tarefa volta a correr. Mantenha-a suspensa ate la."
+            Nota "Se NAO a rodou, a chave em $Chave nao e a que devia ser: pare aqui."
             throw "chave do selador diferente da selagem anterior"
         }
     }
-    $usarAnterior = $temAnterior -and -not $ChaveNova
 
     if ($Puxar -and -not $PorSSH) {
         Passo "1. A PUXAR o backup mais recente do servidor"
@@ -302,43 +277,24 @@ try {
         Bom ("worm.wal: {0:N0} bytes" -f (Get-Item $worm).Length)
     }
 
-    Passo "4. A SELAR"
-    if ($usarAnterior) {
-        Nota "continuidade EXIGIDA face a ancora em vigor"
-        Nota "(mesma VerifyFromCheckpoint que o no corre no arranque; divergencia ou recuo RECUSAM selar)"
-    } else {
-        Mau "-ChaveNova: PRIMEIRA selagem com a chave nova — o --anterior NAO e passado."
-        Nota "Os checkpoints anteriores foram assinados pela chave antiga e nao verificam contra a"
-        Nota "nova. A guarda de continuidade NAO corre nesta execucao: esta ancora vale a partir de"
-        Nota "agora. A selagem anterior fica arquivada em $Ancoras (passo 5)."
-    }
+    Passo "4. A SELAR, com continuidade face a ancora em vigor"
+    Nota "(mesma VerifyFromCheckpoint que o no corre no arranque; divergencia ou recuo RECUSAM selar)"
     $cpNovo = Join-Path $tmp 'checkpoints.json'
     $hdNovo = Join-Path $tmp 'heads.json'
-    $base = @('worm-seal', '--worm', $worm, '--key-file', $Chave)
-    $argsSelar = $base
-    if ($usarAnterior) { $argsSelar = $base + @('--anterior', $anteriorFile) }
+    $base = @('worm-seal', '--worm', $worm, '--key-file', $Chave, '--anterior', $anteriorFile)
 
-    $r = Issuer $argsSelar $cpNovo
+    $r = Issuer $base $cpNovo
     if ($r.Codigo -ne 0) {
         Mau $r.Erro
-        if ($usarAnterior -and $r.Erro -match 'DIVERGIU') {
+        if ($r.Erro -match 'DIVERGIU') {
             Nota "Se RODOU a chave do selador, esta recusa e esperada: o --anterior e verificado contra"
-            Nota "a pubkey NOVA. Corra com -ChaveNova (README, «Rotacao das chaves de autoridade»)."
+            Nota "a pubkey que sela AGORA. A primeira selagem da rotacao faz-se A MAO (README, «Rotacao"
+            Nota "das chaves de autoridade»), e esta tarefa so volta a correr depois do passo (g)."
         }
         throw "worm-seal (checkpoints) falhou"
     }
-    $r = Issuer ($argsSelar + '--heads') $hdNovo
+    $r = Issuer ($base + '--heads') $hdNovo
     if ($r.Codigo -ne 0) { Mau $r.Erro; throw "worm-seal (heads) falhou" }
-
-    if ($ChaveNova) {
-        # AUTO-VERIFICACAO: a guarda de continuidade nao correu contra a selagem anterior, entao
-        # corre-se contra o que ACABOU de sair — sela outra vez com --anterior apontado aos
-        # checkpoints novos. Prova que assinam com esta chave e batem com este worm.wal ANTES de
-        # irem para disco. Foi o passo (d) da rotacao de 2026-09-15.
-        $r = Issuer ($base + @('--anterior', $cpNovo)) (Join-Path $tmp 'verificacao.json')
-        if ($r.Codigo -ne 0) { Mau $r.Erro; throw "auto-verificacao da chave nova falhou" }
-        Bom "auto-verificacao: os checkpoints novos verificam contra a chave nova"
-    }
 
     # SEM BOM, e nao e detalhe de estilo: o no e o `--anterior` da selagem seguinte leem estes
     # mesmos ficheiros. O selador escreve-os ele proprio (ParaFicheiro), pelo que isto e uma
@@ -353,8 +309,8 @@ try {
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
     # A anterior fica GUARDADA, e nao substituida. Se uma selagem futura recusar por divergencia, e
     # este ficheiro que diz contra o que ela recusou. Os pisos guardam-se tambem: repor um par a
-    # mao exige as DUAS metades da mesma selagem. Numa rotacao, e a unica copia da ancora ANTIGA.
-    if ($temAnterior) { Copy-Item $anteriorFile (Join-Path $Ancoras "checkpoints-$stamp.json") -Force }
+    # mao exige as DUAS metades da mesma selagem.
+    Copy-Item $anteriorFile (Join-Path $Ancoras "checkpoints-$stamp.json") -Force
     if (Test-Path $pisosFile) { Copy-Item $pisosFile (Join-Path $Pisos "heads-$stamp.json") -Force }
     if (Test-Path $seladorFile) { Copy-Item $seladorFile (Join-Path $Ancoras "selador-$stamp.pub") -Force }
     Move-Item -Force $cpNovo $anteriorFile
@@ -369,12 +325,6 @@ try {
     Bom ("pisos       -> " + $pisosFile)
 
     Passo "6. A ancora"
-    if ($ChaveNova) {
-        Mau "CHAVE NOVA: estes ficheiros NAO valem com a AOS_WORM_TRUST_ANCHOR que esta no servidor."
-        Nota "Checkpoints, pisos e a variavel mudam JUNTOS, num so comando, com reversao se o no"
-        Nota "abortar — passos (e) e (f) da seccao «Rotacao das chaves de autoridade» do README."
-        Nota "Uma tarefa diaria que corra -Entregar antes disso deixa o no a abortar no arranque."
-    }
     Nota ("AOS_WORM_TRUST_ANCHOR={0}" -f $pub)
     Nota "E a cobertura NUNCA e total: as particoes nascem por run, logo o run seguinte cria uma"
     Nota "que esta ancora nao cobre. Ancorado ate ao ultimo selo; depois disso, so re-encadeamento."

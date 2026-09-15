@@ -850,10 +850,18 @@ go run . worm-seal --worm worm.wal --key-file wormseal.key --heads > heads.json
 ⚠️ **Sem `--anterior`, e esta é a armadilha da rotação.** O `--anterior` é verificado contra a
 pubkey da chave **que sela agora**. Os checkpoints anteriores foram assinados pela chave antiga, não
 verificam contra a nova, e o selador recusa com `ErrWormSealDivergencia`: «o WORM DIVERGIU», a mesma
-mensagem que significaria uma história reescrita. O `selar-worm.ps1` passava o `--anterior` sozinho
-sempre que havia um `checkpoints.json` na sua pasta. Hoje tem o switch `-ChaveNova`, que não o
-passa e recusa `-Entregar`. A partir de agora o script também grava `selador.pub` ao lado dos
-checkpoints e recusa selar se a chave mudou sem `-ChaveNova`.
+mensagem que significaria uma história reescrita. O `selar-worm.ps1` passa o `--anterior` sozinho
+sempre que há um `checkpoints.json` na sua pasta — e é por isso que a primeira selagem de uma
+rotação **não se faz por ele**, mas à mão, com os comandos acima.
+
+E é assim que fica: a selagem diária **exige** continuidade e recusa selar sem checkpoints em vigor
+(#293). Uma selagem sem `--anterior` não compara nada e, numa tarefa que corre sozinha, seria a
+porta por onde uma truncatura passava a ser ancorada. O preço é este passo manual, uma vez por
+rotação, feito por quem sabe que rodou a chave.
+
+> O switch `-ChaveNova` do script — que omitia o `--anterior` e recusava `-Entregar` — nasceu desta
+> rotação e **já não existe**: saiu com o #293, que tornou a continuidade obrigatória. A rotação
+> faz-se por estes passos manuais. Se o encontrares numa cópia antiga do script, não o uses.
 
 **(d) Auto-verificação local.** Sela outra vez, agora **com** `--anterior` apontado aos checkpoints
 acabados de gerar. Tem de sair com código 0.
@@ -862,25 +870,24 @@ acabados de gerar. Tem de sair com código 0.
 go run . worm-seal --worm worm.wal --key-file wormseal.key --anterior checkpoints.json > /dev/null
 ```
 
-Os passos (b) a (d) também se fazem com
-`selar-worm.ps1 -PorSSH -ChaveNova -ChaveSSH <chave-ssh>`, que escreve em
-`secrets-local/ancoras` e `secrets-local/pisos`, arquiva a selagem anterior (checkpoints, pisos e
-`selador.pub`) e recusa `-Entregar`. Desde que a selagem diária passou pelo gate
-(`worm-seal-gate.sh`, §8), o transporte do `-PorSSH` é o **mesmo fluxo** do (b) — o verbo `worm`,
-que não deixa cópia no servidor — e não o `cp` + `scp` que aqui esteve descrito. Com a chave do
-gate, o próprio (b) faz-se sem shell nenhuma:
+**O script não serve para os passos (b) a (d), e é deliberado.** O `selar-worm.ps1` é a *cadência*,
+não a *rotação*: corre sozinho todos os dias, e um modo que sele sem comparar com nada abriria na
+tarefa automática exactamente o buraco que a continuidade fecha. A rotação de 2026-09-15 fez-se à
+mão, e a próxima faz-se igual.
+
+O que o script empresta à rotação é o **transporte**: desde que a selagem diária passou pelo gate
+(`worm-seal-gate.sh`, §8), a chave da selagem faz o passo (b) sem shell nenhuma, porque o verbo
+`worm` é exactamente o `cat` de (b) e não deixa cópia no servidor.
 
 ```bash
-ssh -i <chave-do-gate> aos@37.60.241.150 worm > worm.wal
+ssh -i <chave-da-selagem> aos@37.60.241.150 worm > worm.wal
 ```
 
-**Este caminho foi ensaiado contra um `sshd` descartável (7 casos de rotação, §8) e ainda não
-correu contra produção**; a rotação de 2026-09-15 fez-se à mão.
-
-⚠️ **Suspenda a tarefa diária entre (d) e (f).** Depois da rotação local, a execução seguinte já
-passa na guarda do `selador.pub` e **entrega** — e o gate aceita, porque não verifica assinaturas.
-Com a `AOS_WORM_TRUST_ANCHOR` ainda antiga, o nó abortaria no arranque seguinte.
-`Disable-ScheduledTask AOS-SelarWORM` antes, `Enable-ScheduledTask` depois de (f).
+⚠️ **Suspenda a tarefa diária durante a rotação.** Antes de (g), a `AOS-SelarWORM` recusa selar —
+a chave não bate com o `selador.pub` em vigor. Depois de (g) ela passa a selar **e a entregar**, e o
+gate aceita, porque não verifica assinaturas: com a `AOS_WORM_TRUST_ANCHOR` ainda antiga no `.env`,
+o nó abortaria no arranque seguinte. `Disable-ScheduledTask AOS-SelarWORM` antes de começar,
+`Enable-ScheduledTask` depois de (f) e (g) estarem os dois feitos.
 
 **(e) Subir com nomes temporários.**
 
@@ -943,8 +950,10 @@ EOF
 
 **(g) Deixar a selagem diária a par.** A seed nova passa para `secrets-local/wormseal.key`, e os
 checkpoints e pisos novos para `secrets-local/ancoras/checkpoints.json` e
-`secrets-local/pisos/heads.json`. Pelo caminho `-ChaveNova` já lá estão. Sem isto, a tarefa
-`AOS-SelarWORM` seguinte passa o `--anterior` antigo e recusa selar.
+`secrets-local/pisos/heads.json` — é este o par que a selagem seguinte passa em `--anterior`. Sem
+isto, a tarefa `AOS-SelarWORM` seguinte recusa selar: ou compara com o `--anterior` da chave antiga
+e acusa divergência, ou não encontra checkpoints em vigor. As duas recusas estão certas — quem
+rodou a chave tem de deixar o par novo no sítio, e é o último passo da rotação.
 
 **O que fica por ensaiar.** Os backups anteriores à rotação levam checkpoints assinados pela chave
 antiga, porque o `backup.sh` copia `ancoras/` e `pisos/`. Pelo desenho, restaurar um desses backups
@@ -1380,20 +1389,23 @@ Nomeado, não escondido:
    selagem sem anterior não compara nada — numa tarefa que corre sozinha, seria a porta por onde uma
    truncatura passava a ser ancorada.
 
-   **A única excepção é rodar a chave do selador**, e pede-se com `-ChaveNova`: não passa
-   `--anterior` (os checkpoints antigos foram assinados pela chave antiga e **não** verificam contra
-   a nova — o selador recusaria com `ErrWormSealDivergencia`), auto-verifica o que acabou de produzir
-   selando outra vez contra ele, e **recusa `-Entregar`**, porque a âncora nova só vale junto com a
-   troca de `AOS_WORM_TRUST_ANCHOR` — ver «Rotação das chaves de autoridade». O script guarda a
-   pública do selador em `secrets-local/ancoras/selador.pub` e recusa selar se ela mudou sem
-   `-ChaveNova`: sem esse ficheiro, uma chave trocada aparecia como «o WORM DIVERGIU», que se lê como
-   adulteração quando é só a chave.
+   **E não tem excepção, nem sequer para rodar a chave do selador.** Essa primeira selagem faz-se
+   **à mão** — «Rotação das chaves de autoridade», passos (b) a (d) — e só depois do passo (g), com o
+   par novo em `secrets-local`, é que esta tarefa volta a correr. O script é a **cadência**, não a
+   rotação: um modo que selasse sem comparar com nada abriria, na tarefa automática, exactamente o
+   buraco que a continuidade fecha.
 
-   > ⚠️ **Entre o `-ChaveNova` e o passo (f) da rotação, suspenda a tarefa diária.** Depois da
-   > rotação local, a execução seguinte já passa na guarda (a chave bate com o `selador.pub` novo) e
-   > **entrega** — e o gate aceita, porque não verifica assinaturas. Com a `AOS_WORM_TRUST_ANCHOR`
-   > ainda antiga no `.env`, o nó abortaria no arranque seguinte. `Disable-ScheduledTask
-   > AOS-SelarWORM` antes, e `Enable-ScheduledTask` depois de a variável trocar.
+   **O script guarda a pública do selador em `secrets-local/ancoras/selador.pub`** e recusa selar se
+   ela mudou. Sem esse ficheiro, uma chave trocada aparecia como «o WORM DIVERGIU» — que se lê como
+   adulteração quando é só a chave; com ele, a recusa é **antes** de contactar o servidor e diz que
+   foi a chave que mudou, apontando para a rotação manual. É a mesma pública que vai na
+   `AOS_WORM_TRUST_ANCHOR`, e fica arquivada com o par a cada selagem.
+
+   > ⚠️ **Suspenda a tarefa diária durante uma rotação.** Antes do passo (g) ela recusa (a chave não
+   > bate com o `selador.pub` em vigor); depois de (g) ela sela **e entrega**, e o gate aceita porque
+   > não verifica assinaturas — com a `AOS_WORM_TRUST_ANCHOR` ainda antiga, o nó abortaria no
+   > arranque seguinte. `Disable-ScheduledTask AOS-SelarWORM` antes de começar,
+   > `Enable-ScheduledTask` depois de (f) e (g).
 
    **A entrega não reinicia o nó, nem precisa.** O nó só lê a âncora **no arranque**: o par entregue
    hoje passa a valer no próximo restart, e até lá o nó fica com o que carregou — o que continua
@@ -1472,6 +1484,12 @@ Nomeado, não escondido:
    > - a selagem recusa, **sem entregar nada**, um WORM truncado e um reescrito; sem checkpoints em
    >   vigor recusa **antes de contactar** o servidor; servidor inalcançável sai ≠ 0; o invólucro
    >   propaga o código e escreve-o no `ULTIMA.txt`;
+   > - **rotação da chave do selador, seis casos com estado determinístico:** a cadência com a chave
+   >   em vigor sela e entrega; a chave trocada com `selador.pub` presente é recusada **antes** de
+   >   contactar o servidor (zero leituras do WORM); sem `selador.pub` é o selador que acusa
+   >   (`DIVERGIU`) e a mensagem manda fazer a rotação à mão; sem checkpoints em vigor recusa antes do
+   >   servidor; a rotação manual — (b) a (d) mais (g) — devolve a cadência ao normal na execução
+   >   seguinte; e o `-ChaveNova` já não é um parâmetro do script;
    > - as flags do `docker run` correram no Docker real: o fluxo sai byte a byte igual, e outro uid
    >   leva `Permission denied` — é o `--user` que decide.
    >
