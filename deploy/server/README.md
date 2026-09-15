@@ -1149,7 +1149,7 @@ Nomeado, não escondido:
 
    | passo | o que faz | que chave usa |
    |---|---|---|
-   | exige | checkpoints **em vigor** locais (`--anterior`); sem eles **recusa**, antes de tocar no servidor | — |
+   | exige | checkpoints **em vigor** locais (`--anterior`) e que a chave do selador seja a da última selagem; sem isso **recusa**, antes de tocar no servidor | — |
    | traz | pedido `worm` ao gate: o `worm.wal` **vivo** em stdout, lido como o uid do nó, **sem cópia** no servidor | gate |
    | verifica | re-encadeia o store **antes** de assinar, e exige **continuidade** com a âncora em vigor | — |
    | sela | um checkpoint **por partição**; pisos em ficheiro separado | selador |
@@ -1162,7 +1162,22 @@ Nomeado, não escondido:
    **Continuidade obrigatória.** A chave do selador foi rodada a 2026-09-15 e a primeira selagem com
    ela já foi feita; desde então o `selar-worm.ps1` **recusa** selar sem checkpoints em vigor. Uma
    selagem sem anterior não compara nada — numa tarefa que corre sozinha, seria a porta por onde uma
-   truncatura passava a ser ancorada. A primeira selagem de uma rotação futura faz-se **à mão**.
+   truncatura passava a ser ancorada.
+
+   **A única excepção é rodar a chave do selador**, e pede-se com `-ChaveNova`: não passa
+   `--anterior` (os checkpoints antigos foram assinados pela chave antiga e **não** verificam contra
+   a nova — o selador recusaria com `ErrWormSealDivergencia`), auto-verifica o que acabou de produzir
+   selando outra vez contra ele, e **recusa `-Entregar`**, porque a âncora nova só vale junto com a
+   troca de `AOS_WORM_TRUST_ANCHOR` — ver «Rotação das chaves de autoridade». O script guarda a
+   pública do selador em `secrets-local/ancoras/selador.pub` e recusa selar se ela mudou sem
+   `-ChaveNova`: sem esse ficheiro, uma chave trocada aparecia como «o WORM DIVERGIU», que se lê como
+   adulteração quando é só a chave.
+
+   > ⚠️ **Entre o `-ChaveNova` e o passo (f) da rotação, suspenda a tarefa diária.** Depois da
+   > rotação local, a execução seguinte já passa na guarda (a chave bate com o `selador.pub` novo) e
+   > **entrega** — e o gate aceita, porque não verifica assinaturas. Com a `AOS_WORM_TRUST_ANCHOR`
+   > ainda antiga no `.env`, o nó abortaria no arranque seguinte. `Disable-ScheduledTask
+   > AOS-SelarWORM` antes, e `Enable-ScheduledTask` depois de a variável trocar.
 
    **A entrega não reinicia o nó, nem precisa.** O nó só lê a âncora **no arranque**: o par entregue
    hoje passa a valer no próximo restart, e até lá o nó fica com o que carregou — o que continua
