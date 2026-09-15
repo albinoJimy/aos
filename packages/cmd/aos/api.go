@@ -1499,12 +1499,24 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		g("aos_worm_partitions_anchored", "Particoes cobertas pela ancora assinada que passou no arranque. Comparada com aos_worm_partitions da a COBERTURA — que decai sozinha entre selagens, por desenho.",
 			"gauge", float64(len(a.Checkpoints)), "")
 
-		// IDADE — a série que deteta a tarefa de selagem morta, e a única que o faz.
+		// IDADE DA ÂNCORA EM USO — «o que é que ESTE PROCESSO está a ancorar?».
 		//
-		// O `Timestamp` do checkpoint É ASSINADO (entra no `canonicalCheckpoint`) e, até aqui,
-		// nunca era LIDO por ninguém. Uma âncora de há um ano verifica exactamente como a de
-		// ontem: a assinatura continua válida e o piso continua satisfeito. O que envelhece não
-		// é a validade — é a COBERTURA, e é isso que esta série torna alertável.
+		// O `Timestamp` do checkpoint É ASSINADO (entra no `canonicalCheckpoint`) e, até esta
+		// série existir, nunca era LIDO por ninguém. Uma âncora de há um ano verifica exactamente
+		// como a de ontem: a assinatura continua válida e o piso continua satisfeito. O que
+		// envelhece não é a validade — é a COBERTURA.
+		//
+		// ESTA SÉRIE NÃO ALERTA A MORTE DA SELAGEM, e durante um tempo o HELP afirmou que sim.
+		// A afirmação era falsa por uma razão estrutural: o nó lê `AOS_WORM_CHECKPOINT_FILE` UMA
+		// VEZ, no arranque, e a entrega diária substitui o ficheiro montado SEM reiniciar nada
+		// (por desenho — ver `deploy/server/selar-worm.ps1 -Entregar`). Logo, num nó que fique de
+		// pé, isto cresce 24 h por dia com a tarefa de selagem PERFEITAMENTE VIVA, e o limiar
+		// documentado (48 h) disparava dois dias depois do último arranque, sempre. Um alerta que
+		// grita num nó saudável deixa de ser lido no dia em que gritar a sério.
+		//
+		// O que esta série responde de verdade é a distância entre a cobertura VERIFICADA e o
+		// presente — e é útil: é ela que diz quanto do WORM está por re-encadear desde o selo que
+		// este processo validou. A morte da tarefa é a série ENTREGUE, abaixo.
 		//
 		// Usa-se o MAIS RECENTE: todos os checkpoints de uma selagem partilham o instante, e o
 		// mais recente é «quando foi a última vez que isto correu». O mais antigo responderia a
@@ -1516,8 +1528,61 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !ultimo.IsZero() {
-			g("aos_worm_anchor_age_seconds", "Segundos desde a ULTIMA selagem que produziu esta ancora. Com cadencia diaria, acima de 172800 (48h) a tarefa de selagem morreu — o dobro da cadencia, para que um dia falhado nao alerte e dois sim.",
+			g("aos_worm_anchor_age_seconds", "Segundos desde a selagem que produziu a ancora EM USO — a que foi VERIFICADA no arranque. NAO alerta a morte da selagem: o no le o ficheiro so no arranque e a entrega diaria nao reinicia nada, logo isto cresce 24h por dia com a tarefa viva. Mede quanto do WORM esta por re-encadear desde o selo verificado. Para a morte da tarefa ver aos_worm_anchor_delivered_age_seconds.",
 				"gauge", time.Since(ultimo).Seconds(), "")
+		}
+
+		// IDADE DA ÂNCORA ENTREGUE — «a tarefa de selagem correu?». É esta que se alerta.
+		//
+		// Lê o ficheiro MONTADO na altura da recolha, que é a mesma escolha, e pela mesma razão,
+		// que já se fez para `aos_worm_partitions`: um valor medido no boot e servido como gauge
+		// parece vivo e está congelado — e faz o contrário do que a métrica existe para fazer.
+		//
+		// NÃO É MATERIAL VERIFICADO, E O HELP DI-LO EM VOZ ALTA. Ninguém validou esta assinatura
+		// contra o trust-anchor nem este piso contra a cadeia: isso exige o store composto e
+		// acontece só no arranque, fail-closed. Quem escreve o ficheiro escolhe o `Timestamp`.
+		// Vale como sinal de VIDA de uma tarefa, NUNCA como prova de cobertura — confundir as
+		// duas seria trocar uma prova por um carimbo de data, que é exactamente a forma de falha
+		// que a verificação ancorada existe para fechar.
+		//
+		// AS DUAS JUNTAS DIZEM MAIS DO QUE CADA UMA: entregue baixa + em-uso alta é o estado
+		// NORMAL de um nó de pé (a entrega de hoje só entra em vigor no próximo arranque); as
+		// duas altas é a tarefa morta; entregue alta com em-uso baixa é um nó acabado de
+		// reiniciar sobre um ficheiro velho.
+		if a.CheckpointFile != "" && a.ExpectedHeadsFile != "" {
+			cps, err := lerParEntregue(a.CheckpointFile, a.ExpectedHeadsFile)
+			// ILEGÍVEL É UM FACTO ALERTÁVEL, e não a ausência silenciosa da idade. Lê-se O PAR
+			// (checkpoints + pisos) com a validação de FORMA do arranque, portanto `1` significa
+			// que o PRÓXIMO arranque abortaria — um nó que hoje serve bem e amanhã não levanta.
+			//
+			// A SÉRIE É ASSIMÉTRICA, E ISSO TEM DE SER DITO: `0` NÃO garante que o nó arranca. A
+			// assinatura contra o trust-anchor e a frescura contra a cadeia só são verificáveis
+			// com o store composto, o que aqui não existe. Prometer simetria seria repetir, nesta
+			// série, o erro que ela veio corrigir noutra.
+			g("aos_worm_anchor_delivered_unreadable", "1 = o PAR montado (checkpoints + pisos) nao le, nao parseia, ou falha a validacao de FORMA que o arranque faz (toda a particao com checkpoint tem de trazer piso > 0) — o proximo arranque ABORTA. ASSIMETRICA: 0 NAO garante arranque, porque a assinatura contra o trust-anchor e a frescura contra a cadeia so sao verificaveis com o store composto, no arranque. Sai so com a verificacao ancorada ligada.",
+				"gauge", b01(err != nil), "")
+			if err == nil {
+				var entregue time.Time
+				for _, cp := range cps {
+					if cp.Timestamp.After(entregue) {
+						entregue = cp.Timestamp
+					}
+				}
+				// Sem carimbo utilizável NÃO se emite. Um `0` aqui leria-se «acabado de selar»
+				// sobre um ficheiro que não diz quando foi selado — a mesma regra que impede as
+				// séries de âncora de saírem num nó sem âncora.
+				//
+				// PODE SAIR NEGATIVA, e NÃO se corrige isso aqui. O carimbo é do relógio de QUEM
+				// SELA (outra máquina), comparado com o relógio do nó: um desvio para o futuro dá
+				// idade negativa. Aparar para 0 leria-se «acabado de selar» e SILENCIARIA o
+				// alerta para sempre — a falha exacta que esta série existe para fechar, na sua
+				// forma mais perigosa. Um valor negativo é absurdo à vista e alertável; a regra
+				// de alerta é `> 172800 OU < 0`, e está no README.
+				if !entregue.IsZero() {
+					g("aos_worm_anchor_delivered_age_seconds", "Segundos desde a ULTIMA selagem presente no ficheiro MONTADO, relido a cada recolha. E A SERIE QUE DETETA A TAREFA DE SELAGEM MORTA: com cadencia diaria, acima de 172800 (48h) a tarefa morreu — o dobro da cadencia, para que um dia falhado nao alerte e dois sim. ALERTE `> 172800 OU < 0`: o carimbo vem do relogio de QUEM SELA, e um relogio adiantado da idade NEGATIVA que nunca cruza o limiar. NAO VERIFICADA: ninguem validou esta assinatura contra o trust-anchor nem o piso contra a cadeia (isso e o arranque, fail-closed). Sinal de VIDA da tarefa, nunca prova de cobertura.",
+						"gauge", time.Since(entregue).Seconds(), "")
+				}
+			}
 		}
 	}
 

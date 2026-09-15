@@ -85,7 +85,9 @@ func TestCoberturaDaAncoraSaiEmMetrics(t *testing.T) {
 	}
 	idade, ok := valorDe(t, corpo, "aos_worm_anchor_age_seconds")
 	if !ok {
-		t.Fatal("aos_worm_anchor_age_seconds AUSENTE — e a unica serie que deteta a tarefa de selagem morta")
+		// NÃO é esta que deteta a selagem morta — essa e a `delivered_age`, que rele o ficheiro
+		// montado (ver ancora_entregue_metricas_test.go). Esta mede o que o ARRANQUE verificou.
+		t.Fatal("aos_worm_anchor_age_seconds AUSENTE — e a cobertura que o arranque verificou")
 	}
 	// ~30h. Uma janela larga: o que importa e a ordem de grandeza, nao o segundo.
 	if idade < 29*3600 || idade > 31*3600 {

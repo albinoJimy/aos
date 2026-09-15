@@ -1559,7 +1559,17 @@ func parseWormAnchorFromEnv() (*WormAnchor, error) {
 			return nil, fmt.Errorf("%w: a particao %q tem checkpoint mas NAO tem piso de frescura", ErrBadWormExpectedHead, cp.Partition)
 		}
 	}
-	return &WormAnchor{Public: public, Checkpoints: cps, ExpectedHeads: heads}, nil
+	// OS CAMINHOS viajam com o material, e não só o conteúdo: o `/metrics` relê OS DOIS na altura
+	// da recolha para conseguir distinguir a âncora EM USO da âncora ENTREGUE. Os dois, e não só
+	// os checkpoints, porque é o PAR que o arranque valida. Ver [WormAnchor.CheckpointFile] e
+	// [WormAnchor.ExpectedHeadsFile].
+	return &WormAnchor{
+		Public:            public,
+		Checkpoints:       cps,
+		ExpectedHeads:     heads,
+		CheckpointFile:    rawFile,
+		ExpectedHeadsFile: rawHeads,
+	}, nil
 }
 
 // parseCheckpoints aceita o ARRAY que `aos-issuer worm-seal` emite e, por conveniência, também um
@@ -1575,6 +1585,88 @@ func parseCheckpoints(raw []byte) ([]audit.Checkpoint, error) {
 		return nil, fmt.Errorf("%w: %v", ErrBadWormCheckpoint, err)
 	}
 	return []audit.Checkpoint{um}, nil
+}
+
+// maxAncoraMontada é o TECTO de cada metade da âncora relida pelo `/metrics`.
+//
+// O arranque lê estes ficheiros UMA vez; a releitura acontece a CADA recolha, e `/metrics` vive
+// no `planoAberto` — anónimo e sem admission. Sem tecto, um caminho apontado a um ficheiro
+// enorme passaria a alocá-lo por pedido. É o molde de [maxCredencialMontada] (AOS-338, achado
+// B2). O WORM de produção tem ~108 partições (dezenas de KiB); 4 MiB ficam três ordens de
+// grandeza acima do real e continuam a caber num pedido.
+const maxAncoraMontada = 4 << 20
+
+// lerMontadoComTecto lê um ficheiro montado com tecto e SEM poder bloquear.
+//
+// O `Stat` VEM ANTES DO `Open`, e não é cerimónia: um caminho que aponte para um FIFO prende o
+// `Open` até alguém escrever do outro lado — e aqui isso seria uma goroutine e um descritor
+// presos POR RECOLHA, a pedido de quem quer que alcance a porta. O `Stat` não bloqueia, e um
+// ficheiro que não é regular é recusado antes de se lhe tocar.
+func lerMontadoComTecto(caminho string) ([]byte, error) {
+	info, err := os.Stat(caminho)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q nao e um ficheiro regular", caminho)
+	}
+	f, err := os.Open(caminho)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	// Um byte a mais de propósito, para distinguir «cabe» de «truncado» — [lerCredencialMontada].
+	raw, err := io.ReadAll(io.LimitReader(f, maxAncoraMontada+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxAncoraMontada {
+		return nil, fmt.Errorf("o ficheiro montado %q tem mais de %d bytes", caminho, maxAncoraMontada)
+	}
+	return raw, nil
+}
+
+// lerParEntregue lê O PAR MONTADO — checkpoints E pisos — e repete a validação de FORMA que o
+// arranque faz. Serve o `/metrics` (AOS-268/AOS-072), não a composição.
+//
+// O PAR, E NÃO SÓ OS CHECKPOINTS, e a primeira versão desta leitura errou precisamente aqui. O
+// arranque exige TAMBÉM que cada partição com checkpoint traga piso > 0
+// ([ErrBadWormExpectedHead]), e a entrega troca os dois ficheiros com dois `mv` CONSECUTIVOS
+// (`deploy/server/selar-worm.ps1`): o par incoerente — checkpoints novos, pisos velhos — é o modo
+// de falha MAIS PROVÁVEL desta operação, e uma releitura só-checkpoints declarava-o saudável
+// enquanto o arranque seguinte abortava.
+//
+// O QUE ISTO NÃO VERIFICA, E POR ISSO NÃO SE PROMETE: a ASSINATURA contra o trust-anchor e a
+// FRESCURA contra a cadeia ([audit.ErrCheckpointStale]) exigem o store composto, e isso só existe
+// no arranque. Daí a assimetria que o HELP declara: ilegível ⇒ o arranque abortaria; legível NÃO
+// garante que arranca.
+func lerParEntregue(caminhoCheckpoints, caminhoPisos string) ([]audit.Checkpoint, error) {
+	raw, err := lerMontadoComTecto(caminhoCheckpoints)
+	if err != nil {
+		return nil, err
+	}
+	cps, err := parseCheckpoints(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(cps) == 0 {
+		// O arranque recusa igualmente um ficheiro sem checkpoints; ver [parseWormAnchorFromEnv].
+		return nil, fmt.Errorf("%w: ficheiro sem checkpoints", ErrBadWormCheckpoint)
+	}
+	rawPisos, err := lerMontadoComTecto(caminhoPisos)
+	if err != nil {
+		return nil, err
+	}
+	var pisos map[string]uint64
+	if err := json.Unmarshal(semBOM(rawPisos), &pisos); err != nil {
+		return nil, fmt.Errorf("%w: pisos montados malformados: %v", ErrBadWormExpectedHead, err)
+	}
+	for _, cp := range cps {
+		if h, ok := pisos[cp.Partition]; !ok || h == 0 {
+			return nil, fmt.Errorf("%w: a particao %q tem checkpoint mas NAO tem piso de frescura", ErrBadWormExpectedHead, cp.Partition)
+		}
+	}
+	return cps, nil
 }
 
 // parseBoardRegions interpreta a config DEMO-GRADE do registo board→região (AOS-172, D7) na

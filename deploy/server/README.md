@@ -1445,8 +1445,7 @@ Nomeado, não escondido:
 
    O `deploy.sh` verifica-as antes de mexer no que corre (passo `0b/6`), e o nó verifica a âncora
    no arranque — **fail-closed por partição**. A partir daí o banner declara a cobertura com
-
-
+   número, em vez de dizer que a verificação ancorada está desligada.
 
 ### Onde as métricas vão parar — e o que isso NÃO dá
 
@@ -1506,26 +1505,77 @@ provado é que a métrica **lê** o campo, não que o varredor o **escreve**.
    a cobertura congela enquanto o WORM continua a crescer. Uma âncora de há um ano verifica
    exactamente como a de ontem.
 
-   Três séries em `/metrics` fecham isso:
+   Cinco séries em `/metrics` fecham isso:
 
-   | série | o que diz |
-   |---|---|
-   | `aos_worm_partitions` | partições que o WORM tem **agora** (lidas na altura da recolha, não no arranque) |
-   | `aos_worm_partitions_anchored` | partições cobertas pela âncora que passou no arranque |
-   | `aos_worm_anchor_age_seconds` | segundos desde a **última** selagem |
+   | série | o que diz | lida quando |
+   |---|---|---|
+   | `aos_worm_partitions` | partições que o WORM tem **agora** | na recolha |
+   | `aos_worm_partitions_anchored` | partições cobertas pela âncora que passou no arranque | no arranque |
+   | `aos_worm_anchor_age_seconds` | segundos desde a selagem que produziu a âncora **EM USO** (verificada) | no arranque |
+   | `aos_worm_anchor_delivered_age_seconds` | segundos desde a última selagem presente no **ficheiro montado** | na recolha |
+   | `aos_worm_anchor_delivered_unreadable` | `1` = o **par** montado (checkpoints **+ pisos**) não passa a validação de forma do arranque | na recolha |
 
-   **O alerta que interessa** é o terceiro: com cadência diária, `> 172800` (48 h) significa que a
-   tarefa de selagem morreu. É o dobro da cadência, pela mesma razão que o `pull-backups.ps1` usa
-   48 h — um dia falhado não alerta, dois sim.
+   **O alerta da selagem morta é `aos_worm_anchor_delivered_age_seconds > 172800 OU < 0`** (48 h). O
+   limiar é o dobro da cadência, pela mesma razão que o `pull-backups.ps1` usa 48 h — um dia
+   falhado não alerta, dois sim.
 
-   A razão do primeiro ser lido **na altura da recolha** e não no arranque: as partições nascem por
-   run, e um valor medido no boot e servido como *gauge* pareceria vivo estando congelado. Faria o
-   contrário do que a métrica existe para fazer.
+   **O `< 0` não é defensivo, é o buraco por onde o alerta se cala.** O carimbo vem do relógio de
+   **quem sela** (a máquina que corre a tarefa), comparado com o relógio do nó. Um relógio
+   adiantado — fuso mal configurado, *skew*, ou quem tenha escrita no volume — dá idade
+   **negativa**, que nunca cruza `172800`. O nó **não apara** o valor para `0` de propósito: `0`
+   leria-se «acabado de selar» e seria indistinguível de saúde. Negativo é absurdo à vista.
 
-   **Sem âncora composta, as duas séries de âncora NÃO saem.** Emitir `anchored 0` e `age 0` faria
+   **E NÃO É o `aos_worm_anchor_age_seconds`, apesar de o ser até 2026-09-15.** O nó lê
+   `AOS_WORM_CHECKPOINT_FILE` **uma vez, no arranque**, e a entrega diária substitui o ficheiro
+   **sem reiniciar nada** — por desenho (§"A tarefa diária"). Logo, num nó que fique de pé, a idade
+   da âncora em uso cresce **24 h por dia com a tarefa de selagem viva**, e o alerta disparava dois
+   dias depois do último arranque, sempre. Um alerta que grita num nó saudável deixa de ser lido no
+   dia em que gritar a sério. A série continua a existir, com a pergunta a que responde de verdade:
+   **quanto do WORM está por re-encadear desde o selo que este processo verificou**.
+
+   **As duas idades juntas dizem mais do que cada uma:**
+
+   | entregue | em uso | leitura |
+   |---|---|---|
+   | baixa | alta | **normal** num nó de pé — a entrega de hoje só entra em vigor no próximo arranque |
+   | alta | alta | **a tarefa de selagem morreu** |
+   | alta | baixa | nó acabado de reiniciar sobre um ficheiro **velho** — a selagem está parada há mais tempo do que o processo |
+
+   **A série entregue NÃO é verificada, e o `HELP` di-lo.** Ninguém validou aquela assinatura contra
+   o *trust-anchor* nem aquele piso contra a cadeia: isso exige o store composto e acontece **só no
+   arranque**, fail-closed. Quem escreve o ficheiro escolhe o `Timestamp`. Vale como sinal de **vida
+   de uma tarefa**, nunca como prova de cobertura — confundir as duas seria trocar uma prova por um
+   carimbo de data, que é a forma de falha que a verificação ancorada existe para fechar.
+
+   **`delivered_unreadable 1` é um arranque abortado anunciado com antecedência.** A leitura relê o
+   **par** — checkpoints **e** pisos — e repete a validação de **forma** que o arranque faz,
+   incluindo a que decide: *toda a partição com checkpoint tem de trazer piso > 0*. Sem esta série,
+   um par partido e uma âncora desligada seriam o mesmo silêncio, e a diferença só aparecia num
+   restart que já não volta.
+
+   **Lê-se o par, e não só os checkpoints, por causa da própria entrega.** Ela troca os dois
+   ficheiros com **dois `mv` consecutivos** (§"Porque a entrega é atómica e não ordenada"): entre
+   eles — e **permanentemente** se o segundo falhar, caso em que o script avisa «o par pode estar
+   incoerente» e termina — os checkpoints são novos e os pisos velhos, uma partição nova fica com
+   checkpoint e **sem piso**, e o nó deixa de arrancar. Uma releitura só-checkpoints dava isso por
+   saudável. **Corolário para quem escrever a regra:** alerte com **janela sustentada**, porque a
+   troca legítima atravessa esse estado durante alguns milissegundos por dia.
+
+   ⚠️ **A série é ASSIMÉTRICA, e prometer o contrário seria repetir aqui o erro que ela corrige
+   noutra:** `1` ⇒ o arranque abortaria; **`0` NÃO garante que o nó arranca**. A assinatura contra
+   o *trust-anchor* e a frescura contra a cadeia (`ErrCheckpointStale`) exigem o store composto, e
+   isso só existe no arranque. Um par bem-formado mas assinado por outra chave, ou abaixo do piso,
+   lê `0` aqui e aborta lá.
+
+   A razão de as três séries de recolha serem lidas **na altura da recolha** e não no arranque: um
+   valor medido no boot e servido como *gauge* parece vivo estando congelado. Faria o contrário do
+   que a métrica existe para fazer — que foi, à letra, o defeito do `anchor_age`.
+
+   **Sem âncora composta, as séries de âncora NÃO saem** — e sem caminho montado (âncora injectada
+   em processo) as duas de entrega também não. Emitir `anchored 0`, `age 0` ou `unreadable 0` faria
    um nó desprotegido parecer um nó acabado de selar — pior do que não emitir nada. É a mesma regra
    das séries de OTLP.
-   número, em vez de dizer que a verificação ancorada está desligada.
+
 9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
    o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
    tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de

@@ -386,7 +386,9 @@ try {
             throw "a troca no servidor falhou — o par pode estar incoerente. Corra isto outra vez"
         }
         Bom "ancora entregue (checkpoints e pisos trocados lado a lado)"
-        Nota "o no so a LE no arranque; nada muda ate ao proximo restart"
+        Nota "o no so USA a ancora a partir do arranque; nada muda ate ao proximo restart"
+        Nota "mas a ENTREGA e visivel ja: /metrics traz aos_worm_anchor_delivered_age_seconds"
+        Nota "(relido a cada recolha, NAO verificado); e por ai que se ve se esta tarefa morreu"
     }
 }
 finally {
