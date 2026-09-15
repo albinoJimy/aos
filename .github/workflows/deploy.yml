@@ -149,6 +149,7 @@ jobs:
             deploy/server/sync-tls.sh \
             deploy/server/provision-identity.sh \
             deploy/server/backup.sh \
+            deploy/server/alerta-ancora.sh \
             deploy/server/backup-pull-gate.sh \
             deploy/server/worm-seal-gate.sh \
             deploy/server/restore-drill.sh \
