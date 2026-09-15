@@ -50,6 +50,8 @@ O epic vive maioritariamente na **Fase 2** (governação e observabilidade — i
 | AOS-061 | Cache-hit-rate como SLI | feature | S | P1 | AOS-060, EPIC-08 (observabilidade) |
 | AOS-062 | Contabilidade de custo por chamada (USD) | feature | M | P1 | AOS-055, EPIC-08 (observabilidade) |
 | AOS-063 | Testes de roteamento/failover | chore | M | P1 | AOS-058, AOS-059 |
+| AOS-394 | Selos de governação do Model Gateway ligados ao run e ao passo | fix | M | P1 | AOS-265, AOS-278 |
+| AOS-395 | aos-orq: selos de governação do gateway do planeador duráveis e ligados ao run | fix | M | P2 | AOS-394, AOS-391 |
 
 ---
 
@@ -676,6 +678,92 @@ Cobre os cenários de risco de tecnica/06 §9. Integra a suite como gate de CI. 
 
 ---
 
+## AOS-394 — Selos de governação do Model Gateway ligados ao run e ao passo
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-265 (audit de governação do GW durável), AOS-278 (principal por ctx) — ambos fechados |
+| Bloqueia | AOS-395 |
+| Fecha | O critério residual de AOS-264 «o pipeline do GW passa `WithRun`» (a parte do principal foi fechada por AOS-278) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/platform/model-gateway/runtime_adapter.go`, `packages/platform/model-gateway/policy/allowlist/stage.go` e `audit.go`, `packages/platform/model-gateway/routing/failover/failover.go`, `packages/platform/model-gateway/production_routing.go`, `packages/platform/model-gateway/port/port.go`, `packages/cmd/aos/modelgatewaywiring.go`, `tecnica/06_Model_Gateway_Custos.md` |
+
+### Contexto
+
+Medido em produção a 2026-09-15 no run `run-delegado-1789509858` (roteiro E2E manual, PR #299): o gateway selou as 6 chamadas ao modelo em `modelgw-gov:board-eu` (`AuditSeq` 96–101, `model:invoke`, `allow`, principal `agt-e2e-19` com a cadeia até ao humano), mas **todos os selos têm `RunID`, `StepID`, `RequestID` e `ParentStepID` vazios**. O run de 14 de Setembro (`run-delegado-1789394468`, 4 selos) tem a mesma lacuna. A ligação chamada ao modelo ↔ run só se reconstrói pelo NHI do agente e pela hora; com dois runs do mesmo agente em paralelo a atribuição fica ambígua, contra a trajectória correlacionável que o ADR-010 pede.
+
+A discovery encontrou três causas que se somam:
+
+1. **O nó não entrega o run ao gateway.** O `ModelClientAdapter` só preenche `ChatRequest.RunID` a partir de um valor fixado na construção (`WithRun`, `runtime_adapter.go:79-81`, usado em `:112`). O nó não o liga de propósito (`cmd/aos/modelgatewaywiring.go:296-299`): o adaptador é construído uma vez por nó e um run de construção agregaria todos os runs no mesmo balde. O comentário remete a amarra por run para o AOS-265, que fechou sem a entregar ao GW.
+2. **Mesmo com run, o selo não o copia.** `allowlist.GovRecord` tem `RunID`/`StepID` e o `Seal` copia-os, mas os três sítios que constroem o registo não os preenchem: `allowlist.(*Stage).record` (`stage.go:151-165`), `failover.(*Stage).sealCrossBorderDeny` (`failover.go:229-243`) e `modelSwapRecorder.Process` (`production_routing.go:506-519`).
+3. **O passo não tem onde viajar.** Nem `port.ChatRequest` nem `pipeline.Exchange` têm `StepID`; o `PromptView` que atravessa a porta `ModelClient.Call(ctx, PromptView)` só leva o turno e os hashes.
+
+O `run_id` e o `step_id` existem no ponto da chamada: `Runtime.callModel` recebe-os e põe-nos no span `chat` antes de chamar o modelo.
+
+### Objectivo
+
+Cada selo de governação do gateway escrito durante um run identifica o run e o passo que o originaram, em todos os veredictos (allow, deny de allowlist, deny cross-border, troca de modelo), sem fixar o run na construção do adaptador.
+
+### Critérios de Aceitação
+
+- [ ] O `RunID` e o `StepID` do turno chegam ao gateway **por chamada** — pelo ctx, à imagem de `WithPrincipalFromContext`, ou pela porta — e nunca fixados na construção do adaptador. A escolha fica registada neste ticket.
+- [ ] `port.ChatRequest`, `port.EmbeddingsRequest` e `pipeline.Exchange` transportam `StepID` como metadado de plataforma (`json:"-"`, nunca no wire do provider).
+- [ ] Os três construtores de `allowlist.GovRecord` copiam `RunID` e `StepID` do `Exchange`.
+- [ ] Teste que falha antes da correcção, pela cadeia real do nó (molde de `TestGatewayModelClient_EndToEnd`): uma chamada de turno sela em `modelgw-gov:<board>` com `RunID` igual ao run e `StepID` igual ao passo do turno; o deny de allowlist e o deny cross-border também.
+- [ ] Chamada sem run no ctx: o comportamento é decidido e testado. O selo de governação continua a ser escrito (a governação não depende da correlação) e a ausência fica visível, nunca preenchida com um valor inventado.
+- [ ] Os consumidores que já leem `ex.RunID` (cache-hit-rate por run, atribuição e custo por run) passam a receber o run real no nó, sem regressão nos seus testes.
+- [ ] O comentário de `cmd/aos/modelgatewaywiring.go` que remete a amarra por run para o AOS-265 é corrigido, e o critério residual de AOS-264 é marcado com a evidência deste ticket.
+- [ ] Evidência de sistema: um run real (nó composto com gateway, ou produção) deixa no `model-audit.wal` um selo por turno com `RunID` e `StepID` preenchidos. É o ponto «Selo do gateway ligado ao run» do roteiro E2E.
+- [ ] `tecnica/06_Model_Gateway_Custos.md` descreve os campos do selo de governação e a correlação por run e passo.
+
+### Estado
+
+**ABERTO.** Criado a 2026-09-15 a partir do achado do E2E em produção; discovery read-only feita, nenhuma alteração de código.
+
+---
+
+## AOS-395 — aos-orq: selos de governação do gateway do planeador duráveis e ligados ao run
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-394 (transporte de run e passo até ao selo), AOS-391 (gateway composto no aos-orq) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/model_gateway_wiring.go`, `packages/control-plane/orchestrator/decompose/decompose.go`, `packages/control-plane/orchestrator/planner/planner.go`, `packages/cmd/aos-orq/aos391_gateway_test.go` |
+
+### Contexto
+
+O mesmo defeito do AOS-394 repete-se no caminho `--goal` do `aos-orq`, com um agravante. `gatewayDecomposeModel.Complete` (`model_gateway_wiring.go`) envia o `port.ChatRequest` sem `RunID`, e a porta `decompose.Model.Complete(ctx, system, user)` (`decompose.go:40`) nem sequer recebe o run, embora `planner.runAttempt` o tenha. O agravante: o gateway do planeador é composto com `Audit: audit.NewMemStore()` (`model_gateway_wiring.go:185`), pelo que os selos `modelgw-gov:*` das chamadas de decomposição **perdem-se no fim do processo** — não há rasto durável de que modelo o planeador invocou, sob que principal e com que veredicto.
+
+### Objectivo
+
+As chamadas de decomposição do planeador deixam selos de governação duráveis, ligados ao run e à tentativa de planeamento que as originou.
+
+### Critérios de Aceitação
+
+- [ ] Os selos `modelgw-gov:*` do planeador são escritos num WORM durável (configuração à imagem de `AOS_MODEL_AUDIT_PATH` no nó) e o modo fica declarado no arranque; sem store durável, a postura volátil é declarada, nunca silenciosa.
+- [ ] A chamada de decomposição leva o `RunID` do run e um `StepID` estável da tentativa de planeamento, pelo mesmo mecanismo escolhido no AOS-394.
+- [ ] Teste por processo real (molde de `aos391_gateway_test.go`, com gateway falso): `serve --goal` sela com `RunID` igual a `--run` e o `StepID` da tentativa, e o selo é relido do ficheiro depois de o processo terminar.
+- [ ] Fail-closed preservado: falha a selar ⇒ a decomposição não prossegue; nenhum nó é materializado.
+
+### Estado
+
+**ABERTO.** Criado a 2026-09-15 junto com o AOS-394; discovery read-only feita, nenhuma alteração de código.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -689,3 +777,4 @@ Cobre os cenários de risco de tecnica/06 §9. Integra a suite como gate de CI. 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-09-15 | AOS-394 e AOS-395: selos de governação do gateway sem run nem passo (achado do E2E em produção) | Equipa AOS |
