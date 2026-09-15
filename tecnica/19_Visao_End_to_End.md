@@ -53,6 +53,7 @@ Vocabulário canónico reutilizado em todo o documento:
 | **ADR-012** | SemVer + eval-gate para auto-modificação | Fluxo F2E-05 |
 | **ADR-013** | Gates de risco SA-ROC + controlo bidireccional | Processo P-04 e fluxo F2E-03 |
 | **ADR-014** | Taxonomia de autonomia L0–L5 | Camada de negócio «Governar por política» e processo P-04 |
+| **ADR-025** | Fiabilidade medida e controlador de autonomia | Processo P-04 (promoção automática abaixo de L4, demoção por anomalia) e §9.1 |
 
 ---
 
@@ -330,7 +331,7 @@ A escala L0–L5 (ADR-014) com semântica normativa:
 | L4 | Autonomia por excepção | Só escala em incerteza/risco alto; *danger* deixa de exigir confirmação sistemática ⇒ **cerimónia de dual-control** para subir |
 | L5 | Autonomia plena por domínio | Oversight amostral e post-hoc |
 
-Regras: nível é propriedade do **par (agente, domínio)**; promoção **monótona, um nível de cada vez, opt-in explícito do humano** (o sistema propõe, nunca impõe) com métrica sustentada (referência: erro < 2% ao longo de 30 dias, override-rate baixo); o overlay `nível × classe` compõe-se no PDP e **só aperta** (permit→escalate, nunca deny→permit); subir a L4/L5 exige `autonomy:set` com **duas assinaturas** de emissores distintos; piso `AOS_AUTONOMY_DEFAULT >= L4` é recusado no arranque.
+Regras: nível é propriedade do **par (agente, domínio)**; promoção **monótona, um nível de cada vez**, com métrica sustentada (referência: erro < 2% ao longo de 30 dias, override-rate baixo). Abaixo de L4 a promoção é **automática** (ADR-025), aplicada em memória e revertida à base assinada no reinício; tornar uma promoção durável continua a ser decisão de provisionamento assinada. A **demoção** por anomalia é automática, imediata, durável e por classe; o overlay `nível × classe` compõe-se no PDP e **só aperta** (permit→escalate, nunca deny→permit); subir a L4/L5 exige `autonomy:set` com **duas assinaturas** de emissores distintos; piso `AOS_AUTONOMY_DEFAULT >= L4` é recusado no arranque.
 
 **Sub-processos:** S-04a gate SA-ROC (safe/gray/danger por efeito irreversível ou egress externo; card com efeito resolvido; anti-fadiga: safe sem card, gray em lote expansível, danger individual em destaque com atrito assimétrico); S-04b steer (F2E-03a); S-04c promoção/demoção de nível.
 
@@ -387,7 +388,15 @@ Números normativos citados e os seus documentos: mediação p95 < 15 ms; resumo
 
 ## 9. Dívidas e estados não compostos (não citar como controlos vigentes)
 
-1. **Autonomia automática (DEF-908):** o `autonomy.Controller` (promoção/demoção automáticas por métrica) não está composto — a demoção automática não vigora; mudança de nível é decisão de provisionamento assinada. Fórmula do override-rate não tem limiar numérico fixado.
+1. **Autonomia automática (DEF-908, fechado-residual por AOS-090/ADR-025):** o `autonomy.Controller` está composto no nó.
+   - **Vigora:** a **demoção** por anomalia. Cada trip do disjuntor multi-sinal (AOS-080) demove a **classe** dos pares (classe, domínio) que o run tocou, de forma imediata e durável, sem gate humano (ADR-014).
+   - **Vigora com limites:** a **promoção** por fiabilidade medida (desfecho pós-efeito `tool.call.outcome` e override-rate). Só actua **abaixo de L4**; L4/L5 continuam a exigir a cerimónia assinada de dual-control (AOS-305/AOS-377).
+   - **Residuais, a não citar como controlos vigentes:**
+     - a promoção automática aplica-se em memória e **não sobrevive a reinício**: o par volta ao último nível assinado;
+     - o override-rate é medido por proxy de escalada;
+     - os sinais de drift e de override-spike não têm fontes compostas;
+     - a agregação sobre histórico está por fazer;
+     - a fórmula do override-rate não tem limiar numérico fixado nos documentos-fonte.
 2. **Backup imutável em produção:** o exportador existe mas sem backend durável para a porta `ImmutableStore`; o RPO real de produção hoje é o do `backup.sh` diário (24 h). Os valores RPO ≤ 1 min / RTO ≤ 30 min são proposta a validar por game days.
 3. **Cifra por titular do payload do ES:** o `payload` do Event Store fica em claro (dívida AOS-093; mitigado no audit com crypto-shredding, e a referência de `replay.captured` é digest não-reversível).
 4. **Matriz RBAC formal** (papéis × permissões): não existe documentada; o modelo de autorização é cadeia NHI + política, os papéis de §5 são operacionais implícitos.
