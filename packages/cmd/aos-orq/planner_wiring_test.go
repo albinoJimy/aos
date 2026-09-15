@@ -133,6 +133,62 @@ func TestAOS393_GoalExpansaoSpawnaPapel(t *testing.T) {
 	}
 }
 
+// TestE2E_ArestasDoPlanoDuraveisNoGrafo: as dependências do plano aprovado ficam no grafo
+// DURÁVEL, e não só no documento em memória do processo que materializou.
+//
+// Reproduz o E2E manual de 2026-09-15: com `planoFixtureExpansao` (`analise` depende de
+// `recolha`) o `serve` despachava só `recolha` — a dependência existia EM MEMÓRIA — mas o
+// log ficava sem nenhum `task.edge.added`, e o `inspect` (um processo que só tem o log)
+// ordenava `analise,recolha`. É o grafo que um dono seguinte re-hidrata. Cobre as duas
+// vias que materializam: `--goal` e `--plan-doc`.
+func TestE2E_ArestasDoPlanoDuraveisNoGrafo(t *testing.T) {
+	bin := construir(t)
+	casos := []struct {
+		nome string
+		args func(snap, doc string) []string
+	}{
+		{"goal", func(snap, doc string) []string {
+			return []string{"--goal", "recolher e analisar dados", "--snapshot", snap, "--decompose-fixture", doc}
+		}},
+		{"plan-doc", func(snap, doc string) []string {
+			return []string{"--plan-doc", doc, "--snapshot", snap}
+		}},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			dir := t.TempDir()
+			snapPath := filepath.Join(dir, "snap.json")
+			escrever(t, snapPath, snapshotDuasTools)
+			docPath := filepath.Join(dir, "plano.json")
+			escrever(t, docPath, planoFixtureExpansao)
+			wal := filepath.Join(dir, "es.wal")
+
+			args := append([]string{"serve", "--wal", wal, "--run", "run-arestas", "--worker", "p1", "--release"}, c.args(snapPath, docPath)...)
+			r := correr(t, bin, args...)
+			if r.code != exitOK {
+				t.Fatalf("serve saiu %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+			}
+			if !strings.Contains(r.stdout, "nos=2") {
+				t.Fatalf("o plano não materializou os 2 nós:\n%s", r.stdout)
+			}
+
+			insp := correr(t, bin, "inspect", "--wal", wal, "--run", "run-arestas")
+			if insp.code != exitOK {
+				t.Fatalf("inspect saiu %d\nstderr:\n%s", insp.code, insp.stderr)
+			}
+			if !strings.Contains(insp.stdout, "ordem=recolha,analise") {
+				t.Fatalf("o grafo durável não tem a dependência analise←recolha (esperava ordem=recolha,analise):\n%s", insp.stdout)
+			}
+
+			// Um segundo dono re-hidrata o MESMO grafo, com a aresta: o replay aceita-o.
+			r2 := correr(t, bin, "serve", "--wal", wal, "--run", "run-arestas", "--worker", "p2", "--release")
+			if r2.code != exitOK || !strings.Contains(r2.stdout, "grafo re-hidratado: nos=2") {
+				t.Fatalf("o segundo dono não re-hidratou o grafo (saiu %d)\nstdout:\n%s\nstderr:\n%s", r2.code, r2.stdout, r2.stderr)
+			}
+		})
+	}
+}
+
 // TestAOS388_GoalFailClosed: as três recusas fail-closed do --goal.
 func TestAOS388_GoalFailClosed(t *testing.T) {
 	bin := construir(t)
