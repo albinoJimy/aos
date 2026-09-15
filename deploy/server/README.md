@@ -99,6 +99,7 @@ propósito: o IdP não precisa de ser confiável pelo mundo, só pelo nó e pelo
 | Segredo do `aos-reader` | Keycloak (no servidor) | `secrets/reader-client-secret` (0400) | Credencial de máquina, gerada pelo IdP. Nunca escolhida por ninguém. |
 | Token do Vault | Vault (no servidor) | `secrets/vault-token` | **Não é o root.** Token periódico com política só sobre `aos-kek-*`. O root fica em `secrets/vault-init.json`. |
 | Unseal do Vault | Vault (no servidor) | `secrets/vault-init.json` | Ver §"O selo do Vault" — está aqui por decisão declarada, e limita o que o selo protege. |
+| `wormseal.key` (selador do WORM) | máquina do operador | **máquina do operador** | Assina os checkpoints da verificação ancorada; o nó só recebe a pública, em `AOS_WORM_TRUST_ANCHOR`. Quem a detivesse dava uma âncora válida a uma cadeia reescrita. Rodá-la: §"Rotação das chaves de autoridade". |
 | Chave de release (DSSE) | custódia do Arquitecto de Plataforma | secret `AOS_RELEASE_KEY` | Ver [`../node/CUSTODIA-CHAVE-RELEASE.md`](../node/CUSTODIA-CHAVE-RELEASE.md). |
 
 O servidor, portanto, **não guarda nenhuma credencial que conceda autoridade sobre o sistema**.
@@ -734,6 +735,221 @@ A distinção importa: um service account colapsa "quem lê" numa identidade de 
 **por-leitor** — que é o argumento de todo o mecanismo — só é real quando existirem identidades
 humanas distintas. **Já existem:** o WORM tem, na mesma cadeia, leituras do service account e uma
 de um humano com o seu próprio `sub` (ver §"O que continua por fechar", ponto 7).
+
+---
+
+## Rotação das chaves de autoridade
+
+A 2026-09-15 perderam-se as privadas do operador (`ops:prod`), do ratificador (`release:prod`), dos
+aprovadores (`human:alice`, `human:bob`) e do selador do WORM (`wormseal.key`), e foram rodadas em
+produção. Não havia procedimento escrito. Esta secção descreve o que funcionou nessa rotação e o
+que ficou verificado. A `issuer.key` fica de fora: substituí-la invalida todas as credenciais em
+circulação (§0), e isso é outra operação.
+
+As duas famílias rodam de formas diferentes, por razão estrutural. Operador, ratificador e
+aprovadores são **listas** de pubkeys indexadas por id: troca-se a pubkey e mantém-se o id. O
+selador é **uma** pubkey, e tudo o que ele assinou tem de mudar com ela.
+
+### Operador, ratificador e aprovadores
+
+1. **Gerar as seeds novas** na máquina do operador, com `bash deploy/server/gen-identity.sh`. O
+   script **só cria seeds em falta**: `gen_seed` não toca num ficheiro não-vazio. Para rodar uma
+   seed que ainda existe, arquiva-a primeiro fora de `secrets-local/`. O mesmo script tem duas
+   armadilhas:
+   - o `server.env` que escreve é um **modelo de instalação**: traz `AOS_MODE=` vazio e nenhuma das
+     portas de produção. **Não** o copies por cima do `/opt/aos/.env`;
+   - o passo 1/5 corre `aos-issuer pubkey --key-file issuer.key`, que **cria** a seed se ela não
+     existir. Confirma que `secrets-local/issuer.key` está presente antes de correr o script. Sem
+     ela nasce um issuer novo em silêncio, e a `AOS_ISSUER_PUBKEY` do `server.env` deixa de bater
+     com a do servidor.
+2. **Trocar só as linhas `AOS_OPERATORS` e `AOS_RATIFIERS`** do `/opt/aos/.env`, com os **mesmos
+   ids**. Outras variáveis referem esses ids (`AOS_AUTONOMY_SETTERS`, `AOS_DSAR_ERASERS`), e um id
+   que deixe de constar de `AOS_OPERATORS` aborta o arranque.
+3. **Trocar o `secrets/approvers.json`**, com os **mesmos principais e as mesmas autoridades** que o
+   servidor já tinha. Confirma-as antes de trocar: o ficheiro do `gen-identity.sh` traz as
+   autoridades da instalação, que não são necessariamente as de produção.
+4. **Redeploy.** A mudança no `.env` recria o serviço `aos`, e é essa recriação que faz o nó reler
+   as pubkeys e o `approvers.json` montado.
+
+**O parse é fail-closed, e isso decide a forma da troca.** Não há janela em que a chave antiga e a
+nova valham ao mesmo tempo:
+
+- o mesmo id com duas chaves em `AOS_OPERATORS` ou `AOS_RATIFIERS` aborta o arranque (`ErrBadOperators`
+  / `ErrBadRatifiers`, «o último NÃO ganha»). A mesma pubkey em dois ids também aborta;
+- no `approvers.json` abortam um principal duplicado, uma pubkey repetida entre principais e um
+  campo a mais (§"Os ficheiros JSON montados não toleram um único campo a mais").
+
+**O que a rotação não parte:**
+
+- **Nada reverifica assinaturas antigas no arranque.** Os `steer`/`pause`, as revogações, as
+  destruições DSAR, as aprovações e as ratificações já seladas ficam como evidência do que foi
+  assinado na altura. O nó não as confronta com as pubkeys novas, e o arranque não depende delas.
+- **As ADRs não são assinadas.** O ratificador só serve `POST /promote`.
+
+**A excepção, que tem efeito visível: a autonomia reidratada.** No arranque, a reidratação
+([`autonomy_rehydrate.go`](../../packages/cmd/aos/autonomy_rehydrate.go)) **verifica** cada
+`autonomy.level_changed` de operador contra as pubkeys de **agora**. Um registo assinado pela chave
+antiga deixa de verificar e é **saltado**: nunca é aplicado e o arranque não aborta. O banner
+declara-o com o seq, e o par volta ao nível de `AOS_AUTONOMY_LEVELS` (ou ao piso). Nenhum nível
+sobe por causa disto. Mas uma elevação que um operador tenha assinado por `POST /autonomy` com a
+chave antiga **perde-se** no primeiro arranque depois da rotação. Lê o banner e reassina com a
+chave nova as elevações que devem manter-se. Na rotação de 2026-09-15 isto não teve efeito:
+`AOS_AUTONOMY_SETTERS` está vazio em produção, e sem ele nenhum registo de operador reidrata.
+
+**A prova usada**, para a chave de operador: um `pause` sobre um run **já terminado**, que autentica
+a chave sem mexer em trabalho vivo.
+
+```bash
+aos pause --addr https://aos.elysiumii.site:8444 --run-id <run terminado> --emitter ops:prod --key <seed>
+```
+
+Com uma seed **errada** (aleatória, porque a antiga estava perdida) o nó responde `403`; com a
+**nova**, o pedido é aceite. Esta prova cobre só a chave de operador. Para o ratificador e os
+aprovadores, confirmou-se que as pubkeys derivadas das seeds novas são iguais às que o servidor
+carrega. Nenhum dos dois foi exercitado ao vivo.
+
+### Selador do WORM
+
+**Só existe uma `AOS_WORM_TRUST_ANCHOR`.** O nó verifica todos os checkpoints contra essa pubkey, e
+por isso não há sobreposição possível. Com os checkpoints da chave nova e a variável antiga, o nó
+aborta o arranque; com os checkpoints antigos e a variável nova, também. **Checkpoints, pisos e
+variável mudam juntos.**
+
+**(a) Criar a seed nova.** Em `packages/cmd/aos-issuer`, `go run . pubkey --key-file <novo>` cria a
+seed se ela não existir e imprime a pública em hex. É essa pública que vai para a variável.
+
+**(b) Trazer o `worm.wal` vivo sem deixar cópia no servidor.** Corre isto em Git Bash e não em
+PowerShell: o `>` do PowerShell 5.1 regrava a saída em UTF-16 e estraga o binário.
+
+```bash
+ssh -i <chave-ssh> aos@37.60.241.150 'docker run --rm -v aos_aos-data:/aos:ro alpine:3.20 cat /aos/worm.wal' > worm.wal
+```
+
+```bash
+N=$(stat -c %s worm.wal); sha256sum worm.wal
+```
+
+```bash
+ssh -i <chave-ssh> aos@37.60.241.150 "docker run --rm -v aos_aos-data:/aos:ro alpine:3.20 sh -c 'head -c $N /aos/worm.wal | sha256sum'"
+```
+
+Os dois hashes têm de coincidir. O nó continua a escrever enquanto se copia, pelo que o ficheiro
+local é um **prefixo** do vivo. Por isso se compara o prefixo de `N` bytes e não o ficheiro inteiro.
+O `worm.wal` é dado de produção: fica fora do repositório e apaga-se no fim.
+
+**(c) Selar sem `--anterior`.**
+
+```bash
+go run . worm-seal --worm worm.wal --key-file wormseal.key > checkpoints.json
+```
+
+```bash
+go run . worm-seal --worm worm.wal --key-file wormseal.key --heads > heads.json
+```
+
+⚠️ **Sem `--anterior`, e esta é a armadilha da rotação.** O `--anterior` é verificado contra a
+pubkey da chave **que sela agora**. Os checkpoints anteriores foram assinados pela chave antiga, não
+verificam contra a nova, e o selador recusa com `ErrWormSealDivergencia`: «o WORM DIVERGIU», a mesma
+mensagem que significaria uma história reescrita. O `selar-worm.ps1` passava o `--anterior` sozinho
+sempre que havia um `checkpoints.json` na sua pasta. Hoje tem o switch `-ChaveNova`, que não o
+passa e recusa `-Entregar`. A partir de agora o script também grava `selador.pub` ao lado dos
+checkpoints e recusa selar se a chave mudou sem `-ChaveNova`.
+
+**(d) Auto-verificação local.** Sela outra vez, agora **com** `--anterior` apontado aos checkpoints
+acabados de gerar. Tem de sair com código 0.
+
+```bash
+go run . worm-seal --worm worm.wal --key-file wormseal.key --anterior checkpoints.json > /dev/null
+```
+
+Os passos (b) a (d) também se fazem com
+`selar-worm.ps1 -PorSSH -ChaveNova -ChaveSSH <chave-ssh>`, que escreve em
+`secrets-local/ancoras` e `secrets-local/pisos`, arquiva a selagem anterior (checkpoints, pisos e
+`selador.pub`) e recusa `-Entregar`. Desde que a selagem diária passou pelo gate
+(`worm-seal-gate.sh`, §8), o transporte do `-PorSSH` é o **mesmo fluxo** do (b) — o verbo `worm`,
+que não deixa cópia no servidor — e não o `cp` + `scp` que aqui esteve descrito. Com a chave do
+gate, o próprio (b) faz-se sem shell nenhuma:
+
+```bash
+ssh -i <chave-do-gate> aos@37.60.241.150 worm > worm.wal
+```
+
+**Este caminho foi ensaiado contra um `sshd` descartável (7 casos de rotação, §8) e ainda não
+correu contra produção**; a rotação de 2026-09-15 fez-se à mão.
+
+⚠️ **Suspenda a tarefa diária entre (d) e (f).** Depois da rotação local, a execução seguinte já
+passa na guarda do `selador.pub` e **entrega** — e o gate aceita, porque não verifica assinaturas.
+Com a `AOS_WORM_TRUST_ANCHOR` ainda antiga, o nó abortaria no arranque seguinte.
+`Disable-ScheduledTask AOS-SelarWORM` antes, `Enable-ScheduledTask` depois de (f).
+
+**(e) Subir com nomes temporários.**
+
+```bash
+scp -i <chave-ssh> checkpoints.json aos@37.60.241.150:/opt/aos/ancoras/.checkpoints.novo
+```
+
+```bash
+scp -i <chave-ssh> heads.json aos@37.60.241.150:/opt/aos/pisos/.heads.novo
+```
+
+**(f) Trocar tudo num só comando, com reversão.** O comando faz, por esta ordem: cópias `.bak` dos
+três ficheiros, os dois `mv` lado a lado, a troca da linha `AOS_WORM_TRUST_ANCHOR`, a recriação só
+do `aos` e a espera pelo `healthy`. Se o nó não ficar saudável, reverte os três ficheiros e recria
+o nó outra vez. O bloco abaixo reproduz esses passos; não é a transcrição literal do que se correu.
+
+```bash
+ssh -i <chave-ssh> aos@37.60.241.150 'NOVA=<pubkey hex nova> bash -s' <<'EOF'
+set -euo pipefail
+cd /opt/aos
+[[ "$NOVA" =~ ^[0-9a-f]{64}$ ]] || { echo "NOVA invalida"; exit 1; }
+[ -s ancoras/.checkpoints.novo ] && [ -s pisos/.heads.novo ] || { echo "faltam os .novo (passo e)"; exit 1; }
+grep -q '^AOS_WORM_TRUST_ANCHOR=' .env || { echo "AOS_WORM_TRUST_ANCHOR ausente do .env"; exit 1; }
+dc() { docker compose -f docker-compose.prod.yml --env-file .env --env-file image.env "$@"; }
+
+cp -p .env .env.bak
+cp -p ancoras/checkpoints.json ancoras/checkpoints.json.bak
+cp -p pisos/heads.json pisos/heads.json.bak
+
+reverter() {
+  echo "*** $1 — a reverter"
+  dc logs --tail 40 aos || true
+  cp -p .env.bak .env
+  cp -p ancoras/checkpoints.json.bak ancoras/checkpoints.json
+  cp -p pisos/heads.json.bak pisos/heads.json
+  dc up -d --no-deps aos
+  exit 1
+}
+
+mv ancoras/.checkpoints.novo ancoras/checkpoints.json
+mv pisos/.heads.novo pisos/heads.json
+sed -i "s/^AOS_WORM_TRUST_ANCHOR=.*/AOS_WORM_TRUST_ANCHOR=${NOVA}/" .env
+dc up -d --no-deps aos || reverter "compose up falhou"
+
+for _ in $(seq 1 40); do   # 400 s: o start_period do nó é 300 s
+  hs=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$(dc ps -q aos)" 2>/dev/null || echo '?')
+  if [ "$hs" = healthy ]; then
+    dc logs aos | grep -m1 'ANCORADA em' || echo "AVISO: linha ANCORADA nao encontrada no log"
+    echo ROTACAO-OK
+    exit 0
+  fi
+  sleep 10
+done
+reverter "o no nao ficou healthy"
+EOF
+```
+
+**Resultado esperado no log do nó:** `ANCORADA em N de N`. Se correram runs entre (b) e (f), sai
+`N de M` com M > N. Não é erro: as partições desses runs nasceram depois do selo (§8, ponto 8).
+
+**(g) Deixar a selagem diária a par.** A seed nova passa para `secrets-local/wormseal.key`, e os
+checkpoints e pisos novos para `secrets-local/ancoras/checkpoints.json` e
+`secrets-local/pisos/heads.json`. Pelo caminho `-ChaveNova` já lá estão. Sem isto, a tarefa
+`AOS-SelarWORM` seguinte passa o `--anterior` antigo e recusa selar.
+
+**O que fica por ensaiar.** Os backups anteriores à rotação levam checkpoints assinados pela chave
+antiga, porque o `backup.sh` copia `ancoras/` e `pisos/`. Pelo desenho, restaurar um desses backups
+com a `AOS_WORM_TRUST_ANCHOR` nova aborta o arranque. Guarda a pública antiga (é material público)
+junto do registo desta rotação. Este caso não foi ensaiado.
 
 ---
 

@@ -397,9 +397,10 @@ func (w *autonomyWiring) oracle() autonomy.Oracle {
 //     o par fica no nível do WORM e a divergência é DECLARADA no banner. Para a reverter,
 //     assina-se outra mudança.
 //
-// Fail-closed: uma rehidratação que não se consegue ler, que traz um registo malformado ou que
-// traz um registo cuja AUTORIDADE o nó não confirma aborta o arranque — o nó não serve um nível
-// que não conseguiu confirmar.
+// Fail-closed NO NÍVEL, não no arranque: uma rehidratação que não se consegue LER aborta o
+// arranque; um registo malformado, ou cuja AUTORIDADE o nó não confirma, é SALTADO — nunca
+// aplicado — e declarado no banner. O nó não serve um nível que não conseguiu confirmar, e
+// também não entrega um modo de tijolo a quem escreve no ficheiro do WORM.
 //
 // A AUTORIDADE DO QUE SE REIDRATA, e o que mudou desde AOS-307. Reidratar tornou o WORM uma
 // entrada autoritativa de PRIVILÉGIO, e o `EntryHash` da hash-chain é um SHA-256 SEM CHAVE: o
@@ -413,8 +414,9 @@ func (w *autonomyWiring) oracle() autonomy.Oracle {
 // nó ([autonomyRehydrateValidator], injectado pelo [Bootstrap]), que exige de cada registo de
 // OPERADOR a(s) assinatura(s) ed25519 do pedido que o originou — seladas nos Params do evento,
 // verificadas contra as pubkeys de `AOS_OPERATORS` e o direito `autonomy:set`, com duas
-// assinaturas distintas para L4/L5, a mesma regra da rota. Um registo que não verifique aborta o
-// arranque nomeando o `AuditSeq`. Um registo de `config:node` é aceite sem assinatura: não há
+// assinaturas distintas para L4/L5, a mesma regra da rota. Um registo que não verifique é SALTADO
+// e declarado no banner com o `AuditSeq` ([autonomyWiring.rejeitados]) — nunca aplicado, e sem
+// abortar o arranque. Um registo de `config:node` é aceite sem assinatura: não há
 // nenhuma para exigir, e pela precedência acima ele CEDE ao ambiente, pelo que forjá-lo não
 // concede nada.
 //

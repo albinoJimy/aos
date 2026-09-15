@@ -22,19 +22,23 @@ package main
 // O QUE PASSA A VALER. O registo transporta a(s) ASSINATURA(S) que o produziram
 // ([autonomy.LevelChangeProof], seladas nos Params, logo dentro do EntryHash) e a
 // rehidratação RECUSA o que não verificar contra uma raiz de confiança que NÃO vive no
-// store: as pubkeys de `AOS_OPERATORS`, que o nó recebe do ambiente. Um registo que não
-// verifica ABORTA o arranque nomeando o `AuditSeq` — o mesmo fail-closed que já existia
-// para um registo malformado.
+// store: as pubkeys de `AOS_OPERATORS`, que o nó recebe do ambiente. RECUSAR é SALTAR, e
+// não abortar: o registo nunca é aplicado, fica em [autonomy.RehydrateReport.Rejeitados] com
+// o `AuditSeq` e o motivo, e o banner de arranque declara-o. Um registo malformado tem o
+// mesmo destino. A primeira versão abortava o arranque, e isso entregava um modo de tijolo
+// permanente ao mesmo adversário que a verificação contém — quem escreve no ficheiro do WORM
+// apendia um registo e o nó deixava de arrancar (ver o bloco FAIL-CLOSED NO NÍVEL em
+// [autonomy.LevelRegistry.Rehydrate]).
 //
-// O QUE ISTO CUSTA, e é honesto dizê-lo: um WORM escrito por uma versão ANTERIOR tem
-// registos de operador SEM prova — foram selados antes de o campo existir. Um nó que os
-// releia com este validador ABORTA o arranque. É a direcção segura e não há outra: aceitar
-// registos sem prova «por serem antigos» seria manter aberta exactamente a porta que isto
-// fecha, e um adversário só teria de omitir a prova para entrar por ela. A saída é do
-// operador e é deliberada: reassinar a decisão por `POST /autonomy` (que passa a selar com
-// prova), ou remover a partição `autonomy` do WORM e reprovisionar por
-// AOS_AUTONOMY_LEVELS — em qualquer dos casos, uma pessoa decide, em vez de o nó decidir
-// por omissão.
+// O QUE ISTO CUSTA, e é honesto dizê-lo: um registo de operador que deixe de verificar é
+// saltado, e o par volta a vigorar no nível de AOS_AUTONOMY_LEVELS (ou no piso). Deixa de
+// verificar quando foi escrito por uma versão ANTERIOR (selado antes de o campo de prova
+// existir), quando a chave do operador que o assinou foi RODADA em `AOS_OPERATORS`, ou
+// quando o emissor já não detém `autonomy:set`. Saltar só pode deixar de ELEVAR — nunca
+// eleva. Aceitar registos sem prova «por serem antigos» manteria aberta exactamente a porta
+// que isto fecha, e um adversário só teria de omitir a prova para entrar por ela. A saída é
+// do operador e é deliberada: reassinar a decisão por `POST /autonomy`, que sela uma prova
+// verificável contra as pubkeys de agora.
 //
 // PORQUE A REGRA VIVE AQUI e não no pacote `autonomy`: verificar exige o tuplo canónico
 // do canal de controlo (packages/integration) e o registo de pubkeys do nó. Um pacote de
@@ -62,8 +66,9 @@ import (
 // abortar por um registo entregaria um modo de tijolo a quem escreve no ficheiro do WORM.
 //
 // A mensagem é DELIBERADAMENTE explícita (ao contrário do 403 uniforme da rota): aqui não
-// há adversário remoto a sondar respostas — há um operador em frente a um nó que não
-// arranca, e o que ele precisa de saber é qual o registo e o que lhe falta.
+// há adversário remoto a sondar respostas — há um operador a ler o banner de um nó que
+// arrancou com um par abaixo do que esperava, e o que ele precisa de saber é qual o registo
+// e o que lhe falta.
 var ErrAutonomyRehydrateUnverified = errors.New("aos: alteracao de nivel de autonomia RELIDA do WORM sem prova assinada valida — desde AOS-307 o WORM e autoritativo sobre os niveis no arranque, e o EntryHash da hash-chain e um SHA-256 SEM CHAVE (quem escreve no ficheiro consegue apendir um registo que a re-verificacao aceita); por isso um registo de OPERADOR so e reidratado se trouxer a(s) assinatura(s) ed25519 do pedido que o originou, verificaveis contra AOS_OPERATORS e emitidas por quem detem autonomy:set (AOS_AUTONOMY_SETTERS)")
 
 // autonomyRehydrateValidator constrói o predicado que o [Bootstrap] injecta em
@@ -102,15 +107,14 @@ var ErrAutonomyRehydrateUnverified = errors.New("aos: alteracao de nivel de auto
 // `config:node`). É a leitura honesta do fail-closed: um nó sem pubkeys de operador não
 // tem como confirmar decisão nenhuma, e servir um nível que não confirma é o defeito.
 //
-// UM ACTOR QUE AINDA NÃO EXISTE NO WORM DESTE NÓ, e que fica declarado para não ser uma
-// surpresa: [autonomy.ControllerActor] ("autonomy-controller"), das democões automáticas
-// por anomalia. Hoje o [autonomy.Controller] NÃO tem chamador em cmd/aos, pelo que nenhum
-// registo desses chega a esta partição. Quando tiver, cai na regra (2) e ABORTA o arranque
-// — de propósito: aceitá-lo sem prova daria um terceiro actor forjável, e um forjador
-// escolhe `new_level` (o controlador só desce; um registo forjado não é obrigado a
-// descer). Fechá-lo exige dar ao controlador uma prova própria — uma assinatura do nó
-// sobre a transição, com a chave do nó — e isso é trabalho a fazer com o controlador, não
-// a antecipar aqui.
+// O ACTOR QUE NÃO PASSA POR ESTE VALIDADOR: [autonomy.ControllerActor]
+// ("autonomy-controller"), das demoções automáticas por anomalia. O [autonomy.Controller] é
+// composto pelo [Bootstrap], pelo que os seus registos chegam a esta partição — mas
+// [autonomy.LevelRegistry.Rehydrate] não os entrega aqui: uma demoção automática não tem
+// assinatura de operador a exigir. A sua durabilidade sem prova assenta nos dois invariantes
+// de DIRECÇÃO do pacote (o agente é uma classe; o nível novo fica estritamente abaixo do já
+// reconstruído), e não em custódia de chave. Um registo forjado com este actor não consegue
+// SUBIR nada; um que viole os invariantes é saltado e declarado como qualquer outro.
 func autonomyRehydrateValidator(operators map[string]ed25519.PublicKey, setters map[string]bool) func(autonomy.LevelChange) error {
 	return func(ch autonomy.LevelChange) error {
 		// (1) Provisionamento por configuração: sem assinatura, e sem privilégio a ganhar.
