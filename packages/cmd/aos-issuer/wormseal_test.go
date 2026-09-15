@@ -616,3 +616,66 @@ func TestWormSealRecusaAnteriorQueELIXO(t *testing.T) {
 		t.Fatal("aceitou um --anterior que e LIXO — a normalizacao do BOM virou tolerancia")
 	}
 }
+
+// TestWormSealRotacaoDaChave fixa o que a rotação do selador de 2026-09-15 descobriu à força, e o
+// que o `selar-worm.ps1 -ChaveNova` e o README («Rotação das chaves de autoridade») assumem.
+//
+// O `--anterior` é verificado contra a pubkey da chave QUE SELA AGORA. Com checkpoints da chave
+// ANTIGA, a recusa é [ErrWormSealDivergencia] — a mesma de uma história reescrita, sobre um WORM
+// que não mudou um byte. A primeira selagem com a chave nova faz-se por isso SEM `--anterior`, e a
+// auto-verificação é selar outra vez com `--anterior` apontado aos checkpoints acabados de gerar.
+func TestWormSealRotacaoDaChave(t *testing.T) {
+	caminho, _ := wormDeTeste(t)
+	dir := t.TempDir()
+	selar := func(seed string, anterior string) ([]byte, error) {
+		args := []string{"--worm", caminho, "--key-file", seed}
+		if anterior != "" {
+			args = append(args, "--anterior", anterior)
+		}
+		var out bytes.Buffer
+		err := runWormSeal(args, &out)
+		return out.Bytes(), err
+	}
+	escrever := func(nome string, b []byte) string {
+		f := filepath.Join(dir, nome)
+		if err := os.WriteFile(f, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	antiga, _ := seedDeTeste(t)
+	cpsAntiga, err := selar(antiga, "")
+	if err != nil {
+		t.Fatalf("selagem com a chave antiga: %v", err)
+	}
+	anteriorAntiga := escrever("antiga.json", cpsAntiga)
+
+	nova, _ := seedDeTeste(t)
+
+	// (1) A armadilha: WORM intacto, chave nova, --anterior da antiga => DIVERGIU.
+	out, err := selar(nova, anteriorAntiga)
+	if !errors.Is(err, ErrWormSealDivergencia) {
+		t.Fatalf("chave nova com --anterior da antiga: esperava ErrWormSealDivergencia, veio %v", err)
+	}
+	if len(out) > 0 {
+		t.Errorf("emitiu checkpoint apesar da recusa: %s", out)
+	}
+
+	// (2) A primeira selagem com a chave nova, sem --anterior.
+	cpsNova, err := selar(nova, "")
+	if err != nil {
+		t.Fatalf("primeira selagem com a chave nova: %v", err)
+	}
+	anteriorNova := escrever("nova.json", cpsNova)
+
+	// (3) A auto-verificação: os checkpoints novos servem de --anterior à própria chave nova.
+	if _, err := selar(nova, anteriorNova); err != nil {
+		t.Errorf("auto-verificacao com a chave nova recusou: %v", err)
+	}
+
+	// CONTROLO — a auto-verificação decide alguma coisa: a chave antiga não passa sobre os novos.
+	if _, err := selar(antiga, anteriorNova); !errors.Is(err, ErrWormSealDivergencia) {
+		t.Errorf("chave antiga com --anterior da nova: esperava ErrWormSealDivergencia, veio %v", err)
+	}
+}
