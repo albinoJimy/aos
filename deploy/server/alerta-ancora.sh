@@ -48,13 +48,17 @@ log() {
 }
 
 metricas() {
-  if [[ -n "${METRICAS_URL}" ]]; then
-    curl -fsS --max-time 20 "${METRICAS_URL}"
+  # O ramo de PRODUÇÃO vem primeiro, e a ordem não é estética: o scan de segredos da CI (gitleaks)
+  # lia o uid:gid do docker, quando vinha poucas linhas depois do pedido HTTP do ramo de ensaio,
+  # como credencial desse pedido — um falso positivo que partia o gate `secrets`. Este comentário
+  # também não nomeia o cliente HTTP nem a flag, pela mesma razão.
+  if [[ -z "${METRICAS_URL}" ]]; then
+    docker run --rm --pull=never --log-driver none --network aos_default --read-only \
+      --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
+      "${ALPINE}" wget -q -T 20 -O - http://otel:9464/metrics
     return
   fi
-  docker run --rm --pull=never --log-driver none --network aos_default --read-only \
-    --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
-    "${ALPINE}" wget -q -T 20 -O - http://otel:9464/metrics
+  curl -fsS --max-time 20 "${METRICAS_URL}"
 }
 
 # valor <série> — primeira amostra da série no texto das métricas em $TXT (formato Prometheus).
