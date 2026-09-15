@@ -35,9 +35,11 @@
   README — e o par novo fica em secrets-local (passo (g)) para esta tarefa o poder usar no
   `--anterior` do dia seguinte.
 
-  O NO SO LE A ANCORA NO ARRANQUE. Entregar nao obriga a reiniciar nada, e nada muda no no ate ao
-  proximo restart — incluindo a metrica `aos_worm_anchor_age_seconds`, que conta desde a selagem
-  que o no CARREGOU (ver README §8).
+  O NO SO USA A ANCORA A PARTIR DO ARRANQUE. Entregar nao obriga a reiniciar nada, e a ancora EM USO
+  so muda no proximo restart — tal como a metrica `aos_worm_anchor_age_seconds`, que conta desde a
+  selagem que o no CARREGOU. A ENTREGA, essa, e visivel JA: `aos_worm_anchor_delivered_age_seconds`
+  e relida a cada recolha, e e por ai que se ve se esta tarefa morreu, sem depender de restarts
+  (ver README §8).
 
 .EXAMPLE
   # o ciclo diario: WORM vivo pelo gate, sela com continuidade, entrega pelo gate
@@ -364,7 +366,10 @@ try {
             throw "o servidor instalou um par DIFERENTE do que foi selado aqui (sha256 nao bate)"
         }
         Bom "ancora entregue: checkpoints e pisos validados e trocados lado a lado (sha256 conferido)"
-        Nota "o no so a LE no arranque: nao e preciso reinicia-lo, e nada muda nele ate ao proximo restart"
+        Nota "o no so USA a ancora a partir do arranque: nao e preciso reinicia-lo, e nada muda nele"
+        Nota "ate ao proximo restart. Mas a ENTREGA e visivel JA: /metrics traz"
+        Nota "aos_worm_anchor_delivered_age_seconds (relido a cada recolha, NAO verificado) — e por"
+        Nota "ai que se ve se esta tarefa morreu, sem depender de restarts."
     }
 }
 finally {

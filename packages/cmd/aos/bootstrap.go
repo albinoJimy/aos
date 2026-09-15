@@ -256,6 +256,29 @@ type WormAnchor struct {
 	// aceite sem frescura, que é precisamente o no-op que [audit.VerifyFromCheckpointAtHead] tenta
 	// impedir.
 	ExpectedHeads map[string]uint64
+	// CheckpointFile é o CAMINHO MONTADO de onde os Checkpoints acima foram lidos
+	// (AOS_WORM_CHECKPOINT_FILE), retido para o `/metrics` o poder RELER na altura da recolha.
+	//
+	// PORQUE O CAMINHO E NÃO SÓ O CONTEÚDO. Os Checkpoints acima são uma FOTOGRAFIA do arranque,
+	// e a selagem diária SUBSTITUI este ficheiro sem reiniciar o nó. Sem o caminho, a única
+	// idade que o nó sabe calcular é a da fotografia — que cresce 24 h por dia com a tarefa de
+	// selagem perfeitamente viva. Ver [apiHandler.handleMetrics].
+	//
+	// NÃO É MATERIAL VERIFICADO: é um caminho. O que se lê dele em runtime NÃO passou por
+	// [audit.VerifyFromCheckpointAtHead] — essa verificação exige o store composto e acontece
+	// só no arranque. Vazio ⇒ a âncora foi injectada em processo (testes, embedders) e as séries
+	// de «entregue» NÃO saem.
+	CheckpointFile string
+	// ExpectedHeadsFile é o caminho montado do ficheiro de PISOS (AOS_WORM_EXPECTED_HEADS_FILE),
+	// retido pela mesma razão que o [WormAnchor.CheckpointFile] — e sem ele a releitura seria
+	// uma MEIA leitura.
+	//
+	// O ARRANQUE VALIDA O PAR, NÃO O CHECKPOINT SOZINHO: lê os pisos, exige que TODA a partição
+	// com checkpoint traga piso > 0, e aborta com [ErrBadWormExpectedHead] se faltar algum. Uma
+	// releitura que só olhasse para os checkpoints declararia «legível» um par que o arranque
+	// recusa — e essa é a forma MAIS PROVÁVEL de o par ficar incoerente, porque a entrega troca
+	// os dois ficheiros com dois `mv` consecutivos (ver `deploy/server/selar-worm.ps1`).
+	ExpectedHeadsFile string
 }
 
 // Config é a configuração MÍNIMA e EXPLÍCITA do nó `aos` (AC2). SEM segredos em código:
