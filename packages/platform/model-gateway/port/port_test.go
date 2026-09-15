@@ -95,6 +95,17 @@ func TestChatRequest_Normalize(t *testing.T) {
 	}
 }
 
+// TestVersion_ValorFixado fixa o LITERAL da versão do contrato: 1.1.0 desde que o StepID entrou
+// (campo aditivo, MINOR — AOS-394). O teste de formato sozinho compara a constante consigo
+// própria e deixava a versão mudar em silêncio, enquanto a prosa de tecnica/06 §5 a afirma.
+func TestVersion_ValorFixado(t *testing.T) {
+	t.Parallel()
+	const quer = "1.1.0"
+	if port.Version != quer {
+		t.Fatalf("port.Version = %q, quer %q — se a mudança é deliberada, actualize tecnica/06 §5 e este teste", port.Version, quer)
+	}
+}
+
 // TestChatRequest_MarshalWire_NaoVazaMetadados garante que Principal/Region/Board
 // (metadados de plataforma) NUNCA aparecem no wire enviado ao provider (ADR-006:
 // sem segredos; e soberania não vaza).
@@ -106,13 +117,15 @@ func TestChatRequest_MarshalWire_NaoVazaMetadados(t *testing.T) {
 		Principal: "token-SECRETO-do-principal",
 		Region:    "eu-west",
 		Board:     "board-1",
+		RunID:     "run-aos394",
+		StepID:    "step-000007",
 	}
 	wire, err := req.MarshalWire(false)
 	if err != nil {
 		t.Fatalf("MarshalWire: %v", err)
 	}
 	s := string(wire)
-	for _, forbidden := range []string{"token-SECRETO", "eu-west", "board-1", "Principal", "principal", "region", "board"} {
+	for _, forbidden := range []string{"token-SECRETO", "eu-west", "board-1", "Principal", "principal", "region", "board", "run-aos394", "step-000007", "run_id", "step_id"} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("wire contem metadado de plataforma %q: %s", forbidden, s)
 		}

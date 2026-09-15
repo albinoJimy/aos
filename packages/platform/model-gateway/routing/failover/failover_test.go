@@ -97,6 +97,7 @@ func TestCrossBorder_BlockedAndSealed(t *testing.T) {
 
 	ex := euExchange("eu")
 	ex.ResolvedProvider = "openai"
+	ex.RunID, ex.StepID = "run-aos394", "step-000003"
 	err := st.Process(context.Background(), ex)
 	if !errors.Is(err, failover.ErrCrossBorderBlocked) {
 		t.Fatalf("failover cross-border devia bloquear fail-closed; got %v", err)
@@ -111,6 +112,10 @@ func TestCrossBorder_BlockedAndSealed(t *testing.T) {
 	}
 	if at.Principal.NHIID != "agent-42" || at.Obligations[0].Params["board"] != "board-eu" {
 		t.Fatalf("deny devia ser atribuível a principal+board; got principal=%q board=%q", at.Principal.NHIID, at.Obligations[0].Params["board"])
+	}
+	// AOS-394: o deny cross-border liga-se ao run e ao passo da chamada.
+	if at.RunID != "run-aos394" || at.StepID != "step-000003" {
+		t.Fatalf("deny cross-border selado com RunID=%q StepID=%q; quero run-aos394/step-000003", at.RunID, at.StepID)
 	}
 }
 

@@ -293,10 +293,12 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 	// nodeReferencePrincipal "aos-node/aos-agent", que não era um token verificável, foi
 	// removido com o stub).
 	//
-	// WithRun NÃO se liga aqui de propósito: este adaptador é construído UMA VEZ, ao
-	// nível do nó, pelo que um runID de construção seria CONSTANTE e agregaria todos os
-	// runs no mesmo balde de SLI/atribuição — a "auditoria que não distingue runs" que o
-	// A3 §V descreve. A amarra POR-RUN é a porta de aquisição com contexto de AOS-265.
+	// CORRELAÇÃO POR RUN E POR PASSO (AOS-394). WithRun NÃO se liga aqui de propósito: este
+	// adaptador é construído UMA VEZ, ao nível do nó, pelo que um runID de construção seria
+	// CONSTANTE e agregaria todos os runs no mesmo balde — a "auditoria que não distingue runs"
+	// que o A3 §V descreve. O run e o passo de cada chamada chegam pelo ctx que o runtime escreve
+	// antes de chamar o modelo (agentruntime.ContextWithModelCall) e que o adaptador lê: é o que
+	// liga cada selo modelgw-gov ao turno que o originou.
 	opts := []modelgateway.RuntimeAdapterOption{
 		modelgateway.WithRegionBoard(region, board),
 		modelgateway.WithPrincipalFromContext(modelCredentialFromContext),

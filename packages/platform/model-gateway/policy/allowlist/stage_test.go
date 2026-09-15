@@ -47,6 +47,7 @@ func TestStage_Allow(t *testing.T) {
 	st := allowlist.NewStage(signedCustom(t), allowlist.WithRecorder(rec))
 
 	ex := newExchange(pipeline.OpChat, "board-eu", "gpt-4o", "eu")
+	ex.RunID, ex.StepID = "run-aos394", "step-000001"
 	if err := st.Process(context.Background(), ex); err != nil {
 		t.Fatalf("allow devia passar; got %v", err)
 	}
@@ -63,6 +64,10 @@ func TestStage_Allow(t *testing.T) {
 	if at.Resource.Value != "gpt-4o" || at.Resource.Region != "eu" {
 		t.Fatalf("rota selada = %+v; quero gpt-4o/eu", at.Resource)
 	}
+	// AOS-394: o selo liga-se ao run e ao passo da chamada.
+	if at.RunID != "run-aos394" || at.StepID != "step-000001" {
+		t.Fatalf("allow selado com RunID=%q StepID=%q; quero run-aos394/step-000001", at.RunID, at.StepID)
+	}
 }
 
 // TestStage_Deny_FailClosed — modelo fora da allowlist é DENY fail-closed com seal WORM.
@@ -72,6 +77,7 @@ func TestStage_Deny_FailClosed(t *testing.T) {
 	st := allowlist.NewStage(signedCustom(t), allowlist.WithRecorder(rec))
 
 	ex := newExchange(pipeline.OpChat, "board-eu", "claude-3", "eu")
+	ex.RunID, ex.StepID = "run-aos394", "step-000002"
 	err := st.Process(context.Background(), ex)
 	if !errors.Is(err, allowlist.ErrModelNotAllowed) {
 		t.Fatalf("modelo fora da allowlist devia falhar ErrModelNotAllowed; got %v", err)
@@ -86,6 +92,10 @@ func TestStage_Deny_FailClosed(t *testing.T) {
 	}
 	if at.Obligations[0].Params["board"] != "board-eu" {
 		t.Fatalf("deny devia selar o board")
+	}
+	// AOS-394: o deny também se liga ao run e ao passo.
+	if at.RunID != "run-aos394" || at.StepID != "step-000002" {
+		t.Fatalf("deny selado com RunID=%q StepID=%q; quero run-aos394/step-000002", at.RunID, at.StepID)
 	}
 }
 

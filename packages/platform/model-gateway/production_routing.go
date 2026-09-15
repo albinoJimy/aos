@@ -516,7 +516,10 @@ func (s *modelSwapRecorder) Process(ctx context.Context, ex *pipeline.Exchange) 
 		Reason:          reason,
 		PolicyVersion:   version,
 		Operation:       string(ex.Op),
-		Timestamp:       ex.Now(),
+		// AOS-394: a troca de modelo liga-se ao run e ao passo que fizeram a chamada.
+		RunID:     ex.RunID,
+		StepID:    ex.StepID,
+		Timestamp: ex.Now(),
 	}); err != nil {
 		return fmt.Errorf("%w: %v", ErrModelSwapNotSealed, err)
 	}

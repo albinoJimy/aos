@@ -644,6 +644,9 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 	// torna o cache-hit-rate do prefixo observável por telemetria (AOS-013 CA3).
 	span.SetAttribute(AttrPrefixHash, view.PrefixHash)
 
+	// AOS-394: o run e o passo seguem no ctx até ao ModelClient, para que quem sela a chamada
+	// (os selos de governação do Model Gateway) a ligue ao passo exacto deste turno.
+	chatCtx = ContextWithModelCall(chatCtx, goal.RunID, stepID)
 	resp, err := rt.model.Call(chatCtx, view)
 	if err != nil {
 		span.End()

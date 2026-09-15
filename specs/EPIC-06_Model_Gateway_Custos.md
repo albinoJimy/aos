@@ -52,6 +52,7 @@ O epic vive maioritariamente na **Fase 2** (governação e observabilidade — i
 | AOS-063 | Testes de roteamento/failover | chore | M | P1 | AOS-058, AOS-059 |
 | AOS-394 | Selos de governação do Model Gateway ligados ao run e ao passo | fix | M | P1 | AOS-265, AOS-278 |
 | AOS-395 | aos-orq: selos de governação do gateway do planeador duráveis e ligados ao run | fix | M | P2 | AOS-394, AOS-391 |
+| AOS-397 | Agregados por run do metering do GW sem remoção nem tecto | fix | M | P2 | AOS-394, AOS-062 |
 
 ---
 
@@ -712,19 +713,19 @@ Cada selo de governação do gateway escrito durante um run identifica o run e o
 
 ### Critérios de Aceitação
 
-- [ ] O `RunID` e o `StepID` do turno chegam ao gateway **por chamada** — pelo ctx, à imagem de `WithPrincipalFromContext`, ou pela porta — e nunca fixados na construção do adaptador. A escolha fica registada neste ticket.
-- [ ] `port.ChatRequest`, `port.EmbeddingsRequest` e `pipeline.Exchange` transportam `StepID` como metadado de plataforma (`json:"-"`, nunca no wire do provider).
-- [ ] Os três construtores de `allowlist.GovRecord` copiam `RunID` e `StepID` do `Exchange`.
-- [ ] Teste que falha antes da correcção, pela cadeia real do nó (molde de `TestGatewayModelClient_EndToEnd`): uma chamada de turno sela em `modelgw-gov:<board>` com `RunID` igual ao run e `StepID` igual ao passo do turno; o deny de allowlist e o deny cross-border também.
-- [ ] Chamada sem run no ctx: o comportamento é decidido e testado. O selo de governação continua a ser escrito (a governação não depende da correlação) e a ausência fica visível, nunca preenchida com um valor inventado.
-- [ ] Os consumidores que já leem `ex.RunID` (cache-hit-rate por run, atribuição e custo por run) passam a receber o run real no nó, sem regressão nos seus testes.
-- [ ] O comentário de `cmd/aos/modelgatewaywiring.go` que remete a amarra por run para o AOS-265 é corrigido, e o critério residual de AOS-264 é marcado com a evidência deste ticket.
-- [ ] Evidência de sistema: um run real (nó composto com gateway, ou produção) deixa no `model-audit.wal` um selo por turno com `RunID` e `StepID` preenchidos. É o ponto «Selo do gateway ligado ao run» do roteiro E2E.
-- [ ] `tecnica/06_Model_Gateway_Custos.md` descreve os campos do selo de governação e a correlação por run e passo.
+- [x] O `RunID` e o `StepID` do turno chegam ao gateway **por chamada** — pelo ctx, à imagem de `WithPrincipalFromContext`, ou pela porta — e nunca fixados na construção do adaptador. A escolha fica registada neste ticket. *(DECISÃO: pelo **ctx**. `agentruntime.ContextWithModelCall`/`ModelCallFromContext` (`packages/kernel/agent-runtime/model_call_context.go`) são escritas por `Runtime.callModel` sobre o `chatCtx`, com o mesmo `stepID` dos checkpoints e do `turn.recorded`; o `ModelClientAdapter.Call` lê-as e o run do ctx tem **precedência** sobre `WithRun`, que fica como fallback de um adaptador construído por run. A chave vive no pacote raiz do agent-runtime, o único sítio que a baseline do `layer-lint` autoriza o gateway a importar (ADR-019 §2.3, que nomeia `RunID`/`StepID`). Alternativas rejeitadas: pôr o par na `PromptView` (muda um tipo da porta do kernel que a captura e o replay tratam) e derivar o passo no nó a partir de `view.Turn` (duplicaria o formato e divergiria de um `StepIdentity` injectado).)*
+- [x] `port.ChatRequest`, `port.EmbeddingsRequest` e `pipeline.Exchange` transportam `StepID` como metadado de plataforma (`json:"-"`, nunca no wire do provider). *(`port/port.go`, `pipeline/pipeline.go`; `newExchange` passa-o nos três caminhos (chat, stream, embeddings). `port.Version` sobe a `1.1.0` — campo aditivo, MINOR pelo critério do próprio pacote. `TestChatRequest_MarshalWire_NaoVazaMetadados` passa a proibir no wire o run, o passo, `run_id` e `step_id`.)*
+- [x] Os três construtores de `allowlist.GovRecord` copiam `RunID` e `StepID` do `Exchange`. *(`policy/allowlist/stage.go` (allow e deny), `routing/failover/failover.go` (deny cross-border), `production_routing.go` (troca de modelo). O `Seal` já os copiava para o registo de audit. A atribuição (`Gateway.attribute`) passa também a levar o `StepID`, que o `attribution.Record` já tinha.)*
+- [x] Teste que falha antes da correcção, pela cadeia real do nó (molde de `TestGatewayModelClient_EndToEnd`): uma chamada de turno sela em `modelgw-gov:<board>` com `RunID` igual ao run e `StepID` igual ao passo do turno; o deny de allowlist e o deny cross-border também. *(`packages/cmd/aos/aos394_model_gateway_run_test.go`: Agent Runtime real + `newGatewayModelClient` + upstream httptest; dois runs do mesmo agente saem distinguíveis e o passo selado é o mesmo do `turn.recorded`; um modelo fora da allowlist sela o deny com run e passo. **FALHA-ANTES MEDIDA**: comentar a escrita do ctx em `callModel` faz falhar `TestAOS394_CallModel_AnexaRunEPassoDeCadaTurno` («viu (\"\", \"\")») e os dois testes do nó («selo 1 tem RunID \"\"»). O deny cross-border e a troca de modelo não são alcançáveis pelo nó de referência (uma só conta na região pedida; sem escada de tiers, DEF-280-NO), pelo que são provados na composição `NewProduction`: `packages/platform/model-gateway/aos394_production_selos_test.go`.)*
+- [x] Chamada sem run no ctx: o comportamento é decidido e testado. O selo de governação continua a ser escrito (a governação não depende da correlação) e a ausência fica visível, nunca preenchida com um valor inventado. *(`TestAOS394_NoGateway_ChamadaSemRunSelaNaMesmaComAusenciaVisivel` e o caso «sem correlacao» de `TestAOS394_Adaptador_CorrelacaoPorChamada`.)*
+- [~] Os consumidores que já leem `ex.RunID` (cache-hit-rate por run, atribuição e custo por run) passam a receber o run real no nó, sem regressão nos seus testes. *(Sem regressão: `go test -race ./...` verde no módulo do GW, no kernel e em `cmd/aos`; `apex` e `routing` verdes. **Consequência declarada, não fechada aqui**: com o run real, o `cost.Recorder` passa a manter um cumulativo por run em `runAggs`, um mapa sem remoção nem tecto — num nó de vida longa cresce com o número de runs. Fica no **AOS-397** (o eixo é o agregador de custo, não a correlação); o `cache_sli` tem o mesmo padrão e não está composto no nó.)*
+- [x] O comentário de `cmd/aos/modelgatewaywiring.go` que remete a amarra por run para o AOS-265 é corrigido, e o critério residual de AOS-264 é marcado com a evidência deste ticket. *(Comentário reescrito; nota acrescentada ao critério de `specs/EPIC-20` — a caixa lá **não** é marcada porque a outra metade do critério, a capability da troca no bundle assinado, é do broker.)*
+- [~] Evidência de sistema: um run real (nó composto com gateway, ou produção) deixa no `model-audit.wal` um selo por turno com `RunID` e `StepID` preenchidos. É o ponto «Selo do gateway ligado ao run» do roteiro E2E. *(Coberto em composição real com WORM em memória (teste do nó) e o smoke do nó composto passa 10/10 com estas alterações. **NÃO VERIFICADO em produção**: o nó de produção tem o WORM em ficheiro e o modelo vivo, e essa leitura só existe depois de um deploy desta versão — repetir o passo 19 do roteiro E2E e confirmar o selo com run e passo no `model-audit.wal`.)*
+- [x] `tecnica/06_Model_Gateway_Custos.md` descreve os campos do selo de governação e a correlação por run e passo. *(§5, «Selo de governação por chamada».)*
 
 ### Estado
 
-**ABERTO.** Criado a 2026-09-15 a partir do achado do E2E em produção; discovery read-only feita, nenhuma alteração de código.
+**IMPLEMENTADO (2026-09-15).** A correlação viaja no ctx por chamada e entra nos quatro veredictos selados; `port.Version` 1.1.0. Verificado: suites `-race` verdes no kernel, no módulo do GW e em `cmd/aos`; `build`, `lint`, `layer-lint`, `apex`, `routing` e `integration` verdes; smoke do nó composto 10/10; falha-antes medida por mutação. **Fica por confirmar em produção** (último critério) e fica declarada a consequência do agregado de custo por run, com ticket próprio.
 
 ---
 
@@ -764,6 +765,44 @@ As chamadas de decomposição do planeador deixam selos de governação durávei
 
 ---
 
+## AOS-397 — Agregados por run do metering do GW sem remoção nem tecto
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-394 (faz o run real chegar ao gateway), AOS-062 (contabilidade de custo) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/platform/model-gateway/metering/cost/recorder.go`, `packages/platform/model-gateway/metering/cache_sli.go` |
+
+### Contexto
+
+O `cost.Recorder` mantém o cumulativo de custo por run em `runAggs`, um mapa `RunKey{RunID,Tenant} → *Amount` **sem remoção, expiração nem tecto**. Enquanto o nó enviava o run vazio, o ramo que o alimenta nunca corria e o mapa ficava vazio; com o AOS-394 o run real passa a chegar em cada chamada, pelo que o mapa ganha uma entrada por run e mantém-na durante toda a vida do processo — um nó que corre semanas acumula-as. O mesmo padrão existe no eixo de árvore (`treeAggs`, hoje sem `TreeID` preenchido), no `MemoryBurndownSink` (que memoriza cumulativos por run) e no `cache_sli`, que agrega por (run, tenant) e não está composto no nó.
+
+Impacto medido por leitura de código: é **memória**, não decisões — no nó de referência nenhum consumidor lê o cumulativo por run (não há `budgetbridge` composto). O custo por chamada e o canal de AOS-259 não dependem deste agregado.
+
+### Objectivo
+
+A retenção por run do metering do gateway é limitada e a política fica declarada, sem alterar o custo por chamada nem o canal de custo.
+
+### Critérios de Aceitação
+
+- [ ] Teste que mede a retenção antes da correcção: N runs distintos deixam N entradas retidas no `cost.Recorder`.
+- [ ] Política escolhida e implementada, com a decisão registada neste ticket: fim-de-run explícito, expiração por inactividade, tecto com despejo, ou não retenção quando ninguém lê o cumulativo. Verificar primeiro quem lê o cumulativo por run (burn-down de AOS-259/AOS-261, span, sinks).
+- [ ] O mesmo eixo verificado no `MemoryBurndownSink` e no `cache_sli`; onde não se fechar, o limite fica declarado.
+- [ ] `go test -race -count=1 ./...` no módulo do GW e `bash scripts/ci/routing.sh` verdes.
+
+### Estado
+
+**ABERTO.** Criado a 2026-09-15 a partir da revisão adversarial do AOS-394.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -778,3 +817,4 @@ As chamadas de decomposição do planeador deixam selos de governação durávei
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-09-15 | AOS-394 e AOS-395: selos de governação do gateway sem run nem passo (achado do E2E em produção) | Equipa AOS |
+| 1.2 | 2026-09-15 | AOS-394 implementado; AOS-397 aberto (retenção por run do metering) a partir da revisão adversarial | Equipa AOS |
