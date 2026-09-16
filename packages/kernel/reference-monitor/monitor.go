@@ -284,6 +284,11 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 	}
 	defer func() {
 		span.SetAttribute(otelgenai.AttrDecision, string(dec.Effect))
+		// A DURAÇÃO DA DECISÃO, separada da janela do span (AOS-398, ADR-026). O span só
+		// fecha depois de a tool correr, pelo que a sua latência é a da tool call mediada
+		// inteira; quem quer medir o OVERHEAD DA MEDIAÇÃO tem de ler este atributo. Sem
+		// ele o SLI `mediation_overhead_p95` media a execução no sandbox (DEF-281).
+		span.SetAttribute(otelgenai.AttrMediationDecisionLatencyNanos, dec.DecisionLatency.Nanoseconds())
 		// Numa negação/escalada, anotar o hook atribuível (ex.: "taint") para que a
 		// causa da decisão seja auto-descritível no span, sem segredos.
 		if dec.Effect != EffectPermit && dec.DeniedBy != "" {
@@ -335,7 +340,8 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		// DELIBERADAMENTE não-auditada: gravar no Event Store exigiria o mesmo
 		// contexto (já cancelado) e falharia de qualquer forma. É o único caminho
 		// de deny sem registo; todos os outros passam por fail() (best-effort).
-		d := Decision{Effect: EffectDeny, Code: CodeContextCanceled, DeniedBy: "context", Reason: err.Error(), Latency: m.now().Sub(start)}
+		lat := m.now().Sub(start)
+		d := Decision{Effect: EffectDeny, Code: CodeContextCanceled, DeniedBy: "context", Reason: err.Error(), Latency: lat, DecisionLatency: lat}
 		m.metrics.Denials.Add(1)
 		return d, err
 	}
@@ -471,6 +477,18 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	// Registo de mediação durável bem-sucedido ⇒ o último-desfecho está saudável (AOS-369).
 	m.metrics.recordingFailing.Store(false)
 
+	// A JANELA DO OVERHEAD DE MEDIAÇÃO fecha AQUI (AOS-398): a cadeia de política correu, as
+	// obrigações foram impostas, o selo pré-efeito está DURÁVEL — e o despacho ainda não
+	// começou. É tudo o que a mediação acrescenta ao caminho de uma tool call, e nada do que
+	// a tool custa. É esta leitura que sai no span e alimenta o SLI `mediation_overhead_p95`.
+	//
+	// DELIBERADAMENTE MAIS LARGA que o `latency_ns` do selo (`rec.Latency`, acima), que pára imediatamente
+	// ANTES da escrita de auditoria. A diferença é o `RecordMediation`, que está no caminho
+	// crítico: atrasa o efeito, logo é overhead, e um sink lento tem de aparecer no SLO em vez
+	// de se esconder atrás dele. O selo NÃO muda — o seu campo é contrato de fio selado no WORM
+	// (tecnica/12 §4) e mexer-lhe reescreveria o significado de rasto já ancorado.
+	decisionLatency := m.now().Sub(start)
+
 	// 4) Permit: mintar o Permit não-forjável e despachar via dispatcher interno. O
 	//    despacho devolve TAMBÉM o custo medido do efeito (AOS-212): 0 para uma tool
 	//    registada por Register, o valor reportado para uma CostingToolFunc.
@@ -485,15 +503,17 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 
 	m.metrics.Permits.Add(1)
 	return Decision{
-		Effect:       EffectPermit,
-		Reason:       "permitido pela cadeia de mediacao",
-		Obligations:  obligations,
-		Latency:      m.now().Sub(start),
-		MediationSeq: seq,
-		Output:       out,
-		ToolErr:      toolErr,
-		CostMicroUSD: costMicroUSD,
-		permit:       p,
+		Effect:      EffectPermit,
+		Reason:      "permitido pela cadeia de mediacao",
+		Obligations: obligations,
+		Latency:     m.now().Sub(start),
+		// EXCLUI o despacho: ver [Decision.DecisionLatency]. A `Latency` acima inclui-o.
+		DecisionLatency: decisionLatency,
+		MediationSeq:    seq,
+		Output:          out,
+		ToolErr:         toolErr,
+		CostMicroUSD:    costMicroUSD,
+		permit:          p,
 	}, nil
 }
 
@@ -607,12 +627,14 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		m.metrics.Denials.Add(1)
 	}
 	return Decision{
-		Effect:       eff,
-		Code:         code,
-		Reason:       reason,
-		DeniedBy:     deniedBy,
-		Latency:      latency,
-		MediationSeq: seq,
+		Effect:   eff,
+		Code:     code,
+		Reason:   reason,
+		DeniedBy: deniedBy,
+		Latency:  latency,
+		// Igual a Latency por construção: nenhum caminho que passa por fail() despachou.
+		DecisionLatency: latency,
+		MediationSeq:    seq,
 	}
 }
 

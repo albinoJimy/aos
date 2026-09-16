@@ -55,6 +55,7 @@ O epic encerra dois cenários de falha do plano-base: *The Audit Log Lied* (o tr
 | AOS-084 | Eval harness ligado ao trace | feature | M | P1 | AOS-077, EPIC-11 |
 | AOS-085 | Dashboards + SLIs/SLOs | feature | M | P1 | AOS-076, AOS-078, AOS-082 |
 | AOS-086 | Alertas a partir dos SLIs | feature | S | P2 | AOS-085 |
+| AOS-398 | O SLI de overhead de mediação mede a execução da tool, não a decisão | fix | M | P0 | AOS-085, AOS-086, AOS-274 |
 
 ---
 
@@ -659,6 +660,105 @@ Testa violação sintética de cada SLO crítico e o encaminhamento. Corre gates
 
 ---
 
+## Adenda pós-encerramento — defeito apurado em produção
+
+Esta secção existe pelo mesmo motivo da adenda da `EPIC-25`: um defeito no que este epic entregou
+foi medido **depois** do encerramento, e abrir um epic novo para um ticket seria espiral de
+processo. O ticket entra aqui, no epic que é dono do artefacto.
+
+## AOS-398 — O SLI de overhead de mediação mede a execução da tool, não a decisão, e acende dois `critical` em cada tool call
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Fase 3 — Escala e controlo |
+| Tipo | fix |
+| Prioridade | P0 |
+| Estimativa | M |
+| Dependências | AOS-085 (o SLI), AOS-086 (os alertas), AOS-274 (o avaliador no nó) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `tecnica/19_Visao_End_to_End.md` §4/§7, `tecnica/08_Observabilidade_Evals.md` §7.1, `docs/adr/ADR-026-overhead-de-mediacao-e-a-janela-da-decisao.md`, `docs/runbooks/RB-04.md`, `docs/governance/REGISTO-Deferimentos.md` (`DEF-281`) |
+
+### Contexto
+
+Fecha **DEF-281**, aberto desde 2026-08-27 e declarado no código desde então.
+
+O SLI `mediation_overhead_p95` derivava da latência do span `execute_tool`. Esse span **envolve a
+execução da tool**: `Monitor.evaluate` chama `m.dispatch` antes de devolver a decisão, pelo que só
+fecha depois de a tool correr. O que o SLO de 15 ms exprime (`tecnica/19` §4) é o overhead da
+**decisão** — o que a mediação acrescenta —, que os selos `tool.call.mediated.latency_ns` mediram em
+**2–8,6 ms** nos runs reais. A execução em gVisor mediu **0,6–1,8 s** no E2E de 2026-09-15. Duas
+ordens de grandeza entre o que se media e o que se dizia medir.
+
+**Observado em produção a 2026-09-15/16.** O run `run-delegado-1789519407` — dois turnos, **uma**
+tool call `doc_read` — fez disparar `mediation_overhead_high` (catálogo `mediation`) e
+`mediation_overhead_p95_high` (catálogo `operational`), ambos `critical`, com `valor=1.21099128e+09`
+ns contra `slo=1.5e+07` ns, streak a subir até 4, sobre **uma** amostra. Quando a janela de 5 min
+rolou, o SLI voltou a zero amostras e o alerta calou-se. Antes, a 2026-08-27: 1 amostra, `3,047 s`.
+
+Em qualquer nó com sandbox real, uma tool call normal violava o SLO por duas ordens de grandeza e
+produzia um `critical` com rota para o **RB-04 («Falha de PDP»)** — que manda depurar a peça sã. O
+dano não é o ruído: é que um alerta que toca sempre ensina a ignorar a classe inteira, e o custo
+cobra-se no `critical` verdadeiro que ninguém vai ver.
+
+O `tecnica/19` contribuía para o erro: o §4 aplica os 15 ms à avaliação de política, o §7 (S-02f)
+listava `EXEC` **dentro** da cadeia orçamentada, e nenhuma das leituras estava marcada como
+vinculativa. A arbitragem está no **ADR-026**.
+
+### Objectivo
+
+Separar as duas medidas, decidindo qual delas o SLO governa: o SLI passa a medir só o **overhead da
+decisão** (a janela que termina no selo pré-efeito, antes do despacho), o alvo de 15 ms mantém-se
+porque passa a ser comparável com o que se mede, e a **duração da tool call mediada** fica
+observável e **sem SLO** até haver alvo ratificado.
+
+### Critérios de Aceitação
+
+- [x] O Reference Monitor mede a janela da decisão — política, obrigações e selo pré-efeito,
+      **excluindo** o despacho — e publica-a em `Decision.DecisionLatency` e no atributo de span
+      `aos.mediation.decision_latency_ns`
+- [x] `overheadP95SLI` deriva desse atributo; mantém o filtro da decisão e **não** cai para a
+      latência do span quando o atributo falta (`Samples == 0`, `avaliavel="0"`)
+- [x] O selo `tool.call.mediated.latency_ns` fica **inalterado** (contrato de fio ancorado no WORM)
+- [x] Teste de regressão com os números do incidente: decisão de 8,6 ms + execução de 1,21 s **não**
+      viola o SLO de 15 ms, e não acende nenhum dos dois `critical` em nenhum dos dois catálogos
+- [x] Teste do sinal: uma **decisão** de 120 ms continua a acender `mediation_overhead_high` e
+      `mediation_overhead_p95_high` — a correcção não é um silenciador
+- [x] `tecnica/19` §4 (linha RM), §7 (S-02f) e §8 coerentes com a escolha; `tecnica/08` ganha a §7.1
+      com a tabela dos quatro SLIs que o `slo.go` já citava e que não existia
+- [x] ADR-026 ratificado; `DEF-281` fechado no registo de deferimentos
+- [x] RTM regenerada; `rtm`, `ref-lint`, `estado-citado` e `deferrals` verdes
+
+### Detalhes Técnicos
+
+- `packages/kernel/reference-monitor/monitor.go`, `decision.go` — a leitura da janela e o atributo
+  de span; a anotação vive no `defer` de `Mediate`, que cobre todos os caminhos de retorno.
+- `packages/substrate/otel-genai/semconv.go`, `wide_event.go`, `slo.go` — a constante do atributo, o
+  campo tipado derivado do bag, e a nova fonte do SLI.
+- Sem instrumentação nova no sentido de cronómetro novo: a janela já era lida para selar o
+  `tool.call.mediated`; o que faltava era atravessar a fronteira até ao wide event.
+
+### Testes Requeridos
+
+- Unidade (kernel): a janela da decisão exclui o despacho, com relógio manual; o span publica-a; num
+  deny as duas janelas coincidem; o selo não muda de significado.
+- Unidade (substrate): regressão com os números de produção; o sinal continua a disparar; um span
+  sem a medida não entra na amostra; a derivação sobrevive à projecção span → wide event.
+- Integração (nó): o avaliador de SLOs do AOS-274 continua a disparar sobre spans reais.
+
+### Definition of Done
+
+- [x] Critérios de Aceitação satisfeitos e verificados por teste
+- [x] Gates de CI/CD verdes; scan de segredos limpo
+- [x] ADR-026 e cross-refs (`tecnica/08`, `tecnica/19`, RB-04) actualizados
+
+### Estado
+
+**IMPLEMENTADO.** Criado e executado a 2026-09-16. Fecha `DEF-281`.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -674,3 +774,4 @@ Testa violação sintética de cada SLO crítico e o encaminhamento. Corre gates
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | Setembro 2026 | Adenda pós-encerramento: AOS-398 (DEF-281 — o SLI de overhead de mediação media a execução da tool; ADR-026) | Equipa AOS |

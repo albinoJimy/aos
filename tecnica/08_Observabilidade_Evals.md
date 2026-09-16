@@ -153,6 +153,36 @@ O plano-base filtrava no *emit-time* (*"diagnósticos auto-limpam, só emito sin
 
 Isto suporta o pilar de métricas com SLIs/SLOs (cache-hit-rate, overhead de mediação p95, custo por trajectória, override-rate) por agregação *ad hoc* sobre os wide events, e alimenta a detecção de anomalias que, por sua vez, informa o circuit breaker e a demoção automática de autonomia (L0–L5, ver `tecnica/09`). A distinção crítica: os wide events são **diagnósticos efémeros** com TTL — não devem confundir-se com o audit trail, que é permanente e tamper-evident (secção 8).
 
+### 7.1 Os quatro SLIs da mediação e o que cada um mede
+
+A tabela abaixo é a referência que `packages/substrate/otel-genai/slo.go` cita. Cada SLI nomeia a
+**dimensão exacta** de onde sai, porque é aí que o erro se esconde: um SLI e o seu SLO podem estar
+ambos certos e o par ser inútil se o número lido não for o número que o alvo descreve.
+
+| SLI | Fonte no wide event | SLO | Driver |
+|---|---|---|---|
+| `cache_hit_rate` | `aos.cache.hit_rate` dos spans `chat`, ponderado por prompt tokens | > 0,80 | ADR-009 |
+| `mediation_overhead_p95` | `aos.mediation.decision_latency_ns` dos spans `execute_tool` **que decidiram** | p95 < 15 ms | `tecnica/19` §4 |
+| `cost_per_trajectory` | custo agregado por trace (só spans `chat`, sem dupla-contagem) | tecto por trajectória | ADR-008 |
+| `override_rate` | fracção de decisões com `aos.decision == escalate` | tecto de fracção | ADR-010 |
+
+**O overhead de mediação é a janela da DECISÃO, não a da tool call.** O span `execute_tool` do
+Reference Monitor **fecha depois de a tool correr** — `Monitor.evaluate` despacha antes de devolver a
+decisão —, pelo que a latência do span é decisão + execução no sandbox. O que o SLO de 15 ms exprime
+é só o que a mediação **acrescenta**: identidade, PDP, orçamento, egress e selo pré-efeito. O kernel
+publica essa janela no atributo `aos.mediation.decision_latency_ns`, medido imediatamente antes do
+despacho, e é dele — não da latência do span — que o SLI deriva.
+
+Ler a janela errada custou um ano de alertas falsos: em qualquer nó com sandbox real, uma tool call
+normal violava o SLO por duas ordens de grandeza e acendia dois `critical` a apontar o RB-04 («Falha
+de PDP»), mandando depurar a peça sã. Era DEF-281, e está fechado por **AOS-398** / **ADR-026**.
+
+**A duração da tool call mediada inteira não tem SLO, e a omissão é deliberada.** Continua observável
+— é a latência do próprio span `execute_tool`, e o drill-down chega ao trace — mas nenhum documento
+normativo ratifica um orçamento para a execução de uma tool, que depende do runtime de sandbox e da
+tool concreta. Fixar aqui um limiar por estimativa reproduziria, com outro nome, o alerta mal
+calibrado que o AOS-398 apagou. Quando existir alvo ratificado, entra como SLI próprio.
+
 ---
 
 ## 8. Audit WORM e evals ligados ao trace

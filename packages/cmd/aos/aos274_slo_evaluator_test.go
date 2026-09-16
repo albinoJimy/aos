@@ -80,14 +80,21 @@ func aos274Service(t *testing.T, node *Node) *NodeService {
 }
 
 // aos274EmitToolSpans emite n spans `execute_tool` PELO TRACER DO NÓ — o mesmo caminho que a
-// mediação real usa. Com o relógio de [aos274Clock] a passo `step`, cada span fica com `step` de
-// latência, o que decide se o SLI de overhead p95 (SLO: 15 ms) cumpre ou viola.
-func aos274EmitToolSpans(node *Node, n int) {
+// mediação real usa. Com o relógio de [aos274Clock] a passo `step`, cada span fica com `step`
+// de latência de SPAN.
+//
+// `decisao` é a janela da DECISÃO que o span publica ([otelgenai.AttrMediationDecisionLatencyNanos]),
+// e é ELA que decide se o SLI de overhead p95 (SLO: 15 ms) cumpre ou viola — desde AOS-398 o
+// SLI não lê a latência do span, porque essa inclui a execução da tool no sandbox (DEF-281).
+// Quem chama passa habitualmente o mesmo `step` do nó, para que o cenário continue a ser
+// governado por um número só; passar um valor diferente modela um despacho não-instantâneo.
+func aos274EmitToolSpans(node *Node, n int, decisao time.Duration) {
 	for i := 0; i < n; i++ {
 		_, span := node.Tracer.StartSpan(context.Background(), otelgenai.OpExecuteTool)
 		span.SetAttribute(otelgenai.AttrOperationName, otelgenai.OpExecuteTool)
 		span.SetAttribute(otelgenai.AttrToolName, "aos274.tool")
 		span.SetAttribute(otelgenai.AttrDecision, otelgenai.DecisionPermit)
+		span.SetAttribute(otelgenai.AttrMediationDecisionLatencyNanos, decisao.Nanoseconds())
 		span.End()
 	}
 }
@@ -130,7 +137,7 @@ func TestAOS274_AlertaDisparaSobreSpansReais(t *testing.T) {
 	if node.sloTap == nil {
 		t.Fatal("com observabilidade ligada a torneira de spans (AOS-274) tinha de estar composta")
 	}
-	aos274EmitToolSpans(node, 12)
+	aos274EmitToolSpans(node, 12, 20*time.Millisecond)
 
 	// A janela sustentada mais longa em jogo é 3 (config da mediação, AOS-086): 3 observações
 	// consecutivas em breach. As duas primeiras NÃO podem disparar — é o anti-fadiga.
@@ -187,7 +194,7 @@ func TestAOS274_AlertaDisparaSobreSpansReais(t *testing.T) {
 func TestAOS274_SemBreachNaoDispara(t *testing.T) {
 	node := aos274Node(t, 1*time.Millisecond)
 	svc := aos274Service(t, node)
-	aos274EmitToolSpans(node, 12)
+	aos274EmitToolSpans(node, 12, 1*time.Millisecond)
 
 	var ev *SLOEvaluation
 	for i := 0; i < 4; i++ {
@@ -338,7 +345,7 @@ func TestAOS274_AdulteracaoDisparaIntegridadeMasIlegivelNaoInventa(t *testing.T)
 func TestAOS274_SemProdutorNaoDisparaNemAfirmaCumprimento(t *testing.T) {
 	node := aos274Node(t, 1*time.Millisecond)
 	svc := aos274Service(t, node)
-	aos274EmitToolSpans(node, 8)
+	aos274EmitToolSpans(node, 8, 1*time.Millisecond)
 
 	var ev *SLOEvaluation
 	for i := 0; i < 4; i++ {
@@ -377,7 +384,7 @@ func TestAOS274_TodoAlerteResolveRunbook(t *testing.T) {
 	}
 	node := aos274Node(t, 20*time.Millisecond)
 	svc := aos274Service(t, node)
-	aos274EmitToolSpans(node, 8)
+	aos274EmitToolSpans(node, 8, 20*time.Millisecond)
 
 	ev := svc.EvaluateSLOsNow(context.Background())
 	if len(ev.Alerts) == 0 {
@@ -411,7 +418,7 @@ func TestAOS274_LogEstruturadoLevaORunbook(t *testing.T) {
 		t.Fatalf("NewNodeService: %v", err)
 	}
 	svc.slo = newSLOEvaluator(node, DefaultSLOEvalInterval, DefaultSLOWindow)
-	aos274EmitToolSpans(node, 8)
+	aos274EmitToolSpans(node, 8, 20*time.Millisecond)
 	for i := 0; i < 3; i++ {
 		svc.EvaluateSLOsNow(context.Background())
 	}
@@ -598,7 +605,7 @@ func TestAOS274_MetricsExpoeSLOsEAlertas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAPIHandler: %v", err)
 	}
-	aos274EmitToolSpans(node, 8)
+	aos274EmitToolSpans(node, 8, 20*time.Millisecond)
 	var ev *SLOEvaluation
 	for i := 0; i < 3; i++ {
 		ev = svc.EvaluateSLOsNow(context.Background())

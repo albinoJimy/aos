@@ -18,18 +18,32 @@ func chatCacheCost(traceB, spanB byte, inTok int64, cacheRate float64, costMicro
 	return sd
 }
 
-// execToolLat constrói um span execute_tool com uma latência (o overhead de
-// mediação = End-Start) e uma decisão de mediação anotada.
+// execToolLat constrói um span execute_tool com uma decisão de mediação anotada e a
+// latência dada, publicada nas DUAS janelas que o span transporta desde AOS-398: a do
+// span (End-Start, decisão + despacho) e a da DECISÃO ([AttrMediationDecisionLatencyNanos],
+// a fonte do SLI de overhead).
+//
+// Fazê-las coincidir é a simplificação deliberada destes cenários — modelam um despacho
+// instantâneo, para que um número só continue a governar as expectativas de p95 a jusante.
+// Quem quiser as duas janelas SEPARADAS (o caso real, com a tool a correr no sandbox) usa
+// [execToolDecisaoEDespacho] ou os construtores de `overhead_mediacao_test.go`.
 func execToolLat(traceB, spanB byte, latency time.Duration, decision string) SpanData {
+	return execToolDecisaoEDespacho(traceB, spanB, latency, latency, decision)
+}
+
+// execToolDecisaoEDespacho constrói um span execute_tool em que a janela da DECISÃO e a
+// janela TOTAL do span são distintas — a diferença é o despacho da tool.
+func execToolDecisaoEDespacho(traceB, spanB byte, decisao, total time.Duration, decision string) SpanData {
 	attrs := []KeyValue{{Key: AttrOperationName, Value: OpExecuteTool}}
 	if decision != "" {
 		attrs = append(attrs, KeyValue{Key: AttrDecision, Value: decision})
+		attrs = append(attrs, KeyValue{Key: AttrMediationDecisionLatencyNanos, Value: decisao.Nanoseconds()})
 	}
 	return SpanData{
 		Name:          OpExecuteTool,
 		SpanContext:   SpanContext{TraceID: traceID(traceB), SpanID: spanID(spanB)},
 		StartUnixNano: 1_000_000,
-		EndUnixNano:   1_000_000 + latency.Nanoseconds(),
+		EndUnixNano:   1_000_000 + total.Nanoseconds(),
 		Attributes:    attrs,
 	}
 }

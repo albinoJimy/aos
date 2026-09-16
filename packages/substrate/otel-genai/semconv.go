@@ -79,6 +79,23 @@ const (
 	// AttrDecision — aos.decision: o efeito da mediação (permit|deny|escalate|error)
 	// anotado no span execute_tool, para leitura directa do veredicto no span.
 	AttrDecision = "aos.decision"
+	// AttrMediationDecisionLatencyNanos — aos.mediation.decision_latency_ns: a duração da
+	// CADEIA DE DECISÃO do Reference Monitor, em nanos, EXCLUINDO a janela do despacho da
+	// tool. É a medida que o SLI [SLIMediationOverheadP95] consome.
+	//
+	// Existe porque a latência do span `execute_tool` NÃO serve para isto: o span só fecha
+	// depois de a tool correr (`Monitor.evaluate` despacha antes de devolver a decisão),
+	// pelo que a sua janela envolve a execução no sandbox — 0,6–1,8 s medidos em gVisor —
+	// e não o custo que a mediação acrescenta (2–8,6 ms medidos). Era DEF-281, e o alerta
+	// `mediation_overhead_high` (critical, RB-04) disparava em qualquer nó com tráfego real.
+	//
+	// A JANELA é a mesma que o kernel já sabia ler para selar `tool.call.mediated.latency_ns`,
+	// estendida até ao fim do registo pré-efeito: no caminho de permit fecha depois de o selo
+	// estar durável e ANTES do despacho; nos caminhos de recusa/escalada, que não despacham,
+	// é toda a mediação. Ver AOS-398 e ADR-026.
+	//
+	// É uma duração, nunca um segredo.
+	AttrMediationDecisionLatencyNanos = "aos.mediation.decision_latency_ns"
 	// AttrCacheHitRate — aos.cache.hit_rate: o cache-hit-rate AGREGADO do prefixo
 	// (fracção [0,1] = cache_read_tokens / prompt_tokens) anotado no span da model
 	// call pelo Model Gateway (packages/platform/model-gateway/metering/cache_sli,
