@@ -18,9 +18,9 @@ package main
 // EXCLUSIVA de escrita ao sistema operativo ([eventstore.LockWAL], o árbitro do AOS-285, sobre o
 // irmão `<path>.lock`): uma segunda réplica `aos-orq` com o mesmo caminho é recusada ANTES de
 // abrir (o replay de abertura trunca uma cauda incompleta, e a cauda seria a escrita em curso do
-// outro processo) e sai com o código 5, como o `--wal` detido. A posse não cobre o nó `aos`, que
-// abre o seu `model-audit.wal` sem a pedir: um host que corra os dois tem de lhes dar caminhos
-// DISTINTOS. Um lock de SO sobre um volume partilhado por rede depende do sistema de ficheiros.
+// outro processo) e sai com o código 5, como o `--wal` detido. O nó `aos` pede a mesma posse
+// sobre o seu caminho (AOS-399): um host que corra os dois tem de lhes dar caminhos DISTINTOS, e
+// o segundo a arrancar num caminho partilhado é recusado. Um lock de SO sobre um volume partilhado por rede depende do sistema de ficheiros.
 
 import (
 	"errors"
