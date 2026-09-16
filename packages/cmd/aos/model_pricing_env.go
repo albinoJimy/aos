@@ -45,8 +45,9 @@ package main
 // `run_id:step_id` e duráveis); ligar aqui um [cost.BurndownSink] abriria um SEGUNDO
 // canal de contabilidade, em memória, com outra chave e outra retenção — exactamente o
 // que AOS-261 rejeitou. A agregação por run/árvore do recorder continua a correr e é
-// introspectável, mas quem decide o burn-down é o ledger, alimentado por este mesmo
-// número através do canal de custo.
+// introspectável, com tecto de retenção (AOS-397: `cost.DefaultRetainedKeys` por eixo,
+// despejo do menos-recentemente-usado), mas quem decide o burn-down é o ledger,
+// alimentado por este mesmo número através do canal de custo.
 
 import (
 	"errors"
