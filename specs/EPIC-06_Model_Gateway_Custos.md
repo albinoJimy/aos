@@ -53,6 +53,7 @@ O epic vive maioritariamente na **Fase 2** (governação e observabilidade — i
 | AOS-394 | Selos de governação do Model Gateway ligados ao run e ao passo | fix | M | P1 | AOS-265, AOS-278 |
 | AOS-395 | aos-orq: selos de governação do gateway do planeador duráveis e ligados ao run | fix | M | P2 | AOS-394, AOS-391 |
 | AOS-397 | Agregados por run do metering do GW sem remoção nem tecto | fix | M | P2 | AOS-394, AOS-062 |
+| AOS-399 | O nó pede a posse exclusiva do caminho do audit de governação do gateway | fix | S | P2 | AOS-265, AOS-285 |
 
 ---
 
@@ -756,14 +757,14 @@ As chamadas de decomposição do planeador deixam selos de governação durávei
 
 ### Critérios de Aceitação
 
-- [x] Os selos `modelgw-gov:*` do planeador são escritos num WORM durável (configuração à imagem de `AOS_MODEL_AUDIT_PATH` no nó) e o modo fica declarado no arranque; sem store durável, a postura volátil é declarada, nunca silenciosa. *(`packages/cmd/aos-orq/model_audit_env.go`: a mesma variável `AOS_MODEL_AUDIT_PATH` abre um `audit.FileStore`, e o `construirModeloGateway` recebe-o no lugar do `MemStore`. A variável resolve-se no `serve` **antes** de reclamar o run e só quando a decomposição vai pelo gateway (`--goal` sem fixture, gateway configurado). Um caminho que não abre, ou cujo directório não existe, aborta com `ErrBadModelAudit` sem tomar posse. A linha de postura (`modelAuditPostureBanner`) sai quando a decomposição vai pelo gateway: `DURAVEL` com o caminho, ou `IN-MEMORY (VOLATIL)` a dizer que os selos se perdem. **Acrescento à discovery**: o WORM do audit não arbitra entre processos, e duas réplicas `aos-orq` no mesmo caminho bifurcariam a hash-chain. A abertura pede primeiro a posse exclusiva ao SO (`eventstore.LockWAL`, o árbitro do AOS-285), e um segundo escritor sai com o código 5 antes de reclamar o run. O nó `aos` não pede essa posse: os caminhos dos dois binários têm de ser distintos, o que fica no runbook `PROC-DESPACHO-MULTIPROC` e em `tecnica/06` §5.)*
+- [x] Os selos `modelgw-gov:*` do planeador são escritos num WORM durável (configuração à imagem de `AOS_MODEL_AUDIT_PATH` no nó) e o modo fica declarado no arranque; sem store durável, a postura volátil é declarada, nunca silenciosa. *(`packages/cmd/aos-orq/model_audit_env.go`: a mesma variável `AOS_MODEL_AUDIT_PATH` abre um `audit.FileStore`, e o `construirModeloGateway` recebe-o no lugar do `MemStore`. A variável resolve-se no `serve` **antes** de reclamar o run e só quando a decomposição vai pelo gateway (`--goal` sem fixture, gateway configurado). Um caminho que não abre, ou cujo directório não existe, aborta com `ErrBadModelAudit` sem tomar posse. A linha de postura (`modelAuditPostureBanner`) sai quando a decomposição vai pelo gateway: `DURAVEL` com o caminho, ou `IN-MEMORY (VOLATIL)` a dizer que os selos se perdem. **Acrescento à discovery**: o WORM do audit não arbitra entre processos, e duas réplicas `aos-orq` no mesmo caminho bifurcariam a hash-chain. A abertura pede primeiro a posse exclusiva ao SO (`eventstore.LockWAL`, o árbitro do AOS-285), e um segundo escritor sai com o código 5 antes de reclamar o run. O nó `aos` pede a mesma posse desde o AOS-399, pelo que um nó e um `aos-orq` no mesmo caminho recusam-se um ao outro; os caminhos continuam a ter de ser distintos, o que fica no runbook `PROC-DESPACHO-MULTIPROC` e em `tecnica/06` §5.)*
 - [x] A chamada de decomposição leva o `RunID` do run e um `StepID` estável da tentativa de planeamento, pelo mesmo mecanismo escolhido no AOS-394. *(Pelo ctx: `planner.runAttempt` anexa `agentruntime.ContextWithModelCall(ctx, req.RunID, "planstep:decompose:<tentativa>")` e `gatewayDecomposeModel.Complete` lê o par e passa-o ao `port.ChatRequest`. A porta `decompose.Model` não muda. Sem anexo, os dois campos ficam vazios. Testes: `TestAOS395_RunAttempt_AnexaRunEPassoPorTentativa` (duas tentativas, dois passos distintos), `TestAOS395_Complete_LevaRunEPassoDoCtx` e `TestAOS395_Complete_SemCtxMostraAAusencia`.)*
 - [x] Teste por processo real (molde de `aos391_gateway_test.go`, com gateway falso): `serve --goal` sela com `RunID` igual a `--run` e o `StepID` da tentativa, e o selo é relido do ficheiro depois de o processo terminar. *(`TestAOS395_ProcessoReal_SeloDuravelComRunEPasso`: o binário compõe o gateway REAL (`NewProduction`) contra um upstream OpenAI em httptest. Depois de o processo sair, o selo `model:invoke` é relido de `modelgw-gov:board-eu` por `OpenFileStoreReadOnly`, com `RunID=run-aos395` e `StepID=planstep:decompose:1`. **FALHA-ANTES MEDIDA por mutação**: sem a anexação em `runAttempt`, o teste do planeador vê `SEM-ANEXO` e o de processo real lê `RunID=""`, com o ficheiro durável presente. As duas metades do ticket falham de forma independente.)*
 - [x] Fail-closed preservado: falha a selar ⇒ a decomposição não prossegue; nenhum nó é materializado. *(`TestAOS395_SeloFalha_NaoChamaOModeloNemDecompoe`: com o gateway composto por `construirModeloGateway` e um store que recusa o selo `model:invoke`, o `Complete` devolve erro e o upstream recebe **zero** pedidos (audit-before-effect do estágio de allowlist). O controlo positivo, com o mesmo store sem avaria, recebe um pedido. O erro do decompositor faz `decomporEMaterializar` sair antes da validação e da materialização. Na config: `TestAOS395_ProcessoReal_AuditMalConfiguradoAbortaSemPosse` (caminho que não abre ⇒ exit ≠ 0, sem nós) e `TestAOS395_ProcessoReal_CaminhoDetidoPorOutroEscritorSai5` (caminho detido ⇒ exit 5, sem `posse:`). **FALHA-ANTES MEDIDA** do último: sem o `LockWAL`, o segundo processo reclama o run e abre o WORM do outro. `TestAOS395_ProcessoReal_ServeSemGatewayIgnoraOAudit` guarda o inverso: um `serve` sem `--goal`, com o caminho detido, sai 0. Medido: com a abertura incondicional sai 5, e réplicas `--nats` que partilham o ambiente seriam recusadas sem chamarem o modelo.)*
 
 ### Estado
 
-**IMPLEMENTADO (2026-09-16).** Os selos de governação das decomposições do `aos-orq` ficam num WORM em ficheiro, com um só escritor por caminho arbitrado pelo SO, e levam o run e a tentativa pelo mecanismo do AOS-394. Verificado: suites `-race` verdes no módulo do orchestrator e em `cmd/aos-orq`; `build`, `layer-lint` e `gofmt` verdes; `lint`, RTM, `ref-lint`, `deferrals` e `estado-citado` verdes; falha-antes medida por mutação na correlação, na posse e no âmbito da abertura. Revisão adversarial independente: nenhum crítico ou alto; os achados médios e baixos foram corrigidos, excepto o residual abaixo. **Residuais declarados**: a posse do caminho não cobre o nó `aos`, que abre o seu `model-audit.wal` sem a pedir (fechá-lo é acrescentar esse caminho aos alvos de `tomarPosseDoWAL` do nó); e este caminho não tem ainda evidência de produção.
+**IMPLEMENTADO (2026-09-16).** Os selos de governação das decomposições do `aos-orq` ficam num WORM em ficheiro, com um só escritor por caminho arbitrado pelo SO, e levam o run e a tentativa pelo mecanismo do AOS-394. Verificado: suites `-race` verdes no módulo do orchestrator e em `cmd/aos-orq`; `build`, `layer-lint` e `gofmt` verdes; `lint`, RTM, `ref-lint`, `deferrals` e `estado-citado` verdes; falha-antes medida por mutação na correlação, na posse e no âmbito da abertura. Revisão adversarial independente: nenhum crítico ou alto; os achados médios e baixos foram corrigidos, excepto o residual abaixo. **Residual declarado**: este caminho não tem ainda evidência de produção. A posse do caminho no nó `aos`, que ficou como residual na revisão, fechou com o AOS-399 (tomada em `parseModelAuditFromEnv`, antes da abertura, e não em `tomarPosseDoWAL`, que corre depois).
 
 ---
 
@@ -805,6 +806,42 @@ A retenção por run do metering do gateway é limitada e a política fica decla
 
 ---
 
+## AOS-399 — O nó pede a posse exclusiva do caminho do audit de governação do gateway
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-265 (audit de governação durável do gateway), AOS-285 (posse de escrita arbitrada pelo SO) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/model_audit_env.go`, `packages/cmd/aos/wal_posse.go`, `packages/substrate/eventstore/wallock.go`, `packages/cmd/aos/aos285_guard_arranque_test.go` |
+
+### Contexto
+
+O nó abre o WORM de governação do gateway a partir de `AOS_MODEL_AUDIT_PATH` em `parseModelAuditFromEnv`, chamado por `parseModelFromEnv` antes do `Bootstrap`. O guard de arranque do AOS-285 (`tomarPosseDoWAL`, no `Bootstrap`) pede a posse do Event Store e do WORM do nó, mas não a deste caminho. Dois processos apontados ao mesmo ficheiro abriam-no ambos: o segundo corria o replay da abertura, que trunca uma cauda incompleta e pode assim cortar a escrita em curso do primeiro, e selava a sua activação da allowlist na mesma partição `modelgw-gov:<board>`. A hash-chain bifurca, e a reabertura recusa a cadeia (medido para o WORM do nó no AOS-284). A variável tem o mesmo nome no `aos-orq` (AOS-395), pelo que a colisão pode vir de outro nó ou de um `aos-orq` no mesmo host. Até aqui só a documentação a impedia. Achado da revisão do AOS-395, onde ficou como residual declarado.
+
+### Objectivo
+
+Um segundo escritor do mesmo `AOS_MODEL_AUDIT_PATH` é recusado no arranque do nó, pela mesma via do Event Store e do WORM detidos, antes de o ficheiro ser aberto.
+
+### Critérios de Aceitação
+
+- [x] A posse exclusiva do caminho é pedida ao SO antes do `audit.OpenFileStore`, pelo mecanismo do AOS-285. *(`parseModelAuditFromEnv` chama `tomarPosse`, o laço de `tomarPosseDoWAL` extraído para ser partilhado, com o caminho como alvo. A posse fica aqui e não na tabela do `Bootstrap` porque este store abre-se antes dele: trancar no `Bootstrap` deixaria o replay correr sobre o ficheiro de outro escritor. O store devolvido (`modelAuditDetido`) fecha o WAL e só depois larga a posse; em produção ambos vivem até ao fim do processo, como antes.)*
+- [x] O segundo escritor é recusado pela saída existente de posse detida: `ErrEventStoreJaDetido`, com o ficheiro e a razão, e não `ErrBadModelAudit`. *(A acção do operador é parar o outro escritor, não corrigir o caminho. O processo sai pelo `main` como nas outras recusas de posse: código 1 e a mensagem no stderr.)*
+- [x] Teste por processo real. *(`TestAOS399_ProcessoReal_SegundoNoNoMesmoModelAuditRecusa`: compila o nó; o nó A serve com o caminho, o nó B, com Event Store e WORM próprios, é recusado com a mensagem que nomeia `AOS_MODEL_AUDIT_PATH` e o ficheiro, e o WAL de A fica byte a byte igual. Morto A, o mesmo B arranca e reabre a cadeia. Complementos no processo do teste: `TestAOS399_ModelAuditDetidoRecusaSemAbrir` (erro classificado e WAL não criado) e `TestAOS399_CloseLargaAPosseEOWORMDoNoNaoPartilhaOCaminho` (o `Close` larga a posse; um `AOS_WORM_PATH` igual ao caminho do audit é recusado pelo guard do WORM, porque a posse do audit já foi tomada no mesmo processo). **FALHA-ANTES MEDIDA por mutação**: sem a posse, B sai 0 e os três testes falham; com a posse tomada depois do `OpenFileStore`, o teste da ordem vê o WAL criado.)*
+- [x] O teste de reabertura do AOS-265 (`TestParseModelAuditFromEnv_Duravel_AbreWORM`) fecha o primeiro store antes de reabrir, como num restart. *(Com o primeiro aberto, a posse recusa a segunda abertura no mesmo processo, que é o comportamento pedido.)*
+
+### Estado
+
+**IMPLEMENTADO (2026-09-16).** O nó recusa arrancar sobre um `AOS_MODEL_AUDIT_PATH` detido por outro processo, antes de abrir o WAL. Verificado: suite de `cmd/aos` verde; falha-antes medida por mutação (sem posse, e com a posse depois da abertura). **Limites declarados**: a posse só protege entre processos que a pedem (o nó desde este ticket, o `aos-orq` desde o AOS-395, onde sai com o código 5); um lock de SO sobre um volume partilhado por rede depende do sistema de ficheiros, como para o Event Store e o WORM do nó.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -820,3 +857,4 @@ A retenção por run do metering do gateway é limitada e a política fica decla
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-09-15 | AOS-394 e AOS-395: selos de governação do gateway sem run nem passo (achado do E2E em produção) | Equipa AOS |
 | 1.2 | 2026-09-15 | AOS-394 implementado; AOS-397 aberto (retenção por run do metering) a partir da revisão adversarial | Equipa AOS |
+| 1.3 | 2026-09-16 | AOS-395 implementado; AOS-399: o nó pede a posse exclusiva do caminho do audit de governação do gateway (residual da revisão do AOS-395, fechado) | Equipa AOS |

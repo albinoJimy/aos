@@ -151,21 +151,31 @@ var ErrEventStoreJaDetido = errors.New("aos: Event Store já detido por outro pr
 // para ler», escreveria na mesma no primeiro run — e é a escrita concorrente que
 // corrompe.
 func tomarPosseDoWAL(cfg Config) (*posseDoWAL, error) {
-	p := &posseDoWAL{}
 	// Cada alvo com a sua razão: o Event Store porque não arbitra entre processos
 	// (DEF-282); o WORM porque dois escritores forkam a hash-chain e o nó deixa de
 	// arrancar (medido — ver [guardDoWORMAplicavel]).
-	alvos := []struct {
-		path   string
-		aplica bool
-		nome   string
-		porque string
-	}{
+	return tomarPosse([]alvoDePosse{
 		{mustPath(guardDePosseAplicavel(cfg)), mustOK(guardDePosseAplicavel(cfg)), "Event Store",
 			"o Event Store de referência não arbitra entre processos — ver DEF-282 e ADR-023 §4"},
 		{mustPath(guardDoWORMAplicavel(cfg)), mustOK(guardDoWORMAplicavel(cfg)), "WORM",
 			"dois escritores FORKAM a hash-chain (medido: ambos escrevem audit_seq=1) e o arranque seguinte RECUSA a cadeia como adulterada — ver AOS-284"},
-	}
+	})
+}
+
+// alvoDePosse é um ficheiro durável cuja posse exclusiva de escrita o nó pede ao SO,
+// com o nome e a razão que a recusa mostra ao operador.
+type alvoDePosse struct {
+	path   string
+	aplica bool
+	nome   string
+	porque string
+}
+
+// tomarPosse adquire, em série, a posse de cada alvo que se aplica. É o mecanismo
+// partilhado por [tomarPosseDoWAL] (no Bootstrap) e pela posse do audit do Model
+// Gateway (em [parseModelAuditFromEnv], que corre ANTES do Bootstrap — ver AOS-399).
+func tomarPosse(alvos []alvoDePosse) (*posseDoWAL, error) {
+	p := &posseDoWAL{}
 	for _, a := range alvos {
 		if !a.aplica {
 			continue
