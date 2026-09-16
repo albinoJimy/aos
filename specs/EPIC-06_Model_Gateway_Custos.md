@@ -764,7 +764,16 @@ As chamadas de decomposição do planeador deixam selos de governação durávei
 
 ### Estado
 
-**IMPLEMENTADO (2026-09-16).** Os selos de governação das decomposições do `aos-orq` ficam num WORM em ficheiro, com um só escritor por caminho arbitrado pelo SO, e levam o run e a tentativa pelo mecanismo do AOS-394. Verificado: suites `-race` verdes no módulo do orchestrator e em `cmd/aos-orq`; `build`, `layer-lint` e `gofmt` verdes; `lint`, RTM, `ref-lint`, `deferrals` e `estado-citado` verdes; falha-antes medida por mutação na correlação, na posse e no âmbito da abertura. Revisão adversarial independente: nenhum crítico ou alto; os achados médios e baixos foram corrigidos, excepto o residual abaixo. **Residual declarado**: este caminho não tem ainda evidência de produção. A posse do caminho no nó `aos`, que ficou como residual na revisão, fechou com o AOS-399 (tomada em `parseModelAuditFromEnv`, antes da abertura, e não em `tomarPosseDoWAL`, que corre depois).
+**IMPLEMENTADO (2026-09-16).** Os selos de governação das decomposições do `aos-orq` ficam num WORM em ficheiro, com um só escritor por caminho arbitrado pelo SO, e levam o run e a tentativa pelo mecanismo do AOS-394. Verificado: suites `-race` verdes no módulo do orchestrator e em `cmd/aos-orq`; `build`, `layer-lint` e `gofmt` verdes; `lint`, RTM, `ref-lint`, `deferrals` e `estado-citado` verdes; falha-antes medida por mutação na correlação, na posse e no âmbito da abertura. Revisão adversarial independente: nenhum crítico ou alto; os achados médios e baixos foram corrigidos, excepto o residual abaixo. A posse do caminho no nó `aos`, que ficou como residual na revisão, fechou com o AOS-399 (tomada em `parseModelAuditFromEnv`, antes da abertura, e não em `tomarPosseDoWAL`, que corre depois).
+
+**VERIFICADO EM PRODUÇÃO (2026-09-16, v0.1.16).** O deploy da `v0.1.16` (commit `3a5aaa6`, imagem `aos-node@sha256:7e35a476…`) não põe este caminho a correr, porque o `aos-orq` não vem na release nem na imagem do nó. A prova fez-se por um run avulso no servidor: o `aos-orq` linux compilado do `3a5aaa6` correu uma vez num contentor efémero na rede `aos_default`, contra o litellm de produção (`gpt-4o-mini`), com `AOS_MODEL_AUDIT_PATH` numa pasta temporária. O arranque declarou a postura `DURAVEL`. Depois de o processo sair, o WORM foi aberto com `OpenFileStoreReadOnly`, que valida a cadeia, e a partição `modelgw-gov:board-eu` tinha três selos `allow` de `model:invoke`:
+
+| Run | Seq | StepID |
+|---|---|---|
+| `run-aos395-prod-1789586701` | 1, 2, 3 | `planstep:decompose:1`, `:2`, `:3` |
+| `run-aos395-prod-1789587285` | 1, 2, 3 | `planstep:decompose:1`, `:2`, `:3` |
+
+Todos levam o `RunID` do seu run e a cadeia liga-se (o `PrevHash` de cada selo é o `EntryHash` do anterior). As três tentativas por run aconteceram porque o decompositor recusou os três planos devolvidos pelo modelo (`plan: objective de topo em falta`; o litellm respondeu 200 às seis chamadas). Nada foi materializado. A recusa não é deste ticket: é uma lacuna do prompt do planeador, registada no **AOS-400**. As pastas temporárias foram apagadas do servidor.
 
 ---
 

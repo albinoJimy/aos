@@ -65,6 +65,7 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 | AOS-390 | Compor o despacho governado do Planeador (`plandispatch.Dispatcher` sob Tenure) | feature | L | P0 | AOS-281, AOS-237, AOS-238, AOS-389 |
 | AOS-391 | T2-B: compor o `decompose.Model` real via Model Gateway | feature | L | P1 | AOS-388, AOS-390, AOS-278 |
 | AOS-393 | Fix fail-closed: o ramo papéis-que-expandem via `Delegator.Spawn` é recusado no `--goal` (depth_mismatch; `agent.spawn` latente) | feature (correcção) | S | P1 | AOS-388, AOS-026, AOS-237 |
+| AOS-400 | O prompt de decomposição declara o schema do `PlanDocument` que o decode exige | fix | M | P1 | AOS-241, AOS-273, AOS-391 |
 
 ---
 
@@ -685,7 +686,7 @@ Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nome
 Compor um `decompose.Model` de produção que invoca o Model Gateway para produzir o `PlanDocument` a partir do `goal`, sob a identidade e o orçamento corretos, substituindo o `fixtureModel` no caminho `--goal`. Fecha DEF-803 e o critério de saída do goal→DAG real.
 
 ### Critérios de Aceitação
-- [x] `--goal` **sem** `--decompose-fixture` produz um `PlanDocument` via Model Gateway (deixa de recusar); `--decompose-fixture` continua disponível para testes offline. *(Cablagem entregue: `packages/cmd/aos-orq/model_gateway_wiring.go` — `gatewayDecomposeModel` fala directo com `port.Gateway.Chat` (system+user); composição via `modelgateway.NewProduction` em `decomporEMaterializar`. Build OFFLINE verde. O caminho VIVO é **env-gated** — `AOS_MODEL_ENDPOINT`+`AOS_MODEL_NAME`+credencial+rede — corre onde há endpoint, como os testes `--nats` cluster-gated.)*
+- [~] `--goal` **sem** `--decompose-fixture` produz um `PlanDocument` via Model Gateway (deixa de recusar); `--decompose-fixture` continua disponível para testes offline. *(Cablagem entregue: `packages/cmd/aos-orq/model_gateway_wiring.go` — `gatewayDecomposeModel` fala directo com `port.Gateway.Chat` (system+user); composição via `modelgateway.NewProduction` em `decomporEMaterializar`. Build OFFLINE verde. O caminho VIVO é **env-gated** — `AOS_MODEL_ENDPOINT`+`AOS_MODEL_NAME`+credencial+rede — corre onde há endpoint, como os testes `--nats` cluster-gated.)* **Reaberto a 2026-09-16:** com o modelo de produção a chamada chega ao gateway e é selada, mas o planeador recusa os três planos (`plan: objective de topo em falta`), porque o prompt não declara o schema que o decode exige. O critério volta a `[x]` com a evidência do **AOS-400**.
 - [x] A invocação corre sob NHI com `model:invoke` **verificada**; a decisão ADR-020 está documentada e implementada. *(O token do run sela `model:invoke` (`planner_wiring.go`, `coordCaps`); o estágio authn REAL do gateway (`authn.New(verifier, autoridadeModelo, LoadPolicy())`) verifica-o fail-closed. Fidelidade ADR-020 RESIDUAL declarada: usa-se o token do RUN, não o `agent:planner`, porque o `planner.Planner` não expõe o token filho ao decompositor — follow-up no control-plane.)*
 - [~] A reserva de planeamento é admitida antes da decomposição (AOS-234) — SIM (via `planner.Planner`). O custo do turno para o burn-down (AOS-259) — `Cost: nil` (sem tabela de preços montada) ⇒ transporta ZERO declarado; montar o `cost.Recorder` (à imagem de `cmd/aos/model_pricing_env.go`) é follow-up.
 - [x] O `PlanDocument` passa pelo validador puro (AOS-231) e, se tiver condicionais, são **avaliadas** por AOS-390 (landed) — nem recusadas nem fail-open. *(O caminho `--goal` valida com `planvalidate.Validate` e despacha via o Dispatcher composto.)*
@@ -782,6 +783,61 @@ Corrige o ramo papéis-que-expandem do --goal do aos-orq (AOS-393, EPIC-19).
 
 ---
 
+## AOS-400 — O prompt de decomposição declara o schema do `PlanDocument` que o decode exige
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-009 (cache-estabilidade do prompt) e ADR-012 (mutação governada do prompt) citados
+     neste bloco são MENÇÃO — restrições que o ticket respeita — não implementação. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-241 (prompt SemVer, golden-sets e eval-gate), AOS-273 (precedente: a regra do `plan_version`), AOS-391 (decomposição pelo Model Gateway) |
+| Bloqueia | AOS-391 (critério «`--goal` sem fixture produz um `PlanDocument`», que não se cumpre com o modelo vivo) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/plannerprompt/artifact.go` (`decompositionTemplateV1`, `Current`), `packages/control-plane/orchestrator/plan/plandocument.go` (`Decode`, `validateShape`), `packages/control-plane/orchestrator/decompose/decompose.go` (`renderUser`, `extractJSON`), `packages/control-plane/orchestrator/plannerprompt/prompt.go` (`ValidatePromptMutation`) |
+
+### Contexto
+
+Medido em produção a 2026-09-16, na validação do AOS-395. O `aos-orq` compilado do `3a5aaa6` correu duas vezes contra o litellm de produção (`gpt-4o-mini`) com `serve --goal`. Nas duas, o litellm respondeu 200 às três tentativas e o planeador recusou os três planos:
+
+```
+aos-orq: decomposição do objectivo: planner: decomposição falhou em todas as tentativas:
+  decompose: documento invalido: plan: objective de topo em falta
+```
+
+Nada foi materializado (fail-closed correcto). A decomposição por LLM vivo nunca tinha produzido um plano aceite: os testes do AOS-388/391/395 usam fixtures ou upstreams falsos que já devolvem o schema certo.
+
+**Causa.** O template `decompositionTemplateV1` (prompt 1.1.0) exige «UM PlanDocument JSON de schema FECHADO (sem campos extra)», mas nunca diz quais são os campos. Nomeia só os campos por nó `node_id`, `role`, `objective` e `depends_on`, mais `planner_meta` e `plan_version`. O `plan.Decode` recusa campos desconhecidos (`DisallowUnknownFields`) e o `validateShape` exige:
+- no topo: `plan_version`, `objective`, `planner_meta` completo e `nodes` não vazio;
+- em cada nó: `node_id`, `role` e `objective` não vazios, `risk_class` num valor válido, e cada referência de ferramenta com `name`, `version` e `digest`.
+
+O template não menciona o `objective` de topo, o `budget_total`, o nome da lista `nodes`, nem os campos de nó `tools`, `budget_estimate` e `risk_class`. O modelo não tem como adivinhar um schema fechado que não vê. O primeiro campo em falta é o `objective` de topo. É a mesma classe de lacuna que o AOS-273 fechou para o `plan_version`, que o template também não nomeava: um prompt é um pedido e o validador impõe, mas o pedido tem de conter o contrato.
+
+### Objectivo
+
+Com o modelo de produção, `serve --goal` sem fixture produz um `PlanDocument` que passa o `plan.Decode` e o validador AOS-231, sem mudar o contrato do schema nem enfraquecer a validação.
+
+### Critérios de Aceitação
+
+- [ ] O template declara o schema completo do `PlanDocument`: os campos de topo e de nó, quais são obrigatórios, a forma das referências de ferramenta e dos orçamentos, os valores de `risk_class`, e que campos fora do schema são recusados. O texto continua estático (cache-estável, ADR-009); o conteúdo variável continua no `renderUser`.
+- [ ] A mudança é um bump governado por `ValidatePromptMutation` (ADR-012), com a classe SemVer justificada (MINOR se só acrescenta o contrato, como no AOS-273) e o `Current` actualizado.
+- [ ] Os golden-sets e o eval-gate do prompt (AOS-241) ficam verdes com a nova versão, e há um caso que falha com o template 1.1.0: um documento sem `objective` de topo é o que um modelo produz sem o schema.
+- [ ] Um teste impede a regressão da lacuna: cada campo obrigatório de `validateShape` aparece nomeado no template. Um campo novo obrigatório no `PlanDocument` sem menção no prompt faz o teste falhar.
+- [ ] Evidência de sistema: um run avulso em produção (a forma registada no AOS-395) produz `decomposto: objectivo -> plano de N nos` com o modelo real, e o selo do planeador fica no WORM como antes. Se o modelo continuar a falhar por outra forma, a causa fica registada neste ticket.
+- [ ] O critério do AOS-391 «`--goal` sem fixture produz um `PlanDocument`» volta a `[x]` com esta evidência.
+
+### Estado
+
+**ABERTO.** Criado a 2026-09-16 a partir da validação em produção do AOS-395; discovery read-only feita, nenhuma alteração de código.
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -819,4 +875,5 @@ Corrige o ramo papéis-que-expandem do --goal do aos-orq (AOS-393, EPIC-19).
 |---|---|---|---|
 | 1.0 | 2026-08-02 | Emissão inicial: decomposição do `tecnica/18` v1.0 (Ratificado) em 15 tickets AOS-230..244. | Equipa AOS |
 | 1.1 | 2026-09-09 | +AOS-388 (Decomposer LLM de produção + wiring multi-nó no aos-orq): gradua a decomposição LLM offline (doubles) para viva, fechando DEF-803 e a dependência de Model Gateway nomeada em §2/§6. | Equipa AOS |
+| 1.2 | 2026-09-16 | +AOS-400 (o prompt de decomposição declara o schema do `PlanDocument`): a validação em produção do AOS-395 mostrou o modelo real a falhar 3/3 com `objective de topo em falta`; o critério de cabeçalho do AOS-391 passa a `[~]`. | Equipa AOS |
 | 1.2 | 2026-09-10 | +AOS-389/390/391 (despacho governado do Planeador para v1.1 distribuído): guard fail-closed de condicionais (389), composição do `plandispatch.Dispatcher` sob Tenure com avaliação de elegibilidade/condicionais/headroom (390), e T2-B do Model Gateway (391). Origem: análise adversarial que mediu a violação fail-open do ADR-022 §2.1 no spawn-eager. | Equipa AOS |
