@@ -242,6 +242,8 @@ O ramo de allowlist do diagrama vive em `packages/platform/model-gateway/policy/
   - O **evento de variância** (troca de modelo/provider/região) continua a ser emitido sem run nem passo, mesmo agora que o selo da troca os leva: quem junta os dois trilhos fá-lo pela partição e pela hora.
   - O registo de **atribuição** (partição `modelgw:<raiz-humana>`) leva o passo desde AOS-394, mas não está composto no nó de referência.
 
+  **Um escritor por caminho (AOS-399).** O WORM de governação não arbitra entre processos: dois escritores na mesma partição bifurcam a hash-chain, e a reabertura recusa a cadeia. O nó pede ao SO a posse exclusiva de `AOS_MODEL_AUDIT_PATH` (`eventstore.LockWAL` sobre `<path>.lock`, o árbitro do AOS-285) antes de abrir o ficheiro, porque o replay da abertura trunca uma cauda incompleta que pode ser a escrita em curso de outro processo. A posse é tomada em `parseModelAuditFromEnv` e não no guard do `Bootstrap`, porque o cliente de modelo compõe-se antes dele. Um caminho detido faz o nó recusar o arranque com `ErrEventStoreJaDetido`, a recusa do Event Store e do WORM detidos. O mesmo mecanismo recusa um `AOS_WORM_PATH` igual a este caminho no mesmo nó.
+
 ---
 
 ## 6. Roteamento cost/load-aware e model tiering
