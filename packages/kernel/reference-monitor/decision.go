@@ -74,6 +74,18 @@ type Decision struct {
 	Obligations []Obligation
 	// Latency é o tempo total de mediação (avaliação + registo + despacho).
 	Latency time.Duration
+	// DecisionLatency é o tempo da CADEIA DE DECISÃO apenas — avaliação de política,
+	// obrigações e registo pré-efeito — EXCLUINDO a janela do despacho da tool.
+	//
+	// Num permit é ESTRITAMENTE MENOR que [Latency]: fecha depois de o selo pré-efeito
+	// `tool.call.mediated` estar durável e ANTES de a tool ser despachada.
+	// Numa recusa ou escalada é IGUAL a [Latency] — esses caminhos não despacham nada.
+	//
+	// É esta, e não [Latency], que exprime o custo que a mediação ACRESCENTA, e é a que
+	// o SLO de overhead de mediação (p95 < 15 ms) mede. Confundi-las fazia o SLI reportar
+	// a duração da execução no sandbox — 0,6–1,8 s em gVisor — como overhead de decisão,
+	// e disparar um `critical` em qualquer nó com tráfego real (DEF-281, fechado por AOS-398).
+	DecisionLatency time.Duration
 	// MediationSeq é o seq do evento de mediação no Event Store (0 se o registo
 	// não produziu seq).
 	MediationSeq uint64
