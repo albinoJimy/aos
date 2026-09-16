@@ -66,6 +66,7 @@ import (
 	"github.com/aos-ref/control-plane/orchestrator/planmaterialize"
 	"github.com/aos-ref/control-plane/runlifecycle"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	audit "github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -123,7 +124,7 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
           em paralelo sao suportadas e o vencedor e decidido pelo LEASE (3).
           [--nats-stream NOME] [--nats-replicas N] [--nats-region REGIAO]
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL detido por outro ESCRITOR
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR
 `)
 }
 
@@ -181,6 +182,27 @@ func cmdServe(args []string) error {
 	}
 	defer func() { _ = fechar() }()
 	fmt.Println(sub.descrever())
+
+	// AOS-395: o audit de governação do gateway resolve-se ANTES de tomar posse do run. Um
+	// AOS_MODEL_AUDIT_PATH inválido aborta aqui, sem reclamar o lease nem escrever no log —
+	// abortar depois da posse deixaria um lease tomado por causa de um erro de config. Um
+	// caminho detido por outro processo sai com 5, como o WAL detido. Só se abre quando a
+	// decomposição vai DE FACTO pelo gateway: um `serve` sem `--goal`, com fixture ou sem
+	// gateway não sela nada, e trancar-lhe o caminho recusaria réplicas `--nats` que partilham
+	// o ambiente sem nunca chamarem o modelo (AOS-100). Um erro de config do gateway é
+	// reportado pelo ramo do `--goal`, abaixo.
+	var govAudit audit.Store
+	var govAuditPath string
+	if *goal != "" && *decomposeFixture == "" {
+		if gw, gwErr := gatewayConfigFromEnv(); gwErr == nil && gw != nil {
+			st, caminho, fecharAudit, err := parseModelAuditFromEnv()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = fecharAudit() }()
+			govAudit, govAuditPath = st, caminho
+		}
+	}
 
 	leases, err := durable.NewLeaseManager(store, leaseTTL, durable.WithWorkerID(*worker))
 	if err != nil {
@@ -254,7 +276,12 @@ func cmdServe(args []string) error {
 		if model == nil && gwCfg == nil {
 			return errors.New("--goal exige --decompose-fixture (pipeline offline) OU o Model Gateway (AOS_MODEL_ENDPOINT + AOS_MODEL_NAME); nenhum composto")
 		}
-		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker); err != nil {
+		// AOS-395: a postura do audit de governação declara-se quando a decomposição vai de
+		// facto pelo gateway (sem fixture) — amarrada ao estado composto, não à intenção.
+		if linha := modelAuditPostureBanner(model == nil && gwCfg != nil, govAuditPath); linha != "" {
+			fmt.Println(linha)
+		}
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit); err != nil {
 			return err
 		}
 	}

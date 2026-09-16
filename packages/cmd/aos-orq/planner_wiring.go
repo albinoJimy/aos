@@ -45,6 +45,7 @@ import (
 	planvalidate "github.com/aos-ref/control-plane/orchestrator/planvalidate"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
 	rm "github.com/aos-ref/kernel/reference-monitor"
+	audit "github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
 )
 
@@ -107,7 +108,9 @@ func carregarFixtureModel(path string) (fixtureModel, error) {
 // o backbone (identidade real + RM mínimo + orçamento partilhado), decompõe o objectivo
 // pelo PLANEADOR GOVERNADO, valida a estrutura (AOS-231) e materializa com o DELEGATOR
 // REAL. Fail-closed em cada passo. O gate humano fica de fora (DEF-274).
-func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string) error {
+// govAudit é o WORM durável de governação do gateway resolvido do ambiente (AOS-395), ou nil
+// para o MemStore de referência. Só é usado quando a decomposição vai pelo gateway vivo.
+func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store) error {
 	runID := ten.RunID()
 
 	// (1) BACKBONE DE IDENTIDADE REAL — emissor efémero + raiz humana + token do run.
@@ -179,7 +182,7 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	// gateway configurado, é fail-closed (a montante, em main).
 	if model == nil {
 		verifier := identity.NewVerifier(identity.WithTrustedIssuer("iss:aos-orq", iss.PublicKey()))
-		gwModel, mErr := construirModeloGateway(ctx, gwCfg, verifier, runTok.Compact)
+		gwModel, mErr := construirModeloGateway(ctx, gwCfg, verifier, runTok.Compact, govAudit)
 		if mErr != nil {
 			return fmt.Errorf("model gateway: %w", mErr)
 		}
