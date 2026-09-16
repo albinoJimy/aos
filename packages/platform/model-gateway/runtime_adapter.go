@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -174,6 +177,31 @@ var ErrRespostaSemChoices = errors.New("model-gateway: o gateway respondeu sem n
 // Micro-USD INTEIRO em toda a travessia: os dois lados da fronteira são int64 e a
 // projecção é uma cópia — sem conversão, sem float, sem arredondamento onde se pudesse
 // perder um micro-USD.
+// maxModeloServido é o tecto em bytes do nome do modelo servido que o turno grava. Um nome
+// de modelo real tem dezenas de bytes; o tecto impede um provider avariado ou hostil de
+// encher cada `turn.recorded` com o que quiser meter no campo `model`.
+const maxModeloServido = 256
+
+// modeloServido saneia o `model` devolvido pelo provider antes de ele ir para o manifesto:
+// retira os caracteres não imprimíveis e corta em [maxModeloServido] bytes, sem partir um
+// carácter UTF-8 a meio.
+func modeloServido(s string) string {
+	s = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return -1
+		}
+		return r
+	}, s))
+	if len(s) <= maxModeloServido {
+		return s
+	}
+	corte := maxModeloServido
+	for corte > 0 && !utf8.RuneStart(s[corte]) {
+		corte--
+	}
+	return s[:corte]
+}
+
 func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, error) {
 	out := agentruntime.ModelResponse{
 		Usage: agentruntime.Usage{
@@ -189,6 +217,11 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 			Ausente: !resp.Usage.Definido(),
 		},
 		CostMicroUSD: resp.Usage.CostMicroUSD,
+		// AOS-396 — o modelo que SERVIU: o `model` que o provider devolveu (o gateway só o
+		// preenche com o modelo resolvido quando o provider não o manda). Vai para o
+		// `served_model_id` do manifesto do turno; o modelo pedido vem do Goal. É texto do
+		// provider que fica em claro em cada evento: ver [modeloServido].
+		Model: modeloServido(resp.Model),
 	}
 	if len(resp.Choices) == 0 {
 		// FAIL-CLOSED. Ver [ErrRespostaSemChoices]: isto NAO e um turno vazio.

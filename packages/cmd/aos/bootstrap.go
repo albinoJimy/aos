@@ -427,6 +427,13 @@ type Config struct {
 	// config OU cair para um default de referência para o nó arrancar. O Model Gateway
 	// real é EPIC-06.
 	Model agentruntime.ModelClient
+	// ModelID é o nome do modelo que [Config.Model] PEDE ao provider (AOS-396) — no nó por
+	// ambiente, o `AOS_MODEL_NAME` que o adaptador do gateway envia em cada chamada. É
+	// AUTORITATIVO: o nó escreve-o no `Goal.Model.ModelID` de cada run que hospeda, por cima
+	// do que o goal trouxer, porque é esse o modelo que viaja. Vazio com um Config.Model
+	// injectado ⇒ o nó não declara nada e o goal fica como veio. Sem Config.Model, o modelo
+	// de referência declara [ReferenceModelID].
+	ModelID string
 	// ModelIdentityBinder liga, no Bootstrap, o VERIFIER REAL do nó ao estágio authn do Model
 	// Gateway REAL (AOS-278, CUTOVER DURO). O gateway é construído na fronteira de ambiente
 	// (parseModelFromEnv), ANTES de a identidade estar composta; o seu estágio authn arranca
@@ -742,6 +749,11 @@ type Node struct {
 	// (AOS-021): uma aprovação concluída produz um GRANT persistido, amarrado à preview
 	// da acção, em vez de evaporar. nil quando o four-eyes não está composto.
 	ApprovalBroker *integration.ApprovalBroker
+	// modelID é o modelo pedido que o nó declara no Goal de cada run (AOS-396); ver
+	// [Config.ModelID] e [Node.fixarModelo]. modeloAutoritativo diz se sobrepõe o do goal
+	// (gateway por ambiente) ou só preenche um goal vazio (modelo de referência).
+	modelID            string
+	modeloAutoritativo bool
 	// PendingApprovals é o registo DURÁVEL das tool calls escaladas que aguardam aval
 	// humano — o que a superfície de administração expõe ao operador (polling). nil
 	// quando o four-eyes não está composto.
@@ -1853,8 +1865,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	// (6) COLABORADORES NÃO-IDENTIDADE — defaults de REFERÊNCIA (o foco é a identidade).
 	model := cfg.Model
+	// AOS-396: o nome do modelo que o nó pede. Com o gateway por ambiente é o AOS_MODEL_NAME e
+	// sobrepõe-se ao goal; com o modelo de referência é um identificador estável, que só
+	// preenche um goal sem modelo (embedders e testes que declaram o seu continuam intactos).
+	modeloDoNo, modeloAutoritativo := strings.TrimSpace(cfg.ModelID), cfg.Model != nil
 	if model == nil {
 		model = referenceModel{}
+		modeloDoNo, modeloAutoritativo = ReferenceModelID, false
 	}
 	// RETOMA (AOS-021) — decorador OUTERMOST, aplicado AQUI e não no construtor de modelo
 	// do arranque por ambiente. Num turno coberto pelo plano de replay (que viaja no ctx),
@@ -2829,6 +2846,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
+		// AOS-396: o modelo pedido que o nó declara em cada turno.
+		modelID:            modeloDoNo,
+		modeloAutoritativo: modeloAutoritativo,
 		// A ancora que PASSOU no arranque, para o /metrics a poder declarar. Fail-closed acima:
 		// se nao tivesse passado, nao se chegava aqui.
 		ancora:           cfg.WORMAnchor,
@@ -2980,6 +3000,12 @@ func describeSubstrateEx(provided bool, path, nats string) string {
 // AOS-163 é a composição de segurança/identidade, não o modelo.
 type referenceModel struct{}
 
+// ReferenceModelID é o identificador ESTÁVEL do modelo de referência (AOS-396): o
+// `model_id` e o `served_model_id` do manifesto de um turno servido por ele. Declarado para
+// que o manifesto nunca fique vazio num nó sem gateway, e distinguível à primeira vista de
+// um modelo real.
+const ReferenceModelID = "aos-reference-model"
+
 // Os números FABRICADOS do modelo de referência. São constantes NOMEADAS e não literais porque
 // deixaram de ser só decoração de observabilidade: desde AOS-260 o custo de um turno é debitado na
 // árvore de orçamento, pelo que [requireCostSourceForBudgetCap] tem de os poder citar ao operador
@@ -3006,6 +3032,7 @@ func (referenceModel) Call(context.Context, agentruntime.PromptView) (agentrunti
 		Final:        true,
 		Usage:        agentruntime.Usage{InputTokens: referenceModelInputTokens, OutputTokens: referenceModelOutputTokens},
 		CostMicroUSD: referenceModelCostMicroUSD,
+		Model:        ReferenceModelID,
 	}, nil
 }
 

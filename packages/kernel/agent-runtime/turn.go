@@ -22,10 +22,18 @@ type EventAppender interface {
 }
 
 // ModelManifest é a parte do manifesto que pina o modelo (model_id/params/seed).
+//
+// `model_id` é o modelo PEDIDO (a configuração do run, [Goal.Model]) — é o que o span
+// `chat` e a admissão do turno usam e o que o replay compara. `served_model_id` é o
+// modelo que SERVIU a resposta, como o cliente o reportou ([ModelResponse.Model]),
+// AOS-396: difere do pedido quando o provider devolve uma versão datada ou o gateway
+// troca o modelo. `omitempty` é deliberado: um cliente que não reporta o modelo grava
+// exactamente os bytes de antes (o precedente de `usage_ausente`, AOS-336).
 type ModelManifest struct {
-	ModelID string            `json:"model_id"`
-	Params  map[string]string `json:"params,omitempty"`
-	Seed    int64             `json:"seed"`
+	ModelID       string            `json:"model_id"`
+	ServedModelID string            `json:"served_model_id,omitempty"`
+	Params        map[string]string `json:"params,omitempty"`
+	Seed          int64             `json:"seed"`
 }
 
 // PinnedDep é uma dependência pinada no manifesto (tool ou skill): nome+versão+
