@@ -924,6 +924,11 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// é reconstituível de mais lado nenhum do log (o turn.recorded guarda hashes, a ingestão
 	// redige, e a credencial nunca se persiste). É a MESMA escrita que a suspensão de AOS-021 já
 	// fazia, mas antecipada do momento da escalada para o arranque.
+	// AOS-396: o modelo pedido entra no Goal ANTES do registo de crash-resume e do primeiro
+	// turno, pelo que o manifesto de cada turno, o span `chat` e a admissão falam do mesmo
+	// modelo. Esta é a via única por onde passam a submissão, a retoma e a varredura de
+	// crash-resume.
+	goal = s.node.fixarModelo(goal)
 	s.persistCrashResumeRecord(ctx, goal)
 
 	res, _, err = s.node.Runtime.Run(ctx, goal, nil)

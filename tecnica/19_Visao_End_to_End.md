@@ -170,7 +170,7 @@ Lente «tempo»: sequências que atravessam componentes. Seis fluxos cobrem o si
 
 Participantes: RT → RM → PDP → (humano) → ADM → BRK → SBX → ES.
 
-1. **Montar** — o RT remonta o prompt (prefixo imutável byte-idêntico + tail append-only); grava `turn.recorded` com o manifesto: `prompt_hash`, `system_hash`, `assembly_version`, `model{model_id, params, seed}`, tools/skills pinadas.
+1. **Montar** — o RT remonta o prompt (prefixo imutável byte-idêntico + tail append-only); grava `turn.recorded` com o manifesto: `prompt_hash`, `system_hash`, `assembly_version`, `model{model_id, served_model_id, params, seed}` (o modelo pedido e o que serviu, AOS-396), tools/skills pinadas.
 2. **Chamar** — o modelo via GW (pipeline: auth-principal → allowlist regional → roteamento → cache-layout → metering).
 3. **Pedir tool call** — o RT propõe a activity ao RM com contexto: principal + cadeia, action/tool, resource, taint, orçamento, região, sensibilidade.
 4. **Resolver identidade** — o RM verifica a cadeia de delegação (ADR-003); sem cadeia válida até humano, **deny**.

@@ -123,6 +123,12 @@ type ModelResponse struct {
 	// CostMicroUSD é o custo do turno em micro-USD INTEIRO (1 USD = 1_000_000).
 	// Inteiro evita imprecisão de vírgula flutuante no burn-down de custo.
 	CostMicroUSD int64
+	// Model é o modelo que SERVIU a resposta, tal como o cliente o reporta (AOS-396): no
+	// Model Gateway, o `model` devolvido pelo provider (que pode ser uma versão datada do
+	// modelo pedido, ou outro modelo se o gateway o trocou). Vazio quando o cliente não o
+	// sabe. Vai para `manifest.model.served_model_id` do `turn.recorded`; o modelo PEDIDO
+	// continua a vir de [Goal.Model].
+	Model string
 }
 
 // ModelClient é a PORTA para o Model Gateway (GW). O GW real — routing,

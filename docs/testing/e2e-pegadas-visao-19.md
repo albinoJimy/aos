@@ -273,7 +273,7 @@ Evento real (seq 1, completo):
 - `idempotency_key == run_id + ":" + step_id` em **todos** os eventos (§1.4), com os domínios `state-N` e `ckpt-`.
 - A transição 1 (`ready→running`) leva `token_value=1`. É a única transição com pré-condição de fencing (P-01, tabela, #1).
 - As fases `assembled → model_called → turn_recorded → verified` estão por esta ordem. Não há `dispatched`, porque não houve tool calls (S-01b).
-- O manifesto do `turn.recorded` tem `prompt_hash`, `system_hash`, `assembly_version` e `model{model_id, seed}` (F2E-01 passo 1). Com o modelo de referência, `model_id=""`, `seed=0`, e `system_hash` é o SHA-256 da string vazia.
+- O manifesto do `turn.recorded` tem `prompt_hash`, `system_hash`, `assembly_version` e `model{model_id, served_model_id, seed}` (F2E-01 passo 1). Desde o AOS-396, com o modelo de referência `model_id` e `served_model_id` são `aos-reference-model`; com o Model Gateway, `model_id` é o `AOS_MODEL_NAME` e `served_model_id` o modelo que o provider devolveu. `seed=0` (nada o envia) e `system_hash` é o SHA-256 da string vazia. A linha 5 da tabela acima foi medida antes do AOS-396, quando o `model_id` saía vazio.
 - `replay.captured` traz o conteúdo **cifrado** (`sealed_content`), não em claro (F2E-01 passo 11; dívida §9.3 mitigada no conteúdo capturado).
 - A transição final é `running→complete` (P-01 #9, terminal absorvente).
 

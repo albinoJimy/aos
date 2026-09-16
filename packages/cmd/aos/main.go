@@ -1047,6 +1047,9 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	if modelClient != nil {
 		cfg.Model = modelClient
+		// AOS-396: o nome que o adaptador do gateway pede em cada chamada. parseModelFromEnv já
+		// recusou um AOS_MODEL_NAME vazio com o endpoint definido.
+		cfg.ModelID = modelNameFromEnv()
 		// CUTOVER DURO (AOS-278): o binder liga, no Bootstrap, o verifier REAL do nó ao
 		// estágio authn do gateway construído aqui. Sem ele nenhum turno de modelo passa.
 		cfg.ModelIdentityBinder = modelBinder
@@ -2086,7 +2089,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if endpoint == "" {
 		return nil, nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
 	}
-	model := strings.TrimSpace(os.Getenv("AOS_MODEL_NAME"))
+	model := modelNameFromEnv()
 	if model == "" {
 		return nil, nil, ErrBadModelConfig
 	}

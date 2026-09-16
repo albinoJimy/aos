@@ -17,7 +17,7 @@ até uma resposta final ou o esgotamento do tecto de turnos. Este pacote entrega
 3. **Despachar** — cada tool call **pretendida** pelo modelo é traduzida num `referencemonitor.Call` e submetida a `Monitor.Mediate`. **Nenhuma** tool executa fora do RM.
 4. **Verificar** — o resultado de cada tool volta ao loop **marcado untrusted** (`Tainted`, ADR-005) e é injectado no tail append-only. A terminação é um *stub* simples (a máquina de estados durável é AOS-017).
 
-Cada turno grava um evento `turn.recorded` no Event Store com o **manifesto por trajectória** (ADR-010): `prompt_hash`, `system_hash`, `model{model_id,params,seed}`, `assembly_version` e as `tools`/`skills` pinadas. O `step_id` é distinto por turno (evita a deduplicação por `idempotency_key` do Event Store).
+Cada turno grava um evento `turn.recorded` no Event Store com o **manifesto por trajectória** (ADR-010): `prompt_hash`, `system_hash`, `model{model_id,served_model_id,params,seed}` (o modelo pedido pelo `Goal` e o que serviu, reportado em `ModelResponse.Model`; AOS-396), `assembly_version` e as `tools`/`skills` pinadas. O `step_id` é distinto por turno (evita a deduplicação por `idempotency_key` do Event Store).
 
 ## Garantia estrutural de no-bypass (ADR-002)
 
