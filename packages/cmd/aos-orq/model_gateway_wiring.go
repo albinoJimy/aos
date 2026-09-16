@@ -28,6 +28,7 @@ import (
 	"time"
 
 	decompose "github.com/aos-ref/control-plane/orchestrator/decompose"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	audit "github.com/aos-ref/platform/audit"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/pipeline/authn"
@@ -126,6 +127,10 @@ type gatewayDecomposeModel struct {
 // Complete satisfaz [decompose.Model]: invoca o gateway com o prompt system+user e devolve
 // o texto da resposta (o decompositor extrai e valida o JSON a jusante — AOS-231).
 func (m gatewayDecomposeModel) Complete(ctx context.Context, system, user string) (string, error) {
+	// CORRELAÇÃO POR CHAMADA (AOS-395, mecanismo do AOS-394): o run e o passo da tentativa
+	// vêm do ctx que o planeador escreve antes de decompor. O par lê-se JUNTO: sem anexo, os
+	// dois campos ficam vazios e o selo mostra a ausência — nunca se inventa uma correlação.
+	runID, stepID, _ := agentruntime.ModelCallFromContext(ctx)
 	resp, err := m.gw.Chat(ctx, port.ChatRequest{
 		Model: m.model,
 		Messages: []port.Message{
@@ -135,6 +140,8 @@ func (m gatewayDecomposeModel) Complete(ctx context.Context, system, user string
 		Principal: m.principal, // token NHI do run que sela model:invoke
 		Region:    m.region,
 		Board:     m.board,
+		RunID:     runID,
+		StepID:    stepID,
 		// Sem Tools: o decompositor quer texto JSON, não tool_calls.
 	})
 	if err != nil {
@@ -152,7 +159,10 @@ func (m gatewayDecomposeModel) Complete(ctx context.Context, system, user string
 // [decompose.Model], sob o `verifier` de identidade (o issuer efémero do run) e o
 // `principal` (token do run que sela `model:invoke`). Fail-closed: sem verifier não há
 // estágio authn e o gateway não se compõe.
-func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier authn.Verifier, principal string) (decompose.Model, error) {
+// govAudit é o store de governação do gateway: o WORM durável resolvido do ambiente
+// ([parseModelAuditFromEnv], AOS-395) ou nil, caso em que se usa o MemStore de referência e a
+// postura VOLÁTIL fica declarada no arranque.
+func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier authn.Verifier, principal string, govAudit audit.Store) (decompose.Model, error) {
 	if cfg == nil {
 		return nil, errors.New("config do Model Gateway nil")
 	}
@@ -178,12 +188,17 @@ func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier au
 		secret = strings.TrimSpace(string(raw))
 	}
 
+	// AOS-395: o audit de governação é o WORM DURÁVEL quando o ambiente o resolveu; sem ele,
+	// o MemStore de referência — e a volatilidade fica declarada no arranque, nunca em silêncio.
+	if govAudit == nil {
+		govAudit = audit.NewMemStore()
+	}
 	gwCfg := modelgateway.ProductionConfig{
 		Provider:      "openai",
 		BaseURL:       base,
 		DefaultRegion: cfg.region,
 		Authn:         authnStage,
-		Audit:         audit.NewMemStore(),
+		Audit:         govAudit,
 		Credentials:   staticCredencialModelo{secret: secret},
 		Accounts:      []modelgateway.InfraAccount{{KeyID: "model-upstream", Provider: "openai", Region: cfg.region}},
 	}

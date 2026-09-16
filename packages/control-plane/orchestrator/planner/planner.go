@@ -482,6 +482,18 @@ func (p *Planner) Decompose(ctx context.Context, req DecomposeRequest) (*PlanRes
 	}, nil
 }
 
+// stepDecompose é o prefixo do passo de uma tentativa de decomposição, na convenção
+// `planstep:` que o planeador já usa (ver o `planstep:admit` da mediação e a família de
+// plannerevents). Os passos REPETÍVEIS compõem-se com um discriminador — aqui o número da
+// tentativa —, pelo que duas tentativas do mesmo run são distinguíveis no trilho selado.
+const stepDecompose = "planstep:decompose"
+
+// stepDecomposeAttempt devolve o passo estável desta tentativa: planstep:decompose:<n>.
+// Determinístico: o mesmo run e a mesma tentativa dão sempre o mesmo id.
+func stepDecomposeAttempt(attempt int) string {
+	return fmt.Sprintf("%s:%d", stepDecompose, attempt)
+}
+
 // runAttempt abre o span chat de uma tentativa (filho do span-âncora), anota o
 // custo por tentativa e invoca o [Decomposer]. O span fecha sempre (defer). A
 // tentativa é DENTRO do span-âncora do planeador — filha do run por transitividade.
@@ -498,6 +510,11 @@ func (p *Planner) runAttempt(ctx context.Context, req DecomposeRequest, planID, 
 	span.SetAttribute(agentruntime.AttrInputTokens, perAttempt.Tokens)
 	span.SetAttribute(agentruntime.AttrCostUSD, float64(perAttempt.CostMicroUSD)/1_000_000.0)
 
+	// AOS-395: o run e o passo DESTA tentativa viajam no ctx até ao decompositor e, daí, a
+	// quem chamar o modelo — é o mesmo mecanismo que o AOS-394 usa no loop do agente
+	// ([agentruntime.ContextWithModelCall], escrito imediatamente antes da chamada). É o que
+	// liga cada selo de governação da decomposição ao run e à tentativa que o originaram.
+	ctx = agentruntime.ContextWithModelCall(ctx, req.RunID, stepDecomposeAttempt(attempt))
 	return p.decomposer.Decompose(ctx, DecomposeInput{
 		RunID:      req.RunID,
 		PlanID:     planID,
