@@ -17,8 +17,8 @@ func TestCurrentPrompt_CacheStable(t *testing.T) {
 	if Current.CacheKey() != twin.CacheKey() {
 		t.Fatalf("cache-key nao determinista: %q != %q", Current.CacheKey(), twin.CacheKey())
 	}
-	if Current.MetaPromptVersion() != "1.1.0" {
-		t.Fatalf("prompt_version canonica esperada 1.1.0, obtive %q", Current.MetaPromptVersion())
+	if Current.MetaPromptVersion() != "1.2.0" {
+		t.Fatalf("prompt_version canonica esperada 1.2.0, obtive %q", Current.MetaPromptVersion())
 	}
 	// A regra 6 (AOS-273) nomeia a linha de schema que o documento tem de carimbar. É
 	// pinada aqui porque é o lado do PRODUTOR de uma regra cuja imposição vive noutro
