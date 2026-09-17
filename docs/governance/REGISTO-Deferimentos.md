@@ -1012,7 +1012,7 @@ AOS-196 correu em paralelo com outros pipelines e o seu âmbito de escrita foi d
   diferente (decisões reabertas, não deferimentos).
 - `scripts/ci/deferrals.py` · `scripts/ci/baseline/deferrals.txt` · `scripts/ci/run.sh` ·
   `.github/workflows/ci.yml`.
-### N-DEF-281 — cobre DEF-281 — **RESOLVIDO: AOS-398** (`specs/EPIC-08`, ADR-026)
+### N-DEF-281 — cobre DEF-281 — **RESOLVIDO: AOS-398 + AOS-401** (`specs/EPIC-08`, ADR-026 emendado)
 
 **A linha do §3 foi removida a 2026-09-16 porque a dívida foi paga**, não porque tenha sido
 perdoada: o marcador `DEFERIDO` já não existe em `packages/substrate/otel-genai/slo.go`, e o gate
@@ -1042,6 +1042,11 @@ span quando ele falta. O `tecnica/19` §7 (S-02f) listava `EXEC` dentro do orça
 contradição com o §4 — o ADR-026 arbitrou a favor do §4. A duração da tool call mediada inteira
 continua observável e ficou deliberadamente **sem SLO**, para não recriar o mesmo alerta mal
 calibrado com outro nome.
+
+**E não ficou fechado à primeira.** A v0.1.15 (AOS-398) fechou a janela DEPOIS da escrita do selo,
+e a verificação em produção a 2026-09-16 (run `run-delegado-1789569005`) mediu ~31 ms — o SLO
+continuava violado, com o streak dos dois `critical` a subir. O **AOS-401** emendou o ADR-026: o SLO
+governa só a janela da política, e a escrita do selo passou a ter atributo próprio e sem SLO.
 
 O follow-up que `packages/cmd/aos/api.go` declarava para este SLI («exige histogramas instrumentados
 no kernel») fica satisfeito na parte que lhe dizia respeito.

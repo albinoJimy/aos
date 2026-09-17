@@ -86,6 +86,21 @@ type Decision struct {
 	// a duração da execução no sandbox — 0,6–1,8 s em gVisor — como overhead de decisão,
 	// e disparar um `critical` em qualquer nó com tráfego real (DEF-281, fechado por AOS-398).
 	DecisionLatency time.Duration
+	// PolicyLatency é a janela da CADEIA DE POLÍTICA: identidade, PDP, orçamento, egress e
+	// obrigações — até imediatamente ANTES da escrita do selo de auditoria. É o mesmo instante
+	// que o `latency_ns` do selo `tool.call.mediated` regista, e é ESTA a janela que o SLO de
+	// overhead de mediação (p95 < 15 ms) governa (AOS-401, emenda ao ADR-026 §1).
+	//
+	// Existe porque [DecisionLatency] inclui a escrita durável do selo: a 2026-09-16, com a
+	// v0.1.15, a janela da decisão mediu 30,8–32,7 ms em produção, quando o selo sempre registou
+	// 2–8,6 ms para a política. O SLO voltava a disparar. A diferença atribui-se à escrita por
+	// inferência; [AuditWriteLatency] é a medida directa que faltava.
+	PolicyLatency time.Duration
+	// AuditWriteLatency é a duração da escrita do selo de mediação no sink (Event Store/WORM).
+	// Num permit está no caminho crítico — o efeito espera por ela — e soma com [PolicyLatency]
+	// para dar [DecisionLatency]. Observável, sem SLO: nenhum alvo foi ratificado para o custo
+	// de um sink durável, e é por não o haver que ela deixou de contar para os 15 ms.
+	AuditWriteLatency time.Duration
 	// MediationSeq é o seq do evento de mediação no Event Store (0 se o registo
 	// não produziu seq).
 	MediationSeq uint64

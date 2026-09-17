@@ -12,14 +12,14 @@ package otelgenai
 //   - CACHE-HIT-RATE — média PONDERADA (por prompt tokens) do atributo
 //     [AttrCacheHitRate] dos wide events. Torna o CACHE THRASH visível como SLI
 //     (ADR-009): um run com cache-hit baixo aparece como SLI degradado. SLO: > 0.80.
-//   - OVERHEAD DE MEDIAÇÃO p95 — percentil 95 da [AttrMediationDecisionLatencyNanos] dos
-//     spans [OpExecuteTool] QUE TOMARAM UMA DECISÃO: a cadeia de política do Reference
-//     Monitor, EXCLUINDO o despacho da tool. Até AOS-398 a fonte era a [WideEvent.LatencyNanos]
-//     do span, que fecha DEPOIS de a tool correr — o SLI publicava a duração da execução no
-//     sandbox como se fosse overhead e o alerta `critical` tocava em qualquer nó com tráfego
-//     (DEF-281, ADR-026). SLO: p95 < 15 ms, agora comparável com o que se mede. Ver
-//     [overheadP95SLI]. A duração da tool call mediada INTEIRA continua em
-//     [WideEvent.LatencyNanos] e deliberadamente sem SLO.
+//   - OVERHEAD DE MEDIAÇÃO p95 — percentil 95 da [AttrMediationPolicyLatencyNanos] dos spans
+//     [OpExecuteTool] QUE TOMARAM UMA DECISÃO: a cadeia de política do Reference Monitor, até
+//     antes da escrita do selo de auditoria, EXCLUINDO essa escrita e o despacho da tool. Até
+//     AOS-398 a fonte era a latência do span (incluía a execução no sandbox, DEF-281); em
+//     AOS-398 passou a ser a janela da decisão, que ainda incluía a escrita do selo e mediu
+//     ~31 ms em produção; AOS-401 deixou-a só na política (ADR-026, emendado). SLO: p95 < 15 ms.
+//     Ver [overheadP95SLI]. A escrita do selo e a tool call inteira continuam observáveis e
+//     deliberadamente sem SLO.
 //   - CUSTO POR TRAJECTÓRIA — custo agregado por trace, reutilizando
 //     [AggregateByTrace] (AOS-078) SEM dupla-contagem (conta só os spans `chat`). O
 //     SLI é o PIOR (máximo) custo por trajectória — a restrição vinculativa. SLO: um
@@ -408,10 +408,10 @@ func cacheHitRateSLI(events []WideEvent, target float64) SLIValue {
 	return sli
 }
 
-// overheadP95SLI deriva o p95 do OVERHEAD DE MEDIAÇÃO: o percentil 95 do custo que a
-// cadeia de decisão do Reference Monitor ACRESCENTA a uma tool call — avaliação de
-// política, obrigações e registo pré-efeito —, EXCLUINDO a execução da tool. Drill-down:
-// quando degradado, os trace_ids acima do tecto (pior latência primeiro).
+// overheadP95SLI deriva o p95 do OVERHEAD DE MEDIAÇÃO: o percentil 95 do custo da CADEIA DE
+// POLÍTICA do Reference Monitor — identidade, PDP, orçamento, egress e obrigações —, EXCLUINDO
+// a escrita do selo de auditoria e a execução da tool. Drill-down: quando degradado, os
+// trace_ids acima do tecto (pior latência primeiro).
 //
 // # A FONTE É [AttrMediationDecisionLatencyNanos], NÃO A LATÊNCIA DO SPAN (AOS-398)
 //
@@ -430,6 +430,20 @@ func cacheHitRateSLI(events []WideEvent, target float64) SLIValue {
 // tirada ANTES do despacho. Este SLI lê-a. NADA se cronometra de novo: o número correcto
 // existia no kernel e não atravessava a fronteira. ADR-026 regista a decisão.
 //
+// # E DEPOIS, SÓ A POLÍTICA: [AttrMediationPolicyLatencyNanos] (AOS-401)
+//
+// A primeira correcção fechou a janela DEPOIS da escrita do selo, com o argumento de que essa
+// escrita está no caminho crítico e atrasa o efeito. O argumento é verdadeiro e a conclusão
+// estava errada: medido em produção a 2026-09-16 com a v0.1.15, o p95 desceu de 1,21 s para
+// 30,8–32,7 ms — ainda o dobro do tecto, com o streak dos dois `critical` a subir em cada run.
+// A política sempre coube em 2–8,6 ms; o resto atribui-se, por inferência, ao sink durável —
+// e é para o deixar de inferir que a escrita passou a ter atributo próprio.
+//
+// O SLO de 15 ms exprime o custo de DECIDIR, e o RB-04 sabe depurar o PDP, não um fsync.
+// O SLI passou a ler a janela até ANTES da escrita — o mesmo instante do `latency_ns` do selo.
+// A escrita ficou em [AttrMediationAuditWriteLatencyNanos], observável e sem SLO, e a soma
+// das duas continua em [AttrMediationDecisionLatencyNanos], com o significado que já tinha.
+//
 // # DUAS CONDIÇÕES, E O QUE CADA UMA EXCLUI
 //
 // A DECISÃO ([AttrDecision] não-vazio) escolhe o produtor. `execute_tool` é emitido por
@@ -439,13 +453,17 @@ func cacheHitRateSLI(events []WideEvent, target float64) SLIValue {
 // efeito vazio). Inferir pela parentela seria mais frágil: o RM instrumenta QUALQUER
 // chamador (ADR-002), pelo que o pai de uma mediação nem sempre é um `execute_tool`.
 //
-// A PRESENÇA DO ATRIBUTO escolhe a medida. Um span de um RM anterior ao AOS-398 decide mas
-// não traz a duração da decisão; cai FORA da amostra em vez de contribuir com a latência do
-// span. A direcção é deliberada: `Samples == 0` faz o rótulo `avaliavel="0"` dizer a verdade
+// A PRESENÇA DO ATRIBUTO escolhe a medida. Um span de um RM anterior ao AOS-401 decide mas
+// não traz a janela da política — o da v0.1.15 traz só a da decisão, que inclui a escrita —;
+// cai FORA da amostra em vez de contribuir com um número mais largo. A direcção é deliberada:
+// `Samples == 0` faz o rótulo `avaliavel="0"` dizer a verdade
 // e o operador vê que não há sinal, ao passo que o fallback devolveria exactamente o número
 // errado que este SLI existe para deixar de publicar.
 //
 // # O QUE ESTE SLI NÃO MEDE, E ONDE ISSO ESTÁ
+//
+// A ESCRITA DO SELO DE AUDITORIA está em [WideEvent.MediationAuditWriteLatencyNanos]. Não tem
+// SLO pela mesma razão da tool call: nenhum alvo ratificado para o custo de um sink durável.
 //
 // A DURAÇÃO DA TOOL CALL MEDIADA — decisão mais execução — continua observável: é a
 // [WideEvent.LatencyNanos] deste mesmo evento. Não tem SLO, e não ganha um aqui de
@@ -466,7 +484,7 @@ func overheadP95SLI(events []WideEvent, maxNanos int64) SLIValue {
 		if e.Operation != OpExecuteTool || e.Decision == "" {
 			continue
 		}
-		d, ok := mediationDecisionLatencyOf(e)
+		d, ok := mediationPolicyLatencyOf(e)
 		if !ok {
 			continue
 		}
@@ -499,18 +517,18 @@ func overheadP95SLI(events []WideEvent, maxNanos int64) SLIValue {
 	return sli
 }
 
-// mediationDecisionLatencyOf devolve a duração da cadeia de decisão do evento e se ela
-// EXISTE. Os dois resultados são distintos: uma decisão que demorou zero (relógio manual
-// de teste) é uma amostra legítima, uma decisão sem medida não é nenhuma.
+// mediationPolicyLatencyOf devolve a janela da cadeia de política do evento e se ela EXISTE.
+// Os dois resultados são distintos: uma política que demorou zero (relógio manual de teste) é
+// uma amostra legítima, uma política sem medida não é nenhuma.
 //
 // O bag é a fonte primária porque é o que o span traz; o campo tipado é a via para um
 // [WideEvent] construído directamente, sem passar por [WideEventFromSpanData].
-func mediationDecisionLatencyOf(e WideEvent) (int64, bool) {
-	if _, ok := e.Attributes[AttrMediationDecisionLatencyNanos]; ok {
-		return attrInt64Bag(e.Attributes, AttrMediationDecisionLatencyNanos), true
+func mediationPolicyLatencyOf(e WideEvent) (int64, bool) {
+	if _, ok := e.Attributes[AttrMediationPolicyLatencyNanos]; ok {
+		return attrInt64Bag(e.Attributes, AttrMediationPolicyLatencyNanos), true
 	}
-	if e.MediationDecisionLatencyNanos != 0 {
-		return e.MediationDecisionLatencyNanos, true
+	if e.MediationPolicyLatencyNanos != 0 {
+		return e.MediationPolicyLatencyNanos, true
 	}
 	return 0, false
 }

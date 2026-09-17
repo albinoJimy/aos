@@ -56,6 +56,7 @@ O epic encerra dois cenários de falha do plano-base: *The Audit Log Lied* (o tr
 | AOS-085 | Dashboards + SLIs/SLOs | feature | M | P1 | AOS-076, AOS-078, AOS-082 |
 | AOS-086 | Alertas a partir dos SLIs | feature | S | P2 | AOS-085 |
 | AOS-398 | O SLI de overhead de mediação mede a execução da tool, não a decisão | fix | M | P0 | AOS-085, AOS-086, AOS-274 |
+| AOS-401 | O SLI de overhead de mediação ainda conta a escrita do selo e continua a violar o SLO em produção | fix | S | P0 | AOS-398 |
 
 ---
 
@@ -757,6 +758,70 @@ observável e **sem SLO** até haver alvo ratificado.
 
 **IMPLEMENTADO.** Criado e executado a 2026-09-16. Fecha `DEF-281`.
 
+## AOS-401 — O SLI de overhead de mediação ainda conta a escrita do selo e continua a violar o SLO em produção
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Fase 3 — Escala e controlo |
+| Tipo | fix |
+| Prioridade | P0 |
+| Estimativa | S |
+| Dependências | AOS-398 |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/adr/ADR-026-overhead-de-mediacao-e-a-janela-da-decisao.md` (Emenda), `tecnica/08_Observabilidade_Evals.md` §7.1, `tecnica/19_Visao_End_to_End.md` §4/§7, `docs/runbooks/RB-04.md` |
+
+### Contexto
+
+O AOS-398 entrou em produção como **v0.1.15** a 2026-09-16 (digest `3aeb256b…`). A verificação no
+servidor, com o run `run-delegado-1789569005` (tool `doc_read` em gVisor), mediu o SLI
+`mediation_overhead_p95` em **30,8 ms com 2 amostras e 32,7 ms com 7**, contra 15 ms, com
+`aos_slo_breached=1` nos dois catálogos e o streak de `mediation_overhead_high` e
+`mediation_overhead_p95_high` a subir até **2 de 3**.
+
+A correcção funcionou na metade que prometia — o SLI desceu de 1,21 s para ~31 ms, a execução no
+sandbox saiu —, mas o ADR-026 §1 tinha decidido deixar **dentro** da janela a escrita durável do selo
+de auditoria. A política sempre coube em 2–8,6 ms (o `latency_ns` dos selos); a diferença
+atribui-se, **por inferência**, à escrita no Event Store e no WORM — no run não foi possível separar
+as duas metades. O resultado operacional é o mesmo defeito com outra causa: um `critical` com rota
+RB-04 («Falha de PDP») em cada run normal.
+
+### Objectivo
+
+O SLO de 15 ms passa a governar só a **janela da política** (até antes da escrita do selo), e o
+kernel publica as duas metades separadas, para que a escrita do selo deixe de ser inferida.
+
+### Critérios de Aceitação
+
+- [x] `Decision.PolicyLatency` e `Decision.AuditWriteLatency`; a política é lida no MESMO instante
+      que o `latency_ns` do selo, uma única vez, e política + escrita = decisão num permit
+- [x] Span `execute_tool` com `aos.mediation.policy_latency_ns` e `aos.mediation.audit_write_latency_ns`;
+      `aos.mediation.decision_latency_ns` mantém o significado que já tinha na v0.1.15
+- [x] O SLI deriva da política; um span da v0.1.15 (só com a decisão) fica fora da amostra
+- [x] Num deny, a escrita do selo é medida à parte e não entra na política
+- [x] Quando o selo do PERMIT falha e a decisão degrada para deny, a política é a medida antes dessa
+      escrita e as duas escritas (a falhada e a do `fail()`) somam-se em `AuditWriteLatency` — um sink
+      pendurado até ao prazo do pedido não acende o alerta do PDP
+      (`TestAOS401_SeloDoPermitQueFalhaNaoEntraNaPolitica`; encontrado na revisão adversarial)
+- [x] Regressão com os números da v0.1.15 (política 5 ms + escrita 27,7 ms): não viola o SLO nem acende
+      nenhum `critical`; com a fonte da v0.1.15 o teste falha a publicar `3.27e+07`, o valor de produção
+- [x] Uma política de 120 ms continua a acender os dois `critical`
+- [x] ADR-026 emendado (§1, §2 e a Emenda); `tecnica/08` §7.1, `tecnica/19` §4/§7/§8 e RB-04 coerentes;
+      RTM regenerada
+- [ ] Verificação em produção com a versão seguinte: `policy_latency_ns` abaixo de 15 ms, a escrita
+      medida directamente, e os dois `critical` a 0 depois de um run com tool call
+
+### Estado
+
+**IMPLEMENTADO** a 2026-09-16; a verificação em produção fica pendente do deploy. Numerado AOS-399 na
+sessão que o escreveu, sem commit; renumerado AOS-401 porque o AOS-399 foi atribuído entretanto a outro
+ticket (EPIC-06). Verificado: suites `-race` do Reference Monitor, do `otel-genai`, de `cmd/aos` e de
+`integration`; `build`, `lint`, `layer-lint`, `apex` e `event-catalog` verdes; falha-antes medida por
+mutação na fonte do SLI (volta a publicar os 32,7 ms de produção) e no selo do permit falhado (a política
+sai com 404 ms em vez de 4 ms). Revisão adversarial independente: nenhum defeito crítico; o médio (selo
+do permit falhado) e os baixos foram corrigidos.
+
 ---
 
 ## Tabela de aprovação
@@ -775,3 +840,4 @@ observável e **sem SLO** até haver alvo ratificado.
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | Setembro 2026 | Adenda pós-encerramento: AOS-398 (DEF-281 — o SLI de overhead de mediação media a execução da tool; ADR-026) | Equipa AOS |
+| 1.2 | Setembro 2026 | AOS-401: emenda ao ADR-026 depois da verificação da v0.1.15 em produção — o SLO governa só a política, a escrita do selo sai da janela | Equipa AOS |

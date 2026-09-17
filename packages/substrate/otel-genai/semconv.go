@@ -96,6 +96,20 @@ const (
 	//
 	// É uma duração, nunca um segredo.
 	AttrMediationDecisionLatencyNanos = "aos.mediation.decision_latency_ns"
+	// AttrMediationPolicyLatencyNanos — aos.mediation.policy_latency_ns: a janela da CADEIA DE
+	// POLÍTICA do Reference Monitor, em nanos — até imediatamente ANTES da escrita do selo de
+	// auditoria. É o mesmo instante do `latency_ns` do selo `tool.call.mediated`, e é a medida
+	// que o SLI [SLIMediationOverheadP95] consome desde AOS-401.
+	//
+	// Porque não [AttrMediationDecisionLatencyNanos]: essa inclui a escrita durável do selo, e
+	// em produção (v0.1.15, 2026-09-16) mediu 30,8–32,7 ms — o SLO de 15 ms voltava a alertar
+	// em cada run, desta vez pelo custo do sink e não pelo do sandbox. Emenda ao ADR-026 §1.
+	AttrMediationPolicyLatencyNanos = "aos.mediation.policy_latency_ns"
+	// AttrMediationAuditWriteLatencyNanos — aos.mediation.audit_write_latency_ns: a duração da
+	// escrita do selo de mediação no sink (Event Store/WORM), em nanos. Somada com
+	// [AttrMediationPolicyLatencyNanos] dá [AttrMediationDecisionLatencyNanos] num permit.
+	// Observável e sem SLO: não há alvo ratificado para o custo de um sink durável.
+	AttrMediationAuditWriteLatencyNanos = "aos.mediation.audit_write_latency_ns"
 	// AttrCacheHitRate — aos.cache.hit_rate: o cache-hit-rate AGREGADO do prefixo
 	// (fracção [0,1] = cache_read_tokens / prompt_tokens) anotado no span da model
 	// call pelo Model Gateway (packages/platform/model-gateway/metering/cache_sli,
