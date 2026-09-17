@@ -73,6 +73,10 @@ func MediationHookLatency(events []WideEvent) []HookLatencyObservation {
 			if !ok || hook == "" {
 				continue
 			}
+			// Volta a sanitizar: o Reference Monitor já o faz, mas a chave pode vir de outro produtor
+			// na mesma torneira, e o nome vai para um rótulo do `/metrics` — um tab ou um byte que não
+			// seja UTF-8 partiria o formato de exposição e, com ele, todas as séries do nó.
+			hook = nomeDeHookSeguro(hook)
 			n, ok := attrInt64(v)
 			if !ok {
 				continue

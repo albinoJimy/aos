@@ -66,6 +66,22 @@ func TestAOS405_NomeDoHookFicaSeguro(t *testing.T) {
 	}
 }
 
+// TestAOS405_DerivacaoVoltaASanitizar — uma chave de outro produtor com tab ou bytes inválidos não
+// pode chegar crua a um rótulo do /metrics.
+func TestAOS405_DerivacaoVoltaASanitizar(t *testing.T) {
+	events := []WideEvent{{
+		Operation: OpExecuteTool, Decision: DecisionPermit,
+		Attributes: map[string]any{
+			AttrMediationHookLatencyPrefix + "po\tlicy":   int64(time.Millisecond),
+			AttrMediationHookLatencyPrefix + "egr\xffess": int64(2 * time.Millisecond),
+		},
+	}}
+	got := MediationHookLatency(events)
+	if len(got) != 2 || got[0].Hook != "egr_ess" || got[1].Hook != "po_licy" {
+		t.Fatalf("nomes do bag têm de sair sanitizados: %+v", got)
+	}
+}
+
 // TestAOS405_DerivaDoSpanData — o caminho real: atributos de span → wide event → observação.
 func TestAOS405_DerivaDoSpanData(t *testing.T) {
 	sd := SpanData{

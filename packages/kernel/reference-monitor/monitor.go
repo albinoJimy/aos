@@ -293,10 +293,10 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 		// selo, e só a POLÍTICA tem SLO. Publicar as duas deixa ver qual das metades pesa.
 		span.SetAttribute(otelgenai.AttrMediationPolicyLatencyNanos, dec.PolicyLatency.Nanoseconds())
 		span.SetAttribute(otelgenai.AttrMediationAuditWriteLatencyNanos, dec.AuditWriteLatency.Nanoseconds())
-		// E a política partida por hook (AOS-405), um atributo por hook. Dois hooks com o mesmo nome
-		// numa cadeia somam-se: o atributo é por nome, e publicar só o último esconderia o primeiro.
-		for hook, lat := range latenciaPorHook(dec.HookLatencies) {
-			span.SetAttribute(otelgenai.MediationHookLatencyAttr(hook), lat.Nanoseconds())
+		// E a política partida por hook (AOS-405), um atributo por hook. Dois hooks com a mesma CHAVE
+		// numa cadeia somam-se: o atributo é por chave, e publicar só o último esconderia o primeiro.
+		for chave, lat := range latenciaPorAtributo(dec.HookLatencies) {
+			span.SetAttribute(chave, lat.Nanoseconds())
 		}
 		// Numa negação/escalada, anotar o hook atribuível (ex.: "taint") para que a
 		// causa da decisão seja auto-descritível no span, sem segredos.
@@ -317,14 +317,17 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 	return dec, err
 }
 
-// latenciaPorHook soma as latências por nome de hook, para o span ter um atributo por nome.
-func latenciaPorHook(lats []HookLatency) map[string]time.Duration {
+// latenciaPorAtributo soma as latências por CHAVE de atributo — o nome do hook já sanitizado por
+// [otelgenai.MediationHookLatencyAttr]. Somar pelo nome cru deixaria dois nomes distintos que
+// sanitizam para a mesma chave (ex.: `risk.classify` e `risk_classify`) sobrescreverem-se no span,
+// com o vencedor decidido pela ordem aleatória do mapa.
+func latenciaPorAtributo(lats []HookLatency) map[string]time.Duration {
 	if len(lats) == 0 {
 		return nil
 	}
 	out := make(map[string]time.Duration, len(lats))
 	for _, l := range lats {
-		out[l.Hook] += l.Latency
+		out[otelgenai.MediationHookLatencyAttr(l.Hook)] += l.Latency
 	}
 	return out
 }
@@ -359,8 +362,12 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err er
 	// LATÊNCIA POR HOOK (AOS-405): medida à volta de cada Evaluate e anexada à decisão em TODOS
 	// os caminhos de retorno por este defer — permit, recusa, escalada, erro de hook, tool não
 	// registada, obrigação por cumprir, selo falhado. Numa recusa ficam os hooks até ao que decidiu.
-	var hookLatencies []HookLatency
-	defer func() { dec.HookLatencies = hookLatencies }()
+	hookLatencies := make([]HookLatency, 0, len(m.hooks))
+	defer func() {
+		if len(hookLatencies) > 0 {
+			dec.HookLatencies = hookLatencies
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		// Contexto já cancelado: fail-closed, sem sequer avaliar. Esta negação é
 		// DELIBERADAMENTE não-auditada: gravar no Event Store exigiria o mesmo
@@ -392,7 +399,8 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err er
 	for _, h := range m.hooks {
 		inicioHook := m.now()
 		res, err := safeEvaluate(ctx, h, &call)
-		hookLatencies = append(hookLatencies, HookLatency{Hook: h.Name(), Latency: m.now().Sub(inicioHook)})
+		duracaoHook := m.now().Sub(inicioHook)
+		hookLatencies = append(hookLatencies, HookLatency{Hook: h.Name(), Latency: duracaoHook})
 		if res.PolicyVersion != "" {
 			policyVersion = res.PolicyVersion
 		}

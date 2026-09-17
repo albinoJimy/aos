@@ -1051,19 +1051,28 @@ janela do avaliador, sem SLO nem alerta.
       `evaluate`: numa recusa, escalada ou erro de hook ficam os hooks até ao que decidiu, esse
       incluído; na recusa por contexto cancelado é nil. Os hooks somam-se dentro de `PolicyLatency`
       (o resto é o próprio RM: registo da tool e imposição de obrigações). O span `execute_tool` ganha
-      um atributo por hook, `aos.mediation.hook_latency_ns.<hook>`, somando hooks com o mesmo nome.
-      *(`TestAOS405_PermitTrazALatenciaDeCadaHookPelaOrdemDaCadeia`,
+      um atributo por hook, `aos.mediation.hook_latency_ns.<hook>`, somando hooks cuja chave sanitizada
+      coincide. *(Com relógio manual: `TestAOS405_PermitTrazALatenciaDeCadaHookPelaOrdemDaCadeia`,
       `TestAOS405_RecusaSoTrazOsHooksQueCorreram`, `TestAOS405_HookComErroTambemTraz`,
-      `TestAOS405_NomesRepetidosSomamNoSpan`, `TestAOS405_ContextoCanceladoNaoTemHooks`, com relógio
-      manual. **FALHA-ANTES por mutação**: sem anexar as latências à decisão, os quatro primeiros
-      falham.)*
+      `TestAOS405_EscaladaTrazOsHooksAteAoQueEscalou`, `TestAOS405_ToolNaoRegistadaTrazTodosOsHooks`,
+      `TestAOS405_SeloDoPermitQueFalhaGuardaOsHooks` (o caminho em que a política é reposta depois do
+      selo falhado), `TestAOS405_NomesRepetidosSomamNoSpan`,
+      `TestAOS405_NomesQueSanitizamParaAMesmaChaveSomam`; a soma dos hooks cabe na política em todos.
+      `TestAOS405_ContextoCanceladoNaoTemHooks` é um guarda de contrato e passa também sem a
+      implementação. **FALHA-ANTES por mutação**: sem anexar as latências à decisão, os testes do
+      permit, da recusa, do erro de hook e dos nomes repetidos falham. Revisão adversarial independente:
+      sem defeitos no código; somar pela chave sanitizada, voltar a sanitizar na derivação, os testes dos
+      restantes caminhos e as correcções de documentação vieram dela.)*
 - [x] **Substrato.** `otelgenai.MediationHookLatency` deriva, dos wide events da janela, amostras,
       p50, p95 e máximo por hook, por ordem de nome, sobre a mesma amostra do SLI de overhead e com a
       exclusão da recusa por contexto cancelado. Não se parte por decisão: o custo de um hook é o
       mesmo seja qual for o desfecho, e partir tornaria as amostras poucas demais.
-      `MediationHookLatencyAttr` troca por `_` tudo o que no nome não for letra, dígito, `-` ou `_`.
+      `MediationHookLatencyAttr` troca por `_` tudo o que no nome não for letra, dígito, `-` ou `_`, e a
+      derivação volta a aplicá-lo ao nome que lê do bag: a chave pode vir de outro produtor, e um tab ou
+      um byte inválido num rótulo partiria o formato de exposição do `/metrics` inteiro.
       *(`TestAOS405_LatenciaPorHookComPercentis`, `TestAOS405_ExclusoesDaAmostra`,
-      `TestAOS405_NomeDoHookFicaSeguro`, `TestAOS405_DerivaDoSpanData`.)*
+      `TestAOS405_NomeDoHookFicaSeguro`, `TestAOS405_DerivacaoVoltaASanitizar`,
+      `TestAOS405_DerivaDoSpanData`.)*
 - [x] **Nó.** O `/metrics` publica `aos_mediation_hook_samples{hook}` e
       `aos_mediation_hook_latency_ns{hook,stat="p50|p95|max"}` em nanossegundos, sem SLO nem alerta.
       *(DECISÃO: ao contrário da escrita do selo, os rótulos não são um conjunto fechado — são os hooks
@@ -1076,8 +1085,11 @@ janela do avaliador, sem SLO nem alerta.
       o banner do avaliador declara-a.
 - [ ] **Evidência de sistema.** Depois de um deploy, um run com tool calls deixa no `/metrics` de
       produção `aos_mediation_hook_samples` e `aos_mediation_hook_latency_ns` para os hooks da cadeia
-      real (identity, revalidation, risk-classify, policy, taint, scope, budget, egress), e a soma dos
-      hooks de cada call cabe na política medida. Com isto, a próxima política lenta diz que hook pesa.
+      real (identity, revalidation, risk-classify, policy, taint, scope, budget, egress). O `/metrics` só
+      tem agregados — o p50 ou o máximo de dois hooks podem vir de calls diferentes, e os spans com o
+      valor por call são descartados pelo colector de produção. Por isso a verificação da soma faz-se numa
+      janela com **uma só** mediação, em que cada estatística de cada hook é essa call: a soma dos hooks
+      tem de caber em `aos_slo_sli{sli="mediation_overhead_p95"}` dessa mesma janela.
 
 ### Estado
 
