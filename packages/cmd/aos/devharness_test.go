@@ -600,7 +600,7 @@ func TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary(t *testing.T) {
 
 	// PROCESSO 1 (aos-issuer): minta um token NHI — a chave NUNCA sai deste processo.
 	tok := runAOSIssuer(t, bin, "mint", "--key-file", keyFile, "--issuer", issuerID,
-		"--human", "human:alice", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
+		"--human", "human:alice", "--board", "board:aos-demo", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
 	if tok == "" {
 		t.Fatal("o issuer não produziu token")
 	}
@@ -636,7 +636,7 @@ func TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary(t *testing.T) {
 	// NEGADO em identity — o anchor (pubkey da 1ª chave) é a única fonte de confiança.
 	rogueKey := filepath.Join(t.TempDir(), "rogue.key")
 	rogueTok := runAOSIssuer(t, bin, "mint", "--key-file", rogueKey, "--issuer", issuerID,
-		"--human", "human:alice", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
+		"--human", "human:alice", "--board", "board:aos-demo", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
 	decRogue, err := node.Runtime.Monitor().Mediate(ctx, tnCall(rogueTok))
 	if err != nil {
 		t.Fatalf("Mediate (rogue): %v", err)

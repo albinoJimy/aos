@@ -56,7 +56,7 @@ BEARER="$(getidtoken)"; [[ -n "${BEARER}" ]] || fail "sem id-token do Keycloak"
 
 echo "[tool-deny] 2/5 NHI mintado COM cap:http.post (o principal ESTÁ autorizado) ..."
 NHI="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer \
-  --human human:alice --agent agt-tooldeny --class researcher --caps cap:http.post --ttl 15m | tr -d '\r\n')"
+  --human human:alice --board board:demo --agent agt-tooldeny --class researcher --caps cap:http.post --ttl 15m | tr -d '\r\n')"
 [[ -n "${NHI}" ]] || fail "mint falhou"
 
 echo "[tool-deny] 3/5 POST /runs — objetivo que INDUZ o modelo a pedir a tool web_post ..."

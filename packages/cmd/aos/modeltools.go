@@ -80,6 +80,41 @@ type sandboxMapping struct {
 	WriteArg string   `json:"write_arg"`
 }
 
+// ErrToolRegionForaDosBoards — com AOS_BOARD_REGIONS definida, uma tool de AOS_MODEL_TOOLS declara
+// uma `resource_region` vazia ou que nenhum board autoriza (AOS-407). A obrigação `region` do PDP
+// negaria essa tool em todas as chamadas; o arranque recusa em vez de servir tools mortas.
+var ErrToolRegionForaDosBoards = errors.New("aos: AOS_MODEL_TOOLS declara uma tool com resource_region vazia ou fora das regioes de AOS_BOARD_REGIONS — com a soberania por board ligada (AOS-407) essa tool seria negada em todas as chamadas")
+
+// validarRegioesDasTools confronta a `resource_region` de cada tool com as regiões autorizadas pelo
+// mapa de soberania (AOS-407). Sem mapa (soberania desligada) ou sem tools, não há nada a validar.
+//
+// ÂMBITO: é uma validação da SUPERFÍCIE DE AMBIENTE (lê `AOS_MODEL_TOOLS`), e é por isso que o
+// chamador é o `nodeConfigFromEnv` e não o `Bootstrap` — o manifesto só existe nesta fronteira; um
+// embedder que componha `Bootstrap` com as suas próprias tools declara as regiões que quiser e
+// responde por elas. Nota lateral: com um só board isto torna a recusa cross-border inalcançável em
+// runtime (a região da tool é sempre a do board), trocando um deny por chamada por uma recusa no
+// arranque — deliberado, porque servir tools que o PEP negaria sempre é pior.
+func validarRegioesDasTools(boardRegions map[string]string) error {
+	if len(boardRegions) == 0 {
+		return nil
+	}
+	specs, err := readModelToolSpecs()
+	if err != nil || len(specs) == 0 {
+		return err
+	}
+	autorizadas := make(map[string]bool, len(boardRegions))
+	for _, r := range boardRegions {
+		autorizadas[strings.ToLower(strings.TrimSpace(r))] = true
+	}
+	for _, s := range specs {
+		regiao := strings.ToLower(strings.TrimSpace(s.ResourceRegion))
+		if regiao == "" || !autorizadas[regiao] {
+			return fmt.Errorf("%w: tool %q com resource_region %q", ErrToolRegionForaDosBoards, strings.TrimSpace(s.Name), s.ResourceRegion)
+		}
+	}
+	return nil
+}
+
 // readModelToolSpecs lê + valida o ficheiro AOS_MODEL_TOOLS e devolve os specs crus. Vazio ⇒
 // (nil, nil): não configurado. Fonte única partilhada por loadModelToolsFromEnv (face do modelo) e
 // parseSignedToolRegistryFromEnv (catálogo assinado).

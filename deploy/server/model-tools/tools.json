@@ -13,7 +13,7 @@
     "reversibility": "reversible",
     "resource_type": "file",
     "resource_value": "doc://{doc_id}",
-    "resource_region": "eu",
+    "resource_region": "eu-west",
     "egress": "none",
     "sandbox": { "command": "read", "path_arg": "doc_id" }
   },
@@ -31,7 +31,7 @@
     "capability": "cap:http.post",
     "resource_type": "http",
     "resource_value": "https://api.example.com/results",
-    "resource_region": "eu",
+    "resource_region": "eu-west",
     "egress": "external"
   }
 ]

@@ -73,9 +73,12 @@ func (c *IdentityCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookRes
 	// Verify) liga a NHI ao humano responsável e propaga a cada evento de tool
 	// call, permitindo reconstruir "quem autorizou" (AOS-006).
 	call.Principal = rm.Principal{
-		NHIID:           principal.AgentID,
-		AgentID:         principal.AgentID,
-		AgentClass:      principal.AgentClass,
+		NHIID:      principal.AgentID,
+		AgentID:    principal.AgentID,
+		AgentClass: principal.AgentClass,
+		// AOS-407: o board vem do token VERIFICADO. Este hook substitui o Principal inteiro, e
+		// sem esta linha o board era apagado antes de chegar ao PDP (DEF-909).
+		Board:           principal.Board,
 		DelegationChain: toRMChain(principal.DelegationChain),
 		Authority:       principal.Scope,
 		// Autoridade de escopo derivada da IDENTIDADE (AOS-156): o grant ASSINADO pelo

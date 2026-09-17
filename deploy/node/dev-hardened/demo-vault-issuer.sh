@@ -48,7 +48,7 @@ echo "[vault-issuer]   AOS_ISSUER_PUBKEY = ${PUB:0:32}…  (veio do Vault, não 
 
 echo "[vault-issuer] 3/6 a mintar um NHI ASSINADO PELO VAULT (a privada nunca entra no issuer) ..."
 NHI="$("${ISSUERBIN}" mint --vault-addr "${VADDR_HOST}" --vault-key "${KEYNAME}" --vault-token-path "${SECRETS}/vault-token" --vault-ca "${SECRETS}/ca.crt" \
-  --issuer iss:aos-issuer --human human:alice --agent agt-vault --class agent-worker --caps cap:http.post --ttl 15m | tr -d '\r\n')"
+  --issuer iss:aos-issuer --human human:alice --board board:demo --agent agt-vault --class agent-worker --caps cap:http.post --ttl 15m | tr -d '\r\n')"
 [[ -n "${NHI}" ]] || fail "mint via Vault falhou"
 echo "[vault-issuer]   NHI mintado (${#NHI} chars)"
 
@@ -57,7 +57,7 @@ cp "${SCRIPT_DIR}/.env" "${SCRIPT_DIR}/.env.bak-vaultissuer"
 trap 'mv -f "${SCRIPT_DIR}/.env.bak-vaultissuer" "${SCRIPT_DIR}/.env" 2>/dev/null; recreate_node' EXIT
 sed -i "s#^AOS_ISSUER_PUBKEY=.*#AOS_ISSUER_PUBKEY=${PUB}#" "${SCRIPT_DIR}/.env"
 recreate_node
-FNHI="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer --human human:alice --agent agt-file --class agent-worker --caps cap:http.post --ttl 15m | tr -d '\r\n')"
+FNHI="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer --human human:alice --board board:demo --agent agt-file --class agent-worker --caps cap:http.post --ttl 15m | tr -d '\r\n')"
 # O NHI é verificado na MEDIAÇÃO (hook de identidade do RM por-tool-call), NÃO no submit — logo a
 # prova faz-se INDUZINDO uma tool call. Objetivo diretivo força a web_post.
 OBJ="Publica resultado-42 fazendo HTTP POST para https://api.example.com/results usando a tool web_post. So podes publicar via web_post."

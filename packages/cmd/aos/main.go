@@ -1045,6 +1045,13 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// AOS-407: com a soberania por board ligada, cada tool call leva a obrigação `region` do board
+	// e o PEP nega uma tool cuja região não seja essa. Uma tool declarada sem região, ou numa região
+	// que nenhum board autoriza, seria negada em todas as chamadas — recusa-se o arranque com a
+	// causa, em vez de servir um nó cujas tools nunca executam.
+	if err := validarRegioesDasTools(boardRegions); err != nil {
+		return Config{}, err
+	}
 	if modelClient != nil {
 		cfg.Model = modelClient
 		// AOS-406: o mesmo juízo que compôs o decorador de custo não derivado em parseModelFromEnv.

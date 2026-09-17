@@ -191,6 +191,11 @@ type AuthorityConfig struct {
 	// DefaultPolicyRef é o policy_ref a codificar nos tokens quando o mint não o
 	// especifica. Vazio ⇒ derivado da classe ("policy://<class>").
 	DefaultPolicyRef string
+	// Board é o board de soberania selado em CADA token desta autoridade (AOS-407). A
+	// autoridade co-localizada é a via de REFERÊNCIA (um nó, um board): o nó compõe-na com o
+	// board do seu mapa de soberania. Em produção quem cunha é o aos-issuer, que copia o board
+	// da claim do IdP. Vazio ⇒ tokens sem board, que a soberania ligada nega.
+	Board string
 }
 
 // IssuerAuthority é a AUTORIDADE DE IDENTIDADE SEPARADA (AOS-156). Detém a chave de
@@ -208,6 +213,7 @@ type IssuerAuthority struct {
 	// dir é a porta de autenticação humana consultada antes de cada mint.
 	dir              HumanDirectory
 	defaultPolicyRef string
+	board            string // AOS-407: board de soberania selado em cada token
 }
 
 // NewIssuerAuthority constrói a autoridade. A fonte da chave de assinatura é escolhida
@@ -264,6 +270,7 @@ func NewIssuerAuthority(cfg AuthorityConfig) (*IssuerAuthority, error) {
 		issuer:           iss,
 		dir:              cfg.Directory,
 		defaultPolicyRef: cfg.DefaultPolicyRef,
+		board:            cfg.Board,
 	}, nil
 }
 
@@ -334,6 +341,7 @@ func (a *IssuerAuthority) mint(ctx context.Context, humanID, agentID, class stri
 		AgentID:       agentID,
 		AgentClass:    class,
 		PolicyRef:     policyRef,
+		Board:         a.board,
 		UserAuthority: scope,
 		AuthMethod:    authMethod, // contexto de autorização ⇒ binding auditável
 	})

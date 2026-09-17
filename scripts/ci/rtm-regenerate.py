@@ -807,7 +807,16 @@ def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -
     # Os epics desta gama são TODOS os que contêm tickets nela — não «o último».
     # Nomear só um transformava cada epic novo numa substituição do anterior.
     rem_epics = epics_between(aos_key(rem_low), stats["max_aos"], tickets, index)
-    rem_epics_str = ", ".join(rem_epics)
+
+    def rem_epics_menos(*ja_nomeados: str) -> str:
+        """A lista da gama de remediação sem os epics que a linha já nomeia literalmente.
+
+        Um epic antigo que receba um ticket novo entra nesta gama e sairia DUAS vezes
+        na mesma célula (o AOS-407, em EPIC-09, fez isso na linha do `tecnica/09`). As
+        declarações não mudam — o epic continua declarado com os tickets das duas gamas;
+        o que se evita é a repetição no texto.
+        """
+        return ", ".join(e for e in rem_epics if e not in ja_nomeados)
     rem_claims = [
         (e, [t for t in tickets_between(aos_key(rem_low), stats["max_aos"], tickets) if index[t] == e])
         for e in rem_epics
@@ -840,11 +849,11 @@ def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -
          [("EPIC-07", rng(64, 75))]),
         ("| `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |",
          [("EPIC-08", rng(76, 86))]),
-        (f"| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, {rem_epics_str} | AOS-087 – AOS-097 (+ {rem_range}) |",
+        (f"| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, {rem_epics_menos('EPIC-09')} | AOS-087 – AOS-097 (+ {rem_range}) |",
          [("EPIC-09", rng(87, 97))] + rem_claims),
         ("| `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |",
          [("EPIC-10", rng(98, 108)), ("EPIC-11", ["AOS-118"])]),
-        (f"| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), {rem_epics_str} | AOS-109 – AOS-118 (+ AOS-045–054, + {rem_range}) |",
+        (f"| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), {rem_epics_menos('EPIC-11', 'EPIC-05')} | AOS-109 – AOS-118 (+ AOS-045–054, + {rem_range}) |",
          [("EPIC-11", rng(109, 118)), ("EPIC-05", rng(45, 54))] + rem_claims),
         ("| `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |",
          [("EPIC-01", rng(3, 4)), ("EPIC-05", rng(45, 54)), ("EPIC-06", rng(55, 63)),

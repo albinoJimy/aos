@@ -1412,6 +1412,25 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, perr
 	}
 
+	// (2b-ter) SOBERANIA POR BOARD NO CAMINHO DE EFEITO (AOS-407, fecha DEF-909). A autoridade
+	// board→região nasce AQUI — o WORM já existe e o runtime seguro ainda não — e liga-se ao PDP
+	// como resolvedor VIVO: cada decisão de base permit exige o board do principal (claim assinada
+	// no NHI) e leva a obrigação `region`, que o PEP impõe contra a região da tool. É a MESMA
+	// autoridade que o read-path soberano consulta mais abaixo (ADR-011: uma só fonte para efeito e
+	// leitura), pelo que uma rotação vale para os dois. Sem AOS_BOARD_REGIONS não há autoridade e o
+	// PDP decide como antes; sem PDP carregado não há decisão onde a ligar.
+	var sovAuthority *SovereignRegionAuthority
+	if len(cfg.BoardRegions) > 0 {
+		sa, serr := NewSovereignRegionAuthority(ctx, cfg.BoardRegions, worm, cfg.SovereignClock)
+		if serr != nil {
+			return nil, fmt.Errorf("aos: fonte de autoridade de soberania (AOS-205): %w", serr)
+		}
+		sovAuthority = sa
+		if cfg.PDP != nil {
+			cfg.PDP.SetBoardRegions(sovAuthority)
+		}
+	}
+
 	// (2c-pre) CIFRA POR-TITULAR DO CONTEÚDO DOS RUNS (AOS-093). O vault de chaves de
 	// PII por-titular e o índice titular→partição são criados AQUI — antes da execução
 	// durável — porque são PARTILHADOS por duas frentes que TÊM de usar a mesma chave:
@@ -1663,12 +1682,21 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if cfg.HumanDirectory != nil {
 			humanDir = cfg.HumanDirectory
 		}
+		// AOS-407: o board que esta autoridade sela. Com vários boards no mapa fica VAZIO — ver
+		// [boardDeReferencia]: escolher um board é atribuir a sua região a um humano que pode ser
+		// de outro, e esta autoridade cunha para qualquer humano do directório. Vazio ⇒ o PDP nega
+		// fail-closed essas tool calls, e a via com board é cunhar no `aos-issuer`.
+		boardDaAutoridade := boardDeReferencia(cfg.BoardRegions)
 		authority, err = integration.NewIssuerAuthority(integration.AuthorityConfig{
 			IssuerID:      cfg.IssuerID,
 			Classes:       cfg.IssuerClasses,
 			Directory:     humanDir,
 			SigningKey:    signingKey,
 			IssuerOptions: issuerOpts,
+			// AOS-407: a autoridade de REFERÊNCIA sela o board do nó em cada token, para a
+			// soberania por board ligada ao PDP ter um board a resolver. Em produção quem cunha é
+			// o aos-issuer, com o board da claim do IdP.
+			Board: boardDaAutoridade,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("aos: autoridade de identidade (AOS-156): %w", err)
@@ -2251,7 +2279,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// residência do run é selada na criação e authorizeReadComCausa recusa cross-region — ver
 	// sovereignty.go/api.go. NÃO é EPIC-09/10.
 	// Vazio ⇒ read-path legado (sem authz por-chamador nem selo). Reutiliza a MESMA autoridade
-	// board→região que o PDP (AOS-094): a regra NÃO é duplicada.
+	// board→região que o PDP consulta desde o AOS-407 (antes disso o PDP não a tinha — DEF-909):
+	// a regra NÃO é duplicada.
 	// AOS-205: a fonte board→região é agora uma PORTA DE AUTORIDADE ([SovereignRegionAuthority])
 	// com ROTAÇÃO e AUDITORIA de alterações — o mapa de env é apenas a SEMENTE do provisionamento
 	// inicial, não a verdade congelada. A REGRA fail-closed (govsov.RegionFor) NÃO se duplica.
@@ -2259,11 +2288,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	var readAuthority *SovereignRegionAuthority
 	var readRegions *govsov.Registry
 	var readCred readCredentialVerifier
-	if len(cfg.BoardRegions) > 0 {
-		readAuthority, err = NewSovereignRegionAuthority(ctx, cfg.BoardRegions, worm, cfg.SovereignClock)
-		if err != nil {
-			return nil, fmt.Errorf("aos: fonte de autoridade de soberania (AOS-205): %w", err)
-		}
+	if sovAuthority != nil {
+		// AOS-407: a mesma autoridade que o PDP já consulta no caminho de efeito.
+		readAuthority = sovAuthority
 		readRegions = readAuthority.Registry()
 	}
 	// CREDENCIAL FORTE do leitor (AOS-205): quando o verificador OIDC de soberania está
@@ -2745,6 +2772,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("NOTA AOS-205: o TENANT concreto (IdP de soberania da organizacao que empurra o board->regiao autoritativo) fica DEFERIDO — a semente/rotacoes entram por config/operador; o no fica com o CONTRATO (fonte rotacionavel+auditada e verificacao de credencial). A coincidencia leitor.regiao==run.regiao POR-RUN esta ENTREGUE (AOS-182/DEF-202): residencia selada na criacao, authorizeReadComCausa recusa cross-region")
 	} else {
 		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed")
+	}
+	// SOBERANIA DE EFEITO (AOS-407). Declarada à parte da de leitura porque são duas metades
+	// distintas da MESMA autoridade, e até ao AOS-407 só a de leitura existia: o PDP não tinha
+	// registo board→região (DEF-909) e nenhuma tool call era restringida por região.
+	switch {
+	case sovAuthority != nil && cfg.PDP != nil && cfg.PDP.SovereigntyEnabled():
+		log("soberania de EFEITO (AOS-094/AOS-407, ADR-011 §5): LIGADA — o PDP resolve o board SELADO no token NHI (claim board, afirmada pelo IdP no mint) para a regiao autorizada e emite a obrigacao `region`; o PEP RECUSA qualquer tool call cujo recurso esteja noutra regiao (cross-border), e um board vazio ou desconhecido e NEGADO fail-closed. Mesma autoridade rotacionavel da soberania de leitura (%d board(s), revisao %d): uma rotacao vale para as duas. A regiao declarada de cada tool foi verificada no arranque contra este mapa — com UM board isso torna a recusa cross-border inalcancavel por construcao (regiao-da-tool = regiao-do-board) e a metade que actua e o deny de board vazio/desconhecido; a recusa cross-border pesa com >1 board de regioes diferentes", sovAuthority.Len(), sovAuthority.Revision())
+		if len(cfg.BoardRegions) > 1 && authority != nil {
+			// AOS-407: com vários boards a autoridade de identidade CO-LOCALIZADA sela board VAZIO
+			// (não escolhe por ti — ver boardDeReferencia). Declarar isto é a diferença entre "as
+			// tool calls são negadas e não sei porquê" e uma postura conhecida no arranque.
+			log("  ^ CUNHAGEM DE REFERENCIA SEM BOARD: o mapa tem %d boards e a autoridade co-localizada nao sabe a que board pertence cada humano (isso vem do IdP), pelo que sela board VAZIO — as tool calls dos tokens que ela cunha sao NEGADAS fail-closed. Para tool calls num no multi-board, cunhe no aos-issuer (mint --assertion, board da claim do IdP)", len(cfg.BoardRegions))
+		}
+	case cfg.PDP == nil && len(cfg.BoardRegions) > 0:
+		log("soberania de EFEITO (AOS-094/AOS-407): INERTE — ha mapa board->regiao mas NAO ha bundle de politica carregado, e a obrigacao `region` nasce numa decisao do PDP. NAO e permissivo: sem bundle o composition-root compoe pdp.NewUnloaded e TODA a tool call mediada e negada (default-deny explicito, ver a linha da mediacao de politica). O que fica inerte e a DISTINCAO por regiao, nao a mediacao")
+	case len(cfg.BoardRegions) == 0:
+		log("soberania de EFEITO (AOS-094/AOS-407): INERTE — sem Config.BoardRegions nao ha mapa board->regiao; as tool calls nao sao restringidas por regiao (o board selado no token nao e consultado)")
 	}
 	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
 	// CUSTÓDIA DA KEK (AOS-215/DEF-302). O banner DECLARA a postura REALMENTE composta: custódia

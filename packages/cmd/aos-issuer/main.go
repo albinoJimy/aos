@@ -125,6 +125,7 @@ func cmdMint(args []string, out io.Writer) error {
 	buildSigner := vaultSignerFlags(fs, keyFile)
 	issuerID := fs.String("issuer", "iss:aos-issuer", "id do issuer (== AOS_ISSUER_ID do nó)")
 	human := fs.String("human", "", "humano responsável (raiz da delegação); alternativa a --assertion (via manual/allowlist)")
+	board := fs.String("board", "", "board de soberania do humano, SÓ com --human (com --assertion vem da claim `board` do IdP e esta flag é recusada)")
 	agent := fs.String("agent", "", "id do agente (NHI a criar)")
 	class := fs.String("class", "", "classe do agente (selecciona a ClassPolicy)")
 	caps := fs.String("caps", "", "capabilities CSV que o utilizador possui (a autoridade é a intersecção com a classe)")
@@ -169,7 +170,12 @@ func cmdMint(args []string, out io.Writer) error {
 		if !*assertionUnbound {
 			nonce = delegationNonce(*agent, *class, splitCSV(*caps), *ttl)
 		}
-		h, m, err := authenticateOIDC(context.Background(), oidc.Config{
+		if *board != "" {
+			// O board é uma afirmação de soberania: com prova OIDC vem do IdP, e uma flag ao lado
+			// deixaria quem cunha escolher a fronteira que o IdP não afirmou (AOS-407).
+			return errors.New("--board só se usa com --human: com --assertion o board vem da claim `board` do IdP")
+		}
+		h, m, b, err := authenticateOIDCComBoard(context.Background(), oidc.Config{
 			Issuer:     *oidcIssuer,
 			Audience:   *oidcAudience,
 			JWKSURI:    *oidcJWKS, // vazio ⇒ discovery via issuer
@@ -186,7 +192,13 @@ func cmdMint(args []string, out io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("autenticação OIDC do humano: %w", err)
 		}
-		rootHuman, method = h, m
+		if b == "" {
+			// FAIL-CLOSED (AOS-407): sem board afirmado pelo IdP não há fronteira de soberania, e
+			// um NHI sem board seria negado em cada tool call. Recusa-se aqui, com a causa, em vez
+			// de cunhar um token inútil. O cliente OIDC do aos-issuer tem de emitir a claim.
+			return errors.New("o ID-token nao traz a claim `board`: o cliente OIDC do aos-issuer tem de a emitir (mapper do atributo board no IdP) — sem board o NHI seria negado em todas as tool calls")
+		}
+		rootHuman, method, *board = h, m, b
 		if !*assertionUnbound {
 			// Rótulo FORTE: o humano autenticou-se PARA ESTA delegação, não apenas "esteve
 			// presente". *oidcIssuer é seguro como fonte porque Validate já exigiu que o `iss`
@@ -196,6 +208,9 @@ func cmdMint(args []string, out io.Writer) error {
 	}
 	if rootHuman == "" {
 		return errors.New("mint exige --human ou --assertion (o humano-raiz da delegação)")
+	}
+	if *board == "" {
+		return errors.New("mint exige o board de soberania: --board com --human, ou a claim `board` do IdP com --assertion (AOS-407)")
 	}
 	scope := splitCSV(*caps)
 
@@ -218,6 +233,7 @@ func cmdMint(args []string, out io.Writer) error {
 		AgentID:       *agent,
 		AgentClass:    *class,
 		PolicyRef:     "policy://" + *class,
+		Board:         *board,
 		UserAuthority: scope,
 		AuthMethod:    method,
 	})
@@ -241,15 +257,23 @@ func cmdMint(args []string, out io.Writer) error {
 // sem `AllowInsecureTransport`, exige https ao IdP (loopback exceptuado). Um chamador que injecte
 // um `cfg.HTTPClient` (ex.: httptest) é respeitado tal-qual.
 func authenticateOIDC(ctx context.Context, cfg oidc.Config, assertion string) (human, method string, err error) {
+	human, method, _, err = authenticateOIDCComBoard(ctx, cfg, assertion)
+	return human, method, err
+}
+
+// authenticateOIDCComBoard é [authenticateOIDC] mais o board de soberania VERIFICADO do ID-token
+// (claim `board`, AOS-407). O board vem do mesmo Validate que deriva o humano: não há caminho em
+// que um board chegue ao token sem ter passado pela assinatura do IdP.
+func authenticateOIDCComBoard(ctx context.Context, cfg oidc.Config, assertion string) (human, method, board string, err error) {
 	v, err := oidc.NewVerifier(cfg)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	claims, err := v.Validate(ctx, assertion)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return "human:" + claims.Subject, "oidc:" + claims.Issuer, nil
+	return "human:" + claims.Subject, "oidc:" + claims.Issuer, claims.Board, nil
 }
 
 // loadOrCreateKey carrega a seed ed25519 (32 bytes em hex) do ficheiro; se não existir, gera uma

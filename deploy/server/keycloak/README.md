@@ -188,8 +188,16 @@ para **cunhar uma NHI enraizada no leitor** — dois poderes muito diferentes at
 A audiência do OAuth existe exactamente para dizer *a quem* um token se destina, e usá-la é o que
 impede a confusão.
 
-O `aos-issuer` **não tem** o mapper de `board`: cunhar não é ler, e um token que não precisa do
-dado não deve trazê-lo.
+O `aos-issuer` **passa a ter** o mapper de `board` desde o **AOS-407**, e a razão inverteu-se: o
+board deixou de servir só para ler. Ele vai **assinado no NHI** e é o PDP que o resolve para a região
+em cada tool call, pelo que cunhar precisa do dado — sem a claim, o `mint --assertion` **recusa** (um
+NHI sem board seria negado em todas as tool calls). As duas audiências continuam separadas: o que se
+partilha é o atributo do utilizador, não o poder do token.
+
+> ⚠️ **Num Keycloak já provisionado, a importação do realm não volta a correr.** O mapper novo entra
+> por `provision-identity.sh` (passo idempotente que o cria se faltar) ou à mão, em *Clients →
+> aos-issuer → Client scopes → dedicated → Add mapper → By configuration → User Attribute*, com
+> `user.attribute=board`, `claim.name=board`, e as claims de ID e access token ligadas.
 
 ### O que o `aos-issuer` exige a mais
 

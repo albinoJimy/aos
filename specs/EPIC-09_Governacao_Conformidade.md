@@ -53,6 +53,7 @@ Este epic é o degrau **M3 — Governado** do modelo de maturidade: não se atin
 | AOS-092 | TTL por classe de dado | feature | S | P1 | AOS-091, EPIC-08 (audit WORM) |
 | AOS-093 | Crypto-shredding (direito ao apagamento, Art. 17) | feature | L | P0 | AOS-091, AOS-092, EPIC-07 (vault) |
 | AOS-094 | Soberania por board (bloqueio cross-border) | feature | M | P1 | AOS-087, EPIC-06 (allowlist regional GW) |
+| AOS-407 | O board vai assinado no NHI e a soberania por board fica ligada no caminho de efeito | fix | M | P1 | AOS-094, AOS-156, AOS-205 |
 | AOS-095 | Aprovação HITL (Art. 14): assinada, fail-closed, override-rate medido | feature | L | P0 | AOS-087, EPIC-01 (estado waiting_on_human) |
 | AOS-096 | Gate de ratificação de auto-modificação | feature | M | P1 | AOS-088, AOS-095, EPIC-08 (eval-gate) |
 | AOS-097 | Modelo de responsabilização + relatórios de conformidade | feature | M | P1 | AOS-088, AOS-095, EPIC-08 (audit WORM) |
@@ -588,8 +589,8 @@ Implementar a imposição de soberania por board: a região autorizada é codifi
 
 ### Critérios de Aceitação
 
-- [ ] Cada board tem uma **fronteira regional** associada; o escopo de identidade codifica a região autorizada.
-- [ ] O PDP devolve a **região como obrigação**; o PEP **recusa** qualquer roteamento que a viole.
+- [x] Cada board tem uma **fronteira regional** associada; o escopo de identidade codifica a região autorizada. *(Entregue por **AOS-407**: o token NHI leva a claim `board` assinada — o escopo codifica o BOARD e a região deriva dele no PDP, que é a forma do ADR-011 §5.1 e evita duplicar o mapa em cada token.)*
+- [x] O PDP devolve a **região como obrigação**; o PEP **recusa** qualquer roteamento que a viole. *(Mecanismo desde AOS-094; LIGADO no nó por **AOS-407** — até lá `WithBoardRegions` não tinha chamador, DEF-909.)*
 - [ ] O **failover está proibido de cruzar fronteira**: perda de capacidade num board europeu **não** encaminha para região fora da UE (teste prova recusa).
 - [ ] A allowlist regional do Model Gateway (EPIC-06) é respeitada — nenhuma chamada de modelo sai da região autorizada.
 - [ ] Uma tentativa de roteamento cross-border é um evento auditável (deny + motivo de soberania).
@@ -838,6 +839,124 @@ PII. Não expandas escopo; abre PR com o template padrão.
 
 ---
 
+## AOS-407 — O board vai assinado no NHI e a soberania por board fica ligada no caminho de efeito
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-09 — Governação e Conformidade |
+| Fase | Remediação pós-produção |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-094 (mecanismo PDP/PEP), AOS-156 (autoridade de identidade), AOS-205 (autoridade board→região) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma / Responsável de Segurança |
+| Documentos de referência | ADR-011 §5 (nota posterior), `tecnica/09` §6, `packages/platform/identity/{token.go,issuer.go,issuer_child.go,verifier.go,rmadapter.go}`, `packages/control-plane/pdp/sovereignty.go`, `packages/cmd/aos/{bootstrap.go,modeltools.go}`, `packages/cmd/aos-issuer/main.go`, `deploy/server/keycloak/realm-aos.json` |
+
+### Contexto
+
+O ADR-011 §5 e o AOS-094 impõem soberania por board no caminho de efeito: o PDP resolve o board do
+principal para a sua região e emite a obrigação `region`, que o PEP impõe recusando uma tool call
+cujo recurso esteja noutra região. O mecanismo existia dos dois lados e estava **inerte** (DEF-909):
+`pdp.WithBoardRegions` não tinha chamador de produção. O levantamento encontrou uma **terceira peça**
+que o registo não nomeava: o token NHI não tinha board e o hook de identidade substituía o
+`rm.Principal` sem ele, pelo que ligar só o registo negaria **todas** as tool calls (board vazio ⇒
+deny fail-closed). E encontrou três vocabulários de região que não se cruzavam em produção
+(`board:prod=eu-west`, tools e gateway em `eu`, Cedar a exigir `eu`).
+
+### Objectivo
+
+O board do humano responsável vai assinado no token NHI, chega ao PDP e a obrigação `region` passa a
+ser imposta em cada tool call, com a mesma autoridade rotacionável do read-path soberano.
+
+### Critérios de Aceitação
+
+- [x] **Identidade.** `Claims.Board` (`omitempty`: um token anterior continua a verificar, com board
+      vazio), `IssueRequest.Board`, `Principal.Board`; `IssueChild` herda o board do pai e não tem
+      campo para o mudar; o `IdentityCheck` propaga-o ao `rm.Principal`; o evento
+      `identity.nhi.issued` regista-o. Um board adulterado no token invalida a assinatura.
+      *(`TestAOS407_BoardAssinadoChegaAoPrincipal`, `TestAOS407_FilhoHerdaOBoardDoPai`,
+      `TestAOS407_BoardAdulteradoInvalidaAAssinatura`, `TestAOS407_TokenSemBoardContinuaAVerificar`,
+      `TestAOS407_IdentityCheckPropagaOBoard`.)*
+- [x] **Cunhagem.** Em produção o board vem do **IdP**: o cliente Keycloak `aos-issuer` passa a emitir
+      a claim `board` (mapper no realm e passo idempotente no `provision-identity.sh`, porque a
+      importação do realm não volta a correr) e o `aos-issuer mint --assertion` copia-a do ID-token
+      verificado; sem a claim **recusa** em vez de cunhar um NHI que seria negado em todas as
+      chamadas. Com `--human` exige-se `--board`; `--board` com `--assertion` é recusado (o board é
+      afirmado pelo IdP, não por quem cunha). **Fronteira de confiança:** a afirmação do IdP vale
+      no caminho `--assertion`; com `--human` o board é declarado por quem cunha e é, portanto, tão
+      confiável como a `issuer.key` — que já autoriza escolher humano e capabilities. O caminho
+      `--human` é o de CI/dev (`auth_method: manual`) e o runbook de produção usa o
+      `get-id-token.ps1 -Cunhar`. *(`TestAOS407_AsserçãoDevolveOBoardVerificadoDoIdP`,
+      `TestAOS407_MintSemBoardRecusa`, `TestAOS407_BoardPorFlagComAsserçãoRecusa`.)*
+- [x] **PDP.** `BoardRegionResolver` (interface) e `SetBoardRegions` com lock: o nó abre o PDP ao ler
+      o ambiente, antes de o WORM e da autoridade existirem, e liga-a depois. `applySovereignty` lê o
+      resolvedor sob o lock de leitura, pelo que uma **rotação** da autoridade vale sem reabrir o PDP.
+      Um `*Registry` nil não fica preso na interface (negaria tudo em vez de ficar inerte).
+      *(`TestAOS407_SetBoardRegionsLigaDepoisDoOpenEVeARotacao`,
+      `TestAOS407_WithBoardRegionsNilFicaInerte`, `TestAOS407_SetBoardRegionsSemCorrida`.)*
+- [x] **Nó.** A autoridade de soberania nasce logo depois do WORM e é a MESMA para efeito e leitura
+      (ADR-011: uma só fonte). A autoridade de identidade de REFERÊNCIA sela o board do mapa do nó nos
+      tokens que minta — e com **vários** boards no mapa sela board **VAZIO** em vez de escolher
+      um: essa autoridade cunha para qualquer humano do directório e não sabe a que board cada um
+      pertence (isso vem do IdP), pelo que selar um seria atribuir a região de outro — a travessia
+      que a soberania existe para impedir. Vazio ⇒ o PDP nega essas tool calls fail-closed, e a via
+      com board é cunhar no `aos-issuer`; o nó multi-board continua a arrancar, porque é a
+      configuração do read-path soberano. O banner declara a soberania de efeito LIGADA ou INERTE
+      com a causa, e declara também esta cunhagem sem board quando ela acontece.
+      *(`TestAOS407_ToolNaRegiaoDoBoardExecuta`, `TestAOS407_ToolForaDaRegiaoDoBoardENegada` no nó
+      composto por ambiente com bundle real; `TestAOS407_ACausaDaNegacaoEAObrigacaoDeRegiao` afirma a
+      CAUSA (código `E_OBLIGATION_UNSATISFIED` e hook `obligation` nos rótulos que o loop devolve ao
+      modelo), senão um deny de outro gate manteria o par verde;
+      `TestAOS407_BoardDeReferenciaNaoEscolhePorTi`. **FALHA-ANTES por mutação nas duas metades**:
+      sem `SetBoardRegions` a tool noutra região executa; sem o board no `rm.Principal` a tool na
+      região certa é negada.)*
+- [x] **Região do recurso.** Com mapa de boards, o arranque **recusa** uma tool de `AOS_MODEL_TOOLS`
+      com `resource_region` vazia ou fora das regiões autorizadas (`ErrToolRegionForaDosBoards`) — sem
+      isso o nó servia tools que o PEP negaria em todas as chamadas.
+      *(`TestAOS407_ToolComRegiaoForaDosBoardsRecusaOArranque`.)*
+- [x] **Alcance em produção, dito sem inflação.** Com **um só** board (`board:prod=eu-west`) e o
+      arranque a exigir que cada tool declare uma região do mapa, região-da-tool ≡ região-do-board:
+      nenhuma tool call de produção pode violar a obrigação `region`. A metade que **actua** hoje é o
+      deny fail-closed de **board vazio** (um NHI sem a claim — tokens pré-deploy, ou um IdP sem o
+      mapper). A recusa cross-border torna-se alcançável com **≥2 boards** de regiões diferentes, e é
+      nessa configuração que a recusa de ambiguidade acima passa a ser a guarda que importa. O banner
+      declara a postura, não o alcance.
+- [x] **Vocabulário de produção alinhado.** Decisão do dono (2026-09-17): manter `board:prod=eu-west`
+      e passar a `resource_region` das tools de produção e de dev-hardened para `eu-west`. Mudar o
+      board para `eu` tornaria **ilegíveis** todos os runs já selados com residência `eu-west` (o
+      read-path recusa cross-region). O Model Gateway continua em `board-eu`/`eu`, que é outro
+      domínio (allowlist de modelos). **Resíduo declarado:** o bundle Cedar **não** é reassinado e a
+      regra `allow_http_post` continua a exigir `resource.region == "eu"`, pelo que fica
+      **inalcançável** enquanto todas as tools declararem `eu-west`. Hoje isso não muda nenhum
+      veredicto — uma tool call originada pelo modelo é `untrusted` e o taint-gate nega `cap:http.post`
+      antes —, mas a regra passa a estar desalinhada por si: se algum dia existir um caminho com taint
+      confiável, a negação vem da região, com uma causa que ninguém procurou. Alinhar exige reassinar
+      o bundle, o que pertence ao eixo de política e não a este ticket.
+- [ ] **Evidência de sistema.** Depois do deploy: o Keycloak de produção emite a claim `board` no
+      cliente `aos-issuer` (reprovisionamento), um NHI cunhado leva `board:prod`, um run faz tool
+      calls `eu-west` que EXECUTAM, e o banner declara a soberania de efeito LIGADA. Tokens cunhados
+      antes do deploy não têm board e as suas tool calls passam a ser negadas. **A janela não é fixa:**
+      dura o `--ttl` com que a NHI foi cunhada (o runbook usa `45m`) e uma NHI **filha** recebe um TTL
+      **novo** a contar do spawn, independente do `exp` do pai — na prática até cerca do **dobro** do
+      TTL depois do deploy. Recunhar resolve; quem quiser a janela curta cunha com `--ttl` curto antes
+      do cutover.
+
+### Fora de âmbito (declarado)
+
+O serviço **`aos-orq`** compõe um **RM mínimo** (`rm.New()`, sem `PolicyCheck`/PDP) e cunha o token
+do run com o **seu** emissor, sem board: nenhuma obrigação `region` é emitida nem imposta nesse
+processo. Isto é anterior a este ticket (a cadeia PDP completa do planeador está deferida, ADR-018) e
+não é regressão — mas significa que «a obrigação `region` é imposta em cada tool call» vale para o nó
+`aos`, não para o `aos-orq`. Compor a cadeia PDP no orquestrador é trabalho do eixo ORQ.
+
+### Estado
+
+**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy e do reprovisionamento
+do mapper no Keycloak.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -853,5 +972,6 @@ PII. Não expandas escopo; abre PR com o template padrão.
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-09-17 | AOS-407: o board vai assinado no NHI e a soberania por board fica ligada no caminho de efeito (fecha DEF-909); AC1/AC2 do AOS-094 passam a entregues | Equipa AOS |
 </content>
 </invoke>

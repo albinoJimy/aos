@@ -37,9 +37,10 @@ func (m *aos369ToolPingModel) Call(_ context.Context, _ agentruntime.PromptView)
 	if atomic.AddInt32(&m.calls, 1)%2 == 1 {
 		return agentruntime.ModelResponse{
 			ToolCalls: []agentruntime.ToolInvocation{{
-				ToolID:     "counter",
-				Capability: durCap,
-				Input:      []byte("tick"),
+				ToolID:         "counter",
+				Capability:     durCap,
+				ResourceRegion: "eu", // AOS-407: a região do board por omissão do nó (board:aos-demo=eu)
+				Input:          []byte("tick"),
 			}},
 			Usage: agentruntime.Usage{InputTokens: 1, OutputTokens: 1},
 		}, nil

@@ -50,7 +50,7 @@ submit_run() {
   local bearer nhi code body st
   bearer="$(getidtoken)"; [[ -n "${bearer}" ]] || fail "sem id-token"
   nhi="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer \
-    --human human:alice --agent "${agent}" --class agent-worker --caps "${caps}" --ttl 15m | tr -d '\r\n')"
+    --human human:alice --board board:demo --agent "${agent}" --class agent-worker --caps "${caps}" --ttl 15m | tr -d '\r\n')"
   [[ -n "${nhi}" ]] || fail "mint falhou"
   code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST https://localhost:8443/runs \
     -H "Authorization: Bearer ${bearer}" -H 'Content-Type: application/json' \

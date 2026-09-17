@@ -47,7 +47,7 @@ func TestIssuer_MintProducesVerifiableToken(t *testing.T) {
 	var tokBuf bytes.Buffer
 	if err := run([]string{
 		"mint", "--key-file", key, "--issuer", issuerID,
-		"--human", "human:alice", "--agent", "agt-1", "--class", "agent-worker", "--caps", "cap:fs.read",
+		"--human", "human:alice", "--board", "board:prod", "--agent", "agt-1", "--class", "agent-worker", "--caps", "cap:fs.read",
 	}, &tokBuf, io.Discard); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
