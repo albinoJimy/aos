@@ -293,6 +293,11 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 		// selo, e só a POLÍTICA tem SLO. Publicar as duas deixa ver qual das metades pesa.
 		span.SetAttribute(otelgenai.AttrMediationPolicyLatencyNanos, dec.PolicyLatency.Nanoseconds())
 		span.SetAttribute(otelgenai.AttrMediationAuditWriteLatencyNanos, dec.AuditWriteLatency.Nanoseconds())
+		// E a política partida por hook (AOS-405), um atributo por hook. Dois hooks com o mesmo nome
+		// numa cadeia somam-se: o atributo é por nome, e publicar só o último esconderia o primeiro.
+		for hook, lat := range latenciaPorHook(dec.HookLatencies) {
+			span.SetAttribute(otelgenai.MediationHookLatencyAttr(hook), lat.Nanoseconds())
+		}
 		// Numa negação/escalada, anotar o hook atribuível (ex.: "taint") para que a
 		// causa da decisão seja auto-descritível no span, sem segredos.
 		if dec.Effect != EffectPermit && dec.DeniedBy != "" {
@@ -310,6 +315,18 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 	// da cadeia de hooks nascem filhos do execute_tool, mantendo a propagação de trace.
 	dec, err = m.evaluate(spanCtx, call)
 	return dec, err
+}
+
+// latenciaPorHook soma as latências por nome de hook, para o span ter um atributo por nome.
+func latenciaPorHook(lats []HookLatency) map[string]time.Duration {
+	if len(lats) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Duration, len(lats))
+	for _, l := range lats {
+		out[l.Hook] += l.Latency
+	}
+	return out
 }
 
 // spanErrorType mapeia o erro de uma tool despachada para um código de conjunto FECHADO,
@@ -337,8 +354,13 @@ func spanErrorType(err error) string {
 // evaluate corre a cadeia de mediação (hooks → default-deny → audit-before-effect →
 // despacho) e devolve a decisão. É o núcleo de [Monitor.Mediate], separado apenas
 // para que o span execute_tool envolva TODOS os caminhos de retorno via defer.
-func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
+func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err error) {
 	start := m.now()
+	// LATÊNCIA POR HOOK (AOS-405): medida à volta de cada Evaluate e anexada à decisão em TODOS
+	// os caminhos de retorno por este defer — permit, recusa, escalada, erro de hook, tool não
+	// registada, obrigação por cumprir, selo falhado. Numa recusa ficam os hooks até ao que decidiu.
+	var hookLatencies []HookLatency
+	defer func() { dec.HookLatencies = hookLatencies }()
 	if err := ctx.Err(); err != nil {
 		// Contexto já cancelado: fail-closed, sem sequer avaliar. Esta negação é
 		// DELIBERADAMENTE não-auditada: gravar no Event Store exigiria o mesmo
@@ -368,7 +390,9 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	// negação de política registe a versão em vigor no evento de mediação.
 	var policyVersion string
 	for _, h := range m.hooks {
+		inicioHook := m.now()
 		res, err := safeEvaluate(ctx, h, &call)
+		hookLatencies = append(hookLatencies, HookLatency{Hook: h.Name(), Latency: m.now().Sub(inicioHook)})
 		if res.PolicyVersion != "" {
 			policyVersion = res.PolicyVersion
 		}

@@ -59,6 +59,7 @@ O epic encerra dois cenários de falha do plano-base: *The Audit Log Lied* (o tr
 | AOS-401 | O SLI de overhead de mediação ainda conta a escrita do selo e continua a violar o SLO em produção | fix | S | P0 | AOS-398 |
 | AOS-402 | A escrita do selo de mediação fica legível no `/metrics` do nó | fix | S | P2 | AOS-401 |
 | AOS-404 | Os ~31 ms de overhead de mediação da v0.1.15 ficam explicados pelos dados de produção | spike | S | P2 | AOS-402 |
+| AOS-405 | A janela da política de mediação fica partida por hook no span e no `/metrics` do nó | fix | S | P1 | AOS-404 |
 
 ---
 
@@ -1004,12 +1005,83 @@ corrigir o que o registo afirma.
       de que só a escrita do selo de mediação é custo de sink; e, sem mínimo de amostras e com
       `sustained_windows: 3`, **um run curto** com uma call lenta mantém o p95 acima do tecto durante a
       janela e pode disparar o `critical` de RB-04 sem PDP degradado (no run de 9 calls da v0.1.15, o p95
-      só da política nunca passou os 15 ms). Medir por hook é o passo seguinte, em ticket próprio.
+      só da política nunca passou os 15 ms). Medir por hook é o passo seguinte: **AOS-405**. A decisão
+      entre corrigir e recalibrar espera pelos dados que ele trouxer de produção.
 
 ### Estado
 
 **CONCLUÍDO** a 2026-09-17 (investigação): os ~31 ms estão explicados e o registo corrigido. O
 residual fica nomeado acima, à espera de decisão.
+
+---
+
+## AOS-405 — A janela da política de mediação fica partida por hook no span e no `/metrics` do nó
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Remediação pós-produção |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-404 |
+| Bloqueia | a decisão do residual do AOS-404 (corrigir o caminho lento ou recalibrar o SLO) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/adr/ADR-026-overhead-de-mediacao-e-a-janela-da-decisao.md` (Emenda), `tecnica/08_Observabilidade_Evals.md` §7.1, `docs/runbooks/RB-04.md`, `packages/kernel/reference-monitor/monitor.go`, `packages/substrate/otel-genai/hook_latency.go` |
+
+### Contexto
+
+O SLO de overhead de mediação governa a janela da política inteira (AOS-401). O AOS-404 encontrou em
+produção 4 de 27 políticas acima dos 15 ms (até 103,63 ms) e, pelo carimbo do selo
+`registry.revalidation`, pôs o excesso todo **depois** dele: num troço que junta o `fsync` desse selo
+com risk-classify, PDP, taint, scope, budget e egress. Nas 27 calls o troço anterior (identidade e
+preparação da revalidação) ficou em ~0,3–1 ms, com uma excepção de 6,85 ms. Os selos guardados não
+separam o troço lento, e escolher entre corrigir um hook e recalibrar o SLO sem saber qual pesa seria
+voltar a inferir.
+
+### Objectivo
+
+Cada mediação publica a duração de cada hook da cadeia; o `/metrics` do nó publica-a por hook, na
+janela do avaliador, sem SLO nem alerta.
+
+### Critérios de Aceitação
+
+- [x] **Kernel.** `Decision.HookLatencies` traz a duração de cada hook que correu, pela ordem da
+      cadeia, medida à volta de `Evaluate` e anexada por `defer` em todos os caminhos de retorno de
+      `evaluate`: numa recusa, escalada ou erro de hook ficam os hooks até ao que decidiu, esse
+      incluído; na recusa por contexto cancelado é nil. Os hooks somam-se dentro de `PolicyLatency`
+      (o resto é o próprio RM: registo da tool e imposição de obrigações). O span `execute_tool` ganha
+      um atributo por hook, `aos.mediation.hook_latency_ns.<hook>`, somando hooks com o mesmo nome.
+      *(`TestAOS405_PermitTrazALatenciaDeCadaHookPelaOrdemDaCadeia`,
+      `TestAOS405_RecusaSoTrazOsHooksQueCorreram`, `TestAOS405_HookComErroTambemTraz`,
+      `TestAOS405_NomesRepetidosSomamNoSpan`, `TestAOS405_ContextoCanceladoNaoTemHooks`, com relógio
+      manual. **FALHA-ANTES por mutação**: sem anexar as latências à decisão, os quatro primeiros
+      falham.)*
+- [x] **Substrato.** `otelgenai.MediationHookLatency` deriva, dos wide events da janela, amostras,
+      p50, p95 e máximo por hook, por ordem de nome, sobre a mesma amostra do SLI de overhead e com a
+      exclusão da recusa por contexto cancelado. Não se parte por decisão: o custo de um hook é o
+      mesmo seja qual for o desfecho, e partir tornaria as amostras poucas demais.
+      `MediationHookLatencyAttr` troca por `_` tudo o que no nome não for letra, dígito, `-` ou `_`.
+      *(`TestAOS405_LatenciaPorHookComPercentis`, `TestAOS405_ExclusoesDaAmostra`,
+      `TestAOS405_NomeDoHookFicaSeguro`, `TestAOS405_DerivaDoSpanData`.)*
+- [x] **Nó.** O `/metrics` publica `aos_mediation_hook_samples{hook}` e
+      `aos_mediation_hook_latency_ns{hook,stat="p50|p95|max"}` em nanossegundos, sem SLO nem alerta.
+      *(DECISÃO: ao contrário da escrita do selo, os rótulos não são um conjunto fechado — são os hooks
+      que a cadeia do nó compõe —, pelo que sem amostras nada sai, nem `samples` a zero; sem torneira de
+      spans também nada sai. `TestAOS405_MetricsExpoeALatenciaPorHookSemSLO` passa pela torneira e
+      pela passagem real do avaliador e verifica valores, formato, um HELP e um TYPE por nome e a
+      ausência de SLO; `TestAOS405_JanelaSemMediacaoNaoPublicaHooks`. **FALHA-ANTES por mutação**: sem
+      a publicação, o primeiro falha.)*
+- [x] `tecnica/08` §7.1, ADR-026 (Emenda) e RB-04 dizem onde se lê a latência por hook e como a usar;
+      o banner do avaliador declara-a.
+- [ ] **Evidência de sistema.** Depois de um deploy, um run com tool calls deixa no `/metrics` de
+      produção `aos_mediation_hook_samples` e `aos_mediation_hook_latency_ns` para os hooks da cadeia
+      real (identity, revalidation, risk-classify, policy, taint, scope, budget, egress), e a soma dos
+      hooks de cada call cabe na política medida. Com isto, a próxima política lenta diz que hook pesa.
+
+### Estado
+
+**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy.
 
 ---
 
@@ -1032,3 +1104,4 @@ residual fica nomeado acima, à espera de decisão.
 | 1.2 | Setembro 2026 | AOS-401: emenda ao ADR-026 depois da verificação da v0.1.15 em produção — o SLO governa só a política, a escrita do selo sai da janela | Equipa AOS |
 | 1.3 | Setembro 2026 | AOS-402: a escrita do selo de mediação passa a ser legível no `/metrics` do nó, sem SLO | Equipa AOS |
 | 1.4 | Setembro 2026 | AOS-404: os ~31 ms da v0.1.15 explicados por duas tool calls lentas em todos os troços num p95 de poucas amostras; residual da política acima de 15 ms nomeado | Equipa AOS |
+| 1.5 | Setembro 2026 | AOS-405: a janela da política partida por hook no span `execute_tool` e no `/metrics` do nó, sem SLO | Equipa AOS |

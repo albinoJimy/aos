@@ -292,6 +292,10 @@ type SLOEvaluation struct {
 	// sem alvo, sem breach, sem alerta. Existe porque o span que a transporta não é legível em
 	// produção (o colector exporta os traces para `debug`), e a escrita voltava a ser inferida.
 	AuditWrite []otelgenai.AuditWriteLatency
+	// HookLatency é a latência de cada hook da cadeia de política nesta janela (AOS-405). Também NÃO
+	// é um SLI. Parte a janela que o SLI de overhead governa inteira: o AOS-404 viu em produção
+	// políticas de 17 a 104 ms num troço que os selos guardados não separam.
+	HookLatency []otelgenai.HookLatencyObservation
 }
 
 // SLOAlert é um alerta avaliado JÁ LIGADO ao registo de runbooks (AOS-106).
@@ -577,6 +581,7 @@ func (e *sloEvaluator) evaluate(ctx context.Context, probe func(context.Context)
 		AvailabilitySamples: availN,
 		WORMChecked:         wormChecked,
 		AuditWrite:          otelgenai.MediationAuditWriteLatency(events),
+		HookLatency:         otelgenai.MediationHookLatency(events),
 	}
 	e.last.Store(ev)
 	e.total.Add(1)
@@ -758,6 +763,31 @@ func (h *apiHandler) writeSLOMetrics(b *strings.Builder) {
 	}
 
 	writeAuditWriteMetrics(b, ev.AuditWrite, h.node != nil && h.node.sloTap != nil)
+	writeHookLatencyMetrics(b, ev.HookLatency, h.node != nil && h.node.sloTap != nil)
+}
+
+// writeHookLatencyMetrics publica a latência de cada hook da cadeia de política (AOS-405), na janela
+// dos SLIs e SEM SLO: não há `aos_slo_target` nem `aos_alert_firing` para ela.
+//
+// Ao contrário da escrita do selo, os rótulos não são um conjunto fechado: são os nomes dos hooks que
+// a cadeia deste nó compõe, e só se conhecem quando um hook corre. Por isso, sem amostras na janela,
+// nada sai — nem `samples` a zero, que exigiria inventar a lista de hooks. Sem torneira de spans
+// também nada sai, pela razão do AOS-402. Nanossegundos, como a política e a escrita do selo: os
+// hooks de uma mediação somam-se dentro de `aos_slo_sli{sli="mediation_overhead_p95"}`.
+func writeHookLatencyMetrics(b *strings.Builder, obs []otelgenai.HookLatencyObservation, comTorneira bool) {
+	if !comTorneira || len(obs) == 0 {
+		return
+	}
+	b.WriteString("# HELP aos_mediation_hook_samples Mediacoes da janela em que o hook da cadeia de politica correu (AOS-405). Numa recusa, os hooks depois do que recusou nao correm. Sem SLO nem alerta.\n# TYPE aos_mediation_hook_samples gauge\n")
+	for _, o := range obs {
+		fmt.Fprintf(b, "aos_mediation_hook_samples{hook=%q} %d\n", o.Hook, o.Samples)
+	}
+	b.WriteString("# HELP aos_mediation_hook_latency_ns Duracao de cada hook da cadeia de politica do Reference Monitor na janela do avaliador, em nanossegundos, por hook e estatistica (p50, p95, max). Inclui o que o hook escreve: o de revalidacao sela no WORM. Os hooks de uma mediacao somam-se dentro da politica (aos_slo_sli{sli=mediation_overhead_p95}); o resto da politica e o proprio Reference Monitor. Sem SLO nem alerta.\n# TYPE aos_mediation_hook_latency_ns gauge\n")
+	for _, o := range obs {
+		fmt.Fprintf(b, "aos_mediation_hook_latency_ns{hook=%q,stat=\"p50\"} %d\n", o.Hook, o.P50)
+		fmt.Fprintf(b, "aos_mediation_hook_latency_ns{hook=%q,stat=\"p95\"} %d\n", o.Hook, o.P95)
+		fmt.Fprintf(b, "aos_mediation_hook_latency_ns{hook=%q,stat=\"max\"} %d\n", o.Hook, o.Max)
+	}
 }
 
 // writeAuditWriteMetrics publica a escrita do selo de mediação por decisão (AOS-402), com a mesma
@@ -829,7 +859,7 @@ func sloEvaluatorBanner(node *Node, interval, window time.Duration) string {
 	fontes := "prontidao do plano de controlo (sonda igual a do /readyz) e integridade da hash-chain do WORM"
 	derivados := "DORMENTES (observabilidade OTLP desligada: sem spans nao ha cache-hit, overhead p95, custo por trajectoria, override-rate nem cold-start — ficam SEM AMOSTRAS, nunca 'cumpridos'); defina AOS_OTLP_ENDPOINT para os ligar"
 	if node.sloTap != nil {
-		derivados = "LIGADOS pela torneira de spans (os MESMOS spans que saem para o colector OTLP): overhead de mediacao p95 dos execute_tool, custo por trajectoria dos chat, override-rate das decisoes; cache-hit-rate e cold-start entram se o gateway/pool partilharem o tracer. A escrita do selo de mediacao sai a parte, sem SLO, em aos_mediation_audit_write_* (AOS-402)"
+		derivados = "LIGADOS pela torneira de spans (os MESMOS spans que saem para o colector OTLP): overhead de mediacao p95 dos execute_tool, custo por trajectoria dos chat, override-rate das decisoes; cache-hit-rate e cold-start entram se o gateway/pool partilharem o tracer. A escrita do selo de mediacao sai a parte, sem SLO, em aos_mediation_audit_write_* (AOS-402), e a politica partida por hook em aos_mediation_hook_* (AOS-405)"
 	}
 	return fmt.Sprintf("avaliador de SLOs (AOS-274): LIGADO — avalia de %s em %s sobre uma janela de %s, compondo os 4 SLIs da MEDIACAO (AOS-085/086) e os 7 CANONICOS operacionais (AOS-104/105) na MESMA passagem, com janela sustentada (um pico transitorio nao alerta); cada alerta disparado e ligado ao registo de runbooks (AOS-106) no log estruturado e exposto em GET /metrics (aos_slo_*/aos_alert_firing). FONTES SEMPRE ACTIVAS: %s. SLIs derivados de spans: %s. Sem produtor no no e SEM valor inventado (anti-vacuidade de AOS-085): headroom do scheduler e fidelidade de replay. FAIL-OPEN DECLARADO — ao contrario de todo o resto do no, a observabilidade NUNCA o derruba: panico contido, sem propagacao ao caminho de execucao, sondas com prazo, e o laco NAO para nem quando deteta adulteracao (nao destroi nada, e e quando o sinal mais faz falta)",
 		interval, interval, window, fontes, derivados)

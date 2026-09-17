@@ -56,6 +56,15 @@ type Obligation struct {
 	Params map[string]string // parâmetros genéricos (ex.: {"seconds": "3600"})
 }
 
+// HookLatency é a duração de um hook da cadeia de política numa mediação (AOS-405).
+type HookLatency struct {
+	// Hook é o [Hook.Name] do hook.
+	Hook string
+	// Latency é o tempo de [Hook.Evaluate] desse hook, incluindo o que ele próprio escreve (o
+	// hook de revalidação sela no WORM dentro desta janela).
+	Latency time.Duration
+}
+
 // Decision é o resultado de [Monitor.Mediate]. É sempre devolvida (mesmo em
 // negação): fail-closed produz uma Decision Deny, nunca a ausência de resposta.
 type Decision struct {
@@ -102,6 +111,11 @@ type Decision struct {
 	// para dar [DecisionLatency]. Observável, sem SLO: nenhum alvo foi ratificado para o custo
 	// de um sink durável, e é por não o haver que ela deixou de contar para os 15 ms.
 	AuditWriteLatency time.Duration
+	// HookLatencies é a duração de CADA hook que correu, pela ordem da cadeia (AOS-405). Somam-se
+	// dentro de [PolicyLatency]; o resto da política é o próprio RM (registo da tool e imposição de
+	// obrigações). Numa recusa ou escalada só estão os hooks até ao que decidiu, esse incluído; na
+	// recusa por contexto cancelado, antes de correr qualquer hook, é nil. Observável, sem SLO.
+	HookLatencies []HookLatency
 	// MediationSeq é o seq do evento de mediação no Event Store (0 se o registo
 	// não produziu seq).
 	MediationSeq uint64
