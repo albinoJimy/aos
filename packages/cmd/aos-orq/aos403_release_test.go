@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // AOS-403 — o `aos-orq` viaja na imagem assinada do nó e corre-se em produção pelo serviço
@@ -43,6 +44,27 @@ func TestAOS403_EgressDerivaDoEndpointSobProducao(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("timeout de egress le a variavel do no", func(t *testing.T) {
+		t.Setenv("AOS_MODE", "production")
+		t.Setenv("AOS_MODEL_ENDPOINT", "https://litellm:4000/v1")
+		t.Setenv("AOS_MODEL_EGRESS_HOSTS", "")
+		t.Setenv("AOS_MODEL_EGRESS_TIMEOUT", "120s")
+		cfg, err := gatewayConfigFromEnv()
+		if err != nil || cfg == nil {
+			t.Fatalf("cfg=%v err=%v", cfg, err)
+		}
+		if cfg.egressTimeout != 120*time.Second {
+			t.Errorf("egressTimeout = %v, quer 120s", cfg.egressTimeout)
+		}
+		for _, mau := range []string{"1ms", "31m", "abc"} {
+			t.Setenv("AOS_MODEL_EGRESS_TIMEOUT", mau)
+			if _, err := gatewayConfigFromEnv(); err == nil {
+				t.Errorf("AOS_MODEL_EGRESS_TIMEOUT=%q aceite — devia recusar", mau)
+			}
+		}
+		t.Setenv("AOS_MODEL_EGRESS_TIMEOUT", "")
+	})
 
 	t.Run("producao com endpoint sem host recusa", func(t *testing.T) {
 		t.Setenv("AOS_MODE", "production")
@@ -119,6 +141,10 @@ func TestAOS403_ServicoDoComposeCorreOOrquestrador(t *testing.T) {
 		"- ALL",
 		"disable: true",
 		"- aos-orq-data:/var/lib/aos-orq",
+		"- ./orq:/etc/aos-orq:ro",
+		"- ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro",
+		"- ./secrets/model-api.key:/etc/aos/model-api.key:ro",
+		`SSL_CERT_FILE: "${AOS_INTERNAL_CA_BUNDLE:-}"`,
 		`AOS_MODEL_AUDIT_PATH: "${AOS_ORQ_MODEL_AUDIT_PATH:-/var/lib/aos-orq/model-audit.wal}"`,
 	} {
 		if !strings.Contains(bloco, quer) {

@@ -231,7 +231,7 @@ else
   ANCORA="desligada"
 fi
 CONFIG=(.env secrets policies keycloak vault litellm model-tools tls-internal docker-compose.prod.yml image.env)
-for d in ancoras pisos; do [[ -d "${AOS_DIR}/${d}" ]] && CONFIG+=("${d}"); done
+for d in ancoras pisos orq; do [[ -d "${AOS_DIR}/${d}" ]] && CONFIG+=("${d}"); done
 tar czf "${WORK}/config.tar.gz" -C "${AOS_DIR}" \
   --exclude=backups --exclude='*.bak-*' --exclude='.env.bak*' \
   "${CONFIG[@]}" 2>/dev/null || fail "tar da configuração falhou"
@@ -253,6 +253,8 @@ fi
     "${STAMP}" "$(hostname)" "$(grep -oE 'sha256:[a-f0-9]{12}' "${AOS_DIR}/image.env" 2>/dev/null || echo '?')"
   printf '%s\n' "${MANIFEST_ES}"
   printf 'worm-ancora=%s\n' "${ANCORA}"
+  # AOS-403: diz se o volume do aos-orq entrou no tar, para que a ausência não se confunda com perda.
+  printf 'aos-orq-data=%s\n' "$( [[ ${#ORQ_DIR[@]} -gt 0 ]] && echo volume || echo ausente )"
 } > "${WORK}/MANIFEST"
 tar czf "${WORK}/bundle.tar.gz" -C "${WORK}" MANIFEST idp-db.sql volumes.tar.gz config.tar.gz
 OUT="${DEST}/aos-${STAMP}.tar.gz.enc"

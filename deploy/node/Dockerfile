@@ -25,7 +25,7 @@
 # =============================================================================
 
 # ----------------------------------------------------------------------------
-# STAGE 1 — builder: compila o binário ESTÁTICO zero-dep + o healthprobe.
+# STAGE 1 — builder: compila os binários ESTÁTICOS zero-dep (nó e aos-orq) + o healthprobe.
 # golang:1.25.13-bookworm  (go 1.25.13, casa com `go 1.25` / `toolchain go1.25.13` dos módulos)
 # ----------------------------------------------------------------------------
 FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS builder

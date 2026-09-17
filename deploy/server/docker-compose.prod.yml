@@ -511,7 +511,7 @@ services:
     healthcheck:
       disable: true
     environment:
-      # Postura: a MESMA do nó. Sob `production` o gateway usa o egress endurecido (https +
+      # Postura e config de modelo: as do nó. Sob `production` o gateway usa o egress endurecido (https +
       # allowlist, derivada do host do endpoint quando AOS_MODEL_EGRESS_HOSTS está vazia) e exige
       # a credencial por ficheiro.
       AOS_MODE: "${AOS_MODE:-}"
@@ -520,7 +520,11 @@ services:
       AOS_MODEL_REGION: "${AOS_MODEL_REGION:-eu}"
       AOS_MODEL_BOARD: "${AOS_MODEL_BOARD:-board-eu}"
       AOS_MODEL_EGRESS_HOSTS: "${AOS_MODEL_EGRESS_HOSTS:-}"
+      # O mesmo tempo máximo por pedido ao modelo que o nó (120s em produção desde a v0.1.12).
+      AOS_MODEL_EGRESS_TIMEOUT: "${AOS_MODEL_EGRESS_TIMEOUT:-}"
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
+      # UM escritor por caminho: dois `run` em simultâneo precisam de caminhos distintos, com
+      # `run -e AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/<run>-audit.wal` — senão o segundo sai com 5.
       AOS_MODEL_AUDIT_PATH: "${AOS_ORQ_MODEL_AUDIT_PATH:-/var/lib/aos-orq/model-audit.wal}"
       # A mesma CA interna do nó: o LiteLLM serve TLS assinado por ela.
       SSL_CERT_FILE: "${AOS_INTERNAL_CA_BUNDLE:-}"

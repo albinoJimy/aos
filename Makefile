@@ -137,7 +137,7 @@ ci-sca: ## Gate: SCA (govulncheck, vulns afetantes)
 ci-package: ## Gate: empacotamento do nó `aos` — secrets + sast + sca + sbom + docker build (AOS-168 / AOS-187)
 	$(CI)/package.sh
 
-ci-sbom: ## Gate: SBOM + proveniência mínima do binário `aos` (ADR-017 ponto 3; AOS-187)
+ci-sbom: ## Gate: SBOM + proveniência mínima dos binários `aos` e `aos-orq` (ADR-017 ponto 3; AOS-187, AOS-403)
 	$(CI)/sbom.sh
 
 ci-policy: ## Gate: teste de política do PDP (golden allow/deny + assinatura)

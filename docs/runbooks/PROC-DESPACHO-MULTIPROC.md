@@ -21,7 +21,8 @@ de entrega). Não se compila à parte para produção: corre-se a partir do dige
 `--entrypoint /usr/local/bin/aos-orq` ou, no servidor single-host, pelo serviço `aos-orq` do compose
 (`--profile orq run --rm`) — ver `deploy/server/README.md` §«Orquestrador multi-nó (`aos-orq`)».
 Cada réplica tem o seu `AOS_MODEL_AUDIT_PATH`: o WORM de governação do gateway tem um escritor por
-caminho, e uma segunda réplica no mesmo caminho sai com 5.
+caminho, e uma segunda réplica no mesmo caminho sai com 5. Pelo compose, o caminho por omissão é um
+só — passa-se o de cada réplica com `run -e AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/<réplica>-audit.wal`.
 
 ## Topologia
 
