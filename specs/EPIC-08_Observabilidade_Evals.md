@@ -58,6 +58,7 @@ O epic encerra dois cenários de falha do plano-base: *The Audit Log Lied* (o tr
 | AOS-398 | O SLI de overhead de mediação mede a execução da tool, não a decisão | fix | M | P0 | AOS-085, AOS-086, AOS-274 |
 | AOS-401 | O SLI de overhead de mediação ainda conta a escrita do selo e continua a violar o SLO em produção | fix | S | P0 | AOS-398 |
 | AOS-402 | A escrita do selo de mediação fica legível no `/metrics` do nó | fix | S | P2 | AOS-401 |
+| AOS-404 | Os ~31 ms de overhead de mediação da v0.1.15 ficam explicados pelos dados de produção | spike | S | P2 | AOS-402 |
 
 ---
 
@@ -785,7 +786,8 @@ A correcção funcionou na metade que prometia — o SLI desceu de 1,21 s para ~
 sandbox saiu —, mas o ADR-026 §1 tinha decidido deixar **dentro** da janela a escrita durável do selo
 de auditoria. A política sempre coube em 2–8,6 ms (o `latency_ns` dos selos); a diferença
 atribui-se, **por inferência**, à escrita no Event Store e no WORM — no run não foi possível separar
-as duas metades. O resultado operacional é o mesmo defeito com outra causa: um `critical` com rota
+as duas metades. *(Correcção do AOS-404: no mesmo run uma das nove políticas levou 17,06 ms, e os ~31 ms
+eram o p95 de poucas amostras dominado por duas calls lentas em todos os troços ao mesmo tempo.)* O resultado operacional é o mesmo defeito com outra causa: um `critical` com rota
 RB-04 («Falha de PDP») em cada run normal.
 
 ### Objectivo
@@ -919,6 +921,98 @@ sem SLO nem alerta.
 
 ---
 
+## AOS-404 — Os ~31 ms de overhead de mediação da v0.1.15 ficam explicados pelos dados de produção
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Remediação pós-produção |
+| Tipo | spike |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-402 |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/adr/ADR-026-overhead-de-mediacao-e-a-janela-da-decisao.md` (Emenda), `tecnica/08_Observabilidade_Evals.md` §7.1, `docs/runbooks/RB-04.md`, `packages/platform/audit/filestore.go`, `packages/substrate/eventstore/store.go`, `packages/platform/registry/revalidation` |
+
+### Contexto
+
+A v0.1.15 mediu o SLI de overhead de mediação — então a janela da decisão, política + escrita do
+selo — em **30,8 ms com 2 amostras e 32,7 ms com 7** (run `run-delegado-1789569005`). O AOS-401
+atribuiu a diferença para a política à escrita do selo, por inferência; o AOS-402 mediu a escrita
+directamente na v0.1.19 (6,5–8,3 ms) e desmentiu-a, deixando os ~31 ms por explicar. Os documentos
+repetiam ainda que «a política sempre coube em 2–8,6 ms».
+
+### Objectivo
+
+Explicar os ~31 ms com medidas, a partir dos ficheiros de produção, sem reinstalar a v0.1.15, e
+corrigir o que o registo afirma.
+
+### Critérios de Aceitação
+
+- [x] **Método.** Há três escritas duráveis no WORM/Event Store por tool call permitida, e cada uma
+      carimba o seu instante antes do append:
+      1. o selo `registry.revalidation`, escrito pelo hook de revalidação DENTRO da cadeia de hooks
+         (`integration/secured.go`, `Revalidator.recordRaw`) — portanto dentro da janela a que o
+         `latency_ns` chama política;
+      2. o selo de mediação no WORM (`audit.MediationSink`, 1.º sink do `TeeSink`);
+      3. o evento `tool.call.mediated` no Event Store (carimba `Ts` antes do `fsync`, `eventstore/store.go`).
+
+      Por tool call: `latency_ns` = política; «antes» = carimbo da revalidação − abertura da política;
+      «depois» = carimbo do selo de mediação − carimbo da revalidação; «WORM» = `Ts` do evento − carimbo do
+      selo de mediação (inclui também o `json.Marshal` do evento e a espera do stripe, ≈0 sem outro
+      escritor do stream); `Ts(evento seguinte do stream) − Ts(tool.call.mediated)` = limite superior do
+      Event Store (o seguinte, `sandbox.instance.created`, é causalmente posterior). Aplicado a cópias só
+      de leitura do `events.wal` e do `worm.wal` do volume `aos_aos-data` (2026-09-17): **27** permits com
+      selo, de runs entre 2026-09-14 e 2026-09-17 (v0.1.12 a v0.1.19); recusas e calls sem selo ficam de
+      fora.
+- [x] **Verificação do método** contra a medida directa do AOS-402 (run `run-delegado-1789639455`,
+      v0.1.19, escritas 8,26 e 6,49 ms no `/metrics`). A decomposição dá WORM 5,14 + Event Store ≤ 3,36 ms e
+      WORM 2,70 + Event Store ≤ 3,90 ms, com folga de 0,11–0,24 ms. Verifica a SOMA, não a divisão entre
+      WORM e Event Store; e o 8,26/6,49 de cada call é o único emparelhamento compatível com o máximo e o
+      p50 de duas amostras, não uma leitura por call.
+- [x] **Explicação.** O run da v0.1.15 teve **9** permits e nenhuma recusa. Sete ficaram entre ~5 e ~13 ms
+      de decisão (limites superiores). As outras duas foram lentas em **todos os troços ao mesmo tempo**:
+
+      | Call | Política (antes / depois da revalidação) | WORM | Event Store |
+      |---|---|---|---|
+      | 1.ª | 8,92 ms (0,98 / 7,94) | 7,88 ms | ≤ 15,64 ms (≈15,3 inferido) |
+      | 6.ª | 17,06 ms (**6,85** / 10,21) | 5,32 ms | ≤ 10,75 ms (≈10,6 inferido) |
+      | outras 7 | 1,88–4,65 ms (0,29–0,49 / 1,59–4,16) | 1,28–4,65 ms | ≤ 2,07–3,92 ms |
+
+      Num run normal, «antes» fica em ~0,3–0,5 ms e «depois» tem o tamanho de um append ao WORM. Na 6.ª,
+      até «antes» (identidade e preparação da revalidação, sem escrita) levou 6,85 ms. Não é um PDP lento
+      nem escrita a frio (o stream tinha sido escrito 21 ms antes da 1.ª call, e noutros runs a 1.ª call é
+      rápida): os dados são compatíveis com **episódios transitórios de I/O ou do nó**, que não identificam.
+      O SLI é um p95 com interpolação linear (`percentileNanos`) sobre a janela de 5 min, avaliado a cada
+      minuto; com poucas amostras fica colado ao máximo. **Consistência, não prova independente:** os
+      30,8 ms (1.ª passagem, calls 1–2) implicam Event Store ∈ [15,28; 15,51] ms na 1.ª call e os 32,7 ms
+      (passagem seguinte, calls 1–7) implicam Event Store ∈ [10,41; 10,67] ms na 6.ª — ambos dentro dos
+      limites medidos. A política também não coube sempre em 2–8,6 ms.
+- [x] **Hipótese de contenção no WORM sem suporte.** O `FileStore.Append` detém um lock global do ficheiro
+      durante o `fsync`. Nenhum selo de outra partição foi carimbado dentro das janelas; como esse teste não
+      vê um escritor que carimbou antes e ainda detém o lock, as calls 1 e 6 foram revistas com margem de
+      segundos: só o selo de revalidação, sequencial na mesma goroutine.
+- [x] **Registo corrigido.** ADR-026 (nota posterior), `tecnica/08` §7.1, `tecnica/19`, RB-04 e os
+      comentários de `monitor.go`, `decision.go` e `slo.go` deixam de dizer que a política sempre coube
+      em 2–8,6 ms ou que os ~31 ms ficam por explicar.
+- [ ] **Residual com decisão por tomar.** Das 27 políticas, **4 passaram os 15 ms** (17,06, 17,28, 40,16 e
+      103,63 ms; mais uma de 14,19 ms); três estão em runs de 1 a 3 calls. Em todas, o excesso está em
+      «depois» da revalidação — o append do selo de revalidação no WORM mais risk-classify, PDP, taint,
+      scope, budget e egress —, que os selos guardados não separam. Duas consequências para o SLO actual
+      (AOS-401): **a janela da política inclui um `fsync`** (o da revalidação, AOS-381), contra a premissa
+      de que só a escrita do selo de mediação é custo de sink; e, sem mínimo de amostras e com
+      `sustained_windows: 3`, **um run curto** com uma call lenta mantém o p95 acima do tecto durante a
+      janela e pode disparar o `critical` de RB-04 sem PDP degradado (no run de 9 calls da v0.1.15, o p95
+      só da política nunca passou os 15 ms). Medir por hook é o passo seguinte, em ticket próprio.
+
+### Estado
+
+**CONCLUÍDO** a 2026-09-17 (investigação): os ~31 ms estão explicados e o registo corrigido. O
+residual fica nomeado acima, à espera de decisão.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -937,3 +1031,4 @@ sem SLO nem alerta.
 | 1.1 | Setembro 2026 | Adenda pós-encerramento: AOS-398 (DEF-281 — o SLI de overhead de mediação media a execução da tool; ADR-026) | Equipa AOS |
 | 1.2 | Setembro 2026 | AOS-401: emenda ao ADR-026 depois da verificação da v0.1.15 em produção — o SLO governa só a política, a escrita do selo sai da janela | Equipa AOS |
 | 1.3 | Setembro 2026 | AOS-402: a escrita do selo de mediação passa a ser legível no `/metrics` do nó, sem SLO | Equipa AOS |
+| 1.4 | Setembro 2026 | AOS-404: os ~31 ms da v0.1.15 explicados por duas tool calls lentas em todos os troços num p95 de poucas amostras; residual da política acima de 15 ms nomeado | Equipa AOS |
