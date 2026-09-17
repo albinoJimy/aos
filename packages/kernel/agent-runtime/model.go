@@ -123,6 +123,11 @@ type ModelResponse struct {
 	// CostMicroUSD é o custo do turno em micro-USD INTEIRO (1 USD = 1_000_000).
 	// Inteiro evita imprecisão de vírgula flutuante no burn-down de custo.
 	CostMicroUSD int64
+	// CustoNaoDerivado diz que o cliente NÃO TEM FONTE DE PREÇO para este turno (AOS-406): o
+	// CostMicroUSD a zero é ausência de dados, não custo nulo. Em produção é o caso de um
+	// modelo pago por subscrição, sem preço por token. Os tokens continuam medidos e o
+	// orçamento em tokens continua a decidir; só o custo em dólares não existe.
+	CustoNaoDerivado bool
 	// Model é o modelo que SERVIU a resposta, tal como o cliente o reporta (AOS-396): no
 	// Model Gateway, o `model` devolvido pelo provider (que pode ser uma versão datada do
 	// modelo pedido, ou outro modelo se o gateway o trocou). Vazio quando o cliente não o

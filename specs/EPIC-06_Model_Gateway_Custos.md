@@ -54,6 +54,7 @@ O epic vive maioritariamente na **Fase 2** (governação e observabilidade — i
 | AOS-395 | aos-orq: selos de governação do gateway do planeador duráveis e ligados ao run | fix | M | P2 | AOS-394, AOS-391 |
 | AOS-397 | Agregados por run do metering do GW sem remoção nem tecto | fix | M | P2 | AOS-394, AOS-062 |
 | AOS-399 | O nó pede a posse exclusiva do caminho do audit de governação do gateway | fix | S | P2 | AOS-265, AOS-285 |
+| AOS-406 | Sem fonte de preço o custo fica marcado como não derivado e o SLI de custo deixa de dar verde com zeros | fix | S | P1 | AOS-259, AOS-336 |
 
 ---
 
@@ -848,6 +849,90 @@ Um segundo escritor do mesmo `AOS_MODEL_AUDIT_PATH` é recusado no arranque do n
 ### Estado
 
 **IMPLEMENTADO (2026-09-16).** O nó recusa arrancar sobre um `AOS_MODEL_AUDIT_PATH` detido por outro processo, antes de abrir o WAL. Verificado: suite de `cmd/aos` verde; falha-antes medida por mutação (sem posse, e com a posse depois da abertura). **Limites declarados**: a posse só protege entre processos que a pedem (o nó desde este ticket, o `aos-orq` desde o AOS-395, onde sai com o código 5); um lock de SO sobre um volume partilhado por rede depende do sistema de ficheiros, como para o Event Store e o WORM do nó.
+
+---
+
+## AOS-406 — Sem fonte de preço o custo fica marcado como não derivado e o SLI de custo deixa de dar verde com zeros
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-259 (canal de custo), AOS-336 (turno não medido) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/model_pricing_env.go`, `packages/kernel/agent-runtime/{model.go,loop.go,turn.go}`, `packages/kernel/agent-runtime/replay/nondeterminism_capture.go`, `packages/substrate/otel-genai/{semconv.go,cost_aggregation.go,slo.go}`, `deploy/server/README.md`, `deploy/node/README.md` |
+
+### Contexto
+
+Em produção o custo de todos os turnos é zero. O nó pede `gpt-4o-mini` em `eu`, e a tabela de preços
+embebida não tem esse par; `AOS_MODEL_PRICING_PATH` está vazia. O alias `gpt-4o-mini` é do LiteLLM de
+produção e encaminha para `openai/kimi-for-coding` em `api.kimi.com/coding/v1` — lido na configuração
+do LiteLLM do servidor a 2026-09-17 (o `deploy/server/litellm/config.yaml` do repositório é um modelo
+com as entradas comentadas) —, que o operador paga por **subscrição**, sem preço por token (decisão
+do dono na conversa de 2026-09-17). Não há, por isso, tabela a
+montar: pôr o preço da OpenAI daria um custo preciso e falso.
+
+O problema é o que o zero fazia a jusante. O span `chat` emitia `aos.cost.micro_usd=0`, o
+`turn.recorded` gravava `cost_micro_usd: 0` sem marca, e o SLI `cost_per_trajectory` contava esses
+traces como amostras e dava o SLO por cumprido — um verde sem dados, contra a regra anti-vacuidade do
+AOS-085. O banner dizia que o zero era ausência de dados; o `/metrics` e o evento durável não.
+
+### Objectivo
+
+Sem fonte de preço, cada turno sai marcado como custo **não derivado** em toda a travessia, e o SLI
+de custo por trajectória não conta esses traces.
+
+### Critérios de Aceitação
+
+- [x] **Kernel.** `ModelResponse.CustoNaoDerivado`. O span `chat` leva `aos.cost.undefined=true` e não
+      leva `aos.cost.micro_usd` nem `gen_ai.usage.cost_usd`; os tokens continuam no span. O agregado do
+      run no `invoke_agent` também sai marcado e sem número (`Result.CustoNaoDerivado`). O
+      `turn.recorded` leva `custo_nao_derivado: true`, com `omitempty` — um turno com preço grava os
+      mesmos bytes de sempre. É ortogonal ao `usage_ausente` do AOS-336: aqui os tokens foram medidos.
+      A captura canónica do replay guarda a marca (também `omitempty`), para um turno retomado não
+      voltar a parecer gratuito. *(`TestAOS406_SpanChatSemCustoDerivadoNaoEmiteCusto`, que cobre o `chat` e o `invoke_agent`,
+      `TestAOS406_TurnRecordedMarcaOCustoNaoDerivado`, `TestAOS406_CustoNaoDerivadoSobreviveACaptura`.)*
+- [x] **Substrato.** `aos.cost.undefined` no vocabulário; a agregação por trace propaga a marca
+      (`UsageTotals.CostUndefined`); o `cost_per_trajectory` retira da amostra **o trace inteiro** que
+      tenha um chat sem custo derivado — uma soma parcial subestimaria a trajectória — e, sem traces com
+      custo, fica sem amostras (`avaliavel="0"`). *(`TestAOS406_SLIDeCustoSemPrecoNaoEAvaliado`, que
+      falha antes: os dois traces contavam como amostras de custo zero; `TestAOS406_TraceMistoSaiInteiro`.
+      **FALHA-ANTES por mutação**: sem a exclusão no SLI, os dois falham.)*
+- [x] **Nó.** Quando a tabela em vigor não cobre `(AOS_MODEL_NAME, AOS_MODEL_REGION)`, `parseModelFromEnv`
+      envolve o cliente do gateway em `custoNaoDerivadoClient`, que marca cada resposta e zera o custo;
+      com preço, o cliente não é decorado. O banner da postura de custo passa a descrever a marca, a
+      exclusão do SLI e a postura de subscrição. *(`TestAOS406_SemPrecoOClienteMarcaOCusto` — o caso de
+      produção, `gpt-4o-mini` em `eu` com a tabela embebida, sem tools —,
+      `TestAOS406_ComToolsODecoradorFicaPorDentroDoEnriquecedor` — a cadeia real, com tools: o decorador
+      fica por dentro do enriquecedor e a marca atravessa-o —, `TestAOS406_ComPrecoOClienteNaoEDecorado`,
+      `TestAOS406_DecoradorMarcaEZeraOCusto`, `TestAOS406_BannerDeclaraAPosturaDeSubscricao`.)*
+- [x] **`/metrics` honesto.** Sem fonte de preço o SLI de custo nunca tem amostras neste nó; o
+      `aos_alert_firing` do alerta de custo sai com `produtor="0"` («a regra nunca dispara») e não com
+      `produtor="1"` («janela vazia, pode disparar»). `Config.CustoSemFontePreco` é escrito pelo caminho
+      por ambiente com o mesmo juízo que compõe o decorador; um `cfg.Model` injectado deixa-o a false.
+      *(`TestAOS406_AlertaDeCustoSemFonteDePrecoNaoTemProdutor`.)*
+- [x] **Limites declarados.** (1) Um run capturado **antes** do deploy e retomado depois devolve as
+      respostas capturadas sem a marca; se o trace só tiver turnos reproduzidos, entra no SLI como custo
+      zero — só na transição. (2) A exclusão do trace misto é inalcançável no nó (a postura de preço é
+      do processo inteiro), mas a função é genérica: uma soma parcial já acima do tecto também sai da
+      amostra. (3) Superfícies de biblioteca que não distinguem «sem custo» (`BuildRunView`,
+      `trajectory-surface`, `TraceDiff`) não são compostas no nó e ficam fora deste ticket.
+- [x] O orçamento em tokens e o tecto em dólares não mudam: sem preço, `AOS_BUDGET_MAX_COST_MICRO_USD`
+      continua recusado no arranque (DEF-277), e a dimensão que decide é tokens.
+- [x] `deploy/server/README.md` (ponto 9), `deploy/node/README.md` (`AOS_MODEL_PRICING_PATH`) e
+      `tecnica/08` §7.1 descrevem a marca e a postura de subscrição.
+- [ ] **Evidência de sistema.** Depois de um deploy, um run em produção grava `custo_nao_derivado: true`
+      nos `turn.recorded`, e o `/metrics` dá `aos_slo_samples{sli="cost_per_trajectory"}` a 0 com o
+      alerta de custo `avaliavel="0"` e `produtor="0"`, em vez de amostras com custo zero.
+
+### Estado
+
+**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy.
 
 ---
 

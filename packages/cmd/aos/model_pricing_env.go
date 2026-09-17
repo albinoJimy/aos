@@ -50,11 +50,13 @@ package main
 // alimentado por este mesmo número através do canal de custo.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/metering/cost"
 	"github.com/aos-ref/platform/model-gateway/pricing"
 )
@@ -183,6 +185,25 @@ func modelPricingPostureFromEnv() modelPricingPosture {
 	return p
 }
 
+// custoNaoDerivadoClient marca cada resposta do modelo como custo NÃO DERIVADO (AOS-406). Compõe-se
+// só quando a tabela de preços em vigor não cobre o par (modelo, região) deste nó: o zero que o
+// gateway devolve é então ausência de dados, e a marca impede que o span `chat`, o `turn.recorded`
+// e o SLI de custo por trajectória o leiam como custo nulo. Tokens e orçamento em tokens não mudam.
+type custoNaoDerivadoClient struct {
+	inner agentruntime.ModelClient
+}
+
+// Call implementa [agentruntime.ModelClient].
+func (c custoNaoDerivadoClient) Call(ctx context.Context, view agentruntime.PromptView) (agentruntime.ModelResponse, error) {
+	resp, err := c.inner.Call(ctx, view)
+	if err != nil {
+		return resp, err
+	}
+	resp.CostMicroUSD = 0
+	resp.CustoNaoDerivado = true
+	return resp, nil
+}
+
 // modelPricingPostureBanner declara o MODO da contabilidade de custo do nó (AOS-259).
 // Só sai quando há gateway composto: sem gateway não há custo de modelo a declarar.
 func modelPricingPostureBanner(gatewayComposed bool, p modelPricingPosture) []string {
@@ -195,7 +216,7 @@ func modelPricingPostureBanner(gatewayComposed bool, p modelPricingPosture) []st
 	}
 	if !p.Armed {
 		return []string{
-			fmt.Sprintf("custo do modelo / canal de custo (AOS-259): CANAL LIGADO, FONTE AUSENTE — o par (modelo=%q, regiao=%q) NAO tem preco na tabela %s em vigor (%s), pelo que o custo derivado e ZERO em toda a travessia: port.Usage.CostMicroUSD, o span chat (aos.cost.micro_usd), o campo cost_micro_usd do evento turn.recorded e o acumulado do run. ESSE ZERO E AUSENCIA DE DADOS, NAO CUSTO NULO — nao foi inventado nenhum preco para o modelo deste no. O burn-down NAO fica cego por isso: a dimensao que DECIDE e TOKENS (AOS_BUDGET_MAX_TOKENS), que continua a ser lida do ledger de turnos e continua fail-closed (ErrBurndownNoUsage se somar zero). Para ter custo em dolares monte a sua tabela de precos em AOS_MODEL_PRICING_PATH (formato de pricing_table.json: versao + entradas (modelo, regiao, 4 rates em micro-USD por 1M tokens)). Eixo: AOS-259",
+			fmt.Sprintf("custo do modelo / canal de custo (AOS-259): CANAL LIGADO, FONTE AUSENTE — o par (modelo=%q, regiao=%q) NAO tem preco na tabela %s em vigor (%s), pelo que NAO HA CUSTO DERIVADO — o zero do canal e AUSENCIA DE DADOS, NAO CUSTO NULO: cada turno sai marcado como custo NAO DERIVADO (AOS-406) — o span chat leva aos.cost.undefined=true em vez de aos.cost.micro_usd, o evento turn.recorded leva custo_nao_derivado=true, e o SLI cost_per_trajectory NAO conta esses traces (fica sem amostras, nunca verde com zeros). E a postura certa para um modelo pago por SUBSCRICAO, sem preco por token — nao foi inventado nenhum preco para o modelo deste no. O burn-down NAO fica cego por isso: a dimensao que DECIDE e TOKENS (AOS_BUDGET_MAX_TOKENS), que continua a ser lida do ledger de turnos e continua fail-closed (ErrBurndownNoUsage se somar zero). Para ter custo em dolares monte a sua tabela de precos em AOS_MODEL_PRICING_PATH (formato de pricing_table.json: versao + entradas (modelo, regiao, 4 rates em micro-USD por 1M tokens)). Eixo: AOS-259",
 				p.Model, p.Region, origem, p.TableVersion),
 		}
 	}

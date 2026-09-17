@@ -752,7 +752,7 @@ func (h *apiHandler) writeSLOMetrics(b *strings.Builder) {
 		// se acrescenta é o facto ESTRUTURAL ao lado — sem ele, os dois zeros diferentes
 		// («nunca vai disparar» e «ainda não houve tráfego») liam-se como o mesmo.
 		avaliavel := boolMetric(amostras[sa.Catalog+"\x00"+sa.Alert.SLI] > 0)
-		produtor := boolMetric(produtorNoNo(sa.Alert.SLI, h.node != nil && h.node.sloTap != nil))
+		produtor := boolMetric(produtorDoAlerta(sa.Alert.SLI, h.node != nil && h.node.sloTap != nil, h.node != nil && h.node.custoSemFontePreco))
 		fmt.Fprintf(b, "aos_alert_firing{alert=%q,catalog=%q,severity=%q,sli=%q,runbook=%q,owner=%q,runbook_orphan=\"%d\",avaliavel=\"%d\",produtor=\"%d\"} %d\n",
 			sa.Alert.Name, sa.Catalog, string(sa.Alert.Severity), sa.Alert.SLI,
 			sa.Alert.Route.Runbook, sa.Alert.Route.Owner, orphan, avaliavel, produtor, boolMetric(sa.Alert.Fired))

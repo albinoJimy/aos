@@ -163,7 +163,7 @@ ambos certos e o par ser inútil se o número lido não for o número que o alvo
 |---|---|---|---|
 | `cache_hit_rate` | `aos.cache.hit_rate` dos spans `chat`, ponderado por prompt tokens | > 0,80 | ADR-009 |
 | `mediation_overhead_p95` | `aos.mediation.policy_latency_ns` dos spans `execute_tool` **que decidiram** | p95 < 15 ms | `tecnica/19` §4 |
-| `cost_per_trajectory` | custo agregado por trace (só spans `chat`, sem dupla-contagem) | tecto por trajectória | ADR-008 |
+| `cost_per_trajectory` | custo agregado por trace (só spans `chat`, sem dupla-contagem); um trace com um chat de custo **não derivado** (`aos.cost.undefined`, AOS-406 — sem fonte de preço, ex. modelo por subscrição) sai da amostra inteiro | tecto por trajectória | ADR-008 |
 | `override_rate` | fracção de decisões com `aos.decision == escalate` | tecto de fracção | ADR-010 |
 
 **O overhead de mediação é a janela da POLÍTICA, não a da tool call nem a do selo.** O span
