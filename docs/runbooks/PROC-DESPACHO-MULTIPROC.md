@@ -14,6 +14,16 @@
 
 O distribuído v1.1 do Planeador é **scale-out por run**, não co-planeamento do mesmo run (ADR-023 §2.1): **N processos `aos-orq`, cada um dono dos seus runs**, coordenados apenas pelo Event Store replicado. Para um dado run, a posse é arbitrada por um **lease durável**: exactamente um processo ganha (escreve o ciclo de vida e despacha); os outros saem **negados-pelo-lease** (exit 3). O efeito por-nó (spawn de papel / arranque de folha) nasce no **despacho governado** (ADR-024), sob a posse — logo nasce **uma só vez**, no processo dono. É esta invariante que a prova de AOS-392 exercita (`vencedores=1` por run).
 
+## De onde vem o binário (AOS-403)
+
+O `aos-orq` viaja na imagem assinada do nó (`/usr/local/bin/aos-orq`, subject próprio da atestação
+de entrega). Não se compila à parte para produção: corre-se a partir do digest publicado, com
+`--entrypoint /usr/local/bin/aos-orq` ou, no servidor single-host, pelo serviço `aos-orq` do compose
+(`--profile orq run --rm`) — ver `deploy/server/README.md` §«Orquestrador multi-nó (`aos-orq`)».
+Cada réplica tem o seu `AOS_MODEL_AUDIT_PATH`: o WORM de governação do gateway tem um escritor por
+caminho, e uma segunda réplica no mesmo caminho sai com 5. Pelo compose, o caminho por omissão é um
+só — passa-se o de cada réplica com `run -e AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/<réplica>-audit.wal`.
+
 ## Topologia
 
 ```

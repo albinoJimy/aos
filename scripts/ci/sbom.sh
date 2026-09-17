@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sbom.sh — SBOM + PROVENIÊNCIA do binário do nó `aos` (ADR-017 ponto 3).
+# sbom.sh — SBOM + PROVENIÊNCIA dos binários da imagem do nó: `aos` e `aos-orq` (ADR-017 ponto 3).
 #
 # ÂMBITO (mudou com AOS-207): este script GERA o SBOM e a proveniência; NÃO assina. A
 # assinatura e a recusa da entrega são de `scripts/ci/sign.sh` e
@@ -9,11 +9,13 @@
 # nenhum dos onze tickets do EPIC-10 assina imagens (corrigido por AOS-196 e fechado aqui).
 #
 # Este script:
-#   (a) determina o SUBJECT — o binário que a IMAGEM REALMENTE carrega. Quando a imagem
-#       (IMAGE_TAG) existe, EXTRAI /usr/local/bin/aos dela (docker create + docker cp) e
-#       hasheia ESSE artefacto. A proveniência tem de bindar-se ao que SHIPA, não a um
-#       rebuild do host (toolchain/cache do host divergem byte-a-byte do build da imagem);
-#   (b) extrai o SBOM dos MÓDULOS embebidos NESSE binário com `go version -m` (Go tooling);
+#   (a) determina os SUBJECTS — os binários que a IMAGEM REALMENTE carrega: o nó
+#       /usr/local/bin/aos e, desde AOS-403, o orquestrador /usr/local/bin/aos-orq. Quando a
+#       imagem (IMAGE_TAG) existe, EXTRAI cada um dela (docker create + docker cp) e hasheia
+#       ESSE artefacto. A proveniência tem de bindar-se ao que SHIPA, não a um rebuild do host
+#       (toolchain/cache do host divergem byte-a-byte do build da imagem);
+#   (b) extrai o SBOM dos MÓDULOS embebidos em CADA binário com `go version -m` (Go tooling):
+#       `sbom.json` para o nó e `sbom-aos-orq.json` para o orquestrador;
 #   (c) emite o registo de PROVENIÊNCIA (quem/o-quê/quando) com o bloco `signature` ainda
 #       POR FINALIZAR — quem o fecha é o `sign.sh` (não se finge aqui uma garantia que só
 #       existe depois de assinada e verificada).
@@ -47,6 +49,7 @@ skip_declared() {
 }
 
 NODE_MOD="packages/cmd/aos"
+ORQ_MOD="packages/cmd/aos-orq"
 OUT_DIR="${1:-$REPO_ROOT/deploy/node/build}"
 IMAGE_TAG="${IMAGE_TAG:-aos-node:local}"
 mkdir -p "$OUT_DIR"
@@ -86,83 +89,114 @@ unset _df _df_builder _df_runtime
 log_gate "sbom · binário estático + SBOM + proveniência (ADR-017 ponto 3; assina-se em sign.sh)"
 
 # ---------------------------------------------------------------------------
-# Rebuild estático do host (CGO off, GOPROXY=off, trimpath) — o MESMO comando do Dockerfile.
-# NÃO é (por si) o subject: serve (a) de fallback quando não há imagem para extrair e (b) de
-# referência para a verificação de reprodutibilidade byte-a-byte contra o binário da imagem.
-host_bin="$OUT_DIR/aos.hostbuild"
-log_step "rebuild estático do host CGO_ENABLED=0 GOPROXY=off (referência de reprodutibilidade)"
-if ! ( cd "$REPO_ROOT/$NODE_MOD" && CGO_ENABLED=0 GOOS=linux GOPROXY=off \
-        go build -trimpath -ldflags="-s -w -buildid=" -o "$host_bin" . ); then
-  log_fail "build estático do nó falhou (cache primo? corre scripts/ci/cache-prime.sh com rede)"
-  exit 1
-fi
-host_sha="$( sha256sum "$host_bin" | awk '{print $1}' )"
-log_ok "rebuild do host: $host_bin ($host_sha)"
-
-# ---------------------------------------------------------------------------
-# SUBJECT = binário que a IMAGEM carrega. Extrai-o da imagem quando disponível; senão, cai para
-# o rebuild do host (declarando a fonte). subject_source torna a origem explícita e auditável.
-bin="$OUT_DIR/aos"
+# SUBJECTS — os binários que a IMAGEM carrega: o nó `aos` e, desde AOS-403, o orquestrador
+# `aos-orq`. Passam os DOIS pelo mesmo procedimento, para que nenhum saia com uma garantia mais
+# fraca do que o outro sem que a proveniência o diga.
+#
+# atestar_binario <nome> <módulo>
+#   Define sub_bin, sub_sha, sub_source, sub_host_sha, sub_repro e sub_repro_check; define
+#   image_id quando extrai da imagem. Aborta o script (fail-closed) se o build ou a extracção falhar.
 image_id=""
-if command -v docker >/dev/null 2>&1 && docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-  log_step "extrair /usr/local/bin/aos da imagem $IMAGE_TAG (subject = artefacto que SHIPA)"
-  cid="$( docker create "$IMAGE_TAG" )"
-  if ! docker cp "$cid:/usr/local/bin/aos" "$bin" >/dev/null 2>&1; then
-    docker rm -f "$cid" >/dev/null 2>&1 || true
-    log_fail "falha a extrair o binário da imagem $IMAGE_TAG — fail-closed"
+atestar_binario() {
+  local nome="$1" modulo="$2"
+  local host_bin="$OUT_DIR/$nome.hostbuild"
+  local cid etapa
+  sub_bin="$OUT_DIR/$nome"
+
+  # Rebuild estático do host (CGO off, GOPROXY=off, trimpath) — o MESMO comando do Dockerfile.
+  # NÃO é (por si) o subject: serve (a) de fallback quando não há imagem para extrair e (b) de
+  # referência para a verificação de reprodutibilidade byte-a-byte contra o binário da imagem.
+  log_step "rebuild estático do host de $nome CGO_ENABLED=0 GOPROXY=off (referência de reprodutibilidade)"
+  if ! ( cd "$REPO_ROOT/$modulo" && CGO_ENABLED=0 GOOS=linux GOPROXY=off \
+          go build -trimpath -ldflags="-s -w -buildid=" -o "$host_bin" . ); then
+    log_fail "build estático de $nome falhou (cache primo? corre scripts/ci/cache-prime.sh com rede)"
     exit 1
   fi
-  docker rm -f "$cid" >/dev/null 2>&1 || true
-  image_id="$( docker image inspect --format '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo unknown )"
-  subject_source="image:$IMAGE_TAG"
-  log_ok "subject extraído da imagem: $bin"
-else
-  # DEGRADAÇÃO DECLARADA (AOS-199): a CI invoca este script TAMBÉM como step autónomo
-  # (fora do package.sh), e nesse caminho um WARN solto a meio do output não é registo —
-  # o veredicto do próprio script tem de redeclarar o que ficou por verificar. O registo
-  # de skips passa a ser propriedade do runner, não de um script.
-  skip_declared "SBOM subject bindado à imagem" \
-                "imagem $IMAGE_TAG indisponível (docker ausente ou imagem não construída)" \
-                "ADR-017 ponto 3 — a proveniência NÃO fica ligada ao binário que shipa (subject = rebuild do host)"
-  cp -f "$host_bin" "$bin"
-  subject_source="host-build"
-fi
-bin_sha="$( sha256sum "$bin" | awk '{print $1}' )"
-log_ok "subject sha256: $bin_sha (fonte: $subject_source)"
+  sub_host_sha="$( sha256sum "$host_bin" | awk '{print $1}' )"
+  log_ok "rebuild do host: $host_bin ($sub_host_sha)"
 
-# ---------------------------------------------------------------------------
-# Verificação de reprodutibilidade: só afirma reproducible=true se o rebuild do host bater
-# BYTE-A-BYTE com o subject (o binário da imagem). Nunca se finge a garantia.
-if [ "$subject_source" = "host-build" ]; then
-  reproducible="false"
-  repro_check="unverified-no-image-to-compare"
-elif [ "$host_sha" = "$bin_sha" ]; then
-  reproducible="true"
-  repro_check="verified-equal-to-host-rebuild"
-  log_ok "reprodutibilidade VERIFICADA: rebuild do host == binário da imagem"
-else
-  reproducible="false"
-  repro_check="host-rebuild-differs-from-image"
-  log_warn "reprodutibilidade NÃO verificada: rebuild do host ($host_sha) != imagem ($bin_sha) — reproducible=false (honesto; toolchain/cache do host divergem do builder pinado)"
-fi
+  # SUBJECT = binário que a IMAGEM carrega. Extrai-o da imagem quando disponível; senão, cai para
+  # o rebuild do host (declarando a fonte). sub_source torna a origem explícita e auditável.
+  if command -v docker >/dev/null 2>&1 && docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+    log_step "extrair /usr/local/bin/$nome da imagem $IMAGE_TAG (subject = artefacto que SHIPA)"
+    cid="$( docker create "$IMAGE_TAG" )"
+    if ! docker cp "$cid:/usr/local/bin/$nome" "$sub_bin" >/dev/null 2>&1; then
+      docker rm -f "$cid" >/dev/null 2>&1 || true
+      log_fail "falha a extrair /usr/local/bin/$nome da imagem $IMAGE_TAG — fail-closed"
+      exit 1
+    fi
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+    image_id="$( docker image inspect --format '{{.Id}}' "$IMAGE_TAG" 2>/dev/null || echo unknown )"
+    sub_source="image:$IMAGE_TAG"
+    log_ok "subject extraído da imagem: $sub_bin"
+  else
+    # DEGRADAÇÃO DECLARADA (AOS-199): a CI invoca este script TAMBÉM como step autónomo
+    # (fora do package.sh), e nesse caminho um WARN solto a meio do output não é registo —
+    # o veredicto do próprio script tem de redeclarar o que ficou por verificar. O registo
+    # de skips passa a ser propriedade do runner, não de um script. O nome da etapa do nó
+    # mantém-se o de sempre (package.sh declara-o com esse nome).
+    if [ "$nome" = "aos" ]; then
+      etapa="SBOM subject bindado à imagem"
+    else
+      etapa="SBOM subject $nome bindado à imagem"
+    fi
+    skip_declared "$etapa" \
+                  "imagem $IMAGE_TAG indisponível (docker ausente ou imagem não construída)" \
+                  "ADR-017 ponto 3 — a proveniência NÃO fica ligada ao binário $nome que shipa (subject = rebuild do host)"
+    cp -f "$host_bin" "$sub_bin"
+    sub_source="host-build"
+  fi
+  sub_sha="$( sha256sum "$sub_bin" | awk '{print $1}' )"
+  log_ok "subject $nome sha256: $sub_sha (fonte: $sub_source)"
+
+  # Verificação de reprodutibilidade: só afirma reproducible=true se o rebuild do host bater
+  # BYTE-A-BYTE com o subject (o binário da imagem). Nunca se finge a garantia.
+  if [ "$sub_source" = "host-build" ]; then
+    sub_repro="false"
+    sub_repro_check="unverified-no-image-to-compare"
+  elif [ "$sub_host_sha" = "$sub_sha" ]; then
+    sub_repro="true"
+    sub_repro_check="verified-equal-to-host-rebuild"
+    log_ok "reprodutibilidade de $nome VERIFICADA: rebuild do host == binário da imagem"
+  else
+    sub_repro="false"
+    sub_repro_check="host-rebuild-differs-from-image"
+    log_warn "reprodutibilidade de $nome NÃO verificada: rebuild do host ($sub_host_sha) != imagem ($sub_sha) — reproducible=false (honesto; toolchain/cache do host divergem do builder pinado)"
+  fi
+
+  # Limpeza do rebuild de referência (artefacto intermédio; o subject fica em $sub_bin).
+  rm -f "$host_bin"
+}
+
+atestar_binario aos "$NODE_MOD"
+bin="$sub_bin"; bin_sha="$sub_sha"; subject_source="$sub_source"
+host_sha="$sub_host_sha"; reproducible="$sub_repro"; repro_check="$sub_repro_check"
+
+atestar_binario aos-orq "$ORQ_MOD"
+orq_bin="$sub_bin"; orq_sha="$sub_sha"; orq_source="$sub_source"
+orq_host_sha="$sub_host_sha"; orq_reproducible="$sub_repro"; orq_repro_check="$sub_repro_check"
 
 # ---------------------------------------------------------------------------
 # (b) SBOM a partir dos módulos embebidos NO SUBJECT (go version -m). Formato: JSON minimalista
 # com componentes {path,version,sum}. Não inventa CycloneDX/SPDX completo — forma MÍNIMA honesta;
 # o campo "format" declara-o.
-log_step "go version -m (módulos embebidos no subject)"
-gvm="$( go version -m "$bin" )"
+#
+# escrever_sbom <binário> <destino> <nome> <sha256> <fonte> <main module por omissão>
+escrever_sbom() {
+local s_bin="$1" s_out="$2" s_nome="$3" s_sha="$4" s_source="$5" s_main="$6"
+local gvm main_path ncomp
+log_step "go version -m (módulos embebidos no subject $s_nome)"
+gvm="$( go version -m "$s_bin" )"
 
-sbom="$OUT_DIR/sbom.json"
 {
   printf '{\n'
   printf '  "format": "aos-sbom-minimal/v1",\n'
   printf '  "note": "Formato MINIMO (nao e CycloneDX/SPDX completo): componentes extraidos de `go version -m` do binario que a imagem carrega. Este SBOM e um dos subjects ATESTADOS em attestation.dsse.json (AOS-207); qualquer byte alterado aqui faz scripts/ci/verify-attestation.sh recusar a entrega.",\n'
-  printf '  "subject": { "name": "aos", "sha256": "%s", "source": "%s" },\n' "$bin_sha" "$subject_source"
+  printf '  "subject": { "name": "%s", "sha256": "%s", "source": "%s" },\n' "$s_nome" "$s_sha" "$s_source"
   printf '  "toolchain": "%s",\n' "$( go version | awk '{print $3}' )"
   # main module
   main_path="$( printf '%s\n' "$gvm" | awk '$1=="mod"{print $2; exit}' )"
-  printf '  "main_module": "%s",\n' "${main_path:-github.com/aos-ref/cmd/aos}"
+  printf '  "main_module": "%s",\n' "${main_path:-$s_main}"
   printf '  "components": [\n'
   # dep + => (replaced) linhas. Colunas: <tipo> <path> <version> [<sum>]
   printf '%s\n' "$gvm" | awk '
@@ -177,9 +211,17 @@ sbom="$OUT_DIR/sbom.json"
     }'
   printf '  ]\n'
   printf '}\n'
-} > "$sbom"
-ncomp="$( grep -c '"path":' "$sbom" || true )"
-log_ok "SBOM: $sbom ($ncomp componentes do subject)"
+} > "$s_out"
+ncomp="$( grep -c '"path":' "$s_out" || true )"
+log_ok "SBOM: $s_out ($ncomp componentes do subject $s_nome)"
+}
+
+sbom="$OUT_DIR/sbom.json"
+escrever_sbom "$bin" "$sbom" aos "$bin_sha" "$subject_source" "github.com/aos-ref/cmd/aos"
+# AOS-403: o orquestrador tem SBOM PRÓPRIO, e não uma secção dentro do do nó — cada SBOM
+# descreve UM subject, que é o contrato do formato desde o início.
+sbom_orq="$OUT_DIR/sbom-aos-orq.json"
+escrever_sbom "$orq_bin" "$sbom_orq" aos-orq "$orq_sha" "$orq_source" "github.com/aos-ref/cmd/aos-orq"
 
 # ---------------------------------------------------------------------------
 # (b') Cobertura do componente externo de autoridade (packages/platform/attestation).
@@ -247,6 +289,10 @@ builder_id="$( id -un 2>/dev/null || echo unknown )@$( hostname 2>/dev/null || e
   printf '  "format": "aos-provenance-minimal/v1",\n'
   printf '  "buildType": "aos/node/docker-multistage",\n'
   printf '  "subject": { "name": "aos", "sha256": "%s", "source": "%s", "imageId": "%s" },\n' "$bin_sha" "$subject_source" "${image_id:-}"
+  # AOS-403: o orquestrador viaja na MESMA imagem. `subject` continua a ser o nó (quem lê o
+  # formato v1 não muda de leitura); os restantes binários atestados listam-se aqui, cada um com
+  # a sua fonte, o seu SBOM e a SUA verificação de reprodutibilidade.
+  printf '  "additionalSubjects": [ { "name": "aos-orq", "path": "usr/local/bin/aos-orq", "sha256": "%s", "source": "%s", "sbom": "sbom-aos-orq.json", "hostRebuildSha256": "%s", "reproducible": %s, "reproducibilityCheck": "%s" } ],\n' "$orq_sha" "$orq_source" "$orq_host_sha" "$orq_reproducible" "$orq_repro_check"
   printf '  "builder": { "id": "%s", "toolchain": "%s" },\n' "$builder_id" "$( go version | awk '{print $3}' )"
   printf '  "source": { "repo": "github.com/aos-ref", "commit": "%s", "branch": "%s" },\n' "$commit" "$branch"
   printf '  "buildConfig": {\n'
@@ -263,7 +309,7 @@ log_ok "proveniência (não-assinada): $prov"
 # ---------------------------------------------------------------------------
 # INVALIDAÇÃO DOS ARTEFACTOS DE ASSINATURA DE UMA CORRIDA ANTERIOR.
 #
-# `sbom.json` e `provenance.json` acabaram de ser REESCRITOS: os seus sha256 mudaram (o bloco
+# `sbom.json`, `sbom-aos-orq.json` e `provenance.json` acabaram de ser REESCRITOS: os seus sha256 mudaram (o bloco
 # `signature` sozinho já muda o digest da proveniência). Ambos são SUBJECTS assinados, pelo que
 # qualquer `attestation.dsse.json`/`delivery-manifest.json` que estivesse aqui deixou, neste
 # instante, de cobrir o que está no disco. Deixá-los seria publicar um envelope dessincronizado
@@ -282,9 +328,6 @@ for stale in "$OUT_DIR/attestation.dsse.json" "$OUT_DIR/delivery-manifest.json";
   fi
 done
 
-# Limpeza do rebuild de referência (artefacto intermédio; o subject fica em $bin).
-rm -f "$host_bin"
-
 # REDECLARAÇÃO da degradação no veredicto (AOS-199). O exit NÃO muda: o SBOM foi
 # genuinamente emitido e o JSON já regista subject.source/reproducible=false — avermelhar
 # aqui seria um FALSO VERMELHO num ambiente sem docker. O que faltava era o registo
@@ -294,4 +337,4 @@ gate_skip_file "$OUT_DIR/SKIPPED.txt" || true
 # O veredicto NÃO afirma nada sobre a assinatura: este script não assina. Dizia
 # «assinatura DEFERIDA-EPIC-10» — eixo errado (AOS-196) e, desde AOS-207, estado errado.
 # Quem tem autoridade para falar do estado da assinatura é o sign.sh/verify-attestation.sh.
-log_ok "sbom: verde (SBOM + proveniência mínima; subject = $subject_source; reproducible=$reproducible/$repro_check; assinatura: fica para sign.sh — ver signature.status em provenance.json)"
+log_ok "sbom: verde (SBOM + proveniência mínima; subject = $subject_source; reproducible=$reproducible/$repro_check; aos-orq = $orq_source, reproducible=$orq_reproducible/$orq_repro_check; assinatura: fica para sign.sh — ver signature.status em provenance.json)"

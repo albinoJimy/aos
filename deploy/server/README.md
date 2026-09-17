@@ -426,6 +426,52 @@ Porque é que cada parâmetro tem de ser assim:
 
 ---
 
+## Orquestrador multi-nó (`aos-orq`)
+
+Desde o **AOS-403** o `aos-orq` vem **na mesma imagem** que o nó, atestado como subject próprio
+(`usr/local/bin/aos-orq`, com `sbom-aos-orq.json`). Deixa de haver binário compilado à parte e
+copiado para o servidor: corre-se o que o release assinou, a partir do digest que o `deploy.sh`
+pinou em `image.env`.
+
+O serviço `aos-orq` do `docker-compose.prod.yml` está no profile **`orq`**, pelo que o `deploy.sh`
+não o arranca: um `serve` possui **um** run, decompõe-o, despacha-o e termina. Corre-se à mão:
+
+```bash
+cd /opt/aos
+cp snapshot.json orq/snapshot.json      # snapshot PINADO de capabilities (obrigatório com --goal)
+docker compose -f docker-compose.prod.yml --env-file .env --env-file image.env \
+  --profile orq run --rm aos-orq \
+  serve --wal /var/lib/aos-orq/run-X.wal --run run-X \
+        --goal "objectivo" --snapshot /etc/aos-orq/snapshot.json
+```
+
+| O quê | Onde | Porquê |
+|---|---|---|
+| WAL do run e WORM de governação do gateway | volume `aos_aos-orq-data`, em `/var/lib/aos-orq` | Volume **próprio**: o WORM pede posse exclusiva do seu caminho, tal como o do nó (AOS-395/AOS-399). Volumes separados tornam impossível apontar os dois ao mesmo ficheiro por engano. |
+| Caminho do audit | `AOS_ORQ_MODEL_AUDIT_PATH` (por omissão `/var/lib/aos-orq/model-audit.wal`) | **Não** lê a `AOS_MODEL_AUDIT_PATH` do `.env`, que é a do nó e aponta para outro volume. |
+| Entradas (snapshot, plan-doc) | `/opt/aos/orq` → `/etc/aos-orq`, só leitura | Criada pelo `deploy.sh`. |
+| Modelo | as `AOS_MODEL_*` (incluindo `AOS_MODEL_EGRESS_TIMEOUT`) e `AOS_MODE` do `.env` do nó, a `model-api.key` e o bundle da CA interna | A mesma config de modelo do nó. Sob `AOS_MODE=production` o egress é o endurecido; com `AOS_MODEL_EGRESS_HOSTS` vazia a allowlist deriva do host do endpoint, como no nó. |
+
+Códigos de saída: `0` ok · `1` erro · `2` flags inválidas · `3` posse do run negada · `4` posse
+superada · `5` WAL ou `AOS_MODEL_AUDIT_PATH` detido por outro escritor. Para ler um run sem tomar
+posse, `run --rm aos-orq inspect --wal … --run …`.
+
+**Dois runs ao mesmo tempo precisam de dois caminhos de audit**, não só de dois `--wal`: o caminho
+por omissão é um só, e o segundo `serve --goal` sai com `5`. Dê a cada corrida o seu:
+
+```bash
+docker compose … --profile orq run --rm -e AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/run-Y-audit.wal \
+  aos-orq serve --wal /var/lib/aos-orq/run-Y.wal --run run-Y --goal "…" --snapshot /etc/aos-orq/snapshot.json
+```
+
+O contentor corre com o root-fs só de leitura, sem capabilities, como `65532` e sem o
+`HEALTHCHECK` da imagem (que sonda o HTTP do nó). O `backup.sh` inclui o volume
+`aos_aos-orq-data` quando ele existe (antes da primeira corrida não existe e fica de fora, e o log
+di-lo), leva `orq/` na configuração e escreve `aos-orq-data=volume|ausente` no MANIFEST. O
+`restore-drill.sh` não restaura este volume: prova o nó, não o orquestrador.
+
+---
+
 ## Operar o plano de controlo
 
 Quatro rotas mudam o curso de um run em execução, e **nenhuma** aceita o token do IdP: são

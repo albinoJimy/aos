@@ -140,8 +140,20 @@ log "  $(wc -c < "${WORK}/idp-db.sql") bytes"
 # escrito em ficheiros pequenos; a janela de inconsistência existe mas é estreita. Não se para o
 # nó para copiar 700 KB.
 log "2/4 volumes"
-docker run --rm -v aos_aos-data:/aos:ro -v aos_vault-data:/vault:ro -v "${WORK}":/out alpine:3.20 \
-  tar czf /out/volumes.tar.gz -C / aos vault 2>/dev/null || fail "tar dos volumes falhou"
+# O volume do orquestrador `aos-orq` (AOS-403) guarda os WAL dos runs multi-nó e o WORM de
+# governação do gateway do planeador. Só existe depois da primeira corrida (`--profile orq`): um
+# `-v` a um volume inexistente CRIÁ-LO-IA fora do compose, que depois avisa que não é seu. Entra
+# no tar quando existe, e a ausência fica escrita no log.
+ORQ_MOUNT=()
+ORQ_DIR=()
+if docker volume inspect aos_aos-orq-data >/dev/null 2>&1; then
+  ORQ_MOUNT=(-v aos_aos-orq-data:/aos-orq:ro)
+  ORQ_DIR=(aos-orq)
+else
+  log "  aos_aos-orq-data não existe (o aos-orq nunca correu neste servidor) — fora do tar"
+fi
+docker run --rm -v aos_aos-data:/aos:ro -v aos_vault-data:/vault:ro "${ORQ_MOUNT[@]}" -v "${WORK}":/out alpine:3.20 \
+  tar czf /out/volumes.tar.gz -C / aos vault "${ORQ_DIR[@]}" 2>/dev/null || fail "tar dos volumes falhou"
 log "  $(wc -c < "${WORK}/volumes.tar.gz") bytes"
 
 # --- 2b. E o tar trouxe mesmo o que existe para trazer? ---------------------------------------
@@ -219,7 +231,7 @@ else
   ANCORA="desligada"
 fi
 CONFIG=(.env secrets policies keycloak vault litellm model-tools tls-internal docker-compose.prod.yml image.env)
-for d in ancoras pisos; do [[ -d "${AOS_DIR}/${d}" ]] && CONFIG+=("${d}"); done
+for d in ancoras pisos orq; do [[ -d "${AOS_DIR}/${d}" ]] && CONFIG+=("${d}"); done
 tar czf "${WORK}/config.tar.gz" -C "${AOS_DIR}" \
   --exclude=backups --exclude='*.bak-*' --exclude='.env.bak*' \
   "${CONFIG[@]}" 2>/dev/null || fail "tar da configuração falhou"
@@ -241,6 +253,8 @@ fi
     "${STAMP}" "$(hostname)" "$(grep -oE 'sha256:[a-f0-9]{12}' "${AOS_DIR}/image.env" 2>/dev/null || echo '?')"
   printf '%s\n' "${MANIFEST_ES}"
   printf 'worm-ancora=%s\n' "${ANCORA}"
+  # AOS-403: diz se o volume do aos-orq entrou no tar, para que a ausência não se confunda com perda.
+  printf 'aos-orq-data=%s\n' "$( [[ ${#ORQ_DIR[@]} -gt 0 ]] && echo volume || echo ausente )"
 } > "${WORK}/MANIFEST"
 tar czf "${WORK}/bundle.tar.gz" -C "${WORK}" MANIFEST idp-db.sql volumes.tar.gz config.tar.gz
 OUT="${DEST}/aos-${STAMP}.tar.gz.enc"

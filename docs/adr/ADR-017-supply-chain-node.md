@@ -39,6 +39,15 @@ impõe às tools, materializadas na entrega:
    - **Formato:** envelope **DSSE v1** (`payloadType application/vnd.in-toto+json`) sobre um
      **in-toto Statement v1**. Os *subjects* assinados são o **digest da imagem**, o binário que
      ela carrega, o `sbom.json`, o `provenance.json` e o **manifesto de entrega**.
+     **Emenda (AOS-403, 2026-09-17):** a imagem passa a carregar também o orquestrador multi-nó
+     `aos-orq`, que produção corre a partir do mesmo digest. Entra na atestação como subject
+     próprio (`usr/local/bin/aos-orq`) com SBOM próprio (`sbom-aos-orq.json`), extraído da imagem
+     e sujeito à mesma verificação de reprodutibilidade que o nó (o resultado, verdadeiro ou não,
+     fica em `additionalSubjects` da proveniência); `verify-attestation.sh` recusa a entrega que
+     traga o orquestrador sem o atestar ou com o digest divergente. Um binário que corre em
+     produção fora desta cadeia seria a excepção que o ponto 3 não admite. Consequência aceite:
+     o verificador da árvore actual exige estes subjects, pelo que uma entrega anterior ao AOS-403
+     reverificada com ele sai vermelha — verifica-se com o verificador da sua própria tag.
    - **Primitiva: `crypto/ed25519` da stdlib**, não cosign/sigstore — decisão declarada, com o
      custo em §Consequências e a matriz comparativa em `deploy/node/CUSTODIA-CHAVE-RELEASE.md §0`.
      O assinador (`scripts/ci/attest`) é um passo de **entrega (CI)**: não entra no binário do nó,

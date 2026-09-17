@@ -45,13 +45,15 @@ O arranque de referência corre **in-memory** (não escreve no root-fs), pelo qu
 
 O ambiente é a **única** superfície de configuração do binário entregue (`Config` vive em
 `package main`: um campo que `nodeConfigFromEnv` não escreva é **inalcançável** por quem corre a
-imagem). A tabela abaixo é o **índice completo** — toda a variável lida pelos dois binários da
-imagem (o nó, `packages/cmd/aos`, e o `aos-healthprobe` do `HEALTHCHECK`) está aqui.
+imagem). A tabela abaixo é o **índice completo** — toda a variável lida pelos três binários da
+imagem (o nó, `packages/cmd/aos`, o orquestrador `aos-orq` desde AOS-403, e o `aos-healthprobe` do
+`HEALTHCHECK`) está aqui. O `aos-orq` só lê variáveis que o nó também lê (`AOS_MODE` e as
+`AOS_MODEL_*`).
 
 O teste `TestAOS203EnvSurfaceIsDocumented` (`packages/cmd/aos/env_surface_test.go`) **avermelha**
 se alguém acrescentar uma leitura de ambiente sem a documentar **nesta secção**. O que ele impõe,
 exactamente: extrai por **AST** (não `grep`) as chamadas `os.Getenv`/`os.LookupEnv`/`envOr` das
-duas árvores de código, **recursivamente**; **proíbe** `os.Environ` (leitura por enumeração
+três árvores de código, **recursivamente**; **proíbe** `os.Environ` (leitura por enumeração
 escaparia ao gate por construção); e exige, para cada variável, uma linha de tabela **dentro
 desta secção** com as células **Default e Efeito preenchidas** — uma linha degenerada
 ``| `AOS_X` |  |  |`` **não** conta como documentação.
@@ -1201,8 +1203,11 @@ bash scripts/ci/verify-attestation.sh   # recusa a entrega que não valide
 `sort -u`). Uma descoberta nova fora da baseline **avermelha**.
 
 **Atestação assinada (AOS-207, fecha o ponto 3).** `sign.sh` emite um envelope **DSSE v1** com um
-**in-toto Statement v1** assinado em **ed25519**, cujos *subjects* são o digest da imagem, o
-binário, o SBOM, a proveniência e o manifesto de entrega. `verify-attestation.sh` verifica a
+**in-toto Statement v1** assinado em **ed25519**, cujos *subjects* são o digest da imagem, os
+dois binários (`usr/local/bin/aos` e, desde AOS-403, `usr/local/bin/aos-orq`), o SBOM de cada um
+(`sbom.json`, `sbom-aos-orq.json`), a proveniência e o manifesto de entrega. A proveniência mantém
+o nó em `subject` e lista o orquestrador em `additionalSubjects`, com a sua própria verificação de
+reprodutibilidade. `verify-attestation.sh` verifica a
 assinatura contra `release-pubkeys.json` e **recompara cada digest com o artefacto real** — mexer
 no digest da imagem dentro de `delivery-manifest.json` põe o gate **vermelho**.
 

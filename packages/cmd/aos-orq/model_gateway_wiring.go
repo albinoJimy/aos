@@ -22,7 +22,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -47,8 +49,17 @@ type gatewayConfig struct {
 	region      string
 	board       string
 	egressHosts []string
-	production  bool
+	// egressTimeout é o tempo máximo de CADA pedido ao modelo (AOS_MODEL_EGRESS_TIMEOUT); 0 ⇒ o
+	// default do caminho (30 s no transporte endurecido, 60 s no seam de dev), como no nó.
+	egressTimeout time.Duration
+	production    bool
 }
+
+// Limites de AOS_MODEL_EGRESS_TIMEOUT — os mesmos do nó (packages/cmd/aos/main.go).
+const (
+	minModelEgressTimeout = time.Second
+	maxModelEgressTimeout = 30 * time.Minute
+)
 
 // gatewayConfigFromEnv lê a config do Model Gateway do ambiente. Devolve (nil, nil) quando
 // `AOS_MODEL_ENDPOINT` está ausente — não há gateway, e o `--goal` sem fixture recusa
@@ -84,7 +95,36 @@ func gatewayConfigFromEnv() (*gatewayConfig, error) {
 			}
 		}
 	}
-	return &gatewayConfig{endpoint: endpoint, model: model, apiKeyPath: apiKeyPath, region: region, board: board, egressHosts: egress, production: production}, nil
+	// AOS-403: sob produção, uma allowlist vazia deriva do host do próprio endpoint, como no nó
+	// (AOS-366, egressAllowlistFromEnv em packages/cmd/aos/main.go). Sem isto, o aos-orq
+	// corrido a partir da imagem com o `.env` do nó (AOS_MODE=production, sem
+	// AOS_MODEL_EGRESS_HOSTS) compunha o gateway com a allowlist vazia, que nega tudo — e a
+	// primeira decomposição falhava por config que o nó aceita. Deriva-se pelos mesmos
+	// acessores que a validação do gateway compara (Hostname + Port).
+	if production && len(egress) == 0 {
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Hostname() == "" {
+			return nil, fmt.Errorf("AOS_MODEL_ENDPOINT (%q) sem host para a allowlist de egress endurecida de produção; defina AOS_MODEL_EGRESS_HOSTS", endpoint)
+		}
+		host := u.Hostname()
+		if p := u.Port(); p != "" {
+			host = net.JoinHostPort(host, p)
+		}
+		egress = []string{host}
+	}
+	// AOS-403: o tempo máximo de cada pedido ao modelo lê-se da MESMA variável do nó. Sem ela, o
+	// aos-orq corrido com o `.env` de produção (AOS_MODEL_EGRESS_TIMEOUT=120s, a correcção do
+	// incidente da v0.1.12) ficava nos 30 s do transporte endurecido, e uma decomposição lenta que
+	// o nó aguentaria era cortada. Valor inválido recusa, em vez de seguir com o default.
+	var egressTimeout time.Duration
+	if raw := strings.TrimSpace(os.Getenv("AOS_MODEL_EGRESS_TIMEOUT")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < minModelEgressTimeout || d > maxModelEgressTimeout {
+			return nil, fmt.Errorf("AOS_MODEL_EGRESS_TIMEOUT inválida (%q): duração Go entre 1s e 30m, ex.: 120s", raw)
+		}
+		egressTimeout = d
+	}
+	return &gatewayConfig{endpoint: endpoint, model: model, apiKeyPath: apiKeyPath, region: region, board: board, egressHosts: egress, egressTimeout: egressTimeout, production: production}, nil
 }
 
 // staticCredencialModelo implementa [modelgateway.CredentialProvider]: devolve o segredo de
@@ -205,9 +245,14 @@ func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier au
 	if cfg.production {
 		// Egress REAL endurecido (SSRF fail-closed, AOS-223): HTTPClient nil + allowlist.
 		gwCfg.AllowedEgressHosts = cfg.egressHosts
+		gwCfg.EgressTimeout = cfg.egressTimeout // 0 ⇒ o default do gateway (30 s)
 	} else {
 		// Seam de dev: transporte injectado governa o egress (aponta a endpoints internos).
-		gwCfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
+		devTimeout := 60 * time.Second
+		if cfg.egressTimeout > 0 {
+			devTimeout = cfg.egressTimeout
+		}
+		gwCfg.HTTPClient = &http.Client{Timeout: devTimeout}
 	}
 
 	gw, err := modelgateway.NewProduction(ctx, gwCfg)
