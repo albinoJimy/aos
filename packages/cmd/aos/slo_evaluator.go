@@ -19,9 +19,11 @@ package main
 //     sua janela sustentada e o seu vocabulário de alerta (os nomes não colidem — `..._op` no
 //     lado operacional), porque fundi-las obrigaria a escolher um dos dois SLOs para os dois
 //     SLIs que ambas observam e a decisão ficaria escondida numa fusão em vez de declarada.
-//   - ZERO métricas novas. Nenhum SLI é recalculado aqui: agrega-se o que o substrato já sabe
-//     derivar, sobre os spans que o nó já emitia. Escrever um segundo derivador seria criar uma
-//     contabilidade paralela — o defeito que AOS-085 existe para não ter.
+//   - Nenhum SLI é recalculado aqui: agrega-se o que o substrato já sabe derivar, sobre os spans
+//     que o nó já emitia. Escrever um segundo derivador seria criar uma contabilidade paralela — o
+//     defeito que AOS-085 existe para não ter. A ÚNICA medida publicada que não é um SLI é a
+//     escrita do selo de mediação (AOS-402, `aos_mediation_audit_write_*`): derivada também no
+//     substrato ([otelgenai.MediationAuditWriteLatency]) sobre os MESMOS wide events, e sem SLO.
 //
 // # DE ONDE VÊM OS DADOS (todos REAIS; nada é fabricado)
 //
@@ -286,6 +288,10 @@ type SLOEvaluation struct {
 	// WORMChecked indica se a hash-chain foi de facto verificada nesta passagem (false quando o
 	// WORM é opaco/inalcançável — nesse caso o SLI fica sem amostras, não em breach).
 	WORMChecked bool
+	// AuditWrite é a escrita do selo de mediação por decisão nesta janela (AOS-402). NÃO é um SLI:
+	// sem alvo, sem breach, sem alerta. Existe porque o span que a transporta não é legível em
+	// produção (o colector exporta os traces para `debug`), e a escrita voltava a ser inferida.
+	AuditWrite []otelgenai.AuditWriteLatency
 }
 
 // SLOAlert é um alerta avaliado JÁ LIGADO ao registo de runbooks (AOS-106).
@@ -570,6 +576,7 @@ func (e *sloEvaluator) evaluate(ctx context.Context, probe func(context.Context)
 		SpansObserved:       e.node.sloTap.observedTotal(),
 		AvailabilitySamples: availN,
 		WORMChecked:         wormChecked,
+		AuditWrite:          otelgenai.MediationAuditWriteLatency(events),
 	}
 	e.last.Store(ev)
 	e.total.Add(1)
@@ -749,6 +756,43 @@ func (h *apiHandler) writeSLOMetrics(b *strings.Builder) {
 	for _, sa := range ev.Alerts {
 		fmt.Fprintf(b, "aos_alert_streak{alert=%q,catalog=%q} %d\n", sa.Alert.Name, sa.Catalog, sa.Alert.Streak)
 	}
+
+	writeAuditWriteMetrics(b, ev.AuditWrite, h.node != nil && h.node.sloTap != nil)
+}
+
+// writeAuditWriteMetrics publica a escrita do selo de mediação por decisão (AOS-402), com a mesma
+// janela dos SLIs e SEM SLO: não há `aos_slo_target` nem `aos_alert_firing` para ela.
+//
+// Sem torneira de spans (observabilidade OTLP desligada) nada sai: a medida não tem de onde vir, e
+// `samples` a zero leria-se como «nenhuma mediação» enquanto aos_mediation_permits_total sobe.
+//
+// Com torneira, `samples` sai sempre, também a zero — «nenhuma mediação com medida na janela» é
+// informação. Os
+// percentis só saem para uma decisão com amostras: um p95 a zero sem amostra seria uma escrita
+// instantânea que nunca aconteceu, e uma série que mentiria fica ausente. Nanossegundos, como o
+// `aos_slo_sli` do overhead e o `latency_ns` do selo, para as duas metades da decisão se lerem
+// lado a lado.
+func writeAuditWriteMetrics(b *strings.Builder, obs []otelgenai.AuditWriteLatency, comTorneira bool) {
+	if !comTorneira || len(obs) == 0 {
+		return
+	}
+	b.WriteString("# HELP aos_mediation_audit_write_samples Mediacoes da janela com a escrita do selo tool.call.mediated medida, por decisao (AOS-402). Sem SLO nem alerta.\n# TYPE aos_mediation_audit_write_samples gauge\n")
+	for _, o := range obs {
+		fmt.Fprintf(b, "aos_mediation_audit_write_samples{decision=%q} %d\n", o.Decision, o.Samples)
+	}
+	cabecalho := false
+	for _, o := range obs {
+		if o.Samples == 0 {
+			continue
+		}
+		if !cabecalho {
+			b.WriteString("# HELP aos_mediation_audit_write_latency_ns Escrita do selo tool.call.mediated no sink duravel na janela do avaliador, em nanossegundos, por decisao e estatistica (p50, p95, max). So a de um permit esta no caminho critico; um selo de permit que falha degrada para deny e a escrita falhada aparece em decision=deny. Sem SLO nem alerta (ADR-026, Emenda); a politica esta em aos_slo_sli{sli=mediation_overhead_p95}.\n# TYPE aos_mediation_audit_write_latency_ns gauge\n")
+			cabecalho = true
+		}
+		fmt.Fprintf(b, "aos_mediation_audit_write_latency_ns{decision=%q,stat=\"p50\"} %d\n", o.Decision, o.P50)
+		fmt.Fprintf(b, "aos_mediation_audit_write_latency_ns{decision=%q,stat=\"p95\"} %d\n", o.Decision, o.P95)
+		fmt.Fprintf(b, "aos_mediation_audit_write_latency_ns{decision=%q,stat=\"max\"} %d\n", o.Decision, o.Max)
+	}
 }
 
 // forEachSLI percorre os SLIs das DUAS famílias por ordem estável, rotulando cada um com a sua.
@@ -785,7 +829,7 @@ func sloEvaluatorBanner(node *Node, interval, window time.Duration) string {
 	fontes := "prontidao do plano de controlo (sonda igual a do /readyz) e integridade da hash-chain do WORM"
 	derivados := "DORMENTES (observabilidade OTLP desligada: sem spans nao ha cache-hit, overhead p95, custo por trajectoria, override-rate nem cold-start — ficam SEM AMOSTRAS, nunca 'cumpridos'); defina AOS_OTLP_ENDPOINT para os ligar"
 	if node.sloTap != nil {
-		derivados = "LIGADOS pela torneira de spans (os MESMOS spans que saem para o colector OTLP): overhead de mediacao p95 dos execute_tool, custo por trajectoria dos chat, override-rate das decisoes; cache-hit-rate e cold-start entram se o gateway/pool partilharem o tracer"
+		derivados = "LIGADOS pela torneira de spans (os MESMOS spans que saem para o colector OTLP): overhead de mediacao p95 dos execute_tool, custo por trajectoria dos chat, override-rate das decisoes; cache-hit-rate e cold-start entram se o gateway/pool partilharem o tracer. A escrita do selo de mediacao sai a parte, sem SLO, em aos_mediation_audit_write_* (AOS-402)"
 	}
 	return fmt.Sprintf("avaliador de SLOs (AOS-274): LIGADO — avalia de %s em %s sobre uma janela de %s, compondo os 4 SLIs da MEDIACAO (AOS-085/086) e os 7 CANONICOS operacionais (AOS-104/105) na MESMA passagem, com janela sustentada (um pico transitorio nao alerta); cada alerta disparado e ligado ao registo de runbooks (AOS-106) no log estruturado e exposto em GET /metrics (aos_slo_*/aos_alert_firing). FONTES SEMPRE ACTIVAS: %s. SLIs derivados de spans: %s. Sem produtor no no e SEM valor inventado (anti-vacuidade de AOS-085): headroom do scheduler e fidelidade de replay. FAIL-OPEN DECLARADO — ao contrario de todo o resto do no, a observabilidade NUNCA o derruba: panico contido, sem propagacao ao caminho de execucao, sondas com prazo, e o laco NAO para nem quando deteta adulteracao (nao destroi nada, e e quando o sinal mais faz falta)",
 		interval, interval, window, fontes, derivados)

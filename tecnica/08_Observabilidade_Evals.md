@@ -177,7 +177,10 @@ antes de devolver a decisão —, pelo que carrega três janelas encaixadas, tod
 | `aos.mediation.decision_latency_ns` | num permit, política + escrita — tudo o que antecede o despacho | nenhum |
 | latência do span | decisão + execução da tool no sandbox | nenhum |
 
-O SLI deriva só da primeira, que é o mesmo instante do `latency_ns` do selo.
+O SLI deriva só da primeira, que é o mesmo instante do `latency_ns` do selo. A segunda é legível no
+`/metrics` do nó (AOS-402), na janela do avaliador e por decisão: `aos_mediation_audit_write_samples{decision}`
+e `aos_mediation_audit_write_latency_ns{decision,stat="p50|p95|max"}`, em nanossegundos e sem SLO — o
+atributo do span sozinho não chegava, porque o colector de produção descarta os traces.
 
 Ler a janela errada custou um ano de alertas falsos: em qualquer nó com sandbox real, uma tool call
 normal violava o SLO por duas ordens de grandeza e acendia dois `critical` a apontar o RB-04 («Falha

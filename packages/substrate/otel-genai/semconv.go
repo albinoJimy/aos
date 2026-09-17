@@ -254,6 +254,10 @@ const (
 	DecisionEscalate = "escalate"
 	// DecisionError — a mediação terminou em ERRO (nem permit nem deny limpos).
 	DecisionError = "error"
+	// DeniedByContext — o valor de [AttrDeniedBy] quando a mediação é recusada porque o contexto
+	// do chamador já estava cancelado. O Reference Monitor sai antes de escrever o selo, pelo que
+	// as medidas da escrita desse span são zero sem terem sido medidas (AOS-402).
+	DeniedByContext = "context"
 )
 
 // MicroUSDToUSD converte micro-USD inteiro para USD (float, só para o atributo de

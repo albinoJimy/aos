@@ -88,7 +88,7 @@ A janela inteira (decisão + execução) continua observável: é a latência do
 
 - **Um nó com um Reference Monitor anterior ao AOS-398 deixa de alimentar o SLI** (`Samples == 0`, `avaliavel="0"`) em vez de o alimentar com o número errado. É a direcção conservadora, e é visível no `/metrics`.
 - ~~**A janela do SLI e a do selo divergem** (§1 vs §3)~~ — **deixou de ser verdade com a Emenda (AOS-401)**: o SLI lê a política, que é o mesmo instante do `latency_ns` do selo. A escrita do selo tem atributo próprio.
-- **A escrita do selo não tem SLO nem alerta** (Emenda §3). Um sink durável lento não acende o RB-04; aparece no atributo `aos.mediation.audit_write_latency_ns` e, se falhar, no `/readyz`.
+- **A escrita do selo não tem SLO nem alerta** (Emenda §3). Um sink durável lento não acende o RB-04; aparece no atributo `aos.mediation.audit_write_latency_ns`, legível no `/metrics` do nó em `aos_mediation_audit_write_latency_ns{decision,stat}` (AOS-402), e, se falhar, no `/readyz`.
 - **A duração da tool call mediada não tem alerta** (§4). Uma tool patologicamente lenta não produz sinal por esta via — produz pelo circuit breaker multi-sinal (AOS-080) e pelos timeouts do sandbox, que é onde esse sintoma pertence.
 
 ## Rastreabilidade
