@@ -1006,7 +1006,10 @@ corrigir o que o registo afirma.
       `sustained_windows: 3`, **um run curto** com uma call lenta mantém o p95 acima do tecto durante a
       janela e pode disparar o `critical` de RB-04 sem PDP degradado (no run de 9 calls da v0.1.15, o p95
       só da política nunca passou os 15 ms). Medir por hook é o passo seguinte: **AOS-405**. A decisão
-      entre corrigir e recalibrar espera pelos dados que ele trouxer de produção.
+      entre corrigir e recalibrar espera pelos dados que ele trouxer de produção. *(Primeiros dados, v0.1.21,
+      2026-09-17: num run de 5 calls a revalidação teve p50 6,20 ms e máximo 7,41 ms, e o PDP p50 0,52 ms
+      — o grosso da política é o hook que escreve o selo durável no WORM, não a decisão. Ver a evidência
+      do AOS-405.)*
 
 ### Estado
 
@@ -1083,17 +1086,47 @@ janela do avaliador, sem SLO nem alerta.
       a publicação, o primeiro falha.)*
 - [x] `tecnica/08` §7.1, ADR-026 (Emenda) e RB-04 dizem onde se lê a latência por hook e como a usar;
       o banner do avaliador declara-a.
-- [ ] **Evidência de sistema.** Depois de um deploy, um run com tool calls deixa no `/metrics` de
-      produção `aos_mediation_hook_samples` e `aos_mediation_hook_latency_ns` para os hooks da cadeia
-      real (identity, revalidation, risk-classify, policy, taint, scope, budget, egress). O `/metrics` só
-      tem agregados — o p50 ou o máximo de dois hooks podem vir de calls diferentes, e os spans com o
-      valor por call são descartados pelo colector de produção. Por isso a verificação da soma faz-se numa
-      janela com **uma só** mediação, em que cada estatística de cada hook é essa call: a soma dos hooks
-      tem de caber em `aos_slo_sli{sli="mediation_overhead_p95"}` dessa mesma janela.
+- [x] **Evidência de sistema — as séries.** Depois de um deploy, um run com tool calls deixa no
+      `/metrics` de produção `aos_mediation_hook_samples` e `aos_mediation_hook_latency_ns` para os hooks
+      da cadeia real. *(**VERIFICADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.21` (merge `4efad74`, imagem
+      `aos-node@sha256:04778c90…`, nó `healthy`). O run `run-delegado-1789652697` fez 5 tool calls
+      mediadas (permit, com selo) entre 12:45:05Z e 12:45:51Z. Na leitura das 12:49Z o `/metrics` deu
+      `aos_mediation_hook_samples` = 5 para os **nove** hooks — approval, identity, revalidation,
+      risk-classify, policy, taint, scope, budget e egress — e, em ns:
+
+      | Hook | p50 | p95 | máx |
+      |---|---|---|---|
+      | revalidation | **6 198 446** | 7 187 654 | 7 405 053 |
+      | policy | 517 980 | 1 217 162 | 1 255 900 |
+      | risk-classify | 64 931 | 2 426 333 | 2 968 173 |
+      | identity | 212 237 | 330 103 | 359 562 |
+      | budget | 25 368 | 905 917 | 1 125 946 |
+      | scope | 14 438 | 20 546 | 21 690 |
+      | egress | 3 646 | 14 181 | 16 561 |
+      | approval | 2 855 | 20 841 | 25 247 |
+      | taint | 1 874 | 10 564 | 12 724 |
+
+      `aos_slo_sli{sli="mediation_overhead_p95"}` = 11 066 053 ns com 5 amostras, sem violação e com os
+      dois `critical` a 0. Os selos `tool.call.mediated` do run, lidos de uma cópia só de leitura do
+      `events.wal`, têm políticas de 3,73, 11,87, 7,85, 7,77 e 3,36 ms, cujo p95 interpolado é
+      exactamente o valor do SLI: as amostras dos hooks são destas cinco calls.)*
+- [~] **Evidência de sistema — a soma por call.** O `/metrics` só tem agregados: o p50 ou o máximo de
+      dois hooks podem vir de calls diferentes, e os spans com o valor por call são descartados pelo
+      colector de produção. A verificação da soma faz-se numa janela com **uma só** mediação, em que cada
+      estatística de cada hook é essa call: a soma dos hooks tem de caber em
+      `aos_slo_sli{sli="mediation_overhead_p95"}` dessa mesma janela. *(Por verificar: o run acima teve
+      cinco calls na mesma janela. Há só coerência — a soma dos p50 dos hooks (7,04 ms) fica abaixo da
+      política p50 (7,77 ms), o máximo da revalidação (7,41 ms) abaixo da maior política (11,87 ms) —, e
+      a divisão pelo carimbo do selo `registry.revalidation` põe o troço anterior a ele em 0,12–0,55 ms
+      nas cinco calls, compatível com identidade p50 0,21 ms. A soma por call provada está nos testes do
+      kernel.)*
 
 ### Estado
 
-**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy.
+**IMPLEMENTADO e VALIDADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.21`: as séries saem para os nove hooks da
+cadeia real, e a primeira medida mostra a **revalidação com quase toda a política** (p50 6,20 ms de uma
+política p50 7,77 ms) e o PDP em ~0,5 ms. A soma por call numa janela com uma só mediação fica por
+verificar.
 
 ---
 
@@ -1117,3 +1150,4 @@ janela do avaliador, sem SLO nem alerta.
 | 1.3 | Setembro 2026 | AOS-402: a escrita do selo de mediação passa a ser legível no `/metrics` do nó, sem SLO | Equipa AOS |
 | 1.4 | Setembro 2026 | AOS-404: os ~31 ms da v0.1.15 explicados por duas tool calls lentas em todos os troços num p95 de poucas amostras; residual da política acima de 15 ms nomeado | Equipa AOS |
 | 1.5 | Setembro 2026 | AOS-405: a janela da política partida por hook no span `execute_tool` e no `/metrics` do nó, sem SLO | Equipa AOS |
+| 1.6 | Setembro 2026 | AOS-405 validado em produção (v0.1.21): nove hooks no `/metrics`, a revalidação com quase toda a política; soma por call ainda por verificar numa janela de uma mediação | Equipa AOS |
