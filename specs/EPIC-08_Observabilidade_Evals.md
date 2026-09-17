@@ -809,12 +809,26 @@ kernel publica as duas metades separadas, para que a escrita do selo deixe de se
 - [x] Uma política de 120 ms continua a acender os dois `critical`
 - [x] ADR-026 emendado (§1, §2 e a Emenda); `tecnica/08` §7.1, `tecnica/19` §4/§7/§8 e RB-04 coerentes;
       RTM regenerada
-- [ ] Verificação em produção com a versão seguinte: `policy_latency_ns` abaixo de 15 ms, a escrita
+- [~] Verificação em produção com a versão seguinte: `policy_latency_ns` abaixo de 15 ms, a escrita
       medida directamente, e os dois `critical` a 0 depois de um run com tool call
+      *(**VERIFICADO EM PRODUÇÃO a 2026-09-17, excepto a escrita.** `v0.1.18` (commit `30d245e`, imagem
+      `aos-node@sha256:adb7fb64…`, deploy às 00:41Z). O run `run-delegado-1789609369` correu
+      `ready → running → complete` entre 00:42:51Z e 00:43:06Z, com uma tool call `doc_read` mediada e
+      executada no sandbox. No `/metrics` do nó (lido pela rede `aos_default`), nos dois catálogos:
+      `aos_slo_sli{sli="mediation_overhead_p95"} = 6.516382e+06` (**6,52 ms**, contra 30,8–32,7 ms na
+      v0.1.15), `aos_slo_samples = 1`, `aos_slo_breached = 0`; `mediation_overhead_high` e
+      `mediation_overhead_p95_high` com `avaliavel="1"`, `aos_alert_firing = 0` e `aos_alert_streak = 0`
+      nas passagens do avaliador das 00:43:33Z, 00:44:33Z e 00:45:33Z (`a_disparar=0`). O valor do SLI é
+      **exactamente** o `latency_ns` do selo `tool.call.mediated` desse run (`6516382`), o que prova
+      que o SLI lê a janela da política, o mesmo instante do selo. **NÃO VERIFICADO — a escrita medida
+      directamente:** o `aos.mediation.audit_write_latency_ns` é atributo de span, e o colector OTel de
+      produção exporta os traces para `debug`, que os descarta sem atributos; o nó também não o expõe
+      no `/metrics`. Fica por medir até haver um destino de traces ou uma métrica. A amostra tem uma só
+      tool call.)*
 
 ### Estado
 
-**IMPLEMENTADO** a 2026-09-16; a verificação em produção fica pendente do deploy. Numerado AOS-399 na
+**IMPLEMENTADO** a 2026-09-16 e **VALIDADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.18`: o SLI mediu 6,52 ms (1 amostra), sem violação nem alertas; a escrita do selo medida directamente continua ilegível em produção (colector com traces para `debug`). Numerado AOS-399 na
 sessão que o escreveu, sem commit; renumerado AOS-401 porque o AOS-399 foi atribuído entretanto a outro
 ticket (EPIC-06). Verificado: suites `-race` do Reference Monitor, do `otel-genai`, de `cmd/aos` e de
 `integration`; `build`, `lint`, `layer-lint`, `apex` e `event-catalog` verdes; falha-antes medida por
