@@ -810,7 +810,7 @@ kernel publica as duas metades separadas, para que a escrita do selo deixe de se
 - [x] Uma política de 120 ms continua a acender os dois `critical`
 - [x] ADR-026 emendado (§1, §2 e a Emenda); `tecnica/08` §7.1, `tecnica/19` §4/§7/§8 e RB-04 coerentes;
       RTM regenerada
-- [~] Verificação em produção com a versão seguinte: `policy_latency_ns` abaixo de 15 ms, a escrita
+- [x] Verificação em produção com a versão seguinte: `policy_latency_ns` abaixo de 15 ms, a escrita
       medida directamente, e os dois `critical` a 0 depois de um run com tool call
       *(**VERIFICADO EM PRODUÇÃO a 2026-09-17, excepto a escrita.** `v0.1.18` (commit `30d245e`, imagem
       `aos-node@sha256:adb7fb64…`, deploy às 00:41Z). O run `run-delegado-1789609369` correu
@@ -824,12 +824,12 @@ kernel publica as duas metades separadas, para que a escrita do selo deixe de se
       que o SLI lê a janela da política, o mesmo instante do selo. **NÃO VERIFICADO — a escrita medida
       directamente:** o `aos.mediation.audit_write_latency_ns` é atributo de span, e o colector OTel de
       produção exporta os traces para `debug`, que os descarta sem atributos; o nó também não o expõe
-      no `/metrics`. Fica por medir até haver um destino de traces ou uma métrica — a métrica é o **AOS-402**. A amostra tem uma só
+      no `/metrics`. Fica por medir até haver um destino de traces ou uma métrica — a métrica é o **AOS-402**. **Fechado pelo AOS-402 a 2026-09-17** (v0.1.19): a escrita medida directamente no `/metrics` de produção deu p95 8,17 ms nos permits — ver a evidência nesse ticket. A amostra tem uma só
       tool call.)*
 
 ### Estado
 
-**IMPLEMENTADO** a 2026-09-16 e **VALIDADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.18`: o SLI mediu 6,52 ms (1 amostra), sem violação nem alertas; a escrita do selo medida directamente continua ilegível em produção (colector com traces para `debug`). Numerado AOS-399 na
+**IMPLEMENTADO** a 2026-09-16 e **VALIDADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.18`: o SLI mediu 6,52 ms (1 amostra), sem violação nem alertas; a escrita do selo passou a ser medida directamente em produção pelo AOS-402 (v0.1.19, p95 8,17 ms). Numerado AOS-399 na
 sessão que o escreveu, sem commit; renumerado AOS-401 porque o AOS-399 foi atribuído entretanto a outro
 ticket (EPIC-06). Verificado: suites `-race` do Reference Monitor, do `otel-genai`, de `cmd/aos` e de
 `integration`; `build`, `lint`, `layer-lint`, `apex` e `event-catalog` verdes; falha-antes medida por
@@ -896,13 +896,26 @@ sem SLO nem alerta.
       independente: nenhum crítico, alto ou médio; os quatro baixos foram corrigidos.)*
 - [x] `tecnica/08` §7.1, ADR-026 (Emenda) e RB-04 dizem onde se lê a escrita; o banner do avaliador
       declara-a.
-- [ ] Evidência de sistema: depois de um deploy, um run com tool call deixa no `/metrics` de produção
+- [x] Evidência de sistema: depois de um deploy, um run com tool call deixa no `/metrics` de produção
       `aos_mediation_audit_write_samples{decision="permit"}` ≥ 1 e a escrita medida, o que fecha o
-      critério `[~]` do AOS-401.
+      critério `[~]` do AOS-401. *(**VERIFICADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.19` (commit `e860d6e`,
+      imagem `aos-node@sha256:34d137e4…`, deploy às 09:02Z). O run `run-delegado-1789639455` correu
+      `ready → running → complete` entre 09:04:17Z e 09:04:39Z, com duas tool calls `doc_read` mediadas e
+      executadas no sandbox. Na passagem do avaliador das 09:05:14Z o `/metrics` do nó deu:
+      `aos_mediation_audit_write_samples` permit **2**, deny 0, escalate 0;
+      `aos_mediation_audit_write_latency_ns{decision="permit"}` p50 **7 376 852**, p95 **8 171 602**,
+      max **8 259 908** ns; `aos_slo_sli{sli="mediation_overhead_p95"}` **6 167 793** ns com 2 amostras,
+      `aos_slo_breached` 0 e os dois `critical` a 0 (`a_disparar=0`). Os selos `tool.call.mediated` do run
+      têm política `latency_ns` 6 306 124 e 3 539 510, cujo p95 interpolado é exactamente o valor do SLI —
+      as amostras são as destas tool calls. **Correcção de registo:** a escrita do selo tinha sido
+      atribuída, por inferência, a ~25 ms dos ~31 ms que a v0.1.15 mediu (ADR-026, `tecnica/19`, `tecnica/08`).
+      Medida directamente custa 6,5–8,3 ms, e política + escrita ≈ 12–13 ms por tool call. A separação
+      do AOS-401 mantém-se certa, mas a diferença para os ~31 ms da v0.1.15 não fica explicada pela
+      escrita; os documentos foram corrigidos.)*
 
 ### Estado
 
-**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy.
+**IMPLEMENTADO e VALIDADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.19`: a escrita do selo mediu p95 8,17 ms nos permits, a primeira medida directa, que desmente a inferência de ~25 ms.
 
 ---
 
