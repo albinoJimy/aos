@@ -500,8 +500,9 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	// Divide-se em DUAS metades (AOS-401), e só a primeira tem SLO. A política é o que o PDP e a
 	// cadeia de hooks custam; a escrita é o que o sink durável custa. Em produção, com as duas
 	// somadas, o SLO de 15 ms mediu ~31 ms e voltava a alertar em `critical` a cada run, a apontar
-	// o RB-04 («Falha de PDP»). O AOS-404 decompôs esses ~31 ms: eram duas calls lentas num p95 de
-	// poucas amostras, uma com a escrita a frio e outra com a própria política a 17 ms.
+	// o RB-04 («Falha de PDP»). O AOS-404 decompôs esses ~31 ms: eram duas calls lentas em todos os
+	// troços ao mesmo tempo, num p95 de poucas amostras. Note-se que a janela da política inclui o selo
+	// durável da revalidação (AOS-381), escrito no WORM por um hook da cadeia.
 	decisionLatency := m.now().Sub(start)
 	auditWriteLatency := decisionLatency - policyLatency
 

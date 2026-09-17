@@ -94,8 +94,8 @@ type Decision struct {
 	// Existe porque [DecisionLatency] inclui a escrita durável do selo: a 2026-09-16, com a
 	// v0.1.15, a janela da decisão mediu 30,8–32,7 ms em produção. O SLO voltava a disparar. A
 	// diferença atribuiu-se à escrita por inferência; [AuditWriteLatency] é a medida directa que
-	// faltava. O AOS-404 decompôs esses valores: duas calls lentas num p95 de poucas amostras, uma
-	// pela escrita a frio e outra pela própria política (17 ms).
+	// faltava. O AOS-404 decompôs esses valores: duas calls lentas em todos os troços ao mesmo tempo,
+	// num p95 de poucas amostras. A janela da política inclui o selo durável da revalidação (AOS-381).
 	PolicyLatency time.Duration
 	// AuditWriteLatency é a duração da escrita do selo de mediação no sink (Event Store/WORM).
 	// Num permit está no caminho crítico — o efeito espera por ela — e soma com [PolicyLatency]

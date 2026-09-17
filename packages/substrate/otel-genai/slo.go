@@ -440,9 +440,10 @@ func cacheHitRateSLI(events []WideEvent, target float64) SLIValue {
 // escrita passou a ter atributo próprio. Medida directamente em produção a 2026-09-17 (AOS-402),
 // a escrita custa 6,5–8,3 ms: a inferência estava errada, e a separação continua certa pelo
 // argumento do RB-04, não pelo tamanho da escrita. O AOS-404 decompôs os ~31 ms por call: duas
-// calls lentas num p95 de poucas amostras, uma pela escrita a frio e outra pela própria política
-// (17 ms). A política NÃO cabe sempre em 2–8,6 ms: 4 de 27 calls de produção passaram os 15 ms,
-// e este SLI, sem mínimo de amostras, é violado por um run com uma call dessas.
+// calls lentas em todos os troços ao mesmo tempo, num p95 de poucas amostras. A política NÃO cabe
+// sempre em 2–8,6 ms (4 de 27 permits de produção passaram os 15 ms), a sua janela inclui o selo
+// durável da revalidação (AOS-381), e este SLI, sem mínimo de amostras, é violado por um run curto
+// com uma call dessas.
 //
 // O SLO de 15 ms exprime o custo de DECIDIR, e o RB-04 sabe depurar o PDP, não um fsync.
 // O SLI passou a ler a janela até ANTES da escrita — o mesmo instante do `latency_ns` do selo.
