@@ -289,6 +289,10 @@ func (m *Monitor) Mediate(ctx context.Context, call Call) (dec Decision, err err
 		// inteira; quem quer medir o OVERHEAD DA MEDIAÇÃO tem de ler este atributo. Sem
 		// ele o SLI `mediation_overhead_p95` media a execução no sandbox (DEF-281).
 		span.SetAttribute(otelgenai.AttrMediationDecisionLatencyNanos, dec.DecisionLatency.Nanoseconds())
+		// A divisão que a produção pediu (AOS-401): a janela da decisão é política + escrita do
+		// selo, e só a POLÍTICA tem SLO. Publicar as duas deixa ver qual das metades pesa.
+		span.SetAttribute(otelgenai.AttrMediationPolicyLatencyNanos, dec.PolicyLatency.Nanoseconds())
+		span.SetAttribute(otelgenai.AttrMediationAuditWriteLatencyNanos, dec.AuditWriteLatency.Nanoseconds())
 		// Numa negação/escalada, anotar o hook atribuível (ex.: "taint") para que a
 		// causa da decisão seja auto-descritível no span, sem segredos.
 		if dec.Effect != EffectPermit && dec.DeniedBy != "" {
@@ -341,7 +345,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		// contexto (já cancelado) e falharia de qualquer forma. É o único caminho
 		// de deny sem registo; todos os outros passam por fail() (best-effort).
 		lat := m.now().Sub(start)
-		d := Decision{Effect: EffectDeny, Code: CodeContextCanceled, DeniedBy: "context", Reason: err.Error(), Latency: lat, DecisionLatency: lat}
+		d := Decision{Effect: EffectDeny, Code: CodeContextCanceled, DeniedBy: "context", Reason: err.Error(), Latency: lat, DecisionLatency: lat, PolicyLatency: lat}
 		m.metrics.Denials.Add(1)
 		return d, err
 	}
@@ -454,12 +458,17 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 	}
 
 	// 3) Auditoria ANTES do efeito (audit-before-effect). Se falhar, fail-closed.
+	//
+	// policyLatency fecha a janela da CADEIA DE POLÍTICA (AOS-401) e é lida UMA vez: serve o
+	// `latency_ns` do selo — que sempre mediu isto — e o [Decision.PolicyLatency] que sai no
+	// span. Uma leitura só garante que os dois números não divergem.
+	policyLatency := m.now().Sub(start)
 	rec := MediationRecord{
 		RequestID: call.RequestID,
 		RunID:     call.RunID, StepID: call.StepID, ParentStepID: call.ParentStepID,
 		Effect: EffectPermit, ToolID: call.ToolID, Capability: call.Capability,
 		Resource: call.Resource, Context: call.Context,
-		Principal: call.Principal, Latency: m.now().Sub(start), Obligations: obligations,
+		Principal: call.Principal, Latency: policyLatency, Obligations: obligations,
 		PolicyVersion: policyVersion,
 	}
 	seq, err := m.sink.RecordMediation(ctx, rec)
@@ -470,24 +479,30 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		// recordFailures se voltar a falhar. Contar aqui E lá contaria a mesma avaria duas
 		// vezes. No sucesso, porém, marca-se a saúde: este é um registo de mediação
 		// bem-sucedido como qualquer outro, e o último-desfecho tem de reflecti-lo.
+		// A escrita que acabou de falhar é custo do SINK, não da política (AOS-401): mede-se
+		// antes de o fail() re-tentar, e soma-se à escrita dele. Sem isto, um Event Store
+		// pendurado até ao prazo do pedido entrava no p95 da política e acendia o alerta do
+		// PDP (RB-04) — o encaminhamento errado que a emenda ao ADR-026 existe para fechar.
+		escritaFalhada := m.now().Sub(start) - policyLatency
 		d := m.fail(ctx, call, EffectDeny, CodeAuditUnavailable, "audit-sink",
 			fmt.Sprintf("%s: %v", ErrAuditUnavailable.msg, err), nil, nil, start, policyVersion)
+		d.PolicyLatency = policyLatency
+		d.AuditWriteLatency += escritaFalhada
 		return d, nil
 	}
 	// Registo de mediação durável bem-sucedido ⇒ o último-desfecho está saudável (AOS-369).
 	m.metrics.recordingFailing.Store(false)
 
-	// A JANELA DO OVERHEAD DE MEDIAÇÃO fecha AQUI (AOS-398): a cadeia de política correu, as
-	// obrigações foram impostas, o selo pré-efeito está DURÁVEL — e o despacho ainda não
-	// começou. É tudo o que a mediação acrescenta ao caminho de uma tool call, e nada do que
-	// a tool custa. É esta leitura que sai no span e alimenta o SLI `mediation_overhead_p95`.
+	// A JANELA DA DECISÃO fecha AQUI (AOS-398): política corrida, obrigações impostas, selo
+	// pré-efeito DURÁVEL — e o despacho ainda não começou. É tudo o que a mediação acrescenta ao
+	// caminho de uma tool call.
 	//
-	// DELIBERADAMENTE MAIS LARGA que o `latency_ns` do selo (`rec.Latency`, acima), que pára imediatamente
-	// ANTES da escrita de auditoria. A diferença é o `RecordMediation`, que está no caminho
-	// crítico: atrasa o efeito, logo é overhead, e um sink lento tem de aparecer no SLO em vez
-	// de se esconder atrás dele. O selo NÃO muda — o seu campo é contrato de fio selado no WORM
-	// (tecnica/12 §4) e mexer-lhe reescreveria o significado de rasto já ancorado.
+	// Divide-se em DUAS metades (AOS-401), e só a primeira tem SLO. A política é o que o PDP e a
+	// cadeia de hooks custam; a escrita é o que o sink durável custa. Em produção, com as duas
+	// somadas, o SLO de 15 ms mediu ~31 ms e voltava a alertar em `critical` a cada run, a apontar
+	// o RB-04 («Falha de PDP») — quando a política sempre coube em 2–8,6 ms.
 	decisionLatency := m.now().Sub(start)
+	auditWriteLatency := decisionLatency - policyLatency
 
 	// 4) Permit: mintar o Permit não-forjável e despachar via dispatcher interno. O
 	//    despacho devolve TAMBÉM o custo medido do efeito (AOS-212): 0 para uma tool
@@ -508,12 +523,14 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		Obligations: obligations,
 		Latency:     m.now().Sub(start),
 		// EXCLUI o despacho: ver [Decision.DecisionLatency]. A `Latency` acima inclui-o.
-		DecisionLatency: decisionLatency,
-		MediationSeq:    seq,
-		Output:          out,
-		ToolErr:         toolErr,
-		CostMicroUSD:    costMicroUSD,
-		permit:          p,
+		DecisionLatency:   decisionLatency,
+		PolicyLatency:     policyLatency,
+		AuditWriteLatency: auditWriteLatency,
+		MediationSeq:      seq,
+		Output:            out,
+		ToolErr:           toolErr,
+		CostMicroUSD:      costMicroUSD,
+		permit:            p,
 	}, nil
 }
 
@@ -598,6 +615,7 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 	// usado em `packages/integration/budget.go` e `packages/substrate/sandbox/lifecycle.go`.
 	regCtx, cancelReg := context.WithTimeout(context.WithoutCancel(ctx), failRecordTimeout)
 	defer cancelReg()
+	escritaInicio := m.now()
 	seq, err := m.sink.RecordMediation(regCtx, MediationRecord{
 		RequestID: call.RequestID,
 		RunID:     call.RunID, StepID: call.StepID, ParentStepID: call.ParentStepID,
@@ -615,6 +633,7 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 	// Mas uma prova perdida em silêncio tornava um deny indistinguível de uma chamada que nunca
 	// aconteceu: um WORM em baixo negava 100% das tool calls sem deixar rasto nenhum. Conta-se a
 	// perda e marca-se o último-desfecho, que o /readyz lê como dependência crítica.
+	auditWriteLatency := m.now().Sub(escritaInicio)
 	if err != nil {
 		m.metrics.recordFailures.Add(1)
 		m.metrics.recordingFailing.Store(true)
@@ -634,7 +653,12 @@ func (m *Monitor) fail(ctx context.Context, call Call, eff Effect, code, deniedB
 		Latency:  latency,
 		// Igual a Latency por construção: nenhum caminho que passa por fail() despachou.
 		DecisionLatency: latency,
-		MediationSeq:    seq,
+		// A política é a janela ANTES do registo, como no permit (AOS-401). Quando fail() é
+		// chamado porque o selo do PERMIT falhou, o chamador repõe a política medida antes
+		// dessa escrita e soma a escrita falhada a AuditWriteLatency.
+		PolicyLatency:     latency,
+		AuditWriteLatency: auditWriteLatency,
+		MediationSeq:      seq,
 	}
 }
 

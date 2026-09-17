@@ -83,9 +83,10 @@ func aos274Service(t *testing.T, node *Node) *NodeService {
 // mediação real usa. Com o relógio de [aos274Clock] a passo `step`, cada span fica com `step`
 // de latência de SPAN.
 //
-// `decisao` é a janela da DECISÃO que o span publica ([otelgenai.AttrMediationDecisionLatencyNanos]),
-// e é ELA que decide se o SLI de overhead p95 (SLO: 15 ms) cumpre ou viola — desde AOS-398 o
-// SLI não lê a latência do span, porque essa inclui a execução da tool no sandbox (DEF-281).
+// `decisao` é a janela que o span publica como DECISÃO e como POLÍTICA (escrita do selo a zero),
+// e é a da política que decide se o SLI de overhead p95 (SLO: 15 ms) cumpre ou viola — o SLI
+// não lê a latência do span (inclui a execução no sandbox, DEF-281) nem a da decisão (inclui a
+// escrita durável do selo, AOS-401).
 // Quem chama passa habitualmente o mesmo `step` do nó, para que o cenário continue a ser
 // governado por um número só; passar um valor diferente modela um despacho não-instantâneo.
 func aos274EmitToolSpans(node *Node, n int, decisao time.Duration) {
@@ -95,6 +96,8 @@ func aos274EmitToolSpans(node *Node, n int, decisao time.Duration) {
 		span.SetAttribute(otelgenai.AttrToolName, "aos274.tool")
 		span.SetAttribute(otelgenai.AttrDecision, otelgenai.DecisionPermit)
 		span.SetAttribute(otelgenai.AttrMediationDecisionLatencyNanos, decisao.Nanoseconds())
+		// Sem escrita de selo modelada, a POLÍTICA é a decisão — e é ela a fonte do SLI (AOS-401).
+		span.SetAttribute(otelgenai.AttrMediationPolicyLatencyNanos, decisao.Nanoseconds())
 		span.End()
 	}
 }

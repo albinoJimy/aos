@@ -19,9 +19,9 @@ func chatCacheCost(traceB, spanB byte, inTok int64, cacheRate float64, costMicro
 }
 
 // execToolLat constrói um span execute_tool com uma decisão de mediação anotada e a
-// latência dada, publicada nas DUAS janelas que o span transporta desde AOS-398: a do
-// span (End-Start, decisão + despacho) e a da DECISÃO ([AttrMediationDecisionLatencyNanos],
-// a fonte do SLI de overhead).
+// latência dada, publicada nas janelas que o span transporta: a do span (End-Start, decisão +
+// despacho), a da DECISÃO ([AttrMediationDecisionLatencyNanos]) e a da POLÍTICA
+// ([AttrMediationPolicyLatencyNanos], a fonte do SLI de overhead desde AOS-401).
 //
 // Fazê-las coincidir é a simplificação deliberada destes cenários — modelam um despacho
 // instantâneo, para que um número só continue a governar as expectativas de p95 a jusante.
@@ -38,6 +38,8 @@ func execToolDecisaoEDespacho(traceB, spanB byte, decisao, total time.Duration, 
 	if decision != "" {
 		attrs = append(attrs, KeyValue{Key: AttrDecision, Value: decision})
 		attrs = append(attrs, KeyValue{Key: AttrMediationDecisionLatencyNanos, Value: decisao.Nanoseconds()})
+		// Sem sink modelado, a política É a decisão: a escrita do selo é zero nestes cenários.
+		attrs = append(attrs, KeyValue{Key: AttrMediationPolicyLatencyNanos, Value: decisao.Nanoseconds()})
 	}
 	return SpanData{
 		Name:          OpExecuteTool,

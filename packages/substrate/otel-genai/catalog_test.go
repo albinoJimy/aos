@@ -199,7 +199,7 @@ func TestRenderCoversEverySLIWithSLOAndWindow(t *testing.T) {
 				Attributes: map[string]any{AttrCacheHitRate: 0.95}},
 			// overhead baixo (cumpre 15ms).
 			{Operation: OpExecuteTool, TraceIDHex: "t1", RunID: "run-1", Decision: DecisionPermit, LatencyNanos: int64(3 * time.Millisecond),
-				Attributes: map[string]any{AttrMediationDecisionLatencyNanos: int64(3 * time.Millisecond)}},
+				Attributes: map[string]any{AttrMediationPolicyLatencyNanos: int64(3 * time.Millisecond)}},
 			// cold-start baixo (cumpre 125ms).
 			coldStartEvent("run-1", 40),
 			// headroom saudável (cumpre >= 1).

@@ -162,22 +162,32 @@ ambos certos e o par ser inútil se o número lido não for o número que o alvo
 | SLI | Fonte no wide event | SLO | Driver |
 |---|---|---|---|
 | `cache_hit_rate` | `aos.cache.hit_rate` dos spans `chat`, ponderado por prompt tokens | > 0,80 | ADR-009 |
-| `mediation_overhead_p95` | `aos.mediation.decision_latency_ns` dos spans `execute_tool` **que decidiram** | p95 < 15 ms | `tecnica/19` §4 |
+| `mediation_overhead_p95` | `aos.mediation.policy_latency_ns` dos spans `execute_tool` **que decidiram** | p95 < 15 ms | `tecnica/19` §4 |
 | `cost_per_trajectory` | custo agregado por trace (só spans `chat`, sem dupla-contagem) | tecto por trajectória | ADR-008 |
 | `override_rate` | fracção de decisões com `aos.decision == escalate` | tecto de fracção | ADR-010 |
 
-**O overhead de mediação é a janela da DECISÃO, não a da tool call.** O span `execute_tool` do
-Reference Monitor **fecha depois de a tool correr** — `Monitor.evaluate` despacha antes de devolver a
-decisão —, pelo que a latência do span é decisão + execução no sandbox. O que o SLO de 15 ms exprime
-é só o que a mediação **acrescenta**: identidade, PDP, orçamento, egress e selo pré-efeito. O kernel
-publica essa janela no atributo `aos.mediation.decision_latency_ns`, medido imediatamente antes do
-despacho, e é dele — não da latência do span — que o SLI deriva.
+**O overhead de mediação é a janela da POLÍTICA, não a da tool call nem a do selo.** O span
+`execute_tool` do Reference Monitor **fecha depois de a tool correr** — `Monitor.evaluate` despacha
+antes de devolver a decisão —, pelo que carrega três janelas encaixadas, todas publicadas pelo kernel:
+
+| Atributo | Janela | SLO |
+|---|---|---|
+| `aos.mediation.policy_latency_ns` | identidade, PDP, orçamento, egress, obrigações — até **antes** da escrita do selo | **p95 < 15 ms** |
+| `aos.mediation.audit_write_latency_ns` | a escrita durável do selo `tool.call.mediated` (Event Store/WORM) | nenhum |
+| `aos.mediation.decision_latency_ns` | num permit, política + escrita — tudo o que antecede o despacho | nenhum |
+| latência do span | decisão + execução da tool no sandbox | nenhum |
+
+O SLI deriva só da primeira, que é o mesmo instante do `latency_ns` do selo.
 
 Ler a janela errada custou um ano de alertas falsos: em qualquer nó com sandbox real, uma tool call
 normal violava o SLO por duas ordens de grandeza e acendia dois `critical` a apontar o RB-04 («Falha
-de PDP»), mandando depurar a peça sã. Era DEF-281, e está fechado por **AOS-398** / **ADR-026**.
+de PDP»), mandando depurar a peça sã. Era DEF-281, fechado por **AOS-398** / **ADR-026**.
 
-**A duração da tool call mediada inteira não tem SLO, e a omissão é deliberada.** Continua observável
+A primeira correcção (AOS-398) fechou a janela **depois** da escrita do selo. Em produção, com a
+v0.1.15, o SLI desceu de 1,21 s para ~31 ms — ainda o dobro do tecto. A política sempre coube em
+2–8,6 ms; a diferença atribui-se, por inferência, à escrita durável do selo. O **AOS-401** emendou o ADR-026: o SLO governa só a política.
+
+**A escrita do selo e a duração da tool call mediada não têm SLO, e a omissão é deliberada.** Continua observável
 — é a latência do próprio span `execute_tool`, e o drill-down chega ao trace — mas nenhum documento
 normativo ratifica um orçamento para a execução de uma tool, que depende do runtime de sandbox e da
 tool concreta. Fixar aqui um limiar por estimativa reproduziria, com outro nome, o alerta mal

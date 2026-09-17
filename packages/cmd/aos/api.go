@@ -1165,9 +1165,9 @@ type readinessProber interface {
 // kernel: gauges de saúde/dependência (o gap exato do achado) + runtime Go. As latências de
 // request continuam a exigir histogramas instrumentados no kernel — follow-up ainda aberto. O
 // caso do `mediation_overhead_p95`, que esta nota citava como exemplo, deixou de o ser: o
-// Reference Monitor instrumenta a janela da DECISÃO e publica-a em
-// `aos.mediation.decision_latency_ns` (AOS-398/ADR-026), pelo que esse SLI passou a derivar de
-// uma medida do kernel e não de um proxy. O
+// Reference Monitor instrumenta a janela da POLÍTICA e publica-a em
+// `aos.mediation.policy_latency_ns` (AOS-398/AOS-401, ADR-026), pelo que esse SLI passou a
+// derivar de uma medida do kernel e não de um proxy. O
 // corpo NÃO revela RunIDs/contagens sensíveis (coerente com a filosofia não-enumerável).
 func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder

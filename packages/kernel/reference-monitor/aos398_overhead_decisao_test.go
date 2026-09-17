@@ -2,6 +2,7 @@ package referencemonitor
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -157,6 +158,19 @@ func TestAOS398_SpanPublicaAJanelaDaDecisao(t *testing.T) {
 		t.Fatalf("o span publicou %v — devia publicar a janela da DECISÃO (8ms), não a do span",
 			time.Duration(got))
 	}
+	// AOS-401: a fonte do SLI e a metade que o sink custa.
+	for chave, quer := range map[string]int64{
+		otelgenai.AttrMediationPolicyLatencyNanos:     int64(8 * time.Millisecond),
+		otelgenai.AttrMediationAuditWriteLatencyNanos: 0,
+	} {
+		v, ok := spy.atributo(chave)
+		if !ok {
+			t.Fatalf("o span execute_tool tem de anotar %s", chave)
+		}
+		if n, ok := v.(int64); !ok || n != quer {
+			t.Fatalf("%s = %v (%T), queria %v", chave, v, v, time.Duration(quer))
+		}
+	}
 }
 
 // TestAOS398_RecusaNaoDespachaLogoAsDuasJanelasCoincidem — num deny/escalate não há efeito, e
@@ -182,6 +196,35 @@ func TestAOS398_RecusaNaoDespachaLogoAsDuasJanelasCoincidem(t *testing.T) {
 	}
 	if dec.DecisionLatency != 3*time.Millisecond {
 		t.Fatalf("DecisionLatency = %v — esperava os 3ms da cadeia", dec.DecisionLatency)
+	}
+	if dec.PolicyLatency != 3*time.Millisecond {
+		t.Fatalf("PolicyLatency = %v — num deny a política é a mesma janela de antes do registo (3ms)", dec.PolicyLatency)
+	}
+}
+
+// TestAOS401_RecusaMedeAEscritaDoSeloSemAContarNaPolitica — no caminho de recusa o registo é
+// feito DEPOIS de a decisão estar fixada (fail()), mas o sink custa o mesmo. A política não o
+// pode absorver, senão um sink lento acenderia o alerta de PDP também nas recusas.
+func TestAOS401_RecusaMedeAEscritaDoSeloSemAContarNaPolitica(t *testing.T) {
+	clk := novoRelogioManual()
+	sink := &sinkEspiao{antes: func() { clk.avancar(25 * time.Millisecond) }}
+	hook := &spyHook{name: "policy", result: HookResult{Decision: HookDeny, Reason: "negado"}, mutate: func(*Call) {
+		clk.avancar(3 * time.Millisecond)
+	}}
+	m := New(WithHooks(hook), WithEventSink(sink), withClock(clk.agora))
+
+	dec, err := m.Mediate(context.Background(), baseCall())
+	if err != nil {
+		t.Fatalf("Mediate: %v", err)
+	}
+	if dec.Effect != EffectDeny {
+		t.Fatalf("esperava deny; veio %q", dec.Effect)
+	}
+	if dec.PolicyLatency != 3*time.Millisecond {
+		t.Fatalf("PolicyLatency = %v — a escrita de 25ms do selo não pode entrar na política (3ms)", dec.PolicyLatency)
+	}
+	if dec.AuditWriteLatency != 25*time.Millisecond {
+		t.Fatalf("AuditWriteLatency = %v — esperava os 25ms do sink", dec.AuditWriteLatency)
 	}
 }
 
@@ -250,6 +293,21 @@ func TestAOS398_AEscritaDeAuditoriaContaComoOverhead(t *testing.T) {
 	if len(recs) != 1 || recs[0].Latency != 8*time.Millisecond {
 		t.Fatalf("o selo tem de continuar a parar ANTES da escrita (8ms); veio %+v", recs)
 	}
+	// AOS-401: as duas metades da decisão, e a do SLO é a política.
+	if dec.PolicyLatency != 8*time.Millisecond {
+		t.Fatalf("PolicyLatency = %v — é a janela ANTES da escrita do selo (8ms), a fonte do SLO", dec.PolicyLatency)
+	}
+	if dec.AuditWriteLatency != 2*time.Millisecond {
+		t.Fatalf("AuditWriteLatency = %v — é só a escrita do selo (2ms)", dec.AuditWriteLatency)
+	}
+	if dec.PolicyLatency+dec.AuditWriteLatency != dec.DecisionLatency {
+		t.Fatalf("política (%v) + escrita (%v) tem de dar a decisão (%v)",
+			dec.PolicyLatency, dec.AuditWriteLatency, dec.DecisionLatency)
+	}
+	// O mesmo instante serve o selo e o SLO: os dois números não podem divergir.
+	if dec.PolicyLatency != recs[0].Latency {
+		t.Fatalf("a política (%v) tem de ser o `latency_ns` do selo (%v)", dec.PolicyLatency, recs[0].Latency)
+	}
 	if dec.Latency != 1210*time.Millisecond {
 		t.Fatalf("Latency = %v — a janela total inclui política, selo e despacho (1,21s)", dec.Latency)
 	}
@@ -281,4 +339,46 @@ func (s *sinkEspiao) todos() []MediationRecord {
 	out := make([]MediationRecord, len(s.recs))
 	copy(out, s.recs)
 	return out
+}
+
+// sinkQueFalha consome tempo e falha todas as escritas: um Event Store pendurado que acaba por
+// devolver erro.
+type sinkQueFalha struct {
+	antes func()
+}
+
+func (s *sinkQueFalha) RecordMediation(context.Context, MediationRecord) (uint64, error) {
+	if s.antes != nil {
+		s.antes()
+	}
+	return 0, errors.New("sink indisponivel")
+}
+
+// TestAOS401_SeloDoPermitQueFalhaNaoEntraNaPolitica — quando o selo do PERMIT falha, a decisão
+// degrada para deny e o fail() re-tenta o registo. As duas escritas são custo do sink: a política
+// continua a ser a janela antes da primeira, e um sink pendurado não acende o alerta do PDP.
+func TestAOS401_SeloDoPermitQueFalhaNaoEntraNaPolitica(t *testing.T) {
+	clk := novoRelogioManual()
+	sink := &sinkQueFalha{antes: func() { clk.avancar(400 * time.Millisecond) }}
+	hook := &spyHook{name: "policy", result: HookResult{Decision: HookAllow}, mutate: func(*Call) {
+		clk.avancar(4 * time.Millisecond)
+	}}
+	m := New(WithHooks(hook), WithEventSink(sink), withClock(clk.agora))
+	if err := m.Register("tool.echo", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dec, err := m.Mediate(context.Background(), baseCall())
+	if err != nil {
+		t.Fatalf("Mediate: %v", err)
+	}
+	if dec.Effect != EffectDeny || dec.Code != CodeAuditUnavailable {
+		t.Fatalf("o selo falhado tem de degradar para deny audit-unavailable; veio %q/%q", dec.Effect, dec.Code)
+	}
+	if dec.PolicyLatency != 4*time.Millisecond {
+		t.Fatalf("PolicyLatency = %v — a escrita falhada não pode entrar na política (4ms)", dec.PolicyLatency)
+	}
+	if dec.AuditWriteLatency != 800*time.Millisecond {
+		t.Fatalf("AuditWriteLatency = %v — esperava as duas escritas do sink (2 x 400ms)", dec.AuditWriteLatency)
+	}
 }
