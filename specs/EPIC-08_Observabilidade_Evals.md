@@ -57,6 +57,7 @@ O epic encerra dois cenários de falha do plano-base: *The Audit Log Lied* (o tr
 | AOS-086 | Alertas a partir dos SLIs | feature | S | P2 | AOS-085 |
 | AOS-398 | O SLI de overhead de mediação mede a execução da tool, não a decisão | fix | M | P0 | AOS-085, AOS-086, AOS-274 |
 | AOS-401 | O SLI de overhead de mediação ainda conta a escrita do selo e continua a violar o SLO em produção | fix | S | P0 | AOS-398 |
+| AOS-402 | A escrita do selo de mediação fica legível no `/metrics` do nó | fix | S | P2 | AOS-401 |
 
 ---
 
@@ -823,7 +824,7 @@ kernel publica as duas metades separadas, para que a escrita do selo deixe de se
       que o SLI lê a janela da política, o mesmo instante do selo. **NÃO VERIFICADO — a escrita medida
       directamente:** o `aos.mediation.audit_write_latency_ns` é atributo de span, e o colector OTel de
       produção exporta os traces para `debug`, que os descarta sem atributos; o nó também não o expõe
-      no `/metrics`. Fica por medir até haver um destino de traces ou uma métrica. A amostra tem uma só
+      no `/metrics`. Fica por medir até haver um destino de traces ou uma métrica — a métrica é o **AOS-402**. A amostra tem uma só
       tool call.)*
 
 ### Estado
@@ -835,6 +836,73 @@ ticket (EPIC-06). Verificado: suites `-race` do Reference Monitor, do `otel-gena
 mutação na fonte do SLI (volta a publicar os 32,7 ms de produção) e no selo do permit falhado (a política
 sai com 404 ms em vez de 4 ms). Revisão adversarial independente: nenhum defeito crítico; o médio (selo
 do permit falhado) e os baixos foram corrigidos.
+
+---
+
+## AOS-402 — A escrita do selo de mediação fica legível no `/metrics` do nó
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Remediação pós-produção |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-401 |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/adr/ADR-026-overhead-de-mediacao-e-a-janela-da-decisao.md` (Emenda), `tecnica/08_Observabilidade_Evals.md` §7.1, `packages/substrate/otel-genai/audit_write_latency.go`, `packages/cmd/aos/slo_evaluator.go` |
+
+### Contexto
+
+O AOS-401 separou a escrita durável do selo `tool.call.mediated` da janela da política e publicou-a no
+span `execute_tool` (`aos.mediation.audit_write_latency_ns`). A verificação em produção da `v0.1.18`
+(2026-09-17) confirmou a política (6,52 ms, igual ao `latency_ns` do selo), mas não conseguiu ler a
+escrita: o colector OTel de produção exporta os traces para `debug`, que os descarta, e o nó não a
+expunha no `/metrics`. A escrita — que era, por inferência, a maior parte dos ~31 ms da v0.1.15 —
+continuava sem medida legível.
+
+### Objectivo
+
+O `/metrics` do nó publica a escrita do selo de mediação por decisão, na janela do avaliador de SLOs,
+sem SLO nem alerta.
+
+### Critérios de Aceitação
+
+- [x] A medida é derivada no substrato, sobre os mesmos wide events do SLI de overhead, e não no nó:
+      `otelgenai.MediationAuditWriteLatency` devolve, por decisão (permit, deny, escalate), as amostras,
+      p50, p95 e máximo. Tipo próprio (`AuditWriteLatency`), fora do catálogo de SLIs: sem alvo, sem
+      breach, sem alerta. *(Mesma amostra do `overheadP95SLI` — `execute_tool` que decidiu e traz a
+      medida —, com duas exclusões: span sem o atributo (Reference Monitor anterior ao AOS-401) e recusa
+      por contexto cancelado (`denied_by=context`), que sai antes de escrever e publicaria zero. Testes:
+      `TestAOS402_EscritaDoSeloPorDecisaoComPercentis`, `TestAOS402_SpanSemAMedidaNaoEntra`,
+      `TestAOS402_RecusaPorContextoCanceladoNaoConta`, `TestAOS402_DerivaDoBagDoSpan`.)*
+- [x] O `/metrics` publica `aos_mediation_audit_write_samples{decision}` (sempre, também a zero) e
+      `aos_mediation_audit_write_latency_ns{decision,stat="p50|p95|max"}` só para decisões com amostras.
+      Nanossegundos, como o `aos_slo_sli` do overhead e o `latency_ns` do selo. *(DECISÃO: gauges da
+      janela e não histograma: o avaliador já agrega por janela e um contador cumulativo exigiria uma
+      segunda contabilidade no nó. A unidade segue as medidas que se comparam com esta, e não a
+      convenção de segundos do Prometheus. `TestAOS402_MetricsExpoeAEscritaDoSeloPorDecisaoSemSLO`
+      passa pela torneira de spans e pela passagem real do avaliador, verifica os valores, a ausência
+      de percentis sem amostras, um HELP e um TYPE por nome, nomes e valores válidos no formato de
+      exposição, e que nenhuma série de SLO ou alerta fala desta medida;
+      `TestAOS402_JanelaSemMediacaoSoPublicaAmostrasAZero`; `TestAOS402_SemTorneiraNaoPublicaNada` (com a
+      observabilidade OTLP desligada nada sai: `samples` a zero leria-se como «nenhuma mediação»). O
+      guarda de formato geral `TestMetricsRespeitaOFormatoDeExposicao` corre sem o avaliador e não vê
+      estas famílias, pelo que a validação de formato delas está no teste do AOS-402. O valor
+      `denied_by=context` passou a constante partilhada (`otelgenai.DeniedByContext`) entre o
+      Reference Monitor e o filtro. **FALHA-ANTES MEDIDA por mutação**: sem a publicação, as séries
+      `aos_mediation_audit_write_latency_ns` não existem no `/metrics`. Revisão adversarial
+      independente: nenhum crítico, alto ou médio; os quatro baixos foram corrigidos.)*
+- [x] `tecnica/08` §7.1, ADR-026 (Emenda) e RB-04 dizem onde se lê a escrita; o banner do avaliador
+      declara-a.
+- [ ] Evidência de sistema: depois de um deploy, um run com tool call deixa no `/metrics` de produção
+      `aos_mediation_audit_write_samples{decision="permit"}` ≥ 1 e a escrita medida, o que fecha o
+      critério `[~]` do AOS-401.
+
+### Estado
+
+**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy.
 
 ---
 
@@ -855,3 +923,4 @@ do permit falhado) e os baixos foram corrigidos.
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | Setembro 2026 | Adenda pós-encerramento: AOS-398 (DEF-281 — o SLI de overhead de mediação media a execução da tool; ADR-026) | Equipa AOS |
 | 1.2 | Setembro 2026 | AOS-401: emenda ao ADR-026 depois da verificação da v0.1.15 em produção — o SLO governa só a política, a escrita do selo sai da janela | Equipa AOS |
+| 1.3 | Setembro 2026 | AOS-402: a escrita do selo de mediação passa a ser legível no `/metrics` do nó, sem SLO | Equipa AOS |

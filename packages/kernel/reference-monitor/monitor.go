@@ -345,7 +345,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (Decision, error) {
 		// contexto (já cancelado) e falharia de qualquer forma. É o único caminho
 		// de deny sem registo; todos os outros passam por fail() (best-effort).
 		lat := m.now().Sub(start)
-		d := Decision{Effect: EffectDeny, Code: CodeContextCanceled, DeniedBy: "context", Reason: err.Error(), Latency: lat, DecisionLatency: lat, PolicyLatency: lat}
+		d := Decision{Effect: EffectDeny, Code: CodeContextCanceled, DeniedBy: otelgenai.DeniedByContext, Reason: err.Error(), Latency: lat, DecisionLatency: lat, PolicyLatency: lat}
 		m.metrics.Denials.Add(1)
 		return d, err
 	}
