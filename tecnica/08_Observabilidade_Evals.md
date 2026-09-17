@@ -174,13 +174,17 @@ antes de devolver a decisão —, pelo que carrega três janelas encaixadas, tod
 |---|---|---|
 | `aos.mediation.policy_latency_ns` | identidade, PDP, orçamento, egress, obrigações — até **antes** da escrita do selo | **p95 < 15 ms** |
 | `aos.mediation.audit_write_latency_ns` | a escrita durável do selo `tool.call.mediated` (Event Store/WORM) | nenhum |
+| `aos.mediation.hook_latency_ns.<hook>` | cada hook da cadeia de política, dentro da primeira (AOS-405); inclui o que o hook escreve — o de revalidação sela no WORM | nenhum |
 | `aos.mediation.decision_latency_ns` | num permit, política + escrita — tudo o que antecede o despacho | nenhum |
 | latência do span | decisão + execução da tool no sandbox | nenhum |
 
 O SLI deriva só da primeira, que é o mesmo instante do `latency_ns` do selo. A segunda é legível no
 `/metrics` do nó (AOS-402), na janela do avaliador e por decisão: `aos_mediation_audit_write_samples{decision}`
 e `aos_mediation_audit_write_latency_ns{decision,stat="p50|p95|max"}`, em nanossegundos e sem SLO — o
-atributo do span sozinho não chegava, porque o colector de produção descarta os traces.
+atributo do span sozinho não chegava, porque o colector de produção descarta os traces. A política
+partida por hook sai também no `/metrics` (AOS-405): `aos_mediation_hook_samples{hook}` e
+`aos_mediation_hook_latency_ns{hook,stat="p50|p95|max"}`, só para os hooks que correram na janela e sem
+SLO. Os hooks de uma mediação somam-se dentro da política; o resto é o próprio Reference Monitor.
 
 Ler a janela errada custou um ano de alertas falsos: em qualquer nó com sandbox real, uma tool call
 normal violava o SLO por duas ordens de grandeza e acendia dois `critical` a apontar o RB-04 («Falha

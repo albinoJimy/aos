@@ -110,6 +110,16 @@ const (
 	// [AttrMediationPolicyLatencyNanos] dá [AttrMediationDecisionLatencyNanos] num permit.
 	// Observável e sem SLO: não há alvo ratificado para o custo de um sink durável.
 	AttrMediationAuditWriteLatencyNanos = "aos.mediation.audit_write_latency_ns"
+	// AttrMediationHookLatencyPrefix — aos.mediation.hook_latency_ns.<hook>: a duração de CADA hook
+	// da cadeia de política do Reference Monitor, em nanos, um atributo por hook (AOS-405). Os
+	// hooks que correram somam-se dentro de [AttrMediationPolicyLatencyNanos]; o que falta para a
+	// política é o próprio RM (registo da tool e imposição de obrigações). Numa recusa só aparecem
+	// os hooks até ao que recusou. O nome do atributo constrói-se com [MediationHookLatencyAttr].
+	//
+	// Porque existe: o AOS-404 viu em produção políticas de 17 a 104 ms em que todo o excesso estava
+	// depois do selo de revalidação — num troço que junta o fsync desse selo com risk-classify,
+	// PDP, taint, scope, budget e egress, e que os selos guardados não separam.
+	AttrMediationHookLatencyPrefix = "aos.mediation.hook_latency_ns."
 	// AttrCacheHitRate — aos.cache.hit_rate: o cache-hit-rate AGREGADO do prefixo
 	// (fracção [0,1] = cache_read_tokens / prompt_tokens) anotado no span da model
 	// call pelo Model Gateway (packages/platform/model-gateway/metering/cache_sli,
