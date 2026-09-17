@@ -431,7 +431,13 @@ Porque é que cada parâmetro tem de ser assim:
 Desde o **AOS-403** o `aos-orq` vem **na mesma imagem** que o nó, atestado como subject próprio
 (`usr/local/bin/aos-orq`, com `sbom-aos-orq.json`). Deixa de haver binário compilado à parte e
 copiado para o servidor: corre-se o que o release assinou, a partir do digest que o `deploy.sh`
-pinou em `image.env`.
+pinou em `image.env`. **Verificado em produção** a 2026-09-17 na `v0.1.20`: o run
+`run-aos403-prod-1789643089` correu por esta receita, decompôs um plano de 2 nós com `gpt-4o-mini` e
+selou no volume do orquestrador (evidência no AOS-403, `specs/EPIC-10`).
+
+> Envie o comando **inline** (`ssh aos-prod '…'`) e não por `ssh … bash -s < script`: o
+> `docker compose run` lê o stdin e consome o resto do script, pelo que o que viesse depois (o
+> `echo $?`, por exemplo) nunca corre.
 
 O serviço `aos-orq` do `docker-compose.prod.yml` está no profile **`orq`**, pelo que o `deploy.sh`
 não o arranca: um `serve` possui **um** run, decompõe-o, despacha-o e termina. Corre-se à mão:
