@@ -53,13 +53,22 @@ RUN go mod download && go mod verify
 # verificado; -trimpath remove caminhos absolutos; -buildid= e -s -w tornam o output estável.
 RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos .
 
+# --- Orquestrador multi-nó `aos-orq` (AOS-403) --------------------------------
+# Viaja na MESMA imagem assinada, e não numa segunda: produção corre-o a partir do digest que o
+# deploy já pinou, com a mesma base, o mesmo USER e a mesma atestação (ADR-017 §3, subject
+# `usr/local/bin/aos-orq`). O grafo do módulo é só stdlib + módulos locais (replace por path),
+# sem go.sum, pelo que compila OFFLINE sem prime de cache. Não é um segundo ENTRYPOINT: corre-se
+# por `--entrypoint` (ver o serviço `aos-orq` de deploy/server/docker-compose.prod.yml).
+WORKDIR /src/packages/cmd/aos-orq
+RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos-orq .
+
 # --- healthprobe (zero-dep: só stdlib => offline trivial, sem cache externo) --
 WORKDIR /src/healthprobe
 RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos-healthprobe .
 
 # ----------------------------------------------------------------------------
 # STAGE 2 — final: distroless STATIC, NON-ROOT. Sem shell, sem package-manager,
-# sem segredos. Só os dois binários estáticos.
+# sem segredos. Só os três binários estáticos (nó, orquestrador, healthprobe).
 # gcr.io/distroless/static-debian12:nonroot
 # ----------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
@@ -83,7 +92,7 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a
 # disser, o label parece uma instrução executável e não é. Por isso cada valor qualifica-se a si
 # próprio: onde NÃO está o artefacto, e o que a verificação EXIGE para dar verde.
 LABEL org.opencontainers.image.title="aos-node" \
-      org.opencontainers.image.description="Nó de referência do Agentic OS (AOS-168), distroless non-root read-only" \
+      org.opencontainers.image.description="Nó de referência do Agentic OS (AOS-168) e orquestrador aos-orq (AOS-403), distroless non-root read-only" \
       org.opencontainers.image.source="github.com/aos-ref/cmd/aos" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.aos.adr="ADR-017" \
@@ -96,11 +105,19 @@ LABEL org.opencontainers.image.title="aos-node" \
 
 # Binários estáticos (o único conteúdo mutável do artefacto).
 COPY --from=builder /out/aos /usr/local/bin/aos
+COPY --from=builder /out/aos-orq /usr/local/bin/aos-orq
 COPY --from=builder /out/aos-healthprobe /usr/local/bin/aos-healthprobe
 
 # NON-ROOT por UID NUMÉRICO (o distroless `nonroot` é uid:gid 65532:65532). UID numérico (não
 # nome) para que orquestradores que impõem runAsNonRoot possam validar sem resolver /etc/passwd.
 USER 65532:65532
+
+# ESTADO DO `aos-orq` (AOS-403): o WAL do run, o snapshot e o WORM de governação do gateway do
+# planeador vivem num volume PRÓPRIO, nunca no do nó. O caminho do audit TEM de ser distinto do
+# nó (os dois pedem posse exclusiva do seu WAL — AOS-395/AOS-399), e separar os volumes torna-o
+# estrutural. O WORKDIR cria o directório owned por 65532, como o de baixo; o WORKDIR final
+# continua a ser o do nó.
+WORKDIR /var/lib/aos-orq
 
 # ESTADO DURÁVEL fora do root-fs (AOS-170): o Event Store (EventStorePath) e o WORM (WORMPath),
 # QUANDO o operador os liga, escrevem aqui — um mount GRAVÁVEL EXPLÍCITO (-v aos-data:/var/lib/aos),

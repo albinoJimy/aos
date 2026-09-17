@@ -199,6 +199,13 @@ Num processo próprio, `aos-orq` (`packages/cmd/aos-orq`), sobre o módulo
 single-host o arranca, e o grafo de build do nó `aos` não o contém — verificado dos dois
 lados por guarda de teste (ADR-018 §5 e ADR-023 §5).
 
+**Empacotamento (AOS-403).** O `aos-orq` viaja na mesma imagem assinada do nó, como binário
+separado (`/usr/local/bin/aos-orq`, módulo próprio, fora do grafo de build do `aos`) e subject
+próprio da atestação de entrega. Em produção corre-se à mão, a partir do digest que o deploy
+pinou, pelo serviço `aos-orq` do compose (profile `orq`, que o `deploy.sh` nunca arranca), com
+volume de estado próprio (`aos-orq-data`) e a config de modelo do nó. Receita em
+`deploy/server/README.md` §«Orquestrador multi-nó (`aos-orq`)».
+
 > **LIMITE OPERACIONAL DECLARADO (DEF-282, eixo AOS-100) — e agora IMPOSTO (AOS-285).** A
 > arbitragem da posse depende de o `expected_seq` do stream de lease ser atómico **entre
 > escritores**. O Event Store de referência não o é entre **processos**: as réplicas de

@@ -76,6 +76,9 @@ esac
 # errado nunca casaria, o guarda nunca dispararia, e diria «DESLIGADA» sobre um nó com a âncora
 # ligada. Um guarda que não pode falhar em voz alta é pior do que não ter guarda.
 mkdir -p "${APP_DIR}/ancoras" "${APP_DIR}/pisos"
+# `orq/` é a pasta de entradas do serviço `aos-orq` (AOS-403: snapshot e plan-doc). Pela mesma
+# razão: sem ela, o primeiro `--profile orq run` deixava o Docker criá-la como root.
+mkdir -p "${APP_DIR}/orq"
 if [ -n "${AOS_WORM_TRUST_ANCHOR:-}" ]; then
   [ -s "${APP_DIR}/ancoras/checkpoints.json" ] \
     || fail "AOS_WORM_TRUST_ANCHOR está ligada mas ${APP_DIR}/ancoras/checkpoints.json não existe (ou está vazio) — o nó abortaria no arranque. Corra a selagem e entregue o ficheiro ANTES de ligar a âncora"

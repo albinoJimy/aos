@@ -210,6 +210,10 @@ subjects = {s.get("name"): s.get("digest", {}).get("sha256") for s in stmt.get("
 FILES = {
     "usr/local/bin/aos": "aos",
     "sbom.json": "sbom.json",
+    # AOS-403: o orquestrador viaja na mesma imagem. Uma entrega que o traga sem o atestar é
+    # recusada como qualquer outro subject em falta.
+    "usr/local/bin/aos-orq": "aos-orq",
+    "sbom-aos-orq.json": "sbom-aos-orq.json",
     "provenance.json": "provenance.json",
     "delivery-manifest.json": "delivery-manifest.json",
 }
@@ -288,9 +292,10 @@ else:
     else:
         n_manifest += 1
 
+BINARIOS = {"aos": "usr/local/bin/aos", "aos-orq": "usr/local/bin/aos-orq"}
 for art in man.get("artifacts", []):
     name = art.get("name")
-    key = "usr/local/bin/aos" if name == "aos" else name
+    key = BINARIOS.get(name, name)
     signed = subjects.get(key)
     if signed is None:
         errs.append(f"o manifesto lista o artefacto {name!r} que o statement assinado NÃO cobre")

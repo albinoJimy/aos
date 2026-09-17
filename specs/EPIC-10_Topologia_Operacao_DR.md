@@ -61,6 +61,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-285 | Guard de arranque: o nó recusa arrancar sobre um Event Store já detido | feature | S | P0 | — |
 | AOS-286 | Estender o guard de posse do WAL aos restantes escritores | feature | S | P1 | AOS-285 |
 | AOS-392 | Prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook *(v1.1)* | test | M | P0 | AOS-390, AOS-283, AOS-284, AOS-391, AOS-100 |
+| AOS-403 | O `aos-orq` na release assinada e corrível em produção a partir do digest pinado | feature | M | P1 | AOS-392, AOS-395, AOS-400 |
 
 ---
 
@@ -1110,6 +1111,38 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 
 ---
 
+## AOS-403 — O `aos-orq` na release assinada e corrível em produção a partir do digest pinado
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-392 (topologia do `aos-orq`), AOS-395 (audit durável do planeador), AOS-400 (decomposição viva em produção) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma / SRE |
+| Documentos de referência | ADR-017 (ponto 3, emenda AOS-403), `deploy/node/Dockerfile`, `scripts/ci/sbom.sh`, `scripts/ci/sign.sh`, `scripts/ci/verify-attestation.sh`, `deploy/server/docker-compose.prod.yml`, `deploy/server/README.md` |
+
+**Contexto.** O `aos-orq` só existia como binário compilado a partir da árvore. As provas em produção do AOS-395 e do AOS-400 correram-no assim: compilado para linux na máquina do operador, copiado para uma pasta temporária do servidor e executado num contentor efémero. Esse binário não passou pela cadeia de supply-chain do ADR-017 (sem SBOM, proveniência nem atestação) e não tinha forma registada de correr em produção. O deploy da release também não o levava.
+
+**Objectivo.** O `aos-orq` passa a viajar na imagem assinada do nó, atestado como subject próprio. Produção corre-o a partir do digest que o deploy pinou, por um serviço do compose que não interfere com o nó.
+
+**Critérios de Aceitação**
+- [x] O `Dockerfile` compila `packages/cmd/aos-orq` no builder com as flags reprodutíveis do nó (`GOPROXY=off`, `-trimpath`, `-s -w -buildid=`) e copia-o para `/usr/local/bin/aos-orq`. O `ENTRYPOINT` continua a ser o nó, o `WORKDIR` final continua a ser `/var/lib/aos` e `/var/lib/aos-orq` nasce owned por `65532`. *(`TestAOS403_ImagemEmpacotaOOrquestrador`. O mesmo build corre offline no host com go1.25.13, a versão do builder pinado. O `docker build` não correu localmente porque não havia daemon Docker: fica para o `package.sh` da release, que é fail-closed.)*
+- [x] A atestação de entrega cobre o orquestrador. O `sbom.sh` extrai-o da imagem e verifica a reprodutibilidade pelo mesmo procedimento do nó, com `sbom-aos-orq.json` próprio e `additionalSubjects` na proveniência. O `sign.sh` assina `usr/local/bin/aos-orq` e `sbom-aos-orq.json`, e o `verify-attestation.sh` recusa-os em falta ou divergentes. *(Prova local com uma chave descartável fora do repositório: `sbom.sh` → `sign.sh` → `verify-attestation.sh` recomputou **6** subjects contra os artefactos reais e saiu com 4, por falta de imagem neste host. Depois de um byte acrescentado ao `aos-orq`, saiu com 1: `DIGEST DIVERGENTE em aos-orq`.)*
+- [x] O serviço `aos-orq` de `deploy/server/docker-compose.prod.yml` está no profile `orq` e corre como pontual (`restart: "no"`). Usa `image: ${AOS_IMAGE}`, `entrypoint /usr/local/bin/aos-orq`, root-fs só de leitura, `cap_drop ALL`, sem o `HEALTHCHECK` do nó e o volume `aos-orq-data`, nunca o do nó. Recebe todas as variáveis que o binário lê, e o caminho do audit não vem da variável do nó. *(`TestAOS403_ServicoDoComposeCorreOOrquestrador`. `docker compose config` sem profile não lista o serviço e com `--profile orq` resolve `AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/model-audit.wal` com o `.env` do nó.)*
+- [x] Sob `AOS_MODE=production`, com `AOS_MODEL_EGRESS_HOSTS` vazia, a allowlist de egress do `aos-orq` deriva do host do endpoint, como no nó (AOS-366). Um endpoint sem host é recusado. *(`TestAOS403_EgressDerivaDoEndpointSobProducao`.)*
+- [x] Os testes do nó que leem o compose e o ambiente continuam fiéis. O teste de manifesto lê só o bloco `aos:`, e o índice de variáveis do README inclui a árvore do `aos-orq`. *(`TestManifestoDeDeployPassaTodaAConfigQueONoLe`, `TestAOS203EnvSurfaceIsDocumented`.)*
+- [x] Operação: o `deploy.sh` cria `orq/` e o `backup.sh` inclui `aos_aos-orq-data` quando existe, sem o criar fora do compose. A documentação está actualizada: ADR-017 (emenda), `deploy/node/README.md`, `deploy/server/README.md` (secção nova), `PROC-DESPACHO-MULTIPROC`, `tecnica/10`, CHANGELOG e RTM.
+- [ ] Evidência de sistema. A release seguinte constrói a imagem com o `aos-orq` e o `verify-attestation.sh` do `package.sh` dá verde com os subjects novos. Depois do deploy, um run em produção com `docker compose --profile orq run --rm aos-orq serve … --goal …` decompõe com o modelo real (a forma do AOS-400) e sela no volume `aos-orq-data`, sem binário compilado à parte.
+
+**Estado.** **IMPLEMENTADO** a 2026-09-17. A evidência de sistema depende da release seguinte e de um run em produção.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1126,3 +1159,4 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-09-10 | +AOS-392 (prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook): capstone da v1.1 distribuída, estende a prova de 4 processos ao despacho a atravessar a fronteira do processo. | Equipa AOS |
+| 1.2 | 2026-09-17 | +AOS-403 (o `aos-orq` na release assinada): o orquestrador viaja na imagem do nó, atestado como subject próprio, e corre em produção pelo serviço `aos-orq` do compose (profile `orq`). | Equipa AOS |

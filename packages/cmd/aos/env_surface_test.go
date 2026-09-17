@@ -45,18 +45,21 @@ const nodeREADME = "../../../deploy/node/README.md"
 const readmeEnvSection = "Superfície de configuração"
 
 // envSourceRoots são as árvores de CÓDIGO cujas leituras de ambiente este gate exige
-// documentadas no README do nó. São duas porque a IMAGEM entrega dois binários e o operador
+// documentadas no README do nó. São três porque a IMAGEM entrega três binários e o operador
 // não distingue um do outro ao escrever o `docker run`:
 //
 //   - "." — o nó (`packages/cmd/aos`), o âmbito literal do critério de aceitação;
 //   - o `aos-healthprobe` do HEALTHCHECK, que lê `AOS_HEALTH_URL`/`AOS_API_ADDR`. Está fora
 //     do módulo, mas uma variável nova ali é exactamente o mesmo defeito para quem opera a
 //     imagem — e incluí-la aqui custa uma linha, enquanto um gate em CI (AOS-190/198) custa
-//     um ticket com propriedade de scripts/**.
+//     um ticket com propriedade de scripts/**;
+//   - o orquestrador `aos-orq`, que viaja na mesma imagem desde AOS-403. Hoje só lê variáveis
+//     que o nó também lê (AOS_MODE e as AOS_MODEL_*); uma nova que só ele leia tem de chegar ao
+//     README como qualquer outra.
 //
 // A varredura é RECURSIVA (WalkDir, não ReadDir): um subpacote acrescentado amanhã não
 // escapa ao gate em silêncio.
-var envSourceRoots = []string{".", "../../../deploy/node/healthprobe"}
+var envSourceRoots = []string{".", "../../../deploy/node/healthprobe", "../aos-orq"}
 
 // internalEnvAllowlist é a válvula EXPLÍCITA para uma variável deliberadamente INTERNA
 // (não destinada ao operador) que, por isso, não aparece no README do nó. Cada entrada é

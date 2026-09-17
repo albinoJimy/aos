@@ -159,6 +159,8 @@ jobs:
             echo "- Atestação DSSE **assinada e verificada** — o \`package.sh\` é fail-closed:"
             echo "  se a assinatura ou a verificação não corressem, esta release não existiria."
             echo "- SBOM e proveniência no artefacto \`aos-delivery-$VERSION\`."
+            echo "- A imagem traz o orquestrador \`aos-orq\` (AOS-403), atestado como subject próprio"
+            echo "  com SBOM próprio (\`sbom-aos-orq.json\`)."
             echo "- ⚠️ A atestação **não viaja com a imagem** (sem OCI referrers): um \`docker pull\`"
             echo "  não a traz. Residual declarado em ADR-017."
             echo
@@ -169,6 +171,7 @@ jobs:
           } > notes.md
           gh release create "$VERSION" --title "$VERSION" --notes-file notes.md \
             deploy/node/build/sbom.json \
+            deploy/node/build/sbom-aos-orq.json \
             deploy/node/build/provenance.json \
             deploy/node/build/attestation.dsse.json \
             deploy/node/build/delivery-manifest.json || \

@@ -475,6 +475,61 @@ services:
       retries: 5
       start_period: 300s
 
+  # --- o orquestrador multi-nó `aos-orq` (AOS-403): corrida PONTUAL, nunca um serviço de fundo ---
+  #
+  # Viaja na MESMA imagem assinada do nó (${AOS_IMAGE}, o digest que o deploy pinou) e é atestado
+  # como subject próprio (`usr/local/bin/aos-orq`, ADR-017 §3). Está no profile `orq` para que o
+  # `deploy.sh` (`up -d`) NUNCA o arranque: um `serve` possui um run e termina, não é um daemon.
+  # Corre-se à mão, com o run e o objectivo na linha de comando — ver deploy/server/README.md
+  # §"Orquestrador multi-nó (aos-orq)":
+  #
+  #   docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env \
+  #     --env-file /opt/aos/image.env --profile orq run --rm aos-orq \
+  #     serve --wal /var/lib/aos-orq/<run>.wal --run <run> --goal "<objectivo>" \
+  #     --snapshot /etc/aos-orq/snapshot.json
+  #
+  # ESTADO SEPARADO DO NÓ: volume próprio. O WORM de governação do gateway pede posse exclusiva
+  # do seu caminho, tal como o do nó (AOS-395/AOS-399) — com volumes distintos, os dois nunca
+  # podem apontar o mesmo ficheiro por engano de `.env`. Por isso o caminho do audit NÃO lê a
+  # AOS_MODEL_AUDIT_PATH do `.env` (que é a do nó, noutro volume).
+  aos-orq:
+    image: ${AOS_IMAGE:?AOS_IMAGE por definir — use --env-file /opt/aos/image.env}
+    profiles: ["orq"]
+    entrypoint: ["/usr/local/bin/aos-orq"]
+    restart: "no"
+    mem_limit: ${AOS_ORQ_MEM_LIMIT:-512m}
+    pids_limit: 256
+    read_only: true               # root-fs read-only (ADR-017); estado só no volume.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    # O HEALTHCHECK da imagem sonda o HTTP do NÓ, que este processo não serve: herdado, marcaria
+    # a corrida `unhealthy` sem razão nenhuma.
+    healthcheck:
+      disable: true
+    environment:
+      # Postura: a MESMA do nó. Sob `production` o gateway usa o egress endurecido (https +
+      # allowlist, derivada do host do endpoint quando AOS_MODEL_EGRESS_HOSTS está vazia) e exige
+      # a credencial por ficheiro.
+      AOS_MODE: "${AOS_MODE:-}"
+      AOS_MODEL_ENDPOINT: "${AOS_MODEL_ENDPOINT:-}"
+      AOS_MODEL_NAME: "${AOS_MODEL_NAME:-}"
+      AOS_MODEL_REGION: "${AOS_MODEL_REGION:-eu}"
+      AOS_MODEL_BOARD: "${AOS_MODEL_BOARD:-board-eu}"
+      AOS_MODEL_EGRESS_HOSTS: "${AOS_MODEL_EGRESS_HOSTS:-}"
+      AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
+      AOS_MODEL_AUDIT_PATH: "${AOS_ORQ_MODEL_AUDIT_PATH:-/var/lib/aos-orq/model-audit.wal}"
+      # A mesma CA interna do nó: o LiteLLM serve TLS assinado por ela.
+      SSL_CERT_FILE: "${AOS_INTERNAL_CA_BUNDLE:-}"
+    volumes:
+      - aos-orq-data:/var/lib/aos-orq                    # WAL dos runs + WORM de governação
+      - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc)
+      - ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro
+      - ./secrets/model-api.key:/etc/aos/model-api.key:ro
+
   # --- edge de ingresso: termina TLS e é a ÚNICA porta publicada no host ----------------------
   edge:
     image: nginx:1.27-alpine
@@ -746,5 +801,6 @@ services:
 
 volumes:
   aos-data:
+  aos-orq-data:
   idp-db:
   vault-data:

@@ -98,13 +98,16 @@ KEY_FILE="${AOS_RELEASE_KEY_FILE:-}"
 PROV="$OUT_DIR/provenance.json"
 SBOM="$OUT_DIR/sbom.json"
 BIN="$OUT_DIR/aos"
+# AOS-403: o orquestrador viaja na mesma imagem e é atestado como o nó — binário e SBOM próprios.
+BIN_ORQ="$OUT_DIR/aos-orq"
+SBOM_ORQ="$OUT_DIR/sbom-aos-orq.json"
 MANIFEST="$OUT_DIR/delivery-manifest.json"
 ENVELOPE="$OUT_DIR/attestation.dsse.json"
 
 log_gate "sign · atestação de entrega assinada (ADR-017 ponto 3 / AOS-207)"
 
 # --- Pré-condições: não se assina o que não existe ---------------------------
-for f in "$SBOM" "$PROV" "$BIN"; do
+for f in "$SBOM" "$PROV" "$BIN" "$BIN_ORQ" "$SBOM_ORQ"; do
   if [ ! -f "$f" ]; then
     log_fail "artefacto de entrega ausente: $f — corra scripts/ci/sbom.sh primeiro (fail-closed)"
     exit 1
@@ -216,14 +219,17 @@ log_step "escrever o manifesto de entrega"
 sbom_sha="$( sha_of "$SBOM" )"
 prov_sha="$( sha_of "$PROV" )"
 bin_sha="$( sha_of "$BIN" )"
+orq_sha="$( sha_of "$BIN_ORQ" )"
+sbom_orq_sha="$( sha_of "$SBOM_ORQ" )"
 commit="$( git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown )"
 now="$( date -u +%Y-%m-%dT%H:%M:%SZ )"
 
 python3 - "$MANIFEST" "$IMAGE_TAG" "$image_id" "$image_repo_digest" \
-          "$sbom_sha" "$prov_sha" "$bin_sha" "$commit" "$now" "$signed" "$keyid" "$image_bound" <<'PY'
+          "$sbom_sha" "$prov_sha" "$bin_sha" "$commit" "$now" "$signed" "$keyid" "$image_bound" \
+          "$orq_sha" "$sbom_orq_sha" <<'PY'
 import json, sys
 (out, tag, image_id, repo_digest, sbom_sha, prov_sha, bin_sha, commit, now, signed, keyid,
- image_bound) = sys.argv[1:13]
+ image_bound, orq_sha, sbom_orq_sha) = sys.argv[1:15]
 is_signed = signed == "1"
 is_bound = image_bound == "1"
 doc = {
@@ -243,6 +249,9 @@ doc = {
         {"name": "aos", "path": "aos", "sha256": bin_sha,
          "note": "binario que a imagem carrega em /usr/local/bin/aos"},
         {"name": "sbom.json", "path": "sbom.json", "sha256": sbom_sha},
+        {"name": "aos-orq", "path": "aos-orq", "sha256": orq_sha,
+         "note": "orquestrador multi-no que a imagem carrega em /usr/local/bin/aos-orq (AOS-403)"},
+        {"name": "sbom-aos-orq.json", "path": "sbom-aos-orq.json", "sha256": sbom_orq_sha},
         {"name": "provenance.json", "path": "provenance.json", "sha256": prov_sha},
     ],
     "attestation": {
@@ -285,16 +294,18 @@ if [ "$signed" -ne 1 ]; then
 fi
 
 # --- (4) STATEMENT in-toto v1 -------------------------------------------------
-# Os `subject` são o conjunto ATESTADO: imagem (quando há), binário, SBOM, proveniência e o
+# Os `subject` são o conjunto ATESTADO: imagem (quando há), binários (nó e, desde AOS-403, o
+# orquestrador `aos-orq`), os SBOMs de cada um, proveniência e o
 # próprio MANIFESTO. Incluir o manifesto como subject é o que torna a prova negativa exacta:
 # qualquer byte alterado nele muda o seu sha256 e a verificação avermelha.
 manifest_sha="$( sha_of "$MANIFEST" )"
 STATEMENT="$TOOLDIR/statement.json"
-log_step "construir o in-toto Statement v1 (subjects = imagem + binário + SBOM + proveniência + manifesto)"
+log_step "construir o in-toto Statement v1 (subjects = imagem + binários + SBOMs + proveniência + manifesto)"
 python3 - "$STATEMENT" "$PROV" "$IMAGE_TAG" "$image_id" "$image_repo_digest" \
-          "$bin_sha" "$sbom_sha" "$prov_sha" "$manifest_sha" "$now" <<'PY'
+          "$bin_sha" "$sbom_sha" "$prov_sha" "$manifest_sha" "$now" "$orq_sha" "$sbom_orq_sha" <<'PY'
 import json, sys
-(out, prov_path, tag, image_id, repo_digest, bin_sha, sbom_sha, prov_sha, manifest_sha, now) = sys.argv[1:11]
+(out, prov_path, tag, image_id, repo_digest, bin_sha, sbom_sha, prov_sha, manifest_sha, now,
+ orq_sha, sbom_orq_sha) = sys.argv[1:13]
 with open(prov_path, "r", encoding="utf-8") as f:
     prov = json.load(f)
 
@@ -305,6 +316,8 @@ if image_id:
 subjects += [
     {"name": "usr/local/bin/aos", "digest": {"sha256": bin_sha}},
     {"name": "sbom.json", "digest": {"sha256": sbom_sha}},
+    {"name": "usr/local/bin/aos-orq", "digest": {"sha256": orq_sha}},
+    {"name": "sbom-aos-orq.json", "digest": {"sha256": sbom_orq_sha}},
     {"name": "provenance.json", "digest": {"sha256": prov_sha}},
     {"name": "delivery-manifest.json", "digest": {"sha256": manifest_sha}},
 ]
@@ -318,6 +331,7 @@ stmt = {
         "source": prov.get("source"),
         "buildConfig": prov.get("buildConfig"),
         "metadata": prov.get("metadata"),
+        "additionalSubjects": prov.get("additionalSubjects"),
         "image": {"tag": tag, "id": image_id or None, "repoDigest": repo_digest or None},
         "attestedOn": now,
         "adr": "ADR-017 ponto 3 (fechado por AOS-207)",
