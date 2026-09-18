@@ -70,6 +70,9 @@ type Result struct {
 	TotalUsage Usage
 	// TotalCostMicroUSD é o custo agregado do run em micro-USD inteiro.
 	TotalCostMicroUSD int64
+	// CustoNaoDerivado diz que pelo menos um turno do run não teve custo derivado (AOS-406):
+	// TotalCostMicroUSD é então uma soma sem fonte, não o custo do run.
+	CustoNaoDerivado bool
 	// ToolResults são TODOS os resultados de tools despachadas, na ordem de
 	// despacho, cada um marcado untrusted (ADR-005).
 	ToolResults []Tainted
@@ -406,6 +409,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		res.TotalUsage.InputTokens += resp.Usage.InputTokens
 		res.TotalUsage.OutputTokens += resp.Usage.OutputTokens
 		res.TotalCostMicroUSD += resp.CostMicroUSD
+		res.CustoNaoDerivado = res.CustoNaoDerivado || resp.CustoNaoDerivado
 
 		// Gravar o turno com o manifesto por trajectória.
 		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), stepID, turn, view, resp, producer)
@@ -659,8 +663,14 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 	// soma sem drift de vírgula flutuante e o que reconcilia com os totais do Model
 	// Gateway; é o mesmo valor já em mão (resp.CostMicroUSD), emitido em paralelo — não é
 	// contabilidade nova, é a exposição exacta do custo que a chat span já registava.
-	span.SetAttribute(AttrCostUSD, microUSDToUSD(resp.CostMicroUSD))
-	span.SetAttribute(AttrCostMicroUSD, resp.CostMicroUSD)
+	if resp.CustoNaoDerivado {
+		// AOS-406: sem fonte de preço não se emite custo nenhum — um `aos.cost.micro_usd` a zero
+		// seria lido como turno gratuito pela agregação e pelo SLI de custo por trajectória.
+		span.SetAttribute(AttrCostUndefined, true)
+	} else {
+		span.SetAttribute(AttrCostUSD, microUSDToUSD(resp.CostMicroUSD))
+		span.SetAttribute(AttrCostMicroUSD, resp.CostMicroUSD)
+	}
 	span.End()
 	return resp, nil
 }
@@ -681,15 +691,16 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 		Skills: pinnedDeps(goal.Skills),
 	}
 	seq, err := rt.recorder.Record(ctx, TurnRecord{
-		RunID:        goal.RunID,
-		StepID:       stepID,
-		Turn:         turn,
-		Manifest:     manifest,
-		Usage:        resp.Usage,
-		CostMicroUSD: resp.CostMicroUSD,
-		ToolCalls:    len(resp.ToolCalls),
-		Final:        resp.Final,
-		Producer:     producer,
+		RunID:            goal.RunID,
+		StepID:           stepID,
+		Turn:             turn,
+		Manifest:         manifest,
+		Usage:            resp.Usage,
+		CostMicroUSD:     resp.CostMicroUSD,
+		CustoNaoDerivado: resp.CustoNaoDerivado,
+		ToolCalls:        len(resp.ToolCalls),
+		Final:            resp.Final,
+		Producer:         producer,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("%w: turno %d: %w", ErrTurnRecord, turn, err)
@@ -860,6 +871,12 @@ func (rt *Runtime) annotateAgentSpan(span Span, res Result) {
 	// somado pela agregação por trajectória (AOS-078) — duplicaria com os por-turno dos
 	// chats; a agregação conta só spans chat. O inteiro exacto aqui serve o consumidor
 	// que lê o total directamente do invoke_agent.
+	if res.CustoNaoDerivado {
+		// AOS-406: um total com turnos sem fonte de preço não é o custo do run — o agregado sai
+		// marcado e sem número, pela mesma razão do span `chat`.
+		span.SetAttribute(AttrCostUndefined, true)
+		return
+	}
 	span.SetAttribute(AttrCostUSD, microUSDToUSD(res.TotalCostMicroUSD))
 	span.SetAttribute(AttrCostMicroUSD, res.TotalCostMicroUSD)
 }

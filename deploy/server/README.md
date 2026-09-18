@@ -1839,10 +1839,16 @@ provado é que a métrica **lê** o campo, não que o varredor o **escreve**.
    um nó desprotegido parecer um nó acabado de selar — pior do que não emitir nada. É a mesma regra
    das séries de OTLP.
 
-9. **Sem tabela de preços.** O par (`gpt-4o-mini`, `eu`) não consta da tabela embebida, pelo que
-   o custo derivado é **zero por ausência de dados** — não custo nulo. A dimensão que decide é
-   tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares seria recusado no arranque por falta de
-   fonte de preço, em vez de comparar sempre contra zero.
+9. **Sem preço por token — o modelo é pago por subscrição.** O alias `gpt-4o-mini` do LiteLLM
+   encaminha para `openai/kimi-for-coding` (`api.kimi.com/coding/v1`), pago por subscrição, pelo que
+   **não se monta tabela de preços** (decisão do dono, 2026-09-17): o preço da OpenAI daria um custo
+   preciso e falso. Desde o AOS-406, cada turno sai marcado como custo **não derivado** — o span `chat`
+   leva `aos.cost.undefined=true` em vez de custo, o `turn.recorded` leva `custo_nao_derivado: true`, e
+   o SLI `cost_per_trajectory` não conta esses runs: fica **sem amostras**, e o alerta de custo sai
+   com `produtor="0"` (a regra nunca dispara neste nó), nunca verde com zeros. A dimensão que decide é tokens (`AOS_BUDGET_MAX_TOKENS`); um tecto em dólares
+   continua recusado no arranque por falta de fonte de preço. Se o modelo passar a ser pago por token,
+   monta-se a tabela em `AOS_MODEL_PRICING_PATH` com uma entrada **com o nome do alias** (`gpt-4o-mini`,
+   `eu` — é esse par que o nó consulta) e as **taxas do modelo que serve** (não as da OpenAI).
 11. ~~A frescura por-cerimónia da aprovação está dormente.~~ **✅ LIGADA.** `AOS_CHALLENGE_ISSUANCE=1`
    ⇒ `POST /runs/{id}/challenge` emite um challenge por `(pedido, aprovador)` com TTL de 5 min, e
    cada perna da cerimónia passa a exigi-lo. Dormente, o anti-replay ficava só pelo uso-único

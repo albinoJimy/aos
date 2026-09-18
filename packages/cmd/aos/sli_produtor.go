@@ -48,6 +48,17 @@ import (
 //
 // Declarar `produtor="1"` para estes últimos por "poderem" ter produtor noutro destacamento
 // seria a promessa a mais que este eixo existe para evitar: o rótulo descreve ESTE binário.
+// produtorDoAlerta é [produtorNoNo] com a postura de preço do nó (AOS-406): sem fonte de preço,
+// cada turno sai com custo não derivado e o SLI de custo por trajectória nunca tem amostras —
+// este binário não o alimenta, e a regra NUNCA dispara. Declará-lo `produtor="1"` repetiria o
+// equívoco do achado D, agora por uma causa de configuração em vez de composição.
+func produtorDoAlerta(sli string, torneiraLigada, custoSemFontePreco bool) bool {
+	if sli == otelgenai.SLICostPerTrajectory && custoSemFontePreco {
+		return false
+	}
+	return produtorNoNo(sli, torneiraLigada)
+}
+
 func produtorNoNo(sli string, torneiraLigada bool) bool {
 	switch sli {
 	case otelgenai.SLIControlPlaneAvailability, otelgenai.SLIAuditWORMIntegrity:

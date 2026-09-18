@@ -548,6 +548,14 @@ func costPerTrajectorySLI(spans []SpanData, ceilMicroUSD int64) SLIValue {
 	sli := SLIValue{Name: SLICostPerTrajectory, SLO: float64(ceilMicroUSD), Direction: DirMax, Met: true}
 
 	byTrace := AggregateByTrace(spans)
+	// AOS-406: um trace com um chat sem custo derivado sai da amostra INTEIRO. O custo dele é
+	// desconhecido — contá-lo como zero (ou só com os chats que tiveram preço) diria o SLO
+	// cumprido sem base. Sem traces com custo, Samples=0 e o SLI fica por avaliar.
+	for id, u := range byTrace {
+		if u.CostUndefined {
+			delete(byTrace, id)
+		}
+	}
 	sli.Samples = len(byTrace)
 	if len(byTrace) == 0 {
 		return sli

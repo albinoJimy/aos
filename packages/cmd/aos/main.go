@@ -1047,6 +1047,8 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	if modelClient != nil {
 		cfg.Model = modelClient
+		// AOS-406: o mesmo juízo que compôs o decorador de custo não derivado em parseModelFromEnv.
+		cfg.CustoSemFontePreco = !modelPricingPostureFromEnv().Armed
 		// AOS-396: o nome que o adaptador do gateway pede em cada chamada. parseModelFromEnv já
 		// recusou um AOS_MODEL_NAME vazio com o endpoint definido.
 		cfg.ModelID = modelNameFromEnv()
@@ -2171,6 +2173,12 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout)
 	if err != nil {
 		return nil, nil, err
+	}
+	// SEM FONTE DE PREÇO (AOS-406): cada turno sai marcado como custo NÃO DERIVADO, para o span e
+	// o turn.recorded não dizerem «gratuito» e o SLI de custo não se dar por cumprido com zeros.
+	// É o caso de produção: o modelo é pago por subscrição e não tem preço por token.
+	if costRec == nil {
+		client = custoNaoDerivadoClient{inner: client}
 	}
 	// Decora com o enriquecedor de governança só quando há bindings (o modelo escolhe a tool pelo
 	// nome; o RM recebe a capability do registry). Sem tools ⇒ cliente nu (comportamento inalterado).

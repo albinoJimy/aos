@@ -34,6 +34,13 @@ const (
 	// span de custo — a mesma chave, aqui elevada à fonte única do vocabulário. Não é
 	// segredo (custo não é credencial, ADR-010).
 	AttrCostMicroUSD = "aos.cost.micro_usd"
+	// AttrCostUndefined — aos.cost.undefined: o custo do span NÃO FOI DERIVADO (AOS-406). O
+	// cliente de modelo não tem fonte de preço para o par pedido — em produção, um modelo pago
+	// por subscrição, sem preço por token —, pelo que o span não traz [AttrCostMicroUSD] nem
+	// [AttrCostUSD] e o zero não é lido como custo nulo. Um trace com este atributo fica FORA do
+	// SLI de custo por trajectória: afirmar o SLO cumprido com base em zeros sem fonte seria
+	// o falso verde que a regra anti-vacuidade (AOS-085) proíbe.
+	AttrCostUndefined = "aos.cost.undefined"
 	// AttrToolName — gen_ai.tool.name (span execute_tool).
 	AttrToolName = "gen_ai.tool.name"
 	// AttrPrincipalNHI — aos.principal.nhi_id: o identificador estável da NHI do

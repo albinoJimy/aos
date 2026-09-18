@@ -66,6 +66,10 @@ type responseCapture struct {
 	InputTokens  int64             `json:"input_tokens"`
 	OutputTokens int64             `json:"output_tokens"`
 	CostMicroUSD int64             `json:"cost_micro_usd"`
+	// CustoNaoDerivado (AOS-406): sem ele, um turno retomado a partir da captura voltaria a
+	// emitir custo zero como se fosse gratuito. `omitempty` mantém os bytes de uma resposta com
+	// preço — nenhuma captura existente muda de digest.
+	CustoNaoDerivado bool `json:"custo_nao_derivado,omitempty"`
 }
 
 // toolResultCapture serializa o resultado observado de UMA tool call.
@@ -357,11 +361,12 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 // argumentos da tool call (ex.: o corpo de um send_email), não só no output.
 func (c *EventStoreCapturer) encodeResponse(r agentruntime.ModelResponse) responseCapture {
 	rc := responseCapture{
-		Text:         r.Text,
-		Final:        r.Final,
-		InputTokens:  r.Usage.InputTokens,
-		OutputTokens: r.Usage.OutputTokens,
-		CostMicroUSD: r.CostMicroUSD,
+		Text:             r.Text,
+		Final:            r.Final,
+		InputTokens:      r.Usage.InputTokens,
+		OutputTokens:     r.Usage.OutputTokens,
+		CostMicroUSD:     r.CostMicroUSD,
+		CustoNaoDerivado: r.CustoNaoDerivado,
 	}
 	if c.sensitive && rc.Text != "" {
 		// NUNCA persistir o texto do modelo em claro em modo sensível — pode ecoar PII.
@@ -434,10 +439,11 @@ func (c *EventStoreCapturer) encodeResults(results []agentruntime.CapturedToolRe
 // o cliente de modelo de replay devolve exactamente esta resposta (nunca ao vivo).
 func (r responseCapture) decode() agentruntime.ModelResponse {
 	resp := agentruntime.ModelResponse{
-		Text:         r.Text,
-		Final:        r.Final,
-		Usage:        agentruntime.Usage{InputTokens: r.InputTokens, OutputTokens: r.OutputTokens},
-		CostMicroUSD: r.CostMicroUSD,
+		Text:             r.Text,
+		Final:            r.Final,
+		Usage:            agentruntime.Usage{InputTokens: r.InputTokens, OutputTokens: r.OutputTokens},
+		CostMicroUSD:     r.CostMicroUSD,
+		CustoNaoDerivado: r.CustoNaoDerivado,
 	}
 	for _, tc := range r.ToolCalls {
 		resp.ToolCalls = append(resp.ToolCalls, agentruntime.ToolInvocation{

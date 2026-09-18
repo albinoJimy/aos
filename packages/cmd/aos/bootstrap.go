@@ -427,6 +427,12 @@ type Config struct {
 	// config OU cair para um default de referência para o nó arrancar. O Model Gateway
 	// real é EPIC-06.
 	Model agentruntime.ModelClient
+	// CustoSemFontePreco diz que [Config.Model] é o gateway composto por ambiente SEM fonte de
+	// preço para o par pedido (AOS-406): cada turno sai marcado como custo não derivado, pelo que
+	// o SLI de custo por trajectória não tem produtor neste nó e o `/metrics` declara-o
+	// (`produtor="0"`) em vez de sugerir uma regra que pode disparar. Só o caminho por ambiente o
+	// escreve; um cfg.Model injectado deixa-o a false.
+	CustoSemFontePreco bool
 	// ModelID é o nome do modelo que [Config.Model] PEDE ao provider (AOS-396) — no nó por
 	// ambiente, o `AOS_MODEL_NAME` que o adaptador do gateway envia em cada chamada. É
 	// AUTORITATIVO: o nó escreve-o no `Goal.Model.ModelID` de cada run que hospeda, por cima
@@ -847,6 +853,8 @@ type Node struct {
 	// não dependem de spans, e o banner declara quais ficaram sem produtor). Não-exportado: é um
 	// detalhe da composição do nó, não uma porta.
 	sloTap *sloSpanTap
+	// custoSemFontePreco espelha [Config.CustoSemFontePreco] para o rótulo `produtor` do /metrics.
+	custoSemFontePreco bool
 
 	// Ingestion é o motor de redacção/tokenização de PII (AOS-091) LIGADO de facto ao
 	// fecho transitivo do nó (AOS-208): a fronteira de minimização onde o objectivo de
@@ -2851,28 +2859,29 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		modeloAutoritativo: modeloAutoritativo,
 		// A ancora que PASSOU no arranque, para o /metrics a poder declarar. Fail-closed acima:
 		// se nao tivesse passado, nao se chegava aqui.
-		ancora:           cfg.WORMAnchor,
-		Steer:            steer,
-		FourEyes:         foureyes,
-		ApprovalBroker:   approvalBroker,
-		PendingApprovals: pendingApprovals,
-		ResumeRecords:    resumeRecords,
-		ChallengeIssuer:  challengeIssuer, // nil quando a frescura por-cerimónia (AOS-266) está DORMENTE
-		ChallengeAuth:    challengeAuth,   // AOS-308: nil sempre que ChallengeIssuer o for (mesmo bloco)
-		Promotion:        promotion,       // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
-		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
-		Verifier:         verifier,
-		SteerAuth:        steerAuth,
-		AutonomySetters:  autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
-		DSARErasers:      dsarErasers,     // AOS-367: quem detém dsar:erase (⊆ Operators, validado acima)
-		Revocations:      revocations,
-		Autonomy:         cfg.Autonomy,
-		EventStore:       es,
-		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
-		IdentityMode:     identityMode,
-		Tracer:           tracer,
-		sloTap:           sloTap, // AOS-274: nil quando a observabilidade OTLP está desligada
-		Ingestion:        ingestion,
+		ancora:             cfg.WORMAnchor,
+		Steer:              steer,
+		FourEyes:           foureyes,
+		ApprovalBroker:     approvalBroker,
+		PendingApprovals:   pendingApprovals,
+		ResumeRecords:      resumeRecords,
+		ChallengeIssuer:    challengeIssuer, // nil quando a frescura por-cerimónia (AOS-266) está DORMENTE
+		ChallengeAuth:      challengeAuth,   // AOS-308: nil sempre que ChallengeIssuer o for (mesmo bloco)
+		Promotion:          promotion,       // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
+		Authority:          authority,       // nil no modo endurecido (a autoridade corre fora do processo)
+		Verifier:           verifier,
+		SteerAuth:          steerAuth,
+		AutonomySetters:    autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
+		DSARErasers:        dsarErasers,     // AOS-367: quem detém dsar:erase (⊆ Operators, validado acima)
+		Revocations:        revocations,
+		Autonomy:           cfg.Autonomy,
+		EventStore:         es,
+		WORM:               worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
+		IdentityMode:       identityMode,
+		Tracer:             tracer,
+		sloTap:             sloTap, // AOS-274: nil quando a observabilidade OTLP está desligada
+		custoSemFontePreco: cfg.CustoSemFontePreco,
+		Ingestion:          ingestion,
 
 		Checkpointer:  checkpointer, // nil quando a execução durável está desligada
 		Capturer:      capturer,     // (os três são compostos/omitidos EM CONJUNTO)

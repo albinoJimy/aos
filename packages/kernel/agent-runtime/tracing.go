@@ -47,6 +47,8 @@ const (
 	// AttrCostMicroUSD — aos.cost.micro_usd (custo EXACTO do span em micro-USD inteiro,
 	// fonte de verdade da agregação por trajectória/sub-árvore de AOS-078).
 	AttrCostMicroUSD = otelgenai.AttrCostMicroUSD
+	// AttrCostUndefined — aos.cost.undefined (o custo do turno não foi derivado, AOS-406).
+	AttrCostUndefined = otelgenai.AttrCostUndefined
 	// AttrToolName — gen_ai.tool.name (span execute_tool).
 	AttrToolName = otelgenai.AttrToolName
 	// AttrToolCallHash — aos.tool_call.hash (hash(tool+args), posto pelo RM).
