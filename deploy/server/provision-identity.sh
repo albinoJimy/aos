@@ -132,7 +132,7 @@ done
 #     A validação por padrão faz o IdP RECUSAR um board malformado à cabeça, e `required`
 #     impede que se crie um leitor sem fronteira nenhuma.
 # ------------------------------------------------------------------------------------------
-log "4b/6 a declarar o atributo `board` no user profile do realm"
+log "4b/6 a declarar o atributo 'board' no user profile do realm"
 ADMTOK="$(curl -sk --max-time 20 -X POST "${IDP_LOCAL}/realms/master/protocol/openid-connect/token" \
   -d grant_type=password -d client_id=admin-cli \
   -d "username=$(grep -E '^IDP_ADMIN_USER=' "${ENV_FILE}" | cut -d= -f2-)" \
@@ -350,8 +350,20 @@ nodex vault token lookup >/dev/null 2>&1 \
   || fail "o token do no NAO consegue lookup-self — a sonda de saude lera 403 e o /readyz ficara VERMELHO sobre um token bom; confirme os paths auth/token/* na politica aos-node"
 nodex vault token renew >/dev/null 2>&1 \
   || fail "o token do no NAO consegue renew-self — um token periodico que nunca e renovado MORRE no fim do periodo, sem aviso"
-nodex vault list transit/keys >/dev/null 2>&1 \
-  || fail "o token do no NAO consegue listar transit/keys — a prova de capacidade da sonda falharia"
+# O `vault list` sai com 2 tanto num 403 como num motor Transit VAZIO («No value found at
+# transit/keys/» — o Vault devolve 404 ao LIST). O 404 é o Vault a dizer «autorizado, e não há
+# chaves nenhumas», e é assim que o nó o lê (provaDeCapacidade em packages/cmd/aos/vaultkeyvault.go
+# aceita 200 e 404). Tratá-lo como falta de permissão abortava o primeiro provisionamento antes do
+# passo 6 (observado em produção a 2026-09-18). Fail-closed para tudo o resto: só passa o sucesso
+# ou a mensagem do 404, e nunca com 403/permission denied na saída.
+if ! LIST_OUT="$(nodex vault list transit/keys 2>&1)"; then
+  if grep -qiE 'permission denied|Code: 403' <<<"${LIST_OUT}" \
+     || ! grep -q 'No value found at transit/keys' <<<"${LIST_OUT}"; then
+    fail "o token do no NAO consegue listar transit/keys — a prova de capacidade da sonda falharia: ${LIST_OUT}"
+  fi
+  log "  transit/keys vazio (404 no LIST) — autorizado, ainda sem chaves"
+fi
+unset LIST_OUT
 unset NODE_TOK
 log "  token do no verificado: lookup-self, renew-self e list transit/keys PASSAM"
 unset ROOT_TOKEN UNSEAL_KEY

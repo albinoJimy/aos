@@ -62,6 +62,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-286 | Estender o guard de posse do WAL aos restantes escritores | feature | S | P1 | AOS-285 |
 | AOS-392 | Prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook *(v1.1)* | test | M | P0 | AOS-390, AOS-283, AOS-284, AOS-391, AOS-100 |
 | AOS-403 | O `aos-orq` na release assinada e corrível em produção a partir do digest pinado | feature | M | P1 | AOS-392, AOS-395, AOS-400 |
+| AOS-410 | O controlo do `provision-identity.sh` aceita o Transit vazio (404) como o nó e as mensagens deixam de executar backticks | bug | S | P1 | AOS-098 |
 
 ---
 
@@ -1148,6 +1149,40 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 
 ---
 
+## AOS-410 — O controlo do `provision-identity.sh` aceita o Transit vazio (404) como o nó e as mensagens deixam de executar backticks
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | bug |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-098 (provisionamento) |
+| Bloqueia | — |
+| Responsável sugerido | SRE |
+| Documentos de referência | `deploy/server/provision-identity.sh`, `packages/cmd/aos/vaultkeyvault.go` (`provaDeCapacidade`) |
+
+**Contexto.** Observado em produção a 2026-09-18, ao correr `bash /opt/aos/provision-identity.sh`. Dois defeitos:
+
+1. **Falso negativo no passo 5.** O controlo do token do nó fazia `nodex vault list transit/keys >/dev/null 2>&1 || fail …`. O CLI `vault list` sai com 2 quando o motor Transit está vazio (`No value found at transit/keys/`, um 404 ao LIST), tal como num 403. O script lia os dois como falta de permissão e abortava, e o passo 6 (unseal automático) ficava por correr. O nó trata o mesmo caso como autorizado: `provaDeCapacidade` aceita 200 e 404. Com o mesmo token, o `/readyz` do nó dava `ready` e o `lookup-self`/`renew-self` do script passavam.
+2. **Backticks numa mensagem.** `` log "4b/6 a declarar o atributo `board` …" ``: dentro de aspas duplas a shell executava `board` como comando (`board: command not found`) e a mensagem saía sem o nome. Era cosmético, porque a declaração real usa `board` literal e deu HTTP 200.
+
+**Objectivo.** O controlo do provisionamento usa o critério do nó: 200 e 404 passam, e continua fail-closed para o 403 e para qualquer erro que não reconheça. Nenhuma mensagem do script executa o próprio texto.
+
+**Critérios de Aceitação**
+- [x] O passo 5 guarda a saída do `vault list transit/keys` e só passa com sucesso ou com `No value found at transit/keys`. Uma saída com `permission denied`/`Code: 403` falha sempre, mesmo que mencione `No value found`, e um erro desconhecido (p.ex. ligação recusada) também falha. A mensagem de falha inclui a saída do CLI. *(`TestAOS410_ListTransitVazioNaoAbortaEo403Aborta`, que corre o bloco REAL do script em bash com um `nodex` falso: 200, 404, 403, erro de rede e 403 que menciona `No value found`.)*
+- [x] O `log` do passo 4b usa `'board'`, e nenhuma linha `log "…"`/`fail "…"` do script tem backticks. *(`TestAOS410_MensagensDoProvisionamentoSemBackticks`.)*
+- [x] FALHA-ANTES: contra o script anterior, os dois testes falham — o bloco do controlo não existe, e a linha 135 é apontada como substituição de comando.
+- [ ] Evidência de sistema: o operador volta a correr `bash /opt/aos/provision-identity.sh` no servidor e o script chega ao fim do passo 6, com a saída colada. É do operador, e não se corre daqui contra produção.
+
+**Fora de âmbito.** A saída de um 403 usada no teste imita o formato do CLI do Vault e não foi capturada de um Vault real. A direcção de falha não depende dela: só a mensagem do 404 é aceite.
+
+**Estado.** **IMPLEMENTADO**, falta a evidência de sistema do operador.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1166,3 +1201,4 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 | 1.1 | 2026-09-10 | +AOS-392 (prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook): capstone da v1.1 distribuída, estende a prova de 4 processos ao despacho a atravessar a fronteira do processo. | Equipa AOS |
 | 1.2 | 2026-09-17 | +AOS-403 (o `aos-orq` na release assinada): o orquestrador viaja na imagem do nó, atestado como subject próprio, e corre em produção pelo serviço `aos-orq` do compose (profile `orq`). | Equipa AOS |
 | 1.3 | 2026-09-17 | AOS-403 validado em produção (v0.1.20): binário do servidor igual ao manifesto assinado, run pelo serviço do compose com o modelo real e selo no volume próprio. | Equipa AOS |
+| 1.4 | 2026-09-19 | +AOS-410 (o controlo do `provision-identity.sh` aceita o Transit vazio como o nó e as mensagens deixam de executar backticks): dois defeitos observados em produção a 2026-09-18. | Equipa AOS |
