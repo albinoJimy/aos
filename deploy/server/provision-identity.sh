@@ -240,6 +240,25 @@ if [[ ! -s "${SECRETS}/reader-client-secret" ]]; then
   [[ -s "${SECRETS}/reader-client-secret" ]] || fail "nao consegui obter o segredo do aos-reader"
   log "  segredo em ${SECRETS}/reader-client-secret (0400)"
 fi
+
+# BOARD NO CLIENTE DE CUNHAGEM (AOS-407). O realm importado antes do AOS-407 nao tinha o mapper
+# `board` no cliente aos-issuer — e a importacao do realm NAO volta a correr num Keycloak ja
+# provisionado. Sem a claim, `aos-issuer mint --assertion` RECUSA (um NHI sem board seria negado em
+# todas as tool calls). Idempotente: so cria o mapper se ele nao existir.
+ISSUER_CID="$(kc "${IDP_LOCAL}/admin/realms/aos/clients?clientId=aos-issuer" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
+if [[ -n "${ISSUER_CID}" ]]; then
+  if kc "${IDP_LOCAL}/admin/realms/aos/clients/${ISSUER_CID}/protocol-mappers/models" | grep -q '"name":"board-claim"'; then
+    log "  mapper board do aos-issuer: ja existia"
+  else
+    kc -o /dev/null -X POST "${IDP_LOCAL}/admin/realms/aos/clients/${ISSUER_CID}/protocol-mappers/models"       -H 'Content-Type: application/json' -d '{
+      "name":"board-claim","protocol":"openid-connect","protocolMapper":"oidc-usermodel-attribute-mapper",
+      "config":{"user.attribute":"board","claim.name":"board","jsonType.label":"String",
+                "id.token.claim":"true","access.token.claim":"true","multivalued":"false"}}'
+    log "  mapper board do aos-issuer: criado (AOS-407)"
+  fi
+else
+  log "  aviso: cliente aos-issuer nao encontrado — o mapper board (AOS-407) NAO foi verificado"
+fi
 unset ADMTOK
 
 # ------------------------------------------------------------------------------------------

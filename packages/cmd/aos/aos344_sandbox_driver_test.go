@@ -51,7 +51,9 @@ func aos344ProducaoQuaseCompleta(t *testing.T) {
 	t.Setenv("AOS_ISSUER_ID", "iss:aos-344")
 	t.Setenv("AOS_ISSUER_PUBKEY", hex.EncodeToString(pub))
 	t.Setenv("AOS_ISSUER_KEY_PATH", "")
-	t.Setenv("AOS_BOARD_REGIONS", "board:demo=eu")
+	// AOS-407: a região tem de casar com a `resource_region` do manifesto de produção (eu-west),
+	// senão o arranque recusa — é a validação que impede servir tools que o PEP negaria sempre.
+	t.Setenv("AOS_BOARD_REGIONS", "board:demo=eu-west")
 	t.Setenv("AOS_SOVEREIGN_OIDC_ISSUER", "https://idp-soberania.example")
 	t.Setenv("AOS_SOVEREIGN_OIDC_AUDIENCE", "aos-node")
 	t.Setenv("AOS_DURABLE_EXECUTION", "")
@@ -146,6 +148,8 @@ func TestAOS344_ForaDeProducaoOFakeContinuaAFuncionar(t *testing.T) {
 		t.Run(c.nome, func(t *testing.T) {
 			var sb strings.Builder
 			t.Setenv("AOS_MODE", "") // modo de referência
+			// AOS-407: o manifesto de produção declara eu-west; o mapa de boards tem de o conter.
+			t.Setenv("AOS_BOARD_REGIONS", "board:demo=eu-west")
 			t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoComSandbox)
 			t.Setenv("AOS_SANDBOX_DRIVER", c.valor)
 

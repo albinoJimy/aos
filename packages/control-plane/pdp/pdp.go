@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
-	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -45,8 +44,11 @@ type PDP struct {
 	// compõe para EMITIR a obrigação `region` a partir do board do escopo de
 	// identidade. nil ⇒ soberania por board inerte (opt-in; o PDP decide como antes).
 	// Só TIGHTENS: pode negar fail-closed um board desconhecido ou anexar a
-	// obrigação de região, nunca afrouxar um permit. Ligado por [WithBoardRegions].
-	boardRegions *govsov.Registry
+	// obrigação de região, nunca afrouxar um permit. Ligado por [WithBoardRegions]
+	// ou, depois de Open, por [PDP.SetBoardRegions] — é um
+	// resolvedor e não uma fotografia, para uma rotação da autoridade (AOS-407) valer já.
+	// Lido e escrito sob p.mu.
+	boardRegions BoardRegionResolver
 }
 
 // ReloadRequest transporta a atribuição do carregamento de política: QUEM o

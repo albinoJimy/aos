@@ -370,8 +370,10 @@ Errar qualquer um devolve uma recusa correcta mas opaca, por isso ficam aqui fix
 # 1. Cunhar a credencial NHI (na tua máquina — a issuer.key nunca vai para o servidor).
 #    É quem o RUN age em nome de. NÃO é o que autentica a chamada.
 cd packages/cmd/aos-issuer
+#    AOS-407: a NHI leva o BOARD de soberania assinado. Com --human declara-se em --board; a via
+#    de produção é o get-id-token.ps1 -Cunhar, que usa --assertion e copia o board da claim do IdP.
 NHI=$(go run . mint --key-file ../../../deploy/server/secrets-local/issuer.key \
-  --issuer iss:aos-issuer --human human:alice --agent agt-teste-01 --class agent-worker \
+  --issuer iss:aos-issuer --human human:alice --board board:prod --agent agt-teste-01 --class agent-worker \
   --caps 'model:invoke,cap:fs.read' --ttl 45m | tr -d '\r\n')
 
 # 2. Obter um token do IdP. É quem CHAMA a API. Token NOVO a cada chamada — ver o aviso do jti.

@@ -19,7 +19,7 @@
     {
       "clientId": "aos-issuer",
       "name": "AOS — raiz humana da cadeia de delegacao (ADR-003)",
-      "description": "Audiencia SEPARADA de aos-node, de proposito: um ID-token obtido para LER um run NAO pode cunhar uma raiz de delegacao. Sao dois poderes distintos e cada um tem a sua audiencia. O aos-issuer verifica a assercao contra este cliente e exige que o nonce seja o DIGEST DA DELEGACAO que esta a cunhar — o humano autoriza aquela delegacao concreta, nao apenas 'esteve presente'. Sem mapper de board: cunhar nao e ler, e o token nao precisa desse dado.",
+      "description": "Audiencia SEPARADA de aos-node, de proposito: um ID-token obtido para LER um run NAO pode cunhar uma raiz de delegacao. Sao dois poderes distintos e cada um tem a sua audiencia. O aos-issuer verifica a assercao contra este cliente e exige que o nonce seja o DIGEST DA DELEGACAO que esta a cunhar — o humano autoriza aquela delegacao concreta, nao apenas 'esteve presente'. DESDE AOS-407 emite a claim `board`: o board de soberania fica SELADO no NHI e e o PDP que o resolve para a regiao em cada tool call, pelo que cunhar passa a precisar desse dado (sem ele o mint RECUSA e o NHI seria negado em todas as chamadas).",
       "enabled": true,
       "publicClient": true,
       "protocol": "openid-connect",
@@ -33,7 +33,25 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "access.token.lifespan": "300"
-      }
+      },
+      "protocolMappers": [
+        {
+          "name": "board-claim",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "board",
+            "claim.name": "board",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "multivalued": "false",
+            "aggregate.attrs": "false"
+          }
+        }
+      ]
     },
     {
       "clientId": "aos-node",

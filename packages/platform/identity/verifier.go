@@ -25,12 +25,14 @@ type Principal struct {
 	AgentID    string
 	AgentClass string
 	PolicyRef  string
-	Issuer     string
-	JTI        string
-	Scope      []string
-	IssuedAt   time.Time
-	NotBefore  time.Time
-	Expiry     time.Time
+	// Board é o board de soberania selado no token (AOS-407). Vazio num token sem a claim.
+	Board     string
+	Issuer    string
+	JTI       string
+	Scope     []string
+	IssuedAt  time.Time
+	NotBefore time.Time
+	Expiry    time.Time
 	// DelegationChain é a cadeia on-behalf-of verificada (raiz humana → agente
 	// actual), extraída dos claims e validada por [Verifier.Verify] (AOS-006).
 	DelegationChain delegation.Chain
@@ -231,6 +233,7 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 		AgentID:         c.AgentID,
 		AgentClass:      c.AgentClass,
 		PolicyRef:       c.PolicyRef,
+		Board:           c.Board,
 		Issuer:          c.Issuer,
 		JTI:             c.JTI,
 		Scope:           append([]string(nil), c.Scope...),

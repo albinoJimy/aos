@@ -36,6 +36,10 @@ type IssueRequest struct {
 	AgentClass string
 	// PolicyRef é a referência de política a codificar (policy_ref, AOS-004).
 	PolicyRef string
+	// Board é o board de soberania do humano responsável (AOS-407), tal como o autenticador o
+	// afirmou (ex.: a claim `board` do ID-token OIDC). Vazio ⇒ o token sai sem board, e a
+	// soberania por board, quando ligada, nega as suas tool calls.
+	Board string
 	// UserAuthority são as capabilities que o UTILIZADOR possui. A autoridade do
 	// token é a intersecção com [ClassPolicy.Scope].
 	UserAuthority []string
@@ -243,6 +247,7 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		AgentID:         req.AgentID,
 		AgentClass:      req.AgentClass,
 		PolicyRef:       req.PolicyRef,
+		Board:           req.Board,
 		Scope:           scope,
 		Issuer:          i.iss,
 		IssuedAt:        now.Unix(),
@@ -283,6 +288,7 @@ func (i *Issuer) recordIssued(ctx context.Context, c Claims, authMethod string) 
 		AgentID:    c.AgentID,
 		AgentClass: c.AgentClass,
 		PolicyRef:  c.PolicyRef,
+		Board:      c.Board,
 		Scope:      c.Scope,
 		Issuer:     c.Issuer,
 		IssuedAt:   c.IssuedAt,

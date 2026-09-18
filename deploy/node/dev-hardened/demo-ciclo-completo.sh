@@ -56,7 +56,7 @@ BEARER="$(tok)"; SUB="$(claim_of "${BEARER}" sub)"
 BOARD="$(claim_of "${BEARER}" board)"
 info "Bearer soberano: sub=${SUB}  board=${BOARD}  (ID-token RS256 do Keycloak)"
 NHI="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer \
-  --human human:alice --agent agt-ciclo --class agent-worker --caps cap:http.post,cap:fs.read --ttl 15m | tr -d '\r\n')"
+  --human human:alice --board board:demo --agent agt-ciclo --class agent-worker --caps cap:http.post,cap:fs.read --ttl 15m | tr -d '\r\n')"
 [[ -n "${NHI}" && -n "${SUB}" ]] && ok "NHI assinado (agent-worker, cap:http.post+cap:fs.read) + Bearer verificado" || { warn "identidade incompleta"; exit 1; }
 KEK="aos-kek-$(printf 'aos.audit.pii:%s' "${SUB}" | sha256sum | cut -d' ' -f1)"
 

@@ -96,6 +96,33 @@ type boardRegionResolver interface {
 	RegionFor(board string) (string, bool)
 }
 
+// boardDeReferencia devolve o board que a autoridade de identidade CO-LOCALIZADA (via de
+// REFERÊNCIA, nós não-endurecidos) sela nos tokens que cunha (AOS-407):
+//
+//   - sem mapa ⇒ vazio, e a soberania por board está desligada (o board não é consultado);
+//   - UM board ⇒ esse board;
+//   - VÁRIOS boards ⇒ VAZIO, deliberadamente.
+//
+// O terceiro caso é o que importa. Esta autoridade cunha para QUALQUER humano do directório e não
+// sabe a que board cada humano pertence — esse dado vem do IdP, e quem o lê é o `aos-issuer`.
+// Escolher um board do mapa (o «primeiro», por qualquer ordem) seria atribuir a REGIÃO desse board
+// a um humano de outro: exactamente a travessia de fronteira que a soberania existe para impedir, e
+// produzida pela peça que a devia garantir. Selar vazio deixa a decisão onde ela é fail-closed: o
+// PDP nega um board vazio (ver `applySovereignty`), pelo que os tokens desta autoridade não fazem
+// tool calls num nó multi-board — a via para isso é cunhar no `aos-issuer`, com o board do IdP.
+// Um mapa com vários boards continua legítimo (é o do read-path soberano, que resolve o board
+// DECLARADO por leitor, não o selado por esta autoridade); é a CUNHAGEM que fica sem board, não o nó
+// sem arranque. O arranque declara-o no banner.
+func boardDeReferencia(regions map[string]string) string {
+	if len(regions) != 1 {
+		return ""
+	}
+	for b := range regions {
+		return b
+	}
+	return ""
+}
+
 // readGovernance é a costura de soberania/conformidade do read-path do nó (D7+D6). Compõe a
 // autoridade board→região (a MESMA regra que o PDP usa, AOS-094) e o WORM durável já composto no
 // nó (AOS-170). É imutável após construção e seguro para uso concorrente (a fonte board→região é
