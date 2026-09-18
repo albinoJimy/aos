@@ -461,8 +461,54 @@ docker compose -f docker-compose.prod.yml --env-file .env --env-file image.env \
 | Modelo | as `AOS_MODEL_*` (incluindo `AOS_MODEL_EGRESS_TIMEOUT`) e `AOS_MODE` do `.env` do nó, a `model-api.key` e o bundle da CA interna | A mesma config de modelo do nó. Sob `AOS_MODE=production` o egress é o endurecido; com `AOS_MODEL_EGRESS_HOSTS` vazia a allowlist deriva do host do endpoint, como no nó. |
 
 Códigos de saída: `0` ok · `1` erro · `2` flags inválidas · `3` posse do run negada · `4` posse
-superada · `5` WAL ou `AOS_MODEL_AUDIT_PATH` detido por outro escritor. Para ler um run sem tomar
-posse, `run --rm aos-orq inspect --wal … --run …`.
+superada · `5` WAL ou `AOS_MODEL_AUDIT_PATH` detido por outro escritor · `6` plano **pendente** de
+decisão humana · `7` decisão **recusada**. Para ler um run sem tomar posse,
+`run --rm aos-orq inspect --wal … --run …`.
+
+#### Gate de aprovação de plano (AOS-408)
+
+Um plano cujo risco resolvido seja `danger` (pelas tools do snapshot pinado, não pelo que o
+documento diz de si) **não materializa**: o `serve` apensa os factos do pendente, larga a posse e
+sai com **`6`**. A decisão vem por fora, assinada, e o `serve` repetido prossegue. Um plano sem
+risco auto-aprova e segue como antes.
+
+```bash
+C="docker compose -f docker-compose.prod.yml --env-file .env --env-file image.env --profile orq"
+# 1. o plano fica pendente (saída 6) e o documento vai para o volume
+$C run --rm aos-orq serve --wal /var/lib/aos-orq/run-X.wal --run run-X --goal "…" \
+   --snapshot /etc/aos-orq/snapshot.json --plan-out /var/lib/aos-orq/run-X-pendente.json
+# 2. o que assinar: imprime o request_id (plan:<run>-plan:<plan_hash>)
+$C run --rm aos-orq plans --wal /var/lib/aos-orq/run-X.wal --run run-X
+```
+
+Na **máquina do aprovador** (a chave privada nunca vai para o servidor):
+
+```powershell
+aos-issuer plan-approve-sign --request-id plan:run-X-plan:sha256:… --approver human:alice `
+  --key-file C:\caminho\aprovador.seed --approve --out aprovacao.json
+```
+
+De volta ao servidor, com `aprovacao.json` copiada para `/opt/aos/orq/`:
+
+```bash
+# 3. a cerimónia: assinatura contra a chave PINADA em /opt/aos/orq/approvers.json (saída 0 ou 7)
+$C run --rm aos-orq decide --wal /var/lib/aos-orq/run-X.wal --run run-X \
+   --plan-doc /var/lib/aos-orq/run-X-pendente.json --snapshot /etc/aos-orq/snapshot.json \
+   --decision approve --approval /etc/aos-orq/aprovacao.json
+# 4. a mesma invocação do passo 1, sem --plan-out: reconhece a decisão, materializa e despacha
+$C run --rm aos-orq serve --wal /var/lib/aos-orq/run-X.wal --run run-X --goal "…" \
+   --snapshot /etc/aos-orq/snapshot.json
+```
+
+`/opt/aos/orq/approvers.json` tem o formato do `AOS_APPROVERS_FILE` do nó
+(`{"approvers":[{"principal":…,"pubkey":"<64 hex>","authority":["approve:danger"]}]}`). Sem ele,
+nenhum plano de risco é aprovável — é a direcção certa do erro.
+
+> ⚠️ **Fronteira de confiança.** O gate governa o PLANO e quem decide sem chave — não quem opera
+> este CLI: o Event Store não assina eventos, e o snapshot e os aprovadores são ficheiros do
+> operador. Com o modelo vivo, a repetição do passo 4 re-decompõe e pode produzir outro plano
+> (outro hash), que já não é decidível no mesmo run; o plano aprovado materializa por
+> `--plan-doc`, mas esse caminho não despacha. Ver o ticket AOS-408.
 
 **Dois runs ao mesmo tempo precisam de dois caminhos de audit**, não só de dois `--wal`: o caminho
 por omissão é um só, e o segundo `serve --goal` sai com `5`. Dê a cada corrida o seu:
