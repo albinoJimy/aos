@@ -312,51 +312,79 @@ const planoFixtureDuasFolhasComSnapshotAOS408 = `{
   ]
 }`
 
-// TestAOS408_DepoisDaAprovacaoODespachoConsultaOOraculo fecha o furo MÉDIO M7 — e com ele a única
-// pergunta que faltava: para que serve a decisão?
+// aos408PlanoRiscoIndependente tem o nó de risco SEM dependências: é elegível logo na primeira
+// passagem de despacho, e por isso é apresentado ao oráculo de cartão. (No plano das outras fixtures
+// o nó de risco depende do de leitura e nem chega a ser avaliado nessa passagem.)
+const aos408PlanoRiscoIndependente = `{
+  "plan_version": "1.0.0",
+  "objective": "recolher e publicar",
+  "budget_total": {"tokens": 100, "cost_micro_usd": 100},
+  "planner_meta": {"model":"fixture","prompt_version":"1.2.0","capabilities_hash":"sha256:snap-aos408"},
+  "nodes": [
+    {"node_id":"recolha","role":"worker","objective":"recolher","depends_on":[],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":10,"cost_micro_usd":10}},
+    {"node_id":"publicacao","role":"worker","objective":"publicar","depends_on":[],
+     "risk_class":"safe",
+     "tools":[{"name":"http.post","version":"2.0.0","digest":"sha256:bbb"}],
+     "budget_estimate":{"tokens":10,"cost_micro_usd":10}}
+  ]
+}`
+
+// TestAOS408_DepoisDaAprovacaoODespachoConsultaOOraculo fecha o furo MÉDIO M7 — para que serve a
+// decisão.
 //
 // FALHA-ANTES (por análise, confirmada): o despacho só corria pelo caminho do `--goal`, e esse
-// caminho só chegava ao despacho quando NENHUM nó exigia cartão. Logo `needsCard` era provadamente
-// sempre falso e o `CardOracle` NUNCA era consultado: trocara-se um oráculo que recusava sempre e
-// não era consultado por um leitor que também não era consultado. Pior: um plano aprovado não tinha
-// caminho para correr — a decisão não levava a lado nenhum.
+// caminho só chegava ao despacho quando NENHUM nó exigia cartão, pelo que o `CardOracle` nunca era
+// consultado e um plano aprovado não tinha caminho para correr.
 //
-// Agora o `--goal` reconhece a decisão já tomada e prossegue: materializa E despacha, e é no
-// despacho que o `Cleared` do oráculo autoriza o nó `danger`.
+// O que se afirma aqui é o ARRANQUE DO NÓ DE RISCO: `publicacao` exige cartão (é `danger` pelas
+// tools, embora se declare `safe`) e só arranca se o oráculo a autorizar. Sem isso o despacho
+// arrancaria só a `recolha` (`nos_despachados=1`). A versão anterior deste teste usava um plano em
+// que o nó de risco dependia do outro — nunca chegava ao oráculo, e o teste só confirmava que
+// «algum» nó despachara.
 func TestAOS408_DepoisDaAprovacaoODespachoConsultaOOraculo(t *testing.T) {
 	bin := construir(t)
 	dir := t.TempDir()
-	wal, doc, requestID := aos408Pendente(t, bin, dir, "run-aos408-m7")
-	priv, aprovadores := aos408Aprovador(t, dir, "human:alice")
-	aprovacao := aos408Assinar(t, dir, "aprovacao.json", requestID, "human:alice", priv, true)
 	snapPath := filepath.Join(dir, "snap.json")
+	escrever(t, snapPath, aos408SnapshotComPerigo)
 	fixPath := filepath.Join(dir, "fixture.json")
+	escrever(t, fixPath, aos408PlanoRiscoIndependente)
+	doc := filepath.Join(dir, "pendente.json")
+	wal := filepath.Join(dir, "es.wal")
+	const run = "run-aos408-m7"
 
-	d := correr(t, bin, "decide", "--wal", wal, "--run", "run-aos408-m7",
-		"--plan-doc", doc, "--snapshot", snapPath, "--decision", "approve",
-		"--approval", aprovacao, "--approvers", aprovadores)
+	r1 := correr(t, bin, "serve", "--wal", wal, "--run", run, "--goal", "recolher e publicar",
+		"--snapshot", snapPath, "--decompose-fixture", fixPath, "--plan-out", doc, "--worker", "p1")
+	if r1.code != exitPendenteDeAprovacao {
+		t.Fatalf("esperava pendente, saiu %d\n%s\n%s", r1.code, r1.stdout, r1.stderr)
+	}
+	pl := correr(t, bin, "plans", "--wal", wal, "--run", run)
+	m := reRequestID.FindStringSubmatch(pl.stdout)
+	if m == nil {
+		t.Fatalf("sem request_id:\n%s", pl.stdout)
+	}
+	priv, aprovadores := aos408Aprovador(t, dir, "human:alice")
+	aprovacao := aos408Assinar(t, dir, "aprovacao.json", m[1], "human:alice", priv, true)
+	d := correr(t, bin, "decide", "--wal", wal, "--run", run, "--plan-doc", doc, "--snapshot", snapPath,
+		"--decision", "approve", "--approval", aprovacao, "--approvers", aprovadores)
 	if d.code != exitOK {
 		t.Fatalf("a aprovação legítima falhou: %d\n%s\n%s", d.code, d.stdout, d.stderr)
 	}
 
 	// A MESMA invocação que ficou pendente, repetida: o plano é o mesmo (fixture), logo o hash é o
 	// mesmo, e a decisão no log é reconhecida.
-	r := correr(t, bin, "serve", "--wal", wal, "--run", "run-aos408-m7",
-		"--goal", "recolher e publicar", "--snapshot", snapPath,
-		"--decompose-fixture", fixPath, "--worker", "p2")
+	r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--goal", "recolher e publicar",
+		"--snapshot", snapPath, "--decompose-fixture", fixPath, "--worker", "p2")
 	if r.code != exitOK {
 		t.Fatalf("com a decisão no log, o mesmo comando tinha de prosseguir; saiu %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
 	}
 	if !strings.Contains(r.stdout, "gate de plano: APROVADO por humano") {
 		t.Fatalf("tinha de reconhecer a decisão humana do log:\n%s", r.stdout)
 	}
-	if !strings.Contains(r.stdout, "materializado:") {
-		t.Fatalf("um plano aprovado tem de materializar:\n%s", r.stdout)
-	}
-	// E DESPACHA — é aqui que o oráculo de cartão é consultado para o nó danger. Sem a decisão no
-	// log, o `Cleared` devolveria false e o nó ficaria em espera.
-	if !strings.Contains(r.stdout, "despachado:") {
-		t.Fatalf("o despacho governado tinha de correr sobre o plano aprovado:\n%s", r.stdout)
+	// O NÓ DE RISCO ARRANCA — autorizado pelo oráculo de cartão, no despacho.
+	if !strings.Contains(r.stdout, "folha publicacao a arrancar") || !strings.Contains(r.stdout, "nos_despachados=2") {
+		t.Fatalf("o nó danger tinha de passar o oráculo e arrancar (nos_despachados=2):\n%s", r.stdout)
 	}
 }
 

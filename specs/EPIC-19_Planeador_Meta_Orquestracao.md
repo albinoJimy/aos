@@ -938,7 +938,11 @@ substituindo o `cardsFailClosed`.
       reconhecer a decisão já tomada e a prosseguir: repetir a mesma invocação depois da aprovação
       materializa E despacha, e é no despacho que o oráculo autoriza o nó `danger` — com o MESMO
       predicado do gate (decisão humana, deste hash), e não o `Approved()` sozinho que a 1.ª versão
-      usava (`TestAOS408_DepoisDaAprovacaoODespachoConsultaOOraculo`).) **Âmbito real:** isto vale
+      usava (`TestAOS408_DepoisDaAprovacaoODespachoConsultaOOraculo`, que afirma o ARRANQUE do nó
+      `danger` — `nos_despachados=2` —; **falha-antes por mutação**: com o oráculo a recusar, o nó de
+      risco fica parado e `nos_despachados=1`. A 1.ª versão do teste usava um plano em que o nó de
+      risco dependia do outro e nunca chegava ao oráculo — apanhado no ensaio da validação de
+      produção).) **Âmbito real:** isto vale
       quando a repetição produz o MESMO documento — uma decomposição determinística. Com o modelo
       vivo, a segunda decomposição produz outro organigrama (outro hash) e fica pendente sem poder
       ser decidida (o plano já tem decisão terminal); o plano aprovado materializa por
