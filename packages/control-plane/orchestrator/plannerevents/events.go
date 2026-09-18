@@ -298,6 +298,12 @@ type ValidatedPayload struct {
 	MaxDepth    int    `json:"max_depth"`
 	MaxFanout   int    `json:"max_fanout"`
 	MaxNodes    int    `json:"max_nodes"`
+	// SnapshotDigest é o digest do CONTEÚDO do snapshot de capabilities contra o qual o plano foi
+	// validado (AOS-408) — os eixos de risco de cada tool, não o rótulo `hash` que o ficheiro
+	// declara sobre si mesmo. É a âncora que impede uma decisão humana de ser tomada, ou um plano
+	// aprovado de ser materializado, sob um catálogo diferente daquele que tornou o plano pendente.
+	// Opcional e aditivo: vazio num facto anterior, e um consumidor que dele dependa recusa.
+	SnapshotDigest string `json:"snapshot_digest,omitempty"`
 }
 
 // Decision é a decisão do gate de aprovação-de-plano (AOS-121).

@@ -528,9 +528,13 @@ services:
       AOS_MODEL_AUDIT_PATH: "${AOS_ORQ_MODEL_AUDIT_PATH:-/var/lib/aos-orq/model-audit.wal}"
       # A mesma CA interna do nó: o LiteLLM serve TLS assinado por ela.
       SSL_CERT_FILE: "${AOS_INTERNAL_CA_BUNDLE:-}"
+      # AOS-408: aprovadores PINADOS do gate de aprovação de plano (chave pública + autoridade por
+      # classe), no MESMO formato do nó. Só o `aos-orq decide` a lê; vazia, um plano de risco fica
+      # pendente e nunca é aprovado — que é a direcção certa do erro.
+      AOS_APPROVERS_FILE: "${AOS_ORQ_APPROVERS_FILE:-/etc/aos-orq/approvers.json}"
     volumes:
       - aos-orq-data:/var/lib/aos-orq                    # WAL dos runs + WORM de governação
-      - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc)
+      - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc, approvers)
       - ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro
       - ./secrets/model-api.key:/etc/aos/model-api.key:ro
 

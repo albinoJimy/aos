@@ -56,7 +56,9 @@ uso:
   aos-issuer revoke-sign   --emitter <id> --key-file <ficheiro> --jti <jti> --reason <texto>
                           → imprime o corpo JSON de POST /nhi/revoke (AOS-288)
   aos-issuer worm-seal --worm <ficheiro> --key-file <ficheiro> [--partition <p>] [--anterior <ficheiro>] [--heads]
-                          → imprime o corpo JSON de POST /promote (AOS-275)`
+                          → imprime o corpo JSON de POST /promote (AOS-275)
+  aos-issuer plan-approve-sign --request-id plan:<plano>:<hash> --approver <principal> --key-file <ficheiro> [--approve] [--out <ficheiro>]
+                          → imprime a decisão ASSINADA de um plano pendente do aos-orq (AOS-408)`
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -77,6 +79,10 @@ func run(args []string, out, diag io.Writer) error {
 		return cmdPubkey(args[1:], out)
 	case "approve-sign":
 		return runApproveSign(args[1:])
+	// AOS-408: a decisão assinada de um PLANO pendente do `aos-orq` (o gate de plano é
+	// non-signing, como o four-eyes do nó: quem verifica não assina).
+	case "plan-approve-sign":
+		return runPlanApproveSign(args[1:])
 	case "ratify-sign":
 		return runRatifySign(args[1:], out)
 	case "mint":

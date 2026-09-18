@@ -87,6 +87,14 @@ const (
 	// DISTINTO do 3: ali a remediação é parar quem detém aquele RUN; aqui é parar o
 	// outro escritor do STORE. Um código só faria o operador procurar no sítio errado.
 	exitWALDetido = 5
+	// exitPendenteDeAprovacao — o plano exige decisão HUMANA e nada foi materializado
+	// (AOS-408). NÃO é avaria: é o estado normal de um plano de risco num gate assíncrono.
+	// Sem um código próprio, um operador (e um teste de aceitação) não distinguiria «à
+	// espera do humano» de «rebentou», e a diferença decide o que fazer a seguir.
+	exitPendenteDeAprovacao = 6
+	// exitDecisaoRecusada — houve decisão humana e foi NÃO (ou o prazo passou, ou a
+	// assinatura não verifica). Distinto do 6: ali espera-se, aqui o caso está fechado.
+	exitDecisaoRecusada = 7
 )
 
 func main() {
@@ -100,6 +108,12 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "inspect":
 		err = cmdInspect(os.Args[2:])
+	// AOS-408: a cerimónia de decisão de um plano pendente. `plans` LÊ (nunca pede posse);
+	// `decide` ESCREVE a decisão sob a mesma posse e o mesmo appender fenced do `serve`.
+	case "plans":
+		err = cmdPlans(os.Args[2:])
+	case "decide":
+		err = cmdDecide(os.Args[2:])
 	default:
 		usage()
 		os.Exit(exitErro)
@@ -115,7 +129,14 @@ func usage() {
 
   aos-orq serve   (--wal FICHEIRO | --nats HOST:PORTA) --run ID [--plan ID] [--nodes a,b,c]
                   [--release] [--worker NOME] [--plan-doc DOC.json --snapshot SNAP.json]
+                  [--goal OBJECTIVO --snapshot SNAP.json [--plan-out DOC.json]]
   aos-orq inspect (--wal FICHEIRO | --nats HOST:PORTA) --run ID
+  aos-orq plans   (--wal FICHEIRO | --nats HOST:PORTA) --run ID [--ttl DURACAO]
+  aos-orq decide  (--wal FICHEIRO | --nats HOST:PORTA) --run ID --plan-doc DOC.json
+                  --snapshot SNAP.json --decision approve|reject --approval APROVACAO.json
+                  [--approvers APROVADORES.json] [--ttl DURACAO]
+                  (o plan_id DERIVA do run: <run>-plan. O lease e do RUN e a escrita e no stream do
+                   PLANO; com os dois independentes, dois decide nao seriam arbitrados por lease.)
 
 Substrato (EXCLUSIVO — um ou outro, nunca ambos):
   --wal   Event Store de referencia sobre ficheiro. NAO arbitra entre processos:
@@ -124,8 +145,37 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
           em paralelo sao suportadas e o vencedor e decidido pelo LEASE (3).
           [--nats-stream NOME] [--nats-replicas N] [--nats-region REGIAO]
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR
+Gate de aprovação de plano (AOS-408): um plano com nós de risco (danger) ou lacuna de
+capacidade NAO materializa — fica PENDENTE (saida 6) e a decisao vem por fora, assinada.
+
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA
 `)
+}
+
+// largarSePendente ANUNCIA que larga a posse quando o plano ficou PENDENTE de decisão humana
+// (AOS-408), e devolve o erro original intacto.
+//
+// Um pendente não é uma avaria a meio do trabalho: é o fim do trabalho deste processo. Manter o
+// lease até expirar bloquearia o `aos-orq decide` — que ESCREVE a decisão no stream do plano e
+// precisa da mesma posse — e a barreira do gate ficaria a bloquear-se a si mesma. Uma falha
+// verdadeira, em contraste, NÃO larga: aí o lease a expirar é a informação certa (alguém estava a
+// trabalhar neste run e caiu).
+//
+// Um erro a largar é reportado JUNTO do pendente, nunca em vez dele: a causa que interessa ao
+// operador é o plano estar à espera de uma decisão.
+func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(), err error) error {
+	// Uma RECUSA também é o fim do trabalho deste processo sobre o run (o plano não vai correr por
+	// esta via), e reter a posse bloqueava o passo seguinte do operador com um «posse negada».
+	if !errors.Is(err, errPlanoPendente) && !errors.Is(err, errDecisaoRecusada) {
+		return err
+	}
+	if parar != nil {
+		parar()
+	}
+	if rerr := ten.Release(ctx); rerr != nil {
+		return fmt.Errorf("%w (e o anúncio de largar a posse falhou: %v)", err, rerr)
+	}
+	return err
 }
 
 // codigoDe traduz o erro no código de saída que o distingue.
@@ -139,6 +189,10 @@ func codigoDe(err error) int {
 		errors.Is(err, durable.ErrLeaseSuperseded),
 		errors.Is(err, durable.ErrLeaseExpired):
 		return exitFenced
+	case errors.Is(err, errPlanoPendente):
+		return exitPendenteDeAprovacao
+	case errors.Is(err, errDecisaoRecusada):
+		return exitDecisaoRecusada
 	default:
 		return exitErro
 	}
@@ -161,6 +215,7 @@ func cmdServe(args []string) error {
 	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc/--goal: é dele que sai o oráculo de efeito e o validador AOS-231)")
 	goal := fs.String("goal", "", "objectivo a decompor num DAG multi-nó pelo Planner governado (F2E-02, AOS-388; exige --snapshot; exclui --nodes/--plan-doc)")
 	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM até o Model Gateway ser composto (T2-B)")
+	planOut := fs.String("plan-out", "", "ficheiro onde escrever o PlanDocument que ficou PENDENTE de aprovação humana (AOS-408): o documento cru não vive no log, e é este ficheiro que o `decide` reapresenta")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -216,6 +271,11 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("posse do run %q: %w", *runID, err)
 	}
 	fmt.Printf("posse: run=%s plano=%s token=%d worker=%s\n", ten.RunID(), planoID, ten.Token(), *worker)
+	// AOS-408: a postura do gate de plano declara-se quando ha plano para gatar (--goal ou
+	// --plan-doc). Um `serve --nodes` nao passa por gate nenhum e o banner nao se aplica.
+	if *goal != "" || *planDoc != "" {
+		fmt.Println(bannerDoGateDePlano())
+	}
 
 	// O emissor do domínio do plano (veredicto, payload, decisões de ramo) — os
 	// chamadores de produção que DEF-272/DEF-273 nomeavam como ausentes. É construído
@@ -281,8 +341,8 @@ func cmdServe(args []string) error {
 		if linha := modelAuditPostureBanner(model == nil && gwCfg != nil, govAuditPath); linha != "" {
 			fmt.Println(linha)
 		}
-		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit); err != nil {
-			return err
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit, *planOut); err != nil {
+			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
 
@@ -305,8 +365,8 @@ func cmdServe(args []string) error {
 	// snapshot pinado e não aceita substituição — ver o comentário lá. O que este
 	// comando fornece é a FONTE do snapshot e o documento aprovado.
 	if *planDoc != "" {
-		if err := materializar(ctx, ten, rec, *planDoc, *snapshot, *worker); err != nil {
-			return err
+		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, *worker); err != nil {
+			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
 
@@ -395,7 +455,7 @@ func separar(s string) []string {
 // tecto real vem do plano de controlo, e este comando não o compõe. É limitação de
 // escopo DESTE binário — a admissão em si ([runlifecycle.BudgetAdmission]) é a real,
 // com reserva atómica em toda a ancestralidade e saldo por Commit/Release.
-func materializar(ctx context.Context, ten *runlifecycle.Tenure, rec *runlifecycle.PlanRecorder, docPath, snapPath, worker string) error {
+func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath, worker string) error {
 	if snapPath == "" {
 		return errors.New("--plan-doc exige --snapshot: sem o snapshot pinado não há oráculo de efeito real, e o verificador materializaria com autoridade vazia (DEF-273)")
 	}
@@ -410,6 +470,14 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, rec *runlifecyc
 	doc, err := plan.Decode(raw)
 	if err != nil {
 		return fmt.Errorf("documento aprovado %q: %w", docPath, err)
+	}
+	// AOS-408: a flag chama-se `--plan-doc` e o seu nome AFIRMA «documento APROVADO» — mas nada o
+	// verificava. Um plano de risco entregue por aqui contornava o gate inteiro. Passa a exigir a
+	// decisão no log, confrontada pelo hash: sem ela, fica pendente como qualquer outro.
+	// O run é o da POSSE (ten.RunID()), nunca derivado do plano: derivá-lo do `--plan` faria a
+	// verificação «este plano é o do run?» passar sempre.
+	if err := exigirDecisaoParaDocumento(ctx, store, rec, ten.RunID(), doc, snap); err != nil {
+		return err
 	}
 
 	b, err := budget.New(ten.RunID(), budget.Amount{Tokens: materializeBudgetTokens, CostMicroUSD: materializeBudgetCost})

@@ -27,6 +27,7 @@ import (
 	planbudget "github.com/aos-ref/control-plane/orchestrator/planbudget"
 	plandispatch "github.com/aos-ref/control-plane/orchestrator/plandispatch"
 	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
+	planvalidate "github.com/aos-ref/control-plane/orchestrator/planvalidate"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
 	identity "github.com/aos-ref/platform/identity"
 	eventstore "github.com/aos-ref/substrate/eventstore"
@@ -92,13 +93,16 @@ func (h *boundedHeadroom) Release(context.Context) error {
 	return nil
 }
 
-// cardsFailClosed satisfaz plandispatch.CardOracle recusando (fail-closed). Só é
-// consultada para nós marcados RequiresCard; esta composição passa needsCard=false (o
-// gating de cartão danger/gap no despacho é follow-up — o gate de aprovação AOS-236 é o
-// ponto onde o danger é autorizado, a montante), pelo que não é consultada em prática.
-type cardsFailClosed struct{}
-
-func (cardsFailClosed) Cleared(context.Context, string, string) (bool, error) { return false, nil }
+// AOS-408 — o CardOracle desta composição é a DECISÃO DO PLANO, lida do log.
+//
+// Até aqui era um `cardsFailClosed` que recusava sempre, e o comentário dizia a verdade sobre si
+// mesmo: «esta composição passa needsCard=false, pelo que não é consultada em prática». Duas
+// metades inertes a anularem-se — nenhum nó exigia cartão, e quem o exigisse seria recusado para
+// sempre. Agora as duas ligam-se: `needsCard` é a projecção do cartão (danger|gap, pelo risco
+// RESOLVIDO) e o oráculo responde com a decisão aprovada do plano.
+//
+// Fail-closed preservado: sem decisão no log, o nó fica em espera (e essa espera não consome
+// headroom, porque é avaliada antes do Acquire).
 
 // combinedResults funde os dois observáveis de resultado de produção numa só ResultView:
 // terminal_state (derivado da vista do ciclo de vida) e verdict (dos factos
@@ -201,6 +205,9 @@ func composeEDespachar(
 	doc plan.PlanDocument,
 	payload plannerevents.MaterializedPayload,
 	worker string,
+	// AOS-408: o snapshot PINADO, para o `needsCard` sair do risco RESOLVIDO das tools e nao do
+	// rotulo advisory do documento. E o mesmo snapshot que validou o plano.
+	snap planvalidate.Snapshot,
 ) error {
 	runID := ten.RunID()
 	planID := rec.PlanID()
@@ -252,13 +259,23 @@ func composeEDespachar(
 	if err != nil {
 		return fmt.Errorf("result reader: %w", err)
 	}
+	// AOS-408: o oráculo de cartão do despacho. Relê-se por passagem, como os outros readers —
+	// uma decisão que chegue a meio de um despacho longo passa a valer na passagem seguinte.
+	decisaoR, err := runlifecycle.NewPlanDecisionReader(store, planID)
+	if err != nil {
+		return fmt.Errorf("plan decision reader: %w", err)
+	}
 
 	journal := rec.BranchJournal()
 	headroom := &boundedHeadroom{max: dispatchMaxConcurrency}
 	sink := &dispatchSink{del: del, g: g, runID: runID, parentToken: parentToken, kinds: kinds, authority: authority, budgets: budgets}
 
-	// Plano despachável (do materializado + doc). needsCard=false: ver cardsFailClosed.
-	p, err := plandispatch.PlanFrom(payload, doc, func(string) bool { return false })
+	// Plano despachável (do materializado + doc). AOS-408: `needsCard` é a projecção do CARTÃO —
+	// os nós de risco RESOLVIDO (danger) ou com lacuna de capacidade. Antes derivava do
+	// `dn.RiskClass`, o rótulo ADVISORY do LLM: um plano que se declarasse `safe` sobre uma tool
+	// irreversível não exigia cartão nenhum. O piso das tools pinadas é que manda.
+	exigeCartao := nosQueExigemHumano(planoParaGate(doc, planvalidate.ResolveRisks(doc, snap, nil), runID, agenteDoRun(runID), dominioDeAutonomia))
+	p, err := plandispatch.PlanFrom(payload, doc, func(nodeID string) bool { return exigeCartao[nodeID] })
 	if err != nil {
 		return fmt.Errorf("projecção do plano despachável: %w", err)
 	}
@@ -283,7 +300,11 @@ func composeEDespachar(
 		}
 		results := combinedResults{terminal: lcResults, verdicts: verds}
 
-		d, err := plandispatch.NewDispatcher(gate, vista, headroom, cardsFailClosed{}, sink,
+		cartoes, err := decisaoR.Snapshot(ctx)
+		if err != nil {
+			return fmt.Errorf("retrato da decisão do plano (passagem %d): %w", pass, err)
+		}
+		d, err := plandispatch.NewDispatcher(gate, vista, headroom, oraculoDeCartao{estado: cartoes, hash: payload.PlanHash}, sink,
 			plandispatch.WithConditionalBranches(results, journal, meter))
 		if err != nil {
 			return fmt.Errorf("dispatcher (passagem %d): %w", pass, err)
