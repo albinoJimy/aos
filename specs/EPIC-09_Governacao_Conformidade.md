@@ -933,7 +933,7 @@ ser imposta em cada tool call, com a mesma autoridade rotacionável do read-path
       antes —, mas a regra passa a estar desalinhada por si: se algum dia existir um caminho com taint
       confiável, a negação vem da região, com uma causa que ninguém procurou. Alinhar exige reassinar
       o bundle, o que pertence ao eixo de política e não a este ticket.
-- [ ] **Evidência de sistema.** Depois do deploy: o Keycloak de produção emite a claim `board` no
+- [x] **Evidência de sistema.** Depois do deploy: o Keycloak de produção emite a claim `board` no
       cliente `aos-issuer` (reprovisionamento), um NHI cunhado leva `board:prod`, um run faz tool
       calls `eu-west` que EXECUTAM, e o banner declara a soberania de efeito LIGADA. Tokens cunhados
       antes do deploy não têm board e as suas tool calls passam a ser negadas. **A janela não é fixa:**
@@ -941,6 +941,21 @@ ser imposta em cada tool call, com a mesma autoridade rotacionável do read-path
       **novo** a contar do spawn, independente do `exp` do pai — na prática até cerca do **dobro** do
       TTL depois do deploy. Recunhar resolve; quem quiser a janela curta cunha com `--ttl` curto antes
       do cutover.
+      *(2026-09-18, `v0.1.22`, imagem `sha256:35ea82a0…`. O banner do nó declara «soberania de EFEITO
+      … LIGADA». O `provision-identity.sh` criou o mapper («mapper board do aos-issuer: criado
+      (AOS-407)»). O NHI cunhado pelo `get-id-token.ps1 -Cunhar` saiu com `board = board:prod`,
+      copiado da claim do ID-token. O run `run-delegado-1789775725`, lido do Event Store do nó:
+      **5** `tool.call.mediated` com `decision=permit` e **0** negadas, cada uma com a obrigação
+      `{"Type":"region","Params":{"region":"eu-west"}}` emitida pelo PDP e o recurso `doc_read` em
+      `eu-west`; `sandbox.exec.completed` em cada volta; `ready → running → complete`. **Entre o
+      deploy e o reprovisionamento, os runs do nó com tool calls ficaram bloqueados** — o mint
+      recusava sem a claim, e um NHI sem board era negado. Isso deve constar do runbook de qualquer
+      deploy que ligue a soberania. **Observado e não resolvido aqui:** o `provision-identity.sh`
+      abortou no passo 5 com um falso negativo (o `vault list` sai com 2 quando o Transit está vazio;
+      o nó trata esse 404 como autorizado e o `/readyz` estava `ready`) — correcção em sessão
+      própria. E a varredura de crash-resume (AOS-253) classificou o run como órfão «sem
+      turn.recorded» enquanto ele corria, sem reinício do contentor; não o retomou nem o estragou,
+      mas é uma corrida por investigar.)*
 
 ### Fora de âmbito (declarado)
 
@@ -952,8 +967,9 @@ não é regressão — mas significa que «a obrigação `region` é imposta em 
 
 ### Estado
 
-**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy e do reprovisionamento
-do mapper no Keycloak.
+**IMPLEMENTADO** a 2026-09-17; **verificado em produção a 2026-09-18** (`v0.1.22`): o mapper do
+Keycloak foi reprovisionado, o NHI leva `board:prod` e as 5 tool calls de um run real foram
+autorizadas com a obrigação `region=eu-west` e executadas na sandbox.
 
 ---
 
