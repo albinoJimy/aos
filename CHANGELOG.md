@@ -6,6 +6,11 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.22 em produção (AOS-407, AOS-408)
+- `docs(AOS-407)` — **a soberania por board está verificada em produção.** Depois de reprovisionar o mapper `board` no Keycloak, um NHI cunhado pelo `-Cunhar` leva `board:prod` e as 5 tool calls do run `run-delegado-1789775725` foram autorizadas com a obrigação `region=eu-west` e executadas na sandbox (0 negadas, run `complete`). Entre o deploy e o reprovisionamento os runs com tool calls ficaram bloqueados — é o preço de ligar a soberania antes do IdP emitir a claim.
+- `docs(AOS-408)` — **o gate de aprovação de plano está verificado em produção** com o caso adversarial (um nó `danger` que se declara `safe`): fica pendente (`EXIT=6`), a decisão assinada fora do servidor é aceite contra a chave pinada, e só depois o nó de risco arranca (`nos_despachados=2`). Tudo confirmado no log durável, não só no stdout.
+- Observado, fora destes tickets: o `provision-identity.sh` aborta com um falso negativo quando o Transit do Vault está vazio; e a varredura de crash-resume classificou um run vivo como órfão sem reinício do nó.
+
 ### Added — EPIC-19 (AOS-408) O gate de aprovação de plano fica composto no `aos-orq`
 - `feat(AOS-408)` — **um plano de risco deixa de materializar sem decisão humana assinada** (DEF-274 passa a FECHADO-RESIDUAL). O gate (AOS-236) estava entregue como CONTRATO e ausente como CAMINHO: o único consumidor era o `aos-demo`, que construía o `planapproval.Plan` à mão.
   - **Mapeador de produção.** `PlanDocument` → `planapproval.Plan` no composition root do `aos-orq`, com as extensões de ADR-022 e o taint **efectivo** do output. A classe de cada nó é o risco **RESOLVIDO** pelo validador: um plano que se declare `safe` sobre uma tool irreversível chega ao humano como `danger`.

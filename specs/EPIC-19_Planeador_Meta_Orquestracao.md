@@ -1068,8 +1068,29 @@ não se finge feito aqui. Declarado também no banner.
 **IMPLEMENTADO** (2026-09-17). Verificado: suites `cmd/aos-orq`, `cmd/aos-issuer`,
 `governance/plan-approval`, `runlifecycle` e `orchestrator` verdes; `build`, `lint`, `layer-lint`,
 `event-catalog` e os gates documentais verdes; falha-antes medida por mutação no gap e pelo par de
-processos no gate. **Evidência de produção pendente** (o `aos-orq` corre em produção desde a
-v0.1.20): exige aprovadores pinados no servidor e um run com plano de risco.
+processos no gate.
+
+**Verificado em produção a 2026-09-18** (`v0.1.22`, imagem `sha256:35ea82a0…`), com o plano do
+caso adversarial: o nó `publicacao` usa uma tool irreversível com egress externo e DECLARA-SE
+`safe`. O snapshot, o plano e uma chave de aprovador **só de validação** foram postos em
+`/opt/aos/orq/` e retirados no fim (a chave privada nunca saiu da máquina do aprovador).
+
+| Passo | Saída em produção |
+|---|---|
+| `serve --goal` | `EXIT=6`, `pendente de aprovacao humana … 1 no(s) de risco: publicacao`, `plan_hash=sha256:b14d2336…`, nada materializado |
+| `decide` | `EXIT=0`, `decisao APROVADA por human:validacao-aos408` — assinatura feita fora do servidor e verificada contra a chave pinada; o hash é o do ensaio local, o que confirma o `request_id` determinístico |
+| `serve --goal` repetido | `EXIT=0`, `gate de plano: APROVADO por humano`, `folha publicacao a arrancar`, `nos_despachados=2` — o nó de risco só arrancou porque o oráculo de cartão o autorizou |
+| `plans` / `inspect` (leitura) | `estado=DECIDIDO decisao=approved em=2026-09-18T22:32:34Z` com o mesmo hash; `nos=2 ordem=leitura,publicacao` |
+
+A primeira tentativa falhou por um defeito dos COMANDOS, não do gate: o PowerShell 5.1 estraga as
+aspas duplas dentro de `ssh '…'`, o `--goal "dois termos"` chegou partido e o parser de flags parou.
+Nesse estado tudo recusou — `--goal exige --snapshot`, e o `decide` recusou por não haver
+`plan.validated` no log — e nada foi materializado.
+
+O ensaio local desta validação apanhou ainda um defeito do teste do oráculo: com o nó de risco
+dependente do outro, ele nunca chegava ao oráculo numa passagem de despacho. O teste e o plano de
+validação passaram a ter o nó de risco sem dependências, e a mutação do oráculo passou a ser
+detectada.
 
 **Duas revisões adversariais independentes**, ambas com reprodução nos binários reais. A 1.ª
 encontrou quatro furos ALTA (snapshot escolhido por quem decide; âncora no `plan.validated`; recusa
