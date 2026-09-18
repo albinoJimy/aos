@@ -66,6 +66,8 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 | AOS-391 | T2-B: compor o `decompose.Model` real via Model Gateway | feature | L | P1 | AOS-388, AOS-390, AOS-278 |
 | AOS-393 | Fix fail-closed: o ramo papéis-que-expandem via `Delegator.Spawn` é recusado no `--goal` (depth_mismatch; `agent.spawn` latente) | feature (correcção) | S | P1 | AOS-388, AOS-026, AOS-237 |
 | AOS-400 | O prompt de decomposição declara o schema do `PlanDocument` que o decode exige | fix | M | P1 | AOS-241, AOS-273, AOS-391 |
+| AOS-408 | O gate de aprovação de plano fica composto no `aos-orq`: um plano de risco espera decisão humana antes de materializar | feature | L | P1 | AOS-236, AOS-237, AOS-390, AOS-388 |
+| AOS-409 | O `IsEffectTool` ganha o 4.º eixo — mutação — a partir de uma fonte de verdade que não seja o próprio plano | feature | M | P2 | AOS-231, AOS-408 |
 
 ---
 
@@ -650,11 +652,11 @@ Alternativas rejeitadas: **(B)** o Dispatcher gateia ANTES da materialização �
 - [ ] **Gating por `depends_on`**: um nó com dependência não concluída **não** é despachado (teste: `B depends_on A`, `A` pendente ⇒ `B` não spawna).
 - [ ] **Arestas condicionais + poda `branch_not_taken`** (ADR-022 §2.1): `B conditional_on A {verdict=fail}` — se `A` passa, `B` é decidido `branch_not_taken` e **não** tem efeito; se `A` falha, `B` é despachado. Prova pela composição real, caso positivo **e** negativo. **Isto fecha a violação medida no AOS-389.**
 - [ ] **Headroom de concorrência**: com headroom esgotado, os nós elegíveis excedentes ficam `OutcomeDeferredHeadroom` e são retomados numa passagem seguinte quando a concorrência liberta — sem os perder e sem fail-open.
-- [ ] **Card oracle**: um nó cujo card exige aprovação humana (`danger`) fica `waiting`, não é spawnado sem o gate (AOS-236).
+- [x] **Card oracle**: um nó cujo card exige aprovação humana (`danger`) fica `waiting`, não é spawnado sem o gate (AOS-236). *(Fechado pelo **AOS-408**: o `cardsFailClosed` — que recusava sempre e nunca era consultado, porque o `needsCard` era `false` — deu lugar ao `runlifecycle.PlanDecisionReader` (decisão do plano derivada do log) e a um `needsCard` que é a projecção do cartão pelo risco RESOLVIDO. `TestAOS408_PlanoDeRiscoNaoMaterializaSemAprovacao` e `TestAOS408_DecisaoAssinadaAprovaEDepoisMaterializa`.)*
 - [ ] **Semântica re-invocável**: o Dispatcher é função por passagem, sem laço próprio; o escalonador do `serve` re-invoca-o quando `ResultView`/`LifecycleView` mudam ou headroom liberta. **Não escreve ciclo de vida** (teste: o stream do run não cresce por escrita do dispatcher numa passagem só de leitura).
 - [ ] **Sob Tenure**: um dispatcher cuja posse foi superada é recusado por fencing (`ErrStaleFencingToken`) sem tocar no log — herda a disciplina de AOS-281.
 - [ ] **AOS-389 é superado**: o guard fail-closed de condicionais é substituído pela avaliação real; o guard-test de não-regressão de AOS-389 passa a assertar avaliação em vez de recusa.
-- [ ] **Registo**: a row de deferimento do gap de despacho passa a `FECHADO-RESIDUAL`/removida; DEF-274 e DEF-275 têm o Eixo corrigido para este ticket. RTM regenerada.
+- [ ] **Registo**: a row de deferimento do gap de despacho passa a `FECHADO-RESIDUAL`/removida; DEF-274 e DEF-275 têm o Eixo corrigido para este ticket. RTM regenerada. *(Esta caixa fica por marcar e assim deve ficar: o eixo de DEF-274/275 foi corrigido no **AOS-408** — para si próprio —, não neste ticket. Marcá-la seria afirmar que este ticket fez o que não fez; o AOS-408 fechou o DEF-274 e o DEF-275 continua ABERTO com eixo válido.)*
 
 ---
 
@@ -838,6 +840,301 @@ Com o modelo de produção, `serve --goal` sem fixture produz um `PlanDocument` 
 
 ---
 
+## AOS-408 — O gate de aprovação de plano fica composto no `aos-orq`: um plano de risco espera decisão humana antes de materializar
+
+<!-- rtm: adrs-mencionados -->
+<!-- ADR-005 (o plano é dados; o documento cru não vive no log de eventos), ADR-016 §1 (a
+     assinatura do humano é produzida FORA do processo que a verifica) e ADR-019 (fronteiras de
+     camada; o composition root é que pode cruzar governance × orchestrator) são MENÇÃO —
+     restrições que este ticket respeita — não implementação. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-236 (contrato do gate e do cartão), AOS-237 (materialização consome `plan.approved`), AOS-390 (despacho governado, de onde vem o `CardOracle`), AOS-388/AOS-391 (decomposição viva no `aos-orq`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma / Responsável de Segurança |
+| Documentos de referência | `packages/control-plane/governance/plan-approval/{gate.go,ports.go,plancard.go,triage.go}`, `packages/cmd/aos-orq/{planner_wiring.go,dispatch_wiring.go,main.go,snapshot.go}`, `packages/control-plane/orchestrator/{plan/plandocument.go,plan/payload.go,planvalidate/resources.go}`, `packages/control-plane/runlifecycle/emitters.go`, `packages/control-plane/governance/hitl/{channel.go,approval.go,nonce_store.go}` |
+
+### Contexto
+
+O gate de aprovação-de-plano (AOS-236) está **entregue como contrato e ausente como caminho**. O
+`plan-approval` tem a porta, o cartão `aos.plan.card.v1` 1.1.0, a triagem por risco e o
+dual-control; o único consumidor é o `aos-demo`, que constrói o `planapproval.Plan` **à mão**
+(`packages/cmd/aos-demo/main.go:235-255`) com um revisor de demonstração. É o residual que o
+DEF-274 nomeia: «o mapeamento `PlanDocument → planapproval.Plan` vive a jusante e NÃO existe em
+produção».
+
+No `aos-orq` — o binário que decompõe e materializa de verdade desde a v0.1.20 — a sequência é
+`decompose → planvalidate.Validate → materializar → despachar`, **sem gate**. Duas consequências
+medidas na leitura do código:
+
+1. **Nada consome `plan.approved`.** O catálogo `aos.planner.v1` declara `plan.approved` e
+   `plan.rejected` e o `aos-orq` emite `plan.materialized` sem que exista decisão nenhuma no
+   stream. A DoD do AOS-237 («consome `plan.approved`; emite `plan.materialized`») está meia.
+2. **O despacho mente por omissão.** `cardsFailClosed` devolve `false`
+   (`packages/cmd/aos-orq/dispatch_wiring.go:95-101`) e o `needsCard` do `plandispatch` deriva de
+   `Node.RiskClass`, que é o rótulo **advisory do LLM** (`plandispatch/dispatch.go:546`). Um plano
+   que declare `"risk_class":"safe"` sobre uma tool `irreversible` no snapshot pinado despacha
+   **sem cartão**: o piso de risco autoritativo é o do `planvalidate` (`elevateOnly`), e ninguém o
+   consulta no despacho.
+
+Havia ainda um defeito de governação a montante: DEF-274 e DEF-275 tinham como **eixo** o AOS-238,
+que está **FECHADO** — um deferimento cujo gatilho aponta para um ticket fechado não tem quem o
+reavalie, que é exactamente o que o §1 do registo existe para impedir. O AOS-390 tinha «corrigir o
+eixo destes dois» na DoD e fechou sem o cumprir. Este ticket corrige o eixo para si.
+
+### Objectivo
+
+No `aos-orq`, um plano cujo cartão traga risco (`danger`) ou lacuna de capability (`gap`) **não
+materializa nem despacha** sem uma decisão humana assinada, durável e verificável; os restantes
+planos continuam a passar sem atrito. O veredicto passa a ser a fonte do `CardOracle` do despacho,
+substituindo o `cardsFailClosed`.
+
+### Decisões do dono (2026-09-17)
+
+- **Aprovação ASSÍNCRONA.** O plano fica pendente como FACTO no stream do plano
+  (`plan.proposed` + `plan.validated`, sem decisão terminal); a decisão chega por fora e a
+  materialização continua nessa passagem. Não se bloqueia o processo à espera de um humano, e a
+  ausência de decisão **não** é uma recusa.
+- **Âmbito `danger` ou `gap`.** Um plano `safe`/`gray` auto-aprova pelo nível de autonomia; o
+  atrito humano é só para risco resolvido `danger` ou lacuna de capability.
+
+### Critérios de Aceitação
+
+- [x] **Mapeador de produção.** `plan.PlanDocument` → `planapproval.Plan` no composition root do
+      `aos-orq`, com as extensões do DEF-274 (`Role`, `ConditionalOn`, `Outputs`, `Consumes`) e o
+      taint **efectivo** do output (`plan.Node.EffectiveOutputTaint`), não o declarado. A `Class` de
+      cada nó é o risco **resolvido** pelo `planvalidate` (o advisory do LLM só eleva), nunca o
+      `risk_class` cru. O `Preview` do cartão não transporta texto livre do modelo.
+      **A amarra do snapshot é parte da regra, e tem duas camadas.** O rótulo: o snapshot tem de ser
+      o que o documento DECLARA (`planner_meta.capabilities_hash`). E o CONTEÚDO: o `hash` de um
+      snapshot é um rótulo que o ficheiro declara sobre si mesmo — copiá-lo para um catálogo com
+      eixos benignos passava a primeira camada (a 2.ª revisão reproduziu-o). Por isso o digest dos
+      eixos de cada tool é SELADO no `plan.validated` quando o plano fica pendente, e a decisão e a
+      materialização têm de apresentar o mesmo conteúdo.
+      *(`packages/cmd/aos-orq/plan_gate_wiring.go`. O risco resolvido entra por
+      `planvalidate.ResolveRisks`, ponto de entrada novo que isola a regra 6: o `ValidateResources`
+      rejeitava o plano inteiro sem `Pricer`, e o `aos-orq` não compõe tabela de preços — sem isto o
+      binário cairia no rótulo advisory, que é exactamente o que a regra 6 existe para não fazer.
+      Cinco testes em `aos408_mapeador_test.go`: o nó que se declara `safe` sobre uma tool
+      irreversível chega ao cartão como `danger`; um `summary` declarado `trusted` por um
+      não-verificador fica `untrusted` e só sobe com produtor verificador E forma fechada; o
+      `objective` do modelo não aparece no cartão; as condições e arestas de dados atravessam.)*
+- [x] **Risco autoritativo no despacho, e o oráculo consultado de facto.** O `needsCard` passa a
+      ser a projecção do cartão (`danger` ou `gap`) derivada do risco resolvido — antes vinha do
+      `risk_class` ADVISORY do LLM, pelo que um plano que se declarasse `safe` sobre uma tool
+      irreversível não exigia cartão nenhum. *(Duas metades inertes a anularem-se deram lugar a duas
+      ligadas: o `cardsFailClosed` — que recusava sempre e cujo comentário dizia «não é consultada em
+      prática» — deu lugar ao `PlanDecisionReader`. **Correcção vinda da revisão:** trocar as duas
+      metades não bastava. O despacho só corre pelo caminho do `--goal`, e esse caminho só chegava
+      ao despacho quando NENHUM nó exigia cartão — o oráculo continuava provadamente nunca
+      consultado, e um plano aprovado não tinha caminho para correr. O `gatearPlano` passou a
+      reconhecer a decisão já tomada e a prosseguir: repetir a mesma invocação depois da aprovação
+      materializa E despacha, e é no despacho que o oráculo autoriza o nó `danger` — com o MESMO
+      predicado do gate (decisão humana, deste hash), e não o `Approved()` sozinho que a 1.ª versão
+      usava (`TestAOS408_DepoisDaAprovacaoODespachoConsultaOOraculo`).) **Âmbito real:** isto vale
+      quando a repetição produz o MESMO documento — uma decomposição determinística. Com o modelo
+      vivo, a segunda decomposição produz outro organigrama (outro hash) e fica pendente sem poder
+      ser decidida (o plano já tem decisão terminal); o plano aprovado materializa por
+      `--plan-doc`, mas esse caminho nunca despachou — limitação anterior a este ticket, que fica
+      como resíduo com eixo próprio.*
+- [x] **Gate composto.** `planapproval.NewPlanGate` no caminho do `--goal`, entre a validação e a
+      materialização, com revisão forçada dos nós de risco. Um plano `danger` não materializa: o
+      processo apensa os factos do pendente, larga a posse e sai com código próprio (**6**); um
+      plano sem risco auto-aprova pelo nível de autonomia e materializa como antes.
+      *(PAR FALHA-ANTES pelo processo real, `aos408_gate_plano_test.go`: o MESMO pipeline com o
+      plano de risco sai 6, não imprime `materializado:` e deixa o grafo durável a `nos=0`; o plano
+      sem risco sai 0 e despacha os 2 nós. Quem fica pendente LARGA o lease — um pendente é o fim do
+      trabalho deste processo, e retê-lo bloquearia o próprio `decide`, que escreve no stream do
+      plano: o gate a travar-se a si mesmo.)*
+- [x] **O `gap` força humano.** A auto-aprovação por nível de autonomia deixa de ignorar
+      `CapabilityGap`: a `autonomy.Oversight` é função de (nível, classe) e não conhece o gap, pelo
+      que um plano com lacuna auto-aprovava a L5 desde que a classe o permitisse — o contrário do
+      que o contrato do campo declara e do que a triagem do cartão já fazia.
+      *(`temLacunaDeCapacidade` em `ports.go`, guarda em `gate.go`;
+      `TestAOS408_LacunaDeCapacidadeNaoAutoAprova` com contraprova (sem gap, auto-aprova e o canal
+      nem é chamado) e **FALHA-ANTES por mutação**: sem a guarda, o plano com gap auto-aprova.
+      DECLARADO: no `aos-orq` nada abre um gap hoje, pelo que esta metade do âmbito é contrato e não
+      facto — o banner diz-lo.)*
+- [x] **Pendente durável, derivado do log.** O pendente é `plan.validated` sem decisão terminal,
+      dentro do prazo, lido pelo `runlifecycle.PlanDecisionReader` (irmão do `GateReader`: relê o
+      stream uma vez e fixa um retrato imutável). Os três factos que faltavam ter chamador de
+      produção — `plan.proposed`, `plan.validated`, `plan.approved`/`rejected` — passam pelo
+      `PlanRecorder`, logo pelo appender FENCED. *(Sem estes factos, «à espera do humano» era a
+      AUSÊNCIA de factos, indistinguível de «nunca foi proposto», e um restart perdia o caso. A
+      precedência terminal é explícita porque o step id é `planstep:decision:<decisão>`, o que
+      deixa um `approved` e um `rejected` coexistirem no mesmo stream.)*
+- [x] **Decisão assinada fora do processo.** `aos-issuer plan-approve-sign` produz a decisão
+      (ed25519, chave privada lida de ficheiro montado, nunca vista pelo verificador — ADR-016 §1);
+      `aos-orq decide` verifica-a pelo `hitl.Channel` contra chaves **pinadas** com autoridade por
+      classe, no MESMO formato de `AOS_APPROVERS_FILE` do nó. `aos-orq plans` imprime o `request_id`
+      a assinar. **A pinagem é por ficheiro escolhido pelo operador** (`--approvers`, ou
+      `AOS_APPROVERS_FILE` do compose): protege contra quem não tem chave, não contra quem controla
+      esse ficheiro — ver «Fronteira de confiança». *(Seis testes pelo processo real em
+      `aos408_decide_test.go`: aprovação legítima
+      aprova e só então materializa; assinatura de chave não-pinada recusa; aprovador com
+      `approve:gray` não aprova `danger`; replay da mesma aprovação recusa (nonce por CAS durável);
+      documento adulterado recusa por divergência de hash; recusa assinada fecha o plano. Um bug
+      real que esta prova apanhou: com `issued_at` em RFC3339 de segundos, a assinatura — que cobre
+      o instante em `UnixNano` — deixava de verificar; o wire passou a RFC3339Nano nos três sítios.)*
+      **Quatro furos ALTA que a revisão adversarial reproduziu com os binários reais, e as
+      correcções:** (1) o `--snapshot` do `decide` era arbitrário — com um snapshot benigno o risco
+      resolvia-se `safe`, a auto-aprovação por nível SALTAVA o canal e uma assinatura de lixo
+      aprovava um plano `danger`: passou a exigir-se o snapshot declarado pelo documento e a
+      cerimónia corre a L1, onde o canal é sempre chamado; (2) a âncora era o hash do primeiro
+      `plan.validated`, pelo que a auto-aprovação de um plano inócuo no mesmo `plan_id` autorizava o
+      perigoso: o predicado passou a exigir decisão APROVADA, do MESMO hash e com referência
+      `hitl:`; (3) o ramo de recusa gravava `plan.rejected` antes de qualquer verificação — quem não
+      tinha chave fechava um plano pendente e o log culpava um aprovador pinado: um facto terminal só
+      se escreve com aprovador VERIFICADO (o `plan-approval` passou a levar o aprovador também na
+      recusa, que antes descartava), e o nonce só é consumido DEPOIS da verificação, senão uma forja
+      queimava o nonce de uma decisão legítima; (4) um nó `gray` ao lado do `danger` tornava o plano
+      INAPROVÁVEL (a revisão forçada cobre `>=gray` e o revisor declarava só `danger|gap`) — e a
+      primeira tentativa legítima fechava-o: o revisor passou a declarar os nós que o CARTÃO força.
+      Cada um tem teste em `aos408_furos_test.go`.
+- [x] **TTL imposto na decisão, e a expiração DERIVADA.** Um pendente fora do prazo é recusado no
+      momento da decisão, sem varredor — a disciplina do `handleApprove` do nó. A expiração NÃO
+      escreve facto: é derivada do instante do `plan.validated` e do prazo, como o próprio pendente.
+      *(A 1.ª versão gravava `plan.rejected` ao expirar, e o teste chamava-se «...FechaOCaso»: a
+      2.ª revisão mostrou que isso ERA o ataque — `decide --ttl 1ns` com ficheiros que nem existiam
+      fechava qualquer plano pendente para sempre. O prazo passou a só poder ser ENCURTADO por quem
+      decide, nunca alargado nem desligado (`--ttl` ≤ 24 h e positivo), e a decisão assinada tem
+      janela de frescura. `TestAOS408_PrazoExpiradoRecusaSemFecharOPlano` (recusa, o plano continua
+      pendente e a decisão legítima aprova a seguir), `TestAOS408_PrazoNaoPodeSerAlargadoPorQuemDecide`,
+      `TestAOS408_PrazoNaoPositivoERecusado`, `TestAOS408_ExpiracaoEDerivadaENaoEscrita`.)*
+- [x] **Postura declarada no arranque.** `bannerDoGateDePlano` declara o gate composto e o nível,
+      e diz em voz alta as três limitações que, caladas, seriam ilusões de governação: o `gap` é
+      contrato e não facto neste binário; o 4-eyes é **fraco** aqui (o solicitante é a NHI do run,
+      logo qualquer humano o satisfaz — a garantia é «um humano com autoridade pinada», não «dois
+      humanos»); e o nível de autonomia é um default do processo, não um nível durável por par
+      (agente, domínio) como no nó.
+- [x] **Prova falsificável.** 33 testes: 5 do mapeador, 2 do par falha-antes, 9 da cerimónia
+      (incluindo o prazo), 10 dos furos das duas revisões — todos estes pelo processo real —, 5 do
+      predicado de decisão no `runlifecycle` e 2 do gap no `plan-approval`. Falha-antes por mutação no gap e na condição `hitl:` do predicado.
+      O contorno do `--plan-doc` fica fechado **contra o plano e contra quem decide**
+      (`TestAOS408_PlanDocSemDecisaoNaoContornaOGate`,
+      `TestAOS408_PlanDocComSnapshotBenignoNaoContorna`); NÃO contra um operador que escreve um
+      catálogo com eixos benignos num run novo — ver «Fronteira de confiança».
+- [x] **Governação.** O eixo de DEF-274/275 passou de AOS-238 (**fechado** — um deferimento cujo
+      gatilho aponta para um ticket fechado não tem quem o reavalie) para AOS-408; o DEF-274 passa a
+      **FECHADO-RESIDUAL** (o estado terminal do registo — a linha fica como contraste, com os
+      residuais nomeados) e o critério «Card oracle» do AOS-390 fica marcado com evidência. O
+      DEF-275 continua ABERTO, agora com eixo válido.
+
+### Fora de âmbito (declarado)
+
+- **API HTTP no `aos-orq`.** O binário não tem superfície de rede nenhuma (o único `net/http` é
+  cliente do Model Gateway); abrir uma exige barreiras próprias (mTLS, token-bucket, OIDC) e é
+  outro ticket. A cerimónia aqui é CLI + ficheiro assinado, que é a disciplina mais forte
+  (ADR-016 §1: quem verifica não assina), não a mais fraca.
+- **`Pricer`/tabela de preços** no `aos-orq` (regra 5 do AOS-232) — residual já declarado no
+  AOS-391; por isso o risco resolvido entra por um ponto de entrada só-risco, sem orçamento.
+- **DEF-275** (4.º eixo de mutação no `IsEffectTool`) fica ABERTO, com eixo no **AOS-409** — este
+  ticket não o implementa, e apontá-lo para aqui repetiria, ao fechar, o defeito que corrigiu (um
+  eixo num ticket fechado). A premissa de bloqueio do registo já é falsa (há construção de
+  `planvalidate.Capability` em produção); o eixo tem decisões próprias.
+
+### Fronteira de confiança (declarada)
+
+Este gate governa o **PLANO**: um organigrama de risco vindo do modelo não materializa nem despacha
+sem uma decisão humana explícita, atribuível e amarrada àquele organigrama e àquele catálogo. É isso
+que o dono pediu, e é isso que está provado — contra o documento (que não escolhe o seu risco),
+contra quem decide sem chave (a assinatura é sempre verificada), contra a reutilização de decisões
+(noutro hash, noutro catálogo, noutro run, noutro nonce) e contra o fecho de planos por quem não
+decidiu.
+
+**NÃO é uma fronteira de segurança contra quem opera o CLI no servidor.** O Event Store não assina
+eventos (quem tem escrita no WAL pode apensar um `plan.approved`), o snapshot é um ficheiro pinado e
+NÃO assinado (quem o escreve escolhe os eixos de risco de um run novo), e o registo de aprovadores é
+um ficheiro que o operador escolhe. No deploy, o `aos-orq` corre no contentor que detém o WAL: o
+acesso ao CLI é o acesso ao store. Endurecer isso exige snapshot assinado, decisões assinadas no log
+e verificadas no consumo, e pinagem fora do alcance de quem invoca — trabalho de outro ticket, que
+não se finge feito aqui. Declarado também no banner.
+- **Dual-control por-efeito** (dois humanos distintos) e **edição de plano pela CLI**: as portas
+  existem, a correspondência assinatura↔chamada e a UX são trabalho separado.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-17). Verificado: suites `cmd/aos-orq`, `cmd/aos-issuer`,
+`governance/plan-approval`, `runlifecycle` e `orchestrator` verdes; `build`, `lint`, `layer-lint`,
+`event-catalog` e os gates documentais verdes; falha-antes medida por mutação no gap e pelo par de
+processos no gate. **Evidência de produção pendente** (o `aos-orq` corre em produção desde a
+v0.1.20): exige aprovadores pinados no servidor e um run com plano de risco.
+
+**Duas revisões adversariais independentes**, ambas com reprodução nos binários reais. A 1.ª
+encontrou quatro furos ALTA (snapshot escolhido por quem decide; âncora no `plan.validated`; recusa
+gravada antes de verificar; nó `gray` a tornar o plano inaprovável) e o oráculo ainda nunca
+consultado. A 2.ª mostrou que duas correcções só fechavam a variante exacta dos testes — o rótulo
+`hash` do snapshot copia-se (fechado selando o CONTEÚDO), e a expiração gravada era a mesma arma que
+a recusa (fechado derivando-a) — e encontrou a decisão de um run a servir outro pelo `--plan` do
+`serve`, uma aprovação negada pelo canal gravada como recusa humana, e o oráculo com critério mais
+fraco que o gate. Todos corrigidos e com teste.
+
+**Resíduos declarados:** o `plan_id` da cerimónia DERIVA do run (`<run>-plan`) porque a ligação
+run→plano não é um facto do log — um run cujo plano tenha outro id não é decidível por esta via; os
+nós de `--nodes` entram no grafo antes do gate do `--plan-doc` (sem tools, sem efeito, mas entram);
+o `Cleared` do oráculo é por PLANO e não por nó — um auditor vê «este
+plano foi aprovado», não «este nó foi revisto»; não há dual-control por-efeito (dois humanos
+distintos); o selo do canal HITL é in-memory neste binário (a decisão durável vive no Event Store) e
+um WORM próprio para o gate fica para ticket separado — o não-repúdio da decisão fica, portanto,
+na referência `hitl:<principal>` do log e NÃO na assinatura, que não é re-verificável depois; com o
+modelo vivo, um plano aprovado não despacha (o `--plan-doc` nunca despachou); o nonce é consumido
+antes de o facto da decisão ser escrito, pelo que uma escrita falhada obriga a reassinar; um
+`plan_id` admite uma só decisão — re-planear exige um run novo; a regra Cedar `allow_http_post`
+continua a exigir `region == "eu"`, resíduo herdado do AOS-407.
+
+---
+
+## AOS-409 — O `IsEffectTool` ganha o 4.º eixo — mutação — a partir de uma fonte de verdade que não seja o próprio plano
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-231 (validador e `IsEffectTool`), AOS-408 (o gate que consome o risco resolvido) |
+| Bloqueia | — |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/control-plane/orchestrator/planvalidate/verifier.go` (`IsEffectTool`), `packages/cmd/aos-orq/snapshot.go` (`carregarSnapshot`) |
+
+### Contexto
+
+É o eixo do **DEF-275**. O `IsEffectTool` classifica uma tool como «com efeito» por egress ou
+irreversibilidade, e ignora a **mutação**: uma tool que altera estado sem egress e reversível passa
+por inócua, e um verificador pode pinná-la. O registo dava como bloqueio «não existe construção de
+`planvalidate.Capability` fora de testes» — premissa que deixou de ser verdadeira: o `aos-orq`
+constrói-as do snapshot pinado (`carregarSnapshot`). O eixo do DEF-275 apontava para o AOS-238
+(fechado) e passou provisoriamente para o AOS-408, que não o implementa — este ticket existe para o
+eixo apontar para quem o fará.
+
+### Objectivo
+
+Uma tool que muta estado conta como efeito na validação e no risco, com o dado a vir de uma fonte
+que não seja o documento do plano.
+
+### Critérios de Aceitação
+
+- [ ] Decisão registada sobre a FONTE do eixo (campo do snapshot pinado vs. classificação do REG) e
+      sobre a omissão para snapshots existentes — fail-closed (todo o catálogo passa a «mutador») ou
+      transição declarada. Uma decisão fail-closed pode impedir planos de quem já corre.
+- [ ] `IsEffectTool` com o 4.º eixo e teste sobre o CATÁLOGO, não sobre literal de teste.
+- [ ] DEF-275 fecha com evidência.
+
+### Estado
+
+**POR FAZER.**
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -877,4 +1174,6 @@ Com o modelo de produção, `serve --goal` sem fixture produz um `PlanDocument` 
 | 1.1 | 2026-09-09 | +AOS-388 (Decomposer LLM de produção + wiring multi-nó no aos-orq): gradua a decomposição LLM offline (doubles) para viva, fechando DEF-803 e a dependência de Model Gateway nomeada em §2/§6. | Equipa AOS |
 | 1.2 | 2026-09-16 | +AOS-400 (o prompt de decomposição declara o schema do `PlanDocument`): a validação em produção do AOS-395 mostrou o modelo real a falhar 3/3 com `objective de topo em falta`; o critério de cabeçalho do AOS-391 passa a `[~]`. | Equipa AOS |
 | 1.3 | 2026-09-16 | AOS-400 implementado: prompt de decomposição 1.2.0 com o schema e as regras de grafo; o modelo de produção decompõe à primeira tentativa e o critério de cabeçalho do AOS-391 volta a `[x]`. | Equipa AOS |
+| 1.4 | 2026-09-17 | +AOS-408 (o gate de aprovação de plano fica composto no `aos-orq`): fecha o residual do DEF-274 (o mapeador `PlanDocument`→`planapproval.Plan` não existia em produção) e o fail-open do `needsCard` derivado do `risk_class` advisory; corrige o eixo de DEF-274/275, que citava o AOS-238 (fechado). | Equipa AOS |
+| 1.5 | 2026-09-18 | +AOS-409 (4.º eixo de mutação no `IsEffectTool`): passa a ser o eixo do DEF-275, que o AOS-408 não implementa. AOS-408: duas revisões adversariais e a fronteira de confiança declarada. | Equipa AOS |
 | 1.2 | 2026-09-10 | +AOS-389/390/391 (despacho governado do Planeador para v1.1 distribuído): guard fail-closed de condicionais (389), composição do `plandispatch.Dispatcher` sob Tenure com avaliação de elegibilidade/condicionais/headroom (390), e T2-B do Model Gateway (391). Origem: análise adversarial que mediu a violação fail-open do ADR-022 §2.1 no spawn-eager. | Equipa AOS |

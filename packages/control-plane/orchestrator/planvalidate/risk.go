@@ -163,6 +163,31 @@ type NodeRisk struct {
 // gate AOS-236 é a autoridade final; este é o sinal que ele consome.
 func (r NodeRisk) AutoApprovable() bool { return r.Resolved != plan.RiskDanger }
 
+// ResolveRisks devolve o risco RESOLVIDO de cada nó, por node_id, SEM passar pela regra 5
+// (orçamento) — é a regra 6 isolada (AOS-408).
+//
+// Existe porque o único ponto de entrada que resolvia risco era o [ValidateResources], e esse
+// rejeita fail-closed sem [BudgetPolicy.Pricer] (sem pricer não há re-preçamento, e ecoar o custo
+// do LLM é a falha que a regra 5 previne). Um chamador que não compõe tabela de preços — hoje o
+// `aos-orq` — ficava sem forma de obter o risco autoritativo e caía no `risk_class` ADVISORY do
+// documento, que é exactamente o que a regra 6 existe para não fazer.
+//
+// Não é uma segunda autoridade de classificação: delega no MESMO [resolveNodeRisk] que o
+// [ValidateResources] usa, com a mesma resolução de tools pelo snapshot e a mesma defesa em
+// profundidade (tool que não resolve ⇒ capability de eixos-zero ⇒ contribui `danger`). Puro, sem
+// I/O, determinístico. `pol` nil cai na [risk.DefaultPolicy].
+//
+// NÃO substitui a validação: as regras 1–4 continuam a ser pré-requisito (as tools têm de resolver
+// antes de o risco significar algo), e esta função não rejeita nada — resolve.
+func ResolveRisks(doc plan.PlanDocument, snap Snapshot, pol *risk.Policy) map[string]NodeRisk {
+	idx := snap.index()
+	out := make(map[string]NodeRisk, len(doc.Nodes))
+	for _, n := range doc.Nodes {
+		out[n.NodeID] = resolveNodeRisk(n, resolveCaps(n, idx), pol)
+	}
+	return out
+}
+
 // resolveNodeRisk deriva o risco de UM nó a partir das suas capabilities
 // resolvidas e aplica o «só eleva» sobre o rótulo declarado. Puro e determinístico
 // (função apenas dos eixos pinados e do rótulo). `pol` nil cai na [risk.DefaultPolicy].

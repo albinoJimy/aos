@@ -19,11 +19,16 @@ const snapshotCondicional = `{
 // `conditional_on`: o nó `recuperacao` só devia despachar se `recolha` REPROVAR
 // (`verdict eq fail`) — o ramo de recuperação de ADR-022 §2.1. `plan_version` é 1.1.0
 // porque `conditional_on` é aditivo dessa MINOR (semver do schema).
+// AOS-408: o capabilities_hash DECLARA o snapshot contra o qual o plano foi construido, e o
+// caminho do --plan-doc passou a exigir que corresponda (a mesma regra que o validador AOS-231 ja
+// impunha e que este caminho nunca chamava). O modelo e o prompt ficam FORJADOS de proposito — no
+// caminho do --goal o Decomposer sobrescreve-os —, mas o hash do snapshot nao pode ser forjado,
+// porque e dele que sai o risco de cada no.
 const planoCondicional = `{
   "plan_version": "1.1.0",
   "objective": "ramo condicional de recuperacao",
   "budget_total": {"tokens": 100, "cost_micro_usd": 100},
-  "planner_meta": {"model":"FORJADO","prompt_version":"9.9.9","capabilities_hash":"sha256:FORJADO"},
+"planner_meta": {"model":"FORJADO","prompt_version":"9.9.9","capabilities_hash":"sha256:snap-cond"},
   "nodes": [
     {"node_id":"recolha","role":"worker","objective":"recolher","depends_on":[],
      "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],

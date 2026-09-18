@@ -106,11 +106,19 @@ func carregarFixtureModel(path string) (fixtureModel, error) {
 
 // decomporEMaterializar corre o pipeline goal→DAG multi-nó sob a posse deste run: compõe
 // o backbone (identidade real + RM mínimo + orçamento partilhado), decompõe o objectivo
-// pelo PLANEADOR GOVERNADO, valida a estrutura (AOS-231) e materializa com o DELEGATOR
-// REAL. Fail-closed em cada passo. O gate humano fica de fora (DEF-274).
+// pelo PLANEADOR GOVERNADO, valida a estrutura (AOS-231), passa pelo GATE DE APROVAÇÃO
+// (AOS-408) e materializa com o DELEGATOR REAL. Fail-closed em cada passo.
+//
+// Um plano de risco (`danger`, ou lacuna de capacidade) NÃO materializa aqui: fica PENDENTE de
+// decisão humana como facto no log e a função devolve [errPlanoPendente], que o chamador traduz na
+// saída própria. A decisão é dada por fora, pelo subcomando `decide` — é o que torna a aprovação
+// ASSÍNCRONA em vez de prender o processo à espera de um humano.
+//
 // govAudit é o WORM durável de governação do gateway resolvido do ambiente (AOS-395), ou nil
 // para o MemStore de referência. Só é usado quando a decomposição vai pelo gateway vivo.
-func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store) error {
+// planOut, quando dado, é o ficheiro onde o documento pendente é escrito para o humano o rever e
+// para o `decide` o reapresentar (o documento cru NÃO vive no log, ADR-005 — só o seu hash).
+func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store, planOut string) error {
 	runID := ten.RunID()
 
 	// (1) BACKBONE DE IDENTIDADE REAL — emissor efémero + raiz humana + token do run.
@@ -229,6 +237,23 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 		return fmt.Errorf("plano rejeitado na validação estrutural (AOS-231): %s", v.Reason)
 	}
 
+	// (6-bis) GATE DE APROVAÇÃO DE PLANO (AOS-408, fecha o residual do DEF-274). Interpõe-se
+	// ANTES da materialização porque é essa a fronteira que dá a propriedade: nenhuma admissão
+	// no DAG e nenhum spawn sem que o plano esteja decidido. Um plano de risco sai daqui como
+	// PENDENTE — factos no log, nada materializado — e a decisão chega pelo subcomando `decide`.
+	hashDoPlano, err := gatearPlano(ctx, pedidoDeGate{
+		rec:       rec,
+		store:     store,
+		runID:     runID,
+		doc:       res.Doc,
+		snap:      snap,
+		tentativa: res.Attempts,
+		planOut:   planOut,
+	})
+	if err != nil {
+		return err // errPlanoPendente ⇒ saída 6; qualquer outro ⇒ fail-closed
+	}
+
 	// (7) MATERIALIZAÇÃO ADMISSÃO-PURA (AOS-390, ADR-024). A materialização admite os nós
 	// no DAG — folhas com a sua tool call, papéis-que-expandem como nós PENDENTES sem tool
 	// — e NÃO produz efeito. O spawn de papéis (Delegator.Spawn, AOS-026) e o arranque de
@@ -248,6 +273,12 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 		ParentToken:    runTok.Compact,
 		RootBudgetNode: runID,
 		Doc:            res.Doc,
+		// AOS-408: o hash que o gate DECIDIU. Hoje é a MESMA derivação que o materializador faria
+		// sozinho (sha256 sobre `plan.Encode` do mesmo documento), pelo que passá-lo não prova
+		// nada por si — o que amarra a materialização à decisão é o gate ter confrontado este
+		// hash com o `decision_ref`/`plan_hash` da decisão no log. Passa-se explicitamente para o
+		// facto `plan.materialized` citar o hash que foi decidido, e não um recalculado.
+		PlanHash: hashDoPlano,
 	})
 	if err != nil {
 		if rerr := adm.Release(ctx); rerr != nil {
@@ -273,7 +304,7 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	if err != nil {
 		return fmt.Errorf("delegator: %w", err)
 	}
-	if err := composeEDespachar(ctx, ten, store, rec, del, bud, runTok.Compact, res.Doc, payload, worker); err != nil {
+	if err := composeEDespachar(ctx, ten, store, rec, del, bud, runTok.Compact, res.Doc, payload, worker, snap); err != nil {
 		return fmt.Errorf("despacho governado: %w", err)
 	}
 	return nil

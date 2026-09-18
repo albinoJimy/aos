@@ -313,6 +313,24 @@ func aggregateClass(nodes []PlanNode) risk.Class {
 	return worst
 }
 
+// temLacunaDeCapacidade diz se algum nó do plano tem uma LACUNA DE CAPACIDADE aberta
+// ([PlanNode.CapabilityGap]) — a condição que, desde AOS-408, impede a auto-aprovação por nível de
+// autonomia em [PlanGate.Approve].
+//
+// Vive ao lado de [aggregateClass] porque é o segundo predicado agregado do plano, e a razão de
+// serem dois está no que cada um sabe: a classe agrega RISCO CONHECIDO (e a [autonomy.Oversight]
+// sabe decidir sobre ele); o gap é a ausência de autorização para a capability, que nenhum nível
+// de autonomia pode suprir. [PlanCard.ForcedTaskIDs] já os tratava aos dois — era só a
+// auto-aprovação que via um e não o outro.
+func temLacunaDeCapacidade(nodes []PlanNode) bool {
+	for _, n := range nodes {
+		if n.CapabilityGap {
+			return true
+		}
+	}
+	return false
+}
+
 // classSeverity ordena as classes por severidade para a agregação: danger(3) > gray(2)
 // > safe(1). Espelha a semântica fail-closed de [risk.Class] (danger é o valor-zero, o
 // pior caso).
