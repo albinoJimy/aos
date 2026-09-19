@@ -188,6 +188,24 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 	riscos := planvalidate.ResolveRisks(p.doc, p.snap, nil)
 	pl := planoParaGate(p.doc, riscos, p.runID, agenteDoRun(p.runID), dominioDeAutonomia)
 
+	// O ESTADO DA DECISÃO, lido ANTES de apensar factos (AOS-412). Um `plan_id` admite UMA
+	// decisão terminal; se ela já existe e não é a aprovação DESTE organigrama, este plano não é
+	// decidível neste run — e dizê-lo como «pendente» era mentir: o `decide` recusaria depois
+	// («ja tem decisao terminal»), e o operador ficava num beco. É o caso normal com o modelo vivo:
+	// aprovado o organigrama H1, repetir o `--goal` re-decompõe e produz H2.
+	estado, err := lerDecisaoDoPlano(ctx, p.store, p.rec.PlanID())
+	if err != nil {
+		return "", err
+	}
+	if d := estado.Decision(); d != "" && !(estado.Approved() && estado.DecidedHash() == hash) {
+		dica := "este plano ja foi decidido; um plano novo exige um run novo"
+		if estado.Approved() {
+			dica = "para executar o organigrama APROVADO use `aos-orq serve --plan-doc <documento aprovado>` — repetir o `--goal` re-decompoe e produz outro"
+		}
+		return "", fmt.Errorf("%w: o plano %s ja tem decisao terminal %q (%s) para o organigrama %s, e este e %s — %s",
+			errDecisaoRecusada, p.rec.PlanID(), d, estado.DecisionRef(), estado.DecidedHash(), hash, dica)
+	}
+
 	if _, err := p.rec.RecordProposed(ctx, plannerevents.ProposedPayload{
 		PlanHash: hash,
 		Meta: plannerevents.PlannerMeta{
@@ -214,16 +232,34 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 		// A DECISÃO PODE JÁ EXISTIR: é este o caminho de retoma depois da cerimónia. Sem ele, um
 		// plano aprovado ficava pendente para sempre — a decisão não levava a lado nenhum, e o
 		// oráculo de cartão do despacho nunca era consultado (só se chega ao despacho por aqui).
-		decidido, err := decisaoHumanaNoLog(ctx, p.store, p.rec.PlanID(), hash, p.snap)
-		if err != nil {
-			return "", err
-		}
-		if decidido {
+		if estado.AprovadoPorHumano(hash) {
+			// Decidido por humano para ESTE organigrama — mas sob que catálogo, e em que run?
+			// Materializar sob outro catálogo é executar um risco que ninguém decidiu, e a decisão
+			// de um run não atravessa para outro.
+			if err := exigirSnapshotSelado(estado, p.snap); err != nil {
+				return "", err
+			}
 			if err := exigirPlanoDoRun(p.runID, p.rec.PlanID()); err != nil {
 				return "", err
 			}
 			fmt.Printf("gate de plano: APROVADO por humano (decisao no log) plan_hash=%s nos_de_risco=%d\n", hash, len(forcados))
 			return hash, nil
+		}
+		if estado.Approved() {
+			// Aprovado para este hash, mas pela MÁQUINA (auto-aprovação de quando o plano não
+			// tinha nós de risco — por exemplo, sob outro catálogo). A auto-aprovação não autoriza
+			// nós de risco, e o plano já não é decidível: recusa em vez de um pendente sem saída.
+			return "", fmt.Errorf("%w: o plano %s foi aprovado pela maquina (%s) e agora tem nos de risco — uma auto-aprovacao nao os autoriza; um run novo",
+				errDecisaoRecusada, p.rec.PlanID(), estado.DecisionRef())
+		}
+		if estado.Validated() && estado.PlanHash() != hash {
+			// O plano JÁ está pendente, mas de OUTRO organigrama: o `plan.validated` é de
+			// primeira-escrita (o passo é fixo), pelo que o `decide` ancora no primeiro hash e
+			// este não seria decidível — outro «pendente» era outro beco, e reescrever o
+			// `--plan-out` perdia o documento do plano que o É. Com o modelo vivo é o caso de
+			// repetir o `--goal` antes da decisão.
+			return "", fmt.Errorf("%w: o plano %s ja esta pendente para o organigrama %s, e este e %s — decida o documento pendente (`aos-orq decide --plan-doc <documento pendente>`) e execute-o com `aos-orq serve --plan-doc`; repetir o `--goal` re-decompoe e produz outro",
+				errDecisaoRecusada, p.rec.PlanID(), estado.PlanHash(), hash)
 		}
 		if err := escreverDocumentoPendente(p.planOut, p.doc); err != nil {
 			return "", err
@@ -231,6 +267,18 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 		fmt.Printf("pendente de aprovacao humana: plano=%s plan_hash=%s %s\n", p.rec.PlanID(), hash, resumoDosForcados(pl, forcados))
 		fmt.Printf("  decida com: aos-orq decide --run %s --plan-doc <doc.json> --decision approve|reject --approval <aprovacao.json>\n", p.runID)
 		return "", fmt.Errorf("%w: plano=%s plan_hash=%s", errPlanoPendente, p.rec.PlanID(), hash)
+	}
+
+	// Sem nós de risco e JÁ aprovado para este organigrama (uma repetição do mesmo comando, ou o
+	// `--plan-doc` depois do `--goal`): segue sem reescrever a decisão.
+	// O catálogo tem de ser o SELADO: o risco, as capabilities do token e o cartão do despacho
+	// derivam dele, e um snapshot com o mesmo rótulo e eixos benignos baixava-os todos.
+	if estado.Approved() {
+		if err := exigirSnapshotSelado(estado, p.snap); err != nil {
+			return "", err
+		}
+		fmt.Printf("gate de plano: ja APROVADO (%s) plan_hash=%s\n", estado.DecisionRef(), hash)
+		return hash, nil
 	}
 
 	// Sem nós de risco: o plano passa pelo GATE (não por um atalho) e auto-aprova pelo nível de
@@ -265,109 +313,14 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 	return hash, nil
 }
 
-// exigirDecisaoParaDocumento fecha o contorno do `--plan-doc` (AOS-408).
-//
-// A flag afirma «documento APROVADO» e, até aqui, nada o verificava: um plano de risco entregue
-// por ficheiro materializava sem passar pelo gate. Uma barreira que se contorna com outra flag não
-// é uma barreira.
-//
-// Regras, por esta ordem:
-//   - plano SEM nós de risco ⇒ passa (é o caminho comum, e o gate auto-aprovaria);
-//   - plano de risco COM `plan.approved` no log E hash coincidente ⇒ passa;
-//   - plano de risco com decisão APROVADA de OUTRO organigrama ⇒ recusa (é o ataque óbvio:
-//     aprovar um plano inócuo e materializar outro);
-//   - plano de risco recusado ⇒ recusa; sem decisão ⇒ PENDENTE (os factos são apensos para o
-//     pendente ser derivável, como no caminho do `--goal`).
-func exigirDecisaoParaDocumento(ctx context.Context, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, runID string, doc plan.PlanDocument, snap planvalidate.Snapshot) error {
-	// A amarra do snapshot vem PRIMEIRO: sem ela, tudo o que se decide a seguir foi calculado
-	// sobre entradas escolhidas por quem invoca o comando.
-	if err := exigirSnapshotDoPlano(doc, snap); err != nil {
-		return err
-	}
-	riscos := planvalidate.ResolveRisks(doc, snap, nil)
-	pl := planoParaGate(doc, riscos, rec.PlanID(), agenteDoRun(rec.PlanID()), dominioDeAutonomia)
-	forcados := nosQueExigemHumano(pl)
-	if len(forcados) == 0 {
-		return nil
-	}
-	hash := hashDoPlano(doc)
-	if hash == "" {
-		return errors.New("hash canonico do plano nao derivavel (fail-closed)")
-	}
-	leitor, err := runlifecycle.NewPlanDecisionReader(store, rec.PlanID())
-	if err != nil {
-		return err
-	}
-	estado, err := leitor.Snapshot(ctx)
-	if err != nil {
-		return err
-	}
-	switch {
-	case estado.AprovadoPorHumano(hash):
-		// A decisão só vale no plano DO RUN que materializa, e sob o MESMO catálogo em que o plano
-		// ficou pendente — senão uma aprovação autorizaria outro run, ou um risco que não foi o
-		// decidido.
-		if err := exigirPlanoDoRun(runID, rec.PlanID()); err != nil {
-			return err
-		}
-		if err := exigirSnapshotSelado(estado, snap); err != nil {
-			return err
-		}
-		fmt.Printf("gate de plano: APROVADO por humano (%s) plan_hash=%s nos_de_risco=%d\n", estado.DecisionRef(), hash, len(forcados))
-		return nil
-	case estado.Approved():
-		// Há aprovação, mas não é DESTE organigrama ou não é de um humano. As duas recusas são a
-		// mesma classe de erro: tomar por autorização uma decisão que autorizou outra coisa.
-		return fmt.Errorf("%w: o log tem `approved` com hash %q e referencia %q; este documento e %q e exige decisao humana",
-			errDecisaoRecusada, estado.DecidedHash(), estado.DecisionRef(), hash)
-	case estado.Decision() != "":
-		return fmt.Errorf("%w: o plano tem decisao terminal %q no log", errDecisaoRecusada, estado.Decision())
-	}
-	// Sem decisão: apensa os factos do pendente (idempotentes por plano+passo) e sai pendente.
-	if _, err := rec.RecordProposed(ctx, plannerevents.ProposedPayload{
-		PlanHash: hash,
-		Meta: plannerevents.PlannerMeta{
-			Model:            doc.PlannerMeta.Model,
-			PromptVersion:    doc.PlannerMeta.PromptVersion,
-			CapabilitiesHash: doc.PlannerMeta.CapabilitiesHash,
-		},
-	}); err != nil {
-		return fmt.Errorf("facto da proposta do plano: %w", err)
-	}
-	if _, err := rec.RecordValidated(ctx, plannerevents.ValidatedPayload{
-		PlanHash:       hash,
-		NodeCount:      len(doc.Nodes),
-		BudgetTotal:    clampU64ToInt64(doc.BudgetTotal.Tokens),
-		MaxNodes:       planvalidate.DefaultMaxNodes,
-		SnapshotDigest: digestDoSnapshot(snap),
-	}); err != nil {
-		return fmt.Errorf("facto da validação do plano: %w", err)
-	}
-	fmt.Printf("pendente de aprovacao humana: plano=%s plan_hash=%s %s\n", rec.PlanID(), hash, resumoDosForcados(pl, forcados))
-	return fmt.Errorf("%w: plano=%s plan_hash=%s", errPlanoPendente, rec.PlanID(), hash)
-}
-
-// decisaoHumanaNoLog diz se existe, no stream do plano, uma decisão APROVADA por humano para ESTE
-// hash. Fail-closed: qualquer outra coisa (sem decisão, recusa, aprovação de outro hash,
-// auto-aprovação da máquina) é «não».
-func decisaoHumanaNoLog(ctx context.Context, store runlifecycle.EventStore, planID, hash string, snap planvalidate.Snapshot) (bool, error) {
+// lerDecisaoDoPlano relê o stream do plano e devolve o retrato da decisão (pendente, aprovada,
+// recusada; hash e referência da decisão; digest do snapshot selado).
+func lerDecisaoDoPlano(ctx context.Context, store runlifecycle.EventStore, planID string) (*runlifecycle.PlanDecisionSnapshot, error) {
 	leitor, err := runlifecycle.NewPlanDecisionReader(store, planID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	estado, err := leitor.Snapshot(ctx)
-	if err != nil {
-		return false, err
-	}
-	if !estado.AprovadoPorHumano(hash) {
-		return false, nil
-	}
-	// Há decisão humana para este hash — mas tomada sob que catálogo? Materializar sob outro é
-	// executar um risco que ninguém decidiu. Recusa (erro, não «não decidido»: não é pendente).
-	if err := exigirSnapshotSelado(estado, snap); err != nil {
-		return false, err
-	}
-	return true, nil
+	return leitor.Snapshot(ctx)
 }
 
 // oraculoDeCartao é o [plandispatch.CardOracle] do despacho: um nó que exige cartão só é autorizado

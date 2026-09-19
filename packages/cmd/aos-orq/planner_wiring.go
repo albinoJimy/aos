@@ -121,10 +121,111 @@ func carregarFixtureModel(path string) (fixtureModel, error) {
 func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store, planOut string) error {
 	runID := ten.RunID()
 
+	// (1)–(3) BASE DE EXECUÇÃO — identidade real, RM mínimo e orçamento partilhado. É a MESMA que
+	// o `--plan-doc` compõe (AOS-412): as duas vias só diferem na ORIGEM do documento.
+	b, err := comporBaseDeExecucao(ctx, runID, worker, snap)
+	if err != nil {
+		return err
+	}
+
+	// (3-bis) MODEL GATEWAY (AOS-391) — quando NÃO há fixture, o `model` chega nil e a
+	// decomposição usa o LLM vivo via Model Gateway, sob a identidade do issuer efémero e o
+	// token do run (que sela `model:invoke`). O verifier trusta o issuer deste run. Sem
+	// gateway configurado, é fail-closed (a montante, em main).
+	if model == nil {
+		verifier := identity.NewVerifier(identity.WithTrustedIssuer("iss:aos-orq", b.iss.PublicKey()))
+		gwModel, mErr := construirModeloGateway(ctx, gwCfg, verifier, b.tokenDoRun, govAudit)
+		if mErr != nil {
+			return fmt.Errorf("model gateway: %w", mErr)
+		}
+		model = gwModel
+	}
+
+	// (4) DECOMPOSER + PLANEADOR GOVERNADO.
+	dec, err := decompose.New(model, decompose.WithModelID("aos-orq/decompose"), decompose.WithCapabilities(renderCapabilities(snap)))
+	if err != nil {
+		return fmt.Errorf("decompositor: %w", err)
+	}
+	pl, err := planner.NewPlanner(b.bud, b.mon, b.iss, dec)
+	if err != nil {
+		return fmt.Errorf("planeador: %w", err)
+	}
+
+	// (5) DECOMPOSE(goal) — sob mediação, reserva e NHI filha reais.
+	res, err := pl.Decompose(ctx, planner.DecomposeRequest{
+		RunID:             runID,
+		PlanID:            rec.PlanID(),
+		ParentBudgetNode:  runID,
+		PlannerBudgetNode: runID + "-planner",
+		ParentToken:       b.tokenDoRun,
+		Child: identity.ChildRequest{
+			AgentID:    "agent:planner",
+			AgentClass: classePlaneador,
+			Authority:  []string{capPlan},
+		},
+		Context: planner.PlanningContext{
+			Goal:             goal,
+			ContextUnits:     int64(len(goal)/4) + 1,
+			CapabilitiesHash: snap.Hash,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("decomposição do objectivo: %w", err)
+	}
+	fmt.Printf("decomposto: objectivo -> plano de %d nos (tentativas=%d, planner_nhi=%s)\n", len(res.Doc.Nodes), res.Attempts, res.PlannerNHI)
+
+	// (6) VALIDAÇÃO ESTRUTURAL (AOS-231) — fail-closed. O documento é untrusted; a forma
+	// já passou em plan.Decode, aqui valida-se aciclicidade/tools/tectos contra o snapshot
+	// pinado. O tecto de cardinalidade é o DERIVADO da revisibilidade humana.
+	if err := validarEstrutura(res.Doc, snap); err != nil {
+		return err
+	}
+
+	// (6-bis) GATE DE APROVAÇÃO DE PLANO (AOS-408, fecha o residual do DEF-274). Interpõe-se
+	// ANTES da materialização porque é essa a fronteira que dá a propriedade: nenhuma admissão
+	// no DAG e nenhum spawn sem que o plano esteja decidido. Um plano de risco sai daqui como
+	// PENDENTE — factos no log, nada materializado — e a decisão chega pelo subcomando `decide`.
+	hashDoPlano, err := gatearPlano(ctx, pedidoDeGate{
+		rec:       rec,
+		store:     store,
+		runID:     runID,
+		doc:       res.Doc,
+		snap:      snap,
+		tentativa: res.Attempts,
+		planOut:   planOut,
+	})
+	if err != nil {
+		return err // errPlanoPendente ⇒ saída 6; qualquer outro ⇒ fail-closed
+	}
+
+	// (7)+(8) MATERIALIZAÇÃO ADMISSÃO-PURA e DESPACHO GOVERNADO — a mesma função que o
+	// `--plan-doc` usa (AOS-412).
+	return materializarEDespachar(ctx, ten, store, rec, b, snap, res.Doc, hashDoPlano, worker)
+}
+
+// baseDeExecucao é o que um run precisa para materializar e despachar sob identidade real
+// (AOS-412): o emissor efémero, o token do run (a raiz da cadeia de delegação), o RM mínimo
+// com as tools do planeador e do spawn, e o orçamento partilhado da árvore.
+//
+// Existe como tipo porque passou a ter DOIS chamadores — o `--goal`, que ainda decompõe, e o
+// `--plan-doc`, que recebe um documento já aprovado. Antes, só o `--goal` a compunha, e o
+// `--plan-doc` materializava com um token de faz-de-conta (`"nhi:"+worker`) e sem despacho: um
+// plano aprovado por essa via era admitido no DAG e ficava pendente para sempre.
+type baseDeExecucao struct {
+	iss        *identity.Issuer
+	tokenDoRun string
+	mon        *rm.Monitor
+	bud        *budget.Budget
+}
+
+// comporBaseDeExecucao compõe a base de execução de um run: (1) backbone de identidade real —
+// emissor efémero, raiz humana e token do run —, (2) RM mínimo com as tools do planeador e do
+// spawn registadas, (3) orçamento partilhado por Planner + Delegator + admissão.
+func comporBaseDeExecucao(ctx context.Context, runID, worker string, snap planvalidate.Snapshot) (*baseDeExecucao, error) {
 	// (1) BACKBONE DE IDENTIDADE REAL — emissor efémero + raiz humana + token do run.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return fmt.Errorf("chave do emissor: %w", err)
+		return nil, fmt.Errorf("chave do emissor: %w", err)
 	}
 	// AOS-393: a autoridade sobre TOOLS que a cadeia de delegação do run tem de carregar
 	// para materializar papéis que as usam — a UNIÃO das capabilities coarse do snapshot
@@ -150,7 +251,7 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	}
 	iss, err := identity.NewIssuer("iss:aos-orq", priv, classes)
 	if err != nil {
-		return fmt.Errorf("emissor de identidade: %w", err)
+		return nil, fmt.Errorf("emissor de identidade: %w", err)
 	}
 	runTok, err := iss.Issue(ctx, identity.IssueRequest{
 		UserID:        "human:" + worker,
@@ -159,107 +260,55 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 		UserAuthority: coordCaps,
 	})
 	if err != nil {
-		return fmt.Errorf("token NHI do run: %w", err)
+		return nil, fmt.Errorf("token NHI do run: %w", err)
 	}
 
 	// (2) RM MÍNIMO — permite genuinamente e regista a tool do planeador (senão
 	// default-deny). É o "RM real" do teste do planner; a cadeia PDP completa é posterior.
 	mon := rm.New()
 	if err := mon.Register("agent.plan", func(context.Context, []byte) ([]byte, error) { return nil, nil }); err != nil {
-		return fmt.Errorf("registo da tool do planeador: %w", err)
+		return nil, fmt.Errorf("registo da tool do planeador: %w", err)
 	}
 	// AOS-393: o Delegator medeia o spawn de papéis-que-expandem com a tool `agent.spawn`
 	// (default do `NewDelegator`). Sem a registar, o RM nega-o por default-deny e a
 	// materialização de um papel aborta. Registá-la mantém a mediação OBRIGATÓRIA (o RM
 	// corre a cadeia neutra + este handler antes de permitir) — não a contorna.
 	if err := mon.Register("agent.spawn", func(context.Context, []byte) ([]byte, error) { return nil, nil }); err != nil {
-		return fmt.Errorf("registo da tool de spawn: %w", err)
+		return nil, fmt.Errorf("registo da tool de spawn: %w", err)
 	}
 
 	// (3) ORÇAMENTO PARTILHADO por Planner + Delegator + admissão da materialização (uma
 	// só árvore, raiz = runID). Tecto local generoso (o tecto real vem do plano de
-	// controlo — limitação de escopo deste binário, como em materializar).
+	// controlo — limitação de escopo deste binário).
 	bud, err := budget.New(runID, budget.Amount{Tokens: materializeBudgetTokens, CostMicroUSD: materializeBudgetCost})
 	if err != nil {
-		return fmt.Errorf("orçamento da árvore: %w", err)
+		return nil, fmt.Errorf("orçamento da árvore: %w", err)
 	}
+	return &baseDeExecucao{iss: iss, tokenDoRun: runTok.Compact, mon: mon, bud: bud}, nil
+}
 
-	// (3-bis) MODEL GATEWAY (AOS-391) — quando NÃO há fixture, o `model` chega nil e a
-	// decomposição usa o LLM vivo via Model Gateway, sob a identidade do issuer efémero e o
-	// token do run (que sela `model:invoke`). O verifier trusta o issuer deste run. Sem
-	// gateway configurado, é fail-closed (a montante, em main).
-	if model == nil {
-		verifier := identity.NewVerifier(identity.WithTrustedIssuer("iss:aos-orq", iss.PublicKey()))
-		gwModel, mErr := construirModeloGateway(ctx, gwCfg, verifier, runTok.Compact, govAudit)
-		if mErr != nil {
-			return fmt.Errorf("model gateway: %w", mErr)
-		}
-		model = gwModel
-	}
-
-	// (4) DECOMPOSER + PLANEADOR GOVERNADO.
-	dec, err := decompose.New(model, decompose.WithModelID("aos-orq/decompose"), decompose.WithCapabilities(renderCapabilities(snap)))
-	if err != nil {
-		return fmt.Errorf("decompositor: %w", err)
-	}
-	pl, err := planner.NewPlanner(bud, mon, iss, dec)
-	if err != nil {
-		return fmt.Errorf("planeador: %w", err)
-	}
-
-	// (5) DECOMPOSE(goal) — sob mediação, reserva e NHI filha reais.
-	res, err := pl.Decompose(ctx, planner.DecomposeRequest{
-		RunID:             runID,
-		PlanID:            rec.PlanID(),
-		ParentBudgetNode:  runID,
-		PlannerBudgetNode: runID + "-planner",
-		ParentToken:       runTok.Compact,
-		Child: identity.ChildRequest{
-			AgentID:    "agent:planner",
-			AgentClass: classePlaneador,
-			Authority:  []string{capPlan},
-		},
-		Context: planner.PlanningContext{
-			Goal:             goal,
-			ContextUnits:     int64(len(goal)/4) + 1,
-			CapabilitiesHash: snap.Hash,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("decomposição do objectivo: %w", err)
-	}
-	fmt.Printf("decomposto: objectivo -> plano de %d nos (tentativas=%d, planner_nhi=%s)\n", len(res.Doc.Nodes), res.Attempts, res.PlannerNHI)
-
-	// (6) VALIDAÇÃO ESTRUTURAL (AOS-231) — fail-closed. O documento é untrusted; a forma
-	// já passou em plan.Decode, aqui valida-se aciclicidade/tools/tectos contra o snapshot
-	// pinado. O tecto de cardinalidade é o DERIVADO da revisibilidade humana.
-	if v := planvalidate.Validate(res.Doc, snap, planvalidate.Ceilings{MaxNodes: planvalidate.DefaultMaxNodes}); v.Rejected() {
+// validarEstrutura corre a validação estrutural (AOS-231) — aciclicidade, resolução das tools no
+// snapshot pinado, tectos. Fail-closed: o documento é untrusted venha de onde vier — do modelo, ou
+// de um ficheiro que um operador passou em `--plan-doc` (que, até ao AOS-412, não era validado).
+func validarEstrutura(doc plan.PlanDocument, snap planvalidate.Snapshot) error {
+	if v := planvalidate.Validate(doc, snap, planvalidate.Ceilings{MaxNodes: planvalidate.DefaultMaxNodes}); v.Rejected() {
 		return fmt.Errorf("plano rejeitado na validação estrutural (AOS-231): %s", v.Reason)
 	}
+	return nil
+}
 
-	// (6-bis) GATE DE APROVAÇÃO DE PLANO (AOS-408, fecha o residual do DEF-274). Interpõe-se
-	// ANTES da materialização porque é essa a fronteira que dá a propriedade: nenhuma admissão
-	// no DAG e nenhum spawn sem que o plano esteja decidido. Um plano de risco sai daqui como
-	// PENDENTE — factos no log, nada materializado — e a decisão chega pelo subcomando `decide`.
-	hashDoPlano, err := gatearPlano(ctx, pedidoDeGate{
-		rec:       rec,
-		store:     store,
-		runID:     runID,
-		doc:       res.Doc,
-		snap:      snap,
-		tentativa: res.Attempts,
-		planOut:   planOut,
-	})
-	if err != nil {
-		return err // errPlanoPendente ⇒ saída 6; qualquer outro ⇒ fail-closed
-	}
-
-	// (7) MATERIALIZAÇÃO ADMISSÃO-PURA (AOS-390, ADR-024). A materialização admite os nós
-	// no DAG — folhas com a sua tool call, papéis-que-expandem como nós PENDENTES sem tool
-	// — e NÃO produz efeito. O spawn de papéis (Delegator.Spawn, AOS-026) e o arranque de
-	// folhas são do despacho governado (plandispatch.Dispatcher/DispatchSink), composto e
-	// corrido em (8), disparados por elegibilidade.
-	adm, err := runlifecycle.NewBudgetAdmission(bud, runID)
+// materializarEDespachar admite os nós do plano DECIDIDO no DAG e despacha-os pela cadeia
+// governada (AOS-412: um só caminho para o `--goal` e o `--plan-doc`).
+//
+// (7) MATERIALIZAÇÃO ADMISSÃO-PURA (AOS-390, ADR-024). A materialização admite os nós no DAG —
+// folhas com a sua tool call, papéis-que-expandem como nós PENDENTES sem tool — e NÃO produz
+// efeito. (8) DESPACHO GOVERNADO: o efeito por-nó nasce aqui — o plandispatch.Dispatcher decide a
+// elegibilidade (gate + estado + depends_on + condicionais com poda branch_not_taken + cartão +
+// headroom) e entrega os nós elegíveis ao DispatchSink — papel→Delegator.Spawn, folha→arranque.
+// Sob a MESMA posse; o SCH continua derivador.
+func materializarEDespachar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, b *baseDeExecucao, snap planvalidate.Snapshot, doc plan.PlanDocument, hashDoPlano, worker string) error {
+	runID := ten.RunID()
+	adm, err := runlifecycle.NewBudgetAdmission(b.bud, runID)
 	if err != nil {
 		return err
 	}
@@ -270,9 +319,9 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	payload, err := m.Materialize(ctx, planmaterialize.Request{
 		RunID:          runID,
 		PlanID:         rec.PlanID(),
-		ParentToken:    runTok.Compact,
+		ParentToken:    b.tokenDoRun,
 		RootBudgetNode: runID,
-		Doc:            res.Doc,
+		Doc:            doc,
 		// AOS-408: o hash que o gate DECIDIU. Hoje é a MESMA derivação que o materializador faria
 		// sozinho (sha256 sobre `plan.Encode` do mesmo documento), pelo que passá-lo não prova
 		// nada por si — o que amarra a materialização à decisão é o gate ter confrontado este
@@ -281,6 +330,9 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 		PlanHash: hashDoPlano,
 	})
 	if err != nil {
+		// FAIL-CLOSED SEM VAZAR: a materialização é em duas fases e aborta antes de qualquer
+		// efeito, mas os nós JÁ admitidos deixaram reservas pendentes. Sem esta devolução,
+		// cada tentativa falhada encolhia a árvore até negar tudo.
 		if rerr := adm.Release(ctx); rerr != nil {
 			return fmt.Errorf("materialização falhou (%w) e a devolução das reservas também: %v", err, rerr)
 		}
@@ -295,16 +347,11 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 		fmt.Printf("  no=%s kind=%s tools=%s\n", n.NodeID, n.Kind, strings.Join(n.Tools, "|"))
 	}
 
-	// (8) DESPACHO GOVERNADO (AOS-390, ADR-024). O efeito por-nó nasce AQUI, não na
-	// materialização: o plandispatch.Dispatcher decide a elegibilidade (gate + estado +
-	// depends_on + condicionais com poda branch_not_taken + cartão + headroom) e entrega os
-	// nós elegíveis ao DispatchSink — papel→Delegator.Spawn, folha→arranque. Sob a MESMA
-	// posse; o SCH continua derivador (não escreve ciclo de vida por outra via).
-	del, err := orchestrator.NewDelegator(bud, mon, iss)
+	del, err := orchestrator.NewDelegator(b.bud, b.mon, b.iss)
 	if err != nil {
 		return fmt.Errorf("delegator: %w", err)
 	}
-	if err := composeEDespachar(ctx, ten, store, rec, del, bud, runTok.Compact, res.Doc, payload, worker, snap); err != nil {
+	if err := composeEDespachar(ctx, ten, store, rec, del, b.bud, b.tokenDoRun, doc, payload, worker, snap); err != nil {
 		return fmt.Errorf("despacho governado: %w", err)
 	}
 	return nil

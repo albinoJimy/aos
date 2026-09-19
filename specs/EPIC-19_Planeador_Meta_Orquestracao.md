@@ -1109,7 +1109,8 @@ plano foi aprovado», não «este nó foi revisto»; não há dual-control por-e
 distintos); o selo do canal HITL é in-memory neste binário (a decisão durável vive no Event Store) e
 um WORM próprio para o gate fica para ticket separado — o não-repúdio da decisão fica, portanto,
 na referência `hitl:<principal>` do log e NÃO na assinatura, que não é re-verificável depois; com o
-modelo vivo, um plano aprovado não despacha (o `--plan-doc` nunca despachou); o nonce é consumido
+modelo vivo, um plano aprovado não despachava (o `--plan-doc` nunca despachou) — fechado pelo
+AOS-412; o nonce é consumido
 antes de o facto da decisão ser escrito, pelo que uma escrita falhada obriga a reassinar; um
 `plan_id` admite uma só decisão — re-planear exige um run novo; a regra Cedar `allow_http_post`
 continua a exigir `region == "eu"`, resíduo herdado do AOS-407.
@@ -1160,6 +1161,92 @@ que não seja o documento do plano.
 
 ---
 
+## AOS-412 — Com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-408 (o gate de aprovação de plano), AOS-390 (materialização admit-only, efeito no despacho) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/main.go` (`materializar`), `packages/cmd/aos-orq/planner_wiring.go` (`comporBaseDeExecucao`, `materializarEDespachar`), `packages/cmd/aos-orq/plan_gate_wiring.go` (`gatearPlano`) |
+
+### Contexto
+
+O AOS-408 compôs o gate e validou-o em produção (v0.1.22) com o planeador de fixture, que é
+determinístico: repetir o `serve --goal` depois do `decide` re-decompõe no MESMO organigrama e o
+plano aprovado corre. Com o **modelo vivo** não é assim — a segunda decomposição produz outro
+organigrama (outro `plan_hash`), e o registo do AOS-408 declarava-o como resíduo: «com o modelo
+vivo, um plano aprovado não despacha». Havia dois becos:
+
+- o `--goal` repetido dizia «pendente» sobre um `plan_id` que JÁ tinha decisão terminal, e o
+  `decide` recusava-o depois («ja tem decisao terminal») — um pendente sem saída;
+- o `--plan-doc`, a via determinística, **parava na admissão**: materializava com um token de
+  faz-de-conta (`"nhi:"+worker`), não despachava (os nós ficavam pendentes para sempre) e nem
+  sequer corria a validação estrutural AOS-231, que só o `--goal` chamava.
+
+Ou seja: o caso para que o gate existe — aprovar um organigrama de risco e vê-lo correr — não era
+possível em produção com o planeador real.
+
+### Objectivo
+
+O `serve --plan-doc` percorre o mesmo caminho do `--goal`, menos a decomposição: validação
+estrutural → o MESMO gate → base de execução real (identidade, RM, orçamento) → materializar →
+**despachar**. E o `--goal` sobre um plano já decidido recusa em vez de mentir «pendente».
+
+### Critérios de Aceitação
+
+- [x] `serve --plan-doc <documento aprovado>` materializa E despacha o organigrama aprovado,
+      incluindo o nó de risco. *(Evidência: `TestAOS412_ComModeloVivoOPlanoAprovadoCorrePeloPlanDoc`
+      — aprova H1, simula a re-decomposição com um H2 diferente e corre H1 pelo `--plan-doc`:
+      «APROVADO por humano», `folha publicacao a arrancar`, `nos_despachados=2`.)*
+- [x] O `--goal` sobre um `plan_id` com decisão terminal para OUTRO organigrama sai com **7** e
+      indica o caminho (`--plan-doc`), sem materializar. *(Evidência: o mesmo teste, passo 1.)*
+- [x] O documento do `--plan-doc` é untrusted como o do modelo: passa pela validação AOS-231.
+      *(Evidência: `TestAOS412_PlanDocValidaAEstrutura` — uma tool fora do snapshot é recusada
+      com a regra AOS-231.)*
+- [x] Um plano sem risco pelo `--plan-doc` passa pelo MESMO gate (auto-aprova, com os factos no
+      log) e despacha. *(Evidência: `TestAOS412_PlanDocSemRiscoAutoAprovaEDespacha`.)*
+- [x] Um só gate para as duas vias: `exigirDecisaoParaDocumento` (a verificação paralela do
+      `--plan-doc`) sai; o `gatearPlano` lê a decisão ANTES de apensar factos.
+- [x] Um segundo organigrama de risco sobre um plano JÁ pendente de outro sai com **7** e não
+      reescreve o documento pendente (o `plan.validated` é de primeira-escrita e o `decide` ancora
+      nele). *(Evidência: `TestAOS412_SegundoOrganigramaSobrePendenteRecusa`.)*
+- [x] Reutilizar uma aprovação (ramo sem risco) exige o catálogo SELADO, como o ramo de risco.
+      *(Evidência: `TestAOS412_AprovacaoReutilizadaExigeOSnapshotSelado`.)*
+- [x] O runbook da cerimónia (`deploy/server/README.md`) executa o plano aprovado pelo `--plan-doc`.
+
+**FALHA-ANTES:** os três testes, contra os ficheiros de produção da base (`main.go`,
+`planner_wiring.go`, `plan_gate_wiring.go` repostos), falham pela razão que medem — o H2 saía **6**
+(pendente) em vez de 7; o documento com tool desconhecida não era recusado pela AOS-231; o plano sem
+risco não passava pelo gate nem despachava.
+
+**Fixtures corrigidas.** Dois testes antigos usavam documentos que a regra AOS-231 recusa e que
+passavam só porque o `--plan-doc` não validava: o do DEF-273 (um `verifier` com `plan_version` 1.0.0
+e uma tool de efeito) e o do AOS-390 (um ramo condicional sobre o `verdict` de um nó que não é
+verificador). Passaram a documentos admissíveis. O do DEF-273 prova agora as duas linhas pelo
+processo real: a regra (V3) recusa o verificador com tool de efeito (`verifier_effect_tool`) e o
+oráculo do snapshot continua composto para o verificador read-only. O clamp da materialização
+(segunda linha) deixou de ser alcançável por esta via, porque a primeira apanha o documento antes;
+a sua cobertura é a de unidade.
+
+### Fora de âmbito
+
+- O `plan_id` continua a admitir UMA decisão: re-planear depois de uma recusa exige um run novo
+  (resíduo do AOS-408, inalterado).
+- Os nós de `--nodes` continuam a entrar no grafo antes do gate (resíduo do AOS-408, inalterado).
+
+### Estado
+
+**FEITO.**
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -1202,3 +1289,4 @@ que não seja o documento do plano.
 | 1.4 | 2026-09-17 | +AOS-408 (o gate de aprovação de plano fica composto no `aos-orq`): fecha o residual do DEF-274 (o mapeador `PlanDocument`→`planapproval.Plan` não existia em produção) e o fail-open do `needsCard` derivado do `risk_class` advisory; corrige o eixo de DEF-274/275, que citava o AOS-238 (fechado). | Equipa AOS |
 | 1.5 | 2026-09-18 | +AOS-409 (4.º eixo de mutação no `IsEffectTool`): passa a ser o eixo do DEF-275, que o AOS-408 não implementa. AOS-408: duas revisões adversariais e a fronteira de confiança declarada. | Equipa AOS |
 | 1.2 | 2026-09-10 | +AOS-389/390/391 (despacho governado do Planeador para v1.1 distribuído): guard fail-closed de condicionais (389), composição do `plandispatch.Dispatcher` sob Tenure com avaliação de elegibilidade/condicionais/headroom (390), e T2-B do Model Gateway (391). Origem: análise adversarial que mediu a violação fail-open do ADR-022 §2.1 no spawn-eager. | Equipa AOS |
+| 1.6 | 2026-09-19 | +AOS-412 (com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`): fecha o resíduo do AOS-408 «com o modelo vivo, um plano aprovado não despacha». | Equipa AOS |
