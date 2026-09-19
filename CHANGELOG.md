@@ -6,6 +6,10 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.23 em produção (AOS-412)
+- `docs(AOS-412)` — **com o modelo vivo, o plano de risco aprovado corre pelo `--plan-doc`** (run `run-aos412-vivo-1`). O `--goal` deixou o H1 pendente (`EXIT=6`); repetido antes e depois da decisão, o modelo re-decompôs noutros organigramas e o `serve` recusou os dois com `EXIT=7`, indicando o `--plan-doc`; o `decide` assinado fora do servidor aprovou o H1 (o documento pendente não foi reescrito); e o `serve --plan-doc` reconheceu a aprovação humana, materializou os 3 nós e despachou o `n1`. O nó de risco `n3` espera o veredicto do verificador `n2` (`conditional_on`), pela topologia que o modelo escolheu — não foi visto a executar nesta corrida.
+- Observado, fora deste ticket: uma decomposição viva recusada pela regra AOS-231 termina o `serve` com `1` sem realimentar o planeador.
+
 ### Fixed — EPIC-19 (AOS-412) Com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`
 - `fix(AOS-412)` — **o `serve --plan-doc` passa a percorrer o mesmo caminho do `--goal`, menos a decomposição**: validação estrutural (AOS-231), o MESMO gate de plano, identidade/RM/orçamento reais, materializar e **despachar**. Até aqui parava na admissão, com um token de faz-de-conta e sem validar o documento — com o modelo vivo, que re-decompõe noutro organigrama a cada `--goal`, um plano de risco aprovado não tinha por onde correr (resíduo declarado do AOS-408).
   - O `--goal` sobre um plano que já tem decisão terminal para outro organigrama sai com **7** e indica o `--plan-doc`, em vez de um «pendente» que o `decide` recusaria.
