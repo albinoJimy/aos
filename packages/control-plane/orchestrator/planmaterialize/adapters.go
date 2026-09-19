@@ -40,6 +40,14 @@ func (a graphLeafAdmitter) AdmitLeaf(ctx context.Context, node LeafNode) error {
 	})
 }
 
+// AdmitEdge admite a dependência From→To e persiste task.edge.added. A aciclicidade é a
+// do [orchestrator.GraphBuilder.AddEdge], contra o grafo re-hidratado da posse: uma
+// aresta que feche ciclo é recusada, fica registada como task.edge.rejected_cycle e
+// devolve [orchestrator.ErrEdgeClosesCycle].
+func (a graphLeafAdmitter) AdmitEdge(ctx context.Context, from, to string) error {
+	return a.g.AddEdge(ctx, from, to)
+}
+
 // O ADAPTADOR DE SPAWN SAIU DAQUI (AOS-390, ADR-024). `delegatorSpawner`/
 // `NewDelegatorSpawner` — que ligavam a porta `Spawner` (removida) a
 // *orchestrator.Delegator — deixaram de existir: o spawn de papéis já não acontece na

@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | ID | PROC-DESPACHO-MULTIPROC |
-| Versão | 1.0 |
+| Versão | 1.1 (2026-09-15: a recuperação da morte de uma réplica deixa de afirmar que o despacho retoma — DEF-913) |
 | Tipo | Procedimento operacional (v1.1 distribuído; entregue por AOS-392) |
 | Modo de falha | Correr N réplicas do `aos-orq` sobre o mesmo substrato sem arbitragem ⇒ efeito duplicado (dois processos a despachar/spawnar o mesmo run) |
 | ADR | ADR-023 (escritor único por-run: o lease arbitra), ADR-024 (o efeito vive no despacho, não na materialização), ADR-018 (fronteira nó↔ORQ/SCH) |
@@ -43,7 +43,8 @@ N× aos-orq serve --nats <cluster-addr> --nats-stream <stream> --nats-replicas 3
 
 ## Recuperação da morte de uma réplica
 
-- A morte **abrupta** de uma réplica dona de um run deixa o lease a expirar por **TTL** (`leaseTTL`). Outra réplica assume o run após a expiração e **re-hidrata** o grafo do log (`RebuildDAG`) — o despacho retoma sem re-executar o que já concluiu (idempotência por `(run_id, step_id)`).
+- A morte **abrupta** de uma réplica dona de um run deixa o lease a expirar por **TTL** (`leaseTTL`). Outra réplica pode reclamar o run após a expiração e **re-hidrata** o grafo do log (`RebuildDAG`) — nós, arestas de dependência e estado por-nó.
+- **O despacho NÃO retoma** (medido a 2026-09-15, DEF-913): a réplica que assume o run re-hidrata o grafo mas não despacha os nós que ficaram pendentes — o despacho só é composto no `serve --goal`, e repetir o `--goal` sobre um run já materializado é recusado (`nó já existe no grafo`). Os nós pendentes ficam pendentes (fail-closed: nada é despachado fora de ordem nem duas vezes). Um run cujo dono morreu a meio **não termina sozinho** nesta versão; tratá-lo como incidente do run, não como recuperação automática.
 - **NÃO** forçar a tomada de um run cujo lease ainda está vivo: o exit 3 («negado-pelo-lease») diz ao operador para **parar o outro dono do run**, não para o contornar. Roubar o lease violaria a invariante de escritor único (ADR-023).
 - Janela conhecida: a janela TOCTOU do caso token-igual do `FencedAppender` mantém-se delegada ao CAS do substrato de produção (ADR-023 §4) — não é fechada por este procedimento.
 
