@@ -1274,6 +1274,113 @@ plano admissível.
 
 ---
 
+## AOS-413 — Os nós despachados de um organigrama executam até ao fim e o plano produz resultado
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-390 (despacho governado sob Tenure), AOS-412 (o plano aprovado corre pelo `--plan-doc`), ADR-018, ADR-024 |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/dispatch_wiring.go` (`dispatchSink.Dispatch`), `packages/control-plane/orchestrator/graph.go` (`MarkRunning`), `packages/control-plane/orchestrator/plandispatch/ports.go`, `packages/control-plane/runlifecycle/emitters.go`, `packages/cmd/aos/api.go` (`POST /runs`) |
+
+### Contexto
+
+Os tickets AOS-400 a AOS-412 fecharam a cadeia do `aos-orq` até ao despacho: modelo vivo → plano →
+validação → gate humano → materializar → despachar. A cadeia **acaba aí**. Despachar um nó é, hoje,
+cunhar a NHI (se for papel) e `MarkRunning` — e nada executa o trabalho do nó nem o conclui. O próprio
+código o diz: «Sem um executor a concluir nós, o ponto fixo alcança-se numa ou duas passagens».
+
+Em produção (v0.1.23, run `run-aos412-vivo-1`) o organigrama aprovado despachou o `n1` (ler o
+relatório) e parou: o `n1` fica `running` para sempre, o verificador `n2` nunca emite veredicto e o
+nó de risco `n3` (`conditional_on: n2 verdict eq pass`) nunca publica. **Um objectivo entregue ao
+`aos-orq` não produz resultado.** O caminho de um só run no nó `aos` executa tools na sandbox e
+conclui (E2E de 2026-09-15); o multi-nó é o único que não chega ao fim.
+
+O lado de LEITURA já existe e está composto — falta quem ESCREVA:
+
+| Peça | Leitor (composto) | Produtor (em falta) |
+|---|---|---|
+| Dependência cumprida | `LifecycleView.State` sobre `task.node.state_changed` (`RebuildDAG` já honra um `To=complete`) | nenhuma transição `running→complete\|failed` no `GraphBuilder` — só existe `MarkRunning` |
+| Veredicto de um `verifier` | `runlifecycle.ResultReader` sobre `plan.verdict_recorded` | `PlanRecorder.RecordVerdict` sem chamador de produção |
+| Payload entre nós (`consumes`) | `PayloadResolver` sobre `plan.payload_published` | `PlanRecorder.RecordPayloadPublished` sem chamador de produção |
+| Headroom | a porta diz que o liberta quem conclui o nó | o `boundedHeadroom` do `aos-orq` é em memória e nunca liberta |
+| O trabalho do nó | — | **indefinido**: nenhum ciclo de modelo corre para um nó do plano (o `aos-orq` nunca chama `agentruntime.Run`) |
+
+Não há deferimento registado para isto: a lacuna não estava declarada.
+
+### Decisão a tomar primeiro (do dono)
+
+Onde corre o trabalho de um nó. O ADR-018 faz do laço de serviço do nó `aos` a fonte única do ciclo
+de vida de um run e proíbe-o de importar orquestrador/scheduler (`boundary_orq_sch_test.go`); o
+ADR-024 põe a composição do despacho no `aos-orq serve`. Opções, com o que cada uma custa:
+
+- **(A) Cada folha é um run no nó `aos`.** O `aos-orq` submete-a por `POST /runs` e acompanha-a por
+  `GET /runs/{id}`; as tool calls ficam governadas pelo RM e pela sandbox que já estão em produção.
+  Não mexe no ADR-018. Custa: um cliente HTTP autenticado no `aos-orq` (não existe), o corpo do
+  `POST /runs` não leva as tools nem o `node_id` do plano (o nó tem de ficar restrito às tools
+  pinadas do nó do plano, senão o clamp da materialização é decorativo), e a espera por um run
+  remoto num binário que hoje é de uma passagem.
+- **(B) O `aos-orq` corre o ciclo de modelo em processo** (`agentruntime` com o RM do próprio
+  binário). Custa: um segundo sítio a executar tools, fora da sandbox e da cadeia PDP completa do nó
+  — o RM do `aos-orq` é mínimo e sem PDP (fora de âmbito declarado no AOS-407).
+- **(C) Emendar o ADR-018** para o nó `aos` hospedar o multi-nó. Custa: reabre a decisão que mantém
+  uma só autoridade sobre o ciclo de vida.
+
+A recomendação à partida é **(A)**, por reutilizar a execução governada que já corre em produção —
+mas a escolha é do dono, e fica num ADR.
+
+### Objectivo
+
+Um organigrama aprovado executa até ao fim: cada folha faz o seu trabalho com as tools pinadas do seu
+nó, conclui (`complete`/`failed`) de forma durável sob a posse do run, um `verifier` emite o
+veredicto, o despacho avança para os dependentes e para os ramos condicionais, e o plano termina com
+um resultado legível.
+
+### Critérios de Aceitação
+
+- [ ] Decisão (A)/(B)/(C) registada num ADR, com o impacto no ADR-018/ADR-024.
+- [ ] Transição durável `running→complete|failed` de um nó do plano, escrita só sob o lease
+      (ADR-023), e `RebuildDAG` a reconstituí-la depois de um crash.
+- [ ] O trabalho de uma folha executa restrito às tools pinadas DO NÓ (as do `plan.materialized`),
+      não às do run inteiro — com teste que prova que uma tool de outro nó é negada.
+- [ ] Um `verifier` concluído emite `plan.verdict_recorded`; os outputs declarados emitem
+      `plan.payload_published`; o `conditional_on` passa a ser avaliado sobre veredictos reais.
+- [ ] O headroom liberta-se na conclusão (o laço não esgota o tecto de concorrência).
+- [ ] O `serve` termina quando o plano chega a estado terminal (ou declara, com código de saída
+      próprio, que deixou nós a correr), e o `inspect` mostra o resultado por nó.
+- [ ] Um nó `danger` aprovado executa e um nó não aprovado não executa — pelo processo real.
+- [ ] Verificado em produção com o modelo vivo: um organigrama com `verifier` e ramo condicional
+      chega ao fim (o caso do `run-aos412-vivo-1`).
+
+### Lacunas a verificar no desenho
+
+- O comentário de `dispatchSink.Dispatch` diz que o spawn de um PAPEL falha fail-closed (o token do
+  run traz `cap:plan` e o `IssueChild` exige `Authority` ⊆ folha do pai), mas em produção o `n1` foi
+  «papel spawnado» com sucesso. Ou o comentário ficou desactualizado, ou o spawn passa por uma razão
+  que convém conhecer antes de lhe pendurar execução.
+- O que é o «trabalho» de um nó sem skills: o `tecnica/18` declara como lacuna honesta que os nós só
+  correm sobre tools registadas. O objectivo do nó é o prompt; as tools pinadas são o que pode fazer.
+- A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, DEF-913) toca no
+  mesmo `RebuildDAG`: coordenar a ordem.
+
+### Fora de âmbito
+
+- Um executor de skills (a lacuna do `capability_gap`, AOS-240).
+- O re-planeamento quando a regra AOS-231 recusa uma decomposição viva (observado na validação do
+  AOS-412) — é outro ticket, se se quiser.
+
+### Estado
+
+**POR FAZER.**
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -1318,3 +1425,4 @@ plano admissível.
 | 1.2 | 2026-09-10 | +AOS-389/390/391 (despacho governado do Planeador para v1.1 distribuído): guard fail-closed de condicionais (389), composição do `plandispatch.Dispatcher` sob Tenure com avaliação de elegibilidade/condicionais/headroom (390), e T2-B do Model Gateway (391). Origem: análise adversarial que mediu a violação fail-open do ADR-022 §2.1 no spawn-eager. | Equipa AOS |
 | 1.6 | 2026-09-19 | +AOS-412 (com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`): fecha o resíduo do AOS-408 «com o modelo vivo, um plano aprovado não despacha». | Equipa AOS |
 | 1.7 | 2026-09-19 | AOS-412 verificado em produção (`v0.1.23`) com o modelo vivo: as duas re-decomposições recusadas com 7, o organigrama aprovado materializado e despachado pelo `--plan-doc`. | Equipa AOS |
+| 1.8 | 2026-09-19 | +AOS-413 (os nós despachados executam até ao fim): a cadeia do `aos-orq` acabava no despacho — nada executava nem concluía um nó do plano, e a lacuna não estava registada. Decisão de onde corre o trabalho (ADR) antes da implementação. | Equipa AOS |
