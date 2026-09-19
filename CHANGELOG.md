@@ -6,6 +6,11 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Fixed — EPIC-10 (AOS-410) O controlo do `provision-identity.sh` aceita o Transit vazio como o nó
+- `fix(AOS-410)` — **o passo 5 do `provision-identity.sh` deixa de abortar sobre um motor Transit vazio** (observado em produção a 2026-09-18). O `vault list transit/keys` sai com 2 tanto num 404 (`No value found`, motor sem chaves) como num 403, e o script lia os dois como falta de permissão, deixando o passo 6 por correr. Passa a aceitar 200 e 404, o critério da `provaDeCapacidade` do nó, e continua fail-closed para o 403 e para qualquer erro que não reconheça, com a saída do CLI na mensagem.
+  - O `log` do passo 4b tinha `` `board` `` dentro de aspas duplas e a shell executava-o (`board: command not found`). Passa a `'board'`, e um teste impede backticks em mensagens `log`/`fail` do script.
+  - **FALHA-ANTES:** o teste corre o bloco real do script em bash com um `nodex` falso (200, 404, 403, erro de rede, 403 que menciona `No value found`); contra o script anterior os dois testes falham.
+  - Falta a evidência de sistema: o operador volta a correr o script no servidor.
 ### Verified — v0.1.22 em produção (AOS-407, AOS-408)
 - `docs(AOS-407)` — **a soberania por board está verificada em produção.** Depois de reprovisionar o mapper `board` no Keycloak, um NHI cunhado pelo `-Cunhar` leva `board:prod` e as 5 tool calls do run `run-delegado-1789775725` foram autorizadas com a obrigação `region=eu-west` e executadas na sandbox (0 negadas, run `complete`). Entre o deploy e o reprovisionamento os runs com tool calls ficaram bloqueados — é o preço de ligar a soberania antes do IdP emitir a claim.
 - `docs(AOS-408)` — **o gate de aprovação de plano está verificado em produção** com o caso adversarial (um nó `danger` que se declara `safe`): fica pendente (`EXIT=6`), a decisão assinada fora do servidor é aceite contra a chave pinada, e só depois o nó de risco arranca (`nos_despachados=2`). Tudo confirmado no log durável, não só no stdout.
