@@ -59,6 +59,7 @@ O EPIC-02 entrega o loop durável e a sua máquina de estados de suspensão de p
 | AOS-023 | Estado `paused` + canal de steer/interrupt | feature | M | P2 | AOS-017 |
 | AOS-024 | Harness de testes de replay/idempotência | chore | M | P1 | AOS-014, AOS-016 |
 | AOS-396 | Manifesto do turno pina o modelo que respondeu (model_id vazio no nó) | fix | M | P1 | AOS-013, AOS-016 |
+| AOS-411 | A re-varredura de órfãos exclui os runs vivos antes de os reconstituir | fix | S | P2 | AOS-253 |
 
 > **Notas de dependência.** Os tickets `AOS-003` (Reference Monitor) e `AOS-002` (Event Store replicado) pertencem ao `specs/EPIC-01_Fundacoes_Plano_Controlo.md` e devem estar `Done` antes do arranque efectivo de AOS-013. AOS-018 partilha o contrato de lease/fencing com o Escalonador (`specs/EPIC-03_Orquestracao_Escalonamento.md`); coordenar para não duplicar a implementação do token monotónico.
 
@@ -909,6 +910,95 @@ O `turn.recorded` de cada turno regista o modelo que produziu a resposta e os pa
 
 ---
 
+## AOS-411 — A re-varredura de órfãos exclui os runs vivos antes de os reconstituir
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-253 (crash-resume e a re-varredura periódica A4) — fechado |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/crash_resume.go` (`resumeInterruptedRuns`, `crashResumeBanner`), `packages/cmd/aos/orphan_sweeper.go` (`StartOrphanSweeper`), `packages/cmd/aos/resume.go` (`replayPlanFor`), `packages/cmd/aos/service.go` (`submit`, o registo `s.runs`) |
+
+### Contexto
+
+Observado em produção a 2026-09-18, na `v0.1.22`, durante a evidência do AOS-407. O run
+`run-delegado-1789775725` foi submetido e **terminou bem** (`ready → running → complete`, 5 tool
+calls executadas). Enquanto corria, o nó escreveu:
+
+```
+crash-resume: capturas do run "run-delegado-1789775725" ILEGIVEIS — NAO retomado (fail-closed): replay: trajectória vazia (sem turn.recorded)
+crash-resume / varredura de arranque (AOS-253): CORREU sobre 192 stream(s) — 1 run(s) orfaos em `running` … 0 RETOMADO(s) …
+```
+
+O contentor não tinha reiniciado (`restarts=0`, arranque às 22:19; as linhas são das 22:55). Quem as
+escreveu foi a **re-varredura periódica** (`StartOrphanSweeper`, a cada TTL de lease), que usa o
+mesmo banner da varredura de arranque sempre que encontra alguma coisa.
+
+Confirmado no código:
+
+- `resumeInterruptedRuns` classifica como órfão todo o stream cujo estado durável é `running`
+  (`crash_resume.go`, passo 1). Um run **vivo** — hospedado por esta réplica, ou com lease vivo noutra
+  — está nesse estado durante toda a execução.
+- Para esse run, a varredura reconstrói o cursor (passo 2), lê o registo de retoma (passo 3) e
+  **decifra as capturas por-titular** com o `ReconstructResumable` (passo 4, `replayPlanFor`) — tudo
+  ANTES de saber se o run está vivo.
+- Só no passo 5 (`submit`) é que o registo em memória `s.runs` devolve `ErrRunAlreadyInProgress`, ou
+  o `TryAcquire` do lease salta um run de outra réplica. É essa guarda, no fim, que impede a dupla
+  hospedagem. **Não houve dano**: o run não foi retomado nem estragado.
+
+O que está errado, então, é a ORDEM:
+
+1. **Sinal falso de órfão.** Um run vivo cujo primeiro turno ainda não foi capturado falha no passo 4
+   e sai como «capturas ILEGÍVEIS — NÃO retomado (fail-closed)», conta como falha e faz o banner
+   anunciar «1 run órfão». Um operador — e foi o caso — lê isso como um crash que não houve.
+2. **Trabalho e acesso a PII sem necessidade.** A cada ciclo, para cada run vivo, a varredura decifra
+   as capturas por-titular sob a chave do titular, só para depois descobrir que não tinha nada a
+   retomar. É o mesmo gate de decifração do read-path soberano, usado sem razão.
+3. **Correcção dependente de uma guarda tardia.** A não-duplicação assenta inteira no último passo.
+   Qualquer mudança futura na ordem ou no `submit` (por exemplo, uma retoma que escreva antes de
+   verificar) passa a correr sobre runs vivos.
+4. **O banner mente sobre a origem.** A re-varredura periódica anuncia-se como «varredura de
+   arranque».
+
+### Objectivo
+
+A varredura (de arranque e periódica) exclui, **antes** de reconstituir qualquer coisa, os runs que
+estão vivos — hospedados por esta réplica ou com lease vivo noutra —, e só conta como órfão o que
+não tem dono.
+
+### Critérios de Aceitação
+
+- [ ] Um run hospedado por esta réplica (`s.runs`) é saltado sem ler cursor, registo de retoma nem
+      capturas, e sem contar como órfão nem como falha. Teste com um run a correr e o varredor
+      chamado a meio: nenhuma decifração de capturas, banner sem órfãos. **FALHA-ANTES:** hoje o teste
+      vê a linha «capturas ILEGÍVEIS» (antes do 1.º turno) ou a leitura das capturas (depois dele).
+- [ ] Um run com lease vivo noutra réplica é saltado pelo MESMO critério antes do passo 2, e contado
+      à parte («vivo noutra réplica»), como hoje o passo 5 já distingue. A verificação do lease no
+      `submit` mantém-se como defesa em profundidade.
+- [ ] Um órfão verdadeiro (lease expirado, sem dono) continua a ser retomado exactamente como hoje:
+      os testes do AOS-253 e do A4 (`aos253_crash_resume_test.go`, `aos_a4_revarredura_test.go`)
+      ficam verdes sem alteração de asserções.
+- [ ] O banner distingue a origem da passagem — varredura de ARRANQUE ou RE-VARREDURA periódica — e
+      um ciclo periódico sem órfãos continua silencioso.
+- [ ] Evidência de sistema: um run real em produção atravessa pelo menos um ciclo da re-varredura
+      sem produzir linhas de crash-resume.
+
+### Fora de âmbito
+
+A política da retoma em si (o que se reproduz, a credencial vazia, o replay-then-continue) não muda.
+
+### Estado
+
+**POR FAZER.** Aberto a 2026-09-19 a partir da observação em produção durante a evidência do AOS-407.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -923,3 +1013,4 @@ O `turn.recorded` de cada turno regista o modelo que produziu a resposta e os pa
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-09-15 | AOS-396: manifesto do turno com model_id vazio no nó (achado do E2E em produção) | Equipa AOS |
+| 1.2 | 2026-09-19 | +AOS-411: a re-varredura de órfãos tratava um run vivo como órfão e decifrava-lhe as capturas antes de verificar o dono (observado em produção na v0.1.22) | Equipa AOS |
