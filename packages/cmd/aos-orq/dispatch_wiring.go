@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	budget "github.com/aos-ref/control-plane/budget"
 	orchestrator "github.com/aos-ref/control-plane/orchestrator"
@@ -29,6 +30,7 @@ import (
 	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
 	planvalidate "github.com/aos-ref/control-plane/orchestrator/planvalidate"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
+	arstate "github.com/aos-ref/kernel/agent-runtime/state"
 	identity "github.com/aos-ref/platform/identity"
 	eventstore "github.com/aos-ref/substrate/eventstore"
 )
@@ -145,15 +147,19 @@ type dispatchSink struct {
 	kinds       map[string]plannerevents.SpawnKind
 	authority   map[string][]string
 	budgets     map[string]budget.Amount
+	// exec é o executor de nós (AOS-413); nil ⇒ o despacho só marca o nó a correr.
+	exec *executorDeNos
 }
 
-// LIMITAÇÃO DE IDENTIDADE conhecida (papel): a NHI filha do papel pede Authority =
-// tools clampadas do papel (cap:tool:*), mas o token do run neste binário traz cap:plan
-// e o IssueChild exige Authority ⊆ folha-do-pai. Logo o spawn de um PAPEL falha
-// fail-closed (loud) até o cutover de identidade (família AOS-278) dar ao token do run a
-// autoridade com escopo de tools. O caminho de FOLHA (MarkRunning) não toca identidade e
-// funciona. Fail-closed é a direcção certa: um papel que não pode cunhar NHI legítima não
-// deve correr em silêncio.
+// IDENTIDADE DO PAPEL: a NHI filha do papel pede Authority = tools clampadas do papel
+// (cap:tool:*), e o IssueChild exige Authority ⊆ folha-do-pai. O token do run que o
+// [comporBaseDeExecucao] cunha traz as capabilities de tool do snapshot (AOS-393), pelo que o
+// spawn passa — em produção (v0.1.23, `run-aos412-vivo-1`) o `n1` foi «papel spawnado». Se o
+// token não as trouxesse, o spawn falhava fail-closed (loud), que é a direcção certa.
+//
+// Esta NHI filha é o REGISTO da delegação (ADR-024) e vive no domínio de confiança do
+// `aos-orq`; o trabalho do nó corre no nó `aos` com o NHI do run cunhado pelo operador
+// (ADR-027), porque o nó só confia no seu emissor.
 func (s *dispatchSink) Dispatch(ctx context.Context, node plandispatch.Node) error {
 	if s.kinds[node.NodeID] == plannerevents.SpawnRole {
 		sr := orchestrator.SpawnRequest{
@@ -183,6 +189,14 @@ func (s *dispatchSink) Dispatch(ctx context.Context, node plandispatch.Node) err
 	} else {
 		fmt.Printf("  despacho: folha %s a arrancar\n", node.NodeID)
 	}
+	// AOS-413: o trabalho do nó — papel ou folha — é um run do nó `aos`. Submete-se ANTES do
+	// MarkRunning: se a marcação falhar, o nó continua pendente e a submissão repete-se na
+	// passagem seguinte (idempotente); ao contrário ficava `running` sem run nenhum.
+	if s.exec != nil {
+		if err := s.exec.submeter(ctx, node.NodeID); err != nil {
+			return fmt.Errorf("execução do nó %q: %w", node.NodeID, err)
+		}
+	}
 	// Marca o nó a correr — vale para papel e folha: sai de pending, não re-despacha.
 	if err := s.g.MarkRunning(ctx, node.NodeID); err != nil {
 		return fmt.Errorf("marcar %q a correr: %w", node.NodeID, err)
@@ -208,6 +222,8 @@ func composeEDespachar(
 	// AOS-408: o snapshot PINADO, para o `needsCard` sair do risco RESOLVIDO das tools e nao do
 	// rotulo advisory do documento. E o mesmo snapshot que validou o plano.
 	snap planvalidate.Snapshot,
+	// AOS-413: o executor de nós; nil ⇒ despacha sem executar e pára no primeiro ponto fixo.
+	exe *configDoExecutor,
 ) error {
 	runID := ten.RunID()
 	planID := rec.PlanID()
@@ -270,6 +286,27 @@ func composeEDespachar(
 	headroom := &boundedHeadroom{max: dispatchMaxConcurrency}
 	sink := &dispatchSink{del: del, g: g, runID: runID, parentToken: parentToken, kinds: kinds, authority: authority, budgets: budgets}
 
+	// AOS-413: com o executor composto, cada nó despachado é um run do nó `aos`. Os nós que um
+	// `serve` anterior deixou `running` voltam a estar em voo (retoma).
+	var ex *executorDeNos
+	if exe != nil {
+		ex = novoExecutorDeNos(exe.cli, rec, g, runID, doc, authority, headroom)
+		sink.exec = ex
+		var emExecucao []string
+		for _, n := range payload.Nodes {
+			if st, ok := g.DAG().State(n.NodeID); ok && st == arstate.Running {
+				emExecucao = append(emExecucao, n.NodeID)
+			}
+		}
+		if err := ex.retomar(ctx, emExecucao); err != nil {
+			return err
+		}
+	}
+	var prazo time.Time
+	if exe != nil {
+		prazo = time.Now().Add(exe.prazo)
+	}
+
 	// Plano despachável (do materializado + doc). AOS-408: `needsCard` é a projecção do CARTÃO —
 	// os nós de risco RESOLVIDO (danger) ou com lacuna de capacidade. Antes derivava do
 	// `dn.RiskClass`, o rótulo ADVISORY do LLM: um plano que se declarasse `safe` sobre uma tool
@@ -281,7 +318,7 @@ func composeEDespachar(
 	}
 
 	total := 0
-	for pass := 0; pass < dispatchMaxPasses; pass++ {
+	for pass := 0; ex != nil || pass < dispatchMaxPasses; pass++ {
 		gate, err := gateR.Snapshot(ctx)
 		if err != nil {
 			return fmt.Errorf("retrato do gate (passagem %d): %w", pass, err)
@@ -314,12 +351,41 @@ func composeEDespachar(
 			return fmt.Errorf("despacho (passagem %d): %w", pass, err)
 		}
 		total += res.Dispatched
-		// Ponto fixo: uma passagem que não despacha nada. Sem executor a concluir nós nesta
-		// execução one-shot, os nós com deps/condições por satisfazer ficam a aguardar.
-		if res.Dispatched == 0 {
+		if ex == nil {
+			// Ponto fixo: uma passagem que não despacha nada. Sem executor, nenhum nó conclui e
+			// os que têm deps/condições por satisfazer ficam a aguardar.
+			if res.Dispatched == 0 {
+				break
+			}
+			continue
+		}
+		// Com executor: recolhe o que acabou; se nada mudou, espera — pela conclusão dos runs em
+		// voo, até ao prazo. Sem nada em voo e nada despachável, o plano chegou ao fim.
+		fechados, err := ex.recolher(ctx)
+		if err != nil {
+			return fmt.Errorf("execução (passagem %d): %w", pass, err)
+		}
+		if res.Dispatched > 0 || fechados > 0 {
+			continue
+		}
+		if len(ex.emVoo) == 0 {
 			break
+		}
+		if !time.Now().Before(prazo) {
+			fmt.Printf("despachado: plano=%s nos_despachados=%d em_voo=%d\n", planID, total, len(ex.emVoo))
+			return fmt.Errorf("%w: %d nó(s) do plano %s ainda a correr ao fim de %s — uma nova invocação do serve retoma-os", errNosEmVoo, len(ex.emVoo), planID, exe.prazo)
+		}
+		select {
+		case e := <-exe.perdida:
+			return fmt.Errorf("posse perdida a meio da execução: %w", e)
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(exe.sondagem):
 		}
 	}
 	fmt.Printf("despachado: plano=%s nos_despachados=%d\n", planID, total)
+	if ex != nil {
+		fmt.Println(resumoDaExecucao(g, payload))
+	}
 	return nil
 }

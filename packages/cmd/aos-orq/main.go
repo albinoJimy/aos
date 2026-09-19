@@ -93,6 +93,9 @@ const (
 	// exitDecisaoRecusada — houve decisão humana e foi NÃO (ou o prazo passou, ou a
 	// assinatura não verifica). Distinto do 6: ali espera-se, aqui o caso está fechado.
 	exitDecisaoRecusada = 7
+	// exitNosEmVoo — o prazo do `serve` (--plan-timeout) acabou com nós do plano ainda a correr
+	// no nó `aos` (AOS-413). Não é avaria: a posse é largada e uma nova invocação retoma-os.
+	exitNosEmVoo = 8
 )
 
 func main() {
@@ -164,7 +167,8 @@ Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro
 func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(), err error) error {
 	// Uma RECUSA também é o fim do trabalho deste processo sobre o run (o plano não vai correr por
 	// esta via), e reter a posse bloqueava o passo seguinte do operador com um «posse negada».
-	if !errors.Is(err, errPlanoPendente) && !errors.Is(err, errDecisaoRecusada) {
+	// AOS-413: o prazo esgotado com nós em voo também — a retoma é de outra invocação.
+	if !errors.Is(err, errPlanoPendente) && !errors.Is(err, errDecisaoRecusada) && !errors.Is(err, errNosEmVoo) {
 		return err
 	}
 	if parar != nil {
@@ -191,6 +195,8 @@ func codigoDe(err error) int {
 		return exitPendenteDeAprovacao
 	case errors.Is(err, errDecisaoRecusada):
 		return exitDecisaoRecusada
+	case errors.Is(err, errNosEmVoo):
+		return exitNosEmVoo
 	default:
 		return exitErro
 	}
@@ -214,11 +220,27 @@ func cmdServe(args []string) error {
 	goal := fs.String("goal", "", "objectivo a decompor num DAG multi-nó pelo Planner governado (F2E-02, AOS-388; exige --snapshot; exclui --nodes/--plan-doc)")
 	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM até o Model Gateway ser composto (T2-B)")
 	planOut := fs.String("plan-out", "", "ficheiro onde escrever o PlanDocument que ficou PENDENTE de aprovação humana (AOS-408): o documento cru não vive no log, e é este ficheiro que o `decide` reapresenta")
+	planTimeout := fs.Duration("plan-timeout", prazoDoPlanoPorOmissao, "com o executor de nós composto (AOS_ORQ_NODE_URL, AOS-413): quanto tempo o serve espera pelos runs dos nós; esgotado com nós em voo, sai com 8 e larga a posse. Abaixo da validade do NHI do run")
+	pollInterval := fs.Duration("poll-interval", intervaloDeSondagemPorOmissao, "com o executor de nós composto: intervalo entre leituras do estado dos runs dos nós")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *planTimeout <= 0 || *pollInterval <= 0 {
+		return errors.New("--plan-timeout e --poll-interval têm de ser positivos")
+	}
+	// AOS-413: o executor de nós resolve-se ANTES da posse — uma configuração incompleta aborta
+	// sem reclamar o lease, como o audit do gateway.
+	cliDoNo, err := nodeClientDoAmbiente()
+	if err != nil {
 		return err
 	}
 	if *runID == "" {
 		return errors.New("--run é obrigatório")
+	}
+	// AOS-413: o id do run filho é `<run>~<node_id>`; com um `~` no run a decomposição deixava de
+	// ser única e dois planos podiam dar o mesmo run filho.
+	if strings.Contains(*runID, separadorDoRunFilho) {
+		return fmt.Errorf("--run não pode conter %q (separa o run do nó no id dos runs filhos)", separadorDoRunFilho)
 	}
 	planoID := *planID
 	if planoID == "" {
@@ -273,6 +295,7 @@ func cmdServe(args []string) error {
 	// --plan-doc). Um `serve --nodes` nao passa por gate nenhum e o banner nao se aplica.
 	if *goal != "" || *planDoc != "" {
 		fmt.Println(bannerDoGateDePlano())
+		fmt.Println(bannerDoExecutor(cliDoNo))
 	}
 
 	// O emissor do domínio do plano (veredicto, payload, decisões de ramo) — os
@@ -294,6 +317,12 @@ func cmdServe(args []string) error {
 		}
 	})
 	defer parar()
+
+	// AOS-413: o executor de nós, quando composto; nil ⇒ o despacho não executa (como antes).
+	var exe *configDoExecutor
+	if cliDoNo != nil {
+		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida}
+	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse
 	// não precisa de saber, à partida, se o run é novo — e era essa pergunta, mal
@@ -339,7 +368,7 @@ func cmdServe(args []string) error {
 		if linha := modelAuditPostureBanner(model == nil && gwCfg != nil, govAuditPath); linha != "" {
 			fmt.Println(linha)
 		}
-		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit, *planOut); err != nil {
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit, *planOut, exe); err != nil {
 			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
@@ -363,7 +392,7 @@ func cmdServe(args []string) error {
 	// snapshot pinado e não aceita substituição — ver o comentário lá. O que este
 	// comando fornece é a FONTE do snapshot e o documento aprovado.
 	if *planDoc != "" {
-		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, *worker); err != nil {
+		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, *worker, exe); err != nil {
 			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
@@ -453,7 +482,7 @@ func separar(s string) []string {
 // tecto real vem do plano de controlo, e este comando não o compõe. É limitação de
 // escopo DESTE binário — a admissão em si ([runlifecycle.BudgetAdmission]) é a real,
 // com reserva atómica em toda a ancestralidade e saldo por Commit/Release.
-func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath, worker string) error {
+func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath, worker string, exe *configDoExecutor) error {
 	if snapPath == "" {
 		return errors.New("--plan-doc exige --snapshot: sem o snapshot pinado não há oráculo de efeito real, e o verificador materializaria com autoridade vazia (DEF-273)")
 	}
@@ -500,6 +529,7 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecy
 	if err != nil {
 		return err
 	}
+	b.exe = exe
 	return materializarEDespachar(ctx, ten, store, rec, b, snap, doc, hashDoPlano, worker)
 }
 

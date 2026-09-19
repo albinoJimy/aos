@@ -30,6 +30,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -42,6 +43,7 @@ import (
 	plan "github.com/aos-ref/control-plane/orchestrator/plan"
 	planmaterialize "github.com/aos-ref/control-plane/orchestrator/planmaterialize"
 	planner "github.com/aos-ref/control-plane/orchestrator/planner"
+	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
 	planvalidate "github.com/aos-ref/control-plane/orchestrator/planvalidate"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
 	rm "github.com/aos-ref/kernel/reference-monitor"
@@ -118,7 +120,7 @@ func carregarFixtureModel(path string) (fixtureModel, error) {
 // para o MemStore de referência. Só é usado quando a decomposição vai pelo gateway vivo.
 // planOut, quando dado, é o ficheiro onde o documento pendente é escrito para o humano o rever e
 // para o `decide` o reapresentar (o documento cru NÃO vive no log, ADR-005 — só o seu hash).
-func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store, planOut string) error {
+func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store, planOut string, exe *configDoExecutor) error {
 	runID := ten.RunID()
 
 	// (1)–(3) BASE DE EXECUÇÃO — identidade real, RM mínimo e orçamento partilhado. É a MESMA que
@@ -200,6 +202,7 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 
 	// (7)+(8) MATERIALIZAÇÃO ADMISSÃO-PURA e DESPACHO GOVERNADO — a mesma função que o
 	// `--plan-doc` usa (AOS-412).
+	b.exe = exe
 	return materializarEDespachar(ctx, ten, store, rec, b, snap, res.Doc, hashDoPlano, worker)
 }
 
@@ -216,6 +219,8 @@ type baseDeExecucao struct {
 	tokenDoRun string
 	mon        *rm.Monitor
 	bud        *budget.Budget
+	// exe é o executor de nós (AOS-413); nil ⇒ o despacho não executa.
+	exe *configDoExecutor
 }
 
 // comporBaseDeExecucao compõe a base de execução de um run: (1) backbone de identidade real —
@@ -308,6 +313,21 @@ func validarEstrutura(doc plan.PlanDocument, snap planvalidate.Snapshot) error {
 // Sob a MESMA posse; o SCH continua derivador.
 func materializarEDespachar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, b *baseDeExecucao, snap planvalidate.Snapshot, doc plan.PlanDocument, hashDoPlano, worker string) error {
 	runID := ten.RunID()
+
+	// RETOMA (AOS-413): um plano JÁ materializado não se materializa de novo — admitir os nós
+	// outra vez é recusado («nó já existe no grafo»). Com o executor, a retoma é o caso normal: o
+	// `serve` anterior saiu com 8 (prazo esgotado com nós em voo) e este segue para o despacho
+	// com o facto `plan.materialized` que está no log.
+	if ja, err := materializadoNoLog(ctx, store, rec.PlanID()); err != nil {
+		return err
+	} else if ja != nil {
+		if ja.PlanHash != hashDoPlano {
+			return fmt.Errorf("o plano %s já foi materializado com o organigrama %s, e este é %s", rec.PlanID(), ja.PlanHash, hashDoPlano)
+		}
+		fmt.Printf("materializado (retoma, do log): plano=%s nos=%d\n", ja.PlanID, len(ja.Nodes))
+		return despachar(ctx, ten, store, rec, b, snap, doc, *ja, worker)
+	}
+
 	adm, err := runlifecycle.NewBudgetAdmission(b.bud, runID)
 	if err != nil {
 		return err
@@ -347,14 +367,38 @@ func materializarEDespachar(ctx context.Context, ten *runlifecycle.Tenure, store
 		fmt.Printf("  no=%s kind=%s tools=%s\n", n.NodeID, n.Kind, strings.Join(n.Tools, "|"))
 	}
 
+	return despachar(ctx, ten, store, rec, b, snap, doc, payload, worker)
+}
+
+// despachar compõe o Delegator e o despacho governado sobre o plano materializado.
+func despachar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, b *baseDeExecucao, snap planvalidate.Snapshot, doc plan.PlanDocument, payload plannerevents.MaterializedPayload, worker string) error {
 	del, err := orchestrator.NewDelegator(b.bud, b.mon, b.iss)
 	if err != nil {
 		return fmt.Errorf("delegator: %w", err)
 	}
-	if err := composeEDespachar(ctx, ten, store, rec, del, b.bud, b.tokenDoRun, doc, payload, worker, snap); err != nil {
+	if err := composeEDespachar(ctx, ten, store, rec, del, b.bud, b.tokenDoRun, doc, payload, worker, snap, b.exe); err != nil {
 		return fmt.Errorf("despacho governado: %w", err)
 	}
 	return nil
+}
+
+// materializadoNoLog devolve o facto `plan.materialized` do plano, se já existir (nil se não).
+func materializadoNoLog(ctx context.Context, store runlifecycle.EventStore, planID string) (*plannerevents.MaterializedPayload, error) {
+	eventos, err := store.Read(ctx, planID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("ler o stream do plano %q: %w", planID, err)
+	}
+	for _, ev := range eventos {
+		if ev.Type != plannerevents.EventMaterialized {
+			continue
+		}
+		var p plannerevents.MaterializedPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			return nil, fmt.Errorf("plan.materialized ilegível no plano %q: %w", planID, err)
+		}
+		return &p, nil
+	}
+	return nil, nil
 }
 
 // toolCapabilities deriva as capabilities coarse das tools do snapshot pinado, pelo

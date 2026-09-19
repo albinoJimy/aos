@@ -37,6 +37,15 @@ type Goal struct {
 	System string
 	// Tools é o tool set CONGELADO no run (ordem significativa, nunca reordenada).
 	Tools []ToolSpec
+	// AllowedTools é a LISTA-BRANCA de tools (por nome, o `ToolID`) que este run pode chamar
+	// (AOS-413, ADR-027). nil ⇒ sem restrição além do token — o comportamento de sempre.
+	// Não-nil ⇒ uma tool call fora dela é NEGADA antes da mediação, sem despacho; e uma lista
+	// não-nil VAZIA nega TODAS — é o caso de um nó do plano sem tools pinadas, que de outro
+	// modo herdaria as tools de todo o token do run. Existe
+	// para um run que é o trabalho de UM nó de um plano: o nó só pode usar as tools que o
+	// plano lhe pinou, e não as de todo o run que o token autoriza. ESTREITA a autoridade,
+	// nunca a alarga: uma tool na lista continua sujeita a todo o RM.
+	AllowedTools []string
 	// Skills são as skills pinadas do run (vão ao manifesto).
 	Skills []ToolSpec
 	// Objective é a instrução inicial (semeia o tail append-only, trusted).
@@ -171,6 +180,10 @@ type CallRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
 // CodeEffectRewrite é o Code de Deny quando o [CallRewriter] recusa a Call (ex.: args do
 // modelo malformados). Nenhum efeito ocorre.
 const CodeEffectRewrite = "E_EFFECT_REWRITE"
+
+// CodeToolOutsideRunAllowlist é o Code de Deny quando a tool call não está na lista-branca
+// [Goal.AllowedTools] do run (AOS-413). Como no [CodeEffectRewrite], nada é despachado.
+const CodeToolOutsideRunAllowlist = "E_TOOL_OUTSIDE_RUN_ALLOWLIST"
 
 // WithCallRewriter injecta o [CallRewriter]. Default: nenhum (Call inalterada).
 func WithCallRewriter(r CallRewriter) Option { return func(rt *Runtime) { rt.callRewriter = r } }
@@ -788,6 +801,21 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	// emitida e consumida, nunca casava com a acção (observado ao vivo). Fazê-la na
 	// construção elimina a divergência POR CONSTRUÇÃO.
 	//
+	// LISTA-BRANCA DO RUN (AOS-413) — antes da reescrita e da mediação: uma tool fora da
+	// lista não chega a ser construída como efeito. Materializa-se como Deny no tail, como a
+	// reescrita recusada, e não é fatal para o loop.
+	if !toolPermitidaNoRun(goal.AllowedTools, inv.ToolID) {
+		return toolOutcome{
+			Result: Untrusted(nil),
+			Denial: &ToolDenial{
+				Effect:   string(referencemonitor.EffectDeny),
+				Code:     CodeToolOutsideRunAllowlist,
+				DeniedBy: "run_tool_allowlist",
+			},
+			Call: call,
+		}, nil
+	}
+
 	// Fail-closed: uma reescrita que falha (args malformados) NÃO despacha nada e
 	// materializa-se como Deny no tail — não é fatal para o loop.
 	if rt.callRewriter != nil {
@@ -861,6 +889,20 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 		ToolErr: dec.ToolErr,
 		Call:    call,
 	}, nil
+}
+
+// toolPermitidaNoRun diz se a tool pode ser chamada neste run: sem lista-branca (nil), sim; com
+// ela — mesmo vazia —, só se o nome lá estiver.
+func toolPermitidaNoRun(permitidas []string, toolID string) bool {
+	if permitidas == nil {
+		return true
+	}
+	for _, t := range permitidas {
+		if t == toolID {
+			return true
+		}
+	}
+	return false
 }
 
 // annotateAgentSpan anota o span invoke_agent com o uso e custo agregados.
