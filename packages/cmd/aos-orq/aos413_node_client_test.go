@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+// Nomes das variáveis de ambiente do executor (o código de produção usa-os em literal, que é o
+// que o gate da superfície de ambiente lê).
+const (
+	envNodeURL            = "AOS_ORQ_NODE_URL"
+	envNodeCredentialFile = "AOS_ORQ_NODE_CREDENTIAL_FILE"
+	envOIDCTokenURL       = "AOS_ORQ_OIDC_TOKEN_URL"
+	envOIDCClientID       = "AOS_ORQ_OIDC_CLIENT_ID"
+	envOIDCSecretFile     = "AOS_ORQ_OIDC_CLIENT_SECRET_FILE"
+)
+
 type aos413NoFalso struct {
 	mu        sync.Mutex
 	tokens    []string // Authorization recebidos, por ordem

@@ -29,17 +29,6 @@ import (
 	"time"
 )
 
-// Variáveis de ambiente do executor de nós (para as mensagens; o `os.Getenv` usa o literal,
-// que é o que o gate da superfície de ambiente lê).
-const (
-	envNodeURL            = "AOS_ORQ_NODE_URL"
-	envNodeCredentialFile = "AOS_ORQ_NODE_CREDENTIAL_FILE"
-	envNodePrincipal      = "AOS_ORQ_NODE_PRINCIPAL"
-	envOIDCTokenURL       = "AOS_ORQ_OIDC_TOKEN_URL"
-	envOIDCClientID       = "AOS_ORQ_OIDC_CLIENT_ID"
-	envOIDCSecretFile     = "AOS_ORQ_OIDC_CLIENT_SECRET_FILE"
-)
-
 // nodeClientTimeout limita cada pedido HTTP ao nó ou ao IdP.
 const nodeClientTimeout = 30 * time.Second
 
@@ -104,15 +93,15 @@ func nodeClientDoAmbiente() (*nodeClient, error) {
 	}
 	u, err := url.Parse(base)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("%w: %s=%q não é um URL http(s)", ErrNodeClientConfig, envNodeURL, base)
+		return nil, fmt.Errorf("%w: %s=%q não é um URL http(s)", ErrNodeClientConfig, "AOS_ORQ_NODE_URL", base)
 	}
 	production := strings.EqualFold(strings.TrimSpace(os.Getenv("AOS_MODE")), "production")
 	if production && u.Scheme != "https" && !hostInterno(u.Hostname()) {
-		return nil, fmt.Errorf("%w: em produção o nó fala-se por https, ou por http só dentro da rede do compose (nome de serviço ou loopback) — %s=%q", ErrNodeClientConfig, envNodeURL, base)
+		return nil, fmt.Errorf("%w: em produção o nó fala-se por https, ou por http só dentro da rede do compose (nome de serviço ou loopback) — %s=%q", ErrNodeClientConfig, "AOS_ORQ_NODE_URL", base)
 	}
 	credFile := strings.TrimSpace(os.Getenv("AOS_ORQ_NODE_CREDENTIAL_FILE"))
 	if credFile == "" {
-		return nil, fmt.Errorf("%w: %s definido sem %s — o NHI do run, cunhado pelo operador, é obrigatório", ErrNodeClientConfig, envNodeURL, envNodeCredentialFile)
+		return nil, fmt.Errorf("%w: %s definido sem %s — o NHI do run, cunhado pelo operador, é obrigatório", ErrNodeClientConfig, "AOS_ORQ_NODE_URL", "AOS_ORQ_NODE_CREDENTIAL_FILE")
 	}
 	c := &nodeClient{
 		base: base,
@@ -138,19 +127,19 @@ func nodeClientDoAmbiente() (*nodeClient, error) {
 	switch {
 	case tokenURL == "" && clientID == "" && secretFile == "":
 		if production {
-			return nil, fmt.Errorf("%w: em produção o nó exige um Bearer do IdP — defina %s, %s e %s", ErrNodeClientConfig, envOIDCTokenURL, envOIDCClientID, envOIDCSecretFile)
+			return nil, fmt.Errorf("%w: em produção o nó exige um Bearer do IdP — defina %s, %s e %s", ErrNodeClientConfig, "AOS_ORQ_OIDC_TOKEN_URL", "AOS_ORQ_OIDC_CLIENT_ID", "AOS_ORQ_OIDC_CLIENT_SECRET_FILE")
 		}
 	case tokenURL == "" || clientID == "" || secretFile == "":
-		return nil, fmt.Errorf("%w: o Bearer do IdP exige os três — %s, %s e %s", ErrNodeClientConfig, envOIDCTokenURL, envOIDCClientID, envOIDCSecretFile)
+		return nil, fmt.Errorf("%w: o Bearer do IdP exige os três — %s, %s e %s", ErrNodeClientConfig, "AOS_ORQ_OIDC_TOKEN_URL", "AOS_ORQ_OIDC_CLIENT_ID", "AOS_ORQ_OIDC_CLIENT_SECRET_FILE")
 	default:
 		tu, err := url.Parse(tokenURL)
 		if err != nil || (tu.Scheme != "http" && tu.Scheme != "https") || tu.Host == "" {
-			return nil, fmt.Errorf("%w: %s=%q não é um URL http(s)", ErrNodeClientConfig, envOIDCTokenURL, tokenURL)
+			return nil, fmt.Errorf("%w: %s=%q não é um URL http(s)", ErrNodeClientConfig, "AOS_ORQ_OIDC_TOKEN_URL", tokenURL)
 		}
 		// O pedido de token leva o SEGREDO do cliente no corpo: em produção só por https, sem a
 		// excepção da rede interna (o IdP serve https mesmo lá dentro).
 		if production && tu.Scheme != "https" {
-			return nil, fmt.Errorf("%w: em produção o token do IdP pede-se por https (%s=%q)", ErrNodeClientConfig, envOIDCTokenURL, tokenURL)
+			return nil, fmt.Errorf("%w: em produção o token do IdP pede-se por https (%s=%q)", ErrNodeClientConfig, "AOS_ORQ_OIDC_TOKEN_URL", tokenURL)
 		}
 		c.bearer = clientCredentials(c.http, tokenURL, clientID, secretFile)
 	}

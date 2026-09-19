@@ -73,11 +73,11 @@ func bannerDoExecutor(cli *nodeClient) string {
 	if cli == nil {
 		return "executor de nos (AOS-413): NAO composto — o despacho marca os nos a correr e NADA os executa (defina AOS_ORQ_NODE_URL e o NHI do run em AOS_ORQ_NODE_CREDENTIAL_FILE)"
 	}
-	bearer := "sem Bearer (no sem gate soberano)"
+	chamador := "sem autenticacao do chamador (no sem gate soberano)"
 	if cli.bearer != nil {
-		bearer = "Bearer do IdP por client_credentials, um por chamada"
+		chamador = "chamador autenticado pelo IdP (client_credentials), um token por chamada"
 	}
-	return fmt.Sprintf("executor de nos (AOS-413, ADR-027): COMPOSTO — cada no despachado e um run do no aos em %s (%s; NHI do run do ficheiro montado; tools do no como lista-branca). NAO transporta a saida de um no para o seguinte (sem canal separado por taint, DEF-806)", cli.base, bearer)
+	return fmt.Sprintf("executor de nos (AOS-413, ADR-027): COMPOSTO — cada no despachado e um run do no aos em %s (%s; NHI do run do ficheiro montado; tools do no como lista-branca). NAO transporta a saida de um no para o seguinte (sem canal separado por taint, DEF-806)", cli.base, chamador)
 }
 
 // resumoDaExecucao é a linha final do `serve` com o executor: o estado de cada nó do plano.
