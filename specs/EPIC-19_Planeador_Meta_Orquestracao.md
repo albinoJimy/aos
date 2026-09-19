@@ -1245,6 +1245,33 @@ a sua cobertura é a de unidade.
 
 **FEITO.**
 
+**Verificado em produção a 2026-09-19** (`v0.1.23`, imagem `sha256:b59db1fb…`), com o **modelo
+vivo** (sem `--decompose-fixture`) no run `run-aos412-vivo-1`. O snapshot com uma tool `danger`
+(`http.post`, irreversível, egress externo) e a chave pública de um aprovador **só de validação**
+foram postos em `/opt/aos/orq/` e retirados no fim; a chave privada nunca saiu da máquina do
+aprovador.
+
+| Passo | Saída em produção |
+|---|---|
+| `serve --goal` | `EXIT=6`, `plan_hash=sha256:3c370e34…` (H1), `1 no(s) de risco: n3`, documento em `--plan-out` |
+| `serve --goal` repetido, H1 pendente | `EXIT=7` — o modelo re-decompôs em `sha256:96617bd1…` e o `serve` recusou («ja esta pendente para o organigrama … decida o documento pendente … `serve --plan-doc`») em vez de um segundo pendente indecidível |
+| `decide` | `EXIT=0`, `decisao APROVADA por human:validacao-aos408` sobre o H1 — o documento pendente não foi reescrito pelo passo anterior (senão o hash não batia) |
+| `serve --goal` depois da decisão | `EXIT=7` — outro organigrama (`sha256:844511f7…`), recusado com a indicação do `--plan-doc` |
+| `serve --plan-doc` | `EXIT=0`, `gate de plano: APROVADO por humano`, `materializado: … nos=3 oraculo=snapshot(sha256:snap-aos408-validacao)`, `despacho: papel n1 spawnado`, `nos_despachados=1` |
+| `plans` / `inspect` (leitura) | `estado=DECIDIDO decisao=approved plan_hash=sha256:3c370e34…`; `nos=3 ordem=n1,n2,n3` |
+
+O despacho parou no `n1` pela TOPOLOGIA que o modelo escolheu, não pelo gate: o documento aprovado
+(lido do volume, só leitura) tem `n1` a ler, `n2` como `verifier` sobre o que o `n1` leu, e o `n3`
+(`http.post`, `danger`) com `conditional_on: n2 verdict eq pass`. O `n3` espera, correctamente, pelo
+veredicto — que só existe depois de os filhos correrem, fora de um `serve` de uma passagem. A
+execução do nó de risco depois da aprovação ficou vista na validação do AOS-408 (fixture,
+`nos_despachados=2`); com o modelo vivo, NÃO VERIFICADO nesta corrida.
+
+**Observado, fora deste ticket:** a primeira decomposição viva produziu um plano que a regra AOS-231
+recusou (`consumes_taint_authority`) e o `serve` saiu com `1` sem voltar a pedir ao modelo
+(`tentativas=1`) — a recusa estrutural não realimenta o planeador. A segunda corrida decompôs num
+plano admissível.
+
 ---
 
 ## 5. Vista de qualidade
@@ -1290,3 +1317,4 @@ a sua cobertura é a de unidade.
 | 1.5 | 2026-09-18 | +AOS-409 (4.º eixo de mutação no `IsEffectTool`): passa a ser o eixo do DEF-275, que o AOS-408 não implementa. AOS-408: duas revisões adversariais e a fronteira de confiança declarada. | Equipa AOS |
 | 1.2 | 2026-09-10 | +AOS-389/390/391 (despacho governado do Planeador para v1.1 distribuído): guard fail-closed de condicionais (389), composição do `plandispatch.Dispatcher` sob Tenure com avaliação de elegibilidade/condicionais/headroom (390), e T2-B do Model Gateway (391). Origem: análise adversarial que mediu a violação fail-open do ADR-022 §2.1 no spawn-eager. | Equipa AOS |
 | 1.6 | 2026-09-19 | +AOS-412 (com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`): fecha o resíduo do AOS-408 «com o modelo vivo, um plano aprovado não despacha». | Equipa AOS |
+| 1.7 | 2026-09-19 | AOS-412 verificado em produção (`v0.1.23`) com o modelo vivo: as duas re-decomposições recusadas com 7, o organigrama aprovado materializado e despachado pelo `--plan-doc`. | Equipa AOS |
