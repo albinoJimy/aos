@@ -521,6 +521,11 @@ type submitRequest struct {
 	Scope        []string `json:"scope,omitempty"`
 	System       string   `json:"system,omitempty"`
 	MaxTurns     int      `json:"max_turns,omitempty"`
+	// Tools é a lista-branca de tools do run (AOS-413, ADR-027): o nome de cada tool que o run
+	// pode chamar. AUSENTE (ou `null`) ⇒ sem restrição além do token. PRESENTE e vazia (`[]`) ⇒
+	// nenhuma tool. Um run que é o trabalho de um nó de um plano do `aos-orq` traz aqui as tools
+	// pinadas desse nó — `[]` quando o nó não tem nenhuma.
+	Tools []string `json:"tools,omitempty"`
 }
 
 // submitResponse devolve o RunID hospedado (201).
@@ -552,6 +557,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if req.RunID == "" {
 		writeError(w, http.StatusBadRequest, "run_id em falta")
 		return
+	}
+	// Uma entrada vazia na lista-branca não restringe nada e não é um nome de tool: recusa, em
+	// vez de a aceitar como se fosse uma restrição.
+	for _, t := range req.Tools {
+		if t == "" {
+			writeError(w, http.StatusBadRequest, "tools com entrada vazia")
+			return
+		}
 	}
 
 	// SOBERANIA — RESIDÊNCIA DO RUN na CRIAÇÃO (AOS-182, DEF-202). Em modo SOBERANO (gate de
@@ -623,6 +636,8 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		Scope:      req.Scope,
 		System:     req.System,
 		MaxTurns:   req.MaxTurns,
+		// AOS-413: a lista-branca do run, imposta na mediação de cada tool call.
+		AllowedTools: req.Tools,
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
 

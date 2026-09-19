@@ -511,6 +511,48 @@ nenhum plano de risco é aprovável — é a direcção certa do erro.
 > plano (outro hash), que já não é decidível no mesmo run — o `serve` recusa-o com saída `7` e
 > aponta para o `--plan-doc`. Ver os tickets AOS-408 e AOS-412.
 
+#### Executor de nós do plano (AOS-413, ADR-027)
+
+Sem ele, um plano aprovado é despachado e **nada o executa**: os nós ficam `running` para sempre.
+Com ele, cada nó despachado é um run do nó `aos`, com as tools pinadas **desse** nó como
+lista-branca; a conclusão e o veredicto de cada verificador voltam ao log e o despacho avança
+até ao fim do plano.
+
+**Antes da corrida, três coisas que o executor não resolve sozinho:**
+
+- **O snapshot tem de usar os nomes de tool do nó.** A lista-branca compara o nome da tool no
+  plano com o `ToolID` das tools do nó (`AOS_MODEL_TOOLS`). Um snapshot com nomes que o nó não tem
+  deixa cada nó sem nenhuma tool utilizável — fail-closed, mas o plano não faz nada.
+- **O NHI do run é cunhado por si**, com o `aos-issuer`, na sua máquina: as tools do plano,
+  `model:invoke` e o board (o `-Cunhar` do `get-id-token.ps1` copia o board do IdP). A validade
+  (45 min) é o tecto de duração do plano. Copie-o para `/opt/aos/orq/nhi-run.jwt` e **apague-o no
+  fim**.
+- **O segredo do cliente tem de ser legível pelo contentor** (uid `65532`, o `nonroot` da imagem).
+  O `secrets/reader-client-secret` está em `0400` do utilizador `aos`: dê-lhe leitura ao uid do
+  contentor sem a abrir a toda a gente — `setfacl -m u:65532:r secrets/reader-client-secret` — ou
+  aceite `0644` como o `model-api.key`. É uma decisão sobre um segredo; o repositório não a toma.
+
+```bash
+$C run --rm \
+  -e AOS_ORQ_NODE_URL=http://aos:8080 \
+  -e AOS_ORQ_NODE_CREDENTIAL_FILE=/etc/aos-orq/nhi-run.jwt \
+  -e AOS_ORQ_OIDC_TOKEN_URL=https://idp:8443/realms/aos/protocol/openid-connect/token \
+  -e AOS_ORQ_OIDC_CLIENT_ID=aos-reader \
+  -e AOS_ORQ_OIDC_CLIENT_SECRET_FILE=/run/aos-orq/reader-client-secret \
+  aos-orq serve --wal /var/lib/aos-orq/run-X.wal --run run-X \
+    --plan-doc /var/lib/aos-orq/run-X-pendente.json --snapshot /etc/aos-orq/snapshot.json
+```
+
+O `serve` espera pelos runs dos nós até `--plan-timeout` (40 min por omissão). Termina com `0` e
+a linha `execucao: n1=complete …` quando o plano chega ao fim; com **`8`** se o prazo acabar com
+nós ainda a correr — larga a posse, e a mesma invocação retoma-os. Os runs dos nós são runs
+normais do nó (`<run>~<node_id>`), legíveis por `GET /runs/<run>~<node_id>`.
+
+> ⚠️ **O que ainda não faz:** não leva a saída de um nó ao run do nó seguinte. O conteúdo de um run
+> é untrusted e não há canal no prompt separado por taint (DEF-806); um verificador só vê o que as
+> suas próprias tools lhe mostram. O veredicto lê-se da saída final por uma gramática fechada —
+> qualquer outra resposta conta como `fail`, e o ramo condicional não corre.
+
 **Dois runs ao mesmo tempo precisam de dois caminhos de audit**, não só de dois `--wal`: o caminho
 por omissão é um só, e o segundo `serve --goal` sai com `5`. Dê a cada corrida o seu:
 

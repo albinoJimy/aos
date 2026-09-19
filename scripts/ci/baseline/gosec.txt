@@ -61,9 +61,11 @@
 #       agente. Um operador que queira ler um ficheiro seu nao precisa de traversal: monta-o.
 #       (AOS-268: +2 ocorrencias main.go|G703 = a leitura da ancora assinada do checkpoint e a do ficheiro de PISOS de frescura, AOS_WORM_EXPECTED_HEADS_FILE. Ambas sao ficheiros MONTADOS pelo operador; e o mesmo caminho de confianca.)
 #       (AOS-395: +1 ocorrencia aos-orq/model_audit_env.go|G703 = o os.Stat do directorio de AOS_MODEL_AUDIT_PATH, o WORM de governacao do gateway do planeador. Variavel de ambiente lida no arranque do aos-orq, config do operador; o agente e o modelo nao a escolhem.)
+#       (AOS-413: +1 ocorrencia aos-orq/node_client.go|G703 = a leitura dos ficheiros MONTADOS do executor de nos — o NHI do run (AOS_ORQ_NODE_CREDENTIAL_FILE) e o segredo do cliente do IdP (AOS_ORQ_OIDC_CLIENT_SECRET_FILE). Config do operador; o agente e o modelo nao a escolhem.)
 #     G704 "SSRF" (cli.go:278,293): o `base` e a flag --addr / AOS_API_ADDR do CLI — o
 #       operador a dizer ao SEU proprio cliente a que no se liga. Nao ha atacante a
 #       controlar o destino.
+#       (AOS-413: +2 ocorrencias aos-orq/node_client.go|G704 = o pedido de token ao IdP em AOS_ORQ_OIDC_TOKEN_URL, config do operador. O cliente NAO segue redirects (o corpo leva o segredo do cliente) e, em producao, exige https.)
 #     G122 "TOCTOU symlink" (activity/separation/separation.go:164): o WalkDir corre sobre
 #       o CODIGO-FONTE do repo no analisador estatico de separacao de deveres — verificado
 #       que NAO tem chamador de producao (so testes/CI). Nao ha superficie viva.
@@ -90,6 +92,9 @@
 # ============================================================================
 packages/cmd/aos-attestation/synth.go|G115
 packages/cmd/aos-orq/model_audit_env.go|G703
+packages/cmd/aos-orq/node_client.go|G703
+packages/cmd/aos-orq/node_client.go|G704
+packages/cmd/aos-orq/node_client.go|G704
 packages/cmd/aos/authority_directory.go|G703
 packages/cmd/aos/broker_vault_env.go|G703
 packages/cmd/aos/cli.go|G704

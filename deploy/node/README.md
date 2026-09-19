@@ -47,8 +47,8 @@ O ambiente é a **única** superfície de configuração do binário entregue (`
 `package main`: um campo que `nodeConfigFromEnv` não escreva é **inalcançável** por quem corre a
 imagem). A tabela abaixo é o **índice completo** — toda a variável lida pelos três binários da
 imagem (o nó, `packages/cmd/aos`, o orquestrador `aos-orq` desde AOS-403, e o `aos-healthprobe` do
-`HEALTHCHECK`) está aqui. O `aos-orq` só lê variáveis que o nó também lê (`AOS_MODE` e as
-`AOS_MODEL_*`).
+`HEALTHCHECK`) está aqui. O `aos-orq` lê variáveis do nó (`AOS_MODE`, as `AOS_MODEL_*`,
+`AOS_APPROVERS_FILE`) e, desde AOS-413, as `AOS_ORQ_*` do executor de nós do plano.
 
 O teste `TestAOS203EnvSurfaceIsDocumented` (`packages/cmd/aos/env_surface_test.go`) **avermelha**
 se alguém acrescentar uma leitura de ambiente sem a documentar **nesta secção**. O que ele impõe,
@@ -169,6 +169,12 @@ de índice e o detalhe lá.
 | `AOS_READER` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--reader`, transportada no header `X-Aos-Reader`. É a **identidade de leitura** declarada pelo cliente; com a soberania de leitura ligada, o **nó** é que a exige e a resolve — a CLI só a transporta. Ausente contra um nó soberano ⇒ `404`. |
 | `AOS_BOARD` | *(vazio)* | **Lado CLIENTE** (`aos observe`): default da flag `--board`, transportada no header `X-Aos-Board`. Board de governação do leitor, de onde o nó resolve a **região autorizada**. Ausente ou desconhecido contra um nó soberano ⇒ `404` (fail-closed). |
 | `AOS_HEALTH_URL` | *(vazio ⇒ derivada de `AOS_API_ADDR`)* | **Override opcional** do URL sondado pelo `aos-healthprobe` do `HEALTHCHECK` (lida por `deploy/node/healthprobe`, **não** pelo nó). Sem ela o probe deriva `127.0.0.1:<porta de AOS_API_ADDR>/healthz` — ver [Health / probes](#health--probes). |
+| `AOS_ORQ_NODE_URL` | *(vazio ⇒ **executor de nós NÃO composto**: o `aos-orq serve` despacha sem executar, como até AOS-412)* | **Só o `aos-orq`** (AOS-413, ADR-027). URL da API do nó `aos` para onde o `aos-orq` submete o trabalho de cada nó despachado de um plano (`POST /runs`, acompanhado por `GET /runs/{id}`). Presente ⇒ exige `AOS_ORQ_NODE_CREDENTIAL_FILE`; sob `AOS_MODE=production` exige `https` — ou `http` só para um serviço da rede do compose (nome sem pontos, como `aos`) ou loopback, o troço interno que o edge já usa até ao nó — e o Bearer do IdP (`AOS_ORQ_OIDC_*`). Configuração incompleta **ABORTA** o `serve` (`ErrNodeClientConfig`). Material **público** (um URL). |
+| `AOS_ORQ_NODE_CREDENTIAL_FILE` | *(vazio ⇒ **obrigatória** com `AOS_ORQ_NODE_URL`)* | **Só o `aos-orq`** (AOS-413). Ficheiro **montado** com o **NHI do run**, cunhado pelo **operador** com o `aos-issuer mint` (tools do plano, `model:invoke`, board). Vai no campo `credential` de cada `POST /runs`; relê-se em cada submissão. O nó confia num só emissor — o `aos-orq` **não** cunha esta credencial. A validade do NHI é o tecto de duração de um plano. Material **SECRETO** (ficheiro). |
+| `AOS_ORQ_NODE_PRINCIPAL` | `agent:aos-orq` | **Só o `aos-orq`** (AOS-413). O `principal_nhi` do corpo do `POST /runs`. Num nó com gate soberano é **ignorado** (o titular vem do Bearer verificado); só conta num nó sem gate, fora de produção. Material **público**. |
+| `AOS_ORQ_OIDC_TOKEN_URL` | *(vazio ⇒ **sem Bearer**; obrigatória em produção)* | **Só o `aos-orq`** (AOS-413). Endpoint de token do IdP (`.../protocol/openid-connect/token`) de onde o `aos-orq` pede, por `client_credentials`, um Bearer **novo a cada chamada** ao nó (o nó aceita cada `jti` uma só vez). Os três `AOS_ORQ_OIDC_*` vão juntos: um sem os outros **ABORTA**. Material **público** (um URL). |
+| `AOS_ORQ_OIDC_CLIENT_ID` | *(vazio ⇒ **sem Bearer**; obrigatória em produção)* | **Só o `aos-orq`** (AOS-413). O `client_id` do cliente do IdP com que o `aos-orq` se autentica no nó. Material **público**. |
+| `AOS_ORQ_OIDC_CLIENT_SECRET_FILE` | *(vazio ⇒ **sem Bearer**; obrigatória em produção)* | **Só o `aos-orq`** (AOS-413). Ficheiro **montado** com o segredo desse cliente; relê-se em cada pedido de token. Nunca por variável de ambiente. Material **SECRETO** (ficheiro). |
 
 > **Nenhuma destas variáveis transporta segredos**, com as excepções declaradas de
 > `AOS_ISSUER_KEY_PATH`, `AOS_TLS_KEY_PATH`, `AOS_OTLP_CLIENT_KEY_PATH` e

@@ -1284,7 +1284,7 @@ plano admissível.
 | Tipo | feature |
 | Prioridade | P1 |
 | Estimativa | L |
-| Dependências | AOS-390 (despacho governado sob Tenure), AOS-412 (o plano aprovado corre pelo `--plan-doc`), ADR-018, ADR-024 |
+| Dependências | AOS-390 (despacho governado sob Tenure), AOS-412 (o plano aprovado corre pelo `--plan-doc`), ADR-018, ADR-024, ADR-027 |
 | Bloqueia | — |
 | Responsável sugerido | Arquitecto de Plataforma |
 | Documentos de referência | `packages/cmd/aos-orq/dispatch_wiring.go` (`dispatchSink.Dispatch`), `packages/control-plane/orchestrator/graph.go` (`MarkRunning`), `packages/control-plane/orchestrator/plandispatch/ports.go`, `packages/control-plane/runlifecycle/emitters.go`, `packages/cmd/aos/api.go` (`POST /runs`) |
@@ -1335,6 +1335,11 @@ ADR-024 põe a composição do despacho no `aos-orq serve`. Opções, com o que 
 A recomendação à partida é **(A)**, por reutilizar a execução governada que já corre em produção —
 mas a escolha é do dono, e fica num ADR.
 
+**Decidido (2026-09-19) — ADR-027:** opção **(A)**. O NHI do run é cunhado pelo operador com o
+`aos-issuer` e montado em ficheiro (o nó continua a confiar num só emissor); o `POST /runs` ganha um
+campo `tools` como lista-branca imposta pelo RM; a validade do NHI (45 min) é o tecto de um plano por
+agora, com a renovação como resíduo declarado.
+
 ### Objectivo
 
 Um organigrama aprovado executa até ao fim: cada folha faz o seu trabalho com as tools pinadas do seu
@@ -1344,17 +1349,38 @@ um resultado legível.
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (A)/(B)/(C) registada num ADR, com o impacto no ADR-018/ADR-024.
-- [ ] Transição durável `running→complete|failed` de um nó do plano, escrita só sob o lease
-      (ADR-023), e `RebuildDAG` a reconstituí-la depois de um crash.
-- [ ] O trabalho de uma folha executa restrito às tools pinadas DO NÓ (as do `plan.materialized`),
-      não às do run inteiro — com teste que prova que uma tool de outro nó é negada.
-- [ ] Um `verifier` concluído emite `plan.verdict_recorded`; os outputs declarados emitem
+- [x] Decisão (A)/(B)/(C) registada num ADR, com o impacto no ADR-018/ADR-024. *(Evidência: ADR-027.)*
+- [x] Transição durável `running→complete|failed` de um nó do plano, escrita só sob o lease
+      (ADR-023), e `RebuildDAG` a reconstituí-la depois de um crash. *(Evidência:
+      `GraphBuilder.MarkTerminal`; `TestAOS413_MarkTerminalFicaDuravelESobreviveAoReplay`,
+      `…RecusaOQueNaoEConclusao` (ready→complete e killed recusados), `…RevertidoSeOAppendFalha`.)*
+- [x] O trabalho de uma folha executa restrito às tools pinadas DO NÓ (as do `plan.materialized`),
+      não às do run inteiro — com teste que prova que uma tool de outro nó é negada. *(Evidência:
+      campo `tools` do `POST /runs` → `Goal.AllowedTools`, imposto antes da mediação; lista
+      AUSENTE ⇒ sem restrição, PRESENTE e vazia ⇒ nenhuma tool (um nó sem tools pinadas não herda
+      as do NHI do run); preservada pela retoma. `TestAOS413_ToolsDoPostRunsCortaAToolForaDaLista`
+      pelo nó real (a call não chega ao RM, nas duas variantes), `TestAOS413_ListaBrancaVaziaNegaTudo`,
+      `TestAOS413_RetomaDistingueListaVaziaDeAusente`; mutação no guarda e no mapeamento da API.)*
+- [~] Um `verifier` concluído emite `plan.verdict_recorded`; os outputs declarados emitem
       `plan.payload_published`; o `conditional_on` passa a ser avaliado sobre veredictos reais.
-- [ ] O headroom liberta-se na conclusão (o laço não esgota o tecto de concorrência).
-- [ ] O `serve` termina quando o plano chega a estado terminal (ou declara, com código de saída
-      próprio, que deixou nós a correr), e o `inspect` mostra o resultado por nó.
-- [ ] Um nó `danger` aprovado executa e um nó não aprovado não executa — pelo processo real.
+      *(Feito: o veredicto lê-se da saída final por gramática fechada — texto à volta, campo a mais,
+      outcome ou razão fora da gramática ⇒ `fail` `verdict_unparseable`; os `subjects` vêm do plano.
+      `TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco`. POR FAZER: os payloads — a saída de um
+      nó não chega ao run seguinte, porque o conteúdo é untrusted e o prompt não tem canal
+      separado por taint (DEF-806); publicar referências sem consumidor seria decorativo.)*
+- [x] O headroom liberta-se na conclusão (o laço não esgota o tecto de concorrência). *(E a
+      retoma re-adquire-o para os nós que um `serve` anterior deixou a correr.)*
+- [x] O `serve` termina quando o plano chega a estado terminal (ou declara, com código de saída
+      próprio, que deixou nós a correr), e o `inspect` mostra o resultado por nó. *(Evidência: a
+      linha `execucao: n1=complete …`; `--plan-timeout` esgotado ⇒ saída **8**, posse largada, e a
+      invocação seguinte retoma sem re-materializar (lê o `plan.materialized` do log) —
+      `TestAOS413_PrazoComNosEmVooSai8ERetoma`. O estado por nó fica no stream do run; o `inspect`
+      não mudou.)*
+- [x] Um nó `danger` aprovado executa e um nó não aprovado não executa — pelo processo real.
+      *(Evidência: `TestAOS413_OrganigramaAprovadoExecutaAteAoFim` — o plano do `run-aos412-vivo-1`
+      contra um nó falso: nada é submetido enquanto está pendente; aprovado, `n1`, `n2` e `n3` são
+      runs do nó, cada um com a lista-branca do SEU nó (`n2` com `[]`), e o `n3` só corre depois do
+      `pass`.)*
 - [ ] Verificado em produção com o modelo vivo: um organigrama com `verifier` e ramo condicional
       chega ao fim (o caso do `run-aos412-vivo-1`).
 

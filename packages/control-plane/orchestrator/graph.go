@@ -509,7 +509,29 @@ func (b *GraphBuilder) AddNode(ctx context.Context, spec NodeSpec) error {
 // tabela declarativa de AOS-017 (fail-closed). Se o Append falhar, a transição é
 // revertida em memória (consistência DAG↔log).
 func (b *GraphBuilder) MarkRunning(ctx context.Context, taskID string) error {
-	from, err := b.dag.transitionNode(taskID, state.Running)
+	return b.transitarDuravel(ctx, taskID, state.Running)
+}
+
+// MarkTerminal fecha um nó em execução: running→complete (o trabalho do nó concluiu) ou
+// running→failed (não concluiu), e persiste a transição como task.node.state_changed — o
+// facto que o despacho lê para saber que uma dependência se cumpriu (AOS-413, ADR-027).
+//
+// Só aceita os dois destinos de conclusão: os outros estados terminais da tabela de AOS-017
+// (killed, timed_out) têm autores próprios e não são «o nó acabou o seu trabalho». A
+// validade da transição continua a ser a da tabela (um nó que não está `running` é recusado,
+// fail-closed), e a escrita segue a disciplina do [GraphBuilder.MarkRunning]: revertida em
+// memória se o Append falhar, e [ErrLogAhead] se o log já a tinha.
+func (b *GraphBuilder) MarkTerminal(ctx context.Context, taskID string, to state.State) error {
+	if to != state.Complete && to != state.Failed {
+		return fmt.Errorf("%w: MarkTerminal só fecha em %s ou %s, não em %s (nó %s)",
+			state.ErrInvalidTransition, state.Complete, state.Failed, to, taskID)
+	}
+	return b.transitarDuravel(ctx, taskID, to)
+}
+
+// transitarDuravel aplica a transição validada pela tabela de AOS-017 e escreve-a no log.
+func (b *GraphBuilder) transitarDuravel(ctx context.Context, taskID string, to state.State) error {
+	from, err := b.dag.transitionNode(taskID, to)
 	if err != nil {
 		return err
 	}
@@ -517,9 +539,9 @@ func (b *GraphBuilder) MarkRunning(ctx context.Context, taskID string) error {
 		RunID:  b.dag.runID,
 		TaskID: taskID,
 		From:   string(from),
-		To:     string(state.Running),
+		To:     string(to),
 	}
-	step := contract.StepNodeStateChanged(taskID, string(state.Running))
+	step := contract.StepNodeStateChanged(taskID, string(to))
 	st, eerr := b.emit(ctx, contract.EventTaskNodeStateChanged, step, payload)
 	if eerr != nil {
 		b.dag.restoreState(taskID, from) // revert: transição não durável
@@ -529,7 +551,7 @@ func (b *GraphBuilder) MarkRunning(ctx context.Context, taskID string) error {
 		// Idem [GraphBuilder.AddNode]: o log já tinha esta transição. Sem isto, um nó
 		// abortado por política (running→failed pelo detector de deadlock) voltava a
 		// `running` num builder retomado, com ZERO eventos novos a registá-lo.
-		return fmt.Errorf("%w: %s %q→%s", ErrLogAhead, contract.EventTaskNodeStateChanged, taskID, state.Running)
+		return fmt.Errorf("%w: %s %q→%s", ErrLogAhead, contract.EventTaskNodeStateChanged, taskID, to)
 	}
 	return nil
 }

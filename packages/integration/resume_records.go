@@ -38,12 +38,17 @@ var ErrNilResumeStore = errors.New("integration: event store nil para o registo 
 // ResumeRecord é o que reconstitui um run suspenso — o [agentruntime.Goal] SEM a
 // credencial (ver as omissões acima).
 type ResumeRecord struct {
-	RunID             string
-	Principal         referencemonitor.Principal
-	Scope             []string
-	Model             agentruntime.ModelConfig
-	System            string
-	Tools             []agentruntime.ToolSpec
+	RunID     string
+	Principal referencemonitor.Principal
+	Scope     []string
+	Model     agentruntime.ModelConfig
+	System    string
+	Tools     []agentruntime.ToolSpec
+	// AllowedTools é a lista-branca do run (AOS-413). Tem de sobreviver à retoma: um run
+	// re-hospedado sem ela ganhava as tools de todo o token. nil e vazia NÃO são o mesmo (vazia
+	// nega tudo), e o JSON preserva a diferença (`null` vs `[]`). Um registo anterior não a tem
+	// e decodifica nil — esses runs nunca tiveram restrição.
+	AllowedTools      []string
 	Skills            []agentruntime.ToolSpec
 	Objective         string
 	MemoryContext     []byte
@@ -62,6 +67,7 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		Model:             r.Model,
 		System:            r.System,
 		Tools:             r.Tools,
+		AllowedTools:      r.AllowedTools,
 		Skills:            r.Skills,
 		Objective:         r.Objective,
 		MemoryContext:     r.MemoryContext,

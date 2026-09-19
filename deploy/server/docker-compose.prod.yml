@@ -532,11 +532,25 @@ services:
       # classe), no MESMO formato do nó. Só o `aos-orq decide` a lê; vazia, um plano de risco fica
       # pendente e nunca é aprovado — que é a direcção certa do erro.
       AOS_APPROVERS_FILE: "${AOS_ORQ_APPROVERS_FILE:-/etc/aos-orq/approvers.json}"
+      # AOS-413 (ADR-027): o EXECUTOR DE NÓS. Vazio ⇒ não composto — o serve despacha e nada executa,
+      # como até aqui. Composto, cada nó despachado de um plano é um run do nó `aos` (POST /runs), pelo
+      # troço interno que o edge já usa (http://aos:8080). O NHI do run é cunhado pelo OPERADOR e
+      # entra por ficheiro; o Bearer vem do IdP pelo backchannel interno, com o segredo do cliente
+      # noutro ficheiro. Passam-se por `run -e` na corrida — ver deploy/server/README.md.
+      AOS_ORQ_NODE_URL: "${AOS_ORQ_NODE_URL:-}"
+      AOS_ORQ_NODE_CREDENTIAL_FILE: "${AOS_ORQ_NODE_CREDENTIAL_FILE:-}"
+      AOS_ORQ_NODE_PRINCIPAL: "${AOS_ORQ_NODE_PRINCIPAL:-}"
+      AOS_ORQ_OIDC_TOKEN_URL: "${AOS_ORQ_OIDC_TOKEN_URL:-}"
+      AOS_ORQ_OIDC_CLIENT_ID: "${AOS_ORQ_OIDC_CLIENT_ID:-}"
+      AOS_ORQ_OIDC_CLIENT_SECRET_FILE: "${AOS_ORQ_OIDC_CLIENT_SECRET_FILE:-}"
     volumes:
       - aos-orq-data:/var/lib/aos-orq                    # WAL dos runs + WORM de governação
       - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc, approvers)
       - ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro
       - ./secrets/model-api.key:/etc/aos/model-api.key:ro
+      # AOS-413: o segredo do cliente do IdP com que o executor de nós obtém o Bearer (o mesmo
+      # cliente `aos-reader` do E2E). Só é lido com AOS_ORQ_OIDC_CLIENT_SECRET_FILE apontado aqui.
+      - ./secrets/reader-client-secret:/run/aos-orq/reader-client-secret:ro
 
   # --- edge de ingresso: termina TLS e é a ÚNICA porta publicada no host ----------------------
   edge:
