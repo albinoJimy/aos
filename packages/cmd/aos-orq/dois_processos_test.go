@@ -414,8 +414,19 @@ func TestDEF273_OraculoRealAtravesDeProcessoReal(t *testing.T) {
   ]
 }`)
 
-	// Documento APROVADO com um verificador que declara AS DUAS tools, a de efeito
-	// PRIMEIRO — o pior caso para `primaryTool`.
+	// PRIMEIRA LINHA (AOS-412): um verificador que pina uma tool DE EFEITO não chega à
+	// materialização. Desde que o `--plan-doc` corre a validação estrutural, a regra (V3)
+	// recusa-o pelo MESMO critério do snapshot — o clamp abaixo é a segunda linha, e só a
+	// alcança um documento que a primeira deixou passar.
+	efeitoPath := filepath.Join(dir, "plano-efeito.json")
+	escrever(t, efeitoPath, planoComVerificadorDeEfeito)
+	if r := correr(t, bin, "serve", "--wal", filepath.Join(dir, "efeito.wal"), "--run", "run-efeito",
+		"--plan-doc", efeitoPath, "--snapshot", snapPath, "--worker", "p1"); r.code == exitOK ||
+		!strings.Contains(r.stderr, "verifier_effect_tool") {
+		t.Fatalf("um verificador com tool de efeito tinha de ser recusado pela regra (V3), saiu %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+	}
+
+	// Documento APROVADO com um verificador read-only que OBSERVA o build.
 	docPath := filepath.Join(dir, "plano.json")
 	escrever(t, docPath, planoComVerificador)
 
@@ -428,13 +439,11 @@ func TestDEF273_OraculoRealAtravesDeProcessoReal(t *testing.T) {
 		t.Fatalf("a materialização não declarou o oráculo derivado do snapshot:\n%s", r.stdout)
 	}
 
-	// A LINHA QUE VALE: o verificador ficou com a tool read-only e SEM a de efeito.
+	// A LINHA QUE VALE: o verificador ficou com a tool read-only. Com o oráculo por
+	// omissão (tudo é efeito) o clamp tirava-lha e a autoridade viria VAZIA.
 	linha := linhaDoNo(t, r.stdout, "verif")
 	if !strings.Contains(linha, "cap:tool:fs.read") {
 		t.Fatalf("o verificador perdeu a autoridade READ-ONLY: %q\n(com o oráculo por omissão viria VAZIA — é o DEF-273 por fechar)", linha)
-	}
-	if strings.Contains(linha, "cap:tool:http.post") {
-		t.Fatalf("o verificador manteve a autoridade DE EFEITO: %q — o clamp de ADR-022 §2.2 não correu", linha)
 	}
 
 	// O nó comum NÃO é clampado — o clamp é do papel, não de toda a gente.
@@ -490,16 +499,12 @@ func linhaDoNo(t *testing.T, out, nodeID string) string {
 
 // planoComVerificador é o documento APROVADO da demonstração do oráculo de efeito.
 //
-// DUAS FOLHAS INDEPENDENTES, e a independência é deliberada: o `DefaultClassifier`
-// do materializador trata como PAPEL-QUE-EXPANDE qualquer nó de que outro dependa, e
-// este comando RECUSA spawns (não compõe o Delegator — ver [recusaSpawn]). Uma aresta
-// entre os dois nós faria o teste falhar por uma razão que nada tem a ver com o
-// clamp que ele mede.
-//
-// O verificador declara AS DUAS tools com a DE EFEITO PRIMEIRO — o pior caso, porque
-// é a ordem em que `primaryTool` escolheria a tool errada se o clamp não corresse.
+// Desde o AOS-412 o `--plan-doc` valida o documento (regra AOS-231), por isso o fixture é
+// um plano que a validação ADMITE: `plan_version` 1.2.0 (o piso do `role: verifier`) e o
+// verificador OBSERVA o build (`depends_on`). O verificador pina só a tool read-only — um que
+// pinasse a de efeito é [planoComVerificadorDeEfeito], recusado antes de materializar.
 const planoComVerificador = `{
-  "plan_version": "1.0.0",
+  "plan_version": "1.2.0",
   "objective": "compilar e verificar",
   "budget_total": {"tokens": 100, "cost_micro_usd": 100},
   "planner_meta": {"model":"m","prompt_version":"1","capabilities_hash":"sha256:snap-teste"},
@@ -507,12 +512,19 @@ const planoComVerificador = `{
     {"node_id":"build","role":"worker","objective":"compilar","depends_on":[],
      "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
      "budget_estimate":{"tokens":10,"cost_micro_usd":10}},
-    {"node_id":"verif","role":"verifier","objective":"verificar o build","depends_on":[],
-     "tools":[{"name":"http.post","version":"2.0.0","digest":"sha256:bbb"},
-              {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+    {"node_id":"verif","role":"verifier","objective":"verificar o build","depends_on":["build"],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
      "budget_estimate":{"tokens":10,"cost_micro_usd":10}}
   ]
 }`
+
+// planoComVerificadorDeEfeito é o mesmo plano com o verificador a pinar TAMBÉM a tool de
+// efeito, e a de efeito PRIMEIRO — o pior caso para `primaryTool`. A regra (V3) recusa-o.
+var planoComVerificadorDeEfeito = strings.Replace(planoComVerificador,
+	`"objective":"verificar o build","depends_on":["build"],
+     "tools":[{"name":"fs.read"`,
+	`"objective":"verificar o build","depends_on":["build"],
+     "tools":[{"name":"http.post","version":"2.0.0","digest":"sha256:bbb"},{"name":"fs.read"`, 1)
 
 // ---------------------------------------------------------------------------
 // TESTE — `inspect` LÊ com o WAL detido; `serve` é RECUSADO (AOS-286).

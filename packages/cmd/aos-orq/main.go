@@ -60,10 +60,8 @@ import (
 	"strings"
 	"time"
 
-	budget "github.com/aos-ref/control-plane/budget"
 	"github.com/aos-ref/control-plane/orchestrator"
 	"github.com/aos-ref/control-plane/orchestrator/plan"
-	"github.com/aos-ref/control-plane/orchestrator/planmaterialize"
 	"github.com/aos-ref/control-plane/runlifecycle"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	audit "github.com/aos-ref/platform/audit"
@@ -471,62 +469,45 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecy
 	if err != nil {
 		return fmt.Errorf("documento aprovado %q: %w", docPath, err)
 	}
-	// AOS-408: a flag chama-se `--plan-doc` e o seu nome AFIRMA «documento APROVADO» — mas nada o
-	// verificava. Um plano de risco entregue por aqui contornava o gate inteiro. Passa a exigir a
-	// decisão no log, confrontada pelo hash: sem ela, fica pendente como qualquer outro.
-	// O run é o da POSSE (ten.RunID()), nunca derivado do plano: derivá-lo do `--plan` faria a
-	// verificação «este plano é o do run?» passar sempre.
-	if err := exigirDecisaoParaDocumento(ctx, store, rec, ten.RunID(), doc, snap); err != nil {
+	// AOS-412: o `--plan-doc` percorre o MESMO caminho que o `--goal`, menos a decomposição.
+	//
+	// Até aqui era uma via à parte e incompleta: materializava com um token de faz-de-conta
+	// (`"nhi:"+worker`), NÃO validava o documento (a regra AOS-231 só corria no `--goal`) e NÃO
+	// despachava — os nós ficavam admitidos e pendentes para sempre. Com o modelo vivo isso
+	// deixava um plano de risco APROVADO sem forma nenhuma de correr: repetir o `--goal`
+	// re-decompõe e produz outro organigrama, e o `--plan-doc`, a via determinística, parava na
+	// admissão.
+	//
+	// (a) validação estrutural — o documento é untrusted, venha de onde vier;
+	if err := validarEstrutura(doc, snap); err != nil {
 		return err
 	}
-
-	b, err := budget.New(ten.RunID(), budget.Amount{Tokens: materializeBudgetTokens, CostMicroUSD: materializeBudgetCost})
-	if err != nil {
-		return fmt.Errorf("orçamento da árvore: %w", err)
-	}
-	adm, err := runlifecycle.NewBudgetAdmission(b, ten.RunID())
-	if err != nil {
-		return err
-	}
-
-	m, err := ten.Materializer(ctx, snap, rec, adm)
-	if err != nil {
-		return fmt.Errorf("materializador: %w", err)
-	}
-	payload, err := m.Materialize(ctx, planmaterialize.Request{
-		RunID:          ten.RunID(),
-		PlanID:         rec.PlanID(),
-		ParentToken:    "nhi:" + worker,
-		RootBudgetNode: ten.RunID(),
-		Doc:            doc,
+	// (b) o MESMO gate do `--goal`: um plano sem risco auto-aprova e fica com os factos no log;
+	//     um de risco exige a decisão humana DESTE organigrama, sob o mesmo catálogo e no plano do
+	//     run da posse (ten.RunID(), nunca derivado do `--plan`);
+	hashDoPlano, err := gatearPlano(ctx, pedidoDeGate{
+		rec:   rec,
+		store: store,
+		runID: ten.RunID(),
+		doc:   doc,
+		snap:  snap,
 	})
 	if err != nil {
-		// FAIL-CLOSED SEM VAZAR: a materialização é em duas fases e aborta antes de
-		// qualquer efeito, mas os nós JÁ admitidos deixaram reservas pendentes. Sem
-		// esta devolução, cada tentativa falhada encolhia a árvore até negar tudo.
-		if rerr := adm.Release(ctx); rerr != nil {
-			return fmt.Errorf("materialização falhou (%w) e a devolução das reservas também: %v", err, rerr)
-		}
-		return fmt.Errorf("materialização: %w", err)
+		return err
 	}
-	if err := adm.Commit(ctx); err != nil {
-		return fmt.Errorf("confirmação das reservas de admissão: %w", err)
+	// (c) a base de execução REAL (identidade, RM, orçamento) e (d) materializar + despachar.
+	b, err := comporBaseDeExecucao(ctx, ten.RunID(), worker, snap)
+	if err != nil {
+		return err
 	}
-
-	fmt.Printf("materializado: plano=%s nos=%d oraculo=snapshot(%s)\n", payload.PlanID, len(payload.Nodes), snap.Hash)
-	for _, n := range payload.Nodes {
-		fmt.Printf("  no=%s kind=%s tools=%s\n", n.NodeID, n.Kind, strings.Join(n.Tools, "|"))
-	}
-	return nil
+	return materializarEDespachar(ctx, ten, store, rec, b, snap, doc, hashDoPlano, worker)
 }
 
-// NOTA (AOS-390, ADR-024): a via `--plan-doc` é ADMISSÃO-PURA. A materialização já não
-// produz efeito (não spawna papéis nem arranca folhas); admite os nós no DAG como
-// pendentes e apensa `plan.materialized`. Um documento com papéis-que-expandem é
-// ADMITIDO (o papel entra como nó pendente sem tool), não recusado — mas este comando
-// não compõe o despacho governado, pelo que os nós ficam pendentes (nenhum sub-agente é
-// criado). O antigo `recusaSpawn` deixou de fazer sentido: não há spawn na
-// materialização que recusar.
+// NOTA (AOS-390, ADR-024, revista no AOS-412): a MATERIALIZAÇÃO continua admissão-pura — não
+// spawna papéis nem arranca folhas; admite os nós no DAG e apensa `plan.materialized`. O efeito
+// nasce no DESPACHO governado, que desde o AOS-412 o `--plan-doc` também compõe (antes não
+// compunha, e os nós ficavam pendentes para sempre). É a leitura do ADR-024 levada até ao fim:
+// efeito no despacho, e não «sem efeito nenhum por esta via».
 
 // Tectos do orçamento da árvore usados pela materialização deste comando. Um tecto
 // real vem do plano de controlo; aqui são generosos e declarados, para que a admissão

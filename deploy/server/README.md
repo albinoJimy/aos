@@ -495,9 +495,10 @@ De volta ao servidor, com `aprovacao.json` copiada para `/opt/aos/orq/`:
 $C run --rm aos-orq decide --wal /var/lib/aos-orq/run-X.wal --run run-X \
    --plan-doc /var/lib/aos-orq/run-X-pendente.json --snapshot /etc/aos-orq/snapshot.json \
    --decision approve --approval /etc/aos-orq/aprovacao.json
-# 4. a mesma invocação do passo 1, sem --plan-out: reconhece a decisão, materializa e despacha
-$C run --rm aos-orq serve --wal /var/lib/aos-orq/run-X.wal --run run-X --goal "…" \
-   --snapshot /etc/aos-orq/snapshot.json
+# 4. executar o organigrama APROVADO — pelo documento, não pelo --goal: reconhece a decisão,
+#    materializa e despacha (saída 0)
+$C run --rm aos-orq serve --wal /var/lib/aos-orq/run-X.wal --run run-X \
+   --plan-doc /var/lib/aos-orq/run-X-pendente.json --snapshot /etc/aos-orq/snapshot.json
 ```
 
 `/opt/aos/orq/approvers.json` tem o formato do `AOS_APPROVERS_FILE` do nó
@@ -506,9 +507,9 @@ nenhum plano de risco é aprovável — é a direcção certa do erro.
 
 > ⚠️ **Fronteira de confiança.** O gate governa o PLANO e quem decide sem chave — não quem opera
 > este CLI: o Event Store não assina eventos, e o snapshot e os aprovadores são ficheiros do
-> operador. Com o modelo vivo, a repetição do passo 4 re-decompõe e pode produzir outro plano
-> (outro hash), que já não é decidível no mesmo run; o plano aprovado materializa por
-> `--plan-doc`, mas esse caminho não despacha. Ver o ticket AOS-408.
+> operador. Não repita o `--goal` para executar: com o modelo vivo re-decompõe e produz outro
+> plano (outro hash), que já não é decidível no mesmo run — o `serve` recusa-o com saída `7` e
+> aponta para o `--plan-doc`. Ver os tickets AOS-408 e AOS-412.
 
 **Dois runs ao mesmo tempo precisam de dois caminhos de audit**, não só de dois `--wal`: o caminho
 por omissão é um só, e o segundo `serve --goal` sai com `5`. Dê a cada corrida o seu:
