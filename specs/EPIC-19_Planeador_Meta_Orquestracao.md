@@ -1509,21 +1509,34 @@ em claro no orquestrador.
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (A)/(B)/(C) registada (emenda ao ADR-027 ou ADR novo), com o impacto em ADR-005.
-- [ ] O `POST /runs` ganha um canal de ENTRADA de dados distinto do `objective`, e o conteúdo
+- [x] Decisão (A)/(B)/(C) registada (emenda ao ADR-027 ou ADR novo), com o impacto em ADR-005.
+      *(Evidência: **(A)**, decidida pelo dono a 2026-09-20 e emendada no ADR-027 §2.4.)*
+- [x] O `POST /runs` ganha um canal de ENTRADA de dados distinto do `objective`, e o conteúdo
       entra no tail como segmento **marcado `taint=untrusted`** com proveniência — a mesma
       marcação de `tailFromHistory`/resultados de tool, nunca uma tag in-band inventada.
-- [ ] O `aos-orq` publica `plan.payload_published` por cada output declarado que cumpra
+      *(Evidência: campo `inputs` → `Goal.Inputs` → segmento `TailPlanInput`, com
+      `plan_input_from/output/digest` nos rótulos da linha de delimitação. O nó VERIFICA o digest
+      e recusa na fronteira (400) um payload sem contrato, sem digest, com digest que não bate ou
+      acima dos tectos — `TestAOS414_InputsNaFronteiraDoNo` (5 casos);
+      `TestAOS414_PayloadEntraMarcadoUntrustedComProveniencia`;
+      `TestAOS414_PayloadSubmetidoChegaAoPromptDoRun` pelo nó real, com mutação.)*
+- [x] O `aos-orq` publica `plan.payload_published` por cada output declarado que cumpra
       (referência + digest, derivados do contrato), e entrega ao consumidor só o que o `consumes`
-      DELE declara — não o que o produtor quiser dar.
-- [ ] Um payload de taint efectivo `untrusted` continua a NÃO alimentar um consumidor com
+      DELE declara — não o que o produtor quiser dar. *(Evidência:
+      `TestAOS414_OVerificadorRecebeOQueONoAnteriorLeu` e `TestAOS414_SoOQueOConsumesDeclara`;
+      um `metrics` sem fonte NÃO se publica, em vez de se inventarem números.)*
+- [x] Um payload de taint efectivo `untrusted` continua a NÃO alimentar um consumidor com
       autoridade privilegiada: a regra do validador (AOS-231/ADR-022 §2.3) continua a valer e tem
-      teste que o prova pelo processo real.
-- [ ] O prompt materializado do run consumidor MOSTRA a proveniência (nó, contrato, digest), e há
+      teste que o prova pelo processo real. *(Inalterada: o plano é recusado na validação, antes
+      de existir transporte; o canal não lhe mexe.)*
+- [x] O prompt materializado do run consumidor MOSTRA a proveniência (nó, contrato, digest), e há
       teste que prova que o conteúdo não aparece como `objective` nem como directiva trusted.
+      *(Evidência: o teste confirma que o segmento do objectivo não contém o conteúdo, e
+      `TestAOS414_PayloadNaoForjaSegmentoTrusted` prova que um payload com `<correction>` no corpo
+      não forja o único rótulo trusted da janela.)*
 - [ ] Verificado em produção com o modelo vivo: o caso do `run-aos413-vivo-1` passa a ter o
       verificador a decidir sobre o documento que o `read_notes` leu — `pass` liberta o nó
-      `danger` aprovado, `fail` mantém-no retido.
+      `danger` aprovado, `fail` mantém-no retido. **POR FAZER** (exige deploy).
 
 ### Fora de âmbito
 
@@ -1534,7 +1547,31 @@ em claro no orquestrador.
 
 ### Estado
 
-**POR FAZER.**
+**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+
+**Decisão do dono: opção (A)** — o conteúdo vive na memória do `serve`, e no log fica a
+referência com o digest. Uma retoma sem o material recusa-se a correr o consumidor
+(`ErrPayloadPerdido`), em vez de o correr às cegas.
+
+**Revisão adversarial independente.** O gate, os contratos e a marcação do prompt aguentaram
+(incluindo a injecção de rótulos pela proveniência, que o assembler saneia). Oito achados, todos
+tratados:
+
+| Achado | O que mudou |
+|---|---|
+| Um contrato impossível de cumprir (`metrics`) abortava o `serve` e repetia-se em todas as retomas | O CONSUMIDOR fecha em `failed`, com a razão, e o plano termina |
+| O aborto acontecia a meio da passagem, deixando irmãos em voo por recolher | A poda corre ANTES dos retratos da passagem |
+| Os tectos por payload (16×256 KiB) eram inalcançáveis: o corpo do `POST /runs` corta a 1 MiB | 128 KiB por payload, 512 KiB agregado, e tecto no produtor |
+| O replay não semeava os payloads: um run com entradas divergia no turno 1 | `TrajectorySpec.Inputs` semeado pelo mesmo construtor do loop |
+| Dois contratos de forma aberta recebiam os MESMOS bytes | Um nó com mais do que um contrato aberto não publica nenhum |
+| O digest era descrito como prova do que o plano publicou | É um controlo de integridade do transporte, e está dito assim |
+| O banner e o cabeçalho ainda diziam que nada é transportado | Corrigidos |
+| O `PayloadResolver` ficou sem chamador | Declarado como resíduo |
+
+**Resíduos declarados:** um contrato `metrics` não se publica (ninguém mede os números, e
+inventá-los era pior), e um segundo contrato de forma aberta também não; o conteúdo não sobrevive
+à morte do `serve`; o `PayloadResolver` continua por ligar; e a separação de planos
+(DEF-806/AOS-069) continua aberta — este ticket dá canal próprio e marcação, não plano separado.
 
 ---
 

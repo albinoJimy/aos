@@ -548,10 +548,19 @@ a linha `execucao: n1=complete …` quando o plano chega ao fim; com **`8`** se 
 nós ainda a correr — larga a posse, e a mesma invocação retoma-os. Os runs dos nós são runs
 normais do nó (`<run>~<node_id>`), legíveis por `GET /runs/<run>~<node_id>`.
 
-> ⚠️ **O que ainda não faz:** não leva a saída de um nó ao run do nó seguinte. O conteúdo de um run
-> é untrusted e não há canal no prompt separado por taint (DEF-806); um verificador só vê o que as
-> suas próprias tools lhe mostram. O veredicto lê-se da saída final por uma gramática fechada —
-> qualquer outra resposta conta como `fail`, e o ramo condicional não corre.
+Desde o **AOS-414**, um nó recebe os payloads que o `consumes` dele declara: entram no prompt do
+run como segmento próprio, marcado `taint=untrusted` e com a proveniência (nó de origem, output,
+digest), nunca como objectivo. O nó verifica o digest. O veredicto de um verificador lê-se da saída
+final por uma gramática fechada — qualquer outra resposta conta como `fail`, e o ramo condicional
+não corre.
+
+> ⚠️ **O conteúdo vive na memória do `serve`** (ADR-027 §2.4, opção (A)): no log fica a
+> referência. Se o `serve` morrer, o consumidor cujo produtor já concluiu **não corre**: fecha em
+> `failed` com a razão à vista (`o contrato <no>/<output> ficou por cumprir`) e o plano termina —
+> para o refazer, um run novo. O mesmo vale para o que não é publicável: um contrato `metrics`,
+> um segundo contrato de forma aberta no mesmo nó, ou uma saída acima de 128 KiB. A separação de
+> planos (DEF-806) continua aberta: o canal é próprio e marcado, mas o conteúdo é lido pelo mesmo
+> plano que planeia.
 
 **Dois runs ao mesmo tempo precisam de dois caminhos de audit**, não só de dois `--wal`: o caminho
 por omissão é um só, e o segundo `serve --goal` sai com `5`. Dê a cada corrida o seu:

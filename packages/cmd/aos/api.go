@@ -43,6 +43,8 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -526,12 +528,81 @@ type submitRequest struct {
 	// nenhuma tool. Um run que é o trabalho de um nó de um plano do `aos-orq` traz aqui as tools
 	// pinadas desse nó — `[]` quando o nó não tem nenhuma.
 	Tools []string `json:"tools,omitempty"`
+	// Inputs são os payloads que o PLANO declarou que este nó consome (AOS-414). Vão ao tail
+	// como segmentos `plan_input` marcados `taint=untrusted`, com a proveniência nos rótulos —
+	// NUNCA como objectivo, que é trusted. Ausente ⇒ nada muda.
+	Inputs []planInputWire `json:"inputs,omitempty"`
 }
+
+// planInputWire é a representação de wire de um payload consumido (AOS-414). O `digest` é
+// `sha256:<hex>` do `content` e o nó VERIFICA-O: não é confiança no conteúdo (que é untrusted
+// de qualquer modo), é integridade — o que o plano publicou como referência tem de ser o que
+// chega ao consumidor.
+type planInputWire struct {
+	From    string `json:"from"`
+	Output  string `json:"output"`
+	Digest  string `json:"digest"`
+	Content string `json:"content"`
+}
+
+// Limites do canal de entrada (AOS-414): contam ANTES de o run existir, como o tecto de turnos.
+const (
+	maxPlanInputs = 16
+	// maxPlanInputBytes é o tecto de UM payload, e maxPlanInputsBytes o do conjunto. O agregado
+	// é o que conta: o corpo do pedido tem o seu tecto (DefaultMaxBodyBytes) e, sem este, 16
+	// payloads no tecto individual davam 413 na fronteira — um erro sobre o TAMANHO DO CORPO,
+	// que não diz a quem opera o que se passou.
+	maxPlanInputBytes   = 128 << 10
+	maxPlanInputsBytes  = 512 << 10
+	maxPlanInputNameLen = 128
+	planInputDigestAlgo = "sha256:"
+)
 
 // submitResponse devolve o RunID hospedado (201).
 type submitResponse struct {
 	RunID  string `json:"run_id"`
 	Status string `json:"status"`
+}
+
+// validarPlanInputs verifica os payloads do plano e converte-os para o Goal. Devolve a mensagem
+// de erro (vazia quando está tudo bem) — a fronteira recusa antes de o run existir:
+//
+//   - contrato completo (`from`/`output`), senão o segmento não tem proveniência para mostrar;
+//   - digest `sha256:<hex>` que BATE com o conteúdo — integridade do que o plano publicou;
+//   - tectos de número e tamanho, para um payload não engolir a janela do modelo.
+func validarPlanInputs(wire []planInputWire) ([]agentruntime.PlanInput, string) {
+	if len(wire) == 0 {
+		return nil, ""
+	}
+	if len(wire) > maxPlanInputs {
+		return nil, "inputs acima do tecto"
+	}
+	out := make([]agentruntime.PlanInput, 0, len(wire))
+	total := 0
+	for _, in := range wire {
+		if in.From == "" || in.Output == "" {
+			return nil, "input sem contrato (from/output)"
+		}
+		if len(in.From) > maxPlanInputNameLen || len(in.Output) > maxPlanInputNameLen {
+			return nil, "contrato do input acima do comprimento maximo"
+		}
+		if len(in.Content) > maxPlanInputBytes {
+			return nil, "input acima do tamanho maximo"
+		}
+		total += len(in.Content)
+		if total > maxPlanInputsBytes {
+			return nil, "inputs acima do tamanho agregado maximo"
+		}
+		if !strings.HasPrefix(in.Digest, planInputDigestAlgo) {
+			return nil, "input sem digest sha256"
+		}
+		soma := sha256.Sum256([]byte(in.Content))
+		if !hmac.Equal([]byte(hex.EncodeToString(soma[:])), []byte(strings.TrimPrefix(in.Digest, planInputDigestAlgo))) {
+			return nil, "digest do input nao corresponde ao conteudo"
+		}
+		out = append(out, agentruntime.PlanInput{From: in.From, Output: in.Output, Digest: in.Digest, Content: []byte(in.Content)})
+	}
+	return out, ""
 }
 
 // handleSubmit é o INGRESSO do plano de dados com ADMISSION (achado nº5): (1) rate-limit
@@ -565,6 +636,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "tools com entrada vazia")
 			return
 		}
+	}
+	// AOS-414: os payloads do plano. Fail-closed na fronteira — um digest que não bate é um
+	// payload que não é o que o plano publicou, e um input sem contrato não tem proveniência
+	// que mostrar ao modelo.
+	inputs, ierr := validarPlanInputs(req.Inputs)
+	if ierr != "" {
+		writeError(w, http.StatusBadRequest, ierr)
+		return
 	}
 
 	// SOBERANIA — RESIDÊNCIA DO RUN na CRIAÇÃO (AOS-182, DEF-202). Em modo SOBERANO (gate de
@@ -638,6 +717,8 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		MaxTurns:   req.MaxTurns,
 		// AOS-413: a lista-branca do run, imposta na mediação de cada tool call.
 		AllowedTools: req.Tools,
+		// AOS-414: os payloads do plano, já verificados contra o digest declarado.
+		Inputs: inputs,
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
 

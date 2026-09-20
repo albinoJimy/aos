@@ -52,6 +52,10 @@ type TrajectorySpec struct {
 	Tools         []agentruntime.ToolSpec
 	Objective     string
 	MemoryContext []byte
+	// Inputs são os payloads do plano que o run recebeu (AOS-414). Entram no tail semeado na
+	// MESMA ordem e com a MESMA construção do loop ([agentruntime.TailFromPlanInput]); sem eles,
+	// um run que consumiu payloads divergia logo no turno 1 e a fidelidade dava zero.
+	Inputs []agentruntime.PlanInput
 	// Model é a configuração de modelo ESPERADA (model_id/params/seed) — os inputs
 	// não-determinísticos que o manifesto pina (ADR-010) mas que NÃO entram nos bytes
 	// materializados do prompt. Se ModelID != "", o replay compara-a com a gravada no
@@ -672,6 +676,9 @@ func seedTail(spec TrajectorySpec) []agentruntime.TailSegment {
 	tail := make([]agentruntime.TailSegment, 0, 8)
 	if len(spec.MemoryContext) > 0 {
 		tail = append(tail, agentruntime.TailSegment{Kind: agentruntime.TailMemory, Content: spec.MemoryContext})
+	}
+	for _, in := range spec.Inputs {
+		tail = append(tail, agentruntime.TailFromPlanInput(in))
 	}
 	if spec.Objective != "" {
 		tail = append(tail, agentruntime.TailSegment{Kind: agentruntime.TailObjective, Content: []byte(spec.Objective)})

@@ -91,7 +91,7 @@ func (f *aos413No) servidor(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]any{"run_id": id, "status": "in_progress"})
 			return
 		}
-		saida := "feito"
+		saida := "feito: " + id
 		if strings.HasSuffix(id, "~n2") {
 			saida = f.saidaVerif
 		}
@@ -112,6 +112,14 @@ func (f *aos413No) submetidos() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// inputs devolve os payloads que um run filho recebeu (AOS-414).
+func (f *aos413No) inputs(id string) []any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	xs, _ := f.submissoes[id]["inputs"].([]any)
+	return xs
 }
 
 func (f *aos413No) tools(id string) []any {
@@ -323,5 +331,123 @@ func TestAOS413_RunComOSeparadorERecusado(t *testing.T) {
 	r := correr(t, bin, "serve", "--wal", filepath.Join(t.TempDir(), "es.wal"), "--run", "a~b", "--nodes", "x")
 	if r.code == exitOK || !strings.Contains(r.stderr, "~") {
 		t.Fatalf("um run_id com ~ tinha de ser recusado, saiu %d\n%s", r.code, r.stderr)
+	}
+}
+
+// TestAOS414_OVerificadorRecebeOQueONoAnteriorLeu é o caso que a produção mediu em falta: o
+// verificador reprovava com `documento_nao_fornecido` porque não via o documento.
+// FALHA-ANTES: o run do verificador era submetido sem `inputs`.
+func TestAOS414_OVerificadorRecebeOQueONoAnteriorLeu(t *testing.T) {
+	f := &aos413No{saidaVerif: `{"outcome":"pass","reasons":["documento_valido"]}`}
+	const run = "run-aos414-cadeia"
+	env, bin, wal, snapPath, doc := aos413Aprovado(t, f, run)
+
+	r := aos413Serve(t, env, bin, wal, run, snapPath, doc)
+	if r.code != exitOK {
+		t.Fatalf("saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	// (1) O verificador recebeu o payload do n1, pelo contrato que o SEU `consumes` declara.
+	xs := f.inputs(run + "~n2")
+	if len(xs) != 1 {
+		t.Fatalf("o verificador tinha de receber 1 payload, recebeu %d: %v", len(xs), xs)
+	}
+	in, _ := xs[0].(map[string]any)
+	if in["from"] != "n1" || in["output"] != "report_content" {
+		t.Fatalf("o payload veio com outro contrato: %v", in)
+	}
+	if conteudo, _ := in["content"].(string); !strings.Contains(conteudo, run+"~n1") {
+		t.Fatalf("o conteúdo não é a saída do n1: %q", conteudo)
+	}
+	if dig, _ := in["digest"].(string); !strings.HasPrefix(dig, "sha256:") {
+		t.Fatalf("o payload tinha de levar digest: %v", in)
+	}
+	// (2) O contrato ficou publicado no log, com a referência.
+	if !strings.Contains(r.stdout, "payload n1/report_content publicado") {
+		t.Fatalf("o contrato do n1 tinha de ser publicado:\n%s", r.stdout)
+	}
+	// (3) O veredicto do verificador é uma forma FECHADA publicada, e o n3 (danger, aprovado)
+	// recebeu-a e correu.
+	if !strings.Contains(r.stdout, "payload n2/decision publicado (verdict)") {
+		t.Fatalf("o veredicto tinha de ser publicado como forma fechada:\n%s", r.stdout)
+	}
+	if xs3 := f.inputs(run + "~n3"); len(xs3) != 1 {
+		t.Fatalf("o nó de risco tinha de receber o veredicto, recebeu %v", xs3)
+	}
+	if !strings.Contains(r.stdout, "execucao: n1=complete n2=complete n3=complete") {
+		t.Fatalf("a cadeia tinha de chegar ao fim:\n%s", r.stdout)
+	}
+}
+
+// Um nó só recebe o que o SEU `consumes` declara — não o que houver publicado.
+func TestAOS414_SoOQueOConsumesDeclara(t *testing.T) {
+	f := &aos413No{saidaVerif: `{"outcome":"pass","reasons":[]}`}
+	const run = "run-aos414-so-o-seu"
+	env, bin, wal, snapPath, doc := aos413Aprovado(t, f, run)
+	if r := aos413Serve(t, env, bin, wal, run, snapPath, doc); r.code != exitOK {
+		t.Fatalf("saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	// O n1 não consome nada; o n3 consome só o veredicto do n2, não o documento do n1.
+	if xs := f.inputs(run + "~n1"); len(xs) != 0 {
+		t.Fatalf("o n1 não consome nada e recebeu %v", xs)
+	}
+	xs3 := f.inputs(run + "~n3")
+	if len(xs3) != 1 {
+		t.Fatalf("o n3 tinha de receber só o veredicto, recebeu %v", xs3)
+	}
+	if in, _ := xs3[0].(map[string]any); in["from"] != "n2" || in["output"] != "decision" {
+		t.Fatalf("o n3 recebeu um contrato que não declara: %v", xs3[0])
+	}
+}
+
+// aos414PlanoComMetrics: o n2 consome um contrato `metrics` do n1 — que o validador ADMITE e que
+// o executor NUNCA consegue publicar (ninguem mede os numeros). Sem risco: auto-aprova.
+const aos414PlanoComMetrics = `{
+  "plan_version": "1.2.0",
+  "objective": "medir e reagir",
+  "budget_total": {"tokens": 100, "cost_micro_usd": 100},
+  "planner_meta": {"model":"fixture","prompt_version":"1.2.0","capabilities_hash":"sha256:snap-aos408"},
+  "nodes": [
+    {"node_id":"n1","role":"worker","objective":"medir","depends_on":[],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":10,"cost_micro_usd":10},
+     "outputs":[{"name":"medidas","type":"metrics"}]},
+    {"node_id":"n2","role":"worker","objective":"reagir as medidas","depends_on":["n1"],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":10,"cost_micro_usd":10},
+     "consumes":[{"from":"n1","output":"medidas","type":"metrics"}]}
+  ]
+}`
+
+// TestAOS414_ContratoPorCumprirFalhaONoENaoOServe: um contrato que nunca pode ser cumprido
+// fecha o CONSUMIDOR e deixa o plano terminar. FALHA-ANTES: o sink recusava, a passagem abortava,
+// o serve saia com erro e TODAS as retomas repetiam o mesmo — o plano nunca acabava.
+func TestAOS414_ContratoPorCumprirFalhaONoENaoOServe(t *testing.T) {
+	f := &aos413No{}
+	srv := f.servidor(t)
+	bin := construir(t)
+	dir := t.TempDir()
+	cred := filepath.Join(dir, "nhi.jwt")
+	escrever(t, cred, "nhi-do-operador")
+	env := []string{"AOS_ORQ_NODE_URL=" + srv.URL, "AOS_ORQ_NODE_CREDENTIAL_FILE=" + cred, "AOS_MODE="}
+	snapPath := filepath.Join(dir, "snap.json")
+	escrever(t, snapPath, aos408SnapshotComPerigo)
+	fix := filepath.Join(dir, "plano.json")
+	escrever(t, fix, aos414PlanoComMetrics)
+	wal := filepath.Join(dir, "es.wal")
+	const run = "run-aos414-metrics"
+
+	r := correrComEnv(t, env, bin, "serve", "--wal", wal, "--run", run, "--goal", "medir-e-reagir",
+		"--snapshot", snapPath, "--decompose-fixture", fix, "--worker", "p1", "--poll-interval", "20ms")
+	if r.code != exitOK {
+		t.Fatalf("o serve tinha de TERMINAR, saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "execucao: n1=complete n2=failed") {
+		t.Fatalf("o n1 tinha de concluir e o n2 fechar sem payload:\n%s", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "o contrato n1/medidas ficou por cumprir") {
+		t.Fatalf("a razão tinha de estar visível:\n%s", r.stdout)
+	}
+	if ids := f.submetidos(); len(ids) != 1 || ids[0] != run+"~n1" {
+		t.Fatalf("só o n1 podia correr, correram %v", ids)
 	}
 }
