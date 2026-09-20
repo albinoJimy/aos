@@ -6,6 +6,10 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.24 em produção (AOS-413)
+- `docs(AOS-413)` — **os nós de um organigrama executam em produção** (run `run-aos413-vivo-1`, modelo vivo). O plano ficou pendente, foi aprovado por decisão assinada fora do servidor, e o `serve --plan-doc` com o executor composto levou `read_notes` e `verify_publication` a correr como **runs reais do nó `aos`** (`<run>~<node_id>`), cada um com a lista-branca do seu nó, e a concluir no log. O verificador emitiu `outcome=fail` na gramática fechada, com `subjects` tirados do plano, e o nó `danger` APROVADO (`publish_external`) **não** correu — o ramo condicional é avaliado sobre um veredicto real.
+- O `fail` foi `documento_nao_fornecido`: o verificador não vê o que o nó anterior leu. É o limite declarado no ADR-027 (DEF-806) medido em produção — o plano executa-se e governa-se, mas os nós ainda não trocam dados.
+
 ### Added — EPIC-19 (AOS-413) Os nós despachados de um organigrama executam até ao fim
 - `feat(AOS-413)` — **um plano aprovado passa a produzir resultado**: cada nó despachado pelo `aos-orq` é um run do nó `aos` (ADR-027, decisão do dono). Até aqui a cadeia acabava no despacho — `MarkRunning` e nada mais; em produção (v0.1.23, `run-aos412-vivo-1`) o `n1` ficou `running` para sempre e o nó de risco nunca correu.
   - **Execução no nó, não no orquestrador.** O `aos-orq` submete o trabalho de cada nó por `POST /runs` (id `<run>~<node_id>`) e acompanha-o por `GET /runs/{id}`; as tool calls passam pelo mesmo RM, PDP e sandbox de produção. O ADR-018 mantém-se: o nó não importa orquestrador nem scheduler.
