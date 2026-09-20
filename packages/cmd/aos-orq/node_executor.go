@@ -78,6 +78,14 @@ func bannerDoExecutor(cli *nodeClient) string {
 	}
 	chamador := "sem autenticacao do chamador (no sem gate soberano)"
 	if cli.bearer != nil {
+		// AOS-416 — O QUE ESTA FRASE PROVA, E O QUE NÃO PROVA.
+		//
+		// O arranque LÊ as duas credenciais montadas, por isso «do ficheiro montado» deixou de
+		// ser uma promessa: um ficheiro ilegível já não chega aqui. O que o arranque NÃO prova é
+		// autenticação — um segredo legível mas obsoleto (rodado no IdP, ficheiro por
+		// actualizar) dá 401 na primeira submissão, e o segredo relê-se a CADA chamada de
+		// propósito, para que rodá-lo não exija reiniciar. Por isso a frase diz o mecanismo, não
+		// o desfecho.
 		chamador = "chamador autenticado pelo IdP (client_credentials), um token por chamada"
 	}
 	return fmt.Sprintf("executor de nos (AOS-413/AOS-414, ADR-027): COMPOSTO — cada no despachado e um run do no aos em %s (%s; NHI do run do ficheiro montado; tools do no como lista-branca). Os payloads do `consumes` viajam MARCADOS untrusted e vivem na MEMORIA deste processo: um serve que morra perde-os e o consumidor NAO corre. A separacao de planos (DEF-806) continua aberta: o conteudo e lido pelo mesmo plano que planeia", cli.base, chamador)

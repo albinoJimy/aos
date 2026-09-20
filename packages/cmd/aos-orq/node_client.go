@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -115,6 +116,13 @@ func nodeClientDoAmbiente() (*nodeClient, error) {
 	if credFile == "" {
 		return nil, fmt.Errorf("%w: %s definido sem %s — o NHI do run, cunhado pelo operador, é obrigatório", ErrNodeClientConfig, "AOS_ORQ_NODE_URL", "AOS_ORQ_NODE_CREDENTIAL_FILE")
 	}
+	// AOS-416: o NHI é a OUTRA credencial montada, com o mesmo uid e o mesmo sintoma. O operador
+	// copia-o à mão para `secrets/`/`orq/` com `umask 077`, o que dá 0600 do utilizador dele —
+	// ilegível pelo contentor. Corrigir só o segredo do IdP fechava uma porta e deixava a outra
+	// aberta na mesma parede.
+	if err := validarCredencialDeFicheiro("AOS_ORQ_NODE_CREDENTIAL_FILE", credFile); err != nil {
+		return nil, err
+	}
 	c := &nodeClient{
 		base: base,
 		// SEM redirects: num 307/308 o Go reenvia o CORPO — com o NHI do run, ou o segredo do
@@ -153,9 +161,76 @@ func nodeClientDoAmbiente() (*nodeClient, error) {
 		if production && tu.Scheme != "https" {
 			return nil, fmt.Errorf("%w: em produção o token do IdP pede-se por https (%s=%q)", ErrNodeClientConfig, "AOS_ORQ_OIDC_TOKEN_URL", tokenURL)
 		}
+		// AOS-416 — A CREDENCIAL VERIFICA-SE AQUI, NÃO NA PRIMEIRA SUBMISSÃO.
+		//
+		// Até aqui o arranque só via que a string do caminho não estava vazia. Com o ficheiro
+		// ilegível — que era o estado REAL em produção, `0400` do utilizador `aos` contra um
+		// contentor que corre como 65532 — a composição passava, o banner dizia COMPOSTO, e a
+		// falha só aparecia na primeira submissão de nó. Isso é o modo de falha do AOS-413 a
+		// regressar por outra porta: o plano despacha e nada executa.
+		if err := validarCredencialDeFicheiro("AOS_ORQ_OIDC_CLIENT_SECRET_FILE", secretFile); err != nil {
+			return nil, err
+		}
 		c.bearer = clientCredentials(c.http, tokenURL, clientID, secretFile)
 	}
 	return c, nil
+}
+
+// uidDoContentor é o uid não-root da imagem (`USER 65532:65532`, deploy/node/Dockerfile). Está
+// aqui como número porque é isso que aparece nos `ls -l` do host: o host não tem utilizador com
+// este nome, e a mensagem de erro tem de ser reconhecível por quem olha para o ficheiro.
+const uidDoContentor = 65532
+
+// validarCredencialDeFicheiro prova, no ARRANQUE, que uma credencial montada em ficheiro existe,
+// é LEGÍVEL por este processo e não está vazia. Serve as duas do executor: o NHI do run e o
+// segredo do cliente do IdP.
+//
+// # PORQUE É QUE A LEITURA É PARTE DA VALIDAÇÃO
+//
+// Um `os.Stat` diz que o ficheiro existe; não diz que este processo o consegue LER. A diferença é
+// exactamente o defeito que o AOS-416 corrige — `0400` do utilizador `aos` contra um contentor que
+// corre como 65532 — e um `Stat` teria passado por cima dele.
+//
+// # PORQUE É QUE O MODO NÃO É POLÍTICA AQUI
+//
+// A primeira versão deste código recusava em produção qualquer ficheiro com bits de grupo ou de
+// outros, por entender que `0644` punha o segredo «ao alcance de qualquer processo da máquina».
+// Isso é falso neste deployment e a revisão adversarial mostrou-o: `deploy/server/bootstrap.sh`
+// cria `secrets/` com `install -d -m 700` e o `provision.sh` reforça-o — medido em produção,
+// `drwx------ aos aos`. **O directório é a fronteira**; sem travessia, o modo do ficheiro lá
+// dentro não abre nada a ninguém. A regra teria recusado a configuração CORRECTA (a convenção
+// `0644` que todos os outros segredos montados seguem) e empurrado para um `chown` que parte o
+// backup nocturno — que corre como `aos` e tara o `secrets/` inteiro.
+//
+// O que fica é a propriedade que importa e que se pode provar aqui: o processo consegue ler.
+func validarCredencialDeFicheiro(variavel, caminho string) error {
+	info, err := os.Stat(caminho)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("%w: %s=%q está configurado mas o ficheiro NÃO existe — sem ele o executor não fala com o nó",
+			ErrNodeClientConfig, variavel, caminho)
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("%w: %s=%q: %s", ErrNodeClientConfig, variavel, caminho, comoAbrirAoContentor(caminho))
+	case err != nil:
+		return fmt.Errorf("%w: %s=%q: %v", ErrNodeClientConfig, variavel, caminho, err)
+	case info.IsDir():
+		return fmt.Errorf("%w: %s=%q é um directório", ErrNodeClientConfig, variavel, caminho)
+	}
+	if _, err := lerSegredo(caminho); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("%w: %s=%q: %s", ErrNodeClientConfig, variavel, caminho, comoAbrirAoContentor(caminho))
+		}
+		return fmt.Errorf("%w: %s=%q: %v", ErrNodeClientConfig, variavel, caminho, err)
+	}
+	return nil
+}
+
+// comoAbrirAoContentor é a metade accionável da mensagem: o operador tem de saber o gesto, senão
+// inventa um. Na validação do AOS-415 a adivinha produziu uma CÓPIA do segredo em 0444 — e é
+// dessa cópia que este ticket nasceu.
+func comoAbrirAoContentor(caminho string) string {
+	return fmt.Sprintf("o ficheiro existe mas este processo NÃO o consegue ler. O contentor corre como uid %d: no host, `chmod 0644 %s` — é a convenção dos outros segredos montados (model-api.key, vault-token), e o directório `secrets/` em 0700 continua a ser a fronteira. NÃO faça uma cópia do ficheiro",
+		uidDoContentor, caminho)
 }
 
 // hostInterno diz se o host é o de um serviço da rede do compose (um nome sem pontos, como `aos`)
@@ -205,7 +280,9 @@ func clientCredentials(hc *http.Client, tokenURL, clientID, secretFile string) f
 	}
 }
 
-// lerSegredo lê um ficheiro de segredo e tira o fim de linha.
+// lerSegredo lê um ficheiro de segredo e tira o fim de linha. O erro do SO viaja embrulhado com
+// `%w` de propósito: quem chama distingue `fs.ErrPermission` de `fs.ErrNotExist`, que são dois
+// problemas de operação diferentes (AOS-416).
 func lerSegredo(caminho string) (string, error) {
 	b, err := os.ReadFile(caminho)
 	if err != nil {

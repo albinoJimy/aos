@@ -96,7 +96,7 @@ propósito: o IdP não precisa de ser confiável pelo mundo, só pelo nó e pelo
 | Trust anchor do PDP | `packages/control-plane/pdp/policies/trust_anchor.pub` | `/opt/aos/.env` (hex) | Forçado *out-of-band*: nunca lido do directório mutável do bundle, senão quem tivesse escrita lá trocava âncora **e** assinatura de uma vez. |
 | Chave TLS do edge | servidor (`provision.sh`) | **servidor** | Cifra transporte; não autentica sujeitos nem autoriza nada. |
 | **CA interna** (`internal-ca/ca.key`) | máquina do operador | **máquina do operador** | Assina os certificados do `idp` e do `vault`. Quem a detivesse forjava um certificado para `idp` e **personificava o IdP perante o nó** — isso é fronteira de autoridade, não de transporte, e por isso fica ao lado da `issuer.key`. Só as folhas (`idp.crt/key`, `vault.crt/key`) e a `ca.crt` viajam. |
-| Segredo do `aos-reader` | Keycloak (no servidor) | `secrets/reader-client-secret` (0400) | Credencial de máquina, gerada pelo IdP. Nunca escolhida por ninguém. |
+| Segredo do `aos-reader` | Keycloak (no servidor) | `secrets/reader-client-secret` (0644 dentro de `secrets/` em 0700 — AOS-416) | Credencial de máquina, gerada pelo IdP. Nunca escolhida por ninguém. |
 | Token do Vault | Vault (no servidor) | `secrets/vault-token` | **Não é o root.** Token periódico com política só sobre `aos-kek-*`. O root fica em `secrets/vault-init.json`. |
 | Unseal do Vault | Vault (no servidor) | `secrets/vault-init.json` | Ver §"O selo do Vault" — está aqui por decisão declarada, e limita o que o selo protege. |
 | `wormseal.key` (selador do WORM) | máquina do operador | **máquina do operador** | Assina os checkpoints da verificação ancorada; o nó só recebe a pública, em `AOS_WORM_TRUST_ANCHOR`. Quem a detivesse dava uma âncora válida a uma cadeia reescrita. Rodá-la: §"Rotação das chaves de autoridade". |
@@ -527,10 +527,14 @@ até ao fim do plano.
   `model:invoke` e o board (o `-Cunhar` do `get-id-token.ps1` copia o board do IdP). A validade
   (45 min) é o tecto de duração do plano. Copie-o para `/opt/aos/orq/nhi-run.jwt` e **apague-o no
   fim**.
-- **O segredo do cliente tem de ser legível pelo contentor** (uid `65532`, o `nonroot` da imagem).
-  O `secrets/reader-client-secret` está em `0400` do utilizador `aos`: dê-lhe leitura ao uid do
-  contentor sem a abrir a toda a gente — `setfacl -m u:65532:r secrets/reader-client-secret` — ou
-  aceite `0644` como o `model-api.key`. É uma decisão sobre um segredo; o repositório não a toma.
+- **As duas credenciais montadas têm de ser legíveis pelo uid `65532`** (AOS-416), e o `serve`
+  recusa arrancar se não forem, dizendo qual e o gesto — em vez de dizer `COMPOSTO` e falhar na
+  primeira submissão, que era o comportamento antigo. O `provision-identity.sh` já põe o
+  `secrets/reader-client-secret` em `0644`; numa instalação anterior ao AOS-416 ele está em `0400`
+  do utilizador `aos` e o contentor **não o lê** — corrija com `chmod 644
+  secrets/reader-client-secret`. O mesmo vale para o NHI que copiar para `orq/nhi-run.jwt`: com o
+  `umask 077` fica `0600` e é preciso `chmod 644`. **A fronteira do segredo é o directório**, que
+  está em `0700`; não faça cópias dos ficheiros.
 
 ```bash
 $C run --rm \
@@ -878,7 +882,7 @@ razão, ele destrava. Verificado selando-o à mão.
 Ver [`keycloak/README.md`](keycloak/README.md). Dois clientes:
 
 - **`aos-reader`** — cliente confidencial com *service account*. É o que está em uso. O segredo é
-  gerado pelo Keycloak e vive em `secrets/reader-client-secret` (0400).
+  gerado pelo Keycloak e vive em `secrets/reader-client-secret` (0644 dentro de `secrets/` em 0700, para que o uid 65532 o leia — AOS-416).
 - **`aos-node`** — cliente público, **código de autorização + PKCE S256**, para leitores
   **humanos**, cada um com o seu atributo `board`. O humano autentica-se no browser com
   [`get-id-token.ps1`](get-id-token.ps1); a password nunca passa pela linha de comandos.

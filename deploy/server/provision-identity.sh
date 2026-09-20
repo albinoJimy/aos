@@ -236,9 +236,26 @@ log "  board do leitor = ${READER_BOARD} (atributo da identidade, nao constante 
 if [[ ! -s "${SECRETS}/reader-client-secret" ]]; then
   kc "${IDP_LOCAL}/admin/realms/aos/clients/${READER_CID}/client-secret" \
     | grep -o '"value":"[^"]*"' | cut -d'"' -f4 > "${SECRETS}/reader-client-secret"
-  chmod 400 "${SECRETS}/reader-client-secret"
   [[ -s "${SECRETS}/reader-client-secret" ]] || fail "nao consegui obter o segredo do aos-reader"
-  log "  segredo em ${SECRETS}/reader-client-secret (0400)"
+  log "  segredo obtido para ${SECRETS}/reader-client-secret"
+fi
+# AOS-416 — O MODO CORRIGE-SE FORA DO GUARD, E DE PROPOSITO.
+#
+# Este ficheiro e montado no `aos-orq`, que corre como 65532 (o nonroot da imagem). Em 0400 do
+# utilizador `aos` o contentor NAO o le, e o executor de nos nao obtem Bearer nenhum — medido em
+# producao a 2026-09-20. A fronteira do segredo e o DIRECTORIO: `bootstrap.sh` cria `secrets/`
+# com `install -d -m 700` e o `provision.sh` reforca-o, portanto um 0644 la dentro nao e legivel
+# por mais ninguem. E a convencao que o `model-api.key` e o `vault-token` ja seguem.
+#
+# Um `chown 65532` seria pior de duas maneiras: exige root, que este script nao tem (corre como
+# `aos`), e tiraria a leitura ao `backup.sh`, que corre no cron do `aos` e tara o `secrets/`
+# inteiro — o backup nocturno passaria a falhar em silencio.
+#
+# FORA do `if` acima porque uma instalacao ANTERIOR ao AOS-416 ja tem o ficheiro, e um guard por
+# existencia nunca lhe tocaria: e precisamente a instalacao com o defeito que e preciso reparar.
+if [[ -s "${SECRETS}/reader-client-secret" ]]; then
+  chmod 644 "${SECRETS}/reader-client-secret"   # uid 65532 (non-root) tem de o LER
+  log "  segredo em ${SECRETS}/reader-client-secret (0644 dentro de secrets/ em 0700)"
 fi
 
 # BOARD NO CLIENTE DE CUNHAGEM (AOS-407). O realm importado antes do AOS-407 nao tinha o mapper
