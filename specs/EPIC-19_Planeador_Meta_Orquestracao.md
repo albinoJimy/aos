@@ -2103,6 +2103,132 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ---
 
+## AOS-418 — Os payloads de um plano reconstroem-se do log: um `serve` que morra deixa de os levar consigo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket EMENDA uma decisão registada no ADR-027 §2.4 (decisão (A) do dono no AOS-414:
+     conteúdo em memória) sem a superar: o regime continua a ser memória, e o que muda é que ela
+     passa a ser RECONSTRUÍVEL. As citações ao ADR-022/027 são menções. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-414 (o canal de entrada e o `plan.payload_published`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/node_executor.go` (`publicarSaidas`, `entradasDe`, `ErrPayloadPerdido`), `packages/cmd/aos-orq/dispatch_wiring.go` (composição do executor), `packages/control-plane/orchestrator/plannerevents/events.go` (`PayloadPublishedPayload`) |
+
+### Contexto
+
+O conteúdo que os nós de um plano trocam vivia **só** no mapa em memória do executor — decisão (A)
+do dono no AOS-414, declarada como resíduo. Um `serve` novo sobre o MESMO plano via o mapa vazio e
+o consumidor falhava com `ErrPayloadPerdido`, **apesar de a saída do produtor existir, durável**.
+
+Enquanto cada corrida é conduzida por um operador, isto é um incómodo: repete-se a corrida. Com o
+ingresso do AOS-417 e corridas a tornarem-se rotina, **passa a ser perda de dados visível ao
+utilizador**. A fragilidade não muda; muda quem a sofre.
+
+### Objectivo
+
+Um `serve` que arranca sobre um plano a meio reconstrói os payloads dos contratos já cumpridos, e
+o que não conseguir confirmar não entrega.
+
+### O que torna isto possível sem evento novo
+
+O `plan.payload_published` já carrega o suficiente, de duas formas:
+
+| Forma | O que o evento carrega | Como se reconstrói |
+|---|---|---|
+| **Fechada** (veredicto) | o conteúdo INTEIRO, em `Closed` | pela mesma função canónica que o publicou |
+| **Aberta** | a REFERÊNCIA durável (o run filho) e o DIGEST | relê-se o run filho pelo nó, e o digest diz se é o mesmo |
+
+### Critérios de aceitação
+
+- [x] A forma fechada reconstrói-se do log sem falar com ninguém
+      (`TestAOS418_FormaFechadaReconstroiSeDoLog`).
+- [x] A forma aberta relê-se do run filho e **confere o digest**
+      (`TestAOS418_FormaAbertaReleDoRunFilhoEConfereODigest`).
+- [x] Um digest que não bate **não entra** no mapa — entregar o que voltou seria substituir o
+      payload por outro sem ninguém dar por isso (`TestAOS418_DigestQueNaoBateNaoEntra`).
+- [x] Um run filho que o nó já não conhece não entra, e o consumidor falha como antes
+      (`TestAOS418_RunFilhoDesaparecidoNaoEntra`).
+- [x] A forma canónica do conteúdo fechado vive numa só função **que NORMALIZA** — uma função
+      partilhada fecha o eixo da expressão e não o das entradas, e era por aí que divergia
+      (`TestAOS418_RazoesVaziasNaoDivergemEntrePublicarEReidratar`).
+- [x] Um `plan.payload_published` ilegível **não tranca o plano**: é ignorado com aviso, em vez de
+      abortar todas as retomas seguintes (`TestAOS418_EventoIlegivelNaoTrancaOPlano`).
+- [x] A reidratação corre no CONSTRUTOR do executor, não no wiring — um passo que se pode esquecer
+      sem nenhum teste dar por isso não é um passo.
+- [ ] Verificado em produção: um `serve` morto a meio de um plano, e o seguinte a concluir o
+      consumidor. **POR FAZER** (exige deploy), e ver o alcance real abaixo.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+
+**Falha-antes, pelo processo real.** Com a reidratação neutralizada, os dois testes que provam a
+reconstrução ficam vermelhos:
+
+```console
+--- FAIL: TestAOS418_FormaFechadaReconstroiSeDoLog
+      o payload de forma FECHADA não foi reconstruído do log
+--- FAIL: TestAOS418_FormaAbertaReleDoRunFilhoEConfereODigest
+      payload de forma ABERTA = "", quero "o texto que o no produziu"
+```
+
+Os outros três passam dos dois lados **por desenho**, e digo-o em vez de os contar como prova: dois
+são guardas (digest que não bate; run filho desaparecido) e o terceiro é o controlo que prova que
+o mapa vazio É o modo de falha — sem ele, «reconstrói sempre alguma coisa» satisfazia os
+primeiros.
+
+**A decisão de desenho que não tomei.** Não pus o conteúdo da forma aberta dentro do evento. Seria
+mais simples de reidratar e poria conteúdo untrusted, até 128 KiB por payload, no log de
+governação — que é append-only e vai ao WORM. A referência + digest dá a mesma durabilidade sem
+engordar o log, e o digest é o que impede que a releitura devolva outra coisa.
+
+**Revisão adversarial independente: onze achados, um crítico.** Os cinco que mudaram
+comportamento:
+
+| Achado | O que mudou |
+|---|---|
+| **A forma fechada DIVERGIA entre publicar e reidratar**, e o critério dizia que não podia. A publicação calculava o conteúdo das razões CRUAS e a reidratação das do evento, que o `normalizeClosed` reduz — uma lista vazia vira `nil` (campo `omitempty`). Medido: publicado `{"outcome":"pass","reasons":[]}`, reidratado `{"outcome":"pass","reasons":null}`, para um veredicto que a gramática fechada aceita | `conteudoFechado` passou a NORMALIZAR, tornando-se total sobre as duas entradas |
+| **A composição não tinha sensor nenhum:** tirar as três linhas do wiring que chamavam a reidratação deixava a suite INTEIRA verde, porque nada no pacote exercita o `composeEDespachar`. O «falha-antes» declarado cobria o corpo da função e não o facto de ela ser chamada | A reidratação passou para o CONSTRUTOR. A mesma mutação agora mata dois testes |
+| **Um evento ilegível trancava o plano para sempre**, e contradizia o resíduo que eu tinha declarado: o evento não desaparece de um log append-only, logo todas as retomas batiam no mesmo ponto | Ignora-se com aviso, como o `fechar` já fazia a um veredicto ilegível |
+| **A mensagem acusava adulteração no caso mais provável**: com o nó reiniciado, o `final_text` volta vazio e o digest não bate — mas o facto é «o nó já não retém a saída», não «a saída mudou» | Caso próprio, com a razão certa |
+| **Latência de arranque ilimitada e fora do `--plan-timeout`**: uma chamada ao nó por payload, sequencial, com `ctx` sem deadline | Prazo de 2 min para a reidratação inteira |
+
+**O ALCANCE REAL, que a revisão mediu e que muda o valor deste ticket.** A forma aberta relê-se do
+`GET /runs/{id}` do nó, e o `final_text` que esse endpoint devolve vem de um registo de desfechos
+**em memória**, com poda FIFO. O ramo durável responde `completed` **sem** `final_text`. Logo:
+
+- um `serve` que morra sozinho e volte — **os payloads voltam**, que é o caso que o ticket fecha;
+- um restart do STACK inteiro (o `aos-orq` e o `aos` correm no mesmo compose) — **os de forma
+  aberta NÃO voltam**, porque o nó já não retém o texto. Os de forma fechada voltam sempre, porque
+  vêm do evento.
+
+Ou seja: isto fecha a morte do orquestrador, **não** a morte do nó. Dizê-lo aqui porque a
+verificação em produção pode passar sem medir o caso que interessa — se o operador reiniciar só o
+`aos-orq`, mede o caso fácil.
+
+**A alternativa que existe e que não usei:** o `runlifecycle.PayloadReader` já faz a metade do log
+(ler o stream, indexar por `(produtor, output)`, primeiro vence) e alimenta o
+`plandispatch.PayloadResolver`, que re-verifica tipo, taint efectivo e `contract_digest` contra o
+documento aprovado — defesa-em-profundidade que esta implementação **salta**. Reusá-lo é o caminho
+certo e é trabalho a mais do que cabe aqui; fica nomeado em vez de ignorado.
+
+**Resíduo declarado:** a reidratação é *best-effort por payload*. Um payload que não se confirme
+não aborta o arranque — fica por cumprir, e o consumidor falha com `ErrPayloadPerdido` como antes.
+Abortar o `serve` inteiro por causa de um payload de um nó seria trocar uma falha localizada por
+uma total. E o digest protege INTEGRIDADE, não origem nem contrato: quem calcula e quem compara
+são o mesmo processo.
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -2153,3 +2279,4 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 | 1.11 | 2026-09-20 | +AOS-415 (o veredicto da validação volta ao planeador): nas DUAS validações em produção com o modelo vivo a 1.ª decomposição foi recusada pela AOS-231 e o `serve` terminou — o laço de tentativas só cobre o decode, e cada tentativa reenvia o mesmo prompt. | Equipa AOS |
 | 1.12 | 2026-09-20 | +AOS-416 (o segredo do IdP do executor de nós): a limpeza do servidor depois do AOS-415 mediu que o uid do contentor (`65532`) não lê o ficheiro `0400` que o compose lhe monta — o executor só funcionou porque existia uma cópia `0444` do segredo, entretanto apagada. | Equipa AOS |
 | 1.13 | 2026-09-20 | +AOS-417 (ingresso do caminho do plano): medido que o `aos-orq` não tem superfície de rede nenhuma (`ListenAndServe` fora de testes = zero) e que o compose o exclui do arranque por desenho — logo toda a corrida com nós executados exige um humano no terminal do servidor, e nenhum ticket cobria isso. | Equipa AOS |
+| 1.14 | 2026-09-20 | +AOS-418 (payloads reconstroem-se do log): o conteúdo vivia só em memória e um `serve` que morresse levava-o consigo, apesar de a saída do produtor existir durável — incómodo com operador, perda de dados quando o ingresso do AOS-417 tornar as corridas rotina. | Equipa AOS |

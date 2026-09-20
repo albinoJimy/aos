@@ -290,7 +290,14 @@ func composeEDespachar(
 	// `serve` anterior deixou `running` voltam a estar em voo (retoma).
 	var ex *executorDeNos
 	if exe != nil {
-		ex = novoExecutorDeNos(exe.cli, rec, g, runID, doc, authority, headroom)
+		// AOS-418: o construtor reidrata os payloads dos contratos já cumpridos a partir do LOG.
+		// Sem isso, um `serve` novo sobre um plano a meio via o mapa vazio e o consumidor falhava
+		// com ErrPayloadPerdido — a saída do produtor existia, durável, e mesmo assim perdia-se.
+		var errEx error
+		ex, errEx = novoExecutorDeNos(ctx, exe.cli, rec, g, runID, doc, authority, headroom, store, planID)
+		if errEx != nil {
+			return errEx
+		}
 		sink.exec = ex
 		var emExecucao []string
 		for _, n := range payload.Nodes {

@@ -13,7 +13,8 @@ package main
 //   - os payloads dos contratos cumpridos (AOS-414): publica `plan.payload_published` e entrega
 //     a cada nó o que o `consumes` DELE declara, marcado untrusted no prompt do run.
 //
-// O conteúdo dos payloads vive na MEMÓRIA deste processo (ADR-027 §2.4, decisão (A) do dono): no
+// O conteúdo dos payloads vive na memória deste processo em REGIME, e reconstrói-se do log no
+// arranque (AOS-418, que emenda a decisão (A) do dono no AOS-414). Originalmente: no
 // log fica a referência com o digest. O que NÃO faz: não executa o conteúdo untrusted num plano
 // separado do que planeia — a separação de planos (DEF-806/AOS-069) continua aberta.
 
@@ -88,7 +89,7 @@ func bannerDoExecutor(cli *nodeClient) string {
 		// o desfecho.
 		chamador = "chamador autenticado pelo IdP (client_credentials), um token por chamada"
 	}
-	return fmt.Sprintf("executor de nos (AOS-413/AOS-414, ADR-027): COMPOSTO — cada no despachado e um run do no aos em %s (%s; NHI do run do ficheiro montado; tools do no como lista-branca). Os payloads do `consumes` viajam MARCADOS untrusted e vivem na MEMORIA deste processo: um serve que morra perde-os e o consumidor NAO corre. A separacao de planos (DEF-806) continua aberta: o conteudo e lido pelo mesmo plano que planeia", cli.base, chamador)
+	return fmt.Sprintf("executor de nos (AOS-413/AOS-414, ADR-027): COMPOSTO — cada no despachado e um run do no aos em %s (%s; NHI do run do ficheiro montado; tools do no como lista-branca). Os payloads do `consumes` viajam MARCADOS untrusted e RECONSTROEM-SE do log no arranque (AOS-418): a forma fechada vem inteira do evento, a aberta rele-se do run filho e confere-se contra o digest publicado. O que nao se consegue confirmar NAO entra, e o consumidor nao corre — a direccao segura. A separacao de planos (DEF-806) continua aberta: o conteudo e lido pelo mesmo plano que planeia", cli.base, chamador)
 }
 
 // resumoDaExecucao é a linha final do `serve` com o executor: o estado de cada nó do plano.
@@ -131,6 +132,10 @@ type executorDeNos struct {
 	// nó. O custo, declarado: um `serve` que morra perde-o, e a retoma recusa-se a correr um
 	// consumidor sem o material — alto, em vez de o correr às cegas.
 	payloads map[chaveDePayload]string
+	// rehidratados conta os payloads reconstruídos do log neste arranque (AOS-418), e é
+	// impresso no fim da reidratação — não no banner do executor, que é escrito muito antes de
+	// o executor existir.
+	rehidratados int
 }
 
 // chaveDePayload identifica um contrato cumprido: (produtor, output).
@@ -147,21 +152,41 @@ var ErrPayloadPerdido = errors.New("aos-orq: contrato de entrada por cumprir (AO
 // transporta, e o contrato fica POR CUMPRIR — o consumidor não corre, em vez de receber metade.
 const maxPayloadBytes = 128 << 10
 
+// prazoDeRehidratacao limita o arranque quando os payloads de forma aberta têm de ser relidos do
+// nó. Esgotá-lo não é erro: os que não voltaram ficam por cumprir e os consumidores respectivos
+// falham, que é o mesmo desfecho de não os ter (AOS-418).
+const prazoDeRehidratacao = 2 * time.Minute
+
 // toleranciaA404 é quanto tempo um run em voo pode responder 404 antes de contar como perdido.
 // Um 404 não é, por si, a morte do run: o nó responde 404 a um run durável `running` que não está
 // na memória DESTE processo — outra réplica, ou a janela antes de a retoma de arranque o voltar a
 // hospedar. Marcá-lo `failed` à primeira era dar por morto trabalho que continua.
 const toleranciaA404 = 2 * time.Minute
 
-func novoExecutorDeNos(cli nodeRunner, rec *runlifecycle.PlanRecorder, g *orchestrator.GraphBuilder, runID string,
-	doc plan.PlanDocument, pinadas map[string][]string, headroom *boundedHeadroom) *executorDeNos {
+// novoExecutorDeNos compõe o executor E reidrata os payloads dos contratos já cumpridos.
+//
+// # PORQUE É QUE A REIDRATAÇÃO ESTÁ AQUI E NÃO NO WIRING
+//
+// Esteve no wiring, e a revisão adversarial mostrou o preço: tirar as três linhas que a chamavam
+// deixava a suite INTEIRA verde, porque nada no pacote exercita `composeEDespachar`. Um passo que
+// se pode esquecer sem nenhum teste dar por isso não é um passo — é uma sugestão. Aqui, esquecê-lo
+// exige apagá-lo de dentro do construtor, e aí os testes de unidade ficam vermelhos.
+func novoExecutorDeNos(ctx context.Context, cli nodeRunner, rec *runlifecycle.PlanRecorder, g *orchestrator.GraphBuilder, runID string,
+	doc plan.PlanDocument, pinadas map[string][]string, headroom *boundedHeadroom,
+	store runlifecycle.EventStore, planID string) (*executorDeNos, error) {
 	nos := make(map[string]plan.Node, len(doc.Nodes))
 	for _, n := range doc.Nodes {
 		nos[n.NodeID] = n
 	}
-	return &executorDeNos{cli: cli, rec: rec, g: g, runID: runID, nos: nos, tools: pinadas, headroom: headroom,
+	e := &executorDeNos{cli: cli, rec: rec, g: g, runID: runID, nos: nos, tools: pinadas, headroom: headroom,
 		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now,
 		payloads: map[chaveDePayload]string{}}
+	if store != nil && planID != "" {
+		if err := e.rehidratarPayloads(ctx, store, planID); err != nil {
+			return nil, err
+		}
+	}
+	return e, nil
 }
 
 // retomar põe em voo os nós que um `serve` anterior deixou `running`, e reserva-lhes o headroom
@@ -289,11 +314,11 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 			// Forma fechada: viaja inline e validada pelo construtor. O conteúdo que o
 			// consumidor recebe é a forma canónica do veredicto, não texto do modelo.
 			p.Closed = &plannerevents.ClosedPayload{Outcome: v.Outcome, Reasons: v.Reasons}
-			bruto, err := json.Marshal(map[string]any{"outcome": v.Outcome, "reasons": v.Reasons})
+			bruto, err := conteudoFechado(v.Outcome, v.Reasons)
 			if err != nil {
 				return err
 			}
-			conteudo = string(bruto)
+			conteudo = bruto
 		case contrato.Type.ClosedForm():
 			// `metrics` (ou um veredicto que não se conseguiu ler): sem fonte, não se publica.
 			continue
@@ -319,6 +344,137 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 		fmt.Printf("  execucao: payload %s/%s publicado (%s)\n", n.NodeID, contrato.Name, contrato.Type)
 	}
 	return nil
+}
+
+// conteudoFechado é a forma canónica de um veredicto como PAYLOAD.
+//
+// Vive numa função porque é calculada em DOIS momentos — na publicação e na reidratação de
+// AOS-418 — e duas expressões equivalentes hoje divergem amanhã em silêncio: o consumidor
+// receberia bytes diferentes conforme o processo tivesse ou não reiniciado, e nada o diria.
+//
+// # PORQUE É QUE ELA NORMALIZA, E NÃO SÓ FORMATA
+//
+// Uma função partilhada fecha o eixo da EXPRESSÃO e não o das ENTRADAS, e foi por aí que a
+// primeira versão deste código divergiu: a publicação passava-lhe as razões CRUAS
+// (`veredictoDaSaida`) e a reidratação passava-lhe as razões do evento, que o
+// `plannerevents.normalizeClosed` já reduziu — em particular, uma lista VAZIA vira `nil` porque o
+// campo é `omitempty`. Resultado medido: publicado `{"outcome":"pass","reasons":[]}`, reidratado
+// `{"outcome":"pass","reasons":null}` — para um verificador que responda `reasons: []`, que a
+// gramática fechada aceita. Reduzir aqui torna a função TOTAL sobre as duas entradas.
+func conteudoFechado(outcome plannerevents.VerdictOutcome, reasons []string) (string, error) {
+	if len(reasons) == 0 {
+		reasons = nil
+	}
+	bruto, err := json.Marshal(map[string]any{"outcome": outcome, "reasons": reasons})
+	if err != nil {
+		return "", err
+	}
+	return string(bruto), nil
+}
+
+// rehidratarPayloads reconstrói o conteúdo dos contratos já cumpridos a partir do LOG, para que
+// um `serve` que morra a meio de um plano não leve os payloads com ele (AOS-418).
+//
+// # PORQUE É QUE ISTO NÃO PRECISA DE EVENTO NOVO
+//
+// O `plan.payload_published` já carrega o suficiente, e de duas formas diferentes:
+//
+//   - FECHADA (veredicto): o conteúdo está INTEIRO no evento (`Closed`). Reconstrói-se pela mesma
+//     função canónica que o publicou.
+//   - ABERTA: o evento carrega a REFERÊNCIA durável (o run filho que produziu a saída) e o
+//     DIGEST. O conteúdo relê-se do run filho pelo nó, e o digest do evento diz se o que voltou é
+//     o mesmo que foi publicado.
+//
+// # FAIL-CLOSED, E PORQUÊ
+//
+// Um payload que não se consiga reconstruir NÃO entra no mapa: o consumidor falha depois com
+// [ErrPayloadPerdido], que é o comportamento de hoje. A alternativa — entregar o que voltou sem
+// conferir o digest — daria ao consumidor bytes que ninguém publicou, e a marca `untrusted` do
+// AOS-414 protege a FRONTEIRA, não a identidade do conteúdo.
+func (e *executorDeNos) rehidratarPayloads(ctx context.Context, store runlifecycle.EventStore, planID string) error {
+	// A reidratação tem PRAZO. Cada payload de forma aberta é uma chamada ao nó, sequencial, e o
+	// `ctx` que chega aqui não traz deadline: com o nó indisponível, um plano com muitos
+	// produtores dava minutos de arranque mudo — e o `--plan-timeout` só começa a contar depois.
+	ctx, cancelar := context.WithTimeout(ctx, prazoDeRehidratacao)
+	defer cancelar()
+
+	vistos := 0
+	eventos, err := store.Read(ctx, planID, 0)
+	if err != nil {
+		return fmt.Errorf("rehidratar payloads: ler o stream do plano %q: %w", planID, err)
+	}
+	for _, ev := range eventos {
+		if ev.Type != plannerevents.EventPayloadPublished {
+			continue
+		}
+		var p plannerevents.PayloadPublishedPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			// NÃO aborta. O evento não desaparece de um log append-only: abortar aqui repetia-se
+			// em TODAS as retomas e trancava o plano para sempre por linha de comando. É a mesma
+			// regra que `fechar` aplica a um veredicto ilegível — o payload fica por cumprir, o
+			// consumidor falha, e o resto do plano segue.
+			fmt.Printf("  execucao: %s ILEGIVEL no plano %s (ignorado; o consumidor falha se precisar dele): %v\n", plannerevents.EventPayloadPublished, planID, err)
+			continue
+		}
+		vistos++
+		chave := chaveDePayload{no: p.NodeID, output: p.Output}
+		if _, ja := e.payloads[chave]; ja {
+			continue
+		}
+		switch {
+		case p.Closed != nil:
+			conteudo, err := conteudoFechado(p.Closed.Outcome, p.Closed.Reasons)
+			if err != nil {
+				return fmt.Errorf("rehidratar payloads: forma fechada de %q/%q: %w", p.NodeID, p.Output, err)
+			}
+			e.payloads[chave] = conteudo
+			e.rehidratados++
+		case p.Record.Stream != "":
+			conteudo, ok := e.relerDoRunFilho(ctx, p)
+			if !ok {
+				continue
+			}
+			e.payloads[chave] = conteudo
+			e.rehidratados++
+		}
+	}
+	if vistos > 0 {
+		// Imprime-se TAMBÉM com zero reconstruídos: um plano a meio cujos payloads não voltaram
+		// é precisamente o que o operador tem de ver, e o silêncio dizia-lhe o contrário.
+		fmt.Printf("  execucao: %d de %d payload(s) reconstruido(s) do log (AOS-418)\n", e.rehidratados, vistos)
+	}
+	return nil
+}
+
+// relerDoRunFilho relê a saída de um run filho e confirma-a contra o digest do evento. Devolve
+// (conteudo, true) só quando o que voltou é byte a byte o que foi publicado.
+func (e *executorDeNos) relerDoRunFilho(ctx context.Context, p plannerevents.PayloadPublishedPayload) (string, bool) {
+	st, existe, err := e.cli.Status(ctx, p.Record.Stream)
+	if err != nil {
+		fmt.Printf("  execucao: payload %s/%s NAO rehidratado (run filho %s ilegivel: %v)\n", p.NodeID, p.Output, p.Record.Stream, err)
+		return "", false
+	}
+	if !existe {
+		// O nó já não conhece o run filho. A saída existiu, mas não há de onde a reler — e
+		// inventá-la não é opção.
+		fmt.Printf("  execucao: payload %s/%s NAO rehidratado (o no ja nao conhece o run filho %s)\n", p.NodeID, p.Output, p.Record.Stream)
+		return "", false
+	}
+	if st.FinalText == "" {
+		// O CASO PROVÁVEL, e não o da adulteração. O `final_text` do nó vem de um registo de
+		// desfechos EM MEMÓRIA, com poda FIFO: um nó reiniciado responde `completed` sem texto.
+		// Dizer «o digest não bate» aqui seria acusar substituição onde o facto é «o nó já não
+		// retém a saída» — o diagnóstico errado no caso mais frequente.
+		fmt.Printf("  execucao: payload %s/%s NAO rehidratado (o no ja nao retem a saida do run %s — registo de desfechos em memoria)\n", p.NodeID, p.Output, p.Record.Stream)
+		return "", false
+	}
+	if digestDoConteudo(st.FinalText) != p.Record.Digest {
+		// Não é um erro de transporte: é a saída do run filho a não ser a que foi publicada.
+		// Entregá-la seria substituir o payload por outro sem ninguém dar por isso.
+		fmt.Printf("  execucao: payload %s/%s NAO rehidratado (digest do run filho %s nao bate com o publicado)\n", p.NodeID, p.Output, p.Record.Stream)
+		return "", false
+	}
+	return st.FinalText, true
 }
 
 // nomesDasTools converte as capabilities pinadas (`cap:tool:<nome>`) nos nomes de tool que a
