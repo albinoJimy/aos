@@ -69,14 +69,25 @@ const (
 	tokenTTL = 30 * time.Minute
 )
 
-// fixtureModel é um [decompose.Model] NÃO-PRODUÇÃO: devolve sempre o mesmo texto (um
-// PlanDocument lido de ficheiro). Existe para exercitar o pipeline do Planner
-// ponta-a-ponta sem um LLM vivo, até o Model Gateway ser composto (T2-B). O binário só o
-// usa quando `--decompose-fixture` é dado.
-type fixtureModel struct{ conteudo string }
+// fixtureModel é um [decompose.Model] NÃO-PRODUÇÃO: devolve um PlanDocument lido de ficheiro.
+// Existe para exercitar o pipeline do Planner ponta-a-ponta sem um LLM vivo. O binário só o usa
+// quando `--decompose-fixture` é dado.
+//
+// AOS-415: aceita VÁRIOS documentos (o flag separa-os por vírgula) e devolve um por TENTATIVA,
+// repetindo o último. É o que permite exercitar, pelo processo real, o caso que a produção mediu:
+// a 1.ª decomposição recusada pela validação e a 2.ª admitida.
+type fixtureModel struct {
+	conteudos []string
+	chamadas  int
+}
 
-func (m fixtureModel) Complete(_ context.Context, _, _ string) (string, error) {
-	return m.conteudo, nil
+func (m *fixtureModel) Complete(_ context.Context, _, _ string) (string, error) {
+	i := m.chamadas
+	m.chamadas++
+	if i >= len(m.conteudos) {
+		i = len(m.conteudos) - 1
+	}
+	return m.conteudos[i], nil
 }
 
 // modeloDeDecomposicao escolhe o [decompose.Model] do `--goal`. Enquanto o Model Gateway
@@ -93,17 +104,28 @@ func modeloDeDecomposicao(fixturePath string) (decompose.Model, error) {
 	return carregarFixtureModel(fixturePath)
 }
 
-// carregarFixtureModel lê o ficheiro-fixture do decompositor. Fail-closed: um ficheiro
-// vazio não é um modelo.
-func carregarFixtureModel(path string) (fixtureModel, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fixtureModel{}, fmt.Errorf("fixture do decompositor %q: %w", path, err)
+// carregarFixtureModel lê os ficheiros-fixture do decompositor — um por TENTATIVA, separados
+// por vírgula (AOS-415). Fail-closed: um ficheiro vazio não é um modelo.
+func carregarFixtureModel(path string) (*fixtureModel, error) {
+	var conteudos []string
+	for _, p := range strings.Split(path, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return nil, fmt.Errorf("fixture do decompositor %q: %w", p, err)
+		}
+		if strings.TrimSpace(string(raw)) == "" {
+			return nil, fmt.Errorf("fixture do decompositor %q vazio", p)
+		}
+		conteudos = append(conteudos, string(raw))
 	}
-	if strings.TrimSpace(string(raw)) == "" {
-		return fixtureModel{}, fmt.Errorf("fixture do decompositor %q vazio", path)
+	if len(conteudos) == 0 {
+		return nil, fmt.Errorf("fixture do decompositor %q vazio", path)
 	}
-	return fixtureModel{conteudo: string(raw)}, nil
+	return &fixtureModel{conteudos: conteudos}, nil
 }
 
 // decomporEMaterializar corre o pipeline goal→DAG multi-nó sob a posse deste run: compõe
@@ -148,7 +170,10 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	if err != nil {
 		return fmt.Errorf("decompositor: %w", err)
 	}
-	pl, err := planner.NewPlanner(b.bud, b.mon, b.iss, dec)
+	// AOS-415: a validação estrutural (AOS-231) entra NO LAÇO de tentativas do planeador. Antes
+	// corria só aqui a jusante, e uma recusa era terminal — medido em produção nas validações do
+	// AOS-412 e do AOS-414, as duas com a 1.ª decomposição recusada e o `serve` a acabar.
+	pl, err := planner.NewPlanner(b.bud, b.mon, b.iss, dec, planner.WithValidator(validadorDoSnapshot{snap: snap}))
 	if err != nil {
 		return fmt.Errorf("planeador: %w", err)
 	}
@@ -290,6 +315,23 @@ func comporBaseDeExecucao(ctx context.Context, runID, worker string, snap planva
 		return nil, fmt.Errorf("orçamento da árvore: %w", err)
 	}
 	return &baseDeExecucao{iss: iss, tokenDoRun: runTok.Compact, mon: mon, bud: bud}, nil
+}
+
+// validadorDoSnapshot adapta a validação estrutural (AOS-231) à porta [planner.Validator]: é o
+// MESMO `planvalidate.Validate` que corre a jusante, com o MESMO snapshot pinado — não uma
+// segunda opinião sobre o que é admissível.
+//
+// O que atravessa a fronteira é só o que o veredicto traz em CÓDIGOS: a regra, o sub-código e o
+// node_id do locator. O enum foi escrito para isto («sinal accionável sem vazar conteúdo
+// untrusted», `planvalidate/verdict.go`), e o node_id tem grammar fechada.
+type validadorDoSnapshot struct{ snap planvalidate.Snapshot }
+
+func (v validadorDoSnapshot) Validate(doc plan.PlanDocument) *planner.Rejection {
+	ver := planvalidate.Validate(doc, v.snap, planvalidate.Ceilings{MaxNodes: planvalidate.DefaultMaxNodes})
+	if !ver.Rejected() {
+		return nil
+	}
+	return &planner.Rejection{Rule: string(ver.Rule), Reason: string(ver.Reason), NodeID: ver.Locator.NodeID}
 }
 
 // validarEstrutura corre a validação estrutural (AOS-231) — aciclicidade, resolução das tools no

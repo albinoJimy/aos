@@ -62,6 +62,7 @@ import (
 
 	"github.com/aos-ref/control-plane/orchestrator"
 	"github.com/aos-ref/control-plane/orchestrator/plan"
+	planner "github.com/aos-ref/control-plane/orchestrator/planner"
 	"github.com/aos-ref/control-plane/runlifecycle"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	audit "github.com/aos-ref/platform/audit"
@@ -96,6 +97,10 @@ const (
 	// exitNosEmVoo — o prazo do `serve` (--plan-timeout) acabou com nós do plano ainda a correr
 	// no nó `aos` (AOS-413). Não é avaria: a posse é largada e uma nova invocação retoma-os.
 	exitNosEmVoo = 8
+	// exitPlanoRecusado — o planeador esgotou as tentativas e o plano continua a ser recusado
+	// pela validação estrutural (AOS-415). Tem código PRÓPRIO porque a posse É largada: sem ele,
+	// esta saída seria um `1` genérico que larga o lease, quando todo o outro `1` o retém.
+	exitPlanoRecusado = 9
 )
 
 func main() {
@@ -149,7 +154,7 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
 Gate de aprovação de plano (AOS-408): um plano com nós de risco (danger) ou lacuna de
 capacidade NAO materializa — fica PENDENTE (saida 6) e a decisao vem por fora, assinada.
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas)
 `)
 }
 
@@ -168,7 +173,11 @@ func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(
 	// Uma RECUSA também é o fim do trabalho deste processo sobre o run (o plano não vai correr por
 	// esta via), e reter a posse bloqueava o passo seguinte do operador com um «posse negada».
 	// AOS-413: o prazo esgotado com nós em voo também — a retoma é de outra invocação.
-	if !errors.Is(err, errPlanoPendente) && !errors.Is(err, errDecisaoRecusada) && !errors.Is(err, errNosEmVoo) {
+	// AOS-415: e a recusa da validação, depois de esgotadas as tentativas. Sem isto o `serve`
+	// seguinte, com o mesmo `--run`, saía com 3 («lease detido») e o operador esperava pelo TTL —
+	// observado na validação do AOS-414.
+	if !errors.Is(err, errPlanoPendente) && !errors.Is(err, errDecisaoRecusada) &&
+		!errors.Is(err, errNosEmVoo) && !errors.Is(err, planner.ErrPlanRejected) {
 		return err
 	}
 	if parar != nil {
@@ -197,6 +206,8 @@ func codigoDe(err error) int {
 		return exitDecisaoRecusada
 	case errors.Is(err, errNosEmVoo):
 		return exitNosEmVoo
+	case errors.Is(err, planner.ErrPlanRejected):
+		return exitPlanoRecusado
 	default:
 		return exitErro
 	}
@@ -218,7 +229,7 @@ func cmdServe(args []string) error {
 	planDoc := fs.String("plan-doc", "", "ficheiro JSON do PlanDocument APROVADO a materializar")
 	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc/--goal: é dele que sai o oráculo de efeito e o validador AOS-231)")
 	goal := fs.String("goal", "", "objectivo a decompor num DAG multi-nó pelo Planner governado (F2E-02, AOS-388; exige --snapshot; exclui --nodes/--plan-doc)")
-	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM até o Model Gateway ser composto (T2-B)")
+	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro(s) com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM. Vários ficheiros separados por vírgula ⇒ um por TENTATIVA (AOS-415), repetindo o último; um caminho com vírgula não é suportado por esta via")
 	planOut := fs.String("plan-out", "", "ficheiro onde escrever o PlanDocument que ficou PENDENTE de aprovação humana (AOS-408): o documento cru não vive no log, e é este ficheiro que o `decide` reapresenta")
 	planTimeout := fs.Duration("plan-timeout", prazoDoPlanoPorOmissao, "com o executor de nós composto (AOS_ORQ_NODE_URL, AOS-413): quanto tempo o serve espera pelos runs dos nós; esgotado com nós em voo, sai com 8 e larga a posse. Abaixo da validade do NHI do run")
 	pollInterval := fs.Duration("poll-interval", intervaloDeSondagemPorOmissao, "com o executor de nós composto: intervalo entre leituras do estado dos runs dos nós")

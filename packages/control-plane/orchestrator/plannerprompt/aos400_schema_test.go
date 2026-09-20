@@ -426,18 +426,58 @@ func lerTemplate110(t *testing.T) string {
 // TestAOS400_Mutacao110Para120PassaOGateADR012: a primeira chamada do gate sobre a mutação
 // REAL (os bumps anteriores só o exercitavam com templates inventados). 1.1.0 → 1.2.0 é um
 // MINOR: mesmo MAJOR, MINOR seguinte, PATCH a zero, e as regras do 1.1.0 ficam intactas.
+//
+// AOS-415: o `Current` subiu para 1.3.0, pelo que esta mutação passa a ser medida contra o
+// template 1.2.0 GUARDADO (`testdata/prompt-1.2.0.txt`) — o que este teste prova continua a
+// ser o bump do AOS-400, não o do ticket seguinte. O bump 1.2.0 → 1.3.0 tem teste próprio.
 func TestAOS400_Mutacao110Para120PassaOGateADR012(t *testing.T) {
 	antigo := Prompt{Version: PromptVersion{Major: 1, Minor: 1, Patch: 0}, Template: lerTemplate110(t)}
+	novo := Prompt{Version: PromptVersion{Major: 1, Minor: 2, Patch: 0}, Template: lerTemplate120(t)}
 	ap := PromptApproval{Approver: "Arquitecto de Plataforma", ADR012Ref: "ADR-012 (AOS-400)"}
-	if err := ValidatePromptMutation(antigo, Current, ap); err != nil {
-		t.Fatalf("a mutacao 1.1.0 -> %s devia passar o gate: %v", Current.MetaPromptVersion(), err)
+	if err := ValidatePromptMutation(antigo, novo, ap); err != nil {
+		t.Fatalf("a mutacao 1.1.0 -> 1.2.0 devia passar o gate: %v", err)
 	}
-	if v := Current.Version; v.Major != 1 || v.Minor != 2 || v.Patch != 0 {
-		t.Fatalf("o AOS-400 e um MINOR sobre 1.1.0; Current=%s", Current.MetaPromptVersion())
+	inicioRegras := strings.Index(antigo.Template, "REGRAS DURAS:")
+	if inicioRegras < 0 || !strings.Contains(novo.Template, antigo.Template[inicioRegras:]) {
+		t.Fatal("as REGRAS DURAS do 1.1.0 tinham de ficar intactas no 1.2.0 (bump MINOR aditivo)")
+	}
+}
+
+// fingerprintPrompt120 é o SHA-256 do template 1.2.0 tal como foi publicado (AOS-400).
+const fingerprintPrompt120 = "07c2ae7b10992476ca812ec6b6c0ef9a0e04f8813f0476e69405858990205c2e"
+
+func lerTemplate120(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/prompt-1.2.0.txt")
+	if err != nil {
+		t.Fatalf("template 1.2.0: %v", err)
+	}
+	raw = bytes.TrimSuffix(raw, []byte("\n"))
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != fingerprintPrompt120 {
+		t.Fatalf("testdata/prompt-1.2.0.txt nao e o template publicado: sha256=%s", got)
+	}
+	return string(raw)
+}
+
+// TestAOS415_Mutacao120Para130PassaOGateADR012: o bump que acrescenta a regra 11 (o bloco
+// de RECUSA DA TENTATIVA ANTERIOR). MINOR e ADITIVO: as regras 1 a 10 do 1.2.0 ficam
+// intactas, e o que muda é texto NOVO no fim.
+func TestAOS415_Mutacao120Para130PassaOGateADR012(t *testing.T) {
+	antigo := Prompt{Version: PromptVersion{Major: 1, Minor: 2, Patch: 0}, Template: lerTemplate120(t)}
+	ap := PromptApproval{Approver: "Arquitecto de Plataforma", ADR012Ref: "ADR-012 (AOS-415)"}
+	if err := ValidatePromptMutation(antigo, Current, ap); err != nil {
+		t.Fatalf("a mutacao 1.2.0 -> %s devia passar o gate: %v", Current.MetaPromptVersion(), err)
+	}
+	if v := Current.Version; v.Major != 1 || v.Minor != 3 || v.Patch != 0 {
+		t.Fatalf("o AOS-415 e um MINOR sobre 1.2.0; Current=%s", Current.MetaPromptVersion())
 	}
 	inicioRegras := strings.Index(antigo.Template, "REGRAS DURAS:")
 	if inicioRegras < 0 || !strings.Contains(Current.Template, antigo.Template[inicioRegras:]) {
-		t.Fatal("as REGRAS DURAS do 1.1.0 tinham de ficar intactas no 1.2.0 (bump MINOR aditivo)")
+		t.Fatal("as REGRAS DURAS do 1.2.0 tinham de ficar intactas no 1.3.0 (bump MINOR aditivo)")
+	}
+	if !strings.Contains(Current.Template, "RECUSA DA TENTATIVA ANTERIOR") {
+		t.Fatal("o 1.3.0 tem de declarar o bloco de recusa que o chamador injecta")
 	}
 }
 

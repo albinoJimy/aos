@@ -1,17 +1,4 @@
-package plannerprompt
-
-// decompositionTemplateV1 é o TEXTO ESTÁTICO do prompt de decomposição v1.2.0. É um
-// const (imutável, compilado no binário) — a fonte da cache-estabilidade de ADR-009:
-// não há montagem dinâmica nem interpolação em run-time, logo o [Prompt.Fingerprint]
-// é invariante entre processos e execuções. Descreve o CONTRATO de schema fechado que
-// o modelo tem de respeitar; o conteúdo do objectivo/contexto é injectado a JUSANTE
-// pelo chamador (untrusted), NÃO por edição deste template.
-//
-// O bloco SCHEMA é o espelho do que `plan.Decode` exige: os nomes dos campos, quais são
-// obrigatórios (`*`) e os valores fechados. `TestTemplateDeclaraOSchemaQueODecodeExige`
-// deriva os campos dos tipos de `plan` e a obrigatoriedade do próprio decode, e falha se
-// o bloco deixar de os nomear.
-const decompositionTemplateV1 = `Es o planeador de decomposicao do AOS.
+Es o planeador de decomposicao do AOS.
 A tua unica saida e UM PlanDocument JSON de schema FECHADO (sem campos extra).
 
 SCHEMA (um campo fora desta lista e RECUSADO; * marca os obrigatorios):
@@ -81,47 +68,3 @@ REGRAS DURAS:
    metrics ou verdict e nao usa ferramentas de efeito.
 10. budget_estimate e a tua estimativa realista do custo do no, com tokens maior que
     zero; budget_total e a soma das estimativas dos nos.
-11. Se a mensagem do utilizador trouxer RECUSA DA TENTATIVA ANTERIOR, o teu documento
-    anterior foi rejeitado pelo validador com esses codigos (rule, reason e, quando
-    existe, node_id). Corrige EXACTAMENTE essa causa e devolve o documento INTEIRO e
-    corrigido. Nao repitas o mesmo erro, nao pecas desculpa e nao expliques: a tua saida
-    continua a ser so o JSON.`
-
-// Current é o prompt de decomposição CORRENTE que este módulo publica (v1.3.0). As
-// propostas novas saem sob esta versão; um bump governado (ADR-012, via
-// [ValidatePromptMutation]) actualiza este valor. É cache-estável por construção
-// (template const).
-//
-// 1.1.0 (AOS-273) — MINOR: a regra 6 NOMEIA a linha de schema que o documento tem de
-// carimbar e as três extensões de ADR-022 que a fazem subir. Antes disto o template
-// nunca mencionava o `plan_version`: o modelo carimbava o que calhava (as fixtures
-// pré-existentes carimbam 1.0.0), e o piso derivado das features — imposto na regra 1 de
-// `planvalidate` desde AOS-273 — transformava um descuido de carimbo numa REJEIÇÃO do
-// plano inteiro. A instrução fecha o lado do produtor da mesma regra; a imposição
-// continua a ser do validador, porque um prompt é um pedido e não uma garantia.
-//
-// 1.2.0 (AOS-400) — MINOR: o bloco SCHEMA e a FORMA MINIMA declaram o documento que o
-// decode exige; as regras 7 a 9 declaram as regras de grafo do validador (AOS-231) que
-// acompanham as extensões; a regra 10 pede orçamentos realistas, porque um nó a zero é
-// admitido sem reserva e um papel a zero não consegue delegar (a fatia do spawn tem de
-// ser positiva). O template 1.1.0 pedia um schema fechado sem o
-// descrever, e o modelo de produção falhou as três tentativas com `plan: objective de
-// topo em falta` (medido a 2026-09-16). O planeador só repete a tentativa quando o decode
-// falha: uma recusa do validador acaba o run, pelo que o prompt tem de dizer também essas
-// regras. É aditivo: as regras 1 a 6 ficam iguais, o schema não muda e o texto não impõe
-// nada (quem impõe é o decode e o validador, como antes), pelo que um documento válido sob
-// 1.1.0 continua válido. O 1.1.0 fica em `testdata/prompt-1.1.0.txt`, contra o qual a
-// mutação é validada.
-// 1.3.0 (AOS-415) — MINOR: a regra 11 declara o bloco RECUSA DA TENTATIVA ANTERIOR que o
-// chamador passa a injectar na mensagem `user` quando a tentativa anterior foi rejeitada
-// pelo validador (AOS-231). Sem ela, o bloco chegaria ao modelo sem contrato que o
-// explique. Medido em produção: nas validações do AOS-412 e do AOS-414 a PRIMEIRA
-// decomposição do modelo vivo foi recusada, as duas vezes com `consumes_taint_authority`,
-// e o `serve` terminava — o laço de tentativas só cobria o decode e cada tentativa
-// reenviava o MESMO prompt. É aditivo: as regras 1 a 10 ficam intactas, o schema não muda,
-// e um documento válido sob 1.2.0 continua válido. O 1.2.0 fica em
-// `testdata/prompt-1.2.0.txt`, contra o qual a mutação é validada.
-var Current = Prompt{
-	Version:  PromptVersion{Major: 1, Minor: 3, Patch: 0},
-	Template: decompositionTemplateV1,
-}
