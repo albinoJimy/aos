@@ -6,6 +6,10 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.25 em produção (AOS-414)
+- `docs(AOS-414)` — **o verificador passa a decidir sobre o documento que o nó anterior leu** (run `run-aos414-vivo-2`, modelo vivo). O payload do `n1_read_notes` foi publicado como `record` com `taint=untrusted` e referência ao run filho com digest; o `n2_verify_content` emitiu `outcome=pass` com quatro razões SOBRE O CONTEÚDO (segredos, credenciais, dados pessoais, identificadores internos), onde na validação do AOS-413 reprovava com `documento_nao_fornecido`; o ramo condicional ficou `taken=true`; e o nó `danger` aprovado (`n3_publish_external`) correu. Os três nós `complete`, `EXIT=0`.
+- Observado, fora do ticket: a primeira decomposição viva foi recusada pela regra AOS-231 (`consumes_taint_authority`) e o `serve` recusado RETEVE a posse do run — a invocação seguinte saiu com `3`. E ler um WAL de produção com `grep` dá contagens falsas (enquadramento binário): use-se `strings`.
+
 ### Added — EPIC-19 (AOS-414) Os nós de um plano trocam dados por um canal marcado como untrusted
 - `feat(AOS-414)` — **o `POST /runs` ganha um canal de entrada (`inputs`)** e os nós do plano passam a trocar dados (ADR-027 §2.4 emendado, opção (A) do dono). A validação do AOS-413 em produção tinha medido a cadeia a partir-se: o verificador reprovava com `documento_nao_fornecido`.
   - **Marcação, não confiança.** O conteúdo entra no tail como segmento `plan_input` com `taint=untrusted` e a proveniência (`plan_input_from/output/digest`) nos RÓTULOS da linha de delimitação, que é inforjável — nunca no corpo, nunca como objectivo (que é trusted). Um payload com `<correction>` no corpo não forja o único rótulo trusted da janela.
