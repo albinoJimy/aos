@@ -1534,9 +1534,9 @@ em claro no orquestrador.
       *(Evidência: o teste confirma que o segmento do objectivo não contém o conteúdo, e
       `TestAOS414_PayloadNaoForjaSegmentoTrusted` prova que um payload com `<correction>` no corpo
       não forja o único rótulo trusted da janela.)*
-- [ ] Verificado em produção com o modelo vivo: o caso do `run-aos413-vivo-1` passa a ter o
+- [x] Verificado em produção com o modelo vivo: o caso do `run-aos413-vivo-1` passa a ter o
       verificador a decidir sobre o documento que o `read_notes` leu — `pass` liberta o nó
-      `danger` aprovado, `fail` mantém-no retido. **POR FAZER** (exige deploy).
+      `danger` aprovado, `fail` mantém-no retido. *(Ver abaixo: `run-aos414-vivo-2`, v0.1.25.)*
 
 ### Fora de âmbito
 
@@ -1547,7 +1547,39 @@ em claro no orquestrador.
 
 ### Estado
 
-**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+**FEITO.**
+
+**Verificado em produção a 2026-09-20** (`v0.1.25`, imagem `sha256:51ca557c…`), com o modelo vivo,
+no run `run-aos414-vivo-2`. O planeador decompôs em `n1_read_notes` (lê com `doc_read`),
+`n2_verify_content` (verificador, sem tools) e `n3_publish_external` (`web_post`, `danger`,
+condicional ao `pass`). O plano ficou pendente, foi aprovado por decisão assinada fora do servidor,
+e o `serve --plan-doc` com o executor composto levou a cadeia ao fim:
+
+| Facto no log | Conteúdo |
+|---|---|
+| `plan.payload_published` (n1) | `output=notes_content type=record taint=untrusted`, referência `stream=run-aos414-vivo-2~n1_read_notes` com digest |
+| `plan.verdict_recorded` (n2) | `subjects=["n1_read_notes"] outcome=pass reasons=["conteudo_nao_contem_segredos","sem_credenciais_chaves_ou_tokens","sem_dados_pessoais_sensiveis_apenas_nomes_proprios","informacao_tecnica_generica_sem_identificadores_internos"]` |
+| `plan.branch_decided` (n3) | `taken=true sources=["n2_verify_content"]` |
+| Fim do `serve` | `nos_despachados=3`, `execucao: n1_read_notes=complete n2_verify_content=complete n3_publish_external=complete`, `EXIT=0` |
+
+**A prova está nas razões do veredicto.** Na validação do AOS-413 o verificador reprovava com
+`documento_nao_fornecido`; aqui pronuncia-se sobre o QUE LEU — quatro razões sobre segredos,
+credenciais, dados pessoais e identificadores internos. É a diferença entre o canal existir e não
+existir. O nó `danger` aprovado correu porque a condição se cumpriu, e não porque alguém o deixou
+passar.
+
+**Observado, fora deste ticket:**
+
+- A primeira decomposição viva foi recusada pela regra AOS-231 (`consumes_taint_authority`): o
+  modelo tentou alimentar um consumidor com autoridade privilegiada a partir de um payload
+  untrusted. A regra fez o seu trabalho — e o `serve` não re-planeia (resíduo do AOS-412), pelo
+  que foi preciso repetir.
+- Esse `serve` recusado **reteve a posse do run**: a invocação seguinte com o mesmo `--run` saiu
+  com `3` (lease detido) e a validação seguiu num run novo. Largar a posse numa recusa de
+  validação é candidato a ticket.
+- Ler o WAL com `grep` deu contagens FALSAS (zero veredictos) por causa do enquadramento binário
+  do ficheiro; só `strings` mostrou os 33 eventos. Quem verificar um WAL de produção à mão que
+  use `strings`, ou lerá um log incompleto e concluirá o contrário do que lá está.
 
 **Decisão do dono: opção (A)** — o conteúdo vive na memória do `serve`, e no log fica a
 referência com o digest. Uma retoma sem o material recusa-se a correr o consumidor
