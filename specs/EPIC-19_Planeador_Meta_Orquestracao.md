@@ -1401,9 +1401,48 @@ um resultado legível.
 - O re-planeamento quando a regra AOS-231 recusa uma decomposição viva (observado na validação do
   AOS-412) — é outro ticket, se se quiser.
 
+- [x] Verificado em produção com o modelo vivo: um organigrama com `verifier` e ramo condicional
+      chega ao fim (o caso do `run-aos412-vivo-1`). *(Ver abaixo.)*
+
 ### Estado
 
-**POR FAZER.**
+**FEITO.**
+
+**Verificado em produção a 2026-09-20** (`v0.1.24`, imagem `sha256:d808d964…`), com o **modelo
+vivo**, no run `run-aos413-vivo-1`. O snapshot de validação usa os nomes de tool DO NÓ
+(`doc_read`, `web_post`) — com outros nomes a lista-branca nega tudo e o plano não faz nada.
+
+O planeador decompôs em três nós: `read_notes` lê com `doc_read`; `verify_publication` é o
+verificador do que ele leu; `publish_external` publica com `web_post` (`danger`) e só corre com
+`verdict eq pass`. O plano ficou pendente (`EXIT=6`), foi aprovado por decisão assinada fora do
+servidor, e o `serve --plan-doc` correu com o executor composto:
+
+| Passo | Saída em produção |
+|---|---|
+| Banner | `executor de nos (AOS-413, ADR-027): COMPOSTO — cada no despachado e um run do no aos em http://aos:8080 (chamador autenticado pelo IdP …)` |
+| Gate | `gate de plano: APROVADO por humano … nos_de_risco=1` |
+| Materialização | `nos=3 oraculo=snapshot(sha256:snap-aos413-validacao)`, com `cap:tool:doc_read`, `cap:tool:web_post` e o verificador SEM tools |
+| Execução | `no read_notes complete (run run-aos413-vivo-1~read_notes)` e `no verify_publication complete (run …~verify_publication)` — **runs reais do nó `aos`** |
+| Veredicto no log | `node_id=verify_publication subjects=["read_notes"] outcome=fail reasons=["documento_nao_fornecido"]` |
+| Fim | `nos_despachados=2`, `execucao: publish_external=ready read_notes=complete verify_publication=complete`, `EXIT=0` |
+
+**O que isto prova:** os nós do plano executam e concluem de forma durável (antes ficavam
+`running` para sempre); cada run levou a lista-branca do SEU nó; o veredicto veio do modelo vivo
+na gramática fechada, com os sujeitos tirados do plano; e o nó `danger` APROVADO **não** correu,
+porque a condição que o liberta não se cumpriu — o ramo condicional é avaliado sobre um veredicto
+real.
+
+**E confirma o limite declarado (DEF-806).** A razão do `fail` é `documento_nao_fornecido`: o
+verificador não vê o que o `read_notes` leu, porque a saída de um nó não chega ao run do nó
+seguinte. O plano executa-se e governa-se; os nós ainda não trocam dados. É o próximo passo
+natural desta linha, e precisa de um canal de entrada separado por taint.
+
+**Higiene da validação:** o NHI do run (45 min) foi cunhado pelo operador com login no IdP, ficou
+num ficheiro montado e não passou por variável de ambiente. O segredo do cliente do IdP está em
+`0400` do utilizador `aos` e o contentor corre como uid 65532; sem `root` na sessão, a validação
+usou uma CÓPIA legível localmente (`orq-client-secret`), a apagar no fim, com rotação do segredo
+recomendada. A forma correcta — cópia com dono 65532 e `0400` — exige `sudo` com terminal.
+
 
 ---
 
@@ -1452,3 +1491,4 @@ um resultado legível.
 | 1.6 | 2026-09-19 | +AOS-412 (com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`): fecha o resíduo do AOS-408 «com o modelo vivo, um plano aprovado não despacha». | Equipa AOS |
 | 1.7 | 2026-09-19 | AOS-412 verificado em produção (`v0.1.23`) com o modelo vivo: as duas re-decomposições recusadas com 7, o organigrama aprovado materializado e despachado pelo `--plan-doc`. | Equipa AOS |
 | 1.8 | 2026-09-19 | +AOS-413 (os nós despachados executam até ao fim): a cadeia do `aos-orq` acabava no despacho — nada executava nem concluía um nó do plano, e a lacuna não estava registada. Decisão de onde corre o trabalho (ADR) antes da implementação. | Equipa AOS |
+| 1.9 | 2026-09-20 | AOS-413 implementado (ADR-027) e verificado em produção (`v0.1.24`): dois nós do plano correram como runs do nó `aos`, o veredicto do verificador veio do modelo vivo na gramática fechada e o nó `danger` aprovado não correu por não ter `pass`. O `fail` foi `documento_nao_fornecido` — o limite do DEF-806 medido em produção. | Equipa AOS |
