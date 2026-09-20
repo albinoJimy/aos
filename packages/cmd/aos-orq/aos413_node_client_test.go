@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	plan "github.com/aos-ref/control-plane/orchestrator/plan"
 )
 
 // Nomes das variáveis de ambiente do executor (o código de produção usa-os em literal, que é o
@@ -289,5 +291,20 @@ func TestAOS413_GramaticaDoVeredicto(t *testing.T) {
 		if got != quer {
 			t.Errorf("%q → %s, quero %s", saida, got, quer)
 		}
+	}
+}
+
+// AOS-414: numa retoma, o conteudo dos payloads ja nao esta na memoria deste processo. Um
+// consumidor NAO corre sem o material que o plano lhe declarou — falha alto.
+func TestAOS414_ConsumidorSemPayloadFalhaAlto(t *testing.T) {
+	e := &executorDeNos{payloads: map[chaveDePayload]string{}}
+	n := plan.Node{NodeID: "n3", Consumes: []plan.PayloadEdge{{From: "n2", Output: "decision", Type: plan.PayloadVerdict}}}
+	if _, err := e.entradasDe(n); !errors.Is(err, ErrPayloadPerdido) {
+		t.Fatalf("tinha de ser ErrPayloadPerdido, veio %v", err)
+	}
+	e.payloads[chaveDePayload{no: "n2", output: "decision"}] = `{"outcome":"pass"}`
+	xs, err := e.entradasDe(n)
+	if err != nil || len(xs) != 1 || xs[0].Digest == "" {
+		t.Fatalf("com o payload em memoria tinha de entregar: %v %v", xs, err)
 	}
 }

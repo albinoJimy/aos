@@ -52,6 +52,11 @@ type Goal struct {
 	Objective string
 	// MemoryContext é o contexto de memória injectado no tail (ver EPIC-04).
 	MemoryContext []byte
+	// Inputs são os payloads que o PLANO declarou que este nó consome (AOS-414): produto de
+	// outros runs, entregue por quem submete. Entram no tail como segmentos
+	// [TailPlanInput], marcados `taint=untrusted` e com a proveniência do contrato. Vazio ⇒
+	// nada muda no prompt (um run que não é nó de um plano nunca os tem).
+	Inputs []PlanInput
 	// MaxTurns limita o nº de iterações (0 ⇒ [DefaultMaxTurns]).
 	MaxTurns int
 
@@ -180,6 +185,16 @@ type CallRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
 // CodeEffectRewrite é o Code de Deny quando o [CallRewriter] recusa a Call (ex.: args do
 // modelo malformados). Nenhum efeito ocorre.
 const CodeEffectRewrite = "E_EFFECT_REWRITE"
+
+// PlanInput é um payload consumido de outro nó do plano (AOS-414, ADR-022 §2.3): o contrato
+// que o declara (nó de origem e nome do output), o digest do conteúdo e o conteúdo. É SEMPRE
+// untrusted no prompt; o digest serve a integridade, não a confiança.
+type PlanInput struct {
+	From    string
+	Output  string
+	Digest  string
+	Content []byte
+}
 
 // CodeToolOutsideRunAllowlist é o Code de Deny quando a tool call não está na lista-branca
 // [Goal.AllowedTools] do run (AOS-413). Como no [CodeEffectRewrite], nada é despachado.
@@ -351,6 +366,12 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	// memória estivesse tratado.
 	if len(goal.MemoryContext) > 0 {
 		win.Append(TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
+	}
+	// AOS-414: os payloads do plano ANTES do objectivo — primeiro o material sobre o qual se
+	// trabalha (untrusted), depois a instrução (trusted). A ordem é a mesma do par
+	// resultado-de-tool → turno seguinte, e mantém o objectivo como o último a falar.
+	for _, in := range goal.Inputs {
+		win.Append(tailFromPlanInput(in))
 	}
 	if goal.Objective != "" {
 		win.Append(TailSegment{Kind: TailObjective, Content: []byte(goal.Objective)})

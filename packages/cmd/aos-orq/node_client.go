@@ -71,6 +71,18 @@ type pedidoDeRun struct {
 	Objective string
 	// Tools é a lista-branca do run: as tools pinadas do nó no `plan.materialized`.
 	Tools []string
+	// Inputs são os payloads que o `consumes` DESTE nó declara (AOS-414). Vão ao tail do run
+	// como segmentos untrusted, com a proveniência do contrato.
+	Inputs []entradaDoNo
+}
+
+// entradaDoNo é um payload entregue ao run de um nó: o contrato que o declara, o digest do
+// conteúdo e o conteúdo.
+type entradaDoNo struct {
+	From    string `json:"from"`
+	Output  string `json:"output"`
+	Digest  string `json:"digest"`
+	Content string `json:"content"`
 }
 
 // nodeClient fala com a API do nó.
@@ -238,6 +250,7 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 		"principal_nhi": c.principal,
 		"credential":    cred,
 		"tools":         p.Tools,
+		"inputs":        p.Inputs,
 	})
 	if err != nil {
 		return err

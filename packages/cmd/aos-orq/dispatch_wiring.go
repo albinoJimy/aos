@@ -319,6 +319,14 @@ func composeEDespachar(
 
 	total := 0
 	for pass := 0; ex != nil || pass < dispatchMaxPasses; pass++ {
+		// AOS-414: fecha os consumidores cujo contrato já não pode ser cumprido ANTES de tomar os
+		// retratos desta passagem — senão o despacho ainda os vê elegíveis, o sink recusa e a
+		// passagem aborta com os irmãos em voo por recolher.
+		if ex != nil {
+			if err := ex.podarSemPayload(ctx); err != nil {
+				return fmt.Errorf("poda de consumidores sem payload (passagem %d): %w", pass, err)
+			}
+		}
 		gate, err := gateR.Snapshot(ctx)
 		if err != nil {
 			return fmt.Errorf("retrato do gate (passagem %d): %w", pass, err)

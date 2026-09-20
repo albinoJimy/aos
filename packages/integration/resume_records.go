@@ -48,7 +48,10 @@ type ResumeRecord struct {
 	// re-hospedado sem ela ganhava as tools de todo o token. nil e vazia NÃO são o mesmo (vazia
 	// nega tudo), e o JSON preserva a diferença (`null` vs `[]`). Um registo anterior não a tem
 	// e decodifica nil — esses runs nunca tiveram restrição.
-	AllowedTools      []string
+	AllowedTools []string
+	// Inputs são os payloads do plano (AOS-414): um run re-hospedado sem eles perderia o
+	// material sobre o qual o nó trabalha, e o modelo veria só o objectivo.
+	Inputs            []agentruntime.PlanInput
 	Skills            []agentruntime.ToolSpec
 	Objective         string
 	MemoryContext     []byte
@@ -68,6 +71,7 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		System:            r.System,
 		Tools:             r.Tools,
 		AllowedTools:      r.AllowedTools,
+		Inputs:            r.Inputs,
 		Skills:            r.Skills,
 		Objective:         r.Objective,
 		MemoryContext:     r.MemoryContext,

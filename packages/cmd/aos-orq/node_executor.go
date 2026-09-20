@@ -10,14 +10,17 @@ package main
 //   - o veredicto, quando o nó é um verificador (plan.verdict_recorded), lido da saída final do
 //     run por uma gramática FECHADA — tudo o que não se ler é `fail`.
 //
-// O que NÃO faz, e porquê: não leva a saída de um nó ao run do nó seguinte, nem publica payloads
-// (plan.payload_published). O conteúdo produzido por um run é untrusted, e o único sítio do
-// prompt por onde entraria (o objectivo) é trusted; o outro candidato (o contexto de memória) não
-// tem separação de taint — é o DEF-806. Levar conteúdo por um desses era branquear o taint.
-// Resíduo declarado no ADR-027 e no ticket.
+//   - os payloads dos contratos cumpridos (AOS-414): publica `plan.payload_published` e entrega
+//     a cada nó o que o `consumes` DELE declara, marcado untrusted no prompt do run.
+//
+// O conteúdo dos payloads vive na MEMÓRIA deste processo (ADR-027 §2.4, decisão (A) do dono): no
+// log fica a referência com o digest. O que NÃO faz: não executa o conteúdo untrusted num plano
+// separado do que planeia — a separação de planos (DEF-806/AOS-069) continua aberta.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,7 +80,7 @@ func bannerDoExecutor(cli *nodeClient) string {
 	if cli.bearer != nil {
 		chamador = "chamador autenticado pelo IdP (client_credentials), um token por chamada"
 	}
-	return fmt.Sprintf("executor de nos (AOS-413, ADR-027): COMPOSTO — cada no despachado e um run do no aos em %s (%s; NHI do run do ficheiro montado; tools do no como lista-branca). NAO transporta a saida de um no para o seguinte (sem canal separado por taint, DEF-806)", cli.base, chamador)
+	return fmt.Sprintf("executor de nos (AOS-413/AOS-414, ADR-027): COMPOSTO — cada no despachado e um run do no aos em %s (%s; NHI do run do ficheiro montado; tools do no como lista-branca). Os payloads do `consumes` viajam MARCADOS untrusted e vivem na MEMORIA deste processo: um serve que morra perde-os e o consumidor NAO corre. A separacao de planos (DEF-806) continua aberta: o conteudo e lido pelo mesmo plano que planeia", cli.base, chamador)
 }
 
 // resumoDaExecucao é a linha final do `serve` com o executor: o estado de cada nó do plano.
@@ -114,7 +117,27 @@ type executorDeNos struct {
 	// sumidos marca desde quando um nó em voo responde 404, e agora dá o relógio.
 	sumidos map[string]time.Time
 	agora   func() time.Time
+	// payloads é o conteúdo publicado por cada contrato cumprido, guardado EM MEMÓRIA
+	// enquanto este `serve` vive (AOS-414, opção (A) do dono). No log fica a referência com o
+	// digest; o conteúdo não entra no WAL do orquestrador, que não tem a cifra por-titular do
+	// nó. O custo, declarado: um `serve` que morra perde-o, e a retoma recusa-se a correr um
+	// consumidor sem o material — alto, em vez de o correr às cegas.
+	payloads map[chaveDePayload]string
 }
+
+// chaveDePayload identifica um contrato cumprido: (produtor, output).
+type chaveDePayload struct{ no, output string }
+
+// ErrPayloadPerdido — um consumidor precisa de um payload que este processo não tem. Ou o
+// produtor concluiu noutro `serve` (o conteúdo vive na memória deste), ou o contrato não chegou a
+// ser publicável (`metrics` sem fonte, saída acima do tecto, dois contratos abertos no mesmo nó).
+// Em qualquer dos casos o nó NÃO corre — mas quem falha é o NÓ, não o `serve`: ver [podarSemPayload].
+var ErrPayloadPerdido = errors.New("aos-orq: contrato de entrada por cumprir (AOS-414)")
+
+// maxPayloadBytes é o tecto do conteúdo de UM payload no produtor. O nó impõe o mesmo por
+// payload, e o corpo do `POST /runs` tem o seu tecto (1 MiB): uma saída maior do que isto não se
+// transporta, e o contrato fica POR CUMPRIR — o consumidor não corre, em vez de receber metade.
+const maxPayloadBytes = 128 << 10
 
 // toleranciaA404 é quanto tempo um run em voo pode responder 404 antes de contar como perdido.
 // Um 404 não é, por si, a morte do run: o nó responde 404 a um run durável `running` que não está
@@ -129,7 +152,8 @@ func novoExecutorDeNos(cli nodeRunner, rec *runlifecycle.PlanRecorder, g *orches
 		nos[n.NodeID] = n
 	}
 	return &executorDeNos{cli: cli, rec: rec, g: g, runID: runID, nos: nos, tools: pinadas, headroom: headroom,
-		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now}
+		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now,
+		payloads: map[chaveDePayload]string{}}
 }
 
 // retomar põe em voo os nós que um `serve` anterior deixou `running`, e reserva-lhes o headroom
@@ -159,14 +183,133 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 	if n.IsVerifier() {
 		objectivo += instrucaoDeVeredicto
 	}
+	entradas, err := e.entradasDe(n)
+	if err != nil {
+		return err
+	}
 	if err := e.cli.Submit(ctx, pedidoDeRun{
 		RunID:     childRunID(e.runID, nodeID),
 		Objective: objectivo,
 		Tools:     nomesDasTools(e.tools[nodeID]),
+		Inputs:    entradas,
 	}); err != nil {
 		return err
 	}
 	e.emVoo[nodeID] = struct{}{}
+	return nil
+}
+
+// entradasDe reúne os payloads que o `consumes` DESTE nó declara — nunca o que o produtor
+// quis dar. Um contrato por cumprir é fail-closed: o nó não corre sem o material.
+func (e *executorDeNos) entradasDe(n plan.Node) ([]entradaDoNo, error) {
+	if len(n.Consumes) == 0 {
+		return nil, nil
+	}
+	entradas := make([]entradaDoNo, 0, len(n.Consumes))
+	for _, c := range n.Consumes {
+		conteudo, ok := e.payloads[chaveDePayload{no: c.From, output: c.Output}]
+		if !ok {
+			return nil, fmt.Errorf("%w: o no %q consome %q/%q", ErrPayloadPerdido, n.NodeID, c.From, c.Output)
+		}
+		entradas = append(entradas, entradaDoNo{
+			From: c.From, Output: c.Output, Digest: digestDoConteudo(conteudo), Content: conteudo,
+		})
+	}
+	return entradas, nil
+}
+
+// podarSemPayload fecha, ANTES do despacho, os nós cujo `consumes` já não pode ser cumprido: o
+// produtor está terminal e o payload não está em memória. Sem isto, o nó era despachado, o sink
+// recusava e a passagem ABORTAVA — deixando os irmãos em voo por recolher e o `serve` a repetir o
+// mesmo erro em todas as retomas. Falha o NÓ (durável, com razão visível) e o plano segue: os
+// dependentes são podados pelas regras normais do despacho.
+func (e *executorDeNos) podarSemPayload(ctx context.Context) error {
+	for id, n := range e.nos {
+		if len(n.Consumes) == 0 {
+			continue
+		}
+		if st, ok := e.g.DAG().State(id); !ok || st != arstate.Ready {
+			continue
+		}
+		for _, c := range n.Consumes {
+			if _, temos := e.payloads[chaveDePayload{no: c.From, output: c.Output}]; temos {
+				continue
+			}
+			pst, ok := e.g.DAG().State(c.From)
+			if !ok || (pst != arstate.Complete && pst != arstate.Failed) {
+				continue // o produtor ainda pode publicar
+			}
+			fmt.Printf("  execucao: no %s NAO corre — o contrato %s/%s ficou por cumprir\n", id, c.From, c.Output)
+			if err := e.g.MarkRunning(ctx, id); err != nil {
+				return fmt.Errorf("marcar %q a correr para o fechar: %w", id, err)
+			}
+			if err := e.g.MarkTerminal(ctx, id, arstate.Failed); err != nil {
+				return fmt.Errorf("fechar %q sem payload: %w", id, err)
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// digestDoConteudo é o `sha256:<hex>` do conteúdo. O nó reverifica-o: é um controlo de
+// INTEGRIDADE do transporte entre este processo e o run — não uma prova de origem (quem calcula
+// e quem envia são o mesmo processo) nem confiança no conteúdo, que é untrusted de qualquer modo.
+func digestDoConteudo(conteudo string) string {
+	soma := sha256.Sum256([]byte(conteudo))
+	return "sha256:" + hex.EncodeToString(soma[:])
+}
+
+// publicarSaidas cumpre os contratos de saída do nó que acabou de concluir (AOS-414): guarda o
+// conteúdo em memória para os consumidores e apensa `plan.payload_published` com a REFERÊNCIA
+// (forma aberta: run filho + digest) ou com a forma FECHADA validada (o veredicto).
+//
+// O que não se consegue derivar não se publica: um contrato `metrics` exigiria números que
+// ninguém mediu, e inventá-los seria pior do que o contrato ficar por cumprir.
+func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st estadoDoRun, v *plannerevents.VerdictRecordedPayload) error {
+	abertos := 0
+	for _, c := range n.Outputs {
+		if !c.Type.ClosedForm() {
+			abertos++
+		}
+	}
+	for _, contrato := range n.Outputs {
+		p := plannerevents.PayloadPublishedPayload{NodeID: n.NodeID, Output: contrato.Name}
+		var conteudo string
+		switch {
+		case contrato.Type == plan.PayloadVerdict && v != nil:
+			// Forma fechada: viaja inline e validada pelo construtor. O conteúdo que o
+			// consumidor recebe é a forma canónica do veredicto, não texto do modelo.
+			p.Closed = &plannerevents.ClosedPayload{Outcome: v.Outcome, Reasons: v.Reasons}
+			bruto, err := json.Marshal(map[string]any{"outcome": v.Outcome, "reasons": v.Reasons})
+			if err != nil {
+				return err
+			}
+			conteudo = string(bruto)
+		case contrato.Type.ClosedForm():
+			// `metrics` (ou um veredicto que não se conseguiu ler): sem fonte, não se publica.
+			continue
+		case abertos > 1:
+			// DOIS contratos de forma aberta no mesmo nó: um run devolve UMA saída final, e
+			// atribuí-la aos dois publicaria bytes iguais sob nomes diferentes — o tipo que o
+			// validador impõe na admissão não significaria nada na entrega.
+			continue
+		case len(st.FinalText) > maxPayloadBytes:
+			continue
+		default:
+			conteudo = st.FinalText
+			p.Record = plannerevents.PayloadRecordRef{
+				Store:  plannerevents.PayloadStoreEventStore,
+				Stream: childRunID(e.runID, n.NodeID),
+				Digest: digestDoConteudo(conteudo),
+			}
+		}
+		if _, err := e.rec.RecordPayloadPublished(ctx, p, n); err != nil {
+			return fmt.Errorf("publicacao de %q/%q: %w", n.NodeID, contrato.Name, err)
+		}
+		e.payloads[chaveDePayload{no: n.NodeID, output: contrato.Name}] = conteudo
+		fmt.Printf("  execucao: payload %s/%s publicado (%s)\n", n.NodeID, contrato.Name, contrato.Type)
+	}
 	return nil
 }
 
@@ -232,6 +375,7 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	if existe && st.concluiu() {
 		destino = arstate.Complete
 	}
+	var veredicto *plannerevents.VerdictRecordedPayload
 	if n.IsVerifier() && destino == arstate.Complete {
 		v := veredictoDaSaida(st.FinalText)
 		v.NodeID = nodeID
@@ -253,6 +397,14 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 		}
 		if err != nil {
 			return fmt.Errorf("veredicto de %q: %w", nodeID, err)
+		}
+		veredicto = &v
+	}
+	// AOS-414: os contratos de saída cumprem-se ANTES da conclusão — uma passagem que veja o nó
+	// `complete` tem de ver também o que ele publicou.
+	if destino == arstate.Complete {
+		if err := e.publicarSaidas(ctx, n, st, veredicto); err != nil {
+			return err
 		}
 	}
 	if err := e.g.MarkTerminal(ctx, nodeID, destino); err != nil && !errors.Is(err, orchestrator.ErrLogAhead) {

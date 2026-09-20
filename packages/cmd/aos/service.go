@@ -1014,6 +1014,7 @@ func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
 		System:            goal.System,
 		Tools:             goal.Tools,
 		AllowedTools:      goal.AllowedTools,
+		Inputs:            goal.Inputs,
 		Skills:            goal.Skills,
 		Objective:         goal.Objective,
 		MemoryContext:     goal.MemoryContext,

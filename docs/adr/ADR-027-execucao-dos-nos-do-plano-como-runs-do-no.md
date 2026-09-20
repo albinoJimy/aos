@@ -81,11 +81,38 @@ O `scope` existente fica como está: os clientes actuais já o enviam com capabi
   (`{"outcome":"pass|fail","reasons":[<identificador>...]}`). Tudo o que não se ler — saída livre,
   JSON inválido, run falhado — é **`fail`** com a razão `verdict_unparseable`. Os `subjects` vêm do
   plano (as arestas de entrada do verificador), nunca do modelo.
-- **Payloads: não se publicam, nem se transportam.** A saída de um nó não chega ao run do nó
-  seguinte: o conteúdo é untrusted, o objectivo do run é trusted e o contexto de memória não tem
-  separação de taint (DEF-806) — levar conteúdo por um deles era branquear o taint. Publicar
-  referências (`plan.payload_published`) sem ninguém que as possa consumir com segurança seria
-  decorativo. Um verificador só vê o que as suas próprias tools lhe mostram.
+- **Payloads (EMENDADO a 2026-09-20 pelo AOS-414, opção (A) do dono).** A versão original deste
+  ADR não publicava nem transportava payloads, e a validação em produção mediu o custo: o
+  verificador reprovou com `documento_nao_fornecido`. Agora:
+  - o `POST /runs` tem um canal de ENTRADA próprio (`inputs`), distinto do objectivo trusted: o
+    conteúdo entra no tail como segmento `plan_input`, marcado `taint=untrusted`, com a
+    proveniência (nó de origem, output, digest) nos RÓTULOS da linha de delimitação, que é
+    inforjável — nunca no corpo;
+  - o nó VERIFICA o digest do que recebe (integridade do que o plano publicou; não é confiança);
+  - o `aos-orq` publica `plan.payload_published` por contrato cumprido — referência (run filho +
+    digest) nas formas abertas, forma fechada validada no veredicto — e entrega a cada nó só o
+    que o `consumes` DELE declara;
+  - **o conteúdo vive na MEMÓRIA do `serve`** (decisão (A)): no log fica a referência. As
+    alternativas rejeitadas eram guardar saída de modelo em claro no WAL do orquestrador — fora da
+    cifra por-titular do nó — ou não transportar nada, que só serve para produtos endereçáveis;
+  - **um contrato que não pode ser cumprido fecha o CONSUMIDOR, não o `serve`.** O nó consumidor
+    vai a `failed`, com a razão visível, e o plano termina; os seus dependentes são podados pelas
+    regras normais. Abortar o `serve` — a primeira versão — deixava os irmãos em voo por recolher
+    e repetia-se em todas as retomas, num plano que nunca acabava. Os casos são três: o produtor
+    concluiu noutro `serve` (conteúdo perdido), o contrato não é publicável (`metrics`, que
+    exigiria números que ninguém mediu), ou a saída passou o tecto;
+  - **tectos**: 128 KiB por payload e 512 KiB no conjunto, abaixo do tecto do corpo do
+    `POST /runs` — um payload maior não se transporta, e o contrato fica por cumprir;
+  - **um nó com mais do que um contrato de forma ABERTA não publica nenhum**: um run devolve UMA
+    saída final, e atribuí-la a dois nomes publicaria bytes iguais sob tipos diferentes — o tipo
+    que o validador impõe na admissão deixaria de significar o que diz;
+  - **o digest é um controlo de INTEGRIDADE do transporte**, não uma prova de origem: quem o
+    calcula e quem o envia são o mesmo processo. A proveniência viaja nos rótulos, fora do digest.
+  - **Não fecha a separação de planos (DEF-806/AOS-069):** o conteúdo untrusted passa a ter canal
+    próprio e marcado, mas continua a ser lido pelo MESMO plano que planeia.
+  - **O `plandispatch.PayloadResolver` continua sem chamador de produção:** a entrega lê o mapa em
+    memória deste processo, e não a projecção das referências publicadas. A re-verificação de
+    tipo/taint/`contract_digest` que o resolver faria fica como defesa-em-profundidade por ligar.
 
 ### 2.5 O `serve` espera
 
@@ -110,8 +137,10 @@ invocação retoma os nós `running`.
   e um laço de espera com prazo.
 - O trabalho de um nó continua limitado às tools registadas: sem skills, o objectivo do nó é o
   prompt e as tools pinadas são o que ele pode fazer (lacuna declarada no `tecnica/18`).
-- **Resíduos:** o transporte de dados entre nós (acima, DEF-806); a renovação do NHI para planos
-  longos; a colisão do id do run filho num nó SEM gate soberano, que responde 201 em vez de 409 e não
+- **Resíduos:** a separação de planos (DEF-806/AOS-069), que o canal de entrada do AOS-414 NÃO
+  fecha; o conteúdo dos payloads preso à vida do `serve` (decisão (A)); contratos `metrics` e
+  segundos contratos de forma aberta que ficam por cumprir; o `PayloadResolver` por ligar; a
+  renovação do NHI para planos longos; a colisão do id do run filho num nó SEM gate soberano, que responde 201 em vez de 409 e não
   é detectável (fora de produção); o texto final de um run filho vive na
   memória do nó, pelo que um reinício do nó entre a conclusão e a leitura perde-o (o estado durável
   sobrevive e o nó conta como `failed` se não houver saída legível).
