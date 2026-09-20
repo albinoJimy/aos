@@ -6,6 +6,10 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Documentation
+- `docs(EPIC-22)` — **o epic contradizia-se a si próprio, e o gate acreditava na metade errada.** O merge de reconciliação (#277) tomou o spec do lado do ramo e deixou os AOS-305..311 como `ABERTO`; o #280 restaurou a tabela §0.2 para «implementado» mas **não tocou nos blocos `### Estado` de cada ticket**, que continuaram a dizer `ABERTO`. O gate `estado-citado` lê o primeiro lexema desses blocos — ou seja, sete tickets P0/P1 já entregues contavam como abertos para efeitos de governação, e uma declaração de código que os citasse como bloqueio passaria.
+- Os sete blocos passam a dizer o que o código faz, com as divergências declaradas em vez de suavizadas: a capability do AOS-305 vive em lista própria e não no vocabulário fechado de `/approve`; o AOS-307 **salta-e-declara** um registo irreconfirmável em vez de abortar o arranque (abortar dava um modo de tijolo); o AOS-309 fechou por **log correlável** e não por selo no WORM; e o título do AOS-310 continua literalmente verdadeiro — `PDP.Reload` não tem chamador de produção —, o que fica escrito em vez de arredondado.
+
 ### Fixed — AOS-359
 - `fix(AOS-359)` — **um comando de leitura do `aos-orq` apagava bytes confirmados do WAL.** `substrato.abrirParaLeitura` chamava `eventstore.Open`, que trunca a cauda a `validEnd` antes de anexar o WAL em append; com a quebra no último registo a guarda fail-closed não dispara. Medido: `969 → 646 bytes`, 323 bytes de um registo que o `Append` tinha confirmado. Com o escritor vivo, a inspecção ganhava uma segunda cabeça e o arranque seguinte recusava o WAL com `E_RESTORE_ORDER`.
 - A via passou a `eventstore.OpenReadOnly`, que o AOS-347 já tinha dado às vias do nó. A varredura de chamadores desse ticket ficou-se pelo módulo `cmd/aos` — o defeito era a varredura incompleta, não a linha. A correcção fecha `aos-orq inspect` **e** `aos-orq plans`, que partilham a via.

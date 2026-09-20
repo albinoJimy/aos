@@ -138,7 +138,16 @@ em `governance.control`. O defeito é de controlo preventivo, não de rasto.
 
 ### Estado
 
-**ABERTO.** P0.
+**IMPLEMENTADO.** P0. Mudar para L4/L5 exige **duas assinaturas de operadores distintos**
+com a capability `autonomy:set`, e as DUAS provas ficam no selo — o que a rehidratação tem de
+poder reverificar é que foram duas pessoas, e isso não se lê de uma string com uma vírgula
+(`packages/cmd/aos/autonomy_route.go`, `autonomyDualControlRequired`; teste
+`aos305_autonomy_dual_control_test.go`).
+
+**Divergência de forma, declarada:** a capability vive numa lista própria
+(`AOS_AUTONOMY_SETTERS`), validada no arranque contra `AOS_OPERATORS`, e não no vocabulário
+fechado de `/approve` que o critério nomeava. A substância — só quem tem o papel muda o nível, e
+sozinho não muda — está cumprida; a forma citada não.
 
 ---
 
@@ -181,7 +190,11 @@ permitida»).
 
 ### Estado
 
-**ABERTO.** P0.
+**IMPLEMENTADO.** P0. A ordem está invertida: **sela-se ANTES de aplicar**, e a falha
+devolve `ErrSealFailed` sem mutar nada (`packages/control-plane/governance/autonomy/registry.go`
+— «1) SELAR … 2) APLICAR — só depois de o selo existir na hash-chain»). O handler distingue o
+caso: `503` com «selagem no WORM indisponivel — nivel NAO aplicado», separado do `400` de nível
+recusado.
 
 ---
 
@@ -224,7 +237,15 @@ vigor até ser revertida deliberadamente».
 
 ### Estado
 
-**ABERTO.** P1.
+**IMPLEMENTADO.** P1. `LevelRegistry.Rehydrate` existe, no molde do `Revocations.Rebuild`,
+e é chamado no arranque ANTES de o ambiente ser aplicado, com validador de provas cuja raiz de
+confiança está fora do WORM (`packages/cmd/aos/bootstrap.go` → `cfg.Autonomy.provision(...
+WithRehydrateValidator)`). Testes `aos306_307_autonomy_node_test.go`, `aos307_precedencia_test.go`,
+`aos307_rehydrate_auth_test.go`.
+
+**Desvio deliberado a um critério, declarado:** um registo irreconfirmável é **saltado e
+declarado**, não aborta o arranque. O critério pedia abortar; abortar dava um modo de tijolo — um
+nó que não volta a arrancar por causa de um registo antigo. Só a falha de leitura aborta.
 
 ---
 
@@ -264,7 +285,12 @@ uma barreira que não existe.
 
 ### Estado
 
-**ABERTO.** P2.
+**IMPLEMENTADO.** P2. O pedido de challenge é **assinado pelo aprovador nomeado**, com
+chave pinada no roster, nonce de uso único e frescura, e o emissor tem de SER o aprovador — senão
+um detentor de uma chave inundava o registo em nome dos outros (`packages/cmd/aos/api.go`,
+`handleChallenge`). O comentário que dizia «autenticado pela mesma admission que o /approve»
+enquanto a rota não verificava identidade nenhuma foi substituído pela descrição do que o código
+faz.
 
 ---
 
@@ -301,7 +327,14 @@ exactamente a mesma ausência de diagnóstico.
 
 ### Estado
 
-**ABERTO.** P1.
+**IMPLEMENTADO.** P1. Toda a negação fica no log do operador, correlável por `request_id`
+e por `run`, com a razão sanitizada e os MESMOS campos nas duas vias (gate directo e broker) —
+`packages/cmd/aos/api.go`; teste `aos309_approve_denial_log_test.go`. A resposta HTTP mantém-se
+uniforme, que é o que impede o canal de virar oráculo.
+
+**Divergência de via, declarada:** fechou por **log correlável**, não por selo no WORM.
+`FourEyesGate.Authorize` continua puro (`packages/integration/foureyes.go`); a correcção ficou no
+chamador, como o primeiro critério permitia.
 
 ---
 
@@ -341,7 +374,14 @@ mesmo composition-root existe e funciona: AOS-248 selou os níveis de autonomia 
 
 ### Estado
 
-**ABERTO.** P2.
+**IMPLEMENTADO.** P2. O nó provisiona o changelog de política no arranque, fail-closed e
+idempotente por (versão, `ContentHash`), e declara-o no banner (`packages/cmd/aos/policy_changelog.go`,
+chamado do `bootstrap.go`; teste `aos310_policy_changelog_test.go`).
+
+**O título deste ticket continua literalmente verdadeiro, e isso é deliberado:** `PDP.Reload` não
+tem chamador de produção — uma varredura por `.Reload(` fora de testes devolve vazio. O que o
+ticket remediava era o nó não emitir `policy.changed`; o recarregamento a quente não foi composto,
+e a ausência está escrita no `bootstrap.go` em vez de ficar por explicar.
 
 ---
 
@@ -383,7 +423,14 @@ verificação de `ctx` é transversal a toda a governação selada no WORM, não
 
 ### Estado
 
-**ABERTO.** P1.
+**IMPLEMENTADO.** P1. `audit.FileStore.Append` consulta o `ctx` em **dois** pontos —
+depois de verificada a posse e antes de `persist` — e devolve o próprio `ctx.Err()`, distinguível
+de `ErrParticaoAlheia` (`packages/platform/audit/filestore.go`). A ordem posse→ctx está
+documentada como não-corrida. Testes `aos311_ctx_test.go` (que fixa exactamente dois pontos de
+consulta) e `aos311_selo_nao_cancelavel_test.go`.
+
+**Por verificar:** o critério que manda o `tecnica/17` §4.3-D deixar de declarar «timeout
+fail-closed» sem qualificação — `NÃO VERIFICADO`, não foi lido nesta passagem.
 
 ---
 
