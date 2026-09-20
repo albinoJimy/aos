@@ -1668,19 +1668,39 @@ fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativ
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (1)/(2)/(3) registada no ticket; se mudar a versão do prompt, ADR ou nota no epic.
-- [ ] Uma recusa da validação AOS-231 gera nova tentativa, com `rule`/`reason`/`node_id` no
-      prompt — e o teste prova que o conteúdo do documento **não** é reenviado.
-- [ ] O tecto é respeitado: esgotadas as tentativas, o `serve` sai como hoje, com a razão da
-      ÚLTIMA recusa.
-- [ ] Cada tentativa continua a ser debitada no orçamento de planeamento e a ter o seu span
-      (`planner.go` mantém a contabilidade actual).
-- [ ] O facto durável do planeador regista quantas tentativas foram recusadas pelo validador e
-      com que razão (observabilidade de fiabilidade, hoje inexistente).
-- [ ] **Falha-antes por processo real:** um decompositor-fixture que devolve um plano recusado na
+- [x] Decisão (1)/(2)/(3) registada no ticket; se mudar a versão do prompt, ADR ou nota no epic.
+      *(Decidido a 2026-09-20: **(1)** o laço vive no PLANEADOR, por uma porta `Validator` que o
+      `aos-orq` injecta com o snapshot pinado — uma só autoridade sobre o que é admissível;
+      **(2)** bloco próprio no `user` e o CONTRATO no template, que sobe a **1.3.0** (regra 11)
+      sob o gate ADR-012; **(3)** tecto PARTILHADO de 3 tentativas.)*
+- [x] Uma recusa da validação AOS-231 gera nova tentativa, com `rule`/`reason`/`node_id` no
+      prompt — e o teste prova que o conteúdo do documento **não** é reenviado. *(Evidência:
+      `TestAOS415_RecusaDoValidadorGeraNovaTentativaComARazao` (a 1.ª tentativa sem recusa, a 2.ª
+      com ela); `TestAOS415_RecusaEntraNoUserEmCodigos` (e o template NÃO é tocado, ADR-009);
+      `TestAOS415_ODocumentoRecusadoNaoVolta` (nenhum valor do documento recusado aparece).)*
+- [x] O tecto é respeitado: esgotadas as tentativas, o `serve` sai como hoje, com a razão da
+      ÚLTIMA recusa. *(Evidência: `TestAOS415_TectoEsgotadoDevolveARecusa` — e o erro é
+      `ErrPlanRejected`, NÃO `ErrDecomposition`: o modelo produziu documento, o que não é
+      admissível é o documento.)*
+- [x] Cada tentativa continua a ser debitada no orçamento de planeamento e a ter o seu span
+      (`planner.go` mantém a contabilidade actual). *(Evidência:
+      `TestAOS415_TentativaRecusadaContinuaAAbrirSpanPorTentativa` — duas tentativas, dois spans
+      `chat`, cada um anotado com o custo por tentativa. A RESERVA continua dimensionada para
+      `maxAttempts`, e uma recusa não acrescenta chamadas ao modelo além do tecto.)*
+- [~] O facto durável do planeador regista quantas tentativas foram recusadas pelo validador e
+      com que razão (observabilidade de fiabilidade, hoje inexistente). *(Feito no SPAN
+      (`aos.planner.validator_rejections`) e no `PlanResult.ValidatorRejections`. POR FAZER no
+      facto durável: o `plan.planner_admitted` é apensado ANTES das tentativas (é a admissão, não
+      o desfecho), e acrescentar-lhe um contador exigiria um facto novo — que se abre quando
+      alguém precisar dele para medir fiabilidade ao longo do tempo.)*
+- [x] **Falha-antes por processo real:** um decompositor-fixture que devolve um plano recusado na
       1.ª tentativa e um válido na 2.ª — hoje o `serve` sai com 1; depois, materializa.
+      *(Evidência: `TestAOS415_RecusaDaValidacaoGeraNovaTentativaNoBinario`; o `--decompose-fixture`
+      passa a aceitar vários ficheiros separados por vírgula, um por tentativa — superfície
+      NÃO-PRODUÇÃO, como o próprio flag. Com a mutação que tira o validador do laço, o binário
+      reproduz a falha de produção: `tentativas=1` e `consumes_taint_authority`.)*
 - [ ] Verificado em produção: uma corrida `--goal` com o modelo vivo que recupere de uma recusa
-      sem intervenção.
+      sem intervenção. **POR FAZER** (exige deploy).
 
 ### Âmbito acrescentado, e porquê
 
@@ -1688,6 +1708,8 @@ fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativ
   `serve` recusado reteve o lease, e a invocação seguinte com o mesmo `--run` saiu com `3`. É o
   mesmo caminho de falha que este ticket toca (`largarSePendente` já trata o pendente e a recusa
   de decisão), e deixá-lo de fora obrigaria o operador a esperar pelo TTL na corrida seguinte.
+  *(Feito: `ErrPlanRejected` larga a posse; `TestAOS415_TectoEsgotadoLargaAPosse` prova que a
+  invocação seguinte com o MESMO run toma a posse e materializa.)*
 
 ### Fora de âmbito
 
@@ -1698,7 +1720,28 @@ fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativ
 
 ### Estado
 
-**POR FAZER.**
+**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+
+**Decisões do dono:** o laço no planeador (porta `Validator`), bloco próprio com o prompt a subir
+para **1.3.0** (regra 11, sob o gate ADR-012 do AOS-273/AOS-400), e tecto PARTILHADO de 3
+tentativas.
+
+**Revisão adversarial independente.** Nove achados, todos tratados. Os três que mudaram
+comportamento:
+
+| Achado | O que mudou |
+|---|---|
+| Uma recusa seguida de falha de decode devolvia `ErrDecomposition`: o `serve` RETINHA a posse e a invocação seguinte saía com `3` — o sintoma do AOS-414, de forma intermitente | Se houve recusa do validador, o desfecho é `ErrPlanRejected`, seja qual for a última falha (`TestAOS415_RecusaSeguidaDeFalhaDeDecodeContinuaARecusa`) |
+| A garantia de «só códigos» vivia em quem implementa a porta, não no ponto que escreve no prompt | O decompositor valida os campos da recusa onde os escreve, e OMITE o que não reconhece (`TestAOS415_CampoHostilDaRecusaNaoEntraNoPrompt`) |
+| O objectivo era escrito ANTES do bloco: um objectivo hostil podia sintetizar o seu próprio bloco de recusa, que a regra 11 manda levar a sério | O bloco passa a vir primeiro (`TestAOS415_ORecusaVemAntesDoObjectivo`) |
+
+Mais: a recusa passou a ter **código de saída próprio (9)**, porque larga a posse e todo o outro
+`1` a retém; uma recusa velha deixa de ser reapresentada depois de uma tentativa que nem produziu
+documento; a ajuda do `--decompose-fixture` deixou de mentir; e dois testes que afirmavam mais do
+que mediam foram reformulados.
+
+**Resíduo declarado:** o contador de recusas vive no span e no `PlanResult`, não num facto
+durável — medir fiabilidade ao longo do tempo exige um facto novo, que este ticket não inventa.
 
 ---
 

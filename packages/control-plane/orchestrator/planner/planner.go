@@ -119,13 +119,42 @@ type PlanningContext struct {
 }
 
 // DecomposeInput é o que o [Decomposer] recebe por tentativa: a identidade sob que
-// corre, o número da tentativa e o contexto pinado.
+// corre, o número da tentativa, o contexto pinado e — desde AOS-415 — a RECUSA da
+// tentativa anterior, quando houve.
 type DecomposeInput struct {
 	RunID      string
 	PlanID     string
 	PlannerNHI string
 	Attempt    int
 	Context    PlanningContext
+	// Rejection é o veredicto da tentativa ANTERIOR, nil na primeira. Sem isto, cada
+	// tentativa reenviava o mesmo prompt e o modelo repetia o mesmo erro — medido em
+	// produção nas validações do AOS-412 e do AOS-414, as duas recusadas à primeira com
+	// a mesma razão.
+	Rejection *Rejection
+}
+
+// Rejection é a razão por que um plano foi recusado, na forma que se pode reapresentar ao
+// modelo: CÓDIGOS de enumeração fechada e um node_id — nunca texto do documento nem da
+// saída do modelo. É esta a fronteira que impede o feedback de virar um canal por onde
+// conteúdo untrusted regressa ao prompt com estatuto de instrução (ADR-005).
+type Rejection struct {
+	// Rule é a regra do validador que recusou (código estável).
+	Rule string
+	// Reason é o sub-código da recusa (enumeração fechada do validador).
+	Reason string
+	// NodeID é o nó apontado pelo veredicto; vazio quando a recusa é do documento.
+	NodeID string
+}
+
+// Validator decide se um documento é ADMISSÍVEL para além da forma: é a validação
+// estrutural (AOS-231) vista pelo planeador. A porta é local — como o [Decomposer] —
+// para o planeador não depender do pacote de validação; o composition root adapta-a.
+//
+// Devolve uma [Rejection] nil quando admite. Uma recusa NÃO é erro: é o sinal que faz o
+// planeador tentar de novo, com a razão no prompt.
+type Validator interface {
+	Validate(doc plan.PlanDocument) *Rejection
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +164,10 @@ type DecomposeInput struct {
 var (
 	// ErrPlannerDeps — dependências obrigatórias em falta na construção.
 	ErrPlannerDeps = errors.New("planner: dependências obrigatórias em falta (reserver/mediator/issuer/decomposer)")
+	// ErrPlanRejected — o documento produzido NÃO passou a validação estrutural, e o
+	// tecto de tentativas esgotou-se (AOS-415). Distinto de [ErrDecomposition]: ali o
+	// modelo não produziu documento nenhum; aqui produziu, e não é admissível.
+	ErrPlanRejected = errors.New("planner: plano recusado pela validacao estrutural apos esgotar as tentativas")
 	// ErrInvalidRequest — pedido de decomposição malformado.
 	ErrInvalidRequest = errors.New("planner: pedido de decomposição inválido")
 	// ErrMediationDenied — o RM negou a admissão do planeador (ADR-002). A
@@ -164,8 +197,10 @@ const (
 	attrPlannerNHI      = "aos.planner.nhi"
 	attrPlannerAttempt  = "aos.planner.attempt"
 	attrPlannerMaxTries = "aos.planner.max_attempts"
-	attrPlanNodeCount   = "aos.plan.node_count"
-	attrGateAdmitted    = "aos.plan.gate_admitted"
+	// attrPlannerRejections — quantas tentativas o VALIDADOR recusou (AOS-415).
+	attrPlannerRejections = "aos.planner.validator_rejections"
+	attrPlanNodeCount     = "aos.plan.node_count"
+	attrGateAdmitted      = "aos.plan.gate_admitted"
 )
 
 // ---------------------------------------------------------------------------
@@ -189,6 +224,7 @@ type Planner struct {
 	maxAttempts int
 	planToolID  string
 	planCap     string
+	validator   Validator
 }
 
 // Option configura o [Planner].
@@ -227,6 +263,19 @@ func WithMaxAttempts(n int) Option {
 	return func(p *Planner) {
 		if n > 0 {
 			p.maxAttempts = n
+		}
+	}
+}
+
+// WithValidator injecta a validação estrutural (AOS-231) NO LAÇO de tentativas (AOS-415).
+// Sem ela o planeador comporta-se como antes — só a forma é gateada, e uma recusa do
+// validador a jusante acaba o run. Com ela, uma recusa é reapresentada ao modelo e conta
+// para o MESMO tecto de tentativas: o número de chamadas ao MODELO não muda (o caro), e a
+// validação — pura, sem I/O — passa a correr até uma vez por tentativa.
+func WithValidator(v Validator) Option {
+	return func(p *Planner) {
+		if v != nil {
+			p.validator = v
 		}
 	}
 }
@@ -320,6 +369,10 @@ type PlanResult struct {
 	Reserved budget.Amount
 	// Attempts é o número de tentativas efectivamente corridas até ao sucesso.
 	Attempts int
+	// ValidatorRejections é quantas dessas tentativas foram recusadas pela validação
+	// estrutural (AOS-415). É o sinal de fiabilidade do planeador que não existia: um
+	// número que sobe diz que o prompt, ou o modelo, está a produzir planos inadmissíveis.
+	ValidatorRejections int
 }
 
 // Decompose admite e corre a decomposição como agente governado. Passos
@@ -440,17 +493,52 @@ func (p *Planner) Decompose(ctx context.Context, req DecomposeRequest) (*PlanRes
 	// o custo em tokens/USD (o planeamento CUSTA tokens contabilizados; sem ponto cego).
 	var doc plan.PlanDocument
 	var dErr error
+	var rejeicao *Rejection // a recusa da tentativa anterior, reapresentada ao modelo
+	recusasDoValidador := 0
 	attempts := 0
 	for attempt := 1; attempt <= p.maxAttempts; attempt++ {
 		attempts = attempt
-		doc, dErr = p.runAttempt(planCtx, req, planID, plannerNHI, attempt, perAttempt)
-		if dErr == nil {
+		doc, dErr = p.runAttempt(planCtx, req, planID, plannerNHI, attempt, perAttempt, rejeicao)
+		if dErr != nil {
+			// A tentativa nem chegou a produzir documento (chamada, resposta vazia, decode).
+			// A recusa ANTERIOR deixa de valer: reapresentá-la diria ao modelo que o "documento
+			// anterior" foi rejeitado quando o anterior nem existiu.
+			rejeicao = nil
+			continue
+		}
+		// AOS-415: a validação estrutural entra AQUI, dentro do laço. Antes corria a
+		// jusante do planeador e uma recusa era terminal — zero retentativas, com o
+		// modelo sem saber o que fez de errado.
+		if p.validator == nil {
 			break
 		}
+		if r := p.validator.Validate(doc); r != nil {
+			rejeicao = r
+			recusasDoValidador++
+			dErr = fmt.Errorf("%w: %s/%s", ErrPlanRejected, r.Rule, r.Reason)
+			continue
+		}
+		rejeicao = nil
+		break
 	}
+	planSpan.SetAttribute(attrPlannerRejections, recusasDoValidador)
 	if dErr != nil {
 		planSpan.End()
 		_ = p.reserver.Release(ctx, res)
+		// O DESFECHO não pode depender de qual foi a ÚLTIMA falha. Se ALGUMA tentativa foi
+		// recusada pelo validador, o planeamento acabou numa recusa — mesmo que a última
+		// tentativa tenha falhado no decode. Sem isto, a sequência recusa→decode-falhado
+		// devolvia `ErrDecomposição`, e o chamador (que larga a posse na recusa) retinha o
+		// lease: o sintoma exacto que este ticket fecha, a aparecer de forma intermitente.
+		if recusasDoValidador > 0 && !errors.Is(dErr, ErrPlanRejected) {
+			return nil, fmt.Errorf("%w (ultima falha: %v)", ErrPlanRejected, dErr)
+		}
+		if errors.Is(dErr, ErrPlanRejected) {
+			// A recusa do validador propaga-se COMO recusa (não como falha de
+			// decomposição): quem chama distingue "o modelo não produziu plano" de "o
+			// plano que produziu não é admissível", e a última traz a razão.
+			return nil, dErr
+		}
 		return nil, fmt.Errorf("%w: %v", ErrDecomposition, dErr)
 	}
 
@@ -473,12 +561,13 @@ func (p *Planner) Decompose(ctx context.Context, req DecomposeRequest) (*PlanRes
 	}
 
 	return &PlanResult{
-		Doc:          doc,
-		PlannerNHI:   plannerNHI,
-		PlannerToken: tok,
-		Reservation:  res,
-		Reserved:     reserve,
-		Attempts:     attempts,
+		Doc:                 doc,
+		PlannerNHI:          plannerNHI,
+		PlannerToken:        tok,
+		Reservation:         res,
+		Reserved:            reserve,
+		Attempts:            attempts,
+		ValidatorRejections: recusasDoValidador,
 	}, nil
 }
 
@@ -497,7 +586,7 @@ func stepDecomposeAttempt(attempt int) string {
 // runAttempt abre o span chat de uma tentativa (filho do span-âncora), anota o
 // custo por tentativa e invoca o [Decomposer]. O span fecha sempre (defer). A
 // tentativa é DENTRO do span-âncora do planeador — filha do run por transitividade.
-func (p *Planner) runAttempt(ctx context.Context, req DecomposeRequest, planID, plannerNHI string, attempt int, perAttempt budget.Amount) (plan.PlanDocument, error) {
+func (p *Planner) runAttempt(ctx context.Context, req DecomposeRequest, planID, plannerNHI string, attempt int, perAttempt budget.Amount, rejeicao *Rejection) (plan.PlanDocument, error) {
 	_, span := p.tracer.StartSpan(ctx, agentruntime.OpChat)
 	defer span.End()
 	span.SetAttribute(agentruntime.AttrOperationName, agentruntime.OpChat)
@@ -521,6 +610,7 @@ func (p *Planner) runAttempt(ctx context.Context, req DecomposeRequest, planID, 
 		PlannerNHI: plannerNHI,
 		Attempt:    attempt,
 		Context:    req.Context,
+		Rejection:  rejeicao,
 	})
 }
 

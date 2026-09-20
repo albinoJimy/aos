@@ -93,8 +93,8 @@ func TestDecompose_HappyPath_MultiNo(t *testing.T) {
 	if doc.PlannerMeta.Model != modeloTeste {
 		t.Errorf("model: esperava %q, obtive %q", modeloTeste, doc.PlannerMeta.Model)
 	}
-	if doc.PlannerMeta.PromptVersion != "1.2.0" {
-		t.Errorf("prompt_version: esperava 1.2.0, obtive %q", doc.PlannerMeta.PromptVersion)
+	if doc.PlannerMeta.PromptVersion != "1.3.0" {
+		t.Errorf("prompt_version: esperava 1.3.0, obtive %q", doc.PlannerMeta.PromptVersion)
 	}
 	if doc.PlannerMeta.CapabilitiesHash != capHashReal {
 		t.Errorf("capabilities_hash: esperava %q, obtive %q", capHashReal, doc.PlannerMeta.CapabilitiesHash)
@@ -259,18 +259,18 @@ func TestSatisfazPortaDoPlaneador(t *testing.T) {
 }
 
 // TestWithPrompt_VersaoZeroMantemDefault fecha o achado #1: um prompt de versão ZERO é
-// ignorado (mantém o default 1.2.0, sempre válido); um prompt VÁLIDO de versão própria
+// ignorado (mantém o default 1.3.0, sempre válido); um prompt VÁLIDO de versão própria
 // é usado e carimba a sua versão.
 func TestWithPrompt_VersaoZeroMantemDefault(t *testing.T) {
-	// Versão zero ⇒ ignorado ⇒ default Current (1.2.0), NÃO "0.0.0".
+	// Versão zero ⇒ ignorado ⇒ default Current (1.3.0), NÃO "0.0.0".
 	fm := &fakeModel{reply: forjadoJSON(t)}
 	d := novo(t, fm, decompose.WithPrompt(plannerprompt.Prompt{Template: "IGNORADO-SEM-VERSAO"}))
 	doc, err := d.Decompose(context.Background(), stdInput())
 	if err != nil {
 		t.Fatalf("Decompose: %v", err)
 	}
-	if doc.PlannerMeta.PromptVersion != "1.2.0" {
-		t.Errorf("prompt de versao zero devia ser ignorado; esperava 1.2.0, obtive %q", doc.PlannerMeta.PromptVersion)
+	if doc.PlannerMeta.PromptVersion != "1.3.0" {
+		t.Errorf("prompt de versao zero devia ser ignorado; esperava 1.3.0, obtive %q", doc.PlannerMeta.PromptVersion)
 	}
 	if fm.gotSystem == "IGNORADO-SEM-VERSAO" {
 		t.Error("o template sem versao NAO devia ter sido usado como system")
