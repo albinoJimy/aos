@@ -974,20 +974,53 @@ não tem dono.
 
 ### Critérios de Aceitação
 
-- [ ] Um run hospedado por esta réplica (`s.runs`) é saltado sem ler cursor, registo de retoma nem
+- [x] Um run hospedado por esta réplica (`s.runs`) é saltado sem ler cursor, registo de retoma nem
       capturas, e sem contar como órfão nem como falha. Teste com um run a correr e o varredor
       chamado a meio: nenhuma decifração de capturas, banner sem órfãos. **FALHA-ANTES:** hoje o teste
       vê a linha «capturas ILEGÍVEIS» (antes do 1.º turno) ou a leitura das capturas (depois dele).
-- [ ] Um run com lease vivo noutra réplica é saltado pelo MESMO critério antes do passo 2, e contado
+      *(Guarda (1-bis) em `crash_resume.go`, antes do passo 2: `hospedadoNestaReplica` lê o registo
+      de em-curso sob o MESMO mutex que o `submit` usa. `TestAOS411_RunVivoNestaReplicaNaoEOrfao`
+      hospeda um run real, prende-o no 1.º turno por canal, verifica a precondição (`running`
+      durável + presente em `s.runs`) e exige `orfaos=0` e um log SEM as palavras `ILEGIVEIS`,
+      `orfao` e `crash-resume`. **FALHA-ANTES MEDIDA** contra o ficheiro da base: `orfaos=1` e a
+      saída reproduz o incidente — «capturas do run "run-411-vivo-aqui" ILEGIVEIS — NAO retomado
+      (fail-closed): replay: trajectória vazia (sem turn.recorded)».)*
+- [x] Um run com lease vivo noutra réplica é saltado pelo MESMO critério antes do passo 2, e contado
       à parte («vivo noutra réplica»), como hoje o passo 5 já distingue. A verificação do lease no
       `submit` mantém-se como defesa em profundidade.
-- [ ] Um órfão verdadeiro (lease expirado, sem dono) continua a ser retomado exactamente como hoje:
+      *(`leaseAindaVivo` lê `durable.LeaseManager.CurrentLeaseExpired` — o predicado que faz o
+      `Claim` devolver `ErrLeaseHeld` —, sem mintar, renovar ou mutar nada; o `submit` e o seu
+      `TryAcquire` ficam intactos, e `heldElsewhere` continua a contar à parte o que a defesa em
+      profundidade ainda apanhar. `TestAOS411_LeaseVivoNoutraReplicaNaoEOrfao` põe uma segunda
+      autoridade de lease (`replica-B`) a reclamar o run sobre o mesmo log e o mesmo relógio manual,
+      com registo de retoma presente de propósito — para a varredura antiga chegar mesmo às
+      capturas — e exige `orfaos=0`, banner com «0 run(s) orfaos» e «1 com LEASE VIVO noutra
+      replica». **FALHA-ANTES MEDIDA**: `orfaos=1` e «capturas ... ILEGIVEIS».)*
+- [x] Um órfão verdadeiro (lease expirado, sem dono) continua a ser retomado exactamente como hoje:
       os testes do AOS-253 e do A4 (`aos253_crash_resume_test.go`, `aos_a4_revarredura_test.go`)
       ficam verdes sem alteração de asserções.
-- [ ] O banner distingue a origem da passagem — varredura de ARRANQUE ou RE-VARREDURA periódica — e
+      *(Nenhum dos dois ficheiros foi tocado — a assinatura de `crashResumeBanner` e o texto da
+      linha de ARRANQUE ficaram iguais. `TestAOS253_CrashResumeScanCompletesWithoutDoubleExecution`,
+      `TestAOS253_CrashResumeBannerDeclaresResult` e `TestA4_ReVarreduraRetomaOrfaoSemSegundoArranque`
+      verdes. Acresce `TestAOS411_OrfaoVerdadeiroContinuaAVerSeOLeaseExpirou`: uma réplica reclama o
+      lease, o relógio MANUAL avança um TTL, e o run volta a contar como órfão — guarda que passa
+      dos dois lados da correcção, de propósito, porque o que ela mede é a ausência de regressão.)*
+- [x] O banner distingue a origem da passagem — varredura de ARRANQUE ou RE-VARREDURA periódica — e
       um ciclo periódico sem órfãos continua silencioso.
+      *(`crashResumeBannerDaPassagem` escolhe a origem pelo `anuncia` que já era passado; a periódica
+      diz «RE-VARREDURA periodica (AOS-253/A4)» e a de arranque mantém a forma anterior, que é a
+      pegada declarada do roteiro E2E (`docs/testing/e2e-pegadas-visao-19.md`). O silêncio é agora
+      REAL e não só por acaso: `scanned` conta órfãos verdadeiros, pelo que o ciclo que só encontrou
+      runs vivos não escreve nada. `TestAOS411_BannerDistingueAOrigemDaPassagem` (**FALHA-ANTES
+      MEDIDA**: a passagem periódica anunciava-se «varredura de arranque») e
+      `TestAOS411_CicloPeriodicoSemOrfaosContinuaMudo`.)*
 - [ ] Evidência de sistema: um run real em produção atravessa pelo menos um ciclo da re-varredura
       sem produzir linhas de crash-resume.
+      *(**NÃO VERIFICADO.** Exige um run real em produção a atravessar um ciclo de
+      `AOS_CRASH_RESUME_INTERVAL` (2 min por omissão) e a leitura do log do contentor — trabalho de
+      operador no servidor, fora do que este worktree consegue fazer. O que se mede quando for
+      feito: `docker logs aos-node` sem nenhuma linha `crash-resume` durante um run longo, e a
+      primeira passagem de arranque a dizer «varredura de arranque» com os dois contadores novos.)*
 
 ### Fora de âmbito
 
@@ -995,7 +1028,18 @@ A política da retoma em si (o que se reproduz, a credencial vazia, o replay-the
 
 ### Estado
 
-**POR FAZER.** Aberto a 2026-09-19 a partir da observação em produção durante a evidência do AOS-407.
+**IMPLEMENTADO (2026-09-20), COM A EVIDÊNCIA DE PRODUÇÃO POR RECOLHER.** A varredura pergunta pelo
+DONO antes de reconstituir o que quer que seja: um run hospedado por esta réplica, ou com lease ainda
+válido noutra, é saltado sem se lhe ler cursor, registo de retoma nem capturas por-titular, não conta
+como órfão e não conta como falha. O `submit` fica onde estava, como defesa em profundidade, e nenhum
+lease é reclamado mais cedo do que era — a guarda lê o MESMO predicado que o `Claim` usa. `scanned`
+passa a contar órfãos VERDADEIROS, o que devolve o silêncio ao ciclo periódico que só encontra runs a
+correr, e o banner passa a nomear a passagem. Verificado: suite `-race` verde em `cmd/aos` (incluindo
+AOS-253 e A4, sem tocar nos seus ficheiros); `layer-lint`, `rtm`, `ref-lint`, `deferrals` e
+`estado-citado` verdes. **FALHA-ANTES MEDIDA** contra o ficheiro da base: três dos cinco testes novos
+falham, e a saída do primeiro reproduz o incidente de produção à letra. **FICA POR FAZER**: a
+evidência de sistema (5.º critério), que precisa de um run real a atravessar um ciclo da re-varredura
+em produção.
 
 ---
 
