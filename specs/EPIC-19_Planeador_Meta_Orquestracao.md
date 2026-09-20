@@ -1607,6 +1607,101 @@ inventá-los era pior), e um segundo contrato de forma aberta também não; o co
 
 ---
 
+## AOS-415 — O veredicto da validação volta ao planeador, e a recusa deixa de acabar o run
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-231 (validador e o enum de razões), AOS-388/AOS-391 (planeador governado com laço de tentativas), AOS-400 (prompt 1.2.0) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/planner/planner.go` (laço de tentativas, `DecomposeInput`), `packages/control-plane/orchestrator/decompose/decompose.go` (`Decomposer`, `renderUser`), `packages/control-plane/orchestrator/planvalidate/verdict.go` (`Verdict`, `Reason`, `Locator`), `packages/cmd/aos-orq/planner_wiring.go` (`decomporEMaterializar`, `validarEstrutura`) |
+
+### Contexto
+
+Nas **duas** validações em produção com o modelo vivo, a PRIMEIRA decomposição foi recusada pela
+validação AOS-231 — as duas vezes por `consumes_taint_authority` — e o `serve` terminou com `1`:
+
+| Quando | Run | Resultado da 1.ª tentativa |
+|---|---|---|
+| v0.1.23 (AOS-412) | `run-aos412-vivo-1` | recusada (`consumes_taint_authority`), repetida à mão |
+| v0.1.25 (AOS-414) | `run-aos414-vivo-2` | recusada (`consumes_taint_authority`), repetida à mão num run NOVO |
+
+O caminho principal do produto falha em cerca de metade das corridas, e a recuperação é manual. A
+razão é estrutural, e está declarada no próprio epic (§AOS-391): **o laço de tentativas do
+planeador só cobre falhas do decompositor** — erro de chamada, resposta vazia, `plan.Decode`
+falhado (`planner.go:442`, `decompose.go:138-148`; o default são 3 tentativas). A validação
+estrutural corre **fora e depois** desse laço (`planner_wiring.go`, `validarEstrutura`), pelo que
+uma recusa do validador é terminal, com zero retentativas.
+
+E o pior: **cada tentativa reenvia o mesmo prompt**. O `DecomposeInput` leva o número da tentativa
+e mais nada; o modelo não sabe o que fez de errado.
+
+A matéria-prima existe e foi desenhada exactamente para isto. O `planvalidate.Reason` é um enum
+FECHADO e sem conteúdo, e o comentário do ficheiro di-lo: existe «para dar ao re-planeamento um
+sinal accionável sem vazar conteúdo untrusted» (`verdict.go`). Hoje o `validarEstrutura` colapsa o
+veredicto numa string e **deita fora a `Rule` e o `Locator`**.
+
+### Objectivo
+
+Uma decomposição recusada pela validação é reapresentada ao modelo com a razão — em código
+fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativas.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Onde vive o laço.** (a) A validação entra no planeador, que já tem o laço, por uma porta
+   nova (`Validator`) — o planeador passa a devolver só planos válidos, e o `aos-orq` deixa de
+   validar a jusante; (b) o laço fica no `aos-orq`, que já conhece o snapshot, e o planeador não
+   muda. **(a)** mantém uma só autoridade sobre «o que é um plano admissível» e é a recomendada;
+   **(b)** é menor mas espalha o critério por dois sítios.
+2. **Que forma tem o feedback no prompt.** O que se reenvia é `rule`, `reason` e `node_id` do
+   `Locator` — nunca texto do documento nem do modelo. Falta decidir se entra como bloco próprio
+   do prompt (e se isso obriga a subir a versão do prompt, hoje 1.2.0) ou como instrução no
+   `user`.
+3. **Quantas tentativas.** Hoje são 3 para o decode. A recusa de validação partilha o mesmo tecto
+   (recomendado: o custo de planeamento já é debitado por tentativa) ou tem tecto próprio?
+
+### Critérios de Aceitação
+
+- [ ] Decisão (1)/(2)/(3) registada no ticket; se mudar a versão do prompt, ADR ou nota no epic.
+- [ ] Uma recusa da validação AOS-231 gera nova tentativa, com `rule`/`reason`/`node_id` no
+      prompt — e o teste prova que o conteúdo do documento **não** é reenviado.
+- [ ] O tecto é respeitado: esgotadas as tentativas, o `serve` sai como hoje, com a razão da
+      ÚLTIMA recusa.
+- [ ] Cada tentativa continua a ser debitada no orçamento de planeamento e a ter o seu span
+      (`planner.go` mantém a contabilidade actual).
+- [ ] O facto durável do planeador regista quantas tentativas foram recusadas pelo validador e
+      com que razão (observabilidade de fiabilidade, hoje inexistente).
+- [ ] **Falha-antes por processo real:** um decompositor-fixture que devolve um plano recusado na
+      1.ª tentativa e um válido na 2.ª — hoje o `serve` sai com 1; depois, materializa.
+- [ ] Verificado em produção: uma corrida `--goal` com o modelo vivo que recupere de uma recusa
+      sem intervenção.
+
+### Âmbito acrescentado, e porquê
+
+- **Largar a posse do run quando a validação recusa.** Observado na validação do AOS-414: o
+  `serve` recusado reteve o lease, e a invocação seguinte com o mesmo `--run` saiu com `3`. É o
+  mesmo caminho de falha que este ticket toca (`largarSePendente` já trata o pendente e a recusa
+  de decisão), e deixá-lo de fora obrigaria o operador a esperar pelo TTL na corrida seguinte.
+
+### Fora de âmbito
+
+- **O `replan.Coordinator` (AOS-239), que continua sem chamador de produção.** Governa o
+  re-plano de uma árvore EM EXECUÇÃO — orçamento residual, autonomia fixada, nós concluídos
+  intocáveis — e não a primeira decomposição. Ligá-lo é outro ticket, com outra justificação.
+- A separação de planos (DEF-806/AOS-069) e o eval-gate com modelo vivo (§5, lacuna declarada).
+
+### Estado
+
+**POR FAZER.**
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -1654,3 +1749,4 @@ inventá-los era pior), e um segundo contrato de forma aberta também não; o co
 | 1.8 | 2026-09-19 | +AOS-413 (os nós despachados executam até ao fim): a cadeia do `aos-orq` acabava no despacho — nada executava nem concluía um nó do plano, e a lacuna não estava registada. Decisão de onde corre o trabalho (ADR) antes da implementação. | Equipa AOS |
 | 1.9 | 2026-09-20 | AOS-413 implementado (ADR-027) e verificado em produção (`v0.1.24`): dois nós do plano correram como runs do nó `aos`, o veredicto do verificador veio do modelo vivo na gramática fechada e o nó `danger` aprovado não correu por não ter `pass`. O `fail` foi `documento_nao_fornecido` — o limite do DEF-806 medido em produção. | Equipa AOS |
 | 1.10 | 2026-09-20 | +AOS-414 (canal de entrada marcado como untrusted): a validação do AOS-413 em produção mediu a cadeia a partir-se — o verificador reprovou com `documento_nao_fornecido` porque a saída de um nó não chega ao run do seguinte, e sem isso qualquer plano com verificação termina em `fail`. | Equipa AOS |
+| 1.11 | 2026-09-20 | +AOS-415 (o veredicto da validação volta ao planeador): nas DUAS validações em produção com o modelo vivo a 1.ª decomposição foi recusada pela AOS-231 e o `serve` terminou — o laço de tentativas só cobre o decode, e cada tentativa reenvia o mesmo prompt. | Equipa AOS |
