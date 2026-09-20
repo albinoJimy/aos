@@ -6,6 +6,11 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.27 em produção (AOS-359)
+- `docs(AOS-359)` — **o defeito está medido em produção com os dois binários, sobre dados reais.** Cópias do Event Store do nó (`events.wal`, 19,7 MB); o binário antigo entrou por digest (`sha256:d0dd2667…`, `v0.1.26`).
+- Cauda rasgada: o antigo levou o ficheiro de `19760888` para `19760884`; o novo não lhe tocou. Byte corrompido **dentro do último registo confirmado**: o antigo levou-o de `19760884` para `19760335` — **549 bytes, um registo inteiro e confirmado do Event Store real do nó, apagados por um comando de LEITURA**. O novo deixou-o em `19760884`.
+- **Limitação declarada:** o ensaio correu sobre CÓPIAS e não sobre o WAL vivo — se a correcção estivesse errada, fazê-lo destruiria o Event Store de produção. O cenário do escritor concorrente está medido na suite, não em produção.
+
 ### Verified — v0.1.27 em produção (AOS-416)
 - `docs(AOS-416)` — **o arranque do `aos-orq` deixou de mentir sobre as credenciais montadas**, medido nos três estados no servidor: ausente ⇒ recusa; presente e **ilegível** pelo uid 65532 ⇒ recusa com saída **1** e o gesto na mensagem (`chmod 0644`, «NÃO faça uma cópia»); legível ⇒ compõe e o banner diz `COMPOSTO`. O caso do meio é a reprodução exacta do defeito que originou o ticket.
 - **O que a evidência não cobre:** o Bearer nunca foi pedido — a corrida positiva parou em `--goal exige --snapshot` e a contagem de `401`/«token do IdP» deu zero. Está provado que o arranque recusa o que não consegue ler; não está provado que o token funciona. Essa metade exige um NHI cunhado pelo operador.
