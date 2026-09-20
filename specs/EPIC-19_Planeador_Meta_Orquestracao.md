@@ -1842,14 +1842,22 @@ que crie uma cópia.
 
 ### Critérios de aceitação
 
-- [ ] Numa instalação limpa, o `aos-orq` com o executor composto obtém um Bearer sem que nenhum
-      ficheiro de segredo esteja legível por outro utilizador que não o uid do contentor — provado
-      por uma verificação de modo/dono, não por afirmação.
-- [ ] Nenhuma cópia do segredo existe fora do caminho único decidido em (1).
-- [ ] Um teste ou passo de gate falha se o ficheiro montado voltar a ficar ilegível pelo uid do
-      contentor, ou legível por todos — a falha de hoje foi silenciosa até alguém a medir.
-- [ ] O `deploy/server/README.md` descreve o caminho real, e a cópia manual desaparece dos passos.
+- [x] Numa instalação limpa, o `aos-orq` com o executor composto obtém um Bearer sem que o segredo
+      fique exposto — **provado pela leitura real do ficheiro no arranque**, e não por afirmação.
+      *(O critério dizia «sem que nenhum ficheiro esteja legível por outro utilizador que não o uid
+      do contentor». **A premissa estava errada e foi emendada**: a fronteira do segredo é o
+      DIRECTÓRIO `secrets/`, que o `bootstrap.sh` cria em 0700 — medido em produção,
+      `drwx------ aos aos`. Um `0644` lá dentro não é legível por mais ninguém, e é a convenção que
+      todos os outros segredos montados seguem.)*
+- [x] Nenhuma cópia do segredo existe fora do caminho único
+      *(a cópia `0444` da validação do AOS-415 foi apagada; o README deixa de sugerir cópias)*.
+- [x] Um teste falha se uma credencial montada voltar a ficar ilegível pelo uid do contentor —
+      `TestAOS416_SegredoIlegivelRecusaNoArranque` e `TestAOS416_NHIIlegivelRecusaNoArranque`;
+      e `TestAOS416_ODirectorioDosSegredosEAFronteira` avermelha se o `secrets/` deixar de ser
+      0700, que é a premissa em que a escolha de modo assenta.
+- [x] O `deploy/server/README.md` descreve o caminho real, e a cópia manual desaparece dos passos.
 - [ ] Verificado em produção: uma corrida com nós despachados obtém o Bearer pelo caminho novo.
+      **POR FAZER** (exige deploy e `chmod 644` no ficheiro vivo).
 
 ### Fora de âmbito, declarado
 
@@ -1865,6 +1873,80 @@ que crie uma cópia.
 |---|---|
 | Mudar dono/modo de um segredo em produção parte outro consumidor do mesmo ficheiro | Verificar quem mais monta o `reader-client-secret` antes de tocar; o E2E de leitura usa-o |
 | A correcção volta a ser um passo manual do operador, e o próximo instalador repete o erro | O critério de aceitação exige um sensor que falhe, não documentação |
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+
+**Decisões do dono, tomadas:** (1) **ficheiro montado**, não Vault — a via do Vault arrastaria o
+arranque do `aos-orq` para uma dependência nova e não é exercitável neste ambiente; (2) **o cliente
+`aos-reader` continua partilhado** — um cliente próprio exige criá-lo no Keycloak, que é acção do
+operador no servidor. As duas ficam reversíveis.
+
+**A correcção que importa não é o modo do ficheiro: é o arranque passar a LER a credencial.** O
+banner do executor decidia por `cli == nil` e `cli.bearer != nil`, e com o segredo ilegível
+imprimia na mesma `COMPOSTO`; a falha aparecia na PRIMEIRA SUBMISSÃO de nó — o modo de falha do
+AOS-413 (o plano despacha, nada executa) a voltar por outra porta. Um `os.Stat` teria passado por
+cima do defeito, porque existir não é o mesmo que ser legível.
+
+A verificação cobre **as duas** credenciais montadas. O `AOS_ORQ_NODE_CREDENTIAL_FILE` (o NHI do
+run) tinha o mesmo defeito, o mesmo uid e o mesmo sintoma, e é *mais* provável estar mal: o
+operador copia-o à mão com `umask 077`, o que dá `0600` do utilizador dele. Fechar uma porta e
+deixar a outra aberta na mesma parede não fecharia nada.
+
+**Uma premissa deste ticket estava errada, e a revisão adversarial apanhou-a.** A primeira versão
+recusava em produção qualquer ficheiro com bits de grupo ou de outros, por entender que `0644`
+punha o segredo «ao alcance de qualquer processo da máquina». **É falso neste deployment**:
+`bootstrap.sh` cria `secrets/` com `install -d -m 700` e o `provision.sh` reforça-o — medido em
+produção, `drwx------ aos aos`. Sem travessia do directório, o modo do ficheiro lá dentro não abre
+nada a ninguém. A regra teria recusado a configuração CORRECTA e foi removida.
+
+**E o `chown 65532` que a primeira versão instalava partia produção de três maneiras**, todas
+verificadas no servidor:
+
+| O que partia | Evidência |
+|---|---|
+| O **backup nocturno** | `backup.sh` corre no cron do `aos` (`17 3 * * *`, medido) e tara o `secrets/` inteiro; com o ficheiro em `0400` do 65532 o `tar` falha — e o `2>/dev/null` do script engole a única linha que o explicaria |
+| O **próprio provisionamento** | `provision-identity.sh` corre como `aos`, que não tem sudo (medido): o `chown` falharia, o `|| fail` mataria o script, e os passos 5 e 6 nunca correriam |
+| A **instalação real** | o `chown` estava dentro do guard `[[ ! -s ]]`, que numa instalação existente é falso — ou seja, nunca tocaria no ficheiro com o defeito |
+
+O provisionamento passou a `chmod 644`, **fora do guard**, para reparar também as instalações
+anteriores ao ticket.
+
+**Falha-antes medida em LINUX, como uid 65532** — não em Windows, onde os bits POSIX não são
+significativos e três destes testes saltariam. O binário de teste foi compilado para `linux/amd64`
+e corrido sob `setpriv --reuid=65532 --regid=65532 --clear-groups`, que é a identidade real do
+contentor. Com a validação removida:
+
+```console
+--- FAIL: TestAOS416_SegredoIlegivelRecusaNoArranque
+--- FAIL: TestAOS416_NHIIlegivelRecusaNoArranque
+--- FAIL: TestAOS416_CredencialAusenteDizQueEstaAusente
+--- FAIL: TestAOS416_CredencialVaziaERecusada
+```
+
+`TestAOS416_OModoDaConvencaoNaoERecusado` é **controlo positivo** e passa dos dois lados por
+desenho: é ele que mata a versão recusada acima, porque «recusa sempre» satisfaria os outros
+quatro.
+
+**O sensor do provisionamento amarra-se à cadeia executável, não à prosa.** A primeira versão fazia
+`grep` do texto do script e sobrevivia a **comentar** a linha que verifica — a revisão demonstrou-o.
+É a mesma disciplina que o `scripts/ci/deploy-gate-lint.sh` já tinha escrito para si próprio.
+
+**O que o banner prova, e o que não prova:** o arranque lê as credenciais, por isso «do ficheiro
+montado» deixou de ser promessa. Não prova autenticação — um segredo legível mas obsoleto (rodado
+no IdP, ficheiro por actualizar) dá `401` na primeira submissão, e o segredo relê-se a cada chamada
+de propósito, para que rodá-lo não exija reiniciar.
+
+**Âmbito que NÃO foi alargado, e fica nomeado:** o `model-api.key` e o `vault-token` estão em
+`0644` — o que, dentro de um `secrets/` em 0700, é a postura coerente e não um defeito. O que
+*seria* defeito é o directório afrouxar, e é isso que o
+`TestAOS416_ODirectorioDosSegredosEAFronteira` passa a vigiar.
+
+**Por verificar:** a corrida em produção com o `chmod 644` aplicado ao ficheiro vivo. E o
+`restore-drill.sh` extrai o bundle sem `-p` e como não-root, pelo que a ownership arquivada é
+ignorada e o modo é o do umask de quem extrai — **não verificado** se um restauro repõe um modo que
+o contentor não lê.
 
 ---
 

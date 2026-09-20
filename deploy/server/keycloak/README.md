@@ -68,7 +68,7 @@ antes desta correcção nunca a receberia. No script é idempotente e alcança o
 
 | Cliente | Tipo | Quem é | Onde vive |
 |---|---|---|---|
-| `aos-reader` | confidencial, *service account* | identidade de **máquina** — é a que está em uso | criado por `provision-identity.sh`; segredo em `secrets/reader-client-secret` (0400) |
+| `aos-reader` | confidencial, *service account* | identidade de **máquina** — é a que está em uso | criado por `provision-identity.sh`; segredo em `secrets/reader-client-secret` (0644 dentro de `secrets/` em 0700 — AOS-416) |
 | `aos-node` | público, *código de autorização + PKCE S256* | leitores **humanos**, cada um com o seu `board` | neste `realm-aos.json` |
 
 Em ambos, o `board` vem do **atributo do utilizador**, nunca de um `oidc-hardcoded-claim-mapper`.
