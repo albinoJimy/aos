@@ -11,6 +11,17 @@ package main
 //
 // O QUE ESTA VARREDURA FAZ, e com que peças EXISTENTES (nada aqui é reinventado):
 //
+//   0. EXCLUI OS RUNS COM DONO VIVO (AOS-411), ANTES de reconstituir o que quer que seja. Um run
+//      HOSPEDADO por esta réplica (está em [NodeService.runs]) ou com LEASE AINDA VÁLIDO noutra
+//      réplica NÃO é um órfão: é um run a correr. Até AOS-411 a exclusão existia — mas só no
+//      passo 5, dentro do `submit` —, e o preço dessa ordem foi pago em produção (v0.1.22,
+//      2026-09-18): a cada ciclo da re-varredura, cada run VIVO era classificado como órfão,
+//      tinha o cursor reconstruído, o registo de retoma lido e as capturas DECIFRADAS SOB A
+//      CHAVE DO TITULAR — e um run vivo antes do 1.º turno capturado saía como «capturas
+//      ILEGIVEIS — NAO retomado (fail-closed)», contado como FALHA, com o banner a anunciar
+//      «1 run órfão» sobre um nó que nunca tinha reiniciado. Nenhum dano (o passo 5 segurava a
+//      não-duplicação), mas um SINAL FALSO de crash, trabalho inútil e um acesso a PII sem
+//      razão. A guarda passa para o princípio; o `submit` fica como defesa em profundidade.
 //   1. ENUMERA os streams do Event Store e reconstrói o estado DURÁVEL de cada um pela MESMA
 //      máquina de estados de AOS-017 ([runStateGates.currentState]). Só um estado `running` sem
 //      desfecho terminal é o rasto de um crash — é a metade negativa que AOS-252 (estados
@@ -72,6 +83,13 @@ func (s *NodeService) ResumeInterruptedRuns(ctx context.Context) (scanned, resum
 // RE-VARREDURA periódica de [StartOrphanSweeper], que só fala quando encontrou alguma coisa. Sem
 // essa distinção, a re-varredura escreveria o banner completo a cada ciclo e afogaria no ruído
 // exactamente o sinal que ela existe para dar.
+//
+// AOS-411: o mesmo `anuncia` passou a NOMEAR a passagem no banner. Antes era só um interruptor
+// de silêncio, e a passagem periódica — quando falava — apresentava-se como «varredura de
+// arranque» num nó que nunca tinha reiniciado. O dado existia; não estava a ser usado.
+//
+// `scanned` conta ÓRFÃOS VERDADEIROS: `running` SEM dono vivo. Runs hospedados por esta réplica
+// ou com lease vivo noutra são excluídos ANTES de qualquer leitura e não entram na conta.
 func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (scanned, resumed int, err error) {
 	// SUBSTRATO MÍNIMO para distinguir órfão de terminado (AOS-252) e para o reconstituir
 	// (AOS-021). Sem qualquer uma destas peças a varredura não teria como decidir com verdade —
@@ -119,7 +137,7 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 			"ate o substrato responder e alguem reiniciar o no", serr)
 		return 0, 0, nil
 	}
-	var heldElsewhere, failed int
+	var heldElsewhere, failed, vivosAqui, vivosNoutra int
 	for _, id := range streams {
 		runID := id
 		// (1) Estado DURÁVEL do stream. Um stream que não é de run (lease:, gov.approvals, …) não
@@ -133,6 +151,31 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 		}
 		if st != state.Running {
 			continue // ready / terminal / suspenso / pausado — não é órfão de crash
+		}
+
+		// (1-bis) TEM DONO VIVO? — AOS-411. `running` é o estado durável de um run que crashou E
+		// o de um run que está a correr NESTE INSTANTE; a máquina de estados não os distingue,
+		// e é por isso que a pergunta pelo DONO tem de ser feita AQUI, e não no fim.
+		//
+		// Silenciosamente: um run vivo não é um acontecimento. Uma linha por run vivo por ciclo
+		// afogaria o sinal que a re-varredura existe para dar — os números vão ao resumo, que
+		// num ciclo periódico sem órfãos continua a não ser escrito.
+		if s.hospedadoNestaReplica(runID) {
+			vivosAqui++
+			continue
+		}
+		vivo, lerr := s.leaseAindaVivo(ctx, runID)
+		if lerr != nil {
+			// FAIL-CLOSED, e pela razão de sempre: sem saber se o run tem dono, retomá-lo seria
+			// retomar às cegas — exactamente o que o passo 5 recusa quando o `Claim` falha.
+			// Antes de AOS-411 este erro aparecia mais tarde e depois de decifrar as capturas.
+			failed++
+			s.log("crash-resume: lease do run %q ILEGIVEL — NAO retomado (fail-closed, AOS-411): %v", runID, lerr)
+			continue
+		}
+		if vivo {
+			vivosNoutra++
+			continue
 		}
 		scanned++
 
@@ -189,17 +232,107 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 	}
 
 	// A re-varredura periódica só declara quando há o que declarar. O arranque declara sempre.
+	//
+	// AOS-411: `scanned` conta agora ÓRFÃOS VERDADEIROS (sem dono vivo), e é por isso que este
+	// mesmo `if` passa a calar o ciclo periódico que só encontrou runs a correr — que era o caso
+	// observado em produção. Runs vivos saltados NÃO abrem a boca do varredor.
 	if anuncia || scanned > 0 {
-		s.log("%s", crashResumeBanner(len(streams), scanned, resumed, heldElsewhere, failed))
+		s.log("%s", crashResumeBannerDaPassagem(anuncia, resumoVarredura{
+			streams:       len(streams),
+			orfaos:        scanned,
+			retomados:     resumed,
+			vivosAqui:     vivosAqui,
+			vivosNoutra:   vivosNoutra,
+			heldElsewhere: heldElsewhere,
+			failed:        failed,
+		}))
 	}
 	return scanned, resumed, nil
 }
 
-// crashResumeBanner declara o RESULTADO da varredura (AC4 de AOS-253) — postura anunciada =
-// postura ligada (AOS-203/AOS-248). É uma função PURA (estado → linha) para os testes cobrirem
-// cada desfecho sem levantar um nó, como as restantes funções de banner.
+// hospedadoNestaReplica diz se o run está no registo de em-curso DESTE processo — a mesma
+// verdade que o passo (2) do [NodeService.submit] consulta para devolver
+// [ErrRunAlreadyInProgress], lida sob o MESMO mutex. Um run aqui dentro é, por definição, um run
+// que esta réplica está a correr: não é órfão de coisa nenhuma.
+//
+// A janela entre esta leitura e o `submit` lá em baixo continua a existir (um run pode ser
+// submetido no meio da varredura) e continua fechada por quem sempre a fechou — a reserva sob
+// mutex do `submit`. Esta guarda não a substitui; retira-lhe é o trabalho e o acesso a PII de
+// chegar até lá.
+func (s *NodeService) hospedadoNestaReplica(runID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.runs[runID]
+	return ok
+}
+
+// leaseAindaVivo diz se o run tem um lease por expirar no relógio da MESMA autoridade de lease
+// que o `submit` usa. É exactamente o predicado que faz [durable.LeaseManager.Claim] devolver
+// ErrLeaseHeld (`agora < expira`) e, com ele, o `submit` devolver [ErrRunLeaseHeldElsewhere] —
+// lido aqui SEM mintar, renovar ou mutar nada ([durable.LeaseManager.CurrentLeaseExpired] é
+// declaradamente inerte). Um lease EXPIRADO, ou a ausência de lease, deixa o run seguir para a
+// retoma como antes: a re-varredura de A4 continua a apanhar o órfão cujo lease morreu, e nunca
+// reclama um lease mais cedo do que reclamava.
+//
+// Sem autoridade de lease composta a pergunta não se faz e o run segue o caminho antigo — o
+// `submit` continua lá. Na prática [NewNodeService] compõe-a sempre.
+func (s *NodeService) leaseAindaVivo(ctx context.Context, runID string) (bool, error) {
+	if s.leases == nil {
+		return false, nil
+	}
+	expirado, existe, err := s.leases.CurrentLeaseExpired(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	return existe && !expirado, nil
+}
+
+// resumoVarredura são os números de UMA passagem do varredor. Estrutura, e não sete inteiros
+// posicionais, porque AOS-411 acrescentou dois e a próxima leitura errada de um banner de sete
+// argumentos seria a que ninguém detectaria.
+type resumoVarredura struct {
+	streams int
+	// orfaos são os órfãos VERDADEIROS — `running` e SEM dono vivo. É o número que o operador
+	// lê como «houve um crash»; antes de AOS-411 incluía runs a correr.
+	orfaos    int
+	retomados int
+	// vivosAqui / vivosNoutra — runs saltados ANTES de qualquer leitura (AOS-411).
+	vivosAqui   int
+	vivosNoutra int
+	// heldElsewhere é o que a DEFESA EM PROFUNDIDADE do `submit` ainda apanhou: um lease que
+	// ficou vivo entre a guarda (1-bis) e o passo 5. Esperado zero em regime normal — se não
+	// for, é sinal de corrida real, e por isso continua a ser contado à parte.
+	heldElsewhere int
+	failed        int
+}
+
+// crashResumeBannerDaPassagem declara a passagem inteira e, antes de mais, a sua ORIGEM
+// (AOS-411/AC4): a re-varredura periódica anunciava-se como «varredura de arranque» e mandava
+// um operador procurar um restart que não tinha havido. A forma da linha de ARRANQUE é
+// INTACTA — é a pegada que o roteiro E2E procura —; a periódica troca só o nome da passagem.
+func crashResumeBannerDaPassagem(arranque bool, r resumoVarredura) string {
+	vivos := fmt.Sprintf(" VIVOS SALTADOS (AOS-411): %d hospedado(s) por ESTA replica e %d com LEASE VIVO noutra replica — nao sao orfaos, nao contam como falha e NAO se lhes leu cursor, registo de retoma nem capturas por-titular (um run em `running` tanto e o rasto de um crash como um run a correr neste instante; a pergunta pelo dono passou a ser a PRIMEIRA, e nao a ultima)", r.vivosAqui, r.vivosNoutra)
+	if arranque {
+		return crashResumeBanner(r.streams, r.orfaos, r.retomados, r.heldElsewhere, r.failed) + "." + vivos
+	}
+	return "crash-resume / RE-VARREDURA periodica (AOS-253/A4): " +
+		crashResumeNucleo(r.streams, r.orfaos, r.retomados, r.heldElsewhere, r.failed) + "." + vivos
+}
+
+// crashResumeBanner declara o RESULTADO da varredura de ARRANQUE (AC4 de AOS-253) — postura
+// anunciada = postura ligada (AOS-203/AOS-248). É uma função PURA (estado → linha) para os testes
+// cobrirem cada desfecho sem levantar um nó, como as restantes funções de banner. A FORMA desta
+// linha é uma pegada declarada do roteiro E2E (`docs/testing/e2e-pegadas-visao-19.md`) e por isso
+// AOS-411 não lhe mexeu: o que era falso não era esta linha, era a periódica usá-la.
 func crashResumeBanner(streams, scanned, resumed, heldElsewhere, failed int) string {
-	return fmt.Sprintf("crash-resume / varredura de arranque (AOS-253): CORREU sobre %d stream(s) — %d run(s) orfaos em `running` (claim sem desfecho terminal, o rasto de um crash a meio que AOS-252 tornou distinguivel), %d RETOMADO(s) pela cadeia real (submit->hostRun->RebuildLedger + replay-then-continue de AOS-021: turnos capturados reproduzidos, efeitos ja aplicados DEDUPLICADOS pelo step-ledger sem re-execucao, modelo NAO re-interrogado nesses turnos), %d saltado(s) por LEASE VIVO noutra replica (sem roubo de particao) e %d nao retomado(s) FAIL-CLOSED (estado/cursor/capturas ilegiveis, ou `running` sem registo de retoma). Os checkpoints do Resumer (AOS-015) passam a ser LIDOS no arranque — antes eram escritos e nunca consultados. ALCANCE HONESTO: a retoma automatica NAO traz credencial fresca (um crash nao tem humano no lacete); os turnos ja capturados nao precisam dela (already-applied precede a mediacao), mas uma continuacao AO VIVO que exija identidade de modelo (AOS-278) e negada atribuivelmente — sem principal forjado", streams, scanned, resumed, heldElsewhere, failed)
+	return "crash-resume / varredura de arranque (AOS-253): " + crashResumeNucleo(streams, scanned, resumed, heldElsewhere, failed)
+}
+
+// crashResumeNucleo são os NÚMEROS da passagem, sem o nome da passagem — o que as duas origens
+// (arranque e re-varredura periódica) têm em comum. Separado para que a origem seja escolhida
+// por quem varre, e não fixada na frase (AOS-411).
+func crashResumeNucleo(streams, scanned, resumed, heldElsewhere, failed int) string {
+	return fmt.Sprintf("CORREU sobre %d stream(s) — %d run(s) orfaos em `running` (claim sem desfecho terminal, o rasto de um crash a meio que AOS-252 tornou distinguivel), %d RETOMADO(s) pela cadeia real (submit->hostRun->RebuildLedger + replay-then-continue de AOS-021: turnos capturados reproduzidos, efeitos ja aplicados DEDUPLICADOS pelo step-ledger sem re-execucao, modelo NAO re-interrogado nesses turnos), %d saltado(s) por LEASE VIVO noutra replica (sem roubo de particao) e %d nao retomado(s) FAIL-CLOSED (estado/cursor/capturas ilegiveis, ou `running` sem registo de retoma). Os checkpoints do Resumer (AOS-015) passam a ser LIDOS no arranque — antes eram escritos e nunca consultados. ALCANCE HONESTO: a retoma automatica NAO traz credencial fresca (um crash nao tem humano no lacete); os turnos ja capturados nao precisam dela (already-applied precede a mediacao), mas uma continuacao AO VIVO que exija identidade de modelo (AOS-278) e negada atribuivelmente — sem principal forjado", streams, scanned, resumed, heldElsewhere, failed)
 }
 
 // crashResumeDisabledBanner declara a varredura DESLIGADA e a RAZÃO — sem o substrato para
