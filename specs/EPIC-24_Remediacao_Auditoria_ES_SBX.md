@@ -252,7 +252,7 @@ mais informativo não é a contagem — é que **três correcções podem ser re
 
 | # | Achado | Ticket | Estado |
 |---|---|---|---|
-| V1 | **`aos-orq inspect` continua a abrir o WAL para escrita.** A varredura das vias de leitura do AOS-347 migrou as três do `aos` para `OpenReadOnly` e esqueceu a via de leitura do `aos-orq` (`substrato.abrirParaLeitura`). Medido na composição com o residual declarado do AOS-346: um comando de **leitura** apagou um evento confirmado (924 → 616 bytes) e envenenou o WAL de um escritor vivo | **AOS-359** | **corrigido** (2026-09-20) |
+| V1 | **`aos-orq inspect` continua a abrir o WAL para escrita.** A varredura das vias de leitura do AOS-347 migrou as três do `aos` para `OpenReadOnly` e esqueceu a via de leitura do `aos-orq` (`substrato.abrirParaLeitura`). Medido na composição com o residual declarado do AOS-346: um comando de **leitura** apagou um evento confirmado (924 → 616 bytes) e envenenou o WAL de um escritor vivo | **AOS-359** | **fechado e verificado em produção** (`v0.1.27`, 2026-09-20) |
 | V2 | **Um critério do AOS-356 está marcado `[x]` sobre um ficheiro que o epic nunca tocou.** `deploy/node/README.md` não aparece no `git log` do merge; a linha `:147` continua a dizer «Ausente ⇒ `fake`» e «exigem KVM/`runsc` no host», contradizendo `:149`/`:150` da mesma tabela | **AOS-361** | por abrir |
 
 #### As três mutações que a CI não apanha
@@ -1203,7 +1203,34 @@ entrega um teste verde que o afirma. Este ticket não o reabre; fecha a via comp
 
 ### Estado
 
-**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+**FEITO.**
+
+**Verificado em produção a 2026-09-20** (`v0.1.27`), com os **dois binários** e sobre **dados
+reais**: cópias do Event Store do nó em produção (`events.wal`, 19,7 MB). O binário antigo entrou
+por digest (`sha256:d0dd2667…`, a `v0.1.26`), o novo pela release em curso.
+
+| Cenário do WAL | `v0.1.26` (antes) | `v0.1.27` (depois) |
+|---|---|---|
+| Cauda rasgada — o que um write interrompido deixa | 19760888 → **19760884** | 19760888 → **19760888** |
+| Byte corrompido **dentro do último registo confirmado** | 19760884 → **19760335** | 19760884 → **19760884** |
+
+O segundo caso é a afirmação deste ticket na sua forma forte: **o binário antigo apagou 549 bytes —
+um registo inteiro, confirmado, do Event Store real do nó — a partir de um comando de LEITURA**. O
+novo não tocou no ficheiro em nenhum dos dois cenários.
+
+**Limitação declarada, e é deliberada.** O ensaio correu sobre CÓPIAS, não sobre o WAL vivo do nó.
+Se a correcção estivesse errada, corrê-lo sobre o ficheiro vivo destruiria o Event Store de
+produção — e o valor marginal de o fazer não paga esse risco. As cópias trazem os mesmos bytes e
+correm o mesmo binário; o que perdem é a presença de um escritor CONCORRENTE, que o
+`eventstore.OpenReadOnly` não distingue, porque não escreve em caso nenhum. O cenário do escritor
+vivo está medido na suite (`TestAOS359_InspeccaoComEscritorVivoNaoEnvenenaOEscritor`,
+`E_RESTORE_ORDER` contra o código anterior), **não** em produção.
+
+Confirmado no fim: o WAL vivo do nó ficou em 19760884 bytes com o mtime inalterado, e as quatro
+cópias foram apagadas.
+
+**Também não verificado:** o ramo `--nats` da correcção (o `SemCriarStream()` da via de leitura)
+continua sem teste — exige um servidor NATS real, e o substrato de produção é o de ficheiro.
 
 `substrato.abrirParaLeitura` passou a `eventstore.OpenReadOnly`. Uma linha de produção; a
 evidência é que toda ela é mensurável.
