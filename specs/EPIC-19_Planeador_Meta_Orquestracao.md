@@ -1446,6 +1446,98 @@ recomendada. A forma correcta — cópia com dono 65532 e `0400` — exige `sudo
 
 ---
 
+## AOS-414 — Os nós de um plano trocam dados por um canal de entrada marcado como untrusted
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-413 (os nós executam como runs do nó), ADR-027, ADR-022 §2.3 (payload tipado por aresta), ADR-005 (taint) |
+| Bloqueia | — |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/cmd/aos/api.go` (`POST /runs`), `packages/kernel/agent-runtime/loop.go` (montagem do tail), `packages/kernel/agent-runtime/prompt.go` (`tailFromHistory`, marcação `taint=`), `packages/control-plane/runlifecycle/readers.go` (`PayloadReader`), `packages/control-plane/runlifecycle/emitters.go` (`RecordPayloadPublished`) |
+
+### Contexto
+
+O AOS-413 pôs os nós a executar, e a validação em produção (v0.1.24, run `run-aos413-vivo-1`)
+mediu exactamente onde a cadeia ainda se parte: o verificador respondeu
+
+```
+outcome=fail reasons=["documento_nao_fornecido"]
+```
+
+— porque a saída do nó anterior **não chega** ao run do nó seguinte. O nó `danger` aprovado não
+correu, e fez bem: a condição que o liberta nunca se cumpriu. Enquanto isto não mudar, **qualquer
+plano com verificação termina em `fail`**, e o `consumes` de ADR-022 §2.3 é um contrato que
+ninguém pode cumprir.
+
+Não é um esquecimento do AOS-413: está declarado no ADR-027. O conteúdo produzido por um run é
+**untrusted** (ADR-005), e as duas entradas do prompt que existiam não servem — o `objective` é
+**trusted** (vem de uma submissão autenticada) e o `memory_context` **não tem separação de taint**
+(é o DEF-806, cujo eixo é o AOS-069). Levar conteúdo por qualquer uma delas era branquear o taint.
+
+### Objectivo
+
+Um nó recebe, no seu run, os payloads que o plano lhe declarou em `consumes` — com a marca de
+untrusted e a proveniência (nó de origem, contrato, digest) visíveis no prompt materializado —,
+sem que isso enfraqueça a fronteira de privilégio.
+
+### Decisão a tomar primeiro (do dono): onde vive o conteúdo
+
+O nó cifra o conteúdo não-determinístico por-titular no seu Event Store; o `aos-orq` **não** tem
+acesso a esse conteúdo, e o `final_text` de um run filho vive na memória do nó (um reinício
+perde-o). Opções:
+
+- **(A) Em memória do `serve`, por referência no log.** O `aos-orq` lê o `final_text` do run
+  filho, publica `plan.payload_published` (referência + digest, sem conteúdo) e entrega o conteúdo
+  ao run seguinte. Custa: um `serve` que retome depois de morrer não tem o conteúdo, e os nós cujo
+  produtor já concluiu têm de voltar a correr.
+- **(B) Durável no stream do plano.** O conteúdo passa a ser um facto do log do `aos-orq`. Custa:
+  saída de modelo **em claro** no WAL do orquestrador, que não tem a cifra por-titular do nó — uma
+  fronteira de dados nova, e o crypto-shredding do nó deixa de a alcançar.
+- **(C) Sem transporte: o consumidor vai buscar.** O nó seguinte lê o artefacto com as SUAS tools
+  (por exemplo, o mesmo `doc_read`). Custa: só funciona quando o produto do nó é um recurso
+  endereçável, e o veredicto de um verificador não o é.
+
+A recomendação à partida é **(A)**, com a duração do plano já limitada pelo NHI (45 min) e a
+retoma a re-executar o que falte; **(B)** exige decisão explícita sobre guardar conteúdo untrusted
+em claro no orquestrador.
+
+### Critérios de Aceitação
+
+- [ ] Decisão (A)/(B)/(C) registada (emenda ao ADR-027 ou ADR novo), com o impacto em ADR-005.
+- [ ] O `POST /runs` ganha um canal de ENTRADA de dados distinto do `objective`, e o conteúdo
+      entra no tail como segmento **marcado `taint=untrusted`** com proveniência — a mesma
+      marcação de `tailFromHistory`/resultados de tool, nunca uma tag in-band inventada.
+- [ ] O `aos-orq` publica `plan.payload_published` por cada output declarado que cumpra
+      (referência + digest, derivados do contrato), e entrega ao consumidor só o que o `consumes`
+      DELE declara — não o que o produtor quiser dar.
+- [ ] Um payload de taint efectivo `untrusted` continua a NÃO alimentar um consumidor com
+      autoridade privilegiada: a regra do validador (AOS-231/ADR-022 §2.3) continua a valer e tem
+      teste que o prova pelo processo real.
+- [ ] O prompt materializado do run consumidor MOSTRA a proveniência (nó, contrato, digest), e há
+      teste que prova que o conteúdo não aparece como `objective` nem como directiva trusted.
+- [ ] Verificado em produção com o modelo vivo: o caso do `run-aos413-vivo-1` passa a ter o
+      verificador a decidir sobre o documento que o `read_notes` leu — `pass` liberta o nó
+      `danger` aprovado, `fail` mantém-no retido.
+
+### Fora de âmbito
+
+- **A separação de planos (DEF-806/AOS-069) continua aberta.** Este ticket dá ao conteúdo
+  untrusted um canal PRÓPRIO e marcado; não o executa num plano separado do que planeia. Dizer o
+  contrário seria fechar por decreto uma dívida que não se fechou.
+- A autorização estruturalmente infalsificável do taint (DEF-807).
+
+### Estado
+
+**POR FAZER.**
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -1492,3 +1584,4 @@ recomendada. A forma correcta — cópia com dono 65532 e `0400` — exige `sudo
 | 1.7 | 2026-09-19 | AOS-412 verificado em produção (`v0.1.23`) com o modelo vivo: as duas re-decomposições recusadas com 7, o organigrama aprovado materializado e despachado pelo `--plan-doc`. | Equipa AOS |
 | 1.8 | 2026-09-19 | +AOS-413 (os nós despachados executam até ao fim): a cadeia do `aos-orq` acabava no despacho — nada executava nem concluía um nó do plano, e a lacuna não estava registada. Decisão de onde corre o trabalho (ADR) antes da implementação. | Equipa AOS |
 | 1.9 | 2026-09-20 | AOS-413 implementado (ADR-027) e verificado em produção (`v0.1.24`): dois nós do plano correram como runs do nó `aos`, o veredicto do verificador veio do modelo vivo na gramática fechada e o nó `danger` aprovado não correu por não ter `pass`. O `fail` foi `documento_nao_fornecido` — o limite do DEF-806 medido em produção. | Equipa AOS |
+| 1.10 | 2026-09-20 | +AOS-414 (canal de entrada marcado como untrusted): a validação do AOS-413 em produção mediu a cadeia a partir-se — o verificador reprovou com `documento_nao_fornecido` porque a saída de um nó não chega ao run do seguinte, e sem isso qualquer plano com verificação termina em `fail`. | Equipa AOS |
