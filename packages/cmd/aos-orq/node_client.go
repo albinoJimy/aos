@@ -185,11 +185,14 @@ const uidDoContentor = 65532
 // é LEGÍVEL por este processo e não está vazia. Serve as duas do executor: o NHI do run e o
 // segredo do cliente do IdP.
 //
-// # PORQUE É QUE A LEITURA É PARTE DA VALIDAÇÃO
+// # PORQUE É QUE A VALIDAÇÃO É UMA LEITURA, E SÓ UMA LEITURA
 //
 // Um `os.Stat` diz que o ficheiro existe; não diz que este processo o consegue LER. A diferença é
 // exactamente o defeito que o AOS-416 corrige — `0400` do utilizador `aos` contra um contentor que
 // corre como 65532 — e um `Stat` teria passado por cima dele.
+//
+// E como o `Stat` nada acrescenta a uma leitura que já distingue ausente de ilegível de vazio, não
+// está aqui: seria uma segunda ocorrência de G703 na baseline do gosec a troco de nada.
 //
 // # PORQUE É QUE O MODO NÃO É POLÍTICA AQUI
 //
@@ -204,25 +207,18 @@ const uidDoContentor = 65532
 //
 // O que fica é a propriedade que importa e que se pode provar aqui: o processo consegue ler.
 func validarCredencialDeFicheiro(variavel, caminho string) error {
-	info, err := os.Stat(caminho)
+	_, err := lerSegredo(caminho)
 	switch {
+	case err == nil:
+		return nil
 	case errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("%w: %s=%q está configurado mas o ficheiro NÃO existe — sem ele o executor não fala com o nó",
 			ErrNodeClientConfig, variavel, caminho)
 	case errors.Is(err, fs.ErrPermission):
 		return fmt.Errorf("%w: %s=%q: %s", ErrNodeClientConfig, variavel, caminho, comoAbrirAoContentor(caminho))
-	case err != nil:
-		return fmt.Errorf("%w: %s=%q: %v", ErrNodeClientConfig, variavel, caminho, err)
-	case info.IsDir():
-		return fmt.Errorf("%w: %s=%q é um directório", ErrNodeClientConfig, variavel, caminho)
-	}
-	if _, err := lerSegredo(caminho); err != nil {
-		if errors.Is(err, fs.ErrPermission) {
-			return fmt.Errorf("%w: %s=%q: %s", ErrNodeClientConfig, variavel, caminho, comoAbrirAoContentor(caminho))
-		}
+	default:
 		return fmt.Errorf("%w: %s=%q: %v", ErrNodeClientConfig, variavel, caminho, err)
 	}
-	return nil
 }
 
 // comoAbrirAoContentor é a metade accionável da mensagem: o operador tem de saber o gesto, senão
