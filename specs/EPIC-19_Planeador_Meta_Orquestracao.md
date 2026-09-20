@@ -1770,6 +1770,104 @@ durável — medir fiabilidade ao longo do tempo exige um facto novo, que este t
 
 ---
 
+## AOS-416 — O executor de nós obtém o segredo do IdP sem uma cópia legível por todos
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa o ADR-027: corrige a superfície de deploy que o ADR-027 assume
+     (o executor obtém um Bearer do IdP com o segredo do cliente num ficheiro montado). As
+     citações ao ADR-027 são menções. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P0 |
+| Estimativa | S |
+| Dependências | AOS-413 (executor de nós e a superfície `AOS_ORQ_OIDC_CLIENT_SECRET_FILE`) |
+| Bloqueia | Qualquer uso do executor de nós numa instalação limpa |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, montagem de `./secrets/reader-client-secret`), `deploy/server/README.md` (passos do operador para o executor), `packages/cmd/aos-orq/node_client.go` (`nodeClientDoAmbiente`, leitura do ficheiro do segredo), `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md` |
+
+### Contexto
+
+O `docker-compose.prod.yml` monta o segredo do cliente do IdP no serviço `aos-orq`:
+
+```yaml
+- ./secrets/reader-client-secret:/run/aos-orq/reader-client-secret:ro
+```
+
+O ficheiro no servidor está em `0400`, dono `aos`. O contentor corre como `65532:65532`
+(`docker inspect`, campo `Config.User`). **O uid do contentor não consegue ler o ficheiro que o
+compose lhe monta.** Medido em produção a 2026-09-20, com o uid real e o ficheiro real:
+
+```console
+$ docker run --rm --user 65532:65532 \
+    -v /opt/aos/secrets/reader-client-secret:/s:ro --entrypoint /bin/sh busybox \
+    -c "cat /s >/dev/null && echo LEGIVEL || echo ILEGIVEL"
+cat: can't open '/s': Permission denied
+ILEGIVEL
+```
+
+Sem o segredo não há Bearer; sem Bearer o `nodeClientDoAmbiente` não compõe e o executor de nós
+não arranca. Ou seja, **o caminho que o AOS-413 entregou e que o compose documenta não funciona
+numa instalação limpa**.
+
+A validação do AOS-413 e do AOS-415 só passou porque existia uma segunda cópia do mesmo segredo,
+criada à mão pelo operador em `0444` — legível por qualquer processo da máquina. A cópia era
+byte a byte idêntica ao original (`cmp` deu igual) e foi **apagada** a 2026-09-20; a partir daí o
+executor deixou de ter caminho para o segredo. Hoje o estado é este: ou o executor não arranca, ou
+volta a existir um segredo do IdP legível por todos. Nenhum dos dois serve.
+
+Isto contradiz uma convenção explícita do repositório — «nenhum segredo em texto claro: env var,
+Vault, ou ficheiro montado em runtime» — no único ponto onde a convenção tinha de valer.
+
+### Objectivo
+
+Numa instalação limpa, o executor de nós obtém o segredo do cliente do IdP **sem que o segredo
+fique legível por processos que não sejam o próprio `aos-orq`**, e sem um passo manual do operador
+que crie uma cópia.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Por onde entra o segredo.** (a) Continua a ser ficheiro montado, mas com dono/modo que o uid
+   do contentor lê e mais ninguém — `0400` com dono `65532`, posto pelo mesmo mecanismo que hoje
+   instala os outros segredos; (b) passa a vir do Vault, como os segredos do nó, e o compose deixa
+   de montar ficheiro nenhum. **(a)** é mais pequena e resolve o bloqueio medido; **(b)** alinha
+   com o resto da postura mas arrasta o arranque do `aos-orq` para uma dependência nova.
+2. **Se o `aos-orq` partilha o cliente `aos-reader` ou tem cliente próprio.** Hoje partilha o do
+   E2E de leitura. Um cliente próprio torna a rotação independente e o alcance do segredo menor;
+   partilhar é menos configuração.
+
+### Critérios de aceitação
+
+- [ ] Numa instalação limpa, o `aos-orq` com o executor composto obtém um Bearer sem que nenhum
+      ficheiro de segredo esteja legível por outro utilizador que não o uid do contentor — provado
+      por uma verificação de modo/dono, não por afirmação.
+- [ ] Nenhuma cópia do segredo existe fora do caminho único decidido em (1).
+- [ ] Um teste ou passo de gate falha se o ficheiro montado voltar a ficar ilegível pelo uid do
+      contentor, ou legível por todos — a falha de hoje foi silenciosa até alguém a medir.
+- [ ] O `deploy/server/README.md` descreve o caminho real, e a cópia manual desaparece dos passos.
+- [ ] Verificado em produção: uma corrida com nós despachados obtém o Bearer pelo caminho novo.
+
+### Fora de âmbito, declarado
+
+- **A renovação do NHI e o tecto de 45 minutos** (resíduo declarado no ADR-027): é a outra metade
+  da credencial do executor, mas é outro eixo — o NHI é cunhado pelo operador por decisão do
+  ADR-027, e mudá-lo exige decidir quem o renova. Não entra aqui, e continua sem ticket próprio.
+- A rotação do segredo do cliente `aos-reader` no IdP, recomendada por ter existido uma cópia
+  legível: é operação, não código.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Mudar dono/modo de um segredo em produção parte outro consumidor do mesmo ficheiro | Verificar quem mais monta o `reader-client-secret` antes de tocar; o E2E de leitura usa-o |
+| A correcção volta a ser um passo manual do operador, e o próximo instalador repete o erro | O critério de aceitação exige um sensor que falhe, não documentação |
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -1818,3 +1916,4 @@ durável — medir fiabilidade ao longo do tempo exige um facto novo, que este t
 | 1.9 | 2026-09-20 | AOS-413 implementado (ADR-027) e verificado em produção (`v0.1.24`): dois nós do plano correram como runs do nó `aos`, o veredicto do verificador veio do modelo vivo na gramática fechada e o nó `danger` aprovado não correu por não ter `pass`. O `fail` foi `documento_nao_fornecido` — o limite do DEF-806 medido em produção. | Equipa AOS |
 | 1.10 | 2026-09-20 | +AOS-414 (canal de entrada marcado como untrusted): a validação do AOS-413 em produção mediu a cadeia a partir-se — o verificador reprovou com `documento_nao_fornecido` porque a saída de um nó não chega ao run do seguinte, e sem isso qualquer plano com verificação termina em `fail`. | Equipa AOS |
 | 1.11 | 2026-09-20 | +AOS-415 (o veredicto da validação volta ao planeador): nas DUAS validações em produção com o modelo vivo a 1.ª decomposição foi recusada pela AOS-231 e o `serve` terminou — o laço de tentativas só cobre o decode, e cada tentativa reenvia o mesmo prompt. | Equipa AOS |
+| 1.12 | 2026-09-20 | +AOS-416 (o segredo do IdP do executor de nós): a limpeza do servidor depois do AOS-415 mediu que o uid do contentor (`65532`) não lê o ficheiro `0400` que o compose lhe monta — o executor só funcionou porque existia uma cópia `0444` do segredo, entretanto apagada. | Equipa AOS |
