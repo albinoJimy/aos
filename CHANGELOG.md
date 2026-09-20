@@ -6,6 +6,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.27 em produção (AOS-416)
+- `docs(AOS-416)` — **o arranque do `aos-orq` deixou de mentir sobre as credenciais montadas**, medido nos três estados no servidor: ausente ⇒ recusa; presente e **ilegível** pelo uid 65532 ⇒ recusa com saída **1** e o gesto na mensagem (`chmod 0644`, «NÃO faça uma cópia»); legível ⇒ compõe e o banner diz `COMPOSTO`. O caso do meio é a reprodução exacta do defeito que originou o ticket.
+- **O que a evidência não cobre:** o Bearer nunca foi pedido — a corrida positiva parou em `--goal exige --snapshot` e a contagem de `401`/«token do IdP» deu zero. Está provado que o arranque recusa o que não consegue ler; não está provado que o token funciona. Essa metade exige um NHI cunhado pelo operador.
+- Mudança de comportamento declarada: desde a `v0.1.27` o `serve` recusa arrancar com credencial ilegível, onde antes arrancava e falhava na primeira submissão. O `chmod 644` do ficheiro vivo foi feito no mesmo deploy.
+- Da mesma release, o **AOS-359** e o **AOS-411** continuam **sem verificação em produção**.
+
 ### Fixed — AOS-416
 - `fix(AOS-416)` — **o executor de nós compunha-se sobre credenciais que não conseguia ler.** O compose monta `secrets/reader-client-secret` (`0400`, dono `aos`) no `aos-orq`, que corre como uid `65532`. O arranque só verificava que a string do caminho não estava vazia: o banner dizia `COMPOSTO` e a falha aparecia na PRIMEIRA submissão de nó — o modo de falha do AOS-413 (o plano despacha, nada executa) a voltar por outra porta.
 - O arranque passa a **ler** as **duas** credenciais montadas — o segredo do IdP e o NHI do run —, e distingue os problemas de operação que a mensagem antiga misturava: não configurado, configurado e ausente, presente e ilegível, presente e vazio. A mensagem nomeia o uid e o gesto, e diz explicitamente para **não** fazer uma cópia do ficheiro.

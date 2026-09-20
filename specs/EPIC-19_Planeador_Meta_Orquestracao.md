@@ -1856,8 +1856,9 @@ que crie uma cópia.
       e `TestAOS416_ODirectorioDosSegredosEAFronteira` avermelha se o `secrets/` deixar de ser
       0700, que é a premissa em que a escolha de modo assenta.
 - [x] O `deploy/server/README.md` descreve o caminho real, e a cópia manual desaparece dos passos.
-- [ ] Verificado em produção: uma corrida com nós despachados obtém o Bearer pelo caminho novo.
-      **POR FAZER** (exige deploy e `chmod 644` no ficheiro vivo).
+- [~] Verificado em produção (`v0.1.27`): o ARRANQUE está medido nos três estados — ausente,
+      ilegível e legível *(ver abaixo)*. O que falta é o Bearer **em uso**: a corrida positiva
+      parou antes de o pedir, e essa metade continua **POR FAZER**.
 
 ### Fora de âmbito, declarado
 
@@ -1943,10 +1944,36 @@ de propósito, para que rodá-lo não exija reiniciar.
 *seria* defeito é o directório afrouxar, e é isso que o
 `TestAOS416_ODirectorioDosSegredosEAFronteira` passa a vigiar.
 
-**Por verificar:** a corrida em produção com o `chmod 644` aplicado ao ficheiro vivo. E o
-`restore-drill.sh` extrai o bundle sem `-p` e como não-root, pelo que a ownership arquivada é
-ignorada e o modo é o do umask de quem extrai — **não verificado** se um restauro repõe um modo que
-o contentor não lê.
+**Verificado em produção a 2026-09-20** (`v0.1.27`, imagem `sha256:fe6f363e…`), com o
+`chmod 644` aplicado ao ficheiro vivo pelo operador. Os três estados do arranque, medidos no
+servidor com o `aos-orq` real:
+
+| Estado da credencial montada | O que o arranque fez |
+|---|---|
+| **Ausente** (`AOS_ORQ_NODE_CREDENTIAL_FILE` a apontar para um caminho inexistente) | recusou: «está configurado mas o ficheiro NÃO existe — sem ele o executor não fala com o nó» |
+| **Presente e ILEGÍVEL** pelo uid do contentor (`-rw------- aos aos`, criado com `umask 077`) | recusou com **saída 1**: «o ficheiro existe mas este processo NÃO o consegue ler. O contentor corre como uid 65532: no host, `chmod 0644 …` … NÃO faça uma cópia do ficheiro» |
+| **Legível** (`-rw-r--r--`, as duas credenciais) | compôs, e o banner declarou `executor de nos (AOS-413/AOS-414, ADR-027): COMPOSTO` |
+
+O caso do meio é a **reprodução exacta do defeito que originou o ticket**: é o mesmo estado que em
+produção fazia o `aos-orq` anunciar `COMPOSTO` e falhar só na primeira submissão de nó. Agora é
+recusado à cabeça, com o gesto na mensagem.
+
+**O que isto NÃO prova, e é preciso dizer:** o Bearer **nunca chegou a ser pedido**. A corrida
+positiva parou antes, em `--goal exige --snapshot`, e a contagem de `401`/«token do IdP» no log deu
+**zero**. Ou seja, está provado que o arranque deixou de mentir; **não** está provado que o token
+funciona contra o IdP. Fechar essa metade é a validação completa do executor, e exige um NHI
+cunhado pelo operador (tecto de 45 min) mais os aprovadores do gate.
+
+**Mudança de comportamento em produção, declarada:** a partir da `v0.1.27` o `serve` RECUSA
+arrancar com uma credencial montada ilegível, onde antes arrancava e falhava mais tarde. O
+`chmod 644` no `secrets/reader-client-secret` foi feito no mesmo deploy; sem ele o executor teria
+ficado indisponível. O nó `aos` não é afectado — só o `aos-orq`, que corre por invocação.
+
+**Por verificar:** o `restore-drill.sh` extrai o bundle sem `-p` e como não-root, pelo que a
+ownership arquivada é ignorada e o modo passa a ser o do umask de quem extrai — **não verificado**
+se um restauro repõe um modo que o contentor não lê. E, da mesma release, o **AOS-359** e o
+**AOS-411** continuam sem verificação em produção: o AOS-411 só se observa num ciclo de
+`AOS_CRASH_RESUME_INTERVAL` no log do nó.
 
 ---
 
