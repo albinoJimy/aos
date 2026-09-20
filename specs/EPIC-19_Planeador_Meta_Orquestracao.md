@@ -1977,6 +1977,132 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
 
 ---
 
+## AOS-417 — Por onde entra um objectivo no caminho do plano: o orquestrador não tem superfície de rede
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: pede a DECISÃO (um ADR novo) sobre o ingresso do
+     caminho do plano, que interage com o ADR-018 (o nó é a única autoridade do ciclo de vida),
+     o ADR-023 (escritor único sob lease) e o ADR-027 (cada nó do plano é um run do nó). As
+     citações a esses ADRs são menções. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura (ADR) + implementação |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | ADR-018, ADR-023, ADR-027 (restrições, não pré-requisitos) |
+| Bloqueia | AOS-133 (BFF) e, por arrasto, todo o EPIC-13; qualquer uso do caminho do plano sem operador |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `packages/cmd/aos-orq/main.go` (subcomandos `serve|inspect|plans|decide`), `packages/cmd/aos/planos.go` (a tabela de rotas do nó), `docs/adr/ADR-023-*.md`, `docs/adr/ADR-018-*.md` |
+
+### Contexto
+
+O caminho do **agente único** já é utilizável sem operador: `POST /runs` aceita um objectivo em
+linguagem natural e autentica-se por `client_credentials`, que é automatizável.
+
+O caminho do **plano multi-nó não tem superfície de rede nenhuma.** Medido: `ListenAndServe` e
+`http.Server` em `packages/cmd/aos-orq/`, fora de testes, devolvem **zero ocorrências**. O
+`aos-orq` é só CLI, e o compose exclui-o deliberadamente do arranque:
+
+```yaml
+profiles: ["orq"]
+restart: "no"
+# está no profile `orq` para que o deploy.sh (up -d) NUNCA o arranque:
+# um `serve` possui um run e termina, não é um daemon
+```
+
+Não existe agendador, fila, nem caminho em que um pedido de utilizador desencadeie um `serve`.
+Os únicos temporizadores do deploy são a sincronização de TLS e a recolha de backups; nenhum
+toca no orquestrador.
+
+**A consequência mede-se nos passos manuais.** Uma corrida com nós executados em produção exige
+hoje, por esta ordem de bloqueio:
+
+| # | Passo manual |
+|---|---|
+| 1 | invocar `aos-orq serve` à mão no servidor (`docker compose --profile orq run --rm`) |
+| 2 | não há UI nenhuma — tudo é `curl`, `docker compose` e PowerShell |
+| 3 | cunhar o NHI na máquina do operador, copiá-lo para o servidor, e apagá-lo no fim |
+| 4 | **dois** logins no browser no caminho de produção (delegação + chamada) |
+| 5 | para um plano de risco, assinar a decisão numa terceira máquina e copiar o ficheiro |
+| 6 | preparar o snapshot pinado à mão, com nomes de tool que coincidam com os do nó |
+
+Os passos 2 a 6 podem ser atacados isoladamente e continuariam a não dar um produto utilizável,
+porque **o passo 1 permanece**: alguém tem de estar no terminal do servidor. O EPIC-13 já o diz
+à sua maneira — «o bloqueador duro é a dívida de wiring de backend, não o frontend» —, e o
+AOS-133 (o BFF) não tem o que chamar para o caminho do plano.
+
+**Não existe ticket que cubra isto.** Varridos os 25 epics.
+
+### Objectivo
+
+Um objectivo submetido por um utilizador autenticado desencadeia uma corrida do caminho do plano
+**sem que ninguém esteja num terminal do servidor**.
+
+### Porque é que isto é um ADR e não só um ticket
+
+A frase «um `serve` possui um run e termina, não é um daemon» não é um acaso de operação: é o
+**ADR-023** a manifestar-se — a autoridade sobre o ciclo de vida de um run é o LEASE, e um
+processo que o detém não é partilhável. Dar ingresso de rede ao caminho do plano obriga a decidir
+coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se decidem em código:
+
+- **Quem detém o lease** quando o pedido chega por rede — o processo que atende, ou um trabalhador
+  que ele desencadeia?
+- **O que acontece a um segundo pedido** para um run que já tem posse: recusa (o actual código 3),
+  fila, ou coalescência?
+- **Onde vive o ingresso** — no nó `aos`, que o ADR-018 declara única autoridade do ciclo de vida
+  e que o `layer-lint` impede de importar o orquestrador; ou num serviço próprio que fala com o nó
+  como o executor já fala (ADR-027)?
+- **O modelo de execução**: daemon que aceita e executa, ou ingresso que só ENFILEIRA e um
+  trabalhador consome? A segunda preserva melhor «um `serve` possui um run», mas introduz uma fila
+  durável que hoje não existe.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Onde vive o ingresso.** (a) Rota nova no nó `aos`, que enfileira e um trabalhador do
+   `aos-orq` consome — mantém uma só porta de entrada e reaproveita a autenticação que já existe,
+   mas o nó passa a conhecer a existência do caminho do plano; (b) serviço próprio do `aos-orq`
+   com porta própria, atrás do mesmo edge — não mexe no nó, mas duplica autenticação, admissão e
+   observabilidade.
+2. **Daemon ou fila.** Aceitar-e-executar no mesmo processo é mais simples e contradiz
+   frontalmente a nota do compose; enfileirar preserva-a, ao custo de uma fila durável nova.
+3. **O que fazer a um pedido cujo run já tem posse** — recusar, enfileirar, ou devolver o estado
+   do run em curso.
+
+### Critérios de aceitação
+
+- [ ] Um **ADR novo** regista a decisão, cita o ADR-018/023/027 e diz explicitamente o que
+      SUPERA ou EMENDA da nota «não é um daemon» — ou porque não a contradiz.
+- [ ] Um utilizador autenticado submete um objectivo por rede e obtém um identificador com que
+      acompanha a corrida, **sem sessão no servidor**.
+- [ ] Um segundo pedido para um run com posse tem o desfecho decidido em (3), e há teste que o
+      fixa — não é comportamento acidental do lease.
+- [ ] O `layer-lint` continua verde: se a opção for (a), o nó **não** importa o orquestrador.
+- [ ] O banner de arranque declara a postura do ingresso, como o resto do sistema já faz.
+- [ ] Verificado em produção: uma corrida desencadeada por rede, sem ninguém no terminal.
+
+### Fora de âmbito, declarado
+
+- **A cunhagem automática do NHI** (passos 3 e 4). É a segunda maior barreira, mas é uma decisão
+  de SEGURANÇA — a `issuer.key` não vai para o servidor por desenho — e não se resolve com
+  ingresso. Continua sem ticket próprio.
+- **A UI** (passo 2). Fica desbloqueada por este ticket, mas é o EPIC-13.
+- **A cerimónia de aprovação** de planos de risco (passo 5): o custo manual ali é o desenho do
+  AOS-408, não um defeito.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Um ingresso que aceite e execute no mesmo processo ressuscita o problema de dois escritores que o ADR-023 fechou | O ADR tem de responder «quem detém o lease» antes de existir código |
+| Duplicar autenticação e admissão num serviço próprio abre uma segunda superfície com postura diferente da do nó | Se for a opção (b), reaproveitar a mesma admissão e o mesmo edge, e prová-lo com teste |
+| O ingresso torna trivial disparar corridas, e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele |
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -2026,3 +2152,4 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
 | 1.10 | 2026-09-20 | +AOS-414 (canal de entrada marcado como untrusted): a validação do AOS-413 em produção mediu a cadeia a partir-se — o verificador reprovou com `documento_nao_fornecido` porque a saída de um nó não chega ao run do seguinte, e sem isso qualquer plano com verificação termina em `fail`. | Equipa AOS |
 | 1.11 | 2026-09-20 | +AOS-415 (o veredicto da validação volta ao planeador): nas DUAS validações em produção com o modelo vivo a 1.ª decomposição foi recusada pela AOS-231 e o `serve` terminou — o laço de tentativas só cobre o decode, e cada tentativa reenvia o mesmo prompt. | Equipa AOS |
 | 1.12 | 2026-09-20 | +AOS-416 (o segredo do IdP do executor de nós): a limpeza do servidor depois do AOS-415 mediu que o uid do contentor (`65532`) não lê o ficheiro `0400` que o compose lhe monta — o executor só funcionou porque existia uma cópia `0444` do segredo, entretanto apagada. | Equipa AOS |
+| 1.13 | 2026-09-20 | +AOS-417 (ingresso do caminho do plano): medido que o `aos-orq` não tem superfície de rede nenhuma (`ListenAndServe` fora de testes = zero) e que o compose o exclui do arranque por desenho — logo toda a corrida com nós executados exige um humano no terminal do servidor, e nenhum ticket cobria isso. | Equipa AOS |
