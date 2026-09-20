@@ -6,6 +6,10 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.26 em produção (AOS-415)
+- `docs(AOS-415)` — **uma corrida recuperou sozinha de uma recusa da validação** (`run-aos415-vivo-3`, modelo vivo: `tentativas=3` e o plano passou ao gate). Antes deste ticket a 1.ª recusa acabava o run com `1`. E a posse é largada: o segundo `serve` com o MESMO `--run` tomou-a (`token=2`), onde a validação do AOS-414 tinha saído com `3`.
+- Reportadas as CINCO corridas, não só as favoráveis: quatro decompuseram à primeira, e uma esgotou as 3 tentativas (saída **9**) com a razão a mudar de `consumes_taint_authority` para `verifier_commissions_work` — o modelo reage ao feedback e pode cair noutra regra. A amostra não mede taxa de sucesso; isso é o eval-gate com modelo vivo, que continua a não existir.
+
 ### Added — EPIC-19 (AOS-415) O veredicto da validação volta ao planeador
 - `feat(AOS-415)` — **uma decomposição recusada pela validação (AOS-231) deixa de acabar o run**: a validação entra no LAÇO de tentativas do planeador, e a razão da recusa volta ao modelo. Nas duas validações em produção com o modelo vivo (v0.1.23 e v0.1.25) a PRIMEIRA decomposição foi recusada, as duas vezes por `consumes_taint_authority`, e o `serve` terminava com `1`.
   - **Porta `Validator` no planeador** (decisão do dono), injectada pelo `aos-orq` com o MESMO snapshot pinado: uma só autoridade sobre o que é um plano admissível. Sem ela o comportamento é o anterior — o laço só cobre o decode.

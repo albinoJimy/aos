@@ -1699,8 +1699,8 @@ fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativ
       passa a aceitar vários ficheiros separados por vírgula, um por tentativa — superfície
       NÃO-PRODUÇÃO, como o próprio flag. Com a mutação que tira o validador do laço, o binário
       reproduz a falha de produção: `tentativas=1` e `consumes_taint_authority`.)*
-- [ ] Verificado em produção: uma corrida `--goal` com o modelo vivo que recupere de uma recusa
-      sem intervenção. **POR FAZER** (exige deploy).
+- [x] Verificado em produção: uma corrida `--goal` com o modelo vivo que recupere de uma recusa
+      sem intervenção. *(Ver abaixo: `run-aos415-vivo-3`, `tentativas=3`, v0.1.26.)*
 
 ### Âmbito acrescentado, e porquê
 
@@ -1720,7 +1720,32 @@ fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativ
 
 ### Estado
 
-**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+**FEITO.**
+
+**Verificado em produção a 2026-09-20** (`v0.1.26`, imagem `sha256:d0dd2667…`), com o modelo vivo.
+Cinco corridas, todas reportadas — não só as que favorecem:
+
+| Run | Resultado |
+|---|---|
+| `run-aos415-vivo-1` (1.ª invocação) | **3 tentativas, todas recusadas** ⇒ saída **9** e posse LARGADA |
+| `run-aos415-vivo-1` (2.ª invocação, MESMO run) | Tomou a posse (`token=2`) — antes disto saía `3` («lease detido») —, `tentativas=1`, pendente |
+| `run-aos415-vivo-2` | `tentativas=1`, pendente |
+| **`run-aos415-vivo-3`** | **`tentativas=3` e o plano passou**: recuperação DENTRO da corrida, sem intervenção, seguida do gate (`EXIT=6`, pendente) |
+| `run-aos415-vivo-4` | `tentativas=1`, pendente |
+
+**O que isto prova:** o laço repete sobre a recusa e uma corrida recuperou sozinha — antes deste
+ticket, a 1.ª recusa acabava o run com `1`. E a posse é largada: o segundo `serve` com o MESMO
+`--run` tomou-a, que é exactamente o que falhava na validação do AOS-414.
+
+**O que isto NÃO prova, e é preciso dizer:** a realimentação não garante sucesso. Na 1.ª corrida
+as três tentativas foram recusadas e a razão MUDOU pelo caminho — de `consumes_taint_authority`
+para `verifier_commissions_work` —, ou seja, o modelo reagiu ao feedback e caiu noutra regra do
+validador. Com quatro corridas em cinco a decompor à primeira e uma a esgotar o tecto, esta
+amostra não mede taxa de sucesso: isso é o eval-gate com modelo vivo, que continua a não existir
+(§5, lacuna declarada desde o AOS-400).
+
+**Resíduo confirmado em produção:** o tecto de 3 é atingível. Subi-lo é trocar custo por
+probabilidade de sucesso, e essa decisão precisa de dados do eval-gate, não de uma corrida.
 
 **Decisões do dono:** o laço no planeador (porta `Validator`), bloco próprio com o prompt a subir
 para **1.3.0** (regra 11, sob o gate ADR-012 do AOS-273/AOS-400), e tecto PARTILHADO de 3
