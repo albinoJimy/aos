@@ -78,14 +78,42 @@ func (s substrato) descrever() string {
 
 // abrirParaLeitura abre o Event Store sem pedir posse. Ler nunca a pede, e nunca é
 // bloqueado por quem a detém.
+//
+// # AOS-359 — A VIA DE LEITURA DESTE BINÁRIO FICOU DE FORA DO AOS-347
+//
+// O AOS-347 migrou as vias de inspecção do nó (`wal-count` e `wal-summary`; o
+// `wal-inspect` que o comentário original desse ticket nomeia NÃO é subcomando —
+// ver `packages/cmd/aos/cli.go`) para [eventstore.OpenReadOnly] porque
+// [eventstore.Open] TRUNCA: repõe a cauda parcial a `validEnd` antes de anexar o WAL em
+// append. A varredura de chamadores parou no módulo `cmd/aos` e esta via — que serve
+// `aos-orq inspect` e `aos-orq plans`, os dois comandos de LEITURA deste binário —
+// continuou em [eventstore.Open].
+//
+// O efeito não é hipotético. Com um WAL cuja CAUDA está rasgada (um write interrompido,
+// que é precisamente o estado em que alguém vai inspeccionar), `contaOrfaos` não acha
+// registo íntegro depois da quebra, a guarda fail-closed de `durable.go` não dispara, e
+// o `Open` trunca: um comando de leitura apaga bytes confirmados e, com um escritor
+// vivo, deixa-lhe o tamanho em memória à frente do ficheiro (`E_WAL_DESSINCRONIZADO`).
+//
+// O comentário que aqui estava — «Ler nunca a pede» — descrevia a POSSE, e nisso estava
+// certo: [eventstore.LockWAL] é sobre o ficheiro irmão, de propósito, para não bloquear
+// quem investiga um incidente. O que ele não dizia é que não pedir posse não impede
+// escrever. Sobre FICHEIRO, [eventstore.OpenReadOnly] fecha as duas coisas: não pede
+// posse E não toca no ficheiro.
+//
+// Sobre o substrato REPLICADO o efeito a impedir é outro, e por isso é tratado noutro
+// sítio: não há ficheiro a truncar, mas [jetstream.Abrir] CRIA o stream por omissão —
+// um `inspect --nats` contra um stream inexistente materializava-o no servidor, com
+// placement e política de retenção, o que um comando de leitura não tem que fazer. Daí
+// o `soLeitura` de [substrato.abrirReplicado].
 func (s substrato) abrirParaLeitura() (eventstore.EventStore, func() error, error) {
 	if err := s.validar(); err != nil {
 		return nil, nil, err
 	}
 	if s.replicado() {
-		return s.abrirReplicado()
+		return s.abrirReplicado(true)
 	}
-	store, err := eventstore.Open(s.wal)
+	store, err := eventstore.OpenReadOnly(s.wal)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -109,7 +137,7 @@ func (s substrato) abrirParaEscrita() (eventstore.EventStore, func() error, erro
 		return nil, nil, err
 	}
 	if s.replicado() {
-		return s.abrirReplicado()
+		return s.abrirReplicado(false)
 	}
 
 	largar, err := eventstore.LockWAL(s.wal)
@@ -139,8 +167,18 @@ func (s substrato) abrirParaEscrita() (eventstore.EventStore, func() error, erro
 	}, nil
 }
 
-func (s substrato) abrirReplicado() (eventstore.EventStore, func() error, error) {
+// abrirReplicado abre o Event Store REPLICADO. Com soLeitura, NÃO cria o stream.
+//
+// AOS-359: [jetstream.Abrir] cria por omissão, e criar é a decisão certa para quem vai
+// escrever — o stream nasce com a configuração que o AOS-100 exige. Para quem vai LER é
+// a decisão errada pela mesma razão que o [eventstore.Open] era no ficheiro: um comando
+// de inspecção passa a ter efeito no substrato. Contra um stream inexistente, ler tem de
+// falhar; materializá-lo é responder a uma pergunta mudando a coisa perguntada.
+func (s substrato) abrirReplicado(soLeitura bool) (eventstore.EventStore, func() error, error) {
 	opts := []jetstream.Option{}
+	if soLeitura {
+		opts = append(opts, jetstream.SemCriarStream())
+	}
 	if s.stream != "" {
 		opts = append(opts, jetstream.ComNomeDeStream(s.stream))
 	}

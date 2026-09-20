@@ -6,6 +6,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Fixed — AOS-359
+- `fix(AOS-359)` — **um comando de leitura do `aos-orq` apagava bytes confirmados do WAL.** `substrato.abrirParaLeitura` chamava `eventstore.Open`, que trunca a cauda a `validEnd` antes de anexar o WAL em append; com a quebra no último registo a guarda fail-closed não dispara. Medido: `969 → 646 bytes`, 323 bytes de um registo que o `Append` tinha confirmado. Com o escritor vivo, a inspecção ganhava uma segunda cabeça e o arranque seguinte recusava o WAL com `E_RESTORE_ORDER`.
+- A via passou a `eventstore.OpenReadOnly`, que o AOS-347 já tinha dado às vias do nó. A varredura de chamadores desse ticket ficou-se pelo módulo `cmd/aos` — o defeito era a varredura incompleta, não a linha. A correcção fecha `aos-orq inspect` **e** `aos-orq plans`, que partilham a via.
+- O mesmo gesto no substrato REPLICADO: `jetstream.Abrir` cria o stream por omissão, pelo que um `inspect --nats` contra um stream inexistente o materializava no servidor. A via de leitura passa agora `SemCriarStream()`. Sem teste — exige um servidor NATS real.
+- E o critério «varredura declarada» deixou de ser uma tabela num `.md`: `TestAOS359_AbridorDeEscritaForaDaListaAvermelha` varre a árvore e avermelha se um abridor de ESCRITA (`eventstore.Open`/`Reopen`) aparecer fora da lista nomeada. A permissão é por contagem de chamadas, não por ficheiro — senão o próprio defeito corrigido, que vivia no mesmo ficheiro de uma chamada legítima, passaria despercebido.
+
 ### Verified — v0.1.26 em produção (AOS-415)
 - `docs(AOS-415)` — **uma corrida recuperou sozinha de uma recusa da validação** (`run-aos415-vivo-3`, modelo vivo: `tentativas=3` e o plano passou ao gate). Antes deste ticket a 1.ª recusa acabava o run com `1`. E a posse é largada: o segundo `serve` com o MESMO `--run` tomou-a (`token=2`), onde a validação do AOS-414 tinha saído com `3`.
 - Reportadas as CINCO corridas, não só as favoráveis: quatro decompuseram à primeira, e uma esgotou as 3 tentativas (saída **9**) com a razão a mudar de `consumes_taint_authority` para `verifier_commissions_work` — o modelo reage ao feedback e pode cair noutra regra. A amostra não mede taxa de sucesso; isso é o eval-gate com modelo vivo, que continua a não existir.

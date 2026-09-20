@@ -252,7 +252,7 @@ mais informativo não é a contagem — é que **três correcções podem ser re
 
 | # | Achado | Ticket | Estado |
 |---|---|---|---|
-| V1 | **`aos-orq inspect` continua a abrir o WAL para escrita.** A varredura das vias de leitura do AOS-347 migrou as três do `aos` para `OpenReadOnly` e esqueceu `packages/cmd/aos-orq/substrato.go:88`. Medido na composição com o residual declarado do AOS-346: um comando de **leitura** apagou um evento confirmado (924 → 616 bytes) e envenenou o WAL de um escritor vivo | **AOS-359** | por abrir |
+| V1 | **`aos-orq inspect` continua a abrir o WAL para escrita.** A varredura das vias de leitura do AOS-347 migrou as três do `aos` para `OpenReadOnly` e esqueceu a via de leitura do `aos-orq` (`substrato.abrirParaLeitura`). Medido na composição com o residual declarado do AOS-346: um comando de **leitura** apagou um evento confirmado (924 → 616 bytes) e envenenou o WAL de um escritor vivo | **AOS-359** | **corrigido** (2026-09-20) |
 | V2 | **Um critério do AOS-356 está marcado `[x]` sobre um ficheiro que o epic nunca tocou.** `deploy/node/README.md` não aparece no `git log` do merge; a linha `:147` continua a dizer «Ausente ⇒ `fake`» e «exigem KVM/`runsc` no host», contradizendo `:149`/`:150` da mesma tabela | **AOS-361** | por abrir |
 
 #### As três mutações que a CI não apanha
@@ -1161,10 +1161,15 @@ mas fechou-o **por migração**, não por imposição. `eventstore.Open` continu
 passaram para `OpenReadOnly` (`packages/cmd/aos/wal_inspect.go:68`,
 `packages/cmd/aos/wal_summary.go:77`, e o `wal-count`).
 
-**A varredura ficou incompleta.** `packages/cmd/aos-orq/substrato.go:88` continua a chamar
-`eventstore.Open`, e é a via de `aos-orq inspect` (`packages/cmd/aos-orq/main.go:280`). O comentário
-do próprio ficheiro (`:81-91`) enuncia a premissa que deixou de ser segura: «abre o Event Store sem
-pedir posse. Ler nunca a pede».
+**A varredura ficou incompleta.** `substrato.abrirParaLeitura`
+(`packages/cmd/aos-orq/substrato.go`) chamava `eventstore.Open`, e é a via de `aos-orq inspect`
+(`cmdInspect`, em `packages/cmd/aos-orq/main.go`) — e também a de `aos-orq plans`, que o achado
+não nomeava. O comentário do próprio ficheiro enunciava a premissa que deixou de ser segura:
+«abre o Event Store sem pedir posse. Ler nunca a pede».
+
+*(As referências aqui são por SÍMBOLO e não por `ficheiro:linha`: a própria correcção deste ticket
+deslocou as linhas que o achado citava, e um número que caduca com o commit que o corrige não é
+uma referência — é uma armadilha para o leitor seguinte.)*
 
 A consequência foi **medida na composição** com o residual que o AOS-346 declara (um `len`
 corrompido no **último** registo continua a ser tratado como cauda):
@@ -1187,18 +1192,80 @@ entrega um teste verde que o afirma. Este ticket não o reabre; fecha a via comp
 
 ### Critérios de Aceitação
 
-- [ ] `abrirParaLeitura` (`packages/cmd/aos-orq/substrato.go:88`) passa a `eventstore.OpenReadOnly`,
+- [x] `abrirParaLeitura` (`packages/cmd/aos-orq/substrato.go`) passa a `eventstore.OpenReadOnly`,
       no molde das três vias do `aos`
-- [ ] Um teste que prove que `aos-orq inspect` sobre um WAL com um escritor vivo **não** encolhe o
+- [x] Um teste que prove que `aos-orq inspect` sobre um WAL com um escritor vivo **não** encolhe o
       ficheiro nem envenena o escritor
-- [ ] Uma varredura declarada de **todos** os chamadores de `eventstore.Open` fora do caminho de
-      escrita — o defeito deste ticket é a varredura incompleta, não a linha
-- [ ] O comentário de `substrato.go:81-91` deixa de enunciar a premissa que caducou
+      (`TestAOS359_InspeccaoComEscritorVivoNaoEnvenenaOEscritor`)
+- [x] Uma varredura declarada de **todos** os chamadores de `eventstore.Open` fora do caminho de
+      escrita — o defeito deste ticket é a varredura incompleta, não a linha *(ver abaixo)*
+- [x] O comentário de `substrato.go` deixa de enunciar a premissa que caducou
 
 ### Estado
 
-**POR IMPLEMENTAR.** P0. Alcance: **nó**, alcançável por operador. Encontrado pela validação
-adversarial do EPIC-24 (§0.7, V1), por medição na composição — não por leitura.
+**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+
+`substrato.abrirParaLeitura` passou a `eventstore.OpenReadOnly`. Uma linha de produção; a
+evidência é que toda ela é mensurável.
+
+**Falha-antes, com números, pelo processo real.** Três dos quatro testes novos falham contra o
+código anterior e passam contra o novo:
+
+| Teste | Antes da correcção |
+|---|---|
+| `TestAOS359_AbrirParaLeituraNaoEncolheOWAL` | o WAL passou de **972 para 968 bytes** ao ser ABERTO PARA LEITURA |
+| `TestAOS359_AbrirParaLeituraNaoApagaEventoConfirmado` | **969 → 646 bytes**: 323 bytes de um registo que o `Append` tinha CONFIRMADO |
+| `TestAOS359_InspeccaoComEscritorVivoNaoEnvenenaOEscritor` | reabrir depois da inspecção = `E_RESTORE_ORDER: lote de restauro nao e gapless` |
+| `TestAOS359_AbrirParaLeituraRecusaEscrever` | o `Append` pela via de LEITURA teve **sucesso** |
+
+O quarto teste, `TestAOS359_AbrirParaLeituraContinuaALerOsEventosConfirmados`, é **controlo
+negativo**: passa nos dois lados por desenho, e existe para impedir a correcção trivial-e-errada
+(um abridor que não toca no ficheiro por não ler nada dele).
+
+**A varredura declarada (AC3).** `eventstore.Open` fora de testes, em toda a árvore, são três
+chamadas — e só uma estava do lado da leitura:
+
+| Chamada | Caminho | Veredicto |
+|---|---|---|
+| `packages/cmd/aos/bootstrap.go` | escrita (store do nó) | legítima |
+| `packages/cmd/aos-orq/substrato.go`, em `abrirParaEscrita` | escrita, DEPOIS de `LockWAL` | legítima |
+| `packages/cmd/aos-orq/substrato.go`, em `abrirParaLeitura` | **leitura** | o defeito, corrigido |
+
+As três vias do nó (`wal-inspect`, `wal-summary`, `wal-count`) já usavam `OpenReadOnly` desde o
+AOS-347. A correcção fecha **dois** comandos de uma vez, porque `abrirParaLeitura` serve o
+`inspect` e também o `plans` (`decide.go`) — o ticket só nomeava o primeiro.
+
+**Alcance: nó, alcançável por operador.** Encontrado pela validação adversarial do EPIC-24 (§0.7,
+V1), por medição na composição — não por leitura.
+
+**Revisão adversarial independente.** Sete achados, todos tratados. Os quatro que mudaram
+comportamento ou evidência:
+
+| Achado | O que mudou |
+|---|---|
+| **O caminho NATS é via de leitura e ficou de fora.** `jetstream.Abrir` CRIA o stream por omissão: um `inspect --nats` contra um stream inexistente materializava-o no servidor, com placement e retenção. E o comentário novo afirmava «não toca no ficheiro» sem condição — falso para metade dos ramos da função | `abrirReplicado` passou a receber `soLeitura` e a via de leitura passa `jetstream.SemCriarStream()`; o comentário passou a distinguir os dois substratos |
+| **A conjunção do critério não tinha sensor.** Os testes partiam «escritor vivo» e «ficheiro encolhe» em dois, e o cenário que o Contexto lidera não era medido por nenhum | `TestAOS359_InspeccaoComEscritorVivoNemEncolheNemParaOEscritor`: corrupção no último registo COM o escritor vivo, e o escritor tem de continuar a aceitar escritas |
+| **O critério 3 remediava uma varredura caducada com outra varredura em prosa** — o artefacto que falhou entre o AOS-347 e este ticket | `aos359_varredura_abridores_test.go` converte-o em propriedade: a permissão é por CONTAGEM de chamadas e não por ficheiro, senão o próprio defeito (duas chamadas no MESMO ficheiro, uma legítima e uma não) passava despercebido. Verificado a repor o defeito: `substrato.go (2 chamada(s), 1 declarada(s))` |
+| **A asserção da recusa era fraca** (`err != nil`) e ficaria verde com a propriedade perdida | Passou a `errors.Is(err, eventstore.ErrReadOnly)` |
+
+Os outros três eram de honestidade documental, e valem por si: as vias do nó migradas pelo AOS-347
+são **duas** (`wal-count` e `wal-summary`) e não três — o `wal-inspect` que o comentário desse
+ticket nomeia não é subcomando —; `eventstore.Reopen` é alias exportado de `Open` com a mesma
+semântica de truncar, e uma varredura que só procurasse `Open(` não o apanharia (está no guard);
+e a tabela de achados do §0.7 continuava a dizer «por abrir».
+
+A revisão confirmou também o que eu tinha medido: os números `972→968`, `969→646` e o
+`E_RESTORE_ORDER` reproduzem-se byte a byte, a mutação mata 4 dos 5 testes, e nenhuma das duas vias
+de leitura precisa de escrever — logo não há `ErrReadOnly` alcançável em runtime.
+
+**Efeito colateral, declarado porque ninguém o pediu:** `inspect`/`plans` sobre um `--wal`
+inexistente deixam de CRIAR o ficheiro (o `openWALAppend` tem `O_CREATE`). É melhoria e nada
+depende do comportamento antigo, mas é mudança.
+
+**Por verificar:** a suite completa do `cmd/aos-orq` passa com `-race`, mas nada disto foi
+exercitado em produção. Um operador a correr `aos-orq inspect` sobre o WAL de produção é a
+verificação que falta. O ramo `--nats` da correcção **não tem teste** — exige um servidor NATS
+real, que este ambiente não tem: `NÃO VERIFICADO`.
 
 ---
 
