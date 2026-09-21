@@ -1979,11 +1979,12 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
 
 ## AOS-417 — Por onde entra um objectivo no caminho do plano: o orquestrador não tem superfície de rede
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa ADR nenhum: pede a DECISÃO (um ADR novo) sobre o ingresso do
-     caminho do plano, que interage com o ADR-018 (o nó é a única autoridade do ciclo de vida),
-     o ADR-023 (escritor único sob lease) e o ADR-027 (cada nó do plano é um run do nó). As
-     citações a esses ADRs são menções. -->
+<!-- Este ticket IMPLEMENTA o ADR-028 (o seu próprio), e por isso o marcador
+     `rtm: adrs-mencionados` SAIU: enquanto lá esteve, o ref-lint tratava TODAS as citações do
+     bloco como menções, e o ADR-028 ficaria sem ticket implementador — gate vermelho. O preço
+     de o tirar é que o ADR-018, o ADR-023 e o ADR-027, que aqui são RESTRIÇÕES e não entregas,
+     passam a contar como implementados por este ticket na RTM. Fica dito porque o parser é
+     textual e o marcador é tudo-ou-nada: não há forma de separar os dois papéis no mesmo bloco. -->
 
 | Campo | Valor |
 |---|---|
