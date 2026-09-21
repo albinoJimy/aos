@@ -214,6 +214,24 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, streamSetupErrorStatus(rerr), "trajectoria indisponivel")
 			return
 		}
+	} else if !streamDeRun(runID, events) && !h.runKnown(runID) {
+		// AOS-426: O STREAM EXISTE, MAS NÃO É DE UM RUN.
+		//
+		// A guarda acima só cobria o stream INEXISTENTE, pelo que qualquer stream INTERNO do nó
+		// cujo nome não tivesse barra era servido por esta rota — as aprovações four-eyes, a
+		// memória, a identidade, os nonces de ratificação. Ver streams_internos.go, que explica
+		// porque é que a decisão sai dos DADOS (o `RunID` dos eventos) e não de uma lista de
+		// nomes proibidos, que seria um conjunto aberto.
+		//
+		// O `runKnown` fica como segunda via porque é um facto positivo de outra natureza: esta
+		// réplica sabe que o id é um run que ela hospeda ou hospedou. Um stream interno nunca o
+		// satisfaz.
+		//
+		// O status é o MESMO 404 uniforme do run desconhecido — um código próprio diria ao
+		// chamador «este stream existe mas não é teu», que é o oráculo de existência que o
+		// ADR-016 fecha.
+		writeError(w, http.StatusNotFound, "not found")
+		return
 	}
 
 	// (D6) SELO WORM de leitura sensível (AOS-172) como PRÉ-CONDIÇÃO da abertura do stream — a
