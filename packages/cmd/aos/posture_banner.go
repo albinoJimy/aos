@@ -687,3 +687,28 @@ func descricaoDaPosturaRecurso(p broker.ResourceBindingPosture) string {
 	}
 	return "allowlist NAO declarada: o eixo nao e imposto. Um provedor autorizado alcanca qualquer destino — e o que o AOS-331 fecha quando ligado"
 }
+
+// planIngressPostureBanner declara a postura do INGRESSO DO CAMINHO DO PLANO (AOS-417, ADR-028).
+//
+// A linha diz duas coisas separadas de propósito, porque falham de maneiras diferentes:
+//
+//  1. Se o facto tem onde ser gravado — a rota existe sempre, mas sem Event Store recusa (503).
+//  2. Se alguém CONSOME a fila. Hoje ninguem consome, e e por isso que esta linha importa: um
+//     pedido aceite fica gravado e espera, e quem o submeter nao tem como distinguir "aceite e
+//     a caminho" de "aceite e parado". Calar isto no arranque seria deixar o operador descobrir
+//     a meio de uma corrida que nunca comeca.
+func planIngressPostureBanner(composto, duravel, temConsumidor bool) []string {
+	if !composto {
+		return []string{
+			"ingresso do caminho do plano (AOS-417, ADR-028): SEM SUBSTRATO — o no nao tem Event Store composto, logo POST /plans RECUSA todo o pedido com 503. A fila de pedidos e o proprio Event Store (ADR-028 §2.2): sem ele nao ha onde gravar o facto, e aceitar seria prometer uma corrida que desaparece com o processo. Defina AOS_EVENTSTORE_PATH (ou AOS_EVENTSTORE_NATS). Eixo: AOS-417 / EPIC-19",
+		}
+	}
+	base := "ingresso do caminho do plano (AOS-417, ADR-028): ROTA ACTIVA — POST /plans aceita um objectivo e grava o facto planrequest.submitted no stream " + planRequestStream + ", sob o MESMO balde de admissao e a MESMA autoridade de identidade do POST /runs (a credencial verificada resolve o principal e a regiao, que entram no facto; o corpo nao os declara). NAO SELA RESIDENCIA, e a omissao e deliberada: o selo e pre-condicao da HOSPEDAGEM de um run e esta rota nao hospeda nada — sela-la aqui fixaria, de forma nao-renegociavel, a fronteira de soberania de um run_id que fica LIVRE para outra pessoa criar. O tecto de runs em curso tambem NAO se aplica (conta runs hospedados); o que limita esta rota e o balde, o tecto de corpo e o tecto do objectivo. TECTO DE PENDENTES DA FILA: decisao em aberto (ADR-028 4). O no NAO corre o plano e NAO importa o orquestrador (ADR-018 intacto): quem o corre e o aos-orq, que consome o facto e reclama o lease como sempre fez, pelo que um serve continua a possuir um run e a terminar (ADR-023 intacto). Um pedido repetido para o mesmo run responde 201 accepted IDEMPOTENTE e NUNCA o estado do run — nao e conveniencia, e a nao-oracularidade do ADR-016."
+	if !duravel {
+		base += " SUBSTRATO VOLATIL: o Event Store e o de REFERENCIA in-memory (sem AOS_EVENTSTORE_PATH nem AOS_EVENTSTORE_NATS), logo a fila de pedidos NAO SOBREVIVE a um reinicio do no — um pedido aceite hoje pode nao existir amanha."
+	}
+	if !temConsumidor {
+		base += " SEM CONSUMIDOR, e esta e a parte que o operador tem de saber: NINGUEM le esta fila ainda. Um pedido aceite fica gravado e ESPERA — o 201 significa 'o pedido esta durável', nao 'a corrida comecou'. O trabalhador do aos-orq que a consome e o passo seguinte do AOS-417; ate la o caminho do plano continua a precisar de alguem no terminal do servidor para invocar o serve."
+	}
+	return []string{base + " Eixo: AOS-417 / EPIC-19"}
+}

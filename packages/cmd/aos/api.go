@@ -629,6 +629,17 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "run_id em falta")
 		return
 	}
+	// ESPAÇO DE NOMES INTERNO RESERVADO (AOS-417). O Event Store tem UM espaço de nomes de
+	// streams, e o `run_id` de um run É o seu stream: sem esta recusa, um run pode nomear um
+	// stream interno do nó — por exemplo a fila de pedidos de plano — e os seus eventos
+	// (`run.state.transition`, `turn.recorded`) são apensos LÁ DENTRO, onde um consumidor que
+	// não filtre por `type` os lê como se fossem o conteúdo da fila. Ver [runIDReservado] em
+	// plan_ingress.go: a reserva tem de ser imposta nas DUAS portas de submissão, porque uma
+	// reserva que só metade das portas respeita não é uma reserva.
+	if runIDReservado(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id reservado")
+		return
+	}
 	// Uma entrada vazia na lista-branca não restringe nada e não é um nome de tool: recusa, em
 	// vez de a aceitar como se fosse uma restrição.
 	for _, t := range req.Tools {
