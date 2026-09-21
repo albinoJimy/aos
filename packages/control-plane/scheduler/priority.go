@@ -256,6 +256,10 @@ func (t Task) partition() Partition { return Partition{Tenant: t.Tenant, Priorit
 type candidate struct {
 	task    Task
 	enqueue int64 // UnixNano da submissão (relógio injectável)
+	// geracao é o número de ORDEM desta submissão, monotónico e independente do
+	// relógio (AOS-420). É o que distingue uma re-submissão do mesmo `task_id` da
+	// submissão que um despachante fotografou — ver [Dispatcher.materializa].
+	geracao uint64
 }
 
 // AdmissionGate é a PORTA que o dispatcher consulta para saber se um trabalho é
@@ -283,7 +287,13 @@ type reservationReleaser interface {
 type Dispatcher struct {
 	mu    sync.Mutex
 	cands []*candidate
-	byID  map[string]struct{}
+	byID  map[string]uint64 // task_id -> geracao da submissão PENDENTE (AOS-420)
+	// geracao numera as submissões por ordem de chegada. Monotónica e independente do
+	// relógio: duas submissões no MESMO nanossegundo — que um relógio fixo de teste
+	// produz à vontade, e um relógio real de baixa resolução também — têm gerações
+	// diferentes. Foi por aqui que a primeira tentativa de fechar o ABA falhou: usava o
+	// `enqueue`, que sob relógio fixo é igual nas duas.
+	geracao uint64
 
 	cfg agingResolver
 	adm AdmissionGate
@@ -417,7 +427,7 @@ func WithDefaultKey(k ProviderKey) DispatcherOption {
 // todos os parâmetros fail-closed.
 func NewDispatcher(def AgingParams, opts ...DispatcherOption) (*Dispatcher, error) {
 	d := &Dispatcher{
-		byID: make(map[string]struct{}),
+		byID: make(map[string]uint64),
 		cfg: agingResolver{
 			def:      def,
 			byClass:  make(map[string]AgingParams),
@@ -522,8 +532,9 @@ func (d *Dispatcher) Submit(ctx context.Context, t Task) (SubmitResult, error) {
 		}
 	}
 
-	d.cands = append(d.cands, &candidate{task: t, enqueue: nowNano})
-	d.byID[t.ID] = struct{}{}
+	d.geracao++
+	d.cands = append(d.cands, &candidate{task: t, enqueue: nowNano, geracao: d.geracao})
+	d.byID[t.ID] = d.geracao
 	return SubmitResult{Queued: true}, nil
 }
 
@@ -565,33 +576,25 @@ type DispatchResult struct {
 //
 // Se nenhum candidato for admitido, devolve Dispatched=false com o menor
 // retry_after — NUNCA descarta trabalho.
+//
+// FRONTEIRA DO LOCK (AOS-420, eixo DEF-910): d.mu protege o ÍNDICE de candidatos
+// e nada mais. A admissão — que é um laço de CAS sobre o Event Store DURÁVEL —
+// corre FORA dele, entre o snapshot (passo 2) e a materialização (passo 4).
+// Mantê-lo através do Admit punha uma secção crítica em processo por cima de uma
+// operação durável e invertia o sinal do escalonador: quanto mais saturado o
+// bucket (mais re-tentativas de CAS), mais lento ficava o Submit — ou seja, menos
+// trabalho novo conseguia ENTRAR precisamente quando havia mais a entrar. Medido
+// antes da correcção: Submit bloqueado 25,4 ms a N=30 e 83,7 ms a N=100, linear
+// em N. O preço de soltar o lock é que o índice pode mudar debaixo do snapshot; é
+// por isso que o passo 4 RECONFIRMA a pendência da tarefa antes de a remover.
 func (d *Dispatcher) Dispatch(ctx context.Context) (DispatchResult, error) {
 	ctx, span := d.tracer.StartSpan(ctx, opDispatch)
 	defer span.End()
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if len(d.cands) == 0 {
+	order, nowNano := d.snapshotCandidatos()
+	if len(order) == 0 {
 		return DispatchResult{Dispatched: false}, nil
 	}
-	nowNano := d.now().UnixNano()
-
-	order := make([]*candidate, len(d.cands))
-	copy(order, d.cands)
-	sort.SliceStable(order, func(i, j int) bool {
-		pi := d.cfg.params(order[i].task.Tenant, order[i].task.Class)
-		pj := d.cfg.params(order[j].task.Tenant, order[j].task.Class)
-		ei, _, _ := pi.effective(nowNano-order[i].enqueue, order[i].task.SLO.Nanoseconds())
-		ej, _, _ := pj.effective(nowNano-order[j].enqueue, order[j].task.SLO.Nanoseconds())
-		if ei != ej {
-			return ei > ej // maior prioridade efectiva primeiro
-		}
-		if order[i].enqueue != order[j].enqueue {
-			return order[i].enqueue < order[j].enqueue // mais antigo primeiro
-		}
-		return order[i].task.ID < order[j].task.ID // tie-break estável (total order)
-	})
 
 	var minRetry time.Duration
 	haveRetry := false
@@ -599,6 +602,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context) (DispatchResult, error) {
 	for _, c := range order {
 		var resID string
 		if d.adm != nil {
+			// FORA do lock: é aqui que vive o CAS durável.
 			ar, err := d.adm.Admit(ctx, AdmitRequest{
 				Key:             d.keyFor(c.task),
 				Tenant:          c.task.Tenant,
@@ -623,62 +627,142 @@ func (d *Dispatcher) Dispatch(ctx context.Context) (DispatchResult, error) {
 			resID = ar.ReservationID
 		}
 
-		// Candidato admitido: despacha.
-		p := d.cfg.params(c.task.Tenant, c.task.Class)
-		age := nowNano - c.enqueue
-		if age < 0 {
-			age = 0
-		}
-		eff, agingComp, sloComp := p.effective(age, c.task.SLO.Nanoseconds())
-		aged := (agingComp + sloComp) > 0
-
-		d.removeLocked(c.task.ID)
-		if d.queues != nil {
-			// Liberta UM lugar da partição servida (bounding/backpressure por
-			// contagem; a identidade do item é do dispatcher, não da fila FIFO).
-			if _, _, derr := d.queues.Dequeue(ctx, c.task.partition()); derr != nil {
-				// A reserva já foi concedida: devolve o headroom antes de propagar o
-				// erro, senão ele fica preso (leak) e o dispatcher acaba por estagnar.
-				d.releaseReservation(ctx, c.task, resID)
-				return DispatchResult{}, derr
-			}
-		}
-
-		waitMs := time.Duration(age).Milliseconds()
-		if err := d.emitScheduled(ctx, c.task, p.Base, eff, agingComp, sloComp, waitMs, resID, nowNano); err != nil {
-			d.releaseReservation(ctx, c.task, resID)
+		res, materializou, err := d.materializa(ctx, c, nowNano, resID)
+		if err != nil {
 			return DispatchResult{}, err
 		}
-		if aged {
-			if err := d.emitAged(ctx, c.task, p.Base, eff, agingComp, sloComp, waitMs, nowNano); err != nil {
-				d.releaseReservation(ctx, c.task, resID)
-				return DispatchResult{}, err
-			}
+		if !materializou {
+			// A tarefa deixou de estar pendente entre o snapshot e aqui: outra
+			// chamada concorrente despachou-a. Segue para o candidato seguinte.
+			continue
 		}
 
+		p := d.cfg.params(c.task.Tenant, c.task.Class)
 		span.SetAttribute(attrSchedTask, c.task.ID)
 		span.SetAttribute(attrSchedPartition, c.task.partition().String())
 		span.SetAttribute(attrSchedClass, c.task.Class)
 		span.SetAttribute(attrSchedBasePrio, p.Base)
-		span.SetAttribute(attrSchedEffPrio, eff)
-		span.SetAttribute(attrSchedWaitMs, waitMs)
-		span.SetAttribute(attrSchedAged, aged)
+		span.SetAttribute(attrSchedEffPrio, res.EffectivePriority)
+		span.SetAttribute(attrSchedWaitMs, res.WaitMs)
+		span.SetAttribute(attrSchedAged, res.Aged)
 		span.SetAttribute(attrSchedAdmitted, true)
-
-		return DispatchResult{
-			Dispatched:        true,
-			Task:              c.task,
-			BasePriority:      p.Base,
-			EffectivePriority: eff,
-			Aged:              aged,
-			WaitMs:            waitMs,
-			ReservationID:     resID,
-		}, nil
+		return res, nil
 	}
 
 	// Nenhum candidato admitido: adia (nunca descarta).
 	span.SetAttribute(attrSchedAdmitted, false)
 	return DispatchResult{Dispatched: false, RetryAfter: minRetry}, nil
+}
+
+// snapshotCandidatos tira, SOB o lock, a fotografia ordenada dos candidatos e o
+// instante da decisão. Copia os candidatos POR VALOR: nada do que sai daqui é
+// partilhado com o índice, pelo que a admissão pode correr fora do lock sem ler
+// memória que o Submit esteja a mutar.
+//
+// A ordem é a mesma de sempre — prioridade efectiva desc, depois timestamp de
+// entrada asc, depois task_id asc (ordem TOTAL, reproduzível em replay).
+func (d *Dispatcher) snapshotCandidatos() ([]candidate, int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(d.cands) == 0 {
+		return nil, 0
+	}
+	nowNano := d.now().UnixNano()
+
+	order := make([]candidate, len(d.cands))
+	for i, c := range d.cands {
+		order[i] = *c
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		pi := d.cfg.params(order[i].task.Tenant, order[i].task.Class)
+		pj := d.cfg.params(order[j].task.Tenant, order[j].task.Class)
+		ei, _, _ := pi.effective(nowNano-order[i].enqueue, order[i].task.SLO.Nanoseconds())
+		ej, _, _ := pj.effective(nowNano-order[j].enqueue, order[j].task.SLO.Nanoseconds())
+		if ei != ej {
+			return ei > ej // maior prioridade efectiva primeiro
+		}
+		if order[i].enqueue != order[j].enqueue {
+			return order[i].enqueue < order[j].enqueue // mais antigo primeiro
+		}
+		return order[i].task.ID < order[j].task.ID // tie-break estável (total order)
+	})
+	return order, nowNano
+}
+
+// materializa fecha o despacho de um candidato JÁ ADMITIDO: reconfirma sob o lock
+// que a tarefa continua pendente, remove-a do índice, liberta o lugar da partição
+// servida e emite os eventos. Devolve ok=false — sem erro — quando a tarefa já
+// não está pendente, o que só acontece se outra chamada concorrente a tiver
+// despachado entre o snapshot e aqui.
+//
+// PORQUE É QUE A RESERVA NÃO É DEVOLVIDA NESSE CASO. O RequestID da admissão
+// deriva do task_id (`sched:<id>`), pelo que o Admit desta chamada e o do
+// vencedor são o MESMO pedido idempotente: o Event Store deduplica-os pelo
+// step_id `grant:<resID>` e existe UMA só reserva, que o vencedor detém e está a
+// consumir. Libertá-la aqui abriria headroom que ninguém devolveu — a
+// oversubscrição que o AOS-027 existe para fechar. As libertações abaixo são
+// outra coisa: aí o despacho FALHOU e a reserva ficaria órfã.
+func (d *Dispatcher) materializa(ctx context.Context, c candidate, nowNano int64, resID string) (DispatchResult, bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// AOS-420 — A RECONFIRMAÇÃO COMPARA A SUBMISSÃO, NÃO A PRESENÇA DA CHAVE.
+	//
+	// Perguntar «o id ainda está no índice?» tinha um ABA que a revisão adversarial
+	// mediu: o vencedor materializa e REMOVE o id, alguém re-submete o MESMO `task_id`
+	// com outro tenant/classe/custo, e o perdedor encontra a chave e despacha com o
+	// SNAPSHOT ANTIGO — dois despachos contra uma só reserva, e o `Dequeue` a drenar a
+	// partição do snapshot velho.
+	//
+	// O discriminador é a GERAÇÃO, e não o `enqueue`: sob um relógio fixo — que os testes
+	// usam, e que um relógio real de baixa resolução imita — as duas submissões têm o
+	// mesmo instante, e a primeira tentativa de fechar este ABA falhou exactamente aí.
+	if ger, pendente := d.byID[c.task.ID]; !pendente || ger != c.geracao {
+		return DispatchResult{}, false, nil
+	}
+
+	p := d.cfg.params(c.task.Tenant, c.task.Class)
+	age := nowNano - c.enqueue
+	if age < 0 {
+		age = 0
+	}
+	eff, agingComp, sloComp := p.effective(age, c.task.SLO.Nanoseconds())
+	aged := (agingComp + sloComp) > 0
+
+	d.removeLocked(c.task.ID)
+	if d.queues != nil {
+		// Liberta UM lugar da partição servida (bounding/backpressure por
+		// contagem; a identidade do item é do dispatcher, não da fila FIFO).
+		if _, _, derr := d.queues.Dequeue(ctx, c.task.partition()); derr != nil {
+			// A reserva já foi concedida: devolve o headroom antes de propagar o
+			// erro, senão ele fica preso (leak) e o dispatcher acaba por estagnar.
+			d.releaseReservation(ctx, c.task, resID)
+			return DispatchResult{}, false, derr
+		}
+	}
+
+	waitMs := time.Duration(age).Milliseconds()
+	if err := d.emitScheduled(ctx, c.task, p.Base, eff, agingComp, sloComp, waitMs, resID, nowNano); err != nil {
+		d.releaseReservation(ctx, c.task, resID)
+		return DispatchResult{}, false, err
+	}
+	if aged {
+		if err := d.emitAged(ctx, c.task, p.Base, eff, agingComp, sloComp, waitMs, nowNano); err != nil {
+			d.releaseReservation(ctx, c.task, resID)
+			return DispatchResult{}, false, err
+		}
+	}
+
+	return DispatchResult{
+		Dispatched:        true,
+		Task:              c.task,
+		BasePriority:      p.Base,
+		EffectivePriority: eff,
+		Aged:              aged,
+		WaitMs:            waitMs,
+		ReservationID:     resID,
+	}, true, nil
 }
 
 // removeLocked remove um candidato pelo task_id, preservando a ordem relativa dos

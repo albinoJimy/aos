@@ -53,6 +53,7 @@ O epic materializa a **Dimensão 1 (Arquitectura)** na parte de grafo acíclico 
 | AOS-032 | Scheduling priority-aware + aging | feature | M | P1 | AOS-027 |
 | AOS-033 | Roteamento least-loaded/token-aware | feature | M | P1 | AOS-027 |
 | AOS-034 | Métricas de saturação e reserva de headroom | feature | S | P1 | AOS-027, AOS-028 |
+| AOS-420 | Caminho quente do escalonador: lock em processo sobre CAS durável + releitura integral do bucket | fix | M | P1 | AOS-027, AOS-032 |
 
 ---
 
@@ -703,6 +704,162 @@ Liga ao pilar de métricas do EPIC-08. Abre PR com o template dos Standards.
 
 ---
 
+## AOS-420 — Caminho quente do escalonador: um lock em processo por cima de um CAS durável, e a releitura integral do bucket a cada decisão
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: corrige o caminho quente de AOS-027 e AOS-032, que
+     são as realizações do ADR-007 (sem SPOF) e do ADR-008 (reserva atómica). As citações a
+     esses ADRs são menções — quem os implementa continua a ser AOS-027/AOS-032. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-03 — Orquestração e Escalonamento |
+| Fase | 3 — Escala e controlo |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-027 (admission control global), AOS-032 (scheduling priority-aware) |
+| Bloqueia | Composição do escalonador em qualquer processo |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/scheduler/priority.go`, `packages/control-plane/scheduler/admission.go`, `docs/governance/REGISTO-Deferimentos.md` (DEF-910, DEF-911), `analises/10_Auditoria_ORQ_SCH_PDP_Adversarial.md` |
+
+### Contexto
+
+A auditoria adversarial ORQ/SCH/PDP mediu **dois** defeitos no mesmo caminho quente — o par
+`Dispatcher.Dispatch` → `Admission.Admit` —, registados como **DEF-910** e **DEF-911**. Ambos
+citavam como eixo tickets **já entregues** (AOS-032 e AOS-027), pelo que nenhum deles tinha
+destino executável: é o padrão que o §1 do registo de deferimentos existe para impedir. Este
+ticket é o eixo novo, no precedente de DEF-274/275 → AOS-281.
+
+**DEF-910 — o lock do dispatcher é mantido através do CAS durável.** `Dispatch` fazia
+`d.mu.Lock(); defer d.mu.Unlock()` à entrada e só o largava no fim, laço de candidatos incluído
+— e esse laço chama `Admit`, que lê o stream do bucket e faz `Append` com `WithExpectedSeq` em
+retry. Uma secção crítica em processo por cima de uma operação durável. Medido sobre o substrato
+real: `Submit` bloqueado **25,4 ms a N=30** e **83,7 ms a N=100**, linear em N. O sinal sai
+**invertido**: quanto mais saturado o bucket (mais re-tentativas de CAS), menos trabalho novo
+consegue ENTRAR — que é o oposto do que um controlo de admissão deve fazer.
+
+**DEF-911 — cada admissão relê o stream do bucket desde a seq 1.** `foldBucket` fazia
+`a.log.Read(ctx, bucketID, 1)` **dentro** do laço de CAS, sem fronteira avançada: O(N) por
+decisão e O(N²) acumulado, no stream mais quente do sistema (partilhado por todos os tenants de
+um `provider:model:region`). Medido: **99,5 eventos lidos por admissão nas primeiras 200 e 699,5
+nas 601–800**. A `Window` limitava quais as reservas que **contam**, não quais os eventos que são
+**lidos**.
+
+Os dois estão no mesmo módulo e no mesmo caminho: não são separáveis em dois trabalhos, porque
+tirar o `Admit` da secção crítica aumenta a concorrência sobre exactamente o `foldBucket` que o
+segundo torna barato.
+
+### Objectivo
+
+O escalonador deixa de pagar, no caminho quente, dois custos que não são do problema que resolve:
+(a) a fila de submissão deixa de serializar atrás de um CAS durável; (b) o custo de uma decisão de
+admissão passa a depender da **janela**, não do **histórico**.
+
+### Critérios de aceitação
+
+- [ ] `Dispatch` **não** detém `d.mu` durante `Admit`: o lock passa a cobrir só o índice de
+      candidatos (snapshot antes, materialização depois).
+- [ ] Uma submissão concorrente **progride** enquanto uma admissão durável está em curso, provado
+      por teste com um gate que pára dentro do `Admit`.
+- [ ] Soltar o lock **não** abre despacho duplicado nem perda de trabalho: a materialização
+      reconfirma sob o lock que a tarefa continua pendente e, se não estiver, salta para o
+      candidato seguinte. Provado com N despachantes concorrentes sob `-race`.
+- [ ] Uma reserva concedida a um candidato que perdeu a corrida **não é devolvida**: o `RequestID`
+      deriva do `task_id`, pelo que a reserva do vencedor é a MESMA (idempotência por `step_id`) e
+      libertá-la abriria headroom em uso — oversubscrição.
+- [ ] O número de **eventos lidos por admissão** deixa de crescer com o histórico do bucket. A
+      medida é a contagem de eventos, **não** o tempo de relógio.
+- [ ] A fronteira de leitura **nunca** altera um veredicto: é derivada da fronteira da janela e das
+      reconciliações, é descartável (perdê-la só faz reler tudo), e recua para leitura integral se
+      o relógio andar para trás.
+- [ ] `Replay`/`ReplayAudit` continuam a ler o stream **inteiro**: isto não é compactação nem
+      snapshot, e o stream não é tocado.
+- [ ] Toda a bateria do módulo verde sob `-race`.
+
+### Detalhes técnicos
+
+- **Fronteira do lock (DEF-910).** `Dispatch` = snapshot ordenado sob o lock (candidatos copiados
+  **por valor**, para que nada partilhado seja lido fora dele) → `Admit` fora do lock →
+  materialização sob o lock com reconfirmação de pendência.
+- **Fronteira de leitura (DEF-911).** Por bucket, memoriza-se o par `(fromSeq, atNano)`: o menor
+  `seq` entre as reservas que ainda contam e o instante em que foi calculado. A invariante é que
+  tudo antes de `fromSeq` pertence a uma reserva que, em `atNano`, já estava fora da janela ou
+  integralmente reconciliada — e nenhuma das duas condições se desfaz com o avanço do relógio. Sem
+  reservas activas, a fronteira é a **cauda** (que é a âncora do CAS), pelo que um bucket ocioso
+  colapsa para leitura constante.
+- **Não é snapshot nem compactação.** Foi decidido em triagem: avançar a `fromSeq` é *bounded* e
+  não toca no stream; um snapshot por bucket não o seria e fica fora de âmbito.
+
+### Testes requeridos
+
+- Progresso: um `Submit` concorrente completa enquanto o `Admit` está parado lá dentro (falha por
+  bloqueio verdadeiro antes da correcção, não por lentidão).
+- Concorrência (controlo negativo, sob `-race`): N despachantes sobre M tarefas ⇒ M despachos
+  distintos, zero duplicados, zero perdidos.
+- Contagem de leituras, janela deslizante: com o relógio a avançar um passo por admissão, os
+  eventos lidos na admissão tardia não excedem o que cabe na janela.
+- Contagem de leituras, reservas reconciliadas: com débito activo zero, a admissão lê um número
+  constante de eventos.
+- `Replay` devolve todos os eventos do stream depois de qualquer dos dois cenários.
+
+### Residuais declarados
+
+- A reserva de um candidato que perde a corrida de materialização só é segura de **não** libertar
+  porque o `AdmissionGate` honra a idempotência por `RequestID` — que é o contrato documentado de
+  `AdmitRequest.RequestID`. Um gate de terceiros que o ignore fica com uma reserva órfã por
+  despacho perdido. Não há gate assim no repositório.
+- `releaseReservation` devolve `max(Task.Cost, 1)` tokens, que só coincide com o reservado quando
+  o custo é fixado na tarefa; com o `CostEstimator` a decidir, uma libertação de erro pode devolver
+  menos do que reservou. É anterior a este ticket e não foi tocado.
+- O módulo continua fora do grafo de build de qualquer binário (ADR-018/ADR-023): os dois
+  deferimentos eram **latentes** e esta correcção é preventiva, medida em teste e não em produção.
+
+### Definition of Done
+
+- [ ] DEF-910 e DEF-911 reapontados para este ticket no registo, com o estado certo.
+- [ ] Testes que falham antes e passam depois, para cada um dos dois eixos, com a contagem de
+      eventos (não o tempo) a medir o segundo.
+- [ ] `go test -race` verde em todo o módulo; `layer-lint`, `rtm`, `ref-lint`, `deferrals` e
+      `estado-citado` verdes.
+- [ ] `CHANGELOG.md` e a secção do módulo no `README.md` actualizados.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-21), **sem alcance em produção** — e a revisão adversarial encontrou
+duas regressões que esta correcção tinha introduzido.
+
+**As duas regressões, e o que as fechou:**
+
+| Regressão | Como se manifestava | O que a fecha |
+|---|---|---|
+| **Oversubscrição.** A fronteira memorizava `(fromSeq, atNano)` mas **não a janela com que foi calculada**. O raciocínio era «a janela só desliza para a frente» — mas ela também **CRESCE**: o `QuotaProvider` lê limites reais do provider e o `Window` muda em runtime | Medido: TPM=100 com **90 tokens activos escondidos**, e um pedido de 30 concedido com `headroom=40` — 120 de 100 | `bucketCursor` guarda o `windowNano` e a fronteira é esquecida quando a janela do fold corrente é maior (`TestAOS420_JanelaQueCresceNaoEscondeReservasActivas`) |
+| **ABA no índice.** Soltar o lock abriu uma janela: o vencedor materializa e remove o id, alguém re-submete o MESMO `task_id` com outro tenant, e o perdedor encontrava a chave e despachava com o SNAPSHOT ANTIGO | Dois despachos contra uma só reserva, e o `Dequeue` a drenar a partição do snapshot velho | A reconfirmação compara a **geração** da submissão (`TestAOS420_ReSubmissaoNaoEDespachadaComOSnapshotAntigo`) |
+
+**A primeira tentativa de fechar o ABA estava errada, e foi o teste que a apanhou.** Usava o
+`enqueue` como discriminador — e sob relógio fixo, que os testes usam e que um relógio real de
+baixa resolução imita, as duas submissões têm o mesmo instante. Só uma **geração monotónica**,
+independente do relógio, distingue uma re-submissão. O teste falhou com a correcção aplicada, que
+é exactamente o que um teste tem de fazer quando a correcção não corrige.
+
+**As redes de segurança passaram a ter sensor.** A revisão mediu que removê-las deixava a bateria
+inteira verde — o critério «recua para leitura integral se o relógio andar para trás» estava
+escrito e não era medido por nada. Há agora um controlo que compara o veredicto de uma instância
+com a fronteira quente contra outra nascida sem fronteira nenhuma, sobre o MESMO stream: uma
+optimização de leitura que mude um veredicto não é uma optimização.
+
+**Alcance, dito sem arredondar.** O escalonador **não está no grafo de build de binário nenhum**:
+o único importador não-teste é o `tieradapter` do Model Gateway, e o `NewAdmissionAdapter` não tem
+chamadores fora de testes — há inclusive um teste de fronteira que **proíbe** o import em
+`cmd/aos`. Os dois deferimentos eram latentes, e esta correcção está medida **em teste, não em
+produção**.
+
+**Resíduo declarado:** o ganho do DEF-911 está medido em regime SEQUENCIAL. A revisão mostrou que
+com admissões concorrentes o `nowNano` lido uma vez por `Admit` faz o guarda do relógio disparar e
+apagar a fronteira — 2,5× mais eventos por fold e 4,3× mais re-tentativas de CAS. O ganho existe,
+é menor do que os números sequenciais sugerem, e medi-lo em concorrência é trabalho próprio.
+
+
 ## Vista de qualidade
 
 Este epic responde primariamente às dimensões **Arquitectura** (grafo acíclico, deadlock, orçamento hierárquico com reserva atómica), **Escalabilidade** (admission control global, headroom, backpressure, scheduling, roteamento) e **Observabilidade** (métricas de saturação/headroom, SLIs/SLOs). Toca **Governação** na atribuição de identidade por sub-agente (delegação, ADR-003) e **Segurança** na mediação de toda a criação de trabalho pelo Reference Monitor (ADR-002). A tese transversal — *orçamento e admissão são globais* — é o antídoto directo ao colapso agregado.
@@ -743,3 +900,4 @@ Este epic responde primariamente às dimensões **Arquitectura** (grafo acíclic
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-09-20 | +AOS-420 (caminho quente do escalonador): os deferimentos DEF-910 e DEF-911 citavam como eixo dois tickets já ENTREGUES (AOS-032 e AOS-027), logo não tinham destino executável. O primeiro mede um lock em processo mantido através do CAS durável da admissão (`Submit` bloqueado 25,4 ms a N=30 e 83,7 ms a N=100, linear em N — o sinal do escalonador sai invertido); o segundo, a releitura do stream do bucket desde a seq 1 a cada decisão (99,5 eventos lidos por admissão nas primeiras 200, 699,5 nas 601–800). Vivem no mesmo caminho e não são separáveis. | Equipa AOS |
