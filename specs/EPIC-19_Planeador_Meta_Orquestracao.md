@@ -79,6 +79,49 @@ O contrato entre o LLM e o sistema é o PlanDocument (`tecnica/18` §3.3): artef
 ### Objectivo
 Definir o schema do PlanDocument com `plan_version` SemVer e desserialização fail-closed.
 
+### O que a discovery mediu, e que condiciona quem implementar
+
+- **O facto não traz o que o `serve` exige.** O payload tem `run_id` e `objective`; o
+  `serve --goal` exige **também** `--snapshot` (ficheiro pinado, hoje colocado à mão em
+  `/etc/aos-orq/snapshot.json`) e o Model Gateway por ambiente (`AOS_MODEL_ENDPOINT`/`_NAME`), sem
+  os quais recusa. De onde vem o snapshot por pedido? Um snapshot global significa que **todos** os
+  pedidos correm contra o mesmo catálogo pinado.
+- **`region` e `board` viajam no facto e nada no `serve` os honra.** Não há flag de região; com
+  `--nats-region` a fronteira é do store inteiro, não do run. Um consumidor que ignore o `region`
+  do facto viola a intenção escrita no ingresso — e a soberania é o eixo onde o AOS-417 já
+  tropeçou uma vez.
+- **O molde do `approval_store_durable` NÃO é importável:** `packages/integration` não está no
+  `go.mod` do `aos-orq`, e o tipo vive em `package integration`. Terá de ser **reescrito**, não
+  reutilizado. Em contrapartida o `control-plane/scheduler` **já está** no grafo (indirect, com
+  `replace`), pelo que o vocabulário de backpressure é alcançável.
+- **Do backpressure do EPIC-03 reaproveita-se o vocabulário, não a fila.** O `Degrader` e o
+  `PolicyEngine` são injectáveis e as acções estão modeladas (`ActionShed`, `ActionDefer`,
+  `ActionDowngrade`, `ActionReject`), mas o `PartitionedQueues` é **em memória** — e o ADR-028 §3
+  rejeita-o explicitamente por isso. O `Defer` exige um `DeferSink` que para uma fila durável não
+  existe.
+- **Mapeamento dos códigos de saída**, que a decisão (4) tem de fixar: `3` (lease detido por outro)
+  é **transitório**; `8` (prazo esgotado com nós em voo) é **retomável**; `6` (pendente de decisão
+  humana) e `7` (decisão recusada) são **terminais para esta invocação**; `9` (plano recusado pela
+  validação) é **permanente**. Os códigos `6/7/8/9` **largam** a posse; qualquer outro `1`
+  retém-na até ao TTL de 30s — o que importa para a cadência de re-tentativa.
+- **Custo de leitura O(n).** O molde existente varre o stream inteiro por passagem. O
+  `approval_store_durable` declara-o aceitável «porque a partição é pequena»; uma fila sem
+  retenção não o é. É a razão PRÁTICA pela qual a decisão (3) importa, e não só a de espaço.
+- **Determinismo dos testes:** o molde do repositório é o `ExportBackupNow`/`SweepRetentionNow` —
+  um método exportado que conduz UM ciclo sem esperar pelo ticker. O `testkit` tem
+  `NewManualClock`, `MustEventStore` e `IdempotencyKey(runID, stepID)` — a **mesma** função pura
+  que o Event Store usa, pelo que a chave se assere sem a reescrever. E o
+  `dois_processos_test.go` do `aos-orq` já compila o binário e corre dois processos reais — é lá
+  que o teste dos dois consumidores pertence.
+- **Efeito colateral garantido:** o `TestAOS417BannerDoConsumidorNaoApodrece` fica **vermelho** no
+  instante em que qualquer ficheiro de `packages/cmd/aos-orq/` contiver o nome do stream —
+  incluindo um teste. É intencional, e obriga o PR do consumidor a corrigir o literal `false` no
+  `bootstrap.go` do nó.
+- **LACUNA por fechar, herdada do AOS-417:** não há evidência de que o caminho novo passe pelo
+  orçamento por árvore (AOS-027). O `materializar` usa tectos `1<<30` vindos do próprio comando,
+  declaradamente de demonstração. Um consumidor torna trivial disparar corridas; sem isto
+  verificado, torna trivial disparar **custo**.
+
 ### Critérios de Aceitação
 - [x] Campos por nó: `node_id`, `role`, `objective`, `tools[]` (nome+versão+digest), `depends_on`, `budget_estimate`, `risk_class` (advisory). *(Evidência: `packages/control-plane/orchestrator/plan/plandocument.go` — struct `Node`.)*
 - [x] Campos de topo: `objective`, `budget_total`, `planner_meta` (modelo, `prompt_version`, `capabilities_hash`). *(Evidência: struct `PlanDocument`/`PlannerMeta` no mesmo ficheiro.)*
@@ -1652,6 +1695,29 @@ veredicto numa string e **deita fora a `Rule` e o `Locator`**.
 Uma decomposição recusada pela validação é reapresentada ao modelo com a razão — em código
 fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativas.
 
+### O PROBLEMA CENTRAL, medido: hoje o consumidor não consegue alcançar a fila
+
+Isto não é um detalhe de implementação — é a pergunta que tem de ser respondida antes de se
+escrever código, e **os três caminhos possíveis estão fechados no código de hoje**.
+
+A fila vive no Event Store **do nó**. Reclamar um item, no molde do `approval_store_durable`, é
+uma **escrita** (`Append` com idempotency-key). Ora:
+
+| Caminho | Estado hoje | Onde se mede |
+|---|---|---|
+| **Ficheiro (`--wal`)** | **FECHADO.** O nó toma `LockWAL` sobre o seu WAL enquanto corre. O `aos-orq` só consegue `abrirParaLeitura` (`OpenReadOnly`, sem tranca); `abrirParaEscrita` faz `LockWAL` primeiro e devolve `ErrWALHeld` ⇒ saída **5** | `packages/cmd/aos/wal_posse.go` (`guardDePosseAplicavel`), `packages/cmd/aos-orq/substrato.go` (`abrirParaEscrita`) |
+| **JetStream (`--nats`)** | **Estava fechado por um defeito do ingresso**, entretanto corrigido: o nome da fila tinha um ponto e o `subjectDe` recusa-o, pelo que o `POST /plans` respondia `503` a tudo sobre NATS. Ver o bloco do AOS-417 sobre isso. **Mas continua sem topologia**: não há serviço NATS no `docker-compose.prod.yml` e o `AOS_EVENTSTORE_NATS` tem default vazio | `packages/substrate/eventstore/jetstream/store.go` (`subjectDe`), `deploy/server/docker-compose.prod.yml` |
+| **HTTP** | **FECHADO POR DESENHO.** Não há rota de leitura da fila, e a barra em `aos-internal/` existe precisamente para que `GET /runs/{id}/...` não a alcance — foi um dos dois defeitos críticos que a revisão do AOS-417 encontrou. Abrir uma rota reabriria as questões do ADR-016 que o ingresso fechou | `packages/cmd/aos/planos.go`, `aos417_soberania_test.go` |
+
+E há um facto de produção que agrava a pergunta: **o Event Store do `aos-orq` em produção não é o
+do nó.** A receita em vigor usa um WAL **por run** (`--wal /var/lib/aos-orq/run-X.wal`), em volume
+próprio (`aos-orq-data`), criado no momento pelo operador. Não existe hoje nenhum store partilhado
+entre os dois processos.
+
+**Consequência para este ticket:** a decisão (1) abaixo não é sobre o *feitio* do trabalhador — é
+sobre **que substrato passa a ser partilhado**, e isso é uma mudança de topologia de produção, não
+uma opção de código. Qualquer desenho que ignore isto escreve um consumidor que não corre.
+
 ### Decisões a tomar primeiro (do dono)
 
 1. **Onde vive o laço.** (a) A validação entra no planeador, que já tem o laço, por uma porta
@@ -2240,6 +2306,164 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ---
 
+## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: materializa a metade do ADR-028 §2.2 que o AOS-417
+     deixou por fazer (o CONSUMO do facto), e as citações ao ADR-018, ADR-023 e ADR-028 são
+     RESTRIÇÕES sob as quais o consumidor tem de caber, não entregas deste ticket. Se vier a
+     exigir decisão nova — e a pergunta (1) abaixo pode exigi-la — abre-se ADR próprio e este
+     marcador sai. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-417 (o ingresso, **FEITO** — PR #353); ADR-028 §2.2 (a decisão de forma); DEF-282 (o substrato de ficheiro não arbitra entre processos) |
+| Bloqueia | AOS-133 (BFF) e, por arrasto, o EPIC-13; o critério por marcar do AOS-417 («uma corrida desencadeada por rede, sem ninguém no terminal») |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/plan_ingress.go` (a forma do facto), `packages/integration/approval_store_durable.go` (o molde de consumo-uma-só-vez), `packages/cmd/aos-orq/substrato.go` (`--wal` vs `--nats`), `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `docs/adr/ADR-028-ingresso-do-caminho-do-plano.md` |
+
+### Contexto
+
+O AOS-417 abriu a porta e não pôs ninguém do outro lado. `POST /plans` aceita um objectivo,
+grava `planrequest.submitted` no stream `aos-internal/plan-requests` e devolve `201 accepted` —
+e o pedido fica lá, a acumular. **Nada o lê.**
+
+Isto não é uma omissão silenciosa: o banner de arranque do nó di-lo por palavras nessas, e o
+critério de aceitação do AOS-417 sobre a verificação em produção ficou deliberadamente **por
+marcar**, porque sem consumidor não há corrida que se desencadeie. Mas é exactamente o modo de
+falha que o próprio AOS-417 existia para fechar — **prometer uma corrida que ninguém vai
+consumir** —, deslocado um passo para a frente: antes o `serve` não tinha quem o invocasse por
+rede; agora o pedido chega por rede e continua sem quem o invoque.
+
+Do ponto de vista de quem usa o produto, **nada mudou ainda**. Continua a ser preciso alguém no
+terminal do servidor.
+
+### Objectivo
+
+Um pedido gravado na fila desencadeia a corrida do plano **sem ninguém no terminal do servidor**,
+uma só vez, e o desfecho fica ao alcance de quem o submeteu.
+
+### O que o ADR-028 §2.2 JÁ decidiu, e que este ticket NÃO reabre
+
+- **O `aos-orq` consome o facto e corre o `serve` como hoje**: reclama o lease, possui o run,
+  termina. Nada no modelo de posse muda.
+- **A frase do compose mantém-se verdadeira** — «um `serve` possui um run e termina, não é um
+  daemon». O que muda é **quem o invoca**: em vez de um humano num terminal, um trabalhador que
+  lê o facto.
+- **Não se inventa substrato de fila.** O Event Store é a fila e o consumo-uma-só-vez segue o
+  molde do `approval_store_durable` (claim-before-read por `Append` com idempotency-key,
+  `StatusDuplicate` como primitivo de arbitragem). Não um broker novo, não um estado paralelo
+  (que o ADR-018 §4 proíbe).
+- **Quem arbitra entre dois consumidores continua a ser o LEASE** (ADR-023). O ingresso não
+  introduziu uma segunda autoridade, e o consumidor também não pode introduzir.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **COMO É QUE O CONSUMIDOR ALCANÇA A FILA.** É a decisão de que tudo o resto depende, e a
+   tabela acima mostra que não há opção gratuita:
+   - **(a) NATS partilhado entre nó e consumidor.** É o único substrato que arbitra entre
+     processos, e o único em que mais do que um consumidor é seguro. Custo: levantar JetStream em
+     produção, migrar o nó de `AOS_EVENTSTORE_PATH` para `AOS_EVENTSTORE_NATS`, e o `aos-orq`
+     passar a apontar ao mesmo. É a mudança de infraestrutura mais pesada das três e a única que
+     escala para além de um consumidor.
+   - **(b) Consumidor DENTRO do processo do nó.** Elimina o problema da tranca — quem já tem o
+     `LockWAL` é o nó — e reaproveita os laços que o nó já tem (molde do `backup_scheduler.go`).
+     **Mas põe o nó a invocar o `aos-orq`**, e isso toca a fronteira do ADR-018 de frente: o nó
+     deixaria de apenas CONHECER a existência do caminho do plano para o DESENCADEAR. Exigiria ADR
+     de emenda, e não é óbvio que deva ser aceite.
+   - **(c) Rota de leitura/reclamação no nó, consumida pelo `aos-orq` por HTTP.** O canal
+     `aos-orq`→nó já existe (`node_client.go`, credencial NHI + Bearer OIDC). Mantém a fronteira
+     do ADR-018 (o nó continua a não correr o plano) e não exige infraestrutura nova. Custo: uma
+     rota que EXPÕE a fila, com tudo o que o ADR-016 e a revisão do AOS-417 obrigam a pensar — e
+     foi deliberadamente fechada por essa razão.
+
+   **Recomendação registada: (c)**, e a razão é que preserva as duas fronteiras que custaram mais a
+   estabelecer — o nó não corre o plano (ADR-018) e a posse continua a ser o lease (ADR-023) — sem
+   pedir uma migração de substrato em produção. **Mas exige ADR**, porque abre uma superfície de
+   leitura que o AOS-417 fechou de propósito, e a não-oracularidade tem de ser reargumentada para
+   um consumidor autenticado (que é caso diferente do chamador anónimo que o ADR-016 considerou).
+2. **A forma do trabalhador**, uma vez resolvido (1). O ADR-028 diz «um trabalhador que lê o
+   facto» e não diz o que ele é: (a) processo de longa duração; (b) temporizador que acorda, drena
+   e termina. **Nenhum dos dois contradiz o compose** — a frase «um `serve` possui um run e
+   termina» é sobre o `serve`, que continua a terminar. O que pesa é outro facto medido: **nenhum
+   binário do AOS corre hoje como serviço de longa duração além do nó** (os `restart: unless-stopped`
+   do compose são todos imagens de terceiros), e o único temporizador do host é o
+   `aos-tls-sync.timer`. Um trabalhador contínuo seria o primeiro, e traz healthcheck, reinicio e
+   observabilidade próprios.
+3. **Tecto de pendentes e retenção**, que o ADR-028 §4 atribuiu ao ticket de implementação «com
+   o molde de backpressure que o EPIC-03 já descreve». O AOS-417 **não** o fez e declarou-o: um
+   tecto sem consumidor bloqueia a rota para sempre ao fim de N pedidos, pelo que a decisão só
+   fica bem informada **depois** de existir quem drene. Com consumidor, a pergunta passa a ser de
+   parâmetros e não de modelo. Recomendação registada: **recusar pedidos novos com tecto alto**,
+   em vez de descartar antigos — um pedido descartado em silêncio é a mesma classe de defeito
+   que este eixo inteiro existe para fechar.
+4. **O que acontece a um pedido cujo `serve` falha.** O facto é reclamado UMA vez; se a corrida
+   terminar em recusa (o `serve` tem códigos de saída distintos para lease detido, fenced, WAL
+   detido, humano pendente, recusa e plano rejeitado), o pedido não pode simplesmente desaparecer.
+   Retentar? Marcar como falhado num facto de desfecho? Uma falha transitória (lease detido por
+   outra réplica) e uma permanente (plano rejeitado) **não podem ter o mesmo tratamento**, e
+   confundi-las dá um de dois defeitos: um pedido perdido, ou um laço a retentar para sempre uma
+   recusa determinista.
+5. **Como é que quem submeteu sabe o desfecho.** Hoje recebe `201` e mais nada. O ADR-028 §2.3
+   proíbe devolver o estado do run na resposta ao pedido (não-oracularidade), e a leitura passa
+   pelo read-path soberano — mas **o `run_id` que o submissor nomeou chega sequer a ser um run
+   legível?** Se o plano materializa nós como `<run>~<nó>` (ADR-027), o id de topo pode nunca
+   existir como run, e o submissor fica sem nada para consultar. *(Continua **POR CONFIRMAR**: a
+   discovery não inspeccionou `decomporEMaterializar`/`materializarEDespachar` em profundidade.)*
+
+### Critérios de Aceitação
+
+- [ ] Um pedido gravado na fila desencadeia a corrida **uma só vez**, e há teste que o prova com
+      DOIS consumidores em simultâneo — não só com um, que não exercita a arbitragem.
+- [ ] O consumo usa o molde do `approval_store_durable` (claim-before-read, `StatusDuplicate`) e
+      **não** um estado paralelo; a arbitragem final continua a ser o LEASE (ADR-023).
+- [ ] O `layer-lint` continua verde e o guard-test de fronteira do ADR-018 **não muda**.
+- [ ] Um pedido cujo `serve` falhe tem o desfecho decidido em (4), com teste que distingue falha
+      TRANSITÓRIA de PERMANENTE — não é comportamento acidental do código de saída.
+- [ ] O banner de arranque do nó **deixa de dizer que ninguém consome a fila**, e o
+      `TestAOS417BannerDoConsumidorNaoApodrece` — que existe precisamente para ficar vermelho
+      neste momento — volta ao verde pela razão certa (o literal `false` foi corrigido), e não
+      por se ter relaxado o teste.
+- [ ] A profundidade da fila é observável no `/metrics`. Sem isto não há como saber se o
+      consumidor está a acompanhar o ingresso, e o AOS-422 já mostrou o que custa uma guarda sem
+      sensor.
+- [ ] Tecto de pendentes e retenção implementados segundo (3), ou **declarados** com a razão —
+      nunca omitidos em silêncio.
+- [ ] Verificado em produção: um objectivo submetido por rede corre até ao fim **sem ninguém no
+      terminal**. É este o critério que o AOS-417 deixou por marcar, e é aqui que fecha.
+
+### Fora de âmbito, declarado
+
+- **A cunhagem automática do NHI.** Continua a ser a barreira seguinte ao uso sem operador, é
+  decisão de SEGURANÇA (a `issuer.key` não vai para o servidor por desenho) e continua sem ticket
+  próprio. Um consumidor que corra sem humano **não** dispensa a credencial que o `serve` precisa.
+- **A UI** (EPIC-13). Fica desbloqueada por este ticket; não é feita nele.
+- **O crypto-shredding do objectivo**, declarado como resíduo no AOS-417: o payload do Event Store
+  é inline e em claro por desenho actual (`tecnica/13` §3.2, pendência §8.1). Não é regressão
+  deste ticket nem se fecha nele.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Um trabalhador de longa duração ressuscita, por outra via, o problema de dois escritores que o ADR-023 fechou | A arbitragem tem de continuar a ser o LEASE, e o teste de dois consumidores é o que o prova. Se a forma escolhida em (1) exigir mais, abre-se ADR |
+| O consumo reclama o facto e o processo morre antes de o `serve` arrancar: o pedido fica reclamado e por correr | É o modo de falha central deste ticket. O claim tem de ser recuperável — ou o desfecho tem de ser um facto próprio, não a ausência de um |
+| Retentar uma recusa determinista (plano rejeitado pela AOS-231) num laço infinito | Decisão (4): distinguir transitório de permanente pelos códigos de saída, e prová-lo com teste |
+| Um consumidor torna trivial disparar corridas e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele — o mesmo risco que o AOS-417 registou e que o ingresso sozinho não exercitava |
+
+### Estado
+
+**ABERTO.** Nada implementado. O ingresso (AOS-417) está em `main` desde o PR #353; a fila existe,
+está vazia em produção e não tem leitor.
+
+---
+
 ## AOS-418 — Os payloads de um plano reconstroem-se do log: um `serve` que morra deixa de os levar consigo
 
 <!-- rtm: adrs-mencionados -->
@@ -2417,3 +2641,4 @@ são o mesmo processo.
 | 1.12 | 2026-09-20 | +AOS-416 (o segredo do IdP do executor de nós): a limpeza do servidor depois do AOS-415 mediu que o uid do contentor (`65532`) não lê o ficheiro `0400` que o compose lhe monta — o executor só funcionou porque existia uma cópia `0444` do segredo, entretanto apagada. | Equipa AOS |
 | 1.13 | 2026-09-20 | +AOS-417 (ingresso do caminho do plano): medido que o `aos-orq` não tem superfície de rede nenhuma (`ListenAndServe` fora de testes = zero) e que o compose o exclui do arranque por desenho — logo toda a corrida com nós executados exige um humano no terminal do servidor, e nenhum ticket cobria isso. | Equipa AOS |
 | 1.14 | 2026-09-20 | +AOS-418 (payloads reconstroem-se do log): o conteúdo vivia só em memória e um `serve` que morresse levava-o consigo, apesar de a saída do produtor existir durável — incómodo com operador, perda de dados quando o ingresso do AOS-417 tornar as corridas rotina. | Equipa AOS |
+| 1.15 | 2026-09-21 | +AOS-423 (consumidor da fila de pedidos): o AOS-417 abriu a porta e não pôs ninguém do outro lado — `POST /plans` grava o facto e devolve `201`, e nada o lê. O modo de falha é o MESMO que o AOS-417 existia para fechar (prometer uma corrida que ninguém consome), deslocado um passo à frente. | Equipa AOS |
