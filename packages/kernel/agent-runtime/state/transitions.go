@@ -60,7 +60,7 @@ type transition struct {
 // §5). Qualquer par NÃO presente nesta tabela é INVÁLIDO e rejeitado com
 // [ErrInvalidTransition] sem tocar no estado persistido.
 //
-// Tabela completa (13 pares):
+// Tabela completa (15 pares):
 //
 //	ready            → running          (EXIGE fencing token válido — o claim)
 //	running          → waiting_on_tool  (bloqueio numa activity externa)
@@ -73,8 +73,20 @@ type transition struct {
 //	running          → complete         (sucesso)
 //	running          → failed           (erro recuperável)
 //	running          → timed_out        (excede o wall-clock)
+//	waiting_on_tool  → timed_out        (BACKSTOP de wall-clock — AOS-419)
+//	paused           → timed_out        (BACKSTOP de wall-clock — AOS-419)
 //	failed           → compensating     (saga de rollback)
 //	compensating     → ready            (retry idempotente após compensação)
+//
+// BACKSTOP DAS ESPERAS NÃO-HUMANAS (AOS-419, eixo do DEF-906). As duas arestas para
+// timed_out a partir de waiting_on_tool e paused são a SAÍDA que faltava a esses dois
+// estados: sem elas, um run suspenso não tinha par válido para nenhum terminal e
+// [Machine.CheckDeadlines] não tinha para onde o transitar — um run pendurado numa
+// activity que nunca responde, ou pausado e esquecido, ficava suspenso para sempre.
+// `waiting_on_human` NÃO ganha aresta nova: a sua saída fail-closed é a de ADR-013
+// (→ killed, com TTL próprio), e é deliberado que a deliberação humana tenha um prazo
+// distinto do tecto de máquina. O contrato está em tecnica/08 §6 («backstop das esperas
+// não-humanas»), que nomeia `timed_out` como o destino do sinal wall-clock ABSOLUTO.
 //
 // Estados TERMINAIS absorventes (zero transições de saída): complete, killed,
 // timed_out. Failed NÃO é absorvente — a única saída é para compensating (é a
@@ -96,6 +108,8 @@ var validTransitions = map[transition]struct{}{
 	{Running, Complete}:       {},
 	{Running, Failed}:         {},
 	{Running, TimedOut}:       {},
+	{WaitingOnTool, TimedOut}: {},
+	{Paused, TimedOut}:        {},
 	{Failed, Compensating}:    {},
 	{Compensating, Ready}:     {},
 }

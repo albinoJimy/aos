@@ -262,7 +262,7 @@ Lente «operação»: catálogo de processos com **trigger**, **actores**, **seq
 | **Actores** | RT, SCH, ES, StepLedger, Machine de estados, humano (gates) |
 | **Output** | `Result` (resposta final ou paragem por `MaxTurns`), custo agregado, `ToolResults` untrusted |
 
-**Máquina de estados canónica (10 estados, 13 transições):**
+**Máquina de estados canónica (10 estados, 15 transições):**
 
 | # | De → Para | Gatilho | Nota |
 |---|---|---|---|
@@ -279,8 +279,10 @@ Lente «operação»: catálogo de processos com **trigger**, **actores**, **seq
 | 11 | `running → timed_out` | wall-clock excedido | terminal absorvente |
 | 12 | `failed → compensating` | saga rollback | compensação LIFO |
 | 13 | `compensating → ready` | retry idempotente | após compensação |
+| 14 | `waiting_on_tool → timed_out` | **backstop de wall-clock** (AOS-419) | mesmo tecto de `running`, contado desde a entrada na espera |
+| 15 | `paused → timed_out` | **backstop de wall-clock** (AOS-419) | idem; a deliberação HUMANA fica de fora (tem TTL próprio) |
 
-Os outros 87 pares da matriz 10×10 são inválidos (`ErrInvalidTransition`, verificação exaustiva por teste). Cada transição é evento `run.state.transition` append-only; o estado reconstrói-se por `Machine.Rebuild` (adopta o `to` de maior `seq`); in-memory só avança **após** commit durável.
+Os outros 85 pares da matriz 10×10 são inválidos (`ErrInvalidTransition`, verificação exaustiva por teste). Cada transição é evento `run.state.transition` append-only; o estado reconstrói-se por `Machine.Rebuild` (adopta o `to` de maior `seq`); in-memory só avança **após** commit durável.
 
 **Sub-processos:**
 

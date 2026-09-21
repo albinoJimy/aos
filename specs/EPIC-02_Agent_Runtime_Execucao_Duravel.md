@@ -60,6 +60,7 @@ O EPIC-02 entrega o loop durável e a sua máquina de estados de suspensão de p
 | AOS-024 | Harness de testes de replay/idempotência | chore | M | P1 | AOS-014, AOS-016 |
 | AOS-396 | Manifesto do turno pina o modelo que respondeu (model_id vazio no nó) | fix | M | P1 | AOS-013, AOS-016 |
 | AOS-411 | A re-varredura de órfãos exclui os runs vivos antes de os reconstituir | fix | S | P2 | AOS-253 |
+| AOS-419 | As esperas não-humanas não tinham prazo nenhum (backstop de wall-clock) | fix | S | P2 | AOS-017, AOS-252 |
 
 > **Notas de dependência.** Os tickets `AOS-003` (Reference Monitor) e `AOS-002` (Event Store replicado) pertencem ao `specs/EPIC-01_Fundacoes_Plano_Controlo.md` e devem estar `Done` antes do arranque efectivo de AOS-013. AOS-018 partilha o contrato de lease/fencing com o Escalonador (`specs/EPIC-03_Orquestracao_Escalonamento.md`); coordenar para não duplicar a implementação do token monotónico.
 
@@ -1043,6 +1044,174 @@ em produção.
 
 ---
 
+## AOS-419 — As esperas não-humanas não tinham prazo nenhum (backstop de wall-clock)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Remediação pós-auditoria |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-017 (máquina de estados durável) — fechado; AOS-252 (varrimento de deadlines, o chamador de `CheckDeadlines`) — fechado |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/governance/REGISTO-Deferimentos.md` (DEF-906), `analises/09_Auditoria_RT_RM_Adversarial.md` §3.2, `tecnica/02_Agent_Runtime_Execucao_Duravel.md` §5.1, `tecnica/08_Observabilidade_Evals.md` §6, `packages/kernel/agent-runtime/state/machine.go` (`CheckDeadlines`), `packages/kernel/agent-runtime/state/transitions.go` (`validTransitions`), `packages/kernel/agent-runtime/liveness/doc.go`, `packages/cmd/aos/deadline_sweeper.go` |
+
+### Contexto
+
+O deferimento **DEF-906** declara, medido: com `humanTTL` e `wallClock` ligados e o relógio
+injectado avançado dez anos, `state.Machine.CheckDeadlines` **não transita** um run em
+`paused` nem em `waiting_on_tool`. Confirmado no código antes de se lhe tocar:
+
+- o `switch` de `CheckDeadlines` (`state/machine.go`) tinha exactamente **dois** ramos —
+  `waiting_on_human` (→ `killed`, ADR-013) e `running` (→ `timed_out`). As duas esperas
+  NÃO-humanas caíam no `default` implícito e devolviam `(estado, false, nil)`;
+- e não havia sequer **para onde** as transitar: a tabela declarativa de AOS-017 dava a
+  `waiting_on_tool` e a `paused` uma única saída, `→ running`. Sem aresta para um terminal,
+  o backstop não era uma linha esquecida no `switch` — era uma transição que não existia.
+
+A segunda via, que `tecnica/08` §6 designava como rede de segurança, também não cobre: a
+guarda de entrada do disjuntor (`breaker.Observe` → `liveness.CountsAsActiveWork`, que só
+admite `running`) devolve cedo, pelo que o sinal wall-clock **absoluto** é recolhido e nunca
+avaliado nestes estados — e, mesmo que fosse, o disjuntor só é observado na fronteira de
+fim-de-turno, que um run suspenso nunca alcança.
+
+O efeito é o que o registo diz: **um run em `paused` ou `waiting_on_tool` pode ficar
+pendurado sem prazo que o feche** — uma activity externa que nunca responde, ou um steer
+aceite e esquecido, ficam suspensos indefinidamente, com o lease largado e sem terminal no
+log durável.
+
+**Porquê um ticket NOVO.** O eixo declarado do DEF-906 cita AOS-080 e AOS-017, ambos
+ENTREGUES — um eixo fechado é operacionalmente indistinguível de não ter eixo (§1 do
+registo). Este ticket é o eixo novo, pelo precedente do DEF-274/275, reapontados para
+AOS-281 em vez de ficarem presos a um ticket fechado.
+
+### Objectivo
+
+As duas esperas NÃO-humanas passam a ter prazo: excedido o tecto de wall-clock, o run
+transita **duravelmente** para `timed_out` (fail-closed), com razão de auditoria distinta da
+do `running`. `waiting_on_human` fica intacto — a deliberação humana tem prazo próprio
+(ADR-013) e não morre pelo tecto de máquina.
+
+### Decisões tomadas (e porquê)
+
+1. **O prazo é o tecto que já existe** (`state.WithRunWallClock`, alimentado por
+   `AOS_BREAKER_MAX_WALL_CLOCK`), não um valor novo. Um segundo tecto seria mais uma variável
+   de ambiente para o operador esquecer — e o ticket seria uma opção dormente. Assim, todo o
+   nó que já configura o tecto fica com o backstop **armado**, sem wiring novo.
+2. **O destino é `timed_out`, não `killed`.** É o terminal que `tecnica/08` §6 nomeia para o
+   sinal wall-clock absoluto, e `killed` é a saída de política/gate humano (ADR-013).
+3. **A razão é distinta:** `suspension_wall_clock_exceeded` e não `wall_clock_exceeded`. O
+   tecto é o mesmo, mas «morreu a trabalhar» e «morreu pendurado numa espera» são incidentes
+   diferentes com donos diferentes (o loop vs. a activity externa ou o operador).
+4. **Por segmento, como o resto da máquina:** conta desde a ENTRADA no estado, pelo que uma
+   espera que retoma a tempo leva o tecto inteiro consigo. O backstop só morde quem lá fica.
+5. **`0` continua a desligar** — a semântica dos outros dois prazos. Quem não configurou
+   tecto nenhum não ganha um kill novo por actualizar.
+
+### Critérios de Aceitação
+
+- [x] Um run em `waiting_on_tool` além do tecto transita para `timed_out` no varrimento
+      seguinte, com a razão `suspension_wall_clock_exceeded`, e o terminal SOBREVIVE a crash
+      (reconstrução por replay).
+      *(`TestAOS419_BackstopMataWaitingOnToolPendurado`,
+      `packages/kernel/agent-runtime/state/aos419_backstop_suspensao_test.go:32`. **FALHA-ANTES
+      MEDIDA** contra os ficheiros da base: «no tecto o backstop TEM de disparar:
+      s="waiting_on_tool" fired=false err=<nil>».)*
+- [x] Idem para `paused`, com a mesma razão e a mesma fronteira INCLUSIVA (`>=`) dos prazos
+      já existentes.
+      *(`TestAOS419_BackstopMataPausedEsquecido`, `…/aos419_backstop_suspensao_test.go:64`.
+      **FALHA-ANTES MEDIDA**: «s="paused" fired=false err=<nil>».)*
+- [x] A tabela declarativa ganha EXACTAMENTE as duas arestas (`waiting_on_tool → timed_out`,
+      `paused → timed_out`) e nenhuma outra: cada uma das duas esperas fica com duas saídas
+      (`running`, `timed_out`), e a matriz 10×10 é re-varrida contra um oráculo escrito à mão
+      (15 válidos, 85 inválidos).
+      *(`TestAOS419_ArestasDeBackstopNaTabela` (`…:89`) e o oráculo de
+      `transitions_test.go:29` (`TestTransitionMatrix10x10`, `TestTableMatchesOracle`).
+      **FALHA-ANTES MEDIDA**: «"waiting_on_tool"→timed_out TEM de ser válida» e
+      «"paused" deve ter exactamente 2 saídas (running, timed_out), tem [running]».)*
+- [x] `waiting_on_human` NÃO é afectado: com o tecto configurado e sem TTL, uma deliberação
+      de 24 h não mata o run; com TTL, continua a ir para `killed` (ADR-013), nunca para
+      `timed_out`.
+      *(`TestAOS419_DeliberacaoHumanaNaoMorrePeloTectoDeMaquina` (`…:195`) — **CONTROLO
+      NEGATIVO declarado**: passa dos dois lados da correcção, porque o que mede é a ausência
+      de regressão na fronteira que AOS-263 fixou.)*
+- [x] O backstop é fail-closed como as restantes transições: com o Event Store a recusar, o
+      estado NÃO avança (persistido nem in-memory) e o erro sobe para quem varre, que
+      re-tenta no tick seguinte.
+      *(`TestAOS419_BackstopFailClosedNaFalhaDoEventStore` (`…:147`). **FALHA-ANTES MEDIDA**:
+      «err=<nil>; quero o erro do Event Store (fail-closed, não engolido)».)*
+- [x] O tecto é POR SEGMENTO no lado da espera: cinco ciclos de espera-e-retoma dentro do
+      tecto atravessam mais de sete minutos com um tecto de um minuto e o run fica vivo.
+      *(`TestAOS419_RetomaLevaOTectoInteiro` (`…:113`) e `TestAOS419_SemTectoNaoHaBackstop`
+      (`…:179`) — ambos **controlos** que passam dos dois lados: o primeiro guarda a
+      semântica por-segmento, o segundo a compatibilidade de quem não configurou tecto.)*
+- [x] O corpus deixa de afirmar o contrário: `tecnica/02` §5.1 (diagrama, tabela e contagem),
+      `tecnica/00` (diagrama), `tecnica/19` (tabela derivada), `tecnica/08` §6 (o contrato do
+      backstop), `state/doc.go`, `state/README.md` e `liveness/doc.go` — que declarava
+      explicitamente «sem backstop». RTM regenerada.
+      *(Verificado pelos gates `rtm`, `ref-lint`, `deferrals` e `estado-citado`.)*
+- [ ] ALCANCE no nó: um run que se suspende e larga a posse SAI do registo de em-curso
+      (`s.runs`) e fecha o gate, pelo que o varrimento de AOS-252 deixa de lhe tocar. O
+      backstop vem armado na máquina (o nó já abre as máquinas com o tecto), mas no nó de hoje
+      só alcança um run que suspenda e FIQUE hospedado.
+      *(**NÃO VERIFICADO — fica por fazer.** Fechá-lo é varrer os streams SUSPENSOS, no molde
+      do `approval_sweeper` (um varrimento durável, não mais uma opção na máquina), e não cabe
+      neste ticket: é trabalho no `packages/cmd/aos` com registo próprio de suspensos. O que
+      se mede quando for feito: um run pausado e largado pelo nó a transitar para `timed_out`
+      num tick do varrimento, com `reason=suspension_wall_clock_exceeded` no log durável.)*
+
+### Fora de âmbito
+
+O timeout da *activity* externa (AOS-018) — primeira linha de `waiting_on_tool` — não muda. O
+disjuntor de EPIC-08 não é tocado: continua a medir TRABALHO ACTIVO e a ser *no-op* fora de
+`running`, que é o desenho de AOS-019 e a razão pela qual não podia ser ele a fechar isto.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-20), **com efeito prático NULO hoje** — e isso é o mais importante
+deste bloco.
+
+**O que foi entregue.** `paused` e `waiting_on_tool` não tinham saída para terminal nenhum na
+tabela canónica: não era um ramo esquecido no `switch`, era uma transição que não existia, e por
+isso um run suspenso não tinha para onde ser morto. A tabela passou de 13 para 15 pares
+(matriz 10×10 re-varrida: 15 válidos / 85 inválidos), e o `CheckDeadlines` ganhou o backstop de
+`waiting_on_tool` com razão de auditoria própria (`suspension_wall_clock_exceeded`), fail-closed
+como os restantes.
+
+**O que a revisão adversarial independente mediu, e que muda a leitura do ticket:**
+
+| Achado | Consequência |
+|---|---|
+| **Nenhum código de produção transita um run para `waiting_on_tool`** — as duas ocorrências fora de testes são *switches de classificação*, não transições | A aresta que ganhou disparo automático **nunca pode disparar hoje** |
+| **Um run que se suspende sai do registo de em-curso** (`finish` faz `delete(s.runs, …)`) e o varrimento exige lá estar | A janela em que um `paused` é varrido é de microssegundos, contra um tecto de 30 min |
+| **O default do NÓ não é 0, é 30 minutos** (`DefaultBreakerMaxWallClock`), e vai direito ao `WithRunWallClock` | «Quem não configurou não ganha kill novo» era falso ao nível do produto |
+| **`paused` tem dois produtores, e um é humano** (`steer_graceful_pause` vs `budget_breaker_tripped`), com razões duráveis distintas que a máquina **não retém** | Um `/pause` de operador morreria pelo tecto do TRABALHO, irrecuperável (`timed_out` é absorvente) |
+
+**A decisão que o último achado forçou.** O `paused` foi **retirado do backstop automático**. É
+palavra por palavra o argumento com que este ticket isenta o `waiting_on_human`: a deliberação
+humana não paga o tecto da máquina. A aresta fica na tabela — a ausência de saída terminal era o
+defeito estrutural —, o disparo não. Estender o backstop a `paused` exige reter a razão de entrada
+e isentar a pausa humana, e essa é **decisão do dono**, não deste ticket.
+`TestAOS419_PausaNaoMorrePeloTectoDoTrabalho` passou a guardar isso.
+
+**Honestamente: o que isto vale hoje.** Fecha um defeito estrutural da tabela e deixa o mecanismo
+pronto. **Não** fecha nenhum caso observável em produção, porque os dois estados que nomeia ou não
+são entrados, ou saem do alcance do varrimento antes de o prazo correr. Por isso o DEF-906 fica
+**MITIGADO** e não fechado, e o último critério fica por marcar.
+
+- [ ] **Alcance:** o varrimento alcançar um run suspenso que já largou a posse (molde do
+      `approval_sweeper`, varrendo streams em vez do registo em memória). É este trabalho, e não
+      mais mecanismo, que dá ao backstop um caso real. **POR FAZER**, em `cmd/aos`.
+
+**Nota de âmbito, declarada:** este diff **não altera uma única linha de código de produção** em
+`packages/cmd/aos` — as edições de `deadline_sweeper.go` e `steer_gates.go` são de comentário e de
+uma linha de log que afirmava o que não sabia («o run estava preso a meio de um turno», que é falso
+para um disparo do backstop).
+
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1058,3 +1227,4 @@ em produção.
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-09-15 | AOS-396: manifesto do turno com model_id vazio no nó (achado do E2E em produção) | Equipa AOS |
 | 1.2 | 2026-09-19 | +AOS-411: a re-varredura de órfãos tratava um run vivo como órfão e decifrava-lhe as capturas antes de verificar o dono (observado em produção na v0.1.22) | Equipa AOS |
+| 1.3 | 2026-09-20 | +AOS-419: `paused` e `waiting_on_tool` não tinham backstop de wall-clock nem aresta de saída para terminal (eixo novo do DEF-906) | Equipa AOS |

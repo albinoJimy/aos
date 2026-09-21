@@ -43,12 +43,15 @@ const reasonRunStartClaim = "run_start_claim"
 type runStateGates struct {
 	store  state.EventStore
 	tracer agentruntime.Tracer
-	// runWallClock é o tecto absoluto de tempo em `running` com que cada máquina é aberta
+	// runWallClock é o tecto absoluto de tempo por SEGMENTO com que cada máquina é aberta
 	// (AOS-252): é ele que permite ao varrimento de deadlines ([sweepDeadlines])
 	// materializar running→timed_out num run preso A MEIO de um turno — o ponto que o
 	// breaker (que avalia o MESMO tecto na fronteira de fim-de-turno) não alcança. É o
-	// valor de AOS_BREAKER_MAX_WALL_CLOCK: UM só conceito operador, dois pontos de
-	// enforcement. 0 ⇒ deadline desligado (CheckDeadlines é no-op para running).
+	// valor de AOS_BREAKER_MAX_WALL_CLOCK: UM só conceito operador, agora TRÊS pontos de
+	// enforcement — desde AOS-419 (eixo do DEF-906) o mesmo tecto é também o BACKSTOP das
+	// esperas NÃO-humanas na máquina (waiting_on_tool/paused → timed_out), sem segundo
+	// valor para o operador configurar nem esquecer. 0 ⇒ deadline desligado (CheckDeadlines
+	// é no-op para todos eles).
 	runWallClock time.Duration
 
 	mu    sync.Mutex
