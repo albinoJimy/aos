@@ -936,6 +936,110 @@ de custo por trajectória não conta esses traces.
 
 ---
 
+## AOS-421 — O nó declara a escada de tiers, e o refino de roteamento passa a correr no binário que está em produção
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa o ADR-021: o scoring ponderado está entregue (AOS-269) e composto
+     no módulo do gateway (AOS-280). O que falta é a fonte de verdade da ESCADA, que vive no
+     deployment. As citações ao ADR-021 são menções. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Prontidão de produção |
+| Milestone | v1.1 |
+| Tipo | feature (exige fonte de verdade nova) |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-269 (scoring), AOS-280 (composição do refino no GW) |
+| Bloqueia | DEF-280-NO e DEF-280-REGIAO |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/modelgatewaywiring.go` (composição do `ProductionConfig`), `packages/platform/model-gateway/production_routing.go` (`newRefineStage`, `composeRoutingStage`, `unpricedLadderPairs`, `modelSwapRecorder`), `docs/adr/ADR-021-*.md` |
+
+### Contexto
+
+O refino de roteamento **existe, está composto e provado** no módulo do gateway — e **nunca corre
+no binário do nó**. A cadeia `failover → refino` só se arma quando o deployment declara
+`RoutingConfig.Tiers`; sem isso, `newRefineStage` devolve `(nil, nil)` e o `composeRoutingStage`
+devolve só o failover.
+
+Medido: **nenhum ficheiro não-teste do repositório preenche `Routing:`** — nem o nó nem o
+composition root —, e `AOS_MODEL_TIERS` não existe em lado nenhum. O binário que está em produção
+roteia só pelo failover.
+
+**O que fica desligado por causa disso**, tudo já escrito e testado do lado do gateway:
+
+| Desligado hoje | O que faz quando armar |
+|---|---|
+| O scoring assinado do ADR-021 | escolha por custo, carga, latência e saúde, com tabela de pesos pinada e carregamento fail-closed |
+| O classificador de produção | candidatos = inventário ∩ regiões legais ∩ saudáveis |
+| A validação de perfis no arranque | um perfil por classe que não bata com a tabela assinada recusa o arranque |
+| **`unpricedLadderPairs` / `ErrRoutingPriceCoverage`** | **recusa de ARRANQUE** quando falta preço a um par alcançável, em vez de uma chamada recusada a meio de um run |
+
+Esta última é o ganho que mais conta, e é também a razão pela qual o **DEF-279** deixa de ter eixo
+de modelo: a verificação «todos os pares alcançáveis» que ele pede já está escrita aqui — modelos
+da escada × regiões das contas, filtrada pela allowlist — e arma com este ticket.
+
+### Porque é que o DEF-280-REGIAO vem no mesmo ticket
+
+O `modelSwapRecorder` é construído **na mesma expressão** que compõe o refino. Enquanto o nó não
+declarar tiers, estender a sua condição de selagem **não muda um único byte do WORM**: seria código
+que nada executa. Os dois eixos são o mesmo trabalho, e separá-los produzia um PR sem efeito.
+
+### O que este ticket tem de CRIAR, e é o que o torna um ticket e não uma limpeza
+
+Não existe fonte de verdade para a escada: **não há env, não há formato, não há artefacto
+assinado**. É o mesmo vazio que bloqueou o AOS-409 (o 4.º eixo do `IsEffectTool` não tinha de onde
+vir) e, antes dele, o DEF-275. O ticket tem de a criar antes de poder ligar o
+`ProductionConfig.Routing`.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Que modelos entram na escada.** Não se adivinha: é decisão de deployment. Cada modelo
+   declarado tem de estar coberto **pela allowlist regional do board** E **pela tabela de preços da
+   região** — senão o arranque passa a ser recusado por `ErrRoutingPriceCoverage`, que é a direcção
+   certa do erro mas tem de ser uma escolha consciente.
+2. **Por onde entra a escada.** (a) Variável de ambiente (`AOS_MODEL_TIERS`), no molde do resto da
+   superfície do nó — simples, e a postura é declarada no banner; (b) artefacto **assinado**, no
+   molde da tabela de pesos do ADR-021 — mais caro, e coerente com o facto de a escada decidir para
+   onde vai dinheiro e que fronteira de soberania se atravessa. A (b) é a que combina com o resto
+   da postura do gateway; a (a) é a que se entrega esta semana.
+3. **DEF-280-REGIAO: selo por chamada ou correlação.** Ou a resolução de região do failover passa a
+   selar um `GovRecord` próprio — custo: **+1 registo WORM em cada chamada com failover** — ou
+   aceita-se que a correlação com o registo de atribuição, selado na mesma chamada, basta ao
+   auditor. É uma decisão sobre volume de trilho em produção, não sobre código.
+
+### Critérios de aceitação
+
+- [ ] A escada tem uma fonte de verdade declarada, com formato fixado e a postura no banner de
+      arranque.
+- [ ] Com a escada declarada, o `ProductionConfig.Routing` é preenchido e o refino **arma** —
+      provado no binário do nó, não só no módulo do gateway.
+- [ ] Um modelo da escada sem preço na região alcançável **recusa o arranque**, e o teste prova-o
+      pela mensagem de `ErrRoutingPriceCoverage`.
+- [ ] Um modelo da escada fora da allowlist regional do board não é candidato, e há teste negativo.
+- [ ] A decisão (3) fica implementada e declarada — selo próprio ou correlação, com a razão escrita.
+- [ ] Verificado em produção: uma chamada cujo modelo efectivo difere do pedido, com o trilho de
+      governação a mostrá-lo.
+
+### Fora de âmbito, declarado
+
+- **DEF-279** (cobertura de preço por região). O seu eixo de MODELO fica resolvido por este ticket;
+  o que sobra é o eixo de REGIÃO, cujo gatilho continua a ser **a segunda conta no inventário do
+  keypool**, que o nó não tem. Fica aberto, com o gatilho já documentado no registo.
+- A mudança do estágio de roteamento em si: o `failover` continua a ser o primeiro elo, e este
+  ticket acrescenta o refino a seguir — não o substitui.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Declarar a escada recusa um arranque que hoje funciona, por lacuna de preço ou de allowlist | É a direcção certa do erro, mas tem de ser verificada em staging antes de produção — a recusa é no arranque, e um nó que não arranca é uma interrupção |
+| A escada por env é configuração não assinada a decidir para onde vai dinheiro | É a decisão (2); se a resposta for (a), fica declarado como resíduo com eixo próprio |
+| Armar o refino muda o caminho quente de TODAS as chamadas de modelo | O `failover` mantém-se como primeiro elo; o refino só decide entre candidatos que ele já validou |
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -952,3 +1056,4 @@ de custo por trajectória não conta esses traces.
 | 1.1 | 2026-09-15 | AOS-394 e AOS-395: selos de governação do gateway sem run nem passo (achado do E2E em produção) | Equipa AOS |
 | 1.2 | 2026-09-15 | AOS-394 implementado; AOS-397 aberto (retenção por run do metering) a partir da revisão adversarial | Equipa AOS |
 | 1.3 | 2026-09-16 | AOS-395 implementado; AOS-399: o nó pede a posse exclusiva do caminho do audit de governação do gateway (residual da revisão do AOS-395, fechado) | Equipa AOS |
+| 1.4 | 2026-09-21 | +AOS-421 (escada de tiers no nó): medido que NENHUM ficheiro não-teste preenche `RoutingConfig.Tiers` e que `AOS_MODEL_TIERS` não existe — o refino de roteamento, o scoring assinado e a recusa de arranque por lacuna de preço estão escritos e provados no módulo do GW, e nunca correm no binário do nó. Absorve DEF-280-NO e DEF-280-REGIAO, que são o mesmo trabalho. | Equipa AOS |
