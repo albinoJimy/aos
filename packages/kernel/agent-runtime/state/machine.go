@@ -32,6 +32,12 @@ const (
 	ReasonHumanTimeout = "human_approval_timeout_fail_closed"
 	// ReasonWallClockTimeout — running → timed_out por exceder o wall-clock.
 	ReasonWallClockTimeout = "wall_clock_exceeded"
+	// ReasonSuspensionBackstop — waiting_on_tool/paused → timed_out pelo BACKSTOP de
+	// wall-clock das esperas NÃO-humanas (AOS-419, eixo do DEF-906). Rótulo DISTINTO do
+	// [ReasonWallClockTimeout] de propósito: o tecto é o mesmo, mas a auditoria tem de
+	// poder separar «morreu a trabalhar» de «morreu pendurado numa espera», que são
+	// incidentes diferentes com donos diferentes (o loop vs. a activity/o operador).
+	ReasonSuspensionBackstop = "suspension_wall_clock_exceeded"
 )
 
 // FencingToken é o CONTRATO do token de fencing monotónico partilhado com AOS-018
@@ -198,8 +204,11 @@ type Machine struct {
 	tracer   agentruntime.Tracer
 	obs      TransitionObserver
 
-	humanTTL  time.Duration    // fail-closed de waiting_on_human → killed (0 = desligado)
-	wallClock time.Duration    // running → timed_out (0 = desligado)
+	humanTTL time.Duration // fail-closed de waiting_on_human → killed (0 = desligado)
+	// wallClock é o tecto de wall-clock POR SEGMENTO (0 = desligado): running → timed_out
+	// e, desde AOS-419, o BACKSTOP das esperas NÃO-humanas (waiting_on_tool/paused →
+	// timed_out). É UM só conceito de operador aplicado a três estados, não três tectos.
+	wallClock time.Duration
 	fencing   FencingAuthority // opcional: se ligada, o claim recusa tokens obsoletos (nil = só presença)
 
 	current   State     // estado corrente (Ready por omissão / após reconstrução)
@@ -231,9 +240,21 @@ func WithHumanApprovalTTL(d time.Duration) Option {
 	return func(m *Machine) { m.humanTTL = d }
 }
 
-// WithRunWallClock define o wall-clock máximo em running: excedido, [Machine.CheckDeadlines]
-// transita running → timed_out. Conta a partir da ENTRADA no running corrente
-// ("a partir de running", AOS-017 critério 5). 0 (default) desliga.
+// WithRunWallClock define o tecto de wall-clock POR SEGMENTO do run: excedido,
+// [Machine.CheckDeadlines] transita para timed_out. Conta SEMPRE a partir da ENTRADA no
+// estado corrente ("a partir de running", AOS-017 critério 5), pelo que cada transição
+// durável — que carimba um `enteredAt` novo — devolve o tecto INTEIRO ao segmento
+// seguinte. 0 (default) desliga.
+//
+// ÂMBITO (AOS-419, eixo do DEF-906): o mesmo tecto governa TRÊS estados — `running`
+// (running → timed_out, AOS-017) e as duas esperas NÃO-humanas, `waiting_on_tool` e
+// `paused` (→ timed_out, com [ReasonSuspensionBackstop]). Não é um alargamento por
+// conveniência: é o «backstop das esperas não-humanas» que tecnica/08 §6 declara como
+// contrato explícito, e o valor de operador é o MESMO que o disjuntor usa
+// (`AOS_BREAKER_MAX_WALL_CLOCK`) — um só conceito, vários pontos de enforcement, em vez
+// de um segundo tecto que se esquece de configurar. `waiting_on_human` fica DE FORA: a
+// deliberação humana tem prazo próprio ([WithHumanApprovalTTL], ADR-013), e misturá-los
+// mataria um gate legítimo pelo tecto de máquina.
 func WithRunWallClock(d time.Duration) Option {
 	return func(m *Machine) { m.wallClock = d }
 }
@@ -581,7 +602,21 @@ func (m *Machine) emitSpan(ctx context.Context, from, to State, rec transitionRe
 // corrente e o tempo desde que foi entrado:
 //
 //   - waiting_on_human há >= humanTTL  → killed  (fail-closed, ADR-013 — NUNCA running);
-//   - running        há >= wallClock  → timed_out.
+//   - running         há >= wallClock  → timed_out ([ReasonWallClockTimeout]);
+//   - waiting_on_tool há >= wallClock  → timed_out ([ReasonSuspensionBackstop]).
+//
+// `paused` NÃO tem backstop automático: ver a nota no corpo da função — metade dos seus
+// produtores é uma decisão humana, e esta máquina não retém a razão que os separa.
+//
+// BACKSTOP DAS ESPERAS NÃO-HUMANAS (AOS-419, eixo do DEF-906). Os dois últimos casos são
+// a rede de segurança que faltava: até aqui o switch só tratava waiting_on_human e
+// running, pelo que um run em `waiting_on_tool` (activity externa que nunca responde) ou
+// em `paused` NÃO tinha prazo nenhum — ficava suspenso indefinidamente, e nem a segunda
+// via o apanhava, porque o disjuntor de EPIC-08 é no-op fora de `running`
+// ([liveness.CountsAsActiveWork]). O tecto é o MESMO de `running` e
+// conta a partir da entrada na espera, pelo que uma espera legítima que RETOMA leva o
+// tecto inteiro consigo (semântica por-segmento, ver [WithRunWallClock]) — o backstop só
+// morde quem lá fica.
 //
 // Devolve o estado resultante, se disparou uma transição, e um erro (só do Event
 // Store — a transição de timeout é sempre válida na tabela). Idempotente: se nenhum
@@ -611,6 +646,36 @@ func (m *Machine) CheckDeadlines(ctx context.Context) (State, bool, error) {
 	case Running:
 		if m.wallClock > 0 && !now.Before(enteredAt.Add(m.wallClock)) {
 			if err := m.doTransition(ctx, TimedOut, TransitionEvent{Reason: ReasonWallClockTimeout}); err != nil {
+				return current, false, err
+			}
+			return TimedOut, true, nil
+		}
+	case WaitingOnTool:
+		// BACKSTOP (AOS-419): a espera por uma activity externa tem o mesmo tecto que o
+		// trabalho. A razão é outra ([ReasonSuspensionBackstop]) para a auditoria não
+		// confundir um run morto a trabalhar com um run morto pendurado. Fail-closed como
+		// os restantes: se o Event Store recusar, o estado NÃO avança e o erro sobe.
+		//
+		// # PORQUE É QUE `paused` NÃO ESTÁ AQUI
+		//
+		// Esteve, e a revisão adversarial mostrou porque não pode estar sem uma decisão
+		// que este ticket não tem mandato para tomar. `paused` tem DOIS produtores com
+		// razões duráveis distintas: o disjuntor de orçamento
+		// (`budget_breaker_tripped`) e a **pausa graciosa de um operador**
+		// (`steer_graceful_pause`). Esta máquina não retém a razão de ENTRADA — o
+		// `lerEstado` devolve estado e instante e deita a razão fora —, pelo que um
+		// backstop em `paused` mataria os dois pelo MESMO tecto, que é o tecto do
+		// TRABALHO. Um `/pause` de operador morreria aos 30 minutos por omissão e ficaria
+		// irrecuperável, porque `timed_out` é absorvente e o `Resume` exige `paused`.
+		//
+		// É palavra por palavra o argumento com que este ticket isenta `waiting_on_human`:
+		// a deliberação humana não paga o tecto da máquina. Estender o backstop a `paused`
+		// exige reter a razão de entrada e isentar a pausa humana — desenho novo, e a
+		// decisão é do dono. A aresta `paused → timed_out` fica na tabela, porque a
+		// ausência de saída terminal é que era o defeito estrutural; o que não fica é o
+		// disparo automático.
+		if m.wallClock > 0 && !now.Before(enteredAt.Add(m.wallClock)) {
+			if err := m.doTransition(ctx, TimedOut, TransitionEvent{Reason: ReasonSuspensionBackstop}); err != nil {
 				return current, false, err
 			}
 			return TimedOut, true, nil

@@ -16,8 +16,9 @@
 //
 // # Tabela declarativa de transições (DADOS, não if/switch)
 //
-// A máquina é DADOS: [validTransitions] é o conjunto EXACTO dos 13 pares (from → to)
-// permitidos, seguindo o stateDiagram da fonte. [IsValidTransition] é a única fonte
+// A máquina é DADOS: [validTransitions] é o conjunto EXACTO dos 15 pares (from → to)
+// permitidos, seguindo o stateDiagram da fonte (13 da fonte + as 2 arestas de backstop
+// de AOS-419, ver abaixo). [IsValidTransition] é a única fonte
 // de verdade da validação; qualquer par ausente é [ErrInvalidTransition]. Tornar a
 // máquina declarativa dá testabilidade por matriz 10×10 e permite ao replay
 // reconstruir estado sem re-derivar regras.
@@ -45,6 +46,15 @@
 // [Machine.CheckDeadlines] aplica, com um [Clock] INJECTÁVEL (testes determinísticos,
 // sem sleeps): waiting_on_human há >= TTL → [Killed] (fail-closed — NUNCA running em
 // ambiguidade); running há >= wall-clock → [TimedOut].
+//
+// # Backstop das esperas NÃO-humanas (AOS-419, eixo do DEF-906)
+//
+// O mesmo tecto de wall-clock ([WithRunWallClock]) governa também [WaitingOnTool] e
+// [Paused] → [TimedOut] (razão [ReasonSuspensionBackstop]). Sem ele, esses dois estados
+// não tinham prazo NENHUM — nem aqui nem no disjuntor de EPIC-08, que é no-op fora de
+// running — e um run pendurado numa activity que nunca responde, ou pausado e esquecido,
+// ficava suspenso indefinidamente. É o contrato que tecnica/08 §6 declara. [WaitingOnHuman]
+// fica de fora: a deliberação humana tem prazo PRÓPRIO ([WithHumanApprovalTTL], ADR-013).
 //
 // # Eventos pause/resume/kill EXPOSTOS
 //

@@ -15,6 +15,11 @@ package main
 //     (materializa o estado; não duplica o breaker, cobre o que ele não alcança).
 //   - waiting_on_human→killed fica DESLIGADO de propósito (humanTTL=0): a decisão do dono
 //     em approval_sweeper.go é que um pendente expirado deixa o run RETOMÁVEL, não morto.
+//   - waiting_on_tool/paused→timed_out (ReasonSuspensionBackstop, AOS-419): o BACKSTOP das
+//     esperas NÃO-humanas vem ARMADO com o MESMO tecto (a máquina é aberta com ele em
+//     [runStateGates.Open]), pelo que um run que suspenda e FIQUE hospedado é apanhado por
+//     este varrimento. O que ele NÃO alcança está dito abaixo: um run que sai do registo de
+//     em-curso ao suspender-se deixa de ter gate por onde varrer.
 //
 // O varrimento é BEST-EFFORT e idempotente: um erro de transição é registado e re-tentado
 // no tick seguinte; uma máquina sem deadline configurado é no-op.
@@ -67,9 +72,14 @@ func (s *NodeService) sweepDeadlines(stop <-chan struct{}) {
 }
 
 // sweepDeadlinesOnce corre [state.Machine.CheckDeadlines] em cada run EM CURSO (o snapshot
-// é do registo de em-curso: runs suspensos/pausados têm o gate fechado e os seus estados
-// de espera não têm deadline neste desenho — ver o cabeçalho). Só máquinas com wall-clock
-// configurado transicionam; as restantes são no-op barato.
+// é do registo de em-curso). Só máquinas com wall-clock configurado transicionam; as
+// restantes são no-op barato.
+//
+// ALCANCE (AOS-419). A máquina já traz o backstop das esperas não-humanas, mas este
+// varrimento só chega aos runs que ESTE registo conhece: um run que se suspende e larga a
+// posse sai de `s.runs` e fecha o gate, e a partir daí nenhum tick lhe toca. Fechar esse
+// resto é varrer os streams SUSPENSOS (o molde do approval_sweeper), não mais uma opção na
+// máquina — e é o que fica por fazer no ticket, declarado como tal.
 //
 // UM DEADLINE QUE DISPARA INTERROMPE O RUN (achado F-A5 da auditoria da W0). Marcar o
 // estado sem parar o trabalho seria a pior das divergências estado↔efeito: o operador lê
@@ -105,7 +115,10 @@ func (s *NodeService) sweepDeadlinesOnce(ctx context.Context) {
 		if rs.cancel != nil {
 			rs.cancel()
 		}
-		s.log("deadline fail-closed materializado: run=%q → %s (o run estava preso a meio de um turno) e o run foi INTERROMPIDO (contexto cancelado)", rs.runID, st)
+		// AOS-419: `timed_out` chega aqui por dois caminhos — o run preso a MEIO DE UM TURNO
+		// (o wall-clock de `running`) e o BACKSTOP de uma espera. Dizer sempre «a meio de um
+		// turno» era a única linha que o operador vê a afirmar o que não sabe.
+		s.log("deadline fail-closed materializado: run=%q → %s e o run foi INTERROMPIDO (contexto cancelado); a razão distingue o wall-clock do trabalho do backstop de uma espera", rs.runID, st)
 	}
 }
 
