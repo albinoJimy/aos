@@ -236,6 +236,16 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 	// AOS-411: `scanned` conta agora ÓRFÃOS VERDADEIROS (sem dono vivo), e é por isso que este
 	// mesmo `if` passa a calar o ciclo periódico que só encontrou runs a correr — que era o caso
 	// observado em produção. Runs vivos saltados NÃO abrem a boca do varredor.
+	// AOS-422: os vivos saltados vão para contadores duráveis ANTES do `if` que cala a
+	// passagem periódica. O log é para acontecimentos; um facto contínuo — «a guarda do
+	// AOS-411 protegeu N runs» — pertence ao `/metrics`, e é lá que se verifica.
+	if vivosAqui > 0 {
+		s.vivosSaltadosAqui.Add(int64(vivosAqui))
+	}
+	if vivosNoutra > 0 {
+		s.vivosSaltadosNoutra.Add(int64(vivosNoutra))
+	}
+
 	if anuncia || scanned > 0 {
 		s.log("%s", crashResumeBannerDaPassagem(anuncia, resumoVarredura{
 			streams:       len(streams),

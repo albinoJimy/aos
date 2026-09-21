@@ -216,6 +216,18 @@ type NodeService struct {
 	ultimoPrazoUnix     atomic.Int64
 	passagensOrfaos     atomic.Int64
 	ultimoOrfaoUnix     atomic.Int64
+	// AOS-422 — OS RUNS VIVOS QUE A VARREDURA SALTOU.
+	//
+	// O AOS-411 fez um run vivo deixar de contar como órfão, e com isso calou a passagem
+	// periódica que só encontra runs a correr — que era o ruído a corrigir. Mas calou
+	// TAMBÉM a única prova de que a guarda funciona: o log da passagem só sai com órfãos
+	// verdadeiros, e os contadores eram variáveis locais.
+	//
+	// `aos_orphan_sweeps_total` já diz que o varredor correu. O que faltava era dizer o que
+	// ele SALTOU — e é a diferença entre «correu e não havia nada» e «correu e protegeu um
+	// run a trabalhar».
+	vivosSaltadosAqui   atomic.Int64
+	vivosSaltadosNoutra atomic.Int64
 	// varredorParado marca a paragem DEFINITIVA por incidente de integridade — distinta de
 	// «ainda não armado» e de «armado, à espera do primeiro tick». As três leem-se de maneira
 	// diferente e exigem acções diferentes.
