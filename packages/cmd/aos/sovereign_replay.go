@@ -133,6 +133,12 @@ func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	// AOS-426: O STREAM EXISTE, MAS NÃO É DE UM RUN. A mesma trava da trajectória, e por mais
+	// razão: esta rota DECIFRA conteúdo por-titular. Ver streams_internos.go.
+	if len(events) > 0 && !streamDeRun(runID, events) && !h.runKnown(runID) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 
 	// (3) SELO WORM DE LEITURA SENSÍVEL (D6) como PRÉ-CONDIÇÃO — a reconstrução decifra conteúdo
 	// sensível e não pode ser silenciosa. Se o WORM não selar, NEGA fail-closed (503).

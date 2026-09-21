@@ -2306,6 +2306,134 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ---
 
+## AOS-426 — O read-path dos runs servia treze streams internos do nó, incluindo aprovações, memória e nonces de ratificação
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma exposição de leitura. As citações ao
+     ADR-016 (o canal não é oráculo de existência) e ao ADR-011 são RESTRIÇÕES que a correcção
+     tem de preservar — nomeadamente o 404 uniforme. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração (por proximidade ao AOS-424/425, onde a classe foi descoberta; o âmbito que toca é o read-path soberano do EPIC-09) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção — exposição de leitura |
+| Prioridade | **P0** |
+| Estimativa | S |
+| Dependências | descoberto a partir do AOS-424; **não depende dele** — a correcção aqui não precisa de renomear nada |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/streams_internos.go` (a trava e a sua justificação), `packages/cmd/aos/trajectory.go`, `packages/cmd/aos/sovereign_replay.go`, `packages/cmd/aos/aos426_streams_internos_test.go` |
+
+### Contexto
+
+O Event Store tem **um** espaço de nomes de streams, e o `run_id` de um run **é** o seu stream.
+As rotas de leitura por-run endereçam esse espaço directamente a partir do URL:
+
+```text
+GET /runs/{id}/trajectory   ->  Read(ctx, id, ...) + Subscribe(Streams: [id])
+GET /runs/{id}/reconstruct  ->  Read(ctx, id, 1)
+```
+
+O padrão da stdlib casa `{id}` com UM segmento de caminho. Logo **qualquer stream interno do nó
+cujo nome não contenha barra era endereçável por estas rotas** — e ambas serviam qualquer stream
+que EXISTISSE, porque a única guarda era o 404 para o stream INEXISTENTE.
+
+### O que foi medido
+
+A 2026-09-21, com o **gate soberano composto** e um leitor **autenticado de OUTRA região**,
+`GET /runs/<stream>/trajectory` devolvia `200` e servia o conteúdo de treze streams internos:
+
+| Stream | O que guarda |
+|---|---|
+| `gov.approvals` | Grants de aprovação four-eyes, pendentes por decidir, e os **registos de retoma**, que carregam o `Goal` |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | A memória do nó (compostas em produção, `bootstrap.go:2496`) |
+| `memory.semantic.knowledge` · `memory.episodic.trajectories` · `memory.migrations` | Idem (sem compositor hoje) |
+| `identity` | Eventos de identidade NHI |
+| `registry` | Registo de artefactos |
+| `lease:<run>` | Posse de run |
+| `ratify-nonce:<escopo>:<hex>` · `4eyes-challenge:<escopo>:<hex>` | **Primitivos de frescura e anti-replay da ratificação humana** |
+
+**Um leitor SEM credencial recebia `404`** — o alcance era de quem já tem credencial válida. O que
+NÃO se aplicava era a fronteira de REGIÃO: um stream interno não tem residência selada, pelo que
+a verificação cross-region caía no ramo «run legado, sem check» (retro-compatibilidade do
+AOS-182) e servia. **O leitor US leu tal como o EU.**
+
+Oito streams estavam seguros — os do scheduler e a fila de pedidos de plano — e o discriminador
+era um só: **têm barra no nome**. A barra estava lá para namespacing; a protecção veio de lambuja.
+
+**NÃO É LATENTE.** Ao contrário do AOS-424/425, isto não depende do JetStream nem de migração
+nenhuma: mede-se no substrato de FICHEIRO, que é o que corre em produção.
+
+### Como foi encontrado, e porque é que isso importa
+
+A revisão adversarial do **AOS-417** encontrou exactamente este defeito **numa superfície NOVA**
+— a fila de pedidos de plano, que ficou corrigida com o prefixo `aos-internal/`. Ninguém
+perguntou, na altura, se as superfícies ANTIGAS tinham o mesmo. Tinham, há muito mais tempo.
+
+A lição é de método: **quando uma revisão encontra um defeito de forma numa superfície nova,
+a pergunta seguinte é sempre se a forma é partilhada.** Aqui era, e só se viu três tickets
+depois.
+
+### A correcção, e porque não é uma lista de nomes proibidos
+
+O read-path dos runs serve **runs**, e isso passa a ser um **facto positivo lido dos dados**: num
+stream de run os eventos declaram o run a que pertencem, e esse run é o stream. Um stream interno
+não satisfaz isto — e não por convenção de nomes, mas porque os seus eventos pertencem a outra
+coisa:
+
+- `gov.approvals` grava com o `RunID` SINTÉTICO `approval` (é a fila de aprovações);
+- `memory.semantic` grava com o `RunID` do run que ESCREVEU a memória, enquanto o stream é a
+  CLASSE;
+- `lease:<run>` grava a posse do run `<run>`, e o stream é `lease:<run>`, não `<run>`.
+
+Uma lista de nomes internos seria um conjunto **ABERTO**: o stream interno seguinte nasceria
+servível e ninguém seria avisado — o mesmo modo de falha que o `planos.go` fechou para as rotas
+(«uma rota só existe se estiver registada»). Com a regra lida dos dados, **um stream interno novo
+fica coberto no dia em que nasce**, sem ninguém declarar nada.
+
+O status é o MESMO `404` uniforme do run desconhecido: um código próprio diria ao chamador
+«este stream existe mas não é teu», que é o oráculo de existência que o ADR-016 fecha.
+
+### Critérios de Aceitação
+
+- [x] Os treze streams expostos respondem `404` e não servem conteúdo, nas DUAS rotas que leem o
+      store por id. *(`TestAOS426ReadPathNaoServeStreamsInternos`, que enumera os 21 — os treze
+      expostos e os oito que a barra já protegia, para que a protecção deixe de depender dela.)*
+- [x] Um run LEGÍTIMO continua a ser servido ao seu leitor. *(`TestAOS426RunLegitimoContinuaAServirTrajectoria`
+      — sem esta metade, uma trava que recusasse toda a gente passaria no critério acima.)*
+- [x] A decisão sai dos DADOS e não do nome. *(`TestAOS426TravaDecidePelosDadosENaoPeloNome`: o
+      mesmo nome de stream é servível ou não consoante os eventos declararem pertencer-lhe.)*
+- [x] O sensor foi verificado: removida a trava, o teste acusa **26 falhas** (13 streams × 2
+      asserções — status e corpo).
+- [x] A não-oracularidade é preservada: `404` uniforme, nunca um código próprio.
+
+### O que isto custa, declarado
+
+Um run cujo `run_id` colida com um stream interno — hoje possível, porque o `POST /runs` **não
+valida o `run_id`** (eixo do AOS-424) — deixa de ser legível por estas rotas. **É a consequência
+pretendida:** um run que partilha stream com o interior do nó já estava a misturar os seus eventos
+com os dele, que é um problema pior do que não o conseguir ler.
+
+### Resíduos declarados
+
+- **O `handleGet` (`GET /runs/{id}`) já dava `404`** para estes nomes, porque não consulta o
+  store — resolve por estado local do serviço. Não foi tocado.
+- **A exposição existiu.** Este ticket fecha-a; não diz nada sobre se foi explorada. Avaliar isso
+  exige os logs de acesso de produção e **não foi feito aqui**.
+- **A causa de fundo — streams internos a viverem no mesmo espaço de nomes dos runs — continua
+  aberta**, e o fim-de-linha limpo é movê-los todos para o prefixo reservado `aos-internal/`. Isso
+  é o AOS-424, e tem o custo de renomear streams com histórico. Esta trava **não** o dispensa: é a
+  defesa que não obriga a migrar dados.
+
+### Estado
+
+**FECHADO.** Trava composta nas duas rotas, com teste que enumera os 21 streams, controlo de
+não-vacuidade e sensor verificado por mutação. Suite do pacote verde com `-race`.
+
+---
+
 ## AOS-425 — Metade do espaço de nomes de streams é composto em runtime, a partir de valores que ninguém valida
 
 <!-- rtm: adrs-mencionados -->
@@ -2970,3 +3098,4 @@ são o mesmo processo.
 | 1.15 | 2026-09-21 | +AOS-423 (consumidor da fila de pedidos): o AOS-417 abriu a porta e não pôs ninguém do outro lado — `POST /plans` grava o facto e devolve `201`, e nada o lê. O modo de falha é o MESMO que o AOS-417 existia para fechar (prometer uma corrida que ninguém consome), deslocado um passo à frente. | Equipa AOS |
 | 1.16 | 2026-09-21 | +AOS-424 (nomes de stream não representáveis): a correcção do AOS-417 revelou uma classe — são NOVE os streams com ponto, dois deles compostos em produção (four-eyes e memória), o `run_id` do cliente não é validado, e a causa-raiz é o backend de ficheiro aceitar o que o JetStream recusa. Latente hoje (sem NATS em prod), destrutivo no dia da migração que o AOS-423 precisa. | Equipa AOS |
 | 1.17 | 2026-09-21 | +AOS-425 (composição de nomes de stream em runtime): a outra metade da classe do AOS-424, que um grep de literais não vê. O `stream_id` de admissão contém o NOME DO MODELO, que vem da allowlist assinada — hoje sem pontos (medido), mas acrescentar um `gpt-4.1` é uma alteração de POLÍTICA que partiria o substrato, e nada no repositório liga as duas coisas. | Equipa AOS |
+| 1.18 | 2026-09-21 | +AOS-426 (read-path servia streams internos): medido que `GET /runs/<stream>/trajectory` devolvia 200 e servia treze streams internos do nó a um leitor autenticado de OUTRA região — aprovações four-eyes, memória, identidade e os nonces de ratificação. NÃO latente: mede-se no substrato de ficheiro, que é o de produção. Fechado com uma trava que lê os DADOS, não uma lista de nomes. | Equipa AOS |
