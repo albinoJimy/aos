@@ -6,6 +6,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Verified — v0.1.28 em produção (AOS-422 e AOS-411)
+- `docs(AOS-422)` — **a métrica existe e respeita a regra da ausência**, medido em produção: com o nó a 58 segundos, **nenhuma família `aos_orphan*`** no `/metrics`; aos 4 minutos e duas passagens, `aos_orphan_live_skipped_total{dono="esta_replica"} 0`. O mesmo `0` significa coisas opostas nos dois momentos, e agora distinguem-se — era esta ambiguidade que impedia a verificação do AOS-411.
+- **O AOS-411 fica verificado, com prova POSITIVA:** o run `run-delegado-1789995086` esteve vivo durante duas passagens e foi saltado nas duas — `aos_orphan_live_skipped_total{dono="esta_replica"} 2`, sem nenhuma linha «capturas ILEGIVEIS», que é o sintoma exacto do incidente de 2026-09-18.
+- **O que a primeira tentativa ensinou, e fica escrito:** um run real vive segundos e o varredor passa a cada 120 — não se cruzaram, e a métrica ficou a `0`. Isso **não** prova que a guarda falhou, só que não foi exercitada; foi dito como tal antes de se tentar de novo. Foi preciso baixar `AOS_CRASH_RESUME_INTERVAL` para `10s` **temporariamente**, com confirmação pelo banner antes de medir, e repor a seguir (confirmado: `a cada 2m0s`).
+- **Um falso positivo apanhado na leitura:** a primeira varredura do sintoma acusou uma ocorrência que era o banner da varredura de ARRANQUE a dizer `0 run(s) orfaos`. Sem olhar para a linha, teria sido reportado um sintoma inexistente.
+
 ### Fixed — AOS-422
 - `fix(AOS-422)` — **o AOS-411 tornou a sua própria evidência inobservável**, e isso foi medido ao tentar verificá-lo em produção. A correcção fez um run VIVO deixar de contar como órfão; o `if` que cala a passagem periódica é `anuncia || scanned > 0`, e `scanned` conta agora órfãos VERDADEIROS. No caso que interessa — varredura passa, encontra um run vivo, salta-o correctamente — o varredor **não escreve nada**, e os contadores eram variáveis locais da função.
 - `aos_orphan_live_skipped_total` expõe o que a varredura saltou, com a label `dono` a separar `esta_replica` de `outra_replica`. Série **ausente** antes da primeira passagem — um zero sem varredura lê-se como «varreu e não havia nada», que é a mentira simétrica; depois dela, `0` é um zero verdadeiro e conta como amostra.

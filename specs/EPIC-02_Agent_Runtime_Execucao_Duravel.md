@@ -1015,13 +1015,16 @@ não tem dono.
       runs vivos não escreve nada. `TestAOS411_BannerDistingueAOrigemDaPassagem` (**FALHA-ANTES
       MEDIDA**: a passagem periódica anunciava-se «varredura de arranque») e
       `TestAOS411_CicloPeriodicoSemOrfaosContinuaMudo`.)*
-- [ ] Evidência de sistema: um run real em produção atravessa pelo menos um ciclo da re-varredura
+- [x] Evidência de sistema: um run real em produção atravessa pelo menos um ciclo da re-varredura
       sem produzir linhas de crash-resume.
-      *(**NÃO VERIFICADO.** Exige um run real em produção a atravessar um ciclo de
-      `AOS_CRASH_RESUME_INTERVAL` (2 min por omissão) e a leitura do log do contentor — trabalho de
-      operador no servidor, fora do que este worktree consegue fazer. O que se mede quando for
-      feito: `docker logs aos-node` sem nenhuma linha `crash-resume` durante um run longo, e a
-      primeira passagem de arranque a dizer «varredura de arranque» com os dois contadores novos.)*
+      *(**VERIFICADO em produção a 2026-09-21** (`v0.1.28`). O run `run-delegado-1789995086`
+      esteve vivo durante DUAS passagens e foi saltado nas duas:
+      `aos_orphan_live_skipped_total{dono="esta_replica"} 2`, sem nenhuma linha «capturas
+      ILEGIVEIS» — o sintoma exacto do incidente de 2026-09-18. A prova é POSITIVA, e não a
+      ausência de um sintoma: foi preciso o **AOS-422** para a tornar observável, porque a
+      passagem periódica só escreve no log quando encontra órfãos verdadeiros, e este ticket fez
+      um run vivo deixar de o ser. Ver o bloco de Estado do AOS-422 para a medição inteira,
+      incluindo por que razão foi preciso baixar a cadência do varredor para a apanhar.)*
 
 ### Fora de âmbito
 
@@ -1274,9 +1277,9 @@ no caso que interessa, não é escrita.
 - [x] Uma família, duas amostras: `# HELP`/`# TYPE` **uma** vez
       (`TestAOS422_UmaFamiliaDuasAmostras`) — dois blocos para o mesmo nome fazem o Prometheus
       rejeitar o payload INTEIRO, não só a família.
-- [ ] Verificado em produção: com um run vivo, um `curl` ao `/metrics` mostra
-      `aos_orphan_live_skipped_total{dono="esta_replica"} >= 1`. **POR FAZER** — e é este critério
-      que fecha também a verificação do AOS-411.
+- [x] Verificado em produção: com um run vivo, o `/metrics` mostrou
+      `aos_orphan_live_skipped_total{dono="esta_replica"} 2` *(ver abaixo)*. Fecha também a
+      verificação do AOS-411.
 
 ### O que este ticket NÃO faz, e porquê
 
@@ -1286,11 +1289,58 @@ runs» — pertence ao `/metrics`. Separar os dois é a razão de este ticket ex
 
 ### Estado
 
-**IMPLEMENTADO** (2026-09-21), verificação em produção por fazer.
+**FEITO.**
+
+**Verificado em produção a 2026-09-21** (`v0.1.28`, imagem `sha256:0b49dd71…`), em duas medições
+que provam coisas diferentes.
+
+**1. A regra da ausência, medida sem nada de especial.** Com o nó a 58 segundos de vida, o
+`/metrics` **não tinha nenhuma família `aos_orphan*`** — nem sequer o `aos_orphan_sweeps_total`,
+que já existia antes deste ticket. Aos 4 minutos, com duas passagens feitas:
+
+```console
+aos_orphan_sweeps_total 2
+aos_orphan_last_sweep_age_seconds 10.6
+aos_orphan_live_skipped_total{dono="esta_replica"} 0
+aos_orphan_live_skipped_total{dono="outra_replica"} 0
+```
+
+O mesmo `0` significa coisas opostas nos dois momentos, e agora distinguem-se: antes era
+**ausência de dados**, depois é um **facto**. Era exactamente esta ambiguidade que impedia a
+verificação do AOS-411.
+
+**2. A guarda do AOS-411 a actuar, e isto exigiu mudar a cadência.** Um run real
+(`run-delegado-1789995086`, submetido com NHI cunhado pelo operador) vive **segundos**; o varredor
+passa a cada **120**. A primeira tentativa não cruzou os dois e a métrica ficou a `0` — o que
+**não** prova que a guarda falhou, só que não foi exercitada, e ficou dito como tal antes de se
+tentar outra vez.
+
+Baixou-se `AOS_CRASH_RESUME_INTERVAL` para `10s` **temporariamente**, com confirmação pelo banner
+(`LIGADA a cada 10s`) antes de medir — uma medição com a cadência antiga voltaria a dar zero e não
+se saberia porquê. Com a cadência baixa:
+
+```console
+aos_orphan_sweeps_total 17
+aos_orphan_live_skipped_total{dono="esta_replica"} 2
+aos_orphan_live_skipped_total{dono="outra_replica"} 0
+```
+
+**A guarda actuou duas vezes.** O run esteve vivo durante duas passagens e foi SALTADO nas duas:
+não foi tratado como órfão, não lhe foram lidas as capturas por-titular, e **não apareceu nenhuma
+linha «capturas ILEGIVEIS»** — que é o sintoma exacto do incidente de 2026-09-18, onde um run vivo
+o produziu com o contentor a `restarts=0`.
+
+A cadência foi **reposta** e confirmada pelo banner (`a cada 2m0s`); o `.env` não ficou com a
+variável.
+
+**Um falso positivo apanhado na leitura, e vale a pena ficar escrito:** a primeira varredura do
+sintoma acusou uma ocorrência. Era o banner da varredura de ARRANQUE a dizer `0 run(s) orfaos em
+`running``, que o padrão apanhava pelo texto. Sem olhar para a linha, teria sido reportado um
+sintoma que não existia.
 
 Segue o molde que já existe: campo `atomic.Int64` no `NodeService`, incrementado no ponto de
 agregação da passagem, lido em `handleMetrics`. O nó **não tem** registo de métricas nem
-Prometheus — o `/metrics` é texto gerado à mão —, e este ticket não introduz nenhum.
+Prometheus — o `/metrics` é texto gerado à mão —, e este ticket não introduziu nenhum.
 
 **Uma correcção ao diagnóstico inicial, que estreitou o ticket:** eu tinha afirmado que o silêncio
 não distinguia «correu e saltou bem» de «não correu». Metade disso estava errado — o
