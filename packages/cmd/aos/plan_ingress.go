@@ -70,7 +70,19 @@ const EventTypePlanRequestSubmitted = "planrequest.submitted"
 //
 // A barra é deliberada: nenhum `run_id` em uso a contém, e [runIDReservado] recusa-a na
 // fronteira das duas rotas de submissão — a reserva só vale enquanto for IMPOSTA.
-const streamsReservados = "aos.internal/"
+//
+// O HÍFEN TAMBÉM É DELIBERADO, e a primeira versão disto usava um PONTO — `aos.internal/` — que
+// tornava a rota INUTILIZÁVEL sobre JetStream. O `stream_id` do AOS é livre, mas um subject NATS
+// não é: o ponto separa tokens, e [jetstream.Store.subjectDe] RECUSA qualquer `stream_id` que o
+// contenha — em vez de escapar em silêncio para um subject vizinho onde outro stream leria os
+// nossos eventos, que é a escolha certa. O `Append` chama-o antes de tudo, pelo que o
+// `POST /plans` respondia `503` a TODO o pedido num nó replicado.
+//
+// O que torna isto mais do que um erro de digitação: o substrato de ficheiro NÃO arbitra entre
+// processos (DEF-282) e o JetStream É o único que arbitra — ou seja, o único substrato onde um
+// consumidor da fila pode sequer existir era exactamente aquele onde o ingresso não gravava.
+// Ver [TestAOS417NomeDoStreamERepresentavelNoNATS], que o impede de voltar.
+const streamsReservados = "aos-internal/"
 
 // planRequestStream é o stream ÚNICO onde os pedidos se acumulam — a fila. Não se inventa
 // substrato: o Event Store já é append-only, ordenado e durável, e o consumo-uma-só-vez sai da

@@ -1886,6 +1886,44 @@ A lição é a mesma das três: **copiar a forma de um handler é barato; copiar
 de ser feito à mão.** Um passo cuja razão de ser não se verifica no destino não é defesa em
 profundidade — é um efeito colateral por escrever.
 
+### O defeito que só apareceu DEPOIS do merge, e o que ele ensina
+
+Corrigido em `fix/AOS-417-nome-do-stream`. **O nome que a fila recebeu — `aos.internal/plan-requests`
+— tornava a rota inutilizável sobre JetStream.**
+
+O `stream_id` do AOS é livre, mas um subject NATS não é: o ponto separa tokens, e o
+`jetstream.Store.subjectDe` **recusa** qualquer `stream_id` que o contenha — em vez de escapar em
+silêncio para um subject vizinho onde outro stream leria os nossos eventos, que é a escolha certa.
+O `Append` chama-o antes de tudo, pelo que o `POST /plans` respondia **`503` a todo o pedido** num
+nó replicado. Medido a correr, não inferido:
+
+```text
+subjectDe("aos.internal/plan-requests") -> err=E_CONFIG: ... não é representável num subject NATS
+subjectDe("aos-internal/plan-requests") -> subject="aos.aos-internal/plan-requests" err=<nil>
+```
+
+**O que o torna mais do que um erro de digitação.** O substrato de ficheiro NÃO arbitra entre
+processos (DEF-282) e o JetStream é o único que arbitra — ou seja, o único substrato onde um
+consumidor da fila pode sequer existir era exactamente aquele onde o ingresso não gravava. A rota
+funcionava em tudo o que se mede hoje e não funcionaria na única topologia em que ela serve para
+alguma coisa.
+
+**Porque escapou a tudo.** Dez gates verdes, uma revisão adversarial que encontrou dois críticos, e
+um smoke de dez passos — **todos correm sobre o substrato de FICHEIRO**. Não há teste de ingresso
+sobre JetStream, e o defeito só apareceu na discovery do trabalho SEGUINTE — o consumidor da
+fila —, quando alguém perguntou como é que ele alcançaria o stream.
+
+A lição não é «falta um teste»: é que **uma superfície nova foi validada só na topologia
+conveniente**, e a topologia que importa para o seu propósito nunca foi exercitada. O guard que
+agora o impede (`TestAOS417NomeDoStreamERepresentavelNoNATS`) **lê a regra da fonte** em vez de a
+repetir — duplicá-la daria um teste verde no dia em que a regra do NATS apertasse.
+
+**RESÍDUO NÃO FECHADO, encontrado ao lado:** `approvalStream = "gov.approvals"`
+(`packages/integration/approval_store_durable.go`) tem **o mesmo defeito** e é anterior a este
+ticket — o que sugere que esta classe de streams nunca foi exercitada sobre JetStream. Não se
+corrigiu aqui porque renomear um stream com histórico não é trocar uma constante: os factos já
+escritos ficam no nome antigo. Precisa de ticket próprio.
+
 ### Resíduos DECLARADOS deste ticket — o que o ADR-028 §4 lhe atribuiu e não foi feito
 
 Isto estava a faltar ao ticket, e a revisão apanhou-o: o ADR-028 §4 atribui explicitamente ao
