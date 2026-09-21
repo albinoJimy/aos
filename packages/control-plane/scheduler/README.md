@@ -163,6 +163,16 @@ Garantias:
   provider penalizar *bursts* no reset, considerar um bucket de janela fixa
   alinhada ou suavização (*leaky-bucket*) — fica para trabalho futuro.
 
+- **Fronteira de leitura por bucket (AOS-420, eixo DEF-911).** `foldBucket` lê a partir de uma
+  fronteira — o par `(fromSeq, atNano)`, onde `fromSeq` é o menor `seq` entre as reservas que ainda
+  contam — e não desde a seq 1. Antes, cada admissão relia o stream inteiro: O(N) por decisão e
+  O(N²) acumulado (medido: 99,5 eventos lidos por admissão nas primeiras 200, 699,5 nas 601–800),
+  porque a `Window` limita quais as reservas que **contam**, não quais os eventos que são **lidos**.
+  A fronteira **não é compactação nem snapshot**: o stream não é tocado e `Replay`/`ReplayAudit`
+  continuam a lê-lo por inteiro. É uma **pista em memória**, não fonte de verdade — perdê-la só faz
+  reler desde 1, e um relógio que ande para trás descarta-a (fail-safe).
+  `TestAdmit_EventosLidosNaoCrescemComOHistorico` mede-a em **contagem de eventos**, não em tempo.
+
 **Fora do âmbito de AOS-027:** `max_spawn` derivado do headroom (AOS-028),
 circuit breaker (AOS-029), backpressure/filas (AOS-030), degradação (AOS-031),
 scheduling priority-aware (AOS-032), roteamento (AOS-033) e o Model Gateway
@@ -421,6 +431,16 @@ res, _ := d.Dispatch(ctx) // serve a MAIOR prioridade efectiva ADMISSÍVEL
   (`TestDispatch_ReplayScheduleReconstructs`). Span OTel `priority_dispatch` (tempo de espera por
   classe) via a porta `agentruntime.Tracer` zero-dep. Seguro para concorrência
   (`TestDispatch_ConcurrentRaceFree`, `-race`).
+- **A admissão corre FORA do lock (AOS-420, eixo DEF-910).** `d.mu` cobre o **índice de
+  candidatos** e nada mais: `Dispatch` = snapshot ordenado sob o lock (candidatos copiados **por
+  valor**) → `Admit` fora dele → materialização sob o lock, que **reconfirma** a pendência da
+  tarefa antes de a remover. Antes, o lock era mantido através do laço de CAS durável da admissão
+  e o `Submit` serializava atrás dele (25,4 ms a N=30; 83,7 ms a N=100, linear em N) — o sinal
+  saía invertido. A reserva de um candidato que perde a corrida de materialização **não** é
+  devolvida: o `RequestID` deriva do `task_id`, logo é a MESMA reserva que o vencedor detém
+  (idempotência por `step_id`) e libertá-la abriria headroom em uso.
+  `TestDispatch_SubmitProgrideDuranteOAdmitDuravel` (progresso) e
+  `TestDispatch_ConcorrenteNaoDuplicaNemPerdeTarefas` (controlo negativo, `-race`).
 
 **Fora do âmbito de AOS-032:** o roteamento least-loaded/token-aware (AOS-033) e as métricas de
 saturação/headroom (AOS-034). **Não** reimplementa as filas (AOS-030) nem o admission (AOS-027).
