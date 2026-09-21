@@ -1860,6 +1860,63 @@ que crie uma cópia.
       ilegível e legível *(ver abaixo)*. O que falta é o Bearer **em uso**: a corrida positiva
       parou antes de o pedir, e essa metade continua **POR FAZER**.
 
+### O que a revisão adversarial corrigiu, escrito para não se repetir
+
+A primeira versão desta rota tinha **dois defeitos CRÍTICOS**, ambos com a mesma raiz: espelhou o
+`handleSubmit` linha a linha e, ao fazê-lo, copiou passos cuja razão de ser não foi verificada no
+destino. Nenhum foi encontrado pelos gates — todos estavam verdes — nem pela auto-validação.
+
+| # | Defeito | Porque escapou |
+|---|---|---|
+| 1 | **A fila estava no espaço de nomes dos runs.** O stream chamava-se `plan.requests`, e o read-path de trajectória endereça streams POR `run_id`: `GET /runs/plan.requests/trajectory` servia a fila INTEIRA, ao vivo e por SSE, a um leitor de QUALQUER região — os objectivos de todos os tenants. Uma fila não tem residência selada, logo a verificação cross-region caía no ramo «run legado, sem check». O `run_id` também não era validado, pelo que `POST /runs {run_id:"plan.requests"}` injectava eventos de run dentro da fila | O ADR-028 §2.2 decidiu «o Event Store já é a fila» sem notar que, no nó, o espaço de nomes de streams **é** o espaço de nomes de `run_id` — e que esse espaço tem um read-path público |
+| 2 | **Selava residência de um run que não criava.** O `POST /runs` sela porque VAI HOSPEDAR; esta rota selava sem criar nada e deixava o `run_id` LIVRE. Como a residência é fixada pelo PRIMEIRO registo e não é re-negociável, quem pedisse um plano primeiro fixava a fronteira de soberania de um run que OUTRA pessoa viria a criar: a vítima corria o run e recebia 404 no seu próprio resultado; a região do atacante lia-o | É **pior** do que o squat que o `POST /runs` já permitia: ali o id fica ocupado e a vítima não corre (negação de serviço); aqui a vítima corre e o conteúdo sai (exfiltração) |
+
+Ambos estão fechados e com sensor — `aos417_soberania_test.go`, com as quatro mutações
+verificadas (repor o nome do stream, repor o selo, remover o bloco de soberania, e tirar a
+reserva do `POST /runs`) a produzir vermelho.
+
+**Três sensores que faltavam**, e que valem mais do que os defeitos que apanharam:
+
+- o bloco INTEIRO de soberania podia ser apagado sem uma única falha — os testes do ticket
+  corriam com `readGov == nil`, pelo que a rota nunca era exercitada AUTENTICADA;
+- remover a admissão deixava a suite COMPLETA do pacote verde;
+- remover a chamada ao banner no composition-root idem.
+
+A lição é a mesma das três: **copiar a forma de um handler é barato; copiar a justificação tem
+de ser feito à mão.** Um passo cuja razão de ser não se verifica no destino não é defesa em
+profundidade — é um efeito colateral por escrever.
+
+### Resíduos DECLARADOS deste ticket — o que o ADR-028 §4 lhe atribuiu e não foi feito
+
+Isto estava a faltar ao ticket, e a revisão apanhou-o: o ADR-028 §4 atribui explicitamente ao
+ticket de implementação a **retenção e o tecto de pendentes**, e a primeira versão nem o fez nem
+o declarou.
+
+1. **Tecto de pendentes da fila e retenção — POR DECIDIR (do dono).** A fila não tem tecto, não
+   tem retenção e não tem métrica de profundidade. A retenção do nó (`audit.RetentionConfig`)
+   actua sobre partições WORM, não sobre streams do Event Store. **Não se inventou uma política**
+   porque um tecto sem consumidor bloqueia a rota permanentemente ao fim de N pedidos, e decidir
+   isso é escolher entre recusar pedidos novos e descartar antigos — uma decisão de produto. O
+   que **foi** feito, por ser inequívoco: tecto de 16 KiB no objectivo (`maxObjetivoBytes`),
+   porque um objectivo é uma frase e não um ficheiro, e sem ele cada pedido escrevia até ~1 MiB
+   de texto untrusted no WAL e nos backups.
+2. **O tecto de runs em curso NÃO se aplica a esta rota, e isso está agora escrito em vez de
+   simulado.** A primeira versão copiou-o do `handleSubmit`: conta runs HOSPEDADOS, esta rota não
+   hospeda nenhum, logo nunca disparava — uma guarda decorativa que fazia o código, a tabela de
+   rotas e o banner afirmarem uma protecção inexistente.
+3. **O objectivo fica em claro no log durável.** É texto livre e untrusted, sem titular, fora do
+   alcance do crypto-shredding por-titular (AOS-093/AOS-217) que existe para tornar o
+   apagamento do Art.º 17 possível por destruição de chave. **NÃO é regressão deste ticket** — o
+   `payload` do Event Store é inline e em claro por desenho actual (`tecnica/13` §3.2, pendência
+   §8.1) — mas esta rota passa a alimentar esse log com texto escrito por um utilizador final,
+   que é um perfil de conteúdo diferente do que lá entrava.
+4. **O schema do payload não está publicado.** O consumidor vive noutro módulo e não pode
+   importar o tipo (`package main`): vai reescrever a struct à mão e nenhum gate liga as duas
+   cópias. Mitigado com um campo de versão (`v`) e um teste que fixa as chaves JSON
+   (`TestAOS417FormaDoFactoEEstavel`); publicar o schema em
+   `packages/substrate/eventstore/schemas/`, como o envelope já tem, fecharia-o melhor e fica
+   por fazer.
+
 ### Fora de âmbito, declarado
 
 - **A renovação do NHI e o tecto de 45 minutos** (resíduo declarado no ADR-027): é a outra metade
@@ -2075,15 +2132,56 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ### Critérios de aceitação
 
-- [ ] Um **ADR novo** regista a decisão, cita o ADR-018/023/027 e diz explicitamente o que
+- [x] Um **ADR novo** regista a decisão, cita o ADR-018/023/027 e diz explicitamente o que
       SUPERA ou EMENDA da nota «não é um daemon» — ou porque não a contradiz.
+      *(ADR-028, aceite 2026-09-21. Não emenda nada: o ingresso enfileira e não executa, pelo
+      que um `serve` continua a possuir um run e a terminar.)*
 - [ ] Um utilizador autenticado submete um objectivo por rede e obtém um identificador com que
       acompanha a corrida, **sem sessão no servidor**.
-- [ ] Um segundo pedido para um run com posse tem o desfecho decidido em (3), e há teste que o
+      *(**METADE FEITA, e a metade que falta é a que conta para o utilizador.** A submissão por
+      rede existe — `POST /plans` aceita o objectivo, autentica pela mesma credencial forte do
+      `POST /runs` e devolve o identificador. O que NÃO existe é quem consuma a fila: o pedido
+      fica gravado e espera, e `acompanha a corrida` não é hoje verdade porque corrida nenhuma
+      começa. O banner de arranque di-lo por palavras nessas — ver o critério do banner abaixo
+      — em vez de deixar o operador descobri-lo a meio. O trabalhador do `aos-orq` é o passo
+      seguinte, e está bloqueado numa decisão do dono: retenção e tecto da fila, declarados
+      como residuais no ADR-028.)*
+- [x] Um segundo pedido para um run com posse tem o desfecho decidido em (3), e há teste que o
       fixa — não é comportamento acidental do lease.
-- [ ] O `layer-lint` continua verde: se a opção for (a), o nó **não** importa o orquestrador.
-- [ ] O banner de arranque declara a postura do ingresso, como o resto do sistema já faz.
+      *(Decidido no ADR-028 §2.3 e imposto por DOIS testes, porque são dois casos distintos e a
+      primeira versão destes testes só cobria o segundo: `TestAOS417PedidoParaRunComPosse`
+      hospeda um run REAL, espera que ele entre no modelo e fique com lease, e só então pede
+      o plano — é este o caso do critério. `TestAOS417PedidoRepetidoNaoDuplicaNemRevela`
+      cobre o pedido repetido, que é outra coisa: a dedup da fila é por `pedido-deste-run`,
+      não por posse, pelo que o desfecho certo saía por coincidência de nomes até o primeiro
+      teste existir. Este segundo assere que
+      `201 accepted` idempotente, **nunca** o estado do run. O teste assere as DUAS metades — a
+      resposta indistinguível byte-a-byte E um só facto na fila — porque cada uma sozinha deixa
+      passar um defeito diferente: só o código deixa passar a gravação em duplicado, só a
+      contagem deixa passar um `409` que seria um oráculo de existência.)*
+- [x] O `layer-lint` continua verde: se a opção for (a), o nó **não** importa o orquestrador.
+      *(A opção foi (a). Dos pacotes do repositório, o `plan_ingress.go` importa apenas
+      `substrate/eventstore` (mais `encoding/json`, `net/http` e `strings` da stdlib); o
+      guard-test de fronteira do ADR-018 não foi tocado. Medido com `go list -deps` sobre
+      `packages/cmd/aos`: zero `orchestrator`/`scheduler`, directo ou transitivo. E há prova pelo COMPORTAMENTO, não só
+      pelos imports: `TestAOS417IngressoNaoHospedaORun` falha se a rota hospedar o run.)*
+- [x] O banner de arranque declara a postura do ingresso, como o resto do sistema já faz.
+      *(`planIngressPostureBanner`, com sensor: `TestAOS417BannerDeclaraAPosturaReal` fixa o que
+      cada postura tem de dizer, e `TestAOS417BannerDoConsumidorNaoApodrece` varre a árvore do
+      `aos-orq` e fica VERMELHO no dia em que alguém lá nomear o stream da fila — que é
+      exactamente o instante em que a linha passaria a mentir. Sem ele, o literal `false` do
+      composition-root sobreviveria ao consumidor, porque quem escrever o consumidor não passa
+      por `bootstrap.go` (é outro módulo). Molde: `aos255_budget_scope_test.go`, que existe
+      pela mesma razão. Declara três coisas separadas porque falham de maneiras
+      diferentes: se há substrato onde gravar, se ele é durável, e — a que importa hoje — que
+      **ninguém consome a fila ainda**, pelo que um `201` significa «o pedido está durável» e
+      não «a corrida começou».)*
 - [ ] Verificado em produção: uma corrida desencadeada por rede, sem ninguém no terminal.
+      *(**NÃO VERIFICÁVEL AINDA, e não por falta de acesso:** sem consumidor não há corrida que
+      se desencadeie. O que se pode medir hoje em produção é estritamente menos do que este
+      critério pede — que a rota aceita, grava e deduplica — e mede-se lendo o stream
+      `plan.requests`. Deixa-se por marcar de propósito: marcar com a medição menor seria
+      trocar o critério por outro mais fácil.)*
 
 ### Fora de âmbito, declarado
 

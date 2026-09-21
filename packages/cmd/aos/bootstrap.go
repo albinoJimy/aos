@@ -2682,6 +2682,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range mediationChannelPostureBanner(es != nil, esMediationDurable) {
 		log("%s", line)
 	}
+	// AOS-417: postura do INGRESSO DO CAMINHO DO PLANO. Os dois primeiros argumentos derivam do
+	// MESMO predicado que a linha acima usa — o store REALMENTE composto e a sua durabilidade —,
+	// porque é literalmente o mesmo substrato: a fila de pedidos é o Event Store (ADR-028 §2.2).
+	// O terceiro é `false` LITERAL e fica assim até existir o trabalhador que consome a fila.
+	// Escrever `false` à mão em vez de derivar de algo é deliberado: quando o consumidor for
+	// escrito, o compilador não avisa, mas este literal é impossível de não ver ao ligar o
+	// consumidor — e uma linha de arranque que continuasse a dizer «ninguém lê esta fila» depois
+	// de alguém a ler seria pior do que não a ter.
+	for _, line := range planIngressPostureBanner(es != nil, esMediationDurable, false) {
+		log("%s", line)
+	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
 	// (`progress`, o mesmo valor entregue a agentruntime.WithProgressObserver), nunca a
 	// intenção da config. Vem LOGO A SEGUIR ao orçamento porque é a leitura desse tecto.

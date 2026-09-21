@@ -206,6 +206,15 @@ func (h *apiHandler) tabelaDeRotas() []rota {
 		// SUBMISSÃO, e movê-lo para o invólucro passaria a limitar as leituras, que hoje não o são.
 		{"POST /runs", h.handleSubmit, planoDados},
 		{"GET /runs/{id}", h.handleGet, planoDados},
+		// Plano de DADOS — INGRESSO DO CAMINHO DO PLANO (AOS-417, ADR-028). É submissão, como o
+		// `POST /runs`, e não controlo: entrega um objectivo para ser corrido, não actua sobre um
+		// run que já existe. Atravessa o MESMO balde de admissão e a MESMA autoridade de
+		// identidade; NÃO sela residência (o selo pertence a quem hospeda o run) e o tecto de
+		// in-flight não se lhe aplica — ver o comentário de admissão em plan_ingress.go, que diz
+		// porquê em vez de copiar guardas que nunca disparam. O que grava é um FACTO na fila;
+		// quem o corre é o `aos-orq`, e por isso esta rota não faz o nó importar o orquestrador
+		// (ADR-018 intacto).
+		{"POST /plans", h.handlePlanRequest, planoDados},
 		// Plano de DADOS — read-path TEMPO-REAL (AOS-167): SSE dos eventos da trajectória.
 		{"GET /runs/{id}/trajectory", h.handleTrajectory, planoDados},
 		// Plano de DADOS — RECONSTRUÇÃO SOBERANA de conteúdo selado (AOS-214): decifra o conteúdo

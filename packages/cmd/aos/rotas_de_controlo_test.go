@@ -178,8 +178,15 @@ func TestClassificacaoDasRotasEDeliberada(t *testing.T) {
 		"GET /readyz":  planoAberto,
 		"GET /metrics": planoAberto,
 
-		"POST /runs":                 planoDados,
-		"GET /runs/{id}":             planoDados,
+		"POST /runs":     planoDados,
+		"GET /runs/{id}": planoDados,
+		// INGRESSO DO CAMINHO DO PLANO (AOS-417). Plano de DADOS, e a escolha é deliberada: um
+		// pedido de plano é uma SUBMISSÃO — entrega um objectivo — e não uma acção sobre um run
+		// existente, que é o que distingue o plano de controlo. Classificá-la como controlo
+		// daria-lhe barreiras que a submissão irmã (`POST /runs`) não tem, sem que o risco o
+		// justifique: o que ela escreve é um pedido na fila, e o gate humano do plano continua
+		// a ser o do `aos-orq`.
+		"POST /plans":                planoDados,
 		"GET /runs/{id}/trajectory":  planoDados,
 		"GET /runs/{id}/reconstruct": planoDados,
 
