@@ -2306,6 +2306,155 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ---
 
+## AOS-425 — Metade do espaço de nomes de streams é composto em runtime, a partir de valores que ninguém valida
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha a metade da classe do AOS-424 que não é
+     alcançável por renomear constantes. As citações ao ADR-007 e ao ADR-011 são RESTRIÇÕES. Se
+     a decisão (2) levar a validar na carga da POLÍTICA, isso é desenho de fronteira e pode
+     exigir ADR — o marcador sai nesse caso. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração (por proximidade ao AOS-424; o âmbito que toca é o do EPIC-03 e do EPIC-06) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção de classe (fronteiras de entrada) |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | **AOS-424** — a decisão (1) de lá determina se este ticket encolhe ou muda de natureza; AOS-100/101 (Event Store replicado) |
+| Bloqueia | a migração para JetStream, em conjunto com o AOS-424 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/scheduler/{admission,quota}.go`, `packages/platform/model-gateway/policy/allowlist/allowlist_policy.json`, `packages/control-plane/governance/hitl/{challenge_issuer,nonce_store}.go`, `packages/substrate/eventstore/jetstream/store.go` (`subjectDe`) |
+
+### Contexto
+
+O AOS-424 inventariou os `stream_id` **literais** que não são representáveis num subject NATS, e
+esses corrigem-se a renomear constantes. Este ticket é a outra metade, e não se corrige assim:
+**os nomes de stream compostos em RUNTIME, a partir de valores que entram no sistema por
+configuração, por ficheiro de política ou por token externo.**
+
+Um grep de literais não os vê. Só aparecem quando o valor que os alimenta muda — e aí já estão
+em produção.
+
+### A tese, e o que a torna concreta
+
+O exemplo que a mostra inteira é a admissão de quota. Medido:
+
+```text
+scheduler/admission.go:64   bucketStreamPrefix = "admission/bucket/"
+scheduler/quota.go:27       ProviderKey.String() = Provider + ":" + Model + ":" + Region
+scheduler/admission.go:463  bucketID := bucketStreamPrefix + keyStr
+scheduler/admission.go:575  a.log.Append(ctx, bucketID, ...)
+```
+
+O `stream_id` de admissão **contém o nome do modelo**. E o nome do modelo não é escolhido por
+quem escreve código: vem da allowlist **assinada** em
+`platform/model-gateway/policy/allowlist/allowlist_policy.json`.
+
+**Hoje isto NÃO é um defeito vivo, e foi medido:** a allowlist em vigor para `board-eu` traz
+`gpt-4o`, `gpt-4o-mini` e `text-embedding-3-large` — **nenhum tem ponto**. A barreira que segura
+esta linha é a política assinada, não o código.
+
+**E é exactamente isso o problema.** `gpt-4.1` é um nome de modelo real. Acrescentá-lo à allowlist
+— uma alteração de POLÍTICA, revista por quem revê política, assinada e promovida como política —
+partiria os streams de admissão sobre JetStream. **Um ficheiro de política e o espaço de nomes do
+substrato estão acoplados, e nada no repositório diz que estão.** Ninguém que revê aquele JSON
+tem razão nenhuma para saber que está a mexer em nomes de stream.
+
+### Inventário dos sítios de composição
+
+Proveniência: varredura de 2026-09-21. As duas primeiras linhas foram **confirmadas por leitura
+directa**; as restantes vêm da varredura e estão marcadas como tal.
+
+| Risco | Composição | Onde | De onde vem o valor |
+|---|---|---|---|
+| **ALTO** | `admission/bucket/<provider>:<model>:<region>` e `admission/audit/…` | `scheduler/admission.go:463,679,956`; `quota.go:27-29` | **Allowlist assinada.** Hoje sem pontos (medido); um modelo novo pode trazer um |
+| MÉDIO | `plan_id` | `orchestrator/plannerevents/recorder.go:98`; `runlifecycle/emitters.go:108` *(varredura)* | `planner.go:410` usa `req.RunID` quando vazio — herda o que o AOS-424 fechar para o `run_id` |
+| MÉDIO | `4eyes-challenge:<scope>:<hex>` | `hitl/challenge_issuer.go:175-176` *(varredura)* | `scope` é o `RatificationID`, token OPACO de fonte externa |
+| MÉDIO | `ratify-nonce:<scope>:<hex>` | `hitl/nonce_store.go:62` *(varredura)* | idem |
+| BAIXO | `backpressure/queue/<name>`, `degradation/<name>`, `routing/<name>`, `scheduling/dispatch/<name>`, `backpressure/policy-audit/<name>` | `scheduler/{queue,degradation,routing,priority,policy}.go` *(varredura)* | nome de instância, dado por quem compõe (interno) |
+| BAIXO | `budget-breaker/<treeID>`, `<treeID>` | `scheduler/breaker.go:882`; `budget/events.go:91` *(varredura)* | id de árvore de orçamento |
+
+**O `run_id` NÃO está nesta lista de propósito** — é critério de aceitação do AOS-424, que o valida
+na fronteira das duas rotas de submissão. Aqui fica o que essa validação **não** alcança.
+
+### Porque é que o AOS-424 sozinho não fecha isto
+
+A decisão (1) do AOS-424 é validar o `stream_id` no contrato do `eventstore`, imposto pelos dois
+backends. Isso **apanha** estes casos — mas repare-se no QUANDO e no QUE ACONTECE:
+
+- a validação dá-se no `Append`, isto é, **no ponto de USO**, muito depois de o valor ter entrado
+  no sistema;
+- o efeito é uma recusa. Para a admissão de quota, uma recusa no `Append` significa **runs a
+  deixarem de ser admitidos** — em produção, por causa de uma alteração de política feita horas
+  antes e aprovada por quem não podia saber.
+
+Ou seja: apertar o contrato do Event Store converte um defeito SILENCIOSO numa **avaria VISÍVEL**,
+que é melhor, mas continua a ser uma avaria — e no sítio errado. Para valores compostos em
+runtime, a validação tem de estar **onde o valor ENTRA**, não onde é usado: na carga da allowlist,
+na emissão do `RatificationID`, na composição do scheduler. É a mesma disciplina que o resto do
+sistema já aplica às env vars — uma `AOS_*_INTERVAL` mal formada **aborta o arranque** em vez de
+degradar em silêncio.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Esperar pelo AOS-424 ou correr em paralelo?** Se a decisão (1) de lá for «só renomear», este
+   ticket passa a ser a única defesa desta metade e sobe para P1. Se for a causa-raiz, este ticket
+   muda de natureza: deixa de ser «impedir nomes inválidos» e passa a ser «antecipar a recusa para
+   a fronteira de entrada».
+2. **Onde validar cada valor.** A allowlist é ASSINADA — validar na carga significa que um bundle
+   assinado válido pode ser **recusado** por conter um modelo com ponto. Isso é desejável (falha
+   cedo, num arranque, e não a meio da admissão de um run), mas é uma decisão de fronteira: passa
+   a haver políticas assinadas que o nó recusa por uma razão que não é de política.
+3. **O `RatificationID` é um token de fonte externa.** Recusar um `scope` com ponto significa
+   recusar uma ratificação — numa cerimónia humana, com assinaturas já dadas. Recusar cedo (na
+   emissão) ou tarde (no uso) tem custos humanos diferentes.
+4. **Escapar em vez de recusar, para os casos internos?** Para nomes de instância do scheduler e
+   `treeID`, uma normalização determinista (`.` → `-`) seria transparente. **NÃO se propõe para os
+   outros**: o `subjectDe` recusa em vez de escapar precisamente para não produzir colisões
+   silenciosas entre streams vizinhos, e essa razão vale aqui na mesma.
+
+### Critérios de Aceitação
+
+- [ ] Cada sítio da tabela tem a sua decisão tomada — validar na entrada, normalizar, ou declarar
+      que se aceita a recusa tardia — e **nenhum fica sem decisão escrita**.
+- [ ] A allowlist de modelos é validada **na carga**, com teste que prova que um modelo com ponto
+      é recusado e nomeia a razão (o nome entra num `stream_id`).
+- [ ] O acoplamento **política ↔ espaço de nomes** fica escrito no sítio onde alguém que revê
+      política o veja — no próprio `allowlist_policy.json` ou ao lado dele. Hoje nada liga os dois,
+      e essa é a falha de fundo deste ticket.
+- [ ] Os casos de risco MÉDIO têm teste com um valor que contém ponto — hoje **os testes só usam
+      valores sem ponto** (`Model: "claude"`, `"gpt"`, `"m"`), que é a razão pela qual isto nunca
+      foi exercitado.
+- [ ] O gate de alcance de repositório do AOS-424 **declara explicitamente** que não apanha
+      composição em runtime, e aponta para este ticket. Um gate que parece cobrir a classe inteira
+      e não cobre é pior do que um gate que declara o seu alcance.
+
+### Fora de âmbito, declarado
+
+- **O `run_id`** — é do AOS-424.
+- **Renomear os nove streams com nome LITERAL** — idem.
+- **Levantar JetStream em produção** — é do AOS-423.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Validar na carga da allowlist faz o nó recusar um bundle ASSINADO e válido | Decisão (2). A recusa tem de nomear a razão real — «este modelo entra num nome de stream» — e não parecer um erro de política |
+| Recusar um `RatificationID` com ponto aborta uma cerimónia humana com assinaturas já dadas | Decisão (3): validar na EMISSÃO, não no uso |
+| Normalizar (`.` → `-`) onde não se deve cria colisões silenciosas entre streams vizinhos | É a razão pela qual o `subjectDe` recusa em vez de escapar. Só se normaliza onde o valor é interno e a colisão é impossível |
+| Este ticket ser lido como «já está coberto pelo AOS-424» e ser fechado sem trabalho | O AOS-424 valida no USO; esta classe precisa de validação na ENTRADA. São coisas diferentes e está escrito acima porquê |
+
+### Estado
+
+**ABERTO.** Nada implementado. **Não é defeito vivo hoje** — a allowlist em vigor não tem modelos
+com ponto (medido) e não há NATS em produção. É uma dívida que só se manifesta quando alguém
+mudar uma política, e por isso vale mais escrever o acoplamento do que confiar em que ninguém o
+faça.
+
+---
+
 ## AOS-424 — Nove streams não são representáveis no JetStream, e o `run_id` do cliente também não é validado
 
 <!-- rtm: adrs-mencionados -->
@@ -2820,3 +2969,4 @@ são o mesmo processo.
 | 1.14 | 2026-09-20 | +AOS-418 (payloads reconstroem-se do log): o conteúdo vivia só em memória e um `serve` que morresse levava-o consigo, apesar de a saída do produtor existir durável — incómodo com operador, perda de dados quando o ingresso do AOS-417 tornar as corridas rotina. | Equipa AOS |
 | 1.15 | 2026-09-21 | +AOS-423 (consumidor da fila de pedidos): o AOS-417 abriu a porta e não pôs ninguém do outro lado — `POST /plans` grava o facto e devolve `201`, e nada o lê. O modo de falha é o MESMO que o AOS-417 existia para fechar (prometer uma corrida que ninguém consome), deslocado um passo à frente. | Equipa AOS |
 | 1.16 | 2026-09-21 | +AOS-424 (nomes de stream não representáveis): a correcção do AOS-417 revelou uma classe — são NOVE os streams com ponto, dois deles compostos em produção (four-eyes e memória), o `run_id` do cliente não é validado, e a causa-raiz é o backend de ficheiro aceitar o que o JetStream recusa. Latente hoje (sem NATS em prod), destrutivo no dia da migração que o AOS-423 precisa. | Equipa AOS |
+| 1.17 | 2026-09-21 | +AOS-425 (composição de nomes de stream em runtime): a outra metade da classe do AOS-424, que um grep de literais não vê. O `stream_id` de admissão contém o NOME DO MODELO, que vem da allowlist assinada — hoje sem pontos (medido), mas acrescentar um `gpt-4.1` é uma alteração de POLÍTICA que partiria o substrato, e nada no repositório liga as duas coisas. | Equipa AOS |
