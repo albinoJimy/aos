@@ -6,6 +6,14 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 [specs/01_Engineering_Standards_e_Handoff.md](specs/01_Engineering_Standards_e_Handoff.md) §5.
 
 ## [Unreleased]
+### Fixed — AOS-418
+- `fix(AOS-418)` — **um `serve` que morresse a meio de um plano levava os payloads consigo.** O conteúdo que os nós trocam vivia só no mapa em memória do executor; um processo novo sobre o MESMO plano via o mapa vazio e o consumidor falhava com `ErrPayloadPerdido` — apesar de a saída do produtor existir, durável, no log e no run filho.
+- Os payloads passam a reconstruir-se do log no arranque, **sem evento novo**: a forma fechada vem inteira do `plan.payload_published`, e a aberta relê-se do run filho que o evento referencia e **confere-se contra o digest publicado**. O que não se consegue confirmar não entra, e o consumidor falha como antes — a direcção segura.
+- Não se pôs o conteúdo da forma aberta dentro do evento: seria mais simples de reidratar e poria conteúdo untrusted, até 128 KiB por payload, no log de governação que vai ao WORM.
+- Emenda a decisão (A) do dono no AOS-414 sem a superar: o regime continua a ser memória, e o que muda é que ela passa a ser reconstruível.
+- **Alcance real, declarado:** fecha a morte do ORQUESTRADOR, não a do nó. A forma aberta relê-se do `GET /runs/{id}`, cujo `final_text` vem de um registo em memória com poda FIFO — um restart do stack inteiro não a traz de volta. A forma fechada volta sempre, porque vem do evento.
+- Uma revisão adversarial independente apanhou onze achados, um crítico: a forma fechada **divergia** entre publicar e reidratar (razões cruas vs. normalizadas — `[]` vira `nil` por `omitempty`), e o critério afirmava que não podia. Também: a composição não tinha sensor nenhum (tirar a chamada do wiring deixava a suite verde), um evento ilegível trancava o plano para sempre, a mensagem acusava adulteração onde o nó só não retinha o texto, e o arranque não tinha prazo.
+
 ### Verified — v0.1.27 em produção (AOS-359)
 - `docs(AOS-359)` — **o defeito está medido em produção com os dois binários, sobre dados reais.** Cópias do Event Store do nó (`events.wal`, 19,7 MB); o binário antigo entrou por digest (`sha256:d0dd2667…`, `v0.1.26`).
 - Cauda rasgada: o antigo levou o ficheiro de `19760888` para `19760884`; o novo não lhe tocou. Byte corrompido **dentro do último registo confirmado**: o antigo levou-o de `19760884` para `19760335` — **549 bytes, um registo inteiro e confirmado do Event Store real do nó, apagados por um comando de LEITURA**. O novo deixou-o em `19760884`.
