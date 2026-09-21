@@ -27,7 +27,7 @@ Este documento é a **Matriz de Rastreabilidade de Requisitos** (*Requirements T
 
 ### 1.2 Âmbito
 
-A rastreabilidade cobre os 27 ADRs canónicos (`docs/adr/README.md`), os 13 requisitos funcionais `RF-01`–`RF-13` (§2), os 12 requisitos não-funcionais `NFR-01`–`NFR-12` (§3) e os **422 tickets** `AOS-001`–`AOS-422` distribuídos por 25 epics. Os catálogos §2 e §3 partem das 11 capacidades funcionais de `specs/00` §4 e dos 10 *drivers* de `specs/00` §7 e estendem-nos com os requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são estáveis e vivem aqui, não na System Spec. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
+A rastreabilidade cobre os 28 ADRs canónicos (`docs/adr/README.md`), os 13 requisitos funcionais `RF-01`–`RF-13` (§2), os 12 requisitos não-funcionais `NFR-01`–`NFR-12` (§3) e os **422 tickets** `AOS-001`–`AOS-422` distribuídos por 25 epics. Os catálogos §2 e §3 partem das 11 capacidades funcionais de `specs/00` §4 e dos 10 *drivers* de `specs/00` §7 e estendem-nos com os requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são estáveis e vivem aqui, não na System Spec. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
 
 ### 1.3 Audiência
 
@@ -43,7 +43,7 @@ Gestão de produto e de programa (cobertura e priorização), arquitectura (veri
 
 ### 1.5 Princípios/decisões aplicáveis (ADRs)
 
-Este documento não introduz decisões de arquitectura; **rastreia** as 27 existentes (ADR-001 a ADR-027, `docs/adr/README.md`). Referencia-as sempre por código.
+Este documento não introduz decisões de arquitectura; **rastreia** as 28 existentes (ADR-001 a ADR-028, `docs/adr/README.md`). Referencia-as sempre por código.
 
 ---
 
@@ -96,7 +96,7 @@ Derivados dos *drivers* canónicos (`_BRIEF` §4 / `specs/00` §7) e dos KPIs/SL
 
 ## 4. Matriz ADR × ticket
 
-Para cada ADR-001…027, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
+Para cada ADR-001…028, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
 
 A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).
 
@@ -119,23 +119,25 @@ A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a
 | **ADR-015** | Durable execution: contrato próprio vs. engine externo | Ratificado | 5 | AOS-129, AOS-281, AOS-290, AOS-296, AOS-358 | `tecnica/09`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-016** | Fronteira de confiança da camada de UI | Ratificado | 13 | AOS-129, AOS-131, AOS-132, AOS-137, AOS-138, AOS-143, AOS-153, AOS-162, AOS-166, AOS-182, AOS-185, AOS-266, AOS-275 | `tecnica/02`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-017** | Supply-chain do nó `aos` e da sua distribuição (binário zero-dep, imagem distroless/non-root, SBOM+proveniência) | Ratificado | 16 | AOS-100, AOS-129, AOS-169, AOS-185, AOS-193, AOS-196, AOS-199, AOS-200, AOS-207, AOS-209, AOS-258, AOS-261, AOS-275, AOS-320, AOS-368, AOS-403 | `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
-| **ADR-018** | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | Aceite | 14 | AOS-164, AOS-185, AOS-204, AOS-222, AOS-234, AOS-238, AOS-262, AOS-270, AOS-272, AOS-281, AOS-299, AOS-326, AOS-407, AOS-413 | `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/18` |
+| **ADR-018** | Fronteira nó↔ORQ/SCH: o loop de serviço é a fonte única de verdade do ciclo de vida (v1 single-host) | Aceite | 15 | AOS-164, AOS-185, AOS-204, AOS-222, AOS-234, AOS-238, AOS-262, AOS-270, AOS-272, AOS-281, AOS-299, AOS-326, AOS-407, AOS-413, AOS-417 | `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/18` |
 | **ADR-019** | Excepções intencionais às fronteiras canónicas de camada (v1 single-host) | Aceite | 7 | AOS-179, AOS-190, AOS-200, AOS-202, AOS-333, AOS-337, AOS-394 | `tecnica/09`, `tecnica/11`, `tecnica/12` |
 | **ADR-020** | Planeador como agente governado (o planeamento é um agente do runtime, não um caminho especial) | Aceite | 5 | AOS-234, AOS-235, AOS-236, AOS-237, AOS-244 | `tecnica/18` |
 | **ADR-021** | Roteamento por scoring ponderado determinístico no Model Gateway (task-fit + perfis de pesos versionados, sem exploração online) | Aceite | 4 | AOS-269, AOS-278, AOS-280, AOS-390 | `tecnica/09`, `tecnica/11` |
 | **ADR-022** | Extensões declarativas ao grafo de plano: arestas condicionais, papel verificador e payload tipado por aresta — sem ciclos, sem blackboard | Aceite | 8 | AOS-270, AOS-271, AOS-272, AOS-273, AOS-278, AOS-279, AOS-390, AOS-414 | `tecnica/09`, `tecnica/11` |
-| **ADR-023** | Escritor único do ciclo de vida por-run: a autoridade é o LEASE, não o componente (o SCH deriva do log; o ORQ escreve só sob posse e sobre grafo re-hidratado) — extende o ADR-018 ao distribuído | Ratificado | 8 | AOS-100, AOS-281, AOS-282, AOS-283, AOS-284, AOS-326, AOS-390, AOS-413 | `tecnica/09`, `tecnica/10`, `tecnica/11` |
+| **ADR-023** | Escritor único do ciclo de vida por-run: a autoridade é o LEASE, não o componente (o SCH deriva do log; o ORQ escreve só sob posse e sobre grafo re-hidratado) — extende o ADR-018 ao distribuído | Ratificado | 9 | AOS-100, AOS-281, AOS-282, AOS-283, AOS-284, AOS-326, AOS-390, AOS-413, AOS-417 | `tecnica/09`, `tecnica/10`, `tecnica/11` |
 | **ADR-024** | O efeito de despacho move-se da materialização para o despacho governado: a materialização admite o plano no DAG sem efeito; o `plandispatch.Dispatcher` decide a elegibilidade por passagem e produz o efeito (extende o AOS-237, dentro do ADR-023; supera o spawn-na-materialização do AOS-393, preservando as suas correcções) | Ratificado | 2 | AOS-390, AOS-413 | `tecnica/09`, `tecnica/11` |
 | **ADR-025** | Fiabilidade medida e o controlador de autonomia: registo de desfecho de execução PÓS-EFEITO (aditivo, sem enfraquecer o audit-before-effect) como sinal honesto de fiabilidade; promoção automática só ABAIXO de L4 e não-durável através de reinício (reverte à base assinada); demoção automática, durável e por CLASSE; os invariantes de direcção da rehidratação fecham a elevação por forja sem custódia de chave (extende o ADR-014, dentro do ADR-010/ADR-023) | Ratificado | 1 | AOS-090 | `tecnica/09` |
 | **ADR-026** | O overhead de mediação é a janela da DECISÃO: o SLO de p95 < 15 ms governa a cadeia de política e EXCLUI o despacho da tool; o SLI passa a derivar de `aos.mediation.policy_latency_ns` — até ANTES da escrita do selo, por emenda de AOS-401 depois de a produção medir ~31 ms com a escrita dentro — (sem fallback para a latência do span; a escrita do selo fica observável sem SLO) e a duração da tool call mediada fica deliberadamente SEM SLO até haver alvo ratificado; arbitra a contradição do `tecnica/19` §4 vs §7 e fecha o DEF-281 (dentro do ADR-002/ADR-010) | Ratificado | 5 | AOS-398, AOS-401, AOS-402, AOS-404, AOS-405 | `tecnica/09`, `tecnica/11` |
-| **ADR-027** | Cada nó despachado de um plano do `aos-orq` executa como um run do nó `aos` (`POST /runs` + `GET /runs/{id}`): NHI do run cunhado pelo operador e montado em ficheiro, campo `tools` como lista-branca imposta antes da mediação (ausente ⇒ sem restrição, vazia ⇒ nenhuma tool), veredicto por gramática fechada (ilegível ⇒ `fail`), conclusão durável escrita pelo `aos-orq` sob o lease (completa o ADR-024, dentro do ADR-018/023) | Aceite | 2 | AOS-413, AOS-414 | `tecnica/09`, `tecnica/11` |
+| **ADR-027** | Cada nó despachado de um plano do `aos-orq` executa como um run do nó `aos` (`POST /runs` + `GET /runs/{id}`): NHI do run cunhado pelo operador e montado em ficheiro, campo `tools` como lista-branca imposta antes da mediação (ausente ⇒ sem restrição, vazia ⇒ nenhuma tool), veredicto por gramática fechada (ilegível ⇒ `fail`), conclusão durável escrita pelo `aos-orq` sob o lease (completa o ADR-024, dentro do ADR-018/023) | Aceite | 3 | AOS-413, AOS-414, AOS-417 | `tecnica/09`, `tecnica/11` |
+| **ADR-028** | Um objectivo entra no caminho do plano por um FACTO gravado pelo nó, e o `aos-orq` consome-o sob a posse que já governa o run: o ingresso é rota do nó e NÃO importa o orquestrador (ADR-018 intacto); o consumo-uma-só-vez segue o molde de idempotency-key já existente, sem substrato de fila novo; um `serve` continua a possuir um run e a terminar (ADR-023 intacto); e um pedido sobre um run com posse responde `201 accepted` idempotente — NUNCA o estado do run —, para não reabrir o oráculo de existência que o ADR-016 fecha | Aceite | 1 | AOS-417 | `tecnica/09`, `tecnica/11` |
 
-**Cobertura: 27/27 ADRs têm ≥ 1 ticket implementador.**
+**Cobertura: 28/28 ADRs têm ≥ 1 ticket implementador.**
 
 - **Sub-cobertura (≤3 tickets):** 
   - **ADR-024** (O efeito de despacho move-se da materialização para o despacho governado: a materialização admite o plano no DAG sem efeito; o `plandispatch.Dispatcher` decide a elegibilidade por passagem e produz o efeito (extende o AOS-237, dentro do ADR-023; supera o spawn-na-materialização do AOS-393, preservando as suas correcções)) — 2 ticket(s): AOS-390, AOS-413.
   - **ADR-025** (Fiabilidade medida e o controlador de autonomia: registo de desfecho de execução PÓS-EFEITO (aditivo, sem enfraquecer o audit-before-effect) como sinal honesto de fiabilidade; promoção automática só ABAIXO de L4 e não-durável através de reinício (reverte à base assinada); demoção automática, durável e por CLASSE; os invariantes de direcção da rehidratação fecham a elevação por forja sem custódia de chave (extende o ADR-014, dentro do ADR-010/ADR-023)) — 1 ticket(s): AOS-090.
-  - **ADR-027** (Cada nó despachado de um plano do `aos-orq` executa como um run do nó `aos` (`POST /runs` + `GET /runs/{id}`): NHI do run cunhado pelo operador e montado em ficheiro, campo `tools` como lista-branca imposta antes da mediação (ausente ⇒ sem restrição, vazia ⇒ nenhuma tool), veredicto por gramática fechada (ilegível ⇒ `fail`), conclusão durável escrita pelo `aos-orq` sob o lease (completa o ADR-024, dentro do ADR-018/023)) — 2 ticket(s): AOS-413, AOS-414.
+  - **ADR-027** (Cada nó despachado de um plano do `aos-orq` executa como um run do nó `aos` (`POST /runs` + `GET /runs/{id}`): NHI do run cunhado pelo operador e montado em ficheiro, campo `tools` como lista-branca imposta antes da mediação (ausente ⇒ sem restrição, vazia ⇒ nenhuma tool), veredicto por gramática fechada (ilegível ⇒ `fail`), conclusão durável escrita pelo `aos-orq` sob o lease (completa o ADR-024, dentro do ADR-018/023)) — 3 ticket(s): AOS-413, AOS-414, AOS-417.
+  - **ADR-028** (Um objectivo entra no caminho do plano por um FACTO gravado pelo nó, e o `aos-orq` consome-o sob a posse que já governa o run: o ingresso é rota do nó e NÃO importa o orquestrador (ADR-018 intacto); o consumo-uma-só-vez segue o molde de idempotency-key já existente, sem substrato de fila novo; um `serve` continua a possuir um run e a terminar (ADR-023 intacto); e um pedido sobre um run com posse responde `201 accepted` idempotente — NUNCA o estado do run —, para não reabrir o oráculo de existência que o ADR-016 fecha) — 1 ticket(s): AOS-417.
 
 ## 5. Matriz NFR × ticket de verificação
 
@@ -185,7 +187,7 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 
 ```mermaid
 flowchart LR
-    RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..027 (decisoes)"]
+    RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..028 (decisoes)"]
     NFR["NFR-01..NFR-12 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-25 (entregas)"]
     EPIC --> TICK["AOS-001..AOS-422 (tickets)"]
@@ -206,14 +208,14 @@ Sinalizadas a partir dos dados reais das §§4–5, e **geradas com elas**: os n
 | GAP-04 | **RF-10 (controlo bidireccional) sem verificação e2e dedicada** — o mecanismo tem tickets (AOS-023, AOS-119, AOS-158, AOS-218, AOS-292), mas nenhum deles é um teste e2e de pausar→corrigir→retomar em EPIC-11; a verificação mais próxima é AOS-117 (*red-team*) | §5 | Adicionar caso de teste e2e de pausar→corrigir→retomar em EPIC-11 |
 | GAP-05 | **Ausência de coluna de estado** — a RTM regista cobertura de *especificação*, não de *implementação concluída*: nenhum dos 422 tickets do corpus traz estado Done/WIP para esta matriz | §4–5 | Ligar a RTM ao *tracker* (estado por ticket) na próxima revisão |
 | GAP-06 | **NFR-09 (DSAR) verificado indirectamente** — provado por AOS-091, AOS-092, AOS-113; o *crypto-shredding* tem ticket próprio (AOS-093) e um defeito conhecido de alcance (AOS-290), mas nenhum teste e2e exercita um DSAR sobre o log encadeado | §5 | Criar teste e2e de *crypto-shredding* preservando integridade da hash-chain |
-| GAP-08 | **Os catálogos de enunciado estão atrás do catálogo de documentos** — `docs/adr/README.md` enuncia 27 ADRs e é a fonte do canon que os gates lêem (AOS-314), mas `_BRIEF` §3 enuncia 14 (faltam ADR-015, ADR-016, ADR-017, ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023, ADR-024, ADR-025, ADR-026, ADR-027) e `specs/00` §11 enuncia 23 (faltam ADR-024, ADR-025, ADR-026, ADR-027). O próprio README declara os dois «a referência de enunciado para todos os ADRs», pelo que a divergência é, pela sua própria regra, um defeito e não uma actualização | `_BRIEF` §3, `specs/00` §11, `docs/adr/README.md` | Completar os dois catálogos de enunciado com os ADRs em falta, ou emendar o README para deixar de os declarar referência de enunciado |
+| GAP-08 | **Os catálogos de enunciado estão atrás do catálogo de documentos** — `docs/adr/README.md` enuncia 28 ADRs e é a fonte do canon que os gates lêem (AOS-314), mas `_BRIEF` §3 enuncia 14 (faltam ADR-015, ADR-016, ADR-017, ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023, ADR-024, ADR-025, ADR-026, ADR-027, ADR-028) e `specs/00` §11 enuncia 23 (faltam ADR-024, ADR-025, ADR-026, ADR-027, ADR-028). O próprio README declara os dois «a referência de enunciado para todos os ADRs», pelo que a divergência é, pela sua própria regra, um defeito e não uma actualização | `_BRIEF` §3, `specs/00` §11, `docs/adr/README.md` | Completar os dois catálogos de enunciado com os ADRs em falta, ou emendar o README para deixar de os declarar referência de enunciado |
 
-Nenhum ADR do canon gated e nenhum NFR está **sem** cobertura mínima: 27/27 ADRs (ADR-001…027) e 12/12 NFRs (NFR-01…NFR-12) têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação** — excepto GAP-08, que é de **coerência entre catálogos**.
+Nenhum ADR do canon gated e nenhum NFR está **sem** cobertura mínima: 28/28 ADRs (ADR-001…028) e 12/12 NFRs (NFR-01…NFR-12) têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação** — excepto GAP-08, que é de **coerência entre catálogos**.
 
 **Lacunas fechadas pelo corpus** (registadas com a evidência que as fechou):
 
 - **GAP-01** — ADR-014 (L0–L5) foi registado como sub-coberto com 3 tickets; §4 conta agora 5 (AOS-022, AOS-089, AOS-090, AOS-125, AOS-380), acima do limiar de sub-cobertura (≤3), e a acção recomendada — medição de fiabilidade e demoção automática — é AOS-090, em EPIC-09.
-- **GAP-07** — registava que ADR-020…023 estavam fora do canon lido pelos gates e deixava a decisão por tomar. **Decidido em AOS-314: o canon passa a ADR-001…027.** ADR-020 tinha zero tickets e teria posto o `ref-lint` vermelho; passou a ser citado pelos cinco tickets que o próprio ADR nomeia (§5 e §6), em `specs/EPIC-19` — a lacuna era da citação, não da cobertura.
+- **GAP-07** — registava que ADR-020…023 estavam fora do canon lido pelos gates e deixava a decisão por tomar. **Decidido em AOS-314: o canon passa a ADR-001…028.** ADR-020 tinha zero tickets e teria posto o `ref-lint` vermelho; passou a ser citado pelos cinco tickets que o próprio ADR nomeia (§5 e §6), em `specs/EPIC-19` — a lacuna era da citação, não da cobertura.
 - **GAP-03** — ADR-003 foi registado como concentrado em AOS-005/006; §4 conta agora 11 tickets, e a rotação/revogação tem eixo próprio em AOS-288 e AOS-300.
 
 ---
@@ -238,7 +240,7 @@ A RTM serve sobretudo as dimensões **Governação** (prova auditável de que ca
 - **Rasto ascendente / descendente:** navegação da evidência para o requisito / do requisito para a evidência.
 - **RF / NFR:** requisito funcional (capacidade) / não-funcional (propriedade de qualidade com alvo mensurável).
 - **Sub-cobertura:** número de implementadores anormalmente baixo face à criticidade — sinal de revisão.
-- **ADR (Architecture Decision Record):** registo de decisão de arquitectura. O canon que os gates lêem é **ADR-001…027**, alinhado com o catálogo em `docs/adr/README.md` por AOS-314 (e ADR-024, AOS-390; ADR-025, AOS-090; ADR-026, AOS-398; ADR-027, AOS-413). Os catálogos de *enunciado* (`_BRIEF` §3, `specs/00` §11) estão atrás dele — divergência registada em **GAP-08**, não uma gama a corrigir por edição desta linha.
+- **ADR (Architecture Decision Record):** registo de decisão de arquitectura. O canon que os gates lêem é **ADR-001…028**, alinhado com o catálogo em `docs/adr/README.md` por AOS-314 (e ADR-024, AOS-390; ADR-025, AOS-090; ADR-026, AOS-398; ADR-027, AOS-413; ADR-028, AOS-417). Os catálogos de *enunciado* (`_BRIEF` §3, `specs/00` §11) estão atrás dele — divergência registada em **GAP-08**, não uma gama a corrigir por edição desta linha.
 - **SLO / SLI:** objectivo / indicador de nível de serviço (ex.: PDP p95 < 15 ms, cache-hit > 80%).
 - **Gate fail-closed:** etapa de CI que, em falha ou dúvida, **bloqueia** a promoção (`specs/01` §4).
 - **Eval-gate:** *admission control* da auto-modificação baseado em *golden-sets* (ADR-012).
