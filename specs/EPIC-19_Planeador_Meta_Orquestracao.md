@@ -2306,6 +2306,183 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ---
 
+## AOS-424 — Nove streams não são representáveis no JetStream, e o `run_id` do cliente também não é validado
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: corrige uma classe de defeito latente e propõe uma
+     regra de nomenclatura. As citações ao ADR-007 (Event Store replicado) e ao ADR-001 são
+     RESTRIÇÕES. A decisão (1) abaixo — validar o `stream_id` no contrato do `eventstore` — É
+     uma decisão de arquitectura com quebra de compatibilidade: se for aceite, abre-se ADR
+     próprio e este marcador sai. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração (por ser onde o resíduo ficou registado; o âmbito que toca é o do EPIC-24, e o eixo funcional é EPIC-02/AOS-021) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção de classe + decisão de contrato |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-417 (onde o resíduo foi declarado); AOS-021 (a cerimónia four-eyes, o consumidor mais afectado); AOS-100/101 (donos do Event Store replicado) |
+| Bloqueia | **AOS-423** — uma das três vias para o consumidor da fila é migrar para JetStream, e esta dívida torna essa via destrutiva |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/substrate/eventstore/jetstream/store.go` (`subjectDe`), `packages/substrate/eventstore/store.go` (o backend que NÃO valida), `packages/integration/approval_store_durable.go`, `packages/platform/memory/**`, `packages/cmd/aos/aos417_nome_do_stream_test.go` (o guard de alcance limitado), `scripts/ci/event-catalog.py` (o molde do gate que falta) |
+
+### Contexto
+
+O `jetstream.Store.subjectDe` **recusa** qualquer `stream_id` que contenha `.`, `*`, `>`, espaço,
+tab, CR ou LF — porque um subject NATS não os representa, e escapar em silêncio para um subject
+vizinho seria pior. É a escolha certa.
+
+O problema é o outro lado: **o store de FICHEIRO não valida nada.** O `eventstore.Store.Append`
+aceita qualquer `streamID`. É essa assimetria — e não o rigor do NATS — a causa-raiz: um nome
+inválido funciona em desenvolvimento, em CI e em produção-sobre-ficheiro, e só falha na topologia
+que nada exercita.
+
+O AOS-417 apanhou UM caso (a fila de pedidos de plano, corrigida no PR #354) e declarou o
+`gov.approvals` como resíduo. **A varredura mostrou que são nove**, mais uma superfície aberta a
+clientes externos.
+
+### O que foi medido
+
+**Nove `stream_id` com ponto**, todos lidos linha a linha:
+
+| Stream | Onde | Composto em produção? |
+|---|---|---|
+| `gov.approvals` | `integration/approval_store_durable.go:48` | **SIM**, quando o four-eyes está ligado (`bootstrap.go:1855`, `:1865`). Serve TAMBÉM os registos de retoma (`resume_records.go:132`) |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | `platform/memory/adapters/eventstore_adapter.go:27` (`streamPrefix = "memory."`) | **SIM** — `bootstrap.go:2496` compõe o `NewEventStoreAdapter` |
+| `memory.semantic.knowledge` | `memory/semantic/knowledge_base.go:66` | não (sem compositor) |
+| `memory.episodic.trajectories` | `memory/episodic/trajectory_store.go:75` | não |
+| `memory.compression.summaries` | `memory/compression/async_compactor.go:71` | não |
+| `memory.migrations` | `memory/migrations/registry.go:24` | não |
+
+**O `subjectDe` tem QUATRO chamadores em produção**, e o quarto não era conhecido:
+`Append` (`store.go:301`), `Read` (`:455`), `StreamHead` (`backup.go:61`) e **`IngestStream`**
+(`backup.go:129`) — o caminho de **restauro / DR**. Consequência: restaurar para um nó JetStream
+um backup tirado de um nó WAL **aborta ao primeiro stream com ponto**, e o `restore.go:168-182`
+pára no primeiro erro. Como `gov.approvals` é alfabeticamente anterior a `memory.*` e a `run-*`,
+**nem os streams de run chegam a ser tentados**. Isto também fecha a via de migração «copiar do
+nome antigo para o novo pelo backup».
+
+**O `Subscribe` falha em SILÊNCIO.** Não chama o `subjectDe`: o consumidor durável usa
+`FilterSubject: prefixo + ".>"` (`store.go:1228`) e o filtro por stream é aplicado **em processo**.
+Um filtro por um nome não representável não dá erro — nunca casa nada. É um modo de falha pior
+do que o `E_CONFIG`.
+
+**O `run_id` NÃO é validado.** O `POST /runs` verifica «vazio» e «prefixo reservado» e mais
+nada (`api.go:628`, `:639`) — e o `run_id` de um run **é** o seu stream. Um cliente que submeta
+`run_id: "cliente.pedido-1"` recebe `201` sobre WAL e `E_CONFIG` sobre JetStream. Propaga-se a
+tudo o que deriva do run: `lease:<run>`, step-ledger, checkpoint, steer, eventsink do RM,
+sandbox, broker. **É a maior superfície da lista, e a única controlável por um cliente externo.**
+
+**Sem teste sobre JetStream em lado nenhum que toque nisto.** O
+`approval_store_durable_test.go` usa o store in-memory; os únicos testes que importam
+`eventstore/jetstream` saltam sem `AOS_NATS_URL`, e **nenhum ficheiro de CI define essa
+variável**. O gate `dormencia` inventaria-as e emite *warn*, não *fail*.
+
+### Gravidade: LATENTE hoje, DESTRUTIVA no dia da migração
+
+**Não há serviço NATS no `docker-compose.prod.yml` e o `AOS_EVENTSTORE_NATS` tem default vazio**
+(medido). Logo isto não é uma avaria em curso — é dívida latente. Mas:
+
+- **o AOS-423 identificou a migração para JetStream como uma das três vias** para o consumidor da
+  fila existir, porque o substrato de ficheiro não arbitra entre processos (DEF-282). Esta dívida
+  torna essa via destrutiva;
+- `AOS_MODE=production` **exige** substrato durável para o four-eyes
+  (`ErrProductionNeedsDurableApproval`), e o JetStream é uma das duas opções sancionadas — a
+  configuração afectada não é exótica, é suportada.
+
+O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
+
+1. **A cerimónia four-eyes fica inoperante por inteiro.** O `PendingApprovals.Put` falha ⇒ **o
+   operador nunca vê o que tem para aprovar**: a escalada acontece, o registo não grava, a lista
+   fica vazia e o run fica suspenso. Fail-closed **e invisível** — a pior combinação.
+2. **A memória desaparece em silêncio.** As quatro classes estão compostas no nó, e o
+   `ErrStreamNotFound` é tratado como «vazio» nessa camada: não há erro, há degradação da
+   qualidade do agente.
+3. **O restauro/DR aborta** ao primeiro stream com ponto.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Corrigir a CAUSA-RAIZ, ou só os nomes?** A causa-raiz é a assimetria: o backend de ficheiro
+   aceita o que o JetStream recusa. Corrigi-la é validar o `stream_id` **no contrato do
+   `eventstore`**, imposto pelos DOIS backends. Isso torna os nove nomes actuais **ilegítimos em
+   qualquer substrato** — é uma quebra de compatibilidade deliberada e precisa de ADR. A
+   alternativa (renomear e pôr um gate estático) é mais barata e deixa a classe reabrir-se a cada
+   stream novo composto em runtime. **Recomendação: corrigir a causa-raiz**, porque enquanto os
+   dois backends discordarem, «funciona em dev, falha em produção» continua a ser o desfecho por
+   omissão.
+2. **Que nome de substituição.** Hífen (`gov-approvals`) ou barra (`gov/approvals`)? A barra tem
+   precedente (`aos-internal/`) e uma propriedade adicional: mantém o stream **fora do alcance de
+   `GET /runs/{id}/...`**, porque o padrão da stdlib casa `{id}` com um só segmento. Para o
+   `gov.approvals` — que guarda grants de aprovação — essa propriedade parece desejável.
+3. **A migração do `gov.approvals`, que NÃO admite leitura dupla ingénua.** O uso-único atómico do
+   `Consume` assenta na dedup do Event Store, que é **por stream**. Com dois streams vivos, um
+   grant consumido no antigo não deduplica no novo, e a garantia «uma aprovação destrava no
+   máximo UMA execução» quebra-se durante a janela — é o primitivo de SEGURANÇA do four-eyes.
+   Ou se copia tudo e se corta de uma vez, ou se aceita que os factos antigos ficam órfãos. E o
+   `platform/backup` **não** serve de veículo (ver `IngestStream` acima).
+4. **Validar o `run_id` na fronteira** é uma mudança de contrato público: um cliente que hoje use
+   um ponto passa a receber `400`. Aceitável? (O sítio óbvio é ao lado do `runIDReservado`, que
+   as duas rotas de submissão já chamam.)
+
+### Âmbito proposto, e o que é barato AGORA
+
+- **Barato e com prazo de validade:** `memory.semantic.knowledge`,
+  `memory.episodic.trajectories`, `memory.compression.summaries` e `memory.migrations` **não têm
+  compositor** — hoje renomear é literalmente trocar uma constante. O `memory.migrations` é o mais
+  urgente dos quatro porque o seu modo de falha é ACTIVO: `IsApplied` responde «não aplicada»
+  sobre stream vazio, logo renomear depois de ligado faz **reaplicar todas as migrações**.
+- **Caro e com histórico:** `gov.approvals` e as quatro classes `memory.*`, todas compostas em
+  produção.
+- **Aditivo, sem histórico:** a validação do `run_id` e o gate de reincidência.
+
+### Critérios de Aceitação
+
+- [ ] Decisão (1) tomada e registada — em ADR se for a causa-raiz.
+- [ ] Nenhum `stream_id` do repositório contém carácter não representável, **e há gate que o
+      impõe com alcance de REPOSITÓRIO**. O guard actual (`aos417_nome_do_stream_test.go`) cobre
+      três constantes de um ficheiro. O molde certo é `scripts/ci/event-catalog.py`, que já extrai
+      constantes de toda a árvore Go sem compilar — vê os 49 módulos, que um teste Go num módulo
+      não vê. Preservar a técnica do guard existente: **ler a regra da fonte**, com controlo de
+      não-vacuidade.
+- [ ] O `run_id` é validado na fronteira das duas rotas de submissão, com teste.
+- [ ] Existe **pelo menos um teste da cerimónia four-eyes sobre JetStream** — hoje não há nenhum,
+      e foi essa ausência que deixou o defeito invisível. Se exigir `AOS_NATS_URL` no CI, isso faz
+      parte do ticket: um teste que salta sempre não é um teste.
+- [ ] `tecnica/13` ganha a **regra escrita de nomenclatura de `stream_id`**. Hoje o documento
+      define `stream_id` como «fronteira de ordenação e particionamento» e **não impõe nenhuma
+      restrição de caracteres** — é a lacuna documental na origem de tudo isto.
+- [ ] A migração do `gov.approvals` tem plano escrito que **preserva o uso-único** do `Consume`,
+      ou declara explicitamente o que se perde.
+- [ ] O comportamento SILENCIOSO do `Subscribe` é fechado ou declarado — um filtro por um nome
+      impossível não pode parecer «sem eventos».
+
+### Fora de âmbito, declarado
+
+- **A composição em runtime além do `run_id`** (chaves de admissão com nome de modelo —
+  `gpt-4.1`, `claude-3.5-…` têm pontos por convenção da indústria; `plan_id`; o `scope` dos
+  challenges). É risco REAL e não medido: nos testes só aparecem valores sem ponto. Se a decisão
+  (1) for a causa-raiz, fecha-se por arrasto; se não for, **precisa de ticket próprio**.
+- **Levantar JetStream em produção.** É topologia, e pertence ao AOS-423.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Renomear `gov.approvals` num nó com histórico perde grants, pendentes e registos de retoma — e o backup não os transporta | Decisão (3): copiar e cortar de uma vez, ou declarar a perda. Nunca leitura dupla ingénua |
+| Corrigir só o `gov.approvals` e deixar os oito não fecha a classe | O gate de alcance de repositório é critério de aceitação, não extra |
+| A validação na fronteira quebra um cliente que use pontos no `run_id` | Decisão (4). Nenhum cliente conhecido o faz, mas é contrato público |
+| Validar no contrato do `eventstore` torna ilegítimos nove nomes existentes, incluindo dois com histórico em produção | A ordem importa: renomear PRIMEIRO, apertar o contrato DEPOIS |
+
+### Estado
+
+**ABERTO.** Nada implementado. Defeito **latente** — não há NATS em produção hoje (medido: sem
+serviço no compose, `AOS_EVENTSTORE_NATS` com default vazio) — e por isso corrigível sem pressa,
+mas **antes** de qualquer migração de topologia.
+
+---
+
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 
 <!-- rtm: adrs-mencionados -->
@@ -2642,3 +2819,4 @@ são o mesmo processo.
 | 1.13 | 2026-09-20 | +AOS-417 (ingresso do caminho do plano): medido que o `aos-orq` não tem superfície de rede nenhuma (`ListenAndServe` fora de testes = zero) e que o compose o exclui do arranque por desenho — logo toda a corrida com nós executados exige um humano no terminal do servidor, e nenhum ticket cobria isso. | Equipa AOS |
 | 1.14 | 2026-09-20 | +AOS-418 (payloads reconstroem-se do log): o conteúdo vivia só em memória e um `serve` que morresse levava-o consigo, apesar de a saída do produtor existir durável — incómodo com operador, perda de dados quando o ingresso do AOS-417 tornar as corridas rotina. | Equipa AOS |
 | 1.15 | 2026-09-21 | +AOS-423 (consumidor da fila de pedidos): o AOS-417 abriu a porta e não pôs ninguém do outro lado — `POST /plans` grava o facto e devolve `201`, e nada o lê. O modo de falha é o MESMO que o AOS-417 existia para fechar (prometer uma corrida que ninguém consome), deslocado um passo à frente. | Equipa AOS |
+| 1.16 | 2026-09-21 | +AOS-424 (nomes de stream não representáveis): a correcção do AOS-417 revelou uma classe — são NOVE os streams com ponto, dois deles compostos em produção (four-eyes e memória), o `run_id` do cliente não é validado, e a causa-raiz é o backend de ficheiro aceitar o que o JetStream recusa. Latente hoje (sem NATS em prod), destrutivo no dia da migração que o AOS-423 precisa. | Equipa AOS |
