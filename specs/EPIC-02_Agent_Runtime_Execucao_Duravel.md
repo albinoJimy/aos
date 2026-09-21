@@ -1220,6 +1220,84 @@ para um disparo do backstop).
 | Responsável de Segurança |  |  |  |
 | Responsável de Produto |  |  |  |
 
+## AOS-422 — A guarda do AOS-411 passa a ter prova: os runs vivos saltados vão ao `/metrics`
+
+<!-- rtm: adrs-mencionados -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Observabilidade da remediação |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-411 (a guarda), AOS-253/A4 (o varredor) |
+| Bloqueia | A verificação em produção do AOS-411 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/crash_resume.go` (`resumeInterruptedRuns`), `packages/cmd/aos/api.go` (`handleMetrics`), `packages/cmd/aos/orphan_sweeper.go` |
+
+### Contexto
+
+**O AOS-411 tornou a sua própria evidência inobservável**, e isso foi medido ao tentar
+verificá-lo em produção.
+
+A correcção fez um run VIVO deixar de contar como órfão. Isso calou o ruído certo — a passagem
+periódica que só encontrava runs a correr deixou de escrever no log —, mas o `if` que a cala é
+`anuncia || scanned > 0`, e `scanned` conta agora **órfãos verdadeiros**. Logo, no caso que
+interessa — varredura passa, encontra um run vivo, salta-o correctamente — **o varredor não
+escreve nada**. E os contadores `vivosAqui`/`vivosNoutra` eram variáveis locais da função.
+
+O `aos_orphan_sweeps_total` já prova que o varredor CORREU. O que faltava era provar o que ele
+**saltou** — a diferença entre «correu e não havia nada» e «correu e protegeu um run a
+trabalhar».
+
+Sem isto, a verificação do AOS-411 em produção só produz **evidência negativa**: a ausência da
+linha «capturas ILEGIVEIS», que é o sintoma do incidente de 2026-09-18. Ausência de sintoma num
+run é mais fraco do que aquilo a que este repositório chama verificado.
+
+### Objectivo
+
+Um run vivo saltado pela varredura é visível no `/metrics`, sem depender de uma linha de log que,
+no caso que interessa, não é escrita.
+
+### Critérios de aceitação
+
+- [x] `aos_orphan_live_skipped_total` existe, com a label `dono` a separar `esta_replica` de
+      `outra_replica` (`TestAOS422_OsVivosSaltadosChegamAoMetrics`).
+- [x] A série está **ausente** antes da primeira passagem do varredor — um `0` num nó que nunca
+      varreu leria-se como «varreu e não havia nada», que é a mentira simétrica
+      (`TestAOS422_SerieAusenteAntesDaPrimeiraPassagem`). É a mesma regra que o bloco dos
+      varredores já impõe.
+- [x] Depois da primeira passagem, `0` é um zero **verdadeiro** e conta como amostra
+      (`TestAOS422_ZeroDepoisDaPrimeiraPassagemEUmZeroVerdadeiro`).
+- [x] Uma família, duas amostras: `# HELP`/`# TYPE` **uma** vez
+      (`TestAOS422_UmaFamiliaDuasAmostras`) — dois blocos para o mesmo nome fazem o Prometheus
+      rejeitar o payload INTEIRO, não só a família.
+- [ ] Verificado em produção: com um run vivo, um `curl` ao `/metrics` mostra
+      `aos_orphan_live_skipped_total{dono="esta_replica"} >= 1`. **POR FAZER** — e é este critério
+      que fecha também a verificação do AOS-411.
+
+### O que este ticket NÃO faz, e porquê
+
+**Não muda quando o varredor fala.** Baixar a condição de silêncio traria de volta o ruído que o
+AOS-411 calou de propósito. O log é para acontecimentos; um facto contínuo — «a guarda protegeu N
+runs» — pertence ao `/metrics`. Separar os dois é a razão de este ticket existir.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-21), verificação em produção por fazer.
+
+Segue o molde que já existe: campo `atomic.Int64` no `NodeService`, incrementado no ponto de
+agregação da passagem, lido em `handleMetrics`. O nó **não tem** registo de métricas nem
+Prometheus — o `/metrics` é texto gerado à mão —, e este ticket não introduz nenhum.
+
+**Uma correcção ao diagnóstico inicial, que estreitou o ticket:** eu tinha afirmado que o silêncio
+não distinguia «correu e saltou bem» de «não correu». Metade disso estava errado — o
+`aos_orphan_sweeps_total` já distinguia. O que faltava era só a prova do que foi saltado.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1228,3 +1306,4 @@ para um disparo do backstop).
 | 1.1 | 2026-09-15 | AOS-396: manifesto do turno com model_id vazio no nó (achado do E2E em produção) | Equipa AOS |
 | 1.2 | 2026-09-19 | +AOS-411: a re-varredura de órfãos tratava um run vivo como órfão e decifrava-lhe as capturas antes de verificar o dono (observado em produção na v0.1.22) | Equipa AOS |
 | 1.3 | 2026-09-20 | +AOS-419: `paused` e `waiting_on_tool` não tinham backstop de wall-clock nem aresta de saída para terminal (eixo novo do DEF-906) | Equipa AOS |
+| 1.4 | 2026-09-21 | +AOS-422 (os runs vivos saltados vão ao `/metrics`): medido ao tentar verificar o AOS-411 em produção que a correcção tornou a sua própria evidência inobservável — a passagem periódica só fala com órfãos verdadeiros, e os contadores eram variáveis locais. | Equipa AOS |

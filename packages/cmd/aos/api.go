@@ -1270,6 +1270,12 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g := func(name, help string, typ string, val float64, labels string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s %s\n%s%s %g\n", name, help, name, typ, name, labels, val)
 	}
+	// amostra escreve UMA amostra a mais de uma família JÁ declarada por `g`. O `# HELP` e o
+	// `# TYPE` aparecem uma vez por família e só uma: repeti-los faz o Prometheus rejeitar o
+	// payload INTEIRO, e é isso que o TestMetricsRespeitaOFormatoDeExposicao impõe.
+	amostra := func(name, labels string, val float64) {
+		fmt.Fprintf(&b, "%s%s %g\n", name, labels, val)
+	}
 	b01 := func(ok bool) float64 {
 		if ok {
 			return 1
@@ -1474,6 +1480,23 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 					"Segundos desde a ultima passagem CONCLUIDA do varredor de "+v.nome+". Acima do dobro da cadencia, o laco parou — e entao "+v.oQueDeixaDeAcontecer+".",
 					"gauge", time.Since(time.Unix(v.ultimo, 0)).Seconds(), "")
 			}
+		}
+
+		// AOS-422 — O QUE A VARREDURA SALTOU, e porque é que isto precisa de existir.
+		//
+		// O AOS-411 fez um run VIVO deixar de contar como órfão. Isso calou o ruído certo — e
+		// calou a prova: a passagem periódica só escreve no log quando encontra órfãos
+		// verdadeiros, pelo que a guarda a funcionar é, no log, indistinguível de não ter
+		// corrido. O `aos_orphan_sweeps_total` já diz que correu; estes dizem o que protegeu.
+		//
+		// SÓ DEPOIS DA PRIMEIRA PASSAGEM. Um `0` num nó que nunca varreu leria-se como «varreu
+		// e não havia nada», que é a mentira simétrica — a mesma regra do bloco acima. Depois
+		// da primeira passagem, `0` é um zero VERDADEIRO e conta como amostra.
+		if h.svc.passagensOrfaos.Load() > 0 {
+			g("aos_orphan_live_skipped_total",
+				"Runs VIVOS que a varredura de orfaos SALTOU por terem dono, desde o arranque (AOS-411). A label `dono` diz onde: `esta_replica` (no registo de em-curso deste processo) ou `outra_replica` (lease ainda valido). Um run vivo NAO e orfao: nao e retomado, nao conta como falha, e nao se lhe leem as capturas por-titular.",
+				"counter", float64(h.svc.vivosSaltadosAqui.Load()), `{dono="esta_replica"}`)
+			amostra("aos_orphan_live_skipped_total", `{dono="outra_replica"}`, float64(h.svc.vivosSaltadosNoutra.Load()))
 		}
 	}
 
