@@ -22,15 +22,47 @@ package adapters
 // evento NOVO, e o `rebuild` reconstrói o estado por replay — «written» fixa o registo,
 // «deleted» remove-o.
 //
-// Se um tombstone não atravessar, **o registo que ele apagava RESSUSCITA**. Não é uma
-// inconsistência abstracta: é uma memória que alguém (ou um `/dsar/erase`) mandou apagar a
-// voltar a estar lá. É por isso que a cópia preserva `(RunID, StepID)` — a idempotency-key —
-// e a ORDEM, que é o que faz o «deleted» continuar a vir depois do «written» que ele apaga.
+// Se um tombstone não atravessar, **o registo que ele apagava RESSUSCITA**. É por isso que a
+// cópia preserva `(RunID, StepID)` — a idempotency-key — e a ORDEM, que é o que faz o
+// «deleted» continuar a vir depois do «written» que ele apaga.
+//
+// # CALIBRAÇÃO HONESTA: HOJE NÃO EXISTEM TOMBSTONES EM PRODUÇÃO
+//
+// A primeira versão deste ficheiro dizia «uma memória que alguém (ou um `/dsar/erase`) mandou
+// apagar». **As duas metades estavam erradas**, e uma revisão adversarial mediu-o:
+//
+//   - o `/dsar/erase` faz crypto-shred da KEK POR-TITULAR, e os registos de memória são JSON
+//     em claro; o `subjectOf` (`cmd/aos/retention.go`) só reconhece `replay.captured` e
+//     `step.ledger.applied`, pelo que o DSAR **não alcança** estes streams;
+//   - `MemoryPort.Delete` **não tem um único chamador** na árvore fora de testes, e não há rota
+//     HTTP que apague memória. Nenhum tombstone é escrito em produção hoje.
+//
+// O invariante continua a ser o certo a preservar — é o que torna o apagamento POSSÍVEL quando
+// alguém o compuser —, mas quem calibrar a severidade pela frase antiga fica com o número
+// errado. A perna de PRIVACIDADE é latente; a que está viva é outra, e é a de baixo.
 //
 // Nota sobre o `StepID` do tombstone: ele embebe o `seq` do registo apagado
 // (`<class>:del:<id>:<seq>`), e os `seq` do stream novo são outros. **Não é problema**, e
 // verificou-se: o `rebuild` obtém o id a apagar do PAYLOAD, nunca do `StepID`. O `seq` ali é
 // só o que torna a chave única por apagamento.
+//
+// # ROLLBACK — A POSTURA, QUE A PRIMEIRA VERSÃO NÃO TINHA
+//
+// A migração copia mas **não carimba a origem**: os dois streams coexistem, e o legado nunca
+// mais recebe nada. Nada no código impede um binário ANTIGO de voltar a escrever lá.
+//
+// **O que está VIVO hoje:** um `Put` feito na janela de rollback aterra no stream legado; no
+// roll-forward é copiado e, por chegar DEPOIS, ganha por last-write-wins a escritas do binário
+// novo que são cronologicamente posteriores. **Dado velho vence dado recente**, em silêncio.
+//
+// **O que está LATENTE** (e só se materializa quando alguém compuser um apagamento de memória):
+// um tombstone escrito pelo binário novo fica só no stream novo; o binário antigo lê o legado,
+// não o encontra, e o registo volta a estar legível — e se o roll-forward copiar depois um
+// `written` do legado, a ressurreição torna-se PERMANENTE.
+//
+// **Postura:** depois desta migração, ninguém escreve na origem. O rollback para um binário que
+// ainda lá escreve não é seguro para a memória, e não há aqui código que o torne seguro — um
+// log append-only não desfaz. Quem precisar de reverter tem de o fazer sabendo isto.
 
 import (
 	"context"

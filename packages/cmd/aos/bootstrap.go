@@ -2528,6 +2528,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// subject NATS. A ordem é a correcção: a cópia TEM de estar completa antes de a primeira
 	// leitura reconstruir o estado, porque **um TOMBSTONE por copiar é uma memória apagada que
 	// ressuscita** — o `rebuild` reconstrói por replay, e o que não tem tombstone está vivo.
+	// (Calibração: hoje NÃO há escritores de tombstones em produção — o `Delete` da MemoryPort
+	// não tem chamadores fora de testes. O invariante é o que torna o apagamento possível quando
+	// alguém o compuser; ver adapters/migracao.go.)
 	//
 	// FAIL-CLOSED: aborta o arranque. Compor a MemoryPort sobre uma migração parcial deixaria
 	// o agente a ler memória que alguém mandou apagar, sem erro nenhum — e o modo de falha

@@ -54,6 +54,14 @@ func TestAOS426ReadPathNaoServeStreamsInternos(t *testing.T) {
 		// PELO ACESSOR, e não por cópias do valor — ver [memadapters.StreamFor]. Com literais,
 		// o rename do AOS-424 fez estas quatro entradas medirem streams MORTOS, verdes, pela
 		// SEGUNDA vez no mesmo ticket.
+		//
+		// O QUE O ACESSOR RESOLVE, E O QUE NÃO: impede a lista de medir nomes que já ninguém
+		// escreve. **Não** impede que ela mude de categoria — e mudou: com a barra no nome novo,
+		// o `{id}` da stdlib (um só segmento) deixa de casar, pelo que o 404 destas quatro passa a
+		// vir do ROTEAMENTO e não da trava do `streamDeRun`. Passaram, de facto, para o grupo
+		// «os que a barra já protegia». Não é um buraco — a trava tem teste próprio em
+		// [TestAOS424TravaDecidePelosDadosENaoPeloNome] — mas a afirmação anterior («torna a
+		// deriva impossível») dizia mais do que se conseguiu.
 		{"memoria episodica", memadapters.StreamFor(memdomain.ClassEpisodic), "platform/memory/adapters"},
 		{"memoria semantica", memadapters.StreamFor(memdomain.ClassSemantic), "platform/memory/adapters"},
 		{"memoria procedural", memadapters.StreamFor(memdomain.ClassProcedural), "platform/memory/adapters"},

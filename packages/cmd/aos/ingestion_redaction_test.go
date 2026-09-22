@@ -13,7 +13,6 @@ import (
 	identity "github.com/aos-ref/platform/identity"
 	memadapters "github.com/aos-ref/platform/memory/adapters"
 	"github.com/aos-ref/platform/memory/domain"
-	memdomain "github.com/aos-ref/platform/memory/domain"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -34,7 +33,7 @@ const (
 // Era um literal `"memory.episodic"`. O AOS-424 renomeou estes streams e o literal passou a
 // apontar para um stream morto — o teste só não ficou verde a medir nada porque acabou por
 // falhar a leitura. Um acessor não deriva.
-var memoryEpisodicStream = memadapters.StreamFor(memdomain.ClassEpisodic)
+var memoryEpisodicStream = memadapters.StreamFor(domain.ClassEpisodic)
 
 // capturingModel regista o prompt MATERIALIZADO de cada turno e conclui o run no 1º
 // turno. É o probe do caminho «→run» da substituição: o objectivo que o LOOP consome

@@ -3,9 +3,13 @@ package adapters
 // migracao_test.go — O QUE FOI APAGADO NÃO PODE VOLTAR.
 //
 // A migração das aprovações tinha o marcador `used-` como o facto que não podia ficar para
-// trás. Aqui é o TOMBSTONE, e a consequência de o perder é mais incómoda de explicar a quem a
-// sofre: uma memória que alguém mandou apagar — possivelmente por `/dsar/erase` — volta a
-// estar lá, sem erro nenhum, porque o `rebuild` reconstrói o estado por replay do log.
+// trás. Aqui é o TOMBSTONE: um registo apagado volta a estar lá, sem erro nenhum, porque o
+// `rebuild` reconstrói o estado por replay do log.
+//
+// CALIBRAÇÃO: hoje **não há tombstones em produção** — o `Delete` da MemoryPort não tem
+// chamadores fora de testes e o `/dsar/erase` não alcança estes streams (ver adapters/migracao.go).
+// O invariante é o que torna o apagamento possível quando alguém o compuser, e é por isso que
+// se preserva agora: depois de haver tombstones, migrar já não é seguro sem ele.
 
 import (
 	"context"
@@ -84,8 +88,8 @@ func TestAOS424TombstoneAtravessaAMigracao(t *testing.T) {
 	_, gerr := ad.Get(ctx, class, rec.ID)
 	if gerr == nil {
 		t.Fatal("A MEMORIA APAGADA RESSUSCITOU: o tombstone nao atravessou a migracao.\n" +
-			"Um registo que alguem — possivelmente um /dsar/erase — mandou apagar voltou a estar\n" +
-			"legivel, e sem erro nenhum, porque o rebuild reconstroi por replay do log.")
+			"Um registo apagado voltou a estar legivel, sem erro nenhum, porque o rebuild\n" +
+			"reconstroi o estado por replay do log.")
 	}
 	if !errors.Is(gerr, domain.ErrNotFound) {
 		t.Fatalf("Get devia dar ErrNotFound depois do tombstone, veio %v", gerr)
@@ -255,6 +259,55 @@ func TestAOS424PrefixoNovoDosStreamsDeMemoria(t *testing.T) {
 	if streamPrefixLegado != "memory." {
 		t.Errorf("o prefixo LEGADO mudou (%q): a migracao deixa de encontrar os factos que existem",
 			streamPrefixLegado)
+	}
+}
+
+// O ENVELOPE ATRAVESSA INTEIRO — e o `RunID` não é decorativo.
+//
+// Uma revisão adversarial mutou a cópia para `RunID: ""` e para `Producer{}`, e os sete testes
+// desta suite ficaram VERDES (só o pacote `integration` apanhava). O `RunID` do envelope é o
+// que a trava do AOS-426 lê para decidir se um stream é de um run: perdê-lo aqui mudaria, em
+// silêncio, a classificação de um stream inteiro.
+func TestAOS424MigracaoDeMemoriaPreservaOEnvelope(t *testing.T) {
+	st := migStore(t)
+	ctx := context.Background()
+	const class = domain.ClassProcedural
+
+	if _, err := st.Append(ctx, streamLegadoDe(class), eventstore.EventInput{
+		Type:          EventTypeWritten,
+		Payload:       []byte(`{"corpo":"x"}`),
+		SchemaVersion: "1.1",
+		RunID:         "run-envelope",
+		StepID:        string(class) + ":put:env",
+		ParentStepID:  "pai-do-passo",
+		Producer:      eventstore.Producer{NHIID: "nhi:emissor", Scope: []string{"escrever"}},
+	}); err != nil {
+		t.Fatalf("Append no legado: %v", err)
+	}
+	if _, err := MigrarStreamsDeMemoria(ctx, st); err != nil {
+		t.Fatalf("MigrarStreamsDeMemoria: %v", err)
+	}
+
+	evs, err := st.Read(ctx, streamFor(class), 0)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("Read: err=%v n=%d", err, len(evs))
+	}
+	ev := evs[0]
+	if ev.RunID != "run-envelope" {
+		t.Errorf("o RunID nao atravessou (%q): e o que a trava do AOS-426 le para decidir se um "+
+			"stream e de um run", ev.RunID)
+	}
+	if ev.SchemaVersion != "1.1" {
+		t.Errorf("o SchemaVersion nao atravessou: %q", ev.SchemaVersion)
+	}
+	if ev.ParentStepID != "pai-do-passo" {
+		t.Errorf("o ParentStepID nao atravessou: %q", ev.ParentStepID)
+	}
+	if ev.Producer.NHIID != "nhi:emissor" || len(ev.Producer.Scope) != 1 {
+		t.Errorf("o Producer nao atravessou: %+v", ev.Producer)
+	}
+	if string(ev.Payload) != `{"corpo":"x"}` {
+		t.Errorf("o Payload nao atravessou: %q", ev.Payload)
 	}
 }
 

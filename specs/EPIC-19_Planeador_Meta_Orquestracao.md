@@ -2077,9 +2077,15 @@ não pode ficar para trás é **outro**, e vale a pena nomeá-lo:
 
 **O TOMBSTONE.** Apagar uma memória é um evento NOVO (`memory.record.deleted`) e o `rebuild`
 reconstrói o estado por replay: «written» fixa o registo, «deleted» remove-o. Se um tombstone
-não atravessar, **o registo que ele apagava RESSUSCITA** — uma memória que alguém, possivelmente
-um `/dsar/erase`, mandou apagar volta a estar legível. É o análogo do `used-` das aprovações, e
-é mais incómodo de explicar a quem o sofre.
+não atravessar, **o registo que ele apagava RESSUSCITA**. É o análogo do `used-` das aprovações.
+
+**CALIBRAÇÃO, porque a primeira versão deste parágrafo exagerou:** dizia «uma memória que alguém,
+possivelmente um `/dsar/erase`, mandou apagar», e **as duas metades estavam erradas**. O
+`/dsar/erase` faz crypto-shred da KEK por-titular e o `subjectOf` não reconhece os eventos de
+memória, pelo que o DSAR não alcança estes streams; e o `MemoryPort.Delete` **não tem um único
+chamador** fora de testes, pelo que **não existe um tombstone em produção hoje**. O invariante
+continua a ser o certo a preservar — é o que torna o apagamento possível quando alguém o
+compuser — mas quem calibrasse a severidade pela frase antiga ficava com o número errado.
 
 E o modo de falha desta camada é **SILÊNCIO**: o `rebuild` trata `ErrStreamNotFound` como «classe
 vazia, não é erro». Sobre um backend que recusa o nome, a memória do nó não dava erro nenhum —
@@ -2100,6 +2106,48 @@ antigo escrito à mão — incluindo o teste do AOS-426, que pela **segunda vez 
 passou a medir streams MORTOS sem que nada avisasse. Em vez de corrigir os literais, exportou-se
 `memadapters.StreamFor(class)`: quem precisa de nomear um stream de memória chama-o. Uma cópia
 do valor deriva em silêncio; uma chamada não.
+
+#### O que a revisão adversarial encontrou nesta migração
+
+**Sem crítico** — o primeiro dos quatro ciclos desta série em que isso acontece. Sete eixos
+foram verificados e estão limpos, entre eles os três que eu tinha nomeado como dúvidas: o helper
+partilhado não perdeu nenhuma das cinco verificações da versão anterior, o rename não toca em
+legal holds nem em crypto-shredding (e a afirmação falsa que a migração das aprovações teve
+sobre o `restoreSubjectIndex` **não se repetiu**), e nenhum consumidor composto antes do ponto de
+cablagem lê memória.
+
+**ALTO — mudei o código e deixei o teste para trás.** A lição do `ErrConfig` foi movida para o
+`CopiarStream`, mas o único sensor dela ficou no pacote `integration` — precisamente aquele cuja
+constante legada está marcada para desaparecer. Medido: desligando o ramo do `ErrConfig`, as
+suites do `eventstore` e da memória ficavam VERDES. No dia da limpeza, o defeito CRÍTICO voltaria
+na terceira migração. Fechado com `substrate/eventstore/migracao_test.go` (sete testes),
+incluindo o caso que **não tinha sensor em lado nenhum**: um `ErrConfig` na ESCRITA do destino
+tem de propagar.
+
+**MÉDIO — um duplicado com conteúdo diferente era descartado em silêncio.** O
+`StatusDuplicate` era tratado como «já lá estava» sem comparar o payload: sem erro, sem
+contagem, sem linha de log, com a migração a declarar-se bem-sucedida. O mesmo ficheiro recusa
+`origem == destino` por essa razão exacta — o padrão estava aplicado a um eixo e não ao outro.
+Passa a ser erro, com controlo de não-vacuidade para a idempotência não partir.
+
+**MÉDIO — a ordem só se preserva DENTRO do conjunto copiado.** Contra o que já está no destino
+é ordem de CHEGADA, e num consumidor last-write-wins isso INVERTE desfechos: um facto velho pode
+ganhar a um recente, e um apagamento copiado tarde pode apagar uma escrita posterior. Provado em
+dois cenários. Está agora escrito com precisão, e é o que motiva a postura de rollback.
+
+**MÉDIO — nenhuma postura de rollback**, ao contrário da migração das aprovações. Acrescentada,
+com as duas pernas separadas: a que está VIVA (um `Put` na janela de rollback ganha, por
+last-write-wins, a escritas mais recentes) e a que está LATENTE (a ressurreição, que precisa de
+haver tombstones).
+
+**BAIXO — o sensor do AOS-426 mudou de categoria em silêncio.** Com a barra no nome novo, o
+`{id}` da stdlib deixa de casar, pelo que o 404 das quatro classes passa a vir do ROTEAMENTO e
+não da trava. Não é buraco (a trava tem teste próprio), mas o comentário que eu tinha escrito
+— «torna a deriva impossível» — dizia mais do que se conseguiu. Corrigido.
+
+**BAIXO — mutantes sobreviventes do envelope.** `RunID: ""` e `Producer{}` deixavam a suite de
+memória verde. O `RunID` não é decorativo: é o que a trava do AOS-426 lê para classificar um
+stream. Fechado, e os três mutantes morrem agora nos dois pacotes.
 
 **Evidência:** no smoke, sobre um WAL persistido, **56 factos copiados na primeira passagem,
 ZERO na segunda**, com o nó composto e os dez passos verdes nas duas. Sete testes, com o teste
@@ -2482,7 +2530,7 @@ A 2026-09-21, com o **gate soberano composto** e um leitor **autenticado de OUTR
 | Stream | O que guarda |
 |---|---|
 | `gov.approvals` | Grants de aprovação four-eyes, pendentes por decidir, e os **registos de retoma**, que carregam o `Goal` |
-| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | A memória do nó (compostas em produção, `bootstrap.go:2496`) |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | A memória do nó (compostas em produção, `bootstrap.go` (composição da MemoryPort; a linha mudou com esta entrega)) |
 | `memory.semantic.knowledge` · `memory.episodic.trajectories` · `memory.migrations` | Idem (sem compositor hoje) |
 | `identity` | Eventos de identidade NHI |
 | `registry` | Registo de artefactos |
@@ -2765,7 +2813,7 @@ clientes externos.
 | Stream | Onde | Composto em produção? |
 |---|---|---|
 | `gov.approvals` | `integration/approval_store_durable.go:48` (à data da medição) | **SIM**, quando o four-eyes está ligado (`bootstrap.go:1855`, `:1865`). Serve TAMBÉM os registos de retoma (`resume_records.go:132`) |
-| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | `platform/memory/adapters/eventstore_adapter.go:27` (`streamPrefix = "memory."`) | **SIM** — `bootstrap.go:2496` compõe o `NewEventStoreAdapter` |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | `platform/memory/adapters/eventstore_adapter.go:27` (`streamPrefix = "memory."`) | **SIM** — `bootstrap.go` (composição da MemoryPort; a linha mudou com esta entrega) compõe o `NewEventStoreAdapter` |
 | `memory.semantic.knowledge` | `memory/semantic/knowledge_base.go:66` | não (sem compositor) |
 | `memory.episodic.trajectories` | `memory/episodic/trajectory_store.go:75` | não |
 | `memory.compression.summaries` | `memory/compression/async_compactor.go:71` | não |

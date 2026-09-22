@@ -26,9 +26,21 @@ package eventstore
 //   - e re-correr a cópia devolve `StatusDuplicate` em cada facto, pelo que é IDEMPOTENTE —
 //     o que a torna segura no arranque e retomável se falhar a meio.
 //
-// A ORDEM RELATIVA preserva-se: lê-se por `seq` ascendente e apende-se nessa ordem. Os `seq` do
-// destino são OUTROS, e isso é deliberado — o que os consumidores usam é a ordem (varreduras do
-// fim para o início, last-write-wins, contagem de gerações), não o valor.
+// A ORDEM RELATIVA preserva-se DENTRO DO CONJUNTO COPIADO: lê-se por `seq` ascendente e
+// apende-se nessa ordem. Os `seq` do destino são OUTROS, e isso é deliberado — o que os
+// consumidores usam é a ordem (varreduras do fim para o início, last-write-wins, contagem de
+// gerações), não o valor.
+//
+// **CONTRA O QUE JÁ ESTÁ NO DESTINO, a ordem é a de CHEGADA**, e a distinção não é académica.
+// Se alguém escrever na ORIGEM depois de uma primeira passagem, esse facto é copiado numa
+// passagem seguinte e aterra DEPOIS de factos do destino que são cronologicamente anteriores.
+// Num consumidor last-write-wins isso INVERTE o desfecho: um facto velho pode ganhar a um
+// recente, e um apagamento copiado tarde pode apagar uma escrita posterior. Uma revisão
+// adversarial provou os dois cenários.
+//
+// A migração não fecha isto — não pode, sem carimbar a origem —, e por isso a única postura
+// honesta é a de baixo: depois de migrar, **ninguém escreve na origem**. Quem reverter para um
+// binário que ainda lá escreve tem de saber o que isso custa.
 //
 // # O QUE ISTO NÃO FAZ
 //
@@ -38,6 +50,7 @@ package eventstore
 // factos por copiar; quem migrar aí tem de garantir que todos os escritores já cortaram.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -117,9 +130,34 @@ func CopiarStream(ctx context.Context, store CopiadorDeStream, origem, destino s
 			return copiados, fmt.Errorf("eventstore: copiar o facto %q (step %q) de %q para %q: %w",
 				ev.Type, ev.StepID, origem, destino, aerr)
 		}
-		if res.Status != StatusDuplicate {
-			copiados++
+		if res.Status == StatusDuplicate {
+			// UM DUPLICADO NÃO É NECESSARIAMENTE O MESMO FACTO, e tratá-lo como tal descarta
+			// dados em silêncio.
+			//
+			// A chave é `(RunID, StepID)`. Se o destino já tiver um facto sob essa chave com
+			// conteúdo DIFERENTE, o do legado não atravessa — e sem esta verificação não há
+			// erro, não há contagem, não há linha de log: a migração declara-se bem-sucedida e
+			// perdeu um facto.
+			//
+			// Este ficheiro já recusa `origem == destino` por essa razão exacta («seria um
+			// no-op SILENCIOSO, e o silêncio esconderia a perda»). O padrão estava aplicado a
+			// um eixo e não ao outro; uma revisão adversarial mediu-o.
+			//
+			// FAIL-CLOSED: é a única coisa que distingue «já migrado» de «divergência». Uma
+			// re-corrida normal compara conteúdos idênticos e não dispara — a idempotência
+			// mantém-se.
+			if !bytes.Equal(res.Event.Payload, ev.Payload) || res.Event.Type != ev.Type {
+				return copiados, fmt.Errorf(
+					"eventstore: DIVERGENCIA na chave (%q, %q) ao copiar de %q para %q — o destino "+
+						"ja tem um facto DIFERENTE sob a mesma idempotency-key (tipo %q vs %q, "+
+						"%d vs %d bytes de payload). Nao se sobrepoe nem se descarta em silencio: "+
+						"alguem tem de decidir qual dos dois e o verdadeiro",
+					ev.RunID, ev.StepID, origem, destino,
+					res.Event.Type, ev.Type, len(res.Event.Payload), len(ev.Payload))
+			}
+			continue
 		}
+		copiados++
 	}
 	return copiados, nil
 }
