@@ -2522,6 +2522,28 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	redactionEngine := redaction.NewEngine(nil) // RemoveAllPolicy não exige KeySource
 	redactionPolicy := redaction.RemoveAllPolicy("aos-node-redaction-v1")
 	ingestor := redaction.NewIngestor(redactionEngine, redactionPolicy)
+	// AOS-424 — MIGRAÇÃO DOS STREAMS DE MEMÓRIA, ANTES DE COMPOR A MemoryPort.
+	//
+	// As quatro classes mudaram de `memory.<classe>` para um prefixo representável num
+	// subject NATS. A ordem é a correcção: a cópia TEM de estar completa antes de a primeira
+	// leitura reconstruir o estado, porque **um TOMBSTONE por copiar é uma memória apagada que
+	// ressuscita** — o `rebuild` reconstrói por replay, e o que não tem tombstone está vivo.
+	//
+	// FAIL-CLOSED: aborta o arranque. Compor a MemoryPort sobre uma migração parcial deixaria
+	// o agente a ler memória que alguém mandou apagar, sem erro nenhum — e o modo de falha
+	// desta camada é SILÊNCIO: o `rebuild` trata um stream em falta como «classe vazia».
+	//
+	// Idempotente: corre a cada arranque e, depois da primeira passagem, copia zero.
+	memCopiados, memErr := memadapters.MigrarStreamsDeMemoria(ctx, es)
+	if memErr != nil {
+		return nil, fmt.Errorf("aos: migracao dos streams de memoria (AOS-424): %w", memErr)
+	}
+	if memCopiados > 0 {
+		log("migracao de memoria (AOS-424): %d facto(s) copiado(s) dos streams legados "+
+			"`memory.<classe>` para os actuais, nas quatro classes. A copia preserva "+
+			"(run_id, step_id) e a ORDEM, pelo que os tombstones continuam a apagar o que "+
+			"apagavam. Idempotente: os arranques seguintes copiam zero.", memCopiados)
+	}
 	memPort := memadapters.NewEventStoreAdapter(es, memadapters.WithEventStoreTracer(tracer))
 	memService := memory.NewService(memPort)
 	ingestion, err := integration.NewIngestionGateway(ingestor, memService, tracer, worm)

@@ -18,7 +18,9 @@ import (
 	"testing"
 	"time"
 
+	memadapters "github.com/aos-ref/platform/memory/adapters"
 	"github.com/aos-ref/platform/memory/compression"
+	memdomain "github.com/aos-ref/platform/memory/domain"
 	"github.com/aos-ref/platform/memory/episodic"
 	"github.com/aos-ref/platform/memory/semantic"
 	"github.com/aos-ref/substrate/eventstore"
@@ -49,10 +51,13 @@ func pedirTrajectoria(t *testing.T, h http.Handler, id string, headers map[strin
 func TestAOS426ReadPathNaoServeStreamsInternos(t *testing.T) {
 	internos := []struct{ nome, stream, dono string }{
 		{"aprovacoes four-eyes", "gov.approvals", "integration/approval_store_durable.go"},
-		{"memoria episodica", "memory.episodic", "platform/memory/adapters"},
-		{"memoria semantica", "memory.semantic", "platform/memory/adapters"},
-		{"memoria procedural", "memory.procedural", "platform/memory/adapters"},
-		{"memoria working", "memory.working", "platform/memory/adapters"},
+		// PELO ACESSOR, e não por cópias do valor — ver [memadapters.StreamFor]. Com literais,
+		// o rename do AOS-424 fez estas quatro entradas medirem streams MORTOS, verdes, pela
+		// SEGUNDA vez no mesmo ticket.
+		{"memoria episodica", memadapters.StreamFor(memdomain.ClassEpisodic), "platform/memory/adapters"},
+		{"memoria semantica", memadapters.StreamFor(memdomain.ClassSemantic), "platform/memory/adapters"},
+		{"memoria procedural", memadapters.StreamFor(memdomain.ClassProcedural), "platform/memory/adapters"},
+		{"memoria working", memadapters.StreamFor(memdomain.ClassWorking), "platform/memory/adapters"},
 		// AS CONSTANTES VIVAS, e não cópias do valor.
 		//
 		// A primeira versão desta lista trazia os valores literais (`memory.semantic.knowledge`,

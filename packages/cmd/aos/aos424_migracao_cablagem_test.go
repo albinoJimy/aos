@@ -94,6 +94,43 @@ func TestAOS424MigracaoDeAprovacoesEFailClosed(t *testing.T) {
 	}
 }
 
+// A MIGRAÇÃO DOS STREAMS DE MEMÓRIA CORRE, E CORRE ANTES DE COMPOR A MemoryPort.
+//
+// Mesmo argumento, outro eixo, e a consequência de falhar é pior de explicar: um TOMBSTONE por
+// copiar é uma memória que alguém mandou apagar — possivelmente por `/dsar/erase` — a
+// ressuscitar. E o modo de falha desta camada é SILÊNCIO: o `rebuild` trata um stream em falta
+// como «classe vazia», sem erro.
+func TestAOS424MigracaoDeMemoriaCorreAntesDeCompor(t *testing.T) {
+	bruto, err := os.ReadFile("bootstrap.go")
+	if err != nil {
+		t.Fatalf("ler bootstrap.go: %v", err)
+	}
+	src := string(bruto)
+
+	iMigracao := strings.Index(src, "memadapters.MigrarStreamsDeMemoria(")
+	if iMigracao < 0 {
+		t.Fatal("o composition-root deixou de chamar `memadapters.MigrarStreamsDeMemoria`:\n" +
+			"a MemoryPort passa a compor-se sobre streams que podem ter factos por migrar, e um\n" +
+			"tombstone por copiar e uma memoria apagada que volta. Eixo: AOS-424.")
+	}
+	iAdaptador := strings.Index(src, "memadapters.NewEventStoreAdapter(")
+	if iAdaptador < 0 {
+		t.Fatal("nao encontrei `memadapters.NewEventStoreAdapter(` no composition-root:\n" +
+			"este teste deixa de saber se a migracao o precede. Actualize-o; NAO o relaxe.")
+	}
+	if iAdaptador < iMigracao {
+		t.Error("a MemoryPort e composta ANTES da migracao dos streams de memoria:\n" +
+			"a primeira leitura reconstroi o estado a partir de um log incompleto. Eixo: AOS-424.")
+	}
+
+	// FAIL-CLOSED: um erro tem de abortar o arranque, e não seguir com um aviso.
+	janela := src[iMigracao:min(iMigracao+400, len(src))]
+	if !strings.Contains(janela, "return nil, fmt.Errorf") {
+		t.Error("a migracao dos streams de memoria deixou de ser FAIL-CLOSED no composition-root:\n" +
+			"seguir com um aviso compoe a MemoryPort sobre uma migracao parcial.")
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

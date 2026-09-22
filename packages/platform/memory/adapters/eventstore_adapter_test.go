@@ -38,7 +38,7 @@ func TestEventStore_ReadRebuildsFromAppendOnlyLog(t *testing.T) {
 	}
 
 	// O stream do Event Store contém DOIS eventos append-only (nada foi mutado).
-	events, err := store.Read(ctx, "memory.episodic", 1)
+	events, err := store.Read(ctx, adapters.StreamFor(domain.ClassEpisodic), 1)
 	if err != nil {
 		t.Fatalf("store.Read: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestEventStore_DeleteIsTombstoneNotMutation(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	events, err := store.Read(ctx, "memory.semantic", 1)
+	events, err := store.Read(ctx, adapters.StreamFor(domain.ClassSemantic), 1)
 	if err != nil {
 		t.Fatalf("store.Read: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestEventStore_TombstoneCarriesAttribution(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	events, err := store.Read(ctx, "memory.semantic", 1)
+	events, err := store.Read(ctx, adapters.StreamFor(domain.ClassSemantic), 1)
 	if err != nil {
 		t.Fatalf("store.Read: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestEventStore_DeleteAbsentIsNoTombstone(t *testing.T) {
 	if err := a.Delete(ctx, domain.ClassSemantic, "ghost", delCtx()); err != nil {
 		t.Fatalf("Delete de stream inexistente: %v", err)
 	}
-	if _, err := store.Read(ctx, "memory.semantic", 1); !errors.Is(err, eventstore.ErrStreamNotFound) {
+	if _, err := store.Read(ctx, adapters.StreamFor(domain.ClassSemantic), 1); !errors.Is(err, eventstore.ErrStreamNotFound) {
 		t.Fatalf("delete de registo inexistente nao devia criar stream/tombstone, err=%v", err)
 	}
 	// Id inexistente num stream vivo: continua a ser no-op (só o put fica no log).
@@ -175,7 +175,7 @@ func TestEventStore_DeleteAbsentIsNoTombstone(t *testing.T) {
 	if err := a.Delete(ctx, domain.ClassSemantic, "absent", delCtx()); err != nil {
 		t.Fatalf("Delete de id inexistente: %v", err)
 	}
-	events, err := store.Read(ctx, "memory.semantic", 1)
+	events, err := store.Read(ctx, adapters.StreamFor(domain.ClassSemantic), 1)
 	if err != nil {
 		t.Fatalf("store.Read: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestEventStore_PayloadCarriesMandatoryMetadata(t *testing.T) {
 	if _, err := a.Put(ctx, recFor(domain.ClassProcedural, "p1", "agent-a", "run-1", domain.ProvenanceUntrusted)); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	events, err := store.Read(ctx, "memory.procedural", 1)
+	events, err := store.Read(ctx, adapters.StreamFor(domain.ClassProcedural), 1)
 	if err != nil {
 		t.Fatalf("store.Read: %v", err)
 	}
