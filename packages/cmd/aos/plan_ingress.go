@@ -366,4 +366,3 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// canal por onde a existência de um pedido alheio se podia inferir. O ADR-028 §2.3 fixa-o.
 	writeJSON(w, http.StatusCreated, planRequestResponse{RunID: req.RunID, Status: "accepted"})
 }
-
