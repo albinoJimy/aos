@@ -2069,6 +2069,94 @@ Sete testes em `approval_stream_migracao_test.go`, com o controlo de não-vacuid
 um grant **por consumir** continua consumível depois da migração — sem ele, uma migração que
 copiasse um `used-` para todos os grants passaria no teste central e partiria o produto.
 
+### A migração dos streams de memória, e o que NÃO podia ficar para trás
+
+O prefixo `memory.` formava as quatro classes e passou a `aos-internal/memory/`. Mesmo desenho
+da migração das aprovações — copiar preservando `(RunID, StepID)` e a ordem — mas o facto que
+não pode ficar para trás é **outro**, e vale a pena nomeá-lo:
+
+**O TOMBSTONE.** Apagar uma memória é um evento NOVO (`memory.record.deleted`) e o `rebuild`
+reconstrói o estado por replay: «written» fixa o registo, «deleted» remove-o. Se um tombstone
+não atravessar, **o registo que ele apagava RESSUSCITA**. É o análogo do `used-` das aprovações.
+
+**CALIBRAÇÃO, porque a primeira versão deste parágrafo exagerou:** dizia «uma memória que alguém,
+possivelmente um `/dsar/erase`, mandou apagar», e **as duas metades estavam erradas**. O
+`/dsar/erase` faz crypto-shred da KEK por-titular e o `subjectOf` não reconhece os eventos de
+memória, pelo que o DSAR não alcança estes streams; e o `MemoryPort.Delete` **não tem um único
+chamador** fora de testes, pelo que **não existe um tombstone em produção hoje**. O invariante
+continua a ser o certo a preservar — é o que torna o apagamento possível quando alguém o
+compuser — mas quem calibrasse a severidade pela frase antiga ficava com o número errado.
+
+E o modo de falha desta camada é **SILÊNCIO**: o `rebuild` trata `ErrStreamNotFound` como «classe
+vazia, não é erro». Sobre um backend que recusa o nome, a memória do nó não dava erro nenhum —
+desaparecia.
+
+**Uma coisa verificada antes de escrever o código:** o `StepID` do tombstone embebe o `seq` do
+registo apagado (`<class>:del:<id>:<seq>`), e os `seq` mudam na cópia. **Não é problema** — o
+`rebuild` obtém o id a apagar do PAYLOAD, nunca do `StepID`; o `seq` ali só torna a chave única
+por apagamento.
+
+**A cópia passou a viver no substrato.** A subtileza do `ErrConfig` — a que custou o defeito
+CRÍTICO da migração das aprovações — não pode existir em duas cópias, porque é assim que um
+defeito fechado volta. `eventstore.CopiarStream` concentra-a, e a migração das aprovações foi
+refeita para a usar.
+
+**E uma causa fechada, não só um sintoma.** O rename partiu QUATRO sítios que tinham o nome
+antigo escrito à mão — incluindo o teste do AOS-426, que pela **segunda vez no mesmo ticket**
+passou a medir streams MORTOS sem que nada avisasse. Em vez de corrigir os literais, exportou-se
+`memadapters.StreamFor(class)`: quem precisa de nomear um stream de memória chama-o. Uma cópia
+do valor deriva em silêncio; uma chamada não.
+
+#### O que a revisão adversarial encontrou nesta migração
+
+**Sem crítico** — o primeiro dos quatro ciclos desta série em que isso acontece. Sete eixos
+foram verificados e estão limpos, entre eles os três que eu tinha nomeado como dúvidas: o helper
+partilhado não perdeu nenhuma das cinco verificações da versão anterior, o rename não toca em
+legal holds nem em crypto-shredding (e a afirmação falsa que a migração das aprovações teve
+sobre o `restoreSubjectIndex` **não se repetiu**), e nenhum consumidor composto antes do ponto de
+cablagem lê memória.
+
+**ALTO — mudei o código e deixei o teste para trás.** A lição do `ErrConfig` foi movida para o
+`CopiarStream`, mas o único sensor dela ficou no pacote `integration` — precisamente aquele cuja
+constante legada está marcada para desaparecer. Medido: desligando o ramo do `ErrConfig`, as
+suites do `eventstore` e da memória ficavam VERDES. No dia da limpeza, o defeito CRÍTICO voltaria
+na terceira migração. Fechado com `substrate/eventstore/migracao_test.go` (sete testes),
+incluindo o caso que **não tinha sensor em lado nenhum**: um `ErrConfig` na ESCRITA do destino
+tem de propagar.
+
+**MÉDIO — um duplicado com conteúdo diferente era descartado em silêncio.** O
+`StatusDuplicate` era tratado como «já lá estava» sem comparar o payload: sem erro, sem
+contagem, sem linha de log, com a migração a declarar-se bem-sucedida. O mesmo ficheiro recusa
+`origem == destino` por essa razão exacta — o padrão estava aplicado a um eixo e não ao outro.
+Passa a ser erro, com controlo de não-vacuidade para a idempotência não partir.
+
+**MÉDIO — a ordem só se preserva DENTRO do conjunto copiado.** Contra o que já está no destino
+é ordem de CHEGADA, e num consumidor last-write-wins isso INVERTE desfechos: um facto velho pode
+ganhar a um recente, e um apagamento copiado tarde pode apagar uma escrita posterior. Provado em
+dois cenários. Está agora escrito com precisão, e é o que motiva a postura de rollback.
+
+**MÉDIO — nenhuma postura de rollback**, ao contrário da migração das aprovações. Acrescentada,
+com as duas pernas separadas: a que está VIVA (um `Put` na janela de rollback ganha, por
+last-write-wins, a escritas mais recentes) e a que está LATENTE (a ressurreição, que precisa de
+haver tombstones).
+
+**BAIXO — o sensor do AOS-426 mudou de categoria em silêncio.** Com a barra no nome novo, o
+`{id}` da stdlib deixa de casar, pelo que o 404 das quatro classes passa a vir do ROTEAMENTO e
+não da trava. Não é buraco (a trava tem teste próprio), mas o comentário que eu tinha escrito
+— «torna a deriva impossível» — dizia mais do que se conseguiu. Corrigido.
+
+**BAIXO — mutantes sobreviventes do envelope.** `RunID: ""` e `Producer{}` deixavam a suite de
+memória verde. O `RunID` não é decorativo: é o que a trava do AOS-426 lê para classificar um
+stream. Fechado, e os três mutantes morrem agora nos dois pacotes.
+
+**Evidência:** no smoke, sobre um WAL persistido, **56 factos copiados na primeira passagem,
+ZERO na segunda**, com o nó composto e os dez passos verdes nas duas. Sete testes, com o teste
+central a medir pelo caminho REAL (o `Get` do adaptador em vigor, que é o que a MemoryPort usa)
+e o controlo de não-vacuidade que importa: um registo NÃO apagado continua legível e com o
+conteúdo certo — sem ele, uma migração que copiasse um tombstone para tudo passaria no teste
+central e apagaria a memória inteira do nó. Duas mutações verificadas: não copiar tombstones, e
+migrar só uma das quatro classes.
+
 #### O que a revisão adversarial encontrou, e que os gates não viam
 
 **CRÍTICO — a migração impedia o nó de arrancar sobre JetStream. Para sempre.** O
@@ -2442,7 +2530,7 @@ A 2026-09-21, com o **gate soberano composto** e um leitor **autenticado de OUTR
 | Stream | O que guarda |
 |---|---|
 | `gov.approvals` | Grants de aprovação four-eyes, pendentes por decidir, e os **registos de retoma**, que carregam o `Goal` |
-| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | A memória do nó (compostas em produção, `bootstrap.go:2496`) |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | A memória do nó (compostas em produção, `bootstrap.go` (composição da MemoryPort; a linha mudou com esta entrega)) |
 | `memory.semantic.knowledge` · `memory.episodic.trajectories` · `memory.migrations` | Idem (sem compositor hoje) |
 | `identity` | Eventos de identidade NHI |
 | `registry` | Registo de artefactos |
@@ -2725,7 +2813,7 @@ clientes externos.
 | Stream | Onde | Composto em produção? |
 |---|---|---|
 | `gov.approvals` | `integration/approval_store_durable.go:48` (à data da medição) | **SIM**, quando o four-eyes está ligado (`bootstrap.go:1855`, `:1865`). Serve TAMBÉM os registos de retoma (`resume_records.go:132`) |
-| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | `platform/memory/adapters/eventstore_adapter.go:27` (`streamPrefix = "memory."`) | **SIM** — `bootstrap.go:2496` compõe o `NewEventStoreAdapter` |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | `platform/memory/adapters/eventstore_adapter.go:27` (`streamPrefix = "memory."`) | **SIM** — `bootstrap.go` (composição da MemoryPort; a linha mudou com esta entrega) compõe o `NewEventStoreAdapter` |
 | `memory.semantic.knowledge` | `memory/semantic/knowledge_base.go:66` | não (sem compositor) |
 | `memory.episodic.trajectories` | `memory/episodic/trajectory_store.go:75` | não |
 | `memory.compression.summaries` | `memory/compression/async_compactor.go:71` | não |
@@ -2841,7 +2929,8 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
       importam o `eventstore` nem chamam `Append` — verificado —, pelo que a omissão não é
       um buraco; mas «alcance de repositório» era demasiado forte. **Dois ficam em BASELINE**, com dono e com o custo escrito — ver
       abaixo; a baseline é dívida declarada, não verde.)*
-- [x] Quatro dos seis nomes não representáveis corrigidos.
+- [x] **Os SEIS nomes não representáveis corrigidos** — quatro por rename simples, dois com
+      MIGRAÇÃO dos factos.
       *(`memory/{semantic,episodic,compression,migrations}` → `aos-internal/memory/...`. Custou
       uma constante cada porque **nenhum é composto pelo nó** — medido: nada em `cmd/aos` nem
       em `integration` os importa, logo não há factos no nome antigo. Usou-se **barra**, e não
@@ -2939,14 +3028,18 @@ módulo, afecta o que o planeador pode produzir, e o prompt de decomposição te
 ### Estado
 
 **PARCIAL.** Entregue: o gate de alcance de repositório (registado nos quatro sítios da lista
-de checks), **cinco** dos seis renames — os quatro de memória sem compositor e o
-`gov.approvals`, este ÚLTIMO **com migração dos factos** —, a validação do `run_id` no
+de checks), **os SEIS renames** — quatro por troca de constante e dois **com migração dos
+factos** (`gov.approvals` e as quatro classes de memória) —, a validação do `run_id` no
 `POST /plans`, e a regra de nomenclatura em `tecnica/13` §3.1.1.
 
-**Por fechar, e cada uma com a sua razão escrita:** o rename do prefixo `memory.` — o único
-que resta com histórico, e que precisa da mesma decisão de migração que o `gov.approvals` já
-teve —, o aperto do contrato do `eventstore` (depende dele), a guarda no `POST /runs` (depende
-do `ValidNodeID`), o teste sobre JetStream (depende de NATS no CI) e o `Subscribe` silencioso.
+**Não resta nenhum `stream_id` da árvore com carácter não representável em uso.** As duas
+entradas que ficam na baseline do gate são constantes do nome ANTIGO, que existem só para as
+migrações conseguirem LER — nada escreve nelas, e saem quando puderem desaparecer.
+
+**Por fechar, e cada uma com a sua razão escrita:** o aperto do contrato do `eventstore` — que
+já **não está bloqueado por renames** e passa a depender só da decisão (1) —, a guarda no
+`POST /runs` (depende do `ValidNodeID`), o teste sobre JetStream (depende de NATS no CI) e o
+`Subscribe` silencioso.
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 

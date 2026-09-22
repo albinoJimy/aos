@@ -18,7 +18,9 @@ import (
 	"testing"
 	"time"
 
+	memadapters "github.com/aos-ref/platform/memory/adapters"
 	"github.com/aos-ref/platform/memory/compression"
+	memdomain "github.com/aos-ref/platform/memory/domain"
 	"github.com/aos-ref/platform/memory/episodic"
 	"github.com/aos-ref/platform/memory/semantic"
 	"github.com/aos-ref/substrate/eventstore"
@@ -49,10 +51,21 @@ func pedirTrajectoria(t *testing.T, h http.Handler, id string, headers map[strin
 func TestAOS426ReadPathNaoServeStreamsInternos(t *testing.T) {
 	internos := []struct{ nome, stream, dono string }{
 		{"aprovacoes four-eyes", "gov.approvals", "integration/approval_store_durable.go"},
-		{"memoria episodica", "memory.episodic", "platform/memory/adapters"},
-		{"memoria semantica", "memory.semantic", "platform/memory/adapters"},
-		{"memoria procedural", "memory.procedural", "platform/memory/adapters"},
-		{"memoria working", "memory.working", "platform/memory/adapters"},
+		// PELO ACESSOR, e não por cópias do valor — ver [memadapters.StreamFor]. Com literais,
+		// o rename do AOS-424 fez estas quatro entradas medirem streams MORTOS, verdes, pela
+		// SEGUNDA vez no mesmo ticket.
+		//
+		// O QUE O ACESSOR RESOLVE, E O QUE NÃO: impede a lista de medir nomes que já ninguém
+		// escreve. **Não** impede que ela mude de categoria — e mudou: com a barra no nome novo,
+		// o `{id}` da stdlib (um só segmento) deixa de casar, pelo que o 404 destas quatro passa a
+		// vir do ROTEAMENTO e não da trava do `streamDeRun`. Passaram, de facto, para o grupo
+		// «os que a barra já protegia». Não é um buraco — a trava tem teste próprio em
+		// [TestAOS424TravaDecidePelosDadosENaoPeloNome] — mas a afirmação anterior («torna a
+		// deriva impossível») dizia mais do que se conseguiu.
+		{"memoria episodica", memadapters.StreamFor(memdomain.ClassEpisodic), "platform/memory/adapters"},
+		{"memoria semantica", memadapters.StreamFor(memdomain.ClassSemantic), "platform/memory/adapters"},
+		{"memoria procedural", memadapters.StreamFor(memdomain.ClassProcedural), "platform/memory/adapters"},
+		{"memoria working", memadapters.StreamFor(memdomain.ClassWorking), "platform/memory/adapters"},
 		// AS CONSTANTES VIVAS, e não cópias do valor.
 		//
 		// A primeira versão desta lista trazia os valores literais (`memory.semantic.knowledge`,

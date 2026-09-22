@@ -138,61 +138,13 @@ func MigrarAprovacoes(ctx context.Context, store approvalAppendReader) (int, err
 			approvalStream)
 	}
 
-	antigos, err := store.Read(ctx, approvalStreamLegado, 0)
-	if err != nil {
-		if errors.Is(err, eventstore.ErrStreamNotFound) {
-			// Nó fresco, ou migração já feita num nó cujo stream antigo nunca existiu. Não é
-			// erro: é a maioria dos casos depois da primeira passagem.
-			return 0, nil
-		}
-		if errors.Is(err, eventstore.ErrConfig) {
-			// O BACKEND NÃO CONSEGUE SEQUER NOMEAR O STREAM LEGADO — e isso significa que ele
-			// NÃO PODE TER NADA.
-			//
-			// Sobre JetStream o `subjectDe` recusa o ponto LEXICALMENTE, antes de tocar na rede,
-			// e o `Read` propaga `ErrConfig`. A primeira versão desta função tolerava apenas o
-			// `ErrStreamNotFound` e propagava isto — o `Bootstrap` abortava, e **um nó JetStream
-			// com four-eyes deixava de arrancar, sempre**, tivesse ou não factos legados. Era o
-			// inverso exacto do propósito deste ficheiro: a migração que existe para destrancar o
-			// four-eyes sobre JetStream era a única coisa que o impedia de correr lá. Uma revisão
-			// adversarial provou-o; o smoke não o via porque corre sobre WAL de ficheiro.
-			//
-			// **ISTO NÃO É TOLERÂNCIA A ERRO, É A VERDADE DAQUELE BACKEND.** O `Append`
-			// (`jetstream/store.go`) e o `IngestStream` do restauro passam pelo MESMO `subjectDe`:
-			// um stream com ponto nunca pôde receber uma escrita nesse substrato, nem por
-			// restauro de backup. Logo «não consigo ler o nome legado» e «o nome legado não tem
-			// factos» são, ali, a MESMA afirmação.
-			//
-			// O âmbito é estreito de propósito: só o `Read` do nome LEGADO, e só este sentinela.
-			// Um `ErrConfig` na ESCRITA do nome novo continua a abortar — esse seria um nome em
-			// uso que o backend recusa, que é um defeito e não um facto.
-			return 0, nil
-		}
-		return 0, fmt.Errorf("integration: ler o stream legado de aprovacoes: %w", err)
-	}
-
-	copiados := 0
-	for _, ev := range antigos {
-		// PRESERVA `(RunID, StepID)`: é a idempotency-key, e é ela que faz o uso-único
-		// atravessar a migração. Preserva também o `SchemaVersion` e o `Producer` — o facto
-		// copiado tem de continuar a dizer quem o emitiu e sob que schema, senão a cópia é
-		// uma falsificação com melhor intenção.
-		res, aerr := store.Append(ctx, approvalStream, eventstore.EventInput{
-			Type:          ev.Type,
-			Payload:       ev.Payload,
-			SchemaVersion: ev.SchemaVersion,
-			RunID:         ev.RunID,
-			StepID:        ev.StepID,
-			ParentStepID:  ev.ParentStepID,
-			Producer:      ev.Producer,
-		})
-		if aerr != nil {
-			return copiados, fmt.Errorf("integration: copiar o facto %q (step %q) para %q: %w",
-				ev.Type, ev.StepID, approvalStream, aerr)
-		}
-		if res.Status != eventstore.StatusDuplicate {
-			copiados++
-		}
-	}
-	return copiados, nil
+	// A CÓPIA EM SI vive no substrato ([eventstore.CopiarStream]), e não aqui.
+	//
+	// Esteve aqui, escrita à mão, e tinha o defeito CRÍTICO que uma revisão adversarial
+	// encontrou: tolerava `ErrStreamNotFound` e não `ErrConfig`, pelo que sobre JetStream a
+	// migração abortava o arranque de qualquer nó — até de um nó fresco. Essa subtileza é
+	// exactamente o tipo de coisa que não pode existir em duas cópias: a segunda migração do
+	// mesmo ticket (a dos streams de memória) tê-la-ia de repetir, e é assim que um defeito
+	// fechado volta.
+	return eventstore.CopiarStream(ctx, store, approvalStreamLegado, approvalStream)
 }

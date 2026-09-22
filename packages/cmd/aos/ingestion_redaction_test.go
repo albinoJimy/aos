@@ -24,10 +24,16 @@ const synthNodeEmail = "carol.payroll@example.com"
 
 // spans de ingestão (literais só no TESTE — o gate event-catalog não varre _test.go).
 const (
-	nodeIngestOp        = "aos.ingest.redacted"
-	nodeIngestObjAttr   = "aos.ingest.objective_redacted"
-	memoryEpisodicStrea = "memory.episodic"
+	nodeIngestOp      = "aos.ingest.redacted"
+	nodeIngestObjAttr = "aos.ingest.objective_redacted"
 )
+
+// memoryEpisodicStream é o stream da memória episódica, PELO ACESSOR e não por cópia.
+//
+// Era um literal `"memory.episodic"`. O AOS-424 renomeou estes streams e o literal passou a
+// apontar para um stream morto — o teste só não ficou verde a medir nada porque acabou por
+// falhar a leitura. Um acessor não deriva.
+var memoryEpisodicStream = memadapters.StreamFor(domain.ClassEpisodic)
 
 // capturingModel regista o prompt MATERIALIZADO de cada turno e conclui o run no 1º
 // turno. É o probe do caminho «→run» da substituição: o objectivo que o LOOP consome
@@ -166,9 +172,9 @@ func TestNodeRedactsRunObjectiveEndToEnd(t *testing.T) {
 
 func readNodeEpisodicGoal(t *testing.T, node *Node, runID string) string {
 	t.Helper()
-	events, err := node.EventStore.Read(context.Background(), memoryEpisodicStrea, 1)
+	events, err := node.EventStore.Read(context.Background(), memoryEpisodicStream, 1)
 	if err != nil {
-		t.Fatalf("EventStore.Read(%s): %v", memoryEpisodicStrea, err)
+		t.Fatalf("EventStore.Read(%s): %v", memoryEpisodicStream, err)
 	}
 	for _, ev := range events {
 		if ev.Type != memadapters.EventTypeWritten {

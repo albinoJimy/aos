@@ -21,10 +21,25 @@ const (
 	EventTypeDeleted = "memory.record.deleted"
 )
 
-// streamPrefix prefixa o stream por classe: "memory.<class>". Um stream por
-// classe dá um log ordenado e auditável por classe e materializa a distinção
-// entre as quatro classes já ao nível do particionamento do log.
-const streamPrefix = "memory."
+// streamPrefix prefixa o stream por classe. Um stream por classe dá um log
+// ordenado e auditável por classe e materializa a distinção entre as quatro
+// classes já ao nível do particionamento do log.
+//
+// O PREFIXO MUDOU (AOS-424): era `memory.`, com um ponto. Um subject NATS não
+// representa o ponto — o `jetstream.Store.subjectDe` recusa-o —, pelo que sobre
+// JetStream estes quatro streams eram inutilizáveis. E o modo de falha era
+// SILENCIOSO: o `rebuild` trata `ErrStreamNotFound` como «classe vazia», logo a
+// memória do nó não dava erro — desaparecia.
+//
+// A BARRA não é estética: um nome sem barra é UM segmento de caminho e casa com o
+// `{id}` de `GET /runs/{id}/...`. O AOS-426 mediu estes quatro streams a serem
+// servidos a um leitor autenticado de OUTRA região. O prefixo põe-nos fora desse
+// alcance por CONSTRUÇÃO, e não só pela trava que o AOS-426 compôs.
+//
+// Os factos escritos no nome antigo são copiados por [MigrarStreamsDeMemoria] —
+// ver migracao.go, e em particular porque é que o TOMBSTONE é o facto que não
+// pode ficar para trás.
+const streamPrefix = "aos-internal/memory/"
 
 // appender é o subconjunto do Event Store de que este adaptador depende para
 // escrita. Mantê-lo mínimo desacopla o adaptador da superfície completa do store.
@@ -66,6 +81,17 @@ func NewEventStoreAdapter(store appender, opts ...EventStoreOption) *EventStoreA
 
 // streamFor devolve o stream do Event Store para uma classe.
 func streamFor(class domain.MemoryClass) string { return streamPrefix + string(class) }
+
+// StreamFor é o acessor PÚBLICO do nome do stream de uma classe.
+//
+// Existe por uma razão medida: quando o AOS-424 renomeou estes streams, QUATRO sítios fora
+// deste pacote tinham o nome antigo escrito à mão — incluindo um teste do AOS-426 que passou a
+// medir streams MORTOS sem que nada avisasse. Foi a segunda vez que o mesmo padrão apareceu no
+// mesmo ticket.
+//
+// Quem precisar de nomear um stream de memória chama isto. Uma cópia do valor deriva em
+// silêncio; uma chamada não.
+func StreamFor(class domain.MemoryClass) string { return streamFor(class) }
 
 // Version implementa ports.MemoryPort.
 func (a *EventStoreAdapter) Version() string { return portVersion }
