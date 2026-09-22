@@ -56,26 +56,49 @@ stream leria os eventos do outro. **Um nome que não se representa recusa-se; n�
 
 ### 2.4 O aperto do `Append` no backend de ficheiro fica DECIDIDO mas BLOQUEADO
 
-É a correcção da causa-raiz, e está decidido que é para fazer. **Não foi feito**, e a razão é
-uma cadeia que termina fora do código:
+É a correcção da causa-raiz, e está decidido que é para fazer. **Continua por fazer**, mas o
+que o bloqueia MUDOU — e a mudança é o essencial desta revisão do ADR.
+
+#### O bloqueio ORIGINAL, e como foi removido
+
+A cadeia era esta, e terminava fora do código:
 
 ```text
-apertar o Append no backend de ficheiro
-  → exige um `node_id` stream-safe
-  → exige apertar o `plan.ValidNodeID`
-  → exige uma versão nova do prompt de decomposição
-  → exige revalidar a decomposição com o MODELO VIVO, em produção
+apertar o Append  →  exige um `node_id` stream-safe
+                  →  exige apertar o `plan.ValidNodeID`
+                  →  exige uma versão nova do prompt de decomposição
+                  →  exige revalidar a decomposição com o MODELO VIVO, em produção
 ```
 
-**Medido:** o prompt em vigor (1.2.0) diz ao modelo, por escrito, que o `node_id` aceita
-`[A-Za-z0-9_.:-]` — ponto e dois-pontos incluídos. O `childRunID` compõe `<run>~<node_id>` e
-submete-o ao nó, e o `run_id` de um run **é** o seu `stream_id`. Logo um nó de plano chamado
-`analise.dados` produz um `stream_id` com ponto, que hoje escreve sem erro no backend de
-ficheiro (verificado: `Append("run-x~analise.dados") → committed`).
+Escolheu-se a **saída 2 da §3**: o `childRunID` passou a ESCAPAR o `node_id` de forma
+injectiva. O `node_id` continua a poder ter pontos — o prompt não muda, o planeador não muda,
+e nada precisa de ser revalidado contra o modelo vivo. O id do run filho é agora sempre um
+`stream_id` válido.
 
-Apertar o `Append` hoje **mataria esse run a meio**, em produção, que corre sobre ficheiro.
-Converteria «funciona sobre WAL, parte sobre JetStream» em «parte em todo o lado» — uma
-regressão, e não uma correcção.
+Com isso, ligou-se também a validação do `run_id` ao `POST /runs`, que estava desligada pela
+mesma razão. **A cadeia acima está fechada.**
+
+#### O que bloqueia AGORA, medido
+
+Experimentou-se ligar a validação ao `Append` do backend de ficheiro e correr as suites.
+Resultado: **39 testes falham**, em quatro módulos — e a causa dominante é inesperada e
+legítima:
+
+- **Os testes das próprias MIGRAÇÕES** (`integration`, `platform/memory`) escrevem nos nomes
+  LEGADOS para construir o mundo «antes». Com o `Append` a validar, **um teste deixa de
+  conseguir montar estado legado** — e sem esse estado não se pode provar que a migração o
+  transporta. Precisa de uma costura de teste (semear o stream sem passar pela validação), que
+  é desenho próprio e não um efeito lateral deste ADR.
+- **Cerca de vinte testes** em `cmd/aos` e `cmd/aos-orq` usam `stream_id` ou `run_id` com ponto
+  escritos à mão. São correcções mecânicas.
+- **A composição em runtime (AOS-425)** continua descoberta, e é o risco REAL que sobra: o
+  `stream_id` de admissão contém o nome do modelo, que vem da allowlist ASSINADA. Hoje nenhum
+  modelo dessa lista tem ponto (medido), mas apertar o `Append` converteria essa dívida latente
+  em avaria viva no dia em que alguém acrescentasse um `gpt-4.1` — e a falha seria na
+  ADMISSÃO, isto é, runs a deixarem de ser admitidos.
+
+O bloqueio deixou de ser «isto parte produção hoje» e passou a ser «isto exige uma costura de
+teste e o AOS-425». É uma dívida mais pequena e mais nomeada, mas continua a ser dívida.
 
 ## 3. Alternativas consideradas
 
@@ -89,10 +112,16 @@ existe não.**
 **Apertar o `IngestStream`.** Rejeitada pela mesma razão, com um agravante: os backups existentes
 contêm `gov.approvals` e `memory.*`. Validar o restauro tornaria-os irrestauráveis.
 
-**Escapar o `node_id` no `childRunID`** (por exemplo `.` → `_2e`, reversível). Continua sobre a
-mesa como alternativa à §2.4: evita mexer no prompt e no que o planeador pode emitir, ao custo de
-ids de run filho menos legíveis em logs e métricas. **Não foi escolhida nem rejeitada** — é uma
-das duas saídas que a §2.4 deixa em aberto.
+**Escapar o `node_id` no `childRunID`** — **ESCOLHIDA e implementada.** Evita mexer no prompt e
+no que o planeador pode emitir, ao custo de ids de run filho menos legíveis nos casos que
+precisam de escape (os comuns atravessam intactos).
+
+A marca é `+`, e a escolha não é arbitrária: **não pertence à gramática do `node_id`**, pelo que
+um id válido nunca é tocado. A primeira tentativa usou `_`, que pertence — e o próprio teste de
+injectividade apanhou a consequência: `a.b` escapava para `a_2eb` e o `node_id` `a_2eb`
+atravessava intacto, **colidindo no mesmo run filho**. Dois nós do plano no mesmo stream, que é
+pior do que o problema original. O `+` também é literal num segmento de caminho de URL — ao
+contrário do `%`, que partiria o `GET /runs/{id}` com que o executor consulta o estado do filho.
 
 **Deixar como está.** Rejeitada: a assimetria é a causa-raiz, e cada `stream_id` novo é uma
 oportunidade de a classe reabrir. O gate `stream-names` cobre os nomes **literais**; a

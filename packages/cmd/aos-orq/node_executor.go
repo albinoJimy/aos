@@ -34,6 +34,7 @@ import (
 	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
 	arstate "github.com/aos-ref/kernel/agent-runtime/state"
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // nodeRunner é o que o executor precisa do nó: submeter e ler o estado. O [nodeClient] é a
@@ -109,8 +110,119 @@ func resumoDaExecucao(g *orchestrator.GraphBuilder, payload plannerevents.Materi
 // node_id, e o `serve` recusa um run_id que o contenha: a decomposição é única.
 const separadorDoRunFilho = "~"
 
+// marcaDeEscape é o carácter que introduz uma sequência escapada no id do run filho.
+//
+// # PORQUE É `+`, E PORQUE NÃO É `_`
+//
+// A primeira versão usou `_`, que PERTENCE à gramática do `node_id`. O próprio teste de
+// injectividade a apanhou: com o atalho de «não há nada a escapar, devolve intacto», o
+// `node_id` `a_2eb` atravessava tal e qual, e o `node_id` `a.b` escapava PARA `a_2eb` — dois nós
+// do plano no MESMO run filho, e portanto no mesmo stream. A colisão exacta que este desenho
+// existe para evitar.
+//
+// Escapar a marca sempre (`_` → `__`) resolveria a injectividade, mas mudaria todos os ids cujo
+// `node_id` tem sublinhado — que a gramática admite e são comuns.
+//
+// `+` NÃO pertence à gramática do `node_id` (`[A-Za-z0-9_.:-]`), pelo que um `node_id` válido
+// nunca o contém e nunca é tocado. Continua a escapar-se a si mesmo (`+` → `++`), porque o
+// `Decode` do documento de plano NÃO impõe a gramática — ela é invariante semântica, verificada
+// pelo AOS-231 — e um `node_id` fora dela pode chegar aqui.
+//
+// E é representável onde tem de ser: o `subjectDe` só recusa `. * >` e espaço em branco, e num
+// segmento de caminho de URL o `+` é literal — ao contrário do `%`, que iniciaria uma sequência
+// percent-encoded e partiria o `GET /runs/{id}` com que o executor consulta o estado do filho.
+const marcaDeEscape = '+'
+
+// escaparParaStream torna um `node_id` seguro para entrar num `stream_id`, de forma INJECTIVA.
+//
+// # PORQUE É QUE ISTO EXISTE (AOS-424, ADR-029 §2.4)
+//
+// O `run_id` de um run **é** o seu `stream_id` no Event Store, e um `stream_id` não pode conter
+// `.`, `*`, `>` nem espaço em branco — o backend replicado recusa-os, porque um subject NATS
+// não os representa. Mas a gramática do `node_id` (`plan.ValidNodeID`, AOS-231) admite `.` e
+// `:`, e o prompt de decomposição em vigor diz ao modelo, por escrito, que os pode usar.
+//
+// Sem escape, um nó de plano chamado `analise.dados` produzia o run filho
+// `run-x~analise.dados` — um `stream_id` com ponto, que funciona sobre o substrato de ficheiro
+// e falha sobre JetStream. Era esse o conflito de invariantes que bloqueava o aperto do
+// contrato do Event Store: dois invariantes registados, um pelo AOS-231 e outro pelo ADR-007.
+//
+// Das duas saídas que o ADR-029 §3 deixou em aberto, esta é a que **não mexe no que o planeador
+// pode emitir**: o `node_id` continua a poder ter pontos, e quem paga é a legibilidade do id do
+// run filho.
+//
+// # PORQUE É QUE É INJECTIVO, E NÃO SÓ «substituir os maus»
+//
+// Substituir `.` por `-` faria os nós `a.b` e `a-b` colidirem no MESMO run filho — dois nós do
+// plano a escrever no mesmo stream. É a mesma razão pela qual o `subjectDe` recusa em vez de
+// escapar: aproximar um nome cria colisões silenciosas.
+//
+// A marca escapa-se a si mesma (`_` → `__`), o que torna a codificação reversível e, portanto,
+// injectiva. Ninguém a reverte hoje — procurou-se, e o separador só aparece numa guarda —, mas
+// a reversibilidade é o que **prova** que não há colisões, e deixa um humano descodificar um id
+// num log.
+//
+// A lista dos caracteres a escapar vem de [eventstore.CaracteresNaoRepresentaveis], a fonte
+// canónica: se a regra apertar, isto aperta com ela sem ninguém se lembrar.
+func escaparParaStream(nodeID string) string {
+	precisa := false
+	for i := 0; i < len(nodeID); i++ {
+		// A MARCA CONTA. Sem isto, o atalho devolvia intacto um `node_id` que JÁ contivesse a
+		// marca, e ele colidia com o escape de outro — foi assim que a primeira versão deixou
+		// `a.b` e `a_2eb` no mesmo run filho.
+		if deveEscapar(nodeID[i]) || nodeID[i] == marcaDeEscape {
+			precisa = true
+			break
+		}
+	}
+	if !precisa {
+		// O caso esmagadoramente comum: um `node_id` como `pesquisa` ou `n1` atravessa
+		// intacto, e o id do run filho continua a ser exactamente o que era.
+		return nodeID
+	}
+	var b strings.Builder
+	b.Grow(len(nodeID) + 8)
+	for i := 0; i < len(nodeID); i++ {
+		c := nodeID[i]
+		switch {
+		case c == marcaDeEscape:
+			b.WriteByte(marcaDeEscape)
+			b.WriteByte(marcaDeEscape)
+		case deveEscapar(c):
+			b.WriteByte(marcaDeEscape)
+			b.WriteString(hex.EncodeToString([]byte{c}))
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// deveEscapar diz se um byte não pode aparecer cru num `stream_id`.
+//
+// Inclui o `~` — que a gramática do `node_id` NÃO admite, mas que o `Decode` do documento de
+// plano não impõe (a gramática é invariante semântica, verificada pelo AOS-231). Se um
+// `node_id` com `~` chegasse aqui, a decomposição `<run>~<nó>` deixaria de ser única; escapá-lo
+// custa nada e fecha-o.
+func deveEscapar(c byte) bool {
+	return strings.IndexByte(eventstore.CaracteresNaoRepresentaveis, c) >= 0 ||
+		c == separadorDoRunFilho[0]
+}
+
 // childRunID é o id do run do nó `aos` que faz o trabalho de um nó do plano.
-func childRunID(runID, nodeID string) string { return runID + separadorDoRunFilho + nodeID }
+//
+// O `node_id` vai ESCAPADO (ver [escaparParaStream]): o id resultante é sempre um `stream_id`
+// válido, em qualquer substrato. Um `node_id` sem caracteres problemáticos — o caso comum —
+// atravessa intacto, pelo que os ids que já existiam não mudam.
+//
+// COMPATIBILIDADE, declarada: um plano EM VOO no momento do deploy, cujo `node_id` contenha um
+// carácter escapável, passa a computar um id diferente — e o executor perde o rasto ao run
+// filho que já tinha submetido (consulta o estado pelo id novo e não o encontra). A janela é
+// pequena, porque um `serve` possui um run e termina, mas existe. Planos com `node_id` sem
+// pontos (todas as fixtures da árvore) não são afectados de todo.
+func childRunID(runID, nodeID string) string {
+	return runID + separadorDoRunFilho + escaparParaStream(nodeID)
+}
 
 // executorDeNos acompanha os runs filhos de UM plano, sob a posse do run.
 type executorDeNos struct {

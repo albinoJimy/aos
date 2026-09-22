@@ -3021,8 +3021,23 @@ produção.
 2. **Escapar o `node_id` no `childRunID`** de forma reversível (`.` → `_2e`). Não mexe no prompt
    nem no que o planeador emite; torna os ids de run filho menos legíveis em logs e métricas.
 
-A primeira é mais limpa e mais cara; a segunda é mais barata e mais feia. **Não se escolheu por
-ti**, e o ADR-029 §4 declara a dívida em vez de a deixar parecer fechada.
+**ESCOLHIDA a segunda** (escape no `childRunID`), e implementada. O `node_id` continua a poder
+ter pontos: o prompt não muda, o planeador não muda, e nada precisa de ser revalidado contra o
+modelo vivo. Com isso ligou-se também a validação do `run_id` ao `POST /runs`, que estava
+desligada pela mesma razão — fechando o critério que este ticket tinha em `[~]`.
+
+**A marca do escape é `+`, e a primeira tentativa (`_`) estava ERRADA.** O `_` pertence à
+gramática do `node_id`, e o teste de injectividade apanhou a consequência: `a.b` escapava para
+`a_2eb` e o `node_id` `a_2eb` atravessava intacto — **colidiam no mesmo run filho**, dois nós do
+plano no mesmo stream. Pior do que o problema original. O `+` não pertence à gramática, logo um
+id válido nunca é tocado.
+
+**O aperto do `Append` continua por fazer, mas o bloqueio mudou de natureza.** Mediu-se:
+ligando a validação ao `Append`, falham **39 testes** — e a causa dominante é que **os testes
+das próprias migrações escrevem nos nomes LEGADOS** para construir o mundo «antes». Com o
+`Append` a validar, um teste deixa de conseguir montar estado legado, e sem ele não se prova que
+a migração o transporta. Precisa de uma costura de teste própria. O resto são ~20 correcções
+mecânicas e o AOS-425, que continua a ser o risco real.
 
 ### O CONFLITO DE INVARIANTES que este ticket descobriu, e que bloqueia metade do critério do `run_id`
 

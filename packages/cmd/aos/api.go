@@ -640,11 +640,20 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "run_id reservado")
 		return
 	}
-	// AOS-424: o `run_id` É o nome de um stream, e nem todo o texto o pode ser — mas esta
-	// rota NÃO o valida, e a assimetria face ao `POST /plans` é deliberada e medida. Ver
-	// [runIDInvalido] em plan_ingress.go, que explica o conflito de invariantes que a
-	// bloqueia: o `ValidNodeID` permite `.` e `:` num `node_id`, e o `childRunID` compõe
-	// `<run>~<node_id>` — validar aqui partiria o caminho do plano em produção.
+	// AOS-424: o `run_id` É o nome de um stream, e nem todo o texto o pode ser.
+	//
+	// Esta guarda esteve DESLIGADA nesta rota, e a razão está registada: o `plan.ValidNodeID`
+	// admite `.` e `:` num `node_id`, o `childRunID` compõe `<run>~<node_id>`, e o executor de
+	// nós submete esse id POR AQUI — validar partia os planos cujos nós usassem esses
+	// caracteres, em produção.
+	//
+	// **Deixou de partir.** O `childRunID` passou a ESCAPAR o `node_id` (ADR-029 §3, saída 2):
+	// o id do run filho é agora sempre um `stream_id` válido, sem mexer no que o planeador pode
+	// emitir. A razão que bloqueava esta guarda desapareceu, e a guarda liga-se.
+	if runIDInvalido(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id invalido")
+		return
+	}
 	// Uma entrada vazia na lista-branca não restringe nada e não é um nome de tool: recusa, em
 	// vez de a aceitar como se fosse uma restrição.
 	for _, t := range req.Tools {
