@@ -2771,12 +2771,14 @@ faça.
 
 ## AOS-424 — Nove streams não são representáveis no JetStream, e o `run_id` do cliente também não é validado
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa ADR nenhum: corrige uma classe de defeito latente e propõe uma
-     regra de nomenclatura. As citações ao ADR-007 (Event Store replicado) e ao ADR-001 são
-     RESTRIÇÕES. A decisão (1) abaixo — validar o `stream_id` no contrato do `eventstore` — É
-     uma decisão de arquitectura com quebra de compatibilidade: se for aceite, abre-se ADR
-     próprio e este marcador sai. -->
+<!-- O marcador `rtm: adrs-mencionados` SAIU, e o próprio comentário anterior previa que saísse:
+     dizia que «se a decisão (1) for aceite, abre-se ADR próprio e este marcador sai». Foi
+     aceite, e o ADR-029 é dele.
+
+     Este ticket IMPLEMENTA o ADR-029. O preço de tirar o marcador é que o ADR-001 e o ADR-007,
+     que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket
+     na RTM. Fica dito porque o parser é textual e o marcador é tudo-ou-nada: não há forma de
+     separar os dois papéis no mesmo bloco. É o mesmo preço que o AOS-417 pagou pelo ADR-028. -->
 
 | Campo | Valor |
 |---|---|
@@ -2905,10 +2907,14 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (1) tomada e registada — em ADR se for a causa-raiz.
-      *(**POR DECIDIR.** Apertar o contrato do `eventstore` torna ilegítimos os dois nomes que
-      ainda têm histórico em produção, pelo que a ordem obrigatória é renomear PRIMEIRO. Esses
-      dois renames precisam da decisão (3), e por isso este critério fica aberto.)*
+- [~] Decisão (1) tomada e registada — em ADR se for a causa-raiz.
+      *(**TOMADA e registada em [ADR-029](../docs/adr/ADR-029-nomenclatura-de-stream-id.md).**
+      A metade que se pôde fazer está feita: a regra deixou de existir em TRÊS cópias (o
+      `ContainsAny` do `subjectDe`, uma constante no nó, e a extracção do gate) e passou a ser
+      `eventstore.ValidarStreamID` — do CONTRATO do Event Store, e não do backend JetStream, que
+      é só onde se manifestou primeiro.
+      **A metade que FALTA é o aperto do `Append` no backend de ficheiro, e está BLOQUEADA** por
+      uma cadeia que termina fora do código — ver a secção abaixo e o ADR-029 §2.4.)*
 - [~] Há **gate que impõe a regra**, e quatro dos seis nomes estão corrigidos — mas **NÃO é
       verdade que nenhum `stream_id` da árvore contenha carácter não representável**: dois
       contêm, e estão em baseline. A primeira versão desta caixa dizia `[x]` com esta mesma
@@ -2978,6 +2984,45 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
       *(**NÃO FEITO.** O `Subscribe` não chama o `subjectDe` — usa `FilterSubject: prefixo + ".>"`
       e filtra em processo —, pelo que um filtro por um nome impossível **não dá erro: nunca casa
       nada**. Fechá-lo é mexer no backend replicado e não cabe num ticket de nomes.)*
+
+### O aperto do contrato: o que se fez, e a cadeia que bloqueia o resto
+
+**FEITO — a regra tem uma fonte.** `eventstore.ValidarStreamID` +
+`eventstore.CaracteresNaoRepresentaveis`, em `substrate/eventstore/stream_id.go`. O `subjectDe`
+chama-a, o nó chama-a (deixou de ter cópia) e o gate `stream-names` lê a declaração canónica.
+Registado no **ADR-029**.
+
+Quando a mudança foi feita, **o gate e o guard do AOS-417 ficaram VERMELHOS** com «nao encontrei
+a regra» — falharam fechados, que é exactamente o que se lhes pedia, e é a prova de que as
+âncoras não eram decorativas. O guard passou a **CHAMAR** a regra em vez de a extrair por regex:
+não há cópia para derivar nem parser para partir.
+
+**NÃO FEITO — o aperto do `Append` no backend de ficheiro**, que é a correcção da causa-raiz. A
+cadeia termina fora do código:
+
+```text
+apertar o Append  →  exige um `node_id` stream-safe
+                  →  exige apertar o `plan.ValidNodeID`
+                  →  exige uma versão nova do prompt de decomposição
+                  →  exige revalidar a decomposição com o MODELO VIVO, em produção
+```
+
+**Medido:** o prompt em vigor (1.2.0) diz ao modelo, por escrito, que o `node_id` aceita
+`[A-Za-z0-9_.:-]` — ponto e dois-pontos **convidados**, não só tolerados. E verificou-se que um
+`run_id` com ponto escreve sem erro hoje no backend de ficheiro
+(`Append("run-x~analise.dados") → committed`). Apertar agora **mataria esse run a meio**, em
+produção.
+
+**Duas saídas, e a escolha é do dono:**
+
+1. **Apertar o `ValidNodeID`** e emitir prompt novo, com revalidação da decomposição contra o
+   modelo vivo. Mantém os ids de run legíveis; muda o que o planeador pode emitir, e um plano com
+   `node_id` mal formado passa a ser recusado na validação — cedo e com razão legível.
+2. **Escapar o `node_id` no `childRunID`** de forma reversível (`.` → `_2e`). Não mexe no prompt
+   nem no que o planeador emite; torna os ids de run filho menos legíveis em logs e métricas.
+
+A primeira é mais limpa e mais cara; a segunda é mais barata e mais feia. **Não se escolheu por
+ti**, e o ADR-029 §4 declara a dívida em vez de a deixar parecer fechada.
 
 ### O CONFLITO DE INVARIANTES que este ticket descobriu, e que bloqueia metade do critério do `run_id`
 

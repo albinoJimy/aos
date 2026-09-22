@@ -13,9 +13,10 @@ package main
 import (
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // UM `run_id` QUE NÃO PODE SER UM STREAM É RECUSADO NO `POST /plans`.
@@ -74,48 +75,65 @@ func TestAOS424RunIDLegitimoContinuaAceite(t *testing.T) {
 	}
 }
 
-// A REGRA DUPLICADA NÃO PODE DERIVAR DA FONTE.
+// A REGRA NÃO PODE VOLTAR A SER DUPLICADA.
 //
-// O nó não pode importar o backend JetStream para lhe perguntar a regra — um `import` só para
-// isto arrastaria o cliente NATS para o caminho de ingresso —, pelo que
-// [caracteresNaoRepresentaveis] é uma CÓPIA. Uma cópia sem detector apodrece; este teste é o
-// detector, e lê o original em vez de o repetir.
-func TestAOS424RegraDuplicadaCoincideComAFonte(t *testing.T) {
-	const fonte = "../../substrate/eventstore/jetstream/store.go"
-	bruto, err := os.ReadFile(fonte)
+// # O QUE ESTE TESTE MEDE, E PORQUE MUDOU
+//
+// A primeira versão comparava a cópia do nó com a fonte, para que não derivassem. Entretanto a
+// cópia desapareceu: a regra vive em [eventstore.ValidarStreamID] e o nó chama-a. O que passou
+// a importar não é que duas cópias coincidam — é que **não volte a haver duas**.
+//
+// O AOS-424 mediu duas vezes o que a duplicação custa: a subtileza do `ErrConfig` deixou um
+// defeito CRÍTICO voltar a meio do mesmo ticket, e a regra dos caracteres esteve a um
+// `ContainsAny` acrescentado de fazer o gate medir só o ponto, em verde.
+func TestAOS424RegraDoStreamIDNaoEDuplicadaNoNo(t *testing.T) {
+	entradas, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("ler %s: %v — sem a fonte este teste nao tem o que comparar", fonte, err)
+		t.Fatalf("ler o pacote: %v", err)
 	}
-	m := regexp.MustCompile(`ContainsAny\(streamID, "([^"]*)"\)`).FindSubmatch(bruto)
-	if m == nil {
-		t.Fatalf("nao encontrei a regra em %s: a guarda do subject NATS mudou de forma.\n"+
-			"Actualize este teste para ler a regra nova — NAO o relaxe.", fonte)
+	// Os caracteres proibidos, escritos aqui SÓ para os procurar — não para os impor.
+	const assinatura = `". *>`
+	var reincidentes []string
+	for _, e := range entradas {
+		nome := e.Name()
+		if e.IsDir() || !strings.HasSuffix(nome, ".go") || nome == "aos424_run_id_test.go" {
+			continue
+		}
+		bruto, rerr := os.ReadFile(nome)
+		if rerr != nil {
+			t.Fatalf("ler %s: %v", nome, rerr)
+		}
+		if strings.Contains(string(bruto), assinatura) {
+			reincidentes = append(reincidentes, nome)
+		}
 	}
-	daFonte := strings.NewReplacer(`\t`, "\t", `\r`, "\r", `\n`, "\n").Replace(string(m[1]))
-
-	// CONTROLO: a regra lida tem de apanhar um valor conhecidamente mau. Se a extracção
-	// partir, o teste falha em vez de comparar duas coisas vazias.
-	if !strings.ContainsAny("a.b", daFonte) {
-		t.Fatalf("a regra lida (%q) nao apanha um valor com ponto — a extraccao esta errada", daFonte)
-	}
-
-	if ordenar(daFonte) != ordenar(caracteresNaoRepresentaveis) {
-		t.Errorf("a regra do no (%q) DIVERGIU da fonte (%q):\n"+
-			"um run_id que o no aceite e o subject NATS recuse volta a ser aceite sobre WAL e a "+
-			"partir sobre JetStream — que e exactamente o defeito que o AOS-424 fechou.",
-			caracteresNaoRepresentaveis, daFonte)
+	if len(reincidentes) > 0 {
+		t.Errorf("a lista de caracteres proibidos voltou a ser escrita no no (%v):\n"+
+			"a regra vive em `eventstore.ValidarStreamID` e chama-se de la. Uma copia deriva em\n"+
+			"silencio — foi assim que o AOS-424 deixou um defeito CRITICO voltar a meio do proprio\n"+
+			"ticket. Se precisar da regra, chame-a; se precisar de a MUDAR, mude-a na fonte.",
+			reincidentes)
 	}
 }
 
-// ordenar normaliza um conjunto de caracteres para comparação independente da ordem.
-func ordenar(s string) string {
-	r := []rune(s)
-	for i := 1; i < len(r); i++ {
-		for j := i; j > 0 && r[j] < r[j-1]; j-- {
-			r[j], r[j-1] = r[j-1], r[j]
+// O NÓ USA A FONTE, e não uma aproximação dela.
+//
+// Controlo de não-vacuidade do teste acima: sem isto, apagar o `runIDInvalido` inteiro também
+// deixaria de haver duplicação — e de haver validação.
+func TestAOS424RunIDInvalidoUsaAFonte(t *testing.T) {
+	for _, mau := range []string{"a.b", "a b", "a*b", "a>b", "a\tb"} {
+		if !runIDInvalido(mau) {
+			t.Errorf("o run_id %q devia ser recusado: e o que `eventstore.ValidarStreamID` diz", mau)
+		}
+		if eventstore.ValidarStreamID(mau) == nil {
+			t.Errorf("a fonte deixou de recusar %q — e a fonte que manda", mau)
 		}
 	}
-	return string(r)
+	for _, bom := range []string{"run-1", "run_2", "aos-internal/x", "RUN3"} {
+		if runIDInvalido(bom) {
+			t.Errorf("o run_id legitimo %q foi recusado", bom)
+		}
+	}
 }
 
 // A ASSIMETRIA FICA FIXADA POR TESTE, E O TESTE LÊ A CAUSA — NÃO A CONSEQUÊNCIA.

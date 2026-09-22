@@ -116,20 +116,12 @@ func runIDReservado(runID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(runID), streamsReservados)
 }
 
-// caracteresNaoRepresentaveis são os que um subject NATS não representa.
+// A regra do que um `stream_id` pode ser vive em [eventstore.ValidarStreamID], e o nó CHAMA-A.
 //
-// O nome NÃO contém «stream» de propósito: o gate `stream-names` varre a árvore à procura de
-// constantes cujo identificador o contenha, e esta guarda um CONJUNTO DE CARACTERES, não um
-// nome de stream — acusava-se a si mesma. Chamar-lhe outra coisa é mais honesto do que
-// ensinar o gate a ignorá-la.
-//
-// A regra é a do `jetstream.Store.subjectDe`, e está aqui DUPLICADA de propósito — o nó não
-// pode importar o backend JetStream para lhe perguntar, e um `import` só para isto arrastaria
-// o cliente NATS para o caminho de ingresso. O que impede a duplicação de derivar é o gate
-// `scripts/ci/stream-names`, que lê a regra da FONTE e verifica a árvore inteira, mais o
-// [TestAOS417NomeDoStreamERepresentavelNoNATS], que faz o mesmo para as constantes deste
-// ficheiro. Duplicar com detector é diferente de duplicar e esperar.
-const caracteresNaoRepresentaveis = ". *>\t\r\n"
+// Esteve aqui duplicada, com o argumento de que o nó não pode importar o backend JetStream só
+// para lhe perguntar a regra. O argumento era válido e a conclusão era errada: a regra não é
+// do backend, é do CONTRATO do Event Store — e o nó já importa `substrate/eventstore`. Passou
+// para lá, e as três cópias (esta, a do `subjectDe` e a extracção do gate) passaram a uma.
 
 // runIDInvalido indica se um `run_id` não pode ser o nome de um stream.
 //
@@ -181,7 +173,7 @@ const caracteresNaoRepresentaveis = ". *>\t\r\n"
 // Runs JÁ CRIADOS com nomes assim não são afectados por esta guarda (ela só actua na
 // submissão); o que os afecta é a trava de leitura do AOS-426, e isso está declarado lá.
 func runIDInvalido(runID string) bool {
-	return strings.ContainsAny(runID, caracteresNaoRepresentaveis)
+	return eventstore.ValidarStreamID(runID) != nil
 }
 
 // planRequest é o corpo aceite. Deliberadamente MÍNIMO: o que o orquestrador precisa para
