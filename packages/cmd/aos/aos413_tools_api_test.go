@@ -51,7 +51,11 @@ func aos413CortaAntesDoRM(t *testing.T, tools []string) {
 	antesP, antesD, _ := node.Runtime.Monitor().Metrics().Snapshot()
 
 	rec := postJSON(h, "POST", "/runs", map[string]any{
-		"run_id":        "run-413.n1",
+		// AOS-424: o `run_id` É o nome de um stream, e o ponto não é representável num
+		// subject NATS. Este id imitava um run filho de plano (`<run>~<nó>`) com um
+		// ponto — e o `childRunID` passou a ESCAPAR o `node_id`, pelo que o id real
+		// para um nó `n1` é este. O ponto aqui era uma invenção do teste, não do produto.
+		"run_id":        "run-413~n1",
 		"objective":     "o trabalho de um no do plano",
 		"principal_nhi": medAgentID,
 		"credential":    tok.Compact,
@@ -62,7 +66,7 @@ func aos413CortaAntesDoRM(t *testing.T, tools []string) {
 	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, ok, werr := svc.Wait(waitCtx, "run-413.n1"); werr != nil || !ok {
+	if _, ok, werr := svc.Wait(waitCtx, "run-413~n1"); werr != nil || !ok {
 		t.Fatalf("o run devia ter sido hospedado: ok=%v err=%v", ok, werr)
 	}
 	if model.turns < 2 {

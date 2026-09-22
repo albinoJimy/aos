@@ -136,96 +136,54 @@ func TestAOS424RunIDInvalidoUsaAFonte(t *testing.T) {
 	}
 }
 
-// A ASSIMETRIA FICA FIXADA POR TESTE, E O TESTE LÊ A CAUSA — NÃO A CONSEQUÊNCIA.
+// O `POST /runs` VALIDA, E A RAZÃO QUE O IMPEDIA ESTÁ FECHADA PELO ESCAPE.
 //
-// O `POST /runs` ainda aceita um `run_id` com ponto, e tem de continuar a aceitar enquanto o
-// `plan.ValidNodeID` admitir `.` e `:` num `node_id`: o `childRunID` compõe `<run>~<node_id>` e
-// submete-o por esta rota, pelo que apertar aqui partiria os planos cujos nós usem esses
-// caracteres — em produção, que corre sobre WAL, onde esses ids funcionam.
+// # HISTÓRIA, porque este teste já afirmou o contrário
 //
-// # PORQUE É QUE ESTE TESTE LÊ UM FICHEIRO DE OUTRO MÓDULO
+// Esta rota esteve deliberadamente SEM validação, e o teste que aqui estava exigia que assim
+// continuasse enquanto o `plan.ValidNodeID` admitisse `.` e `:`: o `childRunID` compõe
+// `<run>~<node_id>` e submete-o POR AQUI, pelo que validar partia os planos cujos nós usassem
+// esses caracteres.
 //
-// A primeira versão afirmava, no ticket, que «fica vermelho no dia em que a causa
-// desaparecer». **Era falso, e uma revisão adversarial provou-o:** apertou o `ValidNodeID` e
-// este teste ficou VERDE. Reagia à CONSEQUÊNCIA (alguem ligar a guarda), não à CAUSA (o
-// charset do `node_id`). Quem apertasse o `ValidNodeID` veria vermelho apenas noutro módulo,
-// com uma mensagem que não fala de `run_id` nem desta rota — ajustava aquele caso de teste,
-// seguia, e a rota ficava sem guarda para sempre.
+// O ADR-029 §3 deixou DUAS saídas: apertar o `ValidNodeID` (com prompt novo e revalidação com o
+// modelo vivo) ou ESCAPAR o `node_id` no `childRunID`. Escolheu-se a segunda — e o teste
+// anterior **só antecipava a primeira**: lia o charset do `ValidNodeID` e, como ele continua a
+// admitir pontos, teria mantido esta rota permissiva para sempre, muito depois de a razão ter
+// desaparecido.
 //
-// Agora o teste LÊ o charset da fonte. Não se importa `control-plane/orchestrator/plan`: o
-// `layer-lint` (ADR-018/ADR-019) proíbe o nó de o importar, e a proibição é o que mantém a
-// fronteira honesta. Ler o ficheiro é a mesma técnica de
-// [TestAOS424RegraDuplicadaCoincideComAFonte] e do guard do AOS-417 — e é o que torna o
-// acoplamento VISÍVEL em vez de documentado.
-func TestAOS424PostRunsAindaNaoValidaEPorque(t *testing.T) {
-	const fonte = "../../control-plane/orchestrator/plan/plandocument.go"
-	bruto, err := os.ReadFile(fonte)
-	if err != nil {
-		t.Fatalf("ler %s: %v \u2014 sem a causa este teste nao sabe o que afirmar", fonte, err)
-	}
-	corpo := string(bruto)
-	j := strings.Index(corpo, "func ValidNodeID(")
-	if j < 0 {
-		t.Fatalf("nao encontrei `func ValidNodeID(` em %s: a grammar do node_id mudou de forma.\n"+
-			"Actualize este teste \u2014 NAO o relaxe: e ele que amarra a decisao de nao validar o "+
-			"run_id no POST /runs \u00e0 razao que a justifica.", fonte)
-	}
-	// O charset admitido, tal como a função o escreve: `case c == '_' || c == '-' || ...`.
-	grammar := corpo[j:]
-	if k := strings.Index(grammar, "\n}"); k > 0 {
-		grammar = grammar[:k]
-	}
-	admitePonto := strings.Contains(grammar, "c == '.'")
-	admiteDoisPontos := strings.Contains(grammar, "c == ':'")
-
-	// CONTROLO DE NÃO-VACUIDADE: a extracção tem de ver o charset. Se não vir NADA do que
-	// espera, falha em vez de concluir «já não admite» por não ter conseguido ler.
-	if !strings.Contains(grammar, "c == '_'") && !strings.Contains(grammar, "c == '-'") {
-		t.Fatalf("a extraccao do charset de ValidNodeID falhou (nem `_` nem `-` encontrados):\n" +
-			"este teste nao pode decidir nada. Corrija a extraccao.")
-	}
-
+// É uma lição sobre guardas que citam uma causa: ela pode deixar de valer por um caminho que o
+// guarda não conhece. Este mede a PROPRIEDADE — «o id do run filho é sempre válido» — e não o
+// mecanismo que a produz.
+func TestAOS424PostRunsValidaEOPlanoContinuaAPassar(t *testing.T) {
 	no, _ := newAPINode(t, &countingModel{}, false)
 	defer func() { _ = no.Close() }()
 	_, h := newAPI(t, no)
 
-	// O id que um nó de plano chamado `analise.dados` produziria.
-	const filho = "run-424~analise.dados"
-	rec := postJSON(h, "POST", "/runs", map[string]any{
-		"run_id": filho, "principal_nhi": "nhi:x",
+	// (a) O que a guarda passa a recusar: um `run_id` de cliente que não pode ser um stream.
+	mau := postJSON(h, "POST", "/runs", map[string]any{
+		"run_id": "cliente.pedido-1", "principal_nhi": "nhi:x",
 	})
-
-	if admitePonto || admiteDoisPontos {
-		// A CAUSA AINDA EXISTE: a rota tem de continuar permissiva.
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("o `POST /runs` tem de continuar a aceitar %q (veio %d): o ValidNodeID ainda "+
-				"admite %s, e o childRunID compoe `<run>~<node_id>` para esta rota. Ligar a guarda "+
-				"agora parte os planos cujos nos usem esses caracteres.",
-				filho, rec.Code, charsAdmitidos(admitePonto, admiteDoisPontos))
-		}
-		return
+	if mau.Code != http.StatusBadRequest {
+		t.Errorf("o `POST /runs` devia recusar um run_id com ponto (veio %d): o run_id E o nome "+
+			"de um stream, e o escape do childRunID fechou a razao que impedia esta guarda",
+			mau.Code)
 	}
 
-	// A CAUSA DESAPARECEU: o `ValidNodeID` já não admite `.` nem `:`, logo nenhum `node_id`
-	// legitimo produz um `run_id` irrepresentável — e a guarda TEM de passar a valer aqui.
-	if rec.Code == http.StatusCreated {
-		t.Fatalf("o `ValidNodeID` deixou de admitir `.` e `:`, mas o `POST /runs` continua a "+
-			"aceitar %q.\n"+
-			"A razao que bloqueava a guarda DESAPARECEU: ligue `runIDInvalido(req.RunID)` ao "+
-			"`handleSubmit` (api.go), como o `POST /plans` ja faz, e actualize este teste.\n"+
-			"Eixo: AOS-424.", filho)
-	}
-}
-
-// charsAdmitidos formata os caracteres que a grammar do node_id ainda admite, para a mensagem
-// de falha nomear o que bloqueia.
-func charsAdmitidos(ponto, doisPontos bool) string {
-	switch {
-	case ponto && doisPontos:
-		return "`.` e `:`"
-	case ponto:
-		return "`.`"
-	default:
-		return "`:`"
+	// (b) E o que ela NÃO pode recusar: o id que o executor de nós submete para um nó de plano
+	// com ponto — que agora chega ESCAPADO. É esta metade que prova que o caminho do plano
+	// continua a passar.
+	//
+	// O valor é o que o `childRunID` produz hoje para `run-424` + `analise.dados`. Está escrito
+	// à mão de propósito: o nó NÃO importa o `aos-orq` (são binários distintos), e um teste que
+	// derivasse o valor da mesma função que o produz não provaria que as duas pontas concordam.
+	// Se o escape mudar de forma, este teste fica vermelho — e é isso que se quer.
+	const filhoEscapado = "run-424~analise+2edados"
+	bom := postJSON(h, "POST", "/runs", map[string]any{
+		"run_id": filhoEscapado, "principal_nhi": "nhi:x",
+	})
+	if bom.Code != http.StatusCreated {
+		t.Fatalf("o `POST /runs` tem de aceitar %q (veio %d): e o id que o childRunID produz para "+
+			"um no de plano chamado `analise.dados`. Se este id deixou de ser aceite, o caminho "+
+			"do plano parte \u2014 verifique se o escape mudou de forma.", filhoEscapado, bom.Code)
 	}
 }
