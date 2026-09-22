@@ -26,11 +26,12 @@ S1. **Constantes de nome de stream.** Extrai da árvore as constantes cujo
     identificador contém `stream` (qualquer capitalização), declaradas numa linha
     e com valor string literal. Zero constantes ⇒ FALHA: um parser partido não
     pode passar por «nada a verificar».
-S2. **Representabilidade.** Nenhum valor pode conter um carácter que o
-    `subjectDe` recusa. **A regra é LIDA DA FONTE** — extraída do
-    `strings.ContainsAny(streamID, "…")` do próprio `jetstream/store.go` — e não
-    duplicada aqui: duplicá-la daria um gate verde no dia em que a regra
-    apertasse. A extracção tem controlo de não-vacuidade (ver S4).
+S2. **Representabilidade.** Nenhum valor pode conter um carácter que o contrato do
+    Event Store recusa. **A regra é LIDA DA FONTE** — a constante
+    `eventstore.CaracteresNaoRepresentaveis`, que é a declaração canónica desde o
+    aperto do contrato (AOS-424, decisão 1) e que o backend JetStream também usa —
+    e não duplicada aqui: duplicá-la daria um gate verde no dia em que a regra
+    apertasse. A extracção tem âncora e piso (ver S4).
 S3. **Literais no ponto de uso.** Um argumento de stream literal em
     `.Append(ctx, "…"` / `.Read(ctx, "…"` cai na mesma regra. Apanha o caso em
     que alguém escreve o nome à mão em vez de referenciar a constante.
@@ -61,7 +62,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 PACKAGES = RAIZ / "packages"
-FONTE_DA_REGRA = PACKAGES / "substrate" / "eventstore" / "jetstream" / "store.go"
+FONTE_DA_REGRA = PACKAGES / "substrate" / "eventstore" / "stream_id.go"
 BASELINE = Path(
     os.environ.get("AOS_STREAM_NAMES_BASELINE")
     or (Path(__file__).resolve().parent / "baseline" / "stream-names.txt")
@@ -127,8 +128,14 @@ RE_USO_LITERAL = re.compile(
     r'[A-Za-z0-9_.]+(?:\([^()]*\))?[ \t]*,[ \t]*'
     r'"((?:[^"\\\n]|\\.)*)"'
 )
-# A regra do subject NATS, tal como o `subjectDe` a escreve.
-RE_REGRA = re.compile(r'ContainsAny\(streamID,\s*"([^"]*)"\)')
+# A regra, tal como a FONTE canónica a declara.
+#
+# Era extraída do `ContainsAny` do `jetstream.Store.subjectDe` — uma de TRÊS cópias da
+# mesma lista. O aperto do contrato (AOS-424, decisão 1) concentrou-a em
+# `eventstore.ValidarStreamID`, e este gate passou a ler de lá. Quando a mudança foi feita,
+# o gate FALHOU FECHADO com «nao encontrei ContainsAny(...)» — que é o comportamento certo e
+# a prova de que a âncora não é decorativa.
+RE_REGRA = re.compile(r'CaracteresNaoRepresentaveis\s*=\s*"([^"]*)"')
 
 
 def ficheiros_go():
@@ -235,19 +242,19 @@ def carregar_regra() -> str:
         print("      sem ela este gate nao tem o que impor. Fail-closed.", file=sys.stderr)
         return ""
     fonte = FONTE_DA_REGRA.read_text(encoding="utf-8")
-    # ANCORA A EXTRACÇÃO NO `subjectDe`, e não no ficheiro. Um `search()` cego apanha a
-    # PRIMEIRA ocorrência de `ContainsAny(streamID, …)` do ficheiro, que pode não ser a regra —
-    # e um segundo `ContainsAny` acima dela fazia o gate medir a coisa errada, em verde.
-    i = fonte.find("func (s *Store) subjectDe(")
+    # ANCORA A EXTRACÇÃO NA DECLARAÇÃO CANÓNICA, e não no ficheiro. Um `search()` cego apanha a
+    # primeira ocorrência que casar, que pode não ser a regra — foi assim que, na versão
+    # anterior, um segundo `ContainsAny` acima do `subjectDe` fazia o gate medir só o ponto.
+    i = fonte.find("const CaracteresNaoRepresentaveis")
     if i < 0:
-        print(f"ERRO: nao encontrei `func (s *Store) subjectDe(` em {FONTE_DA_REGRA}", file=sys.stderr)
-        print("      a funcao mudou de nome ou de receptor. Fail-closed: sem ancora, a regra", file=sys.stderr)
-        print("      extraida pode nao ser a que o backend aplica.", file=sys.stderr)
+        print(f"ERRO: nao encontrei `const CaracteresNaoRepresentaveis` em {FONTE_DA_REGRA}", file=sys.stderr)
+        print("      a fonte canonica da regra mudou de nome ou de sitio. Fail-closed: sem ancora,", file=sys.stderr)
+        print("      a regra extraida pode nao ser a que os backends aplicam.", file=sys.stderr)
         return ""
     m = RE_REGRA.search(fonte, i)
     if not m:
-        print(f"ERRO: nao encontrei `ContainsAny(streamID, ...)` em {FONTE_DA_REGRA}", file=sys.stderr)
-        print("      a guarda do subject NATS mudou de forma. Actualize este gate para ler a", file=sys.stderr)
+        print(f"ERRO: nao encontrei a lista de caracteres em {FONTE_DA_REGRA}", file=sys.stderr)
+        print("      a fonte canonica da regra mudou de forma. Actualize este gate para ler a", file=sys.stderr)
         print("      regra nova — NAO o relaxe: o que ele impede e uma superficie que responde", file=sys.stderr)
         print("      erro a tudo no unico substrato que arbitra entre processos.", file=sys.stderr)
         return ""

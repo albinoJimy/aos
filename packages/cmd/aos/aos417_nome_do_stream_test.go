@@ -21,59 +21,43 @@ package main
 // porque TUDO isso corre sobre o substrato de ficheiro.
 
 import (
-	"os"
-	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aos-ref/substrate/eventstore"
 )
 
-// O teste LÊ A REGRA DA FONTE em vez de a repetir.
+// O teste CHAMA A REGRA em vez de a repetir — e em vez de a extrair da fonte por regex.
 //
-// Duplicar o conjunto de caracteres aqui daria um teste que fica verde no dia em que a regra do
-// NATS mudar e este nome deixar de ser válido — que é precisamente o modo de falha que ele
-// existe para apanhar. Ler o literal do `subjectDe` amarra os dois lados: se a regra apertar, o
-// teste aperta com ela.
+// # PORQUE É QUE ISTO MUDOU DUAS VEZES
 //
-// Precedente da técnica no mesmo ticket: `aos417_banner_test.go` lê o `bootstrap.go` para
-// detectar um literal que apodrece.
+// A primeira versão repetia a lista de caracteres. A segunda extraía-a do
+// `ContainsAny(streamID, …)` do `jetstream/store.go` por expressão regular — melhor, porque
+// uma regra lida não deriva, mas ainda um parser a espreitar para dentro de outro pacote.
+//
+// O aperto do contrato (AOS-424, decisão 1) concentrou a regra em
+// [eventstore.ValidarStreamID], que é exportada e que este pacote já importa. Agora
+// chama-se. Não há cópia para derivar nem extracção para partir.
+//
+// Quando a mudança foi feita, este teste ficou VERMELHO com «nao encontrei a regra» — falhou
+// fechado, que é exactamente o que se lhe pedia.
 func TestAOS417NomeDoStreamERepresentavelNoNATS(t *testing.T) {
-	const fonte = "../../substrate/eventstore/jetstream/store.go"
-	bruto, err := os.ReadFile(fonte)
-	if err != nil {
-		t.Fatalf("ler %s: %v — sem a fonte da regra este teste nao tem o que impor", fonte, err)
-	}
-
-	// Extrai o conjunto de caracteres que `subjectDe` recusa, do próprio código.
-	re := regexp.MustCompile(`ContainsAny\(streamID, "([^"]*)"\)`)
-	m := re.FindSubmatch(bruto)
-	if m == nil {
-		t.Fatalf("nao encontrei a regra `ContainsAny(streamID, ...)` em %s:\n"+
-			"a guarda do subject NATS mudou de forma. Actualize este teste para ler a regra nova "+
-			"— NAO o relaxe, porque o que ele impede e uma rota que responde 503 a tudo no unico "+
-			"substrato que arbitra entre processos.", fonte)
-	}
-	// O literal Go traz escapes (`\t`, `\r`, `\n`) que têm de ser desfeitos para comparar.
-	proibidos := strings.NewReplacer(`\t`, "\t", `\r`, "\r", `\n`, "\n").Replace(string(m[1]))
-	if proibidos == "" {
-		t.Fatal("o conjunto de caracteres proibidos veio vazio — a leitura da regra falhou")
-	}
-
-	// CONTROLO DE NÃO-VACUIDADE: o nome ANTIGO tem de ser apanhado por esta mesma verificação.
-	// Sem isto, um bug na extracção da regra deixaria o teste verde a medir nada.
+	// CONTROLO DE NÃO-VACUIDADE: a regra tem de apanhar o nome ANTIGO, o que o AOS-417 usou e
+	// que tornava a rota inutilizável sobre JetStream. Sem isto, uma regra que aceitasse tudo
+	// deixaria o bloco seguinte a medir nada.
 	const nomeAntigo = "aos.internal/plan-requests"
-	if !strings.ContainsAny(nomeAntigo, proibidos) {
-		t.Fatalf("a regra lida de %s (%q) NAO apanha o nome antigo %q — a extracao esta errada "+
-			"e este teste nao esta a medir nada", fonte, proibidos, nomeAntigo)
+	if eventstore.ValidarStreamID(nomeAntigo) == nil {
+		t.Fatalf("a regra aceita %q, que o subject NATS nao representa: ela deixou de restringir "+
+			"e este teste nao esta a medir nada", nomeAntigo)
 	}
 
-	// E agora o que importa: os nomes EM USO.
+	// E os nomes EM USO.
 	for _, nome := range []string{streamsReservados, planRequestStream, planRequestRunID} {
-		if i := strings.IndexAny(nome, proibidos); i >= 0 {
-			t.Errorf("%q contem o caracter %q, que o subject NATS nao representa (%s):\n"+
-				"sobre JetStream o Append recusa com E_CONFIG e o POST /plans responde 503 a "+
-				"TODO o pedido. E o JetStream e o unico substrato que arbitra entre processos "+
-				"(DEF-282), logo o unico onde um consumidor da fila pode existir.",
-				nome, nome[i], fonte)
+		if err := eventstore.ValidarStreamID(nome); err != nil {
+			t.Errorf("%q nao e representavel (%v):\n"+
+				"sobre JetStream o Append recusa com E_CONFIG e o POST /plans responde 503 a TODO "+
+				"o pedido. E o JetStream e o unico substrato que arbitra entre processos "+
+				"(DEF-282), logo o unico onde um consumidor da fila pode existir.", nome, err)
 		}
 	}
 }

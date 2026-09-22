@@ -1073,12 +1073,15 @@ func (s *Store) prazoDe(ctx context.Context) time.Duration {
 // representável — e a resposta é RECUSAR, não escapar em silêncio para um subject
 // vizinho onde outro stream leria os nossos eventos.
 func (s *Store) subjectDe(streamID string) (string, error) {
-	if streamID == "" {
-		return "", fmt.Errorf("%w: stream_id vazio", eventstore.ErrConfig)
-	}
-	if strings.ContainsAny(streamID, ". *>\t\r\n") {
-		return "", fmt.Errorf("%w: stream_id %q contém um carácter que não é representável num subject NATS (. * > ou espaço)",
-			eventstore.ErrConfig, streamID)
+	// A REGRA VEM DA FONTE ([eventstore.ValidarStreamID]), e não de uma cópia aqui.
+	//
+	// Esteve aqui escrita à mão, e era uma de TRÊS cópias (esta, a do nó, e a extracção do
+	// gate `stream-names`). O AOS-424 mediu o que isso custa: bastava acrescentar outro
+	// `ContainsAny(streamID, ...)` ACIMA desta função para o gate passar a medir só o ponto e
+	// ficar verde com nomes inválidos na árvore. A recusa continua a ser a mesma, e o erro
+	// continua a embrulhar [eventstore.ErrConfig] — muda a origem da regra, não o contrato.
+	if err := eventstore.ValidarStreamID(streamID); err != nil {
+		return "", err
 	}
 	return s.prefixo + "." + streamID, nil
 }
