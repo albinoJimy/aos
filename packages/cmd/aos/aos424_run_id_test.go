@@ -78,7 +78,7 @@ func TestAOS424RunIDLegitimoContinuaAceite(t *testing.T) {
 //
 // O nó não pode importar o backend JetStream para lhe perguntar a regra — um `import` só para
 // isto arrastaria o cliente NATS para o caminho de ingresso —, pelo que
-// [caracteresProibidosNoStream] é uma CÓPIA. Uma cópia sem detector apodrece; este teste é o
+// [caracteresNaoRepresentaveis] é uma CÓPIA. Uma cópia sem detector apodrece; este teste é o
 // detector, e lê o original em vez de o repetir.
 func TestAOS424RegraDuplicadaCoincideComAFonte(t *testing.T) {
 	const fonte = "../../substrate/eventstore/jetstream/store.go"
@@ -99,11 +99,11 @@ func TestAOS424RegraDuplicadaCoincideComAFonte(t *testing.T) {
 		t.Fatalf("a regra lida (%q) nao apanha um valor com ponto — a extraccao esta errada", daFonte)
 	}
 
-	if ordenar(daFonte) != ordenar(caracteresProibidosNoStream) {
+	if ordenar(daFonte) != ordenar(caracteresNaoRepresentaveis) {
 		t.Errorf("a regra do no (%q) DIVERGIU da fonte (%q):\n"+
 			"um run_id que o no aceite e o subject NATS recuse volta a ser aceite sobre WAL e a "+
 			"partir sobre JetStream — que e exactamente o defeito que o AOS-424 fechou.",
-			caracteresProibidosNoStream, daFonte)
+			caracteresNaoRepresentaveis, daFonte)
 	}
 }
 
@@ -118,17 +118,55 @@ func ordenar(s string) string {
 	return string(r)
 }
 
-// A ASSIMETRIA FICA FIXADA POR TESTE, para que seja uma DECISÃO e não um esquecimento.
+// A ASSIMETRIA FICA FIXADA POR TESTE, E O TESTE LÊ A CAUSA — NÃO A CONSEQUÊNCIA.
 //
 // O `POST /runs` ainda aceita um `run_id` com ponto, e tem de continuar a aceitar enquanto o
 // `plan.ValidNodeID` admitir `.` e `:` num `node_id`: o `childRunID` compõe `<run>~<node_id>` e
-// submete-o por esta rota, pelo que apertar aqui partiria o caminho do plano em produção — que
-// corre sobre WAL, onde estes ids funcionam.
+// submete-o por esta rota, pelo que apertar aqui partiria os planos cujos nós usem esses
+// caracteres — em produção, que corre sobre WAL, onde esses ids funcionam.
 //
-// Quando o `ValidNodeID` for apertado (eixo registado no AOS-424), este teste fica VERMELHO e
-// obriga a ligar a guarda à outra rota. É esse o momento em que a assimetria deixa de ser
-// necessária, e é exactamente aí que alguém tem de ser avisado.
+// # PORQUE É QUE ESTE TESTE LÊ UM FICHEIRO DE OUTRO MÓDULO
+//
+// A primeira versão afirmava, no ticket, que «fica vermelho no dia em que a causa
+// desaparecer». **Era falso, e uma revisão adversarial provou-o:** apertou o `ValidNodeID` e
+// este teste ficou VERDE. Reagia à CONSEQUÊNCIA (alguem ligar a guarda), não à CAUSA (o
+// charset do `node_id`). Quem apertasse o `ValidNodeID` veria vermelho apenas noutro módulo,
+// com uma mensagem que não fala de `run_id` nem desta rota — ajustava aquele caso de teste,
+// seguia, e a rota ficava sem guarda para sempre.
+//
+// Agora o teste LÊ o charset da fonte. Não se importa `control-plane/orchestrator/plan`: o
+// `layer-lint` (ADR-018/ADR-019) proíbe o nó de o importar, e a proibição é o que mantém a
+// fronteira honesta. Ler o ficheiro é a mesma técnica de
+// [TestAOS424RegraDuplicadaCoincideComAFonte] e do guard do AOS-417 — e é o que torna o
+// acoplamento VISÍVEL em vez de documentado.
 func TestAOS424PostRunsAindaNaoValidaEPorque(t *testing.T) {
+	const fonte = "../../control-plane/orchestrator/plan/plandocument.go"
+	bruto, err := os.ReadFile(fonte)
+	if err != nil {
+		t.Fatalf("ler %s: %v \u2014 sem a causa este teste nao sabe o que afirmar", fonte, err)
+	}
+	corpo := string(bruto)
+	j := strings.Index(corpo, "func ValidNodeID(")
+	if j < 0 {
+		t.Fatalf("nao encontrei `func ValidNodeID(` em %s: a grammar do node_id mudou de forma.\n"+
+			"Actualize este teste \u2014 NAO o relaxe: e ele que amarra a decisao de nao validar o "+
+			"run_id no POST /runs \u00e0 razao que a justifica.", fonte)
+	}
+	// O charset admitido, tal como a função o escreve: `case c == '_' || c == '-' || ...`.
+	grammar := corpo[j:]
+	if k := strings.Index(grammar, "\n}"); k > 0 {
+		grammar = grammar[:k]
+	}
+	admitePonto := strings.Contains(grammar, "c == '.'")
+	admiteDoisPontos := strings.Contains(grammar, "c == ':'")
+
+	// CONTROLO DE NÃO-VACUIDADE: a extracção tem de ver o charset. Se não vir NADA do que
+	// espera, falha em vez de concluir «já não admite» por não ter conseguido ler.
+	if !strings.Contains(grammar, "c == '_'") && !strings.Contains(grammar, "c == '-'") {
+		t.Fatalf("a extraccao do charset de ValidNodeID falhou (nem `_` nem `-` encontrados):\n" +
+			"este teste nao pode decidir nada. Corrija a extraccao.")
+	}
+
 	no, _ := newAPINode(t, &countingModel{}, false)
 	defer func() { _ = no.Close() }()
 	_, h := newAPI(t, no)
@@ -138,10 +176,38 @@ func TestAOS424PostRunsAindaNaoValidaEPorque(t *testing.T) {
 	rec := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id": filho, "principal_nhi": "nhi:x",
 	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("o `POST /runs` tem de continuar a aceitar %q (veio %d): é o id que o "+
-			"childRunID compõe para um nó de plano com ponto, e o ValidNodeID permite pontos. "+
-			"Se o ValidNodeID foi apertado, ligue [runIDInvalido] também ao POST /runs e "+
-			"actualize este teste.", filho, rec.Code)
+
+	if admitePonto || admiteDoisPontos {
+		// A CAUSA AINDA EXISTE: a rota tem de continuar permissiva.
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("o `POST /runs` tem de continuar a aceitar %q (veio %d): o ValidNodeID ainda "+
+				"admite %s, e o childRunID compoe `<run>~<node_id>` para esta rota. Ligar a guarda "+
+				"agora parte os planos cujos nos usem esses caracteres.",
+				filho, rec.Code, charsAdmitidos(admitePonto, admiteDoisPontos))
+		}
+		return
+	}
+
+	// A CAUSA DESAPARECEU: o `ValidNodeID` já não admite `.` nem `:`, logo nenhum `node_id`
+	// legitimo produz um `run_id` irrepresentável — e a guarda TEM de passar a valer aqui.
+	if rec.Code == http.StatusCreated {
+		t.Fatalf("o `ValidNodeID` deixou de admitir `.` e `:`, mas o `POST /runs` continua a "+
+			"aceitar %q.\n"+
+			"A razao que bloqueava a guarda DESAPARECEU: ligue `runIDInvalido(req.RunID)` ao "+
+			"`handleSubmit` (api.go), como o `POST /plans` ja faz, e actualize este teste.\n"+
+			"Eixo: AOS-424.", filho)
+	}
+}
+
+// charsAdmitidos formata os caracteres que a grammar do node_id ainda admite, para a mensagem
+// de falha nomear o que bloqueia.
+func charsAdmitidos(ponto, doisPontos bool) string {
+	switch {
+	case ponto && doisPontos:
+		return "`.` e `:`"
+	case ponto:
+		return "`.`"
+	default:
+		return "`:`"
 	}
 }

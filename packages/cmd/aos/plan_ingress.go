@@ -116,7 +116,12 @@ func runIDReservado(runID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(runID), streamsReservados)
 }
 
-// caracteresProibidosNoStream são os que um subject NATS não representa.
+// caracteresNaoRepresentaveis são os que um subject NATS não representa.
+//
+// O nome NÃO contém «stream» de propósito: o gate `stream-names` varre a árvore à procura de
+// constantes cujo identificador o contenha, e esta guarda um CONJUNTO DE CARACTERES, não um
+// nome de stream — acusava-se a si mesma. Chamar-lhe outra coisa é mais honesto do que
+// ensinar o gate a ignorá-la.
 //
 // A regra é a do `jetstream.Store.subjectDe`, e está aqui DUPLICADA de propósito — o nó não
 // pode importar o backend JetStream para lhe perguntar, e um `import` só para isto arrastaria
@@ -124,7 +129,7 @@ func runIDReservado(runID string) bool {
 // `scripts/ci/stream-names`, que lê a regra da FONTE e verifica a árvore inteira, mais o
 // [TestAOS417NomeDoStreamERepresentavelNoNATS], que faz o mesmo para as constantes deste
 // ficheiro. Duplicar com detector é diferente de duplicar e esperar.
-const caracteresProibidosNoStream = ". *>\t\r\n"
+const caracteresNaoRepresentaveis = ". *>\t\r\n"
 
 // runIDInvalido indica se um `run_id` não pode ser o nome de um stream.
 //
@@ -176,7 +181,7 @@ const caracteresProibidosNoStream = ". *>\t\r\n"
 // Runs JÁ CRIADOS com nomes assim não são afectados por esta guarda (ela só actua na
 // submissão); o que os afecta é a trava de leitura do AOS-426, e isso está declarado lá.
 func runIDInvalido(runID string) bool {
-	return strings.ContainsAny(runID, caracteresProibidosNoStream)
+	return strings.ContainsAny(runID, caracteresNaoRepresentaveis)
 }
 
 // planRequest é o corpo aceite. Deliberadamente MÍNIMO: o que o orquestrador precisa para
@@ -361,3 +366,4 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// canal por onde a existência de um pedido alheio se podia inferir. O ADR-028 §2.3 fixa-o.
 	writeJSON(w, http.StatusCreated, planRequestResponse{RunID: req.RunID, Status: "accepted"})
 }
+

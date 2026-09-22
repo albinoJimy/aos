@@ -2504,8 +2504,12 @@ directa**; as restantes vêm da varredura e estão marcadas como tal.
 | BAIXO | `backpressure/queue/<name>`, `degradation/<name>`, `routing/<name>`, `scheduling/dispatch/<name>`, `backpressure/policy-audit/<name>` | `scheduler/{queue,degradation,routing,priority,policy}.go` *(varredura)* | nome de instância, dado por quem compõe (interno) |
 | BAIXO | `budget-breaker/<treeID>`, `<treeID>` | `scheduler/breaker.go:882`; `budget/events.go:91` *(varredura)* | id de árvore de orçamento |
 
-**O `run_id` NÃO está nesta lista de propósito** — é critério de aceitação do AOS-424, que o valida
-na fronteira das duas rotas de submissão. Aqui fica o que essa validação **não** alcança.
+**O `run_id` NÃO está nesta lista de propósito** — é critério de aceitação do AOS-424.
+**ATENÇÃO, e isto mudou:** o AOS-424 validou-o **só no `POST /plans`**. No `POST /runs` — o
+único sítio onde um `run_id` de cliente se torna um `stream_id` — **continua sem validação**,
+bloqueado por um conflito de invariantes (o `ValidNodeID` admite `.` e `:`). Quem executar este
+ticket **não pode considerar o `run_id` fechado**: ou o eixo do `ValidNodeID` é resolvido no
+AOS-424, ou esta lista tem de o incluir.
 
 ### Porque é que o AOS-424 sozinho não fecha isto
 
@@ -2626,7 +2630,7 @@ clientes externos.
 
 | Stream | Onde | Composto em produção? |
 |---|---|---|
-| `gov.approvals` | `integration/approval_store_durable.go:48` | **SIM**, quando o four-eyes está ligado (`bootstrap.go:1855`, `:1865`). Serve TAMBÉM os registos de retoma (`resume_records.go:132`) |
+| `gov.approvals` | `integration/approval_store_durable.go:48` (à data da medição) | **SIM**, quando o four-eyes está ligado (`bootstrap.go:1855`, `:1865`). Serve TAMBÉM os registos de retoma (`resume_records.go:132`) |
 | `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | `platform/memory/adapters/eventstore_adapter.go:27` (`streamPrefix = "memory."`) | **SIM** — `bootstrap.go:2496` compõe o `NewEventStoreAdapter` |
 | `memory.semantic.knowledge` | `memory/semantic/knowledge_base.go:66` | não (sem compositor) |
 | `memory.episodic.trajectories` | `memory/episodic/trajectory_store.go:75` | não |
@@ -2720,14 +2724,25 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
       *(**POR DECIDIR.** Apertar o contrato do `eventstore` torna ilegítimos os dois nomes que
       ainda têm histórico em produção, pelo que a ordem obrigatória é renomear PRIMEIRO. Esses
       dois renames precisam da decisão (3), e por isso este critério fica aberto.)*
-- [x] Nenhum `stream_id` do repositório contém carácter não representável, **e há gate que o
-      impõe com alcance de REPOSITÓRIO**.
+- [~] Há **gate que impõe a regra**, e quatro dos seis nomes estão corrigidos — mas **NÃO é
+      verdade que nenhum `stream_id` da árvore contenha carácter não representável**: dois
+      contêm, e estão em baseline. A primeira versão desta caixa dizia `[x]` com esta mesma
+      nota por baixo a contradizê-la; uma revisão adversarial apanhou-o. Uma caixa que afirma
+      o contrário da sua própria nota avermelha a confiança em todas as outras.
       *(`scripts/ci/stream-names.{py,sh}`, no molde do `event-catalog`: lê os ficheiros e por
       isso vê os 49 módulos, que um teste Go num módulo não vê. **Lê a regra da FONTE** —
       extrai o `ContainsAny` do `subjectDe` — em vez de a duplicar, com controlo de
       não-vacuidade contra um valor conhecidamente mau, e fail-closed a zero constantes.
-      Registado no `Makefile` (`ci-stream-names`), no `ci.yml` e na lista REQUIRED-CHECKS.
-      Verificados 22 nomes. **Dois ficam em BASELINE**, com dono e com o custo escrito — ver
+      Registado nos QUATRO sítios onde a lista de checks vive — `ci.yml` (`needs` e
+      comentário), `CONTRIBUTING.md` e o `ALL_GATES` de `scripts/ci/run.sh` —, mais o
+      `Makefile` (`ci-stream-names`). O quarto faltava, e faltava de forma consequente: sem
+      ele o gate não corria no `make ci`, e o gate é o **único** sensor dos quatro renames —
+      revertendo um deles, todas as suites locais ficavam verdes. O self-test §M passou a
+      cruzar os quatro (antes cruzava três). Verificados 24 nomes.
+      **Alcance exacto, sem exagero:** o gate lê `packages/**/*.go` e **salta `*_test.go`**.
+      Os quatro módulos Go fora de `packages/` (três em `deploy/`, `scripts/ci/attest`) não
+      importam o `eventstore` nem chamam `Append` — verificado —, pelo que a omissão não é
+      um buraco; mas «alcance de repositório» era demasiado forte. **Dois ficam em BASELINE**, com dono e com o custo escrito — ver
       abaixo; a baseline é dívida declarada, não verde.)*
 - [x] Quatro dos seis nomes não representáveis corrigidos.
       *(`memory/{semantic,episodic,compression,migrations}` → `aos-internal/memory/...`. Custou
@@ -2739,9 +2754,20 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
 - [~] O `run_id` é validado na fronteira das duas rotas de submissão, com teste.
       *(**METADE, e a outra metade está BLOQUEADA por um conflito de invariantes que este ticket
       descobriu.** Ver a secção abaixo. Feito no `POST /plans`; **NÃO** feito no `POST /runs`,
-      onde partiria o caminho do plano em produção. A assimetria está fixada por teste
-      (`TestAOS424PostRunsAindaNaoValidaEPorque`), que fica VERMELHO no dia em que a causa
-      desaparecer — para ser uma decisão e não um esquecimento.)*
+      onde partiria o caminho do plano em produção.
+      **E a metade feita é a que NÃO tem efeito hoje**, o que tem de ser dito: no `/plans` o
+      `run_id` do cliente nunca se torna um `stream_id` — o append é ao stream fixo da fila e
+      o id vai no payload e no `StepID`. O único sítio onde um `run_id` de cliente se torna
+      stream é o `POST /runs`, que continua permissivo; logo o objectivo da guarda é
+      alcançável pela outra porta, hoje. O que ela vale, e não é nada: é validação **no ponto
+      de entrada** de um valor que se torna stream quando o plano correr — a tese do AOS-425 —
+      e impede que um pedido irrepresentável entre na fila para o consumidor falhar mais
+      tarde, longe de quem o submeteu. A assimetria está fixada por teste
+      (`TestAOS424PostRunsAindaNaoValidaEPorque`), que **lê o charset do `ValidNodeID` da
+      fonte** e fica VERMELHO no dia em que ele deixar de admitir `.` e `:`, com o remédio na
+      mensagem. A primeira versão afirmava isto e era FALSA: reagia à consequência (alguem
+      ligar a guarda), não à causa — uma revisão adversarial apertou o `ValidNodeID` e o teste
+      ficou verde. Verificado por mutação depois de corrigido.)*
 - [ ] Existe **pelo menos um teste da cerimónia four-eyes sobre JetStream**.
       *(**NÃO FEITO, e re-classificado.** Este critério pedia um teste que exige `AOS_NATS_URL`
       no CI — que nenhum ficheiro de CI define hoje, e o gate `dormencia` inventaria essa
@@ -2787,6 +2813,15 @@ AOS-425 aplicada: validar onde o valor ENTRA (o documento de plano, na validaç�
 não onde é usado. Um plano com um `node_id` mal formado passa a ser recusado na validação, com
 razão legível, em vez de falhar a meio da execução. **Custo:** é uma mudança semântica noutro
 módulo, afecta o que o planeador pode produzir, e o prompt de decomposição tem de o saber.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Renomear `gov.approvals` ou o prefixo `memory.` num nó com histórico perde grants, pendentes, registos de retoma e a memória — e o backup não os transporta | Decisão (3). Ficam em baseline até existir plano de migração |
+| **A validação na fronteira quebra um cliente que use pontos no `run_id`** — decisão (4), **TOMADA nesta entrega para o `POST /plans`** | Superfície nova (AOS-417, mergida no mesmo dia) e sem consumidor: nenhum cliente depende dela. No `POST /runs`, onde há comportamento a preservar, a guarda **não** foi ligada |
+| Um gate com evasões dá falsa segurança, que é pior do que gate nenhum | Quatro evasões fechadas depois da revisão: segundo `ContainsAny` no ficheiro (âncora no `subjectDe` + piso da regra), chamada com parênteses no 1.º argumento, concatenação de literais, e escapes `\t`/`\r`/`\n`. Todas verificadas por mutação |
+| O gate corre só no CI e não no `make ci` | Fechado: `ALL_GATES` + self-test §M a cruzar quatro listas |
 
 ### Resíduos deste ticket, declarados
 

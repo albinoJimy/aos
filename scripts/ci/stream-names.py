@@ -67,16 +67,36 @@ BASELINE = Path(
     or (Path(__file__).resolve().parent / "baseline" / "stream-names.txt")
 )
 
-# O valor de controlo: o nome que o AOS-417 usou e que o `subjectDe` recusa.
-# Se a regra extraída NÃO o apanhar, a extracção está errada (S4).
-CONTROLO_MAU = "aos.internal/plan-requests"
+# PISO MÍNIMO da regra. A extracção lê a regra da fonte, mas «ler da fonte» não basta:
+# uma revisão adversarial provou que bastava acrescentar a `store.go`, ACIMA do `subjectDe`,
+# um segundo `ContainsAny(streamID, ".")` — um helper plausível — para o gate passar a medir
+# só o ponto e continuar VERDE com nomes contendo espaço e `>` na árvore.
+#
+# O piso fecha isso: a regra extraída tem de ser um SUPERCONJUNTO deste conjunto. A fonte é o
+# TECTO (se apertar, o gate aperta com ela) e isto é o CHÃO (se a extracção enfraquecer, o gate
+# FALHA em vez de medir menos). Um valor de controlo único não servia: só exercitava o `.` e
+# deixava passar uma extracção que tivesse perdido os outros seis.
+PISO_DA_REGRA = ". *>\t\r\n"
 
-# `const nomeStream = "valor"` / `nomeStream = "valor"` / `NomeStreamID = "valor"`,
-# numa linha e a terminar na string. Mesmo critério de forma do `event-catalog`.
+# Declaração de um nome de stream: `const nomeStream = …` / `nomeStream := …` / `var …`.
+#
+# A versão anterior exigia que a linha TERMINASSE na string, e isso deixava passar a forma que
+# produziu quatro dos nomes deste próprio ticket: a CONCATENAÇÃO
+# (`streamPrefix + string(class)`). Uma revisão adversarial classificou-a como a evasão mais
+# plausível de todas, e com razão — é o idioma que já está na árvore.
+#
+# Agora casa-se só o INÍCIO da declaração e inspeccionam-se TODOS os literais da linha
+# ([RE_LITERAL]), pelo que `"aos-internal/" + "memory.semantic"` é apanhado nos dois pedaços.
 RE_CONST = re.compile(
-    r'^[ \t]*(?:const[ \t]+)?([A-Za-z0-9_]*[Ss]tream[A-Za-z0-9_]*)[ \t]*'
-    r'(?::?=)[ \t]*"([^"\\\n]*)"[ \t]*$'
+    r'^[ \t]*(?:const[ \t]+|var[ \t]+)?([A-Za-z0-9_]*[Ss]tream[A-Za-z0-9_]*)[ \t]*(?::?=)[ \t]'
 )
+# Um literal Go entre aspas, PRESERVANDO os escapes (`\t`, `\r`, `\n`) para depois os decodificar.
+# A versão anterior excluía a barra invertida do valor, pelo que uma constante com `\t`/`\r`/`\n`
+# — três dos sete caracteres que a regra proíbe — não casava, não era contada e nunca era
+# acusada. Eram indetectáveis por construção.
+RE_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+# Literal raw (backtick): pode conter um TAB ou uma nova linha REAIS.
+RE_RAW = re.compile(r"`([^`]*)`")
 # NOMES DE ATRIBUTO NÃO SÃO NOMES DE STREAM, e a distinção não é decorativa: medido
 # na primeira execução deste gate, `AtributoStream`/`AttrLogStream` (o atributo OTel
 # `aos.eventstore.stream_id`, em `eventstore/rastreio.go` e `otel-genai/semconv.go`)
@@ -88,9 +108,25 @@ RE_CONST = re.compile(
 # cujo identificador não comece por `Attr`/`Atributo` voltaria a ser acusado, e o
 # remédio é corrigir este filtro, nunca baselinar o achado: uma baseline diz «isto é
 # dívida real», e uma chave de span não é dívida nenhuma.
-RE_ATRIBUTO = re.compile(r"^(?:Attr|Atributo)")
+#
+# `Err*` entrou pela mesma razão, e foi medido: ao alargar a regex para ver todos os
+# literais de uma linha (para apanhar concatenações), apareceram `ErrStreamNotFound`,
+# `ErrForeignStream` e `ErrTruncatedStream` — MENSAGENS de erro, prosa com espaços, cujo
+# identificador contém «Stream». A convenção Go reserva o prefixo `Err` para valores de
+# erro, o que torna o filtro razoavelmente seguro; um nome de stream chamado `ErrX` seria
+# um nome infeliz, e ficaria invisível a este gate.
+RE_ATRIBUTO = re.compile(r"^(?:Attr|Atributo|Err)")
 # Argumento de stream LITERAL no ponto de uso: `.Append(ctx, "x"` / `.Read(ctx, "x"`.
-RE_USO_LITERAL = re.compile(r'\.(?:Append|Read|StreamHead|IngestStream)\([^,)]+,[ \t]*"([^"\\\n]*)"')
+#
+# O primeiro argumento aceita PARÊNTESES. A versão anterior usava `[^,)]+`, que só casava uma
+# variável nua (`ctx`) — e por isso NÃO via `Append(r.Context(), "gov.x", …)`, que é exactamente
+# a forma que o `plan_ingress.go` usa. Uma revisão adversarial mediu-o com três sondas: só uma
+# foi acusada.
+RE_USO_LITERAL = re.compile(
+    r'\.(?:Append|Read|StreamHead|IngestStream)\('
+    r'[A-Za-z0-9_.]+(?:\([^()]*\))?[ \t]*,[ \t]*'
+    r'"((?:[^"\\\n]|\\.)*)"'
+)
 # A regra do subject NATS, tal como o `subjectDe` a escreve.
 RE_REGRA = re.compile(r'ContainsAny\(streamID,\s*"([^"]*)"\)')
 
@@ -132,13 +168,83 @@ def sem_comentarios(texto: str) -> str:
     return "".join(saida)
 
 
+def decodificar_go(valor: str) -> str:
+    """
+    Decodifica os escapes de uma string Go entre aspas.
+
+    Sem isto, `"gov\\tx"` chega aqui com uma barra e um `t` — dois caracteres que a regra não
+    proíbe —, e o TAB que o Go vai realmente pôr no `stream_id` passa invisível.
+    """
+    pares = {"t": "\t", "r": "\r", "n": "\n", "\\": "\\", '"': '"', "'": "'", "a": "\a",
+             "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
+    saida, i = [], 0
+    while i < len(valor):
+        if valor[i] == "\\" and i + 1 < len(valor):
+            saida.append(pares.get(valor[i + 1], valor[i + 1]))
+            i += 2
+        else:
+            saida.append(valor[i])
+            i += 1
+    return "".join(saida)
+
+
+def autoteste() -> str:
+    """
+    Verifica que as regex do gate apanham as formas que DEVEM apanhar, e ignoram as que não.
+
+    Existe porque S3 não tinha piso: com `0 literal(is) verificados` na saída, uma regex
+    partida e uma árvore limpa eram indistinguíveis. É o mesmo raciocínio de S1 (zero
+    constantes ⇒ falha), aplicado ao resto do parser. Devolve "" quando está tudo bem.
+    """
+    deve_casar_uso = [
+        '\ts.Append(ctx, "gov.x", nil)',
+        '\ts.Append(context.Background(), "gov.x", nil)',
+        '\th.node.EventStore.Append(r.Context(), "gov.x", eventstore.EventInput{',
+        '\tevs, err := s.Read(ctx, "gov.x", 1)',
+    ]
+    for linha in deve_casar_uso:
+        if not RE_USO_LITERAL.search(linha):
+            return f"RE_USO_LITERAL nao casou uma forma que devia: {linha.strip()!r}"
+
+    deve_casar_const = [
+        '\tconst nomeStream = "gov.x"',
+        '\tstreamPrefix = "memory."',
+        '\tKnowledgeStreamID = "a.b"',
+        '\tconst streamX = "aos-internal/" + "memory.semantic"',
+        '\tvar streamY = "gov.y"',
+    ]
+    for linha in deve_casar_const:
+        if not RE_CONST.match(linha):
+            return f"RE_CONST nao casou uma declaracao que devia: {linha.strip()!r}"
+
+    # E os escapes têm de ser decodificados, senão três dos sete caracteres da regra são
+    # indetectáveis por construção.
+    if decodificar_go("gov\\tx") != "gov\tx":
+        return "decodificar_go nao decodifica \\t"
+
+    # CONTROLO NEGATIVO: uma chave de span não pode ser tratada como nome de stream.
+    if not RE_ATRIBUTO.match("AtributoStream"):
+        return "RE_ATRIBUTO deixou de filtrar uma chave de span"
+    return ""
+
+
 def carregar_regra() -> str:
     """Lê da FONTE o conjunto de caracteres que o `subjectDe` recusa."""
     if not FONTE_DA_REGRA.exists():
         print(f"ERRO: nao encontrei a fonte da regra em {FONTE_DA_REGRA}", file=sys.stderr)
         print("      sem ela este gate nao tem o que impor. Fail-closed.", file=sys.stderr)
         return ""
-    m = RE_REGRA.search(FONTE_DA_REGRA.read_text(encoding="utf-8"))
+    fonte = FONTE_DA_REGRA.read_text(encoding="utf-8")
+    # ANCORA A EXTRACÇÃO NO `subjectDe`, e não no ficheiro. Um `search()` cego apanha a
+    # PRIMEIRA ocorrência de `ContainsAny(streamID, …)` do ficheiro, que pode não ser a regra —
+    # e um segundo `ContainsAny` acima dela fazia o gate medir a coisa errada, em verde.
+    i = fonte.find("func (s *Store) subjectDe(")
+    if i < 0:
+        print(f"ERRO: nao encontrei `func (s *Store) subjectDe(` em {FONTE_DA_REGRA}", file=sys.stderr)
+        print("      a funcao mudou de nome ou de receptor. Fail-closed: sem ancora, a regra", file=sys.stderr)
+        print("      extraida pode nao ser a que o backend aplica.", file=sys.stderr)
+        return ""
+    m = RE_REGRA.search(fonte, i)
     if not m:
         print(f"ERRO: nao encontrei `ContainsAny(streamID, ...)` em {FONTE_DA_REGRA}", file=sys.stderr)
         print("      a guarda do subject NATS mudou de forma. Actualize este gate para ler a", file=sys.stderr)
@@ -176,10 +282,23 @@ def main() -> int:
     if not proibidos:
         return 1
 
-    # S4 — NÃO-VACUIDADE. A regra tem de apanhar o valor de controlo.
-    if not any(ch in CONTROLO_MAU for ch in proibidos):
-        print(f"ERRO: a regra lida ({proibidos!r}) NAO apanha o valor de controlo", file=sys.stderr)
-        print(f"      {CONTROLO_MAU!r} — a extraccao esta errada e este gate nao mede nada.", file=sys.stderr)
+    # S4 — PISO DA REGRA. A regra extraída tem de ser um SUPERCONJUNTO do piso conhecido.
+    # Não é um valor de controlo: é o conjunto inteiro. Ver [PISO_DA_REGRA].
+    em_falta = [ch for ch in PISO_DA_REGRA if ch not in proibidos]
+    if em_falta:
+        print(f"ERRO: a regra lida da fonte ({proibidos!r}) NAO cobre o piso conhecido:", file=sys.stderr)
+        print(f"      faltam {em_falta!r}.", file=sys.stderr)
+        print("      Ou a extraccao esta a ler a expressao errada (ha outro `ContainsAny` no", file=sys.stderr)
+        print("      caminho?), ou o backend RELAXOU a regra. Nos dois casos este gate deixaria", file=sys.stderr)
+        print("      de medir o que afirma medir, e por isso FALHA em vez de medir menos.", file=sys.stderr)
+        return 1
+
+    # S5 — AUTO-TESTE DAS REGEX. Sem isto, uma regex partida e uma árvore limpa são
+    # indistinguíveis na saída: o gate imprimiria «0 literais verificados» nos dois casos.
+    # É o mesmo piso fail-closed que S1 tem para as constantes, aplicado ao resto.
+    if falha := autoteste():
+        print(f"ERRO: auto-teste das regex do gate FALHOU: {falha}", file=sys.stderr)
+        print("      um parser partido nao pode passar por «nada a verificar». Fail-closed.", file=sys.stderr)
         return 1
 
     baseline = carregar_baseline()
@@ -193,22 +312,26 @@ def main() -> int:
             continue
 
         for n, linha in enumerate(texto.splitlines(), 1):
-            m = RE_CONST.match(linha)
-            if m:
-                nome, valor = m.group(1), m.group(2)
+            if m := RE_CONST.match(linha):
+                nome = m.group(1)
                 if RE_ATRIBUTO.match(nome):
                     continue  # chave de span, não nome de stream — ver [RE_ATRIBUTO]
+                # TODOS os literais da linha, e não só um: é o que apanha a concatenação
+                # `"prefixo/" + "nome.com.ponto"`, a evasão mais plausível de todas.
+                literais = [decodificar_go(v) for v in RE_LITERAL.findall(linha)]
+                literais += RE_RAW.findall(linha)  # raw: pode trazer um TAB real
+                if not literais:
+                    continue  # declaração sem literal nenhum (ex.: `= outraConst`)
                 declaradas += 1
-                mau = [ch for ch in valor if ch in proibidos]
-                if mau:
-                    achados.append((f"const|{rel}|{nome}|{valor}", rel, n,
-                                    f"constante {nome} = {valor!r} contem {mau!r}"))
+                for valor in literais:
+                    if mau := [ch for ch in valor if ch in proibidos]:
+                        achados.append((f"const|{rel}|{nome}|{valor}", rel, n,
+                                        f"constante {nome} com o literal {valor!r} contem {mau!r}"))
                 continue
             for u in RE_USO_LITERAL.finditer(linha):
-                valor = u.group(1)
+                valor = decodificar_go(u.group(1))
                 usados += 1
-                mau = [ch for ch in valor if ch in proibidos]
-                if mau:
+                if mau := [ch for ch in valor if ch in proibidos]:
                     achados.append((f"uso|{rel}|{valor}", rel, n,
                                     f"stream literal {valor!r} no ponto de uso contem {mau!r}"))
 
